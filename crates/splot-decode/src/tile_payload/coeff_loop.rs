@@ -6,7 +6,7 @@
 //! Feature tracking: `DECODE-COEFF-ALL-ZERO-CONTEXT-STATE`, `DECODE-COEFF-ALL-ZERO-BLOCK-STATE`,
 //! `DECODE-COEFF-EOB-VALUE-STATE`, `DECODE-COEFF-EOB-SYMBOL-READ`, `DECODE-COEFF-EOB-SIZE-CONTEXT`,
 //! `DECODE-COEFF-EOB-DERIVED-SYMBOL-READ`, `DECODE-COEFF-EOB-BRANCH-HANDOFF`,
-//! `DECODE-COEFF-NONZERO-BLOCK-STATE`, `DECODE-COEFF-SCAN-WALK`.
+//! `DECODE-COEFF-NONZERO-BLOCK-STATE`, `DECODE-COEFF-SCAN-WALK`, `DECODE-COEFF-LEVEL-STATE-WRITE`.
 
 use std::collections::TryReserveError;
 
@@ -33,8 +33,8 @@ const MAX_NONZERO_EOB_PT: usize = 11;
 pub(crate) mod base_symbol;
 mod branch;
 pub(crate) use branch::{CoeffBlockEobBranchInput, read_coeff_block_eob_branch};
+pub(crate) mod level_state;
 mod scan_walk;
-
 /// Caller-resolved facts for luma § 8.3.2 `all_zero` context derivation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct LumaAllZeroContextInput {
@@ -643,6 +643,8 @@ fn adjusted_coeff_extent(size4: usize) -> usize {
 mod base_symbol_tests;
 #[cfg(test)]
 mod eob_symbol_tests;
+#[cfg(test)]
+mod level_state_tests;
 
 #[cfg(test)]
 mod tests {

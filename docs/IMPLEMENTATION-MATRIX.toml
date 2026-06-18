@@ -8982,6 +8982,57 @@ fixtures = [
 diagnostics = ["decode/unsupported-feature"]
 
 [[feature]]
+id = "DECODE-COEFF-LEVEL-STATE-WRITE"
+name = "Coefficient level state write"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.20.7.27"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/tile_payload/coeff_loop/level_state.rs"
+openspec_change = "coeff-level-state-write"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Adds a crate-private `splot-decode` state-application boundary for the ordinary non-FSC AV2 §5.20.7.27 coefficient base/base-range level pass after nonzero EOB, checked scan-walk, and base-symbol reads. `apply_nonzero_coeff_base_levels` consumes a `NonZeroCoeffBlockStart`, validates decoded `CoeffBaseSymbolRead` records against the checked `NonZeroCoeffScanWalk`, preflights every target coordinate against the local `TransformCoeffBlockState`, writes each decoded value to `Level[row][col]`, and returns the updated local block state while preserving the decoded EOB facts. Tests cover row-major placement, unchanged `QuantSign[]` and `Quant[]` arrays, read-count mismatch, scan-entry mismatch, and mismatched block/walk geometry rejection before writes. This feature remains partial: the helper is not wired into runtime `coeffs()`, does not derive selectors or scan tables from real transform/block syntax, does not read sign symbols, does not write `QuantSign[]` or `Quant[]`, does not implement `read_quant`, dequantization, inverse transform, residual add, reconstruction, reference refresh, AVM/dav2d invocation, public APIs, or broad `decode_block()` / `decode_tile()` support."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/tile_payload/coeff_loop/level_state_tests.rs::coefficient_level_state_write_sets_levels_from_scan_entries",
+    "crates/splot-decode/src/tile_payload/coeff_loop/level_state_tests.rs::coefficient_level_state_write_rejects_read_count_mismatch",
+    "crates/splot-decode/src/tile_payload/coeff_loop/level_state_tests.rs::coefficient_level_state_write_rejects_scan_entry_mismatch",
+    "crates/splot-decode/src/tile_payload/coeff_loop/level_state_tests.rs::coefficient_level_state_write_rejects_mismatched_block_geometry",
+]
+commands = [
+    "cargo test -p splot-decode coeff_loop --locked",
+    "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-decoder-conformance-coverage",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-decode/src/tile_payload/coeff_loop.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/branch.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/level_state.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/level_state_tests.rs",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
 id = "DECODE-TILE-CDF-SAVE-LIFECYCLE-BOUNDARY"
 name = "Tile CDF save lifecycle boundary"
 category = "infrastructure"

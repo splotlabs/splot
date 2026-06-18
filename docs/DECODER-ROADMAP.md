@@ -160,11 +160,14 @@ CDF row families are now loaded and selectable in the tile CDF subset
 count scaling. A crate-private ordinary non-FSC coefficient base symbol-read
 boundary (`DECODE-COEFF-BASE-SYMBOL-READ`) now consumes caller-resolved
 `coeff_base_eob`, `coeff_base`, and conditional `coeff_br` rows over checked
-scan-walk entries and returns decoded level-building symbols, but it is not yet
-wired into runtime `coeffs()`. The minimal trace uses the handoff only for the
-existing luma and V all-zero applications. Runtime nonzero coefficient blocks
-are still unsupported, and no nonzero `Level[]`/`Quant[]`, sign, or `read_quant`
-coefficient state is written yet. The
+scan-walk entries and returns decoded level-building symbols. Those decoded
+ordinary non-FSC levels can now be applied to local transform-block `Level[]`
+state (`DECODE-COEFF-LEVEL-STATE-WRITE`) after validating the read records
+against the checked scan walk, while keeping `QuantSign[]` and `Quant[]`
+untouched. Neither boundary is wired into runtime `coeffs()` yet. The minimal
+trace uses the handoff only for the existing luma and V all-zero applications.
+Runtime nonzero coefficient blocks are still unsupported, and no sign or
+`read_quant` coefficient state is written yet. The
 § 7.14.4
 `useQm` / `UserQm` gating and `shift` derivation, the rest
 of the § 7.14.3 reconstruct process, the § 7.15.3 secondary transform, the

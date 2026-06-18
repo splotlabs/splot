@@ -576,6 +576,20 @@ local_reference_evidence = []
 notes = "Adds crate-private `splot-decode` symbol-read sequencing for ordinary non-FSC coefficient base/base-EOB/base-range reads after nonzero EOB and checked scan-walk handoff. `read_nonzero_coeff_base_symbols` validates caller-provided scan-entry/input matching, reads caller-resolved `coeff_base_eob` or `coeff_base` rows through `SymbolDecoder`, applies the base-EOB `+1` level bias, conditionally reads caller-resolved `coeff_br` rows when the decoded level crosses the caller-provided `baseLevels` threshold and BR is enabled, and returns decoded level summaries without writing coefficient state. Tests prove direct-read equivalence, no-consumption behavior for mismatched scan entries and reached invalid selectors, disabled CDF updates, unreachable invalid BR selector behavior, disabled BR above threshold, and input-count mismatch. This row remains partial: the helper is not wired into runtime `coeffs()`, does not derive selectors from real block syntax, does not write nonzero `Level[]`, `QuantSign[]`, or `Quant[]`, does not read signs or run `read_quant`, and does not support dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public API, AVM/dav2d invocation, broad `decode_block()`, or broad `decode_tile()`."
 
 [[row]]
+id = "coeff-level-state-write"
+name = "Coefficient level state write"
+feature_id = "DECODE-COEFF-LEVEL-STATE-WRITE"
+spec_sections = ["5.20.7.27"]
+parser_source = "docs/spec/av2/1.0.0/05-syntax-structures.md"
+decode_module = "crates/splot-decode/src/tile_payload/coeff_loop/level_state.rs; crates/splot-decode/src/tile_payload/coeff_loop/level_state_tests.rs"
+tier = "tier1-intra"
+status = "partial"
+self_contained_tests = ["crates/splot-decode/src/tile_payload/coeff_loop/level_state_tests.rs::coefficient_level_state_write_sets_levels_from_scan_entries", "crates/splot-decode/src/tile_payload/coeff_loop/level_state_tests.rs::coefficient_level_state_write_rejects_read_count_mismatch", "crates/splot-decode/src/tile_payload/coeff_loop/level_state_tests.rs::coefficient_level_state_write_rejects_scan_entry_mismatch", "crates/splot-decode/src/tile_payload/coeff_loop/level_state_tests.rs::coefficient_level_state_write_rejects_mismatched_block_geometry", "cargo test -p splot-decode coeff_loop --locked", "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings", "cargo xtask check-decoder-support", "cargo xtask check-decoder-conformance-coverage", "cargo xtask check-feature-status"]
+diagnostics = ["decode/unsupported-feature"]
+local_reference_evidence = []
+notes = "Adds crate-private `splot-decode` local coefficient state writes for the ordinary non-FSC AV2 §5.20.7.27 `Level[row][col] = level` step after nonzero EOB, checked scan walk, and decoded base/base-range symbol summaries. `apply_nonzero_coeff_base_levels` consumes the nonzero block start, validates read-count and scan-entry identity against the checked walk, preflights every row/column coordinate against the local `TransformCoeffBlockState`, writes decoded levels into row-major `Level[]`, and returns the updated block state with EOB facts preserved. Tests prove row-major placement, untouched `QuantSign[]` and `Quant[]`, read-count mismatch rejection, scan-entry mismatch rejection, and mismatched block/walk geometry rejection. This row remains partial: runtime `coeffs()` does not call this helper, selectors and scan tables are still caller-resolved, sign reads, nonzero `QuantSign[]` and `Quant[]`, `read_quant`, dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public API, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` remain unimplemented."
+
+[[row]]
 id = "tile-cdf-save-lifecycle-boundary"
 name = "Tile CDF save lifecycle boundary"
 feature_id = "DECODE-TILE-CDF-SAVE-LIFECYCLE-BOUNDARY"
