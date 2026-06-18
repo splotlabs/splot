@@ -59,8 +59,9 @@ Feature area: `ENC-BITSTREAM-WRITER`.
 
 - Drive the existing `splot-core` syntax and container writers from encoder-owned
   models.
-- Keep coded tile payload generation out until the entropy/range encoder and tile
-  body model exist.
+- The generic AV2 §8.2 entropy/range encoder primitive now exists in
+  `splot-core`; keep coded tile payload generation out until §8.3 token/CDF
+  selection and the tile body model exist.
 - Prove round trips through parser/writer tests and `splot validate`.
 
 ## Phase 4 - First legal all-intra stream

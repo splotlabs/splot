@@ -14,14 +14,14 @@ use crate::error::{Error, Result, SymbolCdfErrorKind, SymbolDecoderErrorKind};
 use crate::span::{BitOffset, ByteOffset};
 use crate::tables::conversion::{PARA_ADJUSTMENT_LIST, PROB_INC};
 
-const CDF_PROB_SCALE: u32 = 1 << 15;
-const CDF_PROB_MAX: i32 = (1 << 15) - 1;
-const EC_PROB_SHIFT: u32 = 7;
-const SYMBOL_RANGE_INIT: u32 = 1 << 15;
-const MIN_SYMBOLS: usize = 2;
-const MAX_SYMBOLS: usize = 8;
-const MAX_LITERAL_BITS: u32 = 32;
-const MAX_CDF_COUNT: i32 = 32;
+pub(crate) const CDF_PROB_SCALE: u32 = 1 << 15;
+pub(crate) const CDF_PROB_MAX: i32 = (1 << 15) - 1;
+pub(crate) const EC_PROB_SHIFT: u32 = 7;
+pub(crate) const SYMBOL_RANGE_INIT: u32 = 1 << 15;
+pub(crate) const MIN_SYMBOLS: usize = 2;
+pub(crate) const MAX_SYMBOLS: usize = 8;
+pub(crate) const MAX_LITERAL_BITS: u32 = 32;
+pub(crate) const MAX_CDF_COUNT: i32 = 32;
 
 /// Relative bit position inside the tile payload consumed by a symbol decoder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -417,55 +417,7 @@ impl<'a> SymbolDecoder<'a> {
     }
 
     fn validate_cdf(&self, cdf: &[i32]) -> Result<CdfShape> {
-        let len = cdf.len();
-        let n = len.saturating_sub(1);
-        if !(MIN_SYMBOLS..=MAX_SYMBOLS).contains(&n) {
-            return Err(self.cdf_error(SymbolCdfErrorKind::UnsupportedLength { len }));
-        }
-
-        for index in 0..n - 1 {
-            let value = cdf[index];
-            if !(1..=CDF_PROB_MAX).contains(&value) {
-                return Err(
-                    self.cdf_error(SymbolCdfErrorKind::ProbabilityOutOfRange { index, value })
-                );
-            }
-            // AV2 § 8.2.6 (docs/spec/av2/1.0.0/08-parsing-process.md#s-8-2) does
-            // not require strictly increasing cumulative entries: the adaptation
-            // step can drive adjacent entries equal, and `read_symbol` still
-            // separates the affected symbols through `Prob_Inc`. Only a strict
-            // decrease is rejected.
-            if index > 0 && value < cdf[index - 1] {
-                return Err(self.cdf_error(SymbolCdfErrorKind::DecreasingCumulative {
-                    previous_index: index - 1,
-                    index,
-                }));
-            }
-        }
-
-        let rate_index = cdf[n - 1];
-        if !(0..PARA_ADJUSTMENT_LIST.len() as i32).contains(&rate_index) {
-            return Err(
-                self.cdf_error(SymbolCdfErrorKind::AdaptationRateOutOfRange {
-                    index: n - 1,
-                    value: rate_index,
-                }),
-            );
-        }
-
-        let count = cdf[n];
-        if !(0..=MAX_CDF_COUNT).contains(&count) {
-            return Err(self.cdf_error(SymbolCdfErrorKind::CountOutOfRange {
-                index: n,
-                value: count,
-            }));
-        }
-
-        Ok(CdfShape {
-            n,
-            rate_index: rate_index as usize,
-            count,
-        })
+        validate_cdf_shape(cdf).map_err(|kind| self.cdf_error(kind))
     }
 
     fn num_bits_to_read(&self, bits: u32) -> u32 {
@@ -519,10 +471,60 @@ impl<'a> SymbolDecoder<'a> {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct CdfShape {
-    n: usize,
-    rate_index: usize,
-    count: i32,
+pub(crate) struct CdfShape {
+    pub(crate) n: usize,
+    pub(crate) rate_index: usize,
+    pub(crate) count: i32,
+}
+
+pub(crate) fn validate_cdf_shape(
+    cdf: &[i32],
+) -> core::result::Result<CdfShape, SymbolCdfErrorKind> {
+    let len = cdf.len();
+    let n = len.saturating_sub(1);
+    if !(MIN_SYMBOLS..=MAX_SYMBOLS).contains(&n) {
+        return Err(SymbolCdfErrorKind::UnsupportedLength { len });
+    }
+
+    for index in 0..n - 1 {
+        let value = cdf[index];
+        if !(1..=CDF_PROB_MAX).contains(&value) {
+            return Err(SymbolCdfErrorKind::ProbabilityOutOfRange { index, value });
+        }
+        // AV2 § 8.2.6 (docs/spec/av2/1.0.0/08-parsing-process.md#s-8-2) does
+        // not require strictly increasing cumulative entries: the adaptation
+        // step can drive adjacent entries equal, and `read_symbol` still
+        // separates the affected symbols through `Prob_Inc`. Only a strict
+        // decrease is rejected.
+        if index > 0 && value < cdf[index - 1] {
+            return Err(SymbolCdfErrorKind::DecreasingCumulative {
+                previous_index: index - 1,
+                index,
+            });
+        }
+    }
+
+    let rate_index = cdf[n - 1];
+    if !(0..PARA_ADJUSTMENT_LIST.len() as i32).contains(&rate_index) {
+        return Err(SymbolCdfErrorKind::AdaptationRateOutOfRange {
+            index: n - 1,
+            value: rate_index,
+        });
+    }
+
+    let count = cdf[n];
+    if !(0..=MAX_CDF_COUNT).contains(&count) {
+        return Err(SymbolCdfErrorKind::CountOutOfRange {
+            index: n,
+            value: count,
+        });
+    }
+
+    Ok(CdfShape {
+        n,
+        rate_index: rate_index as usize,
+        count,
+    })
 }
 
 fn symbol_max_bits_for_len(len: usize, base: ByteOffset) -> Result<i64> {
@@ -548,11 +550,11 @@ fn total_bits(len: usize) -> u64 {
     }
 }
 
-fn floor_log2(value: u32) -> u32 {
+pub(crate) fn floor_log2(value: u32) -> u32 {
     u32::BITS - 1 - value.leading_zeros()
 }
 
-fn update_cdf(cdf: &mut [i32], shape: CdfShape, symbol: usize) {
+pub(crate) fn update_cdf(cdf: &mut [i32], shape: CdfShape, symbol: usize) {
     let time_interval = if shape.count > 31 {
         2usize
     } else if shape.count > 15 {
