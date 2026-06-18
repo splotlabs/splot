@@ -21,15 +21,15 @@ Status: this PR.
 
 ## Phase 1 - `encoder-recon-dependency`
 
-Status: next exclusive encoder change after Phase 0.
+Status: current exclusive encoder change.
 
-Decision: explicitly approve and design the `splot-encode -> splot-recon`
-dependency edge, or choose a different closed-loop boundary. This phase owns:
+Decision: explicitly approve and land the `splot-encode -> splot-recon`
+dependency edge without adding public encode behavior. This phase owns:
 
-- Public boundary between encoder frame input, recon plane/workspace types, and
-  output proof.
-- Deterministic ownership model for borrowed views and materialized frames under
-  `docs/ZERO_COPY.md`.
+- Private dependency boundary for future encoder frame input, recon
+  plane/workspace types, and output proof.
+- Deterministic ownership policy alignment with `docs/ZERO_COPY.md`; concrete
+  borrowed views and materialized frame APIs stay in later phases.
 - Dependency-direction checks, focused compile tests, and API docs.
 
 No encode success path should land in this phase unless it also satisfies the later

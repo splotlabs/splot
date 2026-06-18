@@ -421,27 +421,29 @@ decoder registry when they do not use the `decode/*` namespace. Tracked by
   unsupported namespace
 
 ### Requirement: Decoder crate dependency direction
-The repository SHALL enforce the approved decoder/reconstruction dependency
-boundary through `cargo xtask check-dependency-direction`. `splot-recon` SHALL
-depend on no other `splot-*` crate. `splot-decode` MAY depend on `splot-core`
-and `splot-recon` when implementation code needs those crates. `splot-cli` MAY
-depend on `splot-decode` for library-owned decoder diagnostics and future CLI
-decode integration. `splot-encode` MAY depend on `splot-recon` only through a
-future encoder/reconstruction API change.
+The repository SHALL enforce the approved decoder/reconstruction/encoder
+dependency boundary through `cargo xtask check-dependency-direction`.
+`splot-recon` SHALL depend on no other `splot-*` crate except `splot-tables`.
+`splot-decode` MAY depend on `splot-core`, `splot-parallel`, and `splot-recon`
+when implementation code needs those crates. `splot-cli` MAY depend on
+`splot-decode` for library-owned decoder diagnostics and future CLI decode
+integration. `splot-encode` MAY depend on `splot-core`, `splot-parallel`, and
+`splot-recon` after the `encoder-recon-dependency` change.
 
-#### Scenario: Approved decoder graph is accepted
+#### Scenario: Approved decoder and encoder graph is accepted
 
 - **WHEN** `cargo xtask check-dependency-direction` runs
-- **THEN** the allow-list includes `splot-recon` and `splot-decode`
-- **AND** any internal dependency outside the approved graph is rejected
+- **THEN** the allow-list includes `splot-recon`, `splot-decode`, and the direct
+  `splot-encode -> splot-recon` edge
+- **AND** any internal dependency outside the approved graph is rejected.
 
 #### Scenario: Coverage threshold stays validator-scoped
 
-- **WHEN** the workspace gains `splot-recon` and `splot-decode`
+- **WHEN** the workspace gains or reuses `splot-recon` and `splot-decode`
 - **THEN** local and CI coverage threshold commands keep gating
   `crates/splot-validate` line coverage only
-- **AND** the new scaffold crates do not accidentally join the validator
-  coverage threshold
+- **AND** the scaffold or integration crates do not accidentally join the
+  validator coverage threshold.
 
 ### Requirement: validator context module organization
 
@@ -468,4 +470,3 @@ rule IDs, severities, spec sections, offsets, messages, and ordering.
 
 - **WHEN** the existing validator test suite runs after the split
 - **THEN** its diagnostic expectations remain unchanged
-

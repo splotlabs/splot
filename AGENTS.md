@@ -39,7 +39,7 @@ crates/splot-tables    dependency-free generated AV2 § 9 spec tables shared acr
 crates/splot-recon     reconstruction primitives -> splot-tables (shared § 9 transform kernels + quantizer matrix)
 crates/splot-decode    decoder diagnostic API + stream planning + minimal hash/Y4M runtime -> splot-core, splot-parallel, splot-recon
 crates/splot-validate  parser-driven conformance diagnostics  -> splot-core
-crates/splot-encode    future encoder API (stub)              -> splot-core, splot-parallel
+crates/splot-encode    future encoder API (stub)              -> splot-core, splot-parallel, splot-recon
 crates/splot-cli       thin `splot` binary -> splot-core, splot-parallel, splot-decode, splot-validate, splot-encode
 xtask                  standalone automation (no splot-* dependency)
 fuzz                   cargo-fuzz target (outside the workspace)
@@ -57,7 +57,10 @@ fuzz                   cargo-fuzz target (outside the workspace)
   `splot-recon`; the `splot-recon` edge is limited to runtime
   decode/reconstruction/hash/Y4M output handoff code.
 - `splot-validate` depends only on `splot-core`.
-- `splot-encode` depends only on `splot-core` and `splot-parallel`.
+- `splot-encode` depends only on `splot-core`, `splot-parallel`, and
+  `splot-recon`; the `splot-recon` edge is limited to private lower-level
+  reconstruction-boundary preparation until later encoder phases add public
+  input or closed-loop reconstruction APIs.
 - `splot-cli` depends only on `splot-core`, `splot-parallel`, `splot-decode`,
   `splot-validate`, and `splot-encode`.
 - Nothing depends on `splot-cli`.

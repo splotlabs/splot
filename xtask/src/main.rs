@@ -1136,7 +1136,10 @@ const INTERNAL_DEP_RULES: &[(&str, &[&str])] = &[
         &["splot-core", "splot-recon", "splot-parallel"],
     ),
     ("splot-validate", &["splot-core"]),
-    ("splot-encode", &["splot-core", "splot-parallel"]),
+    (
+        "splot-encode",
+        &["splot-core", "splot-parallel", "splot-recon"],
+    ),
     (
         "splot-cli",
         &[
@@ -1368,6 +1371,29 @@ mod tests {
             err.to_string()
                 .contains("revision range must not start with `-`")
         );
+        Ok(())
+    }
+
+    #[test]
+    fn dependency_direction_allows_encoder_recon_edge_only() -> Result<()> {
+        let Some(encoder_deps) = allowed_internal_deps("splot-encode") else {
+            bail!("splot-encode should have dependency policy");
+        };
+        assert!(encoder_deps.contains(&"splot-core"));
+        assert!(encoder_deps.contains(&"splot-parallel"));
+        assert!(encoder_deps.contains(&"splot-recon"));
+        assert!(!encoder_deps.contains(&"splot-decode"));
+        assert!(!encoder_deps.contains(&"splot-validate"));
+        assert!(!encoder_deps.contains(&"splot-cli"));
+        Ok(())
+    }
+
+    #[test]
+    fn dependency_direction_keeps_recon_tables_only() -> Result<()> {
+        let Some(recon_deps) = allowed_internal_deps("splot-recon") else {
+            bail!("splot-recon should have dependency policy");
+        };
+        assert_eq!(recon_deps, ["splot-tables"]);
         Ok(())
     }
 

@@ -715,7 +715,7 @@ crates/splot-core      bitstream model + parsers
 crates/splot-recon     decoded output model types; hash-input bytes, frame hashes, Y4M writer; future reconstruction primitives, references
 crates/splot-parallel  approved local worker-pool and bounded-queue runtime policy
 crates/splot-decode    diagnostic API; runtime context; stream planners; minimal hash runtime using splot-recon
-crates/splot-encode    future encoder, not yet depending on splot-recon
+crates/splot-encode    future encoder with private splot-recon dependency boundary
 crates/splot-cli       thin CLI rendering splot-decode diagnostics
 ```
 
@@ -735,5 +735,6 @@ unsupported.
 `splot-cli` reads input bytes for `splot decode`, calls the plan-only
 or minimal runtime `splot-decode` handoff, renders structured diagnostics,
 emits hash JSON for the supported minimal tier, and atomically publishes raw or
-Y4M output for the same minimal tier. `splot-encode` remains unchanged until a later
-encoder/reconstruction API change explicitly adds reuse of `splot-recon`.
+Y4M output for the same minimal tier. `splot-encode` now has only a private
+`splot-recon` dependency boundary; public encoder/reconstruction API reuse
+remains future work.

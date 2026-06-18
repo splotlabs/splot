@@ -1108,14 +1108,23 @@ tile payloads while `RangeEncoder` and the `decode_tile()` body remain unimpleme
 ### Requirement: Closed-loop reconstruction reuse is gated
 
 The encoder program SHALL treat `splot-recon` as available lower-level
-reconstruction building blocks, not as an integrated encoder reconstruction loop,
-until the `encoder-recon-dependency` change lands.
+reconstruction building blocks through a direct `splot-encode -> splot-recon`
+dependency. That dependency edge SHALL NOT be treated as an integrated encoder
+reconstruction loop until later input-view, closed-loop, and proof changes land.
 
-#### Scenario: recon APIs are not pulled in by the contract PR
+#### Scenario: recon dependency is not public encode integration
 
-- **WHEN** the encoder-program contract PR is reviewed
-- **THEN** `splot-encode` still depends only on `splot-core` and `splot-parallel`
-- **AND** the recon reuse boundary is documented as future work.
+- **WHEN** the `encoder-recon-dependency` change is reviewed
+- **THEN** `splot-encode` depends on `splot-recon` only as an approved lower-level
+  crate boundary
+- **AND** no encoder public API reports successful encoded output because of this
+  dependency alone.
+
+#### Scenario: future closed-loop work uses the approved boundary
+
+- **WHEN** later encoder frame-input or closed-loop reconstruction work starts
+- **THEN** it may design against the approved `splot-recon` dependency
+- **AND** it must still provide its own Feature IDs, tests, and matrix proof.
 
 ### Requirement: Parked toy intra change is superseded
 

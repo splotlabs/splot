@@ -11,6 +11,9 @@
 //! The [`Context`] now owns a [`splot_parallel::WorkerPool`] configured by an
 //! [`EncoderRuntimeConfig`] thread-count policy; thread count is a runtime knob
 //! and never affects bitstream output.
+//! The crate also has a private `splot-recon` boundary marker so later encoder
+//! phases can reuse reconstruction primitives without creating a public API
+//! promise in this placeholder phase.
 //!
 //! Licensed under PolyForm Noncommercial 1.0.0; commercial use requires a
 //! separate written license from Bartosz Tomczyk.
@@ -18,7 +21,10 @@
 pub mod config;
 pub mod context;
 pub mod error;
+mod recon_boundary;
 pub mod runtime;
+
+const _: fn() -> usize = recon_boundary::dependency_marker;
 
 pub use config::{BitDepth, ChromaSubsampling, EncoderConfig};
 pub use context::{Context, EncoderStatus, Frame, Packet};
