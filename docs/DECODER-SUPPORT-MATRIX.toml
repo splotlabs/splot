@@ -632,6 +632,20 @@ local_reference_evidence = []
 notes = "Adds crate-private `splot-decode` local quantized-coefficient state writes for the ordinary non-FSC AV2 §5.20.7.27 pass after local levels, sign summaries, checked scan-walk entries, and caller-provided §5.20.7.28 `read_quant` outputs exist. `apply_nonzero_coeff_quant_state` validates counts, scan-entry identity, sign-entry identity, local level agreement, required hidden-parity sign syntax for `c == 0`, and local `Quant[pos]` addresses before mutation; then applies hidden-parity, clamped `culLevel`, `dcCategory`, the spec reset `tcqState = 0` plus optional TCQ state and magnitude adjustment, sign application, and signed `Quant[pos]` writes. Tests prove positive writes and summary state, hidden-parity and TCQ adjustment, `QuantSign[]` preservation, required hidden-parity sign syntax, and mismatch rejection before mutation. This row remains partial: runtime `coeffs()` does not call this helper, §5.20.7.28 `read_quant` bit parsing is provided by a separate loaded-but-unwired helper, TCQ/parity/lossless/scan facts are caller-provided, `QuantSign[]` is not written, and dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public API, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` remain unimplemented."
 
 [[row]]
+id = "coeff-quant-pass-compose"
+name = "Coefficient quant pass composition"
+feature_id = "DECODE-COEFF-QUANT-PASS-COMPOSE"
+spec_sections = ["5.20.7.27", "5.20.7.28", "8.2.5"]
+parser_source = "crates/splot-core/src/symbol.rs; docs/spec/av2/1.0.0/05-syntax-structures.md; docs/spec/av2/1.0.0/08-parsing-process.md"
+decode_module = "crates/splot-decode/src/tile_payload/coeff_loop/quant_pass.rs"
+tier = "tier1-intra"
+status = "partial"
+self_contained_tests = ["crates/splot-decode/src/tile_payload/coeff_loop/quant_pass.rs::tests::coefficient_quant_pass_reads_quant_and_writes_signed_quant", "crates/splot-decode/src/tile_payload/coeff_loop/quant_pass.rs::tests::coefficient_quant_pass_applies_hidden_tcq_consistently", "crates/splot-decode/src/tile_payload/coeff_loop/quant_pass.rs::tests::coefficient_quant_pass_allows_hidden_dc_without_parity_sign_when_sum_abs1_zero", "crates/splot-decode/src/tile_payload/coeff_loop/quant_pass.rs::tests::coefficient_quant_pass_rejects_bad_facts_before_consumption", "cargo test -p splot-decode quant_pass --locked", "cargo test -p splot-decode coeff_loop --locked", "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings", "cargo xtask check-decoder-support", "cargo xtask check-decoder-conformance-coverage", "cargo xtask check-feature-status"]
+diagnostics = ["decode/unsupported-feature"]
+local_reference_evidence = []
+notes = "Adds crate-private `splot-decode` ordinary non-FSC composition for the AV2 §5.20.7.27 second coefficient pass. `apply_nonzero_coeff_quant_pass` accepts checked scan entries, local `Level[]` state, sign summaries, caller-derived `maxLevel` facts, and block-level hidden, TCQ, and lossless facts; validates those facts before consuming bits, including impossible hidden-parity pairings with TCQ or lossless; calls the loaded §5.20.7.28 `read_quant` parser; and feeds the decoded quant records into the loaded quant-state writer for signed `Quant[pos]` writes. Tests prove positive `read_quant` to `Quant[]` composition, hidden-parity composition, TCQ composition, hidden DC with zero `sumAbs1`, and bad caller facts failing before bit consumption or block mutation. This row remains partial: runtime `coeffs()` does not call this helper, max-level, hidden, sumAbs1, TCQ, lossless, sign-source, CDF-selector, scan, transform, and `QuantSign[]` facts are still caller-resolved, and tile context writes, dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public API, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` remain unimplemented."
+
+[[row]]
 id = "tile-cdf-save-lifecycle-boundary"
 name = "Tile CDF save lifecycle boundary"
 feature_id = "DECODE-TILE-CDF-SAVE-LIFECYCLE-BOUNDARY"

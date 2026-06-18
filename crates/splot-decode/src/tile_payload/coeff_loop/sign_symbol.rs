@@ -102,6 +102,21 @@ pub(crate) struct CoeffSignRead {
 }
 
 impl CoeffSignRead {
+    #[cfg(test)]
+    pub(crate) const fn for_test(
+        entry: CoeffScanEntry,
+        level: u32,
+        symbol: CoeffSignReadSymbol,
+        sign: bool,
+    ) -> Self {
+        Self {
+            entry,
+            level,
+            symbol,
+            sign,
+        }
+    }
+
     /// Checked scan entry associated with this read.
     #[must_use]
     pub(crate) const fn entry(self) -> CoeffScanEntry {

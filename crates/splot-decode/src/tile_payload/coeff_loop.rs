@@ -3,10 +3,7 @@
 
 //! Coefficient-loop foundation helpers.
 //!
-//! Feature tracking: `DECODE-COEFF-ALL-ZERO-CONTEXT-STATE`, `DECODE-COEFF-ALL-ZERO-BLOCK-STATE`,
-//! `DECODE-COEFF-EOB-VALUE-STATE`, `DECODE-COEFF-EOB-SYMBOL-READ`, `DECODE-COEFF-EOB-SIZE-CONTEXT`,
-//! `DECODE-COEFF-EOB-DERIVED-SYMBOL-READ`, `DECODE-COEFF-EOB-BRANCH-HANDOFF`,
-//! `DECODE-COEFF-NONZERO-BLOCK-STATE`, `DECODE-COEFF-SCAN-WALK`, `DECODE-COEFF-LEVEL-STATE-WRITE`.
+//! Feature tracking: focused `DECODE-COEFF-*` rows cover each helper boundary.
 
 use std::collections::TryReserveError;
 
@@ -33,10 +30,12 @@ pub(crate) mod base_symbol;
 mod branch;
 pub(crate) use branch::{CoeffBlockEobBranchInput, read_coeff_block_eob_branch};
 pub(crate) mod level_state;
+pub(crate) mod quant_pass;
 pub(crate) mod quant_state;
 pub(crate) mod read_quant;
 mod scan_walk;
 pub(crate) mod sign_symbol;
+
 /// Caller-resolved facts for luma § 8.3.2 `all_zero` context derivation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct LumaAllZeroContextInput {
