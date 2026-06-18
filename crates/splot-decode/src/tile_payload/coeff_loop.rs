@@ -141,19 +141,16 @@ impl AllZeroCoeffBlock {
     pub(crate) const fn eob(&self) -> usize {
         self.eob
     }
-
     /// `culLevel` written to level context lines.
     #[must_use]
     pub(crate) const fn cul_level(&self) -> u32 {
         self.cul_level
     }
-
     /// `dcCategory` written to DC context lines.
     #[must_use]
     pub(crate) const fn dc_category(&self) -> u8 {
         self.dc_category
     }
-
     /// Zero-initialized local transform coefficient state.
     #[must_use]
     pub(crate) const fn block(&self) -> &TransformCoeffBlockState {
@@ -174,7 +171,6 @@ impl NonZeroCoeffEob {
     pub(crate) const fn eob_pt(self) -> usize {
         self.eob_pt
     }
-
     /// End-of-block value returned by the nonzero `coeffs()` branch.
     #[must_use]
     pub(crate) const fn eob(self) -> usize {
@@ -198,19 +194,16 @@ impl NonZeroCoeffEobSymbolRead {
     pub(crate) const fn eob(self) -> NonZeroCoeffEob {
         self.eob
     }
-
     /// Raw symbol decoded from the selected `eob_pt_*` CDF row.
     #[must_use]
     pub(crate) const fn eob_pt_symbol(self) -> u8 {
         self.eob_pt_symbol
     }
-
     /// Size-specific `eob_pt_*_extra` literal value, or zero when absent.
     #[must_use]
     pub(crate) const fn eob_pt_extra(self) -> u32 {
         self.eob_pt_extra
     }
-
     /// Decoded `eob_extra` flag, or false when absent.
     #[must_use]
     pub(crate) const fn eob_extra(self) -> bool {
@@ -649,6 +642,8 @@ mod eob_symbol_tests;
 mod level_state_tests;
 #[cfg(test)]
 mod ordinary_pass_tests;
+#[cfg(test)]
+mod ordinary_state_context_tests;
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]

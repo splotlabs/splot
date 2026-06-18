@@ -218,6 +218,10 @@ facts before the interleaved sign/quant stage.
 ordinary pass with the § 5.20.7.27 end-of-`coeffs()` tile context update,
 committing the pass result's final `culLevel` and `dcCategory` to the
 above/left level and DC context lines through `TileCoeffContextState`.
+`DECODE-COEFF-STATE-CONTEXT-HANDOFF` now adds the next state-backed handoff:
+the ordinary nonzero pass reads `AboveDcContext[plane]` and
+`LeftDcContext[plane]` from that same `TileCoeffContextState` before sign-source
+derivation, then commits the final context lines after the pass succeeds.
 The minimal trace uses the handoff only for the existing luma and V all-zero
 applications. Runtime integration of nonzero coefficient blocks, tile context
 fact derivation for nonzero blocks, dequantization, and

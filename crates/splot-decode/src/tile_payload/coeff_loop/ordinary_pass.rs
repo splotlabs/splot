@@ -6,7 +6,8 @@
 //! Feature tracking: `DECODE-COEFF-ORDINARY-PASS-COMPOSE`,
 //! `DECODE-COEFF-ORDINARY-DERIVED-BASE-PASS`,
 //! `DECODE-COEFF-ORDINARY-DERIVED-SIGN-PASS`,
-//! `DECODE-COEFF-NONZERO-CONTEXT-COMMIT`.
+//! `DECODE-COEFF-NONZERO-CONTEXT-COMMIT`,
+//! `DECODE-COEFF-STATE-CONTEXT-HANDOFF`.
 
 use splot_core::symbol::SymbolDecoder;
 
@@ -81,6 +82,20 @@ pub(crate) struct CoeffOrdinaryDerivedBasePassInput<'a> {
     pub(crate) lossless: bool,
 }
 
+/// Caller-resolved facts for the state-backed ordinary non-FSC coefficient pass.
+pub(crate) struct CoeffOrdinaryStateContextPassInput<'a> {
+    /// Decoded nonzero EOB and zeroed local coefficient state.
+    pub(crate) start: NonZeroCoeffBlockStart,
+    /// Caller-resolved `scan = get_scan(txSz, txClass)` raster positions.
+    pub(crate) scan: &'a [u16],
+    /// Caller-resolved facts for deriving base selectors and first-pass state.
+    pub(crate) base_config: CoeffBaseDerivedLevelPassConfig,
+    /// Caller-resolved facts for reading and committing tile context lines.
+    pub(crate) state_context: CoeffOrdinaryStateContextConfig,
+    /// Caller-resolved lossless flag for the quantized-state update.
+    pub(crate) lossless: bool,
+}
+
 /// Caller-resolved facts used by the derived-base pass to derive sign sources.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CoeffOrdinaryDerivedSignPassConfig<'a> {
@@ -92,6 +107,23 @@ pub(crate) struct CoeffOrdinaryDerivedSignPassConfig<'a> {
     pub(crate) above_dc: &'a [u8],
     /// `LeftDcContext[plane]`.
     pub(crate) left_dc: &'a [u8],
+    /// Transform-block x coordinate in 4x4 units.
+    pub(crate) x4: usize,
+    /// Transform-block y coordinate in 4x4 units.
+    pub(crate) y4: usize,
+    /// Transform-block width in 4x4 units.
+    pub(crate) w4: usize,
+    /// Transform-block height in 4x4 units.
+    pub(crate) h4: usize,
+}
+
+/// Caller-resolved state-context facts for a state-backed ordinary pass.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CoeffOrdinaryStateContextConfig {
+    /// Coefficient-CDF quantization context.
+    pub(crate) coeff_cdf_q_ctx: usize,
+    /// Plane type context used by `TileDcSignCdf`.
+    pub(crate) plane_type: usize,
     /// Transform-block x coordinate in 4x4 units.
     pub(crate) x4: usize,
     /// Transform-block y coordinate in 4x4 units.
@@ -425,6 +457,69 @@ pub(crate) fn apply_nonzero_coeff_ordinary_pass_with_context_commit(
         dc_category: quant_state.dc_category(),
     })?;
     Ok(pass)
+}
+
+/// Runs the derived ordinary non-FSC pass with state-backed DC context handoff.
+///
+/// This reads `AboveDcContext[plane]` and `LeftDcContext[plane]` from
+/// [`TileCoeffContextState`] before sign-source derivation, then reuses the
+/// AV2 § 5.20.7.27 end-of-`coeffs()` context update
+/// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27`) through
+/// [`apply_nonzero_coeff_ordinary_pass_with_context_commit`]. Runtime
+/// `coeffs()` wiring, dequantization, inverse transform, residual add, and
+/// reconstruction remain out of scope.
+pub(crate) fn apply_nonzero_coeff_ordinary_pass_with_state_context(
+    state: &mut TileCoeffContextState,
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    input: CoeffOrdinaryStateContextPassInput<'_>,
+) -> Result<NonZeroCoeffOrdinaryDerivedBasePass, CoeffOrdinaryPassError> {
+    let CoeffOrdinaryStateContextPassInput {
+        start,
+        scan,
+        base_config,
+        state_context,
+        lossless,
+    } = input;
+    let plane = base_config.plane;
+    let above_dc = clone_dc_context_line(state.above_dc(plane)?)?;
+    let left_dc = clone_dc_context_line(state.left_dc(plane)?)?;
+    apply_nonzero_coeff_ordinary_pass_with_context_commit(
+        state,
+        cdfs,
+        symbols,
+        CoeffOrdinaryDerivedBasePassInput {
+            start,
+            scan,
+            base_config,
+            sign_config: CoeffOrdinaryDerivedSignPassConfig {
+                coeff_cdf_q_ctx: state_context.coeff_cdf_q_ctx,
+                plane_type: state_context.plane_type,
+                above_dc: &above_dc,
+                left_dc: &left_dc,
+                x4: state_context.x4,
+                y4: state_context.y4,
+                w4: state_context.w4,
+                h4: state_context.h4,
+            },
+            lossless,
+        },
+        CoeffOrdinaryContextCommitConfig {
+            plane,
+            x4: state_context.x4,
+            y4: state_context.y4,
+            w4: state_context.w4,
+            h4: state_context.h4,
+        },
+    )
+}
+
+fn clone_dc_context_line(values: &[u8]) -> Result<Vec<u8>, CoeffOrdinaryPassError> {
+    let mut copy = Vec::new();
+    copy.try_reserve_exact(values.len())
+        .map_err(CoeffSignSourceDeriveError::from)?;
+    copy.extend_from_slice(values);
+    Ok(copy)
 }
 
 struct InterleavedSignQuantInput<'a> {
