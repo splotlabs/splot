@@ -6,7 +6,7 @@
 use splot_core::span::ByteOffset;
 use splot_core::symbol::{CdfUpdateMode, SymbolDecoder, SymbolDecoderConfig};
 
-use super::super::cdf::{CoeffCdfSelector, FrameCdfSubset, TileCdfSubset};
+use super::super::cdf::{CoeffCdfSelector, FrameCdfSubset, TileCdfSelector, TileCdfSubset};
 use super::super::coeff_state::TileCoeffContextState;
 use super::base_level_pass::{
     CoeffBaseDerivedLevelPassConfig, CoeffBaseDerivedLevelPassError,
@@ -21,6 +21,7 @@ use super::*;
 
 const SCAN: [u16; 4] = [0, 8, 1, 9];
 const DC_FIRST_SCAN: [u16; 4] = [9, 8, 1, 0];
+const DC_LAST_HIDDEN_SCAN: [u16; 5] = [0, 1, 8, 9, 2];
 const PAYLOAD_SUFFIXES: [[u8; 3]; 4] = [
     [0x00, 0x00, 0x80],
     [0xff, 0x00, 0x80],
@@ -151,6 +152,13 @@ fn base_tcq_ctx(input: &super::base_symbol::CoeffBaseSymbolReadInput) -> Option<
     }
 }
 
+fn base_selector(input: &super::base_symbol::CoeffBaseSymbolReadInput) -> Option<CoeffCdfSelector> {
+    match input.base {
+        CoeffBaseSymbolSource::Base { selector } => Some(selector),
+        CoeffBaseSymbolSource::BaseEob { .. } => None,
+    }
+}
+
 #[test]
 fn coefficient_base_level_pass_derives_later_contexts_from_written_levels() {
     let payload = find_payload(0, &SCAN, luma_config(false, false), |_| true);
@@ -228,6 +236,64 @@ fn coefficient_base_level_pass_tracks_parity_hiding_summary_before_dc() {
     assert_eq!(pass.first_pass().sum_abs1(), expected_sum_abs1);
     assert_eq!(pass.first_pass().num_nonzero(), expected_num_nonzero);
     assert!(!pass.first_pass().is_hidden());
+}
+
+#[test]
+fn coefficient_base_level_pass_consumes_parity_hidden_base_row() {
+    let config = luma_config(true, false);
+    let payload = find_payload(0, &DC_LAST_HIDDEN_SCAN, config, |pass| {
+        pass.first_pass().is_hidden()
+            && pass.first_pass().num_nonzero() >= 4
+            && matches!(
+                pass.derived_inputs().last().and_then(base_selector),
+                Some(CoeffCdfSelector::BasePh { .. })
+            )
+    });
+    let (mut tile, mut symbols, start, walk) =
+        setup_start(&payload, 0, &DC_LAST_HIDDEN_SCAN).unwrap();
+    let ph_rows_before = (0..5)
+        .map(|ctx| {
+            tile.row(TileCdfSelector::Coeff(CoeffCdfSelector::BasePh {
+                coeff_cdf_q_ctx: 0,
+                ctx,
+            }))
+            .unwrap()
+            .to_vec()
+        })
+        .collect::<Vec<_>>();
+    let pass =
+        apply_nonzero_coeff_base_derived_level_pass(&mut tile, &mut symbols, start, walk, config)
+            .unwrap();
+    let final_read = pass.base_reads().last().copied().unwrap();
+    let final_selector = pass
+        .derived_inputs()
+        .last()
+        .and_then(base_selector)
+        .unwrap();
+
+    assert_eq!(pass.eob_read().eob().eob(), DC_LAST_HIDDEN_SCAN.len());
+    assert!(pass.first_pass().is_hidden());
+    assert_eq!(final_read.entry().scan_index(), 0);
+    assert!(matches!(
+        final_selector,
+        CoeffCdfSelector::BasePh {
+            coeff_cdf_q_ctx: 0,
+            ctx: 0..=4,
+        }
+    ));
+    let CoeffCdfSelector::BasePh { ctx, .. } = final_selector else {
+        unreachable!("selector checked above");
+    };
+    assert_ne!(
+        tile.row(TileCdfSelector::Coeff(final_selector)).unwrap(),
+        ph_rows_before[ctx].as_slice()
+    );
+    assert_eq!(
+        pass.block()
+            .level_at(final_read.entry().row(), final_read.entry().col())
+            .unwrap(),
+        final_read.level()
+    );
 }
 
 #[test]

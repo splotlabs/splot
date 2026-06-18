@@ -209,14 +209,6 @@ pub(crate) enum CoeffBaseDerivedLevelPassError {
     /// The caller supplied mutually exclusive block facts.
     #[error("coefficient base/level config cannot enable parity hiding and TCQ together")]
     InconsistentParityAndTcq,
-    /// Hidden-parity `TileCoeffBasePhCdf` rows are not loaded yet.
-    #[error("coefficient base/level parity-hidden base selector ctx {ctx} is not supported")]
-    UnsupportedParityHiddenBaseSelector {
-        /// Checked scan entry that requested the parity-hidden row.
-        entry: CoeffScanEntry,
-        /// Parity-hidden base context.
-        ctx: usize,
-    },
     /// The local TCQ state was outside the AV2 state table.
     #[error("coefficient base/level entry {entry:?} used invalid tcqState {tcq_state}")]
     InvalidTcqState {
@@ -426,20 +418,20 @@ fn base_selector(
         tx_class: tx_class_index(config.tx_class),
     }
     .select(block.level());
-    map_base_selection(entry, selection, first_pass, config)
+    map_base_selection(selection, first_pass, config)
 }
 
 fn map_base_selection(
-    entry: CoeffScanEntry,
     selection: CoeffBaseSelection,
     first_pass: CoeffBaseFirstPassSummary,
     config: CoeffBaseDerivedLevelPassConfig,
 ) -> Result<CoeffCdfSelector, CoeffBaseDerivedLevelPassError> {
     let tcq_ctx = (first_pass.tcq_state >> 1) & 1;
     match selection {
-        CoeffBaseSelection::Ph { ctx } => {
-            Err(CoeffBaseDerivedLevelPassError::UnsupportedParityHiddenBaseSelector { entry, ctx })
-        }
+        CoeffBaseSelection::Ph { ctx } => Ok(CoeffCdfSelector::BasePh {
+            coeff_cdf_q_ctx: config.coeff_cdf_q_ctx,
+            ctx,
+        }),
         CoeffBaseSelection::LfUv { ctx } => Ok(CoeffCdfSelector::BaseLfUv {
             coeff_cdf_q_ctx: config.coeff_cdf_q_ctx,
             ctx,
