@@ -31,6 +31,6 @@
 - [x] 4.1 Run local correctness/spec, security/zero-copy,
   determinism/concurrency, and test/evidence reviews on the final local tree.
 - [x] 4.2 Archive the OpenSpec change before merge.
-- [ ] 4.3 Open/update the PR with a Flight Manifest and local evidence.
+- [x] 4.3 Open/update the PR with a Flight Manifest and local evidence.
 - [ ] 4.4 Obtain green GitHub checks plus GitHub Claude and GitHub Codex acceptance
   on the final HEAD before squash merge.
