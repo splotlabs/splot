@@ -168,7 +168,11 @@ untouched. A crate-private sign-read boundary
 (`DECODE-COEFF-SIGN-SYMBOL-READ`) now consumes caller-resolved `dc_sign`,
 `dc_sign_horz_vert`, and raw `sign_bit` sources over those local `Level[]`
 entries and returns sign summaries, but still does not write `QuantSign[]` or
-`Quant[]`. A crate-private § 5.20.7.28 `read_quant` parser
+`Quant[]`. A crate-private `maxLevel` derivation boundary
+(`DECODE-COEFF-MAX-LEVEL-DERIVE`) now applies the § 5.20.7.27
+`get_lf_limits(row, col, txClass, plane)` branches plus the hidden `c == 0`
+override over checked scan entries, returning records convertible to the quant
+pass inputs. A crate-private § 5.20.7.28 `read_quant` parser
 (`DECODE-COEFF-READ-QUANT-SYNTAX`) now consumes caller-resolved
 level, max-level, hidden, and TCQ facts plus the reached `q_length_bit`,
 `golomb_length_bit`, and `coeff_rem` literal syntax, returning quant records.

@@ -30,6 +30,7 @@ pub(crate) mod base_symbol;
 mod branch;
 pub(crate) use branch::{CoeffBlockEobBranchInput, read_coeff_block_eob_branch};
 pub(crate) mod level_state;
+pub(crate) mod max_level;
 pub(crate) mod quant_pass;
 pub(crate) mod quant_state;
 pub(crate) mod read_quant;
