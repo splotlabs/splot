@@ -11,6 +11,7 @@ use super::super::cdf::{
 };
 use super::super::coeff_state::{CoeffContextUpdate, TileCoeffContextState, TileCoeffStateError};
 use super::branch::{CoeffBlockEobBranch, NonZeroCoeffBlockStart, NonZeroCoeffBlockStartInput};
+use super::scan_walk::walk_nonzero_coeff_scan;
 use super::*;
 
 fn symbol_decoder(payload: &[u8], mode: CdfUpdateMode) -> SymbolDecoder<'_> {
@@ -140,6 +141,39 @@ fn branch_nonzero(branch: CoeffBlockEobBranch) -> Option<NonZeroCoeffBlockStart>
         CoeffBlockEobBranch::AllZero(_) => None,
         CoeffBlockEobBranch::NonZero(start) => Some(start),
     }
+}
+
+fn nonzero_start_for_eob(
+    eob: usize,
+    state: &mut TileCoeffContextState,
+    tile: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+) -> NonZeroCoeffBlockStart {
+    let branch = read_coeff_block_eob_branch(
+        state,
+        tile,
+        symbols,
+        CoeffBlockEobBranchInput::NonZero(NonZeroCoeffBlockStartInput {
+            block: AllZeroCoeffBlockInput {
+                plane: 0,
+                x4: 0,
+                y4: 0,
+                w4: 2,
+                h4: 2,
+            },
+            eob: NonZeroCoeffEobContextInput {
+                plane: 0,
+                is_inter: false,
+                tx_width_log2: 3,
+                tx_height_log2: 3,
+                coeff_cdf_q_ctx: 0,
+            },
+        }),
+    )
+    .unwrap();
+    let start = branch_nonzero(branch).unwrap();
+    assert_eq!(start.eob_read().eob().eob(), eob);
+    start
 }
 
 #[test]
@@ -428,6 +462,92 @@ fn coeff_block_eob_branch_invalid_nonzero_context_preserves_mutable_state() {
     assert_eq!(tile, tile_before);
     assert_eq!(symbols.consumed_bits(), consumed_before);
     assert_eq!(symbols.symbol_count(), symbol_count_before);
+}
+
+#[test]
+fn coeff_scan_walk_returns_reverse_scan_entries_without_mutation() {
+    let (payload, _) = find_eob_payload(EobPtSize::Pt64, |read| read.eob().eob() == 4);
+    let frame = FrameCdfSubset::from_defaults();
+    let mut tile = frame.tile_copy();
+    let mut symbols = symbol_decoder(&payload, CdfUpdateMode::Enabled);
+    let mut state = seeded_coeff_context_state();
+    let start = nonzero_start_for_eob(4, &mut state, &mut tile, &mut symbols);
+    let tile_before = tile.clone();
+    let state_before = state.clone();
+    let consumed_before = symbols.consumed_bits();
+    let symbol_count_before = symbols.symbol_count();
+    let block_before = start.block().clone();
+
+    let walk = walk_nonzero_coeff_scan(&start, &[0, 8, 1, 9]).unwrap();
+    let entries = walk.entries();
+
+    assert_eq!(entries.len(), 4);
+    assert_eq!(entries[0].scan_index(), 3);
+    assert_eq!(entries[0].pos(), 9);
+    assert_eq!(entries[0].row(), 1);
+    assert_eq!(entries[0].col(), 1);
+    assert_eq!(entries[1].scan_index(), 2);
+    assert_eq!(entries[1].pos(), 1);
+    assert_eq!(entries[1].row(), 0);
+    assert_eq!(entries[1].col(), 1);
+    assert_eq!(entries[2].scan_index(), 1);
+    assert_eq!(entries[2].pos(), 8);
+    assert_eq!(entries[2].row(), 1);
+    assert_eq!(entries[2].col(), 0);
+    assert_eq!(entries[3].scan_index(), 0);
+    assert_eq!(entries[3].pos(), 0);
+    assert_eq!(entries[3].row(), 0);
+    assert_eq!(entries[3].col(), 0);
+    assert_eq!(start.block(), &block_before);
+    assert_eq!(state, state_before);
+    assert_eq!(tile, tile_before);
+    assert_eq!(symbols.consumed_bits(), consumed_before);
+    assert_eq!(symbols.symbol_count(), symbol_count_before);
+}
+
+#[test]
+fn coeff_scan_walk_rejects_eob_larger_than_scan_without_mutation() {
+    let (payload, _) = find_eob_payload(EobPtSize::Pt64, |read| read.eob().eob() == 4);
+    let frame = FrameCdfSubset::from_defaults();
+    let mut tile = frame.tile_copy();
+    let mut symbols = symbol_decoder(&payload, CdfUpdateMode::Enabled);
+    let mut state = seeded_coeff_context_state();
+    let start = nonzero_start_for_eob(4, &mut state, &mut tile, &mut symbols);
+    let block_before = start.block().clone();
+
+    let err = walk_nonzero_coeff_scan(&start, &[0, 8, 1]).unwrap_err();
+
+    assert!(matches!(
+        err,
+        CoeffLoopContextError::ScanWalkEobOutOfRange {
+            eob: 4,
+            scan_len: 3
+        }
+    ));
+    assert_eq!(start.block(), &block_before);
+}
+
+#[test]
+fn coeff_scan_walk_rejects_out_of_range_position_without_mutation() {
+    let (payload, _) = find_eob_payload(EobPtSize::Pt64, |read| read.eob().eob() == 4);
+    let frame = FrameCdfSubset::from_defaults();
+    let mut tile = frame.tile_copy();
+    let mut symbols = symbol_decoder(&payload, CdfUpdateMode::Enabled);
+    let mut state = seeded_coeff_context_state();
+    let start = nonzero_start_for_eob(4, &mut state, &mut tile, &mut symbols);
+    let block_before = start.block().clone();
+
+    let err = walk_nonzero_coeff_scan(&start, &[0, 8, 1, 64]).unwrap_err();
+
+    assert!(matches!(
+        err,
+        CoeffLoopContextError::ScanWalkPositionOutOfRange {
+            scan_index: 3,
+            pos: 64,
+            coeff_count: 64
+        }
+    ));
+    assert_eq!(start.block(), &block_before);
 }
 
 #[test]

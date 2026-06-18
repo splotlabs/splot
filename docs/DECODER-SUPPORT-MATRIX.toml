@@ -534,6 +534,20 @@ local_reference_evidence = []
 notes = "Adds crate-private `splot-decode` nonzero coefficient block-start state for AV2 §5.20.7.27. `NonZeroCoeffBlockStartInput` carries caller-resolved transform-block geometry plus the existing nonzero EOB context facts. The nonzero branch allocates zero-initialized local `Level[]`, `QuantSign[]`, and `Quant[]` arrays from the adjusted transform extent before reading EOB syntax, so invalid geometry fails before CDF rows or symbol bits are consumed. `CoeffBlockEobBranch::NonZero` now returns `NonZeroCoeffBlockStart`, pairing the EOB read result with that local block state while leaving tile coefficient context state unchanged. Tests cover zeroed block allocation, invalid geometry no-consumption behavior, and invalid nonzero transform facts preserving coefficient state, CDF rows, and symbol-decoder counters. This row remains partial: runtime nonzero coefficient blocks are still unsupported; scan traversal, coefficient base/br/sign reads, nonzero `Level[]` or `Quant[]` writes, `read_quant`, dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public API, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` support remain unimplemented."
 
 [[row]]
+id = "coeff-scan-walk"
+name = "Coefficient scan walk"
+feature_id = "DECODE-COEFF-SCAN-WALK"
+spec_sections = ["5.20.7.27"]
+parser_source = "docs/spec/av2/1.0.0/05-syntax-structures.md"
+decode_module = "crates/splot-decode/src/tile_payload/coeff_loop/scan_walk.rs"
+tier = "tier1-intra"
+status = "partial"
+self_contained_tests = ["crates/splot-decode/src/tile_payload/coeff_loop/eob_symbol_tests.rs::coeff_scan_walk_returns_reverse_scan_entries_without_mutation", "crates/splot-decode/src/tile_payload/coeff_loop/eob_symbol_tests.rs::coeff_scan_walk_rejects_eob_larger_than_scan_without_mutation", "crates/splot-decode/src/tile_payload/coeff_loop/eob_symbol_tests.rs::coeff_scan_walk_rejects_out_of_range_position_without_mutation", "cargo test -p splot-decode coeff_loop --locked", "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings", "cargo xtask check-decoder-support", "cargo xtask check-decoder-conformance-coverage", "cargo xtask check-feature-status"]
+diagnostics = ["decode/unsupported-feature"]
+local_reference_evidence = []
+notes = "Adds crate-private `splot-decode` scan traversal for the ordinary non-FSC AV2 §5.20.7.27 nonzero coefficient path. `walk_nonzero_coeff_scan` accepts a `NonZeroCoeffBlockStart` and caller-supplied `scan[c]` positions, then returns checked entries in reverse scan-index order with raster position and row/column facts. It rejects EOB values that exceed the scan slice and scan positions outside the initialized adjusted coefficient block without consuming symbols, mutating CDF rows, or writing coefficient state. This row remains partial: scan-table derivation, transform-type computation, coefficient base/br/sign reads, nonzero `Level[]`, `QuantSign[]`, and `Quant[]` writes, `read_quant`, dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public API, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` support remain unimplemented."
+
+[[row]]
 id = "tile-cdf-save-lifecycle-boundary"
 name = "Tile CDF save lifecycle boundary"
 feature_id = "DECODE-TILE-CDF-SAVE-LIFECYCLE-BOUNDARY"

@@ -150,9 +150,13 @@ the symbol-read sequence. A coefficient EOB branch handoff
 branches to the all-zero state helper and nonzero branches to that derived EOB
 reader, and the nonzero branch now initializes a zeroed local coefficient block
 state shell (`DECODE-COEFF-NONZERO-BLOCK-STATE`) before reading EOB syntax. The
-minimal trace uses the handoff only for the existing luma and V all-zero
-applications. Runtime nonzero coefficient blocks are still unsupported, and no
-scan walk or base/br/sign coefficient symbols are read or written yet. The
+ordinary non-FSC nonzero path also has a checked decode-local scan-walk boundary
+(`DECODE-COEFF-SCAN-WALK`) over caller-supplied `scan[c]` positions: it validates
+EOB length and scan-position bounds and returns reverse-order `c`/`pos`/row/col
+facts without importing `splot-recon`, consuming symbols, mutating CDFs, or
+writing coefficients. The minimal trace uses the handoff only for the existing
+luma and V all-zero applications. Runtime nonzero coefficient blocks are still
+unsupported, and no base/br/sign coefficient symbols are read or written yet. The
 § 7.14.4
 `useQm` / `UserQm` gating and `shift` derivation, the rest
 of the § 7.14.3 reconstruct process, the § 7.15.3 secondary transform, the
