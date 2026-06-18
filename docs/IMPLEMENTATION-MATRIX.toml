@@ -8571,7 +8571,7 @@ notes = "Adds crate-private `splot-decode` nonzero EOB symbol-read composition f
 [feature.status]
 mapped = "done"
 types = "done"
-parse = "not-applicable"
+parse = "partial"
 validate = "not-applicable"
 write = "not-applicable"
 encode = "not-applicable"
@@ -8585,6 +8585,7 @@ tests = [
     "crates/splot-decode/src/tile_payload/coeff_loop/eob_symbol_tests.rs::eob_point_extra_width_tracks_size_specific_extensions",
     "crates/splot-decode/src/tile_payload/coeff_loop/eob_symbol_tests.rs::read_nonzero_coeff_eob_matches_direct_symbol_sequence",
     "crates/splot-decode/src/tile_payload/coeff_loop/eob_symbol_tests.rs::read_nonzero_coeff_eob_reads_size_specific_eob_point_extra_literals",
+    "crates/splot-decode/src/tile_payload/coeff_loop/eob_symbol_tests.rs::read_nonzero_coeff_eob_short_payload_literal_path_reaches_exit_symbol_error",
     "crates/splot-decode/src/tile_payload/coeff_loop/eob_symbol_tests.rs::read_nonzero_coeff_eob_reads_eob_extra_and_literal_refinements",
     "crates/splot-decode/src/tile_payload/coeff_loop/eob_symbol_tests.rs::read_nonzero_coeff_eob_respects_disabled_cdf_update_mode",
     "crates/splot-decode/src/tile_payload/coeff_loop/eob_symbol_tests.rs::read_nonzero_coeff_eob_invalid_selector_fails_before_symbol_read",

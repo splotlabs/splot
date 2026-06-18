@@ -169,6 +169,50 @@ fn read_nonzero_coeff_eob_reads_size_specific_eob_point_extra_literals() {
 }
 
 #[test]
+fn read_nonzero_coeff_eob_short_payload_literal_path_reaches_exit_symbol_error() {
+    let mut found = None;
+
+    'search: {
+        let payload = Vec::new();
+        if short_payload_reaches_exhausted_eob_literal(&payload) {
+            found = Some(payload);
+            break 'search;
+        }
+
+        for byte in u8::MIN..=u8::MAX {
+            let payload = vec![byte];
+            if short_payload_reaches_exhausted_eob_literal(&payload) {
+                found = Some(payload);
+                break 'search;
+            }
+        }
+
+        for bytes in u16::MIN..=u16::MAX {
+            let payload = bytes.to_be_bytes().to_vec();
+            if short_payload_reaches_exhausted_eob_literal(&payload) {
+                found = Some(payload);
+                break 'search;
+            }
+        }
+    }
+
+    let payload = found.unwrap();
+    let (_, symbols, read) =
+        read_eob_with_payload(&payload, EobPtSize::Pt256, CdfUpdateMode::Enabled).unwrap();
+
+    assert!(payload.len() <= 2);
+    assert_eq!(read.eob_pt_symbol(), 7);
+    assert_eq!(
+        eob_pt_extra_width(EobPtSize::Pt256, read.eob_pt_symbol()),
+        1
+    );
+    assert!(symbols.symbol_max_bits() < 0);
+    // Short tile payloads fail at the final symbol boundary once the preloaded
+    // arithmetic state is exhausted; literal reads do not over-read the slice.
+    assert!(symbols.finish().is_err());
+}
+
+#[test]
 fn read_nonzero_coeff_eob_reads_eob_extra_and_literal_refinements() {
     let (_, read) = find_eob_payload(EobPtSize::Pt128, |read| {
         read.eob().eob_pt() >= 4 && read.eob_extra() && read.eob_extra_bits() != 0
@@ -268,4 +312,14 @@ fn read_eob_literal_wraps_symbol_decoder_errors() {
             ..
         }
     ));
+}
+
+fn short_payload_reaches_exhausted_eob_literal(payload: &[u8]) -> bool {
+    let Ok((_, symbols, read)) =
+        read_eob_with_payload(payload, EobPtSize::Pt256, CdfUpdateMode::Enabled)
+    else {
+        return false;
+    };
+
+    read.eob_pt_symbol() == 7 && symbols.symbol_max_bits() < 0 && symbols.finish().is_err()
 }
