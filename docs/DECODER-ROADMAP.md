@@ -232,8 +232,13 @@ derivation, then commits the final context lines after the pass succeeds.
 choice with one ordinary branch boundary: the minimal trace uses its all-zero
 arm for the existing luma and V applications without changing output, while the
 nonzero arm composes EOB start with the state-backed ordinary pass for staged
-tests. Runtime integration of nonzero coefficient blocks, tile context fact
-derivation for nonzero blocks, dequantization, and
+tests. `DECODE-COEFF-ORDINARY-BRANCH-TX-CLASS-HANDOFF` now lets that branch
+boundary accept caller-resolved `PlaneTxType`, derive `txClass` with the
+decode-local § 8.3.2 helper, and then delegate to the existing branch path while
+leaving all-zero behavior unchanged. It still does not implement § 5.20.7.29
+`compute_tx_type`, derive scan order, or wire runtime `coeffs()`. Runtime
+integration of nonzero coefficient blocks, tile context fact derivation for
+nonzero blocks, dequantization, and
 reconstruction remain unsupported. The
 § 7.14.4
 `useQm` / `UserQm` gating and `shift` derivation, the rest

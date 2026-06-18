@@ -4,7 +4,7 @@
 #![allow(clippy::unwrap_used, clippy::panic)]
 
 use splot_core::span::ByteOffset;
-use splot_core::symbol::{CdfUpdateMode, SymbolDecoder, SymbolDecoderConfig};
+use splot_core::symbol::{CdfUpdateMode, SymbolBitPosition, SymbolDecoder, SymbolDecoderConfig};
 
 use super::super::cdf::{FrameCdfSubset, TileCdfSubset};
 use super::super::coeff_state::{CoeffContextUpdate, TileCoeffContextState, TileCoeffStateError};
@@ -13,9 +13,12 @@ use super::branch::{CoeffBlockEobBranch, NonZeroCoeffBlockStart, NonZeroCoeffBlo
 use super::max_level::CoeffTransformClass;
 use super::ordinary_pass::{
     CoeffOrdinaryBranch, CoeffOrdinaryBranchError, CoeffOrdinaryBranchInput,
-    CoeffOrdinaryBranchNonZeroInput, CoeffOrdinaryPassError, CoeffOrdinaryStateContextConfig,
-    CoeffOrdinaryStateContextPassInput, NonZeroCoeffOrdinaryDerivedBasePass,
-    apply_coeff_ordinary_branch, apply_nonzero_coeff_ordinary_pass_with_state_context,
+    CoeffOrdinaryBranchNonZeroInput, CoeffOrdinaryBranchPlaneTxTypeBaseConfig,
+    CoeffOrdinaryBranchPlaneTxTypeInput, CoeffOrdinaryBranchPlaneTxTypeNonZeroInput,
+    CoeffOrdinaryPassError, CoeffOrdinaryStateContextConfig, CoeffOrdinaryStateContextPassInput,
+    NonZeroCoeffOrdinaryDerivedBasePass, apply_coeff_ordinary_branch,
+    apply_coeff_ordinary_branch_from_plane_tx_type,
+    apply_nonzero_coeff_ordinary_pass_with_state_context,
 };
 use super::scan_walk::{NonZeroCoeffScanWalk, walk_nonzero_coeff_scan};
 use super::sign_symbol::{CoeffSignCdfSyntax, CoeffSignReadSource};
@@ -108,6 +111,24 @@ fn luma_base_config(parity_hiding: bool, use_tcq: bool) -> CoeffBaseDerivedLevel
     }
 }
 
+fn luma_plane_tx_type_base_config(
+    plane_tx_type: usize,
+    parity_hiding: bool,
+    use_tcq: bool,
+) -> CoeffOrdinaryBranchPlaneTxTypeBaseConfig {
+    CoeffOrdinaryBranchPlaneTxTypeBaseConfig {
+        coeff_cdf_q_ctx: 0,
+        tx_size_ctx: 0,
+        tx_width_log2: 3,
+        tx_width: 8,
+        tx_height: 8,
+        plane: 0,
+        plane_tx_type,
+        parity_hiding,
+        use_tcq,
+    }
+}
+
 fn state_context_config() -> CoeffOrdinaryStateContextConfig {
     CoeffOrdinaryStateContextConfig {
         coeff_cdf_q_ctx: 0,
@@ -185,6 +206,20 @@ fn branch_nonzero_input(
     })
 }
 
+fn branch_plane_tx_type_nonzero_input(
+    start: NonZeroCoeffBlockStartInput,
+    base_config: CoeffOrdinaryBranchPlaneTxTypeBaseConfig,
+    state_context: CoeffOrdinaryStateContextConfig,
+) -> CoeffOrdinaryBranchPlaneTxTypeInput<'static> {
+    CoeffOrdinaryBranchPlaneTxTypeInput::NonZero(CoeffOrdinaryBranchPlaneTxTypeNonZeroInput {
+        start,
+        scan: &DC_ONLY_SCAN,
+        base_config,
+        state_context,
+        lossless: false,
+    })
+}
+
 fn nonzero_start_input() -> NonZeroCoeffBlockStartInput {
     NonZeroCoeffBlockStartInput {
         block: AllZeroCoeffBlockInput {
@@ -202,6 +237,61 @@ fn nonzero_start_input() -> NonZeroCoeffBlockStartInput {
             coeff_cdf_q_ctx: 0,
         },
     }
+}
+
+fn run_direct_branch(
+    payload: &[u8],
+    input: CoeffOrdinaryBranchInput<'_>,
+) -> (
+    CoeffOrdinaryBranch,
+    TileCoeffContextState,
+    TileCdfSubset,
+    SymbolBitPosition,
+    u64,
+) {
+    let frame = FrameCdfSubset::from_defaults();
+    let mut tile = frame.tile_copy();
+    let mut symbols = symbol_decoder(payload);
+    let mut context_state = seeded_context_state();
+    let branch =
+        apply_coeff_ordinary_branch(&mut context_state, &mut tile, &mut symbols, input).unwrap();
+    (
+        branch,
+        context_state,
+        tile,
+        symbols.consumed_bits(),
+        symbols.symbol_count(),
+    )
+}
+
+fn run_plane_tx_type_branch(
+    payload: &[u8],
+    input: CoeffOrdinaryBranchPlaneTxTypeInput<'_>,
+) -> (
+    CoeffOrdinaryBranch,
+    TileCoeffContextState,
+    TileCdfSubset,
+    SymbolBitPosition,
+    u64,
+) {
+    let frame = FrameCdfSubset::from_defaults();
+    let mut tile = frame.tile_copy();
+    let mut symbols = symbol_decoder(payload);
+    let mut context_state = seeded_context_state();
+    let branch = apply_coeff_ordinary_branch_from_plane_tx_type(
+        &mut context_state,
+        &mut tile,
+        &mut symbols,
+        input,
+    )
+    .unwrap();
+    (
+        branch,
+        context_state,
+        tile,
+        symbols.consumed_bits(),
+        symbols.symbol_count(),
+    )
 }
 
 fn find_state_context_payload(
@@ -379,6 +469,65 @@ fn coefficient_ordinary_branch_preserves_context_on_ordinary_pass_failure() {
         ))
     ));
     assert_eq!(context_state, context_before);
+}
+
+#[test]
+fn coefficient_ordinary_branch_plane_tx_type_nonzero_matches_direct_tx_class() {
+    let cases = [
+        (0, CoeffTransformClass::TwoD),
+        (10, CoeffTransformClass::Vertical),
+        (11, CoeffTransformClass::Horizontal),
+        (usize::MAX, CoeffTransformClass::TwoD),
+    ];
+
+    for (plane_tx_type, tx_class) in cases {
+        let mut direct_base_config = luma_base_config(false, false);
+        direct_base_config.tx_class = tx_class;
+        let plane_tx_type_base_config = luma_plane_tx_type_base_config(plane_tx_type, false, false);
+        let state_context = state_context_config();
+        let payload = find_state_context_payload(direct_base_config, state_context, |_| true);
+
+        let direct = run_direct_branch(
+            &payload,
+            branch_nonzero_input(nonzero_start_input(), direct_base_config, state_context),
+        );
+        let derived = run_plane_tx_type_branch(
+            &payload,
+            branch_plane_tx_type_nonzero_input(
+                nonzero_start_input(),
+                plane_tx_type_base_config,
+                state_context,
+            ),
+        );
+
+        assert_eq!(derived, direct, "PlaneTxType {plane_tx_type}");
+    }
+}
+
+#[test]
+fn coefficient_ordinary_branch_plane_tx_type_all_zero_preserves_direct_branch() {
+    let direct = run_direct_branch(
+        &[0x80],
+        CoeffOrdinaryBranchInput::AllZero(AllZeroCoeffBlockInput {
+            plane: 0,
+            x4: 0,
+            y4: 0,
+            w4: 2,
+            h4: 2,
+        }),
+    );
+    let derived = run_plane_tx_type_branch(
+        &[0x80],
+        CoeffOrdinaryBranchPlaneTxTypeInput::AllZero(AllZeroCoeffBlockInput {
+            plane: 0,
+            x4: 0,
+            y4: 0,
+            w4: 2,
+            h4: 2,
+        }),
+    );
+
+    assert_eq!(derived, direct);
 }
 
 fn dc_sign_ctx_from(pass: &NonZeroCoeffOrdinaryDerivedBasePass) -> Option<usize> {
