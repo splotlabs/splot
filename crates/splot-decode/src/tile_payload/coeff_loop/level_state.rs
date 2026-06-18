@@ -30,6 +30,11 @@ impl NonZeroCoeffLevelState {
     pub(crate) const fn block(&self) -> &TransformCoeffBlockState {
         &self.block
     }
+
+    /// Consumes the level state into its carried EOB facts and local block.
+    pub(crate) fn into_parts(self) -> (NonZeroCoeffEobSymbolRead, TransformCoeffBlockState) {
+        (self.eob_read, self.block)
+    }
 }
 
 /// Error returned by the coefficient level state-write boundary.

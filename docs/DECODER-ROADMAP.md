@@ -186,11 +186,17 @@ while preserving `QuantSign[]`. A loaded-but-unwired composition boundary
 for the ordinary non-FSC second pass. A crate-private max-level handoff
 (`DECODE-COEFF-QUANT-PASS-MAXLEVEL-HANDOFF`) now derives those quant-pass
 `maxLevel` inputs from checked scan entries, caller-resolved plane and transform
-class, and the quant-pass hidden flag before delegating to the composer. These
-boundaries are not wired into
-runtime `coeffs()` yet. The minimal trace uses the handoff only for the existing
-luma and V all-zero applications. Runtime nonzero coefficient blocks and runtime
-quant-pass integration remain unsupported. The
+class, and the quant-pass hidden flag before delegating to the composer. A
+loaded-but-unwired ordinary non-FSC pass composition boundary
+(`DECODE-COEFF-ORDINARY-PASS-COMPOSE`) now composes nonzero block start, checked
+scan walk, base-symbol reads, local `Level[]` writes, and the per-coefficient
+interleaved sign, `maxLevel`, `read_quant`, and signed `Quant[]` write steps
+over caller-resolved scan, selector, plane, transform-class, hidden, sumAbs1,
+TCQ, and lossless facts while resetting `hrLevelAvg` to 0 at block entry. These
+boundaries are not wired into runtime `coeffs()` yet. The minimal trace uses the
+handoff only for the existing luma and V all-zero applications. Runtime selector
+derivation, tile context writes for nonzero blocks, and runtime nonzero
+coefficient blocks remain unsupported. The
 § 7.14.4
 `useQm` / `UserQm` gating and `shift` derivation, the rest
 of the § 7.14.3 reconstruct process, the § 7.15.3 secondary transform, the

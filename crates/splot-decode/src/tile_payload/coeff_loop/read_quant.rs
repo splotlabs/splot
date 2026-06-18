@@ -188,7 +188,7 @@ pub(crate) fn read_nonzero_coeff_quants(
             })?;
     }
 
-    let mut state = ReadQuantState::new(config);
+    let mut state = CoeffReadQuantState::new(config);
     let mut reads = Vec::new();
     reads.try_reserve(entries.len())?;
     for (index, input) in inputs.iter().copied().enumerate() {
@@ -197,15 +197,17 @@ pub(crate) fn read_nonzero_coeff_quants(
     Ok(reads)
 }
 
+/// Stateful §5.20.7.28 `read_quant` stepper for interleaved coefficient loops.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct ReadQuantState {
+pub(crate) struct CoeffReadQuantState {
     is_hidden: bool,
     allow_tcq: bool,
     hr_level_avg: u32,
 }
 
-impl ReadQuantState {
-    const fn new(config: CoeffReadQuantConfig) -> Self {
+impl CoeffReadQuantState {
+    /// Creates a `read_quant` state machine with the caller's initial facts.
+    pub(crate) const fn new(config: CoeffReadQuantConfig) -> Self {
         Self {
             is_hidden: config.is_hidden,
             allow_tcq: config.allow_tcq,
@@ -213,7 +215,8 @@ impl ReadQuantState {
         }
     }
 
-    fn read_one(
+    /// Reads one checked coefficient and updates the carried `hrLevelAvg`.
+    pub(crate) fn read_one(
         &mut self,
         symbols: &mut SymbolDecoder<'_>,
         index: usize,

@@ -130,6 +130,20 @@ pub(crate) struct NonZeroCoeffQuantState {
 }
 
 impl NonZeroCoeffQuantState {
+    /// Builds the final summary from interleaved per-entry writes.
+    pub(crate) fn from_interleaved_parts(
+        writes: Vec<CoeffQuantStateWrite>,
+        state: CoeffQuantStateAccumulator,
+    ) -> Self {
+        Self {
+            writes,
+            cul_level: state.cul_level,
+            dc_category: state.dc_category,
+            tcq_state: state.tcq_state,
+            hr_level_avg: state.hr_level_avg,
+        }
+    }
+
     /// Per-entry quant-state writes in scan-walk order.
     #[must_use]
     pub(crate) fn writes(&self) -> &[CoeffQuantStateWrite] {
@@ -271,7 +285,7 @@ pub(crate) fn apply_nonzero_coeff_quant_state(
         });
     }
     let levels = preflight_quant_writes(block, entries, signs, inputs, config)?;
-    let mut state = QuantAccumulator::new(config);
+    let mut state = CoeffQuantStateAccumulator::new(config);
     let mut writes = Vec::new();
     writes.try_reserve(entries.len())?;
 
@@ -290,13 +304,9 @@ pub(crate) fn apply_nonzero_coeff_quant_state(
         block.set_quant(write.entry().pos(), write.quant())?;
     }
 
-    Ok(NonZeroCoeffQuantState {
-        writes,
-        cul_level: state.cul_level,
-        dc_category: state.dc_category,
-        tcq_state: state.tcq_state,
-        hr_level_avg: state.hr_level_avg,
-    })
+    Ok(NonZeroCoeffQuantState::from_interleaved_parts(
+        writes, state,
+    ))
 }
 
 fn preflight_quant_writes(
@@ -351,7 +361,7 @@ fn preflight_quant_writes(
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct QuantAccumulator {
+pub(crate) struct CoeffQuantStateAccumulator {
     is_hidden: bool,
     sum_abs1: u32,
     use_tcq: bool,
@@ -362,8 +372,9 @@ struct QuantAccumulator {
     hr_level_avg: u32,
 }
 
-impl QuantAccumulator {
-    const fn new(config: CoeffQuantStateConfig) -> Self {
+impl CoeffQuantStateAccumulator {
+    /// Creates the ordinary non-FSC quant-state accumulator.
+    pub(crate) const fn new(config: CoeffQuantStateConfig) -> Self {
         Self {
             is_hidden: config.is_hidden,
             sum_abs1: config.sum_abs1,
@@ -416,6 +427,51 @@ impl QuantAccumulator {
             hr_level_avg: self.hr_level_avg,
         })
     }
+}
+
+/// Applies one pre-read ordinary non-FSC quant-state step and writes `Quant[pos]`.
+pub(crate) fn apply_nonzero_coeff_quant_state_step(
+    block: &mut TransformCoeffBlockState,
+    state: &mut CoeffQuantStateAccumulator,
+    index: usize,
+    entry: CoeffScanEntry,
+    sign: CoeffSignRead,
+    input: CoeffQuantReadInput,
+) -> Result<CoeffQuantStateWrite, CoeffQuantStateWriteError> {
+    if sign.entry() != entry {
+        return Err(CoeffQuantStateWriteError::SignEntryMismatch {
+            index,
+            expected: entry,
+            actual: sign.entry(),
+        });
+    }
+    if input.entry != entry {
+        return Err(CoeffQuantStateWriteError::InputEntryMismatch {
+            index,
+            expected: entry,
+            actual: input.entry,
+        });
+    }
+    let level = block.level_at(entry.row(), entry.col())?;
+    if sign.level() != level {
+        return Err(CoeffQuantStateWriteError::SignLevelMismatch {
+            index,
+            expected: level,
+            actual: sign.level(),
+        });
+    }
+    if state.is_hidden
+        && state.sum_abs1 > 0
+        && entry.scan_index() == 0
+        && sign.symbol() == CoeffSignReadSymbol::None
+    {
+        return Err(CoeffQuantStateWriteError::HiddenParityMissingSign { index, entry });
+    }
+    block.quant_at(entry.pos())?;
+
+    let write = state.apply(index, entry, level, sign.sign(), input)?;
+    block.set_quant(write.entry().pos(), write.quant())?;
+    Ok(write)
 }
 
 fn checked_mul_add(
