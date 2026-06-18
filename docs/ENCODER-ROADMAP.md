@@ -40,12 +40,15 @@ legal-stream evidence gates.
 Status: in progress.
 
 Feature areas: `ENC-Y4M-INPUT`, `ENC-CONTEXT-STATE-MACHINE`,
-`ENC-SPEED-PRESETS`.
+`ENC-SYNTAX-IR`, `ENC-SPEED-PRESETS`.
 
 - Land validated borrowed 8-bit YUV420 input views, then extend the input model
   to 10-bit and Y4M stream adaptation in follow-up PRs.
 - Land the context lifecycle state machine before any packet-producing path, so
   callers can test backpressure, flush, and end-of-stream without fake packets.
+- Land a private deterministic syntax-planning IR before any writer integration,
+  so sequence/frame/tile/block/token decisions can be ordered and inspected
+  without mutating an output writer.
 - Keep bitstream-affecting configuration separate from runtime policy.
 - Define unsupported-format behavior for 12-bit, monochrome, YUV422, YUV444, and
   non-Y4M inputs.
@@ -58,7 +61,7 @@ Status: planned.
 Feature area: `ENC-BITSTREAM-WRITER`.
 
 - Drive the existing `splot-core` syntax and container writers from encoder-owned
-  models.
+  models, starting from the private `ENC-SYNTAX-IR` planning records.
 - The generic AV2 §8.2 entropy/range encoder primitive now exists in
   `splot-core`; keep coded tile payload generation out until §8.3 token/CDF
   selection and the tile body model exist.

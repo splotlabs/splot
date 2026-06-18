@@ -472,6 +472,26 @@ mod tests {
     }
 
     #[test]
+    fn syntax_planning_ir_does_not_enable_packet_output() {
+        let mut ctx =
+            Context::new(EncoderConfig::default(), EncoderRuntimeConfig::default()).unwrap();
+        let y = [0_u8; 4];
+        let u = [0_u8; 1];
+        let v = [0_u8; 1];
+
+        assert!(matches!(
+            ctx.send_frame(&frame(&y, &u, &v)).unwrap(),
+            SendFrameStatus::Accepted { .. }
+        ));
+        assert_eq!(ctx.queued_output_packets(), 0);
+        assert_eq!(
+            ctx.receive_packet().unwrap(),
+            ReceivePacketStatus::NeedMoreData
+        );
+        assert_eq!(ctx.queued_output_packets(), 0);
+    }
+
+    #[test]
     fn flush_without_input_finishes_and_is_repeatable() {
         let mut ctx =
             Context::new(EncoderConfig::default(), EncoderRuntimeConfig::default()).unwrap();
