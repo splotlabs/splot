@@ -550,6 +550,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.13.3.22](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-22) | Resolve divisor process | `RECON-INTRA-DC-SUBSAMPLED-PREDICTION` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.14.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-14-2) | Dequantization functions | `RECON-DEQUANT-QUANTIZER-INDEX-RESOLUTION` | ✅ | — | — | ✅ | — |
 | [§ 7.14.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-14-2) | Dequantization functions | `RECON-DEQUANT-QUANTIZER-LOOKUP` | ✅ | — | — | ✅ | — |
+| [§ 7.14.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-14-3) | Reconstruct process | `ENC-RESIDUAL-FOUNDATION` | ✅ | — | — | ✅ | — |
 | [§ 7.14.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-14-3) | Reconstruct process | `RECON-RESIDUAL-ADDITION` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.14.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-14-4) | Dequantization process | `RECON-DEQUANT-PROCESS` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.14.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-14-4) | Dequantization process | `RECON-DEQUANT-QM-WEIGHT` | ✅ | — | ✅ | ✅ | — |
