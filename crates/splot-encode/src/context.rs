@@ -472,15 +472,18 @@ mod tests {
     }
 
     #[test]
-    fn syntax_planning_ir_does_not_enable_packet_output() {
+    fn syntax_and_header_planning_do_not_enable_packet_output() {
         let mut ctx =
-            Context::new(EncoderConfig::default(), EncoderRuntimeConfig::default()).unwrap();
+            Context::new(EncoderConfig::new(2, 2), EncoderRuntimeConfig::default()).unwrap();
         let y = [0_u8; 4];
         let u = [0_u8; 1];
         let v = [0_u8; 1];
+        let input = frame(&y, &u, &v);
+
+        assert!(crate::header_plan::MinimalHeaderPlan::new(ctx.config(), input.info()).is_ok());
 
         assert!(matches!(
-            ctx.send_frame(&frame(&y, &u, &v)).unwrap(),
+            ctx.send_frame(&input).unwrap(),
             SendFrameStatus::Accepted { .. }
         ));
         assert_eq!(ctx.queued_output_packets(), 0);

@@ -3968,8 +3968,41 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/syntax_ir.rs::tests", "crates/splot-encode/src/context.rs::tests::syntax_planning_ir_does_not_enable_packet_output"]
+tests = ["crates/splot-encode/src/syntax_ir.rs::tests", "crates/splot-encode/src/context.rs::tests::syntax_and_header_planning_do_not_enable_packet_output"]
 commands = ["cargo test -p splot-encode --locked", "cargo clippy -p splot-encode --all-targets --all-features --locked -- -D warnings"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "ENC-MINIMAL-HEADER-PLAN"
+name = "Encoder minimal header plan"
+category = "encoder"
+kind = "encoder-api"
+spec_sections = ["5.4", "5.18", "5.19", "5.20.1"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/header_plan.rs"
+openspec_change = "encoder-minimal-header-plan"
+tracking_issue = ""
+owner = "encoder"
+risk = "medium"
+notes = "Private, non-emitting minimal header-intent planning bridge from EncoderConfig plus first-frame metadata to future writer handoff. The module records typed sequence-header, frame-header, and first tile-group intents for the current 8-bit YUV420 single-tile subset, rejects zero dimensions, unsupported formats, and frame/config metadata mismatches before returning a plan, is not re-exported from the crate root, owns no writer, emits no bytes, and does not change Context packet production."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/header_plan.rs::tests", "crates/splot-encode/src/context.rs::tests::syntax_and_header_planning_do_not_enable_packet_output"]
+commands = ["cargo test -p splot-encode header_plan --locked", "cargo test -p splot-encode syntax_and_header_planning_do_not_enable_packet_output --locked", "cargo clippy -p splot-encode --all-targets --all-features --locked -- -D warnings"]
 fixtures = []
 diagnostics = []
 
