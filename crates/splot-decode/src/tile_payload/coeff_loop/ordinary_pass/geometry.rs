@@ -7,13 +7,64 @@ use splot_core::symbol::SymbolDecoder;
 
 use super::super::super::cdf::TileCdfSubset;
 use super::super::super::coeff_state::TileCoeffContextState;
-use super::super::AllZeroCoeffBlockInput;
 use super::super::branch::NonZeroCoeffBlockStartInput;
+use super::super::{AllZeroCoeffBlockInput, NonZeroCoeffEobContextInput};
 use super::{
     CoeffOrdinaryBranch, CoeffOrdinaryBranchError, CoeffOrdinaryBranchPlaneTxTypeBaseConfig,
     CoeffOrdinaryBranchPlaneTypeInput, CoeffOrdinaryBranchPlaneTypeNonZeroInput,
     CoeffOrdinaryPlaneTypeStateContextConfig, apply_coeff_ordinary_branch_from_plane_type,
 };
+
+/// Caller-selected ordinary coefficient branch before block geometry.
+pub(crate) enum CoeffOrdinaryBranchCoeffsGeometryInput<'a> {
+    /// Decoded `all_zero == 1`.
+    AllZero(CoeffOrdinaryCoeffsGeometryConfig),
+    /// Decoded `all_zero == 0`.
+    NonZero(CoeffOrdinaryBranchCoeffsGeometryNonZeroInput<'a>),
+}
+
+/// Caller-resolved facts for the ordinary nonzero branch before block geometry.
+pub(crate) struct CoeffOrdinaryBranchCoeffsGeometryNonZeroInput<'a> {
+    /// Caller-resolved `coeffs()` geometry facts.
+    pub(crate) geometry: CoeffOrdinaryCoeffsGeometryConfig,
+    /// Caller-resolved facts for reading the nonzero EOB syntax.
+    pub(crate) eob: NonZeroCoeffEobContextInput,
+    /// Caller-resolved `scan = get_scan(txSz, txClass)` raster positions.
+    pub(crate) scan: &'a [u16],
+    /// Caller-resolved facts for deriving base selectors plus `PlaneTxType`.
+    pub(crate) base_config: CoeffOrdinaryBranchPlaneTxTypeBaseConfig,
+    /// Caller-resolved facts for state-backed sign/context handoff, before geometry.
+    pub(crate) state_context: CoeffOrdinaryGeometryStateContextConfig,
+    /// Caller-resolved lossless flag for the quantized-state update.
+    pub(crate) lossless: bool,
+}
+
+/// Caller-resolved AV2 § 5.20.7.27 `coeffs()` geometry facts.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CoeffOrdinaryCoeffsGeometryConfig {
+    /// Plane index, 0 for luma and 1/2 for chroma.
+    pub(crate) plane: usize,
+    /// `startX` argument to `coeffs()`.
+    pub(crate) start_x: usize,
+    /// `startY` argument to `coeffs()`.
+    pub(crate) start_y: usize,
+    /// Caller-resolved `Tx_Width[txSz]`.
+    pub(crate) tx_width: usize,
+    /// Caller-resolved `Tx_Height[txSz]`.
+    pub(crate) tx_height: usize,
+}
+
+impl CoeffOrdinaryCoeffsGeometryConfig {
+    const fn block_input(self) -> AllZeroCoeffBlockInput {
+        AllZeroCoeffBlockInput {
+            plane: self.plane,
+            x4: self.start_x >> 2,
+            y4: self.start_y >> 2,
+            w4: self.tx_width >> 2,
+            h4: self.tx_height >> 2,
+        }
+    }
+}
 
 /// Caller-selected ordinary coefficient branch before state-context geometry.
 pub(crate) enum CoeffOrdinaryBranchGeometryInput<'a> {
@@ -89,4 +140,39 @@ pub(crate) fn apply_coeff_ordinary_branch_from_geometry(
         }
     };
     apply_coeff_ordinary_branch_from_plane_type(state, cdfs, symbols, input)
+}
+
+/// Dispatches the ordinary branch after deriving block geometry from `coeffs()` facts.
+///
+/// This adapts the staged branch boundary for AV2 § 5.20.7.27 `coeffs()`
+/// geometry (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27`) by
+/// applying the spec assignments `x4 = startX >> 2`, `y4 = startY >> 2`,
+/// `w4 = Tx_Width[txSz] >> 2`, and `h4 = Tx_Height[txSz] >> 2`. It does not
+/// derive `Tx_Width[txSz]` or `Tx_Height[txSz]` from `txSz`, implement
+/// `compute_tx_type`, derive scan order, wire runtime `coeffs()`, dequantize,
+/// inverse transform, residual add, or reconstruct.
+pub(crate) fn apply_coeff_ordinary_branch_from_coeffs_geometry(
+    state: &mut TileCoeffContextState,
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    input: CoeffOrdinaryBranchCoeffsGeometryInput<'_>,
+) -> Result<CoeffOrdinaryBranch, CoeffOrdinaryBranchError> {
+    let input = match input {
+        CoeffOrdinaryBranchCoeffsGeometryInput::AllZero(geometry) => {
+            CoeffOrdinaryBranchGeometryInput::AllZero(geometry.block_input())
+        }
+        CoeffOrdinaryBranchCoeffsGeometryInput::NonZero(input) => {
+            CoeffOrdinaryBranchGeometryInput::NonZero(CoeffOrdinaryBranchGeometryNonZeroInput {
+                start: NonZeroCoeffBlockStartInput {
+                    block: input.geometry.block_input(),
+                    eob: input.eob,
+                },
+                scan: input.scan,
+                base_config: input.base_config,
+                state_context: input.state_context,
+                lossless: input.lossless,
+            })
+        }
+    };
+    apply_coeff_ordinary_branch_from_geometry(state, cdfs, symbols, input)
 }
