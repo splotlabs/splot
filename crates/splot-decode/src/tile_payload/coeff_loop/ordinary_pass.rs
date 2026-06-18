@@ -9,7 +9,9 @@
 //! `DECODE-COEFF-NONZERO-CONTEXT-COMMIT`,
 //! `DECODE-COEFF-STATE-CONTEXT-HANDOFF`,
 //! `DECODE-COEFF-ORDINARY-BRANCH-HANDOFF`,
-//! `DECODE-COEFF-ORDINARY-BRANCH-TX-CLASS-HANDOFF`.
+//! `DECODE-COEFF-ORDINARY-BRANCH-TX-CLASS-HANDOFF`,
+//! `DECODE-COEFF-ORDINARY-BRANCH-PLANE-TYPE-HANDOFF`,
+//! `DECODE-COEFF-ORDINARY-BRANCH-GEOMETRY-HANDOFF`.
 
 use splot_core::symbol::SymbolDecoder;
 
@@ -49,6 +51,8 @@ use super::sign_symbol::{
 use super::{
     AllZeroCoeffBlock, AllZeroCoeffBlockInput, CoeffLoopContextError, NonZeroCoeffEobSymbolRead,
 };
+
+pub(crate) mod geometry;
 
 /// Caller-resolved facts for the loaded ordinary non-FSC coefficient pass.
 pub(crate) struct CoeffOrdinaryPassInput<'a> {
@@ -147,6 +151,28 @@ pub(crate) struct CoeffOrdinaryBranchPlaneTxTypeNonZeroInput<'a> {
     pub(crate) lossless: bool,
 }
 
+/// Caller-selected ordinary coefficient branch before nonzero `plane_type`.
+pub(crate) enum CoeffOrdinaryBranchPlaneTypeInput<'a> {
+    /// Decoded `all_zero == 1`.
+    AllZero(AllZeroCoeffBlockInput),
+    /// Decoded `all_zero == 0`.
+    NonZero(CoeffOrdinaryBranchPlaneTypeNonZeroInput<'a>),
+}
+
+/// Caller-resolved facts for the ordinary nonzero branch before `plane_type`.
+pub(crate) struct CoeffOrdinaryBranchPlaneTypeNonZeroInput<'a> {
+    /// Caller-resolved facts for nonzero EOB start.
+    pub(crate) start: NonZeroCoeffBlockStartInput,
+    /// Caller-resolved `scan = get_scan(txSz, txClass)` raster positions.
+    pub(crate) scan: &'a [u16],
+    /// Caller-resolved facts for deriving base selectors plus `PlaneTxType`.
+    pub(crate) base_config: CoeffOrdinaryBranchPlaneTxTypeBaseConfig,
+    /// Caller-resolved facts for reading and committing tile context lines, before `ptype`.
+    pub(crate) state_context: CoeffOrdinaryPlaneTypeStateContextConfig,
+    /// Caller-resolved lossless flag for the quantized-state update.
+    pub(crate) lossless: bool,
+}
+
 /// Caller-resolved base-derivation facts with `PlaneTxType`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CoeffOrdinaryBranchPlaneTxTypeBaseConfig {
@@ -222,6 +248,34 @@ pub(crate) struct CoeffOrdinaryStateContextConfig {
     pub(crate) w4: usize,
     /// Transform-block height in 4x4 units.
     pub(crate) h4: usize,
+}
+
+/// Caller-resolved state-context facts before AV2 `ptype` derivation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CoeffOrdinaryPlaneTypeStateContextConfig {
+    /// Coefficient-CDF quantization context.
+    pub(crate) coeff_cdf_q_ctx: usize,
+    /// Transform-block x coordinate in 4x4 units.
+    pub(crate) x4: usize,
+    /// Transform-block y coordinate in 4x4 units.
+    pub(crate) y4: usize,
+    /// Transform-block width in 4x4 units.
+    pub(crate) w4: usize,
+    /// Transform-block height in 4x4 units.
+    pub(crate) h4: usize,
+}
+
+impl CoeffOrdinaryPlaneTypeStateContextConfig {
+    const fn state_context(self, plane: usize) -> CoeffOrdinaryStateContextConfig {
+        CoeffOrdinaryStateContextConfig {
+            coeff_cdf_q_ctx: self.coeff_cdf_q_ctx,
+            plane_type: if plane > 0 { 1 } else { 0 },
+            x4: self.x4,
+            y4: self.y4,
+            w4: self.w4,
+            h4: self.h4,
+        }
+    }
 }
 
 /// Caller-resolved facts for committing the end-of-`coeffs()` context lines.
@@ -510,6 +564,38 @@ pub(crate) fn apply_coeff_ordinary_branch_from_plane_tx_type(
         }
     };
     apply_coeff_ordinary_branch(state, cdfs, symbols, input)
+}
+
+/// Dispatches the ordinary branch after deriving `plane_type` from `plane`.
+///
+/// This models the AV2 § 5.20.7.27 `coeffs()` assignment `ptype = plane > 0`
+/// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27`) before
+/// delegating to the `PlaneTxType` handoff. It does not implement
+/// `compute_tx_type`, derive scan order, wire runtime `coeffs()`, dequantize,
+/// inverse transform, residual add, or reconstruct.
+pub(crate) fn apply_coeff_ordinary_branch_from_plane_type(
+    state: &mut TileCoeffContextState,
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    input: CoeffOrdinaryBranchPlaneTypeInput<'_>,
+) -> Result<CoeffOrdinaryBranch, CoeffOrdinaryBranchError> {
+    let input = match input {
+        CoeffOrdinaryBranchPlaneTypeInput::AllZero(input) => {
+            CoeffOrdinaryBranchPlaneTxTypeInput::AllZero(input)
+        }
+        CoeffOrdinaryBranchPlaneTypeInput::NonZero(input) => {
+            CoeffOrdinaryBranchPlaneTxTypeInput::NonZero(
+                CoeffOrdinaryBranchPlaneTxTypeNonZeroInput {
+                    start: input.start,
+                    scan: input.scan,
+                    base_config: input.base_config,
+                    state_context: input.state_context.state_context(input.base_config.plane),
+                    lossless: input.lossless,
+                },
+            )
+        }
+    };
+    apply_coeff_ordinary_branch_from_plane_tx_type(state, cdfs, symbols, input)
 }
 
 /// Runs the loaded ordinary non-FSC coefficient pass from nonzero EOB start.

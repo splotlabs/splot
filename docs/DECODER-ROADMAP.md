@@ -235,10 +235,17 @@ nonzero arm composes EOB start with the state-backed ordinary pass for staged
 tests. `DECODE-COEFF-ORDINARY-BRANCH-TX-CLASS-HANDOFF` now lets that branch
 boundary accept caller-resolved `PlaneTxType`, derive `txClass` with the
 decode-local § 8.3.2 helper, and then delegate to the existing branch path while
-leaving all-zero behavior unchanged. It still does not implement § 5.20.7.29
-`compute_tx_type`, derive scan order, or wire runtime `coeffs()`. Runtime
-integration of nonzero coefficient blocks, tile context fact derivation for
-nonzero blocks, dequantization, and
+leaving all-zero behavior unchanged. `DECODE-COEFF-ORDINARY-BRANCH-PLANE-TYPE-HANDOFF`
+adds the next branch-level wrapper: it derives AV2 § 5.20.7.27 `ptype = plane > 0`
+from the caller-resolved plane before delegating to the `PlaneTxType` handoff, so
+the nonzero path no longer accepts a contradictory caller-supplied `plane_type`
+at that wrapper. `DECODE-COEFF-ORDINARY-BRANCH-GEOMETRY-HANDOFF` now derives the
+state-context `x4`, `y4`, `w4`, and `h4` facts from the same nonzero block-start
+geometry carried by the branch input before delegating to the `plane_type`
+handoff. It still does not derive raw `startX`/`startY`/`txSz`, implement §
+5.20.7.29 `compute_tx_type`, derive scan order, or wire runtime `coeffs()`.
+Runtime integration of nonzero coefficient blocks, tile context fact derivation
+for nonzero blocks, dequantization, and
 reconstruction remain unsupported. The
 § 7.14.4
 `useQm` / `UserQm` gating and `shift` derivation, the rest
