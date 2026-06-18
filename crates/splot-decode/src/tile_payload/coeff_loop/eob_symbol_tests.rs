@@ -9,6 +9,7 @@ use splot_core::symbol::{CdfUpdateMode, SymbolDecoder, SymbolDecoderConfig};
 use super::super::cdf::{
     EobPtSize, FrameCdfSubset, TileCdfArray, TileCdfError, TileCdfSelector, TileCdfSubset,
 };
+use super::super::coeff_state::{CoeffContextUpdate, TileCoeffContextState};
 use super::*;
 
 fn symbol_decoder(payload: &[u8], mode: CdfUpdateMode) -> SymbolDecoder<'_> {
@@ -108,6 +109,36 @@ fn direct_eob_read(
         eob_extra,
         eob_extra_bits,
     })
+}
+
+fn seeded_coeff_context_state() -> TileCoeffContextState {
+    let mut state = TileCoeffContextState::new(4, 4).unwrap();
+    state
+        .update_after_coeffs(CoeffContextUpdate {
+            plane: 0,
+            x4: 0,
+            y4: 0,
+            w4: 2,
+            h4: 2,
+            cul_level: 4,
+            dc_category: 2,
+        })
+        .unwrap();
+    state
+}
+
+fn branch_all_zero(branch: CoeffBlockEobBranch) -> Option<AllZeroCoeffBlock> {
+    match branch {
+        CoeffBlockEobBranch::AllZero(applied) => Some(applied),
+        CoeffBlockEobBranch::NonZero(_) => None,
+    }
+}
+
+fn branch_nonzero(branch: CoeffBlockEobBranch) -> Option<NonZeroCoeffEobSymbolRead> {
+    match branch {
+        CoeffBlockEobBranch::AllZero(_) => None,
+        CoeffBlockEobBranch::NonZero(read) => Some(read),
+    }
 }
 
 #[test]
@@ -216,6 +247,116 @@ fn nonzero_coeff_eob_symbol_input_derives_size_context_and_preserves_q_ctx() {
             eob_ctx: 2
         }
     );
+}
+
+#[test]
+fn coeff_block_eob_branch_all_zero_applies_state_without_symbol_consumption() {
+    let frame = FrameCdfSubset::from_defaults();
+    let mut tile = frame.tile_copy();
+    let tile_before = tile.clone();
+    let mut symbols = symbol_decoder(&[0x00, 0x80], CdfUpdateMode::Enabled);
+    let consumed_before = symbols.consumed_bits();
+    let symbol_count_before = symbols.symbol_count();
+    let mut state = seeded_coeff_context_state();
+    let state_before = state.clone();
+
+    let branch = read_coeff_block_eob_branch(
+        &mut state,
+        &mut tile,
+        &mut symbols,
+        CoeffBlockEobBranchInput::AllZero(AllZeroCoeffBlockInput {
+            plane: 0,
+            x4: 0,
+            y4: 0,
+            w4: 2,
+            h4: 2,
+        }),
+    )
+    .unwrap();
+
+    let applied = branch_all_zero(branch).unwrap();
+    assert_eq!(applied.eob(), 0);
+    assert_eq!(applied.cul_level(), 0);
+    assert_eq!(applied.dc_category(), 0);
+    assert_eq!(applied.block().width(), 8);
+    assert_eq!(applied.block().height(), 8);
+    assert_ne!(state, state_before);
+    assert_eq!(state.above_level(0).unwrap(), &[0, 0, 0, 0]);
+    assert_eq!(state.left_level(0).unwrap(), &[0, 0, 0, 0]);
+    assert_eq!(tile, tile_before);
+    assert_eq!(symbols.consumed_bits(), consumed_before);
+    assert_eq!(symbols.symbol_count(), symbol_count_before);
+}
+
+#[test]
+fn coeff_block_eob_branch_nonzero_reads_derived_eob_without_state_mutation() {
+    let (payload, expected) = find_eob_payload(EobPtSize::Pt128, |read| {
+        read.eob().eob_pt() >= 3 && read.eob_extra()
+    });
+    let frame = FrameCdfSubset::from_defaults();
+    let mut tile = frame.tile_copy();
+    let mut symbols = symbol_decoder(&payload, CdfUpdateMode::Enabled);
+    let symbol_count_before = symbols.symbol_count();
+    let mut state = seeded_coeff_context_state();
+    let state_before = state.clone();
+
+    let branch = read_coeff_block_eob_branch(
+        &mut state,
+        &mut tile,
+        &mut symbols,
+        CoeffBlockEobBranchInput::NonZero(NonZeroCoeffEobContextInput {
+            plane: 0,
+            is_inter: false,
+            tx_width_log2: 4,
+            tx_height_log2: 3,
+            coeff_cdf_q_ctx: 0,
+        }),
+    )
+    .unwrap();
+
+    let read = branch_nonzero(branch).unwrap();
+    assert_eq!(read, expected);
+    assert_eq!(state, state_before);
+    assert!(symbols.symbol_count() > symbol_count_before);
+}
+
+#[test]
+fn coeff_block_eob_branch_invalid_nonzero_context_preserves_mutable_state() {
+    let frame = FrameCdfSubset::from_defaults();
+    let mut tile = frame.tile_copy();
+    let tile_before = tile.clone();
+    let mut symbols = symbol_decoder(&[0x00, 0x80], CdfUpdateMode::Enabled);
+    let consumed_before = symbols.consumed_bits();
+    let symbol_count_before = symbols.symbol_count();
+    let mut state = seeded_coeff_context_state();
+    let state_before = state.clone();
+
+    let err = read_coeff_block_eob_branch(
+        &mut state,
+        &mut tile,
+        &mut symbols,
+        CoeffBlockEobBranchInput::NonZero(NonZeroCoeffEobContextInput {
+            plane: 0,
+            is_inter: false,
+            tx_width_log2: 1,
+            tx_height_log2: 2,
+            coeff_cdf_q_ctx: 0,
+        }),
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        err,
+        CoeffLoopContextError::InvalidEobTransformLog2 {
+            axis: "width",
+            value: 1,
+            minimum: 2
+        }
+    ));
+    assert_eq!(state, state_before);
+    assert_eq!(tile, tile_before);
+    assert_eq!(symbols.consumed_bits(), consumed_before);
+    assert_eq!(symbols.symbol_count(), symbol_count_before);
 }
 
 #[test]
