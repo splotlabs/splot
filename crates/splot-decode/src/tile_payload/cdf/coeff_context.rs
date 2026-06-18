@@ -29,11 +29,16 @@
 //!   ([`CoeffBaseContext`]), which selects one of five `coeff_base` banks from a
 //!   neighbour-magnitude sum; and
 //! - the `dc_sign` sign context ([`dc_sign_ctx`]), which sums the above/left
-//!   DC-context signs.
+//!   DC-context signs; and
+//! - the `idtx_sign` sign context ([`idtx_sign_ctx`]), which sums the left, above,
+//!   and above-left `QuantSign[]` neighbours with a `Level[]` threshold.
 //!
-//! The remaining `idtx_sign` sign context is derived by a future increment once
-//! the `QuantSign[]` buffer exists. Nothing here is wired into a decode path yet,
-//! so it is no-output-change (the derivations are exercised by compile-time
+//! This is the complete set of § 8.3.2 coefficient-symbol CDF contexts. What
+//! remains for coefficient decode is the runtime state these read — the
+//! per-transform-block `Level[]` / `QuantSign[]` and the `Above`/`Left`
+//! DC-context tile buffers — plus the § 5.20.7.27 `coeffs()` loop that fills them
+//! and consumes these contexts. Nothing here is wired into a decode path yet, so
+//! it is no-output-change (the derivations are exercised by compile-time
 //! spec-contract `const` checks and unit tests, not by any decode stage).
 
 use splot_core::tables::conversion::SIG_REF_DIFF_OFFSET;
@@ -59,6 +64,10 @@ const LF_SIG_COEF_CONTEXTS_2D_UV: usize = 8;
 /// (`03-symbols.md`); the `coeff_br` magnitude sum clamps each neighbour level to
 /// `MAX_BASE_BR_RANGE - 1`.
 const MAX_BASE_BR_RANGE: u32 = 6;
+
+/// AV2 § 3 `COEFF_BASE_RANGE` (`03-symbols.md`); the `idtx_sign` context is raised
+/// when the current `Level` exceeds it.
+const COEFF_BASE_RANGE: u32 = 3;
 
 /// AV2 § 8.3.2 `Mag_Ref_Offset_With_Tx_Class[txClass][idx][rowOrCol]`
 /// (`08-parsing-process.md#s-8-3-2`): the up-to-three neighbour `(dRow, dCol)`
@@ -505,6 +514,70 @@ pub(crate) const fn dc_sign_ctx(
     }
 }
 
+/// Returns the AV2 § 8.3.2 `idtx_sign` CDF context — the inner index of
+/// `TileIdtxSignCdf[Min(TX_16X16, txSzCtx)][ctx]` (`08-parsing-process.md#s-8-3-2`).
+///
+/// It nets the signs of the left (`QuantSign[row*txw + col-1]`), above
+/// (`QuantSign[(row-1)*txw + col]`), and above-left (`QuantSign[(row-1)*txw +
+/// col-1]`) coefficients into `signc`, maps it to a base context (`5` for `signc >
+/// 2`, `6` for `signc < -2`, `1` for `signc > 0`, `2` for `signc < 0`, else `0`),
+/// then adds `2` when the current `Level[row][col]` exceeds `COEFF_BASE_RANGE` and
+/// the base context is non-zero.
+///
+/// `quant_sign` and `level` are the per-transform-block row-major `txw`-wide
+/// `QuantSign[]` (signed, `-1`/`0`/`+1`) and `Level[]` slices; the edge neighbours
+/// are gated by `col > 0` / `row > 0`, and the flat index is saturating and
+/// slice-bounds-guarded, so the function is total and never panics. The result is
+/// in `0..=8`.
+pub(crate) const fn idtx_sign_ctx(
+    quant_sign: &[i32],
+    level: &[u32],
+    row: usize,
+    col: usize,
+    txw: usize,
+) -> usize {
+    let mut signc: i32 = 0;
+    // Left neighbour.
+    if col > 0 {
+        let idx = row.saturating_mul(txw).saturating_add(col - 1);
+        if idx < quant_sign.len() {
+            signc += quant_sign[idx];
+        }
+    }
+    // Above neighbour.
+    if row > 0 {
+        let idx = (row - 1).saturating_mul(txw).saturating_add(col);
+        if idx < quant_sign.len() {
+            signc += quant_sign[idx];
+        }
+    }
+    // Above-left neighbour.
+    if col > 0 && row > 0 {
+        let idx = (row - 1).saturating_mul(txw).saturating_add(col - 1);
+        if idx < quant_sign.len() {
+            signc += quant_sign[idx];
+        }
+    }
+    let mut ctx: usize = if signc > 2 {
+        5
+    } else if signc < -2 {
+        6
+    } else if signc > 0 {
+        1
+    } else if signc < 0 {
+        2
+    } else {
+        0
+    };
+    // Raise the context when the current level exceeds COEFF_BASE_RANGE.
+    let lidx = row.saturating_mul(txw).saturating_add(col);
+    let level_val = if lidx < level.len() { level[lidx] } else { 0 };
+    if level_val > COEFF_BASE_RANGE && ctx != 0 {
+        ctx += 2;
+    }
+    ctx
+}
+
 // Compile-time spec-contract checks. These `const` items are the non-test
 // consumer of the context derivations until the §5.20.7.27 `coeffs()` decode
 // loop wires them: they pin the §8.3.2 contract at the four/three boundaries
@@ -572,6 +645,21 @@ const _DC_SIGN_CONTRACT: () = {
     // One left sign-1 vote (-1) -> dcSign -1 -> ctx 1.
     let neg = [1u8];
     assert!(dc_sign_ctx(&z2, &neg, 0, 0, 2, 1) == 1);
+};
+const _IDTX_SIGN_CONTRACT: () = {
+    let zq = [0i32; 16];
+    let zl = [0u32; 16];
+    // No neighbour signs -> signc 0 -> ctx 0.
+    assert!(idtx_sign_ctx(&zq, &zl, 1, 1, 4) == 0);
+    // (1,1) neighbours: above-left q[0], above q[1], left q[4]. Three +1 -> signc
+    // 3 -> ctx 5.
+    let pos3 = [1i32, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    assert!(idtx_sign_ctx(&pos3, &zl, 1, 1, 4) == 5);
+    // One +1 neighbour (above q[1]) -> signc 1 -> ctx 1; with Level[1][1]=q-cell 5
+    // > COEFF_BASE_RANGE -> ctx + 2 = 3.
+    let pos1 = [0i32, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    let hi = [0u32, 0, 0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    assert!(idtx_sign_ctx(&pos1, &hi, 1, 1, 4) == 3);
 };
 
 #[cfg(test)]
@@ -1034,5 +1122,61 @@ mod tests {
         // Huge offsets/counts must not panic (saturating index + bounds guard).
         let _ = dc_sign_ctx(&a, &l, usize::MAX, usize::MAX, usize::MAX, usize::MAX);
         assert_eq!(dc_sign_ctx(&a, &l, usize::MAX, usize::MAX, 4, 4), 0); // all out of range -> 0
+    }
+
+    #[test]
+    fn idtx_sign_ctx_maps_signc_to_base_context() {
+        let zl = [0u32; 16];
+        // (1,1) neighbours: above-left q[0], above q[1], left q[4].
+        // signc 3 (>2) -> ctx 5.
+        let p3 = [1i32, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        assert_eq!(idtx_sign_ctx(&p3, &zl, 1, 1, 4), 5);
+        // signc -3 (<-2) -> ctx 6.
+        let n3 = [-1i32, -1, 0, 0, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        assert_eq!(idtx_sign_ctx(&n3, &zl, 1, 1, 4), 6);
+        // signc +1 -> ctx 1; signc -1 -> ctx 2.
+        let p1 = [0i32, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        assert_eq!(idtx_sign_ctx(&p1, &zl, 1, 1, 4), 1);
+        let n1 = [0i32, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        assert_eq!(idtx_sign_ctx(&n1, &zl, 1, 1, 4), 2);
+        // signc 0 -> ctx 0.
+        assert_eq!(idtx_sign_ctx(&[0i32; 16], &zl, 1, 1, 4), 0);
+    }
+
+    #[test]
+    fn idtx_sign_ctx_level_threshold_raises_nonzero_context() {
+        // ctx 1 (one +1 neighbour) + Level[1][1] (q[5]) > COEFF_BASE_RANGE -> +2.
+        let p1 = [0i32, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        let hi = [0u32, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]; // 4 > 3
+        assert_eq!(idtx_sign_ctx(&p1, &hi, 1, 1, 4), 3);
+        // Level == COEFF_BASE_RANGE (3) is NOT > 3 -> no raise.
+        let eq = [0u32, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        assert_eq!(idtx_sign_ctx(&p1, &eq, 1, 1, 4), 1);
+        // ctx 0 is never raised, even with a high level.
+        assert_eq!(idtx_sign_ctx(&[0i32; 16], &hi, 1, 1, 4), 0);
+    }
+
+    #[test]
+    fn idtx_sign_ctx_skips_missing_edge_neighbours() {
+        let zl = [0u32; 16];
+        // (0,0): no left, above, or above-left -> signc 0 -> ctx 0.
+        let q = [1i32; 16];
+        assert_eq!(idtx_sign_ctx(&q, &zl, 0, 0, 4), 0);
+        // (0,1): only left q[0]; no above / above-left (row 0).
+        let only_left = [1i32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        assert_eq!(idtx_sign_ctx(&only_left, &zl, 0, 1, 4), 1);
+        // (1,0): only above q[0]; no left / above-left (col 0).
+        let only_above = [1i32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        assert_eq!(idtx_sign_ctx(&only_above, &zl, 1, 0, 4), 1);
+    }
+
+    #[test]
+    fn idtx_sign_ctx_is_total_for_short_slices_and_pathological_geometry() {
+        // Short slices: out-of-range neighbour/level reads contribute 0, no panic.
+        let q = [1i32, 1];
+        let l = [9u32];
+        let _ = idtx_sign_ctx(&q, &l, 1, 1, 4);
+        // Pathological geometry must not panic (saturating flat index).
+        let _ = idtx_sign_ctx(&q, &l, usize::MAX, usize::MAX, usize::MAX);
     }
 }
