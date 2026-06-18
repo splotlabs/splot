@@ -163,9 +163,8 @@ impl TileCoeffContextState {
         }
         let line_entries = checked_add_usize("mi_rows + mi_cols", mi_rows, mi_cols)?;
         let plane_entries = checked_mul_usize("line_entries * planes", line_entries, PLANE_COUNT)?;
-        let level_entries =
-            checked_mul_usize("plane_entries * level-line sides", plane_entries, 2)?;
-        let dc_entries = checked_mul_usize("plane_entries * dc-line sides", plane_entries, 2)?;
+        let level_entries = plane_entries;
+        let dc_entries = plane_entries;
         let total_entries =
             checked_add_usize("level_entries + dc_entries", level_entries, dc_entries)?;
         Ok(TileCoeffContextAllocation {
@@ -345,7 +344,7 @@ pub(crate) struct CoeffContextUpdate {
     pub(crate) w4: usize,
     /// Transform-block height in 4x4 units.
     pub(crate) h4: usize,
-    /// `culLevel` written into level context lines.
+    /// Caller-clamped `culLevel` written into level context lines.
     pub(crate) cul_level: u32,
     /// `dcCategory` written into DC-context lines.
     pub(crate) dc_category: u8,
@@ -682,7 +681,7 @@ mod tests {
         let context = TileCoeffContextState::allocation(6, 8).unwrap();
         assert_eq!(context.above_len(), 8);
         assert_eq!(context.left_len(), 6);
-        assert_eq!(context.total_entries(), 3 * (6 + 8) * 4);
+        assert_eq!(context.total_entries(), 3 * (6 + 8) * 2);
     }
 
     #[test]
