@@ -9,7 +9,7 @@
 //! counterpart of [`super::block_context`] (which derives the block-mode
 //! contexts).
 //!
-//! Feature tracking: `DECODE-COEFF-BASE-POSITION-CONTEXT`.
+//! Feature tracking: `DECODE-TILE-CDF-SELECTION-BOUNDARY`.
 //!
 //! Scope: the two **position-only** coefficient base contexts — `coeff_base_eob`
 //! (the end-of-block base context, keyed on the scan position relative to the
