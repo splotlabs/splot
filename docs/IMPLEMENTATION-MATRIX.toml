@@ -9792,6 +9792,61 @@ fixtures = [
 diagnostics = ["decode/unsupported-feature"]
 
 [[feature]]
+id = "DECODE-COEFF-NONZERO-CONTEXT-COMMIT"
+name = "Coefficient nonzero context commit"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.20.7.27", "5.20.7.28", "8.2.5"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-28",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-2-5",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_pass.rs"
+openspec_change = "coeff-nonzero-context-commit"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Adds a crate-private loaded-but-unwired ordinary non-FSC nonzero coefficient-pass context-commit boundary for AV2 §5.20.7.27. `apply_nonzero_coeff_ordinary_pass_with_context_commit` wraps the derived-base/derived-sign ordinary pass, then commits the pass result's final quant-state `culLevel` and `dcCategory` to `TileCoeffContextState::update_after_coeffs` using caller-resolved plane and transform-block 4x4 geometry. It returns the ordinary pass result so later dequant/reconstruction handoff can consume the final local `Quant[]` block. Tests cover successful above/left level and DC context writes, ordinary-pass failure preserving tile context state, and invalid context-update facts preserving pre-existing context lines after the ordinary pass succeeds. This feature remains partial: runtime `coeffs()` does not call this wrapper, scan, geometry, plane, transform-class, parity, TCQ, lossless, and DC context facts are still caller-resolved, and dequantization, inverse transform, residual add, reconstruction, reference refresh, AVM/dav2d invocation, public APIs, and broad `decode_block()` / `decode_tile()` support remain unimplemented."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "partial"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_pass_tests.rs::coefficient_ordinary_pass_with_context_commit_updates_tile_context_lines",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_pass_tests.rs::coefficient_ordinary_pass_with_context_commit_preserves_context_on_pass_failure",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_pass_tests.rs::coefficient_ordinary_pass_with_context_commit_preserves_context_on_update_failure",
+]
+commands = [
+    "cargo test -p splot-decode ordinary_pass --locked",
+    "cargo test -p splot-decode coeff_loop --locked",
+    "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-decoder-conformance-coverage",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_pass.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_pass_tests.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/base_level_pass.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/quant_pass.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/quant_state.rs",
+    "crates/splot-decode/src/tile_payload/coeff_state.rs",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
 id = "DECODE-TILE-CDF-SAVE-LIFECYCLE-BOUNDARY"
 name = "Tile CDF save lifecycle boundary"
 category = "infrastructure"

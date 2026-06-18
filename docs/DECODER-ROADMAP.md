@@ -214,9 +214,13 @@ deriving second-pass plane/transform-class facts from the same config.
 inputs from that derived-base path: it derives sign sources from the first-pass
 `Level[]`, `isHidden`, `sumAbs1`, plane, transform class, and DC context-line
 facts before the interleaved sign/quant stage.
+`DECODE-COEFF-NONZERO-CONTEXT-COMMIT` now wraps that derived-base/derived-sign
+ordinary pass with the § 5.20.7.27 end-of-`coeffs()` tile context update,
+committing the pass result's final `culLevel` and `dcCategory` to the
+above/left level and DC context lines through `TileCoeffContextState`.
 The minimal trace uses the handoff only for the existing luma and V all-zero
 applications. Runtime integration of nonzero coefficient blocks, tile context
-writes for nonzero blocks, dequantization, and
+fact derivation for nonzero blocks, dequantization, and
 reconstruction remain unsupported. The
 § 7.14.4
 `useQm` / `UserQm` gating and `shift` derivation, the rest
