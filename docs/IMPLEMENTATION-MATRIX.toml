@@ -8346,7 +8346,7 @@ openspec_change = "tile-coeff-state-buffers"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Adds crate-private `splot-decode` tile coefficient state buffers in `tile_payload/coeff_state.rs`. `TransformCoeffBlockState` owns zero-initialized row-major §5.20.7.27 `Level[]` (`u32`) and `QuantSign[]` (`i32`) arrays for caller-resolved adjusted transform extents capped at 32x32, with checked row/column accessors and fallible allocation. `TileCoeffContextState` owns three-plane `AboveLevelContext`, `LeftLevelContext`, `AboveDcContext`, and `LeftDcContext` lines sized by tile MI columns/rows, exposes checked slices that can feed the existing §8.3.2 coefficient-context functions, applies the §5.20.7.27 end-of-`coeffs()` above/left level/DC context writes, and applies one plane of the §5.20.4.1 `reset_block_context` level/DC reset with validated subsampling shifts and checked coordinate arithmetic. The state is now read by `DECODE-COEFF-ALL-ZERO-CONTEXT-STATE`, but it is not yet wired into a real coefficient symbol loop, so decode output is unchanged. This feature remains partial: it does not read EOB or coefficient symbols, fill `Quant[]`, implement `read_quant`, dequantize, run inverse transforms, add residuals, reconstruct pixels, widen hash/raw/Y4M output, refresh references, invoke AVM/dav2d, add public APIs, or claim broad `decode_tile()` or `decode_block()` support."
+notes = "Adds crate-private `splot-decode` tile coefficient state buffers in `tile_payload/coeff_state.rs`. `TransformCoeffBlockState` owns zero-initialized row-major §5.20.7.27 `Level[]` (`u32`), `QuantSign[]` (`i32`), and `Quant[]` (`i32`) arrays for caller-resolved adjusted transform extents capped at 32x32, with checked row/column accessors and fallible allocation. `TileCoeffContextState` owns three-plane `AboveLevelContext`, `LeftLevelContext`, `AboveDcContext`, and `LeftDcContext` lines sized by tile MI columns/rows, exposes checked slices that can feed the existing §8.3.2 coefficient-context functions, applies the §5.20.7.27 end-of-`coeffs()` above/left level/DC context writes, and applies one plane of the §5.20.4.1 `reset_block_context` level/DC reset with validated subsampling shifts and checked coordinate arithmetic. The state is now read by `DECODE-COEFF-ALL-ZERO-CONTEXT-STATE`, but it is not yet wired into a real coefficient symbol loop, so decode output is unchanged. This feature remains partial: it does not read EOB or coefficient symbols, fill nonzero `Quant[]`, implement `read_quant`, dequantize, run inverse transforms, add residuals, reconstruct pixels, widen hash/raw/Y4M output, refresh references, invoke AVM/dav2d, add public APIs, or claim broad `decode_tile()` or `decode_block()` support."
 
 [feature.status]
 mapped = "done"
@@ -8401,7 +8401,7 @@ openspec_change = "coeff-all-zero-context-state"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Adds crate-private `splot-decode` state-backed `all_zero` context handoff in `tile_payload/coeff_loop.rs`. `luma_all_zero_context` reads `TileCoeffContextState` above/left luma level context slices, OR-reduces the caller-resolved transform range, and feeds those reductions into the existing §8.3.2 `txb_skip` context formula. `v_all_zero_context` reads V-plane above/left level and DC context slices, derives above/left nonzero facts, and feeds the existing §8.3.2 `v_txb_skip` context formula. Reductions are bounded by owned slice tails, so out-of-range starts and pathological caller counts cannot panic or spin. The minimal flat-intra block-symbol trace now allocates zeroed `TileCoeffContextState` from the tile work-unit MI ranges and derives the same luma and V contexts from state that were previously supplied as literal first-block reductions; output is unchanged. This feature remains partial: transform geometry, FSC, and `EobU` are still caller-resolved minimal-tier facts, the U-plane `txb_skip` branch is not modeled, and no EOB decode, coefficient scan walk, `Quant[]`, `read_quant`, dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public API, AVM/dav2d invocation, broad `decode_block()`, or broad `decode_tile()` support is claimed."
+notes = "Adds crate-private `splot-decode` state-backed `all_zero` context handoff in `tile_payload/coeff_loop.rs`. `luma_all_zero_context` reads `TileCoeffContextState` above/left luma level context slices, OR-reduces the caller-resolved transform range, and feeds those reductions into the existing §8.3.2 `txb_skip` context formula. `v_all_zero_context` reads V-plane above/left level and DC context slices, derives above/left nonzero facts, and feeds the existing §8.3.2 `v_txb_skip` context formula. Reductions are bounded by owned slice tails, so out-of-range starts and pathological caller counts cannot panic or spin. The minimal flat-intra block-symbol trace now allocates zeroed `TileCoeffContextState` from the tile work-unit MI ranges and derives the same luma and V contexts from state that were previously supplied as literal first-block reductions; output is unchanged. This feature remains partial: transform geometry, FSC, and `EobU` are still caller-resolved minimal-tier facts, the U-plane `txb_skip` branch is not modeled, and no nonzero EOB decode, coefficient scan walk, nonzero `Quant[]`, `read_quant`, dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public API, AVM/dav2d invocation, broad `decode_block()`, or broad `decode_tile()` support is claimed."
 
 [feature.status]
 mapped = "done"
@@ -8435,6 +8435,64 @@ commands = [
 ]
 fixtures = [
     "crates/splot-decode/src/tile_payload.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop.rs",
+    "crates/splot-decode/src/tile_payload/block_symbol.rs",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
+id = "DECODE-COEFF-ALL-ZERO-BLOCK-STATE"
+name = "Coefficient all_zero block state handoff"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.20.7.27", "8.3.2"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/tile_payload/coeff_loop.rs"
+openspec_change = "coeff-all-zero-block-state"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Adds crate-private `splot-decode` state application for the AV2 §5.20.7.27 `all_zero == 1` coefficient-block branch in `tile_payload/coeff_loop.rs`, plus `Quant[]` storage in `tile_payload/coeff_state.rs`. `TransformCoeffBlockState` now owns zero-initialized row-major `Level[]`, `QuantSign[]`, and `Quant[]` arrays for caller-resolved adjusted extents capped at 32x32. `apply_all_zero_coeff_block` derives the adjusted coefficient extent from caller-resolved 4x4 transform dimensions, initializes zero local coefficient state, returns `eob == 0`, `culLevel == 0`, and `dcCategory == 0`, and applies zero above/left level/DC context writes through `TileCoeffContextState`; malformed extents or context ranges fail with typed state errors before mutating the tile context. The minimal flat-intra block-symbol trace now applies those all-zero state effects after the existing luma `txb_skip` and V `v_txb_skip` all-zero symbol reads; output is unchanged. This feature remains partial: nonzero EOB decode, coefficient scan walk, coefficient base/br/sign reads, nonzero `Quant[]`, `read_quant`, dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public API, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` support remain unimplemented."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/tile_payload/coeff_state.rs::tests::transform_block_state_is_zero_initialized_and_row_major",
+    "crates/splot-decode/src/tile_payload/coeff_state.rs::tests::transform_block_state_rejects_invalid_extents_and_coordinates",
+    "crates/splot-decode/src/tile_payload/coeff_loop.rs::tests::all_zero_coeff_block_applies_zero_state_and_context_writes",
+    "crates/splot-decode/src/tile_payload/coeff_loop.rs::tests::all_zero_coeff_block_rejects_bad_ranges_without_mutation",
+    "crates/splot-decode/src/tile_payload/coeff_loop.rs::tests::all_zero_coeff_block_rejects_zero_transform_extent_before_mutation",
+    "crates/splot-decode/src/tile_payload/coeff_loop.rs::tests::all_zero_coeff_block_saturates_adjusted_extent_to_spec_cap",
+    "crates/splot-decode/src/tile_payload/block_symbol.rs::tests::traced_symbol_mismatch_fails_closed_and_rolls_back_cdfs",
+    "crates/splot-decode/src/tile_payload/runtime_frontier.rs::tests::block_symbol_frontier_accepts_minimal_fixture_trace",
+]
+commands = [
+    "cargo test -p splot-decode coeff_state --locked",
+    "cargo test -p splot-decode coeff_loop --locked",
+    "cargo test -p splot-decode tile_payload::block_symbol --locked",
+    "cargo test -p splot-decode tile_payload --locked",
+    "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-decode/src/tile_payload.rs",
+    "crates/splot-decode/src/tile_payload/coeff_state.rs",
     "crates/splot-decode/src/tile_payload/coeff_loop.rs",
     "crates/splot-decode/src/tile_payload/block_symbol.rs",
 ]

@@ -129,14 +129,18 @@ also has crate-private tile coefficient state buffers
 lines, with checked end-of-`coeffs()` context updates and block-context resets.
 Those buffers now feed the minimal trace's luma and V-plane `all_zero` context
 handoff (`DECODE-COEFF-ALL-ZERO-CONTEXT-STATE`), replacing literal first-block
-level/DC reductions with state-backed reads while keeping output unchanged. They
-are still not read by a real coefficient symbol loop. The § 7.14.4
+level/DC reductions with state-backed reads while keeping output unchanged. The
+minimal trace also applies the § 5.20.7.27 all-zero coefficient block state
+effects (`DECODE-COEFF-ALL-ZERO-BLOCK-STATE`): zero `Level[]`, `QuantSign[]`,
+and `Quant[]` state, `eob == 0`, and zero above/left level/DC context writes for
+the traced luma and V all-zero branches. They are still not read by a real
+coefficient symbol loop. The § 7.14.4
 `useQm` / `UserQm` gating and `shift` derivation, the rest
 of the § 7.14.3 reconstruct process, the § 7.15.3 secondary transform, the
 § 7.15.4 DPCM-direction selection and combined transform-parameter resolve helper,
 the § 5.20.7.29 `compute_tx_type` transform-type computation that produces
 `PlaneTxType`, and the coefficient
-entropy decode that produces `Quant` remain unimplemented.
+entropy decode that produces nonzero `Quant` remain unimplemented.
 `splot-recon` remains scheduler-free:
 future decoder code must partition and schedule parallel work from
 `splot-decode`, then call deterministic reconstruction primitives.

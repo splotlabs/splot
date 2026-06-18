@@ -3,7 +3,8 @@
 
 //! AV2 tile-local coefficient context state.
 //!
-//! Feature tracking: `DECODE-TILE-COEFF-STATE-BUFFERS`.
+//! Feature tracking: `DECODE-TILE-COEFF-STATE-BUFFERS`,
+//! `DECODE-COEFF-ALL-ZERO-BLOCK-STATE`.
 
 use std::collections::TryReserveError;
 
@@ -13,7 +14,7 @@ const MAX_ADJUSTED_TX_EXTENT: usize = 32;
 /// Transform-block-local coefficient state for AV2 § 5.20.7.27 `coeffs()`.
 ///
 /// The arrays are row-major, `width` wide, and sized to the adjusted transform
-/// block extent used by `Level[]` / `QuantSign[]` in
+/// block extent used by `Level[]`, `QuantSign[]`, and `Quant[]` in
 /// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TransformCoeffBlockState {
@@ -21,6 +22,7 @@ pub(crate) struct TransformCoeffBlockState {
     height: usize,
     level: Vec<u32>,
     quant_sign: Vec<i32>,
+    quant: Vec<i32>,
 }
 
 impl TransformCoeffBlockState {
@@ -43,6 +45,7 @@ impl TransformCoeffBlockState {
             height,
             level: zeroed_u32_vec(allocation.coeff_count)?,
             quant_sign: zeroed_i32_vec(allocation.coeff_count)?,
+            quant: zeroed_i32_vec(allocation.coeff_count)?,
         })
     }
 
@@ -70,6 +73,12 @@ impl TransformCoeffBlockState {
         &self.quant_sign
     }
 
+    /// Row-major `Quant[]` coefficient slice, indexed by raster position.
+    #[must_use]
+    pub(crate) fn quant(&self) -> &[i32] {
+        &self.quant
+    }
+
     /// Writes one `Level[row][col]` magnitude.
     pub(crate) fn set_level(
         &mut self,
@@ -94,6 +103,13 @@ impl TransformCoeffBlockState {
         Ok(())
     }
 
+    /// Writes one `Quant[pos]` coefficient value.
+    pub(crate) fn set_quant(&mut self, pos: usize, value: i32) -> Result<(), TileCoeffStateError> {
+        let idx = self.quant_index(pos)?;
+        self.quant[idx] = value;
+        Ok(())
+    }
+
     /// Reads one `Level[row][col]` magnitude.
     pub(crate) fn level_at(&self, row: usize, col: usize) -> Result<u32, TileCoeffStateError> {
         Ok(self.level[self.index(row, col)?])
@@ -102,6 +118,11 @@ impl TransformCoeffBlockState {
     /// Reads one `QuantSign[row][col]` sign value.
     pub(crate) fn quant_sign_at(&self, row: usize, col: usize) -> Result<i32, TileCoeffStateError> {
         Ok(self.quant_sign[self.index(row, col)?])
+    }
+
+    /// Reads one `Quant[pos]` coefficient value.
+    pub(crate) fn quant_at(&self, pos: usize) -> Result<i32, TileCoeffStateError> {
+        Ok(self.quant[self.quant_index(pos)?])
     }
 
     fn index(&self, row: usize, col: usize) -> Result<usize, TileCoeffStateError> {
@@ -120,6 +141,16 @@ impl TransformCoeffBlockState {
                 left: row,
                 right: self.width,
             })
+    }
+
+    fn quant_index(&self, pos: usize) -> Result<usize, TileCoeffStateError> {
+        if pos >= self.quant.len() {
+            return Err(TileCoeffStateError::QuantPositionOutOfBounds {
+                pos,
+                len: self.quant.len(),
+            });
+        }
+        Ok(pos)
     }
 }
 
@@ -455,6 +486,14 @@ pub(crate) enum TileCoeffStateError {
         /// Local block width.
         width: usize,
     },
+    /// A flat `Quant[]` coefficient position exceeded the local block array.
+    #[error("coefficient Quant position {pos} exceeds adjusted block coefficient count {len}")]
+    QuantPositionOutOfBounds {
+        /// Rejected coefficient position.
+        pos: usize,
+        /// Local block coefficient count.
+        len: usize,
+    },
     /// Subsampling shift was not a valid AV2 4:2:0/4:4:4 shift.
     #[error("invalid coefficient context subsampling {axis} shift {value}")]
     InvalidSubsampling {
@@ -634,14 +673,18 @@ mod tests {
         assert_eq!(state.height(), 3);
         assert_eq!(state.level(), &[0; 12]);
         assert_eq!(state.quant_sign(), &[0; 12]);
+        assert_eq!(state.quant(), &[0; 12]);
 
         state.set_level(2, 1, 7).unwrap();
         state.set_quant_sign(2, 1, -1).unwrap();
+        state.set_quant(9, -12).unwrap();
 
         assert_eq!(state.level_at(2, 1).unwrap(), 7);
         assert_eq!(state.quant_sign_at(2, 1).unwrap(), -1);
+        assert_eq!(state.quant_at(9).unwrap(), -12);
         assert_eq!(state.level()[9], 7);
         assert_eq!(state.quant_sign()[9], -1);
+        assert_eq!(state.quant()[9], -12);
     }
 
     #[test]
@@ -670,6 +713,10 @@ mod tests {
                 height: 4,
                 width: 4
             }
+        ));
+        assert!(matches!(
+            state.quant_at(16).unwrap_err(),
+            TileCoeffStateError::QuantPositionOutOfBounds { pos: 16, len: 16 }
         ));
     }
 
