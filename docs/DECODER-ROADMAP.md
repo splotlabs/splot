@@ -210,6 +210,10 @@ eob>=5 hidden-parity first pass consumes it for the final DC coefficient.
 ordinary coefficient pass, carrying first-pass `isHidden`, `sumAbs1`, and
 `useTcq` into the interleaved sign/`read_quant`/signed `Quant[]` stage and
 deriving second-pass plane/transform-class facts from the same config.
+`DECODE-COEFF-ORDINARY-DERIVED-SIGN-PASS` now removes caller-supplied sign
+inputs from that derived-base path: it derives sign sources from the first-pass
+`Level[]`, `isHidden`, `sumAbs1`, plane, transform class, and DC context-line
+facts before the interleaved sign/quant stage.
 The minimal trace uses the handoff only for the existing luma and V all-zero
 applications. Runtime integration of nonzero coefficient blocks, tile context
 writes for nonzero blocks, dequantization, and

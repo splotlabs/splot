@@ -20,8 +20,8 @@ use super::branch::{CoeffBlockEobBranch, NonZeroCoeffBlockStart, NonZeroCoeffBlo
 use super::level_state::apply_nonzero_coeff_base_levels;
 use super::max_level::CoeffTransformClass;
 use super::ordinary_pass::{
-    CoeffOrdinaryDerivedBasePassInput, CoeffOrdinaryPassError, CoeffOrdinaryPassInput,
-    NonZeroCoeffOrdinaryDerivedBasePass, NonZeroCoeffOrdinaryPass,
+    CoeffOrdinaryDerivedBasePassInput, CoeffOrdinaryDerivedSignPassConfig, CoeffOrdinaryPassError,
+    CoeffOrdinaryPassInput, NonZeroCoeffOrdinaryDerivedBasePass, NonZeroCoeffOrdinaryPass,
     apply_nonzero_coeff_ordinary_pass, apply_nonzero_coeff_ordinary_pass_with_derived_base,
 };
 use super::quant_pass::{
@@ -31,13 +31,17 @@ use super::quant_pass::{
 use super::scan_walk::{NonZeroCoeffScanWalk, walk_nonzero_coeff_scan};
 use super::sign_symbol::{
     CoeffDcSignSelector, CoeffSignCdfSyntax, CoeffSignRead, CoeffSignReadInput,
-    CoeffSignReadSource, read_nonzero_coeff_signs,
+    CoeffSignReadSource, CoeffSignSourceDeriveConfig, derive_nonzero_coeff_sign_inputs,
+    read_nonzero_coeff_signs,
 };
 use super::*;
 
 const BASE_LEVELS: u32 = 2;
 const SCAN: [u16; 4] = [0, 8, 1, 9];
+const DC_ONLY_SCAN: [u16; 1] = [0];
 const DC_LAST_HIDDEN_SCAN: [u16; 5] = [0, 1, 8, 9, 2];
+static ABOVE_DC_CONTEXT: [u8; 4] = [0; 4];
+static LEFT_DC_CONTEXT: [u8; 4] = [0; 4];
 const PAYLOAD_SUFFIXES: [[u8; 3]; 4] = [
     [0x00, 0x00, 0x80],
     [0xff, 0x00, 0x80],
@@ -226,6 +230,26 @@ fn luma_base_config(parity_hiding: bool, use_tcq: bool) -> CoeffBaseDerivedLevel
     }
 }
 
+fn luma_sign_config() -> CoeffOrdinaryDerivedSignPassConfig<'static> {
+    CoeffOrdinaryDerivedSignPassConfig {
+        coeff_cdf_q_ctx: 0,
+        plane_type: 0,
+        above_dc: &ABOVE_DC_CONTEXT,
+        left_dc: &LEFT_DC_CONTEXT,
+        x4: 0,
+        y4: 0,
+        w4: 2,
+        h4: 2,
+    }
+}
+
+fn invalid_plane_type_sign_config() -> CoeffOrdinaryDerivedSignPassConfig<'static> {
+    CoeffOrdinaryDerivedSignPassConfig {
+        plane_type: usize::MAX,
+        ..luma_sign_config()
+    }
+}
+
 fn quant_config() -> CoeffQuantPassConfig {
     CoeffQuantPassConfig {
         is_hidden: false,
@@ -298,8 +322,7 @@ fn derived_pass_for_payload(
     config: CoeffBaseDerivedLevelPassConfig,
     lossless: bool,
 ) -> Option<NonZeroCoeffOrdinaryDerivedBasePass> {
-    let (mut tile, mut symbols, start, walk) = setup_start_and_walk(payload, scan)?;
-    let sign_inputs = sign_bit_inputs_for(&walk);
+    let (mut tile, mut symbols, start, _walk) = setup_start_and_walk(payload, scan)?;
     apply_nonzero_coeff_ordinary_pass_with_derived_base(
         &mut tile,
         &mut symbols,
@@ -307,7 +330,7 @@ fn derived_pass_for_payload(
             start,
             scan,
             base_config: config,
-            sign_inputs: &sign_inputs,
+            sign_config: luma_sign_config(),
             lossless,
         },
     )
@@ -333,6 +356,33 @@ fn find_derived_payload(
         }
     }
     panic!("no ordinary derived-base coefficient pass payload found");
+}
+
+fn derived_sign_inputs_for_first_pass(
+    derived_first_pass: &NonZeroCoeffBaseDerivedLevelPass,
+    base_config: CoeffBaseDerivedLevelPassConfig,
+    sign_config: CoeffOrdinaryDerivedSignPassConfig<'_>,
+) -> Vec<CoeffSignReadInput> {
+    let first_pass = derived_first_pass.first_pass();
+    derive_nonzero_coeff_sign_inputs(
+        derived_first_pass.block(),
+        derived_first_pass.walk(),
+        CoeffSignSourceDeriveConfig {
+            coeff_cdf_q_ctx: sign_config.coeff_cdf_q_ctx,
+            plane: base_config.plane,
+            plane_type: sign_config.plane_type,
+            tx_class: base_config.tx_class,
+            is_hidden: first_pass.is_hidden(),
+            sum_abs1: first_pass.sum_abs1(),
+            above_dc: sign_config.above_dc,
+            left_dc: sign_config.left_dc,
+            x4: sign_config.x4,
+            y4: sign_config.y4,
+            w4: sign_config.w4,
+            h4: sign_config.h4,
+        },
+    )
+    .unwrap()
 }
 
 fn explicit_pass_from_derived(
@@ -376,6 +426,23 @@ fn after_base_prefix(
     let (mut tile, mut symbols, start) = setup_start(payload).unwrap();
     let walk = walk_nonzero_coeff_scan(&start, &SCAN).unwrap();
     read_nonzero_coeff_base_symbols(&mut tile, &mut symbols, &walk, base_inputs).unwrap();
+    (tile, symbols.consumed_bits(), symbols.symbol_count())
+}
+
+fn after_derived_base_prefix(
+    payload: &[u8],
+    scan: &[u16],
+    config: CoeffBaseDerivedLevelPassConfig,
+) -> (TileCdfSubset, SymbolBitPosition, u64) {
+    let (mut tile, mut symbols, start, walk) = setup_start_and_walk(payload, scan).unwrap();
+    super::base_level_pass::apply_nonzero_coeff_base_derived_level_pass(
+        &mut tile,
+        &mut symbols,
+        start,
+        walk,
+        config,
+    )
+    .unwrap();
     (tile, symbols.consumed_bits(), symbols.symbol_count())
 }
 
@@ -594,11 +661,12 @@ fn coefficient_ordinary_pass_stops_after_sign_preflight_failure() {
 #[test]
 fn coefficient_ordinary_pass_with_derived_base_matches_explicit_inputs() {
     let config = luma_base_config(false, false);
+    let sign_config = luma_sign_config();
     let payload = find_derived_payload(&SCAN, config, |pass| {
         pass.block().quant().iter().any(|quant| *quant != 0)
     });
     let derived_first_pass = derived_first_pass_for_payload(&payload, &SCAN, config).unwrap();
-    let sign_inputs = sign_bit_inputs_for(derived_first_pass.walk());
+    let sign_inputs = derived_sign_inputs_for_first_pass(&derived_first_pass, config, sign_config);
     let explicit = explicit_pass_from_derived(
         &payload,
         &SCAN,
@@ -615,7 +683,7 @@ fn coefficient_ordinary_pass_with_derived_base_matches_explicit_inputs() {
             start,
             scan: &SCAN,
             base_config: config,
-            sign_inputs: &sign_inputs,
+            sign_config,
             lossless: false,
         },
     )
@@ -627,6 +695,7 @@ fn coefficient_ordinary_pass_with_derived_base_matches_explicit_inputs() {
         derived.derived_base_inputs(),
         derived_first_pass.derived_inputs()
     );
+    assert_eq!(derived.derived_sign_inputs(), sign_inputs);
     assert_eq!(derived.base_reads(), explicit.base_reads());
     assert_eq!(derived.sign_reads(), explicit.sign_reads());
     assert_eq!(derived.quant_pass(), explicit.quant_pass());
@@ -638,10 +707,21 @@ fn coefficient_ordinary_pass_with_derived_base_feeds_hidden_summary_to_quant() {
     let config = luma_base_config(true, false);
     let payload = find_derived_payload(&DC_LAST_HIDDEN_SCAN, config, |pass| {
         let first_pass = pass.base_level_pass().first_pass();
-        first_pass.is_hidden() && first_pass.sum_abs1() > 0
+        first_pass.is_hidden()
+            && first_pass.sum_abs1() > 0
+            && pass
+                .derived_sign_inputs()
+                .iter()
+                .any(|input| input.entry.scan_index() == 0)
     });
     let pass = derived_pass_for_payload(&payload, &DC_LAST_HIDDEN_SCAN, config, false).unwrap();
     let first_pass = pass.base_level_pass().first_pass();
+    let dc_sign_input = pass
+        .derived_sign_inputs()
+        .iter()
+        .find(|input| input.entry.scan_index() == 0)
+        .copied()
+        .unwrap();
     let dc_write = pass
         .quant_pass()
         .quant_state()
@@ -653,6 +733,13 @@ fn coefficient_ordinary_pass_with_derived_base_feeds_hidden_summary_to_quant() {
 
     assert!(first_pass.is_hidden());
     assert!(first_pass.sum_abs1() > 0);
+    assert!(matches!(
+        dc_sign_input.source,
+        CoeffSignReadSource::Cdf {
+            syntax: CoeffSignCdfSyntax::DcSign,
+            ..
+        }
+    ));
     assert_eq!(
         dc_write.quant().unsigned_abs(),
         dc_write.read_quant() * 2 + first_pass.sum_abs1()
@@ -662,8 +749,7 @@ fn coefficient_ordinary_pass_with_derived_base_feeds_hidden_summary_to_quant() {
 #[test]
 fn coefficient_ordinary_pass_with_derived_base_rejects_first_pass_config_before_consumption() {
     let payload = find_payload();
-    let (mut tile, mut symbols, start, walk) = setup_start_and_walk(&payload, &SCAN).unwrap();
-    let sign_inputs = sign_bit_inputs_for(&walk);
+    let (mut tile, mut symbols, start, _walk) = setup_start_and_walk(&payload, &SCAN).unwrap();
     let tile_before = tile.clone();
     let consumed_before = symbols.consumed_bits();
     let symbol_count_before = symbols.symbol_count();
@@ -675,7 +761,7 @@ fn coefficient_ordinary_pass_with_derived_base_rejects_first_pass_config_before_
             start,
             scan: &SCAN,
             base_config: luma_base_config(true, true),
-            sign_inputs: &sign_inputs,
+            sign_config: luma_sign_config(),
             lossless: false,
         },
     )
@@ -690,4 +776,43 @@ fn coefficient_ordinary_pass_with_derived_base_rejects_first_pass_config_before_
     assert_eq!(tile, tile_before);
     assert_eq!(symbols.consumed_bits(), consumed_before);
     assert_eq!(symbols.symbol_count(), symbol_count_before);
+}
+
+#[test]
+fn coefficient_ordinary_pass_with_derived_sign_rejects_bad_selector_before_quant() {
+    let config = luma_base_config(false, false);
+    let payload = find_derived_payload(&DC_ONLY_SCAN, config, |pass| {
+        pass.derived_sign_inputs().iter().any(|input| {
+            input.entry.scan_index() == 0
+                && matches!(
+                    input.source,
+                    CoeffSignReadSource::Cdf {
+                        syntax: CoeffSignCdfSyntax::DcSign,
+                        ..
+                    }
+                )
+        })
+    });
+    let (tile_after_first_pass, consumed_after_first_pass, symbols_after_first_pass) =
+        after_derived_base_prefix(&payload, &DC_ONLY_SCAN, config);
+    let (mut tile, mut symbols, start, _walk) =
+        setup_start_and_walk(&payload, &DC_ONLY_SCAN).unwrap();
+
+    let err = apply_nonzero_coeff_ordinary_pass_with_derived_base(
+        &mut tile,
+        &mut symbols,
+        CoeffOrdinaryDerivedBasePassInput {
+            start,
+            scan: &DC_ONLY_SCAN,
+            base_config: config,
+            sign_config: invalid_plane_type_sign_config(),
+            lossless: false,
+        },
+    )
+    .unwrap_err();
+
+    assert!(matches!(err, CoeffOrdinaryPassError::Sign(_)));
+    assert_eq!(tile, tile_after_first_pass);
+    assert_eq!(symbols.consumed_bits(), consumed_after_first_pass);
+    assert_eq!(symbols.symbol_count(), symbols_after_first_pass);
 }
