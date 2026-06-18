@@ -143,9 +143,11 @@ and packed `eob_extra_bit` refinements before calling that value helper. That
 reader now has a caller-fact derivation helper
 (`DECODE-COEFF-EOB-SIZE-CONTEXT`) that maps caller-resolved
 `Tx_Width_Log2[txSz]` / `Tx_Height_Log2[txSz]` values to the `eob_pt_*` family
-and derives `eobCtx = (plane > 0) ? 2 : is_inter`. It is still not wired into the
-runtime coefficient loop, and no scan walk or base/br/sign coefficient symbols
-are read yet. The § 7.14.4
+and derives `eobCtx = (plane > 0) ? 2 : is_inter`, plus a derived EOB reader
+(`DECODE-COEFF-EOB-DERIVED-SYMBOL-READ`) that composes those caller facts with
+the symbol-read sequence. It is still not wired into the runtime coefficient
+loop, and no scan walk or base/br/sign coefficient symbols are read yet. The
+§ 7.14.4
 `useQm` / `UserQm` gating and `shift` derivation, the rest
 of the § 7.14.3 reconstruct process, the § 7.15.3 secondary transform, the
 § 7.15.4 DPCM-direction selection and combined transform-parameter resolve helper,
