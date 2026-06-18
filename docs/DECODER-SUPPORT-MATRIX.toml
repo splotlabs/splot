@@ -814,6 +814,20 @@ local_reference_evidence = []
 notes = "Adds crate-private loaded-but-unwired ordinary coefficient branch handoff from caller-resolved `PlaneTxType` to the existing state-backed ordinary branch. `apply_coeff_ordinary_branch_from_plane_tx_type` preserves the all-zero branch without requiring transform-type facts, derives AV2 §8.3.2 `txClass` for nonzero branches with the decode-local helper, then delegates to `apply_coeff_ordinary_branch`. This row remains partial: it does not implement §5.20.7.29 `compute_tx_type`, derive scan order, call runtime `coeffs()`, derive selectors from real syntax, dequantize, inverse transform, residual add, reconstruct, output, refresh references, invoke AVM/dav2d, expose public APIs, or claim broad `decode_block()` or `decode_tile()` support."
 
 [[row]]
+id = "coeff-ordinary-branch-plane-type-handoff"
+name = "Coefficient ordinary branch plane-type handoff"
+feature_id = "DECODE-COEFF-ORDINARY-BRANCH-PLANE-TYPE-HANDOFF"
+spec_sections = ["5.20.7.27"]
+parser_source = "docs/spec/av2/1.0.0/05-syntax-structures.md"
+decode_module = "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_pass.rs"
+tier = "tier1-intra"
+status = "partial"
+self_contained_tests = ["crates/splot-decode/src/tile_payload/coeff_loop/ordinary_state_context_tests.rs::coefficient_ordinary_branch_plane_type_nonzero_matches_explicit_plane_type", "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_state_context_tests.rs::coefficient_ordinary_branch_plane_type_all_zero_preserves_direct_branch", "cargo test -p splot-decode ordinary_state_context --locked", "cargo test -p splot-decode ordinary_pass --locked", "cargo test -p splot-decode coeff_loop --locked", "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings", "cargo xtask check-decoder-support", "cargo xtask check-decoder-conformance-coverage", "cargo xtask check-feature-status"]
+diagnostics = ["decode/unsupported-feature"]
+local_reference_evidence = []
+notes = "Adds crate-private loaded-but-unwired ordinary coefficient branch handoff from caller-resolved `plane` to the existing `PlaneTxType` state-backed ordinary branch. `apply_coeff_ordinary_branch_from_plane_type` preserves the all-zero branch without requiring nonzero state-context facts, derives AV2 §5.20.7.27 `ptype = plane > 0` for nonzero branches, then delegates to `apply_coeff_ordinary_branch_from_plane_tx_type`. This row remains partial: it does not implement §5.20.7.29 `compute_tx_type`, derive scan order, call runtime `coeffs()`, derive selectors from real syntax, dequantize, inverse transform, residual add, reconstruct, output, refresh references, invoke AVM/dav2d, expose public APIs, or claim broad `decode_block()` or `decode_tile()` support."
+
+[[row]]
 id = "coeff-base-derived-level-pass"
 name = "Coefficient base derived level pass"
 feature_id = "DECODE-COEFF-BASE-DERIVED-LEVEL-PASS"
