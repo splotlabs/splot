@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 234 feature(s).
+Matrix version 1. Last reviewed 2026-06-15. 235 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -222,6 +222,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `DECODE-COEFF-NONZERO-BLOCK-STATE` | Coefficient nonzero block state | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/coeff_loop/branch.rs` |
 | `DECODE-COEFF-SCAN-WALK` | Coefficient scan walk | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/coeff_loop/scan_walk.rs` |
 | `DECODE-COEFF-BASE-CDF-ROWS` | Coefficient base CDF rows | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/cdf/coeff_rows.rs` |
+| `DECODE-COEFF-BASE-SYMBOL-READ` | Coefficient base symbol read | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/coeff_loop/base_symbol.rs` |
 | `DECODE-TILE-CDF-SAVE-LIFECYCLE-BOUNDARY` | Tile CDF save lifecycle boundary | infrastructure | infrastructure | done | done | done | n/a | n/a | n/a | done | done | n/a | `crates/splot-decode/src/tile_payload/cdf/lifecycle.rs` |
 | `DECODE-TILE-PARTITION-SYMBOL-READ-BOUNDARY` | Tile partition symbol read boundary | infrastructure | infrastructure | done | done | done | n/a | n/a | n/a | done | done | n/a | `crates/splot-decode/src/tile_payload/cdf/partition_read.rs` |
 | `DECODE-TILE-PARTITION-DECISION-BOUNDARY` | Tile partition decision boundary | infrastructure | infrastructure | done | done | done | n/a | n/a | n/a | done | done | n/a | `crates/splot-decode/src/tile_payload/partition.rs` |
