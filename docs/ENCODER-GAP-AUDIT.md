@@ -25,6 +25,10 @@ planning and status; it does not claim encoder behavior exists.
   `splot encode --speed`. The preset is stored in `EncoderRuntimeConfig`, not
   `EncoderConfig`, and currently does not affect packet output because no packet
   output path exists.
+- `ENC-RESIDUAL-FOUNDATION` adds the first private encoder arithmetic primitive:
+  checked source-minus-prediction residual blocks for the current borrowed 8-bit
+  input surface. It is not re-exported, owns no writer, and does not produce
+  packets.
 - `Packet` is still only a byte buffer wrapper, and no coded packet production
   path exists.
 - `EncoderConfig` exposes `BitDepth::Twelve`, but current Baseline Encoder Profile
@@ -72,9 +76,9 @@ planning and status; it does not claim encoder behavior exists.
 
 ## Active ownership baseline
 
-As of the `encoder-minimal-header-plan` branch point on 2026-06-18, PR #267 has
-merged into `main` as `66a941a`, and this branch is based on `origin/main` at
-`66a941a`. No sibling PR is open against `main`; the generated status-doc
+As of the `encoder-residual-foundation` branch point on 2026-06-18, PR #273 has
+merged into `main` as `d42a7fbe`, and this branch is based on `origin/main` at
+`d42a7fbe`. No sibling PR is open against `main`; the generated status-doc
 intersections from the prior encoder and decode work are now part of the base,
 and no semantic overlap remains.
 

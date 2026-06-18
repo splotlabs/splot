@@ -4007,6 +4007,39 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-RESIDUAL-FOUNDATION"
+name = "Encoder residual foundation"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["7.14.3"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/residual.rs"
+openspec_change = "encoder-residual-foundation"
+tracking_issue = ""
+owner = "encoder"
+risk = "medium"
+notes = "Private, non-emitting encoder arithmetic primitive. `ResidualBlock` computes checked row-major signed source-minus-prediction residual blocks for the current borrowed 8-bit input surface using visible-plane-relative rectangles over `splot_recon::PlaneRef<u8>` plus row-strided prediction samples. It validates block bounds, prediction stride/span, and allocation before returning residual data, uses explicit signed storage, and is exercised from the existing no-packet-output lifecycle test. This row does not claim 10-bit input, Y4M adaptation, forward transform, quantization, coefficient tokenization, tile-body emission, packet output, CLI success, rate control, speed-policy behavior, or Baseline Encoder Profile v1 output."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/residual.rs::tests", "crates/splot-encode/src/context.rs::tests::syntax_and_header_planning_do_not_enable_packet_output"]
+commands = ["cargo test -p splot-encode residual --locked", "cargo test -p splot-encode syntax_and_header_planning_do_not_enable_packet_output --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-RECON-DEPENDENCY"
 name = "Encoder reconstruction dependency boundary"
 category = "encoder"

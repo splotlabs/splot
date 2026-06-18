@@ -27,6 +27,7 @@ pub mod error;
 pub mod frame;
 mod header_plan;
 mod recon_boundary;
+mod residual;
 pub mod runtime;
 mod syntax_ir;
 

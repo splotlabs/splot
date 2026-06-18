@@ -318,7 +318,7 @@ mod tests {
     use super::*;
     use crate::config::{BitDepth, ChromaSubsampling};
     use splot_parallel::ThreadCount;
-    use splot_recon::{PlaneRect, PlaneSize};
+    use splot_recon::{PlaneId, PlaneRect, PlaneSize};
 
     fn size(width: usize, height: usize) -> PlaneSize {
         PlaneSize::new(width, height).unwrap()
@@ -493,6 +493,15 @@ mod tests {
         let input = frame(&y, &u, &v);
 
         assert!(crate::header_plan::MinimalHeaderPlan::new(ctx.config(), input.info()).is_ok());
+        let residual = crate::residual::ResidualBlock::from_plane_prediction(
+            PlaneId::Y,
+            input.y(),
+            rect(2, 2),
+            &[0; 4],
+            2,
+        )
+        .unwrap();
+        assert_eq!(residual.samples(), &[0, 0, 0, 0]);
 
         assert!(matches!(
             ctx.send_frame(&input).unwrap(),

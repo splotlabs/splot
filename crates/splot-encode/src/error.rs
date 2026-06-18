@@ -110,6 +110,76 @@ pub enum Error {
         source: ReconError,
     },
 
+    /// A requested encoder residual block fell outside the input plane's visible area.
+    #[error(
+        "encoder residual block {block:?} for plane {plane:?} exceeds visible size {visible_size:?}"
+    )]
+    ResidualBlockOutOfBounds {
+        /// Plane whose residual was requested.
+        plane: PlaneId,
+        /// Visible-plane-relative block rectangle.
+        block: splot_recon::PlaneRect,
+        /// Visible plane size used for the bounds check.
+        visible_size: PlaneSize,
+    },
+
+    /// A prediction row stride was too small for a residual block.
+    #[error(
+        "encoder residual prediction stride {stride_samples} for plane {plane:?} is smaller than block width {width}"
+    )]
+    ResidualPredictionStrideTooSmall {
+        /// Plane whose residual was requested.
+        plane: PlaneId,
+        /// Supplied prediction row stride in samples.
+        stride_samples: usize,
+        /// Required block width in samples.
+        width: usize,
+    },
+
+    /// A prediction buffer was too small for a residual block.
+    #[error(
+        "encoder residual prediction for plane {plane:?} needs at least {expected} samples, got {actual}"
+    )]
+    ResidualPredictionLengthMismatch {
+        /// Plane whose residual was requested.
+        plane: PlaneId,
+        /// Minimum required prediction sample count.
+        expected: usize,
+        /// Actual supplied prediction sample count.
+        actual: usize,
+    },
+
+    /// Residual prediction span arithmetic overflowed.
+    #[error(
+        "encoder residual prediction span overflowed for plane {plane:?}, block {block:?}, stride {stride_samples}"
+    )]
+    ResidualPredictionSpanOverflow {
+        /// Plane whose residual was requested.
+        plane: PlaneId,
+        /// Visible-plane-relative block rectangle.
+        block: splot_recon::PlaneRect,
+        /// Supplied prediction row stride in samples.
+        stride_samples: usize,
+    },
+
+    /// Residual block sample-count arithmetic overflowed.
+    #[error("encoder residual block sample count overflowed for plane {plane:?}, block {block:?}")]
+    ResidualSampleCountOverflow {
+        /// Plane whose residual was requested.
+        plane: PlaneId,
+        /// Visible-plane-relative block rectangle.
+        block: splot_recon::PlaneRect,
+    },
+
+    /// Residual block allocation failed.
+    #[error("failed to allocate encoder residual storage for plane {plane:?}: {context}")]
+    ResidualAllocationFailed {
+        /// Plane whose residual was requested.
+        plane: PlaneId,
+        /// Short description of the failed allocation.
+        context: &'static str,
+    },
+
     /// An encoder lifecycle operation is invalid in the current context state.
     #[error("encoder operation {operation:?} is invalid while the context is {state:?}")]
     State {
