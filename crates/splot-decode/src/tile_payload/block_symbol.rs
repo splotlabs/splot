@@ -9,17 +9,24 @@ use splot_core::Error as CoreError;
 use splot_core::symbol::{SymbolDecoder, SymbolDecoderSummary};
 
 use super::DecodeTileWorkUnit;
-use super::cdf::block_context::{
-    YModeIndexContext, reconstruct_minimal_y_mode, txb_skip_ctx_luma, uv_mode_ctx, v_txb_skip_ctx,
-};
+use super::cdf::block_context::{YModeIndexContext, reconstruct_minimal_y_mode, uv_mode_ctx};
 use super::cdf::block_read::BlockSymbolTraceReadError;
 use super::cdf::{TileCdfSelector, TileCdfSubset};
+use super::coeff_loop::{
+    CoeffLoopContextError, LumaAllZeroContextInput, VAllZeroContextInput, luma_all_zero_context,
+    v_all_zero_context,
+};
+use super::coeff_state::{TileCoeffContextState, TileCoeffStateError};
 
 const INTRA_Y_MODE_SET_REASON: &str = "intra_y_mode_set";
 const INTRA_Y_MODE_INDEX_REASON: &str = "intra_y_mode_index";
 const LUMA_OR_U_ALL_ZERO_TRANSFORM_REASON: &str = "luma_or_u_all_zero_transform";
 const UV_MODE_INDEX_REASON: &str = "uv_mode_index";
 const V_ALL_ZERO_TRANSFORM_REASON: &str = "v_all_zero_transform";
+const MINIMAL_LUMA_TX_W4: usize = 16;
+const MINIMAL_LUMA_TX_H4: usize = 16;
+const MINIMAL_CHROMA_TX_W4: usize = 4;
+const MINIMAL_CHROMA_TX_H4: usize = 4;
 
 /// Summary returned after the traced block symbols and `exit_symbol()` pass.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -68,6 +75,40 @@ pub(crate) enum MinimalBlockSymbolTraceError {
         /// Decoded `y_mode_index` value.
         y_mode_index: u8,
     },
+    /// The tile work-unit MI range could not seed coefficient context state.
+    #[error(
+        "minimal block-symbol trace has invalid coefficient context {axis} range {start}..{end}"
+    )]
+    InvalidCoeffContextRange {
+        /// Range axis.
+        axis: &'static str,
+        /// Range start.
+        start: u32,
+        /// Range end.
+        end: u32,
+    },
+    /// The tile work-unit MI range does not fit this platform's `usize`.
+    #[error(
+        "minimal block-symbol trace coefficient context {axis} length {value} does not fit usize"
+    )]
+    CoeffContextDimensionOverflow {
+        /// Range axis.
+        axis: &'static str,
+        /// Length value.
+        value: u32,
+    },
+    /// Coefficient context state allocation or validation failed.
+    #[error("minimal block-symbol trace coefficient context state failed: {source}")]
+    CoeffContextState {
+        /// Source coefficient context state error.
+        source: TileCoeffStateError,
+    },
+    /// Coefficient-loop context handoff failed.
+    #[error("minimal block-symbol trace coefficient-loop context failed: {source}")]
+    CoeffLoopContext {
+        /// Source coefficient-loop context error.
+        source: CoeffLoopContextError,
+    },
     /// `exit_symbol()` rejected the tile payload suffix.
     #[error("minimal block-symbol trace exit_symbol failed: {source}")]
     ExitSymbol {
@@ -104,6 +145,7 @@ fn consume_trace(
     work_unit: &mut DecodeTileWorkUnit<'_>,
     symbols: &mut SymbolDecoder<'_>,
 ) -> Result<(), MinimalBlockSymbolTraceError> {
+    let coeff_context = minimal_tile_coeff_context(work_unit)?;
     let cdfs = work_unit.cdf_mut().tile_cdfs_mut();
 
     // y_mode_set (§ 8.3.2 `TileYModeSetCdf`, no context).
@@ -136,18 +178,26 @@ fn consume_trace(
         },
     )?;
 
-    // luma all-zero transform (txb_skip), § 8.3.2. The level context is 0 for
-    // this first transform block (no prior decoded transform blocks; the
-    // above/left 4x4 neighbours are out of frame at the tile origin), so the
-    // context reduces to the transform-fills-block branch -> 0.
+    // luma all-zero transform (txb_skip), § 8.3.2. The coefficient context state
+    // is freshly zeroed for this first transform block, so its above/left
+    // reductions are 0 and the context reduces to the transform-fills-block
+    // branch -> 0.
     //
     // TODO(spec: DECODE-TILE-CDF-SELECTION-BOUNDARY): the `tx_fills_block`
-    // geometry and the `AboveLevelContext` / `LeftLevelContext` buffers come from
-    // the § 5.20 transform-block syntax (not yet modelled); they are asserted
-    // here to the values the conformant fixture forces.
-    let luma_txb_skip_ctx = txb_skip_ctx_luma(
-        0, 0, /* tx_fills_block */ true, /* fsc_active */ false,
-    );
+    // geometry comes from the § 5.20 transform-block syntax (not yet modelled);
+    // it is asserted here to the value the conformant fixture forces.
+    let luma_txb_skip_ctx = luma_all_zero_context(
+        &coeff_context,
+        LumaAllZeroContextInput {
+            x4: 0,
+            y4: 0,
+            w4: MINIMAL_LUMA_TX_W4,
+            h4: MINIMAL_LUMA_TX_H4,
+            tx_fills_block: true,
+            fsc_active: false,
+        },
+    )
+    .map_err(|source| MinimalBlockSymbolTraceError::CoeffLoopContext { source })?;
     decode_block_symbol(
         cdfs,
         symbols,
@@ -172,20 +222,27 @@ fn consume_trace(
         UV_MODE_INDEX_REASON,
     )?;
 
-    // V all-zero transform (v_txb_skip), § 8.3.2. The level/DC context is 0 for
-    // this first transform block, and the U plane was decoded all-zero just above
-    // so EobU == 0; the context reduces to the chroma-block-larger-than-transform
-    // contribution -> 3.
+    // V all-zero transform (v_txb_skip), § 8.3.2. The coefficient context state
+    // is freshly zeroed for this first transform block, and the U plane was
+    // decoded all-zero just above so EobU == 0; the context reduces to the
+    // chroma-block-larger-than-transform contribution -> 3.
     //
     // TODO(spec: DECODE-TILE-CDF-SELECTION-BOUNDARY): the
-    // `chroma_block_larger_than_tx` geometry and the `AboveLevelContext` /
-    // `AboveDcContext` (and left) buffers come from the § 5.20 transform-block
-    // syntax (not yet modelled); they are asserted here to the values the
-    // conformant fixture forces.
-    let v_txb_skip_context = v_txb_skip_ctx(
-        /* above_nonzero */ false, /* left_nonzero */ false,
-        /* chroma_block_larger_than_tx */ true, /* eob_u_nonzero */ false,
-    );
+    // `chroma_block_larger_than_tx` geometry comes from the § 5.20
+    // transform-block syntax (not yet modelled); it is asserted here to the
+    // value the conformant fixture forces.
+    let v_txb_skip_context = v_all_zero_context(
+        &coeff_context,
+        VAllZeroContextInput {
+            x4: 0,
+            y4: 0,
+            w4: MINIMAL_CHROMA_TX_W4,
+            h4: MINIMAL_CHROMA_TX_H4,
+            chroma_block_larger_than_tx: true,
+            eob_u_nonzero: false,
+        },
+    )
+    .map_err(|source| MinimalBlockSymbolTraceError::CoeffLoopContext { source })?;
     decode_block_symbol(
         cdfs,
         symbols,
@@ -198,6 +255,34 @@ fn consume_trace(
     )?;
 
     Ok(())
+}
+
+fn minimal_tile_coeff_context(
+    work_unit: &DecodeTileWorkUnit<'_>,
+) -> Result<TileCoeffContextState, MinimalBlockSymbolTraceError> {
+    let mi_rows = range_len_usize("rows", work_unit.mi_row_range())?;
+    let mi_cols = range_len_usize("columns", work_unit.mi_col_range())?;
+    TileCoeffContextState::new(mi_rows, mi_cols)
+        .map_err(|source| MinimalBlockSymbolTraceError::CoeffContextState { source })
+}
+
+fn range_len_usize(
+    axis: &'static str,
+    range: core::ops::Range<u32>,
+) -> Result<usize, MinimalBlockSymbolTraceError> {
+    let length = range.end.checked_sub(range.start).ok_or(
+        MinimalBlockSymbolTraceError::InvalidCoeffContextRange {
+            axis,
+            start: range.start,
+            end: range.end,
+        },
+    )?;
+    usize::try_from(length).map_err(|_| {
+        MinimalBlockSymbolTraceError::CoeffContextDimensionOverflow {
+            axis,
+            value: length,
+        }
+    })
 }
 
 /// Reads one traced block symbol, mapping CDF/symbol failures and an unexpected

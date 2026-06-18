@@ -243,6 +243,14 @@ fn decode_minimal_block_symbol_error(
             offset,
             "minimal runtime hash support only reconstructs the traced flat tile non-directional YMode subset",
         ),
+        MinimalBlockSymbolTraceError::InvalidCoeffContextRange { .. }
+        | MinimalBlockSymbolTraceError::CoeffContextDimensionOverflow { .. }
+        | MinimalBlockSymbolTraceError::CoeffContextState { .. }
+        | MinimalBlockSymbolTraceError::CoeffLoopContext { .. } => unsupported_at(
+            "minimal_tile_coeff_context_state",
+            offset,
+            "minimal runtime hash support requires the traced flat tile coefficient context state",
+        ),
         MinimalBlockSymbolTraceError::ExitSymbol { .. } => unsupported_at(
             "minimal_tile_exit_symbol",
             offset,

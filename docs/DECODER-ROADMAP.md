@@ -127,8 +127,10 @@ also has crate-private tile coefficient state buffers
 (`DECODE-TILE-COEFF-STATE-BUFFERS`): transform-block-local § 5.20.7.27
 `Level[]` / `QuantSign[]` arrays and three-plane above/left level/DC context
 lines, with checked end-of-`coeffs()` context updates and block-context resets.
-Those buffers are scaffolding only; they are not yet read by a real coefficient
-symbol loop and do not change decode output. The § 7.14.4
+Those buffers now feed the minimal trace's luma and V-plane `all_zero` context
+handoff (`DECODE-COEFF-ALL-ZERO-CONTEXT-STATE`), replacing literal first-block
+level/DC reductions with state-backed reads while keeping output unchanged. They
+are still not read by a real coefficient symbol loop. The § 7.14.4
 `useQm` / `UserQm` gating and `shift` derivation, the rest
 of the § 7.14.3 reconstruct process, the § 7.15.3 secondary transform, the
 § 7.15.4 DPCM-direction selection and combined transform-parameter resolve helper,
