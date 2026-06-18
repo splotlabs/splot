@@ -642,13 +642,14 @@ mod eob_symbol_tests;
 #[cfg(test)]
 mod level_state_tests;
 #[cfg(test)]
+mod ordinary_branch_coeffs_geometry_tests;
+#[cfg(test)]
 mod ordinary_pass_tests;
 #[cfg(test)]
 mod ordinary_state_context_tests;
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
-
     use super::super::coeff_state::{CoeffContextUpdate, TileCoeffContextState};
     use super::*;
 

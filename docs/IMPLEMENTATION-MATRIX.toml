@@ -10295,6 +10295,59 @@ fixtures = [
 diagnostics = ["decode/unsupported-feature"]
 
 [[feature]]
+id = "DECODE-COEFF-ORDINARY-BRANCH-COEFFS-GEOMETRY-HANDOFF"
+name = "Coefficient ordinary branch coeffs geometry handoff"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.20.7.27"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_pass/geometry.rs"
+openspec_change = "coeff-ordinary-branch-coeffs-geometry-handoff"
+tracking_issue = ""
+owner = "decoder"
+risk = "low"
+notes = "Adds a crate-private loaded-but-unwired ordinary coefficient branch wrapper that derives block geometry from AV2 §5.20.7.27 `coeffs()` geometry facts: `x4 = startX >> 2`, `y4 = startY >> 2`, `w4 = Tx_Width[txSz] >> 2`, and `h4 = Tx_Height[txSz] >> 2`. The wrapper accepts caller-resolved `Tx_Width[txSz]` and `Tx_Height[txSz]`-style dimensions, delegates to the existing geometry handoff, and leaves all-zero behavior unchanged. Tests prove all-zero preservation plus nonzero branch equivalence against the explicit block-geometry path. This feature remains partial: runtime `coeffs()` still does not call this wrapper, `txSz` table lookup, `Tx_Width_Log2[txSz]`, `Tx_Height_Log2[txSz]`, `txSzCtx`, §5.20.7.29 `compute_tx_type`, scan order, selector, adjusted geometry, parity, TCQ, and lossless facts are still caller-resolved, and dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public APIs, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` remain unimplemented."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "partial"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_coeffs_geometry_tests.rs::coefficient_ordinary_branch_coeffs_geometry_nonzero_matches_explicit_geometry",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_coeffs_geometry_tests.rs::coefficient_ordinary_branch_coeffs_geometry_all_zero_preserves_direct_branch",
+]
+commands = [
+    "cargo test -p splot-decode ordinary_branch_coeffs_geometry --locked",
+    "cargo test -p splot-decode ordinary_state_context --locked",
+    "cargo test -p splot-decode ordinary_pass --locked",
+    "cargo test -p splot-decode coeff_loop --locked",
+    "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-decoder-conformance-coverage",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-decode/src/tile_payload/coeff_loop.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_pass/geometry.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_pass.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_coeffs_geometry_tests.rs",
+    "crates/splot-decode/src/tile_payload/coeff_state.rs",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
 id = "DECODE-TILE-CDF-SAVE-LIFECYCLE-BOUNDARY"
 name = "Tile CDF save lifecycle boundary"
 category = "infrastructure"
