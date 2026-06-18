@@ -66,6 +66,17 @@ pub(crate) struct NonZeroCoeffQuantPass {
 }
 
 impl NonZeroCoeffQuantPass {
+    /// Builds a quant-pass summary from interleaved per-entry steps.
+    pub(crate) fn from_interleaved_parts(
+        read_quants: Vec<CoeffReadQuant>,
+        quant_state: NonZeroCoeffQuantState,
+    ) -> Self {
+        Self {
+            read_quants,
+            quant_state,
+        }
+    }
+
     /// Raw `read_quant` results in scan-walk order.
     #[must_use]
     pub(crate) fn read_quants(&self) -> &[CoeffReadQuant] {
@@ -198,15 +209,7 @@ pub(crate) fn apply_nonzero_coeff_quant_pass(
     inputs: &[CoeffQuantPassInput],
     config: CoeffQuantPassConfig,
 ) -> Result<NonZeroCoeffQuantPass, CoeffQuantPassError> {
-    if config.is_hidden && (config.use_tcq || config.lossless) {
-        return Err(CoeffQuantPassError::InconsistentHiddenParityConfig {
-            use_tcq: config.use_tcq,
-            lossless: config.lossless,
-        });
-    }
-    if config.lossless && config.use_tcq {
-        return Err(CoeffQuantPassError::InconsistentTcqConfig);
-    }
+    validate_coeff_quant_pass_config(config)?;
 
     let read_inputs = preflight_quant_pass(block, walk.entries(), signs, inputs, config)?;
     let read_quants = read_nonzero_coeff_quants(
@@ -237,6 +240,22 @@ pub(crate) fn apply_nonzero_coeff_quant_pass(
         read_quants,
         quant_state,
     })
+}
+
+/// Validates block-level facts shared by batch and interleaved quant passes.
+pub(crate) fn validate_coeff_quant_pass_config(
+    config: CoeffQuantPassConfig,
+) -> Result<(), CoeffQuantPassError> {
+    if config.is_hidden && (config.use_tcq || config.lossless) {
+        return Err(CoeffQuantPassError::InconsistentHiddenParityConfig {
+            use_tcq: config.use_tcq,
+            lossless: config.lossless,
+        });
+    }
+    if config.lossless && config.use_tcq {
+        return Err(CoeffQuantPassError::InconsistentTcqConfig);
+    }
+    Ok(())
 }
 
 /// Runs the ordinary non-FSC quant pass with derived `maxLevel` inputs.

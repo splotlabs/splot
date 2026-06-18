@@ -2,7 +2,6 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 //! Coefficient-loop foundation helpers.
-//!
 //! Feature tracking: focused `DECODE-COEFF-*` rows cover each helper boundary.
 
 use std::collections::TryReserveError;
@@ -31,6 +30,7 @@ mod branch;
 pub(crate) use branch::{CoeffBlockEobBranchInput, read_coeff_block_eob_branch};
 pub(crate) mod level_state;
 pub(crate) mod max_level;
+pub(crate) mod ordinary_pass;
 pub(crate) mod quant_pass;
 pub(crate) mod quant_state;
 pub(crate) mod read_quant;
@@ -612,23 +612,21 @@ fn read_eob_literal(
 }
 
 fn bounded_or_u32(values: &[u32], start: usize, count: usize) -> u32 {
-    let mut value = 0;
-    if let Some(tail) = values.get(start..) {
-        for entry in tail.iter().take(count) {
-            value |= *entry;
-        }
-    }
-    value
+    let Some(tail) = values.get(start..) else {
+        return 0;
+    };
+    tail.iter()
+        .take(count)
+        .fold(0, |value, entry| value | *entry)
 }
 
 fn bounded_or_u8(values: &[u8], start: usize, count: usize) -> u32 {
-    let mut value = 0;
-    if let Some(tail) = values.get(start..) {
-        for entry in tail.iter().take(count) {
-            value |= u32::from(*entry);
-        }
-    }
-    value
+    let Some(tail) = values.get(start..) else {
+        return 0;
+    };
+    tail.iter()
+        .take(count)
+        .fold(0, |value, entry| value | u32::from(*entry))
 }
 
 fn bounded_or_level_dc(level: &[u32], dc: &[u8], start: usize, count: usize) -> u32 {
@@ -646,6 +644,8 @@ mod base_symbol_tests;
 mod eob_symbol_tests;
 #[cfg(test)]
 mod level_state_tests;
+#[cfg(test)]
+mod ordinary_pass_tests;
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]

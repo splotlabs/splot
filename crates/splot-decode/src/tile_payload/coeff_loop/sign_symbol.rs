@@ -217,20 +217,31 @@ pub(crate) fn read_nonzero_coeff_signs(
         });
     }
 
-    let levels = preflight_sign_reads(block, entries, inputs)?;
+    let levels = preflight_nonzero_coeff_signs(block, walk, inputs)?;
     let mut reads = Vec::new();
     reads.try_reserve(entries.len())?;
     for (input, level) in inputs.iter().copied().zip(levels) {
-        reads.push(read_coeff_sign(cdfs, symbols, input, level)?);
+        reads.push(read_preflighted_nonzero_coeff_sign(
+            cdfs, symbols, input, level,
+        )?);
     }
     Ok(reads)
 }
 
-fn preflight_sign_reads(
+/// Validates sign inputs before any sign or quant syntax is consumed.
+pub(crate) fn preflight_nonzero_coeff_signs(
     block: &TransformCoeffBlockState,
-    entries: &[CoeffScanEntry],
+    walk: &NonZeroCoeffScanWalk,
     inputs: &[CoeffSignReadInput],
 ) -> Result<Vec<u32>, CoeffSignReadError> {
+    let entries = walk.entries();
+    if inputs.len() != entries.len() {
+        return Err(CoeffSignReadError::InputCountMismatch {
+            inputs: inputs.len(),
+            entries: entries.len(),
+        });
+    }
+
     let mut levels = Vec::new();
     levels.try_reserve(entries.len())?;
     for (index, (entry, input)) in entries
@@ -259,7 +270,8 @@ fn preflight_sign_reads(
     Ok(levels)
 }
 
-fn read_coeff_sign(
+/// Reads one sign whose scan entry and local level were already preflighted.
+pub(crate) fn read_preflighted_nonzero_coeff_sign(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
     input: CoeffSignReadInput,
