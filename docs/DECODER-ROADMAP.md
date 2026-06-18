@@ -122,7 +122,13 @@ scans), a prerequisite for the coefficient decode loop and § 7.14.4 coefficient
 placement. Its § 8.3.2 `get_tx_class` companion (`tx_class`;
 `RECON-GET-TX-CLASS`) is available too: a `const fn` mapping a `PlaneTxType` to the
 `TransformClass` that selects the scan (the vertical-only and horizontal-only
-transforms to `Vertical`/`Horizontal`, everything else to `TwoD`). The § 7.14.4
+transforms to `Vertical`/`Horizontal`, everything else to `TwoD`). `splot-decode`
+also has crate-private tile coefficient state buffers
+(`DECODE-TILE-COEFF-STATE-BUFFERS`): transform-block-local § 5.20.7.27
+`Level[]` / `QuantSign[]` arrays and three-plane above/left level/DC context
+lines, with checked end-of-`coeffs()` context updates and block-context resets.
+Those buffers are scaffolding only; they are not yet read by a real coefficient
+symbol loop and do not change decode output. The § 7.14.4
 `useQm` / `UserQm` gating and `shift` derivation, the rest
 of the § 7.14.3 reconstruct process, the § 7.15.3 secondary transform, the
 § 7.15.4 DPCM-direction selection and combined transform-parameter resolve helper,
