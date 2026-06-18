@@ -180,6 +180,68 @@ pub enum Error {
         context: &'static str,
     },
 
+    /// A forward-transform block shape is outside the current supported subset.
+    #[error(
+        "encoder forward transform for plane {plane:?} supports only {expected_width}x{expected_height}, got block {block:?}"
+    )]
+    ForwardTransformUnsupportedShape {
+        /// Plane whose transform was requested.
+        plane: PlaneId,
+        /// Visible-plane-relative block rectangle.
+        block: splot_recon::PlaneRect,
+        /// Supported transform width in samples.
+        expected_width: usize,
+        /// Supported transform height in samples.
+        expected_height: usize,
+    },
+
+    /// Forward-transform residual input had the wrong number of samples.
+    #[error(
+        "encoder forward transform for plane {plane:?}, block {block:?} needs {expected} residual samples, got {actual}"
+    )]
+    ForwardTransformInputLengthMismatch {
+        /// Plane whose transform was requested.
+        plane: PlaneId,
+        /// Visible-plane-relative block rectangle.
+        block: splot_recon::PlaneRect,
+        /// Expected residual sample count.
+        expected: usize,
+        /// Actual residual sample count.
+        actual: usize,
+    },
+
+    /// The current forward-transform subset only supports uniform residual blocks.
+    #[error(
+        "encoder forward transform for plane {plane:?}, block {block:?} supports only uniform residuals; sample 0 is {first}, sample {mismatch_index} is {value}"
+    )]
+    ForwardTransformNonUniformResidual {
+        /// Plane whose transform was requested.
+        plane: PlaneId,
+        /// Visible-plane-relative block rectangle.
+        block: splot_recon::PlaneRect,
+        /// First residual sample.
+        first: i32,
+        /// Index of the first non-matching sample.
+        mismatch_index: usize,
+        /// Non-matching residual sample.
+        value: i32,
+    },
+
+    /// Forward-transform coefficient arithmetic overflowed.
+    #[error(
+        "encoder forward transform coefficient overflowed for plane {plane:?}, block {block:?}, residual sample {sample}, scale {scale}"
+    )]
+    ForwardTransformCoefficientOverflow {
+        /// Plane whose transform was requested.
+        plane: PlaneId,
+        /// Visible-plane-relative block rectangle.
+        block: splot_recon::PlaneRect,
+        /// Residual sample being scaled.
+        sample: i32,
+        /// Scale applied to derive the coefficient.
+        scale: i32,
+    },
+
     /// An encoder lifecycle operation is invalid in the current context state.
     #[error("encoder operation {operation:?} is invalid while the context is {state:?}")]
     State {

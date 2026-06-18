@@ -29,6 +29,10 @@ planning and status; it does not claim encoder behavior exists.
   checked source-minus-prediction residual blocks for the current borrowed 8-bit
   input surface. It is not re-exported, owns no writer, and does not produce
   packets.
+- `ENC-FORWARD-TRANSFORM-FOUNDATION` adds a private 4x4 DCT_DCT DC-only
+  forward-transform primitive for uniform residual blocks. It proves the no-op
+  quant/dequant inverse handoff through `splot-recon`, but it is not a broad
+  transform family, quantizer, token writer, or packet path.
 - `Packet` is still only a byte buffer wrapper, and no coded packet production
   path exists.
 - `EncoderConfig` exposes `BitDepth::Twelve`, but current Baseline Encoder Profile
