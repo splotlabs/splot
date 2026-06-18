@@ -397,6 +397,8 @@ pub(crate) enum TileCdfArray {
     DcSign,
     /// `TileCoeffBaseCdf`.
     CoeffBase,
+    /// `TileCoeffBasePhCdf`.
+    CoeffBasePh,
     /// `TileCoeffBaseUvCdf`.
     CoeffBaseUv,
     /// `TileCoeffBaseLfCdf`.
@@ -435,6 +437,7 @@ impl TileCdfArray {
             Self::EobPt => "TileEobPtCdf",
             Self::DcSign => "TileDcSignCdf",
             Self::CoeffBase => "TileCoeffBaseCdf",
+            Self::CoeffBasePh => "TileCoeffBasePhCdf",
             Self::CoeffBaseUv => "TileCoeffBaseUvCdf",
             Self::CoeffBaseLf => "TileCoeffBaseLfCdf",
             Self::CoeffBaseLfUv => "TileCoeffBaseLfUvCdf",

@@ -198,8 +198,9 @@ state-derived first pass (`DECODE-COEFF-BASE-DERIVED-LEVEL-PASS`) now derives
 `coeff_base_eob`, later `coeff_base`, and conditional `coeff_br` selectors from
 the evolving local `Level[]`, updates first-pass `tcqState`, `sumAbs1`, `numNz`,
 and `isHidden`, and writes each decoded `Level[row][col]` before deriving the
-next selector; it remains loaded-but-unwired and reports unsupported if the
-not-yet-loaded parity-hidden-only `TileCoeffBasePhCdf` row is actually selected.
+next selector; it remains loaded-but-unwired. `DECODE-COEFF-BASE-PH-CDF-ROW`
+now loads/selects the parity-hidden-only `TileCoeffBasePhCdf` row and proves an
+eob>=5 hidden-parity first pass consumes it for the final DC coefficient.
 The minimal trace uses the handoff only for the existing luma and V all-zero
 applications. Runtime integration of nonzero coefficient selector derivation,
 tile context writes for nonzero blocks, and runtime nonzero coefficient blocks

@@ -3,13 +3,14 @@
 
 //! Coefficient base/base-EOB/base-range CDF rows.
 //!
-//! Feature tracking: `DECODE-COEFF-BASE-CDF-ROWS`.
+//! Feature tracking: `DECODE-COEFF-BASE-CDF-ROWS` and
+//! `DECODE-COEFF-BASE-PH-CDF-ROW`.
 
 use splot_core::tables::cdf::{
     DEFAULT_COEFF_BASE_CDF, DEFAULT_COEFF_BASE_EOB_CDF, DEFAULT_COEFF_BASE_EOB_UV_CDF,
     DEFAULT_COEFF_BASE_LF_CDF, DEFAULT_COEFF_BASE_LF_EOB_CDF, DEFAULT_COEFF_BASE_LF_EOB_UV_CDF,
-    DEFAULT_COEFF_BASE_LF_UV_CDF, DEFAULT_COEFF_BASE_UV_CDF, DEFAULT_COEFF_BR_CDF,
-    DEFAULT_COEFF_BR_LF_CDF, DEFAULT_COEFF_BR_UV_CDF,
+    DEFAULT_COEFF_BASE_LF_UV_CDF, DEFAULT_COEFF_BASE_PH_CDF, DEFAULT_COEFF_BASE_UV_CDF,
+    DEFAULT_COEFF_BR_CDF, DEFAULT_COEFF_BR_LF_CDF, DEFAULT_COEFF_BR_UV_CDF,
 };
 
 use super::{TileCdfArray, TileCdfError, avg_cdf_row, scale_cdf_count};
@@ -17,6 +18,7 @@ use super::{TileCdfArray, TileCdfError, avg_cdf_row, scale_cdf_count};
 const COEFF_CDF_Q_CONTEXTS: usize = 4;
 const TX_SIZE_CONTEXTS: usize = 5;
 const COEFF_BASE_CONTEXTS: usize = 20;
+const COEFF_BASE_PH_CONTEXTS: usize = 5;
 const COEFF_BASE_TCQ_CONTEXTS: usize = 2;
 const COEFF_BASE_UV_CONTEXTS: usize = 12;
 const COEFF_BASE_EOB_CONTEXTS: usize = 4;
@@ -34,6 +36,8 @@ const COEFF_BR_ROW_LEN: usize = 5;
 pub(crate) type CoeffBaseCdfRows = [[[[[i32; COEFF_BASE_ROW_LEN]; COEFF_BASE_TCQ_CONTEXTS];
     COEFF_BASE_CONTEXTS]; TX_SIZE_CONTEXTS];
     COEFF_CDF_Q_CONTEXTS];
+pub(crate) type CoeffBasePhCdfRows =
+    [[[i32; COEFF_BASE_ROW_LEN]; COEFF_BASE_PH_CONTEXTS]; COEFF_CDF_Q_CONTEXTS];
 pub(crate) type CoeffBaseUvCdfRows =
     [[[i32; COEFF_BASE_ROW_LEN]; COEFF_BASE_UV_CONTEXTS]; COEFF_CDF_Q_CONTEXTS];
 pub(crate) type CoeffBaseLfCdfRows = [[[[[i32; COEFF_BASE_LF_ROW_LEN]; COEFF_BASE_TCQ_CONTEXTS];
@@ -71,6 +75,13 @@ pub(crate) enum CoeffCdfSelector {
         ctx: usize,
         /// `(tcqState >> 1) & 1` context.
         tcq_ctx: usize,
+    },
+    /// `TileCoeffBasePhCdf[coeff_cdf_q_ctx][ctx]`.
+    BasePh {
+        /// Coefficient-CDF quantization context.
+        coeff_cdf_q_ctx: usize,
+        /// Parity-hidden significant-coefficient context.
+        ctx: usize,
     },
     /// `TileCoeffBaseUvCdf[coeff_cdf_q_ctx][ctx]`.
     BaseUv {
@@ -156,6 +167,7 @@ pub(crate) enum CoeffCdfSelector {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CoeffCdfRows {
     pub(super) coeff_base: CoeffBaseCdfRows,
+    pub(super) coeff_base_ph: CoeffBasePhCdfRows,
     pub(super) coeff_base_uv: CoeffBaseUvCdfRows,
     pub(super) coeff_base_lf: CoeffBaseLfCdfRows,
     pub(super) coeff_base_lf_uv: CoeffBaseLfUvCdfRows,
@@ -172,6 +184,7 @@ impl CoeffCdfRows {
     pub(crate) fn from_defaults() -> Self {
         Self {
             coeff_base: DEFAULT_COEFF_BASE_CDF,
+            coeff_base_ph: DEFAULT_COEFF_BASE_PH_CDF,
             coeff_base_uv: DEFAULT_COEFF_BASE_UV_CDF,
             coeff_base_lf: DEFAULT_COEFF_BASE_LF_CDF,
             coeff_base_lf_uv: DEFAULT_COEFF_BASE_LF_UV_CDF,
@@ -203,6 +216,19 @@ impl CoeffCdfRows {
                     COEFF_BASE_TCQ_CONTEXTS,
                 )?;
                 Ok(self.coeff_base[q][tx_size][ctx][tcq_ctx].as_slice())
+            }
+            CoeffCdfSelector::BasePh {
+                coeff_cdf_q_ctx,
+                ctx,
+            } => {
+                let q = checked_coeff_cdf_q_context(TileCdfArray::CoeffBasePh, coeff_cdf_q_ctx)?;
+                let ctx = checked_index(
+                    TileCdfArray::CoeffBasePh,
+                    "ctx",
+                    ctx,
+                    COEFF_BASE_PH_CONTEXTS,
+                )?;
+                Ok(self.coeff_base_ph[q][ctx].as_slice())
             }
             CoeffCdfSelector::BaseUv {
                 coeff_cdf_q_ctx,
@@ -358,6 +384,19 @@ impl CoeffCdfRows {
                 )?;
                 Ok(self.coeff_base[q][tx_size][ctx][tcq_ctx].as_mut_slice())
             }
+            CoeffCdfSelector::BasePh {
+                coeff_cdf_q_ctx,
+                ctx,
+            } => {
+                let q = checked_coeff_cdf_q_context(TileCdfArray::CoeffBasePh, coeff_cdf_q_ctx)?;
+                let ctx = checked_index(
+                    TileCdfArray::CoeffBasePh,
+                    "ctx",
+                    ctx,
+                    COEFF_BASE_PH_CONTEXTS,
+                )?;
+                Ok(self.coeff_base_ph[q][ctx].as_mut_slice())
+            }
             CoeffCdfSelector::BaseUv {
                 coeff_cdf_q_ctx,
                 ctx,
@@ -498,6 +537,12 @@ impl CoeffCdfRows {
             num_log2,
         );
         avg_rows(
+            self.coeff_base_ph.iter_mut().flatten(),
+            tile.coeff_base_ph.iter().flatten(),
+            tile_num,
+            num_log2,
+        );
+        avg_rows(
             self.coeff_base_uv.iter_mut().flatten(),
             tile.coeff_base_uv.iter().flatten(),
             tile_num,
@@ -561,6 +606,7 @@ impl CoeffCdfRows {
 
     pub(crate) fn scale_counts_for_frame_end_update(&mut self) {
         scale_rows(self.coeff_base.iter_mut().flatten().flatten().flatten());
+        scale_rows(self.coeff_base_ph.iter_mut().flatten());
         scale_rows(self.coeff_base_uv.iter_mut().flatten());
         scale_rows(self.coeff_base_lf.iter_mut().flatten().flatten().flatten());
         scale_rows(self.coeff_base_lf_uv.iter_mut().flatten());
