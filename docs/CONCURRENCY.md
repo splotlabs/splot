@@ -9,14 +9,14 @@ This document is the canonical concurrency policy for `splot`. It is enforced by
 
 ## 1. Why this exists (and what it is not)
 
-`splot` is **validator-first**. Today no real decoder or encoder runs: encode and
-decode operations are stubs that return `Error::Unimplemented { feature: "AV2
-encoder" }` or the unchanged `decode/unsupported-feature` diagnostic. The
-concurrency primitives described here are **forward-looking runtime
-infrastructure** so that, when reconstruction and encoding land, the workspace
-already has a single, reviewed, deterministic concurrency surface. **No AV2
-conformance behavior depends on any of this yet.** Adding the primitives changed
-no parser, no diagnostic, and no bitstream output.
+`splot` is **validator-first**. The encoder currently has typed no-output
+lifecycle plumbing and emits no media. The decoder has a narrow minimal-tier
+runtime for hash/raw/Y4M output and routes planning/output work through its owned
+`WorkerPool`, with byte/hash output required to remain deterministic across
+thread policies. The concurrency primitives described here are the single,
+reviewed runtime surface for those current paths and for future reconstruction
+and encoding work. Parser, validator, and bitstream syntax behavior must not
+depend on worker scheduling or thread count.
 
 The maintainer authorized adding exactly two dependencies — `rayon` and
 `crossbeam-channel` — and the dependency-graph edges that route them through one

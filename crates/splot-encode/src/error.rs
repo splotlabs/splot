@@ -6,6 +6,7 @@
 use splot_recon::{PlaneId, PlaneSize, ReconError};
 
 use crate::config::{BitDepth, ChromaSubsampling};
+use crate::context::{EncoderOperation, EncoderState};
 
 /// An error from the splot encoder API.
 #[derive(Debug, thiserror::Error)]
@@ -70,12 +71,52 @@ pub enum Error {
         actual: PlaneSize,
     },
 
+    /// Input frame dimensions do not match the encoder configuration.
+    #[error(
+        "encoder input frame has visible luma size {actual:?}; expected {expected_width}x{expected_height}"
+    )]
+    InputFrameSizeMismatch {
+        /// Configured frame width in luma samples.
+        expected_width: u32,
+        /// Configured frame height in luma samples.
+        expected_height: u32,
+        /// Actual input frame visible luma size.
+        actual: PlaneSize,
+    },
+
+    /// Input frame bit depth does not match the encoder configuration.
+    #[error("encoder input frame bit depth {actual:?} does not match configured {expected:?}")]
+    InputFrameBitDepthMismatch {
+        /// Configured bit depth.
+        expected: BitDepth,
+        /// Actual input frame bit depth.
+        actual: BitDepth,
+    },
+
+    /// Input frame chroma layout does not match the encoder configuration.
+    #[error("encoder input frame chroma layout {actual:?} does not match configured {expected:?}")]
+    InputFrameChromaSubsamplingMismatch {
+        /// Configured chroma layout.
+        expected: ChromaSubsampling,
+        /// Actual input frame chroma layout.
+        actual: ChromaSubsampling,
+    },
+
     /// Chroma-size derivation failed for the input metadata.
     #[error("failed to derive encoder input chroma geometry: {source}")]
     InputChromaGeometry {
         /// Underlying chroma geometry error.
         #[source]
         source: ReconError,
+    },
+
+    /// An encoder lifecycle operation is invalid in the current context state.
+    #[error("encoder operation {operation:?} is invalid while the context is {state:?}")]
+    State {
+        /// Requested operation.
+        operation: EncoderOperation,
+        /// Current context state.
+        state: EncoderState,
     },
 }
 

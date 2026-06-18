@@ -39,10 +39,13 @@ legal-stream evidence gates.
 
 Status: in progress.
 
-Feature areas: `ENC-Y4M-INPUT`, `ENC-SPEED-PRESETS`.
+Feature areas: `ENC-Y4M-INPUT`, `ENC-CONTEXT-STATE-MACHINE`,
+`ENC-SPEED-PRESETS`.
 
 - Land validated borrowed 8-bit YUV420 input views, then extend the input model
   to 10-bit and Y4M stream adaptation in follow-up PRs.
+- Land the context lifecycle state machine before any packet-producing path, so
+  callers can test backpressure, flush, and end-of-stream without fake packets.
 - Keep bitstream-affecting configuration separate from runtime policy.
 - Define unsupported-format behavior for 12-bit, monochrome, YUV422, YUV444, and
   non-Y4M inputs.

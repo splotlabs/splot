@@ -5,9 +5,10 @@
 //!
 //! This crate fixes the *shape* of the encoder API (configuration, borrowed frame
 //! input views, explicit retained input sharing, and a push/pull [`Context`])
-//! without implementing any encoding. Every encoding operation returns
-//! [`splot_core::Error::Unimplemented`]. Nothing in the repository depends on
-//! this crate except `splot-cli`.
+//! without implementing coded packet production. The push/pull lifecycle is
+//! deterministic and typed, but [`Context::receive_packet`] cannot yet return a
+//! real AV2 packet. Nothing in the repository depends on this crate except
+//! `splot-cli`.
 //!
 //! The [`Context`] now owns a [`splot_parallel::WorkerPool`] configured by an
 //! [`EncoderRuntimeConfig`] thread-count policy; thread count is a runtime knob
@@ -21,15 +22,20 @@
 
 pub mod config;
 pub mod context;
+mod core_boundary;
 pub mod error;
 pub mod frame;
 mod recon_boundary;
 pub mod runtime;
 
+const _: fn() -> usize = core_boundary::dependency_marker;
 const _: fn() -> usize = recon_boundary::dependency_marker;
 
 pub use config::{BitDepth, ChromaSubsampling, EncoderConfig};
-pub use context::{Context, EncoderStatus, Packet};
+pub use context::{
+    Context, EncoderOperation, EncoderState, FlushStatus, Packet, ReceivePacketStatus,
+    SendFrameStatus,
+};
 pub use error::{Error, Result};
 pub use frame::{
     Frame, FrameId, FrameInfo, FramePlaneInput, FramePlanesInput, FrameTimestamp, RetainedFrame,

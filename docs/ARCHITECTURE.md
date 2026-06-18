@@ -82,10 +82,10 @@ by `cargo xtask check-dependency-direction`):
   a report, never a process failure.
 - **`splot-encode`** — the *shape* of the future encoder API (configuration,
   borrowed frame input views, explicit retained input sharing, and a push/pull
-  `Context`). It implements no encoding; every operation returns
-  `Error::Unimplemented`. Its direct `splot-recon` dependency currently supports
-  validated borrowed input views; closed-loop reconstruction integration remains
-  a future encoder phase.
+  `Context`). It implements a typed no-output lifecycle state machine, but no
+  coded packet production or successful encode path. Its direct `splot-recon`
+  dependency currently supports validated borrowed input views; closed-loop
+  reconstruction integration remains a future encoder phase.
 - **`splot-cli`** — the thin `splot` binary. It parses arguments (clap),
   initializes logging (tracing), reads/writes files, and calls library APIs. No
   codec logic: the `inspect`/`validate` text and JSON rendering in
