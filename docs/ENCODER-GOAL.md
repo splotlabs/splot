@@ -5,8 +5,9 @@
 `Feature ID: DOC-ENCODER-PROGRAM-CONTRACT`
 
 This document defines the program target for the first supported encoder profile.
-It is not an implementation claim: today `splot-encode` still returns
-`Error::Unimplemented` for encode operations.
+It is not an implementation claim: today `splot-encode` has frame input views and
+a typed lifecycle state machine, but no coded packet production or successful
+encode output path.
 
 ## Baseline Encoder Profile v1
 
@@ -48,7 +49,8 @@ IDs, OpenSpec changes, tests, and proof land:
 The current encoder truth is intentionally narrow:
 
 - `splot-encode` owns API shape only. `send_frame`, `receive_packet`, and `flush`
-  return `Error::Unimplemented`.
+  now expose a typed accepting/draining/finished/failed lifecycle, but
+  `receive_packet` still cannot return a real AV2 packet.
 - `splot-core` owns writer primitives, OBU payload writers, and Annex B/IVF helpers,
   but it does not generate entropy-coded tile payloads.
 - `splot-recon` owns reconstruction building blocks, and `splot-encode` uses

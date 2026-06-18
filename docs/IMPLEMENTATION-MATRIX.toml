@@ -3887,7 +3887,7 @@ openspec_change = "encoder-frame-input-views"
 tracking_issue = ""
 owner = "encoder"
 risk = "medium"
-notes = "Input format plumbing; not normative AV2 syntax. The encoder now has validated borrowed 8-bit YUV420 frame input views over splot-recon PlaneRef, typed frame id/timestamp metadata, explicit RetainedFrame sharing over SharedFrame, context send_frame accepts the real Frame<'_> type, and unit/property plus fuzz target coverage exercise dimensions, strides, odd visible sizes, missing planes, unsupported formats, and truncated buffers. Residual: no Y4M reader, no 10-bit input view, no lookahead materialization, no context state machine, and no public encode success path."
+notes = "Input format plumbing; not normative AV2 syntax. The encoder now has validated borrowed 8-bit YUV420 frame input views over splot-recon PlaneRef, typed frame id/timestamp metadata, explicit RetainedFrame sharing over SharedFrame, context send_frame accepts a borrowed real Frame<'_> input, and unit/property plus fuzz target coverage exercise dimensions, strides, odd visible sizes, missing planes, unsupported formats, and truncated buffers. Residual: no Y4M reader, no 10-bit input view, no lookahead materialization, and no public encode success path."
 
 [feature.status]
 mapped = "partial"
@@ -3902,8 +3902,41 @@ avm_diff = "not-applicable"
 perf = "todo"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/frame.rs::tests", "crates/splot-encode/src/context.rs::tests::encoding_operations_are_unimplemented", "fuzz/fuzz_targets/encoder_frame_input_views_bytes.rs"]
+tests = ["crates/splot-encode/src/frame.rs::tests", "fuzz/fuzz_targets/encoder_frame_input_views_bytes.rs"]
 commands = ["cargo test -p splot-encode --locked", "cargo check --manifest-path fuzz/Cargo.toml --bins", "cargo +nightly fuzz run encoder_frame_input_views_bytes"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "ENC-CONTEXT-STATE-MACHINE"
+name = "Encoder context state machine"
+category = "encoder"
+kind = "encoder-api"
+spec_sections = []
+sources = []
+crate = "splot-encode"
+module = "crates/splot-encode/src/context.rs"
+openspec_change = "encoder-context-state-machine"
+tracking_issue = ""
+owner = "encoder"
+risk = "medium"
+notes = "Non-normative encoder API lifecycle plumbing. Context now exposes accepting/draining/finished/failed state, operation-specific send/receive/flush statuses, typed invalid-state errors, retryable queue-full backpressure without consuming the caller's borrowed frame, config/frame metadata validation before queueing, fixed bounded queue accounting over frame metadata only, and no-output draining semantics. It never retains borrowed pixel buffers, emits no fake coded packets, and does not expose public AV2 encode success."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/context.rs::tests", "fuzz/fuzz_targets/encoder_context_state_machine_bytes.rs", "crates/splot-cli/tests/encode_cli.rs"]
+commands = ["cargo test -p splot-encode --locked", "cargo test -p splot-cli --locked", "cargo check --manifest-path fuzz/Cargo.toml --bins --locked", "cargo +nightly fuzz run encoder_context_state_machine_bytes -- -runs=128", "cargo xtask check-fuzz-targets"]
 fixtures = []
 diagnostics = []
 
@@ -3935,8 +3968,8 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/context.rs::tests::encoding_operations_are_unimplemented", "xtask/src/main.rs::tests::dependency_direction_allows_encoder_recon_edge_only", "xtask/src/main.rs::tests::dependency_direction_keeps_recon_tables_only"]
-commands = ["cargo check -p splot-encode --offline", "cargo test -p splot-encode encoding_operations_are_unimplemented --offline", "cargo test -p xtask dependency_direction --offline", "cargo xtask check-dependency-direction"]
+tests = ["crates/splot-encode/src/context.rs::tests::receive_before_input_needs_more_data", "xtask/src/main.rs::tests::dependency_direction_allows_encoder_recon_edge_only", "xtask/src/main.rs::tests::dependency_direction_keeps_recon_tables_only"]
+commands = ["cargo check -p splot-encode --offline", "cargo test -p splot-encode receive_before_input_needs_more_data --offline", "cargo test -p xtask dependency_direction --offline", "cargo xtask check-dependency-direction"]
 fixtures = []
 diagnostics = []
 

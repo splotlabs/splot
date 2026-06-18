@@ -141,6 +141,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "encoder_context_state_machine_bytes"
+path = "fuzz_targets/encoder_context_state_machine_bytes.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "roundtrip_obu_bytes"
 path = "fuzz_targets/roundtrip_obu_bytes.rs"
 test = false
