@@ -4,9 +4,15 @@
 //! Coefficient-loop foundation helpers.
 //!
 //! Feature tracking: `DECODE-COEFF-ALL-ZERO-CONTEXT-STATE`,
-//! `DECODE-COEFF-ALL-ZERO-BLOCK-STATE`, `DECODE-COEFF-EOB-VALUE-STATE`.
+//! `DECODE-COEFF-ALL-ZERO-BLOCK-STATE`, `DECODE-COEFF-EOB-VALUE-STATE`,
+//! `DECODE-COEFF-EOB-SYMBOL-READ`.
+
+use splot_core::Error as CoreError;
+use splot_core::symbol::SymbolDecoder;
 
 use super::cdf::block_context::{txb_skip_ctx_luma, v_txb_skip_ctx};
+use super::cdf::block_read::BlockSymbolTraceReadError;
+use super::cdf::{EobPtSize, TileCdfSelector, TileCdfSubset};
 use super::coeff_state::{
     CoeffContextUpdate, TileCoeffContextState, TileCoeffStateError, TransformCoeffBlockState,
 };
@@ -80,6 +86,17 @@ pub(crate) struct NonZeroCoeffEobInput {
     pub(crate) eob_extra_bits: usize,
 }
 
+/// Caller-resolved facts for reading the nonzero § 5.20.7.27 EOB syntax.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct NonZeroCoeffEobSymbolInput {
+    /// Transform-size EOB CDF family selected by the caller.
+    pub(crate) size: EobPtSize,
+    /// Coefficient-CDF quantization context.
+    pub(crate) coeff_cdf_q_ctx: usize,
+    /// `eobCtx = (plane > 0) ? 2 : is_inter`, resolved by the caller.
+    pub(crate) eob_ctx: usize,
+}
+
 /// Summary of a § 5.20.7.27 all-zero coefficient block state application.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct AllZeroCoeffBlock {
@@ -136,12 +153,66 @@ impl NonZeroCoeffEob {
     }
 }
 
+/// Result of the crate-private nonzero EOB symbol-read sequence.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct NonZeroCoeffEobSymbolRead {
+    eob: NonZeroCoeffEob,
+    eob_pt_symbol: u8,
+    eob_pt_extra: u32,
+    eob_extra: bool,
+    eob_extra_bits: u32,
+}
+
+impl NonZeroCoeffEobSymbolRead {
+    /// Checked EOB value derived from the decoded syntax elements.
+    #[must_use]
+    pub(crate) const fn eob(self) -> NonZeroCoeffEob {
+        self.eob
+    }
+
+    /// Raw symbol decoded from the selected `eob_pt_*` CDF row.
+    #[must_use]
+    pub(crate) const fn eob_pt_symbol(self) -> u8 {
+        self.eob_pt_symbol
+    }
+
+    /// Size-specific `eob_pt_*_extra` literal value, or zero when absent.
+    #[must_use]
+    pub(crate) const fn eob_pt_extra(self) -> u32 {
+        self.eob_pt_extra
+    }
+
+    /// Decoded `eob_extra` flag, or false when absent.
+    #[must_use]
+    pub(crate) const fn eob_extra(self) -> bool {
+        self.eob_extra
+    }
+
+    /// Packed `eob_extra_bit` refinement value, or zero when absent.
+    #[must_use]
+    pub(crate) const fn eob_extra_bits(self) -> u32 {
+        self.eob_extra_bits
+    }
+}
+
 /// Error returned by coefficient-loop context handoff helpers.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum CoeffLoopContextError {
     /// The underlying coefficient context state rejected a plane or allocation fact.
     #[error("coefficient context state error: {0}")]
     State(#[from] TileCoeffStateError),
+    /// Reading an EOB CDF symbol failed.
+    #[error("coefficient EOB symbol read failed: {0}")]
+    EobSymbolRead(#[from] BlockSymbolTraceReadError),
+    /// Reading EOB literal refinement bits failed.
+    #[error("coefficient EOB literal read failed for {syntax}: {source}")]
+    EobLiteralRead {
+        /// Syntax element being read.
+        syntax: &'static str,
+        /// Source symbol-decoder error.
+        #[source]
+        source: CoreError,
+    },
     /// Caller supplied an `eobPt` outside the nonzero § 5.20.7.27 range.
     #[error("coefficient EOB point {eob_pt} is outside the supported AV2 range 1..=11")]
     InvalidEobPoint {
@@ -315,6 +386,95 @@ pub(crate) fn nonzero_coeff_eob(
     })
 }
 
+/// Reads the AV2 § 5.20.7.27 nonzero-branch EOB syntax and returns its value.
+///
+/// The caller resolves the transform-size class, coefficient-CDF q context, and
+/// `eobCtx`; this helper performs only the `eob_pt_*`, optional
+/// `eob_pt_*_extra`, `eob_extra`, and `eob_extra_bit` read sequence before
+/// delegating the arithmetic to [`nonzero_coeff_eob`]. Scan walking,
+/// coefficient symbols, `Quant[]` writes, dequantization, and reconstruction
+/// remain deferred.
+pub(crate) fn read_nonzero_coeff_eob(
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    input: NonZeroCoeffEobSymbolInput,
+) -> Result<NonZeroCoeffEobSymbolRead, CoeffLoopContextError> {
+    let eob_pt_symbol = cdfs
+        .read_block_symbol_trace(
+            TileCdfSelector::EobPt {
+                size: input.size,
+                coeff_cdf_q_ctx: input.coeff_cdf_q_ctx,
+                eob_ctx: input.eob_ctx,
+            },
+            symbols,
+        )?
+        .get();
+    let eob_pt_extra_width = eob_pt_extra_width(input.size, eob_pt_symbol);
+    let eob_pt_extra = read_eob_literal(symbols, eob_pt_extra_width, "eob_pt_extra")?;
+    let eob_pt = resolved_eob_pt(eob_pt_symbol, eob_pt_extra_width, eob_pt_extra);
+
+    let (eob_extra, eob_extra_bits) = if eob_pt >= 3 {
+        let eob_extra = cdfs
+            .read_block_symbol_trace(
+                TileCdfSelector::EobExtra {
+                    coeff_cdf_q_ctx: input.coeff_cdf_q_ctx,
+                },
+                symbols,
+            )?
+            .get()
+            != 0;
+        let width = (eob_pt - 3) as u32;
+        (
+            eob_extra,
+            read_eob_literal(symbols, width, "eob_extra_bit")?,
+        )
+    } else {
+        (false, 0)
+    };
+
+    let eob = nonzero_coeff_eob(NonZeroCoeffEobInput {
+        eob_pt,
+        eob_extra,
+        eob_extra_bits: eob_extra_bits as usize,
+    })?;
+    Ok(NonZeroCoeffEobSymbolRead {
+        eob,
+        eob_pt_symbol,
+        eob_pt_extra,
+        eob_extra,
+        eob_extra_bits,
+    })
+}
+
+fn eob_pt_extra_width(size: EobPtSize, eob_pt_symbol: u8) -> u32 {
+    match (size, eob_pt_symbol) {
+        (EobPtSize::Pt256, 7) => 1,
+        (EobPtSize::Pt512 | EobPtSize::Pt1024, 7) => 2,
+        _ => 0,
+    }
+}
+
+fn resolved_eob_pt(eob_pt_symbol: u8, eob_pt_extra_width: u32, eob_pt_extra: u32) -> usize {
+    if eob_pt_extra_width == 0 {
+        usize::from(eob_pt_symbol) + 1
+    } else {
+        8 + eob_pt_extra as usize
+    }
+}
+
+fn read_eob_literal(
+    symbols: &mut SymbolDecoder<'_>,
+    width: u32,
+    syntax: &'static str,
+) -> Result<u32, CoeffLoopContextError> {
+    if width == 0 {
+        return Ok(0);
+    }
+    symbols
+        .read_literal(width)
+        .map_err(|source| CoeffLoopContextError::EobLiteralRead { syntax, source })
+}
+
 fn bounded_or_u32(values: &[u32], start: usize, count: usize) -> u32 {
     let mut value = 0;
     if let Some(tail) = values.get(start..) {
@@ -344,6 +504,9 @@ fn adjusted_coeff_extent(size4: usize) -> usize {
         .saturating_mul(COEFFS_PER_4X4)
         .min(MAX_ADJUSTED_COEFF_EXTENT)
 }
+
+#[cfg(test)]
+mod eob_symbol_tests;
 
 #[cfg(test)]
 mod tests {
