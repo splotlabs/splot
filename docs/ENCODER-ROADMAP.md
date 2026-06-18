@@ -80,6 +80,9 @@ Status: planned, replaces the parked toy bootstrap path.
 
 - Re-propose all-intra work under Baseline Encoder Profile v1 instead of resuming
   `toy-intra-encoder-v0`.
+- Land a private residual foundation before forward transform work, so
+  source-minus-prediction arithmetic, block geometry, and signed residual
+  materialization are proven independently of packet output.
 - Use closed-loop reconstruction before public success.
 - Emit only syntax the writer can produce and the validator accepts.
 - Record fixtures, hashes, and matrix proof before marking any encode stage done.
