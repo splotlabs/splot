@@ -9,6 +9,7 @@
 pub(crate) mod block_context;
 pub(crate) mod block_read;
 mod block_rows;
+pub(crate) mod coeff_context;
 pub(crate) mod context;
 mod lifecycle;
 pub(crate) mod partition_read;
