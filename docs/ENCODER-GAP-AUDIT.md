@@ -33,6 +33,11 @@ planning and status; it does not claim encoder behavior exists.
   forward-transform primitive for uniform residual blocks. It proves the no-op
   quant/dequant inverse handoff through `splot-recon`, but it is not a broad
   transform family, quantizer, token writer, or packet path.
+- `ENC-QUANTIZATION-V0` adds a private fixed-quantizer stage for that first 4x4
+  DCT_DCT DC-only coefficient subset. It validates qindex and dequant inputs,
+  proves the `splot-recon` dequant/inverse handoff for qindex zero, and is not a
+  quantization-matrix path, token writer, range encoder, rate-control mode, or
+  packet path.
 - `Packet` is still only a byte buffer wrapper, and no coded packet production
   path exists.
 - `EncoderConfig` exposes `BitDepth::Twelve`, but current Baseline Encoder Profile

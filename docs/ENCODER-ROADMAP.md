@@ -86,6 +86,9 @@ Status: planned, replaces the parked toy bootstrap path.
 - Land a private forward-transform foundation for the first 4x4 DCT_DCT DC-only
   uniform-residual subset before quantization work, proving the no-op
   quant/dequant inverse handoff without claiming broad transform support.
+- Land a private fixed-quantizer v0 for that first 4x4 DCT_DCT DC-only subset,
+  proving the `splot-recon` dequant/inverse handoff before coefficient
+  tokenization or rate-control work.
 - Use closed-loop reconstruction before public success.
 - Emit only syntax the writer can produce and the validator accepts.
 - Record fixtures, hashes, and matrix proof before marking any encode stage done.

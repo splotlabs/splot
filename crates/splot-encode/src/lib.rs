@@ -27,6 +27,7 @@ pub mod error;
 mod forward_transform;
 pub mod frame;
 mod header_plan;
+mod quantization;
 mod recon_boundary;
 mod residual;
 pub mod runtime;

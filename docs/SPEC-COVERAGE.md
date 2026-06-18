@@ -550,16 +550,19 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.13.3.22](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-22) | Resolve divisor process | `RECON-INTRA-DC-RECTANGULAR-PREDICTION` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.13.3.22](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-22) | Resolve divisor process | `RECON-INTRA-DC-SQUARE-PREDICTION` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.13.3.22](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-22) | Resolve divisor process | `RECON-INTRA-DC-SUBSAMPLED-PREDICTION` | ✅ | — | ✅ | ✅ | — |
+| [§ 7.14.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-14-2) | Dequantization functions | `ENC-QUANTIZATION-V0` | ✅ | — | — | ✅ | — |
 | [§ 7.14.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-14-2) | Dequantization functions | `RECON-DEQUANT-QUANTIZER-INDEX-RESOLUTION` | ✅ | — | — | ✅ | — |
 | [§ 7.14.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-14-2) | Dequantization functions | `RECON-DEQUANT-QUANTIZER-LOOKUP` | ✅ | — | — | ✅ | — |
 | [§ 7.14.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-14-3) | Reconstruct process | `ENC-RESIDUAL-FOUNDATION` | ✅ | — | — | ✅ | — |
 | [§ 7.14.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-14-3) | Reconstruct process | `RECON-RESIDUAL-ADDITION` | ✅ | — | ✅ | ✅ | — |
+| [§ 7.14.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-14-4) | Dequantization process | `ENC-QUANTIZATION-V0` | ✅ | — | — | ✅ | — |
 | [§ 7.14.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-14-4) | Dequantization process | `RECON-DEQUANT-PROCESS` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.14.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-14-4) | Dequantization process | `RECON-DEQUANT-QM-WEIGHT` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.15.2.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-15-2-1) | 1d inverse transform process | `RECON-INVERSE-TRANSFORM-1D` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.15.2.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-15-2-2) | Inverse Walsh-Hadamard transform process | `RECON-INVERSE-TRANSFORM-MATRIX-FREE` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.15.2.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-15-2-3) | Inverse identity transform process | `RECON-INVERSE-TRANSFORM-MATRIX-FREE` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.15.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-15-4) | 2D inverse transform process | `ENC-FORWARD-TRANSFORM-FOUNDATION` | ✅ | — | — | ✅ | — |
+| [§ 7.15.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-15-4) | 2D inverse transform process | `ENC-QUANTIZATION-V0` | ✅ | — | — | ✅ | — |
 | [§ 7.15.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-15-4) | 2D inverse transform process | `RECON-GET-TRANSFORM-1D-TYPE` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.15.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-15-4) | 2D inverse transform process | `RECON-INVERSE-TRANSFORM-2D-OUTER` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.15.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-15-4) | 2D inverse transform process | `RECON-TRANSFORM-SHIFT-LOOKUP` | ✅ | — | ✅ | ✅ | — |
