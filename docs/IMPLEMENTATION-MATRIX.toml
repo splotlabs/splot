@@ -9296,6 +9296,54 @@ fixtures = [
 diagnostics = ["decode/unsupported-feature"]
 
 [[feature]]
+id = "DECODE-COEFF-TX-CLASS-DERIVE"
+name = "Coefficient transform class derivation"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.20.7.27", "8.3.2"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/tile_payload/coeff_loop/max_level.rs"
+openspec_change = "coeff-tx-class-derive"
+tracking_issue = ""
+owner = "decoder"
+risk = "low"
+notes = "Adds a crate-private decode-local AV2 §8.3.2 `PlaneTxType -> txClass` derivation for ordinary coefficient syntax. `CoeffTransformClass::from_plane_tx_type` maps `V_DCT`, `V_ADST`, and `V_FLIPADST` to vertical class, maps `H_DCT`, `H_ADST`, and `H_FLIPADST` to horizontal class, and maps every other value to the §8.3.2 `TX_CLASS_2D` fallback. `derive_nonzero_coeff_max_levels_from_plane_tx_type` accepts caller-resolved `PlaneTxType`, derives `txClass`, and delegates to the existing `maxLevel` path over checked scan-walk entries. Tests cover every directional transform type, identity/2D/out-of-range fallback, and max-level equivalence with the direct transform-class config. This feature remains partial: it does not implement §5.20.7.29 `compute_tx_type`, derive scan order, wire runtime `coeffs()`, consume symbols, mutate CDF rows, write coefficient state, dequantize, inverse transform, residual add, reconstruct, output, refresh references, invoke AVM/dav2d, expose public APIs, or claim broad `decode_block()` / `decode_tile()` support."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/tile_payload/coeff_loop/max_level.rs::tests::coefficient_transform_class_derives_from_plane_tx_type",
+    "crates/splot-decode/src/tile_payload/coeff_loop/max_level.rs::tests::coefficient_max_level_plane_tx_type_handoff_matches_direct_config",
+]
+commands = [
+    "cargo test -p splot-decode max_level --locked",
+    "cargo test -p splot-decode coeff_loop --locked",
+    "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-decoder-conformance-coverage",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-decode/src/tile_payload/coeff_loop/max_level.rs",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
 id = "DECODE-COEFF-READ-QUANT-SYNTAX"
 name = "Coefficient read_quant syntax"
 category = "infrastructure"
