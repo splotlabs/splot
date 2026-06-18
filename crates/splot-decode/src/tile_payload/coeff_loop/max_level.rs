@@ -10,9 +10,9 @@ use std::collections::TryReserveError;
 use super::quant_pass::CoeffQuantPassInput;
 use super::scan_walk::{CoeffScanEntry, NonZeroCoeffScanWalk};
 
-const NUM_BASE_LEVELS: u32 = 2;
-const COEFF_BASE_RANGE: u32 = 3;
-const LF_NUM_BASE_LEVELS: u32 = 4;
+pub(crate) const NUM_BASE_LEVELS: u32 = 2;
+pub(crate) const COEFF_BASE_RANGE: u32 = 3;
+pub(crate) const LF_NUM_BASE_LEVELS: u32 = 4;
 
 /// Caller-resolved transform class for ordinary coefficient syntax.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -117,6 +117,23 @@ fn derive_coeff_max_level(entry: CoeffScanEntry, config: CoeffMaxLevelConfig) ->
         is_low_frequency,
         max_level,
     }
+}
+
+/// Returns whether `get_lf_limits(row, col, txClass, plane)` selects the
+/// low-frequency coefficient banks for this entry.
+pub(crate) fn coeff_is_low_frequency(
+    entry: CoeffScanEntry,
+    plane: usize,
+    tx_class: CoeffTransformClass,
+) -> bool {
+    get_lf_limits(
+        entry,
+        CoeffMaxLevelConfig {
+            plane,
+            tx_class,
+            is_hidden: false,
+        },
+    )
 }
 
 fn get_lf_limits(entry: CoeffScanEntry, config: CoeffMaxLevelConfig) -> bool {

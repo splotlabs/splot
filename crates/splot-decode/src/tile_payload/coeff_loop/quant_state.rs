@@ -25,6 +25,16 @@ const TCQ_NEXT_STATE: [[usize; TCQ_PARITIES]; TCQ_STATES] = [
     [3, 7],
 ];
 
+/// Returns the next ordinary coefficient `tcqState` for one decoded parity.
+///
+/// The state table is AV2 §5.20.7.27 local decode state. Invalid caller state
+/// returns `None` instead of indexing the table.
+pub(crate) fn next_tcq_state(tcq_state: usize, parity: u32) -> Option<usize> {
+    TCQ_NEXT_STATE
+        .get(tcq_state)
+        .map(|row| row[(parity & 1) as usize])
+}
+
 /// Caller-resolved block-level facts for applying ordinary non-FSC quant state.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CoeffQuantStateConfig {
@@ -252,6 +262,14 @@ pub(crate) enum CoeffQuantStateWriteError {
     /// The local transform-block state rejected a checked coordinate or position.
     #[error("coefficient quant state error: {0}")]
     State(#[from] TileCoeffStateError),
+    /// The local TCQ state was outside the AV2 state table.
+    #[error("coefficient quant input {index} used invalid tcqState {tcq_state}")]
+    InvalidTcqState {
+        /// Input index.
+        index: usize,
+        /// Invalid `tcqState`.
+        tcq_state: usize,
+    },
 }
 
 /// Applies ordinary non-FSC §5.20.7.27 quantized coefficient state effects.
@@ -408,7 +426,12 @@ impl CoeffQuantStateAccumulator {
 
         if !self.lossless && self.use_tcq {
             let q0 = ((self.tcq_state >> 1) & 1) as u32;
-            self.tcq_state = TCQ_NEXT_STATE[self.tcq_state][(quant & 1) as usize];
+            self.tcq_state = next_tcq_state(self.tcq_state, quant).ok_or(
+                CoeffQuantStateWriteError::InvalidTcqState {
+                    index,
+                    tcq_state: self.tcq_state,
+                },
+            )?;
             if quant > 0 {
                 quant = checked_mul_sub(index, quant, 2, q0, "quant * 2 - q0")?;
             }
