@@ -39,12 +39,13 @@ planning and status; it does not claim encoder behavior exists.
   quantization-matrix path, token writer, range encoder, rate-control mode, or
   packet path.
 - `ENC-COEFFICIENT-TOKENIZATION-MINIMAL` adds a private token-fact bridge for the
-  current luma 4x4 DCT_DCT DC-only quantized subset. It derives scan, EOB,
-  begin-position, sign/magnitude, and ordered base-tier entropy-token records,
-  and proves those records through the in-tree AV2 §8.2 symbol encoder/decoder.
-  It is not broad coefficient syntax, coefficient base-range / `read_quant`
-  extension, tile CDF lifecycle, tile-body emission, rate control, or a packet
-  path.
+  current luma 4x4 DCT_DCT DC-only top-left neutral-spatial-context quantized
+  subset. It derives scan, EOB, begin-position, sign/magnitude, q-context, and
+  ordered base-tier entropy-token records, including the low-frequency EOB base
+  CDF row, and proves those records through the in-tree AV2 §8.2 symbol
+  encoder/decoder. It is not broad coefficient syntax, neighbor-derived spatial
+  contexts, coefficient base-range / `read_quant` extension, tile CDF lifecycle,
+  tile-body emission, rate control, or a packet path.
 - `Packet` is still only a byte buffer wrapper, and no coded packet production
   path exists.
 - `EncoderConfig` exposes `BitDepth::Twelve`, but current Baseline Encoder Profile

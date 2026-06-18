@@ -11,13 +11,15 @@
 //! It does not emit tile payloads, own tile CDF lifecycle, write packets, expose
 //! a public encoder API, or implement coefficient base-range / `read_quant`
 //! extension syntax beyond the declared minimal base-symbol tier.
+//! The current spatial-context subset is the top-left neutral luma block only:
+//! neighbor-derived `all_zero` / `dc_sign` contexts remain future tile-state work.
 
 #![allow(dead_code)]
 
 use splot_core::symbol::{Symbol, SymbolDecoder, SymbolDecoderConfig};
 use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig};
 use splot_core::tables::cdf::{
-    DEFAULT_COEFF_BASE_EOB_CDF, DEFAULT_DC_SIGN_CDF, DEFAULT_EOB_PT_16_CDF, DEFAULT_TXB_SKIP_CDF,
+    DEFAULT_COEFF_BASE_LF_EOB_CDF, DEFAULT_DC_SIGN_CDF, DEFAULT_EOB_PT_16_CDF, DEFAULT_TXB_SKIP_CDF,
 };
 use splot_recon::{PlaneId, PlaneRect, TransformClass, coefficient_scan_order};
 
@@ -27,15 +29,19 @@ use crate::quantization::QuantizedTransformBlock;
 const DCT_DCT_4X4_WIDTH: usize = 4;
 const DCT_DCT_4X4_HEIGHT: usize = 4;
 const DCT_DCT_4X4_COEFF_COUNT: usize = DCT_DCT_4X4_WIDTH * DCT_DCT_4X4_HEIGHT;
-const COEFF_CDF_Q_CTX: usize = 0;
+const COEFF_CDF_Q_CONTEXTS: usize = 4;
 const LUMA_PLANE_TYPE: usize = 0;
 const TX_SIZE_4X4_CTX: usize = 0;
-const TXB_SKIP_CTX: usize = 0;
+const TXB_SKIP_CTX_NEUTRAL: usize = 0;
 const EOB_CTX_LUMA_INTRA: usize = 0;
-const COEFF_BASE_EOB_CTX_DC: usize = 0;
+const COEFF_BASE_LF_EOB_CTX_DC: usize = 0;
 const DC_SIGN_GROUP_VISIBLE: usize = 0;
 const DC_SIGN_CTX_NEUTRAL: usize = 0;
 const MAX_BASE_EOB_MAGNITUDE: u32 = 3;
+const COEFF_CDF_Q_CTX_0_MAX_QINDEX: u32 = 90;
+const COEFF_CDF_Q_CTX_1_MAX_QINDEX: u32 = 140;
+const COEFF_CDF_Q_CTX_2_MAX_QINDEX: u32 = 190;
+const NEUTRAL_SPATIAL_CONTEXT_ORIGIN: usize = 0;
 
 /// Tokenizes the current 4x4 DCT_DCT DC-only quantized coefficient subset.
 pub(crate) fn tokenize_quantized_4x4_dct_dct_dc_only(
@@ -50,6 +56,7 @@ struct CoefficientTokenizationInput<'a> {
     block: PlaneRect,
     width: usize,
     height: usize,
+    coeff_cdf_q_ctx: usize,
     coefficients: &'a [i32],
 }
 
@@ -60,6 +67,7 @@ impl<'a> CoefficientTokenizationInput<'a> {
             block: block.block(),
             width: DCT_DCT_4X4_WIDTH,
             height: DCT_DCT_4X4_HEIGHT,
+            coeff_cdf_q_ctx: coeff_cdf_q_context(block.params().qindex()),
             coefficients: block.quantized(),
         }
     }
@@ -196,8 +204,8 @@ pub(crate) enum CoefficientCdfRowSelector {
         coeff_cdf_q_ctx: usize,
         eob_ctx: usize,
     },
-    /// `TileCoeffBaseEobCdf[coeff_cdf_q_ctx][tx_size][ctx]`.
-    CoeffBaseEob {
+    /// `TileCoeffBaseLfEobCdf[coeff_cdf_q_ctx][tx_size][ctx]`.
+    CoeffBaseLfEob {
         coeff_cdf_q_ctx: usize,
         tx_size: usize,
         ctx: usize,
@@ -216,7 +224,7 @@ impl CoefficientCdfRowSelector {
         match self {
             Self::TxbSkip { .. } => CoefficientTokenSyntax::AllZero.as_str(),
             Self::EobPt16 { .. } => CoefficientTokenSyntax::EobPt16.as_str(),
-            Self::CoeffBaseEob { .. } => CoefficientTokenSyntax::CoeffBaseEob.as_str(),
+            Self::CoeffBaseLfEob { .. } => CoefficientTokenSyntax::CoeffBaseEob.as_str(),
             Self::DcSign { .. } => CoefficientTokenSyntax::DcSign.as_str(),
         }
     }
@@ -373,7 +381,7 @@ fn tokenize_coefficients(
                 context: "all-zero coefficient tokens",
             }
         })?;
-        tokens.push(all_zero_token(true));
+        tokens.push(all_zero_token(input.coeff_cdf_q_ctx, true));
         return Ok(CoefficientTokenizationPlan {
             plane: input.plane,
             block: input.block,
@@ -402,28 +410,28 @@ fn tokenize_coefficients(
         .map_err(|_| Error::CoefficientTokenizationAllocationFailed {
             context: "DC coefficient tokens",
         })?;
-    tokens.push(all_zero_token(false));
+    tokens.push(all_zero_token(input.coeff_cdf_q_ctx, false));
     tokens.push(CoefficientEntropyToken {
         syntax: CoefficientTokenSyntax::EobPt16,
         selector: CoefficientCdfRowSelector::EobPt16 {
-            coeff_cdf_q_ctx: COEFF_CDF_Q_CTX,
+            coeff_cdf_q_ctx: input.coeff_cdf_q_ctx,
             eob_ctx: EOB_CTX_LUMA_INTRA,
         },
         symbol: 0,
     });
     tokens.push(CoefficientEntropyToken {
         syntax: CoefficientTokenSyntax::CoeffBaseEob,
-        selector: CoefficientCdfRowSelector::CoeffBaseEob {
-            coeff_cdf_q_ctx: COEFF_CDF_Q_CTX,
+        selector: CoefficientCdfRowSelector::CoeffBaseLfEob {
+            coeff_cdf_q_ctx: input.coeff_cdf_q_ctx,
             tx_size: TX_SIZE_4X4_CTX,
-            ctx: COEFF_BASE_EOB_CTX_DC,
+            ctx: COEFF_BASE_LF_EOB_CTX_DC,
         },
         symbol: (magnitude - 1) as u8,
     });
     tokens.push(CoefficientEntropyToken {
         syntax: CoefficientTokenSyntax::DcSign,
         selector: CoefficientCdfRowSelector::DcSign {
-            coeff_cdf_q_ctx: COEFF_CDF_Q_CTX,
+            coeff_cdf_q_ctx: input.coeff_cdf_q_ctx,
             plane_type: LUMA_PLANE_TYPE,
             group: DC_SIGN_GROUP_VISIBLE,
             ctx: DC_SIGN_CTX_NEUTRAL,
@@ -473,6 +481,14 @@ fn validate_input(input: CoefficientTokenizationInput<'_>) -> Result<()> {
             actual: input.coefficients.len(),
         });
     }
+    if input.block.x() != NEUTRAL_SPATIAL_CONTEXT_ORIGIN
+        || input.block.y() != NEUTRAL_SPATIAL_CONTEXT_ORIGIN
+    {
+        return Err(Error::CoefficientTokenizationUnsupportedSpatialContext {
+            plane: input.plane,
+            block: input.block,
+        });
+    }
     Ok(())
 }
 
@@ -485,63 +501,100 @@ fn first_non_dc(coefficients: &[i32]) -> Option<(usize, i32)> {
         .find(|(_, value)| *value != 0)
 }
 
-const fn all_zero_token(all_zero: bool) -> CoefficientEntropyToken {
+const fn all_zero_token(coeff_cdf_q_ctx: usize, all_zero: bool) -> CoefficientEntropyToken {
     CoefficientEntropyToken {
         syntax: CoefficientTokenSyntax::AllZero,
         selector: CoefficientCdfRowSelector::TxbSkip {
-            coeff_cdf_q_ctx: COEFF_CDF_Q_CTX,
+            coeff_cdf_q_ctx,
             plane_type: LUMA_PLANE_TYPE,
             tx_size: TX_SIZE_4X4_CTX,
-            ctx: TXB_SKIP_CTX,
+            ctx: TXB_SKIP_CTX_NEUTRAL,
         },
         symbol: all_zero as u8,
     }
 }
 
+const fn coeff_cdf_q_context(qindex: u32) -> usize {
+    if qindex <= COEFF_CDF_Q_CTX_0_MAX_QINDEX {
+        0
+    } else if qindex <= COEFF_CDF_Q_CTX_1_MAX_QINDEX {
+        1
+    } else if qindex <= COEFF_CDF_Q_CTX_2_MAX_QINDEX {
+        2
+    } else {
+        3
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct CoefficientTokenCdfRows {
-    txb_skip: [i32; 3],
-    eob_pt_16: [i32; 6],
-    coeff_base_eob: [i32; 4],
-    dc_sign: [i32; 3],
+    txb_skip: [[i32; 3]; COEFF_CDF_Q_CONTEXTS],
+    eob_pt_16: [[i32; 6]; COEFF_CDF_Q_CONTEXTS],
+    coeff_base_lf_eob: [[i32; 6]; COEFF_CDF_Q_CONTEXTS],
+    dc_sign: [[i32; 3]; COEFF_CDF_Q_CONTEXTS],
 }
 
 impl CoefficientTokenCdfRows {
     fn from_defaults() -> Self {
         Self {
-            txb_skip: DEFAULT_TXB_SKIP_CDF[COEFF_CDF_Q_CTX][LUMA_PLANE_TYPE][TX_SIZE_4X4_CTX]
-                [TXB_SKIP_CTX],
-            eob_pt_16: DEFAULT_EOB_PT_16_CDF[COEFF_CDF_Q_CTX][EOB_CTX_LUMA_INTRA],
-            coeff_base_eob: DEFAULT_COEFF_BASE_EOB_CDF[COEFF_CDF_Q_CTX][TX_SIZE_4X4_CTX]
-                [COEFF_BASE_EOB_CTX_DC],
-            dc_sign: DEFAULT_DC_SIGN_CDF[COEFF_CDF_Q_CTX][LUMA_PLANE_TYPE][DC_SIGN_GROUP_VISIBLE]
-                [DC_SIGN_CTX_NEUTRAL],
+            txb_skip: [
+                DEFAULT_TXB_SKIP_CDF[0][LUMA_PLANE_TYPE][TX_SIZE_4X4_CTX][TXB_SKIP_CTX_NEUTRAL],
+                DEFAULT_TXB_SKIP_CDF[1][LUMA_PLANE_TYPE][TX_SIZE_4X4_CTX][TXB_SKIP_CTX_NEUTRAL],
+                DEFAULT_TXB_SKIP_CDF[2][LUMA_PLANE_TYPE][TX_SIZE_4X4_CTX][TXB_SKIP_CTX_NEUTRAL],
+                DEFAULT_TXB_SKIP_CDF[3][LUMA_PLANE_TYPE][TX_SIZE_4X4_CTX][TXB_SKIP_CTX_NEUTRAL],
+            ],
+            eob_pt_16: [
+                DEFAULT_EOB_PT_16_CDF[0][EOB_CTX_LUMA_INTRA],
+                DEFAULT_EOB_PT_16_CDF[1][EOB_CTX_LUMA_INTRA],
+                DEFAULT_EOB_PT_16_CDF[2][EOB_CTX_LUMA_INTRA],
+                DEFAULT_EOB_PT_16_CDF[3][EOB_CTX_LUMA_INTRA],
+            ],
+            coeff_base_lf_eob: [
+                DEFAULT_COEFF_BASE_LF_EOB_CDF[0][TX_SIZE_4X4_CTX][COEFF_BASE_LF_EOB_CTX_DC],
+                DEFAULT_COEFF_BASE_LF_EOB_CDF[1][TX_SIZE_4X4_CTX][COEFF_BASE_LF_EOB_CTX_DC],
+                DEFAULT_COEFF_BASE_LF_EOB_CDF[2][TX_SIZE_4X4_CTX][COEFF_BASE_LF_EOB_CTX_DC],
+                DEFAULT_COEFF_BASE_LF_EOB_CDF[3][TX_SIZE_4X4_CTX][COEFF_BASE_LF_EOB_CTX_DC],
+            ],
+            dc_sign: [
+                DEFAULT_DC_SIGN_CDF[0][LUMA_PLANE_TYPE][DC_SIGN_GROUP_VISIBLE][DC_SIGN_CTX_NEUTRAL],
+                DEFAULT_DC_SIGN_CDF[1][LUMA_PLANE_TYPE][DC_SIGN_GROUP_VISIBLE][DC_SIGN_CTX_NEUTRAL],
+                DEFAULT_DC_SIGN_CDF[2][LUMA_PLANE_TYPE][DC_SIGN_GROUP_VISIBLE][DC_SIGN_CTX_NEUTRAL],
+                DEFAULT_DC_SIGN_CDF[3][LUMA_PLANE_TYPE][DC_SIGN_GROUP_VISIBLE][DC_SIGN_CTX_NEUTRAL],
+            ],
         }
     }
 
     fn row_mut(&mut self, selector: CoefficientCdfRowSelector) -> Result<&mut [i32]> {
         match selector {
             CoefficientCdfRowSelector::TxbSkip {
-                coeff_cdf_q_ctx: COEFF_CDF_Q_CTX,
+                coeff_cdf_q_ctx,
                 plane_type: LUMA_PLANE_TYPE,
                 tx_size: TX_SIZE_4X4_CTX,
-                ctx: TXB_SKIP_CTX,
-            } => Ok(self.txb_skip.as_mut_slice()),
+                ctx: TXB_SKIP_CTX_NEUTRAL,
+            } if coeff_cdf_q_ctx < COEFF_CDF_Q_CONTEXTS => {
+                Ok(self.txb_skip[coeff_cdf_q_ctx].as_mut_slice())
+            }
             CoefficientCdfRowSelector::EobPt16 {
-                coeff_cdf_q_ctx: COEFF_CDF_Q_CTX,
+                coeff_cdf_q_ctx,
                 eob_ctx: EOB_CTX_LUMA_INTRA,
-            } => Ok(self.eob_pt_16.as_mut_slice()),
-            CoefficientCdfRowSelector::CoeffBaseEob {
-                coeff_cdf_q_ctx: COEFF_CDF_Q_CTX,
+            } if coeff_cdf_q_ctx < COEFF_CDF_Q_CONTEXTS => {
+                Ok(self.eob_pt_16[coeff_cdf_q_ctx].as_mut_slice())
+            }
+            CoefficientCdfRowSelector::CoeffBaseLfEob {
+                coeff_cdf_q_ctx,
                 tx_size: TX_SIZE_4X4_CTX,
-                ctx: COEFF_BASE_EOB_CTX_DC,
-            } => Ok(self.coeff_base_eob.as_mut_slice()),
+                ctx: COEFF_BASE_LF_EOB_CTX_DC,
+            } if coeff_cdf_q_ctx < COEFF_CDF_Q_CONTEXTS => {
+                Ok(self.coeff_base_lf_eob[coeff_cdf_q_ctx].as_mut_slice())
+            }
             CoefficientCdfRowSelector::DcSign {
-                coeff_cdf_q_ctx: COEFF_CDF_Q_CTX,
+                coeff_cdf_q_ctx,
                 plane_type: LUMA_PLANE_TYPE,
                 group: DC_SIGN_GROUP_VISIBLE,
                 ctx: DC_SIGN_CTX_NEUTRAL,
-            } => Ok(self.dc_sign.as_mut_slice()),
+            } if coeff_cdf_q_ctx < COEFF_CDF_Q_CONTEXTS => {
+                Ok(self.dc_sign[coeff_cdf_q_ctx].as_mut_slice())
+            }
             selector => Err(Error::CoefficientTokenizationUnsupportedCdfSelector {
                 syntax: selector.syntax_name(),
             }),
@@ -560,7 +613,11 @@ mod tests {
     const SCAN_4X4_2D: [u16; 16] = [0, 4, 1, 8, 5, 2, 12, 9, 6, 3, 13, 10, 7, 14, 11, 15];
 
     fn rect(width: usize, height: usize) -> PlaneRect {
-        PlaneRect::new(0, 0, width, height).unwrap()
+        rect_at(0, 0, width, height)
+    }
+
+    fn rect_at(x: usize, y: usize, width: usize, height: usize) -> PlaneRect {
+        PlaneRect::new(x, y, width, height).unwrap()
     }
 
     fn uniform(sample: i32) -> [i32; DCT_DCT_4X4_COEFF_COUNT] {
@@ -602,8 +659,21 @@ mod tests {
             block,
             width,
             height,
+            coeff_cdf_q_ctx: 0,
             coefficients,
         }
+    }
+
+    #[test]
+    fn derives_coeff_cdf_q_context_from_qindex() {
+        assert_eq!(coeff_cdf_q_context(0), 0);
+        assert_eq!(coeff_cdf_q_context(90), 0);
+        assert_eq!(coeff_cdf_q_context(91), 1);
+        assert_eq!(coeff_cdf_q_context(140), 1);
+        assert_eq!(coeff_cdf_q_context(141), 2);
+        assert_eq!(coeff_cdf_q_context(190), 2);
+        assert_eq!(coeff_cdf_q_context(191), 3);
+        assert_eq!(coeff_cdf_q_context(255), 3);
     }
 
     #[test]
@@ -617,7 +687,15 @@ mod tests {
         assert_eq!(plan.begin_position(), 0);
         assert_eq!(plan.eob(), 0);
         assert_eq!(plan.sign_magnitude(), None);
-        assert_eq!(plan.tokens(), &[all_zero_token(true)]);
+        assert_eq!(plan.tokens(), &[all_zero_token(0, true)]);
+    }
+
+    #[test]
+    fn all_zero_block_uses_derived_q_context() {
+        let block = quantized(0, 120);
+        let plan = tokenize_quantized_4x4_dct_dct_dc_only(&block).unwrap();
+
+        assert_eq!(plan.tokens(), &[all_zero_token(1, true)]);
     }
 
     #[test]
@@ -641,28 +719,28 @@ mod tests {
         assert_eq!(
             plan.tokens(),
             &[
-                all_zero_token(false),
+                all_zero_token(0, false),
                 CoefficientEntropyToken {
                     syntax: CoefficientTokenSyntax::EobPt16,
                     selector: CoefficientCdfRowSelector::EobPt16 {
-                        coeff_cdf_q_ctx: COEFF_CDF_Q_CTX,
+                        coeff_cdf_q_ctx: 0,
                         eob_ctx: EOB_CTX_LUMA_INTRA,
                     },
                     symbol: 0,
                 },
                 CoefficientEntropyToken {
                     syntax: CoefficientTokenSyntax::CoeffBaseEob,
-                    selector: CoefficientCdfRowSelector::CoeffBaseEob {
-                        coeff_cdf_q_ctx: COEFF_CDF_Q_CTX,
+                    selector: CoefficientCdfRowSelector::CoeffBaseLfEob {
+                        coeff_cdf_q_ctx: 0,
                         tx_size: TX_SIZE_4X4_CTX,
-                        ctx: COEFF_BASE_EOB_CTX_DC,
+                        ctx: COEFF_BASE_LF_EOB_CTX_DC,
                     },
                     symbol: (magnitude - 1) as u8,
                 },
                 CoefficientEntropyToken {
                     syntax: CoefficientTokenSyntax::DcSign,
                     selector: CoefficientCdfRowSelector::DcSign {
-                        coeff_cdf_q_ctx: COEFF_CDF_Q_CTX,
+                        coeff_cdf_q_ctx: 0,
                         plane_type: LUMA_PLANE_TYPE,
                         group: DC_SIGN_GROUP_VISIBLE,
                         ctx: DC_SIGN_CTX_NEUTRAL,
@@ -695,7 +773,7 @@ mod tests {
             Some(CoefficientEntropyToken {
                 syntax: CoefficientTokenSyntax::DcSign,
                 selector: CoefficientCdfRowSelector::DcSign {
-                    coeff_cdf_q_ctx: COEFF_CDF_Q_CTX,
+                    coeff_cdf_q_ctx: 0,
                     plane_type: LUMA_PLANE_TYPE,
                     group: DC_SIGN_GROUP_VISIBLE,
                     ctx: DC_SIGN_CTX_NEUTRAL,
@@ -737,6 +815,27 @@ mod tests {
         assert!(matches!(
             err,
             Error::CoefficientTokenizationUnsupportedPlane { plane: PlaneId::U }
+        ));
+    }
+
+    #[test]
+    fn rejects_non_origin_spatial_context() {
+        let coefficients = [0; DCT_DCT_4X4_COEFF_COUNT];
+        let err = tokenize_coefficients(raw_input(
+            PlaneId::Y,
+            rect_at(4, 0, 4, 4),
+            4,
+            4,
+            &coefficients,
+        ))
+        .unwrap_err();
+
+        assert!(matches!(
+            err,
+            Error::CoefficientTokenizationUnsupportedSpatialContext {
+                plane: PlaneId::Y,
+                ..
+            }
         ));
     }
 

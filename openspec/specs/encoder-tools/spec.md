@@ -1337,13 +1337,14 @@ SHALL NOT emit syntax or create coded packets.
 
 The encoder SHALL provide a private coefficient-tokenization stage tracked by
 `ENC-COEFFICIENT-TOKENIZATION-MINIMAL`. For the current minimal subset, the
-stage SHALL accept a 4x4 DCT_DCT DC-only quantized block, derive coefficient
-scan metadata, EOB, begin position, sign/magnitude facts, and ordered entropy
-token records for AV2 §5.20.7.27 and §5.20.7.28. The stage SHALL prove those
-token values can be written through the in-tree AV2 §8.2 symbol encoder with
-scoped CDF rows and decoded back to the same values. It SHALL NOT emit tile
-payloads, coded packets, public CLI success, or broad coefficient syntax beyond
-the declared minimal tier.
+stage SHALL accept a top-left neutral-spatial-context 4x4 DCT_DCT DC-only
+quantized block, derive coefficient scan metadata, EOB, begin position,
+sign/magnitude facts, coefficient CDF q-context from qindex, and ordered
+entropy token records for AV2 §5.20.7.27 and §5.20.7.28. The stage SHALL prove
+those token values can be written through the in-tree AV2 §8.2 symbol encoder
+with scoped CDF rows and decoded back to the same values. It SHALL NOT emit tile
+payloads, coded packets, public CLI success, neighbor-derived spatial contexts,
+or broad coefficient syntax beyond the declared minimal tier.
 
 #### Scenario: All-zero block emits skip token only
 
@@ -1361,7 +1362,8 @@ the declared minimal tier.
 - **THEN** the tokenization stage SHALL report the DC scan position, EOB, begin
   position, and sign/magnitude facts
 - **AND** SHALL emit ordered entropy-token records for `all_zero`, `eob_pt_16`,
-  `coeff_base_eob`, and DC sign as required by the coefficient sign.
+  low-frequency `coeff_base_eob`, and DC sign as required by the coefficient
+  sign.
 
 #### Scenario: Token records roundtrip through section 8.2 symbols
 
@@ -1375,8 +1377,8 @@ the declared minimal tier.
 #### Scenario: Unsupported coefficient inputs are rejected
 
 - **WHEN** tokenization receives an unsupported shape, transform subset,
-  non-DC coefficient, or coefficient magnitude that would require syntax
-  outside the declared minimal tier
+  non-top-left spatial context, non-DC coefficient, or coefficient magnitude
+  that would require syntax outside the declared minimal tier
 - **THEN** the stage SHALL return a typed encoder error
 - **AND** SHALL NOT return partial token data.
 

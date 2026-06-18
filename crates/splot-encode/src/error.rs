@@ -388,6 +388,17 @@ pub enum Error {
         actual: usize,
     },
 
+    /// A coefficient-tokenization block would require non-neutral spatial contexts.
+    #[error(
+        "encoder coefficient tokenization for plane {plane:?}, block {block:?} currently supports only the top-left neutral spatial context"
+    )]
+    CoefficientTokenizationUnsupportedSpatialContext {
+        /// Plane whose tokenization was requested.
+        plane: PlaneId,
+        /// Visible-plane-relative block rectangle.
+        block: splot_recon::PlaneRect,
+    },
+
     /// Coefficient scan-order derivation failed.
     #[error(
         "encoder coefficient tokenization scan derivation failed for plane {plane:?}, block {block:?}: {source}"

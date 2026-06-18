@@ -20,12 +20,15 @@ selectors used in tests, not by a tile CDF lifecycle or full syntax planner.
 
 - Add a private `coefficient_tokenization` module for
   `ENC-COEFFICIENT-TOKENIZATION-MINIMAL`.
-- Accept the current 4x4 DCT_DCT DC-only quantized block subset.
-- Derive scan metadata, EOB, begin position, sign/magnitude facts, and ordered
-  entropy-token records for all-zero and DC-only base-symbol magnitudes.
+- Accept the current top-left neutral-spatial-context 4x4 DCT_DCT DC-only
+  quantized block subset.
+- Derive scan metadata, EOB, begin position, sign/magnitude facts, coefficient
+  CDF q-context from qindex, and ordered entropy-token records for all-zero and
+  DC-only base-symbol magnitudes.
 - Prove token values can be written through the in-tree AV2 section 8.2
-  `splot-core` symbol encoder with scoped default CDF rows and decoded back to
-  the same values.
+  `splot-core` symbol encoder with scoped default CDF rows, including the
+  low-frequency EOB base CDF row for the DC coefficient, and decoded back to the
+  same values.
 - Preserve the no-packet invariant in `Context`.
 
 **Non-Goals:**
@@ -35,6 +38,7 @@ selectors used in tests, not by a tile CDF lifecycle or full syntax planner.
 - No non-DC coefficients, chroma, inter blocks, FSC, IDTX, TCQ, parity hiding,
   transform selection, coefficient base-range extension, or `read_quant`
   magnitude extension beyond the declared minimal base-symbol tier.
+- No non-top-left blocks or neighbor-derived spatial contexts.
 - No tile CDF save/restore lifecycle, adaptive tile CDF ownership, or broad
   section 8.3 CDF selection implementation.
 - No dependency graph change and no AVM/dav2d evidence; this helper emits no
@@ -67,9 +71,10 @@ selectors used in tests, not by a tile CDF lifecycle or full syntax planner.
 
 5. **Use scoped default CDF rows for roundtrip proof only.**
    The roundtrip tests use generated default CDF rows from `splot-core` to
-   encode and decode the token values. This proves compatibility with the
-   section 8.2 symbol primitive while keeping tile CDF lifecycle and section 8.3
-   selector completeness out of scope.
+   encode and decode the token values. The subset derives q-context from qindex
+   and uses the low-frequency EOB base CDF row for the DC coefficient, while
+   keeping neighbor-derived spatial contexts, tile CDF lifecycle, and broad
+   section 8.3 selector completeness out of scope.
 
 ## Flight Manifest
 
