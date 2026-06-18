@@ -86,6 +86,12 @@ pub(crate) enum SyntaxIrError {
     #[error("quantized coefficient {index:?} has zero value")]
     ZeroCoefficient { index: CoefficientIndex },
 
+    #[error("quantized coefficient index {index:?} exceeds planning limit {limit}")]
+    CoefficientIndexOutOfRange {
+        index: CoefficientIndex,
+        limit: usize,
+    },
+
     #[error("block {block:?} coefficient eob {eob} exceeds transform area {area}")]
     CoefficientsOutsideTransform {
         block: BlockIndex,
@@ -497,6 +503,12 @@ impl QuantizedCoefficients {
         for (index, value) in entries {
             if value == 0 {
                 return Err(SyntaxIrError::ZeroCoefficient { index });
+            }
+            if usize::from(index.get()) >= MAX_COEFFICIENTS_PER_BLOCK {
+                return Err(SyntaxIrError::CoefficientIndexOutOfRange {
+                    index,
+                    limit: MAX_COEFFICIENTS_PER_BLOCK,
+                });
             }
             if let Some(previous) = previous_index {
                 if index == previous {

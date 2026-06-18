@@ -258,6 +258,16 @@ fn rejects_duplicate_and_zero_quantized_coefficients() {
             next: PlanOrderKey::Coefficient(CoefficientIndex(2)),
         }
     ));
+
+    let err = QuantizedCoefficients::new(vec![coefficient(MAX_COEFFICIENTS_PER_BLOCK as u16, 1)])
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        SyntaxIrError::CoefficientIndexOutOfRange {
+            index: CoefficientIndex(4096),
+            limit: MAX_COEFFICIENTS_PER_BLOCK,
+        }
+    ));
 }
 
 #[test]

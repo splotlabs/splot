@@ -56,8 +56,8 @@ consume the plan.
 #### Scenario: Invalid coefficient plans fail
 
 - **WHEN** a quantized coefficient plan contains duplicate coefficient indices
-  or zero-valued coefficient entries, or a block's coefficient EOB exceeds its
-  transform area
+  or zero-valued or out-of-range coefficient entries, or a block's coefficient
+  EOB exceeds its transform area
 - **THEN** construction fails with a typed planning error
 
 #### Scenario: Invalid plan references fail

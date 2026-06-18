@@ -8,13 +8,13 @@
 - [x] 2.1 Add a private `splot-encode` syntax IR module and wire it into the crate without public re-exports.
 - [x] 2.2 Implement typed indices/newtypes and bounded constructors for sequence, frame, tile, superblock, block, coefficient, and event planning records.
 - [x] 2.3 Implement deterministic ordered storage and debug rendering for plans and syntax/token events.
-- [x] 2.4 Return typed planning errors for out-of-order or non-contiguous children, invalid child references, duplicate or zero coefficient entries, coefficient/transform bound violations, count-limit violations, and overflow.
+- [x] 2.4 Return typed planning errors for out-of-order or non-contiguous children, invalid child references, duplicate, zero, or out-of-range coefficient entries, coefficient/transform bound violations, count-limit violations, and overflow.
 - [x] 2.5 Preserve the existing encoder context lifecycle so packet production remains unimplemented.
 
 ## 3. Tests
 
 - [x] 3.1 Add positive construction tests for sequence/frame/tile/superblock/block/token plans.
-- [x] 3.2 Add negative tests for ordering, child contiguity, invalid references, duplicate coefficients, zero coefficients, coefficient/transform bounds, and count-limit/overflow failures.
+- [x] 3.2 Add negative tests for ordering, child contiguity, invalid references, duplicate coefficients, zero/out-of-range coefficients, coefficient/transform bounds, and count-limit/overflow failures.
 - [x] 3.3 Add regression tests showing repeated construction produces stable debug output and invalid construction returns no partially mutated plan.
 - [x] 3.4 Add a context regression test proving `receive_packet` still returns no coded packet.
 
