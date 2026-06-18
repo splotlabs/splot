@@ -5,7 +5,7 @@
 //!
 //! Feature tracking: `DECODE-COEFF-ALL-ZERO-CONTEXT-STATE`,
 //! `DECODE-COEFF-ALL-ZERO-BLOCK-STATE`, `DECODE-COEFF-EOB-VALUE-STATE`,
-//! `DECODE-COEFF-EOB-SYMBOL-READ`.
+//! `DECODE-COEFF-EOB-SYMBOL-READ`, `DECODE-COEFF-EOB-SIZE-CONTEXT`.
 
 use splot_core::Error as CoreError;
 use splot_core::symbol::SymbolDecoder;
@@ -21,6 +21,9 @@ const LUMA_PLANE: usize = 0;
 const V_PLANE: usize = 2;
 const COEFFS_PER_4X4: usize = 4;
 const MAX_ADJUSTED_COEFF_EXTENT: usize = 32;
+const MIN_EOB_TX_LOG2: usize = 2;
+const EOB_MULTISIZE_LOG2_CAP: usize = 5;
+const EOB_MULTISIZE_OFFSET: usize = 4;
 const MIN_NONZERO_EOB_PT: usize = 1;
 const MAX_NONZERO_EOB_PT: usize = 11;
 
@@ -95,6 +98,21 @@ pub(crate) struct NonZeroCoeffEobSymbolInput {
     pub(crate) coeff_cdf_q_ctx: usize,
     /// `eobCtx = (plane > 0) ? 2 : is_inter`, resolved by the caller.
     pub(crate) eob_ctx: usize,
+}
+
+/// Caller-resolved facts for deriving nonzero § 5.20.7.27 EOB CDF selection.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct NonZeroCoeffEobContextInput {
+    /// Plane index, 0 for luma and 1/2 for chroma.
+    pub(crate) plane: usize,
+    /// Whether the current block is inter-predicted.
+    pub(crate) is_inter: bool,
+    /// `Tx_Width_Log2[txSz]`, resolved by the caller from transform syntax.
+    pub(crate) tx_width_log2: usize,
+    /// `Tx_Height_Log2[txSz]`, resolved by the caller from transform syntax.
+    pub(crate) tx_height_log2: usize,
+    /// Coefficient-CDF quantization context.
+    pub(crate) coeff_cdf_q_ctx: usize,
 }
 
 /// Summary of a § 5.20.7.27 all-zero coefficient block state application.
@@ -242,6 +260,18 @@ pub(crate) enum CoeffLoopContextError {
         eob_extra_bits: usize,
         /// Largest packed refinement value allowed by `eobPt`.
         max_eob_extra_bits: usize,
+    },
+    /// Caller supplied a transform log2 dimension outside the AV2 EOB-size range.
+    #[error(
+        "coefficient EOB transform {axis} log2 value {value} is below the AV2 minimum {minimum}"
+    )]
+    InvalidEobTransformLog2 {
+        /// Transform axis whose log2 dimension is invalid.
+        axis: &'static str,
+        /// Caller-provided log2 dimension.
+        value: usize,
+        /// Minimum accepted log2 dimension.
+        minimum: usize,
     },
 }
 
@@ -444,6 +474,59 @@ pub(crate) fn read_nonzero_coeff_eob(
         eob_extra,
         eob_extra_bits,
     })
+}
+
+/// Derives the AV2 § 5.20.7.27 nonzero EOB symbol-reader input.
+///
+/// This helper maps caller-resolved `Tx_Width_Log2[txSz]` and
+/// `Tx_Height_Log2[txSz]` to the active `eob_pt_*` CDF family and derives
+/// `eobCtx = (plane > 0) ? 2 : is_inter` before handing the facts to
+/// [`read_nonzero_coeff_eob`]. It does not read symbols, walk scan order, update
+/// coefficient state, dequantize, or reconstruct.
+pub(crate) fn nonzero_coeff_eob_symbol_input(
+    input: NonZeroCoeffEobContextInput,
+) -> Result<NonZeroCoeffEobSymbolInput, CoeffLoopContextError> {
+    Ok(NonZeroCoeffEobSymbolInput {
+        size: eob_pt_size_from_tx_log2(input.tx_width_log2, input.tx_height_log2)?,
+        coeff_cdf_q_ctx: input.coeff_cdf_q_ctx,
+        eob_ctx: eob_context(input.plane, input.is_inter),
+    })
+}
+
+fn eob_pt_size_from_tx_log2(
+    tx_width_log2: usize,
+    tx_height_log2: usize,
+) -> Result<EobPtSize, CoeffLoopContextError> {
+    checked_eob_tx_log2("width", tx_width_log2)?;
+    checked_eob_tx_log2("height", tx_height_log2)?;
+
+    let eob_multisize = tx_width_log2.min(EOB_MULTISIZE_LOG2_CAP)
+        + tx_height_log2.min(EOB_MULTISIZE_LOG2_CAP)
+        - EOB_MULTISIZE_OFFSET;
+    Ok(match eob_multisize {
+        0 => EobPtSize::Pt16,
+        1 => EobPtSize::Pt32,
+        2 => EobPtSize::Pt64,
+        3 => EobPtSize::Pt128,
+        4 => EobPtSize::Pt256,
+        5 => EobPtSize::Pt512,
+        _ => EobPtSize::Pt1024,
+    })
+}
+
+fn checked_eob_tx_log2(axis: &'static str, value: usize) -> Result<(), CoeffLoopContextError> {
+    if value < MIN_EOB_TX_LOG2 {
+        return Err(CoeffLoopContextError::InvalidEobTransformLog2 {
+            axis,
+            value,
+            minimum: MIN_EOB_TX_LOG2,
+        });
+    }
+    Ok(())
+}
+
+fn eob_context(plane: usize, is_inter: bool) -> usize {
+    if plane > 0 { 2 } else { usize::from(is_inter) }
 }
 
 fn eob_pt_extra_width(size: EobPtSize, eob_pt_symbol: u8) -> u32 {
