@@ -242,8 +242,12 @@ the nonzero path no longer accepts a contradictory caller-supplied `plane_type`
 at that wrapper. `DECODE-COEFF-ORDINARY-BRANCH-GEOMETRY-HANDOFF` now derives the
 state-context `x4`, `y4`, `w4`, and `h4` facts from the same nonzero block-start
 geometry carried by the branch input before delegating to the `plane_type`
-handoff. It still does not derive raw `startX`/`startY`/`txSz`, implement §
-5.20.7.29 `compute_tx_type`, derive scan order, or wire runtime `coeffs()`.
+handoff. `DECODE-COEFF-ORDINARY-BRANCH-COEFFS-GEOMETRY-HANDOFF` now derives that
+block geometry from AV2 § 5.20.7.27 `coeffs()` geometry facts (`startX`,
+`startY`, caller-resolved `Tx_Width[txSz]`, and `Tx_Height[txSz]`) before
+delegating to the block-geometry handoff. It still does not derive
+`Tx_Width[txSz]` or `Tx_Height[txSz]` from `txSz`, implement § 5.20.7.29
+`compute_tx_type`, derive scan order, or wire runtime `coeffs()`.
 Runtime integration of nonzero coefficient blocks, tile context fact derivation
 for nonzero blocks, dequantization, and
 reconstruction remain unsupported. The
