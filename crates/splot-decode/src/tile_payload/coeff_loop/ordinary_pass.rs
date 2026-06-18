@@ -5,12 +5,15 @@
 //!
 //! Feature tracking: `DECODE-COEFF-ORDINARY-PASS-COMPOSE`,
 //! `DECODE-COEFF-ORDINARY-DERIVED-BASE-PASS`,
-//! `DECODE-COEFF-ORDINARY-DERIVED-SIGN-PASS`.
+//! `DECODE-COEFF-ORDINARY-DERIVED-SIGN-PASS`,
+//! `DECODE-COEFF-NONZERO-CONTEXT-COMMIT`.
 
 use splot_core::symbol::SymbolDecoder;
 
 use super::super::cdf::TileCdfSubset;
-use super::super::coeff_state::TransformCoeffBlockState;
+use super::super::coeff_state::{
+    CoeffContextUpdate, TileCoeffContextState, TileCoeffStateError, TransformCoeffBlockState,
+};
 use super::base_level_pass::{
     CoeffBaseDerivedLevelPassConfig, CoeffBaseDerivedLevelPassError,
     NonZeroCoeffBaseDerivedLevelPass, apply_nonzero_coeff_base_derived_level_pass,
@@ -89,6 +92,21 @@ pub(crate) struct CoeffOrdinaryDerivedSignPassConfig<'a> {
     pub(crate) above_dc: &'a [u8],
     /// `LeftDcContext[plane]`.
     pub(crate) left_dc: &'a [u8],
+    /// Transform-block x coordinate in 4x4 units.
+    pub(crate) x4: usize,
+    /// Transform-block y coordinate in 4x4 units.
+    pub(crate) y4: usize,
+    /// Transform-block width in 4x4 units.
+    pub(crate) w4: usize,
+    /// Transform-block height in 4x4 units.
+    pub(crate) h4: usize,
+}
+
+/// Caller-resolved facts for committing the end-of-`coeffs()` context lines.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CoeffOrdinaryContextCommitConfig {
+    /// Plane index, 0 for luma and 1/2 for chroma.
+    pub(crate) plane: usize,
     /// Transform-block x coordinate in 4x4 units.
     pub(crate) x4: usize,
     /// Transform-block y coordinate in 4x4 units.
@@ -238,6 +256,9 @@ pub(crate) enum CoeffOrdinaryPassError {
     /// `read_quant` plus signed `Quant[]` writes failed.
     #[error("ordinary coefficient pass quant pass failed: {0}")]
     Quant(#[from] CoeffQuantPassError),
+    /// End-of-`coeffs()` tile context-line update failed.
+    #[error("ordinary coefficient pass context update failed: {0}")]
+    ContextUpdate(#[from] TileCoeffStateError),
 }
 
 /// Runs the loaded ordinary non-FSC coefficient pass from nonzero EOB start.
@@ -373,6 +394,37 @@ pub(crate) fn apply_nonzero_coeff_ordinary_pass_with_derived_base(
         quant_pass,
         block,
     })
+}
+
+/// Runs the derived ordinary non-FSC pass and commits tile context lines.
+///
+/// This wraps [`apply_nonzero_coeff_ordinary_pass_with_derived_base`] with the
+/// AV2 § 5.20.7.27 end-of-`coeffs()` context update
+/// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27`). The final
+/// `culLevel` and `dcCategory` come from the signed `Quant[]` state summary
+/// produced after § 5.20.7.28 `read_quant`; the caller still resolves scan,
+/// transform, plane, geometry, parity, TCQ, lossless, and DC context facts.
+/// Runtime `coeffs()` wiring, dequantization, inverse transform, residual add,
+/// and reconstruction remain out of scope.
+pub(crate) fn apply_nonzero_coeff_ordinary_pass_with_context_commit(
+    state: &mut TileCoeffContextState,
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    input: CoeffOrdinaryDerivedBasePassInput<'_>,
+    context: CoeffOrdinaryContextCommitConfig,
+) -> Result<NonZeroCoeffOrdinaryDerivedBasePass, CoeffOrdinaryPassError> {
+    let pass = apply_nonzero_coeff_ordinary_pass_with_derived_base(cdfs, symbols, input)?;
+    let quant_state = pass.quant_pass().quant_state();
+    state.update_after_coeffs(CoeffContextUpdate {
+        plane: context.plane,
+        x4: context.x4,
+        y4: context.y4,
+        w4: context.w4,
+        h4: context.h4,
+        cul_level: quant_state.cul_level(),
+        dc_category: quant_state.dc_category(),
+    })?;
+    Ok(pass)
 }
 
 struct InterleavedSignQuantInput<'a> {

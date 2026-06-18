@@ -7,7 +7,7 @@ use splot_core::span::ByteOffset;
 use splot_core::symbol::{CdfUpdateMode, SymbolBitPosition, SymbolDecoder, SymbolDecoderConfig};
 
 use super::super::cdf::{CoeffCdfSelector, FrameCdfSubset, TileCdfSubset};
-use super::super::coeff_state::TileCoeffContextState;
+use super::super::coeff_state::{TileCoeffContextState, TileCoeffStateError};
 use super::base_level_pass::{
     CoeffBaseDerivedLevelPassConfig, CoeffBaseDerivedLevelPassError,
     NonZeroCoeffBaseDerivedLevelPass,
@@ -20,9 +20,11 @@ use super::branch::{CoeffBlockEobBranch, NonZeroCoeffBlockStart, NonZeroCoeffBlo
 use super::level_state::apply_nonzero_coeff_base_levels;
 use super::max_level::CoeffTransformClass;
 use super::ordinary_pass::{
-    CoeffOrdinaryDerivedBasePassInput, CoeffOrdinaryDerivedSignPassConfig, CoeffOrdinaryPassError,
-    CoeffOrdinaryPassInput, NonZeroCoeffOrdinaryDerivedBasePass, NonZeroCoeffOrdinaryPass,
-    apply_nonzero_coeff_ordinary_pass, apply_nonzero_coeff_ordinary_pass_with_derived_base,
+    CoeffOrdinaryContextCommitConfig, CoeffOrdinaryDerivedBasePassInput,
+    CoeffOrdinaryDerivedSignPassConfig, CoeffOrdinaryPassError, CoeffOrdinaryPassInput,
+    NonZeroCoeffOrdinaryDerivedBasePass, NonZeroCoeffOrdinaryPass,
+    apply_nonzero_coeff_ordinary_pass, apply_nonzero_coeff_ordinary_pass_with_context_commit,
+    apply_nonzero_coeff_ordinary_pass_with_derived_base,
 };
 use super::quant_pass::{
     CoeffQuantPassConfig, CoeffQuantPassMaxLevelConfig,
@@ -248,6 +250,39 @@ fn invalid_plane_type_sign_config() -> CoeffOrdinaryDerivedSignPassConfig<'stati
         plane_type: usize::MAX,
         ..luma_sign_config()
     }
+}
+
+fn context_commit_config() -> CoeffOrdinaryContextCommitConfig {
+    CoeffOrdinaryContextCommitConfig {
+        plane: 0,
+        x4: 1,
+        y4: 2,
+        w4: 2,
+        h4: 2,
+    }
+}
+
+fn invalid_plane_context_commit_config() -> CoeffOrdinaryContextCommitConfig {
+    CoeffOrdinaryContextCommitConfig {
+        plane: 3,
+        ..context_commit_config()
+    }
+}
+
+fn seeded_context_state() -> TileCoeffContextState {
+    let mut state = TileCoeffContextState::new(6, 6).unwrap();
+    state
+        .update_after_coeffs(super::super::coeff_state::CoeffContextUpdate {
+            plane: 0,
+            x4: 0,
+            y4: 0,
+            w4: 6,
+            h4: 6,
+            cul_level: 1,
+            dc_category: 1,
+        })
+        .unwrap();
+    state
 }
 
 fn quant_config() -> CoeffQuantPassConfig {
@@ -815,4 +850,112 @@ fn coefficient_ordinary_pass_with_derived_sign_rejects_bad_selector_before_quant
     assert_eq!(tile, tile_after_first_pass);
     assert_eq!(symbols.consumed_bits(), consumed_after_first_pass);
     assert_eq!(symbols.symbol_count(), symbols_after_first_pass);
+}
+
+#[test]
+fn coefficient_ordinary_pass_with_context_commit_updates_tile_context_lines() {
+    let config = luma_base_config(false, false);
+    let payload = find_derived_payload(&SCAN, config, |pass| {
+        pass.block().quant().iter().any(|quant| *quant != 0)
+    });
+    let (mut tile, mut symbols, start, _walk) = setup_start_and_walk(&payload, &SCAN).unwrap();
+    let mut context_state = seeded_context_state();
+
+    let pass = apply_nonzero_coeff_ordinary_pass_with_context_commit(
+        &mut context_state,
+        &mut tile,
+        &mut symbols,
+        CoeffOrdinaryDerivedBasePassInput {
+            start,
+            scan: &SCAN,
+            base_config: config,
+            sign_config: luma_sign_config(),
+            lossless: false,
+        },
+        context_commit_config(),
+    )
+    .unwrap();
+    let quant_state = pass.quant_pass().quant_state();
+
+    assert_eq!(
+        &context_state.above_level(0).unwrap()[1..3],
+        &[quant_state.cul_level(); 2]
+    );
+    assert_eq!(
+        &context_state.left_level(0).unwrap()[2..4],
+        &[quant_state.cul_level(); 2]
+    );
+    assert_eq!(
+        &context_state.above_dc(0).unwrap()[1..3],
+        &[quant_state.dc_category(); 2]
+    );
+    assert_eq!(
+        &context_state.left_dc(0).unwrap()[2..4],
+        &[quant_state.dc_category(); 2]
+    );
+    assert_eq!(context_state.above_level(0).unwrap()[0], 1);
+    assert_eq!(context_state.left_level(0).unwrap()[0], 1);
+}
+
+#[test]
+fn coefficient_ordinary_pass_with_context_commit_preserves_context_on_pass_failure() {
+    let payload = find_payload();
+    let (mut tile, mut symbols, start, _walk) = setup_start_and_walk(&payload, &SCAN).unwrap();
+    let mut context_state = seeded_context_state();
+    let context_before = context_state.clone();
+
+    let err = apply_nonzero_coeff_ordinary_pass_with_context_commit(
+        &mut context_state,
+        &mut tile,
+        &mut symbols,
+        CoeffOrdinaryDerivedBasePassInput {
+            start,
+            scan: &SCAN,
+            base_config: luma_base_config(true, true),
+            sign_config: luma_sign_config(),
+            lossless: false,
+        },
+        context_commit_config(),
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        err,
+        CoeffOrdinaryPassError::BaseDerived(
+            CoeffBaseDerivedLevelPassError::InconsistentParityAndTcq
+        )
+    ));
+    assert_eq!(context_state, context_before);
+}
+
+#[test]
+fn coefficient_ordinary_pass_with_context_commit_preserves_context_on_update_failure() {
+    let config = luma_base_config(false, false);
+    let payload = find_derived_payload(&SCAN, config, |pass| {
+        pass.block().quant().iter().any(|quant| *quant != 0)
+    });
+    let (mut tile, mut symbols, start, _walk) = setup_start_and_walk(&payload, &SCAN).unwrap();
+    let mut context_state = seeded_context_state();
+    let context_before = context_state.clone();
+
+    let err = apply_nonzero_coeff_ordinary_pass_with_context_commit(
+        &mut context_state,
+        &mut tile,
+        &mut symbols,
+        CoeffOrdinaryDerivedBasePassInput {
+            start,
+            scan: &SCAN,
+            base_config: config,
+            sign_config: luma_sign_config(),
+            lossless: false,
+        },
+        invalid_plane_context_commit_config(),
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        err,
+        CoeffOrdinaryPassError::ContextUpdate(TileCoeffStateError::InvalidPlane { plane: 3 })
+    ));
+    assert_eq!(context_state, context_before);
 }
