@@ -2,10 +2,9 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 //! Coefficient-loop foundation helpers.
-//!
-//! Feature tracking: `DECODE-COEFF-ALL-ZERO-CONTEXT-STATE`,
-//! `DECODE-COEFF-ALL-ZERO-BLOCK-STATE`, `DECODE-COEFF-EOB-VALUE-STATE`,
-//! `DECODE-COEFF-EOB-SYMBOL-READ`.
+//! Feature tracking: focused `DECODE-COEFF-*` rows cover each helper boundary.
+
+use std::collections::TryReserveError;
 
 use splot_core::Error as CoreError;
 use splot_core::symbol::SymbolDecoder;
@@ -21,8 +20,23 @@ const LUMA_PLANE: usize = 0;
 const V_PLANE: usize = 2;
 const COEFFS_PER_4X4: usize = 4;
 const MAX_ADJUSTED_COEFF_EXTENT: usize = 32;
+const MIN_EOB_TX_LOG2: usize = 2;
+const EOB_MULTISIZE_LOG2_CAP: usize = 5;
+const EOB_MULTISIZE_OFFSET: usize = 4;
 const MIN_NONZERO_EOB_PT: usize = 1;
 const MAX_NONZERO_EOB_PT: usize = 11;
+pub(crate) mod base_level_pass;
+pub(crate) mod base_symbol;
+mod branch;
+pub(crate) use branch::{CoeffBlockEobBranchInput, read_coeff_block_eob_branch};
+pub(crate) mod level_state;
+pub(crate) mod max_level;
+pub(crate) mod ordinary_pass;
+pub(crate) mod quant_pass;
+pub(crate) mod quant_state;
+pub(crate) mod read_quant;
+mod scan_walk;
+pub(crate) mod sign_symbol;
 
 /// Caller-resolved facts for luma § 8.3.2 `all_zero` context derivation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -95,6 +109,21 @@ pub(crate) struct NonZeroCoeffEobSymbolInput {
     pub(crate) coeff_cdf_q_ctx: usize,
     /// `eobCtx = (plane > 0) ? 2 : is_inter`, resolved by the caller.
     pub(crate) eob_ctx: usize,
+}
+
+/// Caller-resolved facts for deriving nonzero § 5.20.7.27 EOB CDF selection.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct NonZeroCoeffEobContextInput {
+    /// Plane index, 0 for luma and 1/2 for chroma.
+    pub(crate) plane: usize,
+    /// Whether the current block is inter-predicted.
+    pub(crate) is_inter: bool,
+    /// `Tx_Width_Log2[txSz]`, resolved by the caller from transform syntax.
+    pub(crate) tx_width_log2: usize,
+    /// `Tx_Height_Log2[txSz]`, resolved by the caller from transform syntax.
+    pub(crate) tx_height_log2: usize,
+    /// Coefficient-CDF quantization context.
+    pub(crate) coeff_cdf_q_ctx: usize,
 }
 
 /// Summary of a § 5.20.7.27 all-zero coefficient block state application.
@@ -243,6 +272,47 @@ pub(crate) enum CoeffLoopContextError {
         /// Largest packed refinement value allowed by `eobPt`.
         max_eob_extra_bits: usize,
     },
+    /// Caller supplied a transform log2 dimension outside the AV2 EOB-size range.
+    #[error(
+        "coefficient EOB transform {axis} log2 value {value} is below the AV2 minimum {minimum}"
+    )]
+    InvalidEobTransformLog2 {
+        /// Transform axis whose log2 dimension is invalid.
+        axis: &'static str,
+        /// Caller-provided log2 dimension.
+        value: usize,
+        /// Minimum accepted log2 dimension.
+        minimum: usize,
+    },
+    /// Caller reached the ordinary non-FSC scan walk without a positive EOB.
+    #[error("coefficient scan walk requires nonzero EOB, got {eob}")]
+    InvalidScanWalkEob {
+        /// Caller-provided EOB.
+        eob: usize,
+    },
+    /// Caller supplied fewer scan entries than the decoded EOB requires.
+    #[error("coefficient scan walk EOB {eob} exceeds scan length {scan_len}")]
+    ScanWalkEobOutOfRange {
+        /// Decoded EOB.
+        eob: usize,
+        /// Caller-supplied scan table length.
+        scan_len: usize,
+    },
+    /// Caller supplied a scan position outside the initialized coefficient block.
+    #[error(
+        "coefficient scan index {scan_index} points to position {pos}, outside coefficient count {coeff_count}"
+    )]
+    ScanWalkPositionOutOfRange {
+        /// Scan index `c` from § 5.20.7.27.
+        scan_index: usize,
+        /// Caller-supplied raster coefficient position.
+        pos: usize,
+        /// Local adjusted block coefficient count.
+        coeff_count: usize,
+    },
+    /// Allocation for checked scan-walk entries failed.
+    #[error("coefficient scan walk allocation failed: {0}")]
+    ScanWalkAllocation(#[from] TryReserveError),
 }
 
 /// Derives the luma § 8.3.2 `all_zero` (`txb_skip`) context from tile state.
@@ -446,6 +516,73 @@ pub(crate) fn read_nonzero_coeff_eob(
     })
 }
 
+/// Derives EOB selector facts and reads the AV2 § 5.20.7.27 nonzero EOB syntax.
+///
+/// Invalid selector facts fail before CDF or symbol-decoder consumption. Scan
+/// walking, coefficient symbols, `Quant[]`, dequantization, and reconstruction
+/// remain deferred.
+pub(crate) fn read_nonzero_coeff_eob_from_context(
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    input: NonZeroCoeffEobContextInput,
+) -> Result<NonZeroCoeffEobSymbolRead, CoeffLoopContextError> {
+    let input = nonzero_coeff_eob_symbol_input(input)?;
+    read_nonzero_coeff_eob(cdfs, symbols, input)
+}
+
+/// Derives the AV2 § 5.20.7.27 nonzero EOB symbol-reader input.
+///
+/// This helper maps caller-resolved `Tx_Width_Log2[txSz]` and
+/// `Tx_Height_Log2[txSz]` to the active `eob_pt_*` CDF family and derives
+/// `eobCtx = (plane > 0) ? 2 : is_inter` before handing the facts to
+/// [`read_nonzero_coeff_eob`]. It does not read symbols, walk scan order, update
+/// coefficient state, dequantize, or reconstruct.
+pub(crate) fn nonzero_coeff_eob_symbol_input(
+    input: NonZeroCoeffEobContextInput,
+) -> Result<NonZeroCoeffEobSymbolInput, CoeffLoopContextError> {
+    Ok(NonZeroCoeffEobSymbolInput {
+        size: eob_pt_size_from_tx_log2(input.tx_width_log2, input.tx_height_log2)?,
+        coeff_cdf_q_ctx: input.coeff_cdf_q_ctx,
+        eob_ctx: eob_context(input.plane, input.is_inter),
+    })
+}
+
+fn eob_pt_size_from_tx_log2(
+    tx_width_log2: usize,
+    tx_height_log2: usize,
+) -> Result<EobPtSize, CoeffLoopContextError> {
+    checked_eob_tx_log2("width", tx_width_log2)?;
+    checked_eob_tx_log2("height", tx_height_log2)?;
+
+    let eob_multisize = tx_width_log2.min(EOB_MULTISIZE_LOG2_CAP)
+        + tx_height_log2.min(EOB_MULTISIZE_LOG2_CAP)
+        - EOB_MULTISIZE_OFFSET;
+    Ok(match eob_multisize {
+        0 => EobPtSize::Pt16,
+        1 => EobPtSize::Pt32,
+        2 => EobPtSize::Pt64,
+        3 => EobPtSize::Pt128,
+        4 => EobPtSize::Pt256,
+        5 => EobPtSize::Pt512,
+        _ => EobPtSize::Pt1024,
+    })
+}
+
+fn checked_eob_tx_log2(axis: &'static str, value: usize) -> Result<(), CoeffLoopContextError> {
+    if value < MIN_EOB_TX_LOG2 {
+        return Err(CoeffLoopContextError::InvalidEobTransformLog2 {
+            axis,
+            value,
+            minimum: MIN_EOB_TX_LOG2,
+        });
+    }
+    Ok(())
+}
+
+fn eob_context(plane: usize, is_inter: bool) -> usize {
+    if plane > 0 { 2 } else { usize::from(is_inter) }
+}
+
 fn eob_pt_extra_width(size: EobPtSize, eob_pt_symbol: u8) -> u32 {
     match (size, eob_pt_symbol) {
         (EobPtSize::Pt256, 7) => 1,
@@ -476,23 +613,21 @@ fn read_eob_literal(
 }
 
 fn bounded_or_u32(values: &[u32], start: usize, count: usize) -> u32 {
-    let mut value = 0;
-    if let Some(tail) = values.get(start..) {
-        for entry in tail.iter().take(count) {
-            value |= *entry;
-        }
-    }
-    value
+    let Some(tail) = values.get(start..) else {
+        return 0;
+    };
+    tail.iter()
+        .take(count)
+        .fold(0, |value, entry| value | *entry)
 }
 
 fn bounded_or_u8(values: &[u8], start: usize, count: usize) -> u32 {
-    let mut value = 0;
-    if let Some(tail) = values.get(start..) {
-        for entry in tail.iter().take(count) {
-            value |= u32::from(*entry);
-        }
-    }
-    value
+    let Some(tail) = values.get(start..) else {
+        return 0;
+    };
+    tail.iter()
+        .take(count)
+        .fold(0, |value, entry| value | u32::from(*entry))
 }
 
 fn bounded_or_level_dc(level: &[u32], dc: &[u8], start: usize, count: usize) -> u32 {
@@ -504,10 +639,16 @@ fn adjusted_coeff_extent(size4: usize) -> usize {
         .saturating_mul(COEFFS_PER_4X4)
         .min(MAX_ADJUSTED_COEFF_EXTENT)
 }
-
+#[cfg(test)]
+mod base_level_pass_tests;
+#[cfg(test)]
+mod base_symbol_tests;
 #[cfg(test)]
 mod eob_symbol_tests;
-
+#[cfg(test)]
+mod level_state_tests;
+#[cfg(test)]
+mod ordinary_pass_tests;
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]

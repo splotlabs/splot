@@ -478,6 +478,230 @@ local_reference_evidence = []
 notes = "Adds crate-private `splot-decode` nonzero EOB symbol-read composition for AV2 §5.20.7.27 in `tile_payload/coeff_loop.rs`. `read_nonzero_coeff_eob` accepts caller-resolved `EobPtSize`, `coeff_cdf_q_ctx`, and `eob_ctx`, reads the selected `eob_pt_*` CDF row through `TileCdfSubset::read_block_symbol_trace`, consumes size-specific `eob_pt_*_extra` literal bits when symbol 7 requires them, reads `eob_extra` and packed `eob_extra_bit` literal refinements for `eobPt >= 3`, and feeds the decoded pieces into the checked `nonzero_coeff_eob` value helper. Tests cover EOB point CDF consumption and mutation, EOB extra CDF consumption, size-specific EOB-point extra literals, EOB-extra literal refinements, disabled CDF update behavior, and invalid selector failure before symbol consumption. The helper is loaded but not wired into the runtime coefficient loop, so decode output is unchanged. This row remains partial: no transform-size-to-EOB-class mapping, coefficient scan traversal, coefficient base/br/sign reads, nonzero `Level[]` or `Quant[]` writes, `read_quant`, dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public API, AVM/dav2d invocation, broad `decode_block()`, or broad `decode_tile()` support is claimed."
 
 [[row]]
+id = "coeff-eob-size-context"
+name = "Coefficient EOB size context"
+feature_id = "DECODE-COEFF-EOB-SIZE-CONTEXT"
+spec_sections = ["5.20.7.27", "8.3.2", "9.2"]
+parser_source = "docs/spec/av2/1.0.0/05-syntax-structures.md; docs/spec/av2/1.0.0/08-parsing-process.md; docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md"
+decode_module = "crates/splot-decode/src/tile_payload/coeff_loop.rs"
+tier = "tier1-intra"
+status = "partial"
+self_contained_tests = ["crates/splot-decode/src/tile_payload/coeff_loop/eob_symbol_tests.rs::eob_size_from_transform_log2_maps_all_spec_classes", "crates/splot-decode/src/tile_payload/coeff_loop/eob_symbol_tests.rs::eob_size_from_transform_log2_clamps_large_dimensions", "crates/splot-decode/src/tile_payload/coeff_loop/eob_symbol_tests.rs::eob_size_from_transform_log2_rejects_invalid_dimensions", "crates/splot-decode/src/tile_payload/coeff_loop/eob_symbol_tests.rs::eob_context_maps_luma_inter_flag_and_chroma_override", "crates/splot-decode/src/tile_payload/coeff_loop/eob_symbol_tests.rs::nonzero_coeff_eob_symbol_input_derives_size_context_and_preserves_q_ctx", "cargo test -p splot-decode coeff_loop --locked", "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings", "cargo xtask check-decoder-support", "cargo xtask check-decoder-conformance-coverage", "cargo xtask check-feature-status"]
+diagnostics = ["decode/unsupported-feature"]
+local_reference_evidence = []
+notes = "Adds crate-private `splot-decode` nonzero coefficient EOB size/context derivation for AV2 §5.20.7.27 in `tile_payload/coeff_loop.rs`. `nonzero_coeff_eob_symbol_input` accepts caller-resolved `plane`, `is_inter`, `Tx_Width_Log2[txSz]`, `Tx_Height_Log2[txSz]`, and `coeff_cdf_q_ctx`, validates that both transform log2 dimensions are at least the AV2 4x4 minimum before subtracting, applies the spec `Min(..., 5)` `eobMultisize` formula to choose `EobPtSize` (`Pt16` through `Pt1024`), derives `eobCtx = (plane > 0) ? 2 : is_inter`, and returns the existing `NonZeroCoeffEobSymbolInput` consumed by `read_nonzero_coeff_eob`. Tests cover all seven size classes, large-dimension clamping, invalid log2 rejection, luma/chroma `eobCtx`, and quantization-context preservation. The helper is loaded but not wired into the runtime coefficient loop, so decode output is unchanged. This row remains partial: no runtime transform-size table lookup from real `txSz`, runtime EOB symbol read, coefficient scan traversal, coefficient base/br/sign reads, nonzero `Level[]` or `Quant[]` writes, `read_quant`, dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public API, AVM/dav2d invocation, broad `decode_block()`, or broad `decode_tile()` support is claimed."
+
+[[row]]
+id = "coeff-eob-derived-symbol-read"
+name = "Coefficient EOB derived symbol read"
+feature_id = "DECODE-COEFF-EOB-DERIVED-SYMBOL-READ"
+spec_sections = ["5.20.7.27", "8.2.5", "8.2.6", "8.3.2", "9.2", "9.3"]
+parser_source = "crates/splot-core/src/symbol.rs; docs/spec/av2/1.0.0/05-syntax-structures.md; docs/spec/av2/1.0.0/08-parsing-process.md; docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md; docs/spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md"
+decode_module = "crates/splot-decode/src/tile_payload/coeff_loop.rs"
+tier = "tier1-intra"
+status = "partial"
+self_contained_tests = ["crates/splot-decode/src/tile_payload/coeff_loop/eob_symbol_tests.rs::read_nonzero_coeff_eob_from_context_matches_explicit_selector_read", "crates/splot-decode/src/tile_payload/coeff_loop/eob_symbol_tests.rs::read_nonzero_coeff_eob_from_context_rejects_invalid_log2_before_mutation", "crates/splot-decode/src/tile_payload/coeff_loop/eob_symbol_tests.rs::read_nonzero_coeff_eob_from_context_propagates_symbol_reader_errors", "cargo test -p splot-decode coeff_loop --locked", "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings", "cargo xtask check-decoder-support", "cargo xtask check-decoder-conformance-coverage", "cargo xtask check-feature-status"]
+diagnostics = ["decode/unsupported-feature"]
+local_reference_evidence = []
+notes = "Adds crate-private `splot-decode` composition for reading nonzero coefficient EOB syntax from caller-resolved transform and plane/inter facts. `read_nonzero_coeff_eob_from_context` accepts `NonZeroCoeffEobContextInput`, derives the active `EobPtSize` and `eobCtx` through `nonzero_coeff_eob_symbol_input`, then delegates to `read_nonzero_coeff_eob` for the selected `eob_pt_*`, optional size-specific `eob_pt_*_extra`, `eob_extra`, and packed `eob_extra_bit` reads. Invalid transform log2 dimensions fail before CDF rows or symbol-decoder state are consumed; selector, symbol, and literal-read failures continue to use the existing typed errors. Tests cover explicit-selector equivalence, invalid transform-log2 no-consumption behavior, and propagation of EOB symbol-reader selector errors. The helper is loaded but not wired into the runtime coefficient loop, so decode output is unchanged. This row remains partial: no runtime transform-size table lookup from real `txSz`, coefficient scan traversal, coefficient base/br/sign reads, nonzero `Level[]` or `Quant[]` writes, `read_quant`, dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public API, AVM/dav2d invocation, broad `decode_block()`, or broad `decode_tile()` support is claimed."
+
+[[row]]
+id = "coeff-eob-branch-handoff"
+name = "Coefficient EOB branch handoff"
+feature_id = "DECODE-COEFF-EOB-BRANCH-HANDOFF"
+spec_sections = ["5.20.7.27", "8.2.5", "8.2.6", "8.3.2", "9.2", "9.3"]
+parser_source = "crates/splot-core/src/symbol.rs; docs/spec/av2/1.0.0/05-syntax-structures.md; docs/spec/av2/1.0.0/08-parsing-process.md; docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md; docs/spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md"
+decode_module = "crates/splot-decode/src/tile_payload/coeff_loop.rs; crates/splot-decode/src/tile_payload/block_symbol.rs"
+tier = "tier1-intra"
+status = "partial"
+self_contained_tests = ["crates/splot-decode/src/tile_payload/coeff_loop/eob_symbol_tests.rs::coeff_block_eob_branch_all_zero_applies_state_without_symbol_consumption", "crates/splot-decode/src/tile_payload/coeff_loop/eob_symbol_tests.rs::coeff_block_eob_branch_nonzero_reads_derived_eob_without_state_mutation", "crates/splot-decode/src/tile_payload/coeff_loop/eob_symbol_tests.rs::coeff_block_eob_branch_invalid_nonzero_context_preserves_mutable_state", "cargo test -p splot-decode coeff_loop --locked", "cargo test -p splot-decode block_symbol --locked", "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings", "cargo xtask check-decoder-support", "cargo xtask check-decoder-conformance-coverage", "cargo xtask check-feature-status"]
+diagnostics = ["decode/unsupported-feature"]
+local_reference_evidence = []
+notes = "Adds crate-private `splot-decode` branch handoff for the AV2 §5.20.7.27 coefficient EOB path after the caller has decoded `all_zero`. `read_coeff_block_eob_branch` accepts `CoeffBlockEobBranchInput::AllZero` to apply the existing all-zero coefficient-block state effects without consuming CDF rows or symbol bits, or `CoeffBlockEobBranchInput::NonZero` to initialize local nonzero block state and call the existing derived nonzero EOB reader without mutating coefficient context state. The minimal flat-intra block-symbol trace routes its supported luma and V all-zero state applications through this handoff while keeping fixture output unchanged. Tests cover all-zero no-CDF/no-symbol consumption, nonzero EOB read/state preservation, invalid nonzero geometry no-consumption behavior, and invalid nonzero transform facts preserving coefficient state, CDF rows, and symbol-decoder counters. This row remains partial: runtime nonzero coefficient blocks, runtime transform-size fact lookup from real `txSz`, scan traversal, coefficient base/br/sign reads, nonzero `Level[]` or `Quant[]` writes, `read_quant`, dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public API, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` support remain unimplemented."
+
+[[row]]
+id = "coeff-nonzero-block-state"
+name = "Coefficient nonzero block state"
+feature_id = "DECODE-COEFF-NONZERO-BLOCK-STATE"
+spec_sections = ["5.20.7.27", "8.2.5", "8.2.6", "8.3.2", "9.2", "9.3"]
+parser_source = "crates/splot-core/src/symbol.rs; docs/spec/av2/1.0.0/05-syntax-structures.md; docs/spec/av2/1.0.0/08-parsing-process.md; docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md; docs/spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md"
+decode_module = "crates/splot-decode/src/tile_payload/coeff_loop.rs; crates/splot-decode/src/tile_payload/coeff_loop/branch.rs"
+tier = "tier1-intra"
+status = "partial"
+self_contained_tests = ["crates/splot-decode/src/tile_payload/coeff_loop/eob_symbol_tests.rs::coeff_block_eob_branch_nonzero_reads_derived_eob_without_state_mutation", "crates/splot-decode/src/tile_payload/coeff_loop/eob_symbol_tests.rs::coeff_block_eob_branch_invalid_nonzero_geometry_preserves_symbol_state", "crates/splot-decode/src/tile_payload/coeff_loop/eob_symbol_tests.rs::coeff_block_eob_branch_invalid_nonzero_context_preserves_mutable_state", "cargo test -p splot-decode coeff_loop --locked", "cargo test -p splot-decode block_symbol --locked", "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings", "cargo xtask check-decoder-support", "cargo xtask check-decoder-conformance-coverage", "cargo xtask check-feature-status"]
+diagnostics = ["decode/unsupported-feature"]
+local_reference_evidence = []
+notes = "Adds crate-private `splot-decode` nonzero coefficient block-start state for AV2 §5.20.7.27. `NonZeroCoeffBlockStartInput` carries caller-resolved transform-block geometry plus the existing nonzero EOB context facts. The nonzero branch allocates zero-initialized local `Level[]`, `QuantSign[]`, and `Quant[]` arrays from the adjusted transform extent before reading EOB syntax, so invalid geometry fails before CDF rows or symbol bits are consumed. `CoeffBlockEobBranch::NonZero` now returns `NonZeroCoeffBlockStart`, pairing the EOB read result with that local block state while leaving tile coefficient context state unchanged. Tests cover zeroed block allocation, invalid geometry no-consumption behavior, and invalid nonzero transform facts preserving coefficient state, CDF rows, and symbol-decoder counters. This row remains partial: runtime nonzero coefficient blocks are still unsupported; scan traversal, coefficient base/br/sign reads, nonzero `Level[]` or `Quant[]` writes, `read_quant`, dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public API, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` support remain unimplemented."
+
+[[row]]
+id = "coeff-scan-walk"
+name = "Coefficient scan walk"
+feature_id = "DECODE-COEFF-SCAN-WALK"
+spec_sections = ["5.20.7.27"]
+parser_source = "docs/spec/av2/1.0.0/05-syntax-structures.md"
+decode_module = "crates/splot-decode/src/tile_payload/coeff_loop/scan_walk.rs"
+tier = "tier1-intra"
+status = "partial"
+self_contained_tests = ["crates/splot-decode/src/tile_payload/coeff_loop/eob_symbol_tests.rs::coeff_scan_walk_returns_reverse_scan_entries_without_mutation", "crates/splot-decode/src/tile_payload/coeff_loop/eob_symbol_tests.rs::coeff_scan_walk_rejects_eob_larger_than_scan_without_mutation", "crates/splot-decode/src/tile_payload/coeff_loop/eob_symbol_tests.rs::coeff_scan_walk_rejects_out_of_range_position_without_mutation", "cargo test -p splot-decode coeff_loop --locked", "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings", "cargo xtask check-decoder-support", "cargo xtask check-decoder-conformance-coverage", "cargo xtask check-feature-status"]
+diagnostics = ["decode/unsupported-feature"]
+local_reference_evidence = []
+notes = "Adds crate-private `splot-decode` scan traversal for the ordinary non-FSC AV2 §5.20.7.27 nonzero coefficient path. `walk_nonzero_coeff_scan` accepts a `NonZeroCoeffBlockStart` and caller-supplied `scan[c]` positions, then returns checked entries in reverse scan-index order with raster position and row/column facts. It rejects EOB values that exceed the scan slice and scan positions outside the initialized adjusted coefficient block without consuming symbols, mutating CDF rows, or writing coefficient state. This row remains partial: scan-table derivation, transform-type computation, coefficient base/br/sign reads, nonzero `Level[]`, `QuantSign[]`, and `Quant[]` writes, `read_quant`, dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public API, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` support remain unimplemented."
+
+[[row]]
+id = "coeff-base-cdf-rows"
+name = "Coefficient base CDF rows"
+feature_id = "DECODE-COEFF-BASE-CDF-ROWS"
+spec_sections = ["8.3.2", "9.3"]
+parser_source = "crates/splot-core/src/tables/cdf.rs; docs/spec/av2/1.0.0/08-parsing-process.md; docs/spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md"
+decode_module = "crates/splot-decode/src/tile_payload/cdf.rs; crates/splot-decode/src/tile_payload/cdf/block_rows.rs; crates/splot-decode/src/tile_payload/cdf/coeff_rows.rs"
+tier = "tier1-intra"
+status = "partial"
+self_contained_tests = ["crates/splot-decode/src/tile_payload/cdf/tests.rs::coeff_base_rows_load_defaults_and_select_by_family", "crates/splot-decode/src/tile_payload/cdf/tests.rs::coeff_base_selectors_reject_out_of_range_axes", "crates/splot-decode/src/tile_payload/cdf/tests.rs::coeff_base_tile_copy_does_not_alias_the_frame", "crates/splot-decode/src/tile_payload/cdf/tests.rs::coeff_base_row_hands_off_to_symbol_decoder_update_mode", "cargo test -p splot-decode tile_payload::cdf --locked", "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings", "cargo xtask check-decoder-support", "cargo xtask check-decoder-conformance-coverage", "cargo xtask check-feature-status"]
+diagnostics = ["decode/unsupported-feature"]
+local_reference_evidence = []
+notes = "Adds crate-private `splot-decode` tile CDF row storage and typed selectors for ordinary non-IDTX coefficient base/base-EOB/base-range CDF families after the nonzero scan-walk boundary. The supported row set covers `TileCoeffBaseCdf`, `TileCoeffBaseUvCdf`, `TileCoeffBaseLfCdf`, `TileCoeffBaseLfUvCdf`, `TileCoeffBaseEobCdf`, `TileCoeffBaseEobUvCdf`, `TileCoeffBaseLfEobCdf`, `TileCoeffBaseLfEobUvCdf`, `TileCoeffBrCdf`, `TileCoeffBrUvCdf`, and `TileCoeffBrLfCdf`, all loaded from generated AV2 §9.3 defaults and selected with typed bounds errors through `TileCdfSelector::Coeff(CoeffCdfSelector)`. The rows participate in tile copy/save/average and frame-end count scaling, and mutable handoff through `read_block_symbol_trace` is tested. This row remains partial: the rows are loaded but not read by runtime `coeffs()`, and FSC/IDTX/parity-hidden-only/sign rows, coefficient symbol consumption, nonzero `Level[]`, `QuantSign[]`, and `Quant[]` writes, `read_quant`, dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public API, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` support remain unimplemented."
+
+[[row]]
+id = "coeff-base-symbol-read"
+name = "Coefficient base symbol read"
+feature_id = "DECODE-COEFF-BASE-SYMBOL-READ"
+spec_sections = ["5.20.7.27", "8.2.5", "8.2.6", "8.3.2", "9.3"]
+parser_source = "crates/splot-core/src/symbol.rs; crates/splot-core/src/tables/cdf.rs; docs/spec/av2/1.0.0/05-syntax-structures.md; docs/spec/av2/1.0.0/08-parsing-process.md; docs/spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md"
+decode_module = "crates/splot-decode/src/tile_payload/coeff_loop/base_symbol.rs; crates/splot-decode/src/tile_payload/coeff_loop/base_symbol_tests.rs"
+tier = "tier1-intra"
+status = "partial"
+self_contained_tests = ["crates/splot-decode/src/tile_payload/coeff_loop/base_symbol_tests.rs::coefficient_base_symbol_read_matches_direct_sequence", "crates/splot-decode/src/tile_payload/coeff_loop/base_symbol_tests.rs::coefficient_base_symbol_read_rejects_mismatched_scan_entries_before_read", "crates/splot-decode/src/tile_payload/coeff_loop/base_symbol_tests.rs::coefficient_base_symbol_read_rejects_reached_invalid_selector_before_symbol_read", "crates/splot-decode/src/tile_payload/coeff_loop/base_symbol_tests.rs::coefficient_base_symbol_read_honors_disabled_updates_and_unreached_br_selector", "crates/splot-decode/src/tile_payload/coeff_loop/base_symbol_tests.rs::coefficient_base_symbol_read_disabled_base_range_skips_br_above_threshold", "crates/splot-decode/src/tile_payload/coeff_loop/base_symbol_tests.rs::coefficient_base_symbol_read_count_mismatch_preserves_state", "cargo test -p splot-decode coeff_loop --locked", "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings", "cargo xtask check-decoder-support", "cargo xtask check-decoder-conformance-coverage", "cargo xtask check-feature-status"]
+diagnostics = ["decode/unsupported-feature"]
+local_reference_evidence = []
+notes = "Adds crate-private `splot-decode` symbol-read sequencing for ordinary non-FSC coefficient base/base-EOB/base-range reads after nonzero EOB and checked scan-walk handoff. `read_nonzero_coeff_base_symbols` validates caller-provided scan-entry/input matching, reads caller-resolved `coeff_base_eob` or `coeff_base` rows through `SymbolDecoder`, applies the base-EOB `+1` level bias, conditionally reads caller-resolved `coeff_br` rows when the decoded level crosses the caller-provided `baseLevels` threshold and BR is enabled, and returns decoded level summaries without writing coefficient state. Tests prove direct-read equivalence, no-consumption behavior for mismatched scan entries and reached invalid selectors, disabled CDF updates, unreachable invalid BR selector behavior, disabled BR above threshold, and input-count mismatch. This row remains partial: the helper is not wired into runtime `coeffs()`, does not derive selectors from real block syntax, does not write nonzero `Level[]`, `QuantSign[]`, or `Quant[]`, does not read signs or run `read_quant`, and does not support dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public API, AVM/dav2d invocation, broad `decode_block()`, or broad `decode_tile()`."
+
+[[row]]
+id = "coeff-level-state-write"
+name = "Coefficient level state write"
+feature_id = "DECODE-COEFF-LEVEL-STATE-WRITE"
+spec_sections = ["5.20.7.27"]
+parser_source = "docs/spec/av2/1.0.0/05-syntax-structures.md"
+decode_module = "crates/splot-decode/src/tile_payload/coeff_loop/level_state.rs; crates/splot-decode/src/tile_payload/coeff_loop/level_state_tests.rs"
+tier = "tier1-intra"
+status = "partial"
+self_contained_tests = ["crates/splot-decode/src/tile_payload/coeff_loop/level_state_tests.rs::coefficient_level_state_write_sets_levels_from_scan_entries", "crates/splot-decode/src/tile_payload/coeff_loop/level_state_tests.rs::coefficient_level_state_write_rejects_read_count_mismatch", "crates/splot-decode/src/tile_payload/coeff_loop/level_state_tests.rs::coefficient_level_state_write_rejects_scan_entry_mismatch", "crates/splot-decode/src/tile_payload/coeff_loop/level_state_tests.rs::coefficient_level_state_write_rejects_mismatched_block_geometry", "cargo test -p splot-decode coeff_loop --locked", "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings", "cargo xtask check-decoder-support", "cargo xtask check-decoder-conformance-coverage", "cargo xtask check-feature-status"]
+diagnostics = ["decode/unsupported-feature"]
+local_reference_evidence = []
+notes = "Adds crate-private `splot-decode` local coefficient state writes for the ordinary non-FSC AV2 §5.20.7.27 `Level[row][col] = level` step after nonzero EOB, checked scan walk, and decoded base/base-range symbol summaries. `apply_nonzero_coeff_base_levels` consumes the nonzero block start, validates read-count and scan-entry identity against the checked walk, preflights every row/column coordinate against the local `TransformCoeffBlockState`, writes decoded levels into row-major `Level[]`, and returns the updated block state with EOB facts preserved. Tests prove row-major placement, untouched `QuantSign[]` and `Quant[]`, read-count mismatch rejection, scan-entry mismatch rejection, and mismatched block/walk geometry rejection. This row remains partial: runtime `coeffs()` does not call this helper, selectors and scan tables are still caller-resolved, sign reads, nonzero `QuantSign[]` and `Quant[]`, `read_quant`, dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public API, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` remain unimplemented."
+
+[[row]]
+id = "coeff-sign-symbol-read"
+name = "Coefficient sign symbol read"
+feature_id = "DECODE-COEFF-SIGN-SYMBOL-READ"
+spec_sections = ["5.20.7.27", "8.2.5", "8.2.6", "8.3.2", "9.3"]
+parser_source = "crates/splot-core/src/symbol.rs; crates/splot-core/src/tables/cdf.rs; docs/spec/av2/1.0.0/05-syntax-structures.md; docs/spec/av2/1.0.0/08-parsing-process.md; docs/spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md"
+decode_module = "crates/splot-decode/src/tile_payload/coeff_loop/sign_symbol.rs"
+tier = "tier1-intra"
+status = "partial"
+self_contained_tests = ["crates/splot-decode/src/tile_payload/coeff_loop/sign_symbol.rs::tests::coefficient_sign_read_consumes_mixed_sources", "crates/splot-decode/src/tile_payload/coeff_loop/sign_symbol.rs::tests::coefficient_sign_read_rejects_missing_required_sign_before_consumption", "crates/splot-decode/src/tile_payload/coeff_loop/sign_symbol.rs::tests::coefficient_sign_read_rejects_scan_entry_mismatch_before_consumption", "crates/splot-decode/src/tile_payload/coeff_loop/sign_symbol.rs::tests::coefficient_sign_read_rejects_invalid_cdf_selector_before_symbol_read", "crates/splot-decode/src/tile_payload/coeff_loop/sign_symbol.rs::tests::coefficient_sign_read_rejects_input_count_mismatch_before_consumption", "cargo test -p splot-decode coeff_loop --locked", "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings", "cargo xtask check-decoder-support", "cargo xtask check-decoder-conformance-coverage", "cargo xtask check-feature-status"]
+diagnostics = ["decode/unsupported-feature"]
+local_reference_evidence = []
+notes = "Adds crate-private `splot-decode` sign-read sequencing for ordinary non-FSC coefficient signs after local `Level[]` values exist. `read_nonzero_coeff_signs` validates input count, checked scan-entry identity, local level coordinates, and required sign sources for nonzero levels before consuming syntax; then reads caller-resolved `dc_sign` and `dc_sign_horz_vert` rows from the existing `TileDcSignCdf` bank or one-bit `sign_bit` literals in scan-walk order, returning checked entries, local levels, raw symbols/bits, and boolean signs. Tests prove mixed CDF/literal/skip reads, invalid selector no-consumption behavior, input-count mismatch, missing required signs, and scan-entry mismatch. This row remains partial: runtime `coeffs()` does not call this helper, sign-source policy is still caller-resolved, and it does not write `QuantSign[]`, nonzero `Quant[]`, run `read_quant`, dequantize, inverse transform, residual add, reconstruct pixels, output frames, refresh references, invoke AVM/dav2d, expose public APIs, or claim broad `decode_block()` or `decode_tile()` support."
+
+[[row]]
+id = "coeff-max-level-derive"
+name = "Coefficient maxLevel derivation"
+feature_id = "DECODE-COEFF-MAX-LEVEL-DERIVE"
+spec_sections = ["3", "5.20.7.27"]
+parser_source = "docs/spec/av2/1.0.0/03-symbols.md; docs/spec/av2/1.0.0/05-syntax-structures.md"
+decode_module = "crates/splot-decode/src/tile_payload/coeff_loop/max_level.rs"
+tier = "tier1-intra"
+status = "partial"
+self_contained_tests = ["crates/splot-decode/src/tile_payload/coeff_loop/max_level.rs::tests::coefficient_max_level_derives_low_frequency_limits", "crates/splot-decode/src/tile_payload/coeff_loop/max_level.rs::tests::coefficient_max_level_hidden_final_scan_entry_overrides_limit", "crates/splot-decode/src/tile_payload/coeff_loop/max_level.rs::tests::coefficient_max_level_builds_quant_pass_inputs_in_walk_order", "crates/splot-decode/src/tile_payload/coeff_loop/max_level.rs::tests::coefficient_max_level_pathological_coordinates_are_total", "cargo test -p splot-decode max_level --locked", "cargo test -p splot-decode coeff_loop --locked", "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings", "cargo xtask check-decoder-support", "cargo xtask check-decoder-conformance-coverage", "cargo xtask check-feature-status"]
+diagnostics = ["decode/unsupported-feature"]
+local_reference_evidence = []
+notes = "Adds crate-private `splot-decode` ordinary non-FSC `maxLevel` derivation for the AV2 §5.20.7.27 second coefficient pass after checked scan entries and caller-resolved plane, transform-class, and hidden-parity facts exist. `derive_nonzero_coeff_max_levels` implements `get_lf_limits(row, col, txClass, plane)` for 2D, horizontal, and vertical transform classes, applies the luma/chroma low-frequency and non-low-frequency spec constants, applies the hidden `c == 0` override, and returns records convertible to the existing quant-pass inputs. Tests prove transform-class/plane low-frequency limits, hidden final-entry override, quant-pass input conversion, and pathological-coordinate totality. This row remains partial: runtime `coeffs()` does not call this helper, transform class, hidden parity, scan order, sign-source, CDF-selector, TCQ, and lossless facts are still caller-resolved, and symbol reads, tile context writes, dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public API, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` remain unimplemented."
+
+[[row]]
+id = "coeff-read-quant-syntax"
+name = "Coefficient read_quant syntax"
+feature_id = "DECODE-COEFF-READ-QUANT-SYNTAX"
+spec_sections = ["5.20.7.28", "8.2.5"]
+parser_source = "crates/splot-core/src/symbol.rs; docs/spec/av2/1.0.0/05-syntax-structures.md; docs/spec/av2/1.0.0/08-parsing-process.md"
+decode_module = "crates/splot-decode/src/tile_payload/coeff_loop/read_quant.rs"
+tier = "tier1-intra"
+status = "partial"
+self_contained_tests = ["crates/splot-decode/src/tile_payload/coeff_loop/read_quant.rs::tests::read_quant_below_threshold_consumes_no_bits", "crates/splot-decode/src/tile_payload/coeff_loop/read_quant.rs::tests::read_quant_finite_q_length_updates_quant_and_hr_average", "crates/splot-decode/src/tile_payload/coeff_loop/read_quant.rs::tests::read_quant_golomb_extension_path_reads_until_terminator", "crates/splot-decode/src/tile_payload/coeff_loop/read_quant.rs::tests::read_quant_hidden_dc_and_tcq_adjust_predicted_extension", "crates/splot-decode/src/tile_payload/coeff_loop/read_quant.rs::tests::read_quant_rejects_input_mismatch_before_consumption", "crates/splot-decode/src/tile_payload/coeff_loop/read_quant.rs::tests::read_quant_rejects_unterminated_golomb_prefix", "crates/splot-decode/src/tile_payload/coeff_loop/read_quant.rs::tests::read_quant_rejects_pathological_max_level_and_overflow", "crates/splot-decode/src/tile_payload/coeff_loop/read_quant.rs::tests::read_quant_rejects_oversized_golomb_remainder_width", "cargo test -p splot-decode read_quant --locked", "cargo test -p splot-decode coeff_loop --locked", "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings", "cargo xtask check-decoder-support", "cargo xtask check-decoder-conformance-coverage", "cargo xtask check-feature-status"]
+diagnostics = ["decode/unsupported-feature"]
+local_reference_evidence = []
+notes = "Adds crate-private `splot-decode` `read_quant` syntax parsing for ordinary non-FSC AV2 §5.20.7.28 after local levels, checked scan-walk entries, and caller-derived max-level facts exist. `read_nonzero_coeff_quants` validates count and scan-entry identity before consuming bits, reads only the reached pseudo-raw literal syntax (`q_length_bit`, `golomb_length_bit`, and `coeff_rem`) through `SymbolDecoder::read_literal`, applies `GetMsb` and `Clip3`, hidden-DC `lvlShift`, optional TCQ extension doubling, and checked arithmetic, and returns `CoeffQuantReadInput` records for the later quant-state writer. Tests prove below-threshold no-consumption behavior, finite q-length parsing, Golomb extension parsing, hidden DC plus TCQ adjustment, mismatch no-consumption behavior, invalid max-level facts, unterminated-prefix and oversized-width guards, and quant overflow. This row remains partial: runtime `coeffs()` does not call this helper, max-level, hidden, TCQ, and scan facts are still caller-resolved, the helper does not write nonzero `Quant[]`, and dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public API, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` remain unimplemented."
+
+[[row]]
+id = "coeff-quant-state-write"
+name = "Coefficient quantized state write"
+feature_id = "DECODE-COEFF-QUANT-STATE-WRITE"
+spec_sections = ["5.20.7.27", "5.20.7.28"]
+parser_source = "docs/spec/av2/1.0.0/05-syntax-structures.md"
+decode_module = "crates/splot-decode/src/tile_payload/coeff_loop/quant_state.rs"
+tier = "tier1-intra"
+status = "partial"
+self_contained_tests = ["crates/splot-decode/src/tile_payload/coeff_loop/quant_state.rs::tests::coefficient_quant_state_writes_signed_quant_and_summary_state", "crates/splot-decode/src/tile_payload/coeff_loop/quant_state.rs::tests::coefficient_quant_state_applies_hidden_parity_and_tcq", "crates/splot-decode/src/tile_payload/coeff_loop/quant_state.rs::tests::coefficient_quant_state_preserves_quant_sign", "crates/splot-decode/src/tile_payload/coeff_loop/quant_state.rs::tests::coefficient_quant_state_rejects_mismatches_before_mutation", "crates/splot-decode/src/tile_payload/coeff_loop/quant_state.rs::tests::coefficient_quant_state_requires_hidden_parity_sign", "cargo test -p splot-decode coeff_loop --locked", "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings", "cargo xtask check-decoder-support", "cargo xtask check-decoder-conformance-coverage", "cargo xtask check-feature-status"]
+diagnostics = ["decode/unsupported-feature"]
+local_reference_evidence = []
+notes = "Adds crate-private `splot-decode` local quantized-coefficient state writes for the ordinary non-FSC AV2 §5.20.7.27 pass after local levels, sign summaries, checked scan-walk entries, and caller-provided §5.20.7.28 `read_quant` outputs exist. `apply_nonzero_coeff_quant_state` validates counts, scan-entry identity, sign-entry identity, local level agreement, required hidden-parity sign syntax for `c == 0`, and local `Quant[pos]` addresses before mutation; then applies hidden-parity, clamped `culLevel`, `dcCategory`, the spec reset `tcqState = 0` plus optional TCQ state and magnitude adjustment, sign application, and signed `Quant[pos]` writes. Tests prove positive writes and summary state, hidden-parity and TCQ adjustment, `QuantSign[]` preservation, required hidden-parity sign syntax, and mismatch rejection before mutation. This row remains partial: runtime `coeffs()` does not call this helper, §5.20.7.28 `read_quant` bit parsing is provided by a separate loaded-but-unwired helper, TCQ/parity/lossless/scan facts are caller-provided, `QuantSign[]` is not written, and dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public API, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` remain unimplemented."
+
+[[row]]
+id = "coeff-quant-pass-compose"
+name = "Coefficient quant pass composition"
+feature_id = "DECODE-COEFF-QUANT-PASS-COMPOSE"
+spec_sections = ["5.20.7.27", "5.20.7.28", "8.2.5"]
+parser_source = "crates/splot-core/src/symbol.rs; docs/spec/av2/1.0.0/05-syntax-structures.md; docs/spec/av2/1.0.0/08-parsing-process.md"
+decode_module = "crates/splot-decode/src/tile_payload/coeff_loop/quant_pass.rs"
+tier = "tier1-intra"
+status = "partial"
+self_contained_tests = ["crates/splot-decode/src/tile_payload/coeff_loop/quant_pass.rs::tests::coefficient_quant_pass_reads_quant_and_writes_signed_quant", "crates/splot-decode/src/tile_payload/coeff_loop/quant_pass.rs::tests::coefficient_quant_pass_applies_hidden_parity_consistently", "crates/splot-decode/src/tile_payload/coeff_loop/quant_pass.rs::tests::coefficient_quant_pass_applies_tcq_consistently", "crates/splot-decode/src/tile_payload/coeff_loop/quant_pass.rs::tests::coefficient_quant_pass_allows_hidden_dc_without_parity_sign_when_sum_abs1_zero", "crates/splot-decode/src/tile_payload/coeff_loop/quant_pass.rs::tests::coefficient_quant_pass_rejects_bad_facts_before_consumption", "cargo test -p splot-decode quant_pass --locked", "cargo test -p splot-decode coeff_loop --locked", "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings", "cargo xtask check-decoder-support", "cargo xtask check-decoder-conformance-coverage", "cargo xtask check-feature-status"]
+diagnostics = ["decode/unsupported-feature"]
+local_reference_evidence = []
+notes = "Adds crate-private `splot-decode` ordinary non-FSC composition for the AV2 §5.20.7.27 second coefficient pass. `apply_nonzero_coeff_quant_pass` accepts checked scan entries, local `Level[]` state, sign summaries, caller-derived `maxLevel` facts, and block-level hidden, TCQ, and lossless facts; validates those facts before consuming bits, including impossible hidden-parity pairings with TCQ or lossless; calls the loaded §5.20.7.28 `read_quant` parser; and feeds the decoded quant records into the loaded quant-state writer for signed `Quant[pos]` writes. Tests prove positive `read_quant` to `Quant[]` composition, hidden-parity composition, TCQ composition, hidden DC with zero `sumAbs1`, and bad caller facts failing before bit consumption or block mutation. This row remains partial: runtime `coeffs()` does not call this helper, max-level, hidden, sumAbs1, TCQ, lossless, sign-source, CDF-selector, scan, transform, and `QuantSign[]` facts are still caller-resolved, and tile context writes, dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public API, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` remain unimplemented."
+
+[[row]]
+id = "coeff-quant-pass-maxlevel-handoff"
+name = "Coefficient quant pass maxLevel handoff"
+feature_id = "DECODE-COEFF-QUANT-PASS-MAXLEVEL-HANDOFF"
+spec_sections = ["5.20.7.27", "5.20.7.28", "8.2.5"]
+parser_source = "crates/splot-core/src/symbol.rs; docs/spec/av2/1.0.0/05-syntax-structures.md; docs/spec/av2/1.0.0/08-parsing-process.md"
+decode_module = "crates/splot-decode/src/tile_payload/coeff_loop/quant_pass.rs; crates/splot-decode/src/tile_payload/coeff_loop/max_level.rs"
+tier = "tier1-intra"
+status = "partial"
+self_contained_tests = ["crates/splot-decode/src/tile_payload/coeff_loop/quant_pass.rs::tests::coefficient_quant_pass_derives_low_frequency_max_levels", "crates/splot-decode/src/tile_payload/coeff_loop/quant_pass.rs::tests::coefficient_quant_pass_derives_hidden_final_max_level", "crates/splot-decode/src/tile_payload/coeff_loop/quant_pass.rs::tests::coefficient_quant_pass_derived_max_levels_rejects_bad_facts_before_consumption", "cargo test -p splot-decode quant_pass --locked", "cargo test -p splot-decode coeff_loop --locked", "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings", "cargo xtask check-decoder-support", "cargo xtask check-decoder-conformance-coverage", "cargo xtask check-feature-status"]
+diagnostics = ["decode/unsupported-feature"]
+local_reference_evidence = []
+notes = "Adds crate-private `splot-decode` ordinary non-FSC handoff from `maxLevel` derivation into the existing quant-pass composer. `apply_nonzero_coeff_quant_pass_with_derived_max_levels` accepts checked scan entries, local `Level[]` state, sign summaries, caller-resolved plane and transform class, and the existing quant-pass hidden, sumAbs1, TCQ, lossless, and hrLevelAvg facts; derives `maxLevel` records using the loaded AV2 §5.20.7.27 helper with the quant-pass hidden flag, converts them into quant-pass inputs, and delegates to `apply_nonzero_coeff_quant_pass` for §5.20.7.28 literal reads and signed `Quant[pos]` writes. Tests prove luma low-frequency derived max-level below-threshold behavior, hidden final-entry override reaching the extended `read_quant` path, and inconsistent hidden/TCQ facts failing without consuming bits or mutating block state. This row remains partial: runtime `coeffs()` does not call this helper, plane, transform class, hidden, sumAbs1, TCQ, lossless, sign-source, CDF-selector, and scan facts are still caller-resolved, and tile context writes, dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public API, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` remain unimplemented."
+
+[[row]]
+id = "coeff-ordinary-pass-compose"
+name = "Coefficient ordinary pass composition"
+feature_id = "DECODE-COEFF-ORDINARY-PASS-COMPOSE"
+spec_sections = ["5.20.7.27", "5.20.7.28", "8.2.5"]
+parser_source = "crates/splot-core/src/symbol.rs; docs/spec/av2/1.0.0/05-syntax-structures.md; docs/spec/av2/1.0.0/08-parsing-process.md"
+decode_module = "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_pass.rs; crates/splot-decode/src/tile_payload/coeff_loop/base_symbol.rs; crates/splot-decode/src/tile_payload/coeff_loop/level_state.rs; crates/splot-decode/src/tile_payload/coeff_loop/sign_symbol.rs; crates/splot-decode/src/tile_payload/coeff_loop/quant_pass.rs"
+tier = "tier1-intra"
+status = "partial"
+self_contained_tests = ["crates/splot-decode/src/tile_payload/coeff_loop/ordinary_pass_tests.rs::coefficient_ordinary_pass_composes_level_sign_and_quant_writes", "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_pass_tests.rs::coefficient_ordinary_pass_interleaves_sign_and_quant_reads", "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_pass_tests.rs::coefficient_ordinary_pass_rejects_base_inputs_before_base_consumption", "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_pass_tests.rs::coefficient_ordinary_pass_stops_after_sign_preflight_failure", "cargo test -p splot-decode ordinary_pass --locked", "cargo test -p splot-decode coeff_loop --locked", "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings", "cargo xtask check-decoder-support", "cargo xtask check-decoder-conformance-coverage", "cargo xtask check-feature-status"]
+diagnostics = ["decode/unsupported-feature"]
+local_reference_evidence = []
+notes = "Adds a crate-private `splot-decode` ordinary non-FSC coefficient-pass composition boundary for AV2 §5.20.7.27 and §5.20.7.28 after nonzero EOB start exists. `apply_nonzero_coeff_ordinary_pass` accepts a `NonZeroCoeffBlockStart`, caller-supplied scan positions, caller-resolved base and sign read inputs, caller-resolved plane and transform class for max-level derivation, and hidden/sumAbs1/TCQ/lossless quant-pass facts; then composes checked scan walking, base/base-range symbol reads, local `Level[]` writes, and the per-coefficient interleaved sign, derived `maxLevel`, §5.20.7.28 `read_quant`, and signed `Quant[pos]` write steps while resetting `hrLevelAvg` to 0 at the block entry. Tests prove successful local `Level[]` and signed `Quant[]` composition, a regression that distinguishes the spec-order interleaved sign/quant loop from the earlier batch sign-then-quant composition, base-input failure preserving CDF and symbol state before base consumption, and sign-count failure stopping after base reads without running sign or quant phases. This row remains partial: runtime `coeffs()` does not call this helper, scan table, evolving base CDF selector derivation, post-level sign-source selection, plane, transform-class, hidden, sumAbs1, TCQ, and lossless facts are still caller-resolved, nonzero tile context writes are not committed, and dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public API, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` remain unimplemented."
+
+[[row]]
+id = "coeff-base-derived-level-pass"
+name = "Coefficient base derived level pass"
+feature_id = "DECODE-COEFF-BASE-DERIVED-LEVEL-PASS"
+spec_sections = ["3", "5.20.7.27", "8.2.5", "8.2.6", "8.3.2", "9.3"]
+parser_source = "crates/splot-core/src/symbol.rs; crates/splot-core/src/tables/cdf.rs; docs/spec/av2/1.0.0/03-symbols.md; docs/spec/av2/1.0.0/05-syntax-structures.md; docs/spec/av2/1.0.0/08-parsing-process.md; docs/spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md"
+decode_module = "crates/splot-decode/src/tile_payload/coeff_loop/base_level_pass.rs; crates/splot-decode/src/tile_payload/coeff_loop/base_symbol.rs; crates/splot-decode/src/tile_payload/coeff_loop/max_level.rs; crates/splot-decode/src/tile_payload/coeff_loop/quant_state.rs"
+tier = "tier1-intra"
+status = "partial"
+self_contained_tests = ["crates/splot-decode/src/tile_payload/coeff_loop/base_level_pass_tests.rs::coefficient_base_level_pass_derives_later_contexts_from_written_levels", "crates/splot-decode/src/tile_payload/coeff_loop/base_level_pass_tests.rs::coefficient_base_level_pass_tracks_first_pass_tcq_state_for_selectors", "crates/splot-decode/src/tile_payload/coeff_loop/base_level_pass_tests.rs::coefficient_base_level_pass_tracks_parity_hiding_summary_before_dc", "crates/splot-decode/src/tile_payload/coeff_loop/base_level_pass_tests.rs::coefficient_base_level_pass_disables_chroma_low_frequency_base_range", "crates/splot-decode/src/tile_payload/coeff_loop/base_level_pass_tests.rs::coefficient_base_level_pass_rejects_static_config_before_base_consumption", "cargo test -p splot-decode coefficient_base_level_pass --locked", "cargo test -p splot-decode coeff_loop --locked", "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings", "cargo xtask check-decoder-support", "cargo xtask check-decoder-conformance-coverage", "cargo xtask check-feature-status"]
+diagnostics = ["decode/unsupported-feature"]
+local_reference_evidence = []
+notes = "Adds a crate-private `splot-decode` state-derived first pass for ordinary non-FSC AV2 §5.20.7.27 coefficient levels. `apply_nonzero_coeff_base_derived_level_pass` validates caller-resolved adjusted transform geometry, derives `coeff_base_eob`, later `coeff_base`, and conditional `coeff_br` selectors from the current local `Level[]`, reads each coefficient through the existing base-symbol primitive, updates first-pass `tcqState`, `sumAbs1`, `numNz`, and `isHidden`, writes `Level[row][col]` before the next selector derivation, and returns decoded base reads, derived selector inputs, first-pass summary state, and the final local block. Tests prove evolving `Level[]` selector derivation, TCQ selector-state updates, parity summary updates, low-frequency chroma `coeff_br` suppression, and static preflight no-consumption behavior. This row remains partial: runtime `coeffs()` does not call this helper, scan, plane, transform-class, geometry, parity, and TCQ facts are still caller-resolved, parity-hidden-only `TileCoeffBasePhCdf` selection is reported as unsupported because that row is not loaded yet, signs, `read_quant`, `QuantSign[]`, `Quant[]`, tile context writes, dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public APIs, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` remain unimplemented."
+
+[[row]]
 id = "tile-cdf-save-lifecycle-boundary"
 name = "Tile CDF save lifecycle boundary"
 feature_id = "DECODE-TILE-CDF-SAVE-LIFECYCLE-BOUNDARY"

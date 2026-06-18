@@ -9,6 +9,9 @@ use splot_core::symbol::{CdfUpdateMode, SymbolDecoder, SymbolDecoderConfig};
 use super::super::cdf::{
     EobPtSize, FrameCdfSubset, TileCdfArray, TileCdfError, TileCdfSelector, TileCdfSubset,
 };
+use super::super::coeff_state::{CoeffContextUpdate, TileCoeffContextState, TileCoeffStateError};
+use super::branch::{CoeffBlockEobBranch, NonZeroCoeffBlockStart, NonZeroCoeffBlockStartInput};
+use super::scan_walk::walk_nonzero_coeff_scan;
 use super::*;
 
 fn symbol_decoder(payload: &[u8], mode: CdfUpdateMode) -> SymbolDecoder<'_> {
@@ -110,6 +113,69 @@ fn direct_eob_read(
     })
 }
 
+fn seeded_coeff_context_state() -> TileCoeffContextState {
+    let mut state = TileCoeffContextState::new(4, 4).unwrap();
+    state
+        .update_after_coeffs(CoeffContextUpdate {
+            plane: 0,
+            x4: 0,
+            y4: 0,
+            w4: 2,
+            h4: 2,
+            cul_level: 4,
+            dc_category: 2,
+        })
+        .unwrap();
+    state
+}
+
+fn branch_all_zero(branch: CoeffBlockEobBranch) -> Option<AllZeroCoeffBlock> {
+    match branch {
+        CoeffBlockEobBranch::AllZero(applied) => Some(applied),
+        CoeffBlockEobBranch::NonZero(_) => None,
+    }
+}
+
+fn branch_nonzero(branch: CoeffBlockEobBranch) -> Option<NonZeroCoeffBlockStart> {
+    match branch {
+        CoeffBlockEobBranch::AllZero(_) => None,
+        CoeffBlockEobBranch::NonZero(start) => Some(start),
+    }
+}
+
+fn nonzero_start_for_eob(
+    eob: usize,
+    state: &mut TileCoeffContextState,
+    tile: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+) -> NonZeroCoeffBlockStart {
+    let branch = read_coeff_block_eob_branch(
+        state,
+        tile,
+        symbols,
+        CoeffBlockEobBranchInput::NonZero(NonZeroCoeffBlockStartInput {
+            block: AllZeroCoeffBlockInput {
+                plane: 0,
+                x4: 0,
+                y4: 0,
+                w4: 2,
+                h4: 2,
+            },
+            eob: NonZeroCoeffEobContextInput {
+                plane: 0,
+                is_inter: false,
+                tx_width_log2: 3,
+                tx_height_log2: 3,
+                coeff_cdf_q_ctx: 0,
+            },
+        }),
+    )
+    .unwrap();
+    let start = branch_nonzero(branch).unwrap();
+    assert_eq!(start.eob_read().eob().eob(), eob);
+    start
+}
+
 #[test]
 fn eob_point_extra_width_tracks_size_specific_extensions() {
     assert_eq!(eob_pt_extra_width(EobPtSize::Pt16, 5), 0);
@@ -117,6 +183,477 @@ fn eob_point_extra_width_tracks_size_specific_extensions() {
     assert_eq!(eob_pt_extra_width(EobPtSize::Pt256, 7), 1);
     assert_eq!(eob_pt_extra_width(EobPtSize::Pt512, 7), 2);
     assert_eq!(eob_pt_extra_width(EobPtSize::Pt1024, 7), 2);
+}
+
+#[test]
+fn eob_size_from_transform_log2_maps_all_spec_classes() {
+    let cases = [
+        (2, 2, EobPtSize::Pt16),
+        (3, 2, EobPtSize::Pt32),
+        (3, 3, EobPtSize::Pt64),
+        (4, 3, EobPtSize::Pt128),
+        (4, 4, EobPtSize::Pt256),
+        (5, 4, EobPtSize::Pt512),
+        (5, 5, EobPtSize::Pt1024),
+    ];
+
+    for (tx_width_log2, tx_height_log2, expected) in cases {
+        assert_eq!(
+            eob_pt_size_from_tx_log2(tx_width_log2, tx_height_log2).unwrap(),
+            expected,
+            "{tx_width_log2}x{tx_height_log2}"
+        );
+    }
+}
+
+#[test]
+fn eob_size_from_transform_log2_clamps_large_dimensions() {
+    assert_eq!(eob_pt_size_from_tx_log2(6, 6).unwrap(), EobPtSize::Pt1024);
+    assert_eq!(
+        eob_pt_size_from_tx_log2(usize::MAX, usize::MAX).unwrap(),
+        EobPtSize::Pt1024
+    );
+}
+
+#[test]
+fn eob_size_from_transform_log2_rejects_invalid_dimensions() {
+    let bad_width = eob_pt_size_from_tx_log2(1, 2).unwrap_err();
+    let bad_height = eob_pt_size_from_tx_log2(2, 1).unwrap_err();
+
+    assert!(matches!(
+        bad_width,
+        CoeffLoopContextError::InvalidEobTransformLog2 {
+            axis: "width",
+            value: 1,
+            minimum: 2
+        }
+    ));
+    assert!(matches!(
+        bad_height,
+        CoeffLoopContextError::InvalidEobTransformLog2 {
+            axis: "height",
+            value: 1,
+            minimum: 2
+        }
+    ));
+}
+
+#[test]
+fn eob_context_maps_luma_inter_flag_and_chroma_override() {
+    assert_eq!(eob_context(0, false), 0);
+    assert_eq!(eob_context(0, true), 1);
+    assert_eq!(eob_context(1, false), 2);
+    assert_eq!(eob_context(2, true), 2);
+    assert_eq!(eob_context(usize::MAX, false), 2);
+}
+
+#[test]
+fn nonzero_coeff_eob_symbol_input_derives_size_context_and_preserves_q_ctx() {
+    let luma_inter = nonzero_coeff_eob_symbol_input(NonZeroCoeffEobContextInput {
+        plane: 0,
+        is_inter: true,
+        tx_width_log2: 4,
+        tx_height_log2: 3,
+        coeff_cdf_q_ctx: 3,
+    })
+    .unwrap();
+    let chroma_intra = nonzero_coeff_eob_symbol_input(NonZeroCoeffEobContextInput {
+        plane: 1,
+        is_inter: false,
+        tx_width_log2: 5,
+        tx_height_log2: 4,
+        coeff_cdf_q_ctx: 2,
+    })
+    .unwrap();
+
+    assert_eq!(
+        luma_inter,
+        NonZeroCoeffEobSymbolInput {
+            size: EobPtSize::Pt128,
+            coeff_cdf_q_ctx: 3,
+            eob_ctx: 1
+        }
+    );
+    assert_eq!(
+        chroma_intra,
+        NonZeroCoeffEobSymbolInput {
+            size: EobPtSize::Pt512,
+            coeff_cdf_q_ctx: 2,
+            eob_ctx: 2
+        }
+    );
+}
+
+#[test]
+fn coeff_block_eob_branch_all_zero_applies_state_without_symbol_consumption() {
+    let frame = FrameCdfSubset::from_defaults();
+    let mut tile = frame.tile_copy();
+    let tile_before = tile.clone();
+    let mut symbols = symbol_decoder(&[0x00, 0x80], CdfUpdateMode::Enabled);
+    let consumed_before = symbols.consumed_bits();
+    let symbol_count_before = symbols.symbol_count();
+    let mut state = seeded_coeff_context_state();
+    let state_before = state.clone();
+
+    let branch = read_coeff_block_eob_branch(
+        &mut state,
+        &mut tile,
+        &mut symbols,
+        CoeffBlockEobBranchInput::AllZero(AllZeroCoeffBlockInput {
+            plane: 0,
+            x4: 0,
+            y4: 0,
+            w4: 2,
+            h4: 2,
+        }),
+    )
+    .unwrap();
+
+    let applied = branch_all_zero(branch).unwrap();
+    assert_eq!(applied.eob(), 0);
+    assert_eq!(applied.cul_level(), 0);
+    assert_eq!(applied.dc_category(), 0);
+    assert_eq!(applied.block().width(), 8);
+    assert_eq!(applied.block().height(), 8);
+    assert_ne!(state, state_before);
+    assert_eq!(state.above_level(0).unwrap(), &[0, 0, 0, 0]);
+    assert_eq!(state.left_level(0).unwrap(), &[0, 0, 0, 0]);
+    assert_eq!(tile, tile_before);
+    assert_eq!(symbols.consumed_bits(), consumed_before);
+    assert_eq!(symbols.symbol_count(), symbol_count_before);
+}
+
+#[test]
+fn coeff_block_eob_branch_nonzero_reads_derived_eob_without_state_mutation() {
+    let (payload, expected) = find_eob_payload(EobPtSize::Pt128, |read| {
+        read.eob().eob_pt() >= 3 && read.eob_extra()
+    });
+    let frame = FrameCdfSubset::from_defaults();
+    let mut tile = frame.tile_copy();
+    let mut symbols = symbol_decoder(&payload, CdfUpdateMode::Enabled);
+    let symbol_count_before = symbols.symbol_count();
+    let mut state = seeded_coeff_context_state();
+    let state_before = state.clone();
+
+    let branch = read_coeff_block_eob_branch(
+        &mut state,
+        &mut tile,
+        &mut symbols,
+        CoeffBlockEobBranchInput::NonZero(NonZeroCoeffBlockStartInput {
+            block: AllZeroCoeffBlockInput {
+                plane: 0,
+                x4: 0,
+                y4: 0,
+                w4: 4,
+                h4: 2,
+            },
+            eob: NonZeroCoeffEobContextInput {
+                plane: 0,
+                is_inter: false,
+                tx_width_log2: 4,
+                tx_height_log2: 3,
+                coeff_cdf_q_ctx: 0,
+            },
+        }),
+    )
+    .unwrap();
+
+    let start = branch_nonzero(branch).unwrap();
+    assert_eq!(start.eob_read(), expected);
+    assert_eq!(start.block().width(), 16);
+    assert_eq!(start.block().height(), 8);
+    assert!(start.block().level().iter().all(|level| *level == 0));
+    assert!(start.block().quant_sign().iter().all(|sign| *sign == 0));
+    assert!(start.block().quant().iter().all(|quant| *quant == 0));
+    assert_eq!(state, state_before);
+    assert!(symbols.symbol_count() > symbol_count_before);
+}
+
+#[test]
+fn coeff_block_eob_branch_invalid_nonzero_geometry_preserves_symbol_state() {
+    let frame = FrameCdfSubset::from_defaults();
+    let mut tile = frame.tile_copy();
+    let tile_before = tile.clone();
+    let mut symbols = symbol_decoder(&[0x00, 0x80], CdfUpdateMode::Enabled);
+    let consumed_before = symbols.consumed_bits();
+    let symbol_count_before = symbols.symbol_count();
+    let mut state = seeded_coeff_context_state();
+    let state_before = state.clone();
+
+    let err = read_coeff_block_eob_branch(
+        &mut state,
+        &mut tile,
+        &mut symbols,
+        CoeffBlockEobBranchInput::NonZero(NonZeroCoeffBlockStartInput {
+            block: AllZeroCoeffBlockInput {
+                plane: 0,
+                x4: 0,
+                y4: 0,
+                w4: 0,
+                h4: 2,
+            },
+            eob: NonZeroCoeffEobContextInput {
+                plane: 0,
+                is_inter: false,
+                tx_width_log2: 4,
+                tx_height_log2: 3,
+                coeff_cdf_q_ctx: 0,
+            },
+        }),
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        err,
+        CoeffLoopContextError::State(TileCoeffStateError::InvalidAdjustedTransformExtent {
+            axis: "width",
+            value: 0
+        })
+    ));
+    assert_eq!(state, state_before);
+    assert_eq!(tile, tile_before);
+    assert_eq!(symbols.consumed_bits(), consumed_before);
+    assert_eq!(symbols.symbol_count(), symbol_count_before);
+}
+
+#[test]
+fn coeff_block_eob_branch_invalid_nonzero_context_preserves_mutable_state() {
+    let frame = FrameCdfSubset::from_defaults();
+    let mut tile = frame.tile_copy();
+    let tile_before = tile.clone();
+    let mut symbols = symbol_decoder(&[0x00, 0x80], CdfUpdateMode::Enabled);
+    let consumed_before = symbols.consumed_bits();
+    let symbol_count_before = symbols.symbol_count();
+    let mut state = seeded_coeff_context_state();
+    let state_before = state.clone();
+
+    let err = read_coeff_block_eob_branch(
+        &mut state,
+        &mut tile,
+        &mut symbols,
+        CoeffBlockEobBranchInput::NonZero(NonZeroCoeffBlockStartInput {
+            block: AllZeroCoeffBlockInput {
+                plane: 0,
+                x4: 0,
+                y4: 0,
+                w4: 2,
+                h4: 2,
+            },
+            eob: NonZeroCoeffEobContextInput {
+                plane: 0,
+                is_inter: false,
+                tx_width_log2: 1,
+                tx_height_log2: 2,
+                coeff_cdf_q_ctx: 0,
+            },
+        }),
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        err,
+        CoeffLoopContextError::InvalidEobTransformLog2 {
+            axis: "width",
+            value: 1,
+            minimum: 2
+        }
+    ));
+    assert_eq!(state, state_before);
+    assert_eq!(tile, tile_before);
+    assert_eq!(symbols.consumed_bits(), consumed_before);
+    assert_eq!(symbols.symbol_count(), symbol_count_before);
+}
+
+#[test]
+fn coeff_scan_walk_returns_reverse_scan_entries_without_mutation() {
+    let (payload, _) = find_eob_payload(EobPtSize::Pt64, |read| read.eob().eob() == 4);
+    let frame = FrameCdfSubset::from_defaults();
+    let mut tile = frame.tile_copy();
+    let mut symbols = symbol_decoder(&payload, CdfUpdateMode::Enabled);
+    let mut state = seeded_coeff_context_state();
+    let start = nonzero_start_for_eob(4, &mut state, &mut tile, &mut symbols);
+    let tile_before = tile.clone();
+    let state_before = state.clone();
+    let consumed_before = symbols.consumed_bits();
+    let symbol_count_before = symbols.symbol_count();
+    let block_before = start.block().clone();
+
+    let walk = walk_nonzero_coeff_scan(&start, &[0, 8, 1, 9]).unwrap();
+    let entries = walk.entries();
+
+    assert_eq!(entries.len(), 4);
+    assert_eq!(entries[0].scan_index(), 3);
+    assert_eq!(entries[0].pos(), 9);
+    assert_eq!(entries[0].row(), 1);
+    assert_eq!(entries[0].col(), 1);
+    assert_eq!(entries[1].scan_index(), 2);
+    assert_eq!(entries[1].pos(), 1);
+    assert_eq!(entries[1].row(), 0);
+    assert_eq!(entries[1].col(), 1);
+    assert_eq!(entries[2].scan_index(), 1);
+    assert_eq!(entries[2].pos(), 8);
+    assert_eq!(entries[2].row(), 1);
+    assert_eq!(entries[2].col(), 0);
+    assert_eq!(entries[3].scan_index(), 0);
+    assert_eq!(entries[3].pos(), 0);
+    assert_eq!(entries[3].row(), 0);
+    assert_eq!(entries[3].col(), 0);
+    assert_eq!(start.block(), &block_before);
+    assert_eq!(state, state_before);
+    assert_eq!(tile, tile_before);
+    assert_eq!(symbols.consumed_bits(), consumed_before);
+    assert_eq!(symbols.symbol_count(), symbol_count_before);
+}
+
+#[test]
+fn coeff_scan_walk_rejects_eob_larger_than_scan_without_mutation() {
+    let (payload, _) = find_eob_payload(EobPtSize::Pt64, |read| read.eob().eob() == 4);
+    let frame = FrameCdfSubset::from_defaults();
+    let mut tile = frame.tile_copy();
+    let mut symbols = symbol_decoder(&payload, CdfUpdateMode::Enabled);
+    let mut state = seeded_coeff_context_state();
+    let start = nonzero_start_for_eob(4, &mut state, &mut tile, &mut symbols);
+    let block_before = start.block().clone();
+
+    let err = walk_nonzero_coeff_scan(&start, &[0, 8, 1]).unwrap_err();
+
+    assert!(matches!(
+        err,
+        CoeffLoopContextError::ScanWalkEobOutOfRange {
+            eob: 4,
+            scan_len: 3
+        }
+    ));
+    assert_eq!(start.block(), &block_before);
+}
+
+#[test]
+fn coeff_scan_walk_rejects_out_of_range_position_without_mutation() {
+    let (payload, _) = find_eob_payload(EobPtSize::Pt64, |read| read.eob().eob() == 4);
+    let frame = FrameCdfSubset::from_defaults();
+    let mut tile = frame.tile_copy();
+    let mut symbols = symbol_decoder(&payload, CdfUpdateMode::Enabled);
+    let mut state = seeded_coeff_context_state();
+    let start = nonzero_start_for_eob(4, &mut state, &mut tile, &mut symbols);
+    let block_before = start.block().clone();
+
+    let err = walk_nonzero_coeff_scan(&start, &[0, 8, 1, 64]).unwrap_err();
+
+    assert!(matches!(
+        err,
+        CoeffLoopContextError::ScanWalkPositionOutOfRange {
+            scan_index: 3,
+            pos: 64,
+            coeff_count: 64
+        }
+    ));
+    assert_eq!(start.block(), &block_before);
+}
+
+#[test]
+fn read_nonzero_coeff_eob_from_context_matches_explicit_selector_read() {
+    let (payload, _) = find_eob_payload(EobPtSize::Pt128, |read| read.eob().eob_pt() >= 3);
+    let explicit_input = NonZeroCoeffEobSymbolInput {
+        size: EobPtSize::Pt128,
+        coeff_cdf_q_ctx: 0,
+        eob_ctx: 0,
+    };
+    let context_input = NonZeroCoeffEobContextInput {
+        plane: 0,
+        is_inter: false,
+        tx_width_log2: 4,
+        tx_height_log2: 3,
+        coeff_cdf_q_ctx: 0,
+    };
+    let frame = FrameCdfSubset::from_defaults();
+    let mut explicit_tile = frame.tile_copy();
+    let mut derived_tile = frame.tile_copy();
+    let mut explicit_symbols = symbol_decoder(&payload, CdfUpdateMode::Enabled);
+    let mut derived_symbols = symbol_decoder(&payload, CdfUpdateMode::Enabled);
+
+    let expected =
+        read_nonzero_coeff_eob(&mut explicit_tile, &mut explicit_symbols, explicit_input).unwrap();
+    let actual =
+        read_nonzero_coeff_eob_from_context(&mut derived_tile, &mut derived_symbols, context_input)
+            .unwrap();
+
+    assert_eq!(actual, expected);
+    assert_eq!(derived_tile, explicit_tile);
+    assert_eq!(
+        derived_symbols.consumed_bits(),
+        explicit_symbols.consumed_bits()
+    );
+    assert_eq!(
+        derived_symbols.symbol_count(),
+        explicit_symbols.symbol_count()
+    );
+}
+
+#[test]
+fn read_nonzero_coeff_eob_from_context_rejects_invalid_log2_before_mutation() {
+    let frame = FrameCdfSubset::from_defaults();
+    let mut tile = frame.tile_copy();
+    let tile_before = tile.clone();
+    let mut symbols = symbol_decoder(&[0x00, 0x80], CdfUpdateMode::Enabled);
+    let consumed_before = symbols.consumed_bits();
+    let symbol_count_before = symbols.symbol_count();
+
+    let err = read_nonzero_coeff_eob_from_context(
+        &mut tile,
+        &mut symbols,
+        NonZeroCoeffEobContextInput {
+            plane: 0,
+            is_inter: false,
+            tx_width_log2: 1,
+            tx_height_log2: 2,
+            coeff_cdf_q_ctx: 0,
+        },
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        err,
+        CoeffLoopContextError::InvalidEobTransformLog2 {
+            axis: "width",
+            value: 1,
+            minimum: 2
+        }
+    ));
+    assert_eq!(tile, tile_before);
+    assert_eq!(symbols.consumed_bits(), consumed_before);
+    assert_eq!(symbols.symbol_count(), symbol_count_before);
+}
+
+#[test]
+fn read_nonzero_coeff_eob_from_context_propagates_symbol_reader_errors() {
+    let frame = FrameCdfSubset::from_defaults();
+    let mut tile = frame.tile_copy();
+    let mut symbols = symbol_decoder(&[0x00, 0x80], CdfUpdateMode::Enabled);
+
+    let err = read_nonzero_coeff_eob_from_context(
+        &mut tile,
+        &mut symbols,
+        NonZeroCoeffEobContextInput {
+            plane: 0,
+            is_inter: false,
+            tx_width_log2: 2,
+            tx_height_log2: 2,
+            coeff_cdf_q_ctx: 4,
+        },
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        err,
+        CoeffLoopContextError::EobSymbolRead(BlockSymbolTraceReadError::Cdf(
+            TileCdfError::SelectorOutOfRange {
+                array: TileCdfArray::EobPt,
+                index_name: "coeff_cdf_q_ctx",
+                actual: 4,
+                max_exclusive: 4,
+            }
+        ))
+    ));
 }
 
 #[test]

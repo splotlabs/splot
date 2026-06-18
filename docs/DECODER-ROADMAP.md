@@ -140,8 +140,71 @@ value helper (`DECODE-COEFF-EOB-VALUE-STATE`) for caller-decoded `eobPt`,
 symbol reader (`DECODE-COEFF-EOB-SYMBOL-READ`) that consumes caller-selected
 `eob_pt_*` CDF rows, size-specific `eob_pt_*_extra` literal bits, `eob_extra`,
 and packed `eob_extra_bit` refinements before calling that value helper. That
-reader is still not wired into the runtime coefficient loop, and no scan walk or
-base/br/sign coefficient symbols are read yet. The § 7.14.4
+reader now has a caller-fact derivation helper
+(`DECODE-COEFF-EOB-SIZE-CONTEXT`) that maps caller-resolved
+`Tx_Width_Log2[txSz]` / `Tx_Height_Log2[txSz]` values to the `eob_pt_*` family
+and derives `eobCtx = (plane > 0) ? 2 : is_inter`, plus a derived EOB reader
+(`DECODE-COEFF-EOB-DERIVED-SYMBOL-READ`) that composes those caller facts with
+the symbol-read sequence. A coefficient EOB branch handoff
+(`DECODE-COEFF-EOB-BRANCH-HANDOFF`) now dispatches caller-selected all-zero
+branches to the all-zero state helper and nonzero branches to that derived EOB
+reader, and the nonzero branch now initializes a zeroed local coefficient block
+state shell (`DECODE-COEFF-NONZERO-BLOCK-STATE`) before reading EOB syntax. The
+ordinary non-FSC nonzero path also has a checked decode-local scan-walk boundary
+(`DECODE-COEFF-SCAN-WALK`) over caller-supplied `scan[c]` positions: it validates
+EOB length and scan-position bounds and returns reverse-order `c`/`pos`/row/col
+facts without importing `splot-recon`, consuming symbols, mutating CDFs, or
+writing coefficients. The ordinary non-IDTX coefficient base/base-EOB/base-range
+CDF row families are now loaded and selectable in the tile CDF subset
+(`DECODE-COEFF-BASE-CDF-ROWS`), including tile copy/save/average and frame-end
+count scaling. A crate-private ordinary non-FSC coefficient base symbol-read
+boundary (`DECODE-COEFF-BASE-SYMBOL-READ`) now consumes caller-resolved
+`coeff_base_eob`, `coeff_base`, and conditional `coeff_br` rows over checked
+scan-walk entries and returns decoded level-building symbols. Those decoded
+ordinary non-FSC levels can now be applied to local transform-block `Level[]`
+state (`DECODE-COEFF-LEVEL-STATE-WRITE`) after validating the read records
+against the checked scan walk, while keeping `QuantSign[]` and `Quant[]`
+untouched. A crate-private sign-read boundary
+(`DECODE-COEFF-SIGN-SYMBOL-READ`) now consumes caller-resolved `dc_sign`,
+`dc_sign_horz_vert`, and raw `sign_bit` sources over those local `Level[]`
+entries and returns sign summaries, but still does not write `QuantSign[]` or
+`Quant[]`. A crate-private `maxLevel` derivation boundary
+(`DECODE-COEFF-MAX-LEVEL-DERIVE`) now applies the § 5.20.7.27
+`get_lf_limits(row, col, txClass, plane)` branches plus the hidden `c == 0`
+override over checked scan entries, returning records convertible to the quant
+pass inputs. A crate-private § 5.20.7.28 `read_quant` parser
+(`DECODE-COEFF-READ-QUANT-SYNTAX`) now consumes caller-resolved
+level, max-level, hidden, and TCQ facts plus the reached `q_length_bit`,
+`golomb_length_bit`, and `coeff_rem` literal syntax, returning quant records.
+Those sign summaries plus `read_quant` outputs can feed a crate-private
+ordinary non-FSC quantized-state boundary
+(`DECODE-COEFF-QUANT-STATE-WRITE`) that applies hidden parity, clamped
+`culLevel`, `dcCategory`, optional TCQ, sign, and signed `Quant[pos]` writes
+while preserving `QuantSign[]`. A loaded-but-unwired composition boundary
+(`DECODE-COEFF-QUANT-PASS-COMPOSE`) now preflights caller facts, runs
+`read_quant`, and feeds those decoded records into the quantized-state writer
+for the ordinary non-FSC second pass. A crate-private max-level handoff
+(`DECODE-COEFF-QUANT-PASS-MAXLEVEL-HANDOFF`) now derives those quant-pass
+`maxLevel` inputs from checked scan entries, caller-resolved plane and transform
+class, and the quant-pass hidden flag before delegating to the composer. A
+loaded-but-unwired ordinary non-FSC pass composition boundary
+(`DECODE-COEFF-ORDINARY-PASS-COMPOSE`) now composes nonzero block start, checked
+scan walk, base-symbol reads, local `Level[]` writes, and the per-coefficient
+interleaved sign, `maxLevel`, `read_quant`, and signed `Quant[]` write steps
+over caller-resolved scan, selector, plane, transform-class, hidden, sumAbs1,
+TCQ, and lossless facts while resetting `hrLevelAvg` to 0 at block entry. These
+boundaries are not wired into runtime `coeffs()` yet. A crate-private
+state-derived first pass (`DECODE-COEFF-BASE-DERIVED-LEVEL-PASS`) now derives
+`coeff_base_eob`, later `coeff_base`, and conditional `coeff_br` selectors from
+the evolving local `Level[]`, updates first-pass `tcqState`, `sumAbs1`, `numNz`,
+and `isHidden`, and writes each decoded `Level[row][col]` before deriving the
+next selector; it remains loaded-but-unwired and reports unsupported if the
+not-yet-loaded parity-hidden-only `TileCoeffBasePhCdf` row is actually selected.
+The minimal trace uses the handoff only for the existing luma and V all-zero
+applications. Runtime integration of nonzero coefficient selector derivation,
+tile context writes for nonzero blocks, and runtime nonzero coefficient blocks
+remain unsupported. The
+§ 7.14.4
 `useQm` / `UserQm` gating and `shift` derivation, the rest
 of the § 7.14.3 reconstruct process, the § 7.15.3 secondary transform, the
 § 7.15.4 DPCM-direction selection and combined transform-parameter resolve helper,

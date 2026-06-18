@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 229 feature(s).
+Matrix version 1. Last reviewed 2026-06-15. 245 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -217,6 +217,22 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `DECODE-COEFF-ALL-ZERO-BLOCK-STATE` | Coefficient all_zero block state handoff | infrastructure | infrastructure | done | done | n/a | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/coeff_loop.rs` |
 | `DECODE-COEFF-EOB-VALUE-STATE` | Coefficient EOB value state | infrastructure | infrastructure | done | done | n/a | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/coeff_loop.rs` |
 | `DECODE-COEFF-EOB-SYMBOL-READ` | Coefficient EOB symbol read | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/coeff_loop.rs` |
+| `DECODE-COEFF-EOB-SIZE-CONTEXT` | Coefficient EOB size context | infrastructure | infrastructure | done | done | n/a | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/coeff_loop.rs` |
+| `DECODE-COEFF-EOB-DERIVED-SYMBOL-READ` | Coefficient EOB derived symbol read | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/coeff_loop.rs` |
+| `DECODE-COEFF-EOB-BRANCH-HANDOFF` | Coefficient EOB branch handoff | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/coeff_loop.rs` |
+| `DECODE-COEFF-NONZERO-BLOCK-STATE` | Coefficient nonzero block state | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/coeff_loop/branch.rs` |
+| `DECODE-COEFF-SCAN-WALK` | Coefficient scan walk | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/coeff_loop/scan_walk.rs` |
+| `DECODE-COEFF-BASE-CDF-ROWS` | Coefficient base CDF rows | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/cdf/coeff_rows.rs` |
+| `DECODE-COEFF-BASE-SYMBOL-READ` | Coefficient base symbol read | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/coeff_loop/base_symbol.rs` |
+| `DECODE-COEFF-LEVEL-STATE-WRITE` | Coefficient level state write | infrastructure | infrastructure | done | done | n/a | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/coeff_loop/level_state.rs` |
+| `DECODE-COEFF-SIGN-SYMBOL-READ` | Coefficient sign symbol read | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/coeff_loop/sign_symbol.rs` |
+| `DECODE-COEFF-MAX-LEVEL-DERIVE` | Coefficient maxLevel derivation | infrastructure | infrastructure | done | done | n/a | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/coeff_loop/max_level.rs` |
+| `DECODE-COEFF-READ-QUANT-SYNTAX` | Coefficient read_quant syntax | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/coeff_loop/read_quant.rs` |
+| `DECODE-COEFF-QUANT-STATE-WRITE` | Coefficient quantized state write | infrastructure | infrastructure | done | done | n/a | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/coeff_loop/quant_state.rs` |
+| `DECODE-COEFF-QUANT-PASS-COMPOSE` | Coefficient quant pass composition | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/coeff_loop/quant_pass.rs` |
+| `DECODE-COEFF-QUANT-PASS-MAXLEVEL-HANDOFF` | Coefficient quant pass maxLevel handoff | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/coeff_loop/quant_pass.rs` |
+| `DECODE-COEFF-BASE-DERIVED-LEVEL-PASS` | Coefficient base derived level pass | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/coeff_loop/base_level_pass.rs` |
+| `DECODE-COEFF-ORDINARY-PASS-COMPOSE` | Coefficient ordinary pass composition | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/coeff_loop/ordinary_pass.rs` |
 | `DECODE-TILE-CDF-SAVE-LIFECYCLE-BOUNDARY` | Tile CDF save lifecycle boundary | infrastructure | infrastructure | done | done | done | n/a | n/a | n/a | done | done | n/a | `crates/splot-decode/src/tile_payload/cdf/lifecycle.rs` |
 | `DECODE-TILE-PARTITION-SYMBOL-READ-BOUNDARY` | Tile partition symbol read boundary | infrastructure | infrastructure | done | done | done | n/a | n/a | n/a | done | done | n/a | `crates/splot-decode/src/tile_payload/cdf/partition_read.rs` |
 | `DECODE-TILE-PARTITION-DECISION-BOUNDARY` | Tile partition decision boundary | infrastructure | infrastructure | done | done | done | n/a | n/a | n/a | done | done | n/a | `crates/splot-decode/src/tile_payload/partition.rs` |

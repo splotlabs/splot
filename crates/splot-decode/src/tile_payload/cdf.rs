@@ -10,6 +10,7 @@ pub(crate) mod block_context;
 pub(crate) mod block_read;
 mod block_rows;
 pub(crate) mod coeff_context;
+mod coeff_rows;
 pub(crate) mod context;
 mod lifecycle;
 pub(crate) mod partition_read;
@@ -23,6 +24,7 @@ use splot_core::tables::cdf::{
 };
 
 use self::block_rows::{BlockCdfRows, BlockCdfSelector};
+pub(crate) use self::coeff_rows::CoeffCdfSelector;
 // Re-exported at crate visibility so sibling decode code (e.g. the future
 // `coeffs()` consumer in `block_symbol.rs`) can name the `eob_pt` size class to
 // construct the `pub(crate)` `TileCdfSelector::EobPt` variant.
@@ -362,6 +364,8 @@ pub(crate) enum TileCdfSelector {
         /// DC-sign context (caller-resolved from the Above/Left DC contexts).
         ctx: usize,
     },
+    /// Ordinary non-IDTX coefficient base/base-EOB/base-range CDF rows.
+    Coeff(CoeffCdfSelector),
 }
 
 /// Supported CDF arrays for error reporting.
@@ -391,6 +395,28 @@ pub(crate) enum TileCdfArray {
     EobPt,
     /// `TileDcSignCdf`.
     DcSign,
+    /// `TileCoeffBaseCdf`.
+    CoeffBase,
+    /// `TileCoeffBaseUvCdf`.
+    CoeffBaseUv,
+    /// `TileCoeffBaseLfCdf`.
+    CoeffBaseLf,
+    /// `TileCoeffBaseLfUvCdf`.
+    CoeffBaseLfUv,
+    /// `TileCoeffBaseEobCdf`.
+    CoeffBaseEob,
+    /// `TileCoeffBaseEobUvCdf`.
+    CoeffBaseEobUv,
+    /// `TileCoeffBaseLfEobCdf`.
+    CoeffBaseLfEob,
+    /// `TileCoeffBaseLfEobUvCdf`.
+    CoeffBaseLfEobUv,
+    /// `TileCoeffBrCdf`.
+    CoeffBr,
+    /// `TileCoeffBrUvCdf`.
+    CoeffBrUv,
+    /// `TileCoeffBrLfCdf`.
+    CoeffBrLf,
 }
 
 impl TileCdfArray {
@@ -408,6 +434,17 @@ impl TileCdfArray {
             Self::EobExtra => "TileEobExtraCdf",
             Self::EobPt => "TileEobPtCdf",
             Self::DcSign => "TileDcSignCdf",
+            Self::CoeffBase => "TileCoeffBaseCdf",
+            Self::CoeffBaseUv => "TileCoeffBaseUvCdf",
+            Self::CoeffBaseLf => "TileCoeffBaseLfCdf",
+            Self::CoeffBaseLfUv => "TileCoeffBaseLfUvCdf",
+            Self::CoeffBaseEob => "TileCoeffBaseEobCdf",
+            Self::CoeffBaseEobUv => "TileCoeffBaseEobUvCdf",
+            Self::CoeffBaseLfEob => "TileCoeffBaseLfEobCdf",
+            Self::CoeffBaseLfEobUv => "TileCoeffBaseLfEobUvCdf",
+            Self::CoeffBr => "TileCoeffBrCdf",
+            Self::CoeffBrUv => "TileCoeffBrUvCdf",
+            Self::CoeffBrLf => "TileCoeffBrLfCdf",
         }
     }
 }
@@ -769,6 +806,7 @@ impl TileCdfRows {
                 group,
                 ctx,
             }),
+            TileCdfSelector::Coeff(selector) => self.block.row(BlockCdfSelector::Coeff(selector)),
         }
     }
 
@@ -889,6 +927,9 @@ impl TileCdfRows {
                 group,
                 ctx,
             }),
+            TileCdfSelector::Coeff(selector) => {
+                self.block.row_mut(BlockCdfSelector::Coeff(selector))
+            }
         }
     }
 
