@@ -14,6 +14,10 @@
 #![allow(clippy::all, clippy::pedantic)]
 #![allow(clippy::unreadable_literal)]
 
+/// `Adjusted_Tx_Size[ TX_SIZES_ALL ]` (AV2 § 9.2, generated from `docs/spec/av2/1.0.0/attachments/all_tables.h`).
+#[rustfmt::skip]
+pub static ADJUSTED_TX_SIZE: [i32; 25] = [0, 1, 2, 3, 3, 5, 6, 7, 8, 9, 10, 3, 3, 13, 14, 15, 16, 9, 10, 19, 20, 15, 16, 19, 20];
+
 /// `Dr_Intra_Derivative[ 90 ]` (AV2 § 9.2, generated from `docs/spec/av2/1.0.0/attachments/all_tables.h`).
 #[rustfmt::skip]
 pub static DR_INTRA_DERIVATIVE: [i32; 90] = [0, 4096, 2048, 1365, 1024, 819, 682, 585, 512, 455, 409, 409, 409, 372, 341, 292, 273, 256, 227, 215, 204, 186, 178, 170, 157, 151, 146, 136, 132, 128, 117, 110, 107, 99, 97, 97, 93, 87, 83, 81, 77, 74, 73, 69, 66, 64, 62, 59, 56, 55, 53, 50, 49, 47, 44, 42, 42, 41, 38, 37, 35, 32, 31, 30, 28, 27, 26, 24, 23, 22, 20, 19, 18, 16, 15, 14, 12, 11, 10, 10, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1];
@@ -105,6 +109,14 @@ pub static TX_HEIGHT: [i32; 25] = [4, 8, 16, 32, 64, 8, 4, 16, 8, 32, 16, 64, 32
 /// `Tx_Height_Log2[ TX_SIZES_ALL ]` (AV2 § 9.2, generated from `docs/spec/av2/1.0.0/attachments/all_tables.h`).
 #[rustfmt::skip]
 pub static TX_HEIGHT_LOG2: [i32; 25] = [2, 3, 4, 5, 6, 3, 2, 4, 3, 5, 4, 6, 5, 4, 2, 5, 3, 6, 4, 5, 2, 6, 3, 6, 2];
+
+/// `Tx_Size_Sqr[ TX_SIZES_ALL ]` (AV2 § 9.2, generated from `docs/spec/av2/1.0.0/attachments/all_tables.h`).
+#[rustfmt::skip]
+pub static TX_SIZE_SQR: [i32; 25] = [0, 1, 2, 3, 4, 0, 0, 1, 1, 2, 2, 3, 3, 0, 0, 1, 1, 2, 2, 0, 0, 1, 1, 0, 0];
+
+/// `Tx_Size_Sqr_Up[ TX_SIZES_ALL ]` (AV2 § 9.2, generated from `docs/spec/av2/1.0.0/attachments/all_tables.h`).
+#[rustfmt::skip]
+pub static TX_SIZE_SQR_UP: [i32; 25] = [0, 1, 2, 3, 4, 1, 1, 2, 2, 3, 3, 4, 4, 2, 2, 3, 3, 4, 4, 3, 3, 4, 4, 4, 4];
 
 /// `Tx_Width[ TX_SIZES_ALL ]` (AV2 § 9.2, generated from `docs/spec/av2/1.0.0/attachments/all_tables.h`).
 #[rustfmt::skip]

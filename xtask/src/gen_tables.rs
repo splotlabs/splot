@@ -19,8 +19,9 @@
 //! - Tables whose element values are all integer literals are **generated** as
 //!   nested fixed-size `i32` arrays (the array shape is inferred from the brace
 //!   nesting; named dimension expressions are recorded as a doc comment only).
-//! - The two § 9.2 partition-size tables with `BLOCK_*` element values are also
-//!   generated after resolving those spec-defined block-size symbols.
+//! - The two § 9.2 partition-size tables with `BLOCK_*` element values and the
+//!   three § 9.2 transform-size tables with `TX_*` element values are also
+//!   generated after resolving those spec-defined enum symbols.
 //! - Tables whose element values use other unresolved symbolic tokens (AV2 enum
 //!   names like `TX_4X4`, or the `reserved` placeholder) cannot be emitted as
 //!   integer arrays without an enum-value map, so they are listed in an
@@ -134,14 +135,10 @@ struct Section {
 
 /// Tables in the attachment whose element values are not integer literals and so
 /// cannot be emitted as typed integer arrays without an AV2 enum-value resolution
-/// map (out of scope for this change). Each is listed with the reason it is
-/// skipped; the run report enumerates them. A symbolic table NOT in this list is a
-/// hard error (loud failure), preventing silent truncation.
+/// map. Each is listed with the reason it is skipped; the run report enumerates
+/// them. A symbolic table NOT in this list is a hard error (loud failure),
+/// preventing silent truncation.
 const SKIP_ALLOWLIST: &[(&str, &str)] = &[
-    (
-        "Adjusted_Tx_Size",
-        "TxSize enum element values (TX_4X4, ...)",
-    ),
     ("Max_Tx_Size_Rect", "TxSize enum element values (TX_*)"),
     (
         "Mode_To_Txfm",
@@ -155,8 +152,6 @@ const SKIP_ALLOWLIST: &[(&str, &str)] = &[
         "Size_To_Tx_Type_Group_Vert_Or_Horz",
         "BlockSize enum element value (BLOCK_INVALID)",
     ),
-    ("Tx_Size_Sqr", "TxSize enum element values (TX_*)"),
-    ("Tx_Size_Sqr_Up", "TxSize enum element values (TX_*)"),
     (
         "Tile_Area_Scaling_Factor",
         "`reserved` placeholder element tokens",
@@ -963,8 +958,9 @@ mod tests {
                 "committed {rel} drifted from gen-tables output"
             );
         }
-        // Sanity: 234 numeric tables plus the two resolved `BLOCK_*` tables.
-        assert_eq!(a.generated, 236, "generated-table count changed");
+        // Sanity: 234 numeric tables plus two resolved `BLOCK_*` tables and
+        // three resolved `TX_*` tables.
+        assert_eq!(a.generated, 239, "generated-table count changed");
         assert_eq!(a.skipped.len(), SKIP_ALLOWLIST.len());
         Ok(())
     }

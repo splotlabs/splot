@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 262 feature(s); 209 cite a spec section.
+Matrix version 1. Last reviewed 2026-06-15. 263 feature(s); 210 cite a spec section.
 
 One row per (spec section, feature) pair, in spec order; a feature citing both a syntax and a semantics section appears under both. The canonical status source is [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); the full per-feature ledger is [FEATURE-STATUS.md](./FEATURE-STATUS.md).
 
@@ -470,6 +470,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 6.19.3](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-3) | Partition structures | `DECODE-TILE-PARTITION-DECISION-BOUNDARY` | ✅ | ✅ | — | ✅ | — |
 | [§ 6.19.3](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-3) | Partition structures | `DECODE-TILE-PARTITION-SIZE-TABLE-BOUNDARY` | ✅ | — | — | ✅ | — |
 | [§ 6.19.3](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-3) | Partition structures | `DECODE-TILE-PARTITION-TRAVERSAL-BOUNDARY` | ✅ | ✅ | — | ✅ | — |
+| [§ 6.19.6.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-6-1) | TX size semantics | `DECODE-TX-SIZE-SYMBOLIC-TABLES` | ✅ | — | — | ✅ | 1 |
 
 ## Chapter 7 — Decoding process
 
@@ -752,6 +753,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-TILE-PARTITION-ALLOWED-BOUNDARY` | ✅ | — | — | ✅ | — |
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-TILE-PARTITION-SIZE-TABLE-BOUNDARY` | ✅ | — | — | ✅ | — |
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-TILE-PARTITION-TRAVERSAL-BOUNDARY` | ✅ | ✅ | — | ✅ | — |
+| [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-TX-SIZE-SYMBOLIC-TABLES` | ✅ | — | — | ✅ | 1 |
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-Y4M-RUNTIME-OUTPUT` | ✅ | 🟡 | ✅ | ✅ | 4 |
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `ENC-BITSTREAM-WRITER` | 🟡 | — | — | 🟡 | — |
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `RECON-INTRA-CARDINAL-DIRECTIONAL-PREDICTION` | ✅ | — | ✅ | ✅ | — |

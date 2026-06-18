@@ -870,6 +870,20 @@ local_reference_evidence = []
 notes = "Adds crate-private loaded-but-unwired ordinary coefficient branch handoff from AV2 §5.20.7.27 `txSz` to generated §9.2 transform-size dimensions. `apply_coeff_ordinary_branch_from_tx_size_dimensions` preserves the all-zero branch, rejects out-of-range `txSz` before mutating coefficient context state, CDF rows, or symbol-decoder state, derives `Tx_Width[txSz]`, `Tx_Height[txSz]`, `Tx_Width_Log2[txSz]`, and `Tx_Height_Log2[txSz]` from `splot-core` generated conversion tables, then delegates to `apply_coeff_ordinary_branch_from_coeffs_geometry`. This row remains partial: it does not derive `Tx_Size_Sqr[txSz]`, `Tx_Size_Sqr_Up[txSz]`, `txSzCtx`, or `Adjusted_Tx_Size[txSz]`, implement §5.20.7.29 `compute_tx_type`, derive scan order, call runtime `coeffs()`, derive selectors from real syntax, dequantize, inverse transform, residual add, reconstruct, output, refresh references, invoke AVM/dav2d, expose public APIs, or claim broad `decode_block()` or `decode_tile()` support."
 
 [[row]]
+id = "tx-size-symbolic-tables"
+name = "TxSize symbolic conversion tables"
+feature_id = "DECODE-TX-SIZE-SYMBOLIC-TABLES"
+spec_sections = ["6.19.6.1", "9.2"]
+parser_source = "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md; docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md; docs/spec/av2/1.0.0/attachments/all_tables.h"
+decode_module = "xtask/src/gen_tables/block_symbols.rs; crates/splot-core/src/tables/conversion.rs"
+tier = "tier1-intra"
+status = "partial"
+self_contained_tests = ["xtask/src/gen_tables/block_symbols.rs::tests::resolves_supported_tx_size_table_body", "xtask/src/gen_tables/block_symbols.rs::tests::rejects_non_tx_size_symbol_in_supported_table", "crates/splot-core/tests/tables_spot.rs::conversion_tx_size_symbolic_tables_match_mirror", "cargo xtask gen-tables --check", "cargo test -p xtask gen_tables --locked", "cargo test -p splot-core --test tables_spot conversion_tx_size_symbolic_tables_match_mirror --locked", "cargo xtask check-decoder-support", "cargo xtask check-decoder-conformance-coverage", "cargo xtask check-feature-status"]
+diagnostics = ["decode/unsupported-feature"]
+local_reference_evidence = []
+notes = "Extends generated AV2 §9.2 table support with the three TxSize enum-valued conversion tables needed by future coefficient wrappers: `Adjusted_Tx_Size`, `Tx_Size_Sqr`, and `Tx_Size_Sqr_Up`. `cargo xtask gen-tables` now resolves the `TX_*` symbols through the AV2 §6.19.6.1 TxSize ordinal map and emits the arrays in `splot-core::tables::conversion` from the committed all_tables.h attachment. This row is infrastructure only: runtime `coeffs()` does not consume these tables yet, `txSzCtx` remains caller-resolved, and `compute_tx_type`, scan order, dequantization, inverse transform, residual add, reconstruction, output, reference refresh, AVM/dav2d evidence, public APIs, broad `decode_block()`, and broad `decode_tile()` remain unimplemented."
+
+[[row]]
 id = "coeff-base-derived-level-pass"
 name = "Coefficient base derived level pass"
 feature_id = "DECODE-COEFF-BASE-DERIVED-LEVEL-PASS"
