@@ -4,7 +4,8 @@
 //! Ordinary non-FSC coefficient pass composition.
 //!
 //! Feature tracking: `DECODE-COEFF-ORDINARY-PASS-COMPOSE`,
-//! `DECODE-COEFF-ORDINARY-DERIVED-BASE-PASS`.
+//! `DECODE-COEFF-ORDINARY-DERIVED-BASE-PASS`,
+//! `DECODE-COEFF-ORDINARY-DERIVED-SIGN-PASS`.
 
 use splot_core::symbol::SymbolDecoder;
 
@@ -33,6 +34,7 @@ use super::read_quant::{CoeffReadQuantConfig, CoeffReadQuantInput, CoeffReadQuan
 use super::scan_walk::{NonZeroCoeffScanWalk, walk_nonzero_coeff_scan};
 use super::sign_symbol::{
     CoeffSignRead, CoeffSignReadError, CoeffSignReadInput, CoeffSignReadSymbol,
+    CoeffSignSourceDeriveConfig, CoeffSignSourceDeriveError, derive_nonzero_coeff_sign_inputs,
     preflight_nonzero_coeff_signs, read_preflighted_nonzero_coeff_sign,
 };
 use super::{CoeffLoopContextError, NonZeroCoeffEobSymbolRead};
@@ -70,13 +72,31 @@ pub(crate) struct CoeffOrdinaryDerivedBasePassInput<'a> {
     pub(crate) scan: &'a [u16],
     /// Caller-resolved facts for deriving base selectors and first-pass state.
     pub(crate) base_config: CoeffBaseDerivedLevelPassConfig,
-    /// Caller-resolved sign inputs, one per checked scan entry.
-    ///
-    /// Runtime selection of skipped zero-level signs versus sign syntax is
-    /// intentionally deferred until the real `coeffs()` integration.
-    pub(crate) sign_inputs: &'a [CoeffSignReadInput],
+    /// Caller-resolved facts for deriving post-first-pass sign sources.
+    pub(crate) sign_config: CoeffOrdinaryDerivedSignPassConfig<'a>,
     /// Caller-resolved lossless flag for the quantized-state update.
     pub(crate) lossless: bool,
+}
+
+/// Caller-resolved facts used by the derived-base pass to derive sign sources.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CoeffOrdinaryDerivedSignPassConfig<'a> {
+    /// Coefficient-CDF quantization context.
+    pub(crate) coeff_cdf_q_ctx: usize,
+    /// Plane type context used by `TileDcSignCdf`.
+    pub(crate) plane_type: usize,
+    /// `AboveDcContext[plane]`.
+    pub(crate) above_dc: &'a [u8],
+    /// `LeftDcContext[plane]`.
+    pub(crate) left_dc: &'a [u8],
+    /// Transform-block x coordinate in 4x4 units.
+    pub(crate) x4: usize,
+    /// Transform-block y coordinate in 4x4 units.
+    pub(crate) y4: usize,
+    /// Transform-block width in 4x4 units.
+    pub(crate) w4: usize,
+    /// Transform-block height in 4x4 units.
+    pub(crate) h4: usize,
 }
 
 /// Result of the loaded ordinary non-FSC coefficient pass.
@@ -132,6 +152,7 @@ impl NonZeroCoeffOrdinaryPass {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct NonZeroCoeffOrdinaryDerivedBasePass {
     base_level_pass: NonZeroCoeffBaseDerivedLevelPass,
+    sign_inputs: Vec<CoeffSignReadInput>,
     sign_reads: Vec<CoeffSignRead>,
     quant_pass: NonZeroCoeffQuantPass,
     block: TransformCoeffBlockState,
@@ -160,6 +181,12 @@ impl NonZeroCoeffOrdinaryDerivedBasePass {
     #[must_use]
     pub(crate) fn derived_base_inputs(&self) -> &[CoeffBaseSymbolReadInput] {
         self.base_level_pass.derived_inputs()
+    }
+
+    /// Derived sign inputs in scan-walk order.
+    #[must_use]
+    pub(crate) fn derived_sign_inputs(&self) -> &[CoeffSignReadInput] {
+        &self.sign_inputs
     }
 
     /// Decoded base/base-range summaries in scan-walk order.
@@ -199,6 +226,9 @@ pub(crate) enum CoeffOrdinaryPassError {
     /// Derived base/level first-pass composition failed.
     #[error("ordinary coefficient pass derived base/level first pass failed: {0}")]
     BaseDerived(#[from] CoeffBaseDerivedLevelPassError),
+    /// Derived sign-source composition failed.
+    #[error("ordinary coefficient pass derived sign-source pass failed: {0}")]
+    SignSource(#[from] CoeffSignSourceDeriveError),
     /// Local `Level[]` state writes failed.
     #[error("ordinary coefficient pass level state write failed: {0}")]
     Level(#[from] CoeffLevelStateWriteError),
@@ -269,8 +299,10 @@ pub(crate) fn apply_nonzero_coeff_ordinary_pass(
 /// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27` and
 /// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-28`). The first pass
 /// supplies base/base-range reads, local `Level[]`, hidden parity, and `sumAbs1`
-/// facts. The caller still owns runtime scan, geometry, plane, transform-class,
-/// parity, TCQ, lossless, and sign-source derivation. Runtime `coeffs()` wiring,
+/// facts. This wrapper derives sign sources from that first-pass state and
+/// caller-provided DC context-line facts. The caller still owns runtime scan,
+/// geometry, plane, transform-class, parity, TCQ, and lossless derivation.
+/// Runtime `coeffs()` wiring,
 /// tile context writes, dequantization, inverse transform, residual add, and
 /// reconstruction remain out of scope.
 pub(crate) fn apply_nonzero_coeff_ordinary_pass_with_derived_base(
@@ -279,15 +311,34 @@ pub(crate) fn apply_nonzero_coeff_ordinary_pass_with_derived_base(
     input: CoeffOrdinaryDerivedBasePassInput<'_>,
 ) -> Result<NonZeroCoeffOrdinaryDerivedBasePass, CoeffOrdinaryPassError> {
     let base_config = input.base_config;
+    let sign_config = input.sign_config;
     let lossless = input.lossless;
     let walk = walk_nonzero_coeff_scan(&input.start, input.scan)?;
     let base_level_pass =
         apply_nonzero_coeff_base_derived_level_pass(cdfs, symbols, input.start, walk, base_config)?;
     let first_pass = base_level_pass.first_pass();
+    let sign_inputs = derive_nonzero_coeff_sign_inputs(
+        base_level_pass.block(),
+        base_level_pass.walk(),
+        CoeffSignSourceDeriveConfig {
+            coeff_cdf_q_ctx: sign_config.coeff_cdf_q_ctx,
+            plane: base_config.plane,
+            plane_type: sign_config.plane_type,
+            tx_class: base_config.tx_class,
+            is_hidden: first_pass.is_hidden(),
+            sum_abs1: first_pass.sum_abs1(),
+            above_dc: sign_config.above_dc,
+            left_dc: sign_config.left_dc,
+            x4: sign_config.x4,
+            y4: sign_config.y4,
+            w4: sign_config.w4,
+            h4: sign_config.h4,
+        },
+    )?;
     let sign_levels = preflight_nonzero_coeff_signs(
         base_level_pass.block(),
         base_level_pass.walk(),
-        input.sign_inputs,
+        &sign_inputs,
     )?;
     let quant_config = CoeffQuantPassConfig {
         is_hidden: first_pass.is_hidden(),
@@ -303,7 +354,7 @@ pub(crate) fn apply_nonzero_coeff_ordinary_pass_with_derived_base(
         &mut block,
         base_level_pass.walk(),
         InterleavedSignQuantInput {
-            sign_inputs: input.sign_inputs,
+            sign_inputs: &sign_inputs,
             sign_levels: &sign_levels,
             max_level_config: CoeffQuantPassMaxLevelConfig {
                 plane: base_config.plane,
@@ -317,6 +368,7 @@ pub(crate) fn apply_nonzero_coeff_ordinary_pass_with_derived_base(
 
     Ok(NonZeroCoeffOrdinaryDerivedBasePass {
         base_level_pass,
+        sign_inputs,
         sign_reads,
         quant_pass,
         block,
