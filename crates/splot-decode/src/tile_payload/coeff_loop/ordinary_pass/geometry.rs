@@ -4,7 +4,9 @@
 //! Ordinary coefficient branch geometry handoff.
 
 use splot_core::symbol::SymbolDecoder;
-use splot_core::tables::conversion::{TX_HEIGHT, TX_HEIGHT_LOG2, TX_WIDTH, TX_WIDTH_LOG2};
+use splot_core::tables::conversion::{
+    ADJUSTED_TX_SIZE, TX_HEIGHT, TX_HEIGHT_LOG2, TX_WIDTH, TX_WIDTH_LOG2,
+};
 
 use super::super::super::cdf::TileCdfSubset;
 use super::super::super::coeff_state::TileCoeffContextState;
@@ -93,15 +95,15 @@ impl CoeffOrdinaryBranchTxSizeDimensionsBaseConfig {
     const fn base_config(
         self,
         geometry: CoeffOrdinaryTxSizeGeometryConfig,
-        dimensions: CoeffOrdinaryTxSizeDimensions,
+        adjusted_dimensions: CoeffOrdinaryTxSizeDimensions,
         coeff_cdf_q_ctx: usize,
     ) -> CoeffOrdinaryBranchPlaneTxTypeBaseConfig {
         CoeffOrdinaryBranchPlaneTxTypeBaseConfig {
             coeff_cdf_q_ctx,
             tx_size_ctx: self.tx_size_ctx,
-            tx_width_log2: dimensions.tx_width_log2,
-            tx_width: dimensions.tx_width,
-            tx_height: dimensions.tx_height,
+            tx_width_log2: adjusted_dimensions.tx_width_log2,
+            tx_width: adjusted_dimensions.tx_width,
+            tx_height: adjusted_dimensions.tx_height,
             plane: geometry.plane,
             plane_tx_type: self.plane_tx_type,
             parity_hiding: self.parity_hiding,
@@ -279,40 +281,77 @@ pub(crate) fn apply_coeff_ordinary_branch_from_coeffs_geometry(
 /// deriving `Tx_Width[txSz]`, `Tx_Height[txSz]`, `Tx_Width_Log2[txSz]`, and
 /// `Tx_Height_Log2[txSz]` from generated AV2 § 9.2 conversion tables
 /// (`docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md`).
-/// It does not derive `Tx_Size_Sqr[txSz]`, `Tx_Size_Sqr_Up[txSz]`, `txSzCtx`,
-/// `Adjusted_Tx_Size[txSz]`, implement `compute_tx_type`, derive scan order,
-/// wire runtime `coeffs()`, dequantize, inverse transform, residual add, or
-/// reconstruct.
+/// For AV2 § 8.3.2 base contexts
+/// (`docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2`), it separately
+/// derives `Adjusted_Tx_Size[txSz]` and uses the adjusted width, height, and
+/// width log2. It does not derive `Tx_Size_Sqr[txSz]`,
+/// `Tx_Size_Sqr_Up[txSz]`, `txSzCtx`, implement `compute_tx_type`, derive scan
+/// order, wire runtime `coeffs()`, dequantize, inverse transform, residual add,
+/// or reconstruct.
 pub(crate) fn apply_coeff_ordinary_branch_from_tx_size_dimensions(
     state: &mut TileCoeffContextState,
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
     input: CoeffOrdinaryBranchTxSizeDimensionsInput<'_>,
 ) -> Result<CoeffOrdinaryBranch, CoeffOrdinaryBranchError> {
+    apply_coeff_ordinary_branch_from_tx_size_dimensions_with_adjusted_table(
+        state,
+        cdfs,
+        symbols,
+        input,
+        &ADJUSTED_TX_SIZE,
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn apply_coeff_ordinary_branch_from_tx_size_dimensions_with_test_adjusted_table(
+    state: &mut TileCoeffContextState,
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    input: CoeffOrdinaryBranchTxSizeDimensionsInput<'_>,
+    adjusted_tx_size_table: &[i32],
+) -> Result<CoeffOrdinaryBranch, CoeffOrdinaryBranchError> {
+    apply_coeff_ordinary_branch_from_tx_size_dimensions_with_adjusted_table(
+        state,
+        cdfs,
+        symbols,
+        input,
+        adjusted_tx_size_table,
+    )
+}
+
+fn apply_coeff_ordinary_branch_from_tx_size_dimensions_with_adjusted_table(
+    state: &mut TileCoeffContextState,
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    input: CoeffOrdinaryBranchTxSizeDimensionsInput<'_>,
+    adjusted_tx_size_table: &[i32],
+) -> Result<CoeffOrdinaryBranch, CoeffOrdinaryBranchError> {
     let input = match input {
         CoeffOrdinaryBranchTxSizeDimensionsInput::AllZero(geometry) => {
-            let dimensions = tx_size_dimensions(geometry.tx_size)?;
-            CoeffOrdinaryBranchCoeffsGeometryInput::AllZero(geometry.coeffs_geometry(dimensions))
+            let raw_dimensions = tx_size_dimensions(geometry.tx_size)?;
+            CoeffOrdinaryBranchCoeffsGeometryInput::AllZero(
+                geometry.coeffs_geometry(raw_dimensions),
+            )
         }
         CoeffOrdinaryBranchTxSizeDimensionsInput::NonZero(input) => {
-            let dimensions = tx_size_dimensions(input.geometry.tx_size)?;
+            let raw_dimensions = tx_size_dimensions(input.geometry.tx_size)?;
+            let adjusted_dimensions =
+                adjusted_tx_size_dimensions(adjusted_tx_size_table, input.geometry.tx_size)?;
             CoeffOrdinaryBranchCoeffsGeometryInput::NonZero(
                 CoeffOrdinaryBranchCoeffsGeometryNonZeroInput {
-                    geometry: input.geometry.coeffs_geometry(dimensions),
+                    geometry: input.geometry.coeffs_geometry(raw_dimensions),
                     eob: NonZeroCoeffEobContextInput {
                         plane: input.geometry.plane,
                         is_inter: input.is_inter,
-                        tx_width_log2: dimensions.tx_width_log2 as usize,
-                        tx_height_log2: dimensions.tx_height_log2 as usize,
+                        tx_width_log2: raw_dimensions.tx_width_log2 as usize,
+                        tx_height_log2: raw_dimensions.tx_height_log2 as usize,
                         coeff_cdf_q_ctx: input.coeff_cdf_q_ctx,
                     },
                     scan: input.scan,
-                    // TODO(spec: DECODE-COEFF-ORDINARY-BRANCH-TX-SIZE-DIMENSIONS):
-                    // Use Tx_Width_Log2[Adjusted_Tx_Size[txSz]] for the base
-                    // context once the adjusted-size table is generated and wired.
                     base_config: input.base_config.base_config(
                         input.geometry,
-                        dimensions,
+                        adjusted_dimensions,
                         input.coeff_cdf_q_ctx,
                     ),
                     state_context: CoeffOrdinaryGeometryStateContextConfig {
@@ -324,6 +363,15 @@ pub(crate) fn apply_coeff_ordinary_branch_from_tx_size_dimensions(
         }
     };
     apply_coeff_ordinary_branch_from_coeffs_geometry(state, cdfs, symbols, input)
+}
+
+fn adjusted_tx_size_dimensions(
+    adjusted_tx_size_table: &[i32],
+    tx_size: usize,
+) -> Result<CoeffOrdinaryTxSizeDimensions, CoeffOrdinaryBranchError> {
+    let adjusted_tx_size =
+        tx_size_table_usize(adjusted_tx_size_table, "Adjusted_Tx_Size", tx_size)?;
+    tx_size_dimensions(adjusted_tx_size)
 }
 
 fn tx_size_dimensions(

@@ -8,7 +8,7 @@ use splot_core::symbol::{CdfUpdateMode, SymbolBitPosition, SymbolDecoder, Symbol
 
 use super::super::cdf::{FrameCdfSubset, TileCdfSubset};
 use super::super::coeff_state::{CoeffContextUpdate, TileCoeffContextState};
-use super::base_level_pass::CoeffBaseDerivedLevelPassConfig;
+use super::base_level_pass::{CoeffBaseDerivedLevelPassConfig, CoeffBaseDerivedLevelPassError};
 use super::branch::{CoeffBlockEobBranch, NonZeroCoeffBlockStart, NonZeroCoeffBlockStartInput};
 use super::max_level::CoeffTransformClass;
 use super::ordinary_pass::geometry::{
@@ -19,12 +19,14 @@ use super::ordinary_pass::geometry::{
     CoeffOrdinaryGeometryStateContextConfig, CoeffOrdinaryTxSizeGeometryConfig,
     apply_coeff_ordinary_branch_from_coeffs_geometry, apply_coeff_ordinary_branch_from_geometry,
     apply_coeff_ordinary_branch_from_tx_size_dimensions,
+    apply_coeff_ordinary_branch_from_tx_size_dimensions_with_test_adjusted_table,
 };
 use super::ordinary_pass::{
     CoeffOrdinaryBranch, CoeffOrdinaryBranchError, CoeffOrdinaryBranchInput,
-    CoeffOrdinaryBranchPlaneTxTypeBaseConfig, CoeffOrdinaryStateContextConfig,
-    CoeffOrdinaryStateContextPassInput, NonZeroCoeffOrdinaryDerivedBasePass,
-    apply_coeff_ordinary_branch, apply_nonzero_coeff_ordinary_pass_with_state_context,
+    CoeffOrdinaryBranchPlaneTxTypeBaseConfig, CoeffOrdinaryPassError,
+    CoeffOrdinaryStateContextConfig, CoeffOrdinaryStateContextPassInput,
+    NonZeroCoeffOrdinaryDerivedBasePass, apply_coeff_ordinary_branch,
+    apply_nonzero_coeff_ordinary_pass_with_state_context,
 };
 use super::{
     AllZeroCoeffBlockInput, CoeffBlockEobBranchInput, NonZeroCoeffEobContextInput,
@@ -49,7 +51,7 @@ fn symbol_decoder(payload: &[u8]) -> SymbolDecoder<'_> {
 }
 
 fn seeded_context_state() -> TileCoeffContextState {
-    let mut state = TileCoeffContextState::new(6, 6).unwrap();
+    let mut state = TileCoeffContextState::new(32, 32).unwrap();
     state
         .update_after_coeffs(CoeffContextUpdate {
             plane: 0,
@@ -71,12 +73,21 @@ fn payload_from(first: u8, second: u8, suffix: [u8; 3]) -> [u8; 12] {
 }
 
 fn base_config_for_plane(plane: usize) -> CoeffBaseDerivedLevelPassConfig {
+    base_config_for_plane_and_dimensions(plane, 3, 8, 8)
+}
+
+fn base_config_for_plane_and_dimensions(
+    plane: usize,
+    tx_width_log2: u32,
+    tx_width: usize,
+    tx_height: usize,
+) -> CoeffBaseDerivedLevelPassConfig {
     CoeffBaseDerivedLevelPassConfig {
         coeff_cdf_q_ctx: 0,
         tx_size_ctx: 0,
-        tx_width_log2: 3,
-        tx_width: 8,
-        tx_height: 8,
+        tx_width_log2,
+        tx_width,
+        tx_height,
         plane,
         tx_class: CoeffTransformClass::TwoD,
         parity_hiding: false,
@@ -85,12 +96,21 @@ fn base_config_for_plane(plane: usize) -> CoeffBaseDerivedLevelPassConfig {
 }
 
 fn plane_tx_type_base_config_for_plane(plane: usize) -> CoeffOrdinaryBranchPlaneTxTypeBaseConfig {
+    plane_tx_type_base_config_for_plane_and_dimensions(plane, 3, 8, 8)
+}
+
+fn plane_tx_type_base_config_for_plane_and_dimensions(
+    plane: usize,
+    tx_width_log2: u32,
+    tx_width: usize,
+    tx_height: usize,
+) -> CoeffOrdinaryBranchPlaneTxTypeBaseConfig {
     CoeffOrdinaryBranchPlaneTxTypeBaseConfig {
         coeff_cdf_q_ctx: 0,
         tx_size_ctx: 0,
-        tx_width_log2: 3,
-        tx_width: 8,
-        tx_height: 8,
+        tx_width_log2,
+        tx_width,
+        tx_height,
         plane,
         plane_tx_type: 0,
         parity_hiding: false,
@@ -142,6 +162,18 @@ fn nonzero_start_input_for_plane_and_geometry(
     w4: usize,
     h4: usize,
 ) -> NonZeroCoeffBlockStartInput {
+    nonzero_start_input_for_plane_geometry_and_log2(plane, x4, y4, w4, h4, 3, 3)
+}
+
+fn nonzero_start_input_for_plane_geometry_and_log2(
+    plane: usize,
+    x4: usize,
+    y4: usize,
+    w4: usize,
+    h4: usize,
+    tx_width_log2: usize,
+    tx_height_log2: usize,
+) -> NonZeroCoeffBlockStartInput {
     NonZeroCoeffBlockStartInput {
         block: AllZeroCoeffBlockInput {
             plane,
@@ -153,8 +185,8 @@ fn nonzero_start_input_for_plane_and_geometry(
         eob: NonZeroCoeffEobContextInput {
             plane,
             is_inter: false,
-            tx_width_log2: 3,
-            tx_height_log2: 3,
+            tx_width_log2,
+            tx_height_log2,
             coeff_cdf_q_ctx: 0,
         },
     }
@@ -463,6 +495,72 @@ fn coefficient_ordinary_branch_tx_size_dimensions_nonzero_matches_explicit_dimen
 }
 
 #[test]
+fn coefficient_ordinary_branch_tx_size_dimensions_uses_adjusted_base_dimensions() {
+    // TX_64X32 has raw geometry 64x32 for § 5.20.7.27 block/EOB facts, but
+    // Adjusted_Tx_Size[TX_64X32] is TX_32X32 for § 8.3.2 base contexts.
+    let tx_64x32 = 12;
+    let start = nonzero_start_input_for_plane_geometry_and_log2(0, 0, 0, 16, 8, 6, 5);
+    let raw_state_context = CoeffOrdinaryStateContextConfig {
+        coeff_cdf_q_ctx: 0,
+        plane_type: 0,
+        x4: start.block.x4,
+        y4: start.block.y4,
+        w4: start.block.w4,
+        h4: start.block.h4,
+    };
+    let adjusted_base_config = plane_tx_type_base_config_for_plane_and_dimensions(0, 5, 32, 32);
+    let payload = find_state_context_payload_with_start(
+        start,
+        base_config_for_plane_and_dimensions(0, 5, 32, 32),
+        raw_state_context,
+    );
+
+    let explicit = run_coeffs_geometry_branch(
+        &payload,
+        branch_coeffs_geometry_nonzero_input(
+            start,
+            adjusted_base_config,
+            geometry_state_context_config(),
+        ),
+    );
+    let derived = run_tx_size_dimensions_branch(
+        &payload,
+        branch_tx_size_dimensions_nonzero_input(start, tx_64x32, tx_size_base_config()),
+    );
+
+    assert_eq!(derived, explicit);
+
+    let raw_base_config = plane_tx_type_base_config_for_plane_and_dimensions(0, 6, 64, 32);
+    let frame = FrameCdfSubset::from_defaults();
+    let mut tile = frame.tile_copy();
+    let mut symbols = symbol_decoder(&payload);
+    let mut context_state = seeded_context_state();
+    let err = apply_coeff_ordinary_branch_from_coeffs_geometry(
+        &mut context_state,
+        &mut tile,
+        &mut symbols,
+        branch_coeffs_geometry_nonzero_input(
+            start,
+            raw_base_config,
+            geometry_state_context_config(),
+        ),
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        err,
+        CoeffOrdinaryBranchError::Ordinary(CoeffOrdinaryPassError::BaseDerived(
+            CoeffBaseDerivedLevelPassError::BlockGeometryMismatch {
+                block_width: 32,
+                block_height: 32,
+                config_width: 64,
+                config_height: 32,
+            }
+        ))
+    ));
+}
+
+#[test]
 fn coefficient_ordinary_branch_coeffs_geometry_all_zero_preserves_direct_branch() {
     let block = AllZeroCoeffBlockInput {
         plane: 1,
@@ -524,6 +622,42 @@ fn coefficient_ordinary_branch_tx_size_dimensions_invalid_tx_size_preserves_muta
         err,
         CoeffOrdinaryBranchError::InvalidTransformSize {
             tx_size: usize::MAX
+        }
+    ));
+    assert_eq!(context_state, context_before);
+    assert_eq!(tile, tile_before);
+    assert_eq!(symbols.consumed_bits(), consumed_before);
+    assert_eq!(symbols.symbol_count(), symbols_before);
+}
+
+#[test]
+fn coefficient_ordinary_branch_adjusted_tx_size_table_value_preserves_mutable_state() {
+    let frame = FrameCdfSubset::from_defaults();
+    let mut tile = frame.tile_copy();
+    let tile_before = tile.clone();
+    let mut symbols = symbol_decoder(&[0x80]);
+    let consumed_before = symbols.consumed_bits();
+    let symbols_before = symbols.symbol_count();
+    let mut context_state = seeded_context_state();
+    let context_before = context_state.clone();
+    let start = nonzero_start_input_for_plane_and_geometry(1, 1, 1, 2, 2);
+    let invalid_adjusted_tx_size_table = [-1];
+
+    let err = apply_coeff_ordinary_branch_from_tx_size_dimensions_with_test_adjusted_table(
+        &mut context_state,
+        &mut tile,
+        &mut symbols,
+        branch_tx_size_dimensions_nonzero_input(start, 0, tx_size_base_config()),
+        &invalid_adjusted_tx_size_table,
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        err,
+        CoeffOrdinaryBranchError::InvalidTransformSizeTableValue {
+            table: "Adjusted_Tx_Size",
+            tx_size: 0,
+            value: -1,
         }
     ));
     assert_eq!(context_state, context_before);
