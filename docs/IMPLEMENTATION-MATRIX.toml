@@ -3887,7 +3887,7 @@ openspec_change = "encoder-frame-input-views"
 tracking_issue = ""
 owner = "encoder"
 risk = "medium"
-notes = "Input format plumbing; not normative AV2 syntax. The encoder now has validated borrowed 8-bit YUV420 frame input views over splot-recon PlaneRef, typed frame id/timestamp metadata, explicit RetainedFrame sharing over SharedFrame, context send_frame accepts the real Frame<'_> type, and unit/property plus fuzz target coverage exercise dimensions, strides, odd visible sizes, missing planes, unsupported formats, and truncated buffers. Residual: no Y4M reader, no 10-bit input view, no lookahead materialization, and no public encode success path."
+notes = "Input format plumbing; not normative AV2 syntax. The encoder now has validated borrowed 8-bit YUV420 frame input views over splot-recon PlaneRef, typed frame id/timestamp metadata, explicit RetainedFrame sharing over SharedFrame, context send_frame accepts a borrowed real Frame<'_> input, and unit/property plus fuzz target coverage exercise dimensions, strides, odd visible sizes, missing planes, unsupported formats, and truncated buffers. Residual: no Y4M reader, no 10-bit input view, no lookahead materialization, and no public encode success path."
 
 [feature.status]
 mapped = "partial"
@@ -3920,7 +3920,7 @@ openspec_change = "encoder-context-state-machine"
 tracking_issue = ""
 owner = "encoder"
 risk = "medium"
-notes = "Non-normative encoder API lifecycle plumbing. Context now exposes accepting/draining/finished/failed state, operation-specific send/receive/flush statuses, typed invalid-state errors, fixed bounded queue accounting over frame metadata only, and no-output draining semantics. It never retains borrowed pixel buffers, emits no fake coded packets, and does not expose public AV2 encode success."
+notes = "Non-normative encoder API lifecycle plumbing. Context now exposes accepting/draining/finished/failed state, operation-specific send/receive/flush statuses, typed invalid-state errors, retryable queue-full backpressure without consuming the caller's borrowed frame, config/frame metadata validation before queueing, fixed bounded queue accounting over frame metadata only, and no-output draining semantics. It never retains borrowed pixel buffers, emits no fake coded packets, and does not expose public AV2 encode success."
 
 [feature.status]
 mapped = "done"

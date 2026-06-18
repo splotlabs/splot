@@ -41,6 +41,8 @@ packets or report successful public bitstream production.
 - **WHEN** callers send frames until the bounded input queue is full
 - **THEN** the frame that fills the queue is accepted
 - **AND** a later send reports queue-full backpressure without changing state
+- **AND** the later send does not consume the borrowed input frame, so the
+  caller can retry it after draining
 
 #### Scenario: flush drains queued input without fake packets
 
@@ -105,6 +107,13 @@ proved coded-frame path land under separate Feature IDs. A successful
 - **WHEN** a caller sends a valid borrowed input frame to `Context::send_frame`
 - **THEN** the call returns an operation-specific accepted or backpressure status
 - **AND** no packet or fake encode success is produced
+
+#### Scenario: frame metadata must match config
+
+- **WHEN** a caller sends a frame whose dimensions, bit depth, or chroma layout
+  do not match the context configuration
+- **THEN** `send_frame` rejects the frame with a typed input-frame error
+- **AND** the frame is not queued
 
 #### Scenario: end of stream has no packet before encode core
 

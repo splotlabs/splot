@@ -185,7 +185,7 @@ impl Context {
     ///
     /// # Errors
     /// Returns [`Error::State`] if the context is draining, finished, or failed.
-    pub fn send_frame(&mut self, frame: Frame<'_>) -> Result<SendFrameStatus> {
+    pub fn send_frame(&mut self, frame: &Frame<'_>) -> Result<SendFrameStatus> {
         if self.state != EncoderState::Accepting {
             return Err(self.state_error(EncoderOperation::SendFrame));
         }
@@ -197,7 +197,9 @@ impl Context {
             });
         }
 
-        self.input_queue.push_back(frame.info());
+        let info = frame.info();
+        self.validate_frame_info(info)?;
+        self.input_queue.push_back(info);
         Ok(SendFrameStatus::Accepted {
             queued_frames: self.input_queue.len(),
             queue_capacity: INPUT_QUEUE_CAPACITY,
@@ -269,6 +271,33 @@ impl Context {
         }
     }
 
+    fn validate_frame_info(&self, info: FrameInfo) -> Result<()> {
+        let visible_luma_size = info.visible_luma_size();
+        if (self.config.width != 0 || self.config.height != 0)
+            && (visible_luma_size.width() != self.config.width as usize
+                || visible_luma_size.height() != self.config.height as usize)
+        {
+            return Err(Error::InputFrameSizeMismatch {
+                expected_width: self.config.width,
+                expected_height: self.config.height,
+                actual: visible_luma_size,
+            });
+        }
+        if info.bit_depth() != self.config.bit_depth {
+            return Err(Error::InputFrameBitDepthMismatch {
+                expected: self.config.bit_depth,
+                actual: info.bit_depth(),
+            });
+        }
+        if info.chroma_subsampling() != self.config.chroma_subsampling {
+            return Err(Error::InputFrameChromaSubsamplingMismatch {
+                expected: self.config.chroma_subsampling,
+                actual: info.chroma_subsampling(),
+            });
+        }
+        Ok(())
+    }
+
     #[cfg(test)]
     fn enter_failed_for_test(&mut self) {
         self.state = EncoderState::Failed;
@@ -281,6 +310,7 @@ impl Context {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use crate::config::{BitDepth, ChromaSubsampling};
     use splot_parallel::ThreadCount;
     use splot_recon::{PlaneRect, PlaneSize};
 
@@ -338,15 +368,16 @@ mod tests {
         let y = [0_u8; 4];
         let u = [0_u8; 1];
         let v = [0_u8; 1];
-        assert_eq!(
-            ctx.send_frame(frame(&y, &u, &v)).unwrap(),
+        assert!(matches!(
+            ctx.send_frame(&frame(&y, &u, &v)).unwrap(),
             SendFrameStatus::Accepted {
                 queued_frames: 1,
                 queue_capacity: 1,
             }
-        );
+        ));
+        let retry = frame(&y, &u, &v);
         assert_eq!(
-            ctx.send_frame(frame(&y, &u, &v)).unwrap(),
+            ctx.send_frame(&retry).unwrap(),
             SendFrameStatus::QueueFull {
                 queued_frames: 1,
                 queue_capacity: 1,
@@ -354,6 +385,70 @@ mod tests {
         );
         assert_eq!(ctx.state(), EncoderState::Accepting);
         assert_eq!(ctx.queued_input_frames(), 1);
+        assert_eq!(
+            ctx.receive_packet().unwrap(),
+            ReceivePacketStatus::NeedMoreData
+        );
+        assert!(matches!(
+            ctx.send_frame(&retry).unwrap(),
+            SendFrameStatus::Accepted { .. }
+        ));
+    }
+
+    #[test]
+    fn send_frame_rejects_config_size_mismatch_without_queueing() {
+        let mut ctx = Context::new(
+            EncoderConfig::new(1920, 1080),
+            EncoderRuntimeConfig::default(),
+        )
+        .unwrap();
+        let y = [0_u8; 4];
+        let u = [0_u8; 1];
+        let v = [0_u8; 1];
+        assert!(matches!(
+            ctx.send_frame(&frame(&y, &u, &v)),
+            Err(Error::InputFrameSizeMismatch {
+                expected_width: 1920,
+                expected_height: 1080,
+                actual,
+            }) if actual == size(2, 2)
+        ));
+        assert_eq!(ctx.state(), EncoderState::Accepting);
+        assert_eq!(ctx.queued_input_frames(), 0);
+    }
+
+    #[test]
+    fn send_frame_rejects_config_format_mismatch_without_queueing() {
+        let config = EncoderConfig {
+            bit_depth: BitDepth::Ten,
+            ..EncoderConfig::default()
+        };
+        let mut ctx = Context::new(config, EncoderRuntimeConfig::default()).unwrap();
+        let y = [0_u8; 4];
+        let u = [0_u8; 1];
+        let v = [0_u8; 1];
+        assert!(matches!(
+            ctx.send_frame(&frame(&y, &u, &v)),
+            Err(Error::InputFrameBitDepthMismatch {
+                expected: BitDepth::Ten,
+                actual: BitDepth::Eight,
+            })
+        ));
+        assert_eq!(ctx.queued_input_frames(), 0);
+
+        let config = EncoderConfig {
+            chroma_subsampling: ChromaSubsampling::Yuv444,
+            ..EncoderConfig::default()
+        };
+        let mut ctx = Context::new(config, EncoderRuntimeConfig::default()).unwrap();
+        assert!(matches!(
+            ctx.send_frame(&frame(&y, &u, &v)),
+            Err(Error::InputFrameChromaSubsamplingMismatch {
+                expected: ChromaSubsampling::Yuv444,
+                actual: ChromaSubsampling::Yuv420,
+            })
+        ));
+        assert_eq!(ctx.queued_input_frames(), 0);
     }
 
     #[test]
@@ -364,7 +459,7 @@ mod tests {
         let u = [0_u8; 1];
         let v = [0_u8; 1];
         assert!(matches!(
-            ctx.send_frame(frame(&y, &u, &v)).unwrap(),
+            ctx.send_frame(&frame(&y, &u, &v)).unwrap(),
             SendFrameStatus::Accepted { .. }
         ));
         assert_eq!(
@@ -394,7 +489,7 @@ mod tests {
         let u = [0_u8; 1];
         let v = [0_u8; 1];
         assert!(matches!(
-            ctx.send_frame(frame(&y, &u, &v)).unwrap(),
+            ctx.send_frame(&frame(&y, &u, &v)).unwrap(),
             SendFrameStatus::Accepted { .. }
         ));
         assert_eq!(
@@ -420,12 +515,12 @@ mod tests {
         let u = [0_u8; 1];
         let v = [0_u8; 1];
         assert!(matches!(
-            ctx.send_frame(frame(&y, &u, &v)).unwrap(),
+            ctx.send_frame(&frame(&y, &u, &v)).unwrap(),
             SendFrameStatus::Accepted { .. }
         ));
         assert!(matches!(ctx.flush().unwrap(), FlushStatus::Draining { .. }));
         assert!(matches!(
-            ctx.send_frame(frame(&y, &u, &v)),
+            ctx.send_frame(&frame(&y, &u, &v)),
             Err(Error::State {
                 operation: EncoderOperation::SendFrame,
                 state: EncoderState::Draining,
@@ -442,7 +537,7 @@ mod tests {
         let v = [0_u8; 1];
         assert_eq!(ctx.flush().unwrap(), FlushStatus::Finished);
         assert!(matches!(
-            ctx.send_frame(frame(&y, &u, &v)),
+            ctx.send_frame(&frame(&y, &u, &v)),
             Err(Error::State {
                 operation: EncoderOperation::SendFrame,
                 state: EncoderState::Finished,
@@ -460,7 +555,7 @@ mod tests {
         ctx.enter_failed_for_test();
         assert_eq!(ctx.state(), EncoderState::Failed);
         assert!(matches!(
-            ctx.send_frame(frame(&y, &u, &v)),
+            ctx.send_frame(&frame(&y, &u, &v)),
             Err(Error::State {
                 operation: EncoderOperation::SendFrame,
                 state: EncoderState::Failed,

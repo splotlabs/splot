@@ -11,6 +11,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
+use splot_parallel::ThreadCount;
 use splot_encode::{
     Context, EncoderConfig, EncoderOperation, EncoderRuntimeConfig, EncoderState, Error,
     FlushStatus, Frame, FrameId, FrameInfo, FramePlaneInput, FramePlanesInput, PlaneRect,
@@ -20,8 +21,9 @@ use splot_encode::{
 const MAX_COMMANDS: usize = 64;
 
 fuzz_target!(|data: &[u8]| {
-    let mut context = Context::new(EncoderConfig::default(), EncoderRuntimeConfig::default())
-        .unwrap_or_else(|err| panic!("default encoder context should construct: {err:?}"));
+    let runtime = EncoderRuntimeConfig::new(ThreadCount::from(1usize));
+    let mut context = Context::new(EncoderConfig::default(), runtime)
+        .unwrap_or_else(|err| panic!("single-thread encoder context should construct: {err:?}"));
     let mut next_frame_id = 0_u64;
 
     exercise_receive_before_input(&mut context);
@@ -64,7 +66,7 @@ fn send_one(context: &mut Context, frame_id: u64) {
     let u = [0_u8; 1];
     let v = [0_u8; 1];
     let frame = frame(frame_id, &y, &u, &v);
-    match context.send_frame(frame) {
+    match context.send_frame(&frame) {
         Ok(SendFrameStatus::Accepted {
             queued_frames,
             queue_capacity,

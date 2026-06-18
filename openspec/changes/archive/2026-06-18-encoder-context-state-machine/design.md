@@ -1,7 +1,7 @@
 ## Context
 
 `encoder-frame-input-views` made `Context::send_frame` accept a real borrowed
-`Frame<'_>`, but all three lifecycle calls still return
+frame input, but all three lifecycle calls still return
 `splot_core::Error::Unimplemented`. That keeps callers from testing normal
 push/pull behavior such as receive-before-input, backpressure, flush, and
 end-of-stream. This change is non-normative API plumbing tracked by
@@ -48,9 +48,12 @@ Reference gate:
 
 `Frame<'_>` cannot be stored by `Context` without either carrying lifetimes
 through the context or copying/materializing media samples. For this phase,
-`send_frame` will validate the call state and push only `FrameInfo` into a bounded
-internal queue. `receive_packet` will retire queued frame metadata from the
-no-output frontier and report that no packet is ready.
+`send_frame` will borrow `Frame<'_>`, validate the call state and frame metadata
+against the context configuration, then push only `FrameInfo` into a bounded
+internal queue. When the input queue is full, the caller still owns the borrowed
+frame view and can retry without reconstructing it. `receive_packet` will retire
+queued frame metadata from the no-output frontier and report that no packet is
+ready.
 
 Alternative considered: make `Context` lifetime-parameterized over borrowed
 frames. Rejected because it would force a public API shape around a temporary
@@ -63,15 +66,15 @@ The public API will expose:
 
 - `EncoderState`: current lifecycle state.
 - `EncoderOperation`: the operation used in state errors.
-- `SendFrameStatus`: accepted or backpressure without throwing.
+- `SendFrameStatus`: accepted or retryable backpressure without throwing.
 - `ReceivePacketStatus`: packet-ready placeholder shape, need-more-data, or
   finished.
 - `FlushStatus`: draining or already finished.
 
 `Error::State` will represent invalid transitions such as send-after-flush,
-send-after-finished, or calls after failed state. Queue-full is a normal status,
-not an error, so callers can implement backpressure loops without exception
-control flow.
+send-after-finished, or calls after failed state. Input-frame/config mismatches
+are typed input-frame errors. Queue-full is a normal status, not an error, so
+callers can implement backpressure loops without exception control flow.
 
 Alternative considered: reuse the existing `EncoderStatus` enum. Rejected because
 one enum is too vague for all operations and still cannot distinguish packet

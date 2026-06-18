@@ -22,4 +22,4 @@
 - [x] 4.1 Run OpenSpec validation, feature-status checks, formatting, and `cargo xtask ci`.
 - [x] 4.2 Obtain local correctness/spec, security/zero-copy, determinism/concurrency, and test/evidence review reports and address findings.
 - [x] 4.3 Archive the OpenSpec change after implementation and rerun validation/CI.
-- [ ] 4.4 Open a PR with the Flight Manifest, proof commands, local reviewer decisions, and final GitHub Claude/Codex review checklist.
+- [x] 4.4 Open a PR with the Flight Manifest, proof commands, local reviewer decisions, and final GitHub Claude/Codex review checklist.
