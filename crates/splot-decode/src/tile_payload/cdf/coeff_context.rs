@@ -24,14 +24,17 @@
 //!   caller-provided level slice; and
 //! - the two identity-transform magnitude contexts `coeff_base_idtx`
 //!   ([`coeff_base_idtx_ctx`]) and `coeff_br_idtx` ([`coeff_br_idtx_ctx`]), which
-//!   read only the left and above `Level[]` neighbours.
+//!   read only the left and above `Level[]` neighbours;
+//! - the main 2D significant-coefficient context `coeff_base`
+//!   ([`CoeffBaseContext`]), which selects one of five `coeff_base` banks from a
+//!   neighbour-magnitude sum; and
+//! - the `dc_sign` sign context ([`dc_sign_ctx`]), which sums the above/left
+//!   DC-context signs.
 //!
-//! The remaining `Level[]`-dependent coefficient context (`coeff_base`) and the
-//! sign contexts (`dc_sign`, `idtx_sign`) are derived by future increments once
-//! the full per-transform-block level/sign buffers and the § 5.20 coefficient
-//! decode loop exist. Nothing here is wired into a decode path yet, so it is
-//! no-output-change (the derivations are exercised by compile-time spec-contract
-//! `const` checks and unit tests, not by any decode stage).
+//! The remaining `idtx_sign` sign context is derived by a future increment once
+//! the `QuantSign[]` buffer exists. Nothing here is wired into a decode path yet,
+//! so it is no-output-change (the derivations are exercised by compile-time
+//! spec-contract `const` checks and unit tests, not by any decode stage).
 
 use splot_core::tables::conversion::SIG_REF_DIFF_OFFSET;
 
@@ -439,6 +442,69 @@ impl CoeffBaseContext {
     }
 }
 
+/// Returns the AV2 § 8.3.2 `dc_sign` CDF context — the inner index of
+/// `TileDcSignCdf[ptype][isHidden][ctx]` (`08-parsing-process.md#s-8-3-2`).
+///
+/// It nets the DC-sign votes of the block's above and left neighbours:
+/// `AboveDcContext[plane][x4+k]` for `k` in `0..w4` and
+/// `LeftDcContext[plane][y4+k]` for `k` in `0..h4`, each sign `1` decrementing and
+/// sign `2` incrementing a running `dcSign`; the context is `1` if `dcSign < 0`,
+/// `2` if `dcSign > 0`, else `0`.
+///
+/// `above_dc` is `AboveDcContext[plane]` (length `MiCols`) and `left_dc` is
+/// `LeftDcContext[plane]` (length `MiRows`); the spec `x4 + k < MiCols` /
+/// `y4 + k < MiRows` guards are exactly the slice bounds, so reads past either
+/// slice are skipped (matching out-of-frame neighbours). Index arithmetic is
+/// saturating, so the function is total and never panics.
+pub(crate) const fn dc_sign_ctx(
+    above_dc: &[u8],
+    left_dc: &[u8],
+    x4: usize,
+    y4: usize,
+    w4: usize,
+    h4: usize,
+) -> usize {
+    let mut dc_sign: isize = 0;
+    let mut k = 0;
+    // `while` (not `for`): iterators are not permitted in a `const fn`. `idx` is
+    // monotonic in `k`, so once it leaves the slice (the spec `x4 + k < MiCols`
+    // bound) every later `k` is also out of range — `break` is equivalent to the
+    // spec's skip-remaining and bounds the loop to the slice length (so a
+    // pathological `w4` cannot spin).
+    while k < w4 {
+        let idx = x4.saturating_add(k);
+        if idx >= above_dc.len() {
+            break;
+        }
+        match above_dc[idx] {
+            1 => dc_sign -= 1,
+            2 => dc_sign += 1,
+            _ => {}
+        }
+        k += 1;
+    }
+    let mut k = 0;
+    while k < h4 {
+        let idx = y4.saturating_add(k);
+        if idx >= left_dc.len() {
+            break;
+        }
+        match left_dc[idx] {
+            1 => dc_sign -= 1,
+            2 => dc_sign += 1,
+            _ => {}
+        }
+        k += 1;
+    }
+    if dc_sign < 0 {
+        1
+    } else if dc_sign > 0 {
+        2
+    } else {
+        0
+    }
+}
+
 // Compile-time spec-contract checks. These `const` items are the non-test
 // consumer of the context derivations until the §5.20.7.27 `coeffs()` decode
 // loop wires them: they pin the §8.3.2 contract at the four/three boundaries
@@ -494,6 +560,18 @@ const _COEFF_IDTX_CONTRACT: () = {
     assert!(coeff_base_idtx_ctx(&lvl, 1, 1, 4) == 5);
     // br: Min(5,2) + Min(5,10) = 2 + 5 = 7 -> Min(7,6) = 6.
     assert!(coeff_br_idtx_ctx(&lvl, 1, 1, 4) == 6);
+};
+const _DC_SIGN_CONTRACT: () = {
+    let z2 = [0u8, 0];
+    let z1 = [0u8];
+    // No signed neighbours -> dcSign 0 -> ctx 0.
+    assert!(dc_sign_ctx(&z2, &z1, 0, 0, 2, 1) == 0);
+    // Two above sign-2 votes (+1 each) -> dcSign +2 -> ctx 2.
+    let pos = [2u8, 2];
+    assert!(dc_sign_ctx(&pos, &z1, 0, 0, 2, 1) == 2);
+    // One left sign-1 vote (-1) -> dcSign -1 -> ctx 1.
+    let neg = [1u8];
+    assert!(dc_sign_ctx(&z2, &neg, 0, 0, 2, 1) == 1);
 };
 
 #[cfg(test)]
@@ -918,5 +996,43 @@ mod tests {
             tx_class: 9,
         }
         .select(&z);
+    }
+
+    #[test]
+    fn dc_sign_ctx_nets_above_and_left_votes() {
+        // above: +1 (sign 2) +1 (sign 2); left: -1 (sign 1) -1 (sign 1) -> 0 -> 0.
+        let above = [2u8, 2];
+        let left = [1u8, 1];
+        assert_eq!(dc_sign_ctx(&above, &left, 0, 0, 2, 2), 0);
+        // Net negative: above one -1, left zero -> ctx 1.
+        let above_neg = [1u8, 0];
+        let z2 = [0u8, 0];
+        assert_eq!(dc_sign_ctx(&above_neg, &z2, 0, 0, 2, 2), 1);
+        // Net positive: left two +1 -> ctx 2.
+        let pos = [2u8, 2];
+        assert_eq!(dc_sign_ctx(&z2, &pos, 0, 0, 2, 2), 2);
+        // Sign value 0 (no DC sign recorded) contributes nothing.
+        let zeros = [0u8, 0];
+        assert_eq!(dc_sign_ctx(&zeros, &zeros, 0, 0, 2, 2), 0);
+    }
+
+    #[test]
+    fn dc_sign_ctx_honours_the_position_offset_and_max_bounds() {
+        // x4/y4 offset: only above[1], above[2] read for x4=1,w4=2 (above[0] skipped).
+        let above = [1u8, 2, 2]; // index 0 = -1 (skipped), 1,2 = +1 each
+        let z = [0u8; 4];
+        assert_eq!(dc_sign_ctx(&above, &z, 1, 0, 2, 0), 2); // +1+1 = +2 -> ctx 2
+        // Reads beyond the slice (the MiCols/MiRows max bound) are skipped.
+        let short = [2u8]; // only index 0 in range
+        assert_eq!(dc_sign_ctx(&short, &z, 0, 0, 4, 0), 2); // only above[0]=+1 -> ctx 2
+    }
+
+    #[test]
+    fn dc_sign_ctx_is_total_for_pathological_geometry() {
+        let a = [2u8; 4];
+        let l = [1u8; 4];
+        // Huge offsets/counts must not panic (saturating index + bounds guard).
+        let _ = dc_sign_ctx(&a, &l, usize::MAX, usize::MAX, usize::MAX, usize::MAX);
+        assert_eq!(dc_sign_ctx(&a, &l, usize::MAX, usize::MAX, 4, 4), 0); // all out of range -> 0
     }
 }
