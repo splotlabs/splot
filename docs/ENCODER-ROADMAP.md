@@ -52,6 +52,9 @@ Feature areas: `ENC-Y4M-INPUT`, `ENC-CONTEXT-STATE-MACHINE`,
 - Land a private minimal header plan after the syntax IR, so current first-frame
   sequence/frame/tile-group header intent is typed and rejected before any writer
   is allowed to emit bytes.
+- Land a typed runtime speed preset framework, wired from `splot encode --speed`
+  into `EncoderRuntimeConfig`, before any preset-specific mode decision or packet
+  output exists.
 - Keep bitstream-affecting configuration separate from runtime policy.
 - Define unsupported-format behavior for 12-bit, monochrome, YUV422, YUV444, and
   non-Y4M inputs.
@@ -107,5 +110,6 @@ Status: planned.
 Feature areas: `ENC-RATE-CONTROL-V0`, `ENC-SPEED-PRESETS`.
 
 - Keep rate control policy separate from bitstream syntax.
-- Add speed presets as runtime policy with deterministic output for a fixed preset.
+- Consume the typed speed preset framework in later search/scheduling decisions
+  only after syntax correctness is proven for the affected output path.
 - Record performance evidence only after correctness proof exists.

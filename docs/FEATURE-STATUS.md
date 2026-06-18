@@ -126,7 +126,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `ENC-RECON-DEPENDENCY` | Encoder reconstruction dependency boundary | encoder | infrastructure | done | done | n/a | n/a | n/a | n/a | n/a | done | n/a | `crates/splot-encode/src/recon_boundary.rs` |
 | `ENC-INTRA-TOY-V0` | Minimal toy intra encoder path | encoder | encoder-tool | partial | todo | n/a | n/a | todo | todo | todo | todo | pending | `crates/splot-encode/src/context.rs` |
 | `ENC-RATE-CONTROL-V0` | Initial rate control strategy | encoder | encoder-tool | partial | todo | n/a | n/a | n/a | todo | n/a | todo | n/a | `crates/splot-encode/src/context.rs` |
-| `ENC-SPEED-PRESETS` | Encoder speed preset framework | encoder | encoder-api | partial | todo | n/a | n/a | n/a | todo | n/a | todo | n/a | `crates/splot-encode/src/config.rs` |
+| `ENC-SPEED-PRESETS` | Encoder speed preset framework | encoder | encoder-api | done | done | n/a | n/a | n/a | n/a | n/a | done | n/a | `crates/splot-encode/src/runtime.rs` |
 | `CONF-AVM-DIFF-HARNESS` | AVM differential testing harness | conformance | conformance | partial | n/a | n/a | n/a | n/a | n/a | n/a | n/a | pending | `xtask/src/conformance.rs` |
 | `CONF-PUBLIC-VECTORS` | Public AV2 vector corpus integration | conformance | conformance | partial | todo | n/a | n/a | n/a | n/a | todo | todo | pending | `xtask/src/main.rs` |
 | `CONF-AVM-PARSER-TRACES` | AVM parser trace comparison | conformance | conformance | todo | todo | n/a | n/a | n/a | n/a | todo | todo | todo | `xtask/src/main.rs` |

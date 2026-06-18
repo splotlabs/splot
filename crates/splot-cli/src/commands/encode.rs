@@ -10,7 +10,7 @@ use anyhow::Result;
 use clap::Args;
 use splot_encode::{
     Context, EncoderConfig, EncoderRuntimeConfig, Frame, FrameId, FrameInfo, FramePlaneInput,
-    FramePlanesInput, PlaneRect, PlaneSize,
+    FramePlanesInput, PlaneRect, PlaneSize, SpeedPreset,
 };
 use splot_parallel::ThreadCount;
 
@@ -40,8 +40,12 @@ pub struct EncodeArgs {
 /// Returns an error if the encoder context or its temporary input probe cannot
 /// be created.
 pub fn run(args: &EncodeArgs) -> Result<ExitCode> {
-    let _ = (&args.input, &args.output, &args.speed, &args.qp);
-    let runtime = EncoderRuntimeConfig::new(args.threads);
+    let _ = (&args.input, &args.output, &args.qp);
+    let speed_preset = args.speed.map(SpeedPreset::try_from_u8).transpose()?;
+    let mut runtime = EncoderRuntimeConfig::new(args.threads);
+    if let Some(speed_preset) = speed_preset {
+        runtime = runtime.with_speed_preset(speed_preset);
+    }
     let mut context = Context::new(EncoderConfig::default(), runtime)?;
     let y = [0_u8; 1];
     let u = [0_u8; 1];

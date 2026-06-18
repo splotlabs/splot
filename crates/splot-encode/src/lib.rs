@@ -42,5 +42,5 @@ pub use error::{Error, Result};
 pub use frame::{
     Frame, FrameId, FrameInfo, FramePlaneInput, FramePlanesInput, FrameTimestamp, RetainedFrame,
 };
-pub use runtime::EncoderRuntimeConfig;
+pub use runtime::{EncoderRuntimeConfig, SpeedPreset, SpeedPresetError};
 pub use splot_recon::{PlaneRect, PlaneSize};

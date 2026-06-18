@@ -14,7 +14,7 @@ use splot_parallel::{ThreadCount, WorkerPool};
 use crate::config::EncoderConfig;
 use crate::error::{Error, Result};
 use crate::frame::{Frame, FrameInfo};
-use crate::runtime::EncoderRuntimeConfig;
+use crate::runtime::{EncoderRuntimeConfig, SpeedPreset};
 
 const INPUT_QUEUE_CAPACITY: usize = 1;
 const OUTPUT_QUEUE_CAPACITY: usize = 0;
@@ -137,6 +137,12 @@ impl Context {
     #[must_use]
     pub fn requested_threads(&self) -> ThreadCount {
         self.runtime.thread_count
+    }
+
+    /// The configured runtime speed preset.
+    #[must_use]
+    pub fn speed_preset(&self) -> SpeedPreset {
+        self.runtime.speed_preset()
     }
 
     /// The resolved, non-zero worker-thread count.
@@ -336,12 +342,14 @@ mod tests {
 
     #[test]
     fn context_exposes_config_and_threads() {
-        let runtime = EncoderRuntimeConfig::new(ThreadCount::from(4usize));
+        let speed = SpeedPreset::try_from_u8(3).unwrap();
+        let runtime = EncoderRuntimeConfig::new(ThreadCount::from(4usize)).with_speed_preset(speed);
         let ctx = Context::new(EncoderConfig::new(1920, 1080), runtime).unwrap();
         assert_eq!(ctx.config().width, 1920);
         assert_eq!(ctx.config().height, 1080);
         assert_eq!(ctx.threads().get(), 4);
         assert_eq!(ctx.requested_threads(), ThreadCount::from(4usize));
+        assert_eq!(ctx.speed_preset(), speed);
         assert_eq!(ctx.state(), EncoderState::Accepting);
         assert_eq!(ctx.queued_input_frames(), 0);
         assert_eq!(ctx.queued_output_packets(), 0);
@@ -473,8 +481,12 @@ mod tests {
 
     #[test]
     fn syntax_and_header_planning_do_not_enable_packet_output() {
-        let mut ctx =
-            Context::new(EncoderConfig::new(2, 2), EncoderRuntimeConfig::default()).unwrap();
+        let mut ctx = Context::new(
+            EncoderConfig::new(2, 2),
+            EncoderRuntimeConfig::default()
+                .with_speed_preset(SpeedPreset::try_from_u8(10).unwrap()),
+        )
+        .unwrap();
         let y = [0_u8; 4];
         let u = [0_u8; 1];
         let v = [0_u8; 1];

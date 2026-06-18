@@ -73,3 +73,31 @@ fn encode_default_threads_is_accepted() {
         "stderr was: {stderr}"
     );
 }
+
+#[test]
+fn encode_speed_supported_value_is_accepted_but_unimplemented() {
+    let out = splot(&["encode", "--speed", "10", "in.y4m", "-o", "out.av2"]);
+
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("not yet implemented"),
+        "stderr was: {stderr}"
+    );
+}
+
+#[test]
+fn encode_speed_unsupported_value_is_usage_error() {
+    let out = splot(&["encode", "--speed", "11", "in.y4m", "-o", "out.av2"]);
+
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("encoder speed preset 11 is outside the supported range 0..=10"),
+        "stderr was: {stderr}"
+    );
+    assert!(
+        !stderr.contains("not yet implemented"),
+        "stderr was: {stderr}"
+    );
+}
