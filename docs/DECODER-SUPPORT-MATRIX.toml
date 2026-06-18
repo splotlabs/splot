@@ -450,6 +450,20 @@ local_reference_evidence = []
 notes = "Adds crate-private `splot-decode` state application for the AV2 §5.20.7.27 `all_zero == 1` coefficient-block branch in `tile_payload/coeff_loop.rs`, plus `Quant[]` storage in `tile_payload/coeff_state.rs`. `TransformCoeffBlockState` now owns zero-initialized row-major `Level[]`, `QuantSign[]`, and `Quant[]` arrays for caller-resolved adjusted extents capped at 32x32. `apply_all_zero_coeff_block` derives the adjusted coefficient extent from caller-resolved 4x4 transform dimensions, initializes zero local coefficient state, returns `eob == 0`, `culLevel == 0`, and `dcCategory == 0`, and applies zero above/left level/DC context writes through `TileCoeffContextState`; malformed extents or context ranges fail with typed state errors before mutating the tile context. The minimal flat-intra block-symbol trace now applies those all-zero state effects after the existing luma `txb_skip` and V `v_txb_skip` all-zero symbol reads; the fixture trace and output remain unchanged. This row remains partial: nonzero EOB decode, coefficient scan walk, coefficient base/br/sign reads, nonzero `Quant[]`, `read_quant`, dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public API, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` support remain unimplemented."
 
 [[row]]
+id = "coeff-eob-value-state"
+name = "Coefficient EOB value state"
+feature_id = "DECODE-COEFF-EOB-VALUE-STATE"
+spec_sections = ["5.20.7.27"]
+parser_source = "docs/spec/av2/1.0.0/05-syntax-structures.md"
+decode_module = "crates/splot-decode/src/tile_payload/coeff_loop.rs"
+tier = "tier1-intra"
+status = "partial"
+self_contained_tests = ["crates/splot-decode/src/tile_payload/coeff_loop.rs::tests::nonzero_coeff_eob_maps_small_points_without_refinements", "crates/splot-decode/src/tile_payload/coeff_loop.rs::tests::nonzero_coeff_eob_applies_eob_extra_and_refinement_bits", "crates/splot-decode/src/tile_payload/coeff_loop.rs::tests::nonzero_coeff_eob_reaches_max_av2_eob", "crates/splot-decode/src/tile_payload/coeff_loop.rs::tests::nonzero_coeff_eob_rejects_invalid_eob_points", "crates/splot-decode/src/tile_payload/coeff_loop.rs::tests::nonzero_coeff_eob_rejects_refinements_for_small_points", "crates/splot-decode/src/tile_payload/coeff_loop.rs::tests::nonzero_coeff_eob_rejects_out_of_range_refinement_bits", "cargo test -p splot-decode coeff_loop --locked", "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings", "cargo xtask check-decoder-support", "cargo xtask check-feature-status"]
+diagnostics = ["decode/unsupported-feature"]
+local_reference_evidence = []
+notes = "Adds crate-private `splot-decode` nonzero EOB value derivation for AV2 §5.20.7.27 in `tile_payload/coeff_loop.rs`. `nonzero_coeff_eob` accepts caller-decoded `eobPt`, `eob_extra`, and packed `eob_extra_bit` refinements after the active size-specific EOB point syntax has been resolved, validates the AV2 `eobPt` range and refinement width before shifting, and returns the checked `eob` value used by the nonzero `coeffs()` branch. Invalid zero or oversized `eobPt`, refinements on small points, and out-of-range packed refinement bits return typed crate-private errors. The helper is loaded but not yet consumed by a symbol-reading coefficient loop, so decode output is unchanged. This row remains partial: it does not read `eob_pt` CDF rows, read `eob_extra` symbols, read literal `eob_extra_bit` syntax, choose transform-size EOB banks, walk scan order, read coefficient base/br/sign symbols, fill nonzero `Quant[]`, implement `read_quant`, dequantize, run inverse transforms, add residuals, reconstruct pixels, refresh references, invoke AVM/dav2d, add public APIs, or claim broad `decode_block()` or `decode_tile()` support."
+
+[[row]]
 id = "tile-cdf-save-lifecycle-boundary"
 name = "Tile CDF save lifecycle boundary"
 feature_id = "DECODE-TILE-CDF-SAVE-LIFECYCLE-BOUNDARY"

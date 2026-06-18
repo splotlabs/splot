@@ -4,7 +4,7 @@
 //! Coefficient-loop foundation helpers.
 //!
 //! Feature tracking: `DECODE-COEFF-ALL-ZERO-CONTEXT-STATE`,
-//! `DECODE-COEFF-ALL-ZERO-BLOCK-STATE`.
+//! `DECODE-COEFF-ALL-ZERO-BLOCK-STATE`, `DECODE-COEFF-EOB-VALUE-STATE`.
 
 use super::cdf::block_context::{txb_skip_ctx_luma, v_txb_skip_ctx};
 use super::coeff_state::{
@@ -15,6 +15,8 @@ const LUMA_PLANE: usize = 0;
 const V_PLANE: usize = 2;
 const COEFFS_PER_4X4: usize = 4;
 const MAX_ADJUSTED_COEFF_EXTENT: usize = 32;
+const MIN_NONZERO_EOB_PT: usize = 1;
+const MAX_NONZERO_EOB_PT: usize = 11;
 
 /// Caller-resolved facts for luma § 8.3.2 `all_zero` context derivation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -65,6 +67,19 @@ pub(crate) struct AllZeroCoeffBlockInput {
     pub(crate) h4: usize,
 }
 
+/// Caller-resolved facts for computing the nonzero § 5.20.7.27 EOB value.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct NonZeroCoeffEobInput {
+    /// Decoded `eobPt` after the active `eob_pt_*` and any size-specific
+    /// `eob_pt_*_extra` syntax have been resolved by the caller.
+    pub(crate) eob_pt: usize,
+    /// Decoded `eob_extra` flag. This flag is only present for `eobPt >= 3`.
+    pub(crate) eob_extra: bool,
+    /// Packed `eob_extra_bit` refinements. Bit `i` corresponds to the spec loop
+    /// contribution `1 << i`.
+    pub(crate) eob_extra_bits: usize,
+}
+
 /// Summary of a § 5.20.7.27 all-zero coefficient block state application.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct AllZeroCoeffBlock {
@@ -100,12 +115,63 @@ impl AllZeroCoeffBlock {
     }
 }
 
+/// Checked nonzero § 5.20.7.27 EOB value.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct NonZeroCoeffEob {
+    eob_pt: usize,
+    eob: usize,
+}
+
+impl NonZeroCoeffEob {
+    /// Decoded `eobPt` used to derive this EOB value.
+    #[must_use]
+    pub(crate) const fn eob_pt(self) -> usize {
+        self.eob_pt
+    }
+
+    /// End-of-block value returned by the nonzero `coeffs()` branch.
+    #[must_use]
+    pub(crate) const fn eob(self) -> usize {
+        self.eob
+    }
+}
+
 /// Error returned by coefficient-loop context handoff helpers.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum CoeffLoopContextError {
     /// The underlying coefficient context state rejected a plane or allocation fact.
     #[error("coefficient context state error: {0}")]
     State(#[from] TileCoeffStateError),
+    /// Caller supplied an `eobPt` outside the nonzero § 5.20.7.27 range.
+    #[error("coefficient EOB point {eob_pt} is outside the supported AV2 range 1..=11")]
+    InvalidEobPoint {
+        /// Caller-provided `eobPt`.
+        eob_pt: usize,
+    },
+    /// Caller supplied refinement syntax for an `eobPt` that has no refinements.
+    #[error(
+        "coefficient EOB point {eob_pt} cannot carry eob_extra={eob_extra} or eob_extra_bits={eob_extra_bits}"
+    )]
+    UnexpectedEobRefinement {
+        /// Caller-provided `eobPt`.
+        eob_pt: usize,
+        /// Caller-provided `eob_extra`.
+        eob_extra: bool,
+        /// Caller-provided packed `eob_extra_bit` refinements.
+        eob_extra_bits: usize,
+    },
+    /// Caller supplied packed `eob_extra_bit` refinements outside the implied width.
+    #[error(
+        "coefficient EOB point {eob_pt} allows eob_extra_bits <= {max_eob_extra_bits}, got {eob_extra_bits}"
+    )]
+    EobExtraBitsOutOfRange {
+        /// Caller-provided `eobPt`.
+        eob_pt: usize,
+        /// Caller-provided packed `eob_extra_bit` refinements.
+        eob_extra_bits: usize,
+        /// Largest packed refinement value allowed by `eobPt`.
+        max_eob_extra_bits: usize,
+    },
 }
 
 /// Derives the luma § 8.3.2 `all_zero` (`txb_skip`) context from tile state.
@@ -195,6 +261,57 @@ pub(crate) fn apply_all_zero_coeff_block(
         cul_level,
         dc_category,
         block,
+    })
+}
+
+/// Computes the AV2 § 5.20.7.27 nonzero-branch EOB value.
+///
+/// This helper starts after the caller has decoded the size-specific
+/// `eob_pt_*` symbol and any `eob_pt_*_extra` literal bits into `eobPt`; it
+/// models only the following `eob`, `eob_extra`, and `eob_extra_bit` arithmetic
+/// in `coeffs()` (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27`).
+/// CDF reads, transform-size dispatch, scan walking, coefficient reads,
+/// `Quant[]` writes, dequantization, and reconstruction remain caller-owned.
+pub(crate) fn nonzero_coeff_eob(
+    input: NonZeroCoeffEobInput,
+) -> Result<NonZeroCoeffEob, CoeffLoopContextError> {
+    let eob_pt = input.eob_pt;
+    if !(MIN_NONZERO_EOB_PT..=MAX_NONZERO_EOB_PT).contains(&eob_pt) {
+        return Err(CoeffLoopContextError::InvalidEobPoint { eob_pt });
+    }
+    if eob_pt < 3 {
+        if input.eob_extra || input.eob_extra_bits != 0 {
+            return Err(CoeffLoopContextError::UnexpectedEobRefinement {
+                eob_pt,
+                eob_extra: input.eob_extra,
+                eob_extra_bits: input.eob_extra_bits,
+            });
+        }
+        return Ok(NonZeroCoeffEob {
+            eob_pt,
+            eob: eob_pt,
+        });
+    }
+
+    let extra_bits_width = eob_pt - 3;
+    let max_eob_extra_bits = (1usize << extra_bits_width) - 1;
+    if input.eob_extra_bits > max_eob_extra_bits {
+        return Err(CoeffLoopContextError::EobExtraBitsOutOfRange {
+            eob_pt,
+            eob_extra_bits: input.eob_extra_bits,
+            max_eob_extra_bits,
+        });
+    }
+
+    let base = (1usize << (eob_pt - 2)) + 1;
+    let extra = if input.eob_extra {
+        1usize << (eob_pt - 3)
+    } else {
+        0
+    };
+    Ok(NonZeroCoeffEob {
+        eob_pt,
+        eob: base + extra + input.eob_extra_bits,
     })
 }
 
@@ -468,5 +585,115 @@ mod tests {
         assert_eq!(applied.block().width(), 32);
         assert_eq!(applied.block().height(), 32);
         assert_eq!(applied.block().quant().len(), 1024);
+    }
+
+    #[test]
+    fn nonzero_coeff_eob_maps_small_points_without_refinements() {
+        let eob_one = nonzero_coeff_eob(NonZeroCoeffEobInput {
+            eob_pt: 1,
+            eob_extra: false,
+            eob_extra_bits: 0,
+        })
+        .unwrap();
+        let eob_two = nonzero_coeff_eob(NonZeroCoeffEobInput {
+            eob_pt: 2,
+            eob_extra: false,
+            eob_extra_bits: 0,
+        })
+        .unwrap();
+
+        assert_eq!(eob_one.eob_pt(), 1);
+        assert_eq!(eob_one.eob(), 1);
+        assert_eq!(eob_two.eob_pt(), 2);
+        assert_eq!(eob_two.eob(), 2);
+    }
+
+    #[test]
+    fn nonzero_coeff_eob_applies_eob_extra_and_refinement_bits() {
+        let eob = nonzero_coeff_eob(NonZeroCoeffEobInput {
+            eob_pt: 5,
+            eob_extra: true,
+            eob_extra_bits: 0b10,
+        })
+        .unwrap();
+
+        // eobPt 5 starts from (1 << 3) + 1, then `eob_extra` adds bit 2 and
+        // packed refinement bits add bits 1..=0.
+        assert_eq!(eob.eob(), 15);
+    }
+
+    #[test]
+    fn nonzero_coeff_eob_reaches_max_av2_eob() {
+        let eob = nonzero_coeff_eob(NonZeroCoeffEobInput {
+            eob_pt: 11,
+            eob_extra: true,
+            eob_extra_bits: 0xFF,
+        })
+        .unwrap();
+
+        assert_eq!(eob.eob(), 1024);
+    }
+
+    #[test]
+    fn nonzero_coeff_eob_rejects_invalid_eob_points() {
+        let zero = nonzero_coeff_eob(NonZeroCoeffEobInput {
+            eob_pt: 0,
+            eob_extra: false,
+            eob_extra_bits: 0,
+        })
+        .unwrap_err();
+        let oversized = nonzero_coeff_eob(NonZeroCoeffEobInput {
+            eob_pt: 12,
+            eob_extra: false,
+            eob_extra_bits: 0,
+        })
+        .unwrap_err();
+
+        assert!(matches!(
+            zero,
+            CoeffLoopContextError::InvalidEobPoint { eob_pt: 0 }
+        ));
+        assert!(matches!(
+            oversized,
+            CoeffLoopContextError::InvalidEobPoint { eob_pt: 12 }
+        ));
+    }
+
+    #[test]
+    fn nonzero_coeff_eob_rejects_refinements_for_small_points() {
+        let err = nonzero_coeff_eob(NonZeroCoeffEobInput {
+            eob_pt: 1,
+            eob_extra: true,
+            eob_extra_bits: 0,
+        })
+        .unwrap_err();
+
+        assert!(matches!(
+            err,
+            CoeffLoopContextError::UnexpectedEobRefinement {
+                eob_pt: 1,
+                eob_extra: true,
+                eob_extra_bits: 0
+            }
+        ));
+    }
+
+    #[test]
+    fn nonzero_coeff_eob_rejects_out_of_range_refinement_bits() {
+        let err = nonzero_coeff_eob(NonZeroCoeffEobInput {
+            eob_pt: 5,
+            eob_extra: false,
+            eob_extra_bits: 0b100,
+        })
+        .unwrap_err();
+
+        assert!(matches!(
+            err,
+            CoeffLoopContextError::EobExtraBitsOutOfRange {
+                eob_pt: 5,
+                eob_extra_bits: 4,
+                max_eob_extra_bits: 3
+            }
+        ));
     }
 }

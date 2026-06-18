@@ -134,7 +134,10 @@ minimal trace also applies the § 5.20.7.27 all-zero coefficient block state
 effects (`DECODE-COEFF-ALL-ZERO-BLOCK-STATE`): zero `Level[]`, `QuantSign[]`,
 and `Quant[]` state, `eob == 0`, and zero above/left level/DC context writes for
 the traced luma and V all-zero branches. They are still not read by a real
-coefficient symbol loop. The § 7.14.4
+coefficient symbol loop. The nonzero branch now has a checked § 5.20.7.27 EOB
+value helper (`DECODE-COEFF-EOB-VALUE-STATE`) for caller-decoded `eobPt`,
+`eob_extra`, and packed `eob_extra_bit` refinements, but no `eob_pt` or
+coefficient symbols are read yet. The § 7.14.4
 `useQm` / `UserQm` gating and `shift` derivation, the rest
 of the § 7.14.3 reconstruct process, the § 7.15.3 secondary transform, the
 § 7.15.4 DPCM-direction selection and combined transform-parameter resolve helper,

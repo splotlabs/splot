@@ -8499,6 +8499,55 @@ fixtures = [
 diagnostics = ["decode/unsupported-feature"]
 
 [[feature]]
+id = "DECODE-COEFF-EOB-VALUE-STATE"
+name = "Coefficient EOB value state"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.20.7.27"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/tile_payload/coeff_loop.rs"
+openspec_change = "coeff-eob-value-state"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Adds crate-private `splot-decode` nonzero EOB value derivation for AV2 §5.20.7.27 in `tile_payload/coeff_loop.rs`. `nonzero_coeff_eob` accepts caller-decoded `eobPt`, `eob_extra`, and packed `eob_extra_bit` refinements after the active size-specific EOB point syntax has been resolved, validates the AV2 `eobPt` range and refinement width before shifting, and returns the checked `eob` value used by the nonzero `coeffs()` branch. Invalid zero or oversized `eobPt`, refinements on small points, and out-of-range packed refinement bits return typed crate-private errors. The helper is loaded but not yet consumed by a symbol-reading coefficient loop, so decode output is unchanged. This feature remains partial: it does not read `eob_pt` CDF rows, read `eob_extra` symbols, read literal `eob_extra_bit` syntax, choose transform-size EOB banks, walk scan order, read coefficient base/br/sign symbols, fill nonzero `Quant[]`, implement `read_quant`, dequantize, run inverse transforms, add residuals, reconstruct pixels, refresh references, invoke AVM/dav2d, add public APIs, or claim broad `decode_block()` or `decode_tile()` support."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/tile_payload/coeff_loop.rs::tests::nonzero_coeff_eob_maps_small_points_without_refinements",
+    "crates/splot-decode/src/tile_payload/coeff_loop.rs::tests::nonzero_coeff_eob_applies_eob_extra_and_refinement_bits",
+    "crates/splot-decode/src/tile_payload/coeff_loop.rs::tests::nonzero_coeff_eob_reaches_max_av2_eob",
+    "crates/splot-decode/src/tile_payload/coeff_loop.rs::tests::nonzero_coeff_eob_rejects_invalid_eob_points",
+    "crates/splot-decode/src/tile_payload/coeff_loop.rs::tests::nonzero_coeff_eob_rejects_refinements_for_small_points",
+    "crates/splot-decode/src/tile_payload/coeff_loop.rs::tests::nonzero_coeff_eob_rejects_out_of_range_refinement_bits",
+]
+commands = [
+    "cargo test -p splot-decode coeff_loop --locked",
+    "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-decode/src/tile_payload/coeff_loop.rs",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
 id = "DECODE-TILE-CDF-SAVE-LIFECYCLE-BOUNDARY"
 name = "Tile CDF save lifecycle boundary"
 category = "infrastructure"
