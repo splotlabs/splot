@@ -82,7 +82,7 @@ behind this fence (OpenSpec change `conformance-corpus-foundation`,
 plus a manifest and a committed runner now lands and gates in CI — **with no AVM
 dependency** (AVM is a local generator/source seed only; retimed vectors are
 identified in the manifest, and the runner never invokes AVM or the network).
-Still fenced: the encoder/decoder and the
+Still fenced for this validator roadmap: the decoder and the
 *live* `avm encode -> splot validate` / `splot encode -> avm decode`
 differential harness (`CONF-AVM-DIFF-HARNESS`).
 
