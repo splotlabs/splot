@@ -10,7 +10,7 @@ use std::num::TryFromIntError;
 
 use super::super::coeff_state::{TileCoeffStateError, TransformCoeffBlockState};
 use super::scan_walk::{CoeffScanEntry, NonZeroCoeffScanWalk};
-use super::sign_symbol::CoeffSignRead;
+use super::sign_symbol::{CoeffSignRead, CoeffSignReadSymbol};
 
 const TCQ_STATES: usize = 8;
 const TCQ_PARITIES: usize = 2;
@@ -216,6 +216,14 @@ pub(crate) enum CoeffQuantStateWriteError {
         /// Level carried by the sign record.
         actual: u32,
     },
+    /// Hidden parity required sign syntax for the final scan entry.
+    #[error("coefficient quant input {index} skipped required hidden-parity sign")]
+    HiddenParityMissingSign {
+        /// Input index.
+        index: usize,
+        /// Checked scan entry.
+        entry: CoeffScanEntry,
+    },
     /// A quantized coefficient arithmetic operation overflowed the local type.
     #[error("coefficient quant input {index} overflowed during {operation}")]
     QuantOverflow {
@@ -262,7 +270,7 @@ pub(crate) fn apply_nonzero_coeff_quant_state(
             entries: entries.len(),
         });
     }
-    let levels = preflight_quant_writes(block, entries, signs, inputs)?;
+    let levels = preflight_quant_writes(block, entries, signs, inputs, config)?;
     let mut state = QuantAccumulator::new(config);
     let mut writes = Vec::new();
     writes.try_reserve(entries.len())?;
@@ -296,6 +304,7 @@ fn preflight_quant_writes(
     entries: &[CoeffScanEntry],
     signs: &[CoeffSignRead],
     inputs: &[CoeffQuantReadInput],
+    config: CoeffQuantStateConfig,
 ) -> Result<Vec<u32>, CoeffQuantStateWriteError> {
     let mut levels = Vec::new();
     levels.try_reserve(entries.len())?;
@@ -327,6 +336,13 @@ fn preflight_quant_writes(
                 expected: level,
                 actual: sign.level(),
             });
+        }
+        if config.is_hidden
+            && config.sum_abs1 > 0
+            && entry.scan_index() == 0
+            && sign.symbol() == CoeffSignReadSymbol::None
+        {
+            return Err(CoeffQuantStateWriteError::HiddenParityMissingSign { index, entry });
         }
         block.quant_at(entry.pos())?;
         levels.push(level);
@@ -734,5 +750,40 @@ mod tests {
             CoeffQuantStateWriteError::SignEntryMismatch { index: 0, .. }
         ));
         assert_eq!(sign_block, sign_before);
+    }
+
+    #[test]
+    fn coefficient_quant_state_requires_hidden_parity_sign() {
+        let payload = find_eob_payload();
+        let walk = setup_walk(&payload, &EOB_SCAN).unwrap();
+        let mut block = block_for(&walk);
+        let hidden_entry = walk
+            .entries()
+            .iter()
+            .copied()
+            .find(|entry| entry.scan_index() == 0)
+            .unwrap();
+        block
+            .set_level(hidden_entry.row(), hidden_entry.col(), 0)
+            .unwrap();
+        let before = block.clone();
+        let signs = signs_for(&block, &walk);
+        let inputs = quant_inputs_for(&walk, &[0, 0, 0, 1]);
+        let hidden = CoeffQuantStateConfig {
+            is_hidden: true,
+            sum_abs1: 1,
+            use_tcq: false,
+            lossless: false,
+        };
+
+        let err = apply_nonzero_coeff_quant_state(&mut block, &walk, &signs, &inputs, hidden)
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            CoeffQuantStateWriteError::HiddenParityMissingSign { entry, .. }
+                if entry == hidden_entry
+        ));
+        assert_eq!(block, before);
     }
 }
