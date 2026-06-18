@@ -307,6 +307,9 @@ pub(crate) fn apply_coeff_ordinary_branch_from_tx_size_dimensions(
                         coeff_cdf_q_ctx: input.coeff_cdf_q_ctx,
                     },
                     scan: input.scan,
+                    // TODO(spec: DECODE-COEFF-ORDINARY-BRANCH-TX-SIZE-DIMENSIONS):
+                    // Use Tx_Width_Log2[Adjusted_Tx_Size[txSz]] for the base
+                    // context once the adjusted-size table is generated and wired.
                     base_config: input.base_config.base_config(
                         input.geometry,
                         dimensions,
@@ -339,7 +342,7 @@ fn tx_size_table_usize(
     table_name: &'static str,
     tx_size: usize,
 ) -> Result<usize, CoeffOrdinaryBranchError> {
-    let value = tx_size_table_value(table, table_name, tx_size)?;
+    let value = tx_size_table_value(table, tx_size)?;
     usize::try_from(value).map_err(
         |_| CoeffOrdinaryBranchError::InvalidTransformSizeTableValue {
             table: table_name,
@@ -354,7 +357,7 @@ fn tx_size_table_u32(
     table_name: &'static str,
     tx_size: usize,
 ) -> Result<u32, CoeffOrdinaryBranchError> {
-    let value = tx_size_table_value(table, table_name, tx_size)?;
+    let value = tx_size_table_value(table, tx_size)?;
     u32::try_from(value).map_err(
         |_| CoeffOrdinaryBranchError::InvalidTransformSizeTableValue {
             table: table_name,
@@ -364,11 +367,7 @@ fn tx_size_table_u32(
     )
 }
 
-fn tx_size_table_value(
-    table: &[i32],
-    _table_name: &'static str,
-    tx_size: usize,
-) -> Result<i32, CoeffOrdinaryBranchError> {
+fn tx_size_table_value(table: &[i32], tx_size: usize) -> Result<i32, CoeffOrdinaryBranchError> {
     table
         .get(tx_size)
         .copied()
