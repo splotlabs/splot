@@ -27,6 +27,7 @@ pub mod error;
 pub mod frame;
 mod recon_boundary;
 pub mod runtime;
+mod syntax_ir;
 
 const _: fn() -> usize = core_boundary::dependency_marker;
 const _: fn() -> usize = recon_boundary::dependency_marker;

@@ -14,6 +14,9 @@ planning and status; it does not claim encoder behavior exists.
   input views under `ENC-Y4M-INPUT`, and `Context` now exposes a typed
   accepting/draining/finished/failed lifecycle under
   `ENC-CONTEXT-STATE-MACHINE`.
+- `ENC-SYNTAX-IR` adds a private deterministic planning model for future
+  sequence/frame/tile/block/token decisions. It is not re-exported, owns no bit
+  writer, and does not produce packets.
 - `Packet` is still only a byte buffer wrapper, and no coded packet production
   path exists.
 - `EncoderConfig` exposes `BitDepth::Twelve`, but current Baseline Encoder Profile
@@ -31,6 +34,8 @@ planning and status; it does not claim encoder behavior exists.
 - This is still syntax/framing support, not an encoder. Coded tile payload
   generation is missing because encoder-owned §8.3 token/CDF selection and the
   AV2 `decode_tile()` body path remain unimplemented.
+- The private syntax IR can stage future writer inputs, but no IR-to-writer
+  serialization path exists yet.
 - Inter first-group tile-group composition remains blocked on inter frame-header
   writer support.
 - Partial or unimplemented syntax models must be rejected by writers rather than
@@ -59,11 +64,11 @@ planning and status; it does not claim encoder behavior exists.
 
 ## Active ownership baseline
 
-As of the final range-encoder sync pass on 2026-06-18, PR #244 has merged into
-`main` as `a2a9d969` and `e790cb96`, PR #246 has merged into `main` as
-`d526eeea`, and this branch has rebased onto `origin/main` at `d526eeea`. No
-sibling PR is open against `main`; the generated status-doc intersections from
-PR #244 and PR #246 are now part of the base, and no semantic overlap remains.
+As of the `encoder-syntax-ir` branch point on 2026-06-18, PR #247 has merged into
+`main` as `f19c95db`, PR #248 has merged into `main` as `6a9184a3`, and this
+branch is based on `origin/main` at `6a9184a3`. No sibling PR is open against
+`main`; the generated status-doc intersections from the prior encoder and decode
+work are now part of the base, and no semantic overlap remains.
 
 ## Parked work
 

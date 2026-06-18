@@ -3941,6 +3941,39 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-SYNTAX-IR"
+name = "Encoder syntax planning IR"
+category = "encoder"
+kind = "encoder-api"
+spec_sections = []
+sources = []
+crate = "splot-encode"
+module = "crates/splot-encode/src/syntax_ir.rs"
+openspec_change = "encoder-syntax-ir"
+tracking_issue = ""
+owner = "encoder"
+risk = "medium"
+notes = "Non-normative, private encoder planning model. `splot-encode` now has a deterministic syntax-planning IR with SequencePlan, FramePlan, TilePlan, SuperBlockPlan, BlockDecision, PredictionDecision, TransformDecision, QuantizedCoefficients, and ordered SyntaxEvent records. Constructors enforce explicit child ordering, bounded counts, duplicate/zero coefficient rejection, and checked event-count arithmetic before returning a plan. The module is not re-exported from the crate root, owns no bit writer or SymbolEncoder, emits no bytes, and does not change Context packet production."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/syntax_ir.rs::tests", "crates/splot-encode/src/context.rs::tests::syntax_planning_ir_does_not_enable_packet_output"]
+commands = ["cargo test -p splot-encode --locked", "cargo clippy -p splot-encode --all-targets --all-features --locked -- -D warnings"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-RECON-DEPENDENCY"
 name = "Encoder reconstruction dependency boundary"
 category = "encoder"
