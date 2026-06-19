@@ -10330,7 +10330,7 @@ openspec_change = "coeff-ordinary-branch-tx-size-dimensions"
 tracking_issue = ""
 owner = "decoder"
 risk = "low"
-notes = "Adds a crate-private loaded-but-unwired ordinary coefficient branch wrapper that derives generated AV2 §9.2 transform-size dimensions from the §5.20.7.27 `txSz` argument. `apply_coeff_ordinary_branch_from_tx_size_dimensions` validates `txSz` table bounds before mutation, derives `Tx_Width[txSz]`, `Tx_Height[txSz]`, `Tx_Width_Log2[txSz]`, and `Tx_Height_Log2[txSz]` from `splot-core` generated conversion tables, then builds the existing coeffs-geometry, EOB-context, base-config, and state-context handoff inputs before delegating to `apply_coeff_ordinary_branch_from_coeffs_geometry`. Tests prove all-zero preservation, nonzero equivalence against explicit dimensions, and invalid-`txSz` fail-atomic behavior. The follow-on `DECODE-COEFF-ORDINARY-BRANCH-ADJUSTED-TX-SIZE` row covers adjusted base-context dimensions. This feature remains partial: runtime `coeffs()` still does not call this wrapper, `Tx_Size_Sqr[txSz]`, `Tx_Size_Sqr_Up[txSz]`, `txSzCtx`, §5.20.7.29 `compute_tx_type`, scan order, selector, parity, TCQ, and lossless facts are still caller-resolved, and dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public APIs, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` remain unimplemented."
+notes = "Adds a crate-private loaded-but-unwired ordinary coefficient branch wrapper that derives generated AV2 §9.2 transform-size dimensions from the §5.20.7.27 `txSz` argument. `apply_coeff_ordinary_branch_from_tx_size_dimensions` validates `txSz` table bounds before mutation, derives `Tx_Width[txSz]`, `Tx_Height[txSz]`, `Tx_Width_Log2[txSz]`, and `Tx_Height_Log2[txSz]` from `splot-core` generated conversion tables, then builds the existing coeffs-geometry, EOB-context, base-config, and state-context handoff inputs before delegating to `apply_coeff_ordinary_branch_from_coeffs_geometry`. Tests prove all-zero preservation, nonzero equivalence against explicit dimensions, and invalid-`txSz` fail-atomic behavior. The follow-on `DECODE-COEFF-ORDINARY-BRANCH-ADJUSTED-TX-SIZE` row covers adjusted base-context dimensions, and `DECODE-COEFF-ORDINARY-BRANCH-TX-SIZE-CONTEXT` covers `Tx_Size_Sqr[txSz]`, `Tx_Size_Sqr_Up[txSz]`, and `txSzCtx`. This feature remains partial: runtime `coeffs()` still does not call this wrapper, §5.20.7.29 `compute_tx_type`, scan order, selector, parity, TCQ, and lossless facts are still caller-resolved, and dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public APIs, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` remain unimplemented."
 
 [feature.status]
 mapped = "done"
@@ -10387,7 +10387,7 @@ openspec_change = "coeff-ordinary-branch-adjusted-tx-size"
 tracking_issue = ""
 owner = "decoder"
 risk = "low"
-notes = "Extends the crate-private loaded-but-unwired ordinary coefficient branch `txSz` wrapper to derive `Adjusted_Tx_Size[txSz]` from generated AV2 §9.2 conversion tables for AV2 §8.3.2 base contexts. Raw `Tx_Width[txSz]`, `Tx_Height[txSz]`, `Tx_Width_Log2[txSz]`, and `Tx_Height_Log2[txSz]` continue to feed §5.20.7.27 block geometry and EOB-size context, while adjusted `Tx_Width_Log2[Adjusted_Tx_Size[txSz]]`, `Tx_Width[Adjusted_Tx_Size[txSz]]`, and `Tx_Height[Adjusted_Tx_Size[txSz]]` feed the ordinary base-context pass. Tests prove TX_64X32 uses raw 64x32 block/EOB facts with adjusted 32x32 base-context facts, all-zero behavior stays unchanged, and invalid txSz plus invalid adjusted-table values remain fail-atomic. This feature remains partial: runtime `coeffs()` still does not call this wrapper, `Tx_Size_Sqr[txSz]`, `Tx_Size_Sqr_Up[txSz]`, `txSzCtx`, §5.20.7.29 `compute_tx_type`, scan order, selector, parity, TCQ, and lossless facts are still caller-resolved, and dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public APIs, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` remain unimplemented."
+notes = "Extends the crate-private loaded-but-unwired ordinary coefficient branch `txSz` wrapper to derive `Adjusted_Tx_Size[txSz]` from generated AV2 §9.2 conversion tables for AV2 §8.3.2 base contexts. Raw `Tx_Width[txSz]`, `Tx_Height[txSz]`, `Tx_Width_Log2[txSz]`, and `Tx_Height_Log2[txSz]` continue to feed §5.20.7.27 block geometry and EOB-size context, while adjusted `Tx_Width_Log2[Adjusted_Tx_Size[txSz]]`, `Tx_Width[Adjusted_Tx_Size[txSz]]`, and `Tx_Height[Adjusted_Tx_Size[txSz]]` feed the ordinary base-context pass. Tests prove TX_64X32 uses raw 64x32 block/EOB facts with adjusted 32x32 base-context facts, all-zero behavior stays unchanged, and invalid txSz plus invalid adjusted-table values remain fail-atomic. The follow-on `DECODE-COEFF-ORDINARY-BRANCH-TX-SIZE-CONTEXT` row covers `Tx_Size_Sqr[txSz]`, `Tx_Size_Sqr_Up[txSz]`, and `txSzCtx`. This feature remains partial: runtime `coeffs()` still does not call this wrapper, §5.20.7.29 `compute_tx_type`, scan order, selector, parity, TCQ, and lossless facts are still caller-resolved, and dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public APIs, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` remain unimplemented."
 
 [feature.status]
 mapped = "done"
@@ -10407,6 +10407,62 @@ tests = [
     "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_coeffs_geometry_tests.rs::coefficient_ordinary_branch_tx_size_dimensions_all_zero_preserves_direct_branch",
     "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_coeffs_geometry_tests.rs::coefficient_ordinary_branch_tx_size_dimensions_invalid_tx_size_preserves_mutable_state",
     "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_coeffs_geometry_tests.rs::coefficient_ordinary_branch_adjusted_tx_size_table_value_preserves_mutable_state",
+]
+commands = [
+    "cargo test -p splot-decode ordinary_branch_coeffs_geometry --locked",
+    "cargo test -p splot-decode ordinary_pass --locked",
+    "cargo test -p splot-decode coeff_loop --locked",
+    "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-decoder-conformance-coverage",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-decode/src/tile_payload/coeff_loop.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_pass/geometry.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_pass.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_coeffs_geometry_tests.rs",
+    "crates/splot-core/src/tables/conversion.rs",
+    "crates/splot-decode/src/tile_payload/coeff_state.rs",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
+id = "DECODE-COEFF-ORDINARY-BRANCH-TX-SIZE-CONTEXT"
+name = "Coefficient ordinary branch tx size context"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.20.7.27", "9.2"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
+    "docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_pass/geometry.rs"
+openspec_change = "coeff-ordinary-branch-tx-size-context"
+tracking_issue = ""
+owner = "decoder"
+risk = "low"
+notes = "Extends the crate-private loaded-but-unwired ordinary coefficient branch `txSz` wrapper to derive AV2 §5.20.7.27 `txSzCtx = (Tx_Size_Sqr[txSz] + Tx_Size_Sqr_Up[txSz] + 1) >> 1` from generated §9.2 conversion tables. Raw transform dimensions continue to feed §5.20.7.27 block geometry and nonzero EOB-size context, while adjusted transform dimensions still feed §8.3.2 ordinary base-context geometry. Tests prove TX_64X32 derives `txSzCtx` 4 from the square tables while preserving raw 64x32 and adjusted 32x32 dimensions, all-zero behavior stays unchanged, and invalid square-table values remain fail-atomic before coefficient context state, CDF row, or symbol-decoder mutation. This feature remains partial: runtime `coeffs()` still does not call this wrapper, §5.20.7.29 `compute_tx_type`, scan order, selector, parity, TCQ, and lossless facts are still caller-resolved, and dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public APIs, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` remain unimplemented."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "partial"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_coeffs_geometry_tests.rs::coefficient_ordinary_branch_tx_size_dimensions_uses_derived_tx_size_context",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_coeffs_geometry_tests.rs::coefficient_ordinary_branch_tx_size_dimensions_uses_adjusted_base_dimensions",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_coeffs_geometry_tests.rs::coefficient_ordinary_branch_tx_size_dimensions_all_zero_preserves_direct_branch",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_coeffs_geometry_tests.rs::coefficient_ordinary_branch_tx_size_context_table_value_preserves_mutable_state",
 ]
 commands = [
     "cargo test -p splot-decode ordinary_branch_coeffs_geometry --locked",

@@ -5,7 +5,8 @@
 
 use splot_core::symbol::SymbolDecoder;
 use splot_core::tables::conversion::{
-    ADJUSTED_TX_SIZE, TX_HEIGHT, TX_HEIGHT_LOG2, TX_WIDTH, TX_WIDTH_LOG2,
+    ADJUSTED_TX_SIZE, TX_HEIGHT, TX_HEIGHT_LOG2, TX_SIZE_SQR, TX_SIZE_SQR_UP, TX_WIDTH,
+    TX_WIDTH_LOG2,
 };
 
 use super::super::super::cdf::TileCdfSubset;
@@ -45,8 +46,6 @@ pub(crate) struct CoeffOrdinaryBranchTxSizeDimensionsNonZeroInput<'a> {
 /// Caller-resolved base-derivation facts before transform-size dimensions.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CoeffOrdinaryBranchTxSizeDimensionsBaseConfig {
-    /// Transform-size context (`txSzCtx`) for luma coefficient rows.
-    pub(crate) tx_size_ctx: usize,
     /// Caller-resolved `PlaneTxType` from AV2 § 5.20.7.29 `compute_tx_type`.
     pub(crate) plane_tx_type: usize,
     /// Whether hidden parity is active for this transform block.
@@ -95,12 +94,13 @@ impl CoeffOrdinaryBranchTxSizeDimensionsBaseConfig {
     const fn base_config(
         self,
         geometry: CoeffOrdinaryTxSizeGeometryConfig,
+        tx_size_ctx: usize,
         adjusted_dimensions: CoeffOrdinaryTxSizeDimensions,
         coeff_cdf_q_ctx: usize,
     ) -> CoeffOrdinaryBranchPlaneTxTypeBaseConfig {
         CoeffOrdinaryBranchPlaneTxTypeBaseConfig {
             coeff_cdf_q_ctx,
-            tx_size_ctx: self.tx_size_ctx,
+            tx_size_ctx,
             tx_width_log2: adjusted_dimensions.tx_width_log2,
             tx_width: adjusted_dimensions.tx_width,
             tx_height: adjusted_dimensions.tx_height,
@@ -284,10 +284,10 @@ pub(crate) fn apply_coeff_ordinary_branch_from_coeffs_geometry(
 /// For AV2 § 8.3.2 base contexts
 /// (`docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2`), it separately
 /// derives `Adjusted_Tx_Size[txSz]` and uses the adjusted width, height, and
-/// width log2. It does not derive `Tx_Size_Sqr[txSz]`,
-/// `Tx_Size_Sqr_Up[txSz]`, `txSzCtx`, implement `compute_tx_type`, derive scan
-/// order, wire runtime `coeffs()`, dequantize, inverse transform, residual add,
-/// or reconstruct.
+/// width log2. It also derives the AV2 § 5.20.7.27 `txSzCtx` formula from
+/// `Tx_Size_Sqr[txSz]` and `Tx_Size_Sqr_Up[txSz]`. It does not implement
+/// `compute_tx_type`, derive scan order, wire runtime `coeffs()`, dequantize,
+/// inverse transform, residual add, or reconstruct.
 pub(crate) fn apply_coeff_ordinary_branch_from_tx_size_dimensions(
     state: &mut TileCoeffContextState,
     cdfs: &mut TileCdfSubset,
@@ -300,16 +300,20 @@ pub(crate) fn apply_coeff_ordinary_branch_from_tx_size_dimensions(
         symbols,
         input,
         &ADJUSTED_TX_SIZE,
+        &TX_SIZE_SQR,
+        &TX_SIZE_SQR_UP,
     )
 }
 
 #[cfg(test)]
-pub(crate) fn apply_coeff_ordinary_branch_from_tx_size_dimensions_with_test_adjusted_table(
+pub(crate) fn apply_coeff_ordinary_branch_from_tx_size_dimensions_with_test_tables(
     state: &mut TileCoeffContextState,
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
     input: CoeffOrdinaryBranchTxSizeDimensionsInput<'_>,
     adjusted_tx_size_table: &[i32],
+    tx_size_sqr_table: &[i32],
+    tx_size_sqr_up_table: &[i32],
 ) -> Result<CoeffOrdinaryBranch, CoeffOrdinaryBranchError> {
     apply_coeff_ordinary_branch_from_tx_size_dimensions_with_adjusted_table(
         state,
@@ -317,6 +321,8 @@ pub(crate) fn apply_coeff_ordinary_branch_from_tx_size_dimensions_with_test_adju
         symbols,
         input,
         adjusted_tx_size_table,
+        tx_size_sqr_table,
+        tx_size_sqr_up_table,
     )
 }
 
@@ -326,6 +332,8 @@ fn apply_coeff_ordinary_branch_from_tx_size_dimensions_with_adjusted_table(
     symbols: &mut SymbolDecoder<'_>,
     input: CoeffOrdinaryBranchTxSizeDimensionsInput<'_>,
     adjusted_tx_size_table: &[i32],
+    tx_size_sqr_table: &[i32],
+    tx_size_sqr_up_table: &[i32],
 ) -> Result<CoeffOrdinaryBranch, CoeffOrdinaryBranchError> {
     let input = match input {
         CoeffOrdinaryBranchTxSizeDimensionsInput::AllZero(geometry) => {
@@ -338,6 +346,11 @@ fn apply_coeff_ordinary_branch_from_tx_size_dimensions_with_adjusted_table(
             let raw_dimensions = tx_size_dimensions(input.geometry.tx_size)?;
             let adjusted_dimensions =
                 adjusted_tx_size_dimensions(adjusted_tx_size_table, input.geometry.tx_size)?;
+            let tx_size_ctx = tx_size_context(
+                tx_size_sqr_table,
+                tx_size_sqr_up_table,
+                input.geometry.tx_size,
+            )?;
             CoeffOrdinaryBranchCoeffsGeometryInput::NonZero(
                 CoeffOrdinaryBranchCoeffsGeometryNonZeroInput {
                     geometry: input.geometry.coeffs_geometry(raw_dimensions),
@@ -351,6 +364,7 @@ fn apply_coeff_ordinary_branch_from_tx_size_dimensions_with_adjusted_table(
                     scan: input.scan,
                     base_config: input.base_config.base_config(
                         input.geometry,
+                        tx_size_ctx,
                         adjusted_dimensions,
                         input.coeff_cdf_q_ctx,
                     ),
@@ -374,6 +388,16 @@ fn adjusted_tx_size_dimensions(
     tx_size_dimensions(adjusted_tx_size)
 }
 
+fn tx_size_context(
+    tx_size_sqr_table: &[i32],
+    tx_size_sqr_up_table: &[i32],
+    tx_size: usize,
+) -> Result<usize, CoeffOrdinaryBranchError> {
+    let tx_size_sqr = tx_size_table_tx_size(tx_size_sqr_table, "Tx_Size_Sqr", tx_size)?;
+    let tx_size_sqr_up = tx_size_table_tx_size(tx_size_sqr_up_table, "Tx_Size_Sqr_Up", tx_size)?;
+    Ok((tx_size_sqr + tx_size_sqr_up + 1) >> 1)
+}
+
 fn tx_size_dimensions(
     tx_size: usize,
 ) -> Result<CoeffOrdinaryTxSizeDimensions, CoeffOrdinaryBranchError> {
@@ -383,6 +407,16 @@ fn tx_size_dimensions(
         tx_width_log2: tx_size_table_u32(&TX_WIDTH_LOG2, "Tx_Width_Log2", tx_size)?,
         tx_height_log2: tx_size_table_u32(&TX_HEIGHT_LOG2, "Tx_Height_Log2", tx_size)?,
     })
+}
+
+fn tx_size_table_tx_size(
+    table: &[i32],
+    table_name: &'static str,
+    tx_size: usize,
+) -> Result<usize, CoeffOrdinaryBranchError> {
+    let value = tx_size_table_usize(table, table_name, tx_size)?;
+    tx_size_table_value(&TX_WIDTH, value)?;
+    Ok(value)
 }
 
 fn tx_size_table_usize(
