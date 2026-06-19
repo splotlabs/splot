@@ -788,6 +788,19 @@ pub enum Error {
         source: splot_core::Error,
     },
 
+    /// A golomb-tail luma DC magnitude fell outside the supported finite-q range.
+    #[error(
+        "encoder block-symbol trace golomb magnitude {magnitude} is outside the finite-q range {min}..={max}"
+    )]
+    BlockSymbolTraceGolombMagnitudeOutOfRange {
+        /// Requested coefficient magnitude.
+        magnitude: u32,
+        /// Inclusive lower bound (`maxLevel`).
+        min: u32,
+        /// Inclusive upper bound (`maxLevel + 9`).
+        max: u32,
+    },
+
     /// An encoder lifecycle operation is invalid in the current context state.
     #[error("encoder operation {operation:?} is invalid while the context is {state:?}")]
     State {

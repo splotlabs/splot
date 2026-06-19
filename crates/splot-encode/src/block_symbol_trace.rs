@@ -378,20 +378,24 @@ pub(crate) fn compose_intra_dc_golomb_block_trace(
     magnitude: u32,
     negative: bool,
 ) -> Result<Vec<BlockSymbolToken>> {
-    debug_assert!(
-        (GOLOMB_MAXLEVEL..=GOLOMB_FINITE_Q_MAGNITUDE_MAX).contains(&magnitude),
-        "finite-q golomb magnitude is maxLevel..=maxLevel+9 (8..=17); the golomb-prefix path is a later brick"
-    );
+    // Reject out-of-range magnitudes at runtime (a `debug_assert!` would be
+    // stripped in release builds): below `maxLevel` saturates to `x = 0` and 18+
+    // needs the golomb-prefix path (a later brick), so either would emit a
+    // non-conformant trace.
+    if !(GOLOMB_MAXLEVEL..=GOLOMB_FINITE_Q_MAGNITUDE_MAX).contains(&magnitude) {
+        return Err(Error::BlockSymbolTraceGolombMagnitudeOutOfRange {
+            magnitude,
+            min: GOLOMB_MAXLEVEL,
+            max: GOLOMB_FINITE_Q_MAGNITUDE_MAX,
+        });
+    }
     let modes = compose_minimal_intra_dc_block_mode_trace()?;
     let level = luma_dc_golomb_level_tokens(MINIMAL_COEFF_CDF_Q_CTX)?;
     // x = magnitude - maxLevel (the golomb extension); finite-q encoding (m = 1).
-    let x = magnitude.saturating_sub(GOLOMB_MAXLEVEL);
+    // The range check above guarantees `x in 0..=9` and `q <= GOLOMB_FINITE_Q_MAX`.
+    let x = magnitude - GOLOMB_MAXLEVEL;
     let q = x >> GOLOMB_DC_M;
     let coeff_rem = x & 1;
-    debug_assert!(
-        q <= GOLOMB_FINITE_Q_MAX,
-        "golomb-prefix path (q == cMax) is a later brick"
-    );
     // q `q_length_bit` zeros + the terminating `q_length_bit` one + `coeff_rem`.
     let golomb_bits =
         (q as usize)

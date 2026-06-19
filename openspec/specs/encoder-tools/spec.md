@@ -1892,6 +1892,14 @@ or modes beyond the DC minimal tier.
 - **THEN** the reconstructed level SHALL equal each encoded coefficient magnitude
 - **AND** the roundtrip SHALL be deterministic.
 
+#### Scenario: Out-of-range golomb magnitude is rejected
+
+- **WHEN** the parameterized golomb compose is called with a luma DC magnitude
+  outside the finite-q range (`maxLevel..=maxLevel + 9`, 8..=17)
+- **THEN** it SHALL return a typed `BlockSymbolTraceGolombMagnitudeOutOfRange`
+  error at runtime (not via a release-stripped debug assertion)
+- **AND** SHALL NOT emit a trace for the non-conformant coefficient.
+
 #### Scenario: Golomb trace does not produce packets
 
 - **WHEN** the finite-q golomb block trace is available in `splot-encode`

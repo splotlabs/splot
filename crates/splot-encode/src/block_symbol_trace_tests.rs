@@ -405,6 +405,28 @@ fn golomb_block_roundtrip_is_deterministic() {
 }
 
 #[test]
+fn golomb_block_trace_rejects_out_of_finite_q_range() {
+    // A parameterized compose returning Result must reject magnitudes outside the
+    // finite-q range at runtime (not via a release-stripped debug_assert): below
+    // maxLevel (8) and at/above maxLevel+10 (18, the golomb-prefix path) both yield
+    // a typed error, not a non-conformant trace.
+    for magnitude in [0, 7, GOLOMB_FINITE_Q_MAGNITUDE_MAX + 1, 100] {
+        let err = compose_intra_dc_golomb_block_trace(magnitude, false).unwrap_err();
+        assert!(matches!(
+            err,
+            Error::BlockSymbolTraceGolombMagnitudeOutOfRange {
+                magnitude: m,
+                min: GOLOMB_MAXLEVEL,
+                max: GOLOMB_FINITE_Q_MAGNITUDE_MAX,
+            } if m == magnitude
+        ));
+    }
+    // The boundary values are accepted.
+    assert!(compose_intra_dc_golomb_block_trace(GOLOMB_MAXLEVEL, false).is_ok());
+    assert!(compose_intra_dc_golomb_block_trace(GOLOMB_FINITE_Q_MAGNITUDE_MAX, false).is_ok());
+}
+
+#[test]
 fn golomb_block_trace_covers_finite_q_range() {
     // Every finite-q magnitude (maxLevel..=maxLevel+9 = 8..=17) composes a trace
     // that roundtrips through one §8.2 coder and whose decoded golomb bits
