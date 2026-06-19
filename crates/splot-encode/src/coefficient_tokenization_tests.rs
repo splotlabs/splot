@@ -466,6 +466,19 @@ fn chroma_u_dc_coded_coeff_tokens_emit_chroma_contexts() {
 }
 
 #[test]
+fn chroma_u_dc_coded_coeff_tokens_roundtrip_through_generic_helper() {
+    // The chroma U CDF tokens roundtrip through `roundtrip_entropy_tokens` too
+    // (its CDF-row router accepts the chroma U/eob/UV selectors), so the accessor
+    // is usable in both the generic and the block-trace proof paths.
+    let tokens = chroma_u_dc_coded_coeff_tokens(0, 3).unwrap();
+    let proof = roundtrip_entropy_tokens(&tokens).unwrap();
+
+    // txb_skip=0, eob_pt_16=0, coeff_base_eob=2 (magnitude 3).
+    assert_eq!(proof.decoded_symbols(), &[0, 0, 2]);
+    assert_eq!(proof.symbol_count(), 3);
+}
+
+#[test]
 fn chroma_u_dc_coded_coeff_tokens_reject_out_of_tier_magnitude() {
     // Magnitude 0 (all-zero) and >=5 (needs coeff_br/golomb) are rejected with a
     // typed error rather than a debug-only assertion.

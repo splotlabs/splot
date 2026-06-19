@@ -19,8 +19,8 @@
 use splot_core::symbol::{Symbol, SymbolDecoder, SymbolDecoderConfig};
 use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig};
 use splot_core::tables::cdf::{
-    DEFAULT_COEFF_BASE_LF_EOB_CDF, DEFAULT_COEFF_BR_LF_CDF, DEFAULT_DC_SIGN_CDF,
-    DEFAULT_EOB_PT_16_CDF, DEFAULT_TXB_SKIP_CDF,
+    DEFAULT_COEFF_BASE_LF_EOB_CDF, DEFAULT_COEFF_BASE_LF_EOB_UV_CDF, DEFAULT_COEFF_BR_LF_CDF,
+    DEFAULT_DC_SIGN_CDF, DEFAULT_EOB_PT_16_CDF, DEFAULT_TXB_SKIP_CDF,
 };
 use splot_recon::{PlaneId, PlaneRect, TransformClass, coefficient_scan_order};
 
@@ -726,6 +726,9 @@ struct CoefficientTokenCdfRows {
     coeff_base_lf_eob: [[i32; 6]; COEFF_CDF_Q_CONTEXTS],
     coeff_br_lf: [[i32; 5]; COEFF_CDF_Q_CONTEXTS],
     dc_sign: [[i32; 3]; COEFF_CDF_Q_CONTEXTS],
+    chroma_u_txb_skip: [[i32; 3]; COEFF_CDF_Q_CONTEXTS],
+    chroma_eob_pt_16: [[i32; 6]; COEFF_CDF_Q_CONTEXTS],
+    coeff_base_lf_eob_uv: [[i32; 6]; COEFF_CDF_Q_CONTEXTS],
 }
 
 impl CoefficientTokenCdfRows {
@@ -760,6 +763,28 @@ impl CoefficientTokenCdfRows {
                 DEFAULT_DC_SIGN_CDF[1][LUMA_PLANE_TYPE][DC_SIGN_GROUP_VISIBLE][DC_SIGN_CTX_NEUTRAL],
                 DEFAULT_DC_SIGN_CDF[2][LUMA_PLANE_TYPE][DC_SIGN_GROUP_VISIBLE][DC_SIGN_CTX_NEUTRAL],
                 DEFAULT_DC_SIGN_CDF[3][LUMA_PLANE_TYPE][DC_SIGN_GROUP_VISIBLE][DC_SIGN_CTX_NEUTRAL],
+            ],
+            chroma_u_txb_skip: [
+                DEFAULT_TXB_SKIP_CDF[0][INTRA_NON_FSC_TXB_SKIP_BANK][TX_SIZE_4X4_CTX]
+                    [CHROMA_U_TXB_SKIP_CTX_NEUTRAL],
+                DEFAULT_TXB_SKIP_CDF[1][INTRA_NON_FSC_TXB_SKIP_BANK][TX_SIZE_4X4_CTX]
+                    [CHROMA_U_TXB_SKIP_CTX_NEUTRAL],
+                DEFAULT_TXB_SKIP_CDF[2][INTRA_NON_FSC_TXB_SKIP_BANK][TX_SIZE_4X4_CTX]
+                    [CHROMA_U_TXB_SKIP_CTX_NEUTRAL],
+                DEFAULT_TXB_SKIP_CDF[3][INTRA_NON_FSC_TXB_SKIP_BANK][TX_SIZE_4X4_CTX]
+                    [CHROMA_U_TXB_SKIP_CTX_NEUTRAL],
+            ],
+            chroma_eob_pt_16: [
+                DEFAULT_EOB_PT_16_CDF[0][EOB_CTX_CHROMA],
+                DEFAULT_EOB_PT_16_CDF[1][EOB_CTX_CHROMA],
+                DEFAULT_EOB_PT_16_CDF[2][EOB_CTX_CHROMA],
+                DEFAULT_EOB_PT_16_CDF[3][EOB_CTX_CHROMA],
+            ],
+            coeff_base_lf_eob_uv: [
+                DEFAULT_COEFF_BASE_LF_EOB_UV_CDF[0][COEFF_BASE_LF_EOB_CTX_DC],
+                DEFAULT_COEFF_BASE_LF_EOB_UV_CDF[1][COEFF_BASE_LF_EOB_CTX_DC],
+                DEFAULT_COEFF_BASE_LF_EOB_UV_CDF[2][COEFF_BASE_LF_EOB_CTX_DC],
+                DEFAULT_COEFF_BASE_LF_EOB_UV_CDF[3][COEFF_BASE_LF_EOB_CTX_DC],
             ],
         }
     }
@@ -800,6 +825,26 @@ impl CoefficientTokenCdfRows {
                 ctx: DC_SIGN_CTX_NEUTRAL,
             } if coeff_cdf_q_ctx < COEFF_CDF_Q_CONTEXTS => {
                 Ok(self.dc_sign[coeff_cdf_q_ctx].as_mut_slice())
+            }
+            CoefficientCdfRowSelector::TxbSkip {
+                coeff_cdf_q_ctx,
+                plane_type: INTRA_NON_FSC_TXB_SKIP_BANK,
+                tx_size: TX_SIZE_4X4_CTX,
+                ctx: CHROMA_U_TXB_SKIP_CTX_NEUTRAL,
+            } if coeff_cdf_q_ctx < COEFF_CDF_Q_CONTEXTS => {
+                Ok(self.chroma_u_txb_skip[coeff_cdf_q_ctx].as_mut_slice())
+            }
+            CoefficientCdfRowSelector::EobPt16 {
+                coeff_cdf_q_ctx,
+                eob_ctx: EOB_CTX_CHROMA,
+            } if coeff_cdf_q_ctx < COEFF_CDF_Q_CONTEXTS => {
+                Ok(self.chroma_eob_pt_16[coeff_cdf_q_ctx].as_mut_slice())
+            }
+            CoefficientCdfRowSelector::CoeffBaseLfEobUv {
+                coeff_cdf_q_ctx,
+                ctx: COEFF_BASE_LF_EOB_CTX_DC,
+            } if coeff_cdf_q_ctx < COEFF_CDF_Q_CONTEXTS => {
+                Ok(self.coeff_base_lf_eob_uv[coeff_cdf_q_ctx].as_mut_slice())
             }
             selector => Err(Error::CoefficientTokenizationUnsupportedCdfSelector {
                 syntax: selector.syntax_name(),
