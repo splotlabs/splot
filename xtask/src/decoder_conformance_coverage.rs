@@ -499,6 +499,7 @@ const COVERAGE_ROWS: &[CoverageRow] = &[
             "coefficient-scan-order",
             "get-tx-class",
             "residual-addition",
+            "reconstruct-transform-block",
         ],
         feature_ids: &[
             "RECON-CURRENT-FRAME-WORKSPACE",
@@ -516,13 +517,14 @@ const COVERAGE_ROWS: &[CoverageRow] = &[
             "RECON-COEFFICIENT-SCAN-ORDER",
             "RECON-GET-TX-CLASS",
             "RECON-RESIDUAL-ADDITION",
+            "RECON-RECONSTRUCT-TRANSFORM-BLOCK",
         ],
         status: "partial",
         tests: &[],
         fuzz_targets: &[],
         local_reference_evidence: &[],
         diagnostics: &["decode/unsupported-feature"],
-        notes: "Scheduler-free splot-recon primitives exist for the workspace allocation, the §7.14.2 dequantization quantizer functions, all three §7.15.2 1D inverse transforms (kernel, Walsh-Hadamard, identity), the §7.15.4.1 2D matrix transform core (row-then-column passes), the §7.15.4 outer 2D inverse transform orchestration (the Lossless IDTX shortcut, the DPCM cumulative sum, and adjusted-size sample duplication over caller-resolved transform selections), the §7.14.4 dequantization process (per-coefficient dequant arithmetic, the non-quantization-matrix transform-block helper, and the built-in Quantizer_Matrix step-2 weighting over caller-resolved quantizers), the §7.15.4 Transform_Shift row and column down-shift lookup keyed on the original log2 shape, the §7.15.4 get_transform_1d_type row and column transform-type derivation (the Transform_1d_Type table plus the useDdt DDTX and FDDT substitution), the combined §7.15.4 transform-parameter resolve helper (InverseTransform2dOuter::resolve deriving the per-pass shifts, the per-pass types over adjusted sizes, and the IDTX flag from one transform-block fact source), the §5.20.7.30 get_scan coefficient scan order (the anti-diagonal 2D scan and the row and column raster scans) with its §8.3.2 get_tx_class PlaneTxType-to-class mapping, and the §7.14.3 residual-addition step. The §7.14.4 useQm/UserQm gating and shift derivation, the §7.15.3 secondary transform, the §7.15.4 DPCM-direction selection, the §5.20.7.29 compute_tx_type transform-type computation that produces PlaneTxType, the coefficient entropy decode that produces Quant, deblocking, CDEF, CCSO, loop restoration, and GDF are not implemented, and none of the primitives are wired as runtime decode stages.",
+        notes: "Scheduler-free splot-recon primitives exist for the workspace allocation, the §7.14.2 dequantization quantizer functions, all three §7.15.2 1D inverse transforms (kernel, Walsh-Hadamard, identity), the §7.15.4.1 2D matrix transform core (row-then-column passes), the §7.15.4 outer 2D inverse transform orchestration (the Lossless IDTX shortcut, the DPCM cumulative sum, and adjusted-size sample duplication over caller-resolved transform selections), the §7.14.4 dequantization process (per-coefficient dequant arithmetic, the non-quantization-matrix transform-block helper, and the built-in Quantizer_Matrix step-2 weighting over caller-resolved quantizers), the §7.15.4 Transform_Shift row and column down-shift lookup keyed on the original log2 shape, the §7.15.4 get_transform_1d_type row and column transform-type derivation (the Transform_1d_Type table plus the useDdt DDTX and FDDT substitution), the combined §7.15.4 transform-parameter resolve helper (InverseTransform2dOuter::resolve deriving the per-pass shifts, the per-pass types over adjusted sizes, and the IDTX flag from one transform-block fact source), the §5.20.7.30 get_scan coefficient scan order (the anti-diagonal 2D scan and the row and column raster scans) with its §8.3.2 get_tx_class PlaneTxType-to-class mapping, the §7.14.3 residual-addition step, and the §7.14.4 to §7.15.4 to §7.14.3 transform-block reconstruction chain composition (reconstruct_transform_block_residual, the residual sink that turns decoded Quant into reconstructed samples over caller-resolved dequant and transform params). The §7.14.4 useQm/UserQm gating and shift derivation, the §7.15.3 secondary transform, the §7.15.4 DPCM-direction selection, the §5.20.7.29 compute_tx_type transform-type computation that produces PlaneTxType, the coefficient entropy decode that produces Quant, deblocking, CDEF, CCSO, loop restoration, and GDF are not implemented, and none of the primitives are wired as runtime decode stages.",
     },
     CoverageRow {
         id: "output-film-grain-and-reference-update",

@@ -15,7 +15,9 @@
 //! (quantizer-value lookup, quantizer-index resolution, and per-plane DC/AC
 //! composition), the § 7.15.2 1D inverse transforms (§ 7.15.2.1 kernel,
 //! § 7.15.2.2 Walsh-Hadamard, and § 7.15.2.3 identity), the § 7.14.3
-//! residual-addition step, the § 7.15.4.1 2D matrix transform core, the
+//! residual-addition step, the § 7.14.4 → § 7.15.4 → § 7.14.3 transform-block
+//! reconstruction chain composition
+//! ([`reconstruct_transform_block_residual`]), the § 7.15.4.1 2D matrix transform core, the
 //! § 7.15.4 outer orchestration (the lossless IDTX shortcut, the DPCM cumulative
 //! sum, and adjusted-size sample duplication over caller-resolved transform
 //! selections), and the § 7.14.4 dequantization process (the per-coefficient
@@ -64,6 +66,7 @@
 //! `RECON-INVERSE-TRANSFORM-1D`,
 //! `RECON-INVERSE-TRANSFORM-MATRIX-FREE`,
 //! `RECON-RESIDUAL-ADDITION`,
+//! `RECON-RECONSTRUCT-TRANSFORM-BLOCK`,
 //! `RECON-INVERSE-TRANSFORM-2D`,
 //! `RECON-INVERSE-TRANSFORM-2D-OUTER`,
 //! `RECON-DEQUANT-PROCESS`,
@@ -98,6 +101,7 @@ mod inverse_transform_2d;
 mod inverse_transform_2d_outer;
 mod plane;
 mod reconstruct;
+mod reconstruct_block;
 mod reference;
 mod transform_params;
 mod views;
@@ -154,6 +158,7 @@ pub use inverse_transform_2d_outer::{
 };
 pub use plane::{Plane, VisibleRows};
 pub use reconstruct::reconstruct_add_residual;
+pub use reconstruct_block::reconstruct_transform_block_residual;
 pub use reference::{
     ReferenceFrameEntries, ReferenceFrameEntry, ReferenceFrameReplacement, ReferenceFrameStore,
     ReferenceRefreshMask, ReferenceRefreshOutcome, ReferenceRefreshSlots, ReferenceSlot,
