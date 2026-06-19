@@ -9519,6 +9519,61 @@ fixtures = [
 diagnostics = ["decode/unsupported-feature"]
 
 [[feature]]
+id = "DECODE-COEFF-FSC-BRANCH-HANDOFF"
+name = "Coefficient FSC branch handoff"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.20.7.27", "5.20.7.28", "8.2.5"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-28",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-2-5",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/tile_payload/coeff_loop/fsc_quant_pass.rs"
+openspec_change = "coeff-fsc-branch-handoff"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Adds a crate-private loaded-but-unwired FSC/IDTX nonzero coefficient branch handoff for AV2 §5.20.7.27. `apply_coeff_fsc_branch` rejects all-zero routing and non-luma context routing before unintended mutation, initializes the existing nonzero EOB start, derives the checked FSC `bob..segEob` scan walk from caller-resolved `segEob` and scan order, runs the FSC level pass, and delegates to the FSC quant/context-commit wrapper so final `culLevel` and `dcCategory` update tile coefficient context lines. Tests cover explicit-pipeline equivalence, all-zero rejection without state/CDF/symbol mutation, chroma rejection before EOB consumption, and invalid `segEob` rejection after EOB but before FSC level/sign/quant symbols. This feature remains partial: runtime `coeffs()` does not call this wrapper, `useFsc`, `segEob`, scan, transform, and geometry facts are still caller-resolved, and dequantization, inverse transform, residual add, reconstruction, reference refresh, AVM/dav2d invocation, public APIs, and broad `decode_block()` / `decode_tile()` support remain unimplemented."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "partial"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::coefficient_fsc_branch_matches_explicit_staged_pipeline",
+    "crates/splot-decode/src/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::coefficient_fsc_branch_rejects_all_zero_without_mutation",
+    "crates/splot-decode/src/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::coefficient_fsc_branch_rejects_chroma_plane_before_eob_consumption",
+    "crates/splot-decode/src/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::coefficient_fsc_branch_rejects_invalid_scan_before_fsc_symbol_reads",
+]
+commands = [
+    "cargo test -p splot-decode fsc_quant --locked",
+    "cargo test -p splot-decode coeff_loop --locked",
+    "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-decoder-conformance-coverage",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-decode/src/tile_payload/coeff_loop/fsc_quant_pass.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/fsc_quant_pass_tests.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/fsc_level_pass.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/scan_walk.rs",
+    "crates/splot-decode/src/tile_payload/coeff_state.rs",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
 id = "DECODE-COEFF-BASE-SYMBOL-READ"
 name = "Coefficient base symbol read"
 category = "infrastructure"
