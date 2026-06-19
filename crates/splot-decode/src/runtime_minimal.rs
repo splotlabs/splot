@@ -252,6 +252,13 @@ fn decode_minimal_block_symbol_error(
             offset,
             "minimal runtime hash support requires the traced flat tile coefficient context state",
         ),
+        MinimalBlockSymbolTraceError::CoeffTxGeometryDimensionOverflow { .. }
+        | MinimalBlockSymbolTraceError::UnsupportedCoeffTxGeometry { .. }
+        | MinimalBlockSymbolTraceError::InvalidCoeffTxTableValue { .. } => unsupported_at(
+            "minimal_tile_coeff_tx_size_geometry",
+            offset,
+            "minimal runtime hash support requires traced coefficient transform geometry to map to generated AV2 transform-size tables",
+        ),
         MinimalBlockSymbolTraceError::ExitSymbol { .. } => unsupported_at(
             "minimal_tile_exit_symbol",
             offset,

@@ -4,10 +4,12 @@
 //! Minimal flat intra block-symbol trace frontier.
 //!
 //! Feature tracking: `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER` and
-//! `DECODE-COEFF-RUNTIME-FRAME-ENTRY-HANDOFF`.
+//! `DECODE-COEFF-RUNTIME-FRAME-ENTRY-HANDOFF` and
+//! `DECODE-COEFF-RUNTIME-TX-SIZE-GEOMETRY-HANDOFF`.
 
 use splot_core::Error as CoreError;
 use splot_core::symbol::{SymbolDecoder, SymbolDecoderSummary};
+use splot_core::tables::conversion::{TX_HEIGHT, TX_WIDTH};
 
 use super::DecodeTileWorkUnit;
 use super::cdf::block_context::{YModeIndexContext, reconstruct_minimal_y_mode, uv_mode_ctx};
@@ -32,8 +34,15 @@ const MINIMAL_LUMA_TX_W4: usize = 16;
 const MINIMAL_LUMA_TX_H4: usize = 16;
 const MINIMAL_CHROMA_TX_W4: usize = 4;
 const MINIMAL_CHROMA_TX_H4: usize = 4;
-const TX_16X16: usize = 2;
-const TX_64X64: usize = 4;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct TracedAllZeroCoeffGeometry {
+    plane: usize,
+    start_x: usize,
+    start_y: usize,
+    w4: usize,
+    h4: usize,
+}
 
 /// Summary returned after the traced block symbols and `exit_symbol()` pass.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -115,6 +124,42 @@ pub(crate) enum MinimalBlockSymbolTraceError {
     CoeffLoopContext {
         /// Source coefficient-loop context error.
         source: CoeffLoopContextError,
+    },
+    /// Traced 4x4 transform geometry overflowed while converting to pixels.
+    #[error(
+        "minimal block-symbol trace coefficient transform {axis} {blocks_4x4} 4x4 blocks overflows pixel units"
+    )]
+    CoeffTxGeometryDimensionOverflow {
+        /// Dimension axis.
+        axis: &'static str,
+        /// Dimension in 4x4 blocks.
+        blocks_4x4: usize,
+    },
+    /// Traced transform geometry has no generated AV2 transform-size entry.
+    #[error(
+        "minimal block-symbol trace unsupported coefficient transform geometry {w4}x{h4} 4x4 blocks ({width}x{height} pixels)"
+    )]
+    UnsupportedCoeffTxGeometry {
+        /// Width in 4x4 blocks.
+        w4: usize,
+        /// Height in 4x4 blocks.
+        h4: usize,
+        /// Width in pixels.
+        width: usize,
+        /// Height in pixels.
+        height: usize,
+    },
+    /// A generated AV2 transform-size table entry could not be represented.
+    #[error(
+        "minimal block-symbol trace invalid {table}[{tx_size}] transform-size table value {value}"
+    )]
+    InvalidCoeffTxTableValue {
+        /// Table name.
+        table: &'static str,
+        /// Transform-size index.
+        tx_size: usize,
+        /// Raw generated table value.
+        value: i32,
     },
     /// Coefficient-loop frame-entry handoff failed.
     #[error("minimal block-symbol trace coefficient frame-entry handoff failed: {source}")]
@@ -223,15 +268,16 @@ fn consume_trace(
         0,
         LUMA_OR_U_ALL_ZERO_TRANSFORM_REASON,
     )?;
-    apply_all_zero_coeff_frame_entry(
+    apply_all_zero_coeff_frame_entry_from_traced_geometry(
         &mut coeff_context,
         cdfs,
         symbols,
-        CoeffOrdinaryTxSizeGeometryConfig {
+        TracedAllZeroCoeffGeometry {
             plane: 0,
             start_x: 0,
             start_y: 0,
-            tx_size: TX_64X64,
+            w4: MINIMAL_LUMA_TX_W4,
+            h4: MINIMAL_LUMA_TX_H4,
         },
     )?;
 
@@ -277,19 +323,83 @@ fn consume_trace(
         0,
         V_ALL_ZERO_TRANSFORM_REASON,
     )?;
-    apply_all_zero_coeff_frame_entry(
+    apply_all_zero_coeff_frame_entry_from_traced_geometry(
         &mut coeff_context,
         cdfs,
         symbols,
-        CoeffOrdinaryTxSizeGeometryConfig {
+        TracedAllZeroCoeffGeometry {
             plane: 2,
             start_x: 0,
             start_y: 0,
-            tx_size: TX_16X16,
+            w4: MINIMAL_CHROMA_TX_W4,
+            h4: MINIMAL_CHROMA_TX_H4,
         },
     )?;
 
     Ok(())
+}
+
+fn apply_all_zero_coeff_frame_entry_from_traced_geometry(
+    coeff_context: &mut TileCoeffContextState,
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    input: TracedAllZeroCoeffGeometry,
+) -> Result<(), MinimalBlockSymbolTraceError> {
+    let geometry = traced_all_zero_coeff_geometry(input)?;
+    apply_all_zero_coeff_frame_entry(coeff_context, cdfs, symbols, geometry)
+}
+
+// AV2 § 5.20.7.27 passes `txSz` into `coeffs()`, while AV2 § 9.2 maps each
+// generated transform-size enum to `Tx_Width` / `Tx_Height`.
+fn traced_all_zero_coeff_geometry(
+    input: TracedAllZeroCoeffGeometry,
+) -> Result<CoeffOrdinaryTxSizeGeometryConfig, MinimalBlockSymbolTraceError> {
+    Ok(CoeffOrdinaryTxSizeGeometryConfig {
+        plane: input.plane,
+        start_x: input.start_x,
+        start_y: input.start_y,
+        tx_size: tx_size_from_w4_h4(input.w4, input.h4)?,
+    })
+}
+
+fn tx_size_from_w4_h4(w4: usize, h4: usize) -> Result<usize, MinimalBlockSymbolTraceError> {
+    let width = w4.checked_mul(4).ok_or(
+        MinimalBlockSymbolTraceError::CoeffTxGeometryDimensionOverflow {
+            axis: "width",
+            blocks_4x4: w4,
+        },
+    )?;
+    let height = h4.checked_mul(4).ok_or(
+        MinimalBlockSymbolTraceError::CoeffTxGeometryDimensionOverflow {
+            axis: "height",
+            blocks_4x4: h4,
+        },
+    )?;
+    for (tx_size, (&tx_width, &tx_height)) in TX_WIDTH.iter().zip(TX_HEIGHT.iter()).enumerate() {
+        let tx_width = tx_size_table_entry_usize("Tx_Width", tx_size, tx_width)?;
+        let tx_height = tx_size_table_entry_usize("Tx_Height", tx_size, tx_height)?;
+        if tx_width == width && tx_height == height {
+            return Ok(tx_size);
+        }
+    }
+    Err(MinimalBlockSymbolTraceError::UnsupportedCoeffTxGeometry {
+        w4,
+        h4,
+        width,
+        height,
+    })
+}
+
+fn tx_size_table_entry_usize(
+    table: &'static str,
+    tx_size: usize,
+    value: i32,
+) -> Result<usize, MinimalBlockSymbolTraceError> {
+    usize::try_from(value).map_err(|_| MinimalBlockSymbolTraceError::InvalidCoeffTxTableValue {
+        table,
+        tx_size,
+        value,
+    })
 }
 
 fn apply_all_zero_coeff_frame_entry(
@@ -520,12 +630,14 @@ mod tests {
     #[test]
     fn all_zero_coefficient_frame_entry_matches_direct_ordinary_branch() {
         assert_frame_entry_matches_direct_ordinary(
-            CoeffOrdinaryTxSizeGeometryConfig {
+            traced_all_zero_coeff_geometry(TracedAllZeroCoeffGeometry {
                 plane: 0,
                 start_x: 0,
                 start_y: 0,
-                tx_size: TX_64X64,
-            },
+                w4: MINIMAL_LUMA_TX_W4,
+                h4: MINIMAL_LUMA_TX_H4,
+            })
+            .unwrap(),
             AllZeroCoeffBlockInput {
                 plane: 0,
                 x4: 0,
@@ -535,12 +647,14 @@ mod tests {
             },
         );
         assert_frame_entry_matches_direct_ordinary(
-            CoeffOrdinaryTxSizeGeometryConfig {
+            traced_all_zero_coeff_geometry(TracedAllZeroCoeffGeometry {
                 plane: 2,
                 start_x: 0,
                 start_y: 0,
-                tx_size: TX_16X16,
-            },
+                w4: MINIMAL_CHROMA_TX_W4,
+                h4: MINIMAL_CHROMA_TX_H4,
+            })
+            .unwrap(),
             AllZeroCoeffBlockInput {
                 plane: 2,
                 x4: 0,
@@ -549,6 +663,76 @@ mod tests {
                 h4: MINIMAL_CHROMA_TX_H4,
             },
         );
+    }
+
+    #[test]
+    fn all_zero_tx_size_geometry_resolves_generated_tables() {
+        let luma = traced_all_zero_coeff_geometry(TracedAllZeroCoeffGeometry {
+            plane: 0,
+            start_x: 0,
+            start_y: 0,
+            w4: MINIMAL_LUMA_TX_W4,
+            h4: MINIMAL_LUMA_TX_H4,
+        })
+        .unwrap();
+        assert_eq!(luma.plane, 0);
+        assert_eq!(usize::try_from(TX_WIDTH[luma.tx_size]).unwrap(), 64);
+        assert_eq!(usize::try_from(TX_HEIGHT[luma.tx_size]).unwrap(), 64);
+
+        let v = traced_all_zero_coeff_geometry(TracedAllZeroCoeffGeometry {
+            plane: 2,
+            start_x: 0,
+            start_y: 0,
+            w4: MINIMAL_CHROMA_TX_W4,
+            h4: MINIMAL_CHROMA_TX_H4,
+        })
+        .unwrap();
+        assert_eq!(v.plane, 2);
+        assert_eq!(usize::try_from(TX_WIDTH[v.tx_size]).unwrap(), 16);
+        assert_eq!(usize::try_from(TX_HEIGHT[v.tx_size]).unwrap(), 16);
+    }
+
+    #[test]
+    fn unsupported_all_zero_tx_size_geometry_consumes_no_state() {
+        let mut work_unit = make_work_unit(&PAYLOAD, CdfUpdateMode::Disabled);
+        let mut symbols = symbols_at_block_frontier(&mut work_unit).unwrap();
+        let mut coeff_context = minimal_tile_coeff_context(&work_unit).unwrap();
+        let context_before = coeff_context.clone();
+        let tile_before = work_unit.cdf().tile_cdfs().clone();
+        let saved_before = work_unit.cdf().saved_cdfs().clone();
+        let frame_before = work_unit.cdf().frame_cdfs().clone();
+        let consumed_bits_before = symbols.consumed_bits();
+        let symbol_count_before = symbols.symbol_count();
+
+        let err = apply_all_zero_coeff_frame_entry_from_traced_geometry(
+            &mut coeff_context,
+            work_unit.cdf_mut().tile_cdfs_mut(),
+            &mut symbols,
+            TracedAllZeroCoeffGeometry {
+                plane: 0,
+                start_x: 0,
+                start_y: 0,
+                w4: 3,
+                h4: 3,
+            },
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            err,
+            MinimalBlockSymbolTraceError::UnsupportedCoeffTxGeometry {
+                w4: 3,
+                h4: 3,
+                width: 12,
+                height: 12
+            }
+        ));
+        assert_eq!(coeff_context, context_before);
+        assert_eq!(work_unit.cdf().tile_cdfs(), &tile_before);
+        assert_eq!(work_unit.cdf().saved_cdfs(), &saved_before);
+        assert_eq!(work_unit.cdf().frame_cdfs(), &frame_before);
+        assert_eq!(symbols.consumed_bits(), consumed_bits_before);
+        assert_eq!(symbols.symbol_count(), symbol_count_before);
     }
 
     #[test]
