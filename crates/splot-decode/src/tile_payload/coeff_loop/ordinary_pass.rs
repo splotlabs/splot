@@ -14,7 +14,11 @@
 //! `DECODE-COEFF-ORDINARY-BRANCH-GEOMETRY-HANDOFF`,
 //! `DECODE-COEFF-ORDINARY-BRANCH-COEFFS-GEOMETRY-HANDOFF`,
 //! `DECODE-COEFF-ORDINARY-BRANCH-TX-SIZE-DIMENSIONS`,
-//! `DECODE-COEFF-ORDINARY-BRANCH-ADJUSTED-TX-SIZE`.
+//! `DECODE-COEFF-ORDINARY-BRANCH-ADJUSTED-TX-SIZE`,
+//! `DECODE-COEFF-ORDINARY-BRANCH-TX-SIZE-CONTEXT`,
+//! `DECODE-COEFF-ORDINARY-BRANCH-SCAN-ORDER`.
+
+use std::collections::TryReserveError;
 
 use splot_core::symbol::SymbolDecoder;
 
@@ -474,6 +478,17 @@ pub(crate) enum CoeffOrdinaryBranchError {
         /// Generated table value.
         value: i32,
     },
+    /// `get_scan(txSz, txClass)` received an unsupported scan extent.
+    #[error("ordinary coefficient branch invalid scan shape {width}x{height}")]
+    InvalidScanShape {
+        /// Scan width after `Min(Tx_Width[txSz], 32)`.
+        width: usize,
+        /// Scan height after `Min(Tx_Height[txSz], 32)`.
+        height: usize,
+    },
+    /// Allocation for a derived scan order failed.
+    #[error("ordinary coefficient branch scan allocation failed: {0}")]
+    ScanAllocation(#[from] TryReserveError),
     /// EOB branch handoff failed.
     #[error("ordinary coefficient branch handoff failed: {0}")]
     Branch(#[from] CoeffLoopContextError),
