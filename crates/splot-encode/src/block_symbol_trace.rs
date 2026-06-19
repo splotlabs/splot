@@ -72,6 +72,10 @@ const TX_SIZE_4X4_CTX: usize = 0;
 const TXB_SKIP_CTX_NEUTRAL: usize = 0;
 const CHROMA_U_TXB_SKIP_CTX_NEUTRAL: usize = 6;
 const V_TXB_SKIP_CTX_NEUTRAL: usize = 0;
+// AV2 § 8.3.2 (`all_zero`, lines 1257-1262): the V-plane `txb_skip` context adds
+// +6 when `EobU != 0` (the U plane is coded). With empty neighbours and
+// `bw*bh == w*h` (no +3), a block whose U plane is coded uses V context 6.
+const CHROMA_V_TXB_SKIP_CTX_EOBU: usize = 6;
 // AV2 § 5.20.7.27 / § 8.3.2 neutral coded-DC luma coefficient contexts.
 const EOB_CTX_LUMA_INTRA: usize = 0;
 const COEFF_BASE_LF_EOB_CTX_DC: usize = 0;
@@ -279,9 +283,11 @@ pub(crate) fn compose_minimal_intra_dc_coded_chroma_block_trace() -> Result<Vec<
     trace.extend(modes.into_iter().map(BlockSymbolToken::Mode));
     trace.extend(luma.into_iter().map(BlockSymbolToken::Coeff));
     trace.extend(u.into_iter().map(BlockSymbolToken::Coeff));
+    // The U plane is coded (`EobU != 0`), so the V `txb_skip` uses § 8.3.2 context
+    // 6 (the `+6` EobU term), not the all-zero-U neutral context 0.
     trace.push(BlockSymbolToken::Coeff(chroma_v_all_zero_token(
         MINIMAL_COEFF_CDF_Q_CTX,
-        V_TXB_SKIP_CTX_NEUTRAL,
+        CHROMA_V_TXB_SKIP_CTX_EOBU,
     )));
     Ok(trace)
 }
@@ -380,6 +386,7 @@ struct BlockSymbolTraceCdfRows {
     luma_txb_skip: [i32; TXB_SKIP_CDF_ROW_LEN],
     u_txb_skip: [i32; TXB_SKIP_CDF_ROW_LEN],
     v_txb_skip: [i32; V_TXB_SKIP_CDF_ROW_LEN],
+    v_txb_skip_eobu: [i32; V_TXB_SKIP_CDF_ROW_LEN],
     eob_pt_16: [i32; EOB_PT_16_CDF_ROW_LEN],
     coeff_base_lf_eob: [i32; COEFF_BASE_LF_EOB_CDF_ROW_LEN],
     coeff_br_lf: [i32; COEFF_BR_LF_CDF_ROW_LEN],
@@ -401,6 +408,8 @@ impl BlockSymbolTraceCdfRows {
             u_txb_skip: DEFAULT_TXB_SKIP_CDF[MINIMAL_COEFF_CDF_Q_CTX][LUMA_PLANE_TYPE]
                 [TX_SIZE_4X4_CTX][CHROMA_U_TXB_SKIP_CTX_NEUTRAL],
             v_txb_skip: DEFAULT_V_TXB_SKIP_CDF[MINIMAL_COEFF_CDF_Q_CTX][V_TXB_SKIP_CTX_NEUTRAL],
+            v_txb_skip_eobu: DEFAULT_V_TXB_SKIP_CDF[MINIMAL_COEFF_CDF_Q_CTX]
+                [CHROMA_V_TXB_SKIP_CTX_EOBU],
             eob_pt_16: DEFAULT_EOB_PT_16_CDF[MINIMAL_COEFF_CDF_Q_CTX][EOB_CTX_LUMA_INTRA],
             coeff_base_lf_eob: DEFAULT_COEFF_BASE_LF_EOB_CDF[MINIMAL_COEFF_CDF_Q_CTX]
                 [TX_SIZE_4X4_CTX][COEFF_BASE_LF_EOB_CTX_DC],
@@ -444,6 +453,10 @@ impl BlockSymbolTraceCdfRows {
                     coeff_cdf_q_ctx: MINIMAL_COEFF_CDF_Q_CTX,
                     ctx: V_TXB_SKIP_CTX_NEUTRAL,
                 } => Ok(self.v_txb_skip.as_mut_slice()),
+                CoefficientCdfRowSelector::VTxbSkip {
+                    coeff_cdf_q_ctx: MINIMAL_COEFF_CDF_Q_CTX,
+                    ctx: CHROMA_V_TXB_SKIP_CTX_EOBU,
+                } => Ok(self.v_txb_skip_eobu.as_mut_slice()),
                 CoefficientCdfRowSelector::EobPt16 {
                     coeff_cdf_q_ctx: MINIMAL_COEFF_CDF_Q_CTX,
                     eob_ctx: EOB_CTX_LUMA_INTRA,

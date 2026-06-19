@@ -111,9 +111,10 @@ pub(crate) const fn chroma_u_all_zero_token(coeff_cdf_q_ctx: usize) -> Coefficie
 /// all-zero chroma V transform block at the given V `txb_skip` context.
 ///
 /// The V `txb_skip` uses the dedicated `TileVTxbSkipCdf[coeff_cdf_q_ctx][ctx]`.
-/// For a block whose chroma block size equals its transform size with an
-/// all-zero U plane, the § 8.3.2 context is 0 (no chroma-larger-than-tx or
-/// `EobU != 0` contributions).
+/// The caller supplies the § 8.3.2 context: it is 0 only for a block whose chroma
+/// block size equals its transform size with an all-zero U plane; when the U
+/// plane is coded (`EobU != 0`) the context gains `+6`, and a chroma block larger
+/// than its transform adds `+3`.
 pub(crate) const fn chroma_v_all_zero_token(
     coeff_cdf_q_ctx: usize,
     ctx: usize,

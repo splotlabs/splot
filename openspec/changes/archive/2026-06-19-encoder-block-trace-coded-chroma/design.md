@@ -17,13 +17,19 @@ with the same token shape as luma (`txb_skip`, `eob_pt_16`, `coeff_base_eob`,
 - **`dc_sign`** uses `TileDcSignCdf[ptype][isHidden][ctx]` with `ptype = (plane > 0)
   = 1` for chroma, `isHidden = 0`, ctx 0.
 
-All four contexts are verified against the decoder (`base_level_pass.rs::base_eob_selector`,
-`coeff_context.rs::coeff_base_eob_ctx` / `dc_sign` doc).
+- **V `txb_skip`** (all-zero): once the U plane is coded, §8.3.2 (`all_zero`, lines
+  1257-1262) adds `+6` for `EobU != 0` (the coded U plane sets `EobU = eob` per
+  §5.20.5.3), so with empty neighbours and `bw*bh == w*h` the V context is `0 + 6
+  = 6` → `DEFAULT_V_TXB_SKIP_CDF[q][6]`, NOT the all-zero-U neutral ctx 0.
+
+All contexts are verified against the decoder (`base_level_pass.rs::base_eob_selector`,
+`coeff_context.rs::coeff_base_eob_ctx` / `dc_sign` doc) and the §8.3.2 `all_zero`
+context formula.
 
 The minimal coded chroma block codes a luma DC and a U DC (each magnitude `+1`)
 with an all-zero V plane, giving the twelve-symbol trace
 `[0,0,0, 0,0,0,0, 0,0,0,0, 1]` (modes; luma `txb_skip`/`eob_pt`/`base_eob`/`dc_sign`;
-U same; V `all_zero = 1`).
+U same; V `all_zero = 1` at context 6).
 
 Normative AV2 v1.0.0 sections:
 

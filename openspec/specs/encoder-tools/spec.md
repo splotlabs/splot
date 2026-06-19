@@ -1774,9 +1774,12 @@ For a single nonzero chroma U DC coefficient, the U `residual()` SHALL emit
 `txb_skip == 0`, `eob_pt_16`, `coeff_base_eob`, and `dc_sign` (§5.20.7.27) with the
 §8.3.2 chroma contexts: eob context 2 (`eobCtx = (plane > 0) ? 2 : is_inter`), the
 dedicated chroma `TileCoeffBaseLfEobUvCdf` at the DC context 0, and `dc_sign`
-plane-type 1. The stage SHALL compose the AV2 §5.20.5.3 mode-info prefix, the coded
-luma `residual()`, the coded U `residual()`, then the all-zero V `txb_skip`, in
-`residual()` plane order, and SHALL prove the complete trace writes through one
+plane-type 1. Because the coded U plane sets `EobU != 0` (§5.20.5.3), the all-zero
+V `txb_skip` SHALL use the §8.3.2 V context 6 (the `+6` EobU term), not the
+all-zero-U neutral context 0. The stage SHALL compose the AV2 §5.20.5.3 mode-info
+prefix, the coded luma `residual()`, the coded U `residual()`, then the all-zero V
+`txb_skip`, in `residual()` plane order, and SHALL prove the complete trace writes
+through one
 in-tree AV2 §8.2 symbol encoder and decodes back through one symbol decoder with
 shared CDF state. It SHALL NOT emit the chroma base-range/golomb tiers, V-plane
 coded coefficients, multi-coefficient blocks, partition syntax, tile payloads,
