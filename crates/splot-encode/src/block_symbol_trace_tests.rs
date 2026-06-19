@@ -586,3 +586,63 @@ fn golomb_prefix_block_roundtrip_is_deterministic() {
     assert_eq!(first.bytes(), second.bytes());
     assert_eq!(first.decoded_symbols(), second.decoded_symbols());
 }
+
+#[test]
+fn composes_two_coeff_block_trace_in_order() {
+    let trace = compose_minimal_intra_two_coeff_block_trace().unwrap();
+
+    assert_eq!(trace.len(), 10);
+    // Mode prefix (3); coded all_zero, eob_pt_16, AC coeff_base_eob, DC coeff_base
+    // (4 CDF); AC sign_bit (1 bypass); U/V all-zero (2 CDF).
+    for token in &trace[0..3] {
+        assert!(matches!(token, BlockSymbolToken::Mode(_)));
+    }
+    for token in &trace[3..7] {
+        assert!(matches!(token, BlockSymbolToken::Coeff(_)));
+    }
+    assert!(matches!(
+        trace[7],
+        BlockSymbolToken::Bypass { width: 1, value: 0 }
+    ));
+    for token in &trace[8..10] {
+        assert!(matches!(token, BlockSymbolToken::Coeff(_)));
+    }
+    // The AC coeff_base_eob is at context 1; the DC coeff_base is at the DERIVED
+    // low-frequency context 1 (proving the composer used coeff_base_lf_luma_context,
+    // not a hard-coded literal).
+    assert!(
+        matches!(trace[5], BlockSymbolToken::Coeff(ac)
+            if matches!(ac.selector(), CoefficientCdfRowSelector::CoeffBaseLfEob { ctx: 1, .. })),
+        "AC coeff_base_eob at context 1"
+    );
+    assert!(
+        matches!(trace[6], BlockSymbolToken::Coeff(dc)
+            if matches!(dc.selector(), CoefficientCdfRowSelector::CoeffBaseLf { ctx: 1, tcq_ctx: 0, .. })),
+        "DC coeff_base at derived low-frequency context 1"
+    );
+    // modes; all_zero=0, eob_pt_16=1 (eob 2), AC coeff_base_eob=0 (level 1), DC
+    // coeff_base=0 (level 0); AC sign_bit=0; U/V all_zero=1.
+    assert_eq!(
+        trace.iter().map(|token| token.symbol()).collect::<Vec<_>>(),
+        vec![0, 0, 0, 0, 1, 0, 0, 0, 1, 1]
+    );
+}
+
+#[test]
+fn two_coeff_block_trace_roundtrips_through_one_coder() {
+    let trace = compose_minimal_intra_two_coeff_block_trace().unwrap();
+    let proof = roundtrip_block_symbol_trace(&trace).unwrap();
+
+    assert_eq!(proof.decoded_symbols(), &[0, 0, 0, 0, 1, 0, 0, 0, 1, 1]);
+    assert!(!proof.bytes().is_empty());
+}
+
+#[test]
+fn two_coeff_block_roundtrip_is_deterministic() {
+    let trace = compose_minimal_intra_two_coeff_block_trace().unwrap();
+    let first = roundtrip_block_symbol_trace(&trace).unwrap();
+    let second = roundtrip_block_symbol_trace(&trace).unwrap();
+
+    assert_eq!(first.bytes(), second.bytes());
+    assert_eq!(first.decoded_symbols(), second.decoded_symbols());
+}

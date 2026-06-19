@@ -165,6 +165,14 @@ planning and status; it does not claim encoder behavior exists.
   the generic §8.2 router. The eob=2 CDF subsequence roundtrips to `[0,1,0,0]`.
   Available but not yet composed into a trace; the eob>1 trace brick consumes them.
   It is not a multi-coefficient trace or a packet path.
+- `ENC-INTRA-BLOCK-TRACE-TWO-COEFF` composes the FIRST multi-coefficient (eob=2)
+  block trace, combining the three merged building blocks: one nonzero AC (level 1)
+  at scan pos 1 + a zero DC, with `all_zero=0`, `eob_pt_16=1`, the AC
+  `coeff_base_eob` (ctx 1), the DC non-EOB `coeff_base` at the §8.3.2 low-frequency
+  context DERIVED from the AC's `Level[]` (not hard-coded), and the AC `sign_bit`
+  bypass. The 10-token trace `[0,0,0,0,1,0,0,0,1,1]` roundtrips through one §8.2
+  coder. It is not eob>2, chroma multi-coefficient, partition syntax, tile-body, or
+  a packet path.
 - `Packet` is still only a byte buffer wrapper, and no coded packet production
   path exists.
 - `EncoderConfig` exposes `BitDepth::Twelve`, but current Baseline Encoder Profile

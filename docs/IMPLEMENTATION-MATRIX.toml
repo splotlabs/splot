@@ -4635,6 +4635,39 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-INTRA-BLOCK-TRACE-TWO-COEFF"
+name = "Encoder eob=2 multi-coefficient block trace"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20.7.27", "8.3.2", "8.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/block_symbol_trace.rs"
+openspec_change = "encoder-block-trace-two-coeff"
+tracking_issue = ""
+owner = "encoder"
+risk = "medium"
+notes = "Private, non-emitting encoder FIRST MULTI-COEFFICIENT (eob>1) block trace — the milestone composing the three merged building blocks (ENC-COEFF-BASE-LF-CONTEXT context derivation, ENC-COEFF-BASE-LF-TOKEN non-EOB token, ENC-COEFF-MULTI-TOKENS accessors). `compose_minimal_intra_two_coeff_block_trace()` in block_symbol_trace.rs composes a 4x4 DCT_DCT luma block with one nonzero AC coefficient (level 1) at scan pos 1 and a zero DC at scan pos 0: §5.20.5.3 mode prefix + coded all_zero(0) + eob_pt_16(symbol 1 → eobPt 2 → eob 2) + [base pass c=eob-1..0] AC coeff_base_eob at ctx coeff_base_eob_ctx(c=1)=1 (LF, pos1 row+col=1<4) + DC non-EOB coeff_base at the §8.3.2 LF context DERIVED via coeff_base_lf_luma_context (the AC level-1 at pos1 is the DC's neighbour → mag 1 → ctx 1; NOT hard-coded) + [sign pass] AC sign_bit bypass(1,0) (pos(0,1) not luma DC/axis → §8.2.5 literal; zero DC → no sign) + all-zero U/V. 10-token trace [0,0,0,0,1,0,0,0,1,1] through one §8.2 coder. BlockSymbolTraceCdfRows gains the eob=2 AC coeff_base_lf_eob (ctx 1) + DC coeff_base_lf (ctx 1, tcq 0) rows + routing. Tests: compose-in-order (asserts the DC token carries the DERIVED ctx 1, not a literal) + roundtrip + deterministic. Verified vs decoder coeff_loop.rs/coeff_context.rs. The §8.2 roundtrip proves self-consistency only; the data-dependent coeff_base context's conformance vs a real decoder is established at the packet milestone (AVM cross-check). This row does not claim eob>2, higher-magnitude AC (coeff_br/golomb), chroma multi-coefficient, high-frequency coeff_base, partition syntax, tile CDF lifecycle, tile-body emission, packet output, CLI success, or Baseline Encoder Profile v1 output."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/block_symbol_trace_tests.rs::composes_two_coeff_block_trace_in_order", "crates/splot-encode/src/block_symbol_trace_tests.rs::two_coeff_block_trace_roundtrips_through_one_coder", "crates/splot-encode/src/block_symbol_trace_tests.rs::two_coeff_block_roundtrip_is_deterministic"]
+commands = ["cargo test -p splot-encode two_coeff --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-RECON-DEPENDENCY"
 name = "Encoder reconstruction dependency boundary"
 category = "encoder"

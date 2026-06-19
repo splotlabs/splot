@@ -22,7 +22,11 @@
 //! golomb tail: a larger luma DC coefficient's `coeff_rem` bypass bits), and
 //! `ENC-INTRA-BLOCK-TRACE-GOLOMB-PREFIX` (the §5.20.7.28 golomb-*prefix* path,
 //! `q == cMax`: the q_length / `golomb_length` unary codes + a sized `coeff_rem`
-//! for luma DC magnitude 18..=525),
+//! for luma DC magnitude 18..=525), and
+//! `ENC-INTRA-BLOCK-TRACE-TWO-COEFF` (the first MULTI-coefficient block: an eob=2
+//! luma block with one nonzero AC at scan pos 1 and a zero DC, exercising
+//! `eob_pt_16=1`, the non-EOB `coeff_base` with a `Level[]`-derived §8.3.2
+//! low-frequency context, and the AC `sign_bit` bypass),
 //! reusing the merged mode emitters and the coefficient tokenization's per-plane
 //! all-zero and coded-DC tokens
 //! (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3`).
@@ -34,26 +38,29 @@
 //! through one § 8.2 coder with shared CDF state, routing each token to its scoped
 //! CDF row from `splot-core` defaults.
 //!
-//! It does not emit multi-coefficient blocks, luma DC magnitude beyond the
-//! golomb-prefix cap (525), higher-frequency coefficients, the chroma
-//! base-range/golomb tiers, V-plane coded coefficients, partition syntax, tile CDF
-//! lifecycle, packets, a public encoder API, or modes beyond the DC minimal tier.
+//! Its coefficient coverage is the single-DC magnitude vocabulary plus the minimal
+//! eob=2 multi-coefficient block; it does not emit blocks with eob > 2, luma DC
+//! magnitude beyond the golomb-prefix cap (525), high-frequency coefficients, the
+//! chroma base-range/golomb tiers, V-plane coded coefficients, partition syntax,
+//! tile CDF lifecycle, packets, a public encoder API, or modes beyond the DC
+//! minimal tier.
 
 #![allow(dead_code)]
 
 use splot_core::symbol::{Symbol, SymbolDecoder, SymbolDecoderConfig};
 use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig};
 use splot_core::tables::cdf::{
-    DEFAULT_COEFF_BASE_LF_EOB_CDF, DEFAULT_COEFF_BASE_LF_EOB_UV_CDF, DEFAULT_COEFF_BR_LF_CDF,
-    DEFAULT_DC_SIGN_CDF, DEFAULT_EOB_PT_16_CDF, DEFAULT_TXB_SKIP_CDF,
+    DEFAULT_COEFF_BASE_LF_CDF, DEFAULT_COEFF_BASE_LF_EOB_CDF, DEFAULT_COEFF_BASE_LF_EOB_UV_CDF,
+    DEFAULT_COEFF_BR_LF_CDF, DEFAULT_DC_SIGN_CDF, DEFAULT_EOB_PT_16_CDF, DEFAULT_TXB_SKIP_CDF,
     DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF, DEFAULT_V_TXB_SKIP_CDF, DEFAULT_Y_MODE_INDEX_CDF,
     DEFAULT_Y_MODE_SET_CDF,
 };
 
 use crate::coefficient_tokenization::{
     CoefficientCdfRowSelector, CoefficientEntropyToken, chroma_u_all_zero_token,
-    chroma_u_dc_coded_coeff_tokens, chroma_v_all_zero_token, luma_all_zero_token,
-    luma_dc_coded_tokens, luma_dc_golomb_level_tokens, luma_dc_sign_token,
+    chroma_u_dc_coded_coeff_tokens, chroma_v_all_zero_token, coded_luma_all_zero_token,
+    coeff_base_lf_eob_token, coeff_base_lf_luma_context, coeff_base_lf_token, eob_pt_16_token,
+    luma_all_zero_token, luma_dc_coded_tokens, luma_dc_golomb_level_tokens, luma_dc_sign_token,
 };
 use crate::error::{Error, Result};
 use crate::intra_mode_emission::{
@@ -91,6 +98,27 @@ const EOB_CTX_LUMA_INTRA: usize = 0;
 const EOB_CTX_CHROMA: usize = 2;
 const COEFF_BASE_LF_EOB_CTX_DC: usize = 0;
 const COEFF_BR_LF_CTX_DC: usize = 0;
+// The minimal eob=2 multi-coefficient block (one nonzero AC at scan pos 1, DC=0):
+// §5.20.7.27 `eob_pt_16` symbol 1 → eobPt 2 → eob 2; the AC at scan index 1 uses
+// `coeff_base_eob_ctx(c=1) = 1` (low-frequency); the DC at scan index 0 uses the
+// non-EOB `coeff_base` at the §8.3.2 low-frequency context derived from the AC's
+// level (`coeff_base_lf_luma_context` → 1 for an AC level-1 neighbour at pos 1).
+// `tcq_ctx = (tcqState >> 1) & 1` is 0 when TCQ is off.
+const EOB_PT_16_SYMBOL_EOB2: u8 = 1;
+const COEFF_BASE_LF_EOB_CTX_EOB2_AC: usize = 1;
+const COEFF_BASE_LF_CTX_EOB2_DC: usize = 1;
+const COEFF_BASE_LF_TCQ_CTX_NEUTRAL: usize = 0;
+const COEFF_BASE_LF_CDF_ROW_LEN: usize = 7;
+// The minimal eob=2 block's coefficient levels: a single AC of level 1 at scan
+// pos 1 (raster pos 1 in a 4x4) and a zero DC.
+const EOB2_AC_LEVEL: u8 = 1;
+const EOB2_AC_RASTER_POS: usize = 1;
+const EOB2_AC_NEGATIVE: bool = false;
+const EOB2_DC_LEVEL: u8 = 0;
+const TX_4X4_BWL: u32 = 2;
+const TX_4X4_WIDTH: usize = 4;
+const TX_4X4_HEIGHT: usize = 4;
+const TX_CLASS_2D: usize = 0;
 const DC_SIGN_PLANE_TYPE_LUMA: usize = 0;
 const DC_SIGN_GROUP_VISIBLE: usize = 0;
 const DC_SIGN_CTX_NEUTRAL: usize = 0;
@@ -561,6 +589,86 @@ pub(crate) fn compose_intra_dc_golomb_prefix_block_trace(
     Ok(trace)
 }
 
+/// Composes the minimal eob=2 multi-coefficient luma block trace: the AV2
+/// § 5.20.5.3 mode-info prefix, then the coded luma `residual()` for a block with
+/// two scan positions — one nonzero AC coefficient (level 1) at scan index 1 and a
+/// zero DC at scan index 0 — then the all-zero U and V `txb_skip`.
+///
+/// Per § 5.20.7.27 the residual is `all_zero=0`, `eob_pt_16=1` (eob 2), then the
+/// base pass over `c = eob-1..0`: the AC `coeff_base_eob` at context 1 (the
+/// EOB-position coefficient, level 1) and the DC `coeff_base` at the § 8.3.2
+/// low-frequency context derived from the AC's `Level[]` (the AC at scan pos 1 is
+/// the DC's neighbour, so the context is 1; derived via `coeff_base_lf_luma_context`,
+/// not hard-coded). The sign pass then reads the AC `sign_bit` (an § 8.2.5 bypass
+/// literal — pos (0,1) is neither the luma DC nor a directional axis); the DC is
+/// zero, so it carries no sign. The ten-token trace is
+/// `[0,0,0, 0, 1, 0, 0, 0, 1, 1]`.
+///
+/// This is the first multi-coefficient block trace. The § 8.2 roundtrip proves the
+/// symbols are self-consistent; conformance of the data-dependent `coeff_base`
+/// context against a real decoder is established at the packet milestone (AVM
+/// cross-check).
+pub(crate) fn compose_minimal_intra_two_coeff_block_trace() -> Result<Vec<BlockSymbolToken>> {
+    let modes = compose_minimal_intra_dc_block_mode_trace()?;
+    // Derive the DC's § 8.3.2 coeff_base low-frequency context from the AC's
+    // Level[] (the AC of level 1 at scan pos 1 is the DC's significant neighbour).
+    let mut level = [0u32; TX_4X4_WIDTH * TX_4X4_HEIGHT];
+    level[EOB2_AC_RASTER_POS] = EOB2_AC_LEVEL as u32;
+    let dc_ctx = coeff_base_lf_luma_context(
+        0,
+        TX_4X4_BWL,
+        TX_4X4_WIDTH,
+        TX_4X4_HEIGHT,
+        TX_CLASS_2D,
+        0,
+        &level,
+    );
+    debug_assert_eq!(dc_ctx, COEFF_BASE_LF_CTX_EOB2_DC);
+    let total = modes
+        .len()
+        .checked_add(7) // all_zero + eob_pt + AC base_eob + DC base + AC sign + U + V
+        .ok_or(Error::BlockSymbolTraceAllocationFailed {
+            context: "two-coefficient block trace length",
+        })?;
+    let mut trace = Vec::new();
+    trace
+        .try_reserve_exact(total)
+        .map_err(|_| Error::BlockSymbolTraceAllocationFailed {
+            context: "two-coefficient block trace",
+        })?;
+    trace.extend(modes.into_iter().map(BlockSymbolToken::Mode));
+    trace.push(BlockSymbolToken::Coeff(coded_luma_all_zero_token(
+        MINIMAL_COEFF_CDF_Q_CTX,
+    )));
+    trace.push(BlockSymbolToken::Coeff(eob_pt_16_token(
+        MINIMAL_COEFF_CDF_Q_CTX,
+        EOB_CTX_LUMA_INTRA,
+        EOB_PT_16_SYMBOL_EOB2,
+    )));
+    // Base pass (c = eob-1..0): the AC `coeff_base_eob` then the DC `coeff_base`.
+    trace.push(BlockSymbolToken::Coeff(coeff_base_lf_eob_token(
+        MINIMAL_COEFF_CDF_Q_CTX,
+        COEFF_BASE_LF_EOB_CTX_EOB2_AC,
+        EOB2_AC_LEVEL,
+    )));
+    trace.push(BlockSymbolToken::Coeff(coeff_base_lf_token(
+        MINIMAL_COEFF_CDF_Q_CTX,
+        dc_ctx,
+        COEFF_BASE_LF_TCQ_CTX_NEUTRAL,
+        EOB2_DC_LEVEL,
+    )));
+    // Sign pass: the AC `sign_bit` (a §8.2.5 bypass literal); the zero DC has no sign.
+    trace.push(BlockSymbolToken::bypass(1, EOB2_AC_NEGATIVE as u32));
+    trace.push(BlockSymbolToken::Coeff(chroma_u_all_zero_token(
+        MINIMAL_COEFF_CDF_Q_CTX,
+    )));
+    trace.push(BlockSymbolToken::Coeff(chroma_v_all_zero_token(
+        MINIMAL_COEFF_CDF_Q_CTX,
+        V_TXB_SKIP_CTX_NEUTRAL,
+    )));
+    Ok(trace)
+}
+
 /// Result of proving a block-symbol trace through AV2 § 8.2 symbol bytes.
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) struct BlockSymbolTraceRoundtrip {
@@ -698,6 +806,8 @@ struct BlockSymbolTraceCdfRows {
     v_txb_skip: [i32; V_TXB_SKIP_CDF_ROW_LEN],
     eob_pt_16: [i32; EOB_PT_16_CDF_ROW_LEN],
     coeff_base_lf_eob: [i32; COEFF_BASE_LF_EOB_CDF_ROW_LEN],
+    coeff_base_lf_eob_ac: [i32; COEFF_BASE_LF_EOB_CDF_ROW_LEN],
+    coeff_base_lf_dc: [i32; COEFF_BASE_LF_CDF_ROW_LEN],
     coeff_br_lf: [i32; COEFF_BR_LF_CDF_ROW_LEN],
     dc_sign: [i32; DC_SIGN_CDF_ROW_LEN],
     v_txb_skip_eobu: [i32; V_TXB_SKIP_CDF_ROW_LEN],
@@ -720,6 +830,10 @@ impl BlockSymbolTraceCdfRows {
             eob_pt_16: DEFAULT_EOB_PT_16_CDF[MINIMAL_COEFF_CDF_Q_CTX][EOB_CTX_LUMA_INTRA],
             coeff_base_lf_eob: DEFAULT_COEFF_BASE_LF_EOB_CDF[MINIMAL_COEFF_CDF_Q_CTX]
                 [TX_SIZE_4X4_CTX][COEFF_BASE_LF_EOB_CTX_DC],
+            coeff_base_lf_eob_ac: DEFAULT_COEFF_BASE_LF_EOB_CDF[MINIMAL_COEFF_CDF_Q_CTX]
+                [TX_SIZE_4X4_CTX][COEFF_BASE_LF_EOB_CTX_EOB2_AC],
+            coeff_base_lf_dc: DEFAULT_COEFF_BASE_LF_CDF[MINIMAL_COEFF_CDF_Q_CTX][TX_SIZE_4X4_CTX]
+                [COEFF_BASE_LF_CTX_EOB2_DC][COEFF_BASE_LF_TCQ_CTX_NEUTRAL],
             coeff_br_lf: DEFAULT_COEFF_BR_LF_CDF[MINIMAL_COEFF_CDF_Q_CTX][COEFF_BR_LF_CTX_DC],
             dc_sign: DEFAULT_DC_SIGN_CDF[MINIMAL_COEFF_CDF_Q_CTX][DC_SIGN_PLANE_TYPE_LUMA]
                 [DC_SIGN_GROUP_VISIBLE][DC_SIGN_CTX_NEUTRAL],
@@ -775,6 +889,17 @@ impl BlockSymbolTraceCdfRows {
                     tx_size: TX_SIZE_4X4_CTX,
                     ctx: COEFF_BASE_LF_EOB_CTX_DC,
                 } => Ok(self.coeff_base_lf_eob.as_mut_slice()),
+                CoefficientCdfRowSelector::CoeffBaseLfEob {
+                    coeff_cdf_q_ctx: MINIMAL_COEFF_CDF_Q_CTX,
+                    tx_size: TX_SIZE_4X4_CTX,
+                    ctx: COEFF_BASE_LF_EOB_CTX_EOB2_AC,
+                } => Ok(self.coeff_base_lf_eob_ac.as_mut_slice()),
+                CoefficientCdfRowSelector::CoeffBaseLf {
+                    coeff_cdf_q_ctx: MINIMAL_COEFF_CDF_Q_CTX,
+                    tx_size: TX_SIZE_4X4_CTX,
+                    ctx: COEFF_BASE_LF_CTX_EOB2_DC,
+                    tcq_ctx: COEFF_BASE_LF_TCQ_CTX_NEUTRAL,
+                } => Ok(self.coeff_base_lf_dc.as_mut_slice()),
                 CoefficientCdfRowSelector::CoeffBrLf {
                     coeff_cdf_q_ctx: MINIMAL_COEFF_CDF_Q_CTX,
                     ctx: COEFF_BR_LF_CTX_DC,

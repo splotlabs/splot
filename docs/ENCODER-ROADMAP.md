@@ -124,9 +124,10 @@ Status: planned, replaces the parked toy bootstrap path.
   low-frequency luma context derivation, the non-EOB `coeff_base` token + CDF row,
   and the reusable multi-coefficient token accessors (coded `all_zero`, a
   parameterized `eob_pt_16`, a parameterized `coeff_base_eob`) all landed — the
-  pieces the eob>1 trace composes. The eob>1 trace composition itself, the chroma
-  base-range/golomb tiers, partition syntax, and the tile-body byte assembly
-  remain.
+  pieces the eob>1 trace composes. The first eob>1 trace — the minimal eob=2 multi-coefficient block (one nonzero AC
+  + a zero DC, with the DC `coeff_base` context derived from the AC's `Level[]`) —
+  landed. Blocks with eob>2, the chroma base-range/golomb tiers, partition syntax,
+  and the tile-body byte assembly remain.
 - Use closed-loop reconstruction before public success.
 - Emit only syntax the writer can produce and the validator accepts.
 - Record fixtures, hashes, and matrix proof before marking any encode stage done.
