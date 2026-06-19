@@ -1,17 +1,20 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! AV2 § 7.17.7.1 deblocking sample-filter process.
+//! AV2 § 7.17 deblocking-filter sample math.
 //!
-//! This module implements the scheduler-free per-edge sample filter
-//! ([`07-decoding-process.md`](../../../docs/spec/av2/1.0.0/07-decoding-process.md)
-//! `#s-7-17-7-1`): given the line of reconstructed samples perpendicular to a
-//! block boundary, it modifies up to `maxWidthNeg` samples on the previous
-//! (`p`) side and `Max(maxWidthNeg, maxWidthPos)` samples on the current (`q`)
-//! side using the `deltaM2` ramp, the `Q_Thresh_Mults` / `W_Mult` § 9.2 weights,
-//! `Round2`, and the § 4.8 `Clip1` clamp.
+//! This module implements the scheduler-free per-edge AV2 deblocking primitives
+//! ([`07-decoding-process.md`](../../../docs/spec/av2/1.0.0/07-decoding-process.md)):
+//! the § 7.17.7.1 sample filter ([`deblock_sample_filter`], `#s-7-17-7-1`), which
+//! modifies up to `maxWidthNeg` samples on the previous (`p`) side and
+//! `Max(maxWidthNeg, maxWidthPos)` samples on the current (`q`) side using the
+//! `deltaM2` ramp, the `Q_Thresh_Mults` / `W_Mult` § 9.2 weights, `Round2`, and
+//! the § 4.8 `Clip1` clamp; and the § 7.17.3 filter-maximum-width derivation
+//! ([`deblock_filter_max_width`], `#s-7-17-3`), which produces the per-side
+//! widths the sample filter consumes.
 //!
-//! Feature tracking: `RECON-DEBLOCK-SAMPLE-FILTER`.
+//! Feature tracking: `RECON-DEBLOCK-SAMPLE-FILTER`,
+//! `RECON-DEBLOCK-FILTER-MAX-WIDTH`.
 //!
 //! Scope: this is the § 7.17.7.1 sample filter alone, over a caller-supplied
 //! perpendicular sample line. The § 7.17.1 / § 7.17.2 edge traversal, the
@@ -172,6 +175,55 @@ pub fn deblock_sample_filter<T: ReconSample>(
 const fn round2(value: i64, n: u32) -> i64 {
     (value + (1i64 << (n - 1))) >> n
 }
+
+/// Derives the AV2 § 7.17.3 deblocking filter maximum per-side widths
+/// `(maxWidthNeg, maxWidthPos)`
+/// (`docs/spec/av2/1.0.0/07-decoding-process.md#s-7-17-3`).
+///
+/// `filter_size` is the § 7.17.4 maximum filter size (a transform dimension);
+/// `is_chroma` is the spec `plane != 0`; `sb_edge` is whether the edge is at a
+/// super-block boundary. The result is the pair of caller-resolved widths the
+/// § 7.17.7.1 sample filter ([`deblock_sample_filter`]) takes as `max_width_neg`
+/// / `max_width_pos`.
+///
+/// `maxWidthPos` is `1` for `filter_size <= 4`, `3` for `8`, `is_chroma ? 4 : 6`
+/// for `16`, and `is_chroma ? 4 : 8` otherwise; `maxWidthNeg` is
+/// `Min(maxWidthPos, is_chroma ? 2 : 6)` at a super-block edge and `maxWidthPos`
+/// otherwise. This is a total `const fn`: every input maps to a defined pair.
+pub const fn deblock_filter_max_width(
+    filter_size: usize,
+    is_chroma: bool,
+    sb_edge: bool,
+) -> (usize, usize) {
+    let max_width_pos = if filter_size <= 4 {
+        1
+    } else if filter_size == 8 {
+        3
+    } else if filter_size == 16 {
+        if is_chroma { 4 } else { 6 }
+    } else if is_chroma {
+        4
+    } else {
+        8
+    };
+    let max_width_neg = if sb_edge {
+        let cap = if is_chroma { 2 } else { 6 };
+        if max_width_pos < cap {
+            max_width_pos
+        } else {
+            cap
+        }
+    } else {
+        max_width_pos
+    };
+    (max_width_neg, max_width_pos)
+}
+
+// `deblock_filter_max_width` is a `const fn`: a fixed configuration resolves at
+// compile time. This pins luma `filter_size == 32` to `maxWidthPos == 8` and the
+// non-super-block `maxWidthNeg == 8`, as a compile-time § 7.17.3 spec contract.
+const _MAX_WIDTH_CONST_CHECK: () =
+    assert!(matches!(deblock_filter_max_width(32, false, false), (8, 8)));
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
@@ -357,5 +409,24 @@ mod tests {
             )
             .unwrap();
         }
+    }
+
+    #[test]
+    fn max_width_covers_every_spec_branch() {
+        // maxWidthPos by filter_size (no super-block edge -> maxWidthNeg == pos):
+        assert_eq!(deblock_filter_max_width(4, false, false), (1, 1));
+        assert_eq!(deblock_filter_max_width(2, true, false), (1, 1)); // <= 4
+        assert_eq!(deblock_filter_max_width(8, false, false), (3, 3));
+        assert_eq!(deblock_filter_max_width(8, true, false), (3, 3));
+        assert_eq!(deblock_filter_max_width(16, false, false), (6, 6)); // luma
+        assert_eq!(deblock_filter_max_width(16, true, false), (4, 4)); // chroma
+        assert_eq!(deblock_filter_max_width(32, false, false), (8, 8)); // luma > 16
+        assert_eq!(deblock_filter_max_width(64, true, false), (4, 4)); // chroma > 16
+
+        // Super-block edge caps maxWidthNeg at Min(maxWidthPos, chroma ? 2 : 6):
+        assert_eq!(deblock_filter_max_width(32, false, true), (6, 8)); // luma: cap 6
+        assert_eq!(deblock_filter_max_width(64, true, true), (2, 4)); // chroma: cap 2
+        assert_eq!(deblock_filter_max_width(8, true, true), (2, 3)); // chroma: cap 2 < 3
+        assert_eq!(deblock_filter_max_width(4, false, true), (1, 1)); // cap 6 but pos 1
     }
 }

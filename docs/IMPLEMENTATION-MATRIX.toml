@@ -7766,6 +7766,52 @@ fixtures = [
 diagnostics = []
 
 [[feature]]
+id = "RECON-DEBLOCK-FILTER-MAX-WIDTH"
+name = "Deblocking filter maximum width derivation"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["7.17.3"]
+sources = [
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-17-3",
+]
+crate = "splot-recon"
+module = "crates/splot-recon/src/deblock_filter.rs"
+openspec_change = "recon-deblock-filter-max-width"
+tracking_issue = ""
+owner = "decoder"
+risk = "low"
+notes = "Adds `deblock_filter_max_width(filter_size, is_chroma, sb_edge) -> (max_width_neg, max_width_pos)`, the AV2 §7.17.3 filter-maximum-width derivation that produces the per-side widths the §7.17.7.1 sample filter (RECON-DEBLOCK-SAMPLE-FILTER) consumes. maxWidthPos is 1 for filter_size at most 4, 3 for 8, `is_chroma ? 4 : 6` for 16, and `is_chroma ? 4 : 8` otherwise; maxWidthNeg is `Min(maxWidthPos, is_chroma ? 2 : 6)` at a super-block edge (sb_edge) and maxWidthPos otherwise. `filter_size` is the §7.17.4 maximum filter size (a transform dimension, computed by the caller as `Min(Tx_Width/Height[prevTxSz], Tx_Width/Height[txSz])`) and `is_chroma` is the spec `plane != 0`, both caller-resolved scalars. Total with no error path (a `const fn` mapping every input to a defined pair); a module-level const evaluates the luma filter_size 32 contract at compile time. Strictly additive and provably no-output-change: a `const fn` with no rewiring, so the minimal flat-intra fixture snapshots stay byte-identical. Completeness is proven by a branch-coverage test over every filter_size bucket, both planes, and the super-block-edge cap. This row does not implement the §7.17.4 filter size (a caller-side `Min`), the §7.17.5/§7.17.6 adaptive filter strength (which need segment and qindex state), the §7.17.1/§7.17.2 edge traversal, the other loop filters, or wiring into the runtime decode path."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "done"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-recon/src/deblock_filter.rs::tests::max_width_covers_every_spec_branch",
+]
+commands = [
+    "cargo test -p splot-recon deblock_filter --locked",
+    "cargo clippy -p splot-recon --all-targets --locked -- -D warnings",
+    "cargo xtask check-dependency-direction",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-recon/src/deblock_filter.rs",
+    "crates/splot-recon/src/lib.rs",
+]
+diagnostics = []
+
+[[feature]]
 id = "RECON-INVERSE-TRANSFORM-2D"
 name = "2D matrix inverse transform core (row-then-column)"
 category = "infrastructure"

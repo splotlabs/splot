@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 313 feature(s); 260 cite a spec section.
+Matrix version 1. Last reviewed 2026-06-15. 314 feature(s); 261 cite a spec section.
 
 One row per (spec section, feature) pair, in spec order; a feature citing both a syntax and a semantics section appears under both. The canonical status source is [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); the full per-feature ledger is [FEATURE-STATUS.md](./FEATURE-STATUS.md).
 
@@ -667,6 +667,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.15.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-15-4) | 2D inverse transform process | `RECON-TRANSFORM-SHIFT-LOOKUP` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.15.4.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-15-4-1) | 2D matrix transform process | `RECON-INVERSE-TRANSFORM-1D` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.15.4.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-15-4-1) | 2D matrix transform process | `RECON-INVERSE-TRANSFORM-2D` | ✅ | — | ✅ | ✅ | — |
+| [§ 7.17.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-17-3) | Filter maximum width process | `RECON-DEBLOCK-FILTER-MAX-WIDTH` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.17.7.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-17-7-1) | General | `RECON-DEBLOCK-SAMPLE-FILTER` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.21](./spec/av2/1.0.0/07-decoding-process.md#s-7-21) | Output processes | `CLI-DECODE-HASH-OUTPUT` | ✅ | — | — | ✅ | 3 |
 | [§ 7.21](./spec/av2/1.0.0/07-decoding-process.md#s-7-21) | Output processes | `CONF-DECODE-RUNTIME-HASH-FUZZ` | ✅ | — | — | ✅ | 3 |
