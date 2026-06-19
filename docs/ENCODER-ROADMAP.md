@@ -111,10 +111,13 @@ Status: planned, replaces the parked toy bootstrap path.
   symbols in `residual()` order (landed), then add the minimal *coded* block — a
   single luma DC coefficient's `txb_skip=0` + `eob_pt_16` + `coeff_base_eob` +
   `dc_sign` (landed), then the base-range tier — a larger luma DC coefficient's
-  `coeff_br` after `coeff_base_eob` (landed). The coded intra block symbol
-  sequence now roundtrips through the base-range magnitude tier; the coefficient
-  golomb tail, multi-coefficient blocks, chroma coefficients, partition syntax,
-  and the tile-body byte assembly remain.
+  `coeff_br` after `coeff_base_eob` (landed), then add the §8.2.5 bypass-literal
+  token kind (the foundation for non-luma-DC `sign_bit` and the golomb tail,
+  landed). The coded intra block symbol sequence now roundtrips through the
+  base-range magnitude tier, and the trace can carry bypass literals; coded chroma
+  coefficients (whose sign is a `sign_bit` literal), the coefficient golomb tail,
+  multi-coefficient blocks, partition syntax, and the tile-body byte assembly
+  remain.
 - Use closed-loop reconstruction before public success.
 - Emit only syntax the writer can produce and the validator accepts.
 - Record fixtures, hashes, and matrix proof before marking any encode stage done.

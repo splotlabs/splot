@@ -12,7 +12,9 @@
 //! `ENC-INTRA-BLOCK-TRACE-CODED-DC` (the minimal *coded* block: a single luma DC
 //! coefficient's `txb_skip=0` + `eob_pt_16` + `coeff_base_eob` + `dc_sign`), and
 //! `ENC-INTRA-BLOCK-TRACE-CODED-BR` (the base-range tier: a larger luma DC
-//! coefficient adding `coeff_br` after `coeff_base_eob`),
+//! coefficient adding `coeff_br` after `coeff_base_eob`), and
+//! `ENC-INTRA-BLOCK-TRACE-BYPASS-LITERAL` (the §8.2.5 bypass-literal token kind,
+//! the foundation for non-luma-DC `sign_bit` and the golomb tail),
 //! reusing the merged mode emitters and the coefficient tokenization's per-plane
 //! all-zero and coded-DC tokens
 //! (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3`).
@@ -82,7 +84,11 @@ const MINIMAL_CODED_DC_NEGATIVE: bool = false;
 // (level 5 base + `coeff_br = 1`).
 const MINIMAL_BR_DC_MAGNITUDE: u32 = 6;
 const MINIMAL_BR_DC_NEGATIVE: bool = false;
-const BLOCK_SYMBOL_TRACE_BUDGET: usize = 32;
+// Headroom (operations + output bytes) added on top of the per-trace cost. The
+// roundtrip's encoder budget scales with the trace: one operation per CDF symbol
+// and one per bypass-literal bit (`write_literal` charges per bit), so a wide
+// `L(n)` literal — e.g. the golomb tail — is not rejected by a fixed cap.
+const BLOCK_SYMBOL_TRACE_BUDGET_HEADROOM: usize = 32;
 
 /// Composes the ordered AV2 § 5.20.5.3 intra-block mode-info prefix
 /// (`y_mode_set`, `y_mode_index`, `uv_mode`) for the current minimal DC subset.
@@ -114,14 +120,34 @@ pub(crate) enum BlockSymbolToken {
     Mode(IntraModeToken),
     /// An AV2 § 5.20.7 coefficient token (here, the luma `txb_skip` all-zero).
     Coeff(CoefficientEntropyToken),
+    /// An AV2 § 8.2.5 bypass literal of `width` bits carrying `value` (MSB-first).
+    ///
+    /// Unlike `Mode`/`Coeff` (CDF-coded `S()` symbols) a bypass literal is an
+    /// `L(n)` read with no CDF — e.g. the `sign_bit` of a chroma or ordinary
+    /// non-axis luma coefficient (§ 5.20.7.27 codes the luma DC sign as `dc_sign`
+    /// and the directional luma axis signs as `dc_sign_horz_vert`, both CDF; every
+    /// other sign is `sign_bit L(1)`) or the `read_quant` golomb tail (§ 5.20.7.28).
+    Bypass {
+        /// Number of literal bits (`n` in `L(n)`).
+        width: u32,
+        /// The literal value, written/read most-significant-bit first.
+        value: u32,
+    },
 }
 
 impl BlockSymbolToken {
-    /// Returns the raw AV2 § 8.2 symbol value.
+    /// Constructs a bypass literal of `width` bits carrying `value`.
+    pub(crate) const fn bypass(width: u32, value: u32) -> Self {
+        Self::Bypass { width, value }
+    }
+
+    /// Returns the raw symbol/value view of the token (the CDF symbol for
+    /// `Mode`/`Coeff`, or the literal value for `Bypass`).
     pub(crate) const fn symbol(self) -> u8 {
         match self {
             Self::Mode(token) => token.symbol(),
             Self::Coeff(token) => token.symbol(),
+            Self::Bypass { value, .. } => value as u8,
         }
     }
 }
@@ -259,18 +285,36 @@ pub(crate) fn roundtrip_block_symbol_trace(
     trace: &[BlockSymbolToken],
 ) -> Result<BlockSymbolTraceRoundtrip> {
     let mut encode_cdfs = BlockSymbolTraceCdfRows::from_defaults();
+    // One operation per CDF symbol and per bypass-literal bit, plus headroom.
+    let trace_cost = trace
+        .iter()
+        .map(|token| match token {
+            BlockSymbolToken::Bypass { width, .. } => *width as usize,
+            _ => 1,
+        })
+        .sum::<usize>();
+    let budget = trace_cost.saturating_add(BLOCK_SYMBOL_TRACE_BUDGET_HEADROOM);
     let mut encoder = SymbolEncoder::with_config(
         SymbolEncoderConfig::new()
-            .with_max_output_bytes(BLOCK_SYMBOL_TRACE_BUDGET)
-            .with_max_operations(BLOCK_SYMBOL_TRACE_BUDGET),
+            .with_max_output_bytes(budget)
+            .with_max_operations(budget),
     );
     for (index, token) in trace.iter().enumerate() {
-        encoder
-            .write_symbol(
-                encode_cdfs.row_mut(*token, index)?,
-                Symbol::new(token.symbol()),
-            )
-            .map_err(|source| Error::BlockSymbolTraceSymbolWrite { index, source })?;
+        match token {
+            BlockSymbolToken::Bypass { width, value } => {
+                encoder
+                    .write_literal(*value, *width)
+                    .map_err(|source| Error::BlockSymbolTraceSymbolWrite { index, source })?;
+            }
+            _ => {
+                encoder
+                    .write_symbol(
+                        encode_cdfs.row_mut(*token, index)?,
+                        Symbol::new(token.symbol()),
+                    )
+                    .map_err(|source| Error::BlockSymbolTraceSymbolWrite { index, source })?;
+            }
+        }
     }
     let output = encoder
         .finish()
@@ -287,17 +331,40 @@ pub(crate) fn roundtrip_block_symbol_trace(
             context: "roundtrip decoded symbols",
         })?;
     for (index, token) in trace.iter().enumerate() {
-        let decoded = decoder
-            .read_symbol(decode_cdfs.row_mut(*token, index)?)
-            .map_err(|source| Error::BlockSymbolTraceSymbolRead { index, source })?
-            .get();
-        if decoded != token.symbol() {
-            return Err(Error::BlockSymbolTraceSymbolMismatch {
-                index,
-                expected: token.symbol(),
-                actual: decoded,
-            });
-        }
+        let decoded = match token {
+            BlockSymbolToken::Bypass { width, value } => {
+                // A bypass literal carries no CDF. Verify the FULL-WIDTH value
+                // roundtrips (the `decoded_symbols` view below truncates to u8, so
+                // this u32 check is what proves a wide literal — e.g. the golomb
+                // tail — was reproduced exactly, not just its low byte).
+                let actual = decoder
+                    .read_literal(*width)
+                    .map_err(|source| Error::BlockSymbolTraceSymbolRead { index, source })?;
+                if actual != *value {
+                    return Err(Error::BlockSymbolTraceLiteralMismatch {
+                        index,
+                        width: *width,
+                        expected: *value,
+                        actual,
+                    });
+                }
+                actual as u8
+            }
+            _ => {
+                let decoded = decoder
+                    .read_symbol(decode_cdfs.row_mut(*token, index)?)
+                    .map_err(|source| Error::BlockSymbolTraceSymbolRead { index, source })?
+                    .get();
+                if decoded != token.symbol() {
+                    return Err(Error::BlockSymbolTraceSymbolMismatch {
+                        index,
+                        expected: token.symbol(),
+                        actual: decoded,
+                    });
+                }
+                decoded
+            }
+        };
         decoded_symbols.push(decoded);
     }
     let summary = decoder
@@ -351,6 +418,12 @@ impl BlockSymbolTraceCdfRows {
 
     fn row_mut(&mut self, token: BlockSymbolToken, index: usize) -> Result<&mut [i32]> {
         match token {
+            // Bypass literals carry no CDF row; `roundtrip_block_symbol_trace`
+            // dispatches them before ever calling `row_mut`, so this arm is
+            // unreachable in practice.
+            BlockSymbolToken::Bypass { .. } => {
+                Err(Error::BlockSymbolTraceUnsupportedSelector { index })
+            }
             BlockSymbolToken::Mode(mode) => match mode.selector() {
                 IntraModeCdfRowSelector::YModeSet => Ok(self.y_mode_set.as_mut_slice()),
                 IntraModeCdfRowSelector::YModeIndex {
@@ -643,5 +716,48 @@ mod tests {
 
         assert_eq!(first.bytes(), second.bytes());
         assert_eq!(first.decoded_symbols(), second.decoded_symbols());
+    }
+
+    #[test]
+    fn bypass_literals_interleave_with_cdf_symbols() {
+        // §8.2.5 bypass literals (the foundation for non-luma-DC `sign_bit` and
+        // the golomb tail) must roundtrip bit-exactly through the same coder that
+        // carries the CDF symbols.
+        let mut trace = compose_minimal_intra_dc_complete_all_zero_block_trace().unwrap();
+        trace.push(BlockSymbolToken::bypass(1, 1)); // a 1-bit sign-like literal
+        trace.push(BlockSymbolToken::bypass(4, 13)); // a wider literal
+        let proof = roundtrip_block_symbol_trace(&trace).unwrap();
+
+        // The all-zero block symbols, then the two bypass values (value-as-u8).
+        assert_eq!(proof.decoded_symbols(), &[0, 0, 0, 1, 1, 1, 1, 13]);
+        assert!(!proof.bytes().is_empty());
+    }
+
+    #[test]
+    fn bypass_literal_roundtrip_is_deterministic() {
+        let mut trace = compose_minimal_intra_dc_all_zero_block_trace().unwrap();
+        trace.push(BlockSymbolToken::bypass(3, 5));
+        let first = roundtrip_block_symbol_trace(&trace).unwrap();
+        let second = roundtrip_block_symbol_trace(&trace).unwrap();
+
+        assert_eq!(first.bytes(), second.bytes());
+        assert_eq!(first.decoded_symbols(), second.decoded_symbols());
+    }
+
+    #[test]
+    fn wide_bypass_literals_roundtrip_full_width() {
+        // Literals wider than 8 bits (the golomb tail uses up to L(32)) must
+        // roundtrip their FULL value: the budget scales with the bit width, and
+        // the full-width check rejects truncation — so `roundtrip_block_symbol_trace`
+        // returning Ok proves the exact value was reproduced, not just its low byte.
+        let mut trace = compose_minimal_intra_dc_all_zero_block_trace().unwrap();
+        trace.push(BlockSymbolToken::bypass(16, 0x1234));
+        trace.push(BlockSymbolToken::bypass(32, 0xDEAD_BEEF));
+        let proof = roundtrip_block_symbol_trace(&trace).unwrap();
+
+        assert!(!proof.bytes().is_empty());
+        // The u8 view truncates the wide values to their low byte; the Ok above is
+        // the full-width proof.
+        assert_eq!(proof.decoded_symbols().last(), Some(&0xEFu8));
     }
 }
