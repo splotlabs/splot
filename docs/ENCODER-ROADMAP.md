@@ -100,6 +100,11 @@ Status: planned, replaces the parked toy bootstrap path.
   §7.15.4 inverse transform, and §7.14.3 reconstruct, plus the current-frame
   workspace and decoded-frame hash, and prove the emitted coefficient decisions
   reconstruct identically — before any tile-body or packet path.
+- Land private block-symbol emission incrementally before the tile body, starting
+  with the luma intra-mode symbols (`y_mode_set`/`y_mode_index` for DC_PRED at the
+  tile origin, AV2 §5.20.5.5/§8.3.2), proving each through the in-tree AV2 §8.2
+  symbol coder, then extend to chroma `uv_mode` and the per-plane all-zero/coeff
+  symbols already covered by coefficient tokenization.
 - Use closed-loop reconstruction before public success.
 - Emit only syntax the writer can produce and the validator accepts.
 - Record fixtures, hashes, and matrix proof before marking any encode stage done.

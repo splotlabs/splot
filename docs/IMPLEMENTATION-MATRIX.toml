@@ -4172,6 +4172,39 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-INTRA-MODE-SYMBOL-EMISSION"
+name = "Encoder intra-mode symbol emission"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20.5.5", "7.13.2.10", "8.3.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/intra_mode_emission.rs"
+openspec_change = "encoder-intra-mode-symbol-emission"
+tracking_issue = ""
+owner = "encoder"
+risk = "medium"
+notes = "Private, non-emitting encoder intra-mode symbol-emission bridge. `emit_minimal_dc_luma_intra_mode` produces the ordered AV2 §5.20.5.5 `y_mode_set` and `y_mode_index` entropy-token records for the current minimal DC_PRED luma block at the tile-origin neutral context (`y_mode_set=0`, `y_mode_index=0` resolve to DC_PRED, the §7.13.2.10 mode the closed loop uses; the `y_mode_index` §8.3.2 joint-neighbour context is 0 at the tile origin). It derives the scoped `TileYModeSetCdf` (no context) and `TileYModeIndexCdf[ctx]` rows from `splot-core` defaults and proves the token values write through the in-tree AV2 §8.2 `SymbolEncoder` and decode back through `SymbolDecoder` to the same ordered symbols. This row does not claim chroma `uv_mode` syntax, coefficient or all-zero symbols, partition syntax, neighbor-derived contexts, tile CDF lifecycle, tile-body emission, packet output, CLI success, or Baseline Encoder Profile v1 output."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/intra_mode_emission.rs::tests", "crates/splot-encode/src/context.rs::tests::syntax_and_header_planning_do_not_enable_packet_output"]
+commands = ["cargo test -p splot-encode intra_mode_emission --locked", "cargo test -p splot-encode syntax_and_header_planning_do_not_enable_packet_output --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-RECON-DEPENDENCY"
 name = "Encoder reconstruction dependency boundary"
 category = "encoder"

@@ -618,6 +618,77 @@ pub enum Error {
         source: ReconError,
     },
 
+    /// Intra-mode emission allocation failed.
+    #[error("failed to allocate encoder intra-mode emission storage for {context}")]
+    IntraModeEmissionAllocationFailed {
+        /// Short description of the failed allocation.
+        context: &'static str,
+    },
+
+    /// An intra-mode token carried a CDF selector outside the current minimal subset.
+    #[error("unsupported encoder intra-mode token CDF selector for {syntax}")]
+    IntraModeEmissionUnsupportedCdfSelector {
+        /// Token syntax whose selector is unsupported.
+        syntax: &'static str,
+    },
+
+    /// Writing an intra-mode token through the symbol encoder failed.
+    #[error("encoder intra-mode emission symbol write failed for {syntax}: {source}")]
+    IntraModeEmissionSymbolWrite {
+        /// Token syntax being written.
+        syntax: &'static str,
+        /// Source symbol-encoder error.
+        #[source]
+        source: WriteError,
+    },
+
+    /// Finalizing intra-mode token symbol bytes failed.
+    #[error("encoder intra-mode emission symbol encoder finalization failed: {source}")]
+    IntraModeEmissionSymbolEncodeFinish {
+        /// Source symbol-encoder error.
+        #[source]
+        source: WriteError,
+    },
+
+    /// Initializing the intra-mode token symbol decoder failed.
+    #[error("encoder intra-mode emission symbol decoder initialization failed: {source}")]
+    IntraModeEmissionSymbolDecodeInit {
+        /// Source symbol-decoder error.
+        #[source]
+        source: splot_core::Error,
+    },
+
+    /// Reading an intra-mode token through the symbol decoder failed.
+    #[error("encoder intra-mode emission symbol read failed for {syntax}: {source}")]
+    IntraModeEmissionSymbolRead {
+        /// Token syntax being read.
+        syntax: &'static str,
+        /// Source symbol-decoder error.
+        #[source]
+        source: splot_core::Error,
+    },
+
+    /// Decoded intra-mode token symbol value did not match the encoded value.
+    #[error(
+        "encoder intra-mode emission symbol mismatch for {syntax}: expected {expected}, decoded {actual}"
+    )]
+    IntraModeEmissionSymbolMismatch {
+        /// Token syntax being compared.
+        syntax: &'static str,
+        /// Encoded symbol value.
+        expected: u8,
+        /// Decoded symbol value.
+        actual: u8,
+    },
+
+    /// Finalizing the intra-mode token symbol decoder failed.
+    #[error("encoder intra-mode emission symbol decoder finalization failed: {source}")]
+    IntraModeEmissionSymbolDecodeFinish {
+        /// Source symbol-decoder error.
+        #[source]
+        source: splot_core::Error,
+    },
+
     /// An encoder lifecycle operation is invalid in the current context state.
     #[error("encoder operation {operation:?} is invalid while the context is {state:?}")]
     State {
