@@ -53,9 +53,13 @@ const DC_SIGN_CTX_NEUTRAL: usize = 0;
 const MAX_BASE_EOB_MAGNITUDE: u32 = 4;
 const LF_NUM_BASE_LEVELS: u32 = 4;
 const COEFF_BASE_RANGE: u32 = 3;
-// The maximum magnitude representable with `coeff_base_eob` + one `coeff_br`
-// (before the golomb tail, which is a later brick): 4 + 3 + 1 = 8.
-const MAX_BASE_BR_MAGNITUDE: u32 = LF_NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1;
+// The largest magnitude fully coded by `coeff_base_eob` + one `coeff_br`, before
+// AV2 § 5.20.7.28 `read_quant` emits the golomb tail (a later brick). For the LF
+// luma DC EOB coefficient `maxLevel = LF_NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1 = 8`
+// and `read_quant` is invoked when `quant >= maxLevel - allowTcq` (TCQ off here,
+// so `quant >= 8`); the largest magnitude that needs no golomb tail is therefore
+// `maxLevel - 1 = LF_NUM_BASE_LEVELS + COEFF_BASE_RANGE = 7` (`coeff_br` up to 2).
+const MAX_BASE_BR_MAGNITUDE: u32 = LF_NUM_BASE_LEVELS + COEFF_BASE_RANGE;
 const COEFF_CDF_Q_CTX_0_MAX_QINDEX: u32 = 90;
 const COEFF_CDF_Q_CTX_1_MAX_QINDEX: u32 = 140;
 const COEFF_CDF_Q_CTX_2_MAX_QINDEX: u32 = 190;
@@ -141,6 +145,9 @@ pub(crate) fn luma_dc_coded_tokens(
     magnitude: u32,
     negative: bool,
 ) -> Result<Vec<CoefficientEntropyToken>> {
+    // Contract: callers pass a real nonzero coefficient magnitude. A magnitude of
+    // 0 is an all-zero block (handled by `all_zero_token`, never this path).
+    debug_assert!(magnitude >= 1, "coded DC magnitude must be nonzero");
     let needs_br = magnitude > LF_NUM_BASE_LEVELS;
     let len = if needs_br { 5 } else { 4 };
     let mut tokens = Vec::new();
@@ -917,7 +924,7 @@ mod tests {
     fn coded_dc_tokens_match_tokenizer() {
         // `tokenize_coefficients` delegates to `luma_dc_coded_tokens`, so they
         // must agree across the full supported magnitude/sign range (base tier
-        // 1..=4 and base-range tier 5..=8) — this guards the trace accessor.
+        // 1..=4 and base-range tier 5..=7) — this guards the trace accessor.
         let max = MAX_BASE_BR_MAGNITUDE as i32;
         for mag in 1..=max {
             for dc in [mag, -mag] {
@@ -934,9 +941,11 @@ mod tests {
 
     #[test]
     fn base_range_tier_emits_coeff_br() {
-        // Magnitude 5..=8 saturates coeff_base_eob at 4 (level 5) and emits one
+        // Magnitude 5..=7 saturates coeff_base_eob at 4 (level 5) and emits one
         // coeff_br = magnitude - 5 (§5.20.7.27); magnitude 4 stays base-only.
-        for (magnitude, expected) in [(4u32, None), (5, Some(0u8)), (6, Some(1)), (8, Some(3))] {
+        // Magnitude 8 (coeff_br=3, level == maxLevel) needs the golomb tail and
+        // is rejected (see `rejects_magnitude_outside_base_range_tier`).
+        for (magnitude, expected) in [(4u32, None), (5, Some(0u8)), (6, Some(1)), (7, Some(2))] {
             let tokens = luma_dc_coded_tokens(0, magnitude, false).unwrap();
             let br = tokens
                 .iter()
@@ -1106,7 +1115,7 @@ mod tests {
 
     #[test]
     fn rejects_magnitude_outside_base_range_tier() {
-        // Magnitude 28 is beyond the base+range tier (max 8); the golomb tail
+        // Magnitude 28 is beyond the base+range tier (max 7); the golomb tail
         // that would encode it is a later brick.
         let block = quantized(7, 0);
         let err = tokenize_quantized_4x4_dct_dct_dc_only(&block).unwrap_err();
@@ -1118,6 +1127,28 @@ mod tests {
                 coefficient_index: 0,
                 magnitude: 28,
                 max_magnitude: MAX_BASE_BR_MAGNITUDE,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn rejects_max_level_magnitude_requiring_golomb() {
+        // Magnitude 8 reaches maxLevel (LF_NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1),
+        // so AV2 §5.20.7.28 read_quant emits the golomb tail; until that brick
+        // lands, magnitude 8 must be rejected rather than emit an incomplete
+        // (coeff_br=3, no golomb) token stream.
+        assert_eq!(MAX_BASE_BR_MAGNITUDE, 7);
+        let mut coefficients = [0; DCT_DCT_4X4_COEFF_COUNT];
+        coefficients[0] = 8;
+        let err = tokenize_coefficients(raw_input(PlaneId::Y, rect(4, 4), 4, 4, &coefficients))
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            Error::CoefficientTokenizationUnsupportedMagnitude {
+                magnitude: 8,
+                max_magnitude: 7,
                 ..
             }
         ));

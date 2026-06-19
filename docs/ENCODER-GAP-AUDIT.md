@@ -98,11 +98,13 @@ planning and status; it does not claim encoder behavior exists.
   It is not multi-coefficient blocks, `coeff_br` base-range, chroma coefficients,
   partition syntax, tile-body emission, or a packet path.
 - `ENC-INTRA-BLOCK-TRACE-CODED-BR` extends the coded DC trace with the
-  §5.20.7.27 base-range tier: a larger luma DC coefficient (magnitude 5..=8)
+  §5.20.7.27 base-range tier: a larger luma DC coefficient (magnitude 5..=7)
   emits a `coeff_br` symbol after a saturated `coeff_base_eob`, using the
   low-frequency `TileCoeffBrLfCdf` at the DC context 0 (verified vs the decoder).
+  Magnitude 8 reaches `maxLevel` (§5.20.7.27) so §5.20.7.28 `read_quant` would
+  emit the golomb tail; it is rejected until that brick, so the cap is 7.
   `luma_dc_coded_tokens` is now the single coded-DC token source (the tokenizer
-  delegates to it; an equivalence test covers magnitude 1..=8). It is not the
+  delegates to it; an equivalence test covers magnitude 1..=7). It is not the
   golomb tail, multi-coefficient blocks, chroma coefficients, tile-body emission,
   or a packet path.
 - `Packet` is still only a byte buffer wrapper, and no coded packet production

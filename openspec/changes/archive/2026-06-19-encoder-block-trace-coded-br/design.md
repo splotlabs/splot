@@ -16,7 +16,7 @@ if ( level > baseLevels && !(isLf && plane > 0) ) {
 `coeff_base_eob` is 5-ary (symbols 0..=4 → level 1..=5; the `TileCoeffBaseLfEobCdf`
 row has 6 entries → 5 symbols). So for the DC EOB coefficient, `coeff_br` is read
 iff `coeff_base_eob == 4` (level 5), and `coeff_br ∈ 0..=COEFF_BASE_RANGE (3)` adds
-to the level, giving final magnitude 5..=8.
+to the level, giving final magnitude 5..=7 (the cap; see below).
 
 CDF selection (verified against the decoder, `base_level_pass.rs:base_range_selector`
 + `CoeffBrContext::ctx`): for a luma (plane 0) low-frequency coefficient the
@@ -30,7 +30,10 @@ Concrete magnitudes (single luma DC EOB, neutral ctx):
 - magnitude 4: `coeff_base_eob = 3` (level 4, not > 4) → no `coeff_br`.
 - magnitude 5: `coeff_base_eob = 4` (level 5) → `coeff_br = 0`.
 - magnitude 6: `coeff_base_eob = 4`, `coeff_br = 1`.
-- magnitude 8: `coeff_base_eob = 4`, `coeff_br = 3` (the max before the golomb tail).
+- magnitude 8: `coeff_base_eob = 4`, `coeff_br = 3` → level 8 == `maxLevel`
+  (`LF_NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1`), so §5.20.7.28 `read_quant` emits the
+  golomb tail (TCQ off → `quant >= maxLevel`); magnitude 8 is REJECTED until that
+  brick. The cap is therefore `LF_NUM_BASE_LEVELS + COEFF_BASE_RANGE = 7`.
 
 Normative AV2 v1.0.0 sections:
 
@@ -42,9 +45,9 @@ Normative AV2 v1.0.0 sections:
 **Goals:**
 
 - Add `coeff_br` tokenization for the coded luma DC base-range tier (magnitude
-  5..=8) and `compose_minimal_intra_dc_br_block_trace` for the trace.
+  5..=7) and `compose_minimal_intra_dc_br_block_trace` for the trace.
 - Unify the coded DC token shape in `luma_dc_coded_tokens` (the tokenizer
-  delegates to it), guarded by the equivalence test over 1..=8.
+  delegates to it), guarded by the equivalence test over 1..=7.
 - Prove the ten-symbol base-range trace through one §8.2 coder with shared CDF
   state.
 - Preserve the no-packet invariant.
@@ -62,7 +65,7 @@ Normative AV2 v1.0.0 sections:
 1. **`luma_dc_coded_tokens` becomes the single source.** It now returns a
    variable-length `Result<Vec<CoefficientEntropyToken>>` (4 tokens base tier, 5
    with `coeff_br`), and `tokenize_coefficients` delegates to it after validating
-   the magnitude cap. The `coded_dc_tokens_match_tokenizer` test (now over 1..=8)
+   the magnitude cap. The `coded_dc_tokens_match_tokenizer` test (now over 1..=7)
    guarantees the trace accessor and the tokenizer cannot drift.
 
 2. **`coeff_br` uses the low-frequency `BrLf` CDF at ctx 0.** Verified against the
@@ -109,9 +112,9 @@ Normative AV2 v1.0.0 sections:
 ## Risks / Trade-offs
 
 - [Risk] Raising the tokenizer magnitude cap changes which quantized inputs are
-  accepted (5..=8 now tokenize instead of erroring). -> Mitigation: a strict
+  accepted (5..=7 now tokenize instead of erroring). -> Mitigation: a strict
   extension; the rejection test now asserts the new cap (8), and all existing
   base-tier tests still pass.
 - [Risk] `luma_dc_coded_tokens` and `tokenize_coefficients` duplicate the br
   logic. -> Mitigation: `tokenize_coefficients` delegates to the accessor, and the
-  equivalence test over 1..=8 fails on any divergence.
+  equivalence test over 1..=7 fails on any divergence.

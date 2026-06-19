@@ -1721,7 +1721,10 @@ For a single nonzero luma DC coefficient whose AV2 § 5.20.7.27 base level
 (`coeff_base_eob + 1`) exceeds `LF_NUM_BASE_LEVELS`, the coded luma `residual()`
 SHALL additionally emit a `coeff_br` symbol equal to
 `magnitude - (LF_NUM_BASE_LEVELS + 1)` after `coeff_base_eob` (which saturates at
-level 5), supporting magnitudes up to `LF_NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1`.
+level 5), supporting magnitudes up to `LF_NUM_BASE_LEVELS + COEFF_BASE_RANGE`.
+Magnitude `LF_NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1` (the § 5.20.7.27 `maxLevel`)
+reaches the § 5.20.7.28 `read_quant` golomb threshold and SHALL be rejected until
+the golomb tail is modeled, rather than emitting an incomplete token stream.
 The `coeff_br` SHALL use the low-frequency `TileCoeffBrLfCdf` at the DC context 0
 (§ 8.3.2). The coded DC token shape SHALL have a single source proven equivalent to
 the coefficient tokenizer across the full supported magnitude range. The stage
