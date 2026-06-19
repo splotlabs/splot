@@ -10,8 +10,8 @@ Matrix version 1. Last reviewed 2026-06-15. 88 writable feature(s).
 
 | Write status | Features |
 |---|---:|
-| `done` | 76 |
-| `partial` | 12 |
+| `done` | 75 |
+| `partial` | 13 |
 
 | Section | Feature | Name | Write | Module |
 |---|---|---|:-:|---|
@@ -22,7 +22,7 @@ Matrix version 1. Last reviewed 2026-06-15. 88 writable feature(s).
 | 4.11.7 | `AV2-4.11.7-SU` | Signed integer descriptor | done | `crates/splot-core/src/bitio.rs` |
 | 4.11.8 | `AV2-4.11.8-NS` | Non-symmetric integer descriptor | done | `crates/splot-core/src/bitio.rs` |
 | 4.11.10 | `AV2-4.11.10-RG` | Rice-Golomb descriptor | done | `crates/splot-core/src/bitio.rs` |
-| 5.2.1 | `AV2-5.2.1-OBU-DISPATCH` | open_bitstream_unit payload dispatch | done | `crates/splot-core/src/obu.rs` |
+| 5.2.1 | `AV2-5.2.1-OBU-DISPATCH` | open_bitstream_unit payload dispatch | partial | `crates/splot-core/src/obu.rs` |
 | 5.2.2, 6.2.2 | `AV2-5.2.2-OBU-HEADER` | OBU header syntax | done | `crates/splot-core/src/obu.rs` |
 | 5.2.3, 6.2.3 | `AV2-5.2.3-TRAILING-BITS` | Trailing bits syntax and semantics | done | `crates/splot-core/src/obu.rs` |
 | 5.2.4, 6.2.4 | `AV2-5.2.4-BYTE-ALIGNMENT` | Byte alignment syntax and semantics | done | `crates/splot-core/src/bitio.rs` |
