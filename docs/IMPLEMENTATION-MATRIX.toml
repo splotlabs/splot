@@ -504,14 +504,14 @@ openspec_change = "obu-dispatch-frame-payloads"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Stateless dispatch after parsing obu_header(): temporal delimiter payloads are parsed through trailing_bits(), reserved payload bytes stay opaque per AV2 5.3, and every fully-decidable OBU payload is parsed into PayloadStatus::Parsed. Under obu-dispatch-frame-payloads the 11 frame-carrying types (the tile-group family CLK/OLK/leading-/regular-tile-group/switch/RAS and the SEF/TIP/bridge family) no longer return a blanket Unimplemented: dispatch parses their state-free §5.18.2 / §5.19 activation prefix (parse_tile_group_prefix / parse_frame_header_prefix, passing FirstPictureInTU=None since the stateless front door holds no per-extended-layer decoder state — a statelessly-dispatched CLK exposes starts_cvs=None rather than a fabricated value; non-CLK types derive Some(false) from the type alone) and returns the honest PayloadStatus::PrefixParsed { prefix: FramePayloadPrefix::{TileGroup|FrameHeader}, blocked_on = 'active sequence header state', feature = AV2-5.19-TILE-GROUP / AV2-5.18-FRAME-HEADER }; an EOF/invalid-uvlc inside the prefix is the existing structured error path. The deeper §5.18 / §5.19 syntax beyond the prefix stays owned by AV2-5.18-FRAME-HEADER / AV2-5.19-TILE-GROUP (the inspector's stateful frame-header views and the validator's direct-call path are the richer, state-aware surface). The dispatch row's own 11-type Unimplemented residual is now closed — no OBU type returns a blanket Unimplemented; the unimplemented_payload_feature fallback is dead. inspect --json reports the prefix_parsed_awaiting_state status (syntax + feature + blocked_on)."
+notes = "Stateless dispatch after parsing obu_header(): temporal delimiter payloads are parsed through trailing_bits(), reserved payload bytes stay opaque per AV2 5.3, and every fully-decidable OBU payload is parsed into PayloadStatus::Parsed. Under obu-dispatch-frame-payloads the 11 frame-carrying types (the tile-group family CLK/OLK/leading-/regular-tile-group/switch/RAS and the SEF/TIP/bridge family) no longer return a blanket Unimplemented: dispatch parses their state-free §5.18.2 / §5.19 activation prefix (parse_tile_group_prefix / parse_frame_header_prefix, passing FirstPictureInTU=None since the stateless front door holds no per-extended-layer decoder state — a statelessly-dispatched CLK exposes starts_cvs=None rather than a fabricated value; non-CLK types derive Some(false) from the type alone) and returns the honest PayloadStatus::PrefixParsed { prefix: FramePayloadPrefix::{TileGroup|FrameHeader}, blocked_on = 'active sequence header state', feature = AV2-5.19-TILE-GROUP / AV2-5.18-FRAME-HEADER }; an EOF/invalid-uvlc inside the prefix is the existing structured error path. The deeper §5.18 / §5.19 syntax beyond the prefix stays owned by AV2-5.18-FRAME-HEADER / AV2-5.19-TILE-GROUP (the inspector's stateful frame-header views and the validator's direct-call path are the richer, state-aware surface). The dispatch row's own 11-type Unimplemented residual is now closed — no OBU type returns a blanket Unimplemented; the unimplemented_payload_feature fallback is dead. inspect --json reports the prefix_parsed_awaiting_state status (syntax + feature + blocked_on). WRITER: open_bitstream_unit payload dispatch is inverted by write_complete_obu / write_obu_payload (crates/splot-core/src/write/dispatch.rs), routing every ParsedObu variant to its body writer + the §5.2.1/§6.2.1 tail; round-trip proof on ENC-BITSTREAM-WRITER."
 
 [feature.status]
 mapped = "done"
 types = "done"
 parse = "partial"
 validate = "not-applicable"
-write = "todo"
+write = "done"
 encode = "not-applicable"
 decode_check = "partial"
 tests = "done"
@@ -519,7 +519,7 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/obu.rs::tests::dispatch_parses_tile_group_prefix_and_blocks_on_state", "crates/splot-core/src/obu.rs::tests::dispatch_parses_bridge_frame_prefix_and_blocks_on_state", "crates/splot-core/src/obu.rs::tests::dispatch_parses_sef_prefix_and_blocks_on_state", "crates/splot-core/src/obu.rs::tests::dispatch_tile_group_eof_in_prefix_is_structured_error", "crates/splot-core/src/obu.rs::tests::dispatch_frame_header_eof_in_prefix_is_structured_error", "crates/splot-core/src/obu.rs::tests::dispatch_covers_every_frame_carrying_type_without_unimplemented", "crates/splot-core/src/annexb.rs::tests::envelope_payload_status_is_opt_in_and_preserves_raw_payload", "crates/splot-cli/tests/cli.rs::inspect_json_exposes_frame_header_prefix", "crates/splot-cli/tests/cli.rs::inspect_json_includes_payload_status_without_dropping_header_fields"]
+tests = ["crates/splot-core/src/write/dispatch.rs::tests", "crates/splot-core/src/obu.rs::tests::dispatch_parses_tile_group_prefix_and_blocks_on_state", "crates/splot-core/src/obu.rs::tests::dispatch_parses_bridge_frame_prefix_and_blocks_on_state", "crates/splot-core/src/obu.rs::tests::dispatch_parses_sef_prefix_and_blocks_on_state", "crates/splot-core/src/obu.rs::tests::dispatch_tile_group_eof_in_prefix_is_structured_error", "crates/splot-core/src/obu.rs::tests::dispatch_frame_header_eof_in_prefix_is_structured_error", "crates/splot-core/src/obu.rs::tests::dispatch_covers_every_frame_carrying_type_without_unimplemented", "crates/splot-core/src/annexb.rs::tests::envelope_payload_status_is_opt_in_and_preserves_raw_payload", "crates/splot-cli/tests/cli.rs::inspect_json_exposes_frame_header_prefix", "crates/splot-cli/tests/cli.rs::inspect_json_includes_payload_status_without_dropping_header_fields"]
 commands = ["cargo test -p splot-core dispatch", "cargo test -p splot-core envelope_payload_status", "cargo test -p splot-cli inspect_json_exposes_frame_header_prefix"]
 fixtures = ["tests/fixtures/conformant.av2", "tests/fixtures/frame-header-prefix.av2"]
 diagnostics = []
@@ -1072,14 +1072,14 @@ openspec_change = "qm-filmgrain-hls-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Implemented as the shared user_defined_qm(level, t, plane) helper (AV2 §5.4.11) used by quantizer_matrix_obu() (AV2-5.13-QUANTIZATION-MATRIX). Per the current parser it is NOT called directly from sequence_header_obu(); future frame-level quantization can reuse the helper. Covers the three Fundamental_Tx_Size shapes (TX_8X8/TX_8X4/TX_4X8), plane-copy, 8x8 symmetry, 4x8 transpose-from-8x4, the AV2 2D diagonal scan (get_scan, TX_CLASS_2D), svlc() quant deltas, and quant2 == 0 coefficient repeat; scan/transform derivation is from the AV2 spec and the AVM oracle obu_qm.c (no AV1 tables). It enforces the §6.4.11 quant_delta -128..=127 conformance bound (Error::InvalidQuantizerMatrix, surfaced as qm/quant-delta-out-of-range). Depends on AV2-4.11.4-SVLC."
+notes = "Implemented as the shared user_defined_qm(level, t, plane) helper (AV2 §5.4.11) used by quantizer_matrix_obu() (AV2-5.13-QUANTIZATION-MATRIX). Per the current parser it is NOT called directly from sequence_header_obu(); future frame-level quantization can reuse the helper. Covers the three Fundamental_Tx_Size shapes (TX_8X8/TX_8X4/TX_4X8), plane-copy, 8x8 symmetry, 4x8 transpose-from-8x4, the AV2 2D diagonal scan (get_scan, TX_CLASS_2D), svlc() quant deltas, and quant2 == 0 coefficient repeat; scan/transform derivation is from the AV2 spec and the AVM oracle obu_qm.c (no AV1 tables). It enforces the §6.4.11 quant_delta -128..=127 conformance bound (Error::InvalidQuantizerMatrix, surfaced as qm/quant-delta-out-of-range). Depends on AV2-4.11.4-SVLC. WRITER: user_defined_qm is inverted by write_quantizer_matrix (§5.13 quantizer_matrix_obu, crates/splot-core/src/write/quantizer_matrix.rs) to the canonical long form; round-trip proof on AV2-5.13-QUANTIZATION-MATRIX."
 
 [feature.status]
 mapped = "done"
 types = "done"
 parse = "done"
 validate = "not-applicable"
-write = "todo"
+write = "done"
 encode = "todo"
 decode_check = "done"
 tests = "done"
@@ -1087,7 +1087,7 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/quantizer_matrix.rs::tests", "crates/splot-core/src/headers/quantizer_matrix.rs::proptests"]
+tests = ["crates/splot-core/src/write/quantizer_matrix.rs::tests", "crates/splot-core/src/headers/quantizer_matrix.rs::tests", "crates/splot-core/src/headers/quantizer_matrix.rs::proptests"]
 commands = ["cargo test -p splot-core quantizer"]
 fixtures = []
 diagnostics = []
@@ -1105,14 +1105,14 @@ openspec_change = "sequence-hls-validator-coverage"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child row of AV2-5.4-SEQUENCE-HEADER. timing_info() is now reached from the content-interpretation OBU (AV2-5.15-CONTENT-INTERPRETATION) via ci_timing_info_present_flag; cross-embedded-layer consistency (§6.4.12) is checked under AV2-6.4-SEQUENCE-HEADER-SEMANTICS."
+notes = "Child row of AV2-5.4-SEQUENCE-HEADER. timing_info() is now reached from the content-interpretation OBU (AV2-5.15-CONTENT-INTERPRETATION) via ci_timing_info_present_flag; cross-embedded-layer consistency (§6.4.12) is checked under AV2-6.4-SEQUENCE-HEADER-SEMANTICS. WRITER: the timing_info() structure is inverted by write_timing_info (crates/splot-core/src/write/content_interpretation.rs), used by the §5.15 content_interpretation_obu writer; round-trip proof on AV2-5.15-CONTENT-INTERPRETATION."
 
 [feature.status]
 mapped = "done"
 types = "done"
 parse = "done"
 validate = "done"
-write = "todo"
+write = "done"
 encode = "todo"
 decode_check = "done"
 tests = "done"
@@ -1120,7 +1120,7 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/sequence.rs::tests::sequence_timing_rejects_zero_display_tick", "crates/splot-core/src/headers/content_interpretation.rs::tests::parses_with_timing_info_present", "crates/splot-validate/src/checks/mod.rs::tests::syntax_error_diagnostic_maps_timing_errors"]
+tests = ["crates/splot-core/src/write/content_interpretation.rs::tests", "crates/splot-core/src/headers/sequence.rs::tests::sequence_timing_rejects_zero_display_tick", "crates/splot-core/src/headers/content_interpretation.rs::tests::parses_with_timing_info_present", "crates/splot-validate/src/checks/mod.rs::tests::syntax_error_diagnostic_maps_timing_errors"]
 commands = ["cargo test -p splot-core sequence", "cargo test -p splot-core content_interpretation", "cargo test -p splot-validate sequence_header"]
 fixtures = []
 diagnostics = ["sequence-header/timing-display-tick-zero", "sequence-header/timing-time-scale-zero", "sequence-header/timing-num-ticks-per-picture-out-of-range"]
@@ -1369,14 +1369,14 @@ openspec_change = "msdo-global-lcr-agreement"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child of AV2-5.8-LAYER-CONFIG-RECORD; parsed by the §5.8 parser in layer_config_record.rs and tested there. The locally-decidable §6.8.2 requirements landed earlier (recorded on the umbrella AV2-5.8-LAYER-CONFIG-RECORD): lcr_global_config_record_id in 1..7 (lcr/global-id-out-of-range), lcr_xlayer_map in 1..(1<<31)-1 (lcr/xlayer-map-empty), and lcr_dependent_xlayers_flag==0 decoder-ignore (lcr/dependent-xlayers-flag-nonzero) — docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-2, lines 1543-1579. The cross-OBU MSDO<->activated-global-LCR agreement (mirror lines 1646-1678) and the §6.8.2 LCR DOH-constraint requirement (lines 1619-1621) now land under msdo-global-lcr-agreement, deferred to CMVS-membership resolution (the same mechanism as msdo/doh-constraint-required, gated on the §7.3.2 CmvsTracker resolving Inside and the association chain resolving an *activated* global LCR — an observed-but-unactivated global LCR fires nothing): lcr/msdo-stream-count-mismatch (constraint 1), lcr/msdo-sub-xlayer-not-in-lcr (constraint 2), lcr/msdo-aggregate-mismatch (constraint 3: Table A.6 config consistency, Table A.1 interop equality, level, tier), lcr/msdo-substream-ptl-mismatch (constraint 4, exact equality), lcr/msdo-doh-flag-mismatch (constraint 5), and lcr/doh-constraint-required (the §6.8.2 DOH requirement). Residual: the §6.8.2 \"all extended layers present in the multistream shall reference the same activated global LCR\" rule (lines 1550-1551) and the lcr_enforce_tile_alignment_flag cross-layer tile-structure check (lines 1627-1632) stay future (the same-global-LCR reconciliation needs multi-activation arbitration; the tile-alignment check is frame/tile-blocked). AV2-7.3.8-HLS-AVAILABILITY owns the availability model."
+notes = "Child of AV2-5.8-LAYER-CONFIG-RECORD; parsed by the §5.8 parser in layer_config_record.rs and tested there. The locally-decidable §6.8.2 requirements landed earlier (recorded on the umbrella AV2-5.8-LAYER-CONFIG-RECORD): lcr_global_config_record_id in 1..7 (lcr/global-id-out-of-range), lcr_xlayer_map in 1..(1<<31)-1 (lcr/xlayer-map-empty), and lcr_dependent_xlayers_flag==0 decoder-ignore (lcr/dependent-xlayers-flag-nonzero) — docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-2, lines 1543-1579. The cross-OBU MSDO<->activated-global-LCR agreement (mirror lines 1646-1678) and the §6.8.2 LCR DOH-constraint requirement (lines 1619-1621) now land under msdo-global-lcr-agreement, deferred to CMVS-membership resolution (the same mechanism as msdo/doh-constraint-required, gated on the §7.3.2 CmvsTracker resolving Inside and the association chain resolving an *activated* global LCR — an observed-but-unactivated global LCR fires nothing): lcr/msdo-stream-count-mismatch (constraint 1), lcr/msdo-sub-xlayer-not-in-lcr (constraint 2), lcr/msdo-aggregate-mismatch (constraint 3: Table A.6 config consistency, Table A.1 interop equality, level, tier), lcr/msdo-substream-ptl-mismatch (constraint 4, exact equality), lcr/msdo-doh-flag-mismatch (constraint 5), and lcr/doh-constraint-required (the §6.8.2 DOH requirement). Residual: the §6.8.2 \"all extended layers present in the multistream shall reference the same activated global LCR\" rule (lines 1550-1551) and the lcr_enforce_tile_alignment_flag cross-layer tile-structure check (lines 1627-1632) stay future (the same-global-LCR reconciliation needs multi-activation arbitration; the tile-alignment check is frame/tile-blocked). AV2-7.3.8-HLS-AVAILABILITY owns the availability model. WRITER: serialized by write_layer_config_record (the §5.8 umbrella writer, crates/splot-core/src/write/layer_config_record.rs), which inverts the whole §5.8.1-5.8.9 nest; round-trip proof on AV2-5.8-LAYER-CONFIG-RECORD."
 
 [feature.status]
 mapped = "done"
 types = "done"
 parse = "done"
 validate = "partial"
-write = "todo"
+write = "done"
 encode = "todo"
 decode_check = "done"
 tests = "done"
@@ -1384,7 +1384,7 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/layer_config_record.rs::tests", "crates/splot-validate/src/validator/tests/lcr_msdo_cmvs.rs::lcr_msdo_stream_count_mismatch_is_flagged_both_orders", "crates/splot-validate/src/validator/tests/lcr_msdo_cmvs.rs::lcr_msdo_sub_xlayer_not_in_lcr_is_flagged", "crates/splot-validate/src/validator/tests/lcr_msdo_cmvs.rs::lcr_msdo_aggregate_level_and_tier_mismatch_is_flagged", "crates/splot-validate/src/validator/tests/lcr_msdo_cmvs.rs::lcr_msdo_aggregate_interop_and_config_mismatch_is_flagged", "crates/splot-validate/src/validator/tests/lcr_msdo_cmvs.rs::lcr_msdo_substream_ptl_mismatch_is_flagged_both_orders", "crates/splot-validate/src/validator/tests/lcr_msdo_cmvs.rs::lcr_msdo_doh_flag_mismatch_is_flagged", "crates/splot-validate/src/validator/tests/lcr_msdo_cmvs.rs::lcr_doh_constraint_required_is_flagged", "crates/splot-validate/src/validator/tests/lcr_msdo_cmvs.rs::lcr_msdo_agreement_inert_for_unactivated_global_lcr"]
+tests = ["crates/splot-core/src/write/layer_config_record.rs::tests", "crates/splot-core/src/headers/layer_config_record.rs::tests", "crates/splot-validate/src/validator/tests/lcr_msdo_cmvs.rs::lcr_msdo_stream_count_mismatch_is_flagged_both_orders", "crates/splot-validate/src/validator/tests/lcr_msdo_cmvs.rs::lcr_msdo_sub_xlayer_not_in_lcr_is_flagged", "crates/splot-validate/src/validator/tests/lcr_msdo_cmvs.rs::lcr_msdo_aggregate_level_and_tier_mismatch_is_flagged", "crates/splot-validate/src/validator/tests/lcr_msdo_cmvs.rs::lcr_msdo_aggregate_interop_and_config_mismatch_is_flagged", "crates/splot-validate/src/validator/tests/lcr_msdo_cmvs.rs::lcr_msdo_substream_ptl_mismatch_is_flagged_both_orders", "crates/splot-validate/src/validator/tests/lcr_msdo_cmvs.rs::lcr_msdo_doh_flag_mismatch_is_flagged", "crates/splot-validate/src/validator/tests/lcr_msdo_cmvs.rs::lcr_doh_constraint_required_is_flagged", "crates/splot-validate/src/validator/tests/lcr_msdo_cmvs.rs::lcr_msdo_agreement_inert_for_unactivated_global_lcr"]
 commands = ["cargo test -p splot-core lcr", "cargo test -p splot-validate lcr_msdo", "cargo test -p splot-validate lcr_doh"]
 fixtures = []
 diagnostics = ["lcr/msdo-stream-count-mismatch", "lcr/msdo-sub-xlayer-not-in-lcr", "lcr/msdo-aggregate-mismatch", "lcr/msdo-substream-ptl-mismatch", "lcr/msdo-doh-flag-mismatch", "lcr/doh-constraint-required"]
@@ -1402,14 +1402,14 @@ openspec_change = "hls-lcr-atlas-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child of AV2-5.8-LAYER-CONFIG-RECORD; parsed by the §5.8 parser in layer_config_record.rs and tested there. §6.8.3 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-3, lines 1690-1734) has one requirement of bitstream conformance — lcr_local_id != 0 (line 1705) — landed as lcr/local-id-zero, plus the lcr_local_reserved_zero_3bits/5bits decoder-ignore fields landed as lcr/reserved-bits-nonzero (via has_nonzero_reserved_bits). Nothing further is locally decidable for §6.8.3."
+notes = "Child of AV2-5.8-LAYER-CONFIG-RECORD; parsed by the §5.8 parser in layer_config_record.rs and tested there. §6.8.3 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-3, lines 1690-1734) has one requirement of bitstream conformance — lcr_local_id != 0 (line 1705) — landed as lcr/local-id-zero, plus the lcr_local_reserved_zero_3bits/5bits decoder-ignore fields landed as lcr/reserved-bits-nonzero (via has_nonzero_reserved_bits). Nothing further is locally decidable for §6.8.3. WRITER: serialized by write_layer_config_record (the §5.8 umbrella writer, crates/splot-core/src/write/layer_config_record.rs), which inverts the whole §5.8.1-5.8.9 nest; round-trip proof on AV2-5.8-LAYER-CONFIG-RECORD."
 
 [feature.status]
 mapped = "done"
 types = "done"
 parse = "done"
 validate = "done"
-write = "todo"
+write = "done"
 encode = "todo"
 decode_check = "done"
 tests = "done"
@@ -1417,7 +1417,7 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/layer_config_record.rs::tests", "crates/splot-validate/src/validator/tests/lcr_atlas.rs::lcr_local_id_zero_is_flagged", "crates/splot-validate/src/validator/tests/lcr_atlas.rs::lcr_reserved_bits_nonzero_is_warned"]
+tests = ["crates/splot-core/src/write/layer_config_record.rs::tests", "crates/splot-core/src/headers/layer_config_record.rs::tests", "crates/splot-validate/src/validator/tests/lcr_atlas.rs::lcr_local_id_zero_is_flagged", "crates/splot-validate/src/validator/tests/lcr_atlas.rs::lcr_reserved_bits_nonzero_is_warned"]
 commands = ["cargo test -p splot-core lcr", "cargo test -p splot-validate lcr_local_id"]
 fixtures = []
 diagnostics = ["lcr/local-id-zero", "lcr/reserved-bits-nonzero"]
@@ -1435,14 +1435,14 @@ openspec_change = "lcr-aggregate-info-annex-a-range"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child of AV2-5.8-LAYER-CONFIG-RECORD; parsed by the §5.8 parser in layer_config_record.rs and tested there. §6.8.4 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-4, lines 1737-1760) states no requirement of bitstream conformance other than three Annex-A value-space constraints: lcr_config_idc, lcr_aggregate_level_idx, and lcr_max_interop shall not take values outside those specified in Annex A (lcr_max_tier_flag is a 1-bit field with no such clause). All three now land in splot-validate (checks/mod.rs LayerConfigRecordSyntax, Global arm), decidable from the parsed global LCR's lcr_aggregate_info() alone (the requirement is on the bitstream *containing* the value — no activation): lcr/config-idc-reserved (Annex A.3 Table A.5 defines configs 0..=2; 3..=63 reserved, mirror lines 1744-1747), lcr/aggregate-level-idx-reserved (Annex A.4 Table A.7 reserves level indices 22..=30, mirror lines 1749-1752), and lcr/max-interop-reserved (Annex A.3 Table A.3 defines interoperability points 0, 1, 2, 15; 3..=14 reserved, mirror lines 1757-1759). Backed by annex_a.rs is_defined_config_idc / is_reserved_level / is_defined_max_interop helpers, each table-verified by a unit test. No §6.8.4 value-space residual remains."
+notes = "Child of AV2-5.8-LAYER-CONFIG-RECORD; parsed by the §5.8 parser in layer_config_record.rs and tested there. §6.8.4 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-4, lines 1737-1760) states no requirement of bitstream conformance other than three Annex-A value-space constraints: lcr_config_idc, lcr_aggregate_level_idx, and lcr_max_interop shall not take values outside those specified in Annex A (lcr_max_tier_flag is a 1-bit field with no such clause). All three now land in splot-validate (checks/mod.rs LayerConfigRecordSyntax, Global arm), decidable from the parsed global LCR's lcr_aggregate_info() alone (the requirement is on the bitstream *containing* the value — no activation): lcr/config-idc-reserved (Annex A.3 Table A.5 defines configs 0..=2; 3..=63 reserved, mirror lines 1744-1747), lcr/aggregate-level-idx-reserved (Annex A.4 Table A.7 reserves level indices 22..=30, mirror lines 1749-1752), and lcr/max-interop-reserved (Annex A.3 Table A.3 defines interoperability points 0, 1, 2, 15; 3..=14 reserved, mirror lines 1757-1759). Backed by annex_a.rs is_defined_config_idc / is_reserved_level / is_defined_max_interop helpers, each table-verified by a unit test. No §6.8.4 value-space residual remains. WRITER: serialized by write_layer_config_record (the §5.8 umbrella writer, crates/splot-core/src/write/layer_config_record.rs), which inverts the whole §5.8.1-5.8.9 nest; round-trip proof on AV2-5.8-LAYER-CONFIG-RECORD."
 
 [feature.status]
 mapped = "done"
 types = "done"
 parse = "done"
 validate = "done"
-write = "todo"
+write = "done"
 encode = "todo"
 decode_check = "done"
 tests = "done"
@@ -1451,6 +1451,7 @@ perf = "not-applicable"
 
 [feature.proof]
 tests = [
+    "crates/splot-core/src/write/layer_config_record.rs::tests",
     "crates/splot-core/src/headers/layer_config_record.rs::tests",
     "crates/splot-validate/src/validator/tests/lcr_atlas.rs::lcr_config_idc_reserved_value_is_flagged",
     "crates/splot-validate/src/validator/tests/lcr_atlas.rs::lcr_aggregate_level_idx_reserved_value_is_flagged",
@@ -1475,14 +1476,14 @@ openspec_change = "lcr-ptl-activated-sequence-agreement"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child of AV2-5.8-LAYER-CONFIG-RECORD; parsed by the §5.8 parser in layer_config_record.rs and tested there. §6.8.5 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-5, lines 1768-1814) PTL-vs-activated-sequence-header ceilings now LAND under lcr-ptl-activated-sequence-agreement in splot-validate (crates/splot-validate/src/context.rs, check_lcr_ptl_ceilings): when lcr_seq_profile_tier_level_info(i) is present in the LCR activated by extended layer i's frame-confirmed sequence header, seq_profile_idc <= lcr_seq_profile_idc[i] (lcr/ptl-profile-exceeds-max, lines 1774-1776), seq_level_idx <= lcr_max_level_idx[i] (lcr/ptl-level-exceeds-max, 1782-1784), seq_tier <= lcr_tier_flag[i] (lcr/ptl-tier-exceeds-max, 1793-1795), and seq_max_mlayer_cnt_minus_1+1 <= lcr_max_mlayer_count[i] (lcr/ptl-mlayer-count-exceeds-max, 1808-1810), for each sequence header activated by the xlayer-i sub-bitstream (<= semantics, equality passes; absent PTL info compares nothing). The §6.8.5 sentence keys the PTL on the *local* LCR (\"associated with the local LCR ... indicated in an extended layer with obu_xlayer_id equal to i\"), so the local record's lcr_seq_profile_tier_level_info(xlayerId) is snapshotted into the §6.4.1 association at association time (LcrAssociation.local_ptl); a global record carrying lcr_seq_profile_tier_level_info(i) for that xlayer is used as the fallback when the association resolved a global record. Comparisons run from on_sequence_activation against the frame-confirmed activated header; a non-identical LCR redefinition re-checks at the next activation via the content-fingerprinted dedup key (LcrPtlFindingKey); suppressed under ExternalHlsMode::Provided that declares a sequence header. Residual (partial): (2) Annex-A range enforcement on the LCR-declared maxima lcr_seq_profile_idc[i]/lcr_max_level_idx[i]/lcr_tier_flag[i]/lcr_max_mlayer_count[i] (each 'shall not contain values outside those specified in Annex A') is NOT in this change — only lcr_max_level_idx[i] maps onto Table A.7's value space (annex-a/level-reserved territory), and the profile/tier/mlayer-count value spaces and the lcr_max_level_idx wiring stay on the Annex A profile/level/tier table backlog; (3) lsptli_reserved_2bits==0 (lines 1812-1814) is decoder-ignored, so it is at most a producer-anomaly warning, not yet emitted; and no AVM differential oracle has been run (avm_diff pending)."
+notes = "Child of AV2-5.8-LAYER-CONFIG-RECORD; parsed by the §5.8 parser in layer_config_record.rs and tested there. §6.8.5 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-5, lines 1768-1814) PTL-vs-activated-sequence-header ceilings now LAND under lcr-ptl-activated-sequence-agreement in splot-validate (crates/splot-validate/src/context.rs, check_lcr_ptl_ceilings): when lcr_seq_profile_tier_level_info(i) is present in the LCR activated by extended layer i's frame-confirmed sequence header, seq_profile_idc <= lcr_seq_profile_idc[i] (lcr/ptl-profile-exceeds-max, lines 1774-1776), seq_level_idx <= lcr_max_level_idx[i] (lcr/ptl-level-exceeds-max, 1782-1784), seq_tier <= lcr_tier_flag[i] (lcr/ptl-tier-exceeds-max, 1793-1795), and seq_max_mlayer_cnt_minus_1+1 <= lcr_max_mlayer_count[i] (lcr/ptl-mlayer-count-exceeds-max, 1808-1810), for each sequence header activated by the xlayer-i sub-bitstream (<= semantics, equality passes; absent PTL info compares nothing). The §6.8.5 sentence keys the PTL on the *local* LCR (\"associated with the local LCR ... indicated in an extended layer with obu_xlayer_id equal to i\"), so the local record's lcr_seq_profile_tier_level_info(xlayerId) is snapshotted into the §6.4.1 association at association time (LcrAssociation.local_ptl); a global record carrying lcr_seq_profile_tier_level_info(i) for that xlayer is used as the fallback when the association resolved a global record. Comparisons run from on_sequence_activation against the frame-confirmed activated header; a non-identical LCR redefinition re-checks at the next activation via the content-fingerprinted dedup key (LcrPtlFindingKey); suppressed under ExternalHlsMode::Provided that declares a sequence header. Residual (partial): (2) Annex-A range enforcement on the LCR-declared maxima lcr_seq_profile_idc[i]/lcr_max_level_idx[i]/lcr_tier_flag[i]/lcr_max_mlayer_count[i] (each 'shall not contain values outside those specified in Annex A') is NOT in this change — only lcr_max_level_idx[i] maps onto Table A.7's value space (annex-a/level-reserved territory), and the profile/tier/mlayer-count value spaces and the lcr_max_level_idx wiring stay on the Annex A profile/level/tier table backlog; (3) lsptli_reserved_2bits==0 (lines 1812-1814) is decoder-ignored, so it is at most a producer-anomaly warning, not yet emitted; and no AVM differential oracle has been run (avm_diff pending). WRITER: serialized by write_layer_config_record (the §5.8 umbrella writer, crates/splot-core/src/write/layer_config_record.rs), which inverts the whole §5.8.1-5.8.9 nest; round-trip proof on AV2-5.8-LAYER-CONFIG-RECORD."
 
 [feature.status]
 mapped = "done"
 types = "done"
 parse = "done"
 validate = "partial"
-write = "todo"
+write = "done"
 encode = "todo"
 decode_check = "done"
 tests = "done"
@@ -1490,7 +1491,7 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/layer_config_record.rs::tests", "crates/splot-validate/src/validator/tests/lcr_ptl.rs::lcr_ptl_level_exceeds_max_is_flagged", "crates/splot-validate/src/validator/tests/lcr_ptl.rs::lcr_ptl_profile_exceeds_max_is_flagged", "crates/splot-validate/src/validator/tests/lcr_ptl.rs::lcr_ptl_tier_exceeds_max_is_flagged", "crates/splot-validate/src/validator/tests/lcr_ptl.rs::lcr_ptl_mlayer_count_exceeds_max_is_flagged", "crates/splot-validate/src/validator/tests/lcr_ptl.rs::lcr_ptl_equality_passes", "crates/splot-validate/src/validator/tests/lcr_ptl.rs::lcr_ptl_absent_info_compares_nothing", "crates/splot-validate/src/validator/tests/lcr_ptl.rs::lcr_ptl_unconfirmed_activation_is_silent_then_fires_on_frame", "crates/splot-validate/src/validator/tests/lcr_ptl.rs::lcr_ptl_redefinition_rechecks_affected_layer", "crates/splot-validate/src/validator/tests/lcr_ptl.rs::lcr_ptl_global_record_ceiling_is_checked"]
+tests = ["crates/splot-core/src/write/layer_config_record.rs::tests", "crates/splot-core/src/headers/layer_config_record.rs::tests", "crates/splot-validate/src/validator/tests/lcr_ptl.rs::lcr_ptl_level_exceeds_max_is_flagged", "crates/splot-validate/src/validator/tests/lcr_ptl.rs::lcr_ptl_profile_exceeds_max_is_flagged", "crates/splot-validate/src/validator/tests/lcr_ptl.rs::lcr_ptl_tier_exceeds_max_is_flagged", "crates/splot-validate/src/validator/tests/lcr_ptl.rs::lcr_ptl_mlayer_count_exceeds_max_is_flagged", "crates/splot-validate/src/validator/tests/lcr_ptl.rs::lcr_ptl_equality_passes", "crates/splot-validate/src/validator/tests/lcr_ptl.rs::lcr_ptl_absent_info_compares_nothing", "crates/splot-validate/src/validator/tests/lcr_ptl.rs::lcr_ptl_unconfirmed_activation_is_silent_then_fires_on_frame", "crates/splot-validate/src/validator/tests/lcr_ptl.rs::lcr_ptl_redefinition_rechecks_affected_layer", "crates/splot-validate/src/validator/tests/lcr_ptl.rs::lcr_ptl_global_record_ceiling_is_checked"]
 commands = ["cargo test -p splot-core lcr", "cargo test -p splot-validate lcr_ptl"]
 fixtures = []
 diagnostics = ["lcr/ptl-profile-exceeds-max", "lcr/ptl-level-exceeds-max", "lcr/ptl-tier-exceeds-max", "lcr/ptl-mlayer-count-exceeds-max"]
@@ -1508,14 +1509,14 @@ openspec_change = "hls-lcr-atlas-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child of AV2-5.8-LAYER-CONFIG-RECORD; parsed by the §5.8 parser in layer_config_record.rs and tested there. §6.8.6 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-6, lines 1818-1834) states one requirement of bitstream conformance — RemainingLcrPayloadBits shall not be less than 0 (lines 1833-1834) — parse-enforced in parse_lcr_global_payload (crates/splot-core/src/headers/layer_config_record.rs:563) and surfaced as lcr/payload-size-overflow. lcr_remaining_payload_bit is decoder-ignored, so nothing further is locally decidable for §6.8.6."
+notes = "Child of AV2-5.8-LAYER-CONFIG-RECORD; parsed by the §5.8 parser in layer_config_record.rs and tested there. §6.8.6 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-6, lines 1818-1834) states one requirement of bitstream conformance — RemainingLcrPayloadBits shall not be less than 0 (lines 1833-1834) — parse-enforced in parse_lcr_global_payload (crates/splot-core/src/headers/layer_config_record.rs:563) and surfaced as lcr/payload-size-overflow. lcr_remaining_payload_bit is decoder-ignored, so nothing further is locally decidable for §6.8.6. WRITER: serialized by write_layer_config_record (the §5.8 umbrella writer, crates/splot-core/src/write/layer_config_record.rs), which inverts the whole §5.8.1-5.8.9 nest; round-trip proof on AV2-5.8-LAYER-CONFIG-RECORD."
 
 [feature.status]
 mapped = "done"
 types = "done"
 parse = "done"
 validate = "done"
-write = "todo"
+write = "done"
 encode = "todo"
 decode_check = "done"
 tests = "done"
@@ -1523,7 +1524,7 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/layer_config_record.rs::tests::global_payload_too_small_size_is_overflow"]
+tests = ["crates/splot-core/src/write/layer_config_record.rs::tests", "crates/splot-core/src/headers/layer_config_record.rs::tests::global_payload_too_small_size_is_overflow"]
 commands = ["cargo test -p splot-core lcr"]
 fixtures = []
 diagnostics = ["lcr/payload-size-overflow"]
@@ -1541,14 +1542,14 @@ openspec_change = "hls-lcr-atlas-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child of AV2-5.8-LAYER-CONFIG-RECORD; parsed by the §5.8 parser in layer_config_record.rs and tested there. §6.8.7 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-7, lines 1838-1915) states no requirement of bitstream conformance: it is a presence-flag / purpose-id / priority / rendering-method container whose only constrained value (lcr_xlayer_rendering_method 5..255) is a reserved interpretation that decoders shall ignore. The structure is validated by the §5.8 syntax parse: the LayerConfigRecordSyntax check (registry id lcr/syntax in crates/splot-validate/src/checks/mod.rs:601) emits no per-field diagnostic for this child, so a malformed payload surfaces the actually-emitted parse-failure rule ids via syntax_error_diagnostic()/payload_parse_error_diagnostic() (bitstream/parse-error, the trailing-bits/* ids, and obu-header/extension-flag-not-zero for the extensible payload tail); nothing further is locally decidable for §6.8.7."
+notes = "Child of AV2-5.8-LAYER-CONFIG-RECORD; parsed by the §5.8 parser in layer_config_record.rs and tested there. §6.8.7 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-7, lines 1838-1915) states no requirement of bitstream conformance: it is a presence-flag / purpose-id / priority / rendering-method container whose only constrained value (lcr_xlayer_rendering_method 5..255) is a reserved interpretation that decoders shall ignore. The structure is validated by the §5.8 syntax parse: the LayerConfigRecordSyntax check (registry id lcr/syntax in crates/splot-validate/src/checks/mod.rs:601) emits no per-field diagnostic for this child, so a malformed payload surfaces the actually-emitted parse-failure rule ids via syntax_error_diagnostic()/payload_parse_error_diagnostic() (bitstream/parse-error, the trailing-bits/* ids, and obu-header/extension-flag-not-zero for the extensible payload tail); nothing further is locally decidable for §6.8.7. WRITER: serialized by write_layer_config_record (the §5.8 umbrella writer, crates/splot-core/src/write/layer_config_record.rs), which inverts the whole §5.8.1-5.8.9 nest; round-trip proof on AV2-5.8-LAYER-CONFIG-RECORD."
 
 [feature.status]
 mapped = "done"
 types = "done"
 parse = "done"
 validate = "done"
-write = "todo"
+write = "done"
 encode = "todo"
 decode_check = "done"
 tests = "done"
@@ -1556,7 +1557,7 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/layer_config_record.rs::tests"]
+tests = ["crates/splot-core/src/write/layer_config_record.rs::tests", "crates/splot-core/src/headers/layer_config_record.rs::tests"]
 commands = ["cargo test -p splot-core lcr"]
 fixtures = []
 diagnostics = ["bitstream/parse-error", "obu-header/extension-flag-not-zero", "trailing-bits/empty", "trailing-bits/missing-one-bit", "trailing-bits/zero-bit-not-zero"]
@@ -1574,14 +1575,14 @@ openspec_change = "lcr-ptl-activated-sequence-agreement"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child of AV2-5.8-LAYER-CONFIG-RECORD; parsed by the §5.8 parser in layer_config_record.rs and tested there. §6.8.8 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-8, lines 1918-1969) rep-info equality now LANDS under lcr-ptl-activated-sequence-agreement in splot-validate (crates/splot-validate/src/context.rs, check_lcr_rep_info_agreement), resolving the honesty-sweep (PR #45) residual note: for the LCR activated by extended layer j's frame-confirmed sequence header, lcr_max_pic_width[i][j] == max_frame_width_minus_1 + 1, lcr_max_pic_height[i][j] == max_frame_height_minus_1 + 1 (lines 1925-1933, always present), lcr_bit_depth_idc == bit_depth_idc and lcr_chroma_format_idc == chroma_format_idc (lines 1950-1958, gated on lcr_format_info_present_flag), lcr_cropping_window_present_flag == seq_cropping_window_present_flag and (when the LCR cropping window is present) lcr_cropping_win_*_offset == seq_cropping_win_*_offset (lines 1943-1968). Single rule lcr/rep-info-mismatch (error, exact equality), the disagreeing field named in the message; absent rep-info / absent format-info compares nothing for those fields. seq_cropping_window_present_flag is now retained on SequenceHeaderGeneral (it was previously collapsed to a default cropping window) so the flag-equality sentence is exact. The rep-info lives on the *local* record at LcrLocalInfo.xlayer_info.rep_info (isGlobal=0) and on the *global* payload at LcrGlobalPayload.xlayer_info.rep_info (isGlobal=1); the association-time snapshot (LcrAssociation.local_rep_info / global_rep_info_by_xlayer) keeps the comparison pinned to the revision the header associated to. Comparisons run from on_sequence_activation against the frame-confirmed activated header; a non-identical LCR redefinition re-checks at the next activation via the content-fingerprinted dedup key (LcrRepInfoFindingKey); suppressed under ExternalHlsMode::Provided that declares a sequence header. Residual (partial): no AVM differential oracle has been run (avm_diff pending)."
+notes = "Child of AV2-5.8-LAYER-CONFIG-RECORD; parsed by the §5.8 parser in layer_config_record.rs and tested there. §6.8.8 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-8, lines 1918-1969) rep-info equality now LANDS under lcr-ptl-activated-sequence-agreement in splot-validate (crates/splot-validate/src/context.rs, check_lcr_rep_info_agreement), resolving the honesty-sweep (PR #45) residual note: for the LCR activated by extended layer j's frame-confirmed sequence header, lcr_max_pic_width[i][j] == max_frame_width_minus_1 + 1, lcr_max_pic_height[i][j] == max_frame_height_minus_1 + 1 (lines 1925-1933, always present), lcr_bit_depth_idc == bit_depth_idc and lcr_chroma_format_idc == chroma_format_idc (lines 1950-1958, gated on lcr_format_info_present_flag), lcr_cropping_window_present_flag == seq_cropping_window_present_flag and (when the LCR cropping window is present) lcr_cropping_win_*_offset == seq_cropping_win_*_offset (lines 1943-1968). Single rule lcr/rep-info-mismatch (error, exact equality), the disagreeing field named in the message; absent rep-info / absent format-info compares nothing for those fields. seq_cropping_window_present_flag is now retained on SequenceHeaderGeneral (it was previously collapsed to a default cropping window) so the flag-equality sentence is exact. The rep-info lives on the *local* record at LcrLocalInfo.xlayer_info.rep_info (isGlobal=0) and on the *global* payload at LcrGlobalPayload.xlayer_info.rep_info (isGlobal=1); the association-time snapshot (LcrAssociation.local_rep_info / global_rep_info_by_xlayer) keeps the comparison pinned to the revision the header associated to. Comparisons run from on_sequence_activation against the frame-confirmed activated header; a non-identical LCR redefinition re-checks at the next activation via the content-fingerprinted dedup key (LcrRepInfoFindingKey); suppressed under ExternalHlsMode::Provided that declares a sequence header. Residual (partial): no AVM differential oracle has been run (avm_diff pending). WRITER: serialized by write_layer_config_record (the §5.8 umbrella writer, crates/splot-core/src/write/layer_config_record.rs), which inverts the whole §5.8.1-5.8.9 nest; round-trip proof on AV2-5.8-LAYER-CONFIG-RECORD."
 
 [feature.status]
 mapped = "done"
 types = "done"
 parse = "done"
 validate = "done"
-write = "todo"
+write = "done"
 encode = "todo"
 decode_check = "done"
 tests = "done"
@@ -1589,7 +1590,7 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/layer_config_record.rs::tests", "crates/splot-validate/src/validator/tests/lcr_rep_info.rs::lcr_rep_info_width_mismatch_is_flagged", "crates/splot-validate/src/validator/tests/lcr_rep_info.rs::lcr_rep_info_height_bit_depth_chroma_mismatches_are_flagged", "crates/splot-validate/src/validator/tests/lcr_rep_info.rs::lcr_rep_info_cropping_present_flag_mismatch_is_flagged", "crates/splot-validate/src/validator/tests/lcr_rep_info.rs::lcr_rep_info_cropping_offset_mismatch_is_flagged", "crates/splot-validate/src/validator/tests/lcr_rep_info.rs::lcr_rep_info_full_agreement_passes", "crates/splot-validate/src/validator/tests/lcr_rep_info.rs::lcr_rep_info_absent_format_info_compares_nothing", "crates/splot-validate/src/validator/tests/lcr_rep_info.rs::lcr_rep_info_absent_rep_info_compares_nothing", "crates/splot-validate/src/validator/tests/lcr_rep_info.rs::lcr_rep_info_global_record_is_checked", "crates/splot-validate/src/validator/tests/lcr_rep_info.rs::lcr_rep_info_unconfirmed_activation_is_silent_then_fires_on_frame", "crates/splot-validate/src/validator/tests/lcr_rep_info.rs::lcr_rep_info_redefinition_rechecks_affected_layer"]
+tests = ["crates/splot-core/src/write/layer_config_record.rs::tests", "crates/splot-core/src/headers/layer_config_record.rs::tests", "crates/splot-validate/src/validator/tests/lcr_rep_info.rs::lcr_rep_info_width_mismatch_is_flagged", "crates/splot-validate/src/validator/tests/lcr_rep_info.rs::lcr_rep_info_height_bit_depth_chroma_mismatches_are_flagged", "crates/splot-validate/src/validator/tests/lcr_rep_info.rs::lcr_rep_info_cropping_present_flag_mismatch_is_flagged", "crates/splot-validate/src/validator/tests/lcr_rep_info.rs::lcr_rep_info_cropping_offset_mismatch_is_flagged", "crates/splot-validate/src/validator/tests/lcr_rep_info.rs::lcr_rep_info_full_agreement_passes", "crates/splot-validate/src/validator/tests/lcr_rep_info.rs::lcr_rep_info_absent_format_info_compares_nothing", "crates/splot-validate/src/validator/tests/lcr_rep_info.rs::lcr_rep_info_absent_rep_info_compares_nothing", "crates/splot-validate/src/validator/tests/lcr_rep_info.rs::lcr_rep_info_global_record_is_checked", "crates/splot-validate/src/validator/tests/lcr_rep_info.rs::lcr_rep_info_unconfirmed_activation_is_silent_then_fires_on_frame", "crates/splot-validate/src/validator/tests/lcr_rep_info.rs::lcr_rep_info_redefinition_rechecks_affected_layer"]
 commands = ["cargo test -p splot-core lcr", "cargo test -p splot-validate lcr_rep_info"]
 fixtures = []
 diagnostics = ["lcr/rep-info-mismatch"]
@@ -1607,14 +1608,14 @@ openspec_change = "hls-lcr-atlas-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child of AV2-5.8-LAYER-CONFIG-RECORD; parsed by the §5.8 parser in layer_config_record.rs and tested there. The §6.8.9 dependency-map agreement of the activated LCR's lcr_mlayer_map/lcr_tlayer_map against the activated sequence header is checked in splot-validate (diagnostics recorded on the umbrella row). reference-state-and-random-access adds the §6.8.9 pure-arithmetic expected-dimension bound: lcr/max-expected-dims-exceed-sequence-max fires when an activated LCR's lcr_max_expected_width[..][j] / lcr_max_expected_height[..][j] (per embedded layer, present when lcr_same_sh_max_resolution_flag == 0) exceeds the activated sequence header's max_frame_width/height_minus_1 + 1 (mirror docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-9 :2135-2148). The LcrEmbeddedMaps association snapshot now retains the per-layer expected dims, and check_lcr_expected_dims_bounds (context.rs) joins them against the frame-confirmed activated sequence header (same Disabled-only / strict-activation gating as the §6.8.8 rep-info check, anchored at the LCR OBU). RESIDUAL: the companion per-frame FrameWidth/FrameHeight <= lcr_max_expected_* clause (mirror :2137-2139 / :2144-2146) needs each frame's (obu_xlayer_id, obu_mlayer_id) -> (xId, j) mapping joined against the activated LCR and stays future; the §6.8.9 reserved-value decoder-ignore rules also stay future, so validate is partial. BLOCKED: the §6.8.9 per-frame FrameWidth/FrameHeight <= lcr_max_expected_* clause needs a per-frame (obu_xlayer_id, obu_mlayer_id) -> (xId, j) frame-to-LCR-record mapping the validator does not model yet. (The activated-LCR association itself IS modeled — snapshot_lcr_association / activated_global_lcr_in_window — so only the per-frame embedded-layer join is missing.)"
+notes = "Child of AV2-5.8-LAYER-CONFIG-RECORD; parsed by the §5.8 parser in layer_config_record.rs and tested there. The §6.8.9 dependency-map agreement of the activated LCR's lcr_mlayer_map/lcr_tlayer_map against the activated sequence header is checked in splot-validate (diagnostics recorded on the umbrella row). reference-state-and-random-access adds the §6.8.9 pure-arithmetic expected-dimension bound: lcr/max-expected-dims-exceed-sequence-max fires when an activated LCR's lcr_max_expected_width[..][j] / lcr_max_expected_height[..][j] (per embedded layer, present when lcr_same_sh_max_resolution_flag == 0) exceeds the activated sequence header's max_frame_width/height_minus_1 + 1 (mirror docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-9 :2135-2148). The LcrEmbeddedMaps association snapshot now retains the per-layer expected dims, and check_lcr_expected_dims_bounds (context.rs) joins them against the frame-confirmed activated sequence header (same Disabled-only / strict-activation gating as the §6.8.8 rep-info check, anchored at the LCR OBU). RESIDUAL: the companion per-frame FrameWidth/FrameHeight <= lcr_max_expected_* clause (mirror :2137-2139 / :2144-2146) needs each frame's (obu_xlayer_id, obu_mlayer_id) -> (xId, j) mapping joined against the activated LCR and stays future; the §6.8.9 reserved-value decoder-ignore rules also stay future, so validate is partial. BLOCKED: the §6.8.9 per-frame FrameWidth/FrameHeight <= lcr_max_expected_* clause needs a per-frame (obu_xlayer_id, obu_mlayer_id) -> (xId, j) frame-to-LCR-record mapping the validator does not model yet. (The activated-LCR association itself IS modeled — snapshot_lcr_association / activated_global_lcr_in_window — so only the per-frame embedded-layer join is missing.) WRITER: serialized by write_layer_config_record (the §5.8 umbrella writer, crates/splot-core/src/write/layer_config_record.rs), which inverts the whole §5.8.1-5.8.9 nest; round-trip proof on AV2-5.8-LAYER-CONFIG-RECORD."
 
 [feature.status]
 mapped = "done"
 types = "done"
 parse = "done"
 validate = "partial"
-write = "todo"
+write = "done"
 encode = "todo"
 decode_check = "done"
 tests = "done"
@@ -1622,7 +1623,7 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/layer_config_record.rs::tests", "crates/splot-validate/src/validator/tests/layer_dependency_core.rs::lcr_mlayer_dependency_missing_is_flagged", "crates/splot-validate/src/validator/tests/layer_dependency_core.rs::lcr_tlayer_dependency_missing_is_flagged", "crates/splot-validate/src/validator/tests/layer_dependency_core.rs::lcr_max_expected_dims_exceed_sequence_max_is_flagged", "crates/splot-validate/src/validator/tests/layer_dependency_core.rs::lcr_max_expected_dims_at_sequence_max_boundary_is_silent", "crates/splot-validate/src/validator/tests/layer_dependency_core.rs::lcr_max_expected_dims_without_frame_confirmation_is_silent", "crates/splot-validate/src/validator/tests/layer_dependency_core.rs::lcr_max_expected_dims_suppressed_under_external_provided"]
+tests = ["crates/splot-core/src/write/layer_config_record.rs::tests", "crates/splot-core/src/headers/layer_config_record.rs::tests", "crates/splot-validate/src/validator/tests/layer_dependency_core.rs::lcr_mlayer_dependency_missing_is_flagged", "crates/splot-validate/src/validator/tests/layer_dependency_core.rs::lcr_tlayer_dependency_missing_is_flagged", "crates/splot-validate/src/validator/tests/layer_dependency_core.rs::lcr_max_expected_dims_exceed_sequence_max_is_flagged", "crates/splot-validate/src/validator/tests/layer_dependency_core.rs::lcr_max_expected_dims_at_sequence_max_boundary_is_silent", "crates/splot-validate/src/validator/tests/layer_dependency_core.rs::lcr_max_expected_dims_without_frame_confirmation_is_silent", "crates/splot-validate/src/validator/tests/layer_dependency_core.rs::lcr_max_expected_dims_suppressed_under_external_provided"]
 commands = ["cargo test -p splot-core lcr", "cargo test -p splot-validate lcr_"]
 fixtures = []
 diagnostics = ["lcr/max-expected-dims-exceed-sequence-max"]
@@ -1640,14 +1641,14 @@ openspec_change = "hls-lcr-atlas-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child of AV2-5.8-LAYER-CONFIG-RECORD; parsed by the §5.8 parser in layer_config_record.rs and tested there. §6.8.10 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-10, lines 2151-2167) states no requirement of bitstream conformance: layer_color_* are defined to share the interpretation of the ops_color_* elements with no extra §6.8.10 constraint. The structure is validated by the §5.8 syntax parse: the LayerConfigRecordSyntax check (registry id lcr/syntax in crates/splot-validate/src/checks/mod.rs:601) emits no per-field diagnostic for this child, so a malformed payload surfaces the actually-emitted parse-failure rule ids via syntax_error_diagnostic()/payload_parse_error_diagnostic() (bitstream/parse-error, the trailing-bits/* ids, and obu-header/extension-flag-not-zero for the extensible payload tail); nothing further is locally decidable for §6.8.10."
+notes = "Child of AV2-5.8-LAYER-CONFIG-RECORD; parsed by the §5.8 parser in layer_config_record.rs and tested there. §6.8.10 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-8-10, lines 2151-2167) states no requirement of bitstream conformance: layer_color_* are defined to share the interpretation of the ops_color_* elements with no extra §6.8.10 constraint. The structure is validated by the §5.8 syntax parse: the LayerConfigRecordSyntax check (registry id lcr/syntax in crates/splot-validate/src/checks/mod.rs:601) emits no per-field diagnostic for this child, so a malformed payload surfaces the actually-emitted parse-failure rule ids via syntax_error_diagnostic()/payload_parse_error_diagnostic() (bitstream/parse-error, the trailing-bits/* ids, and obu-header/extension-flag-not-zero for the extensible payload tail); nothing further is locally decidable for §6.8.10. WRITER: serialized by write_layer_config_record (the §5.8 umbrella writer, crates/splot-core/src/write/layer_config_record.rs), which inverts the whole §5.8.1-5.8.9 nest; round-trip proof on AV2-5.8-LAYER-CONFIG-RECORD."
 
 [feature.status]
 mapped = "done"
 types = "done"
 parse = "done"
 validate = "done"
-write = "todo"
+write = "done"
 encode = "todo"
 decode_check = "done"
 tests = "done"
@@ -1655,7 +1656,7 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/layer_config_record.rs::tests"]
+tests = ["crates/splot-core/src/write/layer_config_record.rs::tests", "crates/splot-core/src/headers/layer_config_record.rs::tests"]
 commands = ["cargo test -p splot-core lcr"]
 fixtures = []
 diagnostics = ["bitstream/parse-error", "obu-header/extension-flag-not-zero", "trailing-bits/empty", "trailing-bits/missing-one-bit", "trailing-bits/zero-bit-not-zero"]
@@ -1739,14 +1740,14 @@ openspec_change = "hls-lcr-atlas-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child of AV2-5.9-ATLAS-SEGMENT; parsed by the §5.9 parser in atlas_segment.rs and tested there. The §6.9.3 cluster's requirements of bitstream conformance (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-9-3-1, lines 2358-2368 and #s-6-9-3-2, lines 2403-2404) are all locally decidable and landed: ats_num_region_columns_minus_1 < MAX_ATLAS_COLS and ats_num_region_rows_minus_1 < MAX_ATLAS_ROWS as atlas/region-dimension-out-of-range, and NumRegionsInAtlas <= MAX_NUM_ATLAS_SEGMENTS (single-region mapping) as atlas/segment-count-out-of-range. The remaining region geometry (column widths / row heights) carries no stated §6.9.3 conformance requirement, so nothing further is locally decidable for this child."
+notes = "Child of AV2-5.9-ATLAS-SEGMENT; parsed by the §5.9 parser in atlas_segment.rs and tested there. The §6.9.3 cluster's requirements of bitstream conformance (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-9-3-1, lines 2358-2368 and #s-6-9-3-2, lines 2403-2404) are all locally decidable and landed: ats_num_region_columns_minus_1 < MAX_ATLAS_COLS and ats_num_region_rows_minus_1 < MAX_ATLAS_ROWS as atlas/region-dimension-out-of-range, and NumRegionsInAtlas <= MAX_NUM_ATLAS_SEGMENTS (single-region mapping) as atlas/segment-count-out-of-range. The remaining region geometry (column widths / row heights) carries no stated §6.9.3 conformance requirement, so nothing further is locally decidable for this child. WRITER: serialized by write_atlas_segment (the §5.9 umbrella writer, crates/splot-core/src/write/atlas_segment.rs), which inverts all five atlas-mode bodies; round-trip proof on AV2-5.9-ATLAS-SEGMENT."
 
 [feature.status]
 mapped = "done"
 types = "done"
 parse = "done"
 validate = "done"
-write = "todo"
+write = "done"
 encode = "todo"
 decode_check = "done"
 tests = "done"
@@ -1754,7 +1755,7 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/atlas_segment.rs::tests::rejects_region_dimension_out_of_range", "crates/splot-core/src/headers/atlas_segment.rs::tests::rejects_segment_count_out_of_range"]
+tests = ["crates/splot-core/src/write/atlas_segment.rs::tests", "crates/splot-core/src/headers/atlas_segment.rs::tests::rejects_region_dimension_out_of_range", "crates/splot-core/src/headers/atlas_segment.rs::tests::rejects_segment_count_out_of_range"]
 commands = ["cargo test -p splot-core atlas"]
 fixtures = []
 diagnostics = ["atlas/region-dimension-out-of-range", "atlas/segment-count-out-of-range"]
@@ -1772,14 +1773,14 @@ openspec_change = "hls-lcr-atlas-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child of AV2-5.9-ATLAS-SEGMENT; parsed by the §5.9 parser in atlas_segment.rs and tested there. §6.9.4 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-9-4, lines 2430-2465) states no requirement of bitstream conformance of its own: ats_msi_* share the semantics of the §6.9.6 ats_* elements and the background color values are inference-only. The locally decidable segment-count bound is parse-enforced in parse_ats_multistream_info (crates/splot-core/src/headers/atlas_segment.rs:504) as atlas/segment-count-out-of-range; cross-OBU multistream-needs-GLOBAL_XLAYER_ID and duplicate-input-stream-id are validated under AV2-5.9-ATLAS-SEGMENT. Nothing further is locally decidable for §6.9.4. The atlas_multistream_duplicate_input_stream_id_is_flagged proof test exercises the parent-level atlas/duplicate-input-stream-id check (owned by AV2-5.9-ATLAS-SEGMENT) in the multistream context as a regression guard; this row's own diagnostic is atlas/segment-count-out-of-range."
+notes = "Child of AV2-5.9-ATLAS-SEGMENT; parsed by the §5.9 parser in atlas_segment.rs and tested there. §6.9.4 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-9-4, lines 2430-2465) states no requirement of bitstream conformance of its own: ats_msi_* share the semantics of the §6.9.6 ats_* elements and the background color values are inference-only. The locally decidable segment-count bound is parse-enforced in parse_ats_multistream_info (crates/splot-core/src/headers/atlas_segment.rs:504) as atlas/segment-count-out-of-range; cross-OBU multistream-needs-GLOBAL_XLAYER_ID and duplicate-input-stream-id are validated under AV2-5.9-ATLAS-SEGMENT. Nothing further is locally decidable for §6.9.4. The atlas_multistream_duplicate_input_stream_id_is_flagged proof test exercises the parent-level atlas/duplicate-input-stream-id check (owned by AV2-5.9-ATLAS-SEGMENT) in the multistream context as a regression guard; this row's own diagnostic is atlas/segment-count-out-of-range. WRITER: serialized by write_atlas_segment (the §5.9 umbrella writer, crates/splot-core/src/write/atlas_segment.rs), which inverts all five atlas-mode bodies; round-trip proof on AV2-5.9-ATLAS-SEGMENT."
 
 [feature.status]
 mapped = "done"
 types = "done"
 parse = "done"
 validate = "done"
-write = "todo"
+write = "done"
 encode = "todo"
 decode_check = "done"
 tests = "done"
@@ -1787,7 +1788,7 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/atlas_segment.rs::tests::rejects_segment_count_out_of_range", "crates/splot-validate/src/validator/tests/lcr_atlas.rs::atlas_multistream_duplicate_input_stream_id_is_flagged"]
+tests = ["crates/splot-core/src/write/atlas_segment.rs::tests", "crates/splot-core/src/headers/atlas_segment.rs::tests::rejects_segment_count_out_of_range", "crates/splot-validate/src/validator/tests/lcr_atlas.rs::atlas_multistream_duplicate_input_stream_id_is_flagged"]
 commands = ["cargo test -p splot-core atlas", "cargo test -p splot-validate atlas_multistream"]
 fixtures = []
 diagnostics = ["atlas/segment-count-out-of-range"]
@@ -1805,14 +1806,14 @@ openspec_change = "hls-lcr-atlas-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child of AV2-5.9-ATLAS-SEGMENT; parsed by the §5.9 parser in atlas_segment.rs and tested there. §6.9.5 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-9-5, lines 2468-2490) states no requirement of bitstream conformance: ats_msi_alpha_segments_present_flag and ats_msi_alpha_segment_flag are presence/inference-only flags layered on the §6.9.4 multistream info. The locally decidable segment-count bound shared with §6.9.4 is parse-enforced as atlas/segment-count-out-of-range; nothing further is locally decidable for §6.9.5."
+notes = "Child of AV2-5.9-ATLAS-SEGMENT; parsed by the §5.9 parser in atlas_segment.rs and tested there. §6.9.5 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-9-5, lines 2468-2490) states no requirement of bitstream conformance: ats_msi_alpha_segments_present_flag and ats_msi_alpha_segment_flag are presence/inference-only flags layered on the §6.9.4 multistream info. The locally decidable segment-count bound shared with §6.9.4 is parse-enforced as atlas/segment-count-out-of-range; nothing further is locally decidable for §6.9.5. WRITER: serialized by write_atlas_segment (the §5.9 umbrella writer, crates/splot-core/src/write/atlas_segment.rs), which inverts all five atlas-mode bodies; round-trip proof on AV2-5.9-ATLAS-SEGMENT."
 
 [feature.status]
 mapped = "done"
 types = "done"
 parse = "done"
 validate = "done"
-write = "todo"
+write = "done"
 encode = "todo"
 decode_check = "done"
 tests = "done"
@@ -1820,7 +1821,7 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/atlas_segment.rs::tests::rejects_segment_count_out_of_range"]
+tests = ["crates/splot-core/src/write/atlas_segment.rs::tests", "crates/splot-core/src/headers/atlas_segment.rs::tests::rejects_segment_count_out_of_range"]
 commands = ["cargo test -p splot-core atlas"]
 fixtures = []
 diagnostics = ["atlas/segment-count-out-of-range"]
@@ -1838,14 +1839,14 @@ openspec_change = "hls-lcr-atlas-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Child of AV2-5.9-ATLAS-SEGMENT; parsed by the §5.9 parser in atlas_segment.rs and tested there. §6.9.6 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-9-6, lines 2493-2528) states two locally decidable constraints, both landed: ats_num_atlas_segments_minus_1 < MAX_NUM_ATLAS_SEGMENTS (lines 2512-2513) as atlas/segment-count-out-of-range, and 'all values in ats_input_stream_id[] shall be unique' (line 2518) as atlas/duplicate-input-stream-id. The segment top-left/width/height geometry carries no stated §6.9.6 conformance requirement, so nothing further is locally decidable for §6.9.6."
+notes = "Child of AV2-5.9-ATLAS-SEGMENT; parsed by the §5.9 parser in atlas_segment.rs and tested there. §6.9.6 (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-9-6, lines 2493-2528) states two locally decidable constraints, both landed: ats_num_atlas_segments_minus_1 < MAX_NUM_ATLAS_SEGMENTS (lines 2512-2513) as atlas/segment-count-out-of-range, and 'all values in ats_input_stream_id[] shall be unique' (line 2518) as atlas/duplicate-input-stream-id. The segment top-left/width/height geometry carries no stated §6.9.6 conformance requirement, so nothing further is locally decidable for §6.9.6. WRITER: serialized by write_atlas_segment (the §5.9 umbrella writer, crates/splot-core/src/write/atlas_segment.rs), which inverts all five atlas-mode bodies; round-trip proof on AV2-5.9-ATLAS-SEGMENT."
 
 [feature.status]
 mapped = "done"
 types = "done"
 parse = "done"
 validate = "done"
-write = "todo"
+write = "done"
 encode = "todo"
 decode_check = "done"
 tests = "done"
@@ -1853,7 +1854,7 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/atlas_segment.rs::tests::rejects_segment_count_out_of_range", "crates/splot-validate/src/validator/tests/lcr_atlas.rs::atlas_duplicate_input_stream_id_is_flagged"]
+tests = ["crates/splot-core/src/write/atlas_segment.rs::tests", "crates/splot-core/src/headers/atlas_segment.rs::tests::rejects_segment_count_out_of_range", "crates/splot-validate/src/validator/tests/lcr_atlas.rs::atlas_duplicate_input_stream_id_is_flagged"]
 commands = ["cargo test -p splot-core atlas", "cargo test -p splot-validate atlas_duplicate"]
 fixtures = []
 diagnostics = ["atlas/segment-count-out-of-range", "atlas/duplicate-input-stream-id"]
@@ -2762,14 +2763,14 @@ openspec_change = "frame-header-core-foundation"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Activation-prefix parser plus a state-aware frame-header core parser that covers selected §5.18.2 / §5.18.3 / §5.18.4 paths (frame kind, output control, order hint, refresh flags, direct/default frame_size(), screen_content_params(), intrabc_params()) and stops with an explicit status before deeper §5.18 syntax. Filtering, quantization, segmentation/tiling, transform/coding modes, global motion, frame film-grain structures, the inter reference map, frame_header_copy(), and tile payload remain future. Under obu-dispatch-frame-payloads the SEF/TIP/bridge family is reached by the stateless dispatcher's PayloadStatus::PrefixParsed arm (crates/splot-core/src/obu.rs): dispatch parses the §5.18.2 activation prefix via parse_frame_header_prefix and reports blocked_on='active sequence header state' for the state-dependent remainder owned here, instead of a blanket Unimplemented. WRITER: the frame-header writer is landing as a layered slice backlog (#4a-#4i, intra path only). #4a (frame-header-writer-prefix) inverts the §5.18.2 activation prefix (write_frame_header_prefix, AV2-5.18.1-FRAME-HEADER-GENERAL write=partial); the umbrella write stays todo until the composing write_frame_header lands (#4i)."
+notes = "Activation-prefix parser plus a state-aware frame-header core parser that covers selected §5.18.2 / §5.18.3 / §5.18.4 paths (frame kind, output control, order hint, refresh flags, direct/default frame_size(), screen_content_params(), intrabc_params()) and stops with an explicit status before deeper §5.18 syntax. Filtering, quantization, segmentation/tiling, transform/coding modes, global motion, frame film-grain structures, the inter reference map, frame_header_copy(), and tile payload remain future. Under obu-dispatch-frame-payloads the SEF/TIP/bridge family is reached by the stateless dispatcher's PayloadStatus::PrefixParsed arm (crates/splot-core/src/obu.rs): dispatch parses the §5.18.2 activation prefix via parse_frame_header_prefix and reports blocked_on='active sequence header state' for the state-dependent remainder owned here, instead of a blanket Unimplemented. WRITER: the frame-header writer is landing as a layered slice backlog (#4a-#4i, intra path only). #4a (frame-header-writer-prefix) inverts the §5.18.2 activation prefix (write_frame_header_prefix, AV2-5.18.1-FRAME-HEADER-GENERAL write=partial); the umbrella write stays todo until the composing write_frame_header lands (#4i). WRITER: the INTRA frame_header() path is inverted by write_frame_header_core (crates/splot-core/src/write/frame_header_core.rs, IntraHeaderComplete); the inter / show-existing paths remain (blocked on the inter frame-header parser), so write stays partial."
 
 [feature.status]
 mapped = "done"
 types = "partial"
 parse = "partial"
 validate = "partial"
-write = "todo"
+write = "partial"
 encode = "todo"
 decode_check = "partial"
 tests = "done"
@@ -2777,7 +2778,7 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/frame/mod.rs::tests", "crates/splot-core/src/headers/frame/info.rs::tests", "crates/splot-core/src/headers/tile_group.rs::tests", "crates/splot-validate/src/validator/tests/hls_frame_header.rs::hls_frame_header_missing_sequence_header_is_flagged"]
+tests = ["crates/splot-core/src/write/frame_header_core.rs::tests", "crates/splot-core/src/headers/frame/mod.rs::tests", "crates/splot-core/src/headers/frame/info.rs::tests", "crates/splot-core/src/headers/tile_group.rs::tests", "crates/splot-validate/src/validator/tests/hls_frame_header.rs::hls_frame_header_missing_sequence_header_is_flagged"]
 commands = ["cargo test -p splot-core frame_header", "cargo test -p splot-core tile_group", "cargo test -p splot-validate frame_header"]
 fixtures = ["tests/fixtures/frame-header-core.av2"]
 diagnostics = ["hls/unavailable-sequence-header", "hls/unavailable-multi-frame-header", "frame-header/seq-header-id-out-of-range", "frame-header/cur-mfh-id-out-of-range"]
