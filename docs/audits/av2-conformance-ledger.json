@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "32bb65936d643aefcd8ee2a7fa1d6eec2ad2c646",
+  "audited_commit": "d71fff0cf4f6a89c414ea81309d11ee908b11b7e",
   "outcome": "success",
   "files": [
     {
@@ -2396,10 +2396,11 @@
     },
     {
       "path": "crates/splot-encode/src/block_symbol_trace.rs",
-      "sha256": "ac0b05ea6d14d3c390e53d424e3a92268cb2eb0705945dd880d874a90d4b7972",
+      "sha256": "23ac1df5ab5f0af0a1c6ee0a6c49e7a3692262f97a2c23fa2056297e539f6ea6",
       "scope_kind": "workspace:splot-encode",
       "feature_ids": [
         "ENC-INTRA-BLOCK-MODE-TRACE",
+        "ENC-INTRA-BLOCK-TRACE-CHROMA-SKIP",
         "ENC-INTRA-BLOCK-TRACE-LUMA-SKIP"
       ],
       "outcome": "success"
@@ -2415,7 +2416,7 @@
     },
     {
       "path": "crates/splot-encode/src/coefficient_tokenization.rs",
-      "sha256": "56f75617f4e7398cddd47df5b01a110bd5cdde6683d4005397994fd21a462cff",
+      "sha256": "73cd3f9e5cb973b69edfbbeb1e4cf8e6d75a01b099c0b789eb6181ca59bb170d",
       "scope_kind": "workspace:splot-encode",
       "feature_ids": [
         "ENC-COEFFICIENT-TOKENIZATION-MINIMAL"
@@ -4611,7 +4612,7 @@
     },
     {
       "path": "docs/ENCODER-GAP-AUDIT.md",
-      "sha256": "6ba8820074b9611789b20fb34edb092f9de5ed85de37ab11cee4e633148de96a",
+      "sha256": "33c3a8240ba26eefef3705d0cc8f99e387daf0ac54236d17a758b5fdb2fffcca",
       "scope_kind": "docs",
       "feature_ids": [
         "CONF-AVM-DIFF-HARNESS",
@@ -4622,6 +4623,7 @@
         "ENC-CONTEXT-STATE-MACHINE",
         "ENC-FORWARD-TRANSFORM-FOUNDATION",
         "ENC-INTRA-BLOCK-MODE-TRACE",
+        "ENC-INTRA-BLOCK-TRACE-CHROMA-SKIP",
         "ENC-INTRA-BLOCK-TRACE-LUMA-SKIP",
         "ENC-INTRA-MODE-SYMBOL-EMISSION",
         "ENC-MINIMAL-HEADER-PLAN",
@@ -4645,7 +4647,7 @@
     },
     {
       "path": "docs/ENCODER-ROADMAP.md",
-      "sha256": "a4b4d7e249242552b5f591aa5bc3b7f60469febe367ac276828e46604b830ce6",
+      "sha256": "5e1b7caed7334ac5f6ab52eccedd33f4f8635530d99eec673b669a22ad8187ea",
       "scope_kind": "docs",
       "feature_ids": [
         "CONF-AVM-DIFF-HARNESS",
@@ -4662,7 +4664,7 @@
     },
     {
       "path": "docs/FEATURE-STATUS.md",
-      "sha256": "c508fd2a0b1b06e875c9cac0c4773993dfc22428f13b729b8cb88f3c55f76209",
+      "sha256": "d528321cac9d339957caf249bc92d68454b0bafbeb76d5d23015b0cc4f8c5dcc",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.10-RG",
@@ -4895,6 +4897,7 @@
         "ENC-CONTEXT-STATE-MACHINE",
         "ENC-FORWARD-TRANSFORM-FOUNDATION",
         "ENC-INTRA-BLOCK-MODE-TRACE",
+        "ENC-INTRA-BLOCK-TRACE-CHROMA-SKIP",
         "ENC-INTRA-BLOCK-TRACE-LUMA-SKIP",
         "ENC-INTRA-MODE-SYMBOL-EMISSION",
         "ENC-INTRA-TOY-V0",
@@ -4998,7 +5001,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "0a2b0a4bb4dd697b17b98a47f9c20936d902f6866f569666ed9279102e8c6642",
+      "sha256": "b8100c2f5b0e50c254f06781404340c5f044f472f6e58507018ae44a4f13de1e",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.10-RG",
@@ -5231,6 +5234,7 @@
         "ENC-CONTEXT-STATE-MACHINE",
         "ENC-FORWARD-TRANSFORM-FOUNDATION",
         "ENC-INTRA-BLOCK-MODE-TRACE",
+        "ENC-INTRA-BLOCK-TRACE-CHROMA-SKIP",
         "ENC-INTRA-BLOCK-TRACE-LUMA-SKIP",
         "ENC-INTRA-MODE-SYMBOL-EMISSION",
         "ENC-INTRA-TOY-V0",
@@ -5305,7 +5309,7 @@
     },
     {
       "path": "docs/SPEC-COVERAGE.md",
-      "sha256": "fb60abac33040ebd064db7c6982d7ced93aea9cfe682da9f51501941498a8bde",
+      "sha256": "371f2b044f2308c3bcfed4158bb29f787723f664b0807032906f310c388f032d",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.10-RG",
@@ -5538,6 +5542,7 @@
         "ENC-CONTEXT-STATE-MACHINE",
         "ENC-FORWARD-TRANSFORM-FOUNDATION",
         "ENC-INTRA-BLOCK-MODE-TRACE",
+        "ENC-INTRA-BLOCK-TRACE-CHROMA-SKIP",
         "ENC-INTRA-BLOCK-TRACE-LUMA-SKIP",
         "ENC-INTRA-MODE-SYMBOL-EMISSION",
         "ENC-INTRA-TOY-V0",
@@ -14980,6 +14985,50 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/archive/2026-06-19-encoder-block-trace-chroma-skip/.openspec.yaml",
+      "sha256": "d36d5ade13d63079e8fac69f1e3c45e2ee23d6b22c94f88c6a340556a023f11c",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-19-encoder-block-trace-chroma-skip/design.md",
+      "sha256": "6b606712d546ab6d0e6508bd783d5bac60080e5c20d7207a18d5a1ccd66a6ffa",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-INTRA-BLOCK-TRACE-CHROMA-SKIP"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-19-encoder-block-trace-chroma-skip/proposal.md",
+      "sha256": "3f31e5a42cf478c4da213498306253d343b3fdc2d0593ea6047ebc9544161b70",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-INTRA-BLOCK-TRACE-CHROMA-SKIP",
+        "ENC-INTRA-BLOCK-TRACE-LUMA-SKIP"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-19-encoder-block-trace-chroma-skip/specs/encoder-tools/spec.md",
+      "sha256": "83b33d1c8bdc71e72ac89c3d056897255da2eb55fb84e86412104dd110aa17a4",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-INTRA-BLOCK-TRACE-CHROMA-SKIP"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-19-encoder-block-trace-chroma-skip/tasks.md",
+      "sha256": "0a5be6223370dd91cc4ee20ea49f8dcea7fb112ecdceb48e8449e3b0a3f6efc6",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-INTRA-BLOCK-TRACE-CHROMA-SKIP"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/archive/2026-06-19-encoder-block-trace-luma-skip/.openspec.yaml",
       "sha256": "d36d5ade13d63079e8fac69f1e3c45e2ee23d6b22c94f88c6a340556a023f11c",
       "scope_kind": "openspec",
@@ -15526,6 +15575,52 @@
       "scope_kind": "openspec",
       "feature_ids": [
         "DECODE-COEFF-FSC-BRANCH-SEG-EOB-HANDOFF"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/coeff-fsc-branch-tx-size-handoff/design.md",
+      "sha256": "975b43ef67a4f099908909e8207448f851a150d76dffcf4deb45b9f25c32e997",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-COEFF-FSC-BRANCH-SCAN-ORDER",
+        "DECODE-COEFF-FSC-BRANCH-TX-SIZE-HANDOFF"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/coeff-fsc-branch-tx-size-handoff/proposal.md",
+      "sha256": "17f34cce2a70dace72df5dfa727c94084ecb894eac5aecde66c71d48d7b6d31b",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-COEFF-FSC-BRANCH-TX-SIZE-HANDOFF"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/coeff-fsc-branch-tx-size-handoff/specs/coeff-fsc-branch-tx-size-handoff/spec.md",
+      "sha256": "74934fbfc088eff3e3a53de0e0be5f651af36bb06a29a9b79b90b26d2e533d13",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-COEFF-FSC-BRANCH-TX-SIZE-HANDOFF"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/coeff-fsc-branch-tx-size-handoff/specs/decoder-support/spec.md",
+      "sha256": "770d55ba149abc4f3c82b07314632991e1fe95b7ce8b751baa911d980d502e83",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-COEFF-FSC-BRANCH-TX-SIZE-HANDOFF"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/coeff-fsc-branch-tx-size-handoff/tasks.md",
+      "sha256": "9c3e466f7dfb838076003ce7a57395f577e6cf5b8a7c9dae7df6061a254899ee",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-COEFF-FSC-BRANCH-TX-SIZE-HANDOFF"
       ],
       "outcome": "success"
     },
@@ -18212,7 +18307,7 @@
     },
     {
       "path": "openspec/specs/encoder-tools/spec.md",
-      "sha256": "cf0d811eb57a15f377e6e740a45c5525b5937aba2422ea86f0aa0ecb00fa36e4",
+      "sha256": "80c50994535768b39441a3d7f56d8018f761aec80e2b01d6fa2e9bb4ad26f8df",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-5.18.1-FRAME-HEADER-GENERAL",
@@ -18235,6 +18330,7 @@
         "ENC-COEFFICIENT-TOKENIZATION-MINIMAL",
         "ENC-FORWARD-TRANSFORM-FOUNDATION",
         "ENC-INTRA-BLOCK-MODE-TRACE",
+        "ENC-INTRA-BLOCK-TRACE-CHROMA-SKIP",
         "ENC-INTRA-BLOCK-TRACE-LUMA-SKIP",
         "ENC-INTRA-MODE-SYMBOL-EMISSION",
         "ENC-INTRA-TOY-V0",
