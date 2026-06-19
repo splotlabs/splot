@@ -17,22 +17,29 @@ use super::fsc_level_pass::{
 };
 use super::fsc_quant_pass::{
     CoeffFscBranchError, CoeffFscBranchInput, CoeffFscBranchNonZeroInput,
-    CoeffFscBranchSegEobInput, CoeffFscBranchSegEobNonZeroInput, CoeffFscContextCommitConfig,
-    CoeffFscQuantPassError, NonZeroCoeffFscQuantPass, apply_coeff_fsc_branch,
-    apply_coeff_fsc_branch_from_scan_extent, apply_nonzero_coeff_fsc_quant_pass,
-    apply_nonzero_coeff_fsc_quant_pass_with_context_commit,
+    CoeffFscBranchScanOrderInput, CoeffFscBranchScanOrderNonZeroInput, CoeffFscBranchSegEobInput,
+    CoeffFscBranchSegEobNonZeroInput, CoeffFscBranchTestDimensionTables,
+    CoeffFscContextCommitConfig, CoeffFscQuantPassError, NonZeroCoeffFscQuantPass,
+    apply_coeff_fsc_branch, apply_coeff_fsc_branch_from_scan_extent,
+    apply_coeff_fsc_branch_from_scan_order,
+    apply_coeff_fsc_branch_from_scan_order_with_test_dimension_tables,
+    apply_nonzero_coeff_fsc_quant_pass, apply_nonzero_coeff_fsc_quant_pass_with_context_commit,
 };
 use super::fsc_sign_pass::{
     CoeffFscSignPassError, CoeffFscSignRead, NonZeroCoeffFscSignPass,
     apply_nonzero_coeff_fsc_sign_pass,
 };
-use super::max_level::{COEFF_BASE_RANGE, NUM_BASE_LEVELS};
+use super::max_level::{COEFF_BASE_RANGE, CoeffTransformClass, NUM_BASE_LEVELS};
 use super::quant_state::{CoeffQuantStateAccumulator, CoeffQuantStateConfig};
 use super::read_quant::CoeffReadQuantPath;
 use super::read_quant::{CoeffReadQuantConfig, CoeffReadQuantInput, CoeffReadQuantState};
-use super::scan_walk::{FscCoeffScanWalk, walk_fsc_coeff_scan};
+use super::scan_walk::{
+    CoeffScanOrderError, FscCoeffScanWalk, derive_coeff_scan_order, walk_fsc_coeff_scan,
+};
 use super::*;
 
+const DCT_DCT: usize = 0;
+const TX_8X8: usize = 1;
 const SCAN: [u16; 4] = [0, 8, 1, 9];
 const PAYLOAD_SUFFIXES: [[u8; 6]; 6] = [
     [0x00, 0x00, 0x00, 0x00, 0x00, 0x80],
@@ -127,6 +134,20 @@ fn fsc_branch_scan_extent_input<'a>(
     CoeffFscBranchSegEobInput::NonZero(CoeffFscBranchSegEobNonZeroInput {
         start: nonzero_start_input(),
         scan,
+        level_config: config(),
+        context,
+    })
+}
+
+fn fsc_branch_scan_order_input(
+    tx_size: usize,
+    plane_tx_type: usize,
+    context: CoeffFscContextCommitConfig,
+) -> CoeffFscBranchScanOrderInput {
+    CoeffFscBranchScanOrderInput::NonZero(CoeffFscBranchScanOrderNonZeroInput {
+        start: nonzero_start_input(),
+        tx_size,
+        plane_tx_type,
         level_config: config(),
         context,
     })
@@ -302,6 +323,90 @@ fn find_order_sensitive_payload() -> (
         }
     }
     panic!("no coefficient FSC quant order-sensitive payload found");
+}
+
+fn run_scan_order_branch(payload: &[u8]) -> Option<super::fsc_quant_pass::CoeffFscBranch> {
+    let frame = FrameCdfSubset::from_defaults();
+    let mut tile = frame.tile_copy();
+    let mut symbols = symbol_decoder(payload);
+    let mut context = seeded_context_state();
+    apply_coeff_fsc_branch_from_scan_order(
+        &mut context,
+        &mut tile,
+        &mut symbols,
+        fsc_branch_scan_order_input(TX_8X8, DCT_DCT, context_commit_config()),
+    )
+    .ok()
+}
+
+fn find_scan_order_payload() -> [u8; 8] {
+    for first in u8::MIN..=u8::MAX {
+        for second in u8::MIN..=u8::MAX {
+            for suffix in PAYLOAD_SUFFIXES {
+                let payload = [
+                    first, second, suffix[0], suffix[1], suffix[2], suffix[3], suffix[4], suffix[5],
+                ];
+                if run_scan_order_branch(&payload).is_some() {
+                    return payload;
+                }
+            }
+        }
+    }
+    panic!("no coefficient FSC scan-order payload found");
+}
+
+fn assert_scan_order_error_preserves_state(
+    input: CoeffFscBranchScanOrderInput,
+    assert_error: impl FnOnce(&CoeffFscBranchError),
+) {
+    let frame = FrameCdfSubset::from_defaults();
+    let mut tile = frame.tile_copy();
+    let mut symbols = symbol_decoder(&[0x80]);
+    let mut context_state = seeded_context_state();
+    let tile_before = tile.clone();
+    let context_before = context_state.clone();
+    let consumed_before = symbols.consumed_bits();
+    let symbol_count_before = symbols.symbol_count();
+
+    let err =
+        apply_coeff_fsc_branch_from_scan_order(&mut context_state, &mut tile, &mut symbols, input)
+            .unwrap_err();
+
+    assert_error(&err);
+    assert_eq!(context_state, context_before);
+    assert_eq!(tile, tile_before);
+    assert_eq!(symbols.consumed_bits(), consumed_before);
+    assert_eq!(symbols.symbol_count(), symbol_count_before);
+}
+
+fn assert_scan_order_table_error_preserves_state(
+    input: CoeffFscBranchScanOrderInput,
+    tables: CoeffFscBranchTestDimensionTables<'_>,
+    assert_error: impl FnOnce(&CoeffFscBranchError),
+) {
+    let frame = FrameCdfSubset::from_defaults();
+    let mut tile = frame.tile_copy();
+    let mut symbols = symbol_decoder(&[0x80]);
+    let mut context_state = seeded_context_state();
+    let tile_before = tile.clone();
+    let context_before = context_state.clone();
+    let consumed_before = symbols.consumed_bits();
+    let symbol_count_before = symbols.symbol_count();
+
+    let err = apply_coeff_fsc_branch_from_scan_order_with_test_dimension_tables(
+        &mut context_state,
+        &mut tile,
+        &mut symbols,
+        input,
+        tables,
+    )
+    .unwrap_err();
+
+    assert_error(&err);
+    assert_eq!(context_state, context_before);
+    assert_eq!(tile, tile_before);
+    assert_eq!(symbols.consumed_bits(), consumed_before);
+    assert_eq!(symbols.symbol_count(), symbol_count_before);
 }
 
 #[test]
@@ -543,6 +648,50 @@ fn coefficient_fsc_branch_scan_extent_matches_explicit_seg_eob_branch() {
 }
 
 #[test]
+fn coefficient_fsc_branch_scan_order_matches_explicit_scan_extent_branch() {
+    let payload = find_scan_order_payload();
+    let scan =
+        derive_coeff_scan_order(8, 8, CoeffTransformClass::from_plane_tx_type(DCT_DCT)).unwrap();
+
+    let frame = FrameCdfSubset::from_defaults();
+    let mut explicit_tile = frame.tile_copy();
+    let mut explicit_symbols = symbol_decoder(&payload);
+    let mut explicit_context = seeded_context_state();
+    let expected = apply_coeff_fsc_branch_from_scan_extent(
+        &mut explicit_context,
+        &mut explicit_tile,
+        &mut explicit_symbols,
+        fsc_branch_scan_extent_input(&scan, context_commit_config()),
+    )
+    .unwrap();
+
+    let frame = FrameCdfSubset::from_defaults();
+    let mut derived_tile = frame.tile_copy();
+    let mut derived_symbols = symbol_decoder(&payload);
+    let mut derived_context = seeded_context_state();
+    let derived = apply_coeff_fsc_branch_from_scan_order(
+        &mut derived_context,
+        &mut derived_tile,
+        &mut derived_symbols,
+        fsc_branch_scan_order_input(TX_8X8, DCT_DCT, context_commit_config()),
+    )
+    .unwrap();
+
+    assert_eq!(derived, expected);
+    assert_eq!(derived.pass().level_walk().seg_eob(), scan.len());
+    assert_eq!(derived_context, explicit_context);
+    assert_eq!(derived_tile, explicit_tile);
+    assert_eq!(
+        derived_symbols.consumed_bits(),
+        explicit_symbols.consumed_bits()
+    );
+    assert_eq!(
+        derived_symbols.symbol_count(),
+        explicit_symbols.symbol_count()
+    );
+}
+
+#[test]
 fn coefficient_fsc_quant_pass_with_context_commit_preserves_context_on_pass_failure() {
     let payload = find_payload(2, |_| true);
     let (mut tile, mut symbols, _walk, level_pass) = setup_level_pass(&payload, 2).unwrap();
@@ -626,6 +775,70 @@ fn coefficient_fsc_branch_scan_extent_rejects_all_zero_without_mutation() {
     assert_eq!(tile, tile_before);
     assert_eq!(symbols.consumed_bits(), consumed_before);
     assert_eq!(symbols.symbol_count(), symbol_count_before);
+}
+
+#[test]
+fn coefficient_fsc_branch_scan_order_rejects_all_zero_without_mutation() {
+    assert_scan_order_error_preserves_state(
+        CoeffFscBranchScanOrderInput::AllZero(all_zero_block_input()),
+        |err| assert!(matches!(err, CoeffFscBranchError::AllZero)),
+    );
+}
+
+#[test]
+fn coefficient_fsc_branch_scan_order_rejects_invalid_tx_size_without_mutation() {
+    assert_scan_order_error_preserves_state(
+        fsc_branch_scan_order_input(usize::MAX, DCT_DCT, context_commit_config()),
+        |err| {
+            assert!(matches!(
+                err,
+                CoeffFscBranchError::InvalidTransformSize {
+                    tx_size: usize::MAX
+                }
+            ));
+        },
+    );
+}
+
+#[test]
+fn coefficient_fsc_branch_scan_order_rejects_invalid_table_value_without_mutation() {
+    assert_scan_order_table_error_preserves_state(
+        fsc_branch_scan_order_input(0, DCT_DCT, context_commit_config()),
+        CoeffFscBranchTestDimensionTables {
+            tx_width: &[-1],
+            tx_height: &[8],
+        },
+        |err| {
+            assert!(matches!(
+                err,
+                CoeffFscBranchError::InvalidTransformSizeTableValue {
+                    table: "Tx_Width",
+                    tx_size: 0,
+                    value: -1,
+                }
+            ));
+        },
+    );
+}
+
+#[test]
+fn coefficient_fsc_branch_scan_order_rejects_invalid_scan_shape_without_mutation() {
+    assert_scan_order_table_error_preserves_state(
+        fsc_branch_scan_order_input(0, DCT_DCT, context_commit_config()),
+        CoeffFscBranchTestDimensionTables {
+            tx_width: &[2],
+            tx_height: &[8],
+        },
+        |err| {
+            assert!(matches!(
+                err,
+                CoeffFscBranchError::ScanOrder(CoeffScanOrderError::InvalidShape {
+                    width: 2,
+                    height: 8,
+                })
+            ));
+        },
+    );
 }
 
 #[test]

@@ -9761,6 +9761,63 @@ fixtures = [
 diagnostics = ["decode/unsupported-feature"]
 
 [[feature]]
+id = "DECODE-COEFF-FSC-BRANCH-SCAN-ORDER"
+name = "Coefficient FSC branch scan-order handoff"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.20.7.27", "5.20.7.30", "8.3.2", "9.2"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-30",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2",
+    "docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/tile_payload/coeff_loop/fsc_quant_pass.rs"
+openspec_change = "coeff-fsc-branch-scan-order-handoff"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Adds a crate-private loaded-but-unwired FSC/IDTX branch wrapper that derives `scan = get_scan(txSz, txClass)` from generated AV2 §9.2 `Tx_Width[txSz]` / `Tx_Height[txSz]` values and decode-local §8.3.2 `get_tx_class(PlaneTxType)`, then delegates to `apply_coeff_fsc_branch_from_scan_extent` so `segEob` is derived from the scan length before the existing FSC branch. The shared decode-local §5.20.7.30 scan-order helper now backs both ordinary and FSC staged branches. Tests prove explicit scan-extent equivalence, all-zero rejection without table lookup or mutation, invalid `txSz` and invalid table/scan-shape fail-atomic behavior. This feature remains partial: runtime `coeffs()` does not call this wrapper, `useFsc`, full `compute_tx_type`, FSC level config, and context geometry facts are still caller-resolved, and dequantization, inverse transform, residual add, reconstruction, reference refresh, AVM/dav2d invocation, public APIs, and broad `decode_block()` / `decode_tile()` support remain unimplemented."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "partial"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::coefficient_fsc_branch_scan_order_matches_explicit_scan_extent_branch",
+    "crates/splot-decode/src/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::coefficient_fsc_branch_scan_order_rejects_all_zero_without_mutation",
+    "crates/splot-decode/src/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::coefficient_fsc_branch_scan_order_rejects_invalid_tx_size_without_mutation",
+    "crates/splot-decode/src/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::coefficient_fsc_branch_scan_order_rejects_invalid_table_value_without_mutation",
+    "crates/splot-decode/src/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::coefficient_fsc_branch_scan_order_rejects_invalid_scan_shape_without_mutation",
+]
+commands = [
+    "cargo test -p splot-decode fsc_quant --locked",
+    "cargo test -p splot-decode coeff_loop --locked",
+    "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-decoder-conformance-coverage",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-decode/src/tile_payload/coeff_loop/fsc_quant_pass.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/fsc_quant_pass_tests.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/scan_walk.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_pass/geometry.rs",
+    "crates/splot-decode/src/tile_payload/coeff_state.rs",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
 id = "DECODE-COEFF-BASE-SYMBOL-READ"
 name = "Coefficient base symbol read"
 category = "infrastructure"
