@@ -7656,6 +7656,61 @@ fixtures = [
 diagnostics = []
 
 [[feature]]
+id = "RECON-SECONDARY-INVERSE-TRANSFORM"
+name = "Secondary inverse transform process"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["7.15.3"]
+sources = [
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-15-3",
+]
+crate = "splot-recon"
+module = "crates/splot-recon/src/secondary_transform.rs"
+openspec_change = "recon-secondary-inverse-transform"
+tracking_issue = ""
+owner = "decoder"
+risk = "low"
+notes = "Adds the scheduler-free `splot-recon` AV2 §7.15.3 secondary inverse transform `secondary_inverse_transform(dequant, params)`, the matrix-based transform run over the dequantized coefficients before the §7.15.4 2D inverse transform when `sec_tx_type != 0`. It gathers the first `n` coefficients of the `w by h` `Dequant` block in §5.20.7.30 2D scan order via the existing `coefficient_scan_order` (zeroing those positions), multiplies the gathered vector by the §9.7 IST kernel from `splot-tables` (`IST_4X4_KERNEL` or `IST_8X8_KERNEL` selected by `large = w >= 8 && h >= 8`), applies §4.8 `Round2Signed(t, 7)` and the `Clip3` bound `1 shifted left by (BitDepth + 7)`, and scatters the results into the top-left scan sub-block via the hand-written spec-cited `Stx_Scan_Order_4x4` and `Stx_Scan_Order_8x8` process-body constants (and, for the large case, the generated `STX_SCAN_MAP`), honoring `transpose`. The §7.15.3 `kernel` / `transpose` / `n` derivation (the `YMode` and `is_directional_mode` and `pAngle` and `wide_angle_mapping` and `is_inter` and `PlaneTxType` and `most_probable_stx_set` and `Inv_Most_Probable_Stx_Mapping` block-state computation) stays caller-resolved, exactly as the other §7.15 transform primitives take caller-resolved `txSz`-derived values. Total and panic-free: the accumulation uses `i64` (at most 32 products of `Clip3`-bounded coefficients and small kernel weights), every table index is validated before use, the scan scratch is a fixed 32x32 stack buffer, and `w` / `h` / `dequant` length / `n` / `kernel` / `sec_tx_type` are validated before any coefficient is modified (typed `ReconError`, three new variants). Strictly additive and provably no-output-change: a `pub` primitive with no rewiring, so the minimal flat-intra fixture snapshots stay byte-identical. Completeness is proven by a `Round2Signed` both-signs test, a hand-computed single-DC test against literal `IST_4X4_KERNEL` values (102, -45, -53), small-4x4 and large-8x8 matches against an independent in-test re-trace, transpose layout swap, the reduced 8x8 height case, fail-atomic shape/buffer/param rejection, and an `i32::MIN` / `i32::MAX` totality sweep. This completes the §7.15 residual-math transform stack. This row does not parse `sec_tx_type`, derive the kernel/transpose, read frame or block state, or wire into the runtime decode path."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "done"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-recon/src/secondary_transform.rs::tests::round2_signed_matches_spec_for_both_signs",
+    "crates/splot-recon/src/secondary_transform.rs::tests::small_4x4_dc_only_matches_hand_computed_kernel_values",
+    "crates/splot-recon/src/secondary_transform.rs::tests::small_4x4_matches_independent_reference",
+    "crates/splot-recon/src/secondary_transform.rs::tests::small_4x4_transpose_swaps_output_axes",
+    "crates/splot-recon/src/secondary_transform.rs::tests::large_8x8_matches_independent_reference",
+    "crates/splot-recon/src/secondary_transform.rs::tests::large_8x8_reduced_height_uses_only_n_inputs",
+    "crates/splot-recon/src/secondary_transform.rs::tests::rejects_invalid_shape_buffer_and_params",
+    "crates/splot-recon/src/secondary_transform.rs::tests::is_total_for_extreme_coefficients",
+]
+commands = [
+    "cargo test -p splot-recon secondary_transform --locked",
+    "cargo clippy -p splot-recon --all-targets --locked -- -D warnings",
+    "RUSTDOCFLAGS=\"-D warnings\" cargo doc -p splot-recon --no-deps --locked",
+    "cargo xtask check-dependency-direction",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-recon/src/secondary_transform.rs",
+    "crates/splot-recon/src/error.rs",
+    "crates/splot-recon/src/lib.rs",
+]
+diagnostics = []
+
+[[feature]]
 id = "RECON-INVERSE-TRANSFORM-2D"
 name = "2D matrix inverse transform core (row-then-column)"
 category = "infrastructure"

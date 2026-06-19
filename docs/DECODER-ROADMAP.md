@@ -93,7 +93,12 @@ transform-block reconstruction chain that composes the three residual primitives
 (`reconstruct_transform_block_residual`; `RECON-RECONSTRUCT-TRANSFORM-BLOCK`) —
 `out = Clip1(prediction + inverse_transform(dequant(quant)))` — is the residual
 sink that turns a decoded `Quant[]` into reconstructed samples once the
-coefficient loop hands one to recon. The § 7.15.4.1 2D matrix transform core
+coefficient loop hands one to recon. The § 7.15.3 secondary inverse transform
+(`secondary_inverse_transform`; `RECON-SECONDARY-INVERSE-TRANSFORM`) is available
+too: the § 9.7 IST matrix transform that gathers the 2D-scan coefficients,
+multiplies by the kernel, and scatters the `Round2Signed`/`Clip3` results back
+into `Dequant` before the § 7.15.4 inverse transform, over a caller-resolved
+`kernel`/`transpose`/`n`. The § 7.15.4.1 2D matrix transform core
 (`inverse_transform_2d`; `RECON-INVERSE-TRANSFORM-2D`) is available too: the
 row-then-column matrix passes over a caller-supplied dequantized block, with the
 √2 rescale and per-pass `get_identity_scale` derived from the original
@@ -402,7 +407,8 @@ for nonzero blocks, dequantization, and
 reconstruction remain unsupported. The
 § 7.14.4
 `useQm` / `UserQm` gating and `shift` derivation, the rest
-of the § 7.14.3 reconstruct process, the § 7.15.3 secondary transform,
+of the § 7.14.3 reconstruct process, the § 7.15.3 secondary transform
+`kernel` / `transpose` / `n` block-state derivation,
 the remaining § 5.20.7.29 `compute_tx_type` transform-type branches that produce
 `PlaneTxType`, and the coefficient
 entropy decode that produces nonzero `Quant` remain unimplemented.

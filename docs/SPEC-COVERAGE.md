@@ -653,6 +653,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.15.2.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-15-2-1) | 1d inverse transform process | `RECON-INVERSE-TRANSFORM-1D` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.15.2.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-15-2-2) | Inverse Walsh-Hadamard transform process | `RECON-INVERSE-TRANSFORM-MATRIX-FREE` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.15.2.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-15-2-3) | Inverse identity transform process | `RECON-INVERSE-TRANSFORM-MATRIX-FREE` | ✅ | — | ✅ | ✅ | — |
+| [§ 7.15.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-15-3) | Secondary transform process | `RECON-SECONDARY-INVERSE-TRANSFORM` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.15.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-15-4) | 2D inverse transform process | `ENC-CLOSED-LOOP-RECONSTRUCTION-MINIMAL` | ✅ | — | — | ✅ | — |
 | [§ 7.15.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-15-4) | 2D inverse transform process | `ENC-FORWARD-TRANSFORM-FOUNDATION` | ✅ | — | — | ✅ | — |
 | [§ 7.15.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-15-4) | 2D inverse transform process | `ENC-QUANTIZATION-V0` | ✅ | — | — | ✅ | — |

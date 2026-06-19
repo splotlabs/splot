@@ -17,7 +17,9 @@
 //! § 7.15.2.2 Walsh-Hadamard, and § 7.15.2.3 identity), the § 7.14.3
 //! residual-addition step, the § 7.14.4 → § 7.15.4 → § 7.14.3 transform-block
 //! reconstruction chain composition
-//! ([`reconstruct_transform_block_residual`]), the § 7.15.4.1 2D matrix transform core, the
+//! ([`reconstruct_transform_block_residual`]), the § 7.15.3 secondary inverse
+//! transform ([`secondary_inverse_transform`], the § 9.7 IST matrix transform
+//! over caller-resolved kernel/transpose), the § 7.15.4.1 2D matrix transform core, the
 //! § 7.15.4 outer orchestration (the lossless IDTX shortcut, the DPCM cumulative
 //! sum, and adjusted-size sample duplication over caller-resolved transform
 //! selections), and the § 7.14.4 dequantization process (the per-coefficient
@@ -39,7 +41,7 @@
 //! row/column raster scans) with its `get_tx_class` `PlaneTxType`-to-class
 //! mapping; it does not implement byte-consuming decode, full
 //! reconstruction, the § 7.14.4 `shift` derivation
-//! or the user-defined `UserQm` matrices, the § 7.15.3 secondary transform,
+//! or the user-defined `UserQm` matrices,
 //! runtime CLI Y4M output, or full AV2
 //! reference refresh semantics.
 //!
@@ -70,6 +72,7 @@
 //! `RECON-INVERSE-TRANSFORM-MATRIX-FREE`,
 //! `RECON-RESIDUAL-ADDITION`,
 //! `RECON-RECONSTRUCT-TRANSFORM-BLOCK`,
+//! `RECON-SECONDARY-INVERSE-TRANSFORM`,
 //! `RECON-INVERSE-TRANSFORM-2D`,
 //! `RECON-INVERSE-TRANSFORM-2D-OUTER`,
 //! `RECON-DEQUANT-PROCESS`,
@@ -107,6 +110,7 @@ mod plane;
 mod reconstruct;
 mod reconstruct_block;
 mod reference;
+mod secondary_transform;
 mod transform_params;
 mod views;
 mod workspace;
@@ -167,6 +171,7 @@ pub use reference::{
     ReferenceFrameEntries, ReferenceFrameEntry, ReferenceFrameReplacement, ReferenceFrameStore,
     ReferenceRefreshMask, ReferenceRefreshOutcome, ReferenceRefreshSlots, ReferenceSlot,
 };
+pub use secondary_transform::{SecondaryInverseTransform, secondary_inverse_transform};
 pub use transform_params::{TransformPass, dpcm_direction, get_transform_1d_type, transform_shift};
 pub use views::{FrameMut, FrameRef, PlaneMut, PlaneMutRows, PlaneRef, PlaneRefRows};
 pub use workspace::{
