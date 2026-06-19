@@ -21,8 +21,9 @@ use splot_core::types::ObuType;
 
 use super::cdf::TileCdfPolicyInput;
 use super::{
-    DecodeTilePayloadPlan, TileBruPath, TileFrameFacts, TileGridFacts, TilePayloadBoundaryError,
-    TilePayloadBoundaryInput, TilePayloadSource, plan_tile_payload_boundary,
+    DecodeTilePayloadPlan, TileBruPath, TileCoeffFrameFacts, TileFrameFacts, TileGridFacts,
+    TilePayloadBoundaryError, TilePayloadBoundaryInput, TilePayloadSource,
+    plan_tile_payload_boundary,
 };
 use crate::{
     DecodeLimitError, DecodeLimitName, DecodeLimitOp, DecodeLimits, DecodeObuSourceKind,
@@ -47,6 +48,24 @@ impl FrameCandidateCdfFacts {
     }
 }
 
+/// Sequence facts needed by future coefficient decoding.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct FrameCandidateCoeffFacts {
+    enable_fsc: bool,
+    enable_chroma_dctonly: bool,
+}
+
+impl FrameCandidateCoeffFacts {
+    /// Creates coefficient frame facts from the active sequence header.
+    #[must_use]
+    pub(crate) const fn new(enable_fsc: bool, enable_chroma_dctonly: bool) -> Self {
+        Self {
+            enable_fsc,
+            enable_chroma_dctonly,
+        }
+    }
+}
+
 /// Normalized parser facts required by the tile-payload boundary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct FrameCandidateTileFacts<'a> {
@@ -62,6 +81,7 @@ pub(crate) struct FrameCandidateTileFacts<'a> {
     tile_size_bytes: Option<u32>,
     context_update_tile_id: u32,
     base_q_idx: u32,
+    coeff_frame_facts: TileCoeffFrameFacts,
     disable_cdf_update: bool,
     tile_group_structure_start_bits: u64,
 }
@@ -74,6 +94,7 @@ impl<'a> FrameCandidateTileFacts<'a> {
     /// complete intra path or lacks facts required by the tile boundary.
     pub(crate) fn from_frame_core(
         core: &'a FrameHeaderCore,
+        coeff: FrameCandidateCoeffFacts,
     ) -> Result<Self, FrameCandidateTileBoundaryError> {
         if core.status != FrameHeaderParseStatus::IntraHeaderComplete {
             return Err(FrameCandidateTileBoundaryError::Unsupported {
@@ -104,6 +125,21 @@ impl<'a> FrameCandidateTileFacts<'a> {
                 .ok_or(FrameCandidateTileBoundaryError::MissingFact {
                     fact: "disable_cdf_update",
                 })?;
+        let lossless = core
+            .lossless_info
+            .ok_or(FrameCandidateTileBoundaryError::MissingFact {
+                fact: "lossless_info",
+            })?;
+        let tail = core
+            .intra_tail
+            .ok_or(FrameCandidateTileBoundaryError::MissingFact { fact: "intra_tail" })?;
+        let coeff_frame_facts = TileCoeffFrameFacts::new(
+            coeff.enable_fsc,
+            coeff.enable_chroma_dctonly,
+            usize::from(tail.reduced_tx_set),
+            lossless.lossless_array,
+            quant.base_q_idx,
+        );
 
         Ok(Self {
             obu_type: core.obu_type,
@@ -118,6 +154,7 @@ impl<'a> FrameCandidateTileFacts<'a> {
             tile_size_bytes: tile_info.tile_size_bytes,
             context_update_tile_id: tile_info.context_update_tile_id,
             base_q_idx: quant.base_q_idx,
+            coeff_frame_facts,
             disable_cdf_update,
             tile_group_structure_start_bits: core.consumed_bits.checked_add(1).ok_or(
                 DecodeLimitError::ArithmeticOverflow {
@@ -158,6 +195,7 @@ impl<'a> FrameCandidateTileFacts<'a> {
             tile_size_bytes,
             context_update_tile_id,
             base_q_idx,
+            coeff_frame_facts: TileCoeffFrameFacts::default_for_base_q(base_q_idx),
             disable_cdf_update,
             tile_group_structure_start_bits: 8,
         }
@@ -437,6 +475,7 @@ pub(crate) fn plan_derived_tile_payload_boundary<'payload>(
             input.facts.base_q_idx,
             input.facts.disable_cdf_update,
         )
+        .with_coeff_frame_facts(input.facts.coeff_frame_facts)
         .with_cdf_policy(cdf_policy),
         input.limits,
     );

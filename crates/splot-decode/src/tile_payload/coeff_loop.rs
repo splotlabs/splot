@@ -46,6 +46,8 @@ pub(crate) mod read_quant;
 mod scan_walk;
 pub(crate) mod sign_symbol;
 pub(crate) mod use_fsc_branch;
+#[cfg(test)]
+mod use_fsc_frame_facts_tests;
 
 /// Caller-resolved facts for luma § 8.3.2 `all_zero` context derivation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

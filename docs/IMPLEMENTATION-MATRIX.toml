@@ -10256,6 +10256,67 @@ fixtures = [
 diagnostics = ["decode/unsupported-feature"]
 
 [[feature]]
+id = "DECODE-COEFF-FRAME-FACTS-HANDOFF"
+name = "Coefficient frame-facts handoff"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.4.8", "5.18.2", "5.20.7.27", "6.4.8", "6.17.2"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-4-8",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-8",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-2",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/tile_payload/coeff_loop/use_fsc_branch.rs"
+openspec_change = "coeff-frame-facts-handoff"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Adds a crate-private loaded-but-unwired coefficient wrapper above the base-q `useFsc` handoff that derives frame/sequence facts before lower branch delegation. `TileCoeffFrameFacts` carries sequence `enable_fsc`, sequence `enable_chroma_dctonly`, frame `reduced_tx_set`, per-segment `LosslessArray[]`, and frame `base_q_idx` through crate-private tile-payload facts and work units. `apply_coeff_use_fsc_branch_from_frame_facts` preserves all-zero ordering without requiring frame facts, derives shared `enable_fsc`, ordinary `enable_chroma_dctonly`, ordinary `reduced_tx_set`, nonzero `lossless = LosslessArray[segmentId]`, and `base_q_idx` for nonzero inputs, and rejects invalid segment ids before CDF, context-state, or symbol mutation. Tests cover exact lower-packet derivation, all-zero bypass, ordinary and FSC base-q equivalence, invalid-segment fail-atomic behavior, and parser-derived fact propagation from `FrameHeaderCore` plus active sequence TQ facts. This feature remains partial: runtime `coeffs()` does not call this wrapper, runtime `PlaneTxType`, `fsc_mode`, `is_inter`, segment id, transform geometry, ordinary mode/TX facts, full `compute_tx_type`, block syntax traversal, dequantization, inverse transform, residual add, reconstruction, reference refresh, AVM/dav2d invocation, public APIs, and broad `decode_block()` / `decode_tile()` support remain unimplemented."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "partial"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/tile_payload/coeff_loop/use_fsc_frame_facts_tests.rs::coefficient_frame_facts_nonzero_input_derives_lower_packet",
+    "crates/splot-decode/src/tile_payload/coeff_loop/use_fsc_frame_facts_tests.rs::coefficient_frame_facts_all_zero_matches_base_q_path",
+    "crates/splot-decode/src/tile_payload/coeff_loop/use_fsc_frame_facts_tests.rs::coefficient_frame_facts_false_matches_base_q_ordinary_path",
+    "crates/splot-decode/src/tile_payload/coeff_loop/use_fsc_frame_facts_tests.rs::coefficient_frame_facts_true_matches_base_q_fsc_path",
+    "crates/splot-decode/src/tile_payload/coeff_loop/use_fsc_frame_facts_tests.rs::coefficient_frame_facts_invalid_segment_id_is_fail_atomic",
+    "crates/splot-decode/src/tile_payload/derived_tests.rs::derived_boundary_threads_parser_coeff_frame_facts",
+]
+commands = [
+    "cargo test -p splot-decode use_fsc_frame_facts --locked",
+    "cargo test -p splot-decode derived_boundary_threads_parser_coeff_frame_facts --locked",
+    "cargo test -p splot-decode coeff_loop --locked",
+    "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-decoder-conformance-coverage",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-decode/src/tile_payload.rs",
+    "crates/splot-decode/src/tile_payload/input.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/use_fsc_branch.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/use_fsc_frame_facts_tests.rs",
+    "crates/splot-decode/src/tile_payload/derived_tests.rs",
+    "crates/splot-decode/src/runtime_minimal.rs",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
 id = "DECODE-COEFF-BASE-SYMBOL-READ"
 name = "Coefficient base symbol read"
 category = "infrastructure"
