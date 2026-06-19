@@ -517,6 +517,11 @@ mod tests {
         .unwrap();
         assert_eq!(quantized.quantized(), &[0; 16]);
         assert_eq!(quantized.dequantized(), &[0; 16]);
+        let tokenized =
+            crate::coefficient_tokenization::tokenize_quantized_4x4_dct_dct_dc_only(&quantized)
+                .unwrap();
+        assert_eq!(tokenized.eob(), 0);
+        assert_eq!(tokenized.tokens().len(), 1);
 
         assert!(matches!(
             ctx.send_frame(&input).unwrap(),

@@ -38,6 +38,14 @@ planning and status; it does not claim encoder behavior exists.
   proves the `splot-recon` dequant/inverse handoff for qindex zero, and is not a
   quantization-matrix path, token writer, range encoder, rate-control mode, or
   packet path.
+- `ENC-COEFFICIENT-TOKENIZATION-MINIMAL` adds a private token-fact bridge for the
+  current luma 4x4 DCT_DCT DC-only top-left neutral-spatial-context quantized
+  subset. It derives scan, EOB, begin-position, sign/magnitude, q-context, and
+  ordered base-tier entropy-token records, including the low-frequency EOB base
+  CDF row, and proves those records through the in-tree AV2 §8.2 symbol
+  encoder/decoder. It is not broad coefficient syntax, neighbor-derived spatial
+  contexts, coefficient base-range / `read_quant` extension, tile CDF lifecycle,
+  tile-body emission, rate control, or a packet path.
 - `Packet` is still only a byte buffer wrapper, and no coded packet production
   path exists.
 - `EncoderConfig` exposes `BitDepth::Twelve`, but current Baseline Encoder Profile
@@ -53,8 +61,9 @@ planning and status; it does not claim encoder behavior exists.
   Annex B framing helpers, IVF helpers, the generic AV2 §8.2 `SymbolEncoder`
   primitive, and round-trip/fuzz coverage.
 - This is still syntax/framing support, not an encoder. Coded tile payload
-  generation is missing because encoder-owned §8.3 token/CDF selection and the
-  AV2 `decode_tile()` body path remain unimplemented.
+  generation is missing because broad encoder-owned §8.3 token/CDF selection,
+  tile CDF lifecycle, coefficient-loop coverage, and the AV2 `decode_tile()`
+  body path remain unimplemented.
 - The private syntax IR and minimal header plan can stage future writer inputs,
   but no IR-to-writer serialization path exists yet.
 - Inter first-group tile-group composition remains blocked on inter frame-header
@@ -85,11 +94,14 @@ planning and status; it does not claim encoder behavior exists.
 
 ## Active ownership baseline
 
-As of the `encoder-residual-foundation` branch point on 2026-06-18, PR #273 has
-merged into `main` as `d42a7fbe`, and this branch is based on `origin/main` at
-`d42a7fbe`. No sibling PR is open against `main`; the generated status-doc
-intersections from the prior encoder and decode work are now part of the base,
-and no semantic overlap remains.
+As of the `encoder-coefficient-tokenization-minimal` branch point on
+2026-06-18, PR #279 has merged into `main` as `8c9c5e27230e`, and this branch is
+based on `origin/main` at that commit. PR #280
+(`codex/decode-coeff-ordinary-branch-plane-tx-type`) is open against `main`; it
+overlaps generated/tracking docs and coefficient-domain terminology, but its
+code is decoder-local while this branch is private encoder tokenization. If
+PR #280 lands first, rebase and regenerate matrix/status/coverage docs before
+merge.
 
 ## Parked work
 

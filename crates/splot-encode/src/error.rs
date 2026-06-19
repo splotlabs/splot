@@ -3,6 +3,7 @@
 
 //! Error and result types for the splot encoder API.
 
+use splot_core::write::WriteError;
 use splot_recon::{PlaneId, PlaneSize, ReconError};
 
 use crate::config::{BitDepth, ChromaSubsampling};
@@ -348,6 +349,171 @@ pub enum Error {
         /// Underlying reconstruction dequantization error.
         #[source]
         source: ReconError,
+    },
+
+    /// Coefficient tokenization received a plane outside the current minimal subset.
+    #[error("encoder coefficient tokenization supports only luma, got plane {plane:?}")]
+    CoefficientTokenizationUnsupportedPlane {
+        /// Plane whose tokenization was requested.
+        plane: PlaneId,
+    },
+
+    /// A coefficient-tokenization block shape is outside the current supported subset.
+    #[error(
+        "encoder coefficient tokenization for plane {plane:?} supports only {expected_width}x{expected_height}, got block {block:?}"
+    )]
+    CoefficientTokenizationUnsupportedShape {
+        /// Plane whose tokenization was requested.
+        plane: PlaneId,
+        /// Visible-plane-relative block rectangle.
+        block: splot_recon::PlaneRect,
+        /// Supported tokenization width in samples.
+        expected_width: usize,
+        /// Supported tokenization height in samples.
+        expected_height: usize,
+    },
+
+    /// A coefficient-tokenization input had the wrong number of coefficients.
+    #[error(
+        "encoder coefficient tokenization for plane {plane:?}, block {block:?} needs {expected} coefficients, got {actual}"
+    )]
+    CoefficientTokenizationInputLengthMismatch {
+        /// Plane whose tokenization was requested.
+        plane: PlaneId,
+        /// Visible-plane-relative block rectangle.
+        block: splot_recon::PlaneRect,
+        /// Expected coefficient count.
+        expected: usize,
+        /// Actual coefficient count.
+        actual: usize,
+    },
+
+    /// A coefficient-tokenization block would require non-neutral spatial contexts.
+    #[error(
+        "encoder coefficient tokenization for plane {plane:?}, block {block:?} currently supports only the top-left neutral spatial context"
+    )]
+    CoefficientTokenizationUnsupportedSpatialContext {
+        /// Plane whose tokenization was requested.
+        plane: PlaneId,
+        /// Visible-plane-relative block rectangle.
+        block: splot_recon::PlaneRect,
+    },
+
+    /// Coefficient scan-order derivation failed.
+    #[error(
+        "encoder coefficient tokenization scan derivation failed for plane {plane:?}, block {block:?}: {source}"
+    )]
+    CoefficientTokenizationScan {
+        /// Plane whose tokenization was requested.
+        plane: PlaneId,
+        /// Visible-plane-relative block rectangle.
+        block: splot_recon::PlaneRect,
+        /// Underlying reconstruction scan error.
+        #[source]
+        source: ReconError,
+    },
+
+    /// The current coefficient-tokenization subset only supports DC-only blocks.
+    #[error(
+        "encoder coefficient tokenization for plane {plane:?}, block {block:?} supports only DC-only coefficients; coefficient {coefficient_index} is {value}"
+    )]
+    CoefficientTokenizationNonDcCoefficient {
+        /// Plane whose tokenization was requested.
+        plane: PlaneId,
+        /// Visible-plane-relative block rectangle.
+        block: splot_recon::PlaneRect,
+        /// Row-major coefficient index.
+        coefficient_index: usize,
+        /// Unsupported non-DC coefficient value.
+        value: i32,
+    },
+
+    /// A coefficient magnitude requires syntax outside the current tokenization tier.
+    #[error(
+        "encoder coefficient tokenization for plane {plane:?}, block {block:?}, coefficient {coefficient_index} magnitude {magnitude} exceeds current base-symbol maximum {max_magnitude}"
+    )]
+    CoefficientTokenizationUnsupportedMagnitude {
+        /// Plane whose tokenization was requested.
+        plane: PlaneId,
+        /// Visible-plane-relative block rectangle.
+        block: splot_recon::PlaneRect,
+        /// Row-major coefficient index.
+        coefficient_index: usize,
+        /// Unsupported absolute coefficient magnitude.
+        magnitude: u32,
+        /// Maximum magnitude covered by the current minimal base-symbol tier.
+        max_magnitude: u32,
+    },
+
+    /// Coefficient-tokenization allocation failed.
+    #[error("failed to allocate encoder coefficient tokenization storage for {context}")]
+    CoefficientTokenizationAllocationFailed {
+        /// Short description of the failed allocation.
+        context: &'static str,
+    },
+
+    /// A coefficient token carried a CDF selector outside the current minimal subset.
+    #[error("unsupported encoder coefficient token CDF selector for {syntax}")]
+    CoefficientTokenizationUnsupportedCdfSelector {
+        /// Token syntax whose selector is unsupported.
+        syntax: &'static str,
+    },
+
+    /// Writing a coefficient token through the symbol encoder failed.
+    #[error("encoder coefficient tokenization symbol write failed for {syntax}: {source}")]
+    CoefficientTokenizationSymbolWrite {
+        /// Token syntax being written.
+        syntax: &'static str,
+        /// Source symbol-encoder error.
+        #[source]
+        source: WriteError,
+    },
+
+    /// Finalizing coefficient token symbol bytes failed.
+    #[error("encoder coefficient tokenization symbol encoder finalization failed: {source}")]
+    CoefficientTokenizationSymbolEncodeFinish {
+        /// Source symbol-encoder error.
+        #[source]
+        source: WriteError,
+    },
+
+    /// Initializing the coefficient token symbol decoder failed.
+    #[error("encoder coefficient tokenization symbol decoder initialization failed: {source}")]
+    CoefficientTokenizationSymbolDecodeInit {
+        /// Source symbol-decoder error.
+        #[source]
+        source: splot_core::Error,
+    },
+
+    /// Reading a coefficient token through the symbol decoder failed.
+    #[error("encoder coefficient tokenization symbol read failed for {syntax}: {source}")]
+    CoefficientTokenizationSymbolRead {
+        /// Token syntax being read.
+        syntax: &'static str,
+        /// Source symbol-decoder error.
+        #[source]
+        source: splot_core::Error,
+    },
+
+    /// Decoded coefficient token symbol value did not match the encoded value.
+    #[error(
+        "encoder coefficient tokenization symbol mismatch for {syntax}: expected {expected}, decoded {actual}"
+    )]
+    CoefficientTokenizationSymbolMismatch {
+        /// Token syntax being compared.
+        syntax: &'static str,
+        /// Encoded symbol value.
+        expected: u8,
+        /// Decoded symbol value.
+        actual: u8,
+    },
+
+    /// Finalizing the coefficient token symbol decoder failed.
+    #[error("encoder coefficient tokenization symbol decoder finalization failed: {source}")]
+    CoefficientTokenizationSymbolDecodeFinish {
+        /// Source symbol-decoder error.
+        #[source]
+        source: splot_core::Error,
     },
 
     /// An encoder lifecycle operation is invalid in the current context state.
