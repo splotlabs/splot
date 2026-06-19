@@ -9052,7 +9052,7 @@ openspec_change = "coeff-base-cdf-rows"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Adds crate-private `splot-decode` tile CDF row storage and typed selectors for ordinary non-IDTX coefficient base/base-EOB/base-range CDF families after the nonzero scan-walk boundary. `CoeffCdfRows` loads generated AV2 §9.3 defaults for `TileCoeffBaseCdf`, `TileCoeffBaseUvCdf`, `TileCoeffBaseLfCdf`, `TileCoeffBaseLfUvCdf`, `TileCoeffBaseEobCdf`, `TileCoeffBaseEobUvCdf`, `TileCoeffBaseLfEobCdf`, `TileCoeffBaseLfEobUvCdf`, `TileCoeffBrCdf`, `TileCoeffBrUvCdf`, and `TileCoeffBrLfCdf`; validates selector axes for immutable and mutable row access through `TileCdfSelector::Coeff(CoeffCdfSelector)`; and includes those rows in tile copy/save/average and frame-end count scaling. Tests cover generated-default selection, selector bounds errors, tile-copy non-aliasing, and mutable row handoff through `read_block_symbol_trace`. The parity-hidden-only base row is tracked separately by `DECODE-COEFF-BASE-PH-CDF-ROW`. This feature remains partial: the rows are loaded but not read by runtime `coeffs()`, and FSC/IDTX/sign rows, coefficient symbol consumption, nonzero `Level[]`/`Quant[]` writes, `read_quant`, dequantization, inverse transform, residual add, reconstruction, reference refresh, AVM/dav2d invocation, public APIs, and broad `decode_block()` / `decode_tile()` support remain unimplemented."
+notes = "Adds crate-private `splot-decode` tile CDF row storage and typed selectors for ordinary non-IDTX coefficient base/base-EOB/base-range CDF families after the nonzero scan-walk boundary. `CoeffCdfRows` loads generated AV2 §9.3 defaults for `TileCoeffBaseCdf`, `TileCoeffBaseUvCdf`, `TileCoeffBaseLfCdf`, `TileCoeffBaseLfUvCdf`, `TileCoeffBaseEobCdf`, `TileCoeffBaseEobUvCdf`, `TileCoeffBaseLfEobCdf`, `TileCoeffBaseLfEobUvCdf`, `TileCoeffBrCdf`, `TileCoeffBrUvCdf`, and `TileCoeffBrLfCdf`; validates selector axes for immutable and mutable row access through `TileCdfSelector::Coeff(CoeffCdfSelector)`; and includes those rows in tile copy/save/average and frame-end count scaling. Tests cover generated-default selection, selector bounds errors, tile-copy non-aliasing, and mutable row handoff through `read_block_symbol_trace`. The parity-hidden-only base row is tracked separately by `DECODE-COEFF-BASE-PH-CDF-ROW`, and FSC/IDTX row families are tracked separately by `DECODE-COEFF-IDTX-CDF-ROWS`. This feature remains partial: the rows are loaded but not read by runtime `coeffs()`, and coefficient symbol consumption, nonzero `Level[]`/`Quant[]` writes, `read_quant`, dequantization, inverse transform, residual add, reconstruction, reference refresh, AVM/dav2d invocation, public APIs, and broad `decode_block()` / `decode_tile()` support remain unimplemented."
 
 [feature.status]
 mapped = "done"
@@ -9068,6 +9068,63 @@ perf = "not-applicable"
 
 [feature.proof]
 tests = [
+    "crates/splot-decode/src/tile_payload/cdf/tests.rs::coeff_base_rows_load_defaults_and_select_by_family",
+    "crates/splot-decode/src/tile_payload/cdf/tests.rs::coeff_base_selectors_reject_out_of_range_axes",
+    "crates/splot-decode/src/tile_payload/cdf/tests.rs::coeff_base_tile_copy_does_not_alias_the_frame",
+    "crates/splot-decode/src/tile_payload/cdf/tests.rs::coeff_base_row_hands_off_to_symbol_decoder_update_mode",
+]
+commands = [
+    "cargo test -p splot-decode tile_payload::cdf --locked",
+    "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-decoder-conformance-coverage",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-decode/src/tile_payload/cdf.rs",
+    "crates/splot-decode/src/tile_payload/cdf/block_rows.rs",
+    "crates/splot-decode/src/tile_payload/cdf/coeff_rows.rs",
+    "crates/splot-decode/src/tile_payload/cdf/tests.rs",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
+id = "DECODE-COEFF-IDTX-CDF-ROWS"
+name = "Coefficient IDTX CDF rows"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.20.7.27", "8.2.5", "8.2.6", "8.3.2", "9.3"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-2-5",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-2-6",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2",
+    "docs/spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/tile_payload/cdf/coeff_rows.rs"
+openspec_change = "coeff-idtx-cdf-rows"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Adds crate-private `splot-decode` tile CDF row storage and typed selectors for the FSC/IDTX coefficient row families used by AV2 §5.20.7.27 and selected by §8.3.2. `CoeffCdfRows` loads generated AV2 §9.3 defaults for `TileCoeffBaseBobCdf`, `TileCoeffBaseIdtxCdf`, `TileCoeffBrIdtxCdf`, and `TileIdtxSignCdf`; validates q-context, pre-clamped `tx_size_ctx`, and row-specific `ctx` axes for immutable and mutable row access through `TileCdfSelector::Coeff(CoeffCdfSelector)`; and includes those rows in tile copy/save/average and frame-end count scaling. Tests cover generated-default selection, selector bounds errors, tile-copy non-aliasing, lifecycle average/scale behavior, and mutable row handoff through `read_block_symbol_trace`. This feature remains partial: the rows are loaded but not read by runtime `coeffs()`, and `useFsc` branch execution, IDTX coefficient symbol sequencing, nonzero `Level[]`/`QuantSign[]`/`Quant[]` writes, `read_quant`, dequantization, inverse transform, residual add, reconstruction, reference refresh, AVM/dav2d invocation, public APIs, and broad `decode_block()` / `decode_tile()` support remain unimplemented."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "partial"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/tile_payload/cdf/tests.rs::saved_copy_and_average_are_exact_for_supported_subset",
+    "crates/splot-decode/src/tile_payload/cdf/tests.rs::frame_end_update_copies_saved_rows_and_scales_counts",
     "crates/splot-decode/src/tile_payload/cdf/tests.rs::coeff_base_rows_load_defaults_and_select_by_family",
     "crates/splot-decode/src/tile_payload/cdf/tests.rs::coeff_base_selectors_reject_out_of_range_axes",
     "crates/splot-decode/src/tile_payload/cdf/tests.rs::coeff_base_tile_copy_does_not_alias_the_frame",

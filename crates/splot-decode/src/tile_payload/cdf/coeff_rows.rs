@@ -1,37 +1,47 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Coefficient base/base-EOB/base-range CDF rows.
+//! Coefficient base/base-EOB/base-range and IDTX CDF rows.
 //!
 //! Feature tracking: `DECODE-COEFF-BASE-CDF-ROWS` and
-//! `DECODE-COEFF-BASE-PH-CDF-ROW`.
+//! `DECODE-COEFF-BASE-PH-CDF-ROW`, plus
+//! `DECODE-COEFF-IDTX-CDF-ROWS`.
 
 use splot_core::tables::cdf::{
-    DEFAULT_COEFF_BASE_CDF, DEFAULT_COEFF_BASE_EOB_CDF, DEFAULT_COEFF_BASE_EOB_UV_CDF,
-    DEFAULT_COEFF_BASE_LF_CDF, DEFAULT_COEFF_BASE_LF_EOB_CDF, DEFAULT_COEFF_BASE_LF_EOB_UV_CDF,
-    DEFAULT_COEFF_BASE_LF_UV_CDF, DEFAULT_COEFF_BASE_PH_CDF, DEFAULT_COEFF_BASE_UV_CDF,
-    DEFAULT_COEFF_BR_CDF, DEFAULT_COEFF_BR_LF_CDF, DEFAULT_COEFF_BR_UV_CDF,
+    DEFAULT_COEFF_BASE_BOB_CDF, DEFAULT_COEFF_BASE_CDF, DEFAULT_COEFF_BASE_EOB_CDF,
+    DEFAULT_COEFF_BASE_EOB_UV_CDF, DEFAULT_COEFF_BASE_IDTX_CDF, DEFAULT_COEFF_BASE_LF_CDF,
+    DEFAULT_COEFF_BASE_LF_EOB_CDF, DEFAULT_COEFF_BASE_LF_EOB_UV_CDF, DEFAULT_COEFF_BASE_LF_UV_CDF,
+    DEFAULT_COEFF_BASE_PH_CDF, DEFAULT_COEFF_BASE_UV_CDF, DEFAULT_COEFF_BR_CDF,
+    DEFAULT_COEFF_BR_IDTX_CDF, DEFAULT_COEFF_BR_LF_CDF, DEFAULT_COEFF_BR_UV_CDF,
+    DEFAULT_IDTX_SIGN_CDF,
 };
 
 use super::{TileCdfArray, TileCdfError, avg_cdf_row, scale_cdf_count};
 
 const COEFF_CDF_Q_CONTEXTS: usize = 4;
 const TX_SIZE_CONTEXTS: usize = 5;
+const FSC_TX_SIZE_CONTEXTS: usize = 3;
 const COEFF_BASE_CONTEXTS: usize = 20;
 const COEFF_BASE_PH_CONTEXTS: usize = 5;
 const COEFF_BASE_TCQ_CONTEXTS: usize = 2;
 const COEFF_BASE_UV_CONTEXTS: usize = 12;
 const COEFF_BASE_EOB_CONTEXTS: usize = 4;
+const COEFF_BASE_BOB_CONTEXTS: usize = 3;
 const COEFF_BASE_LF_CONTEXTS: usize = 33;
 const COEFF_BASE_LF_UV_CONTEXTS: usize = 12;
+const IDTX_SIG_COEF_CONTEXTS: usize = 7;
 const COEFF_BR_CONTEXTS: usize = 7;
 const COEFF_BR_LF_CONTEXTS: usize = 14;
 const COEFF_BR_UV_CONTEXTS: usize = 4;
+const IDTX_LEVEL_CONTEXTS: usize = 7;
+const IDTX_SIGN_CONTEXTS: usize = 9;
 const COEFF_BASE_ROW_LEN: usize = 5;
 const COEFF_BASE_EOB_ROW_LEN: usize = 4;
+const COEFF_BASE_BOB_ROW_LEN: usize = 4;
 const COEFF_BASE_LF_ROW_LEN: usize = 7;
 const COEFF_BASE_LF_EOB_ROW_LEN: usize = 6;
 const COEFF_BR_ROW_LEN: usize = 5;
+const IDTX_SIGN_ROW_LEN: usize = 3;
 
 pub(crate) type CoeffBaseCdfRows = [[[[[i32; COEFF_BASE_ROW_LEN]; COEFF_BASE_TCQ_CONTEXTS];
     COEFF_BASE_CONTEXTS]; TX_SIZE_CONTEXTS];
@@ -49,6 +59,10 @@ pub(crate) type CoeffBaseEobCdfRows = [[[[i32; COEFF_BASE_EOB_ROW_LEN]; COEFF_BA
     TX_SIZE_CONTEXTS]; COEFF_CDF_Q_CONTEXTS];
 pub(crate) type CoeffBaseEobUvCdfRows =
     [[[i32; COEFF_BASE_EOB_ROW_LEN]; COEFF_BASE_EOB_CONTEXTS]; COEFF_CDF_Q_CONTEXTS];
+pub(crate) type CoeffBaseBobCdfRows = [[[[i32; COEFF_BASE_BOB_ROW_LEN]; COEFF_BASE_BOB_CONTEXTS];
+    FSC_TX_SIZE_CONTEXTS]; COEFF_CDF_Q_CONTEXTS];
+pub(crate) type CoeffBaseIdtxCdfRows = [[[[i32; COEFF_BASE_ROW_LEN]; IDTX_SIG_COEF_CONTEXTS];
+    FSC_TX_SIZE_CONTEXTS]; COEFF_CDF_Q_CONTEXTS];
 pub(crate) type CoeffBaseLfEobCdfRows = [[[[i32; COEFF_BASE_LF_EOB_ROW_LEN];
     COEFF_BASE_EOB_CONTEXTS]; TX_SIZE_CONTEXTS];
     COEFF_CDF_Q_CONTEXTS];
@@ -60,8 +74,12 @@ pub(crate) type CoeffBrUvCdfRows =
     [[[i32; COEFF_BR_ROW_LEN]; COEFF_BR_UV_CONTEXTS]; COEFF_CDF_Q_CONTEXTS];
 pub(crate) type CoeffBrLfCdfRows =
     [[[i32; COEFF_BR_ROW_LEN]; COEFF_BR_LF_CONTEXTS]; COEFF_CDF_Q_CONTEXTS];
+pub(crate) type CoeffBrIdtxCdfRows =
+    [[[[i32; COEFF_BR_ROW_LEN]; IDTX_LEVEL_CONTEXTS]; FSC_TX_SIZE_CONTEXTS]; COEFF_CDF_Q_CONTEXTS];
+pub(crate) type IdtxSignCdfRows =
+    [[[[i32; IDTX_SIGN_ROW_LEN]; IDTX_SIGN_CONTEXTS]; FSC_TX_SIZE_CONTEXTS]; COEFF_CDF_Q_CONTEXTS];
 
-/// Ordinary non-IDTX coefficient CDF selector for AV2 §8.3.2 row selection
+/// Coefficient CDF selector for AV2 §8.3.2 row selection
 /// over AV2 §9.3 default CDF banks.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CoeffCdfSelector {
@@ -124,6 +142,24 @@ pub(crate) enum CoeffCdfSelector {
         /// Chroma EOB significant-coefficient context.
         ctx: usize,
     },
+    /// `TileCoeffBaseBobCdf[coeff_cdf_q_ctx][Min(TX_16X16, txSzCtx)][ctx]`.
+    BaseBob {
+        /// Coefficient-CDF quantization context.
+        coeff_cdf_q_ctx: usize,
+        /// `Min(TX_16X16, txSzCtx)` transform-size context.
+        tx_size_ctx: usize,
+        /// Begin-of-block significant-coefficient context.
+        ctx: usize,
+    },
+    /// `TileCoeffBaseIdtxCdf[coeff_cdf_q_ctx][Min(TX_16X16, txSzCtx)][ctx]`.
+    BaseIdtx {
+        /// Coefficient-CDF quantization context.
+        coeff_cdf_q_ctx: usize,
+        /// `Min(TX_16X16, txSzCtx)` transform-size context.
+        tx_size_ctx: usize,
+        /// Identity-transform significant-coefficient context.
+        ctx: usize,
+    },
     /// `TileCoeffBaseLfEobCdf[coeff_cdf_q_ctx][tx_size][ctx]`.
     BaseLfEob {
         /// Coefficient-CDF quantization context.
@@ -161,9 +197,27 @@ pub(crate) enum CoeffCdfSelector {
         /// Low-frequency base-range context.
         ctx: usize,
     },
+    /// `TileCoeffBrIdtxCdf[coeff_cdf_q_ctx][Min(TX_16X16, txSzCtx)][ctx]`.
+    BrIdtx {
+        /// Coefficient-CDF quantization context.
+        coeff_cdf_q_ctx: usize,
+        /// `Min(TX_16X16, txSzCtx)` transform-size context.
+        tx_size_ctx: usize,
+        /// Identity-transform base-range context.
+        ctx: usize,
+    },
+    /// `TileIdtxSignCdf[coeff_cdf_q_ctx][Min(TX_16X16, txSzCtx)][ctx]`.
+    IdtxSign {
+        /// Coefficient-CDF quantization context.
+        coeff_cdf_q_ctx: usize,
+        /// `Min(TX_16X16, txSzCtx)` transform-size context.
+        tx_size_ctx: usize,
+        /// Identity-transform sign context.
+        ctx: usize,
+    },
 }
 
-/// Supported ordinary non-IDTX coefficient CDF rows.
+/// Supported coefficient CDF rows.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CoeffCdfRows {
     pub(super) coeff_base: CoeffBaseCdfRows,
@@ -173,11 +227,15 @@ pub(crate) struct CoeffCdfRows {
     pub(super) coeff_base_lf_uv: CoeffBaseLfUvCdfRows,
     pub(super) coeff_base_eob: CoeffBaseEobCdfRows,
     pub(super) coeff_base_eob_uv: CoeffBaseEobUvCdfRows,
+    pub(super) coeff_base_bob: CoeffBaseBobCdfRows,
+    pub(super) coeff_base_idtx: CoeffBaseIdtxCdfRows,
     pub(super) coeff_base_lf_eob: CoeffBaseLfEobCdfRows,
     pub(super) coeff_base_lf_eob_uv: CoeffBaseLfEobUvCdfRows,
     pub(super) coeff_br: CoeffBrCdfRows,
     pub(super) coeff_br_uv: CoeffBrUvCdfRows,
     pub(super) coeff_br_lf: CoeffBrLfCdfRows,
+    pub(super) coeff_br_idtx: CoeffBrIdtxCdfRows,
+    pub(super) idtx_sign: IdtxSignCdfRows,
 }
 
 impl CoeffCdfRows {
@@ -190,11 +248,15 @@ impl CoeffCdfRows {
             coeff_base_lf_uv: DEFAULT_COEFF_BASE_LF_UV_CDF,
             coeff_base_eob: DEFAULT_COEFF_BASE_EOB_CDF,
             coeff_base_eob_uv: DEFAULT_COEFF_BASE_EOB_UV_CDF,
+            coeff_base_bob: DEFAULT_COEFF_BASE_BOB_CDF,
+            coeff_base_idtx: DEFAULT_COEFF_BASE_IDTX_CDF,
             coeff_base_lf_eob: DEFAULT_COEFF_BASE_LF_EOB_CDF,
             coeff_base_lf_eob_uv: DEFAULT_COEFF_BASE_LF_EOB_UV_CDF,
             coeff_br: DEFAULT_COEFF_BR_CDF,
             coeff_br_uv: DEFAULT_COEFF_BR_UV_CDF,
             coeff_br_lf: DEFAULT_COEFF_BR_LF_CDF,
+            coeff_br_idtx: DEFAULT_COEFF_BR_IDTX_CDF,
+            idtx_sign: DEFAULT_IDTX_SIGN_CDF,
         }
     }
 
@@ -306,6 +368,36 @@ impl CoeffCdfRows {
                 )?;
                 Ok(self.coeff_base_eob_uv[q][ctx].as_slice())
             }
+            CoeffCdfSelector::BaseBob {
+                coeff_cdf_q_ctx,
+                tx_size_ctx,
+                ctx,
+            } => {
+                let q = checked_coeff_cdf_q_context(TileCdfArray::CoeffBaseBob, coeff_cdf_q_ctx)?;
+                let tx_size_ctx = checked_fsc_tx_size(TileCdfArray::CoeffBaseBob, tx_size_ctx)?;
+                let ctx = checked_index(
+                    TileCdfArray::CoeffBaseBob,
+                    "ctx",
+                    ctx,
+                    COEFF_BASE_BOB_CONTEXTS,
+                )?;
+                Ok(self.coeff_base_bob[q][tx_size_ctx][ctx].as_slice())
+            }
+            CoeffCdfSelector::BaseIdtx {
+                coeff_cdf_q_ctx,
+                tx_size_ctx,
+                ctx,
+            } => {
+                let q = checked_coeff_cdf_q_context(TileCdfArray::CoeffBaseIdtx, coeff_cdf_q_ctx)?;
+                let tx_size_ctx = checked_fsc_tx_size(TileCdfArray::CoeffBaseIdtx, tx_size_ctx)?;
+                let ctx = checked_index(
+                    TileCdfArray::CoeffBaseIdtx,
+                    "ctx",
+                    ctx,
+                    IDTX_SIG_COEF_CONTEXTS,
+                )?;
+                Ok(self.coeff_base_idtx[q][tx_size_ctx][ctx].as_slice())
+            }
             CoeffCdfSelector::BaseLfEob {
                 coeff_cdf_q_ctx,
                 tx_size,
@@ -358,6 +450,27 @@ impl CoeffCdfRows {
                 let q = checked_coeff_cdf_q_context(TileCdfArray::CoeffBrLf, coeff_cdf_q_ctx)?;
                 let ctx = checked_index(TileCdfArray::CoeffBrLf, "ctx", ctx, COEFF_BR_LF_CONTEXTS)?;
                 Ok(self.coeff_br_lf[q][ctx].as_slice())
+            }
+            CoeffCdfSelector::BrIdtx {
+                coeff_cdf_q_ctx,
+                tx_size_ctx,
+                ctx,
+            } => {
+                let q = checked_coeff_cdf_q_context(TileCdfArray::CoeffBrIdtx, coeff_cdf_q_ctx)?;
+                let tx_size_ctx = checked_fsc_tx_size(TileCdfArray::CoeffBrIdtx, tx_size_ctx)?;
+                let ctx =
+                    checked_index(TileCdfArray::CoeffBrIdtx, "ctx", ctx, IDTX_LEVEL_CONTEXTS)?;
+                Ok(self.coeff_br_idtx[q][tx_size_ctx][ctx].as_slice())
+            }
+            CoeffCdfSelector::IdtxSign {
+                coeff_cdf_q_ctx,
+                tx_size_ctx,
+                ctx,
+            } => {
+                let q = checked_coeff_cdf_q_context(TileCdfArray::IdtxSign, coeff_cdf_q_ctx)?;
+                let tx_size_ctx = checked_fsc_tx_size(TileCdfArray::IdtxSign, tx_size_ctx)?;
+                let ctx = checked_index(TileCdfArray::IdtxSign, "ctx", ctx, IDTX_SIGN_CONTEXTS)?;
+                Ok(self.idtx_sign[q][tx_size_ctx][ctx].as_slice())
             }
         }
     }
@@ -473,6 +586,36 @@ impl CoeffCdfRows {
                 )?;
                 Ok(self.coeff_base_eob_uv[q][ctx].as_mut_slice())
             }
+            CoeffCdfSelector::BaseBob {
+                coeff_cdf_q_ctx,
+                tx_size_ctx,
+                ctx,
+            } => {
+                let q = checked_coeff_cdf_q_context(TileCdfArray::CoeffBaseBob, coeff_cdf_q_ctx)?;
+                let tx_size_ctx = checked_fsc_tx_size(TileCdfArray::CoeffBaseBob, tx_size_ctx)?;
+                let ctx = checked_index(
+                    TileCdfArray::CoeffBaseBob,
+                    "ctx",
+                    ctx,
+                    COEFF_BASE_BOB_CONTEXTS,
+                )?;
+                Ok(self.coeff_base_bob[q][tx_size_ctx][ctx].as_mut_slice())
+            }
+            CoeffCdfSelector::BaseIdtx {
+                coeff_cdf_q_ctx,
+                tx_size_ctx,
+                ctx,
+            } => {
+                let q = checked_coeff_cdf_q_context(TileCdfArray::CoeffBaseIdtx, coeff_cdf_q_ctx)?;
+                let tx_size_ctx = checked_fsc_tx_size(TileCdfArray::CoeffBaseIdtx, tx_size_ctx)?;
+                let ctx = checked_index(
+                    TileCdfArray::CoeffBaseIdtx,
+                    "ctx",
+                    ctx,
+                    IDTX_SIG_COEF_CONTEXTS,
+                )?;
+                Ok(self.coeff_base_idtx[q][tx_size_ctx][ctx].as_mut_slice())
+            }
             CoeffCdfSelector::BaseLfEob {
                 coeff_cdf_q_ctx,
                 tx_size,
@@ -526,6 +669,27 @@ impl CoeffCdfRows {
                 let ctx = checked_index(TileCdfArray::CoeffBrLf, "ctx", ctx, COEFF_BR_LF_CONTEXTS)?;
                 Ok(self.coeff_br_lf[q][ctx].as_mut_slice())
             }
+            CoeffCdfSelector::BrIdtx {
+                coeff_cdf_q_ctx,
+                tx_size_ctx,
+                ctx,
+            } => {
+                let q = checked_coeff_cdf_q_context(TileCdfArray::CoeffBrIdtx, coeff_cdf_q_ctx)?;
+                let tx_size_ctx = checked_fsc_tx_size(TileCdfArray::CoeffBrIdtx, tx_size_ctx)?;
+                let ctx =
+                    checked_index(TileCdfArray::CoeffBrIdtx, "ctx", ctx, IDTX_LEVEL_CONTEXTS)?;
+                Ok(self.coeff_br_idtx[q][tx_size_ctx][ctx].as_mut_slice())
+            }
+            CoeffCdfSelector::IdtxSign {
+                coeff_cdf_q_ctx,
+                tx_size_ctx,
+                ctx,
+            } => {
+                let q = checked_coeff_cdf_q_context(TileCdfArray::IdtxSign, coeff_cdf_q_ctx)?;
+                let tx_size_ctx = checked_fsc_tx_size(TileCdfArray::IdtxSign, tx_size_ctx)?;
+                let ctx = checked_index(TileCdfArray::IdtxSign, "ctx", ctx, IDTX_SIGN_CONTEXTS)?;
+                Ok(self.idtx_sign[q][tx_size_ctx][ctx].as_mut_slice())
+            }
         }
     }
 
@@ -573,6 +737,18 @@ impl CoeffCdfRows {
             num_log2,
         );
         avg_rows(
+            self.coeff_base_bob.iter_mut().flatten().flatten(),
+            tile.coeff_base_bob.iter().flatten().flatten(),
+            tile_num,
+            num_log2,
+        );
+        avg_rows(
+            self.coeff_base_idtx.iter_mut().flatten().flatten(),
+            tile.coeff_base_idtx.iter().flatten().flatten(),
+            tile_num,
+            num_log2,
+        );
+        avg_rows(
             self.coeff_base_lf_eob.iter_mut().flatten().flatten(),
             tile.coeff_base_lf_eob.iter().flatten().flatten(),
             tile_num,
@@ -602,6 +778,18 @@ impl CoeffCdfRows {
             tile_num,
             num_log2,
         );
+        avg_rows(
+            self.coeff_br_idtx.iter_mut().flatten().flatten(),
+            tile.coeff_br_idtx.iter().flatten().flatten(),
+            tile_num,
+            num_log2,
+        );
+        avg_rows(
+            self.idtx_sign.iter_mut().flatten().flatten(),
+            tile.idtx_sign.iter().flatten().flatten(),
+            tile_num,
+            num_log2,
+        );
     }
 
     pub(crate) fn scale_counts_for_frame_end_update(&mut self) {
@@ -612,11 +800,15 @@ impl CoeffCdfRows {
         scale_rows(self.coeff_base_lf_uv.iter_mut().flatten());
         scale_rows(self.coeff_base_eob.iter_mut().flatten().flatten());
         scale_rows(self.coeff_base_eob_uv.iter_mut().flatten());
+        scale_rows(self.coeff_base_bob.iter_mut().flatten().flatten());
+        scale_rows(self.coeff_base_idtx.iter_mut().flatten().flatten());
         scale_rows(self.coeff_base_lf_eob.iter_mut().flatten().flatten());
         scale_rows(self.coeff_base_lf_eob_uv.iter_mut().flatten());
         scale_rows(self.coeff_br.iter_mut().flatten());
         scale_rows(self.coeff_br_uv.iter_mut().flatten());
         scale_rows(self.coeff_br_lf.iter_mut().flatten());
+        scale_rows(self.coeff_br_idtx.iter_mut().flatten().flatten());
+        scale_rows(self.idtx_sign.iter_mut().flatten().flatten());
     }
 }
 
@@ -662,6 +854,18 @@ fn checked_tx_size(array: TileCdfArray, tx_size: usize) -> Result<usize, TileCdf
         });
     }
     Ok(tx_size)
+}
+
+fn checked_fsc_tx_size(array: TileCdfArray, tx_size_ctx: usize) -> Result<usize, TileCdfError> {
+    if tx_size_ctx >= FSC_TX_SIZE_CONTEXTS {
+        return Err(TileCdfError::SelectorOutOfRange {
+            array,
+            index_name: "tx_size_ctx",
+            actual: tx_size_ctx,
+            max_exclusive: FSC_TX_SIZE_CONTEXTS,
+        });
+    }
+    Ok(tx_size_ctx)
 }
 
 fn checked_index(
