@@ -81,6 +81,10 @@ fn base_cdf_facts() -> FrameCandidateCdfFacts {
     FrameCandidateCdfFacts::new(false, false)
 }
 
+fn base_coeff_facts() -> FrameCandidateCoeffFacts {
+    FrameCandidateCoeffFacts::new(false, false)
+}
+
 fn derive_tile_payload_plan<'a>(
     ctx: &DecodeContext,
     bytes: &'a [u8],
@@ -228,7 +232,9 @@ fn derived_boundary_honors_parser_derived_disable_cdf_update_fact() {
         mode: FrameHeaderParseMode::Core,
     };
     let core = parse_frame_header_core(&mut frame_reader, &input).unwrap();
-    let facts = FrameCandidateTileFacts::from_frame_core(&core).unwrap();
+    let tq = sequence.transform_quant_entropy.as_ref().unwrap();
+    let coeff = FrameCandidateCoeffFacts::new(tq.enable_fsc, tq.enable_chroma_dctonly);
+    let facts = FrameCandidateTileFacts::from_frame_core(&core, coeff).unwrap();
 
     assert_eq!(core.disable_cdf_update, Some(false));
     let ctx = context(ThreadCount::from(1usize));
@@ -250,6 +256,59 @@ fn derived_boundary_honors_parser_derived_disable_cdf_update_fact() {
     assert_eq!(
         plan.work_units()[0].cdf().update_mode(),
         CdfUpdateMode::Enabled
+    );
+}
+
+#[test]
+fn derived_boundary_threads_parser_coeff_frame_facts() {
+    let bytes = include_bytes!("../../../../tests/fixtures/frame-header-core.av2");
+    let envelopes = parse_annex_b_obus(bytes).unwrap();
+    let seq_envelope = envelopes[1];
+    let frame_envelope = envelopes[2];
+    let mut seq_reader = BitReader::new(seq_envelope.payload, seq_envelope.payload_offset());
+    let sequence = parse_sequence_header(&mut seq_reader).unwrap();
+    let tq = sequence.transform_quant_entropy.as_ref().unwrap();
+    let mut frame_reader = BitReader::new(frame_envelope.payload, frame_envelope.payload_offset());
+    assert_eq!(frame_reader.read_bit().unwrap(), 1);
+    let input = FrameHeaderParseInput {
+        obu_type: ObuType::ClosedLoopKey,
+        first_picture_in_tu: false,
+        active_sequence: Some(&sequence),
+        mfh_record: None,
+        reference_state: FrameReferenceStateView::unknown(),
+        mode: FrameHeaderParseMode::Core,
+    };
+    let core = parse_frame_header_core(&mut frame_reader, &input).unwrap();
+    let coeff = FrameCandidateCoeffFacts::new(tq.enable_fsc, tq.enable_chroma_dctonly);
+    let facts = FrameCandidateTileFacts::from_frame_core(&core, coeff).unwrap();
+    let ctx = context(ThreadCount::from(1usize));
+    let plan = derive_tile_payload_plan(
+        &ctx,
+        bytes,
+        frame_envelope,
+        base_position(),
+        facts,
+        DecodeLimits::unlimited(),
+    )
+    .unwrap();
+    let coeff_facts = plan.work_units()[0].coeff_frame_facts();
+    let lossless = core.lossless_info.unwrap();
+    let tail = core.intra_tail.unwrap();
+    let quant = core.quantization_params.unwrap();
+
+    assert_eq!(coeff_facts.enable_fsc(), tq.enable_fsc);
+    assert_eq!(
+        coeff_facts.enable_chroma_dctonly(),
+        tq.enable_chroma_dctonly
+    );
+    assert_eq!(
+        coeff_facts.reduced_tx_set(),
+        usize::from(tail.reduced_tx_set)
+    );
+    assert_eq!(coeff_facts.base_q_idx(), quant.base_q_idx);
+    assert_eq!(
+        coeff_facts.lossless_for_segment(0),
+        Some(lossless.lossless_array[0])
     );
 }
 
@@ -318,7 +377,7 @@ fn derived_boundary_rejects_envelope_payload_from_different_input_buffer() {
 #[test]
 fn derived_boundary_rejects_absent_frame_header_facts_without_guessing() {
     let core = activation_only_frame_header_core();
-    let error = FrameCandidateTileFacts::from_frame_core(&core).unwrap_err();
+    let error = FrameCandidateTileFacts::from_frame_core(&core, base_coeff_facts()).unwrap_err();
 
     let FrameCandidateTileBoundaryError::Unsupported { reason } = error else {
         panic!("expected incomplete frame-header stop");

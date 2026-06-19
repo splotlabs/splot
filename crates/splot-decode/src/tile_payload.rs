@@ -33,6 +33,7 @@ use cdf::{
     FrameCdfSubset, TileCdfError, TileCdfPolicyInput, TileCdfWorkUnitBoundary, tile_cdf_save_policy,
 };
 use splot_core::headers::tile_group::{TileFramingDefect, TileGroupFraming};
+use splot_core::segment::MAX_SEGMENTS;
 use splot_core::span::{ByteOffset, ByteSpan};
 use splot_core::symbol::{CdfUpdateMode, SymbolDecoder, SymbolDecoderConfig};
 use splot_core::types::ObuType;
@@ -44,9 +45,9 @@ use crate::{
 
 pub(crate) use block_symbol::MinimalBlockSymbolTraceError;
 pub(crate) use input::{
-    FrameCandidateCdfFacts, FrameCandidateTileBoundaryError, FrameCandidateTileBoundaryInput,
-    FrameCandidateTileFacts, FrameCandidateTileMalformed, TileGroupPositionFacts,
-    plan_derived_tile_payload_boundary,
+    FrameCandidateCdfFacts, FrameCandidateCoeffFacts, FrameCandidateTileBoundaryError,
+    FrameCandidateTileBoundaryInput, FrameCandidateTileFacts, FrameCandidateTileMalformed,
+    TileGroupPositionFacts, plan_derived_tile_payload_boundary,
 };
 pub(crate) use partition_traversal::TilePartitionTraversalError;
 pub(crate) use runtime_frontier::{
@@ -185,6 +186,7 @@ pub(crate) struct TileFrameFacts {
     is_bridge: bool,
     bru_path: TileBruPath,
     base_q_idx: u32,
+    coeff_frame_facts: TileCoeffFrameFacts,
     disable_cdf_update: bool,
     cdf_policy: TileCdfPolicyInput,
 }
@@ -211,9 +213,20 @@ impl TileFrameFacts {
             is_bridge,
             bru_path,
             base_q_idx,
+            coeff_frame_facts: TileCoeffFrameFacts::default_for_base_q(base_q_idx),
             disable_cdf_update,
             cdf_policy: TileCdfPolicyInput::single_tile_default(),
         }
+    }
+
+    /// Returns a copy with parsed coefficient frame facts.
+    #[must_use]
+    pub(crate) const fn with_coeff_frame_facts(
+        mut self,
+        coeff_frame_facts: TileCoeffFrameFacts,
+    ) -> Self {
+        self.coeff_frame_facts = coeff_frame_facts;
+        self
     }
 
     /// Returns a copy with explicit tile CDF policy facts.
@@ -221,6 +234,80 @@ impl TileFrameFacts {
     pub(crate) const fn with_cdf_policy(mut self, cdf_policy: TileCdfPolicyInput) -> Self {
         self.cdf_policy = cdf_policy;
         self
+    }
+}
+
+/// Parsed frame/sequence facts needed by future coefficient decoding.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct TileCoeffFrameFacts {
+    enable_fsc: bool,
+    enable_chroma_dctonly: bool,
+    reduced_tx_set: usize,
+    lossless_array: [bool; MAX_SEGMENTS],
+    base_q_idx: u32,
+}
+
+impl TileCoeffFrameFacts {
+    /// Creates parsed coefficient frame facts.
+    #[must_use]
+    pub(crate) const fn new(
+        enable_fsc: bool,
+        enable_chroma_dctonly: bool,
+        reduced_tx_set: usize,
+        lossless_array: [bool; MAX_SEGMENTS],
+        base_q_idx: u32,
+    ) -> Self {
+        Self {
+            enable_fsc,
+            enable_chroma_dctonly,
+            reduced_tx_set,
+            lossless_array,
+            base_q_idx,
+        }
+    }
+
+    const fn default_for_base_q(base_q_idx: u32) -> Self {
+        Self {
+            enable_fsc: false,
+            enable_chroma_dctonly: false,
+            reduced_tx_set: 0,
+            lossless_array: [false; MAX_SEGMENTS],
+            base_q_idx,
+        }
+    }
+
+    /// Parsed `enable_fsc` from AV2 § 5.4.8.
+    #[must_use]
+    pub(crate) const fn enable_fsc(self) -> bool {
+        self.enable_fsc
+    }
+
+    /// Parsed `enable_chroma_dctonly` from AV2 § 5.4.8.
+    #[must_use]
+    pub(crate) const fn enable_chroma_dctonly(self) -> bool {
+        self.enable_chroma_dctonly
+    }
+
+    /// Parsed frame-header `reduced_tx_set`.
+    #[must_use]
+    pub(crate) const fn reduced_tx_set(self) -> usize {
+        self.reduced_tx_set
+    }
+
+    /// Parsed frame `base_q_idx`.
+    #[must_use]
+    pub(crate) const fn base_q_idx(self) -> u32 {
+        self.base_q_idx
+    }
+
+    /// `LosslessArray[segment_id]`, if `segment_id` is in domain.
+    #[must_use]
+    pub(crate) const fn lossless_for_segment(self, segment_id: usize) -> Option<bool> {
+        if segment_id < self.lossless_array.len() {
+            Some(self.lossless_array[segment_id])
+        } else {
+            None
+        }
     }
 }
 
@@ -296,6 +383,7 @@ pub(crate) struct DecodeTileWorkUnit<'a> {
     tile_byte_span: ByteSpan,
     tile_size: u64,
     current_q_index_at_entry: u32,
+    coeff_frame_facts: TileCoeffFrameFacts,
     bru_path: TileBruPath,
     symbol: SymbolInitBoundary,
     cdf: TileCdfWorkUnitBoundary,
@@ -366,6 +454,12 @@ impl<'a> DecodeTileWorkUnit<'a> {
     #[must_use]
     pub(crate) const fn current_q_index_at_entry(&self) -> u32 {
         self.current_q_index_at_entry
+    }
+
+    /// Parsed frame/sequence facts needed by future coefficient decoding.
+    #[must_use]
+    pub(crate) const fn coeff_frame_facts(&self) -> TileCoeffFrameFacts {
+        self.coeff_frame_facts
     }
 
     /// Symbol-decoder initialization boundary facts.
@@ -815,6 +909,7 @@ pub(crate) fn plan_tile_payload_boundary<'a>(
         tile_byte_span,
         tile_size: tile.tile_size,
         current_q_index_at_entry: input.frame.base_q_idx,
+        coeff_frame_facts: input.frame.coeff_frame_facts,
         bru_path: input.frame.bru_path,
         symbol,
         cdf,

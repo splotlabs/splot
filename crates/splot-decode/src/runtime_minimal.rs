@@ -23,10 +23,10 @@ use splot_recon::DecodedFrame;
 
 use crate::error::{DecodeError, DecodeUnsupportedFeature, Result};
 use crate::tile_payload::{
-    FrameCandidateCdfFacts, FrameCandidateTileBoundaryError, FrameCandidateTileBoundaryInput,
-    FrameCandidateTileFacts, MinimalBlockSymbolTraceError, MinimalRuntimeBlockSymbolFrontierError,
-    MinimalRuntimePartitionFrontierError, MinimalRuntimeReconstructionTrace,
-    TileGroupPositionFacts, TilePartitionTraversalError,
+    FrameCandidateCdfFacts, FrameCandidateCoeffFacts, FrameCandidateTileBoundaryError,
+    FrameCandidateTileBoundaryInput, FrameCandidateTileFacts, MinimalBlockSymbolTraceError,
+    MinimalRuntimeBlockSymbolFrontierError, MinimalRuntimePartitionFrontierError,
+    MinimalRuntimeReconstructionTrace, TileGroupPositionFacts, TilePartitionTraversalError,
 };
 use crate::{
     DecodeLimitError, DecodeLimitName, DecodeLimitOp, DecodeOptions, DecodePlannedObu,
@@ -566,8 +566,6 @@ fn derive_tile_plan<'a>(
     core: &'a FrameHeaderCore,
     options: DecodeOptions,
 ) -> Result<crate::tile_payload::DecodeTilePayloadPlan<'a>> {
-    let facts =
-        FrameCandidateTileFacts::from_frame_core(core).map_err(decode_tile_boundary_error)?;
     let tq = sequence.transform_quant_entropy.as_ref().ok_or_else(|| {
         unsupported_at(
             "missing_tq_entropy_config",
@@ -575,6 +573,9 @@ fn derive_tile_plan<'a>(
             "minimal tier requires sequence transform/quant/entropy config",
         )
     })?;
+    let coeff = FrameCandidateCoeffFacts::new(tq.enable_fsc, tq.enable_chroma_dctonly);
+    let facts = FrameCandidateTileFacts::from_frame_core(core, coeff)
+        .map_err(decode_tile_boundary_error)?;
     let cdf = FrameCandidateCdfFacts::new(tq.enable_avg_cdf, tq.avg_cdf_type != 0);
     let input = FrameCandidateTileBoundaryInput::new(
         plan,

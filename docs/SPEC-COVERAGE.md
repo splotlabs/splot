@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 298 feature(s); 245 cite a spec section.
+Matrix version 1. Last reviewed 2026-06-15. 299 feature(s); 246 cite a spec section.
 
 One row per (spec section, feature) pair, in spec order; a feature citing both a syntax and a semantics section appears under both. The canonical status source is [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); the full per-feature ledger is [FEATURE-STATUS.md](./FEATURE-STATUS.md).
 
@@ -98,6 +98,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.4.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-4-6) | Sequence inter config syntax | `RECON-REFERENCE-FRAME-STORE` | ✅ | — | — | ✅ | — |
 | [§ 5.4.7](./spec/av2/1.0.0/05-syntax-structures.md#s-5-4-7) | Sequence screen content config syntax | `AV2-5.4.7-SEQUENCE-SCC-CONFIG` | ✅ | ✅ | 🟡 | ✅ | — |
 | [§ 5.4.8](./spec/av2/1.0.0/05-syntax-structures.md#s-5-4-8) | Sequence transform quant entropy config syntax | `AV2-5.4.8-SEQUENCE-TQ-ENTROPY-CONFIG` | ✅ | ✅ | 🟡 | ✅ | — |
+| [§ 5.4.8](./spec/av2/1.0.0/05-syntax-structures.md#s-5-4-8) | Sequence transform quant entropy config syntax | `DECODE-COEFF-FRAME-FACTS-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.4.9](./spec/av2/1.0.0/05-syntax-structures.md#s-5-4-9) | Segment information syntax | `AV2-5.4.9-SEGMENT-INFO` | ✅ | ✅ | — | ✅ | — |
 | [§ 5.4.10](./spec/av2/1.0.0/05-syntax-structures.md#s-5-4-10) | Sequence filter config syntax | `AV2-5.4.10-SEQUENCE-FILTER-CONFIG` | ✅ | ✅ | 🟡 | ✅ | — |
 | [§ 5.4.11](./spec/av2/1.0.0/05-syntax-structures.md#s-5-4-11) | User defined QM syntax | `AV2-5.4.11-USER-QM` | ✅ | ✅ | — | ✅ | — |
@@ -159,6 +160,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.18.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-1) | General frame header syntax | `AV2-5.18.1-FRAME-HEADER-GENERAL` | ✅ | 🟡 | 🟡 | ✅ | 2 |
 | [§ 5.18.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-1) | General frame header syntax | `DECODE-TILE-PAYLOAD-INPUT-DERIVATION` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 5.18.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2) | Frame header info syntax | `AV2-5.18.2-FRAME-HEADER-INFO` | ✅ | 🟡 | 🟡 | ✅ | 9 |
+| [§ 5.18.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2) | Frame header info syntax | `DECODE-COEFF-FRAME-FACTS-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.18.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2) | Frame header info syntax | `DECODE-MINIMAL-RAW-RUNTIME-OUTPUT` | ✅ | 🟡 | ✅ | ✅ | 4 |
 | [§ 5.18.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2) | Frame header info syntax | `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS` | ✅ | 🟡 | ✅ | ✅ | 3 |
 | [§ 5.18.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2) | Frame header info syntax | `DECODE-TILE-PAYLOAD-INPUT-DERIVATION` | ✅ | 🟡 | — | ✅ | 2 |
@@ -267,6 +269,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-COEFF-EOB-SIZE-CONTEXT` | ✅ | — | — | ✅ | 1 |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-COEFF-EOB-SYMBOL-READ` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-COEFF-EOB-VALUE-STATE` | ✅ | — | — | ✅ | 1 |
+| [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-COEFF-FRAME-FACTS-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-COEFF-FSC-BRANCH-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-COEFF-FSC-BRANCH-SCAN-ORDER` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-COEFF-FSC-BRANCH-SEG-EOB-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
@@ -397,6 +400,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 6.4.6](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-6) | Sequence inter config semantics | `RECON-REFERENCE-FRAME-STORE` | ✅ | — | — | ✅ | — |
 | [§ 6.4.7](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-7) | Sequence screen content config semantics | `AV2-5.4.7-SEQUENCE-SCC-CONFIG` | ✅ | ✅ | 🟡 | ✅ | — |
 | [§ 6.4.8](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-8) | Sequence transform quant entropy config semantics | `AV2-5.4.8-SEQUENCE-TQ-ENTROPY-CONFIG` | ✅ | ✅ | 🟡 | ✅ | — |
+| [§ 6.4.8](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-8) | Sequence transform quant entropy config semantics | `DECODE-COEFF-FRAME-FACTS-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 6.4.9](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-9) | Segment information semantics | `AV2-5.4.9-SEGMENT-INFO` | ✅ | ✅ | — | ✅ | — |
 | [§ 6.4.10](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-10) | Sequence filter config semantics | `AV2-5.4.10-SEQUENCE-FILTER-CONFIG` | ✅ | ✅ | 🟡 | ✅ | — |
 | [§ 6.4.11](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-11) | User defined QM semantics | `AV2-5.4.11-USER-QM` | ✅ | ✅ | — | ✅ | — |
@@ -469,6 +473,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 6.17.2](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-2) | Frame header info semantics | `AV2-7.23-REFERENCE-FRAME-UPDATE` | ✅ | — | 🟡 | ✅ | 1 |
 | [§ 6.17.2](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-2) | Frame header info semantics | `AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY` | ✅ | — | 🟡 | 🟡 | 1 |
 | [§ 6.17.2](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-2) | Frame header info semantics | `DECODE-COEFF-CDF-Q-CONTEXT-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 6.17.2](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-2) | Frame header info semantics | `DECODE-COEFF-FRAME-FACTS-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 6.17.2](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-2) | Frame header info semantics | `DECODE-MINIMAL-RAW-RUNTIME-OUTPUT` | ✅ | 🟡 | ✅ | ✅ | 4 |
 | [§ 6.17.2](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-2) | Frame header info semantics | `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS` | ✅ | 🟡 | ✅ | ✅ | 3 |
 | [§ 6.17.2](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-2) | Frame header info semantics | `DECODE-Y4M-RUNTIME-OUTPUT` | ✅ | 🟡 | ✅ | ✅ | 4 |
