@@ -246,8 +246,10 @@ caller-resolved plane and 4x4 geometry. It still does not wire runtime
 nonzero branch target: it rejects all-zero and non-luma routing, runs the
 nonzero EOB start, derives the checked FSC `bob..segEob` scan walk from
 caller-resolved `segEob` and scan order, then runs the FSC level and
-quant/context-commit stages. Runtime `useFsc`, `segEob`, scan, transform, and
-geometry derivation remain unwired.
+quant/context-commit stages. `DECODE-COEFF-FSC-BRANCH-SEG-EOB-HANDOFF` now
+derives `segEob` from the caller-resolved scan extent before delegating to that
+branch, matching the shared § 5.20.7.27 / § 5.20.7.30 capped transform extent.
+Runtime `useFsc`, scan, transform, and geometry derivation remain unwired.
 Separately, `DECODE-COEFF-ORDINARY-DERIVED-BASE-PASS` now composes the ordinary
 state-derived first pass into the ordinary coefficient pass, carrying
 first-pass `isHidden`, `sumAbs1`, and `useTcq` into the interleaved
