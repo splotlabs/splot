@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 320 feature(s); 267 cite a spec section.
+Matrix version 1. Last reviewed 2026-06-15. 321 feature(s); 268 cite a spec section.
 
 One row per (spec section, feature) pair, in spec order; a feature citing both a syntax and a semantics section appears under both. The canonical status source is [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); the full per-feature ledger is [FEATURE-STATUS.md](./FEATURE-STATUS.md).
 
@@ -213,6 +213,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.20.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-1) | General tile group payload syntax | `DECODE-TILE-PAYLOAD-BOUNDARY` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 5.20.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-1) | General tile group payload syntax | `DECODE-TILE-PAYLOAD-INPUT-DERIVATION` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 5.20.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-1) | General tile group payload syntax | `DECODE-Y4M-RUNTIME-OUTPUT` | ✅ | 🟡 | ✅ | ✅ | 4 |
+| [§ 5.20.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-1) | General tile group payload syntax | `ENC-BLOCK-SYMBOL-ENCODE` | ✅ | — | — | ✅ | — |
 | [§ 5.20.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-1) | General tile group payload syntax | `ENC-MINIMAL-HEADER-PLAN` | ✅ | — | — | ✅ | — |
 | [§ 5.20.2.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-2-1) | Decode tile syntax | `CONF-TILE-PAYLOAD-DECODE-FUZZ` | ✅ | — | — | ✅ | 2 |
 | [§ 5.20.2.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-2-1) | Decode tile syntax | `DECODE-CONTEXT-TILE-PAYLOAD-HANDOFF` | ✅ | — | — | ✅ | 2 |
@@ -724,6 +725,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 
 | Section | Spec item | Feature | Mapped | Parse | Validate | Tests | Diagnostics |
 |---|---|---|:-:|:-:|:-:|:-:|:-:|
+| [§ 8.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2) | Parsing process for symbol decoder | `ENC-BLOCK-SYMBOL-ENCODE` | ✅ | — | — | ✅ | — |
 | [§ 8.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2) | Parsing process for symbol decoder | `ENC-COEFF-BASE-LF-TOKEN` | ✅ | — | — | ✅ | — |
 | [§ 8.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2) | Parsing process for symbol decoder | `ENC-COEFF-MULTI-TOKENS` | ✅ | — | — | ✅ | — |
 | [§ 8.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2) | Parsing process for symbol decoder | `ENC-COEFFICIENT-TOKENIZATION-MINIMAL` | ✅ | — | — | ✅ | — |

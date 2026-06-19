@@ -135,6 +135,10 @@ Status: planned, replaces the parked toy bootstrap path.
   enable_intra_ist==1). The most_probable_stx_set follow-up (read when sec_tx_type!=0),
   blocks with eob>2, the chroma base-range/golomb tiers, partition syntax, and the
   tile-body byte assembly remain.
+- The production entropy-coding entry point `encode_block_symbol_trace` (the §8.2
+  SymbolEncoder driven to a block's coded bytes) has landed — the first tile-body
+  brick. Next: a tile-group OBU from the all-zero trace, then frame assembly and the
+  Context::receive_packet wiring to a first real packet.
 - Use closed-loop reconstruction before public success.
 - Emit only syntax the writer can produce and the validator accepts.
 - Record fixtures, hashes, and matrix proof before marking any encode stage done.

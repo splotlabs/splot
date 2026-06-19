@@ -4800,6 +4800,39 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-BLOCK-SYMBOL-ENCODE"
+name = "Encoder block-symbol entropy-coding entry point"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["8.2", "5.20.1"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/block_symbol_trace.rs"
+openspec_change = "encoder-block-symbol-encode"
+tracking_issue = ""
+owner = "encoder"
+risk = "low"
+notes = "Private production entropy-coding entry point — the FIRST brick of the tile-body assembly phase (toward Milestone A). `encode_block_symbol_trace(trace) -> Result<Vec<u8>>` in block_symbol_trace.rs drives one in-tree §8.2 SymbolEncoder over the ordered trace (one write_symbol per CDF token to its scoped default BlockSymbolTraceCdfRows row, one write_literal per bypass token), finish()es the stream (§8.2.4 padding), and returns the coded bytes — the bytes a §5.20.1 tile_group_payload() carries as a single tile's data (a single tile writes no tile_size field, so the payload IS these bytes). EXTRACTED from the encode half of the roundtrip_block_symbol_trace test helper, which now calls it (DRY; the decode half is unchanged and still proves the bytes). splot-encode CANNOT depend on splot-decode (dependency graph), so the cross-tool encode→decode hash check lives later at CLI/integration level; within splot-encode the bytes are proven decodable via splot-core SymbolDecoder (the roundtrip). Tests: production bytes for the complete all-zero intra block are non-empty, equal the roundtrip's proven-decodable bytes, decode to [0,0,0,1,1,1]; deterministic. This row does not claim a tile-group payload, tile-group OBU, frame assembly, packet, Context::receive_packet output, CLI success, or Baseline Encoder Profile v1 output — the OBU/frame/packet wrappers are later bricks. NEXT: tile-group OBU from the all-zero trace (splot-core write_tile_group_obu + §5.19 structure) → frame assembly → wire receive_packet → first real packet → CLI cross-tool decode-hash test."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/block_symbol_trace_tests.rs::encode_block_symbol_trace_emits_decodable_all_zero_payload", "crates/splot-encode/src/block_symbol_trace_tests.rs::encode_block_symbol_trace_is_deterministic"]
+commands = ["cargo test -p splot-encode block_symbol_trace --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-RECON-DEPENDENCY"
 name = "Encoder reconstruction dependency boundary"
 category = "encoder"

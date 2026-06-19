@@ -744,3 +744,25 @@ fn ist_trace_roundtrip_is_deterministic() {
     assert_eq!(first.bytes(), second.bytes());
     assert_eq!(first.decoded_symbols(), second.decoded_symbols());
 }
+
+#[test]
+fn encode_block_symbol_trace_emits_decodable_all_zero_payload() {
+    // The production entropy-coding entry point emits the §8.2 bytes for the complete
+    // all-zero intra block; they are exactly the bytes the roundtrip proves decodable.
+    let trace = compose_minimal_intra_dc_complete_all_zero_block_trace().unwrap();
+    let bytes = encode_block_symbol_trace(&trace).unwrap();
+    assert!(!bytes.is_empty());
+
+    let proof = roundtrip_block_symbol_trace(&trace).unwrap();
+    assert_eq!(proof.bytes(), bytes.as_slice());
+    assert_eq!(proof.decoded_symbols(), &[0, 0, 0, 1, 1, 1]);
+}
+
+#[test]
+fn encode_block_symbol_trace_is_deterministic() {
+    let trace = compose_minimal_intra_dc_complete_all_zero_block_trace().unwrap();
+    assert_eq!(
+        encode_block_symbol_trace(&trace).unwrap(),
+        encode_block_symbol_trace(&trace).unwrap()
+    );
+}

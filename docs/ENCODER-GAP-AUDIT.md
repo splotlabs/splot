@@ -196,6 +196,11 @@ planning and status; it does not claim encoder behavior exists.
   transform-type symbols (intra_tx_type + the sec_tx_type IST symbol, enable_intra_ist
   ==1): the 12-token trace [0,0,0,0,1,0,0,0,0,0,1,1] roundtrips through one §8.2 coder.
   sec_tx_type=0 (IST off, no most_probable_stx_set). Not eob>2, not a packet path.
+- `ENC-BLOCK-SYMBOL-ENCODE` adds the production entropy-coding entry point
+  `encode_block_symbol_trace(trace) -> Vec<u8>` (the §8.2 SymbolEncoder driven to
+  coded bytes; the roundtrip helper now calls it). It is the first tile-body-phase
+  brick; the bytes are a single tile's §5.20.1 payload data. The tile-group OBU/frame
+  wrappers and the receive_packet wiring remain.
 - `Packet` is still only a byte buffer wrapper, and no coded packet production
   path exists.
 - `EncoderConfig` exposes `BitDepth::Twelve`, but current Baseline Encoder Profile

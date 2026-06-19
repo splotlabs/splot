@@ -653,9 +653,17 @@ impl BlockSymbolTraceRoundtrip {
 
 /// Writes a block-symbol trace through one § 8.2 symbol encoder and decodes it
 /// back through one symbol decoder, sharing CDF state across the whole sequence.
-pub(crate) fn roundtrip_block_symbol_trace(
-    trace: &[BlockSymbolToken],
-) -> Result<BlockSymbolTraceRoundtrip> {
+/// Encodes an ordered block-symbol trace into AV2 § 8.2 entropy-coded bytes — the
+/// encoder's production entropy-coding entry point. Each token is written to its
+/// scoped default CDF row (a bypass literal writes its raw bits); `finish()`
+/// terminates the § 8.2 stream (§ 8.2.4 padding) and yields the coded bytes that a
+/// § 5.20.1 `tile_group_payload()` carries as a single tile's data.
+///
+/// This drives the same § 8.2 encode path as [`roundtrip_block_symbol_trace`] (which
+/// calls it), but returns the coded bytes for downstream tile-group assembly rather
+/// than re-decoding them. It does not assemble a tile-group payload, OBU, frame, or
+/// packet — those are later bricks.
+pub(crate) fn encode_block_symbol_trace(trace: &[BlockSymbolToken]) -> Result<Vec<u8>> {
     let mut encode_cdfs = BlockSymbolTraceCdfRows::from_defaults();
     // One operation per CDF symbol and per bypass-literal bit, plus headroom.
     let trace_cost = trace
@@ -691,7 +699,13 @@ pub(crate) fn roundtrip_block_symbol_trace(
     let output = encoder
         .finish()
         .map_err(|source| Error::BlockSymbolTraceSymbolEncodeFinish { source })?;
-    let bytes = output.into_bytes();
+    Ok(output.into_bytes())
+}
+
+pub(crate) fn roundtrip_block_symbol_trace(
+    trace: &[BlockSymbolToken],
+) -> Result<BlockSymbolTraceRoundtrip> {
+    let bytes = encode_block_symbol_trace(trace)?;
 
     let mut decode_cdfs = BlockSymbolTraceCdfRows::from_defaults();
     let mut decoder = SymbolDecoder::with_config(&bytes, SymbolDecoderConfig::new())
