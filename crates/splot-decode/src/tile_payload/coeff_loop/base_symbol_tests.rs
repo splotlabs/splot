@@ -4,7 +4,8 @@
 #![allow(clippy::unwrap_used, clippy::panic)]
 
 use splot_core::span::ByteOffset;
-use splot_core::symbol::{CdfUpdateMode, SymbolDecoder, SymbolDecoderConfig};
+use splot_core::symbol::{CdfUpdateMode, Symbol, SymbolDecoder, SymbolDecoderConfig};
+use splot_core::symbol_encoder::SymbolEncoder;
 
 use super::super::cdf::block_read::BlockSymbolTraceReadError;
 use super::super::cdf::{
@@ -397,4 +398,121 @@ fn coefficient_base_symbol_read_count_mismatch_preserves_state() {
     assert_eq!(tile, tile_before);
     assert_eq!(symbols.consumed_bits(), consumed_before);
     assert_eq!(symbols.symbol_count(), symbol_count_before);
+}
+
+// --- §5.20.7.27 coeff_base / coeff_br SymbolEncoder roundtrip proofs ---
+//
+// The first CONTEXT-CDF (non-bypass) roundtrip on the coefficient path. These
+// drive the real `read_nonzero_coeff_base_symbols` decode helper with bytes the
+// `SymbolEncoder` writes against the SAME default CDF rows the decoder reads (an
+// identical `tile_copy()` via `with_row_mut`), then assert the decoded base/br
+// symbols and assembled levels recover exactly what was encoded. CDF adaptation
+// is enabled, so the encode and decode tiles stay in lockstep across the
+// multi-symbol stream — proving the row-sharing technique that future context-CDF
+// roundtrips (eob_pt, dc_sign, the single-DC full chain) build on. Unlike the
+// existing `find_payload` brute-force search, the coefficients are chosen up
+// front and encoded directly.
+
+/// Writes one `coeff_base`/`coeff_base_eob`/`coeff_br` symbol to `tile`'s CDF row
+/// for `selector` (adapting it), mirroring the decoder's `read_block_symbol_trace`.
+fn encode_coeff_symbol(
+    tile: &mut TileCdfSubset,
+    encoder: &mut SymbolEncoder,
+    selector: CoeffCdfSelector,
+    symbol: u8,
+) {
+    tile.with_row_mut(TileCdfSelector::Coeff(selector), |row| {
+        encoder.write_symbol(row, Symbol::new(symbol))
+    })
+    .unwrap()
+    .unwrap();
+}
+
+#[test]
+fn coefficient_base_symbols_roundtrip_through_symbol_encoder() {
+    // Two scan entries in one stream: a base-EOB coefficient whose level crosses
+    // `base_levels` (so it reads coeff_br) followed by a base coefficient that
+    // does not. base_eob symbol 2 -> level 3 (> 2) -> br symbol 1 -> level 4;
+    // base symbol 1 -> level 1 (<= 2) -> no br.
+    let entry0 = CoeffScanEntry::for_test(1, 8, 1, 0);
+    let entry1 = CoeffScanEntry::for_test(0, 0, 0, 0);
+    let walk = NonZeroCoeffScanWalk::from_entries_for_test(vec![entry0, entry1]);
+    let base_range = CoeffBaseRangeRead::Enabled {
+        selector: br_selector(),
+    };
+    let inputs = vec![
+        CoeffBaseSymbolReadInput {
+            entry: entry0,
+            base: CoeffBaseSymbolSource::BaseEob {
+                selector: base_eob_selector(),
+            },
+            base_levels: BASE_LEVELS,
+            base_range,
+        },
+        CoeffBaseSymbolReadInput {
+            entry: entry1,
+            base: CoeffBaseSymbolSource::Base {
+                selector: base_selector(),
+            },
+            base_levels: BASE_LEVELS,
+            base_range,
+        },
+    ];
+
+    let mut enc_tile = FrameCdfSubset::from_defaults().tile_copy();
+    let mut encoder = SymbolEncoder::new();
+    encode_coeff_symbol(&mut enc_tile, &mut encoder, base_eob_selector(), 2);
+    encode_coeff_symbol(&mut enc_tile, &mut encoder, br_selector(), 1);
+    encode_coeff_symbol(&mut enc_tile, &mut encoder, base_selector(), 1);
+    let bytes = encoder.finish().unwrap().into_bytes();
+
+    let mut dec_tile = FrameCdfSubset::from_defaults().tile_copy();
+    let mut symbols = symbol_decoder(&bytes, CdfUpdateMode::Enabled);
+    let reads =
+        read_nonzero_coeff_base_symbols(&mut dec_tile, &mut symbols, &walk, &inputs).unwrap();
+
+    assert_eq!(
+        as_tuples(&reads),
+        vec![(entry0, 2u8, Some(1u8), 4u32), (entry1, 1u8, None, 1u32)]
+    );
+    // The encode and decode CDF tiles ended in the same adapted state, confirming
+    // the rows stayed in lockstep across the whole stream.
+    assert_eq!(
+        dec_tile
+            .row(TileCdfSelector::Coeff(base_eob_selector()))
+            .unwrap(),
+        enc_tile
+            .row(TileCdfSelector::Coeff(base_eob_selector()))
+            .unwrap()
+    );
+}
+
+#[test]
+fn coefficient_base_eob_only_roundtrips_through_symbol_encoder() {
+    // A single base-EOB coefficient whose level does not cross `base_levels`, so
+    // no coeff_br is read: base_eob symbol 1 -> level 2 (== base_levels) -> no br.
+    let entry = CoeffScanEntry::for_test(0, 0, 0, 0);
+    let walk = NonZeroCoeffScanWalk::from_entries_for_test(vec![entry]);
+    let inputs = vec![CoeffBaseSymbolReadInput {
+        entry,
+        base: CoeffBaseSymbolSource::BaseEob {
+            selector: base_eob_selector(),
+        },
+        base_levels: BASE_LEVELS,
+        base_range: CoeffBaseRangeRead::Enabled {
+            selector: br_selector(),
+        },
+    }];
+
+    let mut enc_tile = FrameCdfSubset::from_defaults().tile_copy();
+    let mut encoder = SymbolEncoder::new();
+    encode_coeff_symbol(&mut enc_tile, &mut encoder, base_eob_selector(), 1);
+    let bytes = encoder.finish().unwrap().into_bytes();
+
+    let mut dec_tile = FrameCdfSubset::from_defaults().tile_copy();
+    let mut symbols = symbol_decoder(&bytes, CdfUpdateMode::Enabled);
+    let reads =
+        read_nonzero_coeff_base_symbols(&mut dec_tile, &mut symbols, &walk, &inputs).unwrap();
+
+    assert_eq!(as_tuples(&reads), vec![(entry, 1u8, None, 2u32)]);
 }
