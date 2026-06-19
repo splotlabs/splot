@@ -116,6 +116,17 @@ planning and status; it does not claim encoder behavior exists.
   §5.20.7.28 golomb tail. Proven by a mixed CDF+bypass roundtrip; it has no
   consumer yet and is not coded chroma signs, the golomb tail, tile-body emission,
   or a packet path.
+- `ENC-INTRA-BLOCK-TRACE-CODED-CHROMA-DC` adds the first coded *chroma*
+  coefficient (a coded U-plane DC), built on the §8.2.5 bypass-literal token. The
+  U residual is `txb_skip=0` + chroma `eob_pt_16` (ctx 2) + chroma `coeff_base_eob`
+  (the `TileCoeffBaseLfEobUvCdf`) as CDF tokens, then the U DC sign as a `sign_bit`
+  `L(1)` bypass literal (§5.20.7.27 codes the `dc_sign` CDF only for the luma DC
+  and `dc_sign_horz_vert` for the directional luma axis signs), then the all-zero
+  V `txb_skip` at the §8.3.2 EobU context 6 (since the coded U sets `EobU != 0`) —
+  all verified vs the decoder and proven through one §8.2 coder. The accessor
+  rejects out-of-tier magnitudes with a typed error. It is not the chroma
+  base-range/golomb tiers, V-plane coded coefficients, multi-coefficient blocks,
+  tile-body emission, or a packet path.
 - `Packet` is still only a byte buffer wrapper, and no coded packet production
   path exists.
 - `EncoderConfig` exposes `BitDepth::Twelve`, but current Baseline Encoder Profile

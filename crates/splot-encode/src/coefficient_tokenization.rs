@@ -43,6 +43,9 @@ const TXB_SKIP_CTX_NEUTRAL: usize = 0;
 // neutral (above==0, left==0) base context.
 const CHROMA_U_TXB_SKIP_CTX_NEUTRAL: usize = 6;
 const EOB_CTX_LUMA_INTRA: usize = 0;
+// AV2 § 5.20.7.27 line 15362: `eobCtx = (plane > 0) ? 2 : is_inter`, so an intra
+// chroma coefficient uses eob context 2.
+const EOB_CTX_CHROMA: usize = 2;
 const COEFF_BASE_LF_EOB_CTX_DC: usize = 0;
 const COEFF_BR_LF_CTX_DC: usize = 0;
 const DC_SIGN_GROUP_VISIBLE: usize = 0;
@@ -193,6 +196,67 @@ pub(crate) fn luma_dc_coded_tokens(
             ctx: DC_SIGN_CTX_NEUTRAL,
         },
         symbol: negative as u8,
+    });
+    Ok(tokens)
+}
+
+/// Returns the ordered AV2 § 5.20.7.27 coded U-plane DC-only *CDF* coefficient
+/// tokens for a single nonzero chroma U DC coefficient of unsigned `magnitude`
+/// (`1..=MAX_BASE_EOB_MAGNITUDE`, the base tier), at the neutral top-left chroma
+/// context:
+///
+/// 1. `all_zero == 0` (U `txb_skip`, the block is coded),
+/// 2. `eob_pt_16 == 0` (a single coefficient at scan position 0), and
+/// 3. `coeff_base_eob == magnitude - 1` via the chroma `TileCoeffBaseLfEobUvCdf`.
+///
+/// The coefficient's `sign_bit` is **not** included: per § 5.20.7.27 a chroma DC
+/// sign is an `L(1)` bypass literal (`sign_bit`), not a CDF symbol — the caller
+/// appends it as a bypass token. Per § 8.3.2 the chroma contexts differ from luma:
+/// the eob context is `2` (`eobCtx = (plane > 0) ? 2 : is_inter`) and
+/// `coeff_base_eob` uses the dedicated chroma low-frequency CDF (DC ctx `0`).
+/// Verified against the decoder's `base_eob_selector` derivation.
+pub(crate) fn chroma_u_dc_coded_coeff_tokens(
+    coeff_cdf_q_ctx: usize,
+    magnitude: u32,
+) -> Result<Vec<CoefficientEntropyToken>> {
+    if !(1..=MAX_BASE_EOB_MAGNITUDE).contains(&magnitude) {
+        return Err(Error::CoefficientTokenizationUnsupportedChromaMagnitude {
+            plane: PlaneId::U,
+            magnitude,
+            max_magnitude: MAX_BASE_EOB_MAGNITUDE,
+        });
+    }
+    let mut tokens = Vec::new();
+    tokens
+        .try_reserve_exact(3)
+        .map_err(|_| Error::CoefficientTokenizationAllocationFailed {
+            context: "coded chroma U DC coefficient tokens",
+        })?;
+    tokens.push(CoefficientEntropyToken {
+        syntax: CoefficientTokenSyntax::AllZero,
+        selector: CoefficientCdfRowSelector::TxbSkip {
+            coeff_cdf_q_ctx,
+            plane_type: INTRA_NON_FSC_TXB_SKIP_BANK,
+            tx_size: TX_SIZE_4X4_CTX,
+            ctx: CHROMA_U_TXB_SKIP_CTX_NEUTRAL,
+        },
+        symbol: false as u8,
+    });
+    tokens.push(CoefficientEntropyToken {
+        syntax: CoefficientTokenSyntax::EobPt16,
+        selector: CoefficientCdfRowSelector::EobPt16 {
+            coeff_cdf_q_ctx,
+            eob_ctx: EOB_CTX_CHROMA,
+        },
+        symbol: 0,
+    });
+    tokens.push(CoefficientEntropyToken {
+        syntax: CoefficientTokenSyntax::CoeffBaseEob,
+        selector: CoefficientCdfRowSelector::CoeffBaseLfEobUv {
+            coeff_cdf_q_ctx,
+            ctx: COEFF_BASE_LF_EOB_CTX_DC,
+        },
+        symbol: (magnitude - 1) as u8,
     });
     Ok(tokens)
 }
@@ -371,6 +435,9 @@ pub(crate) enum CoefficientCdfRowSelector {
     VTxbSkip { coeff_cdf_q_ctx: usize, ctx: usize },
     /// `TileCoeffBrLfCdf[coeff_cdf_q_ctx][ctx]` (the low-frequency `coeff_br` CDF).
     CoeffBrLf { coeff_cdf_q_ctx: usize, ctx: usize },
+    /// `TileCoeffBaseLfEobUvCdf[coeff_cdf_q_ctx][ctx]` (the chroma low-frequency
+    /// `coeff_base_eob` CDF).
+    CoeffBaseLfEobUv { coeff_cdf_q_ctx: usize, ctx: usize },
 }
 
 impl CoefficientCdfRowSelector {
@@ -381,7 +448,9 @@ impl CoefficientCdfRowSelector {
             }
             Self::EobPt16 { .. } => CoefficientTokenSyntax::EobPt16.as_str(),
             Self::CoeffBrLf { .. } => CoefficientTokenSyntax::CoeffBr.as_str(),
-            Self::CoeffBaseLfEob { .. } => CoefficientTokenSyntax::CoeffBaseEob.as_str(),
+            Self::CoeffBaseLfEob { .. } | Self::CoeffBaseLfEobUv { .. } => {
+                CoefficientTokenSyntax::CoeffBaseEob.as_str()
+            }
             Self::DcSign { .. } => CoefficientTokenSyntax::DcSign.as_str(),
         }
     }
