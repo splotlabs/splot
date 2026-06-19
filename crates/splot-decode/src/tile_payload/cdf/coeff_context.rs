@@ -41,20 +41,13 @@
 //! it is no-output-change (the derivations are exercised by compile-time
 //! spec-contract `const` checks and unit tests, not by any decode stage).
 
+use splot_core::coefficient::{LF_SIG_COEF_CONTEXTS_2D, SIG_REF_DIFF_OFFSET_NUM};
 use splot_core::tables::conversion::SIG_REF_DIFF_OFFSET;
 
 /// AV2 § 3 `SIG_COEF_CONTEXTS_EOB`: the number of `coeff_base_eob` contexts
 /// (`03-symbols.md`); the four contexts are `SIG_COEF_CONTEXTS_EOB - 4 ..=
 /// SIG_COEF_CONTEXTS_EOB - 1`, i.e. `0..=3`.
 const SIG_COEF_CONTEXTS_EOB: usize = 4;
-
-/// AV2 § 3 `SIG_REF_DIFF_OFFSET_NUM` (`03-symbols.md`): the number of `coeff_base`
-/// neighbour samples for luma (chroma uses 3 for 2D, 2 otherwise).
-const SIG_REF_DIFF_OFFSET_NUM: usize = 5;
-
-/// AV2 § 3 `LF_SIG_COEF_CONTEXTS_2D` (`03-symbols.md`): the low-frequency luma 2D
-/// `coeff_base` context-count offset used by the non-2D low-frequency branch.
-const LF_SIG_COEF_CONTEXTS_2D: usize = 21;
 
 /// AV2 § 3 `LF_SIG_COEF_CONTEXTS_2D_UV` (`03-symbols.md`): the chroma 2D
 /// `coeff_base` context-count offset used by the non-2D chroma branch.

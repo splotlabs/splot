@@ -7,18 +7,17 @@
 //! (`ENC-COEFF-BASE-LF-TOKEN`). Split out of `coefficient_tokenization` to keep the
 //! parent file under the 1000-line source budget.
 
+use splot_core::coefficient::{LF_SIG_COEF_CONTEXTS_2D, SIG_REF_DIFF_OFFSET_NUM};
 use splot_core::tables::conversion::SIG_REF_DIFF_OFFSET;
 
 use super::{
     CoefficientCdfRowSelector, CoefficientEntropyToken, CoefficientTokenSyntax, TX_SIZE_4X4_CTX,
 };
 
-// AV2 § 8.3.2 `coeff_base` low-frequency context constants (mirroring the decoder
-// `CoeffBaseContext`): the number of luma significant-neighbour offsets, the base
-// of the low-frequency horiz/vert context bands, and the two `magLimit` clamps
-// (5 for the near-DC low-frequency samples, 3 otherwise).
-const SIG_REF_DIFF_OFFSET_NUM_LUMA: usize = 5;
-const LF_SIG_COEF_CONTEXTS_2D: usize = 21;
+// AV2 § 8.3.2 `coeff_base` low-frequency `magLimit` clamps (mirroring the decoder
+// `CoeffBaseContext`): 5 for the near-DC low-frequency samples, 3 otherwise. The
+// luma significant-neighbour count (`SIG_REF_DIFF_OFFSET_NUM`) and the 2D
+// context-band base (`LF_SIG_COEF_CONTEXTS_2D`) are shared from `splot-core`.
 const COEFF_BASE_LF_NEAR_DC_MAG_LIMIT: u32 = 5;
 const COEFF_BASE_MAG_LIMIT: u32 = 3;
 
@@ -53,7 +52,7 @@ pub(crate) fn coeff_base_lf_luma_context(
     let class_idx = if tx_class < 3 { tx_class } else { 0 };
     let mut mag: u32 = 0;
     let mut idx = 0;
-    while idx < SIG_REF_DIFF_OFFSET_NUM_LUMA {
+    while idx < SIG_REF_DIFF_OFFSET_NUM {
         let off = SIG_REF_DIFF_OFFSET[class_idx][idx];
         let ref_row = row.saturating_add(off[0] as usize);
         let ref_col = col.saturating_add(off[1] as usize);
