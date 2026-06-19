@@ -27,6 +27,7 @@
 
 pub mod annexb;
 pub mod bitio;
+pub mod coefficient;
 pub mod error;
 pub mod headers;
 pub mod hls;
