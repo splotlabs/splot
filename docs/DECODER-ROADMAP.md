@@ -252,8 +252,12 @@ branch, matching the shared § 5.20.7.27 / § 5.20.7.30 capped transform extent.
 `DECODE-COEFF-FSC-BRANCH-SCAN-ORDER` now derives
 `scan = get_scan(txSz, txClass)` from generated transform-size dimensions and
 caller-resolved `PlaneTxType`, sharing the same § 5.20.7.30 scan-order helper
-with the ordinary branch before delegating to the scan-extent wrapper. Runtime
-`useFsc`, full transform/`compute_tx_type`, FSC level config, and geometry
+with the ordinary branch before delegating to the scan-extent wrapper. The
+loaded-but-unwired `DECODE-COEFF-FSC-BRANCH-TX-SIZE-HANDOFF` helper now derives
+FSC branch EOB context, adjusted level/sign dimensions, `txSzCtx`, scan order,
+and context-commit geometry from caller-resolved block geometry plus `txSz`,
+before delegating to the scan-order wrapper. Runtime `useFsc`, full
+transform/`compute_tx_type`, `PlaneTxType`, `is_inter`, and `coeff_cdf_q_ctx`
 derivation remain unwired.
 Separately, `DECODE-COEFF-ORDINARY-DERIVED-BASE-PASS` now composes the ordinary
 state-derived first pass into the ordinary coefficient pass, carrying
