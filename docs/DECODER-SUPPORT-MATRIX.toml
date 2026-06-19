@@ -730,6 +730,20 @@ local_reference_evidence = []
 notes = "Adds a crate-private loaded-but-unwired `splot-decode` selector for the AV2 §5.20.7.27 `useFsc` branch point. `apply_coeff_use_fsc_branch` preserves spec ordering by routing decoded all-zero inputs through the ordinary all-zero branch before evaluating nonzero `use_fsc`, delegates nonzero `use_fsc == false` to the ordinary lossless handoff, and delegates nonzero `use_fsc == true` to the FSC tx-size handoff. Tests prove all-zero ordinary preservation, nonzero ordinary delegation, nonzero FSC delegation, and selected-branch typed errors without unintended state/CDF/symbol mutation. This row remains partial: runtime `coeffs()` does not call this selector, runtime `useFsc` derivation, full `compute_tx_type`, `PlaneTxType`, `is_inter`, and `coeff_cdf_q_ctx` derivation, dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public APIs, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` support remain unimplemented."
 
 [[row]]
+id = "coeff-use-fsc-condition-handoff"
+name = "Coefficient useFsc condition handoff"
+feature_id = "DECODE-COEFF-USE-FSC-CONDITION-HANDOFF"
+spec_sections = ["3", "5.20.7.27"]
+parser_source = "crates/splot-core/src/symbol.rs; docs/spec/av2/1.0.0/03-symbols.md; docs/spec/av2/1.0.0/05-syntax-structures.md"
+decode_module = "crates/splot-decode/src/tile_payload/coeff_loop/use_fsc_branch.rs; crates/splot-decode/src/tile_payload/coeff_loop/use_fsc_branch_tests.rs"
+tier = "tier1-intra"
+status = "partial"
+self_contained_tests = ["crates/splot-decode/src/tile_payload/coeff_loop/use_fsc_branch_tests.rs::coefficient_use_fsc_condition_all_zero_matches_selector", "crates/splot-decode/src/tile_payload/coeff_loop/use_fsc_branch_tests.rs::coefficient_use_fsc_condition_false_delegates_to_ordinary_and_ignores_fsc", "crates/splot-decode/src/tile_payload/coeff_loop/use_fsc_branch_tests.rs::coefficient_use_fsc_condition_true_delegates_to_fsc_and_ignores_ordinary", "crates/splot-decode/src/tile_payload/coeff_loop/use_fsc_branch_tests.rs::coefficient_use_fsc_condition_inter_true_also_selects_fsc", "cargo test -p splot-decode use_fsc_branch --locked", "cargo test -p splot-decode coeff_loop --locked", "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings", "cargo xtask check-decoder-support", "cargo xtask check-decoder-conformance-coverage", "cargo xtask check-feature-status"]
+diagnostics = ["decode/unsupported-feature"]
+local_reference_evidence = []
+notes = "Adds a crate-private loaded-but-unwired `splot-decode` wrapper for deriving the AV2 §5.20.7.27 `useFsc = enable_fsc && PlaneTxType == IDTX && plane == 0 && (fsc_mode || is_inter)` condition from caller-resolved facts before delegating to the existing `useFsc` selector. All-zero inputs bypass condition facts and route through the ordinary all-zero selector path. Tests prove all-zero selector equivalence, every false predicate's ordinary routing, true `fsc_mode` and true `is_inter` FSC routing, and non-selected contradictory branch facts are ignored. This row remains partial: runtime `coeffs()` does not call this wrapper, runtime `enable_fsc`, `PlaneTxType`, `plane`, `fsc_mode`, `is_inter`, and `coeff_cdf_q_ctx` derivation, full `compute_tx_type`, dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public APIs, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` support remain unimplemented."
+
+[[row]]
 id = "coeff-base-symbol-read"
 name = "Coefficient base symbol read"
 feature_id = "DECODE-COEFF-BASE-SYMBOL-READ"
