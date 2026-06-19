@@ -9037,6 +9037,57 @@ fixtures = [
 diagnostics = ["decode/unsupported-feature"]
 
 [[feature]]
+id = "DECODE-COEFF-FSC-SCAN-WALK"
+name = "Coefficient FSC scan walk"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.20.7.27"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/tile_payload/coeff_loop/scan_walk.rs"
+openspec_change = "coeff-fsc-scan-walk"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Adds a crate-private `splot-decode` scan-walk boundary for the FSC/IDTX AV2 §5.20.7.27 nonzero coefficient path. `walk_fsc_coeff_scan` consumes a `NonZeroCoeffBlockStart`, caller-resolved `segEob`, and caller-supplied `scan[c]` positions; validates that decoded EOB is nonzero, `eob <= segEob`, `segEob` fits the scan slice, and every visited raster position fits the initialized `TransformCoeffBlockState`; derives `bob = segEob - eob`; and returns checked `c`, `pos`, `row`, and `col` facts in forward `bob..segEob` order. The helper does not derive `useFsc`, read `coeff_base_bob` / `coeff_base_idtx` / `coeff_br_idtx` / `idtx_sign` symbols, mutate CDF rows or symbol-decoder state, write nonzero `Level[]`, `QuantSign[]`, or `Quant[]`, implement `read_quant`, dequantize, run inverse transforms, add residuals, reconstruct pixels, refresh references, invoke AVM/dav2d, expose public APIs, or claim broad `decode_block()` / `decode_tile()` support."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "partial"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/tile_payload/coeff_loop/eob_symbol_tests.rs::coeff_fsc_scan_walk_returns_forward_segment_without_mutation",
+    "crates/splot-decode/src/tile_payload/coeff_loop/eob_symbol_tests.rs::coeff_fsc_scan_walk_rejects_eob_larger_than_seg_eob_without_mutation",
+    "crates/splot-decode/src/tile_payload/coeff_loop/eob_symbol_tests.rs::coeff_fsc_scan_walk_rejects_segment_and_position_bounds",
+]
+commands = [
+    "cargo test -p splot-decode fsc_scan_walk --locked",
+    "cargo test -p splot-decode coeff_loop --locked",
+    "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-decoder-conformance-coverage",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-decode/src/tile_payload/coeff_loop.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/branch.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/scan_walk.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/eob_symbol_tests.rs",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
 id = "DECODE-COEFF-BASE-CDF-ROWS"
 name = "Coefficient base CDF rows"
 category = "infrastructure"

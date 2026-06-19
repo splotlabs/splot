@@ -292,6 +292,14 @@ pub(crate) enum CoeffLoopContextError {
         /// Caller-supplied scan table length.
         scan_len: usize,
     },
+    /// Caller supplied a FSC segment EOB smaller than the decoded EOB.
+    #[error("coefficient FSC scan walk EOB {eob} exceeds segment EOB {seg_eob}")]
+    FscScanWalkEobOutOfRange {
+        /// Decoded EOB before the FSC branch expands it to `segEob`.
+        eob: usize,
+        /// Caller-resolved `segEob`.
+        seg_eob: usize,
+    },
     /// Caller supplied a scan position outside the initialized coefficient block.
     #[error(
         "coefficient scan index {scan_index} points to position {pos}, outside coefficient count {coeff_count}"

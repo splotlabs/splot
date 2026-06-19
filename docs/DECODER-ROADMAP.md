@@ -154,7 +154,10 @@ ordinary non-FSC nonzero path also has a checked decode-local scan-walk boundary
 (`DECODE-COEFF-SCAN-WALK`) over caller-supplied `scan[c]` positions: it validates
 EOB length and scan-position bounds and returns reverse-order `c`/`pos`/row/col
 facts without importing `splot-recon`, consuming symbols, mutating CDFs, or
-writing coefficients. The ordinary non-IDTX coefficient base/base-EOB/base-range
+writing coefficients. The FSC/IDTX path now has the corresponding forward scan
+window (`DECODE-COEFF-FSC-SCAN-WALK`): it validates caller-resolved `segEob`,
+derives `bob = segEob - eob`, and returns checked `bob..segEob` entries without
+reading symbols or writing coefficients. The ordinary non-IDTX coefficient base/base-EOB/base-range
 CDF row families are now loaded and selectable in the tile CDF subset
 (`DECODE-COEFF-BASE-CDF-ROWS`), including tile copy/save/average and frame-end
 count scaling. A crate-private ordinary non-FSC coefficient base symbol-read
