@@ -4602,6 +4602,39 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-COEFF-MULTI-TOKENS"
+name = "Encoder multi-coefficient token accessors"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20.7.27", "8.3.2", "8.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/coefficient_tokenization/multi_coeff.rs"
+openspec_change = "encoder-coeff-multi-coeff-tokens"
+tracking_issue = ""
+owner = "encoder"
+risk = "low"
+notes = "Private, available-but-uncomposed multi-coefficient (eob>1) token accessors — the reusable tokens the eob>1 trace composes (after the context derivation ENC-COEFF-BASE-LF-CONTEXT and the non-EOB token ENC-COEFF-BASE-LF-TOKEN). New `coefficient_tokenization/multi_coeff.rs` submodule (parent near the 1000-line budget) with: `coded_luma_all_zero_token(q)` (coded luma all_zero == 0, the block has coefficients); `eob_pt_16_token(q, eob_ctx, symbol)` (parameterized — symbol s gives eobPt=s+1, and for eobPt<3 eob=eobPt, so symbol 1 → eob 2); `coeff_base_lf_eob_token(q, ctx, level)` (parameterized LF coeff_base_eob, symbol = level-1 since the EOB base level is coeff_base_eob+1; saturating). The eob=2 AC at scan index 1 uses coeff_base_eob_ctx(c=1, bwl=2, h=4)=SIG_COEF_CONTEXTS_EOB-3=1 and the LF EOB base CDF (pos1 row+col=1<4 → LF); the generic CoefficientTokenCdfRows router gains the ctx-1 coeff_base_lf_eob row (eob_pt_16 routes any symbol; coded all_zero reuses the txb_skip row). Tests: each accessor's symbol mapping + the eob=2 CDF subsequence [coded all_zero, eob_pt_16=1, AC coeff_base_eob ctx1, DC coeff_base ctx1] roundtrips through §8.2 to [0,1,0,0]. Verified vs decoder coeff_loop.rs/coeff_context.rs. §8.2 roundtrip = self-consistency only; AVM cross-check at the packet milestone. This row does not claim a multi-coefficient TRACE (the eob>1 trace brick composes these via block_symbol_trace with coeff_base_lf_token + the AC sign_bit + chroma all-zero), chroma/high-frequency contexts, coeff_br, tile-body emission, packet output, CLI success, or Baseline Encoder Profile v1 output."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/coefficient_tokenization_tests.rs::multi_coeff_token_accessors_carry_expected_symbols", "crates/splot-encode/src/coefficient_tokenization_tests.rs::multi_coeff_eob2_cdf_subsequence_roundtrips"]
+commands = ["cargo test -p splot-encode multi_coeff --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-RECON-DEPENDENCY"
 name = "Encoder reconstruction dependency boundary"
 category = "encoder"

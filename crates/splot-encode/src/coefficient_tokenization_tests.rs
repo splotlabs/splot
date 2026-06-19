@@ -608,3 +608,45 @@ fn coeff_base_lf_token_roundtrips_through_generic_helper() {
         assert_eq!(proof.symbol_count(), 1);
     }
 }
+
+#[test]
+fn multi_coeff_token_accessors_carry_expected_symbols() {
+    // coded all_zero == 0 (block has coefficients).
+    assert_eq!(coded_luma_all_zero_token(0).symbol(), 0);
+    // eob_pt_16 symbol 1 selects eob = 2 (eobPt = 2 < 3).
+    assert_eq!(eob_pt_16_token(0, EOB_CTX_LUMA_INTRA, 1).symbol(), 1);
+    // coeff_base_eob level == symbol + 1, so a base level of 1 is symbol 0.
+    let ac = coeff_base_lf_eob_token(0, COEFF_BASE_LF_EOB_CTX_EOB2_AC, 1);
+    assert_eq!(ac.symbol(), 0);
+    assert!(matches!(
+        ac.selector(),
+        CoefficientCdfRowSelector::CoeffBaseLfEob {
+            coeff_cdf_q_ctx: 0,
+            tx_size: TX_SIZE_4X4_CTX,
+            ctx: 1,
+        }
+    ));
+}
+
+#[test]
+fn multi_coeff_eob2_cdf_subsequence_roundtrips() {
+    // The CDF tokens of the minimal eob=2 luma block (the bypass sign and the
+    // chroma all-zero tokens are proven separately in the block trace): coded
+    // all_zero, eob_pt_16=1 (eob=2), the AC coeff_base_eob at ctx 1 (level 1), and
+    // the DC coeff_base at ctx 1 (level 0).
+    let tokens = [
+        coded_luma_all_zero_token(0),
+        eob_pt_16_token(0, EOB_CTX_LUMA_INTRA, 1),
+        coeff_base_lf_eob_token(0, COEFF_BASE_LF_EOB_CTX_EOB2_AC, 1),
+        coeff_base_lf_token(
+            0,
+            COEFF_BASE_LF_CTX_EOB2_DC,
+            COEFF_BASE_LF_TCQ_CTX_NEUTRAL,
+            0,
+        ),
+    ];
+    let proof = roundtrip_entropy_tokens(&tokens).unwrap();
+
+    assert_eq!(proof.decoded_symbols(), &[0, 1, 0, 0]);
+    assert_eq!(proof.symbol_count(), 4);
+}
