@@ -511,6 +511,12 @@ pub(crate) enum CoeffOrdinaryBranchError {
         /// Caller-provided `txSet`.
         tx_set: usize,
     },
+    /// The chroma-inter `TxTypes` subset handoff received an invalid inter transform set index.
+    #[error("ordinary coefficient branch invalid inter transform set {tx_set}")]
+    InvalidInterTransformSet {
+        /// Caller-provided `txSet`.
+        tx_set: usize,
+    },
     /// The `get_tx_set` handoff received a caller-resolved reduced set outside f(2).
     #[error("ordinary coefficient branch invalid reduced_tx_set value {reduced_tx_set}")]
     InvalidReducedTxSet {
@@ -529,6 +535,12 @@ pub(crate) enum CoeffOrdinaryBranchError {
     #[error("ordinary coefficient branch luma TxTypes value {tx_type} is out of range")]
     InvalidLumaTxType {
         /// Caller-resolved luma `TxTypes` value.
+        tx_type: usize,
+    },
+    /// Caller-resolved chroma-inter `TxTypes` value is outside the AV2 `TX_TYPES` domain.
+    #[error("ordinary coefficient branch chroma-inter TxTypes value {tx_type} is out of range")]
+    InvalidChromaInterTxType {
+        /// Caller-resolved chroma-inter `TxTypes` value.
         tx_type: usize,
     },
     /// Directional `UVMode` angle derivation overflowed before `wide_angle_mapping`.

@@ -284,6 +284,11 @@ transform-type handoff with the non-lossless luma `TxTypes[blockY][blockX]`
 branch: it carries caller-resolved luma `TxTypes`, validates the value against
 the AV2 `TX_TYPES` domain, and returns it before chroma-only
 `enable_chroma_dctonly` and `UVMode` logic.
+`DECODE-COEFF-ORDINARY-BRANCH-CHROMA-INTER-TXTYPES-HANDOFF` now adds the
+non-lossless chroma-inter `TxTypes[y4][x4]` branch: it carries caller-resolved
+chroma-inter `TxTypes`, validates the value against the AV2 `TX_TYPES` domain,
+checks the inline § 5.20.7.29 `Tx_Type_In_Set_Inter` membership table, and
+falls back to `DCT_DCT` when the transform type is outside the inter set.
 `DECODE-COEFF-ORDINARY-BRANCH-TX-SET-HANDOFF` now derives AV2 § 5.20.8.3
 `txSet` from `txSz`, plane, caller-resolved `is_inter`, caller-resolved
 `reduced_tx_set`, caller-resolved `enable_chroma_dctonly`, and generated § 9.2
@@ -292,8 +297,8 @@ handoff. `DECODE-COEFF-ORDINARY-BRANCH-LOSSLESS-HANDOFF` now adds the staged
 § 5.20.7.29 `Lossless` branch that selects `DCT_DCT` before `get_tx_set`, while
 delegating non-lossless inputs back to the `txSet` handoff. The coefficient
 branch still does not implement the full § 5.20.7.29 `compute_tx_type` process
-or wire runtime `coeffs()`: chroma inter `TxTypes` lookup, FSC/IDTX lossless
-handling, and frame-state derivation remain staged gaps.
+or wire runtime `coeffs()`: FSC/IDTX lossless handling and frame-state
+derivation remain staged gaps.
 Runtime integration of nonzero coefficient blocks, tile context fact derivation
 for nonzero blocks, dequantization, and
 reconstruction remain unsupported. The

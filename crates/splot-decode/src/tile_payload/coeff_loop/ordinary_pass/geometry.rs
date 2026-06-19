@@ -59,6 +59,20 @@ const TX_TYPE_IN_SET_INTRA: [[u8; 16]; 7] = [
     [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
 ];
 
+// AV2 §5.20.7.29 inline `Tx_Type_In_Set_Inter[TX_SET_TYPES_INTER][TX_TYPES]`
+// table (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-29`).
+const TX_TYPE_IN_SET_INTER: [[u8; 16]; 9] = [
+    [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [1, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0],
+    [1, 0, 1, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0],
+    [1, 1, 0, 0, 1, 0, 0, 0, 0, 1, 1, 1, 1, 0, 1, 0],
+    [1, 0, 1, 0, 0, 1, 0, 0, 0, 1, 1, 1, 0, 1, 0, 1],
+    [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0],
+    [1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0],
+    [1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0],
+];
+
 /// Caller-selected ordinary coefficient branch before transform-size dimensions.
 pub(crate) enum CoeffOrdinaryBranchTxSizeDimensionsInput {
     /// Decoded `all_zero == 1`.
@@ -175,6 +189,8 @@ pub(crate) struct CoeffOrdinaryBranchModeToTxfmBaseConfig {
     pub(crate) angle_delta_uv: i32,
     /// Caller-resolved luma `TxTypes[blockY][blockX]`.
     pub(crate) luma_tx_type: usize,
+    /// Caller-resolved chroma-inter `TxTypes[y4][x4]`.
+    pub(crate) chroma_inter_tx_type: usize,
     /// Caller-resolved AV2 § 5.20.7.29 `enable_chroma_dctonly` flag.
     pub(crate) enable_chroma_dctonly: bool,
     /// Whether hidden parity is active for this transform block.
@@ -196,6 +212,8 @@ pub(crate) struct CoeffOrdinaryBranchTxSetBaseConfig {
     pub(crate) angle_delta_uv: i32,
     /// Caller-resolved luma `TxTypes[blockY][blockX]`.
     pub(crate) luma_tx_type: usize,
+    /// Caller-resolved chroma-inter `TxTypes[y4][x4]`.
+    pub(crate) chroma_inter_tx_type: usize,
     /// Whether hidden parity is active for this transform block.
     pub(crate) parity_hiding: bool,
     /// Whether TCQ is active for this transform block.
@@ -215,6 +233,8 @@ pub(crate) struct CoeffOrdinaryBranchLosslessBaseConfig {
     pub(crate) angle_delta_uv: i32,
     /// Caller-resolved luma `TxTypes[blockY][blockX]`.
     pub(crate) luma_tx_type: usize,
+    /// Caller-resolved chroma-inter `TxTypes[y4][x4]`.
+    pub(crate) chroma_inter_tx_type: usize,
     /// Whether hidden parity is active for this transform block.
     pub(crate) parity_hiding: bool,
     /// Whether TCQ is active for this transform block.
@@ -249,6 +269,7 @@ impl CoeffOrdinaryBranchTxSetBaseConfig {
             uv_mode: self.uv_mode,
             angle_delta_uv: self.angle_delta_uv,
             luma_tx_type: self.luma_tx_type,
+            chroma_inter_tx_type: self.chroma_inter_tx_type,
             enable_chroma_dctonly: self.enable_chroma_dctonly,
             parity_hiding: self.parity_hiding,
             use_tcq: self.use_tcq,
@@ -272,6 +293,7 @@ impl CoeffOrdinaryBranchLosslessBaseConfig {
             uv_mode: self.uv_mode,
             angle_delta_uv: self.angle_delta_uv,
             luma_tx_type: self.luma_tx_type,
+            chroma_inter_tx_type: self.chroma_inter_tx_type,
             parity_hiding: self.parity_hiding,
             use_tcq: self.use_tcq,
         }
@@ -564,13 +586,15 @@ pub(crate) fn apply_coeff_ordinary_branch_from_tx_size_dimensions(
 /// § 5.20.7.29 `compute_tx_type`
 /// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-29`) where luma
 /// returns caller-resolved `TxTypes[blockY][blockX]`; chroma
-/// `enable_chroma_dctonly` short-circuits to `DCT_DCT`; otherwise directional
-/// `UVMode` applies `wide_angle_mapping`, non-directional `UVMode` maps through
+/// `enable_chroma_dctonly` short-circuits to `DCT_DCT`; chroma inter checks
+/// caller-resolved `TxTypes[y4][x4]` against the inline
+/// `Tx_Type_In_Set_Inter[txSet][txType]` table; otherwise directional `UVMode`
+/// applies `wide_angle_mapping`, non-directional `UVMode` maps through
 /// `Mode_To_Txfm`, followed by the inline
 /// `Tx_Type_In_Set_Intra[txSet][txType]` membership check and `DCT_DCT`
-/// fallback. Full `get_tx_set`, chroma inter and all lossless branches, runtime
-/// `coeffs()`, dequantization, inverse transform, residual add, and
-/// reconstruction remain out of scope.
+/// fallback. Full `get_tx_set`, all lossless branches, runtime `coeffs()`,
+/// dequantization, inverse transform, residual add, and reconstruction remain
+/// out of scope.
 pub(crate) fn apply_coeff_ordinary_branch_from_mode_to_txfm(
     state: &mut TileCoeffContextState,
     cdfs: &mut TileCdfSubset,
@@ -950,7 +974,7 @@ fn mode_to_txfm_plane_tx_type(
         return Ok(DCT_DCT);
     }
     if is_inter {
-        return Err(CoeffOrdinaryBranchError::UnsupportedModeToTxfmSubset { reason: "inter" });
+        return chroma_inter_tx_type(config.tx_set, config.chroma_inter_tx_type);
     }
 
     let uv_mode = if is_directional_mode(config.uv_mode) {
@@ -993,6 +1017,25 @@ fn luma_tx_type(tx_type: usize) -> Result<usize, CoeffOrdinaryBranchError> {
         Ok(tx_type)
     } else {
         Err(CoeffOrdinaryBranchError::InvalidLumaTxType { tx_type })
+    }
+}
+
+fn chroma_inter_tx_type(tx_set: usize, tx_type: usize) -> Result<usize, CoeffOrdinaryBranchError> {
+    if tx_type >= TX_TYPES {
+        return Err(CoeffOrdinaryBranchError::InvalidChromaInterTxType { tx_type });
+    }
+    let set = TX_TYPE_IN_SET_INTER
+        .get(tx_set)
+        .ok_or(CoeffOrdinaryBranchError::InvalidInterTransformSet { tx_set })?;
+    if set
+        .get(tx_type)
+        .copied()
+        .ok_or(CoeffOrdinaryBranchError::InvalidChromaInterTxType { tx_type })?
+        != 0
+    {
+        Ok(tx_type)
+    } else {
+        Ok(DCT_DCT)
     }
 }
 

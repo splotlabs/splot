@@ -10620,7 +10620,7 @@ openspec_change = "coeff-ordinary-branch-directional-uv-handoff"
 tracking_issue = ""
 owner = "decoder"
 risk = "low"
-notes = "Extends the crate-private loaded-but-unwired ordinary coefficient branch `Mode_To_Txfm` handoff with the AV2 §5.20.7.29 non-lossless intra chroma directional `UVMode` subset. The handoff carries caller-resolved `AngleDeltaUV`, derives `pAngle = Mode_To_Angle[UVMode] + AngleDeltaUV * ANGLE_STEP` using generated §9.2 `Mode_To_Angle` and §3 `ANGLE_STEP`, applies the inline `wide_angle_mapping` thresholds, maps the resulting mode through generated §9.2 `Mode_To_Txfm`, checks the inline §5.20.7.29 `Tx_Type_In_Set_Intra[txSet][txType]` table, falls back to `DCT_DCT` when needed, and delegates to the existing transform-size/scan ordinary branch. Tests prove square no-remap mapping, TX_4X8 wide-angle remap, transform-set fallback, all-zero and existing non-directional preservation, and fail-atomic invalid tx-size and angle overflow. The later `DECODE-COEFF-ORDINARY-BRANCH-LUMA-TXTYPES-HANDOFF` row extends this same handoff with non-lossless luma `TxTypes` state. This feature remains partial: `AngleDeltaUV`, `txSet`, `enable_chroma_dctonly`, and frame syntax facts are caller-resolved; runtime `coeffs()` still does not call this wrapper; inter chroma lookup, FSC/IDTX lossless handling, dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public APIs, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` remain unimplemented."
+notes = "Extends the crate-private loaded-but-unwired ordinary coefficient branch `Mode_To_Txfm` handoff with the AV2 §5.20.7.29 non-lossless intra chroma directional `UVMode` subset. The handoff carries caller-resolved `AngleDeltaUV`, derives `pAngle = Mode_To_Angle[UVMode] + AngleDeltaUV * ANGLE_STEP` using generated §9.2 `Mode_To_Angle` and §3 `ANGLE_STEP`, applies the inline `wide_angle_mapping` thresholds, maps the resulting mode through generated §9.2 `Mode_To_Txfm`, checks the inline §5.20.7.29 `Tx_Type_In_Set_Intra[txSet][txType]` table, falls back to `DCT_DCT` when needed, and delegates to the existing transform-size/scan ordinary branch. Tests prove square no-remap mapping, TX_4X8 wide-angle remap, transform-set fallback, all-zero and existing non-directional preservation, and fail-atomic invalid tx-size and angle overflow. The later `DECODE-COEFF-ORDINARY-BRANCH-LUMA-TXTYPES-HANDOFF` row extends this same handoff with non-lossless luma `TxTypes` state, and the later `DECODE-COEFF-ORDINARY-BRANCH-CHROMA-INTER-TXTYPES-HANDOFF` row extends it with non-lossless chroma-inter `TxTypes` state. This feature remains partial: `AngleDeltaUV`, `txSet`, `enable_chroma_dctonly`, and frame syntax facts are caller-resolved; runtime `coeffs()` still does not call this wrapper; FSC/IDTX lossless handling, dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public APIs, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` remain unimplemented."
 
 [feature.status]
 mapped = "done"
@@ -10680,7 +10680,7 @@ openspec_change = "coeff-ordinary-branch-luma-txtypes-handoff"
 tracking_issue = ""
 owner = "decoder"
 risk = "low"
-notes = "Extends the crate-private loaded-but-unwired ordinary coefficient branch transform-type handoff with the AV2 §5.20.7.29 non-lossless luma `TxTypes[blockY][blockX]` subset. The handoff carries caller-resolved luma `TxTypes`, validates that value against the AV2 `TX_TYPES` domain before state/CDF/symbol mutation, returns it before chroma-only `enable_chroma_dctonly` and `UVMode` logic, and delegates to the existing transform-size/scan ordinary branch. Tests prove luma `TxTypes` equivalence with explicit `PlaneTxType`, chroma-only fallback bypass, luma inter support through the same caller-resolved value, all-zero and existing chroma preservation, and fail-atomic invalid luma transform type. This feature remains partial: luma `TxTypes`, `AngleDeltaUV`, `txSet`, `enable_chroma_dctonly`, and frame syntax facts are caller-resolved; runtime `coeffs()` still does not call this wrapper; inter chroma lookup, FSC/IDTX lossless handling, dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public APIs, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` remain unimplemented."
+notes = "Extends the crate-private loaded-but-unwired ordinary coefficient branch transform-type handoff with the AV2 §5.20.7.29 non-lossless luma `TxTypes[blockY][blockX]` subset. The handoff carries caller-resolved luma `TxTypes`, validates that value against the AV2 `TX_TYPES` domain before state/CDF/symbol mutation, returns it before chroma-only `enable_chroma_dctonly` and `UVMode` logic, and delegates to the existing transform-size/scan ordinary branch. Tests prove luma `TxTypes` equivalence with explicit `PlaneTxType`, chroma-only fallback bypass, luma inter support through the same caller-resolved value, all-zero and existing chroma preservation, and fail-atomic invalid luma transform type. The later `DECODE-COEFF-ORDINARY-BRANCH-CHROMA-INTER-TXTYPES-HANDOFF` row extends this same handoff with non-lossless chroma-inter `TxTypes` state. This feature remains partial: luma `TxTypes`, `AngleDeltaUV`, `txSet`, `enable_chroma_dctonly`, and frame syntax facts are caller-resolved; runtime `coeffs()` still does not call this wrapper; FSC/IDTX lossless handling, dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public APIs, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` remain unimplemented."
 
 [feature.status]
 mapped = "done"
@@ -10723,6 +10723,66 @@ fixtures = [
 diagnostics = ["decode/unsupported-feature"]
 
 [[feature]]
+id = "DECODE-COEFF-ORDINARY-BRANCH-CHROMA-INTER-TXTYPES-HANDOFF"
+name = "Coefficient ordinary branch chroma inter TxTypes handoff"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["3", "5.20.7.27", "5.20.7.29"]
+sources = [
+    "docs/spec/av2/1.0.0/03-symbols.md",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-29",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_pass/geometry.rs"
+openspec_change = "coeff-ordinary-branch-chroma-inter-txtypes-handoff"
+tracking_issue = ""
+owner = "decoder"
+risk = "low"
+notes = "Extends the crate-private loaded-but-unwired ordinary coefficient branch transform-type handoff with the AV2 §5.20.7.29 non-lossless chroma-inter `TxTypes[y4][x4]` subset. The handoff carries caller-resolved chroma-inter `TxTypes`, validates that value against the AV2 `TX_TYPES` domain, validates caller-resolved inter `txSet` against the inline §5.20.7.29 `Tx_Type_In_Set_Inter[txSet][txType]` table before state/CDF/symbol mutation, falls back to `DCT_DCT` when the transform type is outside the set, and delegates to the existing transform-size/scan ordinary branch. Tests prove chroma-inter `TxTypes` equivalence with explicit `PlaneTxType`, transform-set fallback, all-zero and existing luma/chroma preservation, fail-atomic invalid chroma-inter transform type, and fail-atomic invalid inter transform set. This feature remains partial: chroma-inter `TxTypes`, luma `TxTypes`, `AngleDeltaUV`, `txSet`, `enable_chroma_dctonly`, and frame syntax facts are caller-resolved; runtime `coeffs()` still does not call this wrapper; FSC/IDTX lossless handling, dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public APIs, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` remain unimplemented."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "partial"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_mode_to_txfm_tests.rs::coefficient_ordinary_branch_mode_to_txfm_chroma_inter_txtypes_maps_when_in_set",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_mode_to_txfm_tests.rs::coefficient_ordinary_branch_mode_to_txfm_chroma_inter_txtypes_falls_back_to_dct",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_mode_to_txfm_tests.rs::coefficient_ordinary_branch_mode_to_txfm_rejects_chroma_inter_tx_type_domains_atomically",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_mode_to_txfm_tests.rs::coefficient_ordinary_branch_mode_to_txfm_rejects_chroma_inter_tx_set_domains_atomically",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_mode_to_txfm_tests.rs::coefficient_ordinary_branch_mode_to_txfm_chroma_inter_dctonly_short_circuits",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_mode_to_txfm_tests.rs::coefficient_ordinary_branch_mode_to_txfm_all_zero_preserves_direct_branch",
+]
+commands = [
+    "cargo test -p splot-decode ordinary_branch_mode_to_txfm --locked",
+    "cargo test -p splot-decode ordinary_branch_tx_set --locked",
+    "cargo test -p splot-decode ordinary_branch_lossless --locked",
+    "cargo test -p splot-decode coeff_loop --locked",
+    "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-decoder-conformance-coverage",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-decode/src/tile_payload/coeff_loop.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_pass/geometry.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_pass.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_mode_to_txfm_tests.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_tx_set_tests.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_lossless_tests.rs",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
 id = "DECODE-COEFF-ORDINARY-BRANCH-TX-SET-HANDOFF"
 name = "Coefficient ordinary branch txSet handoff"
 category = "infrastructure"
@@ -10740,7 +10800,7 @@ openspec_change = "coeff-ordinary-branch-tx-set-handoff"
 tracking_issue = ""
 owner = "decoder"
 risk = "low"
-notes = "Adds a crate-private loaded-but-unwired ordinary coefficient branch wrapper that derives AV2 §5.20.8.3 `txSet` from the `coeffs()` `txSz` and plane, caller-resolved `is_inter`, caller-resolved `reduced_tx_set`, caller-resolved `enable_chroma_dctonly`, and generated §9.2 `Tx_Size_Sqr`, `Tx_Size_Sqr_Up`, `Tx_Width`, and `Tx_Height` tables before delegating to the existing transform-type handoff. Tests prove default intra set derivation, chroma reduced-set derivation with the lower DCT-only short-circuit, large-transform DCT-only derivation, all-zero preservation, and fail-atomic invalid reduced-set / invalid tx-size domains. This feature remains partial: frame-state derivation of `reduced_tx_set` and `enable_chroma_dctonly`, full §5.20.7.29 `compute_tx_type`, inter chroma lookup, lossless handling, runtime `coeffs()`, dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public APIs, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` remain unimplemented."
+notes = "Adds a crate-private loaded-but-unwired ordinary coefficient branch wrapper that derives AV2 §5.20.8.3 `txSet` from the `coeffs()` `txSz` and plane, caller-resolved `is_inter`, caller-resolved `reduced_tx_set`, caller-resolved `enable_chroma_dctonly`, and generated §9.2 `Tx_Size_Sqr`, `Tx_Size_Sqr_Up`, `Tx_Width`, and `Tx_Height` tables before delegating to the existing transform-type handoff. Tests prove default intra set derivation, chroma reduced-set derivation with the lower DCT-only short-circuit, large-transform DCT-only derivation, all-zero preservation, and fail-atomic invalid reduced-set / invalid tx-size domains. This feature remains partial: frame-state derivation of `reduced_tx_set` and `enable_chroma_dctonly`, full §5.20.7.29 `compute_tx_type`, lossless handling, runtime `coeffs()`, dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public APIs, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` remain unimplemented."
 
 [feature.status]
 mapped = "done"
@@ -10799,7 +10859,7 @@ openspec_change = "coeff-ordinary-branch-lossless-handoff"
 tracking_issue = ""
 owner = "decoder"
 risk = "low"
-notes = "Adds a crate-private loaded-but-unwired ordinary coefficient branch wrapper for the staged AV2 §5.20.7.29 `Lossless` branch that selects `DCT_DCT` before `get_tx_set(txSz, plane)`. `apply_coeff_ordinary_branch_from_lossless` preserves all-zero behavior, delegates non-lossless nonzero inputs to the existing AV2 §5.20.8.3 `txSet` handoff, and short-circuits intra lossless nonzero inputs to the existing transform-size/scan ordinary branch with `PlaneTxType = DCT_DCT`, bypassing lower non-lossless `txSet` / transform-type validation and forcing non-lossless parity-hiding/TCQ flags off for the lossless path. It rejects lossless inter inputs atomically because those require the broader IDTX/`TxTypes` branches. Tests prove lossless `DCT_DCT` equivalence, lower-validation bypass, non-lossless entropy-flag suppression, non-lossless `txSet` delegation, all-zero preservation, and fail-atomic invalid tx-size and inter inputs. This feature remains partial: runtime `coeffs()` still does not call this wrapper, frame-state derivation of `Lossless`, FSC/IDTX lossless cases, inter chroma lookup, dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public APIs, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` remain unimplemented."
+notes = "Adds a crate-private loaded-but-unwired ordinary coefficient branch wrapper for the staged AV2 §5.20.7.29 `Lossless` branch that selects `DCT_DCT` before `get_tx_set(txSz, plane)`. `apply_coeff_ordinary_branch_from_lossless` preserves all-zero behavior, delegates non-lossless nonzero inputs to the existing AV2 §5.20.8.3 `txSet` handoff, and short-circuits intra lossless nonzero inputs to the existing transform-size/scan ordinary branch with `PlaneTxType = DCT_DCT`, bypassing lower non-lossless `txSet` / transform-type validation and forcing non-lossless parity-hiding/TCQ flags off for the lossless path. It rejects lossless inter inputs atomically because those require the broader IDTX/`TxTypes` branches. Tests prove lossless `DCT_DCT` equivalence, lower-validation bypass, non-lossless entropy-flag suppression, non-lossless `txSet` delegation, all-zero preservation, and fail-atomic invalid tx-size and inter inputs. This feature remains partial: runtime `coeffs()` still does not call this wrapper, frame-state derivation of `Lossless`, FSC/IDTX lossless cases, dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public APIs, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` remain unimplemented."
 
 [feature.status]
 mapped = "done"
