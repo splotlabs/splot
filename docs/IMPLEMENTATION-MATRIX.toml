@@ -10501,7 +10501,7 @@ openspec_change = "coeff-ordinary-branch-scan-order"
 tracking_issue = ""
 owner = "decoder"
 risk = "low"
-notes = "Extends the crate-private loaded-but-unwired ordinary coefficient branch `txSz` wrapper to derive AV2 §5.20.7.27 `scan = get_scan(txSz, txClass)` using decode-local §5.20.7.30 scan-order logic. The wrapper derives `txClass` from the caller-resolved `PlaneTxType`, caps raw transform dimensions to the §5.20.7.30 scan-table shape, builds vertical, horizontal, or two-dimensional scan permutations before mutation, and removes the caller-provided scan from `CoeffOrdinaryBranchTxSizeDimensionsNonZeroInput`. Raw transform dimensions still feed §5.20.7.27 block geometry and EOB-size context, adjusted dimensions still feed §8.3.2 ordinary base-context geometry, and `txSzCtx` remains square-table derived. Tests prove two-dimensional, horizontal, and vertical scan patterns plus all-zero preservation and invalid scan-shape fail-atomicity. This feature remains partial: runtime `coeffs()` still does not call this wrapper, §5.20.7.29 `compute_tx_type`, selector, parity, TCQ, and lossless facts are still caller-resolved, and dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public APIs, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` remain unimplemented."
+notes = "Extends the crate-private loaded-but-unwired ordinary coefficient branch `txSz` wrapper to derive AV2 §5.20.7.27 `scan = get_scan(txSz, txClass)` using decode-local §5.20.7.30 scan-order logic. The wrapper derives `txClass` from the caller-resolved `PlaneTxType`, caps raw transform dimensions to the §5.20.7.30 scan-table shape, builds vertical, horizontal, or two-dimensional scan permutations before mutation, and removes the caller-provided scan from `CoeffOrdinaryBranchTxSizeDimensionsNonZeroInput`. Raw transform dimensions still feed §5.20.7.27 block geometry and EOB-size context, adjusted dimensions still feed §8.3.2 ordinary base-context geometry, and `txSzCtx` remains square-table derived. Tests prove two-dimensional, horizontal, and vertical scan patterns plus all-zero preservation and invalid scan-shape fail-atomicity. The follow-on `DECODE-COEFF-ORDINARY-BRANCH-MODE-TO-TXFM-HANDOFF` row covers the non-lossless intra chroma non-directional `Mode_To_Txfm` subset of §5.20.7.29. This feature remains partial: runtime `coeffs()` still does not call this wrapper, full §5.20.7.29 `compute_tx_type`, selector, parity, TCQ, and lossless facts are still caller-resolved, and dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public APIs, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` remain unimplemented."
 
 [feature.status]
 mapped = "done"
@@ -10540,6 +10540,65 @@ fixtures = [
     "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_coeffs_geometry_tests.rs",
     "crates/splot-core/src/tables/conversion.rs",
     "crates/splot-decode/src/tile_payload/coeff_state.rs",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
+id = "DECODE-COEFF-ORDINARY-BRANCH-MODE-TO-TXFM-HANDOFF"
+name = "Coefficient ordinary branch Mode_To_Txfm handoff"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.20.7.27", "5.20.7.29", "9.2"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-29",
+    "docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_pass/geometry.rs"
+openspec_change = "coeff-ordinary-branch-mode-to-txfm-handoff"
+tracking_issue = ""
+owner = "decoder"
+risk = "low"
+notes = "Adds a crate-private loaded-but-unwired ordinary coefficient branch wrapper for the non-lossless intra chroma non-directional subset of AV2 §5.20.7.29 `compute_tx_type`. `apply_coeff_ordinary_branch_from_mode_to_txfm` honors the caller-resolved `enable_chroma_dctonly` short-circuit, otherwise derives `PlaneTxType` from generated §9.2 `Mode_To_Txfm[UVMode]`, applies the inline §5.20.7.29 `Tx_Type_In_Set_Intra[txSet][txType]` membership table, falls back to `DCT_DCT` when the mapped transform is not allowed, and then delegates to the existing tx-size/scan ordinary branch. Tests prove accepted mappings, a second non-DCT mapping, `DCT_DCT` fallback from both membership rejection and `enable_chroma_dctonly`, all-zero preservation, and fail-atomic rejection for luma, inter, lossless, directional `UVMode`, invalid `UVMode`, and invalid `txSet` inputs. This feature remains partial: `txSet` and `enable_chroma_dctonly` are caller-resolved, full §5.20.7.29 `compute_tx_type`, §5.20.8.3 `get_tx_set`, luma `TxTypes` state, inter chroma lookup, lossless handling, directional wide-angle mapping, runtime `coeffs()`, dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public APIs, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` remain unimplemented."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "partial"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_mode_to_txfm_tests.rs::coefficient_ordinary_branch_mode_to_txfm_accepts_mapped_transform",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_mode_to_txfm_tests.rs::coefficient_ordinary_branch_mode_to_txfm_uses_second_mapped_transform",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_mode_to_txfm_tests.rs::coefficient_ordinary_branch_mode_to_txfm_falls_back_to_dct",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_mode_to_txfm_tests.rs::coefficient_ordinary_branch_mode_to_txfm_chroma_dctonly_short_circuits",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_mode_to_txfm_tests.rs::coefficient_ordinary_branch_mode_to_txfm_rejects_unsupported_subset_atomically",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_mode_to_txfm_tests.rs::coefficient_ordinary_branch_mode_to_txfm_rejects_domains_atomically",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_mode_to_txfm_tests.rs::coefficient_ordinary_branch_mode_to_txfm_all_zero_preserves_direct_branch",
+]
+commands = [
+    "cargo test -p splot-decode ordinary_branch_mode_to_txfm --locked",
+    "cargo test -p splot-decode ordinary_pass --locked",
+    "cargo test -p splot-decode coeff_loop --locked",
+    "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-decoder-conformance-coverage",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-decode/src/tile_payload/coeff_loop.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_pass/geometry.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_pass.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_mode_to_txfm_tests.rs",
+    "crates/splot-core/src/tables/conversion.rs",
 ]
 diagnostics = ["decode/unsupported-feature"]
 

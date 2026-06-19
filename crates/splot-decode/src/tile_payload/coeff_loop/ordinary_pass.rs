@@ -16,7 +16,8 @@
 //! `DECODE-COEFF-ORDINARY-BRANCH-TX-SIZE-DIMENSIONS`,
 //! `DECODE-COEFF-ORDINARY-BRANCH-ADJUSTED-TX-SIZE`,
 //! `DECODE-COEFF-ORDINARY-BRANCH-TX-SIZE-CONTEXT`,
-//! `DECODE-COEFF-ORDINARY-BRANCH-SCAN-ORDER`.
+//! `DECODE-COEFF-ORDINARY-BRANCH-SCAN-ORDER`,
+//! `DECODE-COEFF-ORDINARY-BRANCH-MODE-TO-TXFM-HANDOFF`.
 
 use std::collections::TryReserveError;
 
@@ -485,6 +486,32 @@ pub(crate) enum CoeffOrdinaryBranchError {
         width: usize,
         /// Scan height after `Min(Tx_Height[txSz], 32)`.
         height: usize,
+    },
+    /// The `Mode_To_Txfm` subset handoff received a branch it intentionally does not cover.
+    #[error("ordinary coefficient branch Mode_To_Txfm handoff does not support {reason}")]
+    UnsupportedModeToTxfmSubset {
+        /// Unsupported subset reason.
+        reason: &'static str,
+    },
+    /// The `Mode_To_Txfm` subset handoff received a `UVMode` outside the table domain.
+    #[error("ordinary coefficient branch invalid UVMode {uv_mode} for Mode_To_Txfm")]
+    InvalidUvMode {
+        /// Caller-provided `UVMode`.
+        uv_mode: usize,
+    },
+    /// The `Mode_To_Txfm` subset handoff received an invalid intra transform set index.
+    #[error("ordinary coefficient branch invalid intra transform set {tx_set}")]
+    InvalidIntraTransformSet {
+        /// Caller-provided `txSet`.
+        tx_set: usize,
+    },
+    /// Generated `Mode_To_Txfm` held a value outside the `TX_TYPES` domain.
+    #[error("ordinary coefficient branch invalid Mode_To_Txfm[{uv_mode}] table value {value}")]
+    InvalidModeToTxfmTableValue {
+        /// Caller-provided `UVMode`.
+        uv_mode: usize,
+        /// Generated table value.
+        value: i32,
     },
     /// Allocation for a derived scan order failed.
     #[error("ordinary coefficient branch scan allocation failed: {0}")]
