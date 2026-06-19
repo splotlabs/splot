@@ -19,9 +19,10 @@ pub(crate) struct CoefficientTokenCdfRows {
     chroma_u_txb_skip: [[i32; 3]; COEFF_CDF_Q_CONTEXTS],
     chroma_eob_pt_16: [[i32; 6]; COEFF_CDF_Q_CONTEXTS],
     coeff_base_lf_eob_uv: [[i32; 6]; COEFF_CDF_Q_CONTEXTS],
-    // The `intra_tx_type` CDF is not coefficient-CDF-q-context indexed; this is the
-    // 4x4 (`Tx_Size_Sqr = 0`) `TX_SET_INTRA_1` row.
-    intra_tx_type_set1_4x4: [i32; INTRA_TX_TYPE_SET1_CDF_ROW_LEN],
+    // The `intra_tx_type` CDF is not coefficient-CDF-q-context indexed; it has one
+    // `TX_SET_INTRA_1` row per `Tx_Size_Sqr` value.
+    intra_tx_type_set1:
+        [[i32; INTRA_TX_TYPE_SET1_CDF_ROW_LEN]; INTRA_TX_TYPE_SET1_TX_SIZE_SQR_COUNT],
 }
 
 impl CoefficientTokenCdfRows {
@@ -95,8 +96,7 @@ impl CoefficientTokenCdfRows {
                 DEFAULT_COEFF_BASE_LF_EOB_UV_CDF[2][COEFF_BASE_LF_EOB_CTX_DC],
                 DEFAULT_COEFF_BASE_LF_EOB_UV_CDF[3][COEFF_BASE_LF_EOB_CTX_DC],
             ],
-            intra_tx_type_set1_4x4: DEFAULT_INTRA_TX_TYPE_SET1_CDF
-                [INTRA_TX_TYPE_SET1_TX_SIZE_SQR_4X4],
+            intra_tx_type_set1: DEFAULT_INTRA_TX_TYPE_SET1_CDF,
         }
     }
 
@@ -172,9 +172,11 @@ impl CoefficientTokenCdfRows {
             } if coeff_cdf_q_ctx < COEFF_CDF_Q_CONTEXTS => {
                 Ok(self.coeff_base_lf_eob_uv[coeff_cdf_q_ctx].as_mut_slice())
             }
-            CoefficientCdfRowSelector::IntraTxTypeSet1 {
-                tx_size_sqr: INTRA_TX_TYPE_SET1_TX_SIZE_SQR_4X4,
-            } => Ok(self.intra_tx_type_set1_4x4.as_mut_slice()),
+            CoefficientCdfRowSelector::IntraTxTypeSet1 { tx_size_sqr }
+                if tx_size_sqr < INTRA_TX_TYPE_SET1_TX_SIZE_SQR_COUNT =>
+            {
+                Ok(self.intra_tx_type_set1[tx_size_sqr].as_mut_slice())
+            }
             selector => Err(Error::CoefficientTokenizationUnsupportedCdfSelector {
                 syntax: selector.syntax_name(),
             }),

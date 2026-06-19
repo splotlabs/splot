@@ -12,13 +12,13 @@ Facts (verified vs the spec + §9 tables):
 - §8.3.2 Table 8.2 (`08-parsing-process.md:1621`): `TX_SET_INTRA_1` uses
   `TileIntraTxTypeSet1Cdf[Tx_Size_Sqr[txSz]]`; `Tx_Size_Sqr[TX_4X4] = 0`, so the CDF
   is `DEFAULT_INTRA_TX_TYPE_SET1_CDF[0]` (`[[i32; 8]; 3]`, 7 symbols).
-- §5.20.7.27 line 16569: `TxType = Md_Idx_To_Type[Size_Class[txSz]][intraDir]
+- §5.20.8.2 `transform_type()` (the transform-type syntax, called from §5.20.7.27) line 16569: `TxType = Md_Idx_To_Type[Size_Class[txSz]][intraDir]
   [intra_tx_type]`. `Size_Class[TX_4X4] = 0`, `intraDir = DC_PRED = 0`, and
   `Md_Idx_To_Type[0][0] = [0, 3, 1, 2, 7, 8, 13]`, so **symbol 0 → TxType 0 =
   DCT_DCT** — the symbol the encoder emits for a plain DCT_DCT block.
 
 The `intra_tx_type` CDF is not coefficient-CDF-q-context indexed (it keys on
-`Tx_Size_Sqr`), so the generic router stores the single 4x4 (`Tx_Size_Sqr 0`) row.
+`Tx_Size_Sqr`), so the generic router stores all three `Tx_Size_Sqr` rows (§8.3.2 indexes the CDF by `Tx_Size_Sqr[txSz]`).
 The decoder does not yet read this symbol (only `get_tx_set` exists in splot-decode),
 so the token is derived from the spec and the §9 tables, with a test guarding the
 `Md_Idx_To_Type` derivation; conformance vs a real decoder is established at the

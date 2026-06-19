@@ -86,8 +86,10 @@ const COEFF_BASE_LF_CTX_EOB2_DC: usize = 1;
 const COEFF_BASE_LF_TCQ_CTX_NEUTRAL: usize = 0;
 const COEFF_BASE_LF_CDF_ROW_LEN: usize = 7;
 // AV2 §8.3.2 Table 8.2: `intra_tx_type` for `TX_SET_INTRA_1` uses
-// `TileIntraTxTypeSet1Cdf[Tx_Size_Sqr[txSz]]`; `Tx_Size_Sqr[TX_4X4] = 0`.
+// `TileIntraTxTypeSet1Cdf[Tx_Size_Sqr[txSz]]`; `Tx_Size_Sqr[TX_4X4] = 0`. The CDF
+// has one row per `Tx_Size_Sqr` value (3 rows).
 const INTRA_TX_TYPE_SET1_TX_SIZE_SQR_4X4: usize = 0;
+const INTRA_TX_TYPE_SET1_TX_SIZE_SQR_COUNT: usize = 3;
 const INTRA_TX_TYPE_SET1_CDF_ROW_LEN: usize = 8;
 const DC_SIGN_GROUP_VISIBLE: usize = 0;
 const DC_SIGN_CTX_NEUTRAL: usize = 0;

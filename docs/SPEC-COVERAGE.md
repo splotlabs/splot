@@ -366,6 +366,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.20.7.30](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-30) | Get scan function | `DECODE-COEFF-ORDINARY-BRANCH-SCAN-ORDER` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.30](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-30) | Get scan function | `ENC-INTRA-BLOCK-TRACE-TWO-COEFF` | ✅ | — | — | ✅ | — |
 | [§ 5.20.7.30](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-30) | Get scan function | `RECON-COEFFICIENT-SCAN-ORDER` | ✅ | — | ✅ | ✅ | — |
+| [§ 5.20.8.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-2) | Transform type syntax | `ENC-INTRA-TX-TYPE-TOKEN` | ✅ | — | — | ✅ | — |
 | [§ 5.20.8.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-3) | Get transform set function | `DECODE-COEFF-ORDINARY-BRANCH-LOSSLESS-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.8.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-3) | Get transform set function | `DECODE-COEFF-ORDINARY-BRANCH-TX-SET-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.9.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-9-1) | Is inside function | `DECODE-TILE-PARTITION-TRAVERSAL-BOUNDARY` | ✅ | ✅ | — | ✅ | — |

@@ -678,3 +678,14 @@ fn intra_tx_type_set1_token_roundtrips_through_generic_helper() {
     assert_eq!(proof.decoded_symbols(), &[0]);
     assert_eq!(proof.symbol_count(), 1);
 }
+
+#[test]
+fn intra_tx_type_set1_token_roundtrips_every_tx_size_sqr_row() {
+    // §8.3.2 indexes TileIntraTxTypeSet1Cdf by Tx_Size_Sqr[txSz] (3 rows), so the
+    // router must accept every valid Tx_Size_Sqr, not just 4x4.
+    for tx_size_sqr in 0..INTRA_TX_TYPE_SET1_TX_SIZE_SQR_COUNT {
+        let token = intra_tx_type_set1_token(tx_size_sqr, 0);
+        let proof = roundtrip_entropy_tokens(&[token]).unwrap();
+        assert_eq!(proof.decoded_symbols(), &[0], "tx_size_sqr {tx_size_sqr}");
+    }
+}
