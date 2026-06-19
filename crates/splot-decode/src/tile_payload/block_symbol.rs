@@ -391,7 +391,15 @@ mod tests {
             tile_byte_span: ByteSpan::new(ByteOffset::new(128), payload.len() as u64),
             tile_size: payload.len() as u64,
             current_q_index_at_entry: 0,
-            coeff_frame_facts: TileCoeffFrameFacts::new(false, false, 0, [false; MAX_SEGMENTS], 0),
+            coeff_frame_facts: TileCoeffFrameFacts::new(
+                false,
+                false,
+                0,
+                [false; MAX_SEGMENTS],
+                false,
+                false,
+                0,
+            ),
             bru_path: TileBruPath::NotUsed,
             symbol: SymbolInitBoundary {
                 consumed_bits: payload.len().saturating_mul(8).min(15) as u64,

@@ -244,6 +244,8 @@ pub(crate) struct TileCoeffFrameFacts {
     enable_chroma_dctonly: bool,
     reduced_tx_set: usize,
     lossless_array: [bool; MAX_SEGMENTS],
+    allow_tcq: bool,
+    allow_parity_hiding: bool,
     base_q_idx: u32,
 }
 
@@ -255,6 +257,8 @@ impl TileCoeffFrameFacts {
         enable_chroma_dctonly: bool,
         reduced_tx_set: usize,
         lossless_array: [bool; MAX_SEGMENTS],
+        allow_tcq: bool,
+        allow_parity_hiding: bool,
         base_q_idx: u32,
     ) -> Self {
         Self {
@@ -262,6 +266,8 @@ impl TileCoeffFrameFacts {
             enable_chroma_dctonly,
             reduced_tx_set,
             lossless_array,
+            allow_tcq,
+            allow_parity_hiding,
             base_q_idx,
         }
     }
@@ -272,6 +278,8 @@ impl TileCoeffFrameFacts {
             enable_chroma_dctonly: false,
             reduced_tx_set: 0,
             lossless_array: [false; MAX_SEGMENTS],
+            allow_tcq: false,
+            allow_parity_hiding: false,
             base_q_idx,
         }
     }
@@ -298,6 +306,18 @@ impl TileCoeffFrameFacts {
     #[must_use]
     pub(crate) const fn base_q_idx(self) -> u32 {
         self.base_q_idx
+    }
+
+    /// Parsed frame `allow_tcq` from AV2 § 5.18.2.
+    #[must_use]
+    pub(crate) const fn allow_tcq(self) -> bool {
+        self.allow_tcq
+    }
+
+    /// Parsed frame `allow_parity_hiding` from AV2 § 5.18.2.
+    #[must_use]
+    pub(crate) const fn allow_parity_hiding(self) -> bool {
+        self.allow_parity_hiding
     }
 
     /// `LosslessArray[segment_id]`, if `segment_id` is in domain.

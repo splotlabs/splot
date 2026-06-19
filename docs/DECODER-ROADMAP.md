@@ -278,6 +278,11 @@ delegating to that shared-facts wrapper, while preserving all-zero bypass.
 coefficient facts (`enable_fsc`, `enable_chroma_dctonly`, `reduced_tx_set`,
 `LosslessArray[]`, and `base_q_idx`) through the tile payload work unit and
 derives the corresponding nonzero branch inputs before the base-q handoff.
+`DECODE-COEFF-PARITY-TCQ-HANDOFF` now carries parsed frame `allow_tcq` and
+`allow_parity_hiding` through the same work unit and derives § 5.20.7.27
+`parityHiding` / `useTcq` from those frame flags, `Lossless`,
+`PlaneTxType`, transform class, plane, and the already-derived `useFsc`
+condition before base-q delegation.
 Runtime `coeffs()` wiring and runtime derivation of remaining block facts
 (`PlaneTxType`, `fsc_mode`, `is_inter`, segment id, transform geometry, and
 ordinary mode/TX facts) remain unwired.
