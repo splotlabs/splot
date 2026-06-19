@@ -4668,6 +4668,39 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-INTRA-TX-TYPE-TOKEN"
+name = "Encoder intra_tx_type TX_SET_INTRA_1 token"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20.8.2", "5.20.7.27", "8.3.2", "8.2", "9.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/coefficient_tokenization/transform_type.rs"
+openspec_change = "encoder-intra-tx-type-token"
+tracking_issue = ""
+owner = "encoder"
+risk = "medium"
+notes = "Private, available-but-uncomposed `intra_tx_type` transform-type token for the TX_SET_INTRA_1 set — the first building block toward GENERAL eob>1 blocks (the eob=2 trace #336 scoped away transform_type() signaling; this models the symbol read between eob_pt and the base pass). Adds CoefficientTokenSyntax::IntraTxType + CoefficientCdfRowSelector::IntraTxTypeSet1{tx_size_sqr} → TileIntraTxTypeSet1Cdf[Tx_Size_Sqr[txSz]] (DEFAULT_INTRA_TX_TYPE_SET1_CDF [[i32;8];3], 7 symbols; NOT coeff-CDF-q-context indexed) + a `coefficient_tokenization/transform_type.rs` submodule with `intra_tx_type_set1_token(tx_size_sqr, symbol)`. DERIVATION (verified vs spec + §9 tables): get_tx_set(TX_4X4, intra, reduced_tx_set=0)→TX_SET_INTRA_1 (decoder geometry.rs:958); §8.3.2 Table 8.2 (08-parsing-process.md:1621)→TileIntraTxTypeSet1Cdf[Tx_Size_Sqr[TX_4X4]=0]; §5.20.8.2 transform_type() (the transform-type syntax, called from §5.20.7.27 coeffs()) line 16569 TxType=Md_Idx_To_Type[Size_Class[txSz]][intraDir][intra_tx_type], SIZE_CLASS[TX_4X4]=0, intraDir=DC_PRED=0, MD_IDX_TO_TYPE[0][0]=[0,3,1,2,7,8,13] → SYMBOL 0 = TxType 0 = DCT_DCT. So intra_tx_type_set1_token(0,0) = the DCT_DCT symbol for 4x4 DC_PRED. The generic CDF-row router (extracted to a coefficient_tokenization/cdf_rows.rs submodule to keep the parent <1000 lines — no behaviour change) routes ALL THREE Tx_Size_Sqr TX_SET_INTRA_1 rows (§8.3.2 indexes the CDF by Tx_Size_Sqr); the token roundtrips through one §8.2 coder. Adding the IntraTxType syntax rippled to as_str + the closed_loop single-DC recovery no-op arm. NO decoder symbol-read mirror (decoder only has get_tx_set) → spec+table-derived; a test guards Md_Idx_To_Type[0][0][0]==DCT_DCT; AVM cross-check at the packet milestone. This row does not claim a general eob>1 TRACE (a later brick inserts this token between eob_pt and the base pass), sec_tx_type (the intra secondary transform), non-TX_SET_INTRA_1 sets (WIDE/HIGH/SET2/inter), non-DC_PRED intraDir, tile-body emission, packet output, CLI success, or Baseline Encoder Profile v1 output."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/coefficient_tokenization_tests.rs::intra_tx_type_set1_dct_dct_is_symbol_zero", "crates/splot-encode/src/coefficient_tokenization_tests.rs::intra_tx_type_set1_token_roundtrips_through_generic_helper", "crates/splot-encode/src/coefficient_tokenization_tests.rs::intra_tx_type_set1_token_roundtrips_every_tx_size_sqr_row"]
+commands = ["cargo test -p splot-encode intra_tx_type --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-RECON-DEPENDENCY"
 name = "Encoder reconstruction dependency boundary"
 category = "encoder"

@@ -404,11 +404,13 @@ mod tests {
                 CoefficientTokenSyntax::CoeffBr => magnitude += i32::from(symbol),
                 CoefficientTokenSyntax::DcSign => negative = symbol == 1,
                 // This helper recovers the single-DC closed-loop magnitude, which
-                // never carries a non-EOB `coeff_base` (that is a multi-coefficient
-                // trace symbol), so it is a no-op here.
+                // never carries a non-EOB `coeff_base` or an `intra_tx_type`
+                // transform-type symbol (those are multi-coefficient / general
+                // eob>1 trace symbols), so they are a no-op here.
                 CoefficientTokenSyntax::AllZero
                 | CoefficientTokenSyntax::EobPt16
-                | CoefficientTokenSyntax::CoeffBase => {}
+                | CoefficientTokenSyntax::CoeffBase
+                | CoefficientTokenSyntax::IntraTxType => {}
             }
         }
         if negative { -magnitude } else { magnitude }
