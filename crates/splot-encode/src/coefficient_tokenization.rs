@@ -187,7 +187,18 @@ pub(crate) fn luma_dc_coded_tokens(
             symbol: magnitude.saturating_sub(LF_NUM_BASE_LEVELS + 1) as u8,
         });
     }
-    tokens.push(CoefficientEntropyToken {
+    tokens.push(luma_dc_sign_token(coeff_cdf_q_ctx, negative));
+    Ok(tokens)
+}
+
+/// Returns the AV2 § 5.20.7.27 luma DC `dc_sign` CDF token (`TileDcSignCdf` at the
+/// neutral luma plane-type/group/ctx). The luma DC sign is CDF-coded (unlike a
+/// chroma or non-axis luma sign, which is a `sign_bit` bypass literal).
+pub(crate) const fn luma_dc_sign_token(
+    coeff_cdf_q_ctx: usize,
+    negative: bool,
+) -> CoefficientEntropyToken {
+    CoefficientEntropyToken {
         syntax: CoefficientTokenSyntax::DcSign,
         selector: CoefficientCdfRowSelector::DcSign {
             coeff_cdf_q_ctx,
@@ -196,6 +207,50 @@ pub(crate) fn luma_dc_coded_tokens(
             ctx: DC_SIGN_CTX_NEUTRAL,
         },
         symbol: negative as u8,
+    }
+}
+
+/// Returns the four fixed AV2 § 5.20.7.27 luma DC *level* CDF tokens for the
+/// golomb (`read_quant`) tier — `all_zero == 0`, `eob_pt_16 == 0`,
+/// `coeff_base_eob == LF_NUM_BASE_LEVELS` (level 5, its maximum), and `coeff_br ==
+/// COEFF_BASE_RANGE` (so the level reaches `maxLevel = LF_NUM_BASE_LEVELS +
+/// COEFF_BASE_RANGE + 1 = 8`). These precede the § 5.20.7.28 golomb `coeff_rem`
+/// bypass bits (the caller appends them) and the `dc_sign` CDF token; the golomb
+/// extension `x = magnitude - maxLevel` is encoded by the bypass bits, not here.
+pub(crate) fn luma_dc_golomb_level_tokens(
+    coeff_cdf_q_ctx: usize,
+) -> Result<Vec<CoefficientEntropyToken>> {
+    let mut tokens = Vec::new();
+    tokens
+        .try_reserve_exact(4)
+        .map_err(|_| Error::CoefficientTokenizationAllocationFailed {
+            context: "golomb-tier luma DC level tokens",
+        })?;
+    tokens.push(all_zero_token(coeff_cdf_q_ctx, false));
+    tokens.push(CoefficientEntropyToken {
+        syntax: CoefficientTokenSyntax::EobPt16,
+        selector: CoefficientCdfRowSelector::EobPt16 {
+            coeff_cdf_q_ctx,
+            eob_ctx: EOB_CTX_LUMA_INTRA,
+        },
+        symbol: 0,
+    });
+    tokens.push(CoefficientEntropyToken {
+        syntax: CoefficientTokenSyntax::CoeffBaseEob,
+        selector: CoefficientCdfRowSelector::CoeffBaseLfEob {
+            coeff_cdf_q_ctx,
+            tx_size: TX_SIZE_4X4_CTX,
+            ctx: COEFF_BASE_LF_EOB_CTX_DC,
+        },
+        symbol: LF_NUM_BASE_LEVELS as u8,
+    });
+    tokens.push(CoefficientEntropyToken {
+        syntax: CoefficientTokenSyntax::CoeffBr,
+        selector: CoefficientCdfRowSelector::CoeffBrLf {
+            coeff_cdf_q_ctx,
+            ctx: COEFF_BR_LF_CTX_DC,
+        },
+        symbol: COEFF_BASE_RANGE as u8,
     });
     Ok(tokens)
 }

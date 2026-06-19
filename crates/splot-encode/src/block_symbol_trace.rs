@@ -17,7 +17,9 @@
 //! the foundation for non-luma-DC `sign_bit` and the golomb tail), and
 //! `ENC-INTRA-BLOCK-TRACE-CODED-CHROMA-DC` (a coded U-plane DC coefficient whose
 //! sign is a `sign_bit` bypass literal, with the §8.3.2 chroma contexts and the V
-//! `txb_skip` EobU context),
+//! `txb_skip` EobU context), and
+//! `ENC-INTRA-BLOCK-TRACE-GOLOMB-FINITE` (the §5.20.7.28 `read_quant` finite-q
+//! golomb tail: a larger luma DC coefficient's `coeff_rem` bypass bits),
 //! reusing the merged mode emitters and the coefficient tokenization's per-plane
 //! all-zero and coded-DC tokens
 //! (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3`).
@@ -29,11 +31,10 @@
 //! through one § 8.2 coder with shared CDF state, routing each token to its scoped
 //! CDF row from `splot-core` defaults.
 //!
-//! It does not emit multi-coefficient blocks, the coefficient golomb
-//! (exp-golomb) tail beyond the base-range tier, higher-frequency coefficients,
-//! the chroma base-range/golomb tiers, V-plane coded coefficients, partition
-//! syntax, tile CDF lifecycle, packets, a public encoder API, or modes beyond the
-//! DC minimal tier.
+//! It does not emit multi-coefficient blocks, the golomb-prefix tail (luma DC
+//! magnitude beyond the finite-q range), higher-frequency coefficients, the chroma
+//! base-range/golomb tiers, V-plane coded coefficients, partition syntax, tile CDF
+//! lifecycle, packets, a public encoder API, or modes beyond the DC minimal tier.
 
 #![allow(dead_code)]
 
@@ -49,7 +50,7 @@ use splot_core::tables::cdf::{
 use crate::coefficient_tokenization::{
     CoefficientCdfRowSelector, CoefficientEntropyToken, chroma_u_all_zero_token,
     chroma_u_dc_coded_coeff_tokens, chroma_v_all_zero_token, luma_all_zero_token,
-    luma_dc_coded_tokens,
+    luma_dc_coded_tokens, luma_dc_golomb_level_tokens, luma_dc_sign_token,
 };
 use crate::error::{Error, Result};
 use crate::intra_mode_emission::{
@@ -104,6 +105,21 @@ const MINIMAL_CODED_CHROMA_DC_NEGATIVE: bool = false;
 // (level 5 base + `coeff_br = 1`).
 const MINIMAL_BR_DC_MAGNITUDE: u32 = 6;
 const MINIMAL_BR_DC_NEGATIVE: bool = false;
+// AV2 § 5.20.7.27 `maxLevel` for the LF luma DC EOB coefficient
+// (LF_NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1). The § 5.20.7.28 `read_quant`
+// golomb tail encodes `x = magnitude - maxLevel` once the level reaches it.
+const GOLOMB_MAXLEVEL: u32 = 8;
+// `read_quant` for the first/only DC coefficient has `hrLevelAvg = 0` (§ 5.20.7.27
+// init), so `predLevel = 0`, `m = Clip3(1, 6, GetMsb(0)) = 1`, `k = m + 1 = 2`,
+// `cMax = Min(m + 4, 6) = 5`. In the finite-q path (`q < cMax`) `length = m = 1`,
+// `xBase = q << 1`, so `x = 2q + coeff_rem` → `q = x >> 1`, `coeff_rem = x & 1`.
+// The finite-q path covers `x` in `0..=9` (q `0..=4`), i.e. magnitude `8..=17`.
+const GOLOMB_DC_M: u32 = 1;
+const GOLOMB_FINITE_Q_MAX: u32 = 4;
+// Minimal golomb-tail coded luma block: a single DC coefficient of value +10
+// (level reaches maxLevel 8, then `x = 2` → q=1, coeff_rem=0).
+const MINIMAL_GOLOMB_DC_MAGNITUDE: u32 = 10;
+const MINIMAL_GOLOMB_DC_NEGATIVE: bool = false;
 // Headroom (operations + output bytes) added on top of the per-trace cost. The
 // roundtrip's encoder budget scales with the trace: one operation per CDF symbol
 // and one per bypass-literal bit (`write_literal` charges per bit), so a wide
@@ -323,6 +339,74 @@ pub(crate) fn compose_minimal_intra_dc_coded_chroma_block_trace() -> Result<Vec<
     trace.push(BlockSymbolToken::Coeff(chroma_v_all_zero_token(
         MINIMAL_COEFF_CDF_Q_CTX,
         CHROMA_V_TXB_SKIP_CTX_EOBU,
+    )));
+    Ok(trace)
+}
+
+/// Composes the minimal ordered intra DC coded *golomb-tail* block trace: the AV2
+/// § 5.20.5.3 mode-info prefix, then the luma `residual()` for a single DC
+/// coefficient whose level reaches `maxLevel` (the fixed `txb_skip=0` /
+/// `eob_pt_16` / `coeff_base_eob=LF_NUM_BASE_LEVELS` / `coeff_br=COEFF_BASE_RANGE`
+/// level tokens), then the § 5.20.7.28 `read_quant` finite-q golomb `coeff_rem`
+/// bypass bits encoding `x = magnitude - maxLevel`, then the luma `dc_sign` CDF
+/// token, then the all-zero U and V `txb_skip` (the U plane is all-zero, so V uses
+/// the neutral context 0).
+///
+/// For the value `+10` the golomb extension is `x = 2`: with `m = 1` (the first DC
+/// coefficient, `hrLevelAvg = 0`) the finite-q path is `q = x >> 1 = 1`,
+/// `coeff_rem = x & 1 = 0`, i.e. the bypass bits `0` (one `q_length_bit` zero),
+/// `1` (the terminating `q_length_bit`), `0` (`coeff_rem`). This covers the
+/// finite-q magnitude range `maxLevel..=maxLevel + 9` (8..=17); the golomb-prefix
+/// path (magnitude 18+) is a later brick.
+pub(crate) fn compose_minimal_intra_dc_golomb_block_trace() -> Result<Vec<BlockSymbolToken>> {
+    let modes = compose_minimal_intra_dc_block_mode_trace()?;
+    let level = luma_dc_golomb_level_tokens(MINIMAL_COEFF_CDF_Q_CTX)?;
+    // x = magnitude - maxLevel (the golomb extension); finite-q encoding (m = 1).
+    let x = MINIMAL_GOLOMB_DC_MAGNITUDE.saturating_sub(GOLOMB_MAXLEVEL);
+    let q = x >> GOLOMB_DC_M;
+    let coeff_rem = x & 1;
+    debug_assert!(
+        q <= GOLOMB_FINITE_Q_MAX,
+        "golomb-prefix path (q == cMax) is a later brick"
+    );
+    // q `q_length_bit` zeros + the terminating `q_length_bit` one + `coeff_rem`.
+    let golomb_bits =
+        (q as usize)
+            .checked_add(2)
+            .ok_or(Error::BlockSymbolTraceAllocationFailed {
+                context: "golomb block trace length",
+            })?;
+    let total = modes
+        .len()
+        .checked_add(level.len())
+        .and_then(|n| n.checked_add(golomb_bits))
+        .and_then(|n| n.checked_add(3)) // dc_sign + U + V all-zero
+        .ok_or(Error::BlockSymbolTraceAllocationFailed {
+            context: "golomb block trace length",
+        })?;
+    let mut trace = Vec::new();
+    trace
+        .try_reserve_exact(total)
+        .map_err(|_| Error::BlockSymbolTraceAllocationFailed {
+            context: "golomb block trace",
+        })?;
+    trace.extend(modes.into_iter().map(BlockSymbolToken::Mode));
+    trace.extend(level.into_iter().map(BlockSymbolToken::Coeff));
+    for _ in 0..q {
+        trace.push(BlockSymbolToken::bypass(1, 0));
+    }
+    trace.push(BlockSymbolToken::bypass(1, 1));
+    trace.push(BlockSymbolToken::bypass(1, coeff_rem));
+    trace.push(BlockSymbolToken::Coeff(luma_dc_sign_token(
+        MINIMAL_COEFF_CDF_Q_CTX,
+        MINIMAL_GOLOMB_DC_NEGATIVE,
+    )));
+    trace.push(BlockSymbolToken::Coeff(chroma_u_all_zero_token(
+        MINIMAL_COEFF_CDF_Q_CTX,
+    )));
+    trace.push(BlockSymbolToken::Coeff(chroma_v_all_zero_token(
+        MINIMAL_COEFF_CDF_Q_CTX,
+        V_TXB_SKIP_CTX_NEUTRAL,
     )));
     Ok(trace)
 }
@@ -894,6 +978,74 @@ mod tests {
     #[test]
     fn coded_chroma_block_roundtrip_is_deterministic() {
         let trace = compose_minimal_intra_dc_coded_chroma_block_trace().unwrap();
+        let first = roundtrip_block_symbol_trace(&trace).unwrap();
+        let second = roundtrip_block_symbol_trace(&trace).unwrap();
+
+        assert_eq!(first.bytes(), second.bytes());
+        assert_eq!(first.decoded_symbols(), second.decoded_symbols());
+    }
+
+    #[test]
+    fn composes_golomb_block_trace_in_order() {
+        let trace = compose_minimal_intra_dc_golomb_block_trace().unwrap();
+
+        assert_eq!(trace.len(), 13);
+        // Mode prefix (3), luma level tokens (4 CDF), golomb bypass (3), dc_sign
+        // (1 CDF), U/V all-zero (2 CDF).
+        for token in &trace[0..3] {
+            assert!(matches!(token, BlockSymbolToken::Mode(_)));
+        }
+        for token in &trace[3..7] {
+            assert!(matches!(token, BlockSymbolToken::Coeff(_)));
+        }
+        // The golomb `coeff_rem` bits are §8.2.5 bypass literals.
+        for token in &trace[7..10] {
+            assert!(matches!(token, BlockSymbolToken::Bypass { width: 1, .. }));
+        }
+        for token in &trace[10..13] {
+            assert!(matches!(token, BlockSymbolToken::Coeff(_)));
+        }
+        // modes; txb_skip=0, eob_pt=0, coeff_base_eob=4, coeff_br=3; golomb q_length
+        // 0,1 + coeff_rem 0; dc_sign=0; U/V all_zero=1.
+        assert_eq!(
+            trace.iter().map(|token| token.symbol()).collect::<Vec<_>>(),
+            vec![0, 0, 0, 0, 0, 4, 3, 0, 1, 0, 0, 1, 1]
+        );
+    }
+
+    #[test]
+    fn golomb_block_trace_roundtrips_and_decodes_to_magnitude() {
+        let trace = compose_minimal_intra_dc_golomb_block_trace().unwrap();
+        let proof = roundtrip_block_symbol_trace(&trace).unwrap();
+        let decoded = proof.decoded_symbols();
+
+        assert_eq!(decoded, &[0, 0, 0, 0, 0, 4, 3, 0, 1, 0, 0, 1, 1]);
+        assert!(!proof.bytes().is_empty());
+
+        // Reconstruct the golomb extension `x` from the decoded bypass bits the
+        // way the decoder's read_quant finite-q path does, and confirm it yields
+        // the encoded magnitude (this is the conformance check, since the
+        // roundtrip alone only proves the bits are self-consistent).
+        let golomb = &decoded[7..10];
+        let mut q = 0u32;
+        let mut idx = 0;
+        while idx < golomb.len() && golomb[idx] == 0 {
+            q += 1;
+            idx += 1;
+        }
+        // idx now points at the terminating q_length_bit (1); coeff_rem follows.
+        let coeff_rem = u32::from(golomb[idx + 1]);
+        let x = (q << GOLOMB_DC_M) + coeff_rem;
+        assert_eq!(
+            GOLOMB_MAXLEVEL + x,
+            MINIMAL_GOLOMB_DC_MAGNITUDE,
+            "golomb bits decode to the encoded magnitude"
+        );
+    }
+
+    #[test]
+    fn golomb_block_roundtrip_is_deterministic() {
+        let trace = compose_minimal_intra_dc_golomb_block_trace().unwrap();
         let first = roundtrip_block_symbol_trace(&trace).unwrap();
         let second = roundtrip_block_symbol_trace(&trace).unwrap();
 

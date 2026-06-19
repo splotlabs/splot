@@ -4469,6 +4469,39 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-INTRA-BLOCK-TRACE-GOLOMB-FINITE"
+name = "Encoder finite-q golomb luma DC block trace"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20.7.27", "5.20.7.28", "8.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/block_symbol_trace.rs"
+openspec_change = "encoder-block-trace-golomb-finite"
+tracking_issue = ""
+owner = "encoder"
+risk = "medium"
+notes = "Private, non-emitting encoder finite-q golomb luma DC block trace (the §5.20.7.28 read_quant tail, the bypass-literal token's first real consumer). Extends the coded luma DC range from magnitude 7 to 8..17. Magnitude 8 reaches §5.20.7.27 maxLevel = LF_NUM_BASE_LEVELS+COEFF_BASE_RANGE+1 = 8 (level 5 base + coeff_br 3), at which read_quant emits the golomb coeff_rem. `coefficient_tokenization` adds `luma_dc_golomb_level_tokens` (the fixed all_zero=0/eob_pt_16=0/coeff_base_eob=4/coeff_br=3 level tokens) + factors out `luma_dc_sign_token`. The golomb derivation (verified vs the decoder read_quant.rs): for the first/only DC coeff hrLevelAvg=0 → predLevel=0 → m=Clip3(1,6,GetMsb(0))=1, k=2, cMax=5; finite-q path (q<cMax) length=m=1, xBase=q<<1, so x=2q+coeff_rem → q=x>>1, coeff_rem=x&1, covering x∈0..9 (magnitude 8..17); golomb-prefix (x>=10, magnitude 18+) is a later brick. `block_symbol_trace` adds `compose_minimal_intra_dc_golomb_block_trace` (magnitude +10 → x=2, q=1, coeff_rem=0): mode prefix + golomb level tokens + the golomb q_length/coeff_rem bits as individual `BlockSymbolToken::bypass(1, bit)` literals + luma dc_sign CDF token + all-zero U/V (U all-zero → V ctx 0). Thirteen-token trace [0,0,0,0,0,4,3,0,1,0,0,1,1] through one in-tree AV2 §8.2 coder. A conformance test reconstructs x from the decoded bypass bits via the decoder's finite-q arithmetic and asserts the encoded magnitude (the §8.2 roundtrip alone only proves the bits are self-consistent). This row does not claim the golomb-prefix tier, multi-coefficient blocks, chroma golomb, partition syntax, tile CDF lifecycle, tile-body emission, packet output, CLI success, or Baseline Encoder Profile v1 output."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/block_symbol_trace.rs::tests::composes_golomb_block_trace_in_order", "crates/splot-encode/src/block_symbol_trace.rs::tests::golomb_block_trace_roundtrips_and_decodes_to_magnitude", "crates/splot-encode/src/block_symbol_trace.rs::tests::golomb_block_roundtrip_is_deterministic"]
+commands = ["cargo test -p splot-encode block_symbol_trace --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-RECON-DEPENDENCY"
 name = "Encoder reconstruction dependency boundary"
 category = "encoder"
