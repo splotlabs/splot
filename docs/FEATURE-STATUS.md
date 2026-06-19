@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 270 feature(s).
+Matrix version 1. Last reviewed 2026-06-15. 271 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -254,6 +254,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `DECODE-COEFF-ORDINARY-BRANCH-TX-SIZE-CONTEXT` | Coefficient ordinary branch tx size context | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/coeff_loop/ordinary_pass/geometry.rs` |
 | `DECODE-COEFF-ORDINARY-BRANCH-SCAN-ORDER` | Coefficient ordinary branch scan order | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/coeff_loop/ordinary_pass/geometry.rs` |
 | `DECODE-COEFF-ORDINARY-BRANCH-MODE-TO-TXFM-HANDOFF` | Coefficient ordinary branch Mode_To_Txfm handoff | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/coeff_loop/ordinary_pass/geometry.rs` |
+| `DECODE-COEFF-ORDINARY-BRANCH-DIRECTIONAL-UV-HANDOFF` | Coefficient ordinary branch directional UV handoff | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/coeff_loop/ordinary_pass/geometry.rs` |
 | `DECODE-COEFF-ORDINARY-BRANCH-TX-SET-HANDOFF` | Coefficient ordinary branch txSet handoff | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/coeff_loop/ordinary_pass/geometry.rs` |
 | `DECODE-COEFF-ORDINARY-BRANCH-LOSSLESS-HANDOFF` | Coefficient ordinary branch lossless handoff | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/coeff_loop/ordinary_pass/geometry.rs` |
 | `DECODE-TX-SIZE-SYMBOLIC-TABLES` | Decode TxSize symbolic tables | infrastructure | infrastructure | done | done | n/a | n/a | n/a | n/a | partial | done | n/a | `crates/splot-core/src/tables/conversion.rs` |
