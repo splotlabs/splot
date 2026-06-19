@@ -814,6 +814,20 @@ local_reference_evidence = []
 notes = "Routes the minimal flat-intra runtime's traced all-zero coefficient applications through the crate-private frame-facts coefficient wrapper instead of calling the older ordinary branch entry directly. The luma trace passes `TX_64X64` all-zero geometry and the V-plane trace passes `TX_16X16` all-zero geometry into `apply_coeff_use_fsc_branch_from_frame_facts`, preserving AV2 §5.20.7.27 all-zero ordering while bypassing nonzero frame/segment/parity/TCQ derivation. This row remains partial: only the minimal runtime all-zero entry uses the top coefficient wrapper; runtime nonzero `coeffs()`, full `compute_tx_type`, segment-map derivation, transform-block syntax traversal, dequantization, inverse transform, residual add, reconstruction changes, output expansion, reference refresh, public APIs, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` support remain unimplemented."
 
 [[row]]
+id = "coeff-runtime-tx-size-geometry-handoff"
+name = "Runtime coefficient tx-size geometry handoff"
+feature_id = "DECODE-COEFF-RUNTIME-TX-SIZE-GEOMETRY-HANDOFF"
+spec_sections = ["5.20.7.27", "8.3.2", "9.2"]
+parser_source = "docs/spec/av2/1.0.0/05-syntax-structures.md; docs/spec/av2/1.0.0/08-parsing-process.md; docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md"
+decode_module = "crates/splot-decode/src/tile_payload/block_symbol.rs; crates/splot-decode/src/runtime_minimal.rs; crates/splot-core/src/tables/conversion.rs"
+tier = "tier1-intra"
+status = "partial"
+self_contained_tests = ["crates/splot-decode/src/tile_payload/block_symbol.rs::tests::all_zero_tx_size_geometry_resolves_generated_tables", "crates/splot-decode/src/tile_payload/block_symbol.rs::tests::unsupported_all_zero_tx_size_geometry_consumes_no_state", "crates/splot-decode/src/tile_payload/block_symbol.rs::tests::all_zero_coefficient_frame_entry_matches_direct_ordinary_branch", "crates/splot-decode/src/tile_payload/runtime_frontier.rs::tests::block_symbol_frontier_accepts_minimal_fixture_trace", "crates/splot-decode/src/tile_payload/runtime_frontier.rs::tests::block_symbol_frontier_rejects_exit_symbol_padding_failure", "crates/splot-decode/src/runtime_hash.rs::tests::minimal_fixture_decodes_to_hash_report", "crates/splot-decode/src/runtime_raw.rs::tests::minimal_fixture_decodes_to_exact_raw_bytes", "crates/splot-decode/src/runtime_y4m.rs::tests::minimal_fixture_decodes_to_exact_y4m_bytes", "cargo test -p splot-decode block_symbol --locked", "cargo test -p splot-decode runtime_hash --locked", "cargo test -p splot-decode runtime_raw --locked", "cargo test -p splot-decode runtime_y4m --locked", "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings", "cargo xtask check-decoder-support", "cargo xtask check-decoder-conformance-coverage", "cargo xtask check-feature-status"]
+diagnostics = ["decode/unsupported-feature"]
+local_reference_evidence = []
+notes = "Replaces the minimal flat-intra runtime's local `TX_64X64` and `TX_16X16` constants with a crate-private traced-geometry resolver that converts the luma 16x16 and V 4x4 transform dimensions in 4x4 units into pixels, then matches generated AV2 §9.2 `Tx_Width` and `Tx_Height` table entries to recover `txSz` before entering the all-zero frame-facts coefficient wrapper. Unsupported or overflowing traced geometry fails with a typed block-symbol trace error before coefficient-wrapper entry, leaving coefficient context state, tile, saved, and frame CDF rows, and symbol counters unchanged. This row remains partial: only the minimal runtime all-zero transform-size geometry handoff is implemented; runtime nonzero `coeffs()`, full `compute_tx_type`, segment-map derivation, broad transform-block syntax traversal, dequantization, inverse transform, residual add, reconstruction changes, output expansion, reference refresh, public APIs, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` support remain unimplemented."
+
+[[row]]
 id = "coeff-base-symbol-read"
 name = "Coefficient base symbol read"
 feature_id = "DECODE-COEFF-BASE-SYMBOL-READ"
