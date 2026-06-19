@@ -88,6 +88,7 @@ fn tx_set_base_config(
         enable_chroma_dctonly,
         uv_mode,
         angle_delta_uv: 0,
+        luma_tx_type: 0,
         parity_hiding: false,
         use_tcq: false,
     }
@@ -119,6 +120,7 @@ fn lossless_base_config_with_entropy_flags(
         enable_chroma_dctonly,
         uv_mode,
         angle_delta_uv: 0,
+        luma_tx_type: 0,
         parity_hiding,
         use_tcq,
     }

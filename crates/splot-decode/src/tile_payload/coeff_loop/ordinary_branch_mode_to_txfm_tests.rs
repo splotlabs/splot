@@ -114,6 +114,7 @@ fn mode_to_txfm_base_config(
         tx_set,
         uv_mode,
         angle_delta_uv: 0,
+        luma_tx_type: DCT_DCT,
         enable_chroma_dctonly: false,
         parity_hiding: false,
         use_tcq: false,
@@ -128,6 +129,16 @@ fn mode_to_txfm_base_config_with_angle(
     CoeffOrdinaryBranchModeToTxfmBaseConfig {
         angle_delta_uv,
         ..mode_to_txfm_base_config(uv_mode, tx_set)
+    }
+}
+
+fn mode_to_txfm_base_config_with_luma_tx_type(
+    tx_set: usize,
+    luma_tx_type: usize,
+) -> CoeffOrdinaryBranchModeToTxfmBaseConfig {
+    CoeffOrdinaryBranchModeToTxfmBaseConfig {
+        luma_tx_type,
+        ..mode_to_txfm_base_config(UV_SMOOTH_PRED, tx_set)
     }
 }
 
@@ -160,7 +171,7 @@ fn explicit_input_with_tx_size(
                 ..tx_size_geometry(start)
             },
             coeff_cdf_q_ctx: 0,
-            is_inter: false,
+            is_inter: start.eob.is_inter,
             base_config: explicit_base_config(plane_tx_type),
             lossless: false,
         },
@@ -198,6 +209,31 @@ fn mode_to_txfm_input_with_angle(
         base_config: mode_to_txfm_base_config_with_angle(uv_mode, tx_set, angle_delta_uv),
         lossless: false,
     })
+}
+
+fn mode_to_txfm_luma_input(
+    start: NonZeroCoeffBlockStartInput,
+    luma_tx_type: usize,
+    enable_chroma_dctonly: bool,
+) -> CoeffOrdinaryBranchModeToTxfmInput {
+    CoeffOrdinaryBranchModeToTxfmInput::NonZero(CoeffOrdinaryBranchModeToTxfmNonZeroInput {
+        geometry: tx_size_geometry(start),
+        coeff_cdf_q_ctx: 0,
+        is_inter: start.eob.is_inter,
+        base_config: CoeffOrdinaryBranchModeToTxfmBaseConfig {
+            enable_chroma_dctonly,
+            ..mode_to_txfm_base_config_with_luma_tx_type(TX_SET_DCTONLY, luma_tx_type)
+        },
+        lossless: false,
+    })
+}
+
+fn luma_start_input(is_inter: bool) -> NonZeroCoeffBlockStartInput {
+    let mut start = start_input();
+    start.block.plane = 0;
+    start.eob.plane = 0;
+    start.eob.is_inter = is_inter;
+    start
 }
 
 fn run_explicit(
@@ -265,7 +301,14 @@ fn find_payload_for_explicit(plane_tx_type: usize) -> [u8; 12] {
 }
 
 fn find_payload_for_explicit_tx_size(tx_size: usize, plane_tx_type: usize) -> [u8; 12] {
-    let start = start_input();
+    find_payload_for_explicit_start(start_input(), tx_size, plane_tx_type)
+}
+
+fn find_payload_for_explicit_start(
+    start: NonZeroCoeffBlockStartInput,
+    tx_size: usize,
+    plane_tx_type: usize,
+) -> [u8; 12] {
     for first in u8::MIN..=u8::MAX {
         for second in u8::MIN..=u8::MAX {
             for suffix in PAYLOAD_SUFFIXES {
@@ -411,6 +454,67 @@ fn coefficient_ordinary_branch_mode_to_txfm_directional_uv_falls_back_to_dct() {
     assert_eq!(derived, explicit);
 }
 
+#[test]
+fn coefficient_ordinary_branch_mode_to_txfm_maps_luma_txtypes() {
+    let start = luma_start_input(false);
+    let payload = find_payload_for_explicit_start(start, TX_8X8, ADST_DCT);
+
+    let explicit = run_explicit(&payload, explicit_input(start, ADST_DCT));
+    let derived = run_mode_to_txfm(&payload, mode_to_txfm_luma_input(start, ADST_DCT, false));
+
+    assert_eq!(derived, explicit);
+}
+
+#[test]
+fn coefficient_ordinary_branch_mode_to_txfm_luma_ignores_chroma_dctonly() {
+    // AV2 §5.20.7.29 returns luma TxTypes before the chroma-only
+    // enable_chroma_dctonly shortcut.
+    let start = luma_start_input(false);
+    let payload = find_payload_for_explicit_start(start, TX_8X8, DCT_ADST);
+
+    let explicit = run_explicit(&payload, explicit_input(start, DCT_ADST));
+    let derived = run_mode_to_txfm(&payload, mode_to_txfm_luma_input(start, DCT_ADST, true));
+
+    assert_eq!(derived, explicit);
+}
+
+#[test]
+fn coefficient_ordinary_branch_mode_to_txfm_luma_inter_uses_txtypes() {
+    let start = luma_start_input(true);
+    let payload = find_payload_for_explicit_start(start, TX_8X8, ADST_DCT);
+
+    let explicit = run_explicit(&payload, explicit_input(start, ADST_DCT));
+    let derived = run_mode_to_txfm(&payload, mode_to_txfm_luma_input(start, ADST_DCT, false));
+
+    assert_eq!(derived, explicit);
+}
+
+#[test]
+fn coefficient_ordinary_branch_mode_to_txfm_chroma_inter_dctonly_short_circuits() {
+    // AV2 §5.20.7.29 applies the chroma-DCT-only shortcut before chroma inter
+    // TxTypes lookup.
+    let mut start = start_input();
+    start.eob.is_inter = true;
+    let payload = find_payload_for_explicit_start(start, TX_8X8, DCT_DCT);
+
+    let explicit = run_explicit(&payload, explicit_input(start, DCT_DCT));
+    let derived = run_mode_to_txfm(
+        &payload,
+        CoeffOrdinaryBranchModeToTxfmInput::NonZero(CoeffOrdinaryBranchModeToTxfmNonZeroInput {
+            geometry: tx_size_geometry(start),
+            coeff_cdf_q_ctx: 0,
+            is_inter: true,
+            base_config: mode_to_txfm_base_config_with_chroma_dctonly(
+                UV_SMOOTH_PRED,
+                TX_SET_DCTONLY,
+            ),
+            lossless: false,
+        }),
+    );
+
+    assert_eq!(derived, explicit);
+}
+
 fn assert_mode_to_txfm_error_preserves_state<F>(
     input: CoeffOrdinaryBranchModeToTxfmInput,
     assert_error: F,
@@ -444,25 +548,10 @@ fn assert_mode_to_txfm_error_preserves_state<F>(
 #[test]
 fn coefficient_ordinary_branch_mode_to_txfm_rejects_unsupported_subset_atomically() {
     let start = start_input();
-    let mut luma = start;
-    luma.block.plane = 0;
-    luma.eob.plane = 0;
     let mut inter = start;
     inter.eob.is_inter = true;
 
     let cases = [
-        (
-            CoeffOrdinaryBranchModeToTxfmInput::NonZero(
-                CoeffOrdinaryBranchModeToTxfmNonZeroInput {
-                    geometry: tx_size_geometry(luma),
-                    coeff_cdf_q_ctx: 0,
-                    is_inter: false,
-                    base_config: mode_to_txfm_base_config(UV_SMOOTH_PRED, TX_SET_INTRA_1),
-                    lossless: false,
-                },
-            ),
-            "luma",
-        ),
         (
             CoeffOrdinaryBranchModeToTxfmInput::NonZero(
                 CoeffOrdinaryBranchModeToTxfmNonZeroInput {
@@ -498,6 +587,18 @@ fn coefficient_ordinary_branch_mode_to_txfm_rejects_unsupported_subset_atomicall
             ));
         });
     }
+}
+
+#[test]
+fn coefficient_ordinary_branch_mode_to_txfm_rejects_luma_domains_atomically() {
+    let start = luma_start_input(false);
+
+    assert_mode_to_txfm_error_preserves_state(mode_to_txfm_luma_input(start, 16, false), |err| {
+        assert!(matches!(
+            err,
+            CoeffOrdinaryBranchError::InvalidLumaTxType { tx_type: 16 }
+        ));
+    });
 }
 
 #[test]
