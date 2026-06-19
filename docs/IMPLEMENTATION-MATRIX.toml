@@ -7678,6 +7678,61 @@ fixtures = [
 diagnostics = []
 
 [[feature]]
+id = "RECON-DEBLOCK-SAMPLE-FILTER"
+name = "Deblocking sample filter process"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["7.17.7.1"]
+sources = [
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-17-7-1",
+]
+crate = "splot-recon"
+module = "crates/splot-recon/src/deblock_filter.rs"
+openspec_change = "recon-deblock-sample-filter"
+tracking_issue = ""
+owner = "decoder"
+risk = "low"
+notes = "Adds the scheduler-free `splot-recon` AV2 §7.17.7.1 deblocking sample-filter process `deblock_sample_filter(line, params)`, the first loop-filter primitive. Over a caller-supplied perpendicular sample line with the current-side base index `boundary` (q0 at boundary, p0 at boundary-1), it computes `deltaM2 = Clip3(-qThrClamp, qThrClamp, (p1 - q1 + 3*(q0 - p0)) * 4)` with `qThrClamp = q_thr * q_thresh_mult`, then for `i` from 0 to `Max(max_width_neg, max_width_pos) - 1` modifies the current-side sample at `boundary + i` to `Clip1(sample - Round2(deltaM2 * w_mult_pos * (max_width_pos - i), 3 + DF_SHIFT))` (unless curr_lossless) and, for `i < max_width_neg`, the previous-side sample at `boundary - 1 - i` to `Clip1(sample + Round2(deltaM2 * w_mult_neg * (max_width_neg - i), 3 + DF_SHIFT))` (unless prev_lossless), reading q0/q1/p0/p1 from the original line before any write. `DF_SHIFT = 8` (§3). The §7.17.1/§7.17.2 edge traversal, the §7.17.3 to §7.17.7.2 filter-size/strength/choice derivation (needing DeblockingTxSizes, filter levels, and block state), and the `Q_Thresh_Mults[width-1]` / `W_Mult[maxWidth-1]` §9.2 lookups stay caller-resolved: the caller passes `q_thr`, the per-side widths, and the three pre-indexed table weights as scalars (the §9.2 deblock tables live in splot-core's conversion module, which has core consumers and cannot be wholesale-moved to splot-tables, so the scalar handoff avoids a gen-tables split). Total and panic-free: the ramp uses i64 (each term far inside i64), `qThrClamp` is clamped non-negative so `Clip3` never inverts, and the line bounds and per-side widths (1..=8) are validated before any sample is read or written (typed `ReconError`, two new variants). Strictly additive and provably no-output-change: a `pub` primitive with no rewiring, so the minimal flat-intra fixture snapshots stay byte-identical. Completeness is proven by a `Round2` toward-negative-infinity test, a hand-computed symmetric width-2 case (line `[10,20,60,50]` to `[18,36,44,42]`), a reference match across asymmetric widths and prev/curr lossless gating and a clamped deltaM2, a both-lossless no-op, a `Clip1` bit-depth clamp at 8 and 10 bits, fail-atomic width/line rejection, and an i32-extreme totality sweep. This row does not implement the §7.17 edge traversal or filter-strength/choice derivation, the other loop filters (CDEF, CCSO, loop restoration, GDF), or wiring into the runtime decode path."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "done"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-recon/src/deblock_filter.rs::tests::round2_rounds_toward_negative_infinity",
+    "crates/splot-recon/src/deblock_filter.rs::tests::matches_hand_computed_symmetric_width_2",
+    "crates/splot-recon/src/deblock_filter.rs::tests::matches_reference_across_configs",
+    "crates/splot-recon/src/deblock_filter.rs::tests::lossless_sides_are_untouched",
+    "crates/splot-recon/src/deblock_filter.rs::tests::clip1_clamps_to_bit_depth",
+    "crates/splot-recon/src/deblock_filter.rs::tests::rejects_invalid_width_and_short_line",
+    "crates/splot-recon/src/deblock_filter.rs::tests::is_total_for_extreme_inputs",
+]
+commands = [
+    "cargo test -p splot-recon deblock_filter --locked",
+    "cargo clippy -p splot-recon --all-targets --locked -- -D warnings",
+    "RUSTDOCFLAGS=\"-D warnings\" cargo doc -p splot-recon --no-deps --locked",
+    "cargo xtask check-zero-copy-policy",
+    "cargo xtask check-dependency-direction",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-recon/src/deblock_filter.rs",
+    "crates/splot-recon/src/error.rs",
+    "crates/splot-recon/src/lib.rs",
+]
+diagnostics = []
+
+[[feature]]
 id = "RECON-INVERSE-TRANSFORM-2D"
 name = "2D matrix inverse transform core (row-then-column)"
 category = "infrastructure"

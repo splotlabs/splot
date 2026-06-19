@@ -39,7 +39,12 @@
 //! and the § 5.20.7.30
 //! `get_scan` coefficient scan order (the anti-diagonal 2D scan and the
 //! row/column raster scans) with its `get_tx_class` `PlaneTxType`-to-class
-//! mapping; it does not implement byte-consuming decode, full
+//! mapping, and the § 7.17.7.1 deblocking sample filter
+//! ([`deblock_sample_filter`], the per-edge `deltaM2` ramp over a caller-supplied
+//! perpendicular sample line and caller-resolved widths/weights); it does not
+//! implement the § 7.17 deblocking edge traversal and filter-strength derivation,
+//! the other loop filters (CDEF, CCSO, loop restoration, GDF), byte-consuming
+//! decode, full
 //! reconstruction, the § 7.14.4 `shift` derivation
 //! or the user-defined `UserQm` matrices,
 //! runtime CLI Y4M output, or full AV2
@@ -82,12 +87,14 @@
 //! `RECON-RESOLVE-2D-TRANSFORM-PARAMS`,
 //! `RECON-DPCM-DIRECTION`,
 //! `RECON-COEFFICIENT-SCAN-ORDER`,
-//! `RECON-GET-TX-CLASS`.
+//! `RECON-GET-TX-CLASS`,
+//! `RECON-DEBLOCK-SAMPLE-FILTER`.
 //!
 //! Licensed under PolyForm Noncommercial 1.0.0; commercial use requires a
 //! separate written license from Bartosz Tomczyk.
 
 mod coefficient_scan;
+mod deblock_filter;
 mod dequant;
 mod dequant_process;
 mod error;
@@ -117,6 +124,7 @@ mod workspace;
 mod y4m;
 
 pub use coefficient_scan::{TransformClass, coefficient_scan_order, tx_class};
+pub use deblock_filter::{DeblockSampleFilter, deblock_sample_filter};
 pub use dequant::{
     QuantizerDeltas, ac_quantizer, dc_quantizer, max_quantizer_index, quantizer_index,
     quantizer_value,
