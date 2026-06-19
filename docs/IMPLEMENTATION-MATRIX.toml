@@ -4172,6 +4172,72 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-INTRA-MODE-SYMBOL-EMISSION"
+name = "Encoder intra-mode symbol emission"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20.5.5", "8.3.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/intra_mode_emission.rs"
+openspec_change = "encoder-intra-mode-symbol-emission"
+tracking_issue = ""
+owner = "encoder"
+risk = "medium"
+notes = "Private, non-emitting encoder intra-mode symbol-emission bridge. `emit_minimal_dc_luma_intra_mode` produces the ordered AV2 §5.20.5.5 `y_mode_set` and `y_mode_index` entropy-token records for the current minimal DC_PRED luma block at the tile-origin neutral context (`y_mode_set=0`, `y_mode_index=0` select the DC_PRED luma mode; the `y_mode_index` §8.3.2 joint-neighbour context is 0 at the tile origin). This emits the §5.20.5.5 sequence for a NON-LOSSLESS block only: per `if(Lossless){use_dpcm_y}else{use_dpcm_y=0}`, a non-lossless block infers `use_dpcm_y=0` and emits no symbol, so the syntax reduces to `y_mode_set` then `y_mode_index`; lossless blocks read `use_dpcm_y` first and are out of scope. It derives the scoped `TileYModeSetCdf` (no context) and the tile-origin `TileYModeIndexCdf` row from `splot-core` defaults, rejects any non-tile-origin `y_mode_index` context, and proves the token values write through the in-tree AV2 §8.2 `SymbolEncoder` and decode back through `SymbolDecoder` to the same ordered symbols. It emits only the mode SELECTOR syntax and does not perform or verify the §7.13.2.10 DC prediction process (that lives in the reconstruction features). This row does not claim chroma `uv_mode` syntax, coefficient or all-zero symbols, lossless DPCM-mode symbols, partition syntax, neighbor-derived contexts, tile CDF lifecycle, tile-body emission, packet output, CLI success, or Baseline Encoder Profile v1 output."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/intra_mode_emission.rs::tests", "crates/splot-encode/src/context.rs::tests::syntax_and_header_planning_do_not_enable_packet_output"]
+commands = ["cargo test -p splot-encode intra_mode_emission --locked", "cargo test -p splot-encode syntax_and_header_planning_do_not_enable_packet_output --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "ENC-UV-MODE-SYMBOL-EMISSION"
+name = "Encoder chroma uv_mode symbol emission"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20.5.6", "8.3.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/intra_mode_emission.rs"
+openspec_change = "encoder-uv-mode-emission"
+tracking_issue = ""
+owner = "encoder"
+risk = "medium"
+notes = "Private, non-emitting encoder chroma uv_mode symbol-emission bridge, extending the `intra_mode_emission` module. `emit_minimal_dc_chroma_uv_mode` produces the ordered AV2 §5.20.5.6 `uv_mode` token record selecting the DC chroma mode (`Default_Mode_List_Uv` index 0 = DC_PRED) for a non-directional DC_PRED luma block, selecting the §8.3.2 `TileUVModeCflNotAllowedCdf` row at the non-directional context 0 (`is_directional(YMode)`); `uv_mode` is one symbol covering both chroma planes. It reuses the existing token / §8.2 roundtrip machinery and typed error model, holds only the non-directional CDF row, rejects any other uv_mode context, and proves the token value writes through the in-tree AV2 §8.2 `SymbolEncoder` and decodes back through `SymbolDecoder` to the same symbol. Per AV2 §5.20.5.3 `intra_frame_mode_info()` calls `read_intra_uv_mode()` right after `read_intra_y_mode()` and before `residual()`, so `uv_mode` precedes all coefficient symbols (ordered composition: y_mode_set, y_mode_index, uv_mode, then residual). It is valid only for the minimal tier where the §5.20.5.6 predecessors are not read: a non-lossless block (`use_dpcm_uv` inferred 0) with CfL disabled (`enable_cfl_intra == 0`) and MHCCP unavailable (so `is_cfl` is not read); lossless or CfL/MHCCP-enabled blocks read `use_dpcm_uv`/`is_cfl` first and are out of scope. This row does not claim lossless `use_dpcm_uv`/`dpcm_mode_uv` or `is_cfl`/CfL/CCTX/MHCCP syntax, directional-luma uv_mode contexts, coefficient or all-zero symbols, partition syntax, tile CDF lifecycle, tile-body emission, packet output, CLI success, or Baseline Encoder Profile v1 output."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/intra_mode_emission.rs::tests::emits_dc_chroma_uv_mode_token", "crates/splot-encode/src/intra_mode_emission.rs::tests::uv_mode_token_roundtrips_through_symbol_coder", "crates/splot-encode/src/intra_mode_emission.rs::tests::accepts_only_the_non_directional_uv_mode_context", "crates/splot-encode/src/context.rs::tests::syntax_and_header_planning_do_not_enable_packet_output"]
+commands = ["cargo test -p splot-encode intra_mode_emission --locked", "cargo test -p splot-encode syntax_and_header_planning_do_not_enable_packet_output --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-RECON-DEPENDENCY"
 name = "Encoder reconstruction dependency boundary"
 category = "encoder"

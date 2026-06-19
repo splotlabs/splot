@@ -56,6 +56,17 @@ planning and status; it does not claim encoder behavior exists.
   is lossless and that the emitted coefficient decisions reconstruct identically.
   It is not chroma/inter/multi-block reconstruction, reference-frame storage,
   tile-body emission, a packet path, or a public encode success path.
+- `ENC-INTRA-MODE-SYMBOL-EMISSION` adds a private block-symbol emission bridge
+  for the luma intra-mode selectors (`y_mode_set`/`y_mode_index` for DC_PRED at
+  the tile-origin neutral context, AV2 §5.20.5.5/§8.3.2). It derives the scoped
+  §8.3.2 CDF rows and proves the token values roundtrip through the in-tree AV2
+  §8.2 symbol encoder/decoder. It is not chroma mode, coefficient/all-zero
+  symbols, partition syntax, tile-body emission, or a packet path.
+- `ENC-UV-MODE-SYMBOL-EMISSION` extends `intra_mode_emission` with the chroma
+  `uv_mode` selector for the DC chroma mode (`Default_Mode_List_Uv` index 0 =
+  DC_PRED) at the non-directional context (AV2 §5.20.5.6/§8.3.2), proven through
+  the in-tree AV2 §8.2 symbol coder. It is not CfL/CCTX, directional-luma
+  contexts, coefficient/all-zero symbols, tile-body emission, or a packet path.
 - `Packet` is still only a byte buffer wrapper, and no coded packet production
   path exists.
 - `EncoderConfig` exposes `BitDepth::Twelve`, but current Baseline Encoder Profile
