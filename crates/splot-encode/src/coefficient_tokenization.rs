@@ -6,7 +6,11 @@
 //! This module advances `ENC-COEFFICIENT-TOKENIZATION-MINIMAL`. It converts the
 //! current private 4x4 DCT_DCT DC-only quantized coefficient block into ordered
 //! AV2 § 5.20.7.27 / § 5.20.7.28 token facts and proves those facts can
-//! roundtrip through `splot-core`'s AV2 § 8.2 symbol encoder/decoder.
+//! roundtrip through `splot-core`'s AV2 § 8.2 symbol encoder/decoder. It also
+//! hosts the multi-coefficient building blocks consumed by `block_symbol_trace`:
+//! `ENC-COEFF-BASE-LF-CONTEXT` (the § 8.3.2 `coeff_base` low-frequency luma context
+//! derivation) and `ENC-COEFF-BASE-LF-TOKEN` (the non-EOB `coeff_base`
+//! low-frequency luma token and its `TileCoeffBaseLfCdf` row).
 //!
 //! It does not emit tile payloads, own tile CDF lifecycle, write packets, expose
 //! a public encoder API, or implement coefficient base-range / `read_quant`
@@ -19,8 +23,8 @@
 use splot_core::symbol::{Symbol, SymbolDecoder, SymbolDecoderConfig};
 use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig};
 use splot_core::tables::cdf::{
-    DEFAULT_COEFF_BASE_LF_EOB_CDF, DEFAULT_COEFF_BASE_LF_EOB_UV_CDF, DEFAULT_COEFF_BR_LF_CDF,
-    DEFAULT_DC_SIGN_CDF, DEFAULT_EOB_PT_16_CDF, DEFAULT_TXB_SKIP_CDF,
+    DEFAULT_COEFF_BASE_LF_CDF, DEFAULT_COEFF_BASE_LF_EOB_CDF, DEFAULT_COEFF_BASE_LF_EOB_UV_CDF,
+    DEFAULT_COEFF_BR_LF_CDF, DEFAULT_DC_SIGN_CDF, DEFAULT_EOB_PT_16_CDF, DEFAULT_TXB_SKIP_CDF,
 };
 use splot_core::tables::conversion::SIG_REF_DIFF_OFFSET;
 use splot_recon::{PlaneId, PlaneRect, TransformClass, coefficient_scan_order};
@@ -49,6 +53,15 @@ const EOB_CTX_LUMA_INTRA: usize = 0;
 const EOB_CTX_CHROMA: usize = 2;
 const COEFF_BASE_LF_EOB_CTX_DC: usize = 0;
 const COEFF_BR_LF_CTX_DC: usize = 0;
+// The § 8.3.2 `coeff_base` low-frequency luma context for the DC of the minimal
+// eob=2 trace (the only `coeff_base_lf` consumer): an AC coefficient of level 1 at
+// scan pos 1 is the DC's sole significant neighbour, so `mag = 1`, `ctx = 1`, and
+// the low-frequency `c == 0` band yields `ctx.min(8) = 1`
+// (see `coeff_base_lf_luma_context`). `tcq_ctx = (tcqState >> 1) & 1` is 0 when TCQ
+// is off.
+const COEFF_BASE_LF_CTX_EOB2_DC: usize = 1;
+const COEFF_BASE_LF_TCQ_CTX_NEUTRAL: usize = 0;
+const COEFF_BASE_LF_CDF_ROW_LEN: usize = 7;
 const DC_SIGN_GROUP_VISIBLE: usize = 0;
 const DC_SIGN_CTX_NEUTRAL: usize = 0;
 // AV2 § 5.20.7.27 / § 8.3.2: a low-frequency luma EOB coefficient's base level
@@ -201,6 +214,29 @@ pub(crate) const fn chroma_v_all_zero_token(
             ctx,
         },
         symbol: true as u8,
+    }
+}
+
+/// Returns the AV2 § 5.20.7.27 non-EOB `coeff_base` token for a low-frequency luma
+/// coefficient: the base `level` (a non-EOB base level equals the decoded symbol)
+/// coded with the `TileCoeffBaseLfCdf[coeff_cdf_q_ctx][4x4][ctx][tcq_ctx]` row. The
+/// `ctx` is the § 8.3.2 low-frequency context (see `coeff_base_lf_luma_context`);
+/// `tcq_ctx` is `(tcqState >> 1) & 1`, which is 0 when TCQ is off.
+pub(crate) const fn coeff_base_lf_token(
+    coeff_cdf_q_ctx: usize,
+    ctx: usize,
+    tcq_ctx: usize,
+    level: u8,
+) -> CoefficientEntropyToken {
+    CoefficientEntropyToken {
+        syntax: CoefficientTokenSyntax::CoeffBase,
+        selector: CoefficientCdfRowSelector::CoeffBaseLf {
+            coeff_cdf_q_ctx,
+            tx_size: TX_SIZE_4X4_CTX,
+            ctx,
+            tcq_ctx,
+        },
+        symbol: level,
     }
 }
 
@@ -519,6 +555,8 @@ pub(crate) enum CoefficientTokenSyntax {
     EobPt16,
     /// `coeff_base_eob` in AV2 § 5.20.7.27.
     CoeffBaseEob,
+    /// `coeff_base` (the non-EOB base level) in AV2 § 5.20.7.27.
+    CoeffBase,
     /// `coeff_br` (base range) in AV2 § 5.20.7.27.
     CoeffBr,
     /// `dc_sign` in AV2 § 5.20.7.27.
@@ -531,6 +569,7 @@ impl CoefficientTokenSyntax {
             Self::AllZero => "all_zero",
             Self::EobPt16 => "eob_pt_16",
             Self::CoeffBaseEob => "coeff_base_eob",
+            Self::CoeffBase => "coeff_base",
             Self::CoeffBr => "coeff_br",
             Self::DcSign => "dc_sign",
         }
@@ -558,6 +597,15 @@ pub(crate) enum CoefficientCdfRowSelector {
         tx_size: usize,
         ctx: usize,
     },
+    /// `TileCoeffBaseLfCdf[coeff_cdf_q_ctx][tx_size][ctx][tcq_ctx]` (the non-EOB
+    /// low-frequency luma `coeff_base` CDF). `tcq_ctx = (tcqState >> 1) & 1` is 0
+    /// when TCQ is off.
+    CoeffBaseLf {
+        coeff_cdf_q_ctx: usize,
+        tx_size: usize,
+        ctx: usize,
+        tcq_ctx: usize,
+    },
     /// `TileDcSignCdf[coeff_cdf_q_ctx][plane_type][group][ctx]`.
     DcSign {
         coeff_cdf_q_ctx: usize,
@@ -582,6 +630,7 @@ impl CoefficientCdfRowSelector {
             }
             Self::EobPt16 { .. } => CoefficientTokenSyntax::EobPt16.as_str(),
             Self::CoeffBrLf { .. } => CoefficientTokenSyntax::CoeffBr.as_str(),
+            Self::CoeffBaseLf { .. } => CoefficientTokenSyntax::CoeffBase.as_str(),
             Self::CoeffBaseLfEob { .. } | Self::CoeffBaseLfEobUv { .. } => {
                 CoefficientTokenSyntax::CoeffBaseEob.as_str()
             }
@@ -858,6 +907,7 @@ struct CoefficientTokenCdfRows {
     txb_skip: [[i32; 3]; COEFF_CDF_Q_CONTEXTS],
     eob_pt_16: [[i32; 6]; COEFF_CDF_Q_CONTEXTS],
     coeff_base_lf_eob: [[i32; 6]; COEFF_CDF_Q_CONTEXTS],
+    coeff_base_lf: [[i32; COEFF_BASE_LF_CDF_ROW_LEN]; COEFF_CDF_Q_CONTEXTS],
     coeff_br_lf: [[i32; 5]; COEFF_CDF_Q_CONTEXTS],
     dc_sign: [[i32; 3]; COEFF_CDF_Q_CONTEXTS],
     chroma_u_txb_skip: [[i32; 3]; COEFF_CDF_Q_CONTEXTS],
@@ -885,6 +935,16 @@ impl CoefficientTokenCdfRows {
                 DEFAULT_COEFF_BASE_LF_EOB_CDF[1][TX_SIZE_4X4_CTX][COEFF_BASE_LF_EOB_CTX_DC],
                 DEFAULT_COEFF_BASE_LF_EOB_CDF[2][TX_SIZE_4X4_CTX][COEFF_BASE_LF_EOB_CTX_DC],
                 DEFAULT_COEFF_BASE_LF_EOB_CDF[3][TX_SIZE_4X4_CTX][COEFF_BASE_LF_EOB_CTX_DC],
+            ],
+            coeff_base_lf: [
+                DEFAULT_COEFF_BASE_LF_CDF[0][TX_SIZE_4X4_CTX][COEFF_BASE_LF_CTX_EOB2_DC]
+                    [COEFF_BASE_LF_TCQ_CTX_NEUTRAL],
+                DEFAULT_COEFF_BASE_LF_CDF[1][TX_SIZE_4X4_CTX][COEFF_BASE_LF_CTX_EOB2_DC]
+                    [COEFF_BASE_LF_TCQ_CTX_NEUTRAL],
+                DEFAULT_COEFF_BASE_LF_CDF[2][TX_SIZE_4X4_CTX][COEFF_BASE_LF_CTX_EOB2_DC]
+                    [COEFF_BASE_LF_TCQ_CTX_NEUTRAL],
+                DEFAULT_COEFF_BASE_LF_CDF[3][TX_SIZE_4X4_CTX][COEFF_BASE_LF_CTX_EOB2_DC]
+                    [COEFF_BASE_LF_TCQ_CTX_NEUTRAL],
             ],
             coeff_br_lf: [
                 DEFAULT_COEFF_BR_LF_CDF[0][COEFF_BR_LF_CTX_DC],
@@ -945,6 +1005,14 @@ impl CoefficientTokenCdfRows {
                 ctx: COEFF_BASE_LF_EOB_CTX_DC,
             } if coeff_cdf_q_ctx < COEFF_CDF_Q_CONTEXTS => {
                 Ok(self.coeff_base_lf_eob[coeff_cdf_q_ctx].as_mut_slice())
+            }
+            CoefficientCdfRowSelector::CoeffBaseLf {
+                coeff_cdf_q_ctx,
+                tx_size: TX_SIZE_4X4_CTX,
+                ctx: COEFF_BASE_LF_CTX_EOB2_DC,
+                tcq_ctx: COEFF_BASE_LF_TCQ_CTX_NEUTRAL,
+            } if coeff_cdf_q_ctx < COEFF_CDF_Q_CONTEXTS => {
+                Ok(self.coeff_base_lf[coeff_cdf_q_ctx].as_mut_slice())
             }
             CoefficientCdfRowSelector::CoeffBrLf {
                 coeff_cdf_q_ctx,
