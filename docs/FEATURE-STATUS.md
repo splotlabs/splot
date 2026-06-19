@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 290 feature(s).
+Matrix version 1. Last reviewed 2026-06-15. 291 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -244,6 +244,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `DECODE-COEFF-FSC-BRANCH-HANDOFF` | Coefficient FSC branch handoff | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/coeff_loop/fsc_quant_pass.rs` |
 | `DECODE-COEFF-FSC-BRANCH-SEG-EOB-HANDOFF` | Coefficient FSC branch segment extent handoff | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/coeff_loop/fsc_quant_pass.rs` |
 | `DECODE-COEFF-FSC-BRANCH-SCAN-ORDER` | Coefficient FSC branch scan-order handoff | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/coeff_loop/fsc_quant_pass.rs` |
+| `DECODE-COEFF-FSC-BRANCH-TX-SIZE-HANDOFF` | Coefficient FSC branch tx-size handoff | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/coeff_loop/fsc_quant_pass.rs` |
 | `DECODE-COEFF-BASE-SYMBOL-READ` | Coefficient base symbol read | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/coeff_loop/base_symbol.rs` |
 | `DECODE-COEFF-LEVEL-STATE-WRITE` | Coefficient level state write | infrastructure | infrastructure | done | done | n/a | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/coeff_loop/level_state.rs` |
 | `DECODE-COEFF-SIGN-SYMBOL-READ` | Coefficient sign symbol read | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/coeff_loop/sign_symbol.rs` |
