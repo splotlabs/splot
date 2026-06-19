@@ -926,6 +926,20 @@ local_reference_evidence = []
 notes = "Adds crate-private loaded-but-unwired ordinary coefficient branch handoff for the non-lossless intra chroma non-directional subset of AV2 §5.20.7.29 `compute_tx_type`. `apply_coeff_ordinary_branch_from_mode_to_txfm` honors the caller-resolved `enable_chroma_dctonly` short-circuit, otherwise derives `PlaneTxType` from generated §9.2 `Mode_To_Txfm[UVMode]`, checks the inline §5.20.7.29 `Tx_Type_In_Set_Intra[txSet][txType]` table, falls back to `DCT_DCT` when needed, and delegates to the existing tx-size/scan ordinary branch. Tests cover accepted mappings, membership fallback, `enable_chroma_dctonly` fallback, all-zero preservation, and fail-atomic unsupported/domain inputs. This row remains partial: `txSet` and `enable_chroma_dctonly` are caller-resolved, and full `compute_tx_type`, `get_tx_set`, luma `TxTypes` state, inter chroma lookup, lossless handling, directional wide-angle mapping, runtime `coeffs()`, dequantization, inverse transform, residual add, reconstruction, output, reference refresh, AVM/dav2d evidence, public APIs, broad `decode_block()`, and broad `decode_tile()` remain unimplemented."
 
 [[row]]
+id = "coeff-ordinary-branch-tx-set-handoff"
+name = "Coefficient ordinary branch txSet handoff"
+feature_id = "DECODE-COEFF-ORDINARY-BRANCH-TX-SET-HANDOFF"
+spec_sections = ["5.20.7.27", "5.20.7.29", "5.20.8.3", "9.2"]
+parser_source = "docs/spec/av2/1.0.0/05-syntax-structures.md; docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md; crates/splot-core/src/tables/conversion.rs"
+decode_module = "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_pass/geometry.rs"
+tier = "tier1-intra"
+status = "partial"
+self_contained_tests = ["crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_tx_set_tests.rs::coefficient_ordinary_branch_tx_set_derives_default_intra_set", "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_tx_set_tests.rs::coefficient_ordinary_branch_tx_set_derives_reduced_chroma_set", "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_tx_set_tests.rs::coefficient_ordinary_branch_tx_set_derives_large_dctonly_set", "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_tx_set_tests.rs::coefficient_ordinary_branch_tx_set_rejects_invalid_reduced_set_atomically", "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_tx_set_tests.rs::coefficient_ordinary_branch_tx_set_rejects_invalid_tx_size_atomically", "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_tx_set_tests.rs::coefficient_ordinary_branch_tx_set_all_zero_preserves_direct_branch", "cargo test -p splot-decode ordinary_branch_tx_set --locked", "cargo test -p splot-decode ordinary_pass --locked", "cargo test -p splot-decode coeff_loop --locked", "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings", "cargo xtask check-decoder-support", "cargo xtask check-decoder-conformance-coverage", "cargo xtask check-feature-status"]
+diagnostics = ["decode/unsupported-feature"]
+local_reference_evidence = []
+notes = "Adds crate-private loaded-but-unwired ordinary coefficient branch handoff for AV2 §5.20.8.3 `get_tx_set`. `apply_coeff_ordinary_branch_from_tx_set` derives `txSet` from `txSz`, plane, caller-resolved `is_inter`, caller-resolved `reduced_tx_set`, caller-resolved `enable_chroma_dctonly`, and generated §9.2 transform-size conversion tables, then delegates to the existing non-lossless intra chroma non-directional `Mode_To_Txfm` subset wrapper. Tests cover default intra set, chroma reduced-set, large-transform DCT-only derivation, all-zero preservation, and fail-atomic invalid-domain inputs. This row remains partial: frame-state derivation, full `compute_tx_type`, luma/inter/lossless branches, directional wide-angle mapping, runtime `coeffs()`, dequantization, inverse transform, residual add, reconstruction, output, reference refresh, AVM/dav2d evidence, public APIs, broad `decode_block()`, and broad `decode_tile()` remain unimplemented."
+
+[[row]]
 id = "tx-size-symbolic-tables"
 name = "TxSize symbolic conversion tables"
 feature_id = "DECODE-TX-SIZE-SYMBOLIC-TABLES"

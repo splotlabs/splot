@@ -10603,6 +10603,65 @@ fixtures = [
 diagnostics = ["decode/unsupported-feature"]
 
 [[feature]]
+id = "DECODE-COEFF-ORDINARY-BRANCH-TX-SET-HANDOFF"
+name = "Coefficient ordinary branch txSet handoff"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.20.7.27", "5.20.7.29", "5.20.8.3", "9.2"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-29",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-3",
+    "docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_pass/geometry.rs"
+openspec_change = "coeff-ordinary-branch-tx-set-handoff"
+tracking_issue = ""
+owner = "decoder"
+risk = "low"
+notes = "Adds a crate-private loaded-but-unwired ordinary coefficient branch wrapper that derives AV2 §5.20.8.3 `txSet` from the `coeffs()` `txSz` and plane, caller-resolved `is_inter`, caller-resolved `reduced_tx_set`, caller-resolved `enable_chroma_dctonly`, and generated §9.2 `Tx_Size_Sqr`, `Tx_Size_Sqr_Up`, `Tx_Width`, and `Tx_Height` tables before delegating to the existing non-lossless intra chroma non-directional `Mode_To_Txfm` subset wrapper. Tests prove default intra set derivation, chroma reduced-set derivation with the lower DCT-only short-circuit, large-transform DCT-only derivation, all-zero preservation, and fail-atomic invalid reduced-set / invalid tx-size domains. This feature remains partial: frame-state derivation of `reduced_tx_set` and `enable_chroma_dctonly`, full §5.20.7.29 `compute_tx_type`, luma `TxTypes` state, inter chroma lookup, lossless handling, directional wide-angle mapping, runtime `coeffs()`, dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public APIs, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` remain unimplemented."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "partial"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_tx_set_tests.rs::coefficient_ordinary_branch_tx_set_derives_default_intra_set",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_tx_set_tests.rs::coefficient_ordinary_branch_tx_set_derives_reduced_chroma_set",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_tx_set_tests.rs::coefficient_ordinary_branch_tx_set_derives_large_dctonly_set",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_tx_set_tests.rs::coefficient_ordinary_branch_tx_set_rejects_invalid_reduced_set_atomically",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_tx_set_tests.rs::coefficient_ordinary_branch_tx_set_rejects_invalid_tx_size_atomically",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_tx_set_tests.rs::coefficient_ordinary_branch_tx_set_all_zero_preserves_direct_branch",
+]
+commands = [
+    "cargo test -p splot-decode ordinary_branch_tx_set --locked",
+    "cargo test -p splot-decode ordinary_pass --locked",
+    "cargo test -p splot-decode coeff_loop --locked",
+    "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-decoder-conformance-coverage",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-decode/src/tile_payload/coeff_loop.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_pass/geometry.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_pass.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_tx_set_tests.rs",
+    "crates/splot-core/src/tables/conversion.rs",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
 id = "DECODE-TX-SIZE-SYMBOLIC-TABLES"
 name = "Decode TxSize symbolic tables"
 category = "infrastructure"

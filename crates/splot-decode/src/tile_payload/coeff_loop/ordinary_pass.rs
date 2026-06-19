@@ -505,6 +505,12 @@ pub(crate) enum CoeffOrdinaryBranchError {
         /// Caller-provided `txSet`.
         tx_set: usize,
     },
+    /// The `get_tx_set` handoff received a caller-resolved reduced set outside f(2).
+    #[error("ordinary coefficient branch invalid reduced_tx_set value {reduced_tx_set}")]
+    InvalidReducedTxSet {
+        /// Caller-provided `reduced_tx_set`.
+        reduced_tx_set: usize,
+    },
     /// Generated `Mode_To_Txfm` held a value outside the `TX_TYPES` domain.
     #[error("ordinary coefficient branch invalid Mode_To_Txfm[{uv_mode}] table value {value}")]
     InvalidModeToTxfmTableValue {
