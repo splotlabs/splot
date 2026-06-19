@@ -108,6 +108,55 @@ pub(crate) const fn chroma_v_all_zero_token(
     }
 }
 
+/// Returns the four ordered AV2 § 5.20.7.27 coded luma DC-only coefficient tokens
+/// for a single nonzero DC coefficient of unsigned `magnitude`
+/// (`1..=MAX_BASE_EOB_MAGNITUDE`) and the given sign, at the neutral top-left
+/// luma context:
+///
+/// 1. `all_zero == 0` (`txb_skip`, the block is coded),
+/// 2. `eob_pt_16 == 0` (EOB point 0: a single coefficient at scan position 0),
+/// 3. `coeff_base_eob == magnitude - 1` (the low-frequency EOB base level), and
+/// 4. `dc_sign` (0 positive, 1 negative).
+///
+/// This mirrors the `tokenize_coefficients` coded DC path exactly; the
+/// `coded_dc_tokens_match_tokenizer` test asserts the two never drift.
+pub(crate) const fn luma_dc_coded_tokens(
+    coeff_cdf_q_ctx: usize,
+    magnitude: u32,
+    negative: bool,
+) -> [CoefficientEntropyToken; 4] {
+    [
+        all_zero_token(coeff_cdf_q_ctx, false),
+        CoefficientEntropyToken {
+            syntax: CoefficientTokenSyntax::EobPt16,
+            selector: CoefficientCdfRowSelector::EobPt16 {
+                coeff_cdf_q_ctx,
+                eob_ctx: EOB_CTX_LUMA_INTRA,
+            },
+            symbol: 0,
+        },
+        CoefficientEntropyToken {
+            syntax: CoefficientTokenSyntax::CoeffBaseEob,
+            selector: CoefficientCdfRowSelector::CoeffBaseLfEob {
+                coeff_cdf_q_ctx,
+                tx_size: TX_SIZE_4X4_CTX,
+                ctx: COEFF_BASE_LF_EOB_CTX_DC,
+            },
+            symbol: magnitude.saturating_sub(1) as u8,
+        },
+        CoefficientEntropyToken {
+            syntax: CoefficientTokenSyntax::DcSign,
+            selector: CoefficientCdfRowSelector::DcSign {
+                coeff_cdf_q_ctx,
+                plane_type: LUMA_PLANE_TYPE,
+                group: DC_SIGN_GROUP_VISIBLE,
+                ctx: DC_SIGN_CTX_NEUTRAL,
+            },
+            symbol: negative as u8,
+        },
+    ]
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct CoefficientTokenizationInput<'a> {
     plane: PlaneId,
@@ -843,6 +892,23 @@ mod tests {
                 symbol: 1,
             })
         );
+    }
+
+    #[test]
+    fn coded_dc_tokens_match_tokenizer() {
+        // `luma_dc_coded_tokens` must mirror the tokenizer's coded DC path
+        // exactly across the supported magnitude/sign range, so the trace
+        // accessor never drifts from `tokenize_coefficients`.
+        let max = MAX_BASE_EOB_MAGNITUDE as i32;
+        for dc in [1i32, -1, 2, -2, 3, -3, max, -max] {
+            let mut coefficients = [0; DCT_DCT_4X4_COEFF_COUNT];
+            coefficients[0] = dc;
+            let plan =
+                tokenize_coefficients(raw_input(PlaneId::Y, rect(4, 4), 4, 4, &coefficients))
+                    .unwrap();
+            let expected = luma_dc_coded_tokens(0, dc.unsigned_abs(), dc < 0);
+            assert_eq!(plan.tokens(), &expected, "dc = {dc}");
+        }
     }
 
     #[test]
