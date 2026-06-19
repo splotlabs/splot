@@ -788,16 +788,17 @@ pub enum Error {
         source: splot_core::Error,
     },
 
-    /// A golomb-tail luma DC magnitude fell outside the supported finite-q range.
+    /// A golomb-tail luma DC magnitude fell outside the supported magnitude range
+    /// for its golomb path (the finite-q or golomb-prefix range, per the call site).
     #[error(
-        "encoder block-symbol trace golomb magnitude {magnitude} is outside the finite-q range {min}..={max}"
+        "encoder block-symbol trace golomb magnitude {magnitude} is outside the supported range {min}..={max}"
     )]
     BlockSymbolTraceGolombMagnitudeOutOfRange {
         /// Requested coefficient magnitude.
         magnitude: u32,
-        /// Inclusive lower bound (`maxLevel`).
+        /// Inclusive lower bound of the supported magnitude range.
         min: u32,
-        /// Inclusive upper bound (`maxLevel + 9`).
+        /// Inclusive upper bound of the supported magnitude range.
         max: u32,
     },
 

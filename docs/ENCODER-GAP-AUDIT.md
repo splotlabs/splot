@@ -139,6 +139,14 @@ planning and status; it does not claim encoder behavior exists.
   the magnitude from the decoded golomb bits via the decoder's finite-q
   arithmetic. It is not the golomb-prefix tier (magnitude 18+), multi-coefficient
   blocks, chroma golomb, tile-body emission, or a packet path.
+- `ENC-INTRA-BLOCK-TRACE-GOLOMB-PREFIX` extends the golomb tail to the
+  §5.20.7.28 golomb-prefix path (`q == cMax`), completing the single-coefficient
+  luma DC magnitude vocabulary up to 525. The trace emits the fixed level tokens,
+  the `dc_sign` CDF token, then the prefix bypass bits (5 q_length zeros, the
+  golomb_length unary, and `coeff_rem` as one `L(length)` literal). A range loop
+  test reconstructs every magnitude 18..=525 via the decoder's golomb-prefix
+  arithmetic; out-of-range magnitudes return a typed runtime error. It is not
+  multi-coefficient blocks, chroma golomb, tile-body emission, or a packet path.
 - `Packet` is still only a byte buffer wrapper, and no coded packet production
   path exists.
 - `EncoderConfig` exposes `BitDepth::Twelve`, but current Baseline Encoder Profile

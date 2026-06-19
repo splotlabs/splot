@@ -19,7 +19,10 @@
 //! sign is a `sign_bit` bypass literal, with the §8.3.2 chroma contexts and the V
 //! `txb_skip` EobU context), and
 //! `ENC-INTRA-BLOCK-TRACE-GOLOMB-FINITE` (the §5.20.7.28 `read_quant` finite-q
-//! golomb tail: a larger luma DC coefficient's `coeff_rem` bypass bits),
+//! golomb tail: a larger luma DC coefficient's `coeff_rem` bypass bits), and
+//! `ENC-INTRA-BLOCK-TRACE-GOLOMB-PREFIX` (the §5.20.7.28 golomb-*prefix* path,
+//! `q == cMax`: the q_length / `golomb_length` unary codes + a sized `coeff_rem`
+//! for luma DC magnitude 18..=525),
 //! reusing the merged mode emitters and the coefficient tokenization's per-plane
 //! all-zero and coded-DC tokens
 //! (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3`).
@@ -31,8 +34,8 @@
 //! through one § 8.2 coder with shared CDF state, routing each token to its scoped
 //! CDF row from `splot-core` defaults.
 //!
-//! It does not emit multi-coefficient blocks, the golomb-prefix tail (luma DC
-//! magnitude beyond the finite-q range), higher-frequency coefficients, the chroma
+//! It does not emit multi-coefficient blocks, luma DC magnitude beyond the
+//! golomb-prefix cap (525), higher-frequency coefficients, the chroma
 //! base-range/golomb tiers, V-plane coded coefficients, partition syntax, tile CDF
 //! lifecycle, packets, a public encoder API, or modes beyond the DC minimal tier.
 
@@ -117,9 +120,28 @@ const GOLOMB_MAXLEVEL: u32 = 8;
 const GOLOMB_DC_M: u32 = 1;
 const GOLOMB_FINITE_Q_MAX: u32 = 4;
 // Top of the finite-q magnitude range: maxLevel + (2*GOLOMB_FINITE_Q_MAX + 1) =
-// 8 + 9 = 17. Above this `q == cMax` and the golomb-prefix path (a later brick)
-// applies.
+// 8 + 9 = 17. Above this `q == cMax` and the golomb-prefix path applies.
 const GOLOMB_FINITE_Q_MAGNITUDE_MAX: u32 = GOLOMB_MAXLEVEL + (2 * GOLOMB_FINITE_Q_MAX + 1);
+// Golomb-prefix path (`q == cMax`, magnitude 18+). `k = m + 1 = 2`; the q_length
+// loop emits `cMax = GOLOMB_FINITE_Q_MAX + 1 = 5` zeros (no terminating 1). Then
+// `xBase = (cMax << m) + (1 << length) - (1 << k) = bias + 2^length`, where the
+// constant bias `(cMax << m) - (1 << k) = 10 - 4 = 6`. Encoding `x = magnitude - 8`
+// (x >= 10): `length = GetMsb(x - 6)`, `golomb_zeros = length - k`,
+// `coeff_rem = (x - 6) - 2^length` as an `L(length)` literal.
+const GOLOMB_DC_K: u32 = GOLOMB_DC_M + 1;
+const GOLOMB_PREFIX_Q_ZEROS: u32 = GOLOMB_FINITE_Q_MAX + 1;
+const GOLOMB_PREFIX_XBASE_BIAS: u32 = (GOLOMB_PREFIX_Q_ZEROS << GOLOMB_DC_M) - (1 << GOLOMB_DC_K);
+// Supported golomb-prefix span for this brick: golomb `length` 2..=8 → magnitude
+// 18..=525 (`coeff_rem` <= 255, exact in the decoded u8 view). Larger magnitudes
+// are a trivial wider-`coeff_rem` extension, rejected here with a typed error.
+const GOLOMB_PREFIX_LENGTH_MAX: u32 = 8;
+const GOLOMB_PREFIX_MAGNITUDE_MIN: u32 = GOLOMB_FINITE_Q_MAGNITUDE_MAX + 1;
+const GOLOMB_PREFIX_MAGNITUDE_MAX: u32 =
+    GOLOMB_MAXLEVEL + GOLOMB_PREFIX_XBASE_BIAS + (1 << (GOLOMB_PREFIX_LENGTH_MAX + 1)) - 1;
+// Minimal golomb-prefix coded luma block: magnitude +18 (x=10, length=2,
+// golomb_zeros=0, coeff_rem=0).
+const MINIMAL_GOLOMB_PREFIX_DC_MAGNITUDE: u32 = GOLOMB_PREFIX_MAGNITUDE_MIN;
+const MINIMAL_GOLOMB_PREFIX_DC_NEGATIVE: bool = false;
 // Minimal golomb-tail coded luma block: a single DC coefficient of value +10
 // (level reaches maxLevel 8, then `x = 2` → q=1, coeff_rem=0).
 const MINIMAL_GOLOMB_DC_MAGNITUDE: u32 = 10;
@@ -431,6 +453,104 @@ pub(crate) fn compose_intra_dc_golomb_block_trace(
     }
     trace.push(BlockSymbolToken::bypass(1, 1));
     trace.push(BlockSymbolToken::bypass(1, coeff_rem));
+    trace.push(BlockSymbolToken::Coeff(chroma_u_all_zero_token(
+        MINIMAL_COEFF_CDF_Q_CTX,
+    )));
+    trace.push(BlockSymbolToken::Coeff(chroma_v_all_zero_token(
+        MINIMAL_COEFF_CDF_Q_CTX,
+        V_TXB_SKIP_CTX_NEUTRAL,
+    )));
+    Ok(trace)
+}
+
+/// Composes the canonical minimal intra DC coded golomb-*prefix* block trace
+/// (magnitude +18, the smallest golomb-prefix coefficient).
+pub(crate) fn compose_minimal_intra_dc_golomb_prefix_block_trace() -> Result<Vec<BlockSymbolToken>>
+{
+    compose_intra_dc_golomb_prefix_block_trace(
+        MINIMAL_GOLOMB_PREFIX_DC_MAGNITUDE,
+        MINIMAL_GOLOMB_PREFIX_DC_NEGATIVE,
+    )
+}
+
+/// Composes the intra DC coded golomb-*prefix* block trace for any luma DC
+/// `magnitude` in `GOLOMB_PREFIX_MAGNITUDE_MIN..=GOLOMB_PREFIX_MAGNITUDE_MAX`
+/// (18..=525). This is the AV2 § 5.20.7.28 `read_quant` golomb-prefix path
+/// (`q == cMax`): the mode prefix, the fixed golomb level tokens, the luma
+/// `dc_sign` CDF token (the sign precedes `read_quant`), then the golomb-prefix
+/// bypass bits — `cMax` (5) `q_length` zeros, the `golomb_length` unary
+/// (`golomb_zeros` zeros and a terminating 1, `length = golomb_zeros + k`), and
+/// `coeff_rem` as one `L(length)` literal — then all-zero U/V `txb_skip`.
+///
+/// Encoding `x = magnitude - maxLevel` (`x >= 10`): `length = GetMsb(x - 6)`,
+/// `golomb_zeros = length - k`, `coeff_rem = (x - 6) - 2^length`,
+/// `xBase = 6 + 2^length`. For magnitude 18: `x = 10`, `length = 2`,
+/// `golomb_zeros = 0`, `coeff_rem = 0` — the 17-token trace
+/// `[0,0,0, 0,0,4,3, 0, 0,0,0,0,0, 1, 0, 1,1]`.
+pub(crate) fn compose_intra_dc_golomb_prefix_block_trace(
+    magnitude: u32,
+    negative: bool,
+) -> Result<Vec<BlockSymbolToken>> {
+    // Reject out-of-range magnitudes at runtime (a `debug_assert!` would be
+    // stripped in release builds): below the minimum is the finite-q path and
+    // above the cap needs a wider `coeff_rem` (a later brick).
+    if !(GOLOMB_PREFIX_MAGNITUDE_MIN..=GOLOMB_PREFIX_MAGNITUDE_MAX).contains(&magnitude) {
+        return Err(Error::BlockSymbolTraceGolombMagnitudeOutOfRange {
+            magnitude,
+            min: GOLOMB_PREFIX_MAGNITUDE_MIN,
+            max: GOLOMB_PREFIX_MAGNITUDE_MAX,
+        });
+    }
+    let modes = compose_minimal_intra_dc_block_mode_trace()?;
+    let level = luma_dc_golomb_level_tokens(MINIMAL_COEFF_CDF_Q_CTX)?;
+    // x = magnitude - maxLevel (x >= 10); golomb-prefix (m = 1, k = 2, q == cMax).
+    // The range check guarantees `x - 6 >= 4` (so `ilog2` is defined and >= 2) and
+    // `length <= GOLOMB_PREFIX_LENGTH_MAX`.
+    let x = magnitude - GOLOMB_MAXLEVEL;
+    let xm6 = x - GOLOMB_PREFIX_XBASE_BIAS;
+    let length = xm6.ilog2();
+    let golomb_zeros = length - GOLOMB_DC_K;
+    let coeff_rem = xm6 - (1 << length);
+    // q_length zeros + golomb_length (golomb_zeros zeros + a 1) + the coeff_rem
+    // literal.
+    let golomb_bits = (GOLOMB_PREFIX_Q_ZEROS as usize)
+        .checked_add(golomb_zeros as usize)
+        .and_then(|n| n.checked_add(2))
+        .ok_or(Error::BlockSymbolTraceAllocationFailed {
+            context: "golomb-prefix block trace length",
+        })?;
+    let total = modes
+        .len()
+        .checked_add(level.len())
+        .and_then(|n| n.checked_add(golomb_bits))
+        .and_then(|n| n.checked_add(3)) // dc_sign + U + V all-zero
+        .ok_or(Error::BlockSymbolTraceAllocationFailed {
+            context: "golomb-prefix block trace length",
+        })?;
+    let mut trace = Vec::new();
+    trace
+        .try_reserve_exact(total)
+        .map_err(|_| Error::BlockSymbolTraceAllocationFailed {
+            context: "golomb-prefix block trace",
+        })?;
+    trace.extend(modes.into_iter().map(BlockSymbolToken::Mode));
+    trace.extend(level.into_iter().map(BlockSymbolToken::Coeff));
+    // dc_sign precedes the golomb bits (§ 5.20.7.27 sign+quant pass).
+    trace.push(BlockSymbolToken::Coeff(luma_dc_sign_token(
+        MINIMAL_COEFF_CDF_Q_CTX,
+        negative,
+    )));
+    // q_length: cMax zeros (the loop hits `q == cMax` with no terminating 1).
+    for _ in 0..GOLOMB_PREFIX_Q_ZEROS {
+        trace.push(BlockSymbolToken::bypass(1, 0));
+    }
+    // golomb_length unary: golomb_zeros zeros + a terminating 1.
+    for _ in 0..golomb_zeros {
+        trace.push(BlockSymbolToken::bypass(1, 0));
+    }
+    trace.push(BlockSymbolToken::bypass(1, 1));
+    // coeff_rem as one L(length) literal.
+    trace.push(BlockSymbolToken::bypass(length, coeff_rem));
     trace.push(BlockSymbolToken::Coeff(chroma_u_all_zero_token(
         MINIMAL_COEFF_CDF_Q_CTX,
     )));

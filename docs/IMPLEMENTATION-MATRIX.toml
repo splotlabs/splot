@@ -4503,6 +4503,39 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-INTRA-BLOCK-TRACE-GOLOMB-PREFIX"
+name = "Encoder golomb-prefix luma DC block trace"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20.7.27", "5.20.7.28", "8.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/block_symbol_trace.rs"
+openspec_change = "encoder-block-trace-golomb-prefix"
+tracking_issue = ""
+owner = "encoder"
+risk = "medium"
+notes = "Private, non-emitting encoder golomb-PREFIX luma DC block trace (§5.20.7.28 read_quant `q == cMax` path), completing the single-coefficient luma DC magnitude vocabulary. Covers magnitude 18..=525 (golomb `length` 2..=8). DERIVATION (verified vs the decoder read_quant + spec): for the first/only DC coeff m=1, k=m+1=2, cMax=Min(m+4,6)=5; the q_length loop emits cMax=5 zeros (no terminating 1, q==cMax), then a golomb_length unary (golomb_zeros zeros + a 1, length=golomb_zeros+k), then coeff_rem L(length). xBase=(cMax<<m)+(1<<length)-(1<<k)=6+2^length. Encoding x=magnitude-8 (x>=10): length=GetMsb(x-6)=(x-6).ilog2(), golomb_zeros=length-k, coeff_rem=(x-6)-2^length. `block_symbol_trace` adds parameterized `compose_intra_dc_golomb_prefix_block_trace(magnitude, negative)` + `compose_minimal_intra_dc_golomb_prefix_block_trace` (canonical +18). dc_sign precedes the golomb bits (§5.20.7.27 sign+quant pass). The q_length/golomb_length unary bits are individual bypass(1,bit) literals; coeff_rem is ONE bypass(length, value) L(length) literal. 17-token canonical trace [0,0,0,0,0,4,3,0,0,0,0,0,0,1,0,1,1] (magnitude 18, x=10, length=2, golomb_zeros=0, coeff_rem=0). A range loop test composes/roundtrips/reconstructs EVERY magnitude 18..=525 via the decoder's golomb-prefix read_quant arithmetic; out-of-range magnitudes return the typed BlockSymbolTraceGolombMagnitudeOutOfRange error (runtime, not a release-stripped debug_assert). The 525 cap (length<=8, coeff_rem<=255 exact in the decoded u8 view) is a brick-scope bound — larger magnitudes are a trivial wider-coeff_rem extension, rejected here. This row does not claim multi-coefficient blocks, chroma golomb, partition syntax, tile CDF lifecycle, tile-body emission, packet output, CLI success, or Baseline Encoder Profile v1 output."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/block_symbol_trace_tests.rs::composes_golomb_prefix_block_trace_in_order", "crates/splot-encode/src/block_symbol_trace_tests.rs::golomb_prefix_block_trace_roundtrips_and_decodes_to_magnitude", "crates/splot-encode/src/block_symbol_trace_tests.rs::golomb_prefix_block_trace_covers_supported_range", "crates/splot-encode/src/block_symbol_trace_tests.rs::golomb_prefix_block_trace_rejects_out_of_range", "crates/splot-encode/src/block_symbol_trace_tests.rs::golomb_prefix_block_roundtrip_is_deterministic"]
+commands = ["cargo test -p splot-encode block_symbol_trace --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-RECON-DEPENDENCY"
 name = "Encoder reconstruction dependency boundary"
 category = "encoder"
