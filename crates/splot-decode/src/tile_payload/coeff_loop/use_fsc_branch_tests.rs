@@ -21,8 +21,9 @@ use super::ordinary_pass::{CoeffOrdinaryBranch, CoeffOrdinaryBranchError};
 use super::use_fsc_branch::{
     CoeffUseFscBranch, CoeffUseFscBranchError, CoeffUseFscBranchInput,
     CoeffUseFscBranchNonZeroInput, CoeffUseFscConditionFacts, CoeffUseFscConditionInput,
-    CoeffUseFscConditionNonZeroInput, apply_coeff_use_fsc_branch,
-    apply_coeff_use_fsc_branch_from_condition,
+    CoeffUseFscConditionNonZeroInput, CoeffUseFscSharedFacts, CoeffUseFscSharedFactsInput,
+    CoeffUseFscSharedFactsNonZeroInput, apply_coeff_use_fsc_branch,
+    apply_coeff_use_fsc_branch_from_condition, apply_coeff_use_fsc_branch_from_shared_facts,
 };
 use super::*;
 
@@ -101,6 +102,13 @@ fn geometry(tx_size: usize) -> CoeffOrdinaryTxSizeGeometryConfig {
     }
 }
 
+fn geometry_for_plane(plane: usize, tx_size: usize) -> CoeffOrdinaryTxSizeGeometryConfig {
+    CoeffOrdinaryTxSizeGeometryConfig {
+        plane,
+        ..geometry(tx_size)
+    }
+}
+
 fn ordinary_base_config() -> CoeffOrdinaryBranchLosslessBaseConfig {
     CoeffOrdinaryBranchLosslessBaseConfig {
         reduced_tx_set: 0,
@@ -114,9 +122,22 @@ fn ordinary_base_config() -> CoeffOrdinaryBranchLosslessBaseConfig {
     }
 }
 
+fn invalid_ordinary_base_config() -> CoeffOrdinaryBranchLosslessBaseConfig {
+    CoeffOrdinaryBranchLosslessBaseConfig {
+        reduced_tx_set: usize::MAX,
+        ..ordinary_base_config()
+    }
+}
+
 fn ordinary_nonzero_input(tx_size: usize) -> CoeffOrdinaryBranchLosslessNonZeroInput {
+    ordinary_nonzero_input_for_geometry(geometry(tx_size))
+}
+
+fn ordinary_nonzero_input_for_geometry(
+    geometry: CoeffOrdinaryTxSizeGeometryConfig,
+) -> CoeffOrdinaryBranchLosslessNonZeroInput {
     CoeffOrdinaryBranchLosslessNonZeroInput {
-        geometry: geometry(tx_size),
+        geometry,
         coeff_cdf_q_ctx: 0,
         is_inter: false,
         base_config: ordinary_base_config(),
@@ -145,10 +166,18 @@ fn fsc_nonzero_input(
     tx_size: usize,
     block: AllZeroCoeffBlockInput,
 ) -> CoeffFscBranchTxSizeNonZeroInput {
+    fsc_nonzero_input_with_plane_tx_type(tx_size, block, DCT_DCT)
+}
+
+fn fsc_nonzero_input_with_plane_tx_type(
+    tx_size: usize,
+    block: AllZeroCoeffBlockInput,
+    plane_tx_type: usize,
+) -> CoeffFscBranchTxSizeNonZeroInput {
     CoeffFscBranchTxSizeNonZeroInput {
         block,
         tx_size,
-        plane_tx_type: DCT_DCT,
+        plane_tx_type,
         is_inter: false,
         coeff_cdf_q_ctx: 0,
     }
@@ -222,6 +251,23 @@ fn run_condition(payload: &[u8], input: CoeffUseFscConditionInput) -> Option<Sel
     ))
 }
 
+fn run_shared(payload: &[u8], input: CoeffUseFscSharedFactsInput) -> Option<SelectorRun> {
+    let frame = FrameCdfSubset::from_defaults();
+    let mut tile = frame.tile_copy();
+    let mut symbols = symbol_decoder(payload);
+    let mut context = seeded_context_state();
+    let branch =
+        apply_coeff_use_fsc_branch_from_shared_facts(&mut context, &mut tile, &mut symbols, input)
+            .ok()?;
+    Some((
+        branch,
+        context,
+        tile,
+        symbols.consumed_bits(),
+        symbols.symbol_count(),
+    ))
+}
+
 fn condition_facts(
     enable_fsc: bool,
     plane_tx_type: usize,
@@ -238,6 +284,31 @@ fn condition_facts(
     }
 }
 
+fn shared_facts(
+    geometry: CoeffOrdinaryTxSizeGeometryConfig,
+    enable_fsc: bool,
+    plane_tx_type: usize,
+    fsc_mode: bool,
+    is_inter: bool,
+) -> CoeffUseFscSharedFacts {
+    CoeffUseFscSharedFacts {
+        geometry,
+        enable_fsc,
+        plane_tx_type,
+        fsc_mode,
+        is_inter,
+        coeff_cdf_q_ctx: 0,
+    }
+}
+
+fn shared_nonzero_input(facts: CoeffUseFscSharedFacts) -> CoeffUseFscSharedFactsNonZeroInput {
+    CoeffUseFscSharedFactsNonZeroInput {
+        facts,
+        ordinary_base_config: ordinary_base_config(),
+        lossless: true,
+    }
+}
+
 fn ordinary_payload_from(first: u8, second: u8, suffix: [u8; 3]) -> [u8; 12] {
     [
         first, second, suffix[0], suffix[1], suffix[2], 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x80,
@@ -245,15 +316,18 @@ fn ordinary_payload_from(first: u8, second: u8, suffix: [u8; 3]) -> [u8; 12] {
 }
 
 fn find_ordinary_payload() -> [u8; 12] {
+    find_ordinary_payload_for(|| ordinary_nonzero_input(TX_8X8))
+}
+
+fn find_ordinary_payload_for(
+    input: impl Fn() -> CoeffOrdinaryBranchLosslessNonZeroInput,
+) -> [u8; 12] {
     for first in u8::MIN..=u8::MAX {
         for second in u8::MIN..=u8::MAX {
             for suffix in ORDINARY_PAYLOAD_SUFFIXES {
                 let payload = ordinary_payload_from(first, second, suffix);
-                if run_direct_ordinary(
-                    &payload,
-                    CoeffOrdinaryBranchLosslessInput::NonZero(ordinary_nonzero_input(TX_8X8)),
-                )
-                .is_some()
+                if run_direct_ordinary(&payload, CoeffOrdinaryBranchLosslessInput::NonZero(input()))
+                    .is_some()
                 {
                     return payload;
                 }
@@ -539,6 +613,141 @@ fn coefficient_use_fsc_condition_inter_true_also_selects_fsc() {
     .unwrap();
 
     assert_eq!(derived.0, expected.0);
+    assert_eq!(derived.1, expected.1);
+    assert_eq!(derived.2, expected.2);
+    assert_eq!(derived.3, expected.3);
+    assert_eq!(derived.4, expected.4);
+}
+
+#[test]
+fn coefficient_use_fsc_shared_facts_all_zero_matches_selector() {
+    let expected =
+        run_selector(&[0x80], CoeffUseFscBranchInput::AllZero(geometry(TX_8X8))).unwrap();
+    let derived = run_shared(
+        &[0x80],
+        CoeffUseFscSharedFactsInput::AllZero(geometry(TX_8X8)),
+    )
+    .unwrap();
+
+    assert_eq!(derived.0, expected.0);
+    assert_eq!(derived.1, expected.1);
+    assert_eq!(derived.2, expected.2);
+    assert_eq!(derived.3, expected.3);
+    assert_eq!(derived.4, expected.4);
+}
+
+#[test]
+fn coefficient_use_fsc_shared_facts_false_matches_ordinary_branch() {
+    let payload = find_ordinary_payload();
+    let expected = run_direct_ordinary(
+        &payload,
+        CoeffOrdinaryBranchLosslessInput::NonZero(ordinary_nonzero_input(TX_8X8)),
+    )
+    .unwrap();
+    let derived = run_shared(
+        &payload,
+        CoeffUseFscSharedFactsInput::NonZero(shared_nonzero_input(shared_facts(
+            geometry(TX_8X8),
+            false,
+            IDTX,
+            true,
+            false,
+        ))),
+    )
+    .unwrap();
+
+    assert_eq!(derived.0, CoeffUseFscBranch::Ordinary(expected.0));
+    assert_eq!(derived.1, expected.1);
+    assert_eq!(derived.2, expected.2);
+    assert_eq!(derived.3, expected.3);
+    assert_eq!(derived.4, expected.4);
+}
+
+#[test]
+fn coefficient_use_fsc_shared_facts_true_matches_fsc_branch() {
+    let payload = find_fsc_payload();
+    let expected = run_direct_fsc(
+        &payload,
+        CoeffFscBranchTxSizeInput::NonZero(fsc_nonzero_input_with_plane_tx_type(
+            TX_8X8,
+            fsc_block(),
+            IDTX,
+        )),
+    )
+    .unwrap();
+    let derived = run_shared(
+        &payload,
+        CoeffUseFscSharedFactsInput::NonZero(shared_nonzero_input(shared_facts(
+            geometry(TX_8X8),
+            true,
+            IDTX,
+            true,
+            false,
+        ))),
+    )
+    .unwrap();
+
+    assert_eq!(derived.0, CoeffUseFscBranch::Fsc(expected.0));
+    assert_eq!(derived.1, expected.1);
+    assert_eq!(derived.2, expected.2);
+    assert_eq!(derived.3, expected.3);
+    assert_eq!(derived.4, expected.4);
+}
+
+#[test]
+fn coefficient_use_fsc_shared_facts_true_ignores_invalid_ordinary_facts() {
+    let payload = find_fsc_payload();
+    let expected = run_direct_fsc(
+        &payload,
+        CoeffFscBranchTxSizeInput::NonZero(fsc_nonzero_input_with_plane_tx_type(
+            TX_8X8,
+            fsc_block(),
+            IDTX,
+        )),
+    )
+    .unwrap();
+    let derived = run_shared(
+        &payload,
+        CoeffUseFscSharedFactsInput::NonZero(CoeffUseFscSharedFactsNonZeroInput {
+            facts: shared_facts(geometry(TX_8X8), true, IDTX, true, false),
+            ordinary_base_config: invalid_ordinary_base_config(),
+            lossless: true,
+        }),
+    )
+    .unwrap();
+
+    assert_eq!(derived.0, CoeffUseFscBranch::Fsc(expected.0));
+    assert_eq!(derived.1, expected.1);
+    assert_eq!(derived.2, expected.2);
+    assert_eq!(derived.3, expected.3);
+    assert_eq!(derived.4, expected.4);
+}
+
+#[test]
+fn coefficient_use_fsc_shared_facts_false_does_not_validate_fsc_non_luma() {
+    let chroma_geometry = geometry_for_plane(1, TX_8X8);
+    let payload =
+        find_ordinary_payload_for(|| ordinary_nonzero_input_for_geometry(chroma_geometry));
+    let expected = run_direct_ordinary(
+        &payload,
+        CoeffOrdinaryBranchLosslessInput::NonZero(ordinary_nonzero_input_for_geometry(
+            chroma_geometry,
+        )),
+    )
+    .unwrap();
+    let derived = run_shared(
+        &payload,
+        CoeffUseFscSharedFactsInput::NonZero(shared_nonzero_input(shared_facts(
+            chroma_geometry,
+            true,
+            IDTX,
+            true,
+            false,
+        ))),
+    )
+    .unwrap();
+
+    assert_eq!(derived.0, CoeffUseFscBranch::Ordinary(expected.0));
     assert_eq!(derived.1, expected.1);
     assert_eq!(derived.2, expected.2);
     assert_eq!(derived.3, expected.3);
