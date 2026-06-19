@@ -10049,6 +10049,62 @@ fixtures = [
 diagnostics = ["decode/unsupported-feature"]
 
 [[feature]]
+id = "DECODE-COEFF-USE-FSC-SHARED-FACTS-HANDOFF"
+name = "Coefficient useFsc shared-facts handoff"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["3", "5.20.7.27", "9.2"]
+sources = [
+    "docs/spec/av2/1.0.0/03-symbols.md",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
+    "docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/tile_payload/coeff_loop/use_fsc_branch.rs"
+openspec_change = "coeff-use-fsc-shared-facts-handoff"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Adds a crate-private loaded-but-unwired coefficient wrapper for deriving the AV2 §5.20.7.27 `useFsc` condition from one shared nonzero fact packet and constructing only the selected lower branch input. `apply_coeff_use_fsc_branch_from_shared_facts` preserves all-zero ordering through the existing selector path, derives `useFsc` from shared `enable_fsc`, `PlaneTxType`, geometry plane, `fsc_mode`, and `is_inter` facts, builds ordinary lossless input only for `useFsc == false`, and builds FSC tx-size input only for `useFsc == true` by deriving 4x4 block geometry from generated `Tx_Width[txSz]` and `Tx_Height[txSz]` values. Tests prove all-zero selector equivalence, ordinary selected-branch equivalence, FSC selected-branch equivalence, invalid ordinary-only facts ignored on the FSC path, and false plane-gated routing that does not validate the FSC non-luma path. This feature remains partial: runtime `coeffs()` does not call this wrapper, runtime `enable_fsc`, `PlaneTxType`, `plane`, `fsc_mode`, `is_inter`, transform geometry, and `coeff_cdf_q_ctx` derivation remain caller-resolved, full `compute_tx_type` is not implemented, and dequantization, inverse transform, residual add, reconstruction, reference refresh, AVM/dav2d invocation, public APIs, and broad `decode_block()` / `decode_tile()` support remain unimplemented."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "partial"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/tile_payload/coeff_loop/use_fsc_branch_tests.rs::coefficient_use_fsc_shared_facts_all_zero_matches_selector",
+    "crates/splot-decode/src/tile_payload/coeff_loop/use_fsc_branch_tests.rs::coefficient_use_fsc_shared_facts_false_matches_ordinary_branch",
+    "crates/splot-decode/src/tile_payload/coeff_loop/use_fsc_branch_tests.rs::coefficient_use_fsc_shared_facts_true_matches_fsc_branch",
+    "crates/splot-decode/src/tile_payload/coeff_loop/use_fsc_branch_tests.rs::coefficient_use_fsc_shared_facts_true_ignores_invalid_ordinary_facts",
+    "crates/splot-decode/src/tile_payload/coeff_loop/use_fsc_branch_tests.rs::coefficient_use_fsc_shared_facts_false_does_not_validate_fsc_non_luma",
+    "crates/splot-decode/src/tile_payload/coeff_loop/use_fsc_branch_tests.rs::coefficient_use_fsc_shared_facts_true_rejects_invalid_tx_size_atomically",
+]
+commands = [
+    "cargo test -p splot-decode use_fsc_branch --locked",
+    "cargo test -p splot-decode coeff_loop --locked",
+    "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-decoder-conformance-coverage",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-decode/src/tile_payload/coeff_loop/use_fsc_branch.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/use_fsc_branch_tests.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/fsc_quant_pass.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_pass/geometry.rs",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
 id = "DECODE-COEFF-BASE-SYMBOL-READ"
 name = "Coefficient base symbol read"
 category = "infrastructure"

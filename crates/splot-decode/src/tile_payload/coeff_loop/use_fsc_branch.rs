@@ -4,19 +4,23 @@
 //! Coefficient branch selector for derived or caller-resolved `useFsc`.
 //!
 //! Feature tracking: `DECODE-COEFF-USE-FSC-BRANCH-HANDOFF` and
-//! `DECODE-COEFF-USE-FSC-CONDITION-HANDOFF`.
+//! `DECODE-COEFF-USE-FSC-CONDITION-HANDOFF` and
+//! `DECODE-COEFF-USE-FSC-SHARED-FACTS-HANDOFF`.
 
 use splot_core::symbol::SymbolDecoder;
+use splot_core::tables::conversion::{TX_HEIGHT, TX_WIDTH};
 
 use super::super::cdf::TileCdfSubset;
 use super::super::coeff_state::TileCoeffContextState;
+use super::AllZeroCoeffBlockInput;
 use super::fsc_quant_pass::{
     CoeffFscBranch, CoeffFscBranchError, CoeffFscBranchTxSizeInput,
     CoeffFscBranchTxSizeNonZeroInput, apply_coeff_fsc_branch_from_tx_size,
 };
 use super::ordinary_pass::geometry::{
-    CoeffOrdinaryBranchLosslessInput, CoeffOrdinaryBranchLosslessNonZeroInput,
-    CoeffOrdinaryTxSizeGeometryConfig, apply_coeff_ordinary_branch_from_lossless,
+    CoeffOrdinaryBranchLosslessBaseConfig, CoeffOrdinaryBranchLosslessInput,
+    CoeffOrdinaryBranchLosslessNonZeroInput, CoeffOrdinaryTxSizeGeometryConfig,
+    apply_coeff_ordinary_branch_from_lossless,
 };
 use super::ordinary_pass::{CoeffOrdinaryBranch, CoeffOrdinaryBranchError};
 
@@ -80,6 +84,53 @@ impl CoeffUseFscConditionFacts {
             && self.plane_tx_type == IDTX
             && self.plane == 0
             && (self.fsc_mode || self.is_inter)
+    }
+}
+
+/// Caller-selected coefficient branch before deriving `useFsc` from shared facts.
+pub(crate) enum CoeffUseFscSharedFactsInput {
+    /// Decoded `all_zero == 1`; AV2 handles this before deriving `useFsc`.
+    AllZero(CoeffOrdinaryTxSizeGeometryConfig),
+    /// Decoded `all_zero == 0`.
+    NonZero(CoeffUseFscSharedFactsNonZeroInput),
+}
+
+/// Shared caller-resolved facts for a nonzero coefficient block.
+pub(crate) struct CoeffUseFscSharedFactsNonZeroInput {
+    /// Facts shared by both nonzero branch targets.
+    pub(crate) facts: CoeffUseFscSharedFacts,
+    /// Ordinary-only facts used only when `useFsc == false`.
+    pub(crate) ordinary_base_config: CoeffOrdinaryBranchLosslessBaseConfig,
+    /// Caller-resolved AV2 § 5.20.7.29 `Lossless` flag for the ordinary path.
+    pub(crate) lossless: bool,
+}
+
+/// Shared caller-resolved facts available before the `useFsc` branch split.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CoeffUseFscSharedFacts {
+    /// Caller-resolved AV2 § 5.20.7.27 `coeffs()` geometry.
+    pub(crate) geometry: CoeffOrdinaryTxSizeGeometryConfig,
+    /// Caller-resolved `enable_fsc` sequence/frame fact.
+    pub(crate) enable_fsc: bool,
+    /// Caller-resolved `PlaneTxType` from AV2 § 5.20.7.29 `compute_tx_type`.
+    pub(crate) plane_tx_type: usize,
+    /// Caller-resolved `fsc_mode` fact.
+    pub(crate) fsc_mode: bool,
+    /// Caller-resolved `is_inter` fact.
+    pub(crate) is_inter: bool,
+    /// Coefficient-CDF quantization context.
+    pub(crate) coeff_cdf_q_ctx: usize,
+}
+
+impl CoeffUseFscSharedFacts {
+    const fn condition(self) -> CoeffUseFscConditionFacts {
+        CoeffUseFscConditionFacts {
+            enable_fsc: self.enable_fsc,
+            plane_tx_type: self.plane_tx_type,
+            plane: self.geometry.plane,
+            fsc_mode: self.fsc_mode,
+            is_inter: self.is_inter,
+        }
     }
 }
 
@@ -183,4 +234,93 @@ pub(crate) fn apply_coeff_use_fsc_branch_from_condition(
         }
     };
     apply_coeff_use_fsc_branch(state, cdfs, symbols, input)
+}
+
+/// Dispatches the coefficient branch after deriving `useFsc` from shared facts.
+///
+/// AV2 § 5.20.7.27 computes `Tx_Width[txSz]` and `Tx_Height[txSz]`, handles
+/// `all_zero`, then derives and tests
+/// `useFsc = enable_fsc && PlaneTxType == IDTX && plane == 0 && (fsc_mode || is_inter)`
+/// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27`;
+/// `docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md`).
+/// This loaded-but-unwired handoff accepts one shared nonzero fact packet and
+/// constructs only the selected lower branch input. Runtime `coeffs()`
+/// integration, full `compute_tx_type`, scan derivation, dequantization,
+/// inverse transform, residual add, and reconstruction remain out of scope.
+pub(crate) fn apply_coeff_use_fsc_branch_from_shared_facts(
+    state: &mut TileCoeffContextState,
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    input: CoeffUseFscSharedFactsInput,
+) -> Result<CoeffUseFscBranch, CoeffUseFscBranchError> {
+    match input {
+        CoeffUseFscSharedFactsInput::AllZero(input) => {
+            apply_coeff_use_fsc_branch(state, cdfs, symbols, CoeffUseFscBranchInput::AllZero(input))
+        }
+        CoeffUseFscSharedFactsInput::NonZero(input) if input.facts.condition().use_fsc() => {
+            let facts = input.facts;
+            let block = fsc_block_from_tx_size_geometry(facts.geometry)?;
+            let branch = apply_coeff_fsc_branch_from_tx_size(
+                state,
+                cdfs,
+                symbols,
+                CoeffFscBranchTxSizeInput::NonZero(CoeffFscBranchTxSizeNonZeroInput {
+                    block,
+                    tx_size: facts.geometry.tx_size,
+                    plane_tx_type: facts.plane_tx_type,
+                    is_inter: facts.is_inter,
+                    coeff_cdf_q_ctx: facts.coeff_cdf_q_ctx,
+                }),
+            )?;
+            Ok(CoeffUseFscBranch::Fsc(branch))
+        }
+        CoeffUseFscSharedFactsInput::NonZero(input) => {
+            let facts = input.facts;
+            let branch = apply_coeff_ordinary_branch_from_lossless(
+                state,
+                cdfs,
+                symbols,
+                CoeffOrdinaryBranchLosslessInput::NonZero(
+                    CoeffOrdinaryBranchLosslessNonZeroInput {
+                        geometry: facts.geometry,
+                        coeff_cdf_q_ctx: facts.coeff_cdf_q_ctx,
+                        is_inter: facts.is_inter,
+                        base_config: input.ordinary_base_config,
+                        lossless: input.lossless,
+                    },
+                ),
+            )?;
+            Ok(CoeffUseFscBranch::Ordinary(branch))
+        }
+    }
+}
+
+fn fsc_block_from_tx_size_geometry(
+    geometry: CoeffOrdinaryTxSizeGeometryConfig,
+) -> Result<AllZeroCoeffBlockInput, CoeffFscBranchError> {
+    let tx_width = tx_size_table_usize(&TX_WIDTH, "Tx_Width", geometry.tx_size)?;
+    let tx_height = tx_size_table_usize(&TX_HEIGHT, "Tx_Height", geometry.tx_size)?;
+    Ok(AllZeroCoeffBlockInput {
+        plane: geometry.plane,
+        x4: geometry.start_x >> 2,
+        y4: geometry.start_y >> 2,
+        w4: tx_width >> 2,
+        h4: tx_height >> 2,
+    })
+}
+
+fn tx_size_table_usize(
+    table: &[i32],
+    table_name: &'static str,
+    tx_size: usize,
+) -> Result<usize, CoeffFscBranchError> {
+    let value = table
+        .get(tx_size)
+        .copied()
+        .ok_or(CoeffFscBranchError::InvalidTransformSize { tx_size })?;
+    usize::try_from(value).map_err(|_| CoeffFscBranchError::InvalidTransformSizeTableValue {
+        table: table_name,
+        tx_size,
+        value,
+    })
 }
