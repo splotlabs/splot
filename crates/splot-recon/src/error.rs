@@ -539,6 +539,33 @@ pub enum ReconError {
         /// Supplied residual buffer length.
         residual_len: usize,
     },
+    /// A § 7.15.3 secondary transform operating side was not a power of two in
+    /// `4..=32`.
+    SecondaryTransformInvalidShape {
+        /// Supplied operating width.
+        w: usize,
+        /// Supplied operating height.
+        h: usize,
+    },
+    /// A § 7.15.3 secondary transform `dequant` buffer length did not match
+    /// `w * h`.
+    SecondaryTransformBufferMismatch {
+        /// Expected length (`w * h`).
+        expected: usize,
+        /// Supplied dequantized-coefficient buffer length.
+        actual: usize,
+    },
+    /// A § 7.15.3 secondary transform parameter was out of range for the selected
+    /// kernel set: `n` exceeds the kernel height, `kernel` exceeds the set size,
+    /// or `sec_tx_type` is not in `1..=3`.
+    SecondaryTransformInvalidParams {
+        /// Supplied input coefficient count (`n`).
+        n: usize,
+        /// Supplied kernel-set index.
+        kernel: usize,
+        /// Supplied secondary transform type (`sec_tx_type`).
+        sec_tx_type: usize,
+    },
     /// A § 7.14.4 dequantization block had an unsupported transform shape.
     InvalidDequantBlockShape {
         /// Supplied dequantized transform-block width.
@@ -1049,6 +1076,22 @@ impl fmt::Display for ReconError {
             } => write!(
                 f,
                 "2D outer inverse transform buffer mismatch: dequant expected {dequant_expected} (got {dequant_len}), residual expected {residual_expected} (got {residual_len})"
+            ),
+            Self::SecondaryTransformInvalidShape { w, h } => write!(
+                f,
+                "unsupported secondary transform shape {w}x{h}; expected each side 4, 8, 16, or 32"
+            ),
+            Self::SecondaryTransformBufferMismatch { expected, actual } => write!(
+                f,
+                "secondary transform buffer mismatch: expected {expected}, got {actual}"
+            ),
+            Self::SecondaryTransformInvalidParams {
+                n,
+                kernel,
+                sec_tx_type,
+            } => write!(
+                f,
+                "invalid secondary transform params: n {n}, kernel {kernel}, sec_tx_type {sec_tx_type}"
             ),
             Self::InvalidDequantBlockShape {
                 tx_width,
