@@ -19,11 +19,13 @@ use super::ordinary_pass::geometry::{
 };
 use super::ordinary_pass::{CoeffOrdinaryBranch, CoeffOrdinaryBranchError};
 use super::use_fsc_branch::{
+    CoeffUseFscBaseQFacts, CoeffUseFscBaseQFactsInput, CoeffUseFscBaseQFactsNonZeroInput,
     CoeffUseFscBranch, CoeffUseFscBranchError, CoeffUseFscBranchInput,
     CoeffUseFscBranchNonZeroInput, CoeffUseFscConditionFacts, CoeffUseFscConditionInput,
     CoeffUseFscConditionNonZeroInput, CoeffUseFscSharedFacts, CoeffUseFscSharedFactsInput,
     CoeffUseFscSharedFactsNonZeroInput, apply_coeff_use_fsc_branch,
-    apply_coeff_use_fsc_branch_from_condition, apply_coeff_use_fsc_branch_from_shared_facts,
+    apply_coeff_use_fsc_branch_from_base_q_facts, apply_coeff_use_fsc_branch_from_condition,
+    apply_coeff_use_fsc_branch_from_shared_facts, coeff_cdf_q_ctx_from_base_q_idx,
 };
 use super::*;
 
@@ -268,6 +270,23 @@ fn run_shared(payload: &[u8], input: CoeffUseFscSharedFactsInput) -> Option<Sele
     ))
 }
 
+fn run_base_q(payload: &[u8], input: CoeffUseFscBaseQFactsInput) -> Option<SelectorRun> {
+    let frame = FrameCdfSubset::from_defaults();
+    let mut tile = frame.tile_copy();
+    let mut symbols = symbol_decoder(payload);
+    let mut context = seeded_context_state();
+    let branch =
+        apply_coeff_use_fsc_branch_from_base_q_facts(&mut context, &mut tile, &mut symbols, input)
+            .ok()?;
+    Some((
+        branch,
+        context,
+        tile,
+        symbols.consumed_bits(),
+        symbols.symbol_count(),
+    ))
+}
+
 fn condition_facts(
     enable_fsc: bool,
     plane_tx_type: usize,
@@ -291,18 +310,55 @@ fn shared_facts(
     fsc_mode: bool,
     is_inter: bool,
 ) -> CoeffUseFscSharedFacts {
+    shared_facts_with_q_ctx(geometry, enable_fsc, plane_tx_type, fsc_mode, is_inter, 0)
+}
+
+fn shared_facts_with_q_ctx(
+    geometry: CoeffOrdinaryTxSizeGeometryConfig,
+    enable_fsc: bool,
+    plane_tx_type: usize,
+    fsc_mode: bool,
+    is_inter: bool,
+    coeff_cdf_q_ctx: usize,
+) -> CoeffUseFscSharedFacts {
     CoeffUseFscSharedFacts {
         geometry,
         enable_fsc,
         plane_tx_type,
         fsc_mode,
         is_inter,
-        coeff_cdf_q_ctx: 0,
+        coeff_cdf_q_ctx,
     }
 }
 
 fn shared_nonzero_input(facts: CoeffUseFscSharedFacts) -> CoeffUseFscSharedFactsNonZeroInput {
     CoeffUseFscSharedFactsNonZeroInput {
+        facts,
+        ordinary_base_config: ordinary_base_config(),
+        lossless: true,
+    }
+}
+
+fn base_q_facts(
+    geometry: CoeffOrdinaryTxSizeGeometryConfig,
+    enable_fsc: bool,
+    plane_tx_type: usize,
+    fsc_mode: bool,
+    is_inter: bool,
+    base_q_idx: u32,
+) -> CoeffUseFscBaseQFacts {
+    CoeffUseFscBaseQFacts {
+        geometry,
+        enable_fsc,
+        plane_tx_type,
+        fsc_mode,
+        is_inter,
+        base_q_idx,
+    }
+}
+
+fn base_q_nonzero_input(facts: CoeffUseFscBaseQFacts) -> CoeffUseFscBaseQFactsNonZeroInput {
+    CoeffUseFscBaseQFactsNonZeroInput {
         facts,
         ordinary_base_config: ordinary_base_config(),
         lossless: true,
@@ -797,4 +853,124 @@ fn coefficient_use_fsc_shared_facts_true_rejects_invalid_tx_size_atomically() {
             ));
         },
     );
+}
+
+#[test]
+fn coefficient_cdf_q_context_from_base_q_idx_matches_spec_thresholds() {
+    let cases = [
+        (0, 0),
+        (90, 0),
+        (91, 1),
+        (140, 1),
+        (141, 2),
+        (190, 2),
+        (191, 3),
+        (u32::MAX, 3),
+    ];
+
+    for (base_q_idx, expected) in cases {
+        assert_eq!(
+            coeff_cdf_q_ctx_from_base_q_idx(base_q_idx),
+            expected,
+            "base_q_idx {base_q_idx}"
+        );
+    }
+}
+
+#[test]
+fn coefficient_use_fsc_base_q_all_zero_matches_shared_facts() {
+    let expected = run_shared(
+        &[0x80],
+        CoeffUseFscSharedFactsInput::AllZero(geometry(TX_8X8)),
+    )
+    .unwrap();
+    let derived = run_base_q(
+        &[0x80],
+        CoeffUseFscBaseQFactsInput::AllZero(geometry(TX_8X8)),
+    )
+    .unwrap();
+
+    assert_eq!(derived.0, expected.0);
+    assert_eq!(derived.1, expected.1);
+    assert_eq!(derived.2, expected.2);
+    assert_eq!(derived.3, expected.3);
+    assert_eq!(derived.4, expected.4);
+}
+
+#[test]
+fn coefficient_use_fsc_base_q_false_matches_explicit_q_contexts() {
+    let cases = [(0, 0), (91, 1), (141, 2), (191, 3)];
+    let payload = find_ordinary_payload();
+
+    for (base_q_idx, coeff_cdf_q_ctx) in cases {
+        let expected = run_shared(
+            &payload,
+            CoeffUseFscSharedFactsInput::NonZero(shared_nonzero_input(shared_facts_with_q_ctx(
+                geometry(TX_8X8),
+                false,
+                IDTX,
+                true,
+                false,
+                coeff_cdf_q_ctx,
+            ))),
+        )
+        .unwrap();
+        let derived = run_base_q(
+            &payload,
+            CoeffUseFscBaseQFactsInput::NonZero(base_q_nonzero_input(base_q_facts(
+                geometry(TX_8X8),
+                false,
+                IDTX,
+                true,
+                false,
+                base_q_idx,
+            ))),
+        )
+        .unwrap();
+
+        assert_eq!(derived.0, expected.0, "base_q_idx {base_q_idx}");
+        assert_eq!(derived.1, expected.1, "base_q_idx {base_q_idx}");
+        assert_eq!(derived.2, expected.2, "base_q_idx {base_q_idx}");
+        assert_eq!(derived.3, expected.3, "base_q_idx {base_q_idx}");
+        assert_eq!(derived.4, expected.4, "base_q_idx {base_q_idx}");
+    }
+}
+
+#[test]
+fn coefficient_use_fsc_base_q_true_matches_explicit_q_contexts() {
+    let cases = [(0, 0), (91, 1), (141, 2), (191, 3)];
+    let payload = find_fsc_payload();
+
+    for (base_q_idx, coeff_cdf_q_ctx) in cases {
+        let expected = run_shared(
+            &payload,
+            CoeffUseFscSharedFactsInput::NonZero(shared_nonzero_input(shared_facts_with_q_ctx(
+                geometry(TX_8X8),
+                true,
+                IDTX,
+                true,
+                false,
+                coeff_cdf_q_ctx,
+            ))),
+        )
+        .unwrap();
+        let derived = run_base_q(
+            &payload,
+            CoeffUseFscBaseQFactsInput::NonZero(base_q_nonzero_input(base_q_facts(
+                geometry(TX_8X8),
+                true,
+                IDTX,
+                true,
+                false,
+                base_q_idx,
+            ))),
+        )
+        .unwrap();
+
+        assert_eq!(derived.0, expected.0, "base_q_idx {base_q_idx}");
+        assert_eq!(derived.1, expected.1, "base_q_idx {base_q_idx}");
+        assert_eq!(derived.2, expected.2, "base_q_idx {base_q_idx}");
+        assert_eq!(derived.3, expected.3, "base_q_idx {base_q_idx}");
+        assert_eq!(derived.4, expected.4, "base_q_idx {base_q_idx}");
+    }
 }

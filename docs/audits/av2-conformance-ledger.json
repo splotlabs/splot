@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "de05ab21b3bd2c59ac911995a4b76cc0a8374f35",
+  "audited_commit": "6f30f92acd9216679faf492ea416a56395512e05",
   "outcome": "success",
   "files": [
     {
@@ -2282,9 +2282,10 @@
     },
     {
       "path": "crates/splot-decode/src/tile_payload/coeff_loop/use_fsc_branch.rs",
-      "sha256": "f058812fdaf8c0e73a4a67eafbd94144b606211e21a1c6c9ee48903cff40bcd0",
+      "sha256": "40c322e90eafc23eea9844b6b3faf9193ac19831c13220ff9ec9142a99027b8c",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
+        "DECODE-COEFF-CDF-Q-CONTEXT-HANDOFF",
         "DECODE-COEFF-USE-FSC-BRANCH-HANDOFF",
         "DECODE-COEFF-USE-FSC-CONDITION-HANDOFF",
         "DECODE-COEFF-USE-FSC-SHARED-FACTS-HANDOFF"
@@ -2293,7 +2294,7 @@
     },
     {
       "path": "crates/splot-decode/src/tile_payload/coeff_loop/use_fsc_branch_tests.rs",
-      "sha256": "e890bcf1dc2222abc9e12a180cd301e12cd9288665ed0890aa76d24997cd8fa6",
+      "sha256": "580db6484c913df163429993d67d99e61073e7e8f13cd4de230f69f48f88401f",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
@@ -2414,10 +2415,11 @@
     },
     {
       "path": "crates/splot-encode/src/block_symbol_trace.rs",
-      "sha256": "7f42ebac2726d1a51cfbd8ef76bd84ad61583aa7753ed5cf12a87e7e9f1ec21f",
+      "sha256": "55c6197487ab279e0028b206356a0ff11dd5d9d47492e7ce78258bbd038c9fbc",
       "scope_kind": "workspace:splot-encode",
       "feature_ids": [
         "ENC-INTRA-BLOCK-MODE-TRACE",
+        "ENC-INTRA-BLOCK-TRACE-BYPASS-LITERAL",
         "ENC-INTRA-BLOCK-TRACE-CHROMA-SKIP",
         "ENC-INTRA-BLOCK-TRACE-CODED-BR",
         "ENC-INTRA-BLOCK-TRACE-CODED-DC",
@@ -2480,7 +2482,7 @@
     },
     {
       "path": "crates/splot-encode/src/error.rs",
-      "sha256": "1c10752811cadb2fe4d5a23eea94e3f4409cbb32d47e4088f2844126ebeefbfc",
+      "sha256": "7c681aae35bc204c637cdee531f4d43457edffee4580ad65ed7ee6716628b542",
       "scope_kind": "workspace:splot-encode",
       "feature_ids": [],
       "outcome": "success"
@@ -4163,7 +4165,7 @@
     },
     {
       "path": "docs/DECODER-ROADMAP.md",
-      "sha256": "ac5a0ef8964f8cd815bc633b16b2a42a6b4e177381e111d48d1a95473fcc8fde",
+      "sha256": "fe156ae98c732fe5610b35c9b6d3ef7d5811c7434baf3bd46b84a6b83da36230",
       "scope_kind": "docs",
       "feature_ids": [
         "DECODE-COEFF-ALL-ZERO-BLOCK-STATE",
@@ -4172,6 +4174,7 @@
         "DECODE-COEFF-BASE-DERIVED-LEVEL-PASS",
         "DECODE-COEFF-BASE-PH-CDF-ROW",
         "DECODE-COEFF-BASE-SYMBOL-READ",
+        "DECODE-COEFF-CDF-Q-CONTEXT-HANDOFF",
         "DECODE-COEFF-EOB-BRANCH-HANDOFF",
         "DECODE-COEFF-EOB-DERIVED-SYMBOL-READ",
         "DECODE-COEFF-EOB-SIZE-CONTEXT",
@@ -4256,7 +4259,7 @@
     },
     {
       "path": "docs/DECODER-SPEC-COVERAGE.md",
-      "sha256": "38deb41c207dfaef54076c02a6f7f66c0a6468b83dac71736f64608485274ad9",
+      "sha256": "bedf647695b8e9a8f4345d570a1e739b4c2b0921d78a4e4f68f4756d8ea0b15e",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-8.2-SYMBOL-DECODER",
@@ -4277,6 +4280,7 @@
         "DECODE-COEFF-BASE-DERIVED-LEVEL-PASS",
         "DECODE-COEFF-BASE-PH-CDF-ROW",
         "DECODE-COEFF-BASE-SYMBOL-READ",
+        "DECODE-COEFF-CDF-Q-CONTEXT-HANDOFF",
         "DECODE-COEFF-EOB-BRANCH-HANDOFF",
         "DECODE-COEFF-EOB-DERIVED-SYMBOL-READ",
         "DECODE-COEFF-EOB-SIZE-CONTEXT",
@@ -4371,7 +4375,7 @@
     },
     {
       "path": "docs/DECODER-SUPPORT-MATRIX.toml",
-      "sha256": "fd6200aca15a8196f7ebbf3c8696a9c025243e50fff455b11d239faf248393fe",
+      "sha256": "abd2c754c7626a8945c0499d9c41c7acc484f1dd692d16abdd04b3df47862f52",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-8.2-SYMBOL-DECODER",
@@ -4394,6 +4398,7 @@
         "DECODE-COEFF-BASE-DERIVED-LEVEL-PASS",
         "DECODE-COEFF-BASE-PH-CDF-ROW",
         "DECODE-COEFF-BASE-SYMBOL-READ",
+        "DECODE-COEFF-CDF-Q-CONTEXT-HANDOFF",
         "DECODE-COEFF-EOB-BRANCH-HANDOFF",
         "DECODE-COEFF-EOB-DERIVED-SYMBOL-READ",
         "DECODE-COEFF-EOB-SIZE-CONTEXT",
@@ -4512,7 +4517,7 @@
     },
     {
       "path": "docs/DECODER-SUPPORT-STATUS.md",
-      "sha256": "402f9a1a6a21c19bc9b662b4c80b60b47ecb271b1162fc1908b5f1533718dfed",
+      "sha256": "a7eda4ae666e7975dfb5cb2a68b968f1a86f7125bf027aa7e5ad25be2d8107f3",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-8.2-SYMBOL-DECODER",
@@ -4535,6 +4540,7 @@
         "DECODE-COEFF-BASE-DERIVED-LEVEL-PASS",
         "DECODE-COEFF-BASE-PH-CDF-ROW",
         "DECODE-COEFF-BASE-SYMBOL-READ",
+        "DECODE-COEFF-CDF-Q-CONTEXT-HANDOFF",
         "DECODE-COEFF-EOB-BRANCH-HANDOFF",
         "DECODE-COEFF-EOB-DERIVED-SYMBOL-READ",
         "DECODE-COEFF-EOB-SIZE-CONTEXT",
@@ -4652,7 +4658,7 @@
     },
     {
       "path": "docs/ENCODER-GAP-AUDIT.md",
-      "sha256": "83be7db9661d9d3e6a155c93fe3411ac6b0c109a4294d6bba9cf7c13db7c690c",
+      "sha256": "f11cfc293266defd95b2d68d7b719e7567e2cc5255f2857cd092fa6aa51ed77a",
       "scope_kind": "docs",
       "feature_ids": [
         "CONF-AVM-DIFF-HARNESS",
@@ -4663,6 +4669,7 @@
         "ENC-CONTEXT-STATE-MACHINE",
         "ENC-FORWARD-TRANSFORM-FOUNDATION",
         "ENC-INTRA-BLOCK-MODE-TRACE",
+        "ENC-INTRA-BLOCK-TRACE-BYPASS-LITERAL",
         "ENC-INTRA-BLOCK-TRACE-CHROMA-SKIP",
         "ENC-INTRA-BLOCK-TRACE-CODED-BR",
         "ENC-INTRA-BLOCK-TRACE-CODED-DC",
@@ -4689,7 +4696,7 @@
     },
     {
       "path": "docs/ENCODER-ROADMAP.md",
-      "sha256": "9710dc802a9301eef3e42efd0bc313f09e4a669937f61c03240b66a3358c1757",
+      "sha256": "5d7645eda4dcd7ebd7dd1044f74c9d632a6dc4bf1f920b75c6f409613bb90223",
       "scope_kind": "docs",
       "feature_ids": [
         "CONF-AVM-DIFF-HARNESS",
@@ -4706,7 +4713,7 @@
     },
     {
       "path": "docs/FEATURE-STATUS.md",
-      "sha256": "05b7789440bb085e2aa06062b9d9352d1655541463f26ce2207de57934cfbcc9",
+      "sha256": "b3eee9e5c53833034000b3d8d66987a9c27717dd128fbc201f31fc22cf1f3809",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.10-RG",
@@ -4849,6 +4856,7 @@
         "DECODE-COEFF-BASE-DERIVED-LEVEL-PASS",
         "DECODE-COEFF-BASE-PH-CDF-ROW",
         "DECODE-COEFF-BASE-SYMBOL-READ",
+        "DECODE-COEFF-CDF-Q-CONTEXT-HANDOFF",
         "DECODE-COEFF-EOB-BRANCH-HANDOFF",
         "DECODE-COEFF-EOB-DERIVED-SYMBOL-READ",
         "DECODE-COEFF-EOB-SIZE-CONTEXT",
@@ -4942,6 +4950,7 @@
         "ENC-CONTEXT-STATE-MACHINE",
         "ENC-FORWARD-TRANSFORM-FOUNDATION",
         "ENC-INTRA-BLOCK-MODE-TRACE",
+        "ENC-INTRA-BLOCK-TRACE-BYPASS-LITERAL",
         "ENC-INTRA-BLOCK-TRACE-CHROMA-SKIP",
         "ENC-INTRA-BLOCK-TRACE-CODED-BR",
         "ENC-INTRA-BLOCK-TRACE-CODED-DC",
@@ -5048,7 +5057,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "6a85a23545a72e561d76a24e2a2ee9c34810945737a857701aa6f075743b2c92",
+      "sha256": "ae190727f4f81a47eb6103c5f728107dce2252e72f970f83f71dfc604c16fb08",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.10-RG",
@@ -5191,6 +5200,7 @@
         "DECODE-COEFF-BASE-DERIVED-LEVEL-PASS",
         "DECODE-COEFF-BASE-PH-CDF-ROW",
         "DECODE-COEFF-BASE-SYMBOL-READ",
+        "DECODE-COEFF-CDF-Q-CONTEXT-HANDOFF",
         "DECODE-COEFF-EOB-BRANCH-HANDOFF",
         "DECODE-COEFF-EOB-DERIVED-SYMBOL-READ",
         "DECODE-COEFF-EOB-SIZE-CONTEXT",
@@ -5284,6 +5294,7 @@
         "ENC-CONTEXT-STATE-MACHINE",
         "ENC-FORWARD-TRANSFORM-FOUNDATION",
         "ENC-INTRA-BLOCK-MODE-TRACE",
+        "ENC-INTRA-BLOCK-TRACE-BYPASS-LITERAL",
         "ENC-INTRA-BLOCK-TRACE-CHROMA-SKIP",
         "ENC-INTRA-BLOCK-TRACE-CODED-BR",
         "ENC-INTRA-BLOCK-TRACE-CODED-DC",
@@ -5361,7 +5372,7 @@
     },
     {
       "path": "docs/SPEC-COVERAGE.md",
-      "sha256": "cd81246f8044784019d9e55eef4c6bbd2e6d54821deb70a7e5babe5f94a1650e",
+      "sha256": "5cc4d985d9a49c0f32d4f1e5c1c166f2e7589d4dc53b81b7abe931015d59bcca",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.10-RG",
@@ -5504,6 +5515,7 @@
         "DECODE-COEFF-BASE-DERIVED-LEVEL-PASS",
         "DECODE-COEFF-BASE-PH-CDF-ROW",
         "DECODE-COEFF-BASE-SYMBOL-READ",
+        "DECODE-COEFF-CDF-Q-CONTEXT-HANDOFF",
         "DECODE-COEFF-EOB-BRANCH-HANDOFF",
         "DECODE-COEFF-EOB-DERIVED-SYMBOL-READ",
         "DECODE-COEFF-EOB-SIZE-CONTEXT",
@@ -5597,6 +5609,7 @@
         "ENC-CONTEXT-STATE-MACHINE",
         "ENC-FORWARD-TRANSFORM-FOUNDATION",
         "ENC-INTRA-BLOCK-MODE-TRACE",
+        "ENC-INTRA-BLOCK-TRACE-BYPASS-LITERAL",
         "ENC-INTRA-BLOCK-TRACE-CHROMA-SKIP",
         "ENC-INTRA-BLOCK-TRACE-CODED-BR",
         "ENC-INTRA-BLOCK-TRACE-CODED-DC",
@@ -15042,6 +15055,49 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/archive/2026-06-19-encoder-block-trace-bypass-literal/.openspec.yaml",
+      "sha256": "d36d5ade13d63079e8fac69f1e3c45e2ee23d6b22c94f88c6a340556a023f11c",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-19-encoder-block-trace-bypass-literal/design.md",
+      "sha256": "d7d45542683682294eb5012562f3d3a04eab909f7fdd4149b39b06f9f322e03d",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-INTRA-BLOCK-TRACE-BYPASS-LITERAL"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-19-encoder-block-trace-bypass-literal/proposal.md",
+      "sha256": "1c6a0ea95846538cc2b222ef7e8861e53dcf9198fc51ec55a2b82ce717327b6e",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-INTRA-BLOCK-TRACE-BYPASS-LITERAL"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-19-encoder-block-trace-bypass-literal/specs/encoder-tools/spec.md",
+      "sha256": "d5083f463f206c30a18dfa290f3105260b329ca7198f4d3dcb40a50e254e9205",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-INTRA-BLOCK-TRACE-BYPASS-LITERAL"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-19-encoder-block-trace-bypass-literal/tasks.md",
+      "sha256": "15bd97d6b06b05b629f053edda3b8211f364c6c22a4a81fcf6a9468a54869e00",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-INTRA-BLOCK-TRACE-BYPASS-LITERAL"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/archive/2026-06-19-encoder-block-trace-chroma-skip/.openspec.yaml",
       "sha256": "d36d5ade13d63079e8fac69f1e3c45e2ee23d6b22c94f88c6a340556a023f11c",
       "scope_kind": "openspec",
@@ -15567,6 +15623,56 @@
       "scope_kind": "openspec",
       "feature_ids": [
         "DECODE-COEFF-BASE-PH-CDF-ROW"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/coeff-cdf-q-context-handoff/.openspec.yaml",
+      "sha256": "d36d5ade13d63079e8fac69f1e3c45e2ee23d6b22c94f88c6a340556a023f11c",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/coeff-cdf-q-context-handoff/design.md",
+      "sha256": "d79058ae126a960a5141c0fd3c908cbd803423df2e1f177dc44500c17cde48fc",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/coeff-cdf-q-context-handoff/proposal.md",
+      "sha256": "a477c17aad50503bb3c213b9622a4d61f91b6f7018bb7218ba556db8bed2281b",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-COEFF-CDF-Q-CONTEXT-HANDOFF"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/coeff-cdf-q-context-handoff/specs/coeff-cdf-q-context-handoff/spec.md",
+      "sha256": "c8ada6dfe22f9ef5eebc34be4f5024a44657b00c4104f08706e4f762a246a7e7",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-COEFF-CDF-Q-CONTEXT-HANDOFF"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/coeff-cdf-q-context-handoff/specs/decoder-support/spec.md",
+      "sha256": "ba48e989f28926ca544a754d41777980afb2dcda8b04a72eddfa4b3c4728c30c",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-COEFF-CDF-Q-CONTEXT-HANDOFF"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/coeff-cdf-q-context-handoff/tasks.md",
+      "sha256": "1fc4f8c7e14e95cc1a22389a16a35226c344e21de2fe6e355dbbecf01aa357eb",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-COEFF-CDF-Q-CONTEXT-HANDOFF"
       ],
       "outcome": "success"
     },
@@ -18607,7 +18713,7 @@
     },
     {
       "path": "openspec/specs/encoder-tools/spec.md",
-      "sha256": "40282b6ff0f5bb26b2b1839a51d3b5876c4764d668fefa3dffcb42e99fef7d34",
+      "sha256": "ef2df4c430fd78b38f55531315bae43159efa3e0fb821b4198a9920dd5907e3a",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-5.18.1-FRAME-HEADER-GENERAL",
@@ -18630,6 +18736,7 @@
         "ENC-COEFFICIENT-TOKENIZATION-MINIMAL",
         "ENC-FORWARD-TRANSFORM-FOUNDATION",
         "ENC-INTRA-BLOCK-MODE-TRACE",
+        "ENC-INTRA-BLOCK-TRACE-BYPASS-LITERAL",
         "ENC-INTRA-BLOCK-TRACE-CHROMA-SKIP",
         "ENC-INTRA-BLOCK-TRACE-CODED-BR",
         "ENC-INTRA-BLOCK-TRACE-CODED-DC",
@@ -18993,7 +19100,7 @@
     },
     {
       "path": "xtask/src/decoder_conformance_coverage.rs",
-      "sha256": "f8669d2eb15a66bab4a4f397a6d04d69098f7c301120be48545632e7cc0888db",
+      "sha256": "4c2c15bdb4b20f01c6981b7f04438dbba6043b3e1f9d70461536f27623b5d369",
       "scope_kind": "workspace:xtask",
       "feature_ids": [
         "AV2-8.2-SYMBOL-DECODER",
@@ -19014,6 +19121,7 @@
         "DECODE-COEFF-BASE-DERIVED-LEVEL-PASS",
         "DECODE-COEFF-BASE-PH-CDF-ROW",
         "DECODE-COEFF-BASE-SYMBOL-READ",
+        "DECODE-COEFF-CDF-Q-CONTEXT-HANDOFF",
         "DECODE-COEFF-EOB-BRANCH-HANDOFF",
         "DECODE-COEFF-EOB-DERIVED-SYMBOL-READ",
         "DECODE-COEFF-EOB-SIZE-CONTEXT",

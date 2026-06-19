@@ -10138,6 +10138,58 @@ fixtures = [
 diagnostics = ["decode/unsupported-feature"]
 
 [[feature]]
+id = "DECODE-COEFF-CDF-Q-CONTEXT-HANDOFF"
+name = "Coefficient CDF q-context handoff"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["3", "5.20.7.27", "6.17.2"]
+sources = [
+    "docs/spec/av2/1.0.0/03-symbols.md",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-2",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/tile_payload/coeff_loop/use_fsc_branch.rs"
+openspec_change = "coeff-cdf-q-context-handoff"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Adds a crate-private loaded-but-unwired coefficient wrapper for deriving the active coefficient CDF q-context from frame `base_q_idx` before delegating to the shared-facts `useFsc` handoff. `coeff_cdf_q_ctx_from_base_q_idx` implements the AV2 §6.17.2 `init_coeff_cdfs()` threshold buckets 0 for `base_q_idx <= 90`, 1 for `<= 140`, 2 for `<= 190`, and 3 otherwise, matching the four §3 `COEFF_CDF_Q_CTXS` selectable contexts. `apply_coeff_use_fsc_branch_from_base_q_facts` preserves all-zero ordering through the existing shared-facts all-zero path without requiring `base_q_idx`, derives q-context only for nonzero inputs, then delegates to the existing shared-facts wrapper so ordinary and FSC selected branches match explicit q-context delegation. Tests cover threshold boundaries including `u32::MAX`, all-zero bypass, and ordinary/FSC selected-branch equivalence across all four q buckets. This feature remains partial: runtime `coeffs()` does not call this wrapper, runtime `enable_fsc`, `PlaneTxType`, `plane`, `fsc_mode`, `is_inter`, transform geometry, and `base_q_idx` handoff into coefficient decoding remain unwired, full CDF lifecycle initialization and `compute_tx_type` are not implemented, and dequantization, inverse transform, residual add, reconstruction, reference refresh, AVM/dav2d invocation, public APIs, and broad `decode_block()` / `decode_tile()` support remain unimplemented."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "partial"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/tile_payload/coeff_loop/use_fsc_branch_tests.rs::coefficient_cdf_q_context_from_base_q_idx_matches_spec_thresholds",
+    "crates/splot-decode/src/tile_payload/coeff_loop/use_fsc_branch_tests.rs::coefficient_use_fsc_base_q_all_zero_matches_shared_facts",
+    "crates/splot-decode/src/tile_payload/coeff_loop/use_fsc_branch_tests.rs::coefficient_use_fsc_base_q_false_matches_explicit_q_contexts",
+    "crates/splot-decode/src/tile_payload/coeff_loop/use_fsc_branch_tests.rs::coefficient_use_fsc_base_q_true_matches_explicit_q_contexts",
+]
+commands = [
+    "cargo test -p splot-decode use_fsc_branch --locked",
+    "cargo test -p splot-decode coeff_loop --locked",
+    "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-decoder-conformance-coverage",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-decode/src/tile_payload/coeff_loop/use_fsc_branch.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/use_fsc_branch_tests.rs",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
 id = "DECODE-COEFF-BASE-SYMBOL-READ"
 name = "Coefficient base symbol read"
 category = "infrastructure"

@@ -265,13 +265,17 @@ nonzero `use_fsc == true` delegates to the FSC tx-size handoff.
 caller-resolved `enable_fsc`, `PlaneTxType`, `plane`, `fsc_mode`, and
 `is_inter` facts while preserving the all-zero bypass. Runtime `coeffs()`
 wiring, full transform/`compute_tx_type`, and caller-to-runtime derivation of
-those facts plus `coeff_cdf_q_ctx` remain unwired.
+those condition facts remain unwired.
 `DECODE-COEFF-USE-FSC-SHARED-FACTS-HANDOFF` now removes the duplicated lower
 input packet at that staged boundary: one shared nonzero fact packet derives
 `useFsc` and lazily constructs only the selected ordinary or FSC lower input,
 with FSC block geometry derived from generated `Tx_Width[txSz]` and
-`Tx_Height[txSz]` table values only on the selected FSC path. Runtime
-`coeffs()` wiring and runtime derivation of those shared facts remain unwired.
+`Tx_Height[txSz]` table values only on the selected FSC path.
+`DECODE-COEFF-CDF-Q-CONTEXT-HANDOFF` now derives the coefficient-CDF q-context
+from frame `base_q_idx` using the § 6.17.2 `init_coeff_cdfs()` buckets before
+delegating to that shared-facts wrapper, while preserving all-zero bypass.
+Runtime `coeffs()` wiring and runtime derivation of the remaining shared facts
+remain unwired.
 Separately, `DECODE-COEFF-ORDINARY-DERIVED-BASE-PASS` now composes the ordinary
 state-derived first pass into the ordinary coefficient pass, carrying
 first-pass `isHidden`, `sumAbs1`, and `useTcq` into the interleaved
