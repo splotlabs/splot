@@ -20,6 +20,7 @@
 
 #![allow(dead_code)]
 
+use splot_core::coefficient::COEFF_BASE_RANGE;
 use splot_core::symbol::{Symbol, SymbolDecoder, SymbolDecoderConfig};
 use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig};
 use splot_core::tables::cdf::{
@@ -84,7 +85,6 @@ const DC_SIGN_CTX_NEUTRAL: usize = 0;
 // exceeds `LF_NUM_BASE_LEVELS`, adding `0..=COEFF_BASE_RANGE` to the level.
 const MAX_BASE_EOB_MAGNITUDE: u32 = 4;
 const LF_NUM_BASE_LEVELS: u32 = 4;
-const COEFF_BASE_RANGE: u32 = 3;
 // The largest magnitude fully coded by `coeff_base_eob` + one `coeff_br`, before
 // AV2 § 5.20.7.28 `read_quant` emits the golomb tail (a later brick). For the LF
 // luma DC EOB coefficient `maxLevel = LF_NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1 = 8`

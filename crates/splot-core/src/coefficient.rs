@@ -7,10 +7,9 @@
 //! `coeff_base` CDF-context derivation (`08-parsing-process.md#s-8-3-2`). They live
 //! here, next to the bitstream model, so the `splot-decode` `coeff_base` context
 //! derivation and the `splot-encode` `coeff_base` tokenizer share a single
-//! definition instead of each re-declaring a local copy. The associated § 9.2
-//! `Sig_Ref_Diff_Offset` *table* already lives in
-//! [`crate::tables::conversion`](crate::tables::conversion::SIG_REF_DIFF_OFFSET);
-//! these two scalars complete that table's vocabulary.
+//! definition instead of each re-declaring a local copy. (The related § 9.2
+//! `Sig_Ref_Diff_Offset` *table* itself lives in
+//! [`crate::tables::conversion`](crate::tables::conversion::SIG_REF_DIFF_OFFSET).)
 
 /// AV2 § 3 `SIG_REF_DIFF_OFFSET_NUM` (`03-symbols.md`): the number of luma
 /// `coeff_base` significant-neighbour samples summed in the § 8.3.2 context
@@ -26,6 +25,13 @@ pub const SIG_REF_DIFF_OFFSET_NUM: usize = 5;
 /// `coeff_base` context-band base, used by the § 8.3.2 non-2D (horizontal/vertical
 /// transform class) low-frequency branch.
 pub const LF_SIG_COEF_CONTEXTS_2D: usize = 21;
+
+/// AV2 § 3 `COEFF_BASE_RANGE` (`03-symbols.md`): the number of values for the
+/// `coeff_br` syntax element. It is the base-range increment cap — a `coeff_br`
+/// symbol adds `0..=COEFF_BASE_RANGE` to a coefficient's base level
+/// (§ 5.20.7.27) — and the § 8.3.2 `idtx_sign` context is raised when a current
+/// `Level` exceeds it.
+pub const COEFF_BASE_RANGE: u32 = 3;
 
 #[cfg(test)]
 mod tests {
