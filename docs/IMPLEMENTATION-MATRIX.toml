@@ -9281,7 +9281,7 @@ openspec_change = "coeff-fsc-level-pass"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Adds a crate-private loaded-but-unwired `splot-decode` FSC/IDTX coefficient level first pass for AV2 §5.20.7.27. `apply_nonzero_coeff_fsc_level_pass` accepts a `NonZeroCoeffBlockStart`, a checked `FscCoeffScanWalk`, and caller-resolved coefficient-CDF q/tx-size facts; preflights EOB/scan cardinality, adjusted block geometry, and row-major scan positions; derives `BaseBob`, later `BaseIdtx`, and conditional `BrIdtx` selectors with the existing §8.3.2 context helpers; clamps the selector transform-size axis to `Min(TX_16X16, txSzCtx)`; reads selected rows through `SymbolDecoder`; writes each resulting `Level[row][col]`; and returns derived selector/read audit records plus updated local block state. This feature remains partial: runtime `coeffs()` does not call the pass, `useFsc` and `segEob` are still caller-resolved, `idtx_sign`, `read_quant`, nonzero `QuantSign[]`/`Quant[]`, tile context commits, dequantization, inverse transform, residual add, reconstruction, reference refresh, AVM/dav2d invocation, public APIs, and broad `decode_block()` / `decode_tile()` support remain unimplemented."
+notes = "Adds a crate-private loaded-but-unwired `splot-decode` FSC/IDTX coefficient level first pass for AV2 §5.20.7.27. `apply_nonzero_coeff_fsc_level_pass` accepts a `NonZeroCoeffBlockStart`, a checked `FscCoeffScanWalk`, and caller-resolved coefficient-CDF q/tx-size facts; preflights EOB/scan cardinality, adjusted block geometry, and row-major scan positions; derives `BaseBob`, later `BaseIdtx`, and conditional `BrIdtx` selectors with the existing §8.3.2 context helpers; clamps the selector transform-size axis to `Min(TX_16X16, txSzCtx)`; reads selected rows through `SymbolDecoder`; writes each resulting `Level[row][col]`; and returns derived selector/read audit records plus updated local block state. Later FSC rows cover `idtx_sign`, `read_quant`, nonzero `QuantSign[]` and `Quant[]`, and the tile context commit. This feature remains partial: runtime `coeffs()` does not call the pass, `useFsc` and `segEob` are still caller-resolved, and dequantization, inverse transform, residual add, reconstruction, reference refresh, AVM/dav2d invocation, public APIs, and broad `decode_block()` / `decode_tile()` support remain unimplemented."
 
 [feature.status]
 mapped = "done"
@@ -9336,7 +9336,7 @@ openspec_change = "coeff-fsc-sign-pass"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Adds a crate-private loaded-but-unwired `splot-decode` FSC/IDTX coefficient sign pass for AV2 §5.20.7.27. `apply_nonzero_coeff_fsc_sign_pass` consumes a completed `NonZeroCoeffFscLevelPass`, validates caller-resolved adjusted geometry and scan coverage for the `0..segEob` second loop, derives `IdtxSign` selectors from current local `QuantSign[]` and `Level[]` state using the existing §8.3.2 context helper, clamps the selector transform-size axis to `Min(TX_16X16, txSzCtx)`, reads `idtx_sign` only for nonzero levels, writes local `QuantSign[]` to `-1` or `1` so later IDTX sign contexts observe prior signs, and leaves `Quant[]` untouched. The later `DECODE-COEFF-FSC-QUANT-PASS` row reuses the same sign derivation/read step inside a spec-order interleaved sign/quant composition for `read_quant` and signed `Quant[]` writes. This feature remains partial: runtime `coeffs()` does not call the pass, `useFsc` and `segEob` are still caller-resolved, tile context commits, dequantization, inverse transform, residual add, reconstruction, reference refresh, AVM/dav2d invocation, public APIs, and broad `decode_block()` / `decode_tile()` support remain unimplemented."
+notes = "Adds a crate-private loaded-but-unwired `splot-decode` FSC/IDTX coefficient sign pass for AV2 §5.20.7.27. `apply_nonzero_coeff_fsc_sign_pass` consumes a completed `NonZeroCoeffFscLevelPass`, validates caller-resolved adjusted geometry and scan coverage for the `0..segEob` second loop, derives `IdtxSign` selectors from current local `QuantSign[]` and `Level[]` state using the existing §8.3.2 context helper, clamps the selector transform-size axis to `Min(TX_16X16, txSzCtx)`, reads `idtx_sign` only for nonzero levels, writes local `QuantSign[]` to `-1` or `1` so later IDTX sign contexts observe prior signs, and leaves `Quant[]` untouched. The later `DECODE-COEFF-FSC-QUANT-PASS` row reuses the same sign derivation/read step inside a spec-order interleaved sign/quant composition for `read_quant` and signed `Quant[]` writes; `DECODE-COEFF-FSC-CONTEXT-COMMIT` wraps that composition with the tile context commit. This feature remains partial: runtime `coeffs()` does not call the pass, `useFsc` and `segEob` are still caller-resolved, and dequantization, inverse transform, residual add, reconstruction, reference refresh, AVM/dav2d invocation, public APIs, and broad `decode_block()` / `decode_tile()` support remain unimplemented."
 
 [feature.status]
 mapped = "done"
@@ -9390,7 +9390,7 @@ openspec_change = "coeff-fsc-quant-pass"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Adds a crate-private loaded-but-unwired `splot-decode` FSC/IDTX coefficient sign/quant composition for the second AV2 §5.20.7.27 `useFsc` loop. `apply_nonzero_coeff_fsc_quant_pass` consumes `NonZeroCoeffFscLevelPass`, validates caller-resolved adjusted geometry and scan coverage for checked `0..segEob` entries before second-loop CDF or symbol consumption, interleaves `idtx_sign`, immediate local `QuantSign[]` writes for later sign contexts, §5.20.7.28 `read_quant` with FSC constants (`isHidden = 0`, `maxLevel = NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1`, `allowTcq = 0`, initial `hrLevelAvg = 0`), signed local `Quant[]` writes, final `culLevel`, and final `dcCategory` through the shared checked quant-state accumulator. Tests cover an order-sensitive payload that diverges from the old batched sign-then-quant composition. This feature remains partial: runtime `coeffs()` does not call the pass, `useFsc` and `segEob` are still caller-resolved, tile context commits, dequantization, inverse transform, residual add, reconstruction, reference refresh, AVM/dav2d invocation, public APIs, and broad `decode_block()` / `decode_tile()` support remain unimplemented."
+notes = "Adds a crate-private loaded-but-unwired `splot-decode` FSC/IDTX coefficient sign/quant composition for the second AV2 §5.20.7.27 `useFsc` loop. `apply_nonzero_coeff_fsc_quant_pass` consumes `NonZeroCoeffFscLevelPass`, validates caller-resolved adjusted geometry and scan coverage for checked `0..segEob` entries before second-loop CDF or symbol consumption, interleaves `idtx_sign`, immediate local `QuantSign[]` writes for later sign contexts, §5.20.7.28 `read_quant` with FSC constants (`isHidden = 0`, `maxLevel = NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1`, `allowTcq = 0`, initial `hrLevelAvg = 0`), signed local `Quant[]` writes, final `culLevel`, and final `dcCategory` through the shared checked quant-state accumulator. Tests cover an order-sensitive payload that diverges from the old batched sign-then-quant composition. The later `DECODE-COEFF-FSC-CONTEXT-COMMIT` row wraps this pass with the end-of-`coeffs()` tile context update. This feature remains partial: runtime `coeffs()` does not call the pass, `useFsc` and `segEob` are still caller-resolved, dequantization, inverse transform, residual add, reconstruction, reference refresh, AVM/dav2d invocation, public APIs, and broad `decode_block()` / `decode_tile()` support remain unimplemented."
 
 [feature.status]
 mapped = "done"
@@ -9428,6 +9428,60 @@ fixtures = [
     "crates/splot-decode/src/tile_payload/coeff_loop/fsc_quant_pass_tests.rs",
     "crates/splot-decode/src/tile_payload/coeff_loop/quant_state.rs",
     "crates/splot-decode/src/tile_payload/coeff_loop/read_quant.rs",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
+id = "DECODE-COEFF-FSC-CONTEXT-COMMIT"
+name = "Coefficient FSC context commit"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.20.7.27", "5.20.7.28", "8.2.5"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-28",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-2-5",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/tile_payload/coeff_loop/fsc_quant_pass.rs"
+openspec_change = "coeff-fsc-context-commit"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Adds a crate-private loaded-but-unwired FSC/IDTX nonzero coefficient-pass context-commit boundary for AV2 §5.20.7.27. `apply_nonzero_coeff_fsc_quant_pass_with_context_commit` wraps the FSC quant pass, then commits the pass result's final quant-state `culLevel` and `dcCategory` to `TileCoeffContextState::update_after_coeffs` using caller-resolved plane and transform-block 4x4 geometry. It returns the FSC pass result so later dequant/reconstruction handoff can consume the final local `Quant[]` block. Tests cover successful above/left level and DC context writes, FSC-pass failure preserving tile context state, and invalid context-update facts preserving pre-existing context lines after the FSC pass succeeds. This feature remains partial: runtime `coeffs()` does not call this wrapper, `useFsc`, `segEob`, scan, plane, and geometry facts are still caller-resolved, and dequantization, inverse transform, residual add, reconstruction, reference refresh, AVM/dav2d invocation, public APIs, and broad `decode_block()` / `decode_tile()` support remain unimplemented."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "partial"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::coefficient_fsc_quant_pass_with_context_commit_updates_tile_context_lines",
+    "crates/splot-decode/src/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::coefficient_fsc_quant_pass_with_context_commit_preserves_context_on_pass_failure",
+    "crates/splot-decode/src/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::coefficient_fsc_quant_pass_with_context_commit_preserves_context_on_update_failure",
+]
+commands = [
+    "cargo test -p splot-decode fsc_quant --locked",
+    "cargo test -p splot-decode coeff_loop --locked",
+    "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-decoder-conformance-coverage",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-decode/src/tile_payload/coeff_loop/fsc_quant_pass.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/fsc_quant_pass_tests.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/fsc_level_pass.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/quant_state.rs",
+    "crates/splot-decode/src/tile_payload/coeff_state.rs",
 ]
 diagnostics = ["decode/unsupported-feature"]
 
