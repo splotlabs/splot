@@ -7,14 +7,16 @@ use super::*;
 use splot_core::span::ByteOffset;
 use splot_core::symbol::{SymbolDecoder, SymbolDecoderConfig};
 use splot_core::tables::cdf::{
-    DEFAULT_COEFF_BASE_CDF, DEFAULT_COEFF_BASE_EOB_CDF, DEFAULT_COEFF_BASE_EOB_UV_CDF,
-    DEFAULT_COEFF_BASE_LF_CDF, DEFAULT_COEFF_BASE_LF_EOB_CDF, DEFAULT_COEFF_BASE_LF_EOB_UV_CDF,
-    DEFAULT_COEFF_BASE_LF_UV_CDF, DEFAULT_COEFF_BASE_PH_CDF, DEFAULT_COEFF_BASE_UV_CDF,
-    DEFAULT_COEFF_BR_CDF, DEFAULT_COEFF_BR_LF_CDF, DEFAULT_COEFF_BR_UV_CDF, DEFAULT_DC_SIGN_CDF,
-    DEFAULT_EOB_EXTRA_CDF, DEFAULT_EOB_PT_16_CDF, DEFAULT_EOB_PT_32_CDF, DEFAULT_EOB_PT_64_CDF,
-    DEFAULT_EOB_PT_128_CDF, DEFAULT_EOB_PT_256_CDF, DEFAULT_EOB_PT_512_CDF,
-    DEFAULT_EOB_PT_1024_CDF, DEFAULT_TXB_SKIP_CDF, DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF,
-    DEFAULT_V_TXB_SKIP_CDF, DEFAULT_Y_MODE_INDEX_CDF, DEFAULT_Y_MODE_SET_CDF,
+    DEFAULT_COEFF_BASE_BOB_CDF, DEFAULT_COEFF_BASE_CDF, DEFAULT_COEFF_BASE_EOB_CDF,
+    DEFAULT_COEFF_BASE_EOB_UV_CDF, DEFAULT_COEFF_BASE_IDTX_CDF, DEFAULT_COEFF_BASE_LF_CDF,
+    DEFAULT_COEFF_BASE_LF_EOB_CDF, DEFAULT_COEFF_BASE_LF_EOB_UV_CDF, DEFAULT_COEFF_BASE_LF_UV_CDF,
+    DEFAULT_COEFF_BASE_PH_CDF, DEFAULT_COEFF_BASE_UV_CDF, DEFAULT_COEFF_BR_CDF,
+    DEFAULT_COEFF_BR_IDTX_CDF, DEFAULT_COEFF_BR_LF_CDF, DEFAULT_COEFF_BR_UV_CDF,
+    DEFAULT_DC_SIGN_CDF, DEFAULT_EOB_EXTRA_CDF, DEFAULT_EOB_PT_16_CDF, DEFAULT_EOB_PT_32_CDF,
+    DEFAULT_EOB_PT_64_CDF, DEFAULT_EOB_PT_128_CDF, DEFAULT_EOB_PT_256_CDF, DEFAULT_EOB_PT_512_CDF,
+    DEFAULT_EOB_PT_1024_CDF, DEFAULT_IDTX_SIGN_CDF, DEFAULT_TXB_SKIP_CDF,
+    DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF, DEFAULT_V_TXB_SKIP_CDF, DEFAULT_Y_MODE_INDEX_CDF,
+    DEFAULT_Y_MODE_SET_CDF,
 };
 
 fn coeff(selector: CoeffCdfSelector) -> TileCdfSelector {
@@ -346,6 +348,8 @@ fn saved_copy_and_average_are_exact_for_supported_subset() {
     ];
     tile.rows_mut().block.v_txb_skip[1][3] = [26_000, 14, 24];
     tile.rows_mut().block.coeff.coeff_base[1][2][3][1] = [20_000, 21_000, 22_000, 9, 8];
+    tile.rows_mut().block.coeff.coeff_base_idtx[1][2][3] = [20_000, 21_000, 22_000, 9, 8];
+    tile.rows_mut().block.coeff.idtx_sign[1][2][3] = [20_000, 9, 8];
 
     let mut saved = SavedCdfSubset::from_frame(&frame);
     saved.apply_completed_tile(
@@ -396,6 +400,11 @@ fn saved_copy_and_average_are_exact_for_supported_subset() {
         saved.rows().block.coeff.coeff_base[1][2][3][1],
         [29_576, 29_826, 30_076, 9, 2]
     );
+    assert_eq!(
+        saved.rows().block.coeff.coeff_base_idtx[1][2][3],
+        [29_576, 29_826, 30_076, 9, 2]
+    );
+    assert_eq!(saved.rows().block.coeff.idtx_sign[1][2][3], [29_576, 9, 2]);
 }
 
 #[test]
@@ -452,6 +461,9 @@ fn frame_end_update_copies_saved_rows_and_scales_counts() {
     ];
     tile.rows_mut().block.v_txb_skip[1][3] = [26_000, 14, 24];
     tile.rows_mut().block.coeff.coeff_base[1][2][3][1] = [20_000, 21_000, 22_000, 9, 20];
+    tile.rows_mut().block.coeff.coeff_base_bob[1][2][1] = [20_000, 21_000, 9, 20];
+    tile.rows_mut().block.coeff.coeff_br_idtx[1][2][3] = [20_000, 21_000, 22_000, 9, 20];
+    tile.rows_mut().block.coeff.idtx_sign[1][2][3] = [20_000, 9, 20];
 
     let mut saved = SavedCdfSubset::from_frame(&frame);
     saved.apply_completed_tile(
@@ -492,6 +504,15 @@ fn frame_end_update_copies_saved_rows_and_scales_counts() {
         frame.rows().block.coeff.coeff_base[1][2][3][1],
         [20_000, 21_000, 22_000, 9, 15]
     );
+    assert_eq!(
+        frame.rows().block.coeff.coeff_base_bob[1][2][1],
+        [20_000, 21_000, 9, 15]
+    );
+    assert_eq!(
+        frame.rows().block.coeff.coeff_br_idtx[1][2][3],
+        [20_000, 21_000, 22_000, 9, 15]
+    );
+    assert_eq!(frame.rows().block.coeff.idtx_sign[1][2][3], [20_000, 9, 15]);
 }
 
 #[test]
@@ -828,6 +849,22 @@ fn coeff_base_rows_load_defaults_and_select_by_family() {
             DEFAULT_COEFF_BASE_EOB_UV_CDF[2][3].as_slice(),
         ),
         (
+            coeff(CoeffCdfSelector::BaseBob {
+                coeff_cdf_q_ctx: 1,
+                tx_size_ctx: 2,
+                ctx: 1,
+            }),
+            DEFAULT_COEFF_BASE_BOB_CDF[1][2][1].as_slice(),
+        ),
+        (
+            coeff(CoeffCdfSelector::BaseIdtx {
+                coeff_cdf_q_ctx: 3,
+                tx_size_ctx: 2,
+                ctx: 6,
+            }),
+            DEFAULT_COEFF_BASE_IDTX_CDF[3][2][6].as_slice(),
+        ),
+        (
             coeff(CoeffCdfSelector::BaseLfEob {
                 coeff_cdf_q_ctx: 3,
                 tx_size: 4,
@@ -862,6 +899,22 @@ fn coeff_base_rows_load_defaults_and_select_by_family() {
                 ctx: 13,
             }),
             DEFAULT_COEFF_BR_LF_CDF[1][13].as_slice(),
+        ),
+        (
+            coeff(CoeffCdfSelector::BrIdtx {
+                coeff_cdf_q_ctx: 2,
+                tx_size_ctx: 1,
+                ctx: 6,
+            }),
+            DEFAULT_COEFF_BR_IDTX_CDF[2][1][6].as_slice(),
+        ),
+        (
+            coeff(CoeffCdfSelector::IdtxSign {
+                coeff_cdf_q_ctx: 0,
+                tx_size_ctx: 2,
+                ctx: 8,
+            }),
+            DEFAULT_IDTX_SIGN_CDF[0][2][8].as_slice(),
         ),
     ];
 
@@ -931,6 +984,48 @@ fn coeff_base_selectors_reject_out_of_range_axes() {
         }
     );
     assert_eq!(
+        tile.row(coeff(CoeffCdfSelector::BaseBob {
+            coeff_cdf_q_ctx: 0,
+            tx_size_ctx: 3,
+            ctx: 0,
+        }))
+        .unwrap_err(),
+        TileCdfError::SelectorOutOfRange {
+            array: TileCdfArray::CoeffBaseBob,
+            index_name: "tx_size_ctx",
+            actual: 3,
+            max_exclusive: 3,
+        }
+    );
+    assert_eq!(
+        tile.row(coeff(CoeffCdfSelector::BaseBob {
+            coeff_cdf_q_ctx: 0,
+            tx_size_ctx: 0,
+            ctx: 3,
+        }))
+        .unwrap_err(),
+        TileCdfError::SelectorOutOfRange {
+            array: TileCdfArray::CoeffBaseBob,
+            index_name: "ctx",
+            actual: 3,
+            max_exclusive: 3,
+        }
+    );
+    assert_eq!(
+        tile.row(coeff(CoeffCdfSelector::BaseIdtx {
+            coeff_cdf_q_ctx: 0,
+            tx_size_ctx: 0,
+            ctx: 7,
+        }))
+        .unwrap_err(),
+        TileCdfError::SelectorOutOfRange {
+            array: TileCdfArray::CoeffBaseIdtx,
+            index_name: "ctx",
+            actual: 7,
+            max_exclusive: 7,
+        }
+    );
+    assert_eq!(
         tile.row(coeff(CoeffCdfSelector::BaseUv {
             coeff_cdf_q_ctx: 0,
             ctx: 12,
@@ -971,6 +1066,34 @@ fn coeff_base_selectors_reject_out_of_range_axes() {
             max_exclusive: 14,
         }
     );
+    assert_eq!(
+        tile.row(coeff(CoeffCdfSelector::BrIdtx {
+            coeff_cdf_q_ctx: 0,
+            tx_size_ctx: 0,
+            ctx: 7,
+        }))
+        .unwrap_err(),
+        TileCdfError::SelectorOutOfRange {
+            array: TileCdfArray::CoeffBrIdtx,
+            index_name: "ctx",
+            actual: 7,
+            max_exclusive: 7,
+        }
+    );
+    assert_eq!(
+        tile.row(coeff(CoeffCdfSelector::IdtxSign {
+            coeff_cdf_q_ctx: 0,
+            tx_size_ctx: 0,
+            ctx: 9,
+        }))
+        .unwrap_err(),
+        TileCdfError::SelectorOutOfRange {
+            array: TileCdfArray::IdtxSign,
+            index_name: "ctx",
+            actual: 9,
+            max_exclusive: 9,
+        }
+    );
 }
 
 #[test]
@@ -983,6 +1106,10 @@ fn coeff_base_tile_copy_does_not_alias_the_frame() {
     tile.rows_mut().block.coeff.coeff_base_lf_uv[0][11] =
         [11_000, 12_000, 13_000, 14_000, 15_000, 5, 8];
     tile.rows_mut().block.coeff.coeff_br_lf[1][13] = [15_000, 16_000, 17_000, 6, 12];
+    tile.rows_mut().block.coeff.coeff_base_bob[1][2][1] = [12_000, 13_000, 8, 10];
+    tile.rows_mut().block.coeff.coeff_base_idtx[3][2][6] = [12_000, 13_000, 14_000, 8, 10];
+    tile.rows_mut().block.coeff.coeff_br_idtx[2][1][6] = [12_000, 13_000, 14_000, 8, 10];
+    tile.rows_mut().block.coeff.idtx_sign[0][2][8] = [12_000, 8, 10];
 
     assert_eq!(
         frame.rows().block.coeff.coeff_base[1][2][3][1],
@@ -1000,28 +1127,63 @@ fn coeff_base_tile_copy_does_not_alias_the_frame() {
         frame.rows().block.coeff.coeff_br_lf[1][13],
         DEFAULT_COEFF_BR_LF_CDF[1][13]
     );
+    assert_eq!(
+        frame.rows().block.coeff.coeff_base_bob[1][2][1],
+        DEFAULT_COEFF_BASE_BOB_CDF[1][2][1]
+    );
+    assert_eq!(
+        frame.rows().block.coeff.coeff_base_idtx[3][2][6],
+        DEFAULT_COEFF_BASE_IDTX_CDF[3][2][6]
+    );
+    assert_eq!(
+        frame.rows().block.coeff.coeff_br_idtx[2][1][6],
+        DEFAULT_COEFF_BR_IDTX_CDF[2][1][6]
+    );
+    assert_eq!(
+        frame.rows().block.coeff.idtx_sign[0][2][8],
+        DEFAULT_IDTX_SIGN_CDF[0][2][8]
+    );
 }
 
 #[test]
 fn coeff_base_row_hands_off_to_symbol_decoder_update_mode() {
     let frame = FrameCdfSubset::from_defaults();
-    let selector = coeff(CoeffCdfSelector::BasePh {
-        coeff_cdf_q_ctx: 1,
-        ctx: 3,
-    });
+    let selectors = [
+        coeff(CoeffCdfSelector::BasePh {
+            coeff_cdf_q_ctx: 1,
+            ctx: 3,
+        }),
+        coeff(CoeffCdfSelector::BaseIdtx {
+            coeff_cdf_q_ctx: 1,
+            tx_size_ctx: 2,
+            ctx: 3,
+        }),
+        coeff(CoeffCdfSelector::IdtxSign {
+            coeff_cdf_q_ctx: 1,
+            tx_size_ctx: 2,
+            ctx: 3,
+        }),
+    ];
     let payload = [0x80, 0x00];
-    let mut tile = frame.tile_copy();
-    let before = tile.row(selector).unwrap().to_vec();
-    let mut symbol = SymbolDecoder::with_base_and_config(
-        &payload,
-        ByteOffset::new(0),
-        SymbolDecoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Enabled),
-    )
-    .unwrap();
-    let consumed_before = symbol.consumed_bits();
 
-    tile.read_block_symbol_trace(selector, &mut symbol).unwrap();
+    for selector in selectors {
+        let mut tile = frame.tile_copy();
+        let before = tile.row(selector).unwrap().to_vec();
+        let mut symbol = SymbolDecoder::with_base_and_config(
+            &payload,
+            ByteOffset::new(0),
+            SymbolDecoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Enabled),
+        )
+        .unwrap();
+        let consumed_before = symbol.consumed_bits();
 
-    assert_ne!(tile.row(selector).unwrap(), before.as_slice());
-    assert_ne!(symbol.consumed_bits(), consumed_before);
+        tile.read_block_symbol_trace(selector, &mut symbol).unwrap();
+
+        assert_ne!(
+            tile.row(selector).unwrap(),
+            before.as_slice(),
+            "{selector:?}"
+        );
+        assert_ne!(symbol.consumed_bits(), consumed_before, "{selector:?}");
+    }
 }

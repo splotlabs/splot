@@ -212,6 +212,11 @@ and `isHidden`, and writes each decoded `Level[row][col]` before deriving the
 next selector. `DECODE-COEFF-BASE-PH-CDF-ROW`
 now loads/selects the parity-hidden-only `TileCoeffBasePhCdf` row and proves an
 eob>=5 hidden-parity first pass consumes it for the final DC coefficient.
+`DECODE-COEFF-IDTX-CDF-ROWS` now loads/selects the FSC/IDTX
+`TileCoeffBaseBobCdf`, `TileCoeffBaseIdtxCdf`, `TileCoeffBrIdtxCdf`, and
+`TileIdtxSignCdf` row families in the tile CDF subset with tile copy/save/average
+and frame-end scaling coverage, but still leaves the runtime `useFsc` symbol pass
+unwired.
 `DECODE-COEFF-ORDINARY-DERIVED-BASE-PASS` now composes that first pass into the
 ordinary coefficient pass, carrying first-pass `isHidden`, `sumAbs1`, and
 `useTcq` into the interleaved sign/`read_quant`/signed `Quant[]` stage and
@@ -297,8 +302,8 @@ handoff. `DECODE-COEFF-ORDINARY-BRANCH-LOSSLESS-HANDOFF` now adds the staged
 § 5.20.7.29 `Lossless` branch that selects `DCT_DCT` before `get_tx_set`, while
 delegating non-lossless inputs back to the `txSet` handoff. The coefficient
 branch still does not implement the full § 5.20.7.29 `compute_tx_type` process
-or wire runtime `coeffs()`: FSC/IDTX lossless handling and frame-state
-derivation remain staged gaps.
+or wire runtime `coeffs()`: FSC/IDTX symbol-pass and lossless runtime handling,
+plus frame-state derivation, remain staged gaps.
 Runtime integration of nonzero coefficient blocks, tile context fact derivation
 for nonzero blocks, dequantization, and
 reconstruction remain unsupported. The
