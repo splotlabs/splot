@@ -73,8 +73,7 @@ ranges. The current-frame workspace can hand off fully available in-storage
 one-sided and middle directional-angle prepared edges to those primitives.
 Luma/MRL/IDIF/full-dispatch directional angles, full edge preparation,
 data-driven prediction, general directional-angle IBP, full CfL, full
-`predict_intra()` dispatch, the full dequantization process, the § 7.15.4
-DPCM-direction selection, runtime
+`predict_intra()` dispatch, the full dequantization process, runtime
 decode output, output scheduling, and AV2 reference refresh semantics remain
 unimplemented. The
 full AV2 § 7.14.2 dequantization quantizer functions are available as
@@ -125,7 +124,11 @@ combined § 7.15.4 transform-parameter resolve helper
 those two derivations together: it resolves `rowType`/`colType` (over the
 adjusted per-pass sizes), `rowShift`/`colShift`, and the `PlaneTxType == IDTX`
 flag from one `(plane_tx_type, log2W, log2H)` source the result stores, so the
-shifts, types, and dimensions cannot disagree. The
+shifts, types, and dimensions cannot disagree. The § 7.15.4 DPCM cumulative-sum
+direction selection (`dpcm_direction`; `RECON-DPCM-DIRECTION`) completes the
+§ 7.15.4 parameter-derivation surface: `None`/`Vertical`/`Horizontal` from the
+caller-resolved `useDpcm` flag and whether the prediction mode is `V_PRED`,
+dropping into the `dpcm` field the outer transform applies. The
 § 5.20.7.30 `get_scan` coefficient scan order (`coefficient_scan_order`;
 `RECON-COEFFICIENT-SCAN-ORDER`) is available too: it writes the coefficient scan
 order for a `w * h` block (the anti-diagonal 2D scan and the row/column raster
@@ -399,8 +402,7 @@ for nonzero blocks, dequantization, and
 reconstruction remain unsupported. The
 § 7.14.4
 `useQm` / `UserQm` gating and `shift` derivation, the rest
-of the § 7.14.3 reconstruct process, the § 7.15.3 secondary transform, the
-§ 7.15.4 DPCM-direction selection,
+of the § 7.14.3 reconstruct process, the § 7.15.3 secondary transform,
 the remaining § 5.20.7.29 `compute_tx_type` transform-type branches that produce
 `PlaneTxType`, and the coefficient
 entropy decode that produces nonzero `Quant` remain unimplemented.

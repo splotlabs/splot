@@ -8015,6 +8015,53 @@ fixtures = [
 diagnostics = []
 
 [[feature]]
+id = "RECON-DPCM-DIRECTION"
+name = "Inverse transform DPCM direction selection"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["7.15.4"]
+sources = [
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-15-4",
+]
+crate = "splot-recon"
+module = "crates/splot-recon/src/transform_params.rs"
+openspec_change = "recon-dpcm-direction"
+tracking_issue = ""
+owner = "decoder"
+risk = "low"
+notes = "Adds `dpcm_direction(use_dpcm, mode_is_v_pred) -> Option<DpcmDirection>` to the `splot-recon` `transform_params` module, the last of the §7.15.4 inverse-transform parameter derivations the RECON-INVERSE-TRANSFORM-2D-OUTER row left caller-resolved (after RECON-TRANSFORM-SHIFT-LOOKUP, RECON-GET-TRANSFORM-1D-TYPE, and RECON-RESOLVE-2D-TRANSFORM-PARAMS). §7.15.4 sets `useDpcm = (plane == 0 ? use_dpcm_y : use_dpcm_uv)` and `mode = (plane == 0 ? YMode : UVMode)`; when `useDpcm` is 1 the cumulative sum runs down each column for `V_PRED` (`DpcmDirection::Vertical`) and across each row otherwise (`DpcmDirection::Horizontal`), and is not applied otherwise (`None`). `use_dpcm` and `mode_is_v_pred` are caller-resolved scalars so `splot-recon` holds no frame state or prediction-mode enum, matching the crate-wide caller-resolves-spec-dimensions contract; the result drops into the `dpcm` field of `InverseTransform2dOuter`, which applies the cumulative sum after the inverse transform. Total with no error path (a `const fn` mapping every `(use_dpcm, mode_is_v_pred)` combination to a defined result). Strictly additive and provably no-output-change: a `const fn` with no rewiring, so the minimal flat-intra fixture snapshots stay byte-identical. Completeness is proven by the four-spec-case mapping (three pinned at compile time as `const` spec contracts) and an integration test driving the §7.15.4 outer transform through a lossless IDTX block so the selected `Vertical` direction produces the per-column `1, 2, 3, 4` cumulative sum while `None` leaves the residual flat. The §7.15.4 inverse-transform parameter-derivation surface is now complete. This row does not implement the runtime resolution of `use_dpcm_y` or `use_dpcm_uv` or the prediction mode (caller-resolved from frame and block syntax), any wiring into the runtime decode path, the §7.15.3 secondary transform, or the coefficient entropy decode that produces `Quant`."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "done"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-recon/src/transform_params.rs::tests::dpcm_direction_maps_the_four_spec_cases",
+    "crates/splot-recon/src/transform_params.rs::tests::selected_direction_drives_the_outer_cumulative_sum",
+]
+commands = [
+    "cargo test -p splot-recon transform_params --locked",
+    "cargo clippy -p splot-recon --all-targets --locked -- -D warnings",
+    "cargo xtask check-dependency-direction",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-recon/src/transform_params.rs",
+    "crates/splot-recon/src/lib.rs",
+]
+diagnostics = []
+
+[[feature]]
 id = "RECON-COEFFICIENT-SCAN-ORDER"
 name = "Coefficient scan order get_scan"
 category = "infrastructure"
