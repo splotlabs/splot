@@ -18,6 +18,12 @@ The AV2 §5.20.7.27 residual for this block, verified vs the decoder `coeff_loop
   directional axis) reads a `sign_bit` bypass literal; the DC is zero, so it carries
   no sign.
 - `read_quant` for both is below `maxLevel`, so no golomb bits.
+- §5.20.7.27 calls `transform_type()` between `eob_pt_16` and the base pass; for
+  `eob > 1` the §5.20.7.29 `eob == 1 → DCT_DCT` shortcut no longer applies, so the
+  trace assumes a transform-set config where `transform_type()` reads no
+  `intra_tx_type` symbol (the DCT-only set, or `reduced_tx_set == 2` intra per the
+  `!(reduced_tx_set == 2 && is_inter == 0)` guard at spec line 16467), consistent
+  with the DCT_DCT transform. The general `intra_tx_type` signaling is a later brick.
 
 The DC `coeff_base` context is data-dependent: it is the §8.3.2 low-frequency
 neighbour-sum context, and the AC of level 1 at raster position 4 (below the DC) is the DC's significant
@@ -54,7 +60,8 @@ Normative AV2 v1.0.0 sections:
 
 **Non-Goals:**
 
-- No eob > 2, no higher-magnitude AC (no `coeff_br`/golomb for the AC), no chroma
+- No general `eob > 1` `intra_tx_type` signaling (the trace assumes the
+  no-tx-type-symbol config), no eob > 2, no higher-magnitude AC (no `coeff_br`/golomb for the AC), no chroma
   multi-coefficient, no high-frequency `coeff_base`, no partition syntax, no
   tile-body emission, no packet output, no Baseline Encoder Profile v1 claim.
 - The §8.2 roundtrip proves self-consistency only; conformance of the data-dependent
