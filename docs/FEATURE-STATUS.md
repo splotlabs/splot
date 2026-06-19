@@ -141,6 +141,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `ENC-INTRA-BLOCK-TRACE-GOLOMB-PREFIX` | Encoder golomb-prefix luma DC block trace | encoder | encoder-tool | done | done | n/a | n/a | n/a | done | n/a | done | n/a | `crates/splot-encode/src/block_symbol_trace.rs` |
 | `ENC-COEFF-BASE-LF-CONTEXT` | Encoder coeff_base low-frequency luma context | encoder | encoder-tool | done | done | n/a | n/a | n/a | done | n/a | done | n/a | `crates/splot-encode/src/coefficient_tokenization.rs` |
 | `ENC-COEFF-BASE-LF-TOKEN` | Encoder non-EOB coeff_base low-frequency luma token | encoder | encoder-tool | done | done | n/a | n/a | n/a | done | n/a | done | n/a | `crates/splot-encode/src/coefficient_tokenization.rs` |
+| `ENC-COEFF-MULTI-TOKENS` | Encoder multi-coefficient token accessors | encoder | encoder-tool | done | done | n/a | n/a | n/a | done | n/a | done | n/a | `crates/splot-encode/src/coefficient_tokenization/multi_coeff.rs` |
 | `ENC-RECON-DEPENDENCY` | Encoder reconstruction dependency boundary | encoder | infrastructure | done | done | n/a | n/a | n/a | n/a | n/a | done | n/a | `crates/splot-encode/src/recon_boundary.rs` |
 | `ENC-INTRA-TOY-V0` | Minimal toy intra encoder path | encoder | encoder-tool | partial | todo | n/a | n/a | todo | todo | todo | todo | pending | `crates/splot-encode/src/context.rs` |
 | `ENC-RATE-CONTROL-V0` | Initial rate control strategy | encoder | encoder-tool | partial | todo | n/a | n/a | n/a | todo | n/a | todo | n/a | `crates/splot-encode/src/context.rs` |

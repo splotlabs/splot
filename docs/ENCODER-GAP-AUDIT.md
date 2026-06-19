@@ -159,6 +159,12 @@ planning and status; it does not claim encoder behavior exists.
   is available but not yet composed into a trace; the eob>1 trace brick consumes
   it. It is not a multi-coefficient trace, chroma/high-frequency `coeff_base`, or a
   packet path.
+- `ENC-COEFF-MULTI-TOKENS` adds the reusable multi-coefficient token accessors
+  (coded `all_zero`, a parameterized `eob_pt_16`, and a parameterized low-frequency
+  `coeff_base_eob`) in a `multi_coeff` submodule, with the eob=2 AC context-1 row in
+  the generic §8.2 router. The eob=2 CDF subsequence roundtrips to `[0,1,0,0]`.
+  Available but not yet composed into a trace; the eob>1 trace brick consumes them.
+  It is not a multi-coefficient trace or a packet path.
 - `Packet` is still only a byte buffer wrapper, and no coded packet production
   path exists.
 - `EncoderConfig` exposes `BitDepth::Twelve`, but current Baseline Encoder Profile
