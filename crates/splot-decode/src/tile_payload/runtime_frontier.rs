@@ -349,8 +349,9 @@ mod tests {
 
     use super::super::cdf::TileCdfSelector;
     use super::super::{
-        DecodeTileWorkUnit, FrameCandidateCdfFacts, FrameCandidateTileBoundaryInput,
-        FrameCandidateTileFacts, TileGroupPositionFacts, plan_derived_tile_payload_boundary,
+        DecodeTileWorkUnit, FrameCandidateCdfFacts, FrameCandidateCoeffFacts,
+        FrameCandidateTileBoundaryInput, FrameCandidateTileFacts, TileGroupPositionFacts,
+        plan_derived_tile_payload_boundary,
     };
     use super::*;
     use crate::{
@@ -558,8 +559,9 @@ mod tests {
         };
         let core = parse_frame_header_core(&mut frame_reader, &frame_input).unwrap();
 
-        let facts = FrameCandidateTileFacts::from_frame_core(&core).unwrap();
         let tq = sequence.transform_quant_entropy.as_ref().unwrap();
+        let coeff = FrameCandidateCoeffFacts::new(tq.enable_fsc, tq.enable_chroma_dctonly);
+        let facts = FrameCandidateTileFacts::from_frame_core(&core, coeff).unwrap();
         let cdf = FrameCandidateCdfFacts::new(tq.enable_avg_cdf, tq.avg_cdf_type != 0);
         let input = FrameCandidateTileBoundaryInput::new(
             &plan,

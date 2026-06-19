@@ -6,11 +6,13 @@
 //! Feature tracking: `DECODE-COEFF-USE-FSC-BRANCH-HANDOFF` and
 //! `DECODE-COEFF-USE-FSC-CONDITION-HANDOFF` and
 //! `DECODE-COEFF-USE-FSC-SHARED-FACTS-HANDOFF` and
-//! `DECODE-COEFF-CDF-Q-CONTEXT-HANDOFF`.
+//! `DECODE-COEFF-CDF-Q-CONTEXT-HANDOFF` and
+//! `DECODE-COEFF-FRAME-FACTS-HANDOFF`.
 
 use splot_core::symbol::SymbolDecoder;
 use splot_core::tables::conversion::{TX_HEIGHT, TX_WIDTH};
 
+use super::super::TileCoeffFrameFacts;
 use super::super::cdf::TileCdfSubset;
 use super::super::coeff_state::TileCoeffContextState;
 use super::AllZeroCoeffBlockInput;
@@ -183,6 +185,90 @@ impl CoeffUseFscBaseQFacts {
     }
 }
 
+/// Caller-selected coefficient branch before deriving frame-scoped facts.
+pub(crate) enum CoeffUseFscFrameFactsInput {
+    /// Decoded `all_zero == 1`; AV2 handles this before frame-fact branch setup.
+    AllZero(CoeffOrdinaryTxSizeGeometryConfig),
+    /// Decoded `all_zero == 0`.
+    NonZero(CoeffUseFscFrameFactsNonZeroInput),
+}
+
+/// Caller-resolved block facts before frame-fact derivation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CoeffUseFscFrameBlockFacts {
+    /// Caller-resolved AV2 § 5.20.7.27 `coeffs()` geometry.
+    pub(crate) geometry: CoeffOrdinaryTxSizeGeometryConfig,
+    /// Caller-resolved `PlaneTxType` from AV2 § 5.20.7.29 `compute_tx_type`.
+    pub(crate) plane_tx_type: usize,
+    /// Caller-resolved `fsc_mode` fact.
+    pub(crate) fsc_mode: bool,
+    /// Caller-resolved `is_inter` fact.
+    pub(crate) is_inter: bool,
+    /// Caller-resolved `SegmentId` for the block.
+    pub(crate) segment_id: usize,
+}
+
+/// Caller-resolved ordinary-only facts that are not frame scoped.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CoeffUseFscFrameOrdinaryFacts {
+    /// Caller-resolved `UVMode` from the chroma intra mode syntax.
+    pub(crate) uv_mode: usize,
+    /// Caller-resolved `AngleDeltaUV` from chroma intra mode syntax.
+    pub(crate) angle_delta_uv: i32,
+    /// Caller-resolved luma `TxTypes[blockY][blockX]`.
+    pub(crate) luma_tx_type: usize,
+    /// Caller-resolved chroma-inter `TxTypes[y4][x4]`.
+    pub(crate) chroma_inter_tx_type: usize,
+    /// Whether hidden parity is active for this transform block.
+    pub(crate) parity_hiding: bool,
+    /// Whether TCQ is active for this transform block.
+    pub(crate) use_tcq: bool,
+}
+
+/// Shared caller-resolved facts plus parsed frame facts for a nonzero block.
+pub(crate) struct CoeffUseFscFrameFactsNonZeroInput {
+    /// Parsed frame/sequence coefficient facts.
+    pub(crate) frame: TileCoeffFrameFacts,
+    /// Caller-resolved block facts.
+    pub(crate) block: CoeffUseFscFrameBlockFacts,
+    /// Ordinary-only facts still resolved by the caller.
+    pub(crate) ordinary: CoeffUseFscFrameOrdinaryFacts,
+}
+
+impl CoeffUseFscFrameFactsNonZeroInput {
+    pub(crate) fn base_q_input(
+        self,
+    ) -> Result<CoeffUseFscBaseQFactsNonZeroInput, CoeffUseFscBranchError> {
+        let lossless = self
+            .frame
+            .lossless_for_segment(self.block.segment_id)
+            .ok_or(CoeffUseFscBranchError::InvalidSegmentId {
+                segment_id: self.block.segment_id,
+            })?;
+        Ok(CoeffUseFscBaseQFactsNonZeroInput {
+            facts: CoeffUseFscBaseQFacts {
+                geometry: self.block.geometry,
+                enable_fsc: self.frame.enable_fsc(),
+                plane_tx_type: self.block.plane_tx_type,
+                fsc_mode: self.block.fsc_mode,
+                is_inter: self.block.is_inter,
+                base_q_idx: self.frame.base_q_idx(),
+            },
+            ordinary_base_config: CoeffOrdinaryBranchLosslessBaseConfig {
+                reduced_tx_set: self.frame.reduced_tx_set(),
+                enable_chroma_dctonly: self.frame.enable_chroma_dctonly(),
+                uv_mode: self.ordinary.uv_mode,
+                angle_delta_uv: self.ordinary.angle_delta_uv,
+                luma_tx_type: self.ordinary.luma_tx_type,
+                chroma_inter_tx_type: self.ordinary.chroma_inter_tx_type,
+                parity_hiding: self.ordinary.parity_hiding,
+                use_tcq: self.ordinary.use_tcq,
+            },
+            lossless,
+        })
+    }
+}
+
 /// Result of the loaded `useFsc` branch selector.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[allow(
@@ -199,6 +285,12 @@ pub(crate) enum CoeffUseFscBranch {
 /// Error returned by the loaded `useFsc` branch selector.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum CoeffUseFscBranchError {
+    /// The caller supplied a `SegmentId` outside `LosslessArray[]`.
+    #[error("coefficient frame-facts handoff received invalid segment_id {segment_id}")]
+    InvalidSegmentId {
+        /// Caller-provided segment id.
+        segment_id: usize,
+    },
     /// The ordinary branch rejected the selected input.
     #[error("coefficient useFsc ordinary branch failed: {0}")]
     Ordinary(#[from] CoeffOrdinaryBranchError),
@@ -393,6 +485,36 @@ pub(crate) fn apply_coeff_use_fsc_branch_from_base_q_facts(
         }
     };
     apply_coeff_use_fsc_branch_from_shared_facts(state, cdfs, symbols, input)
+}
+
+/// Dispatches after deriving parsed frame and sequence facts.
+///
+/// AV2 § 5.4.8 / § 6.4.8 define `enable_fsc` and
+/// `enable_chroma_dctonly`, AV2 § 5.18.2 derives `LosslessArray[segmentId]`
+/// and reads `reduced_tx_set`, and AV2 § 6.17.2 derives the coefficient CDF
+/// q-context from `base_q_idx`
+/// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-4-8`;
+/// `docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-8`;
+/// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2`;
+/// `docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-2`).
+/// This loaded-but-unwired handoff converts those parsed frame facts into the
+/// existing base-q wrapper input while keeping all-zero inputs independent of
+/// frame facts. Runtime `coeffs()` integration, full `compute_tx_type`,
+/// block-syntax traversal, dequantization, inverse transform, residual add, and
+/// reconstruction remain out of scope.
+pub(crate) fn apply_coeff_use_fsc_branch_from_frame_facts(
+    state: &mut TileCoeffContextState,
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    input: CoeffUseFscFrameFactsInput,
+) -> Result<CoeffUseFscBranch, CoeffUseFscBranchError> {
+    let input = match input {
+        CoeffUseFscFrameFactsInput::AllZero(input) => CoeffUseFscBaseQFactsInput::AllZero(input),
+        CoeffUseFscFrameFactsInput::NonZero(input) => {
+            CoeffUseFscBaseQFactsInput::NonZero(input.base_q_input()?)
+        }
+    };
+    apply_coeff_use_fsc_branch_from_base_q_facts(state, cdfs, symbols, input)
 }
 
 fn fsc_block_from_tx_size_geometry(

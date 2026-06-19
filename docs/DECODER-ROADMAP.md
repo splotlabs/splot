@@ -274,8 +274,13 @@ with FSC block geometry derived from generated `Tx_Width[txSz]` and
 `DECODE-COEFF-CDF-Q-CONTEXT-HANDOFF` now derives the coefficient-CDF q-context
 from frame `base_q_idx` using the § 6.17.2 `init_coeff_cdfs()` buckets before
 delegating to that shared-facts wrapper, while preserving all-zero bypass.
-Runtime `coeffs()` wiring and runtime derivation of the remaining shared facts
-remain unwired.
+`DECODE-COEFF-FRAME-FACTS-HANDOFF` now carries parsed sequence/frame
+coefficient facts (`enable_fsc`, `enable_chroma_dctonly`, `reduced_tx_set`,
+`LosslessArray[]`, and `base_q_idx`) through the tile payload work unit and
+derives the corresponding nonzero branch inputs before the base-q handoff.
+Runtime `coeffs()` wiring and runtime derivation of remaining block facts
+(`PlaneTxType`, `fsc_mode`, `is_inter`, segment id, transform geometry, and
+ordinary mode/TX facts) remain unwired.
 Separately, `DECODE-COEFF-ORDINARY-DERIVED-BASE-PASS` now composes the ordinary
 state-derived first pass into the ordinary coefficient pass, carrying
 first-pass `isHidden`, `sumAbs1`, and `useTcq` into the interleaved

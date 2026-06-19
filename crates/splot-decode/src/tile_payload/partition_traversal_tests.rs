@@ -8,9 +8,10 @@ use core::ops::Range;
 use super::super::cdf::{
     FrameCdfSubset, TileCdfPolicyInput, TileCdfWorkUnitBoundary, tile_cdf_save_policy,
 };
-use super::super::{SymbolInitBoundary, TileBruPath, TilePayloadSource};
+use super::super::{SymbolInitBoundary, TileBruPath, TileCoeffFrameFacts, TilePayloadSource};
 use super::*;
 use crate::{DecodeLayerSelection, DecodeLimitError, DecodeLimitThreshold, DecodeObuSourceKind};
+use splot_core::segment::MAX_SEGMENTS;
 use splot_core::span::{ByteOffset, ByteSpan};
 use splot_core::symbol::{CdfUpdateMode, SymbolDecoder, SymbolDecoderConfig};
 use splot_core::tables::cdf::DEFAULT_Y_MODE_SET_CDF;
@@ -76,6 +77,7 @@ fn make_work_unit_at(
         tile_byte_span: ByteSpan::new(ByteOffset::new(128), payload.len() as u64),
         tile_size: payload.len() as u64,
         current_q_index_at_entry: 0,
+        coeff_frame_facts: TileCoeffFrameFacts::new(false, false, 0, [false; MAX_SEGMENTS], 0),
         bru_path: TileBruPath::NotUsed,
         symbol: SymbolInitBoundary {
             consumed_bits: payload.len().saturating_mul(8).min(15) as u64,
