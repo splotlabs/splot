@@ -260,7 +260,7 @@ pub(crate) fn apply_nonzero_coeff_fsc_sign_pass(
     })
 }
 
-fn preflight_pass(
+pub(super) fn preflight_pass(
     block: &TransformCoeffBlockState,
     level_walk: &FscCoeffScanWalk,
     scan: &[u16],
@@ -286,7 +286,7 @@ fn preflight_pass(
     Ok(())
 }
 
-fn fsc_sign_entries(
+pub(super) fn fsc_sign_entries(
     block: &TransformCoeffBlockState,
     seg_eob: usize,
     scan: &[u16],
@@ -346,7 +346,7 @@ fn preflight_entry(
     Ok(())
 }
 
-fn derive_fsc_sign_input(
+pub(super) fn derive_fsc_sign_input(
     entry: CoeffScanEntry,
     block: &TransformCoeffBlockState,
     config: CoeffFscLevelPassConfig,
@@ -376,7 +376,7 @@ fn derive_fsc_sign_input(
     })
 }
 
-fn read_fsc_sign_symbol(
+pub(super) fn read_fsc_sign_symbol(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
     input: CoeffFscSignReadInput,
@@ -398,6 +398,6 @@ fn read_fsc_sign_symbol(
     })
 }
 
-const fn quant_sign_value(sign: bool) -> i32 {
+pub(super) const fn quant_sign_value(sign: bool) -> i32 {
     if sign { -1 } else { 1 }
 }

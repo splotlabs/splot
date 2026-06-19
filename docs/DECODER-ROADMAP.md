@@ -232,8 +232,14 @@ context, or wire runtime `coeffs()`.
 loaded-but-unwired second pass: it walks `0..segEob`, derives `idtx_sign`
 selectors from evolving local `QuantSign[]` and `Level[]`, reads signs only for
 nonzero levels, writes local `QuantSign[]` so later sign contexts observe prior
-signs, and leaves `Quant[]` untouched. It still does not run `read_quant`, write
-nonzero `Quant[]`, commit tile context, or wire runtime `coeffs()`.
+signs, and leaves `Quant[]` untouched.
+`DECODE-COEFF-FSC-QUANT-PASS` now composes the FSC/IDTX second loop in a
+loaded-but-unwired pass: starting from the level pass, it interleaves
+`idtx_sign`, immediate `QuantSign[]` writes, § 5.20.7.28 `read_quant` with FSC
+constants (`isHidden = 0`, `maxLevel = NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1`,
+`allowTcq = 0`), signed local `Quant[]` writes, and final `culLevel` /
+`dcCategory` derivation. It still does not commit tile context or wire runtime
+`coeffs()`.
 Separately, `DECODE-COEFF-ORDINARY-DERIVED-BASE-PASS` now composes the ordinary
 state-derived first pass into the ordinary coefficient pass, carrying
 first-pass `isHidden`, `sumAbs1`, and `useTcq` into the interleaved
