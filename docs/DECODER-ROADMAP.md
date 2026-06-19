@@ -287,9 +287,14 @@ condition before base-q delegation.
 runtime's traced luma and V all-zero coefficient applications through that top
 frame-facts coefficient wrapper, preserving the all-zero bypass and output
 identity while leaving nonzero `coeffs()` unwired.
+`DECODE-COEFF-RUNTIME-TX-SIZE-GEOMETRY-HANDOFF` now derives those traced all-zero
+runtime `txSz` inputs from the luma 64x64 and V 16x16 transform geometry through
+the generated AV2 § 9.2 `Tx_Width` / `Tx_Height` tables, removing the local
+transform-size ordinals while preserving output identity and fail-closed CDF /
+symbol state.
 Runtime `coeffs()` wiring and runtime derivation of remaining block facts
-(`PlaneTxType`, `fsc_mode`, `is_inter`, segment id, transform geometry, and
-ordinary mode/TX facts) remain unwired.
+(`PlaneTxType`, `fsc_mode`, `is_inter`, segment id, broad transform-block
+geometry, and ordinary mode/TX facts) remain unwired.
 Separately, `DECODE-COEFF-ORDINARY-DERIVED-BASE-PASS` now composes the ordinary
 state-derived first pass into the ordinary coefficient pass, carrying
 first-pass `isHidden`, `sumAbs1`, and `useTcq` into the interleaved

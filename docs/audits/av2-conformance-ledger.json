@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "c0d6b40dac38b3923a0ff906ac36b6d38bbaf716",
+  "audited_commit": "015fff67e67833dedba8769e0708f7d90293ca69",
   "outcome": "success",
   "files": [
     {
@@ -1844,7 +1844,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal.rs",
-      "sha256": "f43c2a96b1649d54cf2f133ec11b5bad1e144e3974299d9d92c95274af91b254",
+      "sha256": "c518e3a3b88f1623a436fa66ae800c6d045f82eace7706547417067b79b89063",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-MINIMAL-TIER-RUNTIME-SUCCESS"
@@ -1905,10 +1905,11 @@
     },
     {
       "path": "crates/splot-decode/src/tile_payload/block_symbol.rs",
-      "sha256": "523731058edf421299916f73efd8bf3c2cc6bd8c06625c879a56588ca44917b9",
+      "sha256": "03ee3de510f2e6689bc2f3a164fc3819400a737a407df60c1f775738d6c4469a",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-COEFF-RUNTIME-FRAME-ENTRY-HANDOFF",
+        "DECODE-COEFF-RUNTIME-TX-SIZE-GEOMETRY-HANDOFF",
         "DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER",
         "DECODE-TILE-CDF-SELECTION-BOUNDARY"
       ],
@@ -4176,7 +4177,7 @@
     },
     {
       "path": "docs/DECODER-ROADMAP.md",
-      "sha256": "2ffb3c353613eff08575d809f73dc267065e3c9dd39d4f0efb4296b75237db47",
+      "sha256": "751671fe20edc6edd0cde86de57c2798a99ba153cbc73e68b0442e7f6553e337",
       "scope_kind": "docs",
       "feature_ids": [
         "DECODE-COEFF-ALL-ZERO-BLOCK-STATE",
@@ -4230,6 +4231,7 @@
         "DECODE-COEFF-QUANT-STATE-WRITE",
         "DECODE-COEFF-READ-QUANT-SYNTAX",
         "DECODE-COEFF-RUNTIME-FRAME-ENTRY-HANDOFF",
+        "DECODE-COEFF-RUNTIME-TX-SIZE-GEOMETRY-HANDOFF",
         "DECODE-COEFF-SCAN-WALK",
         "DECODE-COEFF-SIGN-SOURCE-DERIVE",
         "DECODE-COEFF-SIGN-SYMBOL-READ",
@@ -4273,7 +4275,7 @@
     },
     {
       "path": "docs/DECODER-SPEC-COVERAGE.md",
-      "sha256": "739d7dc696f204b316e79816eba2186413e1b0d39e03565f2ab947218c98da8f",
+      "sha256": "a442d50ec2b7283ef89f103331683b7be3aa808bcfac0d9bb3c9609b73970bd0",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-8.2-SYMBOL-DECODER",
@@ -4339,6 +4341,7 @@
         "DECODE-COEFF-QUANT-STATE-WRITE",
         "DECODE-COEFF-READ-QUANT-SYNTAX",
         "DECODE-COEFF-RUNTIME-FRAME-ENTRY-HANDOFF",
+        "DECODE-COEFF-RUNTIME-TX-SIZE-GEOMETRY-HANDOFF",
         "DECODE-COEFF-SCAN-WALK",
         "DECODE-COEFF-SIGN-SOURCE-DERIVE",
         "DECODE-COEFF-SIGN-SYMBOL-READ",
@@ -4392,7 +4395,7 @@
     },
     {
       "path": "docs/DECODER-SUPPORT-MATRIX.toml",
-      "sha256": "3357380e20ece7bf567ea18b2c742437e1dbd3863ad736268c8fcd8be23ac98d",
+      "sha256": "8bca5b8bf2c1810467dd0ae3a22e4d3c26fd1ae8bdeddedcde5a805fa837afd3",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-8.2-SYMBOL-DECODER",
@@ -4460,6 +4463,7 @@
         "DECODE-COEFF-QUANT-STATE-WRITE",
         "DECODE-COEFF-READ-QUANT-SYNTAX",
         "DECODE-COEFF-RUNTIME-FRAME-ENTRY-HANDOFF",
+        "DECODE-COEFF-RUNTIME-TX-SIZE-GEOMETRY-HANDOFF",
         "DECODE-COEFF-SCAN-WALK",
         "DECODE-COEFF-SIGN-SOURCE-DERIVE",
         "DECODE-COEFF-SIGN-SYMBOL-READ",
@@ -4537,7 +4541,7 @@
     },
     {
       "path": "docs/DECODER-SUPPORT-STATUS.md",
-      "sha256": "d40aa8d63eac58976e4cdb9bf1209242a50e91b38a66516c52851dbcf8f88101",
+      "sha256": "69bffceb482aaaa8ca4f1883769d5331b206a7f7de537b7260e814d8824e5356",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-8.2-SYMBOL-DECODER",
@@ -4605,6 +4609,7 @@
         "DECODE-COEFF-QUANT-STATE-WRITE",
         "DECODE-COEFF-READ-QUANT-SYNTAX",
         "DECODE-COEFF-RUNTIME-FRAME-ENTRY-HANDOFF",
+        "DECODE-COEFF-RUNTIME-TX-SIZE-GEOMETRY-HANDOFF",
         "DECODE-COEFF-SCAN-WALK",
         "DECODE-COEFF-SIGN-SOURCE-DERIVE",
         "DECODE-COEFF-SIGN-SYMBOL-READ",
@@ -4737,7 +4742,7 @@
     },
     {
       "path": "docs/FEATURE-STATUS.md",
-      "sha256": "865fd6119f37a0dbe163d7efa6d2299c93ad552a7b8ec23d331b915865221993",
+      "sha256": "f36949b40fda864d299abe2fff91f81c526863769b17c85aed4a9f068ca88739",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.10-RG",
@@ -4925,6 +4930,7 @@
         "DECODE-COEFF-QUANT-STATE-WRITE",
         "DECODE-COEFF-READ-QUANT-SYNTAX",
         "DECODE-COEFF-RUNTIME-FRAME-ENTRY-HANDOFF",
+        "DECODE-COEFF-RUNTIME-TX-SIZE-GEOMETRY-HANDOFF",
         "DECODE-COEFF-SCAN-WALK",
         "DECODE-COEFF-SIGN-SOURCE-DERIVE",
         "DECODE-COEFF-SIGN-SYMBOL-READ",
@@ -5085,7 +5091,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "1559b3728cb14fee659045665161cb1340df20065da4eb8952eec7f9534be341",
+      "sha256": "6bb8b845f8e14fb0fb70c37b09bbdefd085ebb07b0dffe687bf20d2a477222d5",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.10-RG",
@@ -5273,6 +5279,7 @@
         "DECODE-COEFF-QUANT-STATE-WRITE",
         "DECODE-COEFF-READ-QUANT-SYNTAX",
         "DECODE-COEFF-RUNTIME-FRAME-ENTRY-HANDOFF",
+        "DECODE-COEFF-RUNTIME-TX-SIZE-GEOMETRY-HANDOFF",
         "DECODE-COEFF-SCAN-WALK",
         "DECODE-COEFF-SIGN-SOURCE-DERIVE",
         "DECODE-COEFF-SIGN-SYMBOL-READ",
@@ -5404,7 +5411,7 @@
     },
     {
       "path": "docs/SPEC-COVERAGE.md",
-      "sha256": "e1fb22904a83938b4b25a8b4fe297d6e0dce6a0a46d6f474676998d546c73e0f",
+      "sha256": "f81fced5f1c59881b10d049f0f9e00e6538a39ed3a5f21122b81f94265fb91d5",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.10-RG",
@@ -5592,6 +5599,7 @@
         "DECODE-COEFF-QUANT-STATE-WRITE",
         "DECODE-COEFF-READ-QUANT-SYNTAX",
         "DECODE-COEFF-RUNTIME-FRAME-ENTRY-HANDOFF",
+        "DECODE-COEFF-RUNTIME-TX-SIZE-GEOMETRY-HANDOFF",
         "DECODE-COEFF-SCAN-WALK",
         "DECODE-COEFF-SIGN-SOURCE-DERIVE",
         "DECODE-COEFF-SIGN-SYMBOL-READ",
@@ -5868,7 +5876,7 @@
     },
     {
       "path": "docs/spec-coverage-writer.md",
-      "sha256": "33fbb16ee2fb0e7a188109ef402c670230d8340d3342c5dda15e1f19bcf86993",
+      "sha256": "4f4830b454363c09766651ab8ce483c908f6c58dbdb04782b373319764eee4e2",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.10-RG",
@@ -17587,6 +17595,112 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/coeff-runtime-frame-entry-handoff/.openspec.yaml",
+      "sha256": "d36d5ade13d63079e8fac69f1e3c45e2ee23d6b22c94f88c6a340556a023f11c",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/coeff-runtime-frame-entry-handoff/design.md",
+      "sha256": "70a7ef84170156b0ea9fc938e4c76f39f6615636c9bd947f3edac5f4bc50975c",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-COEFF-FRAME-FACTS-HANDOFF",
+        "DECODE-COEFF-PARITY-TCQ-HANDOFF"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/coeff-runtime-frame-entry-handoff/proposal.md",
+      "sha256": "3503958e8b426acdc7aefdc9ca97bbf3bbab07c737aae312ac399ce305bf54f0",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-COEFF-RUNTIME-FRAME-ENTRY-HANDOFF"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/coeff-runtime-frame-entry-handoff/specs/coeff-runtime-frame-entry-handoff/spec.md",
+      "sha256": "083459881919b71a5f0cb4e4b6452286deb50428cbf09e0cb7b05443657a6d0e",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-COEFF-RUNTIME-FRAME-ENTRY-HANDOFF"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/coeff-runtime-frame-entry-handoff/specs/decoder-support/spec.md",
+      "sha256": "3e78c0ac691e79a3c9ce425cf0ae31d34e6a1c858e386e37645eb719597f73da",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-COEFF-RUNTIME-FRAME-ENTRY-HANDOFF"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/coeff-runtime-frame-entry-handoff/tasks.md",
+      "sha256": "0890ed5b551b38cdf7327a18e4154cc587fc1b03f6985d610efce828e8725f9b",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-COEFF-RUNTIME-FRAME-ENTRY-HANDOFF"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/coeff-runtime-tx-size-geometry-handoff/.openspec.yaml",
+      "sha256": "d36d5ade13d63079e8fac69f1e3c45e2ee23d6b22c94f88c6a340556a023f11c",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/coeff-runtime-tx-size-geometry-handoff/design.md",
+      "sha256": "c2f37d88c32d566abee32e304fc86ee7b292f8283a51e3e0c804851d97c2ddf2",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-COEFF-RUNTIME-FRAME-ENTRY-HANDOFF",
+        "DECODE-COEFF-RUNTIME-TX-SIZE-GEOMETRY-HANDOFF"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/coeff-runtime-tx-size-geometry-handoff/proposal.md",
+      "sha256": "89c622c31be72c4aefb587411c48ba11c1d6697a273e79cdf0d658fbad079370",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-COEFF-RUNTIME-TX-SIZE-GEOMETRY-HANDOFF"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/coeff-runtime-tx-size-geometry-handoff/specs/coeff-runtime-tx-size-geometry-handoff/spec.md",
+      "sha256": "7bf193bcd5275a58cac2950fa5c7829ff9e9cf4331874b832a926f5f32848444",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-COEFF-RUNTIME-TX-SIZE-GEOMETRY-HANDOFF"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/coeff-runtime-tx-size-geometry-handoff/specs/decoder-support/spec.md",
+      "sha256": "af177f9ba74e9254fd601fd328a4b121dd712a67338ad6afdcbe1addf0e25aa3",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-COEFF-RUNTIME-TX-SIZE-GEOMETRY-HANDOFF"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/coeff-runtime-tx-size-geometry-handoff/tasks.md",
+      "sha256": "67054ec0719296e1b52be64ba1bebcd840c88f8f85742ea9513bbfa0a628f31f",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-COEFF-RUNTIME-TX-SIZE-GEOMETRY-HANDOFF"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/coeff-sign-source-derive/.openspec.yaml",
       "sha256": "dd9d551d7825a1c1f544545d7183ea272f4812c76e70496415de27a9eb5315d1",
       "scope_kind": "openspec",
@@ -19288,7 +19402,7 @@
     },
     {
       "path": "xtask/src/decoder_conformance_coverage.rs",
-      "sha256": "771f1ae8308c217b715af35c56bdb982e1345d0b08c5c4b90181f9fed5364a51",
+      "sha256": "27d2b4ab634059b4c1774617551b53489af2323c4558fbf63220d5fea7a4997c",
       "scope_kind": "workspace:xtask",
       "feature_ids": [
         "AV2-8.2-SYMBOL-DECODER",
@@ -19354,6 +19468,7 @@
         "DECODE-COEFF-QUANT-STATE-WRITE",
         "DECODE-COEFF-READ-QUANT-SYNTAX",
         "DECODE-COEFF-RUNTIME-FRAME-ENTRY-HANDOFF",
+        "DECODE-COEFF-RUNTIME-TX-SIZE-GEOMETRY-HANDOFF",
         "DECODE-COEFF-SCAN-WALK",
         "DECODE-COEFF-SIGN-SOURCE-DERIVE",
         "DECODE-COEFF-SIGN-SYMBOL-READ",
