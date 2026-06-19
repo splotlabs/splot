@@ -138,6 +138,8 @@ impl<'a> FrameCandidateTileFacts<'a> {
             coeff.enable_chroma_dctonly,
             usize::from(tail.reduced_tx_set),
             lossless.lossless_array,
+            lossless.allow_tcq,
+            lossless.allow_parity_hiding,
             quant.base_q_idx,
         );
 

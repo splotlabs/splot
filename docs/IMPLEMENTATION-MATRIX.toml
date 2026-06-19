@@ -10284,6 +10284,69 @@ fixtures = [
 diagnostics = ["decode/unsupported-feature"]
 
 [[feature]]
+id = "DECODE-COEFF-PARITY-TCQ-HANDOFF"
+name = "Coefficient parity-hiding and TCQ handoff"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["3", "5.18.2", "5.20.7.27", "8.3.2"]
+sources = [
+    "docs/spec/av2/1.0.0/03-symbols.md",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/tile_payload/coeff_loop/use_fsc_branch.rs"
+openspec_change = "coeff-parity-tcq-handoff"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Extends the crate-private loaded-but-unwired coefficient frame-facts handoff so `TileCoeffFrameFacts` also carries parsed frame `allow_tcq` and `allow_parity_hiding` from the §5.18.2 lossless tail through tile-payload facts and work units. `CoeffUseFscFrameFactsNonZeroInput::base_q_input` now derives AV2 §5.20.7.27 ordinary lower facts before base-q delegation: `parity_hiding = allow_parity_hiding && !Lossless && plane == 0 && PlaneTxType != IDTX`, and `use_tcq = allow_tcq && plane == 0 && !Lossless && txClass == TX_CLASS_2D && !useFsc`, reusing the existing §8.3.2 `CoeffTransformClass::from_plane_tx_type` helper and the already-derived `useFsc` condition. All-zero inputs still bypass frame facts, and invalid segment ids still fail before CDF, context-state, or symbol mutation. Tests cover exact lower-packet derivation, lossless/chroma/IDTX-FSC/non-2D suppression, parity and TCQ equivalence against explicit base-q packets, all-zero bypass, FSC/ordinary equivalence, invalid-segment fail-atomic behavior, and parser-derived allow-flag propagation from `FrameHeaderCore`. This feature remains partial: runtime `coeffs()` does not call this wrapper, runtime `PlaneTxType`, `fsc_mode`, `is_inter`, segment id, transform geometry, ordinary mode/TX facts, full `compute_tx_type`, block syntax traversal, dequantization, inverse transform, residual add, reconstruction, reference refresh, AVM/dav2d invocation, public APIs, and broad `decode_block()` / `decode_tile()` support remain unimplemented."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "partial"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/tile_payload/coeff_loop/use_fsc_frame_facts_tests.rs::coefficient_frame_facts_nonzero_input_derives_lower_packet",
+    "crates/splot-decode/src/tile_payload/coeff_loop/use_fsc_frame_facts_tests.rs::coefficient_frame_facts_lossless_suppresses_parity_hiding_and_tcq",
+    "crates/splot-decode/src/tile_payload/coeff_loop/use_fsc_frame_facts_tests.rs::coefficient_frame_facts_chroma_suppresses_parity_hiding_and_tcq",
+    "crates/splot-decode/src/tile_payload/coeff_loop/use_fsc_frame_facts_tests.rs::coefficient_frame_facts_idtx_fsc_suppresses_parity_hiding_and_tcq",
+    "crates/splot-decode/src/tile_payload/coeff_loop/use_fsc_frame_facts_tests.rs::coefficient_frame_facts_non_2d_suppresses_tcq_only",
+    "crates/splot-decode/src/tile_payload/coeff_loop/use_fsc_frame_facts_tests.rs::coefficient_frame_facts_parity_hiding_matches_explicit_base_q_path",
+    "crates/splot-decode/src/tile_payload/coeff_loop/use_fsc_frame_facts_tests.rs::coefficient_frame_facts_tcq_matches_explicit_base_q_path",
+    "crates/splot-decode/src/tile_payload/coeff_loop/use_fsc_frame_facts_tests.rs::coefficient_frame_facts_invalid_segment_id_is_fail_atomic",
+    "crates/splot-decode/src/tile_payload/derived_tests.rs::derived_boundary_threads_parser_coeff_frame_facts",
+]
+commands = [
+    "cargo test -p splot-decode use_fsc_frame_facts --locked",
+    "cargo test -p splot-decode derived_boundary_threads_parser_coeff_frame_facts --locked",
+    "cargo test -p splot-decode coeff_loop --locked",
+    "cargo test -p splot-decode tile_payload --locked",
+    "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-decoder-conformance-coverage",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-decode/src/tile_payload.rs",
+    "crates/splot-decode/src/tile_payload/input.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/use_fsc_branch.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/use_fsc_frame_facts_tests.rs",
+    "crates/splot-decode/src/tile_payload/derived_tests.rs",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
 id = "DECODE-COEFF-BASE-SYMBOL-READ"
 name = "Coefficient base symbol read"
 category = "infrastructure"

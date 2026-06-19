@@ -306,6 +306,11 @@ fn derived_boundary_threads_parser_coeff_frame_facts() {
         usize::from(tail.reduced_tx_set)
     );
     assert_eq!(coeff_facts.base_q_idx(), quant.base_q_idx);
+    assert_eq!(coeff_facts.allow_tcq(), lossless.allow_tcq);
+    assert_eq!(
+        coeff_facts.allow_parity_hiding(),
+        lossless.allow_parity_hiding
+    );
     assert_eq!(
         coeff_facts.lossless_for_segment(0),
         Some(lossless.lossless_array[0])
