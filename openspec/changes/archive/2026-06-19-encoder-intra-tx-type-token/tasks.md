@@ -1,7 +1,7 @@
 ## 1. intra_tx_type token
 
 - [x] 1.1 Add `CoefficientTokenSyntax::IntraTxType` + `CoefficientCdfRowSelector::IntraTxTypeSet1 { tx_size_sqr }` and a `transform_type.rs` submodule with `intra_tx_type_set1_token(tx_size_sqr, symbol)`.
-- [x] 1.2 Wire the 4x4 `TX_SET_INTRA_1` row into the generic CDF-row router; add the `IntraTxType` arm to the closed-loop single-DC recovery helper (no-op).
+- [x] 1.2 Wire all three `Tx_Size_Sqr` `TX_SET_INTRA_1` rows into the generic CDF-row router; add the `IntraTxType` arm to the closed-loop single-DC recovery helper (no-op).
 - [x] 1.3 Extract `CoefficientTokenCdfRows` into a `cdf_rows.rs` submodule to keep the parent under the 1000-line budget.
 
 ## 2. Tests

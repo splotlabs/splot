@@ -16,8 +16,8 @@ coefficient base pass for `eob > 1` blocks — wasn't modeled. This change adds 
   `intra_tx_type_set1_token(tx_size_sqr, symbol)`. The symbol indexes the §9
   `Md_Idx_To_Type[Size_Class[txSz]][intraDir]` row; for a 4x4 (`Tx_Size_Sqr 0`)
   `DC_PRED` block, symbol 0 selects `DCT_DCT` (`Md_Idx_To_Type[0][0][0] = 0`).
-- Wire the 4x4 `TX_SET_INTRA_1` row into the generic CDF-row router so the token
-  roundtrips through the in-tree AV2 §8.2 coder.
+- Wire all three `TX_SET_INTRA_1` rows (one per `Tx_Size_Sqr`) into the generic
+  CDF-row router so the token roundtrips through the in-tree AV2 §8.2 coder.
 - Extract the generic CDF-row router (`CoefficientTokenCdfRows`) into a
   `coefficient_tokenization/cdf_rows.rs` submodule to keep the parent file under the
   1000-line source budget.

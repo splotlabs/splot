@@ -44,9 +44,10 @@ packet milestone (AVM cross-check).
    submodule and the generic router (`CoefficientTokenCdfRows`) is extracted to a
    `cdf_rows` submodule (no behaviour change).
 
-2. **Parameterized but 4x4-routed.** `intra_tx_type_set1_token(tx_size_sqr, symbol)`
-   is parameterized, but the router currently stores only the 4x4 (`Tx_Size_Sqr 0`)
-   row — the minimal block's case; other sizes are future bricks.
+2. **All `Tx_Size_Sqr` rows routed.** `intra_tx_type_set1_token(tx_size_sqr, symbol)`
+   is parameterized over `Tx_Size_Sqr`, and the router stores and routes all three
+   `TileIntraTxTypeSet1Cdf` rows (§8.3.2 indexes the CDF by `Tx_Size_Sqr[txSz]`), so
+   every valid `TX_SET_INTRA_1` size roundtrips, not just 4x4.
 
 ## Flight Manifest
 
