@@ -551,7 +551,7 @@ pub(crate) fn apply_coeff_ordinary_branch_from_tx_size_dimensions(
 
 /// Dispatches the ordinary branch after deriving `PlaneTxType` from `Mode_To_Txfm`.
 ///
-/// This covers only the non-lossless intra chroma non-directional subset of AV2
+/// This covers only the non-lossless intra chroma subset of AV2
 /// § 5.20.7.29 `compute_tx_type`
 /// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-29`) where
 /// `enable_chroma_dctonly` first short-circuits to `DCT_DCT`; otherwise
@@ -583,7 +583,7 @@ pub(crate) fn apply_coeff_ordinary_branch_from_mode_to_txfm(
 /// `txSet` from generated AV2 § 9.2 transform-size conversion tables plus
 /// caller-resolved `is_inter`, `reduced_tx_set`, and `enable_chroma_dctonly`.
 /// It delegates transform-type selection to the non-lossless intra chroma
-/// non-directional `Mode_To_Txfm` subset wrapper. Full frame-state derivation,
+/// `Mode_To_Txfm` subset wrapper. Full frame-state derivation,
 /// full `compute_tx_type`, runtime `coeffs()`, dequantization, inverse
 /// transform, residual add, and reconstruction remain out of scope.
 pub(crate) fn apply_coeff_ordinary_branch_from_tx_set(
