@@ -618,6 +618,20 @@ local_reference_evidence = []
 notes = "Adds crate-private loaded-but-unwired `splot-decode` support for the FSC/IDTX AV2 §5.20.7.27 level first pass. `apply_nonzero_coeff_fsc_level_pass` accepts `NonZeroCoeffBlockStart`, a checked `FscCoeffScanWalk`, and caller-resolved coefficient-CDF q/tx-size facts; validates static EOB/scan and adjusted-geometry facts before CDF or symbol consumption; derives `coeff_base_bob`, later `coeff_base_idtx`, and conditional `coeff_br_idtx` selectors using the existing §8.3.2 context helpers; clamps the selector transform-size axis to `Min(TX_16X16, txSzCtx)`; reads selected rows through `SymbolDecoder`; and writes local `Level[]` state in forward `bob..segEob` order. This row remains partial: runtime `useFsc`, `segEob`, and `coeffs()` integration, IDTX sign reads, `read_quant`, nonzero `QuantSign[]` and `Quant[]`, tile context commits, dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public APIs, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` support remain unimplemented."
 
 [[row]]
+id = "coeff-fsc-sign-pass"
+name = "Coefficient FSC sign pass"
+feature_id = "DECODE-COEFF-FSC-SIGN-PASS"
+spec_sections = ["5.20.7.27", "8.2.5", "8.2.6", "8.3.2", "9.3"]
+parser_source = "crates/splot-core/src/symbol.rs; crates/splot-core/src/tables/cdf.rs; docs/spec/av2/1.0.0/05-syntax-structures.md; docs/spec/av2/1.0.0/08-parsing-process.md; docs/spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md"
+decode_module = "crates/splot-decode/src/tile_payload/coeff_loop/fsc_sign_pass.rs; crates/splot-decode/src/tile_payload/coeff_loop/fsc_sign_pass_tests.rs"
+tier = "tier1-intra"
+status = "partial"
+self_contained_tests = ["crates/splot-decode/src/tile_payload/coeff_loop/fsc_sign_pass_tests.rs::coefficient_fsc_sign_pass_reads_idtx_signs_and_writes_quant_signs", "crates/splot-decode/src/tile_payload/coeff_loop/fsc_sign_pass_tests.rs::coefficient_fsc_sign_pass_derives_context_from_written_quant_sign", "crates/splot-decode/src/tile_payload/coeff_loop/fsc_sign_pass_tests.rs::coefficient_fsc_sign_pass_rejects_static_config_before_consumption", "crates/splot-decode/src/tile_payload/coeff_loop/fsc_sign_pass_tests.rs::coefficient_fsc_sign_pass_rejects_short_scan_before_consumption", "cargo test -p splot-decode fsc_sign --locked", "cargo test -p splot-decode coeff_loop --locked", "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings", "cargo xtask check-decoder-support", "cargo xtask check-decoder-conformance-coverage", "cargo xtask check-feature-status"]
+diagnostics = ["decode/unsupported-feature"]
+local_reference_evidence = []
+notes = "Adds crate-private loaded-but-unwired `splot-decode` support for the FSC/IDTX AV2 §5.20.7.27 sign pass after the level first pass. `apply_nonzero_coeff_fsc_sign_pass` consumes `NonZeroCoeffFscLevelPass`, validates caller-resolved adjusted geometry and scan coverage for the `0..segEob` second loop, derives `IdtxSign` selectors from evolving local `QuantSign[]` and `Level[]` state using the existing §8.3.2 `idtx_sign_ctx`, clamps the selector transform-size axis to `Min(TX_16X16, txSzCtx)`, reads `idtx_sign` only for nonzero levels, and writes local `QuantSign[]` to `-1` or `1` so later IDTX sign contexts observe prior signs. `Quant[]` remains untouched. This row remains partial: runtime `useFsc`, `segEob`, and `coeffs()` integration, `read_quant`, nonzero `Quant[]`, tile context commits, dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public APIs, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` support remain unimplemented."
+
+[[row]]
 id = "coeff-base-symbol-read"
 name = "Coefficient base symbol read"
 feature_id = "DECODE-COEFF-BASE-SYMBOL-READ"

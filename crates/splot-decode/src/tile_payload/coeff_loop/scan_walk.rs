@@ -19,6 +19,15 @@ pub(crate) struct CoeffScanEntry {
 }
 
 impl CoeffScanEntry {
+    pub(super) const fn new(scan_index: usize, pos: usize, row: usize, col: usize) -> Self {
+        Self {
+            scan_index,
+            pos,
+            row,
+            col,
+        }
+    }
+
     /// Scan index `c` from the § 5.20.7.27 loop.
     #[must_use]
     pub(crate) const fn scan_index(self) -> usize {
@@ -139,12 +148,12 @@ pub(crate) fn walk_nonzero_coeff_scan(
                 coeff_count,
             });
         }
-        entries.push(CoeffScanEntry {
+        entries.push(CoeffScanEntry::new(
             scan_index,
             pos,
-            row: pos / width,
-            col: pos % width,
-        });
+            pos / width,
+            pos % width,
+        ));
     }
 
     Ok(NonZeroCoeffScanWalk { entries })
@@ -194,12 +203,12 @@ pub(crate) fn walk_fsc_coeff_scan(
                 coeff_count,
             });
         }
-        entries.push(CoeffScanEntry {
+        entries.push(CoeffScanEntry::new(
             scan_index,
             pos,
-            row: pos / width,
-            col: pos % width,
-        });
+            pos / width,
+            pos % width,
+        ));
     }
 
     Ok(FscCoeffScanWalk {

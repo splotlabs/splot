@@ -228,10 +228,17 @@ against local block geometry, derives `coeff_base_bob`, later
 and writes local `Level[]` in forward scan order. It still does not read
 `idtx_sign`, run `read_quant`, write `QuantSign[]` or `Quant[]`, commit tile
 context, or wire runtime `coeffs()`.
-`DECODE-COEFF-ORDINARY-DERIVED-BASE-PASS` now composes that first pass into the
-ordinary coefficient pass, carrying first-pass `isHidden`, `sumAbs1`, and
-`useTcq` into the interleaved sign/`read_quant`/signed `Quant[]` stage and
-deriving second-pass plane/transform-class facts from the same config.
+`DECODE-COEFF-FSC-SIGN-PASS` now consumes the FSC/IDTX sign rows in a
+loaded-but-unwired second pass: it walks `0..segEob`, derives `idtx_sign`
+selectors from evolving local `QuantSign[]` and `Level[]`, reads signs only for
+nonzero levels, writes local `QuantSign[]` so later sign contexts observe prior
+signs, and leaves `Quant[]` untouched. It still does not run `read_quant`, write
+nonzero `Quant[]`, commit tile context, or wire runtime `coeffs()`.
+Separately, `DECODE-COEFF-ORDINARY-DERIVED-BASE-PASS` now composes the ordinary
+state-derived first pass into the ordinary coefficient pass, carrying
+first-pass `isHidden`, `sumAbs1`, and `useTcq` into the interleaved
+sign/`read_quant`/signed `Quant[]` stage and deriving second-pass
+plane/transform-class facts from the same config.
 `DECODE-COEFF-ORDINARY-DERIVED-SIGN-PASS` now removes caller-supplied sign
 inputs from that derived-base path: it derives sign sources from the first-pass
 `Level[]`, `isHidden`, `sumAbs1`, plane, transform class, and DC context-line
