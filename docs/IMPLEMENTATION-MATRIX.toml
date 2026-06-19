@@ -10348,6 +10348,64 @@ fixtures = [
 diagnostics = ["decode/unsupported-feature"]
 
 [[feature]]
+id = "DECODE-COEFF-RUNTIME-FRAME-ENTRY-HANDOFF"
+name = "Runtime coefficient frame-entry handoff"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.20.7.27", "8.3.2", "9.2"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2",
+    "docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/tile_payload/block_symbol.rs"
+openspec_change = "coeff-runtime-frame-entry-handoff"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Routes the minimal flat-intra runtime's traced all-zero coefficient applications through the crate-private frame-facts coefficient wrapper instead of calling the older ordinary branch entry directly. The luma trace passes `TX_64X64` all-zero geometry and the V-plane trace passes `TX_16X16` all-zero geometry into `apply_coeff_use_fsc_branch_from_frame_facts`, preserving AV2 §5.20.7.27 all-zero ordering and bypassing nonzero frame/segment/parity/TCQ derivation. Tests prove the new frame-entry all-zero path is equivalent to the direct ordinary all-zero branch for both traced shapes, preserves CDF rows and symbol cursor state, and keeps the minimal block-symbol/runtime frontier behavior unchanged. This feature remains partial: runtime nonzero `coeffs()` is still not wired, runtime `PlaneTxType`, `fsc_mode`, `is_inter`, segment id, transform geometry, ordinary mode/TX facts, full `compute_tx_type`, dequantization, inverse transform, residual add, reconstruction changes, output expansion, reference refresh, public APIs, AVM/dav2d invocation, and broad `decode_block()` / `decode_tile()` support remain unimplemented."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "partial"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/tile_payload/block_symbol.rs::tests::all_zero_coefficient_frame_entry_matches_direct_ordinary_branch",
+    "crates/splot-decode/src/tile_payload/runtime_frontier.rs::tests::block_symbol_frontier_accepts_minimal_fixture_trace",
+    "crates/splot-decode/src/tile_payload/runtime_frontier.rs::tests::block_symbol_frontier_rejects_exit_symbol_padding_failure",
+    "crates/splot-decode/src/runtime_hash.rs::tests::minimal_fixture_decodes_to_hash_report",
+    "crates/splot-decode/src/runtime_raw.rs::tests::minimal_fixture_decodes_to_exact_raw_bytes",
+    "crates/splot-decode/src/runtime_y4m.rs::tests::minimal_fixture_decodes_to_exact_y4m_bytes",
+]
+commands = [
+    "cargo test -p splot-decode block_symbol --locked",
+    "cargo test -p splot-decode runtime_hash --locked",
+    "cargo test -p splot-decode runtime_raw --locked",
+    "cargo test -p splot-decode runtime_y4m --locked",
+    "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-decoder-conformance-coverage",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-decode/src/tile_payload/block_symbol.rs",
+    "crates/splot-decode/src/runtime_minimal.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/use_fsc_branch.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_pass/geometry.rs",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
 id = "DECODE-COEFF-BASE-SYMBOL-READ"
 name = "Coefficient base symbol read"
 category = "infrastructure"

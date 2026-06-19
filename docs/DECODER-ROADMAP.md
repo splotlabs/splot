@@ -283,6 +283,10 @@ derives the corresponding nonzero branch inputs before the base-q handoff.
 `parityHiding` / `useTcq` from those frame flags, `Lossless`,
 `PlaneTxType`, transform class, plane, and the already-derived `useFsc`
 condition before base-q delegation.
+`DECODE-COEFF-RUNTIME-FRAME-ENTRY-HANDOFF` now routes the minimal flat-intra
+runtime's traced luma and V all-zero coefficient applications through that top
+frame-facts coefficient wrapper, preserving the all-zero bypass and output
+identity while leaving nonzero `coeffs()` unwired.
 Runtime `coeffs()` wiring and runtime derivation of remaining block facts
 (`PlaneTxType`, `fsc_mode`, `is_inter`, segment id, transform geometry, and
 ordinary mode/TX facts) remain unwired.
