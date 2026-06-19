@@ -391,7 +391,7 @@ pub(crate) struct CoeffQuantStateAccumulator {
 }
 
 impl CoeffQuantStateAccumulator {
-    /// Creates the ordinary non-FSC quant-state accumulator.
+    /// Creates a coefficient quant-state accumulator from caller-resolved facts.
     pub(crate) const fn new(config: CoeffQuantStateConfig) -> Self {
         Self {
             is_hidden: config.is_hidden,
@@ -403,6 +403,18 @@ impl CoeffQuantStateAccumulator {
             tcq_state: 0,
             hr_level_avg: 0,
         }
+    }
+
+    /// Applies one checked coefficient to the accumulator without mutating block storage.
+    pub(crate) fn apply_entry(
+        &mut self,
+        index: usize,
+        entry: CoeffScanEntry,
+        level: u32,
+        sign: bool,
+        input: CoeffQuantReadInput,
+    ) -> Result<CoeffQuantStateWrite, CoeffQuantStateWriteError> {
+        self.apply(index, entry, level, sign, input)
     }
 
     fn apply(
