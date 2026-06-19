@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "fcc10dac5539bc4defef411a67f44adfcdff3529",
+  "audited_commit": "c0d6b40dac38b3923a0ff906ac36b6d38bbaf716",
   "outcome": "success",
   "files": [
     {
@@ -1844,7 +1844,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal.rs",
-      "sha256": "463c7c7c6eff3730fca91752c561df3b821624535cf947fa8be2a81b647ccf33",
+      "sha256": "f43c2a96b1649d54cf2f133ec11b5bad1e144e3974299d9d92c95274af91b254",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-MINIMAL-TIER-RUNTIME-SUCCESS"
@@ -1905,9 +1905,10 @@
     },
     {
       "path": "crates/splot-decode/src/tile_payload/block_symbol.rs",
-      "sha256": "518aa29187b985d94e206b1d4949bf687beecb2b51fb924e3a24d1248a86de27",
+      "sha256": "523731058edf421299916f73efd8bf3c2cc6bd8c06625c879a56588ca44917b9",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
+        "DECODE-COEFF-RUNTIME-FRAME-ENTRY-HANDOFF",
         "DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER",
         "DECODE-TILE-CDF-SELECTION-BOUNDARY"
       ],
@@ -4175,7 +4176,7 @@
     },
     {
       "path": "docs/DECODER-ROADMAP.md",
-      "sha256": "551f105e5c51103ce5413f0e26235b1b589b1253af85f570f125c278455ed688",
+      "sha256": "2ffb3c353613eff08575d809f73dc267065e3c9dd39d4f0efb4296b75237db47",
       "scope_kind": "docs",
       "feature_ids": [
         "DECODE-COEFF-ALL-ZERO-BLOCK-STATE",
@@ -4228,6 +4229,7 @@
         "DECODE-COEFF-QUANT-PASS-MAXLEVEL-HANDOFF",
         "DECODE-COEFF-QUANT-STATE-WRITE",
         "DECODE-COEFF-READ-QUANT-SYNTAX",
+        "DECODE-COEFF-RUNTIME-FRAME-ENTRY-HANDOFF",
         "DECODE-COEFF-SCAN-WALK",
         "DECODE-COEFF-SIGN-SOURCE-DERIVE",
         "DECODE-COEFF-SIGN-SYMBOL-READ",
@@ -4271,7 +4273,7 @@
     },
     {
       "path": "docs/DECODER-SPEC-COVERAGE.md",
-      "sha256": "4ca11a66406218724a1b1006294aed17aab8e342eca794b53c67f3ceb71c3641",
+      "sha256": "739d7dc696f204b316e79816eba2186413e1b0d39e03565f2ab947218c98da8f",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-8.2-SYMBOL-DECODER",
@@ -4336,6 +4338,7 @@
         "DECODE-COEFF-QUANT-PASS-MAXLEVEL-HANDOFF",
         "DECODE-COEFF-QUANT-STATE-WRITE",
         "DECODE-COEFF-READ-QUANT-SYNTAX",
+        "DECODE-COEFF-RUNTIME-FRAME-ENTRY-HANDOFF",
         "DECODE-COEFF-SCAN-WALK",
         "DECODE-COEFF-SIGN-SOURCE-DERIVE",
         "DECODE-COEFF-SIGN-SYMBOL-READ",
@@ -4389,7 +4392,7 @@
     },
     {
       "path": "docs/DECODER-SUPPORT-MATRIX.toml",
-      "sha256": "75b5c6dea0bfd825876b9709081d670b723d2eba34a39d192932eeb686796cd8",
+      "sha256": "3357380e20ece7bf567ea18b2c742437e1dbd3863ad736268c8fcd8be23ac98d",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-8.2-SYMBOL-DECODER",
@@ -4456,6 +4459,7 @@
         "DECODE-COEFF-QUANT-PASS-MAXLEVEL-HANDOFF",
         "DECODE-COEFF-QUANT-STATE-WRITE",
         "DECODE-COEFF-READ-QUANT-SYNTAX",
+        "DECODE-COEFF-RUNTIME-FRAME-ENTRY-HANDOFF",
         "DECODE-COEFF-SCAN-WALK",
         "DECODE-COEFF-SIGN-SOURCE-DERIVE",
         "DECODE-COEFF-SIGN-SYMBOL-READ",
@@ -4533,7 +4537,7 @@
     },
     {
       "path": "docs/DECODER-SUPPORT-STATUS.md",
-      "sha256": "34a67abb37009cc956a6ccd2652ffe0fecc239950229a5302df42fa80d7c3384",
+      "sha256": "d40aa8d63eac58976e4cdb9bf1209242a50e91b38a66516c52851dbcf8f88101",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-8.2-SYMBOL-DECODER",
@@ -4600,6 +4604,7 @@
         "DECODE-COEFF-QUANT-PASS-MAXLEVEL-HANDOFF",
         "DECODE-COEFF-QUANT-STATE-WRITE",
         "DECODE-COEFF-READ-QUANT-SYNTAX",
+        "DECODE-COEFF-RUNTIME-FRAME-ENTRY-HANDOFF",
         "DECODE-COEFF-SCAN-WALK",
         "DECODE-COEFF-SIGN-SOURCE-DERIVE",
         "DECODE-COEFF-SIGN-SYMBOL-READ",
@@ -4732,7 +4737,7 @@
     },
     {
       "path": "docs/FEATURE-STATUS.md",
-      "sha256": "7e892be87411c073ae45ba829d54a98026901e8917f5482c177107474c24618c",
+      "sha256": "865fd6119f37a0dbe163d7efa6d2299c93ad552a7b8ec23d331b915865221993",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.10-RG",
@@ -4919,6 +4924,7 @@
         "DECODE-COEFF-QUANT-PASS-MAXLEVEL-HANDOFF",
         "DECODE-COEFF-QUANT-STATE-WRITE",
         "DECODE-COEFF-READ-QUANT-SYNTAX",
+        "DECODE-COEFF-RUNTIME-FRAME-ENTRY-HANDOFF",
         "DECODE-COEFF-SCAN-WALK",
         "DECODE-COEFF-SIGN-SOURCE-DERIVE",
         "DECODE-COEFF-SIGN-SYMBOL-READ",
@@ -5079,7 +5085,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "0415c0d07e8dc3729f9e8f1824011779bf0a412175a5304dcb0a12dd2f21ed68",
+      "sha256": "1559b3728cb14fee659045665161cb1340df20065da4eb8952eec7f9534be341",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.10-RG",
@@ -5266,6 +5272,7 @@
         "DECODE-COEFF-QUANT-PASS-MAXLEVEL-HANDOFF",
         "DECODE-COEFF-QUANT-STATE-WRITE",
         "DECODE-COEFF-READ-QUANT-SYNTAX",
+        "DECODE-COEFF-RUNTIME-FRAME-ENTRY-HANDOFF",
         "DECODE-COEFF-SCAN-WALK",
         "DECODE-COEFF-SIGN-SOURCE-DERIVE",
         "DECODE-COEFF-SIGN-SYMBOL-READ",
@@ -5397,7 +5404,7 @@
     },
     {
       "path": "docs/SPEC-COVERAGE.md",
-      "sha256": "d472a88cf048b21b7ce6c4e1d0d8cfd444abf3e2ac085ee101972060ac9a6b4f",
+      "sha256": "e1fb22904a83938b4b25a8b4fe297d6e0dce6a0a46d6f474676998d546c73e0f",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.10-RG",
@@ -5584,6 +5591,7 @@
         "DECODE-COEFF-QUANT-PASS-MAXLEVEL-HANDOFF",
         "DECODE-COEFF-QUANT-STATE-WRITE",
         "DECODE-COEFF-READ-QUANT-SYNTAX",
+        "DECODE-COEFF-RUNTIME-FRAME-ENTRY-HANDOFF",
         "DECODE-COEFF-SCAN-WALK",
         "DECODE-COEFF-SIGN-SOURCE-DERIVE",
         "DECODE-COEFF-SIGN-SYMBOL-READ",
@@ -19280,7 +19288,7 @@
     },
     {
       "path": "xtask/src/decoder_conformance_coverage.rs",
-      "sha256": "f280c271d995594df07513f30a4cdb80f1334e021fd695c6b6ff4306356355cb",
+      "sha256": "771f1ae8308c217b715af35c56bdb982e1345d0b08c5c4b90181f9fed5364a51",
       "scope_kind": "workspace:xtask",
       "feature_ids": [
         "AV2-8.2-SYMBOL-DECODER",
@@ -19345,6 +19353,7 @@
         "DECODE-COEFF-QUANT-PASS-MAXLEVEL-HANDOFF",
         "DECODE-COEFF-QUANT-STATE-WRITE",
         "DECODE-COEFF-READ-QUANT-SYNTAX",
+        "DECODE-COEFF-RUNTIME-FRAME-ENTRY-HANDOFF",
         "DECODE-COEFF-SCAN-WALK",
         "DECODE-COEFF-SIGN-SOURCE-DERIVE",
         "DECODE-COEFF-SIGN-SYMBOL-READ",

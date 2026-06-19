@@ -247,7 +247,7 @@ fn decode_minimal_block_symbol_error(
         | MinimalBlockSymbolTraceError::CoeffContextDimensionOverflow { .. }
         | MinimalBlockSymbolTraceError::CoeffContextState { .. }
         | MinimalBlockSymbolTraceError::CoeffLoopContext { .. }
-        | MinimalBlockSymbolTraceError::CoeffOrdinaryBranch { .. } => unsupported_at(
+        | MinimalBlockSymbolTraceError::CoeffFrameEntry { .. } => unsupported_at(
             "minimal_tile_coeff_context_state",
             offset,
             "minimal runtime hash support requires the traced flat tile coefficient context state",

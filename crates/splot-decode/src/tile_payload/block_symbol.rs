@@ -3,7 +3,8 @@
 
 //! Minimal flat intra block-symbol trace frontier.
 //!
-//! Feature tracking: `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER`.
+//! Feature tracking: `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER` and
+//! `DECODE-COEFF-RUNTIME-FRAME-ENTRY-HANDOFF`.
 
 use splot_core::Error as CoreError;
 use splot_core::symbol::{SymbolDecoder, SymbolDecoderSummary};
@@ -12,12 +13,13 @@ use super::DecodeTileWorkUnit;
 use super::cdf::block_context::{YModeIndexContext, reconstruct_minimal_y_mode, uv_mode_ctx};
 use super::cdf::block_read::BlockSymbolTraceReadError;
 use super::cdf::{TileCdfSelector, TileCdfSubset};
-use super::coeff_loop::ordinary_pass::{
-    CoeffOrdinaryBranchError, CoeffOrdinaryBranchInput, apply_coeff_ordinary_branch,
+use super::coeff_loop::ordinary_pass::geometry::CoeffOrdinaryTxSizeGeometryConfig;
+use super::coeff_loop::use_fsc_branch::{
+    CoeffUseFscBranchError, CoeffUseFscFrameFactsInput, apply_coeff_use_fsc_branch_from_frame_facts,
 };
 use super::coeff_loop::{
-    AllZeroCoeffBlockInput, CoeffLoopContextError, LumaAllZeroContextInput, VAllZeroContextInput,
-    luma_all_zero_context, v_all_zero_context,
+    CoeffLoopContextError, LumaAllZeroContextInput, VAllZeroContextInput, luma_all_zero_context,
+    v_all_zero_context,
 };
 use super::coeff_state::{TileCoeffContextState, TileCoeffStateError};
 
@@ -30,6 +32,8 @@ const MINIMAL_LUMA_TX_W4: usize = 16;
 const MINIMAL_LUMA_TX_H4: usize = 16;
 const MINIMAL_CHROMA_TX_W4: usize = 4;
 const MINIMAL_CHROMA_TX_H4: usize = 4;
+const TX_16X16: usize = 2;
+const TX_64X64: usize = 4;
 
 /// Summary returned after the traced block symbols and `exit_symbol()` pass.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -112,11 +116,11 @@ pub(crate) enum MinimalBlockSymbolTraceError {
         /// Source coefficient-loop context error.
         source: CoeffLoopContextError,
     },
-    /// Coefficient-loop ordinary branch handoff failed.
-    #[error("minimal block-symbol trace coefficient ordinary branch failed: {source}")]
-    CoeffOrdinaryBranch {
-        /// Source coefficient-loop ordinary branch error.
-        source: CoeffOrdinaryBranchError,
+    /// Coefficient-loop frame-entry handoff failed.
+    #[error("minimal block-symbol trace coefficient frame-entry handoff failed: {source}")]
+    CoeffFrameEntry {
+        /// Source coefficient-loop frame-entry error.
+        source: CoeffUseFscBranchError,
     },
     /// `exit_symbol()` rejected the tile payload suffix.
     #[error("minimal block-symbol trace exit_symbol failed: {source}")]
@@ -219,19 +223,17 @@ fn consume_trace(
         0,
         LUMA_OR_U_ALL_ZERO_TRANSFORM_REASON,
     )?;
-    apply_coeff_ordinary_branch(
+    apply_all_zero_coeff_frame_entry(
         &mut coeff_context,
         cdfs,
         symbols,
-        CoeffOrdinaryBranchInput::AllZero(AllZeroCoeffBlockInput {
+        CoeffOrdinaryTxSizeGeometryConfig {
             plane: 0,
-            x4: 0,
-            y4: 0,
-            w4: MINIMAL_LUMA_TX_W4,
-            h4: MINIMAL_LUMA_TX_H4,
-        }),
-    )
-    .map_err(|source| MinimalBlockSymbolTraceError::CoeffOrdinaryBranch { source })?;
+            start_x: 0,
+            start_y: 0,
+            tx_size: TX_64X64,
+        },
+    )?;
 
     // uv_mode (§ 8.3.2 context = `is_directional_mode(YMode)`; DC_PRED -> 0).
     decode_block_symbol(
@@ -275,21 +277,35 @@ fn consume_trace(
         0,
         V_ALL_ZERO_TRANSFORM_REASON,
     )?;
-    apply_coeff_ordinary_branch(
+    apply_all_zero_coeff_frame_entry(
         &mut coeff_context,
         cdfs,
         symbols,
-        CoeffOrdinaryBranchInput::AllZero(AllZeroCoeffBlockInput {
+        CoeffOrdinaryTxSizeGeometryConfig {
             plane: 2,
-            x4: 0,
-            y4: 0,
-            w4: MINIMAL_CHROMA_TX_W4,
-            h4: MINIMAL_CHROMA_TX_H4,
-        }),
-    )
-    .map_err(|source| MinimalBlockSymbolTraceError::CoeffOrdinaryBranch { source })?;
+            start_x: 0,
+            start_y: 0,
+            tx_size: TX_16X16,
+        },
+    )?;
 
     Ok(())
+}
+
+fn apply_all_zero_coeff_frame_entry(
+    coeff_context: &mut TileCoeffContextState,
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    geometry: CoeffOrdinaryTxSizeGeometryConfig,
+) -> Result<(), MinimalBlockSymbolTraceError> {
+    apply_coeff_use_fsc_branch_from_frame_facts(
+        coeff_context,
+        cdfs,
+        symbols,
+        CoeffUseFscFrameFactsInput::AllZero(geometry),
+    )
+    .map(|_| ())
+    .map_err(|source| MinimalBlockSymbolTraceError::CoeffFrameEntry { source })
 }
 
 fn minimal_tile_coeff_context(
@@ -355,6 +371,10 @@ mod tests {
 
     use super::super::cdf::{
         FrameCdfSubset, TileCdfPolicyInput, TileCdfWorkUnitBoundary, tile_cdf_save_policy,
+    };
+    use super::super::coeff_loop::AllZeroCoeffBlockInput;
+    use super::super::coeff_loop::ordinary_pass::{
+        CoeffOrdinaryBranchInput, apply_coeff_ordinary_branch,
     };
     use super::super::partition_allowed::PartitionFeatureFlags;
     use super::super::partition_traversal::{
@@ -454,6 +474,81 @@ mod tests {
         assert_eq!(plan.symbol_count_after(), 1);
         assert_eq!(plan.frontier().b_size.index(), BLOCK_64X64);
         Ok(symbols)
+    }
+
+    fn assert_frame_entry_matches_direct_ordinary(
+        geometry: CoeffOrdinaryTxSizeGeometryConfig,
+        block: AllZeroCoeffBlockInput,
+    ) {
+        let mut direct_work_unit = make_work_unit(&PAYLOAD, CdfUpdateMode::Disabled);
+        let mut wrapper_work_unit = make_work_unit(&PAYLOAD, CdfUpdateMode::Disabled);
+        let mut direct_symbols = symbols_at_block_frontier(&mut direct_work_unit).unwrap();
+        let mut wrapper_symbols = symbols_at_block_frontier(&mut wrapper_work_unit).unwrap();
+        let mut direct_context = minimal_tile_coeff_context(&direct_work_unit).unwrap();
+        let mut wrapper_context = minimal_tile_coeff_context(&wrapper_work_unit).unwrap();
+
+        apply_coeff_ordinary_branch(
+            &mut direct_context,
+            direct_work_unit.cdf_mut().tile_cdfs_mut(),
+            &mut direct_symbols,
+            CoeffOrdinaryBranchInput::AllZero(block),
+        )
+        .unwrap();
+        apply_all_zero_coeff_frame_entry(
+            &mut wrapper_context,
+            wrapper_work_unit.cdf_mut().tile_cdfs_mut(),
+            &mut wrapper_symbols,
+            geometry,
+        )
+        .unwrap();
+
+        assert_eq!(wrapper_context, direct_context);
+        assert_eq!(
+            wrapper_work_unit.cdf().tile_cdfs(),
+            direct_work_unit.cdf().tile_cdfs()
+        );
+        assert_eq!(
+            wrapper_symbols.consumed_bits(),
+            direct_symbols.consumed_bits()
+        );
+        assert_eq!(
+            wrapper_symbols.symbol_count(),
+            direct_symbols.symbol_count()
+        );
+    }
+
+    #[test]
+    fn all_zero_coefficient_frame_entry_matches_direct_ordinary_branch() {
+        assert_frame_entry_matches_direct_ordinary(
+            CoeffOrdinaryTxSizeGeometryConfig {
+                plane: 0,
+                start_x: 0,
+                start_y: 0,
+                tx_size: TX_64X64,
+            },
+            AllZeroCoeffBlockInput {
+                plane: 0,
+                x4: 0,
+                y4: 0,
+                w4: MINIMAL_LUMA_TX_W4,
+                h4: MINIMAL_LUMA_TX_H4,
+            },
+        );
+        assert_frame_entry_matches_direct_ordinary(
+            CoeffOrdinaryTxSizeGeometryConfig {
+                plane: 2,
+                start_x: 0,
+                start_y: 0,
+                tx_size: TX_16X16,
+            },
+            AllZeroCoeffBlockInput {
+                plane: 2,
+                x4: 0,
+                y4: 0,
+                w4: MINIMAL_CHROMA_TX_W4,
+                h4: MINIMAL_CHROMA_TX_H4,
+            },
+        );
     }
 
     #[test]
