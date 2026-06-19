@@ -39,10 +39,13 @@
 //! and the § 5.20.7.30
 //! `get_scan` coefficient scan order (the anti-diagonal 2D scan and the
 //! row/column raster scans) with its `get_tx_class` `PlaneTxType`-to-class
-//! mapping, and the § 7.17.7.1 deblocking sample filter
+//! mapping, the § 7.17.7.1 deblocking sample filter
 //! ([`deblock_sample_filter`], the per-edge `deltaM2` ramp over a caller-supplied
-//! perpendicular sample line and caller-resolved widths/weights); it does not
-//! implement the § 7.17 deblocking edge traversal and filter-strength derivation,
+//! perpendicular sample line and caller-resolved widths/weights), and the
+//! § 7.17.3 deblocking filter-maximum-width derivation
+//! ([`deblock_filter_max_width`], the per-side `maxWidthNeg`/`maxWidthPos` from
+//! the filter size, plane, and super-block-edge flag); it does not
+//! implement the rest of the § 7.17 deblocking edge traversal and filter-strength derivation,
 //! the other loop filters (CDEF, CCSO, loop restoration, GDF), byte-consuming
 //! decode, full
 //! reconstruction, the § 7.14.4 `shift` derivation
@@ -88,7 +91,8 @@
 //! `RECON-DPCM-DIRECTION`,
 //! `RECON-COEFFICIENT-SCAN-ORDER`,
 //! `RECON-GET-TX-CLASS`,
-//! `RECON-DEBLOCK-SAMPLE-FILTER`.
+//! `RECON-DEBLOCK-SAMPLE-FILTER`,
+//! `RECON-DEBLOCK-FILTER-MAX-WIDTH`.
 //!
 //! Licensed under PolyForm Noncommercial 1.0.0; commercial use requires a
 //! separate written license from Bartosz Tomczyk.
@@ -124,7 +128,7 @@ mod workspace;
 mod y4m;
 
 pub use coefficient_scan::{TransformClass, coefficient_scan_order, tx_class};
-pub use deblock_filter::{DeblockSampleFilter, deblock_sample_filter};
+pub use deblock_filter::{DeblockSampleFilter, deblock_filter_max_width, deblock_sample_filter};
 pub use dequant::{
     QuantizerDeltas, ac_quantizer, dc_quantizer, max_quantizer_index, quantizer_index,
     quantizer_value,

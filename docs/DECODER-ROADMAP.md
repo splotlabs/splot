@@ -145,7 +145,10 @@ transforms to `Vertical`/`Horizontal`, everything else to `TwoD`). The first loo
 filter has also landed: the § 7.17.7.1 deblocking sample filter
 (`deblock_sample_filter`; `RECON-DEBLOCK-SAMPLE-FILTER`) applies the per-edge
 `deltaM2` ramp over a caller-supplied perpendicular sample line and
-caller-resolved per-side widths and `Q_Thresh_Mults`/`W_Mult` weights, leaving the
+caller-resolved per-side widths and `Q_Thresh_Mults`/`W_Mult` weights, and the
+§ 7.17.3 filter-maximum-width derivation (`deblock_filter_max_width`;
+`RECON-DEBLOCK-FILTER-MAX-WIDTH`) produces those `maxWidthNeg`/`maxWidthPos`
+widths from the filter size, plane, and super-block-edge flag, leaving the
 § 7.17 edge traversal and filter-strength derivation (and CDEF, CCSO, loop
 restoration, GDF) to future rows. `splot-decode`
 also has crate-private tile coefficient state buffers
