@@ -25,6 +25,7 @@ const V_PRED: usize = 1;
 const D45_PRED: usize = 3;
 const D203_PRED: usize = 7;
 const D67_PRED: usize = 8;
+const TX_TYPES: usize = 16;
 const TX_16X16: usize = 2;
 const TX_32X32: usize = 3;
 const ANGLE_STEP: i32 = 3;
@@ -172,6 +173,8 @@ pub(crate) struct CoeffOrdinaryBranchModeToTxfmBaseConfig {
     pub(crate) uv_mode: usize,
     /// Caller-resolved `AngleDeltaUV` from chroma intra mode syntax.
     pub(crate) angle_delta_uv: i32,
+    /// Caller-resolved luma `TxTypes[blockY][blockX]`.
+    pub(crate) luma_tx_type: usize,
     /// Caller-resolved AV2 § 5.20.7.29 `enable_chroma_dctonly` flag.
     pub(crate) enable_chroma_dctonly: bool,
     /// Whether hidden parity is active for this transform block.
@@ -191,6 +194,8 @@ pub(crate) struct CoeffOrdinaryBranchTxSetBaseConfig {
     pub(crate) uv_mode: usize,
     /// Caller-resolved `AngleDeltaUV` from chroma intra mode syntax.
     pub(crate) angle_delta_uv: i32,
+    /// Caller-resolved luma `TxTypes[blockY][blockX]`.
+    pub(crate) luma_tx_type: usize,
     /// Whether hidden parity is active for this transform block.
     pub(crate) parity_hiding: bool,
     /// Whether TCQ is active for this transform block.
@@ -208,6 +213,8 @@ pub(crate) struct CoeffOrdinaryBranchLosslessBaseConfig {
     pub(crate) uv_mode: usize,
     /// Caller-resolved `AngleDeltaUV` from chroma intra mode syntax.
     pub(crate) angle_delta_uv: i32,
+    /// Caller-resolved luma `TxTypes[blockY][blockX]`.
+    pub(crate) luma_tx_type: usize,
     /// Whether hidden parity is active for this transform block.
     pub(crate) parity_hiding: bool,
     /// Whether TCQ is active for this transform block.
@@ -241,6 +248,7 @@ impl CoeffOrdinaryBranchTxSetBaseConfig {
             tx_set: tx_set(geometry, is_inter, self, tables)?,
             uv_mode: self.uv_mode,
             angle_delta_uv: self.angle_delta_uv,
+            luma_tx_type: self.luma_tx_type,
             enable_chroma_dctonly: self.enable_chroma_dctonly,
             parity_hiding: self.parity_hiding,
             use_tcq: self.use_tcq,
@@ -263,6 +271,7 @@ impl CoeffOrdinaryBranchLosslessBaseConfig {
             enable_chroma_dctonly: self.enable_chroma_dctonly,
             uv_mode: self.uv_mode,
             angle_delta_uv: self.angle_delta_uv,
+            luma_tx_type: self.luma_tx_type,
             parity_hiding: self.parity_hiding,
             use_tcq: self.use_tcq,
         }
@@ -549,16 +558,17 @@ pub(crate) fn apply_coeff_ordinary_branch_from_tx_size_dimensions(
     )
 }
 
-/// Dispatches the ordinary branch after deriving `PlaneTxType` from `Mode_To_Txfm`.
+/// Dispatches the ordinary branch after deriving `PlaneTxType`.
 ///
-/// This covers only the non-lossless intra chroma subset of AV2
+/// This covers only the non-lossless luma/chroma subset of AV2
 /// § 5.20.7.29 `compute_tx_type`
-/// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-29`) where
-/// `enable_chroma_dctonly` first short-circuits to `DCT_DCT`; otherwise
-/// directional `UVMode` applies `wide_angle_mapping`, non-directional `UVMode`
-/// maps directly through `Mode_To_Txfm`, followed by the inline
+/// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-29`) where luma
+/// returns caller-resolved `TxTypes[blockY][blockX]`; chroma
+/// `enable_chroma_dctonly` short-circuits to `DCT_DCT`; otherwise directional
+/// `UVMode` applies `wide_angle_mapping`, non-directional `UVMode` maps through
+/// `Mode_To_Txfm`, followed by the inline
 /// `Tx_Type_In_Set_Intra[txSet][txType]` membership check and `DCT_DCT`
-/// fallback. Full `get_tx_set`, luma/inter/lossless branches, runtime
+/// fallback. Full `get_tx_set`, chroma inter and all lossless branches, runtime
 /// `coeffs()`, dequantization, inverse transform, residual add, and
 /// reconstruction remain out of scope.
 pub(crate) fn apply_coeff_ordinary_branch_from_mode_to_txfm(
@@ -582,8 +592,8 @@ pub(crate) fn apply_coeff_ordinary_branch_from_mode_to_txfm(
 /// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-3`) by deriving
 /// `txSet` from generated AV2 § 9.2 transform-size conversion tables plus
 /// caller-resolved `is_inter`, `reduced_tx_set`, and `enable_chroma_dctonly`.
-/// It delegates transform-type selection to the non-lossless intra chroma
-/// `Mode_To_Txfm` subset wrapper. Full frame-state derivation,
+/// It delegates transform-type selection to the non-lossless luma/chroma subset
+/// wrapper. Full frame-state derivation,
 /// full `compute_tx_type`, runtime `coeffs()`, dequantization, inverse
 /// transform, residual add, and reconstruction remain out of scope.
 pub(crate) fn apply_coeff_ordinary_branch_from_tx_set(
@@ -930,17 +940,17 @@ fn mode_to_txfm_plane_tx_type(
     config: CoeffOrdinaryBranchModeToTxfmBaseConfig,
     tables: CoeffOrdinaryTxSizeTables<'_>,
 ) -> Result<usize, CoeffOrdinaryBranchError> {
-    if geometry.plane == 0 {
-        return Err(CoeffOrdinaryBranchError::UnsupportedModeToTxfmSubset { reason: "luma" });
-    }
-    if is_inter {
-        return Err(CoeffOrdinaryBranchError::UnsupportedModeToTxfmSubset { reason: "inter" });
-    }
     if lossless {
         return Err(CoeffOrdinaryBranchError::UnsupportedModeToTxfmSubset { reason: "lossless" });
     }
+    if geometry.plane == 0 {
+        return luma_tx_type(config.luma_tx_type);
+    }
     if config.enable_chroma_dctonly {
         return Ok(DCT_DCT);
+    }
+    if is_inter {
+        return Err(CoeffOrdinaryBranchError::UnsupportedModeToTxfmSubset { reason: "inter" });
     }
 
     let uv_mode = if is_directional_mode(config.uv_mode) {
@@ -975,6 +985,14 @@ fn mode_to_txfm_plane_tx_type(
         Ok(tx_type)
     } else {
         Ok(DCT_DCT)
+    }
+}
+
+fn luma_tx_type(tx_type: usize) -> Result<usize, CoeffOrdinaryBranchError> {
+    if tx_type < TX_TYPES {
+        Ok(tx_type)
+    } else {
+        Err(CoeffOrdinaryBranchError::InvalidLumaTxType { tx_type })
     }
 }
 

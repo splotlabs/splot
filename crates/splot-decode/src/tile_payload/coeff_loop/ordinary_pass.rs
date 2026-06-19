@@ -525,6 +525,12 @@ pub(crate) enum CoeffOrdinaryBranchError {
         /// Generated table value.
         value: i32,
     },
+    /// Caller-resolved luma `TxTypes` value is outside the AV2 `TX_TYPES` domain.
+    #[error("ordinary coefficient branch luma TxTypes value {tx_type} is out of range")]
+    InvalidLumaTxType {
+        /// Caller-resolved luma `TxTypes` value.
+        tx_type: usize,
+    },
     /// Directional `UVMode` angle derivation overflowed before `wide_angle_mapping`.
     #[error(
         "ordinary coefficient branch directional UVMode {uv_mode} angle_delta_uv {angle_delta_uv} overflowed"
