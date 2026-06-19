@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "0ad1b1d3986d3ec0f7da9905adf680699e5c8b51",
+  "audited_commit": "2e9d685a90256808a054cabc73bb5abca65328a2",
   "outcome": "success",
   "files": [
     {
@@ -2006,7 +2006,7 @@
     },
     {
       "path": "crates/splot-decode/src/tile_payload/coeff_loop.rs",
-      "sha256": "a2600b75db44a96f1ea1aff12f80e5ace03164f41b1ff5949759df7ca485ae24",
+      "sha256": "173aa1693c0884837ddb2f3258638458f72688cf3589f3f1d0609b4880a4576d",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-COEFF-ALL-ZERO-BLOCK-STATE",
@@ -4136,7 +4136,7 @@
     },
     {
       "path": "docs/DECODER-ROADMAP.md",
-      "sha256": "72f82bc92dde136825939a4f67b818bd03ee9575b1f02b138592cd0e04c3f006",
+      "sha256": "8a7b46a1e26cb8552153928c1b9bcb6db825c39eb078ca98b5e8359b9126f9c7",
       "scope_kind": "docs",
       "feature_ids": [
         "DECODE-COEFF-ALL-ZERO-BLOCK-STATE",
@@ -4191,6 +4191,7 @@
         "DECODE-COEFF-SIGN-SYMBOL-READ",
         "DECODE-COEFF-STATE-CONTEXT-HANDOFF",
         "DECODE-COEFF-TX-CLASS-DERIVE",
+        "DECODE-COEFF-USE-FSC-BRANCH-HANDOFF",
         "DECODE-MINIMAL-INTRA-RECONSTRUCTION-FRONTIER",
         "DECODE-MINIMAL-RAW-RUNTIME-OUTPUT",
         "DECODE-MINIMAL-TIER-RUNTIME-SUCCESS",
@@ -4226,7 +4227,7 @@
     },
     {
       "path": "docs/DECODER-SPEC-COVERAGE.md",
-      "sha256": "5e6b368effee71ad556e025c248bdef7fc292d4f930f4bb54f35e0660479798b",
+      "sha256": "72170a55ebbbd3e95c1169fd342d687d2c817f365cc891d78bd538aaa43e8a10",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-8.2-SYMBOL-DECODER",
@@ -4293,6 +4294,7 @@
         "DECODE-COEFF-SIGN-SYMBOL-READ",
         "DECODE-COEFF-STATE-CONTEXT-HANDOFF",
         "DECODE-COEFF-TX-CLASS-DERIVE",
+        "DECODE-COEFF-USE-FSC-BRANCH-HANDOFF",
         "DECODE-CONTEXT-TILE-PAYLOAD-HANDOFF",
         "DECODE-MINIMAL-RAW-RUNTIME-OUTPUT",
         "DECODE-MODE-TO-TXFM-SYMBOLIC-TABLE",
@@ -4338,7 +4340,7 @@
     },
     {
       "path": "docs/DECODER-SUPPORT-MATRIX.toml",
-      "sha256": "df99b00ebeb148408c6bfd9c416def98c51f7017b0f581ebfbf4e4e066ba6cfa",
+      "sha256": "e58b27feb139c4681721829d01025ffd825d7eb56065a7bac4c8d7836e6e9a35",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-8.2-SYMBOL-DECODER",
@@ -4407,6 +4409,7 @@
         "DECODE-COEFF-SIGN-SYMBOL-READ",
         "DECODE-COEFF-STATE-CONTEXT-HANDOFF",
         "DECODE-COEFF-TX-CLASS-DERIVE",
+        "DECODE-COEFF-USE-FSC-BRANCH-HANDOFF",
         "DECODE-CONTEXT-TILE-PAYLOAD-HANDOFF",
         "DECODE-LIMITS-RUNTIME-API",
         "DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER",
@@ -4476,7 +4479,7 @@
     },
     {
       "path": "docs/DECODER-SUPPORT-STATUS.md",
-      "sha256": "d830b7e256868b8b0944f87faf32b34ef16e33ec3ca0e97d03e7f5409ddff99f",
+      "sha256": "056f002cd64d59e43812981cdbe2db78328cb4cd625705a7daee95a182cace24",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-8.2-SYMBOL-DECODER",
@@ -4545,6 +4548,7 @@
         "DECODE-COEFF-SIGN-SYMBOL-READ",
         "DECODE-COEFF-STATE-CONTEXT-HANDOFF",
         "DECODE-COEFF-TX-CLASS-DERIVE",
+        "DECODE-COEFF-USE-FSC-BRANCH-HANDOFF",
         "DECODE-CONTEXT-TILE-PAYLOAD-HANDOFF",
         "DECODE-LIMITS-RUNTIME-API",
         "DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER",
@@ -4666,7 +4670,7 @@
     },
     {
       "path": "docs/FEATURE-STATUS.md",
-      "sha256": "863f4b0941f98363c454d870b2b527efd7ffc8cd46da484a95020e905dbdd96b",
+      "sha256": "cd65c9b9151c6ba9608b3fe6c0b9c3f5da8f81ee04c0777f13f8a4f8b3b95c5b",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.10-RG",
@@ -4855,6 +4859,7 @@
         "DECODE-COEFF-SIGN-SYMBOL-READ",
         "DECODE-COEFF-STATE-CONTEXT-HANDOFF",
         "DECODE-COEFF-TX-CLASS-DERIVE",
+        "DECODE-COEFF-USE-FSC-BRANCH-HANDOFF",
         "DECODE-CONTEXT-TILE-PAYLOAD-HANDOFF",
         "DECODE-LIMITS-RUNTIME-API",
         "DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER",
@@ -5004,7 +5009,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "2a77ae664e1451346025a2d96749e832297eb65aee89d9cde56b646f72ebab18",
+      "sha256": "512279097cfa56508a781464db3901717a530ce41cdc794f49bac78f92dcac34",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.10-RG",
@@ -5193,6 +5198,7 @@
         "DECODE-COEFF-SIGN-SYMBOL-READ",
         "DECODE-COEFF-STATE-CONTEXT-HANDOFF",
         "DECODE-COEFF-TX-CLASS-DERIVE",
+        "DECODE-COEFF-USE-FSC-BRANCH-HANDOFF",
         "DECODE-CONTEXT-TILE-PAYLOAD-HANDOFF",
         "DECODE-LIMITS-RUNTIME-API",
         "DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER",
@@ -5313,7 +5319,7 @@
     },
     {
       "path": "docs/SPEC-COVERAGE.md",
-      "sha256": "57e2b309fb479f3edec67c9b7ea31e0fa91a643c019b714b74f9edeec9203afe",
+      "sha256": "56ab8144f28c7b34be2f0516195bac0f10a53886c4488b5e952859345d4862cc",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.10-RG",
@@ -5502,6 +5508,7 @@
         "DECODE-COEFF-SIGN-SYMBOL-READ",
         "DECODE-COEFF-STATE-CONTEXT-HANDOFF",
         "DECODE-COEFF-TX-CLASS-DERIVE",
+        "DECODE-COEFF-USE-FSC-BRANCH-HANDOFF",
         "DECODE-CONTEXT-TILE-PAYLOAD-HANDOFF",
         "DECODE-LIMITS-RUNTIME-API",
         "DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER",
@@ -18740,7 +18747,7 @@
     },
     {
       "path": "xtask/src/decoder_conformance_coverage.rs",
-      "sha256": "43bf30e6ceb14c2cf9a1d0ce4e1043862fe18a1a8b22857f4167db56975a76b0",
+      "sha256": "061beef2f90cb101ffdde295eadab3f928ef9b31952b421bef8c4e6a44737fb8",
       "scope_kind": "workspace:xtask",
       "feature_ids": [
         "AV2-8.2-SYMBOL-DECODER",
@@ -18807,6 +18814,7 @@
         "DECODE-COEFF-SIGN-SYMBOL-READ",
         "DECODE-COEFF-STATE-CONTEXT-HANDOFF",
         "DECODE-COEFF-TX-CLASS-DERIVE",
+        "DECODE-COEFF-USE-FSC-BRANCH-HANDOFF",
         "DECODE-CONTEXT-TILE-PAYLOAD-HANDOFF",
         "DECODE-MINIMAL-RAW-RUNTIME-OUTPUT",
         "DECODE-MODE-TO-TXFM-SYMBOLIC-TABLE",
