@@ -548,6 +548,20 @@ local_reference_evidence = []
 notes = "Adds crate-private `splot-decode` scan traversal for the ordinary non-FSC AV2 §5.20.7.27 nonzero coefficient path. `walk_nonzero_coeff_scan` accepts a `NonZeroCoeffBlockStart` and caller-supplied `scan[c]` positions, then returns checked entries in reverse scan-index order with raster position and row/column facts. It rejects EOB values that exceed the scan slice and scan positions outside the initialized adjusted coefficient block without consuming symbols, mutating CDF rows, or writing coefficient state. This row remains partial: scan-table derivation, transform-type computation, coefficient base/br/sign reads, nonzero `Level[]`, `QuantSign[]`, and `Quant[]` writes, `read_quant`, dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public API, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` support remain unimplemented."
 
 [[row]]
+id = "coeff-fsc-scan-walk"
+name = "Coefficient FSC scan walk"
+feature_id = "DECODE-COEFF-FSC-SCAN-WALK"
+spec_sections = ["5.20.7.27"]
+parser_source = "docs/spec/av2/1.0.0/05-syntax-structures.md"
+decode_module = "crates/splot-decode/src/tile_payload/coeff_loop/scan_walk.rs"
+tier = "tier1-intra"
+status = "partial"
+self_contained_tests = ["crates/splot-decode/src/tile_payload/coeff_loop/eob_symbol_tests.rs::coeff_fsc_scan_walk_returns_forward_segment_without_mutation", "crates/splot-decode/src/tile_payload/coeff_loop/eob_symbol_tests.rs::coeff_fsc_scan_walk_rejects_eob_larger_than_seg_eob_without_mutation", "crates/splot-decode/src/tile_payload/coeff_loop/eob_symbol_tests.rs::coeff_fsc_scan_walk_rejects_segment_and_position_bounds", "cargo test -p splot-decode fsc_scan_walk --locked", "cargo test -p splot-decode coeff_loop --locked", "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings", "cargo xtask check-decoder-support", "cargo xtask check-decoder-conformance-coverage", "cargo xtask check-feature-status"]
+diagnostics = ["decode/unsupported-feature"]
+local_reference_evidence = []
+notes = "Adds crate-private `splot-decode` scan traversal for the FSC/IDTX AV2 §5.20.7.27 nonzero coefficient path. `walk_fsc_coeff_scan` accepts a `NonZeroCoeffBlockStart`, caller-resolved `segEob`, and caller-supplied `scan[c]` positions; derives `bob = segEob - eob`; and returns checked entries in forward scan-index order with raster position and row/column facts. It rejects zero EOB, decoded EOB values larger than `segEob`, `segEob` values larger than the scan slice, and scan positions outside the initialized adjusted coefficient block without consuming symbols, mutating CDF rows, or writing coefficient state. This row remains partial: runtime `useFsc` derivation, FSC/IDTX symbol reads, nonzero `Level[]`, `QuantSign[]`, and `Quant[]` writes, `read_quant`, dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public API, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` support remain unimplemented."
+
+[[row]]
 id = "coeff-base-cdf-rows"
 name = "Coefficient base CDF rows"
 feature_id = "DECODE-COEFF-BASE-CDF-ROWS"
