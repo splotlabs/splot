@@ -45,6 +45,7 @@ pub(crate) mod quant_state;
 pub(crate) mod read_quant;
 mod scan_walk;
 pub(crate) mod sign_symbol;
+pub(crate) mod use_fsc_branch;
 
 /// Caller-resolved facts for luma § 8.3.2 `all_zero` context derivation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -670,6 +671,8 @@ mod ordinary_branch_tx_set_tests;
 mod ordinary_pass_tests;
 #[cfg(test)]
 mod ordinary_state_context_tests;
+#[cfg(test)]
+mod use_fsc_branch_tests;
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]

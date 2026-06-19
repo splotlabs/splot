@@ -256,9 +256,13 @@ with the ordinary branch before delegating to the scan-extent wrapper. The
 loaded-but-unwired `DECODE-COEFF-FSC-BRANCH-TX-SIZE-HANDOFF` helper now derives
 FSC branch EOB context, adjusted level/sign dimensions, `txSzCtx`, scan order,
 and context-commit geometry from caller-resolved block geometry plus `txSz`,
-before delegating to the scan-order wrapper. Runtime `useFsc`, full
-transform/`compute_tx_type`, `PlaneTxType`, `is_inter`, and `coeff_cdf_q_ctx`
-derivation remain unwired.
+before delegating to the scan-order wrapper. `DECODE-COEFF-USE-FSC-BRANCH-HANDOFF`
+now adds the loaded-but-unwired branch selector above the ordinary and FSC
+targets: decoded all-zero inputs still route through the ordinary all-zero arm,
+nonzero `use_fsc == false` delegates to the ordinary lossless handoff, and
+nonzero `use_fsc == true` delegates to the FSC tx-size handoff. Runtime
+`useFsc` derivation, full transform/`compute_tx_type`, `PlaneTxType`,
+`is_inter`, and `coeff_cdf_q_ctx` derivation remain unwired.
 Separately, `DECODE-COEFF-ORDINARY-DERIVED-BASE-PASS` now composes the ordinary
 state-derived first pass into the ordinary coefficient pass, carrying
 first-pass `isHidden`, `sumAbs1`, and `useTcq` into the interleaved
