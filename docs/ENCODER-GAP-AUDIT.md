@@ -107,6 +107,14 @@ planning and status; it does not claim encoder behavior exists.
   delegates to it; an equivalence test covers magnitude 1..=7). It is not the
   golomb tail, multi-coefficient blocks, chroma coefficients, tile-body emission,
   or a packet path.
+- `ENC-INTRA-BLOCK-TRACE-BYPASS-LITERAL` adds the §8.2.5 bypass-literal token kind
+  (`BlockSymbolToken::Bypass { width, value }`) routed through the trace roundtrip
+  via `SymbolEncoder::write_literal` / `SymbolDecoder::read_literal`. It is the
+  foundation for syntax not coded as a CDF symbol — a non-luma-DC coefficient's
+  `sign_bit` (§5.20.7.27 reads the `dc_sign` CDF only for the luma DC) and the
+  §5.20.7.28 golomb tail. Proven by a mixed CDF+bypass roundtrip; it has no
+  consumer yet and is not coded chroma signs, the golomb tail, tile-body emission,
+  or a packet path.
 - `Packet` is still only a byte buffer wrapper, and no coded packet production
   path exists.
 - `EncoderConfig` exposes `BitDepth::Twelve`, but current Baseline Encoder Profile
