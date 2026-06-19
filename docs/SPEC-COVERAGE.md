@@ -570,7 +570,6 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.13.2.10](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-10) | DC intra prediction process | `CONF-RECON-INTRA-PREDICTION-FUZZ` | ✅ | — | — | ✅ | — |
 | [§ 7.13.2.10](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-10) | DC intra prediction process | `DECODE-MINIMAL-INTRA-RECONSTRUCTION-FRONTIER` | ✅ | 🟡 | ✅ | ✅ | 4 |
 | [§ 7.13.2.10](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-10) | DC intra prediction process | `ENC-CLOSED-LOOP-RECONSTRUCTION-MINIMAL` | ✅ | — | — | ✅ | — |
-| [§ 7.13.2.10](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-10) | DC intra prediction process | `ENC-INTRA-MODE-SYMBOL-EMISSION` | ✅ | — | — | ✅ | — |
 | [§ 7.13.2.10](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-10) | DC intra prediction process | `RECON-CURRENT-FRAME-WORKSPACE` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.13.2.10](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-10) | DC intra prediction process | `RECON-INTRA-DC-RECTANGULAR-PREDICTION` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.13.2.10](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-10) | DC intra prediction process | `RECON-INTRA-DC-SQUARE-PREDICTION` | ✅ | — | ✅ | ✅ | — |

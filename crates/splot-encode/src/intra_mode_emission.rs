@@ -10,14 +10,24 @@
 //! encoder/decoder
 //! (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-5`).
 //!
-//! `y_mode_set` and `y_mode_index` both equal to 0 select DC_PRED (AV2 § 7.13.2.10
-//! DC intra prediction), the same luma mode the closed-loop reconstruction uses.
-//! The `y_mode_index` § 8.3.2 context is the joint-neighbour context, which is 0
-//! at the tile origin where both neighbours are out of frame.
+//! `y_mode_set` and `y_mode_index` both equal to 0 select the DC_PRED luma mode
+//! (the mode the closed-loop reconstruction uses). This module emits only the
+//! mode *selector* syntax; it does not perform or verify the AV2 § 7.13.2.10 DC
+//! prediction process (that proof lives in the reconstruction features). The
+//! `y_mode_index` § 8.3.2 context is the joint-neighbour context, which is 0 at
+//! the tile origin where both neighbours are out of frame.
+//!
+//! This emits the AV2 § 5.20.5.5 ordered sequence for a **non-lossless** block.
+//! Per `read_intra_y_mode()` (`if ( Lossless ) { use_dpcm_y } else
+//! { use_dpcm_y = 0 }`), a non-lossless block infers `use_dpcm_y = 0` and emits no
+//! `use_dpcm_y` symbol, so the ordered syntax reduces to `y_mode_set` then
+//! `y_mode_index`. Lossless blocks — which read `use_dpcm_y` (and possibly
+//! `dpcm_mode_y`) before `y_mode_set` — are out of scope and MUST NOT use this
+//! helper until lossless DPCM-mode emission is implemented.
 //!
 //! It does not emit chroma `uv_mode` syntax, coefficient or all-zero symbols,
-//! tile payloads, tile CDF lifecycle, packets, a public encoder API, or broad
-//! intra-mode coverage beyond DC_PRED.
+//! lossless `use_dpcm_y`/`dpcm_mode_y` symbols, tile payloads, tile CDF lifecycle,
+//! packets, a public encoder API, or broad intra-mode coverage beyond DC_PRED.
 
 #![allow(dead_code)]
 
@@ -29,7 +39,6 @@ use crate::error::{Error, Result};
 
 const Y_MODE_SET_CDF_ROW_LEN: usize = 5;
 const Y_MODE_INDEX_CDF_ROW_LEN: usize = 9;
-const Y_MODE_INDEX_CONTEXTS: usize = 3;
 const TILE_ORIGIN_Y_MODE_INDEX_CTX: usize = 0;
 const DC_PRED_Y_MODE_SET_SYMBOL: u8 = 0;
 const DC_PRED_Y_MODE_INDEX_SYMBOL: u8 = 0;
@@ -228,23 +237,27 @@ pub(crate) fn roundtrip_intra_mode_tokens(tokens: &[IntraModeToken]) -> Result<I
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct IntraModeCdfRows {
     y_mode_set: [i32; Y_MODE_SET_CDF_ROW_LEN],
-    y_mode_index: [[i32; Y_MODE_INDEX_CDF_ROW_LEN]; Y_MODE_INDEX_CONTEXTS],
+    // Only the tile-origin `y_mode_index` context (0) is in scope; non-origin
+    // contexts need neighbour-derived `get_joint_mode` support that does not
+    // exist yet, so this holds the single tile-origin row and `row_mut` rejects
+    // any other context.
+    y_mode_index_tile_origin: [i32; Y_MODE_INDEX_CDF_ROW_LEN],
 }
 
 impl IntraModeCdfRows {
     fn from_defaults() -> Self {
         Self {
             y_mode_set: DEFAULT_Y_MODE_SET_CDF,
-            y_mode_index: DEFAULT_Y_MODE_INDEX_CDF,
+            y_mode_index_tile_origin: DEFAULT_Y_MODE_INDEX_CDF[TILE_ORIGIN_Y_MODE_INDEX_CTX],
         }
     }
 
     fn row_mut(&mut self, selector: IntraModeCdfRowSelector) -> Result<&mut [i32]> {
         match selector {
             IntraModeCdfRowSelector::YModeSet => Ok(self.y_mode_set.as_mut_slice()),
-            IntraModeCdfRowSelector::YModeIndex { ctx } if ctx < Y_MODE_INDEX_CONTEXTS => {
-                Ok(self.y_mode_index[ctx].as_mut_slice())
-            }
+            IntraModeCdfRowSelector::YModeIndex {
+                ctx: TILE_ORIGIN_Y_MODE_INDEX_CTX,
+            } => Ok(self.y_mode_index_tile_origin.as_mut_slice()),
             selector @ IntraModeCdfRowSelector::YModeIndex { .. } => {
                 Err(Error::IntraModeEmissionUnsupportedCdfSelector {
                     syntax: selector.syntax_name(),
@@ -301,28 +314,26 @@ mod tests {
     }
 
     #[test]
-    fn rejects_out_of_range_y_mode_index_context() {
+    fn accepts_only_the_tile_origin_y_mode_index_context() {
         let mut cdfs = IntraModeCdfRows::from_defaults();
-        let err = cdfs
-            .row_mut(IntraModeCdfRowSelector::YModeIndex { ctx: 3 })
-            .unwrap_err();
 
-        assert!(matches!(
-            err,
-            Error::IntraModeEmissionUnsupportedCdfSelector {
-                syntax: "y_mode_index",
-            }
-        ));
-    }
-
-    #[test]
-    fn supported_y_mode_index_contexts_resolve_to_distinct_rows() {
-        let mut cdfs = IntraModeCdfRows::from_defaults();
-        for ctx in 0..Y_MODE_INDEX_CONTEXTS {
-            assert!(
-                cdfs.row_mut(IntraModeCdfRowSelector::YModeIndex { ctx })
-                    .is_ok()
-            );
+        assert!(
+            cdfs.row_mut(IntraModeCdfRowSelector::YModeIndex { ctx: 0 })
+                .is_ok()
+        );
+        // Non-origin contexts (1, 2) are in-table but outside the declared
+        // tile-origin scope, and the out-of-table context (3) — all rejected
+        // until neighbour-derived context derivation exists.
+        for ctx in [1usize, 2, 3] {
+            let err = cdfs
+                .row_mut(IntraModeCdfRowSelector::YModeIndex { ctx })
+                .unwrap_err();
+            assert!(matches!(
+                err,
+                Error::IntraModeEmissionUnsupportedCdfSelector {
+                    syntax: "y_mode_index",
+                }
+            ));
         }
     }
 }

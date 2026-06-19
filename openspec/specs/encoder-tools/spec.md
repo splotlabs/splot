@@ -1462,10 +1462,14 @@ records for a DC_PRED luma block at the tile-origin neutral context, selecting t
 §8.3.2 `TileYModeSetCdf` row (no context) and the `TileYModeIndexCdf` row at the
 tile-origin context. The stage SHALL prove those token values can be written
 through the in-tree AV2 §8.2 symbol encoder with scoped default CDF rows and
-decoded back to the same values. It SHALL NOT emit chroma mode syntax,
-coefficient or all-zero symbols, partition syntax, tile payloads, coded packets,
-public CLI success, or broad intra-mode coverage beyond the declared minimal
-tier.
+decoded back to the same values. This is the §5.20.5.5 sequence for a
+non-lossless block, where `use_dpcm_y` is inferred 0 and not emitted; the stage
+SHALL reject any non-tile-origin `y_mode_index` context, and SHALL emit only the
+mode selector syntax and not perform the §7.13.2.10 prediction process. It SHALL
+NOT emit chroma mode syntax, coefficient or all-zero symbols, lossless
+`use_dpcm_y` / `dpcm_mode_y` symbols, partition syntax, tile payloads, coded
+packets, public CLI success, or broad intra-mode coverage beyond the declared
+minimal tier.
 
 #### Scenario: DC_PRED block emits ordered intra-mode tokens
 

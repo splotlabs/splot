@@ -4176,7 +4176,7 @@ id = "ENC-INTRA-MODE-SYMBOL-EMISSION"
 name = "Encoder intra-mode symbol emission"
 category = "encoder"
 kind = "encoder-tool"
-spec_sections = ["5.20.5.5", "7.13.2.10", "8.3.2"]
+spec_sections = ["5.20.5.5", "8.3.2"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-encode"
 module = "crates/splot-encode/src/intra_mode_emission.rs"
@@ -4184,7 +4184,7 @@ openspec_change = "encoder-intra-mode-symbol-emission"
 tracking_issue = ""
 owner = "encoder"
 risk = "medium"
-notes = "Private, non-emitting encoder intra-mode symbol-emission bridge. `emit_minimal_dc_luma_intra_mode` produces the ordered AV2 §5.20.5.5 `y_mode_set` and `y_mode_index` entropy-token records for the current minimal DC_PRED luma block at the tile-origin neutral context (`y_mode_set=0`, `y_mode_index=0` resolve to DC_PRED, the §7.13.2.10 mode the closed loop uses; the `y_mode_index` §8.3.2 joint-neighbour context is 0 at the tile origin). It derives the scoped `TileYModeSetCdf` (no context) and `TileYModeIndexCdf[ctx]` rows from `splot-core` defaults and proves the token values write through the in-tree AV2 §8.2 `SymbolEncoder` and decode back through `SymbolDecoder` to the same ordered symbols. This row does not claim chroma `uv_mode` syntax, coefficient or all-zero symbols, partition syntax, neighbor-derived contexts, tile CDF lifecycle, tile-body emission, packet output, CLI success, or Baseline Encoder Profile v1 output."
+notes = "Private, non-emitting encoder intra-mode symbol-emission bridge. `emit_minimal_dc_luma_intra_mode` produces the ordered AV2 §5.20.5.5 `y_mode_set` and `y_mode_index` entropy-token records for the current minimal DC_PRED luma block at the tile-origin neutral context (`y_mode_set=0`, `y_mode_index=0` select the DC_PRED luma mode; the `y_mode_index` §8.3.2 joint-neighbour context is 0 at the tile origin). This emits the §5.20.5.5 sequence for a NON-LOSSLESS block only: per `if(Lossless){use_dpcm_y}else{use_dpcm_y=0}`, a non-lossless block infers `use_dpcm_y=0` and emits no symbol, so the syntax reduces to `y_mode_set` then `y_mode_index`; lossless blocks read `use_dpcm_y` first and are out of scope. It derives the scoped `TileYModeSetCdf` (no context) and the tile-origin `TileYModeIndexCdf` row from `splot-core` defaults, rejects any non-tile-origin `y_mode_index` context, and proves the token values write through the in-tree AV2 §8.2 `SymbolEncoder` and decode back through `SymbolDecoder` to the same ordered symbols. It emits only the mode SELECTOR syntax and does not perform or verify the §7.13.2.10 DC prediction process (that lives in the reconstruction features). This row does not claim chroma `uv_mode` syntax, coefficient or all-zero symbols, lossless DPCM-mode symbols, partition syntax, neighbor-derived contexts, tile CDF lifecycle, tile-body emission, packet output, CLI success, or Baseline Encoder Profile v1 output."
 
 [feature.status]
 mapped = "done"
