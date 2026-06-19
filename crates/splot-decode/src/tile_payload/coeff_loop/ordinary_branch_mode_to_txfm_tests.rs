@@ -20,15 +20,18 @@ use super::ordinary_pass::{CoeffOrdinaryBranch, CoeffOrdinaryBranchError};
 use super::{AllZeroCoeffBlockInput, NonZeroCoeffEobContextInput};
 
 const TX_8X8: usize = 3;
+const TX_4X8: usize = 5;
 const TX_SET_DCTONLY: usize = 0;
 const TX_SET_INTRA_1: usize = 5;
 const TX_SET_INTRA_2: usize = 6;
 const UV_SMOOTH_PRED: usize = 9;
 const UV_SMOOTH_V_PRED: usize = 10;
 const UV_V_PRED: usize = 1;
+const UV_D45_PRED: usize = 3;
 const DCT_DCT: usize = 0;
 const ADST_ADST: usize = 3;
 const ADST_DCT: usize = 1;
+const DCT_ADST: usize = 2;
 const PAYLOAD_SUFFIXES: [[u8; 3]; 4] = [
     [0x00, 0x00, 0x80],
     [0xff, 0x00, 0x80],
@@ -110,9 +113,21 @@ fn mode_to_txfm_base_config(
     CoeffOrdinaryBranchModeToTxfmBaseConfig {
         tx_set,
         uv_mode,
+        angle_delta_uv: 0,
         enable_chroma_dctonly: false,
         parity_hiding: false,
         use_tcq: false,
+    }
+}
+
+fn mode_to_txfm_base_config_with_angle(
+    uv_mode: usize,
+    tx_set: usize,
+    angle_delta_uv: i32,
+) -> CoeffOrdinaryBranchModeToTxfmBaseConfig {
+    CoeffOrdinaryBranchModeToTxfmBaseConfig {
+        angle_delta_uv,
+        ..mode_to_txfm_base_config(uv_mode, tx_set)
     }
 }
 
@@ -130,9 +145,20 @@ fn explicit_input(
     start: NonZeroCoeffBlockStartInput,
     plane_tx_type: usize,
 ) -> CoeffOrdinaryBranchTxSizeDimensionsInput {
+    explicit_input_with_tx_size(start, TX_8X8, plane_tx_type)
+}
+
+fn explicit_input_with_tx_size(
+    start: NonZeroCoeffBlockStartInput,
+    tx_size: usize,
+    plane_tx_type: usize,
+) -> CoeffOrdinaryBranchTxSizeDimensionsInput {
     CoeffOrdinaryBranchTxSizeDimensionsInput::NonZero(
         CoeffOrdinaryBranchTxSizeDimensionsNonZeroInput {
-            geometry: tx_size_geometry(start),
+            geometry: CoeffOrdinaryTxSizeGeometryConfig {
+                tx_size,
+                ..tx_size_geometry(start)
+            },
             coeff_cdf_q_ctx: 0,
             is_inter: false,
             base_config: explicit_base_config(plane_tx_type),
@@ -151,6 +177,25 @@ fn mode_to_txfm_input(
         coeff_cdf_q_ctx: 0,
         is_inter: false,
         base_config: mode_to_txfm_base_config(uv_mode, tx_set),
+        lossless: false,
+    })
+}
+
+fn mode_to_txfm_input_with_angle(
+    start: NonZeroCoeffBlockStartInput,
+    tx_size: usize,
+    uv_mode: usize,
+    tx_set: usize,
+    angle_delta_uv: i32,
+) -> CoeffOrdinaryBranchModeToTxfmInput {
+    CoeffOrdinaryBranchModeToTxfmInput::NonZero(CoeffOrdinaryBranchModeToTxfmNonZeroInput {
+        geometry: CoeffOrdinaryTxSizeGeometryConfig {
+            tx_size,
+            ..tx_size_geometry(start)
+        },
+        coeff_cdf_q_ctx: 0,
+        is_inter: false,
+        base_config: mode_to_txfm_base_config_with_angle(uv_mode, tx_set, angle_delta_uv),
         lossless: false,
     })
 }
@@ -216,13 +261,20 @@ fn run_mode_to_txfm(
 }
 
 fn find_payload_for_explicit(plane_tx_type: usize) -> [u8; 12] {
+    find_payload_for_explicit_tx_size(TX_8X8, plane_tx_type)
+}
+
+fn find_payload_for_explicit_tx_size(tx_size: usize, plane_tx_type: usize) -> [u8; 12] {
     let start = start_input();
     for first in u8::MIN..=u8::MAX {
         for second in u8::MIN..=u8::MAX {
             for suffix in PAYLOAD_SUFFIXES {
                 let payload = payload_from(first, second, suffix);
                 let result = std::panic::catch_unwind(|| {
-                    run_explicit(&payload, explicit_input(start, plane_tx_type));
+                    run_explicit(
+                        &payload,
+                        explicit_input_with_tx_size(start, tx_size, plane_tx_type),
+                    );
                 });
                 if result.is_ok() {
                     return payload;
@@ -306,6 +358,59 @@ fn coefficient_ordinary_branch_mode_to_txfm_chroma_dctonly_short_circuits() {
     assert_eq!(derived, explicit);
 }
 
+#[test]
+fn coefficient_ordinary_branch_mode_to_txfm_maps_directional_uv_without_remap() {
+    // Square transforms do not trigger AV2 §5.20.7.29 wide_angle_mapping, so
+    // V_PRED maps directly through Mode_To_Txfm to ADST_DCT.
+    let start = start_input();
+    let payload = find_payload_for_explicit(ADST_DCT);
+
+    let explicit = run_explicit(&payload, explicit_input(start, ADST_DCT));
+    let derived = run_mode_to_txfm(
+        &payload,
+        mode_to_txfm_input(start, UV_V_PRED, TX_SET_INTRA_1),
+    );
+
+    assert_eq!(derived, explicit);
+}
+
+#[test]
+fn coefficient_ordinary_branch_mode_to_txfm_maps_directional_uv_with_wide_angle_remap() {
+    // TX_4X8 has h == 2*w. D45_PRED has pAngle 45, below
+    // WAIP_WH_RATIO_2_THRES, so wide_angle_mapping remaps it to D203_PRED,
+    // which maps through Mode_To_Txfm to DCT_ADST.
+    let start = start_input();
+    let payload = find_payload_for_explicit_tx_size(TX_4X8, DCT_ADST);
+
+    let explicit = run_explicit(
+        &payload,
+        explicit_input_with_tx_size(start, TX_4X8, DCT_ADST),
+    );
+    let derived = run_mode_to_txfm(
+        &payload,
+        mode_to_txfm_input_with_angle(start, TX_4X8, UV_D45_PRED, TX_SET_INTRA_1, 0),
+    );
+
+    assert_eq!(derived, explicit);
+}
+
+#[test]
+fn coefficient_ordinary_branch_mode_to_txfm_directional_uv_falls_back_to_dct() {
+    let start = start_input();
+    let payload = find_payload_for_explicit_tx_size(TX_4X8, DCT_DCT);
+
+    let explicit = run_explicit(
+        &payload,
+        explicit_input_with_tx_size(start, TX_4X8, DCT_DCT),
+    );
+    let derived = run_mode_to_txfm(
+        &payload,
+        mode_to_txfm_input_with_angle(start, TX_4X8, UV_D45_PRED, TX_SET_DCTONLY, 0),
+    );
+
+    assert_eq!(derived, explicit);
+}
+
 fn assert_mode_to_txfm_error_preserves_state<F>(
     input: CoeffOrdinaryBranchModeToTxfmInput,
     assert_error: F,
@@ -382,10 +487,6 @@ fn coefficient_ordinary_branch_mode_to_txfm_rejects_unsupported_subset_atomicall
             ),
             "lossless",
         ),
-        (
-            mode_to_txfm_input(start, UV_V_PRED, TX_SET_INTRA_1),
-            "directional UVMode",
-        ),
     ];
 
     for (input, reason) in cases {
@@ -397,6 +498,33 @@ fn coefficient_ordinary_branch_mode_to_txfm_rejects_unsupported_subset_atomicall
             ));
         });
     }
+}
+
+#[test]
+fn coefficient_ordinary_branch_mode_to_txfm_rejects_directional_domains_atomically() {
+    let start = start_input();
+
+    assert_mode_to_txfm_error_preserves_state(
+        mode_to_txfm_input_with_angle(start, 25, UV_D45_PRED, TX_SET_INTRA_1, 0),
+        |err| {
+            assert!(matches!(
+                err,
+                CoeffOrdinaryBranchError::InvalidTransformSize { tx_size: 25 }
+            ));
+        },
+    );
+    assert_mode_to_txfm_error_preserves_state(
+        mode_to_txfm_input_with_angle(start, TX_4X8, UV_D45_PRED, TX_SET_INTRA_1, i32::MAX),
+        |err| {
+            assert!(matches!(
+                err,
+                CoeffOrdinaryBranchError::DirectionalAngleOverflow {
+                    uv_mode: UV_D45_PRED,
+                    angle_delta_uv: i32::MAX
+                }
+            ));
+        },
+    );
 }
 
 #[test]

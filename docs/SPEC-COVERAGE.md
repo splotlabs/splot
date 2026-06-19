@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 270 feature(s); 217 cite a spec section.
+Matrix version 1. Last reviewed 2026-06-15. 271 feature(s); 218 cite a spec section.
 
 One row per (spec section, feature) pair, in spec order; a feature citing both a syntax and a semantics section appears under both. The canonical status source is [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); the full per-feature ledger is [FEATURE-STATUS.md](./FEATURE-STATUS.md).
 
@@ -17,6 +17,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 3](./spec/av2/1.0.0/03-symbols.md#s-3) | Symbols | `CONF-RECON-REFERENCE-FRAME-STORE-FUZZ` | ✅ | — | — | ✅ | — |
 | [§ 3](./spec/av2/1.0.0/03-symbols.md#s-3) | Symbols | `DECODE-COEFF-BASE-DERIVED-LEVEL-PASS` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 3](./spec/av2/1.0.0/03-symbols.md#s-3) | Symbols | `DECODE-COEFF-MAX-LEVEL-DERIVE` | ✅ | — | — | ✅ | 1 |
+| [§ 3](./spec/av2/1.0.0/03-symbols.md#s-3) | Symbols | `DECODE-COEFF-ORDINARY-BRANCH-DIRECTIONAL-UV-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 3](./spec/av2/1.0.0/03-symbols.md#s-3) | Symbols | `DECODE-MODE-TO-TXFM-SYMBOLIC-TABLE` | ✅ | — | — | ✅ | 1 |
 | [§ 3](./spec/av2/1.0.0/03-symbols.md#s-3) | Symbols | `RECON-DEQUANT-PROCESS` | ✅ | — | ✅ | ✅ | — |
 | [§ 3](./spec/av2/1.0.0/03-symbols.md#s-3) | Symbols | `RECON-DEQUANT-QUANTIZER-INDEX-RESOLUTION` | ✅ | — | — | ✅ | — |
@@ -259,6 +260,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-COEFF-NONZERO-CONTEXT-COMMIT` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-COEFF-ORDINARY-BRANCH-ADJUSTED-TX-SIZE` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-COEFF-ORDINARY-BRANCH-COEFFS-GEOMETRY-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-COEFF-ORDINARY-BRANCH-DIRECTIONAL-UV-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-COEFF-ORDINARY-BRANCH-GEOMETRY-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-COEFF-ORDINARY-BRANCH-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-COEFF-ORDINARY-BRANCH-LOSSLESS-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
@@ -293,6 +295,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.20.7.28](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-28) | Read quantized coefficient syntax | `DECODE-COEFF-QUANT-STATE-WRITE` | ✅ | — | — | ✅ | 1 |
 | [§ 5.20.7.28](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-28) | Read quantized coefficient syntax | `DECODE-COEFF-READ-QUANT-SYNTAX` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.28](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-28) | Read quantized coefficient syntax | `DECODE-COEFF-STATE-CONTEXT-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 5.20.7.29](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-29) | Compute transform type function | `DECODE-COEFF-ORDINARY-BRANCH-DIRECTIONAL-UV-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.29](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-29) | Compute transform type function | `DECODE-COEFF-ORDINARY-BRANCH-LOSSLESS-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.29](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-29) | Compute transform type function | `DECODE-COEFF-ORDINARY-BRANCH-MODE-TO-TXFM-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.29](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-29) | Compute transform type function | `DECODE-COEFF-ORDINARY-BRANCH-TX-SET-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
@@ -761,6 +764,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-COEFF-EOB-SIZE-CONTEXT` | ✅ | — | — | ✅ | 1 |
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-COEFF-NONZERO-BLOCK-STATE` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-COEFF-ORDINARY-BRANCH-ADJUSTED-TX-SIZE` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-COEFF-ORDINARY-BRANCH-DIRECTIONAL-UV-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-COEFF-ORDINARY-BRANCH-LOSSLESS-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-COEFF-ORDINARY-BRANCH-MODE-TO-TXFM-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-COEFF-ORDINARY-BRANCH-SCAN-ORDER` | ✅ | 🟡 | — | ✅ | 1 |

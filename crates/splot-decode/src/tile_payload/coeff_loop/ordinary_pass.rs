@@ -525,6 +525,16 @@ pub(crate) enum CoeffOrdinaryBranchError {
         /// Generated table value.
         value: i32,
     },
+    /// Directional `UVMode` angle derivation overflowed before `wide_angle_mapping`.
+    #[error(
+        "ordinary coefficient branch directional UVMode {uv_mode} angle_delta_uv {angle_delta_uv} overflowed"
+    )]
+    DirectionalAngleOverflow {
+        /// Caller-provided `UVMode`.
+        uv_mode: usize,
+        /// Caller-provided `AngleDeltaUV`.
+        angle_delta_uv: i32,
+    },
     /// Allocation for a derived scan order failed.
     #[error("ordinary coefficient branch scan allocation failed: {0}")]
     ScanAllocation(#[from] TryReserveError),

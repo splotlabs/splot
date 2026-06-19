@@ -272,6 +272,13 @@ for the non-lossless intra chroma non-directional `Mode_To_Txfm` subset from
 caller-resolved `enable_chroma_dctonly`, generated § 9.2 `Mode_To_Txfm`, and
 the inline § 5.20.7.29 `Tx_Type_In_Set_Intra` membership table before
 delegating to the `PlaneTxType` handoff.
+`DECODE-COEFF-ORDINARY-BRANCH-DIRECTIONAL-UV-HANDOFF` now extends that
+intra chroma handoff with the directional `UVMode` branch: it carries
+caller-resolved `AngleDeltaUV`, derives `pAngle` from generated § 9.2
+`Mode_To_Angle` plus § 3 `ANGLE_STEP`, applies the inline § 5.20.7.29
+`wide_angle_mapping` thresholds over generated transform dimensions, and then
+maps the resulting mode through generated `Mode_To_Txfm` before the same
+transform-set membership check.
 `DECODE-COEFF-ORDINARY-BRANCH-TX-SET-HANDOFF` now derives AV2 § 5.20.8.3
 `txSet` from `txSz`, plane, caller-resolved `is_inter`, caller-resolved
 `reduced_tx_set`, caller-resolved `enable_chroma_dctonly`, and generated § 9.2
@@ -280,7 +287,8 @@ handoff. `DECODE-COEFF-ORDINARY-BRANCH-LOSSLESS-HANDOFF` now adds the staged
 § 5.20.7.29 `Lossless` branch that selects `DCT_DCT` before `get_tx_set`, while
 delegating non-lossless inputs back to the `txSet` handoff. The coefficient
 branch still does not implement the full § 5.20.7.29 `compute_tx_type` process
-or wire runtime `coeffs()`.
+or wire runtime `coeffs()`: luma/inter `TxTypes` lookup, FSC/IDTX lossless
+handling, and frame-state derivation remain staged gaps.
 Runtime integration of nonzero coefficient blocks, tile context fact derivation
 for nonzero blocks, dequantization, and
 reconstruction remain unsupported. The

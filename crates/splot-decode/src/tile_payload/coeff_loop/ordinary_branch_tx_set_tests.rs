@@ -90,6 +90,7 @@ fn mode_to_txfm_base_config(
     CoeffOrdinaryBranchModeToTxfmBaseConfig {
         tx_set,
         uv_mode,
+        angle_delta_uv: 0,
         enable_chroma_dctonly,
         parity_hiding: false,
         use_tcq: false,
@@ -105,6 +106,7 @@ fn tx_set_base_config(
         reduced_tx_set,
         enable_chroma_dctonly,
         uv_mode,
+        angle_delta_uv: 0,
         parity_hiding: false,
         use_tcq: false,
     }
