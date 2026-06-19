@@ -23,6 +23,20 @@ use super::{
 const DCT_DCT: usize = 0;
 const V_PRED: usize = 1;
 const D67_PRED: usize = 8;
+const TX_16X16: usize = 2;
+const TX_32X32: usize = 3;
+const TX_SET_DCTONLY: usize = 0;
+const TX_SET_WIDE_64: usize = 1;
+const TX_SET_HIGH_64: usize = 2;
+const TX_SET_WIDE_32: usize = 3;
+const TX_SET_HIGH_32: usize = 4;
+const TX_SET_INTRA_1: usize = 5;
+const TX_SET_INTRA_2: usize = 6;
+const TX_SET_INTER_1: usize = 5;
+const TX_SET_INTER_2: usize = 6;
+const TX_SET_DCT_IDTX: usize = 7;
+const TX_SET_DCT_IDTX_IDDCT: usize = 8;
+const MAX_REDUCED_TX_SET: usize = 3;
 
 // AV2 §5.20.7.29 inline `Tx_Type_In_Set_Intra[TX_SET_TYPES_INTRA][TX_TYPES]`
 // table (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-29`).
@@ -80,6 +94,28 @@ pub(crate) struct CoeffOrdinaryBranchModeToTxfmNonZeroInput {
     pub(crate) lossless: bool,
 }
 
+/// Caller-selected ordinary coefficient branch before `txSet` derivation.
+pub(crate) enum CoeffOrdinaryBranchTxSetInput {
+    /// Decoded `all_zero == 1`.
+    AllZero(CoeffOrdinaryTxSizeGeometryConfig),
+    /// Decoded `all_zero == 0`.
+    NonZero(CoeffOrdinaryBranchTxSetNonZeroInput),
+}
+
+/// Caller-resolved facts for the ordinary nonzero branch before `txSet`.
+pub(crate) struct CoeffOrdinaryBranchTxSetNonZeroInput {
+    /// Caller-resolved `coeffs()` geometry facts before table lookup.
+    pub(crate) geometry: CoeffOrdinaryTxSizeGeometryConfig,
+    /// Coefficient-CDF quantization context.
+    pub(crate) coeff_cdf_q_ctx: usize,
+    /// Caller-resolved inter/intra flag for `get_tx_set` and EOB context derivation.
+    pub(crate) is_inter: bool,
+    /// Caller-resolved base facts before `txSet`.
+    pub(crate) base_config: CoeffOrdinaryBranchTxSetBaseConfig,
+    /// Caller-resolved lossless flag for the quantized-state update.
+    pub(crate) lossless: bool,
+}
+
 /// Caller-resolved base-derivation facts before transform-size dimensions.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CoeffOrdinaryBranchTxSizeDimensionsBaseConfig {
@@ -106,6 +142,21 @@ pub(crate) struct CoeffOrdinaryBranchModeToTxfmBaseConfig {
     pub(crate) use_tcq: bool,
 }
 
+/// Caller-resolved base-derivation facts before AV2 § 5.20.8.3 `get_tx_set`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CoeffOrdinaryBranchTxSetBaseConfig {
+    /// Caller-resolved AV2 § 5.20.8.3 `reduced_tx_set` frame flag.
+    pub(crate) reduced_tx_set: usize,
+    /// Caller-resolved AV2 § 5.20.7.29 `enable_chroma_dctonly` flag.
+    pub(crate) enable_chroma_dctonly: bool,
+    /// Caller-resolved `UVMode` from the chroma intra mode syntax.
+    pub(crate) uv_mode: usize,
+    /// Whether hidden parity is active for this transform block.
+    pub(crate) parity_hiding: bool,
+    /// Whether TCQ is active for this transform block.
+    pub(crate) use_tcq: bool,
+}
+
 impl CoeffOrdinaryBranchModeToTxfmBaseConfig {
     fn tx_size_base_config(
         self,
@@ -115,6 +166,23 @@ impl CoeffOrdinaryBranchModeToTxfmBaseConfig {
     ) -> Result<CoeffOrdinaryBranchTxSizeDimensionsBaseConfig, CoeffOrdinaryBranchError> {
         Ok(CoeffOrdinaryBranchTxSizeDimensionsBaseConfig {
             plane_tx_type: mode_to_txfm_plane_tx_type(geometry, is_inter, lossless, self)?,
+            parity_hiding: self.parity_hiding,
+            use_tcq: self.use_tcq,
+        })
+    }
+}
+
+impl CoeffOrdinaryBranchTxSetBaseConfig {
+    fn mode_to_txfm_base_config(
+        self,
+        geometry: CoeffOrdinaryTxSizeGeometryConfig,
+        is_inter: bool,
+        tables: CoeffOrdinaryTxSizeTables<'_>,
+    ) -> Result<CoeffOrdinaryBranchModeToTxfmBaseConfig, CoeffOrdinaryBranchError> {
+        Ok(CoeffOrdinaryBranchModeToTxfmBaseConfig {
+            tx_set: tx_set(geometry, is_inter, self, tables)?,
+            uv_mode: self.uv_mode,
+            enable_chroma_dctonly: self.enable_chroma_dctonly,
             parity_hiding: self.parity_hiding,
             use_tcq: self.use_tcq,
         })
@@ -427,6 +495,31 @@ pub(crate) fn apply_coeff_ordinary_branch_from_mode_to_txfm(
     )
 }
 
+/// Dispatches the ordinary branch after deriving AV2 § 5.20.8.3 `txSet`.
+///
+/// This adapts the staged branch boundary for AV2 § 5.20.8.3 `get_tx_set`
+/// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-3`) by deriving
+/// `txSet` from generated AV2 § 9.2 transform-size conversion tables plus
+/// caller-resolved `is_inter`, `reduced_tx_set`, and `enable_chroma_dctonly`.
+/// It delegates transform-type selection to the non-lossless intra chroma
+/// non-directional `Mode_To_Txfm` subset wrapper. Full frame-state derivation,
+/// full `compute_tx_type`, runtime `coeffs()`, dequantization, inverse
+/// transform, residual add, and reconstruction remain out of scope.
+pub(crate) fn apply_coeff_ordinary_branch_from_tx_set(
+    state: &mut TileCoeffContextState,
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    input: CoeffOrdinaryBranchTxSetInput,
+) -> Result<CoeffOrdinaryBranch, CoeffOrdinaryBranchError> {
+    apply_coeff_ordinary_branch_from_tx_set_with_tables(
+        state,
+        cdfs,
+        symbols,
+        input,
+        DEFAULT_TX_SIZE_TABLES,
+    )
+}
+
 #[cfg(test)]
 pub(crate) fn apply_coeff_ordinary_branch_from_tx_size_dimensions_with_test_tables(
     state: &mut TileCoeffContextState,
@@ -472,6 +565,35 @@ pub(crate) fn apply_coeff_ordinary_branch_from_tx_size_dimensions_with_test_dime
             ..DEFAULT_TX_SIZE_TABLES
         },
     )
+}
+
+fn apply_coeff_ordinary_branch_from_tx_set_with_tables(
+    state: &mut TileCoeffContextState,
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    input: CoeffOrdinaryBranchTxSetInput,
+    tables: CoeffOrdinaryTxSizeTables<'_>,
+) -> Result<CoeffOrdinaryBranch, CoeffOrdinaryBranchError> {
+    let input = match input {
+        CoeffOrdinaryBranchTxSetInput::AllZero(geometry) => {
+            CoeffOrdinaryBranchModeToTxfmInput::AllZero(geometry)
+        }
+        CoeffOrdinaryBranchTxSetInput::NonZero(input) => {
+            let base_config = input.base_config.mode_to_txfm_base_config(
+                input.geometry,
+                input.is_inter,
+                tables,
+            )?;
+            CoeffOrdinaryBranchModeToTxfmInput::NonZero(CoeffOrdinaryBranchModeToTxfmNonZeroInput {
+                geometry: input.geometry,
+                coeff_cdf_q_ctx: input.coeff_cdf_q_ctx,
+                is_inter: input.is_inter,
+                base_config,
+                lossless: input.lossless,
+            })
+        }
+    };
+    apply_coeff_ordinary_branch_from_mode_to_txfm_with_tables(state, cdfs, symbols, input, tables)
 }
 
 fn apply_coeff_ordinary_branch_from_tx_size_dimensions_with_tables(
@@ -562,6 +684,80 @@ fn apply_coeff_ordinary_branch_from_mode_to_txfm_with_tables(
     apply_coeff_ordinary_branch_from_tx_size_dimensions_with_tables(
         state, cdfs, symbols, input, tables,
     )
+}
+
+fn tx_set(
+    geometry: CoeffOrdinaryTxSizeGeometryConfig,
+    is_inter: bool,
+    config: CoeffOrdinaryBranchTxSetBaseConfig,
+    tables: CoeffOrdinaryTxSizeTables<'_>,
+) -> Result<usize, CoeffOrdinaryBranchError> {
+    if config.reduced_tx_set > MAX_REDUCED_TX_SET {
+        return Err(CoeffOrdinaryBranchError::InvalidReducedTxSet {
+            reduced_tx_set: config.reduced_tx_set,
+        });
+    }
+
+    let tx_size_sqr =
+        tx_size_table_tx_size(tables, tables.tx_size_sqr, "Tx_Size_Sqr", geometry.tx_size)?;
+    let tx_size_sqr_up = tx_size_table_tx_size(
+        tables,
+        tables.tx_size_sqr_up,
+        "Tx_Size_Sqr_Up",
+        geometry.tx_size,
+    )?;
+    let tx_width = tx_size_table_usize(tables.tx_width, "Tx_Width", geometry.tx_size)?;
+    let tx_height = tx_size_table_usize(tables.tx_height, "Tx_Height", geometry.tx_size)?;
+
+    if tx_size_sqr_up > TX_32X32 {
+        if tx_size_sqr >= TX_32X32 {
+            return Ok(TX_SET_DCTONLY);
+        }
+        return if tx_width > tx_height {
+            Ok(TX_SET_WIDE_64)
+        } else {
+            Ok(TX_SET_HIGH_64)
+        };
+    }
+    if tx_size_sqr_up == TX_32X32 && tx_size_sqr != TX_32X32 {
+        return if tx_width > tx_height {
+            Ok(TX_SET_WIDE_32)
+        } else {
+            Ok(TX_SET_HIGH_32)
+        };
+    }
+    if !is_inter && tx_size_sqr_up == TX_32X32 {
+        return Ok(TX_SET_DCTONLY);
+    }
+
+    let reduced_tx_set = if geometry.plane == 0 {
+        config.reduced_tx_set
+    } else {
+        usize::from(config.enable_chroma_dctonly)
+    };
+    if tx_size_sqr_up == TX_32X32 || reduced_tx_set == 1 {
+        return if is_inter {
+            Ok(TX_SET_DCT_IDTX)
+        } else {
+            Ok(TX_SET_INTRA_2)
+        };
+    } else if reduced_tx_set == 2 {
+        return Ok(TX_SET_DCT_IDTX);
+    } else if reduced_tx_set == 3 {
+        return if is_inter {
+            Ok(TX_SET_DCT_IDTX_IDDCT)
+        } else {
+            Ok(TX_SET_INTRA_2)
+        };
+    }
+    if is_inter {
+        return if tx_size_sqr == TX_16X16 {
+            Ok(TX_SET_INTER_2)
+        } else {
+            Ok(TX_SET_INTER_1)
+        };
+    }
+    Ok(TX_SET_INTRA_1)
 }
 
 fn mode_to_txfm_plane_tx_type(

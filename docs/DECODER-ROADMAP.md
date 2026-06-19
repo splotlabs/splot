@@ -271,7 +271,12 @@ base-context pass. `DECODE-COEFF-ORDINARY-BRANCH-SCAN-ORDER` now derives
 for the non-lossless intra chroma non-directional `Mode_To_Txfm` subset from
 caller-resolved `enable_chroma_dctonly`, generated § 9.2 `Mode_To_Txfm`, and
 the inline § 5.20.7.29 `Tx_Type_In_Set_Intra` membership table before
-delegating to the `PlaneTxType` handoff. The coefficient branch still does not
+delegating to the `PlaneTxType` handoff.
+`DECODE-COEFF-ORDINARY-BRANCH-TX-SET-HANDOFF` now derives AV2 § 5.20.8.3
+`txSet` from `txSz`, plane, caller-resolved `is_inter`, caller-resolved
+`reduced_tx_set`, caller-resolved `enable_chroma_dctonly`, and generated § 9.2
+transform-size conversion tables before delegating to the `Mode_To_Txfm`
+handoff. The coefficient branch still does not
 implement the full § 5.20.7.29 `compute_tx_type` process or wire runtime
 `coeffs()`.
 Runtime integration of nonzero coefficient blocks, tile context fact derivation
