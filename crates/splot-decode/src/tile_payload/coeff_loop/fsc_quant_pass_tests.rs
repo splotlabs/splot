@@ -17,8 +17,9 @@ use super::fsc_level_pass::{
 };
 use super::fsc_quant_pass::{
     CoeffFscBranchError, CoeffFscBranchInput, CoeffFscBranchNonZeroInput,
-    CoeffFscContextCommitConfig, CoeffFscQuantPassError, NonZeroCoeffFscQuantPass,
-    apply_coeff_fsc_branch, apply_nonzero_coeff_fsc_quant_pass,
+    CoeffFscBranchSegEobInput, CoeffFscBranchSegEobNonZeroInput, CoeffFscContextCommitConfig,
+    CoeffFscQuantPassError, NonZeroCoeffFscQuantPass, apply_coeff_fsc_branch,
+    apply_coeff_fsc_branch_from_scan_extent, apply_nonzero_coeff_fsc_quant_pass,
     apply_nonzero_coeff_fsc_quant_pass_with_context_commit,
 };
 use super::fsc_sign_pass::{
@@ -114,6 +115,18 @@ fn fsc_branch_input(
         start: nonzero_start_input(),
         seg_eob,
         scan: &SCAN,
+        level_config: config(),
+        context,
+    })
+}
+
+fn fsc_branch_scan_extent_input<'a>(
+    scan: &'a [u16],
+    context: CoeffFscContextCommitConfig,
+) -> CoeffFscBranchSegEobInput<'a> {
+    CoeffFscBranchSegEobInput::NonZero(CoeffFscBranchSegEobNonZeroInput {
+        start: nonzero_start_input(),
+        scan,
         level_config: config(),
         context,
     })
@@ -489,6 +502,47 @@ fn coefficient_fsc_branch_matches_explicit_staged_pipeline() {
 }
 
 #[test]
+fn coefficient_fsc_branch_scan_extent_matches_explicit_seg_eob_branch() {
+    let payload = find_payload(SCAN.len(), |_| true);
+
+    let frame = FrameCdfSubset::from_defaults();
+    let mut explicit_tile = frame.tile_copy();
+    let mut explicit_symbols = symbol_decoder(&payload);
+    let mut explicit_context = seeded_context_state();
+    let expected = apply_coeff_fsc_branch(
+        &mut explicit_context,
+        &mut explicit_tile,
+        &mut explicit_symbols,
+        fsc_branch_input(SCAN.len(), context_commit_config()),
+    )
+    .unwrap();
+
+    let frame = FrameCdfSubset::from_defaults();
+    let mut derived_tile = frame.tile_copy();
+    let mut derived_symbols = symbol_decoder(&payload);
+    let mut derived_context = seeded_context_state();
+    let derived = apply_coeff_fsc_branch_from_scan_extent(
+        &mut derived_context,
+        &mut derived_tile,
+        &mut derived_symbols,
+        fsc_branch_scan_extent_input(&SCAN, context_commit_config()),
+    )
+    .unwrap();
+
+    assert_eq!(derived, expected);
+    assert_eq!(derived_context, explicit_context);
+    assert_eq!(derived_tile, explicit_tile);
+    assert_eq!(
+        derived_symbols.consumed_bits(),
+        explicit_symbols.consumed_bits()
+    );
+    assert_eq!(
+        derived_symbols.symbol_count(),
+        explicit_symbols.symbol_count()
+    );
+}
+
+#[test]
 fn coefficient_fsc_quant_pass_with_context_commit_preserves_context_on_pass_failure() {
     let payload = find_payload(2, |_| true);
     let (mut tile, mut symbols, _walk, level_pass) = setup_level_pass(&payload, 2).unwrap();
@@ -549,6 +603,32 @@ fn coefficient_fsc_branch_rejects_all_zero_without_mutation() {
 }
 
 #[test]
+fn coefficient_fsc_branch_scan_extent_rejects_all_zero_without_mutation() {
+    let frame = FrameCdfSubset::from_defaults();
+    let mut tile = frame.tile_copy();
+    let mut symbols = symbol_decoder(&[0x80]);
+    let mut context_state = seeded_context_state();
+    let tile_before = tile.clone();
+    let context_before = context_state.clone();
+    let consumed_before = symbols.consumed_bits();
+    let symbol_count_before = symbols.symbol_count();
+
+    let err = apply_coeff_fsc_branch_from_scan_extent(
+        &mut context_state,
+        &mut tile,
+        &mut symbols,
+        CoeffFscBranchSegEobInput::AllZero(all_zero_block_input()),
+    )
+    .unwrap_err();
+
+    assert!(matches!(err, CoeffFscBranchError::AllZero));
+    assert_eq!(context_state, context_before);
+    assert_eq!(tile, tile_before);
+    assert_eq!(symbols.consumed_bits(), consumed_before);
+    assert_eq!(symbols.symbol_count(), symbol_count_before);
+}
+
+#[test]
 fn coefficient_fsc_branch_rejects_chroma_plane_before_eob_consumption() {
     let payload = find_payload(2, |_| true);
     let frame = FrameCdfSubset::from_defaults();
@@ -565,6 +645,36 @@ fn coefficient_fsc_branch_rejects_chroma_plane_before_eob_consumption() {
         &mut tile,
         &mut symbols,
         fsc_branch_input(2, chroma_context_commit_config()),
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        err,
+        CoeffFscBranchError::NonLumaPlane { plane: 1 }
+    ));
+    assert_eq!(context_state, context_before);
+    assert_eq!(tile, tile_before);
+    assert_eq!(symbols.consumed_bits(), consumed_before);
+    assert_eq!(symbols.symbol_count(), symbol_count_before);
+}
+
+#[test]
+fn coefficient_fsc_branch_scan_extent_rejects_chroma_plane_before_eob_consumption() {
+    let payload = find_payload(2, |_| true);
+    let frame = FrameCdfSubset::from_defaults();
+    let mut tile = frame.tile_copy();
+    let mut symbols = symbol_decoder(&payload);
+    let mut context_state = seeded_context_state();
+    let tile_before = tile.clone();
+    let context_before = context_state.clone();
+    let consumed_before = symbols.consumed_bits();
+    let symbol_count_before = symbols.symbol_count();
+
+    let err = apply_coeff_fsc_branch_from_scan_extent(
+        &mut context_state,
+        &mut tile,
+        &mut symbols,
+        fsc_branch_scan_extent_input(&SCAN, chroma_context_commit_config()),
     )
     .unwrap_err();
 
@@ -604,6 +714,49 @@ fn coefficient_fsc_branch_rejects_invalid_scan_before_fsc_symbol_reads() {
         &mut tile,
         &mut symbols,
         fsc_branch_input(1, context_commit_config()),
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        err,
+        CoeffFscBranchError::Branch(CoeffLoopContextError::FscScanWalkEobOutOfRange {
+            eob: 2,
+            seg_eob: 1
+        })
+    ));
+    assert_eq!(context_state, seeded_context_state());
+    assert_eq!(tile, expected_tile);
+    assert_eq!(symbols.consumed_bits(), expected_symbols.consumed_bits());
+    assert_eq!(symbols.symbol_count(), expected_symbols.symbol_count());
+}
+
+#[test]
+fn coefficient_fsc_branch_scan_extent_rejects_short_scan_before_fsc_symbol_reads() {
+    let payload = find_payload(2, |_| true);
+    let frame = FrameCdfSubset::from_defaults();
+    let mut expected_tile = frame.tile_copy();
+    let mut expected_symbols = symbol_decoder(&payload);
+    let mut expected_context = seeded_context_state();
+    let start = read_coeff_block_eob_branch(
+        &mut expected_context,
+        &mut expected_tile,
+        &mut expected_symbols,
+        CoeffBlockEobBranchInput::NonZero(nonzero_start_input()),
+    )
+    .unwrap();
+    assert!(matches!(start, CoeffBlockEobBranch::NonZero(_)));
+
+    let short_scan = [0u16];
+    let frame = FrameCdfSubset::from_defaults();
+    let mut tile = frame.tile_copy();
+    let mut symbols = symbol_decoder(&payload);
+    let mut context_state = seeded_context_state();
+
+    let err = apply_coeff_fsc_branch_from_scan_extent(
+        &mut context_state,
+        &mut tile,
+        &mut symbols,
+        fsc_branch_scan_extent_input(&short_scan, context_commit_config()),
     )
     .unwrap_err();
 

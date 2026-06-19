@@ -5,7 +5,8 @@
 //!
 //! Feature tracking: `DECODE-COEFF-FSC-QUANT-PASS`,
 //! `DECODE-COEFF-FSC-CONTEXT-COMMIT`,
-//! `DECODE-COEFF-FSC-BRANCH-HANDOFF`.
+//! `DECODE-COEFF-FSC-BRANCH-HANDOFF`,
+//! `DECODE-COEFF-FSC-BRANCH-SEG-EOB-HANDOFF`.
 
 use std::collections::TryReserveError;
 
@@ -84,6 +85,26 @@ pub(crate) struct CoeffFscBranchNonZeroInput<'a> {
     pub(crate) start: NonZeroCoeffBlockStartInput,
     /// Caller-resolved `segEob` for the FSC branch.
     pub(crate) seg_eob: usize,
+    /// Caller-resolved `scan = get_scan(txSz, txClass)` raster positions.
+    pub(crate) scan: &'a [u16],
+    /// Caller-resolved FSC level-pass facts.
+    pub(crate) level_config: CoeffFscLevelPassConfig,
+    /// Caller-resolved facts for committing tile context lines.
+    pub(crate) context: CoeffFscContextCommitConfig,
+}
+
+/// Caller-selected FSC/IDTX coefficient branch before `segEob` handoff.
+pub(crate) enum CoeffFscBranchSegEobInput<'a> {
+    /// Decoded `all_zero == 1`, invalid for the FSC-specific branch.
+    AllZero(AllZeroCoeffBlockInput),
+    /// Decoded `all_zero == 0`.
+    NonZero(CoeffFscBranchSegEobNonZeroInput<'a>),
+}
+
+/// Caller-resolved facts for the FSC/IDTX nonzero branch before `segEob`.
+pub(crate) struct CoeffFscBranchSegEobNonZeroInput<'a> {
+    /// Caller-resolved facts for nonzero EOB start.
+    pub(crate) start: NonZeroCoeffBlockStartInput,
     /// Caller-resolved `scan = get_scan(txSz, txClass)` raster positions.
     pub(crate) scan: &'a [u16],
     /// Caller-resolved FSC level-pass facts.
@@ -277,6 +298,38 @@ pub(crate) fn apply_coeff_fsc_branch(
         input.context,
     )?;
     Ok(CoeffFscBranch { pass })
+}
+
+/// Dispatches the FSC/IDTX branch after deriving `segEob` from scan extent.
+///
+/// AV2 §5.20.7.27 derives `segEob = Min(32, Tx_Width[txSz]) *
+/// Min(Tx_Height[txSz], 32)`, and §5.20.7.30 `get_scan(txSz, txClass)` returns
+/// exactly that many entries
+/// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27`;
+/// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-30`). This staged
+/// wrapper therefore derives `segEob` from the caller-resolved scan length
+/// before delegating to [`apply_coeff_fsc_branch`]. Runtime `useFsc`, scan,
+/// transform, dequantization, inverse transform, residual add, and
+/// reconstruction remain out of scope.
+pub(crate) fn apply_coeff_fsc_branch_from_scan_extent(
+    state: &mut TileCoeffContextState,
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    input: CoeffFscBranchSegEobInput<'_>,
+) -> Result<CoeffFscBranch, CoeffFscBranchError> {
+    let input = match input {
+        CoeffFscBranchSegEobInput::AllZero(input) => CoeffFscBranchInput::AllZero(input),
+        CoeffFscBranchSegEobInput::NonZero(input) => {
+            CoeffFscBranchInput::NonZero(CoeffFscBranchNonZeroInput {
+                start: input.start,
+                seg_eob: input.scan.len(),
+                scan: input.scan,
+                level_config: input.level_config,
+                context: input.context,
+            })
+        }
+    };
+    apply_coeff_fsc_branch(state, cdfs, symbols, input)
 }
 
 /// Runs the FSC/IDTX §5.20.7.27 sign/quant loop over `c = 0 .. segEob`.
