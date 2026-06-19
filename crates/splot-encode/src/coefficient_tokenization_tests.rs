@@ -566,3 +566,45 @@ fn coeff_base_lf_context_out_of_range_neighbours_do_not_panic() {
         0
     );
 }
+
+#[test]
+fn coeff_base_lf_token_carries_non_eob_base_level() {
+    // The non-EOB `coeff_base` level equals its symbol (unlike `coeff_base_eob`,
+    // which is symbol + 1). The token selects the `TileCoeffBaseLfCdf` row at the
+    // eob=2 DC context (1) and TCQ-off context (0).
+    let token = coeff_base_lf_token(
+        0,
+        COEFF_BASE_LF_CTX_EOB2_DC,
+        COEFF_BASE_LF_TCQ_CTX_NEUTRAL,
+        0,
+    );
+    assert_eq!(token.syntax(), CoefficientTokenSyntax::CoeffBase);
+    assert_eq!(token.symbol(), 0);
+    assert!(matches!(
+        token.selector(),
+        CoefficientCdfRowSelector::CoeffBaseLf {
+            coeff_cdf_q_ctx: 0,
+            tx_size: TX_SIZE_4X4_CTX,
+            ctx: 1,
+            tcq_ctx: 0,
+        }
+    ));
+}
+
+#[test]
+fn coeff_base_lf_token_roundtrips_through_generic_helper() {
+    // The `coeff_base_lf` token roundtrips through `roundtrip_entropy_tokens` (its
+    // CDF-row router accepts the new low-frequency `coeff_base` selector), so the
+    // accessor is usable in the block-trace proof path the eob>1 trace will build.
+    for level in [0u8, 2, 5] {
+        let token = coeff_base_lf_token(
+            0,
+            COEFF_BASE_LF_CTX_EOB2_DC,
+            COEFF_BASE_LF_TCQ_CTX_NEUTRAL,
+            level,
+        );
+        let proof = roundtrip_entropy_tokens(&[token]).unwrap();
+        assert_eq!(proof.decoded_symbols(), &[level]);
+        assert_eq!(proof.symbol_count(), 1);
+    }
+}

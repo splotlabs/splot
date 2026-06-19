@@ -153,6 +153,12 @@ planning and status; it does not claim encoder behavior exists.
   `SIG_REF_DIFF_OFFSET` table. It is loaded but unread (no token, CDF, or packet);
   the eob>1 trace brick consumes it. It is not chroma/parity-hidden/high-frequency
   contexts, token emission, or a packet path.
+- `ENC-COEFF-BASE-LF-TOKEN` adds the non-EOB `coeff_base` low-frequency luma
+  token and its `TileCoeffBaseLfCdf` row (the second multi-coefficient building
+  block after the context derivation), roundtrip-proven through the §8.2 coder. It
+  is available but not yet composed into a trace; the eob>1 trace brick consumes
+  it. It is not a multi-coefficient trace, chroma/high-frequency `coeff_base`, or a
+  packet path.
 - `Packet` is still only a byte buffer wrapper, and no coded packet production
   path exists.
 - `EncoderConfig` exposes `BitDepth::Twelve`, but current Baseline Encoder Profile
