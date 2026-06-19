@@ -31,6 +31,7 @@
 use crate::inverse_transform_2d::{
     InverseTransform2d, InverseTransform2dDim, inverse_transform_2d,
 };
+use crate::transform_params::{TransformPass, get_transform_1d_type, transform_shift};
 use crate::{BitDepth, ReconError, Result};
 
 /// Maximum adjusted 1D transform length (§ 7.15.4 caps each adjusted side at 32).
@@ -41,6 +42,15 @@ const MIN_LOG2_DIM: u32 = 2;
 
 /// Maximum original transform-dimension base-2 logarithm (a 64-sample side).
 const MAX_LOG2_DIM: u32 = 6;
+
+/// Maximum adjusted transform-dimension base-2 logarithm (§ 7.15.4 caps each
+/// adjusted side at 32 samples, i.e. `Adjusted_Tx_Size` caps `log2` at 5).
+const MAX_ADJ_LOG2_DIM: u32 = 5;
+
+/// AV2 `IDTX` transform-type value. `PlaneTxType == IDTX` selects the § 7.15.4
+/// lossless bit-shift shortcut. `docs/spec/av2/1.0.0/03-symbols.md` lists
+/// `IDTX = 9`.
+const IDTX_TX_TYPE: usize = 9;
 
 /// AV2 § 7.15.4 DPCM cumulative-sum direction. Selected by the prediction mode:
 /// `V_PRED` sums down each column, every other DPCM mode sums across each row.
@@ -84,6 +94,116 @@ pub struct InverseTransform2dOuter {
     /// DPCM cumulative-sum direction, or `None` when `useDpcm` is 0.
     pub dpcm: Option<DpcmDirection>,
 }
+
+impl InverseTransform2dOuter {
+    /// Resolves the AV2 § 7.15.4 outer parameters from a single transform-block
+    /// fact set, so the per-pass transform selections, the per-pass shifts, the
+    /// `PlaneTxType == IDTX` flag, and the stored log2 dimensions are mutually
+    /// consistent by construction
+    /// (`docs/spec/av2/1.0.0/07-decoding-process.md#s-7-15-4`).
+    ///
+    /// This is the combined § 7.15.4 transform-parameter resolve helper that the
+    /// [`transform_shift`] (`RECON-TRANSFORM-SHIFT-LOOKUP`) and
+    /// [`get_transform_1d_type`] (`RECON-GET-TRANSFORM-1D-TYPE`) rows left for a
+    /// caller to compose. Deriving `row_shift` / `col_shift` and `row_type` /
+    /// `col_type` from the *same* `(log2_width, log2_height)` and `plane_tx_type`
+    /// the result stores avoids the dual-source hazard of a caller computing the
+    /// shifts and types from one `txSz` and the dimensions from another.
+    ///
+    /// `plane_tx_type` is `PlaneTxType` (`0..TX_TYPES`); `log2_width` /
+    /// `log2_height` are the original (unadjusted) `txSz` base-2 log dimensions
+    /// (`Tx_Width_Log2[txSz]` / `Tx_Height_Log2[txSz]`, each `2..=6`); `use_ddt`
+    /// is the caller-resolved `enable_inter_ddt && !use_intrabc && is_inter`.
+    /// `lossless`, `bit_depth`, and `dpcm` are independent caller facts the
+    /// transform size and type cannot supply.
+    ///
+    /// The shifts come from `Transform_Shift[txSz]` via [`transform_shift`]; the
+    /// per-pass types from [`get_transform_1d_type`] applied to the *adjusted*
+    /// sample sizes `w = 1 << Min(log2_width, 5)` and `h = 1 << Min(log2_height,
+    /// 5)`, exactly as § 7.15.4.1 sets `rowType = get_transform_1d_type(0, w)` and
+    /// `colType = get_transform_1d_type(1, h)`. (When `lossless`, the apply step
+    /// takes the Walsh-Hadamard path and ignores `row_type` / `col_type`; they are
+    /// still resolved here for a uniform, total constructor.)
+    ///
+    /// This is a `const fn` so a fixed transform shape resolves at compile time.
+    ///
+    /// # Errors
+    /// Returns [`ReconError::InvalidTransformShiftShape`] if `(log2_width,
+    /// log2_height)` is not one of the AV2 `TX_SIZES_ALL` transform shapes, and
+    /// [`ReconError::InvalidPlaneTxType`] if `plane_tx_type` is not a `TX_TYPES`
+    /// index (`0..16`). Neither the shape nor the type is consumed before both
+    /// are validated, so a rejected call resolves no partial parameters.
+    pub const fn resolve(
+        plane_tx_type: usize,
+        log2_width: u32,
+        log2_height: u32,
+        use_ddt: bool,
+        lossless: bool,
+        bit_depth: BitDepth,
+        dpcm: Option<DpcmDirection>,
+    ) -> Result<Self> {
+        // `transform_shift` validates the (log2_width, log2_height) shape against
+        // the 25 TX_SIZES_ALL shapes, so a bad shape fails here before any
+        // adjusted-size arithmetic runs.
+        let (row_shift, col_shift) = match transform_shift(log2_width, log2_height) {
+            Ok(shifts) => shifts,
+            Err(error) => return Err(error),
+        };
+        // § 7.15.4.1 `w` / `h`: each side's log2 is capped at 5 (`Adjusted_Tx_Size`)
+        // before `1 << adjLog2`. The cap keeps the shift in `0..=5`, so the
+        // adjusted size is at most 32 and never overflows `usize`.
+        let adj_w = 1usize << cap_adjusted_log2(log2_width);
+        let adj_h = 1usize << cap_adjusted_log2(log2_height);
+        let row_type =
+            match get_transform_1d_type(plane_tx_type, TransformPass::Row, adj_w, use_ddt) {
+                Ok(kind) => kind,
+                Err(error) => return Err(error),
+            };
+        let col_type =
+            match get_transform_1d_type(plane_tx_type, TransformPass::Col, adj_h, use_ddt) {
+                Ok(kind) => kind,
+                Err(error) => return Err(error),
+            };
+        Ok(Self {
+            log2_width,
+            log2_height,
+            lossless,
+            plane_tx_type_is_idtx: plane_tx_type == IDTX_TX_TYPE,
+            row_type,
+            col_type,
+            row_shift,
+            col_shift,
+            bit_depth,
+            dpcm,
+        })
+    }
+}
+
+/// Caps a transform-dimension base-2 logarithm at the § 7.15.4 adjusted size (a
+/// `const fn` form of `Min(log2, 5)`, the `Adjusted_Tx_Size` per-side cap).
+const fn cap_adjusted_log2(log2_dim: u32) -> u32 {
+    if log2_dim < MAX_ADJ_LOG2_DIM {
+        log2_dim
+    } else {
+        MAX_ADJ_LOG2_DIM
+    }
+}
+
+// `resolve` is a `const fn`: a fixed transform shape resolves at compile time.
+// This pins TX_4X4 DCT_DCT (PlaneTxType 0) to the § 7.15.4 (rowShift, colShift) =
+// (7, 10), both passes to a kernel transform, and a non-IDTX flag, exercising
+// const evaluation of the helper as a compile-time spec contract.
+const _RESOLVE_CONST_EVAL_CHECK: () = assert!(matches!(
+    InverseTransform2dOuter::resolve(0, 2, 2, false, false, BitDepth::Eight, None),
+    Ok(InverseTransform2dOuter {
+        row_shift: 7,
+        col_shift: 10,
+        plane_tx_type_is_idtx: false,
+        row_type: InverseTransform2dDim::Kernel(_),
+        col_type: InverseTransform2dDim::Kernel(_),
+        ..
+    })
+));
 
 /// Applies the AV2 § 7.15.4 outer 2D inverse transform.
 ///
@@ -688,5 +808,178 @@ mod tests {
                 residual_len: 512
             })
         ));
+    }
+
+    // The 8 valid distinct (log2_width, log2_height) shapes used by the resolve
+    // tests; each is a real AV2 `TX_SIZES_ALL` shape accepted by `transform_shift`.
+    const RESOLVE_SHAPES: [(u32, u32); 8] = [
+        (2, 2),
+        (3, 3),
+        (4, 4),
+        (5, 5),
+        (6, 6),
+        (2, 3),
+        (3, 2),
+        (6, 5),
+    ];
+
+    #[test]
+    fn resolve_wires_the_shift_and_type_helpers_with_the_right_arguments() {
+        // The substance of `resolve` is *which* arguments it threads into the two
+        // helper rows: the original log2 dims into `transform_shift`, and the
+        // adjusted per-pass sample sizes into `get_transform_1d_type`. Prove that
+        // wiring against the helpers directly for several PlaneTxType / shape /
+        // use_ddt combinations.
+        for &(log2_w, log2_h) in &RESOLVE_SHAPES {
+            for plane_tx_type in [0usize, 3, 9, 13, 15] {
+                for use_ddt in [false, true] {
+                    let resolved = InverseTransform2dOuter::resolve(
+                        plane_tx_type,
+                        log2_w,
+                        log2_h,
+                        use_ddt,
+                        false,
+                        BitDepth::Eight,
+                        Some(DpcmDirection::Vertical),
+                    )
+                    .unwrap();
+
+                    let (row_shift, col_shift) = transform_shift(log2_w, log2_h).unwrap();
+                    let adj_w = 1usize << log2_w.min(5);
+                    let adj_h = 1usize << log2_h.min(5);
+                    let row_type =
+                        get_transform_1d_type(plane_tx_type, TransformPass::Row, adj_w, use_ddt)
+                            .unwrap();
+                    let col_type =
+                        get_transform_1d_type(plane_tx_type, TransformPass::Col, adj_h, use_ddt)
+                            .unwrap();
+
+                    assert_eq!(
+                        resolved,
+                        InverseTransform2dOuter {
+                            log2_width: log2_w,
+                            log2_height: log2_h,
+                            lossless: false,
+                            plane_tx_type_is_idtx: plane_tx_type == 9,
+                            row_type,
+                            col_type,
+                            row_shift,
+                            col_shift,
+                            bit_depth: BitDepth::Eight,
+                            dpcm: Some(DpcmDirection::Vertical),
+                        }
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn resolve_applies_ddt_substitution_per_pass_on_the_adjusted_size() {
+        // TX_8X4 (log2 3x2): adjusted row size 8 (DDT-eligible) but adjusted col
+        // size 4 (the `sz != 4` guard blocks substitution). With an ADST_ADST
+        // PlaneTxType (3) and useDdt, the row pass becomes DDTX while the column
+        // pass stays ADST — proving the substitution keys off the per-pass
+        // *adjusted* size, not a single shared size.
+        let resolved =
+            InverseTransform2dOuter::resolve(3, 3, 2, true, false, BitDepth::Eight, None).unwrap();
+        assert_eq!(
+            resolved.row_type,
+            InverseTransform2dDim::Kernel(InverseTransform1dType::Ddtx)
+        );
+        assert_eq!(
+            resolved.col_type,
+            InverseTransform2dDim::Kernel(InverseTransform1dType::Adst)
+        );
+
+        // Without useDdt the same shape keeps both passes ADST.
+        let no_ddt =
+            InverseTransform2dOuter::resolve(3, 3, 2, false, false, BitDepth::Eight, None).unwrap();
+        assert_eq!(
+            no_ddt.row_type,
+            InverseTransform2dDim::Kernel(InverseTransform1dType::Adst)
+        );
+        assert_eq!(
+            no_ddt.col_type,
+            InverseTransform2dDim::Kernel(InverseTransform1dType::Adst)
+        );
+    }
+
+    #[test]
+    fn resolve_produces_params_that_drive_the_outer_transform() {
+        // TX_64X32 (log2 6x5): adjusted 32x32, original 64x32. A resolved
+        // DCT_DCT block must drive `inverse_transform_2d_outer` exactly like a
+        // hand-built params struct, proving the resolved fields are self-consistent
+        // for the apply step (original dims stored, adjusted dims implied).
+        let resolved =
+            InverseTransform2dOuter::resolve(0, 6, 5, false, false, BitDepth::Eight, None).unwrap();
+        let (row_shift, col_shift) = transform_shift(6, 5).unwrap();
+        let manual = params(6, 5, false, false, dct(), dct(), row_shift, col_shift, None);
+        assert_eq!(resolved, manual);
+
+        let mut dequant = [0i32; 32 * 32];
+        dequant[0] = 200;
+        dequant[33] = -50;
+        let mut from_resolved = [0i32; 64 * 32];
+        let mut from_manual = [0i32; 64 * 32];
+        inverse_transform_2d_outer(&resolved, &dequant, &mut from_resolved).unwrap();
+        inverse_transform_2d_outer(&manual, &dequant, &mut from_manual).unwrap();
+        assert_eq!(from_resolved, from_manual);
+    }
+
+    #[test]
+    fn resolve_rejects_invalid_shape_and_plane_tx_type_without_partial_state() {
+        // A non-`TX_SIZES_ALL` shape fails on the shift lookup.
+        assert!(matches!(
+            InverseTransform2dOuter::resolve(0, 7, 7, false, false, BitDepth::Eight, None),
+            Err(ReconError::InvalidTransformShiftShape {
+                log2_width: 7,
+                log2_height: 7
+            })
+        ));
+        // An out-of-range PlaneTxType fails on the type lookup (after a valid shape).
+        assert!(matches!(
+            InverseTransform2dOuter::resolve(16, 2, 2, false, false, BitDepth::Eight, None),
+            Err(ReconError::InvalidPlaneTxType { plane_tx_type: 16 })
+        ));
+    }
+
+    #[test]
+    fn resolve_is_total_for_every_valid_shape_and_tx_type() {
+        // Pathological sweep: every (log2_width, log2_height) in 2..=6 and every
+        // PlaneTxType in 0..16 with both useDdt values either resolves cleanly or
+        // returns a typed error — never panics. For accepted shapes the stored
+        // dims and idtx flag echo the inputs.
+        for log2_w in 0..=8u32 {
+            for log2_h in 0..=8u32 {
+                for plane_tx_type in 0..18usize {
+                    for use_ddt in [false, true] {
+                        match InverseTransform2dOuter::resolve(
+                            plane_tx_type,
+                            log2_w,
+                            log2_h,
+                            use_ddt,
+                            false,
+                            BitDepth::Eight,
+                            None,
+                        ) {
+                            Ok(resolved) => {
+                                assert_eq!(resolved.log2_width, log2_w);
+                                assert_eq!(resolved.log2_height, log2_h);
+                                assert_eq!(resolved.plane_tx_type_is_idtx, plane_tx_type == 9);
+                            }
+                            Err(error) => assert!(
+                                matches!(
+                                    error,
+                                    ReconError::InvalidTransformShiftShape { .. }
+                                        | ReconError::InvalidPlaneTxType { .. }
+                                ),
+                                "unexpected resolve error: {error:?}"
+                            ),
+                        }
+                    }
+                }
+            }
+        }
     }
 }

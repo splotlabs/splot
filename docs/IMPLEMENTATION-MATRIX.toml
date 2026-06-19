@@ -7809,7 +7809,7 @@ openspec_change = "recon-get-transform-1d-type"
 tracking_issue = ""
 owner = "decoder"
 risk = "low"
-notes = "Adds `get_transform_1d_type(plane_tx_type, pass, size, use_ddt) -> Result<InverseTransform2dDim>` to the `splot-recon` `transform_params` module, the second of the §7.15.4 inverse-transform parameter derivations the RECON-INVERSE-TRANSFORM-2D-OUTER row left caller-resolved. It returns `Transform_1d_Type[PlaneTxType][dir]` with the spec `useDdt` substitution: when `use_ddt` (the caller-resolved `enable_inter_ddt && !use_intrabc && is_inter`) is set, the base type is `ADST` or `FDST`, and `size != 4`, the type becomes `DDTX` or `FDDT` respectively. The verbatim 16-row §7.15.4 `Transform_1d_Type[TX_TYPES][2]` constant is hand-written and spec-cited because, like `Transform_Shift`, it is a §7.15.4 process-body constant absent from the generated `all_tables.h` §9 attachment (deliberately not a gen-tables output); `IDT` maps to `InverseTransform2dDim::Identity` and the kernel types to `InverseTransform2dDim::Kernel`, the exact `row_type`/`col_type` field type of the existing `InverseTransform2dOuter`. The `TransformPass` enum selects the spec `dir` (Row=0, Col=1). Strictly additive and provably no-output-change: a `const fn` plus a `TransformPass` enum and one typed error variant (`ReconError::InvalidPlaneTxType`), with no rewiring of any decode path. This row does not implement the DPCM-direction selection, the combined transform-parameter resolve helper, any wiring into the runtime decode path, the §7.15.3 secondary transform, or the coefficient entropy decode that produces `Quant`."
+notes = "Adds `get_transform_1d_type(plane_tx_type, pass, size, use_ddt) -> Result<InverseTransform2dDim>` to the `splot-recon` `transform_params` module, the second of the §7.15.4 inverse-transform parameter derivations the RECON-INVERSE-TRANSFORM-2D-OUTER row left caller-resolved. It returns `Transform_1d_Type[PlaneTxType][dir]` with the spec `useDdt` substitution: when `use_ddt` (the caller-resolved `enable_inter_ddt && !use_intrabc && is_inter`) is set, the base type is `ADST` or `FDST`, and `size != 4`, the type becomes `DDTX` or `FDDT` respectively. The verbatim 16-row §7.15.4 `Transform_1d_Type[TX_TYPES][2]` constant is hand-written and spec-cited because, like `Transform_Shift`, it is a §7.15.4 process-body constant absent from the generated `all_tables.h` §9 attachment (deliberately not a gen-tables output); `IDT` maps to `InverseTransform2dDim::Identity` and the kernel types to `InverseTransform2dDim::Kernel`, the exact `row_type`/`col_type` field type of the existing `InverseTransform2dOuter`. The `TransformPass` enum selects the spec `dir` (Row=0, Col=1). Strictly additive and provably no-output-change: a `const fn` plus a `TransformPass` enum and one typed error variant (`ReconError::InvalidPlaneTxType`), with no rewiring of any decode path. The combined transform-parameter resolve helper that composes this row with RECON-TRANSFORM-SHIFT-LOOKUP is now RECON-RESOLVE-2D-TRANSFORM-PARAMS. This row does not implement the DPCM-direction selection, any wiring into the runtime decode path, the §7.15.3 secondary transform, or the coefficient entropy decode that produces `Quant`."
 
 [feature.status]
 mapped = "done"
@@ -7837,6 +7837,58 @@ commands = [
     "cargo xtask check-feature-status",
 ]
 fixtures = [
+    "crates/splot-recon/src/transform_params.rs",
+    "crates/splot-recon/src/error.rs",
+    "crates/splot-recon/src/lib.rs",
+]
+diagnostics = []
+
+[[feature]]
+id = "RECON-RESOLVE-2D-TRANSFORM-PARAMS"
+name = "Inverse transform 2D parameter resolve helper"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["7.15.4"]
+sources = [
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-15-4",
+]
+crate = "splot-recon"
+module = "crates/splot-recon/src/inverse_transform_2d_outer.rs"
+openspec_change = "recon-resolve-2d-transform-params"
+tracking_issue = ""
+owner = "decoder"
+risk = "low"
+notes = "Adds `InverseTransform2dOuter::resolve(plane_tx_type, log2_width, log2_height, use_ddt, lossless, bit_depth, dpcm) -> Result<Self>` to the `splot-recon` `inverse_transform_2d_outer` module, the combined §7.15.4 transform-parameter resolve helper that the RECON-TRANSFORM-SHIFT-LOOKUP and RECON-GET-TRANSFORM-1D-TYPE rows left for a caller to compose. It derives `row_shift` and `col_shift` from `Transform_Shift[txSz]` via `transform_shift(log2_width, log2_height)`, derives `row_type` and `col_type` from `get_transform_1d_type` over the per-pass adjusted sample sizes `w = 1 << Min(log2_width, 5)` and `h = 1 << Min(log2_height, 5)` (exactly the §7.15.4.1 `rowType = get_transform_1d_type(0, w)` / `colType = get_transform_1d_type(1, h)`), and derives `plane_tx_type_is_idtx` from `PlaneTxType == IDTX (9)`. Resolving all of these from one `(plane_tx_type, log2_width, log2_height)` source the result also stores avoids the dual-source hazard of computing the shifts and types from one `txSz` and the dimensions from another. Total and panic-free: the shape is validated by `transform_shift` before any adjusted-size arithmetic and the type by `get_transform_1d_type`, so a rejected call resolves no partial parameters; reuses the existing `ReconError::InvalidTransformShiftShape` and `ReconError::InvalidPlaneTxType` variants with no new error. Strictly additive and provably no-output-change: a `const fn` constructor plus an IDTX constant and an adjusted-log2 cap helper, with no rewiring of any decode path, so the minimal flat-intra fixture snapshots stay byte-identical. This row does not implement the DPCM-direction selection from `YMode`/`UVMode`, any wiring into the runtime decode path, the §7.15.3 secondary transform, or the coefficient entropy decode that produces `Quant`."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "done"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-recon/src/inverse_transform_2d_outer.rs::tests::resolve_wires_the_shift_and_type_helpers_with_the_right_arguments",
+    "crates/splot-recon/src/inverse_transform_2d_outer.rs::tests::resolve_applies_ddt_substitution_per_pass_on_the_adjusted_size",
+    "crates/splot-recon/src/inverse_transform_2d_outer.rs::tests::resolve_produces_params_that_drive_the_outer_transform",
+    "crates/splot-recon/src/inverse_transform_2d_outer.rs::tests::resolve_rejects_invalid_shape_and_plane_tx_type_without_partial_state",
+    "crates/splot-recon/src/inverse_transform_2d_outer.rs::tests::resolve_is_total_for_every_valid_shape_and_tx_type",
+]
+commands = [
+    "cargo test -p splot-recon inverse_transform_2d_outer --locked",
+    "cargo clippy -p splot-recon --all-targets --locked -- -D warnings",
+    "cargo xtask check-dependency-direction",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-recon/src/inverse_transform_2d_outer.rs",
     "crates/splot-recon/src/transform_params.rs",
     "crates/splot-recon/src/error.rs",
     "crates/splot-recon/src/lib.rs",
