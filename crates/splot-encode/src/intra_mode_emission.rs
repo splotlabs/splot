@@ -28,13 +28,24 @@
 //! It also emits the chroma `uv_mode` selector (AV2 § 5.20.5.6) for the DC chroma
 //! mode (`Default_Mode_List_Uv` index 0 = DC_PRED) at the non-directional context
 //! (`is_directional(YMode)` is 0 for DC_PRED), tracked by
-//! `ENC-UV-MODE-SYMBOL-EMISSION`. In the AV2 mode-info order `uv_mode` is read
-//! after the luma transform/coefficient symbols, so it is emitted as a standalone
-//! token to be composed into the full block trace later.
+//! `ENC-UV-MODE-SYMBOL-EMISSION`. In the AV2 § 5.20.5.3 mode-info order
+//! `read_intra_uv_mode()` is called right after `read_intra_y_mode()` and before
+//! `residual()`, so `uv_mode` precedes all coefficient symbols; it is emitted as a
+//! standalone token for ordered composition (`y_mode_set`, `y_mode_index`,
+//! `uv_mode`, then residual/coefficient syntax).
+//!
+//! `uv_mode` emission here is valid only for the minimal tier where the § 5.20.5.6
+//! predecessors are not read: a non-lossless block (`use_dpcm_uv` is inferred 0
+//! per `if ( Lossless ) { use_dpcm_uv } else { use_dpcm_uv = 0 }`) with CfL
+//! disabled (`enable_cfl_intra == 0` makes `cflAllowed == 0`) and MHCCP
+//! unavailable, so `is_cfl` is not read either. Lossless blocks (which read
+//! `use_dpcm_uv` / `dpcm_mode_uv`) and CfL/MHCCP-enabled blocks (which read
+//! `is_cfl`) read those symbols before `uv_mode` and are out of scope.
 //!
 //! It does not emit coefficient or all-zero symbols, lossless
-//! `use_dpcm_y`/`dpcm_mode_y` symbols, CfL/CCTX syntax, tile payloads, tile CDF
-//! lifecycle, packets, a public encoder API, or chroma/intra modes beyond DC.
+//! `use_dpcm_y`/`dpcm_mode_y` or `use_dpcm_uv`/`dpcm_mode_uv` symbols, `is_cfl` /
+//! CfL / CCTX / MHCCP syntax, tile payloads, tile CDF lifecycle, packets, a public
+//! encoder API, or chroma/intra modes beyond DC.
 
 #![allow(dead_code)]
 

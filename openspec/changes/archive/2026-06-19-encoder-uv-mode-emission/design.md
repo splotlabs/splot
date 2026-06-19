@@ -7,10 +7,15 @@ chroma planes. This change emits the minimal DC chroma `uv_mode` token and prove
 it through the in-tree AV2 §8.2 symbol coder, reusing the `intra_mode_emission`
 module's token / roundtrip machinery.
 
-In the AV2 §5.20.5.5/§5.20.5.6 mode-info order, `uv_mode` is read after the luma
-transform/coefficient symbols, not immediately after `y_mode_index`, so this
-change emits `uv_mode` as a standalone token (it is composed into the full block
-trace later, with the luma coefficient symbols in between).
+In the AV2 §5.20.5.3 mode-info order, `intra_frame_mode_info()` calls
+`read_intra_uv_mode()` right after `read_intra_y_mode()` and before `residual()`,
+so `uv_mode` precedes all coefficient symbols. This change emits `uv_mode` as a
+standalone token for ordered composition (`y_mode_set`, `y_mode_index`, `uv_mode`,
+then residual/coefficient syntax). `read_intra_uv_mode()` (§5.20.5.6) also reads
+`use_dpcm_uv` (when `Lossless`) and `is_cfl` (when `cflAllowed ||
+is_mhccp_allowed()`) before `uv_mode`; this change is valid only for the minimal
+tier where neither is read — a non-lossless block with CfL disabled
+(`enable_cfl_intra == 0`) and MHCCP unavailable.
 
 Normative AV2 v1.0.0 sections:
 

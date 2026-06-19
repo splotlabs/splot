@@ -1512,9 +1512,14 @@ mode (`Default_Mode_List_Uv` index 0 = DC_PRED) for a non-directional DC_PRED lu
 block, selecting the §8.3.2 `TileUVModeCflNotAllowedCdf` row at the
 non-directional context 0. The stage SHALL prove that token value can be written
 through the in-tree AV2 §8.2 symbol encoder with the scoped default CDF row and
-decoded back to the same value. It SHALL NOT emit coefficient or all-zero symbols,
-CfL/CCTX syntax, partition syntax, tile payloads, coded packets, public CLI
-success, or chroma modes beyond the declared DC minimal tier.
+decoded back to the same value. Per AV2 §5.20.5.3 `read_intra_uv_mode()` is called
+after `read_intra_y_mode()` and before `residual()`, so `uv_mode` precedes all
+coefficient symbols. This is valid only for a non-lossless block with CfL disabled
+and MHCCP unavailable, where the §5.20.5.6 `use_dpcm_uv` and `is_cfl` predecessors
+are not read. It SHALL NOT emit lossless `use_dpcm_uv` / `dpcm_mode_uv` or
+`is_cfl` / CfL / CCTX / MHCCP syntax, coefficient or all-zero symbols, partition
+syntax, tile payloads, coded packets, public CLI success, or chroma modes beyond
+the declared DC minimal tier.
 
 #### Scenario: DC chroma block emits the ordered uv_mode token
 
