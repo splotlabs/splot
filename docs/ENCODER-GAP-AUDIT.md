@@ -147,6 +147,12 @@ planning and status; it does not claim encoder behavior exists.
   test reconstructs every magnitude 18..=525 via the decoder's golomb-prefix
   arithmetic; out-of-range magnitudes return a typed runtime error. It is not
   multi-coefficient blocks, chroma golomb, tile-body emission, or a packet path.
+- `ENC-COEFF-BASE-LF-CONTEXT` adds the §8.3.2 `coeff_base` low-frequency luma
+  context derivation (the neighbour-sum context multi-coefficient blocks need),
+  mirroring the decoder's `CoeffBaseContext` LF branch via the shared
+  `SIG_REF_DIFF_OFFSET` table. It is loaded but unread (no token, CDF, or packet);
+  the eob>1 trace brick consumes it. It is not chroma/parity-hidden/high-frequency
+  contexts, token emission, or a packet path.
 - `Packet` is still only a byte buffer wrapper, and no coded packet production
   path exists.
 - `EncoderConfig` exposes `BitDepth::Twelve`, but current Baseline Encoder Profile

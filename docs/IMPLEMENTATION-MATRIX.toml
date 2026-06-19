@@ -4536,6 +4536,39 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-COEFF-BASE-LF-CONTEXT"
+name = "Encoder coeff_base low-frequency luma context"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["8.3.2", "5.20.7.27"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/coefficient_tokenization.rs"
+openspec_change = "encoder-coeff-base-lf-context"
+tracking_issue = ""
+owner = "encoder"
+risk = "medium"
+notes = "Private, loaded-but-unread encoder §8.3.2 `coeff_base` low-frequency LUMA context derivation — the hardest piece of the multi-coefficient (eob>1) path, isolated for focused review before the consuming trace brick. `coeff_base_lf_luma_context(pos, bwl, txw, txh, tx_class, c, level)` mirrors the decoder's `CoeffBaseContext` LF luma branch (crates/splot-decode/src/tile_payload/cdf/coeff_context.rs:365-451): the SIG_REF_DIFF_OFFSET neighbour-sum with the LF `magLimit` (5 for the near-DC samples, else 3), `ctx=(mag+1)>>1`, and the §8.3.2 LF luma mapping (2D: c==0→ctx.min(8); row+col<2→ctx.min(6)+9; else→ctx.min(4)+16; horiz/vert: LF_SIG_COEF_CONTEXTS_2D(21)+...). It imports the shared `splot_core::tables::conversion::SIG_REF_DIFF_OFFSET` §9 table (so the mirror cannot drift from the offsets), is total and panic-free (saturating geometry; out-of-range/short-slice neighbours contribute 0), and is scoped to LF luma (chroma, parity-hidden DC, and high-frequency bands out of scope). Worked case the consuming eob=2 trace will use: DC at pos 0 with an AC level-1 neighbour at pos 1 → mag 1 → ctx 1 → c==0 band ctx.min(8) = 1. Unit tests pin the DC/AC-neighbour case, the magLimit clamp, the three 2D bands, and the no-panic out-of-range path. The §8.2 roundtrip cannot validate a context (it only proves self-consistency), so conformance vs a real decoder is established when this is wired into a trace and cross-checked vs AVM at the packet milestone. This row does not claim token emission, a multi-coefficient trace, chroma/parity-hidden/high-frequency contexts, tile-body emission, packet output, CLI success, or Baseline Encoder Profile v1 output."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/coefficient_tokenization_tests.rs::coeff_base_lf_dc_context_for_single_ac_neighbour_is_one", "crates/splot-encode/src/coefficient_tokenization_tests.rs::coeff_base_lf_dc_context_clamps_neighbour_magnitude", "crates/splot-encode/src/coefficient_tokenization_tests.rs::coeff_base_lf_context_bands_match_spec_mapping", "crates/splot-encode/src/coefficient_tokenization_tests.rs::coeff_base_lf_context_out_of_range_neighbours_do_not_panic"]
+commands = ["cargo test -p splot-encode coeff_base_lf --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-RECON-DEPENDENCY"
 name = "Encoder reconstruction dependency boundary"
 category = "encoder"
