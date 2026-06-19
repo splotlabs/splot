@@ -138,7 +138,7 @@ pub(crate) enum BlockCdfSelector {
         /// DC-sign context (`0..DC_SIGN_CONTEXTS`).
         ctx: usize,
     },
-    /// Ordinary non-IDTX coefficient base/base-EOB/base-range CDF rows.
+    /// Coefficient base/base-EOB/base-range and IDTX CDF rows.
     Coeff(CoeffCdfSelector),
 }
 

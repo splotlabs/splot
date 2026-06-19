@@ -154,7 +154,10 @@ ordinary non-FSC nonzero path also has a checked decode-local scan-walk boundary
 (`DECODE-COEFF-SCAN-WALK`) over caller-supplied `scan[c]` positions: it validates
 EOB length and scan-position bounds and returns reverse-order `c`/`pos`/row/col
 facts without importing `splot-recon`, consuming symbols, mutating CDFs, or
-writing coefficients. The ordinary non-IDTX coefficient base/base-EOB/base-range
+writing coefficients. The FSC/IDTX path now has the corresponding forward scan
+window (`DECODE-COEFF-FSC-SCAN-WALK`): it validates caller-resolved `segEob`,
+derives `bob = segEob - eob`, and returns checked `bob..segEob` entries without
+reading symbols or writing coefficients. The ordinary non-IDTX coefficient base/base-EOB/base-range
 CDF row families are now loaded and selectable in the tile CDF subset
 (`DECODE-COEFF-BASE-CDF-ROWS`), including tile copy/save/average and frame-end
 count scaling. A crate-private ordinary non-FSC coefficient base symbol-read
@@ -212,6 +215,19 @@ and `isHidden`, and writes each decoded `Level[row][col]` before deriving the
 next selector. `DECODE-COEFF-BASE-PH-CDF-ROW`
 now loads/selects the parity-hidden-only `TileCoeffBasePhCdf` row and proves an
 eob>=5 hidden-parity first pass consumes it for the final DC coefficient.
+`DECODE-COEFF-IDTX-CDF-ROWS` now loads/selects the FSC/IDTX
+`TileCoeffBaseBobCdf`, `TileCoeffBaseIdtxCdf`, `TileCoeffBrIdtxCdf`, and
+`TileIdtxSignCdf` row families in the tile CDF subset with tile copy/save/average
+and frame-end scaling coverage, but still leaves the runtime `useFsc` symbol pass
+unwired.
+`DECODE-COEFF-FSC-LEVEL-PASS` now consumes the FSC/IDTX level rows in a
+loaded-but-unwired first pass: it validates the checked `bob..segEob` walk
+against local block geometry, derives `coeff_base_bob`, later
+`coeff_base_idtx`, and conditional `coeff_br_idtx` selectors from current
+`Level[]`, clamps the FSC transform-size context axis, reads the selected rows,
+and writes local `Level[]` in forward scan order. It still does not read
+`idtx_sign`, run `read_quant`, write `QuantSign[]` or `Quant[]`, commit tile
+context, or wire runtime `coeffs()`.
 `DECODE-COEFF-ORDINARY-DERIVED-BASE-PASS` now composes that first pass into the
 ordinary coefficient pass, carrying first-pass `isHidden`, `sumAbs1`, and
 `useTcq` into the interleaved sign/`read_quant`/signed `Quant[]` stage and
@@ -245,9 +261,60 @@ geometry carried by the branch input before delegating to the `plane_type`
 handoff. `DECODE-COEFF-ORDINARY-BRANCH-COEFFS-GEOMETRY-HANDOFF` now derives that
 block geometry from AV2 § 5.20.7.27 `coeffs()` geometry facts (`startX`,
 `startY`, caller-resolved `Tx_Width[txSz]`, and `Tx_Height[txSz]`) before
-delegating to the block-geometry handoff. It still does not derive
-`Tx_Width[txSz]` or `Tx_Height[txSz]` from `txSz`, implement § 5.20.7.29
-`compute_tx_type`, derive scan order, or wire runtime `coeffs()`.
+delegating to the block-geometry handoff. `DECODE-TX-SIZE-SYMBOLIC-TABLES` now
+extends generated § 9.2 conversion-table support with the `TX_*` enum-valued
+`Adjusted_Tx_Size`, `Tx_Size_Sqr`, and `Tx_Size_Sqr_Up` arrays, so future decode
+wrappers can consume the generated `splot-core` copies rather than local table
+transcriptions. `DECODE-MODE-TO-TXFM-SYMBOLIC-TABLE` now similarly generates
+the TxType-valued § 9.2 `Mode_To_Txfm` conversion table for future
+`compute_tx_type()` work, without wiring runtime transform-type computation.
+`DECODE-COEFF-ORDINARY-BRANCH-TX-SIZE-DIMENSIONS`
+now derives
+`Tx_Width[txSz]`, `Tx_Height[txSz]`, `Tx_Width_Log2[txSz]`, and
+`Tx_Height_Log2[txSz]` from the generated § 9.2 conversion tables before
+delegating to the `coeffs()` geometry handoff.
+`DECODE-COEFF-ORDINARY-BRANCH-ADJUSTED-TX-SIZE` now consumes generated
+`Adjusted_Tx_Size[txSz]` so § 8.3.2 ordinary base contexts receive adjusted
+width, height, and width-log2 dimensions while raw dimensions still drive
+§ 5.20.7.27 block geometry and EOB-size context.
+`DECODE-COEFF-ORDINARY-BRANCH-TX-SIZE-CONTEXT` now derives `txSzCtx` from
+generated `Tx_Size_Sqr[txSz]` and `Tx_Size_Sqr_Up[txSz]` before the ordinary
+base-context pass. `DECODE-COEFF-ORDINARY-BRANCH-SCAN-ORDER` now derives
+`scan = get_scan(txSz, txClass)` from raw transform dimensions and decode-local
+§ 5.20.7.30 scan-order logic after deriving `txClass` from caller-resolved
+`PlaneTxType`.
+`DECODE-COEFF-ORDINARY-BRANCH-MODE-TO-TXFM-HANDOFF` now derives `PlaneTxType`
+for the non-lossless intra chroma non-directional `Mode_To_Txfm` subset from
+caller-resolved `enable_chroma_dctonly`, generated § 9.2 `Mode_To_Txfm`, and
+the inline § 5.20.7.29 `Tx_Type_In_Set_Intra` membership table before
+delegating to the `PlaneTxType` handoff.
+`DECODE-COEFF-ORDINARY-BRANCH-DIRECTIONAL-UV-HANDOFF` now extends that
+intra chroma handoff with the directional `UVMode` branch: it carries
+caller-resolved `AngleDeltaUV`, derives `pAngle` from generated § 9.2
+`Mode_To_Angle` plus § 3 `ANGLE_STEP`, applies the inline § 5.20.7.29
+`wide_angle_mapping` thresholds over generated transform dimensions, and then
+maps the resulting mode through generated `Mode_To_Txfm` before the same
+transform-set membership check.
+`DECODE-COEFF-ORDINARY-BRANCH-LUMA-TXTYPES-HANDOFF` now extends the same
+transform-type handoff with the non-lossless luma `TxTypes[blockY][blockX]`
+branch: it carries caller-resolved luma `TxTypes`, validates the value against
+the AV2 `TX_TYPES` domain, and returns it before chroma-only
+`enable_chroma_dctonly` and `UVMode` logic.
+`DECODE-COEFF-ORDINARY-BRANCH-CHROMA-INTER-TXTYPES-HANDOFF` now adds the
+non-lossless chroma-inter `TxTypes[y4][x4]` branch: it carries caller-resolved
+chroma-inter `TxTypes`, validates the value against the AV2 `TX_TYPES` domain,
+checks the inline § 5.20.7.29 `Tx_Type_In_Set_Inter` membership table, and
+falls back to `DCT_DCT` when the transform type is outside the inter set.
+`DECODE-COEFF-ORDINARY-BRANCH-TX-SET-HANDOFF` now derives AV2 § 5.20.8.3
+`txSet` from `txSz`, plane, caller-resolved `is_inter`, caller-resolved
+`reduced_tx_set`, caller-resolved `enable_chroma_dctonly`, and generated § 9.2
+transform-size conversion tables before delegating to the `Mode_To_Txfm`
+handoff. `DECODE-COEFF-ORDINARY-BRANCH-LOSSLESS-HANDOFF` now adds the staged
+§ 5.20.7.29 `Lossless` branch that selects `DCT_DCT` before `get_tx_set`, while
+delegating non-lossless inputs back to the `txSet` handoff. The coefficient
+branch still does not implement the full § 5.20.7.29 `compute_tx_type` process
+or wire runtime `coeffs()`: FSC/IDTX symbol-pass and lossless runtime handling,
+plus frame-state derivation, remain staged gaps.
 Runtime integration of nonzero coefficient blocks, tile context fact derivation
 for nonzero blocks, dequantization, and
 reconstruction remain unsupported. The
@@ -255,7 +322,7 @@ reconstruction remain unsupported. The
 `useQm` / `UserQm` gating and `shift` derivation, the rest
 of the § 7.14.3 reconstruct process, the § 7.15.3 secondary transform, the
 § 7.15.4 DPCM-direction selection and combined transform-parameter resolve helper,
-the § 5.20.7.29 `compute_tx_type` transform-type computation that produces
+the remaining § 5.20.7.29 `compute_tx_type` transform-type branches that produce
 `PlaneTxType`, and the coefficient
 entropy decode that produces nonzero `Quant` remain unimplemented.
 `splot-recon` remains scheduler-free:

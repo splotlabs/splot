@@ -548,6 +548,20 @@ local_reference_evidence = []
 notes = "Adds crate-private `splot-decode` scan traversal for the ordinary non-FSC AV2 §5.20.7.27 nonzero coefficient path. `walk_nonzero_coeff_scan` accepts a `NonZeroCoeffBlockStart` and caller-supplied `scan[c]` positions, then returns checked entries in reverse scan-index order with raster position and row/column facts. It rejects EOB values that exceed the scan slice and scan positions outside the initialized adjusted coefficient block without consuming symbols, mutating CDF rows, or writing coefficient state. This row remains partial: scan-table derivation, transform-type computation, coefficient base/br/sign reads, nonzero `Level[]`, `QuantSign[]`, and `Quant[]` writes, `read_quant`, dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public API, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` support remain unimplemented."
 
 [[row]]
+id = "coeff-fsc-scan-walk"
+name = "Coefficient FSC scan walk"
+feature_id = "DECODE-COEFF-FSC-SCAN-WALK"
+spec_sections = ["5.20.7.27"]
+parser_source = "docs/spec/av2/1.0.0/05-syntax-structures.md"
+decode_module = "crates/splot-decode/src/tile_payload/coeff_loop/scan_walk.rs"
+tier = "tier1-intra"
+status = "partial"
+self_contained_tests = ["crates/splot-decode/src/tile_payload/coeff_loop/eob_symbol_tests.rs::coeff_fsc_scan_walk_returns_forward_segment_without_mutation", "crates/splot-decode/src/tile_payload/coeff_loop/eob_symbol_tests.rs::coeff_fsc_scan_walk_rejects_eob_larger_than_seg_eob_without_mutation", "crates/splot-decode/src/tile_payload/coeff_loop/eob_symbol_tests.rs::coeff_fsc_scan_walk_rejects_segment_and_position_bounds", "cargo test -p splot-decode fsc_scan_walk --locked", "cargo test -p splot-decode coeff_loop --locked", "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings", "cargo xtask check-decoder-support", "cargo xtask check-decoder-conformance-coverage", "cargo xtask check-feature-status"]
+diagnostics = ["decode/unsupported-feature"]
+local_reference_evidence = []
+notes = "Adds crate-private `splot-decode` scan traversal for the FSC/IDTX AV2 §5.20.7.27 nonzero coefficient path. `walk_fsc_coeff_scan` accepts a `NonZeroCoeffBlockStart`, caller-resolved `segEob`, and caller-supplied `scan[c]` positions; derives `bob = segEob - eob`; and returns checked entries in forward scan-index order with raster position and row/column facts. It rejects zero EOB, decoded EOB values larger than `segEob`, `segEob` values larger than the scan slice, and scan positions outside the initialized adjusted coefficient block without consuming symbols, mutating CDF rows, or writing coefficient state. This row remains partial: runtime `useFsc` derivation, FSC/IDTX symbol reads, nonzero `Level[]`, `QuantSign[]`, and `Quant[]` writes, `read_quant`, dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public API, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` support remain unimplemented."
+
+[[row]]
 id = "coeff-base-cdf-rows"
 name = "Coefficient base CDF rows"
 feature_id = "DECODE-COEFF-BASE-CDF-ROWS"
@@ -559,7 +573,7 @@ status = "partial"
 self_contained_tests = ["crates/splot-decode/src/tile_payload/cdf/tests.rs::coeff_base_rows_load_defaults_and_select_by_family", "crates/splot-decode/src/tile_payload/cdf/tests.rs::coeff_base_selectors_reject_out_of_range_axes", "crates/splot-decode/src/tile_payload/cdf/tests.rs::coeff_base_tile_copy_does_not_alias_the_frame", "crates/splot-decode/src/tile_payload/cdf/tests.rs::coeff_base_row_hands_off_to_symbol_decoder_update_mode", "cargo test -p splot-decode tile_payload::cdf --locked", "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings", "cargo xtask check-decoder-support", "cargo xtask check-decoder-conformance-coverage", "cargo xtask check-feature-status"]
 diagnostics = ["decode/unsupported-feature"]
 local_reference_evidence = []
-notes = "Adds crate-private `splot-decode` tile CDF row storage and typed selectors for ordinary non-IDTX coefficient base/base-EOB/base-range CDF families after the nonzero scan-walk boundary. The supported row set covers `TileCoeffBaseCdf`, `TileCoeffBaseUvCdf`, `TileCoeffBaseLfCdf`, `TileCoeffBaseLfUvCdf`, `TileCoeffBaseEobCdf`, `TileCoeffBaseEobUvCdf`, `TileCoeffBaseLfEobCdf`, `TileCoeffBaseLfEobUvCdf`, `TileCoeffBrCdf`, `TileCoeffBrUvCdf`, and `TileCoeffBrLfCdf`, all loaded from generated AV2 §9.3 defaults and selected with typed bounds errors through `TileCdfSelector::Coeff(CoeffCdfSelector)`. The rows participate in tile copy/save/average and frame-end count scaling, and mutable handoff through `read_block_symbol_trace` is tested. The parity-hidden-only base row is tracked separately by `coeff-base-ph-cdf-row`. This row remains partial: the rows are loaded but not read by runtime `coeffs()`, and FSC/IDTX/sign rows, coefficient symbol consumption, nonzero `Level[]`, `QuantSign[]`, and `Quant[]` writes, `read_quant`, dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public API, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` support remain unimplemented."
+notes = "Adds crate-private `splot-decode` tile CDF row storage and typed selectors for ordinary non-IDTX coefficient base/base-EOB/base-range CDF families after the nonzero scan-walk boundary. The supported row set covers `TileCoeffBaseCdf`, `TileCoeffBaseUvCdf`, `TileCoeffBaseLfCdf`, `TileCoeffBaseLfUvCdf`, `TileCoeffBaseEobCdf`, `TileCoeffBaseEobUvCdf`, `TileCoeffBaseLfEobCdf`, `TileCoeffBaseLfEobUvCdf`, `TileCoeffBrCdf`, `TileCoeffBrUvCdf`, and `TileCoeffBrLfCdf`, all loaded from generated AV2 §9.3 defaults and selected with typed bounds errors through `TileCdfSelector::Coeff(CoeffCdfSelector)`. The rows participate in tile copy/save/average and frame-end count scaling, and mutable handoff through `read_block_symbol_trace` is tested. The parity-hidden-only base row is tracked separately by `coeff-base-ph-cdf-row`, and FSC/IDTX row families are tracked separately by `coeff-idtx-cdf-rows`. This row remains partial: the rows are loaded but not read by runtime `coeffs()`, and coefficient symbol consumption, nonzero `Level[]`, `QuantSign[]`, and `Quant[]` writes, `read_quant`, dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public API, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` support remain unimplemented."
 
 [[row]]
 id = "coeff-base-ph-cdf-row"
@@ -574,6 +588,34 @@ self_contained_tests = ["crates/splot-decode/src/tile_payload/cdf/tests.rs::coef
 diagnostics = ["decode/unsupported-feature"]
 local_reference_evidence = []
 notes = "Adds crate-private `splot-decode` support for the parity-hidden-only `TileCoeffBasePhCdf` row used by ordinary non-FSC coefficient base selector derivation. `CoeffCdfRows` loads `Default_Coeff_Base_Ph_Cdf`, exposes `CoeffCdfSelector::BasePh` with typed q-context and Ph-context bounds errors, includes the rows in tile copy/save/average and frame-end count scaling, and the state-derived first-pass helper maps `CoeffBaseSelection::Ph` to that selector. Tests prove generated-default selection, invalid Ph selector axes, tile-copy isolation, mutable symbol-reader handoff, and an eob>=5 hidden-parity first pass consuming `BasePh` for the final DC coefficient. This row remains partial: runtime `coeffs()` does not call this helper, scan, plane, transform-class, geometry, parity, and TCQ facts are still caller-resolved, signs, `read_quant`, `QuantSign[]`, `Quant[]`, tile context writes, dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public APIs, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` remain unimplemented."
+
+[[row]]
+id = "coeff-idtx-cdf-rows"
+name = "Coefficient IDTX CDF rows"
+feature_id = "DECODE-COEFF-IDTX-CDF-ROWS"
+spec_sections = ["5.20.7.27", "8.2.5", "8.2.6", "8.3.2", "9.3"]
+parser_source = "crates/splot-core/src/symbol.rs; crates/splot-core/src/tables/cdf.rs; docs/spec/av2/1.0.0/05-syntax-structures.md; docs/spec/av2/1.0.0/08-parsing-process.md; docs/spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md"
+decode_module = "crates/splot-decode/src/tile_payload/cdf.rs; crates/splot-decode/src/tile_payload/cdf/block_rows.rs; crates/splot-decode/src/tile_payload/cdf/coeff_rows.rs"
+tier = "tier1-intra"
+status = "partial"
+self_contained_tests = ["crates/splot-decode/src/tile_payload/cdf/tests.rs::saved_copy_and_average_are_exact_for_supported_subset", "crates/splot-decode/src/tile_payload/cdf/tests.rs::frame_end_update_copies_saved_rows_and_scales_counts", "crates/splot-decode/src/tile_payload/cdf/tests.rs::coeff_base_rows_load_defaults_and_select_by_family", "crates/splot-decode/src/tile_payload/cdf/tests.rs::coeff_base_selectors_reject_out_of_range_axes", "crates/splot-decode/src/tile_payload/cdf/tests.rs::coeff_base_tile_copy_does_not_alias_the_frame", "crates/splot-decode/src/tile_payload/cdf/tests.rs::coeff_base_row_hands_off_to_symbol_decoder_update_mode", "cargo test -p splot-decode tile_payload::cdf --locked", "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings", "cargo xtask check-decoder-support", "cargo xtask check-decoder-conformance-coverage", "cargo xtask check-feature-status"]
+diagnostics = ["decode/unsupported-feature"]
+local_reference_evidence = []
+notes = "Adds crate-private `splot-decode` support for the FSC/IDTX coefficient CDF row families used by AV2 §5.20.7.27 and selected by §8.3.2. `CoeffCdfRows` loads generated AV2 §9.3 defaults for `TileCoeffBaseBobCdf`, `TileCoeffBaseIdtxCdf`, `TileCoeffBrIdtxCdf`, and `TileIdtxSignCdf`, exposes `CoeffCdfSelector::BaseBob`, `BaseIdtx`, `BrIdtx`, and `IdtxSign` with typed q-context, pre-clamped `tx_size_ctx`, and row-specific context bounds errors, and includes the rows in tile copy/save/average and frame-end count scaling. Tests prove generated-default selection, invalid selector axes, tile-copy isolation, lifecycle average/scale behavior, and mutable symbol-reader handoff. This row remains partial: runtime `coeffs()` does not call a FSC/IDTX symbol pass, `useFsc` is not executed, nonzero `Level[]`, `QuantSign[]`, and `Quant[]` writes for the IDTX branch are not implemented, and `read_quant`, dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public APIs, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` remain unimplemented."
+
+[[row]]
+id = "coeff-fsc-level-pass"
+name = "Coefficient FSC level pass"
+feature_id = "DECODE-COEFF-FSC-LEVEL-PASS"
+spec_sections = ["5.20.7.27", "8.2.5", "8.2.6", "8.3.2", "9.3"]
+parser_source = "crates/splot-core/src/symbol.rs; crates/splot-core/src/tables/cdf.rs; docs/spec/av2/1.0.0/05-syntax-structures.md; docs/spec/av2/1.0.0/08-parsing-process.md; docs/spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md"
+decode_module = "crates/splot-decode/src/tile_payload/coeff_loop/fsc_level_pass.rs; crates/splot-decode/src/tile_payload/coeff_loop/fsc_level_pass_tests.rs"
+tier = "tier1-intra"
+status = "partial"
+self_contained_tests = ["crates/splot-decode/src/tile_payload/coeff_loop/fsc_level_pass_tests.rs::coefficient_fsc_level_pass_reads_basebob_then_baseidtx_and_writes_levels", "crates/splot-decode/src/tile_payload/coeff_loop/fsc_level_pass_tests.rs::coefficient_fsc_level_pass_derives_idtx_context_from_written_neighbour_level", "crates/splot-decode/src/tile_payload/coeff_loop/fsc_level_pass_tests.rs::coefficient_fsc_level_pass_conditionally_reads_bridtx", "crates/splot-decode/src/tile_payload/coeff_loop/fsc_level_pass_tests.rs::coefficient_fsc_level_pass_rejects_static_config_before_consumption", "cargo test -p splot-decode fsc_level --locked", "cargo test -p splot-decode coeff_loop --locked", "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings", "cargo xtask check-decoder-support", "cargo xtask check-decoder-conformance-coverage", "cargo xtask check-feature-status"]
+diagnostics = ["decode/unsupported-feature"]
+local_reference_evidence = []
+notes = "Adds crate-private loaded-but-unwired `splot-decode` support for the FSC/IDTX AV2 §5.20.7.27 level first pass. `apply_nonzero_coeff_fsc_level_pass` accepts `NonZeroCoeffBlockStart`, a checked `FscCoeffScanWalk`, and caller-resolved coefficient-CDF q/tx-size facts; validates static EOB/scan and adjusted-geometry facts before CDF or symbol consumption; derives `coeff_base_bob`, later `coeff_base_idtx`, and conditional `coeff_br_idtx` selectors using the existing §8.3.2 context helpers; clamps the selector transform-size axis to `Min(TX_16X16, txSzCtx)`; reads selected rows through `SymbolDecoder`; and writes local `Level[]` state in forward `bob..segEob` order. This row remains partial: runtime `useFsc`, `segEob`, and `coeffs()` integration, IDTX sign reads, `read_quant`, nonzero `QuantSign[]` and `Quant[]`, tile context commits, dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public APIs, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` support remain unimplemented."
 
 [[row]]
 id = "coeff-base-symbol-read"
@@ -854,6 +896,174 @@ self_contained_tests = ["crates/splot-decode/src/tile_payload/coeff_loop/ordinar
 diagnostics = ["decode/unsupported-feature"]
 local_reference_evidence = []
 notes = "Adds crate-private loaded-but-unwired ordinary coefficient branch handoff from AV2 §5.20.7.27 `coeffs()` geometry facts to the existing block-geometry ordinary branch. `apply_coeff_ordinary_branch_from_coeffs_geometry` preserves the all-zero branch, derives `x4`, `y4`, `w4`, and `h4` from caller-resolved `startX`, `startY`, `Tx_Width[txSz]`, and `Tx_Height[txSz]`-style inputs, then delegates to `apply_coeff_ordinary_branch_from_geometry`. This row remains partial: it does not derive `Tx_Width[txSz]` or `Tx_Height[txSz]` from `txSz`, derive `Tx_Width_Log2[txSz]`, `Tx_Height_Log2[txSz]`, or `txSzCtx`, implement §5.20.7.29 `compute_tx_type`, derive scan order, call runtime `coeffs()`, derive selectors from real syntax, dequantize, inverse transform, residual add, reconstruct, output, refresh references, invoke AVM/dav2d, expose public APIs, or claim broad `decode_block()` or `decode_tile()` support."
+
+[[row]]
+id = "coeff-ordinary-branch-tx-size-dimensions"
+name = "Coefficient ordinary branch tx size dimensions"
+feature_id = "DECODE-COEFF-ORDINARY-BRANCH-TX-SIZE-DIMENSIONS"
+spec_sections = ["5.20.7.27", "9.2"]
+parser_source = "docs/spec/av2/1.0.0/05-syntax-structures.md; docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md; crates/splot-core/src/tables/conversion.rs"
+decode_module = "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_pass/geometry.rs"
+tier = "tier1-intra"
+status = "partial"
+self_contained_tests = ["crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_coeffs_geometry_tests.rs::coefficient_ordinary_branch_tx_size_dimensions_nonzero_matches_explicit_dimensions", "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_coeffs_geometry_tests.rs::coefficient_ordinary_branch_tx_size_dimensions_all_zero_preserves_direct_branch", "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_coeffs_geometry_tests.rs::coefficient_ordinary_branch_tx_size_dimensions_invalid_tx_size_preserves_mutable_state", "cargo test -p splot-decode ordinary_branch_coeffs_geometry --locked", "cargo test -p splot-decode ordinary_state_context --locked", "cargo test -p splot-decode ordinary_pass --locked", "cargo test -p splot-decode coeff_loop --locked", "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings", "cargo xtask check-decoder-support", "cargo xtask check-decoder-conformance-coverage", "cargo xtask check-feature-status"]
+diagnostics = ["decode/unsupported-feature"]
+local_reference_evidence = []
+notes = "Adds crate-private loaded-but-unwired ordinary coefficient branch handoff from AV2 §5.20.7.27 `txSz` to generated §9.2 transform-size dimensions. `apply_coeff_ordinary_branch_from_tx_size_dimensions` preserves the all-zero branch, rejects out-of-range `txSz` before mutating coefficient context state, CDF rows, or symbol-decoder state, derives `Tx_Width[txSz]`, `Tx_Height[txSz]`, `Tx_Width_Log2[txSz]`, and `Tx_Height_Log2[txSz]` from `splot-core` generated conversion tables, then delegates to `apply_coeff_ordinary_branch_from_coeffs_geometry`. The follow-on `coeff-ordinary-branch-adjusted-tx-size` row covers adjusted base-context dimensions, `coeff-ordinary-branch-tx-size-context` covers `Tx_Size_Sqr[txSz]`, `Tx_Size_Sqr_Up[txSz]`, and `txSzCtx`, and `coeff-ordinary-branch-scan-order` covers scan derivation. This row remains partial: it does not implement §5.20.7.29 `compute_tx_type`, call runtime `coeffs()`, derive selectors from real syntax, dequantize, inverse transform, residual add, reconstruct, output, refresh references, invoke AVM/dav2d, expose public APIs, or claim broad `decode_block()` or `decode_tile()` support."
+
+[[row]]
+id = "coeff-ordinary-branch-adjusted-tx-size"
+name = "Coefficient ordinary branch adjusted tx size"
+feature_id = "DECODE-COEFF-ORDINARY-BRANCH-ADJUSTED-TX-SIZE"
+spec_sections = ["5.20.7.27", "8.3.2", "9.2"]
+parser_source = "docs/spec/av2/1.0.0/05-syntax-structures.md; docs/spec/av2/1.0.0/08-parsing-process.md; docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md; crates/splot-core/src/tables/conversion.rs"
+decode_module = "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_pass/geometry.rs"
+tier = "tier1-intra"
+status = "partial"
+self_contained_tests = ["crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_coeffs_geometry_tests.rs::coefficient_ordinary_branch_tx_size_dimensions_uses_adjusted_base_dimensions", "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_coeffs_geometry_tests.rs::coefficient_ordinary_branch_tx_size_dimensions_all_zero_preserves_direct_branch", "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_coeffs_geometry_tests.rs::coefficient_ordinary_branch_tx_size_dimensions_invalid_tx_size_preserves_mutable_state", "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_coeffs_geometry_tests.rs::coefficient_ordinary_branch_adjusted_tx_size_table_value_preserves_mutable_state", "cargo test -p splot-decode ordinary_branch_coeffs_geometry --locked", "cargo test -p splot-decode ordinary_pass --locked", "cargo test -p splot-decode coeff_loop --locked", "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings", "cargo xtask check-decoder-support", "cargo xtask check-decoder-conformance-coverage", "cargo xtask check-feature-status"]
+diagnostics = ["decode/unsupported-feature"]
+local_reference_evidence = []
+notes = "Adds crate-private loaded-but-unwired ordinary coefficient branch adjusted-size handoff. The tx-size wrapper now derives `Adjusted_Tx_Size[txSz]` from generated §9.2 tables and feeds adjusted `Tx_Width_Log2`, `Tx_Width`, and `Tx_Height` into the §8.3.2 ordinary base-context pass, while preserving raw `Tx_Width`, `Tx_Height`, and log2 dimensions for §5.20.7.27 block geometry and nonzero EOB-size context. Tests cover adjusted TX_64X32 base-context dimensions plus invalid `txSz` and invalid adjusted-table fail-atomicity. The follow-on `coeff-ordinary-branch-tx-size-context` row covers `Tx_Size_Sqr[txSz]`, `Tx_Size_Sqr_Up[txSz]`, and `txSzCtx`, and `coeff-ordinary-branch-scan-order` covers scan derivation. This row remains partial: it does not implement §5.20.7.29 `compute_tx_type`, call runtime `coeffs()`, derive selectors from real syntax, dequantize, inverse transform, residual add, reconstruct, output, refresh references, invoke AVM/dav2d, expose public APIs, or claim broad `decode_block()` or `decode_tile()` support."
+
+[[row]]
+id = "coeff-ordinary-branch-tx-size-context"
+name = "Coefficient ordinary branch tx size context"
+feature_id = "DECODE-COEFF-ORDINARY-BRANCH-TX-SIZE-CONTEXT"
+spec_sections = ["5.20.7.27", "9.2"]
+parser_source = "docs/spec/av2/1.0.0/05-syntax-structures.md; docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md; crates/splot-core/src/tables/conversion.rs"
+decode_module = "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_pass/geometry.rs"
+tier = "tier1-intra"
+status = "partial"
+self_contained_tests = ["crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_coeffs_geometry_tests.rs::coefficient_ordinary_branch_tx_size_dimensions_uses_derived_tx_size_context", "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_coeffs_geometry_tests.rs::coefficient_ordinary_branch_tx_size_dimensions_uses_adjusted_base_dimensions", "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_coeffs_geometry_tests.rs::coefficient_ordinary_branch_tx_size_dimensions_all_zero_preserves_direct_branch", "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_coeffs_geometry_tests.rs::coefficient_ordinary_branch_tx_size_context_table_value_preserves_mutable_state", "cargo test -p splot-decode ordinary_branch_coeffs_geometry --locked", "cargo test -p splot-decode ordinary_pass --locked", "cargo test -p splot-decode coeff_loop --locked", "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings", "cargo xtask check-decoder-support", "cargo xtask check-decoder-conformance-coverage", "cargo xtask check-feature-status"]
+diagnostics = ["decode/unsupported-feature"]
+local_reference_evidence = []
+notes = "Adds crate-private loaded-but-unwired ordinary coefficient branch tx-size-context handoff. The tx-size wrapper now derives AV2 §5.20.7.27 `txSzCtx = (Tx_Size_Sqr[txSz] + Tx_Size_Sqr_Up[txSz] + 1) >> 1` from generated §9.2 tables and feeds it into the §8.3.2 ordinary base-context pass, while preserving raw dimensions for §5.20.7.27 block geometry and EOB-size context and adjusted dimensions for base-context geometry. Tests cover rectangular TX_64X32 context derivation, all-zero preservation, and invalid square-table fail-atomicity. The follow-on `coeff-ordinary-branch-scan-order` row covers `scan = get_scan(txSz, txClass)` derivation. This row remains partial: it does not implement §5.20.7.29 `compute_tx_type`, call runtime `coeffs()`, derive selectors from real syntax, dequantize, inverse transform, residual add, reconstruct, output, refresh references, invoke AVM/dav2d, expose public APIs, or claim broad `decode_block()` or `decode_tile()` support."
+
+[[row]]
+id = "coeff-ordinary-branch-scan-order"
+name = "Coefficient ordinary branch scan order"
+feature_id = "DECODE-COEFF-ORDINARY-BRANCH-SCAN-ORDER"
+spec_sections = ["5.20.7.27", "5.20.7.30", "8.3.2", "9.2"]
+parser_source = "docs/spec/av2/1.0.0/05-syntax-structures.md; docs/spec/av2/1.0.0/08-parsing-process.md; docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md; crates/splot-core/src/tables/conversion.rs"
+decode_module = "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_pass/geometry.rs"
+tier = "tier1-intra"
+status = "partial"
+self_contained_tests = ["crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_coeffs_geometry_tests.rs::coefficient_ordinary_branch_tx_size_scan_order_derives_two_dimensional", "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_coeffs_geometry_tests.rs::coefficient_ordinary_branch_tx_size_scan_order_derives_horizontal", "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_coeffs_geometry_tests.rs::coefficient_ordinary_branch_tx_size_scan_order_derives_vertical", "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_coeffs_geometry_tests.rs::coefficient_ordinary_branch_tx_size_scan_shape_preserves_mutable_state", "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_coeffs_geometry_tests.rs::coefficient_ordinary_branch_tx_size_dimensions_uses_derived_tx_size_context", "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_coeffs_geometry_tests.rs::coefficient_ordinary_branch_tx_size_dimensions_all_zero_preserves_direct_branch", "cargo test -p splot-decode ordinary_branch_coeffs_geometry --locked", "cargo test -p splot-decode ordinary_pass --locked", "cargo test -p splot-decode coeff_loop --locked", "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings", "cargo xtask check-decoder-support", "cargo xtask check-decoder-conformance-coverage", "cargo xtask check-feature-status"]
+diagnostics = ["decode/unsupported-feature"]
+local_reference_evidence = []
+notes = "Adds crate-private loaded-but-unwired ordinary coefficient branch scan-order derivation. The tx-size wrapper now derives AV2 §5.20.7.27 `scan = get_scan(txSz, txClass)` from raw transform dimensions and decode-local §5.20.7.30 logic after deriving `txClass` from the caller-resolved `PlaneTxType`, and the wrapper no longer accepts a caller-provided scan. Raw dimensions still feed §5.20.7.27 block geometry and EOB-size context, adjusted dimensions still feed §8.3.2 base-context geometry, and `txSzCtx` remains square-table derived. Tests cover two-dimensional, horizontal, and vertical scan orders plus invalid scan-shape fail-atomicity. The follow-on `coeff-ordinary-branch-mode-to-txfm-handoff` row covers the non-lossless intra chroma non-directional `Mode_To_Txfm` subset of §5.20.7.29. This row remains partial: it does not implement full §5.20.7.29 `compute_tx_type`, call runtime `coeffs()`, derive selectors from real syntax, dequantize, inverse transform, residual add, reconstruct, output, refresh references, invoke AVM/dav2d, expose public APIs, or claim broad `decode_block()` or `decode_tile()` support."
+
+[[row]]
+id = "coeff-ordinary-branch-mode-to-txfm-handoff"
+name = "Coefficient ordinary branch Mode_To_Txfm handoff"
+feature_id = "DECODE-COEFF-ORDINARY-BRANCH-MODE-TO-TXFM-HANDOFF"
+spec_sections = ["5.20.7.27", "5.20.7.29", "9.2"]
+parser_source = "docs/spec/av2/1.0.0/05-syntax-structures.md; docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md; crates/splot-core/src/tables/conversion.rs"
+decode_module = "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_pass/geometry.rs"
+tier = "tier1-intra"
+status = "partial"
+self_contained_tests = ["crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_mode_to_txfm_tests.rs::coefficient_ordinary_branch_mode_to_txfm_accepts_mapped_transform", "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_mode_to_txfm_tests.rs::coefficient_ordinary_branch_mode_to_txfm_uses_second_mapped_transform", "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_mode_to_txfm_tests.rs::coefficient_ordinary_branch_mode_to_txfm_falls_back_to_dct", "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_mode_to_txfm_tests.rs::coefficient_ordinary_branch_mode_to_txfm_chroma_dctonly_short_circuits", "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_mode_to_txfm_tests.rs::coefficient_ordinary_branch_mode_to_txfm_rejects_unsupported_subset_atomically", "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_mode_to_txfm_tests.rs::coefficient_ordinary_branch_mode_to_txfm_rejects_domains_atomically", "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_mode_to_txfm_tests.rs::coefficient_ordinary_branch_mode_to_txfm_all_zero_preserves_direct_branch", "cargo test -p splot-decode ordinary_branch_mode_to_txfm --locked", "cargo test -p splot-decode ordinary_pass --locked", "cargo test -p splot-decode coeff_loop --locked", "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings", "cargo xtask check-decoder-support", "cargo xtask check-decoder-conformance-coverage", "cargo xtask check-feature-status"]
+diagnostics = ["decode/unsupported-feature"]
+local_reference_evidence = []
+notes = "Adds crate-private loaded-but-unwired ordinary coefficient branch handoff for the non-lossless intra chroma non-directional subset of AV2 §5.20.7.29 `compute_tx_type`. `apply_coeff_ordinary_branch_from_mode_to_txfm` honors the caller-resolved `enable_chroma_dctonly` short-circuit, otherwise derives `PlaneTxType` from generated §9.2 `Mode_To_Txfm[UVMode]`, checks the inline §5.20.7.29 `Tx_Type_In_Set_Intra[txSet][txType]` table, falls back to `DCT_DCT` when needed, and delegates to the existing tx-size/scan ordinary branch. Tests cover accepted mappings, membership fallback, `enable_chroma_dctonly` fallback, all-zero preservation, and fail-atomic unsupported/domain inputs. The later `coeff-ordinary-branch-directional-uv-handoff` row extends this same handoff with directional chroma `UVMode` mapping. This row remains partial: `txSet` and `enable_chroma_dctonly` are caller-resolved, and full `compute_tx_type`, `get_tx_set`, luma `TxTypes` state, inter chroma lookup, lossless handling, runtime `coeffs()`, dequantization, inverse transform, residual add, reconstruction, output, reference refresh, AVM/dav2d evidence, public APIs, broad `decode_block()`, and broad `decode_tile()` remain unimplemented."
+
+[[row]]
+id = "coeff-ordinary-branch-directional-uv-handoff"
+name = "Coefficient ordinary branch directional UV handoff"
+feature_id = "DECODE-COEFF-ORDINARY-BRANCH-DIRECTIONAL-UV-HANDOFF"
+spec_sections = ["3", "5.20.7.27", "5.20.7.29", "9.2"]
+parser_source = "docs/spec/av2/1.0.0/03-symbols.md; docs/spec/av2/1.0.0/05-syntax-structures.md; docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md; crates/splot-core/src/tables/conversion.rs"
+decode_module = "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_pass/geometry.rs"
+tier = "tier1-intra"
+status = "partial"
+self_contained_tests = ["crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_mode_to_txfm_tests.rs::coefficient_ordinary_branch_mode_to_txfm_maps_directional_uv_without_remap", "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_mode_to_txfm_tests.rs::coefficient_ordinary_branch_mode_to_txfm_maps_directional_uv_with_wide_angle_remap", "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_mode_to_txfm_tests.rs::coefficient_ordinary_branch_mode_to_txfm_directional_uv_falls_back_to_dct", "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_mode_to_txfm_tests.rs::coefficient_ordinary_branch_mode_to_txfm_rejects_directional_domains_atomically", "cargo test -p splot-decode ordinary_branch_mode_to_txfm --locked", "cargo test -p splot-decode coeff_loop --locked", "cargo xtask check-decoder-support", "cargo xtask check-decoder-conformance-coverage", "cargo xtask check-feature-status"]
+diagnostics = ["decode/unsupported-feature"]
+local_reference_evidence = []
+notes = "Adds crate-private loaded-but-unwired ordinary coefficient branch handoff for the AV2 §5.20.7.29 non-lossless intra chroma directional `UVMode` subset. The existing `Mode_To_Txfm` wrapper now carries caller-resolved `AngleDeltaUV`, derives `pAngle = Mode_To_Angle[UVMode] + AngleDeltaUV * ANGLE_STEP`, applies the inline `wide_angle_mapping` thresholds using generated transform dimensions, maps the resulting mode through generated §9.2 `Mode_To_Txfm`, checks intra transform-set membership, falls back to `DCT_DCT` when needed, and delegates to the existing transform-size and scan ordinary branch. Tests cover square no-remap mapping, TX_4X8 wide-angle remap, transform-set fallback, and fail-atomic invalid tx-size plus angle overflow. The later `coeff-ordinary-branch-luma-txtypes-handoff` row extends this same handoff with non-lossless luma `TxTypes` state, and the later `coeff-ordinary-branch-chroma-inter-txtypes-handoff` row extends it with non-lossless chroma-inter `TxTypes` state. This row remains partial: runtime `coeffs()` still does not call this wrapper, `AngleDeltaUV` and frame syntax facts are caller-resolved, FSC and IDTX lossless handling, dequantization, inverse transform, residual add, reconstruction, output, reference refresh, AVM and dav2d evidence, public APIs, broad `decode_block()`, and broad `decode_tile()` remain unimplemented."
+
+[[row]]
+id = "coeff-ordinary-branch-luma-txtypes-handoff"
+name = "Coefficient ordinary branch luma TxTypes handoff"
+feature_id = "DECODE-COEFF-ORDINARY-BRANCH-LUMA-TXTYPES-HANDOFF"
+spec_sections = ["3", "5.20.7.27", "5.20.7.29"]
+parser_source = "docs/spec/av2/1.0.0/03-symbols.md; docs/spec/av2/1.0.0/05-syntax-structures.md"
+decode_module = "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_pass/geometry.rs"
+tier = "tier1-intra"
+status = "partial"
+self_contained_tests = ["crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_mode_to_txfm_tests.rs::coefficient_ordinary_branch_mode_to_txfm_maps_luma_txtypes", "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_mode_to_txfm_tests.rs::coefficient_ordinary_branch_mode_to_txfm_luma_ignores_chroma_dctonly", "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_mode_to_txfm_tests.rs::coefficient_ordinary_branch_mode_to_txfm_luma_inter_uses_txtypes", "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_mode_to_txfm_tests.rs::coefficient_ordinary_branch_mode_to_txfm_rejects_luma_domains_atomically", "cargo test -p splot-decode ordinary_branch_mode_to_txfm --locked", "cargo test -p splot-decode coeff_loop --locked", "cargo xtask check-decoder-support", "cargo xtask check-decoder-conformance-coverage", "cargo xtask check-feature-status"]
+diagnostics = ["decode/unsupported-feature"]
+local_reference_evidence = []
+notes = "Adds crate-private loaded-but-unwired ordinary coefficient branch handoff for the AV2 §5.20.7.29 non-lossless luma `TxTypes[blockY][blockX]` subset. The transform-type wrapper now carries caller-resolved luma `TxTypes`, validates it against the AV2 `TX_TYPES` domain before state, CDF, or symbol mutation, returns it before chroma-only `enable_chroma_dctonly` and `UVMode` logic, and delegates to the existing transform-size and scan ordinary branch. Tests cover luma transform-type equivalence, chroma-only fallback bypass, luma inter support through caller-resolved `TxTypes`, and fail-atomic invalid luma transform type. The later `coeff-ordinary-branch-chroma-inter-txtypes-handoff` row extends this same handoff with non-lossless chroma-inter `TxTypes` state. This row remains partial: runtime `coeffs()` still does not call this wrapper, luma `TxTypes` and frame syntax facts are caller-resolved, FSC and IDTX lossless handling, dequantization, inverse transform, residual add, reconstruction, output, reference refresh, AVM and dav2d evidence, public APIs, broad `decode_block()`, and broad `decode_tile()` remain unimplemented."
+
+[[row]]
+id = "coeff-ordinary-branch-chroma-inter-txtypes-handoff"
+name = "Coefficient ordinary branch chroma inter TxTypes handoff"
+feature_id = "DECODE-COEFF-ORDINARY-BRANCH-CHROMA-INTER-TXTYPES-HANDOFF"
+spec_sections = ["3", "5.20.7.27", "5.20.7.29"]
+parser_source = "docs/spec/av2/1.0.0/03-symbols.md; docs/spec/av2/1.0.0/05-syntax-structures.md"
+decode_module = "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_pass/geometry.rs"
+tier = "tier1-intra"
+status = "partial"
+self_contained_tests = ["crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_mode_to_txfm_tests.rs::coefficient_ordinary_branch_mode_to_txfm_chroma_inter_txtypes_maps_when_in_set", "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_mode_to_txfm_tests.rs::coefficient_ordinary_branch_mode_to_txfm_chroma_inter_txtypes_falls_back_to_dct", "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_mode_to_txfm_tests.rs::coefficient_ordinary_branch_mode_to_txfm_rejects_chroma_inter_tx_type_domains_atomically", "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_mode_to_txfm_tests.rs::coefficient_ordinary_branch_mode_to_txfm_rejects_chroma_inter_tx_set_domains_atomically", "cargo test -p splot-decode ordinary_branch_mode_to_txfm --locked", "cargo test -p splot-decode coeff_loop --locked", "cargo xtask check-decoder-support", "cargo xtask check-decoder-conformance-coverage", "cargo xtask check-feature-status"]
+diagnostics = ["decode/unsupported-feature"]
+local_reference_evidence = []
+notes = "Adds crate-private loaded-but-unwired ordinary coefficient branch handoff for the AV2 §5.20.7.29 non-lossless chroma-inter `TxTypes[y4][x4]` subset. The transform-type wrapper now carries caller-resolved chroma-inter `TxTypes`, validates it against the AV2 `TX_TYPES` domain before state, CDF, or symbol mutation, checks the inline §5.20.7.29 `Tx_Type_In_Set_Inter[txSet][txType]` table, falls back to `DCT_DCT` when the type is absent from the inter set, and delegates to the existing transform-size and scan ordinary branch. Tests cover chroma-inter transform-type equivalence, transform-set fallback, fail-atomic invalid chroma-inter transform type, fail-atomic invalid inter transform set, and existing DCT-only/luma/chroma-intra preservation. This row remains partial: runtime `coeffs()` still does not call this wrapper, chroma-inter `TxTypes`, `MiRow`, `MiCol`, subsampling, and frame syntax facts are caller-resolved, FSC and IDTX lossless handling, dequantization, inverse transform, residual add, reconstruction, output, reference refresh, AVM and dav2d evidence, public APIs, broad `decode_block()`, and broad `decode_tile()` remain unimplemented."
+
+[[row]]
+id = "coeff-ordinary-branch-tx-set-handoff"
+name = "Coefficient ordinary branch txSet handoff"
+feature_id = "DECODE-COEFF-ORDINARY-BRANCH-TX-SET-HANDOFF"
+spec_sections = ["5.20.7.27", "5.20.7.29", "5.20.8.3", "9.2"]
+parser_source = "docs/spec/av2/1.0.0/05-syntax-structures.md; docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md; crates/splot-core/src/tables/conversion.rs"
+decode_module = "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_pass/geometry.rs"
+tier = "tier1-intra"
+status = "partial"
+self_contained_tests = ["crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_tx_set_tests.rs::coefficient_ordinary_branch_tx_set_derives_default_intra_set", "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_tx_set_tests.rs::coefficient_ordinary_branch_tx_set_derives_reduced_chroma_set", "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_tx_set_tests.rs::coefficient_ordinary_branch_tx_set_derives_large_dctonly_set", "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_tx_set_tests.rs::coefficient_ordinary_branch_tx_set_rejects_invalid_reduced_set_atomically", "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_tx_set_tests.rs::coefficient_ordinary_branch_tx_set_rejects_invalid_tx_size_atomically", "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_tx_set_tests.rs::coefficient_ordinary_branch_tx_set_all_zero_preserves_direct_branch", "cargo test -p splot-decode ordinary_branch_tx_set --locked", "cargo test -p splot-decode ordinary_pass --locked", "cargo test -p splot-decode coeff_loop --locked", "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings", "cargo xtask check-decoder-support", "cargo xtask check-decoder-conformance-coverage", "cargo xtask check-feature-status"]
+diagnostics = ["decode/unsupported-feature"]
+local_reference_evidence = []
+notes = "Adds crate-private loaded-but-unwired ordinary coefficient branch handoff for AV2 §5.20.8.3 `get_tx_set`. `apply_coeff_ordinary_branch_from_tx_set` derives `txSet` from `txSz`, plane, caller-resolved `is_inter`, caller-resolved `reduced_tx_set`, caller-resolved `enable_chroma_dctonly`, and generated §9.2 transform-size conversion tables, then delegates to the existing transform-type subset wrapper. Tests cover default intra set, chroma reduced-set, large-transform DCT-only derivation, all-zero preservation, and fail-atomic invalid-domain inputs. This row remains partial: frame-state derivation, full `compute_tx_type`, lossless branches, runtime `coeffs()`, dequantization, inverse transform, residual add, reconstruction, output, reference refresh, AVM/dav2d evidence, public APIs, broad `decode_block()`, and broad `decode_tile()` remain unimplemented."
+
+[[row]]
+id = "coeff-ordinary-branch-lossless-handoff"
+name = "Coefficient ordinary branch lossless handoff"
+feature_id = "DECODE-COEFF-ORDINARY-BRANCH-LOSSLESS-HANDOFF"
+spec_sections = ["5.20.7.27", "5.20.7.29", "5.20.8.3", "9.2"]
+parser_source = "docs/spec/av2/1.0.0/05-syntax-structures.md; docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md; crates/splot-core/src/tables/conversion.rs"
+decode_module = "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_pass/geometry.rs"
+tier = "tier1-intra"
+status = "partial"
+self_contained_tests = ["crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_lossless_tests.rs::coefficient_ordinary_branch_lossless_selects_dct_dct", "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_lossless_tests.rs::coefficient_ordinary_branch_lossless_bypasses_lower_validation", "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_lossless_tests.rs::coefficient_ordinary_branch_lossless_disables_non_lossless_entropy_flags", "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_lossless_tests.rs::coefficient_ordinary_branch_lossless_delegates_non_lossless_to_tx_set", "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_lossless_tests.rs::coefficient_ordinary_branch_lossless_rejects_invalid_tx_size_atomically", "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_lossless_tests.rs::coefficient_ordinary_branch_lossless_rejects_inter_atomically", "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_lossless_tests.rs::coefficient_ordinary_branch_lossless_all_zero_preserves_tx_set_branch", "cargo test -p splot-decode ordinary_branch_lossless --locked", "cargo test -p splot-decode ordinary_branch_tx_set --locked", "cargo test -p splot-decode ordinary_pass --locked", "cargo test -p splot-decode coeff_loop --locked", "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings", "cargo xtask check-decoder-support", "cargo xtask check-decoder-conformance-coverage", "cargo xtask check-feature-status"]
+diagnostics = ["decode/unsupported-feature"]
+local_reference_evidence = []
+notes = "Adds crate-private loaded-but-unwired ordinary coefficient branch handoff for the staged AV2 §5.20.7.29 `Lossless` branch that selects `DCT_DCT` before `get_tx_set(txSz, plane)`. `apply_coeff_ordinary_branch_from_lossless` preserves all-zero behavior, delegates non-lossless nonzero inputs to the existing AV2 §5.20.8.3 `txSet` wrapper, and short-circuits intra lossless nonzero inputs to the transform-size and scan ordinary branch with `PlaneTxType = DCT_DCT`, bypassing lower non-lossless validation and forcing non-lossless parity-hiding and TCQ flags off. It rejects lossless inter inputs atomically because those require broader IDTX and `TxTypes` handling. Tests cover lossless `DCT_DCT` equivalence, lower-validation bypass, entropy-flag suppression, non-lossless `txSet` delegation, all-zero preservation, and fail-atomic invalid tx-size and inter input. This row remains partial: runtime `coeffs()` still does not call this wrapper, frame-state derivation of `Lossless`, FSC/IDTX lossless cases, dequantization, inverse transform, residual add, reconstruction, output, reference refresh, AVM/dav2d evidence, public APIs, broad `decode_block()`, and broad `decode_tile()` remain unimplemented."
+
+[[row]]
+id = "tx-size-symbolic-tables"
+name = "TxSize symbolic conversion tables"
+feature_id = "DECODE-TX-SIZE-SYMBOLIC-TABLES"
+spec_sections = ["6.19.6.1", "9.2"]
+parser_source = "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md; docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md; docs/spec/av2/1.0.0/attachments/all_tables.h"
+decode_module = "xtask/src/gen_tables/block_symbols.rs; crates/splot-core/src/tables/conversion.rs"
+tier = "tier1-intra"
+status = "partial"
+self_contained_tests = ["xtask/src/gen_tables/block_symbols.rs::tests::resolves_supported_tx_size_table_body", "xtask/src/gen_tables/block_symbols.rs::tests::rejects_non_tx_size_symbol_in_supported_table", "crates/splot-core/tests/tables_spot.rs::conversion_tx_size_symbolic_tables_match_mirror", "cargo xtask gen-tables --check", "cargo test -p xtask gen_tables --locked", "cargo test -p splot-core --test tables_spot conversion_tx_size_symbolic_tables_match_mirror --locked", "cargo xtask check-decoder-support", "cargo xtask check-decoder-conformance-coverage", "cargo xtask check-feature-status"]
+diagnostics = ["decode/unsupported-feature"]
+local_reference_evidence = []
+notes = "Extends generated AV2 §9.2 table support with the three TxSize enum-valued conversion tables needed by future coefficient wrappers: `Adjusted_Tx_Size`, `Tx_Size_Sqr`, and `Tx_Size_Sqr_Up`. `cargo xtask gen-tables` now resolves the `TX_*` symbols through the AV2 §6.19.6.1 TxSize ordinal map and emits the arrays in `splot-core::tables::conversion` from the committed all_tables.h attachment. This row is infrastructure only: runtime `coeffs()` does not consume these tables yet, `txSzCtx` remains caller-resolved, and `compute_tx_type`, scan order, dequantization, inverse transform, residual add, reconstruction, output, reference refresh, AVM/dav2d evidence, public APIs, broad `decode_block()`, and broad `decode_tile()` remain unimplemented."
+
+[[row]]
+id = "mode-to-txfm-symbolic-table"
+name = "Mode_To_Txfm symbolic conversion table"
+feature_id = "DECODE-MODE-TO-TXFM-SYMBOLIC-TABLE"
+spec_sections = ["3", "9.2"]
+parser_source = "docs/spec/av2/1.0.0/03-symbols.md; docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md; docs/spec/av2/1.0.0/attachments/all_tables.h"
+decode_module = "xtask/src/gen_tables/block_symbols.rs; crates/splot-core/src/tables/conversion.rs"
+tier = "tier1-intra"
+status = "partial"
+self_contained_tests = ["xtask/src/gen_tables/block_symbols.rs::tests::resolves_supported_tx_type_table_body", "xtask/src/gen_tables/block_symbols.rs::tests::rejects_non_tx_type_symbol_in_supported_table", "crates/splot-core/tests/tables_spot.rs::conversion_mode_to_txfm_matches_mirror", "cargo xtask gen-tables --check", "cargo test -p xtask gen_tables --locked", "cargo test -p splot-core --test tables_spot conversion_mode_to_txfm_matches_mirror --locked", "cargo xtask check-decoder-support", "cargo xtask check-decoder-conformance-coverage", "cargo xtask check-feature-status"]
+diagnostics = ["decode/unsupported-feature"]
+local_reference_evidence = []
+notes = "Extends generated AV2 §9.2 table support with the TxType enum-valued `Mode_To_Txfm` table needed by future §5.20.7.29 `compute_tx_type` intra chroma fallback. `cargo xtask gen-tables` resolves the TxType symbols through the AV2 §3 ordinal map and emits the array in `splot-core::tables::conversion` from the committed all_tables.h attachment. This row is infrastructure only: runtime `coeffs()` does not consume the table yet, `compute_tx_type`, `TxTypes` tile state, transform-set membership, luma tx-size state, mode syntax, wide-angle mapping, dequantization, inverse transform, residual add, reconstruction, output, reference refresh, AVM/dav2d evidence, public APIs, broad `decode_block()`, and broad `decode_tile()` remain unimplemented."
 
 [[row]]
 id = "coeff-base-derived-level-pass"

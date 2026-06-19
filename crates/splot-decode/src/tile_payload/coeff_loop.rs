@@ -30,6 +30,7 @@ pub(crate) mod base_symbol;
 mod branch;
 #[cfg(test)]
 pub(crate) use branch::{CoeffBlockEobBranchInput, read_coeff_block_eob_branch};
+pub(crate) mod fsc_level_pass;
 pub(crate) mod level_state;
 pub(crate) mod max_level;
 pub(crate) mod ordinary_pass;
@@ -291,6 +292,14 @@ pub(crate) enum CoeffLoopContextError {
         eob: usize,
         /// Caller-supplied scan table length.
         scan_len: usize,
+    },
+    /// Caller supplied a FSC segment EOB smaller than the decoded EOB.
+    #[error("coefficient FSC scan walk EOB {eob} exceeds segment EOB {seg_eob}")]
+    FscScanWalkEobOutOfRange {
+        /// Decoded EOB before the FSC branch expands it to `segEob`.
+        eob: usize,
+        /// Caller-resolved `segEob`.
+        seg_eob: usize,
     },
     /// Caller supplied a scan position outside the initialized coefficient block.
     #[error(
@@ -640,9 +649,17 @@ mod base_symbol_tests;
 #[cfg(test)]
 mod eob_symbol_tests;
 #[cfg(test)]
+mod fsc_level_pass_tests;
+#[cfg(test)]
 mod level_state_tests;
 #[cfg(test)]
 mod ordinary_branch_coeffs_geometry_tests;
+#[cfg(test)]
+mod ordinary_branch_lossless_tests;
+#[cfg(test)]
+mod ordinary_branch_mode_to_txfm_tests;
+#[cfg(test)]
+mod ordinary_branch_tx_set_tests;
 #[cfg(test)]
 mod ordinary_pass_tests;
 #[cfg(test)]

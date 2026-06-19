@@ -364,7 +364,7 @@ pub(crate) enum TileCdfSelector {
         /// DC-sign context (caller-resolved from the Above/Left DC contexts).
         ctx: usize,
     },
-    /// Ordinary non-IDTX coefficient base/base-EOB/base-range CDF rows.
+    /// Coefficient base/base-EOB/base-range and IDTX CDF rows.
     Coeff(CoeffCdfSelector),
 }
 
@@ -409,6 +409,10 @@ pub(crate) enum TileCdfArray {
     CoeffBaseEob,
     /// `TileCoeffBaseEobUvCdf`.
     CoeffBaseEobUv,
+    /// `TileCoeffBaseBobCdf`.
+    CoeffBaseBob,
+    /// `TileCoeffBaseIdtxCdf`.
+    CoeffBaseIdtx,
     /// `TileCoeffBaseLfEobCdf`.
     CoeffBaseLfEob,
     /// `TileCoeffBaseLfEobUvCdf`.
@@ -419,6 +423,10 @@ pub(crate) enum TileCdfArray {
     CoeffBrUv,
     /// `TileCoeffBrLfCdf`.
     CoeffBrLf,
+    /// `TileCoeffBrIdtxCdf`.
+    CoeffBrIdtx,
+    /// `TileIdtxSignCdf`.
+    IdtxSign,
 }
 
 impl TileCdfArray {
@@ -443,11 +451,15 @@ impl TileCdfArray {
             Self::CoeffBaseLfUv => "TileCoeffBaseLfUvCdf",
             Self::CoeffBaseEob => "TileCoeffBaseEobCdf",
             Self::CoeffBaseEobUv => "TileCoeffBaseEobUvCdf",
+            Self::CoeffBaseBob => "TileCoeffBaseBobCdf",
+            Self::CoeffBaseIdtx => "TileCoeffBaseIdtxCdf",
             Self::CoeffBaseLfEob => "TileCoeffBaseLfEobCdf",
             Self::CoeffBaseLfEobUv => "TileCoeffBaseLfEobUvCdf",
             Self::CoeffBr => "TileCoeffBrCdf",
             Self::CoeffBrUv => "TileCoeffBrUvCdf",
             Self::CoeffBrLf => "TileCoeffBrLfCdf",
+            Self::CoeffBrIdtx => "TileCoeffBrIdtxCdf",
+            Self::IdtxSign => "TileIdtxSignCdf",
         }
     }
 }

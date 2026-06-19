@@ -63,6 +63,60 @@ fn conversion_partition_size_tables_match_mirror() {
 }
 
 #[test]
+fn conversion_tx_size_symbolic_tables_match_mirror() {
+    // docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md
+    // lines 383-413 (Tx_Size_Sqr), 415-448 (Tx_Size_Sqr_Up), and 515-533
+    // (Adjusted_Tx_Size). Numeric values are AV2 §6.19.6.1 TxSize
+    // discriminants.
+    assert_eq!(tables::conversion::TX_SIZE_SQR.len(), 25);
+    assert_eq!(tables::conversion::TX_SIZE_SQR_UP.len(), 25);
+    assert_eq!(tables::conversion::ADJUSTED_TX_SIZE.len(), 25);
+
+    assert_eq!(&tables::conversion::TX_SIZE_SQR[..5], &[0, 1, 2, 3, 4]);
+    assert_eq!(tables::conversion::TX_SIZE_SQR[5], 0); // TX_4X8 -> TX_4X4.
+    assert_eq!(tables::conversion::TX_SIZE_SQR[12], 3); // TX_64X32 -> TX_32X32.
+    assert_eq!(tables::conversion::TX_SIZE_SQR[24], 0); // TX_64X4 -> TX_4X4.
+
+    assert_eq!(&tables::conversion::TX_SIZE_SQR_UP[..5], &[0, 1, 2, 3, 4]);
+    assert_eq!(tables::conversion::TX_SIZE_SQR_UP[5], 1); // TX_4X8 -> TX_8X8.
+    assert_eq!(tables::conversion::TX_SIZE_SQR_UP[12], 4); // TX_64X32 -> TX_64X64.
+    assert_eq!(tables::conversion::TX_SIZE_SQR_UP[24], 4); // TX_64X4 -> TX_64X64.
+
+    assert_eq!(&tables::conversion::ADJUSTED_TX_SIZE[..5], &[0, 1, 2, 3, 3]);
+    assert_eq!(tables::conversion::ADJUSTED_TX_SIZE[11], 3); // TX_32X64 -> TX_32X32.
+    assert_eq!(tables::conversion::ADJUSTED_TX_SIZE[17], 9); // TX_16X64 -> TX_16X32.
+    assert_eq!(tables::conversion::ADJUSTED_TX_SIZE[24], 20); // TX_64X4 -> TX_32X4.
+}
+
+#[test]
+fn conversion_mode_to_txfm_matches_mirror() {
+    // docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md
+    // lines 261-276 (Mode_To_Txfm[UV_INTRA_MODES_CFL_ALLOWED]). Numeric
+    // values are AV2 §3 Table 3.1 TxType discriminants.
+    let t = &tables::conversion::MODE_TO_TXFM;
+    assert_eq!(t.len(), 14);
+    assert_eq!(
+        *t,
+        [
+            0, // DCT_DCT, DC_PRED.
+            1, // ADST_DCT, V_PRED.
+            2, // DCT_ADST, H_PRED.
+            0, // DCT_DCT, D45_PRED.
+            3, // ADST_ADST, D135_PRED.
+            1, // ADST_DCT, D113_PRED.
+            2, // DCT_ADST, D157_PRED.
+            2, // DCT_ADST, D203_PRED.
+            1, // ADST_DCT, D67_PRED.
+            3, // ADST_ADST, SMOOTH_PRED.
+            1, // ADST_DCT, SMOOTH_V_PRED.
+            2, // DCT_ADST, SMOOTH_H_PRED.
+            3, // ADST_ADST, PAETH_PRED.
+            0, // DCT_DCT, UV_CFL_PRED.
+        ]
+    );
+}
+
+#[test]
 fn conversion_palette_color_hash_multipliers_matches_mirror() {
     // 09-02-conversion-tables.md line 290:
     // "Palette_Color_Hash_Multipliers[ PALETTE_NUM_NEIGHBORS ] = { 1, 2, 2 }".
