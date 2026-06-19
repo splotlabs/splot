@@ -4569,6 +4569,39 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-COEFF-BASE-LF-TOKEN"
+name = "Encoder non-EOB coeff_base low-frequency luma token"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20.7.27", "8.3.2", "8.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/coefficient_tokenization.rs"
+openspec_change = "encoder-coeff-base-lf-token"
+tracking_issue = ""
+owner = "encoder"
+risk = "medium"
+notes = "Private, available-but-uncomposed non-EOB `coeff_base` low-frequency luma token — the second multi-coefficient building block (after ENC-COEFF-BASE-LF-CONTEXT). Adds `CoefficientTokenSyntax::CoeffBase` (non-EOB base level == symbol, vs coeff_base_eob's symbol+1) + `CoefficientCdfRowSelector::CoeffBaseLf { coeff_cdf_q_ctx, tx_size, ctx, tcq_ctx }` → `TileCoeffBaseLfCdf[q][tx_size][ctx][tcq_ctx]` (DEFAULT_COEFF_BASE_LF_CDF [4][5][33][2][7], row len 7 = 6 symbols; tcq_ctx=(tcqState>>1)&1=0 when TCQ off, confirmed base_level_pass.rs only updates tcqState under use_tcq) + `pub(crate) coeff_base_lf_token(coeff_cdf_q_ctx, ctx, tcq_ctx, level)`. The generic `CoefficientTokenCdfRows` roundtrip router stores the coeff_base_lf row at the eob=2 trace's DC context (1 — an AC level-1 neighbour at scan pos 1 gives mag 1 → ctx 1 via coeff_base_lf_luma_context, the c==0 LF band) and TCQ-off context (0); the token roundtrips through one §8.2 coder. Adding the CoeffBase syntax rippled to the 2 exhaustive matches (as_str + the closed_loop single-DC recovery helper, where CoeffBase is a documented no-op — single-DC never carries a non-EOB base). Verified vs decoder base_symbol.rs/coeff_rows.rs. The §8.2 roundtrip proves self-consistency only; AVM cross-check deferred to the packet milestone. This row does not claim a multi-coefficient TRACE (the eob>1 trace brick composes it via block_symbol_trace), chroma/high-frequency coeff_base, coeff_br for the AC, tile-body emission, packet output, CLI success, or Baseline Encoder Profile v1 output."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/coefficient_tokenization_tests.rs::coeff_base_lf_token_carries_non_eob_base_level", "crates/splot-encode/src/coefficient_tokenization_tests.rs::coeff_base_lf_token_roundtrips_through_generic_helper"]
+commands = ["cargo test -p splot-encode coeff_base_lf --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-RECON-DEPENDENCY"
 name = "Encoder reconstruction dependency boundary"
 category = "encoder"
