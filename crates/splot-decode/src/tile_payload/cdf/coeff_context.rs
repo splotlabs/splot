@@ -41,7 +41,7 @@
 //! it is no-output-change (the derivations are exercised by compile-time
 //! spec-contract `const` checks and unit tests, not by any decode stage).
 
-use splot_core::coefficient::{LF_SIG_COEF_CONTEXTS_2D, SIG_REF_DIFF_OFFSET_NUM};
+use splot_core::coefficient::{COEFF_BASE_RANGE, LF_SIG_COEF_CONTEXTS_2D, SIG_REF_DIFF_OFFSET_NUM};
 use splot_core::tables::conversion::SIG_REF_DIFF_OFFSET;
 
 /// AV2 § 3 `SIG_COEF_CONTEXTS_EOB`: the number of `coeff_base_eob` contexts
@@ -55,12 +55,9 @@ const LF_SIG_COEF_CONTEXTS_2D_UV: usize = 8;
 
 /// AV2 § 3 `MAX_BASE_BR_RANGE` = `COEFF_BASE_RANGE (3) + NUM_BASE_LEVELS (2) + 1`
 /// (`03-symbols.md`); the `coeff_br` magnitude sum clamps each neighbour level to
-/// `MAX_BASE_BR_RANGE - 1`.
+/// `MAX_BASE_BR_RANGE - 1`. (`COEFF_BASE_RANGE` is shared from
+/// [`splot_core::coefficient`].)
 const MAX_BASE_BR_RANGE: u32 = 6;
-
-/// AV2 § 3 `COEFF_BASE_RANGE` (`03-symbols.md`); the `idtx_sign` context is raised
-/// when the current `Level` exceeds it.
-const COEFF_BASE_RANGE: u32 = 3;
 
 /// AV2 § 8.3.2 `Mag_Ref_Offset_With_Tx_Class[txClass][idx][rowOrCol]`
 /// (`08-parsing-process.md#s-8-3-2`): the up-to-three neighbour `(dRow, dCol)`
