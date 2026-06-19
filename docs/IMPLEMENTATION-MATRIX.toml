@@ -4635,6 +4635,39 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-INTRA-BLOCK-TRACE-TWO-COEFF"
+name = "Encoder eob=2 multi-coefficient block trace"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20.7.27", "5.20.7.29", "5.20.7.30", "8.3.2", "8.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/block_symbol_trace.rs"
+openspec_change = "encoder-block-trace-two-coeff"
+tracking_issue = ""
+owner = "encoder"
+risk = "medium"
+notes = "Private, non-emitting encoder FIRST MULTI-COEFFICIENT (eob>1) block trace — the milestone composing the three merged building blocks (ENC-COEFF-BASE-LF-CONTEXT context derivation, ENC-COEFF-BASE-LF-TOKEN non-EOB token, ENC-COEFF-MULTI-TOKENS accessors). `compose_minimal_intra_two_coeff_block_trace()` in block_symbol_trace.rs composes a 4x4 DCT_DCT luma block with one nonzero AC coefficient (level 1) at scan index 1 (raster position 4 = row 1 col 0, DERIVED from the AV2 2D scan order [0,4,1,...] via coefficient_scan_order — not assumed equal to the scan index) and a zero DC at scan index 0: §5.20.5.3 mode prefix + coded all_zero(0) + eob_pt_16(symbol 1 → eobPt 2 → eob 2) + [base pass c=eob-1..0] AC coeff_base_eob at ctx coeff_base_eob_ctx(c=1)=1 (LF, pos1 row+col=1<4) + DC non-EOB coeff_base at the §8.3.2 LF context DERIVED via coeff_base_lf_luma_context (the AC level-1 at raster 4, below the DC, is a DC neighbour → mag 1 → ctx 1; NOT hard-coded) + [sign pass] AC sign_bit bypass(1,0) (pos(0,1) not luma DC/axis → §8.2.5 literal; zero DC → no sign) + all-zero U/V. 10-token trace [0,0,0,0,1,0,0,0,1,1] through one §8.2 coder. BlockSymbolTraceCdfRows gains the eob=2 AC coeff_base_lf_eob (ctx 1) + DC coeff_base_lf (ctx 1, tcq 0) rows + routing. Tests: compose-in-order (asserts the DC token carries the DERIVED ctx 1, not a literal) + roundtrip + deterministic. Verified vs decoder coeff_loop.rs/coeff_context.rs. The §8.2 roundtrip proves self-consistency only; the data-dependent coeff_base context's conformance vs a real decoder is established at the packet milestone (AVM cross-check). TRANSFORM-TYPE SCOPE: §5.20.7.27 calls transform_type() between eob_pt_16 and the base pass, and for eob>1 the §5.20.7.29 eob==1 DCT_DCT shortcut no longer applies — so this trace assumes a config where transform_type() reads NO intra_tx_type symbol (the DCT-only set get_tx_set→TX_SET_DCTONLY, or reduced_tx_set==2 intra per the !(reduced_tx_set==2 && is_inter==0) guard) AND enable_intra_ist==0 (else §5.20.7.29 line 16603 reads a sec_tx_type intra-secondary-transform symbol before the base pass for an eob>1 DCT_DCT block), consistent with the plain DCT_DCT transform; the general eob>1 intra_tx_type/sec_tx_type signaling is a later brick. The scan-index→raster-position derivation uses §5.20.7.30 get_scan. This row does not claim the general intra_tx_type/sec_tx_type signaling, eob>2, higher-magnitude AC (coeff_br/golomb), chroma multi-coefficient, high-frequency coeff_base, partition syntax, tile CDF lifecycle, tile-body emission, packet output, CLI success, or Baseline Encoder Profile v1 output."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/block_symbol_trace_tests.rs::composes_two_coeff_block_trace_in_order", "crates/splot-encode/src/block_symbol_trace_tests.rs::eob2_ac_scan_index_maps_to_raster_four", "crates/splot-encode/src/block_symbol_trace_tests.rs::two_coeff_block_trace_roundtrips_through_one_coder", "crates/splot-encode/src/block_symbol_trace_tests.rs::two_coeff_block_roundtrip_is_deterministic"]
+commands = ["cargo test -p splot-encode block_symbol_trace --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-RECON-DEPENDENCY"
 name = "Encoder reconstruction dependency boundary"
 category = "encoder"
