@@ -7537,6 +7537,59 @@ fixtures = [
 diagnostics = []
 
 [[feature]]
+id = "RECON-RECONSTRUCT-TRANSFORM-BLOCK"
+name = "Transform-block reconstruction residual chain"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["7.14.3", "7.14.4", "7.15.4"]
+sources = [
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-14-3",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-14-4",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-15-4",
+]
+crate = "splot-recon"
+module = "crates/splot-recon/src/reconstruct_block.rs"
+openspec_change = "recon-reconstruct-transform-block"
+tracking_issue = ""
+owner = "decoder"
+risk = "low"
+notes = "Adds the scheduler-free `splot-recon` AV2 transform-block reconstruction residual chain `reconstruct_transform_block_residual<T: ReconSample>(prediction, quant, dequant_params, transform, dequant_scratch, residual_scratch, out)`, composing the three existing residual primitives into the sequence a decoder runs to turn decoded quantized coefficients into reconstructed samples: §7.14.4 `dequantize_block` then §7.15.4 `inverse_transform_2d_outer` then §7.14.3 `reconstruct_add_residual`, i.e. `out = Clip1(prediction + inverse_transform(dequant(quant)))`. `quant` is the adjusted `tx_width by tx_height` decoded coefficients and `prediction` and `out` are the original transform-size samples; the two scratch buffers are caller-owned so the composition allocates nothing, and `transform` is resolved with `InverseTransform2dOuter::resolve` so its shifts, per-pass types, and dimensions stay consistent. Total and panic-free for consistent inputs (each step is total and rejects any buffer-length or geometry inconsistency with a typed `ReconError` before mutating `out`); reuses the underlying primitives' error variants with no new error. Strictly additive and provably no-output-change: a pure `pub` composition over already-tested primitives with no rewiring, so the minimal flat-intra fixture snapshots stay byte-identical. Completeness is proven by an all-zero-preserves-prediction anchor and a uniform signed nonzero-DC residual at TX_4X4, the same two at TX_64X64 (exercising the adjusted 32x32 to original 64x64 sample-duplication geometry), and a fail-atomic inconsistent-buffer rejection. This is the residual sink for the coefficient pipeline; this row does not implement the coefficient entropy decode that produces `Quant`, the §7.15.3 secondary transform, the §7.14.4 useQm or shift derivation, the §7.15.4 DPCM-direction selection, intra/inter prediction sample production, runtime decode wiring, output, reference refresh, or AVM/dav2d invocation."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "done"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-recon/src/reconstruct_block.rs::tests::all_zero_quant_preserves_prediction_4x4",
+    "crates/splot-recon/src/reconstruct_block.rs::tests::nonzero_dc_produces_uniform_signed_residual_4x4",
+    "crates/splot-recon/src/reconstruct_block.rs::tests::all_zero_quant_preserves_prediction_tx_64x64",
+    "crates/splot-recon/src/reconstruct_block.rs::tests::nonzero_dc_is_uniform_after_expansion_tx_64x64",
+    "crates/splot-recon/src/reconstruct_block.rs::tests::rejects_inconsistent_buffers_before_writing_output",
+]
+commands = [
+    "cargo test -p splot-recon reconstruct_block --locked",
+    "cargo clippy -p splot-recon --all-targets --locked -- -D warnings",
+    "RUSTDOCFLAGS=\"-D warnings\" cargo doc -p splot-recon --no-deps --locked",
+    "cargo xtask check-dependency-direction",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-recon/src/reconstruct_block.rs",
+    "crates/splot-recon/src/lib.rs",
+]
+diagnostics = []
+
+[[feature]]
 id = "RECON-INVERSE-TRANSFORM-2D"
 name = "2D matrix inverse transform core (row-then-column)"
 category = "infrastructure"
