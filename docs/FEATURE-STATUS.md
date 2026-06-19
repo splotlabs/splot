@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 314 feature(s).
+Matrix version 1. Last reviewed 2026-06-15. 315 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -212,6 +212,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `RECON-SECONDARY-INVERSE-TRANSFORM` | Secondary inverse transform process | infrastructure | infrastructure | done | done | n/a | done | n/a | n/a | done | done | n/a | `crates/splot-recon/src/secondary_transform.rs` |
 | `RECON-DEBLOCK-SAMPLE-FILTER` | Deblocking sample filter process | infrastructure | infrastructure | done | done | n/a | done | n/a | n/a | done | done | n/a | `crates/splot-recon/src/deblock_filter.rs` |
 | `RECON-DEBLOCK-FILTER-MAX-WIDTH` | Deblocking filter maximum width derivation | infrastructure | infrastructure | done | done | n/a | done | n/a | n/a | done | done | n/a | `crates/splot-recon/src/deblock_filter.rs` |
+| `RECON-DEBLOCK-ADAPTIVE-STRENGTH` | Deblocking adaptive filter strength derivation | infrastructure | infrastructure | done | done | n/a | done | n/a | n/a | done | done | n/a | `crates/splot-recon/src/deblock_filter.rs` |
 | `RECON-INVERSE-TRANSFORM-2D` | 2D matrix inverse transform core (row-then-column) | infrastructure | infrastructure | done | done | n/a | done | n/a | n/a | done | done | n/a | `crates/splot-recon/src/inverse_transform_2d.rs` |
 | `RECON-INVERSE-TRANSFORM-2D-OUTER` | 2D inverse transform outer process (shortcut, DPCM, sample duplication) | infrastructure | infrastructure | done | done | n/a | done | n/a | n/a | done | done | n/a | `crates/splot-recon/src/inverse_transform_2d_outer.rs` |
 | `RECON-DEQUANT-PROCESS` | Dequantization process (Quant to Dequant) | infrastructure | infrastructure | done | done | n/a | done | n/a | n/a | done | done | n/a | `crates/splot-recon/src/dequant_process.rs` |
