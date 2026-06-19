@@ -173,6 +173,13 @@ planning and status; it does not claim encoder behavior exists.
   bypass. The 10-token trace `[0,0,0,0,1,0,0,0,1,1]` roundtrips through one §8.2
   coder. It is not eob>2, chroma multi-coefficient, partition syntax, tile-body, or
   a packet path.
+- `ENC-INTRA-TX-TYPE-TOKEN` adds the `intra_tx_type` (TX_SET_INTRA_1) transform-type
+  token — the symbol §5.20.7.27 reads between `eob_pt` and the base pass for eob>1
+  blocks (the eob=2 trace #336 scoped it away). For a 4x4 DC_PRED block symbol 0
+  selects DCT_DCT (Md_Idx_To_Type[0][0][0]==0). Roundtrips through the §8.2 router
+  (extracted to a cdf_rows submodule for the source budget). Available but not yet
+  composed into a trace; the general eob>1 trace brick consumes it. It is not a
+  general trace, sec_tx_type, or a packet path.
 - `Packet` is still only a byte buffer wrapper, and no coded packet production
   path exists.
 - `EncoderConfig` exposes `BitDepth::Twelve`, but current Baseline Encoder Profile

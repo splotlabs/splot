@@ -25,7 +25,8 @@ use splot_core::symbol::{Symbol, SymbolDecoder, SymbolDecoderConfig};
 use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig};
 use splot_core::tables::cdf::{
     DEFAULT_COEFF_BASE_LF_CDF, DEFAULT_COEFF_BASE_LF_EOB_CDF, DEFAULT_COEFF_BASE_LF_EOB_UV_CDF,
-    DEFAULT_COEFF_BR_LF_CDF, DEFAULT_DC_SIGN_CDF, DEFAULT_EOB_PT_16_CDF, DEFAULT_TXB_SKIP_CDF,
+    DEFAULT_COEFF_BR_LF_CDF, DEFAULT_DC_SIGN_CDF, DEFAULT_EOB_PT_16_CDF,
+    DEFAULT_INTRA_TX_TYPE_SET1_CDF, DEFAULT_TXB_SKIP_CDF,
 };
 use splot_recon::{PlaneId, PlaneRect, TransformClass, coefficient_scan_order};
 
@@ -43,6 +44,12 @@ mod multi_coeff;
 // referenced by non-test code in this module.
 #[allow(unused_imports)]
 pub(crate) use multi_coeff::{coded_luma_all_zero_token, coeff_base_lf_eob_token, eob_pt_16_token};
+
+mod transform_type;
+// Re-exported for the sibling tests and the upcoming general eob>1 trace brick;
+// not yet referenced by non-test code in this module.
+#[allow(unused_imports)]
+pub(crate) use transform_type::intra_tx_type_set1_token;
 
 const DCT_DCT_4X4_WIDTH: usize = 4;
 const DCT_DCT_4X4_HEIGHT: usize = 4;
@@ -78,6 +85,10 @@ const COEFF_BR_LF_CTX_DC: usize = 0;
 const COEFF_BASE_LF_CTX_EOB2_DC: usize = 1;
 const COEFF_BASE_LF_TCQ_CTX_NEUTRAL: usize = 0;
 const COEFF_BASE_LF_CDF_ROW_LEN: usize = 7;
+// AV2 §8.3.2 Table 8.2: `intra_tx_type` for `TX_SET_INTRA_1` uses
+// `TileIntraTxTypeSet1Cdf[Tx_Size_Sqr[txSz]]`; `Tx_Size_Sqr[TX_4X4] = 0`.
+const INTRA_TX_TYPE_SET1_TX_SIZE_SQR_4X4: usize = 0;
+const INTRA_TX_TYPE_SET1_CDF_ROW_LEN: usize = 8;
 const DC_SIGN_GROUP_VISIBLE: usize = 0;
 const DC_SIGN_CTX_NEUTRAL: usize = 0;
 // AV2 § 5.20.7.27 / § 8.3.2: a low-frequency luma EOB coefficient's base level
@@ -471,6 +482,8 @@ pub(crate) enum CoefficientTokenSyntax {
     CoeffBaseEob,
     /// `coeff_base` (the non-EOB base level) in AV2 § 5.20.7.27.
     CoeffBase,
+    /// `intra_tx_type` (the transform type) in AV2 § 5.20.7.27.
+    IntraTxType,
     /// `coeff_br` (base range) in AV2 § 5.20.7.27.
     CoeffBr,
     /// `dc_sign` in AV2 § 5.20.7.27.
@@ -484,6 +497,7 @@ impl CoefficientTokenSyntax {
             Self::EobPt16 => "eob_pt_16",
             Self::CoeffBaseEob => "coeff_base_eob",
             Self::CoeffBase => "coeff_base",
+            Self::IntraTxType => "intra_tx_type",
             Self::CoeffBr => "coeff_br",
             Self::DcSign => "dc_sign",
         }
@@ -534,6 +548,9 @@ pub(crate) enum CoefficientCdfRowSelector {
     /// `TileCoeffBaseLfEobUvCdf[coeff_cdf_q_ctx][ctx]` (the chroma low-frequency
     /// `coeff_base_eob` CDF).
     CoeffBaseLfEobUv { coeff_cdf_q_ctx: usize, ctx: usize },
+    /// `TileIntraTxTypeSet1Cdf[tx_size_sqr]` (the `intra_tx_type` CDF for the
+    /// `TX_SET_INTRA_1` transform set; the CDF has no coefficient-CDF q-context).
+    IntraTxTypeSet1 { tx_size_sqr: usize },
 }
 
 impl CoefficientCdfRowSelector {
@@ -545,6 +562,7 @@ impl CoefficientCdfRowSelector {
             Self::EobPt16 { .. } => CoefficientTokenSyntax::EobPt16.as_str(),
             Self::CoeffBrLf { .. } => CoefficientTokenSyntax::CoeffBr.as_str(),
             Self::CoeffBaseLf { .. } => CoefficientTokenSyntax::CoeffBase.as_str(),
+            Self::IntraTxTypeSet1 { .. } => CoefficientTokenSyntax::IntraTxType.as_str(),
             Self::CoeffBaseLfEob { .. } | Self::CoeffBaseLfEobUv { .. } => {
                 CoefficientTokenSyntax::CoeffBaseEob.as_str()
             }
@@ -816,172 +834,8 @@ const fn coeff_cdf_q_context(qindex: u32) -> usize {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct CoefficientTokenCdfRows {
-    txb_skip: [[i32; 3]; COEFF_CDF_Q_CONTEXTS],
-    eob_pt_16: [[i32; 6]; COEFF_CDF_Q_CONTEXTS],
-    coeff_base_lf_eob: [[i32; 6]; COEFF_CDF_Q_CONTEXTS],
-    coeff_base_lf_eob_ac: [[i32; 6]; COEFF_CDF_Q_CONTEXTS],
-    coeff_base_lf: [[i32; COEFF_BASE_LF_CDF_ROW_LEN]; COEFF_CDF_Q_CONTEXTS],
-    coeff_br_lf: [[i32; 5]; COEFF_CDF_Q_CONTEXTS],
-    dc_sign: [[i32; 3]; COEFF_CDF_Q_CONTEXTS],
-    chroma_u_txb_skip: [[i32; 3]; COEFF_CDF_Q_CONTEXTS],
-    chroma_eob_pt_16: [[i32; 6]; COEFF_CDF_Q_CONTEXTS],
-    coeff_base_lf_eob_uv: [[i32; 6]; COEFF_CDF_Q_CONTEXTS],
-}
-
-impl CoefficientTokenCdfRows {
-    fn from_defaults() -> Self {
-        Self {
-            txb_skip: [
-                DEFAULT_TXB_SKIP_CDF[0][LUMA_PLANE_TYPE][TX_SIZE_4X4_CTX][TXB_SKIP_CTX_NEUTRAL],
-                DEFAULT_TXB_SKIP_CDF[1][LUMA_PLANE_TYPE][TX_SIZE_4X4_CTX][TXB_SKIP_CTX_NEUTRAL],
-                DEFAULT_TXB_SKIP_CDF[2][LUMA_PLANE_TYPE][TX_SIZE_4X4_CTX][TXB_SKIP_CTX_NEUTRAL],
-                DEFAULT_TXB_SKIP_CDF[3][LUMA_PLANE_TYPE][TX_SIZE_4X4_CTX][TXB_SKIP_CTX_NEUTRAL],
-            ],
-            eob_pt_16: [
-                DEFAULT_EOB_PT_16_CDF[0][EOB_CTX_LUMA_INTRA],
-                DEFAULT_EOB_PT_16_CDF[1][EOB_CTX_LUMA_INTRA],
-                DEFAULT_EOB_PT_16_CDF[2][EOB_CTX_LUMA_INTRA],
-                DEFAULT_EOB_PT_16_CDF[3][EOB_CTX_LUMA_INTRA],
-            ],
-            coeff_base_lf_eob: [
-                DEFAULT_COEFF_BASE_LF_EOB_CDF[0][TX_SIZE_4X4_CTX][COEFF_BASE_LF_EOB_CTX_DC],
-                DEFAULT_COEFF_BASE_LF_EOB_CDF[1][TX_SIZE_4X4_CTX][COEFF_BASE_LF_EOB_CTX_DC],
-                DEFAULT_COEFF_BASE_LF_EOB_CDF[2][TX_SIZE_4X4_CTX][COEFF_BASE_LF_EOB_CTX_DC],
-                DEFAULT_COEFF_BASE_LF_EOB_CDF[3][TX_SIZE_4X4_CTX][COEFF_BASE_LF_EOB_CTX_DC],
-            ],
-            coeff_base_lf_eob_ac: [
-                DEFAULT_COEFF_BASE_LF_EOB_CDF[0][TX_SIZE_4X4_CTX][COEFF_BASE_LF_EOB_CTX_EOB2_AC],
-                DEFAULT_COEFF_BASE_LF_EOB_CDF[1][TX_SIZE_4X4_CTX][COEFF_BASE_LF_EOB_CTX_EOB2_AC],
-                DEFAULT_COEFF_BASE_LF_EOB_CDF[2][TX_SIZE_4X4_CTX][COEFF_BASE_LF_EOB_CTX_EOB2_AC],
-                DEFAULT_COEFF_BASE_LF_EOB_CDF[3][TX_SIZE_4X4_CTX][COEFF_BASE_LF_EOB_CTX_EOB2_AC],
-            ],
-            coeff_base_lf: [
-                DEFAULT_COEFF_BASE_LF_CDF[0][TX_SIZE_4X4_CTX][COEFF_BASE_LF_CTX_EOB2_DC]
-                    [COEFF_BASE_LF_TCQ_CTX_NEUTRAL],
-                DEFAULT_COEFF_BASE_LF_CDF[1][TX_SIZE_4X4_CTX][COEFF_BASE_LF_CTX_EOB2_DC]
-                    [COEFF_BASE_LF_TCQ_CTX_NEUTRAL],
-                DEFAULT_COEFF_BASE_LF_CDF[2][TX_SIZE_4X4_CTX][COEFF_BASE_LF_CTX_EOB2_DC]
-                    [COEFF_BASE_LF_TCQ_CTX_NEUTRAL],
-                DEFAULT_COEFF_BASE_LF_CDF[3][TX_SIZE_4X4_CTX][COEFF_BASE_LF_CTX_EOB2_DC]
-                    [COEFF_BASE_LF_TCQ_CTX_NEUTRAL],
-            ],
-            coeff_br_lf: [
-                DEFAULT_COEFF_BR_LF_CDF[0][COEFF_BR_LF_CTX_DC],
-                DEFAULT_COEFF_BR_LF_CDF[1][COEFF_BR_LF_CTX_DC],
-                DEFAULT_COEFF_BR_LF_CDF[2][COEFF_BR_LF_CTX_DC],
-                DEFAULT_COEFF_BR_LF_CDF[3][COEFF_BR_LF_CTX_DC],
-            ],
-            dc_sign: [
-                DEFAULT_DC_SIGN_CDF[0][LUMA_PLANE_TYPE][DC_SIGN_GROUP_VISIBLE][DC_SIGN_CTX_NEUTRAL],
-                DEFAULT_DC_SIGN_CDF[1][LUMA_PLANE_TYPE][DC_SIGN_GROUP_VISIBLE][DC_SIGN_CTX_NEUTRAL],
-                DEFAULT_DC_SIGN_CDF[2][LUMA_PLANE_TYPE][DC_SIGN_GROUP_VISIBLE][DC_SIGN_CTX_NEUTRAL],
-                DEFAULT_DC_SIGN_CDF[3][LUMA_PLANE_TYPE][DC_SIGN_GROUP_VISIBLE][DC_SIGN_CTX_NEUTRAL],
-            ],
-            chroma_u_txb_skip: [
-                DEFAULT_TXB_SKIP_CDF[0][INTRA_NON_FSC_TXB_SKIP_BANK][TX_SIZE_4X4_CTX]
-                    [CHROMA_U_TXB_SKIP_CTX_NEUTRAL],
-                DEFAULT_TXB_SKIP_CDF[1][INTRA_NON_FSC_TXB_SKIP_BANK][TX_SIZE_4X4_CTX]
-                    [CHROMA_U_TXB_SKIP_CTX_NEUTRAL],
-                DEFAULT_TXB_SKIP_CDF[2][INTRA_NON_FSC_TXB_SKIP_BANK][TX_SIZE_4X4_CTX]
-                    [CHROMA_U_TXB_SKIP_CTX_NEUTRAL],
-                DEFAULT_TXB_SKIP_CDF[3][INTRA_NON_FSC_TXB_SKIP_BANK][TX_SIZE_4X4_CTX]
-                    [CHROMA_U_TXB_SKIP_CTX_NEUTRAL],
-            ],
-            chroma_eob_pt_16: [
-                DEFAULT_EOB_PT_16_CDF[0][EOB_CTX_CHROMA],
-                DEFAULT_EOB_PT_16_CDF[1][EOB_CTX_CHROMA],
-                DEFAULT_EOB_PT_16_CDF[2][EOB_CTX_CHROMA],
-                DEFAULT_EOB_PT_16_CDF[3][EOB_CTX_CHROMA],
-            ],
-            coeff_base_lf_eob_uv: [
-                DEFAULT_COEFF_BASE_LF_EOB_UV_CDF[0][COEFF_BASE_LF_EOB_CTX_DC],
-                DEFAULT_COEFF_BASE_LF_EOB_UV_CDF[1][COEFF_BASE_LF_EOB_CTX_DC],
-                DEFAULT_COEFF_BASE_LF_EOB_UV_CDF[2][COEFF_BASE_LF_EOB_CTX_DC],
-                DEFAULT_COEFF_BASE_LF_EOB_UV_CDF[3][COEFF_BASE_LF_EOB_CTX_DC],
-            ],
-        }
-    }
-
-    fn row_mut(&mut self, selector: CoefficientCdfRowSelector) -> Result<&mut [i32]> {
-        match selector {
-            CoefficientCdfRowSelector::TxbSkip {
-                coeff_cdf_q_ctx,
-                plane_type: LUMA_PLANE_TYPE,
-                tx_size: TX_SIZE_4X4_CTX,
-                ctx: TXB_SKIP_CTX_NEUTRAL,
-            } if coeff_cdf_q_ctx < COEFF_CDF_Q_CONTEXTS => {
-                Ok(self.txb_skip[coeff_cdf_q_ctx].as_mut_slice())
-            }
-            CoefficientCdfRowSelector::EobPt16 {
-                coeff_cdf_q_ctx,
-                eob_ctx: EOB_CTX_LUMA_INTRA,
-            } if coeff_cdf_q_ctx < COEFF_CDF_Q_CONTEXTS => {
-                Ok(self.eob_pt_16[coeff_cdf_q_ctx].as_mut_slice())
-            }
-            CoefficientCdfRowSelector::CoeffBaseLfEob {
-                coeff_cdf_q_ctx,
-                tx_size: TX_SIZE_4X4_CTX,
-                ctx: COEFF_BASE_LF_EOB_CTX_DC,
-            } if coeff_cdf_q_ctx < COEFF_CDF_Q_CONTEXTS => {
-                Ok(self.coeff_base_lf_eob[coeff_cdf_q_ctx].as_mut_slice())
-            }
-            CoefficientCdfRowSelector::CoeffBaseLfEob {
-                coeff_cdf_q_ctx,
-                tx_size: TX_SIZE_4X4_CTX,
-                ctx: COEFF_BASE_LF_EOB_CTX_EOB2_AC,
-            } if coeff_cdf_q_ctx < COEFF_CDF_Q_CONTEXTS => {
-                Ok(self.coeff_base_lf_eob_ac[coeff_cdf_q_ctx].as_mut_slice())
-            }
-            CoefficientCdfRowSelector::CoeffBaseLf {
-                coeff_cdf_q_ctx,
-                tx_size: TX_SIZE_4X4_CTX,
-                ctx: COEFF_BASE_LF_CTX_EOB2_DC,
-                tcq_ctx: COEFF_BASE_LF_TCQ_CTX_NEUTRAL,
-            } if coeff_cdf_q_ctx < COEFF_CDF_Q_CONTEXTS => {
-                Ok(self.coeff_base_lf[coeff_cdf_q_ctx].as_mut_slice())
-            }
-            CoefficientCdfRowSelector::CoeffBrLf {
-                coeff_cdf_q_ctx,
-                ctx: COEFF_BR_LF_CTX_DC,
-            } if coeff_cdf_q_ctx < COEFF_CDF_Q_CONTEXTS => {
-                Ok(self.coeff_br_lf[coeff_cdf_q_ctx].as_mut_slice())
-            }
-            CoefficientCdfRowSelector::DcSign {
-                coeff_cdf_q_ctx,
-                plane_type: LUMA_PLANE_TYPE,
-                group: DC_SIGN_GROUP_VISIBLE,
-                ctx: DC_SIGN_CTX_NEUTRAL,
-            } if coeff_cdf_q_ctx < COEFF_CDF_Q_CONTEXTS => {
-                Ok(self.dc_sign[coeff_cdf_q_ctx].as_mut_slice())
-            }
-            CoefficientCdfRowSelector::TxbSkip {
-                coeff_cdf_q_ctx,
-                plane_type: INTRA_NON_FSC_TXB_SKIP_BANK,
-                tx_size: TX_SIZE_4X4_CTX,
-                ctx: CHROMA_U_TXB_SKIP_CTX_NEUTRAL,
-            } if coeff_cdf_q_ctx < COEFF_CDF_Q_CONTEXTS => {
-                Ok(self.chroma_u_txb_skip[coeff_cdf_q_ctx].as_mut_slice())
-            }
-            CoefficientCdfRowSelector::EobPt16 {
-                coeff_cdf_q_ctx,
-                eob_ctx: EOB_CTX_CHROMA,
-            } if coeff_cdf_q_ctx < COEFF_CDF_Q_CONTEXTS => {
-                Ok(self.chroma_eob_pt_16[coeff_cdf_q_ctx].as_mut_slice())
-            }
-            CoefficientCdfRowSelector::CoeffBaseLfEobUv {
-                coeff_cdf_q_ctx,
-                ctx: COEFF_BASE_LF_EOB_CTX_DC,
-            } if coeff_cdf_q_ctx < COEFF_CDF_Q_CONTEXTS => {
-                Ok(self.coeff_base_lf_eob_uv[coeff_cdf_q_ctx].as_mut_slice())
-            }
-            selector => Err(Error::CoefficientTokenizationUnsupportedCdfSelector {
-                syntax: selector.syntax_name(),
-            }),
-        }
-    }
-}
+mod cdf_rows;
+use cdf_rows::CoefficientTokenCdfRows;
 
 #[cfg(test)]
 #[path = "coefficient_tokenization_tests.rs"]

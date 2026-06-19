@@ -126,8 +126,11 @@ Status: planned, replaces the parked toy bootstrap path.
   parameterized `eob_pt_16`, a parameterized `coeff_base_eob`) all landed — the
   pieces the eob>1 trace composes. The first eob>1 trace — the minimal eob=2 multi-coefficient block (one nonzero AC
   + a zero DC, with the DC `coeff_base` context derived from the AC's `Level[]`) —
-  landed. Blocks with eob>2, the chroma base-range/golomb tiers, partition syntax,
-  and the tile-body byte assembly remain.
+  landed. The transform-type signaling the general eob>1 path needs has begun: the
+  `intra_tx_type` (TX_SET_INTRA_1) transform-type token landed (DCT_DCT = symbol 0
+  for 4x4 DC_PRED). The general eob>1 trace inserting it (+ `sec_tx_type`), blocks
+  with eob>2, the chroma base-range/golomb tiers, partition syntax, and the
+  tile-body byte assembly remain.
 - Use closed-loop reconstruction before public success.
 - Emit only syntax the writer can produce and the validator accepts.
 - Record fixtures, hashes, and matrix proof before marking any encode stage done.
