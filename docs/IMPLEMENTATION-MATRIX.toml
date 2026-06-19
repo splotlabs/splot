@@ -10662,6 +10662,68 @@ fixtures = [
 diagnostics = ["decode/unsupported-feature"]
 
 [[feature]]
+id = "DECODE-COEFF-ORDINARY-BRANCH-LOSSLESS-HANDOFF"
+name = "Coefficient ordinary branch lossless handoff"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.20.7.27", "5.20.7.29", "5.20.8.3", "9.2"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-29",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-3",
+    "docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_pass/geometry.rs"
+openspec_change = "coeff-ordinary-branch-lossless-handoff"
+tracking_issue = ""
+owner = "decoder"
+risk = "low"
+notes = "Adds a crate-private loaded-but-unwired ordinary coefficient branch wrapper for the staged AV2 §5.20.7.29 `Lossless` branch that selects `DCT_DCT` before `get_tx_set(txSz, plane)`. `apply_coeff_ordinary_branch_from_lossless` preserves all-zero behavior, delegates non-lossless nonzero inputs to the existing AV2 §5.20.8.3 `txSet` handoff, and short-circuits intra lossless nonzero inputs to the existing transform-size/scan ordinary branch with `PlaneTxType = DCT_DCT`, bypassing lower non-lossless `txSet` / `Mode_To_Txfm` validation and forcing non-lossless parity-hiding/TCQ flags off for the lossless path. It rejects lossless inter inputs atomically because those require the broader IDTX/`TxTypes` branches. Tests prove lossless `DCT_DCT` equivalence, lower-validation bypass, non-lossless entropy-flag suppression, non-lossless `txSet` delegation, all-zero preservation, and fail-atomic invalid tx-size and inter inputs. This feature remains partial: runtime `coeffs()` still does not call this wrapper, frame-state derivation of `Lossless`, FSC/IDTX lossless cases, luma `TxTypes` state, inter chroma lookup, directional wide-angle mapping, dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public APIs, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` remain unimplemented."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "partial"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_lossless_tests.rs::coefficient_ordinary_branch_lossless_selects_dct_dct",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_lossless_tests.rs::coefficient_ordinary_branch_lossless_bypasses_lower_validation",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_lossless_tests.rs::coefficient_ordinary_branch_lossless_disables_non_lossless_entropy_flags",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_lossless_tests.rs::coefficient_ordinary_branch_lossless_delegates_non_lossless_to_tx_set",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_lossless_tests.rs::coefficient_ordinary_branch_lossless_rejects_invalid_tx_size_atomically",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_lossless_tests.rs::coefficient_ordinary_branch_lossless_rejects_inter_atomically",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_lossless_tests.rs::coefficient_ordinary_branch_lossless_all_zero_preserves_tx_set_branch",
+]
+commands = [
+    "cargo test -p splot-decode ordinary_branch_lossless --locked",
+    "cargo test -p splot-decode ordinary_branch_tx_set --locked",
+    "cargo test -p splot-decode ordinary_pass --locked",
+    "cargo test -p splot-decode coeff_loop --locked",
+    "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-decoder-conformance-coverage",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-decode/src/tile_payload/coeff_loop.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_pass/geometry.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_pass.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_lossless_tests.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_branch_tx_set_tests.rs",
+    "crates/splot-core/src/tables/conversion.rs",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
 id = "DECODE-TX-SIZE-SYMBOLIC-TABLES"
 name = "Decode TxSize symbolic tables"
 category = "infrastructure"

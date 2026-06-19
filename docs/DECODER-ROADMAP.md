@@ -276,9 +276,11 @@ delegating to the `PlaneTxType` handoff.
 `txSet` from `txSz`, plane, caller-resolved `is_inter`, caller-resolved
 `reduced_tx_set`, caller-resolved `enable_chroma_dctonly`, and generated § 9.2
 transform-size conversion tables before delegating to the `Mode_To_Txfm`
-handoff. The coefficient branch still does not
-implement the full § 5.20.7.29 `compute_tx_type` process or wire runtime
-`coeffs()`.
+handoff. `DECODE-COEFF-ORDINARY-BRANCH-LOSSLESS-HANDOFF` now adds the staged
+§ 5.20.7.29 `Lossless` branch that selects `DCT_DCT` before `get_tx_set`, while
+delegating non-lossless inputs back to the `txSet` handoff. The coefficient
+branch still does not implement the full § 5.20.7.29 `compute_tx_type` process
+or wire runtime `coeffs()`.
 Runtime integration of nonzero coefficient blocks, tile context fact derivation
 for nonzero blocks, dequantization, and
 reconstruction remain unsupported. The

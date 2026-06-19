@@ -25,6 +25,7 @@ const V_PRED: usize = 1;
 const D67_PRED: usize = 8;
 const TX_16X16: usize = 2;
 const TX_32X32: usize = 3;
+// AV2 §5.20.8.3 transform-set ordinals used by `get_tx_set`.
 const TX_SET_DCTONLY: usize = 0;
 const TX_SET_WIDE_64: usize = 1;
 const TX_SET_HIGH_64: usize = 2;
@@ -116,6 +117,34 @@ pub(crate) struct CoeffOrdinaryBranchTxSetNonZeroInput {
     pub(crate) lossless: bool,
 }
 
+/// Caller-selected ordinary coefficient branch before lossless transform-type selection.
+pub(crate) enum CoeffOrdinaryBranchLosslessInput {
+    /// Decoded `all_zero == 1`.
+    AllZero(CoeffOrdinaryTxSizeGeometryConfig),
+    /// Decoded `all_zero == 0`.
+    NonZero(CoeffOrdinaryBranchLosslessNonZeroInput),
+}
+
+/// Caller-resolved facts for the ordinary nonzero branch before lossless selection.
+pub(crate) struct CoeffOrdinaryBranchLosslessNonZeroInput {
+    /// Caller-resolved `coeffs()` geometry facts before table lookup.
+    pub(crate) geometry: CoeffOrdinaryTxSizeGeometryConfig,
+    /// Coefficient-CDF quantization context.
+    pub(crate) coeff_cdf_q_ctx: usize,
+    /// Caller-resolved inter/intra flag for lower non-lossless derivation.
+    ///
+    /// The staged lossless `DCT_DCT` subset only accepts intra blocks; lossless
+    /// inter blocks require the broader IDTX/`TxTypes` branches in § 5.20.7.29.
+    pub(crate) is_inter: bool,
+    /// Caller-resolved base facts before lossless transform-type selection.
+    pub(crate) base_config: CoeffOrdinaryBranchLosslessBaseConfig,
+    /// Caller-resolved AV2 § 5.20.7.29 `Lossless` flag.
+    ///
+    /// Callers must route only the non-FSC lossless outcome represented by this
+    /// wrapper. FSC/IDTX lossless handling is intentionally out of scope.
+    pub(crate) lossless: bool,
+}
+
 /// Caller-resolved base-derivation facts before transform-size dimensions.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CoeffOrdinaryBranchTxSizeDimensionsBaseConfig {
@@ -157,6 +186,21 @@ pub(crate) struct CoeffOrdinaryBranchTxSetBaseConfig {
     pub(crate) use_tcq: bool,
 }
 
+/// Caller-resolved base-derivation facts before AV2 § 5.20.7.29 lossless selection.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CoeffOrdinaryBranchLosslessBaseConfig {
+    /// Caller-resolved AV2 § 5.20.8.3 `reduced_tx_set` frame flag.
+    pub(crate) reduced_tx_set: usize,
+    /// Caller-resolved AV2 § 5.20.7.29 `enable_chroma_dctonly` flag.
+    pub(crate) enable_chroma_dctonly: bool,
+    /// Caller-resolved `UVMode` from the chroma intra mode syntax.
+    pub(crate) uv_mode: usize,
+    /// Whether hidden parity is active for this transform block.
+    pub(crate) parity_hiding: bool,
+    /// Whether TCQ is active for this transform block.
+    pub(crate) use_tcq: bool,
+}
+
 impl CoeffOrdinaryBranchModeToTxfmBaseConfig {
     fn tx_size_base_config(
         self,
@@ -186,6 +230,26 @@ impl CoeffOrdinaryBranchTxSetBaseConfig {
             parity_hiding: self.parity_hiding,
             use_tcq: self.use_tcq,
         })
+    }
+}
+
+impl CoeffOrdinaryBranchLosslessBaseConfig {
+    const fn lossless_tx_size_base_config(self) -> CoeffOrdinaryBranchTxSizeDimensionsBaseConfig {
+        CoeffOrdinaryBranchTxSizeDimensionsBaseConfig {
+            plane_tx_type: DCT_DCT,
+            parity_hiding: false,
+            use_tcq: false,
+        }
+    }
+
+    const fn tx_set_base_config(self) -> CoeffOrdinaryBranchTxSetBaseConfig {
+        CoeffOrdinaryBranchTxSetBaseConfig {
+            reduced_tx_set: self.reduced_tx_set,
+            enable_chroma_dctonly: self.enable_chroma_dctonly,
+            uv_mode: self.uv_mode,
+            parity_hiding: self.parity_hiding,
+            use_tcq: self.use_tcq,
+        }
     }
 }
 
@@ -520,6 +584,30 @@ pub(crate) fn apply_coeff_ordinary_branch_from_tx_set(
     )
 }
 
+/// Dispatches the ordinary branch after applying a staged lossless transform branch.
+///
+/// This covers only the AV2 § 5.20.7.29 `compute_tx_type`
+/// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-29`) lossless
+/// outcome that selects `DCT_DCT` before `get_tx_set(txSz, plane)`. Non-lossless
+/// branches delegate to the existing AV2 § 5.20.8.3 `txSet` wrapper. Full
+/// `compute_tx_type`, FSC/IDTX lossless cases, luma/inter transform-state
+/// lookup, runtime `coeffs()`, dequantization, inverse transform, residual add,
+/// and reconstruction remain out of scope.
+pub(crate) fn apply_coeff_ordinary_branch_from_lossless(
+    state: &mut TileCoeffContextState,
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    input: CoeffOrdinaryBranchLosslessInput,
+) -> Result<CoeffOrdinaryBranch, CoeffOrdinaryBranchError> {
+    apply_coeff_ordinary_branch_from_lossless_with_tables(
+        state,
+        cdfs,
+        symbols,
+        input,
+        DEFAULT_TX_SIZE_TABLES,
+    )
+}
+
 #[cfg(test)]
 pub(crate) fn apply_coeff_ordinary_branch_from_tx_size_dimensions_with_test_tables(
     state: &mut TileCoeffContextState,
@@ -594,6 +682,63 @@ fn apply_coeff_ordinary_branch_from_tx_set_with_tables(
         }
     };
     apply_coeff_ordinary_branch_from_mode_to_txfm_with_tables(state, cdfs, symbols, input, tables)
+}
+
+fn apply_coeff_ordinary_branch_from_lossless_with_tables(
+    state: &mut TileCoeffContextState,
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    input: CoeffOrdinaryBranchLosslessInput,
+    tables: CoeffOrdinaryTxSizeTables<'_>,
+) -> Result<CoeffOrdinaryBranch, CoeffOrdinaryBranchError> {
+    match input {
+        CoeffOrdinaryBranchLosslessInput::AllZero(geometry) => {
+            apply_coeff_ordinary_branch_from_tx_set_with_tables(
+                state,
+                cdfs,
+                symbols,
+                CoeffOrdinaryBranchTxSetInput::AllZero(geometry),
+                tables,
+            )
+        }
+        CoeffOrdinaryBranchLosslessInput::NonZero(input) if input.lossless => {
+            if input.is_inter {
+                return Err(CoeffOrdinaryBranchError::UnsupportedLosslessSubset {
+                    reason: "inter",
+                });
+            }
+            apply_coeff_ordinary_branch_from_tx_size_dimensions_with_tables(
+                state,
+                cdfs,
+                symbols,
+                CoeffOrdinaryBranchTxSizeDimensionsInput::NonZero(
+                    CoeffOrdinaryBranchTxSizeDimensionsNonZeroInput {
+                        geometry: input.geometry,
+                        coeff_cdf_q_ctx: input.coeff_cdf_q_ctx,
+                        is_inter: input.is_inter,
+                        base_config: input.base_config.lossless_tx_size_base_config(),
+                        lossless: input.lossless,
+                    },
+                ),
+                tables,
+            )
+        }
+        CoeffOrdinaryBranchLosslessInput::NonZero(input) => {
+            apply_coeff_ordinary_branch_from_tx_set_with_tables(
+                state,
+                cdfs,
+                symbols,
+                CoeffOrdinaryBranchTxSetInput::NonZero(CoeffOrdinaryBranchTxSetNonZeroInput {
+                    geometry: input.geometry,
+                    coeff_cdf_q_ctx: input.coeff_cdf_q_ctx,
+                    is_inter: input.is_inter,
+                    base_config: input.base_config.tx_set_base_config(),
+                    lossless: input.lossless,
+                }),
+                tables,
+            )
+        }
+    }
 }
 
 fn apply_coeff_ordinary_branch_from_tx_size_dimensions_with_tables(
