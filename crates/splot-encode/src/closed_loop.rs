@@ -410,7 +410,8 @@ mod tests {
                 CoefficientTokenSyntax::AllZero
                 | CoefficientTokenSyntax::EobPt16
                 | CoefficientTokenSyntax::CoeffBase
-                | CoefficientTokenSyntax::IntraTxType => {}
+                | CoefficientTokenSyntax::IntraTxType
+                | CoefficientTokenSyntax::SecTxType => {}
             }
         }
         if negative { -magnitude } else { magnitude }

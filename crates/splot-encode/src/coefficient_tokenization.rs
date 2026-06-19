@@ -26,7 +26,7 @@ use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig};
 use splot_core::tables::cdf::{
     DEFAULT_COEFF_BASE_LF_CDF, DEFAULT_COEFF_BASE_LF_EOB_CDF, DEFAULT_COEFF_BASE_LF_EOB_UV_CDF,
     DEFAULT_COEFF_BR_LF_CDF, DEFAULT_DC_SIGN_CDF, DEFAULT_EOB_PT_16_CDF,
-    DEFAULT_INTRA_TX_TYPE_SET1_CDF, DEFAULT_TXB_SKIP_CDF,
+    DEFAULT_INTRA_TX_TYPE_SET1_CDF, DEFAULT_SEC_TX_TYPE_CDF, DEFAULT_TXB_SKIP_CDF,
 };
 use splot_recon::{PlaneId, PlaneRect, TransformClass, coefficient_scan_order};
 
@@ -46,10 +46,11 @@ mod multi_coeff;
 pub(crate) use multi_coeff::{coded_luma_all_zero_token, coeff_base_lf_eob_token, eob_pt_16_token};
 
 mod transform_type;
-// Re-exported for the sibling tests and the upcoming general eob>1 trace brick;
-// not yet referenced by non-test code in this module.
+// Re-exported for the sibling tests and the general eob>1 trace bricks; the
+// `intra_tx_type` token is consumed by the trace, the `sec_tx_type` token is not yet
+// referenced by non-test code in this module.
 #[allow(unused_imports)]
-pub(crate) use transform_type::intra_tx_type_set1_token;
+pub(crate) use transform_type::{intra_tx_type_set1_token, sec_tx_type_intra_token};
 
 const DCT_DCT_4X4_WIDTH: usize = 4;
 const DCT_DCT_4X4_HEIGHT: usize = 4;
@@ -91,6 +92,15 @@ const COEFF_BASE_LF_CDF_ROW_LEN: usize = 7;
 const INTRA_TX_TYPE_SET1_TX_SIZE_SQR_4X4: usize = 0;
 const INTRA_TX_TYPE_SET1_TX_SIZE_SQR_COUNT: usize = 3;
 const INTRA_TX_TYPE_SET1_CDF_ROW_LEN: usize = 8;
+// AV2 §8.3.2 (08-parsing-process.md:867): `sec_tx_type` (the IST secondary
+// transform) uses `TileSecTxTypeCdf[is_inter][Tx_Size_Sqr[txSz]]`. The encoder's
+// minimal subset is intra, so the bank index is `is_inter = 0`. `DEFAULT_SEC_TX_TYPE_CDF[0]`
+// has one row per `Tx_Size_Sqr` value (5 rows, `Tx_Size_Sqr 0..=4`); each row is
+// `STX_TYPES (4) + 1 = 5` long → 4 `sec_tx_type` symbol values.
+const SEC_TX_TYPE_INTRA_BANK: usize = 0;
+const SEC_TX_TYPE_TX_SIZE_SQR_4X4: usize = 0;
+const SEC_TX_TYPE_TX_SIZE_SQR_COUNT: usize = 5;
+const SEC_TX_TYPE_CDF_ROW_LEN: usize = 5;
 const DC_SIGN_GROUP_VISIBLE: usize = 0;
 const DC_SIGN_CTX_NEUTRAL: usize = 0;
 // AV2 § 5.20.7.27 / § 8.3.2: a low-frequency luma EOB coefficient's base level
@@ -484,8 +494,12 @@ pub(crate) enum CoefficientTokenSyntax {
     CoeffBaseEob,
     /// `coeff_base` (the non-EOB base level) in AV2 § 5.20.7.27.
     CoeffBase,
-    /// `intra_tx_type` (the transform type) in AV2 § 5.20.7.27.
+    /// `intra_tx_type` (the primary transform type) in AV2 § 5.20.8.2
+    /// `transform_type()` (called from § 5.20.7.27 `coeffs()`).
     IntraTxType,
+    /// `sec_tx_type` (the IST secondary transform) in AV2 § 5.20.8.2
+    /// `transform_type()`, read right after `intra_tx_type`.
+    SecTxType,
     /// `coeff_br` (base range) in AV2 § 5.20.7.27.
     CoeffBr,
     /// `dc_sign` in AV2 § 5.20.7.27.
@@ -500,6 +514,7 @@ impl CoefficientTokenSyntax {
             Self::CoeffBaseEob => "coeff_base_eob",
             Self::CoeffBase => "coeff_base",
             Self::IntraTxType => "intra_tx_type",
+            Self::SecTxType => "sec_tx_type",
             Self::CoeffBr => "coeff_br",
             Self::DcSign => "dc_sign",
         }
@@ -553,6 +568,9 @@ pub(crate) enum CoefficientCdfRowSelector {
     /// `TileIntraTxTypeSet1Cdf[tx_size_sqr]` (the `intra_tx_type` CDF for the
     /// `TX_SET_INTRA_1` transform set; the CDF has no coefficient-CDF q-context).
     IntraTxTypeSet1 { tx_size_sqr: usize },
+    /// `TileSecTxTypeCdf[0][tx_size_sqr]` (the intra `sec_tx_type` IST CDF, `is_inter
+    /// = 0`; the CDF has no coefficient-CDF q-context).
+    SecTxTypeIntra { tx_size_sqr: usize },
 }
 
 impl CoefficientCdfRowSelector {
@@ -565,6 +583,7 @@ impl CoefficientCdfRowSelector {
             Self::CoeffBrLf { .. } => CoefficientTokenSyntax::CoeffBr.as_str(),
             Self::CoeffBaseLf { .. } => CoefficientTokenSyntax::CoeffBase.as_str(),
             Self::IntraTxTypeSet1 { .. } => CoefficientTokenSyntax::IntraTxType.as_str(),
+            Self::SecTxTypeIntra { .. } => CoefficientTokenSyntax::SecTxType.as_str(),
             Self::CoeffBaseLfEob { .. } | Self::CoeffBaseLfEobUv { .. } => {
                 CoefficientTokenSyntax::CoeffBaseEob.as_str()
             }

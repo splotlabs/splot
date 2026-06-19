@@ -689,3 +689,43 @@ fn intra_tx_type_set1_token_roundtrips_every_tx_size_sqr_row() {
         assert_eq!(proof.decoded_symbols(), &[0], "tx_size_sqr {tx_size_sqr}");
     }
 }
+
+#[test]
+fn sec_tx_type_intra_off_token_roundtrips_through_generic_helper() {
+    // The intra sec_tx_type "IST off" token (symbol 0, Tx_Size_Sqr 0 = 4x4) roundtrips
+    // through the §8.2 router via the new TileSecTxTypeCdf[0] row. Symbol 0 means
+    // sec_tx_type = 0, which (§5.20.8.2 line 16615) reads no most_probable_stx_set.
+    let token = sec_tx_type_intra_token(SEC_TX_TYPE_TX_SIZE_SQR_4X4, 0);
+    assert_eq!(token.syntax(), CoefficientTokenSyntax::SecTxType);
+    assert_eq!(token.symbol(), 0);
+    assert!(matches!(
+        token.selector(),
+        CoefficientCdfRowSelector::SecTxTypeIntra { tx_size_sqr: 0 }
+    ));
+    let proof = roundtrip_entropy_tokens(&[token]).unwrap();
+    assert_eq!(proof.decoded_symbols(), &[0]);
+    assert_eq!(proof.symbol_count(), 1);
+}
+
+#[test]
+fn sec_tx_type_intra_token_roundtrips_every_tx_size_sqr_row() {
+    // §8.3.2 indexes TileSecTxTypeCdf[is_inter] by Tx_Size_Sqr[txSz] (5 rows for the
+    // intra bank), so the router must accept every valid Tx_Size_Sqr.
+    for tx_size_sqr in 0..SEC_TX_TYPE_TX_SIZE_SQR_COUNT {
+        let token = sec_tx_type_intra_token(tx_size_sqr, 0);
+        let proof = roundtrip_entropy_tokens(&[token]).unwrap();
+        assert_eq!(proof.decoded_symbols(), &[0], "tx_size_sqr {tx_size_sqr}");
+    }
+}
+
+#[test]
+fn sec_tx_type_intra_token_roundtrips_every_symbol_value() {
+    // sec_tx_type has STX_TYPES = 4 values (0..=3); the inner CDF row of length 5
+    // holds 3 thresholds + count + pad. Each value roundtrips through the §8.2 coder.
+    const STX_TYPES: u8 = 4;
+    for symbol in 0..STX_TYPES {
+        let token = sec_tx_type_intra_token(SEC_TX_TYPE_TX_SIZE_SQR_4X4, symbol);
+        let proof = roundtrip_entropy_tokens(&[token]).unwrap();
+        assert_eq!(proof.decoded_symbols(), &[symbol], "sec_tx_type {symbol}");
+    }
+}
