@@ -242,7 +242,12 @@ constants (`isHidden = 0`, `maxLevel = NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1`,
 pass with the § 5.20.7.27 end-of-`coeffs()` tile context update, committing the
 final `culLevel` and `dcCategory` through `TileCoeffContextState` with
 caller-resolved plane and 4x4 geometry. It still does not wire runtime
-`coeffs()`.
+`coeffs()`. `DECODE-COEFF-FSC-BRANCH-HANDOFF` now composes the loaded FSC
+nonzero branch target: it rejects all-zero and non-luma routing, runs the
+nonzero EOB start, derives the checked FSC `bob..segEob` scan walk from
+caller-resolved `segEob` and scan order, then runs the FSC level and
+quant/context-commit stages. Runtime `useFsc`, `segEob`, scan, transform, and
+geometry derivation remain unwired.
 Separately, `DECODE-COEFF-ORDINARY-DERIVED-BASE-PASS` now composes the ordinary
 state-derived first pass into the ordinary coefficient pass, carrying
 first-pass `isHidden`, `sumAbs1`, and `useTcq` into the interleaved
@@ -329,8 +334,8 @@ handoff. `DECODE-COEFF-ORDINARY-BRANCH-LOSSLESS-HANDOFF` now adds the staged
 § 5.20.7.29 `Lossless` branch that selects `DCT_DCT` before `get_tx_set`, while
 delegating non-lossless inputs back to the `txSet` handoff. The coefficient
 branch still does not implement the full § 5.20.7.29 `compute_tx_type` process
-or wire runtime `coeffs()`: FSC/IDTX symbol-pass and lossless runtime handling,
-plus frame-state derivation, remain staged gaps.
+or wire runtime `coeffs()`: runtime FSC/IDTX routing, lossless runtime
+handling, and frame-state derivation remain staged gaps.
 Runtime integration of nonzero coefficient blocks, tile context fact derivation
 for nonzero blocks, dequantization, and
 reconstruction remain unsupported. The

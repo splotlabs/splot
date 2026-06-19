@@ -3,7 +3,9 @@
 
 //! FSC/IDTX coefficient quant pass.
 //!
-//! Feature tracking: `DECODE-COEFF-FSC-QUANT-PASS`.
+//! Feature tracking: `DECODE-COEFF-FSC-QUANT-PASS`,
+//! `DECODE-COEFF-FSC-CONTEXT-COMMIT`,
+//! `DECODE-COEFF-FSC-BRANCH-HANDOFF`.
 
 use std::collections::TryReserveError;
 
@@ -13,8 +15,14 @@ use super::super::cdf::TileCdfSubset;
 use super::super::coeff_state::{
     CoeffContextUpdate, TileCoeffContextState, TileCoeffStateError, TransformCoeffBlockState,
 };
-use super::NonZeroCoeffEobSymbolRead;
-use super::fsc_level_pass::{CoeffFscLevelPassConfig, CoeffFscLevelRead, NonZeroCoeffFscLevelPass};
+use super::branch::{
+    CoeffBlockEobBranch, CoeffBlockEobBranchInput, NonZeroCoeffBlockStartInput,
+    read_coeff_block_eob_branch,
+};
+use super::fsc_level_pass::{
+    CoeffFscLevelPassConfig, CoeffFscLevelPassError, CoeffFscLevelRead, NonZeroCoeffFscLevelPass,
+    apply_nonzero_coeff_fsc_level_pass,
+};
 use super::fsc_sign_pass::{
     CoeffFscSignPassError, CoeffFscSignRead, CoeffFscSignReadInput, derive_fsc_sign_input,
     fsc_sign_entries, preflight_pass, quant_sign_value, read_fsc_sign_symbol,
@@ -28,7 +36,8 @@ use super::read_quant::{
     CoeffReadQuant, CoeffReadQuantConfig, CoeffReadQuantError, CoeffReadQuantInput,
     CoeffReadQuantState,
 };
-use super::scan_walk::{CoeffScanEntry, FscCoeffScanWalk};
+use super::scan_walk::{CoeffScanEntry, FscCoeffScanWalk, walk_fsc_coeff_scan};
+use super::{AllZeroCoeffBlockInput, CoeffLoopContextError, NonZeroCoeffEobSymbolRead};
 
 const FSC_MAX_LEVEL: u32 = NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1;
 
@@ -59,6 +68,42 @@ pub(crate) struct CoeffFscContextCommitConfig {
     pub(crate) w4: usize,
     /// Transform-block height in 4x4 units.
     pub(crate) h4: usize,
+}
+
+/// Caller-selected FSC/IDTX coefficient branch after `all_zero`.
+pub(crate) enum CoeffFscBranchInput<'a> {
+    /// Decoded `all_zero == 1`, invalid for the FSC-specific branch.
+    AllZero(AllZeroCoeffBlockInput),
+    /// Decoded `all_zero == 0`.
+    NonZero(CoeffFscBranchNonZeroInput<'a>),
+}
+
+/// Caller-resolved facts for the FSC/IDTX nonzero branch.
+pub(crate) struct CoeffFscBranchNonZeroInput<'a> {
+    /// Caller-resolved facts for nonzero EOB start.
+    pub(crate) start: NonZeroCoeffBlockStartInput,
+    /// Caller-resolved `segEob` for the FSC branch.
+    pub(crate) seg_eob: usize,
+    /// Caller-resolved `scan = get_scan(txSz, txClass)` raster positions.
+    pub(crate) scan: &'a [u16],
+    /// Caller-resolved FSC level-pass facts.
+    pub(crate) level_config: CoeffFscLevelPassConfig,
+    /// Caller-resolved facts for committing tile context lines.
+    pub(crate) context: CoeffFscContextCommitConfig,
+}
+
+/// Result of the loaded FSC/IDTX coefficient branch handoff.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CoeffFscBranch {
+    pass: NonZeroCoeffFscQuantPass,
+}
+
+impl CoeffFscBranch {
+    /// Completed FSC/IDTX quant pass.
+    #[must_use]
+    pub(crate) const fn pass(&self) -> &NonZeroCoeffFscQuantPass {
+        &self.pass
+    }
 }
 
 impl NonZeroCoeffFscQuantPass {
@@ -144,6 +189,94 @@ pub(crate) enum CoeffFscQuantPassError {
     /// Committing tile coefficient context lines failed.
     #[error("coefficient FSC quant context update failed: {0}")]
     ContextUpdate(TileCoeffStateError),
+}
+
+/// Error returned by the FSC/IDTX coefficient branch handoff.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum CoeffFscBranchError {
+    /// The FSC-specific branch was asked to handle `all_zero == 1`.
+    #[error("coefficient FSC branch does not support all-zero routing")]
+    AllZero,
+    /// The FSC-specific branch was requested for a non-luma plane.
+    #[error("coefficient FSC branch requires luma plane, got plane {plane}")]
+    NonLumaPlane {
+        /// Rejected plane index.
+        plane: usize,
+    },
+    /// EOB branch handoff or checked scan-walk derivation failed.
+    #[error("coefficient FSC branch handoff failed: {0}")]
+    Branch(#[from] CoeffLoopContextError),
+    /// The FSC/IDTX first level pass failed.
+    #[error("coefficient FSC branch level pass failed: {0}")]
+    Level(#[from] CoeffFscLevelPassError),
+    /// The FSC/IDTX quant and context-commit pass failed.
+    #[error("coefficient FSC branch quant pass failed: {0}")]
+    Quant(#[from] CoeffFscQuantPassError),
+    /// Internal branch routing returned a different branch than requested.
+    #[error("coefficient FSC branch returned unexpected {actual} arm while expecting {expected}")]
+    UnexpectedBranch {
+        /// Expected branch arm.
+        expected: &'static str,
+        /// Actual branch arm.
+        actual: &'static str,
+    },
+}
+
+/// Dispatches the FSC/IDTX nonzero coefficient branch.
+///
+/// This loaded-but-unwired helper models the AV2 §5.20.7.27 `useFsc` branch
+/// after caller-decoded `all_zero == 0`
+/// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27`). It derives
+/// `bob = segEob - eob`, walks the caller-resolved scan window, runs the FSC
+/// level pass, then runs the FSC sign/quant pass and commits the final tile
+/// context lines. Runtime `useFsc`, `segEob`, scan, transform, dequantization,
+/// inverse transform, residual add, and reconstruction remain out of scope.
+pub(crate) fn apply_coeff_fsc_branch(
+    state: &mut TileCoeffContextState,
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    input: CoeffFscBranchInput<'_>,
+) -> Result<CoeffFscBranch, CoeffFscBranchError> {
+    let input = match input {
+        CoeffFscBranchInput::AllZero(input) => {
+            let _ = input;
+            return Err(CoeffFscBranchError::AllZero);
+        }
+        CoeffFscBranchInput::NonZero(input) => input,
+    };
+    if input.context.plane != 0 {
+        return Err(CoeffFscBranchError::NonLumaPlane {
+            plane: input.context.plane,
+        });
+    }
+
+    let start = match read_coeff_block_eob_branch(
+        state,
+        cdfs,
+        symbols,
+        CoeffBlockEobBranchInput::NonZero(input.start),
+    )? {
+        CoeffBlockEobBranch::NonZero(start) => start,
+        CoeffBlockEobBranch::AllZero(_) => {
+            return Err(CoeffFscBranchError::UnexpectedBranch {
+                expected: "nonzero",
+                actual: "all-zero",
+            });
+        }
+    };
+    let walk = walk_fsc_coeff_scan(&start, input.seg_eob, input.scan)?;
+    let level_pass =
+        apply_nonzero_coeff_fsc_level_pass(cdfs, symbols, start, walk, input.level_config)?;
+    let pass = apply_nonzero_coeff_fsc_quant_pass_with_context_commit(
+        state,
+        cdfs,
+        symbols,
+        level_pass,
+        input.scan,
+        input.level_config,
+        input.context,
+    )?;
+    Ok(CoeffFscBranch { pass })
 }
 
 /// Runs the FSC/IDTX §5.20.7.27 sign/quant loop over `c = 0 .. segEob`.

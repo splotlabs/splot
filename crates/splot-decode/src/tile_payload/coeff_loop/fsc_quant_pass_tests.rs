@@ -8,13 +8,18 @@ use splot_core::symbol::{CdfUpdateMode, SymbolDecoder, SymbolDecoderConfig};
 
 use super::super::cdf::{FrameCdfSubset, TileCdfSubset};
 use super::super::coeff_state::{CoeffContextUpdate, TileCoeffContextState, TileCoeffStateError};
-use super::branch::{CoeffBlockEobBranch, NonZeroCoeffBlockStart, NonZeroCoeffBlockStartInput};
+use super::branch::{
+    CoeffBlockEobBranch, CoeffBlockEobBranchInput, NonZeroCoeffBlockStart,
+    NonZeroCoeffBlockStartInput,
+};
 use super::fsc_level_pass::{
     CoeffFscLevelPassConfig, NonZeroCoeffFscLevelPass, apply_nonzero_coeff_fsc_level_pass,
 };
 use super::fsc_quant_pass::{
+    CoeffFscBranchError, CoeffFscBranchInput, CoeffFscBranchNonZeroInput,
     CoeffFscContextCommitConfig, CoeffFscQuantPassError, NonZeroCoeffFscQuantPass,
-    apply_nonzero_coeff_fsc_quant_pass, apply_nonzero_coeff_fsc_quant_pass_with_context_commit,
+    apply_coeff_fsc_branch, apply_nonzero_coeff_fsc_quant_pass,
+    apply_nonzero_coeff_fsc_quant_pass_with_context_commit,
 };
 use super::fsc_sign_pass::{
     CoeffFscSignPassError, CoeffFscSignRead, NonZeroCoeffFscSignPass,
@@ -72,6 +77,48 @@ fn context_commit_config() -> CoeffFscContextCommitConfig {
     }
 }
 
+fn all_zero_block_input() -> AllZeroCoeffBlockInput {
+    AllZeroCoeffBlockInput {
+        plane: 0,
+        x4: 1,
+        y4: 2,
+        w4: 2,
+        h4: 2,
+    }
+}
+
+fn nonzero_start_input() -> NonZeroCoeffBlockStartInput {
+    NonZeroCoeffBlockStartInput {
+        block: AllZeroCoeffBlockInput {
+            plane: 0,
+            x4: 0,
+            y4: 0,
+            w4: 2,
+            h4: 2,
+        },
+        eob: NonZeroCoeffEobContextInput {
+            plane: 0,
+            is_inter: false,
+            tx_width_log2: 3,
+            tx_height_log2: 3,
+            coeff_cdf_q_ctx: 0,
+        },
+    }
+}
+
+fn fsc_branch_input(
+    seg_eob: usize,
+    context: CoeffFscContextCommitConfig,
+) -> CoeffFscBranchInput<'static> {
+    CoeffFscBranchInput::NonZero(CoeffFscBranchNonZeroInput {
+        start: nonzero_start_input(),
+        seg_eob,
+        scan: &SCAN,
+        level_config: config(),
+        context,
+    })
+}
+
 fn chroma_context_commit_config() -> CoeffFscContextCommitConfig {
     CoeffFscContextCommitConfig {
         plane: 1,
@@ -119,22 +166,7 @@ fn setup_level_pass<'a>(
         &mut state,
         &mut tile,
         &mut symbols,
-        CoeffBlockEobBranchInput::NonZero(NonZeroCoeffBlockStartInput {
-            block: AllZeroCoeffBlockInput {
-                plane: 0,
-                x4: 0,
-                y4: 0,
-                w4: 2,
-                h4: 2,
-            },
-            eob: NonZeroCoeffEobContextInput {
-                plane: 0,
-                is_inter: false,
-                tx_width_log2: 3,
-                tx_height_log2: 3,
-                coeff_cdf_q_ctx: 0,
-            },
-        }),
+        CoeffBlockEobBranchInput::NonZero(nonzero_start_input()),
     )
     .ok()?;
     let start = branch_nonzero(branch)?;
@@ -412,6 +444,51 @@ fn coefficient_fsc_quant_pass_with_context_commit_updates_tile_context_lines() {
 }
 
 #[test]
+fn coefficient_fsc_branch_matches_explicit_staged_pipeline() {
+    let payload = find_payload(2, |pass| {
+        pass.quant_state().cul_level() > 0 && pass.quant_state().dc_category() != 0
+    });
+    let (mut explicit_tile, mut explicit_symbols, _walk, level_pass) =
+        setup_level_pass(&payload, 2).unwrap();
+    let mut explicit_context = seeded_context_state();
+    let expected = apply_nonzero_coeff_fsc_quant_pass_with_context_commit(
+        &mut explicit_context,
+        &mut explicit_tile,
+        &mut explicit_symbols,
+        level_pass,
+        &SCAN,
+        config(),
+        context_commit_config(),
+    )
+    .unwrap();
+
+    let frame = FrameCdfSubset::from_defaults();
+    let mut branch_tile = frame.tile_copy();
+    let mut branch_symbols = symbol_decoder(&payload);
+    let mut branch_context = seeded_context_state();
+
+    let branch = apply_coeff_fsc_branch(
+        &mut branch_context,
+        &mut branch_tile,
+        &mut branch_symbols,
+        fsc_branch_input(2, context_commit_config()),
+    )
+    .unwrap();
+
+    assert_eq!(branch.pass(), &expected);
+    assert_eq!(branch_context, explicit_context);
+    assert_eq!(branch_tile, explicit_tile);
+    assert_eq!(
+        branch_symbols.consumed_bits(),
+        explicit_symbols.consumed_bits()
+    );
+    assert_eq!(
+        branch_symbols.symbol_count(),
+        explicit_symbols.symbol_count()
+    );
+}
+
+#[test]
 fn coefficient_fsc_quant_pass_with_context_commit_preserves_context_on_pass_failure() {
     let payload = find_payload(2, |_| true);
     let (mut tile, mut symbols, _walk, level_pass) = setup_level_pass(&payload, 2).unwrap();
@@ -443,6 +520,104 @@ fn coefficient_fsc_quant_pass_with_context_commit_preserves_context_on_pass_fail
     assert_eq!(symbols.consumed_bits(), consumed_before);
     assert_eq!(symbols.symbol_count(), symbol_count_before);
     assert_eq!(tile, tile_before);
+}
+
+#[test]
+fn coefficient_fsc_branch_rejects_all_zero_without_mutation() {
+    let frame = FrameCdfSubset::from_defaults();
+    let mut tile = frame.tile_copy();
+    let mut symbols = symbol_decoder(&[0x80]);
+    let mut context_state = seeded_context_state();
+    let tile_before = tile.clone();
+    let context_before = context_state.clone();
+    let consumed_before = symbols.consumed_bits();
+    let symbol_count_before = symbols.symbol_count();
+
+    let err = apply_coeff_fsc_branch(
+        &mut context_state,
+        &mut tile,
+        &mut symbols,
+        CoeffFscBranchInput::AllZero(all_zero_block_input()),
+    )
+    .unwrap_err();
+
+    assert!(matches!(err, CoeffFscBranchError::AllZero));
+    assert_eq!(context_state, context_before);
+    assert_eq!(tile, tile_before);
+    assert_eq!(symbols.consumed_bits(), consumed_before);
+    assert_eq!(symbols.symbol_count(), symbol_count_before);
+}
+
+#[test]
+fn coefficient_fsc_branch_rejects_chroma_plane_before_eob_consumption() {
+    let payload = find_payload(2, |_| true);
+    let frame = FrameCdfSubset::from_defaults();
+    let mut tile = frame.tile_copy();
+    let mut symbols = symbol_decoder(&payload);
+    let mut context_state = seeded_context_state();
+    let tile_before = tile.clone();
+    let context_before = context_state.clone();
+    let consumed_before = symbols.consumed_bits();
+    let symbol_count_before = symbols.symbol_count();
+
+    let err = apply_coeff_fsc_branch(
+        &mut context_state,
+        &mut tile,
+        &mut symbols,
+        fsc_branch_input(2, chroma_context_commit_config()),
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        err,
+        CoeffFscBranchError::NonLumaPlane { plane: 1 }
+    ));
+    assert_eq!(context_state, context_before);
+    assert_eq!(tile, tile_before);
+    assert_eq!(symbols.consumed_bits(), consumed_before);
+    assert_eq!(symbols.symbol_count(), symbol_count_before);
+}
+
+#[test]
+fn coefficient_fsc_branch_rejects_invalid_scan_before_fsc_symbol_reads() {
+    let payload = find_payload(2, |_| true);
+    let frame = FrameCdfSubset::from_defaults();
+    let mut expected_tile = frame.tile_copy();
+    let mut expected_symbols = symbol_decoder(&payload);
+    let mut expected_context = seeded_context_state();
+    let start = read_coeff_block_eob_branch(
+        &mut expected_context,
+        &mut expected_tile,
+        &mut expected_symbols,
+        CoeffBlockEobBranchInput::NonZero(nonzero_start_input()),
+    )
+    .unwrap();
+    assert!(matches!(start, CoeffBlockEobBranch::NonZero(_)));
+
+    let frame = FrameCdfSubset::from_defaults();
+    let mut tile = frame.tile_copy();
+    let mut symbols = symbol_decoder(&payload);
+    let mut context_state = seeded_context_state();
+
+    let err = apply_coeff_fsc_branch(
+        &mut context_state,
+        &mut tile,
+        &mut symbols,
+        fsc_branch_input(1, context_commit_config()),
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        err,
+        CoeffFscBranchError::Branch(CoeffLoopContextError::FscScanWalkEobOutOfRange {
+            eob: 2,
+            seg_eob: 1
+        })
+    ));
+    assert_eq!(context_state, seeded_context_state());
+    assert_eq!(tile, expected_tile);
+    assert_eq!(symbols.consumed_bits(), expected_symbols.consumed_bits());
+    assert_eq!(symbols.symbol_count(), expected_symbols.symbol_count());
 }
 
 #[test]
