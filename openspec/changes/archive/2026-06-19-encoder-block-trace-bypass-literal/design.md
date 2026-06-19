@@ -44,11 +44,12 @@ coder already provides the primitives: `SymbolEncoder::write_literal(value, n)`
    matches `Bypass` first and calls `write_literal`/`read_literal`; `row_mut` gains
    an unreachable `Bypass` arm only for match exhaustiveness.
 
-3. **No per-token literal mismatch check.** `read_literal` of what `write_literal`
-   wrote is deterministic (no CDF state), so the bypass decode returns the value
-   directly; the roundtrip tests assert the decoded values equal the encoded ones.
-   (`write_literal` already rejects a value that does not fit its width, so a
-   divergence is unreachable.)
+3. **Full-width mismatch check + bit-width-scaled budget.** The roundtrip
+   verifies the decoded literal against the FULL `u32` value (the `decoded_symbols`
+   view is u8, so this check is what proves a >8-bit literal — e.g. the golomb tail
+   — roundtrips exactly, not just its low byte). The encoder operation/byte budget
+   scales with the trace (one op per CDF symbol, one per bypass bit, plus headroom)
+   so a valid wide `L(n)` literal is not rejected by a fixed cap.
 
 4. **Foundation-only, with a synthetic proof.** Like the decoder mission's
    loaded-but-unread CDF-row bricks, this lands the mechanism before its first real
@@ -77,9 +78,9 @@ coder already provides the primitives: `SymbolEncoder::write_literal(value, n)`
     `crates/splot-encode/src/intra_mode_emission.rs`; `crates/splot-encode/src/lib.rs`;
     `crates/splot-encode/src/closed_loop.rs`
   - workspace manifests and `Cargo.lock`; AV2 spec mirror under `docs/spec/av2/**`
-  - NOTE: `crates/splot-encode/src/error.rs` is touched only to reuse existing
-    variants (no new variant); the bypass path reuses `BlockSymbolTraceSymbolWrite`
-    / `BlockSymbolTraceSymbolRead`.
+  - `crates/splot-encode/src/error.rs` (adds one `BlockSymbolTraceLiteralMismatch`
+    variant for the full-width bypass check; the write/read paths reuse the
+    existing `BlockSymbolTraceSymbolWrite` / `BlockSymbolTraceSymbolRead`).
 - Public APIs/types owned: none
 - Matrix rows owned: `ENC-INTRA-BLOCK-TRACE-BYPASS-LITERAL`
 - Generated files owned: `docs/FEATURE-STATUS.md`, `docs/SPEC-COVERAGE.md`

@@ -752,6 +752,21 @@ pub enum Error {
         actual: u8,
     },
 
+    /// A decoded bypass literal did not match the encoded full-width value.
+    #[error(
+        "encoder block-symbol trace bypass-literal mismatch for token {index} (width {width}): expected {expected}, decoded {actual}"
+    )]
+    BlockSymbolTraceLiteralMismatch {
+        /// Zero-based index of the mismatched token in the trace.
+        index: usize,
+        /// Literal bit width.
+        width: u32,
+        /// Encoded full-width literal value.
+        expected: u32,
+        /// Decoded full-width literal value.
+        actual: u32,
+    },
+
     /// Finalizing the block-symbol trace symbol decoder failed.
     #[error("encoder block-symbol trace symbol decoder finalization failed: {source}")]
     BlockSymbolTraceSymbolDecodeFinish {

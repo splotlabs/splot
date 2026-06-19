@@ -84,7 +84,11 @@ const MINIMAL_CODED_DC_NEGATIVE: bool = false;
 // (level 5 base + `coeff_br = 1`).
 const MINIMAL_BR_DC_MAGNITUDE: u32 = 6;
 const MINIMAL_BR_DC_NEGATIVE: bool = false;
-const BLOCK_SYMBOL_TRACE_BUDGET: usize = 32;
+// Headroom (operations + output bytes) added on top of the per-trace cost. The
+// roundtrip's encoder budget scales with the trace: one operation per CDF symbol
+// and one per bypass-literal bit (`write_literal` charges per bit), so a wide
+// `L(n)` literal — e.g. the golomb tail — is not rejected by a fixed cap.
+const BLOCK_SYMBOL_TRACE_BUDGET_HEADROOM: usize = 32;
 
 /// Composes the ordered AV2 § 5.20.5.3 intra-block mode-info prefix
 /// (`y_mode_set`, `y_mode_index`, `uv_mode`) for the current minimal DC subset.
@@ -279,10 +283,19 @@ pub(crate) fn roundtrip_block_symbol_trace(
     trace: &[BlockSymbolToken],
 ) -> Result<BlockSymbolTraceRoundtrip> {
     let mut encode_cdfs = BlockSymbolTraceCdfRows::from_defaults();
+    // One operation per CDF symbol and per bypass-literal bit, plus headroom.
+    let trace_cost = trace
+        .iter()
+        .map(|token| match token {
+            BlockSymbolToken::Bypass { width, .. } => *width as usize,
+            _ => 1,
+        })
+        .sum::<usize>();
+    let budget = trace_cost.saturating_add(BLOCK_SYMBOL_TRACE_BUDGET_HEADROOM);
     let mut encoder = SymbolEncoder::with_config(
         SymbolEncoderConfig::new()
-            .with_max_output_bytes(BLOCK_SYMBOL_TRACE_BUDGET)
-            .with_max_operations(BLOCK_SYMBOL_TRACE_BUDGET),
+            .with_max_output_bytes(budget)
+            .with_max_operations(budget),
     );
     for (index, token) in trace.iter().enumerate() {
         match token {
@@ -317,15 +330,23 @@ pub(crate) fn roundtrip_block_symbol_trace(
         })?;
     for (index, token) in trace.iter().enumerate() {
         let decoded = match token {
-            BlockSymbolToken::Bypass { width, .. } => {
-                // A bypass literal carries no CDF; `read_literal` of what
-                // `write_literal` wrote is deterministic, so the decoded value is
-                // returned directly (the roundtrip tests assert it equals the
-                // encoded value).
-                decoder
+            BlockSymbolToken::Bypass { width, value } => {
+                // A bypass literal carries no CDF. Verify the FULL-WIDTH value
+                // roundtrips (the `decoded_symbols` view below truncates to u8, so
+                // this u32 check is what proves a wide literal — e.g. the golomb
+                // tail — was reproduced exactly, not just its low byte).
+                let actual = decoder
                     .read_literal(*width)
-                    .map_err(|source| Error::BlockSymbolTraceSymbolRead { index, source })?
-                    as u8
+                    .map_err(|source| Error::BlockSymbolTraceSymbolRead { index, source })?;
+                if actual != *value {
+                    return Err(Error::BlockSymbolTraceLiteralMismatch {
+                        index,
+                        width: *width,
+                        expected: *value,
+                        actual,
+                    });
+                }
+                actual as u8
             }
             _ => {
                 let decoded = decoder
@@ -719,5 +740,22 @@ mod tests {
 
         assert_eq!(first.bytes(), second.bytes());
         assert_eq!(first.decoded_symbols(), second.decoded_symbols());
+    }
+
+    #[test]
+    fn wide_bypass_literals_roundtrip_full_width() {
+        // Literals wider than 8 bits (the golomb tail uses up to L(32)) must
+        // roundtrip their FULL value: the budget scales with the bit width, and
+        // the full-width check rejects truncation — so `roundtrip_block_symbol_trace`
+        // returning Ok proves the exact value was reproduced, not just its low byte.
+        let mut trace = compose_minimal_intra_dc_all_zero_block_trace().unwrap();
+        trace.push(BlockSymbolToken::bypass(16, 0x1234));
+        trace.push(BlockSymbolToken::bypass(32, 0xDEAD_BEEF));
+        let proof = roundtrip_block_symbol_trace(&trace).unwrap();
+
+        assert!(!proof.bytes().is_empty());
+        // The u8 view truncates the wide values to their low byte; the Ok above is
+        // the full-width proof.
+        assert_eq!(proof.decoded_symbols().last(), Some(&0xEFu8));
     }
 }
