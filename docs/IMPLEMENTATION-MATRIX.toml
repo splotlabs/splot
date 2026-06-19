@@ -4337,6 +4337,39 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-INTRA-BLOCK-TRACE-CODED-DC"
+name = "Encoder minimal coded intra block trace"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20.5.3", "5.20.7.27", "8.2", "8.3.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/block_symbol_trace.rs"
+openspec_change = "encoder-block-trace-coded-dc"
+tracking_issue = ""
+owner = "encoder"
+risk = "medium"
+notes = "Private, non-emitting encoder minimal *coded* (non-all-zero) intra block trace extending `block_symbol_trace`. `compose_minimal_intra_dc_coded_block_trace` returns the ordered AV2 §5.20.5.3 mode-info prefix (`y_mode_set`, `y_mode_index`, `uv_mode`), then the coded luma §5.20.7.27 `residual()` for a single nonzero DC coefficient — `txb_skip`=0, `eob_pt_16`=0, `coeff_base_eob`=magnitude-1, `dc_sign` — then the all-zero U and V `txb_skip` symbols, in `residual()` plane order. For a DC value +1 the nine-symbol trace is [0,0,0,0,0,0,0,1,1]. Adds a `pub(crate)` `luma_dc_coded_tokens(coeff_cdf_q_ctx, magnitude, negative)` accessor mirroring the tokenizer's coded DC path, guarded by the `coded_dc_tokens_match_tokenizer` equivalence test against `tokenize_coefficients`. The coded `txb_skip`=0 reuses the existing luma `txb_skip` row; the unified `roundtrip_block_symbol_trace` adds the §8.3.2 neutral luma `eob_pt_16` (DEFAULT_EOB_PT_16_CDF[0][0]), `coeff_base_lf_eob` (DEFAULT_COEFF_BASE_LF_EOB_CDF[0][0][0]), and `dc_sign` (DEFAULT_DC_SIGN_CDF[0][0][0][0]) rows, routes each token to its scoped row, and proves the nine-symbol sequence writes through one in-tree AV2 §8.2 SymbolEncoder and decodes back through one SymbolDecoder with shared CDF state. This row does not claim multi-coefficient blocks, coefficient base-range (`coeff_br`)/higher-frequency/sign-golomb extension, chroma coefficients, CfL/CCTX, partition syntax, tile CDF lifecycle, tile-body emission, packet output, CLI success, or Baseline Encoder Profile v1 output."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/block_symbol_trace.rs::tests::composes_coded_block_trace_in_order", "crates/splot-encode/src/block_symbol_trace.rs::tests::coded_block_trace_roundtrips_through_one_coder", "crates/splot-encode/src/block_symbol_trace.rs::tests::coded_block_roundtrip_is_deterministic", "crates/splot-encode/src/coefficient_tokenization.rs::tests::coded_dc_tokens_match_tokenizer"]
+commands = ["cargo test -p splot-encode block_symbol_trace --locked", "cargo test -p splot-encode coefficient_tokenization --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-RECON-DEPENDENCY"
 name = "Encoder reconstruction dependency boundary"
 category = "encoder"
