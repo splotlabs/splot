@@ -9,29 +9,40 @@
 //! modifies up to `maxWidthNeg` samples on the previous (`p`) side and
 //! `Max(maxWidthNeg, maxWidthPos)` samples on the current (`q`) side using the
 //! `deltaM2` ramp, the `Q_Thresh_Mults` / `W_Mult` § 9.2 weights, `Round2`, and
-//! the § 4.8 `Clip1` clamp; and the § 7.17.3 filter-maximum-width derivation
+//! the § 4.8 `Clip1` clamp; the § 7.17.3 filter-maximum-width derivation
 //! ([`deblock_filter_max_width`], `#s-7-17-3`), which produces the per-side
-//! widths the sample filter consumes.
+//! widths the sample filter consumes; and the § 7.17.5 adaptive filter strength
+//! ([`deblock_adaptive_filter_strength`] / [`deblock_side_threshold_index`],
+//! `#s-7-17-5`), which produces the `qThr` / `side` thresholds from the filter
+//! level.
 //!
 //! Feature tracking: `RECON-DEBLOCK-SAMPLE-FILTER`,
-//! `RECON-DEBLOCK-FILTER-MAX-WIDTH`.
+//! `RECON-DEBLOCK-FILTER-MAX-WIDTH`, `RECON-DEBLOCK-ADAPTIVE-STRENGTH`.
 //!
-//! Scope: this is the § 7.17.7.1 sample filter alone, over a caller-supplied
-//! perpendicular sample line. The § 7.17.1 / § 7.17.2 edge traversal, the
-//! § 7.17.3-§ 7.17.7.2 filter-size / strength / choice derivation (which need the
-//! `DeblockingTxSizes`, filter levels, and block state), and the
-//! `Q_Thresh_Mults[width - 1]` / `W_Mult[maxWidth - 1]` table lookups stay with
-//! the caller — the caller passes the resolved `q_thr`, the per-side widths, and
-//! the three pre-indexed table weights as scalars, exactly as the other
-//! `splot-recon` primitives take caller-resolved spec-derived values. It does not
-//! read frame, segment, or tile state or wire into the runtime decode path.
+//! Scope: these are the per-edge sample math and the parameter derivations over
+//! caller-resolved spec-derived values. The § 7.17.1 / § 7.17.2 edge traversal,
+//! the § 7.17.6 filter-level selection and § 7.17.7.2 filter choice (which need
+//! the `DeblockingTxSizes`, segment/qindex maps, and block state), and the
+//! `Q_Thresh_Mults` / `W_Mult` / `Side_Thresholds` § 9.2 table lookups stay with
+//! the caller — it passes the resolved widths, weights, level, and pre-indexed
+//! threshold as scalars, exactly as the other `splot-recon` primitives take
+//! caller-resolved spec-derived values. It does not read frame, segment, or tile
+//! state or wire into the runtime decode path.
 
+use crate::dequant::quantizer_value;
 use crate::intra_dc_math::validate_sample_type;
 use crate::{BitDepth, ReconError, ReconSample, Result};
 
 /// AV2 § 3 `DF_SHIFT`: the deblocking-filter ramp shift
 /// (`docs/spec/av2/1.0.0/03-symbols.md`, `DF_SHIFT = 8`).
 const DF_SHIFT: u32 = 8;
+
+/// AV2 § 3 `MAX_SIDE_TABLE`: the length of the § 9.2 `Side_Thresholds` array, the
+/// upper bound (exclusive) on the § 7.17.5 `qInd`.
+const MAX_SIDE_TABLE: usize = 296;
+
+/// AV2 § 3 `QUANT_TABLE_BITS`: the § 7.14.4 / § 7.17.5 quantizer-table shift.
+const QUANT_TABLE_BITS: u32 = 3;
 
 /// AV2 § 3 `MAX_DBL_FLT_LEN`: the maximum deblocking-filter length, i.e. the
 /// length of `Q_Thresh_Mults` / `W_Mult` and the maximum per-side width.
@@ -224,6 +235,56 @@ pub const fn deblock_filter_max_width(
 // non-super-block `maxWidthNeg == 8`, as a compile-time § 7.17.3 spec contract.
 const _MAX_WIDTH_CONST_CHECK: () =
     assert!(matches!(deblock_filter_max_width(32, false, false), (8, 8)));
+
+/// Derives the AV2 § 7.17.5 `qInd`, the index into the § 9.2 `Side_Thresholds`
+/// array (`docs/spec/av2/1.0.0/07-decoding-process.md#s-7-17-5`):
+/// `Clip3(0, MAX_SIDE_TABLE - 1, lvl - 24 * (BitDepth - 8))`.
+///
+/// `lvl` is the § 7.17.6 adaptive filter level. The caller uses the result to
+/// look up `Side_Thresholds[qInd]` and pass it as the `side_threshold` of
+/// [`deblock_adaptive_filter_strength`] (`Side_Thresholds` lives in `splot-core`'s
+/// generated § 9.2 tables, which `splot-recon` cannot reach). This is a total
+/// `const fn`.
+pub const fn deblock_side_threshold_index(lvl: u32, bit_depth: BitDepth) -> usize {
+    let q = lvl as i64 - 24 * (bit_depth.bits() as i64 - 8);
+    if q < 0 {
+        0
+    } else if q > (MAX_SIDE_TABLE as i64 - 1) {
+        MAX_SIDE_TABLE - 1
+    } else {
+        q as usize
+    }
+}
+
+/// Derives the AV2 § 7.17.5 adaptive filter strength outputs `(qThr, side)` from
+/// the filter level `lvl`, the caller-resolved `side_threshold =
+/// Side_Thresholds[qInd]` (with `qInd` from [`deblock_side_threshold_index`]), and
+/// the active `bit_depth`
+/// (`docs/spec/av2/1.0.0/07-decoding-process.md#s-7-17-5`).
+///
+/// `qThr = Round2(get_q(lvl, 0), QUANT_TABLE_BITS) >> 6` (the § 7.14.2
+/// quantizer-value lookup; [`quantizer_value`](crate::quantizer_value)), and
+/// `side = Max(side_threshold + (1 << (12 - BitDepth)), 0) >> (13 - BitDepth)`.
+/// `qThr` is the threshold the § 7.17.7.1 sample filter
+/// ([`deblock_sample_filter`]) takes as `q_thr`; `side` is the side threshold the
+/// § 7.17.7.2 filter-choice process uses.
+///
+/// The computation is total and panic-free: the quantizer lookup is total, and
+/// the `i64` arithmetic with `bit_depth` shifts (`12 - BitDepth` and
+/// `13 - BitDepth` are positive for the 8- and 10-bit depths) cannot overflow.
+pub fn deblock_adaptive_filter_strength(
+    lvl: u32,
+    side_threshold: i32,
+    bit_depth: BitDepth,
+) -> (i32, i32) {
+    let bits = i64::from(bit_depth.bits());
+    // qThr = Round2(get_q(lvl, 0), QUANT_TABLE_BITS) >> 6.
+    let get_q = i64::from(quantizer_value(lvl, 0, bit_depth));
+    let q_thr = ((get_q + (1 << (QUANT_TABLE_BITS - 1))) >> QUANT_TABLE_BITS) >> 6;
+    // side = Max(Side_Thresholds[qInd] + (1 << (12 - BitDepth)), 0) >> (13 - BitDepth).
+    let side = (i64::from(side_threshold) + (1i64 << (12 - bits))).max(0) >> (13 - bits);
+    (q_thr as i32, side as i32)
+}
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
@@ -428,5 +489,49 @@ mod tests {
         assert_eq!(deblock_filter_max_width(64, true, true), (2, 4)); // chroma: cap 2
         assert_eq!(deblock_filter_max_width(8, true, true), (2, 3)); // chroma: cap 2 < 3
         assert_eq!(deblock_filter_max_width(4, false, true), (1, 1)); // cap 6 but pos 1
+    }
+
+    #[test]
+    fn side_threshold_index_clips_to_table_range() {
+        // 8-bit: qInd = lvl (no offset), clamped to 0..=295.
+        assert_eq!(deblock_side_threshold_index(10, BitDepth::Eight), 10);
+        assert_eq!(deblock_side_threshold_index(0, BitDepth::Eight), 0);
+        assert_eq!(deblock_side_threshold_index(400, BitDepth::Eight), 295);
+        // 10-bit: qInd = lvl - 48, clamped (negative -> 0).
+        assert_eq!(deblock_side_threshold_index(10, BitDepth::Ten), 0); // 10 - 48 < 0
+        assert_eq!(deblock_side_threshold_index(100, BitDepth::Ten), 52); // 100 - 48
+    }
+
+    #[test]
+    fn adaptive_filter_strength_matches_spec() {
+        // `side` is independent of get_q: Max(threshold + (1 << (12 - bits)), 0)
+        // >> (13 - bits). 8-bit: +16 >> 5; 10-bit: +4 >> 3.
+        assert_eq!(
+            deblock_adaptive_filter_strength(40, 100, BitDepth::Eight).1,
+            3
+        ); // (100+16)>>5
+        assert_eq!(
+            deblock_adaptive_filter_strength(40, -16, BitDepth::Eight).1,
+            0
+        ); // (0)>>5
+        assert_eq!(
+            deblock_adaptive_filter_strength(40, 1678, BitDepth::Eight).1,
+            52
+        ); // (1694)>>5
+        assert_eq!(
+            deblock_adaptive_filter_strength(40, 100, BitDepth::Ten).1,
+            13
+        ); // (104)>>3
+
+        // `qThr` composes get_q with Round2(_, 3) >> 6; verify against the
+        // independently-tested quantizer_value for several levels and depths.
+        for &(lvl, bd) in &[
+            (40u32, BitDepth::Eight),
+            (128, BitDepth::Eight),
+            (200, BitDepth::Ten),
+        ] {
+            let expected = (((i64::from(quantizer_value(lvl, 0, bd)) + 4) >> 3) >> 6) as i32;
+            assert_eq!(deblock_adaptive_filter_strength(lvl, 0, bd).0, expected);
+        }
     }
 }

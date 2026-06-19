@@ -148,9 +148,12 @@ filter has also landed: the § 7.17.7.1 deblocking sample filter
 caller-resolved per-side widths and `Q_Thresh_Mults`/`W_Mult` weights, and the
 § 7.17.3 filter-maximum-width derivation (`deblock_filter_max_width`;
 `RECON-DEBLOCK-FILTER-MAX-WIDTH`) produces those `maxWidthNeg`/`maxWidthPos`
-widths from the filter size, plane, and super-block-edge flag, leaving the
-§ 7.17 edge traversal and filter-strength derivation (and CDEF, CCSO, loop
-restoration, GDF) to future rows. `splot-decode`
+widths from the filter size, plane, and super-block-edge flag, and the § 7.17.5
+adaptive filter strength (`deblock_adaptive_filter_strength` /
+`deblock_side_threshold_index`; `RECON-DEBLOCK-ADAPTIVE-STRENGTH`) derives the
+`qThr` / `side` thresholds from the filter level, leaving the § 7.17.6
+filter-level selection, the § 7.17 edge traversal, and the § 7.17.7.2 filter
+choice (and CDEF, CCSO, loop restoration, GDF) to future rows. `splot-decode`
 also has crate-private tile coefficient state buffers
 (`DECODE-TILE-COEFF-STATE-BUFFERS`): transform-block-local § 5.20.7.27
 `Level[]` / `QuantSign[]` arrays and three-plane above/left level/DC context
