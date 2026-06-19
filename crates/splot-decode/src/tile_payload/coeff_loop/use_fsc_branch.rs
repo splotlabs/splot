@@ -7,7 +7,8 @@
 //! `DECODE-COEFF-USE-FSC-CONDITION-HANDOFF` and
 //! `DECODE-COEFF-USE-FSC-SHARED-FACTS-HANDOFF` and
 //! `DECODE-COEFF-CDF-Q-CONTEXT-HANDOFF` and
-//! `DECODE-COEFF-FRAME-FACTS-HANDOFF`.
+//! `DECODE-COEFF-FRAME-FACTS-HANDOFF` and
+//! `DECODE-COEFF-PARITY-TCQ-HANDOFF`.
 
 use splot_core::symbol::SymbolDecoder;
 use splot_core::tables::conversion::{TX_HEIGHT, TX_WIDTH};
@@ -20,6 +21,7 @@ use super::fsc_quant_pass::{
     CoeffFscBranch, CoeffFscBranchError, CoeffFscBranchTxSizeInput,
     CoeffFscBranchTxSizeNonZeroInput, apply_coeff_fsc_branch_from_tx_size,
 };
+use super::max_level::CoeffTransformClass;
 use super::ordinary_pass::geometry::{
     CoeffOrdinaryBranchLosslessBaseConfig, CoeffOrdinaryBranchLosslessInput,
     CoeffOrdinaryBranchLosslessNonZeroInput, CoeffOrdinaryTxSizeGeometryConfig,
@@ -219,10 +221,6 @@ pub(crate) struct CoeffUseFscFrameOrdinaryFacts {
     pub(crate) luma_tx_type: usize,
     /// Caller-resolved chroma-inter `TxTypes[y4][x4]`.
     pub(crate) chroma_inter_tx_type: usize,
-    /// Whether hidden parity is active for this transform block.
-    pub(crate) parity_hiding: bool,
-    /// Whether TCQ is active for this transform block.
-    pub(crate) use_tcq: bool,
 }
 
 /// Shared caller-resolved facts plus parsed frame facts for a nonzero block.
@@ -245,6 +243,24 @@ impl CoeffUseFscFrameFactsNonZeroInput {
             .ok_or(CoeffUseFscBranchError::InvalidSegmentId {
                 segment_id: self.block.segment_id,
             })?;
+        let use_fsc = CoeffUseFscConditionFacts {
+            enable_fsc: self.frame.enable_fsc(),
+            plane_tx_type: self.block.plane_tx_type,
+            plane: self.block.geometry.plane,
+            fsc_mode: self.block.fsc_mode,
+            is_inter: self.block.is_inter,
+        }
+        .use_fsc();
+        let parity_hiding = self.frame.allow_parity_hiding()
+            && !lossless
+            && self.block.geometry.plane == 0
+            && self.block.plane_tx_type != IDTX;
+        let use_tcq = self.frame.allow_tcq()
+            && self.block.geometry.plane == 0
+            && !lossless
+            && CoeffTransformClass::from_plane_tx_type(self.block.plane_tx_type)
+                == CoeffTransformClass::TwoD
+            && !use_fsc;
         Ok(CoeffUseFscBaseQFactsNonZeroInput {
             facts: CoeffUseFscBaseQFacts {
                 geometry: self.block.geometry,
@@ -261,8 +277,8 @@ impl CoeffUseFscFrameFactsNonZeroInput {
                 angle_delta_uv: self.ordinary.angle_delta_uv,
                 luma_tx_type: self.ordinary.luma_tx_type,
                 chroma_inter_tx_type: self.ordinary.chroma_inter_tx_type,
-                parity_hiding: self.ordinary.parity_hiding,
-                use_tcq: self.ordinary.use_tcq,
+                parity_hiding,
+                use_tcq,
             },
             lossless,
         })
