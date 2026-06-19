@@ -430,3 +430,70 @@ fn rejects_wrong_coefficient_count() {
         }
     ));
 }
+
+#[test]
+fn chroma_u_dc_coded_coeff_tokens_emit_chroma_contexts() {
+    // The coded chroma U CDF tokens use the §8.3.2 chroma contexts: U `txb_skip`
+    // bank 0 ctx 6, eob ctx 2, and the chroma `CoeffBaseLfEobUv` CDF. No sign
+    // token — the chroma DC sign is an `L(1)` bypass literal handled by the trace.
+    let tokens = chroma_u_dc_coded_coeff_tokens(0, 3).unwrap();
+    assert_eq!(tokens.len(), 3);
+    assert_eq!(
+        tokens[0].selector(),
+        CoefficientCdfRowSelector::TxbSkip {
+            coeff_cdf_q_ctx: 0,
+            plane_type: 0,
+            tx_size: 0,
+            ctx: 6,
+        }
+    );
+    assert_eq!(tokens[0].symbol(), 0);
+    assert_eq!(
+        tokens[1].selector(),
+        CoefficientCdfRowSelector::EobPt16 {
+            coeff_cdf_q_ctx: 0,
+            eob_ctx: 2,
+        }
+    );
+    assert_eq!(
+        tokens[2].selector(),
+        CoefficientCdfRowSelector::CoeffBaseLfEobUv {
+            coeff_cdf_q_ctx: 0,
+            ctx: 0,
+        }
+    );
+    assert_eq!(tokens[2].symbol(), 2); // magnitude 3 → coeff_base_eob = 2
+}
+
+#[test]
+fn chroma_u_dc_coded_coeff_tokens_roundtrip_through_generic_helper() {
+    // The chroma U CDF tokens roundtrip through `roundtrip_entropy_tokens` too
+    // (its CDF-row router accepts the chroma U/eob/UV selectors), so the accessor
+    // is usable in both the generic and the block-trace proof paths.
+    let tokens = chroma_u_dc_coded_coeff_tokens(0, 3).unwrap();
+    let proof = roundtrip_entropy_tokens(&tokens).unwrap();
+
+    // txb_skip=0, eob_pt_16=0, coeff_base_eob=2 (magnitude 3).
+    assert_eq!(proof.decoded_symbols(), &[0, 0, 2]);
+    assert_eq!(proof.symbol_count(), 3);
+}
+
+#[test]
+fn chroma_u_dc_coded_coeff_tokens_reject_out_of_tier_magnitude() {
+    // Magnitude 0 (all-zero) and >=5 (needs coeff_br/golomb) are rejected with a
+    // typed error rather than a debug-only assertion.
+    for magnitude in [0u32, 5, 28] {
+        let err = chroma_u_dc_coded_coeff_tokens(0, magnitude).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                Error::CoefficientTokenizationUnsupportedChromaMagnitude {
+                    plane: PlaneId::U,
+                    max_magnitude: 4,
+                    ..
+                }
+            ),
+            "magnitude {magnitude}"
+        );
+    }
+}

@@ -445,6 +445,19 @@ pub enum Error {
         max_magnitude: u32,
     },
 
+    /// A chroma coefficient magnitude is outside the current coded-chroma tier.
+    #[error(
+        "encoder coded chroma coefficient tokenization for plane {plane:?} magnitude {magnitude} is outside the current base tier (1..={max_magnitude})"
+    )]
+    CoefficientTokenizationUnsupportedChromaMagnitude {
+        /// Chroma plane whose tokenization was requested.
+        plane: PlaneId,
+        /// Unsupported absolute coefficient magnitude.
+        magnitude: u32,
+        /// Maximum magnitude covered by the current coded-chroma base tier.
+        max_magnitude: u32,
+    },
+
     /// Coefficient-tokenization allocation failed.
     #[error("failed to allocate encoder coefficient tokenization storage for {context}")]
     CoefficientTokenizationAllocationFailed {
