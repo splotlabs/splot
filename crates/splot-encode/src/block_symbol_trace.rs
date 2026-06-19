@@ -1,32 +1,55 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Private encoder intra-block mode-trace composition.
+//! Private encoder block-symbol trace composition.
 //!
-//! This module advances `ENC-INTRA-BLOCK-MODE-TRACE`. It composes the ordered
-//! AV2 § 5.20.5.3 mode-info prefix for the current minimal DC intra block —
-//! `y_mode_set`, `y_mode_index`, then `uv_mode` — by reusing the merged luma and
-//! chroma mode emitters, and proves the combined sequence roundtrips through one
-//! in-tree AV2 § 8.2 symbol encoder/decoder with shared CDF state
+//! This module is the home for the growing ordered block-symbol trace. It
+//! advances `ENC-INTRA-BLOCK-MODE-TRACE` (the AV2 § 5.20.5.3 mode-info prefix
+//! `y_mode_set`, `y_mode_index`, `uv_mode`) and `ENC-INTRA-BLOCK-TRACE-LUMA-SKIP`
+//! (the unified trace extended with the first `residual()` symbol, the luma
+//! `txb_skip` / § 5.20.7.27 `all_zero`), reusing the merged mode emitters and the
+//! coefficient tokenization's luma all-zero token
 //! (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3`).
 //!
 //! AV2 § 5.20.5.3 `intra_frame_mode_info()` calls `read_intra_y_mode()` then
-//! `read_intra_uv_mode()` (before `residual()`), so the mode-info prefix is the
-//! luma mode tokens followed by the chroma `uv_mode` token. The coefficient
-//! symbols that follow in `residual()` are out of scope here and join the trace
-//! in a later change.
+//! `read_intra_uv_mode()` before `residual()`, so the ordered trace is the mode
+//! prefix followed by the residual symbols; the unified `BlockSymbolToken` spans
+//! both kinds, and `roundtrip_block_symbol_trace` proves the combined sequence
+//! through one § 8.2 coder with shared CDF state, routing each token to its scoped
+//! CDF row from `splot-core` defaults.
 //!
-//! It does not emit coefficient or all-zero symbols, partition syntax, tile
-//! payloads, tile CDF lifecycle, packets, a public encoder API, or modes beyond
-//! the DC minimal tier. It is the home for the growing ordered block-symbol
-//! trace.
+//! It does not emit chroma `txb_skip`, non-all-zero luma coefficients, partition
+//! syntax, tile CDF lifecycle, packets, a public encoder API, or modes beyond the
+//! DC minimal tier.
 
 #![allow(dead_code)]
 
+use splot_core::symbol::{Symbol, SymbolDecoder, SymbolDecoderConfig};
+use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig};
+use splot_core::tables::cdf::{
+    DEFAULT_TXB_SKIP_CDF, DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF, DEFAULT_Y_MODE_INDEX_CDF,
+    DEFAULT_Y_MODE_SET_CDF,
+};
+
+use crate::coefficient_tokenization::{
+    CoefficientCdfRowSelector, CoefficientEntropyToken, luma_all_zero_token,
+};
 use crate::error::{Error, Result};
 use crate::intra_mode_emission::{
-    IntraModeToken, emit_minimal_dc_chroma_uv_mode, emit_minimal_dc_luma_intra_mode,
+    IntraModeCdfRowSelector, IntraModeToken, emit_minimal_dc_chroma_uv_mode,
+    emit_minimal_dc_luma_intra_mode,
 };
+
+const Y_MODE_SET_CDF_ROW_LEN: usize = 5;
+const INTRA_MODE_CDF_ROW_LEN: usize = 9;
+const TXB_SKIP_CDF_ROW_LEN: usize = 3;
+const TILE_ORIGIN_Y_MODE_INDEX_CTX: usize = 0;
+const NON_DIRECTIONAL_UV_MODE_CTX: usize = 0;
+const MINIMAL_COEFF_CDF_Q_CTX: usize = 0;
+const LUMA_PLANE_TYPE: usize = 0;
+const TX_SIZE_4X4_CTX: usize = 0;
+const TXB_SKIP_CTX_NEUTRAL: usize = 0;
+const BLOCK_SYMBOL_TRACE_BUDGET: usize = 32;
 
 /// Composes the ordered AV2 § 5.20.5.3 intra-block mode-info prefix
 /// (`y_mode_set`, `y_mode_index`, `uv_mode`) for the current minimal DC subset.
@@ -48,6 +71,181 @@ pub(crate) fn compose_minimal_intra_dc_block_mode_trace() -> Result<Vec<IntraMod
     trace.extend_from_slice(luma.tokens());
     trace.extend_from_slice(uv.tokens());
     Ok(trace)
+}
+
+/// One symbol of the ordered block-symbol trace, spanning the intra-mode and
+/// coefficient token kinds that a coded tile body interleaves through one coder.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum BlockSymbolToken {
+    /// An AV2 § 5.20.5 mode-info token (`y_mode_set` / `y_mode_index` / `uv_mode`).
+    Mode(IntraModeToken),
+    /// An AV2 § 5.20.7 coefficient token (here, the luma `txb_skip` all-zero).
+    Coeff(CoefficientEntropyToken),
+}
+
+impl BlockSymbolToken {
+    /// Returns the raw AV2 § 8.2 symbol value.
+    pub(crate) const fn symbol(self) -> u8 {
+        match self {
+            Self::Mode(token) => token.symbol(),
+            Self::Coeff(token) => token.symbol(),
+        }
+    }
+}
+
+/// Composes the ordered minimal intra DC all-zero block trace: the AV2 § 5.20.5.3
+/// mode-info prefix (`y_mode_set`, `y_mode_index`, `uv_mode`) followed by the
+/// first `residual()` symbol, the luma `txb_skip` (§ 5.20.7.27 `all_zero`).
+pub(crate) fn compose_minimal_intra_dc_all_zero_block_trace() -> Result<Vec<BlockSymbolToken>> {
+    let modes = compose_minimal_intra_dc_block_mode_trace()?;
+    let total = modes
+        .len()
+        .checked_add(1)
+        .ok_or(Error::BlockSymbolTraceAllocationFailed {
+            context: "all-zero block trace length",
+        })?;
+    let mut trace = Vec::new();
+    trace
+        .try_reserve_exact(total)
+        .map_err(|_| Error::BlockSymbolTraceAllocationFailed {
+            context: "all-zero block trace",
+        })?;
+    trace.extend(modes.into_iter().map(BlockSymbolToken::Mode));
+    trace.push(BlockSymbolToken::Coeff(luma_all_zero_token(
+        MINIMAL_COEFF_CDF_Q_CTX,
+    )));
+    Ok(trace)
+}
+
+/// Result of proving a block-symbol trace through AV2 § 8.2 symbol bytes.
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) struct BlockSymbolTraceRoundtrip {
+    bytes: Vec<u8>,
+    decoded_symbols: Vec<u8>,
+    symbol_count: u64,
+}
+
+impl BlockSymbolTraceRoundtrip {
+    /// Returns finalized symbol payload bytes.
+    pub(crate) fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    /// Returns decoded token symbols in order.
+    pub(crate) fn decoded_symbols(&self) -> &[u8] {
+        &self.decoded_symbols
+    }
+
+    /// Returns the decoder's final symbol count.
+    pub(crate) const fn symbol_count(&self) -> u64 {
+        self.symbol_count
+    }
+}
+
+/// Writes a block-symbol trace through one § 8.2 symbol encoder and decodes it
+/// back through one symbol decoder, sharing CDF state across the whole sequence.
+pub(crate) fn roundtrip_block_symbol_trace(
+    trace: &[BlockSymbolToken],
+) -> Result<BlockSymbolTraceRoundtrip> {
+    let mut encode_cdfs = BlockSymbolTraceCdfRows::from_defaults();
+    let mut encoder = SymbolEncoder::with_config(
+        SymbolEncoderConfig::new()
+            .with_max_output_bytes(BLOCK_SYMBOL_TRACE_BUDGET)
+            .with_max_operations(BLOCK_SYMBOL_TRACE_BUDGET),
+    );
+    for (index, token) in trace.iter().enumerate() {
+        encoder
+            .write_symbol(
+                encode_cdfs.row_mut(*token, index)?,
+                Symbol::new(token.symbol()),
+            )
+            .map_err(|source| Error::BlockSymbolTraceSymbolWrite { index, source })?;
+    }
+    let output = encoder
+        .finish()
+        .map_err(|source| Error::BlockSymbolTraceSymbolEncodeFinish { source })?;
+    let bytes = output.into_bytes();
+
+    let mut decode_cdfs = BlockSymbolTraceCdfRows::from_defaults();
+    let mut decoder = SymbolDecoder::with_config(&bytes, SymbolDecoderConfig::new())
+        .map_err(|source| Error::BlockSymbolTraceSymbolDecodeInit { source })?;
+    let mut decoded_symbols = Vec::new();
+    decoded_symbols
+        .try_reserve_exact(trace.len())
+        .map_err(|_| Error::BlockSymbolTraceAllocationFailed {
+            context: "roundtrip decoded symbols",
+        })?;
+    for (index, token) in trace.iter().enumerate() {
+        let decoded = decoder
+            .read_symbol(decode_cdfs.row_mut(*token, index)?)
+            .map_err(|source| Error::BlockSymbolTraceSymbolRead { index, source })?
+            .get();
+        if decoded != token.symbol() {
+            return Err(Error::BlockSymbolTraceSymbolMismatch {
+                index,
+                expected: token.symbol(),
+                actual: decoded,
+            });
+        }
+        decoded_symbols.push(decoded);
+    }
+    let summary = decoder
+        .finish()
+        .map_err(|source| Error::BlockSymbolTraceSymbolDecodeFinish { source })?;
+
+    Ok(BlockSymbolTraceRoundtrip {
+        bytes,
+        decoded_symbols,
+        symbol_count: summary.symbol_count,
+    })
+}
+
+/// Unified scoped default-CDF rows for the minimal block-symbol trace, built
+/// directly from `splot-core` defaults so the trace module does not reach into
+/// the emitter modules' private CDF-row internals.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct BlockSymbolTraceCdfRows {
+    y_mode_set: [i32; Y_MODE_SET_CDF_ROW_LEN],
+    y_mode_index_tile_origin: [i32; INTRA_MODE_CDF_ROW_LEN],
+    uv_mode_non_directional: [i32; INTRA_MODE_CDF_ROW_LEN],
+    luma_txb_skip: [i32; TXB_SKIP_CDF_ROW_LEN],
+}
+
+impl BlockSymbolTraceCdfRows {
+    fn from_defaults() -> Self {
+        Self {
+            y_mode_set: DEFAULT_Y_MODE_SET_CDF,
+            y_mode_index_tile_origin: DEFAULT_Y_MODE_INDEX_CDF[TILE_ORIGIN_Y_MODE_INDEX_CTX],
+            uv_mode_non_directional: DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF
+                [NON_DIRECTIONAL_UV_MODE_CTX],
+            luma_txb_skip: DEFAULT_TXB_SKIP_CDF[MINIMAL_COEFF_CDF_Q_CTX][LUMA_PLANE_TYPE]
+                [TX_SIZE_4X4_CTX][TXB_SKIP_CTX_NEUTRAL],
+        }
+    }
+
+    fn row_mut(&mut self, token: BlockSymbolToken, index: usize) -> Result<&mut [i32]> {
+        match token {
+            BlockSymbolToken::Mode(mode) => match mode.selector() {
+                IntraModeCdfRowSelector::YModeSet => Ok(self.y_mode_set.as_mut_slice()),
+                IntraModeCdfRowSelector::YModeIndex {
+                    ctx: TILE_ORIGIN_Y_MODE_INDEX_CTX,
+                } => Ok(self.y_mode_index_tile_origin.as_mut_slice()),
+                IntraModeCdfRowSelector::UvModeCflNotAllowed {
+                    ctx: NON_DIRECTIONAL_UV_MODE_CTX,
+                } => Ok(self.uv_mode_non_directional.as_mut_slice()),
+                _ => Err(Error::BlockSymbolTraceUnsupportedSelector { index }),
+            },
+            BlockSymbolToken::Coeff(coeff) => match coeff.selector() {
+                CoefficientCdfRowSelector::TxbSkip {
+                    coeff_cdf_q_ctx: MINIMAL_COEFF_CDF_Q_CTX,
+                    plane_type: LUMA_PLANE_TYPE,
+                    tx_size: TX_SIZE_4X4_CTX,
+                    ctx: TXB_SKIP_CTX_NEUTRAL,
+                } => Ok(self.luma_txb_skip.as_mut_slice()),
+                _ => Err(Error::BlockSymbolTraceUnsupportedSelector { index }),
+            },
+        }
+    }
 }
 
 #[cfg(test)]
@@ -113,5 +311,60 @@ mod tests {
 
         assert_eq!(first.bytes(), second.bytes());
         assert_eq!(first.decoded_symbols(), second.decoded_symbols());
+    }
+
+    #[test]
+    fn composes_all_zero_block_trace_in_order() {
+        let trace = compose_minimal_intra_dc_all_zero_block_trace().unwrap();
+
+        assert_eq!(trace.len(), 4);
+        assert!(matches!(trace[0], BlockSymbolToken::Mode(_)));
+        assert!(matches!(trace[1], BlockSymbolToken::Mode(_)));
+        assert!(matches!(trace[2], BlockSymbolToken::Mode(_)));
+        assert!(matches!(trace[3], BlockSymbolToken::Coeff(_)));
+        if let BlockSymbolToken::Mode(token) = trace[0] {
+            assert_eq!(token.syntax(), IntraModeSyntax::YModeSet);
+        }
+        if let BlockSymbolToken::Mode(token) = trace[2] {
+            assert_eq!(token.syntax(), IntraModeSyntax::UvMode);
+        }
+        // y_mode_set=0, y_mode_index=0, uv_mode=0, luma all_zero=1.
+        assert_eq!(
+            trace.iter().map(|token| token.symbol()).collect::<Vec<_>>(),
+            vec![0, 0, 0, 1]
+        );
+    }
+
+    #[test]
+    fn unified_trace_roundtrips_through_one_coder() {
+        let trace = compose_minimal_intra_dc_all_zero_block_trace().unwrap();
+        let proof = roundtrip_block_symbol_trace(&trace).unwrap();
+
+        assert_eq!(proof.decoded_symbols(), &[0, 0, 0, 1]);
+        assert_eq!(proof.symbol_count(), 4);
+        assert!(!proof.bytes().is_empty());
+    }
+
+    #[test]
+    fn unified_roundtrip_is_deterministic() {
+        let trace = compose_minimal_intra_dc_all_zero_block_trace().unwrap();
+        let first = roundtrip_block_symbol_trace(&trace).unwrap();
+        let second = roundtrip_block_symbol_trace(&trace).unwrap();
+
+        assert_eq!(first.bytes(), second.bytes());
+        assert_eq!(first.decoded_symbols(), second.decoded_symbols());
+    }
+
+    #[test]
+    fn rejects_unsupported_unified_selector() {
+        // A luma txb_skip token at a non-minimal coefficient CDF q-context is
+        // outside the unified router's supported rows.
+        let unsupported = BlockSymbolToken::Coeff(luma_all_zero_token(1));
+        let err = roundtrip_block_symbol_trace(&[unsupported]).unwrap_err();
+
+        assert!(matches!(
+            err,
+            Error::BlockSymbolTraceUnsupportedSelector { index: 0 }
+        ));
     }
 }

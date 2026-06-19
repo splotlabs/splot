@@ -4271,6 +4271,39 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-INTRA-BLOCK-TRACE-LUMA-SKIP"
+name = "Encoder unified block-symbol trace with luma txb_skip"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20.5.3", "5.20.7.27", "8.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/block_symbol_trace.rs"
+openspec_change = "encoder-block-trace-luma-skip"
+tracking_issue = ""
+owner = "encoder"
+risk = "medium"
+notes = "Private, non-emitting encoder unified block-symbol trace extending the `block_symbol_trace` module with a `BlockSymbolToken` that spans the intra-mode and coefficient token kinds. `compose_minimal_intra_dc_all_zero_block_trace` returns the ordered AV2 §5.20.5.3 mode-info prefix (`y_mode_set`, `y_mode_index`, `uv_mode`) followed by the first `residual()` symbol — the luma `txb_skip` / §5.20.7.27 `all_zero` (symbol 1 for an all-zero block) — reusing the merged mode emitters and a new `pub(crate)` `luma_all_zero_token` accessor over `coefficient_tokenization`'s private `all_zero_token`. `roundtrip_block_symbol_trace` holds the mode and luma `txb_skip` CDF rows from `splot-core` defaults (DEFAULT_Y_MODE_SET_CDF, DEFAULT_Y_MODE_INDEX_CDF[0], DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF[0], DEFAULT_TXB_SKIP_CDF[0][0][0][0]), routes each token to its scoped §8.3.2 row, and proves the combined four-symbol sequence writes through one in-tree AV2 §8.2 SymbolEncoder and decodes back through one SymbolDecoder with shared CDF state; unsupported selectors are rejected with a typed error keyed by token index. This row does not claim chroma `txb_skip` (U/V all-zero), non-all-zero luma coefficients, partition syntax, tile CDF lifecycle, tile-body emission, packet output, CLI success, or Baseline Encoder Profile v1 output."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/block_symbol_trace.rs::tests::composes_all_zero_block_trace_in_order", "crates/splot-encode/src/block_symbol_trace.rs::tests::unified_trace_roundtrips_through_one_coder", "crates/splot-encode/src/block_symbol_trace.rs::tests::unified_roundtrip_is_deterministic", "crates/splot-encode/src/block_symbol_trace.rs::tests::rejects_unsupported_unified_selector", "crates/splot-encode/src/context.rs::tests::syntax_and_header_planning_do_not_enable_packet_output"]
+commands = ["cargo test -p splot-encode block_symbol_trace --locked", "cargo test -p splot-encode syntax_and_header_planning_do_not_enable_packet_output --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-RECON-DEPENDENCY"
 name = "Encoder reconstruction dependency boundary"
 category = "encoder"
