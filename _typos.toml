@@ -32,3 +32,5 @@ muh = "muh"  # metadata unit header prefix: muh_layer_idc / muh_payload_size / .
 paeth = "paeth"  # PAETH_PRED / AV2 §7.13.2.2 basic intra prediction mode and API names
 Paeth = "Paeth"  # Rust type names for PAETH prediction helpers
 PAETH = "PAETH"  # AV2 PAETH_PRED mode name and feature identifiers
+thr = "thr"  # qThr / q_thr — AV2 §7.17.7 deblocking-filter threshold variable
+Thr = "Thr"  # qThr / sideThr — AV2 §7.17.7 deblocking-filter threshold variables

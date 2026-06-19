@@ -566,6 +566,25 @@ pub enum ReconError {
         /// Supplied secondary transform type (`sec_tx_type`).
         sec_tx_type: usize,
     },
+    /// A § 7.17.7.1 deblocking sample filter per-side width was not in `1..=8`.
+    DeblockFilterInvalidWidth {
+        /// Supplied previous-side maximum width (`maxWidthNeg`).
+        max_width_neg: usize,
+        /// Supplied current-side maximum width (`maxWidthPos`).
+        max_width_pos: usize,
+    },
+    /// A § 7.17.7.1 deblocking sample filter line did not contain the previous-
+    /// and current-side samples the filter reads and writes around `boundary`.
+    DeblockFilterLineTooShort {
+        /// Supplied current-side base index (`boundary`).
+        boundary: usize,
+        /// Supplied previous-side maximum width (`maxWidthNeg`).
+        max_width_neg: usize,
+        /// Derived filter width (`Max(maxWidthNeg, maxWidthPos)`).
+        width: usize,
+        /// Supplied sample-line length.
+        len: usize,
+    },
     /// A § 7.14.4 dequantization block had an unsupported transform shape.
     InvalidDequantBlockShape {
         /// Supplied dequantized transform-block width.
@@ -1092,6 +1111,22 @@ impl fmt::Display for ReconError {
             } => write!(
                 f,
                 "invalid secondary transform params: n {n}, kernel {kernel}, sec_tx_type {sec_tx_type}"
+            ),
+            Self::DeblockFilterInvalidWidth {
+                max_width_neg,
+                max_width_pos,
+            } => write!(
+                f,
+                "invalid deblocking filter widths: neg {max_width_neg}, pos {max_width_pos}; expected each in 1..=8"
+            ),
+            Self::DeblockFilterLineTooShort {
+                boundary,
+                max_width_neg,
+                width,
+                len,
+            } => write!(
+                f,
+                "deblocking filter line too short: boundary {boundary}, max_width_neg {max_width_neg}, width {width}, len {len}"
             ),
             Self::InvalidDequantBlockShape {
                 tx_width,

@@ -141,7 +141,13 @@ scans), a prerequisite for the coefficient decode loop and § 7.14.4 coefficient
 placement. Its § 8.3.2 `get_tx_class` companion (`tx_class`;
 `RECON-GET-TX-CLASS`) is available too: a `const fn` mapping a `PlaneTxType` to the
 `TransformClass` that selects the scan (the vertical-only and horizontal-only
-transforms to `Vertical`/`Horizontal`, everything else to `TwoD`). `splot-decode`
+transforms to `Vertical`/`Horizontal`, everything else to `TwoD`). The first loop
+filter has also landed: the § 7.17.7.1 deblocking sample filter
+(`deblock_sample_filter`; `RECON-DEBLOCK-SAMPLE-FILTER`) applies the per-edge
+`deltaM2` ramp over a caller-supplied perpendicular sample line and
+caller-resolved per-side widths and `Q_Thresh_Mults`/`W_Mult` weights, leaving the
+§ 7.17 edge traversal and filter-strength derivation (and CDEF, CCSO, loop
+restoration, GDF) to future rows. `splot-decode`
 also has crate-private tile coefficient state buffers
 (`DECODE-TILE-COEFF-STATE-BUFFERS`): transform-block-local § 5.20.7.27
 `Level[]` / `QuantSign[]` arrays and three-plane above/left level/DC context
