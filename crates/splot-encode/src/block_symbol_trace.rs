@@ -62,6 +62,8 @@ use crate::coefficient_tokenization::{
     coeff_base_lf_eob_token, coeff_base_lf_luma_context, coeff_base_lf_token, eob_pt_16_token,
     luma_all_zero_token, luma_dc_coded_tokens, luma_dc_golomb_level_tokens, luma_dc_sign_token,
 };
+use splot_recon::{TransformClass, coefficient_scan_order};
+
 use crate::error::{Error, Result};
 use crate::intra_mode_emission::{
     IntraModeCdfRowSelector, IntraModeToken, emit_minimal_dc_chroma_uv_mode,
@@ -110,9 +112,11 @@ const COEFF_BASE_LF_CTX_EOB2_DC: usize = 1;
 const COEFF_BASE_LF_TCQ_CTX_NEUTRAL: usize = 0;
 const COEFF_BASE_LF_CDF_ROW_LEN: usize = 7;
 // The minimal eob=2 block's coefficient levels: a single AC of level 1 at scan
-// pos 1 (raster pos 1 in a 4x4) and a zero DC.
+// index 1 and a zero DC at scan index 0. The AC's raster position is derived from
+// the AV2 2D scan order (`scan[1] = 4` in the 4x4 order `[0, 4, 1, ...]`, i.e.
+// row 1 col 0), not assumed equal to the scan index.
 const EOB2_AC_LEVEL: u8 = 1;
-const EOB2_AC_RASTER_POS: usize = 1;
+const EOB2_AC_SCAN_INDEX: usize = 1;
 const EOB2_AC_NEGATIVE: bool = false;
 const EOB2_DC_LEVEL: u8 = 0;
 const TX_4X4_BWL: u32 = 2;
@@ -610,10 +614,19 @@ pub(crate) fn compose_intra_dc_golomb_prefix_block_trace(
 /// cross-check).
 pub(crate) fn compose_minimal_intra_two_coeff_block_trace() -> Result<Vec<BlockSymbolToken>> {
     let modes = compose_minimal_intra_dc_block_mode_trace()?;
-    // Derive the DC's § 8.3.2 coeff_base low-frequency context from the AC's
-    // Level[] (the AC of level 1 at scan pos 1 is the DC's significant neighbour).
+    // Derive the AC's raster position from the AV2 2D scan order (scan index 1 maps
+    // to raster position 4 in the 4x4 order, not 1), then derive the DC's § 8.3.2
+    // coeff_base low-frequency context from the AC's Level[] (the AC of level 1 is
+    // the DC's significant neighbour).
+    let mut scan = [0u16; TX_4X4_WIDTH * TX_4X4_HEIGHT];
+    coefficient_scan_order(TX_4X4_WIDTH, TX_4X4_HEIGHT, TransformClass::TwoD, &mut scan).map_err(
+        |_| Error::BlockSymbolTraceAllocationFailed {
+            context: "two-coefficient scan order",
+        },
+    )?;
+    let ac_raster_pos = scan[EOB2_AC_SCAN_INDEX] as usize;
     let mut level = [0u32; TX_4X4_WIDTH * TX_4X4_HEIGHT];
-    level[EOB2_AC_RASTER_POS] = EOB2_AC_LEVEL as u32;
+    level[ac_raster_pos] = EOB2_AC_LEVEL as u32;
     let dc_ctx = coeff_base_lf_luma_context(
         0,
         TX_4X4_BWL,

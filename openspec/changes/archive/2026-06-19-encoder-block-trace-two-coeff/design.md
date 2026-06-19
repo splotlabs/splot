@@ -3,15 +3,15 @@
 This is the first MULTI-coefficient (eob > 1) block trace, composing the three
 merged building blocks (`coeff_base_lf_luma_context`, `coeff_base_lf_token`, and the
 `multi_coeff` accessors). The minimal case is eob = 2: a 4x4 DCT_DCT luma block with
-one nonzero AC coefficient (level 1) at scan position 1 and a zero DC at scan
-position 0.
+one nonzero AC coefficient (level 1) at scan index 1 (raster position 4 = row 1
+col 0 in the 4x4 2D scan order `[0, 4, 1, ...]`, derived via `coefficient_scan_order`)
+and a zero DC at scan index 0 (raster position 0).
 
 The AV2 §5.20.7.27 residual for this block, verified vs the decoder `coeff_loop.rs`:
 
 - `all_zero = 0` (the block is coded).
 - `eob_pt_16 = 1` → `eobPt = 2` → `eob = 2` (eobPt < 3, no extra bits).
-- Base pass `c = eob-1..0`: the AC (c = 1, scan pos 1, low-frequency since
-  `row+col = 1 < 4`) reads `coeff_base_eob` at context
+- Base pass `c = eob-1..0`: the AC (c = 1, raster position 4 = row 1 col 0, low-frequency since `row+col = 1 < 4`) reads `coeff_base_eob` at context
   `coeff_base_eob_ctx(c=1) = 1`; the DC (c = 0) reads the non-EOB `coeff_base` at the
   §8.3.2 low-frequency context.
 - Sign pass `c = eob-1..0`: the AC (level 1, pos (0,1) — not the luma DC, not a
@@ -20,8 +20,8 @@ The AV2 §5.20.7.27 residual for this block, verified vs the decoder `coeff_loop
 - `read_quant` for both is below `maxLevel`, so no golomb bits.
 
 The DC `coeff_base` context is data-dependent: it is the §8.3.2 low-frequency
-neighbour-sum context, and the AC of level 1 at scan pos 1 is the DC's significant
-neighbour. `coeff_base_lf_luma_context(pos 0, …, Level[pos 1] = 1)` returns
+neighbour-sum context, and the AC of level 1 at raster position 4 (below the DC) is the DC's significant
+neighbour. `coeff_base_lf_luma_context(pos 0, …, Level[raster 4] = 1)` returns
 `mag = 1` → `ctx = 1` → low-frequency `c == 0` band `ctx.min(8) = 1`. The composer
 DERIVES this context (it constructs the AC's `Level[]` and calls the merged context
 function) rather than hard-coding `1`, and a test asserts the DC token carries

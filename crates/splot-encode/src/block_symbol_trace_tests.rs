@@ -629,6 +629,16 @@ fn composes_two_coeff_block_trace_in_order() {
 }
 
 #[test]
+fn eob2_ac_scan_index_maps_to_raster_four() {
+    // The composer must seed the AC's Level[] at its scan-derived raster position,
+    // not at the scan index: in the 4x4 2D scan order `[0, 4, 1, ...]`, scan index
+    // 1 maps to raster position 4 (row 1, col 0), not raster 1.
+    let mut scan = [0u16; TX_4X4_WIDTH * TX_4X4_HEIGHT];
+    coefficient_scan_order(TX_4X4_WIDTH, TX_4X4_HEIGHT, TransformClass::TwoD, &mut scan).unwrap();
+    assert_eq!(scan[EOB2_AC_SCAN_INDEX], 4);
+}
+
+#[test]
 fn two_coeff_block_trace_roundtrips_through_one_coder() {
     let trace = compose_minimal_intra_two_coeff_block_trace().unwrap();
     let proof = roundtrip_block_symbol_trace(&trace).unwrap();

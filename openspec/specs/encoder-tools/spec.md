@@ -2082,7 +2082,8 @@ or produce a coded packet.
 The encoder SHALL provide a private eob=2 multi-coefficient luma block trace stage
 tracked by `ENC-INTRA-BLOCK-TRACE-TWO-COEFF`, the first block trace with more than
 one coefficient. For a 4x4 DCT_DCT luma block with one nonzero AC coefficient
-(level 1) at scan position 1 and a zero DC at scan position 0, the luma `residual()`
+(level 1) at scan index 1 (raster position 4, derived from the AV2 2D scan order)
+and a zero DC at scan index 0, the luma `residual()`
 SHALL emit `all_zero=0`, `eob_pt_16=1` (eob 2), then the base pass — the AC
 `coeff_base_eob` at context 1 and the DC non-EOB `coeff_base` at the §8.3.2
 low-frequency context DERIVED from the AC's `Level[]` via the merged context
