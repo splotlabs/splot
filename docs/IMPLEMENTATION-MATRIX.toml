@@ -4734,6 +4734,39 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-SEC-TX-TYPE-TOKEN"
+name = "Encoder sec_tx_type IST transform-type token"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20.8.2", "8.3.2", "8.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/coefficient_tokenization.rs"
+openspec_change = "encoder-sec-tx-type-token"
+tracking_issue = ""
+owner = "encoder"
+risk = "medium"
+notes = "Private, non-emitting `sec_tx_type` transform-type token — the §5.20.8.2 transform_type() IST secondary-transform symbol read right after intra_tx_type (line 16613, after intra_tx_type at line 16529, in the SAME function — NOT §5.20.7.29 compute_tx_type, which reads zero symbols; verified adversarially vs the spec mirror via a 4-reader/4-verifier workflow). New CoefficientTokenSyntax::SecTxType + CoefficientCdfRowSelector::SecTxTypeIntra{tx_size_sqr} routing TileSecTxTypeCdf[0][Tx_Size_Sqr] (the intra is_inter=0 bank; §8.3.2, 08-parsing-process.md:867). `sec_tx_type_intra_token(tx_size_sqr, symbol)` in coefficient_tokenization/transform_type.rs. DEFAULT_SEC_TX_TYPE_CDF is [[[i32;5];5];2]: outer[2]=is_inter, middle[5]=Tx_Size_Sqr(0..=4), inner[5]=STX_TYPES(4)+1 → 4 sec_tx_type values. symbol 0 = sec_tx_type 0 (IST off), which reads NO most_probable_stx_set follow-up (that S() only when sec_tx_type!=0 && !is_inter, line 16615). Tests: off-token roundtrip (syntax/selector) + every-Tx_Size_Sqr-row + every-sec_tx_type-value (all 4 STX values) through one §8.2 coder. Also corrects the IntraTxType enum-variant doc to cite §5.20.8.2 (the syntax section), matching #347. The intra CONDITION (enable_intra_ist && eob!=1 && !Lossless && (TxType==ADST_ADST||DCT_DCT) && YMode!=PAETH_PRED && eob<=eobLim) is documented but NOT runtime-evaluated. This row does not claim a trace inserting the token, most_probable_stx_set, the inter bank, eob>2, tile-body emission, packet output, CLI success, or Baseline Encoder Profile v1 output."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/coefficient_tokenization_tests.rs::sec_tx_type_intra_off_token_roundtrips_through_generic_helper", "crates/splot-encode/src/coefficient_tokenization_tests.rs::sec_tx_type_intra_token_roundtrips_every_tx_size_sqr_row", "crates/splot-encode/src/coefficient_tokenization_tests.rs::sec_tx_type_intra_token_roundtrips_every_symbol_value"]
+commands = ["cargo test -p splot-encode sec_tx_type --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-RECON-DEPENDENCY"
 name = "Encoder reconstruction dependency boundary"
 category = "encoder"

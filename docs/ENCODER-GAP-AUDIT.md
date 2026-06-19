@@ -187,6 +187,11 @@ planning and status; it does not claim encoder behavior exists.
   [0,0,0,0,1,0,0,0,0,1,1] roundtrips through one §8.2 coder. The golomb composers
   were split to a submodule for the source budget. It is not sec_tx_type, eob>2, or
   a packet path.
+- `ENC-SEC-TX-TYPE-TOKEN` models the §5.20.8.2 sec_tx_type IST token (read right
+  after intra_tx_type in transform_type(), verified adversarially vs the mirror),
+  coded with TileSecTxTypeCdf[0][Tx_Size_Sqr]; symbol 0 = IST off (no
+  most_probable_stx_set). Roundtrips for every row/value through one §8.2 coder. Not
+  yet a trace, not the inter bank, not a packet path.
 - `Packet` is still only a byte buffer wrapper, and no coded packet production
   path exists.
 - `EncoderConfig` exposes `BitDepth::Twelve`, but current Baseline Encoder Profile

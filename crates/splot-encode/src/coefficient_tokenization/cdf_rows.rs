@@ -23,6 +23,8 @@ pub(crate) struct CoefficientTokenCdfRows {
     // `TX_SET_INTRA_1` row per `Tx_Size_Sqr` value.
     intra_tx_type_set1:
         [[i32; INTRA_TX_TYPE_SET1_CDF_ROW_LEN]; INTRA_TX_TYPE_SET1_TX_SIZE_SQR_COUNT],
+    // The intra `sec_tx_type` CDF (`is_inter = 0` bank); one row per `Tx_Size_Sqr`.
+    sec_tx_type_intra: [[i32; SEC_TX_TYPE_CDF_ROW_LEN]; SEC_TX_TYPE_TX_SIZE_SQR_COUNT],
 }
 
 impl CoefficientTokenCdfRows {
@@ -97,6 +99,7 @@ impl CoefficientTokenCdfRows {
                 DEFAULT_COEFF_BASE_LF_EOB_UV_CDF[3][COEFF_BASE_LF_EOB_CTX_DC],
             ],
             intra_tx_type_set1: DEFAULT_INTRA_TX_TYPE_SET1_CDF,
+            sec_tx_type_intra: DEFAULT_SEC_TX_TYPE_CDF[SEC_TX_TYPE_INTRA_BANK],
         }
     }
 
@@ -176,6 +179,11 @@ impl CoefficientTokenCdfRows {
                 if tx_size_sqr < INTRA_TX_TYPE_SET1_TX_SIZE_SQR_COUNT =>
             {
                 Ok(self.intra_tx_type_set1[tx_size_sqr].as_mut_slice())
+            }
+            CoefficientCdfRowSelector::SecTxTypeIntra { tx_size_sqr }
+                if tx_size_sqr < SEC_TX_TYPE_TX_SIZE_SQR_COUNT =>
+            {
+                Ok(self.sec_tx_type_intra[tx_size_sqr].as_mut_slice())
             }
             selector => Err(Error::CoefficientTokenizationUnsupportedCdfSelector {
                 syntax: selector.syntax_name(),
