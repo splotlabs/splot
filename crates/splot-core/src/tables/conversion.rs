@@ -46,6 +46,10 @@ pub static MI_WIDTH_LOG2: [i32; 29] = [0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4,
 #[rustfmt::skip]
 pub static MODE_TO_ANGLE: [i32; 13] = [0, 90, 180, 45, 135, 113, 157, 203, 67, 0, 0, 0, 0];
 
+/// `Mode_To_Txfm[ UV_INTRA_MODES_CFL_ALLOWED ]` (AV2 § 9.2, generated from `docs/spec/av2/1.0.0/attachments/all_tables.h`).
+#[rustfmt::skip]
+pub static MODE_TO_TXFM: [i32; 14] = [0, 1, 2, 0, 3, 1, 2, 2, 1, 3, 1, 2, 3, 0];
+
 /// `Num_4x4_Blocks_High[ BLOCK_SIZES ]` (AV2 § 9.2, generated from `docs/spec/av2/1.0.0/attachments/all_tables.h`).
 #[rustfmt::skip]
 pub static NUM_4X4_BLOCKS_HIGH: [i32; 29] = [1, 2, 1, 2, 4, 2, 4, 8, 4, 8, 16, 8, 16, 32, 16, 32, 64, 32, 64, 4, 1, 8, 2, 16, 4, 8, 1, 16, 2];
