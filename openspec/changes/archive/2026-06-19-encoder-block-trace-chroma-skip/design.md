@@ -7,9 +7,10 @@ all-zero block symbol sequence with the chroma U and V `txb_skip` symbols.
 
 Chroma `txb_skip` CDF selection (AV2 §8.3.2):
 
-- **U (plane 1)** reuses `TileTxbSkipCdf` with `plane_type == 1`; the neutral
-  (`above == 0`, `left == 0`) context adds a fixed `+6`, so the minimal U context
-  is `6` → `DEFAULT_TXB_SKIP_CDF[q][1][0][6]`.
+- **U (plane 1)** reuses `TileTxbSkipCdf` at the same bank as luma: the first
+  index is `is_inter || fsc_mode` (= 0 for this intra non-FSC block), NOT plane
+  type. The neutral (`above == 0`, `left == 0`) context adds the fixed `+6` for
+  U, so the minimal U context is `6` → `DEFAULT_TXB_SKIP_CDF[q][0][0][6]`.
 - **V (plane 2)** uses the dedicated `TileVTxbSkipCdf[q][ctx]`; for a block whose
   chroma block size equals its transform size with an all-zero U plane the
   context is `0` → `DEFAULT_V_TXB_SKIP_CDF[q][0]`.
@@ -43,7 +44,8 @@ Normative AV2 v1.0.0 sections:
 ## Decisions
 
 1. **U reuses `TxbSkip`; V needs a new `VTxbSkip` selector.** There is no separate
-   U `txb_skip` table — U is `TileTxbSkipCdf` with `plane_type == 1`. V uses the
+   U `txb_skip` table — U is `TileTxbSkipCdf` at the same `is_inter || fsc_mode`
+   bank as luma (0 for intra), distinguished only by `ctx` (+6). V uses the
    dedicated `TileVTxbSkipCdf`, so a `VTxbSkip { coeff_cdf_q_ctx, ctx }` variant is
    added to `CoefficientCdfRowSelector`. The coefficient tokenization module never
    produces `VTxbSkip` (it is luma-only); its row router falls through to its

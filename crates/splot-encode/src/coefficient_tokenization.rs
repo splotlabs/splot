@@ -30,8 +30,12 @@ const DCT_DCT_4X4_WIDTH: usize = 4;
 const DCT_DCT_4X4_HEIGHT: usize = 4;
 const DCT_DCT_4X4_COEFF_COUNT: usize = DCT_DCT_4X4_WIDTH * DCT_DCT_4X4_HEIGHT;
 const COEFF_CDF_Q_CONTEXTS: usize = 4;
+// AV2 § 8.3.2 `TileTxbSkipCdf[ is_inter || fsc_mode ][ txSzCtx ][ ctx ]`: the
+// first index is the inter/FSC bank, NOT plane type (the `plane_type` field name
+// is a pre-existing misnomer). For an intra non-FSC block it is 0, the bank that
+// luma and U share; the plane is distinguished only by `ctx`.
 const LUMA_PLANE_TYPE: usize = 0;
-const CHROMA_PLANE_TYPE: usize = 1;
+const INTRA_NON_FSC_TXB_SKIP_BANK: usize = 0;
 const TX_SIZE_4X4_CTX: usize = 0;
 const TXB_SKIP_CTX_NEUTRAL: usize = 0;
 // AV2 § 8.3.2: the U-plane `txb_skip` context adds a fixed +6 to the
@@ -66,14 +70,16 @@ pub(crate) const fn luma_all_zero_token(coeff_cdf_q_ctx: usize) -> CoefficientEn
 /// Returns the AV2 § 5.20.7.27 U-plane `all_zero` (`txb_skip`) token for an
 /// all-zero chroma U transform block at the neutral spatial context.
 ///
-/// The U `txb_skip` uses `TileTxbSkipCdf` with `plane_type == 1` and the § 8.3.2
-/// neutral context `6` (above/left reductions are 0, plus the fixed +6 for U).
+/// Per AV2 § 8.3.2 the U `txb_skip` reuses `TileTxbSkipCdf` at the same
+/// `is_inter || fsc_mode` bank as luma (0 for this intra non-FSC block) and is
+/// distinguished only by `ctx`: the § 8.3.2 neutral context `6` (above/left
+/// reductions are 0, plus the fixed `+6` for the U plane).
 pub(crate) const fn chroma_u_all_zero_token(coeff_cdf_q_ctx: usize) -> CoefficientEntropyToken {
     CoefficientEntropyToken {
         syntax: CoefficientTokenSyntax::AllZero,
         selector: CoefficientCdfRowSelector::TxbSkip {
             coeff_cdf_q_ctx,
-            plane_type: CHROMA_PLANE_TYPE,
+            plane_type: INTRA_NON_FSC_TXB_SKIP_BANK,
             tx_size: TX_SIZE_4X4_CTX,
             ctx: CHROMA_U_TXB_SKIP_CTX_NEUTRAL,
         },

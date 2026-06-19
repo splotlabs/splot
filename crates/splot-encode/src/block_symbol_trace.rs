@@ -50,8 +50,10 @@ const V_TXB_SKIP_CDF_ROW_LEN: usize = 3;
 const TILE_ORIGIN_Y_MODE_INDEX_CTX: usize = 0;
 const NON_DIRECTIONAL_UV_MODE_CTX: usize = 0;
 const MINIMAL_COEFF_CDF_Q_CTX: usize = 0;
+// AV2 § 8.3.2 `TileTxbSkipCdf`'s first index is `is_inter || fsc_mode` (the
+// `plane_type` field name is a pre-existing misnomer), 0 for an intra non-FSC
+// block — the bank luma and U share; the plane is distinguished only by `ctx`.
 const LUMA_PLANE_TYPE: usize = 0;
-const CHROMA_PLANE_TYPE: usize = 1;
 const TX_SIZE_4X4_CTX: usize = 0;
 const TXB_SKIP_CTX_NEUTRAL: usize = 0;
 const CHROMA_U_TXB_SKIP_CTX_NEUTRAL: usize = 6;
@@ -251,7 +253,7 @@ impl BlockSymbolTraceCdfRows {
                 [NON_DIRECTIONAL_UV_MODE_CTX],
             luma_txb_skip: DEFAULT_TXB_SKIP_CDF[MINIMAL_COEFF_CDF_Q_CTX][LUMA_PLANE_TYPE]
                 [TX_SIZE_4X4_CTX][TXB_SKIP_CTX_NEUTRAL],
-            u_txb_skip: DEFAULT_TXB_SKIP_CDF[MINIMAL_COEFF_CDF_Q_CTX][CHROMA_PLANE_TYPE]
+            u_txb_skip: DEFAULT_TXB_SKIP_CDF[MINIMAL_COEFF_CDF_Q_CTX][LUMA_PLANE_TYPE]
                 [TX_SIZE_4X4_CTX][CHROMA_U_TXB_SKIP_CTX_NEUTRAL],
             v_txb_skip: DEFAULT_V_TXB_SKIP_CDF[MINIMAL_COEFF_CDF_Q_CTX][V_TXB_SKIP_CTX_NEUTRAL],
         }
@@ -278,7 +280,7 @@ impl BlockSymbolTraceCdfRows {
                 } => Ok(self.luma_txb_skip.as_mut_slice()),
                 CoefficientCdfRowSelector::TxbSkip {
                     coeff_cdf_q_ctx: MINIMAL_COEFF_CDF_Q_CTX,
-                    plane_type: CHROMA_PLANE_TYPE,
+                    plane_type: LUMA_PLANE_TYPE,
                     tx_size: TX_SIZE_4X4_CTX,
                     ctx: CHROMA_U_TXB_SKIP_CTX_NEUTRAL,
                 } => Ok(self.u_txb_skip.as_mut_slice()),

@@ -1639,9 +1639,12 @@ trace `y_mode_set`, `y_mode_index`, `uv_mode` (§5.20.5.3), then the per-plane
 `txb_skip` (`all_zero == 1`) symbols for luma, U, and V (§5.20.7.27, in
 `residual()` plane order), and SHALL prove the complete six-symbol sequence writes
 through one in-tree AV2 §8.2 symbol encoder and decodes back through one symbol
-decoder with shared CDF state. The U `txb_skip` SHALL use `TileTxbSkipCdf` with
-`plane_type == 1` at the §8.3.2 neutral context 6, and the V `txb_skip` SHALL use
-the dedicated `TileVTxbSkipCdf` at context 0. It SHALL NOT emit non-all-zero
+decoder with shared CDF state. Per §8.3.2
+`TileTxbSkipCdf[is_inter || fsc_mode][txSzCtx][ctx]`, the U `txb_skip` SHALL use
+the same bank as luma (the first index is `is_inter || fsc_mode` = 0 for this
+intra non-FSC block, not plane type) at the §8.3.2 neutral context 6, and the V
+`txb_skip` SHALL use the dedicated `TileVTxbSkipCdf` at context 0. It SHALL NOT
+emit non-all-zero
 coefficient symbols, CfL/CCTX, partition syntax, tile payloads, coded packets,
 public CLI success, or modes beyond the DC minimal tier.
 

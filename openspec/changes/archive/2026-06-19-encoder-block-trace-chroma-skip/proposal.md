@@ -16,7 +16,8 @@ minimal all-zero intra block symbol sequence by adding the chroma U and V
 - Extend `block_symbol_trace` with `compose_minimal_intra_dc_complete_all_zero_block_trace`,
   the ordered `y_mode_set`, `y_mode_index`, `uv_mode`, then per-plane luma/U/V
   `txb_skip` (`all_zero`) sequence, and route the U/V `txb_skip` CDF rows
-  (`DEFAULT_TXB_SKIP_CDF[..][1][..][6]` for U; `DEFAULT_V_TXB_SKIP_CDF[..][0]` for
+  (`DEFAULT_TXB_SKIP_CDF[..][0][..][6]` for U — the same `is_inter||fsc_mode`
+  bank as luma, distinguished by ctx 6; `DEFAULT_V_TXB_SKIP_CDF[..][0]` for
   V) through the unified §8.2 roundtrip.
 - Prove the complete six-symbol trace writes through one `SymbolEncoder` and
   decodes back through one `SymbolDecoder` with shared CDF state.
