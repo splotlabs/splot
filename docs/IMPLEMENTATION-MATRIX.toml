@@ -4602,6 +4602,39 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-COEFF-MULTI-TOKENS"
+name = "Encoder multi-coefficient token accessors"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20.7.27", "8.3.2", "8.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/coefficient_tokenization/multi_coeff.rs"
+openspec_change = "encoder-coeff-multi-coeff-tokens"
+tracking_issue = ""
+owner = "encoder"
+risk = "low"
+notes = "Private, available-but-uncomposed multi-coefficient (eob>1) token accessors — the reusable tokens the eob>1 trace composes (after the context derivation ENC-COEFF-BASE-LF-CONTEXT and the non-EOB token ENC-COEFF-BASE-LF-TOKEN). New `coefficient_tokenization/multi_coeff.rs` submodule (parent near the 1000-line budget) with: `coded_luma_all_zero_token(q)` (coded luma all_zero == 0, the block has coefficients); `eob_pt_16_token(q, eob_ctx, symbol)` (parameterized — symbol s gives eobPt=s+1, and for eobPt<3 eob=eobPt, so symbol 1 → eob 2); `coeff_base_lf_eob_token(q, ctx, level)` (parameterized LF coeff_base_eob, symbol = level-1 since the EOB base level is coeff_base_eob+1; saturating). The eob=2 AC at scan index 1 uses coeff_base_eob_ctx(c=1, bwl=2, h=4)=SIG_COEF_CONTEXTS_EOB-3=1 and the LF EOB base CDF (pos1 row+col=1<4 → LF); the generic CoefficientTokenCdfRows router gains the ctx-1 coeff_base_lf_eob row (eob_pt_16 routes any symbol; coded all_zero reuses the txb_skip row). Tests: each accessor's symbol mapping + the eob=2 CDF subsequence [coded all_zero, eob_pt_16=1, AC coeff_base_eob ctx1, DC coeff_base ctx1] roundtrips through §8.2 to [0,1,0,0]. Verified vs decoder coeff_loop.rs/coeff_context.rs. §8.2 roundtrip = self-consistency only; AVM cross-check at the packet milestone. This row does not claim a multi-coefficient TRACE (the eob>1 trace brick composes these via block_symbol_trace with coeff_base_lf_token + the AC sign_bit + chroma all-zero), chroma/high-frequency contexts, coeff_br, tile-body emission, packet output, CLI success, or Baseline Encoder Profile v1 output."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/coefficient_tokenization_tests.rs::multi_coeff_token_accessors_carry_expected_symbols", "crates/splot-encode/src/coefficient_tokenization_tests.rs::multi_coeff_eob2_cdf_subsequence_roundtrips"]
+commands = ["cargo test -p splot-encode multi_coeff --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-RECON-DEPENDENCY"
 name = "Encoder reconstruction dependency boundary"
 category = "encoder"
@@ -7532,6 +7565,59 @@ commands = [
 fixtures = [
     "crates/splot-recon/src/reconstruct.rs",
     "crates/splot-recon/src/error.rs",
+    "crates/splot-recon/src/lib.rs",
+]
+diagnostics = []
+
+[[feature]]
+id = "RECON-RECONSTRUCT-TRANSFORM-BLOCK"
+name = "Transform-block reconstruction residual chain"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["7.14.3", "7.14.4", "7.15.4"]
+sources = [
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-14-3",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-14-4",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-15-4",
+]
+crate = "splot-recon"
+module = "crates/splot-recon/src/reconstruct_block.rs"
+openspec_change = "recon-reconstruct-transform-block"
+tracking_issue = ""
+owner = "decoder"
+risk = "low"
+notes = "Adds the scheduler-free `splot-recon` AV2 transform-block reconstruction residual chain `reconstruct_transform_block_residual<T: ReconSample>(prediction, quant, dequant_params, transform, dequant_scratch, residual_scratch, out)`, composing the three existing residual primitives into the sequence a decoder runs to turn decoded quantized coefficients into reconstructed samples: §7.14.4 `dequantize_block` then §7.15.4 `inverse_transform_2d_outer` then §7.14.3 `reconstruct_add_residual`, i.e. `out = Clip1(prediction + inverse_transform(dequant(quant)))`. `quant` is the adjusted `tx_width by tx_height` decoded coefficients and `prediction` and `out` are the original transform-size samples; the two scratch buffers are caller-owned so the composition allocates nothing, and `transform` is resolved with `InverseTransform2dOuter::resolve` so its shifts, per-pass types, and dimensions stay consistent. Total and panic-free for consistent inputs (each step is total and rejects any buffer-length or geometry inconsistency with a typed `ReconError` before mutating `out`); reuses the underlying primitives' error variants with no new error. Strictly additive and provably no-output-change: a pure `pub` composition over already-tested primitives with no rewiring, so the minimal flat-intra fixture snapshots stay byte-identical. Completeness is proven by an all-zero-preserves-prediction anchor and a uniform signed nonzero-DC residual at TX_4X4, the same two at TX_64X64 (exercising the adjusted 32x32 to original 64x64 sample-duplication geometry), and a fail-atomic inconsistent-buffer rejection. This is the residual sink for the coefficient pipeline; this row does not implement the coefficient entropy decode that produces `Quant`, the §7.15.3 secondary transform, the §7.14.4 useQm or shift derivation, the §7.15.4 DPCM-direction selection, intra/inter prediction sample production, runtime decode wiring, output, reference refresh, or AVM/dav2d invocation."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "done"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-recon/src/reconstruct_block.rs::tests::all_zero_quant_preserves_prediction_4x4",
+    "crates/splot-recon/src/reconstruct_block.rs::tests::nonzero_dc_produces_uniform_signed_residual_4x4",
+    "crates/splot-recon/src/reconstruct_block.rs::tests::all_zero_quant_preserves_prediction_tx_64x64",
+    "crates/splot-recon/src/reconstruct_block.rs::tests::nonzero_dc_is_uniform_after_expansion_tx_64x64",
+    "crates/splot-recon/src/reconstruct_block.rs::tests::rejects_inconsistent_buffers_before_writing_output",
+]
+commands = [
+    "cargo test -p splot-recon reconstruct_block --locked",
+    "cargo clippy -p splot-recon --all-targets --locked -- -D warnings",
+    "RUSTDOCFLAGS=\"-D warnings\" cargo doc -p splot-recon --no-deps --locked",
+    "cargo xtask check-dependency-direction",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-recon/src/reconstruct_block.rs",
     "crates/splot-recon/src/lib.rs",
 ]
 diagnostics = []

@@ -37,6 +37,12 @@ mod coeff_base_lf;
 #[allow(unused_imports)]
 pub(crate) use coeff_base_lf::{coeff_base_lf_luma_context, coeff_base_lf_token};
 
+mod multi_coeff;
+// Re-exported for the sibling tests and the upcoming eob>1 trace brick; not yet
+// referenced by non-test code in this module.
+#[allow(unused_imports)]
+pub(crate) use multi_coeff::{coded_luma_all_zero_token, coeff_base_lf_eob_token, eob_pt_16_token};
+
 const DCT_DCT_4X4_WIDTH: usize = 4;
 const DCT_DCT_4X4_HEIGHT: usize = 4;
 const DCT_DCT_4X4_COEFF_COUNT: usize = DCT_DCT_4X4_WIDTH * DCT_DCT_4X4_HEIGHT;
@@ -57,6 +63,10 @@ const EOB_CTX_LUMA_INTRA: usize = 0;
 // chroma coefficient uses eob context 2.
 const EOB_CTX_CHROMA: usize = 2;
 const COEFF_BASE_LF_EOB_CTX_DC: usize = 0;
+// The § 8.3.2 `coeff_base_eob` context for the EOB-position coefficient of the
+// minimal eob=2 trace (the AC at scan index 1): `coeff_base_eob_ctx(c=1, bwl=2,
+// h=4) = SIG_COEF_CONTEXTS_EOB - 3 = 1` (`c <= numCoeffs/8 = 2`).
+const COEFF_BASE_LF_EOB_CTX_EOB2_AC: usize = 1;
 const COEFF_BR_LF_CTX_DC: usize = 0;
 // The § 8.3.2 `coeff_base` low-frequency luma context for the DC of the minimal
 // eob=2 trace (the only `coeff_base_lf` consumer): an AC coefficient of level 1 at
@@ -811,6 +821,7 @@ struct CoefficientTokenCdfRows {
     txb_skip: [[i32; 3]; COEFF_CDF_Q_CONTEXTS],
     eob_pt_16: [[i32; 6]; COEFF_CDF_Q_CONTEXTS],
     coeff_base_lf_eob: [[i32; 6]; COEFF_CDF_Q_CONTEXTS],
+    coeff_base_lf_eob_ac: [[i32; 6]; COEFF_CDF_Q_CONTEXTS],
     coeff_base_lf: [[i32; COEFF_BASE_LF_CDF_ROW_LEN]; COEFF_CDF_Q_CONTEXTS],
     coeff_br_lf: [[i32; 5]; COEFF_CDF_Q_CONTEXTS],
     dc_sign: [[i32; 3]; COEFF_CDF_Q_CONTEXTS],
@@ -839,6 +850,12 @@ impl CoefficientTokenCdfRows {
                 DEFAULT_COEFF_BASE_LF_EOB_CDF[1][TX_SIZE_4X4_CTX][COEFF_BASE_LF_EOB_CTX_DC],
                 DEFAULT_COEFF_BASE_LF_EOB_CDF[2][TX_SIZE_4X4_CTX][COEFF_BASE_LF_EOB_CTX_DC],
                 DEFAULT_COEFF_BASE_LF_EOB_CDF[3][TX_SIZE_4X4_CTX][COEFF_BASE_LF_EOB_CTX_DC],
+            ],
+            coeff_base_lf_eob_ac: [
+                DEFAULT_COEFF_BASE_LF_EOB_CDF[0][TX_SIZE_4X4_CTX][COEFF_BASE_LF_EOB_CTX_EOB2_AC],
+                DEFAULT_COEFF_BASE_LF_EOB_CDF[1][TX_SIZE_4X4_CTX][COEFF_BASE_LF_EOB_CTX_EOB2_AC],
+                DEFAULT_COEFF_BASE_LF_EOB_CDF[2][TX_SIZE_4X4_CTX][COEFF_BASE_LF_EOB_CTX_EOB2_AC],
+                DEFAULT_COEFF_BASE_LF_EOB_CDF[3][TX_SIZE_4X4_CTX][COEFF_BASE_LF_EOB_CTX_EOB2_AC],
             ],
             coeff_base_lf: [
                 DEFAULT_COEFF_BASE_LF_CDF[0][TX_SIZE_4X4_CTX][COEFF_BASE_LF_CTX_EOB2_DC]
@@ -909,6 +926,13 @@ impl CoefficientTokenCdfRows {
                 ctx: COEFF_BASE_LF_EOB_CTX_DC,
             } if coeff_cdf_q_ctx < COEFF_CDF_Q_CONTEXTS => {
                 Ok(self.coeff_base_lf_eob[coeff_cdf_q_ctx].as_mut_slice())
+            }
+            CoefficientCdfRowSelector::CoeffBaseLfEob {
+                coeff_cdf_q_ctx,
+                tx_size: TX_SIZE_4X4_CTX,
+                ctx: COEFF_BASE_LF_EOB_CTX_EOB2_AC,
+            } if coeff_cdf_q_ctx < COEFF_CDF_Q_CONTEXTS => {
+                Ok(self.coeff_base_lf_eob_ac[coeff_cdf_q_ctx].as_mut_slice())
             }
             CoefficientCdfRowSelector::CoeffBaseLf {
                 coeff_cdf_q_ctx,

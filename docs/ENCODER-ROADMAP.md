@@ -121,10 +121,12 @@ Status: planned, replaces the parked toy bootstrap path.
   range loop tests, landed. The coded intra block symbol sequence now roundtrips
   for luma (the full single-DC magnitude vocabulary 1..=525) and a coded chroma DC.
   The multi-coefficient (eob>1) path has begun: the §8.3.2 `coeff_base`
-  low-frequency luma context derivation and the non-EOB `coeff_base` low-frequency
-  luma token + CDF row landed (the two building blocks the eob>1 trace consumes).
-  The eob>1 trace composition, the chroma base-range/golomb tiers, partition
-  syntax, and the tile-body byte assembly remain.
+  low-frequency luma context derivation, the non-EOB `coeff_base` token + CDF row,
+  and the reusable multi-coefficient token accessors (coded `all_zero`, a
+  parameterized `eob_pt_16`, a parameterized `coeff_base_eob`) all landed — the
+  pieces the eob>1 trace composes. The eob>1 trace composition itself, the chroma
+  base-range/golomb tiers, partition syntax, and the tile-body byte assembly
+  remain.
 - Use closed-loop reconstruction before public success.
 - Emit only syntax the writer can produce and the validator accepts.
 - Record fixtures, hashes, and matrix proof before marking any encode stage done.

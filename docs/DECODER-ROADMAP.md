@@ -89,7 +89,12 @@ composition (`RECON-DEQUANT-QUANTIZER-INDEX-RESOLUTION`). All three § 7.15.2
 Walsh-Hadamard and § 7.15.2.3 identity transforms
 (`RECON-INVERSE-TRANSFORM-MATRIX-FREE`). The § 7.14.3 residual-addition step
 (`Clip1(prediction + residual)`; `RECON-RESIDUAL-ADDITION`) is also available as
-a scheduler-free primitive. The § 7.15.4.1 2D matrix transform core
+a scheduler-free primitive, and the § 7.14.4 → § 7.15.4 → § 7.14.3
+transform-block reconstruction chain that composes the three residual primitives
+(`reconstruct_transform_block_residual`; `RECON-RECONSTRUCT-TRANSFORM-BLOCK`) —
+`out = Clip1(prediction + inverse_transform(dequant(quant)))` — is the residual
+sink that turns a decoded `Quant[]` into reconstructed samples once the
+coefficient loop hands one to recon. The § 7.15.4.1 2D matrix transform core
 (`inverse_transform_2d`; `RECON-INVERSE-TRANSFORM-2D`) is available too: the
 row-then-column matrix passes over a caller-supplied dequantized block, with the
 √2 rescale and per-pass `get_identity_scale` derived from the original
