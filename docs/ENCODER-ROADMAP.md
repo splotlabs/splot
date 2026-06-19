@@ -119,9 +119,11 @@ Status: planned, replaces the parked toy bootstrap path.
   coefficient — the finite-q range (8..=17) and the golomb-prefix range (18..=525,
   the q_length/golomb_length unary codes + a sized `coeff_rem`), both proven by
   range loop tests, landed. The coded intra block symbol sequence now roundtrips
-  for luma (the full single-DC magnitude vocabulary 1..=525) and a coded chroma DC;
-  multi-coefficient blocks, the chroma base-range/golomb tiers, partition syntax,
-  and the tile-body byte assembly remain.
+  for luma (the full single-DC magnitude vocabulary 1..=525) and a coded chroma DC.
+  The multi-coefficient (eob>1) path has begun: the §8.3.2 `coeff_base`
+  low-frequency luma context derivation (the neighbour-sum context, loaded but
+  unread) landed. The eob>1 trace, the chroma base-range/golomb tiers, partition
+  syntax, and the tile-body byte assembly remain.
 - Use closed-loop reconstruction before public success.
 - Emit only syntax the writer can produce and the validator accepts.
 - Record fixtures, hashes, and matrix proof before marking any encode stage done.

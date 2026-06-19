@@ -497,3 +497,72 @@ fn chroma_u_dc_coded_coeff_tokens_reject_out_of_tier_magnitude() {
         );
     }
 }
+
+// AV2 § 8.3.2 `coeff_base` low-frequency luma context (4x4 luma: bwl=2, txw=txh=4,
+// 2D class). `level` is row-major, txw-wide.
+const LF_CTX_BWL: u32 = 2;
+const LF_CTX_TXW: usize = 4;
+const LF_CTX_TXH: usize = 4;
+const LF_CTX_2D: usize = 0;
+
+#[test]
+fn coeff_base_lf_dc_context_for_single_ac_neighbour_is_one() {
+    // The eob=2 trace brick's exact case: DC at pos 0, the only nonzero neighbour
+    // an AC of level 1 at pos 1 (the DC's right neighbour). mag = min(1,5) = 1 →
+    // ctx = (1+1)>>1 = 1 → LF c==0 band ctx.min(8) = 1.
+    let mut level = [0u32; 16];
+    level[1] = 1;
+    let ctx =
+        coeff_base_lf_luma_context(0, LF_CTX_BWL, LF_CTX_TXW, LF_CTX_TXH, LF_CTX_2D, 0, &level);
+    assert_eq!(ctx, 1);
+}
+
+#[test]
+fn coeff_base_lf_dc_context_clamps_neighbour_magnitude() {
+    // A large neighbour level is clamped by the near-DC magLimit of 5:
+    // mag = min(10,5) = 5 → ctx = (5+1)>>1 = 3 → c==0 band ctx.min(8) = 3.
+    let mut level = [0u32; 16];
+    level[1] = 10;
+    let ctx =
+        coeff_base_lf_luma_context(0, LF_CTX_BWL, LF_CTX_TXW, LF_CTX_TXH, LF_CTX_2D, 0, &level);
+    assert_eq!(ctx, 3);
+}
+
+#[test]
+fn coeff_base_lf_context_bands_match_spec_mapping() {
+    let zero = [0u32; 16];
+    // c==0 band (DC), no neighbours → ctx 0 → ctx.min(8) = 0.
+    assert_eq!(
+        coeff_base_lf_luma_context(0, LF_CTX_BWL, LF_CTX_TXW, LF_CTX_TXH, LF_CTX_2D, 0, &zero),
+        0
+    );
+    // row+col<2 band: pos 1 (row 0, col 1), c=1, no neighbours → ctx 0 → 0 + 9 = 9.
+    assert_eq!(
+        coeff_base_lf_luma_context(1, LF_CTX_BWL, LF_CTX_TXW, LF_CTX_TXH, LF_CTX_2D, 1, &zero),
+        9
+    );
+    // else band: pos 5 (row 1, col 1, row+col=2), c=2, no neighbours → ctx 0 → 16.
+    assert_eq!(
+        coeff_base_lf_luma_context(5, LF_CTX_BWL, LF_CTX_TXW, LF_CTX_TXH, LF_CTX_2D, 2, &zero),
+        16
+    );
+}
+
+#[test]
+fn coeff_base_lf_context_out_of_range_neighbours_do_not_panic() {
+    // Bottom-right corner: every 2D neighbour offset falls outside the 4x4 bounds,
+    // so all contribute 0 (mag 0, ctx 0). pos 15 is row 3, col 3 (row+col=6) → else
+    // band ctx.min(4)+16 = 16. Must not panic.
+    let zero = [0u32; 16];
+    assert_eq!(
+        coeff_base_lf_luma_context(15, LF_CTX_BWL, LF_CTX_TXW, LF_CTX_TXH, LF_CTX_2D, 3, &zero),
+        16
+    );
+    // A short Level[] slice: the bounds-guard skips the missing entries (contribute
+    // 0) instead of indexing out of range.
+    let short: [u32; 1] = [7];
+    assert_eq!(
+        coeff_base_lf_luma_context(0, LF_CTX_BWL, LF_CTX_TXW, LF_CTX_TXH, LF_CTX_2D, 0, &short),
+        0
+    );
+}
