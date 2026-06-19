@@ -401,6 +401,7 @@ mod tests {
         for (token, &symbol) in plan.tokens().iter().zip(decoded_symbols) {
             match token.syntax() {
                 CoefficientTokenSyntax::CoeffBaseEob => magnitude = i32::from(symbol) + 1,
+                CoefficientTokenSyntax::CoeffBr => magnitude += i32::from(symbol),
                 CoefficientTokenSyntax::DcSign => negative = symbol == 1,
                 CoefficientTokenSyntax::AllZero | CoefficientTokenSyntax::EobPt16 => {}
             }

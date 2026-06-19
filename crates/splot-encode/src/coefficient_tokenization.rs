@@ -19,7 +19,8 @@
 use splot_core::symbol::{Symbol, SymbolDecoder, SymbolDecoderConfig};
 use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig};
 use splot_core::tables::cdf::{
-    DEFAULT_COEFF_BASE_LF_EOB_CDF, DEFAULT_DC_SIGN_CDF, DEFAULT_EOB_PT_16_CDF, DEFAULT_TXB_SKIP_CDF,
+    DEFAULT_COEFF_BASE_LF_EOB_CDF, DEFAULT_COEFF_BR_LF_CDF, DEFAULT_DC_SIGN_CDF,
+    DEFAULT_EOB_PT_16_CDF, DEFAULT_TXB_SKIP_CDF,
 };
 use splot_recon::{PlaneId, PlaneRect, TransformClass, coefficient_scan_order};
 
@@ -43,9 +44,22 @@ const TXB_SKIP_CTX_NEUTRAL: usize = 0;
 const CHROMA_U_TXB_SKIP_CTX_NEUTRAL: usize = 6;
 const EOB_CTX_LUMA_INTRA: usize = 0;
 const COEFF_BASE_LF_EOB_CTX_DC: usize = 0;
+const COEFF_BR_LF_CTX_DC: usize = 0;
 const DC_SIGN_GROUP_VISIBLE: usize = 0;
 const DC_SIGN_CTX_NEUTRAL: usize = 0;
+// AV2 § 5.20.7.27 / § 8.3.2: a low-frequency luma EOB coefficient's base level
+// is `coeff_base_eob + 1` (max 5), and `coeff_br` is read when that level
+// exceeds `LF_NUM_BASE_LEVELS`, adding `0..=COEFF_BASE_RANGE` to the level.
 const MAX_BASE_EOB_MAGNITUDE: u32 = 4;
+const LF_NUM_BASE_LEVELS: u32 = 4;
+const COEFF_BASE_RANGE: u32 = 3;
+// The largest magnitude fully coded by `coeff_base_eob` + one `coeff_br`, before
+// AV2 § 5.20.7.28 `read_quant` emits the golomb tail (a later brick). For the LF
+// luma DC EOB coefficient `maxLevel = LF_NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1 = 8`
+// and `read_quant` is invoked when `quant >= maxLevel - allowTcq` (TCQ off here,
+// so `quant >= 8`); the largest magnitude that needs no golomb tail is therefore
+// `maxLevel - 1 = LF_NUM_BASE_LEVELS + COEFF_BASE_RANGE = 7` (`coeff_br` up to 2).
+const MAX_BASE_BR_MAGNITUDE: u32 = LF_NUM_BASE_LEVELS + COEFF_BASE_RANGE;
 const COEFF_CDF_Q_CTX_0_MAX_QINDEX: u32 = 90;
 const COEFF_CDF_Q_CTX_1_MAX_QINDEX: u32 = 140;
 const COEFF_CDF_Q_CTX_2_MAX_QINDEX: u32 = 190;
@@ -108,53 +122,79 @@ pub(crate) const fn chroma_v_all_zero_token(
     }
 }
 
-/// Returns the four ordered AV2 § 5.20.7.27 coded luma DC-only coefficient tokens
-/// for a single nonzero DC coefficient of unsigned `magnitude`
-/// (`1..=MAX_BASE_EOB_MAGNITUDE`) and the given sign, at the neutral top-left
-/// luma context:
+/// Returns the ordered AV2 § 5.20.7.27 coded luma DC-only coefficient tokens for a
+/// single nonzero DC coefficient of unsigned `magnitude` (`1..=MAX_BASE_BR_MAGNITUDE`)
+/// and the given sign, at the neutral top-left luma context:
 ///
 /// 1. `all_zero == 0` (`txb_skip`, the block is coded),
 /// 2. `eob_pt_16 == 0` (EOB point 0: a single coefficient at scan position 0),
-/// 3. `coeff_base_eob == magnitude - 1` (the low-frequency EOB base level), and
-/// 4. `dc_sign` (0 positive, 1 negative).
+/// 3. `coeff_base_eob == min(magnitude, LF_NUM_BASE_LEVELS + 1) - 1` (the
+///    low-frequency EOB base level; its level is `coeff_base_eob + 1`),
+/// 4. `coeff_br == magnitude - (LF_NUM_BASE_LEVELS + 1)` *only when*
+///    `magnitude > LF_NUM_BASE_LEVELS` (i.e. the base level reached its max 5 and
+///    the base-range extension applies), and
+/// 5. `dc_sign` (0 positive, 1 negative).
 ///
-/// This mirrors the `tokenize_coefficients` coded DC path exactly; the
-/// `coded_dc_tokens_match_tokenizer` test asserts the two never drift.
-pub(crate) const fn luma_dc_coded_tokens(
+/// This is the single source of the coded DC token shape: `tokenize_coefficients`
+/// delegates to it, and the `coded_dc_tokens_match_tokenizer` test asserts that.
+/// The caller guarantees `1 <= magnitude <= MAX_BASE_BR_MAGNITUDE`
+/// (`tokenize_coefficients` validates it); the arithmetic is saturating so the
+/// function is total for any input.
+pub(crate) fn luma_dc_coded_tokens(
     coeff_cdf_q_ctx: usize,
     magnitude: u32,
     negative: bool,
-) -> [CoefficientEntropyToken; 4] {
-    [
-        all_zero_token(coeff_cdf_q_ctx, false),
-        CoefficientEntropyToken {
-            syntax: CoefficientTokenSyntax::EobPt16,
-            selector: CoefficientCdfRowSelector::EobPt16 {
-                coeff_cdf_q_ctx,
-                eob_ctx: EOB_CTX_LUMA_INTRA,
-            },
-            symbol: 0,
+) -> Result<Vec<CoefficientEntropyToken>> {
+    // Contract: callers pass a real nonzero coefficient magnitude. A magnitude of
+    // 0 is an all-zero block (handled by `all_zero_token`, never this path).
+    debug_assert!(magnitude >= 1, "coded DC magnitude must be nonzero");
+    let needs_br = magnitude > LF_NUM_BASE_LEVELS;
+    let len = if needs_br { 5 } else { 4 };
+    let mut tokens = Vec::new();
+    tokens
+        .try_reserve_exact(len)
+        .map_err(|_| Error::CoefficientTokenizationAllocationFailed {
+            context: "coded DC coefficient tokens",
+        })?;
+    tokens.push(all_zero_token(coeff_cdf_q_ctx, false));
+    tokens.push(CoefficientEntropyToken {
+        syntax: CoefficientTokenSyntax::EobPt16,
+        selector: CoefficientCdfRowSelector::EobPt16 {
+            coeff_cdf_q_ctx,
+            eob_ctx: EOB_CTX_LUMA_INTRA,
         },
-        CoefficientEntropyToken {
-            syntax: CoefficientTokenSyntax::CoeffBaseEob,
-            selector: CoefficientCdfRowSelector::CoeffBaseLfEob {
-                coeff_cdf_q_ctx,
-                tx_size: TX_SIZE_4X4_CTX,
-                ctx: COEFF_BASE_LF_EOB_CTX_DC,
-            },
-            symbol: magnitude.saturating_sub(1) as u8,
+        symbol: 0,
+    });
+    tokens.push(CoefficientEntropyToken {
+        syntax: CoefficientTokenSyntax::CoeffBaseEob,
+        selector: CoefficientCdfRowSelector::CoeffBaseLfEob {
+            coeff_cdf_q_ctx,
+            tx_size: TX_SIZE_4X4_CTX,
+            ctx: COEFF_BASE_LF_EOB_CTX_DC,
         },
-        CoefficientEntropyToken {
-            syntax: CoefficientTokenSyntax::DcSign,
-            selector: CoefficientCdfRowSelector::DcSign {
+        symbol: magnitude.min(LF_NUM_BASE_LEVELS + 1).saturating_sub(1) as u8,
+    });
+    if needs_br {
+        tokens.push(CoefficientEntropyToken {
+            syntax: CoefficientTokenSyntax::CoeffBr,
+            selector: CoefficientCdfRowSelector::CoeffBrLf {
                 coeff_cdf_q_ctx,
-                plane_type: LUMA_PLANE_TYPE,
-                group: DC_SIGN_GROUP_VISIBLE,
-                ctx: DC_SIGN_CTX_NEUTRAL,
+                ctx: COEFF_BR_LF_CTX_DC,
             },
-            symbol: negative as u8,
+            symbol: magnitude.saturating_sub(LF_NUM_BASE_LEVELS + 1) as u8,
+        });
+    }
+    tokens.push(CoefficientEntropyToken {
+        syntax: CoefficientTokenSyntax::DcSign,
+        selector: CoefficientCdfRowSelector::DcSign {
+            coeff_cdf_q_ctx,
+            plane_type: LUMA_PLANE_TYPE,
+            group: DC_SIGN_GROUP_VISIBLE,
+            ctx: DC_SIGN_CTX_NEUTRAL,
         },
-    ]
+        symbol: negative as u8,
+    });
+    Ok(tokens)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -281,6 +321,8 @@ pub(crate) enum CoefficientTokenSyntax {
     EobPt16,
     /// `coeff_base_eob` in AV2 § 5.20.7.27.
     CoeffBaseEob,
+    /// `coeff_br` (base range) in AV2 § 5.20.7.27.
+    CoeffBr,
     /// `dc_sign` in AV2 § 5.20.7.27.
     DcSign,
 }
@@ -291,6 +333,7 @@ impl CoefficientTokenSyntax {
             Self::AllZero => "all_zero",
             Self::EobPt16 => "eob_pt_16",
             Self::CoeffBaseEob => "coeff_base_eob",
+            Self::CoeffBr => "coeff_br",
             Self::DcSign => "dc_sign",
         }
     }
@@ -326,6 +369,8 @@ pub(crate) enum CoefficientCdfRowSelector {
     },
     /// `TileVTxbSkipCdf[coeff_cdf_q_ctx][ctx]` (the V-plane `all_zero` CDF).
     VTxbSkip { coeff_cdf_q_ctx: usize, ctx: usize },
+    /// `TileCoeffBrLfCdf[coeff_cdf_q_ctx][ctx]` (the low-frequency `coeff_br` CDF).
+    CoeffBrLf { coeff_cdf_q_ctx: usize, ctx: usize },
 }
 
 impl CoefficientCdfRowSelector {
@@ -335,6 +380,7 @@ impl CoefficientCdfRowSelector {
                 CoefficientTokenSyntax::AllZero.as_str()
             }
             Self::EobPt16 { .. } => CoefficientTokenSyntax::EobPt16.as_str(),
+            Self::CoeffBrLf { .. } => CoefficientTokenSyntax::CoeffBr.as_str(),
             Self::CoeffBaseLfEob { .. } => CoefficientTokenSyntax::CoeffBaseEob.as_str(),
             Self::DcSign { .. } => CoefficientTokenSyntax::DcSign.as_str(),
         }
@@ -505,50 +551,17 @@ fn tokenize_coefficients(
     }
 
     let magnitude = dc.unsigned_abs();
-    if magnitude > MAX_BASE_EOB_MAGNITUDE {
+    if magnitude > MAX_BASE_BR_MAGNITUDE {
         return Err(Error::CoefficientTokenizationUnsupportedMagnitude {
             plane: input.plane,
             block: input.block,
             coefficient_index: 0,
             magnitude,
-            max_magnitude: MAX_BASE_EOB_MAGNITUDE,
+            max_magnitude: MAX_BASE_BR_MAGNITUDE,
         });
     }
 
-    let mut tokens = Vec::new();
-    tokens
-        .try_reserve_exact(4)
-        .map_err(|_| Error::CoefficientTokenizationAllocationFailed {
-            context: "DC coefficient tokens",
-        })?;
-    tokens.push(all_zero_token(input.coeff_cdf_q_ctx, false));
-    tokens.push(CoefficientEntropyToken {
-        syntax: CoefficientTokenSyntax::EobPt16,
-        selector: CoefficientCdfRowSelector::EobPt16 {
-            coeff_cdf_q_ctx: input.coeff_cdf_q_ctx,
-            eob_ctx: EOB_CTX_LUMA_INTRA,
-        },
-        symbol: 0,
-    });
-    tokens.push(CoefficientEntropyToken {
-        syntax: CoefficientTokenSyntax::CoeffBaseEob,
-        selector: CoefficientCdfRowSelector::CoeffBaseLfEob {
-            coeff_cdf_q_ctx: input.coeff_cdf_q_ctx,
-            tx_size: TX_SIZE_4X4_CTX,
-            ctx: COEFF_BASE_LF_EOB_CTX_DC,
-        },
-        symbol: (magnitude - 1) as u8,
-    });
-    tokens.push(CoefficientEntropyToken {
-        syntax: CoefficientTokenSyntax::DcSign,
-        selector: CoefficientCdfRowSelector::DcSign {
-            coeff_cdf_q_ctx: input.coeff_cdf_q_ctx,
-            plane_type: LUMA_PLANE_TYPE,
-            group: DC_SIGN_GROUP_VISIBLE,
-            ctx: DC_SIGN_CTX_NEUTRAL,
-        },
-        symbol: u8::from(dc < 0),
-    });
+    let tokens = luma_dc_coded_tokens(input.coeff_cdf_q_ctx, magnitude, dc < 0)?;
 
     Ok(CoefficientTokenizationPlan {
         plane: input.plane,
@@ -642,6 +655,7 @@ struct CoefficientTokenCdfRows {
     txb_skip: [[i32; 3]; COEFF_CDF_Q_CONTEXTS],
     eob_pt_16: [[i32; 6]; COEFF_CDF_Q_CONTEXTS],
     coeff_base_lf_eob: [[i32; 6]; COEFF_CDF_Q_CONTEXTS],
+    coeff_br_lf: [[i32; 5]; COEFF_CDF_Q_CONTEXTS],
     dc_sign: [[i32; 3]; COEFF_CDF_Q_CONTEXTS],
 }
 
@@ -665,6 +679,12 @@ impl CoefficientTokenCdfRows {
                 DEFAULT_COEFF_BASE_LF_EOB_CDF[1][TX_SIZE_4X4_CTX][COEFF_BASE_LF_EOB_CTX_DC],
                 DEFAULT_COEFF_BASE_LF_EOB_CDF[2][TX_SIZE_4X4_CTX][COEFF_BASE_LF_EOB_CTX_DC],
                 DEFAULT_COEFF_BASE_LF_EOB_CDF[3][TX_SIZE_4X4_CTX][COEFF_BASE_LF_EOB_CTX_DC],
+            ],
+            coeff_br_lf: [
+                DEFAULT_COEFF_BR_LF_CDF[0][COEFF_BR_LF_CTX_DC],
+                DEFAULT_COEFF_BR_LF_CDF[1][COEFF_BR_LF_CTX_DC],
+                DEFAULT_COEFF_BR_LF_CDF[2][COEFF_BR_LF_CTX_DC],
+                DEFAULT_COEFF_BR_LF_CDF[3][COEFF_BR_LF_CTX_DC],
             ],
             dc_sign: [
                 DEFAULT_DC_SIGN_CDF[0][LUMA_PLANE_TYPE][DC_SIGN_GROUP_VISIBLE][DC_SIGN_CTX_NEUTRAL],
@@ -698,6 +718,12 @@ impl CoefficientTokenCdfRows {
             } if coeff_cdf_q_ctx < COEFF_CDF_Q_CONTEXTS => {
                 Ok(self.coeff_base_lf_eob[coeff_cdf_q_ctx].as_mut_slice())
             }
+            CoefficientCdfRowSelector::CoeffBrLf {
+                coeff_cdf_q_ctx,
+                ctx: COEFF_BR_LF_CTX_DC,
+            } if coeff_cdf_q_ctx < COEFF_CDF_Q_CONTEXTS => {
+                Ok(self.coeff_br_lf[coeff_cdf_q_ctx].as_mut_slice())
+            }
             CoefficientCdfRowSelector::DcSign {
                 coeff_cdf_q_ctx,
                 plane_type: LUMA_PLANE_TYPE,
@@ -714,361 +740,5 @@ impl CoefficientTokenCdfRows {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
-mod tests {
-    use super::*;
-    use crate::forward_transform::ForwardTransformBlock;
-    use crate::quantization::{FixedQuantizationParams, QuantizedTransformBlock};
-    use splot_recon::BitDepth as ReconBitDepth;
-
-    const SCAN_4X4_2D: [u16; 16] = [0, 4, 1, 8, 5, 2, 12, 9, 6, 3, 13, 10, 7, 14, 11, 15];
-
-    fn rect(width: usize, height: usize) -> PlaneRect {
-        rect_at(0, 0, width, height)
-    }
-
-    fn rect_at(x: usize, y: usize, width: usize, height: usize) -> PlaneRect {
-        PlaneRect::new(x, y, width, height).unwrap()
-    }
-
-    fn uniform(sample: i32) -> [i32; DCT_DCT_4X4_COEFF_COUNT] {
-        [sample; DCT_DCT_4X4_COEFF_COUNT]
-    }
-
-    fn transform(sample: i32) -> ForwardTransformBlock {
-        ForwardTransformBlock::dct_dct_4x4_dc_only(PlaneId::Y, rect(4, 4), &uniform(sample))
-            .unwrap()
-    }
-
-    fn quantized(sample: i32, qindex: u32) -> QuantizedTransformBlock {
-        QuantizedTransformBlock::dct_dct_4x4_dc_only(
-            &transform(sample),
-            FixedQuantizationParams::new(ReconBitDepth::Eight, qindex).unwrap(),
-        )
-        .unwrap()
-    }
-
-    fn quantized_base_tier(sample: i32) -> QuantizedTransformBlock {
-        (0..=255)
-            .map(|qindex| quantized(sample, qindex))
-            .find(|block| {
-                let magnitude = block.quantized()[0].unsigned_abs();
-                (1..=MAX_BASE_EOB_MAGNITUDE).contains(&magnitude)
-            })
-            .expect("base-tier qindex must exist for coefficient tokenization test sample")
-    }
-
-    fn raw_input<'a>(
-        plane: PlaneId,
-        block: PlaneRect,
-        width: usize,
-        height: usize,
-        coefficients: &'a [i32],
-    ) -> CoefficientTokenizationInput<'a> {
-        CoefficientTokenizationInput {
-            plane,
-            block,
-            width,
-            height,
-            coeff_cdf_q_ctx: 0,
-            coefficients,
-        }
-    }
-
-    #[test]
-    fn derives_coeff_cdf_q_context_from_qindex() {
-        assert_eq!(coeff_cdf_q_context(0), 0);
-        assert_eq!(coeff_cdf_q_context(90), 0);
-        assert_eq!(coeff_cdf_q_context(91), 1);
-        assert_eq!(coeff_cdf_q_context(140), 1);
-        assert_eq!(coeff_cdf_q_context(141), 2);
-        assert_eq!(coeff_cdf_q_context(190), 2);
-        assert_eq!(coeff_cdf_q_context(191), 3);
-        assert_eq!(coeff_cdf_q_context(255), 3);
-    }
-
-    #[test]
-    fn all_zero_block_emits_skip_token_only() {
-        let block = quantized(0, 0);
-        let plan = tokenize_quantized_4x4_dct_dct_dc_only(&block).unwrap();
-
-        assert_eq!(plan.plane(), PlaneId::Y);
-        assert_eq!(plan.block(), rect(4, 4));
-        assert_eq!(plan.scan(), &SCAN_4X4_2D);
-        assert_eq!(plan.begin_position(), 0);
-        assert_eq!(plan.eob(), 0);
-        assert_eq!(plan.sign_magnitude(), None);
-        assert_eq!(plan.tokens(), &[all_zero_token(0, true)]);
-    }
-
-    #[test]
-    fn all_zero_block_uses_derived_q_context() {
-        let block = quantized(0, 120);
-        let plan = tokenize_quantized_4x4_dct_dct_dc_only(&block).unwrap();
-
-        assert_eq!(plan.tokens(), &[all_zero_token(1, true)]);
-    }
-
-    #[test]
-    fn positive_dc_only_block_emits_ordered_base_tokens() {
-        let block = quantized_base_tier(1);
-        let magnitude = block.quantized()[0].unsigned_abs();
-        let plan = tokenize_quantized_4x4_dct_dct_dc_only(&block).unwrap();
-
-        assert_eq!(plan.eob(), 1);
-        assert_eq!(
-            plan.sign_magnitude(),
-            Some(CoefficientSignMagnitude {
-                scan_index: 0,
-                coefficient_index: 0,
-                row: 0,
-                col: 0,
-                magnitude,
-                negative: false,
-            })
-        );
-        assert_eq!(
-            plan.tokens(),
-            &[
-                all_zero_token(0, false),
-                CoefficientEntropyToken {
-                    syntax: CoefficientTokenSyntax::EobPt16,
-                    selector: CoefficientCdfRowSelector::EobPt16 {
-                        coeff_cdf_q_ctx: 0,
-                        eob_ctx: EOB_CTX_LUMA_INTRA,
-                    },
-                    symbol: 0,
-                },
-                CoefficientEntropyToken {
-                    syntax: CoefficientTokenSyntax::CoeffBaseEob,
-                    selector: CoefficientCdfRowSelector::CoeffBaseLfEob {
-                        coeff_cdf_q_ctx: 0,
-                        tx_size: TX_SIZE_4X4_CTX,
-                        ctx: COEFF_BASE_LF_EOB_CTX_DC,
-                    },
-                    symbol: (magnitude - 1) as u8,
-                },
-                CoefficientEntropyToken {
-                    syntax: CoefficientTokenSyntax::DcSign,
-                    selector: CoefficientCdfRowSelector::DcSign {
-                        coeff_cdf_q_ctx: 0,
-                        plane_type: LUMA_PLANE_TYPE,
-                        group: DC_SIGN_GROUP_VISIBLE,
-                        ctx: DC_SIGN_CTX_NEUTRAL,
-                    },
-                    symbol: 0,
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn negative_dc_only_block_emits_negative_dc_sign() {
-        let block = quantized_base_tier(-1);
-        let magnitude = block.quantized()[0].unsigned_abs();
-        let plan = tokenize_quantized_4x4_dct_dct_dc_only(&block).unwrap();
-
-        assert_eq!(
-            plan.sign_magnitude(),
-            Some(CoefficientSignMagnitude {
-                scan_index: 0,
-                coefficient_index: 0,
-                row: 0,
-                col: 0,
-                magnitude,
-                negative: true,
-            })
-        );
-        assert_eq!(
-            plan.tokens().last().copied(),
-            Some(CoefficientEntropyToken {
-                syntax: CoefficientTokenSyntax::DcSign,
-                selector: CoefficientCdfRowSelector::DcSign {
-                    coeff_cdf_q_ctx: 0,
-                    plane_type: LUMA_PLANE_TYPE,
-                    group: DC_SIGN_GROUP_VISIBLE,
-                    ctx: DC_SIGN_CTX_NEUTRAL,
-                },
-                symbol: 1,
-            })
-        );
-    }
-
-    #[test]
-    fn coded_dc_tokens_match_tokenizer() {
-        // `luma_dc_coded_tokens` must mirror the tokenizer's coded DC path
-        // exactly across the supported magnitude/sign range, so the trace
-        // accessor never drifts from `tokenize_coefficients`.
-        let max = MAX_BASE_EOB_MAGNITUDE as i32;
-        for dc in [1i32, -1, 2, -2, 3, -3, max, -max] {
-            let mut coefficients = [0; DCT_DCT_4X4_COEFF_COUNT];
-            coefficients[0] = dc;
-            let plan =
-                tokenize_coefficients(raw_input(PlaneId::Y, rect(4, 4), 4, 4, &coefficients))
-                    .unwrap();
-            let expected = luma_dc_coded_tokens(0, dc.unsigned_abs(), dc < 0);
-            assert_eq!(plan.tokens(), &expected, "dc = {dc}");
-        }
-    }
-
-    #[test]
-    fn accepts_lf_base_tier_boundary_magnitude() {
-        let mut coefficients = [0; DCT_DCT_4X4_COEFF_COUNT];
-        coefficients[0] = MAX_BASE_EOB_MAGNITUDE as i32;
-        let plan =
-            tokenize_coefficients(raw_input(PlaneId::Y, rect(4, 4), 4, 4, &coefficients)).unwrap();
-        let expected_symbol = (MAX_BASE_EOB_MAGNITUDE - 1) as u8;
-
-        assert_eq!(
-            plan.sign_magnitude(),
-            Some(CoefficientSignMagnitude {
-                scan_index: 0,
-                coefficient_index: 0,
-                row: 0,
-                col: 0,
-                magnitude: MAX_BASE_EOB_MAGNITUDE,
-                negative: false,
-            })
-        );
-        assert_eq!(
-            plan.tokens()[2],
-            CoefficientEntropyToken {
-                syntax: CoefficientTokenSyntax::CoeffBaseEob,
-                selector: CoefficientCdfRowSelector::CoeffBaseLfEob {
-                    coeff_cdf_q_ctx: 0,
-                    tx_size: TX_SIZE_4X4_CTX,
-                    ctx: COEFF_BASE_LF_EOB_CTX_DC,
-                },
-                symbol: expected_symbol,
-            }
-        );
-
-        let proof = roundtrip_entropy_tokens(plan.tokens()).unwrap();
-        assert_eq!(proof.decoded_symbols(), &[0, 0, expected_symbol, 0]);
-    }
-
-    #[test]
-    fn all_zero_tokens_roundtrip_through_symbol_coder() {
-        let block = quantized(0, 0);
-        let plan = tokenize_quantized_4x4_dct_dct_dc_only(&block).unwrap();
-        let proof = roundtrip_entropy_tokens(plan.tokens()).unwrap();
-
-        assert_eq!(proof.decoded_symbols(), &[1]);
-        assert_eq!(proof.symbol_count(), 1);
-        assert!(!proof.bytes().is_empty());
-    }
-
-    #[test]
-    fn dc_tokens_roundtrip_through_symbol_coder() {
-        let block = quantized_base_tier(-1);
-        let plan = tokenize_quantized_4x4_dct_dct_dc_only(&block).unwrap();
-        let expected: Vec<u8> = plan.tokens().iter().map(|token| token.symbol()).collect();
-        let proof = roundtrip_entropy_tokens(plan.tokens()).unwrap();
-
-        assert_eq!(proof.decoded_symbols(), expected.as_slice());
-        assert_eq!(proof.symbol_count(), plan.tokens().len() as u64);
-        assert!(!proof.bytes().is_empty());
-    }
-
-    #[test]
-    fn rejects_non_luma_plane() {
-        let coefficients = [0; DCT_DCT_4X4_COEFF_COUNT];
-        let err = tokenize_coefficients(raw_input(PlaneId::U, rect(4, 4), 4, 4, &coefficients))
-            .unwrap_err();
-
-        assert!(matches!(
-            err,
-            Error::CoefficientTokenizationUnsupportedPlane { plane: PlaneId::U }
-        ));
-    }
-
-    #[test]
-    fn rejects_non_origin_spatial_context() {
-        let coefficients = [0; DCT_DCT_4X4_COEFF_COUNT];
-        let err = tokenize_coefficients(raw_input(
-            PlaneId::Y,
-            rect_at(4, 0, 4, 4),
-            4,
-            4,
-            &coefficients,
-        ))
-        .unwrap_err();
-
-        assert!(matches!(
-            err,
-            Error::CoefficientTokenizationUnsupportedSpatialContext {
-                plane: PlaneId::Y,
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn rejects_non_4x4_shape() {
-        let coefficients = [0; DCT_DCT_4X4_COEFF_COUNT];
-        let err = tokenize_coefficients(raw_input(PlaneId::Y, rect(2, 4), 2, 4, &coefficients))
-            .unwrap_err();
-
-        assert!(matches!(
-            err,
-            Error::CoefficientTokenizationUnsupportedShape {
-                plane: PlaneId::Y,
-                expected_width: 4,
-                expected_height: 4,
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn rejects_non_dc_coefficient() {
-        let mut coefficients = [0; DCT_DCT_4X4_COEFF_COUNT];
-        coefficients[4] = 1;
-        let err = tokenize_coefficients(raw_input(PlaneId::Y, rect(4, 4), 4, 4, &coefficients))
-            .unwrap_err();
-
-        assert!(matches!(
-            err,
-            Error::CoefficientTokenizationNonDcCoefficient {
-                plane: PlaneId::Y,
-                coefficient_index: 4,
-                value: 1,
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn rejects_magnitude_outside_base_symbol_tier() {
-        let block = quantized(7, 0);
-        let err = tokenize_quantized_4x4_dct_dct_dc_only(&block).unwrap_err();
-
-        assert!(matches!(
-            err,
-            Error::CoefficientTokenizationUnsupportedMagnitude {
-                plane: PlaneId::Y,
-                coefficient_index: 0,
-                magnitude: 28,
-                max_magnitude: MAX_BASE_EOB_MAGNITUDE,
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn rejects_wrong_coefficient_count() {
-        let coefficients = [0; DCT_DCT_4X4_COEFF_COUNT - 1];
-        let err = tokenize_coefficients(raw_input(PlaneId::Y, rect(4, 4), 4, 4, &coefficients))
-            .unwrap_err();
-
-        assert!(matches!(
-            err,
-            Error::CoefficientTokenizationInputLengthMismatch {
-                plane: PlaneId::Y,
-                expected: 16,
-                actual: 15,
-                ..
-            }
-        ));
-    }
-}
+#[path = "coefficient_tokenization_tests.rs"]
+mod tests;
