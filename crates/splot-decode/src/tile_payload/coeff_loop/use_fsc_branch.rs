@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Coefficient branch selector for caller-resolved `useFsc`.
+//! Coefficient branch selector for derived or caller-resolved `useFsc`.
 //!
-//! Feature tracking: `DECODE-COEFF-USE-FSC-BRANCH-HANDOFF`.
+//! Feature tracking: `DECODE-COEFF-USE-FSC-BRANCH-HANDOFF` and
+//! `DECODE-COEFF-USE-FSC-CONDITION-HANDOFF`.
 
 use splot_core::symbol::SymbolDecoder;
 
@@ -18,6 +19,9 @@ use super::ordinary_pass::geometry::{
     CoeffOrdinaryTxSizeGeometryConfig, apply_coeff_ordinary_branch_from_lossless,
 };
 use super::ordinary_pass::{CoeffOrdinaryBranch, CoeffOrdinaryBranchError};
+
+// AV2 § 3 `IDTX` transform type value.
+const IDTX: usize = 9;
 
 /// Caller-selected coefficient branch before the AV2 `useFsc` split.
 pub(crate) enum CoeffUseFscBranchInput {
@@ -35,6 +39,48 @@ pub(crate) struct CoeffUseFscBranchNonZeroInput {
     pub(crate) ordinary: CoeffOrdinaryBranchLosslessNonZeroInput,
     /// Lower-boundary input for the FSC/IDTX branch.
     pub(crate) fsc: CoeffFscBranchTxSizeNonZeroInput,
+}
+
+/// Caller-selected coefficient branch before deriving the AV2 `useFsc` condition.
+pub(crate) enum CoeffUseFscConditionInput {
+    /// Decoded `all_zero == 1`; AV2 handles this before deriving `useFsc`.
+    AllZero(CoeffOrdinaryTxSizeGeometryConfig),
+    /// Decoded `all_zero == 0`.
+    NonZero(CoeffUseFscConditionNonZeroInput),
+}
+
+/// Caller-resolved facts before deriving the nonzero `useFsc` condition.
+pub(crate) struct CoeffUseFscConditionNonZeroInput {
+    /// Caller-resolved facts named by the AV2 § 5.20.7.27 `useFsc` expression.
+    pub(crate) condition: CoeffUseFscConditionFacts,
+    /// Lower-boundary input for the ordinary non-FSC branch.
+    pub(crate) ordinary: CoeffOrdinaryBranchLosslessNonZeroInput,
+    /// Lower-boundary input for the FSC/IDTX branch.
+    pub(crate) fsc: CoeffFscBranchTxSizeNonZeroInput,
+}
+
+/// Caller-resolved facts named by the AV2 § 5.20.7.27 `useFsc` expression.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CoeffUseFscConditionFacts {
+    /// Caller-resolved `enable_fsc` sequence/frame fact.
+    pub(crate) enable_fsc: bool,
+    /// Caller-resolved `PlaneTxType` from AV2 § 5.20.7.29 `compute_tx_type`.
+    pub(crate) plane_tx_type: usize,
+    /// Coefficient plane index; luma is 0.
+    pub(crate) plane: usize,
+    /// Caller-resolved `fsc_mode` fact.
+    pub(crate) fsc_mode: bool,
+    /// Caller-resolved `is_inter` fact.
+    pub(crate) is_inter: bool,
+}
+
+impl CoeffUseFscConditionFacts {
+    const fn use_fsc(self) -> bool {
+        self.enable_fsc
+            && self.plane_tx_type == IDTX
+            && self.plane == 0
+            && (self.fsc_mode || self.is_inter)
+    }
 }
 
 /// Result of the loaded `useFsc` branch selector.
@@ -69,8 +115,10 @@ pub(crate) enum CoeffUseFscBranchError {
 /// to either the ordinary lossless handoff or the FSC tx-size handoff based on
 /// caller-resolved `use_fsc`
 /// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27`). Runtime
-/// `useFsc` derivation, full `compute_tx_type`, dequantization, inverse
-/// transform, residual add, and reconstruction remain out of scope.
+/// `coeffs()` integration, full `compute_tx_type`, dequantization, inverse
+/// transform, residual add, and reconstruction remain out of scope. This staged
+/// boundary partitions the already-loaded branch targets; the full spec block
+/// still has additional common work after the `if ( useFsc )` body.
 pub(crate) fn apply_coeff_use_fsc_branch(
     state: &mut TileCoeffContextState,
     cdfs: &mut TileCdfSubset,
@@ -106,4 +154,33 @@ pub(crate) fn apply_coeff_use_fsc_branch(
             Ok(CoeffUseFscBranch::Ordinary(branch))
         }
     }
+}
+
+/// Dispatches the coefficient branch after deriving the AV2 `useFsc` condition.
+///
+/// AV2 § 5.20.7.27 derives
+/// `useFsc = enable_fsc && PlaneTxType == IDTX && plane == 0 && (fsc_mode || is_inter)`
+/// only in the decoded nonzero branch after `PlaneTxType` is available
+/// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27`). This
+/// loaded-but-unwired handoff preserves the preceding all-zero ordering and
+/// delegates the derived boolean to `apply_coeff_use_fsc_branch`. Runtime
+/// `coeffs()` integration, full `compute_tx_type`, and caller-to-runtime fact
+/// derivation remain out of scope.
+pub(crate) fn apply_coeff_use_fsc_branch_from_condition(
+    state: &mut TileCoeffContextState,
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    input: CoeffUseFscConditionInput,
+) -> Result<CoeffUseFscBranch, CoeffUseFscBranchError> {
+    let input = match input {
+        CoeffUseFscConditionInput::AllZero(input) => CoeffUseFscBranchInput::AllZero(input),
+        CoeffUseFscConditionInput::NonZero(input) => {
+            CoeffUseFscBranchInput::NonZero(CoeffUseFscBranchNonZeroInput {
+                use_fsc: input.condition.use_fsc(),
+                ordinary: input.ordinary,
+                fsc: input.fsc,
+            })
+        }
+    };
+    apply_coeff_use_fsc_branch(state, cdfs, symbols, input)
 }

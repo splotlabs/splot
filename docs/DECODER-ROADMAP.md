@@ -260,9 +260,12 @@ before delegating to the scan-order wrapper. `DECODE-COEFF-USE-FSC-BRANCH-HANDOF
 now adds the loaded-but-unwired branch selector above the ordinary and FSC
 targets: decoded all-zero inputs still route through the ordinary all-zero arm,
 nonzero `use_fsc == false` delegates to the ordinary lossless handoff, and
-nonzero `use_fsc == true` delegates to the FSC tx-size handoff. Runtime
-`useFsc` derivation, full transform/`compute_tx_type`, `PlaneTxType`,
-`is_inter`, and `coeff_cdf_q_ctx` derivation remain unwired.
+nonzero `use_fsc == true` delegates to the FSC tx-size handoff.
+`DECODE-COEFF-USE-FSC-CONDITION-HANDOFF` now derives that selector boolean from
+caller-resolved `enable_fsc`, `PlaneTxType`, `plane`, `fsc_mode`, and
+`is_inter` facts while preserving the all-zero bypass. Runtime `coeffs()`
+wiring, full transform/`compute_tx_type`, and caller-to-runtime derivation of
+those facts plus `coeff_cdf_q_ctx` remain unwired.
 Separately, `DECODE-COEFF-ORDINARY-DERIVED-BASE-PASS` now composes the ordinary
 state-derived first pass into the ordinary coefficient pass, carrying
 first-pass `isHidden`, `sumAbs1`, and `useTcq` into the interleaved
