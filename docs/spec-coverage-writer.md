@@ -10,9 +10,8 @@ Matrix version 1. Last reviewed 2026-06-15. 88 writable feature(s).
 
 | Write status | Features |
 |---|---:|
-| `done` | 60 |
-| `partial` | 11 |
-| `todo` | 17 |
+| `done` | 75 |
+| `partial` | 13 |
 
 | Section | Feature | Name | Write | Module |
 |---|---|---|:-:|---|
@@ -23,7 +22,7 @@ Matrix version 1. Last reviewed 2026-06-15. 88 writable feature(s).
 | 4.11.7 | `AV2-4.11.7-SU` | Signed integer descriptor | done | `crates/splot-core/src/bitio.rs` |
 | 4.11.8 | `AV2-4.11.8-NS` | Non-symmetric integer descriptor | done | `crates/splot-core/src/bitio.rs` |
 | 4.11.10 | `AV2-4.11.10-RG` | Rice-Golomb descriptor | done | `crates/splot-core/src/bitio.rs` |
-| 5.2.1 | `AV2-5.2.1-OBU-DISPATCH` | open_bitstream_unit payload dispatch | todo | `crates/splot-core/src/obu.rs` |
+| 5.2.1 | `AV2-5.2.1-OBU-DISPATCH` | open_bitstream_unit payload dispatch | partial | `crates/splot-core/src/obu.rs` |
 | 5.2.2, 6.2.2 | `AV2-5.2.2-OBU-HEADER` | OBU header syntax | done | `crates/splot-core/src/obu.rs` |
 | 5.2.3, 6.2.3 | `AV2-5.2.3-TRAILING-BITS` | Trailing bits syntax and semantics | done | `crates/splot-core/src/obu.rs` |
 | 5.2.4, 6.2.4 | `AV2-5.2.4-BYTE-ALIGNMENT` | Byte alignment syntax and semantics | done | `crates/splot-core/src/bitio.rs` |
@@ -38,28 +37,28 @@ Matrix version 1. Last reviewed 2026-06-15. 88 writable feature(s).
 | 5.4.8, 6.4.8 | `AV2-5.4.8-SEQUENCE-TQ-ENTROPY-CONFIG` | Sequence transform, quantization, and entropy configuration syntax | done | `crates/splot-core/src/headers/sequence.rs` |
 | 5.4.9, 6.4.9 | `AV2-5.4.9-SEGMENT-INFO` | Segment info syntax | done | `crates/splot-core/src/segment.rs` |
 | 5.4.10, 6.4.10 | `AV2-5.4.10-SEQUENCE-FILTER-CONFIG` | Sequence filter configuration syntax | done | `crates/splot-core/src/headers/sequence.rs` |
-| 5.4.11, 6.4.11 | `AV2-5.4.11-USER-QM` | Sequence user quantization matrix syntax | todo | `crates/splot-core/src/headers/quantizer_matrix.rs` |
-| 5.4.12, 6.4.12 | `AV2-5.4.12-TIMING-INFO` | Sequence timing info syntax | todo | `crates/splot-core/src/headers/sequence.rs` |
+| 5.4.11, 6.4.11 | `AV2-5.4.11-USER-QM` | Sequence user quantization matrix syntax | done | `crates/splot-core/src/headers/quantizer_matrix.rs` |
+| 5.4.12, 6.4.12 | `AV2-5.4.12-TIMING-INFO` | Sequence timing info syntax | done | `crates/splot-core/src/headers/sequence.rs` |
 | 5.4.13, 6.4.13 | `AV2-5.4.13-SEQUENCE-DECODER-MODEL-INFO` | Sequence decoder model info syntax | done | `crates/splot-core/src/headers/sequence.rs` |
 | 5.5, 6.5 | `AV2-5.5-TEMPORAL-DELIMITER` | Temporal delimiter OBU syntax | done | `crates/splot-core/src/obu.rs` |
 | 5.6, 6.6 | `AV2-5.6-MSDO` | Multistream decoder operation OBU syntax | done | `crates/splot-core/src/hls.rs` |
 | 5.7, 6.7 | `AV2-5.7-MULTI-FRAME-HEADER` | Multi-frame header OBU syntax | done | `crates/splot-core/src/hls.rs` |
 | 5.8, 6.8 | `AV2-5.8-LAYER-CONFIG-RECORD` | Layer configuration record OBU syntax | done | `crates/splot-core/src/headers/layer_config_record.rs` |
-| 5.8.1, 6.8.2 | `AV2-5.8.1-LCR-GLOBAL-INFO` | LCR global info syntax | todo | `crates/splot-core/src/headers/layer_config_record.rs` |
-| 5.8.2, 6.8.3 | `AV2-5.8.2-LCR-LOCAL-INFO` | LCR local info syntax | todo | `crates/splot-core/src/headers/layer_config_record.rs` |
-| 5.8.3, 6.8.4 | `AV2-5.8.3-LCR-AGGREGATE-INFO` | LCR aggregate info syntax | todo | `crates/splot-core/src/headers/layer_config_record.rs` |
-| 5.8.4, 6.8.5 | `AV2-5.8.4-LCR-SEQ-PTL-INFO` | LCR sequence profile tier level information syntax | todo | `crates/splot-core/src/headers/layer_config_record.rs` |
-| 5.8.5, 6.8.6 | `AV2-5.8.5-LCR-GLOBAL-PAYLOAD` | LCR global payload syntax | todo | `crates/splot-core/src/headers/layer_config_record.rs` |
-| 5.8.6, 6.8.7 | `AV2-5.8.6-LCR-XLAYER-INFO` | LCR xlayer info syntax | todo | `crates/splot-core/src/headers/layer_config_record.rs` |
-| 5.8.7, 6.8.8 | `AV2-5.8.7-LCR-REP-INFO` | LCR representation info syntax | todo | `crates/splot-core/src/headers/layer_config_record.rs` |
-| 5.8.8, 6.8.9 | `AV2-5.8.8-LCR-EMBEDDED-LAYER-INFO` | LCR embedded layer info syntax | todo | `crates/splot-core/src/headers/layer_config_record.rs` |
-| 5.8.9, 6.8.10 | `AV2-5.8.9-LCR-XLAYER-COLOR-INFO` | LCR xlayer color info syntax | todo | `crates/splot-core/src/headers/layer_config_record.rs` |
+| 5.8.1, 6.8.2 | `AV2-5.8.1-LCR-GLOBAL-INFO` | LCR global info syntax | done | `crates/splot-core/src/headers/layer_config_record.rs` |
+| 5.8.2, 6.8.3 | `AV2-5.8.2-LCR-LOCAL-INFO` | LCR local info syntax | done | `crates/splot-core/src/headers/layer_config_record.rs` |
+| 5.8.3, 6.8.4 | `AV2-5.8.3-LCR-AGGREGATE-INFO` | LCR aggregate info syntax | done | `crates/splot-core/src/headers/layer_config_record.rs` |
+| 5.8.4, 6.8.5 | `AV2-5.8.4-LCR-SEQ-PTL-INFO` | LCR sequence profile tier level information syntax | done | `crates/splot-core/src/headers/layer_config_record.rs` |
+| 5.8.5, 6.8.6 | `AV2-5.8.5-LCR-GLOBAL-PAYLOAD` | LCR global payload syntax | done | `crates/splot-core/src/headers/layer_config_record.rs` |
+| 5.8.6, 6.8.7 | `AV2-5.8.6-LCR-XLAYER-INFO` | LCR xlayer info syntax | done | `crates/splot-core/src/headers/layer_config_record.rs` |
+| 5.8.7, 6.8.8 | `AV2-5.8.7-LCR-REP-INFO` | LCR representation info syntax | done | `crates/splot-core/src/headers/layer_config_record.rs` |
+| 5.8.8, 6.8.9 | `AV2-5.8.8-LCR-EMBEDDED-LAYER-INFO` | LCR embedded layer info syntax | done | `crates/splot-core/src/headers/layer_config_record.rs` |
+| 5.8.9, 6.8.10 | `AV2-5.8.9-LCR-XLAYER-COLOR-INFO` | LCR xlayer color info syntax | done | `crates/splot-core/src/headers/layer_config_record.rs` |
 | 5.9, 6.9 | `AV2-5.9-ATLAS-SEGMENT` | Atlas segment info OBU syntax | done | `crates/splot-core/src/headers/atlas_segment.rs` |
 | 5.9.1, 6.9.2 | `AV2-5.9.1-ATLAS-LABEL-SEGMENT-INFO` | Atlas label segment info syntax | done | `crates/splot-core/src/headers/atlas_segment.rs` |
-| 5.9.2, 6.9.3 | `AV2-5.9.2-ATLAS-ENHANCED-INFO` | Atlas enhanced atlas info syntax | todo | `crates/splot-core/src/headers/atlas_segment.rs` |
-| 5.9.3, 6.9.4 | `AV2-5.9.3-ATLAS-MULTISTREAM-INFO` | Atlas multistream info syntax | todo | `crates/splot-core/src/headers/atlas_segment.rs` |
-| 5.9.4, 6.9.5 | `AV2-5.9.4-ATLAS-MULTISTREAM-ALPHA-INFO` | Atlas multistream with alpha info syntax | todo | `crates/splot-core/src/headers/atlas_segment.rs` |
-| 5.9.5, 6.9.6 | `AV2-5.9.5-ATLAS-BASIC-INFO` | Atlas basic info syntax | todo | `crates/splot-core/src/headers/atlas_segment.rs` |
+| 5.9.2, 6.9.3 | `AV2-5.9.2-ATLAS-ENHANCED-INFO` | Atlas enhanced atlas info syntax | done | `crates/splot-core/src/headers/atlas_segment.rs` |
+| 5.9.3, 6.9.4 | `AV2-5.9.3-ATLAS-MULTISTREAM-INFO` | Atlas multistream info syntax | done | `crates/splot-core/src/headers/atlas_segment.rs` |
+| 5.9.4, 6.9.5 | `AV2-5.9.4-ATLAS-MULTISTREAM-ALPHA-INFO` | Atlas multistream with alpha info syntax | done | `crates/splot-core/src/headers/atlas_segment.rs` |
+| 5.9.5, 6.9.6 | `AV2-5.9.5-ATLAS-BASIC-INFO` | Atlas basic info syntax | done | `crates/splot-core/src/headers/atlas_segment.rs` |
 | 5.10, 5.11, 6.10 | `AV2-5.10-OPERATING-POINT-SET` | Operating point set OBU syntax | done | `crates/splot-core/src/headers/operating_point_set.rs` |
 | 5.10, 6.10.2 | `AV2-5.10-OPS-SYNTAX-ELEMENTS` | Operating point set syntax elements | done | `crates/splot-core/src/headers/operating_point_set.rs` |
 | 5.11, 6.10 | `AV2-5.11-OPERATING-POINT-PAYLOAD` | Operating point payload syntax | done | `crates/splot-core/src/headers/operating_point_set.rs` |
@@ -87,7 +86,7 @@ Matrix version 1. Last reviewed 2026-06-15. 88 writable feature(s).
 | 5.17.11, 6.16.11 | `AV2-5.17.11-METADATA-TEMPORAL-POINT-INFO` | Temporal point info metadata syntax | done | `crates/splot-core/src/headers/metadata.rs` |
 | 5.17.12, 6.16.13 | `AV2-5.17.12-METADATA-DECODED-FRAME-HASH` | Decoded frame hash metadata syntax | done | `crates/splot-core/src/headers/metadata.rs` |
 | 5.17.13, 6.16.12 | `AV2-5.17.13-METADATA-USER-DATA-UNREGISTERED` | User data unregistered metadata syntax | done | `crates/splot-core/src/headers/metadata.rs` |
-| 5.18, 6.17 | `AV2-5.18-FRAME-HEADER` | Frame header syntax | todo | `crates/splot-core/src/headers/frame/mod.rs` |
+| 5.18, 6.17 | `AV2-5.18-FRAME-HEADER` | Frame header syntax | partial | `crates/splot-core/src/headers/frame/mod.rs` |
 | 5.18.1, 6.17 | `AV2-5.18.1-FRAME-HEADER-GENERAL` | Frame header general syntax | partial | `crates/splot-core/src/headers/frame/mod.rs` |
 | 5.18.2, 6.17.2 | `AV2-5.18.2-FRAME-HEADER-INFO` | Frame header info syntax | partial | `crates/splot-core/src/headers/frame/info.rs` |
 | 5.18.3 | `AV2-5.18.3-FRAME-CONFIGURATION` | Frame configuration syntax | partial | `crates/splot-core/src/headers/frame/config.rs` |
