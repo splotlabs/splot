@@ -9996,6 +9996,59 @@ fixtures = [
 diagnostics = ["decode/unsupported-feature"]
 
 [[feature]]
+id = "DECODE-COEFF-USE-FSC-CONDITION-HANDOFF"
+name = "Coefficient useFsc condition handoff"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["3", "5.20.7.27"]
+sources = [
+    "docs/spec/av2/1.0.0/03-symbols.md",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/tile_payload/coeff_loop/use_fsc_branch.rs"
+openspec_change = "coeff-use-fsc-condition-handoff"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Adds a crate-private loaded-but-unwired coefficient wrapper for deriving the AV2 §5.20.7.27 `useFsc` condition from caller-resolved `enable_fsc`, `PlaneTxType`, `plane`, `fsc_mode`, and `is_inter` facts before delegating to the existing `apply_coeff_use_fsc_branch` selector. All-zero inputs bypass condition facts and route through the existing ordinary all-zero path. Tests prove all-zero selector equivalence, every false predicate's ordinary delegation, both true `fsc_mode` and true `is_inter` FSC delegation, and non-selected contradictory branch facts are ignored. This feature remains partial: runtime `coeffs()` does not call this wrapper, `PlaneTxType`, `enable_fsc`, `fsc_mode`, `is_inter`, and `coeff_cdf_q_ctx` are still caller-resolved, full `compute_tx_type` is not implemented, and dequantization, inverse transform, residual add, reconstruction, reference refresh, AVM/dav2d invocation, public APIs, and broad `decode_block()` / `decode_tile()` support remain unimplemented."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "partial"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/tile_payload/coeff_loop/use_fsc_branch_tests.rs::coefficient_use_fsc_condition_all_zero_matches_selector",
+    "crates/splot-decode/src/tile_payload/coeff_loop/use_fsc_branch_tests.rs::coefficient_use_fsc_condition_false_delegates_to_ordinary_and_ignores_fsc",
+    "crates/splot-decode/src/tile_payload/coeff_loop/use_fsc_branch_tests.rs::coefficient_use_fsc_condition_true_delegates_to_fsc_and_ignores_ordinary",
+    "crates/splot-decode/src/tile_payload/coeff_loop/use_fsc_branch_tests.rs::coefficient_use_fsc_condition_inter_true_also_selects_fsc",
+]
+commands = [
+    "cargo test -p splot-decode use_fsc_branch --locked",
+    "cargo test -p splot-decode coeff_loop --locked",
+    "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-decoder-conformance-coverage",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-decode/src/tile_payload/coeff_loop/use_fsc_branch.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/use_fsc_branch_tests.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/fsc_quant_pass.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_pass/geometry.rs",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
 id = "DECODE-COEFF-BASE-SYMBOL-READ"
 name = "Coefficient base symbol read"
 category = "infrastructure"

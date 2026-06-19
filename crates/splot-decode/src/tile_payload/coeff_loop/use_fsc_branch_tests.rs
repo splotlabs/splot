@@ -20,11 +20,14 @@ use super::ordinary_pass::geometry::{
 use super::ordinary_pass::{CoeffOrdinaryBranch, CoeffOrdinaryBranchError};
 use super::use_fsc_branch::{
     CoeffUseFscBranch, CoeffUseFscBranchError, CoeffUseFscBranchInput,
-    CoeffUseFscBranchNonZeroInput, apply_coeff_use_fsc_branch,
+    CoeffUseFscBranchNonZeroInput, CoeffUseFscConditionFacts, CoeffUseFscConditionInput,
+    CoeffUseFscConditionNonZeroInput, apply_coeff_use_fsc_branch,
+    apply_coeff_use_fsc_branch_from_condition,
 };
 use super::*;
 
 const DCT_DCT: usize = 0;
+const IDTX: usize = 9;
 const TX_8X8: usize = 1;
 const UV_SMOOTH_PRED: usize = 9;
 const ORDINARY_PAYLOAD_SUFFIXES: [[u8; 3]; 4] = [
@@ -200,6 +203,39 @@ fn run_selector(payload: &[u8], input: CoeffUseFscBranchInput) -> Option<Selecto
         symbols.consumed_bits(),
         symbols.symbol_count(),
     ))
+}
+
+fn run_condition(payload: &[u8], input: CoeffUseFscConditionInput) -> Option<SelectorRun> {
+    let frame = FrameCdfSubset::from_defaults();
+    let mut tile = frame.tile_copy();
+    let mut symbols = symbol_decoder(payload);
+    let mut context = seeded_context_state();
+    let branch =
+        apply_coeff_use_fsc_branch_from_condition(&mut context, &mut tile, &mut symbols, input)
+            .ok()?;
+    Some((
+        branch,
+        context,
+        tile,
+        symbols.consumed_bits(),
+        symbols.symbol_count(),
+    ))
+}
+
+fn condition_facts(
+    enable_fsc: bool,
+    plane_tx_type: usize,
+    plane: usize,
+    fsc_mode: bool,
+    is_inter: bool,
+) -> CoeffUseFscConditionFacts {
+    CoeffUseFscConditionFacts {
+        enable_fsc,
+        plane_tx_type,
+        plane,
+        fsc_mode,
+        is_inter,
+    }
 }
 
 fn ordinary_payload_from(first: u8, second: u8, suffix: [u8; 3]) -> [u8; 12] {
@@ -382,4 +418,129 @@ fn coefficient_use_fsc_branch_true_wraps_fsc_error() {
             ));
         },
     );
+}
+
+#[test]
+fn coefficient_use_fsc_condition_all_zero_matches_selector() {
+    let expected =
+        run_selector(&[0x80], CoeffUseFscBranchInput::AllZero(geometry(TX_8X8))).unwrap();
+    let derived = run_condition(
+        &[0x80],
+        CoeffUseFscConditionInput::AllZero(geometry(TX_8X8)),
+    )
+    .unwrap();
+
+    assert_eq!(derived.0, expected.0);
+    assert_eq!(derived.1, expected.1);
+    assert_eq!(derived.2, expected.2);
+    assert_eq!(derived.3, expected.3);
+    assert_eq!(derived.4, expected.4);
+}
+
+#[test]
+fn coefficient_use_fsc_condition_false_delegates_to_ordinary_and_ignores_fsc() {
+    let payload = find_ordinary_payload();
+    let expected = run_selector(
+        &payload,
+        CoeffUseFscBranchInput::NonZero(CoeffUseFscBranchNonZeroInput {
+            use_fsc: false,
+            ordinary: ordinary_nonzero_input(TX_8X8),
+            fsc: fsc_nonzero_input(
+                TX_8X8,
+                AllZeroCoeffBlockInput {
+                    plane: 1,
+                    ..fsc_block()
+                },
+            ),
+        }),
+    )
+    .unwrap();
+    let false_cases = [
+        condition_facts(false, IDTX, 0, true, false),
+        condition_facts(true, DCT_DCT, 0, true, false),
+        condition_facts(true, IDTX, 1, true, false),
+        condition_facts(true, IDTX, 0, false, false),
+    ];
+
+    for condition in false_cases {
+        let derived = run_condition(
+            &payload,
+            CoeffUseFscConditionInput::NonZero(CoeffUseFscConditionNonZeroInput {
+                condition,
+                ordinary: ordinary_nonzero_input(TX_8X8),
+                fsc: fsc_nonzero_input(
+                    TX_8X8,
+                    AllZeroCoeffBlockInput {
+                        plane: 1,
+                        ..fsc_block()
+                    },
+                ),
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(derived.0, expected.0, "{condition:?}");
+        assert_eq!(derived.1, expected.1, "{condition:?}");
+        assert_eq!(derived.2, expected.2, "{condition:?}");
+        assert_eq!(derived.3, expected.3, "{condition:?}");
+        assert_eq!(derived.4, expected.4, "{condition:?}");
+    }
+}
+
+#[test]
+fn coefficient_use_fsc_condition_true_delegates_to_fsc_and_ignores_ordinary() {
+    let payload = find_fsc_payload();
+    let expected = run_selector(
+        &payload,
+        CoeffUseFscBranchInput::NonZero(CoeffUseFscBranchNonZeroInput {
+            use_fsc: true,
+            ordinary: ordinary_nonzero_input(25),
+            fsc: fsc_nonzero_input(TX_8X8, fsc_block()),
+        }),
+    )
+    .unwrap();
+    let derived = run_condition(
+        &payload,
+        CoeffUseFscConditionInput::NonZero(CoeffUseFscConditionNonZeroInput {
+            condition: condition_facts(true, IDTX, 0, true, false),
+            ordinary: ordinary_nonzero_input(25),
+            fsc: fsc_nonzero_input(TX_8X8, fsc_block()),
+        }),
+    )
+    .unwrap();
+
+    assert_eq!(derived.0, expected.0);
+    assert_eq!(derived.1, expected.1);
+    assert_eq!(derived.2, expected.2);
+    assert_eq!(derived.3, expected.3);
+    assert_eq!(derived.4, expected.4);
+}
+
+#[test]
+fn coefficient_use_fsc_condition_inter_true_also_selects_fsc() {
+    let payload = find_fsc_payload();
+    let expected = run_selector(
+        &payload,
+        CoeffUseFscBranchInput::NonZero(CoeffUseFscBranchNonZeroInput {
+            use_fsc: true,
+            ordinary: ordinary_nonzero_input(25),
+            fsc: fsc_nonzero_input(TX_8X8, fsc_block()),
+        }),
+    )
+    .unwrap();
+    let derived = run_condition(
+        &payload,
+        CoeffUseFscConditionInput::NonZero(CoeffUseFscConditionNonZeroInput {
+            condition: condition_facts(true, IDTX, 0, false, true),
+            ordinary: ordinary_nonzero_input(25),
+            fsc: fsc_nonzero_input(TX_8X8, fsc_block()),
+        }),
+    )
+    .unwrap();
+
+    assert_eq!(derived.0, expected.0);
+    assert_eq!(derived.1, expected.1);
+    assert_eq!(derived.2, expected.2);
+    assert_eq!(derived.3, expected.3);
+    assert_eq!(derived.4, expected.4);
 }
