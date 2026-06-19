@@ -14,20 +14,25 @@
 //! widths the sample filter consumes; and the § 7.17.5 adaptive filter strength
 //! ([`deblock_adaptive_filter_strength`] / [`deblock_side_threshold_index`],
 //! `#s-7-17-5`), which produces the `qThr` / `side` thresholds from the filter
-//! level.
+//! level; and the § 7.17.7.2 filter-choice process ([`deblock_filter_choice`],
+//! `#s-7-17-7-2`), which chooses the filter width from the two perpendicular edge
+//! sample lines, the estimated second derivatives, and the `qThr` / `sideThr`
+//! threshold cascade over the caller-resolved `Q_First` table.
 //!
 //! Feature tracking: `RECON-DEBLOCK-SAMPLE-FILTER`,
-//! `RECON-DEBLOCK-FILTER-MAX-WIDTH`, `RECON-DEBLOCK-ADAPTIVE-STRENGTH`.
+//! `RECON-DEBLOCK-FILTER-MAX-WIDTH`, `RECON-DEBLOCK-ADAPTIVE-STRENGTH`,
+//! `RECON-DEBLOCK-FILTER-CHOICE`.
 //!
 //! Scope: these are the per-edge sample math and the parameter derivations over
 //! caller-resolved spec-derived values. The § 7.17.1 / § 7.17.2 edge traversal,
-//! the § 7.17.6 filter-level selection and § 7.17.7.2 filter choice (which need
-//! the `DeblockingTxSizes`, segment/qindex maps, and block state), and the
-//! `Q_Thresh_Mults` / `W_Mult` / `Side_Thresholds` § 9.2 table lookups stay with
-//! the caller — it passes the resolved widths, weights, level, and pre-indexed
-//! threshold as scalars, exactly as the other `splot-recon` primitives take
-//! caller-resolved spec-derived values. It does not read frame, segment, or tile
-//! state or wire into the runtime decode path.
+//! the § 7.17.6 filter-level selection (which needs the `DeblockingTxSizes`,
+//! segment/qindex maps, and block state), the per-edge sample gathering into the
+//! `s` / `t` lines `deblock_filter_choice` consumes, and the `Q_Thresh_Mults` /
+//! `W_Mult` / `Side_Thresholds` / `Q_First` § 9.2 table lookups stay with the
+//! caller — it passes the resolved widths, weights, level, thresholds, sample
+//! lines, and tables as scalars/slices, exactly as the other `splot-recon`
+//! primitives take caller-resolved spec-derived values. It does not read frame,
+//! segment, or tile state or wire into the runtime decode path.
 
 use crate::dequant::quantizer_value;
 use crate::intra_dc_math::validate_sample_type;
@@ -47,6 +52,10 @@ const QUANT_TABLE_BITS: u32 = 3;
 /// AV2 § 3 `MAX_DBL_FLT_LEN`: the maximum deblocking-filter length, i.e. the
 /// length of `Q_Thresh_Mults` / `W_Mult` and the maximum per-side width.
 const MAX_DBL_FLT_LEN: usize = 8;
+
+/// AV2 § 3 `DBL_REG_DECIS_LEN`: the length of the § 9.2 `Q_First` array
+/// (`docs/spec/av2/1.0.0/03-symbols.md`, `DBL_REG_DECIS_LEN = 9`).
+const DBL_REG_DECIS_LEN: usize = 9;
 
 /// Caller-resolved parameters for the AV2 § 7.17.7.1 deblocking sample filter.
 ///
@@ -284,6 +293,203 @@ pub fn deblock_adaptive_filter_strength(
     // side = Max(Side_Thresholds[qInd] + (1 << (12 - BitDepth)), 0) >> (13 - BitDepth).
     let side = (i64::from(side_threshold) + (1i64 << (12 - bits))).max(0) >> (13 - bits);
     (q_thr as i32, side as i32)
+}
+
+/// Caller-resolved parameters for the AV2 § 7.17.7.2 deblocking filter-choice
+/// process (`docs/spec/av2/1.0.0/07-decoding-process.md#s-7-17-7-2`).
+///
+/// `boundary` is the index in the `s` / `t` perpendicular sample lines of the
+/// first current-side sample (the spec `s[0]` / `t[0]`, at the edge); the
+/// previous-side samples (`s[-1]`, `s[-2]`, …) are at `boundary - 1`,
+/// `boundary - 2`, …. `q_thr` and `side_thr` are the § 7.17.5 thresholds.
+/// `max_width_neg` / `max_width_pos` are the § 7.17.3 per-side maximum widths
+/// (`1..=MAX_DBL_FLT_LEN`). `q_first` is the § 9.2 `Q_First` array, resolved by
+/// the caller from `splot-core`'s generated tables (which `splot-recon` cannot
+/// reach).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DeblockFilterChoice {
+    /// Index in `s` / `t` of the first current-side sample (the spec `s[0]`).
+    pub boundary: usize,
+    /// § 7.17.5 filter threshold `qThr`.
+    pub q_thr: i32,
+    /// § 7.17.5 side threshold `sideThr`.
+    pub side_thr: i32,
+    /// Maximum current-side width (`maxWidthPos`, `1..=8`).
+    pub max_width_pos: usize,
+    /// Maximum previous-side width (`maxWidthNeg`, `1..=8`).
+    pub max_width_neg: usize,
+    /// The § 9.2 `Q_First` array (`Q_First[dist - 4]` in the width loop).
+    pub q_first: [i32; DBL_REG_DECIS_LEN],
+}
+
+/// Chooses the AV2 § 7.17.7.2 deblocking filter width from the two perpendicular
+/// sample lines `s` (the first row/column of the edge) and `t` (the last,
+/// `count - 1` row/column), returning the number of samples to filter
+/// (`0..=maxWidthPos`).
+///
+/// The process estimates the second derivative `secondDeriv[-2..=1]` of the
+/// samples at the edge from both lines, then walks a cascade of threshold tests
+/// (`sideThr`, `sideThr >> 2`, `sideThr >> 3`, `(sideThr * 3) >> 4`, and the
+/// per-distance `(sideThr * dist) >> 4` / `qThr * Q_First[dist - 4]`), widening
+/// the chosen width while the samples stay flat enough and stopping at the first
+/// threshold the local curvature exceeds. It returns `0` immediately when
+/// `q_thr` or `side_thr` is `0`.
+///
+/// `s` / `t` are read-only; this is the width decision that the § 7.17.7.1
+/// [`deblock_sample_filter`] consumes, not the sample modification.
+///
+/// The computation is total and panic-free: every sample access stays within the
+/// `[boundary - maxSamplesNeg, boundary + maxSamplesPos - 1]` window (with the
+/// unconditional `s[3]` read covered for every `maxWidthPos > 1`, and the deeper
+/// negative reads guarded by the matching `maxWidthNeg` conditions), the line
+/// lengths are validated before any sample is read, the `i64` arithmetic cannot
+/// overflow, and `q_first` is a fixed-size array so the `Q_First[dist - 4]`
+/// lookup (`dist - 4 <= 4`) is always in bounds.
+///
+/// # Errors
+/// Returns [`ReconError::DeblockFilterInvalidWidth`] if `max_width_neg` /
+/// `max_width_pos` are not in `1..=8`, and
+/// [`ReconError::DeblockFilterLineTooShort`] if `s` or `t` does not contain the
+/// samples the cascade reads around `boundary`. All inputs are validated before
+/// any sample is read.
+pub fn deblock_filter_choice<T: ReconSample>(
+    s: &[T],
+    t: &[T],
+    params: &DeblockFilterChoice,
+) -> Result<usize> {
+    let DeblockFilterChoice {
+        boundary,
+        q_thr,
+        side_thr,
+        max_width_pos,
+        max_width_neg,
+        q_first,
+    } = *params;
+
+    // § 7.17.7.2: terminate immediately if either threshold is zero.
+    if q_thr == 0 || side_thr == 0 {
+        return Ok(0);
+    }
+
+    if !(1..=MAX_DBL_FLT_LEN).contains(&max_width_neg)
+        || !(1..=MAX_DBL_FLT_LEN).contains(&max_width_pos)
+    {
+        return Err(ReconError::DeblockFilterInvalidWidth {
+            max_width_neg,
+            max_width_pos,
+        });
+    }
+
+    // maxSamplesPos = Clip3(3, 8, maxWidthPos + 1); maxSamplesNeg likewise.
+    let max_samples_neg = (max_width_neg + 1).clamp(3, MAX_DBL_FLT_LEN);
+    let max_samples_pos = (max_width_pos + 1).clamp(3, MAX_DBL_FLT_LEN);
+    // The cascade reads `s[3]` / `t[3]` unconditionally once `maxWidthPos != 1`
+    // (the § 7.17.3 widths are `{1, 3, 4, 6, 8}`, so `s[3]` never exceeds
+    // `maxSamplesPos - 1` there); require the positive span to cover index `3`
+    // for every `maxWidthPos > 1` so the read is in bounds for any caller input.
+    let pos_span = if max_width_pos == 1 {
+        max_samples_pos
+    } else {
+        max_samples_pos.max(4)
+    };
+    for line in [s, t] {
+        if boundary < max_samples_neg || boundary + pos_span > line.len() {
+            return Err(ReconError::DeblockFilterLineTooShort {
+                boundary,
+                max_width_neg,
+                width: max_width_neg.max(max_width_pos),
+                len: line.len(),
+            });
+        }
+    }
+
+    let q_thr = i64::from(q_thr);
+    let side_thr = i64::from(side_thr);
+
+    // `s[k]` / `t[k]`: the sample at signed offset `k` from `boundary`. Every
+    // access below is within the validated window, so the cast never wraps.
+    let sample =
+        |line: &[T], k: i64| -> i64 { i64::from(line[(boundary as i64 + k) as usize].to_u16()) };
+    // The § 7.17.7.2 estimated second derivative of `s` and `t` at offset `k`.
+    let second_deriv_at = |k: i64| -> i64 {
+        let deriv_s = (sample(s, k - 1) - (sample(s, k) << 1) + sample(s, k + 1)).abs();
+        let deriv_t = (sample(t, k - 1) - (sample(t, k) << 1) + sample(t, k + 1)).abs();
+        (deriv_s + deriv_t + 1) >> 1
+    };
+
+    let sd_m2 = second_deriv_at(-2);
+    let sd_m1 = second_deriv_at(-1);
+    let sd_0 = second_deriv_at(0);
+    let sd_1 = second_deriv_at(1);
+
+    if sd_m2 > side_thr || sd_1 > side_thr {
+        return Ok(0);
+    }
+    if max_width_pos == 1 {
+        return Ok(1);
+    }
+
+    let side_thr2 = side_thr >> 2;
+    if sd_m2 > side_thr2 || sd_1 > side_thr2 {
+        return Ok(1);
+    }
+    if sd_m1 + sd_0 > q_thr * 4 {
+        return Ok(1);
+    }
+
+    let side_thr3 = side_thr >> 3;
+    if sd_m2 > side_thr3 || sd_1 > side_thr3 {
+        return Ok(2);
+    }
+    if sd_m1 + sd_0 > q_thr * 3 {
+        return Ok(2);
+    }
+
+    // The § 7.17.7.2 directional derivative `Abs(a[i] - a[j] - n*(a[i] - a[g]))`
+    // for line `a`, estimated over both lines and rounded. `g` is the gradient
+    // neighbour: the spec uses `s[-2]` (`g = i - 1`) on the negative side and
+    // `s[1]` (`g = i + 1`) on the positive side.
+    let directional = |i: i64, j: i64, g: i64, n: i64| -> i64 {
+        let deriv_s = (sample(s, i) - sample(s, j) - n * (sample(s, i) - sample(s, g))).abs();
+        let deriv_t = (sample(t, i) - sample(t, j) - n * (sample(t, i) - sample(t, g))).abs();
+        (deriv_s + deriv_t + 1) >> 1
+    };
+
+    let end_thr = (side_thr * 3) >> 4;
+    // Abs(s[-1] - s[-4] - 3*(s[-1] - s[-2])) and Abs(s[0] - s[3] - 3*(s[0] - s[1])).
+    if max_width_neg > 2 && directional(-1, -4, -2, 3) > end_thr {
+        return Ok(2);
+    }
+    if directional(0, 3, 1, 3) > end_thr {
+        return Ok(2);
+    }
+    if max_width_pos == 3 {
+        return Ok(3);
+    }
+
+    let transition = (sd_m1 + sd_0) << 4;
+    let mut prev_dist = 3usize;
+    let mut dist = 4usize;
+    while dist <= max_width_pos {
+        let q_thr4 = q_thr * i64::from(q_first[dist - 4]);
+        let end_thr4 = (side_thr * dist as i64) >> 4;
+        if transition > q_thr4 {
+            return Ok(prev_dist);
+        }
+        let dist2 = dist.min(7);
+        let n = dist2 as i64;
+        // Abs(s[-1] - s[-dist2-1] - dist2*(s[-1] - s[-2])).
+        if max_width_neg >= dist2 && directional(-1, -(n + 1), -2, n) > end_thr4 {
+            return Ok(prev_dist);
+        }
+        // Abs(s[0] - s[dist2] - dist2*(s[0] - s[1])).
+        if directional(0, n, 1, n) > end_thr4 {
+            return Ok(prev_dist);
+        }
+        prev_dist = dist;
+        dist += 2;
+    }
+    Ok(max_width_pos)
 }
 
 #[cfg(test)]
@@ -533,5 +739,214 @@ mod tests {
             let expected = (((i64::from(quantizer_value(lvl, 0, bd)) + 4) >> 3) >> 6) as i32;
             assert_eq!(deblock_adaptive_filter_strength(lvl, 0, bd).0, expected);
         }
+    }
+
+    /// The § 9.2 `Q_First` array (`docs/spec/.../03-symbols.md`, DBL_REG_DECIS_LEN).
+    const Q_FIRST: [i32; DBL_REG_DECIS_LEN] = [45, 43, 40, 35, 32, 32, 32, 32, 32];
+
+    fn choice(
+        boundary: usize,
+        q_thr: i32,
+        side_thr: i32,
+        max_width_neg: usize,
+        max_width_pos: usize,
+    ) -> DeblockFilterChoice {
+        DeblockFilterChoice {
+            boundary,
+            q_thr,
+            side_thr,
+            max_width_pos,
+            max_width_neg,
+            q_first: Q_FIRST,
+        }
+    }
+
+    // Independent re-trace of § 7.17.7.2 (mirrors the spec pseudocode directly,
+    // not a call of the function under test), used as the property-test oracle.
+    #[allow(clippy::too_many_arguments)]
+    fn reference_choice(
+        s: &[u16],
+        t: &[u16],
+        boundary: usize,
+        q_thr: i64,
+        side_thr: i64,
+        max_width_neg: usize,
+        max_width_pos: usize,
+        q_first: &[i32; DBL_REG_DECIS_LEN],
+    ) -> usize {
+        if q_thr == 0 || side_thr == 0 {
+            return 0;
+        }
+        let g = |a: &[u16], k: i64| -> i64 { i64::from(a[(boundary as i64 + k) as usize]) };
+        let mut sd = [0i64; 4]; // index dist + 2, for dist in -2..=1
+        for dist in -2i64..=1 {
+            let ds = (g(s, dist - 1) - 2 * g(s, dist) + g(s, dist + 1)).abs();
+            let dt = (g(t, dist - 1) - 2 * g(t, dist) + g(t, dist + 1)).abs();
+            sd[(dist + 2) as usize] = (ds + dt + 1) >> 1;
+        }
+        let sdv = |d: i64| sd[(d + 2) as usize];
+        if sdv(-2) > side_thr || sdv(1) > side_thr {
+            return 0;
+        }
+        if max_width_pos == 1 {
+            return 1;
+        }
+        if sdv(-2) > (side_thr >> 2) || sdv(1) > (side_thr >> 2) {
+            return 1;
+        }
+        if sdv(-1) + sdv(0) > q_thr * 4 {
+            return 1;
+        }
+        if sdv(-2) > (side_thr >> 3) || sdv(1) > (side_thr >> 3) {
+            return 2;
+        }
+        if sdv(-1) + sdv(0) > q_thr * 3 {
+            return 2;
+        }
+        let end_thr = (side_thr * 3) >> 4;
+        if max_width_neg > 2 {
+            let ds = (g(s, -1) - g(s, -4) - 3 * (g(s, -1) - g(s, -2))).abs();
+            let dt = (g(t, -1) - g(t, -4) - 3 * (g(t, -1) - g(t, -2))).abs();
+            if ((ds + dt + 1) >> 1) > end_thr {
+                return 2;
+            }
+        }
+        let ds = (g(s, 0) - g(s, 3) - 3 * (g(s, 0) - g(s, 1))).abs();
+        let dt = (g(t, 0) - g(t, 3) - 3 * (g(t, 0) - g(t, 1))).abs();
+        if ((ds + dt + 1) >> 1) > end_thr {
+            return 2;
+        }
+        if max_width_pos == 3 {
+            return 3;
+        }
+        let transition = (sdv(-1) + sdv(0)) << 4;
+        let mut prev_dist = 3usize;
+        let mut dist = 4usize;
+        while dist <= max_width_pos {
+            let q_thr4 = q_thr * i64::from(q_first[dist - 4]);
+            let end_thr4 = (side_thr * dist as i64) >> 4;
+            if transition > q_thr4 {
+                return prev_dist;
+            }
+            let dist2 = dist.min(7) as i64;
+            if max_width_neg >= dist2 as usize {
+                let ds = (g(s, -1) - g(s, -dist2 - 1) - dist2 * (g(s, -1) - g(s, -2))).abs();
+                let dt = (g(t, -1) - g(t, -dist2 - 1) - dist2 * (g(t, -1) - g(t, -2))).abs();
+                if ((ds + dt + 1) >> 1) > end_thr4 {
+                    return prev_dist;
+                }
+            }
+            let ds = (g(s, 0) - g(s, dist2) - dist2 * (g(s, 0) - g(s, 1))).abs();
+            let dt = (g(t, 0) - g(t, dist2) - dist2 * (g(t, 0) - g(t, 1))).abs();
+            if ((ds + dt + 1) >> 1) > end_thr4 {
+                return prev_dist;
+            }
+            prev_dist = dist;
+            dist += 2;
+        }
+        max_width_pos
+    }
+
+    #[test]
+    fn filter_choice_zero_threshold_returns_zero() {
+        let line = [128u16; 17];
+        assert_eq!(
+            deblock_filter_choice(&line, &line, &choice(8, 0, 500, 8, 8)).unwrap(),
+            0
+        );
+        assert_eq!(
+            deblock_filter_choice(&line, &line, &choice(8, 50, 0, 8, 8)).unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn filter_choice_flat_returns_full_width() {
+        // Flat samples have zero curvature everywhere, so the cascade widens to
+        // the full `maxWidthPos` for every width.
+        let line = [128u16; 17];
+        for pos in [1usize, 3, 4, 6, 8] {
+            let neg = pos.min(6);
+            let got = deblock_filter_choice(&line, &line, &choice(8, 10, 2000, neg, pos)).unwrap();
+            assert_eq!(got, pos, "flat width pos={pos}");
+        }
+    }
+
+    #[test]
+    fn filter_choice_high_curvature_returns_zero() {
+        // A spike at `s[-2]` makes secondDeriv[-2] exceed sideThr, the first gate.
+        let mut line = [128u16; 17];
+        line[8 - 2] = 320; // boundary = 8 -> index 6 is s[-2]
+        // secondDeriv[-2] = |128 - 640 + 128| = 384 -> (384+384+1)>>1 = 384 > 100.
+        assert_eq!(
+            deblock_filter_choice(&line, &line, &choice(8, 50, 100, 8, 8)).unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn filter_choice_width_three_flat_returns_three() {
+        let line = [128u16; 17];
+        assert_eq!(
+            deblock_filter_choice(&line, &line, &choice(8, 10, 2000, 3, 3)).unwrap(),
+            3
+        );
+    }
+
+    #[test]
+    fn filter_choice_invalid_width_and_short_line_error() {
+        let line = [128u16; 17];
+        assert!(matches!(
+            deblock_filter_choice(&line, &line, &choice(8, 50, 500, 8, 9)),
+            Err(ReconError::DeblockFilterInvalidWidth { .. })
+        ));
+        let short = [128u16; 10];
+        assert!(matches!(
+            deblock_filter_choice(&short, &short, &choice(8, 50, 500, 8, 8)),
+            Err(ReconError::DeblockFilterLineTooShort { .. })
+        ));
+    }
+
+    #[test]
+    fn filter_choice_matches_independent_reference() {
+        // Deterministic LCG over many sample patterns, widths, and thresholds;
+        // the function under test must equal the independent spec re-trace.
+        let mut state = 0x0123_4567_89ab_cdefu64;
+        let mut next = |bound: u32| -> u32 {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            ((state >> 33) as u32) % bound
+        };
+        let widths = [1usize, 2, 3, 4, 6, 8];
+        let thresholds = [0i32, 5, 50, 500, 5000];
+        let mut checked = 0u32;
+        for _ in 0..4000 {
+            let s: Vec<u16> = (0..17).map(|_| next(512) as u16).collect();
+            let t: Vec<u16> = (0..17).map(|_| next(512) as u16).collect();
+            let max_width_pos = widths[next(widths.len() as u32) as usize];
+            let neg_choice = widths[next(widths.len() as u32) as usize];
+            let max_width_neg = neg_choice.min(max_width_pos).max(1);
+            let q_thr = thresholds[next(thresholds.len() as u32) as usize];
+            let side_thr = thresholds[next(thresholds.len() as u32) as usize];
+            let params = choice(8, q_thr, side_thr, max_width_neg, max_width_pos);
+            let got = deblock_filter_choice(&s, &t, &params).unwrap();
+            let expected = reference_choice(
+                &s,
+                &t,
+                8,
+                i64::from(q_thr),
+                i64::from(side_thr),
+                max_width_neg,
+                max_width_pos,
+                &Q_FIRST,
+            );
+            assert_eq!(
+                got, expected,
+                "pos={max_width_pos} neg={max_width_neg} q={q_thr} side={side_thr} s={s:?} t={t:?}"
+            );
+            checked += 1;
+        }
+        assert_eq!(checked, 4000);
     }
 }

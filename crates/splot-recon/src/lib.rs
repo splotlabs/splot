@@ -47,8 +47,11 @@
 //! the filter size, plane, and super-block-edge flag), and the § 7.17.5 adaptive
 //! filter strength ([`deblock_adaptive_filter_strength`] /
 //! [`deblock_side_threshold_index`], the `qThr`/`side` thresholds from the filter
-//! level); it does not
-//! implement the rest of the § 7.17 deblocking edge traversal and filter-level/choice derivation,
+//! level), and the § 7.17.7.2 deblocking filter-choice process
+//! ([`deblock_filter_choice`], the chosen filter width from the two perpendicular
+//! edge sample lines, the estimated second derivatives, and the `qThr`/`sideThr`
+//! threshold cascade over the caller-resolved `Q_First` table); it does not
+//! implement the rest of the § 7.17 deblocking edge traversal and § 7.17.6 filter-level derivation,
 //! the other loop filters (CDEF, CCSO, loop restoration, GDF), byte-consuming
 //! decode, full
 //! reconstruction, the § 7.14.4 `shift` derivation
@@ -96,7 +99,8 @@
 //! `RECON-GET-TX-CLASS`,
 //! `RECON-DEBLOCK-SAMPLE-FILTER`,
 //! `RECON-DEBLOCK-FILTER-MAX-WIDTH`,
-//! `RECON-DEBLOCK-ADAPTIVE-STRENGTH`.
+//! `RECON-DEBLOCK-ADAPTIVE-STRENGTH`,
+//! `RECON-DEBLOCK-FILTER-CHOICE`.
 //!
 //! Licensed under PolyForm Noncommercial 1.0.0; commercial use requires a
 //! separate written license from Bartosz Tomczyk.
@@ -133,8 +137,9 @@ mod y4m;
 
 pub use coefficient_scan::{TransformClass, coefficient_scan_order, tx_class};
 pub use deblock_filter::{
-    DeblockSampleFilter, deblock_adaptive_filter_strength, deblock_filter_max_width,
-    deblock_sample_filter, deblock_side_threshold_index,
+    DeblockFilterChoice, DeblockSampleFilter, deblock_adaptive_filter_strength,
+    deblock_filter_choice, deblock_filter_max_width, deblock_sample_filter,
+    deblock_side_threshold_index,
 };
 pub use dequant::{
     QuantizerDeltas, ac_quantizer, dc_quantizer, max_quantizer_index, quantizer_index,
