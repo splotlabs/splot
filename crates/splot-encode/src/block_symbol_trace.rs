@@ -63,11 +63,11 @@ use splot_core::tables::cdf::{
 };
 
 use crate::coefficient_tokenization::{
-    CoefficientCdfRowSelector, CoefficientEntropyToken, chroma_u_all_zero_token,
-    chroma_u_dc_coded_coeff_tokens, chroma_v_all_zero_token, coded_luma_all_zero_token,
-    coeff_base_lf_eob_token, coeff_base_lf_luma_context, coeff_base_lf_token, eob_pt_16_token,
-    intra_tx_type_set1_token, luma_all_zero_token, luma_dc_coded_tokens,
-    luma_dc_golomb_level_tokens, luma_dc_sign_token,
+    CoefficientCdfRowSelector, CoefficientEntropyToken, CoefficientTokenSyntax,
+    chroma_u_all_zero_token, chroma_u_dc_coded_coeff_tokens, chroma_v_all_zero_token,
+    coded_luma_all_zero_token, coeff_base_lf_eob_token, coeff_base_lf_luma_context,
+    coeff_base_lf_token, eob_pt_16_token, intra_tx_type_set1_token, luma_all_zero_token,
+    luma_dc_coded_tokens, luma_dc_golomb_level_tokens, luma_dc_sign_token,
 };
 use splot_recon::{TransformClass, coefficient_scan_order};
 
@@ -539,13 +539,28 @@ pub(crate) fn compose_minimal_intra_two_coeff_block_trace() -> Result<Vec<BlockS
 pub(crate) fn compose_minimal_intra_two_coeff_block_trace_with_tx_type()
 -> Result<Vec<BlockSymbolToken>> {
     let base = compose_minimal_intra_two_coeff_block_trace()?;
-    let split = EOB_PT_16_TRACE_INDEX + 1;
+    // Derive the insertion point from the `eob_pt_16` token kind so it tracks any
+    // growth of the base trace, falling back to the known `EOB_PT_16_TRACE_INDEX`.
+    let split = base
+        .iter()
+        .position(|token| {
+            matches!(token, BlockSymbolToken::Coeff(coeff)
+                if matches!(coeff.syntax(), CoefficientTokenSyntax::EobPt16))
+        })
+        .unwrap_or(EOB_PT_16_TRACE_INDEX)
+        + 1;
+    let total = base
+        .len()
+        .checked_add(1)
+        .ok_or(Error::BlockSymbolTraceAllocationFailed {
+            context: "two-coefficient tx-type block trace length",
+        })?;
     let mut trace = Vec::new();
-    trace.try_reserve_exact(base.len() + 1).map_err(|_| {
-        Error::BlockSymbolTraceAllocationFailed {
+    trace
+        .try_reserve_exact(total)
+        .map_err(|_| Error::BlockSymbolTraceAllocationFailed {
             context: "two-coefficient tx-type block trace",
-        }
-    })?;
+        })?;
     trace.extend_from_slice(&base[..split]);
     trace.push(BlockSymbolToken::Coeff(intra_tx_type_set1_token(
         INTRA_TX_TYPE_SET1_TX_SIZE_SQR_4X4,
