@@ -326,6 +326,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `ENC-INTRA-BLOCK-TRACE-CODED-BR` | ✅ | — | — | ✅ | — |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `ENC-INTRA-BLOCK-TRACE-CODED-CHROMA-DC` | ✅ | — | — | ✅ | — |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `ENC-INTRA-BLOCK-TRACE-CODED-DC` | ✅ | — | — | ✅ | — |
+| [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `ENC-INTRA-BLOCK-TRACE-GOLOMB-FINITE` | ✅ | — | — | ✅ | — |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `ENC-INTRA-BLOCK-TRACE-LUMA-SKIP` | ✅ | — | — | ✅ | — |
 | [§ 5.20.7.28](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-28) | Read quantized coefficient syntax | `DECODE-COEFF-FSC-BRANCH-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.28](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-28) | Read quantized coefficient syntax | `DECODE-COEFF-FSC-BRANCH-SEG-EOB-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
@@ -343,6 +344,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.20.7.28](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-28) | Read quantized coefficient syntax | `DECODE-COEFF-STATE-CONTEXT-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.28](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-28) | Read quantized coefficient syntax | `ENC-COEFFICIENT-TOKENIZATION-MINIMAL` | ✅ | — | — | ✅ | — |
 | [§ 5.20.7.28](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-28) | Read quantized coefficient syntax | `ENC-INTRA-BLOCK-TRACE-BYPASS-LITERAL` | ✅ | — | — | ✅ | — |
+| [§ 5.20.7.28](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-28) | Read quantized coefficient syntax | `ENC-INTRA-BLOCK-TRACE-GOLOMB-FINITE` | ✅ | — | — | ✅ | — |
 | [§ 5.20.7.29](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-29) | Compute transform type function | `DECODE-COEFF-ORDINARY-BRANCH-CHROMA-INTER-TXTYPES-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.29](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-29) | Compute transform type function | `DECODE-COEFF-ORDINARY-BRANCH-DIRECTIONAL-UV-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.29](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-29) | Compute transform type function | `DECODE-COEFF-ORDINARY-BRANCH-LOSSLESS-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
@@ -703,6 +705,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 8.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2) | Parsing process for symbol decoder | `ENC-INTRA-BLOCK-TRACE-CODED-BR` | ✅ | — | — | ✅ | — |
 | [§ 8.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2) | Parsing process for symbol decoder | `ENC-INTRA-BLOCK-TRACE-CODED-CHROMA-DC` | ✅ | — | — | ✅ | — |
 | [§ 8.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2) | Parsing process for symbol decoder | `ENC-INTRA-BLOCK-TRACE-CODED-DC` | ✅ | — | — | ✅ | — |
+| [§ 8.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2) | Parsing process for symbol decoder | `ENC-INTRA-BLOCK-TRACE-GOLOMB-FINITE` | ✅ | — | — | ✅ | — |
 | [§ 8.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2) | Parsing process for symbol decoder | `ENC-INTRA-BLOCK-TRACE-LUMA-SKIP` | ✅ | — | — | ✅ | — |
 | [§ 8.2.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-2) | Initialization process for symbol decoder | `AV2-8.2-SYMBOL-DECODER` | ✅ | ✅ | ✅ | ✅ | — |
 | [§ 8.2.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-2) | Initialization process for symbol decoder | `CONF-SYMBOL-DECODER-FUZZ` | ✅ | — | — | ✅ | — |

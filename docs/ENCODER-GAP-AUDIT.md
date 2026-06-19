@@ -127,6 +127,18 @@ planning and status; it does not claim encoder behavior exists.
   rejects out-of-tier magnitudes with a typed error. It is not the chroma
   base-range/golomb tiers, V-plane coded coefficients, multi-coefficient blocks,
   tile-body emission, or a packet path.
+- `ENC-INTRA-BLOCK-TRACE-GOLOMB-FINITE` adds the §5.20.7.28 `read_quant` finite-q
+  golomb tail (the bypass-literal token's first real consumer), covering the
+  full finite-q luma DC range (magnitude 8..=17), proven by a range loop test that
+  composes/roundtrips/reconstructs every magnitude in the range (the base/range
+  tokenizer accessor stays capped at 7; the golomb is composed in the trace). The luma residual is the fixed level
+  tokens (level reaches `maxLevel=8`), then the `dc_sign` CDF token, then
+  the golomb `q_length`/`coeff_rem` bypass bits encoding `x = magnitude - 8`
+  (`m=1` for the first DC → `q=x>>1`, `coeff_rem=x&1`); §5.20.7.27's sign+quant
+  pass reads the sign before `read_quant`. A conformance test reconstructs
+  the magnitude from the decoded golomb bits via the decoder's finite-q
+  arithmetic. It is not the golomb-prefix tier (magnitude 18+), multi-coefficient
+  blocks, chroma golomb, tile-body emission, or a packet path.
 - `Packet` is still only a byte buffer wrapper, and no coded packet production
   path exists.
 - `EncoderConfig` exposes `BitDepth::Twelve`, but current Baseline Encoder Profile
