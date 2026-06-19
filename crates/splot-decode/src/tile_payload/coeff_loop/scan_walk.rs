@@ -3,11 +3,15 @@
 
 //! Decode-side coefficient scan traversal helpers.
 //!
-//! Feature tracking: `DECODE-COEFF-SCAN-WALK` and
-//! `DECODE-COEFF-FSC-SCAN-WALK`.
+//! Feature tracking: `DECODE-COEFF-SCAN-WALK`,
+//! `DECODE-COEFF-FSC-SCAN-WALK`, and
+//! `DECODE-COEFF-FSC-BRANCH-SCAN-ORDER`.
+
+use std::collections::TryReserveError;
 
 use super::CoeffLoopContextError;
 use super::branch::NonZeroCoeffBlockStart;
+use super::max_level::CoeffTransformClass;
 
 /// One checked § 5.20.7.27 coefficient scan entry.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -108,6 +112,77 @@ impl FscCoeffScanWalk {
     pub(crate) fn entries(&self) -> &[CoeffScanEntry] {
         &self.entries
     }
+}
+
+/// Error returned while deriving an AV2 coefficient scan order.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum CoeffScanOrderError {
+    /// `get_scan(txSz, txClass)` received an unsupported scan extent.
+    #[error("coefficient scan order invalid scan shape {width}x{height}")]
+    InvalidShape {
+        /// Scan width after `Min(Tx_Width[txSz], 32)`.
+        width: usize,
+        /// Scan height after `Min(Tx_Height[txSz], 32)`.
+        height: usize,
+    },
+    /// Allocation for the derived scan order failed.
+    #[error("coefficient scan order allocation failed: {0}")]
+    Allocation(#[from] TryReserveError),
+}
+
+/// Derives AV2 § 5.20.7.30 `get_scan(txSz, txClass)` output.
+///
+/// The caller supplies already-resolved `Tx_Width[txSz]`, `Tx_Height[txSz]`,
+/// and `txClass` facts. This helper applies the spec's 32-coefficient axis cap
+/// before emitting vertical, horizontal, or anti-diagonal scan positions
+/// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-30`). It does not
+/// derive transform type, read symbols, mutate CDFs, or write coefficients.
+pub(crate) fn derive_coeff_scan_order(
+    tx_width: usize,
+    tx_height: usize,
+    tx_class: CoeffTransformClass,
+) -> Result<Vec<u16>, CoeffScanOrderError> {
+    let width = tx_width.min(32);
+    let height = tx_height.min(32);
+    if !matches!(width, 4 | 8 | 16 | 32) || !matches!(height, 4 | 8 | 16 | 32) {
+        return Err(CoeffScanOrderError::InvalidShape { width, height });
+    }
+
+    let coeff_count = width * height;
+    let mut out = Vec::new();
+    out.try_reserve_exact(coeff_count)?;
+    match tx_class {
+        CoeffTransformClass::Vertical => {
+            for y in 0..height {
+                for x in 0..width {
+                    out.push((y * width + x) as u16);
+                }
+            }
+        }
+        CoeffTransformClass::Horizontal => {
+            for x in 0..width {
+                for y in 0..height {
+                    out.push((y * width + x) as u16);
+                }
+            }
+        }
+        CoeffTransformClass::TwoD => {
+            let (wi, hi) = (width as i32, height as i32);
+            let (mut x, mut y) = (0i32, 0i32);
+            for _ in 0..coeff_count {
+                out.push((y * wi + x) as u16);
+                x += 1;
+                y -= 1;
+                if y < 0 || x >= wi {
+                    x += 1;
+                    let s = x.min(hi - 1 - y);
+                    x -= s;
+                    y += s;
+                }
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// Walks the ordinary non-FSC § 5.20.7.27 nonzero coefficient scan window.

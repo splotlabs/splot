@@ -249,7 +249,12 @@ caller-resolved `segEob` and scan order, then runs the FSC level and
 quant/context-commit stages. `DECODE-COEFF-FSC-BRANCH-SEG-EOB-HANDOFF` now
 derives `segEob` from the caller-resolved scan extent before delegating to that
 branch, matching the shared § 5.20.7.27 / § 5.20.7.30 capped transform extent.
-Runtime `useFsc`, scan, transform, and geometry derivation remain unwired.
+`DECODE-COEFF-FSC-BRANCH-SCAN-ORDER` now derives
+`scan = get_scan(txSz, txClass)` from generated transform-size dimensions and
+caller-resolved `PlaneTxType`, sharing the same § 5.20.7.30 scan-order helper
+with the ordinary branch before delegating to the scan-extent wrapper. Runtime
+`useFsc`, full transform/`compute_tx_type`, FSC level config, and geometry
+derivation remain unwired.
 Separately, `DECODE-COEFF-ORDINARY-DERIVED-BASE-PASS` now composes the ordinary
 state-derived first pass into the ordinary coefficient pass, carrying
 first-pass `isHidden`, `sumAbs1`, and `useTcq` into the interleaved
