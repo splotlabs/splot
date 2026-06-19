@@ -644,6 +644,8 @@ mod level_state_tests;
 #[cfg(test)]
 mod ordinary_branch_coeffs_geometry_tests;
 #[cfg(test)]
+mod ordinary_branch_lossless_tests;
+#[cfg(test)]
 mod ordinary_branch_mode_to_txfm_tests;
 #[cfg(test)]
 mod ordinary_branch_tx_set_tests;

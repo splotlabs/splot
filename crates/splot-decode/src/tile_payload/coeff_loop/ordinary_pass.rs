@@ -493,6 +493,12 @@ pub(crate) enum CoeffOrdinaryBranchError {
         /// Unsupported subset reason.
         reason: &'static str,
     },
+    /// The lossless subset handoff received a branch it intentionally does not cover.
+    #[error("ordinary coefficient branch lossless handoff does not support {reason}")]
+    UnsupportedLosslessSubset {
+        /// Unsupported subset reason.
+        reason: &'static str,
+    },
     /// The `Mode_To_Txfm` subset handoff received a `UVMode` outside the table domain.
     #[error("ordinary coefficient branch invalid UVMode {uv_mode} for Mode_To_Txfm")]
     InvalidUvMode {
