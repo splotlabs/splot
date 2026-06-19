@@ -25,14 +25,18 @@
 //! § 7.15.4 `Transform_Shift` row/column down-shift lookup keyed on the
 //! original `(log2W, log2H)` shape, the § 7.15.4 `get_transform_1d_type`
 //! row/column transform-type derivation (the built-in `Transform_1d_Type`
-//! table plus the `useDdt` `DDTX`/`FDDT` substitution), and the § 5.20.7.30
+//! table plus the `useDdt` `DDTX`/`FDDT` substitution), the combined § 7.15.4
+//! transform-parameter resolve helper ([`InverseTransform2dOuter::resolve`],
+//! which derives the per-pass shifts, the per-pass transform types over the
+//! adjusted sample sizes, and the `PlaneTxType == IDTX` flag from one
+//! `(plane_tx_type, log2W, log2H)` source), and the § 5.20.7.30
 //! `get_scan` coefficient scan order (the anti-diagonal 2D scan and the
 //! row/column raster scans) with its `get_tx_class` `PlaneTxType`-to-class
 //! mapping; it does not implement byte-consuming decode, full
 //! reconstruction, the § 7.14.4 `shift` derivation
 //! or the user-defined `UserQm` matrices, the § 7.15.3 secondary transform, the
-//! § 7.15.4 DPCM-direction selection and combined transform-parameter resolve
-//! helper, runtime CLI Y4M output, or full AV2 reference refresh semantics.
+//! § 7.15.4 DPCM-direction selection, runtime CLI Y4M output, or full AV2
+//! reference refresh semantics.
 //!
 //! The ownership model is view-first ([`docs/ZERO_COPY.md`](../../../docs/ZERO_COPY.md)):
 //! owned plane/frame/workspace storage hands out borrowed [`PlaneRef`]/[`PlaneMut`]
@@ -66,6 +70,7 @@
 //! `RECON-DEQUANT-QM-WEIGHT`,
 //! `RECON-TRANSFORM-SHIFT-LOOKUP`,
 //! `RECON-GET-TRANSFORM-1D-TYPE`,
+//! `RECON-RESOLVE-2D-TRANSFORM-PARAMS`,
 //! `RECON-COEFFICIENT-SCAN-ORDER`,
 //! `RECON-GET-TX-CLASS`.
 //!
