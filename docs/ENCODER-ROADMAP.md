@@ -130,11 +130,11 @@ Status: planned, replaces the parked toy bootstrap path.
   `intra_tx_type` (TX_SET_INTRA_1) transform-type token landed (DCT_DCT = symbol 0
   for 4x4 DC_PRED). The general eob>1 trace inserting it landed (the eob=2 block for the default
   reduced_tx_set TX_SET_INTRA_1 config, with the intra_tx_type DCT_DCT symbol after
-  eob_pt). The eob=2 trace now carries BOTH §5.20.8.2 transform-type symbols (intra_tx_type +
-  the sec_tx_type IST symbol, for enable_intra_ist==1) — the transform-type prefix is
-  complete for a general intra block. The most_probable_stx_set follow-up, blocks with
-  eob>2, the chroma base-range/golomb tiers, partition syntax, and the tile-body byte
-  assembly remain.
+  eob_pt). The eob=2 trace now carries BOTH §5.20.8.2 transform-type symbols for the minimal
+  TX_SET_INTRA_1 / sec_tx_type=0 path (intra_tx_type + the sec_tx_type IST symbol, for
+  enable_intra_ist==1). The most_probable_stx_set follow-up (read when sec_tx_type!=0),
+  blocks with eob>2, the chroma base-range/golomb tiers, partition syntax, and the
+  tile-body byte assembly remain.
 - Use closed-loop reconstruction before public success.
 - Emit only syntax the writer can produce and the validator accepts.
 - Record fixtures, hashes, and matrix proof before marking any encode stage done.

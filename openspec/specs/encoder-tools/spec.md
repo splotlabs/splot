@@ -2196,10 +2196,11 @@ transform symbol read right after `intra_tx_type` (line 16613). It SHALL expose 
 token whose syntax is `sec_tx_type`, coded with the intra `TileSecTxTypeCdf[0]
 [Tx_Size_Sqr]` CDF (the `is_inter = 0` bank, §8.3.2), and SHALL prove the token
 writes through one in-tree AV2 §8.2 symbol encoder and decodes back for every intra
-`Tx_Size_Sqr` row and every `sec_tx_type` value (`STX_TYPES = 4`). It SHALL NOT emit
-a trace inserting the token, the `most_probable_stx_set` follow-up symbol, the inter
-bank, blocks with eob > 2, tile payloads, coded packets, public CLI success, or modes
-beyond the DC minimal tier.
+`Tx_Size_Sqr` row and every `sec_tx_type` value (`STX_TYPES = 4`). The token feature
+itself SHALL NOT model the `most_probable_stx_set` follow-up symbol, the inter bank,
+blocks with eob > 2, tile payloads, coded packets, public CLI success, or modes
+beyond the DC minimal tier. (A trace inserting the token is tracked separately by
+`ENC-INTRA-BLOCK-TRACE-IST`.)
 
 #### Scenario: The sec_tx_type token carries the intra IST selector
 
@@ -2218,8 +2219,9 @@ beyond the DC minimal tier.
 
 - **WHEN** the `sec_tx_type` token is available in `splot-encode`
 - **THEN** `Context::receive_packet` SHALL continue to return no coded packet
-- **AND** no documentation or matrix row SHALL claim a trace, IST condition
-  evaluation, or Baseline Encoder Profile v1 output from the token alone.
+- **AND** no documentation or matrix row SHALL claim IST condition evaluation or
+  Baseline Encoder Profile v1 output from the `sec_tx_type` token feature alone (the
+  trace inserting it is tracked separately by `ENC-INTRA-BLOCK-TRACE-IST`).
 
 ### Requirement: Encoder eob=2 trace with intra_tx_type and sec_tx_type
 
