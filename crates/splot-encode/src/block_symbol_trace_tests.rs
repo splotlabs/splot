@@ -462,3 +462,127 @@ fn golomb_block_trace_covers_finite_q_range() {
         );
     }
 }
+
+// Reconstructs the encoded magnitude from a decoded golomb-*prefix* trace the way
+// the decoder's read_quant golomb-prefix path does. Returns the magnitude.
+fn reconstruct_golomb_prefix_magnitude(decoded: &[u8]) -> u32 {
+    // After 3 modes + 4 level + dc_sign the golomb bits start at index 8.
+    let after_sign = &decoded[8..];
+    // The first GOLOMB_PREFIX_Q_ZEROS bits are q_length zeros (q == cMax).
+    let qz = GOLOMB_PREFIX_Q_ZEROS as usize;
+    assert!(
+        after_sign[..qz].iter().all(|&b| b == 0),
+        "q_length is cMax zeros"
+    );
+    let golomb = &after_sign[qz..];
+    // golomb_length unary: count zeros up to the terminating 1.
+    let mut gz = 0usize;
+    while golomb[gz] == 0 {
+        gz += 1;
+    }
+    let length = gz as u32 + GOLOMB_DC_K;
+    let coeff_rem = u32::from(golomb[gz + 1]); // the L(length) literal value
+    let x = GOLOMB_PREFIX_XBASE_BIAS + (1 << length) + coeff_rem;
+    GOLOMB_MAXLEVEL + x
+}
+
+#[test]
+fn composes_golomb_prefix_block_trace_in_order() {
+    let trace = compose_minimal_intra_dc_golomb_prefix_block_trace().unwrap();
+
+    assert_eq!(trace.len(), 17);
+    // Mode prefix (3), level tokens + dc_sign (5 CDF), q_length + golomb_length
+    // (6 width-1 bypass), coeff_rem (1 width-2 bypass), U/V all-zero (2 CDF).
+    for token in &trace[0..3] {
+        assert!(matches!(token, BlockSymbolToken::Mode(_)));
+    }
+    for token in &trace[3..8] {
+        assert!(matches!(token, BlockSymbolToken::Coeff(_)));
+    }
+    for token in &trace[8..14] {
+        assert!(matches!(token, BlockSymbolToken::Bypass { width: 1, .. }));
+    }
+    assert!(matches!(
+        trace[14],
+        BlockSymbolToken::Bypass { width: 2, value: 0 }
+    ));
+    for token in &trace[15..17] {
+        assert!(matches!(token, BlockSymbolToken::Coeff(_)));
+    }
+    // modes; txb_skip=0, eob_pt=0, coeff_base_eob=4, coeff_br=3; dc_sign=0;
+    // 5 q_length zeros; golomb_length 1 (0 zeros); coeff_rem 0; U/V all_zero=1.
+    assert_eq!(
+        trace.iter().map(|token| token.symbol()).collect::<Vec<_>>(),
+        vec![0, 0, 0, 0, 0, 4, 3, 0, 0, 0, 0, 0, 0, 1, 0, 1, 1]
+    );
+}
+
+#[test]
+fn golomb_prefix_block_trace_roundtrips_and_decodes_to_magnitude() {
+    let trace = compose_minimal_intra_dc_golomb_prefix_block_trace().unwrap();
+    let proof = roundtrip_block_symbol_trace(&trace).unwrap();
+    let decoded = proof.decoded_symbols();
+
+    assert_eq!(
+        decoded,
+        &[0, 0, 0, 0, 0, 4, 3, 0, 0, 0, 0, 0, 0, 1, 0, 1, 1]
+    );
+    assert!(!proof.bytes().is_empty());
+    assert_eq!(
+        reconstruct_golomb_prefix_magnitude(decoded),
+        MINIMAL_GOLOMB_PREFIX_DC_MAGNITUDE
+    );
+}
+
+#[test]
+fn golomb_prefix_block_trace_covers_supported_range() {
+    // Every supported golomb-prefix magnitude (18..=525, golomb length 2..=8)
+    // composes a trace that roundtrips through one §8.2 coder and whose decoded
+    // golomb-prefix bits reconstruct that magnitude via the decoder's read_quant
+    // golomb-prefix arithmetic.
+    for magnitude in GOLOMB_PREFIX_MAGNITUDE_MIN..=GOLOMB_PREFIX_MAGNITUDE_MAX {
+        let trace = compose_intra_dc_golomb_prefix_block_trace(magnitude, false).unwrap();
+        let proof = roundtrip_block_symbol_trace(&trace).unwrap();
+        assert!(!proof.bytes().is_empty());
+        // Fixed prefix: 3 modes, txb_skip=0, eob_pt=0, coeff_base_eob=4,
+        // coeff_br=3, dc_sign=0.
+        assert_eq!(&proof.decoded_symbols()[0..8], &[0, 0, 0, 0, 0, 4, 3, 0]);
+        assert_eq!(
+            reconstruct_golomb_prefix_magnitude(proof.decoded_symbols()),
+            magnitude,
+            "golomb-prefix bits reconstruct the encoded magnitude across the range"
+        );
+    }
+}
+
+#[test]
+fn golomb_prefix_block_trace_rejects_out_of_range() {
+    // Below the minimum (finite-q range) and above the cap (wider coeff_rem, a
+    // later brick) yield a typed runtime error, not a non-conformant trace.
+    for magnitude in [
+        GOLOMB_PREFIX_MAGNITUDE_MIN - 1,
+        GOLOMB_PREFIX_MAGNITUDE_MAX + 1,
+    ] {
+        let err = compose_intra_dc_golomb_prefix_block_trace(magnitude, false).unwrap_err();
+        assert!(matches!(
+            err,
+            Error::BlockSymbolTraceGolombMagnitudeOutOfRange {
+                magnitude: m,
+                min: GOLOMB_PREFIX_MAGNITUDE_MIN,
+                max: GOLOMB_PREFIX_MAGNITUDE_MAX,
+            } if m == magnitude
+        ));
+    }
+    assert!(compose_intra_dc_golomb_prefix_block_trace(GOLOMB_PREFIX_MAGNITUDE_MIN, false).is_ok());
+    assert!(compose_intra_dc_golomb_prefix_block_trace(GOLOMB_PREFIX_MAGNITUDE_MAX, false).is_ok());
+}
+
+#[test]
+fn golomb_prefix_block_roundtrip_is_deterministic() {
+    let trace = compose_minimal_intra_dc_golomb_prefix_block_trace().unwrap();
+    let first = roundtrip_block_symbol_trace(&trace).unwrap();
+    let second = roundtrip_block_symbol_trace(&trace).unwrap();
+
+    assert_eq!(first.bytes(), second.bytes());
+    assert_eq!(first.decoded_symbols(), second.decoded_symbols());
+}

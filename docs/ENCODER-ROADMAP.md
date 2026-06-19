@@ -115,13 +115,13 @@ Status: planned, replaces the parked toy bootstrap path.
   token kind (the foundation for non-luma-DC `sign_bit` and the golomb tail,
   landed), then a coded chroma U DC coefficient whose sign is a `sign_bit` bypass
   literal, with the §8.3.2 chroma contexts and the V `txb_skip` EobU context
-  (landed), then the §5.20.7.28 finite-q golomb tail for a larger luma DC
-  coefficient (the full finite-q range, magnitude 8..=17, proven by a range loop
-  test; the `coeff_rem` bypass bits, landed). The coded
-  intra block symbol sequence now roundtrips for luma (base + range + finite-q
-  golomb) and a coded chroma DC; the golomb-prefix tier (magnitude 18+), the
-  chroma base-range/golomb tiers, multi-coefficient blocks, partition syntax, and
-  the tile-body byte assembly remain.
+  (landed), then the §5.20.7.28 golomb tail for a larger luma DC
+  coefficient — the finite-q range (8..=17) and the golomb-prefix range (18..=525,
+  the q_length/golomb_length unary codes + a sized `coeff_rem`), both proven by
+  range loop tests, landed. The coded intra block symbol sequence now roundtrips
+  for luma (the full single-DC magnitude vocabulary 1..=525) and a coded chroma DC;
+  multi-coefficient blocks, the chroma base-range/golomb tiers, partition syntax,
+  and the tile-body byte assembly remain.
 - Use closed-loop reconstruction before public success.
 - Emit only syntax the writer can produce and the validator accepts.
 - Record fixtures, hashes, and matrix proof before marking any encode stage done.
