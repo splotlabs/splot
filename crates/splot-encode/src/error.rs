@@ -564,6 +564,20 @@ pub enum Error {
         source: ReconError,
     },
 
+    /// Resolving the decoder-visible transform shift rejected closed-loop reconstruction.
+    #[error(
+        "encoder closed-loop transform-shift derivation failed for plane {plane:?}, block {block:?}: {source}"
+    )]
+    ClosedLoopTransformShift {
+        /// Plane whose reconstruction was requested.
+        plane: PlaneId,
+        /// Visible-plane-relative transform block rectangle.
+        block: splot_recon::PlaneRect,
+        /// Underlying reconstruction transform-shift error.
+        #[source]
+        source: ReconError,
+    },
+
     /// Decoder-visible inverse transform rejected closed-loop reconstruction.
     #[error(
         "encoder closed-loop inverse transform failed for plane {plane:?}, block {block:?}: {source}"

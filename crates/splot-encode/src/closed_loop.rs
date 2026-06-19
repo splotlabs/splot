@@ -36,7 +36,7 @@ use splot_recon::{
     IntraSquareBlockSize, InverseTransform1dType, InverseTransform2dDim, InverseTransform2dOuter,
     OutputIndex, PixelFormat, PlaneId, PlaneRect, PlaneRef, PlaneSize, QuantizerDeltas,
     ac_quantizer, dc_quantizer, dequantize_block, inverse_transform_2d_outer,
-    predict_intra_dc_square_into, reconstruct_add_residual,
+    predict_intra_dc_square_into, reconstruct_add_residual, transform_shift,
 };
 
 use crate::error::{Error, Result};
@@ -48,8 +48,6 @@ const DCT_DCT_4X4_WIDTH: usize = 4;
 const DCT_DCT_4X4_HEIGHT: usize = 4;
 const DCT_DCT_4X4_COEFF_COUNT: usize = DCT_DCT_4X4_WIDTH * DCT_DCT_4X4_HEIGHT;
 const DCT_DCT_4X4_LOG2: u8 = 2;
-const DCT_DCT_4X4_ROW_SHIFT: u8 = 7;
-const DCT_DCT_4X4_COL_SHIFT: u8 = 10;
 
 /// Reconstructed coefficients and decoder-visible samples for one private block.
 #[derive(Debug)]
@@ -191,10 +189,20 @@ pub(crate) fn reconstruct_dc_only_from_quantized(
     // AV2 §7.14.2 / §7.14.4 dequantization (decoder-visible, recon).
     let dequantized = dequantize_dc_only(params, plane, block, quantized)?;
 
-    // AV2 §7.15.4 inverse transform (decoder-visible, recon).
+    // AV2 §7.15.4 inverse transform (decoder-visible, recon). The §7.15.4
+    // `Transform_Shift` values are sourced from `splot-recon`, not hand-copied,
+    // so a recon table correction cannot silently desync the closed loop.
+    let (row_shift, col_shift) =
+        transform_shift(u32::from(DCT_DCT_4X4_LOG2), u32::from(DCT_DCT_4X4_LOG2)).map_err(
+            |source| Error::ClosedLoopTransformShift {
+                plane,
+                block,
+                source,
+            },
+        )?;
     let mut reconstructed_residual = [0i32; DCT_DCT_4X4_COEFF_COUNT];
     inverse_transform_2d_outer(
-        &dct_dct_4x4_inverse_params(bit_depth),
+        &dct_dct_4x4_inverse_params(bit_depth, row_shift, col_shift),
         &dequantized,
         &mut reconstructed_residual,
     )
@@ -329,7 +337,11 @@ fn transform_block_rect() -> Result<PlaneRect> {
     })
 }
 
-fn dct_dct_4x4_inverse_params(bit_depth: ReconBitDepth) -> InverseTransform2dOuter {
+fn dct_dct_4x4_inverse_params(
+    bit_depth: ReconBitDepth,
+    row_shift: u8,
+    col_shift: u8,
+) -> InverseTransform2dOuter {
     InverseTransform2dOuter {
         log2_width: u32::from(DCT_DCT_4X4_LOG2),
         log2_height: u32::from(DCT_DCT_4X4_LOG2),
@@ -337,8 +349,8 @@ fn dct_dct_4x4_inverse_params(bit_depth: ReconBitDepth) -> InverseTransform2dOut
         plane_tx_type_is_idtx: false,
         row_type: InverseTransform2dDim::Kernel(InverseTransform1dType::Dct),
         col_type: InverseTransform2dDim::Kernel(InverseTransform1dType::Dct),
-        row_shift: DCT_DCT_4X4_ROW_SHIFT,
-        col_shift: DCT_DCT_4X4_COL_SHIFT,
+        row_shift,
+        col_shift,
         bit_depth,
         dpcm: None,
     }
