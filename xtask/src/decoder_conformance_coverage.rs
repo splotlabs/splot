@@ -264,6 +264,7 @@ const COVERAGE_ROWS: &[CoverageRow] = &[
             "coeff-ordinary-branch-tx-size-context",
             "coeff-ordinary-branch-scan-order",
             "coeff-ordinary-branch-mode-to-txfm-handoff",
+            "coeff-ordinary-branch-directional-uv-handoff",
             "coeff-ordinary-branch-tx-set-handoff",
             "coeff-ordinary-branch-lossless-handoff",
             "tx-size-symbolic-tables",
