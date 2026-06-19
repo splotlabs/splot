@@ -516,6 +516,108 @@ pub enum Error {
         source: splot_core::Error,
     },
 
+    /// Closed-loop reconstruction received an unsupported bit depth.
+    #[error(
+        "encoder closed-loop reconstruction supports only 8-bit input, got bit depth {bit_depth:?}"
+    )]
+    ClosedLoopUnsupportedBitDepth {
+        /// Requested decoded bit depth.
+        bit_depth: splot_recon::BitDepth,
+    },
+
+    /// Closed-loop reconstruction received a source view that is not 4x4.
+    #[error(
+        "encoder closed-loop reconstruction for plane {plane:?} supports only {expected_width}x{expected_height} source views, got visible size {actual:?}"
+    )]
+    ClosedLoopUnsupportedSourceSize {
+        /// Plane whose reconstruction was requested.
+        plane: PlaneId,
+        /// Actual visible source size.
+        actual: PlaneSize,
+        /// Supported source width in samples.
+        expected_width: usize,
+        /// Supported source height in samples.
+        expected_height: usize,
+    },
+
+    /// Decoder-visible intra prediction rejected closed-loop reconstruction.
+    #[error("encoder closed-loop intra prediction failed for plane {plane:?}: {source}")]
+    ClosedLoopPredict {
+        /// Plane whose reconstruction was requested.
+        plane: PlaneId,
+        /// Underlying reconstruction prediction error.
+        #[source]
+        source: ReconError,
+    },
+
+    /// Decoder-visible dequantization rejected closed-loop reconstruction.
+    #[error(
+        "encoder closed-loop dequantization failed for plane {plane:?}, block {block:?}: {source}"
+    )]
+    ClosedLoopDequant {
+        /// Plane whose reconstruction was requested.
+        plane: PlaneId,
+        /// Visible-plane-relative transform block rectangle.
+        block: splot_recon::PlaneRect,
+        /// Underlying reconstruction dequantization error.
+        #[source]
+        source: ReconError,
+    },
+
+    /// Resolving the decoder-visible transform shift rejected closed-loop reconstruction.
+    #[error(
+        "encoder closed-loop transform-shift derivation failed for plane {plane:?}, block {block:?}: {source}"
+    )]
+    ClosedLoopTransformShift {
+        /// Plane whose reconstruction was requested.
+        plane: PlaneId,
+        /// Visible-plane-relative transform block rectangle.
+        block: splot_recon::PlaneRect,
+        /// Underlying reconstruction transform-shift error.
+        #[source]
+        source: ReconError,
+    },
+
+    /// Decoder-visible inverse transform rejected closed-loop reconstruction.
+    #[error(
+        "encoder closed-loop inverse transform failed for plane {plane:?}, block {block:?}: {source}"
+    )]
+    ClosedLoopInverseTransform {
+        /// Plane whose reconstruction was requested.
+        plane: PlaneId,
+        /// Visible-plane-relative transform block rectangle.
+        block: splot_recon::PlaneRect,
+        /// Underlying reconstruction inverse-transform error.
+        #[source]
+        source: ReconError,
+    },
+
+    /// Decoder-visible residual addition rejected closed-loop reconstruction.
+    #[error(
+        "encoder closed-loop residual addition failed for plane {plane:?}, block {block:?}: {source}"
+    )]
+    ClosedLoopResidualAdd {
+        /// Plane whose reconstruction was requested.
+        plane: PlaneId,
+        /// Visible-plane-relative transform block rectangle.
+        block: splot_recon::PlaneRect,
+        /// Underlying reconstruction residual-addition error.
+        #[source]
+        source: ReconError,
+    },
+
+    /// Building or freezing the closed-loop reconstruction workspace failed.
+    #[error(
+        "encoder closed-loop reconstruction workspace failed while preparing {context}: {source}"
+    )]
+    ClosedLoopWorkspace {
+        /// Short description of the failed workspace step.
+        context: &'static str,
+        /// Underlying reconstruction workspace error.
+        #[source]
+        source: ReconError,
+    },
+
     /// An encoder lifecycle operation is invalid in the current context state.
     #[error("encoder operation {operation:?} is invalid while the context is {state:?}")]
     State {

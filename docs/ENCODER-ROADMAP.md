@@ -93,6 +93,13 @@ Status: planned, replaces the parked toy bootstrap path.
   DCT_DCT DC-only top-left neutral-spatial-context quantized subset, proving
   q-context-derived ordered base-tier entropy-token records through the in-tree
   AV2 §8.2 symbol encoder/decoder before tile-body writer integration.
+- Land a private minimal closed-loop reconstruction for the current 8-bit luma
+  4x4 DCT_DCT DC-only top-left subset, composing the encoder
+  residual/forward-transform/quantization stages with the `splot-recon`
+  decoder-visible AV2 §7.13.2.10 DC prediction, §7.14.2/§7.14.4 dequantization,
+  §7.15.4 inverse transform, and §7.14.3 reconstruct, plus the current-frame
+  workspace and decoded-frame hash, and prove the emitted coefficient decisions
+  reconstruct identically — before any tile-body or packet path.
 - Use closed-loop reconstruction before public success.
 - Emit only syntax the writer can produce and the validator accepts.
 - Record fixtures, hashes, and matrix proof before marking any encode stage done.

@@ -4139,6 +4139,39 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-CLOSED-LOOP-RECONSTRUCTION-MINIMAL"
+name = "Encoder closed-loop reconstruction minimal"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["7.13.2.10", "7.14.2", "7.14.3", "7.14.4", "7.15.4"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/closed_loop.rs"
+openspec_change = "encoder-closed-loop-reconstruction-minimal"
+tracking_issue = ""
+owner = "encoder"
+risk = "medium"
+notes = "Private, non-emitting encoder closed-loop reconstruction. `MinimalClosedLoopReconstruction::reconstruct_luma_4x4_dc_only` composes the existing private encoder-policy residual, forward-transform, and fixed-quantization stages with the decoder-visible `splot-recon` reconstruction process for the current top-left 8-bit luma 4x4 DCT_DCT DC-only uniform-block subset. Every decoder-visible step is performed by `splot-recon`: AV2 §7.13.2.10 no-neighbor DC intra prediction, §7.14.2/§7.14.4 dequantization, §7.15.4 inverse transform, and §7.14.3 reconstruct (residual addition with clip). The reconstructed block is frozen into a `splot-recon` monochrome current-frame workspace and hashed with the decoded-frame hash contract. Tests prove the qindex-zero flat subset reconstructs losslessly to the source, reconstruction and hash are deterministic (cross-checked against an independently filled workspace), and the emitted coefficient decisions (the §8.2 tokenization roundtrip) decode back to the exact quantized coefficient the loop reconstructs from. This row does not claim chroma, inter, multi-block, non-4x4, non-DC, non-uniform, or 10-bit reconstruction; reference-frame storage; tile-body emission; packet output; CLI success; rate control; quality behavior; or Baseline Encoder Profile v1 output."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/closed_loop.rs::tests", "crates/splot-encode/src/context.rs::tests::syntax_and_header_planning_do_not_enable_packet_output"]
+commands = ["cargo test -p splot-encode closed_loop --locked", "cargo test -p splot-encode syntax_and_header_planning_do_not_enable_packet_output --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-RECON-DEPENDENCY"
 name = "Encoder reconstruction dependency boundary"
 category = "encoder"

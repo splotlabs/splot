@@ -46,6 +46,16 @@ planning and status; it does not claim encoder behavior exists.
   encoder/decoder. It is not broad coefficient syntax, neighbor-derived spatial
   contexts, coefficient base-range / `read_quant` extension, tile CDF lifecycle,
   tile-body emission, rate control, or a packet path.
+- `ENC-CLOSED-LOOP-RECONSTRUCTION-MINIMAL` adds a private closed-loop
+  reconstruction for the current 8-bit luma 4x4 DCT_DCT DC-only top-left subset.
+  It composes the encoder residual/forward-transform/quantization stages with
+  the `splot-recon` decoder-visible AV2 §7.13.2.10 DC prediction,
+  §7.14.2/§7.14.4 dequantization, §7.15.4 inverse transform, and §7.14.3
+  reconstruct (residual addition), freezes the result into a `splot-recon`
+  current-frame workspace, and hashes it. It proves the qindex-zero flat subset
+  is lossless and that the emitted coefficient decisions reconstruct identically.
+  It is not chroma/inter/multi-block reconstruction, reference-frame storage,
+  tile-body emission, a packet path, or a public encode success path.
 - `Packet` is still only a byte buffer wrapper, and no coded packet production
   path exists.
 - `EncoderConfig` exposes `BitDepth::Twelve`, but current Baseline Encoder Profile
@@ -79,9 +89,14 @@ planning and status; it does not claim encoder behavior exists.
 - It is not a byte-consuming decoder and does not yet provide a full encoder
   closed-loop reconstruction API.
 - `splot-encode` has a direct `splot-recon` dependency and uses recon borrowed
-  plane/shared-frame views for input. It still has no closed-loop reconstruction
-  integration, packet generation, or public encode success path; those decisions
-  remain future work.
+  plane/shared-frame views for input. A private minimal closed-loop
+  reconstruction now composes the encoder forward path with the `splot-recon`
+  decoder-visible reconstruction process for the 8-bit luma 4x4 DCT_DCT DC-only
+  top-left subset, including the current-frame workspace and decoded-frame hash
+  (`ENC-CLOSED-LOOP-RECONSTRUCTION-MINIMAL`). It still has no reference-frame
+  storage, packet generation, or public encode success path, and reconstruction
+  beyond the minimal subset (chroma, inter, multi-block, broader transforms)
+  remains future work.
 
 ## Conformance baseline
 
