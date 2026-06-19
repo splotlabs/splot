@@ -41,8 +41,9 @@
 //! Its coefficient coverage is the single-DC magnitude vocabulary plus the minimal
 //! eob=2 multi-coefficient block; it does not emit blocks with eob > 2, luma DC
 //! magnitude beyond the golomb-prefix cap (525), high-frequency coefficients, the
-//! general `eob > 1` `transform_type()` / `intra_tx_type` signaling (the eob=2 trace
-//! assumes the DCT-only / reduced_tx_set==2 config where it reads no symbol), the
+//! general `eob > 1` `transform_type()` / `intra_tx_type` / `sec_tx_type` signaling
+//! (the eob=2 trace assumes the DCT-only / reduced_tx_set==2 / enable_intra_ist==0
+//! config where it reads no transform-type symbol), the
 //! chroma base-range/golomb tiers, V-plane coded coefficients, partition syntax,
 //! tile CDF lifecycle, packets, a public encoder API, or modes beyond the DC
 //! minimal tier.
@@ -611,13 +612,16 @@ pub(crate) fn compose_intra_dc_golomb_prefix_block_trace(
 /// no sign. The ten-token trace is `[0,0,0, 0, 1, 0, 0, 0, 1, 1]`.
 ///
 /// Transform-type scope: § 5.20.7.27 calls `transform_type()` between `eob_pt_16`
-/// and the base pass, and for `eob > 1` the § 5.20.7.29 `eob == 1` shortcut no
-/// longer infers `DCT_DCT`. This trace therefore assumes a transform-set
+/// and the base pass, and for `eob > 1` the `transform_type()` `eob == 1` shortcut
+/// no longer infers `DCT_DCT`. This trace therefore assumes a transform-set
 /// configuration where `transform_type()` reads NO `intra_tx_type` symbol — the
 /// DCT-only set (`get_tx_set` returns `TX_SET_DCTONLY`) or `reduced_tx_set == 2` for
-/// intra (§ 5.20.7.27, the `!(reduced_tx_set == 2 && is_inter == 0)` guard) —
-/// consistent with the block's DCT_DCT transform. The general `eob > 1`
-/// `intra_tx_type` signaling (`set > 0`, `reduced_tx_set != 2`) is a later brick.
+/// intra (§ 5.20.7.27, the `!(reduced_tx_set == 2 && is_inter == 0)` guard) — AND
+/// `enable_intra_ist == 0`, since § 5.20.7.29 (line 16603) otherwise reads a
+/// `sec_tx_type` (intra secondary transform) symbol before the base pass for an
+/// `eob > 1` DCT_DCT block. Both are consistent with the block's plain DCT_DCT
+/// transform; the general `eob > 1` `intra_tx_type` / `sec_tx_type` signaling
+/// (`set > 0` and `reduced_tx_set != 2`, or `enable_intra_ist`) is a later brick.
 ///
 /// This is the first multi-coefficient block trace. The § 8.2 roundtrip proves the
 /// symbols are self-consistent; conformance of the data-dependent `coeff_base`

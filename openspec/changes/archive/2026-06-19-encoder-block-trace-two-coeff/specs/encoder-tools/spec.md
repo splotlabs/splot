@@ -16,8 +16,10 @@ all-zero U and V `txb_skip`, and SHALL prove the complete trace writes through o
 in-tree AV2 §8.2 symbol encoder and decodes back through one symbol decoder with
 shared CDF state. The trace assumes a transform-set configuration where §5.20.7.27's
 `transform_type()` reads no `intra_tx_type` symbol (the DCT-only set or
-`reduced_tx_set == 2` intra), consistent with the DCT_DCT transform. It SHALL NOT
-emit the general `eob > 1` `intra_tx_type` signaling, blocks with eob > 2,
+`reduced_tx_set == 2` intra) AND `enable_intra_ist == 0` (else §5.20.7.29 reads a
+`sec_tx_type` symbol before the base pass for an eob > 1 DCT_DCT block), consistent
+with the plain DCT_DCT transform. It SHALL NOT emit the general `eob > 1`
+`intra_tx_type` / `sec_tx_type` signaling, blocks with eob > 2,
 higher-magnitude AC coefficients, chroma multi-coefficient blocks, partition syntax, tile payloads,
 coded packets, public CLI success, or modes beyond the DC minimal tier.
 

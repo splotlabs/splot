@@ -22,8 +22,12 @@ The AV2 §5.20.7.27 residual for this block, verified vs the decoder `coeff_loop
   `eob > 1` the §5.20.7.29 `eob == 1 → DCT_DCT` shortcut no longer applies, so the
   trace assumes a transform-set config where `transform_type()` reads no
   `intra_tx_type` symbol (the DCT-only set, or `reduced_tx_set == 2` intra per the
-  `!(reduced_tx_set == 2 && is_inter == 0)` guard at spec line 16467), consistent
-  with the DCT_DCT transform. The general `intra_tx_type` signaling is a later brick.
+  `!(reduced_tx_set == 2 && is_inter == 0)` guard at spec line 16467) AND
+  `enable_intra_ist == 0` (else §5.20.7.29 line 16603 reads a `sec_tx_type`
+  intra-secondary-transform symbol before the base pass for an `eob > 1` DCT_DCT
+  block), consistent with the plain DCT_DCT transform. The general `intra_tx_type` /
+  `sec_tx_type` signaling is a later brick. The scan-index→raster derivation uses
+  §5.20.7.30 `get_scan`.
 
 The DC `coeff_base` context is data-dependent: it is the §8.3.2 low-frequency
 neighbour-sum context, and the AC of level 1 at raster position 4 (below the DC) is the DC's significant
