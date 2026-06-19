@@ -89,6 +89,14 @@ planning and status; it does not claim encoder behavior exists.
   not plane type) and is distinguished only by ctx 6; V uses the dedicated
   `TileVTxbSkipCdf` at ctx 0. It is not non-all-zero coefficients, tile-body
   emission, or a packet path.
+- `ENC-INTRA-BLOCK-TRACE-CODED-DC` adds the minimal *coded* (non-all-zero) intra
+  block symbol trace: the mode prefix, the coded luma `residual()` for a single
+  nonzero DC coefficient (`txb_skip=0`, `eob_pt_16`, `coeff_base_eob`, `dc_sign`
+  per §5.20.7.27), then the all-zero U/V `txb_skip`, proven through one in-tree
+  AV2 §8.2 coder with shared CDF state. A `pub(crate)` `luma_dc_coded_tokens`
+  accessor mirrors the tokenizer's coded DC path, guarded by an equivalence test.
+  It is not multi-coefficient blocks, `coeff_br` base-range, chroma coefficients,
+  partition syntax, tile-body emission, or a packet path.
 - `Packet` is still only a byte buffer wrapper, and no coded packet production
   path exists.
 - `EncoderConfig` exposes `BitDepth::Twelve`, but current Baseline Encoder Profile
