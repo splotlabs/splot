@@ -67,6 +67,13 @@ planning and status; it does not claim encoder behavior exists.
   DC_PRED) at the non-directional context (AV2 §5.20.5.6/§8.3.2), proven through
   the in-tree AV2 §8.2 symbol coder. It is not CfL/CCTX, directional-luma
   contexts, coefficient/all-zero symbols, tile-body emission, or a packet path.
+- `ENC-INTRA-BLOCK-MODE-TRACE` adds a private `block_symbol_trace` module that
+  composes the ordered AV2 §5.20.5.3 mode-info prefix (`y_mode_set`,
+  `y_mode_index`, `uv_mode`) by reusing the merged mode emitters, proving the
+  combined sequence roundtrips through one in-tree AV2 §8.2 coder with shared CDF
+  state. It is the home for the growing block-symbol trace; coefficient symbols
+  from `residual()` join later. It is not coefficient/all-zero symbols, tile-body
+  emission, or a packet path.
 - `Packet` is still only a byte buffer wrapper, and no coded packet production
   path exists.
 - `EncoderConfig` exposes `BitDepth::Twelve`, but current Baseline Encoder Profile
