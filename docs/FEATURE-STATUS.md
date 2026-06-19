@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 317 feature(s).
+Matrix version 1. Last reviewed 2026-06-15. 318 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -144,6 +144,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `ENC-COEFF-MULTI-TOKENS` | Encoder multi-coefficient token accessors | encoder | encoder-tool | done | done | n/a | n/a | n/a | done | n/a | done | n/a | `crates/splot-encode/src/coefficient_tokenization/multi_coeff.rs` |
 | `ENC-INTRA-BLOCK-TRACE-TWO-COEFF` | Encoder eob=2 multi-coefficient block trace | encoder | encoder-tool | done | done | n/a | n/a | n/a | done | n/a | done | n/a | `crates/splot-encode/src/block_symbol_trace.rs` |
 | `ENC-INTRA-TX-TYPE-TOKEN` | Encoder intra_tx_type TX_SET_INTRA_1 token | encoder | encoder-tool | done | done | n/a | n/a | n/a | done | n/a | done | n/a | `crates/splot-encode/src/coefficient_tokenization/transform_type.rs` |
+| `ENC-INTRA-BLOCK-TRACE-TWO-COEFF-TX-TYPE` | Encoder eob=2 trace with TX_SET_INTRA_1 intra_tx_type | encoder | encoder-tool | done | done | n/a | n/a | n/a | done | n/a | done | n/a | `crates/splot-encode/src/block_symbol_trace.rs` |
 | `ENC-RECON-DEPENDENCY` | Encoder reconstruction dependency boundary | encoder | infrastructure | done | done | n/a | n/a | n/a | n/a | n/a | done | n/a | `crates/splot-encode/src/recon_boundary.rs` |
 | `ENC-INTRA-TOY-V0` | Minimal toy intra encoder path | encoder | encoder-tool | partial | todo | n/a | n/a | todo | todo | todo | todo | pending | `crates/splot-encode/src/context.rs` |
 | `ENC-RATE-CONTROL-V0` | Initial rate control strategy | encoder | encoder-tool | partial | todo | n/a | n/a | n/a | todo | n/a | todo | n/a | `crates/splot-encode/src/context.rs` |

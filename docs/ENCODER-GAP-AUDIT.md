@@ -180,6 +180,13 @@ planning and status; it does not claim encoder behavior exists.
   (extracted to a cdf_rows submodule for the source budget). Available but not yet
   composed into a trace; the general eob>1 trace brick consumes it. It is not a
   general trace, sec_tx_type, or a packet path.
+- `ENC-INTRA-BLOCK-TRACE-TWO-COEFF-TX-TYPE` composes the GENERAL eob>1 trace for
+  the default reduced_tx_set TX_SET_INTRA_1 config: the eob=2 trace with the
+  §5.20.8.2 intra_tx_type DCT_DCT symbol inserted after eob_pt_16 (removing #336's
+  reduced_tx_set==2 scope; still enable_intra_ist==0). 11-token trace
+  [0,0,0,0,1,0,0,0,0,1,1] roundtrips through one §8.2 coder. The golomb composers
+  were split to a submodule for the source budget. It is not sec_tx_type, eob>2, or
+  a packet path.
 - `Packet` is still only a byte buffer wrapper, and no coded packet production
   path exists.
 - `EncoderConfig` exposes `BitDepth::Twelve`, but current Baseline Encoder Profile

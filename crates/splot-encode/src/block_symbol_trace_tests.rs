@@ -656,3 +656,43 @@ fn two_coeff_block_roundtrip_is_deterministic() {
     assert_eq!(first.bytes(), second.bytes());
     assert_eq!(first.decoded_symbols(), second.decoded_symbols());
 }
+
+#[test]
+fn composes_two_coeff_with_tx_type_inserts_intra_tx_type_after_eob_pt() {
+    let base = compose_minimal_intra_two_coeff_block_trace().unwrap();
+    let trace = compose_minimal_intra_two_coeff_block_trace_with_tx_type().unwrap();
+
+    // The tx-type trace is the eob=2 trace plus one intra_tx_type token after the
+    // eob_pt_16 token (index 4).
+    assert_eq!(trace.len(), base.len() + 1);
+    assert!(
+        matches!(trace[5], BlockSymbolToken::Coeff(t)
+            if matches!(t.selector(), CoefficientCdfRowSelector::IntraTxTypeSet1 { tx_size_sqr: 0 })),
+        "intra_tx_type (DCT_DCT) after eob_pt"
+    );
+    // modes; all_zero=0, eob_pt_16=1, intra_tx_type=0 (DCT_DCT), AC coeff_base_eob=0,
+    // DC coeff_base=0, AC sign_bit=0, U/V all_zero=1.
+    assert_eq!(
+        trace.iter().map(|token| token.symbol()).collect::<Vec<_>>(),
+        vec![0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 1]
+    );
+}
+
+#[test]
+fn two_coeff_with_tx_type_roundtrips_through_one_coder() {
+    let trace = compose_minimal_intra_two_coeff_block_trace_with_tx_type().unwrap();
+    let proof = roundtrip_block_symbol_trace(&trace).unwrap();
+
+    assert_eq!(proof.decoded_symbols(), &[0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 1]);
+    assert!(!proof.bytes().is_empty());
+}
+
+#[test]
+fn two_coeff_with_tx_type_roundtrip_is_deterministic() {
+    let trace = compose_minimal_intra_two_coeff_block_trace_with_tx_type().unwrap();
+    let first = roundtrip_block_symbol_trace(&trace).unwrap();
+    let second = roundtrip_block_symbol_trace(&trace).unwrap();
+
+    assert_eq!(first.bytes(), second.bytes());
+    assert_eq!(first.decoded_symbols(), second.decoded_symbols());
+}

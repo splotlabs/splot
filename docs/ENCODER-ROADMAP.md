@@ -128,9 +128,10 @@ Status: planned, replaces the parked toy bootstrap path.
   + a zero DC, with the DC `coeff_base` context derived from the AC's `Level[]`) —
   landed. The transform-type signaling the general eob>1 path needs has begun: the
   `intra_tx_type` (TX_SET_INTRA_1) transform-type token landed (DCT_DCT = symbol 0
-  for 4x4 DC_PRED). The general eob>1 trace inserting it (+ `sec_tx_type`), blocks
-  with eob>2, the chroma base-range/golomb tiers, partition syntax, and the
-  tile-body byte assembly remain.
+  for 4x4 DC_PRED). The general eob>1 trace inserting it landed (the eob=2 block for the default
+  reduced_tx_set TX_SET_INTRA_1 config, with the intra_tx_type DCT_DCT symbol after
+  eob_pt). `sec_tx_type` (enable_intra_ist), blocks with eob>2, the chroma
+  base-range/golomb tiers, partition syntax, and the tile-body byte assembly remain.
 - Use closed-loop reconstruction before public success.
 - Emit only syntax the writer can produce and the validator accepts.
 - Record fixtures, hashes, and matrix proof before marking any encode stage done.
