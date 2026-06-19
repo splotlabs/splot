@@ -5,10 +5,12 @@
 //!
 //! This module is the home for the growing ordered block-symbol trace. It
 //! advances `ENC-INTRA-BLOCK-MODE-TRACE` (the AV2 § 5.20.5.3 mode-info prefix
-//! `y_mode_set`, `y_mode_index`, `uv_mode`) and `ENC-INTRA-BLOCK-TRACE-LUMA-SKIP`
+//! `y_mode_set`, `y_mode_index`, `uv_mode`), `ENC-INTRA-BLOCK-TRACE-LUMA-SKIP`
 //! (the unified trace extended with the first `residual()` symbol, the luma
-//! `txb_skip` / § 5.20.7.27 `all_zero`), reusing the merged mode emitters and the
-//! coefficient tokenization's luma all-zero token
+//! `txb_skip` / § 5.20.7.27 `all_zero`), and `ENC-INTRA-BLOCK-TRACE-CHROMA-SKIP`
+//! (the complete all-zero block: the per-plane luma/U/V `txb_skip` symbols),
+//! reusing the merged mode emitters and the coefficient tokenization's per-plane
+//! all-zero tokens
 //! (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3`).
 //!
 //! AV2 § 5.20.5.3 `intra_frame_mode_info()` calls `read_intra_y_mode()` then
@@ -18,7 +20,7 @@
 //! through one § 8.2 coder with shared CDF state, routing each token to its scoped
 //! CDF row from `splot-core` defaults.
 //!
-//! It does not emit chroma `txb_skip`, non-all-zero luma coefficients, partition
+//! It does not emit non-all-zero coefficient symbols (EOB/base/sign), partition
 //! syntax, tile CDF lifecycle, packets, a public encoder API, or modes beyond the
 //! DC minimal tier.
 
@@ -27,12 +29,13 @@
 use splot_core::symbol::{Symbol, SymbolDecoder, SymbolDecoderConfig};
 use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig};
 use splot_core::tables::cdf::{
-    DEFAULT_TXB_SKIP_CDF, DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF, DEFAULT_Y_MODE_INDEX_CDF,
-    DEFAULT_Y_MODE_SET_CDF,
+    DEFAULT_TXB_SKIP_CDF, DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF, DEFAULT_V_TXB_SKIP_CDF,
+    DEFAULT_Y_MODE_INDEX_CDF, DEFAULT_Y_MODE_SET_CDF,
 };
 
 use crate::coefficient_tokenization::{
-    CoefficientCdfRowSelector, CoefficientEntropyToken, luma_all_zero_token,
+    CoefficientCdfRowSelector, CoefficientEntropyToken, chroma_u_all_zero_token,
+    chroma_v_all_zero_token, luma_all_zero_token,
 };
 use crate::error::{Error, Result};
 use crate::intra_mode_emission::{
@@ -43,12 +46,16 @@ use crate::intra_mode_emission::{
 const Y_MODE_SET_CDF_ROW_LEN: usize = 5;
 const INTRA_MODE_CDF_ROW_LEN: usize = 9;
 const TXB_SKIP_CDF_ROW_LEN: usize = 3;
+const V_TXB_SKIP_CDF_ROW_LEN: usize = 3;
 const TILE_ORIGIN_Y_MODE_INDEX_CTX: usize = 0;
 const NON_DIRECTIONAL_UV_MODE_CTX: usize = 0;
 const MINIMAL_COEFF_CDF_Q_CTX: usize = 0;
 const LUMA_PLANE_TYPE: usize = 0;
+const CHROMA_PLANE_TYPE: usize = 1;
 const TX_SIZE_4X4_CTX: usize = 0;
 const TXB_SKIP_CTX_NEUTRAL: usize = 0;
+const CHROMA_U_TXB_SKIP_CTX_NEUTRAL: usize = 6;
+const V_TXB_SKIP_CTX_NEUTRAL: usize = 0;
 const BLOCK_SYMBOL_TRACE_BUDGET: usize = 32;
 
 /// Composes the ordered AV2 § 5.20.5.3 intra-block mode-info prefix
@@ -113,6 +120,28 @@ pub(crate) fn compose_minimal_intra_dc_all_zero_block_trace() -> Result<Vec<Bloc
     trace.extend(modes.into_iter().map(BlockSymbolToken::Mode));
     trace.push(BlockSymbolToken::Coeff(luma_all_zero_token(
         MINIMAL_COEFF_CDF_Q_CTX,
+    )));
+    Ok(trace)
+}
+
+/// Composes the complete ordered minimal intra DC all-zero block trace: the AV2
+/// § 5.20.5.3 mode-info prefix, then the per-plane § 5.20.7.27 `all_zero`
+/// (`txb_skip`) symbols for luma, U, and V (each `1` for an all-zero block),
+/// read in `residual()` plane order Y, U, V.
+pub(crate) fn compose_minimal_intra_dc_complete_all_zero_block_trace()
+-> Result<Vec<BlockSymbolToken>> {
+    let mut trace = compose_minimal_intra_dc_all_zero_block_trace()?;
+    trace
+        .try_reserve_exact(2)
+        .map_err(|_| Error::BlockSymbolTraceAllocationFailed {
+            context: "complete all-zero block trace",
+        })?;
+    trace.push(BlockSymbolToken::Coeff(chroma_u_all_zero_token(
+        MINIMAL_COEFF_CDF_Q_CTX,
+    )));
+    trace.push(BlockSymbolToken::Coeff(chroma_v_all_zero_token(
+        MINIMAL_COEFF_CDF_Q_CTX,
+        V_TXB_SKIP_CTX_NEUTRAL,
     )));
     Ok(trace)
 }
@@ -209,6 +238,8 @@ struct BlockSymbolTraceCdfRows {
     y_mode_index_tile_origin: [i32; INTRA_MODE_CDF_ROW_LEN],
     uv_mode_non_directional: [i32; INTRA_MODE_CDF_ROW_LEN],
     luma_txb_skip: [i32; TXB_SKIP_CDF_ROW_LEN],
+    u_txb_skip: [i32; TXB_SKIP_CDF_ROW_LEN],
+    v_txb_skip: [i32; V_TXB_SKIP_CDF_ROW_LEN],
 }
 
 impl BlockSymbolTraceCdfRows {
@@ -220,6 +251,9 @@ impl BlockSymbolTraceCdfRows {
                 [NON_DIRECTIONAL_UV_MODE_CTX],
             luma_txb_skip: DEFAULT_TXB_SKIP_CDF[MINIMAL_COEFF_CDF_Q_CTX][LUMA_PLANE_TYPE]
                 [TX_SIZE_4X4_CTX][TXB_SKIP_CTX_NEUTRAL],
+            u_txb_skip: DEFAULT_TXB_SKIP_CDF[MINIMAL_COEFF_CDF_Q_CTX][CHROMA_PLANE_TYPE]
+                [TX_SIZE_4X4_CTX][CHROMA_U_TXB_SKIP_CTX_NEUTRAL],
+            v_txb_skip: DEFAULT_V_TXB_SKIP_CDF[MINIMAL_COEFF_CDF_Q_CTX][V_TXB_SKIP_CTX_NEUTRAL],
         }
     }
 
@@ -242,6 +276,16 @@ impl BlockSymbolTraceCdfRows {
                     tx_size: TX_SIZE_4X4_CTX,
                     ctx: TXB_SKIP_CTX_NEUTRAL,
                 } => Ok(self.luma_txb_skip.as_mut_slice()),
+                CoefficientCdfRowSelector::TxbSkip {
+                    coeff_cdf_q_ctx: MINIMAL_COEFF_CDF_Q_CTX,
+                    plane_type: CHROMA_PLANE_TYPE,
+                    tx_size: TX_SIZE_4X4_CTX,
+                    ctx: CHROMA_U_TXB_SKIP_CTX_NEUTRAL,
+                } => Ok(self.u_txb_skip.as_mut_slice()),
+                CoefficientCdfRowSelector::VTxbSkip {
+                    coeff_cdf_q_ctx: MINIMAL_COEFF_CDF_Q_CTX,
+                    ctx: V_TXB_SKIP_CTX_NEUTRAL,
+                } => Ok(self.v_txb_skip.as_mut_slice()),
                 _ => Err(Error::BlockSymbolTraceUnsupportedSelector { index }),
             },
         }
@@ -366,5 +410,44 @@ mod tests {
             err,
             Error::BlockSymbolTraceUnsupportedSelector { index: 0 }
         ));
+    }
+
+    #[test]
+    fn composes_complete_all_zero_block_trace_in_order() {
+        let trace = compose_minimal_intra_dc_complete_all_zero_block_trace().unwrap();
+
+        assert_eq!(trace.len(), 6);
+        // Mode prefix, then per-plane all_zero (Y, U, V) in residual() order.
+        assert!(matches!(trace[0], BlockSymbolToken::Mode(_)));
+        assert!(matches!(trace[1], BlockSymbolToken::Mode(_)));
+        assert!(matches!(trace[2], BlockSymbolToken::Mode(_)));
+        assert!(matches!(trace[3], BlockSymbolToken::Coeff(_)));
+        assert!(matches!(trace[4], BlockSymbolToken::Coeff(_)));
+        assert!(matches!(trace[5], BlockSymbolToken::Coeff(_)));
+        // y_mode_set=0, y_mode_index=0, uv_mode=0, then luma/U/V all_zero=1.
+        assert_eq!(
+            trace.iter().map(|token| token.symbol()).collect::<Vec<_>>(),
+            vec![0, 0, 0, 1, 1, 1]
+        );
+    }
+
+    #[test]
+    fn complete_trace_roundtrips_through_one_coder() {
+        let trace = compose_minimal_intra_dc_complete_all_zero_block_trace().unwrap();
+        let proof = roundtrip_block_symbol_trace(&trace).unwrap();
+
+        assert_eq!(proof.decoded_symbols(), &[0, 0, 0, 1, 1, 1]);
+        assert_eq!(proof.symbol_count(), 6);
+        assert!(!proof.bytes().is_empty());
+    }
+
+    #[test]
+    fn complete_roundtrip_is_deterministic() {
+        let trace = compose_minimal_intra_dc_complete_all_zero_block_trace().unwrap();
+        let first = roundtrip_block_symbol_trace(&trace).unwrap();
+        let second = roundtrip_block_symbol_trace(&trace).unwrap();
+
+        assert_eq!(first.bytes(), second.bytes());
+        assert_eq!(first.decoded_symbols(), second.decoded_symbols());
     }
 }

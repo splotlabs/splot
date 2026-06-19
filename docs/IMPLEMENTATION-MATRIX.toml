@@ -4304,6 +4304,39 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-INTRA-BLOCK-TRACE-CHROMA-SKIP"
+name = "Encoder complete all-zero intra block trace"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20.5.3", "5.20.7.27", "8.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/block_symbol_trace.rs"
+openspec_change = "encoder-block-trace-chroma-skip"
+tracking_issue = ""
+owner = "encoder"
+risk = "medium"
+notes = "Private, non-emitting encoder complete all-zero intra block trace extending `block_symbol_trace`. `compose_minimal_intra_dc_complete_all_zero_block_trace` returns the ordered AV2 §5.20.5.3 mode-info prefix (`y_mode_set`, `y_mode_index`, `uv_mode`) followed by the per-plane §5.20.7.27 `txb_skip` (`all_zero`=1) symbols for luma, U, and V in `residual()` plane order — the complete six-symbol sequence a minimal all-zero intra block emits. Adds `pub(crate)` `chroma_u_all_zero_token` / `chroma_v_all_zero_token` accessors plus a `VTxbSkip` CDF-row selector to `coefficient_tokenization` (U reuses `TileTxbSkipCdf` with plane_type=1 at the §8.3.2 neutral context 6 — the fixed +6 for U; V uses the dedicated `TileVTxbSkipCdf` at context 0 for a chroma-block-equals-transform-size all-zero-U block). The unified `roundtrip_block_symbol_trace` holds the luma/U/V `txb_skip` rows from `splot-core` defaults (DEFAULT_TXB_SKIP_CDF[0][0][0][0], [0][1][0][6]; DEFAULT_V_TXB_SKIP_CDF[0][0]), routes each token to its scoped §8.3.2 row, and proves the six-symbol sequence writes through one in-tree AV2 §8.2 SymbolEncoder and decodes back through one SymbolDecoder with shared CDF state. This row does not claim non-all-zero coefficient symbols (EOB/base/sign), CfL/CCTX, partition syntax, tile CDF lifecycle, tile-body emission, packet output, CLI success, or Baseline Encoder Profile v1 output."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/block_symbol_trace.rs::tests::composes_complete_all_zero_block_trace_in_order", "crates/splot-encode/src/block_symbol_trace.rs::tests::complete_trace_roundtrips_through_one_coder", "crates/splot-encode/src/block_symbol_trace.rs::tests::complete_roundtrip_is_deterministic", "crates/splot-encode/src/context.rs::tests::syntax_and_header_planning_do_not_enable_packet_output"]
+commands = ["cargo test -p splot-encode block_symbol_trace --locked", "cargo test -p splot-encode coefficient_tokenization --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-RECON-DEPENDENCY"
 name = "Encoder reconstruction dependency boundary"
 category = "encoder"

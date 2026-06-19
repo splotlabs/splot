@@ -107,8 +107,10 @@ Status: planned, replaces the parked toy bootstrap path.
   landed), compose the ordered §5.20.5.3 mode-info prefix (`y_mode_set`,
   `y_mode_index`, `uv_mode`) into one trace (landed), extend it with the first
   `residual()` symbol — the luma `txb_skip` — through one unified §8.2 coder
-  (landed), and add the remaining per-plane all-zero/coeff symbols (chroma U/V
-  `txb_skip`) in `residual()` order.
+  (landed), and complete the all-zero block with the chroma U/V `txb_skip`
+  symbols in `residual()` order (landed). The complete minimal all-zero intra
+  block symbol sequence now roundtrips; the nonzero-coefficient interleaving and
+  the tile-body byte assembly remain.
 - Use closed-loop reconstruction before public success.
 - Emit only syntax the writer can produce and the validator accepts.
 - Record fixtures, hashes, and matrix proof before marking any encode stage done.

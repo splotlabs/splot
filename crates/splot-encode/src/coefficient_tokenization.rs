@@ -31,8 +31,12 @@ const DCT_DCT_4X4_HEIGHT: usize = 4;
 const DCT_DCT_4X4_COEFF_COUNT: usize = DCT_DCT_4X4_WIDTH * DCT_DCT_4X4_HEIGHT;
 const COEFF_CDF_Q_CONTEXTS: usize = 4;
 const LUMA_PLANE_TYPE: usize = 0;
+const CHROMA_PLANE_TYPE: usize = 1;
 const TX_SIZE_4X4_CTX: usize = 0;
 const TXB_SKIP_CTX_NEUTRAL: usize = 0;
+// AV2 § 8.3.2: the U-plane `txb_skip` context adds a fixed +6 to the
+// neutral (above==0, left==0) base context.
+const CHROMA_U_TXB_SKIP_CTX_NEUTRAL: usize = 6;
 const EOB_CTX_LUMA_INTRA: usize = 0;
 const COEFF_BASE_LF_EOB_CTX_DC: usize = 0;
 const DC_SIGN_GROUP_VISIBLE: usize = 0;
@@ -57,6 +61,45 @@ pub(crate) fn tokenize_quantized_4x4_dct_dct_dc_only(
 /// luma coefficient symbols follow it.
 pub(crate) const fn luma_all_zero_token(coeff_cdf_q_ctx: usize) -> CoefficientEntropyToken {
     all_zero_token(coeff_cdf_q_ctx, true)
+}
+
+/// Returns the AV2 § 5.20.7.27 U-plane `all_zero` (`txb_skip`) token for an
+/// all-zero chroma U transform block at the neutral spatial context.
+///
+/// The U `txb_skip` uses `TileTxbSkipCdf` with `plane_type == 1` and the § 8.3.2
+/// neutral context `6` (above/left reductions are 0, plus the fixed +6 for U).
+pub(crate) const fn chroma_u_all_zero_token(coeff_cdf_q_ctx: usize) -> CoefficientEntropyToken {
+    CoefficientEntropyToken {
+        syntax: CoefficientTokenSyntax::AllZero,
+        selector: CoefficientCdfRowSelector::TxbSkip {
+            coeff_cdf_q_ctx,
+            plane_type: CHROMA_PLANE_TYPE,
+            tx_size: TX_SIZE_4X4_CTX,
+            ctx: CHROMA_U_TXB_SKIP_CTX_NEUTRAL,
+        },
+        symbol: true as u8,
+    }
+}
+
+/// Returns the AV2 § 5.20.7.27 V-plane `all_zero` (`txb_skip`) token for an
+/// all-zero chroma V transform block at the given V `txb_skip` context.
+///
+/// The V `txb_skip` uses the dedicated `TileVTxbSkipCdf[coeff_cdf_q_ctx][ctx]`.
+/// For a block whose chroma block size equals its transform size with an
+/// all-zero U plane, the § 8.3.2 context is 0 (no chroma-larger-than-tx or
+/// `EobU != 0` contributions).
+pub(crate) const fn chroma_v_all_zero_token(
+    coeff_cdf_q_ctx: usize,
+    ctx: usize,
+) -> CoefficientEntropyToken {
+    CoefficientEntropyToken {
+        syntax: CoefficientTokenSyntax::AllZero,
+        selector: CoefficientCdfRowSelector::VTxbSkip {
+            coeff_cdf_q_ctx,
+            ctx,
+        },
+        symbol: true as u8,
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -226,12 +269,16 @@ pub(crate) enum CoefficientCdfRowSelector {
         group: usize,
         ctx: usize,
     },
+    /// `TileVTxbSkipCdf[coeff_cdf_q_ctx][ctx]` (the V-plane `all_zero` CDF).
+    VTxbSkip { coeff_cdf_q_ctx: usize, ctx: usize },
 }
 
 impl CoefficientCdfRowSelector {
     const fn syntax_name(self) -> &'static str {
         match self {
-            Self::TxbSkip { .. } => CoefficientTokenSyntax::AllZero.as_str(),
+            Self::TxbSkip { .. } | Self::VTxbSkip { .. } => {
+                CoefficientTokenSyntax::AllZero.as_str()
+            }
             Self::EobPt16 { .. } => CoefficientTokenSyntax::EobPt16.as_str(),
             Self::CoeffBaseLfEob { .. } => CoefficientTokenSyntax::CoeffBaseEob.as_str(),
             Self::DcSign { .. } => CoefficientTokenSyntax::DcSign.as_str(),

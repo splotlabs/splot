@@ -80,6 +80,12 @@ planning and status; it does not claim encoder behavior exists.
   `txb_skip` / §5.20.7.27 `all_zero`), proving the combined sequence through one
   in-tree AV2 §8.2 coder with shared CDF state. It is not chroma `txb_skip`,
   non-all-zero coefficients, tile-body emission, or a packet path.
+- `ENC-INTRA-BLOCK-TRACE-CHROMA-SKIP` completes the minimal all-zero intra block
+  symbol trace: the mode prefix plus the per-plane luma/U/V `txb_skip`
+  (§5.20.7.27 `all_zero`) symbols in `residual()` order, proven through one
+  in-tree AV2 §8.2 coder with shared CDF state (U via `TileTxbSkipCdf`
+  plane_type=1 ctx=6; V via the dedicated `TileVTxbSkipCdf`). It is not
+  non-all-zero coefficients, tile-body emission, or a packet path.
 - `Packet` is still only a byte buffer wrapper, and no coded packet production
   path exists.
 - `EncoderConfig` exposes `BitDepth::Twelve`, but current Baseline Encoder Profile
