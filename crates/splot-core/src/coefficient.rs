@@ -36,11 +36,12 @@ pub const LF_SIG_COEF_CONTEXTS_2D: usize = 21;
 /// `idtx_sign` context is raised when a current `Level` exceeds it.
 pub const COEFF_BASE_RANGE: u32 = 3;
 
-/// AV2 § 3 `LF_NUM_BASE_LEVELS` (`03-symbols.md:419`, "Base level threshold for low
-/// frequency region"; `= LF_BASE_SYMBOLS - 2 = 4`): the low-frequency base-level
-/// threshold. In § 5.20.7.27 a low-frequency coefficient reads `coeff_br` when its
-/// level exceeds `LF_NUM_BASE_LEVELS` (the non-low-frequency threshold is the
-/// distinct, decode-local `NUM_BASE_LEVELS = 2`, `03-symbols.md:585`).
+/// AV2 § 3 `LF_NUM_BASE_LEVELS` (`03-symbols.md:419-420`, "Base level threshold for
+/// low frequency coefficients for deciding to read coeff_br"; `= LF_BASE_SYMBOLS - 2
+/// = 4`): the low-frequency base-level threshold. In § 5.20.7.27 a low-frequency
+/// coefficient reads `coeff_br` when its level exceeds `LF_NUM_BASE_LEVELS` (the
+/// non-low-frequency threshold is the distinct, decode-local `NUM_BASE_LEVELS = 2`,
+/// `03-symbols.md:585`).
 pub const LF_NUM_BASE_LEVELS: u32 = 4;
 
 #[cfg(test)]
