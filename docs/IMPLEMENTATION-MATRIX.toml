@@ -4403,6 +4403,39 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-INTRA-BLOCK-TRACE-CODED-CHROMA-DC"
+name = "Encoder coded chroma intra block trace"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20.5.3", "5.20.7.27", "8.2", "8.3.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/block_symbol_trace.rs"
+openspec_change = "encoder-block-trace-coded-chroma"
+tracking_issue = ""
+owner = "encoder"
+risk = "medium"
+notes = "Private, non-emitting encoder coded chroma (U-plane) intra DC block trace. AV2 §5.20.7.27 codes a chroma coefficient with the same token shape as luma (`txb_skip`, `eob_pt_16`, `coeff_base_eob`, `dc_sign`) but with §8.3.2 chroma contexts. `coefficient_tokenization` adds a `CoeffBaseLfEobUv` (`TileCoeffBaseLfEobUvCdf`) selector + a `pub(crate)` `chroma_u_dc_coded_tokens(coeff_cdf_q_ctx, magnitude, negative)` accessor (base tier 1..=4). The chroma contexts (verified vs the decoder `base_eob_selector`/`coeff_base_eob_ctx`/`dc_sign`): U `txb_skip`=0 reuses the U all-zero row (`is_inter||fsc_mode` bank 0, ctx 6 — only the symbol differs); `eob_pt_16` uses eob ctx 2 (`eobCtx=(plane>0)?2:is_inter`, §5.20.7.27 line 15362); `coeff_base_eob` uses the chroma `DEFAULT_COEFF_BASE_LF_EOB_UV_CDF[q][0]` (c==0 → SIG_COEF_CONTEXTS_EOB-4=0); `dc_sign` uses `TileDcSignCdf[ptype=1][isHidden=0][ctx=0]`. `block_symbol_trace` adds `compose_minimal_intra_dc_coded_chroma_block_trace` (coded luma DC + coded U DC + all-zero V, both magnitude +1) + the chroma `eob_pt_16`/`coeff_base_lf_eob_uv`/chroma `dc_sign` rows, proving the twelve-symbol trace [0,0,0,0,0,0,0,0,0,0,0,1] through one in-tree AV2 §8.2 coder with shared CDF state. This row does not claim the chroma base-range/golomb tiers, V-plane coded coefficients, multi-coefficient blocks, partition syntax, tile CDF lifecycle, tile-body emission, packet output, CLI success, or Baseline Encoder Profile v1 output."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/block_symbol_trace.rs::tests::composes_coded_chroma_block_trace_in_order", "crates/splot-encode/src/block_symbol_trace.rs::tests::coded_chroma_block_trace_roundtrips_through_one_coder", "crates/splot-encode/src/block_symbol_trace.rs::tests::coded_chroma_block_roundtrip_is_deterministic"]
+commands = ["cargo test -p splot-encode block_symbol_trace --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-RECON-DEPENDENCY"
 name = "Encoder reconstruction dependency boundary"
 category = "encoder"

@@ -107,6 +107,14 @@ planning and status; it does not claim encoder behavior exists.
   delegates to it; an equivalence test covers magnitude 1..=7). It is not the
   golomb tail, multi-coefficient blocks, chroma coefficients, tile-body emission,
   or a packet path.
+- `ENC-INTRA-BLOCK-TRACE-CODED-CHROMA-DC` adds the first coded *chroma*
+  coefficient: a coded U-plane DC (`txb_skip=0`, `eob_pt_16`, `coeff_base_eob`,
+  `dc_sign`) with the §8.3.2 chroma contexts (eob ctx 2; the chroma
+  `TileCoeffBaseLfEobUvCdf` at DC ctx 0; `dc_sign` ptype 1 — verified vs the
+  decoder), proven in a coded-luma + coded-U + all-zero-V trace through one
+  in-tree AV2 §8.2 coder. It is not the chroma base-range/golomb tiers, V-plane
+  coded coefficients, multi-coefficient blocks, tile-body emission, or a packet
+  path.
 - `Packet` is still only a byte buffer wrapper, and no coded packet production
   path exists.
 - `EncoderConfig` exposes `BitDepth::Twelve`, but current Baseline Encoder Profile

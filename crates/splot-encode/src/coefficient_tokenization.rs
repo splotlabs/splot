@@ -43,8 +43,14 @@ const TXB_SKIP_CTX_NEUTRAL: usize = 0;
 // neutral (above==0, left==0) base context.
 const CHROMA_U_TXB_SKIP_CTX_NEUTRAL: usize = 6;
 const EOB_CTX_LUMA_INTRA: usize = 0;
+// AV2 § 5.20.7.27 line 15362: `eobCtx = (plane > 0) ? 2 : is_inter`, so an intra
+// chroma coefficient uses eob context 2.
+const EOB_CTX_CHROMA: usize = 2;
 const COEFF_BASE_LF_EOB_CTX_DC: usize = 0;
 const COEFF_BR_LF_CTX_DC: usize = 0;
+// AV2 § 8.3.2 `dc_sign` CDF is `TileDcSignCdf[ptype][isHidden][ctx]`; the ptype
+// index is `(plane > 0)`, so luma is 0 (`LUMA_PLANE_TYPE`) and chroma (U/V) is 1.
+const DC_SIGN_PLANE_TYPE_CHROMA: usize = 1;
 const DC_SIGN_GROUP_VISIBLE: usize = 0;
 const DC_SIGN_CTX_NEUTRAL: usize = 0;
 // AV2 § 5.20.7.27 / § 8.3.2: a low-frequency luma EOB coefficient's base level
@@ -189,6 +195,76 @@ pub(crate) fn luma_dc_coded_tokens(
         selector: CoefficientCdfRowSelector::DcSign {
             coeff_cdf_q_ctx,
             plane_type: LUMA_PLANE_TYPE,
+            group: DC_SIGN_GROUP_VISIBLE,
+            ctx: DC_SIGN_CTX_NEUTRAL,
+        },
+        symbol: negative as u8,
+    });
+    Ok(tokens)
+}
+
+/// Returns the ordered AV2 § 5.20.7.27 coded U-plane DC-only coefficient tokens
+/// for a single nonzero chroma U DC coefficient of unsigned `magnitude`
+/// (`1..=MAX_BASE_EOB_MAGNITUDE`, the base tier; chroma base-range/golomb are
+/// later bricks) and the given sign, at the neutral top-left chroma context:
+///
+/// 1. `all_zero == 0` (U `txb_skip`, the block is coded),
+/// 2. `eob_pt_16 == 0` (a single coefficient at scan position 0),
+/// 3. `coeff_base_eob == magnitude - 1` via the chroma `TileCoeffBaseLfEobUvCdf`,
+/// 4. `dc_sign` via the chroma `ptype == 1` plane.
+///
+/// Per AV2 § 8.3.2 the chroma contexts differ from luma: the eob context is `2`
+/// (§ 5.20.7.27 `eobCtx = (plane > 0) ? 2 : is_inter`), `coeff_base_eob` uses the
+/// dedicated chroma low-frequency CDF (DC ctx `0`), and `dc_sign` uses ptype `1`.
+/// Verified against the decoder's `base_eob_selector` / `dc_sign` derivation.
+pub(crate) fn chroma_u_dc_coded_tokens(
+    coeff_cdf_q_ctx: usize,
+    magnitude: u32,
+    negative: bool,
+) -> Result<Vec<CoefficientEntropyToken>> {
+    debug_assert!(
+        (1..=MAX_BASE_EOB_MAGNITUDE).contains(&magnitude),
+        "coded chroma DC magnitude must be in the base tier"
+    );
+    let mut tokens = Vec::new();
+    tokens
+        .try_reserve_exact(4)
+        .map_err(|_| Error::CoefficientTokenizationAllocationFailed {
+            context: "coded chroma U DC coefficient tokens",
+        })?;
+    // U `txb_skip == 0` (coded): the same § 8.3.2 row as the U all-zero token
+    // (`is_inter || fsc_mode` bank 0, ctx 6), only the symbol differs.
+    tokens.push(CoefficientEntropyToken {
+        syntax: CoefficientTokenSyntax::AllZero,
+        selector: CoefficientCdfRowSelector::TxbSkip {
+            coeff_cdf_q_ctx,
+            plane_type: INTRA_NON_FSC_TXB_SKIP_BANK,
+            tx_size: TX_SIZE_4X4_CTX,
+            ctx: CHROMA_U_TXB_SKIP_CTX_NEUTRAL,
+        },
+        symbol: false as u8,
+    });
+    tokens.push(CoefficientEntropyToken {
+        syntax: CoefficientTokenSyntax::EobPt16,
+        selector: CoefficientCdfRowSelector::EobPt16 {
+            coeff_cdf_q_ctx,
+            eob_ctx: EOB_CTX_CHROMA,
+        },
+        symbol: 0,
+    });
+    tokens.push(CoefficientEntropyToken {
+        syntax: CoefficientTokenSyntax::CoeffBaseEob,
+        selector: CoefficientCdfRowSelector::CoeffBaseLfEobUv {
+            coeff_cdf_q_ctx,
+            ctx: COEFF_BASE_LF_EOB_CTX_DC,
+        },
+        symbol: magnitude.min(LF_NUM_BASE_LEVELS + 1).saturating_sub(1) as u8,
+    });
+    tokens.push(CoefficientEntropyToken {
+        syntax: CoefficientTokenSyntax::DcSign,
+        selector: CoefficientCdfRowSelector::DcSign {
+            coeff_cdf_q_ctx,
+            plane_type: DC_SIGN_PLANE_TYPE_CHROMA,
             group: DC_SIGN_GROUP_VISIBLE,
             ctx: DC_SIGN_CTX_NEUTRAL,
         },
@@ -371,6 +447,9 @@ pub(crate) enum CoefficientCdfRowSelector {
     VTxbSkip { coeff_cdf_q_ctx: usize, ctx: usize },
     /// `TileCoeffBrLfCdf[coeff_cdf_q_ctx][ctx]` (the low-frequency `coeff_br` CDF).
     CoeffBrLf { coeff_cdf_q_ctx: usize, ctx: usize },
+    /// `TileCoeffBaseLfEobUvCdf[coeff_cdf_q_ctx][ctx]` (the chroma low-frequency
+    /// `coeff_base_eob` CDF).
+    CoeffBaseLfEobUv { coeff_cdf_q_ctx: usize, ctx: usize },
 }
 
 impl CoefficientCdfRowSelector {
@@ -381,7 +460,9 @@ impl CoefficientCdfRowSelector {
             }
             Self::EobPt16 { .. } => CoefficientTokenSyntax::EobPt16.as_str(),
             Self::CoeffBrLf { .. } => CoefficientTokenSyntax::CoeffBr.as_str(),
-            Self::CoeffBaseLfEob { .. } => CoefficientTokenSyntax::CoeffBaseEob.as_str(),
+            Self::CoeffBaseLfEob { .. } | Self::CoeffBaseLfEobUv { .. } => {
+                CoefficientTokenSyntax::CoeffBaseEob.as_str()
+            }
             Self::DcSign { .. } => CoefficientTokenSyntax::DcSign.as_str(),
         }
     }
