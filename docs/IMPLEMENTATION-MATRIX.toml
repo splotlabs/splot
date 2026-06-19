@@ -9197,6 +9197,61 @@ fixtures = [
 diagnostics = ["decode/unsupported-feature"]
 
 [[feature]]
+id = "DECODE-COEFF-FSC-LEVEL-PASS"
+name = "Coefficient FSC level pass"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.20.7.27", "8.2.5", "8.2.6", "8.3.2", "9.3"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-2-5",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-2-6",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2",
+    "docs/spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/tile_payload/coeff_loop/fsc_level_pass.rs"
+openspec_change = "coeff-fsc-level-pass"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Adds a crate-private loaded-but-unwired `splot-decode` FSC/IDTX coefficient level first pass for AV2 §5.20.7.27. `apply_nonzero_coeff_fsc_level_pass` accepts a `NonZeroCoeffBlockStart`, a checked `FscCoeffScanWalk`, and caller-resolved coefficient-CDF q/tx-size facts; preflights EOB/scan cardinality, adjusted block geometry, and row-major scan positions; derives `BaseBob`, later `BaseIdtx`, and conditional `BrIdtx` selectors with the existing §8.3.2 context helpers; clamps the selector transform-size axis to `Min(TX_16X16, txSzCtx)`; reads selected rows through `SymbolDecoder`; writes each resulting `Level[row][col]`; and returns derived selector/read audit records plus updated local block state. This feature remains partial: runtime `coeffs()` does not call the pass, `useFsc` and `segEob` are still caller-resolved, `idtx_sign`, `read_quant`, nonzero `QuantSign[]`/`Quant[]`, tile context commits, dequantization, inverse transform, residual add, reconstruction, reference refresh, AVM/dav2d invocation, public APIs, and broad `decode_block()` / `decode_tile()` support remain unimplemented."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "partial"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/tile_payload/coeff_loop/fsc_level_pass_tests.rs::coefficient_fsc_level_pass_reads_basebob_then_baseidtx_and_writes_levels",
+    "crates/splot-decode/src/tile_payload/coeff_loop/fsc_level_pass_tests.rs::coefficient_fsc_level_pass_derives_idtx_context_from_written_neighbour_level",
+    "crates/splot-decode/src/tile_payload/coeff_loop/fsc_level_pass_tests.rs::coefficient_fsc_level_pass_conditionally_reads_bridtx",
+    "crates/splot-decode/src/tile_payload/coeff_loop/fsc_level_pass_tests.rs::coefficient_fsc_level_pass_rejects_static_config_before_consumption",
+]
+commands = [
+    "cargo test -p splot-decode fsc_level --locked",
+    "cargo test -p splot-decode coeff_loop --locked",
+    "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-decoder-conformance-coverage",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-decode/src/tile_payload/coeff_loop.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/fsc_level_pass.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/fsc_level_pass_tests.rs",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
 id = "DECODE-COEFF-BASE-SYMBOL-READ"
 name = "Coefficient base symbol read"
 category = "infrastructure"

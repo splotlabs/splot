@@ -30,6 +30,7 @@ pub(crate) mod base_symbol;
 mod branch;
 #[cfg(test)]
 pub(crate) use branch::{CoeffBlockEobBranchInput, read_coeff_block_eob_branch};
+pub(crate) mod fsc_level_pass;
 pub(crate) mod level_state;
 pub(crate) mod max_level;
 pub(crate) mod ordinary_pass;
@@ -647,6 +648,8 @@ mod base_level_pass_tests;
 mod base_symbol_tests;
 #[cfg(test)]
 mod eob_symbol_tests;
+#[cfg(test)]
+mod fsc_level_pass_tests;
 #[cfg(test)]
 mod level_state_tests;
 #[cfg(test)]
