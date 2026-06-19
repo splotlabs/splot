@@ -266,8 +266,14 @@ generated `Tx_Size_Sqr[txSz]` and `Tx_Size_Sqr_Up[txSz]` before the ordinary
 base-context pass. `DECODE-COEFF-ORDINARY-BRANCH-SCAN-ORDER` now derives
 `scan = get_scan(txSz, txClass)` from raw transform dimensions and decode-local
 § 5.20.7.30 scan-order logic after deriving `txClass` from caller-resolved
-`PlaneTxType`. The coefficient branch still does not implement
-§ 5.20.7.29 `compute_tx_type` or wire runtime `coeffs()`.
+`PlaneTxType`.
+`DECODE-COEFF-ORDINARY-BRANCH-MODE-TO-TXFM-HANDOFF` now derives `PlaneTxType`
+for the non-lossless intra chroma non-directional `Mode_To_Txfm` subset from
+caller-resolved `enable_chroma_dctonly`, generated § 9.2 `Mode_To_Txfm`, and
+the inline § 5.20.7.29 `Tx_Type_In_Set_Intra` membership table before
+delegating to the `PlaneTxType` handoff. The coefficient branch still does not
+implement the full § 5.20.7.29 `compute_tx_type` process or wire runtime
+`coeffs()`.
 Runtime integration of nonzero coefficient blocks, tile context fact derivation
 for nonzero blocks, dequantization, and
 reconstruction remain unsupported. The
@@ -275,7 +281,7 @@ reconstruction remain unsupported. The
 `useQm` / `UserQm` gating and `shift` derivation, the rest
 of the § 7.14.3 reconstruct process, the § 7.15.3 secondary transform, the
 § 7.15.4 DPCM-direction selection and combined transform-parameter resolve helper,
-the § 5.20.7.29 `compute_tx_type` transform-type computation that produces
+the remaining § 5.20.7.29 `compute_tx_type` transform-type branches that produce
 `PlaneTxType`, and the coefficient
 entropy decode that produces nonzero `Quant` remain unimplemented.
 `splot-recon` remains scheduler-free:
