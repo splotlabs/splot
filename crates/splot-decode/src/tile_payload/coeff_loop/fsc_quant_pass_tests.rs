@@ -7,13 +7,14 @@ use splot_core::span::ByteOffset;
 use splot_core::symbol::{CdfUpdateMode, SymbolDecoder, SymbolDecoderConfig};
 
 use super::super::cdf::{FrameCdfSubset, TileCdfSubset};
-use super::super::coeff_state::TileCoeffContextState;
+use super::super::coeff_state::{CoeffContextUpdate, TileCoeffContextState, TileCoeffStateError};
 use super::branch::{CoeffBlockEobBranch, NonZeroCoeffBlockStart, NonZeroCoeffBlockStartInput};
 use super::fsc_level_pass::{
     CoeffFscLevelPassConfig, NonZeroCoeffFscLevelPass, apply_nonzero_coeff_fsc_level_pass,
 };
 use super::fsc_quant_pass::{
-    CoeffFscQuantPassError, NonZeroCoeffFscQuantPass, apply_nonzero_coeff_fsc_quant_pass,
+    CoeffFscContextCommitConfig, CoeffFscQuantPassError, NonZeroCoeffFscQuantPass,
+    apply_nonzero_coeff_fsc_quant_pass, apply_nonzero_coeff_fsc_quant_pass_with_context_commit,
 };
 use super::fsc_sign_pass::{
     CoeffFscSignPassError, CoeffFscSignRead, NonZeroCoeffFscSignPass,
@@ -59,6 +60,46 @@ fn config() -> CoeffFscLevelPassConfig {
         tx_width: 8,
         tx_height: 8,
     }
+}
+
+fn context_commit_config() -> CoeffFscContextCommitConfig {
+    CoeffFscContextCommitConfig {
+        plane: 0,
+        x4: 1,
+        y4: 2,
+        w4: 2,
+        h4: 2,
+    }
+}
+
+fn chroma_context_commit_config() -> CoeffFscContextCommitConfig {
+    CoeffFscContextCommitConfig {
+        plane: 1,
+        ..context_commit_config()
+    }
+}
+
+fn out_of_bounds_context_commit_config() -> CoeffFscContextCommitConfig {
+    CoeffFscContextCommitConfig {
+        x4: 5,
+        ..context_commit_config()
+    }
+}
+
+fn seeded_context_state() -> TileCoeffContextState {
+    let mut state = TileCoeffContextState::new(6, 6).unwrap();
+    state
+        .update_after_coeffs(CoeffContextUpdate {
+            plane: 0,
+            x4: 0,
+            y4: 0,
+            w4: 6,
+            h4: 6,
+            cul_level: 1,
+            dc_category: 1,
+        })
+        .unwrap();
+    state
 }
 
 fn setup_level_pass<'a>(
@@ -326,6 +367,143 @@ fn coefficient_fsc_quant_pass_interleaves_sign_and_quant_reads() {
         batched_quant.as_slice(),
         "payload unexpectedly matched batch quant order: {payload:?}"
     );
+}
+
+#[test]
+fn coefficient_fsc_quant_pass_with_context_commit_updates_tile_context_lines() {
+    let payload = find_payload(2, |pass| {
+        pass.quant_state().cul_level() > 0 && pass.quant_state().dc_category() != 0
+    });
+    let expected = run_pass(&payload, 2).unwrap();
+    let (mut tile, mut symbols, _walk, level_pass) = setup_level_pass(&payload, 2).unwrap();
+    let mut context_state = seeded_context_state();
+
+    let pass = apply_nonzero_coeff_fsc_quant_pass_with_context_commit(
+        &mut context_state,
+        &mut tile,
+        &mut symbols,
+        level_pass,
+        &SCAN,
+        config(),
+        context_commit_config(),
+    )
+    .unwrap();
+    let quant_state = pass.quant_state();
+
+    assert_eq!(pass, expected);
+    assert_eq!(
+        &context_state.above_level(0).unwrap()[1..3],
+        &[quant_state.cul_level(); 2]
+    );
+    assert_eq!(
+        &context_state.left_level(0).unwrap()[2..4],
+        &[quant_state.cul_level(); 2]
+    );
+    assert_eq!(
+        &context_state.above_dc(0).unwrap()[1..3],
+        &[quant_state.dc_category(); 2]
+    );
+    assert_eq!(
+        &context_state.left_dc(0).unwrap()[2..4],
+        &[quant_state.dc_category(); 2]
+    );
+    assert_eq!(context_state.above_level(0).unwrap()[0], 1);
+    assert_eq!(context_state.left_level(0).unwrap()[0], 1);
+}
+
+#[test]
+fn coefficient_fsc_quant_pass_with_context_commit_preserves_context_on_pass_failure() {
+    let payload = find_payload(2, |_| true);
+    let (mut tile, mut symbols, _walk, level_pass) = setup_level_pass(&payload, 2).unwrap();
+    let mut context_state = seeded_context_state();
+    let context_before = context_state.clone();
+    let consumed_before = symbols.consumed_bits();
+    let symbol_count_before = symbols.symbol_count();
+    let tile_before = tile.clone();
+
+    let err = apply_nonzero_coeff_fsc_quant_pass_with_context_commit(
+        &mut context_state,
+        &mut tile,
+        &mut symbols,
+        level_pass,
+        &SCAN,
+        CoeffFscLevelPassConfig {
+            tx_width: 4,
+            ..config()
+        },
+        context_commit_config(),
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        err,
+        CoeffFscQuantPassError::Sign(CoeffFscSignPassError::BlockGeometryMismatch { .. })
+    ));
+    assert_eq!(context_state, context_before);
+    assert_eq!(symbols.consumed_bits(), consumed_before);
+    assert_eq!(symbols.symbol_count(), symbol_count_before);
+    assert_eq!(tile, tile_before);
+}
+
+#[test]
+fn coefficient_fsc_quant_pass_with_context_commit_rejects_chroma_plane_before_pass() {
+    let payload = find_payload(2, |_| true);
+    let (mut tile, mut symbols, _walk, level_pass) = setup_level_pass(&payload, 2).unwrap();
+    let mut context_state = seeded_context_state();
+    let context_before = context_state.clone();
+    let consumed_before = symbols.consumed_bits();
+    let symbol_count_before = symbols.symbol_count();
+    let tile_before = tile.clone();
+
+    let err = apply_nonzero_coeff_fsc_quant_pass_with_context_commit(
+        &mut context_state,
+        &mut tile,
+        &mut symbols,
+        level_pass,
+        &SCAN,
+        config(),
+        chroma_context_commit_config(),
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        err,
+        CoeffFscQuantPassError::NonLumaPlane { plane: 1 }
+    ));
+    assert_eq!(context_state, context_before);
+    assert_eq!(symbols.consumed_bits(), consumed_before);
+    assert_eq!(symbols.symbol_count(), symbol_count_before);
+    assert_eq!(tile, tile_before);
+}
+
+#[test]
+fn coefficient_fsc_quant_pass_with_context_commit_preserves_context_on_update_failure() {
+    let payload = find_payload(2, |_| true);
+    let (mut tile, mut symbols, _walk, level_pass) = setup_level_pass(&payload, 2).unwrap();
+    let mut context_state = seeded_context_state();
+    let context_before = context_state.clone();
+
+    let err = apply_nonzero_coeff_fsc_quant_pass_with_context_commit(
+        &mut context_state,
+        &mut tile,
+        &mut symbols,
+        level_pass,
+        &SCAN,
+        config(),
+        out_of_bounds_context_commit_config(),
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        err,
+        CoeffFscQuantPassError::ContextUpdate(TileCoeffStateError::ContextRangeOutOfBounds {
+            context: "above",
+            start: 5,
+            end: 7,
+            len: 6
+        })
+    ));
+    assert_eq!(context_state, context_before);
 }
 
 #[test]

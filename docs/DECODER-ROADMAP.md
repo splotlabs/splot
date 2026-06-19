@@ -238,7 +238,10 @@ loaded-but-unwired pass: starting from the level pass, it interleaves
 `idtx_sign`, immediate `QuantSign[]` writes, § 5.20.7.28 `read_quant` with FSC
 constants (`isHidden = 0`, `maxLevel = NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1`,
 `allowTcq = 0`), signed local `Quant[]` writes, and final `culLevel` /
-`dcCategory` derivation. It still does not commit tile context or wire runtime
+`dcCategory` derivation. `DECODE-COEFF-FSC-CONTEXT-COMMIT` now wraps that FSC
+pass with the § 5.20.7.27 end-of-`coeffs()` tile context update, committing the
+final `culLevel` and `dcCategory` through `TileCoeffContextState` with
+caller-resolved plane and 4x4 geometry. It still does not wire runtime
 `coeffs()`.
 Separately, `DECODE-COEFF-ORDINARY-DERIVED-BASE-PASS` now composes the ordinary
 state-derived first pass into the ordinary coefficient pass, carrying

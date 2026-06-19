@@ -10,7 +10,9 @@ use std::collections::TryReserveError;
 use splot_core::symbol::SymbolDecoder;
 
 use super::super::cdf::TileCdfSubset;
-use super::super::coeff_state::{TileCoeffStateError, TransformCoeffBlockState};
+use super::super::coeff_state::{
+    CoeffContextUpdate, TileCoeffContextState, TileCoeffStateError, TransformCoeffBlockState,
+};
 use super::NonZeroCoeffEobSymbolRead;
 use super::fsc_level_pass::{CoeffFscLevelPassConfig, CoeffFscLevelRead, NonZeroCoeffFscLevelPass};
 use super::fsc_sign_pass::{
@@ -42,6 +44,21 @@ pub(crate) struct NonZeroCoeffFscQuantPass {
     read_quants: Vec<CoeffReadQuant>,
     quant_state: NonZeroCoeffQuantState,
     block: TransformCoeffBlockState,
+}
+
+/// Caller-resolved facts for committing FSC end-of-`coeffs()` context lines.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CoeffFscContextCommitConfig {
+    /// Plane index; the FSC/IDTX branch is valid only for luma plane 0.
+    pub(crate) plane: usize,
+    /// Transform-block x coordinate in 4x4 units.
+    pub(crate) x4: usize,
+    /// Transform-block y coordinate in 4x4 units.
+    pub(crate) y4: usize,
+    /// Transform-block width in 4x4 units.
+    pub(crate) w4: usize,
+    /// Transform-block height in 4x4 units.
+    pub(crate) h4: usize,
 }
 
 impl NonZeroCoeffFscQuantPass {
@@ -118,6 +135,15 @@ pub(crate) enum CoeffFscQuantPassError {
     /// Applying signed quant state failed.
     #[error("coefficient FSC quant write failed: {0}")]
     QuantState(#[from] CoeffQuantStateWriteError),
+    /// The FSC/IDTX context commit was requested for a non-luma plane.
+    #[error("coefficient FSC quant context commit requires luma plane, got plane {plane}")]
+    NonLumaPlane {
+        /// Rejected plane index.
+        plane: usize,
+    },
+    /// Committing tile coefficient context lines failed.
+    #[error("coefficient FSC quant context update failed: {0}")]
+    ContextUpdate(TileCoeffStateError),
 }
 
 /// Runs the FSC/IDTX §5.20.7.27 sign/quant loop over `c = 0 .. segEob`.
@@ -157,6 +183,47 @@ pub(crate) fn apply_nonzero_coeff_fsc_quant_pass(
         quant_state,
         block,
     })
+}
+
+/// Runs the FSC/IDTX quant pass and commits tile context lines.
+///
+/// This wraps [`apply_nonzero_coeff_fsc_quant_pass`] with the AV2 §5.20.7.27
+/// end-of-`coeffs()` context update
+/// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27`). The final
+/// `culLevel` and `dcCategory` come from the signed `Quant[]` state summary
+/// produced after §5.20.7.28 `read_quant`; the caller still resolves `useFsc`,
+/// `segEob`, scan, plane, and geometry facts. Runtime `coeffs()` wiring,
+/// dequantization, inverse transform, residual add, and reconstruction remain
+/// out of scope.
+pub(crate) fn apply_nonzero_coeff_fsc_quant_pass_with_context_commit(
+    state: &mut TileCoeffContextState,
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    level_pass: NonZeroCoeffFscLevelPass,
+    scan: &[u16],
+    config: CoeffFscLevelPassConfig,
+    context: CoeffFscContextCommitConfig,
+) -> Result<NonZeroCoeffFscQuantPass, CoeffFscQuantPassError> {
+    if context.plane != 0 {
+        return Err(CoeffFscQuantPassError::NonLumaPlane {
+            plane: context.plane,
+        });
+    }
+
+    let pass = apply_nonzero_coeff_fsc_quant_pass(cdfs, symbols, level_pass, scan, config)?;
+    let quant_state = pass.quant_state();
+    state
+        .update_after_coeffs(CoeffContextUpdate {
+            plane: context.plane,
+            x4: context.x4,
+            y4: context.y4,
+            w4: context.w4,
+            h4: context.h4,
+            cul_level: quant_state.cul_level(),
+            dc_category: quant_state.dc_category(),
+        })
+        .map_err(CoeffFscQuantPassError::ContextUpdate)?;
+    Ok(pass)
 }
 
 struct FscInterleavedQuantPass {
