@@ -116,6 +116,10 @@ const GOLOMB_MAXLEVEL: u32 = 8;
 // The finite-q path covers `x` in `0..=9` (q `0..=4`), i.e. magnitude `8..=17`.
 const GOLOMB_DC_M: u32 = 1;
 const GOLOMB_FINITE_Q_MAX: u32 = 4;
+// Top of the finite-q magnitude range: maxLevel + (2*GOLOMB_FINITE_Q_MAX + 1) =
+// 8 + 9 = 17. Above this `q == cMax` and the golomb-prefix path (a later brick)
+// applies.
+const GOLOMB_FINITE_Q_MAGNITUDE_MAX: u32 = GOLOMB_MAXLEVEL + (2 * GOLOMB_FINITE_Q_MAX + 1);
 // Minimal golomb-tail coded luma block: a single DC coefficient of value +10
 // (level reaches maxLevel 8, then `x = 2` → q=1, coeff_rem=0).
 const MINIMAL_GOLOMB_DC_MAGNITUDE: u32 = 10;
@@ -360,10 +364,28 @@ pub(crate) fn compose_minimal_intra_dc_coded_chroma_block_trace() -> Result<Vec<
 /// finite-q magnitude range `maxLevel..=maxLevel + 9` (8..=17); the golomb-prefix
 /// path (magnitude 18+) is a later brick.
 pub(crate) fn compose_minimal_intra_dc_golomb_block_trace() -> Result<Vec<BlockSymbolToken>> {
+    compose_intra_dc_golomb_block_trace(MINIMAL_GOLOMB_DC_MAGNITUDE, MINIMAL_GOLOMB_DC_NEGATIVE)
+}
+
+/// Composes the intra DC coded golomb-tail block trace for any finite-q luma DC
+/// `magnitude` in `GOLOMB_MAXLEVEL..=GOLOMB_FINITE_Q_MAGNITUDE_MAX` (8..=17). The
+/// level tokens are identical across the tier (the level always saturates to
+/// `maxLevel`); only the § 5.20.7.28 golomb `q_length`/`coeff_rem` bypass bits
+/// vary with `x = magnitude - maxLevel` (`q = x >> 1`, `coeff_rem = x & 1`, `m = 1`
+/// for the first DC coefficient). The `dc_sign` CDF token precedes the golomb bits
+/// (§ 5.20.7.27's sign+quant pass reads the sign before calling `read_quant`).
+pub(crate) fn compose_intra_dc_golomb_block_trace(
+    magnitude: u32,
+    negative: bool,
+) -> Result<Vec<BlockSymbolToken>> {
+    debug_assert!(
+        (GOLOMB_MAXLEVEL..=GOLOMB_FINITE_Q_MAGNITUDE_MAX).contains(&magnitude),
+        "finite-q golomb magnitude is maxLevel..=maxLevel+9 (8..=17); the golomb-prefix path is a later brick"
+    );
     let modes = compose_minimal_intra_dc_block_mode_trace()?;
     let level = luma_dc_golomb_level_tokens(MINIMAL_COEFF_CDF_Q_CTX)?;
     // x = magnitude - maxLevel (the golomb extension); finite-q encoding (m = 1).
-    let x = MINIMAL_GOLOMB_DC_MAGNITUDE.saturating_sub(GOLOMB_MAXLEVEL);
+    let x = magnitude.saturating_sub(GOLOMB_MAXLEVEL);
     let q = x >> GOLOMB_DC_M;
     let coeff_rem = x & 1;
     debug_assert!(
@@ -398,7 +420,7 @@ pub(crate) fn compose_minimal_intra_dc_golomb_block_trace() -> Result<Vec<BlockS
     // order is `dc_sign` then the golomb `q_length_bit`/`coeff_rem` literals.
     trace.push(BlockSymbolToken::Coeff(luma_dc_sign_token(
         MINIMAL_COEFF_CDF_Q_CTX,
-        MINIMAL_GOLOMB_DC_NEGATIVE,
+        negative,
     )));
     for _ in 0..q {
         trace.push(BlockSymbolToken::bypass(1, 0));
@@ -659,403 +681,5 @@ impl BlockSymbolTraceCdfRows {
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
-mod tests {
-    use super::*;
-    use crate::intra_mode_emission::{
-        IntraModeCdfRowSelector, IntraModeSyntax, roundtrip_intra_mode_tokens,
-    };
-
-    #[test]
-    fn composes_ordered_mode_info_prefix() {
-        let trace = compose_minimal_intra_dc_block_mode_trace().unwrap();
-
-        assert_eq!(trace.len(), 3);
-        assert_eq!(trace[0].syntax(), IntraModeSyntax::YModeSet);
-        assert_eq!(trace[1].syntax(), IntraModeSyntax::YModeIndex);
-        assert_eq!(trace[2].syntax(), IntraModeSyntax::UvMode);
-        assert!(matches!(
-            trace[0].selector(),
-            IntraModeCdfRowSelector::YModeSet
-        ));
-        assert!(matches!(
-            trace[1].selector(),
-            IntraModeCdfRowSelector::YModeIndex { ctx: 0 }
-        ));
-        assert!(matches!(
-            trace[2].selector(),
-            IntraModeCdfRowSelector::UvModeCflNotAllowed { ctx: 0 }
-        ));
-        assert_eq!(
-            trace.iter().map(|token| token.symbol()).collect::<Vec<_>>(),
-            vec![0, 0, 0]
-        );
-    }
-
-    #[test]
-    fn composed_trace_matches_concatenated_emitters() {
-        let trace = compose_minimal_intra_dc_block_mode_trace().unwrap();
-        let luma = emit_minimal_dc_luma_intra_mode().unwrap();
-        let uv = emit_minimal_dc_chroma_uv_mode().unwrap();
-
-        let mut expected = luma.tokens().to_vec();
-        expected.extend_from_slice(uv.tokens());
-        assert_eq!(trace, expected);
-    }
-
-    #[test]
-    fn composed_trace_roundtrips_through_one_coder() {
-        let trace = compose_minimal_intra_dc_block_mode_trace().unwrap();
-        let proof = roundtrip_intra_mode_tokens(&trace).unwrap();
-
-        assert_eq!(proof.decoded_symbols(), &[0, 0, 0]);
-        assert_eq!(proof.symbol_count(), 3);
-        assert!(!proof.bytes().is_empty());
-    }
-
-    #[test]
-    fn roundtrip_is_deterministic() {
-        let trace = compose_minimal_intra_dc_block_mode_trace().unwrap();
-        let first = roundtrip_intra_mode_tokens(&trace).unwrap();
-        let second = roundtrip_intra_mode_tokens(&trace).unwrap();
-
-        assert_eq!(first.bytes(), second.bytes());
-        assert_eq!(first.decoded_symbols(), second.decoded_symbols());
-    }
-
-    #[test]
-    fn composes_all_zero_block_trace_in_order() {
-        let trace = compose_minimal_intra_dc_all_zero_block_trace().unwrap();
-
-        assert_eq!(trace.len(), 4);
-        assert!(matches!(trace[0], BlockSymbolToken::Mode(_)));
-        assert!(matches!(trace[1], BlockSymbolToken::Mode(_)));
-        assert!(matches!(trace[2], BlockSymbolToken::Mode(_)));
-        assert!(matches!(trace[3], BlockSymbolToken::Coeff(_)));
-        if let BlockSymbolToken::Mode(token) = trace[0] {
-            assert_eq!(token.syntax(), IntraModeSyntax::YModeSet);
-        }
-        if let BlockSymbolToken::Mode(token) = trace[2] {
-            assert_eq!(token.syntax(), IntraModeSyntax::UvMode);
-        }
-        // y_mode_set=0, y_mode_index=0, uv_mode=0, luma all_zero=1.
-        assert_eq!(
-            trace.iter().map(|token| token.symbol()).collect::<Vec<_>>(),
-            vec![0, 0, 0, 1]
-        );
-    }
-
-    #[test]
-    fn unified_trace_roundtrips_through_one_coder() {
-        let trace = compose_minimal_intra_dc_all_zero_block_trace().unwrap();
-        let proof = roundtrip_block_symbol_trace(&trace).unwrap();
-
-        assert_eq!(proof.decoded_symbols(), &[0, 0, 0, 1]);
-        assert_eq!(proof.symbol_count(), 4);
-        assert!(!proof.bytes().is_empty());
-    }
-
-    #[test]
-    fn unified_roundtrip_is_deterministic() {
-        let trace = compose_minimal_intra_dc_all_zero_block_trace().unwrap();
-        let first = roundtrip_block_symbol_trace(&trace).unwrap();
-        let second = roundtrip_block_symbol_trace(&trace).unwrap();
-
-        assert_eq!(first.bytes(), second.bytes());
-        assert_eq!(first.decoded_symbols(), second.decoded_symbols());
-    }
-
-    #[test]
-    fn rejects_unsupported_unified_selector() {
-        // A luma txb_skip token at a non-minimal coefficient CDF q-context is
-        // outside the unified router's supported rows.
-        let unsupported = BlockSymbolToken::Coeff(luma_all_zero_token(1));
-        let err = roundtrip_block_symbol_trace(&[unsupported]).unwrap_err();
-
-        assert!(matches!(
-            err,
-            Error::BlockSymbolTraceUnsupportedSelector { index: 0 }
-        ));
-    }
-
-    #[test]
-    fn composes_complete_all_zero_block_trace_in_order() {
-        let trace = compose_minimal_intra_dc_complete_all_zero_block_trace().unwrap();
-
-        assert_eq!(trace.len(), 6);
-        // Mode prefix, then per-plane all_zero (Y, U, V) in residual() order.
-        assert!(matches!(trace[0], BlockSymbolToken::Mode(_)));
-        assert!(matches!(trace[1], BlockSymbolToken::Mode(_)));
-        assert!(matches!(trace[2], BlockSymbolToken::Mode(_)));
-        assert!(matches!(trace[3], BlockSymbolToken::Coeff(_)));
-        assert!(matches!(trace[4], BlockSymbolToken::Coeff(_)));
-        assert!(matches!(trace[5], BlockSymbolToken::Coeff(_)));
-        // y_mode_set=0, y_mode_index=0, uv_mode=0, then luma/U/V all_zero=1.
-        assert_eq!(
-            trace.iter().map(|token| token.symbol()).collect::<Vec<_>>(),
-            vec![0, 0, 0, 1, 1, 1]
-        );
-    }
-
-    #[test]
-    fn complete_trace_roundtrips_through_one_coder() {
-        let trace = compose_minimal_intra_dc_complete_all_zero_block_trace().unwrap();
-        let proof = roundtrip_block_symbol_trace(&trace).unwrap();
-
-        assert_eq!(proof.decoded_symbols(), &[0, 0, 0, 1, 1, 1]);
-        assert_eq!(proof.symbol_count(), 6);
-        assert!(!proof.bytes().is_empty());
-    }
-
-    #[test]
-    fn complete_roundtrip_is_deterministic() {
-        let trace = compose_minimal_intra_dc_complete_all_zero_block_trace().unwrap();
-        let first = roundtrip_block_symbol_trace(&trace).unwrap();
-        let second = roundtrip_block_symbol_trace(&trace).unwrap();
-
-        assert_eq!(first.bytes(), second.bytes());
-        assert_eq!(first.decoded_symbols(), second.decoded_symbols());
-    }
-
-    #[test]
-    fn composes_coded_block_trace_in_order() {
-        let trace = compose_minimal_intra_dc_coded_block_trace().unwrap();
-
-        assert_eq!(trace.len(), 9);
-        // Mode prefix (3), then coded luma residual (txb_skip, eob_pt_16,
-        // coeff_base_eob, dc_sign), then all-zero U and V txb_skip.
-        for token in &trace[0..3] {
-            assert!(matches!(token, BlockSymbolToken::Mode(_)));
-        }
-        for token in &trace[3..9] {
-            assert!(matches!(token, BlockSymbolToken::Coeff(_)));
-        }
-        // y_mode_set=0, y_mode_index=0, uv_mode=0, luma txb_skip=0 (coded),
-        // eob_pt_16=0, coeff_base_eob=0 (mag 1), dc_sign=0 (positive),
-        // then U/V all_zero=1.
-        assert_eq!(
-            trace.iter().map(|token| token.symbol()).collect::<Vec<_>>(),
-            vec![0, 0, 0, 0, 0, 0, 0, 1, 1]
-        );
-    }
-
-    #[test]
-    fn coded_block_trace_roundtrips_through_one_coder() {
-        let trace = compose_minimal_intra_dc_coded_block_trace().unwrap();
-        let proof = roundtrip_block_symbol_trace(&trace).unwrap();
-
-        assert_eq!(proof.decoded_symbols(), &[0, 0, 0, 0, 0, 0, 0, 1, 1]);
-        assert_eq!(proof.symbol_count(), 9);
-        assert!(!proof.bytes().is_empty());
-    }
-
-    #[test]
-    fn coded_block_roundtrip_is_deterministic() {
-        let trace = compose_minimal_intra_dc_coded_block_trace().unwrap();
-        let first = roundtrip_block_symbol_trace(&trace).unwrap();
-        let second = roundtrip_block_symbol_trace(&trace).unwrap();
-
-        assert_eq!(first.bytes(), second.bytes());
-        assert_eq!(first.decoded_symbols(), second.decoded_symbols());
-    }
-
-    #[test]
-    fn composes_br_block_trace_in_order() {
-        let trace = compose_minimal_intra_dc_br_block_trace().unwrap();
-
-        assert_eq!(trace.len(), 10);
-        // Mode prefix (3), coded luma residual with coeff_br (5), U/V txb_skip (2).
-        for token in &trace[0..3] {
-            assert!(matches!(token, BlockSymbolToken::Mode(_)));
-        }
-        for token in &trace[3..10] {
-            assert!(matches!(token, BlockSymbolToken::Coeff(_)));
-        }
-        // y_mode_set=0, y_mode_index=0, uv_mode=0, txb_skip=0, eob_pt_16=0,
-        // coeff_base_eob=4 (level 5), coeff_br=1 (magnitude 6), dc_sign=0,
-        // then U/V all_zero=1.
-        assert_eq!(
-            trace.iter().map(|token| token.symbol()).collect::<Vec<_>>(),
-            vec![0, 0, 0, 0, 0, 4, 1, 0, 1, 1]
-        );
-    }
-
-    #[test]
-    fn br_block_trace_roundtrips_through_one_coder() {
-        let trace = compose_minimal_intra_dc_br_block_trace().unwrap();
-        let proof = roundtrip_block_symbol_trace(&trace).unwrap();
-
-        assert_eq!(proof.decoded_symbols(), &[0, 0, 0, 0, 0, 4, 1, 0, 1, 1]);
-        assert_eq!(proof.symbol_count(), 10);
-        assert!(!proof.bytes().is_empty());
-    }
-
-    #[test]
-    fn br_block_roundtrip_is_deterministic() {
-        let trace = compose_minimal_intra_dc_br_block_trace().unwrap();
-        let first = roundtrip_block_symbol_trace(&trace).unwrap();
-        let second = roundtrip_block_symbol_trace(&trace).unwrap();
-
-        assert_eq!(first.bytes(), second.bytes());
-        assert_eq!(first.decoded_symbols(), second.decoded_symbols());
-    }
-
-    #[test]
-    fn bypass_literals_interleave_with_cdf_symbols() {
-        // §8.2.5 bypass literals (the foundation for non-luma-DC `sign_bit` and
-        // the golomb tail) must roundtrip bit-exactly through the same coder that
-        // carries the CDF symbols.
-        let mut trace = compose_minimal_intra_dc_complete_all_zero_block_trace().unwrap();
-        trace.push(BlockSymbolToken::bypass(1, 1)); // a 1-bit sign-like literal
-        trace.push(BlockSymbolToken::bypass(4, 13)); // a wider literal
-        let proof = roundtrip_block_symbol_trace(&trace).unwrap();
-
-        // The all-zero block symbols, then the two bypass values (value-as-u8).
-        assert_eq!(proof.decoded_symbols(), &[0, 0, 0, 1, 1, 1, 1, 13]);
-        assert!(!proof.bytes().is_empty());
-    }
-
-    #[test]
-    fn bypass_literal_roundtrip_is_deterministic() {
-        let mut trace = compose_minimal_intra_dc_all_zero_block_trace().unwrap();
-        trace.push(BlockSymbolToken::bypass(3, 5));
-        let first = roundtrip_block_symbol_trace(&trace).unwrap();
-        let second = roundtrip_block_symbol_trace(&trace).unwrap();
-
-        assert_eq!(first.bytes(), second.bytes());
-        assert_eq!(first.decoded_symbols(), second.decoded_symbols());
-    }
-
-    #[test]
-    fn wide_bypass_literals_roundtrip_full_width() {
-        // Literals wider than 8 bits (the golomb tail uses up to L(32)) must
-        // roundtrip their FULL value: the budget scales with the bit width, and
-        // the full-width check rejects truncation — so `roundtrip_block_symbol_trace`
-        // returning Ok proves the exact value was reproduced, not just its low byte.
-        let mut trace = compose_minimal_intra_dc_all_zero_block_trace().unwrap();
-        trace.push(BlockSymbolToken::bypass(16, 0x1234));
-        trace.push(BlockSymbolToken::bypass(32, 0xDEAD_BEEF));
-        let proof = roundtrip_block_symbol_trace(&trace).unwrap();
-
-        assert!(!proof.bytes().is_empty());
-        // The u8 view truncates the wide values to their low byte; the Ok above is
-        // the full-width proof.
-        assert_eq!(proof.decoded_symbols().last(), Some(&0xEFu8));
-    }
-
-    #[test]
-    fn composes_coded_chroma_block_trace_in_order() {
-        let trace = compose_minimal_intra_dc_coded_chroma_block_trace().unwrap();
-
-        assert_eq!(trace.len(), 12);
-        // Mode prefix (3), coded luma residual (4 CDF), coded U residual (3 CDF +
-        // 1 bypass sign), V all-zero txb_skip (1 CDF).
-        for token in &trace[0..3] {
-            assert!(matches!(token, BlockSymbolToken::Mode(_)));
-        }
-        for token in &trace[3..10] {
-            assert!(matches!(token, BlockSymbolToken::Coeff(_)));
-        }
-        // The U DC sign is a bypass literal, not a CDF symbol.
-        assert!(matches!(
-            trace[10],
-            BlockSymbolToken::Bypass { width: 1, value: 0 }
-        ));
-        assert!(matches!(trace[11], BlockSymbolToken::Coeff(_)));
-        assert_eq!(
-            trace.iter().map(|token| token.symbol()).collect::<Vec<_>>(),
-            vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]
-        );
-    }
-
-    #[test]
-    fn coded_chroma_block_trace_roundtrips_through_one_coder() {
-        let trace = compose_minimal_intra_dc_coded_chroma_block_trace().unwrap();
-        let proof = roundtrip_block_symbol_trace(&trace).unwrap();
-
-        assert_eq!(
-            proof.decoded_symbols(),
-            &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]
-        );
-        assert!(!proof.bytes().is_empty());
-    }
-
-    #[test]
-    fn coded_chroma_block_roundtrip_is_deterministic() {
-        let trace = compose_minimal_intra_dc_coded_chroma_block_trace().unwrap();
-        let first = roundtrip_block_symbol_trace(&trace).unwrap();
-        let second = roundtrip_block_symbol_trace(&trace).unwrap();
-
-        assert_eq!(first.bytes(), second.bytes());
-        assert_eq!(first.decoded_symbols(), second.decoded_symbols());
-    }
-
-    #[test]
-    fn composes_golomb_block_trace_in_order() {
-        let trace = compose_minimal_intra_dc_golomb_block_trace().unwrap();
-
-        assert_eq!(trace.len(), 13);
-        // Mode prefix (3), luma level tokens (4 CDF), dc_sign (1 CDF), golomb
-        // bypass (3), U/V all-zero (2 CDF). Per §5.20.7.27 the sign precedes the
-        // §5.20.7.28 read_quant golomb bits.
-        for token in &trace[0..3] {
-            assert!(matches!(token, BlockSymbolToken::Mode(_)));
-        }
-        for token in &trace[3..8] {
-            assert!(matches!(token, BlockSymbolToken::Coeff(_)));
-        }
-        // The golomb `coeff_rem` bits are §8.2.5 bypass literals, after dc_sign.
-        for token in &trace[8..11] {
-            assert!(matches!(token, BlockSymbolToken::Bypass { width: 1, .. }));
-        }
-        for token in &trace[11..13] {
-            assert!(matches!(token, BlockSymbolToken::Coeff(_)));
-        }
-        // modes; txb_skip=0, eob_pt=0, coeff_base_eob=4, coeff_br=3; dc_sign=0;
-        // golomb q_length 0,1 + coeff_rem 0; U/V all_zero=1.
-        assert_eq!(
-            trace.iter().map(|token| token.symbol()).collect::<Vec<_>>(),
-            vec![0, 0, 0, 0, 0, 4, 3, 0, 0, 1, 0, 1, 1]
-        );
-    }
-
-    #[test]
-    fn golomb_block_trace_roundtrips_and_decodes_to_magnitude() {
-        let trace = compose_minimal_intra_dc_golomb_block_trace().unwrap();
-        let proof = roundtrip_block_symbol_trace(&trace).unwrap();
-        let decoded = proof.decoded_symbols();
-
-        assert_eq!(decoded, &[0, 0, 0, 0, 0, 4, 3, 0, 0, 1, 0, 1, 1]);
-        assert!(!proof.bytes().is_empty());
-
-        // Reconstruct the golomb extension `x` from the decoded bypass bits the
-        // way the decoder's read_quant finite-q path does, and confirm it yields
-        // the encoded magnitude (this is the conformance check, since the
-        // roundtrip alone only proves the bits are self-consistent). The golomb
-        // bits follow the dc_sign at index 7, so they are at indices 8..11.
-        let golomb = &decoded[8..11];
-        let mut q = 0u32;
-        let mut idx = 0;
-        while idx < golomb.len() && golomb[idx] == 0 {
-            q += 1;
-            idx += 1;
-        }
-        // idx now points at the terminating q_length_bit (1); coeff_rem follows.
-        let coeff_rem = u32::from(golomb[idx + 1]);
-        let x = (q << GOLOMB_DC_M) + coeff_rem;
-        assert_eq!(
-            GOLOMB_MAXLEVEL + x,
-            MINIMAL_GOLOMB_DC_MAGNITUDE,
-            "golomb bits decode to the encoded magnitude"
-        );
-    }
-
-    #[test]
-    fn golomb_block_roundtrip_is_deterministic() {
-        let trace = compose_minimal_intra_dc_golomb_block_trace().unwrap();
-        let first = roundtrip_block_symbol_trace(&trace).unwrap();
-        let second = roundtrip_block_symbol_trace(&trace).unwrap();
-
-        assert_eq!(first.bytes(), second.bytes());
-        assert_eq!(first.decoded_symbols(), second.decoded_symbols());
-    }
-}
+#[path = "block_symbol_trace_tests.rs"]
+mod tests;

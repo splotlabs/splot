@@ -116,7 +116,8 @@ Status: planned, replaces the parked toy bootstrap path.
   landed), then a coded chroma U DC coefficient whose sign is a `sign_bit` bypass
   literal, with the §8.3.2 chroma contexts and the V `txb_skip` EobU context
   (landed), then the §5.20.7.28 finite-q golomb tail for a larger luma DC
-  coefficient (magnitude 8..17, the `coeff_rem` bypass bits, landed). The coded
+  coefficient (the full finite-q range, magnitude 8..=17, proven by a range loop
+  test; the `coeff_rem` bypass bits, landed). The coded
   intra block symbol sequence now roundtrips for luma (base + range + finite-q
   golomb) and a coded chroma DC; the golomb-prefix tier (magnitude 18+), the
   chroma base-range/golomb tiers, multi-coefficient blocks, partition syntax, and

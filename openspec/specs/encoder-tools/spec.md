@@ -1883,12 +1883,13 @@ or modes beyond the DC minimal tier.
   token, the golomb `q_length_bit` / `coeff_rem` bypass literals, then the all-zero U
   and V `txb_skip` tokens.
 
-#### Scenario: Decoded golomb bits reconstruct the encoded magnitude
+#### Scenario: Decoded golomb bits reconstruct the encoded magnitude across the finite-q range
 
-- **WHEN** the composed golomb trace is roundtripped through one in-tree AV2 §8.2
-  coder and the decoded `coeff_rem` bypass bits are read back through the decoder's
+- **WHEN** a golomb trace is composed for every magnitude in the finite-q range
+  (`maxLevel..=maxLevel + 9`, i.e. 8..=17), roundtripped through one in-tree AV2 §8.2
+  coder, and the decoded `coeff_rem` bypass bits are read back through the decoder's
   finite-q `read_quant` arithmetic
-- **THEN** the reconstructed level SHALL equal the encoded coefficient magnitude
+- **THEN** the reconstructed level SHALL equal each encoded coefficient magnitude
 - **AND** the roundtrip SHALL be deterministic.
 
 #### Scenario: Golomb trace does not produce packets

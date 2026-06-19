@@ -5,10 +5,10 @@
 
 ## 2. Golomb block trace and tests
 
-- [x] 2.1 Extend `block_symbol_trace` with `compose_minimal_intra_dc_golomb_block_trace` (mode prefix + golomb level tokens + finite-q `coeff_rem` bypass bits + `dc_sign` CDF + all-zero U/V).
-- [x] 2.2 Prove the trace is the mode prefix, level tokens, golomb bypass bits, `dc_sign`, then all-zero U/V, in order.
+- [x] 2.1 Extend `block_symbol_trace` with a parameterized `compose_intra_dc_golomb_block_trace(magnitude, negative)` over the finite-q range 8..=17 (mode prefix + golomb level tokens + `dc_sign` CDF + finite-q `coeff_rem` bypass bits + all-zero U/V), with `compose_minimal_intra_dc_golomb_block_trace` the canonical +10 case.
+- [x] 2.2 Prove the trace is the mode prefix, level tokens, `dc_sign`, then the golomb bypass bits, then all-zero U/V, in order (the sign precedes the §5.20.7.28 read_quant bits).
 - [x] 2.3 Prove the trace roundtrips deterministically through one §8.2 coder.
-- [x] 2.4 Prove the decoded golomb bits reconstruct the encoded magnitude via the decoder's `read_quant` finite-q arithmetic (the conformance check).
+- [x] 2.4 Prove the decoded golomb bits reconstruct the encoded magnitude via the decoder's `read_quant` finite-q arithmetic (the conformance check) for the canonical +10 case and for every magnitude across the finite-q range 8..=17.
 
 ## 3. Tracking and verification
 
