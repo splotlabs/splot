@@ -5,7 +5,8 @@
 //!
 //! Feature tracking: `DECODE-COEFF-USE-FSC-BRANCH-HANDOFF` and
 //! `DECODE-COEFF-USE-FSC-CONDITION-HANDOFF` and
-//! `DECODE-COEFF-USE-FSC-SHARED-FACTS-HANDOFF`.
+//! `DECODE-COEFF-USE-FSC-SHARED-FACTS-HANDOFF` and
+//! `DECODE-COEFF-CDF-Q-CONTEXT-HANDOFF`.
 
 use splot_core::symbol::SymbolDecoder;
 use splot_core::tables::conversion::{TX_HEIGHT, TX_WIDTH};
@@ -134,6 +135,54 @@ impl CoeffUseFscSharedFacts {
     }
 }
 
+/// Caller-selected coefficient branch before deriving q-context from `base_q_idx`.
+pub(crate) enum CoeffUseFscBaseQFactsInput {
+    /// Decoded `all_zero == 1`; AV2 handles this before deriving q-context.
+    AllZero(CoeffOrdinaryTxSizeGeometryConfig),
+    /// Decoded `all_zero == 0`.
+    NonZero(CoeffUseFscBaseQFactsNonZeroInput),
+}
+
+/// Shared caller-resolved facts for a nonzero coefficient block carrying base q.
+pub(crate) struct CoeffUseFscBaseQFactsNonZeroInput {
+    /// Facts shared by both nonzero branch targets.
+    pub(crate) facts: CoeffUseFscBaseQFacts,
+    /// Ordinary-only facts used only when `useFsc == false`.
+    pub(crate) ordinary_base_config: CoeffOrdinaryBranchLosslessBaseConfig,
+    /// Caller-resolved AV2 § 5.20.7.29 `Lossless` flag for the ordinary path.
+    pub(crate) lossless: bool,
+}
+
+/// Shared caller-resolved facts before q-context and `useFsc` derivation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CoeffUseFscBaseQFacts {
+    /// Caller-resolved AV2 § 5.20.7.27 `coeffs()` geometry.
+    pub(crate) geometry: CoeffOrdinaryTxSizeGeometryConfig,
+    /// Caller-resolved `enable_fsc` sequence/frame fact.
+    pub(crate) enable_fsc: bool,
+    /// Caller-resolved `PlaneTxType` from AV2 § 5.20.7.29 `compute_tx_type`.
+    pub(crate) plane_tx_type: usize,
+    /// Caller-resolved `fsc_mode` fact.
+    pub(crate) fsc_mode: bool,
+    /// Caller-resolved `is_inter` fact.
+    pub(crate) is_inter: bool,
+    /// Frame `base_q_idx` used by AV2 § 6.17.2 `init_coeff_cdfs()`.
+    pub(crate) base_q_idx: u32,
+}
+
+impl CoeffUseFscBaseQFacts {
+    const fn shared_facts(self) -> CoeffUseFscSharedFacts {
+        CoeffUseFscSharedFacts {
+            geometry: self.geometry,
+            enable_fsc: self.enable_fsc,
+            plane_tx_type: self.plane_tx_type,
+            fsc_mode: self.fsc_mode,
+            is_inter: self.is_inter,
+            coeff_cdf_q_ctx: coeff_cdf_q_ctx_from_base_q_idx(self.base_q_idx),
+        }
+    }
+}
+
 /// Result of the loaded `useFsc` branch selector.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[allow(
@@ -156,6 +205,26 @@ pub(crate) enum CoeffUseFscBranchError {
     /// The FSC/IDTX branch rejected the selected input.
     #[error("coefficient useFsc FSC branch failed: {0}")]
     Fsc(#[from] CoeffFscBranchError),
+}
+
+/// Derives AV2 § 6.17.2 `init_coeff_cdfs()` q-context from `base_q_idx`.
+///
+/// The spec defines four selectable coefficient CDF q-contexts
+/// (`COEFF_CDF_Q_CTXS = 4` in § 3) and derives the active `idx` from
+/// `base_q_idx` using thresholds 90, 140, and 190
+/// (`docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-2`;
+/// `docs/spec/av2/1.0.0/03-symbols.md`). The final bucket is total for
+/// staged caller-provided values beyond the syntax domain.
+pub(crate) const fn coeff_cdf_q_ctx_from_base_q_idx(base_q_idx: u32) -> usize {
+    if base_q_idx <= 90 {
+        0
+    } else if base_q_idx <= 140 {
+        1
+    } else if base_q_idx <= 190 {
+        2
+    } else {
+        3
+    }
 }
 
 /// Dispatches the coefficient branch after caller-resolved `useFsc`.
@@ -293,6 +362,37 @@ pub(crate) fn apply_coeff_use_fsc_branch_from_shared_facts(
             Ok(CoeffUseFscBranch::Ordinary(branch))
         }
     }
+}
+
+/// Dispatches after deriving q-context from frame `base_q_idx`.
+///
+/// AV2 § 6.17.2 `init_coeff_cdfs()` derives the active coefficient CDF
+/// q-context from `base_q_idx`, and AV2 § 5.20.7.27 then uses that context for
+/// coefficient syntax CDF selection
+/// (`docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-2`;
+/// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27`). This
+/// loaded-but-unwired handoff keeps all-zero inputs independent of frame q
+/// facts, derives q-context only for nonzero inputs, and delegates to the
+/// existing shared-facts wrapper. Runtime `coeffs()` integration, full CDF
+/// lifecycle wiring, full `compute_tx_type`, dequantization, inverse transform,
+/// residual add, and reconstruction remain out of scope.
+pub(crate) fn apply_coeff_use_fsc_branch_from_base_q_facts(
+    state: &mut TileCoeffContextState,
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    input: CoeffUseFscBaseQFactsInput,
+) -> Result<CoeffUseFscBranch, CoeffUseFscBranchError> {
+    let input = match input {
+        CoeffUseFscBaseQFactsInput::AllZero(input) => CoeffUseFscSharedFactsInput::AllZero(input),
+        CoeffUseFscBaseQFactsInput::NonZero(input) => {
+            CoeffUseFscSharedFactsInput::NonZero(CoeffUseFscSharedFactsNonZeroInput {
+                facts: input.facts.shared_facts(),
+                ordinary_base_config: input.ordinary_base_config,
+                lossless: input.lossless,
+            })
+        }
+    };
+    apply_coeff_use_fsc_branch_from_shared_facts(state, cdfs, symbols, input)
 }
 
 fn fsc_block_from_tx_size_geometry(

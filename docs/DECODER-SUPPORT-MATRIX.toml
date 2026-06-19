@@ -758,6 +758,20 @@ local_reference_evidence = []
 notes = "Adds a crate-private loaded-but-unwired `splot-decode` wrapper for deriving the AV2 §5.20.7.27 `useFsc` condition from one shared nonzero fact packet and constructing only the selected lower branch input. All-zero inputs route through the existing ordinary all-zero selector path. Nonzero inputs derive `useFsc` from shared `enable_fsc`, `PlaneTxType`, geometry plane, `fsc_mode`, and `is_inter` facts, then lazily build either ordinary lossless input or FSC tx-size input, with FSC 4x4 block geometry derived from generated `Tx_Width[txSz]` and `Tx_Height[txSz]` values only on the selected FSC path. This row remains partial: runtime `coeffs()` does not call this wrapper, runtime `enable_fsc`, `PlaneTxType`, `plane`, `fsc_mode`, `is_inter`, transform geometry, and `coeff_cdf_q_ctx` derivation, full `compute_tx_type`, dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public APIs, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` support remain unimplemented."
 
 [[row]]
+id = "coeff-cdf-q-context-handoff"
+name = "Coefficient CDF q-context handoff"
+feature_id = "DECODE-COEFF-CDF-Q-CONTEXT-HANDOFF"
+spec_sections = ["3", "5.20.7.27", "6.17.2"]
+parser_source = "docs/spec/av2/1.0.0/03-symbols.md; docs/spec/av2/1.0.0/05-syntax-structures.md; docs/spec/av2/1.0.0/06-syntax-structures-semantics.md"
+decode_module = "crates/splot-decode/src/tile_payload/coeff_loop/use_fsc_branch.rs; crates/splot-decode/src/tile_payload/coeff_loop/use_fsc_branch_tests.rs"
+tier = "tier1-intra"
+status = "partial"
+self_contained_tests = ["crates/splot-decode/src/tile_payload/coeff_loop/use_fsc_branch_tests.rs::coefficient_cdf_q_context_from_base_q_idx_matches_spec_thresholds", "crates/splot-decode/src/tile_payload/coeff_loop/use_fsc_branch_tests.rs::coefficient_use_fsc_base_q_all_zero_matches_shared_facts", "crates/splot-decode/src/tile_payload/coeff_loop/use_fsc_branch_tests.rs::coefficient_use_fsc_base_q_false_matches_explicit_q_contexts", "crates/splot-decode/src/tile_payload/coeff_loop/use_fsc_branch_tests.rs::coefficient_use_fsc_base_q_true_matches_explicit_q_contexts", "cargo test -p splot-decode use_fsc_branch --locked", "cargo test -p splot-decode coeff_loop --locked", "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings", "cargo xtask check-decoder-support", "cargo xtask check-decoder-conformance-coverage", "cargo xtask check-feature-status"]
+diagnostics = ["decode/unsupported-feature"]
+local_reference_evidence = []
+notes = "Adds a crate-private loaded-but-unwired `splot-decode` wrapper for deriving the active coefficient CDF q-context from frame `base_q_idx` before delegating to the existing shared-facts `useFsc` handoff. `coeff_cdf_q_ctx_from_base_q_idx` implements the AV2 §6.17.2 `init_coeff_cdfs()` threshold buckets 0 for `base_q_idx <= 90`, 1 for `<= 140`, 2 for `<= 190`, and 3 otherwise, matching the four §3 `COEFF_CDF_Q_CTXS` selectable contexts. All-zero inputs bypass `base_q_idx` and delegate through the shared-facts all-zero path. Nonzero inputs derive q-context from `base_q_idx`, then delegate so ordinary and FSC selected branches match explicit q-context shared-facts behavior across all four buckets. This row remains partial: runtime `coeffs()` does not call this wrapper, runtime `enable_fsc`, `PlaneTxType`, `plane`, `fsc_mode`, `is_inter`, transform geometry, and `base_q_idx` handoff into coefficient decoding remain unwired, full CDF lifecycle initialization and `compute_tx_type` are not implemented, and dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public APIs, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` support remain unimplemented."
+
+[[row]]
 id = "coeff-base-symbol-read"
 name = "Coefficient base symbol read"
 feature_id = "DECODE-COEFF-BASE-SYMBOL-READ"
