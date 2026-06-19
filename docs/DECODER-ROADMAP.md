@@ -257,9 +257,11 @@ delegating to the `coeffs()` geometry handoff.
 `DECODE-COEFF-ORDINARY-BRANCH-ADJUSTED-TX-SIZE` now consumes generated
 `Adjusted_Tx_Size[txSz]` so § 8.3.2 ordinary base contexts receive adjusted
 width, height, and width-log2 dimensions while raw dimensions still drive
-§ 5.20.7.27 block geometry and EOB-size context. The coefficient branch still
-does not derive `txSzCtx`, implement § 5.20.7.29 `compute_tx_type`, derive scan
-order, or wire runtime `coeffs()`.
+§ 5.20.7.27 block geometry and EOB-size context.
+`DECODE-COEFF-ORDINARY-BRANCH-TX-SIZE-CONTEXT` now derives `txSzCtx` from
+generated `Tx_Size_Sqr[txSz]` and `Tx_Size_Sqr_Up[txSz]` before the ordinary
+base-context pass. The coefficient branch still does not implement
+§ 5.20.7.29 `compute_tx_type`, derive scan order, or wire runtime `coeffs()`.
 Runtime integration of nonzero coefficient blocks, tile context fact derivation
 for nonzero blocks, dequantization, and
 reconstruction remain unsupported. The
