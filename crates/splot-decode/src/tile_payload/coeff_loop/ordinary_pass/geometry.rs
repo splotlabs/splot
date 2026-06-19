@@ -13,6 +13,7 @@ use super::super::super::cdf::TileCdfSubset;
 use super::super::super::coeff_state::TileCoeffContextState;
 use super::super::branch::NonZeroCoeffBlockStartInput;
 use super::super::max_level::CoeffTransformClass;
+use super::super::scan_walk::{CoeffScanOrderError, derive_coeff_scan_order};
 use super::super::{AllZeroCoeffBlockInput, NonZeroCoeffEobContextInput};
 use super::{
     CoeffOrdinaryBranch, CoeffOrdinaryBranchError, CoeffOrdinaryBranchPlaneTxTypeBaseConfig,
@@ -1144,46 +1145,16 @@ fn tx_size_scan(
     dimensions: CoeffOrdinaryTxSizeDimensions,
     tx_class: CoeffTransformClass,
 ) -> Result<Vec<u16>, CoeffOrdinaryBranchError> {
-    let width = dimensions.tx_width.min(32);
-    let height = dimensions.tx_height.min(32);
-    if !matches!(width, 4 | 8 | 16 | 32) || !matches!(height, 4 | 8 | 16 | 32) {
-        return Err(CoeffOrdinaryBranchError::InvalidScanShape { width, height });
-    }
-    let coeff_count = width * height;
-    let mut out = Vec::new();
-    out.try_reserve_exact(coeff_count)?;
-    match tx_class {
-        CoeffTransformClass::Vertical => {
-            for y in 0..height {
-                for x in 0..width {
-                    out.push((y * width + x) as u16);
-                }
+    derive_coeff_scan_order(dimensions.tx_width, dimensions.tx_height, tx_class).map_err(|error| {
+        match error {
+            CoeffScanOrderError::InvalidShape { width, height } => {
+                CoeffOrdinaryBranchError::InvalidScanShape { width, height }
+            }
+            CoeffScanOrderError::Allocation(source) => {
+                CoeffOrdinaryBranchError::ScanAllocation(source)
             }
         }
-        CoeffTransformClass::Horizontal => {
-            for x in 0..width {
-                for y in 0..height {
-                    out.push((y * width + x) as u16);
-                }
-            }
-        }
-        CoeffTransformClass::TwoD => {
-            let (wi, hi) = (width as i32, height as i32);
-            let (mut x, mut y) = (0i32, 0i32);
-            for _ in 0..coeff_count {
-                out.push((y * wi + x) as u16);
-                x += 1;
-                y -= 1;
-                if y < 0 || x >= wi {
-                    x += 1;
-                    let s = x.min(hi - 1 - y);
-                    x -= s;
-                    y += s;
-                }
-            }
-        }
-    }
-    Ok(out)
+    })
 }
 
 #[cfg(test)]
