@@ -220,6 +220,14 @@ eob>=5 hidden-parity first pass consumes it for the final DC coefficient.
 `TileIdtxSignCdf` row families in the tile CDF subset with tile copy/save/average
 and frame-end scaling coverage, but still leaves the runtime `useFsc` symbol pass
 unwired.
+`DECODE-COEFF-FSC-LEVEL-PASS` now consumes the FSC/IDTX level rows in a
+loaded-but-unwired first pass: it validates the checked `bob..segEob` walk
+against local block geometry, derives `coeff_base_bob`, later
+`coeff_base_idtx`, and conditional `coeff_br_idtx` selectors from current
+`Level[]`, clamps the FSC transform-size context axis, reads the selected rows,
+and writes local `Level[]` in forward scan order. It still does not read
+`idtx_sign`, run `read_quant`, write `QuantSign[]` or `Quant[]`, commit tile
+context, or wire runtime `coeffs()`.
 `DECODE-COEFF-ORDINARY-DERIVED-BASE-PASS` now composes that first pass into the
 ordinary coefficient pass, carrying first-pass `isHidden`, `sumAbs1`, and
 `useTcq` into the interleaved sign/`read_quant`/signed `Quant[]` stage and
