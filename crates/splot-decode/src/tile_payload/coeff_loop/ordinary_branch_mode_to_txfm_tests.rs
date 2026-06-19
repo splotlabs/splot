@@ -24,6 +24,8 @@ const TX_4X8: usize = 5;
 const TX_SET_DCTONLY: usize = 0;
 const TX_SET_INTRA_1: usize = 5;
 const TX_SET_INTRA_2: usize = 6;
+const TX_SET_INTER_1: usize = 5;
+const TX_SET_DCT_IDTX: usize = 7;
 const UV_SMOOTH_PRED: usize = 9;
 const UV_SMOOTH_V_PRED: usize = 10;
 const UV_V_PRED: usize = 1;
@@ -115,6 +117,7 @@ fn mode_to_txfm_base_config(
         uv_mode,
         angle_delta_uv: 0,
         luma_tx_type: DCT_DCT,
+        chroma_inter_tx_type: DCT_DCT,
         enable_chroma_dctonly: false,
         parity_hiding: false,
         use_tcq: false,
@@ -138,6 +141,16 @@ fn mode_to_txfm_base_config_with_luma_tx_type(
 ) -> CoeffOrdinaryBranchModeToTxfmBaseConfig {
     CoeffOrdinaryBranchModeToTxfmBaseConfig {
         luma_tx_type,
+        ..mode_to_txfm_base_config(UV_SMOOTH_PRED, tx_set)
+    }
+}
+
+fn mode_to_txfm_base_config_with_chroma_inter_tx_type(
+    tx_set: usize,
+    chroma_inter_tx_type: usize,
+) -> CoeffOrdinaryBranchModeToTxfmBaseConfig {
+    CoeffOrdinaryBranchModeToTxfmBaseConfig {
+        chroma_inter_tx_type,
         ..mode_to_txfm_base_config(UV_SMOOTH_PRED, tx_set)
     }
 }
@@ -233,6 +246,29 @@ fn luma_start_input(is_inter: bool) -> NonZeroCoeffBlockStartInput {
     start.block.plane = 0;
     start.eob.plane = 0;
     start.eob.is_inter = is_inter;
+    start
+}
+
+fn mode_to_txfm_chroma_inter_input(
+    start: NonZeroCoeffBlockStartInput,
+    tx_set: usize,
+    chroma_inter_tx_type: usize,
+) -> CoeffOrdinaryBranchModeToTxfmInput {
+    CoeffOrdinaryBranchModeToTxfmInput::NonZero(CoeffOrdinaryBranchModeToTxfmNonZeroInput {
+        geometry: tx_size_geometry(start),
+        coeff_cdf_q_ctx: 0,
+        is_inter: true,
+        base_config: mode_to_txfm_base_config_with_chroma_inter_tx_type(
+            tx_set,
+            chroma_inter_tx_type,
+        ),
+        lossless: false,
+    })
+}
+
+fn chroma_inter_start_input() -> NonZeroCoeffBlockStartInput {
+    let mut start = start_input();
+    start.eob.is_inter = true;
     start
 }
 
@@ -493,8 +529,7 @@ fn coefficient_ordinary_branch_mode_to_txfm_luma_inter_uses_txtypes() {
 fn coefficient_ordinary_branch_mode_to_txfm_chroma_inter_dctonly_short_circuits() {
     // AV2 §5.20.7.29 applies the chroma-DCT-only shortcut before chroma inter
     // TxTypes lookup.
-    let mut start = start_input();
-    start.eob.is_inter = true;
+    let start = chroma_inter_start_input();
     let payload = find_payload_for_explicit_start(start, TX_8X8, DCT_DCT);
 
     let explicit = run_explicit(&payload, explicit_input(start, DCT_DCT));
@@ -510,6 +545,34 @@ fn coefficient_ordinary_branch_mode_to_txfm_chroma_inter_dctonly_short_circuits(
             ),
             lossless: false,
         }),
+    );
+
+    assert_eq!(derived, explicit);
+}
+
+#[test]
+fn coefficient_ordinary_branch_mode_to_txfm_chroma_inter_txtypes_maps_when_in_set() {
+    let start = chroma_inter_start_input();
+    let payload = find_payload_for_explicit_start(start, TX_8X8, ADST_DCT);
+
+    let explicit = run_explicit(&payload, explicit_input(start, ADST_DCT));
+    let derived = run_mode_to_txfm(
+        &payload,
+        mode_to_txfm_chroma_inter_input(start, TX_SET_INTER_1, ADST_DCT),
+    );
+
+    assert_eq!(derived, explicit);
+}
+
+#[test]
+fn coefficient_ordinary_branch_mode_to_txfm_chroma_inter_txtypes_falls_back_to_dct() {
+    let start = chroma_inter_start_input();
+    let payload = find_payload_for_explicit_start(start, TX_8X8, DCT_DCT);
+
+    let explicit = run_explicit(&payload, explicit_input(start, DCT_DCT));
+    let derived = run_mode_to_txfm(
+        &payload,
+        mode_to_txfm_chroma_inter_input(start, TX_SET_DCT_IDTX, ADST_DCT),
     );
 
     assert_eq!(derived, explicit);
@@ -548,35 +611,17 @@ fn assert_mode_to_txfm_error_preserves_state<F>(
 #[test]
 fn coefficient_ordinary_branch_mode_to_txfm_rejects_unsupported_subset_atomically() {
     let start = start_input();
-    let mut inter = start;
-    inter.eob.is_inter = true;
 
-    let cases = [
-        (
-            CoeffOrdinaryBranchModeToTxfmInput::NonZero(
-                CoeffOrdinaryBranchModeToTxfmNonZeroInput {
-                    geometry: tx_size_geometry(inter),
-                    coeff_cdf_q_ctx: 0,
-                    is_inter: true,
-                    base_config: mode_to_txfm_base_config(UV_SMOOTH_PRED, TX_SET_INTRA_1),
-                    lossless: false,
-                },
-            ),
-            "inter",
-        ),
-        (
-            CoeffOrdinaryBranchModeToTxfmInput::NonZero(
-                CoeffOrdinaryBranchModeToTxfmNonZeroInput {
-                    geometry: tx_size_geometry(start),
-                    coeff_cdf_q_ctx: 0,
-                    is_inter: false,
-                    base_config: mode_to_txfm_base_config(UV_SMOOTH_PRED, TX_SET_INTRA_1),
-                    lossless: true,
-                },
-            ),
-            "lossless",
-        ),
-    ];
+    let cases = [(
+        CoeffOrdinaryBranchModeToTxfmInput::NonZero(CoeffOrdinaryBranchModeToTxfmNonZeroInput {
+            geometry: tx_size_geometry(start),
+            coeff_cdf_q_ctx: 0,
+            is_inter: false,
+            base_config: mode_to_txfm_base_config(UV_SMOOTH_PRED, TX_SET_INTRA_1),
+            lossless: true,
+        }),
+        "lossless",
+    )];
 
     for (input, reason) in cases {
         assert_mode_to_txfm_error_preserves_state(input, |err| {
@@ -599,6 +644,36 @@ fn coefficient_ordinary_branch_mode_to_txfm_rejects_luma_domains_atomically() {
             CoeffOrdinaryBranchError::InvalidLumaTxType { tx_type: 16 }
         ));
     });
+}
+
+#[test]
+fn coefficient_ordinary_branch_mode_to_txfm_rejects_chroma_inter_tx_type_domains_atomically() {
+    let start = chroma_inter_start_input();
+
+    assert_mode_to_txfm_error_preserves_state(
+        mode_to_txfm_chroma_inter_input(start, TX_SET_INTER_1, 16),
+        |err| {
+            assert!(matches!(
+                err,
+                CoeffOrdinaryBranchError::InvalidChromaInterTxType { tx_type: 16 }
+            ));
+        },
+    );
+}
+
+#[test]
+fn coefficient_ordinary_branch_mode_to_txfm_rejects_chroma_inter_tx_set_domains_atomically() {
+    let start = chroma_inter_start_input();
+
+    assert_mode_to_txfm_error_preserves_state(
+        mode_to_txfm_chroma_inter_input(start, 9, DCT_DCT),
+        |err| {
+            assert!(matches!(
+                err,
+                CoeffOrdinaryBranchError::InvalidInterTransformSet { tx_set: 9 }
+            ));
+        },
+    );
 }
 
 #[test]
