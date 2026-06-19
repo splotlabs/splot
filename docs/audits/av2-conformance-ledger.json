@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "567e77be703d15689f1f143edd2c5389721920a3",
+  "audited_commit": "de05ab21b3bd2c59ac911995a4b76cc0a8374f35",
   "outcome": "success",
   "files": [
     {
@@ -2293,7 +2293,7 @@
     },
     {
       "path": "crates/splot-decode/src/tile_payload/coeff_loop/use_fsc_branch_tests.rs",
-      "sha256": "939bcfe8ea67e450c20b0239ac363b638432a66b7c26bf36b71921129e49fe9c",
+      "sha256": "e890bcf1dc2222abc9e12a180cd301e12cd9288665ed0890aa76d24997cd8fa6",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
@@ -4371,7 +4371,7 @@
     },
     {
       "path": "docs/DECODER-SUPPORT-MATRIX.toml",
-      "sha256": "5aff5472281c548c409ff137c2bc6514e347df6a5ad9bf0a8eec3546dbdb2b56",
+      "sha256": "fd6200aca15a8196f7ebbf3c8696a9c025243e50fff455b11d239faf248393fe",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-8.2-SYMBOL-DECODER",
@@ -4512,7 +4512,7 @@
     },
     {
       "path": "docs/DECODER-SUPPORT-STATUS.md",
-      "sha256": "54817c41bf25a7d35742a280c171ef6485883b70e0c5cf3f5272fe8e8c82b030",
+      "sha256": "402f9a1a6a21c19bc9b662b4c80b60b47ecb271b1162fc1908b5f1533718dfed",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-8.2-SYMBOL-DECODER",
@@ -5048,7 +5048,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "87c35b6aef9f585877d66e656b0adbe4fa86ac9de4c190b77047caf7a52b0927",
+      "sha256": "6a85a23545a72e561d76a24e2a2ee9c34810945737a857701aa6f075743b2c92",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.10-RG",
@@ -17602,6 +17602,58 @@
       "scope_kind": "openspec",
       "feature_ids": [
         "DECODE-COEFF-USE-FSC-CONDITION-HANDOFF"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/coeff-use-fsc-shared-facts-handoff/.openspec.yaml",
+      "sha256": "d36d5ade13d63079e8fac69f1e3c45e2ee23d6b22c94f88c6a340556a023f11c",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/coeff-use-fsc-shared-facts-handoff/design.md",
+      "sha256": "90ed183e1102c079e4bf3efdfdb7a13ac813b6d5beec164733ec654cb5b40699",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-COEFF-USE-FSC-SHARED-FACTS-HANDOFF"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/coeff-use-fsc-shared-facts-handoff/proposal.md",
+      "sha256": "5d37abd3b510250c20a798f09c6ac1a4eeb6dbe22572d11e2bd7801171f37a78",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-COEFF-USE-FSC-SHARED-FACTS-HANDOFF"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/coeff-use-fsc-shared-facts-handoff/specs/coeff-use-fsc-shared-facts-handoff/spec.md",
+      "sha256": "014f22289ac7146f46dc275bbec63e70c9b1322c3773cdc93fafa85a467c96d7",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-COEFF-USE-FSC-SHARED-FACTS-HANDOFF"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/coeff-use-fsc-shared-facts-handoff/specs/decoder-support/spec.md",
+      "sha256": "9f59a1811e8df7b7e4664df8575834b9187925da3187c692c074959bb729e583",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-COEFF-USE-FSC-SHARED-FACTS-HANDOFF"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/coeff-use-fsc-shared-facts-handoff/tasks.md",
+      "sha256": "b91dc0fb96b005b11c45d820cbcbdf53d6b99456e5b57f04aaaf5b44f5c17e47",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-COEFF-USE-FSC-SHARED-FACTS-HANDOFF"
       ],
       "outcome": "success"
     },

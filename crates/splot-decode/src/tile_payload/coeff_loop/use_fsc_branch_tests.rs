@@ -452,6 +452,30 @@ fn assert_selector_error_preserves_state(
     assert_eq!(symbols.symbol_count(), symbol_count_before);
 }
 
+fn assert_shared_error_preserves_state(
+    input: CoeffUseFscSharedFactsInput,
+    assert_error: impl FnOnce(&CoeffUseFscBranchError),
+) {
+    let frame = FrameCdfSubset::from_defaults();
+    let mut tile = frame.tile_copy();
+    let mut symbols = symbol_decoder(&[0x80]);
+    let mut context = seeded_context_state();
+    let tile_before = tile.clone();
+    let context_before = context.clone();
+    let consumed_before = symbols.consumed_bits();
+    let symbol_count_before = symbols.symbol_count();
+
+    let err =
+        apply_coeff_use_fsc_branch_from_shared_facts(&mut context, &mut tile, &mut symbols, input)
+            .unwrap_err();
+
+    assert_error(&err);
+    assert_eq!(context, context_before);
+    assert_eq!(tile, tile_before);
+    assert_eq!(symbols.consumed_bits(), consumed_before);
+    assert_eq!(symbols.symbol_count(), symbol_count_before);
+}
+
 #[test]
 fn coefficient_use_fsc_branch_false_wraps_ordinary_error() {
     assert_selector_error_preserves_state(
@@ -752,4 +776,25 @@ fn coefficient_use_fsc_shared_facts_false_does_not_validate_fsc_non_luma() {
     assert_eq!(derived.2, expected.2);
     assert_eq!(derived.3, expected.3);
     assert_eq!(derived.4, expected.4);
+}
+
+#[test]
+fn coefficient_use_fsc_shared_facts_true_rejects_invalid_tx_size_atomically() {
+    assert_shared_error_preserves_state(
+        CoeffUseFscSharedFactsInput::NonZero(shared_nonzero_input(shared_facts(
+            geometry(25),
+            true,
+            IDTX,
+            true,
+            false,
+        ))),
+        |err| {
+            assert!(matches!(
+                err,
+                CoeffUseFscBranchError::Fsc(CoeffFscBranchError::InvalidTransformSize {
+                    tx_size: 25
+                })
+            ));
+        },
+    );
 }

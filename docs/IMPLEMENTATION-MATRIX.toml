@@ -10086,6 +10086,7 @@ tests = [
     "crates/splot-decode/src/tile_payload/coeff_loop/use_fsc_branch_tests.rs::coefficient_use_fsc_shared_facts_true_matches_fsc_branch",
     "crates/splot-decode/src/tile_payload/coeff_loop/use_fsc_branch_tests.rs::coefficient_use_fsc_shared_facts_true_ignores_invalid_ordinary_facts",
     "crates/splot-decode/src/tile_payload/coeff_loop/use_fsc_branch_tests.rs::coefficient_use_fsc_shared_facts_false_does_not_validate_fsc_non_luma",
+    "crates/splot-decode/src/tile_payload/coeff_loop/use_fsc_branch_tests.rs::coefficient_use_fsc_shared_facts_true_rejects_invalid_tx_size_atomically",
 ]
 commands = [
     "cargo test -p splot-decode use_fsc_branch --locked",
