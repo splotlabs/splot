@@ -20,11 +20,13 @@ decoder `read_quant.rs` and the spec):
 The level tokens before the golomb tail are fixed for the golomb tier:
 `all_zero = 0`, `eob_pt_16 = 0`, `coeff_base_eob = LF_NUM_BASE_LEVELS (4)` (level 5,
 its max), `coeff_br = COEFF_BASE_RANGE (3)` (level reaches `maxLevel = 8`). The
-sign loop's luma DC `dc_sign` is a CDF token and follows the golomb bits.
+sign+quant pass reads the sign before calling `read_quant`, so the luma DC
+`dc_sign` CDF token precedes the golomb bits.
 
 For magnitude `+10`: `x = 2`, `q = 1`, `coeff_rem = 0` → golomb bypass bits `0`
-(one `q_length_bit` zero), `1` (terminating `q_length_bit`), `0` (`coeff_rem`). The
-thirteen-token trace is `[0,0,0, 0,0,4,3, 0,1,0, 0, 1,1]`.
+(one `q_length_bit` zero), `1` (terminating `q_length_bit`), `0` (`coeff_rem`),
+emitted after the `dc_sign` token. The thirteen-token trace is
+`[0,0,0, 0,0,4,3, 0, 0,1,0, 1,1]`.
 
 Normative AV2 v1.0.0 sections:
 
@@ -65,8 +67,9 @@ Normative AV2 v1.0.0 sections:
 
 3. **`luma_dc_sign_token` factored out.** The luma DC `dc_sign` CDF token is
    extracted so both `luma_dc_coded_tokens` and the golomb compose share it; the
-   golomb tail inserts the `coeff_rem` bypass bits between the level tokens and the
-   `dc_sign` token (matching §5.20.7.27/§5.20.7.28 ordering).
+   golomb tail appends the `coeff_rem` bypass bits after the `dc_sign` token,
+   because §5.20.7.27's sign+quant pass reads the sign before calling
+   §5.20.7.28 `read_quant` (the level tokens, then `dc_sign`, then the golomb bits).
 
 ## Flight Manifest
 

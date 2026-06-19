@@ -15,10 +15,11 @@ golomb tail's first real consumer of the bypass token.
   `coeff_br=COEFF_BASE_RANGE` level tokens that drive the level to `maxLevel`) and
   factor out `luma_dc_sign_token` in `coefficient_tokenization`.
 - Extend `block_symbol_trace` with `compose_minimal_intra_dc_golomb_block_trace`:
-  the mode prefix, the golomb level tokens, the §5.20.7.28 finite-q golomb
-  `coeff_rem` bypass bits encoding `x = magnitude - maxLevel` (`m = 1`,
-  `q = x >> 1`, `coeff_rem = x & 1`), the luma `dc_sign` CDF token, then all-zero
-  U/V `txb_skip`.
+  the mode prefix, the golomb level tokens, the luma `dc_sign` CDF token, then the
+  §5.20.7.28 finite-q golomb `coeff_rem` bypass bits encoding
+  `x = magnitude - maxLevel` (`m = 1`, `q = x >> 1`, `coeff_rem = x & 1`) — the
+  §5.20.7.27 sign+quant pass reads the sign before calling `read_quant` — then
+  all-zero U/V `txb_skip`.
 - Prove the trace roundtrips through one §8.2 coder and that the decoded golomb
   bits reconstruct the encoded magnitude via the decoder's `read_quant` finite-q
   arithmetic.

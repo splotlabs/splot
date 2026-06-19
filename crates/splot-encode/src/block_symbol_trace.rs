@@ -347,10 +347,11 @@ pub(crate) fn compose_minimal_intra_dc_coded_chroma_block_trace() -> Result<Vec<
 /// § 5.20.5.3 mode-info prefix, then the luma `residual()` for a single DC
 /// coefficient whose level reaches `maxLevel` (the fixed `txb_skip=0` /
 /// `eob_pt_16` / `coeff_base_eob=LF_NUM_BASE_LEVELS` / `coeff_br=COEFF_BASE_RANGE`
-/// level tokens), then the § 5.20.7.28 `read_quant` finite-q golomb `coeff_rem`
-/// bypass bits encoding `x = magnitude - maxLevel`, then the luma `dc_sign` CDF
-/// token, then the all-zero U and V `txb_skip` (the U plane is all-zero, so V uses
-/// the neutral context 0).
+/// level tokens), then the luma `dc_sign` CDF token, then the § 5.20.7.28
+/// `read_quant` finite-q golomb `coeff_rem` bypass bits encoding
+/// `x = magnitude - maxLevel` (§ 5.20.7.27's sign+quant pass reads the sign before
+/// calling `read_quant`), then the all-zero U and V `txb_skip` (the U plane is
+/// all-zero, so V uses the neutral context 0).
 ///
 /// For the value `+10` the golomb extension is `x = 2`: with `m = 1` (the first DC
 /// coefficient, `hrLevelAvg = 0`) the finite-q path is `q = x >> 1 = 1`,
@@ -392,15 +393,18 @@ pub(crate) fn compose_minimal_intra_dc_golomb_block_trace() -> Result<Vec<BlockS
         })?;
     trace.extend(modes.into_iter().map(BlockSymbolToken::Mode));
     trace.extend(level.into_iter().map(BlockSymbolToken::Coeff));
+    // AV2 § 5.20.7.27's sign+quant pass reads the sign FIRST, then calls
+    // § 5.20.7.28 `read_quant` (which emits the golomb bits): the per-coefficient
+    // order is `dc_sign` then the golomb `q_length_bit`/`coeff_rem` literals.
+    trace.push(BlockSymbolToken::Coeff(luma_dc_sign_token(
+        MINIMAL_COEFF_CDF_Q_CTX,
+        MINIMAL_GOLOMB_DC_NEGATIVE,
+    )));
     for _ in 0..q {
         trace.push(BlockSymbolToken::bypass(1, 0));
     }
     trace.push(BlockSymbolToken::bypass(1, 1));
     trace.push(BlockSymbolToken::bypass(1, coeff_rem));
-    trace.push(BlockSymbolToken::Coeff(luma_dc_sign_token(
-        MINIMAL_COEFF_CDF_Q_CTX,
-        MINIMAL_GOLOMB_DC_NEGATIVE,
-    )));
     trace.push(BlockSymbolToken::Coeff(chroma_u_all_zero_token(
         MINIMAL_COEFF_CDF_Q_CTX,
     )));
@@ -990,26 +994,27 @@ mod tests {
         let trace = compose_minimal_intra_dc_golomb_block_trace().unwrap();
 
         assert_eq!(trace.len(), 13);
-        // Mode prefix (3), luma level tokens (4 CDF), golomb bypass (3), dc_sign
-        // (1 CDF), U/V all-zero (2 CDF).
+        // Mode prefix (3), luma level tokens (4 CDF), dc_sign (1 CDF), golomb
+        // bypass (3), U/V all-zero (2 CDF). Per §5.20.7.27 the sign precedes the
+        // §5.20.7.28 read_quant golomb bits.
         for token in &trace[0..3] {
             assert!(matches!(token, BlockSymbolToken::Mode(_)));
         }
-        for token in &trace[3..7] {
+        for token in &trace[3..8] {
             assert!(matches!(token, BlockSymbolToken::Coeff(_)));
         }
-        // The golomb `coeff_rem` bits are §8.2.5 bypass literals.
-        for token in &trace[7..10] {
+        // The golomb `coeff_rem` bits are §8.2.5 bypass literals, after dc_sign.
+        for token in &trace[8..11] {
             assert!(matches!(token, BlockSymbolToken::Bypass { width: 1, .. }));
         }
-        for token in &trace[10..13] {
+        for token in &trace[11..13] {
             assert!(matches!(token, BlockSymbolToken::Coeff(_)));
         }
-        // modes; txb_skip=0, eob_pt=0, coeff_base_eob=4, coeff_br=3; golomb q_length
-        // 0,1 + coeff_rem 0; dc_sign=0; U/V all_zero=1.
+        // modes; txb_skip=0, eob_pt=0, coeff_base_eob=4, coeff_br=3; dc_sign=0;
+        // golomb q_length 0,1 + coeff_rem 0; U/V all_zero=1.
         assert_eq!(
             trace.iter().map(|token| token.symbol()).collect::<Vec<_>>(),
-            vec![0, 0, 0, 0, 0, 4, 3, 0, 1, 0, 0, 1, 1]
+            vec![0, 0, 0, 0, 0, 4, 3, 0, 0, 1, 0, 1, 1]
         );
     }
 
@@ -1019,14 +1024,15 @@ mod tests {
         let proof = roundtrip_block_symbol_trace(&trace).unwrap();
         let decoded = proof.decoded_symbols();
 
-        assert_eq!(decoded, &[0, 0, 0, 0, 0, 4, 3, 0, 1, 0, 0, 1, 1]);
+        assert_eq!(decoded, &[0, 0, 0, 0, 0, 4, 3, 0, 0, 1, 0, 1, 1]);
         assert!(!proof.bytes().is_empty());
 
         // Reconstruct the golomb extension `x` from the decoded bypass bits the
         // way the decoder's read_quant finite-q path does, and confirm it yields
         // the encoded magnitude (this is the conformance check, since the
-        // roundtrip alone only proves the bits are self-consistent).
-        let golomb = &decoded[7..10];
+        // roundtrip alone only proves the bits are self-consistent). The golomb
+        // bits follow the dc_sign at index 7, so they are at indices 8..11.
+        let golomb = &decoded[8..11];
         let mut q = 0u32;
         let mut idx = 0;
         while idx < golomb.len() && golomb[idx] == 0 {

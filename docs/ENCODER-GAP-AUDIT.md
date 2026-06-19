@@ -130,9 +130,10 @@ planning and status; it does not claim encoder behavior exists.
 - `ENC-INTRA-BLOCK-TRACE-GOLOMB-FINITE` adds the §5.20.7.28 `read_quant` finite-q
   golomb tail (the bypass-literal token's first real consumer), extending the
   coded luma DC range to magnitude 8..17. The luma residual is the fixed level
-  tokens (level reaches `maxLevel=8`), then the golomb `q_length`/`coeff_rem`
-  bypass bits encoding `x = magnitude - 8` (`m=1` for the first DC → `q=x>>1`,
-  `coeff_rem=x&1`), then the `dc_sign` CDF token. A conformance test reconstructs
+  tokens (level reaches `maxLevel=8`), then the `dc_sign` CDF token, then
+  the golomb `q_length`/`coeff_rem` bypass bits encoding `x = magnitude - 8`
+  (`m=1` for the first DC → `q=x>>1`, `coeff_rem=x&1`); §5.20.7.27's sign+quant
+  pass reads the sign before `read_quant`. A conformance test reconstructs
   the magnitude from the decoded golomb bits via the decoder's finite-q
   arithmetic. It is not the golomb-prefix tier (magnitude 18+), multi-coefficient
   blocks, chroma golomb, tile-body emission, or a packet path.
