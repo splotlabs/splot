@@ -4370,6 +4370,39 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-INTRA-BLOCK-TRACE-CODED-BR"
+name = "Encoder coded base-range intra block trace"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20.7.27", "8.2", "8.3.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/coefficient_tokenization.rs"
+openspec_change = "encoder-block-trace-coded-br"
+tracking_issue = ""
+owner = "encoder"
+risk = "medium"
+notes = "Private, non-emitting encoder coded base-range (`coeff_br`) intra DC block trace extending the coded DC tokenizer/trace. AV2 §5.20.7.27 codes a low-frequency EOB coefficient whose base level (`coeff_base_eob` + 1, max 5) exceeds `LF_NUM_BASE_LEVELS`=4 with an extra `coeff_br` symbol (`level += coeff_br`, `coeff_br` ∈ 0..=COEFF_BASE_RANGE=3). `coefficient_tokenization` adds the `coeff_br` token syntax + a `CoeffBrLf` (`TileCoeffBrLfCdf[q][ctx]`) selector; `luma_dc_coded_tokens` becomes the single coded-DC token source (variable length: 4 base-tier, 5 with `coeff_br`) and `tokenize_coefficients` delegates to it, raising the magnitude cap from 4 to LF_NUM_BASE_LEVELS+COEFF_BASE_RANGE+1=8. For magnitude 5..=8: `coeff_base_eob`=4 (level 5), `coeff_br`=magnitude-5. The `coeff_br` CDF is the low-frequency `DEFAULT_COEFF_BR_LF_CDF[q][0]` (ctx 0 for the DC: pos 0, empty Level[], 2D — verified vs the decoder `base_range_selector`/`CoeffBrContext::ctx`). `block_symbol_trace` adds `compose_minimal_intra_dc_br_block_trace` (magnitude +6 → `coeff_br`=1) + the `coeff_br_lf` row, proving the ten-symbol trace [0,0,0,0,0,4,1,0,1,1] through one in-tree AV2 §8.2 coder with shared CDF state. The `coded_dc_tokens_match_tokenizer` equivalence test covers the full 1..=8 range; the `closed_loop` DC-recovery helper accumulates `coeff_br` into the level. This row does not claim the golomb tail (magnitude > 8), multi-coefficient blocks, higher-frequency or chroma coefficients, partition syntax, tile CDF lifecycle, tile-body emission, packet output, CLI success, or Baseline Encoder Profile v1 output."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/coefficient_tokenization.rs::tests::base_range_tier_emits_coeff_br", "crates/splot-encode/src/coefficient_tokenization.rs::tests::base_range_tier_tokens_roundtrip", "crates/splot-encode/src/coefficient_tokenization.rs::tests::coded_dc_tokens_match_tokenizer", "crates/splot-encode/src/block_symbol_trace.rs::tests::composes_br_block_trace_in_order", "crates/splot-encode/src/block_symbol_trace.rs::tests::br_block_trace_roundtrips_through_one_coder"]
+commands = ["cargo test -p splot-encode coefficient_tokenization --locked", "cargo test -p splot-encode block_symbol_trace --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-RECON-DEPENDENCY"
 name = "Encoder reconstruction dependency boundary"
 category = "encoder"
