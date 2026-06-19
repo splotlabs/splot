@@ -19,10 +19,12 @@ use super::fsc_quant_pass::{
     CoeffFscBranchError, CoeffFscBranchInput, CoeffFscBranchNonZeroInput,
     CoeffFscBranchScanOrderInput, CoeffFscBranchScanOrderNonZeroInput, CoeffFscBranchSegEobInput,
     CoeffFscBranchSegEobNonZeroInput, CoeffFscBranchTestDimensionTables,
+    CoeffFscBranchTestTxSizeTables, CoeffFscBranchTxSizeInput, CoeffFscBranchTxSizeNonZeroInput,
     CoeffFscContextCommitConfig, CoeffFscQuantPassError, NonZeroCoeffFscQuantPass,
     apply_coeff_fsc_branch, apply_coeff_fsc_branch_from_scan_extent,
     apply_coeff_fsc_branch_from_scan_order,
     apply_coeff_fsc_branch_from_scan_order_with_test_dimension_tables,
+    apply_coeff_fsc_branch_from_tx_size, apply_coeff_fsc_branch_from_tx_size_with_test_tables,
     apply_nonzero_coeff_fsc_quant_pass, apply_nonzero_coeff_fsc_quant_pass_with_context_commit,
 };
 use super::fsc_sign_pass::{
@@ -75,6 +77,15 @@ fn config() -> CoeffFscLevelPassConfig {
     }
 }
 
+fn tx_size_config() -> CoeffFscLevelPassConfig {
+    CoeffFscLevelPassConfig {
+        coeff_cdf_q_ctx: 0,
+        tx_size_ctx: 1,
+        tx_width: 8,
+        tx_height: 8,
+    }
+}
+
 fn context_commit_config() -> CoeffFscContextCommitConfig {
     CoeffFscContextCommitConfig {
         plane: 0,
@@ -97,13 +108,7 @@ fn all_zero_block_input() -> AllZeroCoeffBlockInput {
 
 fn nonzero_start_input() -> NonZeroCoeffBlockStartInput {
     NonZeroCoeffBlockStartInput {
-        block: AllZeroCoeffBlockInput {
-            plane: 0,
-            x4: 0,
-            y4: 0,
-            w4: 2,
-            h4: 2,
-        },
+        block: tx_size_block_input(),
         eob: NonZeroCoeffEobContextInput {
             plane: 0,
             is_inter: false,
@@ -111,6 +116,27 @@ fn nonzero_start_input() -> NonZeroCoeffBlockStartInput {
             tx_height_log2: 3,
             coeff_cdf_q_ctx: 0,
         },
+    }
+}
+
+fn tx_size_block_input() -> AllZeroCoeffBlockInput {
+    AllZeroCoeffBlockInput {
+        plane: 0,
+        x4: 0,
+        y4: 0,
+        w4: 2,
+        h4: 2,
+    }
+}
+
+fn tx_size_context_commit_config() -> CoeffFscContextCommitConfig {
+    let block = tx_size_block_input();
+    CoeffFscContextCommitConfig {
+        plane: block.plane,
+        x4: block.x4,
+        y4: block.y4,
+        w4: block.w4,
+        h4: block.h4,
     }
 }
 
@@ -151,6 +177,31 @@ fn fsc_branch_scan_order_input(
         level_config: config(),
         context,
     })
+}
+
+fn fsc_branch_tx_size_input(
+    tx_size: usize,
+    block: AllZeroCoeffBlockInput,
+) -> CoeffFscBranchTxSizeInput {
+    CoeffFscBranchTxSizeInput::NonZero(CoeffFscBranchTxSizeNonZeroInput {
+        block,
+        tx_size,
+        plane_tx_type: DCT_DCT,
+        is_inter: false,
+        coeff_cdf_q_ctx: 0,
+    })
+}
+
+fn small_tx_size_tables() -> CoeffFscBranchTestTxSizeTables<'static> {
+    CoeffFscBranchTestTxSizeTables {
+        adjusted_tx_size: &[0, 1],
+        tx_size_sqr: &[0, 1],
+        tx_size_sqr_up: &[0, 1],
+        tx_width: &[4, 8],
+        tx_height: &[4, 8],
+        tx_width_log2: &[2, 3],
+        tx_height_log2: &[2, 3],
+    }
 }
 
 fn chroma_context_commit_config() -> CoeffFscContextCommitConfig {
@@ -355,6 +406,36 @@ fn find_scan_order_payload() -> [u8; 8] {
     panic!("no coefficient FSC scan-order payload found");
 }
 
+fn run_tx_size_branch(payload: &[u8]) -> Option<super::fsc_quant_pass::CoeffFscBranch> {
+    let frame = FrameCdfSubset::from_defaults();
+    let mut tile = frame.tile_copy();
+    let mut symbols = symbol_decoder(payload);
+    let mut context = seeded_context_state();
+    apply_coeff_fsc_branch_from_tx_size(
+        &mut context,
+        &mut tile,
+        &mut symbols,
+        fsc_branch_tx_size_input(TX_8X8, tx_size_block_input()),
+    )
+    .ok()
+}
+
+fn find_tx_size_payload() -> [u8; 8] {
+    for first in u8::MIN..=u8::MAX {
+        for second in u8::MIN..=u8::MAX {
+            for suffix in PAYLOAD_SUFFIXES {
+                let payload = [
+                    first, second, suffix[0], suffix[1], suffix[2], suffix[3], suffix[4], suffix[5],
+                ];
+                if run_tx_size_branch(&payload).is_some() {
+                    return payload;
+                }
+            }
+        }
+    }
+    panic!("no coefficient FSC tx-size payload found");
+}
+
 fn assert_scan_order_error_preserves_state(
     input: CoeffFscBranchScanOrderInput,
     assert_error: impl FnOnce(&CoeffFscBranchError),
@@ -371,6 +452,60 @@ fn assert_scan_order_error_preserves_state(
     let err =
         apply_coeff_fsc_branch_from_scan_order(&mut context_state, &mut tile, &mut symbols, input)
             .unwrap_err();
+
+    assert_error(&err);
+    assert_eq!(context_state, context_before);
+    assert_eq!(tile, tile_before);
+    assert_eq!(symbols.consumed_bits(), consumed_before);
+    assert_eq!(symbols.symbol_count(), symbol_count_before);
+}
+
+fn assert_tx_size_error_preserves_state(
+    input: CoeffFscBranchTxSizeInput,
+    assert_error: impl FnOnce(&CoeffFscBranchError),
+) {
+    let frame = FrameCdfSubset::from_defaults();
+    let mut tile = frame.tile_copy();
+    let mut symbols = symbol_decoder(&[0x80]);
+    let mut context_state = seeded_context_state();
+    let tile_before = tile.clone();
+    let context_before = context_state.clone();
+    let consumed_before = symbols.consumed_bits();
+    let symbol_count_before = symbols.symbol_count();
+
+    let err =
+        apply_coeff_fsc_branch_from_tx_size(&mut context_state, &mut tile, &mut symbols, input)
+            .unwrap_err();
+
+    assert_error(&err);
+    assert_eq!(context_state, context_before);
+    assert_eq!(tile, tile_before);
+    assert_eq!(symbols.consumed_bits(), consumed_before);
+    assert_eq!(symbols.symbol_count(), symbol_count_before);
+}
+
+fn assert_tx_size_table_error_preserves_state(
+    input: CoeffFscBranchTxSizeInput,
+    tables: CoeffFscBranchTestTxSizeTables<'_>,
+    assert_error: impl FnOnce(&CoeffFscBranchError),
+) {
+    let frame = FrameCdfSubset::from_defaults();
+    let mut tile = frame.tile_copy();
+    let mut symbols = symbol_decoder(&[0x80]);
+    let mut context_state = seeded_context_state();
+    let tile_before = tile.clone();
+    let context_before = context_state.clone();
+    let consumed_before = symbols.consumed_bits();
+    let symbol_count_before = symbols.symbol_count();
+
+    let err = apply_coeff_fsc_branch_from_tx_size_with_test_tables(
+        &mut context_state,
+        &mut tile,
+        &mut symbols,
+        input,
+        tables,
+    )
+    .unwrap_err();
 
     assert_error(&err);
     assert_eq!(context_state, context_before);
@@ -692,6 +827,63 @@ fn coefficient_fsc_branch_scan_order_matches_explicit_scan_extent_branch() {
 }
 
 #[test]
+fn coefficient_fsc_branch_tx_size_matches_explicit_scan_order_branch() {
+    let payload = find_tx_size_payload();
+
+    let frame = FrameCdfSubset::from_defaults();
+    let mut explicit_tile = frame.tile_copy();
+    let mut explicit_symbols = symbol_decoder(&payload);
+    let mut explicit_context = seeded_context_state();
+    let expected = apply_coeff_fsc_branch_from_scan_order(
+        &mut explicit_context,
+        &mut explicit_tile,
+        &mut explicit_symbols,
+        CoeffFscBranchScanOrderInput::NonZero(CoeffFscBranchScanOrderNonZeroInput {
+            start: NonZeroCoeffBlockStartInput {
+                block: tx_size_block_input(),
+                eob: NonZeroCoeffEobContextInput {
+                    plane: 0,
+                    is_inter: false,
+                    tx_width_log2: 3,
+                    tx_height_log2: 3,
+                    coeff_cdf_q_ctx: 0,
+                },
+            },
+            tx_size: TX_8X8,
+            plane_tx_type: DCT_DCT,
+            level_config: tx_size_config(),
+            context: tx_size_context_commit_config(),
+        }),
+    )
+    .unwrap();
+
+    let frame = FrameCdfSubset::from_defaults();
+    let mut derived_tile = frame.tile_copy();
+    let mut derived_symbols = symbol_decoder(&payload);
+    let mut derived_context = seeded_context_state();
+    let derived = apply_coeff_fsc_branch_from_tx_size(
+        &mut derived_context,
+        &mut derived_tile,
+        &mut derived_symbols,
+        fsc_branch_tx_size_input(TX_8X8, tx_size_block_input()),
+    )
+    .unwrap();
+
+    assert_eq!(derived, expected);
+    assert_eq!(derived.pass().level_walk().seg_eob(), 64);
+    assert_eq!(derived_context, explicit_context);
+    assert_eq!(derived_tile, explicit_tile);
+    assert_eq!(
+        derived_symbols.consumed_bits(),
+        explicit_symbols.consumed_bits()
+    );
+    assert_eq!(
+        derived_symbols.symbol_count(),
+        explicit_symbols.symbol_count()
+    );
+}
+
+#[test]
 fn coefficient_fsc_quant_pass_with_context_commit_preserves_context_on_pass_failure() {
     let payload = find_payload(2, |_| true);
     let (mut tile, mut symbols, _walk, level_pass) = setup_level_pass(&payload, 2).unwrap();
@@ -836,6 +1028,115 @@ fn coefficient_fsc_branch_scan_order_rejects_invalid_scan_shape_without_mutation
                     width: 2,
                     height: 8,
                 })
+            ));
+        },
+    );
+}
+
+#[test]
+fn coefficient_fsc_branch_tx_size_rejects_all_zero_without_mutation() {
+    assert_tx_size_error_preserves_state(
+        CoeffFscBranchTxSizeInput::AllZero(all_zero_block_input()),
+        |err| assert!(matches!(err, CoeffFscBranchError::AllZero)),
+    );
+}
+
+#[test]
+fn coefficient_fsc_branch_tx_size_rejects_non_luma_without_mutation() {
+    assert_tx_size_error_preserves_state(
+        fsc_branch_tx_size_input(
+            TX_8X8,
+            AllZeroCoeffBlockInput {
+                plane: 1,
+                ..tx_size_block_input()
+            },
+        ),
+        |err| {
+            assert!(matches!(
+                err,
+                CoeffFscBranchError::NonLumaPlane { plane: 1 }
+            ));
+        },
+    );
+}
+
+#[test]
+fn coefficient_fsc_branch_tx_size_rejects_invalid_tx_size_without_mutation() {
+    assert_tx_size_error_preserves_state(
+        fsc_branch_tx_size_input(usize::MAX, tx_size_block_input()),
+        |err| {
+            assert!(matches!(
+                err,
+                CoeffFscBranchError::InvalidTransformSize {
+                    tx_size: usize::MAX
+                }
+            ));
+        },
+    );
+}
+
+#[test]
+fn coefficient_fsc_branch_tx_size_rejects_invalid_adjusted_table_value_without_mutation() {
+    assert_tx_size_table_error_preserves_state(
+        fsc_branch_tx_size_input(TX_8X8, tx_size_block_input()),
+        CoeffFscBranchTestTxSizeTables {
+            adjusted_tx_size: &[0, -1],
+            ..small_tx_size_tables()
+        },
+        |err| {
+            assert!(matches!(
+                err,
+                CoeffFscBranchError::InvalidTransformSizeTableValue {
+                    table: "Adjusted_Tx_Size",
+                    tx_size: TX_8X8,
+                    value: -1,
+                }
+            ));
+        },
+    );
+}
+
+#[test]
+fn coefficient_fsc_branch_tx_size_rejects_invalid_tx_size_table_index_without_mutation() {
+    assert_tx_size_table_error_preserves_state(
+        fsc_branch_tx_size_input(TX_8X8, tx_size_block_input()),
+        CoeffFscBranchTestTxSizeTables {
+            adjusted_tx_size: &[0, 99],
+            ..small_tx_size_tables()
+        },
+        |err| {
+            assert!(matches!(
+                err,
+                CoeffFscBranchError::InvalidTransformSizeTableIndex {
+                    table: "Adjusted_Tx_Size",
+                    tx_size: TX_8X8,
+                    value: 99,
+                }
+            ));
+        },
+    );
+}
+
+#[test]
+fn coefficient_fsc_branch_tx_size_rejects_block_geometry_mismatch_without_mutation() {
+    assert_tx_size_error_preserves_state(
+        fsc_branch_tx_size_input(
+            TX_8X8,
+            AllZeroCoeffBlockInput {
+                w4: 1,
+                ..tx_size_block_input()
+            },
+        ),
+        |err| {
+            assert!(matches!(
+                err,
+                CoeffFscBranchError::BlockGeometryMismatch {
+                    tx_size: TX_8X8,
+                    actual_w4: 1,
+                    actual_h4: 2,
+                    expected_w4: 2,
+                    expected_h4: 2,
+                }
             ));
         },
     );

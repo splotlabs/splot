@@ -9884,6 +9884,64 @@ fixtures = [
 diagnostics = ["decode/unsupported-feature"]
 
 [[feature]]
+id = "DECODE-COEFF-FSC-BRANCH-TX-SIZE-HANDOFF"
+name = "Coefficient FSC branch tx-size handoff"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.20.7.27", "5.20.7.30", "8.3.2", "9.2"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-30",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2",
+    "docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/tile_payload/coeff_loop/fsc_quant_pass.rs"
+openspec_change = "coeff-fsc-branch-tx-size-handoff"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Adds a crate-private loaded-but-unwired FSC/IDTX branch wrapper that derives tx-size-dependent branch facts from generated AV2 §9.2 conversion tables before delegating to the existing scan-order FSC branch. The wrapper derives raw `Tx_Width[txSz]` / `Tx_Height[txSz]` / log2 dimensions for nonzero EOB context and block-geometry validation, `Adjusted_Tx_Size[txSz]` dimensions for FSC level/sign contexts, `txSzCtx` from `Tx_Size_Sqr[txSz]` and `Tx_Size_Sqr_Up[txSz]`, scan order from `txSz` and caller-resolved `PlaneTxType`, and context-commit geometry from the same block input. Tests prove explicit scan-order equivalence plus all-zero, non-luma, invalid `txSz`, invalid generated table value/index, and geometry-mismatch fail-atomic behavior. This feature remains partial: runtime `coeffs()` does not call this wrapper, `useFsc`, full `compute_tx_type`, `PlaneTxType`, `is_inter`, and `coeff_cdf_q_ctx` are still caller-resolved, and dequantization, inverse transform, residual add, reconstruction, reference refresh, AVM/dav2d invocation, public APIs, and broad `decode_block()` / `decode_tile()` support remain unimplemented."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "partial"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::coefficient_fsc_branch_tx_size_matches_explicit_scan_order_branch",
+    "crates/splot-decode/src/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::coefficient_fsc_branch_tx_size_rejects_all_zero_without_mutation",
+    "crates/splot-decode/src/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::coefficient_fsc_branch_tx_size_rejects_non_luma_without_mutation",
+    "crates/splot-decode/src/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::coefficient_fsc_branch_tx_size_rejects_invalid_tx_size_without_mutation",
+    "crates/splot-decode/src/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::coefficient_fsc_branch_tx_size_rejects_invalid_adjusted_table_value_without_mutation",
+    "crates/splot-decode/src/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::coefficient_fsc_branch_tx_size_rejects_invalid_tx_size_table_index_without_mutation",
+    "crates/splot-decode/src/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::coefficient_fsc_branch_tx_size_rejects_block_geometry_mismatch_without_mutation",
+]
+commands = [
+    "cargo test -p splot-decode fsc_quant --locked",
+    "cargo test -p splot-decode coeff_loop --locked",
+    "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-decoder-conformance-coverage",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-decode/src/tile_payload/coeff_loop/fsc_quant_pass.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/fsc_quant_pass_tests.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/scan_walk.rs",
+    "crates/splot-decode/src/tile_payload/coeff_state.rs",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
 id = "DECODE-COEFF-BASE-SYMBOL-READ"
 name = "Coefficient base symbol read"
 category = "infrastructure"

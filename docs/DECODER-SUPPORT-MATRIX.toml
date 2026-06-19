@@ -702,6 +702,20 @@ local_reference_evidence = []
 notes = "Adds crate-private loaded-but-unwired `splot-decode` support for deriving FSC/IDTX `scan = get_scan(txSz, txClass)` from generated transform-size dimensions and decode-local `get_tx_class(PlaneTxType)` before delegating to the scan-extent FSC branch. The same §5.20.7.30 scan-order helper now backs ordinary and FSC staged branches. This row remains partial: runtime `useFsc`, full `compute_tx_type`, FSC level config, context geometry, `coeffs()` integration, dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public APIs, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` support remain unimplemented."
 
 [[row]]
+id = "coeff-fsc-branch-tx-size-handoff"
+name = "Coefficient FSC branch tx-size handoff"
+feature_id = "DECODE-COEFF-FSC-BRANCH-TX-SIZE-HANDOFF"
+spec_sections = ["5.20.7.27", "5.20.7.30", "8.3.2", "9.2"]
+parser_source = "crates/splot-core/src/symbol.rs; crates/splot-core/src/tables/conversion.rs; docs/spec/av2/1.0.0/05-syntax-structures.md; docs/spec/av2/1.0.0/08-parsing-process.md; docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md"
+decode_module = "crates/splot-decode/src/tile_payload/coeff_loop/fsc_quant_pass.rs; crates/splot-decode/src/tile_payload/coeff_loop/fsc_quant_pass_tests.rs; crates/splot-decode/src/tile_payload/coeff_loop/scan_walk.rs; crates/splot-decode/src/tile_payload/coeff_state.rs"
+tier = "tier1-intra"
+status = "partial"
+self_contained_tests = ["crates/splot-decode/src/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::coefficient_fsc_branch_tx_size_matches_explicit_scan_order_branch", "crates/splot-decode/src/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::coefficient_fsc_branch_tx_size_rejects_all_zero_without_mutation", "crates/splot-decode/src/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::coefficient_fsc_branch_tx_size_rejects_non_luma_without_mutation", "crates/splot-decode/src/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::coefficient_fsc_branch_tx_size_rejects_invalid_tx_size_without_mutation", "crates/splot-decode/src/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::coefficient_fsc_branch_tx_size_rejects_invalid_adjusted_table_value_without_mutation", "crates/splot-decode/src/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::coefficient_fsc_branch_tx_size_rejects_invalid_tx_size_table_index_without_mutation", "crates/splot-decode/src/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::coefficient_fsc_branch_tx_size_rejects_block_geometry_mismatch_without_mutation", "cargo test -p splot-decode fsc_quant --locked", "cargo test -p splot-decode coeff_loop --locked", "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings", "cargo xtask check-decoder-support", "cargo xtask check-decoder-conformance-coverage", "cargo xtask check-feature-status"]
+diagnostics = ["decode/unsupported-feature"]
+local_reference_evidence = []
+notes = "Adds crate-private loaded-but-unwired `splot-decode` support for deriving FSC/IDTX tx-size-dependent branch facts from generated AV2 §9.2 conversion tables before delegating to the scan-order FSC branch. The wrapper derives raw transform dimensions/log2 values for nonzero EOB context and block-geometry validation, adjusted dimensions for FSC level/sign contexts, `txSzCtx` from `Tx_Size_Sqr[txSz]` and `Tx_Size_Sqr_Up[txSz]`, scan order from `txSz` and caller-resolved `PlaneTxType`, and context-commit geometry from the same block input. This row remains partial: runtime `useFsc`, full `compute_tx_type`, `PlaneTxType`, `is_inter`, `coeff_cdf_q_ctx`, `coeffs()` integration, dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public APIs, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` support remain unimplemented."
+
+[[row]]
 id = "coeff-base-symbol-read"
 name = "Coefficient base symbol read"
 feature_id = "DECODE-COEFF-BASE-SYMBOL-READ"
