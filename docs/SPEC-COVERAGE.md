@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 283 feature(s); 230 cite a spec section.
+Matrix version 1. Last reviewed 2026-06-15. 284 feature(s); 231 cite a spec section.
 
 One row per (spec section, feature) pair, in spec order; a feature citing both a syntax and a semantics section appears under both. The canonical status source is [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); the full per-feature ledger is [FEATURE-STATUS.md](./FEATURE-STATUS.md).
 
@@ -241,6 +241,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.20.5.5](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-5) | Read intra Y mode syntax | `ENC-INTRA-MODE-SYMBOL-EMISSION` | ✅ | — | — | ✅ | — |
 | [§ 5.20.5.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-6) | Read intra UV mode syntax | `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER` | ✅ | 🟡 | — | ✅ | 4 |
 | [§ 5.20.5.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-6) | Read intra UV mode syntax | `DECODE-MINIMAL-INTRA-RECONSTRUCTION-FRONTIER` | ✅ | 🟡 | ✅ | ✅ | 4 |
+| [§ 5.20.5.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-6) | Read intra UV mode syntax | `ENC-UV-MODE-SYMBOL-EMISSION` | ✅ | — | — | ✅ | — |
 | [§ 5.20.6.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-6-1) | TX size syntax | `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER` | ✅ | 🟡 | — | ✅ | 4 |
 | [§ 5.20.6.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-6-2) | Block TX size syntax | `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER` | ✅ | 🟡 | — | ✅ | 4 |
 | [§ 5.20.7.23](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-23) | Residual syntax | `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER` | ✅ | 🟡 | — | ✅ | 4 |
@@ -786,6 +787,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-Y4M-RUNTIME-OUTPUT` | ✅ | 🟡 | ✅ | ✅ | 4 |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `ENC-COEFFICIENT-TOKENIZATION-MINIMAL` | ✅ | — | — | ✅ | — |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `ENC-INTRA-MODE-SYMBOL-EMISSION` | ✅ | — | — | ✅ | — |
+| [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `ENC-UV-MODE-SYMBOL-EMISSION` | ✅ | — | — | ✅ | — |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `RECON-GET-TX-CLASS` | ✅ | — | ✅ | ✅ | — |
 
 ## Chapter 9 — Additional tables

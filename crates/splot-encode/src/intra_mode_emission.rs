@@ -25,23 +25,35 @@
 //! `dpcm_mode_y`) before `y_mode_set` — are out of scope and MUST NOT use this
 //! helper until lossless DPCM-mode emission is implemented.
 //!
-//! It does not emit chroma `uv_mode` syntax, coefficient or all-zero symbols,
-//! lossless `use_dpcm_y`/`dpcm_mode_y` symbols, tile payloads, tile CDF lifecycle,
-//! packets, a public encoder API, or broad intra-mode coverage beyond DC_PRED.
+//! It also emits the chroma `uv_mode` selector (AV2 § 5.20.5.6) for the DC chroma
+//! mode (`Default_Mode_List_Uv` index 0 = DC_PRED) at the non-directional context
+//! (`is_directional(YMode)` is 0 for DC_PRED), tracked by
+//! `ENC-UV-MODE-SYMBOL-EMISSION`. In the AV2 mode-info order `uv_mode` is read
+//! after the luma transform/coefficient symbols, so it is emitted as a standalone
+//! token to be composed into the full block trace later.
+//!
+//! It does not emit coefficient or all-zero symbols, lossless
+//! `use_dpcm_y`/`dpcm_mode_y` symbols, CfL/CCTX syntax, tile payloads, tile CDF
+//! lifecycle, packets, a public encoder API, or chroma/intra modes beyond DC.
 
 #![allow(dead_code)]
 
 use splot_core::symbol::{Symbol, SymbolDecoder, SymbolDecoderConfig};
 use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig};
-use splot_core::tables::cdf::{DEFAULT_Y_MODE_INDEX_CDF, DEFAULT_Y_MODE_SET_CDF};
+use splot_core::tables::cdf::{
+    DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF, DEFAULT_Y_MODE_INDEX_CDF, DEFAULT_Y_MODE_SET_CDF,
+};
 
 use crate::error::{Error, Result};
 
 const Y_MODE_SET_CDF_ROW_LEN: usize = 5;
 const Y_MODE_INDEX_CDF_ROW_LEN: usize = 9;
+const UV_MODE_CDF_ROW_LEN: usize = 9;
 const TILE_ORIGIN_Y_MODE_INDEX_CTX: usize = 0;
+const NON_DIRECTIONAL_UV_MODE_CTX: usize = 0;
 const DC_PRED_Y_MODE_SET_SYMBOL: u8 = 0;
 const DC_PRED_Y_MODE_INDEX_SYMBOL: u8 = 0;
+const DC_CHROMA_UV_MODE_SYMBOL: u8 = 0;
 const INTRA_MODE_SYMBOL_BUDGET: usize = 16;
 
 /// Emits the current minimal DC_PRED luma intra-mode block symbols.
@@ -67,6 +79,28 @@ pub(crate) fn emit_minimal_dc_luma_intra_mode() -> Result<IntraModeEmissionPlan>
     Ok(IntraModeEmissionPlan { tokens })
 }
 
+/// Emits the current minimal DC chroma `uv_mode` block symbol.
+///
+/// `uv_mode == 0` selects `Default_Mode_List_Uv[0] == DC_PRED` chroma (AV2
+/// § 5.20.5.6) for a non-directional DC_PRED luma block, whose § 8.3.2 context
+/// `is_directional(YMode)` is 0.
+pub(crate) fn emit_minimal_dc_chroma_uv_mode() -> Result<IntraModeEmissionPlan> {
+    let mut tokens = Vec::new();
+    tokens
+        .try_reserve_exact(1)
+        .map_err(|_| Error::IntraModeEmissionAllocationFailed {
+            context: "dc chroma uv-mode token",
+        })?;
+    tokens.push(IntraModeToken {
+        syntax: IntraModeSyntax::UvMode,
+        selector: IntraModeCdfRowSelector::UvModeCflNotAllowed {
+            ctx: NON_DIRECTIONAL_UV_MODE_CTX,
+        },
+        symbol: DC_CHROMA_UV_MODE_SYMBOL,
+    });
+    Ok(IntraModeEmissionPlan { tokens })
+}
+
 /// AV2 intra-mode syntax covered by the current private subset.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum IntraModeSyntax {
@@ -74,6 +108,8 @@ pub(crate) enum IntraModeSyntax {
     YModeSet,
     /// `y_mode_index` in AV2 § 5.20.5.5.
     YModeIndex,
+    /// `uv_mode` in AV2 § 5.20.5.6.
+    UvMode,
 }
 
 impl IntraModeSyntax {
@@ -81,6 +117,7 @@ impl IntraModeSyntax {
         match self {
             Self::YModeSet => "y_mode_set",
             Self::YModeIndex => "y_mode_index",
+            Self::UvMode => "uv_mode",
         }
     }
 }
@@ -95,6 +132,11 @@ pub(crate) enum IntraModeCdfRowSelector {
         /// Joint-neighbour context (0 at the tile origin).
         ctx: usize,
     },
+    /// `TileUVModeCflNotAllowedCdf[ctx]` (§ 8.3.2).
+    UvModeCflNotAllowed {
+        /// `is_directional(YMode)` context (0 for the DC_PRED luma block).
+        ctx: usize,
+    },
 }
 
 impl IntraModeCdfRowSelector {
@@ -102,6 +144,7 @@ impl IntraModeCdfRowSelector {
         match self {
             Self::YModeSet => IntraModeSyntax::YModeSet.as_str(),
             Self::YModeIndex { .. } => IntraModeSyntax::YModeIndex.as_str(),
+            Self::UvModeCflNotAllowed { .. } => IntraModeSyntax::UvMode.as_str(),
         }
     }
 }
@@ -242,6 +285,11 @@ struct IntraModeCdfRows {
     // exist yet, so this holds the single tile-origin row and `row_mut` rejects
     // any other context.
     y_mode_index_tile_origin: [i32; Y_MODE_INDEX_CDF_ROW_LEN],
+    // Only the non-directional `uv_mode` context (0) is in scope; the directional
+    // context needs a directional luma mode, which the DC minimal tier never
+    // emits, so this holds the single non-directional row and `row_mut` rejects
+    // any other context.
+    uv_mode_cfl_not_allowed_non_directional: [i32; UV_MODE_CDF_ROW_LEN],
 }
 
 impl IntraModeCdfRows {
@@ -249,6 +297,8 @@ impl IntraModeCdfRows {
         Self {
             y_mode_set: DEFAULT_Y_MODE_SET_CDF,
             y_mode_index_tile_origin: DEFAULT_Y_MODE_INDEX_CDF[TILE_ORIGIN_Y_MODE_INDEX_CTX],
+            uv_mode_cfl_not_allowed_non_directional: DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF
+                [NON_DIRECTIONAL_UV_MODE_CTX],
         }
     }
 
@@ -258,7 +308,11 @@ impl IntraModeCdfRows {
             IntraModeCdfRowSelector::YModeIndex {
                 ctx: TILE_ORIGIN_Y_MODE_INDEX_CTX,
             } => Ok(self.y_mode_index_tile_origin.as_mut_slice()),
-            selector @ IntraModeCdfRowSelector::YModeIndex { .. } => {
+            IntraModeCdfRowSelector::UvModeCflNotAllowed {
+                ctx: NON_DIRECTIONAL_UV_MODE_CTX,
+            } => Ok(self.uv_mode_cfl_not_allowed_non_directional.as_mut_slice()),
+            selector @ (IntraModeCdfRowSelector::YModeIndex { .. }
+            | IntraModeCdfRowSelector::UvModeCflNotAllowed { .. }) => {
                 Err(Error::IntraModeEmissionUnsupportedCdfSelector {
                     syntax: selector.syntax_name(),
                 })
@@ -333,6 +387,52 @@ mod tests {
                 Error::IntraModeEmissionUnsupportedCdfSelector {
                     syntax: "y_mode_index",
                 }
+            ));
+        }
+    }
+
+    #[test]
+    fn emits_dc_chroma_uv_mode_token() {
+        let plan = emit_minimal_dc_chroma_uv_mode().unwrap();
+
+        assert_eq!(
+            plan.tokens(),
+            &[IntraModeToken {
+                syntax: IntraModeSyntax::UvMode,
+                selector: IntraModeCdfRowSelector::UvModeCflNotAllowed { ctx: 0 },
+                symbol: 0,
+            }]
+        );
+    }
+
+    #[test]
+    fn uv_mode_token_roundtrips_through_symbol_coder() {
+        let plan = emit_minimal_dc_chroma_uv_mode().unwrap();
+        let proof = roundtrip_intra_mode_tokens(plan.tokens()).unwrap();
+
+        assert_eq!(proof.decoded_symbols(), &[0]);
+        assert_eq!(proof.symbol_count(), 1);
+        assert!(!proof.bytes().is_empty());
+    }
+
+    #[test]
+    fn accepts_only_the_non_directional_uv_mode_context() {
+        let mut cdfs = IntraModeCdfRows::from_defaults();
+
+        assert!(
+            cdfs.row_mut(IntraModeCdfRowSelector::UvModeCflNotAllowed { ctx: 0 })
+                .is_ok()
+        );
+        // The directional context (1) is in-table but needs a directional luma
+        // mode the DC minimal tier never emits; the out-of-table context (2) is
+        // also rejected.
+        for ctx in [1usize, 2] {
+            let err = cdfs
+                .row_mut(IntraModeCdfRowSelector::UvModeCflNotAllowed { ctx })
+                .unwrap_err();
+            assert!(matches!(
+                err,
+                Error::IntraModeEmissionUnsupportedCdfSelector { syntax: "uv_mode" }
             ));
         }
     }
