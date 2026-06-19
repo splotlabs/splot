@@ -60,6 +60,9 @@ closed loop never carries a non-EOB base.
 - Depends on merged changes: `encoder-coeff-base-lf-context`.
 - Exact files/directories owned by this PR:
   - `crates/splot-encode/src/coefficient_tokenization.rs`
+  - `crates/splot-encode/src/coefficient_tokenization/coeff_base_lf.rs` (the
+    `coeff_base` low-frequency submodule — the context derivation and the token —
+    split out of the parent to keep it under the 1000-line source budget)
   - `crates/splot-encode/src/coefficient_tokenization_tests.rs`
   - `crates/splot-encode/src/closed_loop.rs`
   - `docs/IMPLEMENTATION-MATRIX.toml`
