@@ -6,9 +6,12 @@
 //! This module resolves the per-pass parameters the § 7.15.4 outer 2D inverse
 //! transform ([`inverse_transform_2d_outer`](crate::inverse_transform_2d_outer))
 //! consumes but leaves caller-resolved. It provides the [`transform_shift`]
-//! lookup (the `rowShift` / `colShift` down-shifts) and the
-//! [`get_transform_1d_type`] row/column transform-type derivation; the DPCM
-//! direction selection and a combined `resolve` helper are future rows.
+//! lookup (the `rowShift` / `colShift` down-shifts), the
+//! [`get_transform_1d_type`] row/column transform-type derivation, and the
+//! [`dpcm_direction`] § 7.15.4 DPCM cumulative-sum direction selection. The
+//! combined resolve helper that ties the shifts and types together is the
+//! [`InverseTransform2dOuter::resolve`](crate::InverseTransform2dOuter::resolve)
+//! constructor.
 //!
 //! Like the rest of `splot-recon`, transform shape is keyed by the original
 //! (unadjusted) `(log2W, log2H)` base-2 log dimensions rather than a `txSz`
@@ -20,10 +23,11 @@
 //! uniquely identifies every `TX_SIZES_ALL` ordinal, so the lookup is exact.
 //!
 //! Feature tracking: `RECON-TRANSFORM-SHIFT-LOOKUP`,
-//! `RECON-GET-TRANSFORM-1D-TYPE`.
+//! `RECON-GET-TRANSFORM-1D-TYPE`, `RECON-DPCM-DIRECTION`.
 
 use crate::inverse_transform::InverseTransform1dType;
 use crate::inverse_transform_2d::InverseTransform2dDim;
+use crate::inverse_transform_2d_outer::DpcmDirection;
 use crate::{ReconError, Result};
 
 /// AV2 § 7.15.4 `Transform_Shift[TX_SIZES_ALL][2]` = `(rowShift, colShift)` per
@@ -225,10 +229,49 @@ pub const fn get_transform_1d_type(
     Ok(base)
 }
 
+/// Selects the AV2 § 7.15.4 DPCM cumulative-sum direction for a transform block,
+/// or `None` when DPCM is not applied
+/// (`docs/spec/av2/1.0.0/07-decoding-process.md#s-7-15-4`).
+///
+/// § 7.15.4 sets `useDpcm = (plane == 0 ? use_dpcm_y : use_dpcm_uv)` and
+/// `mode = (plane == 0 ? YMode : UVMode)`; when `useDpcm` is 1 the cumulative sum
+/// runs down each column for `V_PRED` ([`DpcmDirection::Vertical`]) and across
+/// each row otherwise ([`DpcmDirection::Horizontal`]). `use_dpcm` is the
+/// plane-selected `useDpcm` flag and `mode_is_v_pred` is whether the
+/// plane-selected prediction `mode` equals `V_PRED`, both caller-resolved so
+/// `splot-recon` holds no frame state or prediction-mode enum. The result drops
+/// into the `dpcm` field of
+/// [`InverseTransform2dOuter`](crate::InverseTransform2dOuter), which applies the
+/// cumulative sum after the inverse transform.
+///
+/// This is a `const fn` and is total: every `(use_dpcm, mode_is_v_pred)`
+/// combination maps to a defined result with no error path.
+pub const fn dpcm_direction(use_dpcm: bool, mode_is_v_pred: bool) -> Option<DpcmDirection> {
+    if !use_dpcm {
+        None
+    } else if mode_is_v_pred {
+        Some(DpcmDirection::Vertical)
+    } else {
+        Some(DpcmDirection::Horizontal)
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    // `dpcm_direction` is a `const fn`: the spec's four cases resolve at compile
+    // time. None when DPCM is off; Vertical for V_PRED, Horizontal otherwise.
+    const _DPCM_NONE: () = assert!(dpcm_direction(false, true).is_none());
+    const _DPCM_VERTICAL: () = assert!(matches!(
+        dpcm_direction(true, true),
+        Some(DpcmDirection::Vertical)
+    ));
+    const _DPCM_HORIZONTAL: () = assert!(matches!(
+        dpcm_direction(true, false),
+        Some(DpcmDirection::Horizontal)
+    ));
 
     // The lookup is a `const fn`: a fixed shape resolves at compile time. This
     // const item both exercises const evaluation and pins TX_4X4 -> (7, 10).
@@ -403,5 +446,47 @@ mod tests {
             get_transform_1d_type(usize::MAX, TransformPass::Col, 8, true),
             Err(ReconError::InvalidPlaneTxType { .. })
         ));
+    }
+
+    #[test]
+    fn dpcm_direction_maps_the_four_spec_cases() {
+        assert_eq!(dpcm_direction(false, false), None);
+        assert_eq!(dpcm_direction(false, true), None);
+        assert_eq!(dpcm_direction(true, true), Some(DpcmDirection::Vertical));
+        assert_eq!(dpcm_direction(true, false), Some(DpcmDirection::Horizontal));
+    }
+
+    #[test]
+    fn selected_direction_drives_the_outer_cumulative_sum() {
+        use crate::{BitDepth, InverseTransform2dOuter, inverse_transform_2d_outer};
+
+        // A 4x4 lossless IDTX block takes the § 7.15.4 shortcut
+        // `Residual = Dequant >> (3 - shift)` (shift 0 here), so a flat
+        // `Dequant == 8` yields a flat pre-DPCM `Residual == 1`. With the
+        // Vertical direction from `dpcm_direction(true, true)`, the column
+        // cumulative sum turns each column into `1, 2, 3, 4`.
+        let dequant = [8i32; 16];
+        let resolve = |dpcm| {
+            InverseTransform2dOuter::resolve(9, 2, 2, false, true, BitDepth::Eight, dpcm).unwrap()
+        };
+
+        let mut vertical = [0i32; 16];
+        inverse_transform_2d_outer(
+            &resolve(dpcm_direction(true, true)),
+            &dequant,
+            &mut vertical,
+        )
+        .unwrap();
+        assert_eq!(
+            vertical,
+            [1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4],
+            "Vertical DPCM accumulates down each column"
+        );
+
+        // With no DPCM (`use_dpcm == false`), the residual stays the flat 1s.
+        let mut none = [0i32; 16];
+        inverse_transform_2d_outer(&resolve(dpcm_direction(false, true)), &dequant, &mut none)
+            .unwrap();
+        assert_eq!(none, [1i32; 16], "no DPCM leaves the residual unchanged");
     }
 }
