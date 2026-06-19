@@ -449,6 +449,7 @@ mod tests {
 
     use splot_core::span::ByteOffset;
     use splot_core::symbol::{CdfUpdateMode, SymbolDecoderConfig};
+    use splot_core::symbol_encoder::SymbolEncoder;
 
     use super::*;
 
@@ -459,6 +460,34 @@ mod tests {
             SymbolDecoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Enabled),
         )
         .unwrap()
+    }
+
+    /// Encodes the §5.20.7.28 `read_quant` bitstream for one Extended-path
+    /// coefficient with `splot-core`'s `SymbolEncoder`, mirroring the decoder's
+    /// reads exactly: the q-length unary code (`q` zeros, then a terminating `1`
+    /// when `q < c_max`, otherwise the golomb length prefix of `golomb_prefix`
+    /// zeros and a terminating `1`), followed by the `length`-bit `coeff_rem`
+    /// literal. These are pure bypass writes, so no CDF is involved.
+    fn encode_extended(
+        enc: &mut SymbolEncoder,
+        q: u32,
+        c_max: u32,
+        golomb_prefix: u32,
+        length: u32,
+        coeff_rem: u32,
+    ) {
+        for _ in 0..q {
+            enc.write_bool(false).unwrap();
+        }
+        if q < c_max {
+            enc.write_bool(true).unwrap();
+        } else {
+            for _ in 0..golomb_prefix {
+                enc.write_bool(false).unwrap();
+            }
+            enc.write_bool(true).unwrap();
+        }
+        enc.write_literal(coeff_rem, length).unwrap();
     }
 
     fn walk() -> NonZeroCoeffScanWalk {
@@ -696,5 +725,171 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    // --- §5.20.7.28 read_quant SymbolEncoder roundtrip proofs ---
+    //
+    // These drive the real `read_nonzero_coeff_quants` decode helper with bytes
+    // produced by `SymbolEncoder` (the in-repo coder oracle), asserting the
+    // decoded `quant` and `path` recover the coefficient the encoder wrote. The
+    // expected `quant` is computed independently from the §5.20.7.28 formula in
+    // the test, so a golomb-assembly decode bug surfaces as a mismatch. The
+    // bypass write/read roundtrip itself is proven in splot-core; here the proof
+    // is the read_quant magnitude-extension assembly.
+
+    #[test]
+    fn read_quant_finite_q_roundtrips_through_symbol_encoder() {
+        // hr_level_avg = 16 -> pred_level = 16, m = 4, k = 5, c_max = 6.
+        let entry = CoeffScanEntry::for_test(3, 9, 1, 1);
+        let (m, k, c_max) = (4u32, 5u32, 6u32);
+        let (q, coeff_rem) = (2u32, 10u32); // q < c_max -> finite-q path
+        let length = m;
+        let x_base = q << m;
+        let x = x_base + coeff_rem;
+        let level = 3u32;
+        let expected_quant = level + x; // allow_tcq = 0 -> quant = level + x
+
+        let mut enc = SymbolEncoder::new();
+        encode_extended(&mut enc, q, c_max, 0, length, coeff_rem);
+        let bytes = enc.finish().unwrap().into_bytes();
+
+        let mut symbols = symbol_decoder(&bytes);
+        let walk = NonZeroCoeffScanWalk::from_entries_for_test(vec![entry]);
+        let inputs = [input(entry, level, level)];
+        let reads = read_nonzero_coeff_quants(&mut symbols, &walk, &inputs, config(16)).unwrap();
+
+        assert_eq!(reads[0].quant_input().quant, expected_quant);
+        assert_eq!(
+            reads[0].path(),
+            CoeffReadQuantPath::Extended {
+                m,
+                k,
+                c_max,
+                q,
+                length,
+                x_base,
+                coeff_rem,
+                x,
+            }
+        );
+    }
+
+    #[test]
+    fn read_quant_golomb_extension_roundtrips_through_symbol_encoder() {
+        // hr_level_avg = 1 -> pred_level = 1, m = 1, k = 2, c_max = 5.
+        let entry = CoeffScanEntry::for_test(3, 9, 1, 1);
+        let (m, k, c_max) = (1u32, 2u32, 5u32);
+        let (golomb_prefix, coeff_rem) = (1u32, 5u32);
+        let q = c_max; // q == c_max -> golomb extension path
+        let length = golomb_prefix + k;
+        let x_base = (q << m) + ((1 << length) - (1 << k));
+        let x = x_base + coeff_rem;
+        let level = 2u32;
+        let expected_quant = level + x;
+
+        let mut enc = SymbolEncoder::new();
+        encode_extended(&mut enc, q, c_max, golomb_prefix, length, coeff_rem);
+        let bytes = enc.finish().unwrap().into_bytes();
+
+        let mut symbols = symbol_decoder(&bytes);
+        let walk = NonZeroCoeffScanWalk::from_entries_for_test(vec![entry]);
+        let inputs = [input(entry, level, level)];
+        let reads = read_nonzero_coeff_quants(&mut symbols, &walk, &inputs, config(1)).unwrap();
+
+        assert_eq!(reads[0].quant_input().quant, expected_quant);
+        assert_eq!(
+            reads[0].path(),
+            CoeffReadQuantPath::Extended {
+                m,
+                k,
+                c_max,
+                q,
+                length,
+                x_base,
+                coeff_rem,
+                x,
+            }
+        );
+    }
+
+    #[test]
+    fn read_quant_finite_q_roundtrips_across_parameter_grid() {
+        // hr_level_avg = 16 -> m = 4, k = 5, c_max = 6. Sweep the finite-q range
+        // and several coeff_rem widths; every (q, coeff_rem) must roundtrip.
+        let entry = CoeffScanEntry::for_test(3, 9, 1, 1);
+        let (m, k, c_max) = (4u32, 5u32, 6u32);
+        let level = 4u32;
+        let mut cases = 0u32;
+        for q in 0..c_max {
+            for coeff_rem in [0u32, 1, 7, 15] {
+                let length = m;
+                let x_base = q << m;
+                let x = x_base + coeff_rem;
+                let expected_quant = level + x;
+
+                let mut enc = SymbolEncoder::new();
+                encode_extended(&mut enc, q, c_max, 0, length, coeff_rem);
+                let bytes = enc.finish().unwrap().into_bytes();
+
+                let mut symbols = symbol_decoder(&bytes);
+                let walk = NonZeroCoeffScanWalk::from_entries_for_test(vec![entry]);
+                let inputs = [input(entry, level, level)];
+                let reads =
+                    read_nonzero_coeff_quants(&mut symbols, &walk, &inputs, config(16)).unwrap();
+
+                assert_eq!(
+                    reads[0].quant_input().quant,
+                    expected_quant,
+                    "q={q} coeff_rem={coeff_rem}"
+                );
+                assert_eq!(
+                    reads[0].path(),
+                    CoeffReadQuantPath::Extended {
+                        m,
+                        k,
+                        c_max,
+                        q,
+                        length,
+                        x_base,
+                        coeff_rem,
+                        x,
+                    }
+                );
+                cases += 1;
+            }
+        }
+        assert_eq!(cases, c_max * 4);
+    }
+
+    #[test]
+    fn read_quant_multi_coeff_roundtrips_with_state_carry() {
+        // Two coefficients in one stream: an Extended coefficient (writes bits)
+        // followed by a BelowThreshold coefficient (writes none). Proves the
+        // stateful scan-walk loop decodes both correctly from one encoder stream.
+        let a = CoeffScanEntry::for_test(1, 8, 1, 0);
+        let b = CoeffScanEntry::for_test(0, 0, 0, 0);
+        // A: hr = 16 -> m = 4, c_max = 6; q = 1 (finite-q), coeff_rem = 3.
+        let (m, c_max) = (4u32, 6u32);
+        let (q, coeff_rem) = (1u32, 3u32);
+        let length = m;
+        let x = (q << m) + coeff_rem;
+        let level_a = 4u32;
+        let quant_a = level_a + x;
+        // B: level 1 < threshold 5 -> BelowThreshold, quant = level, no bits.
+        let level_b = 1u32;
+        let max_b = 5u32;
+
+        let mut enc = SymbolEncoder::new();
+        encode_extended(&mut enc, q, c_max, 0, length, coeff_rem);
+        let bytes = enc.finish().unwrap().into_bytes();
+
+        let mut symbols = symbol_decoder(&bytes);
+        let walk = NonZeroCoeffScanWalk::from_entries_for_test(vec![a, b]);
+        let inputs = [input(a, level_a, level_a), input(b, level_b, max_b)];
+        let reads = read_nonzero_coeff_quants(&mut symbols, &walk, &inputs, config(16)).unwrap();
+
+        assert_eq!(reads[0].quant_input().quant, quant_a);
+        assert_eq!(reads[1].quant_input().quant, level_b);
+        assert_eq!(reads[1].path(), CoeffReadQuantPath::BelowThreshold);
     }
 }
