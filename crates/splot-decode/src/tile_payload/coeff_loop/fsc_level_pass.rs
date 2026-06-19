@@ -36,7 +36,7 @@ pub(crate) struct CoeffFscLevelPassConfig {
 }
 
 impl CoeffFscLevelPassConfig {
-    const fn fsc_tx_size_ctx(self) -> usize {
+    pub(crate) const fn fsc_tx_size_ctx(self) -> usize {
         if self.tx_size_ctx < TX_16X16_CONTEXT {
             self.tx_size_ctx
         } else {
@@ -160,6 +160,25 @@ impl NonZeroCoeffFscLevelPass {
     #[must_use]
     pub(crate) const fn block(&self) -> &TransformCoeffBlockState {
         &self.block
+    }
+
+    /// Decomposes the completed first pass for later staged FSC/IDTX phases.
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        NonZeroCoeffEobSymbolRead,
+        FscCoeffScanWalk,
+        Vec<CoeffFscLevelReadInput>,
+        Vec<CoeffFscLevelRead>,
+        TransformCoeffBlockState,
+    ) {
+        (
+            self.eob_read,
+            self.walk,
+            self.derived_inputs,
+            self.level_reads,
+            self.block,
+        )
     }
 }
 

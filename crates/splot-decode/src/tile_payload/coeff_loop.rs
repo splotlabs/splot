@@ -31,6 +31,9 @@ mod branch;
 #[cfg(test)]
 pub(crate) use branch::{CoeffBlockEobBranchInput, read_coeff_block_eob_branch};
 pub(crate) mod fsc_level_pass;
+pub(crate) mod fsc_sign_pass;
+#[cfg(test)]
+mod fsc_sign_pass_tests;
 pub(crate) mod level_state;
 pub(crate) mod max_level;
 pub(crate) mod ordinary_pass;
