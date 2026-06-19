@@ -19,9 +19,10 @@
 //! - Tables whose element values are all integer literals are **generated** as
 //!   nested fixed-size `i32` arrays (the array shape is inferred from the brace
 //!   nesting; named dimension expressions are recorded as a doc comment only).
-//! - The two § 9.2 partition-size tables with `BLOCK_*` element values and the
-//!   three § 9.2 transform-size tables with `TX_*` element values are also
-//!   generated after resolving those spec-defined enum symbols.
+//! - The two § 9.2 partition-size tables with `BLOCK_*` element values, the
+//!   three § 9.2 transform-size tables with `TX_*` element values, and the
+//!   § 9.2 `Mode_To_Txfm` table with `TxType` element values are also generated
+//!   after resolving those spec-defined enum symbols.
 //! - Tables whose element values use other unresolved symbolic tokens (AV2 enum
 //!   names like `TX_4X4`, or the `reserved` placeholder) cannot be emitted as
 //!   integer arrays without an enum-value map, so they are listed in an
@@ -140,10 +141,6 @@ struct Section {
 /// preventing silent truncation.
 const SKIP_ALLOWLIST: &[(&str, &str)] = &[
     ("Max_Tx_Size_Rect", "TxSize enum element values (TX_*)"),
-    (
-        "Mode_To_Txfm",
-        "TxType enum element values (DCT_DCT, ADST_ADST, ...)",
-    ),
     (
         "Size_To_Tx_Type_Group_Vert_And_Horz",
         "BlockSize enum element value (BLOCK_INVALID)",
@@ -958,9 +955,9 @@ mod tests {
                 "committed {rel} drifted from gen-tables output"
             );
         }
-        // Sanity: 234 numeric tables plus two resolved `BLOCK_*` tables and
-        // three resolved `TX_*` tables.
-        assert_eq!(a.generated, 239, "generated-table count changed");
+        // Sanity: 234 numeric tables plus two resolved `BLOCK_*` tables, three
+        // resolved `TX_*` tables, and one resolved `TxType` table.
+        assert_eq!(a.generated, 240, "generated-table count changed");
         assert_eq!(a.skipped.len(), SKIP_ALLOWLIST.len());
         Ok(())
     }

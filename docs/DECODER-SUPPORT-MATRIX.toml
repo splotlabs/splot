@@ -926,6 +926,20 @@ local_reference_evidence = []
 notes = "Extends generated AV2 §9.2 table support with the three TxSize enum-valued conversion tables needed by future coefficient wrappers: `Adjusted_Tx_Size`, `Tx_Size_Sqr`, and `Tx_Size_Sqr_Up`. `cargo xtask gen-tables` now resolves the `TX_*` symbols through the AV2 §6.19.6.1 TxSize ordinal map and emits the arrays in `splot-core::tables::conversion` from the committed all_tables.h attachment. This row is infrastructure only: runtime `coeffs()` does not consume these tables yet, `txSzCtx` remains caller-resolved, and `compute_tx_type`, scan order, dequantization, inverse transform, residual add, reconstruction, output, reference refresh, AVM/dav2d evidence, public APIs, broad `decode_block()`, and broad `decode_tile()` remain unimplemented."
 
 [[row]]
+id = "mode-to-txfm-symbolic-table"
+name = "Mode_To_Txfm symbolic conversion table"
+feature_id = "DECODE-MODE-TO-TXFM-SYMBOLIC-TABLE"
+spec_sections = ["3", "9.2"]
+parser_source = "docs/spec/av2/1.0.0/03-symbols.md; docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md; docs/spec/av2/1.0.0/attachments/all_tables.h"
+decode_module = "xtask/src/gen_tables/block_symbols.rs; crates/splot-core/src/tables/conversion.rs"
+tier = "tier1-intra"
+status = "partial"
+self_contained_tests = ["xtask/src/gen_tables/block_symbols.rs::tests::resolves_supported_tx_type_table_body", "xtask/src/gen_tables/block_symbols.rs::tests::rejects_non_tx_type_symbol_in_supported_table", "crates/splot-core/tests/tables_spot.rs::conversion_mode_to_txfm_matches_mirror", "cargo xtask gen-tables --check", "cargo test -p xtask gen_tables --locked", "cargo test -p splot-core --test tables_spot conversion_mode_to_txfm_matches_mirror --locked", "cargo xtask check-decoder-support", "cargo xtask check-decoder-conformance-coverage", "cargo xtask check-feature-status"]
+diagnostics = ["decode/unsupported-feature"]
+local_reference_evidence = []
+notes = "Extends generated AV2 §9.2 table support with the TxType enum-valued `Mode_To_Txfm` table needed by future §5.20.7.29 `compute_tx_type` intra chroma fallback. `cargo xtask gen-tables` resolves the TxType symbols through the AV2 §3 ordinal map and emits the array in `splot-core::tables::conversion` from the committed all_tables.h attachment. This row is infrastructure only: runtime `coeffs()` does not consume the table yet, `compute_tx_type`, `TxTypes` tile state, transform-set membership, luma tx-size state, mode syntax, wide-angle mapping, dequantization, inverse transform, residual add, reconstruction, output, reference refresh, AVM/dav2d evidence, public APIs, broad `decode_block()`, and broad `decode_tile()` remain unimplemented."
+
+[[row]]
 id = "coeff-base-derived-level-pass"
 name = "Coefficient base derived level pass"
 feature_id = "DECODE-COEFF-BASE-DERIVED-LEVEL-PASS"

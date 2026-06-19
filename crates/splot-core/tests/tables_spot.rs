@@ -89,6 +89,34 @@ fn conversion_tx_size_symbolic_tables_match_mirror() {
 }
 
 #[test]
+fn conversion_mode_to_txfm_matches_mirror() {
+    // docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md
+    // lines 261-276 (Mode_To_Txfm[UV_INTRA_MODES_CFL_ALLOWED]). Numeric
+    // values are AV2 §3 Table 3.1 TxType discriminants.
+    let t = &tables::conversion::MODE_TO_TXFM;
+    assert_eq!(t.len(), 14);
+    assert_eq!(
+        *t,
+        [
+            0, // DCT_DCT, DC_PRED.
+            1, // ADST_DCT, V_PRED.
+            2, // DCT_ADST, H_PRED.
+            0, // DCT_DCT, D45_PRED.
+            3, // ADST_ADST, D135_PRED.
+            1, // ADST_DCT, D113_PRED.
+            2, // DCT_ADST, D157_PRED.
+            2, // DCT_ADST, D203_PRED.
+            1, // ADST_DCT, D67_PRED.
+            3, // ADST_ADST, SMOOTH_PRED.
+            1, // ADST_DCT, SMOOTH_V_PRED.
+            2, // DCT_ADST, SMOOTH_H_PRED.
+            3, // ADST_ADST, PAETH_PRED.
+            0, // DCT_DCT, UV_CFL_PRED.
+        ]
+    );
+}
+
+#[test]
 fn conversion_palette_color_hash_multipliers_matches_mirror() {
     // 09-02-conversion-tables.md line 290:
     // "Palette_Color_Hash_Multipliers[ PALETTE_NUM_NEIGHBORS ] = { 1, 2, 2 }".

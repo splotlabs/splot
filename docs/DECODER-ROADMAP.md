@@ -249,7 +249,10 @@ delegating to the block-geometry handoff. `DECODE-TX-SIZE-SYMBOLIC-TABLES` now
 extends generated § 9.2 conversion-table support with the `TX_*` enum-valued
 `Adjusted_Tx_Size`, `Tx_Size_Sqr`, and `Tx_Size_Sqr_Up` arrays, so future decode
 wrappers can consume the generated `splot-core` copies rather than local table
-transcriptions. `DECODE-COEFF-ORDINARY-BRANCH-TX-SIZE-DIMENSIONS`
+transcriptions. `DECODE-MODE-TO-TXFM-SYMBOLIC-TABLE` now similarly generates
+the TxType-valued § 9.2 `Mode_To_Txfm` conversion table for future
+`compute_tx_type()` work, without wiring runtime transform-type computation.
+`DECODE-COEFF-ORDINARY-BRANCH-TX-SIZE-DIMENSIONS`
 now derives
 `Tx_Width[txSz]`, `Tx_Height[txSz]`, `Tx_Width_Log2[txSz]`, and
 `Tx_Height_Log2[txSz]` from the generated § 9.2 conversion tables before

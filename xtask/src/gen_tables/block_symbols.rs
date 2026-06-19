@@ -7,6 +7,7 @@ use anyhow::{Result, bail};
 
 const TABLES_WITH_BLOCK_SYMBOLS: &[&str] = &["H_Partition_Midsize", "Partition_Subsize"];
 const TABLES_WITH_TX_SIZE_SYMBOLS: &[&str] = &["Adjusted_Tx_Size", "Tx_Size_Sqr", "Tx_Size_Sqr_Up"];
+const TABLES_WITH_TX_TYPE_SYMBOLS: &[&str] = &["Mode_To_Txfm"];
 
 /// Resolves supported symbolic table bodies into numeric bodies.
 pub(super) fn resolve_body(table_name: &str, body: &str) -> Result<Option<String>> {
@@ -14,6 +15,8 @@ pub(super) fn resolve_body(table_name: &str, body: &str) -> Result<Option<String
         block_size_symbol_value
     } else if TABLES_WITH_TX_SIZE_SYMBOLS.contains(&table_name) {
         tx_size_symbol_value
+    } else if TABLES_WITH_TX_TYPE_SYMBOLS.contains(&table_name) {
+        tx_type_symbol_value
     } else {
         return Ok(None);
     };
@@ -116,6 +119,29 @@ fn tx_size_symbol_value(symbol: &str) -> Option<i32> {
     })
 }
 
+// AV2 § 3 Table 3.1 defines TxType values 0..=15 and `TX_TYPES = 16`.
+fn tx_type_symbol_value(symbol: &str) -> Option<i32> {
+    Some(match symbol {
+        "DCT_DCT" => 0,
+        "ADST_DCT" => 1,
+        "DCT_ADST" => 2,
+        "ADST_ADST" => 3,
+        "FLIPADST_DCT" => 4,
+        "DCT_FLIPADST" => 5,
+        "FLIPADST_FLIPADST" => 6,
+        "ADST_FLIPADST" => 7,
+        "FLIPADST_ADST" => 8,
+        "IDTX" => 9,
+        "V_DCT" => 10,
+        "H_DCT" => 11,
+        "V_ADST" => 12,
+        "H_ADST" => 13,
+        "V_FLIPADST" => 14,
+        "H_FLIPADST" => 15,
+        _ => return None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -145,6 +171,18 @@ mod tests {
     }
 
     #[test]
+    fn resolves_supported_tx_type_table_body() -> Result<()> {
+        assert_eq!(
+            resolve_body(
+                "Mode_To_Txfm",
+                "{ DCT_DCT, ADST_DCT, DCT_ADST, ADST_ADST, IDTX, H_FLIPADST }",
+            )?,
+            Some("{ 0, 1, 2, 3, 9, 15 }".to_string())
+        );
+        Ok(())
+    }
+
+    #[test]
     fn rejects_non_block_symbol_in_supported_table() {
         assert!(resolve_body("H_Partition_Midsize", "{ TX_4X4 }").is_err());
     }
@@ -155,8 +193,13 @@ mod tests {
     }
 
     #[test]
+    fn rejects_non_tx_type_symbol_in_supported_table() {
+        assert!(resolve_body("Mode_To_Txfm", "{ TX_4X4 }").is_err());
+    }
+
+    #[test]
     fn ignores_other_symbolic_tables() -> Result<()> {
-        assert_eq!(resolve_body("Mode_To_Txfm", "{ TX_4X4 }")?, None);
+        assert_eq!(resolve_body("Max_Tx_Size_Rect", "{ TX_4X4 }")?, None);
         Ok(())
     }
 }
