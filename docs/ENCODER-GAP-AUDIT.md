@@ -74,6 +74,12 @@ planning and status; it does not claim encoder behavior exists.
   state. It is the home for the growing block-symbol trace; coefficient symbols
   from `residual()` join later. It is not coefficient/all-zero symbols, tile-body
   emission, or a packet path.
+- `ENC-INTRA-BLOCK-TRACE-LUMA-SKIP` extends `block_symbol_trace` with a unified
+  `BlockSymbolToken` spanning the intra-mode and coefficient token kinds, and
+  composes the mode prefix plus the first `residual()` symbol (the luma
+  `txb_skip` / §5.20.7.27 `all_zero`), proving the combined sequence through one
+  in-tree AV2 §8.2 coder with shared CDF state. It is not chroma `txb_skip`,
+  non-all-zero coefficients, tile-body emission, or a packet path.
 - `Packet` is still only a byte buffer wrapper, and no coded packet production
   path exists.
 - `EncoderConfig` exposes `BitDepth::Twelve`, but current Baseline Encoder Profile

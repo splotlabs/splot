@@ -689,6 +689,77 @@ pub enum Error {
         source: splot_core::Error,
     },
 
+    /// Block-symbol trace allocation failed.
+    #[error("failed to allocate encoder block-symbol trace storage for {context}")]
+    BlockSymbolTraceAllocationFailed {
+        /// Short description of the failed allocation.
+        context: &'static str,
+    },
+
+    /// A block-symbol trace token carried a selector outside the current minimal subset.
+    #[error("unsupported encoder block-symbol trace selector for token {index}")]
+    BlockSymbolTraceUnsupportedSelector {
+        /// Zero-based index of the unsupported token in the trace.
+        index: usize,
+    },
+
+    /// Writing a block-symbol trace token through the symbol encoder failed.
+    #[error("encoder block-symbol trace symbol write failed for token {index}: {source}")]
+    BlockSymbolTraceSymbolWrite {
+        /// Zero-based index of the failing token in the trace.
+        index: usize,
+        /// Source symbol-encoder error.
+        #[source]
+        source: WriteError,
+    },
+
+    /// Finalizing block-symbol trace symbol bytes failed.
+    #[error("encoder block-symbol trace symbol encoder finalization failed: {source}")]
+    BlockSymbolTraceSymbolEncodeFinish {
+        /// Source symbol-encoder error.
+        #[source]
+        source: WriteError,
+    },
+
+    /// Initializing the block-symbol trace symbol decoder failed.
+    #[error("encoder block-symbol trace symbol decoder initialization failed: {source}")]
+    BlockSymbolTraceSymbolDecodeInit {
+        /// Source symbol-decoder error.
+        #[source]
+        source: splot_core::Error,
+    },
+
+    /// Reading a block-symbol trace token through the symbol decoder failed.
+    #[error("encoder block-symbol trace symbol read failed for token {index}: {source}")]
+    BlockSymbolTraceSymbolRead {
+        /// Zero-based index of the failing token in the trace.
+        index: usize,
+        /// Source symbol-decoder error.
+        #[source]
+        source: splot_core::Error,
+    },
+
+    /// Decoded block-symbol trace token value did not match the encoded value.
+    #[error(
+        "encoder block-symbol trace symbol mismatch for token {index}: expected {expected}, decoded {actual}"
+    )]
+    BlockSymbolTraceSymbolMismatch {
+        /// Zero-based index of the mismatched token in the trace.
+        index: usize,
+        /// Encoded symbol value.
+        expected: u8,
+        /// Decoded symbol value.
+        actual: u8,
+    },
+
+    /// Finalizing the block-symbol trace symbol decoder failed.
+    #[error("encoder block-symbol trace symbol decoder finalization failed: {source}")]
+    BlockSymbolTraceSymbolDecodeFinish {
+        /// Source symbol-decoder error.
+        #[source]
+        source: splot_core::Error,
+    },
+
     /// An encoder lifecycle operation is invalid in the current context state.
     #[error("encoder operation {operation:?} is invalid while the context is {state:?}")]
     State {
