@@ -651,8 +651,6 @@ impl BlockSymbolTraceRoundtrip {
     }
 }
 
-/// Writes a block-symbol trace through one § 8.2 symbol encoder and decodes it
-/// back through one symbol decoder, sharing CDF state across the whole sequence.
 /// Encodes an ordered block-symbol trace into AV2 § 8.2 entropy-coded bytes — the
 /// encoder's production entropy-coding entry point. Each token is written to its
 /// scoped default CDF row (a bypass literal writes its raw bits); `finish()`
@@ -702,6 +700,10 @@ pub(crate) fn encode_block_symbol_trace(trace: &[BlockSymbolToken]) -> Result<Ve
     Ok(output.into_bytes())
 }
 
+/// Proves a block-symbol trace through one § 8.2 coder: encodes it via
+/// [`encode_block_symbol_trace`], then decodes the bytes back through one symbol
+/// decoder with the same shared CDF state, verifying every token reproduces. Returns
+/// the coded bytes and the decoded symbols for assertions.
 pub(crate) fn roundtrip_block_symbol_trace(
     trace: &[BlockSymbolToken],
 ) -> Result<BlockSymbolTraceRoundtrip> {
