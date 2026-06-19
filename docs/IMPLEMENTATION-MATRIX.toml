@@ -4701,6 +4701,39 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-INTRA-BLOCK-TRACE-TWO-COEFF-TX-TYPE"
+name = "Encoder eob=2 trace with TX_SET_INTRA_1 intra_tx_type"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20.8.2", "5.20.7.27", "8.3.2", "8.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/block_symbol_trace.rs"
+openspec_change = "encoder-block-trace-two-coeff-tx-type"
+tracking_issue = ""
+owner = "encoder"
+risk = "medium"
+notes = "Private, non-emitting eob=2 multi-coefficient luma block trace WITH the §5.20.8.2 intra_tx_type transform-type symbol — the GENERAL eob>1 trace for the default reduced_tx_set TX_SET_INTRA_1 config (removing ENC-INTRA-BLOCK-TRACE-TWO-COEFF's reduced_tx_set==2 / DCT-only scope; the first multi-coefficient trace that carries a transform-type symbol). `compose_minimal_intra_two_coeff_block_trace_with_tx_type()` in block_symbol_trace.rs DELEGATES to the eob=2 composer (#336) and inserts the intra_tx_type DCT_DCT token (symbol 0, TX_SET_INTRA_1, Tx_Size_Sqr 0; #347's intra_tx_type_set1_token) after eob_pt_16 — §5.20.8.2 transform_type() is read right after the eob reading (§5.20.7.27 line 15474), before the base pass. 11-token trace [0,0,0,0,1,0,0,0,0,1,1] (the eob=2 [0,0,0,0,1,0,0,0,1,1] + intra_tx_type=0 at index 5) through one §8.2 coder. BlockSymbolTraceCdfRows gains the 4x4 TX_SET_INTRA_1 row + routing. Still assumes enable_intra_ist==0 (no sec_tx_type — §5.20.7.29 would otherwise read it; the next brick). The §5.20.7.28 golomb-tail composers were EXTRACTED to a `block_symbol_trace/golomb.rs` submodule (parent hit 1015>1000; use super::* gives the consts/tokens; #[allow(unused_imports)] on the re-export since only tests reference them) → parent 819 lines. Tests: compose-in-order (asserts the intra_tx_type token after eob_pt + the symbols) + roundtrip + deterministic. Reuses the derived coeff_base context + scan-derived AC position from #336 and the verified DCT_DCT=symbol-0 from #347; AVM cross-check at the packet milestone. This row does not claim sec_tx_type, eob>2, non-DCT_DCT transform types, non-TX_SET_INTRA_1 sets, non-DC_PRED directions, tile-body emission, packet output, CLI success, or Baseline Encoder Profile v1 output."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/block_symbol_trace_tests.rs::composes_two_coeff_with_tx_type_inserts_intra_tx_type_after_eob_pt", "crates/splot-encode/src/block_symbol_trace_tests.rs::two_coeff_with_tx_type_roundtrips_through_one_coder", "crates/splot-encode/src/block_symbol_trace_tests.rs::two_coeff_with_tx_type_roundtrip_is_deterministic"]
+commands = ["cargo test -p splot-encode block_symbol_trace --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-RECON-DEPENDENCY"
 name = "Encoder reconstruction dependency boundary"
 category = "encoder"
