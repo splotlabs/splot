@@ -166,3 +166,55 @@ output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
 kind = "digest-equality"
 left = "avm-raw-md5"
 right = "dav2d-raw-md5"
+
+[[evidence]]
+id = "lref-avm-dav2d-syn-flat-intra-64x64-q80"
+feature_id = "DECODE-GENERAL-INTRA-FRAME-FRONTIER"
+decoder_support_rows = ["general-intra-frame-frontier"]
+kind = "reference-output-agreement"
+summary = "Local AVM and dav2d raw decoder output MD5 digests agreed for the 8-bit 64x64 single-block intra IVF fixture at base_q_idx 80, the first general-intra decode target whose block carries a real nonzero DC residual."
+recorded_at = "2026-06-19"
+
+[[evidence.fixture]]
+id = "input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-flat-intra-64x64-q80.ivf"
+sha256 = "19f422ac63056ae799157daf1954715c33028002baafb399731c9e768204c7ef"
+size_bytes = 74
+format = "ivf"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Generated locally from project-owned synthetic flat YUV input with broad decode tools disabled; AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avm"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "457cd58681a747465661baccb1f32095bc5b7774"
+version_summary = "AVM checkout HEAD 457cd58681a747465661baccb1f32095bc5b7774, exact binary build commit not separately archived."
+command_summary = "Local avmdec raw decoder output MD5 for {fixture:input}, exact arguments not archived."
+output_digest_id = "avm-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "5419a251dd0a3ae1e87bb27679b06b54"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.reference_run]]
+id = "dav2d"
+tool = "dav2d"
+executable_name = "dav2d"
+tool_role = "decode-reference"
+source_url = "https://code.videolan.org/videolan/dav2d"
+revision = "f4f96cb06bb3cd3f31e29e1f190f1c0e373ab352"
+version_summary = "dav2d 0.0.1-191-gf4f96cb0 (commit f4f96cb0), exact version output not archived."
+command_summary = "Local dav2d raw decoder output MD5 for {fixture:input}, exact arguments not archived."
+output_digest_id = "dav2d-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "5419a251dd0a3ae1e87bb27679b06b54"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-raw-md5"
+right = "dav2d-raw-md5"

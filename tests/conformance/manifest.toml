@@ -40,6 +40,11 @@ description = "Single flat 8-bit 4:2:0 intra key frame (IVF, 64x64) from project
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-flat-intra-64x64-q80.ivf"
+description = "Single flat 8-bit 4:2:0 intra key frame (IVF, 64x64) from project-owned synthetic input with broad decode tools disabled at base_q_idx 80, so the single 64x64 block carries a real (nonzero) DC residual; the first general-intra decode target whose avmdec and dav2d raw outputs agree byte-for-byte; validates clean."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-key-inter-64x64.ivf"
 description = "Key frame plus two inter frames (IVF, 64x64) from project-owned synthetic input; validates clean."
 expect = "clean"

@@ -45,6 +45,16 @@ const MINIMAL_HEIGHT: u32 = 64;
 const MINIMAL_TRACE_SYMBOLS: u64 = 6;
 const MINIMAL_TRACE_TRAILING_BIT_POSITION: u64 = 14;
 const MINIMAL_TRACE_PADDING_END_POSITION: u64 = 16;
+/// `base_q_idx` of the committed frozen minimal-tier fixture; frames with this
+/// quantizer stay on the frozen hash-contract path, all others route to the
+/// general intra frontier.
+const FROZEN_MINIMAL_BASE_Q_IDX: u32 = 255;
+
+const GENERAL_INTRA_FEATURE_ID: &str = "DECODE-GENERAL-INTRA-FRAME-FRONTIER";
+const GENERAL_INTRA_MATRIX_ROW: &str = "general-intra-frame-frontier";
+const GENERAL_INTRA_TIER_ID: &str = "general-intra-8bit420-frontier-v1";
+const GENERAL_INTRA_SPEC_SECTION: &str = "5.20.3.1";
+const GENERAL_INTRA_REMEDIATION: &str = "General intra block-symbol, coefficient, and reconstruction decode is not yet implemented; track DECODE-GENERAL-INTRA-FRAME-FRONTIER.";
 
 pub(crate) struct MinimalRuntimeFrame {
     pub(crate) frame: DecodedFrame<u8>,
@@ -94,6 +104,17 @@ pub(crate) fn decode_minimal_frame_from_plan_with_ivf_preflight(
 
     let candidate = single_plan_candidate(plan)?;
     let core = parse_frame_core(frame_envelope, &sequence)?;
+    if route_general_minimal_intra(&core) {
+        return decode_general_minimal_intra_frame(
+            plan,
+            candidate,
+            bytes,
+            frame_envelope,
+            &sequence,
+            &core,
+            options,
+        );
+    }
     validate_frame_core(&core, frame_envelope.offset)?;
 
     let mut tile_plan = derive_tile_plan(
@@ -562,6 +583,177 @@ fn validate_frame_core(core: &FrameHeaderCore, offset: ByteOffset) -> Result<()>
         ));
     }
     Ok(())
+}
+
+/// Routes a parsed frame to the general intra decode frontier.
+///
+/// The frozen minimal hash tier owns exactly the committed
+/// `base_q_idx == 255` fixture (see [`validate_frame_core`]); any other
+/// general minimal-tool intra key frame routes to
+/// [`decode_general_minimal_intra_frame`]. Frames that are not minimal-tool
+/// intra (segmentation, quant matrices, delta-Q, in-loop filters, CCSO, GDF,
+/// or film grain enabled) fall through to the frozen gate so its precise
+/// diagnostics are preserved.
+fn route_general_minimal_intra(core: &FrameHeaderCore) -> bool {
+    core.quantization_params
+        .is_some_and(|quant| quant.base_q_idx != FROZEN_MINIMAL_BASE_Q_IDX)
+        && is_general_minimal_intra(core)
+}
+
+/// Returns whether `core` is a single-tile 64x64 8-bit intra key frame with no
+/// segmentation, quant matrices, delta-Q, in-loop filters, CCSO, GDF, or film
+/// grain — the general intra subset the frontier admits. This mirrors
+/// [`validate_frame_core`] but accepts any `base_q_idx`, so the single 64x64
+/// block can carry a real (nonzero) residual.
+fn is_general_minimal_intra(core: &FrameHeaderCore) -> bool {
+    core.status == FrameHeaderParseStatus::IntraHeaderComplete
+        && core.cur_mfh_id.is_zero()
+        && core.show_existing_frame == Some(false)
+        && core.frame_is_intra == Some(true)
+        && core.is_key_frame
+        && core.immediate_output_frame == Some(true)
+        && core.implicit_output_frame == Some(false)
+        && matches!(
+            core.frame_size,
+            Some(FrameSize {
+                width: MINIMAL_WIDTH,
+                height: MINIMAL_HEIGHT,
+                ..
+            })
+        )
+        && core
+            .tile_info
+            .as_ref()
+            .is_some_and(|tile_info| tile_info.tile_cols == 1 && tile_info.tile_rows == 1)
+        && core.quantization_params.is_some()
+        && core
+            .segmentation_params
+            .as_ref()
+            .is_some_and(|seg| !seg.segmentation_enabled)
+        && core.setup_qm_params.is_some_and(|qm| !qm.using_qmatrix)
+        && core
+            .delta_q_params
+            .is_some_and(|delta| !delta.delta_q_present)
+        && core
+            .lossless_info
+            .as_ref()
+            .is_some_and(|lossless| !lossless.coded_lossless)
+        && core
+            .deblocking_filter_params
+            .is_some_and(|filter| filter.apply_deblocking_filter == [false; 4])
+        && core.gdf_params.is_some_and(|gdf| !gdf.gdf_frame_enable)
+        && core
+            .cdef_params
+            .as_ref()
+            .is_some_and(|cdef| !cdef.cdef_frame_enable)
+        && core.lr_params.as_ref().is_some_and(|lr| !lr.uses_lr)
+        && core
+            .ccso_params
+            .as_ref()
+            .is_some_and(|ccso| ccso.ccso_frame_flag.is_none() && ccso.planes.is_empty())
+        && core
+            .intra_tail
+            .is_some_and(|tail| !tail.film_grain.apply_grain)
+}
+
+/// Decodes a general minimal-tool intra key frame as far as the current
+/// frontier reaches.
+///
+/// This runs the real AV2 § 5.20.3.1 partition traversal over the single tile
+/// and confirms the root partition frontier, then returns a structured
+/// `decode/unsupported-feature` diagnostic: block-symbol, coefficient,
+/// dequantization, inverse-transform, residual, and prediction decode for the
+/// general intra path are not yet wired. It never returns a reconstructed
+/// frame yet and never mutates the frozen minimal hash tier.
+fn decode_general_minimal_intra_frame(
+    plan: &DecodeStreamPlan,
+    candidate: &DecodePlannedObu,
+    bytes: &[u8],
+    frame_envelope: ObuEnvelope<'_>,
+    sequence: &SequenceHeader,
+    core: &FrameHeaderCore,
+    options: DecodeOptions,
+) -> Result<MinimalRuntimeFrame> {
+    let mut tile_plan = derive_tile_plan(
+        plan,
+        candidate,
+        bytes,
+        frame_envelope,
+        sequence,
+        core,
+        options,
+    )?;
+    let tile = match tile_plan.work_units_mut() {
+        [tile] => tile,
+        [] => {
+            return Err(general_intra_unsupported(
+                "general_intra_missing_tile_work_unit",
+                None,
+                "general intra decode requires one tile work unit",
+            ));
+        }
+        work_units => {
+            return Err(general_intra_unsupported(
+                "general_intra_unexpected_tile_work_units",
+                work_units.first().map(|tile| tile.tile_byte_span().start),
+                "general intra decode currently supports exactly one tile work unit",
+            ));
+        }
+    };
+    let tile_offset = tile.tile_byte_span().start;
+    crate::tile_payload::plan_minimal_runtime_partition_frontier(
+        tile,
+        sequence,
+        core,
+        options.limits(),
+    )
+    .map_err(|error| general_intra_partition_frontier_error(error, tile_offset))?;
+    Err(general_intra_unsupported(
+        "general_intra_block_decode_unimplemented",
+        Some(tile_offset),
+        "general intra frame reaches the AV2 §5.20.3.1 root partition frontier; block-symbol, coefficient, and reconstruction decode are not yet implemented",
+    ))
+}
+
+fn general_intra_partition_frontier_error(
+    error: MinimalRuntimePartitionFrontierError,
+    offset: ByteOffset,
+) -> DecodeError {
+    match error {
+        MinimalRuntimePartitionFrontierError::Limit(source)
+        | MinimalRuntimePartitionFrontierError::Traversal(TilePartitionTraversalError::Limit(
+            source,
+        )) => DecodeError::Limit { source },
+        MinimalRuntimePartitionFrontierError::MissingFact { .. }
+        | MinimalRuntimePartitionFrontierError::MiSizeState(_)
+        | MinimalRuntimePartitionFrontierError::Traversal(_)
+        | MinimalRuntimePartitionFrontierError::UnexpectedFrontier { .. } => {
+            general_intra_unsupported(
+                "general_intra_partition_frontier",
+                Some(offset),
+                "general intra decode could not reach a supported AV2 §5.20.3.1 single-block root partition frontier",
+            )
+        }
+    }
+}
+
+fn general_intra_unsupported(
+    reason: &'static str,
+    byte_offset: Option<ByteOffset>,
+    message: &'static str,
+) -> DecodeError {
+    DecodeError::UnsupportedFeature {
+        unsupported: Box::new(DecodeUnsupportedFeature::new(
+            reason,
+            GENERAL_INTRA_TIER_ID,
+            GENERAL_INTRA_MATRIX_ROW,
+            GENERAL_INTRA_FEATURE_ID,
+            GENERAL_INTRA_SPEC_SECTION,
+            message,
+            GENERAL_INTRA_REMEDIATION,
+            byte_offset,
+        )),
+    }
 }
 
 fn derive_tile_plan<'a>(
