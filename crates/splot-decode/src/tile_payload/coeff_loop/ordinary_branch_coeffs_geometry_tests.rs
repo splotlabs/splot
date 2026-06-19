@@ -17,10 +17,11 @@ use super::ordinary_pass::geometry::{
     CoeffOrdinaryBranchGeometryInput, CoeffOrdinaryBranchGeometryNonZeroInput,
     CoeffOrdinaryBranchTxSizeDimensionsBaseConfig, CoeffOrdinaryBranchTxSizeDimensionsInput,
     CoeffOrdinaryBranchTxSizeDimensionsNonZeroInput, CoeffOrdinaryCoeffsGeometryConfig,
-    CoeffOrdinaryGeometryStateContextConfig, CoeffOrdinaryTxSizeGeometryConfig,
-    apply_coeff_ordinary_branch_from_coeffs_geometry, apply_coeff_ordinary_branch_from_geometry,
-    apply_coeff_ordinary_branch_from_tx_size_dimensions,
-    apply_coeff_ordinary_branch_from_tx_size_dimensions_with_test_tables,
+    CoeffOrdinaryGeometryStateContextConfig, CoeffOrdinaryTestDimensionTables,
+    CoeffOrdinaryTxSizeGeometryConfig, apply_coeff_ordinary_branch_from_coeffs_geometry,
+    apply_coeff_ordinary_branch_from_geometry, apply_coeff_ordinary_branch_from_tx_size_dimensions,
+    apply_coeff_ordinary_branch_from_tx_size_dimensions_with_test_dimension_tables,
+    apply_coeff_ordinary_branch_from_tx_size_dimensions_with_test_tables, tx_size_scan_for_test,
 };
 use super::ordinary_pass::{
     CoeffOrdinaryBranch, CoeffOrdinaryBranchError, CoeffOrdinaryBranchInput,
@@ -71,6 +72,17 @@ fn payload_from(first: u8, second: u8, suffix: [u8; 3]) -> [u8; 12] {
     [
         first, second, suffix[0], suffix[1], suffix[2], 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x80,
     ]
+}
+
+fn assert_scan_permutation(scan: &[u16]) {
+    let mut seen = vec![false; scan.len()];
+    for &pos in scan {
+        let pos = usize::from(pos);
+        assert!(pos < scan.len(), "scan position {pos} outside scan length");
+        assert!(!seen[pos], "scan position {pos} repeated");
+        seen[pos] = true;
+    }
+    assert!(seen.into_iter().all(|seen| seen));
 }
 
 fn base_config_for_plane(plane: usize) -> CoeffBaseDerivedLevelPassConfig {
@@ -324,13 +336,12 @@ fn branch_tx_size_dimensions_nonzero_input(
     start: NonZeroCoeffBlockStartInput,
     tx_size: usize,
     base_config: CoeffOrdinaryBranchTxSizeDimensionsBaseConfig,
-) -> CoeffOrdinaryBranchTxSizeDimensionsInput<'static> {
+) -> CoeffOrdinaryBranchTxSizeDimensionsInput {
     CoeffOrdinaryBranchTxSizeDimensionsInput::NonZero(
         CoeffOrdinaryBranchTxSizeDimensionsNonZeroInput {
             geometry: tx_size_geometry_config_for_block(start.block, tx_size),
             coeff_cdf_q_ctx: 0,
             is_inter: start.eob.is_inter,
-            scan: &DC_ONLY_SCAN,
             base_config,
             lossless: false,
         },
@@ -424,7 +435,7 @@ fn run_coeffs_geometry_branch(
 
 fn run_tx_size_dimensions_branch(
     payload: &[u8],
-    input: CoeffOrdinaryBranchTxSizeDimensionsInput<'_>,
+    input: CoeffOrdinaryBranchTxSizeDimensionsInput,
 ) -> (
     CoeffOrdinaryBranch,
     TileCoeffContextState,
@@ -484,6 +495,35 @@ fn coefficient_ordinary_branch_coeffs_geometry_nonzero_matches_explicit_geometry
     );
 
     assert_eq!(derived, explicit);
+}
+
+#[test]
+fn coefficient_ordinary_branch_tx_size_scan_order_derives_two_dimensional() {
+    let scan = tx_size_scan_for_test(8, 4, 0).unwrap();
+
+    assert_eq!(&scan[..10], &[0, 8, 1, 16, 9, 2, 24, 17, 10, 3]);
+    assert_eq!(scan.len(), 32);
+    assert_scan_permutation(&scan);
+}
+
+#[test]
+fn coefficient_ordinary_branch_tx_size_scan_order_derives_horizontal() {
+    let scan = tx_size_scan_for_test(4, 4, 11).unwrap();
+
+    assert_eq!(
+        scan.as_slice(),
+        &[0, 4, 8, 12, 1, 5, 9, 13, 2, 6, 10, 14, 3, 7, 11, 15]
+    );
+}
+
+#[test]
+fn coefficient_ordinary_branch_tx_size_scan_order_derives_vertical() {
+    let scan = tx_size_scan_for_test(4, 4, 10).unwrap();
+
+    assert_eq!(
+        scan.as_slice(),
+        &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    );
 }
 
 #[test]
@@ -816,4 +856,43 @@ fn coefficient_ordinary_branch_tx_size_context_table_value_preserves_mutable_sta
             CoeffOrdinaryBranchError::InvalidTransformSize { tx_size: 25 }
         ));
     });
+}
+
+#[test]
+fn coefficient_ordinary_branch_tx_size_scan_shape_preserves_mutable_state() {
+    let frame = FrameCdfSubset::from_defaults();
+    let mut tile = frame.tile_copy();
+    let tile_before = tile.clone();
+    let mut symbols = symbol_decoder(&[0x80]);
+    let consumed_before = symbols.consumed_bits();
+    let symbols_before = symbols.symbol_count();
+    let mut context_state = seeded_context_state();
+    let context_before = context_state.clone();
+    let start = nonzero_start_input_for_plane_and_geometry(1, 1, 1, 2, 2);
+
+    let err = apply_coeff_ordinary_branch_from_tx_size_dimensions_with_test_dimension_tables(
+        &mut context_state,
+        &mut tile,
+        &mut symbols,
+        branch_tx_size_dimensions_nonzero_input(start, 0, tx_size_base_config()),
+        CoeffOrdinaryTestDimensionTables {
+            tx_width: &[2],
+            tx_height: &[4],
+            tx_width_log2: &[1],
+            tx_height_log2: &[2],
+        },
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        err,
+        CoeffOrdinaryBranchError::InvalidScanShape {
+            width: 2,
+            height: 4
+        }
+    ));
+    assert_eq!(context_state, context_before);
+    assert_eq!(tile, tile_before);
+    assert_eq!(symbols.consumed_bits(), consumed_before);
+    assert_eq!(symbols.symbol_count(), symbols_before);
 }
