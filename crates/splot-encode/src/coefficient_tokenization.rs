@@ -50,6 +50,15 @@ pub(crate) fn tokenize_quantized_4x4_dct_dct_dc_only(
     tokenize_coefficients(CoefficientTokenizationInput::from_quantized(block))
 }
 
+/// Returns the AV2 § 5.20.7.27 luma `all_zero` (`txb_skip`) token for an
+/// all-zero transform block at the given coefficient CDF q-context.
+///
+/// This is the first `residual()` symbol of an all-zero luma block; no further
+/// luma coefficient symbols follow it.
+pub(crate) const fn luma_all_zero_token(coeff_cdf_q_ctx: usize) -> CoefficientEntropyToken {
+    all_zero_token(coeff_cdf_q_ctx, true)
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct CoefficientTokenizationInput<'a> {
     plane: PlaneId,
