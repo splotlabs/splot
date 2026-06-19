@@ -1,10 +1,10 @@
 ## Why
 
 Every block-symbol token so far is a CDF-coded `S()` symbol. But AV2 codes some
-syntax as `L(n)` *bypass literals* with no CDF — notably a non-luma-DC
-coefficient's `sign_bit` (§5.20.7.27 reads the `dc_sign` CDF symbol only for the
-luma DC; every other coefficient's sign is `sign_bit L(1)`) and the §5.20.7.28
-`read_quant` golomb tail. The block-symbol trace cannot represent those yet. This
+syntax as `L(n)` *bypass literals* with no CDF — notably the `sign_bit` of a chroma
+or ordinary non-axis luma coefficient (§5.20.7.27 codes the luma DC sign as
+`dc_sign` and the directional luma axis signs as `dc_sign_horz_vert`, both CDF;
+every other sign is `sign_bit L(1)`) and the §5.20.7.28 `read_quant` golomb tail. The block-symbol trace cannot represent those yet. This
 change adds the bypass-literal token kind so the trace and its §8.2 roundtrip can
 carry literal bits interleaved with CDF symbols, unblocking coded chroma signs and
 the golomb tail.

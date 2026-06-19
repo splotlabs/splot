@@ -5,7 +5,7 @@
 The encoder SHALL provide a private bypass-literal block-symbol token tracked by
 `ENC-INTRA-BLOCK-TRACE-BYPASS-LITERAL`, extending the unified block-symbol trace.
 The token SHALL represent an AV2 §8.2.5 `L(n)` bypass literal of a given bit width
-and value (the foundation for a non-luma-DC coefficient's `sign_bit` per §5.20.7.27
+and value (the foundation for the `sign_bit` of a chroma or ordinary non-axis luma coefficient per §5.20.7.27 — the luma DC sign is `dc_sign` and the directional luma axis signs are `dc_sign_horz_vert`, both CDF
 and the §5.20.7.28 golomb tail). The `roundtrip_block_symbol_trace` proof SHALL
 write a bypass token through the in-tree `SymbolEncoder` literal primitive and read
 it back through the `SymbolDecoder` literal primitive, interleaved with CDF

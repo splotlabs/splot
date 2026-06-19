@@ -123,8 +123,10 @@ pub(crate) enum BlockSymbolToken {
     /// An AV2 § 8.2.5 bypass literal of `width` bits carrying `value` (MSB-first).
     ///
     /// Unlike `Mode`/`Coeff` (CDF-coded `S()` symbols) a bypass literal is an
-    /// `L(n)` read with no CDF — e.g. a non-luma-DC coefficient's `sign_bit`
-    /// (§ 5.20.7.27) or the `read_quant` golomb tail (§ 5.20.7.28).
+    /// `L(n)` read with no CDF — e.g. the `sign_bit` of a chroma or ordinary
+    /// non-axis luma coefficient (§ 5.20.7.27 codes the luma DC sign as `dc_sign`
+    /// and the directional luma axis signs as `dc_sign_horz_vert`, both CDF; every
+    /// other sign is `sign_bit L(1)`) or the `read_quant` golomb tail (§ 5.20.7.28).
     Bypass {
         /// Number of literal bits (`n` in `L(n)`).
         width: u32,

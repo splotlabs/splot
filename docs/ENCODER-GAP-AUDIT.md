@@ -110,8 +110,9 @@ planning and status; it does not claim encoder behavior exists.
 - `ENC-INTRA-BLOCK-TRACE-BYPASS-LITERAL` adds the §8.2.5 bypass-literal token kind
   (`BlockSymbolToken::Bypass { width, value }`) routed through the trace roundtrip
   via `SymbolEncoder::write_literal` / `SymbolDecoder::read_literal`. It is the
-  foundation for syntax not coded as a CDF symbol — a non-luma-DC coefficient's
-  `sign_bit` (§5.20.7.27 reads the `dc_sign` CDF only for the luma DC) and the
+  foundation for syntax not coded as a CDF symbol — the `sign_bit` of a chroma or ordinary
+  non-axis luma coefficient (§5.20.7.27 codes the luma DC sign as `dc_sign` and
+  the directional luma axis signs as `dc_sign_horz_vert`, both CDF) and the
   §5.20.7.28 golomb tail. Proven by a mixed CDF+bypass roundtrip; it has no
   consumer yet and is not coded chroma signs, the golomb tail, tile-body emission,
   or a packet path.
