@@ -192,6 +192,10 @@ planning and status; it does not claim encoder behavior exists.
   coded with TileSecTxTypeCdf[0][Tx_Size_Sqr]; symbol 0 = IST off (no
   most_probable_stx_set). Roundtrips for every row/value through one §8.2 coder. Not
   yet a trace, not the inter bank, not a packet path.
+- `ENC-INTRA-BLOCK-TRACE-IST` composes the eob=2 trace with BOTH §5.20.8.2
+  transform-type symbols (intra_tx_type + the sec_tx_type IST symbol, enable_intra_ist
+  ==1): the 12-token trace [0,0,0,0,1,0,0,0,0,0,1,1] roundtrips through one §8.2 coder.
+  sec_tx_type=0 (IST off, no most_probable_stx_set). Not eob>2, not a packet path.
 - `Packet` is still only a byte buffer wrapper, and no coded packet production
   path exists.
 - `EncoderConfig` exposes `BitDepth::Twelve`, but current Baseline Encoder Profile

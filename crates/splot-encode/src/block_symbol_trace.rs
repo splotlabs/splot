@@ -29,7 +29,9 @@
 //! low-frequency context, and the AC `sign_bit` bypass), and
 //! `ENC-INTRA-BLOCK-TRACE-TWO-COEFF-TX-TYPE` (the same eob=2 block for the
 //! default-`reduced_tx_set` `TX_SET_INTRA_1` config, inserting the §5.20.8.2
-//! `intra_tx_type` DCT_DCT symbol after `eob_pt_16`),
+//! `intra_tx_type` DCT_DCT symbol after `eob_pt_16`), and
+//! `ENC-INTRA-BLOCK-TRACE-IST` (that eob=2 block for `enable_intra_ist == 1`, adding
+//! the §5.20.8.2 `sec_tx_type` IST symbol right after `intra_tx_type`),
 //! reusing the merged mode emitters and the coefficient tokenization's per-plane
 //! all-zero and coded-DC tokens
 //! (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3`).
@@ -42,14 +44,14 @@
 //! CDF row from `splot-core` defaults.
 //!
 //! Its coefficient coverage is the single-DC magnitude vocabulary plus the minimal
-//! eob=2 multi-coefficient block (with or without the `TX_SET_INTRA_1`
-//! `intra_tx_type` symbol); it does not emit blocks with eob > 2, luma DC magnitude
+//! eob=2 multi-coefficient block (with no transform-type symbol, with the
+//! `TX_SET_INTRA_1` `intra_tx_type` symbol, or with both `intra_tx_type` and the
+//! `sec_tx_type` IST symbol); it does not emit blocks with eob > 2, luma DC magnitude
 //! beyond the golomb-prefix cap (525), high-frequency coefficients, the
-//! `sec_tx_type` secondary-transform symbol (the tx-type trace still assumes
-//! `enable_intra_ist == 0`), non-`TX_SET_INTRA_1` / non-`DC_PRED` transform types,
-//! the chroma base-range/golomb tiers, V-plane coded coefficients, partition syntax,
-//! tile CDF lifecycle, packets, a public encoder API, or modes beyond the DC
-//! minimal tier.
+//! `most_probable_stx_set` IST-set symbol (the IST trace uses `sec_tx_type = 0`),
+//! non-`TX_SET_INTRA_1` / non-`DC_PRED` transform types, the chroma
+//! base-range/golomb tiers, V-plane coded coefficients, partition syntax, tile CDF
+//! lifecycle, packets, a public encoder API, or modes beyond the DC minimal tier.
 
 #![allow(dead_code)]
 
@@ -58,8 +60,9 @@ use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig};
 use splot_core::tables::cdf::{
     DEFAULT_COEFF_BASE_LF_CDF, DEFAULT_COEFF_BASE_LF_EOB_CDF, DEFAULT_COEFF_BASE_LF_EOB_UV_CDF,
     DEFAULT_COEFF_BR_LF_CDF, DEFAULT_DC_SIGN_CDF, DEFAULT_EOB_PT_16_CDF,
-    DEFAULT_INTRA_TX_TYPE_SET1_CDF, DEFAULT_TXB_SKIP_CDF, DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF,
-    DEFAULT_V_TXB_SKIP_CDF, DEFAULT_Y_MODE_INDEX_CDF, DEFAULT_Y_MODE_SET_CDF,
+    DEFAULT_INTRA_TX_TYPE_SET1_CDF, DEFAULT_SEC_TX_TYPE_CDF, DEFAULT_TXB_SKIP_CDF,
+    DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF, DEFAULT_V_TXB_SKIP_CDF, DEFAULT_Y_MODE_INDEX_CDF,
+    DEFAULT_Y_MODE_SET_CDF,
 };
 
 use crate::coefficient_tokenization::{
@@ -67,7 +70,7 @@ use crate::coefficient_tokenization::{
     chroma_u_all_zero_token, chroma_u_dc_coded_coeff_tokens, chroma_v_all_zero_token,
     coded_luma_all_zero_token, coeff_base_lf_eob_token, coeff_base_lf_luma_context,
     coeff_base_lf_token, eob_pt_16_token, intra_tx_type_set1_token, luma_all_zero_token,
-    luma_dc_coded_tokens, luma_dc_golomb_level_tokens, luma_dc_sign_token,
+    luma_dc_coded_tokens, luma_dc_golomb_level_tokens, luma_dc_sign_token, sec_tx_type_intra_token,
 };
 use splot_recon::{TransformClass, coefficient_scan_order};
 
@@ -122,6 +125,16 @@ const INTRA_TX_TYPE_SET1_TX_SIZE_SQR_4X4: usize = 0;
 const INTRA_TX_TYPE_DCT_DCT_SYMBOL: u8 = 0;
 const INTRA_TX_TYPE_SET1_CDF_ROW_LEN: usize = 8;
 const EOB_PT_16_TRACE_INDEX: usize = 4;
+// §5.20.8.2 `transform_type()` reads `sec_tx_type` (the IST secondary transform) at
+// line 16613, right after `intra_tx_type` (line 16529), when the IST condition holds.
+// For this 4x4 DCT_DCT DC_PRED eob=2 block with `enable_intra_ist == 1` it holds
+// (`eob 2 != 1`, `!Lossless`, `TxType == DCT_DCT`, `YMode != PAETH`, `eob 2 <= eobLim
+// = IST_4X4_HEIGHT = 8`), so the symbol is read; symbol 0 is `sec_tx_type = 0` (IST
+// off), which reads no `most_probable_stx_set`. It is inserted after `intra_tx_type`.
+const SEC_TX_TYPE_INTRA_BANK: usize = 0;
+const SEC_TX_TYPE_INTRA_TX_SIZE_SQR_4X4: usize = 0;
+const SEC_TX_TYPE_IST_OFF_SYMBOL: u8 = 0;
+const SEC_TX_TYPE_INTRA_CDF_ROW_LEN: usize = 5;
 const COEFF_BASE_LF_EOB_CTX_EOB2_AC: usize = 1;
 const COEFF_BASE_LF_CTX_EOB2_DC: usize = 1;
 const COEFF_BASE_LF_TCQ_CTX_NEUTRAL: usize = 0;
@@ -570,6 +583,49 @@ pub(crate) fn compose_minimal_intra_two_coeff_block_trace_with_tx_type()
     Ok(trace)
 }
 
+/// Composes the eob=2 trace with BOTH §5.20.8.2 transform-type symbols —
+/// `intra_tx_type` AND `sec_tx_type` (the IST secondary transform) — for the
+/// `enable_intra_ist == 1` configuration. `sec_tx_type` (§5.20.8.2 line 16613) is read
+/// right after `intra_tx_type` (line 16529), before the base pass; for this 4x4 DCT_DCT
+/// `DC_PRED` eob=2 block the IST condition holds (`eob 2 != 1 && !Lossless && TxType ==
+/// DCT_DCT && YMode != PAETH && eob 2 <= eobLim = IST_4X4_HEIGHT = 8`), and symbol 0 is
+/// `sec_tx_type = 0` (IST off, no `most_probable_stx_set`). The twelve-token trace is
+/// the tx-type trace with that symbol inserted after `intra_tx_type`:
+/// `[0,0,0, 0, 1, 0, 0, 0, 0, 0, 1, 1]`.
+pub(crate) fn compose_minimal_intra_two_coeff_block_trace_with_ist() -> Result<Vec<BlockSymbolToken>>
+{
+    let base = compose_minimal_intra_two_coeff_block_trace_with_tx_type()?;
+    // `sec_tx_type` is read right after `intra_tx_type`; derive the insertion point
+    // from the `intra_tx_type` token kind, falling back to just after `eob_pt_16`.
+    let split = base
+        .iter()
+        .position(|token| {
+            matches!(token, BlockSymbolToken::Coeff(coeff)
+                if matches!(coeff.syntax(), CoefficientTokenSyntax::IntraTxType))
+        })
+        .unwrap_or(EOB_PT_16_TRACE_INDEX + 1)
+        + 1;
+    let total = base
+        .len()
+        .checked_add(1)
+        .ok_or(Error::BlockSymbolTraceAllocationFailed {
+            context: "two-coefficient IST block trace length",
+        })?;
+    let mut trace = Vec::new();
+    trace
+        .try_reserve_exact(total)
+        .map_err(|_| Error::BlockSymbolTraceAllocationFailed {
+            context: "two-coefficient IST block trace",
+        })?;
+    trace.extend_from_slice(&base[..split]);
+    trace.push(BlockSymbolToken::Coeff(sec_tx_type_intra_token(
+        SEC_TX_TYPE_INTRA_TX_SIZE_SQR_4X4,
+        SEC_TX_TYPE_IST_OFF_SYMBOL,
+    )));
+    trace.extend_from_slice(&base[split..]);
+    Ok(trace)
+}
+
 /// Result of proving a block-symbol trace through AV2 § 8.2 symbol bytes.
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) struct BlockSymbolTraceRoundtrip {
@@ -707,6 +763,7 @@ struct BlockSymbolTraceCdfRows {
     v_txb_skip: [i32; V_TXB_SKIP_CDF_ROW_LEN],
     eob_pt_16: [i32; EOB_PT_16_CDF_ROW_LEN],
     intra_tx_type_set1_4x4: [i32; INTRA_TX_TYPE_SET1_CDF_ROW_LEN],
+    sec_tx_type_intra_4x4: [i32; SEC_TX_TYPE_INTRA_CDF_ROW_LEN],
     coeff_base_lf_eob: [i32; COEFF_BASE_LF_EOB_CDF_ROW_LEN],
     coeff_base_lf_eob_ac: [i32; COEFF_BASE_LF_EOB_CDF_ROW_LEN],
     coeff_base_lf_dc: [i32; COEFF_BASE_LF_CDF_ROW_LEN],
@@ -732,6 +789,8 @@ impl BlockSymbolTraceCdfRows {
             eob_pt_16: DEFAULT_EOB_PT_16_CDF[MINIMAL_COEFF_CDF_Q_CTX][EOB_CTX_LUMA_INTRA],
             intra_tx_type_set1_4x4: DEFAULT_INTRA_TX_TYPE_SET1_CDF
                 [INTRA_TX_TYPE_SET1_TX_SIZE_SQR_4X4],
+            sec_tx_type_intra_4x4: DEFAULT_SEC_TX_TYPE_CDF[SEC_TX_TYPE_INTRA_BANK]
+                [SEC_TX_TYPE_INTRA_TX_SIZE_SQR_4X4],
             coeff_base_lf_eob: DEFAULT_COEFF_BASE_LF_EOB_CDF[MINIMAL_COEFF_CDF_Q_CTX]
                 [TX_SIZE_4X4_CTX][COEFF_BASE_LF_EOB_CTX_DC],
             coeff_base_lf_eob_ac: DEFAULT_COEFF_BASE_LF_EOB_CDF[MINIMAL_COEFF_CDF_Q_CTX]
@@ -791,6 +850,9 @@ impl BlockSymbolTraceCdfRows {
                 CoefficientCdfRowSelector::IntraTxTypeSet1 {
                     tx_size_sqr: INTRA_TX_TYPE_SET1_TX_SIZE_SQR_4X4,
                 } => Ok(self.intra_tx_type_set1_4x4.as_mut_slice()),
+                CoefficientCdfRowSelector::SecTxTypeIntra {
+                    tx_size_sqr: SEC_TX_TYPE_INTRA_TX_SIZE_SQR_4X4,
+                } => Ok(self.sec_tx_type_intra_4x4.as_mut_slice()),
                 CoefficientCdfRowSelector::CoeffBaseLfEob {
                     coeff_cdf_q_ctx: MINIMAL_COEFF_CDF_Q_CTX,
                     tx_size: TX_SIZE_4X4_CTX,

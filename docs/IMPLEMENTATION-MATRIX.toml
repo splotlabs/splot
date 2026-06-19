@@ -4767,6 +4767,39 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-INTRA-BLOCK-TRACE-IST"
+name = "Encoder eob=2 trace with intra_tx_type and sec_tx_type"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20.8.2", "5.20.7.27", "8.3.2", "8.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/block_symbol_trace.rs"
+openspec_change = "encoder-block-trace-ist"
+tracking_issue = ""
+owner = "encoder"
+risk = "medium"
+notes = "Private, non-emitting eob=2 multi-coefficient luma block trace carrying BOTH §5.20.8.2 transform-type symbols — intra_tx_type AND the sec_tx_type IST secondary transform — for the enable_intra_ist==1 config (completes the transform-type prefix). `compose_minimal_intra_two_coeff_block_trace_with_ist()` in block_symbol_trace.rs DELEGATES to the tx-type composer (#349) and inserts the sec_tx_type IST-off token (symbol 0; #350's sec_tx_type_intra_token, intra is_inter=0 bank, Tx_Size_Sqr 0) right after intra_tx_type — §5.20.8.2 sec_tx_type (line 16613) is read right after intra_tx_type (line 16529), before the base pass. 12-token trace [0,0,0,0,1,0,0,0,0,0,1,1] (the tx-type [0,0,0,0,1,0,0,0,0,1,1] + sec_tx_type=0 at index 6) through one §8.2 coder. The insertion point is DERIVED from the intra_tx_type token kind (fallback EOB_PT_16_TRACE_INDEX+1). BlockSymbolTraceCdfRows gains the 4x4 intra TileSecTxTypeCdf[0][0] row + routing. This block satisfies the IST condition (eob 2 != 1, !Lossless, TxType==DCT_DCT, YMode!=PAETH, eob 2 <= eobLim=IST_4X4_HEIGHT=8) by construction; the condition is NOT runtime-evaluated. sec_tx_type==0 (IST off) reads NO most_probable_stx_set follow-up. Tests: compose-in-order (asserts intra_tx_type at idx 5 + sec_tx_type at idx 6 + symbols) + roundtrip + deterministic. This row does not claim most_probable_stx_set, eob>2, non-DCT_DCT transform types, non-TX_SET_INTRA_1 sets, runtime IST-condition evaluation, tile-body emission, packet output, CLI success, or Baseline Encoder Profile v1 output."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/block_symbol_trace_tests.rs::composes_ist_trace_inserts_sec_tx_type_after_intra_tx_type", "crates/splot-encode/src/block_symbol_trace_tests.rs::ist_trace_roundtrips_through_one_coder", "crates/splot-encode/src/block_symbol_trace_tests.rs::ist_trace_roundtrip_is_deterministic"]
+commands = ["cargo test -p splot-encode block_symbol_trace --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-RECON-DEPENDENCY"
 name = "Encoder reconstruction dependency boundary"
 category = "encoder"
