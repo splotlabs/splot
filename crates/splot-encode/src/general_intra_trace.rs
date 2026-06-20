@@ -281,7 +281,7 @@ fn compose_general_intra_coded_chroma_v_block_trace(
     let total = modes
         .len()
         .checked_add(v_coeffs.len())
-        .and_then(|n| n.checked_add(3)) // do_split + luma skip + U skip + V sign
+        .and_then(|n| n.checked_add(4)) // do_split + luma skip + U skip + V sign
         .ok_or(Error::BlockSymbolTraceAllocationFailed {
             context: "general coded chroma V block trace length",
         })?;
