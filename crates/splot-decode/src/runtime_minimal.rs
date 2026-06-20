@@ -314,6 +314,7 @@ fn decode_minimal_partition_frontier_error(
         )) => DecodeError::Limit { source },
         MinimalRuntimePartitionFrontierError::MissingFact { .. }
         | MinimalRuntimePartitionFrontierError::MiSizeState(_)
+        | MinimalRuntimePartitionFrontierError::IntraJointModeState(_)
         | MinimalRuntimePartitionFrontierError::Traversal(_)
         | MinimalRuntimePartitionFrontierError::UnexpectedFrontier { .. } => unsupported_at(
             "minimal_tile_partition_frontier",
@@ -846,11 +847,12 @@ fn decode_general_minimal_intra_frame(
         sequence,
         core,
         limits,
-        |work_unit, symbols, frontier| {
+        |work_unit, symbols, frontier, joint_modes| {
             decode_one_general_intra_block(
                 work_unit,
                 symbols,
                 frontier,
+                joint_modes,
                 &mut workspace,
                 &mut coeff_ctx,
                 qindex,
@@ -886,18 +888,24 @@ fn decode_general_minimal_intra_frame(
 /// blocks: the no-neighbour-aware §7.13.2 DC prediction is read from the
 /// partially-built frame, so non-DC modes and non-square partitions are
 /// rejected. Chroma is 4:2:0 (half-resolution).
+///
+/// Returns the block's AV2 § 5.20.5.3 `IntraJointMode` (`= modeDelta`) so the
+/// caller can record it into the `IntraJointModes` grid for later blocks'
+/// § 8.3.2 `y_mode_index` neighbour context; `joint_modes` supplies that grid
+/// (read-only here) for this block's own `y_mode_index` context.
 #[allow(clippy::too_many_arguments)]
 fn decode_one_general_intra_block(
     work_unit: &mut crate::tile_payload::DecodeTileWorkUnit<'_>,
     symbols: &mut SymbolDecoder<'_>,
     frontier: &crate::tile_payload::DecodeBlockFrontier,
+    joint_modes: &crate::tile_payload::TileIntraJointModeState,
     workspace: &mut splot_recon::CurrentFrameWorkspace<u8>,
     coeff_ctx: &mut crate::tile_payload::TileCoeffContextState,
     qindex: u32,
     luma_use_tcq: bool,
     mi_cols: usize,
     tile_offset: ByteOffset,
-) -> Result<()> {
+) -> Result<u8> {
     // Resolve the block geometry and gate the handled subset BEFORE reading the
     // §5.20.5.3 mode info: `uv_mode` is only coded when the block has chroma, and
     // sub-8x8 luma leaves use a different (deferred 4x4) chroma sizing that this
@@ -947,8 +955,20 @@ fn decode_one_general_intra_block(
         ));
     }
 
-    let modes = crate::tile_payload::decode_general_intra_block_modes(work_unit, symbols)
-        .map_err(|error| general_intra_block_mode_error(error, tile_offset))?;
+    // The block's § 8.3.2 `y_mode_index` context is derived from the already-
+    // decoded left/above neighbours' stored `IntraJointMode` (§ 5.20.5.3); a
+    // directional neighbour (`ctx != 0`) is rejected inside the mode decode
+    // before any symbol is read (the unverified-CDF reject for codex P2 / #383).
+    let modes = crate::tile_payload::decode_general_intra_block_modes(
+        work_unit,
+        symbols,
+        joint_modes,
+        frontier.r,
+        frontier.c,
+        n4w,
+        n4h,
+    )
+    .map_err(|error| general_intra_block_mode_error(error, tile_offset))?;
     // Chroma is reconstructed with DC prediction or, when the decoded
     // `uv_mode` resolves (via § 5.20.5.3 `get_intra_uv_mode_set`) to
     // `SMOOTH_PRED`, with § 7.13.2.13 smooth prediction over § 7.13.2.1
@@ -1216,7 +1236,10 @@ fn decode_one_general_intra_block(
         )
         .map_err(|error| general_intra_residual_error(error, tile_offset))?;
     }
-    Ok(())
+    // AV2 § 5.20.5.3: this block's IntraJointMode (the reorder index modeDelta)
+    // is recorded into the IntraJointModes grid by the partition walk so later
+    // blocks' § 8.3.2 `y_mode_index` context can read it as a neighbour.
+    Ok(modes.intra_joint_mode)
 }
 
 /// 4:2:0 chroma horizontal subsampling (`SubsamplingX == 1`).
@@ -1341,6 +1364,14 @@ fn general_intra_block_mode_error(
             "general intra decode rejected an out-of-range chroma uv_mode index",
             GENERAL_INTRA_MODE_SPEC_SECTION,
         ),
+        GeneralIntraBlockModeError::UnsupportedYModeIndexContext { .. } => {
+            general_intra_unsupported(
+                "general_intra_directional_neighbour_y_mode_index_ctx",
+                Some(offset),
+                "general intra directional-neighbour y_mode_index context (ctx != 0) is not yet verified",
+                GENERAL_INTRA_MODE_SPEC_SECTION,
+            )
+        }
     }
 }
 
@@ -1355,6 +1386,7 @@ fn general_intra_partition_frontier_error(
         )) => DecodeError::Limit { source },
         MinimalRuntimePartitionFrontierError::MissingFact { .. }
         | MinimalRuntimePartitionFrontierError::MiSizeState(_)
+        | MinimalRuntimePartitionFrontierError::IntraJointModeState(_)
         | MinimalRuntimePartitionFrontierError::Traversal(_)
         | MinimalRuntimePartitionFrontierError::UnexpectedFrontier { .. } => {
             general_intra_unsupported(

@@ -36,6 +36,19 @@ edge-filter synthesis and is bit-exact even over a non-flat neighbour edge.
   `decode/unsupported-feature` diagnostic before reconstruction.
 - Add the project-owned `syn-mbvg-intra-128x64-q80.ivf` fixture and prove it
   decodes bit-exactly to the avmdec AND dav2d oracle.
+- Replace the hardcoded tile-origin `y_mode_index` § 8.3.2 context with the real
+  neighbour-derived context: add a per-MI `IntraJointModes` grid
+  (`TileIntraJointModeState`) threaded through the general intra partition walk,
+  compute `ctx = (get_joint_mode(0) >= NON_DIRECTIONAL_MODES_COUNT) +
+  (get_joint_mode(1) >= NON_DIRECTIONAL_MODES_COUNT)` (§ 8.3.2 / § 5.20.5.3
+  `get_joint_mode`) before reading any `y_mode_set` / `y_mode_index` symbol, and
+  REJECT the unverified `ctx != 0` (directional-neighbour) case with a structured
+  `decode/unsupported-feature` diagnostic instead of misdecoding with the wrong
+  CDF. This fixes the codex P2 on PR #385 and the latent #383 case (a DC block
+  below/right of a `D135` block now rejects rather than misdecodes). No
+  `ctx == 1` oracle fixture is possible: the minimal-tool avmenc couples a `D135`
+  luma block to `uv_mode == 0` chroma that splot rejects, so a multi-block frame
+  whose `D135` block splot decodes past is not encoder-producible.
 - Update decoder tracking, generated status docs, and OpenSpec tasks.
 
 ## Capabilities
@@ -52,15 +65,22 @@ edge-filter synthesis and is bit-exact even over a non-flat neighbour edge.
 
 ## Impact
 
-- Affects `crates/splot-decode/src/runtime_minimal.rs` and
-  `crates/splot-decode/src/runtime_minimal_recon.rs`.
+- Affects `crates/splot-decode/src/runtime_minimal.rs`,
+  `crates/splot-decode/src/runtime_minimal_recon.rs`, the new
+  `crates/splot-decode/src/tile_payload/intra_joint_modes.rs`,
+  `crates/splot-decode/src/tile_payload/general_intra_block.rs`,
+  `crates/splot-decode/src/tile_payload/partition_traversal.rs`,
+  `crates/splot-decode/src/tile_payload/runtime_frontier.rs`, and
+  `crates/splot-decode/src/tile_payload/cdf/block_context.rs`.
 - Updates `docs/IMPLEMENTATION-MATRIX.toml`,
   `docs/DECODER-SUPPORT-MATRIX.toml`, `docs/LOCAL-REFERENCE-EVIDENCE.toml`,
   `tests/conformance/manifest.toml`, and generated status docs.
 - No public API, dependency graph, encoder, or validator changes.
   Neighbour-having § 7.13.2.8 directional luma over a real non-flat edge (real
   IDIF 4-tap interpolation), the in-frame directional-neighbour `y_mode_index`
-  reorder / per-MI joint-mode tracking, sub-superblock non-DC blocks, SMOOTH /
-  PAETH luma, non-DC chroma neighbour edges beyond the existing SMOOTH chroma
-  path, multiple tiles, inter prediction, in-loop filters, and live in-CI
-  AVM/dav2d remain out of scope.
+  reorder and the `ctx != 0` `y_mode_index` decode itself (the per-MI
+  `IntraJointModes` grid and the `ctx != 0` reject now land; only the unverified
+  `ctx != 0` decode is deferred to DECODE-GENERAL-INTRA-ANGLE), sub-superblock
+  non-DC blocks, SMOOTH / PAETH luma, non-DC chroma neighbour edges beyond the
+  existing SMOOTH chroma path, multiple tiles, inter prediction, in-loop filters,
+  and live in-CI AVM/dav2d remain out of scope.

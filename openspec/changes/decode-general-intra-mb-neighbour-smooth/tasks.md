@@ -11,6 +11,8 @@
 - [x] 2.3 Add `reconstruct_general_intra_luma_nondc_neighbour_block_into`: build the §7.13.2.1 `LeftCol`/`AboveRow` edges from the partially-built frame's real reconstructed neighbour, run the shared `predict_intra_smooth_rect_into` SMOOTH_V/H mode, and add the §5.20.7.27 residual.
 - [x] 2.4 Relax the multi-block non-DC luma gate to allow a neighbour-having SMOOTH_V/H full 64x64 superblock block; keep rejecting neighbour-having directional (D135) luma, sub-superblock non-DC, and not-yet-verified modes before reconstruction.
 - [x] 2.5 Dispatch the neighbour-having SMOOTH_V/H luma block to the new recon function (the no-neighbour top-left path is unchanged).
+- [x] 2.6 Add the per-MI `IntraJointModes` grid (`TileIntraJointModeState`) and thread it through the general intra partition walk (`decode_general_intra_multiblock_tree` -> `decode_general_intra_partition_tree` -> the `on_leaf` callback -> `decode_one_general_intra_block`); record each block's reconstructed `IntraJointMode` (`modeDelta`) after the leaf.
+- [x] 2.7 Compute the real § 8.3.2 `y_mode_index` context (`get_joint_mode(left) + get_joint_mode(above)`) from the grid in `decode_general_intra_block_modes` before reading any symbol; reject `ctx != 0` with a typed `decode/unsupported-feature` diagnostic and keep `ctx == 0` decoding exactly as before (codex P2 on PR #385 + latent #383 fix).
 
 ## 3. Documentation And Verification
 

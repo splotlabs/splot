@@ -10,6 +10,7 @@ use splot_core::symbol::{SymbolDecoder, SymbolDecoderCheckpoint, SymbolDecoderCo
 use super::DecodeTileWorkUnit;
 use super::cdf::TileCdfError;
 use super::cdf::context::{PartitionContextInput, SquareSplitContextInput};
+use super::intra_joint_modes::TileIntraJointModeState;
 use super::mi_size_state::{TileMiSizeState, TileMiSizeStateError};
 use super::partition::{PartitionDecisionError, PartitionType, ReadPartitionDecision};
 use super::partition_allowed::{
@@ -535,12 +536,15 @@ pub(crate) enum GeneralIntraTreeWalkError<E> {
 /// are read interleaved on one live symbol decoder and the tile CDFs, exactly as
 /// the spec orders them. The MI-size partition context is maintained across
 /// blocks via `mi_size_state` (read for each partition decision, updated after
-/// each leaf). The live symbol decoder is returned for the caller's § 8.2.4
-/// `exit_symbol()` check.
+/// each leaf), and the AV2 § 5.20.5.3 `IntraJointModes` neighbour-mode grid via
+/// `joint_modes` (read by `on_leaf` for the § 8.3.2 `y_mode_index` context,
+/// updated after each leaf with the leaf's returned `IntraJointMode`). The live
+/// symbol decoder is returned for the caller's § 8.2.4 `exit_symbol()` check.
 pub(crate) fn decode_general_intra_partition_tree<'payload, E, F>(
     work_unit: &mut DecodeTileWorkUnit<'payload>,
     frame: TilePartitionFrameFacts,
     mi_size_state: &mut TileMiSizeState,
+    joint_modes: &mut TileIntraJointModeState,
     limits: DecodeLimits,
     mut on_leaf: F,
 ) -> Result<SymbolDecoder<'payload>, GeneralIntraTreeWalkError<E>>
@@ -549,7 +553,8 @@ where
         &mut DecodeTileWorkUnit<'payload>,
         &mut SymbolDecoder<'payload>,
         &DecodeBlockFrontier,
-    ) -> Result<(), E>,
+        &TileIntraJointModeState,
+    ) -> Result<u8, E>,
 {
     if !frame.frame_is_intra {
         return Err(TilePartitionTraversalError::Unsupported(
@@ -651,8 +656,18 @@ where
                         symbol_count_before_block: symbols.symbol_count(),
                         symbol_checkpoint_before_block: symbols.checkpoint(),
                     };
-                    on_leaf(work_unit, &mut symbols, &frontier)
+                    let joint_mode = on_leaf(work_unit, &mut symbols, &frontier, joint_modes)
                         .map_err(GeneralIntraTreeWalkError::Leaf)?;
+                    // AV2 § 5.20.5.3: store the block's IntraJointMode into every
+                    // MI cell it covers, so a later block's § 8.3.2 `y_mode_index`
+                    // context sees it as a left/above neighbour.
+                    let block_n4w = sub_size
+                        .num_4x4_wide()
+                        .map_err(TilePartitionTraversalError::from)?;
+                    let block_n4h = sub_size
+                        .num_4x4_high()
+                        .map_err(TilePartitionTraversalError::from)?;
+                    joint_modes.record_block(call.r, call.c, block_n4w, block_n4h, joint_mode);
                     mi_size_state
                         .update_luma_block(call.r, call.c, sub_size)
                         .map_err(GeneralIntraTreeWalkError::MiSize)?;

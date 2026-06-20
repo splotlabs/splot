@@ -55,3 +55,39 @@ in-loop filters, or invoke AVM or dav2d.
 - **THEN** the decoder returns a structured `decode/unsupported-feature`
   diagnostic (the neighbour SMOOTH path is verified only for the first superblock
   row, where the above edge is the no-neighbour fallback)
+
+### Requirement: General intra `y_mode_index` neighbour context from `IntraJointModes`
+The decoder SHALL derive the AV2 § 8.3.2 `y_mode_index` (and `y_mode_offset`) CDF
+context for a general intra block from the already-decoded left/above neighbours'
+stored § 5.20.5.3 `IntraJointMode` (`= modeDelta`), not from a hardcoded
+tile-origin literal. It SHALL maintain a per-MI `IntraJointModes` grid across the
+partition walk, recording each reconstructed block's `IntraJointMode` into every
+MI cell it covers (§ 5.20.5.3), and SHALL compute
+`ctx = (get_joint_mode(0) >= NON_DIRECTIONAL_MODES_COUNT) + (get_joint_mode(1) >=
+NON_DIRECTIONAL_MODES_COUNT)`, where `get_joint_mode(dir)` reads the left
+(`dir == 0`) / above (`dir == 1`) neighbour's stored `IntraJointModes` value or
+`DC_PRED` (`0`) when out of frame (§ 5.20.5.3 `get_joint_mode`). It SHALL compute
+this context and reject an unverified `ctx != 0` (a directional neighbour with
+`IntraJointMode >= NON_DIRECTIONAL_MODES_COUNT`) with a structured
+`decode/unsupported-feature` diagnostic BEFORE reading any `y_mode_set` /
+`y_mode_index` symbol, rather than decoding with the wrong (hardcoded `ctx == 0`)
+CDF row. It SHALL proceed exactly as before for `ctx == 0` (non-directional or
+out-of-frame neighbours), keeping all existing fixtures bit-exact. It SHALL NOT
+yet implement the `ctx != 0` decode or the in-frame directional-neighbour
+`get_intra_y_mode_set` reorder.
+
+#### Scenario: Non-directional neighbour keeps context zero and decodes
+- **WHEN** a general intra block's already-decoded left/above neighbour stored a
+  non-directional `IntraJointMode` (`modeDelta < NON_DIRECTIONAL_MODES_COUNT`,
+  e.g. the mbvg `SMOOTH_V` left neighbour with `modeDelta == 2`)
+- **THEN** the § 8.3.2 `y_mode_index` context is `0` and the block decodes with
+  the verified `ctx == 0` CDF row, unchanged and bit-exact
+
+#### Scenario: Directional-neighbour context is rejected before any symbol read
+- **WHEN** a general intra block's already-decoded left/above neighbour stored a
+  directional `IntraJointMode` (`modeDelta >= NON_DIRECTIONAL_MODES_COUNT`, e.g. a
+  `D135` block with `modeDelta == 36`), so the § 8.3.2 `y_mode_index` context is
+  `1` or `2`
+- **THEN** the decoder returns a structured `decode/unsupported-feature`
+  diagnostic without reading the `y_mode_set` / `y_mode_index` symbols (the
+  `ctx != 0` `y_mode_index` CDF selection is not yet oracle-verified)

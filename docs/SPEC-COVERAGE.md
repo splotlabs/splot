@@ -962,6 +962,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-GENERAL-INTRA-BLOCK-MODES` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-GENERAL-INTRA-FRAME-RECON` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-GENERAL-INTRA-LUMA-COEFFS` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-GENERAL-INTRA-MB-NEIGHBOUR-SMOOTH` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-GENERAL-INTRA-MULTIBLOCK` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER` | ✅ | 🟡 | — | ✅ | 4 |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-MINIMAL-RAW-RUNTIME-OUTPUT` | ✅ | 🟡 | ✅ | ✅ | 4 |
