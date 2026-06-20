@@ -123,6 +123,66 @@ pub(crate) enum SupportedNonDcLumaMode {
     SmoothHorizontal,
 }
 
+/// The chroma intra modes the general intra decode can reconstruct today — the
+/// subset of § 5.20.5.3 `get_intra_uv_mode_set` outputs proven bit-exact against
+/// the AVM/dav2d oracle. Other chroma modes (`SMOOTH_V/H_PRED`, `PAETH_PRED`,
+/// directional) need their own § 7.13 chroma predictors and remain deferred.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SupportedChromaMode {
+    /// AV2 `DC_PRED` chroma prediction (§ 7.13.2.4).
+    Dc,
+    /// AV2 `SMOOTH_PRED` chroma prediction (§ 7.13.2.13).
+    Smooth,
+}
+
+/// AV2 § 9.2 canonical chroma mode values from `Default_Mode_List_Uv`:
+/// `DC_PRED == 0`, `SMOOTH_PRED == 9`.
+const DC_PRED_VALUE: u8 = 0;
+const SMOOTH_PRED_VALUE: u8 = 9;
+
+/// AV2 § 5.20.5.3 `Default_Mode_List_Uv[UV_INTRA_MODES_CFL_NOT_ALLOWED]`: the
+/// chroma intra mode list (CfL not allowed), in selection order. The first five
+/// entries (`DC_PRED`, `SMOOTH_PRED`, `SMOOTH_V_PRED`, `SMOOTH_H_PRED`,
+/// `PAETH_PRED`) are the non-directional modes; the remainder are directional.
+/// The label order is the § 5.20.5.3 table; each entry is the canonical intra
+/// mode value from § 6 (`06-syntax-structures-semantics.md` lines 6790-6815):
+/// `DC=0, V=1, H=2, D45=3, D135=4, D113=5, D157=6, D203=7, D67=8, SMOOTH=9,
+/// SMOOTH_V=10, SMOOTH_H=11, PAETH=12`.
+const DEFAULT_MODE_LIST_UV: [u8; 13] = [
+    0, // DC_PRED
+    9, // SMOOTH_PRED
+    10, 11, 12, // SMOOTH_V_PRED, SMOOTH_H_PRED, PAETH_PRED
+    1, 2, // V_PRED, H_PRED
+    3, 4, // D45_PRED, D135_PRED
+    8, 5, 6, 7, // D67_PRED, D113_PRED, D157_PRED, D203_PRED
+];
+
+/// Resolves the typed chroma `UVMode` from the decoded `uv_mode` index via
+/// AV2 § 5.20.5.3 `get_intra_uv_mode_set`, restricted to the non-directional
+/// luma case (`is_directional_mode(YMode) == 0`), which is the only luma subset
+/// [`reconstruct_minimal_y_mode`] produces. In that case `get_intra_uv_mode_set`
+/// skips its directional `modeIdx == 0 -> YMode` branch and the per-entry
+/// `mode != YMode` filter (all `Default_Mode_List_Uv` entries pass), so
+/// `UVMode == Default_Mode_List_Uv[uv_mode]`. Returns the supported chroma
+/// predictor or `None` for any other mode.
+pub(crate) fn supported_chroma_mode_non_directional_luma(
+    y_mode: IntraYMode,
+    uv_mode: u8,
+) -> Option<SupportedChromaMode> {
+    if y_mode.is_directional() {
+        // The directional luma reordering in `get_intra_uv_mode_set` is not
+        // modelled; `reconstruct_minimal_y_mode` never produces a directional
+        // YMode, so this guards against a future caller change.
+        return None;
+    }
+    let uv_mode_value = *DEFAULT_MODE_LIST_UV.get(usize::from(uv_mode))?;
+    match uv_mode_value {
+        DC_PRED_VALUE => Some(SupportedChromaMode::Dc),
+        SMOOTH_PRED_VALUE => Some(SupportedChromaMode::Smooth),
+        _ => None,
+    }
+}
+
 /// AV2 § 5 `Reordered_Y_Mode[0..NON_DIRECTIONAL_MODES_COUNT]`: the five
 /// non-directional modes in reorder order — `DC_PRED`, `SMOOTH_PRED`,
 /// `SMOOTH_V_PRED`, `SMOOTH_H_PRED`, `PAETH_PRED` (canonical values 0, 9, 10, 11,

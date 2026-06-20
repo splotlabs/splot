@@ -10839,6 +10839,60 @@ fixtures = [
 diagnostics = ["decode/unsupported-feature"]
 
 [[feature]]
+id = "DECODE-GENERAL-INTRA-NON64-MULTISB"
+name = "General intra multi-superblock (non-64x64) DC decode"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.20.2.1", "5.20.3.1", "5.20.5.3", "7.13.2.1", "7.13.2.13"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-2-1",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-1",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-1",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-13",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/tile_payload/partition_traversal.rs"
+openspec_change = "decode-general-intra-non64-multisb"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Generalizes the general intra decode from a single 64x64 superblock to a single ROW of superblocks: single-tile 8-bit 4:2:0 intra key frames whose width is any positive multiple of 64 and whose height is exactly 64 (e.g. 128x64). The IVF size gate (`require_minimal_ivf`) now admits any positive-sized AV02 frame to routing, and `is_general_minimal_intra` accepts width a multiple of 64 with height 64; the frozen `base_q_idx == 255` hash tier still re-imposes its strict 64x64 requirement in `validate_frame_core`. Height is restricted to 64 (one superblock row) because the §7.13.2.13 SMOOTH chroma path builds its §7.13.2.1 bottom-left sentinel `LeftCol[h]` by edge-clamping (repeating the last neighbour sample), which equals the spec value `CurrFrame[Min(maxY, y+h)][x-1]` only when the chroma block sits at the bottom frame edge with no above neighbour (always true at height 64); taller frames are deferred until that sentinel reads the real below-block reconstructed sample. `new_general_intra_workspace` is parameterized by the real frame size (chroma = half for 4:2:0), and `decode_general_intra_partition_tree` now iterates every superblock in the tile's MI range in raster order per AV2 §5.20.2.1 `decode_tile()` (`sbSize4 = Num_4x4_Blocks_Wide[SbSize]` steps, `clear_left_context()` at each superblock-row start), reusing one `SymbolDecoder`, tile CDFs, `TileMiSizeState`, and frame-spanning `TileCoeffContextState` + workspace so later superblocks DC-predict from already-reconstructed neighbours. Chroma reconstruction adds the §7.13.2.13 SMOOTH_PRED case (resolved from `uv_mode` via §5.20.5.3 `get_intra_uv_mode_set` for the non-directional luma subset) over §7.13.2.1 neighbour edges read from the partially-built frame, since the multi-SB encoder codes the second superblock's (residual-free) chroma as SMOOTH_PRED. The committed `syn-2sb-intra-128x64-q80.ivf` (left flat luma 80, right flat luma 180, chroma flat U=120 V=130) decodes bit-exactly to the avmdec and dav2d oracle (md5 88cf94a2d7b2a20c3212d96acdd456ef, pinned frame hash 18ba32ffb8d818689cbded3dbd5c44602bb091c1f9750c1bb062e6f80498540f), guarded by the §8.2.4 `exit_symbol()` bit-exactness check; existing 64x64 fixtures still decode bit-exact. Multi-superblock-ROW frames (height > 64, deferred for the SMOOTH chroma sentinel reason above), partial frames (non-multiple-of-64 widths needing edge clamping), non-DC/non-SMOOTH chroma, multiple tiles, inter prediction, in-loop filters, and live AVM/dav2d in CI remain future work."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "partial"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "partial"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/runtime_minimal.rs::general_intra_tests::two_superblock_intra_frame_decodes_to_oracle",
+    "crates/splot-decode/src/runtime_minimal.rs::general_intra_tests::quad_multiblock_intra_frame_decodes_to_oracle",
+]
+commands = [
+    "cargo test -p splot-decode general_intra --locked",
+    "cargo test -p splot-cli --test conformance --locked",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "tests/conformance/vectors/valid/syn-2sb-intra-128x64-q80.ivf",
+    "crates/splot-decode/src/tile_payload/partition_traversal.rs",
+    "crates/splot-decode/src/tile_payload/mi_size_state.rs",
+    "crates/splot-decode/src/runtime_minimal.rs",
+    "crates/splot-decode/src/runtime_minimal_recon.rs",
+    "crates/splot-decode/src/tile_payload/cdf/block_context.rs",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
 id = "DECODE-COEFF-FSC-SCAN-WALK"
 name = "Coefficient FSC scan walk"
 category = "infrastructure"

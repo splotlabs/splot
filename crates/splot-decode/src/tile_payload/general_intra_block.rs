@@ -24,7 +24,8 @@ use splot_core::symbol::SymbolDecoder;
 
 use super::DecodeTileWorkUnit;
 use super::cdf::block_context::{
-    IntraYMode, SupportedNonDcLumaMode, YModeIndexContext, reconstruct_minimal_y_mode, uv_mode_ctx,
+    IntraYMode, SupportedChromaMode, SupportedNonDcLumaMode, YModeIndexContext,
+    reconstruct_minimal_y_mode, supported_chroma_mode_non_directional_luma, uv_mode_ctx,
 };
 use super::cdf::block_read::BlockSymbolTraceReadError;
 use super::cdf::{TileCdfSelector, TileCdfSubset};
@@ -47,9 +48,6 @@ const Y_MODE_INDEX_REASON: &str = "intra_y_mode_index";
 const UV_MODE_REASON: &str = "intra_uv_mode";
 const UV_MODE_IDX_REASON: &str = "intra_uv_mode_idx";
 
-/// AV2 § 9.2 `UV_DC_PRED`: the chroma DC prediction `uv_mode` index.
-const UV_DC_PRED: u8 = 0;
-
 /// The decoded mode-info facts for one general intra block.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct GeneralIntraBlockModes {
@@ -67,15 +65,18 @@ impl GeneralIntraBlockModes {
         self.y_mode == IntraYMode::DC_PRED
     }
 
-    /// True when the chroma planes use `UV_DC_PRED`.
-    pub(crate) fn uv_is_dc(&self) -> bool {
-        self.uv_mode == UV_DC_PRED
-    }
-
     /// The supported non-DC luma predictor for this block, or `None` for DC and
     /// the not-yet-supported non-DC luma modes (see [`IntraYMode::supported_nondc`]).
     pub(crate) fn supported_nondc_luma(&self) -> Option<SupportedNonDcLumaMode> {
         self.y_mode.supported_nondc()
+    }
+
+    /// The supported chroma predictor for this block (DC or SMOOTH), resolving
+    /// the decoded `uv_mode` index through § 5.20.5.3 `get_intra_uv_mode_set`
+    /// for the non-directional luma case, or `None` for an unsupported chroma
+    /// mode (see [`supported_chroma_mode_non_directional_luma`]).
+    pub(crate) fn supported_chroma_mode(&self) -> Option<SupportedChromaMode> {
+        supported_chroma_mode_non_directional_luma(self.y_mode, self.uv_mode)
     }
 }
 
