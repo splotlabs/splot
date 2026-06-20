@@ -25,7 +25,7 @@ use crate::headers::sequence::ChromaFormatIdc;
 use crate::headers::tile_group::{TileGroupFraming, TileGroupStructure};
 use crate::obu::ObuHeader;
 use crate::span::ByteOffset;
-use crate::types::{EmbeddedLayerId, ExtendedLayerId, ObuType, TemporalLayerId};
+use crate::types::{EmbeddedLayerId, ExtendedLayerId, GLOBAL_XLAYER_ID, ObuType, TemporalLayerId};
 use crate::write::{BitWriter, WriteError, WriteResult, write_annexb_obu, write_tile_group_obu};
 
 impl CoreSeqInterView {
@@ -423,6 +423,34 @@ pub fn encode_minimal_intra_clk_annexb_obu(
     Ok(writer.into_bytes())
 }
 
+/// Serializes a standalone AV2 `OBU_TEMPORAL_DELIMITER` (§ 5.5) in Annex B framing (§ B.2,
+/// `docs/spec/av2/1.0.0/annex-b-length-delimited-bitstream-format.md#s-annex-b-2`): a
+/// `leb128` size prefix, the § 5.2.2 OBU header, and an empty payload. The temporal delimiter
+/// has no body; it marks the start of a temporal unit and is the first OBU the decoder's
+/// minimal-tier IVF frame requires (before the sequence-header and frame OBUs).
+///
+/// The § 5.2.2 header is the no-extension `OBU_TEMPORAL_DELIMITER` header: `obu_mlayer_id` is
+/// inferred `0` and `obu_xlayer_id` the global id (`31`) — the temporal delimiter and
+/// `OBU_MSDO` are the two types that infer the global xlayer (§ 5.2.2). The canonical encoding
+/// is the two bytes `[0x01, 0x08]`.
+///
+/// This is a public encoder writer-input primitive: a later brick concatenates it with the
+/// sequence-header and frame OBUs into a temporal unit and an IVF stream.
+pub fn encode_temporal_delimiter_obu() -> Result<Vec<u8>, WriteError> {
+    // § 5.2.2: the no-extension OBU_TEMPORAL_DELIMITER header (global xlayer 31, mlayer 0).
+    let header = ObuHeader {
+        has_header_extension: false,
+        obu_type: ObuType::TemporalDelimiter,
+        temporal_layer_id: TemporalLayerId::from_bits(0),
+        embedded_layer_id: EmbeddedLayerId::from_bits(0),
+        extended_layer_id: GLOBAL_XLAYER_ID,
+        header_size_bytes: 1,
+    };
+    let mut writer = BitWriter::new();
+    write_annexb_obu(&mut writer, &header, &[])?;
+    Ok(writer.into_bytes())
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -612,5 +640,20 @@ mod tests {
         // Propagates the inner zero-size-tile rejection — a typed error, no panic.
         let err = encode_minimal_intra_clk_annexb_obu(&[]).unwrap_err();
         assert!(matches!(err, MinimalIntraTileGroupError::Write(_)));
+    }
+
+    #[test]
+    fn encode_temporal_delimiter_obu_round_trips() {
+        let bytes = encode_temporal_delimiter_obu().unwrap();
+        // The canonical minimal encoding: leb128(1) + the TD header byte 0x08.
+        assert_eq!(bytes, vec![0x01, 0x08]);
+
+        // Reparses as exactly one OBU_TEMPORAL_DELIMITER with an empty payload.
+        let parsed = parse_annex_b_obus_partial(&bytes);
+        assert!(parsed.error.is_none());
+        assert_eq!(parsed.obus.len(), 1);
+        assert_eq!(parsed.obus[0].header.obu_type, ObuType::TemporalDelimiter);
+        assert!(!parsed.obus[0].header.has_header_extension);
+        assert!(parsed.obus[0].payload.is_empty());
     }
 }

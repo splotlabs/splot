@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 332 feature(s); 279 cite a spec section.
+Matrix version 1. Last reviewed 2026-06-15. 333 feature(s); 280 cite a spec section.
 
 One row per (spec section, feature) pair, in spec order; a feature citing both a syntax and a semantics section appears under both. The canonical status source is [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); the full per-feature ledger is [FEATURE-STATUS.md](./FEATURE-STATUS.md).
 
@@ -13,6 +13,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | Section | Spec item | Feature | Mapped | Parse | Validate | Tests | Diagnostics |
 |---|---|---|:-:|:-:|:-:|:-:|:-:|
 | § B.2 | Encoder writer-input minimal-intra Annex B OBU wrapper | `ENC-MINIMAL-INTRA-CLK-ANNEXB-OBU` | ✅ | — | — | ✅ | — |
+| § B.2 | Encoder temporal-delimiter OBU primitive | `ENC-TEMPORAL-DELIMITER-OBU` | ✅ | — | — | ✅ | — |
 
 ## Chapter 3 — Symbols and abbreviated terms
 
@@ -92,6 +93,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.2.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-2-2) | OBU header syntax | `AV2-5.2.2-OBU-HEADER` | ✅ | ✅ | ✅ | ✅ | 6 |
 | [§ 5.2.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-2-2) | OBU header syntax | `DECODE-BYTE-STREAM-PLANNER` | ✅ | ✅ | — | ✅ | 3 |
 | [§ 5.2.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-2-2) | OBU header syntax | `ENC-MINIMAL-INTRA-CLK-ANNEXB-OBU` | ✅ | — | — | ✅ | — |
+| [§ 5.2.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-2-2) | OBU header syntax | `ENC-TEMPORAL-DELIMITER-OBU` | ✅ | — | — | ✅ | — |
 | [§ 5.2.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-2-3) | Trailing bits syntax | `AV2-5.2.3-TRAILING-BITS` | ✅ | ✅ | 🟡 | ✅ | 2 |
 | [§ 5.2.4](./spec/av2/1.0.0/05-syntax-structures.md#s-5-2-4) | Byte alignment syntax | `AV2-5.2.4-BYTE-ALIGNMENT` | ✅ | ✅ | 🟡 | ✅ | 1 |
 | [§ 5.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-3) | Reserved OBU syntax | `AV2-5.3-RESERVED-OBU` | ✅ | — | ✅ | ✅ | 2 |
@@ -119,6 +121,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.4.12](./spec/av2/1.0.0/05-syntax-structures.md#s-5-4-12) | Timing info syntax | `AV2-5.4.12-TIMING-INFO` | ✅ | ✅ | ✅ | ✅ | 3 |
 | [§ 5.4.13](./spec/av2/1.0.0/05-syntax-structures.md#s-5-4-13) | Sequence decoder model info syntax | `AV2-5.4.13-SEQUENCE-DECODER-MODEL-INFO` | ✅ | ✅ | 🟡 | ✅ | — |
 | [§ 5.5](./spec/av2/1.0.0/05-syntax-structures.md#s-5-5) | Temporal delimiter OBU syntax | `AV2-5.5-TEMPORAL-DELIMITER` | ✅ | ✅ | 🟡 | ✅ | 2 |
+| [§ 5.5](./spec/av2/1.0.0/05-syntax-structures.md#s-5-5) | Temporal delimiter OBU syntax | `ENC-TEMPORAL-DELIMITER-OBU` | ✅ | — | — | ✅ | — |
 | [§ 5.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-6) | Multi Stream Decoder Operation OBU syntax | `AV2-5.6-MSDO` | ✅ | ✅ | 🟡 | ✅ | 9 |
 | [§ 5.7](./spec/av2/1.0.0/05-syntax-structures.md#s-5-7) | Multi frame header OBU syntax | `AV2-5.7-MULTI-FRAME-HEADER` | ✅ | ✅ | 🟡 | ✅ | 7 |
 | [§ 5.8](./spec/av2/1.0.0/05-syntax-structures.md#s-5-8) | Layer config record OBU syntax | `AV2-5.8-LAYER-CONFIG-RECORD` | ✅ | ✅ | 🟡 | ✅ | 11 |
