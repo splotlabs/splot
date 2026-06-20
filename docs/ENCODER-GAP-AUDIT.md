@@ -201,6 +201,13 @@ planning and status; it does not claim encoder behavior exists.
   coded bytes; the roundtrip helper now calls it). It is the first tile-body-phase
   brick; the bytes are a single tile's §5.20.1 payload data. The tile-group OBU/frame
   wrappers and the receive_packet wiring remain.
+- The encoder→packet path is gated on splot-core writer-input constructors: the
+  tile-group/frame writer models are #[non_exhaustive] / parse-only. The first
+  writer-bridge brick `ENC-WRITER-INPUT-FRAMING` adds
+  `TileGroupFraming::single_tile()` to splot-core (the §5.20.1 single-tile framing,
+  proven to match the parser and round-trip through write_tile_group_payload). The
+  TileGroupStructure / FrameHeaderCore / CoreSeqView constructors and the OBU/frame/
+  packet assembly remain.
 - `Packet` is still only a byte buffer wrapper, and no coded packet production
   path exists.
 - `EncoderConfig` exposes `BitDepth::Twelve`, but current Baseline Encoder Profile

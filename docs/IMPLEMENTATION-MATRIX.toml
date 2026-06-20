@@ -4833,6 +4833,41 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-WRITER-INPUT-FRAMING"
+name = "Encoder writer-input single-tile framing constructor"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20", "6.19"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers/tile_group.rs"
+openspec_change = "encoder-writer-input-framing"
+tracking_issue = ""
+owner = "encoder"
+risk = "low"
+# encode stays `todo`: the constructor (write-surface) exists and round-trips, but no
+# splot-encode code consumes it yet — encoder consumption lands in a later bridge brick.
+notes = "First brick of the maintainer-approved splot-core WRITER BRIDGE (the encoder→packet critical path). splot-core's tile-group/frame writer-input models (TileGroupFraming, TileGroupStructure, FrameHeaderCore, CoreSeqView) are #[non_exhaustive] with NO public constructor — produced only by parsing — so splot-encode cannot hand-build them to drive write_tile_group_obu/payload. This adds the smallest one: `TileGroupFraming::single_tile(tile_size) -> TileGroupFraming` in crates/splot-core/src/headers/tile_group.rs — the defect-free §5.20.1 framing for a first single-tile tile group (TileNum 0, size_field_offset None [the only tile is the last tile, no tile_size_minus_1 field, mirror :8557], tile_data_offset 0, tile_size, defect None). It is the EXACT encoder-side INVERSE of parse_tile_group_framing(payload, 0, 0, _, false) for ALL tile_size: a nonzero size yields defect None; a degenerate tile_size==0 yields the SAME §8.2.2 ZeroSizeTile-defective framing the parser would (not a falsely-conformant defect:None) — so the parser-inverse contract holds even for the degenerate input. #[non_exhaustive] is preserved (the internal TileFraming + the ZeroSizeTile defect are within-crate literals). Proven: value-equal to the parser's framing for both a nonzero size and the zero-size defect case; a write_tile_group_payload of a nonzero framing produces the byte-exact coded bytes and reparses value-equal (the round-trip is the correctness oracle). Encoder-mission-DRIVEN (owner=encoder) though the code lands in splot-core (crate=splot-core), per the maintainer's 'build the splot-core writer bridge' decision. encode status stays `todo`: no splot-encode code consumes the constructor yet (only the splot-core round-trip tests reference it). This row does not claim a multi-tile framing constructor, a TileGroupStructure/FrameHeaderCore/CoreSeqView constructor, a tile-group OBU, a frame, a packet, receive_packet output, CLI success, or Baseline Encoder Profile v1. NEXT bridge bricks: TileGroupStructure ctor (§5.19) → CoreSeqView + FrameHeaderCore ctors → drive write_tile_group_obu → seq-OBU + frame → Packet → receive_packet → CLI encode→decode-hash."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "todo"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-core/src/headers/tile_group.rs::tests::single_tile_constructor_matches_parser", "crates/splot-core/src/headers/tile_group.rs::tests::single_tile_constructor_matches_parser_for_zero_size", "crates/splot-core/src/headers/tile_group.rs::tests::single_tile_framing_write_then_reparse_round_trips"]
+commands = ["cargo test -p splot-core single_tile"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-RECON-DEPENDENCY"
 name = "Encoder reconstruction dependency boundary"
 category = "encoder"

@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 323 feature(s); 270 cite a spec section.
+Matrix version 1. Last reviewed 2026-06-15. 324 feature(s); 271 cite a spec section.
 
 One row per (spec section, feature) pair, in spec order; a feature citing both a syntax and a semantics section appears under both. The canonical status source is [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); the full per-feature ledger is [FEATURE-STATUS.md](./FEATURE-STATUS.md).
 
@@ -201,6 +201,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.19](./spec/av2/1.0.0/05-syntax-structures.md#s-5-19) | Tile group OBU syntax | `ENC-MINIMAL-HEADER-PLAN` | ✅ | — | — | ✅ | — |
 | [§ 5.20](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20) | Tile group payload syntax | `AV2-5.19-TILE-GROUP` | ✅ | 🟡 | 🟡 | ✅ | 7 |
 | [§ 5.20](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20) | Tile group payload syntax | `AV2-5.20-TILE-GROUP-PAYLOAD` | ✅ | 🟡 | 🟡 | ✅ | 3 |
+| [§ 5.20](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20) | Tile group payload syntax | `ENC-WRITER-INPUT-FRAMING` | ✅ | — | — | ✅ | — |
 | [§ 5.20.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-1) | General tile group payload syntax | `CONF-DECODE-RUNTIME-HASH-FUZZ` | ✅ | — | — | ✅ | 3 |
 | [§ 5.20.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-1) | General tile group payload syntax | `CONF-DECODE-RUNTIME-RAW-FUZZ` | ✅ | — | — | ✅ | 4 |
 | [§ 5.20.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-1) | General tile group payload syntax | `CONF-DECODE-RUNTIME-Y4M-FUZZ` | ✅ | — | — | ✅ | 4 |
@@ -548,6 +549,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 6.18](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-18) | Tile group OBU semantics | `DECODE-Y4M-RUNTIME-OUTPUT` | ✅ | 🟡 | ✅ | ✅ | 4 |
 | [§ 6.19](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19) | Tile group payload semantics | `AV2-5.19-TILE-GROUP` | ✅ | 🟡 | 🟡 | ✅ | 7 |
 | [§ 6.19](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19) | Tile group payload semantics | `AV2-5.20-TILE-GROUP-PAYLOAD` | ✅ | 🟡 | 🟡 | ✅ | 3 |
+| [§ 6.19](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19) | Tile group payload semantics | `ENC-WRITER-INPUT-FRAMING` | ✅ | — | — | ✅ | — |
 | [§ 6.19.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-1) | General tile group payload semantics | `CONF-TILE-PAYLOAD-DECODE-FUZZ` | ✅ | — | — | ✅ | 2 |
 | [§ 6.19.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-1) | General tile group payload semantics | `DECODE-CONTEXT-TILE-PAYLOAD-HANDOFF` | ✅ | — | — | ✅ | 2 |
 | [§ 6.19.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-1) | General tile group payload semantics | `DECODE-LIMITS-RUNTIME-API` | ✅ | — | — | ✅ | — |
