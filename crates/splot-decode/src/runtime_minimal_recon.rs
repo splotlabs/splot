@@ -7,15 +7,17 @@
 
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DecodedFrame, DecodedFrameInfo, IntraCardinalDirection,
-    IntraCardinalEdges, IntraRectBlockSize, IntraSquareBlockSize, OutputIndex, PixelFormat,
-    PlaneId, PlaneRect, PlaneSize, predict_intra_cardinal_directional_rect_into,
-    predict_intra_dc_rect_value,
+    IntraCardinalEdges, IntraRectBlockSize, IntraSmoothEdges, IntraSmoothMode,
+    IntraSquareBlockSize, OutputIndex, PixelFormat, PlaneId, PlaneRect, PlaneSize,
+    predict_intra_cardinal_directional_rect_into, predict_intra_dc_rect_value,
+    predict_intra_smooth_rect_into,
 };
 
 use crate::Result;
 use crate::tile_payload::{
     GeneralIntraResidualError, LumaCoeffBlock, MinimalRuntimeReconstructionTrace,
-    reconstruct_general_intra_block,
+    SupportedNonDcLumaMode, reconstruct_general_intra_block,
+    reconstruct_general_intra_block_with_prediction,
 };
 
 const MINIMAL_LUMA_WIDTH: usize = 64;
@@ -122,6 +124,81 @@ pub(crate) fn reconstruct_general_intra_block_into(
         .write_rect_block(plane_id, x, y, block_size, &out)
         .map_err(recon_err)?;
     Ok(())
+}
+
+/// AV2 § 7.13.2.1 no-neighbour fallback (8-bit, `haveAbove == 0 && haveLeft == 0`):
+/// every `AboveRow` sample is `(1 << (BitDepth - 1)) - 1` and every `LeftCol`
+/// sample is `(1 << (BitDepth - 1)) + 1`.
+const NONEIGHBOUR_ABOVE_8BIT: u8 = (1 << 7) - 1;
+const NONEIGHBOUR_LEFT_8BIT: u8 = (1 << 7) + 1;
+
+/// Reconstructs one no-neighbour (top-left) non-DC luma block: builds the
+/// § 7.13.2.13 smooth prediction over the § 7.13.2.1 no-neighbour fallback edges,
+/// adds the decoded AC residual (or writes the bare prediction for an all-zero
+/// block), and stores the result into the workspace.
+///
+/// This path is gated to the top-left block (no above/left neighbours), so the
+/// edges are pure § 7.13.2.1 fallbacks; multi-block non-DC prediction (which
+/// reads reconstructed neighbours) is a future increment.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn reconstruct_general_intra_luma_nondc_first_block_into(
+    workspace: &mut CurrentFrameWorkspace<u8>,
+    block: &LumaCoeffBlock,
+    mode: SupportedNonDcLumaMode,
+    x: usize,
+    y: usize,
+    log2_side: u32,
+    qindex: u32,
+    use_tcq: bool,
+) -> core::result::Result<(), GeneralIntraResidualError> {
+    let side = 1usize << log2_side;
+    let log2 = u8::try_from(log2_side).unwrap_or(u8::MAX);
+    let block_size = IntraRectBlockSize::new(log2, log2).map_err(recon_err)?;
+    let prediction = predict_nondc_noneighbour_smooth(mode, block_size, side)?;
+    let out = if block.all_zero {
+        prediction
+    } else {
+        reconstruct_general_intra_block_with_prediction(
+            &block.quant,
+            &prediction,
+            qindex,
+            PlaneId::Y,
+            log2_side,
+            use_tcq,
+        )?
+    };
+    workspace
+        .write_rect_block(PlaneId::Y, x, y, block_size, &out)
+        .map_err(recon_err)?;
+    Ok(())
+}
+
+/// Builds the § 7.13.2.13 smooth prediction for a no-neighbour square block over
+/// the § 7.13.2.1 fallback edges (above `127`, left `129`; the smooth sentinels
+/// `above[w]` / `left[h]` share those fallbacks).
+fn predict_nondc_noneighbour_smooth(
+    mode: SupportedNonDcLumaMode,
+    block_size: IntraRectBlockSize,
+    side: usize,
+) -> core::result::Result<Vec<u8>, GeneralIntraResidualError> {
+    let smooth_mode = match mode {
+        SupportedNonDcLumaMode::SmoothVertical => IntraSmoothMode::SmoothVertical,
+        SupportedNonDcLumaMode::SmoothHorizontal => IntraSmoothMode::SmoothHorizontal,
+    };
+    let above = vec![NONEIGHBOUR_ABOVE_8BIT; side + 1];
+    let left = vec![NONEIGHBOUR_LEFT_8BIT; side + 1];
+    let edges = IntraSmoothEdges::new(&left, &above);
+    let mut out = vec![0u8; side * side];
+    predict_intra_smooth_rect_into(
+        BitDepth::Eight,
+        block_size,
+        smooth_mode,
+        edges,
+        &mut out,
+        side,
+    )
+    .map_err(recon_err)?;
+    Ok(out)
 }
 
 fn recon_err(source: splot_recon::ReconError) -> GeneralIntraResidualError {

@@ -24,7 +24,7 @@ use splot_core::symbol::SymbolDecoder;
 
 use super::DecodeTileWorkUnit;
 use super::cdf::block_context::{
-    IntraYMode, YModeIndexContext, reconstruct_minimal_y_mode, uv_mode_ctx,
+    IntraYMode, SupportedNonDcLumaMode, YModeIndexContext, reconstruct_minimal_y_mode, uv_mode_ctx,
 };
 use super::cdf::block_read::BlockSymbolTraceReadError;
 use super::cdf::{TileCdfSelector, TileCdfSubset};
@@ -62,11 +62,20 @@ pub(crate) struct GeneralIntraBlockModes {
 }
 
 impl GeneralIntraBlockModes {
-    /// True when both planes use DC prediction (luma `DC_PRED`, chroma
-    /// `UV_DC_PRED`). The minimal no-neighbour reconstruction only reproduces DC
-    /// prediction exactly; other intra modes need their § 7.13 predictors.
-    pub(crate) fn is_dc_only(&self) -> bool {
-        self.y_mode == IntraYMode::DC_PRED && self.uv_mode == UV_DC_PRED
+    /// True when the luma plane uses `DC_PRED`.
+    pub(crate) fn luma_is_dc(&self) -> bool {
+        self.y_mode == IntraYMode::DC_PRED
+    }
+
+    /// True when the chroma planes use `UV_DC_PRED`.
+    pub(crate) fn uv_is_dc(&self) -> bool {
+        self.uv_mode == UV_DC_PRED
+    }
+
+    /// The supported non-DC luma predictor for this block, or `None` for DC and
+    /// the not-yet-supported non-DC luma modes (see [`IntraYMode::supported_nondc`]).
+    pub(crate) fn supported_nondc_luma(&self) -> Option<SupportedNonDcLumaMode> {
+        self.y_mode.supported_nondc()
     }
 }
 

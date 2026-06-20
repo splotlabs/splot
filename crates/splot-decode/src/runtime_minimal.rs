@@ -905,13 +905,42 @@ fn decode_one_general_intra_block(
 
     let modes = crate::tile_payload::decode_general_intra_block_modes(work_unit, symbols)
         .map_err(|error| general_intra_block_mode_error(error, tile_offset))?;
-    if !modes.is_dc_only() {
+    // Chroma is reconstructed with DC prediction only; non-DC chroma modes need
+    // their § 7.13 chroma predictors and are deferred.
+    if !modes.uv_is_dc() {
         return Err(general_intra_unsupported(
-            "general_intra_non_dc_prediction_mode",
+            "general_intra_non_dc_chroma_mode",
             Some(tile_offset),
-            "general intra reconstruction only supports DC prediction; non-DC luma or chroma modes are not yet implemented",
+            "general intra reconstruction only supports DC chroma prediction; non-DC chroma (uv_mode) modes are not yet implemented",
             GENERAL_INTRA_MODE_SPEC_SECTION,
         ));
+    }
+    // Luma is DC or a supported non-DC mode (§ 7.13.2.13 SMOOTH_V / SMOOTH_H).
+    // The supported non-DC modes are only reconstructed for the top-left
+    // (no-neighbour) block, where § 7.13.2.1 supplies pure fallback edges;
+    // multi-block non-DC prediction (reading reconstructed neighbours), the
+    // remaining non-DC modes (SMOOTH, PAETH), and directional modes are deferred.
+    let supported_nondc_luma = modes.supported_nondc_luma();
+    if !modes.luma_is_dc() {
+        match supported_nondc_luma {
+            Some(_) if frontier.r == 0 && frontier.c == 0 => {}
+            Some(_) => {
+                return Err(general_intra_unsupported(
+                    "general_intra_multiblock_non_dc_luma",
+                    Some(tile_offset),
+                    "general intra non-DC luma prediction is only supported for the top-left (no-neighbour) block; multi-block non-DC prediction is not yet implemented",
+                    GENERAL_INTRA_MODE_SPEC_SECTION,
+                ));
+            }
+            None => {
+                return Err(general_intra_unsupported(
+                    "general_intra_unsupported_luma_mode",
+                    Some(tile_offset),
+                    "general intra reconstruction only supports DC and SMOOTH_V / SMOOTH_H luma prediction; SMOOTH, PAETH, and directional luma modes are not yet implemented",
+                    GENERAL_INTRA_MODE_SPEC_SECTION,
+                ));
+            }
+        }
     }
 
     let uv_mode = usize::from(modes.uv_mode);
@@ -923,17 +952,32 @@ fn decode_one_general_intra_block(
         work_unit, symbols, coeff_ctx, 0, luma_tx, luma_x, luma_y, false, uv_mode,
     )
     .map_err(|error| general_intra_residual_error(error, tile_offset))?;
-    crate::runtime_minimal_recon::reconstruct_general_intra_block_into(
-        workspace,
-        &luma,
-        PlaneId::Y,
-        luma_x,
-        luma_y,
-        luma_log2,
-        qindex,
-        luma_use_tcq,
-    )
-    .map_err(|error| general_intra_residual_error(error, tile_offset))?;
+    match supported_nondc_luma {
+        Some(mode) => {
+            crate::runtime_minimal_recon::reconstruct_general_intra_luma_nondc_first_block_into(
+                workspace,
+                &luma,
+                mode,
+                luma_x,
+                luma_y,
+                luma_log2,
+                qindex,
+                luma_use_tcq,
+            )
+            .map_err(|error| general_intra_residual_error(error, tile_offset))?
+        }
+        None => crate::runtime_minimal_recon::reconstruct_general_intra_block_into(
+            workspace,
+            &luma,
+            PlaneId::Y,
+            luma_x,
+            luma_y,
+            luma_log2,
+            qindex,
+            luma_use_tcq,
+        )
+        .map_err(|error| general_intra_residual_error(error, tile_offset))?,
+    }
 
     if frontier.has_chroma {
         // 4:2:0: chroma is half-resolution, so the chroma transform/log2 is one
@@ -1036,6 +1080,7 @@ fn general_intra_residual_error(
             GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
         ),
         GeneralIntraResidualError::QuantLength { .. }
+        | GeneralIntraResidualError::PredictionLength { .. }
         | GeneralIntraResidualError::Reconstruct { .. } => general_intra_unsupported(
             "general_intra_luma_reconstruct",
             Some(offset),
@@ -1457,6 +1502,91 @@ mod general_intra_tests {
         assert_eq!(
             hash,
             "c54ed4e996841e2178e74033d765dda1e1127d5d89c3012be3266c3e24a7fd28"
+        );
+    }
+
+    // Single-block non-DC intra: a 64x64 vertical-gradient luma block the encoder
+    // codes as SMOOTH_V_PRED (DC chroma). The decoder builds the §7.13.2.13
+    // vertical smooth prediction over the §7.13.2.1 no-neighbour fallback edges
+    // and adds the AC residual. avmdec and dav2d agree on the decoded output.
+    const VSMOOTH_FIXTURE: &[u8] =
+        include_bytes!("../../../tests/conformance/vectors/valid/syn-vsmooth-intra-64x64-q120.ivf");
+    // Companion single-block SMOOTH_H_PRED (horizontal-gradient) block.
+    const HSMOOTH_FIXTURE: &[u8] =
+        include_bytes!("../../../tests/conformance/vectors/valid/syn-hsmooth-intra-64x64-q120.ivf");
+
+    fn decode_general_intra_luma(fixture: &[u8]) -> DecodedFrame<u8> {
+        let options = DecodeOptions::default();
+        let context = DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize)))
+            .expect("context");
+        let plan = context.plan_bytes(fixture, options).expect("plan");
+        decode_minimal_frame_from_plan(fixture, options, &plan)
+            .expect("decode")
+            .frame
+    }
+
+    #[test]
+    fn vsmooth_single_block_intra_frame_decodes_to_oracle() {
+        use splot_recon::{BitDepth, PixelFormat, PlaneSize};
+
+        let frame = decode_general_intra_luma(VSMOOTH_FIXTURE);
+        assert_eq!(frame.bit_depth(), BitDepth::Eight);
+        assert_eq!(frame.pixel_format(), PixelFormat::Yuv420);
+        assert_eq!(frame.y().visible_size(), PlaneSize::new(64, 64).unwrap());
+
+        let y = frame.y().samples();
+        // SMOOTH_V over a vertical gradient: each row is constant across columns,
+        // and the gradient increases top-to-bottom (proving the non-DC prediction
+        // plus AC residual ran, not a flat DC level).
+        assert!(
+            y[0..64].iter().all(|&s| s == y[0]),
+            "top row should be constant across columns"
+        );
+        assert!(y[0] < y[63 * 64], "luma should increase top-to-bottom");
+        let distinct = y.iter().collect::<std::collections::BTreeSet<_>>().len();
+        assert!(distinct > 4, "luma should be a non-flat reconstruction");
+        assert!(frame.u().unwrap().samples().iter().all(|&s| s == 120));
+        assert!(frame.v().unwrap().samples().iter().all(|&s| s == 130));
+
+        // Frame hash pins splot's output, which reproduces avmdec's and dav2d's
+        // raw output byte-for-byte (verified locally).
+        let hash = splot_recon::DecodedFrameHashInput::new(&frame)
+            .compute_hash()
+            .to_hex();
+        assert_eq!(
+            hash,
+            "3aebe2eb215d4878bbc40aa2f97e2178b6140ef51c03afaaae478e69dbbf6bcd"
+        );
+    }
+
+    #[test]
+    fn hsmooth_single_block_intra_frame_decodes_to_oracle() {
+        use splot_recon::{BitDepth, PixelFormat, PlaneSize};
+
+        let frame = decode_general_intra_luma(HSMOOTH_FIXTURE);
+        assert_eq!(frame.bit_depth(), BitDepth::Eight);
+        assert_eq!(frame.pixel_format(), PixelFormat::Yuv420);
+        assert_eq!(frame.y().visible_size(), PlaneSize::new(64, 64).unwrap());
+
+        let y = frame.y().samples();
+        // SMOOTH_H over a horizontal gradient: each column is constant across rows,
+        // and the gradient increases left-to-right.
+        assert!(
+            (0..64).all(|r| y[r * 64] == y[0]),
+            "left column should be constant across rows"
+        );
+        assert!(y[0] < y[63], "luma should increase left-to-right");
+        let distinct = y.iter().collect::<std::collections::BTreeSet<_>>().len();
+        assert!(distinct > 4, "luma should be a non-flat reconstruction");
+        assert!(frame.u().unwrap().samples().iter().all(|&s| s == 120));
+        assert!(frame.v().unwrap().samples().iter().all(|&s| s == 130));
+
+        let hash = splot_recon::DecodedFrameHashInput::new(&frame)
+            .compute_hash()
+            .to_hex();
+        assert_eq!(
+            hash,
+            "cfc6debd26760cdebf1d1a4497792461f0f68bc7e7773741ddf2cbc34561e702"
         );
     }
 }
