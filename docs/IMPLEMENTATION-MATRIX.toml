@@ -5255,6 +5255,39 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-GENERAL-INTRA-SKIP-TILE-DATA"
+name = "Encoder general-intra DC skip tile_data bytes"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20", "8.2.4", "8.2.2", "8.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/general_intra_trace.rs"
+openspec_change = "encoder-general-intra-skip-tile-data"
+tracking_issue = ""
+owner = "encoder"
+risk = "low"
+notes = "Decodable-tile arc BRICK 3: turns the brick-2 general-intra DC skip-block trace into its \u00a78.2.4-finalized tile_data bytes. Adds encode_general_intra_dc_skip_tile_data() in general_intra_trace.rs: composes compose_general_intra_dc_skip_block_trace() and finalizes it through the existing encode_block_symbol_trace \u00a78.2 coder, returning the entropy-coded tile_data. VERIFIED (Workflow wru0vud9g, 8 agents, 2/3 adversarial lenses confirm): a single-tile LAST-tile frame's tile_data is PURE \u00a78.2.4-finalized symbol bytes with NO structural prefix (tile_data_offset=pos, no tile_size_minus_1; decoder slices [offset..+size] -> SymbolDecoder reads from byte 0); SymbolEncoder.finish()->into_bytes() = pure byte-aligned MSB-first Vec<u8>; so the bytes are directly-usable tile_data, no wrapper. MUXING CONTRACT for a later brick (the 1 conditional adversarial refutal): the real tile reader derives CdfUpdateMode from disable_cdf_update, so the muxed frame header MUST set disable_cdf_update==0 (the minimal header does) AND base_q_idx<=90 (coeff_cdf_q_ctx 0, matching brick 2's txb_skip rows) - the existing build_minimal_intra_clk_core hardcodes base_q_idx=255 (q_ctx 3), so a base_q_idx<=90 header variant is a SEPARATE splot-core brick; the cross-crate decode oracle belongs in splot-cli. ORACLE: the emitted bytes are non-empty, equal the proven roundtrip bytes, and that trace decodes to [0,0,0,0,1,1,1]. All crate-private. Encoder-mission-DRIVEN (owner=encoder). This row is ONE IN-MEMORY tile_data BYTE PRODUCER: it does NOT claim a tile-group OBU, a frame, an IVF, a packet, receive_packet output, CLI success, a decode, or Baseline Encoder Profile v1."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/general_intra_trace.rs::tests::skip_tile_data_is_nonempty_and_equals_the_proven_trace_bytes"]
+commands = ["cargo test -p splot-encode general_intra_trace --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-RECON-DEPENDENCY"
 name = "Encoder reconstruction dependency boundary"
 category = "encoder"
@@ -11003,6 +11036,59 @@ commands = [
 fixtures = [
     "tests/conformance/vectors/valid/syn-2sbcol-intra-64x128-q80.ivf",
     "crates/splot-decode/src/runtime_minimal.rs",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
+id = "DECODE-GENERAL-INTRA-GRID"
+name = "General intra full 2-D superblock grid decode"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.18.3", "5.20.2.3", "5.20.7.25", "7.13.2.1", "7.13.2.13"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-2-3",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-25",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-1",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-13",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/runtime_minimal_recon.rs"
+openspec_change = "decode-general-intra-grid"
+tracking_issue = ""
+owner = "decoder"
+risk = "low"
+notes = "Relaxes the general intra frame-size admission from a single superblock ROW or COLUMN to a full 2-D grid: `is_general_minimal_intra` now accepts any frame whose width and height are positive multiples of 64 (dropping the `width == 64 || height == 64` restriction). The enabling fix is the §7.13.2.13 SMOOTH chroma top-right sentinel `AboveRow[w]`: for a full-superblock block at a non-rightmost row>0 superblock the above-right neighbour IS already decoded (`clear_block_decoded_flags` (§5.20.2.3) marks the above row `BlockDecoded[plane][-1][x] = 1` out to `(MiColEnd - c) >> SubsamplingX`, exceeding the superblock width), so the sentinel must read the real reconstructed `CurrFrame[plane][y-1][Min(aboveLimit, x+w)]` rather than the edge-clamped own-top sample. `full_sb_chroma_num4_above_right` (runtime_minimal.rs) derives §7.13.2.1 `num4AboveRight` faithfully to §5.20.7.25 `count_top_right_avail` over that `BlockDecoded` state for the full-superblock case (chroma `w4 = n4w >> SubsamplingX`, sub-block MI position `(0,0)`); `resolve_smooth_above_right_sentinel` (runtime_minimal_recon.rs) then reads the sentinel via the new total/checked `CurrentFrameWorkspace::reconstructed_sample` accessor, with `aboveLimit = Min(maxX, x + w + 4*num4AboveRight - 1)` simplifying to the column `Min(maxX, x+w)` for `num4AboveRight >= 1`. The bottom-left §7.13.2.13 `LeftCol[h]` sentinel is unchanged (in raster decode order the below-left is never decoded yet, `num4BelowLeft == 0`, so the clamp equals the spec value). SMOOTH chroma stays gated to full 64x64 superblock blocks (`n4w == 16`); sub-partitioned SMOOTH chroma needs the per-block §5.20.2.3 `BlockDecoded` update, still future. The committed `syn-grid-intra-128x128-q80.ivf` (uniform luma 100; chroma distinct flat per quadrant except a SMOOTH bottom-left superblock whose above-right is the distinct top-right superblock) decodes bit-exactly to the avmdec/dav2d oracle (md5 dd2fa84f..., pinned frame hash 42bd99fa...); the bottom-left SMOOTH block reads the real above-right (its top-right corner is pulled toward 200, not the clamped own-top 110), and the old repeat-last sentinel mismatched this fixture by 4096 bytes. All single-row/column 64x64, 128x64, and 64x128 fixtures are unchanged. Distinct content needing directional luma, SMOOTH chroma on sub-partitioned blocks, partial (non-multiple-of-64) frames, multiple tiles, inter prediction, in-loop filters, and live AVM/dav2d in CI remain future work."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "partial"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "partial"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/runtime_minimal.rs::general_intra_tests::grid_2d_intra_frame_decodes_to_oracle",
+    "crates/splot-decode/src/runtime_minimal.rs::general_intra_tests::full_sb_chroma_num4_above_right_matches_count_top_right_avail",
+    "crates/splot-recon/src/workspace_tests.rs::workspace_reconstructed_sample_reads_arbitrary_in_storage_samples",
+]
+commands = [
+    "cargo test -p splot-decode general_intra --locked",
+    "cargo test -p splot-recon workspace_reconstructed --locked",
+    "cargo test -p splot-cli --test conformance --locked",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "tests/conformance/vectors/valid/syn-grid-intra-128x128-q80.ivf",
+    "crates/splot-decode/src/runtime_minimal.rs",
+    "crates/splot-decode/src/runtime_minimal_recon.rs",
+    "crates/splot-recon/src/workspace.rs",
 ]
 diagnostics = ["decode/unsupported-feature"]
 
