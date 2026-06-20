@@ -20,8 +20,8 @@ use crate::block_symbol_trace::{
 };
 use crate::coefficient_tokenization::{
     chroma_v_all_zero_token, general_intra_32x32_chroma_u_all_zero_token,
-    general_intra_32x32_chroma_u_dc_coded_tokens, general_intra_64x64_luma_all_zero_token,
-    general_intra_64x64_luma_dc_coded_tokens,
+    general_intra_32x32_chroma_u_dc_coded_tokens, general_intra_32x32_chroma_v_dc_coded_tokens,
+    general_intra_64x64_luma_all_zero_token, general_intra_64x64_luma_dc_coded_tokens,
 };
 use crate::error::{Error, Result};
 use crate::partition_emission::emit_root_do_split_none;
@@ -265,6 +265,68 @@ pub fn emit_minimal_intra_coded_chroma_ivf() -> Result<Vec<u8>> {
     .map_err(|source| Error::MinimalIntraSkipIvf { source })
 }
 
+/// Composes the general intra coded-*chroma-V* block trace: `do_split`, the mode prefix, a
+/// **skipped** luma plane, a **skipped** U plane, then a single coded V DC coefficient
+/// (`VTxbSkip == 0`, `eob_pt == 0`, `coeff_base_eob`, then the V DC `sign_bit` § 8.2.5 bypass
+/// literal) at the general `TX_32X32` chroma contexts. The V `txb_skip` uses the neutral
+/// context `0` (`EobU == 0`, since U is skipped). The decoded frame isolates V residual: luma
+/// and U stay flat 128, V carries the dequantized residual.
+fn compose_general_intra_coded_chroma_v_block_trace(
+    magnitude: u32,
+    negative: bool,
+) -> Result<Vec<BlockSymbolToken>> {
+    let modes = compose_minimal_intra_dc_block_mode_trace()?;
+    let v_coeffs =
+        general_intra_32x32_chroma_v_dc_coded_tokens(SKIP_FRAME_COEFF_CDF_Q_CTX, magnitude)?;
+    let total = modes
+        .len()
+        .checked_add(v_coeffs.len())
+        .and_then(|n| n.checked_add(3)) // do_split + luma skip + U skip + V sign
+        .ok_or(Error::BlockSymbolTraceAllocationFailed {
+            context: "general coded chroma V block trace length",
+        })?;
+    let mut trace = Vec::new();
+    trace
+        .try_reserve_exact(total)
+        .map_err(|_| Error::BlockSymbolTraceAllocationFailed {
+            context: "general coded chroma V block trace",
+        })?;
+    trace.push(BlockSymbolToken::Partition(emit_root_do_split_none()));
+    trace.extend(modes.into_iter().map(BlockSymbolToken::Mode));
+    trace.push(BlockSymbolToken::Coeff(
+        general_intra_64x64_luma_all_zero_token(SKIP_FRAME_COEFF_CDF_Q_CTX),
+    ));
+    trace.push(BlockSymbolToken::Coeff(
+        general_intra_32x32_chroma_u_all_zero_token(SKIP_FRAME_COEFF_CDF_Q_CTX),
+    ));
+    trace.extend(v_coeffs.into_iter().map(BlockSymbolToken::Coeff));
+    trace.push(BlockSymbolToken::bypass(
+        CHROMA_SIGN_BIT_WIDTH,
+        negative as u32,
+    ));
+    Ok(trace)
+}
+
+/// Emits a complete, decodable AV2 IVF stream for one 64x64 all-intra `OBU_CLOSED_LOOP_KEY`
+/// frame whose **chroma V** block carries a single negative coded DC coefficient (luma and U
+/// skipped).
+///
+/// The V-plane counterpart of [`emit_minimal_intra_coded_chroma_ivf`]: decoding reconstructs a
+/// flat luma plane of `128` (skipped), a flat U plane of `128` (skipped), and a flat V plane
+/// below `128` (the dequantized negative chroma DC). With the U and V coded frames this
+/// completes the per-plane coded-residual set. The cross-crate decode oracle lives in
+/// `splot-cli`.
+pub fn emit_minimal_intra_coded_chroma_v_ivf() -> Result<Vec<u8>> {
+    let trace =
+        compose_general_intra_coded_chroma_v_block_trace(CODED_CHROMA_U_DC_MAGNITUDE, true)?;
+    let tile_data = encode_block_symbol_trace(&trace)?;
+    splot_core::headers::frame::encode_minimal_intra_clk_ivf_with_base_q_idx(
+        SKIP_FRAME_BASE_Q_IDX,
+        &tile_data,
+    )
+    .map_err(|source| Error::MinimalIntraSkipIvf { source })
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -463,5 +525,49 @@ mod tests {
         assert!(parsed.error.is_none());
         assert_eq!(parsed.frames.len(), 1);
         assert_eq!(ivf, emit_minimal_intra_coded_chroma_ivf().unwrap());
+    }
+
+    #[test]
+    fn composes_general_coded_chroma_v_block_trace_in_order() {
+        let trace =
+            compose_general_intra_coded_chroma_v_block_trace(CODED_CHROMA_U_DC_MAGNITUDE, true)
+                .unwrap();
+
+        // do_split, 3 modes, luma txb_skip (skip), U txb_skip (skip), 3 coded-V symbols,
+        // V sign bypass = 10 tokens.
+        assert_eq!(trace.len(), 10);
+        assert!(matches!(trace[0], BlockSymbolToken::Partition(_)));
+        assert!(matches!(
+            trace[9],
+            BlockSymbolToken::Bypass { width: 1, value: 1 }
+        ));
+        // do_split=0, modes 0/0/0, luma txb_skip=1, U txb_skip=1, V txb_skip=0, V eob_pt=0,
+        // V coeff_base_eob=3, V sign_bit=1 (negative).
+        assert_eq!(
+            trace.iter().map(|token| token.symbol()).collect::<Vec<_>>(),
+            vec![0, 0, 0, 0, 1, 1, 0, 0, 3, 1]
+        );
+    }
+
+    #[test]
+    fn general_coded_chroma_v_block_trace_roundtrips_through_one_coder() {
+        let trace =
+            compose_general_intra_coded_chroma_v_block_trace(CODED_CHROMA_U_DC_MAGNITUDE, true)
+                .unwrap();
+        let proof = roundtrip_block_symbol_trace(&trace).unwrap();
+
+        assert_eq!(proof.decoded_symbols(), &[0, 0, 0, 0, 1, 1, 0, 0, 3, 1]);
+        assert_eq!(proof.symbol_count(), 10);
+        assert!(!proof.bytes().is_empty());
+    }
+
+    #[test]
+    fn emit_minimal_intra_coded_chroma_v_ivf_is_parseable_and_deterministic() {
+        let ivf = emit_minimal_intra_coded_chroma_v_ivf().unwrap();
+        assert!(!ivf.is_empty());
+        let parsed = splot_core::ivf::parse_ivf_partial(&ivf);
+        assert!(parsed.error.is_none());
+        assert_eq!(parsed.frames.len(), 1);
+        assert_eq!(ivf, emit_minimal_intra_coded_chroma_v_ivf().unwrap());
     }
 }

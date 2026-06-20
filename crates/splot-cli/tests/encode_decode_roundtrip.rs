@@ -162,3 +162,52 @@ fn encoder_coded_chroma_ivf_decodes_to_a_flat_127_u_frame() {
         "expected a flat 128 V plane (skipped)",
     );
 }
+
+/// The V-plane counterpart of the coded-chroma oracle: the V block carries a single negative
+/// DC coefficient (luma and U skipped). `splot decode` reconstructs flat luma 128, flat U 128,
+/// and flat V 127. With the U and V oracles this proves coded residual on every plane.
+#[test]
+fn encoder_coded_chroma_v_ivf_decodes_to_a_flat_127_v_frame() {
+    let ivf =
+        splot_encode::emit_minimal_intra_coded_chroma_v_ivf().expect("emit the coded chroma V IVF");
+
+    let input = temp_path("chroma-v-input", "ivf");
+    let output = temp_path("chroma-v-output", "raw");
+    std::fs::write(&input, &ivf).expect("write the emitted IVF");
+
+    let status = Command::new(env!("CARGO_BIN_EXE_splot"))
+        .args([
+            "decode",
+            input.to_str().expect("utf-8 input path"),
+            "--output",
+            output.to_str().expect("utf-8 output path"),
+            "--output-format",
+            "raw",
+        ])
+        .status()
+        .expect("run the splot binary");
+
+    let raw = std::fs::read(&output);
+    let _ = std::fs::remove_file(&input);
+    let _ = std::fs::remove_file(&output);
+
+    assert!(
+        status.success(),
+        "splot decode of the coded chroma V IVF failed"
+    );
+    let raw = raw.expect("read the decoded raw output");
+    assert_eq!(raw.len(), 6144, "unexpected decoded frame size");
+    // 8-bit 4:2:0 64x64: Y = [0..4096), U = [4096..5120), V = [5120..6144).
+    assert!(
+        raw[..4096].iter().all(|&s| s == 128),
+        "expected a flat 128 luma plane (skipped)",
+    );
+    assert!(
+        raw[4096..5120].iter().all(|&s| s == 128),
+        "expected a flat 128 U plane (skipped)",
+    );
+    assert!(
+        raw[5120..6144].iter().all(|&s| s == 127),
+        "expected a flat 127 V plane from the coded chroma DC",
+    );
+}
