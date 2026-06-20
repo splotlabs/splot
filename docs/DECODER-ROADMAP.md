@@ -423,8 +423,11 @@ hash tier: it accepts a single-tile 64x64 8-bit 4:2:0 intra key frame with any
 `base_q_idx` other than the frozen fixture value 255 and with segmentation,
 quant matrices, delta-Q, in-loop filters, CCSO, GDF, and film grain disabled,
 runs the real § 5.20.3.1 root partition traversal to the single-block frontier,
-and then returns a structured `decode/unsupported-feature` diagnostic because
-block-symbol, coefficient, and reconstruction decode are not yet wired. It is
+then decodes the § 5.20.5.3 block mode info
+(`DECODE-GENERAL-INTRA-BLOCK-MODES`: `read_intra_y_mode` and `read_intra_uv_mode`
+mode symbols in spec order, reconstructing the typed non-directional luma
+`YMode`), and then returns a structured `decode/unsupported-feature` diagnostic
+because coefficient and reconstruction decode are not yet wired. It is
 the first brick of the AVM-oracle general intra decode path: the committed
 `syn-flat-intra-64x64-q80.ivf` fixture carries a real nonzero DC residual whose
 avmdec and dav2d raw outputs agree byte-for-byte, the bit-exact target for the

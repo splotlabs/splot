@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 322 feature(s).
+Matrix version 1. Last reviewed 2026-06-15. 323 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -257,6 +257,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `DECODE-COEFF-NONZERO-BLOCK-STATE` | Coefficient nonzero block state | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/coeff_loop/branch.rs` |
 | `DECODE-COEFF-SCAN-WALK` | Coefficient scan walk | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/coeff_loop/scan_walk.rs` |
 | `DECODE-GENERAL-INTRA-FRAME-FRONTIER` | General intra frame decode frontier | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/runtime_minimal.rs` |
+| `DECODE-GENERAL-INTRA-BLOCK-MODES` | General intra block mode-info decode | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/general_intra_block.rs` |
 | `DECODE-COEFF-FSC-SCAN-WALK` | Coefficient FSC scan walk | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/coeff_loop/scan_walk.rs` |
 | `DECODE-COEFF-BASE-CDF-ROWS` | Coefficient base CDF rows | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/cdf/coeff_rows.rs` |
 | `DECODE-COEFF-IDTX-CDF-ROWS` | Coefficient IDTX CDF rows | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/cdf/coeff_rows.rs` |

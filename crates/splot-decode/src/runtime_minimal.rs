@@ -24,9 +24,10 @@ use splot_recon::DecodedFrame;
 use crate::error::{DecodeError, DecodeUnsupportedFeature, Result};
 use crate::tile_payload::{
     FrameCandidateCdfFacts, FrameCandidateCoeffFacts, FrameCandidateTileBoundaryError,
-    FrameCandidateTileBoundaryInput, FrameCandidateTileFacts, MinimalBlockSymbolTraceError,
-    MinimalRuntimeBlockSymbolFrontierError, MinimalRuntimePartitionFrontierError,
-    MinimalRuntimeReconstructionTrace, TileGroupPositionFacts, TilePartitionTraversalError,
+    FrameCandidateTileBoundaryInput, FrameCandidateTileFacts, GeneralIntraBlockModeError,
+    MinimalBlockSymbolTraceError, MinimalRuntimeBlockSymbolFrontierError,
+    MinimalRuntimePartitionFrontierError, MinimalRuntimeReconstructionTrace,
+    TileGroupPositionFacts, TilePartitionTraversalError,
 };
 use crate::{
     DecodeLimitError, DecodeLimitName, DecodeLimitOp, DecodeOptions, DecodePlannedObu,
@@ -701,18 +702,40 @@ fn decode_general_minimal_intra_frame(
         }
     };
     let tile_offset = tile.tile_byte_span().start;
-    crate::tile_payload::plan_minimal_runtime_partition_frontier(
+    let frontier = crate::tile_payload::plan_minimal_runtime_partition_frontier(
         tile,
         sequence,
         core,
         options.limits(),
     )
     .map_err(|error| general_intra_partition_frontier_error(error, tile_offset))?;
+    let mut symbols = frontier.into_symbol_decoder();
+    let _modes = crate::tile_payload::decode_general_intra_block_modes(tile, &mut symbols)
+        .map_err(|error| general_intra_block_mode_error(error, tile_offset))?;
     Err(general_intra_unsupported(
-        "general_intra_block_decode_unimplemented",
+        "general_intra_residual_decode_unimplemented",
         Some(tile_offset),
-        "general intra frame reaches the AV2 §5.20.3.1 root partition frontier; block-symbol, coefficient, and reconstruction decode are not yet implemented",
+        "general intra frame decodes the AV2 §5.20.5.3 block mode info; residual/coefficient decode and reconstruction are not yet implemented",
     ))
+}
+
+fn general_intra_block_mode_error(
+    error: GeneralIntraBlockModeError,
+    offset: ByteOffset,
+) -> DecodeError {
+    match error {
+        GeneralIntraBlockModeError::SymbolRead { .. }
+        | GeneralIntraBlockModeError::Literal { .. } => general_intra_unsupported(
+            "general_intra_block_mode_parse",
+            Some(offset),
+            "general intra block mode-info syntax could not be parsed from the tile payload",
+        ),
+        GeneralIntraBlockModeError::UnsupportedYMode { .. } => general_intra_unsupported(
+            "general_intra_unsupported_y_mode",
+            Some(offset),
+            "general intra decode currently reconstructs only the non-directional luma intra mode subset",
+        ),
+    }
 }
 
 fn general_intra_partition_frontier_error(
