@@ -5118,6 +5118,77 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-SEQUENCE-HEADER-OBU"
+name = "Encoder minimal-intra sequence-header OBU"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.4", "5.2.2", "5.2.3", "B.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers/frame/encoder_input.rs"
+openspec_change = "encoder-sequence-header-obu"
+tracking_issue = ""
+owner = "encoder"
+risk = "low"
+# encode stays `todo`: the sequence-header OBU is byte-exact to the conformance vector, but
+# it is a single OBU — the temporal unit, the consistent frame OBU, and the IVF wrap are
+# later bricks, and no splot-encode code consumes it yet.
+notes = "The GATING piece for a decodable temporal unit. The decoder minimal-tier IVF frame requires its OBUs in order OBU_TEMPORAL_DELIMITER (brick 6), OBU_SEQUENCE_HEADER, then the frame OBU (brick 5). This adds the sequence header — the activated tier the frame header parses against. `build_minimal_intra_sequence_header() -> Result<SequenceHeader, MinimalIntraSequenceHeaderError>` PARSE-BACKS the committed syn-cos-intra-64x64-q180 conformance vector's 11-byte sequence_header() body [82 0a 55 ff f0 c0 04 d1 16 e0 22] into a SequenceHeader (conformant by construction — the exact seq header the decoder accepts). `encode_minimal_intra_sequence_header_obu()` emits the body-PLUS-§5.2.3-TAIL payload via write_obu_payload (NOT the body-only write_sequence_header — a write_sequence_header-only attempt produced ...e0 20 [zero padding] vs the vector's ...e0 22 [the trailing_bits 1-marker], caught by the byte-exact oracle: the seq header is an EXTENSIBLE OBU so its tail = obu_extension_flag(0) + trailing_bits) under the no-extension OBU_SEQUENCE_HEADER §5.2.2 header (inferred layer ids 0), in Annex B framing → byte-exact to the vector's seq header OBU [0c 04 82 0a 55 ff f0 c0 04 d1 16 e0 22]. MinimalIntraSequenceHeaderError (Parse #[from] error::Error / Write #[from] WriteError). ORACLE = byte-exact to the decoder-accepted conformance vector (the strongest splot-core oracle — caught the body-vs-tail bug) + the payload round-trips byte-exact + reparses as 1 OBU_SEQUENCE_HEADER. Public API: 2 new fns + 1 new error, splot-core, no dependency-graph change. Encoder-mission-DRIVEN (owner=encoder). encode=todo. This row is a SINGLE OBU, NOT a temporal unit or decodable stream: it does NOT claim the frame OBU made CONSISTENT with this seq header (the assembler brick must reconcile them — the frame header parses AGAINST this seq header), an IVF stream, a packet, receive_packet output, CLI success, or Baseline Encoder Profile v1. NEXT: the temporal-unit assembler (TD + this seq header + a CONSISTENT frame OBU) → IVF wrap (write_ivf_header/write_ivf_frame) → CLI encode→decode-hash."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "todo"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-core/src/headers/frame/encoder_input.rs::tests::encode_minimal_intra_sequence_header_obu_matches_conformance_vector", "crates/splot-core/src/headers/frame/encoder_input.rs::tests::minimal_intra_sequence_header_payload_round_trips_the_body"]
+commands = ["cargo test -p splot-core encoder_input"]
+fixtures = ["tests/conformance/vectors/valid/syn-cos-intra-64x64-q180.ivf"]
+diagnostics = []
+
+[[feature]]
+id = "ENC-MINIMAL-INTRA-IVF"
+name = "Encoder minimal-intra IVF temporal-unit assembler"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.2.1", "B.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers/frame/encoder_input.rs"
+openspec_change = "encoder-ivf-temporal-unit"
+tracking_issue = ""
+owner = "encoder"
+risk = "low"
+# encode stays `todo`: the IVF is structurally valid with consistent headers, but the coded
+# tile content is a caller input, and no splot-encode code consumes it yet.
+notes = "The integration finale first half. The encoder now emits all three OBUs the decoder minimal-tier IVF frame requires (TD brick 6, sequence header byte-exact, frame OBU brick 5); this assembles them into one IVF temporal unit (the first complete container the encoder produces). encode_minimal_intra_clk_ivf(tile_data) -> Result<Vec<u8>, MinimalIntraIvfError> concatenates the TD + sequence-header + frame Annex B OBUs into one AV2 temporal unit (decoder-required order) and wraps it in one AV02 64x64 IVF frame (write_ivf_header(IvfHeader::new(AV02,64,64,30,1,1)) + write_ivf_frame(_,0,tu); timebase 30/1 + frame_count 1 match the committed conformance vector). CONSISTENCY VERIFIED: the sequence header + the frame header describe the SAME tier - CoreSeqView::from_sequence(build_minimal_intra_sequence_header()) matches the view build_minimal_intra_clk_core built the frame header against on EVERY frame-header-parse-driving field (single_picture=true, OrderHintBits=0, NumRefFrames=2, SCC/imv SELECT=2, 64x64 maxima, (enable_avg_cdf,avg_cdf_type)=(true,1), monotonic_output_order_flag=true, seq_sb_size=Block64x64). The Block64x64 override added for the keystone #364 [Important] finding is EXACTLY what makes seq+frame consistent (the new_minimal_intra default Block128x128 would NOT match the vector Block64x64). MinimalIntraIvfError (SequenceHeader/Frame/Write/Ivf #[from], incl. std::io::Error). ORACLE = parse_ivf_partial -> valid AV02 64x64 IVF, 1 frame; frame payload parse_annex_b -> [TemporalDelimiter, SequenceHeader, ClosedLoopKey] in order; from_sequence(seq) is the frozen Block64x64 64x64 single-picture tier; + empty-tile_data reject. Public API: 1 new fn + 1 new error, splot-core, no dependency-graph change. Encoder-mission-DRIVEN (owner=encoder). encode=todo. STRUCTURALLY VALID IVF with CONSISTENT HEADERS, NOT yet a decode-hash match: tile_data is a caller input -> a COMPLETE spec-conformant coded tile (and base_q_idx) is a SEPARATE axis = the block-symbol trace wiring. Does NOT claim a decodable image, a packet, receive_packet output, CLI success, or Baseline Encoder Profile v1. NEXT (integration finale 2nd half): wire the block-symbol trace -> a complete coded 64x64 tile -> feed encode_minimal_intra_clk_ivf -> CLI encode + splot-decode decode-hash (and AVM/dav2d agreement)."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "todo"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-core/src/headers/frame/encoder_input.rs::tests::encode_minimal_intra_clk_ivf_assembles_consistent_temporal_unit", "crates/splot-core/src/headers/frame/encoder_input.rs::tests::encode_minimal_intra_clk_ivf_rejects_empty_tile_data"]
+commands = ["cargo test -p splot-core encoder_input"]
+fixtures = ["tests/conformance/vectors/valid/syn-cos-intra-64x64-q180.ivf"]
+diagnostics = []
+
+[[feature]]
 id = "ENC-RECON-DEPENDENCY"
 name = "Encoder reconstruction dependency boundary"
 category = "encoder"

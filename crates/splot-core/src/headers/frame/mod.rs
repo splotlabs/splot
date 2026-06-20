@@ -48,8 +48,10 @@ mod tiling;
 
 pub use config::IntrabcParams;
 pub use encoder_input::{
-    MinimalIntraCoreError, MinimalIntraTileGroupError, build_minimal_intra_clk_core,
-    encode_minimal_intra_clk_annexb_obu, encode_minimal_intra_clk_tile_group_obu,
+    MinimalIntraCoreError, MinimalIntraIvfError, MinimalIntraSequenceHeaderError,
+    MinimalIntraTileGroupError, build_minimal_intra_clk_core, build_minimal_intra_sequence_header,
+    encode_minimal_intra_clk_annexb_obu, encode_minimal_intra_clk_ivf,
+    encode_minimal_intra_clk_tile_group_obu, encode_minimal_intra_sequence_header_obu,
     encode_temporal_delimiter_obu,
 };
 pub use filtering::{

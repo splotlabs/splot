@@ -21,12 +21,15 @@ use crate::headers::frame::{
     CoreSeqSegView, CoreSeqTileView, CoreSeqView, FrameHeaderCore, FrameReferenceStateView,
     init_core_from_prefix, parse_core_body, parse_frame_header_prefix,
 };
-use crate::headers::sequence::ChromaFormatIdc;
+use crate::headers::sequence::{ChromaFormatIdc, SequenceHeader, parse_sequence_header};
 use crate::headers::tile_group::{TileGroupFraming, TileGroupStructure};
-use crate::obu::ObuHeader;
+use crate::ivf::{IvfHeader, write_ivf_frame, write_ivf_header};
+use crate::obu::{ObuHeader, ParsedObu};
 use crate::span::ByteOffset;
 use crate::types::{EmbeddedLayerId, ExtendedLayerId, GLOBAL_XLAYER_ID, ObuType, TemporalLayerId};
-use crate::write::{BitWriter, WriteError, WriteResult, write_annexb_obu, write_tile_group_obu};
+use crate::write::{
+    BitWriter, WriteError, WriteResult, write_annexb_obu, write_obu_payload, write_tile_group_obu,
+};
 
 impl CoreSeqInterView {
     /// Builds the all-disabled § 5.4.6 inter-config view a minimal intra sequence
@@ -451,6 +454,135 @@ pub fn encode_temporal_delimiter_obu() -> Result<Vec<u8>, WriteError> {
     Ok(writer.into_bytes())
 }
 
+/// The canonical 64x64 single-picture intra `OBU_SEQUENCE_HEADER` **payload** (§ 5.4,
+/// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-4`): the 11 payload bytes of the
+/// `OBU_SEQUENCE_HEADER` in the committed `syn-cos-intra-64x64-q180` conformance vector — the
+/// `sequence_header()` body **plus** the § 5.2.1 / § 5.2.3 OBU tail (`obu_extension_flag = 0`
+/// then `trailing_bits()`). It is tier-level — independent of the frame's `base_q_idx` and
+/// coded tile content — so it is shared by every frame of the tier.
+const MINIMAL_INTRA_SEQUENCE_HEADER_PAYLOAD: [u8; 11] = [
+    0x82, 0x0a, 0x55, 0xff, 0xf0, 0xc0, 0x04, 0xd1, 0x16, 0xe0, 0x22,
+];
+
+/// Error assembling the canonical minimal-intra sequence header
+/// ([`build_minimal_intra_sequence_header`] / [`encode_minimal_intra_sequence_header_obu`]):
+/// the canonical body either failed to parse or failed to serialize. Both arms are
+/// unreachable for the fixed canonical body; they exist only to honor the no-panic policy.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum MinimalIntraSequenceHeaderError {
+    /// The canonical body could not be parsed into a [`SequenceHeader`].
+    #[error("canonical sequence-header body did not parse: {0}")]
+    Parse(#[from] crate::error::Error),
+    /// The sequence-header OBU could not be serialized.
+    #[error("sequence-header OBU serialization failed: {0}")]
+    Write(#[from] WriteError),
+}
+
+/// Assembles the canonical minimal-intra [`SequenceHeader`] for the frozen 64x64
+/// single-picture tier by **parsing** the committed conformance-vector payload (the
+/// `MINIMAL_INTRA_SEQUENCE_HEADER_PAYLOAD` const) — the parse-backed model is conformant by
+/// construction (it is the exact sequence header the decoder's minimal tier accepts).
+pub fn build_minimal_intra_sequence_header()
+-> Result<SequenceHeader, MinimalIntraSequenceHeaderError> {
+    let mut reader = BitReader::new(&MINIMAL_INTRA_SEQUENCE_HEADER_PAYLOAD, ByteOffset::new(0));
+    Ok(parse_sequence_header(&mut reader)?)
+}
+
+/// Serializes the canonical minimal-intra `OBU_SEQUENCE_HEADER` **payload** — the
+/// `sequence_header()` body plus the § 5.2.1 / § 5.2.3 OBU tail (`obu_extension_flag = 0`
+/// then `trailing_bits()`, since the sequence header is an extensible OBU). This is what
+/// [`write_obu_payload`] emits (`write_sequence_header` writes the body alone, without the
+/// tail), so the bytes match the committed conformance vector's sequence-header payload.
+fn minimal_intra_sequence_header_payload() -> Result<Vec<u8>, MinimalIntraSequenceHeaderError> {
+    let seq = build_minimal_intra_sequence_header()?;
+    let mut writer = BitWriter::new();
+    write_obu_payload(
+        &mut writer,
+        &ParsedObu::SequenceHeader(Box::new(seq)),
+        ObuType::SequenceHeader.is_extensible_obu(),
+        &[],
+    )?;
+    Ok(writer.into_bytes())
+}
+
+/// Serializes the canonical minimal-intra `OBU_SEQUENCE_HEADER` (§ 5.4) in Annex B framing
+/// (§ B.2, `docs/spec/av2/1.0.0/annex-b-length-delimited-bitstream-format.md#s-annex-b-2`):
+/// a `leb128` size prefix, the no-extension § 5.2.2 `OBU_SEQUENCE_HEADER` header (inferred
+/// layer ids `0`), then the body-plus-tail payload of
+/// [`build_minimal_intra_sequence_header`]. The result reproduces the committed conformance
+/// vector's sequence-header OBU byte-for-byte.
+///
+/// This is the second of the two OBUs the decoder's minimal-tier IVF frame requires (after
+/// the temporal delimiter, before the frame OBU). Assembling the three into a temporal unit
+/// and an IVF stream — with the frame OBU made consistent with this sequence header — is a
+/// later brick.
+pub fn encode_minimal_intra_sequence_header_obu() -> Result<Vec<u8>, MinimalIntraSequenceHeaderError>
+{
+    let payload = minimal_intra_sequence_header_payload()?;
+    // § 5.2.2: the no-extension OBU_SEQUENCE_HEADER header (inferred layer ids 0).
+    let header = ObuHeader {
+        has_header_extension: false,
+        obu_type: ObuType::SequenceHeader,
+        temporal_layer_id: TemporalLayerId::from_bits(0),
+        embedded_layer_id: EmbeddedLayerId::from_bits(0),
+        extended_layer_id: ExtendedLayerId::from_bits(0),
+        header_size_bytes: 1,
+    };
+    let mut writer = BitWriter::new();
+    write_annexb_obu(&mut writer, &header, &payload)?;
+    Ok(writer.into_bytes())
+}
+
+/// Error assembling the canonical minimal-intra IVF temporal unit
+/// ([`encode_minimal_intra_clk_ivf`]): one of the three OBUs could not be built, or the IVF
+/// container could not be written.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum MinimalIntraIvfError {
+    /// The sequence-header OBU could not be assembled.
+    #[error("sequence-header OBU assembly failed: {0}")]
+    SequenceHeader(#[from] MinimalIntraSequenceHeaderError),
+    /// The frame (tile-group) OBU could not be assembled.
+    #[error("frame OBU assembly failed: {0}")]
+    Frame(#[from] MinimalIntraTileGroupError),
+    /// The temporal-delimiter OBU could not be serialized.
+    #[error("temporal-delimiter OBU serialization failed: {0}")]
+    Write(#[from] WriteError),
+    /// The IVF container could not be written.
+    #[error("IVF container write failed: {0}")]
+    Ivf(#[from] std::io::Error),
+}
+
+/// Assembles the canonical minimal-intra 64x64 single-picture intra temporal unit as a
+/// complete IVF stream: the AV2 Annex B temporal unit — `OBU_TEMPORAL_DELIMITER`,
+/// `OBU_SEQUENCE_HEADER`, then the `OBU_CLOSED_LOOP_KEY` frame OBU, in the order the
+/// decoder's minimal tier requires — inside one `AV02` 64x64 IVF frame
+/// ([`write_ivf_header`] / [`write_ivf_frame`]).
+///
+/// The three OBUs are consistent: the frame OBU's frame header parses against this sequence
+/// header (both describe the frozen 64x64 single-picture `Block64x64` tier — verified field
+/// by field). `tile_data` is the § 8.2 coded bytes of the one 64x64 tile (`>= 1`); an empty
+/// slice is rejected by the inner frame assembler.
+///
+/// This is the encoder writer-input bridge's container end-point: it emits a structurally
+/// valid IVF whose OBUs and headers are consistent. It is **not** yet a hash-exact match to
+/// the committed conformance vector — `tile_data` is a caller input, so a complete
+/// spec-conformant coded tile (and thus a decode-hash match) is a later brick.
+pub fn encode_minimal_intra_clk_ivf(tile_data: &[u8]) -> Result<Vec<u8>, MinimalIntraIvfError> {
+    // AV2 Annex B temporal unit: TD, then the sequence header, then the frame OBU.
+    let mut temporal_unit = encode_temporal_delimiter_obu()?;
+    temporal_unit.extend_from_slice(&encode_minimal_intra_sequence_header_obu()?);
+    temporal_unit.extend_from_slice(&encode_minimal_intra_clk_annexb_obu(tile_data)?);
+
+    // IVF container: one AV02 64x64 frame carrying the temporal unit (the frozen-tier shape;
+    // the timebase 30/1 and frame count 1 match the committed conformance vector's header).
+    let mut ivf = Vec::new();
+    write_ivf_header(&mut ivf, &IvfHeader::new(*b"AV02", 64, 64, 30, 1, 1))?;
+    write_ivf_frame(&mut ivf, 0, &temporal_unit)?;
+    Ok(ivf)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -655,5 +787,81 @@ mod tests {
         assert_eq!(parsed.obus[0].header.obu_type, ObuType::TemporalDelimiter);
         assert!(!parsed.obus[0].header.has_header_extension);
         assert!(parsed.obus[0].payload.is_empty());
+    }
+
+    #[test]
+    fn minimal_intra_sequence_header_payload_round_trips() {
+        // The canonical payload parses (the body prefix), and the byte-exact body+tail writer
+        // reproduces it (so the OBU payload matches the committed conformance vector's payload).
+        let payload = minimal_intra_sequence_header_payload().unwrap();
+        assert_eq!(payload, MINIMAL_INTRA_SEQUENCE_HEADER_PAYLOAD);
+    }
+
+    #[test]
+    fn encode_minimal_intra_sequence_header_obu_matches_conformance_vector() {
+        let bytes = encode_minimal_intra_sequence_header_obu().unwrap();
+        // Byte-exact to the OBU_SEQUENCE_HEADER in the committed syn-cos-intra-64x64-q180
+        // vector: leb128(12) + obu_header 0x04 + the 11-byte payload.
+        let mut expected = vec![0x0c, 0x04];
+        expected.extend_from_slice(&MINIMAL_INTRA_SEQUENCE_HEADER_PAYLOAD);
+        assert_eq!(bytes, expected);
+
+        // Reparses as exactly one OBU_SEQUENCE_HEADER carrying the body.
+        let parsed = parse_annex_b_obus_partial(&bytes);
+        assert!(parsed.error.is_none());
+        assert_eq!(parsed.obus.len(), 1);
+        assert_eq!(parsed.obus[0].header.obu_type, ObuType::SequenceHeader);
+        assert!(!parsed.obus[0].header.has_header_extension);
+        assert_eq!(
+            parsed.obus[0].payload,
+            &MINIMAL_INTRA_SEQUENCE_HEADER_PAYLOAD[..]
+        );
+    }
+
+    #[test]
+    fn encode_minimal_intra_clk_ivf_assembles_consistent_temporal_unit() {
+        let tile_data: Vec<u8> = (0u8..5).map(|b| b.wrapping_mul(37)).collect();
+        let ivf = encode_minimal_intra_clk_ivf(&tile_data).unwrap();
+
+        // A valid AV02 64x64 IVF with exactly one frame.
+        let parsed = crate::ivf::parse_ivf_partial(&ivf);
+        assert!(parsed.error.is_none());
+        let header = parsed.header.unwrap();
+        assert_eq!(&header.fourcc, b"AV02");
+        assert_eq!((header.width, header.height), (64, 64));
+        assert_eq!(parsed.frames.len(), 1);
+
+        // The frame payload is the Annex B temporal unit, in the decoder-required order:
+        // temporal delimiter, sequence header, then the frame OBU.
+        let obus = parse_annex_b_obus_partial(parsed.frames[0].payload);
+        assert!(obus.error.is_none());
+        let types: Vec<_> = obus.obus.iter().map(|o| o.header.obu_type).collect();
+        assert_eq!(
+            types,
+            vec![
+                ObuType::TemporalDelimiter,
+                ObuType::SequenceHeader,
+                ObuType::ClosedLoopKey,
+            ]
+        );
+
+        // The frame OBU is consistent with this sequence header: from_sequence(seq) is the
+        // frozen 64x64 single-picture Block64x64 tier the frame header was built for.
+        let seq = build_minimal_intra_sequence_header().unwrap();
+        let view = CoreSeqView::from_sequence(&seq).unwrap();
+        assert!(view.single_picture_header_flag);
+        assert_eq!((view.max_frame_width, view.max_frame_height), (64, 64));
+        assert_eq!(view.order_hint_bits, 0);
+        assert_eq!(
+            view.tile.seq_sb_size,
+            crate::headers::sequence::SuperblockSize::Block64x64
+        );
+    }
+
+    #[test]
+    fn encode_minimal_intra_clk_ivf_rejects_empty_tile_data() {
+        // The empty-tile_data rejection propagates from the frame assembler — a typed error.
+        let err = encode_minimal_intra_clk_ivf(&[]).unwrap_err();
+        assert!(matches!(err, MinimalIntraIvfError::Frame(_)));
     }
 }
