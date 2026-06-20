@@ -337,6 +337,52 @@ fn general_intra_32x32_chroma_u_all_zero_token_targets_tx_32x32_ctx6() {
 }
 
 #[test]
+fn general_intra_64x64_luma_dc_coded_tokens_use_eob_pt_1024_and_tx_64x64() {
+    // Magnitude 6 (negative): txb_skip=0, eob_pt=0, coeff_base_eob=4, coeff_br=1, dc_sign=1.
+    let tokens = general_intra_64x64_luma_dc_coded_tokens(0, 6, true).unwrap();
+    let syntaxes: Vec<_> = tokens.iter().map(|t| t.syntax()).collect();
+    assert_eq!(
+        syntaxes,
+        vec![
+            CoefficientTokenSyntax::AllZero,
+            CoefficientTokenSyntax::EobPt1024,
+            CoefficientTokenSyntax::CoeffBaseEob,
+            CoefficientTokenSyntax::CoeffBr,
+            CoefficientTokenSyntax::DcSign,
+        ]
+    );
+    // The luma txb_skip and coeff_base_eob use the TX_64X64 txSzCtx (4); the EOB symbol is
+    // the 1024-position size class.
+    assert!(matches!(
+        tokens[0].selector(),
+        CoefficientCdfRowSelector::TxbSkip {
+            tx_size: TX_SIZE_64X64_CTX,
+            ..
+        }
+    ));
+    assert!(matches!(
+        tokens[1].selector(),
+        CoefficientCdfRowSelector::EobPt1024 {
+            coeff_cdf_q_ctx: 0,
+            eob_ctx: EOB_CTX_LUMA_INTRA,
+        }
+    ));
+    assert!(matches!(
+        tokens[2].selector(),
+        CoefficientCdfRowSelector::CoeffBaseLfEob {
+            tx_size: TX_SIZE_64X64_CTX,
+            ..
+        }
+    ));
+    let symbols: Vec<_> = tokens.iter().map(|t| t.symbol()).collect();
+    assert_eq!(symbols, vec![0, 0, 4, 1, 1]);
+
+    // A sub-base magnitude (2 <= LF_NUM_BASE_LEVELS) omits the coeff_br token.
+    let small = general_intra_64x64_luma_dc_coded_tokens(0, 2, false).unwrap();
+    assert_eq!(small.len(), 4);
+}
+
+#[test]
 fn dc_tokens_roundtrip_through_symbol_coder() {
     let block = quantized_base_tier(-1);
     let plan = tokenize_quantized_4x4_dct_dct_dc_only(&block).unwrap();

@@ -5354,6 +5354,39 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-GENERAL-INTRA-CODED-LUMA-DC"
+name = "First decodable coded-DC intra frame"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20.7.27", "5.20.7.28", "7.13.2", "8.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/general_intra_trace.rs"
+openspec_change = "encoder-general-intra-coded-luma-dc"
+tracking_issue = ""
+owner = "encoder"
+risk = "low"
+notes = "Decodable-tile arc: the FIRST CODED (non-skip) decodable frame - proves the encoder emits REAL RESIDUAL the decoder reconstructs (the milestone skip frame only proved prediction). emit_minimal_intra_coded_dc_ivf() (splot-encode public) emits one 64x64 all-intra frame whose luma block carries a single negative coded DC coefficient (U/V skipped) -> `splot decode` -> flat luma 127 (128 + dequantized negative DC) + flat chroma 128 (cross-crate oracle crates/splot-cli/tests/encode_decode_roundtrip.rs). Adds the eob_pt_1024 token (new CoefficientTokenSyntax::EobPt1024 + CoefficientCdfRowSelector::EobPt1024 - the eob_pt symbol for the TX_64X64 1024-position EOB size class, distinct from the minimal eob_pt_16) + general_intra_64x64_luma_dc_coded_tokens (TX_64X64 txb_skip/coeff_base_lf_eob, reusing the shared coeff_br/dc_sign rows) + the eob_pt_1024 and TX_64X64 coeff_base_lf_eob BlockSymbolTraceCdfRows. CODED CONTEXTS PINNED by instrumenting the decoder while decoding the AVM-validated q80 fixture (itself a coded single-DC frame: luma TxbSkip{tx4}=0, EobPt{Pt1024}=0, CoeffBaseLfEob{tx4}=4, CoeffBrLf=2, DcSign=1). **THE DECODE ORACLE CAUGHT A REAL BUG: q80's luma level 7 (the value 100) triggers the \u00a75.20.7.28 GOLOMB TAIL because the minimal seq header's luma uses TCQ (golomb threshold = maxLevel 8 - allowTcq 1 = 7); at level 7 the decoder reads ~8 read_literal bypass bits after dc_sign that the encoder did not emit -> \u00a78.2.4 exit_symbol() fails. Bypass reads are invisible to the CDF-symbol trace, so this surfaced ONLY via the cross-crate decode.** This brick emits MAGNITUDE 6 (coeff_base_eob 4 + coeff_br 1, level 6, the largest sub-golomb level) -> flat luma 127; magnitude 7 (q80's luma 100) needs the golomb tail = a FOLLOW-UP brick. decode_check=done (splot-decode, AVM/dav2d-validated on the coded q80/q180 fixtures); avm_diff=not-applicable (this exact stream not AVM-decoded). Encoder-mission-DRIVEN (owner=encoder). HONEST SCOPE: the FIRST decodable coded-DC frame - NOT a general encoder, NOT a Context::receive_packet packet, NOT Baseline Encoder Profile v1."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-cli/tests/encode_decode_roundtrip.rs::encoder_coded_dc_ivf_decodes_to_a_flat_127_luma_frame", "crates/splot-encode/src/coefficient_tokenization_tests.rs::general_intra_64x64_luma_dc_coded_tokens_use_eob_pt_1024_and_tx_64x64"]
+commands = ["cargo test -p splot-cli --test encode_decode_roundtrip --locked", "cargo test -p splot-encode coded --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-RECON-DEPENDENCY"
 name = "Encoder reconstruction dependency boundary"
 category = "encoder"

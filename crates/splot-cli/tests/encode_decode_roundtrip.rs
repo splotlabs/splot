@@ -66,3 +66,48 @@ fn encoder_skip_ivf_decodes_to_a_flat_128_frame() {
         "expected a flat 128 frame from the skip block",
     );
 }
+
+/// The encoder's first decodable output carrying a **coded** coefficient: `splot-encode`
+/// emits a 64x64 all-intra frame whose luma block has a single negative DC coefficient
+/// (U and V skipped), and `splot decode` reconstructs it. The dequantized residual is added
+/// to the `128` predictor, so the luma plane is flat `127` while the skipped chroma stays
+/// flat `128` — proving the encoder emits real residual the decoder reconstructs, not just
+/// prediction.
+#[test]
+fn encoder_coded_dc_ivf_decodes_to_a_flat_127_luma_frame() {
+    let ivf = splot_encode::emit_minimal_intra_coded_dc_ivf().expect("emit the coded DC IVF");
+
+    let input = temp_path("coded-input", "ivf");
+    let output = temp_path("coded-output", "raw");
+    std::fs::write(&input, &ivf).expect("write the emitted IVF");
+
+    let status = Command::new(env!("CARGO_BIN_EXE_splot"))
+        .args([
+            "decode",
+            input.to_str().expect("utf-8 input path"),
+            "--output",
+            output.to_str().expect("utf-8 output path"),
+            "--output-format",
+            "raw",
+        ])
+        .status()
+        .expect("run the splot binary");
+
+    let raw = std::fs::read(&output);
+    let _ = std::fs::remove_file(&input);
+    let _ = std::fs::remove_file(&output);
+
+    assert!(status.success(), "splot decode of the coded IVF failed");
+    let raw = raw.expect("read the decoded raw output");
+    assert_eq!(raw.len(), 6144, "unexpected decoded frame size");
+    // Luma (first 4096 bytes) carries the coded residual; chroma (next 2048) is skipped.
+    let (luma, chroma) = raw.split_at(4096);
+    assert!(
+        luma.iter().all(|&sample| sample == 127),
+        "expected a flat 127 luma plane from the coded DC",
+    );
+    assert!(
+        chroma.iter().all(|&sample| sample == 128),
+        "expected flat 128 chroma from the skipped chroma planes",
+    );
+}

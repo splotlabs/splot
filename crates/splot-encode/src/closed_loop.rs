@@ -409,6 +409,7 @@ mod tests {
                 // eob>1 trace symbols), so they are a no-op here.
                 CoefficientTokenSyntax::AllZero
                 | CoefficientTokenSyntax::EobPt16
+                | CoefficientTokenSyntax::EobPt1024
                 | CoefficientTokenSyntax::CoeffBase
                 | CoefficientTokenSyntax::IntraTxType
                 | CoefficientTokenSyntax::SecTxType => {}
