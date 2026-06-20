@@ -334,6 +334,11 @@ pub(crate) struct YModeEscapeResult {
     /// The reconstructed `AngleDeltaY` (in `-MAX_ANGLE_DELTA..=MAX_ANGLE_DELTA`),
     /// `0` for a non-directional reconstructed mode.
     pub(crate) angle_delta_y: i8,
+    /// The AV2 § 5.20.5.3 `IntraJointMode` (`= modeDelta`,
+    /// `get_intra_y_mode_set(modeIdx)`), the reorder index stored into
+    /// `IntraJointModes` for the § 8.3.2 neighbour `y_mode_index` context. A
+    /// directional reconstructed mode has `modeDelta >= NON_DIRECTIONAL_MODES_COUNT`.
+    pub(crate) intra_joint_mode: u8,
 }
 
 /// Reconstructs the typed luma `YMode` and `AngleDeltaY` for the AV2 § 5.20.5.3
@@ -367,14 +372,21 @@ pub(crate) fn reconstruct_y_mode_offset_escape_top_left(
     }
     // modeIdx = y_mode_index + y_mode_offset, with y_mode_index == MODE_INDEX_COUNT - 1.
     let mode_idx = usize::from(MODE_INDEX_COUNT - 1) + usize::from(y_mode_offset);
-    // get_intra_y_mode_set, top-left no-directional-neighbour case.
+    // get_intra_y_mode_set, top-left no-directional-neighbour case. This is the
+    // AV2 § 5.20.5.3 `IntraJointMode` (`modeDelta`) stored for the § 8.3.2
+    // neighbour context; it is also `>= NON_DIRECTIONAL_MODES_COUNT` for the
+    // directional reconstruction branch below.
     let mode_delta = get_intra_y_mode_set_top_left(mode_idx)?;
+    // Preserve the stored `IntraJointMode` before the directional rebase, which
+    // mutates `mode_delta` only for the `YMode` / `AngleDeltaY` reorder math.
+    let intra_joint_mode = u8::try_from(mode_delta).ok()?;
 
     if mode_delta < NON_DIRECTIONAL_MODES_COUNT {
         let y_mode = *REORDERED_Y_MODE.get(mode_delta)?;
         return Some(YModeEscapeResult {
             y_mode,
             angle_delta_y: 0,
+            intra_joint_mode,
         });
     }
     let mode_delta = mode_delta - NON_DIRECTIONAL_MODES_COUNT;
@@ -385,6 +397,7 @@ pub(crate) fn reconstruct_y_mode_offset_escape_top_left(
     Some(YModeEscapeResult {
         y_mode,
         angle_delta_y,
+        intra_joint_mode,
     })
 }
 

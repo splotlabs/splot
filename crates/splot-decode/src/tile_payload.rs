@@ -22,6 +22,7 @@ mod coeff_state;
 mod general_intra_block;
 mod general_intra_residual;
 mod input;
+mod intra_joint_modes;
 mod mi_size_state;
 mod partition;
 mod partition_allowed;
@@ -62,6 +63,7 @@ pub(crate) use input::{
     FrameCandidateTileBoundaryInput, FrameCandidateTileFacts, FrameCandidateTileMalformed,
     TileGroupPositionFacts, plan_derived_tile_payload_boundary,
 };
+pub(crate) use intra_joint_modes::TileIntraJointModeState;
 pub(crate) use partition_traversal::TilePartitionTraversalError;
 pub(crate) use partition_traversal::{DecodeBlockFrontier, GeneralIntraTreeWalkError};
 pub(crate) use runtime_frontier::{
