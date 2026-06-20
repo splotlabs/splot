@@ -51,6 +51,7 @@ fields; the round-trips prove it serializes correctly.
   - `crates/splot-core/src/headers/frame/info.rs` (the `new_minimal_intra` constructor, one field test, the promoted `base_inter`)
   - `crates/splot-core/src/write/frame_header_core_tests.rs` (promoted `base_inter`)
   - `crates/splot-core/src/write/tile_group_obu_tests.rs` (promoted `base_inter`)
+  - `xtask/src/source_lines.rs` (info.rs allowance bump +41 for the constructor + test)
   - `docs/IMPLEMENTATION-MATRIX.toml`
   - `docs/FEATURE-STATUS.md`
   - `docs/SPEC-COVERAGE.md`
