@@ -5420,6 +5420,39 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-GENERAL-INTRA-CODED-CHROMA-V-DC"
+name = "Decodable coded-V intra frame"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20.7.27", "8.2.5", "7.13.2", "8.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/general_intra_trace.rs"
+openspec_change = "encoder-general-intra-coded-chroma-v-dc"
+tracking_issue = ""
+owner = "encoder"
+risk = "low"
+notes = "Decodable-tile arc: COMPLETES the per-plane coded-residual set (luma + U + V). emit_minimal_intra_coded_chroma_v_ivf() (splot-encode public) emits one 64x64 frame whose V block has a single negative coded DC (luma + U skipped) -> `splot decode` -> flat luma 128 (skip) + flat U 128 (skip) + flat V 127 (dequantized V residual) (cross-crate oracle). Adds general_intra_32x32_chroma_v_dc_coded_tokens in general_coded.rs: VTxbSkip (the dedicated TileVTxbSkipCdf, NOT the U/luma TxbSkip) coded at the NEUTRAL ctx 0 (EobU==0 since U is skipped) + eob_pt_1024 chroma eob_ctx 2 + coeff_base_lf_eob_uv - REUSES the chroma eob_pt_1024 + coeff_base_lf_eob_uv rows from the U brick + the existing neutral v_txb_skip row (NO new CDF rows). Composer: luma skip + U skip + V coded + V DC sign_bit \u00a78.2.5 bypass. Magnitude 4 (base tier). decode_check=done (splot-decode); avm_diff=not-applicable. Encoder-mission-DRIVEN (owner=encoder). HONEST SCOPE: completes per-plane coded-DC; NOT a general encoder, NOT receive_packet, NOT Baseline Encoder Profile v1."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-cli/tests/encode_decode_roundtrip.rs::encoder_coded_chroma_v_ivf_decodes_to_a_flat_127_v_frame", "crates/splot-encode/src/general_intra_trace.rs::tests::general_coded_chroma_v_block_trace_roundtrips_through_one_coder"]
+commands = ["cargo test -p splot-cli --test encode_decode_roundtrip --locked", "cargo test -p splot-encode chroma_v --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-RECON-DEPENDENCY"
 name = "Encoder reconstruction dependency boundary"
 category = "encoder"

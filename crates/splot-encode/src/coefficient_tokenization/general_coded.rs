@@ -137,3 +137,60 @@ pub(crate) fn general_intra_32x32_chroma_u_dc_coded_tokens(
     });
     Ok(tokens)
 }
+
+/// The § 8.3.2 neutral V `txb_skip` context: `0`. For a V-only-coded block the chroma block
+/// equals its transform and the U plane is skipped (`EobU == 0`), so neither the
+/// chroma-larger-than-tx (`+3`) nor the `EobU != 0` (`+6`) term applies.
+const V_TXB_SKIP_CTX_NEUTRAL: usize = 0;
+
+/// Returns the three AV2 § 5.20.7.27 coded chroma V DC CDF tokens for the **general** intra
+/// decode path's `TX_32X32` chroma transform: a single nonzero DC of unsigned `magnitude`
+/// (`1..=MAX_BASE_EOB_MAGNITUDE`, the base tier — no `coeff_br`/golomb).
+///
+/// Like [`general_intra_32x32_chroma_u_dc_coded_tokens`] but the `txb_skip` uses the dedicated
+/// `TileVTxbSkipCdf` (`VTxbSkip`) at the neutral context `0` (the U plane is skipped, so
+/// `EobU == 0`); the `eob_pt_1024` and `coeff_base_lf_eob_uv` rows are shared with U. The caller
+/// appends the V DC `sign_bit` § 8.2.5 bypass literal.
+pub(crate) fn general_intra_32x32_chroma_v_dc_coded_tokens(
+    coeff_cdf_q_ctx: usize,
+    magnitude: u32,
+) -> Result<Vec<CoefficientEntropyToken>> {
+    if !(1..=MAX_BASE_EOB_MAGNITUDE).contains(&magnitude) {
+        return Err(Error::CoefficientTokenizationUnsupportedChromaMagnitude {
+            plane: PlaneId::V,
+            magnitude,
+            max_magnitude: MAX_BASE_EOB_MAGNITUDE,
+        });
+    }
+    let mut tokens = Vec::new();
+    tokens
+        .try_reserve_exact(3)
+        .map_err(|_| Error::CoefficientTokenizationAllocationFailed {
+            context: "general coded chroma V DC coefficient tokens",
+        })?;
+    tokens.push(CoefficientEntropyToken {
+        syntax: CoefficientTokenSyntax::AllZero,
+        selector: CoefficientCdfRowSelector::VTxbSkip {
+            coeff_cdf_q_ctx,
+            ctx: V_TXB_SKIP_CTX_NEUTRAL,
+        },
+        symbol: false as u8,
+    });
+    tokens.push(CoefficientEntropyToken {
+        syntax: CoefficientTokenSyntax::EobPt1024,
+        selector: CoefficientCdfRowSelector::EobPt1024 {
+            coeff_cdf_q_ctx,
+            eob_ctx: EOB_CTX_CHROMA,
+        },
+        symbol: 0,
+    });
+    tokens.push(CoefficientEntropyToken {
+        syntax: CoefficientTokenSyntax::CoeffBaseEob,
+        selector: CoefficientCdfRowSelector::CoeffBaseLfEobUv {
+            coeff_cdf_q_ctx,
+            ctx: COEFF_BASE_LF_EOB_CTX_DC,
+        },
+        symbol: (magnitude - 1) as u8,
+    });
+    Ok(tokens)
+}
