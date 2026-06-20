@@ -21,12 +21,14 @@ use crate::headers::frame::{
     CoreSeqSegView, CoreSeqTileView, CoreSeqView, FrameHeaderCore, FrameReferenceStateView,
     init_core_from_prefix, parse_core_body, parse_frame_header_prefix,
 };
-use crate::headers::sequence::ChromaFormatIdc;
+use crate::headers::sequence::{ChromaFormatIdc, SequenceHeader, parse_sequence_header};
 use crate::headers::tile_group::{TileGroupFraming, TileGroupStructure};
-use crate::obu::ObuHeader;
+use crate::obu::{ObuHeader, ParsedObu};
 use crate::span::ByteOffset;
 use crate::types::{EmbeddedLayerId, ExtendedLayerId, GLOBAL_XLAYER_ID, ObuType, TemporalLayerId};
-use crate::write::{BitWriter, WriteError, WriteResult, write_annexb_obu, write_tile_group_obu};
+use crate::write::{
+    BitWriter, WriteError, WriteResult, write_annexb_obu, write_obu_payload, write_tile_group_obu,
+};
 
 impl CoreSeqInterView {
     /// Builds the all-disabled § 5.4.6 inter-config view a minimal intra sequence
@@ -451,6 +453,86 @@ pub fn encode_temporal_delimiter_obu() -> Result<Vec<u8>, WriteError> {
     Ok(writer.into_bytes())
 }
 
+/// The canonical 64x64 single-picture intra `OBU_SEQUENCE_HEADER` **payload** (§ 5.4,
+/// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-4`): the 11 payload bytes of the
+/// `OBU_SEQUENCE_HEADER` in the committed `syn-cos-intra-64x64-q180` conformance vector — the
+/// `sequence_header()` body **plus** the § 5.2.1 / § 5.2.3 OBU tail (`obu_extension_flag = 0`
+/// then `trailing_bits()`). It is tier-level — independent of the frame's `base_q_idx` and
+/// coded tile content — so it is shared by every frame of the tier.
+const MINIMAL_INTRA_SEQUENCE_HEADER_PAYLOAD: [u8; 11] = [
+    0x82, 0x0a, 0x55, 0xff, 0xf0, 0xc0, 0x04, 0xd1, 0x16, 0xe0, 0x22,
+];
+
+/// Error assembling the canonical minimal-intra sequence header
+/// ([`build_minimal_intra_sequence_header`] / [`encode_minimal_intra_sequence_header_obu`]):
+/// the canonical body either failed to parse or failed to serialize. Both arms are
+/// unreachable for the fixed canonical body; they exist only to honor the no-panic policy.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum MinimalIntraSequenceHeaderError {
+    /// The canonical body could not be parsed into a [`SequenceHeader`].
+    #[error("canonical sequence-header body did not parse: {0}")]
+    Parse(#[from] crate::error::Error),
+    /// The sequence-header OBU could not be serialized.
+    #[error("sequence-header OBU serialization failed: {0}")]
+    Write(#[from] WriteError),
+}
+
+/// Assembles the canonical minimal-intra [`SequenceHeader`] for the frozen 64x64
+/// single-picture tier by **parsing** the committed conformance-vector payload (the
+/// `MINIMAL_INTRA_SEQUENCE_HEADER_PAYLOAD` const) — the parse-backed model is conformant by
+/// construction (it is the exact sequence header the decoder's minimal tier accepts).
+pub fn build_minimal_intra_sequence_header()
+-> Result<SequenceHeader, MinimalIntraSequenceHeaderError> {
+    let mut reader = BitReader::new(&MINIMAL_INTRA_SEQUENCE_HEADER_PAYLOAD, ByteOffset::new(0));
+    Ok(parse_sequence_header(&mut reader)?)
+}
+
+/// Serializes the canonical minimal-intra `OBU_SEQUENCE_HEADER` **payload** — the
+/// `sequence_header()` body plus the § 5.2.1 / § 5.2.3 OBU tail (`obu_extension_flag = 0`
+/// then `trailing_bits()`, since the sequence header is an extensible OBU). This is what
+/// [`write_obu_payload`] emits (`write_sequence_header` writes the body alone, without the
+/// tail), so the bytes match the committed conformance vector's sequence-header payload.
+fn minimal_intra_sequence_header_payload() -> Result<Vec<u8>, MinimalIntraSequenceHeaderError> {
+    let seq = build_minimal_intra_sequence_header()?;
+    let mut writer = BitWriter::new();
+    write_obu_payload(
+        &mut writer,
+        &ParsedObu::SequenceHeader(Box::new(seq)),
+        ObuType::SequenceHeader.is_extensible_obu(),
+        &[],
+    )?;
+    Ok(writer.into_bytes())
+}
+
+/// Serializes the canonical minimal-intra `OBU_SEQUENCE_HEADER` (§ 5.4) in Annex B framing
+/// (§ B.2, `docs/spec/av2/1.0.0/annex-b-length-delimited-bitstream-format.md#s-annex-b-2`):
+/// a `leb128` size prefix, the no-extension § 5.2.2 `OBU_SEQUENCE_HEADER` header (inferred
+/// layer ids `0`), then the body-plus-tail payload of
+/// [`build_minimal_intra_sequence_header`]. The result reproduces the committed conformance
+/// vector's sequence-header OBU byte-for-byte.
+///
+/// This is the second of the two OBUs the decoder's minimal-tier IVF frame requires (after
+/// the temporal delimiter, before the frame OBU). Assembling the three into a temporal unit
+/// and an IVF stream — with the frame OBU made consistent with this sequence header — is a
+/// later brick.
+pub fn encode_minimal_intra_sequence_header_obu() -> Result<Vec<u8>, MinimalIntraSequenceHeaderError>
+{
+    let payload = minimal_intra_sequence_header_payload()?;
+    // § 5.2.2: the no-extension OBU_SEQUENCE_HEADER header (inferred layer ids 0).
+    let header = ObuHeader {
+        has_header_extension: false,
+        obu_type: ObuType::SequenceHeader,
+        temporal_layer_id: TemporalLayerId::from_bits(0),
+        embedded_layer_id: EmbeddedLayerId::from_bits(0),
+        extended_layer_id: ExtendedLayerId::from_bits(0),
+        header_size_bytes: 1,
+    };
+    let mut writer = BitWriter::new();
+    write_annexb_obu(&mut writer, &header, &payload)?;
+    Ok(writer.into_bytes())
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -655,5 +737,34 @@ mod tests {
         assert_eq!(parsed.obus[0].header.obu_type, ObuType::TemporalDelimiter);
         assert!(!parsed.obus[0].header.has_header_extension);
         assert!(parsed.obus[0].payload.is_empty());
+    }
+
+    #[test]
+    fn minimal_intra_sequence_header_payload_round_trips() {
+        // The canonical payload parses (the body prefix), and the byte-exact body+tail writer
+        // reproduces it (so the OBU payload matches the committed conformance vector's payload).
+        let payload = minimal_intra_sequence_header_payload().unwrap();
+        assert_eq!(payload, MINIMAL_INTRA_SEQUENCE_HEADER_PAYLOAD);
+    }
+
+    #[test]
+    fn encode_minimal_intra_sequence_header_obu_matches_conformance_vector() {
+        let bytes = encode_minimal_intra_sequence_header_obu().unwrap();
+        // Byte-exact to the OBU_SEQUENCE_HEADER in the committed syn-cos-intra-64x64-q180
+        // vector: leb128(12) + obu_header 0x04 + the 11-byte payload.
+        let mut expected = vec![0x0c, 0x04];
+        expected.extend_from_slice(&MINIMAL_INTRA_SEQUENCE_HEADER_PAYLOAD);
+        assert_eq!(bytes, expected);
+
+        // Reparses as exactly one OBU_SEQUENCE_HEADER carrying the body.
+        let parsed = parse_annex_b_obus_partial(&bytes);
+        assert!(parsed.error.is_none());
+        assert_eq!(parsed.obus.len(), 1);
+        assert_eq!(parsed.obus[0].header.obu_type, ObuType::SequenceHeader);
+        assert!(!parsed.obus[0].header.has_header_extension);
+        assert_eq!(
+            parsed.obus[0].payload,
+            &MINIMAL_INTRA_SEQUENCE_HEADER_PAYLOAD[..]
+        );
     }
 }
