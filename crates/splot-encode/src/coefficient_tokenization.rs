@@ -52,6 +52,11 @@ mod transform_type;
 #[allow(unused_imports)]
 pub(crate) use transform_type::{intra_tx_type_set1_token, sec_tx_type_intra_token};
 
+mod general_coded;
+pub(crate) use general_coded::{
+    general_intra_32x32_chroma_u_dc_coded_tokens, general_intra_64x64_luma_dc_coded_tokens,
+};
+
 const DCT_DCT_4X4_WIDTH: usize = 4;
 const DCT_DCT_4X4_HEIGHT: usize = 4;
 const DCT_DCT_4X4_COEFF_COUNT: usize = DCT_DCT_4X4_WIDTH * DCT_DCT_4X4_HEIGHT;
@@ -280,72 +285,6 @@ pub(crate) fn luma_dc_coded_tokens(
         selector: CoefficientCdfRowSelector::CoeffBaseLfEob {
             coeff_cdf_q_ctx,
             tx_size: TX_SIZE_4X4_CTX,
-            ctx: COEFF_BASE_LF_EOB_CTX_DC,
-        },
-        symbol: magnitude.min(LF_NUM_BASE_LEVELS + 1).saturating_sub(1) as u8,
-    });
-    if needs_br {
-        tokens.push(CoefficientEntropyToken {
-            syntax: CoefficientTokenSyntax::CoeffBr,
-            selector: CoefficientCdfRowSelector::CoeffBrLf {
-                coeff_cdf_q_ctx,
-                ctx: COEFF_BR_LF_CTX_DC,
-            },
-            symbol: magnitude.saturating_sub(LF_NUM_BASE_LEVELS + 1) as u8,
-        });
-    }
-    tokens.push(luma_dc_sign_token(coeff_cdf_q_ctx, negative));
-    Ok(tokens)
-}
-
-/// Returns the ordered AV2 § 5.20.7.27 coded luma DC-only coefficient tokens for the
-/// **general** intra decode path's single `TX_64X64` transform: a single nonzero DC of
-/// unsigned `magnitude` (`1..=MAX_BASE_BR_MAGNITUDE`) and the given sign.
-///
-/// The general-path counterpart of [`luma_dc_coded_tokens`]: identical token sequence
-/// (`txb_skip == 0`, `eob_pt == 0`, `coeff_base_eob`, optional `coeff_br`, `dc_sign`) except
-/// the `txb_skip` and `coeff_base_eob` use the `TX_64X64` `txSzCtx` (`4`) and the EOB symbol
-/// is `eob_pt_1024` (the 1024-position size class) rather than `eob_pt_16`. The `coeff_br`
-/// and `dc_sign` rows are shared with the minimal tier (their selectors carry no `tx_size`).
-pub(crate) fn general_intra_64x64_luma_dc_coded_tokens(
-    coeff_cdf_q_ctx: usize,
-    magnitude: u32,
-    negative: bool,
-) -> Result<Vec<CoefficientEntropyToken>> {
-    debug_assert!(magnitude >= 1, "coded DC magnitude must be nonzero");
-    let needs_br = magnitude > LF_NUM_BASE_LEVELS;
-    let len = if needs_br { 5 } else { 4 };
-    let mut tokens = Vec::new();
-    tokens
-        .try_reserve_exact(len)
-        .map_err(|_| Error::CoefficientTokenizationAllocationFailed {
-            context: "general coded DC coefficient tokens",
-        })?;
-    // luma `txb_skip == 0` (coded) at the TX_64X64 context.
-    tokens.push(CoefficientEntropyToken {
-        syntax: CoefficientTokenSyntax::AllZero,
-        selector: CoefficientCdfRowSelector::TxbSkip {
-            coeff_cdf_q_ctx,
-            plane_type: LUMA_PLANE_TYPE,
-            tx_size: TX_SIZE_64X64_CTX,
-            ctx: TXB_SKIP_CTX_NEUTRAL,
-        },
-        symbol: false as u8,
-    });
-    // `eob_pt == 0` -> a single EOB coefficient at scan position 0 (no `eob_extra`).
-    tokens.push(CoefficientEntropyToken {
-        syntax: CoefficientTokenSyntax::EobPt1024,
-        selector: CoefficientCdfRowSelector::EobPt1024 {
-            coeff_cdf_q_ctx,
-            eob_ctx: EOB_CTX_LUMA_INTRA,
-        },
-        symbol: 0,
-    });
-    tokens.push(CoefficientEntropyToken {
-        syntax: CoefficientTokenSyntax::CoeffBaseEob,
-        selector: CoefficientCdfRowSelector::CoeffBaseLfEob {
-            coeff_cdf_q_ctx,
-            tx_size: TX_SIZE_64X64_CTX,
             ctx: COEFF_BASE_LF_EOB_CTX_DC,
         },
         symbol: magnitude.min(LF_NUM_BASE_LEVELS + 1).saturating_sub(1) as u8,

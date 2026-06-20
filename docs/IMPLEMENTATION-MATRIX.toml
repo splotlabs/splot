@@ -5387,6 +5387,39 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-GENERAL-INTRA-CODED-CHROMA-DC"
+name = "First decodable coded-chroma intra frame"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20.7.27", "8.2.5", "7.13.2", "8.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/general_intra_trace.rs"
+openspec_change = "encoder-general-intra-coded-chroma-dc"
+tracking_issue = ""
+owner = "encoder"
+risk = "low"
+notes = "Decodable-tile arc: the FIRST CODED CHROMA decodable frame - proves CHROMA residual reconstruction, isolated from luma. emit_minimal_intra_coded_chroma_ivf() (splot-encode public) emits one 64x64 all-intra frame whose U block has a single negative coded DC (luma + V skipped) -> `splot decode` -> flat luma 128 (skipped) + flat U 127 (dequantized chroma residual) + flat V 128 (skipped) (cross-crate oracle crates/splot-cli/tests/encode_decode_roundtrip.rs). Adds general_intra_32x32_chroma_u_dc_coded_tokens (TX_32X32 txb_skip ctx6 + eob_pt_1024 at chroma eob_ctx 2 + coeff_base_lf_eob_uv) in a NEW coefficient_tokenization/general_coded submodule (also relocates the merged general luma coded-DC tokens there, keeping coefficient_tokenization.rs under the 1000-line budget: 1049->935). Adds the chroma eob_pt_1024 (eob_ctx 2) BlockSymbolTraceCdfRows row. compose_general_intra_coded_chroma_u_block_trace = do_split + modes + luma SKIP + U coded + U DC sign_bit \u00a78.2.5 bypass literal (chroma signs are bypass NOT CDF dc_sign) + V skip at the EobU!=0 ctx 6. Contexts pinned vs q80 (its U is coded: TxbSkip{tx3,ctx6}=0, EobPt{Pt1024,eob_ctx2}=0, BaseLfEobUv). Magnitude 4 (base tier, no br/golomb). decode_check=done (splot-decode); avm_diff=not-applicable. Encoder-mission-DRIVEN (owner=encoder). HONEST SCOPE: first decodable coded-CHROMA frame - NOT a general encoder, NOT receive_packet, NOT Baseline Encoder Profile v1."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-cli/tests/encode_decode_roundtrip.rs::encoder_coded_chroma_ivf_decodes_to_a_flat_127_u_frame", "crates/splot-encode/src/general_intra_trace.rs::tests::general_coded_chroma_block_trace_roundtrips_through_one_coder"]
+commands = ["cargo test -p splot-cli --test encode_decode_roundtrip --locked", "cargo test -p splot-encode chroma --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-RECON-DEPENDENCY"
 name = "Encoder reconstruction dependency boundary"
 category = "encoder"
