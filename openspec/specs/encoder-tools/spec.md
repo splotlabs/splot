@@ -2436,3 +2436,79 @@ constructor, a tile-group OBU, a frame, a packet, or `Context::receive_packet` o
   tile-group OBU, a frame, a packet, or Baseline Encoder Profile v1 output from the
   constructor alone.
 
+### Requirement: Encoder writer-input minimal-intra FrameHeaderCore parse-backed assembler
+
+The encoder writer bridge SHALL provide a public `splot-core` parse-backed assembler for
+the minimal-intra `FrameHeaderCore`, tracked by `ENC-FRAME-HEADER-CORE-ASSEMBLER`, so an
+encoder can build the § 5.18.2 frame-header model that `write_frame_header_core` /
+`write_tile_group_obu` require without a parsed `SequenceHeader` (the model is otherwise
+`#[non_exhaustive]` and produced only by the parser). The assembler SHALL serialize the
+canonical 64x64, `base_q_idx == 255` single-picture `OBU_CLOSED_LOOP_KEY` intra body and
+parse it to an `IntraHeaderComplete` core, so the result is conformant by construction. It
+SHALL be paired with a single-picture `CoreSeqView` constructor whose § 5.4.x inferences
+make the body spec-real. It SHALL NOT produce a tile-group OBU, a frame, a packet, or
+`Context::receive_packet` output.
+
+#### Scenario: The single-picture constructor applies the spec inferences
+
+- **WHEN** `CoreSeqView::new_minimal_intra_single_picture` is called with in-range maxima
+- **THEN** the view SHALL differ from `new_minimal_intra` only by the eight § 5.4.x
+  single-picture inferences (`single_picture_header_flag` top-level + filter + CCSO,
+  § 5.4.6 `OrderHintBits = 0` and `NumRefFrames = 2`, § 5.4.7 `seq_force_screen_content_tools`
+  / `seq_force_integer_mv = 2`, § 5.4.8 `(enable_avg_cdf, avg_cdf_type) = (true, 1)`,
+  § 5.4.1 `monotonic_output_order_flag = true`)
+- **AND** maxima outside `1..=2^16` SHALL yield `None`.
+
+#### Scenario: The assembler produces a conformant intra core
+
+- **WHEN** `build_minimal_intra_clk_core` is called (it builds the matched 64x64
+  single-picture view internally and returns the `(core, seq)` pair)
+- **THEN** the returned `FrameHeaderCore` SHALL have status `IntraHeaderComplete`, frame
+  type Key, frame size 64x64, `order_hint_lsb == 0`, `refresh_frame_flags == 3`, and
+  immediate (not implicit) output
+- **AND** `write_frame_header_core` of that core SHALL re-emit a stream that reparses to an
+  equal core.
+
+#### Scenario: The bridge does not produce packets
+
+- **WHEN** the assembler is available
+- **THEN** `Context::receive_packet` SHALL continue to return no coded packet
+- **AND** no documentation or matrix row SHALL claim a tile-group OBU, a frame, a packet,
+  or Baseline Encoder Profile v1 output from the assembler alone.
+
+### Requirement: Encoder writer-input minimal-intra tile-group OBU payload assembler
+
+The encoder writer bridge SHALL provide a public `splot-core` function, tracked by
+`ENC-MINIMAL-INTRA-TILE-GROUP-OBU`, that assembles a § 5.19 `tile_group_obu()` payload for
+the frozen 64x64 single-picture `OBU_CLOSED_LOOP_KEY` intra tier from caller-supplied coded
+tile bytes, without a parsed `SequenceHeader`. It SHALL build the matched
+`(FrameHeaderCore, CoreSeqView)` via the parse-backed assembler, frame the tile bytes as the
+single (last) tile of the first tile group, and drive `write_tile_group_obu`. The returned
+bytes SHALL be the `tile_group_obu()` payload (embedded frame header + § 5.20.1 tile framing
++ tile data) and SHALL NOT include the § 5.2.2 OBU header / size wrapper. It SHALL NOT claim
+a complete spec-conformant coded tile, a frame, a packet, or `Context::receive_packet`
+output.
+
+#### Scenario: The assembler emits a round-trippable first tile-group payload
+
+- **WHEN** `encode_minimal_intra_clk_tile_group_obu` is called with at least one coded tile
+  byte
+- **THEN** the returned payload SHALL reparse as a first tile group
+  (`is_first_tile_group`, `frame_header_present_flag`, and an embedded frame header all
+  present)
+- **AND** the coded tile bytes SHALL be the byte-aligned trailing region of the payload (the
+  lone last tile reads no size field).
+
+#### Scenario: An empty tile is rejected
+
+- **WHEN** `encode_minimal_intra_clk_tile_group_obu` is called with empty `tile_data`
+- **THEN** it SHALL return a typed `Write` error (the § 8.2.2 zero-size-tile defect), not
+  panic.
+
+#### Scenario: The bridge does not produce packets
+
+- **WHEN** the assembler is available
+- **THEN** `Context::receive_packet` SHALL continue to return no coded packet
+- **AND** no documentation or matrix row SHALL claim an OBU header/size wrapper, a complete
+  coded tile, a frame, a packet, or Baseline Encoder Profile v1 output from it.
+

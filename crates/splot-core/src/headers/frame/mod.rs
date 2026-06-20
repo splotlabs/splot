@@ -47,6 +47,10 @@ mod tail;
 mod tiling;
 
 pub use config::IntrabcParams;
+pub use encoder_input::{
+    MinimalIntraCoreError, MinimalIntraTileGroupError, build_minimal_intra_clk_core,
+    encode_minimal_intra_clk_tile_group_obu,
+};
 pub use filtering::{
     CdefParams, CdefStrengthSet, CoreSeqFilterView, DeblockingFilterParams, GdfGeometry, GdfParams,
     InterpolationFilter, MfhDeblockingView, parse_cdef_params, parse_deblocking_filter_params,
@@ -66,10 +70,11 @@ pub use info::{
     FrameHeaderParseStatus, FrameReferenceStateView, FrameType, MfhFrameView, SefTrailingBits,
     parse_frame_header_core,
 };
-// Test-only: the `crate::write` frame-header-core writer round-trips against the §5.18.2 core
-// parser body. `parse_frame_header_core` needs a full `SequenceHeader`; these let the sibling
-// writer tests run the body against a directly built `CoreSeqView` / `MfhFrameView`.
-#[cfg(test)]
+// Lower-level §5.18.2 core-parser entry points (the full `parse_frame_header_core` needs a
+// `SequenceHeader`; these run the activation prefix + body against a directly built
+// `CoreSeqView` / `MfhFrameView`). Used by the sibling `crate::write` writer round-trip tests
+// and by the encoder writer-input bridge ([`encoder_input::build_minimal_intra_clk_core`]),
+// which parse-backs a conformant minimal-intra core.
 pub(crate) use info::{init_core_from_prefix, parse_core_body};
 pub use inter::{InterControl, InterStop, MvPrecision, TipFrameMode};
 pub use quant::{

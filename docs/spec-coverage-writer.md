@@ -4,13 +4,13 @@ Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask writer-coverage
 
 The AV2 bitstream **writer** (`splot-core::write`) surface: one row per writable `splot-core` syntax feature, plus every other `splot-core` feature with a landed writer, with its `write` maturity (writers in other crates, e.g. the `splot-recon` Y4M output, are out of scope). The writer is the inverse of the parser — `parse(write(parse(x))) == parse(x)` — byte-exact on the canonical subset and semantic (round-trip on the parsed model) for the canonicalizing writers (e.g. film grain and quantizer matrix, whose model is lossy versus the wire). The canonical status source is [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); each row's per-writer round-trip details live in its matrix notes, and the full per-feature ledger is [FEATURE-STATUS.md](./FEATURE-STATUS.md).
 
-Matrix version 1. Last reviewed 2026-06-15. 92 writable feature(s).
+Matrix version 1. Last reviewed 2026-06-15. 94 writable feature(s).
 
 `write` legend: `done` written and round-trip-proven, `partial` in progress, `todo` not written yet, `pending` waiting on external proof, `blocked` blocked, `exp` experimental.
 
 | Write status | Features |
 |---|---:|
-| `done` | 79 |
+| `done` | 81 |
 | `partial` | 13 |
 
 | Section | Feature | Name | Write | Module |
@@ -91,6 +91,7 @@ Matrix version 1. Last reviewed 2026-06-15. 92 writable feature(s).
 | 5.18, 6.17 | `AV2-5.18-FRAME-HEADER` | Frame header syntax | partial | `crates/splot-core/src/headers/frame/mod.rs` |
 | 5.18.1, 6.17 | `AV2-5.18.1-FRAME-HEADER-GENERAL` | Frame header general syntax | partial | `crates/splot-core/src/headers/frame/mod.rs` |
 | 5.18.2, 6.17.2 | `AV2-5.18.2-FRAME-HEADER-INFO` | Frame header info syntax | partial | `crates/splot-core/src/headers/frame/info.rs` |
+| 5.18.2, 5.4.1, 5.4.6, 5.4.7, 5.4.8 | `ENC-FRAME-HEADER-CORE-ASSEMBLER` | Encoder writer-input minimal-intra FrameHeaderCore parse-backed assembler | done | `crates/splot-core/src/headers/frame/encoder_input.rs` |
 | 5.18.3 | `AV2-5.18.3-FRAME-CONFIGURATION` | Frame configuration syntax | partial | `crates/splot-core/src/headers/frame/config.rs` |
 | 5.18.4, 6.17.4.1 | `AV2-5.18.4-FRAME-SIZE` | Frame size syntax | partial | `crates/splot-core/src/headers/frame/size.rs` |
 | 5.18.5, 5.18.5.2, 6.17.5.2 | `AV2-5.18.5-FILTERING` | Frame filtering syntax | partial | `crates/splot-core/src/headers/frame/filtering.rs` |
@@ -101,6 +102,7 @@ Matrix version 1. Last reviewed 2026-06-15. 92 writable feature(s).
 | 5.18.9, 6.17 | `AV2-5.18.9-GLOBAL-MOTION` | Frame global motion syntax | partial | `crates/splot-core/src/headers/frame/global_motion.rs` |
 | 5.18.10, 6.17.10.1 | `AV2-5.18.10-FILM-GRAIN-STRUCTURES` | Frame film grain structures syntax | done | `crates/splot-core/src/headers/frame/tail.rs` |
 | 5.19, 5.20, 6.18, 6.19 | `AV2-5.19-TILE-GROUP` | Tile group OBU syntax | partial | `crates/splot-core/src/headers/tile_group.rs` |
+| 5.19, 5.20.1 | `ENC-MINIMAL-INTRA-TILE-GROUP-OBU` | Encoder writer-input minimal-intra tile-group OBU payload assembler | done | `crates/splot-core/src/headers/frame/encoder_input.rs` |
 | 5.19 | `ENC-WRITER-INPUT-STRUCTURE` | Encoder writer-input single-tile structure constructor | done | `crates/splot-core/src/headers/tile_group.rs` |
 | 5.20, 6.19 | `AV2-5.20-TILE-GROUP-PAYLOAD` | Tile group payload syntax | partial | `crates/splot-core/src/headers/tile_group.rs` |
 | 5.20, 6.19 | `ENC-WRITER-INPUT-FRAMING` | Encoder writer-input single-tile framing constructor | done | `crates/splot-core/src/headers/tile_group.rs` |

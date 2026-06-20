@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 329 feature(s); 276 cite a spec section.
+Matrix version 1. Last reviewed 2026-06-15. 331 feature(s); 278 cite a spec section.
 
 One row per (spec section, feature) pair, in spec order; a feature citing both a syntax and a semantics section appears under both. The canonical status source is [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); the full per-feature ledger is [FEATURE-STATUS.md](./FEATURE-STATUS.md).
 
@@ -91,17 +91,21 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.4](./spec/av2/1.0.0/05-syntax-structures.md#s-5-4) | Sequence header OBU syntax | `AV2-5.4-SEQUENCE-HEADER` | ✅ | 🟡 | 🟡 | 🟡 | 1 |
 | [§ 5.4](./spec/av2/1.0.0/05-syntax-structures.md#s-5-4) | Sequence header OBU syntax | `ENC-MINIMAL-HEADER-PLAN` | ✅ | — | — | ✅ | — |
 | [§ 5.4.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-4-1) | General sequence header OBU syntax | `AV2-5.4.1-SEQUENCE-HEADER-GENERAL` | ✅ | ✅ | ✅ | ✅ | 6 |
+| [§ 5.4.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-4-1) | General sequence header OBU syntax | `ENC-FRAME-HEADER-CORE-ASSEMBLER` | ✅ | — | — | ✅ | — |
 | [§ 5.4.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-4-1) | General sequence header OBU syntax | `ENC-WRITER-INPUT-SEQ-VIEW` | ✅ | — | — | ✅ | — |
 | [§ 5.4.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-4-2) | Sequence tile config syntax | `AV2-5.4.2-SEQUENCE-TILE-CONFIG` | ✅ | ✅ | ✅ | ✅ | 4 |
 | [§ 5.4.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-4-3) | Sequence partition config syntax | `AV2-5.4.3-SEQUENCE-PARTITION-CONFIG` | ✅ | ✅ | 🟡 | ✅ | — |
 | [§ 5.4.4](./spec/av2/1.0.0/05-syntax-structures.md#s-5-4-4) | Sequence segment config syntax | `AV2-5.4.4-SEQUENCE-SEGMENT-CONFIG` | ✅ | ✅ | 🟡 | ✅ | — |
 | [§ 5.4.5](./spec/av2/1.0.0/05-syntax-structures.md#s-5-4-5) | Sequence intra config syntax | `AV2-5.4.5-SEQUENCE-INTRA-CONFIG` | ✅ | ✅ | 🟡 | ✅ | — |
 | [§ 5.4.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-4-6) | Sequence inter config syntax | `AV2-5.4.6-SEQUENCE-INTER-CONFIG` | ✅ | ✅ | ✅ | ✅ | 1 |
+| [§ 5.4.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-4-6) | Sequence inter config syntax | `ENC-FRAME-HEADER-CORE-ASSEMBLER` | ✅ | — | — | ✅ | — |
 | [§ 5.4.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-4-6) | Sequence inter config syntax | `ENC-WRITER-INPUT-INTER-VIEW` | ✅ | — | — | ✅ | — |
 | [§ 5.4.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-4-6) | Sequence inter config syntax | `RECON-REFERENCE-FRAME-STORE` | ✅ | — | — | ✅ | — |
 | [§ 5.4.7](./spec/av2/1.0.0/05-syntax-structures.md#s-5-4-7) | Sequence screen content config syntax | `AV2-5.4.7-SEQUENCE-SCC-CONFIG` | ✅ | ✅ | 🟡 | ✅ | — |
+| [§ 5.4.7](./spec/av2/1.0.0/05-syntax-structures.md#s-5-4-7) | Sequence screen content config syntax | `ENC-FRAME-HEADER-CORE-ASSEMBLER` | ✅ | — | — | ✅ | — |
 | [§ 5.4.8](./spec/av2/1.0.0/05-syntax-structures.md#s-5-4-8) | Sequence transform quant entropy config syntax | `AV2-5.4.8-SEQUENCE-TQ-ENTROPY-CONFIG` | ✅ | ✅ | 🟡 | ✅ | — |
 | [§ 5.4.8](./spec/av2/1.0.0/05-syntax-structures.md#s-5-4-8) | Sequence transform quant entropy config syntax | `DECODE-COEFF-FRAME-FACTS-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 5.4.8](./spec/av2/1.0.0/05-syntax-structures.md#s-5-4-8) | Sequence transform quant entropy config syntax | `ENC-FRAME-HEADER-CORE-ASSEMBLER` | ✅ | — | — | ✅ | — |
 | [§ 5.4.9](./spec/av2/1.0.0/05-syntax-structures.md#s-5-4-9) | Segment information syntax | `AV2-5.4.9-SEGMENT-INFO` | ✅ | ✅ | — | ✅ | — |
 | [§ 5.4.10](./spec/av2/1.0.0/05-syntax-structures.md#s-5-4-10) | Sequence filter config syntax | `AV2-5.4.10-SEQUENCE-FILTER-CONFIG` | ✅ | ✅ | 🟡 | ✅ | — |
 | [§ 5.4.11](./spec/av2/1.0.0/05-syntax-structures.md#s-5-4-11) | User defined QM syntax | `AV2-5.4.11-USER-QM` | ✅ | ✅ | — | ✅ | — |
@@ -170,6 +174,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.18.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2) | Frame header info syntax | `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS` | ✅ | 🟡 | ✅ | ✅ | 3 |
 | [§ 5.18.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2) | Frame header info syntax | `DECODE-TILE-PAYLOAD-INPUT-DERIVATION` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 5.18.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2) | Frame header info syntax | `DECODE-Y4M-RUNTIME-OUTPUT` | ✅ | 🟡 | ✅ | ✅ | 4 |
+| [§ 5.18.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2) | Frame header info syntax | `ENC-FRAME-HEADER-CORE-ASSEMBLER` | ✅ | — | — | ✅ | — |
 | [§ 5.18.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2) | Frame header info syntax | `RECON-REFERENCE-FRAME-STORE` | ✅ | — | — | ✅ | — |
 | [§ 5.18.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-3) | Frame configuration structures | `AV2-5.18.3-FRAME-CONFIGURATION` | ✅ | 🟡 | — | ✅ | — |
 | [§ 5.18.4](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-4) | Frame size structures | `AV2-5.18.4-FRAME-SIZE` | ✅ | 🟡 | 🟡 | ✅ | 2 |
@@ -201,6 +206,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.19](./spec/av2/1.0.0/05-syntax-structures.md#s-5-19) | Tile group OBU syntax | `DECODE-TILE-PAYLOAD-INPUT-DERIVATION` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 5.19](./spec/av2/1.0.0/05-syntax-structures.md#s-5-19) | Tile group OBU syntax | `DECODE-Y4M-RUNTIME-OUTPUT` | ✅ | 🟡 | ✅ | ✅ | 4 |
 | [§ 5.19](./spec/av2/1.0.0/05-syntax-structures.md#s-5-19) | Tile group OBU syntax | `ENC-MINIMAL-HEADER-PLAN` | ✅ | — | — | ✅ | — |
+| [§ 5.19](./spec/av2/1.0.0/05-syntax-structures.md#s-5-19) | Tile group OBU syntax | `ENC-MINIMAL-INTRA-TILE-GROUP-OBU` | ✅ | — | — | ✅ | — |
 | [§ 5.19](./spec/av2/1.0.0/05-syntax-structures.md#s-5-19) | Tile group OBU syntax | `ENC-WRITER-INPUT-STRUCTURE` | ✅ | — | — | ✅ | — |
 | [§ 5.20](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20) | Tile group payload syntax | `AV2-5.19-TILE-GROUP` | ✅ | 🟡 | 🟡 | ✅ | 7 |
 | [§ 5.20](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20) | Tile group payload syntax | `AV2-5.20-TILE-GROUP-PAYLOAD` | ✅ | 🟡 | 🟡 | ✅ | 3 |
@@ -221,6 +227,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.20.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-1) | General tile group payload syntax | `DECODE-Y4M-RUNTIME-OUTPUT` | ✅ | 🟡 | ✅ | ✅ | 4 |
 | [§ 5.20.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-1) | General tile group payload syntax | `ENC-BLOCK-SYMBOL-ENCODE` | ✅ | — | — | ✅ | — |
 | [§ 5.20.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-1) | General tile group payload syntax | `ENC-MINIMAL-HEADER-PLAN` | ✅ | — | — | ✅ | — |
+| [§ 5.20.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-1) | General tile group payload syntax | `ENC-MINIMAL-INTRA-TILE-GROUP-OBU` | ✅ | — | — | ✅ | — |
 | [§ 5.20.2.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-2-1) | Decode tile syntax | `CONF-TILE-PAYLOAD-DECODE-FUZZ` | ✅ | — | — | ✅ | 2 |
 | [§ 5.20.2.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-2-1) | Decode tile syntax | `DECODE-CONTEXT-TILE-PAYLOAD-HANDOFF` | ✅ | — | — | ✅ | 2 |
 | [§ 5.20.2.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-2-1) | Decode tile syntax | `DECODE-TILE-CDF-SAVE-LIFECYCLE-BOUNDARY` | ✅ | ✅ | — | ✅ | 2 |
