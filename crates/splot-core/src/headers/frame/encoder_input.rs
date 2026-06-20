@@ -14,12 +14,17 @@
 //!
 //! [`SequenceHeader`]: crate::headers::sequence::SequenceHeader
 
+use crate::bitio::BitReader;
 use crate::headers::frame::size::ceil_log2;
 use crate::headers::frame::{
     CoreSeqCcsoView, CoreSeqFilterView, CoreSeqInterView, CoreSeqQuantView, CoreSeqRestorationView,
-    CoreSeqSegView, CoreSeqTileView, CoreSeqView,
+    CoreSeqSegView, CoreSeqTileView, CoreSeqView, FrameHeaderCore, FrameReferenceStateView,
+    init_core_from_prefix, parse_core_body, parse_frame_header_prefix,
 };
 use crate::headers::sequence::ChromaFormatIdc;
+use crate::span::ByteOffset;
+use crate::types::ObuType;
+use crate::write::{BitWriter, WriteError, WriteResult};
 
 impl CoreSeqInterView {
     /// Builds the all-disabled § 5.4.6 inter-config view a minimal intra sequence
@@ -174,12 +179,163 @@ impl CoreSeqView {
             film_grain_params_present: Some(false),
         })
     }
+
+    /// Builds the **single-picture** (`single_picture_header_flag == true`) variant of
+    /// [`CoreSeqView::new_minimal_intra`]: the § 5.4.1
+    /// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-4-1`) sequence-derived view a
+    /// single-picture minimal-intra frame needs, the input to
+    /// [`build_minimal_intra_clk_core`] / the frozen-tier intra frame-header writer.
+    ///
+    /// It is the non-single view ([`CoreSeqView::new_minimal_intra`]) with exactly the eight
+    /// § 5.4.x inferences a single-picture sequence header forces, which a non-single header
+    /// signals differently (every other tool stays disabled, a legal single-picture choice):
+    ///
+    /// - `single_picture_header_flag` (top-level + § 5.18.10 filter + CCSO mirrors): `true`.
+    /// - § 5.4.6 `OrderHintBits = 0` (`#s-5-4-6` line 832): the frame `order_hint` is
+    ///   `f(OrderHintBits)` = `f(0)`, i.e. **omitted** from the frame header.
+    /// - § 5.4.6 `NumRefFrames = 2` (`#s-5-4-6` line 870).
+    /// - § 5.4.7 `seq_force_screen_content_tools = SELECT_SCREEN_CONTENT_TOOLS = 2`
+    ///   and `seq_force_integer_mv = SELECT_INTEGER_MV = 2` (`#s-5-4-7` lines 1074/1076):
+    ///   the frame reads an explicit `allow_screen_content_tools` bit.
+    /// - § 5.4.8 `(enable_avg_cdf, avg_cdf_type) = (true, 1)` (`#s-5-4-8`).
+    /// - § 5.4.1 `monotonic_output_order_flag = true` (the single-picture general branch).
+    ///
+    /// Returns `None` on the same out-of-range maxima as [`CoreSeqView::new_minimal_intra`].
+    #[must_use]
+    pub fn new_minimal_intra_single_picture(
+        max_frame_width: u32,
+        max_frame_height: u32,
+    ) -> Option<Self> {
+        let mut view = Self::new_minimal_intra(max_frame_width, max_frame_height)?;
+        // §5.4.1: the single_picture_header_flag mirror (top-level + filter + CCSO).
+        view.single_picture_header_flag = true;
+        view.filter.single_picture_header_flag = true;
+        view.ccso.single_picture_header_flag = true;
+        // §5.4.6: OrderHintBits = 0 (frame order_hint becomes f(0) -> omitted); NumRefFrames = 2.
+        view.order_hint_bits = 0;
+        view.num_ref_frames = 2;
+        // §5.4.7: SELECT_SCREEN_CONTENT_TOOLS / SELECT_INTEGER_MV (both the sentinel value 2).
+        view.seq_force_screen_content_tools = 2;
+        view.seq_force_integer_mv = 2;
+        // §5.4.8: single-picture sequence_tq_entropy_config infers (enable_avg_cdf, avg_cdf_type).
+        view.tile.enable_avg_cdf = true;
+        view.tile.avg_cdf_type = 1;
+        // §5.4.1: the single-picture general branch infers monotonic_output_order_flag = true.
+        view.monotonic_output_order_flag = true;
+        Some(view)
+    }
+}
+
+/// Error assembling the canonical minimal-intra CLK [`FrameHeaderCore`]
+/// ([`build_minimal_intra_clk_core`]). Every arm is unreachable for the fixed canonical
+/// 64x64 frozen tier; they exist only to honor the no-panic library policy (no
+/// `unwrap`/`expect` on the internal sequence-view / `BitWriter` / parser results).
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum MinimalIntraCoreError {
+    /// The internal canonical 64x64 single-picture sequence view could not be built
+    /// (unreachable: 64 is inside the valid `1..=2^16` maxima domain).
+    #[error("canonical minimal-intra sequence view could not be built")]
+    Seq,
+    /// The fixed canonical body failed to serialize through [`BitWriter`].
+    #[error("canonical minimal-intra body serialization failed: {0}")]
+    Body(#[from] WriteError),
+    /// The parser rejected the canonical body.
+    #[error("canonical minimal-intra body did not parse: {0}")]
+    Parse(#[from] crate::error::Error),
+}
+
+/// Serializes the canonical 64x64, `base_q_idx == 255` single-picture
+/// `OBU_CLOSED_LOOP_KEY` intra `frame_header()` body (§ 5.18.2
+/// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2`), MSB-first, against the
+/// [`CoreSeqView::new_minimal_intra_single_picture`] sequence shape. Every element is a
+/// fixed minimal-intra choice, so the writes provably never overflow; the round-trip test
+/// proves the byte sequence parses back to an `IntraHeaderComplete` core.
+fn minimal_intra_clk_body_bytes() -> WriteResult<Vec<u8>> {
+    let mut writer = BitWriter::new();
+    writer.write_uvlc(0)?; // cur_mfh_id == 0 (direct reference, no MFH)
+    writer.write_uvlc(0)?; // seq_header_id_in_frame_header == 0
+    // single-picture: no frame_type / show_existing / output-flag / frame_size_override bits.
+    // order_hint: f(OrderHintBits == 0) -> omitted (no bit).
+    // refresh_frame_flags: CLK + max_mlayer_id == 0 -> all-frames inference (no bit, derives 3).
+    // frame_size: non-override -> the seq 64x64 maxima (no bits).
+    writer.write_bit(0)?; // allow_screen_content_tools (SCC == SELECT forces this; 0 => no force_integer_mv)
+    writer.write_bit(0)?; // allow_intrabc
+    writer.write_bit(0)?; // disable_cdf_update
+    writer.write_bit(1)?; // uniform_tile_spacing_flag (64x64 -> 1 superblock -> no increment bits)
+    writer.write_bits(255, 8)?; // base_q_idx (!= 0 avoids CodedLossless)
+    writer.write_bit(0)?; // segmentation_enabled
+    writer.write_bit(0)?; // using_qmatrix
+    writer.write_bit(0)?; // delta_q_present
+    writer.write_bit(0)?; // apply_deblocking_filter[0]
+    writer.write_bit(0)?; // apply_deblocking_filter[1]
+    writer.write_bit(0)?; // tx_mode_select
+    writer.write_bits(0, 2)?; // reduced_tx_set
+    Ok(writer.into_bytes())
+}
+
+/// The frozen minimal-intra tier's frame dimension: a single 64x64 superblock. The
+/// canonical body's bit layout is matched to it (single-superblock tile info, omitted
+/// override frame size), so the assembler builds the sequence view at this dimension
+/// itself rather than accepting one.
+const FROZEN_TIER_DIM: u32 = 64;
+
+/// Assembles the canonical minimal-intra `OBU_CLOSED_LOOP_KEY` frame header for the frozen
+/// 64x64, `base_q_idx == 255` single-picture tier and returns it paired with the matching
+/// sequence view, by **parsing** the canonical § 5.18.2 body (`minimal_intra_clk_body_bytes`)
+/// against an internally built [`CoreSeqView::new_minimal_intra_single_picture`] — the
+/// parse-backed assembler is conformant by construction (it inverts the same parser the
+/// decoder runs). The returned [`FrameHeaderCore`] has status
+/// [`FrameHeaderParseStatus::IntraHeaderComplete`].
+///
+/// The sequence view is built here, not taken as a parameter: the canonical body's bit
+/// layout depends on the exact § 5.4.x single-picture inferences (notably `OrderHintBits ==
+/// 0`, the SCC `SELECT` force fields, and the 64x64 single-superblock tiling), so any other
+/// view would mis-parse these fixed bits into a different (but still complete) core. The
+/// body also references **sequence header 0** (`seq_header_id_in_frame_header == 0`), the
+/// frozen tier's only sequence header.
+///
+/// This is the public encoder writer-input assembler: with the returned `(core, seq)` pair
+/// and [`crate::write::write_frame_header_core`] it lets `splot-encode` emit the frozen-tier
+/// frame header without a parsed [`SequenceHeader`].
+///
+/// [`SequenceHeader`]: crate::headers::sequence::SequenceHeader
+/// [`FrameHeaderParseStatus::IntraHeaderComplete`]: super::FrameHeaderParseStatus::IntraHeaderComplete
+pub fn build_minimal_intra_clk_core()
+-> Result<(FrameHeaderCore, CoreSeqView), MinimalIntraCoreError> {
+    use crate::headers::sequence::SuperblockSize;
+    let mut seq = CoreSeqView::new_minimal_intra_single_picture(FROZEN_TIER_DIM, FROZEN_TIER_DIM)
+        .ok_or(MinimalIntraCoreError::Seq)?;
+    // Frozen 64x64 tier: one 64x64 superblock — the root partition the decode minimal runtime
+    // frontier expects. This is a frozen-tier choice, not a § 5.4 single-picture inference, so
+    // it is set here, not in `new_minimal_intra_single_picture` (whose default `Block128x128`
+    // is shared with the `base_seq` round-trip suite). A 64x64 frame is one superblock at
+    // either SB size, so the canonical body bit-sequence is unchanged (the
+    // `uniform_tile_spacing_flag` reads zero increment bits either way, and `enable_gdf ==
+    // false` means the `seq_sb_size`-dependent GDF read never fires).
+    seq.tile.seq_sb_size = SuperblockSize::Block64x64;
+    seq.tile.use_128x128_superblock = false;
+    let data = minimal_intra_clk_body_bytes()?;
+    let mut reader = BitReader::new(&data, ByteOffset::new(0));
+    let prefix = parse_frame_header_prefix(&mut reader, ObuType::ClosedLoopKey, Some(true))?;
+    let mut core = init_core_from_prefix(&prefix, ObuType::ClosedLoopKey, true);
+    parse_core_body(
+        &mut reader,
+        &mut core,
+        &seq,
+        None,
+        &FrameReferenceStateView::unknown(),
+    )?;
+    core.consumed_bits = reader.consumed_bits();
+    Ok((core, seq))
 }
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use crate::headers::frame::{FrameHeaderParseStatus, FrameSize, FrameType};
+    use crate::write::write_frame_header_core;
 
     #[test]
     fn core_seq_inter_view_minimal_intra_is_all_disabled() {
@@ -222,9 +378,86 @@ mod tests {
         assert_eq!(bits((1 << 16) + 1), None);
 
         // The constructor builds the non-single-picture shape; the single-picture
-        // variant (different §5.4.1 inferences) is a separate later constructor.
+        // variant (different §5.4.1 inferences) is a separate constructor (below).
         assert!(!base.single_picture_header_flag);
         assert!(!base.filter.single_picture_header_flag);
         assert!(!base.ccso.single_picture_header_flag);
+    }
+
+    #[test]
+    fn new_minimal_intra_single_picture_applies_eight_spec_inferences() {
+        let base = CoreSeqView::new_minimal_intra(64, 64).unwrap();
+        let sp = CoreSeqView::new_minimal_intra_single_picture(64, 64).unwrap();
+
+        // The eight §5.4.x single-picture inferences that differ from the non-single view.
+        assert!(sp.single_picture_header_flag && !base.single_picture_header_flag);
+        assert!(sp.filter.single_picture_header_flag && !base.filter.single_picture_header_flag);
+        assert!(sp.ccso.single_picture_header_flag && !base.ccso.single_picture_header_flag);
+        assert_eq!((base.order_hint_bits, sp.order_hint_bits), (4, 0)); // §5.4.6 OrderHintBits = 0
+        assert_eq!((base.num_ref_frames, sp.num_ref_frames), (8, 2)); // §5.4.6 NumRefFrames = 2
+        assert_eq!(
+            (
+                base.seq_force_screen_content_tools,
+                sp.seq_force_screen_content_tools
+            ),
+            (0, 2) // §5.4.7 SELECT_SCREEN_CONTENT_TOOLS
+        );
+        assert_eq!((base.seq_force_integer_mv, sp.seq_force_integer_mv), (0, 2)); // §5.4.7 SELECT_INTEGER_MV
+        assert_eq!(
+            (base.tile.enable_avg_cdf, sp.tile.enable_avg_cdf),
+            (false, true)
+        );
+        assert_eq!((base.tile.avg_cdf_type, sp.tile.avg_cdf_type), (0, 1)); // §5.4.8
+        assert!(sp.monotonic_output_order_flag && !base.monotonic_output_order_flag);
+
+        // Out-of-range maxima reject like the non-single ctor; the rest is inherited unchanged.
+        assert!(CoreSeqView::new_minimal_intra_single_picture(0, 0).is_none());
+        assert!(CoreSeqView::new_minimal_intra_single_picture((1 << 16) + 1, 64).is_none());
+        assert_eq!((sp.max_frame_width, sp.max_frame_height), (64, 64));
+        assert_eq!((sp.frame_width_bits, sp.frame_height_bits), (6, 6));
+    }
+
+    #[test]
+    fn build_minimal_intra_clk_core_round_trips() {
+        // Self-contained: it builds the matching 64x64 single-picture view itself and
+        // returns the (core, seq) pair, so a caller cannot mis-pair the body and view.
+        let (core, seq) = build_minimal_intra_clk_core().unwrap();
+        assert_eq!((seq.max_frame_width, seq.max_frame_height), (64, 64));
+        assert!(seq.single_picture_header_flag);
+        // Frozen 64x64 tier: a single 64x64 superblock (the decode minimal runtime frontier's
+        // root partition), not the new_minimal_intra default Block128x128.
+        assert_eq!(
+            seq.tile.seq_sb_size,
+            crate::headers::sequence::SuperblockSize::Block64x64
+        );
+        assert!(!seq.tile.use_128x128_superblock);
+
+        // Parses to a complete intra header with the derived single-picture CLK facts.
+        assert_eq!(core.status, FrameHeaderParseStatus::IntraHeaderComplete);
+        assert_eq!(core.frame_type, Some(FrameType::Key));
+        assert_eq!(core.frame_size, Some(FrameSize::new(64, 64)));
+        assert_eq!(core.order_hint_lsb, Some(0)); // order_hint f(0) yields 0
+        assert_eq!(core.refresh_frame_flags, Some(3)); // all-frames inference (NumRefFrames == 2)
+        assert_eq!(core.immediate_output_frame, Some(true));
+        assert_eq!(core.implicit_output_frame, Some(false));
+
+        // Round-trips: the existing §5.18.2 writer re-emits a stream reparsing to an equal core.
+        let mut writer = BitWriter::new();
+        write_frame_header_core(&mut writer, &core, &seq, None, true).unwrap();
+        let bytes = writer.into_bytes();
+        let mut reader = BitReader::new(&bytes, ByteOffset::new(0));
+        let prefix =
+            parse_frame_header_prefix(&mut reader, ObuType::ClosedLoopKey, Some(true)).unwrap();
+        let mut reparsed = init_core_from_prefix(&prefix, ObuType::ClosedLoopKey, true);
+        parse_core_body(
+            &mut reader,
+            &mut reparsed,
+            &seq,
+            None,
+            &FrameReferenceStateView::unknown(),
+        )
+        .unwrap();
+        reparsed.consumed_bits = reader.consumed_bits();
+        assert_eq!(reparsed, core);
     }
 }

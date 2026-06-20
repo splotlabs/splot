@@ -4975,6 +4975,42 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-FRAME-HEADER-CORE-ASSEMBLER"
+name = "Encoder writer-input minimal-intra FrameHeaderCore parse-backed assembler"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.18.2", "5.4.1", "5.4.6", "5.4.7", "5.4.8"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers/frame/encoder_input.rs"
+openspec_change = "encoder-frame-header-core-assembler"
+tracking_issue = ""
+owner = "encoder"
+risk = "low"
+# encode stays `todo`: the assembler (write-surface) produces a conformant FrameHeaderCore
+# and the round-trip proves it, but no splot-encode code consumes it yet — the tile-group
+# OBU call-site and the packet path are later bridge bricks.
+notes = "Header-bridge BRICK 3 (the keystone, after ENC-WRITER-INPUT-SEQ-VIEW). write_frame_header_core / write_tile_group_obu serialize a §5.18.2 FrameHeaderCore; the encoder needs one, otherwise #[non_exhaustive]/crate-private-field and produced only by the parser. Rather than a fragile field-by-field literal, adds a PARSE-BACKED assembler: `build_minimal_intra_clk_core() -> Result<(FrameHeaderCore, CoreSeqView), MinimalIntraCoreError>` is SELF-CONTAINED (builds the matched 64x64 single-picture view INTERNALLY and returns the (core, seq) pair, so a caller cannot mis-pair body and view — this resolved 3 Codex P2s: a non-64x64 / non-single-picture / nonzero-seq-id view passed to an arbitrary-&CoreSeqView signature would mis-parse the fixed bits into a different-but-complete core). It serializes the canonical 64x64/base_q_idx=255 single-picture OBU_CLOSED_LOOP_KEY intra §5.18.2 body (BitWriter, one write per element — order_hint OMITTED because OrderHintBits=0, an explicit allow_screen_content_tools bit because SCC=SELECT, uniform_tile_spacing_flag with NO increment bits because 64x64 is one superblock, base_q_idx=255) and PARSES it to an IntraHeaderComplete core, so the result is conformant by construction (inverts the same parser the decoder runs). Also adds the matched single-picture seq view `CoreSeqView::new_minimal_intra_single_picture(max_w, max_h) -> Option<Self>` = new_minimal_intra + exactly eight §5.4.x single-picture inferences a non-single header signals differently: single_picture_header_flag (top-level + filter + CCSO), §5.4.6 OrderHintBits=0 & NumRefFrames=2, §5.4.7 seq_force_screen_content_tools/seq_force_integer_mv=SELECT(=2), §5.4.8 (enable_avg_cdf,avg_cdf_type)=(true,1), §5.4.1 monotonic_output_order_flag=true (the rest stays the disabled-tool value, a legal single-picture choice). Plus the MinimalIntraCoreError typed error (Body/Parse arms, both unreachable for the canonical input, present for no-panic) and un-gating the existing pub(crate) init_core_from_prefix/parse_core_body re-export (was #[cfg(test)]) for the non-test assembler. The §5.4.x facts + the exact body bit-sequence were adversarially verified by a Workflow (it caught order_hint_bits=0 → order_hint omitted, the allow_screen_content_tools bit, and monotonic_output_order_flag=true). ORACLE = a round-trip test: parse the canonical body against the single-picture view → assert IntraHeaderComplete/Key/64x64/order_hint_lsb=0/refresh_frame_flags=3/immediate-output, then write_frame_header_core → reparse → equal core (the existing single_picture_clk_bits fixture is NOT a spec-real oracle: it is self-consistent with a non-degenerate order_hint_bits=4/SCC=0 test seq); plus a field-delta test for the eight inferences. Public API: one new CoreSeqView ctor + build_minimal_intra_clk_core + MinimalIntraCoreError, all splot-core, no dependency-graph change. Encoder-mission-DRIVEN (owner=encoder), per the maintainer's writer-bridge decision. encode=todo. This row does not claim a tile-group OBU, a frame, a packet, receive_packet output, CLI success, or Baseline Encoder Profile v1. NEXT: encoder write_tile_group_obu call-site (brick 4) → frame/Packet/receive_packet (brick 5) → CLI encode→decode-hash (brick 6)."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "todo"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-core/src/headers/frame/encoder_input.rs::tests::build_minimal_intra_clk_core_round_trips", "crates/splot-core/src/headers/frame/encoder_input.rs::tests::new_minimal_intra_single_picture_applies_eight_spec_inferences"]
+commands = ["cargo test -p splot-core encoder_input"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-RECON-DEPENDENCY"
 name = "Encoder reconstruction dependency boundary"
 category = "encoder"
