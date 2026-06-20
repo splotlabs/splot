@@ -868,10 +868,24 @@ impl CoreSeqView {
     /// = 0` / `NumRefFrames = 2`, § 5.4.1 SCC `SELECT` force fields, § 5.4.10
     /// `(enable_avg_cdf, avg_cdf_type) = (true, 1)`) across four § 5.4.1 config parsers
     /// and is a later, separately round-trip-verified constructor.
+    /// Returns `None` if either maximum is outside `1..=65536`: § 5.4.1
+    /// `frame_*_bits_minus_1` is `f(4)`, so `frame_*_bits` is `1..=16` and a real
+    /// sequence header can only describe maxima up to `2^16` — a wider/zero maximum has
+    /// no valid sequence header to invert.
     #[must_use]
-    pub fn new_minimal_intra(max_frame_width: u32, max_frame_height: u32) -> Self {
+    pub fn new_minimal_intra(max_frame_width: u32, max_frame_height: u32) -> Option<Self> {
         use crate::headers::sequence::{CdefOnSkipTxfm, LevelIdx, SuperblockSize, Tier};
-        Self {
+        // §5.4.1 dim bit-widths derived from the maxima so any in-range maxima can write
+        // an overridden frame size (ceil_log2(4096) == 12 keeps base_seq); clamped to the
+        // 1-bit spec minimum and gated to the writable 1..=2^16 maxima domain.
+        let dim_bits = |max: u32| -> Option<u32> {
+            (1..=(1u32 << 16))
+                .contains(&max)
+                .then(|| ceil_log2(max).max(1))
+        };
+        let frame_width_bits = dim_bits(max_frame_width)?;
+        let frame_height_bits = dim_bits(max_frame_height)?;
+        Some(Self {
             num_ref_frames: 8,
             order_hint_bits: 4,
             long_term_frame_id_bits: 0,
@@ -879,10 +893,8 @@ impl CoreSeqView {
             monotonic_output_order_flag: false,
             single_picture_header_flag: false,
             max_mlayer_id: 0,
-            // §5.4.1 dim bit-widths derived from the maxima so any in-range maxima can
-            // write an overridden frame size (ceil_log2(4096) == 12 keeps base_seq).
-            frame_width_bits: ceil_log2(max_frame_width),
-            frame_height_bits: ceil_log2(max_frame_height),
+            frame_width_bits,
+            frame_height_bits,
             max_frame_width,
             max_frame_height,
             seq_force_screen_content_tools: 0,
@@ -947,7 +959,7 @@ impl CoreSeqView {
             },
             chroma_format_idc: ChromaFormatIdc::Yuv420,
             film_grain_params_present: Some(false),
-        }
+        })
     }
 
     /// Gathers the sequence-derived state the frame-header core parse — and the inverse
@@ -2405,7 +2417,7 @@ mod tests {
         // The representative non-single-picture intra sequence view is exactly the
         // public encoder writer-input constructor, so the whole frame-header round-trip
         // suite regresses `CoreSeqView::new_minimal_intra`.
-        CoreSeqView::new_minimal_intra(4096, 2304)
+        CoreSeqView::new_minimal_intra(4096, 2304).expect("4096x2304 is a valid maximum")
     }
 
     #[test]
@@ -2413,12 +2425,21 @@ mod tests {
         // frame_width_bits / frame_height_bits are derived from the maxima so any
         // in-range maxima can write an overridden frame size; ceil_log2(4096) == 12
         // keeps the base_seq shape, ceil_log2(64) == 6 for the encoder's 64x64 tier.
-        let base = CoreSeqView::new_minimal_intra(4096, 2304);
+        let base = CoreSeqView::new_minimal_intra(4096, 2304).unwrap();
         assert_eq!((base.frame_width_bits, base.frame_height_bits), (12, 12));
         assert_eq!((base.max_frame_width, base.max_frame_height), (4096, 2304));
 
-        let small = CoreSeqView::new_minimal_intra(64, 64);
+        let small = CoreSeqView::new_minimal_intra(64, 64).unwrap();
         assert_eq!((small.frame_width_bits, small.frame_height_bits), (6, 6));
+
+        // A 1-pixel maximum clamps to the 1-bit spec minimum; the largest f(4)-describable
+        // maximum (2^16) uses 16 bits; a zero or wider-than-2^16 maximum (frame_*_bits would
+        // exceed the f(4) range) has no valid §5.4.1 sequence header and is rejected.
+        let bits = |max| CoreSeqView::new_minimal_intra(max, max).map(|v| v.frame_width_bits);
+        assert_eq!(bits(1), Some(1));
+        assert_eq!(bits(1 << 16), Some(16));
+        assert_eq!(bits(0), None);
+        assert_eq!(bits((1 << 16) + 1), None);
 
         // The constructor builds the non-single-picture shape; the single-picture
         // variant (different §5.4.1 inferences) is a separate later constructor.
