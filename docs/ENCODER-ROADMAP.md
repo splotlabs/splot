@@ -139,6 +139,10 @@ Status: planned, replaces the parked toy bootstrap path.
   SymbolEncoder driven to a block's coded bytes) has landed — the first tile-body
   brick. Next: a tile-group OBU from the all-zero trace, then frame assembly and the
   Context::receive_packet wiring to a first real packet.
+- The splot-core writer bridge has begun (maintainer-approved critical path): the
+  first brick adds `TileGroupFraming::single_tile()` so the encoder can build the
+  §5.20.1 framing input the writer needs. Next: the TileGroupStructure / CoreSeqView /
+  FrameHeaderCore constructors, then drive write_tile_group_obu to a first OBU.
 - Use closed-loop reconstruction before public success.
 - Emit only syntax the writer can produce and the validator accepts.
 - Record fixtures, hashes, and matrix proof before marking any encode stage done.

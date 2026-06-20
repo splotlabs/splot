@@ -456,6 +456,36 @@ pub struct TileGroupFraming {
     pub defect: Option<TileFramingDefect>,
 }
 
+impl TileGroupFraming {
+    /// Builds the § 5.20.1 framing for a single-tile tile group (the first tile group,
+    /// `TileNum 0`): one tile whose `tileSize` coded region spans the whole
+    /// `tile_group_payload()` from offset 0, with **no** `tile_size_minus_1` field (the
+    /// only tile is the last tile, mirror :8557). This is the encoder-side inverse of
+    /// the parser: it is exactly the (defect-free) framing
+    /// `parse_tile_group_framing(payload, 0, 0, _, false)` reproduces for a `payload`
+    /// of `tile_size` coded bytes, so a write (via [`write_tile_group_payload`]) then
+    /// reparse round-trips value-equal.
+    ///
+    /// `tile_size` is the coded-tile byte length and must be `>= 1`; a zero-size
+    /// non-bridge tile is the § 8.2.2 `ZeroSizeTile` framing defect, which
+    /// [`write_tile_group_payload`] independently rejects, so this constructor does not
+    /// itself encode a defect (callers pass real § 8.2 coded bytes).
+    ///
+    /// [`write_tile_group_payload`]: crate::write::tile_group::write_tile_group_payload
+    #[must_use]
+    pub fn single_tile(tile_size: u64) -> Self {
+        Self {
+            tiles: vec![TileFraming {
+                tile_num: 0,
+                size_field_offset: None,
+                tile_data_offset: 0,
+                tile_size,
+            }],
+            defect: None,
+        }
+    }
+}
+
 /// Parses the § 5.20.1 per-tile framing of a `tile_group_payload()` region (AV2 v1.0.0
 /// § 5.20.1, mirror :8553-8640).
 ///
@@ -1238,6 +1268,32 @@ mod tests {
         assert_eq!(t.size_field_offset, None);
         assert_eq!(t.tile_data_offset, 0);
         assert_eq!(t.tile_size, 5);
+    }
+
+    #[test]
+    fn single_tile_constructor_matches_parser() {
+        // The encoder-side constructor reproduces exactly the defect-free framing the
+        // parser yields for a single-tile region (tg_start == tg_end == 0).
+        let region = vec![0xAA; 5];
+        let parsed = parse_tile_group_framing(&region, 0, 0, 1, false);
+        assert_eq!(TileGroupFraming::single_tile(5), parsed);
+    }
+
+    #[test]
+    fn single_tile_framing_write_then_reparse_round_trips() {
+        use crate::write::bit_writer::BitWriter;
+        use crate::write::tile_group::write_tile_group_payload;
+
+        // A single (last) tile writes no size field, so the payload region is byte-exact
+        // with the coded data, and a reparse is value-equal to the constructed framing.
+        let coded = [0x12u8, 0x34, 0x56, 0x78];
+        let framing = TileGroupFraming::single_tile(coded.len() as u64);
+        let mut writer = BitWriter::new();
+        write_tile_group_payload(&mut writer, &framing, &[&coded], 1, false).unwrap();
+        let region = writer.into_bytes();
+
+        assert_eq!(region, coded, "single-tile payload is the coded bytes");
+        assert_eq!(parse_tile_group_framing(&region, 0, 0, 1, false), framing);
     }
 
     #[test]
