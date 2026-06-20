@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 341 feature(s); 288 cite a spec section.
+Matrix version 1. Last reviewed 2026-06-15. 342 feature(s); 289 cite a spec section.
 
 One row per (spec section, feature) pair, in spec order; a feature citing both a syntax and a semantics section appears under both. The canonical status source is [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); the full per-feature ledger is [FEATURE-STATUS.md](./FEATURE-STATUS.md).
 
@@ -227,6 +227,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.19](./spec/av2/1.0.0/05-syntax-structures.md#s-5-19) | Tile group OBU syntax | `ENC-WRITER-INPUT-STRUCTURE` | ✅ | — | — | ✅ | — |
 | [§ 5.20](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20) | Tile group payload syntax | `AV2-5.19-TILE-GROUP` | ✅ | 🟡 | 🟡 | ✅ | 7 |
 | [§ 5.20](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20) | Tile group payload syntax | `AV2-5.20-TILE-GROUP-PAYLOAD` | ✅ | 🟡 | 🟡 | ✅ | 3 |
+| [§ 5.20](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20) | Tile group payload syntax | `ENC-GENERAL-INTRA-SKIP-TILE-DATA` | ✅ | — | — | ✅ | — |
 | [§ 5.20](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20) | Tile group payload syntax | `ENC-WRITER-INPUT-FRAMING` | ✅ | — | — | ✅ | — |
 | [§ 5.20.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-1) | General tile group payload syntax | `CONF-DECODE-RUNTIME-HASH-FUZZ` | ✅ | — | — | ✅ | 3 |
 | [§ 5.20.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-1) | General tile group payload syntax | `CONF-DECODE-RUNTIME-RAW-FUZZ` | ✅ | — | — | ✅ | 4 |
@@ -793,6 +794,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 8.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2) | Parsing process for symbol decoder | `ENC-COEFFICIENT-TOKENIZATION-MINIMAL` | ✅ | — | — | ✅ | — |
 | [§ 8.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2) | Parsing process for symbol decoder | `ENC-DO-SPLIT-PARTITION-SYMBOL` | ✅ | — | — | ✅ | — |
 | [§ 8.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2) | Parsing process for symbol decoder | `ENC-GENERAL-INTRA-SKIP-BLOCK-TRACE` | ✅ | — | — | ✅ | — |
+| [§ 8.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2) | Parsing process for symbol decoder | `ENC-GENERAL-INTRA-SKIP-TILE-DATA` | ✅ | — | — | ✅ | — |
 | [§ 8.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2) | Parsing process for symbol decoder | `ENC-INTRA-BLOCK-MODE-TRACE` | ✅ | — | — | ✅ | — |
 | [§ 8.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2) | Parsing process for symbol decoder | `ENC-INTRA-BLOCK-TRACE-BYPASS-LITERAL` | ✅ | — | — | ✅ | — |
 | [§ 8.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2) | Parsing process for symbol decoder | `ENC-INTRA-BLOCK-TRACE-CHROMA-SKIP` | ✅ | — | — | ✅ | — |
@@ -819,6 +821,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 8.2.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-2) | Initialization process for symbol decoder | `DECODE-TILE-PAYLOAD-INPUT-DERIVATION` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 8.2.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-2) | Initialization process for symbol decoder | `DECODE-Y4M-RUNTIME-OUTPUT` | ✅ | 🟡 | ✅ | ✅ | 4 |
 | [§ 8.2.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-2) | Initialization process for symbol decoder | `ENC-BITSTREAM-WRITER` | 🟡 | — | — | 🟡 | — |
+| [§ 8.2.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-2) | Initialization process for symbol decoder | `ENC-GENERAL-INTRA-SKIP-TILE-DATA` | ✅ | — | — | ✅ | — |
 | [§ 8.2.3](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-3) | Boolean decoding process | `AV2-8.2-SYMBOL-DECODER` | ✅ | ✅ | ✅ | ✅ | — |
 | [§ 8.2.3](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-3) | Boolean decoding process | `CONF-SYMBOL-DECODER-FUZZ` | ✅ | — | — | ✅ | — |
 | [§ 8.2.3](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-3) | Boolean decoding process | `ENC-BITSTREAM-WRITER` | 🟡 | — | — | 🟡 | — |
@@ -836,6 +839,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 8.2.4](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-4) | Exit process for symbol decoder | `DECODE-TILE-PAYLOAD-INPUT-DERIVATION` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 8.2.4](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-4) | Exit process for symbol decoder | `DECODE-Y4M-RUNTIME-OUTPUT` | ✅ | 🟡 | ✅ | ✅ | 4 |
 | [§ 8.2.4](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-4) | Exit process for symbol decoder | `ENC-BITSTREAM-WRITER` | 🟡 | — | — | 🟡 | — |
+| [§ 8.2.4](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-4) | Exit process for symbol decoder | `ENC-GENERAL-INTRA-SKIP-TILE-DATA` | ✅ | — | — | ✅ | — |
 | [§ 8.2.5](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-5) | Parsing process for read_literal | `AV2-8.2-SYMBOL-DECODER` | ✅ | ✅ | ✅ | ✅ | — |
 | [§ 8.2.5](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-5) | Parsing process for read_literal | `CONF-SYMBOL-DECODER-FUZZ` | ✅ | — | — | ✅ | — |
 | [§ 8.2.5](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-5) | Parsing process for read_literal | `DECODE-COEFF-BASE-DERIVED-LEVEL-PASS` | ✅ | 🟡 | — | ✅ | 1 |

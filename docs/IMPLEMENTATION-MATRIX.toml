@@ -5255,6 +5255,39 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-GENERAL-INTRA-SKIP-TILE-DATA"
+name = "Encoder general-intra DC skip tile_data bytes"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20", "8.2.4", "8.2.2", "8.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/general_intra_trace.rs"
+openspec_change = "encoder-general-intra-skip-tile-data"
+tracking_issue = ""
+owner = "encoder"
+risk = "low"
+notes = "Decodable-tile arc BRICK 3: turns the brick-2 general-intra DC skip-block trace into its \u00a78.2.4-finalized tile_data bytes. Adds encode_general_intra_dc_skip_tile_data() in general_intra_trace.rs: composes compose_general_intra_dc_skip_block_trace() and finalizes it through the existing encode_block_symbol_trace \u00a78.2 coder, returning the entropy-coded tile_data. VERIFIED (Workflow wru0vud9g, 8 agents, 2/3 adversarial lenses confirm): a single-tile LAST-tile frame's tile_data is PURE \u00a78.2.4-finalized symbol bytes with NO structural prefix (tile_data_offset=pos, no tile_size_minus_1; decoder slices [offset..+size] -> SymbolDecoder reads from byte 0); SymbolEncoder.finish()->into_bytes() = pure byte-aligned MSB-first Vec<u8>; so the bytes are directly-usable tile_data, no wrapper. MUXING CONTRACT for a later brick (the 1 conditional adversarial refutal): the real tile reader derives CdfUpdateMode from disable_cdf_update, so the muxed frame header MUST set disable_cdf_update==0 (the minimal header does) AND base_q_idx<=90 (coeff_cdf_q_ctx 0, matching brick 2's txb_skip rows) - the existing build_minimal_intra_clk_core hardcodes base_q_idx=255 (q_ctx 3), so a base_q_idx<=90 header variant is a SEPARATE splot-core brick; the cross-crate decode oracle belongs in splot-cli. ORACLE: the emitted bytes are non-empty, equal the proven roundtrip bytes, and that trace decodes to [0,0,0,0,1,1,1]. All crate-private. Encoder-mission-DRIVEN (owner=encoder). This row is ONE IN-MEMORY tile_data BYTE PRODUCER: it does NOT claim a tile-group OBU, a frame, an IVF, a packet, receive_packet output, CLI success, a decode, or Baseline Encoder Profile v1."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/general_intra_trace.rs::tests::skip_tile_data_is_nonempty_and_equals_the_proven_trace_bytes"]
+commands = ["cargo test -p splot-encode general_intra_trace --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-RECON-DEPENDENCY"
 name = "Encoder reconstruction dependency boundary"
 category = "encoder"
