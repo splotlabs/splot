@@ -4868,6 +4868,41 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-WRITER-INPUT-STRUCTURE"
+name = "Encoder writer-input single-tile structure constructor"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.19"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers/tile_group.rs"
+openspec_change = "encoder-writer-input-structure"
+tracking_issue = ""
+owner = "encoder"
+risk = "low"
+# encode stays `todo`: the constructor (write-surface) exists and round-trips, but no
+# splot-encode code consumes it yet — encoder consumption lands in a later bridge brick.
+notes = "Writer-bridge BRICK 2 (after ENC-WRITER-INPUT-FRAMING). write_tile_group_obu needs a §5.19 TileGroupStructure alongside the §5.20.1 framing; like the framing it is #[non_exhaustive] / parse-only. Adds `TileGroupStructure::single_tile_first_group() -> TileGroupStructure` in crates/splot-core/src/headers/tile_group.rs — the structure for a single-tile FIRST tile group (NumTiles==1): tile_start_and_end_present_flag inferred 0 (parser never reads it for a single tile, mirror :8467-8473), tg_start 0, tg_end 0 (= NumTiles-1), outcome Complete. UNLIKE the framing ctor (an exact parser-inverse), the structure's header_bytes/payload_size are parse-context BYTE-ACCOUNTING the §5.19 writers IGNORE (write_tile_group_structure only validates outcome==Complete + the flag + the tg-range; write_tile_group_obu recomputes the header length + takes the payload from the tile data), so the ctor leaves them None and the oracle is a SEMANTIC round-trip (write→reparse → flag/tg_start/tg_end match + Complete) — the same contract the existing write_tile_group_structure round-trip tests use. #[non_exhaustive] preserved (within-crate literal). Proven: canonical fields + semantic round-trip via write_tile_group_structure for a TileGroupLayout::new(1,1,0,0). Encoder-mission-DRIVEN (owner=encoder), code in splot-core (crate=splot-core), per the maintainer's writer-bridge decision. encode=todo (no splot-encode code consumes it yet). This row does not claim a multi-tile/continuation structure, a CoreSeqView/FrameHeaderCore constructor, a tile-group OBU, a frame, a packet, receive_packet output, CLI success, or Baseline Encoder Profile v1. NEXT bridge bricks: CoreSeqView + FrameHeaderCore ctors → drive write_tile_group_obu → seq-OBU + frame → Packet → receive_packet → CLI encode→decode-hash."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "todo"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-core/src/headers/tile_group.rs::tests::single_tile_first_group_structure_has_canonical_fields", "crates/splot-core/src/headers/tile_group.rs::tests::single_tile_first_group_structure_round_trips"]
+commands = ["cargo test -p splot-core single_tile_first_group"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-RECON-DEPENDENCY"
 name = "Encoder reconstruction dependency boundary"
 category = "encoder"
