@@ -94,6 +94,36 @@ pub(crate) fn encode_general_intra_dc_skip_tile_data() -> Result<Vec<u8>> {
     encode_block_symbol_trace(&trace)
 }
 
+/// The `base_q_idx` the minimal intra skip frame is muxed at: 80, the AVM- and
+/// dav2d-validated `syn-flat-intra-64x64-q80` fixture's value. It is `<= 90`, so the decoder
+/// derives coefficient CDF q-context `0` — the q-context [`encode_general_intra_dc_skip_tile_data`]
+/// codes its `txb_skip` symbols under.
+const SKIP_FRAME_BASE_Q_IDX: u8 = 80;
+
+/// Emits a complete, decodable AV2 IVF stream: one 64x64 all-intra `OBU_CLOSED_LOOP_KEY` frame
+/// whose single tile is a DC skip (all-zero residual) block. This is `splot-encode`'s first
+/// end-to-end decodable output.
+///
+/// It pairs the general-intra DC skip `tile_data` (`encode_general_intra_dc_skip_tile_data`)
+/// with the `base_q_idx`-80 container
+/// ([`splot_core::headers::frame::encode_minimal_intra_clk_ivf_with_base_q_idx`]) whose
+/// decoder-derived coefficient CDF q-context (`0`) matches the tile's coding. Decoding the
+/// stream reconstructs a flat frame: every luma and chroma sample is the § 7.13.2 DC
+/// prediction of a no-neighbour block — `128` for 8-bit — because the block is skipped.
+///
+/// The container is byte-identical to the `syn-flat-intra-64x64-q80` fixture apart from the
+/// `tile_data`; only the tile bytes encode the skip block. The cross-crate decode that proves
+/// the flat reconstruction lives in `splot-cli` (which depends on both `splot-encode` and
+/// `splot-decode`).
+pub fn emit_minimal_intra_skip_ivf() -> Result<Vec<u8>> {
+    let tile_data = encode_general_intra_dc_skip_tile_data()?;
+    splot_core::headers::frame::encode_minimal_intra_clk_ivf_with_base_q_idx(
+        SKIP_FRAME_BASE_Q_IDX,
+        &tile_data,
+    )
+    .map_err(|source| Error::MinimalIntraSkipIvf { source })
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -162,6 +192,29 @@ mod tests {
         assert_eq!(
             encode_general_intra_dc_skip_tile_data().unwrap(),
             encode_general_intra_dc_skip_tile_data().unwrap()
+        );
+    }
+
+    #[test]
+    fn emit_minimal_intra_skip_ivf_is_a_parseable_one_frame_av02_ivf() {
+        let ivf = emit_minimal_intra_skip_ivf().unwrap();
+        assert!(!ivf.is_empty());
+
+        // Structurally a single-frame AV02 64x64 IVF; the full decode-to-flat-128 proof is
+        // the cross-crate oracle in splot-cli.
+        let parsed = splot_core::ivf::parse_ivf_partial(&ivf);
+        assert!(parsed.error.is_none());
+        let header = parsed.header.unwrap();
+        assert_eq!(&header.fourcc, b"AV02");
+        assert_eq!((header.width, header.height), (64, 64));
+        assert_eq!(parsed.frames.len(), 1);
+    }
+
+    #[test]
+    fn emit_minimal_intra_skip_ivf_is_deterministic() {
+        assert_eq!(
+            emit_minimal_intra_skip_ivf().unwrap(),
+            emit_minimal_intra_skip_ivf().unwrap()
         );
     }
 }

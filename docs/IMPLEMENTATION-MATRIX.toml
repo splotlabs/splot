@@ -5321,6 +5321,39 @@ fixtures = ["tests/conformance/vectors/valid/syn-flat-intra-64x64-q80.ivf"]
 diagnostics = []
 
 [[feature]]
+id = "ENC-MINIMAL-INTRA-SKIP-IVF"
+name = "First decodable minimal intra skip IVF"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.18.2", "5.20", "7.13.2", "8.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/general_intra_trace.rs"
+openspec_change = "encoder-minimal-intra-skip-ivf"
+tracking_issue = ""
+owner = "encoder"
+risk = "low"
+notes = "Decodable-tile arc BRICK 5 - THE MILESTONE: splot-encode's FIRST end-to-end decodable output, cross-crate decode-proven. emit_minimal_intra_skip_ivf() (splot-encode public) composes the general-intra DC skip tile_data (bricks 2-3) and muxes it through encode_minimal_intra_clk_ivf_with_base_q_idx(80, ..) (brick 4 splot-core), returning a complete AV2 IVF for one 64x64 all-intra OBU_CLOSED_LOOP_KEY DC skip frame. CROSS-CRATE ORACLE (crates/splot-cli/tests/encode_decode_roundtrip.rs - splot-cli is the only crate depending on both splot-encode + splot-decode): emit the IVF -> `splot decode --output-format raw` -> assert 6144 bytes (8-bit 420 64x64: Y 64*64 + U 32*32 + V 32*32) ALL == 128. The single block is do_split=0 + DC_PRED luma/chroma + all-zero residual, so the no-neighbour \u00a77.13.2 DC predictor 1<<(8-1)=128 reconstructs a flat frame. This proves bricks 1-4 (do_split + modes + per-plane all_zero txb_skip at general contexts + \u00a78.2.4 finalize + base_q_idx-80 container) DECODE through splot's own decoder. Added Error::MinimalIntraSkipIvf for the container-assembly failure path. Also a splot-encode test that the emitted bytes parse as a 1-frame AV02 64x64 IVF + are deterministic. decode_check=done (splot-decode, itself AVM/dav2d-validated on the coded q80/q180 fixtures); avm_diff NOT claimed (this exact stream not decoded with AVM - the container is byte-identical to the AVM-validated q80 fixture apart from tile_data). Encoder-mission-DRIVEN (owner=encoder). HONEST SCOPE: the FIRST decodable minimal-intra skip stream - NOT a general encoder, NOT a Context::receive_packet packet, NOT Baseline Encoder Profile v1."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-cli/tests/encode_decode_roundtrip.rs::encoder_skip_ivf_decodes_to_a_flat_128_frame", "crates/splot-encode/src/general_intra_trace.rs::tests::emit_minimal_intra_skip_ivf_is_a_parseable_one_frame_av02_ivf"]
+commands = ["cargo test -p splot-cli --test encode_decode_roundtrip --locked", "cargo test -p splot-encode general_intra_trace --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-RECON-DEPENDENCY"
 name = "Encoder reconstruction dependency boundary"
 category = "encoder"

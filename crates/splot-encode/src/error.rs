@@ -810,6 +810,14 @@ pub enum Error {
         /// Current context state.
         state: EncoderState,
     },
+
+    /// Assembling the minimal intra skip IVF container failed.
+    #[error("encoder minimal intra skip IVF assembly failed: {source}")]
+    MinimalIntraSkipIvf {
+        /// Source container-assembly error from the `splot-core` writer bridge.
+        #[source]
+        source: splot_core::headers::frame::MinimalIntraIvfError,
+    },
 }
 
 /// A specialized [`Result`](core::result::Result) for encoder context operations.
