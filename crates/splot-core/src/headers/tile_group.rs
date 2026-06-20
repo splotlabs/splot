@@ -195,6 +195,36 @@ pub struct TileGroupStructure {
     pub payload_size: Option<u64>,
 }
 
+impl TileGroupStructure {
+    /// Builds the AV2 § 5.19 (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-19`,
+    /// mirror :8467-8493) structure for a single-tile first tile group (`NumTiles == 1`):
+    /// `tile_start_and_end_present_flag` is inferred `0` (the parser never reads it for a
+    /// single tile, mirror :8467-8473), `tg_start = 0`, and `tg_end = 0` (`= NumTiles - 1`).
+    /// `outcome` is [`TileGroupStructureOutcome::Complete`].
+    ///
+    /// `header_bytes` / `payload_size` are the parser's byte-accounting of a real
+    /// `tile_group_obu()` header (mirror :8523-8527) and are left `None`: the § 5.19
+    /// writers ([`write_tile_group_structure`] / [`write_tile_group_obu`]) ignore them —
+    /// they recompute the header length and take the payload length from the tile data,
+    /// so a reparse recomputes both. The round-trip is therefore semantic on the
+    /// `flag` / `tg_start` / `tg_end` syntax fields (the bits a single tile actually
+    /// writes), matching the writer's parse-context contract.
+    ///
+    /// [`write_tile_group_structure`]: crate::write::tile_group::write_tile_group_structure
+    /// [`write_tile_group_obu`]: crate::write::tile_group::write_tile_group_obu
+    #[must_use]
+    pub fn single_tile_first_group() -> Self {
+        Self {
+            tile_start_and_end_present_flag: false,
+            tg_start: 0,
+            tg_end: 0,
+            outcome: TileGroupStructureOutcome::Complete,
+            header_bytes: None,
+            payload_size: None,
+        }
+    }
+}
+
 /// How far [`parse_tile_group_structure`] reached through the § 5.19 modeled region.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -1313,6 +1343,42 @@ mod tests {
 
         assert_eq!(region, coded, "single-tile payload is the coded bytes");
         assert_eq!(parse_tile_group_framing(&region, 0, 0, 1, false), framing);
+    }
+
+    #[test]
+    fn single_tile_first_group_structure_has_canonical_fields() {
+        // NumTiles == 1: no present flag, tg_start = tg_end = 0, Complete; the parse-context
+        // byte-accounting (header_bytes / payload_size) is left None for the writer to ignore.
+        let s = TileGroupStructure::single_tile_first_group();
+        assert!(!s.tile_start_and_end_present_flag);
+        assert_eq!(s.tg_start, 0);
+        assert_eq!(s.tg_end, 0);
+        assert_eq!(s.outcome, TileGroupStructureOutcome::Complete);
+        assert_eq!(s.header_bytes, None);
+        assert_eq!(s.payload_size, None);
+    }
+
+    #[test]
+    fn single_tile_first_group_structure_round_trips() {
+        use crate::span::ByteOffset;
+        use crate::write::bit_writer::BitWriter;
+        use crate::write::tile_group::write_tile_group_structure;
+
+        // The constructed structure is writer-encodable for a NumTiles == 1 layout, and the
+        // emitted bits reparse to the same syntax fields (a single tile writes no flag/range,
+        // so the structure bits are empty and the reparse infers the canonical range).
+        let layout = TileGroupLayout::new(1, 1, 0, 0);
+        let s = TileGroupStructure::single_tile_first_group();
+        let mut writer = BitWriter::new();
+        write_tile_group_structure(&mut writer, &s, layout).unwrap();
+        let bytes = writer.into_bytes();
+
+        let mut reader = BitReader::new(&bytes, ByteOffset::new(0));
+        let parsed = parse_tile_group_structure(&mut reader, layout, bytes.len() as u64).unwrap();
+        assert!(!parsed.tile_start_and_end_present_flag);
+        assert_eq!(parsed.tg_start, 0);
+        assert_eq!(parsed.tg_end, 0);
+        assert_eq!(parsed.outcome, TileGroupStructureOutcome::Complete);
     }
 
     #[test]

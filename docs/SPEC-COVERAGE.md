@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 323 feature(s); 270 cite a spec section.
+Matrix version 1. Last reviewed 2026-06-15. 324 feature(s); 271 cite a spec section.
 
 One row per (spec section, feature) pair, in spec order; a feature citing both a syntax and a semantics section appears under both. The canonical status source is [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); the full per-feature ledger is [FEATURE-STATUS.md](./FEATURE-STATUS.md).
 
@@ -199,6 +199,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.19](./spec/av2/1.0.0/05-syntax-structures.md#s-5-19) | Tile group OBU syntax | `DECODE-TILE-PAYLOAD-INPUT-DERIVATION` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 5.19](./spec/av2/1.0.0/05-syntax-structures.md#s-5-19) | Tile group OBU syntax | `DECODE-Y4M-RUNTIME-OUTPUT` | ✅ | 🟡 | ✅ | ✅ | 4 |
 | [§ 5.19](./spec/av2/1.0.0/05-syntax-structures.md#s-5-19) | Tile group OBU syntax | `ENC-MINIMAL-HEADER-PLAN` | ✅ | — | — | ✅ | — |
+| [§ 5.19](./spec/av2/1.0.0/05-syntax-structures.md#s-5-19) | Tile group OBU syntax | `ENC-WRITER-INPUT-STRUCTURE` | ✅ | — | — | ✅ | — |
 | [§ 5.20](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20) | Tile group payload syntax | `AV2-5.19-TILE-GROUP` | ✅ | 🟡 | 🟡 | ✅ | 7 |
 | [§ 5.20](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20) | Tile group payload syntax | `AV2-5.20-TILE-GROUP-PAYLOAD` | ✅ | 🟡 | 🟡 | ✅ | 3 |
 | [§ 5.20](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20) | Tile group payload syntax | `ENC-WRITER-INPUT-FRAMING` | ✅ | — | — | ✅ | — |
