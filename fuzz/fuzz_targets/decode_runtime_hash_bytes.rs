@@ -55,7 +55,12 @@ fuzz_target!(|data: &[u8]| {
 
     let options = DecodeOptions::new(runtime_hash_fuzz_limits(flags, bitstream.len()));
     if let Ok(report) = context.decode_hash_report_bytes(bitstream, options) {
-        assert_minimal_hash_report_shape(&report);
+        // The minimal report shape only holds for the pristine frozen fixture; a
+        // mutation can now route to the general intra path and decode
+        // successfully to a different (still valid) frame.
+        if bitstream == MINIMAL_FIXTURE {
+            assert_minimal_hash_report_shape(&report);
+        }
     }
 });
 

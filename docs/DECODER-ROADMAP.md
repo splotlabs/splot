@@ -429,14 +429,21 @@ mode symbols in spec order, reconstructing the typed non-directional luma
 `YMode`), then decodes the § 5.20.7.27 luma transform-block coefficients
 (`DECODE-GENERAL-INTRA-LUMA-COEFFS`: the `all_zero` `txb_skip` symbol with the
 spec-derived § 8.3.2 context, then the nonzero coefficient pass producing the
-luma `Quant[]` and end-of-block), and then returns a structured
-`decode/unsupported-feature` diagnostic because chroma coefficient decode and
-reconstruction are not yet wired. This is the first genuine coefficient entropy
-decode of a real AVM stream through the coefficient-loop machinery. The committed
-`syn-flat-intra-64x64-q80.ivf` fixture carries a real nonzero DC residual whose
-avmdec and dav2d raw outputs agree byte-for-byte, the bit-exact target for the
-later bricks. It never reconstructs a frame yet and never mutates the frozen
-minimal hash contract.
+luma `Quant[]` and end-of-block), then decodes the chroma coefficients and
+reconstructs the full frame (`DECODE-GENERAL-INTRA-FRAME-RECON`:
+`decode_general_intra_chroma_coeffs` for the U/V 32x32 blocks using the § 8
+parsing `TileTxbSkipCdf[is_inter || fsc_mode][txSzCtx][ctx]` and
+`TileVTxbSkipCdf[ctx]` selectors, then `reconstruct_general_intra_block`
+composing § 7.14.4 dequant with the TCQ `dqDenom` term, the § 7.15.4 inverse
+transform, and the § 7.14.3 residual add over the § 7.13.2 DC prediction, with a
+§ 8.2.4 `exit_symbol()` check and frame assembly). This is the first end-to-end
+bit-exact frame decode: the committed `syn-flat-intra-64x64-q80.ivf` fixture
+decodes to flat planes Y=100, U=120, V=130 matching the avmdec and dav2d raw
+outputs (pinned frame hash
+`ce9c46b1078b9dd593254837ead7dcd6cee8b3ec6cc3c7d34f54fb08df703979`). It never
+mutates the frozen minimal hash contract. Split partitions, multiple blocks,
+multiple tiles, non-64x64 frames, chroma `cctx`/CfL, inter prediction, and
+in-loop filters remain later bricks.
 Runtime integration of nonzero coefficient blocks, tile context fact derivation
 for nonzero blocks, dequantization, and
 reconstruction remain unsupported. The

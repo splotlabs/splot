@@ -70,7 +70,12 @@ fuzz_target!(|data: &[u8]| {
             .decode_y4m_bytes(bitstream, options, &mut writer)
             .is_ok()
         {
-            assert_minimal_y4m_shape(writer.bytes());
+            // The flat minimal shape only holds for the pristine frozen fixture;
+            // a mutation can now route to the general intra path and decode
+            // successfully to a different (still valid) frame.
+            if bitstream == MINIMAL_FIXTURE {
+                assert_minimal_y4m_shape(writer.bytes());
+            }
         }
     } else {
         let mut writer = FailAfterBytes::new(usize::from(payload.first().copied().unwrap_or(0)));
