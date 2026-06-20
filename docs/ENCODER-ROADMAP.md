@@ -142,8 +142,8 @@ Status: planned, replaces the parked toy bootstrap path.
 - The splot-core writer bridge has begun (maintainer-approved critical path):
   `TileGroupFraming::single_tile()` (§5.20.1 framing input) and
   `TileGroupStructure::single_tile_first_group()` (§5.19 structure input) have landed.
-  The CoreSeqInterView minimal-intra constructor (the one blocked nested sequence
-  sub-view) has also landed. Next: the CoreSeqView constructor, the FrameHeaderCore
+  The CoreSeqInterView and CoreSeqView minimal-intra constructors have landed (the
+  encoder can now build the sequence-derived writer input). Next: the FrameHeaderCore
   parse-backed assembler, then drive write_tile_group_obu to a first OBU.
 - Use closed-loop reconstruction before public success.
 - Emit only syntax the writer can produce and the validator accepts.

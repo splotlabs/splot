@@ -846,6 +846,125 @@ pub struct CoreSeqView {
 }
 
 impl CoreSeqView {
+    /// Builds the AV2 § 5.4.1 (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-4-1`)
+    /// sequence-derived view a minimal intra frame needs, the public encoder
+    /// writer-input constructor for the otherwise `#[non_exhaustive]`,
+    /// crate-private-field [`CoreSeqView`]. It lets `splot-encode` drive the
+    /// `write_tile_group_obu` / `write_frame_header_core` writers without a parsed
+    /// [`SequenceHeader`] (the alternative [`CoreSeqView::from_sequence`] input).
+    ///
+    /// Every sequence tool an intra frame does not use is disabled: no reference-frame
+    /// state (§ 5.4.6 inter view all-off via [`CoreSeqInterView::new_minimal_intra`]),
+    /// no segmentation/tiles/loop-filters/restoration/CCSO, no film grain. 8-bit YUV420,
+    /// 3 planes. The configurable inputs are the § 5.4.1 frame-size maxima
+    /// (`max_frame_width` / `max_frame_height`); `frame_width_bits` / `frame_height_bits`
+    /// are derived from them via `ceil_log2`, so any in-range maxima can write an
+    /// overridden frame size, not just those that fit 12 bits.
+    ///
+    /// This is the **non-single-picture** view (`single_picture_header_flag == false`):
+    /// it is the exact shape the test `base_seq` helper builds, so the existing
+    /// frame-header round-trip suite regresses it (`base_seq()` delegates here). The
+    /// single-picture variant infers a different sequence shape (§ 5.4.6 `OrderHintBits
+    /// = 0` / `NumRefFrames = 2`, § 5.4.1 SCC `SELECT` force fields, § 5.4.10
+    /// `(enable_avg_cdf, avg_cdf_type) = (true, 1)`) across four § 5.4.1 config parsers
+    /// and is a later, separately round-trip-verified constructor.
+    /// Returns `None` if either maximum is outside `1..=65536`: § 5.4.1
+    /// `frame_*_bits_minus_1` is `f(4)`, so `frame_*_bits` is `1..=16` and a real
+    /// sequence header can only describe maxima up to `2^16` — a wider/zero maximum has
+    /// no valid sequence header to invert.
+    #[must_use]
+    pub fn new_minimal_intra(max_frame_width: u32, max_frame_height: u32) -> Option<Self> {
+        use crate::headers::sequence::{CdefOnSkipTxfm, LevelIdx, SuperblockSize, Tier};
+        // §5.4.1 dim bit-widths derived from the maxima so any in-range maxima can write
+        // an overridden frame size (ceil_log2(4096) == 12 keeps base_seq); clamped to the
+        // 1-bit spec minimum and gated to the writable 1..=2^16 maxima domain.
+        let dim_bits = |max: u32| -> Option<u32> {
+            (1..=(1u32 << 16))
+                .contains(&max)
+                .then(|| ceil_log2(max).max(1))
+        };
+        let frame_width_bits = dim_bits(max_frame_width)?;
+        let frame_height_bits = dim_bits(max_frame_height)?;
+        Some(Self {
+            num_ref_frames: 8,
+            order_hint_bits: 4,
+            long_term_frame_id_bits: 0,
+            enable_short_refresh_frame_flags: false,
+            monotonic_output_order_flag: false,
+            single_picture_header_flag: false,
+            max_mlayer_id: 0,
+            frame_width_bits,
+            frame_height_bits,
+            max_frame_width,
+            max_frame_height,
+            seq_force_screen_content_tools: 0,
+            seq_force_integer_mv: 0,
+            allow_frame_max_bvp_drl_bits: false,
+            inter: CoreSeqInterView::new_minimal_intra(),
+            quant: CoreSeqQuantView {
+                bit_depth: 8,
+                num_planes: 3,
+                separate_uv_delta_q: false,
+                equal_ac_dc_q: false,
+                y_dc_delta_q_enabled: false,
+                uv_dc_delta_q_enabled: false,
+                uv_ac_delta_q_enabled: false,
+                base_y_dc_delta_q: 0,
+                base_uv_dc_delta_q: 0,
+                base_uv_ac_delta_q: 0,
+                enable_tcq: false,
+                choose_tcq_per_frame: false,
+                enable_parity_hiding: false,
+            },
+            seg: CoreSeqSegView {
+                seq_seg_info_present_flag: false,
+                seq_allow_seg_info_change: false,
+                enable_ext_seg: false,
+                max_segments: 8,
+                seq_segment_info: None,
+            },
+            tile: CoreSeqTileView {
+                seq_tile_info_present_flag: false,
+                allow_tile_info_change: false,
+                seq_tile_params: None,
+                seq_sb_col_starts: Vec::new(),
+                seq_sb_row_starts: Vec::new(),
+                seq_sb_size: SuperblockSize::Block128x128,
+                use_256x256_superblock: false,
+                use_128x128_superblock: true,
+                enable_avg_cdf: false,
+                avg_cdf_type: 0,
+                seq_tier: Tier::Main,
+                // §A: the no-level / `Configurable` sentinel, so the §5.18.7.2 tile-info
+                // writer's level-derived tile-width/area bounds do not constrain a
+                // larger writer-input view (which the maxima would otherwise exceed).
+                seq_level_idx: LevelIdx::from_bits(31),
+            },
+            filter: CoreSeqFilterView {
+                enable_cdef: false,
+                enable_gdf: false,
+                gdf_unit_matches_sb_size: false,
+                disable_loopfilters_across_tiles: false,
+                cdef_on_skip_txfm: CdefOnSkipTxfm::Adaptive,
+                df_par_bits_minus_2: 0,
+                single_picture_header_flag: false,
+            },
+            restoration: CoreSeqRestorationView {
+                enable_restoration: false,
+                lr_pc_wiener_disabled: false,
+                lr_wiener_nonsep_disabled: false,
+                lr_uv_pc_wiener_disabled: false,
+                lr_uv_wiener_nonsep_disabled: false,
+            },
+            ccso: CoreSeqCcsoView {
+                enable_ccso: false,
+                single_picture_header_flag: false,
+            },
+            chroma_format_idc: ChromaFormatIdc::Yuv420,
+            film_grain_params_present: Some(false),
+        })
+    }
+
     /// Gathers the sequence-derived state the frame-header core parse — and the inverse
     /// [`crate::write`] frame-header writer — need from a fully parsed [`SequenceHeader`]
     /// (AV2 v1.0.0 § 5.4.1). Returns `None` when any required child config is absent (the
@@ -2209,55 +2328,6 @@ fn read_refresh_frame_flags(
     }
 }
 
-/// Arbitrary-but-fixed § 5.18.6 / § 5.18.7 sub-views for tests: an 8-bit, 4:2:0,
-/// no-sequence-tile, no-sequence-segmentation stream with 128×128 superblocks and
-/// every optional quantizer/segmentation/tile read disabled. With these views the
-/// intra tail reads `uniform_tile_spacing_flag` (plus any increment bits),
-/// `base_q_idx` `f(8)`, `segmentation_enabled`, `using_qmatrix`, and
-/// `delta_q_present` (when `base_q_idx > 0`) after `disable_cdf_update`.
-#[cfg(test)]
-fn test_sub_views() -> (CoreSeqQuantView, CoreSeqSegView, CoreSeqTileView) {
-    use crate::headers::sequence::{LevelIdx, SuperblockSize, Tier};
-    (
-        CoreSeqQuantView {
-            bit_depth: 8,
-            num_planes: 3,
-            separate_uv_delta_q: false,
-            equal_ac_dc_q: false,
-            y_dc_delta_q_enabled: false,
-            uv_dc_delta_q_enabled: false,
-            uv_ac_delta_q_enabled: false,
-            base_y_dc_delta_q: 0,
-            base_uv_dc_delta_q: 0,
-            base_uv_ac_delta_q: 0,
-            enable_tcq: false,
-            choose_tcq_per_frame: false,
-            enable_parity_hiding: false,
-        },
-        CoreSeqSegView {
-            seq_seg_info_present_flag: false,
-            seq_allow_seg_info_change: false,
-            enable_ext_seg: false,
-            max_segments: 8,
-            seq_segment_info: None,
-        },
-        CoreSeqTileView {
-            seq_tile_info_present_flag: false,
-            allow_tile_info_change: false,
-            seq_tile_params: None,
-            seq_sb_col_starts: Vec::new(),
-            seq_sb_row_starts: Vec::new(),
-            seq_sb_size: SuperblockSize::Block128x128,
-            use_256x256_superblock: false,
-            use_128x128_superblock: true,
-            enable_avg_cdf: false,
-            avg_cdf_type: 0,
-            seq_tier: Tier::Main,
-            seq_level_idx: LevelIdx::from_bits(0),
-        },
-    )
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -2327,59 +2397,12 @@ mod tests {
         }
     }
 
-    /// A representative non-single-picture sequence view: OrderHintBits = 4,
-    /// NumRefFrames = 8, no long-term ids, full refresh signaling, screen-content
-    /// forced off, 12-bit frame dimensions, 4096x2304 maximum.
-    /// A test sequence filter view (§ 5.4.10) with CDEF and GDF disabled, so the
-    /// § 5.18.2 tail loop-filter cluster reads only the `deblocking_filter_params()`
-    /// `apply_deblocking_filter` bits (GDF / CDEF return without reading). Override the
-    /// individual flags in a test that needs the enabled arms.
-    fn base_filter() -> CoreSeqFilterView {
-        CoreSeqFilterView {
-            enable_cdef: false,
-            enable_gdf: false,
-            gdf_unit_matches_sb_size: false,
-            disable_loopfilters_across_tiles: false,
-            cdef_on_skip_txfm: crate::headers::sequence::CdefOnSkipTxfm::Adaptive,
-            df_par_bits_minus_2: 0,
-            single_picture_header_flag: false,
-        }
-    }
-
-    /// A test restoration view (§ 5.4.10) with `enable_restoration == false`, so
-    /// `lr_params()` returns without reading any bits. Override it in a test that needs the
-    /// enabled per-plane arm.
-    fn base_restoration() -> CoreSeqRestorationView {
-        CoreSeqRestorationView {
-            enable_restoration: false,
-            lr_pc_wiener_disabled: false,
-            lr_wiener_nonsep_disabled: false,
-            lr_uv_pc_wiener_disabled: false,
-            lr_uv_wiener_nonsep_disabled: false,
-        }
-    }
-
-    /// A test CCSO view (§ 5.4.10) with `enable_ccso == false`, so `ccso_params()` returns
-    /// without reading any bits. Override it in a test that needs the enabled arm.
-    fn base_ccso() -> CoreSeqCcsoView {
-        CoreSeqCcsoView {
-            enable_ccso: false,
-            single_picture_header_flag: false,
-        }
-    }
-
-    /// A § 5.4.6 inter sub-view for tests with every inter tool disabled: the inter path
-    /// reads the explicit reference map only when `explicit_ref_frame_map` is overridden.
-    fn base_inter() -> CoreSeqInterView {
-        CoreSeqInterView::new_minimal_intra()
-    }
-
     #[test]
     fn core_seq_inter_view_minimal_intra_is_all_disabled() {
         // The public encoder writer-input constructor yields the inert §5.4.6 inter view:
         // every tool off, every motion mode disabled. (CoreSeqInterView has no PartialEq,
-        // so assert the fields directly; the writer round-trips additionally exercise it
-        // through the promoted base_inter() helpers.)
+        // so assert the fields directly; the frame-header writer round-trips additionally
+        // exercise it through the minimal-intra seq view's inlined inter field.)
         let v = CoreSeqInterView::new_minimal_intra();
         assert!(!v.enable_ref_frame_mvs);
         assert!(!v.explicit_ref_frame_map);
@@ -2394,32 +2417,38 @@ mod tests {
     }
 
     fn base_seq() -> CoreSeqView {
-        let (quant, seg, tile) = test_sub_views();
-        CoreSeqView {
-            num_ref_frames: 8,
-            order_hint_bits: 4,
-            long_term_frame_id_bits: 0,
-            enable_short_refresh_frame_flags: false,
-            monotonic_output_order_flag: false,
-            single_picture_header_flag: false,
-            max_mlayer_id: 0,
-            frame_width_bits: 12,
-            frame_height_bits: 12,
-            max_frame_width: 4096,
-            max_frame_height: 2304,
-            seq_force_screen_content_tools: 0,
-            seq_force_integer_mv: 0,
-            allow_frame_max_bvp_drl_bits: false,
-            inter: base_inter(),
-            quant,
-            seg,
-            tile,
-            filter: base_filter(),
-            restoration: base_restoration(),
-            ccso: base_ccso(),
-            chroma_format_idc: ChromaFormatIdc::Yuv420,
-            film_grain_params_present: Some(false),
-        }
+        // The representative non-single-picture intra sequence view is exactly the
+        // public encoder writer-input constructor, so the whole frame-header round-trip
+        // suite regresses `CoreSeqView::new_minimal_intra`.
+        CoreSeqView::new_minimal_intra(4096, 2304).expect("4096x2304 is a valid maximum")
+    }
+
+    #[test]
+    fn core_seq_view_minimal_intra_derives_dim_bits_and_is_non_single_picture() {
+        // frame_width_bits / frame_height_bits are derived from the maxima so any
+        // in-range maxima can write an overridden frame size; ceil_log2(4096) == 12
+        // keeps the base_seq shape, ceil_log2(64) == 6 for the encoder's 64x64 tier.
+        let base = CoreSeqView::new_minimal_intra(4096, 2304).unwrap();
+        assert_eq!((base.frame_width_bits, base.frame_height_bits), (12, 12));
+        assert_eq!((base.max_frame_width, base.max_frame_height), (4096, 2304));
+
+        let small = CoreSeqView::new_minimal_intra(64, 64).unwrap();
+        assert_eq!((small.frame_width_bits, small.frame_height_bits), (6, 6));
+
+        // A 1-pixel maximum clamps to the 1-bit spec minimum; the largest f(4)-describable
+        // maximum (2^16) uses 16 bits; a zero or wider-than-2^16 maximum (frame_*_bits would
+        // exceed the f(4) range) has no valid §5.4.1 sequence header and is rejected.
+        let bits = |max| CoreSeqView::new_minimal_intra(max, max).map(|v| v.frame_width_bits);
+        assert_eq!(bits(1), Some(1));
+        assert_eq!(bits(1 << 16), Some(16));
+        assert_eq!(bits(0), None);
+        assert_eq!(bits((1 << 16) + 1), None);
+
+        // The constructor builds the non-single-picture shape; the single-picture
+        // variant (different §5.4.1 inferences) is a separate later constructor.
+        assert!(!base.single_picture_header_flag);
+        assert!(!base.filter.single_picture_header_flag);
+        assert!(!base.ccso.single_picture_header_flag);
     }
 
     /// Parses the activation prefix then the core body, returning the result and the
@@ -3436,7 +3465,7 @@ mod tests {
         // has choose_tcq_per_frame / enable_parity_hiding off -> no allow_* bits.
         // deblocking_filter_params(): the resolved MFH did not signal an update
         // (mfh_deblocking_filter_update == 0), so apply[0]/[1] are read from the
-        // bitstream. GDF/CDEF disabled in base_filter -> no bits.
+        // bitstream. GDF/CDEF disabled in the minimal-intra seq view -> no bits.
         bits.bit(0); // apply_deblocking_filter[0]
         bits.bit(0); // apply_deblocking_filter[1]
         // lr_params()/ccso_params(): restoration and CCSO disabled -> no bits.
@@ -3579,7 +3608,7 @@ mod tests {
         // lossless tail: segment 3 has alt-q feature data 7 -> non-lossless; others
         // disabled (qindex == base_q_idx 70, non-lossless). No QM -> no qm_index bits.
         // deblocking_filter_params(): not lossless, MFH did not signal an update ->
-        // apply[0]/[1] read. GDF/CDEF disabled in base_filter.
+        // apply[0]/[1] read. GDF/CDEF disabled in the minimal-intra seq view.
         bits.bit(0); // apply_deblocking_filter[0]
         bits.bit(0); // apply_deblocking_filter[1]
         // lr_params()/ccso_params(): restoration and CCSO disabled -> no bits.
@@ -3868,7 +3897,7 @@ mod tests {
         bits.bit(0); // using_qmatrix
         bits.bit(0); // delta_q_present
         // deblocking_filter_params(): not lossless -> apply[0]/[1] read. GDF/CDEF are
-        // disabled in base_filter, so the single-picture enable inference is not reached.
+        // disabled in the minimal-intra seq view, so the single-picture enable inference is not reached.
         bits.bit(0); // apply_deblocking_filter[0]
         bits.bit(0); // apply_deblocking_filter[1]
         // lr_params()/ccso_params(): restoration and CCSO disabled -> no bits.
