@@ -144,13 +144,17 @@ const SMOOTH_PRED_VALUE: u8 = 9;
 /// chroma intra mode list (CfL not allowed), in selection order. The first five
 /// entries (`DC_PRED`, `SMOOTH_PRED`, `SMOOTH_V_PRED`, `SMOOTH_H_PRED`,
 /// `PAETH_PRED`) are the non-directional modes; the remainder are directional.
+/// The label order is the § 5.20.5.3 table; each entry is the canonical intra
+/// mode value from § 6 (`06-syntax-structures-semantics.md` lines 6790-6815):
+/// `DC=0, V=1, H=2, D45=3, D135=4, D113=5, D157=6, D203=7, D67=8, SMOOTH=9,
+/// SMOOTH_V=10, SMOOTH_H=11, PAETH=12`.
 const DEFAULT_MODE_LIST_UV: [u8; 13] = [
     0, // DC_PRED
     9, // SMOOTH_PRED
     10, 11, 12, // SMOOTH_V_PRED, SMOOTH_H_PRED, PAETH_PRED
-    1, 6, // V_PRED, H_PRED
-    3, 5, // D45_PRED, D135_PRED
-    2, 4, 7, 8, // D67_PRED, D113_PRED, D157_PRED, D203_PRED
+    1, 2, // V_PRED, H_PRED
+    3, 4, // D45_PRED, D135_PRED
+    8, 5, 6, 7, // D67_PRED, D113_PRED, D157_PRED, D203_PRED
 ];
 
 /// Resolves the typed chroma `UVMode` from the decoded `uv_mode` index via
