@@ -4,13 +4,13 @@ Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask writer-coverage
 
 The AV2 bitstream **writer** (`splot-core::write`) surface: one row per writable `splot-core` syntax feature, plus every other `splot-core` feature with a landed writer, with its `write` maturity (writers in other crates, e.g. the `splot-recon` Y4M output, are out of scope). The writer is the inverse of the parser — `parse(write(parse(x))) == parse(x)` — byte-exact on the canonical subset and semantic (round-trip on the parsed model) for the canonicalizing writers (e.g. film grain and quantizer matrix, whose model is lossy versus the wire). The canonical status source is [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); each row's per-writer round-trip details live in its matrix notes, and the full per-feature ledger is [FEATURE-STATUS.md](./FEATURE-STATUS.md).
 
-Matrix version 1. Last reviewed 2026-06-15. 97 writable feature(s).
+Matrix version 1. Last reviewed 2026-06-15. 98 writable feature(s).
 
 `write` legend: `done` written and round-trip-proven, `partial` in progress, `todo` not written yet, `pending` waiting on external proof, `blocked` blocked, `exp` experimental.
 
 | Write status | Features |
 |---|---:|
-| `done` | 84 |
+| `done` | 85 |
 | `partial` | 13 |
 
 | Section | Feature | Name | Write | Module |
@@ -23,6 +23,7 @@ Matrix version 1. Last reviewed 2026-06-15. 97 writable feature(s).
 | 4.11.8 | `AV2-4.11.8-NS` | Non-symmetric integer descriptor | done | `crates/splot-core/src/bitio.rs` |
 | 4.11.10 | `AV2-4.11.10-RG` | Rice-Golomb descriptor | done | `crates/splot-core/src/bitio.rs` |
 | 5.2.1 | `AV2-5.2.1-OBU-DISPATCH` | open_bitstream_unit payload dispatch | partial | `crates/splot-core/src/obu.rs` |
+| 5.2.1, B.2 | `ENC-MINIMAL-INTRA-IVF` | Encoder minimal-intra IVF temporal-unit assembler | done | `crates/splot-core/src/headers/frame/encoder_input.rs` |
 | 5.2.2, 6.2.2 | `AV2-5.2.2-OBU-HEADER` | OBU header syntax | done | `crates/splot-core/src/obu.rs` |
 | 5.2.2, B.2 | `ENC-MINIMAL-INTRA-CLK-ANNEXB-OBU` | Encoder writer-input minimal-intra Annex B OBU wrapper | done | `crates/splot-core/src/headers/frame/encoder_input.rs` |
 | 5.2.3, 6.2.3 | `AV2-5.2.3-TRAILING-BITS` | Trailing bits syntax and semantics | done | `crates/splot-core/src/obu.rs` |
