@@ -2386,8 +2386,8 @@ mod tests {
     fn core_seq_inter_view_minimal_intra_is_all_disabled() {
         // The public encoder writer-input constructor yields the inert §5.4.6 inter view:
         // every tool off, every motion mode disabled. (CoreSeqInterView has no PartialEq,
-        // so assert the fields directly; the writer round-trips additionally exercise it
-        // through the promoted base_inter() helpers.)
+        // so assert the fields directly; the frame-header writer round-trips additionally
+        // exercise it through the minimal-intra seq view's inlined inter field.)
         let v = CoreSeqInterView::new_minimal_intra();
         assert!(!v.enable_ref_frame_mvs);
         assert!(!v.explicit_ref_frame_map);
@@ -3441,7 +3441,7 @@ mod tests {
         // has choose_tcq_per_frame / enable_parity_hiding off -> no allow_* bits.
         // deblocking_filter_params(): the resolved MFH did not signal an update
         // (mfh_deblocking_filter_update == 0), so apply[0]/[1] are read from the
-        // bitstream. GDF/CDEF disabled in base_filter -> no bits.
+        // bitstream. GDF/CDEF disabled in the minimal-intra seq view -> no bits.
         bits.bit(0); // apply_deblocking_filter[0]
         bits.bit(0); // apply_deblocking_filter[1]
         // lr_params()/ccso_params(): restoration and CCSO disabled -> no bits.
@@ -3584,7 +3584,7 @@ mod tests {
         // lossless tail: segment 3 has alt-q feature data 7 -> non-lossless; others
         // disabled (qindex == base_q_idx 70, non-lossless). No QM -> no qm_index bits.
         // deblocking_filter_params(): not lossless, MFH did not signal an update ->
-        // apply[0]/[1] read. GDF/CDEF disabled in base_filter.
+        // apply[0]/[1] read. GDF/CDEF disabled in the minimal-intra seq view.
         bits.bit(0); // apply_deblocking_filter[0]
         bits.bit(0); // apply_deblocking_filter[1]
         // lr_params()/ccso_params(): restoration and CCSO disabled -> no bits.
@@ -3873,7 +3873,7 @@ mod tests {
         bits.bit(0); // using_qmatrix
         bits.bit(0); // delta_q_present
         // deblocking_filter_params(): not lossless -> apply[0]/[1] read. GDF/CDEF are
-        // disabled in base_filter, so the single-picture enable inference is not reached.
+        // disabled in the minimal-intra seq view, so the single-picture enable inference is not reached.
         bits.bit(0); // apply_deblocking_filter[0]
         bits.bit(0); // apply_deblocking_filter[1]
         // lr_params()/ccso_params(): restoration and CCSO disabled -> no bits.
