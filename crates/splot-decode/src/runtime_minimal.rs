@@ -679,18 +679,21 @@ fn is_general_minimal_intra(core: &FrameHeaderCore) -> bool {
         && core.is_key_frame
         && core.immediate_output_frame == Some(true)
         && core.implicit_output_frame == Some(false)
-        // §5.18.3 + §7.13.2.1: the general intra path tiles the frame as a single
-        // ROW of one or more 64x64 superblocks — width is any positive multiple of
-        // the superblock side (64), height is exactly 64. A taller (multi-SB-row)
-        // frame places chroma blocks above the bottom frame edge, where the
-        // §7.13.2.13 SMOOTH chroma sentinel `LeftCol[h]` is the actual below-block
-        // reconstructed sample (§7.13.2.1 `CurrFrame[Min(maxY, y+h)][x-1]`) rather
-        // than the edge-clamped repeat this path builds; until that sentinel reads
-        // the real neighbour, multi-SB-row frames stay on the deferred frontier.
-        // At height 64 every chroma block is at the bottom edge with no above
-        // neighbour, so the built edges are §7.13.2.1-exact for any chroma content.
+        // §5.18.3: the general intra path tiles the frame as a grid of 64x64
+        // superblocks, so width and height must be positive multiples of the
+        // superblock side (64); the §5.20.2.1 superblock raster loop decodes a
+        // 2-D grid (multiple rows and columns), `clear_left_context()` at each
+        // superblock-row start, with later superblocks predicting from the
+        // already-reconstructed left/above neighbours. (SMOOTH chroma is
+        // separately gated per block to full 64x64 superblocks, where its
+        // §7.13.2.1 above-right/below-left sentinels are clamp-correct regardless
+        // of row; sub-partitioned SMOOTH chroma and partial — non-multiple-of-64 —
+        // frames remain deferred.)
         && core.frame_size.is_some_and(|size| {
-            size.width != 0 && size.width % MINIMAL_WIDTH == 0 && size.height == MINIMAL_HEIGHT
+            size.width != 0
+                && size.height != 0
+                && size.width % MINIMAL_WIDTH == 0
+                && size.height % MINIMAL_HEIGHT == 0
         })
         && core
             .tile_info
@@ -1636,6 +1639,53 @@ mod general_intra_tests {
         assert_eq!(
             hash,
             "18ba32ffb8d818689cbded3dbd5c44602bb091c1f9750c1bb062e6f80498540f"
+        );
+    }
+
+    // A 128x128 multi-superblock-ROW intra frame: a 2x2 grid of flat 64x64
+    // DC_PRED superblocks (uniform luma 100, chroma 120/130). Exercises the
+    // §5.20.2.1 superblock raster loop across multiple rows AND columns
+    // (`clear_left_context()` per superblock row), with the second-row
+    // superblocks DC-predicting from the already-reconstructed above neighbours
+    // and reconstructing full-superblock SMOOTH chroma at row > 0. avmdec and
+    // dav2d agree on the decoded output (md5 df1bc678...).
+    const GRID_FIXTURE: &[u8] = include_bytes!(
+        "../../../tests/conformance/vectors/valid/syn-uniform-intra-128x128-q80.ivf"
+    );
+
+    #[test]
+    fn multi_row_superblock_intra_frame_decodes_to_oracle() {
+        use splot_recon::{BitDepth, PixelFormat, PlaneSize};
+
+        let options = DecodeOptions::default();
+        let context = DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize)))
+            .expect("context");
+        let plan = context.plan_bytes(GRID_FIXTURE, options).expect("plan");
+        let frame = decode_minimal_frame_from_plan(GRID_FIXTURE, options, &plan)
+            .expect("decode")
+            .frame;
+
+        assert_eq!(frame.bit_depth(), BitDepth::Eight);
+        assert_eq!(frame.pixel_format(), PixelFormat::Yuv420);
+        assert_eq!(frame.y().visible_size(), PlaneSize::new(128, 128).unwrap());
+        assert_eq!(
+            frame.u().unwrap().visible_size(),
+            PlaneSize::new(64, 64).unwrap()
+        );
+
+        // Uniform 128x128: every luma sample is 100, chroma U=120 / V=130, across
+        // all four superblocks (the second-row superblocks DC-predict from the
+        // reconstructed first-row neighbours), matching the avmdec/dav2d oracle.
+        assert!(frame.y().samples().iter().all(|&s| s == 100));
+        assert!(frame.u().unwrap().samples().iter().all(|&s| s == 120));
+        assert!(frame.v().unwrap().samples().iter().all(|&s| s == 130));
+
+        let hash = splot_recon::DecodedFrameHashInput::new(&frame)
+            .compute_hash()
+            .to_hex();
+        assert_eq!(
+            hash,
+            "1bfd079174c7494086aab6d37f61dec25e850d42767f6adc3969e2969384d6eb"
         );
     }
 

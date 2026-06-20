@@ -10893,6 +10893,54 @@ fixtures = [
 diagnostics = ["decode/unsupported-feature"]
 
 [[feature]]
+id = "DECODE-GENERAL-INTRA-MULTIROW"
+name = "General intra multi-superblock-row (grid) decode"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.18.3", "5.20.2.1", "5.20.4.1", "7.13.2"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-2-1",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-4-1",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/runtime_minimal.rs"
+openspec_change = "decode-general-intra-multirow"
+tracking_issue = ""
+owner = "decoder"
+risk = "low"
+notes = "Relaxes the general intra frame-size admission from a single superblock ROW (height exactly 64) to a full GRID of 64x64 superblocks: `is_general_minimal_intra` now accepts any frame whose width and height are positive multiples of 64. The §5.20.2.1 superblock raster loop already iterates rows and columns with `clear_left_context()` at each superblock-row start, and the DC path already reads above neighbours, so a second-row superblock DC-predicts its luma from the reconstructed first-row neighbour, and a full-superblock (64x64) block's §7.13.2.13 SMOOTH chroma is correct at any row (`clear_block_decoded_flags` zeroes its above-right region and the below-left is decoded later, so the §7.13.2.1 sentinels collapse to the edge-clamped last sample). The committed `syn-uniform-intra-128x128-q80.ivf` (a 2x2 grid of flat 64x64 DC superblocks, uniform luma 100, chroma 120/130) decodes bit-exactly to the avmdec/dav2d oracle (md5 df1bc678..., pinned frame hash 1bfd0791...); all single-row 64x64 and 128x64 fixtures are unchanged. Distinct multi-row content stays deferred because a non-uniform diagonal superblock prefers a directional luma mode (rejected as `general_intra_unsupported_y_mode`); directional luma, SMOOTH chroma on sub-partitioned blocks, partial (non-multiple-of-64) frames, multiple tiles, inter prediction, in-loop filters, and live AVM/dav2d in CI remain future work."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "partial"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "partial"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/runtime_minimal.rs::general_intra_tests::multi_row_superblock_intra_frame_decodes_to_oracle",
+    "crates/splot-decode/src/runtime_minimal.rs::general_intra_tests::two_superblock_intra_frame_decodes_to_oracle",
+]
+commands = [
+    "cargo test -p splot-decode general_intra --locked",
+    "cargo test -p splot-cli --test conformance --locked",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "tests/conformance/vectors/valid/syn-uniform-intra-128x128-q80.ivf",
+    "crates/splot-decode/src/runtime_minimal.rs",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
 id = "DECODE-COEFF-FSC-SCAN-WALK"
 name = "Coefficient FSC scan walk"
 category = "infrastructure"

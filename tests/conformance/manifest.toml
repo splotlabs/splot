@@ -70,6 +70,11 @@ description = "Multi-superblock 8-bit 4:2:0 intra key frame (IVF, 128x64) from a
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-uniform-intra-128x128-q80.ivf"
+description = "Multi-superblock-row 8-bit 4:2:0 intra key frame (IVF, 128x128) from a project-owned uniform luma input (flat 100, chroma U=120 V=130) with broad decode tools disabled at base_q_idx 80, so the frame is a 2x2 grid of 64x64 DC_PRED superblocks; exercises the section 5.20.2.1 superblock raster loop across multiple rows and columns (clear_left_context per superblock row) with the second-row superblocks DC-predicting from the reconstructed above neighbours and full-superblock SMOOTH_PRED chroma at row > 0; the first general-intra multi-superblock-row decode target whose avmdec and dav2d raw outputs agree and splot reproduces byte-for-byte; validates clean."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-key-inter-64x64.ivf"
 description = "Key frame plus two inter frames (IVF, 64x64) from project-owned synthetic input; validates clean."
 expect = "clean"
