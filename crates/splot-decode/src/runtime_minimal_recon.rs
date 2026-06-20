@@ -142,6 +142,12 @@ pub(crate) fn reconstruct_general_intra_block_into(
 ///   the no-above / no-left / no-neighbour fallbacks), runs § 7.13.2.13 smooth
 ///   prediction, and adds the decoded residual (or writes the bare prediction
 ///   for an `all_zero` block).
+///
+/// `num4_above_right` is the § 7.13.2.1 `num4AboveRight` (in 4x4 units) for this
+/// transform block, derived by the caller from § 5.20.7.25 `count_top_right_avail`
+/// over the § 5.20.2.3 `BlockDecoded` state; it selects the SMOOTH top-right
+/// sentinel `AboveRow[w]` between the real reconstructed above-right sample and
+/// the clamped last in-block above sample.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_chroma_block_into(
     workspace: &mut CurrentFrameWorkspace<u8>,
@@ -152,6 +158,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into(
     log2_side: u32,
     qindex: u32,
     mode: SupportedChromaMode,
+    num4_above_right: usize,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     match mode {
         // Chroma never uses the §7.14.4 TCQ dqDenom term (luma DCT_DCT only), so
@@ -160,7 +167,14 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into(
             workspace, block, plane_id, x, y, log2_side, qindex, false,
         ),
         SupportedChromaMode::Smooth => reconstruct_general_intra_chroma_smooth_into(
-            workspace, block, plane_id, x, y, log2_side, qindex,
+            workspace,
+            block,
+            plane_id,
+            x,
+            y,
+            log2_side,
+            qindex,
+            num4_above_right,
         ),
     }
 }
@@ -176,6 +190,7 @@ fn reconstruct_general_intra_chroma_smooth_into(
     y: usize,
     log2_side: u32,
     qindex: u32,
+    num4_above_right: usize,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     let side = 1usize << log2_side;
     let log2 = u8::try_from(log2_side).unwrap_or(u8::MAX);
@@ -188,12 +203,26 @@ fn reconstruct_general_intra_chroma_smooth_into(
     // edge, which `intra_dc_edges_for_rect` reports as a present left/above edge.
     let have_left = edges.left_samples().is_some();
     let have_above = edges.above_samples().is_some();
+    // §7.13.2.1 top-right sentinel `AboveRow[w]`: when haveAbove and the
+    // above-right is decoded (`num4AboveRight > 0`), read the real reconstructed
+    // `CurrFrame[plane][y-1][Min(aboveLimit, x+w)]`; otherwise the no-above
+    // fallback / clamped last in-block sample is used (built below).
+    let above_right_sentinel = resolve_smooth_above_right_sentinel(
+        workspace,
+        plane_id,
+        x,
+        y,
+        side,
+        have_above,
+        num4_above_right,
+    )?;
     let (left, above) = build_smooth_chroma_edges(
         edges.left_samples(),
         edges.above_samples(),
         have_left,
         have_above,
         side,
+        above_right_sentinel,
     )?;
     let smooth_edges = IntraSmoothEdges::new(&left, &above);
     let mut prediction = vec![0u8; side * side];
@@ -228,16 +257,25 @@ fn reconstruct_general_intra_chroma_smooth_into(
 /// (8-bit, `MrlIndex == 0`, no DIP) for § 7.13.2.13 smooth chroma prediction,
 /// from the reconstructed left/above neighbours. The `[side]` entries are the
 /// smooth-process bottom-left / top-right sentinels.
+///
+/// `above_right_sentinel` is the caller-resolved § 7.13.2.1 top-right sentinel
+/// `AboveRow[w]` (the real reconstructed above-right sample when decoded, or
+/// `None` to keep the clamped last in-block above sample / no-above fallback).
 fn build_smooth_chroma_edges(
     left_neighbour: Option<&[u8]>,
     above_neighbour: Option<&[u8]>,
     have_left: bool,
     have_above: bool,
     side: usize,
+    above_right_sentinel: Option<u8>,
 ) -> core::result::Result<(Vec<u8>, Vec<u8>), GeneralIntraResidualError> {
     let edge_len = side + 1;
     // §7.13.2.1 `LeftCol[i]`: reconstructed left column when haveLeft; else when
     // haveAbove, the above neighbour's first sample; else the no-left fallback.
+    // The bottom-left sentinel `LeftCol[h]` keeps the clamped last left sample:
+    // in raster decode order a full-superblock block's below-left is never
+    // decoded yet (`num4BelowLeft == 0`), so the spec value
+    // `CurrFrame[plane][Min(maxY, y+h)][x-1]` equals the clamped last sample.
     let left = match (have_left, left_neighbour) {
         (true, Some(samples)) => fill_edge_from_neighbour(samples, edge_len),
         _ if have_above => {
@@ -250,7 +288,7 @@ fn build_smooth_chroma_edges(
     };
     // §7.13.2.1 `AboveRow[i]`: reconstructed above row when haveAbove; else when
     // haveLeft, the left neighbour's first sample; else the no-above fallback.
-    let above = match (have_above, above_neighbour) {
+    let mut above = match (have_above, above_neighbour) {
         (true, Some(samples)) => fill_edge_from_neighbour(samples, edge_len),
         _ if have_left => {
             let seed = left_neighbour
@@ -260,7 +298,69 @@ fn build_smooth_chroma_edges(
         }
         _ => vec![NONEIGHBOUR_ABOVE_8BIT; edge_len],
     };
+    // §7.13.2.1 top-right sentinel `AboveRow[w]` (index `side`): overwrite the
+    // clamped last in-block sample with the real reconstructed above-right sample
+    // when the caller resolved one (above-right decoded, in-frame).
+    if let Some(sentinel) = above_right_sentinel
+        && let Some(slot) = above.get_mut(side)
+    {
+        *slot = sentinel;
+    }
     Ok((left, above))
+}
+
+/// Resolves the AV2 § 7.13.2.1 top-right sentinel `AboveRow[w]` for a SMOOTH
+/// chroma block in this single-tile minimal path.
+///
+/// Per § 7.13.2.1, when `haveAbove == 1` the sentinel is
+/// `CurrFrame[plane][y - 1][Min(aboveLimit, x + w)]` with
+/// `aboveLimit = Min(maxX, x + w + 4 * num4AboveRight - 1)` (8-bit, `MrlIndex == 0`,
+/// `aboveMrlIndex == 0`). When `num4AboveRight == 0` (no decoded above-right) or
+/// the block already touches the chroma frame right edge (`x + w > maxX`), this
+/// reduces to the clamped last in-block above sample, so `None` is returned to
+/// keep the [`build_smooth_chroma_edges`] clamp. When `haveAbove == 0` the
+/// sentinel is not read from the above-right at all, so `None` is returned.
+fn resolve_smooth_above_right_sentinel(
+    workspace: &CurrentFrameWorkspace<u8>,
+    plane_id: PlaneId,
+    x: usize,
+    y: usize,
+    side: usize,
+    have_above: bool,
+    num4_above_right: usize,
+) -> core::result::Result<Option<u8>, GeneralIntraResidualError> {
+    if !have_above || num4_above_right == 0 {
+        return Ok(None);
+    }
+    // §7.13.2.1: maxX = ((MiCols * MI_SIZE) >> SubsamplingX) - 1, i.e. the chroma
+    // frame right column. The chroma workspace plane storage width equals the
+    // chroma frame width for these multiple-of-64 frames, so its last column is
+    // `maxX`.
+    let plane = workspace.plane(plane_id).map_err(recon_err)?;
+    let storage_width = plane.storage_size().width();
+    let max_x = match storage_width.checked_sub(1) {
+        Some(value) => value,
+        None => return Ok(None),
+    };
+    let above_row = match y.checked_sub(1) {
+        Some(value) => value,
+        None => return Ok(None),
+    };
+    let x_plus_w = x.saturating_add(side);
+    // aboveLimit = Min(maxX, x + w + 4 * num4AboveRight - 1). Since
+    // num4AboveRight >= 1, `x + w + 4*num4AboveRight - 1 >= x + w`, so the
+    // sentinel column `Min(aboveLimit, x + w)` simplifies to `Min(maxX, x + w)`.
+    let sentinel_col = x_plus_w.min(max_x);
+    // When the block already touches the frame right edge (`x + w > maxX`) the
+    // sentinel collapses to the clamped last in-block sample (`maxX` would be the
+    // block's own last column), which the clamp already supplies; leave it.
+    if x_plus_w > max_x {
+        return Ok(None);
+    }
+    let sentinel = workspace
+        .reconstructed_sample(plane_id, sentinel_col, above_row)
+        .map_err(recon_err)?;
+    Ok(Some(sentinel))
 }
 
 /// Copies `samples` into a length-`edge_len` edge, repeating the last sample to

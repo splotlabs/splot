@@ -988,3 +988,55 @@ fn workspace_freezes_into_hash_y4m_and_reference_store_inputs() {
         expected_index
     );
 }
+
+#[test]
+fn workspace_reconstructed_sample_reads_arbitrary_in_storage_samples() {
+    let mut workspace = CurrentFrameWorkspace::<u8>::new(
+        info(
+            BitDepth::Eight,
+            PixelFormat::Monochrome,
+            size(4, 3),
+            rect(0, 0, 4, 3),
+        ),
+        1,
+    )
+    .unwrap();
+
+    // Write a 2x2 block so a specific reconstructed sample is observable.
+    workspace
+        .write_rect(PlaneId::Y, rect(1, 1, 2, 2), &[9, 8, 7, 6], 2)
+        .unwrap();
+
+    assert_eq!(workspace.reconstructed_sample(PlaneId::Y, 2, 1).unwrap(), 8);
+    assert_eq!(workspace.reconstructed_sample(PlaneId::Y, 1, 2).unwrap(), 7);
+    assert_eq!(workspace.reconstructed_sample(PlaneId::Y, 0, 0).unwrap(), 1);
+}
+
+#[test]
+fn workspace_reconstructed_sample_rejects_out_of_bounds_and_missing_plane() {
+    let workspace = CurrentFrameWorkspace::<u8>::new(
+        info(
+            BitDepth::Eight,
+            PixelFormat::Monochrome,
+            size(4, 3),
+            rect(0, 0, 4, 3),
+        ),
+        1,
+    )
+    .unwrap();
+
+    // Out-of-bounds column / row are rejected, not silently clamped.
+    assert!(matches!(
+        workspace.reconstructed_sample(PlaneId::Y, 4, 0),
+        Err(ReconError::WorkspaceRectOutOfBounds { .. })
+    ));
+    assert!(matches!(
+        workspace.reconstructed_sample(PlaneId::Y, 0, 3),
+        Err(ReconError::WorkspaceRectOutOfBounds { .. })
+    ));
+    // Absent chroma plane on a monochrome workspace is rejected.
+    assert!(matches!(
+        workspace.reconstructed_sample(PlaneId::U, 0, 0),
+        Err(ReconError::MissingWorkspacePlane { plane: PlaneId::U })
+    ));
+}

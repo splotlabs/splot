@@ -530,3 +530,55 @@ output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
 kind = "digest-equality"
 left = "avm-2sbcol-raw-md5"
 right = "dav2d-2sbcol-raw-md5"
+
+[[evidence]]
+id = "lref-avm-dav2d-syn-grid-intra-128x128-q80"
+feature_id = "DECODE-GENERAL-INTRA-GRID"
+decoder_support_rows = ["general-intra-grid"]
+kind = "reference-output-agreement"
+summary = "Local AVM and dav2d raw decoder output MD5 digests agreed for the 8-bit 128x128 full 2-D intra IVF fixture at base_q_idx 80: uniform luma 100 (every superblock DC_PRED) with chroma distinct flat per quadrant (U top-left 110, top-right 200, bottom-right 130) except a SMOOTH_PRED bottom-left superblock; the first general-intra full 2-D superblock grid decode target, exercising the §7.13.2.1 above-right sentinel (the bottom-left SMOOTH chroma block, at a non-rightmost row above 0, reads the real reconstructed above-right neighbour, 200, not the edge-clamped own-top 110)."
+recorded_at = "2026-06-20"
+
+[[evidence.fixture]]
+id = "input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-grid-intra-128x128-q80.ivf"
+sha256 = "6a24b14cbbd7563bfd99ef25216c77309cc2c7c8755b13bb11db7a3aac1b193e"
+size_bytes = 108
+format = "ivf"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Generated locally from a project-owned 128x128 YUV input (uniform luma 100; chroma distinct flat per quadrant with a smooth 2-D ramp in the bottom-left chroma quadrant) with broad decode tools (incl. GDF, IBP, and rectangular partitions) disabled; AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avm"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "457cd58681a747465661baccb1f32095bc5b7774"
+version_summary = "AVM checkout HEAD 457cd58681a747465661baccb1f32095bc5b7774, exact binary build commit not separately archived."
+command_summary = "Local avmdec --rawvideo output MD5 for {fixture:input}, exact arguments not archived."
+output_digest_id = "avm-grid-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "dd2fa84f802c72fea4472b3af87104f1"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.reference_run]]
+id = "dav2d"
+tool = "dav2d"
+executable_name = "dav2d"
+tool_role = "decode-reference"
+source_url = "https://code.videolan.org/videolan/dav2d"
+revision = "f4f96cb06bb3cd3f31e29e1f190f1c0e373ab352"
+version_summary = "dav2d 0.0.1-191-gf4f96cb0 (commit f4f96cb0), decoded with --demuxer ivf; exact version output not archived."
+command_summary = "Local dav2d --demuxer ivf raw decoder output MD5 for {fixture:input}, exact arguments not archived."
+output_digest_id = "dav2d-grid-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "dd2fa84f802c72fea4472b3af87104f1"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-grid-raw-md5"
+right = "dav2d-grid-raw-md5"
