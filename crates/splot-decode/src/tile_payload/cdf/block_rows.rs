@@ -9,7 +9,8 @@ use splot_core::tables::cdf::{
     DEFAULT_DC_SIGN_CDF, DEFAULT_EOB_EXTRA_CDF, DEFAULT_EOB_PT_16_CDF, DEFAULT_EOB_PT_32_CDF,
     DEFAULT_EOB_PT_64_CDF, DEFAULT_EOB_PT_128_CDF, DEFAULT_EOB_PT_256_CDF, DEFAULT_EOB_PT_512_CDF,
     DEFAULT_EOB_PT_1024_CDF, DEFAULT_TXB_SKIP_CDF, DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF,
-    DEFAULT_V_TXB_SKIP_CDF, DEFAULT_Y_MODE_INDEX_CDF, DEFAULT_Y_MODE_SET_CDF,
+    DEFAULT_V_TXB_SKIP_CDF, DEFAULT_Y_MODE_INDEX_CDF, DEFAULT_Y_MODE_OFFSET_CDF,
+    DEFAULT_Y_MODE_SET_CDF,
 };
 
 use super::coeff_rows::{CoeffCdfRows, CoeffCdfSelector};
@@ -18,6 +19,11 @@ use super::{CDF_ROW_LEN, TileCdfArray, TileCdfError, avg_cdf_row, scale_cdf_coun
 const Y_MODE_SET_CDF_ROW_LEN: usize = 5;
 const Y_MODE_INDEX_CONTEXTS: usize = 3;
 const INTRA_MODE_CDF_ROW_LEN: usize = 9;
+// `Default_Y_Mode_Offset_Cdf[Y_MODE_CONTEXTS][MODE_OFFSET_COUNT + 1]` is
+// `[[i32; 7]; 3]`: 6 `y_mode_offset` symbols (MODE_OFFSET_COUNT) plus the count
+// slot, sharing the `y_mode_index` 3-context axis.
+const Y_MODE_OFFSET_CDF_ROW_LEN: usize = 7;
+const Y_MODE_OFFSET_CONTEXTS: usize = 3;
 const COEFF_CDF_Q_CONTEXTS: usize = 4;
 const EOB_PLANE_CTXS: usize = 3;
 const PLANE_TYPES: usize = 2;
@@ -30,6 +36,7 @@ const DC_SIGN_CONTEXTS: usize = 3;
 
 pub(crate) type YModeSetCdfRow = [i32; Y_MODE_SET_CDF_ROW_LEN];
 pub(crate) type YModeIndexCdfRows = [[i32; INTRA_MODE_CDF_ROW_LEN]; Y_MODE_INDEX_CONTEXTS];
+pub(crate) type YModeOffsetCdfRows = [[i32; Y_MODE_OFFSET_CDF_ROW_LEN]; Y_MODE_OFFSET_CONTEXTS];
 pub(crate) type TxbSkipCdfRows = [[[[[i32; CDF_ROW_LEN]; TXB_SKIP_CONTEXTS]; TX_SIZE_CONTEXTS];
     PLANE_TYPES]; COEFF_CDF_Q_CONTEXTS];
 pub(crate) type UvModeCflNotAllowedCdfRows = [[i32; INTRA_MODE_CDF_ROW_LEN]; UV_MODE_CONTEXTS];
@@ -84,6 +91,11 @@ pub(crate) enum BlockCdfSelector {
     /// `TileYModeIndexCdf[ctx]`.
     YModeIndex {
         /// Intra mode context index.
+        ctx: usize,
+    },
+    /// `TileYModeOffsetCdf[ctx]`.
+    YModeOffset {
+        /// Intra mode context index (shares the `y_mode_index` § 8.3.2 context).
         ctx: usize,
     },
     /// `TileTxbSkipCdf[coeff_cdf_q_ctx][plane_type][tx_size][ctx]`.
@@ -147,6 +159,7 @@ pub(crate) enum BlockCdfSelector {
 pub(crate) struct BlockCdfRows {
     pub(super) y_mode_set: YModeSetCdfRow,
     pub(super) y_mode_index: YModeIndexCdfRows,
+    pub(super) y_mode_offset: YModeOffsetCdfRows,
     pub(super) txb_skip: TxbSkipCdfRows,
     pub(super) uv_mode_cfl_not_allowed: UvModeCflNotAllowedCdfRows,
     pub(super) v_txb_skip: VTxbSkipCdfRows,
@@ -167,6 +180,7 @@ impl BlockCdfRows {
         Self {
             y_mode_set: DEFAULT_Y_MODE_SET_CDF,
             y_mode_index: DEFAULT_Y_MODE_INDEX_CDF,
+            y_mode_offset: DEFAULT_Y_MODE_OFFSET_CDF,
             txb_skip: DEFAULT_TXB_SKIP_CDF,
             uv_mode_cfl_not_allowed: DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF,
             v_txb_skip: DEFAULT_V_TXB_SKIP_CDF,
@@ -195,6 +209,18 @@ impl BlockCdfRows {
                         index_name: "ctx",
                         actual: ctx,
                         max_exclusive: Y_MODE_INDEX_CONTEXTS,
+                    })?;
+                Ok(row.as_slice())
+            }
+            BlockCdfSelector::YModeOffset { ctx } => {
+                let row = self
+                    .y_mode_offset
+                    .get(ctx)
+                    .ok_or(TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::YModeOffset,
+                        index_name: "ctx",
+                        actual: ctx,
+                        max_exclusive: Y_MODE_OFFSET_CONTEXTS,
                     })?;
                 Ok(row.as_slice())
             }
@@ -303,6 +329,19 @@ impl BlockCdfRows {
                         .get_mut(ctx)
                         .ok_or(TileCdfError::SelectorOutOfRange {
                             array: TileCdfArray::YModeIndex,
+                            index_name: "ctx",
+                            actual: ctx,
+                            max_exclusive,
+                        })?;
+                Ok(row.as_mut_slice())
+            }
+            BlockCdfSelector::YModeOffset { ctx } => {
+                let max_exclusive = self.y_mode_offset.len();
+                let row =
+                    self.y_mode_offset
+                        .get_mut(ctx)
+                        .ok_or(TileCdfError::SelectorOutOfRange {
+                            array: TileCdfArray::YModeOffset,
                             index_name: "ctx",
                             actual: ctx,
                             max_exclusive,

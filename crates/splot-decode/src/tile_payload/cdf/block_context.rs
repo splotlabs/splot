@@ -88,6 +88,9 @@ impl IntraYMode {
     /// bound (§ 5 `is_directional_mode`).
     const D67_PRED: u8 = 8;
 
+    /// AV2 § 9.2 `D135_PRED` canonical luma mode value (the single directional
+    /// luma mode the general intra decode currently reconstructs bit-exact).
+    const D135_PRED: u8 = 4;
     /// AV2 § 9.2 `SMOOTH_V_PRED` canonical luma mode value.
     const SMOOTH_V_PRED: u8 = 10;
     /// AV2 § 9.2 `SMOOTH_H_PRED` canonical luma mode value.
@@ -109,6 +112,19 @@ impl IntraYMode {
             _ => None,
         }
     }
+
+    /// Maps this luma mode to the directional-angle predictor the general intra
+    /// decode currently reconstructs bit-exact against the AVM/dav2d oracle, or
+    /// `None` for every other mode. Only `D135_PRED` (pAngle 135, a § 7.13.2.8
+    /// "middle" angle) is supported, and only over the § 7.13.2.1 no-neighbour
+    /// fallback edges; the remaining directional modes and the
+    /// `enable_intra_edge_filter` / IDIF / upsample edge synthesis are deferred.
+    pub(crate) const fn supported_directional(self) -> Option<SupportedDirectionalLumaMode> {
+        match self.0 {
+            Self::D135_PRED => Some(SupportedDirectionalLumaMode::D135),
+            _ => None,
+        }
+    }
 }
 
 /// The non-DC non-directional luma intra modes the general intra decode can
@@ -121,6 +137,20 @@ pub(crate) enum SupportedNonDcLumaMode {
     SmoothVertical,
     /// AV2 `SMOOTH_H_PRED` (§ 7.13.2.13 horizontal smooth prediction).
     SmoothHorizontal,
+}
+
+/// The directional-angle luma intra modes the general intra decode can
+/// reconstruct today — a strict subset of the § 9.2 directional modes, gated to
+/// those proven bit-exact against the AVM/dav2d oracle. Only `D135_PRED`
+/// (pAngle 135, `AngleDeltaY == 0`) is supported, and only for the top-left
+/// no-neighbour block where the § 7.13.2.8 prediction edges reduce to the
+/// § 7.13.2.1 flat fallbacks and the `enable_intra_edge_filter` / IDIF / upsample
+/// edge synthesis are no-ops. The other directional modes and angle deltas need
+/// their own verified oracle fixtures and remain deferred.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SupportedDirectionalLumaMode {
+    /// AV2 `D135_PRED` (§ 7.13.2.8 directional prediction at pAngle 135).
+    D135,
 }
 
 /// The chroma intra modes the general intra decode can reconstruct today — the
@@ -157,25 +187,46 @@ const DEFAULT_MODE_LIST_UV: [u8; 13] = [
     8, 5, 6, 7, // D67_PRED, D113_PRED, D157_PRED, D203_PRED
 ];
 
-/// Resolves the typed chroma `UVMode` from the decoded `uv_mode` index via
-/// AV2 § 5.20.5.3 `get_intra_uv_mode_set`, restricted to the non-directional
-/// luma case (`is_directional_mode(YMode) == 0`), which is the only luma subset
-/// [`reconstruct_minimal_y_mode`] produces. In that case `get_intra_uv_mode_set`
-/// skips its directional `modeIdx == 0 -> YMode` branch and the per-entry
-/// `mode != YMode` filter (all `Default_Mode_List_Uv` entries pass), so
-/// `UVMode == Default_Mode_List_Uv[uv_mode]`. Returns the supported chroma
-/// predictor or `None` for any other mode.
-pub(crate) fn supported_chroma_mode_non_directional_luma(
+/// Resolves the typed chroma `UVMode` value from the decoded `uv_mode` index via
+/// the AV2 § 5.20.5.3 `get_intra_uv_mode_set(modeIdx)` process, faithful to both
+/// the non-directional and directional luma branches.
+///
+/// When `is_directional_mode(YMode)`, `modeIdx == 0` returns `YMode`; otherwise
+/// `modeIdx -= 1` and the `Default_Mode_List_Uv` scan skips the entry equal to
+/// `YMode` (the `mode != YMode || !is_directional_mode(YMode)` filter). When
+/// `YMode` is non-directional, no entry is skipped and the result is
+/// `Default_Mode_List_Uv[uv_mode]`. Returns `None` if `uv_mode` exhausts the
+/// list (malformed syntax).
+fn get_intra_uv_mode_set(y_mode: IntraYMode, uv_mode: u8) -> Option<u8> {
+    let y_directional = y_mode.is_directional();
+    let mut mode_idx = usize::from(uv_mode);
+    if y_directional {
+        if mode_idx == 0 {
+            return Some(y_mode.0);
+        }
+        mode_idx -= 1;
+    }
+    for &mode in DEFAULT_MODE_LIST_UV.iter() {
+        if mode != y_mode.0 || !y_directional {
+            if mode_idx == 0 {
+                return Some(mode);
+            }
+            mode_idx -= 1;
+        }
+    }
+    None
+}
+
+/// Resolves the supported chroma predictor from the decoded `uv_mode` index for
+/// any luma mode the general intra decode produces (non-directional or the
+/// supported directional subset), via AV2 § 5.20.5.3 `get_intra_uv_mode_set`.
+/// Returns the supported chroma predictor (`DC_PRED` or `SMOOTH_PRED`) or `None`
+/// for any other resolved chroma mode.
+pub(crate) fn supported_chroma_mode(
     y_mode: IntraYMode,
     uv_mode: u8,
 ) -> Option<SupportedChromaMode> {
-    if y_mode.is_directional() {
-        // The directional luma reordering in `get_intra_uv_mode_set` is not
-        // modelled; `reconstruct_minimal_y_mode` never produces a directional
-        // YMode, so this guards against a future caller change.
-        return None;
-    }
-    let uv_mode_value = *DEFAULT_MODE_LIST_UV.get(usize::from(uv_mode))?;
+    let uv_mode_value = get_intra_uv_mode_set(y_mode, uv_mode)?;
     match uv_mode_value {
         DC_PRED_VALUE => Some(SupportedChromaMode::Dc),
         SMOOTH_PRED_VALUE => Some(SupportedChromaMode::Smooth),
@@ -217,6 +268,141 @@ pub(crate) fn reconstruct_minimal_y_mode(y_mode_set: u8, y_mode_index: u8) -> Op
     REORDERED_Y_MODE_NON_DIRECTIONAL
         .get(usize::from(y_mode_index))
         .copied()
+}
+
+/// AV2 § 3 `MODE_INDEX_COUNT`: the number of values for `y_mode_index`
+/// (`03-symbols.md`); `y_mode_index == MODE_INDEX_COUNT - 1` triggers the
+/// § 5.20.5.3 `y_mode_offset` escape.
+pub(crate) const MODE_INDEX_COUNT: u8 = 8;
+
+/// AV2 § 3 `MODE_OFFSET_COUNT`: the number of values for `y_mode_offset`
+/// (`03-symbols.md`); the decoded `y_mode_offset` is in `0..MODE_OFFSET_COUNT`.
+const MODE_OFFSET_COUNT: u8 = 6;
+
+/// AV2 § 3 `DIRECTIONAL_MODES_COUNT` (`03-symbols.md`): the length of
+/// `Default_Mode_List_Y` and the directional-mode index modulus.
+const DIRECTIONAL_MODES_COUNT: usize = 56;
+
+/// AV2 § 3 `TOTAL_ANGLE_DELTA_COUNT` (`03-symbols.md`): the number of distinct
+/// angle deltas (`-MAX_ANGLE_DELTA..=MAX_ANGLE_DELTA`).
+const TOTAL_ANGLE_DELTA_COUNT: usize = 7;
+
+/// AV2 § 3 `MAX_ANGLE_DELTA` (`03-symbols.md`): the maximum magnitude of
+/// `AngleDeltaY`, the bias subtracted from `modeDelta % TOTAL_ANGLE_DELTA_COUNT`.
+const MAX_ANGLE_DELTA: i8 = 3;
+
+/// AV2 § 5.20.5.3 `Default_Mode_List_Y[DIRECTIONAL_MODES_COUNT]`
+/// (`05-syntax-structures.md` lines 11094-11099): the directional-mode selection
+/// order used by `get_intra_y_mode_set` after the joint-mode neighbours are
+/// exhausted. Verbatim from the spec mirror.
+#[rustfmt::skip]
+const DEFAULT_MODE_LIST_Y: [usize; DIRECTIONAL_MODES_COUNT] = [
+    17, 45, 3, 10, 24, 31, 38, 52,
+    15, 19, 43, 47, 1, 5, 8, 12, 22, 26, 29, 33, 36, 40, 50, 54,
+    16, 18, 44, 46, 2, 4, 9, 11, 23, 25, 30, 32, 37, 39, 51, 53,
+    14, 20, 42, 48, 0, 6, 7, 13, 21, 27, 28, 34, 35, 41, 49, 55,
+];
+
+/// AV2 § 5.20.5.3 `Reordered_Y_Mode[INTRA_MODES]` (`05-syntax-structures.md`
+/// lines 11088-11092): the canonical § 9.2 intra mode value for each reorder
+/// index. Index `0..NON_DIRECTIONAL_MODES_COUNT` are the non-directional modes;
+/// `NON_DIRECTIONAL_MODES_COUNT..` are the directional modes
+/// (`D45, D67, V, D113, D135, D157, H, D203` -> canonical 3, 8, 1, 5, 4, 6, 2, 7).
+#[rustfmt::skip]
+const REORDERED_Y_MODE: [IntraYMode; 13] = [
+    IntraYMode(0),  // DC_PRED
+    IntraYMode(9),  // SMOOTH_PRED
+    IntraYMode(10), // SMOOTH_V_PRED
+    IntraYMode(11), // SMOOTH_H_PRED
+    IntraYMode(12), // PAETH_PRED
+    IntraYMode(3),  // D45_PRED
+    IntraYMode(8),  // D67_PRED
+    IntraYMode(1),  // V_PRED
+    IntraYMode(5),  // D113_PRED
+    IntraYMode(4),  // D135_PRED
+    IntraYMode(6),  // D157_PRED
+    IntraYMode(2),  // H_PRED
+    IntraYMode(7),  // D203_PRED
+];
+
+/// The typed luma mode and `AngleDeltaY` reconstructed from the § 5.20.5.3
+/// `y_mode_offset` escape.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct YModeEscapeResult {
+    /// The reconstructed typed luma `YMode`.
+    pub(crate) y_mode: IntraYMode,
+    /// The reconstructed `AngleDeltaY` (in `-MAX_ANGLE_DELTA..=MAX_ANGLE_DELTA`),
+    /// `0` for a non-directional reconstructed mode.
+    pub(crate) angle_delta_y: i8,
+}
+
+/// Reconstructs the typed luma `YMode` and `AngleDeltaY` for the AV2 § 5.20.5.3
+/// `y_mode_set == 0`, `y_mode_index == MODE_INDEX_COUNT - 1` `y_mode_offset`
+/// escape, restricted to the **top-left block with no in-frame directional
+/// joint-mode neighbours** (the single-block tile-origin case).
+///
+/// In that case `modeIdx = (MODE_INDEX_COUNT - 1) + y_mode_offset` and
+/// `get_intra_y_mode_set(modeIdx)` simplifies: both `get_joint_mode` neighbours
+/// are out of frame (`DC_PRED < NON_DIRECTIONAL_MODES_COUNT`), so neither the
+/// joint-mode selection loop nor the `Block_Width * Block_Height > 64` expansion
+/// selects any directional mode (`count == 0`). `modeDelta` therefore reduces to
+/// the `(modeIdx - NON_DIRECTIONAL_MODES_COUNT)`-th unselected entry of
+/// `Default_Mode_List_Y`, i.e. `Default_Mode_List_Y[modeIdx - NON_DIRECTIONAL_MODES_COUNT]
+/// + NON_DIRECTIONAL_MODES_COUNT`. The typed `YMode` and `AngleDeltaY` then
+/// follow the § 5.20.5.3 directional reorder (`Reordered_Y_Mode`,
+/// `TOTAL_ANGLE_DELTA_COUNT`, `MAX_ANGLE_DELTA`).
+///
+/// Returns `None` for a `y_mode_offset` outside `0..MODE_OFFSET_COUNT` or any
+/// arithmetic that escapes the table bounds.
+//
+// TODO(spec: DECODE-GENERAL-INTRA-ANGLE): the in-frame directional-neighbour
+// reorder branches of `get_intra_y_mode_set` (which depend on the per-block
+// `IntraJointModes` neighbour state and `Block_Width * Block_Height > 64`
+// expansion) are not modelled; only the top-left no-neighbour case is supported.
+pub(crate) fn reconstruct_y_mode_offset_escape_top_left(
+    y_mode_offset: u8,
+) -> Option<YModeEscapeResult> {
+    if y_mode_offset >= MODE_OFFSET_COUNT {
+        return None;
+    }
+    // modeIdx = y_mode_index + y_mode_offset, with y_mode_index == MODE_INDEX_COUNT - 1.
+    let mode_idx = usize::from(MODE_INDEX_COUNT - 1) + usize::from(y_mode_offset);
+    // get_intra_y_mode_set, top-left no-directional-neighbour case.
+    let mode_delta = get_intra_y_mode_set_top_left(mode_idx)?;
+
+    if mode_delta < NON_DIRECTIONAL_MODES_COUNT {
+        let y_mode = *REORDERED_Y_MODE.get(mode_delta)?;
+        return Some(YModeEscapeResult {
+            y_mode,
+            angle_delta_y: 0,
+        });
+    }
+    let mode_delta = mode_delta - NON_DIRECTIONAL_MODES_COUNT;
+    let reorder_index = mode_delta / TOTAL_ANGLE_DELTA_COUNT + NON_DIRECTIONAL_MODES_COUNT;
+    let y_mode = *REORDERED_Y_MODE.get(reorder_index)?;
+    // AngleDeltaY = (modeDelta % TOTAL_ANGLE_DELTA_COUNT) - MAX_ANGLE_DELTA.
+    let angle_delta_y = (mode_delta % TOTAL_ANGLE_DELTA_COUNT) as i8 - MAX_ANGLE_DELTA;
+    Some(YModeEscapeResult {
+        y_mode,
+        angle_delta_y,
+    })
+}
+
+/// AV2 § 5.20.5.3 `get_intra_y_mode_set(modeIdx)` for the top-left block with no
+/// in-frame directional joint-mode neighbours. Returns `modeDelta`.
+///
+/// When `modeIdx < NON_DIRECTIONAL_MODES_COUNT` the spec returns `modeIdx`
+/// directly. Otherwise, with both neighbours out of frame, no directional mode is
+/// pre-selected, so the result is the `(modeIdx - NON_DIRECTIONAL_MODES_COUNT)`-th
+/// entry of `Default_Mode_List_Y`, biased by `NON_DIRECTIONAL_MODES_COUNT`.
+/// Returns `None` if `modeIdx - NON_DIRECTIONAL_MODES_COUNT` exceeds the table.
+fn get_intra_y_mode_set_top_left(mode_idx: usize) -> Option<usize> {
+    if mode_idx < NON_DIRECTIONAL_MODES_COUNT {
+        return Some(mode_idx);
+    }
+    let directional_index = mode_idx - NON_DIRECTIONAL_MODES_COUNT;
+    let mode = *DEFAULT_MODE_LIST_Y.get(directional_index)?;
+    Some(mode + NON_DIRECTIONAL_MODES_COUNT)
 }
 
 /// AV2 § 8.3.2 `uv_mode` (`TileUVModeCflNotAllowedCdf[ctx]`) context: `ctx`
@@ -413,5 +599,80 @@ mod tests {
         assert_eq!(v_txb_skip_ctx(true, true, false, false), 2);
         assert_eq!(v_txb_skip_ctx(true, true, true, false), 5);
         assert_eq!(v_txb_skip_ctx(true, true, true, true), 11);
+    }
+
+    #[test]
+    fn y_mode_offset_escape_reconstructs_d135_for_the_hedge_fixture() {
+        // The hedge fixture's escape: y_mode_set == 0,
+        // y_mode_index == MODE_INDEX_COUNT - 1, y_mode_offset == 3 ->
+        // modeIdx = 7 + 3 = 10; get_intra_y_mode_set(10) (top-left, no directional
+        // neighbour) = Default_Mode_List_Y[10 - 5] + 5 = 31 + 5 = 36; directional:
+        // 36 - 5 = 31; Reordered_Y_Mode[31 / 7 + 5] = Reordered_Y_Mode[9] = D135;
+        // AngleDeltaY = 31 % 7 - 3 = 0.
+        let escape = reconstruct_y_mode_offset_escape_top_left(3)
+            .expect("y_mode_offset 3 reconstructs a mode");
+        assert_eq!(escape.y_mode, IntraYMode(IntraYMode::D135_PRED));
+        assert_eq!(escape.angle_delta_y, 0);
+        assert_eq!(
+            escape.y_mode.supported_directional(),
+            Some(SupportedDirectionalLumaMode::D135)
+        );
+        assert!(escape.y_mode.is_directional());
+    }
+
+    #[test]
+    fn y_mode_offset_escape_rejects_out_of_range_offset() {
+        // y_mode_offset must be in 0..MODE_OFFSET_COUNT (0..6).
+        assert!(reconstruct_y_mode_offset_escape_top_left(MODE_OFFSET_COUNT).is_none());
+        assert!(reconstruct_y_mode_offset_escape_top_left(u8::MAX).is_none());
+    }
+
+    #[test]
+    fn y_mode_offset_escape_is_total_over_the_legal_offset_range() {
+        // Every legal y_mode_offset reconstructs a mode without panicking, and the
+        // reconstructed AngleDeltaY stays in -MAX_ANGLE_DELTA..=MAX_ANGLE_DELTA.
+        for offset in 0..MODE_OFFSET_COUNT {
+            let escape = reconstruct_y_mode_offset_escape_top_left(offset)
+                .expect("legal offset reconstructs");
+            assert!(escape.angle_delta_y >= -MAX_ANGLE_DELTA);
+            assert!(escape.angle_delta_y <= MAX_ANGLE_DELTA);
+        }
+    }
+
+    #[test]
+    fn get_intra_uv_mode_set_directional_luma_returns_y_mode_for_index_zero() {
+        // is_directional_mode(D135) -> uv_mode 0 returns YMode (D135).
+        let d135 = IntraYMode(IntraYMode::D135_PRED);
+        assert_eq!(get_intra_uv_mode_set(d135, 0), Some(IntraYMode::D135_PRED));
+    }
+
+    #[test]
+    fn supported_chroma_mode_directional_luma_resolves_dc_for_uv_mode_one() {
+        // The hedge fixture: directional luma (D135) with DC chroma. With
+        // is_directional_mode(YMode), uv_mode 0 -> YMode (directional, unsupported);
+        // uv_mode 1 -> after modeIdx -= 1, the first Default_Mode_List_Uv entry
+        // (DC_PRED) -> SupportedChromaMode::Dc.
+        let d135 = IntraYMode(IntraYMode::D135_PRED);
+        assert_eq!(
+            supported_chroma_mode(d135, 1),
+            Some(SupportedChromaMode::Dc)
+        );
+        // uv_mode 0 resolves to the directional YMode itself, which is unsupported.
+        assert_eq!(supported_chroma_mode(d135, 0), None);
+    }
+
+    #[test]
+    fn supported_chroma_mode_non_directional_luma_passes_list_through() {
+        // For a non-directional luma mode, get_intra_uv_mode_set skips no entry, so
+        // uv_mode indexes Default_Mode_List_Uv directly: 0 -> DC, 1 -> SMOOTH.
+        let dc = IntraYMode::DC_PRED;
+        assert_eq!(supported_chroma_mode(dc, 0), Some(SupportedChromaMode::Dc));
+        assert_eq!(
+            supported_chroma_mode(dc, 1),
+            Some(SupportedChromaMode::Smooth)
+        );
+        // A directional Default_Mode_List_Uv entry (e.g. V_PRED at index 5) is not
+        // a supported chroma predictor.
+        assert_eq!(supported_chroma_mode(dc, 5), None);
     }
 }

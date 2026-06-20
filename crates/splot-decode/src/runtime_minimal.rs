@@ -988,31 +988,35 @@ fn decode_one_general_intra_block(
             GENERAL_INTRA_MODE_SPEC_SECTION,
         ));
     }
-    // Luma is DC or a supported non-DC mode (§ 7.13.2.13 SMOOTH_V / SMOOTH_H).
-    // The supported non-DC modes are only reconstructed for the top-left
-    // (no-neighbour) block of size >= 32x32, where § 7.13.2.1 supplies pure
-    // fallback edges and § 5.20.8.2 `get_tx_set` returns TX_SET_DCTONLY (square
-    // intra `txSzSqrUp >= TX_32X32` -> the transform is forced DCT_DCT with no
-    // `intra_tx_type` signaled, matching the DCT_DCT residual/reconstruction
-    // path). Smaller non-DC blocks (8x8 / 16x16) can carry a mode-dependent
-    // (non-DCT) TxType this path does not yet decode; multi-block non-DC
-    // prediction (reading reconstructed neighbours), the remaining non-DC modes
-    // (SMOOTH, PAETH), and directional modes are also deferred. `n4w` is in 4x4
-    // units, so `n4w >= 8` is the >= 32x32 gate.
+    // Luma is DC, a supported non-DC mode (§ 7.13.2.13 SMOOTH_V / SMOOTH_H), or
+    // the supported directional mode (§ 7.13.2.8 D135_PRED). The non-DC and
+    // directional modes are only reconstructed for the top-left (no-neighbour)
+    // block, where § 7.13.2.1 supplies pure fallback edges and the
+    // `enable_intra_edge_filter` / IDIF / upsample edge synthesis are no-ops.
+    //
+    // Non-DC smooth: gated to >= 32x32 (`n4w >= 8`), where § 5.20.8.2
+    // `get_tx_set` returns TX_SET_DCTONLY (square intra `txSzSqrUp >= TX_32X32`
+    // -> forced DCT_DCT, no `intra_tx_type`). Directional D135: gated to the
+    // verified 64x64 superblock (`n4w == 16`, TX_64X64 -> TX_SET_DCTONLY); the
+    // 32x32 / smaller directional blocks (which may signal a mode-dependent
+    // non-DCT TxType) and other angles / non-zero angle deltas are deferred.
     const NON_DC_MIN_N4: usize = 8;
+    const FULL_SB_N4_LUMA: usize = 16;
     let supported_nondc_luma = modes.supported_nondc_luma();
+    let supported_directional_luma = modes.supported_directional_luma();
     if !modes.luma_is_dc() {
-        match supported_nondc_luma {
-            Some(_) if frontier.r == 0 && frontier.c == 0 && n4w >= NON_DC_MIN_N4 => {}
-            Some(_) if frontier.r != 0 || frontier.c != 0 => {
-                return Err(general_intra_unsupported(
-                    "general_intra_multiblock_non_dc_luma",
-                    Some(tile_offset),
-                    "general intra non-DC luma prediction is only supported for the top-left (no-neighbour) block; multi-block non-DC prediction is not yet implemented",
-                    GENERAL_INTRA_MODE_SPEC_SECTION,
-                ));
-            }
-            Some(_) => {
+        let is_top_left = frontier.r == 0 && frontier.c == 0;
+        if !is_top_left {
+            return Err(general_intra_unsupported(
+                "general_intra_multiblock_non_dc_luma",
+                Some(tile_offset),
+                "general intra non-DC / directional luma prediction is only supported for the top-left (no-neighbour) block; multi-block non-DC prediction is not yet implemented",
+                GENERAL_INTRA_MODE_SPEC_SECTION,
+            ));
+        }
+        match (supported_nondc_luma, supported_directional_luma) {
+            (Some(_), _) if n4w >= NON_DC_MIN_N4 => {}
+            (Some(_), _) => {
                 return Err(general_intra_unsupported(
                     "general_intra_non_dc_non_dctonly_size",
                     Some(tile_offset),
@@ -1020,11 +1024,20 @@ fn decode_one_general_intra_block(
                     GENERAL_INTRA_MODE_SPEC_SECTION,
                 ));
             }
-            None => {
+            (_, Some(_)) if n4w == FULL_SB_N4_LUMA => {}
+            (_, Some(_)) => {
+                return Err(general_intra_unsupported(
+                    "general_intra_directional_non_dctonly_size",
+                    Some(tile_offset),
+                    "general intra directional (D135) luma prediction is only supported for the verified 64x64 (TX_SET_DCTONLY) superblock block; smaller directional blocks can signal a mode-dependent transform type that is not yet decoded",
+                    GENERAL_INTRA_MODE_SPEC_SECTION,
+                ));
+            }
+            (None, None) => {
                 return Err(general_intra_unsupported(
                     "general_intra_unsupported_luma_mode",
                     Some(tile_offset),
-                    "general intra reconstruction only supports DC and SMOOTH_V / SMOOTH_H luma prediction; SMOOTH, PAETH, and directional luma modes are not yet implemented",
+                    "general intra reconstruction only supports DC, SMOOTH_V / SMOOTH_H, and D135 (pAngle 135) luma prediction; SMOOTH, PAETH, other directional modes, and non-zero angle deltas are not yet implemented",
                     GENERAL_INTRA_MODE_SPEC_SECTION,
                 ));
             }
@@ -1040,8 +1053,8 @@ fn decode_one_general_intra_block(
         work_unit, symbols, coeff_ctx, 0, luma_tx, luma_x, luma_y, false, uv_mode,
     )
     .map_err(|error| general_intra_residual_error(error, tile_offset))?;
-    match supported_nondc_luma {
-        Some(mode) => {
+    match (supported_nondc_luma, supported_directional_luma) {
+        (Some(mode), _) => {
             crate::runtime_minimal_recon::reconstruct_general_intra_luma_nondc_first_block_into(
                 workspace,
                 &luma,
@@ -1054,7 +1067,20 @@ fn decode_one_general_intra_block(
             )
             .map_err(|error| general_intra_residual_error(error, tile_offset))?
         }
-        None => crate::runtime_minimal_recon::reconstruct_general_intra_block_into(
+        (None, Some(mode)) => {
+            crate::runtime_minimal_recon::reconstruct_general_intra_luma_directional_first_block_into(
+                workspace,
+                &luma,
+                mode,
+                luma_x,
+                luma_y,
+                luma_log2,
+                qindex,
+                luma_use_tcq,
+            )
+            .map_err(|error| general_intra_residual_error(error, tile_offset))?
+        }
+        (None, None) => crate::runtime_minimal_recon::reconstruct_general_intra_block_into(
             workspace,
             &luma,
             PlaneId::Y,
@@ -1973,6 +1999,47 @@ mod general_intra_tests {
         assert_eq!(
             hash,
             "cfc6debd26760cdebf1d1a4497792461f0f68bc7e7773741ddf2cbc34561e702"
+        );
+    }
+
+    // Single-block directional intra: a 64x64 block the encoder codes as the
+    // § 5.20.5.3 `y_mode_offset` escape (`y_mode_set == 0`,
+    // `y_mode_index == MODE_INDEX_COUNT - 1`, `y_mode_offset == 3`), which
+    // reconstructs `D135_PRED` (pAngle 135, `AngleDeltaY == 0`). The decoder
+    // builds the § 7.13.2.8 directional prediction over the § 7.13.2.1
+    // no-neighbour fallback edges and adds the residual. avmdec and dav2d agree on
+    // the decoded output (md5 1179bcc873c1d1ac49c2c032f11ca44d, DC chroma).
+    const HEDGE_DIR_FIXTURE: &[u8] =
+        include_bytes!("../../../tests/conformance/vectors/valid/syn-hedge-intra-64x64-q80.ivf");
+
+    #[test]
+    fn hedge_directional_d135_intra_frame_decodes_to_oracle() {
+        use splot_recon::{BitDepth, PixelFormat, PlaneSize};
+
+        let frame = decode_general_intra_luma(HEDGE_DIR_FIXTURE);
+        assert_eq!(frame.bit_depth(), BitDepth::Eight);
+        assert_eq!(frame.pixel_format(), PixelFormat::Yuv420);
+        assert_eq!(frame.y().visible_size(), PlaneSize::new(64, 64).unwrap());
+
+        // The D135 directional prediction over a top/bottom split residual: the
+        // top half reconstructs near 40 and the bottom half near 210 (a genuinely
+        // non-flat reconstruction, not a single DC level). Chroma is flat DC.
+        let y = frame.y().samples();
+        assert!(y[0] < y[63 * 64], "luma should increase top-to-bottom");
+        let distinct = y.iter().collect::<std::collections::BTreeSet<_>>().len();
+        assert!(distinct > 4, "luma should be a non-flat reconstruction");
+        assert!(frame.u().unwrap().samples().iter().all(|&s| s == 120));
+        assert!(frame.v().unwrap().samples().iter().all(|&s| s == 130));
+
+        // Frame hash pins splot's output, which reproduces avmdec's and dav2d's
+        // raw output byte-for-byte (verified locally; md5
+        // 1179bcc873c1d1ac49c2c032f11ca44d).
+        let hash = splot_recon::DecodedFrameHashInput::new(&frame)
+            .compute_hash()
+            .to_hex();
+        assert_eq!(
+            hash,
+            "b15f267ec6e99ca4d96a70f38bffe5f798ee4c33ad3aaec23761a1ea74b0be33"
         );
     }
 }

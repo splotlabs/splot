@@ -312,6 +312,12 @@ pub(crate) enum TileCdfSelector {
         /// Intra mode context index.
         ctx: usize,
     },
+    /// `TileYModeOffsetCdf[ctx]` from AV2 § 8.3.2 (the § 5.20.5.3 `y_mode_offset`
+    /// escape symbol; shares the `y_mode_index` context derivation).
+    YModeOffset {
+        /// Intra mode context index.
+        ctx: usize,
+    },
     /// `TileTxbSkipCdf[coeff_cdf_q_ctx][plane_type][tx_size][ctx]`.
     ///
     /// This selector exposes only the generated-default row shape needed by
@@ -383,6 +389,8 @@ pub(crate) enum TileCdfArray {
     DoUneven4WayPartition,
     /// `TileYModeIndexCdf`.
     YModeIndex,
+    /// `TileYModeOffsetCdf`.
+    YModeOffset,
     /// `TileTxbSkipCdf`.
     TxbSkip,
     /// `TileUvModeCflNotAllowedCdf`.
@@ -438,6 +446,7 @@ impl TileCdfArray {
             Self::RectType => "TileRectTypeCdf",
             Self::DoUneven4WayPartition => "TileDoUneven4wayPartitionCdf",
             Self::YModeIndex => "TileYModeIndexCdf",
+            Self::YModeOffset => "TileYModeOffsetCdf",
             Self::TxbSkip => "TileTxbSkipCdf",
             Self::UvModeCflNotAllowed => "TileUvModeCflNotAllowedCdf",
             Self::VTxbSkip => "TileVTxbSkipCdf",
@@ -777,6 +786,9 @@ impl TileCdfRows {
             TileCdfSelector::YModeIndex { ctx } => {
                 self.block.row(BlockCdfSelector::YModeIndex { ctx })
             }
+            TileCdfSelector::YModeOffset { ctx } => {
+                self.block.row(BlockCdfSelector::YModeOffset { ctx })
+            }
             TileCdfSelector::TxbSkip {
                 coeff_cdf_q_ctx,
                 plane_type,
@@ -897,6 +909,9 @@ impl TileCdfRows {
             TileCdfSelector::YModeSet => self.block.row_mut(BlockCdfSelector::YModeSet),
             TileCdfSelector::YModeIndex { ctx } => {
                 self.block.row_mut(BlockCdfSelector::YModeIndex { ctx })
+            }
+            TileCdfSelector::YModeOffset { ctx } => {
+                self.block.row_mut(BlockCdfSelector::YModeOffset { ctx })
             }
             TileCdfSelector::TxbSkip {
                 coeff_cdf_q_ctx,

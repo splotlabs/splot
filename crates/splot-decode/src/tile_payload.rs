@@ -46,7 +46,9 @@ use crate::{
 };
 
 pub(crate) use block_symbol::MinimalBlockSymbolTraceError;
-pub(crate) use cdf::block_context::{SupportedChromaMode, SupportedNonDcLumaMode};
+pub(crate) use cdf::block_context::{
+    SupportedChromaMode, SupportedDirectionalLumaMode, SupportedNonDcLumaMode,
+};
 pub(crate) use coeff_state::TileCoeffContextState;
 pub(crate) use general_intra_block::{
     GeneralIntraBlockModeError, decode_general_intra_block_modes,

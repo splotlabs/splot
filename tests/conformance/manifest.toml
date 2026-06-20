@@ -80,6 +80,11 @@ description = "Full 2-D grid 8-bit 4:2:0 intra key frame (IVF, 128x128) from a p
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-hedge-intra-64x64-q80.ivf"
+description = "Single-block 8-bit 4:2:0 intra key frame (IVF, 64x64) from a project-owned top/bottom-split luma input (top half 40, bottom half 210, flat chroma) with broad decode tools disabled at base_q_idx 80, so the whole frame is one 64x64 D135_PRED luma block coded via the section 5.20.5.3 y_mode_offset escape (y_mode_set 0, y_mode_index MODE_INDEX_COUNT-1, y_mode_offset 3 -> modeIdx 10 -> D135_PRED, AngleDeltaY 0, pAngle 135) over the section 7.13.2.8 directional prediction reduced to the section 7.13.2.1 no-neighbour fallback edges plus residual (DC chroma U=120 V=130); the first general-intra directional-angle decode target whose avmdec and dav2d raw outputs agree (md5 1179bcc873c1d1ac49c2c032f11ca44d) and splot reproduces byte-for-byte; validates clean."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-key-inter-64x64.ivf"
 description = "Key frame plus two inter frames (IVF, 64x64) from project-owned synthetic input; validates clean."
 expect = "clean"

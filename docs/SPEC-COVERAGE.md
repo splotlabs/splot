@@ -290,6 +290,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.20.4.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-4-1) | Decode block syntax | `DECODE-TILE-COEFF-STATE-BUFFERS` | ✅ | — | — | ✅ | — |
 | [§ 5.20.4.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-4-1) | Decode block syntax | `DECODE-TILE-MI-SIZE-STATE-BOUNDARY` | ✅ | — | — | ✅ | — |
 | [§ 5.20.5.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-1) | Mode info syntax | `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER` | ✅ | 🟡 | — | ✅ | 4 |
+| [§ 5.20.5.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3) | Intra frame mode info syntax | `DECODE-GENERAL-INTRA-ANGLE` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.5.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3) | Intra frame mode info syntax | `DECODE-GENERAL-INTRA-BLOCK-MODES` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.5.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3) | Intra frame mode info syntax | `DECODE-GENERAL-INTRA-MULTIBLOCK` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.5.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3) | Intra frame mode info syntax | `DECODE-GENERAL-INTRA-NON64-MULTISB` | ✅ | 🟡 | — | ✅ | 1 |
@@ -373,6 +374,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-COEFF-USE-FSC-BRANCH-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-COEFF-USE-FSC-CONDITION-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-COEFF-USE-FSC-SHARED-FACTS-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-GENERAL-INTRA-ANGLE` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-GENERAL-INTRA-FRAME-RECON` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-GENERAL-INTRA-LUMA-COEFFS` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-GENERAL-INTRA-MULTIBLOCK` | ✅ | 🟡 | — | ✅ | 1 |
@@ -672,6 +674,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.13.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2) | Intra prediction process | `ENC-GENERAL-INTRA-CODED-LUMA-DC` | ✅ | — | — | ✅ | — |
 | [§ 7.13.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2) | Intra prediction process | `ENC-MINIMAL-INTRA-SKIP-IVF` | ✅ | — | — | ✅ | — |
 | [§ 7.13.2.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-1) | General | `CONF-RECON-INTRA-PREDICTION-FUZZ` | ✅ | — | — | ✅ | — |
+| [§ 7.13.2.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-1) | General | `DECODE-GENERAL-INTRA-ANGLE` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.13.2.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-1) | General | `DECODE-GENERAL-INTRA-GRID` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.13.2.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-1) | General | `DECODE-GENERAL-INTRA-NON64-MULTISB` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.13.2.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-1) | General | `DECODE-GENERAL-INTRA-NONDC-LUMA-SMOOTH` | ✅ | 🟡 | — | ✅ | 1 |
@@ -691,6 +694,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.13.2.7](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-7) | Directional intra prediction process | `RECON-INTRA-ONE-SIDED-DIRECTIONAL-ANGLE-PREDICTION` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.13.2.7](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-7) | Directional intra prediction process | `RECON-WORKSPACE-DIRECTIONAL-ANGLE-PREDICTION` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.13.2.8](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-8) | Single directional prediction process | `CONF-RECON-INTRA-PREDICTION-FUZZ` | ✅ | — | — | ✅ | — |
+| [§ 7.13.2.8](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-8) | Single directional prediction process | `DECODE-GENERAL-INTRA-ANGLE` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.13.2.8](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-8) | Single directional prediction process | `DECODE-MINIMAL-INTRA-RECONSTRUCTION-FRONTIER` | ✅ | 🟡 | ✅ | ✅ | 4 |
 | [§ 7.13.2.8](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-8) | Single directional prediction process | `RECON-CURRENT-FRAME-WORKSPACE` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.13.2.8](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-8) | Single directional prediction process | `RECON-INTRA-CARDINAL-DIRECTIONAL-PREDICTION` | ✅ | — | ✅ | ✅ | — |
@@ -844,6 +848,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 8.2.4](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-4) | Exit process for symbol decoder | `AV2-8.2-SYMBOL-DECODER` | ✅ | ✅ | ✅ | ✅ | — |
 | [§ 8.2.4](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-4) | Exit process for symbol decoder | `CONF-SYMBOL-DECODER-FUZZ` | ✅ | — | — | ✅ | — |
 | [§ 8.2.4](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-4) | Exit process for symbol decoder | `CONF-TILE-PAYLOAD-DECODE-FUZZ` | ✅ | — | — | ✅ | 2 |
+| [§ 8.2.4](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-4) | Exit process for symbol decoder | `DECODE-GENERAL-INTRA-ANGLE` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 8.2.4](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-4) | Exit process for symbol decoder | `DECODE-GENERAL-INTRA-FRAME-RECON` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 8.2.4](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-4) | Exit process for symbol decoder | `DECODE-GENERAL-INTRA-MULTIBLOCK` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 8.2.4](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-4) | Exit process for symbol decoder | `DECODE-GENERAL-INTRA-NONDC-LUMA-SMOOTH` | ✅ | 🟡 | — | ✅ | 1 |
@@ -1010,6 +1015,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-COEFF-RUNTIME-FRAME-ENTRY-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-COEFF-RUNTIME-TX-SIZE-GEOMETRY-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-COEFF-USE-FSC-SHARED-FACTS-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-GENERAL-INTRA-ANGLE` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-MINIMAL-INTRA-RECONSTRUCTION-FRONTIER` | ✅ | 🟡 | ✅ | ✅ | 4 |
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-MINIMAL-RAW-RUNTIME-OUTPUT` | ✅ | 🟡 | ✅ | ✅ | 4 |
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS` | ✅ | 🟡 | ✅ | ✅ | 3 |
