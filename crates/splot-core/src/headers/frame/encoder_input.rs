@@ -390,7 +390,8 @@ pub fn encode_minimal_intra_clk_tile_group_obu(
 
 /// Wraps the canonical minimal-intra `OBU_CLOSED_LOOP_KEY` `tile_group_obu()` payload
 /// ([`encode_minimal_intra_clk_tile_group_obu`]) in AV2 Annex B framing (§ B.2,
-/// `docs/spec/av2/1.0.0/index.md`): a `leb128` total-size prefix, the § 5.2.2 OBU header,
+/// `docs/spec/av2/1.0.0/annex-b-length-delimited-bitstream-format.md#s-annex-b-2`): a
+/// `leb128` total-size prefix, the § 5.2.2 OBU header,
 /// then the payload. The result is a **self-delimiting** Annex B OBU that reparses to exactly
 /// one `OBU_CLOSED_LOOP_KEY` carrying the payload — one step beyond the bare `tile_group_obu()`
 /// payload (which has no length framing).
