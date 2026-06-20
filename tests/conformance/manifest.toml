@@ -85,6 +85,11 @@ description = "Single-block 8-bit 4:2:0 intra key frame (IVF, 64x64) from a proj
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-mbvg-intra-128x64-q80.ivf"
+description = "Multi-superblock 8-bit 4:2:0 intra key frame (IVF, 128x64) from a project-owned vertical-gradient luma input (top 30, bottom 210, flat chroma) with broad decode tools disabled at base_q_idx 80, so the frame is two 64x64 SMOOTH_V_PRED luma superblocks: the left (top-left, no-neighbour) superblock predicts over the section 7.13.2.1 fallback edges; the right superblock has a left neighbour and its SMOOTH_V_PRED prediction reads the REAL reconstructed neighbour edge (the section 7.13.2.1 left column / repeated-left above-row of the already-decoded left superblock) plus AC residual; the first general-intra multi-block non-DC luma decode target over a reconstructed (non-flat) neighbour edge whose avmdec and dav2d raw outputs agree (md5 3e57ba0c8cbdbe1d3400b0ae365c5d8e) and splot reproduces byte-for-byte; validates clean."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-key-inter-64x64.ivf"
 description = "Key frame plus two inter frames (IVF, 64x64) from project-owned synthetic input; validates clean."
 expect = "clean"

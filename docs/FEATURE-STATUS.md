@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 346 feature(s).
+Matrix version 1. Last reviewed 2026-06-15. 348 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -279,6 +279,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `DECODE-GENERAL-INTRA-MULTIBLOCK` | General intra multi-block partition decode | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | partial | `crates/splot-decode/src/tile_payload/partition_traversal.rs` |
 | `DECODE-GENERAL-INTRA-NONDC-LUMA-SMOOTH` | General intra single-block non-DC luma (smooth) decode | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | partial | `crates/splot-decode/src/runtime_minimal_recon.rs` |
 | `DECODE-GENERAL-INTRA-ANGLE` | General intra single-block directional-angle luma (D135) decode | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | partial | `crates/splot-decode/src/runtime_minimal_recon.rs` |
+| `DECODE-GENERAL-INTRA-MB-NEIGHBOUR-SMOOTH` | General intra multi-block non-DC luma over a reconstructed neighbour edge | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | partial | `crates/splot-decode/src/runtime_minimal_recon.rs` |
 | `DECODE-GENERAL-INTRA-NON64-MULTISB` | General intra multi-superblock (non-64x64) DC decode | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | partial | `crates/splot-decode/src/tile_payload/partition_traversal.rs` |
 | `DECODE-GENERAL-INTRA-MULTIROW` | General intra multi-superblock-row (grid) decode | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | partial | `crates/splot-decode/src/runtime_minimal.rs` |
 | `DECODE-GENERAL-INTRA-GRID` | General intra full 2-D superblock grid decode | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | partial | `crates/splot-decode/src/runtime_minimal_recon.rs` |

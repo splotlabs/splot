@@ -193,6 +193,94 @@ fn reconstruct_general_intra_chroma_smooth_into(
     qindex: u32,
     num4_above_right: usize,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
+    // Chroma never uses the §7.14.4 TCQ dqDenom term (luma DCT_DCT only).
+    reconstruct_general_intra_smooth_over_edges_into(
+        workspace,
+        block,
+        plane_id,
+        x,
+        y,
+        log2_side,
+        qindex,
+        IntraSmoothMode::Smooth,
+        num4_above_right,
+        false,
+    )
+}
+
+/// Reconstructs one non-DC luma block whose mode is `SMOOTH_V_PRED` /
+/// `SMOOTH_H_PRED` (§ 7.13.2.13) over the § 7.13.2.1 edges read from the
+/// partially-built frame's **real reconstructed neighbours**, adds the decoded
+/// residual (or writes the bare prediction for an `all_zero` block), and stores
+/// the result so later blocks read it as a neighbour.
+///
+/// Unlike [`reconstruct_general_intra_luma_nondc_first_block_into`] (which is
+/// gated to the no-neighbour top-left block and uses the § 7.13.2.1 flat
+/// fallbacks), this reads the genuine reconstructed left column / above row of an
+/// already-decoded neighbour. For a full-superblock block with a left neighbour
+/// but no above neighbour, § 7.13.2.1 sets `LeftCol[i]` to the reconstructed left
+/// column (clamping the bottom-left sentinel `LeftCol[h]` to the last in-block
+/// sample, since `num4BelowLeft == 0` in raster order) and `AboveRow[i]` to the
+/// repeated first left sample (`CurrFrame[plane][y][x-1]`). For `SMOOTH_V_PRED`
+/// the § 7.13.2.13 output depends only on `AboveRow[j]` and the bottom-left
+/// sentinel `LeftCol[h]`; for `SMOOTH_H_PRED` it depends only on `LeftCol[i]` and
+/// the top-right sentinel `AboveRow[w]`. No directional / IDIF edge synthesis is
+/// involved (smooth prediction is linear interpolation, not an angle copy), so
+/// this path is bit-exact against the AVM/dav2d oracle for the verified subset.
+///
+/// `num4_above_right` is the § 7.13.2.1 `num4AboveRight` (in 4x4 units) for this
+/// luma transform block; it selects the § 7.13.2.13 top-right sentinel
+/// `AboveRow[w]` between the real reconstructed above-right sample and the clamped
+/// last in-block above sample (only material for `SMOOTH_H_PRED` / `SMOOTH_PRED`).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn reconstruct_general_intra_luma_nondc_neighbour_block_into(
+    workspace: &mut CurrentFrameWorkspace<u8>,
+    block: &LumaCoeffBlock,
+    mode: SupportedNonDcLumaMode,
+    x: usize,
+    y: usize,
+    log2_side: u32,
+    qindex: u32,
+    use_tcq: bool,
+    num4_above_right: usize,
+) -> core::result::Result<(), GeneralIntraResidualError> {
+    let smooth_mode = match mode {
+        SupportedNonDcLumaMode::SmoothVertical => IntraSmoothMode::SmoothVertical,
+        SupportedNonDcLumaMode::SmoothHorizontal => IntraSmoothMode::SmoothHorizontal,
+    };
+    reconstruct_general_intra_smooth_over_edges_into(
+        workspace,
+        block,
+        PlaneId::Y,
+        x,
+        y,
+        log2_side,
+        qindex,
+        smooth_mode,
+        num4_above_right,
+        use_tcq,
+    )
+}
+
+/// Reconstructs one § 7.13.2.13 smooth block (`SMOOTH_PRED` / `SMOOTH_V_PRED` /
+/// `SMOOTH_H_PRED`) over § 7.13.2.1 edges read from the partially-built frame's
+/// reconstructed neighbours, for any plane. The § 7.13.2.1 edge derivation is
+/// plane-independent (it reads the workspace neighbour samples and applies the
+/// no-above / no-left / no-neighbour fallbacks); the caller selects the smooth
+/// mode and whether luma TCQ dequant applies.
+#[allow(clippy::too_many_arguments)]
+fn reconstruct_general_intra_smooth_over_edges_into(
+    workspace: &mut CurrentFrameWorkspace<u8>,
+    block: &LumaCoeffBlock,
+    plane_id: PlaneId,
+    x: usize,
+    y: usize,
+    log2_side: u32,
+    qindex: u32,
+    smooth_mode: IntraSmoothMode,
+    num4_above_right: usize,
+    use_tcq: bool,
+) -> core::result::Result<(), GeneralIntraResidualError> {
     let side = 1usize << log2_side;
     let log2 = u8::try_from(log2_side).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2, log2).map_err(recon_err)?;
@@ -217,7 +305,7 @@ fn reconstruct_general_intra_chroma_smooth_into(
         have_above,
         num4_above_right,
     )?;
-    let (left, above) = build_smooth_chroma_edges(
+    let (left, above) = build_smooth_edges(
         edges.left_samples(),
         edges.above_samples(),
         have_left,
@@ -230,7 +318,7 @@ fn reconstruct_general_intra_chroma_smooth_into(
     predict_intra_smooth_rect_into(
         BitDepth::Eight,
         block_size,
-        IntraSmoothMode::Smooth,
+        smooth_mode,
         smooth_edges,
         &mut prediction,
         side,
@@ -245,7 +333,7 @@ fn reconstruct_general_intra_chroma_smooth_into(
             qindex,
             plane_id,
             log2_side,
-            false,
+            use_tcq,
         )?
     };
     workspace
@@ -255,14 +343,15 @@ fn reconstruct_general_intra_chroma_smooth_into(
 }
 
 /// Builds the AV2 § 7.13.2.1 `LeftCol[0..=side]` and `AboveRow[0..=side]` edges
-/// (8-bit, `MrlIndex == 0`, no DIP) for § 7.13.2.13 smooth chroma prediction,
-/// from the reconstructed left/above neighbours. The `[side]` entries are the
-/// smooth-process bottom-left / top-right sentinels.
+/// (8-bit, `MrlIndex == 0`, no DIP) for § 7.13.2.13 smooth prediction (luma or
+/// chroma — the edge derivation is plane-independent), from the reconstructed
+/// left/above neighbours. The `[side]` entries are the smooth-process bottom-left
+/// / top-right sentinels.
 ///
 /// `above_right_sentinel` is the caller-resolved § 7.13.2.1 top-right sentinel
 /// `AboveRow[w]` (the real reconstructed above-right sample when decoded, or
 /// `None` to keep the clamped last in-block above sample / no-above fallback).
-fn build_smooth_chroma_edges(
+fn build_smooth_edges(
     left_neighbour: Option<&[u8]>,
     above_neighbour: Option<&[u8]>,
     have_left: bool,
@@ -319,7 +408,7 @@ fn build_smooth_chroma_edges(
 /// `aboveMrlIndex == 0`). When `num4AboveRight == 0` (no decoded above-right) or
 /// the block already touches the chroma frame right edge (`x + w > maxX`), this
 /// reduces to the clamped last in-block above sample, so `None` is returned to
-/// keep the [`build_smooth_chroma_edges`] clamp. When `haveAbove == 0` the
+/// keep the [`build_smooth_edges`] clamp. When `haveAbove == 0` the
 /// sentinel is not read from the above-right at all, so `None` is returned.
 fn resolve_smooth_above_right_sentinel(
     workspace: &CurrentFrameWorkspace<u8>,

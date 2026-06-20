@@ -11090,6 +11090,54 @@ fixtures = [
 diagnostics = ["decode/unsupported-feature"]
 
 [[feature]]
+id = "DECODE-GENERAL-INTRA-MB-NEIGHBOUR-SMOOTH"
+name = "General intra multi-block non-DC luma over a reconstructed neighbour edge"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.20.5.3", "5.20.7.27", "7.13.2.1", "7.13.2.13", "8.2.4", "9.2"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-1",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-13",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/runtime_minimal_recon.rs"
+openspec_change = "decode-general-intra-mb-neighbour-smooth"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Extends the general intra decode to the first MULTI-BLOCK non-DC luma prediction that reads the REAL reconstructed neighbour edge (previous non-DC / directional luma was gated to the no-neighbour top-left block over §7.13.2.1 flat fallbacks). The brief expected a cardinal V_PRED/H_PRED right superblock; the committed `syn-mbvg-128x64-q80.ivf` instead codes BOTH 64x64 superblocks as §7.13.2.13 SMOOTH_V_PRED (confirmed by temporary mode instrumentation: `y_mode == SMOOTH_V_PRED == 10` for both, decoded via the §5.20.5.3 `y_mode_offset` escape). SMOOTH_V is not a cardinal copy nor an §7.13.2.8 angle mode — it is linear interpolation over §7.13.2.13, so it reads the real neighbour edge with NO IDIF / edge-filter synthesis, and is bit-exact over a non-flat neighbour edge. The left (top-left, no-neighbour) superblock uses the existing `reconstruct_general_intra_luma_nondc_first_block_into` (flat fallback edges). The right superblock has a left neighbour (`!is_top_left`), so the new `reconstruct_general_intra_luma_nondc_neighbour_block_into` builds the §7.13.2.1 edges from the partially-built frame via the shared (luma/chroma-general) `build_smooth_edges`: `haveLeft == 1, haveAbove == 0` -> `LeftCol[i] = CurrFrame[0][Min(leftLimit, y+i)][x-1]` (the reconstructed left column, bottom-left sentinel `LeftCol[h]` clamped to the last in-block sample since `num4BelowLeft == 0` in raster order) and `AboveRow[i] = CurrFrame[0][y][x-1]` (repeated first left sample); then runs the shared `predict_intra_smooth_rect_into` SMOOTH_V mode and adds the §5.20.7.27 residual. The `y_mode_index` §8.3.2 context stays 0: `IntraJointMode = modeDelta` (§5.20.5.3, the reorder index, not the canonical mode), the left neighbour SMOOTH_V has `modeDelta == 2 < NON_DIRECTIONAL_MODES_COUNT == 5`, so `get_joint_mode(0) >= 5` is false and no per-MI joint-mode array is needed for this non-directional-neighbour case (the directional-neighbour reorder remains deferred, tracked by DECODE-GENERAL-INTRA-ANGLE). The committed `syn-mbvg-intra-128x64-q80.ivf` (vertical gradient top 30 -> bottom 210, flat chroma U=120 V=130) decodes bit-exactly to the avmdec AND dav2d oracle (md5 3e57ba0c8cbdbe1d3400b0ae365c5d8e, pinned frame hash 269b4969800751c63f7f0605f1f7b8f178f7bf85590ec62fe64313ff394d6dfd), guarded by the §8.2.4 `exit_symbol()` bit-exactness check; all existing general-intra fixtures still decode bit-exact. Gated to a full 64x64 superblock (`n4w == 16`): sub-superblock non-DC blocks need the per-block §5.20.2.3 `BlockDecoded` update for the intra-superblock above-right / below-left split neighbours (not yet modelled). Neighbour-having §7.13.2.8 directional (D135) luma over a real non-flat edge (which needs the real IDIF 4-tap interpolation, since `enableIdif == 0` bilinear equals IDIF only for a flat edge), directional-neighbour `y_mode_index` reorder / per-MI joint-mode tracking, SMOOTH / PAETH luma, non-DC chroma neighbour edges beyond the existing SMOOTH chroma path, sub-superblock non-DC, multiple tiles, inter prediction, in-loop filters, and live AVM/dav2d in CI remain future work. The neighbour-having SMOOTH path is gated to the FIRST superblock row (`frontier.r == 0`, so `haveAbove == 0`): there only the real reconstructed LEFT column is read and the §7.13.2.1 above row + top-right sentinel are the no-neighbour fallback, matching the verified single-superblock-row fixture. A row>0 (multi-superblock-row) neighbour SMOOTH block reads a real above row and a real §7.13.2.1 above-right sentinel that this brick does not yet verify, so it is rejected (`general_intra_multirow_neighbour_non_dc`) and deferred to a dedicated multi-superblock-row non-DC fixture."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "partial"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "partial"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/runtime_minimal.rs::general_intra_tests::mbvg_multiblock_smooth_v_neighbour_intra_frame_decodes_to_oracle",
+]
+commands = [
+    "cargo test -p splot-decode general_intra --locked",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "tests/conformance/vectors/valid/syn-mbvg-intra-128x64-q80.ivf",
+    "crates/splot-decode/src/runtime_minimal.rs",
+    "crates/splot-decode/src/runtime_minimal_recon.rs",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
 id = "DECODE-GENERAL-INTRA-NON64-MULTISB"
 name = "General intra multi-superblock (non-64x64) DC decode"
 category = "infrastructure"
