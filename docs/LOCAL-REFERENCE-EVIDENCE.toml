@@ -582,3 +582,55 @@ output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
 kind = "digest-equality"
 left = "avm-grid-raw-md5"
 right = "dav2d-grid-raw-md5"
+
+[[evidence]]
+id = "lref-avm-dav2d-syn-hedge-intra-64x64-q80"
+feature_id = "DECODE-GENERAL-INTRA-ANGLE"
+decoder_support_rows = ["general-intra-angle"]
+kind = "reference-output-agreement"
+summary = "Local AVM and dav2d raw decoder output MD5 digests agreed for the 8-bit 64x64 single-block directional intra IVF fixture at base_q_idx 80: one 64x64 luma block coded via the §5.20.5.3 y_mode_offset escape (y_mode_set 0, y_mode_index MODE_INDEX_COUNT-1, y_mode_offset 3 -> modeIdx 10 -> D135_PRED, AngleDeltaY 0, pAngle 135) with a top/bottom split residual (top half ~40, bottom half ~210) and DC chroma (U 120, V 130); the first general-intra directional-angle luma decode target, exercising the §7.13.2.8 middle-angle prediction over the §7.13.2.1 no-neighbour fallback edges (enable_intra_edge_filter 0, MrlIndex 0, IDIF/upsample no-ops; pAngle 135 dx=dy=64 so shift==0 and the luma IDIF reduces to a sample copy, bit-identical to bilinear for this angle)."
+recorded_at = "2026-06-20"
+
+[[evidence.fixture]]
+id = "input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-hedge-intra-64x64-q80.ivf"
+sha256 = "9bc90cb41d63f9b8b093549743a7eead75d5d5e56d3060d34ebbc0ec14d79c94"
+size_bytes = 120
+format = "ivf"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Generated locally from a project-owned 64x64 YUV input (top half luma 40, bottom half luma 210, flat chroma) with broad decode tools (incl. GDF, IBP, rectangular partitions, intra edge filter) disabled so the §7.13.2.8 directional prediction reduces to the §7.13.2.1 no-neighbour fallback edges; AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avm"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "457cd58681a747465661baccb1f32095bc5b7774"
+version_summary = "AVM checkout HEAD 457cd58681a747465661baccb1f32095bc5b7774, exact binary build commit not separately archived."
+command_summary = "Local avmdec --rawvideo output MD5 for {fixture:input}, exact arguments not archived."
+output_digest_id = "avm-hedge-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "1179bcc873c1d1ac49c2c032f11ca44d"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.reference_run]]
+id = "dav2d"
+tool = "dav2d"
+executable_name = "dav2d"
+tool_role = "decode-reference"
+source_url = "https://code.videolan.org/videolan/dav2d"
+revision = "f4f96cb06bb3cd3f31e29e1f190f1c0e373ab352"
+version_summary = "dav2d 0.0.1-191-gf4f96cb0 (commit f4f96cb0), decoded with --demuxer ivf; exact version output not archived."
+command_summary = "Local dav2d --demuxer ivf raw decoder output MD5 for {fixture:input}, exact arguments not archived."
+output_digest_id = "dav2d-hedge-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "1179bcc873c1d1ac49c2c032f11ca44d"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-hedge-raw-md5"
+right = "dav2d-hedge-raw-md5"

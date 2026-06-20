@@ -24,8 +24,9 @@ use splot_core::symbol::SymbolDecoder;
 
 use super::DecodeTileWorkUnit;
 use super::cdf::block_context::{
-    IntraYMode, SupportedChromaMode, SupportedNonDcLumaMode, YModeIndexContext,
-    reconstruct_minimal_y_mode, supported_chroma_mode_non_directional_luma, uv_mode_ctx,
+    IntraYMode, MODE_INDEX_COUNT, SupportedChromaMode, SupportedDirectionalLumaMode,
+    SupportedNonDcLumaMode, YModeIndexContext, reconstruct_minimal_y_mode,
+    reconstruct_y_mode_offset_escape_top_left, supported_chroma_mode, uv_mode_ctx,
 };
 use super::cdf::block_read::BlockSymbolTraceReadError;
 use super::cdf::{TileCdfSelector, TileCdfSubset};
@@ -45,6 +46,7 @@ const UV_MODE_IDX_BITS: u32 = 3;
 
 const Y_MODE_SET_REASON: &str = "intra_y_mode_set";
 const Y_MODE_INDEX_REASON: &str = "intra_y_mode_index";
+const Y_MODE_OFFSET_REASON: &str = "intra_y_mode_offset";
 const UV_MODE_REASON: &str = "intra_uv_mode";
 const UV_MODE_IDX_REASON: &str = "intra_uv_mode_idx";
 
@@ -53,6 +55,9 @@ const UV_MODE_IDX_REASON: &str = "intra_uv_mode_idx";
 pub(crate) struct GeneralIntraBlockModes {
     /// The reconstructed typed luma intra mode (§ 5.20.5.3 `read_intra_y_mode`).
     pub(crate) y_mode: IntraYMode,
+    /// The reconstructed `AngleDeltaY` (§ 5.20.5.3), `0` for non-directional
+    /// modes and for the supported directional subset.
+    pub(crate) angle_delta_y: i8,
     /// The decoded `uv_mode` value (after the `CHROMA_MODE_COUNT - 1` escape),
     /// the index into the chroma mode list; typed `UVMode` reconstruction is a
     /// future increment.
@@ -71,12 +76,24 @@ impl GeneralIntraBlockModes {
         self.y_mode.supported_nondc()
     }
 
+    /// The supported directional-angle luma predictor for this block, or `None`
+    /// for non-directional modes and the not-yet-supported directional modes /
+    /// non-zero angle deltas (see [`IntraYMode::supported_directional`]). A
+    /// directional mode with a non-zero `AngleDeltaY` is reported as unsupported
+    /// because only `AngleDeltaY == 0` (pAngle 135) is verified.
+    pub(crate) fn supported_directional_luma(&self) -> Option<SupportedDirectionalLumaMode> {
+        if self.angle_delta_y != 0 {
+            return None;
+        }
+        self.y_mode.supported_directional()
+    }
+
     /// The supported chroma predictor for this block (DC or SMOOTH), resolving
     /// the decoded `uv_mode` index through § 5.20.5.3 `get_intra_uv_mode_set`
-    /// for the non-directional luma case, or `None` for an unsupported chroma
-    /// mode (see [`supported_chroma_mode_non_directional_luma`]).
+    /// (handling both the non-directional and directional luma branches), or
+    /// `None` for an unsupported chroma mode (see [`supported_chroma_mode`]).
     pub(crate) fn supported_chroma_mode(&self) -> Option<SupportedChromaMode> {
-        supported_chroma_mode_non_directional_luma(self.y_mode, self.uv_mode)
+        supported_chroma_mode(self.y_mode, self.uv_mode)
     }
 }
 
@@ -137,24 +154,45 @@ pub(crate) fn decode_general_intra_block_modes(
 
     // y_mode_index (§ 8.3.2 context from `get_joint_mode`; both neighbours are
     // out of frame at the single-block tile origin, so the context is 0).
+    let mode_ctx = YModeIndexContext::tile_origin_block().ctx();
     let y_mode_index = read_symbol(
         cdfs,
         symbols,
-        TileCdfSelector::YModeIndex {
-            ctx: YModeIndexContext::tile_origin_block().ctx(),
-        },
+        TileCdfSelector::YModeIndex { ctx: mode_ctx },
         Y_MODE_INDEX_REASON,
     )?;
 
-    // Reconstruct the typed luma `YMode` (§ 5.20.5.3 `read_intra_y_mode`,
-    // `get_intra_y_mode_set`, `Reordered_Y_Mode`); the minimal-tool subset
-    // decodes a non-directional mode.
-    let y_mode = reconstruct_minimal_y_mode(y_mode_set, y_mode_index).ok_or(
-        GeneralIntraBlockModeError::UnsupportedYMode {
-            y_mode_set,
-            y_mode_index,
-        },
-    )?;
+    // Reconstruct the typed luma `YMode` and `AngleDeltaY` (§ 5.20.5.3
+    // `read_intra_y_mode`, `get_intra_y_mode_set`, `Reordered_Y_Mode`).
+    //
+    // For `y_mode_set == 0`, `y_mode_index == MODE_INDEX_COUNT - 1` is the
+    // `y_mode_offset` escape (§ 5.20.5.3): read `y_mode_offset` (§ 8.3.2
+    // `TileYModeOffsetCdf[ctx]`, sharing the `y_mode_index` context) and resolve
+    // the directional mode at the no-neighbour tile origin. Otherwise the
+    // non-directional `Reordered_Y_Mode` prefix maps the index directly.
+    let (y_mode, angle_delta_y) = if y_mode_set == 0 && y_mode_index == MODE_INDEX_COUNT - 1 {
+        let y_mode_offset = read_symbol(
+            cdfs,
+            symbols,
+            TileCdfSelector::YModeOffset { ctx: mode_ctx },
+            Y_MODE_OFFSET_REASON,
+        )?;
+        let escape = reconstruct_y_mode_offset_escape_top_left(y_mode_offset).ok_or(
+            GeneralIntraBlockModeError::UnsupportedYMode {
+                y_mode_set,
+                y_mode_index,
+            },
+        )?;
+        (escape.y_mode, escape.angle_delta_y)
+    } else {
+        let y_mode = reconstruct_minimal_y_mode(y_mode_set, y_mode_index).ok_or(
+            GeneralIntraBlockModeError::UnsupportedYMode {
+                y_mode_set,
+                y_mode_index,
+            },
+        )?;
+        (y_mode, 0)
+    };
 
     // read_intra_uv_mode(): uv_mode (§ 8.3.2 `TileUVModeCflNotAllowedCdf[ctx]`,
     // `ctx = is_directional_mode(YMode)`). CfL and MHCCP are disabled, so the
@@ -189,7 +227,11 @@ pub(crate) fn decode_general_intra_block_modes(
         return Err(GeneralIntraBlockModeError::InvalidUvMode { uv_mode });
     }
 
-    Ok(GeneralIntraBlockModes { y_mode, uv_mode })
+    Ok(GeneralIntraBlockModes {
+        y_mode,
+        angle_delta_y,
+        uv_mode,
+    })
 }
 
 /// Reads one mode-info `S()` symbol, mapping a CDF/symbol failure to a typed

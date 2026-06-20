@@ -7,17 +7,18 @@
 
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DecodedFrame, DecodedFrameInfo, IntraCardinalDirection,
-    IntraCardinalEdges, IntraRectBlockSize, IntraSmoothEdges, IntraSmoothMode,
-    IntraSquareBlockSize, OutputIndex, PixelFormat, PlaneId, PlaneRect, PlaneSize,
-    predict_intra_cardinal_directional_rect_into, predict_intra_dc_rect_value,
+    IntraCardinalEdges, IntraMiddleDirectionalAngle, IntraMiddleDirectionalAngleEdges,
+    IntraRectBlockSize, IntraSmoothEdges, IntraSmoothMode, IntraSquareBlockSize, OutputIndex,
+    PixelFormat, PlaneId, PlaneRect, PlaneSize, predict_intra_cardinal_directional_rect_into,
+    predict_intra_dc_rect_value, predict_intra_middle_directional_angle_rect_into,
     predict_intra_smooth_rect_into,
 };
 
 use crate::Result;
 use crate::tile_payload::{
     GeneralIntraResidualError, LumaCoeffBlock, MinimalRuntimeReconstructionTrace,
-    SupportedChromaMode, SupportedNonDcLumaMode, reconstruct_general_intra_block,
-    reconstruct_general_intra_block_with_prediction,
+    SupportedChromaMode, SupportedDirectionalLumaMode, SupportedNonDcLumaMode,
+    reconstruct_general_intra_block, reconstruct_general_intra_block_with_prediction,
 };
 
 const MINIMAL_LUMA_WIDTH: usize = 64;
@@ -445,6 +446,94 @@ fn predict_nondc_noneighbour_smooth(
         BitDepth::Eight,
         block_size,
         smooth_mode,
+        edges,
+        &mut out,
+        side,
+    )
+    .map_err(recon_err)?;
+    Ok(out)
+}
+
+/// AV2 § 7.13.2.1 no-neighbour top-left corner sample
+/// (`AboveRow[-1] == LeftCol[-1] == 1 << (BitDepth - 1)`), 8-bit.
+const NONEIGHBOUR_CORNER_8BIT: u8 = 1 << 7;
+
+/// Reconstructs one no-neighbour (top-left) directional-angle luma block:
+/// builds the § 7.13.2.8 prediction over the § 7.13.2.1 no-neighbour fallback
+/// edges, adds the decoded residual (or writes the bare prediction for an
+/// all-zero block), and stores the result into the workspace.
+///
+/// This path is gated (by the caller) to the top-left no-neighbour block at
+/// pAngle 135 (`D135_PRED`, `AngleDeltaY == 0`). For that case
+/// `enable_intra_edge_filter == 0`, `MrlIndex == 0`, and no above/left neighbour
+/// exist, so the § 7.13.2.x edge-filter / corner-filter / upsample step is a
+/// no-op and the prediction edges reduce to the § 7.13.2.1 flat fallbacks:
+/// `AboveRow[k] = 127`, `LeftCol[k] = 129`, and the shared corner
+/// `AboveRow[-1] = LeftCol[-1] = 128`. pAngle 135 is a § 7.13.2.8 "middle" angle
+/// (`90 < pAngle < 180`); its derivatives are `dx = dy = Dr_Intra_Derivative[45]
+/// = 64`, so every projection lands on an integer sample (`shift == 0`) and the
+/// luma IDIF 4-tap `Dr_Interp_Filter` reduces to a sample copy — bit-identical to
+/// the `enableIdif == 0` bilinear `predict_intra_middle_directional_angle_rect_into`
+/// for this angle. (Verified bit-exact against avmdec/dav2d.) Other angles, where
+/// `shift != 0` and luma IDIF genuinely differs from bilinear, are deferred.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn reconstruct_general_intra_luma_directional_first_block_into(
+    workspace: &mut CurrentFrameWorkspace<u8>,
+    block: &LumaCoeffBlock,
+    mode: SupportedDirectionalLumaMode,
+    x: usize,
+    y: usize,
+    log2_side: u32,
+    qindex: u32,
+    use_tcq: bool,
+) -> core::result::Result<(), GeneralIntraResidualError> {
+    let side = 1usize << log2_side;
+    let log2 = u8::try_from(log2_side).unwrap_or(u8::MAX);
+    let block_size = IntraRectBlockSize::new(log2, log2).map_err(recon_err)?;
+    let prediction = predict_directional_noneighbour(mode, block_size, side)?;
+    let out = if block.all_zero {
+        prediction
+    } else {
+        reconstruct_general_intra_block_with_prediction(
+            &block.quant,
+            &prediction,
+            qindex,
+            PlaneId::Y,
+            log2_side,
+            use_tcq,
+        )?
+    };
+    workspace
+        .write_rect_block(PlaneId::Y, x, y, block_size, &out)
+        .map_err(recon_err)?;
+    Ok(())
+}
+
+/// Builds the § 7.13.2.8 directional prediction for a no-neighbour square block
+/// over the § 7.13.2.1 fallback edges. The middle-angle predictor takes logical
+/// edges whose index 0 is the `-1` sample: `above_with_minus_one[0]` /
+/// `left_with_minus_one[0]` are the shared corner `128`, the remaining above
+/// samples are `127` and left samples are `129`.
+fn predict_directional_noneighbour(
+    mode: SupportedDirectionalLumaMode,
+    block_size: IntraRectBlockSize,
+    side: usize,
+) -> core::result::Result<Vec<u8>, GeneralIntraResidualError> {
+    let angle = match mode {
+        SupportedDirectionalLumaMode::D135 => IntraMiddleDirectionalAngle::D135,
+    };
+    // Logical `AboveRow[-1..w)` and `LeftCol[-1..h)` (length side + 1): index 0
+    // is the corner; index `k + 1` is logical `k`.
+    let mut above = vec![NONEIGHBOUR_ABOVE_8BIT; side + 1];
+    let mut left = vec![NONEIGHBOUR_LEFT_8BIT; side + 1];
+    above[0] = NONEIGHBOUR_CORNER_8BIT;
+    left[0] = NONEIGHBOUR_CORNER_8BIT;
+    let edges = IntraMiddleDirectionalAngleEdges::both(&left, &above);
+    let mut out = vec![0u8; side * side];
+    predict_intra_middle_directional_angle_rect_into(
+        BitDepth::Eight,
+        block_size,
+        angle,
         edges,
         &mut out,
         side,
