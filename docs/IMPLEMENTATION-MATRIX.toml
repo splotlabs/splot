@@ -5047,6 +5047,42 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-MINIMAL-INTRA-CLK-ANNEXB-OBU"
+name = "Encoder writer-input minimal-intra Annex B OBU wrapper"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.2.2", "B.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers/frame/encoder_input.rs"
+openspec_change = "encoder-annexb-obu-wrapper"
+tracking_issue = ""
+owner = "encoder"
+risk = "low"
+# encode stays `todo`: the wrapper emits a self-delimiting CLK OBU, but it is a single frame
+# OBU (no temporal delimiter / sequence header / IVF), the tile_data content is a caller
+# input, and no splot-encode code consumes it yet.
+notes = 'Header-bridge BRICK 5 (after ENC-MINIMAL-INTRA-TILE-GROUP-OBU). Brick 4 emits the bare §5.19 tile_group_obu() PAYLOAD (no length framing → cannot stand alone); this wraps it in AV2 Annex B framing (§B.2): `encode_minimal_intra_clk_annexb_obu(tile_data: &[u8]) -> Result<Vec<u8>, MinimalIntraTileGroupError>` assembles the brick-4 payload, builds the no-extension OBU_CLOSED_LOOP_KEY §5.2.2 header (inferred layer ids 0 — CLK is not OBU_MSDO/OBU_TEMPORAL_DELIMITER, the only types that infer the GLOBAL xlayer), and drives write_annexb_obu (leb128 total-size prefix + obu_header + payload). The FIRST complete, self-delimiting OBU the encoder emits. The §5.2.2 CLK header is a fixed literal (the no-ext layer-id inference is a documented constant, not a param); the round-trip oracle verifies it (a wrong field would reparse differently). ORACLE = parse_annex_b_obus_partial(result) is exactly ONE OBU, no error, header type ClosedLoopKey, no extension, payload == the brick-4 tile_group_obu() payload (ending in the coded tile bytes); + an empty-tile_data reject test (propagates the §8.2.2 ZeroSizeTile Write error). Reuses MinimalIntraTileGroupError (write_annexb_obu WriteError → ::Write #[from]; no new error type). Public API: one new fn, splot-core, no dependency-graph change. Encoder-mission-DRIVEN (owner=encoder). encode=todo. This row is a SINGLE FRAME OBU, NOT a decodable temporal unit: it does NOT claim a temporal delimiter, a sequence-header OBU, an IVF stream, a COMPLETE spec-conformant coded tile (tile_data content = the block-symbol trace axis), a frame/packet, receive_packet output, CLI success, or Baseline Encoder Profile v1. NEXT: a temporal-delimiter OBU + a sequence-header OBU → assemble the temporal unit (TD + seq + CLK) → wrap in IVF → a complete coded 64x64 tile (wire the block-symbol trace) → CLI encode→decode-hash.'
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "todo"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-core/src/headers/frame/encoder_input.rs::tests::encode_minimal_intra_clk_annexb_obu_round_trips", "crates/splot-core/src/headers/frame/encoder_input.rs::tests::encode_minimal_intra_clk_annexb_obu_rejects_empty_tile_data"]
+commands = ["cargo test -p splot-core encoder_input"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-RECON-DEPENDENCY"
 name = "Encoder reconstruction dependency boundary"
 category = "encoder"
