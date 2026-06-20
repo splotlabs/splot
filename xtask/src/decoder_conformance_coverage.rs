@@ -225,6 +225,7 @@ const COVERAGE_ROWS: &[CoverageRow] = &[
         decoder_support_rows: &[
             "tile-payload-decode",
             "tile-payload-decode-fuzz",
+            "general-intra-frame-frontier",
             "tile-cdf-selection-boundary",
             "tile-coeff-state-buffers",
             "coeff-all-zero-context-state",
@@ -294,6 +295,7 @@ const COVERAGE_ROWS: &[CoverageRow] = &[
         feature_ids: &[
             "DECODE-TILE-PAYLOAD-BOUNDARY",
             "CONF-TILE-PAYLOAD-DECODE-FUZZ",
+            "DECODE-GENERAL-INTRA-FRAME-FRONTIER",
             "DECODE-TILE-CDF-SELECTION-BOUNDARY",
             "DECODE-TILE-COEFF-STATE-BUFFERS",
             "DECODE-COEFF-ALL-ZERO-CONTEXT-STATE",

@@ -285,6 +285,67 @@ fn decode_hash_json_success_for_minimal_fixture() {
 }
 
 #[test]
+fn decode_general_intra_fixture_reaches_partition_frontier() {
+    // A real AVM-generated minimal-tool intra key frame (base_q_idx 80, one
+    // 64x64 block carrying a nonzero DC residual; avmdec and dav2d agree on its
+    // decoded output). splot routes it off the frozen base_q_idx==255 hash tier
+    // into the general intra path, runs the real AV2 §5.20.3.1 partition
+    // traversal, reaches the single-block root frontier, and reports that
+    // block-symbol/coefficient/reconstruction decode is not yet implemented.
+    let input = conformance_vector("syn-flat-intra-64x64-q80.ivf");
+
+    let out = splot(&[
+        "decode",
+        "--json",
+        "--output-format",
+        "hash",
+        input.to_str().unwrap(),
+    ]);
+
+    assert_eq!(out.status.code(), Some(1));
+    assert!(out.stderr.is_empty(), "stderr was not empty");
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["rule_id"], "decode/unsupported-feature");
+    assert_eq!(json["severity"], "Error");
+    assert_eq!(json["spec_section"], "5.20.3.1");
+    assert_eq!(json["matrix_row"], "general-intra-frame-frontier");
+    assert_eq!(json["feature_id"], "DECODE-GENERAL-INTRA-FRAME-FRONTIER");
+    assert_eq!(json["detail_kind"], "unsupported_feature");
+    assert_eq!(
+        json["unsupported_reason"],
+        "general_intra_block_decode_unimplemented"
+    );
+    assert_eq!(json["tier_id"], "general-intra-8bit420-frontier-v1");
+    assert_eq!(json["output_format"], "hash");
+    assert!(
+        json["byte_offset"].is_u64(),
+        "json missing byte_offset: {json}"
+    );
+}
+
+#[test]
+fn decode_general_intra_routing_does_not_disturb_frozen_minimal_hash() {
+    // Regression guard: routing general intra frames must leave the committed
+    // frozen base_q_idx==255 minimal-tier hash contract byte-identical.
+    let input = conformance_vector("syn-flat-intra-64x64-minimal.ivf");
+
+    let out = splot(&[
+        "decode",
+        "--json",
+        "--output-format",
+        "hash",
+        input.to_str().unwrap(),
+    ]);
+
+    assert_eq!(out.status.code(), Some(0));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        json["frames"][0]["hashes"][0]["digest_hex"],
+        "dd244844938e78b226240de27e9c0acd39fc7ec2c1631319d13250fbe5f08496"
+    );
+}
+
+#[test]
 fn decode_hash_json_success_creates_no_implicit_output_file() {
     let input = conformance_vector("syn-flat-intra-64x64-minimal.ivf");
     let cwd = temp_dir("minimal-hash-cwd");
