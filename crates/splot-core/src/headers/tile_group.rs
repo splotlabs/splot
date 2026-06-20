@@ -456,6 +456,42 @@ pub struct TileGroupFraming {
     pub defect: Option<TileFramingDefect>,
 }
 
+impl TileGroupFraming {
+    /// Builds the AV2 § 5.20.1 (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-1`,
+    /// mirror :8557) framing for a single-tile tile group (the first tile group,
+    /// `TileNum 0`): one tile whose `tileSize` coded region spans the whole
+    /// `tile_group_payload()` from offset 0, with **no** `tile_size_minus_1` field (the
+    /// only tile is the last tile). This is the exact encoder-side inverse of the
+    /// parser: the result equals `parse_tile_group_framing(payload, 0, 0, _, false)`
+    /// for a `payload` of `tile_size` coded bytes, so a write (via
+    /// [`write_tile_group_payload`]) then reparse round-trips value-equal.
+    ///
+    /// `tile_size` is the coded-tile byte length; callers pass real § 8.2 coded bytes
+    /// (`>= 1`). To preserve the parser-inverse contract for the degenerate input, a
+    /// `tile_size == 0` returns the same defective framing the parser would — the
+    /// § 8.2.2 [`TileFramingDefect::ZeroSizeTile`] (which [`write_tile_group_payload`]
+    /// also rejects) — rather than a `defect: None` framing that falsely reads as
+    /// conformant.
+    ///
+    /// [`write_tile_group_payload`]: crate::write::tile_group::write_tile_group_payload
+    #[must_use]
+    pub fn single_tile(tile_size: u64) -> Self {
+        let defect = (tile_size == 0).then_some(TileFramingDefect::ZeroSizeTile {
+            tile_num: 0,
+            tile_data_offset: 0,
+        });
+        Self {
+            tiles: vec![TileFraming {
+                tile_num: 0,
+                size_field_offset: None,
+                tile_data_offset: 0,
+                tile_size,
+            }],
+            defect,
+        }
+    }
+}
+
 /// Parses the § 5.20.1 per-tile framing of a `tile_group_payload()` region (AV2 v1.0.0
 /// § 5.20.1, mirror :8553-8640).
 ///
@@ -1238,6 +1274,45 @@ mod tests {
         assert_eq!(t.size_field_offset, None);
         assert_eq!(t.tile_data_offset, 0);
         assert_eq!(t.tile_size, 5);
+    }
+
+    #[test]
+    fn single_tile_constructor_matches_parser() {
+        // The encoder-side constructor reproduces exactly the defect-free framing the
+        // parser yields for a single-tile region (tg_start == tg_end == 0).
+        let region = vec![0xAA; 5];
+        let parsed = parse_tile_group_framing(&region, 0, 0, 1, false);
+        assert_eq!(TileGroupFraming::single_tile(5), parsed);
+    }
+
+    #[test]
+    fn single_tile_constructor_matches_parser_for_zero_size() {
+        // The parser-inverse contract holds even for the degenerate zero-size input: the
+        // constructor returns the same ZeroSizeTile-defective framing the parser yields
+        // for an empty single-tile region, not a falsely-conformant defect: None.
+        let parsed = parse_tile_group_framing(&[], 0, 0, 1, false);
+        assert!(matches!(
+            parsed.defect,
+            Some(TileFramingDefect::ZeroSizeTile { tile_num: 0, .. })
+        ));
+        assert_eq!(TileGroupFraming::single_tile(0), parsed);
+    }
+
+    #[test]
+    fn single_tile_framing_write_then_reparse_round_trips() {
+        use crate::write::bit_writer::BitWriter;
+        use crate::write::tile_group::write_tile_group_payload;
+
+        // A single (last) tile writes no size field, so the payload region is byte-exact
+        // with the coded data, and a reparse is value-equal to the constructed framing.
+        let coded = [0x12u8, 0x34, 0x56, 0x78];
+        let framing = TileGroupFraming::single_tile(coded.len() as u64);
+        let mut writer = BitWriter::new();
+        write_tile_group_payload(&mut writer, &framing, &[&coded], 1, false).unwrap();
+        let region = writer.into_bytes();
+
+        assert_eq!(region, coded, "single-tile payload is the coded bytes");
+        assert_eq!(parse_tile_group_framing(&region, 0, 0, 1, false), framing);
     }
 
     #[test]
