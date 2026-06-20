@@ -807,17 +807,13 @@ fn decode_general_minimal_intra_frame(
         crate::tile_payload::decode_general_intra_chroma_coeffs(tile, &mut symbols, 2, !u.all_zero)
             .map_err(|error| general_intra_residual_error(error, tile_offset))?;
 
-    // §5.20.7.27: a block with eob > 1 codes intra_tx_type (plane 0) or cctx_type
-    // (plane 1) before the coefficient levels; only all-zero (eob == 0) and
-    // single-DC (eob == 1) blocks are decoded bit-exactly here.
-    if luma.eob > 1 || u.eob > 1 || v.eob > 1 {
-        return Err(general_intra_unsupported(
-            "general_intra_multi_coefficient_block",
-            Some(tile_offset),
-            "general intra reconstruction only supports all-zero and single-DC transform blocks; multi-coefficient blocks (eob > 1) are not yet implemented",
-            GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
-        ));
-    }
+    // Multi-coefficient (eob > 1) blocks are decoded by the same §5.20.7.27
+    // coefficient loop. With the transform-type and cross-component tools
+    // rejected at admission (enable_intra_ist / enable_idtx_intra / enable_cctx),
+    // the inferred DCT_DCT transform applies and the AC coefficients are read
+    // directly. The §8.2.4 exit_symbol() check below is the bit-exactness guard:
+    // any intra_tx_type / cctx_type or other syntax this path does not consume
+    // fails it rather than returning a wrong hash.
 
     // The single 64x64 block consumes the entire tile payload, so §8.2.4
     // exit_symbol() must hold after the luma + chroma coefficients. A failure
@@ -1191,6 +1187,12 @@ mod general_intra_tests {
     const Q80_CHROMA_U: u8 = 120;
     const Q80_CHROMA_V: u8 = 130;
 
+    // A single-block DC_PRED intra frame whose luma carries multiple (eob > 1) AC
+    // coefficients from a low-frequency half-cosine input; avmdec's raw output is
+    // reproduced byte-for-byte (verified locally) and pinned via the frame hash.
+    const Q180_COS_FIXTURE: &[u8] =
+        include_bytes!("../../../tests/conformance/vectors/valid/syn-cos-intra-64x64-q180.ivf");
+
     // Drives the q80 fixture through the full general intra runtime path: decode
     // modes -> decode luma + chroma coefficients -> dequant -> inverse transform
     // -> residual add over the no-neighbour DC prediction -> frame assembly.
@@ -1244,6 +1246,42 @@ mod general_intra_tests {
         assert_eq!(
             hash,
             "ce9c46b1078b9dd593254837ead7dcd6cee8b3ec6cc3c7d34f54fb08df703979"
+        );
+    }
+
+    #[test]
+    fn q180_cos_intra_frame_decodes_multi_coefficient_luma() {
+        use splot_recon::{BitDepth, PixelFormat, PlaneSize};
+
+        let options = DecodeOptions::default();
+        let context = DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize)))
+            .expect("context");
+        let plan = context.plan_bytes(Q180_COS_FIXTURE, options).expect("plan");
+        let frame = decode_minimal_frame_from_plan(Q180_COS_FIXTURE, options, &plan)
+            .expect("decode")
+            .frame;
+
+        assert_eq!(frame.bit_depth(), BitDepth::Eight);
+        assert_eq!(frame.pixel_format(), PixelFormat::Yuv420);
+        assert_eq!(frame.y().visible_size(), PlaneSize::new(64, 64).unwrap());
+
+        // The luma is a reconstructed low-frequency cosine: genuinely non-flat
+        // (proving the eob > 1 AC coefficient path ran, not just a DC level).
+        let y = frame.y().samples();
+        let distinct = y.iter().collect::<std::collections::BTreeSet<_>>().len();
+        assert!(
+            distinct > 4,
+            "luma should be a non-flat AC reconstruction; distinct={distinct}"
+        );
+
+        // Frame hash pins splot's output, which reproduces avmdec's raw output
+        // byte-for-byte (verified locally against ~/Devel/avm/build/avmdec).
+        let hash = splot_recon::DecodedFrameHashInput::new(&frame)
+            .compute_hash()
+            .to_hex();
+        assert_eq!(
+            hash,
+            "8a6751d4517073bad0bbe71f4b5537df8e8b0bfee85fcd6af1ac2d5878dd59e8"
         );
     }
 }
