@@ -47,7 +47,10 @@ mod tail;
 mod tiling;
 
 pub use config::IntrabcParams;
-pub use encoder_input::{MinimalIntraCoreError, build_minimal_intra_clk_core};
+pub use encoder_input::{
+    MinimalIntraCoreError, MinimalIntraTileGroupError, build_minimal_intra_clk_core,
+    encode_minimal_intra_clk_tile_group_obu,
+};
 pub use filtering::{
     CdefParams, CdefStrengthSet, CoreSeqFilterView, DeblockingFilterParams, GdfGeometry, GdfParams,
     InterpolationFilter, MfhDeblockingView, parse_cdef_params, parse_deblocking_filter_params,
