@@ -2,31 +2,32 @@
 
 The non-64x64 brick (`DECODE-GENERAL-INTRA-NON64-MULTISB`) generalized the decode
 to a single superblock row and conservatively gated height to exactly 64. The
-superblock raster loop (§5.20.2.1) it added already iterates both rows and
-columns, and the DC reconstruction already reads above neighbours, so the height
-gate was the only thing blocking a full superblock grid.
+§5.20.2.1 superblock raster loop it added already iterates both rows and columns,
+and the DC reconstruction already reads above neighbours, so a single superblock
+COLUMN works too.
 
 ## Decisions
 
-- **Relax the gate, not the loop.** The loop is already 2-D and the DC/SMOOTH
-  reconstruction is already neighbour-aware; this change only widens the
-  admission predicate from `height == 64` to `height % 64 == 0`.
-- **Full-superblock SMOOTH chroma is row-independent.** The prior brick gated
-  SMOOTH chroma to full 64x64 superblocks. `clear_block_decoded_flags` (§5.20.2)
-  zeroes a full superblock's above-right region and its below-left is decoded
-  later, so the §7.13.2.13 sentinels collapse to the edge-clamped last sample at
-  any row — no additional sentinel work is needed for multi-row.
-- **Verify with a uniform grid fixture.** Distinct multi-row content makes the
-  encoder pick a directional luma mode for the diagonal superblock (its value
-  matches one neighbour exactly, beating DC's average), which this path rejects
-  as `general_intra_unsupported_y_mode`. A uniform 2x2 grid keeps every block
-  DC_PRED while still exercising the multi-row raster loop, cross-row above-
-  neighbour DC, and full-superblock SMOOTH chroma at row > 0.
+- **Admit a single row OR a single column, not a 2-D grid.** The safe condition
+  for the existing edge-clamped SMOOTH chroma sentinel is that no full-superblock
+  block has a decoded above-right neighbour. That holds exactly when every
+  superblock is row-0 (no above) or rightmost-column (no above-right) — i.e. the
+  frame is a single row (height == 64) or a single column (width == 64).
+- **Reject 2-D grids.** Per §5.20.2 `clear_block_decoded_flags`, a non-rightmost
+  superblock's above row is marked decoded up to `(MiColEnd - c) >> subX`, which
+  exceeds the superblock width, so a row>0 non-rightmost superblock's above-right
+  IS decoded and `count_top_right_avail` makes §7.13.2.1 use the real
+  `CurrFrame[y-1][x+w]` for `AboveRow[w]`. The current SMOOTH chroma path repeats
+  the last in-block sample instead, so a 2-D grid with non-uniform chroma would
+  mispredict — it is rejected until the sentinel reads the real neighbour.
+- **Verify with a distinct-value single-column fixture.** `syn-2sbcol-intra-64x128`
+  stacks two distinct flat superblocks (top 80, bottom 180), so the bottom
+  superblock DC-predicts from the reconstructed top neighbour with a real residual
+  and reconstructs full-superblock SMOOTH chroma at row > 0 (rightmost column, no
+  above-right) — exercising the multi-row control flow with a non-trivial value.
 
 ## Risks / Trade-offs
 
-- The fixture is uniform, so the luma residual is zero after the first
-  superblock; the value is in exercising the multi-row *control flow* (the loop,
-  per-row `clear_left_context`, above-neighbour reads), which would fail under
-  any superblock-iteration bug. Distinct multi-row content awaits directional
-  luma support.
+- 2-D grid support (the common real case) is still deferred; it requires reading
+  the real §7.13.2.1 above-right sentinel from the reconstructed frame, a separate
+  brick. This change is a verified-safe stepping stone (single row or column).
