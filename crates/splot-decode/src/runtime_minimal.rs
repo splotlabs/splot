@@ -631,7 +631,14 @@ fn route_general_minimal_intra(sequence: &SequenceHeader, core: &FrameHeaderCore
         && sequence
             .intra
             .as_ref()
-            .is_some_and(|intra| !intra.enable_dip)
+            // §7.13.2 (lines 5355-5365): with `enable_ibp == 1` a non-4x4
+            // `DC_PRED` block runs the §7.13.2.12 IBP DC process, which modifies
+            // the prediction using the available left/above neighbours. This path
+            // applies only the plain §7.13.2.4 DC predictor, so a neighbour-having
+            // DC block (any non-first superblock / split block) would reconstruct
+            // wrong pixels under IBP. Reject `enable_ibp` until the IBP DC process
+            // is modelled (all committed fixtures are encoded with enable_ibp = 0).
+            .is_some_and(|intra| !intra.enable_dip && !intra.enable_ibp)
         && sequence
             .partition
             .is_some_and(|partition| !partition.enable_sdp)
