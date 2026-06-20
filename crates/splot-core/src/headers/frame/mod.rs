@@ -49,7 +49,7 @@ mod tiling;
 pub use config::IntrabcParams;
 pub use encoder_input::{
     MinimalIntraCoreError, MinimalIntraTileGroupError, build_minimal_intra_clk_core,
-    encode_minimal_intra_clk_tile_group_obu,
+    encode_minimal_intra_clk_annexb_obu, encode_minimal_intra_clk_tile_group_obu,
 };
 pub use filtering::{
     CdefParams, CdefStrengthSet, CoreSeqFilterView, DeblockingFilterParams, GdfGeometry, GdfParams,

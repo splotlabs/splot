@@ -2,11 +2,17 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 331 feature(s); 278 cite a spec section.
+Matrix version 1. Last reviewed 2026-06-15. 332 feature(s); 279 cite a spec section.
 
 One row per (spec section, feature) pair, in spec order; a feature citing both a syntax and a semantics section appears under both. The canonical status source is [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); the full per-feature ledger is [FEATURE-STATUS.md](./FEATURE-STATUS.md).
 
 Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked · 🧪 experimental · — not applicable · (blank) todo. Diagnostics counts the rule IDs recorded in the feature's proof; emitted validator IDs are registered in [VALIDATOR-DIAGNOSTICS.md](./VALIDATOR-DIAGNOSTICS.md), and emitted decoder IDs are registered in [DECODER-DIAGNOSTICS.md](./DECODER-DIAGNOSTICS.md).
+
+## Chapter B
+
+| Section | Spec item | Feature | Mapped | Parse | Validate | Tests | Diagnostics |
+|---|---|---|:-:|:-:|:-:|:-:|:-:|
+| § B.2 | Encoder writer-input minimal-intra Annex B OBU wrapper | `ENC-MINIMAL-INTRA-CLK-ANNEXB-OBU` | ✅ | — | — | ✅ | — |
 
 ## Chapter 3 — Symbols and abbreviated terms
 
@@ -85,6 +91,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.2.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-2-1) | General OBU syntax | `DECODE-TILE-PAYLOAD-INPUT-DERIVATION` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 5.2.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-2-2) | OBU header syntax | `AV2-5.2.2-OBU-HEADER` | ✅ | ✅ | ✅ | ✅ | 6 |
 | [§ 5.2.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-2-2) | OBU header syntax | `DECODE-BYTE-STREAM-PLANNER` | ✅ | ✅ | — | ✅ | 3 |
+| [§ 5.2.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-2-2) | OBU header syntax | `ENC-MINIMAL-INTRA-CLK-ANNEXB-OBU` | ✅ | — | — | ✅ | — |
 | [§ 5.2.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-2-3) | Trailing bits syntax | `AV2-5.2.3-TRAILING-BITS` | ✅ | ✅ | 🟡 | ✅ | 2 |
 | [§ 5.2.4](./spec/av2/1.0.0/05-syntax-structures.md#s-5-2-4) | Byte alignment syntax | `AV2-5.2.4-BYTE-ALIGNMENT` | ✅ | ✅ | 🟡 | ✅ | 1 |
 | [§ 5.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-3) | Reserved OBU syntax | `AV2-5.3-RESERVED-OBU` | ✅ | — | ✅ | ✅ | 2 |

@@ -23,9 +23,10 @@ use crate::headers::frame::{
 };
 use crate::headers::sequence::ChromaFormatIdc;
 use crate::headers::tile_group::{TileGroupFraming, TileGroupStructure};
+use crate::obu::ObuHeader;
 use crate::span::ByteOffset;
-use crate::types::ObuType;
-use crate::write::{BitWriter, WriteError, WriteResult, write_tile_group_obu};
+use crate::types::{EmbeddedLayerId, ExtendedLayerId, ObuType, TemporalLayerId};
+use crate::write::{BitWriter, WriteError, WriteResult, write_annexb_obu, write_tile_group_obu};
 
 impl CoreSeqInterView {
     /// Builds the all-disabled § 5.4.6 inter-config view a minimal intra sequence
@@ -387,10 +388,46 @@ pub fn encode_minimal_intra_clk_tile_group_obu(
     Ok(writer.into_bytes())
 }
 
+/// Wraps the canonical minimal-intra `OBU_CLOSED_LOOP_KEY` `tile_group_obu()` payload
+/// ([`encode_minimal_intra_clk_tile_group_obu`]) in AV2 Annex B framing (§ B.2,
+/// `docs/spec/av2/1.0.0/annex-b-length-delimited-bitstream-format.md#s-annex-b-2`): a
+/// `leb128` total-size prefix, the § 5.2.2 OBU header,
+/// then the payload. The result is a **self-delimiting** Annex B OBU that reparses to exactly
+/// one `OBU_CLOSED_LOOP_KEY` carrying the payload — one step beyond the bare `tile_group_obu()`
+/// payload (which has no length framing).
+///
+/// The § 5.2.2 header is the no-extension CLK header: `obu_mlayer_id` and `obu_xlayer_id` are
+/// inferred `0` (CLK does not require the global xlayer — only `OBU_MSDO` /
+/// `OBU_TEMPORAL_DELIMITER` do, § 5.2.2). `tile_data` is the § 8.2 coded tile bytes (`>= 1`);
+/// an empty slice is rejected by the inner assembler.
+///
+/// This is the public encoder writer-input bridge end-point that emits a complete,
+/// self-delimiting OBU. A temporal-delimiter + sequence-header OBU and a full Annex B / IVF
+/// stream around it are later bricks; this is a single frame OBU, not yet a decodable
+/// temporal unit.
+pub fn encode_minimal_intra_clk_annexb_obu(
+    tile_data: &[u8],
+) -> Result<Vec<u8>, MinimalIntraTileGroupError> {
+    let payload = encode_minimal_intra_clk_tile_group_obu(tile_data)?;
+    // § 5.2.2: the no-extension OBU_CLOSED_LOOP_KEY header (inferred layer ids 0).
+    let header = ObuHeader {
+        has_header_extension: false,
+        obu_type: ObuType::ClosedLoopKey,
+        temporal_layer_id: TemporalLayerId::from_bits(0),
+        embedded_layer_id: EmbeddedLayerId::from_bits(0),
+        extended_layer_id: ExtendedLayerId::from_bits(0),
+        header_size_bytes: 1,
+    };
+    let mut writer = BitWriter::new();
+    write_annexb_obu(&mut writer, &header, &payload)?;
+    Ok(writer.into_bytes())
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use crate::annexb::parse_annex_b_obus_partial;
     use crate::headers::frame::{FrameHeaderParseStatus, FrameSize, FrameType};
     use crate::headers::tile_group::parse_tile_group_prefix;
     use crate::write::write_frame_header_core;
@@ -545,6 +582,35 @@ mod tests {
     fn encode_minimal_intra_clk_tile_group_obu_rejects_empty_tile_data() {
         // §8.2.2: a zero-size tile is a framing defect the writer rejects — a typed error, no panic.
         let err = encode_minimal_intra_clk_tile_group_obu(&[]).unwrap_err();
+        assert!(matches!(err, MinimalIntraTileGroupError::Write(_)));
+    }
+
+    #[test]
+    fn encode_minimal_intra_clk_annexb_obu_round_trips() {
+        let tile_data: Vec<u8> = (0u8..5).map(|b| b.wrapping_mul(37)).collect();
+        let bytes = encode_minimal_intra_clk_annexb_obu(&tile_data).unwrap();
+
+        // The Annex B stream reparses cleanly as exactly one OBU_CLOSED_LOOP_KEY.
+        let parsed = parse_annex_b_obus_partial(&bytes);
+        assert!(parsed.error.is_none());
+        assert_eq!(parsed.obus.len(), 1);
+        let obu = &parsed.obus[0];
+        assert_eq!(obu.header.obu_type, ObuType::ClosedLoopKey);
+        assert!(!obu.header.has_header_extension);
+
+        // The carried payload is exactly the tile_group_obu() payload (ending in the tile bytes).
+        let payload = encode_minimal_intra_clk_tile_group_obu(&tile_data).unwrap();
+        assert_eq!(obu.payload, payload.as_slice());
+        assert_eq!(
+            &obu.payload[obu.payload.len() - tile_data.len()..],
+            tile_data.as_slice()
+        );
+    }
+
+    #[test]
+    fn encode_minimal_intra_clk_annexb_obu_rejects_empty_tile_data() {
+        // Propagates the inner zero-size-tile rejection — a typed error, no panic.
+        let err = encode_minimal_intra_clk_annexb_obu(&[]).unwrap_err();
         assert!(matches!(err, MinimalIntraTileGroupError::Write(_)));
     }
 }
