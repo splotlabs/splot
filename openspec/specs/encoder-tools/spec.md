@@ -2123,3 +2123,170 @@ coded packets, public CLI success, or modes beyond the DC minimal tier.
 - **AND** no documentation or matrix row SHALL claim eob > 2, chroma
   multi-coefficient, or Baseline Encoder Profile v1 output from the trace alone.
 
+### Requirement: Encoder intra_tx_type TX_SET_INTRA_1 token
+
+The encoder SHALL provide a private `intra_tx_type` transform-type token tracked by
+`ENC-INTRA-TX-TYPE-TOKEN` for the `TX_SET_INTRA_1` transform set. It SHALL add the
+`IntraTxType` token syntax and an `IntraTxTypeSet1 { tx_size_sqr }` CDF-row selector
+for `TileIntraTxTypeSet1Cdf[Tx_Size_Sqr[txSz]]`, and an
+`intra_tx_type_set1_token(tx_size_sqr, symbol)` accessor whose symbol indexes the §9
+`Md_Idx_To_Type[Size_Class[txSz]][intraDir]` row. The token SHALL roundtrip through
+one in-tree AV2 §8.2 symbol encoder/decoder via the generic coefficient-token CDF-row
+router. It SHALL NOT compose a general `eob > 1` trace, model `sec_tx_type`, derive
+non-`TX_SET_INTRA_1` sets or non-`DC_PRED` directions, or produce a coded packet.
+
+#### Scenario: intra_tx_type symbol 0 selects DCT_DCT for a 4x4 DC_PRED block
+
+- **WHEN** the encoder resolves the `intra_tx_type` symbol for a 4x4 (`Tx_Size_Sqr 0`,
+  `Size_Class 0`) `DC_PRED` (`intraDir 0`) block
+- **THEN** symbol 0 SHALL select `DCT_DCT` (`Md_Idx_To_Type[0][0][0] == 0`).
+
+#### Scenario: The intra_tx_type token roundtrips
+
+- **WHEN** the DCT_DCT `intra_tx_type` token (symbol 0, `Tx_Size_Sqr 0`) is
+  roundtripped through the generic router and one in-tree AV2 §8.2 coder
+- **THEN** the decoded symbol SHALL be 0.
+
+#### Scenario: The token is not yet composed into a trace
+
+- **WHEN** the `intra_tx_type` token is available in `splot-encode`
+- **THEN** `Context::receive_packet` SHALL continue to return no coded packet
+- **AND** no documentation or matrix row SHALL claim a general `eob > 1` trace,
+  `sec_tx_type`, or Baseline Encoder Profile v1 output from the token alone.
+
+### Requirement: Encoder eob=2 trace with TX_SET_INTRA_1 intra_tx_type
+
+The encoder SHALL provide a private eob=2 multi-coefficient luma block trace that
+includes the §5.20.8.2 `intra_tx_type` transform-type symbol, tracked by
+`ENC-INTRA-BLOCK-TRACE-TWO-COEFF-TX-TYPE`, for the default-`reduced_tx_set`
+`TX_SET_INTRA_1` configuration. It SHALL compose the eob=2 multi-coefficient trace
+with the 4x4 `DC_PRED` `intra_tx_type` DCT_DCT symbol (0) inserted after `eob_pt_16`
+(the position `transform_type()` is read, §5.20.7.27), and SHALL prove the
+eleven-token trace `[0,0,0, 0, 1, 0, 0, 0, 0, 1, 1]` writes through one in-tree AV2
+§8.2 symbol encoder and decodes back. It still assumes `enable_intra_ist == 0`. It
+SHALL NOT emit the `sec_tx_type` secondary-transform symbol, blocks with eob > 2,
+non-DCT_DCT transform types, non-`TX_SET_INTRA_1` sets, tile payloads, coded packets,
+public CLI success, or modes beyond the DC minimal tier.
+
+#### Scenario: The intra_tx_type symbol sits after eob_pt_16
+
+- **WHEN** the eob=2 trace with `intra_tx_type` is composed
+- **THEN** it SHALL be the eob=2 multi-coefficient trace plus exactly one
+  `intra_tx_type` (DCT_DCT, `TX_SET_INTRA_1`, `Tx_Size_Sqr 0`) token immediately
+  after the `eob_pt_16` token — symbols `[0,0,0,0,1,0,0,0,0,1,1]`.
+
+#### Scenario: The eob=2 tx-type trace roundtrips
+
+- **WHEN** the composed trace is roundtripped through one in-tree AV2 §8.2 coder
+- **THEN** the decoded symbols SHALL be `[0,0,0,0,1,0,0,0,0,1,1]`
+- **AND** the roundtrip SHALL be deterministic.
+
+#### Scenario: The trace does not produce packets
+
+- **WHEN** the eob=2 tx-type trace is available in `splot-encode`
+- **THEN** `Context::receive_packet` SHALL continue to return no coded packet
+- **AND** no documentation or matrix row SHALL claim `sec_tx_type`, eob > 2, or
+  Baseline Encoder Profile v1 output from the trace alone.
+
+### Requirement: Encoder sec_tx_type IST transform-type token
+
+The encoder SHALL provide a private `sec_tx_type` transform-type token, tracked by
+`ENC-SEC-TX-TYPE-TOKEN`, modeling the AV2 §5.20.8.2 `transform_type()` IST secondary
+transform symbol read right after `intra_tx_type` (line 16613). It SHALL expose a
+token whose syntax is `sec_tx_type`, coded with the intra `TileSecTxTypeCdf[0]
+[Tx_Size_Sqr]` CDF (the `is_inter = 0` bank, §8.3.2), and SHALL prove the token
+writes through one in-tree AV2 §8.2 symbol encoder and decodes back for every intra
+`Tx_Size_Sqr` row and every `sec_tx_type` value (`STX_TYPES = 4`). The token feature
+itself SHALL NOT model the `most_probable_stx_set` follow-up symbol, the inter bank,
+blocks with eob > 2, tile payloads, coded packets, public CLI success, or modes
+beyond the DC minimal tier. (A trace inserting the token is tracked separately by
+`ENC-INTRA-BLOCK-TRACE-IST`.)
+
+#### Scenario: The sec_tx_type token carries the intra IST selector
+
+- **WHEN** the `sec_tx_type` "IST off" token is constructed for `Tx_Size_Sqr 0`
+- **THEN** its syntax SHALL be `sec_tx_type` and its selector SHALL be the intra
+  `TileSecTxTypeCdf[0][0]` row
+- **AND** symbol 0 SHALL represent `sec_tx_type = 0` (no `most_probable_stx_set`).
+
+#### Scenario: The sec_tx_type token roundtrips for all rows and values
+
+- **WHEN** the `sec_tx_type` token is roundtripped through one in-tree AV2 §8.2 coder
+  for each intra `Tx_Size_Sqr` row and each of the four `sec_tx_type` values
+- **THEN** every decoded symbol SHALL equal the encoded symbol.
+
+#### Scenario: The token does not produce packets
+
+- **WHEN** the `sec_tx_type` token is available in `splot-encode`
+- **THEN** `Context::receive_packet` SHALL continue to return no coded packet
+- **AND** no documentation or matrix row SHALL claim IST condition evaluation or
+  Baseline Encoder Profile v1 output from the `sec_tx_type` token feature alone (the
+  trace inserting it is tracked separately by `ENC-INTRA-BLOCK-TRACE-IST`).
+
+### Requirement: Encoder eob=2 trace with intra_tx_type and sec_tx_type
+
+The encoder SHALL provide a private eob=2 multi-coefficient luma block trace that
+includes BOTH §5.20.8.2 transform-type symbols — `intra_tx_type` and the `sec_tx_type`
+IST secondary transform — tracked by `ENC-INTRA-BLOCK-TRACE-IST`, for the
+`enable_intra_ist == 1` configuration. It SHALL compose the eob=2 tx-type trace with
+the 4x4 intra `sec_tx_type` IST-off symbol (0) inserted right after `intra_tx_type`
+(the position `sec_tx_type` is read, §5.20.8.2 line 16613), and SHALL prove the
+twelve-token trace `[0,0,0, 0, 1, 0, 0, 0, 0, 0, 1, 1]` writes through one in-tree AV2
+§8.2 symbol encoder and decodes back. This block satisfies the IST condition (`eob 2
+!= 1 && !Lossless && TxType == DCT_DCT && YMode != PAETH && eob 2 <= eobLim =
+IST_4X4_HEIGHT = 8`) and uses `sec_tx_type = 0`. It SHALL NOT emit the
+`most_probable_stx_set` symbol, blocks with eob > 2, non-DCT_DCT transform types,
+non-`TX_SET_INTRA_1` sets, tile payloads, coded packets, public CLI success, or modes
+beyond the DC minimal tier.
+
+#### Scenario: sec_tx_type sits right after intra_tx_type
+
+- **WHEN** the eob=2 trace with `intra_tx_type` and `sec_tx_type` is composed
+- **THEN** it SHALL be the tx-type trace plus exactly one `sec_tx_type` (IST,
+  `Tx_Size_Sqr 0`) token immediately after the `intra_tx_type` token — symbols
+  `[0,0,0,0,1,0,0,0,0,0,1,1]`.
+
+#### Scenario: The IST trace roundtrips
+
+- **WHEN** the composed trace is roundtripped through one in-tree AV2 §8.2 coder
+- **THEN** the decoded symbols SHALL be `[0,0,0,0,1,0,0,0,0,0,1,1]`
+- **AND** the roundtrip SHALL be deterministic.
+
+#### Scenario: The trace does not produce packets
+
+- **WHEN** the IST trace is available in `splot-encode`
+- **THEN** `Context::receive_packet` SHALL continue to return no coded packet
+- **AND** no documentation or matrix row SHALL claim `most_probable_stx_set`, eob > 2,
+  or Baseline Encoder Profile v1 output from the trace alone.
+
+### Requirement: Encoder block-symbol entropy-coding entry point
+
+The encoder SHALL provide a private production entry point, tracked by
+`ENC-BLOCK-SYMBOL-ENCODE`, that encodes an ordered block-symbol trace into AV2 §8.2
+entropy-coded bytes. It SHALL drive one in-tree `SymbolEncoder` over the trace —
+writing each CDF token to its scoped default CDF row and each bypass token as a raw
+literal — and `finish()` the §8.2 stream, returning the coded bytes that a §5.20.1
+`tile_group_payload()` carries as a single tile's data. The block-symbol trace
+roundtrip SHALL use this entry point for its encode half. It SHALL NOT assemble a
+tile-group payload, a tile-group OBU, a frame, a packet, `Context::receive_packet`
+output, public CLI success, or Baseline Encoder Profile v1 output.
+
+#### Scenario: The entry point emits decodable all-zero bytes
+
+- **WHEN** the complete all-zero intra block trace is encoded
+- **THEN** the returned bytes SHALL be non-empty
+- **AND** they SHALL equal the bytes the block-symbol roundtrip proves decodable, which
+  decode to `[0, 0, 0, 1, 1, 1]`.
+
+#### Scenario: The entry point is deterministic
+
+- **WHEN** the same trace is encoded twice
+- **THEN** the two byte vectors SHALL be identical.
+
+#### Scenario: The entry point does not produce packets
+
+- **WHEN** the block-symbol entropy-coding entry point is available in `splot-encode`
+- **THEN** `Context::receive_packet` SHALL continue to return no coded packet
+- **AND** no documentation or matrix row SHALL claim a tile-group payload, OBU, frame,
+  packet, or Baseline Encoder Profile v1 output from the entry point alone.
+

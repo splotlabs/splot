@@ -126,8 +126,19 @@ Status: planned, replaces the parked toy bootstrap path.
   parameterized `eob_pt_16`, a parameterized `coeff_base_eob`) all landed — the
   pieces the eob>1 trace composes. The first eob>1 trace — the minimal eob=2 multi-coefficient block (one nonzero AC
   + a zero DC, with the DC `coeff_base` context derived from the AC's `Level[]`) —
-  landed. Blocks with eob>2, the chroma base-range/golomb tiers, partition syntax,
-  and the tile-body byte assembly remain.
+  landed. The transform-type signaling the general eob>1 path needs has begun: the
+  `intra_tx_type` (TX_SET_INTRA_1) transform-type token landed (DCT_DCT = symbol 0
+  for 4x4 DC_PRED). The general eob>1 trace inserting it landed (the eob=2 block for the default
+  reduced_tx_set TX_SET_INTRA_1 config, with the intra_tx_type DCT_DCT symbol after
+  eob_pt). The eob=2 trace now carries BOTH §5.20.8.2 transform-type symbols for the minimal
+  TX_SET_INTRA_1 / sec_tx_type=0 path (intra_tx_type + the sec_tx_type IST symbol, for
+  enable_intra_ist==1). The most_probable_stx_set follow-up (read when sec_tx_type!=0),
+  blocks with eob>2, the chroma base-range/golomb tiers, partition syntax, and the
+  tile-body byte assembly remain.
+- The production entropy-coding entry point `encode_block_symbol_trace` (the §8.2
+  SymbolEncoder driven to a block's coded bytes) has landed — the first tile-body
+  brick. Next: a tile-group OBU from the all-zero trace, then frame assembly and the
+  Context::receive_packet wiring to a first real packet.
 - Use closed-loop reconstruction before public success.
 - Emit only syntax the writer can produce and the validator accepts.
 - Record fixtures, hashes, and matrix proof before marking any encode stage done.

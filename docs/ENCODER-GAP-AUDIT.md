@@ -173,6 +173,34 @@ planning and status; it does not claim encoder behavior exists.
   bypass. The 10-token trace `[0,0,0,0,1,0,0,0,1,1]` roundtrips through one §8.2
   coder. It is not eob>2, chroma multi-coefficient, partition syntax, tile-body, or
   a packet path.
+- `ENC-INTRA-TX-TYPE-TOKEN` adds the `intra_tx_type` (TX_SET_INTRA_1) transform-type
+  token — the symbol §5.20.7.27 reads between `eob_pt` and the base pass for eob>1
+  blocks (the eob=2 trace #336 scoped it away). For a 4x4 DC_PRED block symbol 0
+  selects DCT_DCT (Md_Idx_To_Type[0][0][0]==0). Roundtrips through the §8.2 router
+  (extracted to a cdf_rows submodule for the source budget). Available but not yet
+  composed into a trace; the general eob>1 trace brick consumes it. It is not a
+  general trace, sec_tx_type, or a packet path.
+- `ENC-INTRA-BLOCK-TRACE-TWO-COEFF-TX-TYPE` composes the GENERAL eob>1 trace for
+  the default reduced_tx_set TX_SET_INTRA_1 config: the eob=2 trace with the
+  §5.20.8.2 intra_tx_type DCT_DCT symbol inserted after eob_pt_16 (removing #336's
+  reduced_tx_set==2 scope; still enable_intra_ist==0). 11-token trace
+  [0,0,0,0,1,0,0,0,0,1,1] roundtrips through one §8.2 coder. The golomb composers
+  were split to a submodule for the source budget. It is not sec_tx_type, eob>2, or
+  a packet path.
+- `ENC-SEC-TX-TYPE-TOKEN` models the §5.20.8.2 sec_tx_type IST token (read right
+  after intra_tx_type in transform_type(), verified adversarially vs the mirror),
+  coded with TileSecTxTypeCdf[0][Tx_Size_Sqr]; symbol 0 = IST off (no
+  most_probable_stx_set). Roundtrips for every row/value through one §8.2 coder. Not
+  yet a trace, not the inter bank, not a packet path.
+- `ENC-INTRA-BLOCK-TRACE-IST` composes the eob=2 trace with BOTH §5.20.8.2
+  transform-type symbols (intra_tx_type + the sec_tx_type IST symbol, enable_intra_ist
+  ==1): the 12-token trace [0,0,0,0,1,0,0,0,0,0,1,1] roundtrips through one §8.2 coder.
+  sec_tx_type=0 (IST off, no most_probable_stx_set). Not eob>2, not a packet path.
+- `ENC-BLOCK-SYMBOL-ENCODE` adds the production entropy-coding entry point
+  `encode_block_symbol_trace(trace) -> Vec<u8>` (the §8.2 SymbolEncoder driven to
+  coded bytes; the roundtrip helper now calls it). It is the first tile-body-phase
+  brick; the bytes are a single tile's §5.20.1 payload data. The tile-group OBU/frame
+  wrappers and the receive_packet wiring remain.
 - `Packet` is still only a byte buffer wrapper, and no coded packet production
   path exists.
 - `EncoderConfig` exposes `BitDepth::Twelve`, but current Baseline Encoder Profile

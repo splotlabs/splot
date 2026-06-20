@@ -656,3 +656,113 @@ fn two_coeff_block_roundtrip_is_deterministic() {
     assert_eq!(first.bytes(), second.bytes());
     assert_eq!(first.decoded_symbols(), second.decoded_symbols());
 }
+
+#[test]
+fn composes_two_coeff_with_tx_type_inserts_intra_tx_type_after_eob_pt() {
+    let base = compose_minimal_intra_two_coeff_block_trace().unwrap();
+    let trace = compose_minimal_intra_two_coeff_block_trace_with_tx_type().unwrap();
+
+    // The tx-type trace is the eob=2 trace plus one intra_tx_type token after the
+    // eob_pt_16 token (index 4).
+    assert_eq!(trace.len(), base.len() + 1);
+    assert!(
+        matches!(trace[5], BlockSymbolToken::Coeff(t)
+            if matches!(t.selector(), CoefficientCdfRowSelector::IntraTxTypeSet1 { tx_size_sqr: 0 })),
+        "intra_tx_type (DCT_DCT) after eob_pt"
+    );
+    // modes; all_zero=0, eob_pt_16=1, intra_tx_type=0 (DCT_DCT), AC coeff_base_eob=0,
+    // DC coeff_base=0, AC sign_bit=0, U/V all_zero=1.
+    assert_eq!(
+        trace.iter().map(|token| token.symbol()).collect::<Vec<_>>(),
+        vec![0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 1]
+    );
+}
+
+#[test]
+fn two_coeff_with_tx_type_roundtrips_through_one_coder() {
+    let trace = compose_minimal_intra_two_coeff_block_trace_with_tx_type().unwrap();
+    let proof = roundtrip_block_symbol_trace(&trace).unwrap();
+
+    assert_eq!(proof.decoded_symbols(), &[0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 1]);
+    assert!(!proof.bytes().is_empty());
+}
+
+#[test]
+fn two_coeff_with_tx_type_roundtrip_is_deterministic() {
+    let trace = compose_minimal_intra_two_coeff_block_trace_with_tx_type().unwrap();
+    let first = roundtrip_block_symbol_trace(&trace).unwrap();
+    let second = roundtrip_block_symbol_trace(&trace).unwrap();
+
+    assert_eq!(first.bytes(), second.bytes());
+    assert_eq!(first.decoded_symbols(), second.decoded_symbols());
+}
+
+#[test]
+fn composes_ist_trace_inserts_sec_tx_type_after_intra_tx_type() {
+    let base = compose_minimal_intra_two_coeff_block_trace_with_tx_type().unwrap();
+    let trace = compose_minimal_intra_two_coeff_block_trace_with_ist().unwrap();
+
+    // The IST trace is the tx-type trace plus one sec_tx_type token right after the
+    // intra_tx_type token (index 5).
+    assert_eq!(trace.len(), base.len() + 1);
+    assert!(
+        matches!(trace[5], BlockSymbolToken::Coeff(t)
+            if matches!(t.selector(), CoefficientCdfRowSelector::IntraTxTypeSet1 { tx_size_sqr: 0 })),
+        "intra_tx_type at index 5"
+    );
+    assert!(
+        matches!(trace[6], BlockSymbolToken::Coeff(t)
+            if matches!(t.selector(), CoefficientCdfRowSelector::SecTxTypeIntra { tx_size_sqr: 0 })),
+        "sec_tx_type (IST off) right after intra_tx_type"
+    );
+    // modes; all_zero=0, eob_pt_16=1, intra_tx_type=0, sec_tx_type=0, AC coeff_base_eob=0,
+    // DC coeff_base=0, AC sign_bit=0, U/V all_zero=1.
+    assert_eq!(
+        trace.iter().map(|token| token.symbol()).collect::<Vec<_>>(),
+        vec![0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 1]
+    );
+}
+
+#[test]
+fn ist_trace_roundtrips_through_one_coder() {
+    let trace = compose_minimal_intra_two_coeff_block_trace_with_ist().unwrap();
+    let proof = roundtrip_block_symbol_trace(&trace).unwrap();
+
+    assert_eq!(
+        proof.decoded_symbols(),
+        &[0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 1]
+    );
+    assert!(!proof.bytes().is_empty());
+}
+
+#[test]
+fn ist_trace_roundtrip_is_deterministic() {
+    let trace = compose_minimal_intra_two_coeff_block_trace_with_ist().unwrap();
+    let first = roundtrip_block_symbol_trace(&trace).unwrap();
+    let second = roundtrip_block_symbol_trace(&trace).unwrap();
+
+    assert_eq!(first.bytes(), second.bytes());
+    assert_eq!(first.decoded_symbols(), second.decoded_symbols());
+}
+
+#[test]
+fn encode_block_symbol_trace_emits_decodable_all_zero_payload() {
+    // The production entropy-coding entry point emits the §8.2 bytes for the complete
+    // all-zero intra block; they are exactly the bytes the roundtrip proves decodable.
+    let trace = compose_minimal_intra_dc_complete_all_zero_block_trace().unwrap();
+    let bytes = encode_block_symbol_trace(&trace).unwrap();
+    assert!(!bytes.is_empty());
+
+    let proof = roundtrip_block_symbol_trace(&trace).unwrap();
+    assert_eq!(proof.bytes(), bytes.as_slice());
+    assert_eq!(proof.decoded_symbols(), &[0, 0, 0, 1, 1, 1]);
+}
+
+#[test]
+fn encode_block_symbol_trace_is_deterministic() {
+    let trace = compose_minimal_intra_dc_complete_all_zero_block_trace().unwrap();
+    assert_eq!(
+        encode_block_symbol_trace(&trace).unwrap(),
+        encode_block_symbol_trace(&trace).unwrap()
+    );
+}

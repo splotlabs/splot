@@ -26,7 +26,12 @@
 //! `ENC-INTRA-BLOCK-TRACE-TWO-COEFF` (the first MULTI-coefficient block: an eob=2
 //! luma block with one nonzero AC at scan pos 1 and a zero DC, exercising
 //! `eob_pt_16=1`, the non-EOB `coeff_base` with a `Level[]`-derived §8.3.2
-//! low-frequency context, and the AC `sign_bit` bypass),
+//! low-frequency context, and the AC `sign_bit` bypass), and
+//! `ENC-INTRA-BLOCK-TRACE-TWO-COEFF-TX-TYPE` (the same eob=2 block for the
+//! default-`reduced_tx_set` `TX_SET_INTRA_1` config, inserting the §5.20.8.2
+//! `intra_tx_type` DCT_DCT symbol after `eob_pt_16`), and
+//! `ENC-INTRA-BLOCK-TRACE-IST` (that eob=2 block for `enable_intra_ist == 1`, adding
+//! the §5.20.8.2 `sec_tx_type` IST symbol right after `intra_tx_type`),
 //! reusing the merged mode emitters and the coefficient tokenization's per-plane
 //! all-zero and coded-DC tokens
 //! (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3`).
@@ -39,14 +44,14 @@
 //! CDF row from `splot-core` defaults.
 //!
 //! Its coefficient coverage is the single-DC magnitude vocabulary plus the minimal
-//! eob=2 multi-coefficient block; it does not emit blocks with eob > 2, luma DC
-//! magnitude beyond the golomb-prefix cap (525), high-frequency coefficients, the
-//! general `eob > 1` `transform_type()` / `intra_tx_type` / `sec_tx_type` signaling
-//! (the eob=2 trace assumes the DCT-only / reduced_tx_set==2 / enable_intra_ist==0
-//! config where it reads no transform-type symbol), the
-//! chroma base-range/golomb tiers, V-plane coded coefficients, partition syntax,
-//! tile CDF lifecycle, packets, a public encoder API, or modes beyond the DC
-//! minimal tier.
+//! eob=2 multi-coefficient block (with no transform-type symbol, with the
+//! `TX_SET_INTRA_1` `intra_tx_type` symbol, or with both `intra_tx_type` and the
+//! `sec_tx_type` IST symbol); it does not emit blocks with eob > 2, luma DC magnitude
+//! beyond the golomb-prefix cap (525), high-frequency coefficients, the
+//! `most_probable_stx_set` IST-set symbol (the IST trace uses `sec_tx_type = 0`),
+//! non-`TX_SET_INTRA_1` / non-`DC_PRED` transform types, the chroma
+//! base-range/golomb tiers, V-plane coded coefficients, partition syntax, tile CDF
+//! lifecycle, packets, a public encoder API, or modes beyond the DC minimal tier.
 
 #![allow(dead_code)]
 
@@ -54,16 +59,18 @@ use splot_core::symbol::{Symbol, SymbolDecoder, SymbolDecoderConfig};
 use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig};
 use splot_core::tables::cdf::{
     DEFAULT_COEFF_BASE_LF_CDF, DEFAULT_COEFF_BASE_LF_EOB_CDF, DEFAULT_COEFF_BASE_LF_EOB_UV_CDF,
-    DEFAULT_COEFF_BR_LF_CDF, DEFAULT_DC_SIGN_CDF, DEFAULT_EOB_PT_16_CDF, DEFAULT_TXB_SKIP_CDF,
+    DEFAULT_COEFF_BR_LF_CDF, DEFAULT_DC_SIGN_CDF, DEFAULT_EOB_PT_16_CDF,
+    DEFAULT_INTRA_TX_TYPE_SET1_CDF, DEFAULT_SEC_TX_TYPE_CDF, DEFAULT_TXB_SKIP_CDF,
     DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF, DEFAULT_V_TXB_SKIP_CDF, DEFAULT_Y_MODE_INDEX_CDF,
     DEFAULT_Y_MODE_SET_CDF,
 };
 
 use crate::coefficient_tokenization::{
-    CoefficientCdfRowSelector, CoefficientEntropyToken, chroma_u_all_zero_token,
-    chroma_u_dc_coded_coeff_tokens, chroma_v_all_zero_token, coded_luma_all_zero_token,
-    coeff_base_lf_eob_token, coeff_base_lf_luma_context, coeff_base_lf_token, eob_pt_16_token,
-    luma_all_zero_token, luma_dc_coded_tokens, luma_dc_golomb_level_tokens, luma_dc_sign_token,
+    CoefficientCdfRowSelector, CoefficientEntropyToken, CoefficientTokenSyntax,
+    chroma_u_all_zero_token, chroma_u_dc_coded_coeff_tokens, chroma_v_all_zero_token,
+    coded_luma_all_zero_token, coeff_base_lf_eob_token, coeff_base_lf_luma_context,
+    coeff_base_lf_token, eob_pt_16_token, intra_tx_type_set1_token, luma_all_zero_token,
+    luma_dc_coded_tokens, luma_dc_golomb_level_tokens, luma_dc_sign_token, sec_tx_type_intra_token,
 };
 use splot_recon::{TransformClass, coefficient_scan_order};
 
@@ -110,6 +117,24 @@ const COEFF_BR_LF_CTX_DC: usize = 0;
 // level (`coeff_base_lf_luma_context` → 1 for an AC level-1 neighbour at pos 1).
 // `tcq_ctx = (tcqState >> 1) & 1` is 0 when TCQ is off.
 const EOB_PT_16_SYMBOL_EOB2: u8 = 1;
+// §5.20.8.2 `transform_type()` reads `intra_tx_type` right after the eob reading
+// (§5.20.7.27 line 15474), before the base pass. For a 4x4 `DC_PRED`
+// `TX_SET_INTRA_1` block, symbol 0 selects `DCT_DCT` (`Md_Idx_To_Type[0][0][0] = 0`);
+// it is inserted after the `eob_pt_16` token (index 4: 3 modes + `all_zero` + `eob_pt`).
+const INTRA_TX_TYPE_SET1_TX_SIZE_SQR_4X4: usize = 0;
+const INTRA_TX_TYPE_DCT_DCT_SYMBOL: u8 = 0;
+const INTRA_TX_TYPE_SET1_CDF_ROW_LEN: usize = 8;
+const EOB_PT_16_TRACE_INDEX: usize = 4;
+// §5.20.8.2 `transform_type()` reads `sec_tx_type` (the IST secondary transform) at
+// line 16613, right after `intra_tx_type` (line 16529), when the IST condition holds.
+// For this 4x4 DCT_DCT DC_PRED eob=2 block with `enable_intra_ist == 1` it holds
+// (`eob 2 != 1`, `!Lossless`, `TxType == DCT_DCT`, `YMode != PAETH`, `eob 2 <= eobLim
+// = IST_4X4_HEIGHT = 8`), so the symbol is read; symbol 0 is `sec_tx_type = 0` (IST
+// off), which reads no `most_probable_stx_set`. It is inserted after `intra_tx_type`.
+const SEC_TX_TYPE_INTRA_BANK: usize = 0;
+const SEC_TX_TYPE_INTRA_TX_SIZE_SQR_4X4: usize = 0;
+const SEC_TX_TYPE_IST_OFF_SYMBOL: u8 = 0;
+const SEC_TX_TYPE_INTRA_CDF_ROW_LEN: usize = 5;
 const COEFF_BASE_LF_EOB_CTX_EOB2_AC: usize = 1;
 const COEFF_BASE_LF_CTX_EOB2_DC: usize = 1;
 const COEFF_BASE_LF_TCQ_CTX_NEUTRAL: usize = 0;
@@ -404,197 +429,15 @@ pub(crate) fn compose_minimal_intra_dc_coded_chroma_block_trace() -> Result<Vec<
     Ok(trace)
 }
 
-/// Composes the minimal ordered intra DC coded *golomb-tail* block trace: the AV2
-/// § 5.20.5.3 mode-info prefix, then the luma `residual()` for a single DC
-/// coefficient whose level reaches `maxLevel` (the fixed `txb_skip=0` /
-/// `eob_pt_16` / `coeff_base_eob=LF_NUM_BASE_LEVELS` / `coeff_br=COEFF_BASE_RANGE`
-/// level tokens), then the luma `dc_sign` CDF token, then the § 5.20.7.28
-/// `read_quant` finite-q golomb `coeff_rem` bypass bits encoding
-/// `x = magnitude - maxLevel` (§ 5.20.7.27's sign+quant pass reads the sign before
-/// calling `read_quant`), then the all-zero U and V `txb_skip` (the U plane is
-/// all-zero, so V uses the neutral context 0).
-///
-/// For the value `+10` the golomb extension is `x = 2`: with `m = 1` (the first DC
-/// coefficient, `hrLevelAvg = 0`) the finite-q path is `q = x >> 1 = 1`,
-/// `coeff_rem = x & 1 = 0`, i.e. the bypass bits `0` (one `q_length_bit` zero),
-/// `1` (the terminating `q_length_bit`), `0` (`coeff_rem`). This covers the
-/// finite-q magnitude range `maxLevel..=maxLevel + 9` (8..=17); the golomb-prefix
-/// path (magnitude 18+) is a later brick.
-pub(crate) fn compose_minimal_intra_dc_golomb_block_trace() -> Result<Vec<BlockSymbolToken>> {
-    compose_intra_dc_golomb_block_trace(MINIMAL_GOLOMB_DC_MAGNITUDE, MINIMAL_GOLOMB_DC_NEGATIVE)
-}
-
-/// Composes the intra DC coded golomb-tail block trace for any finite-q luma DC
-/// `magnitude` in `GOLOMB_MAXLEVEL..=GOLOMB_FINITE_Q_MAGNITUDE_MAX` (8..=17). The
-/// level tokens are identical across the tier (the level always saturates to
-/// `maxLevel`); only the § 5.20.7.28 golomb `q_length`/`coeff_rem` bypass bits
-/// vary with `x = magnitude - maxLevel` (`q = x >> 1`, `coeff_rem = x & 1`, `m = 1`
-/// for the first DC coefficient). The `dc_sign` CDF token precedes the golomb bits
-/// (§ 5.20.7.27's sign+quant pass reads the sign before calling `read_quant`).
-pub(crate) fn compose_intra_dc_golomb_block_trace(
-    magnitude: u32,
-    negative: bool,
-) -> Result<Vec<BlockSymbolToken>> {
-    // Reject out-of-range magnitudes at runtime (a `debug_assert!` would be
-    // stripped in release builds): below `maxLevel` saturates to `x = 0` and 18+
-    // needs the golomb-prefix path (a later brick), so either would emit a
-    // non-conformant trace.
-    if !(GOLOMB_MAXLEVEL..=GOLOMB_FINITE_Q_MAGNITUDE_MAX).contains(&magnitude) {
-        return Err(Error::BlockSymbolTraceGolombMagnitudeOutOfRange {
-            magnitude,
-            min: GOLOMB_MAXLEVEL,
-            max: GOLOMB_FINITE_Q_MAGNITUDE_MAX,
-        });
-    }
-    let modes = compose_minimal_intra_dc_block_mode_trace()?;
-    let level = luma_dc_golomb_level_tokens(MINIMAL_COEFF_CDF_Q_CTX)?;
-    // x = magnitude - maxLevel (the golomb extension); finite-q encoding (m = 1).
-    // The range check above guarantees `x in 0..=9` and `q <= GOLOMB_FINITE_Q_MAX`.
-    let x = magnitude - GOLOMB_MAXLEVEL;
-    let q = x >> GOLOMB_DC_M;
-    let coeff_rem = x & 1;
-    // q `q_length_bit` zeros + the terminating `q_length_bit` one + `coeff_rem`.
-    let golomb_bits =
-        (q as usize)
-            .checked_add(2)
-            .ok_or(Error::BlockSymbolTraceAllocationFailed {
-                context: "golomb block trace length",
-            })?;
-    let total = modes
-        .len()
-        .checked_add(level.len())
-        .and_then(|n| n.checked_add(golomb_bits))
-        .and_then(|n| n.checked_add(3)) // dc_sign + U + V all-zero
-        .ok_or(Error::BlockSymbolTraceAllocationFailed {
-            context: "golomb block trace length",
-        })?;
-    let mut trace = Vec::new();
-    trace
-        .try_reserve_exact(total)
-        .map_err(|_| Error::BlockSymbolTraceAllocationFailed {
-            context: "golomb block trace",
-        })?;
-    trace.extend(modes.into_iter().map(BlockSymbolToken::Mode));
-    trace.extend(level.into_iter().map(BlockSymbolToken::Coeff));
-    // AV2 § 5.20.7.27's sign+quant pass reads the sign FIRST, then calls
-    // § 5.20.7.28 `read_quant` (which emits the golomb bits): the per-coefficient
-    // order is `dc_sign` then the golomb `q_length_bit`/`coeff_rem` literals.
-    trace.push(BlockSymbolToken::Coeff(luma_dc_sign_token(
-        MINIMAL_COEFF_CDF_Q_CTX,
-        negative,
-    )));
-    for _ in 0..q {
-        trace.push(BlockSymbolToken::bypass(1, 0));
-    }
-    trace.push(BlockSymbolToken::bypass(1, 1));
-    trace.push(BlockSymbolToken::bypass(1, coeff_rem));
-    trace.push(BlockSymbolToken::Coeff(chroma_u_all_zero_token(
-        MINIMAL_COEFF_CDF_Q_CTX,
-    )));
-    trace.push(BlockSymbolToken::Coeff(chroma_v_all_zero_token(
-        MINIMAL_COEFF_CDF_Q_CTX,
-        V_TXB_SKIP_CTX_NEUTRAL,
-    )));
-    Ok(trace)
-}
-
-/// Composes the canonical minimal intra DC coded golomb-*prefix* block trace
-/// (magnitude +18, the smallest golomb-prefix coefficient).
-pub(crate) fn compose_minimal_intra_dc_golomb_prefix_block_trace() -> Result<Vec<BlockSymbolToken>>
-{
-    compose_intra_dc_golomb_prefix_block_trace(
-        MINIMAL_GOLOMB_PREFIX_DC_MAGNITUDE,
-        MINIMAL_GOLOMB_PREFIX_DC_NEGATIVE,
-    )
-}
-
-/// Composes the intra DC coded golomb-*prefix* block trace for any luma DC
-/// `magnitude` in `GOLOMB_PREFIX_MAGNITUDE_MIN..=GOLOMB_PREFIX_MAGNITUDE_MAX`
-/// (18..=525). This is the AV2 § 5.20.7.28 `read_quant` golomb-prefix path
-/// (`q == cMax`): the mode prefix, the fixed golomb level tokens, the luma
-/// `dc_sign` CDF token (the sign precedes `read_quant`), then the golomb-prefix
-/// bypass bits — `cMax` (5) `q_length` zeros, the `golomb_length` unary
-/// (`golomb_zeros` zeros and a terminating 1, `length = golomb_zeros + k`), and
-/// `coeff_rem` as one `L(length)` literal — then all-zero U/V `txb_skip`.
-///
-/// Encoding `x = magnitude - maxLevel` (`x >= 10`): `length = GetMsb(x - 6)`,
-/// `golomb_zeros = length - k`, `coeff_rem = (x - 6) - 2^length`,
-/// `xBase = 6 + 2^length`. For magnitude 18: `x = 10`, `length = 2`,
-/// `golomb_zeros = 0`, `coeff_rem = 0` — the 17-token trace
-/// `[0,0,0, 0,0,4,3, 0, 0,0,0,0,0, 1, 0, 1,1]`.
-pub(crate) fn compose_intra_dc_golomb_prefix_block_trace(
-    magnitude: u32,
-    negative: bool,
-) -> Result<Vec<BlockSymbolToken>> {
-    // Reject out-of-range magnitudes at runtime (a `debug_assert!` would be
-    // stripped in release builds): below the minimum is the finite-q path and
-    // above the cap needs a wider `coeff_rem` (a later brick).
-    if !(GOLOMB_PREFIX_MAGNITUDE_MIN..=GOLOMB_PREFIX_MAGNITUDE_MAX).contains(&magnitude) {
-        return Err(Error::BlockSymbolTraceGolombMagnitudeOutOfRange {
-            magnitude,
-            min: GOLOMB_PREFIX_MAGNITUDE_MIN,
-            max: GOLOMB_PREFIX_MAGNITUDE_MAX,
-        });
-    }
-    let modes = compose_minimal_intra_dc_block_mode_trace()?;
-    let level = luma_dc_golomb_level_tokens(MINIMAL_COEFF_CDF_Q_CTX)?;
-    // x = magnitude - maxLevel (x >= 10); golomb-prefix (m = 1, k = 2, q == cMax).
-    // The range check guarantees `x - 6 >= 4` (so `ilog2` is defined and >= 2) and
-    // `length <= GOLOMB_PREFIX_LENGTH_MAX`.
-    let x = magnitude - GOLOMB_MAXLEVEL;
-    let xm6 = x - GOLOMB_PREFIX_XBASE_BIAS;
-    let length = xm6.ilog2();
-    let golomb_zeros = length - GOLOMB_DC_K;
-    let coeff_rem = xm6 - (1 << length);
-    // q_length zeros + golomb_length (golomb_zeros zeros + a 1) + the coeff_rem
-    // literal.
-    let golomb_bits = (GOLOMB_PREFIX_Q_ZEROS as usize)
-        .checked_add(golomb_zeros as usize)
-        .and_then(|n| n.checked_add(2))
-        .ok_or(Error::BlockSymbolTraceAllocationFailed {
-            context: "golomb-prefix block trace length",
-        })?;
-    let total = modes
-        .len()
-        .checked_add(level.len())
-        .and_then(|n| n.checked_add(golomb_bits))
-        .and_then(|n| n.checked_add(3)) // dc_sign + U + V all-zero
-        .ok_or(Error::BlockSymbolTraceAllocationFailed {
-            context: "golomb-prefix block trace length",
-        })?;
-    let mut trace = Vec::new();
-    trace
-        .try_reserve_exact(total)
-        .map_err(|_| Error::BlockSymbolTraceAllocationFailed {
-            context: "golomb-prefix block trace",
-        })?;
-    trace.extend(modes.into_iter().map(BlockSymbolToken::Mode));
-    trace.extend(level.into_iter().map(BlockSymbolToken::Coeff));
-    // dc_sign precedes the golomb bits (§ 5.20.7.27 sign+quant pass).
-    trace.push(BlockSymbolToken::Coeff(luma_dc_sign_token(
-        MINIMAL_COEFF_CDF_Q_CTX,
-        negative,
-    )));
-    // q_length: cMax zeros (the loop hits `q == cMax` with no terminating 1).
-    for _ in 0..GOLOMB_PREFIX_Q_ZEROS {
-        trace.push(BlockSymbolToken::bypass(1, 0));
-    }
-    // golomb_length unary: golomb_zeros zeros + a terminating 1.
-    for _ in 0..golomb_zeros {
-        trace.push(BlockSymbolToken::bypass(1, 0));
-    }
-    trace.push(BlockSymbolToken::bypass(1, 1));
-    // coeff_rem as one L(length) literal.
-    trace.push(BlockSymbolToken::bypass(length, coeff_rem));
-    trace.push(BlockSymbolToken::Coeff(chroma_u_all_zero_token(
-        MINIMAL_COEFF_CDF_Q_CTX,
-    )));
-    trace.push(BlockSymbolToken::Coeff(chroma_v_all_zero_token(
-        MINIMAL_COEFF_CDF_Q_CTX,
-        V_TXB_SKIP_CTX_NEUTRAL,
-    )));
-    Ok(trace)
-}
+mod golomb;
+// Re-exported for the sibling tests; the composers are not referenced by other
+// non-test code in this module.
+#[allow(unused_imports)]
+pub(crate) use golomb::{
+    compose_intra_dc_golomb_block_trace, compose_intra_dc_golomb_prefix_block_trace,
+    compose_minimal_intra_dc_golomb_block_trace,
+    compose_minimal_intra_dc_golomb_prefix_block_trace,
+};
 
 /// Composes the minimal eob=2 multi-coefficient luma block trace: the AV2
 /// § 5.20.5.3 mode-info prefix, then the coded luma `residual()` for a block with
@@ -697,6 +540,92 @@ pub(crate) fn compose_minimal_intra_two_coeff_block_trace() -> Result<Vec<BlockS
     Ok(trace)
 }
 
+/// Composes the minimal eob=2 multi-coefficient luma block trace WITH the
+/// §5.20.8.2 `intra_tx_type` transform-type symbol, for the default-`reduced_tx_set`
+/// `TX_SET_INTRA_1` configuration (removing the
+/// [`compose_minimal_intra_two_coeff_block_trace`] `reduced_tx_set == 2` scope).
+/// `transform_type()` is read right after `eob_pt_16` (§5.20.7.27 line 15474),
+/// before the base pass; the 4x4 `DC_PRED` symbol is 0 (`DCT_DCT`). The eleven-token
+/// trace is the eob=2 trace with that symbol inserted after `eob_pt_16`:
+/// `[0,0,0, 0, 1, 0, 0, 0, 0, 1, 1]`. It still assumes `enable_intra_ist == 0` (no
+/// `sec_tx_type`); that signaling is a later brick.
+pub(crate) fn compose_minimal_intra_two_coeff_block_trace_with_tx_type()
+-> Result<Vec<BlockSymbolToken>> {
+    let base = compose_minimal_intra_two_coeff_block_trace()?;
+    // Derive the insertion point from the `eob_pt_16` token kind so it tracks any
+    // growth of the base trace, falling back to the known `EOB_PT_16_TRACE_INDEX`.
+    let split = base
+        .iter()
+        .position(|token| {
+            matches!(token, BlockSymbolToken::Coeff(coeff)
+                if matches!(coeff.syntax(), CoefficientTokenSyntax::EobPt16))
+        })
+        .unwrap_or(EOB_PT_16_TRACE_INDEX)
+        + 1;
+    let total = base
+        .len()
+        .checked_add(1)
+        .ok_or(Error::BlockSymbolTraceAllocationFailed {
+            context: "two-coefficient tx-type block trace length",
+        })?;
+    let mut trace = Vec::new();
+    trace
+        .try_reserve_exact(total)
+        .map_err(|_| Error::BlockSymbolTraceAllocationFailed {
+            context: "two-coefficient tx-type block trace",
+        })?;
+    trace.extend_from_slice(&base[..split]);
+    trace.push(BlockSymbolToken::Coeff(intra_tx_type_set1_token(
+        INTRA_TX_TYPE_SET1_TX_SIZE_SQR_4X4,
+        INTRA_TX_TYPE_DCT_DCT_SYMBOL,
+    )));
+    trace.extend_from_slice(&base[split..]);
+    Ok(trace)
+}
+
+/// Composes the eob=2 trace with BOTH §5.20.8.2 transform-type symbols —
+/// `intra_tx_type` AND `sec_tx_type` (the IST secondary transform) — for the
+/// `enable_intra_ist == 1` configuration. `sec_tx_type` (§5.20.8.2 line 16613) is read
+/// right after `intra_tx_type` (line 16529), before the base pass; for this 4x4 DCT_DCT
+/// `DC_PRED` eob=2 block the IST condition holds (`eob 2 != 1 && !Lossless && TxType ==
+/// DCT_DCT && YMode != PAETH && eob 2 <= eobLim = IST_4X4_HEIGHT = 8`), and symbol 0 is
+/// `sec_tx_type = 0` (IST off, no `most_probable_stx_set`). The twelve-token trace is
+/// the tx-type trace with that symbol inserted after `intra_tx_type`:
+/// `[0,0,0, 0, 1, 0, 0, 0, 0, 0, 1, 1]`.
+pub(crate) fn compose_minimal_intra_two_coeff_block_trace_with_ist() -> Result<Vec<BlockSymbolToken>>
+{
+    let base = compose_minimal_intra_two_coeff_block_trace_with_tx_type()?;
+    // `sec_tx_type` is read right after `intra_tx_type`; derive the insertion point
+    // from the `intra_tx_type` token kind, falling back to just after `eob_pt_16`.
+    let split = base
+        .iter()
+        .position(|token| {
+            matches!(token, BlockSymbolToken::Coeff(coeff)
+                if matches!(coeff.syntax(), CoefficientTokenSyntax::IntraTxType))
+        })
+        .unwrap_or(EOB_PT_16_TRACE_INDEX + 1)
+        + 1;
+    let total = base
+        .len()
+        .checked_add(1)
+        .ok_or(Error::BlockSymbolTraceAllocationFailed {
+            context: "two-coefficient IST block trace length",
+        })?;
+    let mut trace = Vec::new();
+    trace
+        .try_reserve_exact(total)
+        .map_err(|_| Error::BlockSymbolTraceAllocationFailed {
+            context: "two-coefficient IST block trace",
+        })?;
+    trace.extend_from_slice(&base[..split]);
+    trace.push(BlockSymbolToken::Coeff(sec_tx_type_intra_token(
+        SEC_TX_TYPE_INTRA_TX_SIZE_SQR_4X4,
+        SEC_TX_TYPE_IST_OFF_SYMBOL,
+    )));
+    trace.extend_from_slice(&base[split..]);
+    Ok(trace)
+}
+
 /// Result of proving a block-symbol trace through AV2 § 8.2 symbol bytes.
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) struct BlockSymbolTraceRoundtrip {
@@ -722,11 +651,17 @@ impl BlockSymbolTraceRoundtrip {
     }
 }
 
-/// Writes a block-symbol trace through one § 8.2 symbol encoder and decodes it
-/// back through one symbol decoder, sharing CDF state across the whole sequence.
-pub(crate) fn roundtrip_block_symbol_trace(
-    trace: &[BlockSymbolToken],
-) -> Result<BlockSymbolTraceRoundtrip> {
+/// Encodes an ordered block-symbol trace into AV2 § 8.2 entropy-coded bytes — the
+/// encoder's production entropy-coding entry point. Each token is written to its
+/// scoped default CDF row (a bypass literal writes its raw bits); `finish()`
+/// terminates the § 8.2 stream (§ 8.2.4 padding) and yields the coded bytes that a
+/// § 5.20.1 `tile_group_payload()` carries as a single tile's data.
+///
+/// This drives the same § 8.2 encode path as [`roundtrip_block_symbol_trace`] (which
+/// calls it), but returns the coded bytes for downstream tile-group assembly rather
+/// than re-decoding them. It does not assemble a tile-group payload, OBU, frame, or
+/// packet — those are later bricks.
+pub(crate) fn encode_block_symbol_trace(trace: &[BlockSymbolToken]) -> Result<Vec<u8>> {
     let mut encode_cdfs = BlockSymbolTraceCdfRows::from_defaults();
     // One operation per CDF symbol and per bypass-literal bit, plus headroom.
     let trace_cost = trace
@@ -762,7 +697,17 @@ pub(crate) fn roundtrip_block_symbol_trace(
     let output = encoder
         .finish()
         .map_err(|source| Error::BlockSymbolTraceSymbolEncodeFinish { source })?;
-    let bytes = output.into_bytes();
+    Ok(output.into_bytes())
+}
+
+/// Proves a block-symbol trace through one § 8.2 coder: encodes it via
+/// [`encode_block_symbol_trace`], then decodes the bytes back through one symbol
+/// decoder with the same shared CDF state, verifying every token reproduces. Returns
+/// the coded bytes and the decoded symbols for assertions.
+pub(crate) fn roundtrip_block_symbol_trace(
+    trace: &[BlockSymbolToken],
+) -> Result<BlockSymbolTraceRoundtrip> {
+    let bytes = encode_block_symbol_trace(trace)?;
 
     let mut decode_cdfs = BlockSymbolTraceCdfRows::from_defaults();
     let mut decoder = SymbolDecoder::with_config(&bytes, SymbolDecoderConfig::new())
@@ -833,6 +778,8 @@ struct BlockSymbolTraceCdfRows {
     u_txb_skip: [i32; TXB_SKIP_CDF_ROW_LEN],
     v_txb_skip: [i32; V_TXB_SKIP_CDF_ROW_LEN],
     eob_pt_16: [i32; EOB_PT_16_CDF_ROW_LEN],
+    intra_tx_type_set1_4x4: [i32; INTRA_TX_TYPE_SET1_CDF_ROW_LEN],
+    sec_tx_type_intra_4x4: [i32; SEC_TX_TYPE_INTRA_CDF_ROW_LEN],
     coeff_base_lf_eob: [i32; COEFF_BASE_LF_EOB_CDF_ROW_LEN],
     coeff_base_lf_eob_ac: [i32; COEFF_BASE_LF_EOB_CDF_ROW_LEN],
     coeff_base_lf_dc: [i32; COEFF_BASE_LF_CDF_ROW_LEN],
@@ -856,6 +803,10 @@ impl BlockSymbolTraceCdfRows {
                 [TX_SIZE_4X4_CTX][CHROMA_U_TXB_SKIP_CTX_NEUTRAL],
             v_txb_skip: DEFAULT_V_TXB_SKIP_CDF[MINIMAL_COEFF_CDF_Q_CTX][V_TXB_SKIP_CTX_NEUTRAL],
             eob_pt_16: DEFAULT_EOB_PT_16_CDF[MINIMAL_COEFF_CDF_Q_CTX][EOB_CTX_LUMA_INTRA],
+            intra_tx_type_set1_4x4: DEFAULT_INTRA_TX_TYPE_SET1_CDF
+                [INTRA_TX_TYPE_SET1_TX_SIZE_SQR_4X4],
+            sec_tx_type_intra_4x4: DEFAULT_SEC_TX_TYPE_CDF[SEC_TX_TYPE_INTRA_BANK]
+                [SEC_TX_TYPE_INTRA_TX_SIZE_SQR_4X4],
             coeff_base_lf_eob: DEFAULT_COEFF_BASE_LF_EOB_CDF[MINIMAL_COEFF_CDF_Q_CTX]
                 [TX_SIZE_4X4_CTX][COEFF_BASE_LF_EOB_CTX_DC],
             coeff_base_lf_eob_ac: DEFAULT_COEFF_BASE_LF_EOB_CDF[MINIMAL_COEFF_CDF_Q_CTX]
@@ -912,6 +863,12 @@ impl BlockSymbolTraceCdfRows {
                     coeff_cdf_q_ctx: MINIMAL_COEFF_CDF_Q_CTX,
                     eob_ctx: EOB_CTX_LUMA_INTRA,
                 } => Ok(self.eob_pt_16.as_mut_slice()),
+                CoefficientCdfRowSelector::IntraTxTypeSet1 {
+                    tx_size_sqr: INTRA_TX_TYPE_SET1_TX_SIZE_SQR_4X4,
+                } => Ok(self.intra_tx_type_set1_4x4.as_mut_slice()),
+                CoefficientCdfRowSelector::SecTxTypeIntra {
+                    tx_size_sqr: SEC_TX_TYPE_INTRA_TX_SIZE_SQR_4X4,
+                } => Ok(self.sec_tx_type_intra_4x4.as_mut_slice()),
                 CoefficientCdfRowSelector::CoeffBaseLfEob {
                     coeff_cdf_q_ctx: MINIMAL_COEFF_CDF_Q_CTX,
                     tx_size: TX_SIZE_4X4_CTX,

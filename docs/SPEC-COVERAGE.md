@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 317 feature(s); 264 cite a spec section.
+Matrix version 1. Last reviewed 2026-06-15. 322 feature(s); 269 cite a spec section.
 
 One row per (spec section, feature) pair, in spec order; a feature citing both a syntax and a semantics section appears under both. The canonical status source is [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); the full per-feature ledger is [FEATURE-STATUS.md](./FEATURE-STATUS.md).
 
@@ -215,6 +215,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.20.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-1) | General tile group payload syntax | `DECODE-TILE-PAYLOAD-BOUNDARY` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 5.20.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-1) | General tile group payload syntax | `DECODE-TILE-PAYLOAD-INPUT-DERIVATION` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 5.20.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-1) | General tile group payload syntax | `DECODE-Y4M-RUNTIME-OUTPUT` | ✅ | 🟡 | ✅ | ✅ | 4 |
+| [§ 5.20.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-1) | General tile group payload syntax | `ENC-BLOCK-SYMBOL-ENCODE` | ✅ | — | — | ✅ | — |
 | [§ 5.20.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-1) | General tile group payload syntax | `ENC-MINIMAL-HEADER-PLAN` | ✅ | — | — | ✅ | — |
 | [§ 5.20.2.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-2-1) | Decode tile syntax | `CONF-TILE-PAYLOAD-DECODE-FUZZ` | ✅ | — | — | ✅ | 2 |
 | [§ 5.20.2.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-2-1) | Decode tile syntax | `DECODE-CONTEXT-TILE-PAYLOAD-HANDOFF` | ✅ | — | — | ✅ | 2 |
@@ -336,8 +337,11 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `ENC-INTRA-BLOCK-TRACE-CODED-DC` | ✅ | — | — | ✅ | — |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `ENC-INTRA-BLOCK-TRACE-GOLOMB-FINITE` | ✅ | — | — | ✅ | — |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `ENC-INTRA-BLOCK-TRACE-GOLOMB-PREFIX` | ✅ | — | — | ✅ | — |
+| [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `ENC-INTRA-BLOCK-TRACE-IST` | ✅ | — | — | ✅ | — |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `ENC-INTRA-BLOCK-TRACE-LUMA-SKIP` | ✅ | — | — | ✅ | — |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `ENC-INTRA-BLOCK-TRACE-TWO-COEFF` | ✅ | — | — | ✅ | — |
+| [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `ENC-INTRA-BLOCK-TRACE-TWO-COEFF-TX-TYPE` | ✅ | — | — | ✅ | — |
+| [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `ENC-INTRA-TX-TYPE-TOKEN` | ✅ | — | — | ✅ | — |
 | [§ 5.20.7.28](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-28) | Read quantized coefficient syntax | `DECODE-COEFF-FSC-BRANCH-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.28](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-28) | Read quantized coefficient syntax | `DECODE-COEFF-FSC-BRANCH-SEG-EOB-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.28](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-28) | Read quantized coefficient syntax | `DECODE-COEFF-FSC-CONTEXT-COMMIT` | ✅ | 🟡 | — | ✅ | 1 |
@@ -369,6 +373,10 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.20.7.30](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-30) | Get scan function | `DECODE-COEFF-ORDINARY-BRANCH-SCAN-ORDER` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.30](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-30) | Get scan function | `ENC-INTRA-BLOCK-TRACE-TWO-COEFF` | ✅ | — | — | ✅ | — |
 | [§ 5.20.7.30](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-30) | Get scan function | `RECON-COEFFICIENT-SCAN-ORDER` | ✅ | — | ✅ | ✅ | — |
+| [§ 5.20.8.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-2) | Transform type syntax | `ENC-INTRA-BLOCK-TRACE-IST` | ✅ | — | — | ✅ | — |
+| [§ 5.20.8.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-2) | Transform type syntax | `ENC-INTRA-BLOCK-TRACE-TWO-COEFF-TX-TYPE` | ✅ | — | — | ✅ | — |
+| [§ 5.20.8.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-2) | Transform type syntax | `ENC-INTRA-TX-TYPE-TOKEN` | ✅ | — | — | ✅ | — |
+| [§ 5.20.8.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-2) | Transform type syntax | `ENC-SEC-TX-TYPE-TOKEN` | ✅ | — | — | ✅ | — |
 | [§ 5.20.8.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-3) | Get transform set function | `DECODE-COEFF-ORDINARY-BRANCH-LOSSLESS-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.8.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-3) | Get transform set function | `DECODE-COEFF-ORDINARY-BRANCH-TX-SET-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.9.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-9-1) | Is inside function | `DECODE-TILE-PARTITION-TRAVERSAL-BOUNDARY` | ✅ | ✅ | — | ✅ | — |
@@ -721,6 +729,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 
 | Section | Spec item | Feature | Mapped | Parse | Validate | Tests | Diagnostics |
 |---|---|---|:-:|:-:|:-:|:-:|:-:|
+| [§ 8.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2) | Parsing process for symbol decoder | `ENC-BLOCK-SYMBOL-ENCODE` | ✅ | — | — | ✅ | — |
 | [§ 8.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2) | Parsing process for symbol decoder | `ENC-COEFF-BASE-LF-TOKEN` | ✅ | — | — | ✅ | — |
 | [§ 8.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2) | Parsing process for symbol decoder | `ENC-COEFF-MULTI-TOKENS` | ✅ | — | — | ✅ | — |
 | [§ 8.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2) | Parsing process for symbol decoder | `ENC-COEFFICIENT-TOKENIZATION-MINIMAL` | ✅ | — | — | ✅ | — |
@@ -732,8 +741,12 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 8.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2) | Parsing process for symbol decoder | `ENC-INTRA-BLOCK-TRACE-CODED-DC` | ✅ | — | — | ✅ | — |
 | [§ 8.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2) | Parsing process for symbol decoder | `ENC-INTRA-BLOCK-TRACE-GOLOMB-FINITE` | ✅ | — | — | ✅ | — |
 | [§ 8.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2) | Parsing process for symbol decoder | `ENC-INTRA-BLOCK-TRACE-GOLOMB-PREFIX` | ✅ | — | — | ✅ | — |
+| [§ 8.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2) | Parsing process for symbol decoder | `ENC-INTRA-BLOCK-TRACE-IST` | ✅ | — | — | ✅ | — |
 | [§ 8.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2) | Parsing process for symbol decoder | `ENC-INTRA-BLOCK-TRACE-LUMA-SKIP` | ✅ | — | — | ✅ | — |
 | [§ 8.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2) | Parsing process for symbol decoder | `ENC-INTRA-BLOCK-TRACE-TWO-COEFF` | ✅ | — | — | ✅ | — |
+| [§ 8.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2) | Parsing process for symbol decoder | `ENC-INTRA-BLOCK-TRACE-TWO-COEFF-TX-TYPE` | ✅ | — | — | ✅ | — |
+| [§ 8.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2) | Parsing process for symbol decoder | `ENC-INTRA-TX-TYPE-TOKEN` | ✅ | — | — | ✅ | — |
+| [§ 8.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2) | Parsing process for symbol decoder | `ENC-SEC-TX-TYPE-TOKEN` | ✅ | — | — | ✅ | — |
 | [§ 8.2.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-2) | Initialization process for symbol decoder | `AV2-8.2-SYMBOL-DECODER` | ✅ | ✅ | ✅ | ✅ | — |
 | [§ 8.2.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-2) | Initialization process for symbol decoder | `CONF-SYMBOL-DECODER-FUZZ` | ✅ | — | — | ✅ | — |
 | [§ 8.2.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-2) | Initialization process for symbol decoder | `CONF-TILE-PAYLOAD-DECODE-FUZZ` | ✅ | — | — | ✅ | 2 |
@@ -872,8 +885,12 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `ENC-INTRA-BLOCK-TRACE-CODED-BR` | ✅ | — | — | ✅ | — |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `ENC-INTRA-BLOCK-TRACE-CODED-CHROMA-DC` | ✅ | — | — | ✅ | — |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `ENC-INTRA-BLOCK-TRACE-CODED-DC` | ✅ | — | — | ✅ | — |
+| [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `ENC-INTRA-BLOCK-TRACE-IST` | ✅ | — | — | ✅ | — |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `ENC-INTRA-BLOCK-TRACE-TWO-COEFF` | ✅ | — | — | ✅ | — |
+| [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `ENC-INTRA-BLOCK-TRACE-TWO-COEFF-TX-TYPE` | ✅ | — | — | ✅ | — |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `ENC-INTRA-MODE-SYMBOL-EMISSION` | ✅ | — | — | ✅ | — |
+| [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `ENC-INTRA-TX-TYPE-TOKEN` | ✅ | — | — | ✅ | — |
+| [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `ENC-SEC-TX-TYPE-TOKEN` | ✅ | — | — | ✅ | — |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `ENC-UV-MODE-SYMBOL-EMISSION` | ✅ | — | — | ✅ | — |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `RECON-GET-TX-CLASS` | ✅ | — | ✅ | ✅ | — |
 
@@ -915,6 +932,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-TX-SIZE-SYMBOLIC-TABLES` | ✅ | — | — | ✅ | 1 |
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-Y4M-RUNTIME-OUTPUT` | ✅ | 🟡 | ✅ | ✅ | 4 |
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `ENC-BITSTREAM-WRITER` | 🟡 | — | — | 🟡 | — |
+| [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `ENC-INTRA-TX-TYPE-TOKEN` | ✅ | — | — | ✅ | — |
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `RECON-INTRA-CARDINAL-DIRECTIONAL-PREDICTION` | ✅ | — | ✅ | ✅ | — |
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `RECON-INTRA-MIDDLE-DIRECTIONAL-ANGLE-PREDICTION` | ✅ | — | ✅ | ✅ | — |
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `RECON-INTRA-ONE-SIDED-DIRECTIONAL-ANGLE-PREDICTION` | ✅ | — | ✅ | ✅ | — |

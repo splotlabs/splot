@@ -4668,6 +4668,171 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-INTRA-TX-TYPE-TOKEN"
+name = "Encoder intra_tx_type TX_SET_INTRA_1 token"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20.8.2", "5.20.7.27", "8.3.2", "8.2", "9.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/coefficient_tokenization/transform_type.rs"
+openspec_change = "encoder-intra-tx-type-token"
+tracking_issue = ""
+owner = "encoder"
+risk = "medium"
+notes = "Private, available-but-uncomposed `intra_tx_type` transform-type token for the TX_SET_INTRA_1 set — the first building block toward GENERAL eob>1 blocks (the eob=2 trace #336 scoped away transform_type() signaling; this models the symbol read between eob_pt and the base pass). Adds CoefficientTokenSyntax::IntraTxType + CoefficientCdfRowSelector::IntraTxTypeSet1{tx_size_sqr} → TileIntraTxTypeSet1Cdf[Tx_Size_Sqr[txSz]] (DEFAULT_INTRA_TX_TYPE_SET1_CDF [[i32;8];3], 7 symbols; NOT coeff-CDF-q-context indexed) + a `coefficient_tokenization/transform_type.rs` submodule with `intra_tx_type_set1_token(tx_size_sqr, symbol)`. DERIVATION (verified vs spec + §9 tables): get_tx_set(TX_4X4, intra, reduced_tx_set=0)→TX_SET_INTRA_1 (decoder geometry.rs:958); §8.3.2 Table 8.2 (08-parsing-process.md:1621)→TileIntraTxTypeSet1Cdf[Tx_Size_Sqr[TX_4X4]=0]; §5.20.8.2 transform_type() (the transform-type syntax, called from §5.20.7.27 coeffs()) line 16569 TxType=Md_Idx_To_Type[Size_Class[txSz]][intraDir][intra_tx_type], SIZE_CLASS[TX_4X4]=0, intraDir=DC_PRED=0, MD_IDX_TO_TYPE[0][0]=[0,3,1,2,7,8,13] → SYMBOL 0 = TxType 0 = DCT_DCT. So intra_tx_type_set1_token(0,0) = the DCT_DCT symbol for 4x4 DC_PRED. The generic CDF-row router (extracted to a coefficient_tokenization/cdf_rows.rs submodule to keep the parent <1000 lines — no behaviour change) routes ALL THREE Tx_Size_Sqr TX_SET_INTRA_1 rows (§8.3.2 indexes the CDF by Tx_Size_Sqr); the token roundtrips through one §8.2 coder. Adding the IntraTxType syntax rippled to as_str + the closed_loop single-DC recovery no-op arm. NO decoder symbol-read mirror (decoder only has get_tx_set) → spec+table-derived; a test guards Md_Idx_To_Type[0][0][0]==DCT_DCT; AVM cross-check at the packet milestone. This row does not claim a general eob>1 TRACE (a later brick inserts this token between eob_pt and the base pass), sec_tx_type (the intra secondary transform), non-TX_SET_INTRA_1 sets (WIDE/HIGH/SET2/inter), non-DC_PRED intraDir, tile-body emission, packet output, CLI success, or Baseline Encoder Profile v1 output."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/coefficient_tokenization_tests.rs::intra_tx_type_set1_dct_dct_is_symbol_zero", "crates/splot-encode/src/coefficient_tokenization_tests.rs::intra_tx_type_set1_token_roundtrips_through_generic_helper", "crates/splot-encode/src/coefficient_tokenization_tests.rs::intra_tx_type_set1_token_roundtrips_every_tx_size_sqr_row"]
+commands = ["cargo test -p splot-encode intra_tx_type --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "ENC-INTRA-BLOCK-TRACE-TWO-COEFF-TX-TYPE"
+name = "Encoder eob=2 trace with TX_SET_INTRA_1 intra_tx_type"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20.8.2", "5.20.7.27", "8.3.2", "8.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/block_symbol_trace.rs"
+openspec_change = "encoder-block-trace-two-coeff-tx-type"
+tracking_issue = ""
+owner = "encoder"
+risk = "medium"
+notes = "Private, non-emitting eob=2 multi-coefficient luma block trace WITH the §5.20.8.2 intra_tx_type transform-type symbol — the GENERAL eob>1 trace for the default reduced_tx_set TX_SET_INTRA_1 config (removing ENC-INTRA-BLOCK-TRACE-TWO-COEFF's reduced_tx_set==2 / DCT-only scope; the first multi-coefficient trace that carries a transform-type symbol). `compose_minimal_intra_two_coeff_block_trace_with_tx_type()` in block_symbol_trace.rs DELEGATES to the eob=2 composer (#336) and inserts the intra_tx_type DCT_DCT token (symbol 0, TX_SET_INTRA_1, Tx_Size_Sqr 0; #347's intra_tx_type_set1_token) after eob_pt_16 — §5.20.8.2 transform_type() is read right after the eob reading (§5.20.7.27 line 15474), before the base pass. 11-token trace [0,0,0,0,1,0,0,0,0,1,1] (the eob=2 [0,0,0,0,1,0,0,0,1,1] + intra_tx_type=0 at index 5) through one §8.2 coder. BlockSymbolTraceCdfRows gains the 4x4 TX_SET_INTRA_1 row + routing. Still assumes enable_intra_ist==0 (no sec_tx_type — §5.20.7.29 would otherwise read it; the next brick). The §5.20.7.28 golomb-tail composers were EXTRACTED to a `block_symbol_trace/golomb.rs` submodule (parent hit 1015>1000; use super::* gives the consts/tokens; #[allow(unused_imports)] on the re-export since only tests reference them) → parent 819 lines. Tests: compose-in-order (asserts the intra_tx_type token after eob_pt + the symbols) + roundtrip + deterministic. Reuses the derived coeff_base context + scan-derived AC position from #336 and the verified DCT_DCT=symbol-0 from #347; AVM cross-check at the packet milestone. This row does not claim sec_tx_type, eob>2, non-DCT_DCT transform types, non-TX_SET_INTRA_1 sets, non-DC_PRED directions, tile-body emission, packet output, CLI success, or Baseline Encoder Profile v1 output."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/block_symbol_trace_tests.rs::composes_two_coeff_with_tx_type_inserts_intra_tx_type_after_eob_pt", "crates/splot-encode/src/block_symbol_trace_tests.rs::two_coeff_with_tx_type_roundtrips_through_one_coder", "crates/splot-encode/src/block_symbol_trace_tests.rs::two_coeff_with_tx_type_roundtrip_is_deterministic"]
+commands = ["cargo test -p splot-encode block_symbol_trace --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "ENC-SEC-TX-TYPE-TOKEN"
+name = "Encoder sec_tx_type IST transform-type token"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20.8.2", "8.3.2", "8.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/coefficient_tokenization.rs"
+openspec_change = "encoder-sec-tx-type-token"
+tracking_issue = ""
+owner = "encoder"
+risk = "medium"
+notes = "Private, non-emitting `sec_tx_type` transform-type token — the §5.20.8.2 transform_type() IST secondary-transform symbol read right after intra_tx_type (line 16613, after intra_tx_type at line 16529, in the SAME function — NOT §5.20.7.29 compute_tx_type, which reads zero symbols; verified adversarially vs the spec mirror via a 4-reader/4-verifier workflow). New CoefficientTokenSyntax::SecTxType + CoefficientCdfRowSelector::SecTxTypeIntra{tx_size_sqr} routing TileSecTxTypeCdf[0][Tx_Size_Sqr] (the intra is_inter=0 bank; §8.3.2, 08-parsing-process.md:867). `sec_tx_type_intra_token(tx_size_sqr, symbol)` in coefficient_tokenization/transform_type.rs. DEFAULT_SEC_TX_TYPE_CDF is [[[i32;5];5];2]: outer[2]=is_inter, middle[5]=Tx_Size_Sqr(0..=4), inner[5]=STX_TYPES(4)+1 → 4 sec_tx_type values. symbol 0 = sec_tx_type 0 (IST off), which reads NO most_probable_stx_set follow-up (that S() only when sec_tx_type!=0 && !is_inter, line 16615). Tests: off-token roundtrip (syntax/selector) + every-Tx_Size_Sqr-row + every-sec_tx_type-value (all 4 STX values) through one §8.2 coder. Also corrects the IntraTxType enum-variant doc to cite §5.20.8.2 (the syntax section), matching #347. The intra CONDITION (enable_intra_ist && eob!=1 && !Lossless && (TxType==ADST_ADST||DCT_DCT) && YMode!=PAETH_PRED && eob<=eobLim) is documented but NOT runtime-evaluated. This row does not claim a trace inserting the token, most_probable_stx_set, the inter bank, eob>2, tile-body emission, packet output, CLI success, or Baseline Encoder Profile v1 output."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/coefficient_tokenization_tests.rs::sec_tx_type_intra_off_token_roundtrips_through_generic_helper", "crates/splot-encode/src/coefficient_tokenization_tests.rs::sec_tx_type_intra_token_roundtrips_every_tx_size_sqr_row", "crates/splot-encode/src/coefficient_tokenization_tests.rs::sec_tx_type_intra_token_roundtrips_every_symbol_value"]
+commands = ["cargo test -p splot-encode sec_tx_type --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "ENC-INTRA-BLOCK-TRACE-IST"
+name = "Encoder eob=2 trace with intra_tx_type and sec_tx_type"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20.8.2", "5.20.7.27", "8.3.2", "8.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/block_symbol_trace.rs"
+openspec_change = "encoder-block-trace-ist"
+tracking_issue = ""
+owner = "encoder"
+risk = "medium"
+notes = "Private, non-emitting eob=2 multi-coefficient luma block trace carrying BOTH §5.20.8.2 transform-type symbols — intra_tx_type AND the sec_tx_type IST secondary transform — for the enable_intra_ist==1 config (completes the transform-type prefix). `compose_minimal_intra_two_coeff_block_trace_with_ist()` in block_symbol_trace.rs DELEGATES to the tx-type composer (#349) and inserts the sec_tx_type IST-off token (symbol 0; #350's sec_tx_type_intra_token, intra is_inter=0 bank, Tx_Size_Sqr 0) right after intra_tx_type — §5.20.8.2 sec_tx_type (line 16613) is read right after intra_tx_type (line 16529), before the base pass. 12-token trace [0,0,0,0,1,0,0,0,0,0,1,1] (the tx-type [0,0,0,0,1,0,0,0,0,1,1] + sec_tx_type=0 at index 6) through one §8.2 coder. The insertion point is DERIVED from the intra_tx_type token kind (fallback EOB_PT_16_TRACE_INDEX+1). BlockSymbolTraceCdfRows gains the 4x4 intra TileSecTxTypeCdf[0][0] row + routing. This block satisfies the IST condition (eob 2 != 1, !Lossless, TxType==DCT_DCT, YMode!=PAETH, eob 2 <= eobLim=IST_4X4_HEIGHT=8) by construction; the condition is NOT runtime-evaluated. sec_tx_type==0 (IST off) reads NO most_probable_stx_set follow-up. Tests: compose-in-order (asserts intra_tx_type at idx 5 + sec_tx_type at idx 6 + symbols) + roundtrip + deterministic. This row does not claim most_probable_stx_set, eob>2, non-DCT_DCT transform types, non-TX_SET_INTRA_1 sets, runtime IST-condition evaluation, tile-body emission, packet output, CLI success, or Baseline Encoder Profile v1 output."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/block_symbol_trace_tests.rs::composes_ist_trace_inserts_sec_tx_type_after_intra_tx_type", "crates/splot-encode/src/block_symbol_trace_tests.rs::ist_trace_roundtrips_through_one_coder", "crates/splot-encode/src/block_symbol_trace_tests.rs::ist_trace_roundtrip_is_deterministic"]
+commands = ["cargo test -p splot-encode block_symbol_trace --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "ENC-BLOCK-SYMBOL-ENCODE"
+name = "Encoder block-symbol entropy-coding entry point"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["8.2", "5.20.1"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/block_symbol_trace.rs"
+openspec_change = "encoder-block-symbol-encode"
+tracking_issue = ""
+owner = "encoder"
+risk = "low"
+notes = "Private production entropy-coding entry point — the FIRST brick of the tile-body assembly phase (toward Milestone A). `encode_block_symbol_trace(trace) -> Result<Vec<u8>>` in block_symbol_trace.rs drives one in-tree §8.2 SymbolEncoder over the ordered trace (one write_symbol per CDF token to its scoped default BlockSymbolTraceCdfRows row, one write_literal per bypass token), finish()es the stream (§8.2.4 padding), and returns the coded bytes — the bytes a §5.20.1 tile_group_payload() carries as a single tile's data (a single tile writes no tile_size field, so the payload IS these bytes). EXTRACTED from the encode half of the roundtrip_block_symbol_trace test helper, which now calls it (DRY; the decode half is unchanged and still proves the bytes). splot-encode CANNOT depend on splot-decode (dependency graph), so the cross-tool encode→decode hash check lives later at CLI/integration level; within splot-encode the bytes are proven decodable via splot-core SymbolDecoder (the roundtrip). Tests: production bytes for the complete all-zero intra block are non-empty, equal the roundtrip's proven-decodable bytes, decode to [0,0,0,1,1,1]; deterministic. This row does not claim a tile-group payload, tile-group OBU, frame assembly, packet, Context::receive_packet output, CLI success, or Baseline Encoder Profile v1 output — the OBU/frame/packet wrappers are later bricks. NEXT: tile-group OBU from the all-zero trace (splot-core write_tile_group_obu + §5.19 structure) → frame assembly → wire receive_packet → first real packet → CLI cross-tool decode-hash test."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/block_symbol_trace_tests.rs::encode_block_symbol_trace_emits_decodable_all_zero_payload", "crates/splot-encode/src/block_symbol_trace_tests.rs::encode_block_symbol_trace_is_deterministic"]
+commands = ["cargo test -p splot-encode block_symbol_trace --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-RECON-DEPENDENCY"
 name = "Encoder reconstruction dependency boundary"
 category = "encoder"
