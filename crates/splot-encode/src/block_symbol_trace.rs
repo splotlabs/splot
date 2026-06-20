@@ -799,6 +799,7 @@ struct BlockSymbolTraceCdfRows {
     u_txb_skip_32x32: [i32; TXB_SKIP_CDF_ROW_LEN],
     eob_pt_16: [i32; EOB_PT_16_CDF_ROW_LEN],
     eob_pt_1024: [i32; EOB_PT_1024_CDF_ROW_LEN],
+    eob_pt_1024_chroma: [i32; EOB_PT_1024_CDF_ROW_LEN],
     coeff_base_lf_eob_tx64: [i32; COEFF_BASE_LF_EOB_CDF_ROW_LEN],
     intra_tx_type_set1_4x4: [i32; INTRA_TX_TYPE_SET1_CDF_ROW_LEN],
     sec_tx_type_intra_4x4: [i32; SEC_TX_TYPE_INTRA_CDF_ROW_LEN],
@@ -832,6 +833,7 @@ impl BlockSymbolTraceCdfRows {
                 [TX_SIZE_32X32_CTX][CHROMA_U_TXB_SKIP_CTX_NEUTRAL],
             eob_pt_16: DEFAULT_EOB_PT_16_CDF[MINIMAL_COEFF_CDF_Q_CTX][EOB_CTX_LUMA_INTRA],
             eob_pt_1024: DEFAULT_EOB_PT_1024_CDF[MINIMAL_COEFF_CDF_Q_CTX][EOB_CTX_LUMA_INTRA],
+            eob_pt_1024_chroma: DEFAULT_EOB_PT_1024_CDF[MINIMAL_COEFF_CDF_Q_CTX][EOB_CTX_CHROMA],
             coeff_base_lf_eob_tx64: DEFAULT_COEFF_BASE_LF_EOB_CDF[MINIMAL_COEFF_CDF_Q_CTX]
                 [TX_SIZE_64X64_CTX][COEFF_BASE_LF_EOB_CTX_DC],
             intra_tx_type_set1_4x4: DEFAULT_INTRA_TX_TYPE_SET1_CDF
@@ -917,6 +919,10 @@ impl BlockSymbolTraceCdfRows {
                     coeff_cdf_q_ctx: MINIMAL_COEFF_CDF_Q_CTX,
                     eob_ctx: EOB_CTX_LUMA_INTRA,
                 } => Ok(self.eob_pt_1024.as_mut_slice()),
+                CoefficientCdfRowSelector::EobPt1024 {
+                    coeff_cdf_q_ctx: MINIMAL_COEFF_CDF_Q_CTX,
+                    eob_ctx: EOB_CTX_CHROMA,
+                } => Ok(self.eob_pt_1024_chroma.as_mut_slice()),
                 CoefficientCdfRowSelector::CoeffBaseLfEob {
                     coeff_cdf_q_ctx: MINIMAL_COEFF_CDF_Q_CTX,
                     tx_size: TX_SIZE_64X64_CTX,
