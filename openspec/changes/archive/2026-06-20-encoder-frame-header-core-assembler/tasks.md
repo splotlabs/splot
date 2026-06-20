@@ -5,7 +5,7 @@
 ## 2. Parse-backed FrameHeaderCore assembler
 
 - [x] 2.1 Serialize the canonical 64x64 / `base_q_idx == 255` single-picture CLK § 5.18.2 body (`BitWriter`, one write per element; `order_hint` omitted, explicit `allow_screen_content_tools`, single-superblock tile info).
-- [x] 2.2 Add `build_minimal_intra_clk_core(seq) -> Result<FrameHeaderCore, MinimalIntraCoreError>` that parses the body against `seq` to an `IntraHeaderComplete` core, with the typed body/parse error.
+- [x] 2.2 Add the self-contained `build_minimal_intra_clk_core() -> Result<(FrameHeaderCore, CoreSeqView), MinimalIntraCoreError>` that builds the matched 64x64 single-picture view (referencing sequence header 0) internally and parses the body against it to an `IntraHeaderComplete` core, returning the `(core, seq)` pair so the body and view cannot be mis-paired; with the typed body/parse/`Seq` error.
 - [x] 2.3 Un-gate the `pub(crate)` `init_core_from_prefix` / `parse_core_body` re-export and re-export the assembler from `frame`.
 
 ## 3. Tests
