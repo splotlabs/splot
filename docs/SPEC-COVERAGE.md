@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 328 feature(s); 275 cite a spec section.
+Matrix version 1. Last reviewed 2026-06-15. 329 feature(s); 276 cite a spec section.
 
 One row per (spec section, feature) pair, in spec order; a feature citing both a syntax and a semantics section appears under both. The canonical status source is [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); the full per-feature ledger is [FEATURE-STATUS.md](./FEATURE-STATUS.md).
 
@@ -91,6 +91,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.4](./spec/av2/1.0.0/05-syntax-structures.md#s-5-4) | Sequence header OBU syntax | `AV2-5.4-SEQUENCE-HEADER` | ✅ | 🟡 | 🟡 | 🟡 | 1 |
 | [§ 5.4](./spec/av2/1.0.0/05-syntax-structures.md#s-5-4) | Sequence header OBU syntax | `ENC-MINIMAL-HEADER-PLAN` | ✅ | — | — | ✅ | — |
 | [§ 5.4.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-4-1) | General sequence header OBU syntax | `AV2-5.4.1-SEQUENCE-HEADER-GENERAL` | ✅ | ✅ | ✅ | ✅ | 6 |
+| [§ 5.4.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-4-1) | General sequence header OBU syntax | `ENC-WRITER-INPUT-SEQ-VIEW` | ✅ | — | — | ✅ | — |
 | [§ 5.4.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-4-2) | Sequence tile config syntax | `AV2-5.4.2-SEQUENCE-TILE-CONFIG` | ✅ | ✅ | ✅ | ✅ | 4 |
 | [§ 5.4.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-4-3) | Sequence partition config syntax | `AV2-5.4.3-SEQUENCE-PARTITION-CONFIG` | ✅ | ✅ | 🟡 | ✅ | — |
 | [§ 5.4.4](./spec/av2/1.0.0/05-syntax-structures.md#s-5-4-4) | Sequence segment config syntax | `AV2-5.4.4-SEQUENCE-SEGMENT-CONFIG` | ✅ | ✅ | 🟡 | ✅ | — |
