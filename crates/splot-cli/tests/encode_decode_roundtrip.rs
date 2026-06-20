@@ -211,3 +211,45 @@ fn encoder_coded_chroma_v_ivf_decodes_to_a_flat_127_v_frame() {
         "expected a flat 127 V plane from the coded chroma DC",
     );
 }
+
+/// The encoder's first frame with all three planes coded at once: luma, U, and V each carry a
+/// single negative coded DC coefficient (mirroring the q80 fixture's structure). `splot decode`
+/// reconstructs every plane below 128. With the per-plane oracles this proves the encoder can
+/// code all planes simultaneously, including the V `txb_skip` `EobU != 0` interaction.
+#[test]
+fn encoder_all_planes_coded_ivf_decodes_to_a_flat_127_frame() {
+    let ivf =
+        splot_encode::emit_minimal_intra_all_planes_coded_ivf().expect("emit the all-planes IVF");
+
+    let input = temp_path("all-input", "ivf");
+    let output = temp_path("all-output", "raw");
+    std::fs::write(&input, &ivf).expect("write the emitted IVF");
+
+    let status = Command::new(env!("CARGO_BIN_EXE_splot"))
+        .args([
+            "decode",
+            input.to_str().expect("utf-8 input path"),
+            "--output",
+            output.to_str().expect("utf-8 output path"),
+            "--output-format",
+            "raw",
+        ])
+        .status()
+        .expect("run the splot binary");
+
+    let raw = std::fs::read(&output);
+    let _ = std::fs::remove_file(&input);
+    let _ = std::fs::remove_file(&output);
+
+    assert!(
+        status.success(),
+        "splot decode of the all-planes IVF failed"
+    );
+    let raw = raw.expect("read the decoded raw output");
+    assert_eq!(raw.len(), 6144, "unexpected decoded frame size");
+    // Every plane carries coded residual -> flat 127 (128 minus the dequantized negative DC).
+    assert!(
+        raw.iter().all(|&s| s == 127),
+        "expected every plane flat at 127 from the all-planes coded block",
+    );
+}

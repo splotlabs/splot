@@ -154,6 +154,7 @@ const V_TXB_SKIP_CTX_NEUTRAL: usize = 0;
 pub(crate) fn general_intra_32x32_chroma_v_dc_coded_tokens(
     coeff_cdf_q_ctx: usize,
     magnitude: u32,
+    v_txb_skip_ctx: usize,
 ) -> Result<Vec<CoefficientEntropyToken>> {
     if !(1..=MAX_BASE_EOB_MAGNITUDE).contains(&magnitude) {
         return Err(Error::CoefficientTokenizationUnsupportedChromaMagnitude {
@@ -172,7 +173,7 @@ pub(crate) fn general_intra_32x32_chroma_v_dc_coded_tokens(
         syntax: CoefficientTokenSyntax::AllZero,
         selector: CoefficientCdfRowSelector::VTxbSkip {
             coeff_cdf_q_ctx,
-            ctx: V_TXB_SKIP_CTX_NEUTRAL,
+            ctx: v_txb_skip_ctx,
         },
         symbol: false as u8,
     });
