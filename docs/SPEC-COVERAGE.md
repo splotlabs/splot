@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 337 feature(s); 284 cite a spec section.
+Matrix version 1. Last reviewed 2026-06-15. 338 feature(s); 285 cite a spec section.
 
 One row per (spec section, feature) pair, in spec order; a feature citing both a syntax and a semantics section appears under both. The canonical status source is [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); the full per-feature ledger is [FEATURE-STATUS.md](./FEATURE-STATUS.md).
 
@@ -246,6 +246,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.20.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-1) | General tile group payload syntax | `ENC-MINIMAL-INTRA-TILE-GROUP-OBU` | ✅ | — | — | ✅ | — |
 | [§ 5.20.2.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-2-1) | Decode tile syntax | `CONF-TILE-PAYLOAD-DECODE-FUZZ` | ✅ | — | — | ✅ | 2 |
 | [§ 5.20.2.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-2-1) | Decode tile syntax | `DECODE-CONTEXT-TILE-PAYLOAD-HANDOFF` | ✅ | — | — | ✅ | 2 |
+| [§ 5.20.2.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-2-1) | Decode tile syntax | `DECODE-GENERAL-INTRA-NON64-MULTISB` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.2.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-2-1) | Decode tile syntax | `DECODE-TILE-CDF-SAVE-LIFECYCLE-BOUNDARY` | ✅ | ✅ | — | ✅ | 2 |
 | [§ 5.20.2.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-2-1) | Decode tile syntax | `DECODE-TILE-CDF-SELECTION-BOUNDARY` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.2.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-2-1) | Decode tile syntax | `DECODE-TILE-PARTITION-TRAVERSAL-BOUNDARY` | ✅ | ✅ | — | ✅ | — |
@@ -254,6 +255,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.20.3.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-1) | Decode partition syntax | `CONF-TILE-PAYLOAD-DECODE-FUZZ` | ✅ | — | — | ✅ | 2 |
 | [§ 5.20.3.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-1) | Decode partition syntax | `DECODE-GENERAL-INTRA-FRAME-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.3.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-1) | Decode partition syntax | `DECODE-GENERAL-INTRA-MULTIBLOCK` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 5.20.3.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-1) | Decode partition syntax | `DECODE-GENERAL-INTRA-NON64-MULTISB` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.3.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-1) | Decode partition syntax | `DECODE-MINIMAL-RAW-RUNTIME-OUTPUT` | ✅ | 🟡 | ✅ | ✅ | 4 |
 | [§ 5.20.3.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-1) | Decode partition syntax | `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS` | ✅ | 🟡 | ✅ | ✅ | 3 |
 | [§ 5.20.3.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-1) | Decode partition syntax | `DECODE-TILE-PARTITION-SIZE-TABLE-BOUNDARY` | ✅ | — | — | ✅ | — |
@@ -277,6 +279,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.20.5.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-1) | Mode info syntax | `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER` | ✅ | 🟡 | — | ✅ | 4 |
 | [§ 5.20.5.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3) | Intra frame mode info syntax | `DECODE-GENERAL-INTRA-BLOCK-MODES` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.5.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3) | Intra frame mode info syntax | `DECODE-GENERAL-INTRA-MULTIBLOCK` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 5.20.5.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3) | Intra frame mode info syntax | `DECODE-GENERAL-INTRA-NON64-MULTISB` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.5.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3) | Intra frame mode info syntax | `DECODE-GENERAL-INTRA-NONDC-LUMA-SMOOTH` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.5.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3) | Intra frame mode info syntax | `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER` | ✅ | 🟡 | — | ✅ | 4 |
 | [§ 5.20.5.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3) | Intra frame mode info syntax | `DECODE-MINIMAL-INTRA-RECONSTRUCTION-FRONTIER` | ✅ | 🟡 | ✅ | ✅ | 4 |
@@ -648,6 +651,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.13.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2) | Intra prediction process | `DECODE-GENERAL-INTRA-FRAME-RECON` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.13.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2) | Intra prediction process | `DECODE-GENERAL-INTRA-MULTIBLOCK` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.13.2.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-1) | General | `CONF-RECON-INTRA-PREDICTION-FUZZ` | ✅ | — | — | ✅ | — |
+| [§ 7.13.2.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-1) | General | `DECODE-GENERAL-INTRA-NON64-MULTISB` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.13.2.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-1) | General | `DECODE-GENERAL-INTRA-NONDC-LUMA-SMOOTH` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.13.2.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-1) | General | `DECODE-MINIMAL-INTRA-RECONSTRUCTION-FRONTIER` | ✅ | 🟡 | ✅ | ✅ | 4 |
 | [§ 7.13.2.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-1) | General | `RECON-CURRENT-FRAME-WORKSPACE` | ✅ | — | ✅ | ✅ | — |
@@ -685,6 +689,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.13.2.12](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-12) | IBP DC process | `RECON-CURRENT-FRAME-WORKSPACE` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.13.2.12](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-12) | IBP DC process | `RECON-INTRA-IBP-DC-PREDICTION` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.13.2.13](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-13) | Smooth intra prediction process | `CONF-RECON-INTRA-PREDICTION-FUZZ` | ✅ | — | — | ✅ | — |
+| [§ 7.13.2.13](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-13) | Smooth intra prediction process | `DECODE-GENERAL-INTRA-NON64-MULTISB` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.13.2.13](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-13) | Smooth intra prediction process | `DECODE-GENERAL-INTRA-NONDC-LUMA-SMOOTH` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.13.2.13](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-13) | Smooth intra prediction process | `RECON-CURRENT-FRAME-WORKSPACE` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.13.2.13](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-13) | Smooth intra prediction process | `RECON-INTRA-SMOOTH-PREDICTION` | ✅ | — | ✅ | ✅ | — |

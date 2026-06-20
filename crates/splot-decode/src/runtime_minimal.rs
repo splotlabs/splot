@@ -200,9 +200,15 @@ fn require_minimal_ivf<'a>(
             "minimal tier requires a complete IVF header",
         ));
     };
+    // Size routing happens after this preflight: the frozen 64x64 hash tier
+    // re-imposes its strict 64x64 requirement in `validate_frame_core`, and the
+    // general intra path accepts positive multiples of 64 (checked in
+    // `is_general_minimal_intra`). Admitting any positive frame size here lets
+    // both 64x64 and larger multiple-of-64 frames reach routing while still
+    // gating container shape (AV02, single in-memory frame, no warnings/errors).
     if header.fourcc != *b"AV02"
-        || header.width != MINIMAL_WIDTH as u16
-        || header.height != MINIMAL_HEIGHT as u16
+        || header.width == 0
+        || header.height == 0
         || header.frame_count != 1
         || ivf.frames.len() != 1
         || !ivf.warnings.is_empty()
@@ -211,7 +217,7 @@ fn require_minimal_ivf<'a>(
         return Err(unsupported(
             "unsupported_ivf_shape",
             None,
-            "minimal tier requires one 64x64 AV02 IVF frame with no container warnings",
+            "minimal tier requires one positive-sized AV02 IVF frame with no container warnings",
         ));
     }
     Ok((ivf, header))
@@ -666,14 +672,19 @@ fn is_general_minimal_intra(core: &FrameHeaderCore) -> bool {
         && core.is_key_frame
         && core.immediate_output_frame == Some(true)
         && core.implicit_output_frame == Some(false)
-        && matches!(
-            core.frame_size,
-            Some(FrameSize {
-                width: MINIMAL_WIDTH,
-                height: MINIMAL_HEIGHT,
-                ..
-            })
-        )
+        // §5.18.3 + §7.13.2.1: the general intra path tiles the frame as a single
+        // ROW of one or more 64x64 superblocks — width is any positive multiple of
+        // the superblock side (64), height is exactly 64. A taller (multi-SB-row)
+        // frame places chroma blocks above the bottom frame edge, where the
+        // §7.13.2.13 SMOOTH chroma sentinel `LeftCol[h]` is the actual below-block
+        // reconstructed sample (§7.13.2.1 `CurrFrame[Min(maxY, y+h)][x-1]`) rather
+        // than the edge-clamped repeat this path builds; until that sentinel reads
+        // the real neighbour, multi-SB-row frames stay on the deferred frontier.
+        // At height 64 every chroma block is at the bottom edge with no above
+        // neighbour, so the built edges are §7.13.2.1-exact for any chroma content.
+        && core.frame_size.is_some_and(|size| {
+            size.width != 0 && size.width % MINIMAL_WIDTH == 0 && size.height == MINIMAL_HEIGHT
+        })
         && core
             .tile_info
             .as_ref()
@@ -780,13 +791,31 @@ fn decode_general_minimal_intra_frame(
     let (mi_rows, mi_cols) = crate::tile_payload::frame_mi_dimensions(core)
         .map_err(|error| general_intra_partition_frontier_error(error, tile_offset))?;
 
+    // §5.18.3 frame dimensions: `is_general_minimal_intra` already gated these to
+    // positive multiples of 64, so the workspace and decode limits are sized to
+    // the real frame size (not the 64x64 single-superblock constant) so that
+    // multi-superblock frames (e.g. 128x64) reconstruct into the full plane.
+    let frame_size = core.frame_size.ok_or_else(|| {
+        general_intra_unsupported(
+            "general_intra_missing_frame_size",
+            Some(tile_offset),
+            "general intra decode requires a parsed frame size",
+            GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
+        )
+    })?;
+    let frame_width = frame_size.width;
+    let frame_height = frame_size.height;
+
     // Enforce the configured decode limits before allocating reconstruction
     // buffers, matching the frozen minimal path's ordering.
     let tile_size = tile.tile_size();
     let limits = options.limits();
-    ensure_runtime_limits(limits, MINIMAL_WIDTH, MINIMAL_HEIGHT, tile_size)?;
+    ensure_runtime_limits(limits, frame_width, frame_height, tile_size)?;
 
-    let mut workspace = crate::runtime_minimal_recon::new_general_intra_workspace()?;
+    let mut workspace = crate::runtime_minimal_recon::new_general_intra_workspace(
+        frame_width as usize,
+        frame_height as usize,
+    )?;
     let mut coeff_ctx =
         crate::tile_payload::TileCoeffContextState::new(mi_rows, mi_cols).map_err(|source| {
             general_intra_residual_error(
@@ -905,13 +934,39 @@ fn decode_one_general_intra_block(
 
     let modes = crate::tile_payload::decode_general_intra_block_modes(work_unit, symbols)
         .map_err(|error| general_intra_block_mode_error(error, tile_offset))?;
-    // Chroma is reconstructed with DC prediction only; non-DC chroma modes need
-    // their § 7.13 chroma predictors and are deferred.
-    if !modes.uv_is_dc() {
+    // Chroma is reconstructed with DC prediction or, when the decoded
+    // `uv_mode` resolves (via § 5.20.5.3 `get_intra_uv_mode_set`) to
+    // `SMOOTH_PRED`, with § 7.13.2.13 smooth prediction over § 7.13.2.1
+    // neighbour edges read from the partially-built frame. Other non-DC chroma
+    // modes (directional, PAETH, SMOOTH_V/H) need their own § 7.13 predictors
+    // and are deferred.
+    let Some(supported_chroma) = modes.supported_chroma_mode() else {
         return Err(general_intra_unsupported(
             "general_intra_non_dc_chroma_mode",
             Some(tile_offset),
-            "general intra reconstruction only supports DC chroma prediction; non-DC chroma (uv_mode) modes are not yet implemented",
+            "general intra reconstruction only supports DC and SMOOTH chroma prediction; other non-DC chroma (uv_mode) modes are not yet implemented",
+            GENERAL_INTRA_MODE_SPEC_SECTION,
+        ));
+    };
+    // §7.13.2.1: the SMOOTH chroma path builds the §7.13.2.13 bottom-left
+    // (`LeftCol[h]`) and top-right (`AboveRow[w]`) sentinels by edge-clamping
+    // (repeating the last in-block neighbour sample). That equals the spec value
+    // `CurrFrame[Min(maxY, y+h)][x-1]` / `CurrFrame[y-1][Min(maxX, x+w)]` only
+    // when there is no decoded below-left / above-right neighbour. For a full
+    // 64x64 superblock block (`n4w == 16`) `clear_block_decoded_flags` (§5.20.2)
+    // zeroes the above-right region and the below-left is decoded later, so both
+    // sentinels collapse to the clamped last sample — exactly what this path
+    // builds. A sub-partitioned (split) block, however, can have an already
+    // decoded above-right chroma neighbour (e.g. the bottom-left split child sees
+    // the top-right child), whose actual sample the sentinel must read; that is
+    // not yet modelled, so SMOOTH chroma is gated to full-superblock blocks.
+    // A 64x64 superblock is 16 4x4 MI units wide.
+    const FULL_SB_N4: usize = 16;
+    if supported_chroma == crate::tile_payload::SupportedChromaMode::Smooth && n4w != FULL_SB_N4 {
+        return Err(general_intra_unsupported(
+            "general_intra_smooth_chroma_subblock",
+            Some(tile_offset),
+            "general intra SMOOTH chroma is only supported for full 64x64 superblock blocks; sub-partitioned SMOOTH chroma needs the §7.13.2.1 above-right / below-left sentinel neighbours, which are not yet read",
             GENERAL_INTRA_MODE_SPEC_SECTION,
         ));
     }
@@ -1005,7 +1060,7 @@ fn decode_one_general_intra_block(
             work_unit, symbols, coeff_ctx, 1, chroma_tx, chroma_x, chroma_y, false, uv_mode,
         )
         .map_err(|error| general_intra_residual_error(error, tile_offset))?;
-        crate::runtime_minimal_recon::reconstruct_general_intra_block_into(
+        crate::runtime_minimal_recon::reconstruct_general_intra_chroma_block_into(
             workspace,
             &u,
             PlaneId::U,
@@ -1013,7 +1068,7 @@ fn decode_one_general_intra_block(
             chroma_y,
             chroma_log2,
             qindex,
-            false,
+            supported_chroma,
         )
         .map_err(|error| general_intra_residual_error(error, tile_offset))?;
         let v = crate::tile_payload::decode_general_intra_plane_coeffs(
@@ -1028,7 +1083,7 @@ fn decode_one_general_intra_block(
             uv_mode,
         )
         .map_err(|error| general_intra_residual_error(error, tile_offset))?;
-        crate::runtime_minimal_recon::reconstruct_general_intra_block_into(
+        crate::runtime_minimal_recon::reconstruct_general_intra_chroma_block_into(
             workspace,
             &v,
             PlaneId::V,
@@ -1036,7 +1091,7 @@ fn decode_one_general_intra_block(
             chroma_y,
             chroma_log2,
             qindex,
-            false,
+            supported_chroma,
         )
         .map_err(|error| general_intra_residual_error(error, tile_offset))?;
     }
@@ -1290,10 +1345,13 @@ fn ensure_runtime_limits(
         u64::from(height),
     )?;
     limits.ensure(DecodeLimitName::MaxLumaSamplesPerFrame, luma_samples)?;
+    // AV2 §5.3.2 4:2:0 chroma plane size uses `(dimension + subsamplingX) >> 1`
+    // rounding. Equivalent to `dimension / 2` for the admitted even (multiple-of-64)
+    // sizes, but written spec-faithfully so a future size relaxation stays correct.
     let chroma_samples = checked_mul(
         DecodeLimitName::MaxLumaSamplesPerFrame,
-        u64::from(width / 2),
-        u64::from(height / 2),
+        u64::from((width + 1) >> 1),
+        u64::from((height + 1) >> 1),
     )?;
     let decoded_bytes = checked_add(
         DecodeLimitName::MaxDecodedFrameBytes,
@@ -1517,6 +1575,60 @@ mod general_intra_tests {
         assert_eq!(
             hash,
             "c54ed4e996841e2178e74033d765dda1e1127d5d89c3012be3266c3e24a7fd28"
+        );
+    }
+
+    // A 128x64 multi-superblock intra frame: two 64x64 DC_PRED superblocks (left
+    // flat luma 80, right flat luma 180). The right superblock DC-predicts its
+    // luma from the already-reconstructed left-superblock neighbour, and codes
+    // its (residual-free) chroma as SMOOTH_PRED over that flat neighbour. avmdec
+    // and dav2d agree on the decoded output (md5 88cf94a2...).
+    const TWO_SB_FIXTURE: &[u8] =
+        include_bytes!("../../../tests/conformance/vectors/valid/syn-2sb-intra-128x64-q80.ivf");
+
+    #[test]
+    fn two_superblock_intra_frame_decodes_to_oracle() {
+        use splot_recon::{BitDepth, PixelFormat, PlaneSize};
+
+        let options = DecodeOptions::default();
+        let context = DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize)))
+            .expect("context");
+        let plan = context.plan_bytes(TWO_SB_FIXTURE, options).expect("plan");
+        let frame = decode_minimal_frame_from_plan(TWO_SB_FIXTURE, options, &plan)
+            .expect("decode")
+            .frame;
+
+        assert_eq!(frame.bit_depth(), BitDepth::Eight);
+        assert_eq!(frame.pixel_format(), PixelFormat::Yuv420);
+        assert_eq!(frame.y().visible_size(), PlaneSize::new(128, 64).unwrap());
+        assert_eq!(
+            frame.u().unwrap().visible_size(),
+            PlaneSize::new(64, 32).unwrap()
+        );
+
+        // Left superblock (cols 0..64) is flat luma 80, right superblock
+        // (cols 64..128) is flat luma 180, matching the avmdec/dav2d oracle.
+        let y = frame.y().samples();
+        assert!(
+            (0..64).all(|r| (0..64).all(|c| y[r * 128 + c] == 80)),
+            "left superblock luma must be flat 80"
+        );
+        assert!(
+            (0..64).all(|r| (64..128).all(|c| y[r * 128 + c] == 180)),
+            "right superblock luma must be flat 180"
+        );
+        // Chroma is flat across both superblocks (U=120, V=130).
+        assert!(frame.u().unwrap().samples().iter().all(|&s| s == 120));
+        assert!(frame.v().unwrap().samples().iter().all(|&s| s == 130));
+
+        // Frame hash pins splot's output, which reproduces avmdec's and dav2d's
+        // raw output byte-for-byte (verified locally).
+        let hash = splot_recon::DecodedFrameHashInput::new(&frame)
+            .compute_hash()
+            .to_hex();
+        assert_eq!(
+            hash,
+            "18ba32ffb8d818689cbded3dbd5c44602bb091c1f9750c1bb062e6f80498540f"
         );
     }
 

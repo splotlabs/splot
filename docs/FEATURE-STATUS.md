@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 337 feature(s).
+Matrix version 1. Last reviewed 2026-06-15. 338 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -272,6 +272,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `DECODE-GENERAL-INTRA-FRAME-RECON` | General intra full frame reconstruction | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | partial | `crates/splot-decode/src/tile_payload/general_intra_residual.rs` |
 | `DECODE-GENERAL-INTRA-MULTIBLOCK` | General intra multi-block partition decode | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | partial | `crates/splot-decode/src/tile_payload/partition_traversal.rs` |
 | `DECODE-GENERAL-INTRA-NONDC-LUMA-SMOOTH` | General intra single-block non-DC luma (smooth) decode | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | partial | `crates/splot-decode/src/runtime_minimal_recon.rs` |
+| `DECODE-GENERAL-INTRA-NON64-MULTISB` | General intra multi-superblock (non-64x64) DC decode | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | partial | `crates/splot-decode/src/tile_payload/partition_traversal.rs` |
 | `DECODE-COEFF-FSC-SCAN-WALK` | Coefficient FSC scan walk | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/coeff_loop/scan_walk.rs` |
 | `DECODE-COEFF-BASE-CDF-ROWS` | Coefficient base CDF rows | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/cdf/coeff_rows.rs` |
 | `DECODE-COEFF-IDTX-CDF-ROWS` | Coefficient IDTX CDF rows | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/cdf/coeff_rows.rs` |

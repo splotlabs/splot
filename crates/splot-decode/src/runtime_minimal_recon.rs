@@ -16,7 +16,7 @@ use splot_recon::{
 use crate::Result;
 use crate::tile_payload::{
     GeneralIntraResidualError, LumaCoeffBlock, MinimalRuntimeReconstructionTrace,
-    SupportedNonDcLumaMode, reconstruct_general_intra_block,
+    SupportedChromaMode, SupportedNonDcLumaMode, reconstruct_general_intra_block,
     reconstruct_general_intra_block_with_prediction,
 };
 
@@ -76,11 +76,17 @@ fn reconstruct_luma_dc_chroma_h_pred_8bit420_64x64() -> Result<DecodedFrame<u8>>
     Ok(workspace.freeze()?)
 }
 
-/// Creates an empty decoded 8-bit 4:2:0 64x64 frame workspace for incremental
-/// per-block reconstruction on the general intra multi-block path.
-pub(crate) fn new_general_intra_workspace() -> Result<CurrentFrameWorkspace<u8>> {
-    let luma_size = PlaneSize::new(MINIMAL_LUMA_WIDTH, MINIMAL_LUMA_HEIGHT)?;
-    let luma_rect = PlaneRect::new(0, 0, MINIMAL_LUMA_WIDTH, MINIMAL_LUMA_HEIGHT)?;
+/// Creates an empty decoded 8-bit 4:2:0 frame workspace sized to the actual
+/// `luma_width` x `luma_height` (a positive multiple of 64) for incremental
+/// per-block reconstruction on the general intra multi-block path. Chroma is
+/// 4:2:0 (half-resolution), so the chroma plane is `luma_width / 2` x
+/// `luma_height / 2`, derived internally by [`PixelFormat::Yuv420`].
+pub(crate) fn new_general_intra_workspace(
+    luma_width: usize,
+    luma_height: usize,
+) -> Result<CurrentFrameWorkspace<u8>> {
+    let luma_size = PlaneSize::new(luma_width, luma_height)?;
+    let luma_rect = PlaneRect::new(0, 0, luma_width, luma_height)?;
     let info = DecodedFrameInfo::new(
         OutputIndex::new(0),
         BitDepth::Eight,
@@ -124,6 +130,152 @@ pub(crate) fn reconstruct_general_intra_block_into(
         .write_rect_block(plane_id, x, y, block_size, &out)
         .map_err(recon_err)?;
     Ok(())
+}
+
+/// Reconstructs one square chroma plane block in decode order into the
+/// workspace, dispatching on the resolved § 5.20.5.3 `UVMode`:
+///
+/// - [`SupportedChromaMode::Dc`] delegates to the § 7.13.2.4 DC reconstruction
+///   ([`reconstruct_general_intra_block_into`]).
+/// - [`SupportedChromaMode::Smooth`] builds the § 7.13.2.1 `AboveRow` / `LeftCol`
+///   edges from the partially-built frame's reconstructed neighbours (applying
+///   the no-above / no-left / no-neighbour fallbacks), runs § 7.13.2.13 smooth
+///   prediction, and adds the decoded residual (or writes the bare prediction
+///   for an `all_zero` block).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn reconstruct_general_intra_chroma_block_into(
+    workspace: &mut CurrentFrameWorkspace<u8>,
+    block: &LumaCoeffBlock,
+    plane_id: PlaneId,
+    x: usize,
+    y: usize,
+    log2_side: u32,
+    qindex: u32,
+    mode: SupportedChromaMode,
+) -> core::result::Result<(), GeneralIntraResidualError> {
+    match mode {
+        // Chroma never uses the §7.14.4 TCQ dqDenom term (luma DCT_DCT only), so
+        // `use_tcq` is false for both DC and SMOOTH chroma reconstruction.
+        SupportedChromaMode::Dc => reconstruct_general_intra_block_into(
+            workspace, block, plane_id, x, y, log2_side, qindex, false,
+        ),
+        SupportedChromaMode::Smooth => reconstruct_general_intra_chroma_smooth_into(
+            workspace, block, plane_id, x, y, log2_side, qindex,
+        ),
+    }
+}
+
+/// Reconstructs one § 7.13.2.13 `SMOOTH_PRED` chroma block over § 7.13.2.1 edges
+/// read from the partially-built frame.
+#[allow(clippy::too_many_arguments)]
+fn reconstruct_general_intra_chroma_smooth_into(
+    workspace: &mut CurrentFrameWorkspace<u8>,
+    block: &LumaCoeffBlock,
+    plane_id: PlaneId,
+    x: usize,
+    y: usize,
+    log2_side: u32,
+    qindex: u32,
+) -> core::result::Result<(), GeneralIntraResidualError> {
+    let side = 1usize << log2_side;
+    let log2 = u8::try_from(log2_side).unwrap_or(u8::MAX);
+    let block_size = IntraRectBlockSize::new(log2, log2).map_err(recon_err)?;
+    let edges = workspace
+        .intra_dc_edges_for_rect(plane_id, x, y, block_size)
+        .map_err(recon_err)?;
+    // §7.13.2.1 `haveLeft` / `haveAbove`: in this single-tile minimal path a
+    // reconstructed neighbour exists exactly when the block is not at the frame
+    // edge, which `intra_dc_edges_for_rect` reports as a present left/above edge.
+    let have_left = edges.left_samples().is_some();
+    let have_above = edges.above_samples().is_some();
+    let (left, above) = build_smooth_chroma_edges(
+        edges.left_samples(),
+        edges.above_samples(),
+        have_left,
+        have_above,
+        side,
+    )?;
+    let smooth_edges = IntraSmoothEdges::new(&left, &above);
+    let mut prediction = vec![0u8; side * side];
+    predict_intra_smooth_rect_into(
+        BitDepth::Eight,
+        block_size,
+        IntraSmoothMode::Smooth,
+        smooth_edges,
+        &mut prediction,
+        side,
+    )
+    .map_err(recon_err)?;
+    let out = if block.all_zero {
+        prediction
+    } else {
+        reconstruct_general_intra_block_with_prediction(
+            &block.quant,
+            &prediction,
+            qindex,
+            plane_id,
+            log2_side,
+            false,
+        )?
+    };
+    workspace
+        .write_rect_block(plane_id, x, y, block_size, &out)
+        .map_err(recon_err)?;
+    Ok(())
+}
+
+/// Builds the AV2 § 7.13.2.1 `LeftCol[0..=side]` and `AboveRow[0..=side]` edges
+/// (8-bit, `MrlIndex == 0`, no DIP) for § 7.13.2.13 smooth chroma prediction,
+/// from the reconstructed left/above neighbours. The `[side]` entries are the
+/// smooth-process bottom-left / top-right sentinels.
+fn build_smooth_chroma_edges(
+    left_neighbour: Option<&[u8]>,
+    above_neighbour: Option<&[u8]>,
+    have_left: bool,
+    have_above: bool,
+    side: usize,
+) -> core::result::Result<(Vec<u8>, Vec<u8>), GeneralIntraResidualError> {
+    let edge_len = side + 1;
+    // §7.13.2.1 `LeftCol[i]`: reconstructed left column when haveLeft; else when
+    // haveAbove, the above neighbour's first sample; else the no-left fallback.
+    let left = match (have_left, left_neighbour) {
+        (true, Some(samples)) => fill_edge_from_neighbour(samples, edge_len),
+        _ if have_above => {
+            let seed = above_neighbour
+                .and_then(|samples| samples.first().copied())
+                .unwrap_or(NONEIGHBOUR_LEFT_8BIT);
+            vec![seed; edge_len]
+        }
+        _ => vec![NONEIGHBOUR_LEFT_8BIT; edge_len],
+    };
+    // §7.13.2.1 `AboveRow[i]`: reconstructed above row when haveAbove; else when
+    // haveLeft, the left neighbour's first sample; else the no-above fallback.
+    let above = match (have_above, above_neighbour) {
+        (true, Some(samples)) => fill_edge_from_neighbour(samples, edge_len),
+        _ if have_left => {
+            let seed = left_neighbour
+                .and_then(|samples| samples.first().copied())
+                .unwrap_or(NONEIGHBOUR_ABOVE_8BIT);
+            vec![seed; edge_len]
+        }
+        _ => vec![NONEIGHBOUR_ABOVE_8BIT; edge_len],
+    };
+    Ok((left, above))
+}
+
+/// Copies `samples` into a length-`edge_len` edge, repeating the last sample to
+/// fill the trailing § 7.13.2.13 sentinel slot(s) (§ 7.13.2.1 edge extension).
+fn fill_edge_from_neighbour(samples: &[u8], edge_len: usize) -> Vec<u8> {
+    let mut edge = Vec::with_capacity(edge_len);
+    for i in 0..edge_len {
+        let sample = samples
+            .get(i)
+            .or_else(|| samples.last())
+            .copied()
+            .unwrap_or(NONEIGHBOUR_LEFT_8BIT);
+        edge.push(sample);
+    }
+    edge
 }
 
 /// AV2 § 7.13.2.1 no-neighbour fallback (8-bit, `haveAbove == 0 && haveLeft == 0`):
