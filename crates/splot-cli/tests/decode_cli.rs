@@ -285,13 +285,15 @@ fn decode_hash_json_success_for_minimal_fixture() {
 }
 
 #[test]
-fn decode_general_intra_fixture_decodes_modes_and_reaches_residual() {
+fn decode_general_intra_fixture_decodes_luma_coeffs_and_reaches_chroma() {
     // A real AVM-generated minimal-tool intra key frame (base_q_idx 80, one
     // 64x64 block carrying a nonzero DC residual; avmdec and dav2d agree on its
     // decoded output). splot routes it off the frozen base_q_idx==255 hash tier
     // into the general intra path, runs the real AV2 §5.20.3.1 partition
-    // traversal, decodes the §5.20.5.3 block mode-info symbols, and reports that
-    // residual/coefficient decode and reconstruction are not yet implemented.
+    // traversal, decodes the §5.20.5.3 block mode-info symbols, decodes the
+    // §5.20.7.27 luma transform-block coefficients (all_zero == 0, nonzero
+    // pass), and reports that chroma coefficient decode and reconstruction are
+    // not yet implemented.
     let input = conformance_vector("syn-flat-intra-64x64-q80.ivf");
 
     let out = splot(&[
@@ -313,7 +315,7 @@ fn decode_general_intra_fixture_decodes_modes_and_reaches_residual() {
     assert_eq!(json["detail_kind"], "unsupported_feature");
     assert_eq!(
         json["unsupported_reason"],
-        "general_intra_residual_decode_unimplemented"
+        "general_intra_chroma_decode_unimplemented"
     );
     assert_eq!(json["tier_id"], "general-intra-8bit420-frontier-v1");
     assert_eq!(json["output_format"], "hash");
