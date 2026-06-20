@@ -758,6 +758,34 @@ pub struct CoreSeqInterView {
     pub(crate) enable_opfl_refine: u8,
 }
 
+impl CoreSeqInterView {
+    /// Builds the all-disabled § 5.4.6 inter-config view a minimal intra sequence
+    /// header signals (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-4-6`): every
+    /// inter tool off and every motion mode disabled. The § 5.18.2 intra control region
+    /// never reads these — an intra frame skips the inter tail — so this is the inert
+    /// inter state a frame-header writer needs to invert `parse_frame_header_core` for a
+    /// minimal intra frame.
+    ///
+    /// This is the public encoder writer-input constructor for the otherwise
+    /// `#[non_exhaustive]`, crate-private-field [`CoreSeqInterView`]; it lets
+    /// `splot-encode` build a [`CoreSeqView`] without a parsed [`SequenceHeader`].
+    #[must_use]
+    pub fn new_minimal_intra() -> Self {
+        Self {
+            enable_ref_frame_mvs: false,
+            explicit_ref_frame_map: false,
+            enable_bru: false,
+            enable_tip: false,
+            seq_max_drl_bits_minus_1: 0,
+            allow_frame_max_drl_bits: false,
+            enable_flex_mvres: false,
+            seq_frame_motion_modes_present_flag: false,
+            seq_enabled_motion_modes: [false; MOTION_MODES],
+            enable_opfl_refine: 0,
+        }
+    }
+}
+
 /// Sequence-derived scalars the core parser needs, gathered from a fully parsed
 /// [`SequenceHeader`]. `None` when any required child config (partition, segment,
 /// inter, screen-content, transform/quant/entropy, or tile) is absent — the header
@@ -2343,18 +2371,26 @@ mod tests {
     /// A § 5.4.6 inter sub-view for tests with every inter tool disabled: the inter path
     /// reads the explicit reference map only when `explicit_ref_frame_map` is overridden.
     fn base_inter() -> CoreSeqInterView {
-        CoreSeqInterView {
-            enable_ref_frame_mvs: false,
-            explicit_ref_frame_map: false,
-            enable_bru: false,
-            enable_tip: false,
-            seq_max_drl_bits_minus_1: 0,
-            allow_frame_max_drl_bits: false,
-            enable_flex_mvres: false,
-            seq_frame_motion_modes_present_flag: false,
-            seq_enabled_motion_modes: [false; MOTION_MODES],
-            enable_opfl_refine: 0,
-        }
+        CoreSeqInterView::new_minimal_intra()
+    }
+
+    #[test]
+    fn core_seq_inter_view_minimal_intra_is_all_disabled() {
+        // The public encoder writer-input constructor yields the inert §5.4.6 inter view:
+        // every tool off, every motion mode disabled. (CoreSeqInterView has no PartialEq,
+        // so assert the fields directly; the writer round-trips additionally exercise it
+        // through the promoted base_inter() helpers.)
+        let v = CoreSeqInterView::new_minimal_intra();
+        assert!(!v.enable_ref_frame_mvs);
+        assert!(!v.explicit_ref_frame_map);
+        assert!(!v.enable_bru);
+        assert!(!v.enable_tip);
+        assert_eq!(v.seq_max_drl_bits_minus_1, 0);
+        assert!(!v.allow_frame_max_drl_bits);
+        assert!(!v.enable_flex_mvres);
+        assert!(!v.seq_frame_motion_modes_present_flag);
+        assert_eq!(v.seq_enabled_motion_modes, [false; MOTION_MODES]);
+        assert_eq!(v.enable_opfl_refine, 0);
     }
 
     fn base_seq() -> CoreSeqView {

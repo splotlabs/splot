@@ -154,18 +154,7 @@ mod obu_tests {
     }
 
     fn base_inter() -> CoreSeqInterView {
-        CoreSeqInterView {
-            enable_ref_frame_mvs: false,
-            explicit_ref_frame_map: false,
-            enable_bru: false,
-            enable_tip: false,
-            seq_max_drl_bits_minus_1: 0,
-            allow_frame_max_drl_bits: false,
-            enable_flex_mvres: false,
-            seq_frame_motion_modes_present_flag: false,
-            seq_enabled_motion_modes: [false; 5],
-            enable_opfl_refine: 0,
-        }
+        CoreSeqInterView::new_minimal_intra()
     }
 
     fn base_seq() -> CoreSeqView {

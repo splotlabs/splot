@@ -206,9 +206,11 @@ planning and status; it does not claim encoder behavior exists.
   writer-bridge brick `ENC-WRITER-INPUT-FRAMING` adds
   `TileGroupFraming::single_tile()` to splot-core (the §5.20.1 single-tile framing,
   proven to match the parser and round-trip through write_tile_group_payload). The
-  §5.19 TileGroupStructure constructor (`single_tile_first_group()`) has also landed.
-  The FrameHeaderCore / CoreSeqView constructors and the OBU/frame/packet assembly
-  remain.
+  §5.19 TileGroupStructure constructor (`single_tile_first_group()`) and the
+  `CoreSeqInterView::new_minimal_intra()` sequence sub-view constructor (the one
+  #[non_exhaustive] nested view that blocked building a CoreSeqView) have also landed.
+  The CoreSeqView constructor, the FrameHeaderCore parse-backed assembler, and the
+  OBU/frame/packet assembly remain.
 - `Packet` is still only a byte buffer wrapper, and no coded packet production
   path exists.
 - `EncoderConfig` exposes `BitDepth::Twelve`, but current Baseline Encoder Profile
