@@ -5288,6 +5288,39 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-MINIMAL-CLK-BASE-Q-IDX"
+name = "base_q_idx-parameterized minimal CLK container"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.18.2", "5.19", "5.2.2", "Annex B"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers/frame/encoder_input.rs"
+openspec_change = "encoder-minimal-clk-base-q-idx"
+tracking_issue = ""
+owner = "encoder"
+risk = "low"
+notes = "Decodable-tile arc BRICK 4: parameterizes the minimal OBU_CLOSED_LOOP_KEY container by base_q_idx (splot-core writer bridge). Bricks 2-3 produced a general-intra DC skip tile_data coded at coeff CDF q-context 0, which the decoder derives only from base_q_idx<=90; the existing assembler hardcoded base_q_idx=255 (q-context 3). Threads base_q_idx through minimal_intra_clk_body_bytes + build_minimal_intra_clk_core + the tile-group/AnnexB/IVF impls; the frozen no-arg public fns delegate at FROZEN_TIER_BASE_Q_IDX=255 (signatures + behavior unchanged). Adds ONE public fn encode_minimal_intra_clk_ivf_with_base_q_idx(base_q_idx, tile_data) + rejects base_q_idx==0 (CodedLossless would change the \u00a75.18.2 body layout) with a typed MinimalIntraCoreError::LosslessBaseQIdx. HEADLINE ORACLE: a measurement showed the existing 255-assembler differs from the AVM/dav2d-validated syn-flat-intra-64x64-q80.ivf in EXACTLY 2 bytes (both in the CLK frame header's base_q_idx field); so encode_minimal_intra_clk_ivf_with_base_q_idx(80, q80_tile_data) reproduces the fixture BYTE-FOR-BYTE (test ivf_with_base_q_idx_80_reproduces_the_avm_validated_q80_fixture). This proves the emitted container (TD + sequence header + CLK frame header + IVF framing) matches the AVM reference structure, with base_q_idx as the only parameterized field - so a later brick muxing the SKIP tile_data into this container varies only the tile_data. base_q_idx<=90 + the canonical disable_cdf_update==0 satisfy the decodability contract a prior multi-agent verification established. Encoder-mission-DRIVEN (owner=encoder). This row is a base_q_idx-PARAMETERIZED CONTAINER: it does NOT claim a decode, a coded skip frame, CLI success, or Baseline Encoder Profile v1; the cross-crate decode oracle is a later splot-cli brick."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "done"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-core/src/headers/frame/encoder_input.rs::tests::ivf_with_base_q_idx_80_reproduces_the_avm_validated_q80_fixture", "crates/splot-core/src/headers/frame/encoder_input.rs::tests::ivf_with_base_q_idx_zero_is_rejected_as_lossless"]
+commands = ["cargo test -p splot-core encoder_input --locked"]
+fixtures = ["tests/conformance/vectors/valid/syn-flat-intra-64x64-q80.ivf"]
+diagnostics = []
+
+[[feature]]
 id = "ENC-RECON-DEPENDENCY"
 name = "Encoder reconstruction dependency boundary"
 category = "encoder"
