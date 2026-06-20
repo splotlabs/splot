@@ -25,9 +25,9 @@ use crate::error::{DecodeError, DecodeUnsupportedFeature, Result};
 use crate::tile_payload::{
     FrameCandidateCdfFacts, FrameCandidateCoeffFacts, FrameCandidateTileBoundaryError,
     FrameCandidateTileBoundaryInput, FrameCandidateTileFacts, GeneralIntraBlockModeError,
-    MinimalBlockSymbolTraceError, MinimalRuntimeBlockSymbolFrontierError,
-    MinimalRuntimePartitionFrontierError, MinimalRuntimeReconstructionTrace,
-    TileGroupPositionFacts, TilePartitionTraversalError,
+    GeneralIntraResidualError, MinimalBlockSymbolTraceError,
+    MinimalRuntimeBlockSymbolFrontierError, MinimalRuntimePartitionFrontierError,
+    MinimalRuntimeReconstructionTrace, TileGroupPositionFacts, TilePartitionTraversalError,
 };
 use crate::{
     DecodeLimitError, DecodeLimitName, DecodeLimitOp, DecodeOptions, DecodePlannedObu,
@@ -732,14 +732,44 @@ fn decode_general_minimal_intra_frame(
     )
     .map_err(|error| general_intra_partition_frontier_error(error, tile_offset))?;
     let mut symbols = frontier.into_symbol_decoder();
-    let _modes = crate::tile_payload::decode_general_intra_block_modes(tile, &mut symbols)
+    let modes = crate::tile_payload::decode_general_intra_block_modes(tile, &mut symbols)
         .map_err(|error| general_intra_block_mode_error(error, tile_offset))?;
+    let _luma = crate::tile_payload::decode_general_intra_luma_coeffs(tile, &mut symbols, modes)
+        .map_err(|error| general_intra_residual_error(error, tile_offset))?;
     Err(general_intra_unsupported(
-        "general_intra_residual_decode_unimplemented",
+        "general_intra_chroma_decode_unimplemented",
         Some(tile_offset),
-        "general intra frame decodes the AV2 §5.20.5.3 block mode info; §5.20.7.27 residual/coefficient decode and reconstruction are not yet implemented",
+        "general intra frame decodes the AV2 §5.20.7.27 luma transform-block coefficients; chroma coefficient decode, dequantization, inverse transform, residual, and reconstruction are not yet implemented",
         GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
     ))
+}
+
+fn general_intra_residual_error(
+    error: GeneralIntraResidualError,
+    offset: ByteOffset,
+) -> DecodeError {
+    match error {
+        GeneralIntraResidualError::AllZeroRead { .. }
+        | GeneralIntraResidualError::NonZeroPass { .. } => general_intra_unsupported(
+            "general_intra_luma_coeff_parse",
+            Some(offset),
+            "general intra luma transform-block coefficient syntax could not be parsed from the tile payload",
+            GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
+        ),
+        GeneralIntraResidualError::CoeffContextState { .. }
+        | GeneralIntraResidualError::InvalidContextRange { .. } => general_intra_unsupported(
+            "general_intra_luma_coeff_state",
+            Some(offset),
+            "general intra luma coefficient context state could not be derived from the tile work unit",
+            GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
+        ),
+        GeneralIntraResidualError::UnexpectedBranch => general_intra_unsupported(
+            "general_intra_luma_coeff_unexpected_branch",
+            Some(offset),
+            "general intra luma coefficient decode produced an unexpected branch result",
+            GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
+        ),
+    }
 }
 
 fn general_intra_block_mode_error(
