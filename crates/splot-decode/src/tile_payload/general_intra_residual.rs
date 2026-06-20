@@ -29,7 +29,7 @@ use splot_recon::{
 
 use super::DecodeTileWorkUnit;
 use super::cdf::TileCdfSelector;
-use super::cdf::block_context::txb_skip_ctx_luma;
+use super::cdf::block_context::{txb_skip_ctx_luma, v_txb_skip_ctx};
 use super::cdf::block_read::BlockSymbolTraceReadError;
 use super::coeff_loop::ordinary_pass::CoeffOrdinaryBranch;
 use super::coeff_loop::ordinary_pass::geometry::CoeffOrdinaryTxSizeGeometryConfig;
@@ -38,24 +38,18 @@ use super::coeff_loop::use_fsc_branch::{
     CoeffUseFscFrameFactsInput, CoeffUseFscFrameFactsNonZeroInput, CoeffUseFscFrameOrdinaryFacts,
     apply_coeff_use_fsc_branch_from_frame_facts, coeff_cdf_q_ctx_from_base_q_idx,
 };
+use super::coeff_state::CoeffContextUpdate;
 use super::coeff_state::{TileCoeffContextState, TileCoeffStateError};
-use super::general_intra_block::GeneralIntraBlockModes;
 
 /// AV2 § 9.2 `TX_SIZES_ALL` index of `TX_64X64` (the single non-partitioned
 /// luma transform size for a 64x64 intra block with transform partitioning
 /// disabled).
 const TX_64X64: usize = 4;
-/// AV2 § 9.2 `TX_SIZES_ALL` index of `TX_32X32` (the single chroma transform
-/// size for the 32x32 4:2:0 chroma block).
-const TX_32X32: usize = 3;
 /// `DCT_DCT` `PlaneTxType` (AV2 § 5.20.7.29 implies `DCT_DCT` for this
 /// minimal-tool intra block; no `intra_tx_type` symbol is coded).
 const DCT_DCT: usize = 0;
 /// The single default segment id for the minimal-tool intra block.
 const SEGMENT_ID: usize = 0;
-/// 8-bit no-neighbour intra DC prediction sample (`1 << (BitDepth - 1)`),
-/// AV2 § 7.13.2.
-const DC_PRED_NO_NEIGHBOUR_8BIT: u8 = 128;
 
 /// The decoded luma transform-block coefficient facts.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -83,16 +77,6 @@ pub(crate) enum GeneralIntraResidualError {
     CoeffContextState {
         /// Source coefficient context state error.
         source: TileCoeffStateError,
-    },
-    /// The tile work-unit MI range is degenerate.
-    #[error("general intra luma coefficient context {axis} range {start}..{end} is invalid")]
-    InvalidContextRange {
-        /// Range axis.
-        axis: &'static str,
-        /// Range start.
-        start: u32,
-        /// Range end.
-        end: u32,
     },
     /// The nonzero coefficient pass failed.
     #[error("general intra luma nonzero coefficient pass failed: {source}")]
@@ -122,132 +106,109 @@ pub(crate) enum GeneralIntraResidualError {
     },
 }
 
-/// Decodes the AV2 § 5.20.7.27 `coeffs()` syntax for the single luma 64x64
-/// transform block, returning the `all_zero` decision and, when coded, the
-/// decoded `Quant[]` and end-of-block.
-pub(crate) fn decode_general_intra_luma_coeffs(
+/// OR-reduces a `u32` context line over `[start, start + len)` (clamped to the
+/// available range), the AV2 § 8.3.2 above/left level-context reduction.
+fn or_u32(line: &[u32], start: usize, len: usize) -> u32 {
+    line.iter().skip(start).take(len).fold(0, |acc, &v| acc | v)
+}
+
+/// OR-reduces a `u8` DC-context line over `[start, start + len)` (clamped).
+fn or_u8(line: &[u8], start: usize, len: usize) -> u8 {
+    line.iter().skip(start).take(len).fold(0, |acc, &v| acc | v)
+}
+
+fn coeff_ctx_err(source: TileCoeffStateError) -> GeneralIntraResidualError {
+    GeneralIntraResidualError::CoeffContextState { source }
+}
+
+/// Decodes the AV2 § 5.20.7.27 `coeffs()` syntax for one square transform block
+/// of any plane in the general intra multi-block walk.
+///
+/// The § 8.3.2 `txb_skip` (`all_zero`) context is derived from the persistent
+/// neighbour context lines (`context`): luma uses
+/// `TileTxbSkipCdf[is_inter || fsc_mode][txSzCtx][ctx]` with `ctx` from the
+/// above/left level OR-reductions; U adds the `+6` chroma offset; V uses
+/// `TileVTxbSkipCdf[ctx]` (with the `EobU` term). When `all_zero == 1` the zero
+/// context write is committed here; otherwise the nonzero coefficient pass reads
+/// `dc_sign` from `context` at `start_x`/`start_y` and commits its own context
+/// update internally. `start_x`/`start_y` are the block's plane-sample position.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn decode_general_intra_plane_coeffs(
     work_unit: &mut DecodeTileWorkUnit<'_>,
     symbols: &mut SymbolDecoder<'_>,
-    modes: GeneralIntraBlockModes,
+    context: &mut TileCoeffContextState,
+    plane: usize,
+    tx_size: usize,
+    start_x: usize,
+    start_y: usize,
+    eob_u_nonzero: bool,
+    uv_mode: usize,
 ) -> Result<LumaCoeffBlock, GeneralIntraResidualError> {
+    let x4 = start_x >> 2;
+    let y4 = start_y >> 2;
+    // Square transform: w4 == h4 == Tx_Width[txSz] >> 2 == 1 << tx_size.
+    let span4 = 1usize << tx_size;
     let frame_facts = work_unit.coeff_frame_facts();
     let coeff_cdf_q_ctx = coeff_cdf_q_ctx_from_base_q_idx(frame_facts.base_q_idx());
-    let tx_size_ctx = txb_skip_tx_size_ctx(TX_64X64);
-    // First transform block of the tile: the level context is zero and the
-    // 64x64 transform fills its residual block, so § 8.3.2 `txb_skip` luma
-    // context reduces to 0.
-    let txb_skip_ctx = txb_skip_ctx_luma(0, 0, true, false);
+    let tx_size_ctx = txb_skip_tx_size_ctx(tx_size);
 
-    let mut context = minimal_tile_coeff_context(work_unit)?;
-    let cdfs = work_unit.cdf_mut().tile_cdfs_mut();
-
-    // all_zero (§ 5.20.7.27): `TileTxbSkipCdf[q][plane_type][txSzCtx][ctx]`.
-    let all_zero = cdfs
-        .read_block_symbol_trace(
+    let above_level_or = or_u32(
+        context.above_level(plane).map_err(coeff_ctx_err)?,
+        x4,
+        span4,
+    );
+    let left_level_or = or_u32(context.left_level(plane).map_err(coeff_ctx_err)?, y4, span4);
+    let selector = match plane {
+        2 => {
+            let above_nz = above_level_or != 0
+                || or_u8(context.above_dc(plane).map_err(coeff_ctx_err)?, x4, span4) != 0;
+            let left_nz = left_level_or != 0
+                || or_u8(context.left_dc(plane).map_err(coeff_ctx_err)?, y4, span4) != 0;
+            TileCdfSelector::VTxbSkip {
+                coeff_cdf_q_ctx,
+                ctx: v_txb_skip_ctx(above_nz, left_nz, false, eob_u_nonzero),
+            }
+        }
+        1 => {
+            let above_nz = above_level_or != 0
+                || or_u8(context.above_dc(plane).map_err(coeff_ctx_err)?, x4, span4) != 0;
+            let left_nz = left_level_or != 0
+                || or_u8(context.left_dc(plane).map_err(coeff_ctx_err)?, y4, span4) != 0;
             TileCdfSelector::TxbSkip {
                 coeff_cdf_q_ctx,
                 plane_type: 0,
                 tx_size: tx_size_ctx,
-                ctx: txb_skip_ctx,
-            },
-            symbols,
-        )
-        .map_err(|source| GeneralIntraResidualError::AllZeroRead { source })?
-        .get()
-        != 0;
-
-    if all_zero {
-        return Ok(LumaCoeffBlock {
-            all_zero: true,
-            eob: 0,
-            quant: Vec::new(),
-        });
-    }
-
-    let geometry = CoeffOrdinaryTxSizeGeometryConfig {
-        plane: 0,
-        start_x: 0,
-        start_y: 0,
-        tx_size: TX_64X64,
-    };
-    let input = CoeffUseFscFrameFactsInput::NonZero(CoeffUseFscFrameFactsNonZeroInput {
-        frame: frame_facts,
-        block: CoeffUseFscFrameBlockFacts {
-            geometry,
-            plane_tx_type: DCT_DCT,
-            fsc_mode: false,
-            is_inter: false,
-            segment_id: SEGMENT_ID,
-        },
-        ordinary: CoeffUseFscFrameOrdinaryFacts {
-            uv_mode: usize::from(modes.uv_mode),
-            angle_delta_uv: 0,
-            luma_tx_type: DCT_DCT,
-            chroma_inter_tx_type: DCT_DCT,
-        },
-    });
-
-    let branch = apply_coeff_use_fsc_branch_from_frame_facts(&mut context, cdfs, symbols, input)
-        .map_err(|source| GeneralIntraResidualError::NonZeroPass { source })?;
-
-    let CoeffUseFscBranch::Ordinary(CoeffOrdinaryBranch::NonZero(pass)) = branch else {
-        return Err(GeneralIntraResidualError::UnexpectedBranch);
-    };
-
-    Ok(LumaCoeffBlock {
-        all_zero: false,
-        eob: pass.eob_read().eob().eob(),
-        quant: pass.block().quant().to_vec(),
-    })
-}
-
-/// Decodes the AV2 § 5.20.7.27 `coeffs()` syntax for a single 32x32 chroma
-/// transform block (U `plane == 1` or V `plane == 2`) of the minimal-tool intra
-/// block, returning the `all_zero` decision and, when coded, the decoded
-/// `Quant[]` and end-of-block.
-///
-/// The § 8.3.2 `all_zero` context for the first chroma block: U uses
-/// `TileTxbSkipCdf[q][1][txSzCtx][ctx]` with `ctx == 6` (`(above != 0) + (left
-/// != 0) + 6` reduces to 6 for the zero-context first block); V uses
-/// `TileVTxbSkipCdf[q][ctx]` with `ctx == (EobU != 0) ? 6 : 0` (the chroma block
-/// equals the transform, so no `bw*bh > w*h` term).
-pub(crate) fn decode_general_intra_chroma_coeffs(
-    work_unit: &mut DecodeTileWorkUnit<'_>,
-    symbols: &mut SymbolDecoder<'_>,
-    plane: usize,
-    eob_u_nonzero: bool,
-) -> Result<LumaCoeffBlock, GeneralIntraResidualError> {
-    let frame_facts = work_unit.coeff_frame_facts();
-    let coeff_cdf_q_ctx = coeff_cdf_q_ctx_from_base_q_idx(frame_facts.base_q_idx());
-    let mut context = minimal_tile_coeff_context(work_unit)?;
-    let cdfs = work_unit.cdf_mut().tile_cdfs_mut();
-
-    let selector = if plane == 2 {
-        // §8 parsing: plane 2 uses TileVTxbSkipCdf[ctx]; for the first chroma
-        // block ctx == (EobU != 0) ? 6 : 0 (no neighbours, tx fills block).
-        TileCdfSelector::VTxbSkip {
-            coeff_cdf_q_ctx,
-            ctx: if eob_u_nonzero { 6 } else { 0 },
+                ctx: usize::from(above_nz) + usize::from(left_nz) + 6,
+            }
         }
-    } else {
-        // §8 parsing: plane 0 or 1 uses TileTxbSkipCdf[is_inter || fsc_mode]
-        // [txSzCtx][ctx]. The second index is is_inter||fsc_mode (== 0 for this
-        // intra frame), NOT plane_type. The U-plane offset lives in ctx: for the
-        // first block (no neighbours) ctx == (above != 0) + (left != 0) + 6 == 6.
-        TileCdfSelector::TxbSkip {
+        _ => TileCdfSelector::TxbSkip {
             coeff_cdf_q_ctx,
             plane_type: 0,
-            tx_size: txb_skip_tx_size_ctx(TX_32X32),
-            ctx: 6,
-        }
+            tx_size: tx_size_ctx,
+            ctx: txb_skip_ctx_luma(above_level_or, left_level_or, true, false),
+        },
     };
-    let all_zero = cdfs
+
+    let all_zero = work_unit
+        .cdf_mut()
+        .tile_cdfs_mut()
         .read_block_symbol_trace(selector, symbols)
         .map_err(|source| GeneralIntraResidualError::AllZeroRead { source })?
         .get()
         != 0;
 
     if all_zero {
+        context
+            .update_after_coeffs(CoeffContextUpdate {
+                plane,
+                x4,
+                y4,
+                w4: span4,
+                h4: span4,
+                cul_level: 0,
+                dc_category: 0,
+            })
+            .map_err(coeff_ctx_err)?;
         return Ok(LumaCoeffBlock {
             all_zero: true,
             eob: 0,
@@ -257,9 +218,9 @@ pub(crate) fn decode_general_intra_chroma_coeffs(
 
     let geometry = CoeffOrdinaryTxSizeGeometryConfig {
         plane,
-        start_x: 0,
-        start_y: 0,
-        tx_size: TX_32X32,
+        start_x,
+        start_y,
+        tx_size,
     };
     let input = CoeffUseFscFrameFactsInput::NonZero(CoeffUseFscFrameFactsNonZeroInput {
         frame: frame_facts,
@@ -271,13 +232,14 @@ pub(crate) fn decode_general_intra_chroma_coeffs(
             segment_id: SEGMENT_ID,
         },
         ordinary: CoeffUseFscFrameOrdinaryFacts {
-            uv_mode: 0,
+            uv_mode,
             angle_delta_uv: 0,
             luma_tx_type: DCT_DCT,
             chroma_inter_tx_type: DCT_DCT,
         },
     });
-    let branch = apply_coeff_use_fsc_branch_from_frame_facts(&mut context, cdfs, symbols, input)
+    let cdfs = work_unit.cdf_mut().tile_cdfs_mut();
+    let branch = apply_coeff_use_fsc_branch_from_frame_facts(context, cdfs, symbols, input)
         .map_err(|source| GeneralIntraResidualError::NonZeroPass { source })?;
     let CoeffUseFscBranch::Ordinary(CoeffOrdinaryBranch::NonZero(pass)) = branch else {
         return Err(GeneralIntraResidualError::UnexpectedBranch);
@@ -290,16 +252,18 @@ pub(crate) fn decode_general_intra_chroma_coeffs(
 }
 
 /// Reconstructs one square intra plane block from the decoded `Quant[]` of its
-/// single DC_PRED transform block.
+/// single DC_PRED transform block over a flat DC prediction `dc_sample`.
 ///
 /// This composes the § 7.14.4 dequantization, § 7.15.4 inverse transform, and
-/// § 7.14.3 residual addition (`reconstruct_transform_block_residual`) over a
-/// flat no-neighbour DC prediction (`128` for 8-bit). `qindex == base_q_idx` for
-/// this minimal-tool frame (no segmentation or delta-Q), and the transform is
+/// § 7.14.3 residual addition (`reconstruct_transform_block_residual`) over the
+/// flat § 7.13.2 DC prediction (`dc_sample`, derived from the partially-built
+/// frame's neighbours, or `128` when none). `qindex == base_q_idx` for this
+/// minimal-tool frame (no segmentation or delta-Q), and the transform is
 /// `DCT_DCT` over the original `log2_side` (adjusted, capped at 32) dimensions.
 /// `use_tcq` adds the § 7.14.4 TCQ `dqDenom` term (luma only).
 pub(crate) fn reconstruct_general_intra_block(
     quant: &[i32],
+    dc_sample: u8,
     qindex: u32,
     plane_id: PlaneId,
     log2_side: u32,
@@ -348,7 +312,7 @@ pub(crate) fn reconstruct_general_intra_block(
     .map_err(|source| GeneralIntraResidualError::Reconstruct { source })?;
 
     let samples = orig_side * orig_side;
-    let prediction = vec![DC_PRED_NO_NEIGHBOUR_8BIT; samples];
+    let prediction = vec![dc_sample; samples];
     let mut dequant_scratch = vec![0i32; adjusted];
     let mut residual_scratch = vec![0i32; samples];
     let mut out = vec![0u8; samples];
@@ -372,29 +336,6 @@ fn txb_skip_tx_size_ctx(tx_size: usize) -> usize {
     let sqr = TX_SIZE_SQR.get(tx_size).copied().unwrap_or(0);
     let sqr_up = TX_SIZE_SQR_UP.get(tx_size).copied().unwrap_or(0);
     (((sqr + sqr_up + 1) >> 1).max(0)) as usize
-}
-
-fn minimal_tile_coeff_context(
-    work_unit: &DecodeTileWorkUnit<'_>,
-) -> Result<TileCoeffContextState, GeneralIntraResidualError> {
-    let mi_rows = range_len("rows", work_unit.mi_row_range())?;
-    let mi_cols = range_len("columns", work_unit.mi_col_range())?;
-    TileCoeffContextState::new(mi_rows, mi_cols)
-        .map_err(|source| GeneralIntraResidualError::CoeffContextState { source })
-}
-
-fn range_len(
-    axis: &'static str,
-    range: core::ops::Range<u32>,
-) -> Result<usize, GeneralIntraResidualError> {
-    let length = range.end.checked_sub(range.start).ok_or(
-        GeneralIntraResidualError::InvalidContextRange {
-            axis,
-            start: range.start,
-            end: range.end,
-        },
-    )?;
-    Ok(length as usize)
 }
 
 #[cfg(test)]

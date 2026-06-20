@@ -9,10 +9,14 @@ use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DecodedFrame, DecodedFrameInfo, IntraCardinalDirection,
     IntraCardinalEdges, IntraRectBlockSize, IntraSquareBlockSize, OutputIndex, PixelFormat,
     PlaneId, PlaneRect, PlaneSize, predict_intra_cardinal_directional_rect_into,
+    predict_intra_dc_rect_value,
 };
 
 use crate::Result;
-use crate::tile_payload::MinimalRuntimeReconstructionTrace;
+use crate::tile_payload::{
+    GeneralIntraResidualError, LumaCoeffBlock, MinimalRuntimeReconstructionTrace,
+    reconstruct_general_intra_block,
+};
 
 const MINIMAL_LUMA_WIDTH: usize = 64;
 const MINIMAL_LUMA_HEIGHT: usize = 64;
@@ -70,13 +74,9 @@ fn reconstruct_luma_dc_chroma_h_pred_8bit420_64x64() -> Result<DecodedFrame<u8>>
     Ok(workspace.freeze()?)
 }
 
-/// Assembles a decoded 8-bit 4:2:0 64x64 frame from three already-reconstructed
-/// planes (luma 64x64, chroma U/V 32x32) for the general intra decode path.
-pub(crate) fn assemble_general_intra_frame(
-    luma: &[u8],
-    chroma_u: &[u8],
-    chroma_v: &[u8],
-) -> Result<DecodedFrame<u8>> {
+/// Creates an empty decoded 8-bit 4:2:0 64x64 frame workspace for incremental
+/// per-block reconstruction on the general intra multi-block path.
+pub(crate) fn new_general_intra_workspace() -> Result<CurrentFrameWorkspace<u8>> {
     let luma_size = PlaneSize::new(MINIMAL_LUMA_WIDTH, MINIMAL_LUMA_HEIGHT)?;
     let luma_rect = PlaneRect::new(0, 0, MINIMAL_LUMA_WIDTH, MINIMAL_LUMA_HEIGHT)?;
     let info = DecodedFrameInfo::new(
@@ -86,13 +86,46 @@ pub(crate) fn assemble_general_intra_frame(
         luma_size,
         luma_rect,
     )?;
-    let mut workspace = CurrentFrameWorkspace::<u8>::new(info, 0)?;
-    let luma_block = IntraRectBlockSize::new(MINIMAL_LUMA_LOG2_SIZE, MINIMAL_LUMA_LOG2_SIZE)?;
-    workspace.write_rect_block(PlaneId::Y, 0, 0, luma_block, luma)?;
-    let chroma_block = IntraRectBlockSize::new(MINIMAL_CHROMA_LOG2_SIZE, MINIMAL_CHROMA_LOG2_SIZE)?;
-    workspace.write_rect_block(PlaneId::U, 0, 0, chroma_block, chroma_u)?;
-    workspace.write_rect_block(PlaneId::V, 0, 0, chroma_block, chroma_v)?;
-    Ok(workspace.freeze()?)
+    Ok(CurrentFrameWorkspace::<u8>::new(info, 0)?)
+}
+
+/// Reconstructs one square plane block in decode order into the workspace: the
+/// § 7.13.2 DC prediction is read from the partially-built frame's neighbours
+/// (`128` fallback when none); an `all_zero` block writes the flat prediction,
+/// otherwise the dequant / inverse-transform / residual-add reconstruction is
+/// added; the result is written back so later blocks read it as a neighbour.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn reconstruct_general_intra_block_into(
+    workspace: &mut CurrentFrameWorkspace<u8>,
+    block: &LumaCoeffBlock,
+    plane_id: PlaneId,
+    x: usize,
+    y: usize,
+    log2_side: u32,
+    qindex: u32,
+    use_tcq: bool,
+) -> core::result::Result<(), GeneralIntraResidualError> {
+    let side = 1usize << log2_side;
+    let log2 = u8::try_from(log2_side).unwrap_or(u8::MAX);
+    let block_size = IntraRectBlockSize::new(log2, log2).map_err(recon_err)?;
+    let edges = workspace
+        .intra_dc_edges_for_rect(plane_id, x, y, block_size)
+        .map_err(recon_err)?;
+    let dc = predict_intra_dc_rect_value(BitDepth::Eight, block_size, edges.as_dc_edges())
+        .map_err(recon_err)?;
+    let out = if block.all_zero {
+        vec![dc; side * side]
+    } else {
+        reconstruct_general_intra_block(&block.quant, dc, qindex, plane_id, log2_side, use_tcq)?
+    };
+    workspace
+        .write_rect_block(plane_id, x, y, block_size, &out)
+        .map_err(recon_err)?;
+    Ok(())
+}
+
+fn recon_err(source: splot_recon::ReconError) -> GeneralIntraResidualError {
+    GeneralIntraResidualError::Reconstruct { source }
 }
 
 #[cfg(test)]

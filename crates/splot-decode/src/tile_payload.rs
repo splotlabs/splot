@@ -46,12 +46,13 @@ use crate::{
 };
 
 pub(crate) use block_symbol::MinimalBlockSymbolTraceError;
+pub(crate) use coeff_state::TileCoeffContextState;
 pub(crate) use general_intra_block::{
     GeneralIntraBlockModeError, decode_general_intra_block_modes,
 };
 pub(crate) use general_intra_residual::{
-    GeneralIntraResidualError, LumaCoeffBlock, decode_general_intra_chroma_coeffs,
-    decode_general_intra_luma_coeffs, reconstruct_general_intra_block,
+    GeneralIntraResidualError, LumaCoeffBlock, decode_general_intra_plane_coeffs,
+    reconstruct_general_intra_block,
 };
 pub(crate) use input::{
     FrameCandidateCdfFacts, FrameCandidateCoeffFacts, FrameCandidateTileBoundaryError,
@@ -59,10 +60,12 @@ pub(crate) use input::{
     TileGroupPositionFacts, plan_derived_tile_payload_boundary,
 };
 pub(crate) use partition_traversal::TilePartitionTraversalError;
+pub(crate) use partition_traversal::{DecodeBlockFrontier, GeneralIntraTreeWalkError};
 pub(crate) use runtime_frontier::{
-    MinimalRuntimeBlockSymbolFrontierError, MinimalRuntimePartitionFrontierError,
-    MinimalRuntimeReconstructionTrace, plan_minimal_runtime_block_symbol_frontier,
-    plan_minimal_runtime_partition_frontier,
+    GeneralIntraMultiblockError, MinimalRuntimeBlockSymbolFrontierError,
+    MinimalRuntimePartitionFrontierError, MinimalRuntimeReconstructionTrace,
+    decode_general_intra_multiblock_tree, frame_mi_dimensions,
+    plan_minimal_runtime_block_symbol_frontier,
 };
 
 pub(crate) const TILE_PAYLOAD_DECODE_MATRIX_ROW: &str = "tile-payload-decode";

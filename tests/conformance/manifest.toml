@@ -50,6 +50,11 @@ description = "Single 8-bit 4:2:0 intra key frame (IVF, 64x64) from a project-ow
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-quad-intra-64x64-q80.ivf"
+description = "Multi-block 8-bit 4:2:0 intra key frame (IVF, 64x64) from a project-owned four-quadrant luma input with broad decode tools disabled at base_q_idx 80, so the frame splits (Horz -> Vert -> Vert) into four square 32x32 DC_PRED blocks each predicted from its reconstructed neighbour; the first general-intra multi-block decode target whose avmdec and dav2d raw outputs agree and splot reproduces byte-for-byte; validates clean."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-key-inter-64x64.ivf"
 description = "Key frame plus two inter frames (IVF, 64x64) from project-owned synthetic input; validates clean."
 expect = "clean"
