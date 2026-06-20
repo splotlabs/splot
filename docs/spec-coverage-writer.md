@@ -28,13 +28,13 @@ Matrix version 1. Last reviewed 2026-06-15. 92 writable feature(s).
 | 5.2.4, 6.2.4 | `AV2-5.2.4-BYTE-ALIGNMENT` | Byte alignment syntax and semantics | done | `crates/splot-core/src/bitio.rs` |
 | 5.4, 6.4 | `AV2-5.4-SEQUENCE-HEADER` | Sequence header OBU syntax | done | `crates/splot-core/src/headers.rs` |
 | 5.4.1, 6.4.1 | `AV2-5.4.1-SEQUENCE-HEADER-GENERAL` | General sequence header syntax | done | `crates/splot-core/src/headers/sequence.rs` |
-| 5.4.1 | `ENC-WRITER-INPUT-SEQ-VIEW` | Encoder writer-input minimal-intra CoreSeqView constructor | done | `crates/splot-core/src/headers/frame/info.rs` |
+| 5.4.1 | `ENC-WRITER-INPUT-SEQ-VIEW` | Encoder writer-input minimal-intra CoreSeqView constructor | done | `crates/splot-core/src/headers/frame/encoder_input.rs` |
 | 5.4.2, 6.4.2 | `AV2-5.4.2-SEQUENCE-TILE-CONFIG` | Sequence tile configuration syntax | done | `crates/splot-core/src/headers/sequence.rs` |
 | 5.4.3, 6.4.3 | `AV2-5.4.3-SEQUENCE-PARTITION-CONFIG` | Sequence partition configuration syntax | done | `crates/splot-core/src/headers/sequence.rs` |
 | 5.4.4, 6.4.4 | `AV2-5.4.4-SEQUENCE-SEGMENT-CONFIG` | Sequence segment configuration syntax | done | `crates/splot-core/src/headers/sequence.rs` |
 | 5.4.5, 6.4.5 | `AV2-5.4.5-SEQUENCE-INTRA-CONFIG` | Sequence intra configuration syntax | done | `crates/splot-core/src/headers/sequence.rs` |
 | 5.4.6, 6.4.6 | `AV2-5.4.6-SEQUENCE-INTER-CONFIG` | Sequence inter configuration syntax | done | `crates/splot-core/src/headers/sequence.rs` |
-| 5.4.6 | `ENC-WRITER-INPUT-INTER-VIEW` | Encoder writer-input minimal-intra inter view constructor | done | `crates/splot-core/src/headers/frame/info.rs` |
+| 5.4.6 | `ENC-WRITER-INPUT-INTER-VIEW` | Encoder writer-input minimal-intra inter view constructor | done | `crates/splot-core/src/headers/frame/encoder_input.rs` |
 | 5.4.7, 6.4.7 | `AV2-5.4.7-SEQUENCE-SCC-CONFIG` | Sequence screen-content-coding configuration syntax | done | `crates/splot-core/src/headers/sequence.rs` |
 | 5.4.8, 6.4.8 | `AV2-5.4.8-SEQUENCE-TQ-ENTROPY-CONFIG` | Sequence transform, quantization, and entropy configuration syntax | done | `crates/splot-core/src/headers/sequence.rs` |
 | 5.4.9, 6.4.9 | `AV2-5.4.9-SEGMENT-INFO` | Segment info syntax | done | `crates/splot-core/src/segment.rs` |
