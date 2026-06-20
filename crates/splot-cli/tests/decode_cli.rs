@@ -285,15 +285,16 @@ fn decode_hash_json_success_for_minimal_fixture() {
 }
 
 #[test]
-fn decode_general_intra_fixture_decodes_luma_coeffs_and_reaches_chroma() {
+fn decode_general_intra_fixture_reconstructs_full_frame() {
     // A real AVM-generated minimal-tool intra key frame (base_q_idx 80, one
-    // 64x64 block carrying a nonzero DC residual; avmdec and dav2d agree on its
-    // decoded output). splot routes it off the frozen base_q_idx==255 hash tier
-    // into the general intra path, runs the real AV2 §5.20.3.1 partition
-    // traversal, decodes the §5.20.5.3 block mode-info symbols, decodes the
-    // §5.20.7.27 luma transform-block coefficients (all_zero == 0, nonzero
-    // pass), and reports that chroma coefficient decode and reconstruction are
-    // not yet implemented.
+    // 64x64 block carrying a nonzero DC residual). splot routes it off the
+    // frozen base_q_idx==255 hash tier into the general intra path, runs the
+    // real AV2 §5.20.3.1 partition traversal, decodes the §5.20.5.3 block
+    // mode-info symbols, decodes the §5.20.7.27 luma + chroma transform-block
+    // coefficients, then dequantizes / inverse-transforms / residual-adds each
+    // plane and reconstructs the full frame. avmdec and dav2d both decode this
+    // fixture to flat planes Y=100, U=120, V=130; the splot hash of that frame is
+    // pinned here as the first oracle-anchored full-frame decode.
     let input = conformance_vector("syn-flat-intra-64x64-q80.ivf");
 
     let out = splot(&[
@@ -304,24 +305,11 @@ fn decode_general_intra_fixture_decodes_luma_coeffs_and_reaches_chroma() {
         input.to_str().unwrap(),
     ]);
 
-    assert_eq!(out.status.code(), Some(1));
-    assert!(out.stderr.is_empty(), "stderr was not empty");
+    assert_eq!(out.status.code(), Some(0));
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(json["rule_id"], "decode/unsupported-feature");
-    assert_eq!(json["severity"], "Error");
-    assert_eq!(json["spec_section"], "5.20.7.27");
-    assert_eq!(json["matrix_row"], "general-intra-frame-frontier");
-    assert_eq!(json["feature_id"], "DECODE-GENERAL-INTRA-FRAME-FRONTIER");
-    assert_eq!(json["detail_kind"], "unsupported_feature");
     assert_eq!(
-        json["unsupported_reason"],
-        "general_intra_chroma_decode_unimplemented"
-    );
-    assert_eq!(json["tier_id"], "general-intra-8bit420-frontier-v1");
-    assert_eq!(json["output_format"], "hash");
-    assert!(
-        json["byte_offset"].is_u64(),
-        "json missing byte_offset: {json}"
+        json["frames"][0]["hashes"][0]["digest_hex"],
+        "ce9c46b1078b9dd593254837ead7dcd6cee8b3ec6cc3c7d34f54fb08df703979"
     );
 }
 

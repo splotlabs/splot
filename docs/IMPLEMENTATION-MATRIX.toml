@@ -10434,7 +10434,7 @@ openspec_change = "decode-general-intra-frame-frontier"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Adds a crate-private general intra decode frontier in `splot-decode` that runs alongside the frozen minimal hash tier. `route_general_minimal_intra` plus `is_general_minimal_intra` accept a single-tile 64x64 8-bit 4:2:0 intra key frame with any `base_q_idx` other than the frozen fixture's 255 and with segmentation, quant matrices, delta-Q, in-loop filters, CCSO, GDF, and film grain all disabled; `decode_general_minimal_intra_frame` derives the one tile work unit and runs the real AV2 §5.20.3.1 root partition traversal to the single-block frontier. It then decodes the AV2 §5.20.5.3 block mode info (`DECODE-GENERAL-INTRA-BLOCK-MODES`) and the §5.20.7.27 luma transform-block coefficients (`DECODE-GENERAL-INTRA-LUMA-COEFFS`) and returns a structured `decode/unsupported-feature` diagnostic (`general_intra_chroma_decode_unimplemented`) because chroma coefficient decode, dequantization, inverse-transform, residual, and prediction for the general path are not yet wired; it never reconstructs a frame and never mutates the frozen `base_q_idx == 255` minimal hash contract. This is the first brick of the AVM-oracle general intra decode path: the committed `syn-flat-intra-64x64-q80.ivf` fixture carries a real nonzero DC residual and its avmdec and dav2d raw outputs agree byte-for-byte, so future bricks can decode it bit-exactly. The frontier does not decode chroma coefficients, dequantize, inverse transform, add residuals, reconstruct pixels, handle split partitions, multiple tiles, non-64x64 frames, or invoke AVM/dav2d."
+notes = "Adds a crate-private general intra decode frontier in `splot-decode` that runs alongside the frozen minimal hash tier. `route_general_minimal_intra` plus `is_general_minimal_intra` accept a single-tile 64x64 8-bit 4:2:0 intra key frame with any `base_q_idx` other than the frozen fixture's 255 and with segmentation, quant matrices, delta-Q, in-loop filters, CCSO, GDF, and film grain all disabled; `decode_general_minimal_intra_frame` derives the one tile work unit and runs the real AV2 §5.20.3.1 root partition traversal to the single-block frontier. It then decodes the AV2 §5.20.5.3 block mode info (`DECODE-GENERAL-INTRA-BLOCK-MODES`), the §5.20.7.27 luma transform-block coefficients (`DECODE-GENERAL-INTRA-LUMA-COEFFS`), and the chroma coefficients plus dequant / inverse-transform / residual-add / frame assembly (`DECODE-GENERAL-INTRA-FRAME-RECON`), reconstructing the full frame; it never mutates the frozen `base_q_idx == 255` minimal hash contract. The committed `syn-flat-intra-64x64-q80.ivf` fixture carries a real nonzero DC residual and decodes bit-exactly to the avmdec/dav2d oracle (flat Y=100, U=120, V=130). The frontier does not yet handle split partitions, multiple blocks, multiple tiles, non-64x64 frames, inter prediction, in-loop filters, or invoke AVM/dav2d in CI."
 
 [feature.status]
 mapped = "done"
@@ -10450,7 +10450,7 @@ perf = "not-applicable"
 
 [feature.proof]
 tests = [
-    "crates/splot-cli/tests/decode_cli.rs::decode_general_intra_fixture_decodes_luma_coeffs_and_reaches_chroma",
+    "crates/splot-cli/tests/decode_cli.rs::decode_general_intra_fixture_reconstructs_full_frame",
     "crates/splot-cli/tests/decode_cli.rs::decode_general_intra_routing_does_not_disturb_frozen_minimal_hash",
 ]
 commands = [
@@ -10549,7 +10549,7 @@ perf = "not-applicable"
 tests = [
     "crates/splot-decode/src/tile_payload/general_intra_residual.rs::tests::txb_skip_tx_size_ctx_matches_spec_formula_for_square_sizes",
     "crates/splot-decode/src/tile_payload/general_intra_residual.rs::tests::txb_skip_tx_size_ctx_is_total_for_out_of_range_tx_size",
-    "crates/splot-cli/tests/decode_cli.rs::decode_general_intra_fixture_decodes_luma_coeffs_and_reaches_chroma",
+    "crates/splot-cli/tests/decode_cli.rs::decode_general_intra_fixture_reconstructs_full_frame",
 ]
 commands = [
     "cargo test -p splot-decode general_intra_residual --locked",
@@ -10562,6 +10562,63 @@ fixtures = [
     "crates/splot-decode/src/tile_payload/general_intra_residual.rs",
     "crates/splot-decode/src/runtime_minimal.rs",
     "tests/conformance/vectors/valid/syn-flat-intra-64x64-q80.ivf",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
+id = "DECODE-GENERAL-INTRA-FRAME-RECON"
+name = "General intra full frame reconstruction"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.20.7.27", "7.13.2", "7.14.2", "7.14.4", "7.15.4", "7.14.3", "8.2.4", "8.3.2"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-14-2",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-14-4",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-15-4",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-14-3",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/tile_payload/general_intra_residual.rs"
+openspec_change = "decode-general-intra-frame-recon"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Completes the first end-to-end AVM-oracle general intra frame decode. After the §5.20.5.3 mode info and the §5.20.7.27 luma transform-block coefficients, `decode_general_intra_chroma_coeffs` decodes the U then V 32x32 chroma blocks: the `all_zero` (`txb_skip`) symbol uses the §8 parsing CDF `TileTxbSkipCdf[is_inter || fsc_mode][txSzCtx][ctx]` for plane 0/1 (the second index is is_inter||fsc_mode == 0 here, NOT plane_type; the U-plane offset lives in ctx == (above!=0)+(left!=0)+6 == 6 for the first block) and `TileVTxbSkipCdf[ctx]` for plane 2 (ctx == (EobU!=0)?6:0); the nonzero pass reuses `apply_coeff_use_fsc_branch_from_frame_facts` with the chroma plane. `reconstruct_general_intra_block` then composes §7.14.4 dequant (with `dqDenom = 1 << ((pels>256)+(pels>1024)+useTcq)`, the §7.14.4 TCQ term applying to the luma DCT_DCT block only), the §7.15.4 inverse transform (64x64 reconstructed via the adjusted 32x32 inverse plus duplication for luma, native 32x32 for chroma), and §7.14.3 residual add over the §7.13.2 no-neighbour DC prediction (128 for 8-bit). The single 64x64 block consumes the whole tile payload, so §8.2.4 `exit_symbol()` is validated after the coefficients (a failure is reported as `general_intra_exit_symbol`). `assemble_general_intra_frame` builds the decoded 8-bit 4:2:0 frame from the three reconstructed planes. The committed `syn-flat-intra-64x64-q80.ivf` decodes bit-exactly to the avmdec/dav2d oracle (flat Y=100, U=120, V=130; pinned frame hash `ce9c46b1078b9dd593254837ead7dcd6cee8b3ec6cc3c7d34f54fb08df703979`) end-to-end through the CLI. To avoid a confident-but-wrong hash, admission and decode reject everything outside the verified subset (reconstruction passes zero deltas, so all resolved quantizer deltas must be zero): nonzero §5.18.6.1 frame DeltaQ values, nonzero §5.4.8 base offsets (BaseYDcDeltaQ via `!equal_ac_dc_q`; BaseUVDcDeltaQ / BaseUVAcDeltaQ derived independently), `enable_fsc`/`enable_cctx`/`enable_idtx_intra`/`enable_intra_ist` (transform-type and cross-component syntax), `TX_MODE_SELECT`, non-DC luma/chroma prediction modes (rejected after mode decode), and multi-coefficient blocks (`eob > 1`, which code `intra_tx_type`/`cctx_type`). The configured decode limits are enforced before any reconstruction buffer is allocated. It does not yet handle split partitions, multiple blocks, multiple tiles, non-64x64 frames, those rejected tools, inter prediction, in-loop filters, or invoke AVM/dav2d live in CI."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "partial"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "partial"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/runtime_minimal.rs::general_intra_tests::q80_intra_frame_reconstructs_flat_planes",
+    "crates/splot-decode/src/runtime_minimal.rs::general_intra_tests::q80_intra_frame_hash_is_stable",
+    "crates/splot-cli/tests/decode_cli.rs::decode_general_intra_fixture_reconstructs_full_frame",
+]
+commands = [
+    "cargo test -p splot-decode general_intra --locked",
+    "cargo test -p splot-cli --test decode_cli --locked",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-decoder-conformance-coverage",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "tests/conformance/vectors/valid/syn-flat-intra-64x64-q80.ivf",
+    "crates/splot-decode/src/tile_payload/general_intra_residual.rs",
+    "crates/splot-decode/src/runtime_minimal.rs",
+    "crates/splot-decode/src/runtime_minimal_recon.rs",
+    "crates/splot-cli/tests/decode_cli.rs",
 ]
 diagnostics = ["decode/unsupported-feature"]
 

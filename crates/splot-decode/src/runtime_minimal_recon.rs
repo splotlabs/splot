@@ -70,6 +70,31 @@ fn reconstruct_luma_dc_chroma_h_pred_8bit420_64x64() -> Result<DecodedFrame<u8>>
     Ok(workspace.freeze()?)
 }
 
+/// Assembles a decoded 8-bit 4:2:0 64x64 frame from three already-reconstructed
+/// planes (luma 64x64, chroma U/V 32x32) for the general intra decode path.
+pub(crate) fn assemble_general_intra_frame(
+    luma: &[u8],
+    chroma_u: &[u8],
+    chroma_v: &[u8],
+) -> Result<DecodedFrame<u8>> {
+    let luma_size = PlaneSize::new(MINIMAL_LUMA_WIDTH, MINIMAL_LUMA_HEIGHT)?;
+    let luma_rect = PlaneRect::new(0, 0, MINIMAL_LUMA_WIDTH, MINIMAL_LUMA_HEIGHT)?;
+    let info = DecodedFrameInfo::new(
+        OutputIndex::new(0),
+        BitDepth::Eight,
+        PixelFormat::Yuv420,
+        luma_size,
+        luma_rect,
+    )?;
+    let mut workspace = CurrentFrameWorkspace::<u8>::new(info, 0)?;
+    let luma_block = IntraRectBlockSize::new(MINIMAL_LUMA_LOG2_SIZE, MINIMAL_LUMA_LOG2_SIZE)?;
+    workspace.write_rect_block(PlaneId::Y, 0, 0, luma_block, luma)?;
+    let chroma_block = IntraRectBlockSize::new(MINIMAL_CHROMA_LOG2_SIZE, MINIMAL_CHROMA_LOG2_SIZE)?;
+    workspace.write_rect_block(PlaneId::U, 0, 0, chroma_block, chroma_u)?;
+    workspace.write_rect_block(PlaneId::V, 0, 0, chroma_block, chroma_v)?;
+    Ok(workspace.freeze()?)
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]

@@ -170,7 +170,7 @@ right = "dav2d-raw-md5"
 [[evidence]]
 id = "lref-avm-dav2d-syn-flat-intra-64x64-q80"
 feature_id = "DECODE-GENERAL-INTRA-FRAME-FRONTIER"
-decoder_support_rows = ["general-intra-frame-frontier"]
+decoder_support_rows = ["general-intra-frame-frontier", "general-intra-frame-recon"]
 kind = "reference-output-agreement"
 summary = "Local AVM and dav2d raw decoder output MD5 digests agreed for the 8-bit 64x64 single-block intra IVF fixture at base_q_idx 80, the first general-intra decode target whose block carries a real nonzero DC residual."
 recorded_at = "2026-06-19"
