@@ -935,7 +935,10 @@ impl CoreSeqView {
                 enable_avg_cdf: false,
                 avg_cdf_type: 0,
                 seq_tier: Tier::Main,
-                seq_level_idx: LevelIdx::from_bits(0),
+                // §A: the no-level / `Configurable` sentinel, so the §5.18.7.2 tile-info
+                // writer's level-derived tile-width/area bounds do not constrain a
+                // larger writer-input view (which the maxima would otherwise exceed).
+                seq_level_idx: LevelIdx::from_bits(31),
             },
             filter: CoreSeqFilterView {
                 enable_cdef: false,
