@@ -59,7 +59,7 @@ use splot_core::symbol::{Symbol, SymbolDecoder, SymbolDecoderConfig};
 use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig};
 use splot_core::tables::cdf::{
     DEFAULT_COEFF_BASE_LF_CDF, DEFAULT_COEFF_BASE_LF_EOB_CDF, DEFAULT_COEFF_BASE_LF_EOB_UV_CDF,
-    DEFAULT_COEFF_BR_LF_CDF, DEFAULT_DC_SIGN_CDF, DEFAULT_EOB_PT_16_CDF,
+    DEFAULT_COEFF_BR_LF_CDF, DEFAULT_DC_SIGN_CDF, DEFAULT_DO_SPLIT_CDF, DEFAULT_EOB_PT_16_CDF,
     DEFAULT_INTRA_TX_TYPE_SET1_CDF, DEFAULT_SEC_TX_TYPE_CDF, DEFAULT_TXB_SKIP_CDF,
     DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF, DEFAULT_V_TXB_SKIP_CDF, DEFAULT_Y_MODE_INDEX_CDF,
     DEFAULT_Y_MODE_SET_CDF,
@@ -79,10 +79,15 @@ use crate::intra_mode_emission::{
     IntraModeCdfRowSelector, IntraModeToken, emit_minimal_dc_chroma_uv_mode,
     emit_minimal_dc_luma_intra_mode,
 };
+use crate::partition_emission::{
+    PartitionCdfRowSelector, PartitionToken, ROOT_64X64_DO_SPLIT_CTX, ROOT_PARTITION_PLANE_START,
+};
 
 const Y_MODE_SET_CDF_ROW_LEN: usize = 5;
 const INTRA_MODE_CDF_ROW_LEN: usize = 9;
 const TXB_SKIP_CDF_ROW_LEN: usize = 3;
+/// `TileDoSplitCdf` is a binary CDF: `[cdf0, count, 0]` (length 3).
+const DO_SPLIT_CDF_ROW_LEN: usize = 3;
 const V_TXB_SKIP_CDF_ROW_LEN: usize = 3;
 const EOB_PT_16_CDF_ROW_LEN: usize = 6;
 const COEFF_BASE_LF_EOB_CDF_ROW_LEN: usize = 6;
@@ -238,6 +243,8 @@ pub(crate) fn compose_minimal_intra_dc_block_mode_trace() -> Result<Vec<IntraMod
 /// coefficient token kinds that a coded tile body interleaves through one coder.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum BlockSymbolToken {
+    /// An AV2 § 5.20.4.1 partition token (here, the root `do_split`).
+    Partition(PartitionToken),
     /// An AV2 § 5.20.5 mode-info token (`y_mode_set` / `y_mode_index` / `uv_mode`).
     Mode(IntraModeToken),
     /// An AV2 § 5.20.7 coefficient token (here, the luma `txb_skip` all-zero).
@@ -267,6 +274,7 @@ impl BlockSymbolToken {
     /// `Mode`/`Coeff`, or the literal value for `Bypass`).
     pub(crate) const fn symbol(self) -> u8 {
         match self {
+            Self::Partition(token) => token.symbol(),
             Self::Mode(token) => token.symbol(),
             Self::Coeff(token) => token.symbol(),
             Self::Bypass { value, .. } => value as u8,
@@ -771,6 +779,7 @@ pub(crate) fn roundtrip_block_symbol_trace(
 /// the emitter modules' private CDF-row internals.
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct BlockSymbolTraceCdfRows {
+    do_split_root: [i32; DO_SPLIT_CDF_ROW_LEN],
     y_mode_set: [i32; Y_MODE_SET_CDF_ROW_LEN],
     y_mode_index_tile_origin: [i32; INTRA_MODE_CDF_ROW_LEN],
     uv_mode_non_directional: [i32; INTRA_MODE_CDF_ROW_LEN],
@@ -793,6 +802,8 @@ struct BlockSymbolTraceCdfRows {
 impl BlockSymbolTraceCdfRows {
     fn from_defaults() -> Self {
         Self {
+            do_split_root: DEFAULT_DO_SPLIT_CDF[ROOT_PARTITION_PLANE_START]
+                [ROOT_64X64_DO_SPLIT_CTX],
             y_mode_set: DEFAULT_Y_MODE_SET_CDF,
             y_mode_index_tile_origin: DEFAULT_Y_MODE_INDEX_CDF[TILE_ORIGIN_Y_MODE_INDEX_CTX],
             uv_mode_non_directional: DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF
@@ -832,6 +843,13 @@ impl BlockSymbolTraceCdfRows {
             BlockSymbolToken::Bypass { .. } => {
                 Err(Error::BlockSymbolTraceUnsupportedSelector { index })
             }
+            BlockSymbolToken::Partition(partition) => match partition.selector() {
+                PartitionCdfRowSelector::DoSplit {
+                    plane_start: ROOT_PARTITION_PLANE_START,
+                    ctx: ROOT_64X64_DO_SPLIT_CTX,
+                } => Ok(self.do_split_root.as_mut_slice()),
+                _ => Err(Error::BlockSymbolTraceUnsupportedSelector { index }),
+            },
             BlockSymbolToken::Mode(mode) => match mode.selector() {
                 IntraModeCdfRowSelector::YModeSet => Ok(self.y_mode_set.as_mut_slice()),
                 IntraModeCdfRowSelector::YModeIndex {

@@ -5189,6 +5189,39 @@ fixtures = ["tests/conformance/vectors/valid/syn-cos-intra-64x64-q180.ivf"]
 diagnostics = []
 
 [[feature]]
+id = "ENC-DO-SPLIT-PARTITION-SYMBOL"
+name = "Encoder root do_split partition symbol"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20.4.1", "8.3.2", "8.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/partition_emission.rs"
+openspec_change = "encoder-do-split-partition-symbol"
+tracking_issue = ""
+owner = "encoder"
+risk = "low"
+notes = "Decodable-tile arc BRICK 1 (re-derived against the AVM-validated GENERAL intra decode path; the prior -minimal frozen tier uses an INVERTED txb_skip polarity vs AVM and is abandoned as the encoder oracle - confirmed via AVM av2/decoder/decodetxb.c: all_zero symbol value IS all_zero, coded=0 skip=1). To emit a tile the general path accepts, the encoder must produce the symbol stream it reads, whose FIRST symbol (before any block mode or coefficient) is the \u00a75.20.4.1 do_split partition flag - the ONE primitive genuinely missing from splot-encode (grep do_split = 0 non-comment hits; every existing composer starts at the mode-info prefix). Adds the partition_emission module: PartitionToken / PartitionCdfRowSelector::DoSplit + emit_root_do_split_none() = the do_split==false (PARTITION_NONE) token for the root 64x64 superblock, coded against TileDoSplitCdf[plane_start 0][ctx 12]. The ctx 12 = Partition_Size_Adjust[BLOCK_64X64]=3 *4 + the two out-of-frame neighbour bits 0, PINNED EMPIRICALLY (a temp debug print in the decoder do_split_selector call site, run over the AVM-validated syn-flat-intra-64x64-q80 fixture, printed DoSplit { plane_start: 0, ctx: 12 } - NOT the workflow agent's wrong 'ctx 0'). Extends BlockSymbolToken with Partition(PartitionToken) routed through symbol() + a do_split_root CDF row (DEFAULT_DO_SPLIT_CDF[0][12]) + row_mut, composing through the existing roundtrip_block_symbol_trace / encode_block_symbol_trace \u00a78.2 coder. ORACLE = roundtrip: the token decodes to [0] with symbol_count==1 (same machinery as the merged mode/coeff tokens); the ctx's cross-crate correctness is proven end-to-end when the full skip trace is muxed into an IVF and decoded (a later brick). All crate-private, no dependency-graph change. Encoder-mission-DRIVEN (owner=encoder). This row is ONE PRIVATE PARTITION SYMBOL: it does NOT claim a full block trace, a tile, a frame, a packet, receive_packet output, CLI success, or Baseline Encoder Profile v1. NEXT: the full ordered skip-block trace (the full ordered skip trace: do_split + modes + luma/U/V all_zero=1 at the general path's contexts)."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/partition_emission.rs::tests::emit_root_do_split_none_is_partition_none_at_ctx_12", "crates/splot-encode/src/block_symbol_trace_tests.rs::root_do_split_none_roundtrips_as_partition_none"]
+commands = ["cargo test -p splot-encode block_symbol_trace --locked", "cargo test -p splot-encode partition --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-RECON-DEPENDENCY"
 name = "Encoder reconstruction dependency boundary"
 category = "encoder"
