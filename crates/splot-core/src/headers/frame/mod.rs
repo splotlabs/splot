@@ -34,6 +34,7 @@ use crate::hls::MfhId;
 use crate::types::ObuType;
 
 mod config;
+mod encoder_input;
 mod filtering;
 mod global_motion;
 mod info;
