@@ -5083,6 +5083,41 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-TEMPORAL-DELIMITER-OBU"
+name = "Encoder temporal-delimiter OBU primitive"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.5", "5.2.2", "B.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers/frame/encoder_input.rs"
+openspec_change = "encoder-temporal-delimiter-obu"
+tracking_issue = ""
+owner = "encoder"
+risk = "low"
+# encode stays `todo`: a single OBU primitive (one building block of a temporal unit); no
+# sequence header / IVF / packet, and no splot-encode consumer yet.
+notes = 'Toward a decodable temporal unit. The decoder minimal-tier IVF frame requires its OBUs in order OBU_TEMPORAL_DELIMITER, OBU_SEQUENCE_HEADER, then the frame OBU (runtime_minimal.rs:94-104); the frame OBU is brick 5. This adds the first of the two missing OBUs — the temporal delimiter (the simplest, empty payload). `encode_temporal_delimiter_obu() -> Result<Vec<u8>, WriteError>` builds the no-extension OBU_TEMPORAL_DELIMITER §5.2.2 header (inferred obu_mlayer_id=0, GLOBAL obu_xlayer_id=31 — the temporal delimiter and OBU_MSDO are the only two types that infer the global xlayer, §5.2.2; DIFFERENT from CLK which infers 0) with an empty payload, in Annex B framing (§B.2) via write_annexb_obu → the canonical two bytes [0x01, 0x08]. ORACLE = a round-trip test: result == [0x01, 0x08] + parse_annex_b_obus_partial yields exactly one OBU, no error, type TemporalDelimiter, no extension, empty payload. Returns WriteError directly (no payload assembly step). Public API: one new fn, splot-core, no dependency-graph change. Encoder-mission-DRIVEN (owner=encoder). encode=todo. This row is a SINGLE OBU PRIMITIVE, NOT a temporal unit or a decodable stream: it does NOT claim a sequence header, an IVF stream, a packet, receive_packet output, CLI success, or Baseline Encoder Profile v1. NEXT: a sequence-header OBU (write_sequence_header + a minimal parse-backed SequenceHeader — the gating piece) → assemble the temporal unit (TD+seq+CLK) → wrap in IVF (write_ivf_header/write_ivf_frame exist) → a complete coded 64x64 tile → CLI encode→decode-hash.'
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "todo"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-core/src/headers/frame/encoder_input.rs::tests::encode_temporal_delimiter_obu_round_trips"]
+commands = ["cargo test -p splot-core encoder_input"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-RECON-DEPENDENCY"
 name = "Encoder reconstruction dependency boundary"
 category = "encoder"
