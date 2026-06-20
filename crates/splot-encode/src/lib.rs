@@ -51,6 +51,6 @@ pub use error::{Error, Result};
 pub use frame::{
     Frame, FrameId, FrameInfo, FramePlaneInput, FramePlanesInput, FrameTimestamp, RetainedFrame,
 };
-pub use general_intra_trace::emit_minimal_intra_skip_ivf;
+pub use general_intra_trace::{emit_minimal_intra_coded_dc_ivf, emit_minimal_intra_skip_ivf};
 pub use runtime::{EncoderRuntimeConfig, SpeedPreset, SpeedPresetError};
 pub use splot_recon::{PlaneRect, PlaneSize};
