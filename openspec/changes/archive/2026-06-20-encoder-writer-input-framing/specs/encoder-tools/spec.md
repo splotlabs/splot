@@ -13,13 +13,20 @@ return the defect-free framing for a first single-tile tile group (`TileNum 0`, 
 multi-tile framing constructor, a tile-group structure / frame-header / sequence-header
 constructor, a tile-group OBU, a frame, a packet, or `Context::receive_packet` output.
 
-#### Scenario: The constructor matches the parser
+#### Scenario: The constructor matches the parser for a nonzero size
 
-- **WHEN** the single-tile framing constructor is called with a tile size
+- **WHEN** the single-tile framing constructor is called with a tile size `>= 1`
 - **THEN** the result SHALL be value-equal to the framing
   `parse_tile_group_framing` yields for a single-tile region of that size
   (`defect == None`, one tile, `TileNum 0`, no size-field offset, `tileSize` = the
   size).
+
+#### Scenario: The constructor matches the parser's defect for a zero size
+
+- **WHEN** the single-tile framing constructor is called with `tile_size == 0`
+- **THEN** the result SHALL be value-equal to the framing `parse_tile_group_framing`
+  yields for an empty single-tile non-bridge region — the § 8.2.2 `ZeroSizeTile`
+  defect (not a falsely-conformant `defect == None`).
 
 #### Scenario: A write then reparse round-trips
 
