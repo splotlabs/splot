@@ -29,6 +29,7 @@ mod core_boundary;
 pub mod error;
 mod forward_transform;
 pub mod frame;
+mod general_intra_trace;
 mod header_plan;
 mod intra_mode_emission;
 mod partition_emission;

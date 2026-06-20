@@ -5222,6 +5222,39 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-GENERAL-INTRA-SKIP-BLOCK-TRACE"
+name = "Encoder general-intra DC skip-block trace"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20.3.2", "5.20.5.3", "5.20.7.27", "8.3.2", "8.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/general_intra_trace.rs"
+openspec_change = "encoder-general-intra-skip-block-trace"
+tracking_issue = ""
+owner = "encoder"
+risk = "low"
+notes = "Decodable-tile arc BRICK 2: the FULL ordered general-path skip-block trace. Brick 1 added the do_split flag; brick 2 composes the complete symbol stream the AVM-validated general intra decode path reads for one undivided 64x64 DC skip (all-zero) superblock: [do_split=0, y_mode_set=0, y_mode_index=0, uv_mode=0, luma all_zero=1, U all_zero=1, V all_zero=1] = [0,0,0,0,1,1,1] (symbol_count 7). Adds the general_intra_trace module with compose_general_intra_dc_skip_block_trace() and two coefficient-token constructors: general_intra_64x64_luma_all_zero_token (TX_64X64 txSzCtx 4, luma ctx 0 since the transform fills the block) and general_intra_32x32_chroma_u_all_zero_token (TX_32X32 txSzCtx 3, U ctx 6). The V txb_skip reuses the neutral TileVTxbSkipCdf[0][0] (v_txb_skip_ctx(0,0,false,false)=0 because the chroma block equals its transform and U is all-zero, EobU==0). Routes the two general txb_skip rows (DEFAULT_TXB_SKIP_CDF[0][0][4][0], [0][0][3][6]) through BlockSymbolTraceCdfRows + row_mut. The TX_64X64/TX_32X32 txSzCtx values (4, 3) were PINNED EMPIRICALLY: a temp debug print on the decoder's general txb_skip selector, run over the AVM-validated syn-flat-intra-64x64-q80 fixture, read tx_size 4 for the 64x64 luma transform and tx_size 3 for the 32x32 chroma U transform (those contexts are geometry-derived, independent of the all-zero/coded outcome). The coefficient CDF q-context is 0 (base_q_idx<=90), the same bank q80's base_q_idx=80 selects; a skip frame's residual is all-zero so its decoded pixels are independent of base_q_idx. ORACLE = roundtrip: the trace decodes to [0,0,0,0,1,1,1] through one \u00a78.2 coder (same machinery as the merged mode/coeff/do_split tokens); cross-crate bit-exact decode of an emitted skip frame is a later brick. All crate-private, no dependency-graph change. Encoder-mission-DRIVEN (owner=encoder). This row is ONE IN-MEMORY SYMBOL TRACE: it does NOT claim a tile_data payload, a tile, a frame, a packet, receive_packet output, CLI success, or Baseline Encoder Profile v1."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/general_intra_trace.rs::tests::general_skip_block_trace_roundtrips_through_one_coder", "crates/splot-encode/src/coefficient_tokenization_tests.rs::general_intra_64x64_luma_all_zero_token_targets_tx_64x64_neutral"]
+commands = ["cargo test -p splot-encode general_intra_trace --locked", "cargo test -p splot-encode coefficient_tokenization --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-RECON-DEPENDENCY"
 name = "Encoder reconstruction dependency boundary"
 category = "encoder"

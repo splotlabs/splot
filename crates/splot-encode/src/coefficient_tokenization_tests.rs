@@ -294,6 +294,49 @@ fn all_zero_tokens_roundtrip_through_symbol_coder() {
 }
 
 #[test]
+fn general_intra_64x64_luma_all_zero_token_targets_tx_64x64_neutral() {
+    let token = general_intra_64x64_luma_all_zero_token(0);
+
+    assert_eq!(
+        token,
+        CoefficientEntropyToken {
+            syntax: CoefficientTokenSyntax::AllZero,
+            selector: CoefficientCdfRowSelector::TxbSkip {
+                coeff_cdf_q_ctx: 0,
+                plane_type: LUMA_PLANE_TYPE,
+                tx_size: TX_SIZE_64X64_CTX,
+                ctx: TXB_SKIP_CTX_NEUTRAL,
+            },
+            symbol: 1,
+        }
+    );
+    // The roundtrip of this general-context row is proven by the block-symbol-trace
+    // driver in `general_intra_trace` (the coefficient-local `roundtrip_entropy_tokens`
+    // only resolves the minimal `TX_4X4` rows).
+    assert_eq!(general_intra_64x64_luma_all_zero_token(0).symbol(), 1);
+}
+
+#[test]
+fn general_intra_32x32_chroma_u_all_zero_token_targets_tx_32x32_ctx6() {
+    let token = general_intra_32x32_chroma_u_all_zero_token(0);
+
+    assert_eq!(
+        token,
+        CoefficientEntropyToken {
+            syntax: CoefficientTokenSyntax::AllZero,
+            selector: CoefficientCdfRowSelector::TxbSkip {
+                coeff_cdf_q_ctx: 0,
+                plane_type: INTRA_NON_FSC_TXB_SKIP_BANK,
+                tx_size: TX_SIZE_32X32_CTX,
+                ctx: CHROMA_U_TXB_SKIP_CTX_NEUTRAL,
+            },
+            symbol: 1,
+        }
+    );
+    assert_eq!(general_intra_32x32_chroma_u_all_zero_token(0).symbol(), 1);
+}
+
+#[test]
 fn dc_tokens_roundtrip_through_symbol_coder() {
     let block = quantized_base_tier(-1);
     let plan = tokenize_quantized_4x4_dct_dct_dc_only(&block).unwrap();
