@@ -769,7 +769,7 @@ fn encode_block_symbol_trace_is_deterministic() {
 
 #[test]
 fn root_do_split_none_roundtrips_as_partition_none() {
-    // The §5.20.4.1 do_split=false (PARTITION_NONE) root symbol — the first symbol the
+    // The §5.20.3.2 do_split=false (PARTITION_NONE) root symbol — the first symbol the
     // decoder reads on the general intra tile path — round-trips through one §8.2 coder at
     // TileDoSplitCdf[plane_start 0][ctx 12] (the ctx pinned against the q80 decode).
     let trace = vec![BlockSymbolToken::Partition(
