@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 325 feature(s); 272 cite a spec section.
+Matrix version 1. Last reviewed 2026-06-15. 326 feature(s); 273 cite a spec section.
 
 One row per (spec section, feature) pair, in spec order; a feature citing both a syntax and a semantics section appears under both. The canonical status source is [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); the full per-feature ledger is [FEATURE-STATUS.md](./FEATURE-STATUS.md).
 
@@ -96,6 +96,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.4.4](./spec/av2/1.0.0/05-syntax-structures.md#s-5-4-4) | Sequence segment config syntax | `AV2-5.4.4-SEQUENCE-SEGMENT-CONFIG` | ✅ | ✅ | 🟡 | ✅ | — |
 | [§ 5.4.5](./spec/av2/1.0.0/05-syntax-structures.md#s-5-4-5) | Sequence intra config syntax | `AV2-5.4.5-SEQUENCE-INTRA-CONFIG` | ✅ | ✅ | 🟡 | ✅ | — |
 | [§ 5.4.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-4-6) | Sequence inter config syntax | `AV2-5.4.6-SEQUENCE-INTER-CONFIG` | ✅ | ✅ | ✅ | ✅ | 1 |
+| [§ 5.4.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-4-6) | Sequence inter config syntax | `ENC-WRITER-INPUT-INTER-VIEW` | ✅ | — | — | ✅ | — |
 | [§ 5.4.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-4-6) | Sequence inter config syntax | `RECON-REFERENCE-FRAME-STORE` | ✅ | — | — | ✅ | — |
 | [§ 5.4.7](./spec/av2/1.0.0/05-syntax-structures.md#s-5-4-7) | Sequence screen content config syntax | `AV2-5.4.7-SEQUENCE-SCC-CONFIG` | ✅ | ✅ | 🟡 | ✅ | — |
 | [§ 5.4.8](./spec/av2/1.0.0/05-syntax-structures.md#s-5-4-8) | Sequence transform quant entropy config syntax | `AV2-5.4.8-SEQUENCE-TQ-ENTROPY-CONFIG` | ✅ | ✅ | 🟡 | ✅ | — |
