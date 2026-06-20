@@ -5011,6 +5011,42 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-MINIMAL-INTRA-TILE-GROUP-OBU"
+name = "Encoder writer-input minimal-intra tile-group OBU payload assembler"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.19", "5.20.1"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers/frame/encoder_input.rs"
+openspec_change = "encoder-tile-group-obu-callsite"
+tracking_issue = ""
+owner = "encoder"
+risk = "low"
+# encode stays `todo`: the payload assembler (write-surface) emits a round-trippable
+# tile_group_obu() payload, but no splot-encode code consumes it yet and the tile_data
+# content is a caller input — a complete coded tile + the OBU wrapper are later bricks.
+notes = "Header-bridge BRICK 4 (after ENC-FRAME-HEADER-CORE-ASSEMBLER). Connects the keystone to the tile-group writer: `encode_minimal_intra_clk_tile_group_obu(tile_data: &[u8]) -> Result<Vec<u8>, MinimalIntraTileGroupError>` builds the matched frozen-tier (FrameHeaderCore, CoreSeqView) via build_minimal_intra_clk_core(), frames tile_data as the single (last) tile of the first tile group (TileGroupStructure::single_tile_first_group() [writer-bridge brick 2] + TileGroupFraming::single_tile(tile_data.len()) [brick 1]), and drives write_tile_group_obu (§5.19/§5.20.1) → returns the tile_group_obu() PAYLOAD (embedded frame header + tile framing + tile data). The FIRST time the bridge pieces compose into framed OBU output. tile_data is a genuine param (different frames carry different §8.2 coded bytes; the §5.20.1 framing is derived from its length); the fixed frozen-tier context is internal. MinimalIntraTileGroupError typed enum (Core(#[from] MinimalIntraCoreError) / Write(#[from] WriteError)); empty tile_data → §8.2.2 ZeroSizeTile defect → typed Write error (no panic). ORACLE = a round-trip test: encode coded tile bytes → reparse the payload tile-group prefix (is_first_tile_group, frame_header_present_flag, embedded frame header) + assert tile_data is the byte-aligned trailing region (the lone last tile reads no size field); + an empty-tile_data reject test. The writer's own whole_obu_round_trips_stage_by_stage already proves write_tile_group_obu round-trips a test core; this proves the KEYSTONE feeds it. Public API: one new fn + one new error, all splot-core, no dependency-graph change. Encoder-mission-DRIVEN (owner=encoder), per the maintainer's writer-bridge decision. encode=todo. This row does NOT claim the §5.2.2 OBU header/size wrapper, a COMPLETE spec-conformant coded tile (tile_data content is the caller's, a separate axis = the block-symbol trace), a frame, a packet, receive_packet output, CLI success, or Baseline Encoder Profile v1. NEXT: the §5.2.2 OBU header/size wrapper + a complete coded 64x64 tile (wire the block-symbol trace) → a temporal unit / frame / packet → CLI encode→decode-hash."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "todo"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-core/src/headers/frame/encoder_input.rs::tests::encode_minimal_intra_clk_tile_group_obu_round_trips", "crates/splot-core/src/headers/frame/encoder_input.rs::tests::encode_minimal_intra_clk_tile_group_obu_rejects_empty_tile_data"]
+commands = ["cargo test -p splot-core encoder_input"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-RECON-DEPENDENCY"
 name = "Encoder reconstruction dependency boundary"
 category = "encoder"

@@ -22,9 +22,10 @@ use crate::headers::frame::{
     init_core_from_prefix, parse_core_body, parse_frame_header_prefix,
 };
 use crate::headers::sequence::ChromaFormatIdc;
+use crate::headers::tile_group::{TileGroupFraming, TileGroupStructure};
 use crate::span::ByteOffset;
 use crate::types::ObuType;
-use crate::write::{BitWriter, WriteError, WriteResult};
+use crate::write::{BitWriter, WriteError, WriteResult, write_tile_group_obu};
 
 impl CoreSeqInterView {
     /// Builds the all-disabled § 5.4.6 inter-config view a minimal intra sequence
@@ -330,11 +331,68 @@ pub fn build_minimal_intra_clk_core()
     Ok((core, seq))
 }
 
+/// Error assembling the canonical minimal-intra `OBU_CLOSED_LOOP_KEY` tile-group payload
+/// ([`encode_minimal_intra_clk_tile_group_obu`]): the frame-header core could not be built,
+/// or the § 5.19 tile-group payload could not be serialized.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum MinimalIntraTileGroupError {
+    /// The frame-header core could not be assembled.
+    #[error("frame-header core assembly failed: {0}")]
+    Core(#[from] MinimalIntraCoreError),
+    /// The § 5.19 tile-group OBU payload could not be serialized (e.g. empty `tile_data`,
+    /// which is a § 8.2.2 zero-size-tile defect).
+    #[error("tile-group OBU payload serialization failed: {0}")]
+    Write(#[from] WriteError),
+}
+
+/// Assembles the canonical minimal-intra `OBU_CLOSED_LOOP_KEY` § 5.19 `tile_group_obu()`
+/// payload (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-19`) for the frozen 64x64
+/// single-picture tier: it builds the matched `(FrameHeaderCore, CoreSeqView)` via
+/// [`build_minimal_intra_clk_core`], frames `tile_data` as the single (last) tile of the
+/// first tile group ([`TileGroupStructure::single_tile_first_group`] /
+/// [`TileGroupFraming::single_tile`]), and drives the § 5.19 / § 5.20.1 writer
+/// [`crate::write::write_tile_group_obu`].
+///
+/// `tile_data` is the § 8.2 entropy-coded bytes of the one 64x64 tile (`>= 1` byte; an empty
+/// slice is a § 8.2.2 zero-size-tile defect the writer rejects). The returned bytes are the
+/// `tile_group_obu()` payload — the embedded frame header, the § 5.20.1 tile framing, and the
+/// tile data — **not** the § 5.2.2 OBU header / size wrapper (a later bridge step). The lone
+/// last tile reads no size field, so `tile_data` is the byte-aligned trailing region of the
+/// payload.
+///
+/// This is the public encoder writer-input bridge end-point: it connects the header
+/// assembler to the tile-group writer, so `splot-encode` can emit a first tile-group payload
+/// from coded tile bytes without a parsed [`SequenceHeader`].
+///
+/// [`SequenceHeader`]: crate::headers::sequence::SequenceHeader
+pub fn encode_minimal_intra_clk_tile_group_obu(
+    tile_data: &[u8],
+) -> Result<Vec<u8>, MinimalIntraTileGroupError> {
+    let (core, seq) = build_minimal_intra_clk_core()?;
+    let structure = TileGroupStructure::single_tile_first_group();
+    let framing = TileGroupFraming::single_tile(tile_data.len() as u64);
+    let mut writer = BitWriter::new();
+    write_tile_group_obu(
+        &mut writer,
+        &core,
+        &seq,
+        None,
+        true,
+        &structure,
+        &framing,
+        &[tile_data],
+        true,
+    )?;
+    Ok(writer.into_bytes())
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::headers::frame::{FrameHeaderParseStatus, FrameSize, FrameType};
+    use crate::headers::tile_group::parse_tile_group_prefix;
     use crate::write::write_frame_header_core;
 
     #[test]
@@ -459,5 +517,34 @@ mod tests {
         .unwrap();
         reparsed.consumed_bits = reader.consumed_bits();
         assert_eq!(reparsed, core);
+    }
+
+    #[test]
+    fn encode_minimal_intra_clk_tile_group_obu_round_trips() {
+        // Five coded tile bytes with a distinct marker each (the writer-test pattern).
+        let tile_data: Vec<u8> = (0u8..5).map(|b| b.wrapping_mul(37)).collect();
+        let bytes = encode_minimal_intra_clk_tile_group_obu(&tile_data).unwrap();
+
+        // The payload is a valid first tile group carrying an embedded frame header.
+        let mut reader = BitReader::new(&bytes, ByteOffset::new(0));
+        let prefix =
+            parse_tile_group_prefix(&mut reader, ObuType::ClosedLoopKey, Some(true)).unwrap();
+        assert!(prefix.is_first_tile_group);
+        assert!(prefix.frame_header_present_flag);
+        assert!(prefix.frame_header.is_some());
+
+        // The lone (last) tile reads no size field and takes the byte-aligned remainder, so the
+        // coded tile bytes are the trailing region of the payload.
+        assert_eq!(
+            &bytes[bytes.len() - tile_data.len()..],
+            tile_data.as_slice()
+        );
+    }
+
+    #[test]
+    fn encode_minimal_intra_clk_tile_group_obu_rejects_empty_tile_data() {
+        // §8.2.2: a zero-size tile is a framing defect the writer rejects — a typed error, no panic.
+        let err = encode_minimal_intra_clk_tile_group_obu(&[]).unwrap_err();
+        assert!(matches!(err, MinimalIntraTileGroupError::Write(_)));
     }
 }
