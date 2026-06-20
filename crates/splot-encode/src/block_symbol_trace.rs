@@ -36,12 +36,13 @@
 //! all-zero and coded-DC tokens
 //! (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3`).
 //!
-//! AV2 § 5.20.5.3 `intra_frame_mode_info()` calls `read_intra_y_mode()` then
-//! `read_intra_uv_mode()` before `residual()`, so the ordered trace is the mode
-//! prefix followed by the residual symbols; the unified `BlockSymbolToken` spans
-//! both kinds, and `roundtrip_block_symbol_trace` proves the combined sequence
-//! through one § 8.2 coder with shared CDF state, routing each token to its scoped
-//! CDF row from `splot-core` defaults.
+//! On the general intra tile path the decoder reads the § 5.20.3.2 `do_split` partition
+//! flag first, then AV2 § 5.20.5.3 `intra_frame_mode_info()` (`read_intra_y_mode()` then
+//! `read_intra_uv_mode()`) before `residual()`, so the ordered trace is the partition flag,
+//! then the mode prefix, then the residual symbols; the unified `BlockSymbolToken` spans
+//! partition, mode, and coefficient kinds, and `roundtrip_block_symbol_trace` proves the
+//! combined sequence through one § 8.2 coder with shared CDF state, routing each token to
+//! its scoped CDF row from `splot-core` defaults.
 //!
 //! Its coefficient coverage is the single-DC magnitude vocabulary plus the minimal
 //! eob=2 multi-coefficient block (with no transform-type symbol, with the
@@ -50,8 +51,9 @@
 //! beyond the golomb-prefix cap (525), high-frequency coefficients, the
 //! `most_probable_stx_set` IST-set symbol (the IST trace uses `sec_tx_type = 0`),
 //! non-`TX_SET_INTRA_1` / non-`DC_PRED` transform types, the chroma
-//! base-range/golomb tiers, V-plane coded coefficients, partition syntax, tile CDF
-//! lifecycle, packets, a public encoder API, or modes beyond the DC minimal tier.
+//! base-range/golomb tiers, V-plane coded coefficients, partition splits beyond the root
+//! `do_split == false` (`PARTITION_NONE`), tile CDF lifecycle, packets, a public encoder
+//! API, or modes beyond the DC minimal tier.
 
 #![allow(dead_code)]
 
@@ -243,7 +245,7 @@ pub(crate) fn compose_minimal_intra_dc_block_mode_trace() -> Result<Vec<IntraMod
 /// coefficient token kinds that a coded tile body interleaves through one coder.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum BlockSymbolToken {
-    /// An AV2 § 5.20.4.1 partition token (here, the root `do_split`).
+    /// An AV2 § 5.20.3.2 partition token (here, the root `do_split`).
     Partition(PartitionToken),
     /// An AV2 § 5.20.5 mode-info token (`y_mode_set` / `y_mode_index` / `uv_mode`).
     Mode(IntraModeToken),

@@ -2,7 +2,7 @@
 
 The decodable-tile arc, brick 1. To produce a tile the AVM-validated general intra decode
 path accepts, the encoder must emit the symbol stream that path reads — and the FIRST symbol
-it reads (before any block mode or coefficient) is the § 5.20.4.1 `do_split` partition flag.
+it reads (before any block mode or coefficient) is the § 5.20.3.2 `do_split` partition flag.
 This is the one primitive genuinely missing from splot-encode (a grep for `do_split` returns
 zero non-comment hits); every existing composer starts at the mode-info prefix.
 

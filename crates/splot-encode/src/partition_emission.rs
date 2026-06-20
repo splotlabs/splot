@@ -3,7 +3,7 @@
 
 //! Encoder partition-symbol emission for the minimal intra block-symbol trace.
 //!
-//! The AV2 § 5.20.4.1 `do_split` partition flag is the **first** symbol the decoder reads on
+//! The AV2 § 5.20.3.2 `do_split` partition flag is the **first** symbol the decoder reads on
 //! the general intra tile path (before any block mode or coefficient symbol). For the frozen
 //! single-block tier the root 64x64 superblock is never split, so the encoder emits the
 //! `do_split == false` (`PARTITION_NONE`) symbol. This module models that one token; the
@@ -14,10 +14,10 @@
 // modules' policy.
 #![allow(dead_code)]
 
-/// AV2 § 5.20.4.1 partition syntax covered by the current encoder subset.
+/// AV2 § 5.20.3.2 partition syntax covered by the current encoder subset.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PartitionSyntax {
-    /// `do_split` in AV2 § 5.20.4.1.
+    /// `do_split` in AV2 § 5.20.3.2.
     DoSplit,
 }
 
@@ -87,7 +87,7 @@ pub(crate) const ROOT_64X64_DO_SPLIT_CTX: usize = 12;
 /// `do_split == false` (`PARTITION_NONE`): the root 64x64 superblock is one undivided block.
 pub(crate) const DO_SPLIT_NONE_SYMBOL: u8 = 0;
 
-/// Emits the AV2 § 5.20.4.1 `do_split == false` (`PARTITION_NONE`) token for the root 64x64
+/// Emits the AV2 § 5.20.3.2 `do_split == false` (`PARTITION_NONE`) token for the root 64x64
 /// superblock — the first symbol the decoder reads on the general intra tile path.
 pub(crate) const fn emit_root_do_split_none() -> PartitionToken {
     PartitionToken {

@@ -2,7 +2,7 @@
 
 ### Requirement: Encoder root do_split partition symbol
 
-The encoder block-symbol trace SHALL emit the AV2 § 5.20.4.1 `do_split == false`
+The encoder block-symbol trace SHALL emit the AV2 § 5.20.3.2 `do_split == false`
 (`PARTITION_NONE`) partition symbol for the root 64x64 superblock, tracked by
 `ENC-DO-SPLIT-PARTITION-SYMBOL` — the first symbol the AVM-validated general intra decode
 path reads. It SHALL be coded against `TileDoSplitCdf[plane_start 0][ctx 12]` and compose
