@@ -2,27 +2,35 @@
 
 ### Requirement: General intra 2-D grid non-DC SMOOTH luma over a real reconstructed above row
 The decoder SHALL reconstruct a full-superblock (`n4w == 16`) § 7.13.2.13
-`SMOOTH_V_PRED` / `SMOOTH_H_PRED` luma block on the general intra path at ANY
-superblock position in a 2-D grid, including a superblock at row > 0
-(`frontier.r > 0`). For a row > 0 block the decoder SHALL build the § 7.13.2.1
-edges with `haveAbove == 1` using the real reconstructed above row
-`CurrFrame[0][y - 1][...]` (the bottom row of the already-decoded above
-superblock), `haveLeft` per position, and the top-right sentinel `AboveRow[w]`
-from the real reconstructed above-right sample when it is decoded
-(`num4AboveRight > 0`, derived faithfully to AV2 § 5.20.7.25
+`SMOOTH_V_PRED` luma block on the general intra path at ANY superblock position
+in a 2-D grid, including a superblock at row > 0 (`frontier.r > 0`). For a
+row > 0 block the decoder SHALL build the § 7.13.2.1 edges with `haveAbove == 1`
+using the real reconstructed above row `CurrFrame[0][y - 1][...]` (the bottom row
+of the already-decoded above superblock), `haveLeft` per position, and the
+top-right sentinel `AboveRow[w]` from the real reconstructed above-right sample
+when it is decoded (`num4AboveRight > 0`, derived faithfully to AV2 § 5.20.7.25
 `count_top_right_avail` over the § 5.20.2.3 `BlockDecoded` state) — the same
 edge-building and above-right resolution the SMOOTH chroma 2-D grid path uses.
 It SHALL then run the § 7.13.2.13 SMOOTH predictor (linear interpolation, no
 `enable_intra_edge_filter` / IDIF / upsample edge synthesis) and add the
-§ 5.20.7.27 residual. The decoder SHALL keep the § 8.3.2 `y_mode_index` context
-derivation unchanged: SMOOTH_V/H are non-directional
-(`modeDelta < NON_DIRECTIONAL_MODES_COUNT`) so the context stays 0 and they are
-admitted, while a directional neighbour (`ctx != 0`) SHALL still be rejected with
-a structured `decode/unsupported-feature` diagnostic before any symbol is read.
-It SHALL reject — with a structured `decode/unsupported-feature` diagnostic — a
-neighbour-having directional (D135) luma block, SMOOTH luma on a sub-partitioned
-(non-full-superblock) block, multiple tiles, inter prediction, and in-loop
-filters, and SHALL NOT invoke AVM or dav2d.
+§ 5.20.7.27 residual. `SMOOTH_V_PRED`'s predictor reads the above row and the
+bottom-left but never the above-right sentinel VALUE, so the row > 0 above-row
+path is fully oracle-verified. `SMOOTH_H_PRED`, whose predictor DOES read the
+above-right sentinel value (`AboveRow[w]`), SHALL be admitted only in the first
+superblock row (`frontier.r == 0`, where the above-right is the § 7.13.2.1
+no-neighbour fallback); a `SMOOTH_H_PRED` luma block at row > 0 reads the real
+reconstructed above-right value over the luma (`sub_x == 0`) path that no oracle
+fixture has yet exercised (only the `sub_x == 1` SMOOTH chroma grid and the
+value-ignoring `SMOOTH_V_PRED` are verified), so the decoder SHALL reject it with
+a structured `decode/unsupported-feature` diagnostic. The decoder SHALL keep the
+§ 8.3.2 `y_mode_index` context derivation unchanged: SMOOTH_V/H are
+non-directional (`modeDelta < NON_DIRECTIONAL_MODES_COUNT`) so the context stays
+0 and they are admitted, while a directional neighbour (`ctx != 0`) SHALL still
+be rejected with a structured `decode/unsupported-feature` diagnostic before any
+symbol is read. It SHALL reject — with a structured `decode/unsupported-feature`
+diagnostic — a neighbour-having directional (D135) luma block, SMOOTH luma on a
+sub-partitioned (non-full-superblock) block, multiple tiles, inter prediction,
+and in-loop filters, and SHALL NOT invoke AVM or dav2d.
 
 #### Scenario: A row > 0 SMOOTH_V luma superblock decodes to the oracle
 - **WHEN** `splot decode` is given the committed 2-D grid intra key frame
@@ -51,6 +59,15 @@ filters, and SHALL NOT invoke AVM or dav2d.
 - **THEN** the decoder emits a structured `decode/unsupported-feature` diagnostic
   before reading any `y_mode_set` / `y_mode_index` symbol, rather than decoding with
   an unverified CDF row
+
+#### Scenario: A row > 0 SMOOTH_H luma block is deferred
+- **WHEN** a full-superblock `SMOOTH_H_PRED` luma block is at superblock row > 0
+  (so its § 7.13.2.13 predictor would read the real reconstructed above-right
+  sentinel value `AboveRow[w]` over the luma `sub_x == 0` path)
+- **THEN** the decoder emits a structured `decode/unsupported-feature` diagnostic
+  (only `SMOOTH_V_PRED`, which ignores the above-right value, and the first-row
+  `SMOOTH_H_PRED` fallback are oracle-verified for luma), rather than decoding the
+  above-right value over an unverified path
 
 #### Scenario: Existing general intra fixtures still decode bit-exact
 - **WHEN** `splot decode` is given the committed 64x64, 128x64, 64x128, and
