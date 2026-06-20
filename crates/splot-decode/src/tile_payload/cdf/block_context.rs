@@ -88,10 +88,39 @@ impl IntraYMode {
     /// bound (§ 5 `is_directional_mode`).
     const D67_PRED: u8 = 8;
 
+    /// AV2 § 9.2 `SMOOTH_V_PRED` canonical luma mode value.
+    const SMOOTH_V_PRED: u8 = 10;
+    /// AV2 § 9.2 `SMOOTH_H_PRED` canonical luma mode value.
+    const SMOOTH_H_PRED: u8 = 11;
+
     /// AV2 § 5 `is_directional_mode(mode)`: true when `V_PRED <= mode <= D67_PRED`.
     pub(crate) const fn is_directional(self) -> bool {
         self.0 >= Self::V_PRED && self.0 <= Self::D67_PRED
     }
+
+    /// Maps this luma mode to the non-DC predictor the general intra decode
+    /// currently reconstructs (§ 7.13.2.13 smooth prediction), or `None` for
+    /// `DC_PRED` and the not-yet-supported non-DC modes (`SMOOTH_PRED`,
+    /// `PAETH_PRED`, and the directional modes, which lack oracle fixtures).
+    pub(crate) const fn supported_nondc(self) -> Option<SupportedNonDcLumaMode> {
+        match self.0 {
+            Self::SMOOTH_V_PRED => Some(SupportedNonDcLumaMode::SmoothVertical),
+            Self::SMOOTH_H_PRED => Some(SupportedNonDcLumaMode::SmoothHorizontal),
+            _ => None,
+        }
+    }
+}
+
+/// The non-DC non-directional luma intra modes the general intra decode can
+/// reconstruct today — a strict subset of the § 9.2 modes, gated to those proven
+/// bit-exact against the AVM/dav2d oracle. `SMOOTH_PRED` and `PAETH_PRED` remain
+/// deferred until they have single-block oracle fixtures.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SupportedNonDcLumaMode {
+    /// AV2 `SMOOTH_V_PRED` (§ 7.13.2.13 vertical smooth prediction).
+    SmoothVertical,
+    /// AV2 `SMOOTH_H_PRED` (§ 7.13.2.13 horizontal smooth prediction).
+    SmoothHorizontal,
 }
 
 /// AV2 § 5 `Reordered_Y_Mode[0..NON_DIRECTIONAL_MODES_COUNT]`: the five

@@ -97,6 +97,15 @@ pub(crate) enum GeneralIntraResidualError {
         /// Actual decoded `Quant[]` length.
         actual: usize,
     },
+    /// The supplied per-sample prediction buffer length does not match the
+    /// original transform-block sample count.
+    #[error("general intra reconstruction expected {expected} prediction samples, got {actual}")]
+    PredictionLength {
+        /// Expected original-block sample count (`orig_side * orig_side`).
+        expected: usize,
+        /// Actual prediction buffer length.
+        actual: usize,
+    },
     /// The `splot-recon` dequant / inverse-transform / residual reconstruction
     /// rejected the luma block.
     #[error("general intra luma reconstruction failed: {source}")]
@@ -270,6 +279,34 @@ pub(crate) fn reconstruct_general_intra_block(
     use_tcq: bool,
 ) -> Result<Vec<u8>, GeneralIntraResidualError> {
     let orig_side = 1usize << log2_side;
+    let prediction = vec![dc_sample; orig_side * orig_side];
+    reconstruct_general_intra_block_with_prediction(
+        quant,
+        &prediction,
+        qindex,
+        plane_id,
+        log2_side,
+        use_tcq,
+    )
+}
+
+/// Reconstructs one square intra plane block from the decoded `Quant[]` of its
+/// single transform block over an arbitrary per-sample `prediction` (§ 7.13.2),
+/// composing § 7.14.4 dequantization, § 7.15.4 inverse transform, and § 7.14.3
+/// residual addition. `prediction` is the predicted block in raster order over
+/// the original (unadjusted) `log2_side` dimensions. The flat DC path is the
+/// special case where every prediction sample is the DC value (see
+/// [`reconstruct_general_intra_block`]); the non-DC § 7.13.2.13 smooth path
+/// supplies a per-sample predicted block.
+pub(crate) fn reconstruct_general_intra_block_with_prediction(
+    quant: &[i32],
+    prediction: &[u8],
+    qindex: u32,
+    plane_id: PlaneId,
+    log2_side: u32,
+    use_tcq: bool,
+) -> Result<Vec<u8>, GeneralIntraResidualError> {
+    let orig_side = 1usize << log2_side;
     let adj_log2 = log2_side.min(5);
     let adj_side = 1usize << adj_log2;
     let adjusted = adj_side * adj_side;
@@ -277,6 +314,13 @@ pub(crate) fn reconstruct_general_intra_block(
         return Err(GeneralIntraResidualError::QuantLength {
             expected: adjusted,
             actual: quant.len(),
+        });
+    }
+    let samples = orig_side * orig_side;
+    if prediction.len() != samples {
+        return Err(GeneralIntraResidualError::PredictionLength {
+            expected: samples,
+            actual: prediction.len(),
         });
     }
     let deltas = QuantizerDeltas {
@@ -311,13 +355,11 @@ pub(crate) fn reconstruct_general_intra_block(
     )
     .map_err(|source| GeneralIntraResidualError::Reconstruct { source })?;
 
-    let samples = orig_side * orig_side;
-    let prediction = vec![dc_sample; samples];
     let mut dequant_scratch = vec![0i32; adjusted];
     let mut residual_scratch = vec![0i32; samples];
     let mut out = vec![0u8; samples];
     reconstruct_transform_block_residual(
-        &prediction,
+        prediction,
         quant,
         &params,
         &transform,
@@ -341,6 +383,29 @@ fn txb_skip_tx_size_ctx(tx_size: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reconstruct_with_prediction_rejects_wrong_prediction_length() {
+        // A 4x4 block needs 16 prediction samples; a short buffer is rejected
+        // with a structured error (no panic) before reconstruction.
+        let quant = vec![0i32; 16];
+        let prediction = vec![128u8; 8];
+        let result = reconstruct_general_intra_block_with_prediction(
+            &quant,
+            &prediction,
+            64,
+            PlaneId::Y,
+            2,
+            false,
+        );
+        assert!(matches!(
+            result,
+            Err(GeneralIntraResidualError::PredictionLength {
+                expected: 16,
+                actual: 8
+            })
+        ));
+    }
 
     #[test]
     fn txb_skip_tx_size_ctx_matches_spec_formula_for_square_sizes() {

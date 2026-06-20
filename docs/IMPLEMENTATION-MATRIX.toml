@@ -10786,6 +10786,59 @@ fixtures = [
 diagnostics = ["decode/unsupported-feature"]
 
 [[feature]]
+id = "DECODE-GENERAL-INTRA-NONDC-LUMA-SMOOTH"
+name = "General intra single-block non-DC luma (smooth) decode"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.20.5.3", "5.20.7.27", "7.13.2.1", "7.13.2.13", "8.2.4"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-1",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-13",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/runtime_minimal_recon.rs"
+openspec_change = "decode-general-intra-nondc-smooth"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Extends the general intra decode from DC-only to the first non-DC luma prediction modes: §7.13.2.13 SMOOTH_V_PRED and SMOOTH_H_PRED. `reconstruct_general_intra_luma_nondc_first_block_into` builds the smooth prediction over the §7.13.2.1 no-neighbour fallback edges (8-bit: AboveRow `127`, LeftCol `129`, the smooth sentinels sharing those fallbacks) via the shared `splot-recon` `predict_intra_smooth_rect_into`, then adds the §5.20.7.27 AC residual through the refactored `reconstruct_general_intra_block_with_prediction` (the DC path is now the flat-prediction special case). The committed `syn-vsmooth-intra-64x64-q120.ivf` (vertical-gradient -> one 64x64 SMOOTH_V luma block) and `syn-hsmooth-intra-64x64-q120.ivf` (horizontal-gradient -> SMOOTH_H) decode bit-exactly to the avmdec/dav2d oracle (pinned frame hashes `3aebe2eb215d4878bbc40aa2f97e2178b6140ef51c03afaaae478e69dbbf6bcd` and `cfc6debd26760cdebf1d1a4497792461f0f68bc7e7773741ddf2cbc34561e702`), guarded by the §8.2.4 `exit_symbol()` bit-exactness check. Gated to the top-left (no-neighbour) block of size >= 32x32 with DC chroma: for square intra blocks of size >= 32x32 the §5.20.8.2 `get_tx_set` returns TX_SET_DCTONLY (`!is_inter && txSzSqrUp >= TX_32X32`), so the transform is forced DCT_DCT with no `intra_tx_type` signaled, matching the DCT_DCT residual path; smaller non-DC blocks (8x8/16x16) can carry a mode-dependent (non-DCT) TxType and are rejected. The remaining non-DC modes (SMOOTH, PAETH), directional modes, multi-block non-DC prediction (which reads reconstructed neighbours), non-DC chroma, sub-32x32 non-DC blocks, non-64x64 frames, inter prediction, in-loop filters, and live AVM/dav2d in CI remain future work."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "partial"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "partial"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/runtime_minimal.rs::general_intra_tests::vsmooth_single_block_intra_frame_decodes_to_oracle",
+    "crates/splot-decode/src/runtime_minimal.rs::general_intra_tests::hsmooth_single_block_intra_frame_decodes_to_oracle",
+]
+commands = [
+    "cargo test -p splot-decode general_intra --locked",
+    "cargo test -p splot-cli --test conformance --locked",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "tests/conformance/vectors/valid/syn-vsmooth-intra-64x64-q120.ivf",
+    "tests/conformance/vectors/valid/syn-hsmooth-intra-64x64-q120.ivf",
+    "crates/splot-decode/src/runtime_minimal_recon.rs",
+    "crates/splot-decode/src/runtime_minimal.rs",
+    "crates/splot-decode/src/tile_payload/general_intra_residual.rs",
+    "crates/splot-decode/src/tile_payload/cdf/block_context.rs",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
 id = "DECODE-COEFF-FSC-SCAN-WALK"
 name = "Coefficient FSC scan walk"
 category = "infrastructure"
