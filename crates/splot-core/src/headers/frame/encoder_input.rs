@@ -303,8 +303,18 @@ const FROZEN_TIER_DIM: u32 = 64;
 /// [`FrameHeaderParseStatus::IntraHeaderComplete`]: super::FrameHeaderParseStatus::IntraHeaderComplete
 pub fn build_minimal_intra_clk_core()
 -> Result<(FrameHeaderCore, CoreSeqView), MinimalIntraCoreError> {
-    let seq = CoreSeqView::new_minimal_intra_single_picture(FROZEN_TIER_DIM, FROZEN_TIER_DIM)
+    use crate::headers::sequence::SuperblockSize;
+    let mut seq = CoreSeqView::new_minimal_intra_single_picture(FROZEN_TIER_DIM, FROZEN_TIER_DIM)
         .ok_or(MinimalIntraCoreError::Seq)?;
+    // Frozen 64x64 tier: one 64x64 superblock — the root partition the decode minimal runtime
+    // frontier expects. This is a frozen-tier choice, not a § 5.4 single-picture inference, so
+    // it is set here, not in `new_minimal_intra_single_picture` (whose default `Block128x128`
+    // is shared with the `base_seq` round-trip suite). A 64x64 frame is one superblock at
+    // either SB size, so the canonical body bit-sequence is unchanged (the
+    // `uniform_tile_spacing_flag` reads zero increment bits either way, and `enable_gdf ==
+    // false` means the `seq_sb_size`-dependent GDF read never fires).
+    seq.tile.seq_sb_size = SuperblockSize::Block64x64;
+    seq.tile.use_128x128_superblock = false;
     let data = minimal_intra_clk_body_bytes()?;
     let mut reader = BitReader::new(&data, ByteOffset::new(0));
     let prefix = parse_frame_header_prefix(&mut reader, ObuType::ClosedLoopKey, Some(true))?;
@@ -414,6 +424,13 @@ mod tests {
         let (core, seq) = build_minimal_intra_clk_core().unwrap();
         assert_eq!((seq.max_frame_width, seq.max_frame_height), (64, 64));
         assert!(seq.single_picture_header_flag);
+        // Frozen 64x64 tier: a single 64x64 superblock (the decode minimal runtime frontier's
+        // root partition), not the new_minimal_intra default Block128x128.
+        assert_eq!(
+            seq.tile.seq_sb_size,
+            crate::headers::sequence::SuperblockSize::Block64x64
+        );
+        assert!(!seq.tile.use_128x128_superblock);
 
         // Parses to a complete intra header with the derived single-picture CLK facts.
         assert_eq!(core.status, FrameHeaderParseStatus::IntraHeaderComplete);
