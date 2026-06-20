@@ -22,6 +22,10 @@
 
 use splot_core::symbol::SymbolDecoder;
 use splot_core::tables::conversion::{TX_SIZE_SQR, TX_SIZE_SQR_UP};
+use splot_recon::{
+    BitDepth, DequantBlockParams, InverseTransform2dOuter, PlaneId, QuantizerDeltas, ReconError,
+    ac_quantizer, dc_quantizer, reconstruct_transform_block_residual,
+};
 
 use super::DecodeTileWorkUnit;
 use super::cdf::TileCdfSelector;
@@ -41,11 +45,17 @@ use super::general_intra_block::GeneralIntraBlockModes;
 /// luma transform size for a 64x64 intra block with transform partitioning
 /// disabled).
 const TX_64X64: usize = 4;
+/// AV2 § 9.2 `TX_SIZES_ALL` index of `TX_32X32` (the single chroma transform
+/// size for the 32x32 4:2:0 chroma block).
+const TX_32X32: usize = 3;
 /// `DCT_DCT` `PlaneTxType` (AV2 § 5.20.7.29 implies `DCT_DCT` for this
 /// minimal-tool intra block; no `intra_tx_type` symbol is coded).
 const DCT_DCT: usize = 0;
 /// The single default segment id for the minimal-tool intra block.
 const SEGMENT_ID: usize = 0;
+/// 8-bit no-neighbour intra DC prediction sample (`1 << (BitDepth - 1)`),
+/// AV2 § 7.13.2.
+const DC_PRED_NO_NEIGHBOUR_8BIT: u8 = 128;
 
 /// The decoded luma transform-block coefficient facts.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -94,6 +104,22 @@ pub(crate) enum GeneralIntraResidualError {
     /// all-zero) for the ordinary luma block.
     #[error("general intra luma nonzero coefficient pass produced an unexpected branch result")]
     UnexpectedBranch,
+    /// The decoded `Quant[]` length does not match the adjusted 32x32 transform
+    /// block the reconstruction expects.
+    #[error("general intra luma reconstruction expected {expected} quant entries, got {actual}")]
+    QuantLength {
+        /// Expected adjusted-block length.
+        expected: usize,
+        /// Actual decoded `Quant[]` length.
+        actual: usize,
+    },
+    /// The `splot-recon` dequant / inverse-transform / residual reconstruction
+    /// rejected the luma block.
+    #[error("general intra luma reconstruction failed: {source}")]
+    Reconstruct {
+        /// Source reconstruction error.
+        source: ReconError,
+    },
 }
 
 /// Decodes the AV2 § 5.20.7.27 `coeffs()` syntax for the single luma 64x64
@@ -173,6 +199,170 @@ pub(crate) fn decode_general_intra_luma_coeffs(
         eob: pass.eob_read().eob().eob(),
         quant: pass.block().quant().to_vec(),
     })
+}
+
+/// Decodes the AV2 § 5.20.7.27 `coeffs()` syntax for a single 32x32 chroma
+/// transform block (U `plane == 1` or V `plane == 2`) of the minimal-tool intra
+/// block, returning the `all_zero` decision and, when coded, the decoded
+/// `Quant[]` and end-of-block.
+///
+/// The § 8.3.2 `all_zero` context for the first chroma block: U uses
+/// `TileTxbSkipCdf[q][1][txSzCtx][ctx]` with `ctx == 6` (`(above != 0) + (left
+/// != 0) + 6` reduces to 6 for the zero-context first block); V uses
+/// `TileVTxbSkipCdf[q][ctx]` with `ctx == (EobU != 0) ? 6 : 0` (the chroma block
+/// equals the transform, so no `bw*bh > w*h` term).
+pub(crate) fn decode_general_intra_chroma_coeffs(
+    work_unit: &mut DecodeTileWorkUnit<'_>,
+    symbols: &mut SymbolDecoder<'_>,
+    plane: usize,
+    eob_u_nonzero: bool,
+) -> Result<LumaCoeffBlock, GeneralIntraResidualError> {
+    let frame_facts = work_unit.coeff_frame_facts();
+    let coeff_cdf_q_ctx = coeff_cdf_q_ctx_from_base_q_idx(frame_facts.base_q_idx());
+    let mut context = minimal_tile_coeff_context(work_unit)?;
+    let cdfs = work_unit.cdf_mut().tile_cdfs_mut();
+
+    let selector = if plane == 2 {
+        // §8 parsing: plane 2 uses TileVTxbSkipCdf[ctx]; for the first chroma
+        // block ctx == (EobU != 0) ? 6 : 0 (no neighbours, tx fills block).
+        TileCdfSelector::VTxbSkip {
+            coeff_cdf_q_ctx,
+            ctx: if eob_u_nonzero { 6 } else { 0 },
+        }
+    } else {
+        // §8 parsing: plane 0 or 1 uses TileTxbSkipCdf[is_inter || fsc_mode]
+        // [txSzCtx][ctx]. The second index is is_inter||fsc_mode (== 0 for this
+        // intra frame), NOT plane_type. The U-plane offset lives in ctx: for the
+        // first block (no neighbours) ctx == (above != 0) + (left != 0) + 6 == 6.
+        TileCdfSelector::TxbSkip {
+            coeff_cdf_q_ctx,
+            plane_type: 0,
+            tx_size: txb_skip_tx_size_ctx(TX_32X32),
+            ctx: 6,
+        }
+    };
+    let all_zero = cdfs
+        .read_block_symbol_trace(selector, symbols)
+        .map_err(|source| GeneralIntraResidualError::AllZeroRead { source })?
+        .get()
+        != 0;
+
+    if all_zero {
+        return Ok(LumaCoeffBlock {
+            all_zero: true,
+            eob: 0,
+            quant: Vec::new(),
+        });
+    }
+
+    let geometry = CoeffOrdinaryTxSizeGeometryConfig {
+        plane,
+        start_x: 0,
+        start_y: 0,
+        tx_size: TX_32X32,
+    };
+    let input = CoeffUseFscFrameFactsInput::NonZero(CoeffUseFscFrameFactsNonZeroInput {
+        frame: frame_facts,
+        block: CoeffUseFscFrameBlockFacts {
+            geometry,
+            plane_tx_type: DCT_DCT,
+            fsc_mode: false,
+            is_inter: false,
+            segment_id: SEGMENT_ID,
+        },
+        ordinary: CoeffUseFscFrameOrdinaryFacts {
+            uv_mode: 0,
+            angle_delta_uv: 0,
+            luma_tx_type: DCT_DCT,
+            chroma_inter_tx_type: DCT_DCT,
+        },
+    });
+    let branch = apply_coeff_use_fsc_branch_from_frame_facts(&mut context, cdfs, symbols, input)
+        .map_err(|source| GeneralIntraResidualError::NonZeroPass { source })?;
+    let CoeffUseFscBranch::Ordinary(CoeffOrdinaryBranch::NonZero(pass)) = branch else {
+        return Err(GeneralIntraResidualError::UnexpectedBranch);
+    };
+    Ok(LumaCoeffBlock {
+        all_zero: false,
+        eob: pass.eob_read().eob().eob(),
+        quant: pass.block().quant().to_vec(),
+    })
+}
+
+/// Reconstructs one square intra plane block from the decoded `Quant[]` of its
+/// single DC_PRED transform block.
+///
+/// This composes the § 7.14.4 dequantization, § 7.15.4 inverse transform, and
+/// § 7.14.3 residual addition (`reconstruct_transform_block_residual`) over a
+/// flat no-neighbour DC prediction (`128` for 8-bit). `qindex == base_q_idx` for
+/// this minimal-tool frame (no segmentation or delta-Q), and the transform is
+/// `DCT_DCT` over the original `log2_side` (adjusted, capped at 32) dimensions.
+/// `use_tcq` adds the § 7.14.4 TCQ `dqDenom` term (luma only).
+pub(crate) fn reconstruct_general_intra_block(
+    quant: &[i32],
+    qindex: u32,
+    plane_id: PlaneId,
+    log2_side: u32,
+    use_tcq: bool,
+) -> Result<Vec<u8>, GeneralIntraResidualError> {
+    let orig_side = 1usize << log2_side;
+    let adj_log2 = log2_side.min(5);
+    let adj_side = 1usize << adj_log2;
+    let adjusted = adj_side * adj_side;
+    if quant.len() != adjusted {
+        return Err(GeneralIntraResidualError::QuantLength {
+            expected: adjusted,
+            actual: quant.len(),
+        });
+    }
+    let deltas = QuantizerDeltas {
+        y_dc: 0,
+        u_dc: 0,
+        v_dc: 0,
+        u_ac: 0,
+        v_ac: 0,
+    };
+    // AV2 §7.14.4: dqDenom = 1 << shift, shift = (pels > 256) + (pels > 1024)
+    // over the ORIGINAL (unadjusted) dimensions, plus 1 when TCQ applies (luma
+    // DCT_DCT non-lossless non-FSC with allow_tcq; chroma never).
+    let pels = (orig_side * orig_side) as u32;
+    let dq_shift = u32::from(pels > 256) + u32::from(pels > 1024) + u32::from(use_tcq);
+    let dq_denom = 1u32 << dq_shift;
+    let params = DequantBlockParams {
+        dc_quant: dc_quantizer(plane_id, qindex, deltas, BitDepth::Eight),
+        ac_quant: ac_quantizer(plane_id, qindex, deltas, BitDepth::Eight),
+        tx_width: adj_side,
+        tx_height: adj_side,
+        dq_denom,
+        bit_depth: BitDepth::Eight,
+    };
+    let transform = InverseTransform2dOuter::resolve(
+        DCT_DCT,
+        log2_side,
+        log2_side,
+        false,
+        false,
+        BitDepth::Eight,
+        None,
+    )
+    .map_err(|source| GeneralIntraResidualError::Reconstruct { source })?;
+
+    let samples = orig_side * orig_side;
+    let prediction = vec![DC_PRED_NO_NEIGHBOUR_8BIT; samples];
+    let mut dequant_scratch = vec![0i32; adjusted];
+    let mut residual_scratch = vec![0i32; samples];
+    let mut out = vec![0u8; samples];
+    reconstruct_transform_block_residual(
+        &prediction,
+        quant,
+        &params,
+        &transform,
+        &mut dequant_scratch,
+        &mut residual_scratch,
+        &mut out,
+    )
+    .map_err(|source| GeneralIntraResidualError::Reconstruct { source })?;
+    Ok(out)
 }
 
 /// AV2 § 5.20.7.27 `txSzCtx = (Tx_Size_Sqr[txSz] + Tx_Size_Sqr_Up[txSz] + 1) >> 1`

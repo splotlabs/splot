@@ -19,7 +19,7 @@ use splot_core::span::ByteOffset;
 use splot_core::stream::{ParsedBitstream, ParsedIvfBitstream, parse_bitstream_partial};
 use splot_core::symbol::SymbolDecoderSummary;
 use splot_core::types::ObuType;
-use splot_recon::DecodedFrame;
+use splot_recon::{DecodedFrame, PlaneId};
 
 use crate::error::{DecodeError, DecodeUnsupportedFeature, Result};
 use crate::tile_payload::{
@@ -117,6 +117,7 @@ pub(crate) fn decode_minimal_frame_from_plan_with_ivf_preflight(
             &sequence,
             &core,
             options,
+            header,
         );
     }
     validate_frame_core(&core, frame_envelope.offset)?;
@@ -680,12 +681,12 @@ fn is_general_minimal_intra(core: &FrameHeaderCore) -> bool {
 /// frontier reaches.
 ///
 /// This runs the real AV2 § 5.20.3.1 partition traversal over the single tile,
-/// confirms the root partition frontier, decodes the § 5.20.5.3 block mode info
-/// (`decode_general_intra_block_modes`), then returns a structured
-/// `decode/unsupported-feature` diagnostic: § 5.20.7.27 coefficient,
-/// dequantization, inverse-transform, residual, and prediction decode for the
-/// general intra path are not yet wired. It never returns a reconstructed
-/// frame yet and never mutates the frozen minimal hash tier.
+/// confirms the root partition frontier, decodes the § 5.20.5.3 block mode info,
+/// decodes the § 5.20.7.27 luma and chroma transform-block coefficients,
+/// dequantizes / inverse-transforms / residual-adds each plane over a
+/// no-neighbour DC prediction, validates `exit_symbol()`, and returns the
+/// reconstructed frame. It never mutates the frozen minimal hash tier.
+#[allow(clippy::too_many_arguments)]
 fn decode_general_minimal_intra_frame(
     plan: &DecodeStreamPlan,
     candidate: &DecodePlannedObu,
@@ -694,6 +695,7 @@ fn decode_general_minimal_intra_frame(
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
     options: DecodeOptions,
+    header: IvfHeader,
 ) -> Result<MinimalRuntimeFrame> {
     let mut tile_plan = derive_tile_plan(
         plan,
@@ -734,14 +736,87 @@ fn decode_general_minimal_intra_frame(
     let mut symbols = frontier.into_symbol_decoder();
     let modes = crate::tile_payload::decode_general_intra_block_modes(tile, &mut symbols)
         .map_err(|error| general_intra_block_mode_error(error, tile_offset))?;
-    let _luma = crate::tile_payload::decode_general_intra_luma_coeffs(tile, &mut symbols, modes)
+
+    // §7.14.2 quantizer index == base_q_idx for the minimal-tool frame (no
+    // segmentation or delta-Q). The §7.14.4 TCQ dqDenom term applies to the luma
+    // DCT_DCT (TX_CLASS_2D) non-lossless non-FSC block only.
+    let qindex = core
+        .quantization_params
+        .map(|quant| quant.base_q_idx)
+        .ok_or_else(|| {
+            general_intra_unsupported(
+                "general_intra_missing_base_q",
+                Some(tile_offset),
+                "general intra decode requires a parsed base_q_idx",
+                GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
+            )
+        })?;
+    let luma_use_tcq = tile.coeff_frame_facts().allow_tcq();
+
+    let luma = crate::tile_payload::decode_general_intra_luma_coeffs(tile, &mut symbols, modes)
         .map_err(|error| general_intra_residual_error(error, tile_offset))?;
-    Err(general_intra_unsupported(
-        "general_intra_chroma_decode_unimplemented",
-        Some(tile_offset),
-        "general intra frame decodes the AV2 §5.20.7.27 luma transform-block coefficients; chroma coefficient decode, dequantization, inverse transform, residual, and reconstruction are not yet implemented",
-        GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
-    ))
+    let u = crate::tile_payload::decode_general_intra_chroma_coeffs(tile, &mut symbols, 1, false)
+        .map_err(|error| general_intra_residual_error(error, tile_offset))?;
+    let v =
+        crate::tile_payload::decode_general_intra_chroma_coeffs(tile, &mut symbols, 2, !u.all_zero)
+            .map_err(|error| general_intra_residual_error(error, tile_offset))?;
+
+    // The single 64x64 block consumes the entire tile payload, so §8.2.4
+    // exit_symbol() must hold after the luma + chroma coefficients. A failure
+    // means the coefficient decode was not bit-exact.
+    symbols.exit_symbol().map_err(|_| {
+        general_intra_unsupported(
+            "general_intra_exit_symbol",
+            Some(tile_offset),
+            "general intra tile payload did not satisfy §8.2.4 exit_symbol() after the decoded coefficients",
+            GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
+        )
+    })?;
+
+    let luma_plane = general_intra_plane_samples(&luma, qindex, PlaneId::Y, 6, luma_use_tcq)
+        .map_err(|error| general_intra_residual_error(error, tile_offset))?;
+    let u_plane = general_intra_plane_samples(&u, qindex, PlaneId::U, 5, false)
+        .map_err(|error| general_intra_residual_error(error, tile_offset))?;
+    let v_plane = general_intra_plane_samples(&v, qindex, PlaneId::V, 5, false)
+        .map_err(|error| general_intra_residual_error(error, tile_offset))?;
+
+    let tile_size = tile.tile_size();
+    let limits = options.limits();
+    ensure_runtime_limits(limits, MINIMAL_WIDTH, MINIMAL_HEIGHT, tile_size)?;
+    let frame = crate::runtime_minimal_recon::assemble_general_intra_frame(
+        &luma_plane,
+        &u_plane,
+        &v_plane,
+    )?;
+
+    Ok(MinimalRuntimeFrame {
+        frame,
+        frame_rate_numerator: header.timebase_denominator,
+        frame_rate_denominator: header.timebase_numerator,
+    })
+}
+
+/// Reconstructs one plane's samples from its decoded coefficient block: a
+/// skipped (`all_zero`) block is the flat no-neighbour DC prediction (`128`),
+/// otherwise the dequant / inverse-transform / residual-add reconstruction.
+fn general_intra_plane_samples(
+    block: &crate::tile_payload::LumaCoeffBlock,
+    qindex: u32,
+    plane_id: splot_recon::PlaneId,
+    log2_side: u32,
+    use_tcq: bool,
+) -> core::result::Result<Vec<u8>, GeneralIntraResidualError> {
+    if block.all_zero {
+        let side = 1usize << log2_side;
+        return Ok(vec![128u8; side * side]);
+    }
+    crate::tile_payload::reconstruct_general_intra_block(
+        &block.quant,
+        qindex,
+        plane_id,
+        log2_side,
+        use_tcq,
+    )
 }
 
 fn general_intra_residual_error(
@@ -767,6 +842,13 @@ fn general_intra_residual_error(
             "general_intra_luma_coeff_unexpected_branch",
             Some(offset),
             "general intra luma coefficient decode produced an unexpected branch result",
+            GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
+        ),
+        GeneralIntraResidualError::QuantLength { .. }
+        | GeneralIntraResidualError::Reconstruct { .. } => general_intra_unsupported(
+            "general_intra_luma_reconstruct",
+            Some(offset),
+            "general intra luma transform-block reconstruction could not be composed from the decoded coefficients",
             GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
         ),
     }
@@ -1029,4 +1111,77 @@ fn unsupported_at(
     message: &'static str,
 ) -> DecodeError {
     unsupported(reason, Some(byte_offset), message)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod general_intra_tests {
+    use splot_parallel::ThreadCount;
+
+    use super::*;
+    use crate::{DecodeContext, DecodeRuntimeConfig};
+
+    const Q80_FIXTURE: &[u8] =
+        include_bytes!("../../../tests/conformance/vectors/valid/syn-flat-intra-64x64-q80.ivf");
+
+    // avmdec and dav2d both decode this fixture to flat planes.
+    const Q80_LUMA: u8 = 100;
+    const Q80_CHROMA_U: u8 = 120;
+    const Q80_CHROMA_V: u8 = 130;
+
+    // Drives the q80 fixture through the full general intra runtime path: decode
+    // modes -> decode luma + chroma coefficients -> dequant -> inverse transform
+    // -> residual add over the no-neighbour DC prediction -> frame assembly.
+    fn decode_q80_frame() -> DecodedFrame<u8> {
+        let options = DecodeOptions::default();
+        let context = DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize)))
+            .expect("context");
+        let plan = context.plan_bytes(Q80_FIXTURE, options).expect("plan");
+        decode_minimal_frame_from_plan(Q80_FIXTURE, options, &plan)
+            .expect("decode")
+            .frame
+    }
+
+    #[test]
+    fn q80_intra_frame_reconstructs_flat_planes() {
+        use splot_recon::{BitDepth, PixelFormat, PlaneSize};
+
+        let frame = decode_q80_frame();
+        assert_eq!(frame.bit_depth(), BitDepth::Eight);
+        assert_eq!(frame.pixel_format(), PixelFormat::Yuv420);
+        assert_eq!(frame.y().visible_size(), PlaneSize::new(64, 64).unwrap());
+
+        let y = frame.y().samples();
+        assert!(
+            y.iter().all(|&s| s == Q80_LUMA),
+            "luma must be flat {Q80_LUMA}; first samples: {:?}",
+            &y[..8]
+        );
+        let u = frame.u().unwrap().samples();
+        assert!(
+            u.iter().all(|&s| s == Q80_CHROMA_U),
+            "U must be flat {Q80_CHROMA_U}; first samples: {:?}",
+            &u[..8]
+        );
+        let v = frame.v().unwrap().samples();
+        assert!(
+            v.iter().all(|&s| s == Q80_CHROMA_V),
+            "V must be flat {Q80_CHROMA_V}; first samples: {:?}",
+            &v[..8]
+        );
+    }
+
+    #[test]
+    fn q80_intra_frame_hash_is_stable() {
+        // Regression pin for the full-frame decode hash. The flat-plane test
+        // above is the avmdec/dav2d oracle anchor; this pins the byte layout.
+        let frame = decode_q80_frame();
+        let hash = splot_recon::DecodedFrameHashInput::new(&frame)
+            .compute_hash()
+            .to_hex();
+        assert_eq!(
+            hash,
+            "ce9c46b1078b9dd593254837ead7dcd6cee8b3ec6cc3c7d34f54fb08df703979"
+        );
+    }
 }

@@ -50,7 +50,8 @@ pub(crate) use general_intra_block::{
     GeneralIntraBlockModeError, decode_general_intra_block_modes,
 };
 pub(crate) use general_intra_residual::{
-    GeneralIntraResidualError, decode_general_intra_luma_coeffs,
+    GeneralIntraResidualError, LumaCoeffBlock, decode_general_intra_chroma_coeffs,
+    decode_general_intra_luma_coeffs, reconstruct_general_intra_block,
 };
 pub(crate) use input::{
     FrameCandidateCdfFacts, FrameCandidateCoeffFacts, FrameCandidateTileBoundaryError,
