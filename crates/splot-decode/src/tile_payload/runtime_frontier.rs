@@ -15,6 +15,7 @@ use splot_core::symbol::{SymbolDecoder, SymbolDecoderSummary};
 
 use super::DecodeTileWorkUnit;
 use super::block_symbol::{MinimalBlockSymbolTraceError, consume_minimal_block_symbol_trace};
+use super::intra_joint_modes::{TileIntraJointModeState, TileIntraJointModeStateError};
 use super::mi_size_state::{TileMiSizeState, TileMiSizeStateError};
 use super::partition::PartitionType;
 use super::partition_allowed::PartitionFeatureFlags;
@@ -106,6 +107,9 @@ pub(crate) enum MinimalRuntimePartitionFrontierError {
     /// The MI-size state boundary failed.
     #[error("minimal runtime MI-size state failed: {0}")]
     MiSizeState(#[from] TileMiSizeStateError),
+    /// The `IntraJointModes` neighbour-mode state boundary failed.
+    #[error("minimal runtime intra joint-mode state failed: {0}")]
+    IntraJointModeState(#[from] TileIntraJointModeStateError),
     /// Traversal reached a shape outside the minimal tier.
     #[error("minimal runtime partition frontier mismatch: {reason}")]
     UnexpectedFrontier {
@@ -163,7 +167,14 @@ pub(crate) enum GeneralIntraMultiblockError<E> {
 /// Decodes the complete general intra partition tree for the tile, invoking
 /// `on_leaf` at each leaf block in decode order, and returns the live symbol
 /// decoder for the caller's § 8.2.4 `exit_symbol()` check. The MI-size partition
-/// context is maintained across blocks internally.
+/// context and the AV2 § 5.20.5.3 `IntraJointModes` neighbour-mode grid are
+/// maintained across blocks internally.
+///
+/// `on_leaf` receives the shared per-MI `IntraJointModes` grid (read-only, for
+/// the § 8.3.2 `y_mode_index` neighbour context) and returns the block's
+/// reconstructed `IntraJointMode` (`= modeDelta`), which the walk then records
+/// into the grid for that block's MI region so later blocks see it as a
+/// neighbour.
 pub(crate) fn decode_general_intra_multiblock_tree<'payload, E, F>(
     work_unit: &mut DecodeTileWorkUnit<'payload>,
     sequence: &SequenceHeader,
@@ -176,14 +187,24 @@ where
         &mut DecodeTileWorkUnit<'payload>,
         &mut SymbolDecoder<'payload>,
         &DecodeBlockFrontier,
-    ) -> Result<(), E>,
+        &TileIntraJointModeState,
+    ) -> Result<u8, E>,
 {
     let frame = minimal_partition_frame_facts(sequence, core)?;
     let (mi_rows, mi_cols) = frame_mi_dimensions(core)?;
     let mut mi_size_state = TileMiSizeState::new(mi_rows, mi_cols, frame.sb_size())
         .map_err(MinimalRuntimePartitionFrontierError::from)?;
-    decode_general_intra_partition_tree(work_unit, frame, &mut mi_size_state, limits, on_leaf)
-        .map_err(GeneralIntraMultiblockError::Walk)
+    let mut joint_modes = TileIntraJointModeState::new(mi_rows, mi_cols)
+        .map_err(MinimalRuntimePartitionFrontierError::from)?;
+    decode_general_intra_partition_tree(
+        work_unit,
+        frame,
+        &mut mi_size_state,
+        &mut joint_modes,
+        limits,
+        on_leaf,
+    )
+    .map_err(GeneralIntraMultiblockError::Walk)
 }
 
 /// Plans the minimal runtime root partition frontier and returns its live cursor.

@@ -314,6 +314,7 @@ fn decode_minimal_partition_frontier_error(
         )) => DecodeError::Limit { source },
         MinimalRuntimePartitionFrontierError::MissingFact { .. }
         | MinimalRuntimePartitionFrontierError::MiSizeState(_)
+        | MinimalRuntimePartitionFrontierError::IntraJointModeState(_)
         | MinimalRuntimePartitionFrontierError::Traversal(_)
         | MinimalRuntimePartitionFrontierError::UnexpectedFrontier { .. } => unsupported_at(
             "minimal_tile_partition_frontier",
@@ -846,11 +847,12 @@ fn decode_general_minimal_intra_frame(
         sequence,
         core,
         limits,
-        |work_unit, symbols, frontier| {
+        |work_unit, symbols, frontier, joint_modes| {
             decode_one_general_intra_block(
                 work_unit,
                 symbols,
                 frontier,
+                joint_modes,
                 &mut workspace,
                 &mut coeff_ctx,
                 qindex,
@@ -886,18 +888,24 @@ fn decode_general_minimal_intra_frame(
 /// blocks: the no-neighbour-aware §7.13.2 DC prediction is read from the
 /// partially-built frame, so non-DC modes and non-square partitions are
 /// rejected. Chroma is 4:2:0 (half-resolution).
+///
+/// Returns the block's AV2 § 5.20.5.3 `IntraJointMode` (`= modeDelta`) so the
+/// caller can record it into the `IntraJointModes` grid for later blocks'
+/// § 8.3.2 `y_mode_index` neighbour context; `joint_modes` supplies that grid
+/// (read-only here) for this block's own `y_mode_index` context.
 #[allow(clippy::too_many_arguments)]
 fn decode_one_general_intra_block(
     work_unit: &mut crate::tile_payload::DecodeTileWorkUnit<'_>,
     symbols: &mut SymbolDecoder<'_>,
     frontier: &crate::tile_payload::DecodeBlockFrontier,
+    joint_modes: &crate::tile_payload::TileIntraJointModeState,
     workspace: &mut splot_recon::CurrentFrameWorkspace<u8>,
     coeff_ctx: &mut crate::tile_payload::TileCoeffContextState,
     qindex: u32,
     luma_use_tcq: bool,
     mi_cols: usize,
     tile_offset: ByteOffset,
-) -> Result<()> {
+) -> Result<u8> {
     // Resolve the block geometry and gate the handled subset BEFORE reading the
     // §5.20.5.3 mode info: `uv_mode` is only coded when the block has chroma, and
     // sub-8x8 luma leaves use a different (deferred 4x4) chroma sizing that this
@@ -947,8 +955,20 @@ fn decode_one_general_intra_block(
         ));
     }
 
-    let modes = crate::tile_payload::decode_general_intra_block_modes(work_unit, symbols)
-        .map_err(|error| general_intra_block_mode_error(error, tile_offset))?;
+    // The block's § 8.3.2 `y_mode_index` context is derived from the already-
+    // decoded left/above neighbours' stored `IntraJointMode` (§ 5.20.5.3); a
+    // directional neighbour (`ctx != 0`) is rejected inside the mode decode
+    // before any symbol is read (the unverified-CDF reject for codex P2 / #383).
+    let modes = crate::tile_payload::decode_general_intra_block_modes(
+        work_unit,
+        symbols,
+        joint_modes,
+        frontier.r,
+        frontier.c,
+        n4w,
+        n4h,
+    )
+    .map_err(|error| general_intra_block_mode_error(error, tile_offset))?;
     // Chroma is reconstructed with DC prediction or, when the decoded
     // `uv_mode` resolves (via § 5.20.5.3 `get_intra_uv_mode_set`) to
     // `SMOOTH_PRED`, with § 7.13.2.13 smooth prediction over § 7.13.2.1
@@ -989,34 +1009,63 @@ fn decode_one_general_intra_block(
         ));
     }
     // Luma is DC, a supported non-DC mode (§ 7.13.2.13 SMOOTH_V / SMOOTH_H), or
-    // the supported directional mode (§ 7.13.2.8 D135_PRED). The non-DC and
-    // directional modes are only reconstructed for the top-left (no-neighbour)
-    // block, where § 7.13.2.1 supplies pure fallback edges and the
-    // `enable_intra_edge_filter` / IDIF / upsample edge synthesis are no-ops.
+    // the supported directional mode (§ 7.13.2.8 D135_PRED).
+    //
+    // SMOOTH_V / SMOOTH_H is reconstructed both for the top-left (no-neighbour)
+    // block (§ 7.13.2.1 pure fallback edges) AND for a neighbour-having
+    // full-superblock block, where § 7.13.2.1 supplies the **real reconstructed**
+    // left column / above row of the already-decoded neighbour. Smooth prediction
+    // is linear interpolation over those edges (no `enable_intra_edge_filter` /
+    // IDIF / upsample edge synthesis is involved), so the neighbour edge can be
+    // non-flat and the result is still bit-exact against the AVM/dav2d oracle.
+    //
+    // The directional mode (§ 7.13.2.8 D135_PRED) is still gated to the top-left
+    // no-neighbour block: over a real (non-flat) neighbour edge its
+    // `enableIdif == 0` bilinear reduction no longer equals the spec IDIF 4-tap
+    // interpolation, so it needs the real § 7.13.2.8 IDIF (a separate brick).
     //
     // Non-DC smooth: gated to >= 32x32 (`n4w >= 8`), where § 5.20.8.2
     // `get_tx_set` returns TX_SET_DCTONLY (square intra `txSzSqrUp >= TX_32X32`
-    // -> forced DCT_DCT, no `intra_tx_type`). Directional D135: gated to the
-    // verified 64x64 superblock (`n4w == 16`, TX_64X64 -> TX_SET_DCTONLY); the
-    // 32x32 / smaller directional blocks (which may signal a mode-dependent
-    // non-DCT TxType) and other angles / non-zero angle deltas are deferred.
+    // -> forced DCT_DCT, no `intra_tx_type`); the neighbour-edge subset is gated
+    // tighter to the full 64x64 superblock (`n4w == 16`), because a sub-superblock
+    // split block needs the per-block § 5.20.2.3 `BlockDecoded` update (for the
+    // intra-superblock above-right / below-left split neighbours) that is not yet
+    // modelled. Directional D135: gated to the verified 64x64 superblock
+    // (`n4w == 16`, TX_64X64 -> TX_SET_DCTONLY); the 32x32 / smaller directional
+    // blocks (which may signal a mode-dependent non-DCT TxType) and other angles /
+    // non-zero angle deltas are deferred.
     const NON_DC_MIN_N4: usize = 8;
     const FULL_SB_N4_LUMA: usize = 16;
     let supported_nondc_luma = modes.supported_nondc_luma();
     let supported_directional_luma = modes.supported_directional_luma();
+    let is_top_left = frontier.r == 0 && frontier.c == 0;
+    // True when a non-DC SMOOTH_V/H luma block reads a **real** reconstructed
+    // LEFT neighbour edge — only the first superblock ROW (`frontier.r == 0`, so
+    // `haveAbove == 0`): there the § 7.13.2.1 above row and the top-right sentinel
+    // are the no-neighbour fallback (matching the verified single-SB-row fixture),
+    // and only the left column is a real reconstructed neighbour. A row>0 block
+    // reads a real above row + above-right that this path does not yet verify.
+    let nondc_luma_has_neighbour =
+        supported_nondc_luma.is_some() && !is_top_left && frontier.r == 0;
     if !modes.luma_is_dc() {
-        let is_top_left = frontier.r == 0 && frontier.c == 0;
-        if !is_top_left {
-            return Err(general_intra_unsupported(
-                "general_intra_multiblock_non_dc_luma",
-                Some(tile_offset),
-                "general intra non-DC / directional luma prediction is only supported for the top-left (no-neighbour) block; multi-block non-DC prediction is not yet implemented",
-                GENERAL_INTRA_MODE_SPEC_SECTION,
-            ));
-        }
         match (supported_nondc_luma, supported_directional_luma) {
-            (Some(_), _) if n4w >= NON_DC_MIN_N4 => {}
-            (Some(_), _) => {
+            // SMOOTH_V / SMOOTH_H at the no-neighbour top-left block.
+            (Some(_), _) if is_top_left && n4w >= NON_DC_MIN_N4 => {}
+            // SMOOTH_V / SMOOTH_H neighbour-having full-superblock block in the
+            // first superblock row (haveAbove == 0): reads the real § 7.13.2.1
+            // reconstructed LEFT column; the above row / above-right are fallback.
+            (Some(_), _) if n4w == FULL_SB_N4_LUMA && frontier.r == 0 => {}
+            // A row>0 neighbour-having SMOOTH block reads a real above row and
+            // above-right sentinel (§7.13.2.1) that is not yet verified for luma.
+            (Some(_), _) if n4w == FULL_SB_N4_LUMA => {
+                return Err(general_intra_unsupported(
+                    "general_intra_multirow_neighbour_non_dc",
+                    Some(tile_offset),
+                    "general intra multi-block non-DC (SMOOTH) luma over a reconstructed neighbour is only supported in the first superblock row (no above neighbour); a row>0 block reads a real above row and above-right sentinel that is not yet verified",
+                    GENERAL_INTRA_MODE_SPEC_SECTION,
+                ));
+            }
+            (Some(_), _) if is_top_left => {
                 return Err(general_intra_unsupported(
                     "general_intra_non_dc_non_dctonly_size",
                     Some(tile_offset),
@@ -1024,7 +1073,24 @@ fn decode_one_general_intra_block(
                     GENERAL_INTRA_MODE_SPEC_SECTION,
                 ));
             }
-            (_, Some(_)) if n4w == FULL_SB_N4_LUMA => {}
+            (Some(_), _) => {
+                return Err(general_intra_unsupported(
+                    "general_intra_multiblock_non_dc_subblock",
+                    Some(tile_offset),
+                    "general intra multi-block non-DC (SMOOTH_V / SMOOTH_H) luma prediction over a reconstructed neighbour is only supported for full 64x64 superblock blocks; sub-partitioned non-DC blocks need the §5.20.2.3 per-block BlockDecoded update for the §7.13.2.1 above-right / below-left neighbours, which is not yet modelled",
+                    GENERAL_INTRA_MODE_SPEC_SECTION,
+                ));
+            }
+            // Directional D135: top-left no-neighbour full superblock only.
+            (_, Some(_)) if is_top_left && n4w == FULL_SB_N4_LUMA => {}
+            (_, Some(_)) if !is_top_left => {
+                return Err(general_intra_unsupported(
+                    "general_intra_multiblock_directional_luma",
+                    Some(tile_offset),
+                    "general intra directional (D135) luma prediction is only supported for the top-left (no-neighbour) block; over a real reconstructed neighbour edge it needs the §7.13.2.8 IDIF 4-tap interpolation (bilinear equals IDIF only for a flat edge), which is not yet implemented",
+                    GENERAL_INTRA_MODE_SPEC_SECTION,
+                ));
+            }
             (_, Some(_)) => {
                 return Err(general_intra_unsupported(
                     "general_intra_directional_non_dctonly_size",
@@ -1054,6 +1120,27 @@ fn decode_one_general_intra_block(
     )
     .map_err(|error| general_intra_residual_error(error, tile_offset))?;
     match (supported_nondc_luma, supported_directional_luma) {
+        (Some(mode), _) if nondc_luma_has_neighbour => {
+            // §7.13.2.1 `num4AboveRight` for the full-superblock luma block (the
+            // gate restricts the neighbour-edge non-DC path to `n4w == 16`), from
+            // §5.20.7.25 `count_top_right_avail`. Luma is not subsampled
+            // (`sub_x == 0`). It only matters for SMOOTH_H / SMOOTH (the top-right
+            // sentinel `AboveRow[w]`); SMOOTH_V's output never reads it.
+            let num4_above_right =
+                full_sb_num4_above_right(frontier.c, n4w, mi_cols, FRAME_LUMA_SUBSAMPLING_X);
+            crate::runtime_minimal_recon::reconstruct_general_intra_luma_nondc_neighbour_block_into(
+                workspace,
+                &luma,
+                mode,
+                luma_x,
+                luma_y,
+                luma_log2,
+                qindex,
+                luma_use_tcq,
+                num4_above_right,
+            )
+            .map_err(|error| general_intra_residual_error(error, tile_offset))?
+        }
         (Some(mode), _) => {
             crate::runtime_minimal_recon::reconstruct_general_intra_luma_nondc_first_block_into(
                 workspace,
@@ -1107,7 +1194,7 @@ fn decode_one_general_intra_block(
         // needs the real reconstructed above-right sample when an in-frame,
         // already-decoded superblock sits to this superblock's upper-right.
         let num4_above_right =
-            full_sb_chroma_num4_above_right(frontier.c, n4w, mi_cols, FRAME_420_SUBSAMPLING_X);
+            full_sb_num4_above_right(frontier.c, n4w, mi_cols, FRAME_420_SUBSAMPLING_X);
         let u = crate::tile_payload::decode_general_intra_plane_coeffs(
             work_unit, symbols, coeff_ctx, 1, chroma_tx, chroma_x, chroma_y, false, uv_mode,
         )
@@ -1149,27 +1236,33 @@ fn decode_one_general_intra_block(
         )
         .map_err(|error| general_intra_residual_error(error, tile_offset))?;
     }
-    Ok(())
+    // AV2 § 5.20.5.3: this block's IntraJointMode (the reorder index modeDelta)
+    // is recorded into the IntraJointModes grid by the partition walk so later
+    // blocks' § 8.3.2 `y_mode_index` context can read it as a neighbour.
+    Ok(modes.intra_joint_mode)
 }
 
 /// 4:2:0 chroma horizontal subsampling (`SubsamplingX == 1`).
 const FRAME_420_SUBSAMPLING_X: usize = 1;
 
-/// Derives AV2 § 7.13.2.1 `num4AboveRight` (in chroma 4x4 units) for a
-/// full-superblock chroma transform block, faithfully to § 5.20.7.25
-/// `count_top_right_avail` over the § 5.20.2.3 `BlockDecoded` state.
+/// Luma horizontal subsampling (`SubsamplingX == 0`).
+const FRAME_LUMA_SUBSAMPLING_X: usize = 0;
+
+/// Derives AV2 § 7.13.2.1 `num4AboveRight` (in plane 4x4 units) for a
+/// full-superblock transform block, faithfully to § 5.20.7.25
+/// `count_top_right_avail` over the § 5.20.2.3 `BlockDecoded` state. The plane is
+/// selected by `sub_x` (`0` for luma, `1` for 4:2:0 chroma).
 ///
 /// For a full 64x64 superblock the block coincides with the superblock, so its
-/// chroma sub-block MI position within the superblock is `(0, 0)` and its chroma
-/// width in 4x4 units is `w4 = n4w >> SubsamplingX` (the luma `n4w` 4x4 units
-/// subsampled). `count_top_right_avail(plane, 0, 0, w4)` scans
-/// `BlockDecoded[plane][-1][w4 + i]` for `i in 0..w4`; `clear_block_decoded_flags`
-/// (§ 5.20.2.3) marks the above row decoded for chroma columns
-/// `x < (MiColEnd - c) >> SubsamplingX` (a single full-frame tile has
-/// `MiColEnd == MiCols`), so a column `w4 + i` is decoded while
+/// sub-block MI position within the superblock is `(0, 0)` and its width in plane
+/// 4x4 units is `w4 = n4w >> SubsamplingX` (the luma `n4w` 4x4 units subsampled).
+/// `count_top_right_avail(plane, 0, 0, w4)` scans `BlockDecoded[plane][-1][w4 + i]`
+/// for `i in 0..w4`; `clear_block_decoded_flags` (§ 5.20.2.3) marks the above row
+/// decoded for plane columns `x < (MiColEnd - c) >> SubsamplingX` (a single
+/// full-frame tile has `MiColEnd == MiCols`), so a column `w4 + i` is decoded while
 /// `w4 + i < (MiCols - c) >> SubsamplingX`. The count stops at the first
 /// undecoded column (or at `w4`), matching the spec loop's `break`.
-fn full_sb_chroma_num4_above_right(c: usize, n4w: usize, mi_cols: usize, sub_x: usize) -> usize {
+fn full_sb_num4_above_right(c: usize, n4w: usize, mi_cols: usize, sub_x: usize) -> usize {
     let w4 = n4w >> sub_x;
     // Chroma above-row decoded extent (in chroma 4x4 columns) for this
     // superblock, from `clear_block_decoded_flags` `sbWidth4 = (MiColEnd - c) >> subX`.
@@ -1271,6 +1364,14 @@ fn general_intra_block_mode_error(
             "general intra decode rejected an out-of-range chroma uv_mode index",
             GENERAL_INTRA_MODE_SPEC_SECTION,
         ),
+        GeneralIntraBlockModeError::UnsupportedYModeIndexContext { .. } => {
+            general_intra_unsupported(
+                "general_intra_directional_neighbour_y_mode_index_ctx",
+                Some(offset),
+                "general intra directional-neighbour y_mode_index context (ctx != 0) is not yet verified",
+                GENERAL_INTRA_MODE_SPEC_SECTION,
+            )
+        }
     }
 }
 
@@ -1285,6 +1386,7 @@ fn general_intra_partition_frontier_error(
         )) => DecodeError::Limit { source },
         MinimalRuntimePartitionFrontierError::MissingFact { .. }
         | MinimalRuntimePartitionFrontierError::MiSizeState(_)
+        | MinimalRuntimePartitionFrontierError::IntraJointModeState(_)
         | MinimalRuntimePartitionFrontierError::Traversal(_)
         | MinimalRuntimePartitionFrontierError::UnexpectedFrontier { .. } => {
             general_intra_unsupported(
@@ -1896,25 +1998,25 @@ mod general_intra_tests {
     }
 
     #[test]
-    fn full_sb_chroma_num4_above_right_matches_count_top_right_avail() {
+    fn full_sb_num4_above_right_matches_count_top_right_avail() {
         // 128x128 (mi_cols = 32), full 64x64 superblock (n4w = 16), 4:2:0
         // (sub_x = 1) -> chroma w4 = 8. The bottom-left superblock (c = 0) has an
         // in-frame decoded above-right (the top-right superblock): chroma above
         // row decoded out to (32 - 0) >> 1 = 16 columns, so columns 8..15 are all
         // decoded -> num4AboveRight = 8 (capped at w4).
-        assert_eq!(full_sb_chroma_num4_above_right(0, 16, 32, 1), 8);
+        assert_eq!(full_sb_num4_above_right(0, 16, 32, 1), 8);
         // The rightmost superblock (c = 16) has no in-frame above-right: chroma
         // above row decoded out to (32 - 16) >> 1 = 8 columns, so columns 8..15
         // are all undecoded -> num4AboveRight = 0 (and the §7.13.2.1 clamp /
         // no-above fallback applies).
-        assert_eq!(full_sb_chroma_num4_above_right(16, 16, 32, 1), 0);
+        assert_eq!(full_sb_num4_above_right(16, 16, 32, 1), 0);
         // A single-column frame (mi_cols = 16) has only one superblock per row, so
         // the rightmost (only) superblock at c = 0 has no above-right.
-        assert_eq!(full_sb_chroma_num4_above_right(0, 16, 16, 1), 0);
+        assert_eq!(full_sb_num4_above_right(0, 16, 16, 1), 0);
         // A 3-wide grid (mi_cols = 48): the middle superblock (c = 16) still has a
         // decoded above-right (the right superblock): decoded out to
         // (48 - 16) >> 1 = 16 columns, columns 8..15 decoded -> 8.
-        assert_eq!(full_sb_chroma_num4_above_right(16, 16, 48, 1), 8);
+        assert_eq!(full_sb_num4_above_right(16, 16, 48, 1), 8);
     }
 
     // Single-block non-DC intra: a 64x64 vertical-gradient luma block the encoder
@@ -2040,6 +2142,81 @@ mod general_intra_tests {
         assert_eq!(
             hash,
             "b15f267ec6e99ca4d96a70f38bffe5f798ee4c33ad3aaec23761a1ea74b0be33"
+        );
+    }
+
+    // A 128x64 multi-superblock intra frame whose two 64x64 superblocks are both
+    // coded as `SMOOTH_V_PRED` (§ 7.13.2.13) over a vertical luma gradient
+    // (top 30, bottom 210, flat chroma U=120 V=130). The LEFT (top-left,
+    // no-neighbour) superblock predicts over the § 7.13.2.1 flat fallback edges.
+    // The RIGHT superblock has a left neighbour, so its § 7.13.2.13 prediction
+    // reads the REAL reconstructed neighbour edge: § 7.13.2.1 supplies the
+    // reconstructed left column (the left superblock's right column) and, with no
+    // above neighbour (`haveAbove == 0, haveLeft == 1`), the repeated-left above
+    // row `AboveRow[i] = CurrFrame[0][y][x-1]`. Smooth prediction is linear
+    // interpolation (no IDIF / edge-filter synthesis), so the non-flat neighbour
+    // edge reconstructs bit-exact. avmdec and dav2d agree on the decoded output
+    // (md5 3e57ba0c8cbdbe1d3400b0ae365c5d8e); the first general-intra multi-block
+    // non-DC luma decode over a reconstructed neighbour edge.
+    const MBVG_FIXTURE: &[u8] =
+        include_bytes!("../../../tests/conformance/vectors/valid/syn-mbvg-intra-128x64-q80.ivf");
+
+    #[test]
+    fn mbvg_multiblock_smooth_v_neighbour_intra_frame_decodes_to_oracle() {
+        use splot_recon::{BitDepth, PixelFormat, PlaneSize};
+
+        let frame = decode_general_intra_luma(MBVG_FIXTURE);
+        assert_eq!(frame.bit_depth(), BitDepth::Eight);
+        assert_eq!(frame.pixel_format(), PixelFormat::Yuv420);
+        assert_eq!(frame.y().visible_size(), PlaneSize::new(128, 64).unwrap());
+        assert_eq!(
+            frame.u().unwrap().visible_size(),
+            PlaneSize::new(64, 32).unwrap()
+        );
+
+        let y = frame.y().samples();
+        let at = |r: usize, c: usize| y[r * 128 + c];
+        // Each superblock is SMOOTH_V (constant across columns within a row), with
+        // a vertical gradient top-to-bottom.
+        assert!(
+            (0..64).all(|c| at(20, c) == at(20, 0)),
+            "left superblock must be constant across columns within a row"
+        );
+        assert!(
+            (64..128).all(|c| at(20, c) == at(20, 64)),
+            "right superblock must be constant across columns within a row"
+        );
+        assert!(
+            at(0, 0) < at(63, 0),
+            "left superblock increases top-to-bottom"
+        );
+        assert!(
+            at(0, 64) < at(63, 64),
+            "right superblock increases top-to-bottom"
+        );
+        // The right superblock reads the REAL reconstructed left-neighbour edge
+        // plus its own residual, so its column profile differs from the left
+        // superblock's (it is not a copy): the superblock centres differ.
+        assert_ne!(
+            at(32, 32),
+            at(32, 96),
+            "right superblock must read the real neighbour edge, not duplicate the left"
+        );
+        let distinct = y.iter().collect::<std::collections::BTreeSet<_>>().len();
+        assert!(distinct > 4, "luma should be a non-flat reconstruction");
+        // Chroma is flat DC across both superblocks (U=120, V=130).
+        assert!(frame.u().unwrap().samples().iter().all(|&s| s == 120));
+        assert!(frame.v().unwrap().samples().iter().all(|&s| s == 130));
+
+        // Frame hash pins splot's output, which reproduces avmdec's and dav2d's
+        // raw output byte-for-byte (verified locally; md5
+        // 3e57ba0c8cbdbe1d3400b0ae365c5d8e).
+        let hash = splot_recon::DecodedFrameHashInput::new(&frame)
+            .compute_hash()
+            .to_hex();
+        assert_eq!(
+            hash,
+            "269b4969800751c63f7f0605f1f7b8f178f7bf85590ec62fe64313ff394d6dfd"
         );
     }
 }
