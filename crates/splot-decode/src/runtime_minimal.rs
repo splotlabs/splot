@@ -667,11 +667,11 @@ fn route_general_minimal_intra(sequence: &SequenceHeader, core: &FrameHeaderCore
 }
 
 /// Returns whether `core` is a single-tile 8-bit intra key frame whose width and
-/// height are positive multiples of 64 forming a single ROW or single COLUMN of
-/// 64x64 superblocks (i.e. width == 64 or height == 64), with no segmentation,
-/// quant matrices, delta-Q, in-loop filters, CCSO, GDF, or film grain — the
-/// general intra subset the frontier admits. This mirrors [`validate_frame_core`]
-/// but accepts any `base_q_idx`, so blocks can carry a real (nonzero) residual.
+/// height are positive multiples of 64 forming a (possibly 2-D) grid of 64x64
+/// superblocks, with no segmentation, quant matrices, delta-Q, in-loop filters,
+/// CCSO, GDF, or film grain — the general intra subset the frontier admits. This
+/// mirrors [`validate_frame_core`] but accepts any `base_q_idx`, so blocks can
+/// carry a real (nonzero) residual.
 fn is_general_minimal_intra(core: &FrameHeaderCore) -> bool {
     core.status == FrameHeaderParseStatus::IntraHeaderComplete
         && core.cur_mfh_id.is_zero()
@@ -684,23 +684,19 @@ fn is_general_minimal_intra(core: &FrameHeaderCore) -> bool {
         // into 64x64 superblocks, so width and height must be positive multiples
         // of the superblock side (64), and the §5.20.2.1 raster loop iterates them
         // (`clear_left_context()` per superblock row) with later superblocks
-        // predicting from already-reconstructed left/above neighbours. The frame
-        // is further restricted to a single superblock ROW (height == 64) or
-        // single COLUMN (width == 64): only then is every full-superblock
-        // §7.13.2.13 SMOOTH chroma block free of a decoded above-right neighbour
-        // (a row-0 block has no above; a rightmost-column block has no
-        // above-right), so the §7.13.2.1 `AboveRow[w]` sentinel this path builds by
-        // edge-clamping (repeat-last) equals the spec value. In a 2-D grid a
-        // non-rightmost row>0 superblock's above-right IS decoded
-        // (`clear_block_decoded_flags` marks `BlockDecoded[-1][x] = 1` up to
-        // `(MiColEnd - c) >> subX`, which exceeds the superblock width), so its
-        // sentinel would need the real `CurrFrame[y-1][x+w]` sample — deferred.
+        // predicting from already-reconstructed left/above neighbours. A full 2-D
+        // grid is admitted: a non-rightmost row>0 superblock's full-superblock
+        // §7.13.2.13 SMOOTH chroma block has a decoded above-right neighbour
+        // (`clear_block_decoded_flags` (§5.20.2.3) marks `BlockDecoded[-1][x] = 1`
+        // up to `(MiColEnd - c) >> subX`, which exceeds the superblock width), so
+        // the §7.13.2.1 `AboveRow[w]` sentinel reads the real reconstructed
+        // `CurrFrame[plane][y-1][Min(aboveLimit, x+w)]` sample (see
+        // `reconstruct_general_intra_chroma_smooth_into`), no longer the edge-clamp.
         && core.frame_size.is_some_and(|size| {
             size.width != 0
                 && size.height != 0
                 && size.width % MINIMAL_WIDTH == 0
                 && size.height % MINIMAL_HEIGHT == 0
-                && (size.width == MINIMAL_WIDTH || size.height == MINIMAL_HEIGHT)
         })
         && core
             .tile_info
@@ -859,6 +855,7 @@ fn decode_general_minimal_intra_frame(
                 &mut coeff_ctx,
                 qindex,
                 luma_use_tcq,
+                mi_cols,
                 tile_offset,
             )
         },
@@ -898,6 +895,7 @@ fn decode_one_general_intra_block(
     coeff_ctx: &mut crate::tile_payload::TileCoeffContextState,
     qindex: u32,
     luma_use_tcq: bool,
+    mi_cols: usize,
     tile_offset: ByteOffset,
 ) -> Result<()> {
     // Resolve the block geometry and gate the handled subset BEFORE reading the
@@ -966,24 +964,27 @@ fn decode_one_general_intra_block(
         ));
     };
     // §7.13.2.1: the SMOOTH chroma path builds the §7.13.2.13 bottom-left
-    // (`LeftCol[h]`) and top-right (`AboveRow[w]`) sentinels by edge-clamping
-    // (repeating the last in-block neighbour sample). That equals the spec value
-    // `CurrFrame[Min(maxY, y+h)][x-1]` / `CurrFrame[y-1][Min(maxX, x+w)]` only
-    // when there is no decoded below-left / above-right neighbour. For a full
-    // 64x64 superblock block (`n4w == 16`) `clear_block_decoded_flags` (§5.20.2)
-    // zeroes the above-right region and the below-left is decoded later, so both
-    // sentinels collapse to the clamped last sample — exactly what this path
-    // builds. A sub-partitioned (split) block, however, can have an already
-    // decoded above-right chroma neighbour (e.g. the bottom-left split child sees
-    // the top-right child), whose actual sample the sentinel must read; that is
-    // not yet modelled, so SMOOTH chroma is gated to full-superblock blocks.
-    // A 64x64 superblock is 16 4x4 MI units wide.
+    // (`LeftCol[h]`) sentinel by edge-clamping (repeating the last in-block
+    // neighbour sample). In raster decode order a full-superblock block's
+    // below-left chroma is never decoded yet (`num4BelowLeft == 0`), so the spec
+    // value `CurrFrame[Min(maxY, y+h)][x-1]` equals the clamped last left sample.
+    // The top-right (`AboveRow[w]`) sentinel, however, reads the real
+    // reconstructed `CurrFrame[plane][y-1][Min(aboveLimit, x+w)]` when the
+    // above-right is decoded (`num4AboveRight > 0`): for a non-rightmost row>0
+    // superblock `clear_block_decoded_flags` (§5.20.2.3) marks the above row
+    // decoded out to `(MiColEnd - c) >> subX`, exceeding the superblock width.
+    //
+    // SMOOTH chroma is still gated to full-superblock blocks (`n4w == 16`): a
+    // sub-partitioned (split) block needs the §5.20.2.3 per-block `BlockDecoded`
+    // update (so an intra-superblock above-right / below-left split child is read
+    // correctly), which is not yet modelled. A 64x64 superblock is 16 4x4 MI
+    // units wide.
     const FULL_SB_N4: usize = 16;
     if supported_chroma == crate::tile_payload::SupportedChromaMode::Smooth && n4w != FULL_SB_N4 {
         return Err(general_intra_unsupported(
             "general_intra_smooth_chroma_subblock",
             Some(tile_offset),
-            "general intra SMOOTH chroma is only supported for full 64x64 superblock blocks; sub-partitioned SMOOTH chroma needs the §7.13.2.1 above-right / below-left sentinel neighbours, which are not yet read",
+            "general intra SMOOTH chroma is only supported for full 64x64 superblock blocks; sub-partitioned SMOOTH chroma needs the §7.13.2.1 above-right / below-left sentinel neighbours from the per-block §5.20.2.3 BlockDecoded update, which is not yet modelled",
             GENERAL_INTRA_MODE_SPEC_SECTION,
         ));
     }
@@ -1073,6 +1074,14 @@ fn decode_one_general_intra_block(
         let chroma_tx = (chroma_log2 - 2) as usize;
         let chroma_x = frontier.c * 2;
         let chroma_y = frontier.r * 2;
+        // §7.13.2.1 `num4AboveRight` for the full-superblock chroma block, from
+        // §5.20.7.25 `count_top_right_avail` over the §5.20.2.3 `BlockDecoded`
+        // state. SMOOTH chroma is gated to full-superblock blocks above, so the
+        // block is the whole 64x64 superblock; the §7.13.2.13 top-right sentinel
+        // needs the real reconstructed above-right sample when an in-frame,
+        // already-decoded superblock sits to this superblock's upper-right.
+        let num4_above_right =
+            full_sb_chroma_num4_above_right(frontier.c, n4w, mi_cols, FRAME_420_SUBSAMPLING_X);
         let u = crate::tile_payload::decode_general_intra_plane_coeffs(
             work_unit, symbols, coeff_ctx, 1, chroma_tx, chroma_x, chroma_y, false, uv_mode,
         )
@@ -1086,6 +1095,7 @@ fn decode_one_general_intra_block(
             chroma_log2,
             qindex,
             supported_chroma,
+            num4_above_right,
         )
         .map_err(|error| general_intra_residual_error(error, tile_offset))?;
         let v = crate::tile_payload::decode_general_intra_plane_coeffs(
@@ -1109,10 +1119,44 @@ fn decode_one_general_intra_block(
             chroma_log2,
             qindex,
             supported_chroma,
+            num4_above_right,
         )
         .map_err(|error| general_intra_residual_error(error, tile_offset))?;
     }
     Ok(())
+}
+
+/// 4:2:0 chroma horizontal subsampling (`SubsamplingX == 1`).
+const FRAME_420_SUBSAMPLING_X: usize = 1;
+
+/// Derives AV2 § 7.13.2.1 `num4AboveRight` (in chroma 4x4 units) for a
+/// full-superblock chroma transform block, faithfully to § 5.20.7.25
+/// `count_top_right_avail` over the § 5.20.2.3 `BlockDecoded` state.
+///
+/// For a full 64x64 superblock the block coincides with the superblock, so its
+/// chroma sub-block MI position within the superblock is `(0, 0)` and its chroma
+/// width in 4x4 units is `w4 = n4w >> SubsamplingX` (the luma `n4w` 4x4 units
+/// subsampled). `count_top_right_avail(plane, 0, 0, w4)` scans
+/// `BlockDecoded[plane][-1][w4 + i]` for `i in 0..w4`; `clear_block_decoded_flags`
+/// (§ 5.20.2.3) marks the above row decoded for chroma columns
+/// `x < (MiColEnd - c) >> SubsamplingX` (a single full-frame tile has
+/// `MiColEnd == MiCols`), so a column `w4 + i` is decoded while
+/// `w4 + i < (MiCols - c) >> SubsamplingX`. The count stops at the first
+/// undecoded column (or at `w4`), matching the spec loop's `break`.
+fn full_sb_chroma_num4_above_right(c: usize, n4w: usize, mi_cols: usize, sub_x: usize) -> usize {
+    let w4 = n4w >> sub_x;
+    // Chroma above-row decoded extent (in chroma 4x4 columns) for this
+    // superblock, from `clear_block_decoded_flags` `sbWidth4 = (MiColEnd - c) >> subX`.
+    let above_decoded_cols = mi_cols.saturating_sub(c) >> sub_x;
+    let mut num_top_right = 0;
+    for i in 0..w4 {
+        if w4 + i < above_decoded_cols {
+            num_top_right = i + 1;
+        } else {
+            break;
+        }
+    }
+    num_top_right
 }
 
 /// Maps a general intra multi-block tree-walk error to a decode diagnostic. The
@@ -1702,6 +1746,149 @@ mod general_intra_tests {
             hash,
             "3ee739a805e13597ff7d75659dd1e0150113bf4782c4d69e1d27ae942d6c10a0"
         );
+    }
+
+    // A 128x128 2-D grid of four 64x64 DC_PRED-luma superblocks. Luma is uniform
+    // (100) so every superblock is DC; chroma is distinct flat per quadrant
+    // (U: top-left 110 / top-right 200 / bottom-right 130) except the bottom-left
+    // superblock, whose chroma the encoder codes as SMOOTH_PRED over a real 2-D
+    // gradient. That bottom-left superblock (raster MI col 0, row > 0) has a
+    // decoded above-right neighbour (the top-right superblock), so its §7.13.2.13
+    // top-right sentinel `AboveRow[w]` reads the real reconstructed above-right
+    // sample (200) per §7.13.2.1 / §5.20.7.25 `count_top_right_avail` — NOT the
+    // edge-clamped own-top sample (110). avmdec and dav2d agree on the decoded
+    // output (md5 dd2fa84f...); the old repeat-last sentinel mismatched it.
+    const GRID_FIXTURE: &[u8] =
+        include_bytes!("../../../tests/conformance/vectors/valid/syn-grid-intra-128x128-q80.ivf");
+
+    #[test]
+    fn grid_2d_intra_frame_decodes_to_oracle() {
+        use splot_recon::{BitDepth, PixelFormat, PlaneSize};
+
+        let options = DecodeOptions::default();
+        let context = DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize)))
+            .expect("context");
+        let plan = context.plan_bytes(GRID_FIXTURE, options).expect("plan");
+        let frame = decode_minimal_frame_from_plan(GRID_FIXTURE, options, &plan)
+            .expect("decode")
+            .frame;
+
+        assert_eq!(frame.bit_depth(), BitDepth::Eight);
+        assert_eq!(frame.pixel_format(), PixelFormat::Yuv420);
+        assert_eq!(frame.y().visible_size(), PlaneSize::new(128, 128).unwrap());
+        assert_eq!(
+            frame.u().unwrap().visible_size(),
+            PlaneSize::new(64, 64).unwrap()
+        );
+        assert_eq!(
+            frame.v().unwrap().visible_size(),
+            PlaneSize::new(64, 64).unwrap()
+        );
+
+        // Uniform luma 100 across the whole 2-D grid (all DC_PRED), matching the
+        // avmdec/dav2d oracle.
+        assert!(
+            frame.y().samples().iter().all(|&s| s == 100),
+            "luma must be uniform 100 across the 2-D grid"
+        );
+
+        // Chroma quadrant helper (64x64 chroma plane, 32x32 quadrants).
+        let quad = |plane: &[u8], qr: usize, qc: usize| -> Vec<u8> {
+            let mut out = Vec::new();
+            for r in (qr * 32)..(qr * 32 + 32) {
+                for c in (qc * 32)..(qc * 32 + 32) {
+                    out.push(plane[r * 64 + c]);
+                }
+            }
+            out
+        };
+        let u = frame.u().unwrap().samples();
+        let v = frame.v().unwrap().samples();
+
+        // Three flat distinct quadrants (top-left, top-right, bottom-right).
+        assert!(
+            quad(u, 0, 0).iter().all(|&s| s == 110),
+            "U top-left flat 110"
+        );
+        assert!(
+            quad(u, 0, 1).iter().all(|&s| s == 200),
+            "U top-right flat 200"
+        );
+        assert!(
+            quad(u, 1, 1).iter().all(|&s| s == 130),
+            "U bottom-right flat 130"
+        );
+        assert!(
+            quad(v, 0, 0).iter().all(|&s| s == 120),
+            "V top-left flat 120"
+        );
+        assert!(
+            quad(v, 0, 1).iter().all(|&s| s == 160),
+            "V top-right flat 160"
+        );
+        assert!(
+            quad(v, 1, 1).iter().all(|&s| s == 140),
+            "V bottom-right flat 140"
+        );
+
+        // The bottom-left superblock chroma is SMOOTH_PRED over a real gradient
+        // (not flat), so the above-right sentinel actually shapes the prediction.
+        let u_bl = quad(u, 1, 0);
+        let v_bl = quad(v, 1, 0);
+        assert!(
+            u_bl.iter().collect::<std::collections::BTreeSet<_>>().len() > 1,
+            "U bottom-left superblock must be a SMOOTH gradient, not flat"
+        );
+        assert!(
+            v_bl.iter().collect::<std::collections::BTreeSet<_>>().len() > 1,
+            "V bottom-left superblock must be a SMOOTH gradient, not flat"
+        );
+        // The bottom-left superblock's top edge is its own top-left neighbour
+        // (110), but its decoded above-right is the top-right superblock (200);
+        // the §7.13.2.1 above-right sentinel pulls the top-right corner toward
+        // 200, so the bottom-left's top row rises above its own top edge.
+        // `u_bl[0]` is the top-left corner (110); `u_bl[31]` is the top-right
+        // corner of the bottom-left superblock.
+        assert_eq!(
+            u_bl[0], 110,
+            "U bottom-left top-left corner == own top edge"
+        );
+        assert!(
+            u_bl[31] > u_bl[0],
+            "U bottom-left top-right corner must be pulled toward the above-right (200), proving the above-right read"
+        );
+
+        // Frame hash pins splot's output, which reproduces avmdec's and dav2d's
+        // raw output byte-for-byte (verified locally vs avmdec + dav2d).
+        let hash = splot_recon::DecodedFrameHashInput::new(&frame)
+            .compute_hash()
+            .to_hex();
+        assert_eq!(
+            hash,
+            "42bd99faae1ac0acb15c3e24fbededd8fc670612d08987bebb8942de5f4f4874"
+        );
+    }
+
+    #[test]
+    fn full_sb_chroma_num4_above_right_matches_count_top_right_avail() {
+        // 128x128 (mi_cols = 32), full 64x64 superblock (n4w = 16), 4:2:0
+        // (sub_x = 1) -> chroma w4 = 8. The bottom-left superblock (c = 0) has an
+        // in-frame decoded above-right (the top-right superblock): chroma above
+        // row decoded out to (32 - 0) >> 1 = 16 columns, so columns 8..15 are all
+        // decoded -> num4AboveRight = 8 (capped at w4).
+        assert_eq!(full_sb_chroma_num4_above_right(0, 16, 32, 1), 8);
+        // The rightmost superblock (c = 16) has no in-frame above-right: chroma
+        // above row decoded out to (32 - 16) >> 1 = 8 columns, so columns 8..15
+        // are all undecoded -> num4AboveRight = 0 (and the §7.13.2.1 clamp /
+        // no-above fallback applies).
+        assert_eq!(full_sb_chroma_num4_above_right(16, 16, 32, 1), 0);
+        // A single-column frame (mi_cols = 16) has only one superblock per row, so
+        // the rightmost (only) superblock at c = 0 has no above-right.
+        assert_eq!(full_sb_chroma_num4_above_right(0, 16, 16, 1), 0);
+        // A 3-wide grid (mi_cols = 48): the middle superblock (c = 16) still has a
+        // decoded above-right (the right superblock): decoded out to
+        // (48 - 16) >> 1 = 16 columns, columns 8..15 decoded -> 8.
+        assert_eq!(full_sb_chroma_num4_above_right(16, 16, 48, 1), 8);
     }
 
     // Single-block non-DC intra: a 64x64 vertical-gradient luma block the encoder

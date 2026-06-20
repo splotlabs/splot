@@ -75,6 +75,11 @@ description = "Single-column multi-superblock-row 8-bit 4:2:0 intra key frame (I
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-grid-intra-128x128-q80.ivf"
+description = "Full 2-D grid 8-bit 4:2:0 intra key frame (IVF, 128x128) from a project-owned input with uniform luma 100 (every 64x64 superblock DC_PRED) and chroma distinct flat per quadrant (U top-left 110 / top-right 200 / bottom-right 130) except a SMOOTH_PRED bottom-left superblock coded over a 2-D ramp, with broad decode tools disabled at base_q_idx 80; the first general-intra full 2-D superblock grid decode target, exercising the section 7.13.2.1 above-right sentinel: the bottom-left SMOOTH chroma block (non-rightmost row > 0 superblock) reads the real reconstructed above-right neighbour (the top-right superblock, 200) per section 5.20.7.25 count_top_right_avail over the section 5.20.2.3 BlockDecoded state, not the edge-clamped own-top sample (110); avmdec and dav2d raw outputs agree and splot reproduces byte-for-byte; validates clean."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-key-inter-64x64.ivf"
 description = "Key frame plus two inter frames (IVF, 64x64) from project-owned synthetic input; validates clean."
 expect = "clean"

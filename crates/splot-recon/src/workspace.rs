@@ -154,6 +154,22 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
         Ok(self.plane(plane)?.samples())
     }
 
+    /// Returns the single already-reconstructed sample at `(x, y)` in `plane`.
+    ///
+    /// This is the checked reader a caller needs when the AV2 §7.13.2.1 edge
+    /// preparation must read a specific reconstructed neighbour sample (for
+    /// example the top-right sentinel `CurrFrame[plane][y-1][Min(aboveLimit,
+    /// x+w)]`) that does not lie on the block's immediate above/left edge. It
+    /// does not decide AV2 availability — the caller is responsible for only
+    /// reading samples that the §5.20.2.3 `BlockDecoded` state marks decoded.
+    ///
+    /// # Errors
+    /// Returns [`ReconError`] when the plane is absent or `(x, y)` falls outside
+    /// the plane storage.
+    pub fn reconstructed_sample(&self, plane: PlaneId, x: usize, y: usize) -> Result<T> {
+        self.plane(plane)?.reconstructed_sample(x, y)
+    }
+
     /// Iterates over a checked rectangular region in `plane`.
     ///
     /// # Errors
@@ -431,6 +447,26 @@ impl<T: ReconSample> CurrentFramePlane<T> {
     /// Returns all backing samples for this plane.
     pub fn samples(&self) -> &[T] {
         &self.samples
+    }
+
+    /// Returns the already-reconstructed sample at `(x, y)` in this plane.
+    ///
+    /// # Errors
+    /// Returns [`ReconError::WorkspaceRectOutOfBounds`] when `(x, y)` falls
+    /// outside the plane storage.
+    pub fn reconstructed_sample(&self, x: usize, y: usize) -> Result<T> {
+        // Validate the column against the storage width (not just the flat
+        // index) so a column at or past the row stride is rejected instead of
+        // aliasing into the next row.
+        if x >= self.storage_size.width() || y >= self.storage_size.height() {
+            return Err(ReconError::WorkspaceRectOutOfBounds {
+                plane: self.plane,
+                storage: self.storage_size,
+                rect: PlaneRect::new(x, y, 1, 1)?,
+            });
+        }
+        let index = self.sample_index(x, y)?;
+        Ok(self.samples[index])
     }
 
     /// Borrows this plane's storage as an immutable [`PlaneRef`] without copying.
