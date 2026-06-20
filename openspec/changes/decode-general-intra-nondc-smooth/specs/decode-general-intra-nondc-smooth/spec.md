@@ -11,8 +11,11 @@ the shared `splot-recon` smooth predictor, and SHALL add the § 5.20.7.27 AC
 residual over that per-sample prediction. It SHALL validate § 8.2.4
 `exit_symbol()` after the coefficients. It SHALL gate the block decode to DC
 chroma and the supported non-DC luma modes only at the top-left (no-neighbour)
-block, rejecting non-DC chroma, the unsupported non-DC luma modes (`SMOOTH`,
-`PAETH`), directional modes, and non-first-block non-DC prediction with a
+block of size 32x32 or larger — the § 5.20.8.2 `get_tx_set` `TX_SET_DCTONLY`
+intra sizes, where the transform is forced `DCT_DCT` with no `intra_tx_type`
+signaled — rejecting non-DC chroma, the unsupported non-DC luma modes (`SMOOTH`,
+`PAETH`), directional modes, sub-32x32 non-DC blocks (which can signal a
+mode-dependent transform type), and non-first-block non-DC prediction with a
 structured `decode/unsupported-feature` diagnostic before any reconstruction. It
 SHALL NOT handle multi-block non-DC prediction, non-64x64 frames, inter
 prediction, in-loop filters, or invoke AVM or dav2d.
@@ -40,7 +43,8 @@ prediction, in-loop filters, or invoke AVM or dav2d.
 
 #### Scenario: Unsupported non-DC cases are rejected before reconstruction
 - **WHEN** a block uses a non-DC chroma mode, an unsupported non-DC luma mode
-  (`SMOOTH`, `PAETH`, or a directional mode), or a supported non-DC luma mode on
-  a block that has an above or left neighbour
+  (`SMOOTH`, `PAETH`, or a directional mode), a supported non-DC luma mode on a
+  block that has an above or left neighbour, or a supported non-DC luma mode on a
+  sub-32x32 (non-`TX_SET_DCTONLY`) block
 - **THEN** the decoder returns a structured `decode/unsupported-feature`
   diagnostic without reconstructing the block

@@ -917,18 +917,33 @@ fn decode_one_general_intra_block(
     }
     // Luma is DC or a supported non-DC mode (§ 7.13.2.13 SMOOTH_V / SMOOTH_H).
     // The supported non-DC modes are only reconstructed for the top-left
-    // (no-neighbour) block, where § 7.13.2.1 supplies pure fallback edges;
-    // multi-block non-DC prediction (reading reconstructed neighbours), the
-    // remaining non-DC modes (SMOOTH, PAETH), and directional modes are deferred.
+    // (no-neighbour) block of size >= 32x32, where § 7.13.2.1 supplies pure
+    // fallback edges and § 5.20.8.2 `get_tx_set` returns TX_SET_DCTONLY (square
+    // intra `txSzSqrUp >= TX_32X32` -> the transform is forced DCT_DCT with no
+    // `intra_tx_type` signaled, matching the DCT_DCT residual/reconstruction
+    // path). Smaller non-DC blocks (8x8 / 16x16) can carry a mode-dependent
+    // (non-DCT) TxType this path does not yet decode; multi-block non-DC
+    // prediction (reading reconstructed neighbours), the remaining non-DC modes
+    // (SMOOTH, PAETH), and directional modes are also deferred. `n4w` is in 4x4
+    // units, so `n4w >= 8` is the >= 32x32 gate.
+    const NON_DC_MIN_N4: usize = 8;
     let supported_nondc_luma = modes.supported_nondc_luma();
     if !modes.luma_is_dc() {
         match supported_nondc_luma {
-            Some(_) if frontier.r == 0 && frontier.c == 0 => {}
-            Some(_) => {
+            Some(_) if frontier.r == 0 && frontier.c == 0 && n4w >= NON_DC_MIN_N4 => {}
+            Some(_) if frontier.r != 0 || frontier.c != 0 => {
                 return Err(general_intra_unsupported(
                     "general_intra_multiblock_non_dc_luma",
                     Some(tile_offset),
                     "general intra non-DC luma prediction is only supported for the top-left (no-neighbour) block; multi-block non-DC prediction is not yet implemented",
+                    GENERAL_INTRA_MODE_SPEC_SECTION,
+                ));
+            }
+            Some(_) => {
+                return Err(general_intra_unsupported(
+                    "general_intra_non_dc_non_dctonly_size",
+                    Some(tile_offset),
+                    "general intra non-DC luma prediction is only supported for 32x32-or-larger (TX_SET_DCTONLY) blocks; smaller non-DC blocks can signal a mode-dependent transform type that is not yet decoded",
                     GENERAL_INTRA_MODE_SPEC_SECTION,
                 ));
             }
