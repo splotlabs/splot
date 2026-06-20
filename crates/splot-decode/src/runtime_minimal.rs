@@ -59,6 +59,10 @@ const GENERAL_INTRA_PARTITION_SPEC_SECTION: &str = "5.20.3.1";
 const GENERAL_INTRA_MODE_SPEC_SECTION: &str = "5.20.5.3";
 const GENERAL_INTRA_RESIDUAL_SPEC_SECTION: &str = "5.20.7.27";
 const GENERAL_INTRA_REMEDIATION: &str = "General intra coefficient and reconstruction decode is not yet implemented; track DECODE-GENERAL-INTRA-FRAME-FRONTIER.";
+/// AV2 § 5.4.8 `DELTA_DCQUANT_MIN` with `DELTA_DCQUANT_BITS == 5`: the bias added
+/// to a raw `base_*_delta_q` field when deriving `Base*DeltaQ` (= -23). A raw
+/// field of `-DELTA_DCQUANT_MIN` therefore resolves to a zero base offset.
+const GENERAL_INTRA_DELTA_DCQUANT_MIN: i32 = (1 << 3) - (1 << 5) + 1;
 
 pub(crate) struct MinimalRuntimeFrame {
     pub(crate) frame: DecodedFrame<u8>,
@@ -634,6 +638,12 @@ fn route_general_minimal_intra(sequence: &SequenceHeader, core: &FrameHeaderCore
                 && !tq.enable_cctx
                 && !tq.enable_idtx_intra
                 && !tq.enable_intra_ist
+                // §5.4.8: equal_ac_dc_q forces BaseYDcDeltaQ to zero, but the
+                // chroma base offsets BaseUVDcDeltaQ / BaseUVAcDeltaQ are derived
+                // independently. Reconstruction passes zero deltas, so require
+                // both to resolve to zero as well.
+                && i32::from(tq.base_uv_dc_delta_q) + GENERAL_INTRA_DELTA_DCQUANT_MIN == 0
+                && i32::from(tq.base_uv_ac_delta_q) + GENERAL_INTRA_DELTA_DCQUANT_MIN == 0
         })
         // §5.20.6.1: TX_MODE_SELECT inserts read_tx_partition() before coeffs();
         // only the fixed-largest 64x64 transform is handled.
@@ -821,6 +831,13 @@ fn decode_general_minimal_intra_frame(
         )
     })?;
 
+    // Enforce the configured decode limits (frame size, luma samples, decoded
+    // bytes, output bytes, tile payload) before allocating any reconstruction
+    // buffers, matching the frozen minimal path's ordering.
+    let tile_size = tile.tile_size();
+    let limits = options.limits();
+    ensure_runtime_limits(limits, MINIMAL_WIDTH, MINIMAL_HEIGHT, tile_size)?;
+
     let luma_plane = general_intra_plane_samples(&luma, qindex, PlaneId::Y, 6, luma_use_tcq)
         .map_err(|error| general_intra_residual_error(error, tile_offset))?;
     let u_plane = general_intra_plane_samples(&u, qindex, PlaneId::U, 5, false)
@@ -828,9 +845,6 @@ fn decode_general_minimal_intra_frame(
     let v_plane = general_intra_plane_samples(&v, qindex, PlaneId::V, 5, false)
         .map_err(|error| general_intra_residual_error(error, tile_offset))?;
 
-    let tile_size = tile.tile_size();
-    let limits = options.limits();
-    ensure_runtime_limits(limits, MINIMAL_WIDTH, MINIMAL_HEIGHT, tile_size)?;
     let frame = crate::runtime_minimal_recon::assemble_general_intra_frame(
         &luma_plane,
         &u_plane,
