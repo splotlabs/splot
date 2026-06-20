@@ -666,11 +666,12 @@ fn route_general_minimal_intra(sequence: &SequenceHeader, core: &FrameHeaderCore
         && is_general_minimal_intra(core)
 }
 
-/// Returns whether `core` is a single-tile 64x64 8-bit intra key frame with no
-/// segmentation, quant matrices, delta-Q, in-loop filters, CCSO, GDF, or film
-/// grain — the general intra subset the frontier admits. This mirrors
-/// [`validate_frame_core`] but accepts any `base_q_idx`, so the single 64x64
-/// block can carry a real (nonzero) residual.
+/// Returns whether `core` is a single-tile 8-bit intra key frame whose width and
+/// height are positive multiples of 64 forming a single ROW or single COLUMN of
+/// 64x64 superblocks (i.e. width == 64 or height == 64), with no segmentation,
+/// quant matrices, delta-Q, in-loop filters, CCSO, GDF, or film grain — the
+/// general intra subset the frontier admits. This mirrors [`validate_frame_core`]
+/// but accepts any `base_q_idx`, so blocks can carry a real (nonzero) residual.
 fn is_general_minimal_intra(core: &FrameHeaderCore) -> bool {
     core.status == FrameHeaderParseStatus::IntraHeaderComplete
         && core.cur_mfh_id.is_zero()
@@ -679,18 +680,27 @@ fn is_general_minimal_intra(core: &FrameHeaderCore) -> bool {
         && core.is_key_frame
         && core.immediate_output_frame == Some(true)
         && core.implicit_output_frame == Some(false)
-        // §5.18.3 + §7.13.2.1: the general intra path tiles the frame as a single
-        // ROW of one or more 64x64 superblocks — width is any positive multiple of
-        // the superblock side (64), height is exactly 64. A taller (multi-SB-row)
-        // frame places chroma blocks above the bottom frame edge, where the
-        // §7.13.2.13 SMOOTH chroma sentinel `LeftCol[h]` is the actual below-block
-        // reconstructed sample (§7.13.2.1 `CurrFrame[Min(maxY, y+h)][x-1]`) rather
-        // than the edge-clamped repeat this path builds; until that sentinel reads
-        // the real neighbour, multi-SB-row frames stay on the deferred frontier.
-        // At height 64 every chroma block is at the bottom edge with no above
-        // neighbour, so the built edges are §7.13.2.1-exact for any chroma content.
+        // §5.18.3 / §5.20.2.1 / §7.13.2.1: the general intra path tiles the frame
+        // into 64x64 superblocks, so width and height must be positive multiples
+        // of the superblock side (64), and the §5.20.2.1 raster loop iterates them
+        // (`clear_left_context()` per superblock row) with later superblocks
+        // predicting from already-reconstructed left/above neighbours. The frame
+        // is further restricted to a single superblock ROW (height == 64) or
+        // single COLUMN (width == 64): only then is every full-superblock
+        // §7.13.2.13 SMOOTH chroma block free of a decoded above-right neighbour
+        // (a row-0 block has no above; a rightmost-column block has no
+        // above-right), so the §7.13.2.1 `AboveRow[w]` sentinel this path builds by
+        // edge-clamping (repeat-last) equals the spec value. In a 2-D grid a
+        // non-rightmost row>0 superblock's above-right IS decoded
+        // (`clear_block_decoded_flags` marks `BlockDecoded[-1][x] = 1` up to
+        // `(MiColEnd - c) >> subX`, which exceeds the superblock width), so its
+        // sentinel would need the real `CurrFrame[y-1][x+w]` sample — deferred.
         && core.frame_size.is_some_and(|size| {
-            size.width != 0 && size.width % MINIMAL_WIDTH == 0 && size.height == MINIMAL_HEIGHT
+            size.width != 0
+                && size.height != 0
+                && size.width % MINIMAL_WIDTH == 0
+                && size.height % MINIMAL_HEIGHT == 0
+                && (size.width == MINIMAL_WIDTH || size.height == MINIMAL_HEIGHT)
         })
         && core
             .tile_info
@@ -1636,6 +1646,61 @@ mod general_intra_tests {
         assert_eq!(
             hash,
             "18ba32ffb8d818689cbded3dbd5c44602bb091c1f9750c1bb062e6f80498540f"
+        );
+    }
+
+    // A 64x128 single-column multi-superblock-ROW intra frame: two vertically
+    // stacked 64x64 DC_PRED superblocks (top flat luma 80, bottom flat luma 180,
+    // chroma 120/130). Exercises the §5.20.2.1 superblock raster loop across
+    // multiple ROWS (`clear_left_context()` per superblock row), with the
+    // second-row superblock DC-predicting its luma from the already-reconstructed
+    // first-row above neighbour and reconstructing full-superblock SMOOTH chroma
+    // at row > 0 (a rightmost-column superblock, so no decoded above-right). avmdec
+    // and dav2d agree on the decoded output (md5 bd09ea82...).
+    const COL_FIXTURE: &[u8] =
+        include_bytes!("../../../tests/conformance/vectors/valid/syn-2sbcol-intra-64x128-q80.ivf");
+
+    #[test]
+    fn multi_row_superblock_intra_frame_decodes_to_oracle() {
+        use splot_recon::{BitDepth, PixelFormat, PlaneSize};
+
+        let options = DecodeOptions::default();
+        let context = DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize)))
+            .expect("context");
+        let plan = context.plan_bytes(COL_FIXTURE, options).expect("plan");
+        let frame = decode_minimal_frame_from_plan(COL_FIXTURE, options, &plan)
+            .expect("decode")
+            .frame;
+
+        assert_eq!(frame.bit_depth(), BitDepth::Eight);
+        assert_eq!(frame.pixel_format(), PixelFormat::Yuv420);
+        assert_eq!(frame.y().visible_size(), PlaneSize::new(64, 128).unwrap());
+        assert_eq!(
+            frame.u().unwrap().visible_size(),
+            PlaneSize::new(32, 64).unwrap()
+        );
+
+        // Top superblock (rows 0..64) flat luma 80; bottom superblock (rows
+        // 64..128) flat luma 180, DC-predicted from the reconstructed first-row
+        // neighbour. Chroma flat U=120 / V=130. Matches the avmdec/dav2d oracle.
+        let y = frame.y().samples();
+        assert!(
+            (0..64).all(|r| (0..64).all(|c| y[r * 64 + c] == 80)),
+            "top superblock luma must be flat 80"
+        );
+        assert!(
+            (64..128).all(|r| (0..64).all(|c| y[r * 64 + c] == 180)),
+            "bottom superblock luma must be flat 180"
+        );
+        assert!(frame.u().unwrap().samples().iter().all(|&s| s == 120));
+        assert!(frame.v().unwrap().samples().iter().all(|&s| s == 130));
+
+        let hash = splot_recon::DecodedFrameHashInput::new(&frame)
+            .compute_hash()
+            .to_hex();
+        assert_eq!(
+            hash,
+            "3ee739a805e13597ff7d75659dd1e0150113bf4782c4d69e1d27ae942d6c10a0"
         );
     }
 
