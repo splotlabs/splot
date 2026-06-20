@@ -31,6 +31,7 @@ mod forward_transform;
 pub mod frame;
 mod header_plan;
 mod intra_mode_emission;
+mod partition_emission;
 mod quantization;
 mod recon_boundary;
 mod residual;
