@@ -5118,6 +5118,42 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-SEQUENCE-HEADER-OBU"
+name = "Encoder minimal-intra sequence-header OBU"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.4", "5.2.2", "5.2.3", "B.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers/frame/encoder_input.rs"
+openspec_change = "encoder-sequence-header-obu"
+tracking_issue = ""
+owner = "encoder"
+risk = "low"
+# encode stays `todo`: the sequence-header OBU is byte-exact to the conformance vector, but
+# it is a single OBU — the temporal unit, the consistent frame OBU, and the IVF wrap are
+# later bricks, and no splot-encode code consumes it yet.
+notes = "The GATING piece for a decodable temporal unit. The decoder minimal-tier IVF frame requires its OBUs in order OBU_TEMPORAL_DELIMITER (brick 6), OBU_SEQUENCE_HEADER, then the frame OBU (brick 5). This adds the sequence header — the activated tier the frame header parses against. `build_minimal_intra_sequence_header() -> Result<SequenceHeader, MinimalIntraSequenceHeaderError>` PARSE-BACKS the committed syn-cos-intra-64x64-q180 conformance vector's 11-byte sequence_header() body [82 0a 55 ff f0 c0 04 d1 16 e0 22] into a SequenceHeader (conformant by construction — the exact seq header the decoder accepts). `encode_minimal_intra_sequence_header_obu()` emits the body-PLUS-§5.2.3-TAIL payload via write_obu_payload (NOT the body-only write_sequence_header — a write_sequence_header-only attempt produced ...e0 20 [zero padding] vs the vector's ...e0 22 [the trailing_bits 1-marker], caught by the byte-exact oracle: the seq header is an EXTENSIBLE OBU so its tail = obu_extension_flag(0) + trailing_bits) under the no-extension OBU_SEQUENCE_HEADER §5.2.2 header (inferred layer ids 0), in Annex B framing → byte-exact to the vector's seq header OBU [0c 04 82 0a 55 ff f0 c0 04 d1 16 e0 22]. MinimalIntraSequenceHeaderError (Parse #[from] error::Error / Write #[from] WriteError). ORACLE = byte-exact to the decoder-accepted conformance vector (the strongest splot-core oracle — caught the body-vs-tail bug) + the payload round-trips byte-exact + reparses as 1 OBU_SEQUENCE_HEADER. Public API: 2 new fns + 1 new error, splot-core, no dependency-graph change. Encoder-mission-DRIVEN (owner=encoder). encode=todo. This row is a SINGLE OBU, NOT a temporal unit or decodable stream: it does NOT claim the frame OBU made CONSISTENT with this seq header (the assembler brick must reconcile them — the frame header parses AGAINST this seq header), an IVF stream, a packet, receive_packet output, CLI success, or Baseline Encoder Profile v1. NEXT: the temporal-unit assembler (TD + this seq header + a CONSISTENT frame OBU) → IVF wrap (write_ivf_header/write_ivf_frame) → CLI encode→decode-hash."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "todo"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-core/src/headers/frame/encoder_input.rs::tests::encode_minimal_intra_sequence_header_obu_matches_conformance_vector", "crates/splot-core/src/headers/frame/encoder_input.rs::tests::minimal_intra_sequence_header_payload_round_trips_the_body"]
+commands = ["cargo test -p splot-core encoder_input"]
+fixtures = ["tests/conformance/vectors/valid/syn-cos-intra-64x64-q180.ivf"]
+diagnostics = []
+
+[[feature]]
 id = "ENC-RECON-DEPENDENCY"
 name = "Encoder reconstruction dependency boundary"
 category = "encoder"
