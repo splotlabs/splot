@@ -47,6 +47,9 @@ const Y_MODE_INDEX_REASON: &str = "intra_y_mode_index";
 const UV_MODE_REASON: &str = "intra_uv_mode";
 const UV_MODE_IDX_REASON: &str = "intra_uv_mode_idx";
 
+/// AV2 § 9.2 `UV_DC_PRED`: the chroma DC prediction `uv_mode` index.
+const UV_DC_PRED: u8 = 0;
+
 /// The decoded mode-info facts for one general intra block.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct GeneralIntraBlockModes {
@@ -56,6 +59,15 @@ pub(crate) struct GeneralIntraBlockModes {
     /// the index into the chroma mode list; typed `UVMode` reconstruction is a
     /// future increment.
     pub(crate) uv_mode: u8,
+}
+
+impl GeneralIntraBlockModes {
+    /// True when both planes use DC prediction (luma `DC_PRED`, chroma
+    /// `UV_DC_PRED`). The minimal no-neighbour reconstruction only reproduces DC
+    /// prediction exactly; other intra modes need their § 7.13 predictors.
+    pub(crate) fn is_dc_only(&self) -> bool {
+        self.y_mode == IntraYMode::DC_PRED && self.uv_mode == UV_DC_PRED
+    }
 }
 
 /// Error returned while decoding general intra block mode info.

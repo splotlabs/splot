@@ -9,7 +9,7 @@ use splot_core::annexb::ObuEnvelope;
 use splot_core::bitio::BitReader;
 use splot_core::headers::frame::{
     FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode, FrameHeaderParseStatus,
-    FrameReferenceStateView, FrameSize, parse_frame_header_core,
+    FrameReferenceStateView, FrameSize, TxMode, parse_frame_header_core,
 };
 use splot_core::headers::sequence::{
     BitDepthIdc, ChromaFormatIdc, SequenceHeader, parse_sequence_header,
@@ -608,6 +608,16 @@ fn validate_frame_core(core: &FrameHeaderCore, offset: ByteOffset) -> Result<()>
 fn route_general_minimal_intra(sequence: &SequenceHeader, core: &FrameHeaderCore) -> bool {
     core.quantization_params
         .is_some_and(|quant| quant.base_q_idx != FROZEN_MINIMAL_BASE_Q_IDX)
+        // Reconstruction passes zero quantizer deltas, so admit only frames whose
+        // §5.18.6.1 per-plane DeltaQ values are all zero. (Base*DeltaQ is forced
+        // to zero by the `equal_ac_dc_q` admission below.)
+        && core.quantization_params.is_some_and(|quant| {
+            quant.delta_q_y_dc == 0
+                && quant.delta_q_u_dc == 0
+                && quant.delta_q_u_ac == 0
+                && quant.delta_q_v_dc == 0
+                && quant.delta_q_v_ac == 0
+        })
         && sequence
             .intra
             .as_ref()
@@ -615,6 +625,21 @@ fn route_general_minimal_intra(sequence: &SequenceHeader, core: &FrameHeaderCore
         && sequence
             .partition
             .is_some_and(|partition| !partition.enable_sdp)
+        // §5.20 / §5.20.7.27: FSC, CCTX, IDTX, and IST all add transform-type or
+        // cross-component syntax the general path does not yet read; `equal_ac_dc_q`
+        // forces every derived Base*DeltaQ to zero (§5.4.8).
+        && sequence.transform_quant_entropy.is_some_and(|tq| {
+            tq.equal_ac_dc_q
+                && !tq.enable_fsc
+                && !tq.enable_cctx
+                && !tq.enable_idtx_intra
+                && !tq.enable_intra_ist
+        })
+        // §5.20.6.1: TX_MODE_SELECT inserts read_tx_partition() before coeffs();
+        // only the fixed-largest 64x64 transform is handled.
+        && core
+            .intra_tail
+            .is_some_and(|tail| tail.tx_mode == TxMode::Largest)
         && is_general_minimal_intra(core)
 }
 
@@ -736,6 +761,17 @@ fn decode_general_minimal_intra_frame(
     let mut symbols = frontier.into_symbol_decoder();
     let modes = crate::tile_payload::decode_general_intra_block_modes(tile, &mut symbols)
         .map_err(|error| general_intra_block_mode_error(error, tile_offset))?;
+    // §7.13: the no-neighbour reconstruction only reproduces DC prediction
+    // exactly; SMOOTH/PAETH/directional luma modes and non-DC chroma modes need
+    // their own §7.13 predictors.
+    if !modes.is_dc_only() {
+        return Err(general_intra_unsupported(
+            "general_intra_non_dc_prediction_mode",
+            Some(tile_offset),
+            "general intra reconstruction only supports DC prediction; non-DC luma or chroma modes are not yet implemented",
+            GENERAL_INTRA_MODE_SPEC_SECTION,
+        ));
+    }
 
     // §7.14.2 quantizer index == base_q_idx for the minimal-tool frame (no
     // segmentation or delta-Q). The §7.14.4 TCQ dqDenom term applies to the luma
@@ -760,6 +796,18 @@ fn decode_general_minimal_intra_frame(
     let v =
         crate::tile_payload::decode_general_intra_chroma_coeffs(tile, &mut symbols, 2, !u.all_zero)
             .map_err(|error| general_intra_residual_error(error, tile_offset))?;
+
+    // §5.20.7.27: a block with eob > 1 codes intra_tx_type (plane 0) or cctx_type
+    // (plane 1) before the coefficient levels; only all-zero (eob == 0) and
+    // single-DC (eob == 1) blocks are decoded bit-exactly here.
+    if luma.eob > 1 || u.eob > 1 || v.eob > 1 {
+        return Err(general_intra_unsupported(
+            "general_intra_multi_coefficient_block",
+            Some(tile_offset),
+            "general intra reconstruction only supports all-zero and single-DC transform blocks; multi-coefficient blocks (eob > 1) are not yet implemented",
+            GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
+        ));
+    }
 
     // The single 64x64 block consumes the entire tile payload, so §8.2.4
     // exit_symbol() must hold after the luma + chroma coefficients. A failure
