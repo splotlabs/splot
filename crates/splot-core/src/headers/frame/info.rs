@@ -855,22 +855,21 @@ impl CoreSeqView {
     ///
     /// Every sequence tool an intra frame does not use is disabled: no reference-frame
     /// state (§ 5.4.6 inter view all-off via [`CoreSeqInterView::new_minimal_intra`]),
-    /// no segmentation/tiles/loop-filters/restoration/CCSO, no film grain. The
-    /// configurable inputs are the § 5.4.1 frame-size maxima (`max_frame_width` /
-    /// `max_frame_height` — for a single-picture frame, `frame_size_override_flag` is
-    /// inferred 0, so the frame size is taken from these maxima and they must equal the
-    /// coded frame size) and `single_picture_header_flag`, which the § 5.18.2 control
-    /// region, the § 5.4.10 filter view, and the § 5.4.1 CCSO view all read. 8-bit
-    /// YUV420, 3 planes.
+    /// no segmentation/tiles/loop-filters/restoration/CCSO, no film grain. 8-bit YUV420,
+    /// 3 planes. The configurable inputs are the § 5.4.1 frame-size maxima
+    /// (`max_frame_width` / `max_frame_height`); `frame_width_bits` / `frame_height_bits`
+    /// are derived from them via `ceil_log2`, so any in-range maxima can write an
+    /// overridden frame size, not just those that fit 12 bits.
     ///
-    /// This is the exact view [the test `base_seq` helper builds, so the existing
-    /// frame-header round-trip suites regress it]; `base_seq()` delegates here.
+    /// This is the **non-single-picture** view (`single_picture_header_flag == false`):
+    /// it is the exact shape the test `base_seq` helper builds, so the existing
+    /// frame-header round-trip suite regresses it (`base_seq()` delegates here). The
+    /// single-picture variant infers a different sequence shape (§ 5.4.6 `OrderHintBits
+    /// = 0` / `NumRefFrames = 2`, § 5.4.1 SCC `SELECT` force fields, § 5.4.10
+    /// `(enable_avg_cdf, avg_cdf_type) = (true, 1)`) across four § 5.4.1 config parsers
+    /// and is a later, separately round-trip-verified constructor.
     #[must_use]
-    pub fn new_minimal_intra(
-        single_picture_header_flag: bool,
-        max_frame_width: u32,
-        max_frame_height: u32,
-    ) -> Self {
+    pub fn new_minimal_intra(max_frame_width: u32, max_frame_height: u32) -> Self {
         use crate::headers::sequence::{CdefOnSkipTxfm, LevelIdx, SuperblockSize, Tier};
         Self {
             num_ref_frames: 8,
@@ -878,10 +877,12 @@ impl CoreSeqView {
             long_term_frame_id_bits: 0,
             enable_short_refresh_frame_flags: false,
             monotonic_output_order_flag: false,
-            single_picture_header_flag,
+            single_picture_header_flag: false,
             max_mlayer_id: 0,
-            frame_width_bits: 12,
-            frame_height_bits: 12,
+            // §5.4.1 dim bit-widths derived from the maxima so any in-range maxima can
+            // write an overridden frame size (ceil_log2(4096) == 12 keeps base_seq).
+            frame_width_bits: ceil_log2(max_frame_width),
+            frame_height_bits: ceil_log2(max_frame_height),
             max_frame_width,
             max_frame_height,
             seq_force_screen_content_tools: 0,
@@ -931,7 +932,7 @@ impl CoreSeqView {
                 disable_loopfilters_across_tiles: false,
                 cdef_on_skip_txfm: CdefOnSkipTxfm::Adaptive,
                 df_par_bits_minus_2: 0,
-                single_picture_header_flag,
+                single_picture_header_flag: false,
             },
             restoration: CoreSeqRestorationView {
                 enable_restoration: false,
@@ -942,7 +943,7 @@ impl CoreSeqView {
             },
             ccso: CoreSeqCcsoView {
                 enable_ccso: false,
-                single_picture_header_flag,
+                single_picture_header_flag: false,
             },
             chroma_format_idc: ChromaFormatIdc::Yuv420,
             film_grain_params_present: Some(false),
@@ -2404,23 +2405,23 @@ mod tests {
         // The representative non-single-picture intra sequence view is exactly the
         // public encoder writer-input constructor, so the whole frame-header round-trip
         // suite regresses `CoreSeqView::new_minimal_intra`.
-        CoreSeqView::new_minimal_intra(false, 4096, 2304)
+        CoreSeqView::new_minimal_intra(4096, 2304)
     }
 
     #[test]
-    fn core_seq_view_minimal_intra_propagates_single_picture_and_dims() {
-        // The parameterized fields: single_picture_header_flag reaches the §5.4.10 filter
-        // and §5.4.1 CCSO views (the §6.17.2 single-picture inferences read all three),
-        // and the frame maxima are taken verbatim (a single-picture frame infers
-        // frame_size_override 0 → the maxima must equal the coded size, e.g. 64x64). The
-        // invariant fields are covered by the base_seq()-delegated round-trip suite.
-        let sp = CoreSeqView::new_minimal_intra(true, 64, 64);
-        assert!(sp.single_picture_header_flag);
-        assert!(sp.filter.single_picture_header_flag);
-        assert!(sp.ccso.single_picture_header_flag);
-        assert_eq!((sp.max_frame_width, sp.max_frame_height), (64, 64));
+    fn core_seq_view_minimal_intra_derives_dim_bits_and_is_non_single_picture() {
+        // frame_width_bits / frame_height_bits are derived from the maxima so any
+        // in-range maxima can write an overridden frame size; ceil_log2(4096) == 12
+        // keeps the base_seq shape, ceil_log2(64) == 6 for the encoder's 64x64 tier.
+        let base = CoreSeqView::new_minimal_intra(4096, 2304);
+        assert_eq!((base.frame_width_bits, base.frame_height_bits), (12, 12));
+        assert_eq!((base.max_frame_width, base.max_frame_height), (4096, 2304));
 
-        let base = CoreSeqView::new_minimal_intra(false, 4096, 2304);
+        let small = CoreSeqView::new_minimal_intra(64, 64);
+        assert_eq!((small.frame_width_bits, small.frame_height_bits), (6, 6));
+
+        // The constructor builds the non-single-picture shape; the single-picture
+        // variant (different §5.4.1 inferences) is a separate later constructor.
         assert!(!base.single_picture_header_flag);
         assert!(!base.filter.single_picture_header_flag);
         assert!(!base.ccso.single_picture_header_flag);

@@ -2409,19 +2409,17 @@ build the § 5.4.1 sequence-derived input that `write_tile_group_obu` /
 otherwise `#[non_exhaustive]` and built only from `from_sequence`). The constructor
 SHALL return the view with every unused sequence tool disabled (the inter view via its
 own constructor, no segmentation/tiles/loop-filters/restoration/CCSO, no film grain),
-8-bit YUV420, parameterized by `single_picture_header_flag` and the § 5.4.1 frame-size
-maxima; `single_picture_header_flag` SHALL propagate to the filter view and the CCSO
-view. The round-trip-proven `base_seq()` test helper SHALL delegate to it so the
+8-bit YUV420, parameterized by the § 5.4.1 frame-size maxima (it builds the non-single-picture
+view; `frame_width_bits` / `frame_height_bits` are derived from the maxima). The round-trip-proven `base_seq()` test helper SHALL delegate to it so the
 frame-header round-trip suite regresses it. It SHALL NOT provide a `FrameHeaderCore`
 constructor, a tile-group OBU, a frame, a packet, or `Context::receive_packet` output.
 
-#### Scenario: The constructor propagates the parameters
+#### Scenario: The constructor derives the dimension bit-widths
 
-- **WHEN** the constructor is called with `single_picture_header_flag = true` and frame
-  maxima
-- **THEN** the result's `single_picture_header_flag`, `filter.single_picture_header_flag`,
-  and `ccso.single_picture_header_flag` SHALL be `true`, and `max_frame_width` /
-  `max_frame_height` SHALL equal the supplied maxima.
+- **WHEN** the constructor is called with frame maxima
+- **THEN** `frame_width_bits` / `frame_height_bits` SHALL be derived from the maxima
+  (`ceil_log2`), so an overridden frame size of any in-range maxima is writable, and
+  `max_frame_width` / `max_frame_height` SHALL equal the supplied maxima.
 
 #### Scenario: The constructor backs the frame-header round-trips
 
