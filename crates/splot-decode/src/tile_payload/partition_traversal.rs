@@ -10,6 +10,7 @@ use splot_core::symbol::{SymbolDecoder, SymbolDecoderCheckpoint, SymbolDecoderCo
 use super::DecodeTileWorkUnit;
 use super::cdf::TileCdfError;
 use super::cdf::context::{PartitionContextInput, SquareSplitContextInput};
+use super::mi_size_state::{TileMiSizeState, TileMiSizeStateError};
 use super::partition::{PartitionDecisionError, PartitionType, ReadPartitionDecision};
 use super::partition_allowed::{
     PartitionAllowedError, PartitionAllowedInput, PartitionFeatureFlags, PartitionTreeType,
@@ -509,6 +510,141 @@ pub(crate) fn plan_tile_partition_traversal_cursor<'payload>(
     }
 
     Err(TilePartitionTraversalError::NoBlockFrontier)
+}
+
+/// Error from the general intra full partition-tree walk, distinguishing
+/// traversal/MI-state failures from a caller leaf-decode failure `E`.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum GeneralIntraTreeWalkError<E> {
+    /// A partition traversal step failed.
+    #[error("partition tree walk traversal failed: {0}")]
+    Traversal(#[from] TilePartitionTraversalError),
+    /// An MI-size state update failed.
+    #[error("partition tree walk MI-size update failed: {0}")]
+    MiSize(TileMiSizeStateError),
+    /// The caller's per-leaf-block decode failed.
+    #[error("partition tree walk leaf-block decode failed")]
+    Leaf(E),
+}
+
+/// Drives the complete AV2 § 5.20.3.1 partition tree for a general intra tile,
+/// invoking `on_leaf` at each `PARTITION_NONE` leaf block in decode (DFS) order.
+///
+/// Unlike [`plan_tile_partition_traversal_cursor`], which stops at the first
+/// leaf, this walks the whole tree: partition-split symbols and per-block syntax
+/// are read interleaved on one live symbol decoder and the tile CDFs, exactly as
+/// the spec orders them. The MI-size partition context is maintained across
+/// blocks via `mi_size_state` (read for each partition decision, updated after
+/// each leaf). The live symbol decoder is returned for the caller's § 8.2.4
+/// `exit_symbol()` check.
+pub(crate) fn decode_general_intra_partition_tree<'payload, E, F>(
+    work_unit: &mut DecodeTileWorkUnit<'payload>,
+    frame: TilePartitionFrameFacts,
+    mi_size_state: &mut TileMiSizeState,
+    limits: DecodeLimits,
+    mut on_leaf: F,
+) -> Result<SymbolDecoder<'payload>, GeneralIntraTreeWalkError<E>>
+where
+    F: FnMut(
+        &mut DecodeTileWorkUnit<'payload>,
+        &mut SymbolDecoder<'payload>,
+        &DecodeBlockFrontier,
+    ) -> Result<(), E>,
+{
+    if !frame.frame_is_intra {
+        return Err(TilePartitionTraversalError::Unsupported(
+            TilePartitionTraversalUnsupported::NonIntra,
+        )
+        .into());
+    }
+    if frame.loop_restoration == TilePartitionLoopRestorationState::UnsupportedReadLrSyntax {
+        return Err(TilePartitionTraversalError::Unsupported(
+            TilePartitionTraversalUnsupported::ReadLoopRestoration,
+        )
+        .into());
+    }
+    if frame.bru_state != TilePartitionBruState::Active {
+        return Err(TilePartitionTraversalError::Unsupported(
+            TilePartitionTraversalUnsupported::BruOrBridge,
+        )
+        .into());
+    }
+
+    let config = SymbolDecoderConfig::new().with_cdf_update_mode(work_unit.cdf().update_mode());
+    let mut symbols = SymbolDecoder::with_base_and_config(
+        work_unit.tile_bytes(),
+        work_unit.tile_byte_span().start,
+        config,
+    )
+    .map_err(TilePartitionTraversalError::from)?;
+    let tile_bounds = TilePartitionBounds::from_work_unit(work_unit);
+    let root = TilePartitionCall::root(
+        work_unit.mi_row_range().start as usize,
+        work_unit.mi_col_range().start as usize,
+        frame.sb_size,
+        frame.has_chroma,
+    );
+    let mut stack = vec![root];
+    let mut step_count: u64 = 0;
+
+    while let Some(call) = stack.pop() {
+        step_count += 1;
+        limits
+            .ensure(DecodeLimitName::MaxTilePartitionSteps, step_count)
+            .map_err(TilePartitionTraversalError::from)?;
+        if call.r >= frame.mi_rows || call.c >= frame.mi_cols {
+            continue;
+        }
+        ensure_supported_call(frame, call)?;
+
+        let decision = mi_size_state
+            .with_context_state(|context| {
+                read_frontier_partition_decision(
+                    call,
+                    frame,
+                    tile_bounds,
+                    context,
+                    work_unit.cdf_mut().tile_cdfs_mut(),
+                    &mut symbols,
+                )
+            })
+            .map_err(GeneralIntraTreeWalkError::MiSize)??;
+        let partition = decision.partition;
+        if is_minimal_sdp_root(frame, call) && partition != PartitionType::None {
+            return Err(TilePartitionTraversalError::Unsupported(
+                TilePartitionTraversalUnsupported::Sdp,
+            )
+            .into());
+        }
+
+        let sub_size = valid_subsize(partition, call.b_size)?;
+        let chroma_offset = updated_chroma_offset(call, partition, sub_size, frame)?;
+        if partition == PartitionType::None {
+            let tree_type = partition_tree_type(frame, call);
+            let frontier = DecodeBlockFrontier {
+                r: call.r,
+                c: call.c,
+                b_size: sub_size,
+                has_chroma: call.has_chroma
+                    && frame.num_planes > 1
+                    && tree_type != PartitionTreeType::LumaPart,
+                chroma_offset,
+                symbol_count_before_block: symbols.symbol_count(),
+                symbol_checkpoint_before_block: symbols.checkpoint(),
+            };
+            on_leaf(work_unit, &mut symbols, &frontier).map_err(GeneralIntraTreeWalkError::Leaf)?;
+            mi_size_state
+                .update_luma_block(call.r, call.c, sub_size)
+                .map_err(GeneralIntraTreeWalkError::MiSize)?;
+        } else {
+            let children = child_calls(call, partition, sub_size, frame, chroma_offset)?;
+            for child in children.as_slice().iter().rev().copied() {
+                stack.push(child);
+            }
+        }
+    }
+
+    Ok(symbols)
 }
 
 fn ensure_supported_call(

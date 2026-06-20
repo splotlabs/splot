@@ -17,7 +17,7 @@ use splot_core::headers::sequence::{
 use splot_core::ivf::IvfHeader;
 use splot_core::span::ByteOffset;
 use splot_core::stream::{ParsedBitstream, ParsedIvfBitstream, parse_bitstream_partial};
-use splot_core::symbol::SymbolDecoderSummary;
+use splot_core::symbol::{SymbolDecoder, SymbolDecoderSummary};
 use splot_core::types::ObuType;
 use splot_recon::{DecodedFrame, PlaneId};
 
@@ -761,27 +761,6 @@ fn decode_general_minimal_intra_frame(
         }
     };
     let tile_offset = tile.tile_byte_span().start;
-    let frontier = crate::tile_payload::plan_minimal_runtime_partition_frontier(
-        tile,
-        sequence,
-        core,
-        options.limits(),
-    )
-    .map_err(|error| general_intra_partition_frontier_error(error, tile_offset))?;
-    let mut symbols = frontier.into_symbol_decoder();
-    let modes = crate::tile_payload::decode_general_intra_block_modes(tile, &mut symbols)
-        .map_err(|error| general_intra_block_mode_error(error, tile_offset))?;
-    // §7.13: the no-neighbour reconstruction only reproduces DC prediction
-    // exactly; SMOOTH/PAETH/directional luma modes and non-DC chroma modes need
-    // their own §7.13 predictors.
-    if !modes.is_dc_only() {
-        return Err(general_intra_unsupported(
-            "general_intra_non_dc_prediction_mode",
-            Some(tile_offset),
-            "general intra reconstruction only supports DC prediction; non-DC luma or chroma modes are not yet implemented",
-            GENERAL_INTRA_MODE_SPEC_SECTION,
-        ));
-    }
 
     // §7.14.2 quantizer index == base_q_idx for the minimal-tool frame (no
     // segmentation or delta-Q). The §7.14.4 TCQ dqDenom term applies to the luma
@@ -798,55 +777,60 @@ fn decode_general_minimal_intra_frame(
             )
         })?;
     let luma_use_tcq = tile.coeff_frame_facts().allow_tcq();
+    let (mi_rows, mi_cols) = crate::tile_payload::frame_mi_dimensions(core)
+        .map_err(|error| general_intra_partition_frontier_error(error, tile_offset))?;
 
-    let luma = crate::tile_payload::decode_general_intra_luma_coeffs(tile, &mut symbols, modes)
-        .map_err(|error| general_intra_residual_error(error, tile_offset))?;
-    let u = crate::tile_payload::decode_general_intra_chroma_coeffs(tile, &mut symbols, 1, false)
-        .map_err(|error| general_intra_residual_error(error, tile_offset))?;
-    let v =
-        crate::tile_payload::decode_general_intra_chroma_coeffs(tile, &mut symbols, 2, !u.all_zero)
-            .map_err(|error| general_intra_residual_error(error, tile_offset))?;
-
-    // Multi-coefficient (eob > 1) blocks are decoded by the same §5.20.7.27
-    // coefficient loop. With the transform-type and cross-component tools
-    // rejected at admission (enable_intra_ist / enable_idtx_intra / enable_cctx),
-    // the inferred DCT_DCT transform applies and the AC coefficients are read
-    // directly. The §8.2.4 exit_symbol() check below is the bit-exactness guard:
-    // any intra_tx_type / cctx_type or other syntax this path does not consume
-    // fails it rather than returning a wrong hash.
-
-    // The single 64x64 block consumes the entire tile payload, so §8.2.4
-    // exit_symbol() must hold after the luma + chroma coefficients. A failure
-    // means the coefficient decode was not bit-exact.
-    symbols.exit_symbol().map_err(|_| {
-        general_intra_unsupported(
-            "general_intra_exit_symbol",
-            Some(tile_offset),
-            "general intra tile payload did not satisfy §8.2.4 exit_symbol() after the decoded coefficients",
-            GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
-        )
-    })?;
-
-    // Enforce the configured decode limits (frame size, luma samples, decoded
-    // bytes, output bytes, tile payload) before allocating any reconstruction
+    // Enforce the configured decode limits before allocating reconstruction
     // buffers, matching the frozen minimal path's ordering.
     let tile_size = tile.tile_size();
     let limits = options.limits();
     ensure_runtime_limits(limits, MINIMAL_WIDTH, MINIMAL_HEIGHT, tile_size)?;
 
-    let luma_plane = general_intra_plane_samples(&luma, qindex, PlaneId::Y, 6, luma_use_tcq)
-        .map_err(|error| general_intra_residual_error(error, tile_offset))?;
-    let u_plane = general_intra_plane_samples(&u, qindex, PlaneId::U, 5, false)
-        .map_err(|error| general_intra_residual_error(error, tile_offset))?;
-    let v_plane = general_intra_plane_samples(&v, qindex, PlaneId::V, 5, false)
-        .map_err(|error| general_intra_residual_error(error, tile_offset))?;
+    let mut workspace = crate::runtime_minimal_recon::new_general_intra_workspace()?;
+    let mut coeff_ctx =
+        crate::tile_payload::TileCoeffContextState::new(mi_rows, mi_cols).map_err(|source| {
+            general_intra_residual_error(
+                GeneralIntraResidualError::CoeffContextState { source },
+                tile_offset,
+            )
+        })?;
 
-    let frame = crate::runtime_minimal_recon::assemble_general_intra_frame(
-        &luma_plane,
-        &u_plane,
-        &v_plane,
-    )?;
+    // Walk the full §5.20.3.1 partition tree, decoding each leaf block's
+    // §5.20.5.3 mode info and §5.20.7.27 Y/U/V coefficients and reconstructing it
+    // into the workspace in decode order (so later blocks DC-predict from the
+    // already-reconstructed neighbours).
+    let symbols = crate::tile_payload::decode_general_intra_multiblock_tree(
+        tile,
+        sequence,
+        core,
+        limits,
+        |work_unit, symbols, frontier| {
+            decode_one_general_intra_block(
+                work_unit,
+                symbols,
+                frontier,
+                &mut workspace,
+                &mut coeff_ctx,
+                qindex,
+                luma_use_tcq,
+                tile_offset,
+            )
+        },
+    )
+    .map_err(|error| map_general_intra_multiblock_error(error, tile_offset))?;
 
+    // The decoded blocks consume the entire tile payload, so §8.2.4
+    // exit_symbol() must hold; a failure means the decode was not bit-exact.
+    symbols.exit_symbol().map_err(|_| {
+        general_intra_unsupported(
+            "general_intra_exit_symbol",
+            Some(tile_offset),
+            "general intra tile payload did not satisfy §8.2.4 exit_symbol() after the decoded blocks",
+            GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
+        )
+    })?;
+
+    let frame = workspace.freeze()?;
     Ok(MinimalRuntimeFrame {
         frame,
         frame_rate_numerator: header.timebase_denominator,
@@ -854,27 +838,148 @@ fn decode_general_minimal_intra_frame(
     })
 }
 
-/// Reconstructs one plane's samples from its decoded coefficient block: a
-/// skipped (`all_zero`) block is the flat no-neighbour DC prediction (`128`),
-/// otherwise the dequant / inverse-transform / residual-add reconstruction.
-fn general_intra_plane_samples(
-    block: &crate::tile_payload::LumaCoeffBlock,
+/// Decodes one general intra leaf block (mode info + Y/U/V coefficients) and
+/// reconstructs it into `workspace` in decode order. Gated to square DC_PRED
+/// blocks: the no-neighbour-aware §7.13.2 DC prediction is read from the
+/// partially-built frame, so non-DC modes and non-square partitions are
+/// rejected. Chroma is 4:2:0 (half-resolution).
+#[allow(clippy::too_many_arguments)]
+fn decode_one_general_intra_block(
+    work_unit: &mut crate::tile_payload::DecodeTileWorkUnit<'_>,
+    symbols: &mut SymbolDecoder<'_>,
+    frontier: &crate::tile_payload::DecodeBlockFrontier,
+    workspace: &mut splot_recon::CurrentFrameWorkspace<u8>,
+    coeff_ctx: &mut crate::tile_payload::TileCoeffContextState,
     qindex: u32,
-    plane_id: splot_recon::PlaneId,
-    log2_side: u32,
-    use_tcq: bool,
-) -> core::result::Result<Vec<u8>, GeneralIntraResidualError> {
-    if block.all_zero {
-        let side = 1usize << log2_side;
-        return Ok(vec![128u8; side * side]);
+    luma_use_tcq: bool,
+    tile_offset: ByteOffset,
+) -> Result<()> {
+    let modes = crate::tile_payload::decode_general_intra_block_modes(work_unit, symbols)
+        .map_err(|error| general_intra_block_mode_error(error, tile_offset))?;
+    if !modes.is_dc_only() {
+        return Err(general_intra_unsupported(
+            "general_intra_non_dc_prediction_mode",
+            Some(tile_offset),
+            "general intra reconstruction only supports DC prediction; non-DC luma or chroma modes are not yet implemented",
+            GENERAL_INTRA_MODE_SPEC_SECTION,
+        ));
     }
-    crate::tile_payload::reconstruct_general_intra_block(
-        &block.quant,
-        qindex,
-        plane_id,
-        log2_side,
-        use_tcq,
+
+    let n4w = frontier.b_size.num_4x4_wide().map_err(|_| {
+        general_intra_unsupported(
+            "general_intra_block_geometry",
+            Some(tile_offset),
+            "general intra block geometry lookup failed",
+            GENERAL_INTRA_PARTITION_SPEC_SECTION,
+        )
+    })?;
+    let n4h = frontier.b_size.num_4x4_high().map_err(|_| {
+        general_intra_unsupported(
+            "general_intra_block_geometry",
+            Some(tile_offset),
+            "general intra block geometry lookup failed",
+            GENERAL_INTRA_PARTITION_SPEC_SECTION,
+        )
+    })?;
+    if n4w != n4h {
+        return Err(general_intra_unsupported(
+            "general_intra_non_square_block",
+            Some(tile_offset),
+            "general intra decode only supports square partition blocks; rectangular partitions are not yet implemented",
+            GENERAL_INTRA_PARTITION_SPEC_SECTION,
+        ));
+    }
+
+    let uv_mode = usize::from(modes.uv_mode);
+    let luma_log2 = n4w.trailing_zeros() + 2;
+    let luma_tx = (luma_log2 - 2) as usize;
+    let luma_x = frontier.c * 4;
+    let luma_y = frontier.r * 4;
+    let luma = crate::tile_payload::decode_general_intra_plane_coeffs(
+        work_unit, symbols, coeff_ctx, 0, luma_tx, luma_x, luma_y, false, uv_mode,
     )
+    .map_err(|error| general_intra_residual_error(error, tile_offset))?;
+    crate::runtime_minimal_recon::reconstruct_general_intra_block_into(
+        workspace,
+        &luma,
+        PlaneId::Y,
+        luma_x,
+        luma_y,
+        luma_log2,
+        qindex,
+        luma_use_tcq,
+    )
+    .map_err(|error| general_intra_residual_error(error, tile_offset))?;
+
+    if frontier.has_chroma {
+        // 4:2:0: chroma is half-resolution, so the chroma transform/log2 is one
+        // smaller and the chroma plane position is the luma position >> 1.
+        let chroma_log2 = luma_log2 - 1;
+        let chroma_tx = (chroma_log2 - 2) as usize;
+        let chroma_x = frontier.c * 2;
+        let chroma_y = frontier.r * 2;
+        let u = crate::tile_payload::decode_general_intra_plane_coeffs(
+            work_unit, symbols, coeff_ctx, 1, chroma_tx, chroma_x, chroma_y, false, uv_mode,
+        )
+        .map_err(|error| general_intra_residual_error(error, tile_offset))?;
+        crate::runtime_minimal_recon::reconstruct_general_intra_block_into(
+            workspace,
+            &u,
+            PlaneId::U,
+            chroma_x,
+            chroma_y,
+            chroma_log2,
+            qindex,
+            false,
+        )
+        .map_err(|error| general_intra_residual_error(error, tile_offset))?;
+        let v = crate::tile_payload::decode_general_intra_plane_coeffs(
+            work_unit,
+            symbols,
+            coeff_ctx,
+            2,
+            chroma_tx,
+            chroma_x,
+            chroma_y,
+            !u.all_zero,
+            uv_mode,
+        )
+        .map_err(|error| general_intra_residual_error(error, tile_offset))?;
+        crate::runtime_minimal_recon::reconstruct_general_intra_block_into(
+            workspace,
+            &v,
+            PlaneId::V,
+            chroma_x,
+            chroma_y,
+            chroma_log2,
+            qindex,
+            false,
+        )
+        .map_err(|error| general_intra_residual_error(error, tile_offset))?;
+    }
+    Ok(())
+}
+
+/// Maps a general intra multi-block tree-walk error to a decode diagnostic. The
+/// leaf-block error is already a structured `DecodeError`; setup, traversal, and
+/// MI-size failures collapse to an unsupported-partition diagnostic.
+fn map_general_intra_multiblock_error(
+    error: crate::tile_payload::GeneralIntraMultiblockError<DecodeError>,
+    tile_offset: ByteOffset,
+) -> DecodeError {
+    use crate::tile_payload::{GeneralIntraMultiblockError, GeneralIntraTreeWalkError};
+    match error {
+        GeneralIntraMultiblockError::Setup(error) => {
+            general_intra_partition_frontier_error(error, tile_offset)
+        }
+        GeneralIntraMultiblockError::Walk(GeneralIntraTreeWalkError::Leaf(error)) => error,
+        GeneralIntraMultiblockError::Walk(_) => general_intra_unsupported(
+            "general_intra_partition_walk",
+            Some(tile_offset),
+            "general intra partition tree walk reached an unsupported path",
+            GENERAL_INTRA_PARTITION_SPEC_SECTION,
+        ),
+    }
 }
 
 fn general_intra_residual_error(
@@ -889,8 +994,7 @@ fn general_intra_residual_error(
             "general intra luma transform-block coefficient syntax could not be parsed from the tile payload",
             GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
         ),
-        GeneralIntraResidualError::CoeffContextState { .. }
-        | GeneralIntraResidualError::InvalidContextRange { .. } => general_intra_unsupported(
+        GeneralIntraResidualError::CoeffContextState { .. } => general_intra_unsupported(
             "general_intra_luma_coeff_state",
             Some(offset),
             "general intra luma coefficient context state could not be derived from the tile work unit",
@@ -1282,6 +1386,48 @@ mod general_intra_tests {
         assert_eq!(
             hash,
             "8a6751d4517073bad0bbe71f4b5537df8e8b0bfee85fcd6af1ac2d5878dd59e8"
+        );
+    }
+
+    // A multi-block intra frame: four flat 32x32 luma quadrants that split
+    // (Horz -> Vert -> Vert) into four square DC_PRED blocks. Each non-first
+    // block DC-predicts from its already-reconstructed neighbour. avmdec and
+    // dav2d agree on the decoded output.
+    const QUAD_FIXTURE: &[u8] =
+        include_bytes!("../../../tests/conformance/vectors/valid/syn-quad-intra-64x64-q80.ivf");
+
+    #[test]
+    fn quad_multiblock_intra_frame_decodes_to_oracle() {
+        use splot_recon::{BitDepth, PixelFormat, PlaneSize};
+
+        let options = DecodeOptions::default();
+        let context = DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize)))
+            .expect("context");
+        let plan = context.plan_bytes(QUAD_FIXTURE, options).expect("plan");
+        let frame = decode_minimal_frame_from_plan(QUAD_FIXTURE, options, &plan)
+            .expect("decode")
+            .frame;
+
+        assert_eq!(frame.bit_depth(), BitDepth::Eight);
+        assert_eq!(frame.pixel_format(), PixelFormat::Yuv420);
+        assert_eq!(frame.y().visible_size(), PlaneSize::new(64, 64).unwrap());
+
+        let y = frame.y().samples();
+        let quad = |r: usize, c: usize| y[r * 64 + c];
+        // TL / TR / BL / BR quadrant centres, matching the avmdec/dav2d oracle.
+        assert_eq!(
+            (quad(16, 16), quad(16, 48), quad(48, 16), quad(48, 48)),
+            (80, 200, 160, 40)
+        );
+        assert!(frame.u().unwrap().samples().iter().all(|&s| s == 120));
+        assert!(frame.v().unwrap().samples().iter().all(|&s| s == 130));
+
+        let hash = splot_recon::DecodedFrameHashInput::new(&frame)
+            .compute_hash()
+            .to_hex();
+        assert_eq!(
+            hash,
+            "c54ed4e996841e2178e74033d765dda1e1127d5d89c3012be3266c3e24a7fd28"
         );
     }
 }

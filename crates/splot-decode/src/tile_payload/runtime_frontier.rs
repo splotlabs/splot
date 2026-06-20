@@ -19,9 +19,10 @@ use super::mi_size_state::{TileMiSizeState, TileMiSizeStateError};
 use super::partition::PartitionType;
 use super::partition_allowed::PartitionFeatureFlags;
 use super::partition_traversal::{
-    DecodeBlockFrontier, TilePartitionBruState, TilePartitionFrameFacts,
+    DecodeBlockFrontier, GeneralIntraTreeWalkError, TilePartitionBruState, TilePartitionFrameFacts,
     TilePartitionLoopRestorationState, TilePartitionTraversalError, TilePartitionTraversalInput,
-    TilePartitionTraversalPlan, plan_tile_partition_traversal_cursor,
+    TilePartitionTraversalPlan, decode_general_intra_partition_tree,
+    plan_tile_partition_traversal_cursor,
 };
 use crate::{DecodeLimitError, DecodeLimitName, DecodeLimitOp, DecodeLimits};
 
@@ -146,6 +147,45 @@ pub(crate) fn plan_minimal_runtime_block_symbol_frontier<'payload>(
     })
 }
 
+/// Error from the general intra multi-block tree decode, separating the frame
+/// setup (frame facts / MI dimensions / MI-size allocation) from the partition
+/// tree walk (whose leaf error `E` is the caller's per-block decode error).
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum GeneralIntraMultiblockError<E> {
+    /// Frame-fact / MI-dimension / MI-size-state setup failed.
+    #[error("general intra multi-block setup failed: {0}")]
+    Setup(#[from] MinimalRuntimePartitionFrontierError),
+    /// The partition tree walk failed.
+    #[error("general intra multi-block tree walk failed: {0}")]
+    Walk(GeneralIntraTreeWalkError<E>),
+}
+
+/// Decodes the complete general intra partition tree for the tile, invoking
+/// `on_leaf` at each leaf block in decode order, and returns the live symbol
+/// decoder for the caller's § 8.2.4 `exit_symbol()` check. The MI-size partition
+/// context is maintained across blocks internally.
+pub(crate) fn decode_general_intra_multiblock_tree<'payload, E, F>(
+    work_unit: &mut DecodeTileWorkUnit<'payload>,
+    sequence: &SequenceHeader,
+    core: &FrameHeaderCore,
+    limits: DecodeLimits,
+    on_leaf: F,
+) -> Result<SymbolDecoder<'payload>, GeneralIntraMultiblockError<E>>
+where
+    F: FnMut(
+        &mut DecodeTileWorkUnit<'payload>,
+        &mut SymbolDecoder<'payload>,
+        &DecodeBlockFrontier,
+    ) -> Result<(), E>,
+{
+    let frame = minimal_partition_frame_facts(sequence, core)?;
+    let (mi_rows, mi_cols) = frame_mi_dimensions(core)?;
+    let mut mi_size_state = TileMiSizeState::new(mi_rows, mi_cols, frame.sb_size())
+        .map_err(MinimalRuntimePartitionFrontierError::from)?;
+    decode_general_intra_partition_tree(work_unit, frame, &mut mi_size_state, limits, on_leaf)
+        .map_err(GeneralIntraMultiblockError::Walk)
+}
+
 /// Plans the minimal runtime root partition frontier and returns its live cursor.
 pub(crate) fn plan_minimal_runtime_partition_frontier<'payload>(
     work_unit: &mut DecodeTileWorkUnit<'payload>,
@@ -184,7 +224,7 @@ pub(crate) fn plan_minimal_runtime_partition_frontier<'payload>(
     })
 }
 
-fn minimal_partition_frame_facts(
+pub(crate) fn minimal_partition_frame_facts(
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
 ) -> Result<TilePartitionFrameFacts, MinimalRuntimePartitionFrontierError> {
@@ -232,7 +272,7 @@ fn minimal_partition_frame_facts(
     )?)
 }
 
-fn frame_mi_dimensions(
+pub(crate) fn frame_mi_dimensions(
     core: &FrameHeaderCore,
 ) -> Result<(usize, usize), MinimalRuntimePartitionFrontierError> {
     let tile_info = core

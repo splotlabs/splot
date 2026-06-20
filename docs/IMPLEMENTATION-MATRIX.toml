@@ -10660,6 +10660,61 @@ fixtures = [
 diagnostics = ["decode/unsupported-feature"]
 
 [[feature]]
+id = "DECODE-GENERAL-INTRA-MULTIBLOCK"
+name = "General intra multi-block partition decode"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.20.3.1", "5.20.4.1", "5.20.5.3", "5.20.7.27", "7.13.2", "8.2.4", "8.3.2"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-1",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-4-1",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/tile_payload/partition_traversal.rs"
+openspec_change = "decode-general-intra-multiblock"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Extends the general intra decode from a single block to a SPLIT-partition multi-block frame. `decode_general_intra_partition_tree` walks the full AV2 §5.20.3.1 partition tree (depth-first), reading partition-split symbols and per-block syntax interleaved on one live symbol decoder and the tile CDFs, maintaining the §5.20.4.1 MI-size partition context across blocks (`TileMiSizeState`). At each PARTITION_NONE leaf, `decode_one_general_intra_block` decodes the §5.20.5.3 mode info and the §5.20.7.27 Y/U/V coefficients and reconstructs the block into a persistent `CurrentFrameWorkspace` in decode order, so each non-first block's §7.13.2 DC prediction reads its already-reconstructed above/left neighbours. The §8.3.2 coefficient contexts are derived from the persistent `TileCoeffContextState` neighbour lines (txb_skip from the above/left level/DC OR-reductions; dc_sign and the per-block context commit are handled by the nonzero coefficient pass). The single-block path is unified through this driver. The committed `syn-quad-intra-64x64-q80.ivf` (four flat quadrants -> Horz/Vert/Vert -> four square 32x32 DC blocks) decodes bit-exactly to the avmdec/dav2d oracle (pinned frame hash `c54ed4e996841e2178e74033d765dda1e1127d5d89c3012be3266c3e24a7fd28`), and the single-block q80/cos fixtures are unchanged. Gated to DC_PRED square blocks (so mode contexts reduce to the tile-origin ctx 0) with the §8.2.4 `exit_symbol()` bit-exactness guard; non-DC modes, non-square (rectangular leaf) partitions, multiple tiles, non-64x64 frames, inter prediction, in-loop filters, and live AVM/dav2d in CI remain future work."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "partial"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "partial"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/runtime_minimal.rs::general_intra_tests::quad_multiblock_intra_frame_decodes_to_oracle",
+    "crates/splot-decode/src/runtime_minimal.rs::general_intra_tests::q80_intra_frame_reconstructs_flat_planes",
+]
+commands = [
+    "cargo test -p splot-decode general_intra --locked",
+    "cargo test -p splot-cli --test conformance --locked",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-decoder-conformance-coverage",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "tests/conformance/vectors/valid/syn-quad-intra-64x64-q80.ivf",
+    "crates/splot-decode/src/tile_payload/partition_traversal.rs",
+    "crates/splot-decode/src/tile_payload/general_intra_residual.rs",
+    "crates/splot-decode/src/runtime_minimal.rs",
+    "crates/splot-decode/src/runtime_minimal_recon.rs",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
 id = "DECODE-COEFF-FSC-SCAN-WALK"
 name = "Coefficient FSC scan walk"
 category = "infrastructure"
