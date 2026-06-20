@@ -34,6 +34,11 @@ use super::cdf::{TileCdfSelector, TileCdfSubset};
 /// `uv_mode_idx` `L(3)` escape (§ 5.20.5.3 `read_intra_uv_mode`).
 const CHROMA_MODE_COUNT: u8 = 8;
 
+/// AV2 § 3 `UV_INTRA_MODES_CFL_NOT_ALLOWED` (`03-symbols.md`): the number of
+/// chroma intra modes when CfL is not allowed; the decoded `uv_mode` (after the
+/// escape) must index this list (`0..UV_INTRA_MODES_CFL_NOT_ALLOWED`).
+const UV_INTRA_MODES_CFL_NOT_ALLOWED: u8 = 13;
+
 /// AV2 § 5.20.5.3 `uv_mode_idx` literal width (`L(3)`).
 const UV_MODE_IDX_BITS: u32 = 3;
 
@@ -84,6 +89,15 @@ pub(crate) enum GeneralIntraBlockModeError {
         y_mode_set: u8,
         /// Decoded `y_mode_index` value.
         y_mode_index: u8,
+    },
+    /// The decoded `uv_mode` (after the `uv_mode_idx` escape) indexed past the
+    /// CfL-not-allowed chroma mode list (`>= UV_INTRA_MODES_CFL_NOT_ALLOWED`),
+    /// so `get_intra_uv_mode_set` has no entry for it (malformed or unsupported
+    /// chroma mode syntax).
+    #[error("general intra mode-info decoded out-of-range uv_mode {uv_mode}")]
+    InvalidUvMode {
+        /// Decoded `uv_mode` value.
+        uv_mode: u8,
     },
 }
 
@@ -145,6 +159,13 @@ pub(crate) fn decode_general_intra_block_modes(
     } else {
         uv_mode_base
     };
+
+    // The decoded `uv_mode` must index the CfL-not-allowed chroma mode list; the
+    // `uv_mode_idx` escape can otherwise produce 13 or 14, which
+    // `get_intra_uv_mode_set` cannot map.
+    if uv_mode >= UV_INTRA_MODES_CFL_NOT_ALLOWED {
+        return Err(GeneralIntraBlockModeError::InvalidUvMode { uv_mode });
+    }
 
     Ok(GeneralIntraBlockModes { y_mode, uv_mode })
 }
@@ -283,16 +304,12 @@ mod tests {
         // asserting and reconstructs the typed mode).
         assert_eq!(modes.y_mode, IntraYMode::DC_PRED);
         // The decoded uv_mode is a valid chroma-mode-list index for the
-        // CfL-not-allowed set (after any escape extension).
+        // CfL-not-allowed set (after any escape extension); out-of-range values
+        // are rejected before constructing GeneralIntraBlockModes.
         assert!(
-            usize::from(modes.uv_mode) < UV_INTRA_MODES_CFL_NOT_ALLOWED,
+            modes.uv_mode < UV_INTRA_MODES_CFL_NOT_ALLOWED,
             "uv_mode {} out of range",
             modes.uv_mode
         );
     }
-
-    /// AV2 § 3 `UV_INTRA_MODES_CFL_NOT_ALLOWED` (`03-symbols.md`): the number of
-    /// chroma intra modes when CfL is not allowed; the decoded `uv_mode` (after
-    /// the escape) indexes this list.
-    const UV_INTRA_MODES_CFL_NOT_ALLOWED: usize = 13;
 }

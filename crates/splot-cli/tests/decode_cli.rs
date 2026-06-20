@@ -307,7 +307,7 @@ fn decode_general_intra_fixture_decodes_modes_and_reaches_residual() {
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(json["rule_id"], "decode/unsupported-feature");
     assert_eq!(json["severity"], "Error");
-    assert_eq!(json["spec_section"], "5.20.3.1");
+    assert_eq!(json["spec_section"], "5.20.7.27");
     assert_eq!(json["matrix_row"], "general-intra-frame-frontier");
     assert_eq!(json["feature_id"], "DECODE-GENERAL-INTRA-FRAME-FRONTIER");
     assert_eq!(json["detail_kind"], "unsupported_feature");

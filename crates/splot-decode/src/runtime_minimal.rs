@@ -54,8 +54,11 @@ const FROZEN_MINIMAL_BASE_Q_IDX: u32 = 255;
 const GENERAL_INTRA_FEATURE_ID: &str = "DECODE-GENERAL-INTRA-FRAME-FRONTIER";
 const GENERAL_INTRA_MATRIX_ROW: &str = "general-intra-frame-frontier";
 const GENERAL_INTRA_TIER_ID: &str = "general-intra-8bit420-frontier-v1";
-const GENERAL_INTRA_SPEC_SECTION: &str = "5.20.3.1";
-const GENERAL_INTRA_REMEDIATION: &str = "General intra block-symbol, coefficient, and reconstruction decode is not yet implemented; track DECODE-GENERAL-INTRA-FRAME-FRONTIER.";
+const GENERAL_INTRA_TILE_SPEC_SECTION: &str = "5.20.1";
+const GENERAL_INTRA_PARTITION_SPEC_SECTION: &str = "5.20.3.1";
+const GENERAL_INTRA_MODE_SPEC_SECTION: &str = "5.20.5.3";
+const GENERAL_INTRA_RESIDUAL_SPEC_SECTION: &str = "5.20.7.27";
+const GENERAL_INTRA_REMEDIATION: &str = "General intra coefficient and reconstruction decode is not yet implemented; track DECODE-GENERAL-INTRA-FRAME-FRONTIER.";
 
 pub(crate) struct MinimalRuntimeFrame {
     pub(crate) frame: DecodedFrame<u8>,
@@ -105,7 +108,7 @@ pub(crate) fn decode_minimal_frame_from_plan_with_ivf_preflight(
 
     let candidate = single_plan_candidate(plan)?;
     let core = parse_frame_core(frame_envelope, &sequence)?;
-    if route_general_minimal_intra(&core) {
+    if route_general_minimal_intra(&sequence, &core) {
         return decode_general_minimal_intra_frame(
             plan,
             candidate,
@@ -593,11 +596,24 @@ fn validate_frame_core(core: &FrameHeaderCore, offset: ByteOffset) -> Result<()>
 /// general minimal-tool intra key frame routes to
 /// [`decode_general_minimal_intra_frame`]. Frames that are not minimal-tool
 /// intra (segmentation, quant matrices, delta-Q, in-loop filters, CCSO, GDF,
-/// or film grain enabled) fall through to the frozen gate so its precise
-/// diagnostics are preserved.
-fn route_general_minimal_intra(core: &FrameHeaderCore) -> bool {
+/// film grain, screen-content/palette, DIP, or SDP enabled) fall through to the
+/// frozen gate so its precise diagnostics are preserved.
+///
+/// `enable_dip` (§ 5.20.5.3 `dip_mode_info`) and `enable_sdp` (luma-only key
+/// partitions that omit the `uv_mode` read) are checked here at the sequence
+/// level — not in [`validate_sequence`] — because the frozen hash fixture is
+/// itself an `enable_sdp` stream whose hand-traced symbol path handles it; only
+/// the general mode decode cannot yet.
+fn route_general_minimal_intra(sequence: &SequenceHeader, core: &FrameHeaderCore) -> bool {
     core.quantization_params
         .is_some_and(|quant| quant.base_q_idx != FROZEN_MINIMAL_BASE_Q_IDX)
+        && sequence
+            .intra
+            .as_ref()
+            .is_some_and(|intra| !intra.enable_dip)
+        && sequence
+            .partition
+            .is_some_and(|partition| !partition.enable_sdp)
         && is_general_minimal_intra(core)
 }
 
@@ -655,14 +671,18 @@ fn is_general_minimal_intra(core: &FrameHeaderCore) -> bool {
         && core
             .intra_tail
             .is_some_and(|tail| !tail.film_grain.apply_grain)
+        // Screen-content tools enable §5.20.8.1 palette_mode_info() after uv_mode,
+        // adding mode symbols the general mode decode does not yet read.
+        && core.allow_screen_content_tools != Some(true)
 }
 
 /// Decodes a general minimal-tool intra key frame as far as the current
 /// frontier reaches.
 ///
-/// This runs the real AV2 § 5.20.3.1 partition traversal over the single tile
-/// and confirms the root partition frontier, then returns a structured
-/// `decode/unsupported-feature` diagnostic: block-symbol, coefficient,
+/// This runs the real AV2 § 5.20.3.1 partition traversal over the single tile,
+/// confirms the root partition frontier, decodes the § 5.20.5.3 block mode info
+/// (`decode_general_intra_block_modes`), then returns a structured
+/// `decode/unsupported-feature` diagnostic: § 5.20.7.27 coefficient,
 /// dequantization, inverse-transform, residual, and prediction decode for the
 /// general intra path are not yet wired. It never returns a reconstructed
 /// frame yet and never mutates the frozen minimal hash tier.
@@ -691,6 +711,7 @@ fn decode_general_minimal_intra_frame(
                 "general_intra_missing_tile_work_unit",
                 None,
                 "general intra decode requires one tile work unit",
+                GENERAL_INTRA_TILE_SPEC_SECTION,
             ));
         }
         work_units => {
@@ -698,6 +719,7 @@ fn decode_general_minimal_intra_frame(
                 "general_intra_unexpected_tile_work_units",
                 work_units.first().map(|tile| tile.tile_byte_span().start),
                 "general intra decode currently supports exactly one tile work unit",
+                GENERAL_INTRA_TILE_SPEC_SECTION,
             ));
         }
     };
@@ -715,7 +737,8 @@ fn decode_general_minimal_intra_frame(
     Err(general_intra_unsupported(
         "general_intra_residual_decode_unimplemented",
         Some(tile_offset),
-        "general intra frame decodes the AV2 §5.20.5.3 block mode info; residual/coefficient decode and reconstruction are not yet implemented",
+        "general intra frame decodes the AV2 §5.20.5.3 block mode info; §5.20.7.27 residual/coefficient decode and reconstruction are not yet implemented",
+        GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
     ))
 }
 
@@ -729,11 +752,19 @@ fn general_intra_block_mode_error(
             "general_intra_block_mode_parse",
             Some(offset),
             "general intra block mode-info syntax could not be parsed from the tile payload",
+            GENERAL_INTRA_MODE_SPEC_SECTION,
         ),
         GeneralIntraBlockModeError::UnsupportedYMode { .. } => general_intra_unsupported(
             "general_intra_unsupported_y_mode",
             Some(offset),
             "general intra decode currently reconstructs only the non-directional luma intra mode subset",
+            GENERAL_INTRA_MODE_SPEC_SECTION,
+        ),
+        GeneralIntraBlockModeError::InvalidUvMode { .. } => general_intra_unsupported(
+            "general_intra_invalid_uv_mode",
+            Some(offset),
+            "general intra decode rejected an out-of-range chroma uv_mode index",
+            GENERAL_INTRA_MODE_SPEC_SECTION,
         ),
     }
 }
@@ -755,6 +786,7 @@ fn general_intra_partition_frontier_error(
                 "general_intra_partition_frontier",
                 Some(offset),
                 "general intra decode could not reach a supported AV2 §5.20.3.1 single-block root partition frontier",
+                GENERAL_INTRA_PARTITION_SPEC_SECTION,
             )
         }
     }
@@ -764,6 +796,7 @@ fn general_intra_unsupported(
     reason: &'static str,
     byte_offset: Option<ByteOffset>,
     message: &'static str,
+    spec_section: &'static str,
 ) -> DecodeError {
     DecodeError::UnsupportedFeature {
         unsupported: Box::new(DecodeUnsupportedFeature::new(
@@ -771,7 +804,7 @@ fn general_intra_unsupported(
             GENERAL_INTRA_TIER_ID,
             GENERAL_INTRA_MATRIX_ROW,
             GENERAL_INTRA_FEATURE_ID,
-            GENERAL_INTRA_SPEC_SECTION,
+            spec_section,
             message,
             GENERAL_INTRA_REMEDIATION,
             byte_offset,
