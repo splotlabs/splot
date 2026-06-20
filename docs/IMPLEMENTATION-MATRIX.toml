@@ -4939,6 +4939,42 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-WRITER-INPUT-SEQ-VIEW"
+name = "Encoder writer-input minimal-intra CoreSeqView constructor"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.4.1"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers/frame/info.rs"
+openspec_change = "encoder-coreseqview-ctor"
+tracking_issue = ""
+owner = "encoder"
+risk = "low"
+# encode stays `todo`: the constructor (write-surface) exists and the round-trip suite
+# regresses it, but no splot-encode code consumes it yet — the FrameHeaderCore assembler
+# and the encoder call-site are later bridge bricks.
+notes = "Header-bridge BRICK 2 (after ENC-WRITER-INPUT-INTER-VIEW). write_tile_group_obu serializes the whole frame header from a &CoreSeqView + &FrameHeaderCore; the encoder needs a CoreSeqView, otherwise #[non_exhaustive]/crate-private-field and built only from a parsed SequenceHeader (from_sequence). Adds `CoreSeqView::new_minimal_intra(single_picture_header_flag, max_frame_width, max_frame_height) -> CoreSeqView` in crates/splot-core/src/headers/frame/info.rs — the §5.4.1 view a minimal intra frame needs: every unused sequence tool disabled (inter via CoreSeqInterView::new_minimal_intra(); no segmentation/tiles/loop-filters/restoration/CCSO; no film grain), 8-bit YUV420, 3 planes. Parameterized by the two things that vary for the encoder target: the §5.4.1 frame-size maxima (a single-picture frame infers frame_size_override 0 → the frame size is taken from these maxima, so they must equal the coded size, e.g. the 64x64 frozen tier) and single_picture_header_flag (which the §5.18.2 control region + the §5.4.10 filter view + the §5.4.1 CCSO view all read — §6.17.2 single-picture inferences). #[non_exhaustive] preserved (within-crate literal). CoreSeqView has NO PartialEq → ORACLE = the base_seq() test helper was PROMOTED to delegate to the ctor (base_seq() = new_minimal_intra(false, 4096, 2304)), so the entire frame-header round-trip suite (83 frame_header_core tests) regresses it; the now-dead nested-view helpers (test_sub_views/base_filter/base_restoration/base_ccso/base_inter) were removed so the ctor (~110 lines) replaces ~124 lines of helpers and info.rs stays under its 5090 allowance (net ~+9); plus a direct parameterization test. Also replaced the remaining hand-rolled all-disabled CoreSeqInterView literal in frame_header_core_proptests.rs with new_minimal_intra() (the brick-1 follow-up de-dup). Encoder-mission-DRIVEN (owner=encoder), code in splot-core, per the maintainer's writer-bridge decision. encode=todo. This row does not claim a FrameHeaderCore constructor, a tile-group OBU, a frame, a packet, receive_packet output, CLI success, or Baseline Encoder Profile v1. NEXT: FrameHeaderCore minimal-intra parse-backed assembler (brick 3) → re-export TileGroupStructure/TileGroupFraming (brick 4) → encoder write_tile_group_obu call-site (brick 5)."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "todo"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-core/src/headers/frame/info.rs::tests::core_seq_view_minimal_intra_propagates_single_picture_and_dims"]
+commands = ["cargo test -p splot-core core_seq_view_minimal_intra", "cargo test -p splot-core frame_header_core"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-RECON-DEPENDENCY"
 name = "Encoder reconstruction dependency boundary"
 category = "encoder"

@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 326 feature(s).
+Matrix version 1. Last reviewed 2026-06-15. 327 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -151,6 +151,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `ENC-WRITER-INPUT-FRAMING` | Encoder writer-input single-tile framing constructor | encoder | encoder-tool | done | done | n/a | n/a | done | todo | n/a | done | n/a | `crates/splot-core/src/headers/tile_group.rs` |
 | `ENC-WRITER-INPUT-STRUCTURE` | Encoder writer-input single-tile structure constructor | encoder | encoder-tool | done | done | n/a | n/a | done | todo | n/a | done | n/a | `crates/splot-core/src/headers/tile_group.rs` |
 | `ENC-WRITER-INPUT-INTER-VIEW` | Encoder writer-input minimal-intra inter view constructor | encoder | encoder-tool | done | done | n/a | n/a | done | todo | n/a | done | n/a | `crates/splot-core/src/headers/frame/info.rs` |
+| `ENC-WRITER-INPUT-SEQ-VIEW` | Encoder writer-input minimal-intra CoreSeqView constructor | encoder | encoder-tool | done | done | n/a | n/a | done | todo | n/a | done | n/a | `crates/splot-core/src/headers/frame/info.rs` |
 | `ENC-RECON-DEPENDENCY` | Encoder reconstruction dependency boundary | encoder | infrastructure | done | done | n/a | n/a | n/a | n/a | n/a | done | n/a | `crates/splot-encode/src/recon_boundary.rs` |
 | `ENC-INTRA-TOY-V0` | Minimal toy intra encoder path | encoder | encoder-tool | partial | todo | n/a | n/a | todo | todo | todo | todo | pending | `crates/splot-encode/src/context.rs` |
 | `ENC-RATE-CONTROL-V0` | Initial rate control strategy | encoder | encoder-tool | partial | todo | n/a | n/a | n/a | todo | n/a | todo | n/a | `crates/splot-encode/src/context.rs` |
