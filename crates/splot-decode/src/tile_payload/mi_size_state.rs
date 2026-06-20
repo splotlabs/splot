@@ -86,6 +86,16 @@ impl TileMiSizeState {
         })
     }
 
+    /// Resets the left MI-size partition context to the clear-context sentinel,
+    /// mirroring AV2 § 5.20.2.1 `clear_left_context()` (§ 6.19.2.1) invoked at
+    /// the start of every superblock row. The above MI-size context persists
+    /// across rows, so only the left line is reset.
+    pub(crate) fn clear_left_context(&mut self) {
+        for line in &mut self.left_mi_sizes {
+            line.fill(BLOCK_256X256_INDEX);
+        }
+    }
+
     /// Applies AV2 § 5.20.4.1 luma MI-size writes for one block.
     pub(crate) fn update_luma_block(
         &mut self,
