@@ -1,13 +1,13 @@
 ## 1. Minimal-intra CoreSeqView constructor
 
-- [x] 1.1 Add `CoreSeqView::new_minimal_intra(single_picture_header_flag, max_frame_width, max_frame_height)` in `splot-core` (the inter view via its constructor + the six nested views all-disabled), preserving `#[non_exhaustive]`.
+- [x] 1.1 Add `CoreSeqView::new_minimal_intra(max_frame_width, max_frame_height) -> Option<Self>` in `splot-core` (the non-single-picture view; the inter view via its constructor + the six nested views all-disabled; `None` for maxima outside `1..=2^16`), preserving `#[non_exhaustive]`.
 - [x] 1.2 Promote `base_seq()` to delegate to the constructor and remove the now-dead nested-view test helpers.
 - [x] 1.3 Replace the remaining hand-rolled all-disabled `CoreSeqInterView` literal in the frame-header property tests with `CoreSeqInterView::new_minimal_intra()`.
 
 ## 2. Tests
 
 - [x] 2.1 The promoted `base_seq()` keeps the frame-header round-trip suites green (the regression oracle).
-- [x] 2.2 A direct test proves the parameterization: `single_picture_header_flag` reaches the seq/filter/CCSO views and the frame maxima are taken verbatim.
+- [x] 2.2 A direct test proves the parameterization: the dim bit-widths are derived from the maxima (clamped to the 1-bit minimum) and maxima outside `1..=2^16` yield `None`.
 
 ## 3. Tracking and verification
 

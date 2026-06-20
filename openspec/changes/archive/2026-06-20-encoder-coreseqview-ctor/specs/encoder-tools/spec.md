@@ -18,8 +18,9 @@ constructor, a tile-group OBU, a frame, a packet, or `Context::receive_packet` o
 
 - **WHEN** the constructor is called with frame maxima
 - **THEN** `frame_width_bits` / `frame_height_bits` SHALL be derived from the maxima
-  (`ceil_log2`), so an overridden frame size of any in-range maxima is writable, and
-  `max_frame_width` / `max_frame_height` SHALL equal the supplied maxima.
+  (`ceil_log2(max).max(1)`, clamped to the 1-bit spec minimum), so an overridden frame
+  size of any in-range maxima is writable; `max_frame_width` / `max_frame_height` SHALL
+  equal the supplied maxima; and maxima outside `1..=2^16` SHALL yield `None`.
 
 #### Scenario: The constructor backs the frame-header round-trips
 

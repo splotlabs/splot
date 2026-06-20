@@ -11,13 +11,15 @@ public minimal-intra constructor.
 
 - Add `ENC-WRITER-INPUT-SEQ-VIEW` as an encoder writer-input-bridge feature (code in
   `splot-core`, driven by the encoder mission).
-- Add `CoreSeqView::new_minimal_intra(single_picture_header_flag, max_frame_width,
-  max_frame_height) -> CoreSeqView` in `splot-core`: the § 5.4.1 view a minimal intra
+- Add `CoreSeqView::new_minimal_intra(max_frame_width, max_frame_height) ->
+  Option<CoreSeqView>` in `splot-core` (the **non-single-picture** view; `None` for
+  maxima outside `1..=2^16` since § 5.4.1 `frame_*_bits` is `f(4)`): the § 5.4.1 view a minimal intra
   frame needs — every unused sequence tool disabled (inter via
   `CoreSeqInterView::new_minimal_intra`, no segmentation/tiles/loop-filters/restoration/
-  CCSO, no film grain), 8-bit YUV420, with the frame-size maxima and
-  `single_picture_header_flag` (which the control region, filter view, and CCSO view
-  all read) as inputs.
+  CCSO, no film grain), 8-bit YUV420, with the frame-size maxima as inputs and
+  `frame_width_bits` / `frame_height_bits` derived from them (`ceil_log2(max).max(1)`).
+  The single-picture variant (different § 5.4.1 inferences) is a separate later
+  constructor.
 - Promote the `base_seq()` test helper to delegate to the constructor, removing the
   now-dead nested-view test helpers, so the existing frame-header round-trip suite
   regresses it; add a direct parameterization test.
