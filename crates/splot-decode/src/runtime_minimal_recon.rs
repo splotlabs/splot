@@ -217,16 +217,22 @@ fn reconstruct_general_intra_chroma_smooth_into(
 /// Unlike [`reconstruct_general_intra_luma_nondc_first_block_into`] (which is
 /// gated to the no-neighbour top-left block and uses the § 7.13.2.1 flat
 /// fallbacks), this reads the genuine reconstructed left column / above row of an
-/// already-decoded neighbour. For a full-superblock block with a left neighbour
-/// but no above neighbour, § 7.13.2.1 sets `LeftCol[i]` to the reconstructed left
-/// column (clamping the bottom-left sentinel `LeftCol[h]` to the last in-block
-/// sample, since `num4BelowLeft == 0` in raster order) and `AboveRow[i]` to the
-/// repeated first left sample (`CurrFrame[plane][y][x-1]`). For `SMOOTH_V_PRED`
-/// the § 7.13.2.13 output depends only on `AboveRow[j]` and the bottom-left
-/// sentinel `LeftCol[h]`; for `SMOOTH_H_PRED` it depends only on `LeftCol[i]` and
-/// the top-right sentinel `AboveRow[w]`. No directional / IDIF edge synthesis is
-/// involved (smooth prediction is linear interpolation, not an angle copy), so
-/// this path is bit-exact against the AVM/dav2d oracle for the verified subset.
+/// already-decoded neighbour at **any** superblock position in the 2-D grid.
+/// First superblock row (a left neighbour but no above neighbour): § 7.13.2.1
+/// sets `LeftCol[i]` to the reconstructed left column (clamping the bottom-left
+/// sentinel `LeftCol[h]` to the last in-block sample, since `num4BelowLeft == 0`
+/// in raster order) and `AboveRow[i]` to the repeated first left sample
+/// (`CurrFrame[plane][y][x-1]`). Row > 0 (an above neighbour, and a left
+/// neighbour when not at the frame left edge): § 7.13.2.1 sets `AboveRow[i]` to
+/// the **real reconstructed above row** (`CurrFrame[plane][y-1][...]`) and, when
+/// an already-decoded above-right block is in frame (`num4AboveRight > 0`,
+/// supplied by the caller), the top-right sentinel `AboveRow[w]` to the real
+/// reconstructed above-right sample. For `SMOOTH_V_PRED` the § 7.13.2.13 output
+/// depends only on `AboveRow[j]` and the bottom-left sentinel `LeftCol[h]`; for
+/// `SMOOTH_H_PRED` it depends only on `LeftCol[i]` and the top-right sentinel
+/// `AboveRow[w]`. No directional / IDIF edge synthesis is involved (smooth
+/// prediction is linear interpolation, not an angle copy), so this path is
+/// bit-exact against the AVM/dav2d oracle for the verified subset.
 ///
 /// `num4_above_right` is the § 7.13.2.1 `num4AboveRight` (in 4x4 units) for this
 /// luma transform block; it selects the § 7.13.2.13 top-right sentinel

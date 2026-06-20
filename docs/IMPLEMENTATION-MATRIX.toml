@@ -11366,6 +11366,60 @@ fixtures = [
 diagnostics = ["decode/unsupported-feature"]
 
 [[feature]]
+id = "DECODE-GENERAL-INTRA-GRID-NEIGHBOUR-NONDC"
+name = "General intra 2-D grid non-DC SMOOTH luma over a real reconstructed above row"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.20.2.3", "5.20.5.3", "5.20.7.25", "5.20.7.27", "7.13.2.1", "7.13.2.13"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-2-3",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-25",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-1",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-13",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/runtime_minimal.rs"
+openspec_change = "decode-general-intra-grid-neighbour-nondc"
+tracking_issue = ""
+owner = "decoder"
+risk = "low"
+notes = "Lifts the prior `DECODE-GENERAL-INTRA-MB-NEIGHBOUR-SMOOTH` restriction that gated the §7.13.2.13 SMOOTH_V/H luma neighbour-edge decode to the FIRST superblock row (`frontier.r == 0`, `haveAbove == 0`, rejecting a row>0 block with the `general_intra_multirow_neighbour_non_dc` diagnostic). A full-superblock SMOOTH luma block at ANY 2-D grid position now decodes: the admission match collapses the two prior arms (first-row admit + row>0 reject) into one `n4w == FULL_SB_N4_LUMA` admit, and `nondc_luma_has_neighbour` drops its `&& frontier.r == 0`. The reconstruction is unchanged — `reconstruct_general_intra_luma_nondc_neighbour_block_into` already delegates to the plane-general `reconstruct_general_intra_smooth_over_edges_into`, which builds the §7.13.2.1 edges from the partially-built frame (`haveAbove`/`haveLeft` per position) and resolves the top-right sentinel via `resolve_smooth_above_right_sentinel` over `full_sb_num4_above_right` (§5.20.7.25 `count_top_right_avail` over the §5.20.2.3 `BlockDecoded` state) — the SAME machinery the SMOOTH chroma grid path (`DECODE-GENERAL-INTRA-GRID`) already uses bit-exact. For a row>0 block §7.13.2.1 supplies the REAL reconstructed above row `CurrFrame[0][y-1][...]` (the bottom row of the already-decoded above superblock); SMOOTH_V's predictor reads `AboveRow[j]` and the bottom-left sentinel `LeftCol[h]`, so this is the first general-intra path to read a real reconstructed above row for non-DC luma. SMOOTH prediction is linear interpolation over those edges (no `enable_intra_edge_filter` / IDIF / upsample synthesis), so the non-flat real above-row edge reconstructs bit-exact. The `y_mode_index` §8.3.2 ctx is unchanged (the per-MI `IntraJointModes` grid from `DECODE-GENERAL-INTRA-MB-NEIGHBOUR-SMOOTH`): SMOOTH_V/H are non-directional (`modeDelta < NON_DIRECTIONAL_MODES_COUNT`), so ctx stays 0 and they are admitted; a directional neighbour (`ctx != 0`) is still REJECTED (`general_intra_directional_neighbour_y_mode_index_ctx`). The committed `syn-vgrid-intra-192x128-q120.ivf` (192x128 = three superblock columns by two rows, vertical gradient top 20 -> bottom 230 with a small per-superblock-column tint, flat chroma U=120 V=130) codes the right two columns as SMOOTH_V_PRED luma; the decisive block is the row>0 SMOOTH_V luma superblock at the MIDDLE (non-rightmost) column (`frontier.r == 16`, `frontier.c == 16`), which reads the real reconstructed above row and (being non-rightmost) has a decoded above-right superblock so the `full_sb_num4_above_right` / `AboveRow[w]` resolver runs (SMOOTH_V ignores the top-right sentinel value). It decodes bit-exactly to the avmdec AND dav2d oracle (md5 136a87190eeecb1ccd32e7cf27861c9c, pinned frame hash c62dd0eb74ab1129e9cd4d6a326cfef9026f62ab4144a378b38cb325b45462d2), guarded by the §8.2.4 `exit_symbol()` bit-exactness check; all existing general-intra fixtures still decode bit-exact and the OLD code rejected this frame (verified). Scope: 2-D grid SMOOTH (SMOOTH_V / SMOOTH_H) luma over a real reconstructed above row, gated to full 64x64 superblock blocks (`n4w == 16`). Out of scope (still rejected / deferred): neighbour-having §7.13.2.8 directional (D135) luma over a real non-flat edge (needs the real IDIF 4-tap, since `enableIdif == 0` bilinear equals IDIF only for a flat edge — `general_intra_multiblock_directional_luma`), directional-neighbour `y_mode_index` reorder, SMOOTH / PAETH luma, sub-superblock (split) non-DC blocks (need the per-block §5.20.2.3 `BlockDecoded` update — `general_intra_multiblock_non_dc_subblock`), multiple tiles, inter prediction, in-loop filters, and live AVM/dav2d in CI."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "partial"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "partial"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/runtime_minimal.rs::general_intra_tests::vgrid_multirow_smooth_v_above_row_intra_frame_decodes_to_oracle",
+    "crates/splot-decode/src/runtime_minimal.rs::general_intra_tests::mbvg_multiblock_smooth_v_neighbour_intra_frame_decodes_to_oracle",
+    "crates/splot-decode/src/runtime_minimal.rs::general_intra_tests::grid_2d_intra_frame_decodes_to_oracle",
+    "crates/splot-decode/src/tile_payload/general_intra_block.rs::tests::directional_neighbour_ctx_is_rejected_without_reading_symbols",
+]
+commands = [
+    "cargo test -p splot-decode general_intra --locked",
+    "cargo test -p splot-cli --test conformance --locked",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "tests/conformance/vectors/valid/syn-vgrid-intra-192x128-q120.ivf",
+    "crates/splot-decode/src/runtime_minimal.rs",
+    "crates/splot-decode/src/runtime_minimal_recon.rs",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
 id = "DECODE-COEFF-FSC-SCAN-WALK"
 name = "Coefficient FSC scan walk"
 category = "infrastructure"
