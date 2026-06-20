@@ -23,11 +23,9 @@ mod obu_tests {
     use super::*;
     use crate::bitio::BitReader;
     use crate::headers::frame::{
-        CoreSeqCcsoView, CoreSeqFilterView, CoreSeqInterView, CoreSeqQuantView,
-        CoreSeqRestorationView, CoreSeqSegView, CoreSeqTileView, FrameHeaderParseStatus, FrameType,
-        FrameReferenceStateView, init_core_from_prefix, parse_core_body, parse_frame_header_prefix,
+        FrameHeaderParseStatus, FrameReferenceStateView, FrameType, init_core_from_prefix,
+        parse_core_body, parse_frame_header_prefix,
     };
-    use crate::headers::sequence::{CdefOnSkipTxfm, ChromaFormatIdc, LevelIdx, SuperblockSize, Tier};
     use crate::headers::tile_group::{
         TileFraming, parse_tile_group_framing, parse_tile_group_prefix,
         parse_tile_group_structure,
@@ -79,110 +77,10 @@ mod obu_tests {
 
     // ---- sub-view builders (mirror frame_header_core_tests.rs::base_*) -----------------
 
-    fn base_quant() -> CoreSeqQuantView {
-        CoreSeqQuantView {
-            bit_depth: 8,
-            num_planes: 3,
-            separate_uv_delta_q: false,
-            equal_ac_dc_q: false,
-            y_dc_delta_q_enabled: false,
-            uv_dc_delta_q_enabled: false,
-            uv_ac_delta_q_enabled: false,
-            base_y_dc_delta_q: 0,
-            base_uv_dc_delta_q: 0,
-            base_uv_ac_delta_q: 0,
-            enable_tcq: false,
-            choose_tcq_per_frame: false,
-            enable_parity_hiding: false,
-        }
-    }
-
-    fn base_seg() -> CoreSeqSegView {
-        CoreSeqSegView {
-            seq_seg_info_present_flag: false,
-            seq_allow_seg_info_change: false,
-            enable_ext_seg: false,
-            max_segments: 8,
-            seq_segment_info: None,
-        }
-    }
-
-    fn base_tile() -> CoreSeqTileView {
-        CoreSeqTileView {
-            seq_tile_info_present_flag: false,
-            allow_tile_info_change: false,
-            seq_tile_params: None,
-            seq_sb_col_starts: Vec::new(),
-            seq_sb_row_starts: Vec::new(),
-            seq_sb_size: SuperblockSize::Block128x128,
-            use_256x256_superblock: false,
-            use_128x128_superblock: true,
-            enable_avg_cdf: false,
-            avg_cdf_type: 0,
-            seq_tier: Tier::Main,
-            seq_level_idx: LevelIdx::from_bits(0),
-        }
-    }
-
-    fn base_filter() -> CoreSeqFilterView {
-        CoreSeqFilterView {
-            enable_cdef: false,
-            enable_gdf: false,
-            gdf_unit_matches_sb_size: false,
-            disable_loopfilters_across_tiles: false,
-            cdef_on_skip_txfm: CdefOnSkipTxfm::Adaptive,
-            df_par_bits_minus_2: 0,
-            single_picture_header_flag: false,
-        }
-    }
-
-    fn base_restoration() -> CoreSeqRestorationView {
-        CoreSeqRestorationView {
-            enable_restoration: false,
-            lr_pc_wiener_disabled: false,
-            lr_wiener_nonsep_disabled: false,
-            lr_uv_pc_wiener_disabled: false,
-            lr_uv_wiener_nonsep_disabled: false,
-        }
-    }
-
-    fn base_ccso() -> CoreSeqCcsoView {
-        CoreSeqCcsoView {
-            enable_ccso: false,
-            single_picture_header_flag: false,
-        }
-    }
-
-    fn base_inter() -> CoreSeqInterView {
-        CoreSeqInterView::new_minimal_intra()
-    }
-
     fn base_seq() -> CoreSeqView {
-        CoreSeqView {
-            num_ref_frames: 8,
-            order_hint_bits: 4,
-            long_term_frame_id_bits: 0,
-            enable_short_refresh_frame_flags: false,
-            monotonic_output_order_flag: false,
-            single_picture_header_flag: false,
-            max_mlayer_id: 0,
-            frame_width_bits: 12,
-            frame_height_bits: 12,
-            max_frame_width: 4096,
-            max_frame_height: 2304,
-            seq_force_screen_content_tools: 0,
-            seq_force_integer_mv: 0,
-            allow_frame_max_bvp_drl_bits: false,
-            inter: base_inter(),
-            quant: base_quant(),
-            seg: base_seg(),
-            tile: base_tile(),
-            filter: base_filter(),
-            restoration: base_restoration(),
-            ccso: base_ccso(),
-            chroma_format_idc: ChromaFormatIdc::Yuv420,
-            film_grain_params_present: Some(false),
-        }
+        // Delegates to the public encoder writer-input constructor so this writer
+        // round-trip suite regresses CoreSeqView::new_minimal_intra.
+        CoreSeqView::new_minimal_intra(4096, 2304).expect("4096x2304 is a valid maximum")
     }
 
     /// The canonical CLK, cur_mfh_id == 0, single-tile, non-lossless intra `frame_header()` body
