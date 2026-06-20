@@ -15,7 +15,9 @@
 // matching the sibling emission modules' policy.
 #![allow(dead_code)]
 
-use crate::block_symbol_trace::{BlockSymbolToken, compose_minimal_intra_dc_block_mode_trace};
+use crate::block_symbol_trace::{
+    BlockSymbolToken, compose_minimal_intra_dc_block_mode_trace, encode_block_symbol_trace,
+};
 use crate::coefficient_tokenization::{
     chroma_v_all_zero_token, general_intra_32x32_chroma_u_all_zero_token,
     general_intra_64x64_luma_all_zero_token,
@@ -73,6 +75,25 @@ pub(crate) fn compose_general_intra_dc_skip_block_trace() -> Result<Vec<BlockSym
     Ok(trace)
 }
 
+/// Encodes the general intra DC skip-block trace into its AV2 § 8.2.4-finalized
+/// `tile_data` bytes — the entropy-coded payload of a single-tile general intra
+/// frame, which the decoder consumes directly from byte 0 via § 8.2.2
+/// `init_symbol` with no structural prefix (a single last tile carries no
+/// `tile_size_minus_1` field).
+///
+/// These are the § 5.20 `tile_data` bytes for one 64x64 DC skip (all-zero)
+/// superblock. For the decoder to read them back identically, the muxing frame
+/// header (a later brick) must set `base_q_idx <= 90` (so the decoder derives
+/// coefficient CDF q-context `0`, matching [`SKIP_FRAME_COEFF_CDF_Q_CTX`]) and
+/// `disable_cdf_update == 0` (so the tile reader's adaptive CDFs match the
+/// `CdfUpdateMode::Enabled` this trace is coded under). This function emits only
+/// the tile bytes; container assembly and the cross-crate decode oracle are later
+/// bricks.
+pub(crate) fn encode_general_intra_dc_skip_tile_data() -> Result<Vec<u8>> {
+    let trace = compose_general_intra_dc_skip_block_trace()?;
+    encode_block_symbol_trace(&trace)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -118,5 +139,29 @@ mod tests {
 
         assert_eq!(first.bytes(), second.bytes());
         assert_eq!(first.decoded_symbols(), second.decoded_symbols());
+    }
+
+    #[test]
+    fn skip_tile_data_is_nonempty_and_equals_the_proven_trace_bytes() {
+        let tile_data = encode_general_intra_dc_skip_tile_data().unwrap();
+        // A zero-size tile is a §8.2.2 defect; the §8.2.4 finalization always
+        // emits at least the exit-window bytes.
+        assert!(!tile_data.is_empty());
+
+        // The emitted tile_data IS the finalized byte stream of the proven skip
+        // trace — identical to the bytes the roundtrip decodes back, so the
+        // standalone emission inherits that decodability proof.
+        let trace = compose_general_intra_dc_skip_block_trace().unwrap();
+        let proof = roundtrip_block_symbol_trace(&trace).unwrap();
+        assert_eq!(tile_data, proof.bytes());
+        assert_eq!(proof.decoded_symbols(), &[0, 0, 0, 0, 1, 1, 1]);
+    }
+
+    #[test]
+    fn skip_tile_data_is_deterministic() {
+        assert_eq!(
+            encode_general_intra_dc_skip_tile_data().unwrap(),
+            encode_general_intra_dc_skip_tile_data().unwrap()
+        );
     }
 }
