@@ -19,6 +19,7 @@ mod block_symbol;
 mod cdf;
 mod coeff_loop;
 mod coeff_state;
+mod general_intra_block;
 mod input;
 mod mi_size_state;
 mod partition;
@@ -44,6 +45,9 @@ use crate::{
 };
 
 pub(crate) use block_symbol::MinimalBlockSymbolTraceError;
+pub(crate) use general_intra_block::{
+    GeneralIntraBlockModeError, decode_general_intra_block_modes,
+};
 pub(crate) use input::{
     FrameCandidateCdfFacts, FrameCandidateCoeffFacts, FrameCandidateTileBoundaryError,
     FrameCandidateTileBoundaryInput, FrameCandidateTileFacts, FrameCandidateTileMalformed,
