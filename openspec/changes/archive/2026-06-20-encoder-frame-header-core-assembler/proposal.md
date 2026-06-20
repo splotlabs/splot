@@ -24,8 +24,10 @@ this also adds the single-picture `CoreSeqView` variant the body is matched to.
   `(enable_avg_cdf, avg_cdf_type) = (true, 1)`, and § 5.4.1 `monotonic_output_order_flag =
   true`. Every other field stays the non-single view's disabled-tool value (a legal
   single-picture choice). Same `None` domain as `new_minimal_intra`.
-- Add `build_minimal_intra_clk_core(seq: &CoreSeqView) -> Result<FrameHeaderCore,
-  MinimalIntraCoreError>`: serialize the canonical § 5.18.2 body (`BitWriter`, one element
+- Add `build_minimal_intra_clk_core() -> Result<(FrameHeaderCore, CoreSeqView),
+  MinimalIntraCoreError>` (self-contained: it builds the matched 64x64 single-picture
+  view internally and returns the `(core, seq)` pair, so the body and view cannot be
+  mis-paired): serialize the canonical § 5.18.2 body (`BitWriter`, one element
   per syntax field — `order_hint` omitted because `OrderHintBits == 0`, an explicit
   `allow_screen_content_tools` bit because SCC is `SELECT`, `uniform_tile_spacing_flag`
   with no increment bits because 64x64 is one superblock, `base_q_idx == 255`) and parse it

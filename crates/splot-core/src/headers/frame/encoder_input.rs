@@ -227,13 +227,16 @@ impl CoreSeqView {
 }
 
 /// Error assembling the canonical minimal-intra CLK [`FrameHeaderCore`]
-/// ([`build_minimal_intra_clk_core`]): the fixed § 5.18.2 canonical body either failed to
-/// serialize or failed to parse. Both arms are unreachable for the canonical input; they
-/// exist only to honor the no-panic library policy (no `unwrap`/`expect` on the internal
-/// `BitWriter` / parser results).
+/// ([`build_minimal_intra_clk_core`]). Every arm is unreachable for the fixed canonical
+/// 64x64 frozen tier; they exist only to honor the no-panic library policy (no
+/// `unwrap`/`expect` on the internal sequence-view / `BitWriter` / parser results).
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum MinimalIntraCoreError {
+    /// The internal canonical 64x64 single-picture sequence view could not be built
+    /// (unreachable: 64 is inside the valid `1..=2^16` maxima domain).
+    #[error("canonical minimal-intra sequence view could not be built")]
+    Seq,
     /// The fixed canonical body failed to serialize through [`BitWriter`].
     #[error("canonical minimal-intra body serialization failed: {0}")]
     Body(#[from] WriteError),
@@ -271,26 +274,37 @@ fn minimal_intra_clk_body_bytes() -> WriteResult<Vec<u8>> {
     Ok(writer.into_bytes())
 }
 
-/// Assembles the canonical minimal-intra `OBU_CLOSED_LOOP_KEY` [`FrameHeaderCore`] for the
-/// frozen 64x64, `base_q_idx == 255` single-picture tier by **parsing** the canonical
-/// § 5.18.2 body (`minimal_intra_clk_body_bytes`) against `seq` — the parse-backed
-/// assembler is conformant by construction (it inverts the same parser the decoder runs).
+/// The frozen minimal-intra tier's frame dimension: a single 64x64 superblock. The
+/// canonical body's bit layout is matched to it (single-superblock tile info, omitted
+/// override frame size), so the assembler builds the sequence view at this dimension
+/// itself rather than accepting one.
+const FROZEN_TIER_DIM: u32 = 64;
+
+/// Assembles the canonical minimal-intra `OBU_CLOSED_LOOP_KEY` frame header for the frozen
+/// 64x64, `base_q_idx == 255` single-picture tier and returns it paired with the matching
+/// sequence view, by **parsing** the canonical § 5.18.2 body (`minimal_intra_clk_body_bytes`)
+/// against an internally built [`CoreSeqView::new_minimal_intra_single_picture`] — the
+/// parse-backed assembler is conformant by construction (it inverts the same parser the
+/// decoder runs). The returned [`FrameHeaderCore`] has status
+/// [`FrameHeaderParseStatus::IntraHeaderComplete`].
 ///
-/// `seq` must be a [`CoreSeqView::new_minimal_intra_single_picture`] view (the canonical
-/// body's bit layout depends on its § 5.4.x inferences — notably `OrderHintBits == 0` and
-/// the SCC `SELECT` force fields); the round-trip test exercises exactly that pairing. The
-/// returned core has status [`FrameHeaderParseStatus::IntraHeaderComplete`].
+/// The sequence view is built here, not taken as a parameter: the canonical body's bit
+/// layout depends on the exact § 5.4.x single-picture inferences (notably `OrderHintBits ==
+/// 0`, the SCC `SELECT` force fields, and the 64x64 single-superblock tiling), so any other
+/// view would mis-parse these fixed bits into a different (but still complete) core. The
+/// body also references **sequence header 0** (`seq_header_id_in_frame_header == 0`), the
+/// frozen tier's only sequence header.
 ///
-/// This is the public encoder writer-input assembler: paired with
-/// [`CoreSeqView::new_minimal_intra_single_picture`] and
-/// [`crate::write::write_frame_header_core`] it lets `splot-encode` emit the frozen-tier
+/// This is the public encoder writer-input assembler: with the returned `(core, seq)` pair
+/// and [`crate::write::write_frame_header_core`] it lets `splot-encode` emit the frozen-tier
 /// frame header without a parsed [`SequenceHeader`].
 ///
 /// [`SequenceHeader`]: crate::headers::sequence::SequenceHeader
 /// [`FrameHeaderParseStatus::IntraHeaderComplete`]: super::FrameHeaderParseStatus::IntraHeaderComplete
-pub fn build_minimal_intra_clk_core(
-    seq: &CoreSeqView,
-) -> Result<FrameHeaderCore, MinimalIntraCoreError> {
+pub fn build_minimal_intra_clk_core()
+-> Result<(FrameHeaderCore, CoreSeqView), MinimalIntraCoreError> {
+    let seq = CoreSeqView::new_minimal_intra_single_picture(FROZEN_TIER_DIM, FROZEN_TIER_DIM)
+        .ok_or(MinimalIntraCoreError::Seq)?;
     let data = minimal_intra_clk_body_bytes()?;
     let mut reader = BitReader::new(&data, ByteOffset::new(0));
     let prefix = parse_frame_header_prefix(&mut reader, ObuType::ClosedLoopKey, Some(true))?;
@@ -298,12 +312,12 @@ pub fn build_minimal_intra_clk_core(
     parse_core_body(
         &mut reader,
         &mut core,
-        seq,
+        &seq,
         None,
         &FrameReferenceStateView::unknown(),
     )?;
     core.consumed_bits = reader.consumed_bits();
-    Ok(core)
+    Ok((core, seq))
 }
 
 #[cfg(test)]
@@ -395,8 +409,11 @@ mod tests {
 
     #[test]
     fn build_minimal_intra_clk_core_round_trips() {
-        let seq = CoreSeqView::new_minimal_intra_single_picture(64, 64).unwrap();
-        let core = build_minimal_intra_clk_core(&seq).unwrap();
+        // Self-contained: it builds the matching 64x64 single-picture view itself and
+        // returns the (core, seq) pair, so a caller cannot mis-pair the body and view.
+        let (core, seq) = build_minimal_intra_clk_core().unwrap();
+        assert_eq!((seq.max_frame_width, seq.max_frame_height), (64, 64));
+        assert!(seq.single_picture_header_flag);
 
         // Parses to a complete intra header with the derived single-picture CLK facts.
         assert_eq!(core.status, FrameHeaderParseStatus::IntraHeaderComplete);

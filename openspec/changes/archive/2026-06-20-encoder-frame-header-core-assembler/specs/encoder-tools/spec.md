@@ -25,8 +25,9 @@ make the body spec-real. It SHALL NOT produce a tile-group OBU, a frame, a packe
 
 #### Scenario: The assembler produces a conformant intra core
 
-- **WHEN** `build_minimal_intra_clk_core` is called with the single-picture view
-- **THEN** it SHALL return a `FrameHeaderCore` with status `IntraHeaderComplete`, frame
+- **WHEN** `build_minimal_intra_clk_core` is called (it builds the matched 64x64
+  single-picture view internally and returns the `(core, seq)` pair)
+- **THEN** the returned `FrameHeaderCore` SHALL have status `IntraHeaderComplete`, frame
   type Key, frame size 64x64, `order_hint_lsb == 0`, `refresh_frame_flags == 3`, and
   immediate (not implicit) output
 - **AND** `write_frame_header_core` of that core SHALL re-emit a stream that reparses to an
