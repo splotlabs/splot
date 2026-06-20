@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 342 feature(s); 289 cite a spec section.
+Matrix version 1. Last reviewed 2026-06-15. 343 feature(s); 290 cite a spec section.
 
 One row per (spec section, feature) pair, in spec order; a feature citing both a syntax and a semantics section appears under both. The canonical status source is [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); the full per-feature ledger is [FEATURE-STATUS.md](./FEATURE-STATUS.md).
 
@@ -95,6 +95,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.2.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-2-1) | General OBU syntax | `ENC-MINIMAL-INTRA-IVF` | ✅ | — | — | ✅ | — |
 | [§ 5.2.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-2-2) | OBU header syntax | `AV2-5.2.2-OBU-HEADER` | ✅ | ✅ | ✅ | ✅ | 6 |
 | [§ 5.2.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-2-2) | OBU header syntax | `DECODE-BYTE-STREAM-PLANNER` | ✅ | ✅ | — | ✅ | 3 |
+| [§ 5.2.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-2-2) | OBU header syntax | `ENC-MINIMAL-CLK-BASE-Q-IDX` | ✅ | — | — | ✅ | — |
 | [§ 5.2.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-2-2) | OBU header syntax | `ENC-MINIMAL-INTRA-CLK-ANNEXB-OBU` | ✅ | — | — | ✅ | — |
 | [§ 5.2.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-2-2) | OBU header syntax | `ENC-SEQUENCE-HEADER-OBU` | ✅ | — | — | ✅ | — |
 | [§ 5.2.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-2-2) | OBU header syntax | `ENC-TEMPORAL-DELIMITER-OBU` | ✅ | — | — | ✅ | — |
@@ -191,6 +192,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.18.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2) | Frame header info syntax | `DECODE-TILE-PAYLOAD-INPUT-DERIVATION` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 5.18.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2) | Frame header info syntax | `DECODE-Y4M-RUNTIME-OUTPUT` | ✅ | 🟡 | ✅ | ✅ | 4 |
 | [§ 5.18.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2) | Frame header info syntax | `ENC-FRAME-HEADER-CORE-ASSEMBLER` | ✅ | — | — | ✅ | — |
+| [§ 5.18.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2) | Frame header info syntax | `ENC-MINIMAL-CLK-BASE-Q-IDX` | ✅ | — | — | ✅ | — |
 | [§ 5.18.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2) | Frame header info syntax | `RECON-REFERENCE-FRAME-STORE` | ✅ | — | — | ✅ | — |
 | [§ 5.18.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-3) | Frame configuration structures | `AV2-5.18.3-FRAME-CONFIGURATION` | ✅ | 🟡 | — | ✅ | — |
 | [§ 5.18.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-3) | Frame configuration structures | `DECODE-GENERAL-INTRA-MULTIROW` | ✅ | 🟡 | — | ✅ | 1 |
@@ -222,6 +224,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.19](./spec/av2/1.0.0/05-syntax-structures.md#s-5-19) | Tile group OBU syntax | `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS` | ✅ | 🟡 | ✅ | ✅ | 3 |
 | [§ 5.19](./spec/av2/1.0.0/05-syntax-structures.md#s-5-19) | Tile group OBU syntax | `DECODE-TILE-PAYLOAD-INPUT-DERIVATION` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 5.19](./spec/av2/1.0.0/05-syntax-structures.md#s-5-19) | Tile group OBU syntax | `DECODE-Y4M-RUNTIME-OUTPUT` | ✅ | 🟡 | ✅ | ✅ | 4 |
+| [§ 5.19](./spec/av2/1.0.0/05-syntax-structures.md#s-5-19) | Tile group OBU syntax | `ENC-MINIMAL-CLK-BASE-Q-IDX` | ✅ | — | — | ✅ | — |
 | [§ 5.19](./spec/av2/1.0.0/05-syntax-structures.md#s-5-19) | Tile group OBU syntax | `ENC-MINIMAL-HEADER-PLAN` | ✅ | — | — | ✅ | — |
 | [§ 5.19](./spec/av2/1.0.0/05-syntax-structures.md#s-5-19) | Tile group OBU syntax | `ENC-MINIMAL-INTRA-TILE-GROUP-OBU` | ✅ | — | — | ✅ | — |
 | [§ 5.19](./spec/av2/1.0.0/05-syntax-structures.md#s-5-19) | Tile group OBU syntax | `ENC-WRITER-INPUT-STRUCTURE` | ✅ | — | — | ✅ | — |
@@ -1037,6 +1040,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [Annex A](./spec/av2/1.0.0/annex-a-profiles-levels-and-tiers.md#s-annex-a) | Profiles, levels, and tiers | `AV2-A-LEVELS-TIERS` | ✅ | — | 🟡 | ✅ | 5 |
 | [Annex A](./spec/av2/1.0.0/annex-a-profiles-levels-and-tiers.md#s-annex-a) | Profiles, levels, and tiers | `AV2-A-PROFILES` | ✅ | — | 🟡 | ✅ | 7 |
 | [Annex B](./spec/av2/1.0.0/annex-b-length-delimited-bitstream-format.md#s-annex-b) | Length delimited bitstream format | `AV2-B-ANNEXB-OBU-ENVELOPE` | ✅ | ✅ | ✅ | ✅ | 1 |
+| [Annex B](./spec/av2/1.0.0/annex-b-length-delimited-bitstream-format.md#s-annex-b) | Length delimited bitstream format | `ENC-MINIMAL-CLK-BASE-Q-IDX` | ✅ | — | — | ✅ | — |
 | [Annex B.2](./spec/av2/1.0.0/annex-b-length-delimited-bitstream-format.md#s-annex-b-2) | Length delimited bitstream syntax | `CONF-DECODE-RUNTIME-HASH-FUZZ` | ✅ | — | — | ✅ | 3 |
 | [Annex B.2](./spec/av2/1.0.0/annex-b-length-delimited-bitstream-format.md#s-annex-b-2) | Length delimited bitstream syntax | `CONF-DECODE-RUNTIME-RAW-FUZZ` | ✅ | — | — | ✅ | 4 |
 | [Annex B.2](./spec/av2/1.0.0/annex-b-length-delimited-bitstream-format.md#s-annex-b-2) | Length delimited bitstream syntax | `CONF-DECODE-RUNTIME-Y4M-FUZZ` | ✅ | — | — | ✅ | 4 |

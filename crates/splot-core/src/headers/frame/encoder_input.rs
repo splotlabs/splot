@@ -248,15 +248,27 @@ pub enum MinimalIntraCoreError {
     /// The parser rejected the canonical body.
     #[error("canonical minimal-intra body did not parse: {0}")]
     Parse(#[from] crate::error::Error),
+    /// A `base_q_idx == 0` was requested. With the canonical body's zero quantizer deltas and
+    /// disabled segmentation that would make `CodedLossless == 1`, changing the § 5.18.2 body
+    /// bit layout the fixed canonical writer does not model.
+    #[error("base_q_idx == 0 (CodedLossless) is not supported by the canonical minimal-intra body")]
+    LosslessBaseQIdx,
 }
 
-/// Serializes the canonical 64x64, `base_q_idx == 255` single-picture
-/// `OBU_CLOSED_LOOP_KEY` intra `frame_header()` body (§ 5.18.2
+/// The frozen minimal-intra conformance tier's `base_q_idx`. Any nonzero value keeps
+/// `CodedLossless == 0` (so the canonical fixed body layout parses unchanged); 255 is the
+/// historical frozen-tier choice. The general skip path supplies its own nonzero value.
+const FROZEN_TIER_BASE_Q_IDX: u8 = 255;
+
+/// Serializes the canonical 64x64 single-picture `OBU_CLOSED_LOOP_KEY` intra
+/// `frame_header()` body (§ 5.18.2
 /// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2`), MSB-first, against the
-/// [`CoreSeqView::new_minimal_intra_single_picture`] sequence shape. Every element is a
-/// fixed minimal-intra choice, so the writes provably never overflow; the round-trip test
-/// proves the byte sequence parses back to an `IntraHeaderComplete` core.
-fn minimal_intra_clk_body_bytes() -> WriteResult<Vec<u8>> {
+/// [`CoreSeqView::new_minimal_intra_single_picture`] sequence shape, with `base_q_idx` as
+/// the only variable field. Every other element is a fixed minimal-intra choice, so the
+/// writes provably never overflow; the round-trip test proves the byte sequence parses back
+/// to an `IntraHeaderComplete` core. `base_q_idx` must be nonzero (a zero value would make
+/// `CodedLossless == 1` and change the body's bit layout); callers enforce that.
+fn minimal_intra_clk_body_bytes(base_q_idx: u8) -> WriteResult<Vec<u8>> {
     let mut writer = BitWriter::new();
     writer.write_uvlc(0)?; // cur_mfh_id == 0 (direct reference, no MFH)
     writer.write_uvlc(0)?; // seq_header_id_in_frame_header == 0
@@ -268,7 +280,7 @@ fn minimal_intra_clk_body_bytes() -> WriteResult<Vec<u8>> {
     writer.write_bit(0)?; // allow_intrabc
     writer.write_bit(0)?; // disable_cdf_update
     writer.write_bit(1)?; // uniform_tile_spacing_flag (64x64 -> 1 superblock -> no increment bits)
-    writer.write_bits(255, 8)?; // base_q_idx (!= 0 avoids CodedLossless)
+    writer.write_bits(u32::from(base_q_idx), 8)?; // base_q_idx (nonzero avoids CodedLossless)
     writer.write_bit(0)?; // segmentation_enabled
     writer.write_bit(0)?; // using_qmatrix
     writer.write_bit(0)?; // delta_q_present
@@ -308,7 +320,22 @@ const FROZEN_TIER_DIM: u32 = 64;
 /// [`FrameHeaderParseStatus::IntraHeaderComplete`]: super::FrameHeaderParseStatus::IntraHeaderComplete
 pub fn build_minimal_intra_clk_core()
 -> Result<(FrameHeaderCore, CoreSeqView), MinimalIntraCoreError> {
+    build_minimal_intra_clk_core_impl(FROZEN_TIER_BASE_Q_IDX)
+}
+
+/// Like [`build_minimal_intra_clk_core`] but at a caller-chosen `base_q_idx`, for the
+/// general intra path whose coefficient symbols are coded at the q-context the decoder
+/// derives from `base_q_idx` (`base_q_idx <= 90` selects q-context 0). The rest of the
+/// canonical body is unchanged, so only the `base_q_idx` bits differ. `base_q_idx` must be
+/// nonzero — a zero value makes `CodedLossless == 1` and changes the body layout, which the
+/// fixed canonical body does not model (rejected with [`MinimalIntraCoreError::LosslessBaseQIdx`]).
+fn build_minimal_intra_clk_core_impl(
+    base_q_idx: u8,
+) -> Result<(FrameHeaderCore, CoreSeqView), MinimalIntraCoreError> {
     use crate::headers::sequence::SuperblockSize;
+    if base_q_idx == 0 {
+        return Err(MinimalIntraCoreError::LosslessBaseQIdx);
+    }
     let mut seq = CoreSeqView::new_minimal_intra_single_picture(FROZEN_TIER_DIM, FROZEN_TIER_DIM)
         .ok_or(MinimalIntraCoreError::Seq)?;
     // Frozen 64x64 tier: one 64x64 superblock — the root partition the decode minimal runtime
@@ -320,7 +347,7 @@ pub fn build_minimal_intra_clk_core()
     // false` means the `seq_sb_size`-dependent GDF read never fires).
     seq.tile.seq_sb_size = SuperblockSize::Block64x64;
     seq.tile.use_128x128_superblock = false;
-    let data = minimal_intra_clk_body_bytes()?;
+    let data = minimal_intra_clk_body_bytes(base_q_idx)?;
     let mut reader = BitReader::new(&data, ByteOffset::new(0));
     let prefix = parse_frame_header_prefix(&mut reader, ObuType::ClosedLoopKey, Some(true))?;
     let mut core = init_core_from_prefix(&prefix, ObuType::ClosedLoopKey, true);
@@ -373,7 +400,14 @@ pub enum MinimalIntraTileGroupError {
 pub fn encode_minimal_intra_clk_tile_group_obu(
     tile_data: &[u8],
 ) -> Result<Vec<u8>, MinimalIntraTileGroupError> {
-    let (core, seq) = build_minimal_intra_clk_core()?;
+    encode_minimal_intra_clk_tile_group_obu_impl(FROZEN_TIER_BASE_Q_IDX, tile_data)
+}
+
+fn encode_minimal_intra_clk_tile_group_obu_impl(
+    base_q_idx: u8,
+    tile_data: &[u8],
+) -> Result<Vec<u8>, MinimalIntraTileGroupError> {
+    let (core, seq) = build_minimal_intra_clk_core_impl(base_q_idx)?;
     let structure = TileGroupStructure::single_tile_first_group();
     let framing = TileGroupFraming::single_tile(tile_data.len() as u64);
     let mut writer = BitWriter::new();
@@ -411,7 +445,14 @@ pub fn encode_minimal_intra_clk_tile_group_obu(
 pub fn encode_minimal_intra_clk_annexb_obu(
     tile_data: &[u8],
 ) -> Result<Vec<u8>, MinimalIntraTileGroupError> {
-    let payload = encode_minimal_intra_clk_tile_group_obu(tile_data)?;
+    encode_minimal_intra_clk_annexb_obu_impl(FROZEN_TIER_BASE_Q_IDX, tile_data)
+}
+
+fn encode_minimal_intra_clk_annexb_obu_impl(
+    base_q_idx: u8,
+    tile_data: &[u8],
+) -> Result<Vec<u8>, MinimalIntraTileGroupError> {
+    let payload = encode_minimal_intra_clk_tile_group_obu_impl(base_q_idx, tile_data)?;
     // § 5.2.2: the no-extension OBU_CLOSED_LOOP_KEY header (inferred layer ids 0).
     let header = ObuHeader {
         has_header_extension: false,
@@ -570,10 +611,35 @@ pub enum MinimalIntraIvfError {
 /// the committed conformance vector — `tile_data` is a caller input, so a complete
 /// spec-conformant coded tile (and thus a decode-hash match) is a later brick.
 pub fn encode_minimal_intra_clk_ivf(tile_data: &[u8]) -> Result<Vec<u8>, MinimalIntraIvfError> {
+    encode_minimal_intra_clk_ivf_impl(FROZEN_TIER_BASE_Q_IDX, tile_data)
+}
+
+/// Like [`encode_minimal_intra_clk_ivf`] but with a caller-chosen `base_q_idx`, for the
+/// general intra path whose coded tile bytes are entropy-coded at the coefficient CDF
+/// q-context the decoder derives from `base_q_idx` (`base_q_idx <= 90` → q-context 0). Only
+/// the `base_q_idx` bits of the frame header differ from the frozen tier; the container is
+/// otherwise identical. `base_q_idx` must be nonzero (a zero value is rejected by the inner
+/// frame-header assembler as [`MinimalIntraCoreError::LosslessBaseQIdx`]).
+///
+/// This pairs with a coded `tile_data` whose symbols match `base_q_idx`'s q-context to emit a
+/// decodable stream; the cross-crate decode oracle that proves it is a later brick.
+pub fn encode_minimal_intra_clk_ivf_with_base_q_idx(
+    base_q_idx: u8,
+    tile_data: &[u8],
+) -> Result<Vec<u8>, MinimalIntraIvfError> {
+    encode_minimal_intra_clk_ivf_impl(base_q_idx, tile_data)
+}
+
+fn encode_minimal_intra_clk_ivf_impl(
+    base_q_idx: u8,
+    tile_data: &[u8],
+) -> Result<Vec<u8>, MinimalIntraIvfError> {
     // AV2 Annex B temporal unit: TD, then the sequence header, then the frame OBU.
     let mut temporal_unit = encode_temporal_delimiter_obu()?;
     temporal_unit.extend_from_slice(&encode_minimal_intra_sequence_header_obu()?);
-    temporal_unit.extend_from_slice(&encode_minimal_intra_clk_annexb_obu(tile_data)?);
+    temporal_unit.extend_from_slice(&encode_minimal_intra_clk_annexb_obu_impl(
+        base_q_idx, tile_data,
+    )?);
 
     // IVF container: one AV02 64x64 frame carrying the temporal unit (the frozen-tier shape;
     // the timebase 30/1 and frame count 1 match the committed conformance vector's header).
@@ -863,5 +929,35 @@ mod tests {
         // The empty-tile_data rejection propagates from the frame assembler — a typed error.
         let err = encode_minimal_intra_clk_ivf(&[]).unwrap_err();
         assert!(matches!(err, MinimalIntraIvfError::Frame(_)));
+    }
+
+    #[test]
+    fn ivf_with_base_q_idx_80_reproduces_the_avm_validated_q80_fixture() {
+        // The AVM- and dav2d-validated syn-flat-intra-64x64-q80.ivf is a base_q_idx == 80
+        // single-tile CLK frame. Re-muxing its exact tile_data through the base_q_idx-80
+        // assembler reproduces the fixture byte-for-byte — proving the emitted container
+        // (TD + sequence header + CLK frame header + IVF framing) matches the reference
+        // structure, with base_q_idx as the only parameterized field.
+        const Q80_TILE_DATA: [u8; 10] =
+            [0x00, 0x03, 0xb6, 0x27, 0x68, 0x56, 0x9a, 0x3f, 0x2f, 0x20];
+        let fixture =
+            std::fs::read("../../tests/conformance/vectors/valid/syn-flat-intra-64x64-q80.ivf")
+                .unwrap();
+        let emitted = encode_minimal_intra_clk_ivf_with_base_q_idx(80, &Q80_TILE_DATA).unwrap();
+        assert_eq!(emitted, fixture);
+    }
+
+    #[test]
+    fn ivf_with_base_q_idx_zero_is_rejected_as_lossless() {
+        // base_q_idx == 0 would make CodedLossless == 1 and change the §5.18.2 body layout the
+        // fixed canonical writer does not model; it is rejected with a typed error before any
+        // bytes are produced.
+        let err = encode_minimal_intra_clk_ivf_with_base_q_idx(0, &[0x01]).unwrap_err();
+        assert!(matches!(
+            err,
+            MinimalIntraIvfError::Frame(MinimalIntraTileGroupError::Core(
+                MinimalIntraCoreError::LosslessBaseQIdx
+            ))
+        ));
     }
 }
