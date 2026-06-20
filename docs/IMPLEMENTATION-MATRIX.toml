@@ -4903,6 +4903,42 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-WRITER-INPUT-INTER-VIEW"
+name = "Encoder writer-input minimal-intra inter view constructor"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.4.6"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers/frame/info.rs"
+openspec_change = "encoder-coreseq-inter-ctor"
+tracking_issue = ""
+owner = "encoder"
+risk = "low"
+# encode stays `todo`: the constructor (write-surface) exists and the round-trips
+# regress it, but no splot-encode code consumes it yet — the CoreSeqView/FrameHeaderCore
+# constructors and the encoder call-site are later bridge bricks.
+notes = "Header-bridge BRICK 1 (from the vetted design workflow). To build a CoreSeqView for write_tile_group_obu, the encoder needs its nested CoreSeqInterView — the ONLY nested CoreSeq*View that is #[non_exhaustive] with crate-private fields and lacked a public ctor (the other six — Quant/Seg/Tile/Filter/Restoration/Ccso — are already all-pub non-#[non_exhaustive] → externally literal-constructible). Adds `CoreSeqInterView::new_minimal_intra() -> CoreSeqInterView` in crates/splot-core/src/headers/frame/info.rs — the all-disabled §5.4.6 inter view (every inter tool off, seq_enabled_motion_modes [false;5], enable_opfl_refine 0), the value the base_inter() test helpers built by hand. An intra frame never reads the inter config (the §5.18.2 control region skips the inter tail), so this is the inert state the writer needs to invert parse_frame_header_core. #[non_exhaustive] preserved (within-crate literal). CoreSeqInterView has NO PartialEq → ORACLE = the three base_inter() parser/writer test helpers (info.rs, frame_header_core_tests.rs, tile_group_obu_tests.rs) were PROMOTED to call the ctor, so the entire existing frame-header round-trip suite (83 frame_header_core tests) regresses it at zero new-test cost; plus a direct all-disabled field test. Encoder-mission-DRIVEN (owner=encoder), code in splot-core, per the maintainer's writer-bridge decision. encode=todo. This row does not claim a CoreSeqView/FrameHeaderCore constructor, a tile-group OBU, a frame, a packet, receive_packet output, CLI success, or Baseline Encoder Profile v1. NEXT: CoreSeqView::new_minimal_intra (brick 2, uses this + the 6 already-public views) → FrameHeaderCore parse-backed assembler (brick 3) → re-export TileGroupStructure/TileGroupFraming (brick 4) → encoder write_tile_group_obu call-site (brick 5)."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "todo"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-core/src/headers/frame/info.rs::tests::core_seq_inter_view_minimal_intra_is_all_disabled"]
+commands = ["cargo test -p splot-core core_seq_inter_view_minimal_intra", "cargo test -p splot-core frame_header_core"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-RECON-DEPENDENCY"
 name = "Encoder reconstruction dependency boundary"
 category = "encoder"
