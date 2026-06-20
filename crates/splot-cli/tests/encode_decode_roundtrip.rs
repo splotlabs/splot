@@ -49,9 +49,15 @@ fn encoder_skip_ivf_decodes_to_a_flat_128_frame() {
         ])
         .status()
         .expect("run the splot binary");
-    assert!(status.success(), "splot decode of the emitted IVF failed");
 
-    let raw = std::fs::read(&output).expect("read the decoded raw output");
+    // Capture results, then clean the temp files up front so a failing assertion below
+    // never leaks them.
+    let raw = std::fs::read(&output);
+    let _ = std::fs::remove_file(&input);
+    let _ = std::fs::remove_file(&output);
+
+    assert!(status.success(), "splot decode of the emitted IVF failed");
+    let raw = raw.expect("read the decoded raw output");
     // 8-bit 4:2:0 64x64: Y (64*64) + U (32*32) + V (32*32) = 6144 bytes.
     assert_eq!(raw.len(), 6144, "unexpected decoded frame size");
     // The skip block reconstructs to the flat no-neighbour DC predictor.
@@ -59,7 +65,4 @@ fn encoder_skip_ivf_decodes_to_a_flat_128_frame() {
         raw.iter().all(|&sample| sample == 128),
         "expected a flat 128 frame from the skip block",
     );
-
-    let _ = std::fs::remove_file(&input);
-    let _ = std::fs::remove_file(&output);
 }
