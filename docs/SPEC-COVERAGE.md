@@ -388,6 +388,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `ENC-COEFF-BASE-LF-TOKEN` | ✅ | — | — | ✅ | — |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `ENC-COEFF-MULTI-TOKENS` | ✅ | — | — | ✅ | — |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `ENC-COEFFICIENT-TOKENIZATION-MINIMAL` | ✅ | — | — | ✅ | — |
+| [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `ENC-GENERAL-INTRA-CODED-CHROMA-DC` | ✅ | — | — | ✅ | — |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `ENC-GENERAL-INTRA-CODED-LUMA-DC` | ✅ | — | — | ✅ | — |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `ENC-GENERAL-INTRA-SKIP-BLOCK-TRACE` | ✅ | — | — | ✅ | — |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `ENC-INTRA-BLOCK-TRACE-BYPASS-LITERAL` | ✅ | — | — | ✅ | — |
@@ -673,6 +674,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.13.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2) | Intra prediction process | `DECODE-GENERAL-INTRA-FRAME-RECON` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.13.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2) | Intra prediction process | `DECODE-GENERAL-INTRA-MULTIBLOCK` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.13.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2) | Intra prediction process | `DECODE-GENERAL-INTRA-MULTIROW` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 7.13.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2) | Intra prediction process | `ENC-GENERAL-INTRA-CODED-CHROMA-DC` | ✅ | — | — | ✅ | — |
 | [§ 7.13.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2) | Intra prediction process | `ENC-GENERAL-INTRA-CODED-LUMA-DC` | ✅ | — | — | ✅ | — |
 | [§ 7.13.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2) | Intra prediction process | `ENC-MINIMAL-INTRA-SKIP-IVF` | ✅ | — | — | ✅ | — |
 | [§ 7.13.2.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-1) | General | `CONF-RECON-INTRA-PREDICTION-FUZZ` | ✅ | — | — | ✅ | — |
@@ -815,6 +817,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 8.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2) | Parsing process for symbol decoder | `ENC-COEFF-MULTI-TOKENS` | ✅ | — | — | ✅ | — |
 | [§ 8.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2) | Parsing process for symbol decoder | `ENC-COEFFICIENT-TOKENIZATION-MINIMAL` | ✅ | — | — | ✅ | — |
 | [§ 8.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2) | Parsing process for symbol decoder | `ENC-DO-SPLIT-PARTITION-SYMBOL` | ✅ | — | — | ✅ | — |
+| [§ 8.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2) | Parsing process for symbol decoder | `ENC-GENERAL-INTRA-CODED-CHROMA-DC` | ✅ | — | — | ✅ | — |
 | [§ 8.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2) | Parsing process for symbol decoder | `ENC-GENERAL-INTRA-CODED-LUMA-DC` | ✅ | — | — | ✅ | — |
 | [§ 8.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2) | Parsing process for symbol decoder | `ENC-GENERAL-INTRA-SKIP-BLOCK-TRACE` | ✅ | — | — | ✅ | — |
 | [§ 8.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2) | Parsing process for symbol decoder | `ENC-GENERAL-INTRA-SKIP-TILE-DATA` | ✅ | — | — | ✅ | — |
@@ -895,6 +898,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 8.2.5](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-5) | Parsing process for read_literal | `DECODE-TILE-PARTITION-DECISION-BOUNDARY` | ✅ | ✅ | — | ✅ | — |
 | [§ 8.2.5](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-5) | Parsing process for read_literal | `DECODE-TILE-PARTITION-TRAVERSAL-BOUNDARY` | ✅ | ✅ | — | ✅ | — |
 | [§ 8.2.5](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-5) | Parsing process for read_literal | `ENC-BITSTREAM-WRITER` | 🟡 | — | — | 🟡 | — |
+| [§ 8.2.5](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-5) | Parsing process for read_literal | `ENC-GENERAL-INTRA-CODED-CHROMA-DC` | ✅ | — | — | ✅ | — |
 | [§ 8.2.6](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-6) | Symbol decoding process | `AV2-8.2-SYMBOL-DECODER` | ✅ | ✅ | ✅ | ✅ | — |
 | [§ 8.2.6](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-6) | Symbol decoding process | `CONF-SYMBOL-DECODER-FUZZ` | ✅ | — | — | ✅ | — |
 | [§ 8.2.6](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-6) | Symbol decoding process | `CONF-TILE-PAYLOAD-DECODE-FUZZ` | ✅ | — | — | ✅ | 2 |
