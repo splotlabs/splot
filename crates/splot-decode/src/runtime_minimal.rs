@@ -854,6 +854,55 @@ fn decode_one_general_intra_block(
     luma_use_tcq: bool,
     tile_offset: ByteOffset,
 ) -> Result<()> {
+    // Resolve the block geometry and gate the handled subset BEFORE reading the
+    // §5.20.5.3 mode info: `uv_mode` is only coded when the block has chroma, and
+    // sub-8x8 luma leaves use a different (deferred 4x4) chroma sizing that this
+    // path does not model. Reading modes first for those cases would consume a
+    // `uv_mode` symbol that is not present and desynchronise the decoder.
+    let geometry_error = || {
+        general_intra_unsupported(
+            "general_intra_block_geometry",
+            Some(tile_offset),
+            "general intra block geometry lookup failed",
+            GENERAL_INTRA_PARTITION_SPEC_SECTION,
+        )
+    };
+    let n4w = frontier
+        .b_size
+        .num_4x4_wide()
+        .map_err(|_| geometry_error())?;
+    let n4h = frontier
+        .b_size
+        .num_4x4_high()
+        .map_err(|_| geometry_error())?;
+    if n4w != n4h {
+        return Err(general_intra_unsupported(
+            "general_intra_non_square_block",
+            Some(tile_offset),
+            "general intra decode only supports square partition blocks; rectangular partitions are not yet implemented",
+            GENERAL_INTRA_PARTITION_SPEC_SECTION,
+        ));
+    }
+    // 4:2:0 sub-8x8 luma leaves defer chroma to the bottom-right 4x4 (a 4x4 chroma
+    // transform over the 8x8 region, not luma_log2 - 1), and the other three are
+    // luma-only; neither chroma sizing/position is modelled yet.
+    if n4w < 2 {
+        return Err(general_intra_unsupported(
+            "general_intra_sub_8x8_block",
+            Some(tile_offset),
+            "general intra decode does not yet support sub-8x8 luma blocks (deferred 4:2:0 chroma sizing)",
+            GENERAL_INTRA_PARTITION_SPEC_SECTION,
+        ));
+    }
+    if !frontier.has_chroma {
+        return Err(general_intra_unsupported(
+            "general_intra_luma_only_block",
+            Some(tile_offset),
+            "general intra decode does not yet support luma-only (no-chroma) blocks",
+            GENERAL_INTRA_PARTITION_SPEC_SECTION,
+        ));
+    }
+
     let modes = crate::tile_payload::decode_general_intra_block_modes(work_unit, symbols)
         .map_err(|error| general_intra_block_mode_error(error, tile_offset))?;
     if !modes.is_dc_only() {
@@ -862,31 +911,6 @@ fn decode_one_general_intra_block(
             Some(tile_offset),
             "general intra reconstruction only supports DC prediction; non-DC luma or chroma modes are not yet implemented",
             GENERAL_INTRA_MODE_SPEC_SECTION,
-        ));
-    }
-
-    let n4w = frontier.b_size.num_4x4_wide().map_err(|_| {
-        general_intra_unsupported(
-            "general_intra_block_geometry",
-            Some(tile_offset),
-            "general intra block geometry lookup failed",
-            GENERAL_INTRA_PARTITION_SPEC_SECTION,
-        )
-    })?;
-    let n4h = frontier.b_size.num_4x4_high().map_err(|_| {
-        general_intra_unsupported(
-            "general_intra_block_geometry",
-            Some(tile_offset),
-            "general intra block geometry lookup failed",
-            GENERAL_INTRA_PARTITION_SPEC_SECTION,
-        )
-    })?;
-    if n4w != n4h {
-        return Err(general_intra_unsupported(
-            "general_intra_non_square_block",
-            Some(tile_offset),
-            "general intra decode only supports square partition blocks; rectangular partitions are not yet implemented",
-            GENERAL_INTRA_PARTITION_SPEC_SECTION,
         ));
     }
 
@@ -973,6 +997,11 @@ fn map_general_intra_multiblock_error(
             general_intra_partition_frontier_error(error, tile_offset)
         }
         GeneralIntraMultiblockError::Walk(GeneralIntraTreeWalkError::Leaf(error)) => error,
+        // Preserve the resource-limit contract: a partition-step (or other)
+        // limit must report as DecodeError::Limit, not unsupported-feature.
+        GeneralIntraMultiblockError::Walk(GeneralIntraTreeWalkError::Traversal(
+            TilePartitionTraversalError::Limit(source),
+        )) => DecodeError::Limit { source },
         GeneralIntraMultiblockError::Walk(_) => general_intra_unsupported(
             "general_intra_partition_walk",
             Some(tile_offset),
