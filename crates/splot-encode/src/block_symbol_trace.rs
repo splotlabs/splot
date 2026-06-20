@@ -104,6 +104,11 @@ const MINIMAL_COEFF_CDF_Q_CTX: usize = 0;
 // block — the bank luma and U share; the plane is distinguished only by `ctx`.
 const LUMA_PLANE_TYPE: usize = 0;
 const TX_SIZE_4X4_CTX: usize = 0;
+// AV2 § 8.3.2 `txb_skip` `txSzCtx` for the general-path single transforms that fill
+// a 64x64 superblock leaf: `TX_64X64` luma is `4`, `TX_32X32` chroma is `3` (see
+// `coefficient_tokenization`; both empirically confirmed against the decoder).
+const TX_SIZE_64X64_CTX: usize = 4;
+const TX_SIZE_32X32_CTX: usize = 3;
 const TXB_SKIP_CTX_NEUTRAL: usize = 0;
 const CHROMA_U_TXB_SKIP_CTX_NEUTRAL: usize = 6;
 const V_TXB_SKIP_CTX_NEUTRAL: usize = 0;
@@ -788,6 +793,8 @@ struct BlockSymbolTraceCdfRows {
     luma_txb_skip: [i32; TXB_SKIP_CDF_ROW_LEN],
     u_txb_skip: [i32; TXB_SKIP_CDF_ROW_LEN],
     v_txb_skip: [i32; V_TXB_SKIP_CDF_ROW_LEN],
+    luma_txb_skip_64x64: [i32; TXB_SKIP_CDF_ROW_LEN],
+    u_txb_skip_32x32: [i32; TXB_SKIP_CDF_ROW_LEN],
     eob_pt_16: [i32; EOB_PT_16_CDF_ROW_LEN],
     intra_tx_type_set1_4x4: [i32; INTRA_TX_TYPE_SET1_CDF_ROW_LEN],
     sec_tx_type_intra_4x4: [i32; SEC_TX_TYPE_INTRA_CDF_ROW_LEN],
@@ -815,6 +822,10 @@ impl BlockSymbolTraceCdfRows {
             u_txb_skip: DEFAULT_TXB_SKIP_CDF[MINIMAL_COEFF_CDF_Q_CTX][LUMA_PLANE_TYPE]
                 [TX_SIZE_4X4_CTX][CHROMA_U_TXB_SKIP_CTX_NEUTRAL],
             v_txb_skip: DEFAULT_V_TXB_SKIP_CDF[MINIMAL_COEFF_CDF_Q_CTX][V_TXB_SKIP_CTX_NEUTRAL],
+            luma_txb_skip_64x64: DEFAULT_TXB_SKIP_CDF[MINIMAL_COEFF_CDF_Q_CTX][LUMA_PLANE_TYPE]
+                [TX_SIZE_64X64_CTX][TXB_SKIP_CTX_NEUTRAL],
+            u_txb_skip_32x32: DEFAULT_TXB_SKIP_CDF[MINIMAL_COEFF_CDF_Q_CTX][LUMA_PLANE_TYPE]
+                [TX_SIZE_32X32_CTX][CHROMA_U_TXB_SKIP_CTX_NEUTRAL],
             eob_pt_16: DEFAULT_EOB_PT_16_CDF[MINIMAL_COEFF_CDF_Q_CTX][EOB_CTX_LUMA_INTRA],
             intra_tx_type_set1_4x4: DEFAULT_INTRA_TX_TYPE_SET1_CDF
                 [INTRA_TX_TYPE_SET1_TX_SIZE_SQR_4X4],
@@ -879,6 +890,18 @@ impl BlockSymbolTraceCdfRows {
                     coeff_cdf_q_ctx: MINIMAL_COEFF_CDF_Q_CTX,
                     ctx: V_TXB_SKIP_CTX_NEUTRAL,
                 } => Ok(self.v_txb_skip.as_mut_slice()),
+                CoefficientCdfRowSelector::TxbSkip {
+                    coeff_cdf_q_ctx: MINIMAL_COEFF_CDF_Q_CTX,
+                    plane_type: LUMA_PLANE_TYPE,
+                    tx_size: TX_SIZE_64X64_CTX,
+                    ctx: TXB_SKIP_CTX_NEUTRAL,
+                } => Ok(self.luma_txb_skip_64x64.as_mut_slice()),
+                CoefficientCdfRowSelector::TxbSkip {
+                    coeff_cdf_q_ctx: MINIMAL_COEFF_CDF_Q_CTX,
+                    plane_type: LUMA_PLANE_TYPE,
+                    tx_size: TX_SIZE_32X32_CTX,
+                    ctx: CHROMA_U_TXB_SKIP_CTX_NEUTRAL,
+                } => Ok(self.u_txb_skip_32x32.as_mut_slice()),
                 CoefficientCdfRowSelector::EobPt16 {
                     coeff_cdf_q_ctx: MINIMAL_COEFF_CDF_Q_CTX,
                     eob_ctx: EOB_CTX_LUMA_INTRA,

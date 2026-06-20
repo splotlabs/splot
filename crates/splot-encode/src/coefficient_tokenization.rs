@@ -63,6 +63,14 @@ const COEFF_CDF_Q_CONTEXTS: usize = 4;
 const LUMA_PLANE_TYPE: usize = 0;
 const INTRA_NON_FSC_TXB_SKIP_BANK: usize = 0;
 const TX_SIZE_4X4_CTX: usize = 0;
+// AV2 § 8.3.2 `txb_skip` `txSzCtx = ((TxSizeSqr[txSz] + TxSizeSqrUp[txSz] + 1) >> 1)`.
+// For a square `TX_64X64` luma transform that is `(4 + 4 + 1) >> 1 == 4`; for a
+// square `TX_32X32` chroma transform `(3 + 3 + 1) >> 1 == 3`. Both were confirmed
+// empirically against the decoder's general-intra `txb_skip` selector while
+// decoding the AVM-validated `syn-flat-intra-64x64-q80` fixture (its 64x64 luma
+// transform read `tx_size: 4`, its 32x32 chroma U transform read `tx_size: 3`).
+const TX_SIZE_64X64_CTX: usize = 4;
+const TX_SIZE_32X32_CTX: usize = 3;
 const TXB_SKIP_CTX_NEUTRAL: usize = 0;
 // AV2 § 8.3.2: the U-plane `txb_skip` context adds a fixed +6 to the
 // neutral (above==0, left==0) base context.
@@ -172,6 +180,53 @@ pub(crate) const fn chroma_v_all_zero_token(
         selector: CoefficientCdfRowSelector::VTxbSkip {
             coeff_cdf_q_ctx,
             ctx,
+        },
+        symbol: true as u8,
+    }
+}
+
+/// Returns the AV2 § 5.20.7.27 luma `all_zero` (`txb_skip`) token for an all-zero
+/// `TX_64X64` luma transform block on the general intra decode path, at the given
+/// coefficient CDF q-context.
+///
+/// This is the general-path counterpart of [`luma_all_zero_token`]: identical
+/// except for the `TX_64X64` `txSzCtx` (`4`) of the single 64x64 transform that
+/// fills a 64x64 superblock leaf, rather than the minimal-tier `TX_4X4` ctx. The
+/// luma `ctx` is `0` because the transform fills the block (§ 8.3.2
+/// `txb_skip_ctx_luma` with `tx_fills_block`).
+pub(crate) const fn general_intra_64x64_luma_all_zero_token(
+    coeff_cdf_q_ctx: usize,
+) -> CoefficientEntropyToken {
+    CoefficientEntropyToken {
+        syntax: CoefficientTokenSyntax::AllZero,
+        selector: CoefficientCdfRowSelector::TxbSkip {
+            coeff_cdf_q_ctx,
+            plane_type: LUMA_PLANE_TYPE,
+            tx_size: TX_SIZE_64X64_CTX,
+            ctx: TXB_SKIP_CTX_NEUTRAL,
+        },
+        symbol: true as u8,
+    }
+}
+
+/// Returns the AV2 § 5.20.7.27 U-plane `all_zero` (`txb_skip`) token for an
+/// all-zero `TX_32X32` chroma U transform block on the general intra decode path,
+/// at the given coefficient CDF q-context.
+///
+/// The general-path counterpart of [`chroma_u_all_zero_token`]: identical except
+/// for the `TX_32X32` `txSzCtx` (`3`) of the 32x32 chroma transform of a 64x64
+/// 4:2:0 block. The `ctx` is the § 8.3.2 neutral U context `6` (above/left
+/// reductions `0`, plus the fixed `+6` for the U plane).
+pub(crate) const fn general_intra_32x32_chroma_u_all_zero_token(
+    coeff_cdf_q_ctx: usize,
+) -> CoefficientEntropyToken {
+    CoefficientEntropyToken {
+        syntax: CoefficientTokenSyntax::AllZero,
+        selector: CoefficientCdfRowSelector::TxbSkip {
+            coeff_cdf_q_ctx,
+            plane_type: INTRA_NON_FSC_TXB_SKIP_BANK,
+            tx_size: TX_SIZE_32X32_CTX,
+            ctx: CHROMA_U_TXB_SKIP_CTX_NEUTRAL,
         },
         symbol: true as u8,
     }
