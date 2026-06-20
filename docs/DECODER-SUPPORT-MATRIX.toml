@@ -548,6 +548,20 @@ local_reference_evidence = []
 notes = "Adds crate-private `splot-decode` scan traversal for the ordinary non-FSC AV2 §5.20.7.27 nonzero coefficient path. `walk_nonzero_coeff_scan` accepts a `NonZeroCoeffBlockStart` and caller-supplied `scan[c]` positions, then returns checked entries in reverse scan-index order with raster position and row/column facts. It rejects EOB values that exceed the scan slice and scan positions outside the initialized adjusted coefficient block without consuming symbols, mutating CDF rows, or writing coefficient state. This row remains partial: scan-table derivation, transform-type computation, coefficient base/br/sign reads, nonzero `Level[]`, `QuantSign[]`, and `Quant[]` writes, `read_quant`, dequantization, inverse transform, residual add, reconstruction, output expansion, reference refresh, public API, AVM/dav2d invocation, broad `decode_block()`, and broad `decode_tile()` support remain unimplemented."
 
 [[row]]
+id = "general-intra-frame-frontier"
+name = "General intra frame decode frontier"
+feature_id = "DECODE-GENERAL-INTRA-FRAME-FRONTIER"
+spec_sections = ["5.18.2", "5.20.1", "5.20.3.1", "5.20.3.2"]
+parser_source = "docs/spec/av2/1.0.0/05-syntax-structures.md"
+decode_module = "crates/splot-decode/src/runtime_minimal.rs"
+tier = "tier1-intra"
+status = "partial"
+self_contained_tests = ["crates/splot-cli/tests/decode_cli.rs::decode_general_intra_fixture_reaches_partition_frontier", "crates/splot-cli/tests/decode_cli.rs::decode_general_intra_routing_does_not_disturb_frozen_minimal_hash", "cargo test -p splot-cli --test decode_cli --locked", "cargo xtask check-decoder-support", "cargo xtask check-decoder-conformance-coverage", "cargo xtask check-feature-status"]
+diagnostics = ["decode/unsupported-feature"]
+local_reference_evidence = ["docs/LOCAL-REFERENCE-EVIDENCE.toml::lref-avm-dav2d-syn-flat-intra-64x64-q80"]
+notes = "First brick of the AVM-oracle general intra decode path. A crate-private frontier in `splot-decode` runs alongside the frozen minimal hash tier: `route_general_minimal_intra` and `is_general_minimal_intra` accept a single-tile 64x64 8-bit 4:2:0 intra key frame with any `base_q_idx` other than the frozen fixture value 255 and with segmentation, quant matrices, delta-Q, in-loop filters, CCSO, GDF, and film grain all disabled, then `decode_general_minimal_intra_frame` derives the one tile work unit and runs the real AV2 §5.20.3.1 root partition traversal to the single-block frontier. It returns a structured unsupported-feature diagnostic (`general_intra_block_decode_unimplemented`) because block-symbol, coefficient, dequantization, inverse-transform, residual, and prediction decode are not yet wired, and it never mutates the frozen `base_q_idx == 255` minimal hash contract. The committed fixture syn-flat-intra-64x64-q80.ivf carries a real nonzero DC residual whose avmdec and dav2d raw outputs agree byte-for-byte. This row stays partial: arbitrary intra mode decode, coefficient symbol reads, `Quant` writes, dequantization, inverse transform, residual add, reconstruction, output, split partitions, multiple tiles, non-64x64 frames, and AVM or dav2d invocation remain unimplemented."
+
+[[row]]
 id = "coeff-fsc-scan-walk"
 name = "Coefficient FSC scan walk"
 feature_id = "DECODE-COEFF-FSC-SCAN-WALK"

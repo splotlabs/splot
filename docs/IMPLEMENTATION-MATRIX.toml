@@ -10167,6 +10167,56 @@ fixtures = [
 diagnostics = ["decode/unsupported-feature"]
 
 [[feature]]
+id = "DECODE-GENERAL-INTRA-FRAME-FRONTIER"
+name = "General intra frame decode frontier"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.18.2", "5.20.1", "5.20.3.1", "5.20.3.2"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-1",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-1",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-2",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/runtime_minimal.rs"
+openspec_change = "decode-general-intra-frame-frontier"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Adds a crate-private general intra decode frontier in `splot-decode` that runs alongside the frozen minimal hash tier. `route_general_minimal_intra` plus `is_general_minimal_intra` accept a single-tile 64x64 8-bit 4:2:0 intra key frame with any `base_q_idx` other than the frozen fixture's 255 and with segmentation, quant matrices, delta-Q, in-loop filters, CCSO, GDF, and film grain all disabled; `decode_general_minimal_intra_frame` derives the one tile work unit and runs the real AV2 §5.20.3.1 root partition traversal to the single-block frontier. It then returns a structured `decode/unsupported-feature` diagnostic (`general_intra_block_decode_unimplemented`) because block-symbol, coefficient, dequantization, inverse-transform, residual, and prediction decode for the general path are not yet wired; it never reconstructs a frame and never mutates the frozen `base_q_idx == 255` minimal hash contract. This is the first brick of the AVM-oracle general intra decode path: the committed `syn-flat-intra-64x64-q80.ivf` fixture carries a real nonzero DC residual and its avmdec and dav2d raw outputs agree byte-for-byte, so future bricks can decode it bit-exactly. The frontier does not decode arbitrary intra modes, read coefficient symbols, write `Quant`, dequantize, inverse transform, add residuals, reconstruct pixels, handle split partitions, multiple tiles, non-64x64 frames, or invoke AVM/dav2d."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "partial"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-cli/tests/decode_cli.rs::decode_general_intra_fixture_reaches_partition_frontier",
+    "crates/splot-cli/tests/decode_cli.rs::decode_general_intra_routing_does_not_disturb_frozen_minimal_hash",
+]
+commands = [
+    "cargo test -p splot-cli --test decode_cli --locked",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-decoder-conformance-coverage",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "tests/conformance/vectors/valid/syn-flat-intra-64x64-q80.ivf",
+    "crates/splot-decode/src/runtime_minimal.rs",
+    "crates/splot-cli/tests/decode_cli.rs",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
 id = "DECODE-COEFF-FSC-SCAN-WALK"
 name = "Coefficient FSC scan walk"
 category = "infrastructure"
