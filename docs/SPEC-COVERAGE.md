@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 371 feature(s); 318 cite a spec section.
+Matrix version 1. Last reviewed 2026-06-15. 374 feature(s); 321 cite a spec section.
 
 One row per (spec section, feature) pair, in spec order; a feature citing both a syntax and a semantics section appears under both. The canonical status source is [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); the full per-feature ledger is [FEATURE-STATUS.md](./FEATURE-STATUS.md).
 
@@ -272,6 +272,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.20.3.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-1) | Decode partition syntax | `DECODE-GENERAL-INTRA-FRAME-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.3.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-1) | Decode partition syntax | `DECODE-GENERAL-INTRA-MULTIBLOCK` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.3.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-1) | Decode partition syntax | `DECODE-GENERAL-INTRA-NON64-MULTISB` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 5.20.3.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-1) | Decode partition syntax | `DECODE-GENERAL-INTRA-RECT-PARTITION` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.3.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-1) | Decode partition syntax | `DECODE-MINIMAL-RAW-RUNTIME-OUTPUT` | ✅ | 🟡 | ✅ | ✅ | 4 |
 | [§ 5.20.3.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-1) | Decode partition syntax | `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS` | ✅ | 🟡 | ✅ | ✅ | 3 |
 | [§ 5.20.3.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-1) | Decode partition syntax | `DECODE-TILE-PARTITION-SIZE-TABLE-BOUNDARY` | ✅ | — | — | ✅ | — |
@@ -293,6 +294,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.20.4.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-4-1) | Decode block syntax | `DECODE-GENERAL-INTRA-DEEP-SPLIT` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.4.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-4-1) | Decode block syntax | `DECODE-GENERAL-INTRA-MULTIBLOCK` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.4.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-4-1) | Decode block syntax | `DECODE-GENERAL-INTRA-MULTIROW` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 5.20.4.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-4-1) | Decode block syntax | `DECODE-GENERAL-INTRA-RECT-PARTITION` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.4.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-4-1) | Decode block syntax | `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER` | ✅ | 🟡 | — | ✅ | 4 |
 | [§ 5.20.4.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-4-1) | Decode block syntax | `DECODE-TILE-COEFF-STATE-BUFFERS` | ✅ | — | — | ✅ | — |
 | [§ 5.20.4.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-4-1) | Decode block syntax | `DECODE-TILE-MI-SIZE-STATE-BOUNDARY` | ✅ | — | — | ✅ | — |
@@ -418,6 +420,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-GENERAL-INTRA-NEIGHBOUR-DIRECTIONAL` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-GENERAL-INTRA-NONDC-LUMA-SMOOTH` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-GENERAL-INTRA-NONDC-LUMA-SMOOTH-PLAIN` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-GENERAL-INTRA-RECT-PARTITION` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER` | ✅ | 🟡 | — | ✅ | 4 |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-MINIMAL-INTRA-RECONSTRUCTION-FRONTIER` | ✅ | 🟡 | ✅ | ✅ | 4 |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-TILE-COEFF-STATE-BUFFERS` | ✅ | — | — | ✅ | — |
@@ -752,6 +755,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.13.2.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-2) | Basic intra prediction process | `CONF-RECON-INTRA-PREDICTION-FUZZ` | ✅ | — | — | ✅ | — |
 | [§ 7.13.2.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-2) | Basic intra prediction process | `RECON-CURRENT-FRAME-WORKSPACE` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.13.2.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-2) | Basic intra prediction process | `RECON-INTRA-BASIC-PAETH-PREDICTION` | ✅ | — | ✅ | ✅ | — |
+| [§ 7.13.2.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-4) | DIP features process | `DECODE-GENERAL-INTRA-RECT-PARTITION` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.13.2.7](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-7) | Directional intra prediction process | `DECODE-GENERAL-INTRA-ANGLE-D113` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.13.2.7](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-7) | Directional intra prediction process | `DECODE-GENERAL-INTRA-ANGLE-D203` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.13.2.7](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-7) | Directional intra prediction process | `DECODE-GENERAL-INTRA-ANGLE-D45` | ✅ | 🟡 | — | ✅ | 1 |
@@ -810,6 +814,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.13.3.22](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-22) | Resolve divisor process | `RECON-INTRA-DC-SUBSAMPLED-PREDICTION` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.14.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-14-2) | Dequantization functions | `DECODE-GENERAL-INTRA-FRAME-RECON` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.14.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-14-2) | Dequantization functions | `ENC-CLOSED-LOOP-RECONSTRUCTION-MINIMAL` | ✅ | — | — | ✅ | — |
+| [§ 7.14.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-14-2) | Dequantization functions | `ENC-FWD-QUANT-PER-COEFF-AC` | ✅ | — | — | ✅ | — |
 | [§ 7.14.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-14-2) | Dequantization functions | `ENC-QUANTIZATION-V0` | ✅ | — | — | ✅ | — |
 | [§ 7.14.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-14-2) | Dequantization functions | `RECON-DEQUANT-QUANTIZER-INDEX-RESOLUTION` | ✅ | — | — | ✅ | — |
 | [§ 7.14.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-14-2) | Dequantization functions | `RECON-DEQUANT-QUANTIZER-LOOKUP` | ✅ | — | — | ✅ | — |
@@ -819,7 +824,9 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.14.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-14-3) | Reconstruct process | `RECON-RECONSTRUCT-TRANSFORM-BLOCK` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.14.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-14-3) | Reconstruct process | `RECON-RESIDUAL-ADDITION` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.14.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-14-4) | Dequantization process | `DECODE-GENERAL-INTRA-FRAME-RECON` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 7.14.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-14-4) | Dequantization process | `DECODE-GENERAL-INTRA-RECT-PARTITION` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.14.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-14-4) | Dequantization process | `ENC-CLOSED-LOOP-RECONSTRUCTION-MINIMAL` | ✅ | — | — | ✅ | — |
+| [§ 7.14.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-14-4) | Dequantization process | `ENC-FWD-QUANT-PER-COEFF-AC` | ✅ | — | — | ✅ | — |
 | [§ 7.14.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-14-4) | Dequantization process | `ENC-QUANTIZATION-V0` | ✅ | — | — | ✅ | — |
 | [§ 7.14.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-14-4) | Dequantization process | `RECON-DEQUANT-PROCESS` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.14.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-14-4) | Dequantization process | `RECON-DEQUANT-QM-WEIGHT` | ✅ | — | ✅ | ✅ | — |
@@ -829,7 +836,9 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.15.2.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-15-2-3) | Inverse identity transform process | `RECON-INVERSE-TRANSFORM-MATRIX-FREE` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.15.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-15-3) | Secondary transform process | `RECON-SECONDARY-INVERSE-TRANSFORM` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.15.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-15-4) | 2D inverse transform process | `DECODE-GENERAL-INTRA-FRAME-RECON` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 7.15.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-15-4) | 2D inverse transform process | `DECODE-GENERAL-INTRA-RECT-PARTITION` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.15.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-15-4) | 2D inverse transform process | `ENC-CLOSED-LOOP-RECONSTRUCTION-MINIMAL` | ✅ | — | — | ✅ | — |
+| [§ 7.15.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-15-4) | 2D inverse transform process | `ENC-FORWARD-TRANSFORM-DCT-4X4` | ✅ | — | — | ✅ | — |
 | [§ 7.15.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-15-4) | 2D inverse transform process | `ENC-FORWARD-TRANSFORM-FOUNDATION` | ✅ | — | — | ✅ | — |
 | [§ 7.15.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-15-4) | 2D inverse transform process | `ENC-QUANTIZATION-V0` | ✅ | — | — | ✅ | — |
 | [§ 7.15.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-15-4) | 2D inverse transform process | `RECON-DPCM-DIRECTION` | ✅ | — | ✅ | ✅ | — |
@@ -838,6 +847,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.15.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-15-4) | 2D inverse transform process | `RECON-RECONSTRUCT-TRANSFORM-BLOCK` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.15.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-15-4) | 2D inverse transform process | `RECON-RESOLVE-2D-TRANSFORM-PARAMS` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.15.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-15-4) | 2D inverse transform process | `RECON-TRANSFORM-SHIFT-LOOKUP` | ✅ | — | ✅ | ✅ | — |
+| [§ 7.15.4.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-15-4-1) | 2D matrix transform process | `ENC-FORWARD-TRANSFORM-DCT-4X4` | ✅ | — | — | ✅ | — |
 | [§ 7.15.4.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-15-4-1) | 2D matrix transform process | `RECON-INVERSE-TRANSFORM-1D` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.15.4.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-15-4-1) | 2D matrix transform process | `RECON-INVERSE-TRANSFORM-2D` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.17.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-17-3) | Filter maximum width process | `RECON-DEBLOCK-FILTER-MAX-WIDTH` | ✅ | — | ✅ | ✅ | — |
@@ -956,6 +966,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 8.2.4](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-4) | Exit process for symbol decoder | `DECODE-GENERAL-INTRA-NEIGHBOUR-DIRECTIONAL` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 8.2.4](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-4) | Exit process for symbol decoder | `DECODE-GENERAL-INTRA-NONDC-LUMA-SMOOTH` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 8.2.4](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-4) | Exit process for symbol decoder | `DECODE-GENERAL-INTRA-NONDC-LUMA-SMOOTH-PLAIN` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 8.2.4](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-4) | Exit process for symbol decoder | `DECODE-GENERAL-INTRA-RECT-PARTITION` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 8.2.4](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-4) | Exit process for symbol decoder | `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER` | ✅ | 🟡 | — | ✅ | 4 |
 | [§ 8.2.4](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-4) | Exit process for symbol decoder | `DECODE-MINIMAL-RAW-RUNTIME-OUTPUT` | ✅ | 🟡 | ✅ | ✅ | 4 |
 | [§ 8.2.4](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-4) | Exit process for symbol decoder | `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS` | ✅ | 🟡 | ✅ | ✅ | 3 |
@@ -1145,6 +1156,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-GENERAL-INTRA-MB-NEIGHBOUR-SMOOTH` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-GENERAL-INTRA-NEIGHBOUR-DIRECTIONAL` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-GENERAL-INTRA-NONDC-LUMA-SMOOTH-PLAIN` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-GENERAL-INTRA-RECT-PARTITION` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-MINIMAL-INTRA-RECONSTRUCTION-FRONTIER` | ✅ | 🟡 | ✅ | ✅ | 4 |
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-MINIMAL-RAW-RUNTIME-OUTPUT` | ✅ | 🟡 | ✅ | ✅ | 4 |
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS` | ✅ | 🟡 | ✅ | ✅ | 3 |

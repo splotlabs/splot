@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "79cb1622a0ce9b2a5e0a6c5c4faf242555767239",
+  "audited_commit": "90e64f4e9bc2c84bab896168149684619dfbc2d8",
   "outcome": "success",
   "files": [
     {
@@ -221,7 +221,7 @@
     },
     {
       "path": "AGENTS.md",
-      "sha256": "3ca1917133b82188be9d44c6211a772c70b5166be7f76128f31db46c3dce8fce",
+      "sha256": "06fa7ba2b3238b75743df4736c9f658c288b46aa3e1d738e1fed88351182f931",
       "scope_kind": "repository-process",
       "feature_ids": [
         "DOC-AUDIT-PROTOCOLS",
@@ -239,7 +239,7 @@
     },
     {
       "path": "Cargo.lock",
-      "sha256": "a3481b3331f64e00c33a41638934240033e8e6497ddf8bd90d62d91f5d6022b9",
+      "sha256": "432d2d6db6711df513fe4c64a00202df32172aa9242a8b535d9d33007bf50449",
       "scope_kind": "repository-process",
       "feature_ids": [],
       "outcome": "success"
@@ -1890,26 +1890,27 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/general_intra.rs",
-      "sha256": "3ebc1b76a2c31511e561814fd0379104fa93dd22f54358eda47ca35d68ac4000",
+      "sha256": "ffd2e96e3601c7ebb961f6c3ca08158f969ff59be9bba8a0cb264f3fae78a5aa",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-GENERAL-INTRA-ANGLE-D113",
         "DECODE-GENERAL-INTRA-ANGLE-D203",
         "DECODE-GENERAL-INTRA-ANGLE-D45",
-        "DECODE-GENERAL-INTRA-FRAME-FRONTIER"
+        "DECODE-GENERAL-INTRA-FRAME-FRONTIER",
+        "DECODE-GENERAL-INTRA-RECT-PARTITION"
       ],
       "outcome": "success"
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/general_intra_tests.rs",
-      "sha256": "5af64a0dd4eea53166ec6366649cabbadba9977a3b80549ed7403d3a9a287d7b",
+      "sha256": "caf43cebe13baadf83db3888bd61cf693676d7429555e268e592f14f3276761d",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal_recon.rs",
-      "sha256": "9e3862f407ddaa8d25eb38856735f34e4dacf8247d3ea134d481c8094293c03d",
+      "sha256": "319b69b81e074ed73ddf8e6d2e6688e8e2cb5db49f7e82fbc4cd5071affdf129",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-GENERAL-INTRA-ANGLE",
@@ -1962,7 +1963,7 @@
     },
     {
       "path": "crates/splot-decode/src/tile_payload.rs",
-      "sha256": "f0ac82587749da831ca0fa02d61f62fea2227c646903748bb4cdb60d4688b87b",
+      "sha256": "ba2e142093276ae01ab30900ad17725c42074605423868f103aa90e80422299f",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-TILE-PAYLOAD-BOUNDARY"
@@ -2415,7 +2416,7 @@
     },
     {
       "path": "crates/splot-decode/src/tile_payload/general_intra_residual.rs",
-      "sha256": "6fb45c31d1859cc724c19793fc2682f7995f02d0a3570290891dcab3a58b2c8a",
+      "sha256": "0aa716aebdfc40a5237505cd3b96ba8d8f3f08f9ab82fba35ce2025ca2fbd254",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-GENERAL-INTRA-FRAME-RECON",
@@ -2527,7 +2528,7 @@
     },
     {
       "path": "crates/splot-encode/Cargo.toml",
-      "sha256": "d4925ce4530716a1a42c0f8223e8c8e77de6d5f262382436fc7e685c22dcb909",
+      "sha256": "452a13c87ae0b56846855a978a4eefaafe1a497f4f2a1892ea13a0080a4250d8",
       "scope_kind": "workspace:splot-encode",
       "feature_ids": [],
       "outcome": "success"
@@ -2754,16 +2755,17 @@
     },
     {
       "path": "crates/splot-encode/src/error.rs",
-      "sha256": "9e0f9c240d04c32b211b498b0c278b521dd8b370377dd0e508c5e7703a00633f",
+      "sha256": "515beaabcf88388f14812bba7e8ad2c722b7040e17630a2c7ff969d42ebbb6ff",
       "scope_kind": "workspace:splot-encode",
       "feature_ids": [],
       "outcome": "success"
     },
     {
       "path": "crates/splot-encode/src/forward_transform.rs",
-      "sha256": "d9fdcb9c0e1774b6579000d22560d3a89aba5d6834fea4077896a0e554ecb4c9",
+      "sha256": "c62c5aa43a0b4a4ad27c190f76df75a13506f68aed13f9ffb3892b93ad885f74",
       "scope_kind": "workspace:splot-encode",
       "feature_ids": [
+        "ENC-FORWARD-TRANSFORM-DCT-4X4",
         "ENC-FORWARD-TRANSFORM-FOUNDATION"
       ],
       "outcome": "success"
@@ -2872,9 +2874,10 @@
     },
     {
       "path": "crates/splot-encode/src/quantization.rs",
-      "sha256": "74066e5f2c01cbe0b39dc8c24b1fc5a18fede964285cbfc1ef7ff4a1e8b1ea71",
+      "sha256": "0694f8e4b4da2e5a300d06896bc4fbb307f7afb216cd858d1b027feafd3561b3",
       "scope_kind": "workspace:splot-encode",
       "feature_ids": [
+        "ENC-FWD-QUANT-PER-COEFF-AC",
         "ENC-QUANTIZATION-V0"
       ],
       "outcome": "success"
@@ -4784,7 +4787,7 @@
     },
     {
       "path": "docs/DECODER-SUPPORT-MATRIX.toml",
-      "sha256": "f322b5fbd4b7d8550a4ce2e82190ef2ed2ec9d98bf32443332f06cce862bc2e6",
+      "sha256": "ca9ae61da528ce29837a4d0ff245416dbd4ee7f23010411fcd2243d53d094985",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-8.2-SYMBOL-DECODER",
@@ -4887,6 +4890,7 @@
         "DECODE-GENERAL-INTRA-NON64-MULTISB",
         "DECODE-GENERAL-INTRA-NONDC-LUMA-SMOOTH",
         "DECODE-GENERAL-INTRA-NONDC-LUMA-SMOOTH-PLAIN",
+        "DECODE-GENERAL-INTRA-RECT-PARTITION",
         "DECODE-LIMITS-RUNTIME-API",
         "DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER",
         "DECODE-MINIMAL-INTRA-RECONSTRUCTION-FRONTIER",
@@ -4963,7 +4967,7 @@
     },
     {
       "path": "docs/DECODER-SUPPORT-STATUS.md",
-      "sha256": "bb793d2677dc2c53ce46c19432052bb1dad48643b143089295ff413830e48be3",
+      "sha256": "82ecc00a0571ded44fc094ee6a74b996437ddef5fba0084aa3815271b109e459",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-8.2-SYMBOL-DECODER",
@@ -5066,6 +5070,7 @@
         "DECODE-GENERAL-INTRA-NON64-MULTISB",
         "DECODE-GENERAL-INTRA-NONDC-LUMA-SMOOTH",
         "DECODE-GENERAL-INTRA-NONDC-LUMA-SMOOTH-PLAIN",
+        "DECODE-GENERAL-INTRA-RECT-PARTITION",
         "DECODE-LIMITS-RUNTIME-API",
         "DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER",
         "DECODE-MINIMAL-INTRA-RECONSTRUCTION-FRONTIER",
@@ -5209,7 +5214,7 @@
     },
     {
       "path": "docs/FEATURE-STATUS.md",
-      "sha256": "00ad82056a438c0065a3f4640a0bdcdfa7f781d3b1d001038ea784978a52ef74",
+      "sha256": "c55ae6fc52eb439a6fd257bbf6f167958558db9ab3a29e89f3cc2055c0b6ba7d",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.10-RG",
@@ -5432,6 +5437,7 @@
         "DECODE-GENERAL-INTRA-NON64-MULTISB",
         "DECODE-GENERAL-INTRA-NONDC-LUMA-SMOOTH",
         "DECODE-GENERAL-INTRA-NONDC-LUMA-SMOOTH-PLAIN",
+        "DECODE-GENERAL-INTRA-RECT-PARTITION",
         "DECODE-LIMITS-RUNTIME-API",
         "DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER",
         "DECODE-MINIMAL-INTRA-RECONSTRUCTION-FRONTIER",
@@ -5479,8 +5485,10 @@
         "ENC-CONTEXT-RECEIVE-PACKET",
         "ENC-CONTEXT-STATE-MACHINE",
         "ENC-DO-SPLIT-PARTITION-SYMBOL",
+        "ENC-FORWARD-TRANSFORM-DCT-4X4",
         "ENC-FORWARD-TRANSFORM-FOUNDATION",
         "ENC-FRAME-HEADER-CORE-ASSEMBLER",
+        "ENC-FWD-QUANT-PER-COEFF-AC",
         "ENC-GENERAL-INTRA-2D",
         "ENC-GENERAL-INTRA-ALL-PLANES-CODED",
         "ENC-GENERAL-INTRA-CODED-CHROMA-DC",
@@ -5627,7 +5635,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "c51af747ed6ee99c31c6035ee376d84f671a3cd46a7aeb1d82c08a6b7c75bcb8",
+      "sha256": "0d5e322e1c182e066c7a39ea47677c3196ddf206a009218a5edbc463d453e374",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.10-RG",
@@ -5850,6 +5858,7 @@
         "DECODE-GENERAL-INTRA-NON64-MULTISB",
         "DECODE-GENERAL-INTRA-NONDC-LUMA-SMOOTH",
         "DECODE-GENERAL-INTRA-NONDC-LUMA-SMOOTH-PLAIN",
+        "DECODE-GENERAL-INTRA-RECT-PARTITION",
         "DECODE-LIMITS-RUNTIME-API",
         "DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER",
         "DECODE-MINIMAL-INTRA-RECONSTRUCTION-FRONTIER",
@@ -5897,8 +5906,10 @@
         "ENC-CONTEXT-RECEIVE-PACKET",
         "ENC-CONTEXT-STATE-MACHINE",
         "ENC-DO-SPLIT-PARTITION-SYMBOL",
+        "ENC-FORWARD-TRANSFORM-DCT-4X4",
         "ENC-FORWARD-TRANSFORM-FOUNDATION",
         "ENC-FRAME-HEADER-CORE-ASSEMBLER",
+        "ENC-FWD-QUANT-PER-COEFF-AC",
         "ENC-GENERAL-INTRA-2D",
         "ENC-GENERAL-INTRA-ALL-PLANES-CODED",
         "ENC-GENERAL-INTRA-CODED-CHROMA-DC",
@@ -6006,7 +6017,7 @@
     },
     {
       "path": "docs/LOCAL-REFERENCE-EVIDENCE.toml",
-      "sha256": "9c651e651ca00db18006b7f35b84078c3fc5e1d2a071933683ceccaeebcd3d74",
+      "sha256": "78d143ea9d048646cc6818ebd80e0248ce4ace98a3eb4016e6c534eae07ed165",
       "scope_kind": "docs",
       "feature_ids": [
         "DECODE-GENERAL-INTRA-ANGLE",
@@ -6032,6 +6043,7 @@
         "DECODE-GENERAL-INTRA-NON64-MULTISB",
         "DECODE-GENERAL-INTRA-NONDC-LUMA-SMOOTH",
         "DECODE-GENERAL-INTRA-NONDC-LUMA-SMOOTH-PLAIN",
+        "DECODE-GENERAL-INTRA-RECT-PARTITION",
         "DOC-DETERMINISTIC-FRAME-HASH-CONTRACT",
         "RECON-HASH-INPUT-SERIALIZATION",
         "RECON-INTRA-ONE-SIDED-DIRECTIONAL-ANGLE-PREDICTION"
@@ -6040,7 +6052,7 @@
     },
     {
       "path": "docs/SPEC-COVERAGE.md",
-      "sha256": "ee794b8e03e03a9697c9ff581fb69ff640df648ae56aa3c2faf99f1a21ee6295",
+      "sha256": "e91968b359be007c3c94ab392449ef6fa27d3b44ffdc06a77e7829e2957ffc8f",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.10-RG",
@@ -6263,6 +6275,7 @@
         "DECODE-GENERAL-INTRA-NON64-MULTISB",
         "DECODE-GENERAL-INTRA-NONDC-LUMA-SMOOTH",
         "DECODE-GENERAL-INTRA-NONDC-LUMA-SMOOTH-PLAIN",
+        "DECODE-GENERAL-INTRA-RECT-PARTITION",
         "DECODE-LIMITS-RUNTIME-API",
         "DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER",
         "DECODE-MINIMAL-INTRA-RECONSTRUCTION-FRONTIER",
@@ -6310,8 +6323,10 @@
         "ENC-CONTEXT-RECEIVE-PACKET",
         "ENC-CONTEXT-STATE-MACHINE",
         "ENC-DO-SPLIT-PARTITION-SYMBOL",
+        "ENC-FORWARD-TRANSFORM-DCT-4X4",
         "ENC-FORWARD-TRANSFORM-FOUNDATION",
         "ENC-FRAME-HEADER-CORE-ASSEMBLER",
+        "ENC-FWD-QUANT-PER-COEFF-AC",
         "ENC-GENERAL-INTRA-2D",
         "ENC-GENERAL-INTRA-ALL-PLANES-CODED",
         "ENC-GENERAL-INTRA-CODED-CHROMA-DC",
@@ -6702,7 +6717,7 @@
     },
     {
       "path": "fuzz/Cargo.lock",
-      "sha256": "ff171c0657faa3c9318be45511c4776a47f4adef75cd23cfa71dc166a2f55161",
+      "sha256": "3a920e6cbfc3167be2192169f8736323d9234edfab5bb3fd6e8468bd7df2551a",
       "scope_kind": "fuzz",
       "feature_ids": [],
       "outcome": "success"
@@ -19821,7 +19836,7 @@
     },
     {
       "path": "openspec/changes/decode-general-intra-block-modes/specs/decode-general-intra-block-modes/spec.md",
-      "sha256": "8da8a35dc9a38e96f5c7388530649f018efacfc56b1999aa512b6430a02b92c6",
+      "sha256": "daf40ed7af185035fa0c3b0b65a4a8b34e43b6dad63ebc961e1c75df52df2a2f",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
@@ -20102,7 +20117,7 @@
     },
     {
       "path": "openspec/changes/decode-general-intra-frame-frontier/specs/decode-general-intra-frame-frontier/spec.md",
-      "sha256": "13a98928d8d1dddf547473e6bbaadbcc12849add3561af020a66fec7ca313569",
+      "sha256": "191a8a0baec681cedf98b3a4a6e6f6fd64c9d284bb5271a5f9431aa705fa7f32",
       "scope_kind": "openspec",
       "feature_ids": [
         "DECODE-GENERAL-INTRA-FRAME-FRONTIER"
@@ -20152,7 +20167,7 @@
     },
     {
       "path": "openspec/changes/decode-general-intra-frame-recon/specs/decode-general-intra-frame-recon/spec.md",
-      "sha256": "f50227f2d9dd24998f9012a7ae5b6442bb7ca5333a7b21730db0266b5ee391af",
+      "sha256": "74e9b32f1d2c801c755ae744e530e969967f0fea6b532b36a466bb47c7fd1a78",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
@@ -20384,7 +20399,7 @@
     },
     {
       "path": "openspec/changes/decode-general-intra-luma-coeffs/specs/decode-general-intra-luma-coeffs/spec.md",
-      "sha256": "512f4d093f4004c0bb728f824b2dc6881e7f7de86c91f72c9a09231c7c331245",
+      "sha256": "db176396c89411eb16af2cbfda85831978a545ecf8fc10389b3ad00a6d859083",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
@@ -20737,6 +20752,54 @@
       "scope_kind": "openspec",
       "feature_ids": [
         "DECODE-GENERAL-INTRA-NONDC-LUMA-SMOOTH"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-rect-partition/.openspec.yaml",
+      "sha256": "ed138d7231a82c3d7badf725aae3eabea38551615fe37435aa9f9f52bb7dfa01",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-rect-partition/design.md",
+      "sha256": "3297a551baf9269b14676ca1d60e5756b2d6c0972743ab03cfd30dd97641fc75",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-rect-partition/proposal.md",
+      "sha256": "ae45b4607fd68bde44168771e3cfed9e9e6de05f936ca9c23c5c4e4e8ee0d7f3",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-RECT-PARTITION"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-rect-partition/specs/decode-general-intra-rect-partition/spec.md",
+      "sha256": "e9961c2bc545631bc215bce5acb80f1ca098aeb9d1e19a296f757f30573b7183",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-rect-partition/specs/decoder-support/spec.md",
+      "sha256": "574292d0feedd395356a8b848e6a65b8ff5a2694d055a94688cb98c09b23c8f0",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-RECT-PARTITION"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-rect-partition/tasks.md",
+      "sha256": "f864d4e58a3f887019bc5c9cf4caab09caca02ce89d42d366789bae175f23583",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-RECT-PARTITION"
       ],
       "outcome": "success"
     },
@@ -21292,6 +21355,61 @@
       "scope_kind": "openspec",
       "feature_ids": [
         "ENC-MINIMAL-INTRA-SKIP-IVF"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/forward-dct-4x4-full/proposal.md",
+      "sha256": "b760ee2e561863af8bbe9262a96ea24e91c20461a0c52ad2205da6bb883e707e",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-FORWARD-TRANSFORM-DCT-4X4"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/forward-dct-4x4-full/specs/encoder-tools/spec.md",
+      "sha256": "82761a5c091d45fb0dc66de9bdab04cde4caa191d27f255316782909ccfed0a9",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-FORWARD-TRANSFORM-DCT-4X4"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/forward-dct-4x4-full/tasks.md",
+      "sha256": "129d98edfff018732bc9f5018fdbca829ee698a5e23522c1777ef19163fda177",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-FORWARD-TRANSFORM-DCT-4X4"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/forward-quant-per-coeff-ac/proposal.md",
+      "sha256": "665551b2561969da2dbd824b67c6cb914cc4a74d1995b02e89806ba1db503907",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-FORWARD-TRANSFORM-DCT-4X4",
+        "ENC-FWD-QUANT-PER-COEFF-AC"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/forward-quant-per-coeff-ac/specs/encoder-tools/spec.md",
+      "sha256": "1cf355e3f3ef7b6e06dbc452e66cb5dfd6f4604359ef65da33a498166041935d",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-FWD-QUANT-PER-COEFF-AC"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/forward-quant-per-coeff-ac/tasks.md",
+      "sha256": "b231f988b8237f561eb0a9497b99c5606341f829b6af86dcceaaef30dd0f103e",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-FWD-QUANT-PER-COEFF-AC"
       ],
       "outcome": "success"
     },
@@ -22801,7 +22919,7 @@
     },
     {
       "path": "tests/conformance/manifest.toml",
-      "sha256": "28f196ed4797b7a744cad6ca781781204c55a87b3d64f8cb44be4c18a141f806",
+      "sha256": "0a87cb6da6786a9eca6d821745c66f5933e1e90ac81996495ca58741e96bae5b",
       "scope_kind": "conformance-corpus",
       "feature_ids": [
         "CONF-AVM-VALID-STREAMS"
@@ -22944,6 +23062,13 @@
     {
       "path": "tests/conformance/vectors/valid/syn-hpred-intra-128x64-q180.ivf",
       "sha256": "889d9a329b7b36a5da9907083c27acdb2c96f41c465a2c753a086d441d60b85a",
+      "scope_kind": "conformance-corpus",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "tests/conformance/vectors/valid/syn-hrect-intra-64x64-q120.ivf",
+      "sha256": "0f85478c9dd5ad50bf4b5523be73b3213c8fd10e0d5b5f1c11997a46e9d21257",
       "scope_kind": "conformance-corpus",
       "feature_ids": [],
       "outcome": "success"
@@ -23327,7 +23452,7 @@
     },
     {
       "path": "xtask/src/main.rs",
-      "sha256": "4359e2b85204c47e3afe10bb4216d44390af754e6ce24095d6d7c6331176007f",
+      "sha256": "a07e52fcdc6c28a54aa718919a3cdbc8df153851280edfd8d3c872fb00edf56a",
       "scope_kind": "workspace:xtask",
       "feature_ids": [
         "CONF-AVM-PARSER-TRACES",

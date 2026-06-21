@@ -54,11 +54,12 @@ pub(crate) use cdf::block_context::{
 };
 pub(crate) use coeff_state::TileCoeffContextState;
 pub(crate) use general_intra_block::{
-    GeneralIntraBlockModeError, decode_general_intra_block_modes,
+    GeneralIntraBlockModeError, GeneralIntraBlockModes, decode_general_intra_block_modes,
 };
 pub(crate) use general_intra_residual::{
     GeneralIntraResidualError, LumaCoeffBlock, decode_general_intra_plane_coeffs,
-    reconstruct_general_intra_block, reconstruct_general_intra_block_with_prediction,
+    reconstruct_general_intra_block, reconstruct_general_intra_block_rect,
+    reconstruct_general_intra_block_with_prediction,
 };
 pub(crate) use input::{
     FrameCandidateCdfFacts, FrameCandidateCoeffFacts, FrameCandidateTileBoundaryError,

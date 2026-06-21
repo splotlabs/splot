@@ -39,7 +39,7 @@ crates/splot-tables    dependency-free generated AV2 § 9 spec tables shared acr
 crates/splot-recon     reconstruction primitives -> splot-tables (shared § 9 transform kernels + quantizer matrix)
 crates/splot-decode    decoder diagnostic API + stream planning + minimal hash/Y4M runtime -> splot-core, splot-parallel, splot-recon
 crates/splot-validate  parser-driven conformance diagnostics  -> splot-core
-crates/splot-encode    future encoder API + borrowed input views -> splot-core, splot-parallel, splot-recon
+crates/splot-encode    future encoder API + borrowed input views -> splot-core, splot-parallel, splot-recon, splot-tables
 crates/splot-cli       thin `splot` binary -> splot-core, splot-parallel, splot-decode, splot-validate, splot-encode
 xtask                  standalone automation (no splot-* dependency)
 fuzz                   cargo-fuzz target (outside the workspace)
@@ -57,10 +57,12 @@ fuzz                   cargo-fuzz target (outside the workspace)
   `splot-recon`; the `splot-recon` edge is limited to runtime
   decode/reconstruction/hash/Y4M output handoff code.
 - `splot-validate` depends only on `splot-core`.
-- `splot-encode` depends only on `splot-core`, `splot-parallel`, and
-  `splot-recon`; the `splot-recon` edge is limited to borrowed encoder input
-  views plus private lower-level reconstruction-boundary preparation until later
-  encoder phases add closed-loop reconstruction APIs.
+- `splot-encode` depends only on `splot-core`, `splot-parallel`, `splot-recon`,
+  and `splot-tables` (the dependency-free § 9 tables crate any crate may depend
+  on; the encoder forward transform consumes its generated § 9 kernels directly,
+  not through `splot-recon`). The `splot-recon` edge is limited to borrowed
+  encoder input views plus private lower-level reconstruction-boundary
+  preparation until later encoder phases add closed-loop reconstruction APIs.
 - `splot-cli` depends only on `splot-core`, `splot-parallel`, `splot-decode`,
   `splot-validate`, and `splot-encode`.
 - Nothing depends on `splot-cli`.

@@ -4074,6 +4074,39 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-FORWARD-TRANSFORM-DCT-4X4"
+name = "Encoder 4x4 DCT_DCT forward transform"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["7.15.4", "7.15.4.1"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/forward_transform.rs"
+openspec_change = "forward-dct-4x4-full"
+tracking_issue = ""
+owner = "encoder"
+risk = "medium"
+notes = "Private, non-emitting encoder arithmetic stage. `ForwardTransformBlock::dct_dct_4x4` maps any signed 4x4 residual (uniform or not) to all 16 row-major DCT_DCT coefficients as the numerical inverse of the §7.15.4 4x4 inverse transform: the transposed §9 `DCT_KERNEL4` (imported directly from the dependency-free `splot-tables` §9 tables crate) applied as a row pass then a column pass with forward down-shifts 0 and 11 (summing to the 11-bit budget that pairs the forward 2D DCT gain with the inverse's row_shift+col_shift). Passes accumulate in i64; the final coefficient is a checked i32 narrowing (typed `ForwardTransformCoefficientRangeExceeded`, never a wrap/panic). A uniform residual v maps bit-exactly to the DC-only stub (DC=v*32, AC=0) and reconstructs exactly through the `splot-recon` inverse; general AC content reconstructs only within an observed bound (<=5 over the tested 8-bit residual domain), NOT bit-exactly, because the AV2 integer DCT4 odd basis rows are not orthonormal. Proven by round-trip through the `splot-recon` inverse oracle plus a hand-computed orientation pin. This row does NOT claim forward quantization, transform/size/type selection, transform sizes other than 4x4, types other than DCT_DCT, chroma, bit depths other than 8, coefficient tokenization, tile-body emission, packet output, CLI success, rate control, or Baseline Encoder Profile v1 output."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/forward_transform.rs::tests"]
+commands = ["cargo test -p splot-encode forward_transform --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-QUANTIZATION-V0"
 name = "Encoder quantization v0"
 category = "encoder"
@@ -4103,6 +4136,39 @@ perf = "not-applicable"
 [feature.proof]
 tests = ["crates/splot-encode/src/quantization.rs::tests", "crates/splot-encode/src/context.rs::tests::syntax_and_header_planning_do_not_enable_packet_output"]
 commands = ["cargo test -p splot-encode quantization --locked", "cargo test -p splot-encode syntax_and_header_planning_do_not_enable_packet_output --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "ENC-FWD-QUANT-PER-COEFF-AC"
+name = "Encoder per-coefficient forward quantizer over a real 4x4 block"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["7.14.2", "7.14.4"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/quantization.rs"
+openspec_change = "forward-quant-per-coeff-ac"
+tracking_issue = ""
+owner = "encoder"
+risk = "medium"
+notes = "Private, non-emitting encoder arithmetic stage. Brick 2 of the forward DCT + quantizer phase. `QuantizedTransformBlock::dct_dct_4x4` (renamed from the misnamed `dct_dct_4x4_dc_only`, which the quantizer never restricted) quantizes all 16 coefficients of a real 4x4 DCT_DCT block per-coefficient by the round-to-nearest v0 policy (index 0 with the DC quantizer, the rest with the AC quantizer), then dequantizes the levels through `splot-recon`'s §7.14 dequantization so the stored dequantized array is exactly the decoder reconstruction of the emitted levels. `dct_dct_4x4_dc_only` is retained as a thin alias (the closed loop's flat-input pairing; identical operation). Proven over a real non-uniform block (the new forward DCT output): per-coefficient round-to-nearest levels with real non-zero AC, the stored dequant equals an independent `splot-recon` dequantize_block of the levels, the AV2 24-bit dequant product guard holds, and the decoder reconstruction stays within a bounded distance of the source residual at qindex 0 (not bit-exact). For zero-delta luma the DC and AC quantizers coincide, so the index-0/rest selection is structural (it differentiates levels only with chroma or DC-delta quantizers, a later brick). This row does NOT claim deadzone/RDO quantization policy, rate control, chroma quantizer deltas, bit depths other than 8, transform sizes other than 4x4, types other than DCT_DCT, coefficient tokenization, or packet output."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/quantization.rs::tests"]
+commands = ["cargo test -p splot-encode quantization --locked"]
 fixtures = []
 diagnostics = []
 
@@ -12338,6 +12404,59 @@ fixtures = [
     "crates/splot-decode/src/runtime_minimal/general_intra.rs",
     "crates/splot-decode/src/runtime_minimal_recon.rs",
     "crates/splot-recon/src/intra_directional_angle.rs",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
+id = "DECODE-GENERAL-INTRA-RECT-PARTITION"
+name = "General intra rectangular (non-square) DC partition leaf decode"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.20.3.1", "5.20.4.1", "5.20.7.27", "7.13.2.4", "7.14.4", "7.15.4", "8.2.4", "9.2"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-1",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-4-1",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-4",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-14-4",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-15-4",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/runtime_minimal/general_intra.rs"
+openspec_change = "decode-general-intra-rect-partition"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Opens the RECTANGULAR (non-square) partition leaf zone — the §5.20.3.2 PARTITION_HORZ / PARTITION_VERT family — by admitting a DC_PRED luma + DC chroma rectangular leaf, the first general-intra decode of a `n4w != n4h` block (every prior fixture, DC/SMOOTH/directional, was a square 64x64/32x32/16x16 block; a rectangular leaf was rejected up front with `general_intra_non_square_block`). The §5.20.3.1 partition traversal already reads the real §8.3.2 partition CDF and recurses through every partition type; the gap was only the per-leaf block decode + reconstruction, which assumed a square block. The §7.13.2.4 DC predictor reads only the immediate in-frame left column / above row from the persistent `CurrentFrameWorkspace` (NO §7.13.2.1 above-right / below-left sentinels, so NO §5.20.2.3 `BlockDecoded` state is needed — the same property the deep-split square brick relied on, now applied to a rectangular block), so a rectangular DC leaf reconstructs correctly at any superblock position. Three minimal, well-bounded splot-decode changes: (1) `decode_general_intra_plane_coeffs` now derives the §5.20.7.27 above/left context-line OR-reduction spans as `w4 = Tx_Width[txSz] >> 2` and `h4 = Tx_Height[txSz] >> 2` independently from the generated §9.2 conversion tables (square is the `w4 == h4` special case) — the nonzero coefficient geometry (scan, eob class, dequant, transform via `CoeffOrdinaryTxSizeGeometryConfig`) ALREADY read width and height independently; (2) new `reconstruct_general_intra_block_rect` / `reconstruct_general_intra_block_rect_into` compose the §7.14.4 dequantization over the adjusted `Min(1<<log2_w,32) x Min(1<<log2_h,32)` coefficient grid, the §7.15.4 inverse transform (which already applies the §7.15.4.1 √2 rescale for an odd `|log2_w - log2_h|` ratio), and the §7.14.3 residual add over the rectangular flat §7.13.2.4 DC prediction (the existing `IntraRectBlockSize` / `intra_dc_edges_for_rect` / `predict_intra_dc_rect_value` / `write_rect_block` primitives already accept a rectangular size); (3) `decode_one_general_intra_rect_block` dispatches the rectangular leaf, gated to DC luma + DC chroma, deriving the rectangular `txSz` (`Max_Tx_Size_Rect` under TX_MODE_LARGEST) by mapping the block width/height log2 to its §9.2 `TX_SIZES_ALL` index via the conversion tables (TX_64X32 luma, TX_32X16 chroma; both resolve to `DCT_DCT` since §5.20.8.2 `get_tx_set` returns TX_SET_DCTONLY for `txSzSqrUp >= TX_32X32`). The committed `syn-hrect-intra-64x64-q120.ivf` (64x64, strong horizontal LUMA edge top 60 / bottom 200, FLAT chroma U=V=128, encoded with broad decode tools disabled plus `--enable-ext-partitions=0 --enable-smooth-intra=0` at base_q_idx 120) has its 64x64 superblock SPLIT via PARTITION_HORZ into two rectangular 64x32 DC_PRED leaves (confirmed by temporary instrumentation: two leaves r=0/r=8, `n4w == 16`, `n4h == 8`, DC luma). It decodes bit-exactly to the avmdec AND dav2d oracle (raw output md5 2234d07aa62a60f347917f340a964425; pinned splot frame hash 6d2e94d795d46cae62d1e2cf06cf4fe5b727b0917742745af998b002a7686142), guarded by the §8.2.4 `exit_symbol()` bit-exactness check: the bottom 64x32 leaf DC-predicts from the reconstructed top leaf, the top band reconstructs to 60 and the bottom band to 200, chroma flat 128. The OLD code rejected this exact frame (`general_intra_non_square_block`). All existing general-intra fixtures still decode bit-exact (the square DC/SMOOTH/directional arms are byte-identical). Only the oracle-verified 64x32 (`n4w == 16`, `n4h == 8`) PARTITION_HORZ DC leaf is admitted; three rejects guard the unverified surface BY CONSTRUCTION — each returns a structured `decode/unsupported-feature` before any coefficient read or sample write (no desync, no output) but is NOT yet individually fixture-backed (deferred follow-on negative vectors): a non-DC luma rectangular leaf (`general_intra_rect_non_dc_luma`), a non-DC chroma rectangular leaf (`general_intra_rect_non_dc_chroma`), and any rectangular geometry other than the verified 64x32 (`general_intra_rect_unverified_geometry`). Scope: a DC_PRED luma + DC chroma rectangular leaf of the verified 64x32 (TX_64X32) PARTITION_HORZ shape over the §7.13.2.4 DC prediction. Out of scope (still rejected / deferred): non-DC rectangular luma (SMOOTH / directional, which need rectangular §7.13.2.8 / §7.13.2.13 predictors + the §7.13.2.1 sentinels), non-DC rectangular chroma, rectangular leaves whose DC neighbour edge needs the §7.13.2.1 above-right / below-left sentinels, the §5.20.3.2 extended HORZ3/VERT3/HORZ4A/B/VERT4A/B rectangular sub-shapes beyond the verified 64x32, non-64x64 frames, inter prediction, in-loop filters, and live AVM/dav2d in CI."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "partial"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "partial"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/runtime_minimal.rs::general_intra_tests::horz_rectangular_partition_intra_frame_decodes_to_oracle",
+]
+commands = [
+    "cargo test -p splot-decode general_intra --locked",
+    "cargo test -p splot-cli --test conformance --locked",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-decoder-conformance-coverage",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "tests/conformance/vectors/valid/syn-hrect-intra-64x64-q120.ivf",
+    "crates/splot-decode/src/runtime_minimal/general_intra.rs",
+    "crates/splot-decode/src/runtime_minimal_recon.rs",
+    "crates/splot-decode/src/tile_payload/general_intra_residual.rs",
 ]
 diagnostics = ["decode/unsupported-feature"]
 

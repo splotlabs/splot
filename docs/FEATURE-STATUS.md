@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 371 feature(s).
+Matrix version 1. Last reviewed 2026-06-15. 374 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -125,7 +125,9 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `ENC-MINIMAL-HEADER-PLAN` | Encoder minimal header plan | encoder | encoder-api | done | done | n/a | n/a | n/a | n/a | n/a | done | n/a | `crates/splot-encode/src/header_plan.rs` |
 | `ENC-RESIDUAL-FOUNDATION` | Encoder residual foundation | encoder | encoder-tool | done | done | n/a | n/a | n/a | done | n/a | done | n/a | `crates/splot-encode/src/residual.rs` |
 | `ENC-FORWARD-TRANSFORM-FOUNDATION` | Encoder forward transform foundation | encoder | encoder-tool | done | done | n/a | n/a | n/a | done | n/a | done | n/a | `crates/splot-encode/src/forward_transform.rs` |
+| `ENC-FORWARD-TRANSFORM-DCT-4X4` | Encoder 4x4 DCT_DCT forward transform | encoder | encoder-tool | done | done | n/a | n/a | n/a | done | n/a | done | n/a | `crates/splot-encode/src/forward_transform.rs` |
 | `ENC-QUANTIZATION-V0` | Encoder quantization v0 | encoder | encoder-tool | done | done | n/a | n/a | n/a | done | n/a | done | n/a | `crates/splot-encode/src/quantization.rs` |
+| `ENC-FWD-QUANT-PER-COEFF-AC` | Encoder per-coefficient forward quantizer over a real 4x4 block | encoder | encoder-tool | done | done | n/a | n/a | n/a | done | n/a | done | n/a | `crates/splot-encode/src/quantization.rs` |
 | `ENC-COEFFICIENT-TOKENIZATION-MINIMAL` | Encoder coefficient tokenization minimal | encoder | encoder-tool | done | done | n/a | n/a | n/a | done | n/a | done | n/a | `crates/splot-encode/src/coefficient_tokenization.rs` |
 | `ENC-CLOSED-LOOP-RECONSTRUCTION-MINIMAL` | Encoder closed-loop reconstruction minimal | encoder | encoder-tool | done | done | n/a | n/a | n/a | done | n/a | done | n/a | `crates/splot-encode/src/closed_loop.rs` |
 | `ENC-INTRA-MODE-SYMBOL-EMISSION` | Encoder intra-mode symbol emission | encoder | encoder-tool | done | done | n/a | n/a | n/a | done | n/a | done | n/a | `crates/splot-encode/src/intra_mode_emission.rs` |
@@ -306,6 +308,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `DECODE-GENERAL-INTRA-ANGLE-D113` | General intra D113 vertical-leaning luma IDIF + follow chroma over a real above edge | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | partial | `crates/splot-decode/src/runtime_minimal/general_intra.rs` |
 | `DECODE-GENERAL-INTRA-ANGLE-D45` | General intra D45 zone-1 one-sided luma + follow chroma reading the real above-right | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | partial | `crates/splot-decode/src/runtime_minimal/general_intra.rs` |
 | `DECODE-GENERAL-INTRA-ANGLE-D203` | General intra D203 zone-3 one-sided luma + follow chroma reading the real left column | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | partial | `crates/splot-decode/src/runtime_minimal/general_intra.rs` |
+| `DECODE-GENERAL-INTRA-RECT-PARTITION` | General intra rectangular (non-square) DC partition leaf decode | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | partial | `crates/splot-decode/src/runtime_minimal/general_intra.rs` |
 | `DECODE-COEFF-FSC-SCAN-WALK` | Coefficient FSC scan walk | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/coeff_loop/scan_walk.rs` |
 | `DECODE-COEFF-BASE-CDF-ROWS` | Coefficient base CDF rows | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/cdf/coeff_rows.rs` |
 | `DECODE-COEFF-IDTX-CDF-ROWS` | Coefficient IDTX CDF rows | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/cdf/coeff_rows.rs` |

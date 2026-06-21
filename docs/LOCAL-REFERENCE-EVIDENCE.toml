@@ -1468,6 +1468,58 @@ left = "avm-d203-raw-md5"
 right = "dav2d-d203-raw-md5"
 
 [[evidence]]
+id = "lref-avm-dav2d-syn-hrect-intra-64x64-q120"
+feature_id = "DECODE-GENERAL-INTRA-RECT-PARTITION"
+decoder_support_rows = ["general-intra-rect-partition"]
+kind = "reference-output-agreement"
+summary = "Local AVM and dav2d raw decoder output MD5 digests agreed for the 8-bit 64x64 RECTANGULAR-partition intra IVF fixture at base_q_idx 120 whose 64x64 superblock SPLITs via §5.20.3.2 PARTITION_HORZ into two rectangular 64x32 DC_PRED leaves (a strong horizontal LUMA edge top 60 and bottom 200, flat chroma U=V=128). This OPENS the rectangular (non-square, n4w != n4h) partition leaf zone — the PARTITION_HORZ and PARTITION_VERT family — the first general-intra decode of a non-square block (every prior fixture, DC/SMOOTH/directional, was a square 64x64/32x32/16x16 block; a rectangular leaf was rejected up front with general_intra_non_square_block). The §7.13.2.4 DC predictor reads only the immediate in-frame left column and above row (no §7.13.2.1 above-right and below-left sentinels, so no §5.20.2.3 BlockDecoded state is needed), so the bottom 64x32 leaf DC-predicts from the reconstructed top leaf; the top band reconstructs to 60 and the bottom to 200, chroma flat 128. The §5.20.7.27 coefficient loop context spans read Tx_Width[txSz] >> 2 and Tx_Height[txSz] >> 2 independently, and the §7.14.4 and §7.15.4 and §7.14.3 reconstruction uses the rectangular transform dimensions (TX_64X32 luma, TX_32X16 chroma, incl. the §7.15.4.1 sqrt(2) rescale for the odd log2 ratio). The OLD code rejected this exact frame (general_intra_non_square_block). Non-DC rectangular luma and chroma (general_intra_rect_non_dc_luma and general_intra_rect_non_dc_chroma), rectangular leaves whose DC edge needs the §7.13.2.1 sentinels, the §5.20.3.2 extended HORZ3/VERT3/HORZ4A/B/VERT4A/B rectangular sub-shapes, non-64x64 frames, inter prediction, and in-loop filters remain out of scope and rejected."
+recorded_at = "2026-06-21"
+
+[[evidence.fixture]]
+id = "input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-hrect-intra-64x64-q120.ivf"
+sha256 = "0f85478c9dd5ad50bf4b5523be73b3213c8fd10e0d5b5f1c11997a46e9d21257"
+size_bytes = 73
+format = "ivf"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Generated locally from a project-owned 64x64 YUV input (a strong horizontal LUMA edge: top 32 rows flat 60, bottom 32 rows flat 200; FLAT chroma U=V=128) with broad decode tools (incl. GDF, CDEF, deblocking, restoration, CCSO, pc-wiener, CfL, MHCCP, CCTX, QM, deltaq/tpl, IBP, angle-delta, intra edge filter, ist, intra-dip, idtx-intra, mrls, sdp, fsc, tx-partition, paeth-intra, palette) disabled, plus --enable-ext-partitions=0 and --enable-smooth-intra=0 at --qp=120, so the encoder SPLITs the single 64x64 superblock via PARTITION_HORZ into two rectangular 64x32 DC_PRED leaves (no SMOOTH chroma); AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avm"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "457cd58681a747465661baccb1f32095bc5b7774"
+version_summary = "AVM checkout HEAD 457cd58681a747465661baccb1f32095bc5b7774, exact binary build commit not separately archived."
+command_summary = "Local avmdec --rawvideo --i420 output MD5 for {fixture:input}."
+output_digest_id = "avm-hrect-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "2234d07aa62a60f347917f340a964425"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.reference_run]]
+id = "dav2d"
+tool = "dav2d"
+executable_name = "dav2d"
+tool_role = "decode-reference"
+source_url = "https://code.videolan.org/videolan/dav2d"
+revision = "a88febb3e546d6bf08897f094a13a13551ab9740"
+version_summary = "dav2d commit a88febb3e546d6bf08897f094a13a13551ab9740, decoded with --demuxer ivf --muxer yuv; exact version output not archived."
+command_summary = "Local dav2d --demuxer ivf --muxer yuv output MD5 for {fixture:input}."
+output_digest_id = "dav2d-hrect-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "2234d07aa62a60f347917f340a964425"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-hrect-raw-md5"
+right = "dav2d-hrect-raw-md5"
+
+[[evidence]]
 id = "lref-avm-dav2d-syn-vpred-intra-64x128-q160"
 feature_id = "DECODE-GENERAL-INTRA-CARDINAL"
 decoder_support_rows = ["general-intra-cardinal"]
