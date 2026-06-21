@@ -8,6 +8,7 @@
 use splot_core::symbol::{SymbolDecoder, SymbolDecoderCheckpoint, SymbolDecoderConfig};
 
 use super::DecodeTileWorkUnit;
+use super::block_decoded_state::TileBlockDecodedState;
 use super::cdf::TileCdfError;
 use super::cdf::context::{PartitionContextInput, SquareSplitContextInput};
 use super::intra_joint_modes::TileIntraJointModeState;
@@ -311,6 +312,9 @@ pub(crate) enum TilePartitionTraversalError {
     /// Resource limit rejected traversal.
     #[error("partition traversal rejected by resource limit: {0}")]
     Limit(#[from] DecodeLimitError),
+    /// The § 5.20.2.3 `BlockDecoded` state allocation/sizing failed.
+    #[error("partition traversal block-decoded state failed: {0}")]
+    BlockDecoded(#[from] super::block_decoded_state::TileBlockDecodedStateError),
     /// A partition-size lookup failed.
     #[error("partition traversal size lookup failed: {0}")]
     Size(#[from] PartitionSizeError),
@@ -554,6 +558,7 @@ where
         &mut SymbolDecoder<'payload>,
         &DecodeBlockFrontier,
         &TileIntraJointModeState,
+        &TileBlockDecodedState,
     ) -> Result<u8, E>,
 {
     if !frame.frame_is_intra {
@@ -599,6 +604,20 @@ where
     let mi_row_end = (work_unit.mi_row_range().end as usize).min(frame.mi_rows);
     let mi_col_start = work_unit.mi_col_range().start as usize;
     let mi_col_end = (work_unit.mi_col_range().end as usize).min(frame.mi_cols);
+    // AV2 § 5.20.2.3 BlockDecoded state: a superblock-relative per-plane decoded
+    // flag grid, re-initialized by clear_block_decoded_flags at each superblock
+    // and updated after each transform block, so a later sub-block reads the
+    // §7.13.2.1 above-right / below-left sentinel availability correctly.
+    let mut block_decoded = TileBlockDecodedState::new(
+        frame.num_planes,
+        usize::from(frame.subsampling_x),
+        usize::from(frame.subsampling_y),
+        sb_size4,
+        mi_col_end,
+        mi_row_end,
+    )
+    .map_err(TilePartitionTraversalError::from)?;
+    let sb_mask = sb_size4.saturating_sub(1);
     let mut step_count: u64 = 0;
 
     let mut sb_row = mi_row_start;
@@ -608,6 +627,10 @@ where
         mi_size_state.clear_left_context();
         let mut sb_col = mi_col_start;
         while sb_col < mi_col_end {
+            // § 5.20.2.1 / § 5.20.2.3: clear_block_decoded_flags(r, c, sbSize4)
+            // re-initializes the superblock-relative BlockDecoded grid before the
+            // superblock's partition DFS.
+            block_decoded.clear_superblock(sb_row, sb_col);
             // One superblock-rooted § 5.20.3.1 partition DFS.
             let root = TilePartitionCall::root(sb_row, sb_col, frame.sb_size, frame.has_chroma);
             let mut stack = vec![root];
@@ -656,8 +679,14 @@ where
                         symbol_count_before_block: symbols.symbol_count(),
                         symbol_checkpoint_before_block: symbols.checkpoint(),
                     };
-                    let joint_mode = on_leaf(work_unit, &mut symbols, &frontier, joint_modes)
-                        .map_err(GeneralIntraTreeWalkError::Leaf)?;
+                    let joint_mode = on_leaf(
+                        work_unit,
+                        &mut symbols,
+                        &frontier,
+                        joint_modes,
+                        &block_decoded,
+                    )
+                    .map_err(GeneralIntraTreeWalkError::Leaf)?;
                     // AV2 § 5.20.5.3: store the block's IntraJointMode into every
                     // MI cell it covers, so a later block's § 8.3.2 `y_mode_index`
                     // context sees it as a left/above neighbour.
@@ -668,6 +697,33 @@ where
                         .num_4x4_high()
                         .map_err(TilePartitionTraversalError::from)?;
                     joint_modes.record_block(call.r, call.c, block_n4w, block_n4h, joint_mode);
+                    // AV2 § 5.20.4: mark every plane 4x4 unit of the decoded block
+                    // (BlockDecoded[plane][(subBlockMiRow >> subY) + i]
+                    // [(subBlockMiCol >> subX) + j] = 1). The superblock-relative MI
+                    // position is `row & sbMask` / `col & sbMask`. The minimal-tier
+                    // subset uses a single full-block transform (TX_MODE_LARGEST),
+                    // so each plane's transform-block 4x4 extent is the block's
+                    // plane 4x4 width / height. Luma (plane 0) is never subsampled;
+                    // chroma uses the frame subsampling.
+                    let sub_block_mi_row = call.r & sb_mask;
+                    let sub_block_mi_col = call.c & sb_mask;
+                    for plane in 0..frame.num_planes {
+                        let (sub_x, sub_y) = if plane == 0 {
+                            (0, 0)
+                        } else {
+                            (
+                                usize::from(frame.subsampling_x),
+                                usize::from(frame.subsampling_y),
+                            )
+                        };
+                        block_decoded.set_block(
+                            plane,
+                            sub_block_mi_row,
+                            sub_block_mi_col,
+                            block_n4w >> sub_x,
+                            block_n4h >> sub_y,
+                        );
+                    }
                     mi_size_state
                         .update_luma_block(call.r, call.c, sub_size)
                         .map_err(GeneralIntraTreeWalkError::MiSize)?;

@@ -11133,6 +11133,61 @@ fixtures = [
 diagnostics = ["decode/unsupported-feature"]
 
 [[feature]]
+id = "DECODE-GENERAL-INTRA-BLOCK-DECODED"
+name = "General intra per-block BlockDecoded state for SMOOTH_H split sub-block above-right"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.20.2.3", "5.20.7.25", "7.13.2.1", "7.13.2.13", "8.2.4"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-2-3",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-25",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-1",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-13",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/tile_payload/block_decoded_state.rs"
+openspec_change = "decode-general-intra-block-decoded"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Implements the AV2 §5.20.2.3 per-block `BlockDecoded` flag state that the DECODE-GENERAL-INTRA-DEEP-SPLIT brick explicitly deferred (DC reads only the immediate left/above so it needs no `BlockDecoded`; SMOOTH reads the §7.13.2.1 above-right `AboveRow[w]` / below-left `LeftCol[h]` sentinels, whose availability §7.13.2.1 derives from `BlockDecoded`). New crate-private `crates/splot-decode/src/tile_payload/block_decoded_state.rs` (`TileBlockDecodedState`) holds a superblock-relative per-plane decoded-flag grid (index ranges y in [-1, sbSize4>>subY], x in [-1, (2*sbSize4)>>subX], the -1 edge stored at offset +1), with `clear_superblock` faithful to §5.20.2.3 `clear_block_decoded_flags(r, c, sbSize4)` (incl the line-8830 below-left corner-zero override) (above row decoded for x < sbWidth4 = (MiColEnd - c)>>subX, left column for y < sbHeight4 = (MiRowEnd - r)>>subY, the corner [-1][-1] = 1), `count_top_right_avail`/`count_bottom_left_avail` (§5.20.7.25), and `set_block` (§5.20.4 `BlockDecoded[plane][(subBlockMiRow>>subY)+i][(subBlockMiCol>>subX)+j] = 1`). The §5.20.3.1 partition walk (`decode_general_intra_partition_tree`) creates the grid, calls `clear_superblock` at each §5.20.2.1 superblock, passes it read-only to the leaf callback, and marks each decoded transform block's plane 4x4 units after the leaf (single full-block transform under TX_MODE_LARGEST). The general intra leaf now derives the luma §7.13.2.1 `num4AboveRight` from `count_top_right_avail` over the real grid (new `luma_num4_above_right_from_block_decoded`) instead of the full-superblock-only `full_sb_num4_above_right` approximation, so a SPLIT child's above-right sibling is counted: this lifts the prior `general_intra_multiblock_non_dc_subblock` reject for a SMOOTH_H luma SPLIT sub-block of size >= 32x32 (TX_SET_DCTONLY) that reads a real reconstructed above-right sentinel. The committed `syn-shsplit-intra-64x64-q80.ivf` (64x64 superblock SPLIT into four 32x32: TL flat 50, TR flat 210, BR flat 130 all DC_PRED, BL 32x32 horizontal-ramp SMOOTH_H_PRED, distinct flat chroma) decodes bit-exactly to the avmdec AND dav2d oracle (raw md5 88ea298073104752646aab5f718fdc31, pinned frame hash `296f15949d88b26b5797bffdb15c6c36dc46bf6976bad59f7995e2443e1b418a`), guarded by the §8.2.4 `exit_symbol()` bit-exactness check. The bottom-left 32x32 SMOOTH_H block (superblock-relative MI (8, 0), x4=0 y4=8 w4=8) reads `count_top_right_avail` = 8 over the decoded top-right 32x32 sibling, so its §7.13.2.1 `AboveRow[w]` sentinel is the real reconstructed top-right corner (210); the reconstructed right column is 211, NOT the ~51 the OLD edge-clamp would produce (empirically confirmed, proving the BlockDecoded path materially changed the output). This is also the first luma (sub_x=0) above-right VALUE oracle anchor (the prior `general_intra_smooth_h_above_right_unverified` deferral noted only the sub_x=1 SMOOTH chroma grid and the value-ignoring SMOOTH_V were verified). VERIFIED-SUBSET DISCIPLINE: only SMOOTH_H luma SPLIT sub-blocks at superblock-relative MI row > 0 (frontier.r % FULL_SB_N4_LUMA != 0, a WITHIN-superblock above-right sibling, the case the syn-shsplit fixture verifies) are admitted; a superblock-relative-row-0 SMOOTH_H split sub-block reads a cross-superblock above-right (the deferred row>0 luma above-right VALUE path, general_intra_smooth_h_above_right_unverified) and is rejected; SMOOTH_V luma sub-blocks (which read the below-left sentinel `LeftCol[h]`, a separate not-yet-fixtured path) and SMOOTH chroma sub-blocks still REJECT with structured `decode/unsupported-feature` diagnostics (`general_intra_multiblock_non_dc_subblock` rescoped to SMOOTH_V, `general_intra_smooth_chroma_subblock` unchanged). The committed `syn-svsplit-intra-64x64-q140.ivf` is the negative companion: it validates clean and avmdec/dav2d agree (md5 f64f680fa0eb63eb4f0fc5101afa0da9), but splot still rejects it (`general_intra_smooth_chroma_subblock`), pinning the verified-subset boundary. All existing general-intra fixtures still decode bit-exact. Out of scope / deferred: SMOOTH_V below-left sub-block sentinels, SMOOTH chroma sub-blocks, directional (D135) sub-blocks (need the mode-dependent transform type too), non-DCTONLY-size (<32x32) non-DC sub-blocks, multiple tiles, inter prediction, in-loop filters, and live AVM/dav2d in CI."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "partial"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "partial"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/runtime_minimal.rs::general_intra_tests::smooth_h_split_subblock_reads_decoded_above_right_sibling",
+    "crates/splot-decode/src/runtime_minimal.rs::general_intra_tests::smooth_chroma_split_subblock_still_rejects",
+    "crates/splot-decode/src/tile_payload.rs::block_decoded_state::tests::split_bottom_left_reads_decoded_top_right_sibling",
+]
+commands = [
+    "cargo test -p splot-decode general_intra --locked",
+    "cargo test -p splot-decode block_decoded --locked",
+    "cargo test -p splot-cli --test conformance --locked",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-decoder-conformance-coverage",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "tests/conformance/vectors/valid/syn-shsplit-intra-64x64-q80.ivf",
+    "tests/conformance/vectors/valid/syn-svsplit-intra-64x64-q140.ivf",
+    "crates/splot-decode/src/tile_payload/block_decoded_state.rs",
+    "crates/splot-decode/src/tile_payload/partition_traversal.rs",
+    "crates/splot-decode/src/runtime_minimal/general_intra.rs",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
 id = "DECODE-GENERAL-INTRA-NONDC-LUMA-SMOOTH"
 name = "General intra single-block non-DC luma (smooth) decode"
 category = "infrastructure"

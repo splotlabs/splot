@@ -14,6 +14,7 @@ use splot_core::headers::sequence::{ChromaFormatIdc, SequenceHeader, SuperblockS
 use splot_core::symbol::{SymbolDecoder, SymbolDecoderSummary};
 
 use super::DecodeTileWorkUnit;
+use super::block_decoded_state::TileBlockDecodedState;
 use super::block_symbol::{MinimalBlockSymbolTraceError, consume_minimal_block_symbol_trace};
 use super::intra_joint_modes::{TileIntraJointModeState, TileIntraJointModeStateError};
 use super::mi_size_state::{TileMiSizeState, TileMiSizeStateError};
@@ -171,10 +172,14 @@ pub(crate) enum GeneralIntraMultiblockError<E> {
 /// maintained across blocks internally.
 ///
 /// `on_leaf` receives the shared per-MI `IntraJointModes` grid (read-only, for
-/// the § 8.3.2 `y_mode_index` neighbour context) and returns the block's
-/// reconstructed `IntraJointMode` (`= modeDelta`), which the walk then records
-/// into the grid for that block's MI region so later blocks see it as a
-/// neighbour.
+/// the § 8.3.2 `y_mode_index` neighbour context) and the superblock-relative
+/// § 5.20.2.3 `BlockDecoded` state (read-only, for the § 7.13.2.1 above-right /
+/// below-left sentinel availability via § 5.20.7.25 `count_top_right_avail` /
+/// `count_bottom_left_avail`), and returns the block's reconstructed
+/// `IntraJointMode` (`= modeDelta`), which the walk then records into the grid
+/// for that block's MI region so later blocks see it as a neighbour. The walk
+/// clears `BlockDecoded` per superblock (§ 5.20.2.3 `clear_block_decoded_flags`)
+/// and marks each decoded transform block's 4x4 units after `on_leaf` returns.
 pub(crate) fn decode_general_intra_multiblock_tree<'payload, E, F>(
     work_unit: &mut DecodeTileWorkUnit<'payload>,
     sequence: &SequenceHeader,
@@ -188,6 +193,7 @@ where
         &mut SymbolDecoder<'payload>,
         &DecodeBlockFrontier,
         &TileIntraJointModeState,
+        &TileBlockDecodedState,
     ) -> Result<u8, E>,
 {
     let frame = minimal_partition_frame_facts(sequence, core)?;

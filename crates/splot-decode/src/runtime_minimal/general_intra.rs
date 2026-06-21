@@ -277,12 +277,13 @@ pub(super) fn decode_general_minimal_intra_frame(
         sequence,
         core,
         limits,
-        |work_unit, symbols, frontier, joint_modes| {
+        |work_unit, symbols, frontier, joint_modes, block_decoded| {
             decode_one_general_intra_block(
                 work_unit,
                 symbols,
                 frontier,
                 joint_modes,
+                block_decoded,
                 &mut workspace,
                 &mut coeff_ctx,
                 qindex,
@@ -329,6 +330,7 @@ fn decode_one_general_intra_block(
     symbols: &mut SymbolDecoder<'_>,
     frontier: &crate::tile_payload::DecodeBlockFrontier,
     joint_modes: &crate::tile_payload::TileIntraJointModeState,
+    block_decoded: &crate::tile_payload::TileBlockDecodedState,
     workspace: &mut splot_recon::CurrentFrameWorkspace<u8>,
     coeff_ctx: &mut crate::tile_payload::TileCoeffContextState,
     qindex: u32,
@@ -568,11 +570,39 @@ fn decode_one_general_intra_block(
                     GENERAL_INTRA_MODE_SPEC_SECTION,
                 ));
             }
+            // SMOOTH_H sub-partitioned (SPLIT-child) block, 32x32-or-larger
+            // (TX_SET_DCTONLY), reading the real § 7.13.2.1 above-right sentinel
+            // VALUE (`AboveRow[w]`) from an already-decoded intra-superblock sibling
+            // via § 5.20.7.25 `count_top_right_avail` over the real § 5.20.2.3
+            // `BlockDecoded` state — but ONLY a WITHIN-superblock above-right: a
+            // child at superblock-relative MI row > 0 (`frontier.r % FULL_SB_N4_LUMA
+            // != 0`, e.g. the bottom-left 32x32 of a SPLIT 64x64 superblock reading
+            // the already-decoded top-right 32x32 sibling's bottom row). That is the
+            // case the `syn-shsplit` fixture oracle-verifies, and it is independent
+            // of the superblock's frame row. A child at superblock-relative row 0
+            // (`frontier.r % FULL_SB_N4_LUMA == 0`) instead reads its above-right
+            // from the superblock ABOVE (a cross-superblock, row>0 neighbour) — the
+            // SAME luma (`sub_x == 0`) above-right VALUE path the full-superblock arm
+            // defers (`general_intra_smooth_h_above_right_unverified`), so it is
+            // rejected here too until a multi-superblock-row SMOOTH_H luma fixture
+            // pins it. SMOOTH_V is NOT admitted here (its § 7.13.2.13 predictor reads
+            // the below-left sentinel `LeftCol[h]`, whose `num4BelowLeft` over a
+            // SPLIT child is a separate, not-yet-fixtured path).
+            (Some(SupportedNonDcLumaMode::SmoothHorizontal), _)
+                if n4w >= NON_DC_MIN_N4 && !frontier.r.is_multiple_of(FULL_SB_N4_LUMA) => {}
+            (Some(SupportedNonDcLumaMode::SmoothHorizontal), _) if n4w >= NON_DC_MIN_N4 => {
+                return Err(general_intra_unsupported(
+                    "general_intra_smooth_h_above_right_unverified",
+                    Some(tile_offset),
+                    "general intra SMOOTH_H sub-partitioned luma at superblock-relative row 0 reads the §7.13.2.1 above-right sentinel value (AboveRow[w]) from a cross-superblock (row>0) decoded neighbour — the same luma (sub_x=0) above-right value path the full-superblock arm defers; only the within-superblock above-right sibling is oracle-verified, so it is deferred to a multi-superblock-row SMOOTH_H luma fixture",
+                    GENERAL_INTRA_MODE_SPEC_SECTION,
+                ));
+            }
             (Some(_), _) => {
                 return Err(general_intra_unsupported(
                     "general_intra_multiblock_non_dc_subblock",
                     Some(tile_offset),
-                    "general intra multi-block non-DC (SMOOTH_V / SMOOTH_H) luma prediction over a reconstructed neighbour is only supported for full 64x64 superblock blocks; sub-partitioned non-DC blocks need the §5.20.2.3 per-block BlockDecoded update for the §7.13.2.1 above-right / below-left neighbours, which is not yet modelled",
+                    "general intra multi-block SMOOTH_V luma prediction over a reconstructed neighbour is only supported for full 64x64 superblock blocks; a sub-partitioned SMOOTH_V block reads the §7.13.2.1 below-left sentinel (LeftCol[h], §5.20.7.25 count_bottom_left_avail), which is not yet covered by an oracle fixture",
                     GENERAL_INTRA_MODE_SPEC_SECTION,
                 ));
             }
@@ -646,13 +676,21 @@ fn decode_one_general_intra_block(
     .map_err(|error| general_intra_residual_error(error, tile_offset))?;
     match (supported_nondc_luma, supported_directional_luma) {
         (Some(mode), _) if nondc_luma_has_neighbour => {
-            // §7.13.2.1 `num4AboveRight` for the full-superblock luma block (the
-            // gate restricts the neighbour-edge non-DC path to `n4w == 16`), from
-            // §5.20.7.25 `count_top_right_avail`. Luma is not subsampled
-            // (`sub_x == 0`). It only matters for SMOOTH_H / SMOOTH (the top-right
+            // §7.13.2.1 `num4AboveRight` from §5.20.7.25 `count_top_right_avail`
+            // over the real §5.20.2.3 `BlockDecoded` state (luma plane, not
+            // subsampled). This is the spec-faithful sub-block derivation: a
+            // full-superblock block coincides with the superblock so it counts the
+            // `clear_block_decoded_flags` above-row marking (identical to
+            // `full_sb_num4_above_right`), while a SPLIT child (e.g. the bottom-left
+            // 32x32) counts its already-decoded intra-superblock sibling (the
+            // top-right 32x32). It only matters for SMOOTH_H / SMOOTH (the top-right
             // sentinel `AboveRow[w]`); SMOOTH_V's output never reads it.
-            let num4_above_right =
-                full_sb_num4_above_right(frontier.c, n4w, mi_cols, FRAME_LUMA_SUBSAMPLING_X);
+            let num4_above_right = luma_num4_above_right_from_block_decoded(
+                block_decoded,
+                frontier.r,
+                frontier.c,
+                n4w,
+            );
             crate::runtime_minimal_recon::reconstruct_general_intra_luma_nondc_neighbour_block_into(
                 workspace,
                 &luma,
@@ -787,9 +825,6 @@ fn decode_one_general_intra_block(
 /// 4:2:0 chroma horizontal subsampling (`SubsamplingX == 1`).
 const FRAME_420_SUBSAMPLING_X: usize = 1;
 
-/// Luma horizontal subsampling (`SubsamplingX == 0`).
-const FRAME_LUMA_SUBSAMPLING_X: usize = 0;
-
 /// Derives AV2 § 7.13.2.1 `num4AboveRight` (in plane 4x4 units) for a
 /// full-superblock transform block, faithfully to § 5.20.7.25
 /// `count_top_right_avail` over the § 5.20.2.3 `BlockDecoded` state. The plane is
@@ -823,6 +858,32 @@ pub(super) fn full_sb_num4_above_right(
         }
     }
     num_top_right
+}
+
+/// Derives AV2 § 7.13.2.1 `num4AboveRight` (in luma 4x4 units) for an arbitrary
+/// (full-superblock or sub-partitioned) luma transform block, faithfully to
+/// § 5.20.7.25 `count_top_right_avail` over the real § 5.20.2.3 `BlockDecoded`
+/// state. Unlike [`full_sb_num4_above_right`] (which special-cases the
+/// full-superblock `(0, 0)` sub-block whose above-right is read directly from the
+/// `clear_block_decoded_flags` above-row marking), this reads the genuine
+/// per-block decoded grid, so a SPLIT child's above-right sibling (e.g. the
+/// bottom-left 32x32 reading the already-decoded top-right 32x32) is counted.
+///
+/// `r` / `c` are the block's luma MI position; `n4w` is its width in luma 4x4
+/// units. The superblock-relative sub-block position is `(r & sbMask, c & sbMask)`
+/// (`sbMask = sbSize4 - 1`); luma is not subsampled, so `x4 = subBlockMiCol`,
+/// `y4 = subBlockMiRow`, `w4 = n4w`.
+fn luma_num4_above_right_from_block_decoded(
+    block_decoded: &crate::tile_payload::TileBlockDecodedState,
+    r: usize,
+    c: usize,
+    n4w: usize,
+) -> usize {
+    let sb_mask = block_decoded.sb_size4().saturating_sub(1);
+    let x4 = c & sb_mask;
+    let y4 = r & sb_mask;
+    // Luma plane (0); not subsampled.
+    block_decoded.count_top_right_avail(0, x4, y4, n4w)
 }
 
 /// Maps a general intra multi-block tree-walk error to a decode diagnostic. The
