@@ -742,6 +742,27 @@ fn entropy_proof_routes_full_4x4_lf_context_banks() {
 }
 
 #[test]
+fn entropy_proof_routes_full_4x4_hf_context_banks() {
+    // The 4x4 HIGH-frequency CDF banks in `CoefficientTokenCdfRows` cover the full
+    // §8.3.2 context dimension (`DEFAULT_COEFF_BASE_EOB_CDF` 4 contexts,
+    // `DEFAULT_COEFF_BR_CDF` 7 contexts), so every reachable HF `coeff_base_eob` /
+    // `coeff_br` context routes through `roundtrip_entropy_tokens`. The eob-11 HF EOB
+    // coefficient reaches `CoeffBaseEob { ctx: 3 }` and `CoeffBr { ctx: 0 }`; sweeping
+    // the full context dimension proves no single-context routing holes remain across
+    // the HF tier (the dual-router rule: the OTHER proof carries these banks too).
+    for ctx in 0..COEFF_BASE_EOB_CTX_COUNT {
+        let token = coeff_base_hf_eob_token(0, ctx, 1);
+        let proof = roundtrip_entropy_tokens(&[token]).unwrap();
+        assert_eq!(proof.symbol_count(), 1);
+    }
+    for ctx in 0..COEFF_BR_CTX_COUNT {
+        let token = coeff_br_hf_token(0, ctx, 0);
+        let proof = roundtrip_entropy_tokens(&[token]).unwrap();
+        assert_eq!(proof.symbol_count(), 1);
+    }
+}
+
+#[test]
 fn multi_coeff_token_accessors_carry_expected_symbols() {
     // coded all_zero == 0 (block has coefficients).
     assert_eq!(coded_luma_all_zero_token(0).symbol(), 0);
