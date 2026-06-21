@@ -11884,6 +11884,58 @@ fixtures = [
 diagnostics = ["decode/unsupported-feature"]
 
 [[feature]]
+id = "DECODE-GENERAL-INTRA-CARDINAL"
+name = "General intra cardinal V_PRED / H_PRED luma + follow chroma over a real edge"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.20.5.3", "5.20.7.27", "7.13.2.1", "7.13.2.7", "7.13.2.8", "8.2.4", "9.2"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-1",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-7",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-8",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/runtime_minimal_recon.rs"
+openspec_change = "decode-general-intra-cardinal"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Adds the two CARDINAL §7.13.2.8 directional luma modes (`V_PRED` pAngle 90, step 4; `H_PRED` pAngle 180, step 5) over a REAL reconstructed neighbour edge, plus their `uv_mode == 0` directional-follow chroma. The cardinal cases are a degenerate sample copy with NO IDIF, NO corner, NO edge synthesis and NO `useIBP` (§7.13.2.7 gates `useIBP` on `pAngle < 90 || pAngle > 180`, and §7.13.2.7's edge-filter step is skipped entirely for `pAngle == 90 || pAngle == 180`): V_PRED is `pred[i][j] = AboveRow[j]` (every row copies the real reconstructed §7.13.2.1 above row, so it needs `haveAbove == 1`, a row>0 superblock); H_PRED is `pred[i][j] = LeftCol[i]` (every column copies the real left column, so it needs `haveLeft == 1`, a non-first-column superblock). Unlike a §7.13.2.8 middle angle (D135), the cardinal copy is bit-exact over a NON-flat reconstructed edge without any interpolation. KEY DECODE-PATH FINDING (corrects the brief's `y_mode_offset` escape hint): at §8.3.2 ctx == 0, V_PRED / H_PRED with `AngleDeltaY == 0` are NOT reachable via the `y_mode_offset` escape (the escape's `modeIdx` 7..12 only reaches D45/D67/D113/D135/D157/D203). They are coded via the §5.20.5.3 DIRECT first-mode-set `y_mode_index` (`modeIdx == y_mode_index`, no escape): V_PRED at `y_mode_index == 5` (`get_intra_y_mode_set(5)` -> `Default_Mode_List_Y[0] == 17` -> `modeDelta 22` -> `Reordered_Y_Mode[7] == V_PRED`, AngleDeltaY 0), H_PRED at `y_mode_index == 6` (`Default_Mode_List_Y[1] == 45` -> `modeDelta 50` -> `Reordered_Y_Mode[11] == H_PRED`, AngleDeltaY 0). (Empirically confirmed: avmenc with `--enable-smooth-intra=0` over a perfect vertical/horizontal continuation at higher QP — base_q_idx 160/180 — codes `y_mode_set == 0, y_mode_index == 5/6`, where at lower QP it preferred an angled `y_second_mode` V/H delta±1.) `reconstruct_y_mode_first_set_directional_top_left(y_mode_index)` reuses the shared `resolve_y_mode_top_left` / `get_intra_y_mode_set_top_left` (the same ctx == 0 selection the escape uses), so the `y_mode_set == 0`, `NON_DIRECTIONAL_MODES_COUNT <= y_mode_index < MODE_INDEX_COUNT - 1` branch reconstructs V/H. ctx != 0 (a directional joint-mode neighbour) is REJECTED (`general_intra_directional_neighbour_reorder`, the unmodelled §5.20.5.3 reorder). The new `reconstruct_general_intra_cardinal_neighbour_block_into` reads the real §7.13.2.1 edge from `intra_dc_edges_for_rect` (above row for V, left column for H) and runs the shared `predict_intra_cardinal_directional_rect_into`; the chroma follow (`SupportedChromaMode::VerticalFollow` / `HorizontalFollow`, resolved when `uv_mode == 0` over a V/H luma makes §5.20.5.3 return `UVMode == V_PRED`/`H_PRED`, `AngleDeltaUV == 0`) routes to the same function (chroma uses no IDIF). The committed `syn-vpred-intra-64x128-q160.ivf` (top DC superblock + bottom V_PRED superblock over a column-constant input, frontier.r == 16) and `syn-hpred-intra-128x64-q180.ivf` (left DC superblock + right H_PRED superblock over a row-constant input, frontier.c == 16) each decode bit-exactly to the avmdec AND dav2d oracle (V raw md5 d35b827668076a934bb6c21717f9a8f9, pinned frame hash 5b2761c0d2eb2502af5cbe544b2cadbb676a4b84b60953d86a3e42d7df910e39; H raw md5 aac61b219518ce5057a6284262ac3bb9, pinned frame hash 826cea4e59f8280b538c3efc26e7be72cd1912aa19f235ebf3f862fc8832a885; raw outputs agree, recorded in LOCAL-REFERENCE-EVIDENCE.toml), guarded by the §8.2.4 `exit_symbol()` check. The OLD code rejected both frames (`general_intra_unsupported_y_mode` at the cardinal block's `y_mode_index == 5/6`). All existing general-intra fixtures still decode bit-exact, and a non-cardinal directional first-set block (e.g. a D45 block) still rejects (`general_intra_unsupported_y_mode`). Scope: V_PRED on a row>0 full 64x64 superblock (`n4w == 16`) reading the real above row; H_PRED on a non-first-column full 64x64 superblock reading the real left column; their `uv_mode == 0` directional-follow chroma. Out of scope (still rejected / deferred): a first-superblock-row V_PRED (`general_intra_cardinal_vertical_unverified`) / first-column H_PRED (`general_intra_cardinal_horizontal_unverified`) reading the §7.13.2.1 no-neighbour fallback, sub-superblock (split) cardinal blocks, a directional-neighbour (ctx != 0) cardinal escape/reorder, non-cardinal angles, non-zero angle deltas, the `y_second_mode` (`y_mode_set != 0`) path, non-64x64 superblock blocks, multiple tiles, inter prediction, in-loop filters, and live AVM/dav2d in CI."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "partial"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "partial"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/runtime_minimal.rs::general_intra_tests::vpred_cardinal_multirow_intra_frame_decodes_to_oracle",
+    "crates/splot-decode/src/runtime_minimal.rs::general_intra_tests::hpred_cardinal_multicolumn_intra_frame_decodes_to_oracle",
+]
+commands = [
+    "cargo test -p splot-decode general_intra --locked",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "tests/conformance/vectors/valid/syn-vpred-intra-64x128-q160.ivf",
+    "tests/conformance/vectors/valid/syn-hpred-intra-128x64-q180.ivf",
+    "crates/splot-decode/src/runtime_minimal.rs",
+    "crates/splot-decode/src/runtime_minimal_recon.rs",
+    "crates/splot-decode/src/runtime_minimal/general_intra.rs",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
 id = "DECODE-COEFF-FSC-SCAN-WALK"
 name = "Coefficient FSC scan walk"
 category = "infrastructure"

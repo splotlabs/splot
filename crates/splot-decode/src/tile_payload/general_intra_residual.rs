@@ -124,6 +124,24 @@ pub(crate) enum GeneralIntraResidualError {
         "general intra directional prediction over a real above-neighbour edge is not yet supported"
     )]
     UnsupportedDirectionalAboveEdge,
+    /// A § 7.13.2.8 cardinal directional block (`V_PRED` pAngle 90 / `H_PRED`
+    /// pAngle 180) was reached without its required reconstructed neighbour edge:
+    /// `V_PRED` needs the real § 7.13.2.1 above row (`haveAbove == 1`), `H_PRED`
+    /// needs the real left column (`haveLeft == 1`). The admission gate only
+    /// admits these when the edge is present, so this is reached only if that gate
+    /// is relaxed without supplying the edge.
+    #[error("general intra cardinal directional prediction is missing its required neighbour edge")]
+    MissingCardinalEdge,
+    /// A cardinal `V_PRED` / `H_PRED` mode reached the § 7.13.2.8 middle-angle
+    /// (`90 < pAngle < 180`) mapping, which only covers `D135`. The dispatch routes
+    /// cardinal modes to the dedicated copy predictor
+    /// (`reconstruct_general_intra_cardinal_neighbour_block_into`), so this is
+    /// unreachable in correct operation; it is a defensive guard for a dispatch
+    /// regression (returned rather than panicking, per the no-panic policy).
+    #[error(
+        "general intra cardinal (V_PRED/H_PRED) mode reached the middle-angle path; it must be dispatched to the cardinal copy reconstruction"
+    )]
+    CardinalModeInMiddleAnglePath,
 }
 
 /// OR-reduces a `u32` context line over `[start, start + len)` (clamped to the

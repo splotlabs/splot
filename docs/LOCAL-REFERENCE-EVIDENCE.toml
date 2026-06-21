@@ -1206,3 +1206,107 @@ output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
 kind = "digest-equality"
 left = "avm-rdir-raw-md5"
 right = "dav2d-rdir-raw-md5"
+
+[[evidence]]
+id = "lref-avm-dav2d-syn-vpred-intra-64x128-q160"
+feature_id = "DECODE-GENERAL-INTRA-CARDINAL"
+decoder_support_rows = ["general-intra-cardinal"]
+kind = "reference-output-agreement"
+summary = "Local AVM and dav2d raw decoder output MD5 digests agreed for the 8-bit 64x128 single-column multi-superblock-row intra IVF fixture at base_q_idx 160 whose TOP 64x64 superblock codes DC_PRED and whose BOTTOM 64x64 superblock (frontier row 16) codes the cardinal §7.13.2.8 V_PRED (pAngle 90) luma mode plus its uv_mode == 0 directional-follow V_PRED chroma. V_PRED is decoded via the §5.20.5.3 DIRECT first-mode-set y_mode_index == 5 (NOT the y_mode_offset escape, which at §8.3.2 ctx == 0 only reaches D45/D67/D113/D135/D157/D203): modeIdx 5 -> get_intra_y_mode_set -> Default_Mode_List_Y[0] (17) -> modeDelta 22 -> Reordered_Y_Mode[7] == V_PRED, AngleDeltaY 0; ctx == 0 (the DC above neighbour stored IntraJointMode 0). V_PRED is a pure VERTICAL copy (pred[i][j] = AboveRow[j]) of the REAL reconstructed §7.13.2.1 above row (the bottom row of the already-decoded top superblock, haveAbove == 1) plus residual; it reads no corner, no left, no IDIF, no useIBP. The chroma follow is a cardinal copy of the real above chroma row. The OLD code rejected this frame (general_intra_unsupported_y_mode at the bottom block's y_mode_index == 5). The first general-intra cardinal V_PRED decode target."
+recorded_at = "2026-06-21"
+
+[[evidence.fixture]]
+id = "input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-vpred-intra-64x128-q160.ivf"
+sha256 = "633cff9c1764da40024e67d857854f46085d1d025a31a6e1c48352c58b871ba6"
+size_bytes = 81
+format = "ivf"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Generated locally from a project-owned 64x128 YUV input (column-constant luma: each column a distinct value 30..210, identical down all rows so the bottom superblock is a perfect vertical continuation of the top; flat chroma U=120 V=130) with broad decode tools (incl. GDF, CDEF, deblocking, restoration, CfL, MHCCP, CCTX, IBP, BAWP, angle-delta, intra edge filter, ist, intra-dip, idtx-intra, flip-idtx, mrls, palette, intrabc, rectangular/extended/uneven partitions, sdp, fsc, tx-partition) AND --enable-smooth-intra=0 disabled and --sb-size=64 --min/max-partition-size=64 forcing a 64x64 superblock grid at --qp=160, so the encoder codes the top superblock as DC_PRED and the bottom superblock as the cardinal V_PRED (pAngle 90) reading the real reconstructed above row; AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avm"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "457cd58681a747465661baccb1f32095bc5b7774"
+version_summary = "AVM checkout HEAD 457cd58681a747465661baccb1f32095bc5b7774, exact binary build commit not separately archived."
+command_summary = "Local avmdec --rawvideo --i420 output MD5 for {fixture:input}."
+output_digest_id = "avm-vpred-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "d35b827668076a934bb6c21717f9a8f9"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.reference_run]]
+id = "dav2d"
+tool = "dav2d"
+executable_name = "dav2d"
+tool_role = "decode-reference"
+source_url = "https://code.videolan.org/videolan/dav2d"
+revision = "f4f96cb06bb3cd3f31e29e1f190f1c0e373ab352"
+version_summary = "dav2d 0.0.1-191-gf4f96cb0 (commit f4f96cb0), decoded with --demuxer ivf --muxer yuv; exact version output not archived."
+command_summary = "Local dav2d --demuxer ivf --muxer yuv output MD5 for {fixture:input}."
+output_digest_id = "dav2d-vpred-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "d35b827668076a934bb6c21717f9a8f9"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-vpred-raw-md5"
+right = "dav2d-vpred-raw-md5"
+
+[[evidence]]
+id = "lref-avm-dav2d-syn-hpred-intra-128x64-q180"
+feature_id = "DECODE-GENERAL-INTRA-CARDINAL"
+decoder_support_rows = ["general-intra-cardinal"]
+kind = "reference-output-agreement"
+summary = "Local AVM and dav2d raw decoder output MD5 digests agreed for the 8-bit 128x64 multi-superblock intra IVF fixture at base_q_idx 180 whose LEFT 64x64 superblock codes DC_PRED and whose RIGHT 64x64 superblock (frontier col 16) codes the cardinal §7.13.2.8 H_PRED (pAngle 180) luma mode plus its uv_mode == 0 directional-follow H_PRED chroma. H_PRED is decoded via the §5.20.5.3 DIRECT first-mode-set y_mode_index == 6 (NOT the escape): modeIdx 6 -> Default_Mode_List_Y[1] (45) -> modeDelta 50 -> Reordered_Y_Mode[11] == H_PRED, AngleDeltaY 0; ctx == 0 (the DC left neighbour stored IntraJointMode 0). H_PRED is a pure HORIZONTAL copy (pred[i][j] = LeftCol[i]) of the REAL reconstructed §7.13.2.1 left column (the right column of the already-decoded left superblock, haveLeft == 1) plus residual; it reads no corner, no above, no IDIF, no useIBP. The chroma follow is a cardinal copy of the real left chroma column. The OLD code rejected this frame (general_intra_unsupported_y_mode at the right block's y_mode_index == 6). The first general-intra cardinal H_PRED decode target."
+recorded_at = "2026-06-21"
+
+[[evidence.fixture]]
+id = "input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-hpred-intra-128x64-q180.ivf"
+sha256 = "889d9a329b7b36a5da9907083c27acdb2c96f41c465a2c753a086d441d60b85a"
+size_bytes = 75
+format = "ivf"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Generated locally from a project-owned 128x64 YUV input (row-constant luma: each row a distinct value 30..210, identical across all columns so the right superblock is a perfect horizontal continuation of the left; flat chroma U=120 V=130) with broad decode tools (incl. GDF, CDEF, deblocking, restoration, CfL, MHCCP, CCTX, IBP, BAWP, angle-delta, intra edge filter, ist, intra-dip, idtx-intra, flip-idtx, mrls, palette, intrabc, rectangular/extended/uneven partitions, sdp, fsc, tx-partition) AND --enable-smooth-intra=0 disabled and --sb-size=64 --min/max-partition-size=64 forcing a 64x64 superblock grid at --qp=180, so the encoder codes the left superblock as DC_PRED and the right superblock as the cardinal H_PRED (pAngle 180) reading the real reconstructed left column; AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avm"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "457cd58681a747465661baccb1f32095bc5b7774"
+version_summary = "AVM checkout HEAD 457cd58681a747465661baccb1f32095bc5b7774, exact binary build commit not separately archived."
+command_summary = "Local avmdec --rawvideo --i420 output MD5 for {fixture:input}."
+output_digest_id = "avm-hpred-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "aac61b219518ce5057a6284262ac3bb9"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.reference_run]]
+id = "dav2d"
+tool = "dav2d"
+executable_name = "dav2d"
+tool_role = "decode-reference"
+source_url = "https://code.videolan.org/videolan/dav2d"
+revision = "f4f96cb06bb3cd3f31e29e1f190f1c0e373ab352"
+version_summary = "dav2d 0.0.1-191-gf4f96cb0 (commit f4f96cb0), decoded with --demuxer ivf --muxer yuv; exact version output not archived."
+command_summary = "Local dav2d --demuxer ivf --muxer yuv output MD5 for {fixture:input}."
+output_digest_id = "dav2d-hpred-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "aac61b219518ce5057a6284262ac3bb9"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-hpred-raw-md5"
+right = "dav2d-hpred-raw-md5"

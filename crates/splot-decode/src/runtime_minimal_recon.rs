@@ -206,6 +206,39 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into(
                 false,
             )
         }
+        // Cardinal directional-follow V_PRED / H_PRED chroma: a degenerate copy of
+        // the real reconstructed §7.13.2.1 above row (V) or left column (H). Chroma
+        // uses no IDIF, so the copy is bit-exact over the non-flat real edge. The
+        // luma cardinal gate guarantees the chroma block has the matching neighbour
+        // (V follows a row>0 luma block, H a non-first-column luma block), and the
+        // 4:2:0 chroma block at the half-resolution position has the same neighbour
+        // availability. Chroma never uses the §7.14.4 TCQ dqDenom term.
+        SupportedChromaMode::VerticalFollow => {
+            reconstruct_general_intra_cardinal_neighbour_block_into(
+                workspace,
+                block,
+                IntraCardinalDirection::Vertical,
+                plane_id,
+                x,
+                y,
+                log2_side,
+                qindex,
+                false,
+            )
+        }
+        SupportedChromaMode::HorizontalFollow => {
+            reconstruct_general_intra_cardinal_neighbour_block_into(
+                workspace,
+                block,
+                IntraCardinalDirection::Horizontal,
+                plane_id,
+                x,
+                y,
+                log2_side,
+                qindex,
+                false,
+            )
+        }
     }
 }
 
@@ -699,9 +732,7 @@ fn predict_directional_noneighbour(
     block_size: IntraRectBlockSize,
     side: usize,
 ) -> core::result::Result<Vec<u8>, GeneralIntraResidualError> {
-    let angle = match mode {
-        SupportedDirectionalLumaMode::D135 => IntraMiddleDirectionalAngle::D135,
-    };
+    let angle = middle_directional_angle(mode)?;
     // Logical `AboveRow[-1..w)` and `LeftCol[-1..h)` (length side + 1): index 0
     // is the corner; index `k + 1` is logical `k`.
     let mut above = vec![NONEIGHBOUR_ABOVE_8BIT; side + 1];
@@ -780,9 +811,7 @@ pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into(
     let have_above = edges.above_samples().is_some();
     let (left, above) =
         build_directional_middle_edges(edges.left_samples(), have_left, have_above, side)?;
-    let angle = match mode {
-        SupportedDirectionalLumaMode::D135 => IntraMiddleDirectionalAngle::D135,
-    };
+    let angle = middle_directional_angle(mode)?;
     let middle_edges = IntraMiddleDirectionalAngleEdges::both(&left, &above);
     let mut prediction = vec![0u8; side * side];
     predict_intra_middle_directional_angle_rect_into(
@@ -790,6 +819,94 @@ pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into(
         block_size,
         angle,
         middle_edges,
+        &mut prediction,
+        side,
+    )
+    .map_err(recon_err)?;
+    let out = if block.all_zero {
+        prediction
+    } else {
+        reconstruct_general_intra_block_with_prediction(
+            &block.quant,
+            &prediction,
+            qindex,
+            plane_id,
+            log2_side,
+            use_tcq,
+        )?
+    };
+    workspace
+        .write_rect_block(plane_id, x, y, block_size, &out)
+        .map_err(recon_err)?;
+    Ok(())
+}
+
+/// Reconstructs one neighbour-having CARDINAL directional luma block — `V_PRED`
+/// (§ 7.13.2.8 step 4, pAngle 90) or `H_PRED` (step 5, pAngle 180) — over the
+/// § 7.13.2.1 edge read from the partially-built frame's **real reconstructed
+/// neighbour**, adds the decoded residual (or writes the bare prediction for an
+/// `all_zero` block), and stores the result so later blocks read it as a
+/// neighbour.
+///
+/// The cardinal cases are a degenerate sample copy with NO IDIF, NO corner, NO
+/// edge synthesis and NO `useIBP` (which § 7.13.2.7 gates on
+/// `pAngle < 90 || pAngle > 180`):
+/// - `V_PRED` (pAngle 90): `pred[i][j] = AboveRow[j]` — every row is a copy of
+///   the real reconstructed above row (`CurrFrame[plane][y-1][x..x+w)`). It reads
+///   ONLY the above row, so it needs `haveAbove == 1` (a real above neighbour;
+///   target a superblock row > 0).
+/// - `H_PRED` (pAngle 180): `pred[i][j] = LeftCol[i]` — every column is a copy of
+///   the real reconstructed left column (`CurrFrame[plane][y..y+h)][x-1]`). It
+///   reads ONLY the left column, so it needs `haveLeft == 1` (a real left
+///   neighbour; target a non-first superblock column).
+///
+/// Unlike the § 7.13.2.8 "middle" angles (D135), the cardinal copy is bit-exact
+/// over a NON-flat reconstructed edge without any interpolation, so it does not
+/// need the corner / IDIF that [`build_directional_middle_edges`] guards. The
+/// `enable_intra_edge_filter == 0` / `MrlIndex == 0` minimal-tool subset keeps the
+/// § 7.13.2.7 edge-filter / corner-filter step a no-op (and § 7.13.2.7 skips it
+/// entirely for `pAngle == 90 || pAngle == 180`).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn reconstruct_general_intra_cardinal_neighbour_block_into(
+    workspace: &mut CurrentFrameWorkspace<u8>,
+    block: &LumaCoeffBlock,
+    direction: IntraCardinalDirection,
+    plane_id: PlaneId,
+    x: usize,
+    y: usize,
+    log2_side: u32,
+    qindex: u32,
+    use_tcq: bool,
+) -> core::result::Result<(), GeneralIntraResidualError> {
+    let side = 1usize << log2_side;
+    let log2 = u8::try_from(log2_side).unwrap_or(u8::MAX);
+    let block_size = IntraRectBlockSize::new(log2, log2).map_err(recon_err)?;
+    let edges = workspace
+        .intra_dc_edges_for_rect(plane_id, x, y, block_size)
+        .map_err(recon_err)?;
+    // §7.13.2.8 step 4/5 read ONLY the above row (V) or the left column (H). Build
+    // exactly that edge from the real reconstructed neighbour; reject if it is
+    // absent (the admission gate guarantees it is present, see general_intra.rs).
+    let cardinal_edges = match direction {
+        IntraCardinalDirection::Vertical => {
+            let above = edges
+                .above_samples()
+                .ok_or(GeneralIntraResidualError::MissingCardinalEdge)?;
+            IntraCardinalEdges::above(above)
+        }
+        IntraCardinalDirection::Horizontal => {
+            let left = edges
+                .left_samples()
+                .ok_or(GeneralIntraResidualError::MissingCardinalEdge)?;
+            IntraCardinalEdges::left(left)
+        }
+    };
+    let mut prediction = vec![0u8; side * side];
+    predict_intra_cardinal_directional_rect_into(
+        BitDepth::Eight,
+        block_size,
+        direction,
+        cardinal_edges,
         &mut prediction,
         side,
     )
@@ -909,6 +1026,24 @@ fn sample_or_last(samples: &[u8], index: usize, fallback: u8) -> u8 {
         .or_else(|| samples.last())
         .copied()
         .unwrap_or(fallback)
+}
+
+/// Maps a supported directional luma mode to its § 7.13.2.8 "middle" angle
+/// (`90 < pAngle < 180`) for the bilinear/IDIF middle-angle predictor. Only
+/// `D135` is a middle angle; the cardinal `Vertical` (pAngle 90) / `Horizontal`
+/// (pAngle 180) modes use the dedicated copy predictor
+/// [`reconstruct_general_intra_cardinal_neighbour_block_into`] and never reach the
+/// middle-angle paths, so they return an error here (defensive: the dispatch
+/// routes them away before these functions are called).
+fn middle_directional_angle(
+    mode: SupportedDirectionalLumaMode,
+) -> core::result::Result<IntraMiddleDirectionalAngle, GeneralIntraResidualError> {
+    match mode {
+        SupportedDirectionalLumaMode::D135 => Ok(IntraMiddleDirectionalAngle::D135),
+        SupportedDirectionalLumaMode::Vertical | SupportedDirectionalLumaMode::Horizontal => {
+            Err(GeneralIntraResidualError::CardinalModeInMiddleAnglePath)
+        }
+    }
 }
 
 fn recon_err(source: splot_recon::ReconError) -> GeneralIntraResidualError {
