@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "3843d5ed393f7382ecd5a2bda5ab666333a8607a",
+  "audited_commit": "602d6bee49014207bb718cf3fc1f1d8a591f0d30",
   "outcome": "success",
   "files": [
     {
@@ -356,10 +356,11 @@
     },
     {
       "path": "crates/splot-cli/tests/decode_cli.rs",
-      "sha256": "0fca9f1c1fb3d66cdac26db2a1fd3dbfa3ee6925041e402d1245e99b229d7dac",
+      "sha256": "77d49a1fd1875e901f24fca7b7af44c324d06d25b6c11f423eb2fde87aa9f242",
       "scope_kind": "workspace:splot-cli",
       "feature_ids": [
         "DECODE-BYTE-STREAM-PLANNER",
+        "DECODE-FIRST-INTER-FRAME-FRONTIER",
         "DECODE-MINIMAL-TIER-RUNTIME-SUCCESS",
         "DECODE-STREAM-STATE-PLANNER",
         "DOC-DECODE-LIMITS-CONTRACT"
@@ -1950,6 +1951,7 @@
       "sha256": "41544cf1ca51bf2e39b7f13e59f596166846dfe85264e98613fb157f902e278e",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
+        "DECODE-FIRST-INTER-FRAME-FRONTIER",
         "DECODE-STREAM-STATE-PLANNER"
       ],
       "outcome": "success"
@@ -4788,7 +4790,7 @@
     },
     {
       "path": "docs/DECODER-SUPPORT-MATRIX.toml",
-      "sha256": "76f54a4c7186683ec0559d4feea7bf40b7640f660650de872061ca2efee7ad6a",
+      "sha256": "e6b86126534a723adeef751a727189eb320e1fd71b8bd25170124e6acafb0eba",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-8.2-SYMBOL-DECODER",
@@ -4866,6 +4868,7 @@
         "DECODE-COEFF-USE-FSC-CONDITION-HANDOFF",
         "DECODE-COEFF-USE-FSC-SHARED-FACTS-HANDOFF",
         "DECODE-CONTEXT-TILE-PAYLOAD-HANDOFF",
+        "DECODE-FIRST-INTER-FRAME-FRONTIER",
         "DECODE-GENERAL-INTRA-ANGLE",
         "DECODE-GENERAL-INTRA-ANGLE-D113",
         "DECODE-GENERAL-INTRA-ANGLE-D203",
@@ -4968,7 +4971,7 @@
     },
     {
       "path": "docs/DECODER-SUPPORT-STATUS.md",
-      "sha256": "82ecc00a0571ded44fc094ee6a74b996437ddef5fba0084aa3815271b109e459",
+      "sha256": "c9145ef7fc842147d0053410944da35989d80192e0437ed2611a8bd28f72be7d",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-8.2-SYMBOL-DECODER",
@@ -5046,6 +5049,7 @@
         "DECODE-COEFF-USE-FSC-CONDITION-HANDOFF",
         "DECODE-COEFF-USE-FSC-SHARED-FACTS-HANDOFF",
         "DECODE-CONTEXT-TILE-PAYLOAD-HANDOFF",
+        "DECODE-FIRST-INTER-FRAME-FRONTIER",
         "DECODE-GENERAL-INTRA-ANGLE",
         "DECODE-GENERAL-INTRA-ANGLE-D113",
         "DECODE-GENERAL-INTRA-ANGLE-D203",
@@ -5215,7 +5219,7 @@
     },
     {
       "path": "docs/FEATURE-STATUS.md",
-      "sha256": "a5d25b8c12d213946e7a01b5d776b6248032371e73c4f91cdb1026ebc987c5e5",
+      "sha256": "e4d700d2e6ba9a4aea29bfe14d95022bb67af6f260755af24184e4763e5671a7",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.10-RG",
@@ -5413,6 +5417,7 @@
         "DECODE-COEFF-USE-FSC-CONDITION-HANDOFF",
         "DECODE-COEFF-USE-FSC-SHARED-FACTS-HANDOFF",
         "DECODE-CONTEXT-TILE-PAYLOAD-HANDOFF",
+        "DECODE-FIRST-INTER-FRAME-FRONTIER",
         "DECODE-GENERAL-INTRA-ANGLE",
         "DECODE-GENERAL-INTRA-ANGLE-D113",
         "DECODE-GENERAL-INTRA-ANGLE-D203",
@@ -5637,7 +5642,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "97168acfdd4bfa5f82ab09278578836769d93818c97c7bb0456edac41d1555d5",
+      "sha256": "4f831f4932720c2dc11b855f2e406f316eb85b49e26d613c283d6fd4e325948d",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.10-RG",
@@ -5835,6 +5840,7 @@
         "DECODE-COEFF-USE-FSC-CONDITION-HANDOFF",
         "DECODE-COEFF-USE-FSC-SHARED-FACTS-HANDOFF",
         "DECODE-CONTEXT-TILE-PAYLOAD-HANDOFF",
+        "DECODE-FIRST-INTER-FRAME-FRONTIER",
         "DECODE-GENERAL-INTRA-ANGLE",
         "DECODE-GENERAL-INTRA-ANGLE-D113",
         "DECODE-GENERAL-INTRA-ANGLE-D203",
@@ -6020,9 +6026,10 @@
     },
     {
       "path": "docs/LOCAL-REFERENCE-EVIDENCE.toml",
-      "sha256": "78d143ea9d048646cc6818ebd80e0248ce4ace98a3eb4016e6c534eae07ed165",
+      "sha256": "cbc14a4104b7ad8b98842434711b913cf98af9cba91e8d764cf4d47729fb82d5",
       "scope_kind": "docs",
       "feature_ids": [
+        "DECODE-FIRST-INTER-FRAME-FRONTIER",
         "DECODE-GENERAL-INTRA-ANGLE",
         "DECODE-GENERAL-INTRA-ANGLE-D113",
         "DECODE-GENERAL-INTRA-ANGLE-D203",
@@ -6055,7 +6062,7 @@
     },
     {
       "path": "docs/SPEC-COVERAGE.md",
-      "sha256": "d31f291e94a56fa9e88ac40a8b44bda1487adcfbd1a1367704b7e46413553118",
+      "sha256": "2d8322cbb26a3e9326cd2b36181bd0fc603c0d91f42974915474df6433bd669e",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.10-RG",
@@ -6253,6 +6260,7 @@
         "DECODE-COEFF-USE-FSC-CONDITION-HANDOFF",
         "DECODE-COEFF-USE-FSC-SHARED-FACTS-HANDOFF",
         "DECODE-CONTEXT-TILE-PAYLOAD-HANDOFF",
+        "DECODE-FIRST-INTER-FRAME-FRONTIER",
         "DECODE-GENERAL-INTRA-ANGLE",
         "DECODE-GENERAL-INTRA-ANGLE-D113",
         "DECODE-GENERAL-INTRA-ANGLE-D203",
@@ -19610,6 +19618,49 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/decode-first-inter-frame-frontier/design.md",
+      "sha256": "f2bb133489663a090b33b4323076d8ec1a35fa0be4f93de289e058744d36001a",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-first-inter-frame-frontier/proposal.md",
+      "sha256": "213c3fd8438ad1ef16aec2bfa8c3d752b7f65f10d1310eb44779398ee4c5fd68",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-FIRST-INTER-FRAME-FRONTIER"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-first-inter-frame-frontier/specs/decode-first-inter-frame-frontier/spec.md",
+      "sha256": "7c335c797cbb72a226d77f336b497c631dbfcc8912ec5d37e41437f3a78a90ba",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-STREAM-STATE-PLANNER"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-first-inter-frame-frontier/specs/decoder-support/spec.md",
+      "sha256": "d1480fc83b562e6a413289660bbce810a31231d4a0442d0f6825bb0213ae76fa",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-FIRST-INTER-FRAME-FRONTIER"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-first-inter-frame-frontier/tasks.md",
+      "sha256": "c6de88975cdccb303d186c6dd0c964324cca1156e062d9b211688be91c0316a7",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-FIRST-INTER-FRAME-FRONTIER"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/decode-general-intra-angle-d113/design.md",
       "sha256": "7a40346a32739ffe8c333c61da6724366707ee9d19fe969b496cb2c2c94ae7a0",
       "scope_kind": "openspec",
@@ -20860,6 +20911,24 @@
     {
       "path": "openspec/changes/decode-minimal-fixture-avm-skip-polarity/specs/decoder-support/spec.md",
       "sha256": "37c1652923e5a0070912added3609a6d0747810a388049fa8e0251c1fa9aec1c",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-FRAME-RECON"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-minimal-fixture-avm-skip-polarity/specs/minimal-block-syntax-frontier/spec.md",
+      "sha256": "ddb53608bf25d54f1886ac65b0b1f2974976e7acdeeeee0f583da8c9c063a21d",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-FRAME-RECON"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-minimal-fixture-avm-skip-polarity/specs/minimal-intra-reconstruction-frontier/spec.md",
+      "sha256": "9c85def3cf42e079186a20b6041ce21eee0e1ab60679cf1abe189ca6abe5279a",
       "scope_kind": "openspec",
       "feature_ids": [
         "DECODE-GENERAL-INTRA-FRAME-RECON"
@@ -22950,10 +23019,11 @@
     },
     {
       "path": "tests/conformance/manifest.toml",
-      "sha256": "0a87cb6da6786a9eca6d821745c66f5933e1e90ac81996495ca58741e96bae5b",
+      "sha256": "c08c5848a367f7f3e28712318dc01555558d7a0951ed4fd9ff866646a6fecc3f",
       "scope_kind": "conformance-corpus",
       "feature_ids": [
-        "CONF-AVM-VALID-STREAMS"
+        "CONF-AVM-VALID-STREAMS",
+        "DECODE-FIRST-INTER-FRAME-FRONTIER"
       ],
       "outcome": "success"
     },
@@ -22974,6 +23044,13 @@
     {
       "path": "tests/conformance/vectors/needs-external-hls/syn-qm-64x64.ivf",
       "sha256": "398a2529e1cd62fb9fe66d05ffd7b950e61601f030c4a18571e803889ef8ce7d",
+      "scope_kind": "conformance-corpus",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "tests/conformance/vectors/valid/syn-2frame-inter-64x64.ivf",
+      "sha256": "74c46c6c9fe368ddd211e696c5cb59ba2d9e8ccd8961355fd112a8f10963ed69",
       "scope_kind": "conformance-corpus",
       "feature_ids": [],
       "outcome": "success"

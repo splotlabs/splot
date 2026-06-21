@@ -185,6 +185,23 @@ description = "Key frame plus two inter frames (IVF, 64x64) from project-owned s
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-2frame-inter-64x64.ivf"
+description = """
+Minimal two-frame inter stream (IVF, 64x64) from a project-owned flat synthetic \
+input (luma 100, U 120, V 130, both frames identical) with broad decode tools \
+disabled and --enable-global-motion=1 --qp=80 --sb-size=64 --min/max-partition-size=64. \
+Frame 0 = OBU_TEMPORAL_DELIMITER + OBU_SEQUENCE_HEADER + OBU_CLOSED_LOOP_KEY (single \
+flat 64x64 intra key block, already decodable by the general-intra runtime). Frame 1 = \
+OBU_TEMPORAL_DELIMITER + OBU_REGULAR_TILE_GROUP (single 64x64 inter block, single \
+reference, GLOBALMV/NEARESTMV with zero MV and skip=1 so the §7.13.3.18 zero-fraction \
+motion compensation reduces to a straight copy of the co-located key block; no residual). \
+avmdec --rawvideo --i420 and dav2d --demuxer ivf raw outputs agree byte-for-byte \
+(decoded-output md5 4e1bd39f0b541ef1f479cff049e6985c, 12288 bytes), so frame 1 decodes \
+bit-exact to a copy of frame 0. The committed verified target for the first inter decode \
+brick (DECODE-FIRST-INTER-FRAME-FRONTIER); validates clean."""
+expect = "clean"
+
+[[vector]]
 path = "vectors/invalid/syn-key-intra-64x64-truncated.ivf"
 description = """
 The intra key-frame vector truncated to 100 bytes (mid-payload): the IVF frame \
