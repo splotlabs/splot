@@ -239,7 +239,12 @@ fn consume_trace(
     // luma all-zero transform (txb_skip), § 8.3.2. The coefficient context state
     // is freshly zeroed for this first transform block, so its above/left
     // reductions are 0 and the context reduces to the transform-fills-block
-    // branch -> 0.
+    // branch -> 0 (this is the CDF *context* index, not the decoded value).
+    //
+    // The decoded `all_zero` symbol is asserted to 1: AV2 § 5.20.7.27 / AVM
+    // `decodetxb.c` (`read_coeffs_txb`) read `all_zero = read_symbol(txb_skip_cdf)`
+    // and take the no-coefficient skip branch when `all_zero == 1`. An all-zero
+    // (skipped) transform block therefore carries `txb_skip == 1`.
     //
     // TODO(spec: DECODE-TILE-CDF-SELECTION-BOUNDARY): the `tx_fills_block`
     // geometry comes from the § 5.20 transform-block syntax (not yet modelled);
@@ -265,7 +270,7 @@ fn consume_trace(
             tx_size: 0,
             ctx: luma_txb_skip_ctx,
         },
-        0,
+        1,
         LUMA_OR_U_ALL_ZERO_TRANSFORM_REASON,
     )?;
     apply_all_zero_coeff_frame_entry_from_traced_geometry(
@@ -295,7 +300,12 @@ fn consume_trace(
     // V all-zero transform (v_txb_skip), § 8.3.2. The coefficient context state
     // is freshly zeroed for this first transform block, and the U plane was
     // decoded all-zero just above so EobU == 0; the context reduces to the
-    // chroma-block-larger-than-transform contribution -> 3.
+    // chroma-block-larger-than-transform contribution -> 3 (CDF context index,
+    // not the decoded value).
+    //
+    // The decoded `all_zero` symbol is asserted to 1 for the same reason as the
+    // luma read above: per AV2 § 5.20.7.27 / AVM `decodetxb.c` an all-zero
+    // (skipped) V transform block carries `v_txb_skip == 1`.
     //
     // TODO(spec: DECODE-TILE-CDF-SELECTION-BOUNDARY): the
     // `chroma_block_larger_than_tx` geometry comes from the § 5.20
@@ -320,7 +330,7 @@ fn consume_trace(
             coeff_cdf_q_ctx: 1,
             ctx: v_txb_skip_context,
         },
-        0,
+        1,
         V_ALL_ZERO_TRANSFORM_REASON,
     )?;
     apply_all_zero_coeff_frame_entry_from_traced_geometry(

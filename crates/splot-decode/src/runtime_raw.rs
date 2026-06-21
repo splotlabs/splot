@@ -54,11 +54,15 @@ mod tests {
         DecodeContext::new(DecodeRuntimeConfig::new(threads)).unwrap()
     }
 
+    // The decoded raw planar output for the committed conformant luma-skip
+    // fixture: luma is an all-zero (skipped) DC block (flat 128) while chroma
+    // carries a real coded residual, so it is no longer flat. avmdec and dav2d
+    // both decode the fixture to these exact bytes (see
+    // docs/LOCAL-REFERENCE-EVIDENCE.toml); the reference is committed alongside
+    // the fixture.
     fn expected_minimal_raw() -> Vec<u8> {
-        let mut bytes = Vec::new();
-        bytes.extend(core::iter::repeat_n(128, 64 * 64));
-        bytes.extend(core::iter::repeat_n(129, 32 * 32 + 32 * 32));
-        bytes
+        include_bytes!("../../../tests/conformance/vectors/valid/syn-flat-intra-64x64-minimal.raw")
+            .to_vec()
     }
 
     fn minimal_fixture_with_timebase(numerator: u32, denominator: u32) -> Vec<u8> {

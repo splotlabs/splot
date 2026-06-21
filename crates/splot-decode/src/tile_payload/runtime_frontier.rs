@@ -414,7 +414,6 @@ mod tests {
     use splot_core::stream::{ParsedBitstream, parse_bitstream_partial};
     use splot_parallel::ThreadCount;
 
-    use super::super::cdf::TileCdfSelector;
     use super::super::{
         DecodeTileWorkUnit, FrameCandidateCdfFacts, FrameCandidateCoeffFacts,
         FrameCandidateTileBoundaryInput, FrameCandidateTileFacts, TileGroupPositionFacts,
@@ -425,83 +424,33 @@ mod tests {
         DecodeContext, DecodeLimitName, DecodeLimitThreshold, DecodeOptions, DecodeRuntimeConfig,
     };
 
-    const MINIMAL_FIXTURE: &[u8] = include_bytes!(
-        "../../../../tests/conformance/vectors/valid/syn-flat-intra-64x64-minimal.ivf"
-    );
-    const MINIMAL_TRACE_SYMBOLS: u64 = 6;
-    const MINIMAL_TRACE_TRAILING_BIT_POSITION: u64 = 14;
-    const MINIMAL_TRACE_PADDING_END_POSITION: u64 = 16;
+    // The retired pre-AVM "minimal" frozen-tier payload. It coded the luma/V
+    // all_zero (skip) symbol as 0, which is inverted vs AV2 § 5.20.7.27 / AVM
+    // (`decodetxb.c`), where a skipped transform block carries all_zero == 1.
+    // This payload is no longer a committed conformance vector (avmdec rejects
+    // it); it is kept here only to exercise the frozen partition frontier's
+    // pre-allocation limit guards and to prove the AVM-honest block-symbol trace
+    // now rejects the inverted-polarity skip. The committed conformance fixture
+    // is the avmdec/dav2d-agreed luma-skip stream decoded by the general intra
+    // path (see runtime_minimal::general_intra_tests).
+    const LEGACY_INVERTED_SKIP_TRACE: &[u8] = &[
+        0x44, 0x4b, 0x49, 0x46, 0x00, 0x00, 0x20, 0x00, 0x41, 0x56, 0x30, 0x32, 0x40, 0x00, 0x40,
+        0x00, 0x1e, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x16, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
+        0x08, 0x0c, 0x04, 0x82, 0x0a, 0x55, 0xff, 0xf1, 0xc2, 0x0d, 0xd7, 0x0b, 0x70, 0x11, 0x06,
+        0x10, 0xe3, 0xfe, 0x21, 0x2f, 0xba,
+    ];
 
     #[test]
-    fn block_symbol_frontier_accepts_minimal_fixture_trace() {
-        with_minimal_work_unit(MINIMAL_FIXTURE, |work_unit, sequence, core| {
-            let selected = block_trace_selectors()
-                .map(|selector| work_unit.cdf().tile_cdfs().row(selector).unwrap().to_vec());
-            let untouched = TileCdfSelector::DoExtPartition {
-                plane_start: 0,
-                ctx: 4,
-            };
-            let untouched_before = work_unit.cdf().tile_cdfs().row(untouched).unwrap().to_vec();
-            let saved_before = work_unit.cdf().saved_cdfs().clone();
-            let frame_before = work_unit.cdf().frame_cdfs().clone();
-
-            let frontier = plan_minimal_runtime_block_symbol_frontier(
-                work_unit,
-                sequence,
-                core,
-                DecodeLimits::DEFAULT,
-            )
-            .unwrap();
-            let summary = frontier.summary();
-
-            assert_eq!(summary.symbol_count, MINIMAL_TRACE_SYMBOLS);
-            assert_eq!(
-                frontier.reconstruction_trace(),
-                MinimalRuntimeReconstructionTrace::LumaDcNoResidual8Bit420_64x64
-            );
-            assert_eq!(
-                summary.trailing_bit_position.get(),
-                MINIMAL_TRACE_TRAILING_BIT_POSITION
-            );
-            assert_eq!(
-                summary.padding_end_position.get(),
-                MINIMAL_TRACE_PADDING_END_POSITION
-            );
-            for (selector, before) in block_trace_selectors().into_iter().zip(selected) {
-                assert_ne!(
-                    work_unit.cdf().tile_cdfs().row(selector).unwrap(),
-                    before.as_slice()
-                );
-            }
-            assert_eq!(
-                work_unit.cdf().tile_cdfs().row(untouched).unwrap(),
-                untouched_before.as_slice()
-            );
-            assert_ne!(work_unit.cdf().saved_cdfs(), &saved_before);
-            assert_ne!(work_unit.cdf().frame_cdfs(), &frame_before);
-            assert_eq!(
-                work_unit.cdf().saved_cdfs().rows().y_mode_set(),
-                work_unit.cdf().tile_cdfs().rows().y_mode_set()
-            );
-            let saved_y_mode_set = work_unit.cdf().saved_cdfs().rows().y_mode_set();
-            let frame_y_mode_set = work_unit.cdf().frame_cdfs().rows().y_mode_set();
-            assert_eq!(
-                &frame_y_mode_set[..frame_y_mode_set.len() - 1],
-                &saved_y_mode_set[..saved_y_mode_set.len() - 1]
-            );
-            assert_eq!(
-                frame_y_mode_set[frame_y_mode_set.len() - 1],
-                (3 * saved_y_mode_set[saved_y_mode_set.len() - 1]) >> 2
-            );
-        });
-    }
-
-    #[test]
-    fn block_symbol_frontier_rejects_exit_symbol_padding_failure() {
-        let mut bytes = MINIMAL_FIXTURE.to_vec();
-        *bytes.last_mut().unwrap() ^= 0x01;
-
-        with_minimal_work_unit(&bytes, |work_unit, sequence, core| {
+    fn block_symbol_trace_rejects_legacy_inverted_skip() {
+        // Honesty regression: the frozen block-symbol trace now asserts the AVM
+        // skip polarity (luma all_zero == 1 for a skipped transform block). The
+        // retired payload coded that symbol as 0, so the trace fails closed with
+        // a typed mismatch on the luma txb_skip read (expected 1, decoded 0) and
+        // rolls back the tile CDFs it touched. The frozen partition frontier
+        // still traces this payload's partition tree, so the failure is at the
+        // block-symbol stage, not the partition stage.
+        with_minimal_work_unit(LEGACY_INVERTED_SKIP_TRACE, |work_unit, sequence, core| {
             let symbols = plan_minimal_runtime_partition_frontier(
                 work_unit,
                 sequence,
@@ -513,12 +462,20 @@ mod tests {
             let before = work_unit.cdf().tile_cdfs().clone();
             let saved_before = work_unit.cdf().saved_cdfs().clone();
             let frame_before = work_unit.cdf().frame_cdfs().clone();
+
             let err = consume_minimal_block_symbol_trace(work_unit, symbols).unwrap_err();
 
-            assert!(matches!(
-                err,
-                MinimalBlockSymbolTraceError::ExitSymbol { .. }
-            ));
+            assert!(
+                matches!(
+                    err,
+                    MinimalBlockSymbolTraceError::UnexpectedSymbol {
+                        expected: 1,
+                        actual: 0,
+                        ..
+                    }
+                ),
+                "expected a luma txb_skip mismatch (expected 1, decoded 0), got {err:?}"
+            );
             assert_eq!(work_unit.cdf().tile_cdfs(), &before);
             assert_eq!(work_unit.cdf().saved_cdfs(), &saved_before);
             assert_eq!(work_unit.cdf().frame_cdfs(), &frame_before);
@@ -527,7 +484,7 @@ mod tests {
 
     #[test]
     fn partition_frontier_checks_padded_mi_state_cells_before_allocation() {
-        with_minimal_work_unit(MINIMAL_FIXTURE, |work_unit, sequence, core| {
+        with_minimal_work_unit(LEGACY_INVERTED_SKIP_TRACE, |work_unit, sequence, core| {
             let mut padded_core = core.clone();
             let tile_info = padded_core.tile_info.as_mut().unwrap();
             *tile_info.mi_row_starts.last_mut().unwrap() = 17;
@@ -551,7 +508,7 @@ mod tests {
 
     #[test]
     fn partition_frontier_checks_mi_state_byte_budget_before_allocation() {
-        with_minimal_work_unit(MINIMAL_FIXTURE, |work_unit, sequence, core| {
+        with_minimal_work_unit(LEGACY_INVERTED_SKIP_TRACE, |work_unit, sequence, core| {
             let limits = DecodeLimits::unlimited()
                 .with_max_decoded_frame_bytes(DecodeLimitThreshold::Max(1024));
 
@@ -570,24 +527,6 @@ mod tests {
                 Some((2 * (256 + 16 + 16) * size_of::<usize>()) as u64)
             );
         });
-    }
-
-    fn block_trace_selectors() -> [TileCdfSelector; 5] {
-        [
-            TileCdfSelector::YModeSet,
-            TileCdfSelector::YModeIndex { ctx: 0 },
-            TileCdfSelector::TxbSkip {
-                coeff_cdf_q_ctx: 2,
-                plane_type: 0,
-                tx_size: 0,
-                ctx: 0,
-            },
-            TileCdfSelector::UvModeCflNotAllowed { ctx: 0 },
-            TileCdfSelector::VTxbSkip {
-                coeff_cdf_q_ctx: 1,
-                ctx: 3,
-            },
-        ]
     }
 
     fn with_minimal_work_unit<R>(
