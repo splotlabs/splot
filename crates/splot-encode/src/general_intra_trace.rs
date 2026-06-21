@@ -22,7 +22,7 @@ use crate::coefficient_tokenization::{
     chroma_v_all_zero_token, general_intra_32x32_chroma_u_all_zero_token,
     general_intra_32x32_chroma_u_dc_coded_tokens, general_intra_32x32_chroma_v_dc_coded_tokens,
     general_intra_64x64_luma_all_zero_token, general_intra_64x64_luma_dc_coded_tokens,
-    general_intra_64x64_luma_two_coeff_tokens,
+    general_intra_64x64_luma_two_coeff_tokens, general_intra_64x64_luma_visible_ac_tokens,
 };
 use crate::error::{Error, Result};
 use crate::partition_emission::emit_root_do_split_none;
@@ -462,6 +462,59 @@ pub fn emit_minimal_intra_two_coeff_ivf() -> Result<Vec<u8>> {
     .map_err(|source| Error::MinimalIntraSkipIvf { source })
 }
 
+/// Composes the general intra eob=2 **visible** multi-coefficient luma block trace: `do_split`,
+/// the mode prefix, a coded luma block carrying a single nonzero AC coefficient of level 5 at
+/// scan index 1 with a zero DC, then the AC `sign_bit` § 8.2.5 bypass, then skipped U and V.
+/// Unlike the minimal level-1 AC (which rounds back to flat 128), the level-5 AC dequantizes to
+/// a residual that reconstructs a visibly non-flat (low-frequency cosine) luma plane.
+fn compose_general_intra_visible_ac_block_trace() -> Result<Vec<BlockSymbolToken>> {
+    let modes = compose_minimal_intra_dc_block_mode_trace()?;
+    let luma = general_intra_64x64_luma_visible_ac_tokens(SKIP_FRAME_COEFF_CDF_Q_CTX)?;
+    let total = modes
+        .len()
+        .checked_add(luma.len())
+        .and_then(|n| n.checked_add(4)) // do_split + AC sign + U skip + V skip
+        .ok_or(Error::BlockSymbolTraceAllocationFailed {
+            context: "general visible-AC block trace length",
+        })?;
+    let mut trace = Vec::new();
+    trace
+        .try_reserve_exact(total)
+        .map_err(|_| Error::BlockSymbolTraceAllocationFailed {
+            context: "general visible-AC block trace",
+        })?;
+    trace.push(BlockSymbolToken::Partition(emit_root_do_split_none()));
+    trace.extend(modes.into_iter().map(BlockSymbolToken::Mode));
+    trace.extend(luma.into_iter().map(BlockSymbolToken::Coeff));
+    trace.push(BlockSymbolToken::bypass(CHROMA_SIGN_BIT_WIDTH, 0));
+    trace.push(BlockSymbolToken::Coeff(
+        general_intra_32x32_chroma_u_all_zero_token(SKIP_FRAME_COEFF_CDF_Q_CTX),
+    ));
+    trace.push(BlockSymbolToken::Coeff(chroma_v_all_zero_token(
+        SKIP_FRAME_COEFF_CDF_Q_CTX,
+        V_TXB_SKIP_CTX_NEUTRAL,
+    )));
+    Ok(trace)
+}
+
+/// Emits a complete, decodable AV2 IVF stream for one 64x64 all-intra `OBU_CLOSED_LOOP_KEY`
+/// frame whose luma block carries a single nonzero **level-5 AC** coefficient (eob=2, U and V
+/// skipped), reconstructing a **visibly non-flat** low-frequency cosine luma plane.
+///
+/// This is the encoder's first frame where a coefficient visibly shapes the reconstruction
+/// (every prior frame was flat). It builds on `emit_minimal_intra_two_coeff_ivf` (the level-1
+/// AC, sub-visible) by raising the AC to the largest `coeff_base_eob` base level so the
+/// dequantized residual survives rounding. The cross-crate decode oracle lives in `splot-cli`.
+pub fn emit_minimal_intra_visible_ac_ivf() -> Result<Vec<u8>> {
+    let trace = compose_general_intra_visible_ac_block_trace()?;
+    let tile_data = encode_block_symbol_trace(&trace)?;
+    splot_core::headers::frame::encode_minimal_intra_clk_ivf_with_base_q_idx(
+        SKIP_FRAME_BASE_Q_IDX,
+        &tile_data,
+    )
+    .map_err(|source| Error::MinimalIntraSkipIvf { source })
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -799,6 +852,48 @@ mod tests {
         assert_ne!(two, emit_minimal_intra_skip_ivf().unwrap());
         assert_eq!(two, emit_minimal_intra_two_coeff_ivf().unwrap());
         let parsed = splot_core::ivf::parse_ivf_partial(&two);
+        assert!(parsed.error.is_none());
+        assert_eq!(parsed.frames.len(), 1);
+    }
+
+    #[test]
+    fn composes_general_visible_ac_block_trace_in_order() {
+        let trace = compose_general_intra_visible_ac_block_trace().unwrap();
+
+        // do_split, 3 modes, 4 coded-luma (txb_skip, eob_pt, AC base_eob, DC base),
+        // AC sign bypass, U skip, V skip = 11 tokens.
+        assert_eq!(trace.len(), 11);
+        assert!(matches!(trace[0], BlockSymbolToken::Partition(_)));
+        assert!(matches!(
+            trace[8],
+            BlockSymbolToken::Bypass { width: 1, value: 0 }
+        ));
+        // do_split, modes 0/0/0; luma txb_skip=0, eob_pt_1024=1 (eob 2), AC coeff_base_eob=3
+        // (level 4, the largest no-coeff_br base level), DC coeff_base=0 (level 0), AC sign=0;
+        // U/V txb_skip=1.
+        assert_eq!(
+            trace.iter().map(|token| token.symbol()).collect::<Vec<_>>(),
+            vec![0, 0, 0, 0, 0, 1, 3, 0, 0, 1, 1]
+        );
+    }
+
+    #[test]
+    fn general_visible_ac_block_trace_roundtrips_through_one_coder() {
+        let trace = compose_general_intra_visible_ac_block_trace().unwrap();
+        let proof = roundtrip_block_symbol_trace(&trace).unwrap();
+        assert_eq!(proof.decoded_symbols(), &[0, 0, 0, 0, 0, 1, 3, 0, 0, 1, 1]);
+        assert_eq!(proof.symbol_count(), 11);
+        assert!(!proof.bytes().is_empty());
+    }
+
+    #[test]
+    fn emit_minimal_intra_visible_ac_ivf_differs_from_two_coeff_and_is_deterministic() {
+        let visible = emit_minimal_intra_visible_ac_ivf().unwrap();
+        assert!(!visible.is_empty());
+        // A distinct entropy stream from the level-1 (sub-visible) eob=2 frame.
+        assert_ne!(visible, emit_minimal_intra_two_coeff_ivf().unwrap());
+        assert_eq!(visible, emit_minimal_intra_visible_ac_ivf().unwrap());
+        let parsed = splot_core::ivf::parse_ivf_partial(&visible);
         assert!(parsed.error.is_none());
         assert_eq!(parsed.frames.len(), 1);
     }

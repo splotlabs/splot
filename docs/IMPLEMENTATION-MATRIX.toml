@@ -5519,6 +5519,39 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-GENERAL-INTRA-VISIBLE-AC"
+name = "First visibly non-flat intra reconstruction"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20.7.27", "8.3.2", "8.2.5", "8.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/general_intra_trace.rs"
+openspec_change = "encoder-general-intra-visible-ac"
+tracking_issue = ""
+owner = "encoder"
+risk = "low"
+notes = "Decodable-tile arc: the FIRST VISIBLY NON-FLAT reconstruction (every prior decodable frame was flat: skip=128, coded-DC=flat plane, level-1 eob=2=sub-visible 128). emit_minimal_intra_visible_ac_ivf() (splot-encode public) raises the #398 eob=2 luma AC to LEVEL 4 (the largest coeff_base_eob base level with NO coeff_br tail: coeff_base_eob symbol 3, needs_br = level > LF_NUM_BASE_LEVELS=4 is false) so the dequantized residual survives rounding -> a VERTICAL low-frequency cosine. `splot decode` reconstructs it bit-exactly: each luma row constant across columns, top 8 rows=129, middle 48=128, bottom 8=127; U/V flat 128. Adds general_intra_64x64_luma_visible_ac_tokens (txb_skip=0, eob_pt_1024=1, AC coeff_base_eob symbol 3 at ctx 1, DC coeff_base symbol 0 at the Level[]-derived ctx 2) + 1 BlockSymbolTraceCdfRows row (DC coeff_base at tx_size 4, ctx 2). KEY: the DC coeff_base context is AC-LEVEL-DEPENDENT (coeff_base_lf_luma_context: level 1-2->ctx 1, 3-4->ctx 2, 5+->ctx 3) \u2014 level 4 maps to ctx 2 (vs ctx 1 for the level-1 #398 frame). The AC coeff_base_eob ctx stays 1 (position-based). TX_64X64 DCT-only -> no transform-type symbol. The splot-encode test asserts the IVF DIFFERS from the level-1 frame. decode_check=done; avm_diff=not-applicable. Encoder-mission-DRIVEN (owner=encoder). FOLLOW-UPS: larger AC magnitudes need the AC coeff_br context (level 5+) or golomb; 2-D/higher-frequency coefficients; eob>2. HONEST SCOPE: first visibly non-flat frame; NOT a general encoder, NOT receive_packet, NOT Baseline Encoder Profile v1."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-cli/tests/encode_decode_roundtrip.rs::encoder_visible_ac_ivf_decodes_to_a_vertical_cosine_luma", "crates/splot-encode/src/general_intra_trace.rs::tests::general_visible_ac_block_trace_roundtrips_through_one_coder"]
+commands = ["cargo test -p splot-cli --test encode_decode_roundtrip --locked", "cargo test -p splot-encode visible_ac --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-RECON-DEPENDENCY"
 name = "Encoder reconstruction dependency boundary"
 category = "encoder"
