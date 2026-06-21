@@ -485,6 +485,13 @@ const VSMOOTH_FIXTURE: &[u8] =
 // Companion single-block SMOOTH_H_PRED (horizontal-gradient) block.
 const HSMOOTH_FIXTURE: &[u8] =
     include_bytes!("../../../../tests/conformance/vectors/valid/syn-hsmooth-intra-64x64-q120.ivf");
+// Single-block plain SMOOTH_PRED (canonical §9.2 mode 9): a 64x64 2-D smooth
+// luma surface the encoder codes as plain SMOOTH_PRED (DC chroma). Distinct from
+// SMOOTH_V/H, the §7.13.2.13 predictor blends BOTH the above row + top-right and
+// the left column + bottom-left, all of which reduce to the §7.13.2.1
+// no-neighbour fallback edges at the top-left block. avmdec and dav2d agree.
+const SMOOTH_FIXTURE: &[u8] =
+    include_bytes!("../../../../tests/conformance/vectors/valid/syn-smooth-intra-64x64-q124.ivf");
 
 fn decode_general_intra_luma(fixture: &[u8]) -> DecodedFrame<u8> {
     let options = DecodeOptions::default();
@@ -559,6 +566,92 @@ fn hsmooth_single_block_intra_frame_decodes_to_oracle() {
         hash,
         "cfc6debd26760cdebf1d1a4497792461f0f68bc7e7773741ddf2cbc34561e702"
     );
+}
+
+#[test]
+fn smooth_single_block_intra_frame_decodes_to_oracle() {
+    use splot_recon::{BitDepth, PixelFormat, PlaneSize};
+
+    let frame = decode_general_intra_luma(SMOOTH_FIXTURE);
+    assert_eq!(frame.bit_depth(), BitDepth::Eight);
+    assert_eq!(frame.pixel_format(), PixelFormat::Yuv420);
+    assert_eq!(frame.y().visible_size(), PlaneSize::new(64, 64).unwrap());
+
+    let y = frame.y().samples();
+    // Plain SMOOTH (§7.13.2.13 mode 9) blends BOTH dimensions, so — unlike
+    // SMOOTH_V (constant top row) and SMOOTH_H (constant left column) — neither
+    // the top row nor the left column is constant; the luma rises toward both the
+    // bottom and the right.
+    assert!(
+        !y[0..64].iter().all(|&s| s == y[0]),
+        "plain SMOOTH must vary along the top row (not SMOOTH_V)"
+    );
+    assert!(
+        !(0..64).all(|r| y[r * 64] == y[0]),
+        "plain SMOOTH must vary down the left column (not SMOOTH_H)"
+    );
+    assert!(
+        y[0] < y[63],
+        "luma should increase left-to-right along the top row"
+    );
+    assert!(
+        y[0] < y[63 * 64],
+        "luma should increase top-to-bottom along the left column"
+    );
+    let distinct = y.iter().collect::<std::collections::BTreeSet<_>>().len();
+    assert!(distinct > 4, "luma should be a non-flat 2-D reconstruction");
+
+    // DC chroma (uv_mode 0) with a coded residual, so the chroma planes are
+    // non-flat but reconstructed through the supported DC predictor.
+    let u = frame.u().unwrap().samples();
+    let v = frame.v().unwrap().samples();
+    assert!(
+        u.iter().any(|&s| s != u[0]),
+        "chroma U carries a DC-mode residual"
+    );
+    assert!(
+        v.iter().any(|&s| s != v[0]),
+        "chroma V carries a DC-mode residual"
+    );
+
+    // Frame hash pins splot's output, which reproduces avmdec's and dav2d's raw
+    // output byte-for-byte (verified locally, oracle MD5 82d0f23be478479c9835e9a76e4a879c).
+    let hash = splot_recon::DecodedFrameHashInput::new(&frame)
+        .compute_hash()
+        .to_hex();
+    assert_eq!(
+        hash,
+        "9b054c6fff47397fbe88a9eb45a34fac018efc7748fc697edebddd3f14bd88d3"
+    );
+}
+
+// Negative decode-boundary companion to syn-smooth: a 64x64 single block whose
+// luma the encoder also codes as plain SMOOTH_PRED (mode 9), but whose chroma is
+// a NON-DC mode (uv_mode 6 -> H_PRED). The plain-SMOOTH luma admission this brick
+// adds is gated to the supported (DC) chroma subset, so the general-intra decoder
+// still rejects this stream with a structured decode/unsupported-feature
+// diagnostic rather than producing wrong chroma output. avmdec and dav2d agree on
+// the (rejected) stream (md5 70494255beb63103c97422e327243319); it validates clean.
+const SMOOTH_NONDC_CHROMA_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-smoothnondc-intra-64x64-q132.ivf"
+);
+
+#[test]
+fn smooth_luma_with_non_dc_chroma_still_rejects() {
+    use crate::error::DecodeError;
+
+    let options = DecodeOptions::default();
+    let context =
+        DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).expect("context");
+    let plan = context
+        .plan_bytes(SMOOTH_NONDC_CHROMA_FIXTURE, options)
+        .expect("plan");
+    let reason = match decode_minimal_frame_from_plan(SMOOTH_NONDC_CHROMA_FIXTURE, options, &plan) {
+        Ok(_) => panic!("plain SMOOTH luma with non-DC chroma must still be rejected, not decoded"),
+        Err(DecodeError::UnsupportedFeature { unsupported }) => unsupported.reason(),
+        Err(other) => panic!("expected an unsupported-feature rejection, got {other:?}"),
+    };
+    assert_eq!(reason, "general_intra_non_dc_chroma_mode");
 }
 
 // A 64x64 superblock SPLIT into four 32x32 squares (TL flat 50, TR flat 210,

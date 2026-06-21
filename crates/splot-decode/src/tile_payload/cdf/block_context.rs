@@ -91,6 +91,10 @@ impl IntraYMode {
     /// AV2 § 9.2 `D135_PRED` canonical luma mode value (the single directional
     /// luma mode the general intra decode currently reconstructs bit-exact).
     const D135_PRED: u8 = 4;
+    /// AV2 § 9.2 `SMOOTH_PRED` canonical luma mode value (the plain 2-D
+    /// § 7.13.2.13 smooth predictor that blends both the above row and left
+    /// column).
+    const SMOOTH_PRED: u8 = 9;
     /// AV2 § 9.2 `SMOOTH_V_PRED` canonical luma mode value.
     const SMOOTH_V_PRED: u8 = 10;
     /// AV2 § 9.2 `SMOOTH_H_PRED` canonical luma mode value.
@@ -103,10 +107,11 @@ impl IntraYMode {
 
     /// Maps this luma mode to the non-DC predictor the general intra decode
     /// currently reconstructs (§ 7.13.2.13 smooth prediction), or `None` for
-    /// `DC_PRED` and the not-yet-supported non-DC modes (`SMOOTH_PRED`,
-    /// `PAETH_PRED`, and the directional modes, which lack oracle fixtures).
+    /// `DC_PRED` and the not-yet-supported non-DC modes (`PAETH_PRED` and the
+    /// directional modes, which lack oracle fixtures).
     pub(crate) const fn supported_nondc(self) -> Option<SupportedNonDcLumaMode> {
         match self.0 {
+            Self::SMOOTH_PRED => Some(SupportedNonDcLumaMode::Smooth),
             Self::SMOOTH_V_PRED => Some(SupportedNonDcLumaMode::SmoothVertical),
             Self::SMOOTH_H_PRED => Some(SupportedNonDcLumaMode::SmoothHorizontal),
             _ => None,
@@ -129,10 +134,14 @@ impl IntraYMode {
 
 /// The non-DC non-directional luma intra modes the general intra decode can
 /// reconstruct today — a strict subset of the § 9.2 modes, gated to those proven
-/// bit-exact against the AVM/dav2d oracle. `SMOOTH_PRED` and `PAETH_PRED` remain
-/// deferred until they have single-block oracle fixtures.
+/// bit-exact against the AVM/dav2d oracle. `PAETH_PRED` remains deferred until it
+/// has a single-block oracle fixture; plain `SMOOTH_PRED` is admitted only for
+/// the top-left no-neighbour block (see the general intra mode gate).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SupportedNonDcLumaMode {
+    /// AV2 `SMOOTH_PRED` (§ 7.13.2.13 plain 2-D smooth prediction blending both
+    /// the above row + top-right and the left column + bottom-left).
+    Smooth,
     /// AV2 `SMOOTH_V_PRED` (§ 7.13.2.13 vertical smooth prediction).
     SmoothVertical,
     /// AV2 `SMOOTH_H_PRED` (§ 7.13.2.13 horizontal smooth prediction).
