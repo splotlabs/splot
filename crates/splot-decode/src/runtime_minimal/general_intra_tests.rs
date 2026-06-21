@@ -1498,3 +1498,87 @@ fn d157_neighbour_directional_idif_intra_frame_decodes_to_oracle() {
         "bf93ca6b8f55e1fb7db2584f3e3821ad67f21018b774c6e326634362ee5ef046"
     );
 }
+
+// A full 2-D grid 128x128 frame (two superblock columns by two rows) whose
+// top-left / top-right / bottom-left 64x64 superblocks are DC_PRED (uniform top
+// 100, bottom-left a vertical gradient coded DC) and whose BOTTOM-RIGHT 64x64
+// superblock (`frontier.r == 16`, `frontier.c == 16`, `haveLeft && haveAbove`)
+// codes the §7.13.2.8 D135_PRED directional mode (the §5.20.5.3 y_mode_offset
+// escape, §8.3.2 ctx == 0, AngleDeltaY 0) plus its uv_mode == 0 directional-follow
+// D135 chroma. The decisive element: the bottom-right block is the first general
+// intra ROW>0 directional decode — its §7.13.2.1 edges read the **real
+// reconstructed** above row (the top-right superblock's bottom row), left column
+// (the bottom-left superblock's right column), AND the diagonally-above-left
+// corner `AboveRow[-1] == LeftCol[-1] == CurrFrame[plane][y-1][x-1]` (the top-left
+// superblock's bottom-right sample, 100 for luma). §7.13.2.8 D135 reads that corner
+// on its main diagonal (`above_base == -1`, `shift == 0`), so the row>0
+// `haveAbove == 1` path needs the real corner that
+// `build_directional_middle_edges`'s `(true, true)` arm now supplies via
+// `reconstructed_sample`. The OLD code rejected this frame
+// (`general_intra_multirow_directional_luma` for luma /
+// `general_intra_directional_chroma_neighbour` for chroma). pAngle 135's
+// `shift == 0` makes the luma IDIF 4-tap a sample copy `Edge[base]`, bit-identical
+// to the chroma bilinear branch over the non-flat real edge. avmdec and dav2d agree
+// on the decoded output (raw md5 79bd663383515e37b75b1ad7054c84d6); the first
+// general-intra row>0 directional decode reading the real §7.13.2.1 corner.
+const D135ROW_FIXTURE: &[u8] =
+    include_bytes!("../../../../tests/conformance/vectors/valid/syn-d135row-intra-128x128-q80.ivf");
+
+#[test]
+fn d135row_neighbour_directional_row_gt0_corner_intra_frame_decodes_to_oracle() {
+    use splot_recon::{BitDepth, PixelFormat, PlaneSize};
+
+    let frame = decode_general_intra_luma(D135ROW_FIXTURE);
+    assert_eq!(frame.bit_depth(), BitDepth::Eight);
+    assert_eq!(frame.pixel_format(), PixelFormat::Yuv420);
+    assert_eq!(frame.y().visible_size(), PlaneSize::new(128, 128).unwrap());
+    assert_eq!(
+        frame.u().unwrap().visible_size(),
+        PlaneSize::new(64, 64).unwrap()
+    );
+
+    let y = frame.y().samples();
+    let at = |r: usize, c: usize| y[r * 128 + c];
+    // Top-left / top-right superblocks are flat 100 (DC).
+    assert!(
+        (0..64).all(|r| (0..128).all(|c| at(r, c) == 100)),
+        "top superblock row must reconstruct flat 100 (DC)"
+    );
+    // BOTTOM-RIGHT superblock (rows 64..128, cols 64..128): D135 reading the real
+    // §7.13.2.1 corner + above row + left column. The main diagonal copies the real
+    // corner `CurrFrame[Y][63][63] == 100` (the top-left superblock's bottom-right
+    // sample), proving the row>0 corner read (a no-corner fallback would be 128).
+    for k in 0..64 {
+        assert_eq!(
+            at(64 + k, 64 + k),
+            100,
+            "bottom-right D135 main diagonal must copy the real corner (100)"
+        );
+    }
+    // The above-branch (j > i) copies the flat above row (100); the left-branch
+    // (j < i) propagates the real reconstructed bottom-left right column (a vertical
+    // gradient) up-right, so the block is genuinely non-flat and not DC.
+    assert!(
+        at(127, 64) != 100,
+        "bottom-right block left-branch must propagate the real left column (not flat DC)"
+    );
+    let distinct = y.iter().collect::<std::collections::BTreeSet<_>>().len();
+    assert!(distinct > 4, "luma should be a non-flat reconstruction");
+    // Chroma is flat (U=120, V=130): the bottom-right chroma runs the row>0
+    // neighbour-having directional-follow D135 chroma path (the §7.13.2.8 bilinear
+    // branch over the real reconstructed corner + edges, all uniform) and
+    // reconstructs flat.
+    assert!(frame.u().unwrap().samples().iter().all(|&s| s == 120));
+    assert!(frame.v().unwrap().samples().iter().all(|&s| s == 130));
+
+    // Frame hash pins splot's output, which reproduces avmdec's and dav2d's raw
+    // output byte-for-byte (verified locally; raw md5
+    // 79bd663383515e37b75b1ad7054c84d6).
+    let hash = splot_recon::DecodedFrameHashInput::new(&frame)
+        .compute_hash()
+        .to_hex();
+    assert_eq!(
+        hash,
+        "85583e5a46ac6a2db97854b86f643735c1b9710bee2c2d2bc65d1aa5a16fe3a1"
+    );
+}

@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 365 feature(s); 312 cite a spec section.
+Matrix version 1. Last reviewed 2026-06-15. 366 feature(s); 313 cite a spec section.
 
 One row per (spec section, feature) pair, in spec order; a feature citing both a syntax and a semantics section appears under both. The canonical status source is [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); the full per-feature ledger is [FEATURE-STATUS.md](./FEATURE-STATUS.md).
 
@@ -299,6 +299,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.20.5.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3) | Intra frame mode info syntax | `DECODE-GENERAL-INTRA-ANGLE` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.5.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3) | Intra frame mode info syntax | `DECODE-GENERAL-INTRA-BLOCK-MODES` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.5.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3) | Intra frame mode info syntax | `DECODE-GENERAL-INTRA-CARDINAL` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 5.20.5.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3) | Intra frame mode info syntax | `DECODE-GENERAL-INTRA-DIRECTIONAL-CORNER` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.5.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3) | Intra frame mode info syntax | `DECODE-GENERAL-INTRA-DIRECTIONAL-FOLLOW-CHROMA` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.5.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3) | Intra frame mode info syntax | `DECODE-GENERAL-INTRA-DIRECTIONAL-NEIGHBOUR-CTX` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.5.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3) | Intra frame mode info syntax | `DECODE-GENERAL-INTRA-GRID-NEIGHBOUR-NONDC` | ✅ | 🟡 | — | ✅ | 1 |
@@ -395,6 +396,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-COEFF-USE-FSC-SHARED-FACTS-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-GENERAL-INTRA-ANGLE` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-GENERAL-INTRA-CARDINAL` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-GENERAL-INTRA-DIRECTIONAL-CORNER` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-GENERAL-INTRA-DIRECTIONAL-FOLLOW-CHROMA` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-GENERAL-INTRA-DIRECTIONAL-NEIGHBOUR-CTX` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-GENERAL-INTRA-FRAME-RECON` | ✅ | 🟡 | — | ✅ | 1 |
@@ -714,6 +716,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.13.2.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-1) | General | `DECODE-GENERAL-INTRA-ANGLE` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.13.2.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-1) | General | `DECODE-GENERAL-INTRA-BLOCK-DECODED` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.13.2.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-1) | General | `DECODE-GENERAL-INTRA-CARDINAL` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 7.13.2.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-1) | General | `DECODE-GENERAL-INTRA-DIRECTIONAL-CORNER` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.13.2.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-1) | General | `DECODE-GENERAL-INTRA-DIRECTIONAL-FOLLOW-CHROMA` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.13.2.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-1) | General | `DECODE-GENERAL-INTRA-GRID` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.13.2.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-1) | General | `DECODE-GENERAL-INTRA-GRID-NEIGHBOUR-NONDC` | ✅ | 🟡 | — | ✅ | 1 |
@@ -736,6 +739,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.13.2.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-2) | Basic intra prediction process | `RECON-CURRENT-FRAME-WORKSPACE` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.13.2.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-2) | Basic intra prediction process | `RECON-INTRA-BASIC-PAETH-PREDICTION` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.13.2.7](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-7) | Directional intra prediction process | `DECODE-GENERAL-INTRA-CARDINAL` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 7.13.2.7](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-7) | Directional intra prediction process | `DECODE-GENERAL-INTRA-DIRECTIONAL-CORNER` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.13.2.7](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-7) | Directional intra prediction process | `DECODE-GENERAL-INTRA-IDIF-D157` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.13.2.7](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-7) | Directional intra prediction process | `RECON-INTRA-CARDINAL-DIRECTIONAL-PREDICTION` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.13.2.7](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-7) | Directional intra prediction process | `RECON-INTRA-MIDDLE-DIRECTIONAL-ANGLE-PREDICTION` | ✅ | — | ✅ | ✅ | — |
@@ -744,6 +748,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.13.2.8](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-8) | Single directional prediction process | `CONF-RECON-INTRA-PREDICTION-FUZZ` | ✅ | — | — | ✅ | — |
 | [§ 7.13.2.8](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-8) | Single directional prediction process | `DECODE-GENERAL-INTRA-ANGLE` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.13.2.8](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-8) | Single directional prediction process | `DECODE-GENERAL-INTRA-CARDINAL` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 7.13.2.8](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-8) | Single directional prediction process | `DECODE-GENERAL-INTRA-DIRECTIONAL-CORNER` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.13.2.8](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-8) | Single directional prediction process | `DECODE-GENERAL-INTRA-DIRECTIONAL-FOLLOW-CHROMA` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.13.2.8](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-8) | Single directional prediction process | `DECODE-GENERAL-INTRA-IDIF-D157` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.13.2.8](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-8) | Single directional prediction process | `DECODE-GENERAL-INTRA-NEIGHBOUR-DIRECTIONAL` | ✅ | 🟡 | — | ✅ | 1 |
@@ -917,6 +922,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 8.2.4](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-4) | Exit process for symbol decoder | `DECODE-GENERAL-INTRA-ANGLE` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 8.2.4](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-4) | Exit process for symbol decoder | `DECODE-GENERAL-INTRA-BLOCK-DECODED` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 8.2.4](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-4) | Exit process for symbol decoder | `DECODE-GENERAL-INTRA-CARDINAL` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 8.2.4](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-4) | Exit process for symbol decoder | `DECODE-GENERAL-INTRA-DIRECTIONAL-CORNER` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 8.2.4](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-4) | Exit process for symbol decoder | `DECODE-GENERAL-INTRA-DIRECTIONAL-FOLLOW-CHROMA` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 8.2.4](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-4) | Exit process for symbol decoder | `DECODE-GENERAL-INTRA-FRAME-RECON` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 8.2.4](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-4) | Exit process for symbol decoder | `DECODE-GENERAL-INTRA-IDIF-D157` | ✅ | 🟡 | — | ✅ | 1 |
