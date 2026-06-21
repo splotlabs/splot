@@ -5,7 +5,7 @@ The decoder SHALL decode a two-level square SPLIT partition tree on the general
 intra path: a 64x64 8-bit 4:2:0 intra key frame whose 64x64 superblock SPLITs
 into four 32x32 quadrants and whose one 32x32 quadrant SPLITs AGAIN into four
 square 16x16 DC_PRED leaves (the other three quadrants staying 32x32 DC_PRED).
-Each sub-32x32 16x16 leaf's § 7.13.2.4 DC prediction SHALL read its in-frame
+Each sub-32x32 16x16 leaf's § 7.13.2.10 DC prediction SHALL read its in-frame
 left column / above row from the persistent frame workspace, so the leaf
 DC-predicts from its already-reconstructed sibling 16x16 neighbour inside the
 parent 32x32 sub-block, in § 5.20.3.1 decode (DFS) order. It SHALL validate
@@ -31,7 +31,7 @@ inter prediction, in-loop filters, or invoke AVM or dav2d.
 #### Scenario: Sub-32x32 16x16 leaf predicts from a reconstructed sibling
 - **WHEN** a 16x16 leaf inside a SPLIT 32x32 has an in-frame above or left 16x16
   sibling already reconstructed in the workspace
-- **THEN** its § 7.13.2.4 DC prediction is the average of the available sibling
+- **THEN** its § 7.13.2.10 DC prediction is the average of the available sibling
   neighbour edge samples rather than the no-neighbour `128` fallback
 
 #### Scenario: Existing general intra fixtures are unchanged

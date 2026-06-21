@@ -16,7 +16,7 @@ INSIDE the parent 32x32 sub-block.
   DC_PRED) — one level deeper than `syn-quad`.
 - No production code change: the § 5.20.4.1 partition recursion
   (`child_calls` PARTITION_SPLIT) already pushes the 16x16 children depth-first,
-  and the § 7.13.2.4 DC predictor reads its in-frame left column / above row from
+  and the § 7.13.2.10 DC predictor reads its in-frame left column / above row from
   the persistent workspace. The § 5.20.2.3 left/above availability for the DC
   predictor is frame-position-based (`x == 0` / `y == 0`), so a sub-32x32 16x16
   leaf correctly DC-predicts from the already-reconstructed sibling neighbour

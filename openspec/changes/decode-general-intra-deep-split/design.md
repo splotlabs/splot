@@ -28,7 +28,7 @@ needs the § 5.20.2.3 `BlockDecoded` flag state.
 
 1. The deeper square DC split needs no new production code.
 
-   Rationale: the § 7.13.2.4 DC predictor reads only the immediate left column
+   Rationale: the § 7.13.2.10 DC predictor reads only the immediate left column
    (`x - 1`) and above row (`y - 1`). The workspace derives left/above
    availability from frame position (`rect.x() == 0` / `rect.y() == 0`), and the
    partition walk reconstructs leaves in § 5.20.3.1 decode (DFS) order, so a

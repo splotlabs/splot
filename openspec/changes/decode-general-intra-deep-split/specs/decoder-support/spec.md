@@ -3,7 +3,7 @@
 ### Requirement: General intra deeper square SPLIT decode support row
 The decoder support model SHALL track `DECODE-GENERAL-INTRA-DEEP-SPLIT` as a
 distinct partial `splot-decode` row named `general-intra-deep-split`. The row
-SHALL cite AV2 § 5.20.2.3, § 5.20.3.1, § 5.20.4.1, and § 7.13.2.4, SHALL record
+SHALL cite AV2 § 5.20.2.3, § 5.20.3.1, § 5.20.4.1, and § 7.13.2.10, SHALL record
 the deeper-split oracle test plus the single-level quad regression test, SHALL
 carry the reciprocal LOCAL-REFERENCE-EVIDENCE pointer for the two-level
 partition-tree fixture, and SHALL keep the § 5.20.2.3 `BlockDecoded` flag state,
