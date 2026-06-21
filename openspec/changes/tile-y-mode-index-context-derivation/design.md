@@ -36,10 +36,15 @@ Non-Goals:
   (honest and reusable for any joint modes); `tile_origin_block()` is the
   minimal-frontier specialization that supplies `DC_PRED` for both.
 - **No-output-change proof reuses the existing snapshot.** The derived ctx equals
-  the old literal, so `block_symbol_frontier_accepts_minimal_fixture_trace`
-  (symbol count 6, trailing bit 14, padding end 16) stays green unchanged, and
-  new unit tests pin the derivation directly (ctx 0 at the origin; ctx 1/2 for
-  directional neighbours; the non-directional boundary).
+  the old literal, so the frozen-trace snapshot then named
+  `block_symbol_frontier_accepts_minimal_fixture_trace` (symbol count 6, trailing
+  bit 14, padding end 16) stayed green unchanged at the time of this change. (That
+  snapshot test was later retired by `decode-minimal-fixture-avm-skip-polarity`,
+  which replaced the committed fixture with a conformant general-path luma-skip
+  stream; the frozen trace is now covered by
+  `block_symbol_trace_rejects_legacy_inverted_skip`.) New unit tests pin the
+  derivation directly (ctx 0 at the origin; ctx 1/2 for directional neighbours;
+  the non-directional boundary).
 
 ## Risks / Trade-offs
 

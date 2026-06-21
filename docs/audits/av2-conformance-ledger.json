@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "76a9493c8c9f7463802d6caee213c5250ab8e05b",
+  "audited_commit": "3843d5ed393f7382ecd5a2bda5ab666333a8607a",
   "outcome": "success",
   "files": [
     {
@@ -4788,7 +4788,7 @@
     },
     {
       "path": "docs/DECODER-SUPPORT-MATRIX.toml",
-      "sha256": "ca9ae61da528ce29837a4d0ff245416dbd4ee7f23010411fcd2243d53d094985",
+      "sha256": "76f54a4c7186683ec0559d4feea7bf40b7640f660650de872061ca2efee7ad6a",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-8.2-SYMBOL-DECODER",
@@ -20850,7 +20850,7 @@
     },
     {
       "path": "openspec/changes/decode-minimal-fixture-avm-skip-polarity/proposal.md",
-      "sha256": "6a5b6e1d7dca65506ed92be86222961abd2d636249b4e22446230796a3ed5bdb",
+      "sha256": "450f09fff4ef436dc769c6b513c0cfe4be98ef2b1ffa2c565c63ea75f762014f",
       "scope_kind": "openspec",
       "feature_ids": [
         "DECODE-GENERAL-INTRA-FRAME-RECON"
@@ -22281,7 +22281,7 @@
     },
     {
       "path": "openspec/changes/tile-txb-skip-context-derivation/design.md",
-      "sha256": "30f17f6cd06e37e1acdbfc9b63b59372be0ee431511c7e2f79b6266995a9d1ed",
+      "sha256": "d7bd4136c05314ef556af6425da8078c97643b1ee54f3eb0c94d457d7e40b6cd",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
@@ -22320,7 +22320,7 @@
     },
     {
       "path": "openspec/changes/tile-uv-mode-context-derivation/design.md",
-      "sha256": "769f048a9506f108b59ff983134879cf42d9aff9b5e9c82b68c7a30d8b9895a2",
+      "sha256": "ce42daef9f3b1ec08061b0b237364c67b5218dc88f3351bfea6cc6a34b551d8d",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
@@ -22359,7 +22359,7 @@
     },
     {
       "path": "openspec/changes/tile-y-mode-index-context-derivation/design.md",
-      "sha256": "9363cfaee0ed63b2cd42e510d6b387d0e7e1ccecfb2e6ca99a4e55d5c9bd2f81",
+      "sha256": "6933463671a8aa4d0827c7575a469297d39c2c31e514ca5a057728b6552057c6",
       "scope_kind": "openspec",
       "feature_ids": [
         "DECODE-TILE-CDF-SELECTION-BOUNDARY"

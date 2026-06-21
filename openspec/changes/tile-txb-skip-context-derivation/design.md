@@ -45,9 +45,14 @@ Non-Goals:
   § 5.20 transform-block syntax.
 - **No-output-change.** `txb_skip_ctx_luma(0, 0, true, false) == 0` and
   `v_txb_skip_ctx(false, false, true, false) == 3` match the previous literals,
-  so `block_symbol_frontier_accepts_minimal_fixture_trace` stays green; unit tests
-  pin the formula directly (filling/non-filling/fsc for luma; the
-  neighbour/chroma/EobU contributions for V).
+  so the frozen-trace snapshot then named
+  `block_symbol_frontier_accepts_minimal_fixture_trace` stayed green at the time of
+  this change. (That snapshot test was later retired by
+  `decode-minimal-fixture-avm-skip-polarity`, which replaced the committed fixture
+  with a conformant general-path luma-skip stream; the frozen trace is now covered
+  by `block_symbol_trace_rejects_legacy_inverted_skip`.) Unit tests pin the formula
+  directly (filling/non-filling/fsc for luma; the neighbour/chroma/EobU
+  contributions for V).
 
 ## Risks / Trade-offs
 

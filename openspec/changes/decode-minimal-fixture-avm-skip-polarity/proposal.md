@@ -67,6 +67,15 @@ None.
 - `decoder-support`: records that the committed minimal-tier fixture is now an
   AVM/dav2d-conformant luma-skip stream decoded by the general intra path, and that
   the frozen block-symbol trace asserts the AVM `all_zero == 1` skip polarity.
+- `minimal-block-syntax-frontier`: the frozen block-symbol trace asserts the AVM
+  `all_zero == 1` skip polarity and is reachable only by a `base_q_idx == 255`
+  frame; the committed fixture now routes through the general intra path, so the
+  frozen happy path has no committed conformant fixture (it is covered by the
+  legacy-rejection test and unit tests).
+- `minimal-intra-reconstruction-frontier`: the frozen `LumaDcNoResidual` handoff
+  applies to the `base_q_idx == 255` frozen trace only; the committed fixture
+  reconstructs through the general intra path, and the frozen handoff stays
+  covered by its `runtime_minimal_recon` unit tests.
 
 ## Impact
 
