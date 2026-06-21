@@ -1085,6 +1085,105 @@ fn vgrid_multirow_smooth_v_above_row_intra_frame_decodes_to_oracle() {
     );
 }
 
+// A 128x128 full 2-D grid (2 superblock columns x 2 superblock rows) whose
+// bottom-left superblock (`frontier.r == 16`, `frontier.c == 0`) codes
+// `SMOOTH_H_PRED` (§ 7.13.2.13) luma over a horizontal gradient, with DC chroma;
+// the other three superblocks are DC luma (top-right also has full-superblock
+// SMOOTH chroma). The decisive block is the row > 0, non-rightmost SMOOTH_H luma
+// superblock: its § 7.13.2.13 `predH2` reads the top-right sentinel `AboveRow[w]`,
+// which at a row > 0 superblock is the **real reconstructed** bottom row of the
+// already-decoded diagonally-above-right superblock (the top-right superblock at
+// `frontier.c == 16`, a distinct flat luma value 200). `count_top_right_avail`
+// (§ 5.20.7.25) over the § 5.20.2.3 `BlockDecoded` state yields
+// `num4AboveRight == 16`, so `resolve_smooth_above_right_sentinel` returns the
+// real above-right (200), NOT the edge-clamp (100, the bottom-left's own above
+// sample at column 63). This is the first general-intra full-superblock SMOOTH_H
+// luma (`sub_x == 0`) decode reading a real, distinct cross-superblock above-right
+// VALUE — the same plane-general machinery the SMOOTH chroma grid already uses for
+// `sub_x == 1`. The prior brick rejected this frame with
+// `general_intra_smooth_h_above_right_unverified`. avmdec and dav2d agree on the
+// decoded output (md5 fe420ce870c13a8055aa83fd5aa64740) and splot reproduces it
+// byte-for-byte.
+const SHGRID_FIXTURE: &[u8] =
+    include_bytes!("../../../../tests/conformance/vectors/valid/syn-shgrid-intra-128x128-q80.ivf");
+
+#[test]
+fn shgrid_multirow_smooth_h_above_right_intra_frame_decodes_to_oracle() {
+    use splot_recon::{BitDepth, PixelFormat, PlaneSize};
+
+    let frame = decode_general_intra_luma(SHGRID_FIXTURE);
+    assert_eq!(frame.bit_depth(), BitDepth::Eight);
+    assert_eq!(frame.pixel_format(), PixelFormat::Yuv420);
+    assert_eq!(frame.y().visible_size(), PlaneSize::new(128, 128).unwrap());
+    assert_eq!(
+        frame.u().unwrap().visible_size(),
+        PlaneSize::new(64, 64).unwrap()
+    );
+
+    let y = frame.y().samples();
+    let at = |r: usize, c: usize| y[r * 128 + c];
+
+    // The bottom-left superblock (rows 64..128, cols 0..64) is SMOOTH_H: its
+    // § 7.13.2.13 `predH2` blends `LeftCol[i]` horizontally toward the top-right
+    // sentinel, so the prediction is constant DOWN each column and varies ACROSS
+    // columns (the horizontal gradient).
+    assert!(
+        (64..128).all(|r| at(r, 0) == at(64, 0)),
+        "SMOOTH_H bottom-left superblock must be constant down column 0"
+    );
+    assert!(
+        (64..128).all(|r| at(r, 32) == at(64, 32)),
+        "SMOOTH_H bottom-left superblock must be constant down column 32"
+    );
+    assert!(
+        at(96, 0) < at(96, 16) && at(96, 16) < at(96, 32) && at(96, 32) < at(96, 48),
+        "SMOOTH_H bottom-left superblock must increase left-to-right (horizontal gradient)"
+    );
+    // The decisive cross-superblock above-right read: the already-decoded
+    // top-right superblock's bottom row (column 64) reconstructs to the distinct
+    // flat luma 200. The bottom-left SMOOTH_H block pulls its rightmost column
+    // (column 63) toward that real above-right sentinel (200), well above the
+    // edge-clamp candidate (100, the bottom-left's own above sample at column 63
+    // == the top-left superblock's bottom row). A clamp-only decode would not lift
+    // the rightmost column above the gradient's own top end.
+    assert_eq!(
+        at(63, 64),
+        200,
+        "top-right superblock bottom row (the above-right source) must reconstruct to 200"
+    );
+    assert!(
+        at(96, 63) > 200,
+        "SMOOTH_H rightmost column must blend toward the real above-right sentinel (200), not the clamp (100)"
+    );
+    let distinct = y.iter().collect::<std::collections::BTreeSet<_>>().len();
+    assert!(distinct > 4, "luma should be a non-flat reconstruction");
+
+    // Chroma is per-superblock-flat DC (the bottom-left superblock's chroma is
+    // DC, not the deferred SMOOTH/non-DC chroma): each 32x32 chroma superblock is
+    // a single reconstructed value.
+    let u = frame.u().unwrap().samples();
+    let v = frame.v().unwrap().samples();
+    let cat = |p: &[u8], r: usize, c: usize| p[r * 64 + c];
+    assert!(
+        (32..64).all(|r| (0..32).all(|c| cat(u, r, c) == cat(u, 32, 0))),
+        "bottom-left superblock U chroma must be a single DC value"
+    );
+    assert!(
+        (32..64).all(|r| (0..32).all(|c| cat(v, r, c) == cat(v, 32, 0))),
+        "bottom-left superblock V chroma must be a single DC value"
+    );
+
+    // Frame hash pins splot's output, which reproduces avmdec's and dav2d's raw
+    // output byte-for-byte (verified locally; md5 fe420ce870c13a8055aa83fd5aa64740).
+    let hash = splot_recon::DecodedFrameHashInput::new(&frame)
+        .compute_hash()
+        .to_hex();
+    assert_eq!(
+        hash,
+        "d1ce39cc3d79f5c46fdea67ad57ec4edd5dfed088ee39fd7029fda1bbb11e0e8"
+    );
+}
+
 // A 128x64 frame (two 64x64 superblocks) whose LEFT superblock codes
 // `SMOOTH_V_PRED` (§ 7.13.2.13) luma with DC chroma, and whose RIGHT superblock
 // codes the § 7.13.2.8 D135_PRED directional luma mode (`uv_mode == 0`
