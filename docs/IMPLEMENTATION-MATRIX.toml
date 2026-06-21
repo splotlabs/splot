@@ -5229,7 +5229,7 @@ kind = "encoder-tool"
 spec_sections = ["5.20.3.2", "5.20.5.3", "5.20.7.27", "8.3.2", "8.2"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-encode"
-module = "crates/splot-encode/src/general_intra_trace.rs"
+module = "crates/splot-encode/src/general_intra_trace/skip.rs"
 openspec_change = "encoder-general-intra-skip-block-trace"
 tracking_issue = ""
 owner = "encoder"
@@ -5249,7 +5249,7 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/general_intra_trace.rs::tests::general_skip_block_trace_roundtrips_through_one_coder", "crates/splot-encode/src/coefficient_tokenization_tests.rs::general_intra_64x64_luma_all_zero_token_targets_tx_64x64_neutral"]
+tests = ["crates/splot-encode/src/general_intra_trace/skip.rs::tests::general_skip_block_trace_roundtrips_through_one_coder", "crates/splot-encode/src/coefficient_tokenization_tests.rs::general_intra_64x64_luma_all_zero_token_targets_tx_64x64_neutral"]
 commands = ["cargo test -p splot-encode general_intra_trace --locked", "cargo test -p splot-encode coefficient_tokenization --locked"]
 fixtures = []
 diagnostics = []
@@ -5262,7 +5262,7 @@ kind = "encoder-tool"
 spec_sections = ["5.20", "8.2.4", "8.2.2", "8.2"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-encode"
-module = "crates/splot-encode/src/general_intra_trace.rs"
+module = "crates/splot-encode/src/general_intra_trace/skip.rs"
 openspec_change = "encoder-general-intra-skip-tile-data"
 tracking_issue = ""
 owner = "encoder"
@@ -5282,7 +5282,7 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/general_intra_trace.rs::tests::skip_tile_data_is_nonempty_and_equals_the_proven_trace_bytes"]
+tests = ["crates/splot-encode/src/general_intra_trace/skip.rs::tests::skip_tile_data_is_nonempty_and_equals_the_proven_trace_bytes"]
 commands = ["cargo test -p splot-encode general_intra_trace --locked"]
 fixtures = []
 diagnostics = []
@@ -5328,7 +5328,7 @@ kind = "encoder-tool"
 spec_sections = ["5.18.2", "5.20", "7.13.2", "8.2"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-encode"
-module = "crates/splot-encode/src/general_intra_trace.rs"
+module = "crates/splot-encode/src/general_intra_trace/skip.rs"
 openspec_change = "encoder-minimal-intra-skip-ivf"
 tracking_issue = ""
 owner = "encoder"
@@ -5348,7 +5348,7 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-cli/tests/encode_decode_roundtrip.rs::encoder_skip_ivf_decodes_to_a_flat_128_frame", "crates/splot-encode/src/general_intra_trace.rs::tests::emit_minimal_intra_skip_ivf_is_a_parseable_one_frame_av02_ivf"]
+tests = ["crates/splot-cli/tests/encode_decode_roundtrip.rs::encoder_skip_ivf_decodes_to_a_flat_128_frame", "crates/splot-encode/src/general_intra_trace/skip.rs::tests::emit_minimal_intra_skip_ivf_is_a_parseable_one_frame_av02_ivf"]
 commands = ["cargo test -p splot-cli --test encode_decode_roundtrip --locked", "cargo test -p splot-encode general_intra_trace --locked"]
 fixtures = []
 diagnostics = []
@@ -5361,7 +5361,7 @@ kind = "encoder-tool"
 spec_sections = ["5.20.7.27", "5.20.7.28", "7.13.2", "8.2"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-encode"
-module = "crates/splot-encode/src/general_intra_trace.rs"
+module = "crates/splot-encode/src/general_intra_trace/coded_dc.rs"
 openspec_change = "encoder-general-intra-coded-luma-dc"
 tracking_issue = ""
 owner = "encoder"
@@ -5394,7 +5394,7 @@ kind = "encoder-tool"
 spec_sections = ["5.20.7.27", "8.2.5", "7.13.2", "8.2"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-encode"
-module = "crates/splot-encode/src/general_intra_trace.rs"
+module = "crates/splot-encode/src/general_intra_trace/chroma.rs"
 openspec_change = "encoder-general-intra-coded-chroma-dc"
 tracking_issue = ""
 owner = "encoder"
@@ -5414,7 +5414,7 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-cli/tests/encode_decode_roundtrip.rs::encoder_coded_chroma_ivf_decodes_to_a_flat_127_u_frame", "crates/splot-encode/src/general_intra_trace.rs::tests::general_coded_chroma_block_trace_roundtrips_through_one_coder"]
+tests = ["crates/splot-cli/tests/encode_decode_roundtrip.rs::encoder_coded_chroma_ivf_decodes_to_a_flat_127_u_frame", "crates/splot-encode/src/general_intra_trace/chroma.rs::tests::general_coded_chroma_block_trace_roundtrips_through_one_coder"]
 commands = ["cargo test -p splot-cli --test encode_decode_roundtrip --locked", "cargo test -p splot-encode chroma --locked"]
 fixtures = []
 diagnostics = []
@@ -5427,7 +5427,7 @@ kind = "encoder-tool"
 spec_sections = ["5.20.7.27", "8.2.5", "7.13.2", "8.2"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-encode"
-module = "crates/splot-encode/src/general_intra_trace.rs"
+module = "crates/splot-encode/src/general_intra_trace/chroma.rs"
 openspec_change = "encoder-general-intra-coded-chroma-v-dc"
 tracking_issue = ""
 owner = "encoder"
@@ -5447,7 +5447,7 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-cli/tests/encode_decode_roundtrip.rs::encoder_coded_chroma_v_ivf_decodes_to_a_flat_127_v_frame", "crates/splot-encode/src/general_intra_trace.rs::tests::general_coded_chroma_v_block_trace_roundtrips_through_one_coder"]
+tests = ["crates/splot-cli/tests/encode_decode_roundtrip.rs::encoder_coded_chroma_v_ivf_decodes_to_a_flat_127_v_frame", "crates/splot-encode/src/general_intra_trace/chroma.rs::tests::general_coded_chroma_v_block_trace_roundtrips_through_one_coder"]
 commands = ["cargo test -p splot-cli --test encode_decode_roundtrip --locked", "cargo test -p splot-encode chroma_v --locked"]
 fixtures = []
 diagnostics = []
@@ -5460,7 +5460,7 @@ kind = "encoder-tool"
 spec_sections = ["5.20.7.27", "8.2.5", "8.3.2", "8.2"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-encode"
-module = "crates/splot-encode/src/general_intra_trace.rs"
+module = "crates/splot-encode/src/general_intra_trace/chroma.rs"
 openspec_change = "encoder-general-intra-all-planes-coded"
 tracking_issue = ""
 owner = "encoder"
@@ -5480,7 +5480,7 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-cli/tests/encode_decode_roundtrip.rs::encoder_all_planes_coded_ivf_decodes_to_a_flat_127_frame", "crates/splot-encode/src/general_intra_trace.rs::tests::general_all_planes_coded_block_trace_roundtrips_through_one_coder"]
+tests = ["crates/splot-cli/tests/encode_decode_roundtrip.rs::encoder_all_planes_coded_ivf_decodes_to_a_flat_127_frame", "crates/splot-encode/src/general_intra_trace/chroma.rs::tests::general_all_planes_coded_block_trace_roundtrips_through_one_coder"]
 commands = ["cargo test -p splot-cli --test encode_decode_roundtrip --locked", "cargo test -p splot-encode all_planes --locked"]
 fixtures = []
 diagnostics = []
@@ -5493,7 +5493,7 @@ kind = "encoder-tool"
 spec_sections = ["5.20.7.27", "8.3.2", "8.2.5", "8.2"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-encode"
-module = "crates/splot-encode/src/general_intra_trace.rs"
+module = "crates/splot-encode/src/general_intra_trace/multi_coeff.rs"
 openspec_change = "encoder-general-intra-two-coeff"
 tracking_issue = ""
 owner = "encoder"
@@ -5513,7 +5513,7 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-cli/tests/encode_decode_roundtrip.rs::encoder_two_coeff_ivf_decodes_successfully", "crates/splot-encode/src/general_intra_trace.rs::tests::general_two_coeff_block_trace_roundtrips_through_one_coder"]
+tests = ["crates/splot-cli/tests/encode_decode_roundtrip.rs::encoder_two_coeff_ivf_decodes_successfully", "crates/splot-encode/src/general_intra_trace/multi_coeff.rs::tests::general_two_coeff_block_trace_roundtrips_through_one_coder"]
 commands = ["cargo test -p splot-cli --test encode_decode_roundtrip --locked", "cargo test -p splot-encode two_coeff --locked"]
 fixtures = []
 diagnostics = []
@@ -5526,7 +5526,7 @@ kind = "encoder-tool"
 spec_sections = ["5.20.7.27", "8.3.2", "8.2.5", "8.2"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-encode"
-module = "crates/splot-encode/src/general_intra_trace.rs"
+module = "crates/splot-encode/src/general_intra_trace/multi_coeff.rs"
 openspec_change = "encoder-general-intra-visible-ac"
 tracking_issue = ""
 owner = "encoder"
@@ -5546,7 +5546,7 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-cli/tests/encode_decode_roundtrip.rs::encoder_visible_ac_ivf_decodes_to_a_vertical_cosine_luma", "crates/splot-encode/src/general_intra_trace.rs::tests::general_visible_ac_block_trace_roundtrips_through_one_coder"]
+tests = ["crates/splot-cli/tests/encode_decode_roundtrip.rs::encoder_visible_ac_ivf_decodes_to_a_vertical_cosine_luma", "crates/splot-encode/src/general_intra_trace/multi_coeff.rs::tests::general_visible_ac_block_trace_roundtrips_through_one_coder"]
 commands = ["cargo test -p splot-cli --test encode_decode_roundtrip --locked", "cargo test -p splot-encode visible_ac --locked"]
 fixtures = []
 diagnostics = []
@@ -5559,7 +5559,7 @@ kind = "encoder-tool"
 spec_sections = ["5.20.7.27", "8.3.2", "8.2.5", "8.2"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-encode"
-module = "crates/splot-encode/src/general_intra_trace.rs"
+module = "crates/splot-encode/src/general_intra_trace/multi_coeff.rs"
 openspec_change = "encoder-general-intra-two-nonzero"
 tracking_issue = ""
 owner = "encoder"
@@ -5579,7 +5579,7 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-cli/tests/encode_decode_roundtrip.rs::encoder_two_nonzero_ivf_decodes_to_a_cosine_plus_dc_offset", "crates/splot-encode/src/general_intra_trace.rs::tests::general_two_nonzero_block_trace_roundtrips_through_one_coder"]
+tests = ["crates/splot-cli/tests/encode_decode_roundtrip.rs::encoder_two_nonzero_ivf_decodes_to_a_cosine_plus_dc_offset", "crates/splot-encode/src/general_intra_trace/multi_coeff.rs::tests::general_two_nonzero_block_trace_roundtrips_through_one_coder"]
 commands = ["cargo test -p splot-cli --test encode_decode_roundtrip --locked", "cargo test -p splot-encode two_nonzero --locked"]
 fixtures = []
 diagnostics = []
