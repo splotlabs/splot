@@ -23,12 +23,14 @@ references, invoke AVM or dav2d, expose a public API, or mutate the frozen
   `DECODE-GENERAL-INTRA-FRAME-FRONTIER` and reason
   `general_intra_block_decode_unimplemented`
 
-#### Scenario: Frozen minimal hash contract is unchanged
-- **WHEN** `splot decode` is given the committed frozen
-  `syn-flat-intra-64x64-minimal.ivf` fixture with `base_q_idx == 255`
-- **THEN** routing the general intra path does not run for that frame
-- **AND** the decoded-frame hash remains the committed
-  `splot-dfh-sha256-v1` digest
+#### Scenario: base_q_idx == 255 frames route to the frozen tier, not the general path
+- **WHEN** `splot decode` is given an intra key frame with `base_q_idx == 255`
+- **THEN** the general intra frame frontier does not run for that frame; it
+  routes to the frozen minimal hash tier
+- **AND** the committed `syn-flat-intra-64x64-minimal.ivf` fixture is no longer a
+  `base_q_idx == 255` frame: change `decode-minimal-fixture-avm-skip-polarity`
+  replaced it with the AVM/dav2d-conformant `base_q_idx` 210 luma-skip stream
+  that routes through the general intra path
 
 #### Scenario: Non-single-block partition is reported, not panicked
 - **WHEN** an accepted general intra frame does not resolve to a supported

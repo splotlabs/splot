@@ -29,9 +29,11 @@ add residuals, reconstruct pixels, or invoke AVM or dav2d.
 - **AND** the `uv_mode` is decoded with the `is_directional_mode(DC_PRED) == 0`
   context and yields a valid chroma-mode-list index
 
-#### Scenario: Frozen minimal hash contract is unchanged
-- **WHEN** `splot decode` is given the committed frozen
-  `syn-flat-intra-64x64-minimal.ivf` fixture with `base_q_idx == 255`
-- **THEN** the general intra mode decode does not run for that frame
-- **AND** the decoded-frame hash remains the committed `splot-dfh-sha256-v1`
-  digest
+#### Scenario: base_q_idx == 255 frames route to the frozen tier, not the general path
+- **WHEN** `splot decode` is given an intra key frame with `base_q_idx == 255`
+- **THEN** the general intra mode decode does not run for that frame; it routes
+  to the frozen minimal hash tier
+- **AND** the committed `syn-flat-intra-64x64-minimal.ivf` fixture is no longer a
+  `base_q_idx == 255` frame: change `decode-minimal-fixture-avm-skip-polarity`
+  replaced it with the AVM/dav2d-conformant `base_q_idx` 210 luma-skip stream
+  that routes through the general intra path
