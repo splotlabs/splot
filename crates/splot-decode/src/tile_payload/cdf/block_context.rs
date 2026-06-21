@@ -300,6 +300,16 @@ pub(crate) enum SupportedChromaMode {
     /// AV2 `H_PRED` directional-follow chroma (§ 7.13.2.8 step 5, pAngle 180,
     /// `AngleDeltaUV == 0`): the cardinal copy of the § 7.13.2.1 left column.
     HorizontalFollow,
+    /// AV2 `H_PRED` chroma (§ 7.13.2.8 step 5, pAngle 180) decoded NON-follow: the
+    /// explicit `uv_mode` index (not the `uv_mode == 0` follow branch) resolves to
+    /// `H_PRED` over a non-directional (e.g. DC) luma. Supported only at the
+    /// no-neighbour top-left block, where § 7.13.2.1 makes `LeftCol[i]` the flat
+    /// no-left fallback (`129` for 8-bit); the § 7.13.2.8 horizontal copy
+    /// `pred[i][j] = LeftCol[i]` is then a flat plane, bit-exact against the
+    /// AVM/dav2d oracle. Neighbour-having non-follow H_PRED chroma (a real
+    /// reconstructed left column) is the `HorizontalFollow` path or remains
+    /// deferred.
+    Horizontal,
     /// AV2 `D45_PRED` directional-follow chroma (§ 7.13.2.8 ZONE-1 step 1,
     /// pAngle 45, `AngleDeltaUV == 0`). Resolved when the decoded `uv_mode == 0`
     /// over a `D45_PRED` luma mode makes § 5.20.5.3 `get_intra_uv_mode_set`
@@ -436,6 +446,12 @@ pub(crate) fn supported_chroma_mode(
         H_PRED_VALUE if uv_mode == 0 && y_mode.is_directional() => {
             Some(SupportedChromaMode::HorizontalFollow)
         }
+        // Non-follow H_PRED chroma: the explicit `uv_mode` index resolves to
+        // `H_PRED` over a non-directional luma (not the `uv_mode == 0` directional
+        // follow). The § 7.13.2.8 horizontal copy reads only the § 7.13.2.1 left
+        // column; at the no-neighbour top-left block (the only position the caller
+        // admits) that column is the flat fallback, so the prediction is bit-exact.
+        H_PRED_VALUE => Some(SupportedChromaMode::Horizontal),
         // Directional-follow D45 chroma: `uv_mode == 0` over the zone-1 D45 luma
         // makes § 5.20.5.3 return `YMode == D45_PRED` (`AngleDeltaUV =
         // AngleDeltaY == 0`). Chroma uses the bilinear one-sided predictor; for
@@ -1142,5 +1158,22 @@ mod tests {
         // after modeIdx -= 1 the first Default_Mode_List_Uv entry (DC_PRED).
         let v = IntraYMode(IntraYMode::V_PRED);
         assert_eq!(supported_chroma_mode(v, 1), Some(SupportedChromaMode::Dc));
+    }
+
+    #[test]
+    fn supported_chroma_mode_non_follow_h_pred_over_dc_luma_resolves_horizontal() {
+        // The two-frame inter target's key frame: a DC (non-directional) luma with
+        // an explicit uv_mode that resolves to H_PRED (the non-follow path, NOT the
+        // uv_mode == 0 directional follow). This must map to the non-follow
+        // `Horizontal` chroma mode, distinct from `HorizontalFollow`.
+        let dc = IntraYMode(DC_PRED as u8);
+        assert!(!dc.is_directional());
+        // uv_mode 6 resolves through Default_Mode_List_Uv to H_PRED (value 2) for a
+        // non-directional luma, matching the committed syn-2frame-inter-64x64 key.
+        assert_eq!(get_intra_uv_mode_set(dc, 6), Some(H_PRED_VALUE));
+        assert_eq!(
+            supported_chroma_mode(dc, 6),
+            Some(SupportedChromaMode::Horizontal)
+        );
     }
 }

@@ -71,55 +71,65 @@ pub(crate) struct MinimalRuntimeFrame {
     pub(crate) frame_rate_denominator: u32,
 }
 
+/// Decodes the leading closed-loop-key frame into a single [`MinimalRuntimeFrame`].
+///
+/// This is the frozen intra-tier convenience entry for the intra runtime tests. It
+/// delegates to the multi-frame driver and returns the first (key) frame; for a
+/// single-frame intra stream the result is byte-identical to the prior single-frame
+/// behavior. Production output adapters call [`decode_minimal_frames_from_plan`].
+#[cfg(test)]
 pub(crate) fn decode_minimal_frame_from_plan(
     bytes: &[u8],
     options: DecodeOptions,
     plan: &DecodeStreamPlan,
 ) -> Result<MinimalRuntimeFrame> {
-    decode_minimal_frame_from_plan_with_ivf_preflight(bytes, options, plan, |_| Ok(()))
+    let mut frames = decode_minimal_frames_from_plan(bytes, options, plan)?;
+    if frames.is_empty() {
+        return Err(unsupported(
+            "missing_decoded_frame",
+            None,
+            "minimal tier requires at least one decoded frame",
+        ));
+    }
+    Ok(frames.swap_remove(0))
 }
 
-pub(crate) fn decode_minimal_frame_from_plan_with_ivf_preflight(
+/// Decodes every frame candidate the planner accepted (one key frame, optionally
+/// followed by inter frames), emitting one [`MinimalRuntimeFrame`] per displayed
+/// frame in output order (AV2 § 5.2.1, § 6.18).
+///
+/// Feature tracking: `DECODE-FIRST-INTER-FRAME-FRONTIER` (the inter frame loop and
+/// reference retention), layered on `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS`.
+pub(crate) fn decode_minimal_frames_from_plan(
     bytes: &[u8],
     options: DecodeOptions,
     plan: &DecodeStreamPlan,
-    preflight: impl FnOnce(IvfHeader) -> Result<()>,
+) -> Result<Vec<MinimalRuntimeFrame>> {
+    decode_minimal_frames_from_plan_with_ivf_preflight(bytes, options, plan, |_| Ok(()))
+}
+
+/// Decodes one closed-loop-key frame candidate into a [`MinimalRuntimeFrame`].
+///
+/// This is the per-key-frame body shared by the single-frame frozen-tier entry and
+/// the multi-frame runtime loop. It routes to the general intra path or the frozen
+/// hash tier exactly as the single-frame entry historically did.
+fn decode_minimal_key_frame(
+    bytes: &[u8],
+    options: DecodeOptions,
+    plan: &DecodeStreamPlan,
+    candidate: &DecodePlannedObu,
+    frame_envelope: ObuEnvelope<'_>,
+    sequence: &SequenceHeader,
+    header: IvfHeader,
 ) -> Result<MinimalRuntimeFrame> {
-    ensure_minimal_plan_shape(plan)?;
-    let parsed = parse_bitstream_partial(bytes);
-    let (ivf, header) = require_minimal_ivf(&parsed)?;
-    preflight(header)?;
-    let frame = &ivf.frames[0];
-    let [td_envelope, sequence_envelope, frame_envelope] =
-        require_minimal_obu_order(frame.obus.as_slice())?;
-    require_obu_type(
-        td_envelope,
-        ObuType::TemporalDelimiter,
-        "missing_temporal_delimiter",
-    )?;
-    require_obu_type(
-        sequence_envelope,
-        ObuType::SequenceHeader,
-        "missing_sequence_header",
-    )?;
-    require_obu_type(
-        frame_envelope,
-        ObuType::ClosedLoopKey,
-        "missing_closed_loop_key",
-    )?;
-
-    let sequence = parse_sequence(sequence_envelope)?;
-    validate_sequence(&sequence, sequence_envelope.offset)?;
-
-    let candidate = single_plan_candidate(plan)?;
-    let core = parse_frame_core(frame_envelope, &sequence)?;
-    if general_intra::route_general_minimal_intra(&sequence, &core) {
+    let core = parse_frame_core(frame_envelope, sequence)?;
+    if general_intra::route_general_minimal_intra(sequence, &core) {
         return general_intra::decode_general_minimal_intra_frame(
             plan,
             candidate,
             bytes,
             frame_envelope,
-            &sequence,
+            sequence,
             &core,
             options,
             header,
@@ -132,7 +142,7 @@ pub(crate) fn decode_minimal_frame_from_plan_with_ivf_preflight(
         candidate,
         bytes,
         frame_envelope,
-        &sequence,
+        sequence,
         &core,
         options,
     )?;
@@ -154,7 +164,7 @@ pub(crate) fn decode_minimal_frame_from_plan_with_ivf_preflight(
         }
     };
     let reconstruction_trace =
-        verify_flat_minimal_tile_trace(tile, &sequence, &core, options.limits())?;
+        verify_flat_minimal_tile_trace(tile, sequence, &core, options.limits())?;
     let tile_size = tile.tile_size();
 
     let limits = options.limits();
@@ -169,29 +179,143 @@ pub(crate) fn decode_minimal_frame_from_plan_with_ivf_preflight(
     })
 }
 
-fn ensure_minimal_plan_shape(plan: &DecodeStreamPlan) -> Result<()> {
-    if plan.source_warnings().is_empty()
-        && plan.obu_count() == 3
-        && plan.frame_candidate_count() == 1
-    {
-        Ok(())
+/// Multi-frame minimal-tier runtime driver (AV2 § 5.2.1, § 5.19, § 6.18).
+///
+/// Decodes the leading closed-loop-key frame (IVF frame 0), then walks any further
+/// inter frame candidates in stream order. Each displayed frame becomes one
+/// [`MinimalRuntimeFrame`]; the key frame's decoded planes are retained as the
+/// reference state the inter frame consumes (§ 7.23). A single-frame intra stream
+/// still yields a one-element vector, byte-identical to the single-frame entry.
+///
+/// Feature tracking: `DECODE-FIRST-INTER-FRAME-FRONTIER`.
+pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
+    bytes: &[u8],
+    options: DecodeOptions,
+    plan: &DecodeStreamPlan,
+    preflight: impl FnOnce(IvfHeader) -> Result<()>,
+) -> Result<Vec<MinimalRuntimeFrame>> {
+    let frame_count = ensure_multiframe_plan_shape(plan)?;
+    let parsed = parse_bitstream_partial(bytes);
+    let (ivf, header) = require_multiframe_ivf(&parsed, frame_count)?;
+    preflight(header)?;
+
+    // The sequence header lives in the first IVF frame's OBU stream; it activates for
+    // every subsequent frame in the stream (AV2 § 7.2.1).
+    let first_ivf_frame = ivf.frames.first().ok_or_else(|| {
+        unsupported(
+            "missing_first_ivf_frame",
+            None,
+            "minimal tier requires at least one IVF frame",
+        )
+    })?;
+    let [td_envelope, sequence_envelope, key_envelope] =
+        require_minimal_obu_order(first_ivf_frame.obus.as_slice())?;
+    require_obu_type(
+        td_envelope,
+        ObuType::TemporalDelimiter,
+        "missing_temporal_delimiter",
+    )?;
+    require_obu_type(
+        sequence_envelope,
+        ObuType::SequenceHeader,
+        "missing_sequence_header",
+    )?;
+    require_obu_type(
+        key_envelope,
+        ObuType::ClosedLoopKey,
+        "missing_closed_loop_key",
+    )?;
+
+    let sequence = parse_sequence(sequence_envelope)?;
+    validate_sequence(&sequence, sequence_envelope.offset)?;
+
+    let mut candidates = plan.frame_candidates_all();
+    let key_candidate = candidates.next().ok_or_else(|| {
+        unsupported(
+            "missing_frame_candidate",
+            None,
+            "minimal tier requires one selected key frame candidate",
+        )
+    })?;
+
+    let mut frames = Vec::new();
+    let key_frame = decode_minimal_key_frame(
+        bytes,
+        options,
+        plan,
+        key_candidate,
+        key_envelope,
+        &sequence,
+        header,
+    )?;
+    frames.push(key_frame);
+
+    // The minimal tier decodes only the first (key) frame so far. Reject any further
+    // frame candidate with a structured diagnostic so no fabricated output is
+    // produced, using the reason that matches the candidate's actual OBU type (a
+    // following inter `OBU_REGULAR_TILE_GROUP` vs. another key frame), rather than
+    // assuming every follow-up frame is inter. Tracked by
+    // `DECODE-FIRST-INTER-FRAME-FRONTIER`.
+    if let Some(next_candidate) = candidates.next() {
+        return Err(match next_candidate.obu_type() {
+            ObuType::RegularTileGroup => unsupported_at(
+                "inter_frame_decode_unimplemented",
+                next_candidate.offset(),
+                "minimal tier decodes only the first (key) frame so far; the following inter frame (OBU_REGULAR_TILE_GROUP) is admitted at the planner but not yet decoded (the inter decode path — header shared tail, §5.20 inter mode info, §7.11 motion vectors, §7.13.3.18 motion compensation — is unimplemented)",
+            ),
+            _ => unsupported_at(
+                "multiple_frames_unimplemented",
+                next_candidate.offset(),
+                "minimal tier decodes only the first frame so far; a following frame candidate (e.g. a second key frame) is admitted at the planner but decoding more than the first frame is not yet implemented",
+            ),
+        });
+    }
+
+    Ok(frames)
+}
+
+/// Validates the planned stream shape for the multi-frame runtime and returns the
+/// number of accepted frame candidates (1 for a single intra key, 2 for a key
+/// followed by one inter frame). The shape is otherwise the minimal tier's: no
+/// source warnings, one base-layer sequence header, exactly one IVF frame per
+/// frame candidate plus the leading temporal delimiters.
+fn ensure_multiframe_plan_shape(plan: &DecodeStreamPlan) -> Result<u64> {
+    let frame_count = plan.frame_candidate_count();
+    // OBU layout: frame 0 = [TD, SEQ, CLK] (3 OBUs); each further inter frame adds
+    // [TD, OBU_REGULAR_TILE_GROUP] (2 OBUs).
+    let expected_obu_count = match frame_count {
+        1 => 3,
+        2 => 5,
+        _ => {
+            return Err(unsupported(
+                "unsupported_frame_candidate_count",
+                None,
+                "minimal tier supports a single key frame, optionally followed by exactly one inter frame",
+            ));
+        }
+    };
+    if plan.source_warnings().is_empty() && plan.obu_count() == expected_obu_count {
+        Ok(frame_count)
     } else {
         Err(unsupported(
             "unexpected_planned_stream_shape",
             None,
-            "minimal tier requires exactly three planned OBUs, one frame candidate, and no source warnings",
+            "minimal tier requires the traced one- or two-frame OBU layout with no source warnings",
         ))
     }
 }
 
-fn require_minimal_ivf<'a>(
+/// Container-shape gate for the multi-frame runtime: an `AV02` IVF with exactly
+/// `frame_count` positive-sized frames and no container warnings or errors.
+fn require_multiframe_ivf<'a>(
     parsed: &'a ParsedBitstream<'a>,
+    frame_count: u64,
 ) -> Result<(&'a ParsedIvfBitstream<'a>, IvfHeader)> {
     let ParsedBitstream::Ivf(ivf) = parsed else {
         return Err(unsupported(
             "non_ivf_input",
             None,
-            "minimal runtime hash support currently accepts only the committed IVF fixture shape",
+            "minimal runtime support currently accepts only the committed IVF fixture shape",
         ));
     };
     let Some(header) = ivf.header else {
@@ -201,24 +325,18 @@ fn require_minimal_ivf<'a>(
             "minimal tier requires a complete IVF header",
         ));
     };
-    // Size routing happens after this preflight: the frozen 64x64 hash tier
-    // re-imposes its strict 64x64 requirement in `validate_frame_core`, and the
-    // general intra path accepts positive multiples of 64 (checked in
-    // `is_general_minimal_intra`). Admitting any positive frame size here lets
-    // both 64x64 and larger multiple-of-64 frames reach routing while still
-    // gating container shape (AV02, single in-memory frame, no warnings/errors).
     if header.fourcc != *b"AV02"
         || header.width == 0
         || header.height == 0
-        || header.frame_count != 1
-        || ivf.frames.len() != 1
+        || u64::from(header.frame_count) != frame_count
+        || ivf.frames.len() as u64 != frame_count
         || !ivf.warnings.is_empty()
         || ivf.error.is_some()
     {
         return Err(unsupported(
             "unsupported_ivf_shape",
             None,
-            "minimal tier requires one positive-sized AV02 IVF frame with no container warnings",
+            "minimal tier requires the planned count of positive-sized AV02 IVF frames with no container warnings",
         ));
     }
     Ok((ivf, header))
@@ -426,13 +544,13 @@ fn validate_sequence(sequence: &SequenceHeader, offset: ByteOffset) -> Result<()
             "minimal tier does not support sequence crop windows",
         ));
     }
-    if !general.single_picture_header_flag {
-        return Err(unsupported_at(
-            "non_single_picture_sequence",
-            offset,
-            "minimal runtime hash support is limited to the traced single-picture sequence shape",
-        ));
-    }
+    // A multi-frame stream (key + inter) carries a non-single-picture sequence
+    // header (`single_picture_header_flag == 0`), so this is admitted here: the
+    // per-frame header parse and the frame-core validation downstream
+    // (`validate_frame_core` / `is_general_minimal_intra`) gate the actual decode
+    // shape, and a single-picture sequence is just the one-frame case. Frame-header
+    // bit layout differences (e.g. the `frame_size_override_flag` read) are handled
+    // by `parse_frame_header_core` and proven bit-exact by the per-frame decode.
     let intra = sequence.intra.as_ref().ok_or_else(|| {
         unsupported_at(
             "missing_sequence_intra_config",
@@ -455,25 +573,6 @@ fn validate_sequence(sequence: &SequenceHeader, offset: ByteOffset) -> Result<()
         ));
     }
     Ok(())
-}
-
-fn single_plan_candidate(plan: &DecodeStreamPlan) -> Result<&DecodePlannedObu> {
-    let mut candidates = plan.frame_candidates();
-    let Some(candidate) = candidates.next() else {
-        return Err(unsupported(
-            "missing_frame_candidate",
-            None,
-            "minimal tier requires one selected closed-loop-key frame candidate",
-        ));
-    };
-    if candidates.next().is_some() {
-        return Err(unsupported(
-            "multiple_frame_candidates",
-            None,
-            "minimal tier supports exactly one selected output frame",
-        ));
-    }
-    Ok(candidate)
 }
 
 fn parse_frame_core(

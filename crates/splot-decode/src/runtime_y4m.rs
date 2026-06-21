@@ -33,25 +33,44 @@ pub(crate) fn encode_y4m_stream_from_plan(
     plan: &DecodeStreamPlan,
 ) -> Result<Vec<u8>> {
     let limits = options.limits();
-    let output = crate::runtime_minimal::decode_minimal_frame_from_plan_with_ivf_preflight(
+    let outputs = crate::runtime_minimal::decode_minimal_frames_from_plan_with_ivf_preflight(
         bytes,
         options,
         plan,
         |header| preflight_y4m_minimal_header(header, limits),
     )?;
-    ensure_y4m_timebase(output.frame_rate_numerator, output.frame_rate_denominator)?;
-    let frame_rate = Y4mFrameRate::new(output.frame_rate_numerator, output.frame_rate_denominator)
+    // Every displayed frame is written into one Y4M stream, in output order
+    // (AV2 § 6.18). The stream header is derived from the first frame; all frames in
+    // the minimal tier share the same dimensions and frame rate.
+    let first = outputs
+        .first()
+        .ok_or_else(|| DecodeError::UnsupportedFeature {
+            unsupported: Box::new(DecodeUnsupportedFeature::new(
+                "empty_decoded_frame_set",
+                crate::runtime_minimal::MINIMAL_INTRA_HASH_TIER_ID,
+                MATRIX_ROW,
+                FEATURE_ID,
+                SPEC_SECTION,
+                "runtime Y4M output requires at least one decoded frame",
+                REMEDIATION,
+                None,
+            )),
+        })?;
+    ensure_y4m_timebase(first.frame_rate_numerator, first.frame_rate_denominator)?;
+    let frame_rate = Y4mFrameRate::new(first.frame_rate_numerator, first.frame_rate_denominator)
         .map_err(|source| DecodeOutputError::y4m(DecodeOutputOperation::SerializeY4m, source))?;
 
     let mut y4m = Vec::new();
     {
         let mut writer =
-            Y4mWriter::from_frame(&mut y4m, &output.frame, frame_rate).map_err(|source| {
+            Y4mWriter::from_frame(&mut y4m, &first.frame, frame_rate).map_err(|source| {
                 DecodeOutputError::y4m(DecodeOutputOperation::SerializeY4m, source)
             })?;
-        writer.write_frame(&output.frame).map_err(|source| {
-            DecodeOutputError::y4m(DecodeOutputOperation::SerializeY4m, source)
-        })?;
+        for output in &outputs {
+            writer.write_frame(&output.frame).map_err(|source| {
+                DecodeOutputError::y4m(DecodeOutputOperation::SerializeY4m, source)
+            })?;
+        }
         writer.flush().map_err(|source| {
             DecodeOutputError::y4m(DecodeOutputOperation::SerializeY4m, source)
         })?;

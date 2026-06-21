@@ -215,8 +215,13 @@ fn parse_bounded_ivf<'a>(input: &'a [u8], limits: DecodeLimits) -> Result<Parsed
 
 fn is_selected_frame_candidate(header: ObuHeader) -> bool {
     let selected_layer = DecodeLayerSelection::base();
-    header.obu_type == ObuType::ClosedLoopKey
-        && header.temporal_layer_id == selected_layer.temporal_layer_id()
+    // AV2 § 5.2.1: a key frame (`OBU_CLOSED_LOOP_KEY`) and an inter frame carried in
+    // an `OBU_REGULAR_TILE_GROUP` both count as selected-layer frame candidates for
+    // the `MaxFramesToDecode` limit, mirroring `classify_obu`'s frame-candidate roles.
+    matches!(
+        header.obu_type,
+        ObuType::ClosedLoopKey | ObuType::RegularTileGroup
+    ) && header.temporal_layer_id == selected_layer.temporal_layer_id()
         && header.embedded_layer_id == selected_layer.embedded_layer_id()
         && header.extended_layer_id == selected_layer.extended_layer_id()
 }

@@ -24,6 +24,14 @@ const Q80_CHROMA_V: u8 = 130;
 const Q180_COS_FIXTURE: &[u8] =
     include_bytes!("../../../../tests/conformance/vectors/valid/syn-cos-intra-64x64-q180.ivf");
 
+// The two-frame inter target. Its KEY frame (IVF frame 0) is a single 64x64 DC
+// luma block with a NON-follow H_PRED chroma block (uv_mode == 6 over a DC luma).
+// avmdec/dav2d decode the whole stream to flat planes; the key frame is
+// Y=100/U=120/V=130. This is the oracle anchor for the non-follow H_PRED chroma
+// reconstruction at the no-neighbour top-left block.
+const TWO_FRAME_INTER_FIXTURE: &[u8] =
+    include_bytes!("../../../../tests/conformance/vectors/valid/syn-2frame-inter-64x64.ivf");
+
 // Drives the q80 fixture through the full general intra runtime path: decode
 // modes -> decode luma + chroma coefficients -> dequant -> inverse transform
 // -> residual add over the no-neighbour DC prediction -> frame assembly.
@@ -35,6 +43,72 @@ fn decode_q80_frame() -> DecodedFrame<u8> {
     decode_minimal_frame_from_plan(Q80_FIXTURE, options, &plan)
         .expect("decode")
         .frame
+}
+
+// Slices the leading IVF frame (the OBU_CLOSED_LOOP_KEY key frame) out of a
+// two-frame AV02/DKIF IVF stream into a standalone single-frame IVF, so the key
+// frame can be decoded on its own and compared to the oracle's frame 0.
+fn single_frame_ivf_from_first(stream: &[u8]) -> Vec<u8> {
+    const IVF_HEADER_LEN: usize = 32;
+    const IVF_FRAME_HEADER_LEN: usize = 12;
+    const FRAME_COUNT_OFFSET: usize = 24;
+
+    let size0 = u32::from_le_bytes([
+        stream[IVF_HEADER_LEN],
+        stream[IVF_HEADER_LEN + 1],
+        stream[IVF_HEADER_LEN + 2],
+        stream[IVF_HEADER_LEN + 3],
+    ]) as usize;
+    let mut out = stream[..IVF_HEADER_LEN].to_vec();
+    out[FRAME_COUNT_OFFSET..FRAME_COUNT_OFFSET + 4].copy_from_slice(&1u32.to_le_bytes());
+    out.extend_from_slice(&stream[IVF_HEADER_LEN..IVF_HEADER_LEN + IVF_FRAME_HEADER_LEN + size0]);
+    out
+}
+
+#[test]
+fn two_frame_key_frame_reconstructs_flat_h_pred_chroma() {
+    // The two-frame target's KEY frame uses a NON-follow H_PRED chroma block
+    // (uv_mode == 6 over a DC luma) at the no-neighbour top-left 64x64 block. The
+    // §7.13.2.8 horizontal copy of the §7.13.2.1 flat fallback left column produces
+    // a flat chroma plane. Decoding the key frame on its own must reproduce the
+    // oracle's frame 0 (avmdec/dav2d: Y=100, U=120, V=130), proving the non-follow
+    // H_PRED chroma reconstruction is bit-exact.
+    use splot_recon::{BitDepth, PixelFormat, PlaneSize};
+
+    let key_stream = single_frame_ivf_from_first(TWO_FRAME_INTER_FIXTURE);
+    let options = DecodeOptions::default();
+    let context =
+        DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).expect("context");
+    let plan = context.plan_bytes(&key_stream, options).expect("plan");
+    let frame = decode_minimal_frame_from_plan(&key_stream, options, &plan)
+        .expect("decode")
+        .frame;
+
+    assert_eq!(frame.bit_depth(), BitDepth::Eight);
+    assert_eq!(frame.pixel_format(), PixelFormat::Yuv420);
+    assert_eq!(frame.y().visible_size(), PlaneSize::new(64, 64).unwrap());
+    assert!(
+        frame.y().samples().iter().all(|&s| s == Q80_LUMA),
+        "luma must be flat {Q80_LUMA}"
+    );
+    assert!(
+        frame
+            .u()
+            .unwrap()
+            .samples()
+            .iter()
+            .all(|&s| s == Q80_CHROMA_U),
+        "U must be flat {Q80_CHROMA_U} (non-follow H_PRED chroma)"
+    );
+    assert!(
+        frame
+            .v()
+            .unwrap()
+            .samples()
+            .iter()
+            .all(|&s| s == Q80_CHROMA_V),
+        "V must be flat {Q80_CHROMA_V} (non-follow H_PRED chroma)"
+    );
 }
 
 #[test]
@@ -626,32 +700,36 @@ fn smooth_single_block_intra_frame_decodes_to_oracle() {
 }
 
 // Negative decode-boundary companion to syn-smooth: a 64x64 single block whose
-// luma the encoder also codes as plain SMOOTH_PRED (mode 9), but whose chroma is
-// a NON-DC mode (uv_mode 6 -> H_PRED). The plain-SMOOTH luma admission this brick
-// adds is gated to the supported (DC) chroma subset, so the general-intra decoder
-// still rejects this stream with a structured decode/unsupported-feature
-// diagnostic rather than producing wrong chroma output. avmdec and dav2d agree on
-// the (rejected) stream (md5 70494255beb63103c97422e327243319); it validates clean.
+// luma the encoder codes as plain SMOOTH_PRED (mode 9), with a NON-DC chroma mode
+// (uv_mode 6 -> H_PRED) at the no-neighbour top-left 64x64 block. The non-follow
+// H_PRED chroma reconstruction (a §7.13.2.8 horizontal copy of the §7.13.2.1 flat
+// fallback left column) is now decoded bit-exact, so the whole frame decodes to
+// the oracle output (avmdec == dav2d md5 70494255beb63103c97422e327243319); it
+// validates clean.
 const SMOOTH_NONDC_CHROMA_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-smoothnondc-intra-64x64-q132.ivf"
 );
 
 #[test]
-fn smooth_luma_with_non_dc_chroma_still_rejects() {
-    use crate::error::DecodeError;
+fn smooth_luma_with_non_dc_h_pred_chroma_decodes_to_oracle() {
+    use splot_recon::{BitDepth, PixelFormat, PlaneSize};
 
-    let options = DecodeOptions::default();
-    let context =
-        DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).expect("context");
-    let plan = context
-        .plan_bytes(SMOOTH_NONDC_CHROMA_FIXTURE, options)
-        .expect("plan");
-    let reason = match decode_minimal_frame_from_plan(SMOOTH_NONDC_CHROMA_FIXTURE, options, &plan) {
-        Ok(_) => panic!("plain SMOOTH luma with non-DC chroma must still be rejected, not decoded"),
-        Err(DecodeError::UnsupportedFeature { unsupported }) => unsupported.reason(),
-        Err(other) => panic!("expected an unsupported-feature rejection, got {other:?}"),
-    };
-    assert_eq!(reason, "general_intra_non_dc_chroma_mode");
+    // Previously rejected (non-DC chroma was unsupported); the non-follow H_PRED
+    // chroma at the no-neighbour top-left block now reconstructs bit-exact, so the
+    // plain-SMOOTH luma + H_PRED chroma frame decodes to the avmdec/dav2d oracle
+    // output. The frame hash is pinned as the byte-layout anchor.
+    let frame = decode_general_intra_luma(SMOOTH_NONDC_CHROMA_FIXTURE);
+    assert_eq!(frame.bit_depth(), BitDepth::Eight);
+    assert_eq!(frame.pixel_format(), PixelFormat::Yuv420);
+    assert_eq!(frame.y().visible_size(), PlaneSize::new(64, 64).unwrap());
+
+    let hash = splot_recon::DecodedFrameHashInput::new(&frame)
+        .compute_hash()
+        .to_hex();
+    assert_eq!(
+        hash,
+        "f1621607dfcd2737e8a4c308fc26cd1596cb001444437f0440e34883a59b519b"
+    );
 }
 
 // A 64x64 superblock SPLIT into four 32x32 squares (TL flat 50, TR flat 210,

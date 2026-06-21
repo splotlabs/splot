@@ -146,11 +146,18 @@ impl DecodeStreamPlan {
         self.obus.iter()
     }
 
-    /// Accepted frame candidates in deterministic source order.
+    /// Accepted closed-loop-key frame candidates in deterministic source order.
     pub fn frame_candidates(&self) -> impl Iterator<Item = &DecodePlannedObu> {
         self.obus
             .iter()
             .filter(|obu| obu.role == DecodePlannedObuRole::FrameCandidate)
+    }
+
+    /// Accepted frame candidates of any kind (key or inter), in deterministic
+    /// source order. This is the per-frame decode order the multi-frame runtime
+    /// walks (AV2 § 5.2.1, § 6.18).
+    pub fn frame_candidates_all(&self) -> impl Iterator<Item = &DecodePlannedObu> {
+        self.obus.iter().filter(|obu| obu.role.is_frame_candidate())
     }
 
     /// Non-fatal source/container warnings carried into the plan.
@@ -220,8 +227,29 @@ pub enum DecodePlannedObuRole {
     Global,
     /// State OBU for the selected base layer.
     SelectedLayerState,
-    /// Closed-loop-key frame candidate for a future decode stage.
+    /// Closed-loop-key frame candidate for a future decode stage (AV2 § 5.2.1
+    /// `OBU_CLOSED_LOOP_KEY`).
     FrameCandidate,
+    /// Inter frame candidate carried in an `OBU_REGULAR_TILE_GROUP` (AV2 § 5.2.1,
+    /// § 5.19): a non-key frame whose first tile group carries the frame header.
+    /// Admitted by the planner so the multi-frame runtime can reach it; the runtime
+    /// decode of an inter frame is tracked by `DECODE-FIRST-INTER-FRAME-FRONTIER`.
+    ///
+    /// Caveat: every `OBU_REGULAR_TILE_GROUP` is currently classified with this role,
+    /// so a frame split across multiple tile groups (§ 5.19 continuation,
+    /// `tg_start`..`tg_end`) is over-counted by `frame_candidate_count` — only the
+    /// first tile group of a frame starts a new frame. See the `classify_obu` TODO;
+    /// the minimal runtime's one-tile-group shape gate masks this today.
+    InterFrameCandidate,
+}
+
+impl DecodePlannedObuRole {
+    /// Whether this role is a frame candidate (key or inter) the runtime decodes
+    /// into an output frame, as opposed to a global marker or layer-state OBU.
+    #[must_use]
+    pub const fn is_frame_candidate(self) -> bool {
+        matches!(self, Self::FrameCandidate | Self::InterFrameCandidate)
+    }
 }
 
 /// One accepted OBU in a parsed stream plan.
@@ -647,7 +675,7 @@ impl PlanBuilder {
         self.traversed_obu_count = next_obu_count;
 
         let role = classify_obu(envelope, self.selected_layer)?;
-        if role == DecodePlannedObuRole::FrameCandidate {
+        if role.is_frame_candidate() {
             let next_frame_count = self.frame_candidate_count.saturating_add(1);
             self.limits
                 .ensure(DecodeLimitName::MaxFramesToDecode, next_frame_count)?;
@@ -750,6 +778,23 @@ fn classify_obu(
         ObuType::TemporalDelimiter | ObuType::Padding => Ok(DecodePlannedObuRole::Global),
         ObuType::SequenceHeader => Ok(DecodePlannedObuRole::SelectedLayerState),
         ObuType::ClosedLoopKey => Ok(DecodePlannedObuRole::FrameCandidate),
+        // AV2 § 5.2.1 / § 5.19: an `OBU_REGULAR_TILE_GROUP` carries (a tile group of)
+        // a non-key frame; the *first* tile group of a frame holds the frame header.
+        // The planner admits it as an inter frame candidate so the multi-frame runtime
+        // can reach it; the actual inter frame decode (header shared tail, § 5.20 mode
+        // info, motion compensation) is gated and tracked by
+        // `DECODE-FIRST-INTER-FRAME-FRONTIER`.
+        // TODO(spec: DECODE-FIRST-INTER-FRAME-FRONTIER): this admits EVERY regular tile
+        // group as a distinct frame candidate. A single inter frame may span multiple
+        // `OBU_REGULAR_TILE_GROUP` OBUs (§ 5.19 tile-group continuation,
+        // `tg_start`..`tg_end`); only the first carries the frame header, the rest are
+        // continuations, not new frames. Distinguishing them needs the tile-group
+        // structure (`tg_start`), which is not parsed at planner classification, so
+        // `frame_candidate_count` would over-count a multi-tile-group frame. This is
+        // masked today by the minimal runtime's strict one-`OBU_REGULAR_TILE_GROUP`
+        // shape gate (`ensure_multiframe_plan_shape`); refine when multi-tile-group
+        // inter frames are supported.
+        ObuType::RegularTileGroup => Ok(DecodePlannedObuRole::InterFrameCandidate),
         ObuType::Msdo
         | ObuType::LayerConfigurationRecord
         | ObuType::AtlasSegment
@@ -769,7 +814,7 @@ fn classify_obu(
                 DecodeUnsupportedReason::UnsupportedFrameObu,
                 envelope,
                 "5.2.1",
-                "only OBU_CLOSED_LOOP_KEY is accepted as a frame candidate by the initial decode stream planner",
+                "only OBU_CLOSED_LOOP_KEY and OBU_REGULAR_TILE_GROUP are accepted as frame candidates by the initial decode stream planner",
             )
         }
         ObuType::Reserved0 | ObuType::Reserved(_) => unsupported(
