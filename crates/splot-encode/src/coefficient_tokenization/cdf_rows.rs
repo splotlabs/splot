@@ -20,6 +20,12 @@ pub(crate) struct CoefficientTokenCdfRows {
     coeff_br_lf: [[i32; 5]; COEFF_CDF_Q_CONTEXTS],
     // The EOB-AC `coeff_br` row (derived ctx `7`, see `COEFF_BR_LF_CTX_EOB_AC`).
     coeff_br_lf_ac: [[i32; 5]; COEFF_CDF_Q_CONTEXTS],
+    // The non-EOB DC `coeff_br` row when its EOB AC neighbour has magnitude `1..=2`
+    // (derived ctx `1`, see `COEFF_BR_LF_CTX_DC_BR_AC_LOW`).
+    coeff_br_lf_dc_ac_low: [[i32; 5]; COEFF_CDF_Q_CONTEXTS],
+    // The non-EOB DC `coeff_br` row when its EOB AC neighbour has magnitude `5..=7`
+    // (derived ctx `3`, see `COEFF_BR_LF_CTX_DC_BR_AC_HIGH`).
+    coeff_br_lf_dc_ac_high: [[i32; 5]; COEFF_CDF_Q_CONTEXTS],
     dc_sign: [[i32; 3]; COEFF_CDF_Q_CONTEXTS],
     chroma_u_txb_skip: [[i32; 3]; COEFF_CDF_Q_CONTEXTS],
     chroma_eob_pt_16: [[i32; 6]; COEFF_CDF_Q_CONTEXTS],
@@ -90,6 +96,18 @@ impl CoefficientTokenCdfRows {
                 DEFAULT_COEFF_BR_LF_CDF[1][COEFF_BR_LF_CTX_EOB_AC],
                 DEFAULT_COEFF_BR_LF_CDF[2][COEFF_BR_LF_CTX_EOB_AC],
                 DEFAULT_COEFF_BR_LF_CDF[3][COEFF_BR_LF_CTX_EOB_AC],
+            ],
+            coeff_br_lf_dc_ac_low: [
+                DEFAULT_COEFF_BR_LF_CDF[0][COEFF_BR_LF_CTX_DC_BR_AC_LOW],
+                DEFAULT_COEFF_BR_LF_CDF[1][COEFF_BR_LF_CTX_DC_BR_AC_LOW],
+                DEFAULT_COEFF_BR_LF_CDF[2][COEFF_BR_LF_CTX_DC_BR_AC_LOW],
+                DEFAULT_COEFF_BR_LF_CDF[3][COEFF_BR_LF_CTX_DC_BR_AC_LOW],
+            ],
+            coeff_br_lf_dc_ac_high: [
+                DEFAULT_COEFF_BR_LF_CDF[0][COEFF_BR_LF_CTX_DC_BR_AC_HIGH],
+                DEFAULT_COEFF_BR_LF_CDF[1][COEFF_BR_LF_CTX_DC_BR_AC_HIGH],
+                DEFAULT_COEFF_BR_LF_CDF[2][COEFF_BR_LF_CTX_DC_BR_AC_HIGH],
+                DEFAULT_COEFF_BR_LF_CDF[3][COEFF_BR_LF_CTX_DC_BR_AC_HIGH],
             ],
             dc_sign: [
                 DEFAULT_DC_SIGN_CDF[0][LUMA_PLANE_TYPE][DC_SIGN_GROUP_VISIBLE][DC_SIGN_CTX_NEUTRAL],
@@ -181,6 +199,18 @@ impl CoefficientTokenCdfRows {
                 ctx: COEFF_BR_LF_CTX_EOB_AC,
             } if coeff_cdf_q_ctx < COEFF_CDF_Q_CONTEXTS => {
                 Ok(self.coeff_br_lf_ac[coeff_cdf_q_ctx].as_mut_slice())
+            }
+            CoefficientCdfRowSelector::CoeffBrLf {
+                coeff_cdf_q_ctx,
+                ctx: COEFF_BR_LF_CTX_DC_BR_AC_LOW,
+            } if coeff_cdf_q_ctx < COEFF_CDF_Q_CONTEXTS => {
+                Ok(self.coeff_br_lf_dc_ac_low[coeff_cdf_q_ctx].as_mut_slice())
+            }
+            CoefficientCdfRowSelector::CoeffBrLf {
+                coeff_cdf_q_ctx,
+                ctx: COEFF_BR_LF_CTX_DC_BR_AC_HIGH,
+            } if coeff_cdf_q_ctx < COEFF_CDF_Q_CONTEXTS => {
+                Ok(self.coeff_br_lf_dc_ac_high[coeff_cdf_q_ctx].as_mut_slice())
             }
             CoefficientCdfRowSelector::DcSign {
                 coeff_cdf_q_ctx,

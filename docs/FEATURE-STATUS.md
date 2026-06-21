@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 379 feature(s).
+Matrix version 1. Last reviewed 2026-06-15. 380 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -148,6 +148,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `ENC-COEFF-MULTI-TOKENS` | Encoder multi-coefficient token accessors | encoder | encoder-tool | done | done | n/a | n/a | n/a | done | n/a | done | n/a | `crates/splot-encode/src/coefficient_tokenization/multi_coeff.rs` |
 | `ENC-COEFF-GENERAL-WALK-LF-BASE` | Encoder general LF base-tier coefficient walk (eob<=2) | encoder | encoder-tool | done | done | n/a | n/a | n/a | done | n/a | done | n/a | `crates/splot-encode/src/coefficient_tokenization` |
 | `ENC-COEFF-GENERAL-WALK-COEFF-BR` | Encoder general LF coefficient walk: EOB coeff_br tier (mag<=7) | encoder | encoder-tool | done | done | n/a | n/a | n/a | done | n/a | done | n/a | `crates/splot-encode/src/coefficient_tokenization` |
+| `ENC-COEFF-GENERAL-WALK-DC-BR` | Encoder general LF coefficient walk: non-EOB DC coeff_br (data-dependent) | encoder | encoder-tool | done | done | n/a | n/a | n/a | done | n/a | done | n/a | `crates/splot-encode/src/coefficient_tokenization` |
 | `ENC-INTRA-BLOCK-TRACE-TWO-COEFF` | Encoder eob=2 multi-coefficient block trace | encoder | encoder-tool | done | done | n/a | n/a | n/a | done | n/a | done | n/a | `crates/splot-encode/src/block_symbol_trace` |
 | `ENC-INTRA-TX-TYPE-TOKEN` | Encoder intra_tx_type TX_SET_INTRA_1 token | encoder | encoder-tool | done | done | n/a | n/a | n/a | done | n/a | done | n/a | `crates/splot-encode/src/coefficient_tokenization/transform_type.rs` |
 | `ENC-INTRA-BLOCK-TRACE-TWO-COEFF-TX-TYPE` | Encoder eob=2 trace with TX_SET_INTRA_1 intra_tx_type | encoder | encoder-tool | done | done | n/a | n/a | n/a | done | n/a | done | n/a | `crates/splot-encode/src/block_symbol_trace` |
