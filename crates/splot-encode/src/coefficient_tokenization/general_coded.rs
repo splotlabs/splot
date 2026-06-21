@@ -265,3 +265,119 @@ pub(crate) fn general_intra_64x64_luma_two_coeff_tokens(
     });
     Ok(tokens)
 }
+
+/// The *visible* eob=2 AC level. Unlike the minimal level-1 AC (whose dequantized residual
+/// rounds to ~0, reconstructing flat 128), level 4 — the largest base level with no `coeff_br`
+/// tail (`coeff_base_eob` symbol `LF_NUM_BASE_LEVELS - 1` = 3; `needs_br` is `level > 4`) — dequantizes to a residual large
+/// enough to reconstruct a visibly non-flat (low-frequency cosine) luma plane.
+const VISIBLE_AC_LEVEL: u8 = 4;
+/// The DC `coeff_base` low-frequency context for the level-4 AC: `coeff_base_lf_luma_context`
+/// maps the larger significant-neighbour magnitude to context `2` (vs `1` for level 1, and `3`
+/// for level 5). Pinned here and asserted against the derivation in this module's tests.
+const VISIBLE_AC_DC_CTX: usize = 2;
+
+/// Returns the ordered general `TX_64X64` luma eob=2 tokens for a **visibly non-flat** block:
+/// a single nonzero AC coefficient of level 4 at scan index 1 and a zero DC. The sequence is
+/// `txb_skip == 0`, `eob_pt_1024 == 1` (eob 2), then the base pass over `c = eob-1..0`: the AC
+/// `coeff_base_eob` (level 4 -> symbol 3, the largest no-`coeff_br` base level) at the EOB
+/// context `1`, then the DC `coeff_base` (level 0 -> symbol 0) at its `Level[]`-derived
+/// low-frequency context `2`. The caller appends the AC `sign_bit` § 8.2.5
+/// bypass literal. Like the minimal tier, `TX_64X64` is DCT-only (no transform-type symbol),
+/// and the AC sits at scan index 1; only the level (and hence the DC context) differs.
+pub(crate) fn general_intra_64x64_luma_visible_ac_tokens(
+    coeff_cdf_q_ctx: usize,
+) -> Result<Vec<CoefficientEntropyToken>> {
+    let mut tokens = Vec::new();
+    tokens
+        .try_reserve_exact(4)
+        .map_err(|_| Error::CoefficientTokenizationAllocationFailed {
+            context: "general visible-AC luma tokens",
+        })?;
+    // luma `txb_skip == 0` (coded) at the TX_64X64 context.
+    tokens.push(CoefficientEntropyToken {
+        syntax: CoefficientTokenSyntax::AllZero,
+        selector: CoefficientCdfRowSelector::TxbSkip {
+            coeff_cdf_q_ctx,
+            plane_type: LUMA_PLANE_TYPE,
+            tx_size: TX_SIZE_64X64_CTX,
+            ctx: TXB_SKIP_CTX_NEUTRAL,
+        },
+        symbol: false as u8,
+    });
+    // `eob_pt_1024 == 1` -> eob 2 (no eob_extra for eob_pt <= 1).
+    tokens.push(CoefficientEntropyToken {
+        syntax: CoefficientTokenSyntax::EobPt1024,
+        selector: CoefficientCdfRowSelector::EobPt1024 {
+            coeff_cdf_q_ctx,
+            eob_ctx: EOB_CTX_LUMA_INTRA,
+        },
+        symbol: 1,
+    });
+    // AC EOB coefficient: coeff_base_eob (level 4 -> symbol 3, largest no-br base level) at ctx 1.
+    tokens.push(CoefficientEntropyToken {
+        syntax: CoefficientTokenSyntax::CoeffBaseEob,
+        selector: CoefficientCdfRowSelector::CoeffBaseLfEob {
+            coeff_cdf_q_ctx,
+            tx_size: TX_SIZE_64X64_CTX,
+            ctx: COEFF_BASE_LF_EOB_CTX_EOB2_AC,
+        },
+        symbol: VISIBLE_AC_LEVEL - 1,
+    });
+    // DC non-EOB coefficient: coeff_base (level 0 -> symbol 0) at the level-4 DC context 2.
+    tokens.push(CoefficientEntropyToken {
+        syntax: CoefficientTokenSyntax::CoeffBase,
+        selector: CoefficientCdfRowSelector::CoeffBaseLf {
+            coeff_cdf_q_ctx,
+            tx_size: TX_SIZE_64X64_CTX,
+            ctx: VISIBLE_AC_DC_CTX,
+            tcq_ctx: COEFF_BASE_LF_TCQ_CTX_NEUTRAL,
+        },
+        symbol: 0,
+    });
+    Ok(tokens)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::{VISIBLE_AC_DC_CTX, VISIBLE_AC_LEVEL};
+    use crate::coefficient_tokenization::coeff_base_lf_luma_context;
+    use splot_recon::{TransformClass, coefficient_scan_order};
+
+    // The DC `coeff_base` low-frequency context is derived from the AC coefficient's level via
+    // § 8.3.2 `coeff_base_lf_luma_context`, so it is AC-level-dependent. This pins the derivation
+    // the `VISIBLE_AC_DC_CTX` doc cites: in the 32x32 (`TX_64X64`-coded) 2-D scan the single AC
+    // sits at scan index 1 (raster row 1 col 0, the DC's vertical neighbour), and the DC context
+    // is `(min(level, 5) + 1) >> 1` mapped to the low-frequency bands.
+    fn dc_ctx_for_ac_level(level: u32) -> usize {
+        const W: usize = 32;
+        const H: usize = 32;
+        const BWL: u32 = 5; // log2(32)
+        let mut scan = vec![0u16; W * H];
+        coefficient_scan_order(W, H, TransformClass::TwoD, &mut scan).unwrap();
+        let ac_pos = scan[1] as usize;
+        let mut levels = vec![0u32; W * H];
+        levels[ac_pos] = level;
+        coeff_base_lf_luma_context(0, BWL, W, H, 0, 0, &levels)
+    }
+
+    #[test]
+    fn visible_ac_dc_context_matches_the_level_4_derivation() {
+        assert_eq!(VISIBLE_AC_LEVEL, 4);
+        assert_eq!(
+            dc_ctx_for_ac_level(VISIBLE_AC_LEVEL as u32),
+            VISIBLE_AC_DC_CTX
+        );
+        assert_eq!(VISIBLE_AC_DC_CTX, 2);
+    }
+
+    #[test]
+    fn dc_context_is_ac_level_dependent() {
+        // Level 1-2 -> ctx 1, 3-4 -> ctx 2 (the visible-AC frame), 5+ -> ctx 3.
+        assert_eq!(dc_ctx_for_ac_level(1), 1);
+        assert_eq!(dc_ctx_for_ac_level(2), 1);
+        assert_eq!(dc_ctx_for_ac_level(3), 2);
+        assert_eq!(dc_ctx_for_ac_level(4), 2);
+        assert_eq!(dc_ctx_for_ac_level(5), 3);
+    }
+}

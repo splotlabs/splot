@@ -294,3 +294,74 @@ fn encoder_two_coeff_ivf_decodes_successfully() {
         "expected the sub-visible level-1 AC to reconstruct flat at 128",
     );
 }
+
+/// The encoder's first frame where a coefficient **visibly shapes the reconstruction**. The
+/// luma block carries a single nonzero level-4 AC coefficient at scan index 1 (eob=2, U and V
+/// skipped). Unlike the sub-visible level-1 AC (which reconstructs flat 128), the level-4 AC
+/// dequantizes to a residual that survives rounding, producing a vertical low-frequency cosine:
+/// each row is constant across columns, the top 8 rows are 129, the middle 48 are 128, and the
+/// bottom 8 are 127. `splot decode` reconstructs it bit-exactly through the entropy + inverse
+/// transform path.
+#[test]
+fn encoder_visible_ac_ivf_decodes_to_a_vertical_cosine_luma() {
+    let ivf = splot_encode::emit_minimal_intra_visible_ac_ivf().expect("emit the visible-AC IVF");
+
+    let input = temp_path("visible-ac-input", "ivf");
+    let output = temp_path("visible-ac-output", "raw");
+    std::fs::write(&input, &ivf).expect("write the emitted IVF");
+
+    let status = Command::new(env!("CARGO_BIN_EXE_splot"))
+        .args([
+            "decode",
+            input.to_str().expect("utf-8 input path"),
+            "--output",
+            output.to_str().expect("utf-8 output path"),
+            "--output-format",
+            "raw",
+        ])
+        .status()
+        .expect("run the splot binary");
+
+    let raw = std::fs::read(&output);
+    let _ = std::fs::remove_file(&input);
+    let _ = std::fs::remove_file(&output);
+
+    assert!(
+        status.success(),
+        "splot decode of the visible-AC IVF failed"
+    );
+    let raw = raw.expect("read the decoded raw output");
+    assert_eq!(raw.len(), 6144, "unexpected decoded frame size");
+
+    // 8-bit 4:2:0 64x64: luma [0..4096), then U [4096..5120), V [5120..6144).
+    let luma = &raw[..4096];
+    // The level-4 AC is the lowest vertical frequency, so each row is constant across columns.
+    for row in 0..64 {
+        let r = &luma[row * 64..(row + 1) * 64];
+        assert!(
+            r.iter().all(|&s| s == r[0]),
+            "luma row {row} is not constant across columns"
+        );
+    }
+    // The vertical cosine: top 8 rows 129, middle 48 rows 128, bottom 8 rows 127.
+    let row_value = |row: usize| luma[row * 64];
+    for row in 0..8 {
+        assert_eq!(row_value(row), 129, "top band row {row}");
+    }
+    for row in 8..56 {
+        assert_eq!(row_value(row), 128, "middle band row {row}");
+    }
+    for row in 56..64 {
+        assert_eq!(row_value(row), 127, "bottom band row {row}");
+    }
+    // It is genuinely non-flat (unlike every prior decodable frame).
+    assert!(
+        luma.iter().any(|&s| s != 128),
+        "expected a visibly non-flat luma plane"
+    );
+    // Chroma is untouched (U and V skipped) -> flat 128.
+    assert!(
+        raw[4096..].iter().all(|&s| s == 128),
+        "expected flat 128 chroma"
+    );
+}
