@@ -206,12 +206,18 @@ pub(crate) fn tokenize_general_lf_luma_block(
             0
         };
 
+    // The all-zero chroma tail appended after the sign pass: the U and V `txb_skip`
+    // tokens (this brick's blocks have no coded chroma coefficients).
+    const CHROMA_ALL_ZERO_TAIL_LEN: usize = 2;
+
     // luma all_zero + eob_pt_16 [+ eob_extra + eob_extra_bits] + base pass + sign
-    // pass + chroma U/V.
+    // pass + chroma U/V. The chroma tail MUST be in the reserved total so its `push`
+    // calls stay inside the `try_reserve_exact` checked-allocation path.
     let total = base_pass
         .len()
         .checked_add(sign_pass.len())
         .and_then(|n| n.checked_add(header_len))
+        .and_then(|n| n.checked_add(CHROMA_ALL_ZERO_TAIL_LEN))
         .ok_or(Error::CoefficientTokenizationAllocationFailed {
             context: "general LF coded block trace length",
         })?;
