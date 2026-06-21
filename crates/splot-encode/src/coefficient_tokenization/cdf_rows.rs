@@ -14,7 +14,12 @@ pub(crate) struct CoefficientTokenCdfRows {
     coeff_base_lf_eob: [[i32; 6]; COEFF_CDF_Q_CONTEXTS],
     coeff_base_lf_eob_ac: [[i32; 6]; COEFF_CDF_Q_CONTEXTS],
     coeff_base_lf: [[i32; COEFF_BASE_LF_CDF_ROW_LEN]; COEFF_CDF_Q_CONTEXTS],
+    // The non-EOB DC `coeff_base` row when its EOB AC neighbour has magnitude `>= 5`
+    // (derived ctx `3`, see `COEFF_BASE_LF_CTX_EOB2_DC_BR`).
+    coeff_base_lf_dc_br: [[i32; COEFF_BASE_LF_CDF_ROW_LEN]; COEFF_CDF_Q_CONTEXTS],
     coeff_br_lf: [[i32; 5]; COEFF_CDF_Q_CONTEXTS],
+    // The EOB-AC `coeff_br` row (derived ctx `7`, see `COEFF_BR_LF_CTX_EOB_AC`).
+    coeff_br_lf_ac: [[i32; 5]; COEFF_CDF_Q_CONTEXTS],
     dc_sign: [[i32; 3]; COEFF_CDF_Q_CONTEXTS],
     chroma_u_txb_skip: [[i32; 3]; COEFF_CDF_Q_CONTEXTS],
     chroma_eob_pt_16: [[i32; 6]; COEFF_CDF_Q_CONTEXTS],
@@ -64,11 +69,27 @@ impl CoefficientTokenCdfRows {
                 DEFAULT_COEFF_BASE_LF_CDF[3][TX_SIZE_4X4_CTX][COEFF_BASE_LF_CTX_EOB2_DC]
                     [COEFF_BASE_LF_TCQ_CTX_NEUTRAL],
             ],
+            coeff_base_lf_dc_br: [
+                DEFAULT_COEFF_BASE_LF_CDF[0][TX_SIZE_4X4_CTX][COEFF_BASE_LF_CTX_EOB2_DC_BR]
+                    [COEFF_BASE_LF_TCQ_CTX_NEUTRAL],
+                DEFAULT_COEFF_BASE_LF_CDF[1][TX_SIZE_4X4_CTX][COEFF_BASE_LF_CTX_EOB2_DC_BR]
+                    [COEFF_BASE_LF_TCQ_CTX_NEUTRAL],
+                DEFAULT_COEFF_BASE_LF_CDF[2][TX_SIZE_4X4_CTX][COEFF_BASE_LF_CTX_EOB2_DC_BR]
+                    [COEFF_BASE_LF_TCQ_CTX_NEUTRAL],
+                DEFAULT_COEFF_BASE_LF_CDF[3][TX_SIZE_4X4_CTX][COEFF_BASE_LF_CTX_EOB2_DC_BR]
+                    [COEFF_BASE_LF_TCQ_CTX_NEUTRAL],
+            ],
             coeff_br_lf: [
                 DEFAULT_COEFF_BR_LF_CDF[0][COEFF_BR_LF_CTX_DC],
                 DEFAULT_COEFF_BR_LF_CDF[1][COEFF_BR_LF_CTX_DC],
                 DEFAULT_COEFF_BR_LF_CDF[2][COEFF_BR_LF_CTX_DC],
                 DEFAULT_COEFF_BR_LF_CDF[3][COEFF_BR_LF_CTX_DC],
+            ],
+            coeff_br_lf_ac: [
+                DEFAULT_COEFF_BR_LF_CDF[0][COEFF_BR_LF_CTX_EOB_AC],
+                DEFAULT_COEFF_BR_LF_CDF[1][COEFF_BR_LF_CTX_EOB_AC],
+                DEFAULT_COEFF_BR_LF_CDF[2][COEFF_BR_LF_CTX_EOB_AC],
+                DEFAULT_COEFF_BR_LF_CDF[3][COEFF_BR_LF_CTX_EOB_AC],
             ],
             dc_sign: [
                 DEFAULT_DC_SIGN_CDF[0][LUMA_PLANE_TYPE][DC_SIGN_GROUP_VISIBLE][DC_SIGN_CTX_NEUTRAL],
@@ -141,11 +162,25 @@ impl CoefficientTokenCdfRows {
             } if coeff_cdf_q_ctx < COEFF_CDF_Q_CONTEXTS => {
                 Ok(self.coeff_base_lf[coeff_cdf_q_ctx].as_mut_slice())
             }
+            CoefficientCdfRowSelector::CoeffBaseLf {
+                coeff_cdf_q_ctx,
+                tx_size: TX_SIZE_4X4_CTX,
+                ctx: COEFF_BASE_LF_CTX_EOB2_DC_BR,
+                tcq_ctx: COEFF_BASE_LF_TCQ_CTX_NEUTRAL,
+            } if coeff_cdf_q_ctx < COEFF_CDF_Q_CONTEXTS => {
+                Ok(self.coeff_base_lf_dc_br[coeff_cdf_q_ctx].as_mut_slice())
+            }
             CoefficientCdfRowSelector::CoeffBrLf {
                 coeff_cdf_q_ctx,
                 ctx: COEFF_BR_LF_CTX_DC,
             } if coeff_cdf_q_ctx < COEFF_CDF_Q_CONTEXTS => {
                 Ok(self.coeff_br_lf[coeff_cdf_q_ctx].as_mut_slice())
+            }
+            CoefficientCdfRowSelector::CoeffBrLf {
+                coeff_cdf_q_ctx,
+                ctx: COEFF_BR_LF_CTX_EOB_AC,
+            } if coeff_cdf_q_ctx < COEFF_CDF_Q_CONTEXTS => {
+                Ok(self.coeff_br_lf_ac[coeff_cdf_q_ctx].as_mut_slice())
             }
             CoefficientCdfRowSelector::DcSign {
                 coeff_cdf_q_ctx,

@@ -6,17 +6,27 @@
 //!
 //! This walks an arbitrary quantized 4x4 DCT_DCT luma `Quant[16]` block whose
 //! nonzero coefficients all sit in the low-frequency end-of-block window (scan
-//! indices `0..=1`, eob `<= 2`) with base-tier magnitudes (`1..=4`), and emits the
-//! ordered § 5.20.7.27 coefficient token stream the decoder coefficient loop reads:
-//! the luma `txb_skip`, `eob_pt_16`, the reverse-scan `coeff_base_eob` /
-//! `coeff_base` base pass (with the running-`Level[]` § 8.3.2 LF luma context from
-//! [`super::coeff_base_lf_luma_context`]), the reverse-scan interleaved sign pass
-//! (`dc_sign` CDF for the DC, `sign_bit` § 8.2.5 bypass for the AC), and the
-//! all-zero chroma U/V `txb_skip` tail. It reuses the existing token constructors
-//! and CDF routing; it never invents AV2 CDF values or contexts.
+//! indices `0..=1`, eob `<= 2`), and emits the ordered § 5.20.7.27 coefficient token
+//! stream the decoder coefficient loop reads: the luma `txb_skip`, `eob_pt_16`, the
+//! reverse-scan `coeff_base_eob` / `coeff_base` base pass (with the running-`Level[]`
+//! § 8.3.2 LF luma context from [`super::coeff_base_lf_luma_context`]), the
+//! reverse-scan interleaved sign pass (`dc_sign` CDF for the DC, `sign_bit` § 8.2.5
+//! bypass for the AC), and the all-zero chroma U/V `txb_skip` tail. It reuses the
+//! existing token constructors and CDF routing; it never invents AV2 CDF values or
+//! contexts.
 //!
-//! Anything outside that window — a nonzero at scan index `>= 2`, or a magnitude
-//! `> 4` (the base tier, no `coeff_br` / golomb) — is rejected with a typed error.
+//! The end-of-block coefficient (the nonzero at the highest scan index, coded with
+//! `coeff_base_eob`) may have a base-range magnitude `1..=7`: a magnitude `> 4` emits
+//! a `coeff_br` token right after its `coeff_base_eob` (interleaved, before the
+//! `Level[]` write). The EOB coefficient's `coeff_br` context is a constant because
+//! the running `Level[]` is empty when the EOB coefficient is visited first in
+//! reverse scan (ctx 0 at the DC raster position, ctx 7 at a non-DC LF position; see
+//! [`COEFF_BR_LF_CTX_EOB_DC`] / [`COEFF_BR_LF_CTX_EOB_AC`]). The NON-EOB coefficient
+//! (the DC at scan index 0 when eob == 2) stays base-tier magnitude `1..=4` (no
+//! `coeff_br`; the data-dependent non-EOB `coeff_br` is a follow-up sub-brick).
+//!
+//! Anything outside that window — a nonzero at scan index `>= 2`, an EOB magnitude
+//! `> 7`, or a non-EOB magnitude `> 4` — is rejected with a typed error.
 //!
 //! HONESTY: the [`recover_quant_from_tokens`] proof is § 8.2 SELF-CONSISTENCY. The
 //! same code authored the emission and its inverse, so it proves the encoder's
@@ -29,9 +39,10 @@
 use splot_recon::{PlaneId, PlaneRect, TransformClass, coefficient_scan_order};
 
 use super::{
-    CoefficientEntropyToken, EOB_CTX_LUMA_INTRA, LF_NUM_BASE_LEVELS, MAX_BASE_EOB_MAGNITUDE,
-    chroma_u_all_zero_token, chroma_v_all_zero_token, coded_luma_all_zero_token,
-    coeff_base_lf_eob_token, coeff_base_lf_luma_context, coeff_base_lf_token, eob_pt_16_token,
+    CoefficientEntropyToken, CoefficientTokenSyntax, EOB_CTX_LUMA_INTRA, LF_NUM_BASE_LEVELS,
+    MAX_BASE_BR_MAGNITUDE, MAX_BASE_EOB_MAGNITUDE, chroma_u_all_zero_token,
+    chroma_v_all_zero_token, coded_luma_all_zero_token, coeff_base_lf_eob_token,
+    coeff_base_lf_luma_context, coeff_base_lf_token, coeff_br_lf_token, eob_pt_16_token,
     luma_all_zero_token, luma_dc_sign_token,
 };
 use crate::block_symbol_trace::BlockSymbolToken;
@@ -58,11 +69,26 @@ const V_TXB_SKIP_CTX_NEUTRAL: usize = 0;
 /// 4x4 `numCoeffs = TX_4X4_HEIGHT << TX_4X4_BWL = 16`, so the bands break at
 /// `numCoeffs / 8 = 2` and `numCoeffs / 4 = 4`.
 const NUM_COEFFS_4X4: usize = TX_4X4_HEIGHT << TX_4X4_BWL;
+/// The § 8.3.2 `coeff_br` low-frequency luma context for the EOB coefficient at the
+/// DC raster position 0 (eob == 1). In the reverse-scan base pass the EOB
+/// coefficient is visited FIRST, so the running `Level[]` is empty when its
+/// `coeff_br` context is derived; mirroring the decoder `CoeffBrContext::ctx`
+/// (`crates/splot-decode/src/tile_payload/cdf/coeff_context.rs`, the `ctx` method)
+/// with an all-zero `Level[]`, the neighbour sum `mag` is 0, `Min((0 + 1) >> 1, 6) =
+/// 0`, and for `self.pos == 0` (the DC) the result is `mag == 0`.
+const COEFF_BR_LF_CTX_EOB_DC: usize = 0;
+/// The § 8.3.2 `coeff_br` low-frequency luma context for the EOB coefficient at a
+/// non-zero raster position (an AC, eob == 2). With the same empty `Level[]`
+/// (`mag == 0`), the `self.is_lf` branch of `CoeffBrContext::ctx` yields
+/// `mag + 7 == 7`.
+const COEFF_BR_LF_CTX_EOB_AC: usize = 7;
 
 /// Tokenizes an arbitrary 4x4 DCT_DCT luma `Quant[16]` block in the general
-/// low-frequency base tier (eob `<= 2`, magnitudes `1..=4`) into the ordered AV2
-/// § 5.20.7.27 block-symbol trace (luma coefficients followed by the all-zero
-/// chroma U/V tail).
+/// low-frequency window (eob `<= 2`) into the ordered AV2 § 5.20.7.27 block-symbol
+/// trace (luma coefficients followed by the all-zero chroma U/V tail). The
+/// end-of-block coefficient may have a base-range magnitude `1..=MAX_BASE_BR_MAGNITUDE`
+/// (`7`, adding `coeff_br`); every other (non-EOB) coefficient stays base-tier
+/// `1..=MAX_BASE_EOB_MAGNITUDE` (`4`).
 ///
 /// `quant` is the row-major (raster) signed quantized block; `coeff_cdf_q_ctx` is
 /// the caller-resolved coefficient-CDF q-context. An all-zero block emits exactly
@@ -72,8 +98,20 @@ const NUM_COEFFS_4X4: usize = TX_4X4_HEIGHT << TX_4X4_BWL;
 ///
 /// - [`Error::CoefficientTokenizationUnsupportedEob`] when a nonzero coefficient
 ///   sits at a scan index `> MAX_GENERAL_LF_SCAN_INDEX`, and
-/// - [`Error::CoefficientTokenizationUnsupportedMagnitude`] when a coefficient
-///   magnitude exceeds the base tier (`MAX_BASE_EOB_MAGNITUDE`).
+/// - [`Error::CoefficientTokenizationUnsupportedMagnitude`] when the EOB coefficient
+///   magnitude exceeds `MAX_BASE_BR_MAGNITUDE` or a non-EOB coefficient magnitude
+///   exceeds the base tier (`MAX_BASE_EOB_MAGNITUDE`).
+///
+/// # Preconditions
+/// Assumes **TCQ is off** (`allow_tcq == 0`), as the minimal intra encoder path is
+/// (`enable_tcq == false` in the sequence header). The § 5.20.7.28 `read_quant`
+/// threshold is `level >= maxLevel - allow_tcq`; for low-frequency luma
+/// `maxLevel == 8`, so with `allow_tcq == 0` a magnitude up to `7` (the EOB
+/// `coeff_br` cap) carries **no** `read_quant` bypass tail. Under TCQ the threshold
+/// drops to `7`, so a level-7 coefficient would need a `read_quant` tail and this
+/// tokenizer's stream would desynchronize a TCQ-enabled decoder — that TCQ
+/// interaction (and the general golomb tail for `maxLevel`+) is a deferred
+/// sub-brick. Do not reuse this tokenizer on a TCQ-enabled block.
 pub(crate) fn tokenize_general_lf_luma_block(
     quant: &[i32; TX_4X4_COEFF_COUNT],
     coeff_cdf_q_ctx: usize,
@@ -162,13 +200,18 @@ pub(crate) fn recover_quant_from_tokens(
     skip_expected_all_zero(tokens, &mut index, coeff_cdf_q_ctx)?;
     let eob = read_eob_from_tokens(tokens, &mut index)?;
 
-    // Base pass: `eob` reverse-scan coefficients, levels only.
+    // Base pass: `eob` reverse-scan coefficients, levels only. The EOB coefficient
+    // (offset 0) may be followed by an interleaved `coeff_br` token that refines its
+    // level (mirroring the emission in `compose_base_pass`).
     let mut levels = [0u32; TX_4X4_COEFF_COUNT];
     for offset in 0..eob {
         let c = eob - 1 - offset;
         let pos = scan_pos(&scan, c)?;
         let token = coeff_token_at(tokens, &mut index)?;
-        let level = recover_base_level(token, offset);
+        let mut level = recover_base_level(token, offset);
+        if offset == 0 {
+            level += recover_eob_coeff_br(tokens, &mut index)?;
+        }
         levels[pos] = level;
     }
 
@@ -227,12 +270,17 @@ fn end_of_block(quant: &[i32; TX_4X4_COEFF_COUNT], scan: &[u16; TX_4X4_COEFF_COU
     eob
 }
 
-/// Rejects any nonzero outside the supported low-frequency window or base tier.
+/// Rejects any nonzero outside the supported low-frequency window or magnitude
+/// tier. The end-of-block coefficient (scan index `eob - 1`, coded with
+/// `coeff_base_eob` + optional `coeff_br`) may have magnitude `1..=MAX_BASE_BR_MAGNITUDE`
+/// (`7`); every other (non-EOB) nonzero stays base-tier `1..=MAX_BASE_EOB_MAGNITUDE`
+/// (`4`), as its data-dependent `coeff_br` is a later sub-brick.
 fn validate_general_lf_scope(
     quant: &[i32; TX_4X4_COEFF_COUNT],
     scan: &[u16; TX_4X4_COEFF_COUNT],
     eob: usize,
 ) -> Result<()> {
+    let eob_scan_index = eob - 1;
     for (c, &raster) in scan.iter().enumerate() {
         let value = quant[raster as usize];
         if value == 0 {
@@ -247,13 +295,20 @@ fn validate_general_lf_scope(
             });
         }
         let magnitude = value.unsigned_abs();
-        if magnitude > MAX_BASE_EOB_MAGNITUDE {
+        // The EOB coefficient carries a `coeff_br` extension (`1..=7`); a non-EOB
+        // coefficient stays in the base tier (`1..=4`).
+        let max_magnitude = if c == eob_scan_index {
+            MAX_BASE_BR_MAGNITUDE
+        } else {
+            MAX_BASE_EOB_MAGNITUDE
+        };
+        if magnitude > max_magnitude {
             return Err(Error::CoefficientTokenizationUnsupportedMagnitude {
                 plane: PLANE_Y,
                 block: lf_block_rect()?,
                 coefficient_index: raster as usize,
                 magnitude,
-                max_magnitude: MAX_BASE_EOB_MAGNITUDE,
+                max_magnitude,
             });
         }
     }
@@ -263,7 +318,10 @@ fn validate_general_lf_scope(
 
 /// Composes the reverse-scan base pass over `c = eob - 1 .. 0` using a running
 /// `Level[]` for the § 8.3.2 LF luma `coeff_base` context of the non-EOB
-/// coefficients.
+/// coefficients. The EOB coefficient (visited first) emits its `coeff_base_eob` and,
+/// when its magnitude exceeds `LF_NUM_BASE_LEVELS`, an interleaved `coeff_br` right
+/// after it (before the next, lower-scan coefficient) at the constant empty-`Level[]`
+/// context.
 fn compose_base_pass(
     quant: &[i32; TX_4X4_COEFF_COUNT],
     scan: &[u16; TX_4X4_COEFF_COUNT],
@@ -271,11 +329,17 @@ fn compose_base_pass(
     coeff_cdf_q_ctx: usize,
 ) -> Result<Vec<CoefficientEntropyToken>> {
     let mut tokens = Vec::new();
-    tokens
-        .try_reserve_exact(eob)
-        .map_err(|_| Error::CoefficientTokenizationAllocationFailed {
-            context: "general LF base pass tokens",
+    // One token per coefficient, plus at most one `coeff_br` for the EOB coefficient.
+    let capacity = eob
+        .checked_add(1)
+        .ok_or(Error::CoefficientTokenizationAllocationFailed {
+            context: "general LF base pass token capacity",
         })?;
+    tokens.try_reserve_exact(capacity).map_err(|_| {
+        Error::CoefficientTokenizationAllocationFailed {
+            context: "general LF base pass tokens",
+        }
+    })?;
     let mut level = [0u32; TX_4X4_COEFF_COUNT];
 
     for offset in 0..eob {
@@ -284,13 +348,26 @@ fn compose_base_pass(
         let magnitude = quant[pos].unsigned_abs();
         if offset == 0 {
             // EOB coefficient: `coeff_base_eob`; `level = coeff_base_eob + 1`, so the
-            // token level is `min(mag, LF_NUM_BASE_LEVELS + 1)` (== mag for mag <= 4).
+            // token level is `min(mag, LF_NUM_BASE_LEVELS + 1)` (== mag for mag <= 4,
+            // saturating at 5 for mag 5..=7).
             let eob_level = magnitude.min(LF_NUM_BASE_LEVELS + 1) as u8;
             tokens.push(coeff_base_lf_eob_token(
                 coeff_cdf_q_ctx,
                 coeff_base_eob_ctx(c),
                 eob_level,
             ));
+            if magnitude > LF_NUM_BASE_LEVELS {
+                // `coeff_br` refines the level: symbol = mag - (LF_NUM_BASE_LEVELS + 1)
+                // (mag 5 -> 0, 6 -> 1, 7 -> 2). The context is the constant
+                // empty-`Level[]` EOB `coeff_br` context: ctx 0 at the DC raster
+                // position, else ctx 7 (the LF non-DC band).
+                let br_symbol = (magnitude - (LF_NUM_BASE_LEVELS + 1)) as u8;
+                tokens.push(coeff_br_lf_token(
+                    coeff_cdf_q_ctx,
+                    eob_coeff_br_ctx(pos),
+                    br_symbol,
+                ));
+            }
         } else {
             // Non-EOB coefficient: the § 8.3.2 LF luma `coeff_base` context derived
             // from the partially-built `Level[]` (the AC neighbour is already
@@ -380,6 +457,20 @@ const fn eob_pt_16_symbol(eob: usize) -> u8 {
     (eob - 1) as u8
 }
 
+/// Returns the constant § 8.3.2 `coeff_br` low-frequency luma context for the EOB
+/// coefficient at raster position `pos`. Because the EOB coefficient is visited
+/// first in reverse scan, the running `Level[]` is empty when this context is
+/// derived, so the decoder `CoeffBrContext::ctx` reduces to a constant: ctx 0 at the
+/// DC raster position 0, ctx 7 at any non-DC low-frequency position (see
+/// [`COEFF_BR_LF_CTX_EOB_DC`] / [`COEFF_BR_LF_CTX_EOB_AC`]).
+const fn eob_coeff_br_ctx(pos: usize) -> usize {
+    if pos == 0 {
+        COEFF_BR_LF_CTX_EOB_DC
+    } else {
+        COEFF_BR_LF_CTX_EOB_AC
+    }
+}
+
 /// Returns `scan[c]` as a raster position, validating the scan index.
 fn scan_pos(scan: &[u16; TX_4X4_COEFF_COUNT], c: usize) -> Result<usize> {
     scan.get(c).map(|&raster| raster as usize).ok_or(
@@ -420,6 +511,23 @@ fn recover_base_level(token: CoefficientEntropyToken, offset: usize) -> u32 {
         u32::from(token.symbol()) + 1
     } else {
         u32::from(token.symbol())
+    }
+}
+
+/// Reads the optional interleaved `coeff_br` refinement that follows the EOB
+/// coefficient's `coeff_base_eob`: when the next token is a `coeff_br`, it is
+/// consumed and its symbol is returned (the level increment); otherwise the cursor
+/// is left untouched and `0` is returned. (The non-EOB base pass has no `coeff_br`
+/// in this brick, so only the EOB coefficient peeks for one.)
+fn recover_eob_coeff_br(tokens: &[BlockSymbolToken], index: &mut usize) -> Result<u32> {
+    match tokens.get(*index) {
+        Some(BlockSymbolToken::Coeff(coeff))
+            if matches!(coeff.syntax(), CoefficientTokenSyntax::CoeffBr) =>
+        {
+            *index += 1;
+            Ok(u32::from(coeff.symbol()))
+        }
+        _ => Ok(0),
     }
 }
 

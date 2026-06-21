@@ -97,6 +97,17 @@ const EOB_CTX_LUMA_INTRA: usize = 0;
 const EOB_CTX_CHROMA: usize = 2;
 const COEFF_BASE_LF_EOB_CTX_DC: usize = 0;
 const COEFF_BR_LF_CTX_DC: usize = 0;
+// The § 8.3.2 `coeff_br` low-frequency luma context for the EOB coefficient at a
+// non-DC low-frequency raster position (the eob=2 general-walk AC). Because the EOB
+// coefficient is visited first in reverse scan its running `Level[]` is empty, so
+// the decoder `CoeffBrContext::ctx` reduces to the constant `mag (0) + 7 = 7` (the
+// `is_lf` branch). See `coefficient_tokenization::general_walk`.
+const COEFF_BR_LF_CTX_EOB_AC: usize = 7;
+// The DC `coeff_base` low-frequency context when its sole significant neighbour —
+// the EOB AC at scan pos 1 — has magnitude `>= 5`: the `coeff_base` `magLimit`
+// clamps the neighbour to 5, so `mag = 5`, `ctx = (5 + 1) >> 1 = 3`, capped by the
+// `c == 0` low-frequency band at 8. Derived via `coeff_base_lf_luma_context`.
+const COEFF_BASE_LF_CTX_4X4_DC_BR_AC: usize = 3;
 // The minimal eob=2 multi-coefficient block (one nonzero AC at scan pos 1, DC=0):
 // §5.20.7.27 `eob_pt_16` symbol 1 → eobPt 2 → eob 2; the AC at scan index 1 uses
 // `coeff_base_eob_ctx(c=1) = 1` (low-frequency); the DC at scan index 0 uses the
