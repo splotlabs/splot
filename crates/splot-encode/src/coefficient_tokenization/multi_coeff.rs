@@ -129,8 +129,9 @@ pub(crate) const fn coeff_base_hf_eob_token(
 /// Returns the AV2 § 5.20.7.27 HIGH-frequency `coeff_br` (base-range) token at the
 /// given § 8.3.2 `coeff_br` context (`TileCoeffBrCdf[coeff_cdf_q_ctx][ctx]`, the HF
 /// table `DEFAULT_COEFF_BR_CDF`, which has NO transform-size dimension). The
-/// `coeff_br` symbol refines a coefficient whose `coeff_base_eob` / `coeff_base`
-/// level reached its maximum (`LF_NUM_BASE_LEVELS + 1`), adding `symbol`
+/// `coeff_br` symbol refines a coefficient whose HF `coeff_base_eob` / `coeff_base`
+/// level reached its maximum (`NUM_BASE_LEVELS + 1 == 3`, the HF base-level cap — NOT
+/// the LF `LF_NUM_BASE_LEVELS + 1 == 5`), adding `symbol`
 /// (`0..COEFF_BASE_RANGE`, i.e. `0..=2`) to the level — the SAME refinement as the LF
 /// [`coeff_br_lf_token`]; only the CDF table/selector and the context derivation
 /// differ (the HF non-DC luma `coeff_br` context is plain `mag`, with NO `+7`

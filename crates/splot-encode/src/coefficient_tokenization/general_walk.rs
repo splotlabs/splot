@@ -41,9 +41,10 @@
 //!   (`[q][tx_size][ctx][row]`), NOT the 6-symbol LF `DEFAULT_COEFF_BASE_LF_EOB_CDF`.
 //!   The `coeff_base_eob` *context* is shared (scan-band based,
 //!   [`coeff_base_eob_ctx`]); for eob 11 the EOB coeff is at scan `c = 10` in a
-//!   16-coeff block → `coeff_base_eob_ctx(10) == 3` (`c > numCoeffs/4 = 4`). The token
-//!   level mapping is the same as LF (`eob_level = min(mag, LF_NUM_BASE_LEVELS + 1)`).
-//! - When the HF EOB coeff magnitude exceeds `LF_NUM_BASE_LEVELS`, its `coeff_br`
+//!   16-coeff block → `coeff_base_eob_ctx(10) == 3` (`c > numCoeffs/4 = 4`). The HF EOB token
+//!   level mapping uses the HF base-level cap (`eob_level = min(mag, NUM_BASE_LEVELS + 1) == min(mag, 3)`, NOT the LF
+//!   `LF_NUM_BASE_LEVELS + 1 == 5`).
+//! - When the HF EOB coeff magnitude exceeds `NUM_BASE_LEVELS`, its `coeff_br`
 //!   reads the HF `DEFAULT_COEFF_BR_CDF` (`[q][ctx][row]`, NO transform-size
 //!   dimension), NOT the LF `DEFAULT_COEFF_BR_LF_CDF`. The HF `coeff_br` context for a
 //!   non-DC luma coefficient is plain `mag` (range `0..=6`) with NO `+7` offset (the
@@ -213,7 +214,9 @@ const MAX_HF_BASE_BR_MAGNITUDE: u32 = NUM_BASE_LEVELS + COEFF_BASE_RANGE;
 /// - [`Error::CoefficientTokenizationUnsupportedEob`] when a nonzero coefficient
 ///   sits at a scan index `> MAX_GENERAL_SCAN_INDEX` (`10`, i.e. eob `>= 12`), and
 /// - [`Error::CoefficientTokenizationUnsupportedMagnitude`] when any coefficient
-///   magnitude exceeds `MAX_BASE_BR_MAGNITUDE` (`7`).
+///   magnitude exceeds its position-dependent base-range cap — `MAX_BASE_BR_MAGNITUDE`
+///   (`7`) at a low-frequency position, `MAX_HF_BASE_BR_MAGNITUDE` (`5`) at a
+///   high-frequency one.
 ///
 /// # Preconditions
 /// Assumes **TCQ is off** (`allow_tcq == 0`), as the minimal intra encoder path is
@@ -500,8 +503,9 @@ const fn is_lf_position(pos: usize) -> bool {
 /// Composes the reverse-scan base pass over `c = eob - 1 .. 0` using a running
 /// `Level[]` for the § 8.3.2 LF luma `coeff_base` / `coeff_br` contexts of the
 /// non-EOB coefficients. The EOB coefficient (visited first) emits its
-/// `coeff_base_eob` and, when its magnitude exceeds `LF_NUM_BASE_LEVELS`, an
-/// interleaved `coeff_br` at the constant empty-`Level[]` context. Each non-EOB
+/// `coeff_base_eob` and, when its magnitude exceeds its position base-level
+/// threshold (`LF_NUM_BASE_LEVELS` low-frequency, `NUM_BASE_LEVELS` high-frequency),
+/// an interleaved `coeff_br` at the constant empty-`Level[]` context. Each non-EOB
 /// coefficient emits its `coeff_base` and, when its magnitude exceeds
 /// `LF_NUM_BASE_LEVELS`, an interleaved `coeff_br` whose context is derived from the
 /// running `Level[]` (the already-written EOB neighbour).
