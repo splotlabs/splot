@@ -3,12 +3,13 @@
 
 //! Push/pull encoder API surface.
 //!
-//! The lifecycle is deterministic state plumbing. [`Context::receive_packet`] now produces a
-//! real, decodable AV2 packet for the input subset the minimal encoder can encode losslessly —
-//! a 64x64 frame whose every visible sample is the 128 no-neighbour DC predictor (encoded as the
-//! skip frame, whose flat-128 reconstruction equals the input). Any other frame is retired
-//! without a packet; broader input handling (forward quantization, larger sizes, real residual)
-//! is future work.
+//! The lifecycle is deterministic state plumbing. [`Context::receive_packet`] now produces a real
+//! [`Packet`] — one coded access unit (the AV2 Annex B temporal unit, not a container file) — for
+//! the input subset the minimal encoder can encode losslessly: a 64x64 frame whose every visible
+//! sample is the 128 no-neighbour DC predictor, encoded as the skip frame, whose flat-128
+//! reconstruction equals the input. A consumer muxes packets into a container (e.g. IVF) to store
+//! or decode them. Any other frame is retired without a packet; broader input handling (forward
+//! quantization, larger sizes, real residual) is future work.
 
 use core::num::NonZeroUsize;
 use std::collections::VecDeque;
@@ -23,7 +24,8 @@ use crate::runtime::{EncoderRuntimeConfig, SpeedPreset};
 const INPUT_QUEUE_CAPACITY: usize = 1;
 const OUTPUT_QUEUE_CAPACITY: usize = 0;
 
-/// An output coded packet.
+/// An output coded packet: the bytes of one coded access unit (an AV2 Annex B temporal
+/// unit). A consumer muxes packets into a container (e.g. IVF) to store or decode them.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Packet {
     /// Coded bytes for one access unit.
@@ -311,7 +313,9 @@ impl Context {
         {
             return Ok(None);
         }
-        let data = crate::general_intra_trace::emit_minimal_intra_skip_ivf()?;
+        // The packet carries one coded access unit (the Annex B temporal unit), not a full IVF
+        // file — so a consumer can mux multiple packets into a stream.
+        let data = crate::general_intra_trace::emit_minimal_intra_skip_temporal_unit()?;
         Ok(Some(Packet { data }))
     }
 
@@ -434,14 +438,16 @@ mod tests {
             SendFrameStatus::Accepted { .. }
         ));
         assert!(matches!(ctx.flush().unwrap(), FlushStatus::Draining { .. }));
-        // The public lifecycle now yields a REAL packet — the decode-proven minimal skip IVF.
+        // The public lifecycle now yields a REAL packet — one coded access unit (the Annex B
+        // temporal unit of the decode-proven minimal skip frame), not a full IVF file.
         let status = ctx.receive_packet().unwrap();
         assert!(
             matches!(&status, ReceivePacketStatus::Packet(packet)
                 if !packet.data.is_empty()
                     && packet.data
-                        == crate::general_intra_trace::emit_minimal_intra_skip_ivf().unwrap()),
-            "expected the minimal skip packet, got {status:?}"
+                        == crate::general_intra_trace::emit_minimal_intra_skip_temporal_unit()
+                            .unwrap()),
+            "expected the minimal skip access unit, got {status:?}"
         );
         // The single frame is consumed; the next pull finishes the stream.
         assert_eq!(ctx.receive_packet().unwrap(), ReceivePacketStatus::Finished);

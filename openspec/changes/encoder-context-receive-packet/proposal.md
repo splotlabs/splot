@@ -13,15 +13,16 @@ the input).
   instead of only `FrameInfo`, so `receive_packet` can inspect the input after the borrowed
   `Frame` ends.
 - `receive_packet` produces a real `Packet` when the queued frame is the supported subset — a
-  64x64 frame whose every visible sample is the 128 no-neighbour DC predictor — by emitting the
-  decode-proven `emit_minimal_intra_skip_ivf()`. Such a frame has zero residual, so the skip
-  frame's flat-128 reconstruction equals the input (the honesty invariant: output decodes to
+  64x64 frame whose every visible sample is the 128 no-neighbour DC predictor — as one coded
+  **access unit** (the Annex B temporal unit, not an IVF file) via the new splot-core
+  `encode_minimal_intra_clk_temporal_unit_with_base_q_idx`. Such a frame has zero residual, so the
+  skip frame's flat-128 reconstruction equals the input (the honesty invariant: output decodes to
   input, never a canned frame).
 - Any other frame is retired without a packet (no wrong/canned output). A typed error for
   unsupported input + broader input handling are follow-ups.
 - Add the cross-crate e2e oracle: build an all-128 frame, drive the public `Context`
-  (`send_frame`/`flush`/`receive_packet`), decode the packet, assert `decode(encode(input)) ==
-  input`.
+  (`send_frame`/`flush`/`receive_packet`), **mux the access-unit packet into an IVF**, decode it,
+  assert `decode(encode(input)) == input`.
 - Update the stale `splot-encode` / `Context` module docs that claimed no packet production.
 
 ## Capabilities

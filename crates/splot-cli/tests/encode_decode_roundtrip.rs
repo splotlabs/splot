@@ -610,10 +610,21 @@ fn context_encodes_all_128_frame_to_a_packet_that_decodes_to_all_128() {
     };
     assert!(!packet_data.is_empty(), "the packet must carry coded bytes");
 
-    // Decode the packet and assert the reconstruction equals the encoder input (all 128).
+    // The packet is one coded access unit (an Annex B temporal unit), not a container file. Mux
+    // it into an IVF — the consumer's job — for the decoder (whose minimal runtime accepts the
+    // IVF fixture shape; the access unit is exactly the IVF frame payload).
+    let mut ivf = Vec::new();
+    splot_core::ivf::write_ivf_header(
+        &mut ivf,
+        &splot_core::ivf::IvfHeader::new(*b"AV02", 64, 64, 30, 1, 1),
+    )
+    .expect("write the IVF header");
+    splot_core::ivf::write_ivf_frame(&mut ivf, 0, &packet_data).expect("mux the packet into IVF");
+
+    // Decode and assert the reconstruction equals the encoder input (all 128).
     let input = temp_path("ctx-encode-input", "ivf");
     let output = temp_path("ctx-encode-output", "raw");
-    std::fs::write(&input, &packet_data).expect("write the encoder packet");
+    std::fs::write(&input, &ivf).expect("write the muxed IVF");
 
     let status = Command::new(env!("CARGO_BIN_EXE_splot"))
         .args([

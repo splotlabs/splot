@@ -6,10 +6,11 @@
 //! This crate fixes the *shape* of the encoder API (configuration, borrowed frame
 //! input views, explicit retained input sharing, and a push/pull [`Context`]).
 //! The push/pull lifecycle is deterministic and typed, and
-//! [`Context::receive_packet`] now returns a real, decodable AV2 packet for the
-//! input subset the minimal encoder can encode losslessly (a 64x64 all-128
-//! frame — encoded as the skip frame, which decodes back to the input). Nothing
-//! in the repository depends on this crate except `splot-cli`.
+//! [`Context::receive_packet`] now returns a real coded access unit (an AV2
+//! Annex B temporal unit) for the input subset the minimal encoder can encode
+//! losslessly (a 64x64 all-128 frame — the skip frame, which decodes back to
+//! the input once muxed into a container). Nothing in the repository depends on
+//! this crate except `splot-cli`.
 //!
 //! The [`Context`] owns a [`splot_parallel::WorkerPool`] configured by an
 //! [`EncoderRuntimeConfig`] thread-count policy; thread count is a runtime knob
