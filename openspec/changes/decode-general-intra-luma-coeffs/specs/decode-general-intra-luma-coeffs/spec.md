@@ -31,9 +31,11 @@ context lines, or invoke AVM or dav2d.
   (4 for `TX_64X64`)
 - **AND** an out-of-range transform size derives 0 rather than panicking
 
-#### Scenario: Frozen minimal hash contract is unchanged
-- **WHEN** `splot decode` is given the committed frozen
-  `syn-flat-intra-64x64-minimal.ivf` fixture with `base_q_idx == 255`
-- **THEN** the general intra luma coefficient decode does not run for that frame
-- **AND** the decoded-frame hash remains the committed `splot-dfh-sha256-v1`
-  digest
+#### Scenario: base_q_idx == 255 frames route to the frozen tier, not the general path
+- **WHEN** `splot decode` is given an intra key frame with `base_q_idx == 255`
+- **THEN** the general intra luma coefficient decode does not run for that frame;
+  it routes to the frozen minimal hash tier
+- **AND** the committed `syn-flat-intra-64x64-minimal.ivf` fixture is no longer a
+  `base_q_idx == 255` frame: change `decode-minimal-fixture-avm-skip-polarity`
+  replaced it with the AVM/dav2d-conformant `base_q_idx` 210 luma-skip stream
+  that routes through the general intra path

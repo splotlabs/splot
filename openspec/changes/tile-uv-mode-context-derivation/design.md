@@ -48,9 +48,13 @@ Non-Goals:
   `UnsupportedYMode` error (no panic) and routed to a
   `decode/unsupported-feature` diagnostic.
 - **No-output-change proof.** Both derived contexts equal the previous literals
-  for the fixture, so `block_symbol_frontier_accepts_minimal_fixture_trace`
-  (symbol count 6, trailing bit 14, padding end 16) stays green; new unit tests
-  pin the reconstruction and the `uv_mode` context directly.
+  for the fixture, so the frozen-trace snapshot then named
+  `block_symbol_frontier_accepts_minimal_fixture_trace` (symbol count 6, trailing
+  bit 14, padding end 16) stayed green at the time of this change. (That snapshot
+  test was later retired by `decode-minimal-fixture-avm-skip-polarity`, which
+  replaced the committed fixture with a conformant general-path luma-skip stream;
+  the frozen trace is now covered by `block_symbol_trace_rejects_legacy_inverted_skip`.)
+  New unit tests pin the reconstruction and the `uv_mode` context directly.
 
 ## Risks / Trade-offs
 

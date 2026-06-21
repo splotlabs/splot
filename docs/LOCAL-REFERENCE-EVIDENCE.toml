@@ -1674,3 +1674,55 @@ output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
 kind = "digest-equality"
 left = "avm-2frame-inter-raw-md5"
 right = "dav2d-2frame-inter-raw-md5"
+
+[[evidence]]
+id = "lref-avm-dav2d-syn-flat-intra-64x64-minimal-skip"
+feature_id = "DECODE-GENERAL-INTRA-FRAME-RECON"
+decoder_support_rows = ["general-intra-frame-recon"]
+kind = "reference-output-agreement"
+summary = "Local AVM and dav2d raw decoder output MD5 digests agreed for the committed 8-bit 64x64 single-block intra IVF fixture at base_q_idx 210 whose single 64x64 luma transform block quantizes to an all-zero (skipped) residual (§5.20.7.27 all_zero == 1, the AVM-correct skip polarity) over a real coded chroma residual; splot reproduces that raw output byte-for-byte through the general intra path. This fixture replaces the retired hand-retimed 'minimal' frozen-tier payload, whose tile payload coded the skip symbol with inverted polarity (all_zero == 0) and which avmdec rejected as a corrupt frame. The first general-intra decode target that exercises the luma all_zero == 1 skip branch in the real decoder."
+recorded_at = "2026-06-21"
+
+[[evidence.fixture]]
+id = "input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-flat-intra-64x64-minimal.ivf"
+sha256 = "161c475afdf5b4067ab93bdc9699187ef023b1a7e1fb619fec114a961781298e"
+size_bytes = 66
+format = "ivf"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Generated locally with avmenc from a project-owned flat-128 64x64 4:2:0 YUV input at --qp 210 with broad decode tools plus intra DIP and tx-partition disabled, so the luma block is coded as an all-zero skipped transform; AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avm"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "457cd58681a747465661baccb1f32095bc5b7774"
+version_summary = "AVM checkout HEAD 457cd58681a747465661baccb1f32095bc5b7774 (v1.0.0-33-g457cd5868), exact binary build commit not separately archived."
+command_summary = "Local avmdec --rawvideo output MD5 for {fixture:input}."
+output_digest_id = "avm-skip-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "f618317b0391acb8a88fe9e3f962441e"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.reference_run]]
+id = "dav2d"
+tool = "dav2d"
+executable_name = "dav2d"
+tool_role = "decode-reference"
+source_url = "https://code.videolan.org/videolan/dav2d"
+revision = "a88febb3e546d6bf08897f094a13a13551ab9740"
+version_summary = "dav2d 0.0.1 (commit a88febb3), decoded with --demuxer ivf; exact version output not archived."
+command_summary = "Local dav2d --demuxer ivf output MD5 for {fixture:input}."
+output_digest_id = "dav2d-skip-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "f618317b0391acb8a88fe9e3f962441e"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-skip-raw-md5"
+right = "dav2d-skip-raw-md5"

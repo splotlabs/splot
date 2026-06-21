@@ -12,7 +12,7 @@
 ## 3. Tests
 
 - [x] 3.1 Add unit tests for the `YMode` reconstruction (set 0 index 0 -> DC_PRED; the non-directional subset; rejection of unsupported inputs) and `uv_mode_ctx` (DC_PRED -> 0, directional -> 1).
-- [x] 3.2 Confirm the no-output-change snapshot `block_symbol_frontier_accepts_minimal_fixture_trace` stays green.
+- [x] 3.2 Confirm the no-output-change snapshot `block_symbol_frontier_accepts_minimal_fixture_trace` (since retired by `decode-minimal-fixture-avm-skip-polarity`) stayed green.
 - [x] 3.3 Run focused `splot-decode` tests plus clippy, doc, and decoder checks.
 
 ## 4. Documentation, Review, And PR Discipline

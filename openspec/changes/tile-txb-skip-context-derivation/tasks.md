@@ -12,7 +12,7 @@
 ## 3. Tests
 
 - [x] 3.1 Add unit tests for the luma context (filling transform -> 0, the Min-clamped level sum, the fsc branch) and the V context (the first-block value 3, the neighbour/chroma/EobU contributions).
-- [x] 3.2 Confirm the no-output-change snapshot `block_symbol_frontier_accepts_minimal_fixture_trace` stays green.
+- [x] 3.2 Confirm the no-output-change snapshot `block_symbol_frontier_accepts_minimal_fixture_trace` (since retired by `decode-minimal-fixture-avm-skip-polarity`) stayed green.
 - [x] 3.3 Run focused `splot-decode` tests plus clippy, doc, and decoder checks.
 
 ## 4. Documentation, Review, And PR Discipline

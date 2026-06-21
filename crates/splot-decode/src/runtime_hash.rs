@@ -69,8 +69,12 @@ mod tests {
         include_bytes!("../../../tests/conformance/vectors/valid/syn-flat-intra-64x64-minimal.ivf");
     const BROAD_FIXTURE: &[u8] =
         include_bytes!("../../../tests/conformance/vectors/valid/syn-key-intra-64x64.ivf");
+    // SHA-256 of the decoded raw planar output for the committed conformant
+    // luma-skip fixture, which routes through the general intra path. avmdec and
+    // dav2d both decode this fixture to the same raw output (recorded in
+    // docs/LOCAL-REFERENCE-EVIDENCE.toml); this digest is that output's hash.
     const EXPECTED_DIGEST: &str =
-        "dd244844938e78b226240de27e9c0acd39fc7ec2c1631319d13250fbe5f08496";
+        "92c4477c8b50d5646c6ed5351cbb8f4fc04517ba39354a127c306e196fd059af";
 
     fn context(threads: ThreadCount) -> DecodeContext {
         DecodeContext::new(DecodeRuntimeConfig::new(threads)).unwrap()
@@ -204,6 +208,9 @@ mod tests {
 
     #[test]
     fn tile_trace_mismatch_fails_closed_as_unsupported() {
+        // The conformant fixture routes through the general intra path; flipping
+        // the final tile-payload bit corrupts the §8.2.4 exit_symbol padding, so
+        // the decoder fails closed with a typed general-intra UnsupportedFeature.
         let mut bytes = MINIMAL_FIXTURE.to_vec();
         let last = bytes.len() - 1;
         bytes[last] ^= 0x01;
@@ -216,15 +223,15 @@ mod tests {
             error,
             DecodeError::UnsupportedFeature {
                 unsupported
-            } if unsupported.reason().starts_with("minimal_tile_")
-                || unsupported.reason().ends_with("_all_zero_transform")
-                || unsupported.reason().starts_with("intra_")
-                || unsupported.reason() == "uv_mode_index"
+            } if unsupported.reason().starts_with("general_intra_")
         ));
     }
 
     #[test]
-    fn partition_symbol_mutation_fails_through_frontier() {
+    fn partition_symbol_mutation_fails_closed_through_general_path() {
+        // Corrupting the partition/mode region of the tile payload desyncs the
+        // general intra block decode, which fails closed with a typed
+        // general-intra UnsupportedFeature rather than producing output.
         let mut bytes = MINIMAL_FIXTURE.to_vec();
         let tile_start = bytes.len() - 2;
         bytes[tile_start] = 0xFF;
@@ -237,18 +244,23 @@ mod tests {
             error,
             DecodeError::UnsupportedFeature {
                 unsupported
-            } if unsupported.reason() == "minimal_tile_partition_frontier"
+            } if unsupported.reason().starts_with("general_intra_")
         ));
     }
 
     #[test]
     fn tile_payload_byte_mutations_return_typed_results() {
+        // Fuzz the trailing tile-payload bytes: every mutation either fails closed
+        // with a typed error or decodes through the general intra path to a
+        // well-formed single-frame hash report. The unmutated fixture pins the
+        // canonical digest.
         let context = context(ThreadCount::from(1usize));
         let tile_payload_offsets = (MINIMAL_FIXTURE.len() - 2)..MINIMAL_FIXTURE.len();
 
         for offset in tile_payload_offsets {
             for value in u8::MIN..=u8::MAX {
                 let mut bytes = MINIMAL_FIXTURE.to_vec();
+                let original = bytes[offset];
                 bytes[offset] = value;
 
                 if let Ok(mut report) =
@@ -256,7 +268,11 @@ mod tests {
                 {
                     assert_eq!(report.frames.len(), 1);
                     let digest = report.frames.remove(0).hashes.remove(0).digest_hex;
-                    assert_eq!(digest, EXPECTED_DIGEST);
+                    assert_eq!(digest.len(), 64);
+                    assert!(digest.bytes().all(|byte| byte.is_ascii_hexdigit()));
+                    if value == original {
+                        assert_eq!(digest, EXPECTED_DIGEST);
+                    }
                 }
             }
         }

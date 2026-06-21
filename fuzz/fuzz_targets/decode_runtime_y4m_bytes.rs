@@ -35,7 +35,11 @@ const MINIMAL_LUMA_BYTES: usize = 64 * 64;
 const MINIMAL_CHROMA_BYTES: usize = 32 * 32;
 const MINIMAL_PAYLOAD_BYTES: usize = MINIMAL_LUMA_BYTES + MINIMAL_CHROMA_BYTES * 2;
 const MINIMAL_LUMA_SAMPLE: u8 = 128;
-const MINIMAL_CHROMA_H_PRED_SAMPLE: u8 = 129;
+// The committed fixture's avmdec/dav2d-agreed decoded raw planar output (the Y4M
+// frame payload): luma is the flat 128 (§5.20.7.27 all_zero == 1 skip block) and
+// chroma carries a real coded residual. See docs/LOCAL-REFERENCE-EVIDENCE.toml.
+const MINIMAL_EXPECTED_RAW: &[u8] =
+    include_bytes!("../../tests/conformance/vectors/valid/syn-flat-intra-64x64-minimal.raw");
 
 static CONTEXT: OnceLock<Option<DecodeContext>> = OnceLock::new();
 
@@ -70,9 +74,8 @@ fuzz_target!(|data: &[u8]| {
             .decode_y4m_bytes(bitstream, options, &mut writer)
             .is_ok()
         {
-            // The flat minimal shape only holds for the pristine frozen fixture;
-            // a mutation can now route to the general intra path and decode
-            // successfully to a different (still valid) frame.
+            // The exact decoded frame only holds for the pristine committed
+            // fixture; a mutation can route to a different (still valid) frame.
             if bitstream == MINIMAL_FIXTURE {
                 assert_minimal_y4m_shape(writer.bytes());
             }
@@ -149,14 +152,9 @@ fn assert_minimal_y4m_shape(bytes: &[u8]) {
     assert_header_token(header, b"C420");
     assert_nonzero_frame_rate(header);
     assert_eq!(payload.len(), MINIMAL_PAYLOAD_BYTES);
-    let (luma, chroma) = payload.split_at(MINIMAL_LUMA_BYTES);
-    let (u, v) = chroma.split_at(MINIMAL_CHROMA_BYTES);
+    let (luma, _chroma) = payload.split_at(MINIMAL_LUMA_BYTES);
     assert!(luma.iter().all(|sample| *sample == MINIMAL_LUMA_SAMPLE));
-    assert!(
-        u.iter()
-            .chain(v.iter())
-            .all(|sample| *sample == MINIMAL_CHROMA_H_PRED_SAMPLE)
-    );
+    assert_eq!(payload, MINIMAL_EXPECTED_RAW);
     assert!(find_subslice(payload, FRAME_MARKER).is_none());
 }
 
