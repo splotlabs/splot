@@ -1876,3 +1876,46 @@ fn d203_neighbour_one_sided_left_intra_frame_decodes_to_oracle() {
         "3b95907f8808cc9d0bdd2eb376c8726019f7a4490cf8ecfcccab883fb11f8a3f"
     );
 }
+
+// A 64x64 intra key frame whose superblock the encoder splits via PARTITION_HORZ
+// into two RECTANGULAR 64x32 DC_PRED leaves (top luma flat 60, bottom flat 200;
+// flat chroma U=V=128), the first general-intra rectangular (non-square)
+// partition decode target. The §7.13.2.4 DC predictor reads only the immediate
+// in-frame left column / above row (no §7.13.2.1 sentinels), and the §5.20.7.27
+// coefficient loop + §7.14.4/§7.15.4 reconstruction read transform width and
+// height independently (TX_64X32 luma, TX_32X16 chroma, incl. the §7.15.4.1 √2
+// rescale for the odd log2 ratio). avmdec and dav2d agree on the decoded output
+// (raw md5 2234d07aa62a60f347917f340a964425).
+const HRECT_FIXTURE: &[u8] =
+    include_bytes!("../../../../tests/conformance/vectors/valid/syn-hrect-intra-64x64-q120.ivf");
+
+#[test]
+fn horz_rectangular_partition_intra_frame_decodes_to_oracle() {
+    use splot_recon::{BitDepth, PixelFormat, PlaneSize};
+
+    let frame = decode_general_intra_luma(HRECT_FIXTURE);
+    assert_eq!(frame.bit_depth(), BitDepth::Eight);
+    assert_eq!(frame.pixel_format(), PixelFormat::Yuv420);
+    assert_eq!(frame.y().visible_size(), PlaneSize::new(64, 64).unwrap());
+
+    let y = frame.y().samples();
+    let at = |col: usize, row: usize| y[row * 64 + col];
+    // Two 64x32 rectangular DC bands: top ~60, bottom ~200. Sampling each band
+    // centre proves the rectangular HORZ leaves reconstructed the right DC level
+    // (the bottom leaf DC-predicts from the reconstructed top leaf), matching the
+    // avmdec/dav2d oracle.
+    assert_eq!((at(32, 16), at(32, 48)), (60, 200));
+    // Flat chroma DC (U == V == 128 per band), matching the oracle.
+    assert!(frame.u().unwrap().samples().iter().all(|&s| s == 128));
+    assert!(frame.v().unwrap().samples().iter().all(|&s| s == 128));
+
+    // Frame hash pins splot's output, which reproduces avmdec's and dav2d's raw
+    // output byte-for-byte (verified locally; raw md5 2234d07aa62a60f347917f340a964425).
+    let hash = splot_recon::DecodedFrameHashInput::new(&frame)
+        .compute_hash()
+        .to_hex();
+    assert_eq!(
+        hash,
+        "6d2e94d795d46cae62d1e2cf06cf4fe5b727b0917742745af998b002a7686142"
+    );
+}

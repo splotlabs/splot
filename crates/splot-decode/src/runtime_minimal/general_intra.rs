@@ -6,6 +6,8 @@
 //!
 //! Feature tracking: `DECODE-GENERAL-INTRA-FRAME-FRONTIER`.
 
+use splot_core::tables::conversion::{TX_HEIGHT_LOG2, TX_WIDTH_LOG2};
+
 use super::*;
 
 /// Routes a parsed frame to the general intra decode frontier.
@@ -359,18 +361,11 @@ fn decode_one_general_intra_block(
         .b_size
         .num_4x4_high()
         .map_err(|_| geometry_error())?;
-    if n4w != n4h {
-        return Err(general_intra_unsupported(
-            "general_intra_non_square_block",
-            Some(tile_offset),
-            "general intra decode only supports square partition blocks; rectangular partitions are not yet implemented",
-            GENERAL_INTRA_PARTITION_SPEC_SECTION,
-        ));
-    }
     // 4:2:0 sub-8x8 luma leaves defer chroma to the bottom-right 4x4 (a 4x4 chroma
     // transform over the 8x8 region, not luma_log2 - 1), and the other three are
-    // luma-only; neither chroma sizing/position is modelled yet.
-    if n4w < 2 {
+    // luma-only; neither chroma sizing/position is modelled yet. This applies to
+    // both square and rectangular leaves (the smaller dimension is checked).
+    if n4w < 2 || n4h < 2 {
         return Err(general_intra_unsupported(
             "general_intra_sub_8x8_block",
             Some(tile_offset),
@@ -403,6 +398,34 @@ fn decode_one_general_intra_block(
         n4h,
     )
     .map_err(|error| general_intra_block_mode_error(error, tile_offset))?;
+
+    // RECTANGULAR PARTITION LEAF (`n4w != n4h`, e.g. a 64x32 PARTITION_HORZ child
+    // or a 32x64 PARTITION_VERT child). The §7.13.2.4 DC predictor reads only the
+    // immediate in-frame left column / above row from the partially-built frame
+    // (no §7.13.2.1 above-right / below-left sentinels, so no §5.20.2.3
+    // BlockDecoded state is needed), and the §5.20.7.27 coefficient loop +
+    // §7.14.4/§7.15.4 reconstruction already read transform width and height
+    // independently from the §9.2 conversion tables (incl. the §7.15.4.1 √2 rescale
+    // for an odd log2 ratio). So a DC_PRED luma + DC chroma rectangular leaf is
+    // reconstructed bit-exact via the dedicated rectangular path; any non-DC luma
+    // or non-DC chroma rectangular mode (which would need rectangular §7.13.2.8 /
+    // §7.13.2.13 prediction edges, not yet modelled) is rejected, keeping every
+    // square mode path below unchanged.
+    if n4w != n4h {
+        return decode_one_general_intra_rect_block(
+            work_unit,
+            symbols,
+            frontier,
+            &modes,
+            workspace,
+            coeff_ctx,
+            qindex,
+            n4w,
+            n4h,
+            tile_offset,
+        );
+    }
+
     // Chroma is reconstructed with DC prediction; with § 7.13.2.13 smooth
     // prediction over § 7.13.2.1 neighbour edges read from the partially-built
     // frame when the decoded `uv_mode` resolves (via § 5.20.5.3
@@ -1225,6 +1248,184 @@ fn decode_one_general_intra_block(
     // is recorded into the IntraJointModes grid by the partition walk so later
     // blocks' § 8.3.2 `y_mode_index` context can read it as a neighbour.
     Ok(modes.intra_joint_mode)
+}
+
+/// Decodes and reconstructs one **rectangular** general intra leaf block
+/// (`n4w != n4h`, e.g. a 64x32 PARTITION_HORZ child or a 32x64 PARTITION_VERT
+/// child), gated to the verified DC_PRED luma + DC chroma subset.
+///
+/// The §7.13.2.4 DC predictor reads only the immediate in-frame left column /
+/// above row, so a rectangular DC leaf reconstructs correctly at any superblock
+/// position with NO §5.20.2.3 BlockDecoded sentinel state. Under TX_MODE_LARGEST
+/// the luma transform is the single rectangular transform spanning the block
+/// (`Max_Tx_Size_Rect`, derived here from the §9.2 conversion tables by the
+/// block's width/height log2), and the 4:2:0 chroma transform is one log2 smaller
+/// in each dimension; both resolve to `DCT_DCT` (§5.20.8.2 `get_tx_set` returns
+/// TX_SET_DCTONLY for `txSzSqrUp >= TX_32X32`). The §5.20.7.27 coefficient loop
+/// and §7.14.4/§7.15.4 reconstruction already read width and height
+/// independently. Any non-DC luma or non-DC chroma mode is rejected (a
+/// rectangular §7.13.2.8 / §7.13.2.13 predictor is not yet modelled), keeping the
+/// verified subset tight.
+#[allow(clippy::too_many_arguments)]
+fn decode_one_general_intra_rect_block(
+    work_unit: &mut crate::tile_payload::DecodeTileWorkUnit<'_>,
+    symbols: &mut SymbolDecoder<'_>,
+    frontier: &crate::tile_payload::DecodeBlockFrontier,
+    modes: &crate::tile_payload::GeneralIntraBlockModes,
+    workspace: &mut splot_recon::CurrentFrameWorkspace<u8>,
+    coeff_ctx: &mut crate::tile_payload::TileCoeffContextState,
+    qindex: u32,
+    n4w: usize,
+    n4h: usize,
+    tile_offset: ByteOffset,
+) -> Result<u8> {
+    // VERIFIED-SUBSET DISCIPLINE: only the oracle-verified 64x32 (`n4w == 16`,
+    // `n4h == 8`, PARTITION_HORZ) rectangular geometry is admitted — that is the
+    // single geometry the committed fixture (`syn-hrect-intra-64x64-q120`) proves
+    // bit-exact against avmdec + dav2d. Every other rectangular size/ratio (32x64,
+    // 32x16, 16x8, the §5.20.3 HORZ4/VERT4 4:1 shapes whose *even* log2 ratio takes
+    // a different §7.15.4 path than the verified 2:1 √2-rescale case, …) is
+    // reconstructed by the same general code but is not yet oracle-fixtured, so it
+    // is rejected here rather than emit a confident-but-unverified sample. Later
+    // bricks widen this set, each with its own conformance vector.
+    if (n4w, n4h) != (16, 8) {
+        return Err(general_intra_unsupported(
+            "general_intra_rect_unverified_geometry",
+            Some(tile_offset),
+            "general intra rectangular (non-square) partition leaves are only oracle-verified for the 64x32 PARTITION_HORZ geometry; other rectangular sizes are decodable by the same path but not yet fixtured",
+            GENERAL_INTRA_PARTITION_SPEC_SECTION,
+        ));
+    }
+    // Only DC_PRED luma is reconstructed for a rectangular leaf: a non-DC mode
+    // (SMOOTH / directional) would need a rectangular §7.13.2.8 / §7.13.2.13
+    // predictor that is not yet modelled.
+    if !modes.luma_is_dc() {
+        return Err(general_intra_unsupported(
+            "general_intra_rect_non_dc_luma",
+            Some(tile_offset),
+            "general intra rectangular (non-square) partition leaves are only reconstructed for DC_PRED luma; non-DC (SMOOTH / directional) rectangular luma prediction is not yet modelled",
+            GENERAL_INTRA_MODE_SPEC_SECTION,
+        ));
+    }
+    // Only DC chroma is reconstructed for a rectangular leaf, for the same reason.
+    if modes.supported_chroma_mode() != Some(crate::tile_payload::SupportedChromaMode::Dc) {
+        return Err(general_intra_unsupported(
+            "general_intra_rect_non_dc_chroma",
+            Some(tile_offset),
+            "general intra rectangular (non-square) partition leaves are only reconstructed for DC chroma; non-DC rectangular chroma prediction is not yet modelled",
+            GENERAL_INTRA_MODE_SPEC_SECTION,
+        ));
+    }
+
+    let uv_mode = usize::from(modes.uv_mode);
+    // §7.15.4 transform dimensions: the block's width / height log2 (4x4 MI units
+    // -> log2 pels is `trailing_zeros + 2`). Under TX_MODE_LARGEST the single
+    // transform spans the whole block (capped at 64), so its width/height log2
+    // equal the block's.
+    let luma_w_log2 = n4w.trailing_zeros() + 2;
+    let luma_h_log2 = n4h.trailing_zeros() + 2;
+    let luma_tx = rect_tx_size_from_log2(luma_w_log2, luma_h_log2).ok_or_else(|| {
+        general_intra_unsupported(
+            "general_intra_rect_tx_size",
+            Some(tile_offset),
+            "general intra rectangular leaf could not resolve a §9.2 transform size for its width/height",
+            GENERAL_INTRA_PARTITION_SPEC_SECTION,
+        )
+    })?;
+    let luma_x = frontier.c * 4;
+    let luma_y = frontier.r * 4;
+    let luma = crate::tile_payload::decode_general_intra_plane_coeffs(
+        work_unit, symbols, coeff_ctx, 0, luma_tx, luma_x, luma_y, false, uv_mode,
+    )
+    .map_err(|error| general_intra_residual_error(error, tile_offset))?;
+    // §7.14.4 TCQ dqDenom applies to the luma DCT_DCT (TX_CLASS_2D) non-lossless
+    // non-FSC block; use the frame-level allowance.
+    let luma_use_tcq = work_unit.coeff_frame_facts().allow_tcq();
+    crate::runtime_minimal_recon::reconstruct_general_intra_block_rect_into(
+        workspace,
+        &luma,
+        PlaneId::Y,
+        luma_x,
+        luma_y,
+        luma_w_log2,
+        luma_h_log2,
+        qindex,
+        luma_use_tcq,
+    )
+    .map_err(|error| general_intra_residual_error(error, tile_offset))?;
+
+    if frontier.has_chroma {
+        // 4:2:0: chroma is half-resolution in each dimension, so the chroma
+        // transform/log2 is one smaller per axis and the chroma plane position is
+        // the luma position >> 1.
+        let chroma_w_log2 = luma_w_log2 - 1;
+        let chroma_h_log2 = luma_h_log2 - 1;
+        let chroma_tx = rect_tx_size_from_log2(chroma_w_log2, chroma_h_log2).ok_or_else(|| {
+            general_intra_unsupported(
+                "general_intra_rect_chroma_tx_size",
+                Some(tile_offset),
+                "general intra rectangular leaf could not resolve a §9.2 chroma transform size",
+                GENERAL_INTRA_PARTITION_SPEC_SECTION,
+            )
+        })?;
+        let chroma_x = frontier.c * 2;
+        let chroma_y = frontier.r * 2;
+        let u = crate::tile_payload::decode_general_intra_plane_coeffs(
+            work_unit, symbols, coeff_ctx, 1, chroma_tx, chroma_x, chroma_y, false, uv_mode,
+        )
+        .map_err(|error| general_intra_residual_error(error, tile_offset))?;
+        crate::runtime_minimal_recon::reconstruct_general_intra_block_rect_into(
+            workspace,
+            &u,
+            PlaneId::U,
+            chroma_x,
+            chroma_y,
+            chroma_w_log2,
+            chroma_h_log2,
+            qindex,
+            false,
+        )
+        .map_err(|error| general_intra_residual_error(error, tile_offset))?;
+        let v = crate::tile_payload::decode_general_intra_plane_coeffs(
+            work_unit,
+            symbols,
+            coeff_ctx,
+            2,
+            chroma_tx,
+            chroma_x,
+            chroma_y,
+            !u.all_zero,
+            uv_mode,
+        )
+        .map_err(|error| general_intra_residual_error(error, tile_offset))?;
+        crate::runtime_minimal_recon::reconstruct_general_intra_block_rect_into(
+            workspace,
+            &v,
+            PlaneId::V,
+            chroma_x,
+            chroma_y,
+            chroma_w_log2,
+            chroma_h_log2,
+            qindex,
+            false,
+        )
+        .map_err(|error| general_intra_residual_error(error, tile_offset))?;
+    }
+    Ok(modes.intra_joint_mode)
+}
+
+/// Resolves the AV2 § 9.2 `TX_SIZES_ALL` index whose `Tx_Width_Log2` /
+/// `Tx_Height_Log2` match `(w_log2, h_log2)`, scanning the generated conversion
+/// tables (no invented constant). Used to map a rectangular block's transform
+/// dimensions to its `txSz` for the §5.20.7.27 coefficient loop and §7.15.4
+/// reconstruction. Returns `None` when no §9.2 transform has those dimensions.
+fn rect_tx_size_from_log2(w_log2: u32, h_log2: u32) -> Option<usize> {
+    let w = i32::try_from(w_log2).ok()?;
+    let h = i32::try_from(h_log2).ok()?;
+    TX_WIDTH_LOG2
+        .iter()
+        .zip(TX_HEIGHT_LOG2.iter())
+        .position(|(&tw, &th)| tw == w && th == h)
 }
 
 /// 4:2:0 chroma horizontal subsampling (`SubsamplingX == 1`).
