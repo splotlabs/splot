@@ -23,10 +23,12 @@
 //! and hashed with the decoded-frame hash contract, so the deterministic artifact
 //! external decoders are later compared against is produced and tested now.
 //!
-//! The current subset is the top-left 8-bit luma 4x4 DCT_DCT DC-only uniform
-//! block only. The module does not emit tile payloads, write packets, store
-//! references, expose a public encoder API, or reconstruct chroma, inter,
-//! multi-block, non-uniform, or non-4x4 content.
+//! The current subset is the top-left 8-bit luma 4x4 DCT_DCT block, from a flat
+//! source ([`MinimalClosedLoopReconstruction::reconstruct_luma_4x4_dc_only`]) or a
+//! non-uniform one ([`MinimalClosedLoopReconstruction::reconstruct_luma_4x4`], which
+//! uses the real 16-coefficient forward DCT). The module does not emit tile
+//! payloads, write packets, store references, expose a public encoder API, or
+//! reconstruct chroma, inter, multi-block, or non-4x4 content.
 
 #![allow(dead_code)]
 
@@ -59,17 +61,51 @@ pub(crate) struct MinimalClosedLoopReconstruction {
 }
 
 impl MinimalClosedLoopReconstruction {
-    /// Reconstructs the current 8-bit luma 4x4 DCT_DCT DC-only top-left subset.
+    /// Reconstructs an 8-bit luma 4x4 DCT_DCT block from a flat (uniform) source.
     ///
     /// `source` is a borrowed input plane view whose visible size must be exactly
     /// 4x4. The block is predicted with AV2 §7.13.2.10 no-neighbor DC intra
-    /// prediction, a uniform residual is formed and quantized through the private
-    /// encoder stages, and the decoder-visible samples are reconstructed entirely
-    /// through `splot-recon`.
+    /// prediction, a residual is formed and quantized through the private encoder
+    /// stages, and the decoder-visible samples are reconstructed entirely through
+    /// `splot-recon`. This entry point uses the flat-only forward transform, so a
+    /// non-uniform residual is rejected
+    /// ([`Error::ForwardTransformNonUniformResidual`]);
+    /// [`Self::reconstruct_luma_4x4`] accepts any source.
     pub(crate) fn reconstruct_luma_4x4_dc_only(
         source: PlaneRef<'_, u8>,
         params: FixedQuantizationParams,
     ) -> Result<Self> {
+        let (block, prediction, residual_i32) = Self::prepare(source, params)?;
+        let transformed =
+            ForwardTransformBlock::dct_dct_4x4_dc_only(PlaneId::Y, block, &residual_i32)?;
+        Self::finish(prediction, transformed, params)
+    }
+
+    /// Reconstructs an 8-bit luma 4x4 DCT_DCT block from any source (uniform or
+    /// not). Identical to [`Self::reconstruct_luma_4x4_dc_only`] except it uses the
+    /// real 16-coefficient forward DCT, so a non-uniform source produces real AC
+    /// coefficients. The quantized decisions reconstruct entirely through
+    /// `splot-recon`; at low qindex the reconstruction is near-lossless (bounded by
+    /// the quant rounding plus the DCT non-orthogonality residue), not bit-exact.
+    pub(crate) fn reconstruct_luma_4x4(
+        source: PlaneRef<'_, u8>,
+        params: FixedQuantizationParams,
+    ) -> Result<Self> {
+        let (block, prediction, residual_i32) = Self::prepare(source, params)?;
+        let transformed = ForwardTransformBlock::dct_dct_4x4(PlaneId::Y, block, &residual_i32)?;
+        Self::finish(prediction, transformed, params)
+    }
+
+    /// Shared front half: validate the bit depth and source size, predict the
+    /// no-neighbor DC block, and form the encoder-policy residual.
+    fn prepare(
+        source: PlaneRef<'_, u8>,
+        params: FixedQuantizationParams,
+    ) -> Result<(
+        PlaneRect,
+        [u8; DCT_DCT_4X4_COEFF_COUNT],
+        [i32; DCT_DCT_4X4_COEFF_COUNT],
+    )> {
         let plane = PlaneId::Y;
         let bit_depth = params.bit_depth();
         if bit_depth != ReconBitDepth::Eight {
@@ -102,21 +138,28 @@ impl MinimalClosedLoopReconstruction {
         for (slot, &sample) in residual_i32.iter_mut().zip(residual.samples()) {
             *slot = i32::from(sample);
         }
+        Ok((block, prediction, residual_i32))
+    }
 
-        // Encoder-policy forward transform and fixed quantization.
-        let transformed = ForwardTransformBlock::dct_dct_4x4_dc_only(plane, block, &residual_i32)?;
-        let quantized_block = QuantizedTransformBlock::dct_dct_4x4_dc_only(&transformed, params)?;
+    /// Shared back half: quantize the transform block, reconstruct the
+    /// decoder-visible samples through `splot-recon`, and hash the result.
+    fn finish(
+        prediction: [u8; DCT_DCT_4X4_COEFF_COUNT],
+        transformed: ForwardTransformBlock,
+        params: FixedQuantizationParams,
+    ) -> Result<Self> {
+        let quantized_block = QuantizedTransformBlock::dct_dct_4x4(&transformed, params)?;
 
         // Decoder-visible dequant -> inverse transform -> residual addition (recon).
-        let reconstructed = reconstruct_dc_only_from_quantized(
+        let reconstructed = reconstruct_from_quantized(
             &prediction,
             params,
-            plane,
+            PlaneId::Y,
             quantized_block.quantized(),
         )?;
 
         // Freeze the reconstructed block into a recon current-frame workspace and hash it.
-        let hash = reconstructed_frame_hash(bit_depth, &reconstructed)?;
+        let hash = reconstructed_frame_hash(params.bit_depth(), &reconstructed)?;
 
         Ok(Self {
             prediction,
@@ -177,7 +220,7 @@ impl MinimalClosedLoopReconstruction {
 /// Used both by the closed loop and by the emitted-decision equivalence proof so
 /// the decoded coefficient stream reconstructs through the exact same
 /// `splot-recon` dequant -> inverse transform -> residual addition path.
-pub(crate) fn reconstruct_dc_only_from_quantized(
+pub(crate) fn reconstruct_from_quantized(
     prediction: &[u8; DCT_DCT_4X4_COEFF_COUNT],
     params: FixedQuantizationParams,
     plane: PlaneId,
@@ -187,7 +230,7 @@ pub(crate) fn reconstruct_dc_only_from_quantized(
     let block = transform_block_rect()?;
 
     // AV2 §7.14.2 / §7.14.4 dequantization (decoder-visible, recon).
-    let dequantized = dequantize_dc_only(params, plane, block, quantized)?;
+    let dequantized = dequantize_block_4x4(params, plane, block, quantized)?;
 
     // AV2 §7.15.4 inverse transform (decoder-visible, recon). The §7.15.4
     // `Transform_Shift` values are sourced from `splot-recon`, not hand-copied,
@@ -247,7 +290,7 @@ fn predict_dc_no_neighbor(
     Ok(prediction)
 }
 
-fn dequantize_dc_only(
+fn dequantize_block_4x4(
     params: FixedQuantizationParams,
     plane: PlaneId,
     block: PlaneRect,
@@ -500,7 +543,7 @@ mod tests {
         // decoder-visible samples as the local closed loop.
         let mut recovered_quantized = [0i32; DCT_DCT_4X4_COEFF_COUNT];
         recovered_quantized[0] = recovered_dc;
-        let reconstructed_from_emitted = reconstruct_dc_only_from_quantized(
+        let reconstructed_from_emitted = reconstruct_from_quantized(
             block.prediction(),
             block.params(),
             PlaneId::Y,
@@ -526,7 +569,7 @@ mod tests {
         assert_eq!(recovered_dc, block.quantized()[0]);
         let mut recovered_quantized = [0i32; DCT_DCT_4X4_COEFF_COUNT];
         recovered_quantized[0] = recovered_dc;
-        let reconstructed_from_emitted = reconstruct_dc_only_from_quantized(
+        let reconstructed_from_emitted = reconstruct_from_quantized(
             block.prediction(),
             block.params(),
             PlaneId::Y,
@@ -605,5 +648,77 @@ mod tests {
                 bit_depth: ReconBitDepth::Ten,
             }
         ));
+    }
+
+    // --- Non-uniform closed-loop reconstruction (`ENC-CLOSED-LOOP-NONUNIFORM-4X4`) ---
+
+    const NON_UNIFORM_SOURCE: [u8; DCT_DCT_4X4_COEFF_COUNT] = [
+        140, 120, 100, 110, 135, 125, 145, 115, 130, 150, 105, 95, 138, 122, 148, 118,
+    ];
+
+    fn reconstruct_general(
+        samples: &[u8; DCT_DCT_4X4_COEFF_COUNT],
+        qindex: u32,
+    ) -> MinimalClosedLoopReconstruction {
+        MinimalClosedLoopReconstruction::reconstruct_luma_4x4(source_view(samples), params(qindex))
+            .unwrap()
+    }
+
+    #[test]
+    fn reconstruct_luma_4x4_handles_a_nonuniform_source() {
+        let block = reconstruct_general(&NON_UNIFORM_SOURCE, 0);
+
+        assert_eq!(block.plane(), PlaneId::Y);
+        assert_eq!(block.block(), rect_4x4());
+        // The real forward DCT produced non-zero AC coefficients — not the DC-only
+        // degenerate case the flat path handles.
+        assert!(
+            block.quantized()[1..].iter().any(|&level| level != 0),
+            "a non-uniform source must produce non-zero AC levels"
+        );
+    }
+
+    #[test]
+    fn reconstruct_luma_4x4_is_near_lossless_at_qindex_zero() {
+        // At qindex 0 the decoder reconstruction of the encoder's quantized
+        // decisions is close to the source — bounded by quant rounding plus the DCT
+        // non-orthogonality residue, not bit-exact.
+        let block = reconstruct_general(&NON_UNIFORM_SOURCE, 0);
+        for (k, (&got, &want)) in block
+            .reconstructed()
+            .iter()
+            .zip(NON_UNIFORM_SOURCE.iter())
+            .enumerate()
+        {
+            let diff = i32::from(got) - i32::from(want);
+            assert!(
+                diff.abs() <= 20,
+                "index {k}: reconstructed {got} vs source {want}"
+            );
+        }
+    }
+
+    #[test]
+    fn reconstruct_luma_4x4_reconstruction_and_hash_are_deterministic() {
+        let first = reconstruct_general(&NON_UNIFORM_SOURCE, 0);
+        let second = reconstruct_general(&NON_UNIFORM_SOURCE, 0);
+
+        assert_eq!(first.reconstructed(), second.reconstructed());
+        assert_eq!(first.hash(), second.hash());
+    }
+
+    #[test]
+    fn reconstruct_luma_4x4_matches_dc_only_on_uniform_source() {
+        // A uniform source routes through both entry points identically: the full
+        // DCT reproduces the flat path's DC-only result.
+        let uniform = [131u8; DCT_DCT_4X4_COEFF_COUNT];
+        let general =
+            MinimalClosedLoopReconstruction::reconstruct_luma_4x4(source_view(&uniform), params(0))
+                .unwrap();
+        let flat = reconstruct(&uniform, 0);
+
+        assert_eq!(general.reconstructed(), flat.reconstructed());
+        assert_eq!(general.quantized(), flat.quantized());
+        assert_eq!(general.hash(), flat.hash());
     }
 }

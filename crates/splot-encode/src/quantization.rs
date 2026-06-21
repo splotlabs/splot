@@ -110,7 +110,7 @@ pub(crate) struct QuantizedTransformBlock {
 impl QuantizedTransformBlock {
     /// Quantizes a real 4x4 DCT_DCT transform block: every one of the 16
     /// coefficients is quantized per-coefficient (index 0 with the DC quantizer,
-    /// the rest with the AC quantizer) by the round-to-nearest § policy, then the
+    /// the rest with the AC quantizer) by the round-to-nearest policy, then the
     /// levels are dequantized through `splot-recon`'s AV2 § 7.14 dequantization so
     /// the stored `dequantized` array is exactly what the decoder reconstructs from
     /// the emitted levels. This accepts any [`ForwardTransformBlock`] — a flat
