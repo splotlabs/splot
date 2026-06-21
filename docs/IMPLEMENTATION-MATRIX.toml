@@ -4074,6 +4074,39 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-FORWARD-TRANSFORM-DCT-4X4"
+name = "Encoder 4x4 DCT_DCT forward transform"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["7.15.4", "7.15.4.1"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/forward_transform.rs"
+openspec_change = "forward-dct-4x4-full"
+tracking_issue = ""
+owner = "encoder"
+risk = "medium"
+notes = "Private, non-emitting encoder arithmetic stage. `ForwardTransformBlock::dct_dct_4x4` maps any signed 4x4 residual (uniform or not) to all 16 row-major DCT_DCT coefficients as the numerical inverse of the §7.15.4 4x4 inverse transform: the transposed §9 `DCT_KERNEL4` (re-exported from `splot-tables` via `splot-recon`) applied as a row pass then a column pass with forward down-shifts 0 and 11 (summing to the 11-bit budget that pairs the forward 2D DCT gain with the inverse's row_shift+col_shift). Passes accumulate in i64; the final coefficient is a checked i32 narrowing (typed `ForwardTransformCoefficientRangeExceeded`, never a wrap/panic). A uniform residual v maps bit-exactly to the DC-only stub (DC=v*32, AC=0) and reconstructs exactly through the `splot-recon` inverse; general AC content reconstructs only within an observed bound (<=5 over the tested 8-bit residual domain), NOT bit-exactly, because the AV2 integer DCT4 odd basis rows are not orthonormal. Proven by round-trip through the `splot-recon` inverse oracle plus a hand-computed orientation pin. This row does NOT claim forward quantization, transform/size/type selection, transform sizes other than 4x4, types other than DCT_DCT, chroma, bit depths other than 8, coefficient tokenization, tile-body emission, packet output, CLI success, rate control, or Baseline Encoder Profile v1 output."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/forward_transform.rs::tests"]
+commands = ["cargo test -p splot-encode forward_transform --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-QUANTIZATION-V0"
 name = "Encoder quantization v0"
 category = "encoder"

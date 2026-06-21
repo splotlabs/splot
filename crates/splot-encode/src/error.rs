@@ -243,6 +243,24 @@ pub enum Error {
         scale: i32,
     },
 
+    /// A forward DCT coefficient fell outside the `i32` coefficient range. The two
+    /// transform passes accumulate in `i64`, so this can only occur for residual
+    /// inputs far outside the valid 8-bit domain (`|residual| <= 255` keeps every
+    /// coefficient within roughly `±8160`); a real encoder residual never reaches it.
+    #[error(
+        "encoder forward DCT coefficient for plane {plane:?}, block {block:?}, coefficient {index} ({value}) is outside the i32 range"
+    )]
+    ForwardTransformCoefficientRangeExceeded {
+        /// Plane whose transform was requested.
+        plane: PlaneId,
+        /// Visible-plane-relative block rectangle.
+        block: splot_recon::PlaneRect,
+        /// Row-major index of the offending coefficient.
+        index: usize,
+        /// The out-of-range coefficient value computed in `i64`.
+        value: i64,
+    },
+
     /// A quantization block shape is outside the current supported subset.
     #[error(
         "encoder quantization for plane {plane:?} supports only {expected_width}x{expected_height}, got block {block:?}"
