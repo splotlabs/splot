@@ -884,6 +884,12 @@ fn general_intra_residual_error(
             "general intra luma transform-block reconstruction could not be composed from the decoded coefficients",
             GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
         ),
+        GeneralIntraResidualError::UnsupportedDirectionalAboveEdge => general_intra_unsupported(
+            "general_intra_directional_above_edge",
+            Some(offset),
+            "general intra directional prediction over a real reconstructed above-neighbour edge needs the §7.13.2.1 corner sample CurrFrame[plane][y-1][x-1] (D135 reads the corner on its main diagonal), which is not yet modelled",
+            GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
+        ),
     }
 }
 

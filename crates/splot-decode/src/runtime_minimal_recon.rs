@@ -771,13 +771,8 @@ pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into(
     // reports as a present left/above edge.
     let have_left = edges.left_samples().is_some();
     let have_above = edges.above_samples().is_some();
-    let (left, above) = build_directional_middle_edges(
-        edges.left_samples(),
-        edges.above_samples(),
-        have_left,
-        have_above,
-        side,
-    )?;
+    let (left, above) =
+        build_directional_middle_edges(edges.left_samples(), have_left, have_above, side)?;
     let angle = match mode {
         SupportedDirectionalLumaMode::D135 => IntraMiddleDirectionalAngle::D135,
     };
@@ -818,25 +813,26 @@ pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into(
 ///
 /// The corner `AboveRow[-1] == LeftCol[-1]` and the `AboveRow[i]` / `LeftCol[i]`
 /// fills follow § 7.13.2.1 exactly for the minimal-tool subset:
-/// - `haveLeft && haveAbove`: `LeftCol` is the reconstructed left column, `AboveRow`
-///   the reconstructed above row, and the corner is `CurrFrame[plane][y-1][x-1]`,
-///   which `intra_dc_edges_for_rect` does not return, so it is reconstructed from
-///   the workspace by the caller path that has both edges (not exercised by the
-///   committed fixture, whose D135 block is row 0 with `haveAbove == 0`); this
-///   helper approximates the corner with the first above sample, matching the
-///   `haveLeft && !haveAbove` fixture path and the no-corner-read D135 geometry.
-/// - `haveLeft && !haveAbove` (the committed fixture's row-0 D135 block):
-///   `LeftCol[i]` is the reconstructed left column (clamped at the bottom-left
-///   sentinel, `num4BelowLeft == 0` in raster order), `AboveRow[i]` is the repeated
-///   first left sample `CurrFrame[plane][y][x-1]`, and the corner
-///   `AboveRow[-1] = LeftCol[-1] = CurrFrame[plane][y][x-1]` (the first left sample).
-/// - `!haveLeft && haveAbove`: symmetric (above row real, left column the repeated
-///   first above sample, corner the first above sample).
+/// - `haveAbove` (either `haveLeft && haveAbove` or `!haveLeft && haveAbove`):
+///   NOT supported, returns [`GeneralIntraResidualError::UnsupportedDirectionalAboveEdge`].
+///   § 7.13.2.8 D135 DOES read the § 7.13.2.1 corner `AboveRow[-1] == LeftCol[-1]` on
+///   its main diagonal (`column == row` gives `above_base == -1`, `shift == 0`), so a
+///   real above neighbour needs the real corner `CurrFrame[plane][y-1][x-1]`, which
+///   `intra_dc_edges_for_rect` does not return. These arms are unreachable today (the
+///   row>0 directional path is gated out, `general_intra_multirow_directional_luma`);
+///   they reject rather than build a wrong-but-plausible corner, so relaxing the gate
+///   must first reconstruct the real corner.
+/// - `haveLeft && !haveAbove` (the committed fixture's row-0 D135 block): the only
+///   reachable neighbour path. `LeftCol[i]` is the reconstructed left column (clamped
+///   at the bottom-left sentinel, `num4BelowLeft == 0` in raster order), `AboveRow[i]`
+///   is the repeated first left sample `CurrFrame[plane][y][x-1]`, and the corner
+///   `AboveRow[-1] = LeftCol[-1] = CurrFrame[plane][y][x-1]` (the first left sample) —
+///   the exact § 7.13.2.1 `haveLeft && !haveAbove` value, so the corner read on the
+///   diagonal is correct and the committed fixture is bit-exact.
 /// - neither: the § 7.13.2.1 flat fallbacks (`AboveRow 127`, `LeftCol 129`, corner
 ///   `128`) — the no-neighbour path handled by `predict_directional_noneighbour`.
 fn build_directional_middle_edges(
     left_neighbour: Option<&[u8]>,
-    above_neighbour: Option<&[u8]>,
     have_left: bool,
     have_above: bool,
     side: usize,
@@ -848,25 +844,17 @@ fn build_directional_middle_edges(
     let mut above = Vec::with_capacity(edge_len);
     match (have_left, have_above) {
         (true, true) => {
-            let left_samples = left_neighbour.unwrap_or(&[]);
-            let above_samples = above_neighbour.unwrap_or(&[]);
-            // §7.13.2.1: corner AboveRow[-1] = LeftCol[-1] = CurrFrame[plane][y-1][x-1].
-            // `intra_dc_edges_for_rect` returns LeftCol[0..) and AboveRow[0..) but
-            // not the (x-1, y-1) corner; for D135 the corner is never read (the
-            // above branch reads AboveRow[j-i-1] for j>i so base>=0, the left branch
-            // reads LeftCol[i-j-1] for j<i so base>=0, and the corner AboveRow[-1]
-            // is read only at base==-1 which D135 does not reach over both edges).
-            // Use the first above sample as a faithful, never-read placeholder.
-            let corner = above_samples
-                .first()
-                .copied()
-                .unwrap_or(NONEIGHBOUR_CORNER_8BIT);
-            left.push(corner);
-            above.push(corner);
-            for i in 0..side {
-                left.push(sample_or_last(left_samples, i, NONEIGHBOUR_LEFT_8BIT));
-                above.push(sample_or_last(above_samples, i, NONEIGHBOUR_ABOVE_8BIT));
-            }
+            // A real reconstructed ABOVE neighbour (`haveAbove == 1`) only arises for
+            // a row>0 directional block, which the admission gate rejects
+            // (`general_intra_multirow_directional_luma`) BEFORE reconstruction, so
+            // this arm is currently unreachable. It is NOT a no-corner case: §7.13.2.8
+            // D135 reads the §7.13.2.1 corner `AboveRow[-1] == LeftCol[-1]` on its main
+            // diagonal (`column == row` gives `above_base == -1`, `shift == 0`, so the
+            // predictor copies the corner). The real corner is
+            // `CurrFrame[plane][y-1][x-1]`, which `intra_dc_edges_for_rect` does not
+            // return. Reject rather than build a wrong-but-plausible corner, so
+            // relaxing the row>0 gate must first reconstruct the real corner.
+            return Err(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge);
         }
         (true, false) => {
             // §7.13.2.1 haveLeft && !haveAbove: AboveRow[i] = CurrFrame[plane][y][x-1]
@@ -886,19 +874,11 @@ fn build_directional_middle_edges(
             }
         }
         (false, true) => {
-            // §7.13.2.1 !haveLeft && haveAbove: LeftCol[i] = CurrFrame[plane][y-1][x]
-            // (the first above sample, repeated), corner = first above sample.
-            let above_samples = above_neighbour.unwrap_or(&[]);
-            let seed = above_samples
-                .first()
-                .copied()
-                .unwrap_or(NONEIGHBOUR_ABOVE_8BIT);
-            left.push(seed);
-            above.push(seed);
-            for i in 0..side {
-                left.push(seed);
-                above.push(sample_or_last(above_samples, i, NONEIGHBOUR_ABOVE_8BIT));
-            }
+            // Same as `(true, true)`: a real ABOVE neighbour needs the §7.13.2.1
+            // corner `CurrFrame[plane][y-1][x-1]` that D135 reads on its diagonal;
+            // unreachable today (row>0 directional is gated out) and rejected here so
+            // it cannot silently produce a wrong corner.
+            return Err(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge);
         }
         (false, false) => {
             // §7.13.2.1 no-neighbour fallbacks (handled by the first-block path, but
