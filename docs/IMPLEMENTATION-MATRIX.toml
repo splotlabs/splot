@@ -5486,6 +5486,39 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-GENERAL-INTRA-TWO-COEFF"
+name = "First multi-coefficient intra frame"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20.7.27", "8.3.2", "8.2.5", "8.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/general_intra_trace.rs"
+openspec_change = "encoder-general-intra-two-coeff"
+tracking_issue = ""
+owner = "encoder"
+risk = "low"
+notes = "Decodable-tile arc: the FIRST MULTI-COEFFICIENT (eob>1) decodable frame. emit_minimal_intra_two_coeff_ivf() (splot-encode public) emits a 64x64 luma block with one nonzero AC coefficient (level 1) at scan index 1 + a zero DC (eob=2; U/V skipped) -> `splot decode` validates the eob=2 entropy stream (\u00a78.2.4 exit_symbol passes only if the AC coeff_base symbols are consistent) and reconstructs. Adds general_intra_64x64_luma_two_coeff_tokens (txb_skip=0, eob_pt_1024=1 [eob 2, no eob_extra for eob_pt<=1], AC coeff_base_eob at ctx 1, DC non-EOB coeff_base at ctx 1) + 2 BlockSymbolTraceCdfRows rows (AC coeff_base_eob + DC coeff_base at tx_size 4) + the composer (do_split + modes + eob=2 luma + AC sign_bit \u00a78.2.5 bypass + U/V skip). KEY: the 32x32 (TX_64X64-coded) 2D scan maps scan index 1 to raster pos 32 (row 1 col 0), the SAME DC-vertical-neighbour relation as the 4x4 scan, so the \u00a78.3.2 coeff_base contexts (AC eob ctx 1, DC ctx 1 via coeff_base_lf_luma_context) MATCH the minimal-tier eob=2 trace. TX_64X64 is DCT-only -> no intra_tx_type/sec_tx_type symbol. The level-1 AC reconstructs SUB-VISIBLY (flat 128 - the dequantized AC residual rounds to ~0); a visibly-non-flat AC needs a LARGER level whose Level[]-derived DC coeff_base context differs (computed per AC level) = a follow-up. The splot-encode test asserts the eob=2 IVF DIFFERS from the skip IVF (distinct eob>1 entropy). decode_check=done; avm_diff=not-applicable. Encoder-mission-DRIVEN (owner=encoder). HONEST SCOPE: first eob>1 frame, level-1 AC sub-visible; NOT a general encoder, NOT receive_packet, NOT Baseline Encoder Profile v1."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-cli/tests/encode_decode_roundtrip.rs::encoder_two_coeff_ivf_decodes_successfully", "crates/splot-encode/src/general_intra_trace.rs::tests::general_two_coeff_block_trace_roundtrips_through_one_coder"]
+commands = ["cargo test -p splot-cli --test encode_decode_roundtrip --locked", "cargo test -p splot-encode two_coeff --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-RECON-DEPENDENCY"
 name = "Encoder reconstruction dependency boundary"
 category = "encoder"

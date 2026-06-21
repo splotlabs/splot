@@ -253,3 +253,44 @@ fn encoder_all_planes_coded_ivf_decodes_to_a_flat_127_frame() {
         "expected every plane flat at 127 from the all-planes coded block",
     );
 }
+
+/// The encoder's first multi-coefficient (`eob > 1`) frame: the luma block carries a single
+/// nonzero AC coefficient (eob=2, U and V skipped). `splot decode` validates the eob=2 entropy
+/// stream (the §8.2.4 exit_symbol check passes only if the AC `coeff_base` symbols are
+/// consistent). The level-1 AC reconstructs to a sub-visible residual, so the frame is flat
+/// 128; a visibly-non-flat AC (larger magnitude, needing the per-level DC `coeff_base` context)
+/// is a follow-up. This proves the encoder emits a decodable eob>1 block, distinct from skip.
+#[test]
+fn encoder_two_coeff_ivf_decodes_successfully() {
+    let ivf = splot_encode::emit_minimal_intra_two_coeff_ivf().expect("emit the eob=2 IVF");
+
+    let input = temp_path("two-coeff-input", "ivf");
+    let output = temp_path("two-coeff-output", "raw");
+    std::fs::write(&input, &ivf).expect("write the emitted IVF");
+
+    let status = Command::new(env!("CARGO_BIN_EXE_splot"))
+        .args([
+            "decode",
+            input.to_str().expect("utf-8 input path"),
+            "--output",
+            output.to_str().expect("utf-8 output path"),
+            "--output-format",
+            "raw",
+        ])
+        .status()
+        .expect("run the splot binary");
+
+    let raw = std::fs::read(&output);
+    let _ = std::fs::remove_file(&input);
+    let _ = std::fs::remove_file(&output);
+
+    // exit_symbol() validates the eob=2 entropy stream; a malformed multi-coeff trace fails it.
+    assert!(status.success(), "splot decode of the eob=2 IVF failed");
+    let raw = raw.expect("read the decoded raw output");
+    assert_eq!(raw.len(), 6144, "unexpected decoded frame size");
+    // The level-1 AC residual is sub-visible -> the frame reconstructs flat at 128.
+    assert!(
+        raw.iter().all(|&s| s == 128),
+        "expected the sub-visible level-1 AC to reconstruct flat at 128",
+    );
+}

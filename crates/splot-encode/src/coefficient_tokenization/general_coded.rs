@@ -195,3 +195,73 @@ pub(crate) fn general_intra_32x32_chroma_v_dc_coded_tokens(
     });
     Ok(tokens)
 }
+
+/// AV2 § 8.3.2 eob=2 non-EOB `coeff_base` contexts (mirroring the minimal-tier eob=2 trace):
+/// the EOB-position (AC) `coeff_base_eob` low-frequency context `1`, and the DC `coeff_base`
+/// low-frequency context `1` (the AC level-1 coefficient at scan index 1 / raster row 1 col 0
+/// is the DC's significant neighbour; derived via `coeff_base_lf_luma_context`). TCQ off -> tcq
+/// context `0`. The 32x32 (`TX_64X64` coded) scan maps scan index 1 to raster position 32, the
+/// same vertical-neighbour relationship as the 4x4 scan, so the contexts match the minimal tier.
+const COEFF_BASE_LF_EOB_CTX_EOB2_AC: usize = 1;
+const COEFF_BASE_LF_CTX_EOB2_DC: usize = 1;
+const COEFF_BASE_LF_TCQ_CTX_NEUTRAL: usize = 0;
+
+/// Returns the ordered general `TX_64X64` luma eob=2 multi-coefficient CDF tokens: a single
+/// nonzero AC coefficient of level 1 at scan index 1 and a zero DC. The sequence is
+/// `txb_skip == 0`, `eob_pt_1024 == 1` (eob 2), then the base pass over `c = eob-1..0`: the AC
+/// `coeff_base_eob` (level 1 -> symbol 0) at the EOB context `1`, then the DC `coeff_base`
+/// (level 0 -> symbol 0) at the low-frequency context `1`. The caller appends the AC `sign_bit`
+/// § 8.2.5 bypass literal (the zero DC carries no sign). `TX_64X64` is DCT-only, so no
+/// `intra_tx_type`/`sec_tx_type` symbol is read.
+pub(crate) fn general_intra_64x64_luma_two_coeff_tokens(
+    coeff_cdf_q_ctx: usize,
+) -> Result<Vec<CoefficientEntropyToken>> {
+    let mut tokens = Vec::new();
+    tokens
+        .try_reserve_exact(4)
+        .map_err(|_| Error::CoefficientTokenizationAllocationFailed {
+            context: "general two-coefficient luma tokens",
+        })?;
+    // luma `txb_skip == 0` (coded) at the TX_64X64 context.
+    tokens.push(CoefficientEntropyToken {
+        syntax: CoefficientTokenSyntax::AllZero,
+        selector: CoefficientCdfRowSelector::TxbSkip {
+            coeff_cdf_q_ctx,
+            plane_type: LUMA_PLANE_TYPE,
+            tx_size: TX_SIZE_64X64_CTX,
+            ctx: TXB_SKIP_CTX_NEUTRAL,
+        },
+        symbol: false as u8,
+    });
+    // `eob_pt_1024 == 1` -> eob 2 (no eob_extra for eob_pt <= 1).
+    tokens.push(CoefficientEntropyToken {
+        syntax: CoefficientTokenSyntax::EobPt1024,
+        selector: CoefficientCdfRowSelector::EobPt1024 {
+            coeff_cdf_q_ctx,
+            eob_ctx: EOB_CTX_LUMA_INTRA,
+        },
+        symbol: 1,
+    });
+    // AC EOB coefficient: coeff_base_eob (level 1 -> symbol 0) at ctx 1.
+    tokens.push(CoefficientEntropyToken {
+        syntax: CoefficientTokenSyntax::CoeffBaseEob,
+        selector: CoefficientCdfRowSelector::CoeffBaseLfEob {
+            coeff_cdf_q_ctx,
+            tx_size: TX_SIZE_64X64_CTX,
+            ctx: COEFF_BASE_LF_EOB_CTX_EOB2_AC,
+        },
+        symbol: 0,
+    });
+    // DC non-EOB coefficient: coeff_base (level 0 -> symbol 0) at ctx 1.
+    tokens.push(CoefficientEntropyToken {
+        syntax: CoefficientTokenSyntax::CoeffBase,
+        selector: CoefficientCdfRowSelector::CoeffBaseLf {
+            coeff_cdf_q_ctx,
+            tx_size: TX_SIZE_64X64_CTX,
+            ctx: COEFF_BASE_LF_CTX_EOB2_DC,
+            tcq_ctx: COEFF_BASE_LF_TCQ_CTX_NEUTRAL,
+        },
+        symbol: 0,
+    });
+    Ok(tokens)
+}

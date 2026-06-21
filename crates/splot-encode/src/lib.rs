@@ -54,7 +54,7 @@ pub use frame::{
 pub use general_intra_trace::{
     emit_minimal_intra_all_planes_coded_ivf, emit_minimal_intra_coded_chroma_ivf,
     emit_minimal_intra_coded_chroma_v_ivf, emit_minimal_intra_coded_dc_ivf,
-    emit_minimal_intra_skip_ivf,
+    emit_minimal_intra_skip_ivf, emit_minimal_intra_two_coeff_ivf,
 };
 pub use runtime::{EncoderRuntimeConfig, SpeedPreset, SpeedPresetError};
 pub use splot_recon::{PlaneRect, PlaneSize};
