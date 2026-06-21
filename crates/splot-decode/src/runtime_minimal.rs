@@ -970,20 +970,40 @@ fn decode_one_general_intra_block(
         n4h,
     )
     .map_err(|error| general_intra_block_mode_error(error, tile_offset))?;
-    // Chroma is reconstructed with DC prediction or, when the decoded
-    // `uv_mode` resolves (via § 5.20.5.3 `get_intra_uv_mode_set`) to
-    // `SMOOTH_PRED`, with § 7.13.2.13 smooth prediction over § 7.13.2.1
-    // neighbour edges read from the partially-built frame. Other non-DC chroma
-    // modes (directional, PAETH, SMOOTH_V/H) need their own § 7.13 predictors
-    // and are deferred.
+    // Chroma is reconstructed with DC prediction; with § 7.13.2.13 smooth
+    // prediction over § 7.13.2.1 neighbour edges read from the partially-built
+    // frame when the decoded `uv_mode` resolves (via § 5.20.5.3
+    // `get_intra_uv_mode_set`) to `SMOOTH_PRED`; or with § 7.13.2.8 D135
+    // directional-follow prediction when `uv_mode == 0` over a directional luma
+    // makes the spec return `YMode == D135_PRED` (`AngleDeltaUV = AngleDeltaY ==
+    // 0`). Other non-DC chroma modes (PAETH, SMOOTH_V/H, other directional
+    // angles) need their own § 7.13 predictors and are deferred.
     let Some(supported_chroma) = modes.supported_chroma_mode() else {
         return Err(general_intra_unsupported(
             "general_intra_non_dc_chroma_mode",
             Some(tile_offset),
-            "general intra reconstruction only supports DC and SMOOTH chroma prediction; other non-DC chroma (uv_mode) modes are not yet implemented",
+            "general intra reconstruction only supports DC, SMOOTH, and D135 directional-follow chroma prediction; other non-DC chroma (uv_mode) modes are not yet implemented",
             GENERAL_INTRA_MODE_SPEC_SECTION,
         ));
     };
+    // The directional-follow D135 chroma predictor is verified bit-exact only for
+    // the top-left no-neighbour block, where the § 7.13.2.1 edges reduce to the
+    // flat fallback so the § 7.13.2.8 `enableIdif == 0` bilinear reduction equals
+    // the spec IDIF 4-tap interpolation (bilinear equals IDIF only for a flat
+    // edge). Over a real reconstructed neighbour edge it needs the genuine
+    // § 7.13.2.8 chroma IDIF (a separate brick), so gate it to the no-neighbour
+    // top-left full superblock.
+    let chroma_is_top_left = frontier.r == 0 && frontier.c == 0;
+    if supported_chroma == crate::tile_payload::SupportedChromaMode::D135Follow
+        && !(chroma_is_top_left && n4w == 16)
+    {
+        return Err(general_intra_unsupported(
+            "general_intra_directional_chroma_neighbour",
+            Some(tile_offset),
+            "general intra directional-follow (D135) chroma prediction is only supported for the top-left (no-neighbour) 64x64 superblock block; over a real reconstructed neighbour edge it needs the §7.13.2.8 IDIF 4-tap interpolation (bilinear equals IDIF only for a flat edge), which is not yet implemented",
+            GENERAL_INTRA_MODE_SPEC_SECTION,
+        ));
+    }
     // §7.13.2.1: the SMOOTH chroma path builds the §7.13.2.13 bottom-left
     // (`LeftCol[h]`) sentinel by edge-clamping (repeating the last in-block
     // neighbour sample). In raster decode order a full-superblock block's
@@ -2171,6 +2191,76 @@ mod general_intra_tests {
         assert_eq!(
             hash,
             "b15f267ec6e99ca4d96a70f38bffe5f798ee4c33ad3aaec23761a1ea74b0be33"
+        );
+    }
+
+    // Single-block directional-follow chroma intra: a 64x64 block whose luma codes
+    // as `D135_PRED` (the § 5.20.5.3 `y_mode_offset` escape, pAngle 135,
+    // `AngleDeltaY == 0`) and whose chroma codes with `uv_mode == 0`, so
+    // § 5.20.5.3 `get_intra_uv_mode_set` returns `YMode` (the directional-follow
+    // branch) — `UVMode == D135_PRED`, `AngleDeltaUV == 0`. Over the § 7.13.2.1
+    // no-neighbour fallback edges the chroma § 7.13.2.8 middle-angle prediction is
+    // the same `enableIdif == 0` bilinear sample copy the luma D135 path uses
+    // (shift `0`), so both U and V reconstruct as a genuine 135° anti-diagonal
+    // pattern (not flat, not DC) plus residual. avmdec and dav2d agree on the
+    // decoded output (md5 09fc23f0bced8ab5b9562d6d2478af1c); the first
+    // general-intra directional-follow chroma decode target.
+    const DFCHROMA_FIXTURE: &[u8] =
+        include_bytes!("../../../tests/conformance/vectors/valid/syn-dfchroma-intra-64x64-q80.ivf");
+
+    #[test]
+    fn dfchroma_directional_follow_chroma_intra_frame_decodes_to_oracle() {
+        use splot_recon::{BitDepth, PixelFormat, PlaneSize};
+
+        let frame = decode_general_intra_luma(DFCHROMA_FIXTURE);
+        assert_eq!(frame.bit_depth(), BitDepth::Eight);
+        assert_eq!(frame.pixel_format(), PixelFormat::Yuv420);
+        assert_eq!(frame.y().visible_size(), PlaneSize::new(64, 64).unwrap());
+        assert_eq!(
+            frame.u().unwrap().visible_size(),
+            PlaneSize::new(32, 32).unwrap()
+        );
+
+        // Luma is the D135 top/bottom split (top near 40, bottom near 210).
+        let y = frame.y().samples();
+        assert!(y[0] < y[63 * 64], "luma should increase top-to-bottom");
+
+        // Chroma is a GENUINE directional (D135) reconstruction, not flat DC: a
+        // 135° anti-diagonal pattern where the upper-right triangle (c > r) sits
+        // below the lower-left triangle (r > c). U and V each take many distinct
+        // values (not a single DC level), proving the directional chroma predictor
+        // ran, not the DC fallback.
+        let u = frame.u().unwrap().samples();
+        let v = frame.v().unwrap().samples();
+        let at = |p: &[u8], r: usize, c: usize| p[r * 32 + c];
+        let u_distinct = u.iter().collect::<std::collections::BTreeSet<_>>().len();
+        let v_distinct = v.iter().collect::<std::collections::BTreeSet<_>>().len();
+        assert!(
+            u_distinct > 4,
+            "U chroma must be a non-flat directional reconstruction"
+        );
+        assert!(
+            v_distinct > 4,
+            "V chroma must be a non-flat directional reconstruction"
+        );
+        assert!(
+            at(u, 2, 28) < at(u, 28, 2),
+            "U upper-right (c>r) must be below lower-left (r>c) for D135"
+        );
+        assert!(
+            at(v, 2, 28) < at(v, 28, 2),
+            "V upper-right (c>r) must be below lower-left (r>c) for D135"
+        );
+
+        // Frame hash pins splot's output, which reproduces avmdec's and dav2d's
+        // raw output byte-for-byte (verified locally; md5
+        // 09fc23f0bced8ab5b9562d6d2478af1c).
+        let hash = splot_recon::DecodedFrameHashInput::new(&frame)
+            .compute_hash()
+            .to_hex();
+        assert_eq!(
+            hash,
+            "628b759dcb63356ad3174063652c54d7ebf6f54d1566ab9f1b64b3a74542154f"
         );
     }
 

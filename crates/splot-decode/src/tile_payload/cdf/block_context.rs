@@ -156,18 +156,30 @@ pub(crate) enum SupportedDirectionalLumaMode {
 /// The chroma intra modes the general intra decode can reconstruct today — the
 /// subset of § 5.20.5.3 `get_intra_uv_mode_set` outputs proven bit-exact against
 /// the AVM/dav2d oracle. Other chroma modes (`SMOOTH_V/H_PRED`, `PAETH_PRED`,
-/// directional) need their own § 7.13 chroma predictors and remain deferred.
+/// other directional angles) need their own § 7.13 chroma predictors and remain
+/// deferred.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SupportedChromaMode {
     /// AV2 `DC_PRED` chroma prediction (§ 7.13.2.4).
     Dc,
     /// AV2 `SMOOTH_PRED` chroma prediction (§ 7.13.2.13).
     Smooth,
+    /// AV2 `D135_PRED` directional-follow chroma prediction (§ 7.13.2.8,
+    /// pAngle 135, `AngleDeltaUV == 0`). Resolved when the decoded
+    /// `uv_mode == 0` makes § 5.20.5.3 `get_intra_uv_mode_set` return `YMode`
+    /// (the directional-follow branch) and `YMode == D135_PRED`; the spec then
+    /// sets `AngleDeltaUV = AngleDeltaY` (here `0`). Over the § 7.13.2.1
+    /// no-neighbour fallback edges this reduces to the same `enableIdif == 0`
+    /// bilinear middle-angle prediction the luma D135 path uses (shift `0`, IDIF
+    /// is a sample copy), so it is verified bit-exact only for the top-left
+    /// no-neighbour block; neighbour-having directional chroma is deferred.
+    D135Follow,
 }
 
 /// AV2 § 9.2 canonical chroma mode values from `Default_Mode_List_Uv`:
-/// `DC_PRED == 0`, `SMOOTH_PRED == 9`.
+/// `DC_PRED == 0`, `D135_PRED == 4`, `SMOOTH_PRED == 9`.
 const DC_PRED_VALUE: u8 = 0;
+const D135_PRED_VALUE: u8 = 4;
 const SMOOTH_PRED_VALUE: u8 = 9;
 
 /// AV2 § 5.20.5.3 `Default_Mode_List_Uv[UV_INTRA_MODES_CFL_NOT_ALLOWED]`: the
@@ -220,8 +232,18 @@ fn get_intra_uv_mode_set(y_mode: IntraYMode, uv_mode: u8) -> Option<u8> {
 /// Resolves the supported chroma predictor from the decoded `uv_mode` index for
 /// any luma mode the general intra decode produces (non-directional or the
 /// supported directional subset), via AV2 § 5.20.5.3 `get_intra_uv_mode_set`.
-/// Returns the supported chroma predictor (`DC_PRED` or `SMOOTH_PRED`) or `None`
-/// for any other resolved chroma mode.
+/// Returns the supported chroma predictor (`DC_PRED`, `SMOOTH_PRED`, or the
+/// `D135_PRED` directional follow) or `None` for any other resolved chroma mode.
+///
+/// `D135_PRED` is admitted only when it is the directional **follow** of a
+/// directional luma mode (`uv_mode == 0` so § 5.20.5.3 returns `YMode`, with
+/// `YMode == D135_PRED`): the spec then sets `AngleDeltaUV = AngleDeltaY`, which
+/// is `0` for the supported luma D135 (so the chroma is pAngle 135 with no angle
+/// delta). The `D135_PRED` value can also appear as a non-follow entry from the
+/// `Default_Mode_List_Uv` scan paired with a non-directional luma mode; that
+/// pairing (`AngleDeltaUV = 0` independently) is also pAngle 135 with no delta,
+/// so it maps to the same predictor, but no oracle fixture exercises it yet, so
+/// it is left to a future increment by requiring the directional-follow path.
 pub(crate) fn supported_chroma_mode(
     y_mode: IntraYMode,
     uv_mode: u8,
@@ -230,6 +252,13 @@ pub(crate) fn supported_chroma_mode(
     match uv_mode_value {
         DC_PRED_VALUE => Some(SupportedChromaMode::Dc),
         SMOOTH_PRED_VALUE => Some(SupportedChromaMode::Smooth),
+        // Directional-follow D135 chroma: `uv_mode == 0` over a directional luma
+        // makes § 5.20.5.3 return `YMode` (`AngleDeltaUV = AngleDeltaY`). Only the
+        // luma D135 (`AngleDeltaY == 0`) follow is verified, so require both the
+        // follow branch (`uv_mode == 0`, directional luma) and `YMode == D135`.
+        D135_PRED_VALUE if uv_mode == 0 && y_mode.is_directional() => {
+            Some(SupportedChromaMode::D135Follow)
+        }
         _ => None,
     }
 }
@@ -661,17 +690,38 @@ mod tests {
 
     #[test]
     fn supported_chroma_mode_directional_luma_resolves_dc_for_uv_mode_one() {
-        // The hedge fixture: directional luma (D135) with DC chroma. With
-        // is_directional_mode(YMode), uv_mode 0 -> YMode (directional, unsupported);
-        // uv_mode 1 -> after modeIdx -= 1, the first Default_Mode_List_Uv entry
-        // (DC_PRED) -> SupportedChromaMode::Dc.
+        // The original hedge fixture: directional luma (D135) with DC chroma. With
+        // is_directional_mode(YMode), uv_mode 1 -> after modeIdx -= 1, the first
+        // Default_Mode_List_Uv entry (DC_PRED) -> SupportedChromaMode::Dc.
         let d135 = IntraYMode(IntraYMode::D135_PRED);
         assert_eq!(
             supported_chroma_mode(d135, 1),
             Some(SupportedChromaMode::Dc)
         );
-        // uv_mode 0 resolves to the directional YMode itself, which is unsupported.
-        assert_eq!(supported_chroma_mode(d135, 0), None);
+    }
+
+    #[test]
+    fn supported_chroma_mode_directional_follow_resolves_d135_for_uv_mode_zero() {
+        // §5.20.5.3: with a directional luma, uv_mode 0 returns YMode itself
+        // (`AngleDeltaUV = AngleDeltaY`). For YMode == D135_PRED that is the
+        // directional-follow D135 chroma the decode now reconstructs.
+        let d135 = IntraYMode(IntraYMode::D135_PRED);
+        assert_eq!(get_intra_uv_mode_set(d135, 0), Some(IntraYMode::D135_PRED));
+        assert_eq!(
+            supported_chroma_mode(d135, 0),
+            Some(SupportedChromaMode::D135Follow)
+        );
+    }
+
+    #[test]
+    fn supported_chroma_mode_non_follow_d135_is_deferred() {
+        // The §5.20.5.3 scan can also yield D135_PRED paired with a non-directional
+        // luma (`Default_Mode_List_Uv[8] == D135`, reached at uv_mode 8 for DC luma).
+        // That non-follow D135 chroma pairing is not yet oracle-verified, so it is
+        // deferred (only the uv_mode 0 directional-follow branch is admitted).
+        let dc = IntraYMode::DC_PRED;
+        assert_eq!(get_intra_uv_mode_set(dc, 8), Some(IntraYMode::D135_PRED));
+        assert_eq!(supported_chroma_mode(dc, 8), None);
     }
 
     #[test]

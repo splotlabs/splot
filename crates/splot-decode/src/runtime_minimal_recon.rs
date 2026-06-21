@@ -177,7 +177,63 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into(
             qindex,
             num4_above_right,
         ),
+        // Directional-follow D135 chroma is gated (by the caller) to the top-left
+        // no-neighbour block, so the §7.13.2.1 edges reduce to the flat fallback
+        // and the §7.13.2.8 middle-angle prediction is the same `enableIdif == 0`
+        // bilinear sample copy the luma D135 path uses (`num4_above_right` is the
+        // top-right sentinel, irrelevant over the fallback edges).
+        SupportedChromaMode::D135Follow => reconstruct_general_intra_chroma_directional_first_into(
+            workspace, block, plane_id, x, y, log2_side, qindex,
+        ),
     }
+}
+
+/// Reconstructs one no-neighbour (top-left) directional-follow D135 chroma block
+/// (§ 7.13.2.8 pAngle 135, `AngleDeltaUV == 0`) over the § 7.13.2.1 no-neighbour
+/// fallback edges, adds the decoded residual (or writes the bare prediction for an
+/// all-zero block), and stores the result into the workspace.
+///
+/// This is the chroma companion of
+/// [`reconstruct_general_intra_luma_directional_first_block_into`]: the caller
+/// gates it to the top-left no-neighbour block, where the chroma plane has no
+/// above/left neighbour, so the § 7.13.2.1 prediction edges reduce to the flat
+/// fallbacks (`AboveRow[k] = 127`, `LeftCol[k] = 129`, corner `128`) and the
+/// `enable_intra_edge_filter` / IDIF / upsample edge synthesis is a no-op. pAngle
+/// 135 has `dx == dy == Dr_Intra_Derivative[45] == 64`, so every projection lands
+/// on an integer sample (`shift == 0`) and the chroma IDIF reduces to a sample
+/// copy — bit-identical to the `enableIdif == 0` bilinear middle-angle predictor
+/// for this angle (verified bit-exact against avmdec/dav2d). Chroma never uses the
+/// § 7.14.4 TCQ dqDenom term (luma DCT_DCT only), so `use_tcq` is `false`.
+fn reconstruct_general_intra_chroma_directional_first_into(
+    workspace: &mut CurrentFrameWorkspace<u8>,
+    block: &LumaCoeffBlock,
+    plane_id: PlaneId,
+    x: usize,
+    y: usize,
+    log2_side: u32,
+    qindex: u32,
+) -> core::result::Result<(), GeneralIntraResidualError> {
+    let side = 1usize << log2_side;
+    let log2 = u8::try_from(log2_side).unwrap_or(u8::MAX);
+    let block_size = IntraRectBlockSize::new(log2, log2).map_err(recon_err)?;
+    let prediction =
+        predict_directional_noneighbour(SupportedDirectionalLumaMode::D135, block_size, side)?;
+    let out = if block.all_zero {
+        prediction
+    } else {
+        reconstruct_general_intra_block_with_prediction(
+            &block.quant,
+            &prediction,
+            qindex,
+            plane_id,
+            log2_side,
+            false,
+        )?
+    };
+    workspace
+        .write_rect_block(plane_id, x, y, block_size, &out)
+        .map_err(recon_err)?;
+    Ok(())
 }
 
 /// Reconstructs one § 7.13.2.13 `SMOOTH_PRED` chroma block over § 7.13.2.1 edges

@@ -85,6 +85,11 @@ description = "Single-block 8-bit 4:2:0 intra key frame (IVF, 64x64) from a proj
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-dfchroma-intra-64x64-q80.ivf"
+description = "Single-block 8-bit 4:2:0 intra key frame (IVF, 64x64) from a project-owned top/bottom-split luma input (top half 40, bottom half 210) with a 135-degree anti-diagonal chroma input, broad decode tools disabled at base_q_idx 80, so the whole frame is one 64x64 D135_PRED luma block (the section 5.20.5.3 y_mode_offset escape, pAngle 135, AngleDeltaY 0) whose chroma codes with uv_mode 0, making section 5.20.5.3 get_intra_uv_mode_set return YMode (the directional-follow branch): UVMode == D135_PRED, AngleDeltaUV 0. The chroma section 7.13.2.8 middle-angle prediction over the section 7.13.2.1 no-neighbour fallback edges reconstructs a genuine 135-degree anti-diagonal pattern (not flat, not DC) plus residual; the first general-intra directional-follow chroma decode target whose avmdec and dav2d raw outputs agree (md5 09fc23f0bced8ab5b9562d6d2478af1c) and splot reproduces byte-for-byte; validates clean."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-mbvg-intra-128x64-q80.ivf"
 description = "Multi-superblock 8-bit 4:2:0 intra key frame (IVF, 128x64) from a project-owned vertical-gradient luma input (top 30, bottom 210, flat chroma) with broad decode tools disabled at base_q_idx 80, so the frame is two 64x64 SMOOTH_V_PRED luma superblocks: the left (top-left, no-neighbour) superblock predicts over the section 7.13.2.1 fallback edges; the right superblock has a left neighbour and its SMOOTH_V_PRED prediction reads the REAL reconstructed neighbour edge (the section 7.13.2.1 left column / repeated-left above-row of the already-decoded left superblock) plus AC residual; the first general-intra multi-block non-DC luma decode target over a reconstructed (non-flat) neighbour edge whose avmdec and dav2d raw outputs agree (md5 3e57ba0c8cbdbe1d3400b0ae365c5d8e) and splot reproduces byte-for-byte; validates clean."
 expect = "clean"
