@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "602d6bee49014207bb718cf3fc1f1d8a591f0d30",
+  "audited_commit": "b2e51d2f7b48600f11d616bcc4f170710f550185",
   "outcome": "success",
   "files": [
     {
@@ -4790,7 +4790,7 @@
     },
     {
       "path": "docs/DECODER-SUPPORT-MATRIX.toml",
-      "sha256": "e6b86126534a723adeef751a727189eb320e1fd71b8bd25170124e6acafb0eba",
+      "sha256": "3e96f4a3519fe901b73c96448e3910a3ab471a23111e64759ba5d3d61abf6b7a",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-8.2-SYMBOL-DECODER",
@@ -5642,7 +5642,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "4f831f4932720c2dc11b855f2e406f316eb85b49e26d613c283d6fd4e325948d",
+      "sha256": "82d875791672ac2aecb2a990a6ccd89112fd780b54a6b240954a3c69f085caa4",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.10-RG",
@@ -22373,7 +22373,7 @@
     },
     {
       "path": "openspec/changes/tile-txb-skip-context-derivation/tasks.md",
-      "sha256": "82d51c55cf18f07ce716ad12d0a451be4815fbde6b966fea6756ff2494014bdd",
+      "sha256": "e102700be87c029640e4669040de3c67b9b666a609538bc7fbd9873e2ed5be9d",
       "scope_kind": "openspec",
       "feature_ids": [
         "DECODE-TILE-CDF-SELECTION-BOUNDARY"
@@ -22396,7 +22396,7 @@
     },
     {
       "path": "openspec/changes/tile-uv-mode-context-derivation/proposal.md",
-      "sha256": "4c43b0b3e6b77eb11d603a8111066b1ef3a556638b39d00b516dddd945c34403",
+      "sha256": "3076bb33824be46765fee4ad793ccd1e613f538aede6782f221e62e79c52094d",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
@@ -22412,7 +22412,7 @@
     },
     {
       "path": "openspec/changes/tile-uv-mode-context-derivation/tasks.md",
-      "sha256": "880b3064aac111d62499e836d36d458a3e741fd2ccfaab4f5be7f3819cc834be",
+      "sha256": "f94f48d720c568c4d4f0114c8672e425787d04761a294f6d644439864edb0cf8",
       "scope_kind": "openspec",
       "feature_ids": [
         "DECODE-TILE-CDF-SELECTION-BOUNDARY"
@@ -22437,7 +22437,7 @@
     },
     {
       "path": "openspec/changes/tile-y-mode-index-context-derivation/proposal.md",
-      "sha256": "957bc190c216bdb71adcf12400c6806fa8e0a809c5e0f01fdb00a256147d9003",
+      "sha256": "7832e7c626123fee18aaaf9092b8fb775b6a3cf9539585a1108b2812314be8c2",
       "scope_kind": "openspec",
       "feature_ids": [
         "DECODE-TILE-CDF-SELECTION-BOUNDARY"
@@ -22455,7 +22455,7 @@
     },
     {
       "path": "openspec/changes/tile-y-mode-index-context-derivation/tasks.md",
-      "sha256": "e60adee817f2a8094a6ce002ee1cd6154bc270368d6ad7ba60416338fc265072",
+      "sha256": "a05eed3a30ba143b8f2d22b3e28cb84d5b0ad1081cba5b51b006a61ce8bf840c",
       "scope_kind": "openspec",
       "feature_ids": [
         "DECODE-TILE-CDF-SELECTION-BOUNDARY"

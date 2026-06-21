@@ -24,7 +24,7 @@ single-block flat-intra fixture (`YMode == DC_PRED`, non-directional, ctx 0).
   the supported reconstruction subset (unreachable for the asserted trace, kept
   total/panic-free) and route it to a `decode/unsupported-feature` diagnostic.
 - The existing no-output-change snapshot
-  (`block_symbol_frontier_accepts_minimal_fixture_trace`) proves the derived
+  (`block_symbol_frontier_accepts_minimal_fixture_trace`, since retired by `decode-minimal-fixture-avm-skip-polarity`) proves the derived
   contexts match the previous literals.
 - Update feature tracking and OpenSpec artifacts.
 

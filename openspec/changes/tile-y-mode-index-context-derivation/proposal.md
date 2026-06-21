@@ -19,7 +19,7 @@ provably no-output-change for the single-block tile-origin fixture.
 - Thread the derived ctx into the minimal block-symbol trace
   (`block_symbol.rs::minimal_trace_items`) in place of the `YModeIndex { ctx: 0 }`
   literal; the existing no-output-change snapshot
-  (`block_symbol_frontier_accepts_minimal_fixture_trace`) proves the derived value
+  (`block_symbol_frontier_accepts_minimal_fixture_trace`, since retired by `decode-minimal-fixture-avm-skip-polarity`) proves the derived value
   matches.
 - Mark the in-frame `IntraJointModes` neighbour lookup deferred with a
   `TODO(spec: DECODE-TILE-CDF-SELECTION-BOUNDARY)` marker (the minimal frontier
