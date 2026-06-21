@@ -37,17 +37,13 @@ const SKIP_FRAME_COEFF_CDF_Q_CTX: usize = 0;
 /// transform and U is all-zero (`EobU == 0`), so neither the `+3` nor the `+6` term applies.
 const V_TXB_SKIP_CTX_NEUTRAL: usize = 0;
 
-/// Composes the complete ordered general intra DC skip-block trace read on the AV2
-/// general intra decode path for one undivided 64x64 superblock: the § 5.20.3.2
-/// `do_split == false` (`PARTITION_NONE`) flag, the § 5.20.5.3 mode-info prefix
-/// (`y_mode_set`, `y_mode_index`, `uv_mode`, all `0` for DC), then the per-plane
-/// § 5.20.7.27 `all_zero` (`txb_skip`) symbols (`1` each) in `residual()` order
-/// Y, U, V.
-///
-/// Unlike `block_symbol_trace::compose_minimal_intra_dc_complete_all_zero_block_trace`
-/// it leads with `do_split` and codes the luma/U `txb_skip` at the `TX_64X64` /
-/// `TX_32X32` `txSzCtx` of a 64x64 4:2:0 leaf rather than the minimal `TX_4X4` ctx;
-/// the V `txb_skip` keeps `ctx 0`. The coefficient CDF q-context is `0`.
+/// Composes the complete ordered general intra DC skip-block trace read on the AV2 general intra
+/// decode path for one undivided 64x64 superblock: the § 5.20.3.2 `do_split == false`
+/// (`PARTITION_NONE`) flag, the § 5.20.5.3 mode-info prefix (`y_mode_set`, `y_mode_index`,
+/// `uv_mode`, all `0` for DC), then the per-plane § 5.20.7.27 `all_zero` (`txb_skip`) symbols
+/// (`1` each) in `residual()` order Y, U, V. Unlike the minimal-tier all-zero composer it leads
+/// with `do_split` and codes the luma/U `txb_skip` at the `TX_64X64` / `TX_32X32` `txSzCtx` of a
+/// 64x64 4:2:0 leaf (not `TX_4X4`); the V `txb_skip` keeps `ctx 0`, q-context `0`.
 pub(crate) fn compose_general_intra_dc_skip_block_trace() -> Result<Vec<BlockSymbolToken>> {
     let modes = compose_minimal_intra_dc_block_mode_trace()?;
     let total = modes
@@ -124,20 +120,12 @@ fn compose_general_intra_dc_coded_block_trace(
     Ok(trace)
 }
 
-/// Encodes the general intra DC skip-block trace into its AV2 § 8.2.4-finalized
-/// `tile_data` bytes — the entropy-coded payload of a single-tile general intra
-/// frame, which the decoder consumes directly from byte 0 via § 8.2.2
-/// `init_symbol` with no structural prefix (a single last tile carries no
-/// `tile_size_minus_1` field).
-///
-/// These are the § 5.20 `tile_data` bytes for one 64x64 DC skip (all-zero)
-/// superblock. For the decoder to read them back identically, the muxing frame
-/// header (a later brick) must set `base_q_idx <= 90` (so the decoder derives
-/// coefficient CDF q-context `0`, matching [`SKIP_FRAME_COEFF_CDF_Q_CTX`]) and
-/// `disable_cdf_update == 0` (so the tile reader's adaptive CDFs match the
-/// `CdfUpdateMode::Enabled` this trace is coded under). This function emits only
-/// the tile bytes; container assembly and the cross-crate decode oracle are later
-/// bricks.
+/// Encodes the general intra DC skip-block trace into its AV2 § 8.2.4-finalized `tile_data`
+/// bytes — the entropy-coded payload of a single-tile general intra frame, which the decoder
+/// consumes from byte 0 via § 8.2.2 `init_symbol` (a single last tile has no `tile_size_minus_1`
+/// prefix). For an identical read-back the muxing header must set `base_q_idx <= 90` (q-context
+/// `0`, matching [`SKIP_FRAME_COEFF_CDF_Q_CTX`]) and `disable_cdf_update == 0`. Emits only the
+/// tile bytes; container assembly and the decode oracle are later bricks.
 pub(crate) fn encode_general_intra_dc_skip_tile_data() -> Result<Vec<u8>> {
     let trace = compose_general_intra_dc_skip_block_trace()?;
     encode_block_symbol_trace(&trace)
