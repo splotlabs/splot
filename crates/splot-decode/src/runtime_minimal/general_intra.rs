@@ -429,19 +429,31 @@ fn decode_one_general_intra_block(
     // (`shift == 0`) that bilinear branch is the sample copy `Edge[base]`, which is
     // bit-identical to the luma IDIF even over the non-flat real chroma edge
     // (verified against avmdec/dav2d). It couples with the neighbour-having D135
-    // luma block (`uv_mode == 0` directional-follow). Gated to the first superblock
-    // row (`frontier.r == 0`): a row>0 D135-follow chroma block reads the real above
-    // row, deferred with the row>0 luma D135 until a fixture pins it.
+    // luma block (`uv_mode == 0` directional-follow). The first-superblock-row
+    // (`frontier.r == 0`) and a row>0 non-first-column (`frontier.r != 0 &&
+    // frontier.c != 0`) full-superblock block are supported: the latter reads the
+    // real reconstructed §7.13.2.1 above chroma row, left chroma column, AND
+    // diagonally-above-left chroma corner via the same plane-general
+    // [`build_directional_middle_edges`] `(true, true)` arm the luma uses. (Chroma is
+    // 4:2:0, so the chroma block is the half-resolution image of the 64x64 luma
+    // superblock and is itself a `haveLeft && haveAbove` block at this position.)
     let chroma_is_top_left = frontier.r == 0 && frontier.c == 0;
     const FULL_SB_N4_CHROMA_GATE: usize = 16;
-    let chroma_neighbour_ok = frontier.r == 0 && n4w == FULL_SB_N4_CHROMA_GATE;
+    let chroma_first_row_neighbour_ok = frontier.r == 0 && n4w == FULL_SB_N4_CHROMA_GATE;
+    // Row>0 non-first-column full-superblock (`haveLeft && haveAbove`): the fixtured
+    // row>0 D135-follow chroma position. The row>0 FIRST-column (`!haveLeft &&
+    // haveAbove`) position is not yet fixtured and stays rejected.
+    let chroma_row_gt0_neighbour_ok =
+        frontier.r != 0 && frontier.c != 0 && n4w == FULL_SB_N4_CHROMA_GATE;
     if supported_chroma == crate::tile_payload::SupportedChromaMode::D135Follow
-        && !((chroma_is_top_left && n4w == FULL_SB_N4_CHROMA_GATE) || chroma_neighbour_ok)
+        && !((chroma_is_top_left && n4w == FULL_SB_N4_CHROMA_GATE)
+            || chroma_first_row_neighbour_ok
+            || chroma_row_gt0_neighbour_ok)
     {
         return Err(general_intra_unsupported(
             "general_intra_directional_chroma_neighbour",
             Some(tile_offset),
-            "general intra directional-follow (D135) chroma prediction is only supported for the top-left (no-neighbour) 64x64 superblock block and for a first-superblock-row neighbour-having full 64x64 superblock block (real reconstructed left column); a row > 0 D135-follow chroma block reads the §7.13.2.1 real reconstructed above row, which is deferred until an oracle fixture pins it",
+            "general intra directional-follow (D135) chroma prediction is supported for the top-left (no-neighbour) 64x64 superblock block, a first-superblock-row neighbour-having full 64x64 superblock block, and a row > 0 non-first-column full 64x64 superblock block (real reconstructed above row + left column + diagonally-above-left corner); a row > 0 FIRST-column (!haveLeft && haveAbove) or sub-partitioned D135-follow chroma block is deferred until an oracle fixture pins it",
             GENERAL_INTRA_MODE_SPEC_SECTION,
         ));
     }
@@ -765,11 +777,30 @@ fn decode_one_general_intra_block(
             // same `shift == 0` argument but is not yet covered by an oracle fixture,
             // so it is deferred to a dedicated row>0 D135 grid fixture.
             (_, Some(_)) if frontier.r == 0 && n4w == FULL_SB_N4_LUMA => {}
+            // Directional D135 at a row>0, non-first-column full-superblock block
+            // (`frontier.r != 0 && frontier.c != 0`, `haveLeft && haveAbove`), reading
+            // the **real reconstructed** §7.13.2.1 above row, left column, AND the
+            // diagonally-above-left corner `CurrFrame[plane][y-1][x-1]`. §7.13.2.8 D135
+            // reads that corner on its main diagonal (`above_base == -1`, `shift == 0`,
+            // a sample copy), so the row>0 `haveAbove == 1` path needs the real corner —
+            // which [`build_directional_middle_edges`]'s `(true, true)` arm now supplies
+            // via `reconstructed_sample`. pAngle 135's `shift == 0` makes the §7.13.2.8
+            // luma IDIF 4-tap (`Dr_Interp_Filter[0] = {0,128,0,0}`) a sample copy
+            // `Edge[base]`, bit-identical to the bilinear branch over the non-flat real
+            // edge (verified bit-exact against avmdec/dav2d). `enable_intra_edge_filter
+            // == 0` / `MrlIndex == 0` keep the edge-filter / upsample synthesis a no-op,
+            // and D135 never reads the above-right sentinel (`AboveRow[w]`).
+            //
+            // Gated tighter than the first-row arm: only the `frontier.c != 0`
+            // (`haveLeft && haveAbove`) row>0 position is fixtured. The `frontier.c == 0`
+            // (`!haveLeft && haveAbove`) first-column row>0 position is rejected below.
+            (_, Some(SupportedDirectionalLumaMode::D135))
+                if frontier.r != 0 && frontier.c != 0 && n4w == FULL_SB_N4_LUMA => {}
             (_, Some(_)) if !is_top_left && frontier.r != 0 => {
                 return Err(general_intra_unsupported(
                     "general_intra_multirow_directional_luma",
                     Some(tile_offset),
-                    "general intra directional (D135) luma prediction over a real reconstructed neighbour is only verified for the first superblock row (haveAbove == 0, real left column); a row > 0 D135 block reads the §7.13.2.1 real reconstructed above row, which is bit-exact by the same shift == 0 argument but is not yet covered by an oracle fixture, so it is deferred",
+                    "general intra directional (D135) luma prediction over a real reconstructed neighbour is verified for the first superblock row (haveAbove == 0, real left column) and for a row > 0 non-first-column full-superblock block (haveLeft && haveAbove, real above row + left column + diagonally-above-left corner); a row > 0 FIRST-column (!haveLeft && haveAbove) or sub-partitioned D135 block, and any row > 0 D157 block, are not yet covered by an oracle fixture, so they are deferred",
                     GENERAL_INTRA_MODE_SPEC_SECTION,
                 ));
             }
