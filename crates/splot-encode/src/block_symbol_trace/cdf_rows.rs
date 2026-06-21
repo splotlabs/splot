@@ -1,0 +1,244 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
+
+//! The unified scoped default-CDF rows for the minimal block-symbol trace
+//! (`BlockSymbolTraceCdfRows` with its `from_defaults()` initializer and `row_mut()`
+//! selector). Split out of `block_symbol_trace` to keep each file under the
+//! 1000-line source budget.
+
+use super::*;
+
+/// Unified scoped default-CDF rows for the minimal block-symbol trace, built
+/// directly from `splot-core` defaults so the trace module does not reach into
+/// the emitter modules' private CDF-row internals.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct BlockSymbolTraceCdfRows {
+    do_split_root: [i32; DO_SPLIT_CDF_ROW_LEN],
+    y_mode_set: [i32; Y_MODE_SET_CDF_ROW_LEN],
+    y_mode_index_tile_origin: [i32; INTRA_MODE_CDF_ROW_LEN],
+    uv_mode_non_directional: [i32; INTRA_MODE_CDF_ROW_LEN],
+    luma_txb_skip: [i32; TXB_SKIP_CDF_ROW_LEN],
+    u_txb_skip: [i32; TXB_SKIP_CDF_ROW_LEN],
+    v_txb_skip: [i32; V_TXB_SKIP_CDF_ROW_LEN],
+    luma_txb_skip_64x64: [i32; TXB_SKIP_CDF_ROW_LEN],
+    u_txb_skip_32x32: [i32; TXB_SKIP_CDF_ROW_LEN],
+    eob_pt_16: [i32; EOB_PT_16_CDF_ROW_LEN],
+    eob_pt_1024: [i32; EOB_PT_1024_CDF_ROW_LEN],
+    eob_pt_1024_chroma: [i32; EOB_PT_1024_CDF_ROW_LEN],
+    eob_extra: [i32; EOB_EXTRA_CDF_ROW_LEN],
+    coeff_base_lf_eob_tx64: [i32; COEFF_BASE_LF_EOB_CDF_ROW_LEN],
+    intra_tx_type_set1_4x4: [i32; INTRA_TX_TYPE_SET1_CDF_ROW_LEN],
+    sec_tx_type_intra_4x4: [i32; SEC_TX_TYPE_INTRA_CDF_ROW_LEN],
+    coeff_base_lf_eob: [i32; COEFF_BASE_LF_EOB_CDF_ROW_LEN],
+    coeff_base_lf_eob_ac: [i32; COEFF_BASE_LF_EOB_CDF_ROW_LEN],
+    coeff_base_lf_eob_ac_tx64: [i32; COEFF_BASE_LF_EOB_CDF_ROW_LEN],
+    coeff_base_lf_dc: [i32; COEFF_BASE_LF_CDF_ROW_LEN],
+    coeff_base_lf_dc_tx64: [i32; COEFF_BASE_LF_CDF_ROW_LEN],
+    coeff_base_lf_dc_tx64_visible_ac: [i32; COEFF_BASE_LF_CDF_ROW_LEN],
+    coeff_base_lf_ac_tx64_ctx9: [i32; COEFF_BASE_LF_CDF_ROW_LEN],
+    coeff_br_lf: [i32; COEFF_BR_LF_CDF_ROW_LEN],
+    dc_sign: [i32; DC_SIGN_CDF_ROW_LEN],
+    v_txb_skip_eobu: [i32; V_TXB_SKIP_CDF_ROW_LEN],
+    chroma_eob_pt_16: [i32; EOB_PT_16_CDF_ROW_LEN],
+    coeff_base_lf_eob_uv: [i32; COEFF_BASE_LF_EOB_UV_CDF_ROW_LEN],
+}
+
+impl BlockSymbolTraceCdfRows {
+    pub(super) fn from_defaults() -> Self {
+        Self {
+            do_split_root: DEFAULT_DO_SPLIT_CDF[ROOT_PARTITION_PLANE_START]
+                [ROOT_64X64_DO_SPLIT_CTX],
+            y_mode_set: DEFAULT_Y_MODE_SET_CDF,
+            y_mode_index_tile_origin: DEFAULT_Y_MODE_INDEX_CDF[TILE_ORIGIN_Y_MODE_INDEX_CTX],
+            uv_mode_non_directional: DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF
+                [NON_DIRECTIONAL_UV_MODE_CTX],
+            luma_txb_skip: DEFAULT_TXB_SKIP_CDF[MINIMAL_COEFF_CDF_Q_CTX][LUMA_PLANE_TYPE]
+                [TX_SIZE_4X4_CTX][TXB_SKIP_CTX_NEUTRAL],
+            u_txb_skip: DEFAULT_TXB_SKIP_CDF[MINIMAL_COEFF_CDF_Q_CTX][LUMA_PLANE_TYPE]
+                [TX_SIZE_4X4_CTX][CHROMA_U_TXB_SKIP_CTX_NEUTRAL],
+            v_txb_skip: DEFAULT_V_TXB_SKIP_CDF[MINIMAL_COEFF_CDF_Q_CTX][V_TXB_SKIP_CTX_NEUTRAL],
+            luma_txb_skip_64x64: DEFAULT_TXB_SKIP_CDF[MINIMAL_COEFF_CDF_Q_CTX][LUMA_PLANE_TYPE]
+                [TX_SIZE_64X64_CTX][TXB_SKIP_CTX_NEUTRAL],
+            u_txb_skip_32x32: DEFAULT_TXB_SKIP_CDF[MINIMAL_COEFF_CDF_Q_CTX][LUMA_PLANE_TYPE]
+                [TX_SIZE_32X32_CTX][CHROMA_U_TXB_SKIP_CTX_NEUTRAL],
+            eob_pt_16: DEFAULT_EOB_PT_16_CDF[MINIMAL_COEFF_CDF_Q_CTX][EOB_CTX_LUMA_INTRA],
+            eob_pt_1024: DEFAULT_EOB_PT_1024_CDF[MINIMAL_COEFF_CDF_Q_CTX][EOB_CTX_LUMA_INTRA],
+            eob_pt_1024_chroma: DEFAULT_EOB_PT_1024_CDF[MINIMAL_COEFF_CDF_Q_CTX][EOB_CTX_CHROMA],
+            eob_extra: DEFAULT_EOB_EXTRA_CDF[MINIMAL_COEFF_CDF_Q_CTX],
+            coeff_base_lf_eob_tx64: DEFAULT_COEFF_BASE_LF_EOB_CDF[MINIMAL_COEFF_CDF_Q_CTX]
+                [TX_SIZE_64X64_CTX][COEFF_BASE_LF_EOB_CTX_DC],
+            intra_tx_type_set1_4x4: DEFAULT_INTRA_TX_TYPE_SET1_CDF
+                [INTRA_TX_TYPE_SET1_TX_SIZE_SQR_4X4],
+            sec_tx_type_intra_4x4: DEFAULT_SEC_TX_TYPE_CDF[SEC_TX_TYPE_INTRA_BANK]
+                [SEC_TX_TYPE_INTRA_TX_SIZE_SQR_4X4],
+            coeff_base_lf_eob: DEFAULT_COEFF_BASE_LF_EOB_CDF[MINIMAL_COEFF_CDF_Q_CTX]
+                [TX_SIZE_4X4_CTX][COEFF_BASE_LF_EOB_CTX_DC],
+            coeff_base_lf_eob_ac: DEFAULT_COEFF_BASE_LF_EOB_CDF[MINIMAL_COEFF_CDF_Q_CTX]
+                [TX_SIZE_4X4_CTX][COEFF_BASE_LF_EOB_CTX_EOB2_AC],
+            coeff_base_lf_eob_ac_tx64: DEFAULT_COEFF_BASE_LF_EOB_CDF[MINIMAL_COEFF_CDF_Q_CTX]
+                [TX_SIZE_64X64_CTX][COEFF_BASE_LF_EOB_CTX_EOB2_AC],
+            coeff_base_lf_dc: DEFAULT_COEFF_BASE_LF_CDF[MINIMAL_COEFF_CDF_Q_CTX][TX_SIZE_4X4_CTX]
+                [COEFF_BASE_LF_CTX_EOB2_DC][COEFF_BASE_LF_TCQ_CTX_NEUTRAL],
+            coeff_base_lf_dc_tx64: DEFAULT_COEFF_BASE_LF_CDF[MINIMAL_COEFF_CDF_Q_CTX]
+                [TX_SIZE_64X64_CTX][COEFF_BASE_LF_CTX_EOB2_DC][COEFF_BASE_LF_TCQ_CTX_NEUTRAL],
+            coeff_base_lf_dc_tx64_visible_ac: DEFAULT_COEFF_BASE_LF_CDF[MINIMAL_COEFF_CDF_Q_CTX]
+                [TX_SIZE_64X64_CTX][COEFF_BASE_LF_CTX_VISIBLE_AC_DC][COEFF_BASE_LF_TCQ_CTX_NEUTRAL],
+            coeff_base_lf_ac_tx64_ctx9: DEFAULT_COEFF_BASE_LF_CDF[MINIMAL_COEFF_CDF_Q_CTX]
+                [TX_SIZE_64X64_CTX][COEFF_BASE_LF_CTX_AC_BAND_BASE][COEFF_BASE_LF_TCQ_CTX_NEUTRAL],
+            coeff_br_lf: DEFAULT_COEFF_BR_LF_CDF[MINIMAL_COEFF_CDF_Q_CTX][COEFF_BR_LF_CTX_DC],
+            dc_sign: DEFAULT_DC_SIGN_CDF[MINIMAL_COEFF_CDF_Q_CTX][DC_SIGN_PLANE_TYPE_LUMA]
+                [DC_SIGN_GROUP_VISIBLE][DC_SIGN_CTX_NEUTRAL],
+            v_txb_skip_eobu: DEFAULT_V_TXB_SKIP_CDF[MINIMAL_COEFF_CDF_Q_CTX]
+                [CHROMA_V_TXB_SKIP_CTX_EOBU],
+            chroma_eob_pt_16: DEFAULT_EOB_PT_16_CDF[MINIMAL_COEFF_CDF_Q_CTX][EOB_CTX_CHROMA],
+            coeff_base_lf_eob_uv: DEFAULT_COEFF_BASE_LF_EOB_UV_CDF[MINIMAL_COEFF_CDF_Q_CTX]
+                [COEFF_BASE_LF_EOB_CTX_DC],
+        }
+    }
+
+    pub(super) fn row_mut(&mut self, token: BlockSymbolToken, index: usize) -> Result<&mut [i32]> {
+        match token {
+            // Bypass literals carry no CDF row; `roundtrip_block_symbol_trace`
+            // dispatches them before ever calling `row_mut`, so this arm is
+            // unreachable in practice.
+            BlockSymbolToken::Bypass { .. } => {
+                Err(Error::BlockSymbolTraceUnsupportedSelector { index })
+            }
+            BlockSymbolToken::Partition(partition) => match partition.selector() {
+                PartitionCdfRowSelector::DoSplit {
+                    plane_start: ROOT_PARTITION_PLANE_START,
+                    ctx: ROOT_64X64_DO_SPLIT_CTX,
+                } => Ok(self.do_split_root.as_mut_slice()),
+                _ => Err(Error::BlockSymbolTraceUnsupportedSelector { index }),
+            },
+            BlockSymbolToken::Mode(mode) => match mode.selector() {
+                IntraModeCdfRowSelector::YModeSet => Ok(self.y_mode_set.as_mut_slice()),
+                IntraModeCdfRowSelector::YModeIndex {
+                    ctx: TILE_ORIGIN_Y_MODE_INDEX_CTX,
+                } => Ok(self.y_mode_index_tile_origin.as_mut_slice()),
+                IntraModeCdfRowSelector::UvModeCflNotAllowed {
+                    ctx: NON_DIRECTIONAL_UV_MODE_CTX,
+                } => Ok(self.uv_mode_non_directional.as_mut_slice()),
+                _ => Err(Error::BlockSymbolTraceUnsupportedSelector { index }),
+            },
+            BlockSymbolToken::Coeff(coeff) => match coeff.selector() {
+                CoefficientCdfRowSelector::TxbSkip {
+                    coeff_cdf_q_ctx: MINIMAL_COEFF_CDF_Q_CTX,
+                    plane_type: LUMA_PLANE_TYPE,
+                    tx_size: TX_SIZE_4X4_CTX,
+                    ctx: TXB_SKIP_CTX_NEUTRAL,
+                } => Ok(self.luma_txb_skip.as_mut_slice()),
+                CoefficientCdfRowSelector::TxbSkip {
+                    coeff_cdf_q_ctx: MINIMAL_COEFF_CDF_Q_CTX,
+                    plane_type: LUMA_PLANE_TYPE,
+                    tx_size: TX_SIZE_4X4_CTX,
+                    ctx: CHROMA_U_TXB_SKIP_CTX_NEUTRAL,
+                } => Ok(self.u_txb_skip.as_mut_slice()),
+                CoefficientCdfRowSelector::VTxbSkip {
+                    coeff_cdf_q_ctx: MINIMAL_COEFF_CDF_Q_CTX,
+                    ctx: V_TXB_SKIP_CTX_NEUTRAL,
+                } => Ok(self.v_txb_skip.as_mut_slice()),
+                CoefficientCdfRowSelector::TxbSkip {
+                    coeff_cdf_q_ctx: MINIMAL_COEFF_CDF_Q_CTX,
+                    plane_type: LUMA_PLANE_TYPE,
+                    tx_size: TX_SIZE_64X64_CTX,
+                    ctx: TXB_SKIP_CTX_NEUTRAL,
+                } => Ok(self.luma_txb_skip_64x64.as_mut_slice()),
+                CoefficientCdfRowSelector::TxbSkip {
+                    coeff_cdf_q_ctx: MINIMAL_COEFF_CDF_Q_CTX,
+                    plane_type: LUMA_PLANE_TYPE,
+                    tx_size: TX_SIZE_32X32_CTX,
+                    ctx: CHROMA_U_TXB_SKIP_CTX_NEUTRAL,
+                } => Ok(self.u_txb_skip_32x32.as_mut_slice()),
+                CoefficientCdfRowSelector::EobPt16 {
+                    coeff_cdf_q_ctx: MINIMAL_COEFF_CDF_Q_CTX,
+                    eob_ctx: EOB_CTX_LUMA_INTRA,
+                } => Ok(self.eob_pt_16.as_mut_slice()),
+                CoefficientCdfRowSelector::EobPt1024 {
+                    coeff_cdf_q_ctx: MINIMAL_COEFF_CDF_Q_CTX,
+                    eob_ctx: EOB_CTX_LUMA_INTRA,
+                } => Ok(self.eob_pt_1024.as_mut_slice()),
+                CoefficientCdfRowSelector::EobPt1024 {
+                    coeff_cdf_q_ctx: MINIMAL_COEFF_CDF_Q_CTX,
+                    eob_ctx: EOB_CTX_CHROMA,
+                } => Ok(self.eob_pt_1024_chroma.as_mut_slice()),
+                CoefficientCdfRowSelector::EobExtra {
+                    coeff_cdf_q_ctx: MINIMAL_COEFF_CDF_Q_CTX,
+                } => Ok(self.eob_extra.as_mut_slice()),
+                CoefficientCdfRowSelector::CoeffBaseLfEob {
+                    coeff_cdf_q_ctx: MINIMAL_COEFF_CDF_Q_CTX,
+                    tx_size: TX_SIZE_64X64_CTX,
+                    ctx: COEFF_BASE_LF_EOB_CTX_DC,
+                } => Ok(self.coeff_base_lf_eob_tx64.as_mut_slice()),
+                CoefficientCdfRowSelector::IntraTxTypeSet1 {
+                    tx_size_sqr: INTRA_TX_TYPE_SET1_TX_SIZE_SQR_4X4,
+                } => Ok(self.intra_tx_type_set1_4x4.as_mut_slice()),
+                CoefficientCdfRowSelector::SecTxTypeIntra {
+                    tx_size_sqr: SEC_TX_TYPE_INTRA_TX_SIZE_SQR_4X4,
+                } => Ok(self.sec_tx_type_intra_4x4.as_mut_slice()),
+                CoefficientCdfRowSelector::CoeffBaseLfEob {
+                    coeff_cdf_q_ctx: MINIMAL_COEFF_CDF_Q_CTX,
+                    tx_size: TX_SIZE_4X4_CTX,
+                    ctx: COEFF_BASE_LF_EOB_CTX_DC,
+                } => Ok(self.coeff_base_lf_eob.as_mut_slice()),
+                CoefficientCdfRowSelector::CoeffBaseLfEob {
+                    coeff_cdf_q_ctx: MINIMAL_COEFF_CDF_Q_CTX,
+                    tx_size: TX_SIZE_4X4_CTX,
+                    ctx: COEFF_BASE_LF_EOB_CTX_EOB2_AC,
+                } => Ok(self.coeff_base_lf_eob_ac.as_mut_slice()),
+                CoefficientCdfRowSelector::CoeffBaseLfEob {
+                    coeff_cdf_q_ctx: MINIMAL_COEFF_CDF_Q_CTX,
+                    tx_size: TX_SIZE_64X64_CTX,
+                    ctx: COEFF_BASE_LF_EOB_CTX_EOB2_AC,
+                } => Ok(self.coeff_base_lf_eob_ac_tx64.as_mut_slice()),
+                CoefficientCdfRowSelector::CoeffBaseLf {
+                    coeff_cdf_q_ctx: MINIMAL_COEFF_CDF_Q_CTX,
+                    tx_size: TX_SIZE_4X4_CTX,
+                    ctx: COEFF_BASE_LF_CTX_EOB2_DC,
+                    tcq_ctx: COEFF_BASE_LF_TCQ_CTX_NEUTRAL,
+                } => Ok(self.coeff_base_lf_dc.as_mut_slice()),
+                CoefficientCdfRowSelector::CoeffBaseLf {
+                    coeff_cdf_q_ctx: MINIMAL_COEFF_CDF_Q_CTX,
+                    tx_size: TX_SIZE_64X64_CTX,
+                    ctx: COEFF_BASE_LF_CTX_EOB2_DC,
+                    tcq_ctx: COEFF_BASE_LF_TCQ_CTX_NEUTRAL,
+                } => Ok(self.coeff_base_lf_dc_tx64.as_mut_slice()),
+                CoefficientCdfRowSelector::CoeffBaseLf {
+                    coeff_cdf_q_ctx: MINIMAL_COEFF_CDF_Q_CTX,
+                    tx_size: TX_SIZE_64X64_CTX,
+                    ctx: COEFF_BASE_LF_CTX_VISIBLE_AC_DC,
+                    tcq_ctx: COEFF_BASE_LF_TCQ_CTX_NEUTRAL,
+                } => Ok(self.coeff_base_lf_dc_tx64_visible_ac.as_mut_slice()),
+                CoefficientCdfRowSelector::CoeffBaseLf {
+                    coeff_cdf_q_ctx: MINIMAL_COEFF_CDF_Q_CTX,
+                    tx_size: TX_SIZE_64X64_CTX,
+                    ctx: COEFF_BASE_LF_CTX_AC_BAND_BASE,
+                    tcq_ctx: COEFF_BASE_LF_TCQ_CTX_NEUTRAL,
+                } => Ok(self.coeff_base_lf_ac_tx64_ctx9.as_mut_slice()),
+                CoefficientCdfRowSelector::CoeffBrLf {
+                    coeff_cdf_q_ctx: MINIMAL_COEFF_CDF_Q_CTX,
+                    ctx: COEFF_BR_LF_CTX_DC,
+                } => Ok(self.coeff_br_lf.as_mut_slice()),
+                CoefficientCdfRowSelector::DcSign {
+                    coeff_cdf_q_ctx: MINIMAL_COEFF_CDF_Q_CTX,
+                    plane_type: DC_SIGN_PLANE_TYPE_LUMA,
+                    group: DC_SIGN_GROUP_VISIBLE,
+                    ctx: DC_SIGN_CTX_NEUTRAL,
+                } => Ok(self.dc_sign.as_mut_slice()),
+                CoefficientCdfRowSelector::VTxbSkip {
+                    coeff_cdf_q_ctx: MINIMAL_COEFF_CDF_Q_CTX,
+                    ctx: CHROMA_V_TXB_SKIP_CTX_EOBU,
+                } => Ok(self.v_txb_skip_eobu.as_mut_slice()),
+                CoefficientCdfRowSelector::EobPt16 {
+                    coeff_cdf_q_ctx: MINIMAL_COEFF_CDF_Q_CTX,
+                    eob_ctx: EOB_CTX_CHROMA,
+                } => Ok(self.chroma_eob_pt_16.as_mut_slice()),
+                CoefficientCdfRowSelector::CoeffBaseLfEobUv {
+                    coeff_cdf_q_ctx: MINIMAL_COEFF_CDF_Q_CTX,
+                    ctx: COEFF_BASE_LF_EOB_CTX_DC,
+                } => Ok(self.coeff_base_lf_eob_uv.as_mut_slice()),
+                _ => Err(Error::BlockSymbolTraceUnsupportedSelector { index }),
+            },
+        }
+    }
+}
