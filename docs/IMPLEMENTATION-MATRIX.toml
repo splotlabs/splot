@@ -5552,6 +5552,39 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-GENERAL-INTRA-TWO-NONZERO"
+name = "First two-nonzero-coefficient intra block"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20.7.27", "8.3.2", "8.2.5", "8.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/general_intra_trace.rs"
+openspec_change = "encoder-general-intra-two-nonzero"
+tracking_issue = ""
+owner = "encoder"
+risk = "low"
+notes = "Decodable-tile arc: the FIRST block with TWO NONZERO COEFFICIENTS + the first MULTI-SIGN block (every prior coded block had <=1 nonzero coeff = <=1 sign). emit_minimal_intra_two_nonzero_ivf() (splot-encode public) codes a POSITIVE level-4 AC at scan index 1 AND a NEGATIVE level-1 DC at scan index 0 in one eob=2 block. KEY NEW MACHINERY: the non-EOB coeff_base NONZERO path (DC coeff_base symbol 1) + the SIGN PASS in the AV2 \u00a75.20.7.27 REVERSE-SCAN order `for c=eob-1..0`: the AC sign_bit (c=1, \u00a78.2.5 bypass) is emitted FIRST, then the DC dc_sign (c=0, CDF). general_intra_64x64_luma_two_nonzero_base_tokens returns the base pass (txb_skip=0, eob_pt_1024=1, AC coeff_base_eob symbol 3 at ctx 1, DC coeff_base symbol 1 at ctx 2); the composer appends the two signs in reverse-scan order. NO NEW CDF ROWS (reuses the #399 visible-AC ctx-2 DC coeff_base row + the shared dc_sign row). CODEX P1 CAUGHT (PR #401) the original DC-first order; an adversarial Workflow (spec \u00a75.20.7.27:15686 reverse loop + splot-decode scan_walk + refuter) confirmed AC-first high-confidence, and the fix uses a NEGATIVE DC so the oracle PROVES the order (a both-positive block reconstructs identically under either order; exit_symbol cannot catch a bit-aligned misorder). `splot decode` reconstructs the cosine + negative DC offset: each luma row constant, top 50 rows=128, bottom 14 rows=127 (a DC-first bug would give 129 in the bottom band); U/V flat 128. decode_check=done; avm_diff=not-applicable. Encoder-mission-DRIVEN (owner=encoder). FOLLOW-UPS: eob>2 (eob_extra), 2-D/horizontal coefficients, larger magnitudes (coeff_br/golomb). HONEST SCOPE: first 2-nonzero/multi-sign block; NOT a general encoder, NOT receive_packet, NOT Baseline Encoder Profile v1."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-cli/tests/encode_decode_roundtrip.rs::encoder_two_nonzero_ivf_decodes_to_a_cosine_plus_dc_offset", "crates/splot-encode/src/general_intra_trace.rs::tests::general_two_nonzero_block_trace_roundtrips_through_one_coder"]
+commands = ["cargo test -p splot-cli --test encode_decode_roundtrip --locked", "cargo test -p splot-encode two_nonzero --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-RECON-DEPENDENCY"
 name = "Encoder reconstruction dependency boundary"
 category = "encoder"

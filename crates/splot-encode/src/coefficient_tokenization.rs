@@ -56,7 +56,7 @@ mod general_coded;
 pub(crate) use general_coded::{
     general_intra_32x32_chroma_u_dc_coded_tokens, general_intra_32x32_chroma_v_dc_coded_tokens,
     general_intra_64x64_luma_dc_coded_tokens, general_intra_64x64_luma_two_coeff_tokens,
-    general_intra_64x64_luma_visible_ac_tokens,
+    general_intra_64x64_luma_two_nonzero_base_tokens, general_intra_64x64_luma_visible_ac_tokens,
 };
 
 const DCT_DCT_4X4_WIDTH: usize = 4;

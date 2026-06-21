@@ -22,7 +22,8 @@ use crate::coefficient_tokenization::{
     chroma_v_all_zero_token, general_intra_32x32_chroma_u_all_zero_token,
     general_intra_32x32_chroma_u_dc_coded_tokens, general_intra_32x32_chroma_v_dc_coded_tokens,
     general_intra_64x64_luma_all_zero_token, general_intra_64x64_luma_dc_coded_tokens,
-    general_intra_64x64_luma_two_coeff_tokens, general_intra_64x64_luma_visible_ac_tokens,
+    general_intra_64x64_luma_two_coeff_tokens, general_intra_64x64_luma_two_nonzero_base_tokens,
+    general_intra_64x64_luma_visible_ac_tokens, luma_dc_sign_token,
 };
 use crate::error::{Error, Result};
 use crate::partition_emission::emit_root_do_split_none;
@@ -32,22 +33,17 @@ use crate::partition_emission::emit_root_do_split_none;
 /// `syn-flat-intra-64x64-q80` fixture's `base_q_idx == 80` selects).
 const SKIP_FRAME_COEFF_CDF_Q_CTX: usize = 0;
 
-/// The § 8.3.2 neutral V `txb_skip` context: `0`. For this skip block the chroma
-/// block equals its transform size and the U plane is all-zero (`EobU == 0`), so
-/// neither the chroma-larger-than-tx (`+3`) nor the `EobU != 0` (`+6`) term applies.
+/// The § 8.3.2 neutral V `txb_skip` context: `0`. For these frames the chroma block equals its
+/// transform and U is all-zero (`EobU == 0`), so neither the `+3` nor the `+6` term applies.
 const V_TXB_SKIP_CTX_NEUTRAL: usize = 0;
 
-/// Composes the complete ordered general intra DC skip-block trace read on the AV2
-/// general intra decode path for one undivided 64x64 superblock: the § 5.20.3.2
-/// `do_split == false` (`PARTITION_NONE`) flag, the § 5.20.5.3 mode-info prefix
-/// (`y_mode_set`, `y_mode_index`, `uv_mode`, all `0` for DC), then the per-plane
-/// § 5.20.7.27 `all_zero` (`txb_skip`) symbols (`1` each) in `residual()` order
-/// Y, U, V.
-///
-/// Unlike `block_symbol_trace::compose_minimal_intra_dc_complete_all_zero_block_trace`
-/// it leads with `do_split` and codes the luma/U `txb_skip` at the `TX_64X64` /
-/// `TX_32X32` `txSzCtx` of a 64x64 4:2:0 leaf rather than the minimal `TX_4X4` ctx;
-/// the V `txb_skip` keeps `ctx 0`. The coefficient CDF q-context is `0`.
+/// Composes the complete ordered general intra DC skip-block trace read on the AV2 general intra
+/// decode path for one undivided 64x64 superblock: the § 5.20.3.2 `do_split == false`
+/// (`PARTITION_NONE`) flag, the § 5.20.5.3 mode-info prefix (`y_mode_set`, `y_mode_index`,
+/// `uv_mode`, all `0` for DC), then the per-plane § 5.20.7.27 `all_zero` (`txb_skip`) symbols
+/// (`1` each) in `residual()` order Y, U, V. Unlike the minimal-tier all-zero composer it leads
+/// with `do_split` and codes the luma/U `txb_skip` at the `TX_64X64` / `TX_32X32` `txSzCtx` of a
+/// 64x64 4:2:0 leaf (not `TX_4X4`); the V `txb_skip` keeps `ctx 0`, q-context `0`.
 pub(crate) fn compose_general_intra_dc_skip_block_trace() -> Result<Vec<BlockSymbolToken>> {
     let modes = compose_minimal_intra_dc_block_mode_trace()?;
     let total = modes
@@ -78,14 +74,11 @@ pub(crate) fn compose_general_intra_dc_skip_block_trace() -> Result<Vec<BlockSym
 }
 
 /// The unsigned luma DC magnitude the coded frame emits: `6` (`coeff_base_eob` saturated at
-/// `4`, level 5, plus `coeff_br == 1`). Negative, it dequantizes to a flat luma reconstruction
-/// of `127` at `base_q_idx == 80`.
-///
-/// It is the largest magnitude that stays **below the § 5.20.7.28 golomb threshold** on this
-/// frame: the minimal sequence header's luma uses TCQ, so `read_quant` reads a golomb bypass
-/// tail once `quant >= maxLevel - allowTcq == 7`. Magnitude `7` (the q80 fixture's luma level,
-/// reconstructing to `100`) would need that golomb tail, which the coded token set does not yet
-/// model — a follow-up brick.
+/// `4`, level 5, plus `coeff_br == 1`). Negative, it reconstructs flat luma `127` at
+/// `base_q_idx == 80`. It is the largest magnitude **below the § 5.20.7.28 golomb threshold** on
+/// this frame: the minimal header's luma uses TCQ, so `read_quant` reads a golomb tail once
+/// `quant >= maxLevel - allowTcq == 7`. Magnitude `7` (the q80 luma level, reconstructing `100`)
+/// would need that tail — a follow-up brick.
 const CODED_LUMA_DC_MAGNITUDE: u32 = 6;
 
 /// Composes the general intra DC coded-block trace: like
@@ -127,20 +120,12 @@ fn compose_general_intra_dc_coded_block_trace(
     Ok(trace)
 }
 
-/// Encodes the general intra DC skip-block trace into its AV2 § 8.2.4-finalized
-/// `tile_data` bytes — the entropy-coded payload of a single-tile general intra
-/// frame, which the decoder consumes directly from byte 0 via § 8.2.2
-/// `init_symbol` with no structural prefix (a single last tile carries no
-/// `tile_size_minus_1` field).
-///
-/// These are the § 5.20 `tile_data` bytes for one 64x64 DC skip (all-zero)
-/// superblock. For the decoder to read them back identically, the muxing frame
-/// header (a later brick) must set `base_q_idx <= 90` (so the decoder derives
-/// coefficient CDF q-context `0`, matching [`SKIP_FRAME_COEFF_CDF_Q_CTX`]) and
-/// `disable_cdf_update == 0` (so the tile reader's adaptive CDFs match the
-/// `CdfUpdateMode::Enabled` this trace is coded under). This function emits only
-/// the tile bytes; container assembly and the cross-crate decode oracle are later
-/// bricks.
+/// Encodes the general intra DC skip-block trace into its AV2 § 8.2.4-finalized `tile_data`
+/// bytes — the entropy-coded payload of a single-tile general intra frame, which the decoder
+/// consumes from byte 0 via § 8.2.2 `init_symbol` (a single last tile has no `tile_size_minus_1`
+/// prefix). For an identical read-back the muxing header must set `base_q_idx <= 90` (q-context
+/// `0`, matching [`SKIP_FRAME_COEFF_CDF_Q_CTX`]) and `disable_cdf_update == 0`. Emits only the
+/// tile bytes; container assembly and the decode oracle are later bricks.
 pub(crate) fn encode_general_intra_dc_skip_tile_data() -> Result<Vec<u8>> {
     let trace = compose_general_intra_dc_skip_block_trace()?;
     encode_block_symbol_trace(&trace)
@@ -508,6 +493,72 @@ fn compose_general_intra_visible_ac_block_trace() -> Result<Vec<BlockSymbolToken
 /// oracle lives in `splot-cli`.
 pub fn emit_minimal_intra_visible_ac_ivf() -> Result<Vec<u8>> {
     let trace = compose_general_intra_visible_ac_block_trace()?;
+    let tile_data = encode_block_symbol_trace(&trace)?;
+    splot_core::headers::frame::encode_minimal_intra_clk_ivf_with_base_q_idx(
+        SKIP_FRAME_BASE_Q_IDX,
+        &tile_data,
+    )
+    .map_err(|source| Error::MinimalIntraSkipIvf { source })
+}
+
+/// The DC sign for the two-nonzero-coefficient block: **negative** (`dc_sign == 1`). A negative
+/// DC makes the oracle genuinely exercise the AV2 § 5.20.7.27 reverse-scan sign order: with both
+/// signs positive the block reconstructs identically under either sign order, so an ordering bug
+/// would pass undetected. With the DC negative and the AC positive, only the spec-correct order
+/// (AC `sign_bit` before DC `dc_sign`) reconstructs consistently.
+const TWO_NONZERO_DC_NEGATIVE: bool = true;
+
+/// Composes the general intra eob=2 **two-nonzero-coefficient** luma block trace: `do_split`,
+/// the mode prefix, the coded luma base pass (a level-4 AC at scan index 1 and a level-1 DC at
+/// scan index 0), then the sign pass in AV2 § 5.20.7.27 order `c = eob-1 .. 0` (reverse scan):
+/// the AC `sign_bit` § 8.2.5 bypass (c=1) FIRST, then the DC `dc_sign` CDF symbol (c=0). U and V
+/// are skipped. This is the first block where two coefficients are nonzero; the reconstruction is
+/// the visible-AC vertical cosine superimposed on the negative DC offset.
+fn compose_general_intra_two_nonzero_block_trace() -> Result<Vec<BlockSymbolToken>> {
+    let modes = compose_minimal_intra_dc_block_mode_trace()?;
+    let luma = general_intra_64x64_luma_two_nonzero_base_tokens(SKIP_FRAME_COEFF_CDF_Q_CTX)?;
+    let total = modes
+        .len()
+        .checked_add(luma.len())
+        .and_then(|n| n.checked_add(5)) // do_split + AC sign + DC sign + U skip + V skip
+        .ok_or(Error::BlockSymbolTraceAllocationFailed {
+            context: "general two-nonzero block trace length",
+        })?;
+    let mut trace = Vec::new();
+    trace
+        .try_reserve_exact(total)
+        .map_err(|_| Error::BlockSymbolTraceAllocationFailed {
+            context: "general two-nonzero block trace",
+        })?;
+    trace.push(BlockSymbolToken::Partition(emit_root_do_split_none()));
+    trace.extend(modes.into_iter().map(BlockSymbolToken::Mode));
+    trace.extend(luma.into_iter().map(BlockSymbolToken::Coeff));
+    // Sign pass, reverse scan (`c = eob-1 .. 0`): the AC `sign_bit` § 8.2.5 bypass (c=1) is
+    // emitted FIRST, then the DC `dc_sign` CDF symbol (c=0).
+    trace.push(BlockSymbolToken::bypass(CHROMA_SIGN_BIT_WIDTH, 0));
+    trace.push(BlockSymbolToken::Coeff(luma_dc_sign_token(
+        SKIP_FRAME_COEFF_CDF_Q_CTX,
+        TWO_NONZERO_DC_NEGATIVE,
+    )));
+    trace.push(BlockSymbolToken::Coeff(
+        general_intra_32x32_chroma_u_all_zero_token(SKIP_FRAME_COEFF_CDF_Q_CTX),
+    ));
+    trace.push(BlockSymbolToken::Coeff(chroma_v_all_zero_token(
+        SKIP_FRAME_COEFF_CDF_Q_CTX,
+        V_TXB_SKIP_CTX_NEUTRAL,
+    )));
+    Ok(trace)
+}
+
+/// Emits a complete, decodable AV2 IVF stream for one 64x64 all-intra `OBU_CLOSED_LOOP_KEY`
+/// frame whose luma block carries **two nonzero coefficients** — a positive level-4 AC at scan
+/// index 1 and a **negative** level-1 DC at scan index 0 (eob=2, U and V skipped). This is the
+/// encoder's first block with more than one nonzero coefficient; it exercises the AV2 § 5.20.7.27
+/// reverse-scan sign pass (AC `sign_bit` before DC `dc_sign`). The reconstruction is the
+/// visible-AC vertical cosine superimposed on the negative DC offset. The cross-crate decode
+/// oracle lives in `splot-cli`.
+pub fn emit_minimal_intra_two_nonzero_ivf() -> Result<Vec<u8>> {
+    let trace = compose_general_intra_two_nonzero_block_trace()?;
     let tile_data = encode_block_symbol_trace(&trace)?;
     splot_core::headers::frame::encode_minimal_intra_clk_ivf_with_base_q_idx(
         SKIP_FRAME_BASE_Q_IDX,
@@ -895,6 +946,53 @@ mod tests {
         assert_ne!(visible, emit_minimal_intra_two_coeff_ivf().unwrap());
         assert_eq!(visible, emit_minimal_intra_visible_ac_ivf().unwrap());
         let parsed = splot_core::ivf::parse_ivf_partial(&visible);
+        assert!(parsed.error.is_none());
+        assert_eq!(parsed.frames.len(), 1);
+    }
+
+    #[test]
+    fn composes_general_two_nonzero_block_trace_in_order() {
+        let trace = compose_general_intra_two_nonzero_block_trace().unwrap();
+
+        // do_split, 3 modes, 4 coded-luma base (txb_skip, eob_pt, AC base_eob, DC base),
+        // AC sign bypass, DC dc_sign, U skip, V skip = 12 tokens.
+        assert_eq!(trace.len(), 12);
+        assert!(matches!(trace[0], BlockSymbolToken::Partition(_)));
+        // Reverse-scan sign pass (§5.20.7.27 c=eob-1..0): the AC sign_bit bypass (c=1) comes
+        // FIRST, then the DC dc_sign CDF symbol (c=0).
+        assert!(matches!(
+            trace[8],
+            BlockSymbolToken::Bypass { width: 1, value: 0 }
+        ));
+        assert!(matches!(trace[9], BlockSymbolToken::Coeff(_)));
+        // do_split, modes 0/0/0; luma txb_skip=0, eob_pt_1024=1, AC coeff_base_eob=3 (level 4),
+        // DC coeff_base=1 (level 1); AC sign=0 (positive); DC dc_sign=1 (negative); U/V txb_skip=1.
+        assert_eq!(
+            trace.iter().map(|token| token.symbol()).collect::<Vec<_>>(),
+            vec![0, 0, 0, 0, 0, 1, 3, 1, 0, 1, 1, 1]
+        );
+    }
+
+    #[test]
+    fn general_two_nonzero_block_trace_roundtrips_through_one_coder() {
+        let trace = compose_general_intra_two_nonzero_block_trace().unwrap();
+        let proof = roundtrip_block_symbol_trace(&trace).unwrap();
+        assert_eq!(
+            proof.decoded_symbols(),
+            &[0, 0, 0, 0, 0, 1, 3, 1, 0, 1, 1, 1]
+        );
+        assert_eq!(proof.symbol_count(), 12);
+        assert!(!proof.bytes().is_empty());
+    }
+
+    #[test]
+    fn emit_minimal_intra_two_nonzero_ivf_differs_from_visible_ac_and_is_deterministic() {
+        let two = emit_minimal_intra_two_nonzero_ivf().unwrap();
+        assert!(!two.is_empty());
+        // Distinct from the single-nonzero (visible-AC) frame: it adds the nonzero DC + its sign.
+        assert_ne!(two, emit_minimal_intra_visible_ac_ivf().unwrap());
+        assert_eq!(two, emit_minimal_intra_two_nonzero_ivf().unwrap());
+        let parsed = splot_core::ivf::parse_ivf_partial(&two);
         assert!(parsed.error.is_none());
         assert_eq!(parsed.frames.len(), 1);
     }
