@@ -33,7 +33,12 @@ const MINIMAL_LUMA_BYTES: usize = 64 * 64;
 const MINIMAL_CHROMA_BYTES: usize = 32 * 32;
 const MINIMAL_PAYLOAD_BYTES: usize = MINIMAL_LUMA_BYTES + MINIMAL_CHROMA_BYTES * 2;
 const MINIMAL_LUMA_SAMPLE: u8 = 128;
-const MINIMAL_CHROMA_H_PRED_SAMPLE: u8 = 129;
+// The committed fixture's avmdec/dav2d-agreed decoded raw planar output: luma is
+// the flat 128 (§5.20.7.27 all_zero == 1 skip block) and chroma carries a real
+// coded residual, decoded through the general intra path. See
+// docs/LOCAL-REFERENCE-EVIDENCE.toml.
+const MINIMAL_EXPECTED_RAW: &[u8] =
+    include_bytes!("../../tests/conformance/vectors/valid/syn-flat-intra-64x64-minimal.raw");
 
 static CONTEXT: OnceLock<Option<DecodeContext>> = OnceLock::new();
 
@@ -68,10 +73,9 @@ fuzz_target!(|data: &[u8]| {
             .decode_raw_bytes(bitstream, options, &mut writer)
             .is_ok()
         {
-            // The flat 128/129 minimal shape only holds for the pristine frozen
-            // fixture. A mutation can now route to the general intra path and
-            // decode successfully to a different (still valid) frame, so only
-            // assert the shape for the unmutated fixture.
+            // The exact decoded output only holds for the pristine committed
+            // fixture. A mutation can route to a different (still valid) frame, so
+            // only assert the exact output for the unmutated fixture.
             if bitstream == MINIMAL_FIXTURE {
                 assert_minimal_raw_shape(writer.bytes());
             }
@@ -134,14 +138,9 @@ fn runtime_raw_fuzz_limits(flags: u8, input_len: usize) -> DecodeLimits {
 
 fn assert_minimal_raw_shape(bytes: &[u8]) {
     assert_eq!(bytes.len(), MINIMAL_PAYLOAD_BYTES);
-    let (luma, chroma) = bytes.split_at(MINIMAL_LUMA_BYTES);
-    let (u, v) = chroma.split_at(MINIMAL_CHROMA_BYTES);
+    let (luma, _chroma) = bytes.split_at(MINIMAL_LUMA_BYTES);
     assert!(luma.iter().all(|sample| *sample == MINIMAL_LUMA_SAMPLE));
-    assert!(
-        u.iter()
-            .chain(v.iter())
-            .all(|sample| *sample == MINIMAL_CHROMA_H_PRED_SAMPLE)
-    );
+    assert_eq!(bytes, MINIMAL_EXPECTED_RAW);
 }
 
 #[derive(Debug)]
