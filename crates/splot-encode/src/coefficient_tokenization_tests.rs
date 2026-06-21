@@ -699,6 +699,49 @@ fn coeff_base_lf_token_roundtrips_through_generic_helper() {
 }
 
 #[test]
+fn eob_extra_token_roundtrips_through_entropy_proof() {
+    // The `eob_extra` token (eobPt 3 EOB refinement) routes through the generic
+    // `roundtrip_entropy_tokens` CDF-row router, not only the block-symbol wrapper:
+    // its `EobExtra` selector has a `TileEobExtraCdf[q]` row arm. Both flags (eob 3
+    // and eob 4) roundtrip.
+    for flag in [false, true] {
+        let token = eob_extra_token(0, flag);
+        assert!(matches!(
+            token.selector(),
+            CoefficientCdfRowSelector::EobExtra { coeff_cdf_q_ctx: 0 }
+        ));
+        let proof = roundtrip_entropy_tokens(&[token]).unwrap();
+        assert_eq!(proof.decoded_symbols(), &[u8::from(flag)]);
+        assert_eq!(proof.symbol_count(), 1);
+    }
+}
+
+#[test]
+fn entropy_proof_routes_full_4x4_lf_context_banks() {
+    // The 4x4 low-frequency CDF banks in `CoefficientTokenCdfRows` cover the full
+    // §8.3.2 context dimension, so every reachable `coeff_base_eob` / `coeff_base` /
+    // `coeff_br` low-frequency context routes through `roundtrip_entropy_tokens`, not
+    // only the hand-picked eob<=2 contexts. Expanding the tokenizer to eob 3/4 reaches
+    // e.g. `CoeffBaseLfEob { ctx: 2 }` and `CoeffBaseLf { ctx: 9 }`; this proves no
+    // single-context routing holes remain across the whole 4x4-LF tier.
+    for ctx in 0..COEFF_BASE_LF_EOB_CTX_COUNT {
+        let token = coeff_base_lf_eob_token(0, ctx, 1);
+        let proof = roundtrip_entropy_tokens(&[token]).unwrap();
+        assert_eq!(proof.symbol_count(), 1);
+    }
+    for ctx in 0..COEFF_BASE_LF_CTX_COUNT {
+        let token = coeff_base_lf_token(0, ctx, COEFF_BASE_LF_TCQ_CTX_NEUTRAL, 0);
+        let proof = roundtrip_entropy_tokens(&[token]).unwrap();
+        assert_eq!(proof.symbol_count(), 1);
+    }
+    for ctx in 0..COEFF_BR_LF_CTX_COUNT {
+        let token = coeff_br_lf_token(0, ctx, 0);
+        let proof = roundtrip_entropy_tokens(&[token]).unwrap();
+        assert_eq!(proof.symbol_count(), 1);
+    }
+}
+
+#[test]
 fn multi_coeff_token_accessors_carry_expected_symbols() {
     // coded all_zero == 0 (block has coefficients).
     assert_eq!(coded_luma_all_zero_token(0).symbol(), 0);

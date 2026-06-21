@@ -506,6 +506,16 @@ pub enum Error {
         syntax: &'static str,
     },
 
+    /// The coefficient token trace was structurally malformed during recovery: an
+    /// expected token kind was missing or out of order. Reachable only from the
+    /// `recover_quant_from_tokens` self-consistency inverse over an internally
+    /// constructed trace, never from real encode paths or hostile input.
+    #[error("malformed encoder coefficient token trace: {context}")]
+    CoefficientTokenizationMalformedTokenTrace {
+        /// Short description of the structural mismatch.
+        context: &'static str,
+    },
+
     /// Writing a coefficient token through the symbol encoder failed.
     #[error("encoder coefficient tokenization symbol write failed for {syntax}: {source}")]
     CoefficientTokenizationSymbolWrite {

@@ -41,6 +41,23 @@ pub(crate) const fn eob_pt_16_token(
     }
 }
 
+/// Returns the AV2 § 5.20.7.27 `eob_extra` token carrying the given binary flag
+/// (`TileEobExtraCdf[coeff_cdf_q_ctx]`; the `eob_extra` CDF is indexed only by the
+/// coefficient CDF q-context, with no per-symbol/eobPt context — see
+/// `DEFAULT_EOB_EXTRA_CDF`). This flag is read only for `eobPt >= 3`; for an
+/// `eob_pt_16` block (`eob_pt_16` symbol 2 → eobPt 3) it refines the EOB:
+/// `eob = ((1 << (eobPt - 2)) + 1) + (eob_extra << (eobPt - 3)) + eob_extra_bits`,
+/// i.e. for eobPt 3 (no `eob_extra_bit` literals, width `eobPt - 3 == 0`)
+/// `eob = 3 + eob_extra` (flag 0 → eob 3, flag 1 → eob 4). Mirrors the decoder
+/// `read_nonzero_coeff_eob` / `nonzero_coeff_eob` arithmetic.
+pub(crate) const fn eob_extra_token(coeff_cdf_q_ctx: usize, flag: bool) -> CoefficientEntropyToken {
+    CoefficientEntropyToken {
+        syntax: CoefficientTokenSyntax::EobExtra,
+        selector: CoefficientCdfRowSelector::EobExtra { coeff_cdf_q_ctx },
+        symbol: flag as u8,
+    }
+}
+
 /// Returns the AV2 § 5.20.7.27 low-frequency `coeff_base_eob` token for the
 /// EOB-position coefficient of base `level`
 /// (`TileCoeffBaseLfEobCdf[coeff_cdf_q_ctx][tx_size][ctx]`). The EOB base level is
