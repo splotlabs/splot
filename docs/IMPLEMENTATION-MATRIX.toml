@@ -3698,6 +3698,39 @@ fixtures = []
 diagnostics = ["frame-header/show-existing-frame-invalid-slot"]
 
 [[feature]]
+id = "AV2-7.7-GET-REF-FRAMES"
+name = "Get ref frames process"
+category = "normative"
+kind = "bitstream-semantics"
+spec_sections = ["7.7", "5.18.2", "5.18.3.1", "6.17.2"]
+sources = ["docs/spec/av2/1.0.0/07-decoding-process.md#s-7-7", "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2", "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-3-1", "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-2"]
+crate = "splot-core"
+module = "crates/splot-core/src/headers/frame/get_ref_frames.rs"
+openspec_change = "decode-inter-ref-frame-map"
+tracking_issue = ""
+owner = "core"
+risk = "high"
+notes = "The §7.7 get_ref_frames() implicit reference-map ranking is MODELED as a typed, total, panic-free derivation (crates/splot-core/src/headers/frame/get_ref_frames.rs, get_ref_frames). It implements the full §7.7 algorithm on EXPLICIT per-slot inputs (GetRefFramesInput / RefSlot): the distinct-reference detection first_slot_with_ref (RefValid + RefCounter dedup), the resolution gate valid_ref_frame_size (the §7.7 2*FrameWidth >= RefFrameWidth .. FrameWidth <= 16*RefFrameWidth window), the per-reference scoring (the §3 Dist_Score_Lookup[7] = {0,64,96,112,120,124,126} table, the maxDisp > OrderHint vs decay arms with DIST_WEIGHT_BITS == 6 and DECAY_DIST_CAP == 6, the refRatio = FloorLog2(RefFrameWidth*RefFrameHeight) penalty, tDist = Abs(dispDiff) + obu_mlayer_id - RefMLayerId[i]), get_relative_dist (§5.18.3.1, the RESTRICTED_OH sentinel arms + Clip3(-127,127,a-b)), the duplicate-score rejection new_score_or_dist, the over-selection drop get_unmapped_ref (NRanked > REFS_PER_FRAME == 7), the exact spec bubble_sort_ref_scores (ScoresScore[j] > ScoresScore[j+1]), the NumTotalRefs = Min(NRanked, ActiveNumRefFrames) cut (ActiveNumRefFrames = Min(REFS_PER_FRAME, NumRefFrames), §5.4.6 mirror :963), and the trailing restricted-frame append (the checkRes && !IsBridge loop). Derived from the §7.7 spec text, never from AVM source (AVM av2/common/pred_common.c was read only to CONFIRM the constants match; no code/table/comment copied). WIRING (crates/splot-core/src/headers/frame/inter.rs, derive_implicit_ref_map): the §5.18.2 inter control parser's get_ref_frames(0) (mirror :4607) and get_ref_frames(1) (mirror :4647) calls now consult §7.7 instead of stopping with InterStop::UnmodeledDerivation, GATED to the AT-MOST-ONE-VALID-REFERENCE case the modeled FrameReferenceStateView (RefValid / RefOrderHint / dims) can resolve EXACTLY — with <= 1 proven-valid slot the score/sort/drop/restricted machinery is irrelevant, so the deterministic single-spatial-layer defaults (each valid slot a distinct RefCounter, AllowedFrames == -1, layer-dependency maps == 1) yield the EXACT §7.7 answer (not a hardcoded [0]); a richer reference state (>= 2 valid slots, or no modeled view) stays an honest UnmodeledDerivation stop. The two §7.7 calls run with checkRes == 0 (before frame_size) then checkRes == 1 (after, applying the resolution gate + restricted append), faithfully reproducing the spec's two-call sequence. This is PARSE-LEVEL ONLY: no decode output changes (the inter frame still won't reconstruct — mode_info / MV / motion-compensation are later bricks). The minimal syn-key-inter-64x64 inter frame (CLK key refresh_frame_flags == 255 leaves only slot 0 RefValid per the §7.23 first rule; inter frame OrderHint == 1, explicitRefFrameMap == 0) now advances PAST UnmodeledDerivation to InterStop::ReachedSharedTail with NumTotalRefs == 1, ref_frame_idx == [0] (proven on the real fixture bytes). DEFERRED (keeps types/parse/decode_check partial): the >= 2-valid-reference ranking needs the unmodeled RefBaseQIdx / RefCounter / RefMLayerId / RefTLayerId / per-frame AllowedFrames / TLayerDependencyMap / MLayerDependencyMap state (FrameReferenceStateView carries only RefValid / RefOrderHint / dims today); the inter SHARED tail past ReachedSharedTail (tile_info() / quant / segmentation / inter coding modes / global motion) and the §5.20 inter tile-group body remain future work; the inspector's unknown() reference view means standalone `splot inspect` still shows the UnmodeledDerivation stop (no cross-OBU state) — the modeled advance is realized in the validator path and the unit tests."
+
+[feature.status]
+mapped = "done"
+types = "partial"
+parse = "partial"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "pending"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-core/src/headers/frame/get_ref_frames.rs::tests", "crates/splot-core/src/headers/frame/get_ref_frames.rs::tests::minimal_single_valid_slot_after_key_yields_one_ref", "crates/splot-core/src/headers/frame/get_ref_frames.rs::tests::no_valid_slot_yields_zero_refs", "crates/splot-core/src/headers/frame/get_ref_frames.rs::tests::equal_ref_counter_collapses_to_first_slot", "crates/splot-core/src/headers/frame/get_ref_frames.rs::tests::two_distinct_refs_rank_by_score", "crates/splot-core/src/headers/frame/get_ref_frames.rs::tests::active_num_ref_frames_caps_the_result", "crates/splot-core/src/headers/frame/get_ref_frames.rs::tests::check_res_drops_resolution_incompatible_reference", "crates/splot-core/src/headers/frame/get_ref_frames.rs::tests::restricted_frame_appended_only_with_check_res", "crates/splot-core/src/headers/frame/get_ref_frames.rs::tests::allowed_frames_mask_excludes_slot", "crates/splot-core/src/headers/frame/get_ref_frames.rs::tests::get_relative_dist_clamps_and_handles_sentinels", "crates/splot-core/src/headers/frame/get_ref_frames.rs::tests::floor_log2_u64_matches_spec", "crates/splot-core/src/headers/frame/inter.rs::tests::inter_implicit_map_one_valid_slot_reaches_shared_tail", "crates/splot-core/src/headers/frame/inter.rs::tests::inter_implicit_map_no_valid_slot_reaches_shared_tail_with_zero_refs", "crates/splot-core/src/headers/frame/inter.rs::tests::inter_implicit_map_two_valid_slots_stops_unmodeled", "crates/splot-core/src/headers/frame/inter.rs::tests::inter_implicit_map_stops_unmodeled", "crates/splot-core/src/headers/frame/inter.rs::tests::frame_header_core_inter_implicit_map_reaches_shared_tail_on_fixture", "crates/splot-core/src/headers/frame/inter.rs::tests::frame_header_core_inter_implicit_map_two_valid_slots_stops_unmodeled"]
+commands = ["cargo test -p splot-core get_ref_frames", "cargo test -p splot-core headers::frame::inter", "cargo test -p splot-core frame_header_core_inter_implicit_map"]
+fixtures = ["tests/conformance/vectors/valid/syn-key-inter-64x64.ivf"]
+diagnostics = []
+
+[[feature]]
 id = "AV2-9-ADDITIONAL-TABLES"
 name = "Additional spec tables (codegen)"
 category = "normative"

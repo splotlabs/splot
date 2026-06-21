@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 376 feature(s).
+Matrix version 1. Last reviewed 2026-06-15. 377 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -114,6 +114,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY` | Long-term reference availability | normative | bitstream-semantics | done | done | n/a | partial | n/a | n/a | partial | partial | pending | `crates/splot-validate/src/context` |
 | `AV2-7.4-RANDOM-ACCESS` | Random access decoding | normative | bitstream-semantics | done | done | n/a | partial | n/a | n/a | partial | partial | pending | `crates/splot-validate/src/context` |
 | `AV2-7.23-REFERENCE-FRAME-UPDATE` | Reference frame update process | normative | bitstream-semantics | done | done | n/a | partial | n/a | n/a | partial | done | pending | `crates/splot-validate/src/reference_state.rs` |
+| `AV2-7.7-GET-REF-FRAMES` | Get ref frames process | normative | bitstream-semantics | done | partial | partial | n/a | n/a | n/a | partial | done | pending | `crates/splot-core/src/headers/frame/get_ref_frames.rs` |
 | `AV2-9-ADDITIONAL-TABLES` | Additional spec tables (codegen) | normative | bitstream-semantics | done | partial | partial | n/a | n/a | n/a | todo | partial | pending | `crates/splot-core/src/tables/` |
 | `AV2-A-PROFILES` | Annex A profile constraints | normative | bitstream-semantics | done | done | n/a | partial | n/a | n/a | todo | done | pending | `crates/splot-validate/src/annex_a.rs` |
 | `AV2-A-LEVELS-TIERS` | Annex A level and tier constraints | normative | bitstream-semantics | done | todo | n/a | partial | n/a | n/a | todo | done | pending | `crates/splot-validate/src/annex_a.rs` |
