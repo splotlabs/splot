@@ -336,6 +336,43 @@ fn decode_general_intra_routing_does_not_disturb_frozen_minimal_hash() {
 }
 
 #[test]
+fn decode_two_frame_inter_fixture_is_rejected_at_planner_today() {
+    // DECODE-FIRST-INTER-FRAME-FRONTIER honesty pin. The committed
+    // syn-2frame-inter-64x64.ivf is the verified first-inter decode target:
+    // frame 0 is an OBU_CLOSED_LOOP_KEY intra key frame, frame 1 is an
+    // OBU_REGULAR_TILE_GROUP inter frame. avmdec and dav2d decode the whole
+    // stream identically (frame 1 == a straight copy of frame 0). splot does NOT
+    // yet decode the inter frame: the initial stream planner accepts only
+    // OBU_CLOSED_LOOP_KEY as a frame candidate (§5.2.1), so the inter
+    // OBU_REGULAR_TILE_GROUP is rejected up front with a structured
+    // decode/unsupported-feature diagnostic and NO output. This test pins that
+    // honest rejection (no fabricated inter decode); when the inter slice lands
+    // it will flip to a bit-exact two-frame decode.
+    let input = conformance_vector("syn-2frame-inter-64x64.ivf");
+    let output = temp_output("yuv");
+
+    let out = splot(&[
+        "decode",
+        "--json",
+        "--output-format",
+        "raw",
+        input.to_str().unwrap(),
+        "-o",
+        output.to_str().unwrap(),
+    ]);
+
+    assert_eq!(out.status.code(), Some(1));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["rule_id"], "decode/unsupported-feature");
+    assert_eq!(json["feature_id"], "DECODE-STREAM-STATE-PLANNER");
+    assert_eq!(json["obu_type"], "OBU_REGULAR_TILE_GROUP");
+    assert!(
+        !output.exists(),
+        "rejected inter decode must not write an output file"
+    );
+}
+
+#[test]
 fn decode_hash_json_success_creates_no_implicit_output_file() {
     let input = conformance_vector("syn-flat-intra-64x64-minimal.ivf");
     let cwd = temp_dir("minimal-hash-cwd");
