@@ -814,6 +814,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.13.3.22](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-22) | Resolve divisor process | `RECON-INTRA-DC-SUBSAMPLED-PREDICTION` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.14.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-14-2) | Dequantization functions | `DECODE-GENERAL-INTRA-FRAME-RECON` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.14.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-14-2) | Dequantization functions | `ENC-CLOSED-LOOP-RECONSTRUCTION-MINIMAL` | ✅ | — | — | ✅ | — |
+| [§ 7.14.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-14-2) | Dequantization functions | `ENC-FWD-QUANT-PER-COEFF-AC` | ✅ | — | — | ✅ | — |
 | [§ 7.14.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-14-2) | Dequantization functions | `ENC-QUANTIZATION-V0` | ✅ | — | — | ✅ | — |
 | [§ 7.14.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-14-2) | Dequantization functions | `RECON-DEQUANT-QUANTIZER-INDEX-RESOLUTION` | ✅ | — | — | ✅ | — |
 | [§ 7.14.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-14-2) | Dequantization functions | `RECON-DEQUANT-QUANTIZER-LOOKUP` | ✅ | — | — | ✅ | — |
@@ -825,6 +826,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.14.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-14-4) | Dequantization process | `DECODE-GENERAL-INTRA-FRAME-RECON` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.14.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-14-4) | Dequantization process | `DECODE-GENERAL-INTRA-RECT-PARTITION` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.14.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-14-4) | Dequantization process | `ENC-CLOSED-LOOP-RECONSTRUCTION-MINIMAL` | ✅ | — | — | ✅ | — |
+| [§ 7.14.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-14-4) | Dequantization process | `ENC-FWD-QUANT-PER-COEFF-AC` | ✅ | — | — | ✅ | — |
 | [§ 7.14.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-14-4) | Dequantization process | `ENC-QUANTIZATION-V0` | ✅ | — | — | ✅ | — |
 | [§ 7.14.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-14-4) | Dequantization process | `RECON-DEQUANT-PROCESS` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.14.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-14-4) | Dequantization process | `RECON-DEQUANT-QM-WEIGHT` | ✅ | — | ✅ | ✅ | — |

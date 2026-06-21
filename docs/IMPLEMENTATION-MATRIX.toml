@@ -4140,6 +4140,39 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-FWD-QUANT-PER-COEFF-AC"
+name = "Encoder per-coefficient forward quantizer over a real 4x4 block"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["7.14.2", "7.14.4"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/quantization.rs"
+openspec_change = "forward-quant-per-coeff-ac"
+tracking_issue = ""
+owner = "encoder"
+risk = "medium"
+notes = "Private, non-emitting encoder arithmetic stage. Brick 2 of the forward DCT + quantizer phase. `QuantizedTransformBlock::dct_dct_4x4` (renamed from the misnamed `dct_dct_4x4_dc_only`, which the quantizer never restricted) quantizes all 16 coefficients of a real 4x4 DCT_DCT block per-coefficient by the round-to-nearest v0 policy (index 0 with the DC quantizer, the rest with the AC quantizer), then dequantizes the levels through `splot-recon`'s §7.14 dequantization so the stored dequantized array is exactly the decoder reconstruction of the emitted levels. `dct_dct_4x4_dc_only` is retained as a thin alias (the closed loop's flat-input pairing; identical operation). Proven over a real non-uniform block (the new forward DCT output): per-coefficient round-to-nearest levels with real non-zero AC, the stored dequant equals an independent `splot-recon` dequantize_block of the levels, the AV2 24-bit dequant product guard holds, and the decoder reconstruction stays within a bounded distance of the source residual at qindex 0 (not bit-exact). For zero-delta luma the DC and AC quantizers coincide, so the index-0/rest selection is structural (it differentiates levels only with chroma or DC-delta quantizers, a later brick). This row does NOT claim deadzone/RDO quantization policy, rate control, chroma quantizer deltas, bit depths other than 8, transform sizes other than 4x4, types other than DCT_DCT, coefficient tokenization, or packet output."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/quantization.rs::tests"]
+commands = ["cargo test -p splot-encode quantization --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-COEFFICIENT-TOKENIZATION-MINIMAL"
 name = "Encoder coefficient tokenization minimal"
 category = "encoder"
