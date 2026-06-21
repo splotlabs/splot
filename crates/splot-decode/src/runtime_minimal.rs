@@ -27,7 +27,8 @@ use crate::tile_payload::{
     FrameCandidateTileBoundaryInput, FrameCandidateTileFacts, GeneralIntraBlockModeError,
     GeneralIntraResidualError, MinimalBlockSymbolTraceError,
     MinimalRuntimeBlockSymbolFrontierError, MinimalRuntimePartitionFrontierError,
-    MinimalRuntimeReconstructionTrace, TileGroupPositionFacts, TilePartitionTraversalError,
+    MinimalRuntimeReconstructionTrace, SupportedNonDcLumaMode, TileGroupPositionFacts,
+    TilePartitionTraversalError,
 };
 use crate::{
     DecodeLimitError, DecodeLimitName, DecodeLimitOp, DecodeOptions, DecodePlannedObu,
@@ -1040,28 +1041,56 @@ fn decode_one_general_intra_block(
     let supported_directional_luma = modes.supported_directional_luma();
     let is_top_left = frontier.r == 0 && frontier.c == 0;
     // True when a non-DC SMOOTH_V/H luma block reads a **real** reconstructed
-    // LEFT neighbour edge — only the first superblock ROW (`frontier.r == 0`, so
-    // `haveAbove == 0`): there the § 7.13.2.1 above row and the top-right sentinel
-    // are the no-neighbour fallback (matching the verified single-SB-row fixture),
-    // and only the left column is a real reconstructed neighbour. A row>0 block
-    // reads a real above row + above-right that this path does not yet verify.
-    let nondc_luma_has_neighbour =
-        supported_nondc_luma.is_some() && !is_top_left && frontier.r == 0;
+    // neighbour edge (any superblock position other than the no-neighbour
+    // top-left). In the first superblock row (`frontier.r == 0`, `haveAbove == 0`)
+    // only the left column is real (the § 7.13.2.1 above row / top-right sentinel
+    // are the no-neighbour fallback); for a row>0 block § 7.13.2.1 supplies the
+    // **real reconstructed above row** (`CurrFrame[plane][y-1][...]`) and, when an
+    // already-decoded above-right superblock is in frame, the real above-right
+    // sentinel (`num4AboveRight > 0`), exactly as the SMOOTH chroma grid path does.
+    // [`reconstruct_general_intra_luma_nondc_neighbour_block_into`] delegates to the
+    // same plane-general edge builder + above-right resolver, so both cases share
+    // one bit-exact path.
+    let nondc_luma_has_neighbour = supported_nondc_luma.is_some() && !is_top_left;
     if !modes.luma_is_dc() {
         match (supported_nondc_luma, supported_directional_luma) {
             // SMOOTH_V / SMOOTH_H at the no-neighbour top-left block.
             (Some(_), _) if is_top_left && n4w >= NON_DC_MIN_N4 => {}
-            // SMOOTH_V / SMOOTH_H neighbour-having full-superblock block in the
-            // first superblock row (haveAbove == 0): reads the real § 7.13.2.1
-            // reconstructed LEFT column; the above row / above-right are fallback.
-            (Some(_), _) if n4w == FULL_SB_N4_LUMA && frontier.r == 0 => {}
-            // A row>0 neighbour-having SMOOTH block reads a real above row and
-            // above-right sentinel (§7.13.2.1) that is not yet verified for luma.
-            (Some(_), _) if n4w == FULL_SB_N4_LUMA => {
+            // SMOOTH_V / SMOOTH_H neighbour-having full-superblock block at ANY
+            // superblock position in the 2-D grid. First superblock row
+            // (`haveAbove == 0`): reads the real § 7.13.2.1 reconstructed LEFT
+            // column (above row / above-right are the no-neighbour fallback). A
+            // row>0 block (`haveAbove == 1`): reads the **real reconstructed above
+            // row** and, when an already-decoded above-right superblock is in frame
+            // (`num4AboveRight > 0`, derived by `full_sb_num4_above_right` over the
+            // § 5.20.2.3 `BlockDecoded` state), the real § 7.13.2.1 above-right
+            // sentinel — the same machinery the SMOOTH chroma grid path already
+            // uses. Smooth prediction is linear interpolation over those edges (no
+            // `enable_intra_edge_filter` / IDIF / upsample edge synthesis), so the
+            // neighbour edge can be non-flat and the result is still bit-exact
+            // against the AVM/dav2d oracle.
+            //
+            // SMOOTH_V at ANY 2-D grid position: its § 7.13.2.13 predictor reads
+            // the above ROW and the bottom-left but never the above-right sentinel
+            // VALUE (`AboveRow[w]`), so the row>0 above-row path is exactly what
+            // the committed `syn-vgrid` fixture oracle-verifies.
+            (Some(SupportedNonDcLumaMode::SmoothVertical), _) if n4w == FULL_SB_N4_LUMA => {}
+            // SMOOTH_H reads the above-right sentinel VALUE (`AboveRow[w]`, the
+            // top-right). In the first superblock row (`haveAbove == 0`) that is
+            // the § 7.13.2.1 no-neighbour fallback (the shared edge builder is
+            // verified and the value is the fallback). At row>0 it would be the
+            // **real reconstructed** above-right of a decoded neighbour — a luma
+            // (`sub_x == 0`) above-right VALUE path no oracle fixture has exercised
+            // yet (the SMOOTH chroma grid verifies only `sub_x == 1`, and SMOOTH_V
+            // row>0 ignores the value), so it is deferred until a SMOOTH_H luma
+            // grid fixture pins it.
+            (Some(SupportedNonDcLumaMode::SmoothHorizontal), _)
+                if n4w == FULL_SB_N4_LUMA && frontier.r == 0 => {}
+            (Some(SupportedNonDcLumaMode::SmoothHorizontal), _) if n4w == FULL_SB_N4_LUMA => {
                 return Err(general_intra_unsupported(
-                    "general_intra_multirow_neighbour_non_dc",
+                    "general_intra_smooth_h_above_right_unverified",
                     Some(tile_offset),
-                    "general intra multi-block non-DC (SMOOTH) luma over a reconstructed neighbour is only supported in the first superblock row (no above neighbour); a row>0 block reads a real above row and above-right sentinel that is not yet verified",
+                    "general intra SMOOTH_H luma at superblock row > 0 reads the §7.13.2.1 real reconstructed above-right sentinel value (AboveRow[w]); that luma (sub_x=0) above-right value path is not yet covered by an oracle fixture (only SMOOTH_V row>0, which ignores the above-right value, and the sub_x=1 SMOOTH chroma grid are verified), so it is deferred to a dedicated SMOOTH_H luma grid fixture",
                     GENERAL_INTRA_MODE_SPEC_SECTION,
                 ));
             }
@@ -2217,6 +2246,94 @@ mod general_intra_tests {
         assert_eq!(
             hash,
             "269b4969800751c63f7f0605f1f7b8f178f7bf85590ec62fe64313ff394d6dfd"
+        );
+    }
+
+    // A 192x128 full 2-D grid (3 superblock columns x 2 superblock rows) whose
+    // right two columns code as `SMOOTH_V_PRED` (§ 7.13.2.13) luma over a vertical
+    // gradient (top 20, bottom 230, with a small per-column tint; flat chroma).
+    // The decisive block is the row > 0 SMOOTH_V luma superblock at the **middle**
+    // (non-rightmost) column (`frontier.r == 16`, `frontier.c == 16`): unlike the
+    // first-row `syn-mbvg` SMOOTH_V block (`haveAbove == 0`, above row a fallback),
+    // this one has `haveAbove == 1`, so § 7.13.2.1 supplies the **real
+    // reconstructed above row** `CurrFrame[0][y-1][...]` (the bottom row of the
+    // already-decoded above superblock); being non-rightmost it also has a decoded
+    // above-right superblock, so `full_sb_num4_above_right` / the § 7.13.2.1
+    // `AboveRow[w]` resolver run (SMOOTH_V's predictor reads `AboveRow[j]` and the
+    // bottom-left sentinel, not the top-right one, but the resolver path is
+    // exercised). Smooth prediction is linear interpolation over those edges (no
+    // IDIF / edge-filter synthesis), so the non-flat real above-row edge
+    // reconstructs bit-exact. The prior brick gated SMOOTH luma neighbour decode to
+    // the first superblock row and rejected this frame with
+    // `general_intra_multirow_neighbour_non_dc`. avmdec and dav2d agree on the
+    // decoded output (md5 136a87190eeecb1ccd32e7cf27861c9c); the first general-intra
+    // 2-D grid non-DC luma decode reading a real reconstructed above row.
+    const VGRID_FIXTURE: &[u8] =
+        include_bytes!("../../../tests/conformance/vectors/valid/syn-vgrid-intra-192x128-q120.ivf");
+
+    #[test]
+    fn vgrid_multirow_smooth_v_above_row_intra_frame_decodes_to_oracle() {
+        use splot_recon::{BitDepth, PixelFormat, PlaneSize};
+
+        let frame = decode_general_intra_luma(VGRID_FIXTURE);
+        assert_eq!(frame.bit_depth(), BitDepth::Eight);
+        assert_eq!(frame.pixel_format(), PixelFormat::Yuv420);
+        assert_eq!(frame.y().visible_size(), PlaneSize::new(192, 128).unwrap());
+        assert_eq!(
+            frame.u().unwrap().visible_size(),
+            PlaneSize::new(96, 64).unwrap()
+        );
+
+        let y = frame.y().samples();
+        let at = |r: usize, c: usize| y[r * 192 + c];
+
+        // The middle superblock column (x in 64..128) is SMOOTH_V: constant across
+        // columns within a row.
+        assert!(
+            (64..128).all(|c| at(80, c) == at(80, 64)),
+            "middle superblock column must be constant across columns within a row (SMOOTH_V)"
+        );
+        // The row > 0 (bottom) middle superblock read the REAL reconstructed above
+        // row: its top row (row 64) continues the gradient from the bottom row of
+        // the above superblock (row 63) rather than jumping toward the §7.13.2.1
+        // no-above flat fallback (127). The samples straddle a small monotone step.
+        assert!(
+            at(63, 96) < at(64, 96) && at(64, 96) < at(65, 96),
+            "bottom middle superblock top must continue the above superblock gradient (real above row read)"
+        );
+        // A flat no-above fallback (≈127) at the SB boundary would break the
+        // monotone gradient; the reconstructed boundary samples sit well below 127
+        // at the top of the frame and rise monotonically toward 230 at the bottom.
+        assert!(
+            at(64, 96) < 140,
+            "bottom superblock top must read the real (low) above row, not the 127 fallback"
+        );
+        assert!(
+            at(0, 96) < at(127, 96),
+            "middle superblock column increases top-to-bottom across both superblock rows"
+        );
+        // Each superblock column reads its OWN real neighbour edge, so the bottom
+        // superblock's reconstruction differs by column (the per-column tint).
+        assert_ne!(
+            at(64, 32),
+            at(64, 96),
+            "left (DC) and middle (SMOOTH_V) bottom superblocks must reconstruct distinct values"
+        );
+        let distinct = y.iter().collect::<std::collections::BTreeSet<_>>().len();
+        assert!(distinct > 4, "luma should be a non-flat reconstruction");
+        // Chroma is flat (U=120, V=130) under DC / SMOOTH over a flat plane.
+        assert!(frame.u().unwrap().samples().iter().all(|&s| s == 120));
+        assert!(frame.v().unwrap().samples().iter().all(|&s| s == 130));
+
+        // Frame hash pins splot's output, which reproduces avmdec's and dav2d's
+        // raw output byte-for-byte (verified locally; md5
+        // 136a87190eeecb1ccd32e7cf27861c9c).
+        let hash = splot_recon::DecodedFrameHashInput::new(&frame)
+            .compute_hash()
+            .to_hex();
+        assert_eq!(
+            hash,
+            "c62dd0eb74ab1129e9cd4d6a326cfef9026f62ab4144a378b38cb325b45462d2"
         );
     }
 }
