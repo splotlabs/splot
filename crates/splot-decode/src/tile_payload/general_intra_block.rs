@@ -327,11 +327,6 @@ pub(crate) fn decode_general_intra_block_modes(
         return Err(GeneralIntraBlockModeError::InvalidUvMode { uv_mode });
     }
 
-    if std::env::var("SPLOT_DBG_MODE").is_ok() {
-        eprintln!(
-            "DBG block r={block_r} c={block_c} ctx={mode_ctx} y_mode_set={y_mode_set} y_mode_index={y_mode_index} y_mode={y_mode:?} angle={angle_delta_y} joint={intra_joint_mode} uv_mode={uv_mode}"
-        );
-    }
     Ok(GeneralIntraBlockModes {
         y_mode,
         angle_delta_y,
