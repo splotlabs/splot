@@ -355,24 +355,25 @@ fn general_intra_fixtures_decode_to_distinct_pinned_hashes() {
 }
 
 #[test]
-fn decode_two_frame_inter_fixture_is_rejected_in_key_frame_chroma_today() {
+fn decode_two_frame_inter_fixture_is_rejected_at_inter_frame_today() {
     // DECODE-FIRST-INTER-FRAME-FRONTIER honesty pin. The committed
     // syn-2frame-inter-64x64.ivf is the verified first-inter decode target:
     // frame 0 is an OBU_CLOSED_LOOP_KEY intra key frame, frame 1 is an
     // OBU_REGULAR_TILE_GROUP inter frame. avmdec and dav2d decode the whole
     // stream identically (frame 1 == a straight copy of frame 0).
     //
-    // The multi-frame planner + runtime loop (DECODE-FIRST-INTER-FRAME-FRONTIER)
-    // now admit the inter OBU_REGULAR_TILE_GROUP at the planner and walk the
-    // frames in order, so the rejection has moved deeper and is more specific:
-    // this fixture's KEY frame uses a non-follow H_PRED chroma mode (uv_mode == 6
-    // resolving to UV H_PRED over a DC luma) that the general intra frontier does
-    // not yet reconstruct, so splot rejects with a structured
-    // decode/unsupported-feature diagnostic and NO output — an honest reject
-    // before any fabricated frame is produced. The full inter slice (key-frame
-    // H_PRED chroma, §7.23 reference retention, §5.18.2 inter header shared tail,
-    // §5.20 inter mode info, §7.11 zero MV, §7.13.3.18 copy) remains TODO; when it
-    // lands this flips to a bit-exact two-frame decode.
+    // The multi-frame planner + runtime loop now admit the inter
+    // OBU_REGULAR_TILE_GROUP and walk the frames in order, and the KEY frame now
+    // decodes bit-exact: the general-intra frontier reconstructs its non-follow
+    // H_PRED chroma (uv_mode == 6 over a DC luma) at the no-neighbour top-left
+    // 64x64 block (verified against avmdec: the key frame is Y=100/U=120/V=130).
+    // The honest rejection has therefore moved to the INTER frame itself: the
+    // runtime decodes the key frame, then rejects the inter
+    // OBU_REGULAR_TILE_GROUP (at its byte offset 100) with a structured
+    // decode/unsupported-feature diagnostic and NO output (the inter header shared
+    // tail, the inter mode info, the motion vectors, and the motion compensation
+    // are not yet implemented). When the inter slice lands this flips to a
+    // bit-exact two-frame decode.
     let input = conformance_vector("syn-2frame-inter-64x64.ivf");
     let output = temp_output("yuv");
 
@@ -389,11 +390,12 @@ fn decode_two_frame_inter_fixture_is_rejected_in_key_frame_chroma_today() {
     assert_eq!(out.status.code(), Some(1));
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(json["rule_id"], "decode/unsupported-feature");
-    assert_eq!(json["feature_id"], "DECODE-GENERAL-INTRA-FRAME-FRONTIER");
+    assert_eq!(json["feature_id"], "DECODE-MINIMAL-TIER-RUNTIME-SUCCESS");
     assert_eq!(
         json["unsupported_reason"],
-        "general_intra_non_dc_chroma_mode"
+        "inter_frame_decode_unimplemented"
     );
+    assert_eq!(json["byte_offset"], 100);
     assert!(
         !output.exists(),
         "rejected inter decode must not write an output file"

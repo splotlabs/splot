@@ -250,15 +250,17 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
     )?;
     frames.push(key_frame);
 
-    // Any further frame candidate is an inter frame. The full inter decode (header
-    // shared tail, § 5.20 mode info, § 7.11 MV, § 7.13.3.18 motion compensation) is
-    // not yet implemented; reject it with a structured diagnostic so no fabricated
-    // output is produced. Tracked by `DECODE-FIRST-INTER-FRAME-FRONTIER`.
+    // The minimal tier decodes only the first (key) frame so far. Any further frame
+    // candidate (the target's inter OBU_REGULAR_TILE_GROUP, or any other following
+    // frame) is not yet decoded: the inter decode path (header shared tail, § 5.20
+    // mode info, § 7.11 MV, § 7.13.3.18 motion compensation) is unimplemented. Reject
+    // it with a structured diagnostic so no fabricated output is produced. Tracked by
+    // `DECODE-FIRST-INTER-FRAME-FRONTIER`.
     if let Some(inter_candidate) = candidates.next() {
         return Err(unsupported_at(
             "inter_frame_decode_unimplemented",
             inter_candidate.offset(),
-            "minimal tier admits the inter OBU_REGULAR_TILE_GROUP at the planner but does not yet decode the inter frame (header shared tail, §5.20 inter mode info, §7.11 motion vectors, §7.13.3.18 motion compensation)",
+            "minimal tier decodes only the first (key) frame so far; the following frame is admitted at the planner but not yet decoded (the inter decode path — header shared tail, §5.20 inter mode info, §7.11 motion vectors, §7.13.3.18 motion compensation — is unimplemented)",
         ));
     }
 

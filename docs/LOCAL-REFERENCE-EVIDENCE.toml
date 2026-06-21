@@ -640,7 +640,7 @@ id = "lref-avm-dav2d-syn-smoothnondc-intra-64x64-q132"
 feature_id = "DECODE-GENERAL-INTRA-NONDC-LUMA-SMOOTH-PLAIN"
 decoder_support_rows = ["general-intra-nondc-luma-smooth-plain"]
 kind = "reference-output-agreement"
-summary = "Local AVM and dav2d raw decoder output MD5 digests agreed for the 8-bit 64x64 2-D smooth-surface intra IVF fixture at base_q_idx 132, which the encoder codes as a single 64x64 plain SMOOTH_PRED luma block (mode 9) with a NON-DC (H_PRED) chroma mode; the negative decode-boundary companion the general-intra decoder rejects because plain-SMOOTH luma is admitted only with the supported DC chroma subset."
+summary = "Local AVM and dav2d raw decoder output MD5 digests agreed for the 8-bit 64x64 2-D smooth-surface intra IVF fixture at base_q_idx 132, which the encoder codes as a single 64x64 plain SMOOTH_PRED luma block (mode 9) with a NON-DC (H_PRED) chroma mode at the no-neighbour top-left block. splot now decodes this frame bit-exactly: the non-follow H_PRED chroma reconstructs via a §7.13.2.8 horizontal copy of the §7.13.2.1 flat fallback left column (DECODE-FIRST-INTER-FRAME-FRONTIER non-follow-H_PRED-chroma support), matching the avmdec/dav2d output (md5 70494255beb63103c97422e327243319)."
 recorded_at = "2026-06-21"
 
 [[evidence.fixture]]

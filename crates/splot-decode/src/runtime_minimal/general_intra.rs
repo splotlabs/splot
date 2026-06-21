@@ -561,6 +561,22 @@ fn decode_one_general_intra_block(
             GENERAL_INTRA_MODE_SPEC_SECTION,
         ));
     }
+    // Non-follow H_PRED chroma (explicit uv_mode over a non-directional luma):
+    // §7.13.2.8 pAngle 180 reads ONLY the §7.13.2.1 left column. Supported only at
+    // the no-neighbour top-left full 64x64 superblock block, where the left column
+    // is the flat fallback, so the horizontal copy is bit-exact. A neighbour-having
+    // position would read the real reconstructed left column over a possibly
+    // non-flat edge and is deferred until an oracle fixture pins it.
+    if supported_chroma == crate::tile_payload::SupportedChromaMode::Horizontal
+        && !(chroma_is_top_left && n4w == FULL_SB_N4_CHROMA_GATE)
+    {
+        return Err(general_intra_unsupported(
+            "general_intra_horizontal_chroma_position",
+            Some(tile_offset),
+            "general intra non-follow H_PRED (pAngle 180) chroma prediction is only supported at the no-neighbour top-left full 64x64 superblock block reading the §7.13.2.1 flat fallback left column; a neighbour-having or sub-partitioned position is not yet covered by an oracle fixture",
+            GENERAL_INTRA_MODE_SPEC_SECTION,
+        ));
+    }
     // §7.13.2.1: the SMOOTH chroma path builds the §7.13.2.13 bottom-left
     // (`LeftCol[h]`) sentinel by edge-clamping (repeating the last in-block
     // neighbour sample). In raster decode order a full-superblock block's

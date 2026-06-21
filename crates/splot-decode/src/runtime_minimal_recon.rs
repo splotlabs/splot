@@ -345,6 +345,14 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into(
                 false,
             )
         }
+        // Non-follow H_PRED chroma at the no-neighbour top-left block: a horizontal
+        // copy of the §7.13.2.1 flat no-left fallback. The caller gates this to the
+        // no-neighbour block, so the flat-fallback prediction is exact.
+        SupportedChromaMode::Horizontal => {
+            reconstruct_general_intra_chroma_cardinal_horizontal_first_into(
+                workspace, block, plane_id, x, y, log2_side, qindex,
+            )
+        }
         // Directional-follow D45 chroma (§7.13.2.8 ZONE-1 step 1, pAngle 45) over
         // the real reconstructed §7.13.2.1 chroma above row + above-right. Chroma
         // takes the `enableIdif == 0` bilinear one-sided branch (`enableIdif =
@@ -429,6 +437,61 @@ fn reconstruct_general_intra_chroma_directional_first_into(
             qindex,
             plane_id,
             log2_side,
+            false,
+        )?
+    };
+    workspace
+        .write_rect_block(plane_id, x, y, block_size, &out)
+        .map_err(recon_err)?;
+    Ok(())
+}
+
+/// Reconstructs one no-neighbour (top-left) cardinal H_PRED chroma block
+/// (§ 7.13.2.8 step 5, pAngle 180) over the § 7.13.2.1 no-neighbour fallback left
+/// column, adds the decoded residual (or writes the bare prediction for an
+/// `all_zero` block), and stores the result.
+///
+/// At the no-neighbour top-left block § 7.13.2.1 has neither a real left nor a
+/// real above neighbour, so `LeftCol[i]` is the flat no-left fallback
+/// (`NONEIGHBOUR_LEFT_8BIT == 129` for 8-bit). The § 7.13.2.8 horizontal copy
+/// `pred[i][j] = LeftCol[i]` therefore writes a flat prediction. The cardinal copy
+/// has no IDIF, no corner, and no `useIBP` (§ 7.13.2.7 skips the edge filter for
+/// `pAngle == 180`), so the flat-fallback prediction is exact; the caller gates
+/// this path to the no-neighbour block (verified bit-exact against avmdec/dav2d).
+fn reconstruct_general_intra_chroma_cardinal_horizontal_first_into(
+    workspace: &mut CurrentFrameWorkspace<u8>,
+    block: &LumaCoeffBlock,
+    plane_id: PlaneId,
+    x: usize,
+    y: usize,
+    log2_side: u32,
+    qindex: u32,
+) -> core::result::Result<(), GeneralIntraResidualError> {
+    let side = 1usize << log2_side;
+    let log2 = u8::try_from(log2_side).unwrap_or(u8::MAX);
+    let block_size = IntraRectBlockSize::new(log2, log2).map_err(recon_err)?;
+    // §7.13.2.1 no-left fallback: `LeftCol[i] = NONEIGHBOUR_LEFT_8BIT` for all rows.
+    let left = vec![NONEIGHBOUR_LEFT_8BIT; side];
+    let mut prediction = vec![0u8; side * side];
+    predict_intra_cardinal_directional_rect_into(
+        BitDepth::Eight,
+        block_size,
+        IntraCardinalDirection::Horizontal,
+        IntraCardinalEdges::left(&left),
+        &mut prediction,
+        side,
+    )
+    .map_err(recon_err)?;
+    let out = if block.all_zero {
+        prediction
+    } else {
+        reconstruct_general_intra_block_with_prediction(
+            &block.quant,
+            &prediction,
+            qindex,
+            plane_id,
+            log2_side,
+            // Chroma never uses the §7.14.4 TCQ dqDenom term (luma DCT_DCT only).
             false,
         )?
     };
