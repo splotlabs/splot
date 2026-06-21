@@ -113,6 +113,17 @@ pub(crate) enum GeneralIntraResidualError {
         /// Source reconstruction error.
         source: ReconError,
     },
+    /// A § 7.13.2.8 middle-angle directional block requested edges with a real
+    /// reconstructed ABOVE neighbour (`haveAbove == 1`). That path needs the real
+    /// § 7.13.2.1 corner sample `CurrFrame[plane][y-1][x-1]` (D135 reads the corner
+    /// on its main diagonal `column == row`, where `above_base == -1`), which the
+    /// current edge builder does not reconstruct. It is gated out (row>0 directional
+    /// is deferred) and reached only if that gate is relaxed without first modelling
+    /// the corner.
+    #[error(
+        "general intra directional prediction over a real above-neighbour edge is not yet supported"
+    )]
+    UnsupportedDirectionalAboveEdge,
 }
 
 /// OR-reduces a `u32` context line over `[start, start + len)` (clamped to the

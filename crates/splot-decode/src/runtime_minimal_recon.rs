@@ -177,14 +177,35 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into(
             qindex,
             num4_above_right,
         ),
-        // Directional-follow D135 chroma is gated (by the caller) to the top-left
-        // no-neighbour block, so the §7.13.2.1 edges reduce to the flat fallback
-        // and the §7.13.2.8 middle-angle prediction is the same `enableIdif == 0`
-        // bilinear sample copy the luma D135 path uses (`num4_above_right` is the
-        // top-right sentinel, irrelevant over the fallback edges).
-        SupportedChromaMode::D135Follow => reconstruct_general_intra_chroma_directional_first_into(
-            workspace, block, plane_id, x, y, log2_side, qindex,
-        ),
+        // Directional-follow D135 chroma. At the no-neighbour top-left block the
+        // §7.13.2.1 edges reduce to the flat fallback and the §7.13.2.8 middle-angle
+        // prediction is the `enableIdif == 0` bilinear sample copy
+        // ([`reconstruct_general_intra_chroma_directional_first_into`]). For a
+        // neighbour-having block the §7.13.2.1 edges are the **real reconstructed**
+        // left column / above row; chroma always takes the §7.13.2.8 bilinear branch
+        // (`enableIdif = plane == 0` is `0` for U/V), which for D135 (`shift == 0`)
+        // is the same sample copy `Edge[base]` as the luma IDIF, bit-exact over a
+        // non-flat edge. `num4_above_right` is the top-right sentinel, never read by
+        // the D135 above/left projections.
+        SupportedChromaMode::D135Follow if x == 0 && y == 0 => {
+            reconstruct_general_intra_chroma_directional_first_into(
+                workspace, block, plane_id, x, y, log2_side, qindex,
+            )
+        }
+        SupportedChromaMode::D135Follow => {
+            reconstruct_general_intra_directional_neighbour_block_into(
+                workspace,
+                block,
+                SupportedDirectionalLumaMode::D135,
+                plane_id,
+                x,
+                y,
+                log2_side,
+                qindex,
+                // Chroma never uses the §7.14.4 TCQ dqDenom term (luma DCT_DCT only).
+                false,
+            )
+        }
     }
 }
 
@@ -692,6 +713,195 @@ fn predict_directional_noneighbour(
     )
     .map_err(recon_err)?;
     Ok(out)
+}
+
+/// Reconstructs one neighbour-having directional-angle block (luma D135 with the
+/// § 7.13.2.8 IDIF, or the directional-follow D135 chroma with the bilinear
+/// branch) over the § 7.13.2.1 edges read from the partially-built frame's **real
+/// reconstructed neighbours**, adds the decoded residual (or writes the bare
+/// prediction for an `all_zero` block), and stores the result so later blocks read
+/// it as a neighbour.
+///
+/// This is the neighbour-having companion of
+/// [`reconstruct_general_intra_luma_directional_first_block_into`] /
+/// [`reconstruct_general_intra_chroma_directional_first_into`] (which are gated to
+/// the no-neighbour top-left block and use the § 7.13.2.1 flat fallbacks). It
+/// reads the genuine reconstructed left column / above row of an already-decoded
+/// neighbour, building the logical `AboveRow[-1..w)` / `LeftCol[-1..h)` edges per
+/// § 7.13.2.1.
+///
+/// pAngle 135 is a § 7.13.2.8 "middle" angle (`90 < pAngle < 180`) whose
+/// derivatives are `dx = dy = Dr_Intra_Derivative[45] = 64`, so every projection
+/// lands on an integer sample (`shift == 0`). At `shift == 0` the § 7.13.2.8 IDIF
+/// 4-tap (`enableIdif == 1` for luma) collapses to `Dr_Interp_Filter[0] =
+/// {0, 128, 0, 0}`, i.e. `Clip1(Round2(128 * Edge[base], 7)) = Edge[base]`, which
+/// is bit-identical to the `enableIdif == 0` bilinear branch
+/// (`Round2(Edge[base] * 32 + Edge[base + 1] * 0, 5) = Edge[base]`) **even over a
+/// non-flat reconstructed edge**. So both the luma IDIF and the chroma bilinear
+/// branch reduce to the same sample copy `Edge[base]` for D135, and the shared
+/// [`predict_intra_middle_directional_angle_rect_into`] (bilinear) is bit-exact
+/// for this angle in either plane. (Other angles, where `shift != 0`, genuinely
+/// differ between IDIF and bilinear and are deferred.)
+///
+/// `enable_intra_edge_filter == 0`, `MrlIndex == 0`, and no upsample apply in the
+/// minimal-tool subset, so no § 7.13.2.x edge-filter / corner-filter / upsample
+/// synthesis runs over the edges. Directional D135 never uses the above-right
+/// sentinel value (its above/left reads stay within `AboveRow[0..w)` /
+/// `LeftCol[0..h)`), so the above-right resolver is not needed.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into(
+    workspace: &mut CurrentFrameWorkspace<u8>,
+    block: &LumaCoeffBlock,
+    mode: SupportedDirectionalLumaMode,
+    plane_id: PlaneId,
+    x: usize,
+    y: usize,
+    log2_side: u32,
+    qindex: u32,
+    use_tcq: bool,
+) -> core::result::Result<(), GeneralIntraResidualError> {
+    let side = 1usize << log2_side;
+    let log2 = u8::try_from(log2_side).unwrap_or(u8::MAX);
+    let block_size = IntraRectBlockSize::new(log2, log2).map_err(recon_err)?;
+    let edges = workspace
+        .intra_dc_edges_for_rect(plane_id, x, y, block_size)
+        .map_err(recon_err)?;
+    // §7.13.2.1 `haveLeft` / `haveAbove`: a reconstructed neighbour exists exactly
+    // when the block is not at the frame edge, which `intra_dc_edges_for_rect`
+    // reports as a present left/above edge.
+    let have_left = edges.left_samples().is_some();
+    let have_above = edges.above_samples().is_some();
+    let (left, above) =
+        build_directional_middle_edges(edges.left_samples(), have_left, have_above, side)?;
+    let angle = match mode {
+        SupportedDirectionalLumaMode::D135 => IntraMiddleDirectionalAngle::D135,
+    };
+    let middle_edges = IntraMiddleDirectionalAngleEdges::both(&left, &above);
+    let mut prediction = vec![0u8; side * side];
+    predict_intra_middle_directional_angle_rect_into(
+        BitDepth::Eight,
+        block_size,
+        angle,
+        middle_edges,
+        &mut prediction,
+        side,
+    )
+    .map_err(recon_err)?;
+    let out = if block.all_zero {
+        prediction
+    } else {
+        reconstruct_general_intra_block_with_prediction(
+            &block.quant,
+            &prediction,
+            qindex,
+            plane_id,
+            log2_side,
+            use_tcq,
+        )?
+    };
+    workspace
+        .write_rect_block(plane_id, x, y, block_size, &out)
+        .map_err(recon_err)?;
+    Ok(())
+}
+
+/// Builds the AV2 § 7.13.2.1 logical `LeftCol[-1..h)` and `AboveRow[-1..w)` edges
+/// (8-bit, `MrlIndex == 0`, no DIP/MRL/edge-filter) for § 7.13.2.8 middle-angle
+/// directional prediction over reconstructed neighbours, for any plane. Each
+/// returned slice has length `side + 1`: index `0` is the logical `-1` (corner)
+/// sample and index `k + 1` is logical index `k`.
+///
+/// The corner `AboveRow[-1] == LeftCol[-1]` and the `AboveRow[i]` / `LeftCol[i]`
+/// fills follow § 7.13.2.1 exactly for the minimal-tool subset:
+/// - `haveAbove` (either `haveLeft && haveAbove` or `!haveLeft && haveAbove`):
+///   NOT supported, returns [`GeneralIntraResidualError::UnsupportedDirectionalAboveEdge`].
+///   § 7.13.2.8 D135 DOES read the § 7.13.2.1 corner `AboveRow[-1] == LeftCol[-1]` on
+///   its main diagonal (`column == row` gives `above_base == -1`, `shift == 0`), so a
+///   real above neighbour needs the real corner `CurrFrame[plane][y-1][x-1]`, which
+///   `intra_dc_edges_for_rect` does not return. These arms are unreachable today (the
+///   row>0 directional path is gated out, `general_intra_multirow_directional_luma`);
+///   they reject rather than build a wrong-but-plausible corner, so relaxing the gate
+///   must first reconstruct the real corner.
+/// - `haveLeft && !haveAbove` (the committed fixture's row-0 D135 block): the only
+///   reachable neighbour path. `LeftCol[i]` is the reconstructed left column (clamped
+///   at the bottom-left sentinel, `num4BelowLeft == 0` in raster order), `AboveRow[i]`
+///   is the repeated first left sample `CurrFrame[plane][y][x-1]`, and the corner
+///   `AboveRow[-1] = LeftCol[-1] = CurrFrame[plane][y][x-1]` (the first left sample) —
+///   the exact § 7.13.2.1 `haveLeft && !haveAbove` value, so the corner read on the
+///   diagonal is correct and the committed fixture is bit-exact.
+/// - neither: the § 7.13.2.1 flat fallbacks (`AboveRow 127`, `LeftCol 129`, corner
+///   `128`) — the no-neighbour path handled by `predict_directional_noneighbour`.
+fn build_directional_middle_edges(
+    left_neighbour: Option<&[u8]>,
+    have_left: bool,
+    have_above: bool,
+    side: usize,
+) -> core::result::Result<(Vec<u8>, Vec<u8>), GeneralIntraResidualError> {
+    let edge_len = side + 1;
+    // §7.13.2.1 LeftCol[i] (logical 0..side-1 -> slice index 1..=side) and the
+    // corner LeftCol[-1] (slice index 0).
+    let mut left = Vec::with_capacity(edge_len);
+    let mut above = Vec::with_capacity(edge_len);
+    match (have_left, have_above) {
+        (true, true) => {
+            // A real reconstructed ABOVE neighbour (`haveAbove == 1`) only arises for
+            // a row>0 directional block, which the admission gate rejects
+            // (`general_intra_multirow_directional_luma`) BEFORE reconstruction, so
+            // this arm is currently unreachable. It is NOT a no-corner case: §7.13.2.8
+            // D135 reads the §7.13.2.1 corner `AboveRow[-1] == LeftCol[-1]` on its main
+            // diagonal (`column == row` gives `above_base == -1`, `shift == 0`, so the
+            // predictor copies the corner). The real corner is
+            // `CurrFrame[plane][y-1][x-1]`, which `intra_dc_edges_for_rect` does not
+            // return. Reject rather than build a wrong-but-plausible corner, so
+            // relaxing the row>0 gate must first reconstruct the real corner.
+            return Err(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge);
+        }
+        (true, false) => {
+            // §7.13.2.1 haveLeft && !haveAbove: AboveRow[i] = CurrFrame[plane][y][x-1]
+            // (the first left sample, repeated), corner AboveRow[-1] = LeftCol[-1] =
+            // CurrFrame[plane][y][x-1] (also the first left sample). LeftCol[i] is the
+            // reconstructed left column.
+            let left_samples = left_neighbour.unwrap_or(&[]);
+            let seed = left_samples
+                .first()
+                .copied()
+                .unwrap_or(NONEIGHBOUR_LEFT_8BIT);
+            left.push(seed);
+            above.push(seed);
+            for i in 0..side {
+                left.push(sample_or_last(left_samples, i, NONEIGHBOUR_LEFT_8BIT));
+                above.push(seed);
+            }
+        }
+        (false, true) => {
+            // Same as `(true, true)`: a real ABOVE neighbour needs the §7.13.2.1
+            // corner `CurrFrame[plane][y-1][x-1]` that D135 reads on its diagonal;
+            // unreachable today (row>0 directional is gated out) and rejected here so
+            // it cannot silently produce a wrong corner.
+            return Err(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge);
+        }
+        (false, false) => {
+            // §7.13.2.1 no-neighbour fallbacks (handled by the first-block path, but
+            // kept total here): AboveRow 127, LeftCol 129, shared corner 128.
+            left.push(NONEIGHBOUR_CORNER_8BIT);
+            above.push(NONEIGHBOUR_CORNER_8BIT);
+            for _ in 0..side {
+                left.push(NONEIGHBOUR_LEFT_8BIT);
+                above.push(NONEIGHBOUR_ABOVE_8BIT);
+            }
+        }
+    }
+    Ok((left, above))
+}
+
+/// Returns `samples[index]`, falling back to the last sample (§ 7.13.2.1 bottom-left
+/// / right-most edge clamp) and then to `fallback` for an empty slice.
+fn sample_or_last(samples: &[u8], index: usize, fallback: u8) -> u8 {
+    samples
+        .get(index)
+        .or_else(|| samples.last())
+        .copied()
+        .unwrap_or(fallback)
 }
 
 fn recon_err(source: splot_recon::ReconError) -> GeneralIntraResidualError {

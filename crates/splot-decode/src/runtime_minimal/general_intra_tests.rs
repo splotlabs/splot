@@ -834,3 +834,84 @@ fn vgrid_multirow_smooth_v_above_row_intra_frame_decodes_to_oracle() {
         "c62dd0eb74ab1129e9cd4d6a326cfef9026f62ab4144a378b38cb325b45462d2"
     );
 }
+
+// A 128x64 frame (two 64x64 superblocks) whose LEFT superblock codes
+// `SMOOTH_V_PRED` (§ 7.13.2.13) luma with DC chroma, and whose RIGHT superblock
+// codes the § 7.13.2.8 D135_PRED directional luma mode (`uv_mode == 0`
+// directional-follow D135 chroma) reading a **real reconstructed** neighbour edge.
+//
+// The RIGHT block is the first general-intra **neighbour-having directional**
+// luma+chroma decode. Its § 5.20.5.3 `y_mode_offset` escape was decoded with a
+// non-directional left neighbour (the SMOOTH_V left superblock stored
+// `IntraJointMode == 2 < NON_DIRECTIONAL_MODES_COUNT`), so its § 8.3.2 context is
+// `0` — the same supported escape path the top-left D135 uses — not the deferred
+// directional-neighbour reorder. At `frontier.r == 0`, `haveAbove == 0`, so
+// § 7.13.2.1 fills `AboveRow` with the repeated first left sample and `LeftCol`
+// with the **real reconstructed left column** of the already-decoded left
+// superblock (a non-flat vertical gradient, 34 distinct values). pAngle 135 has
+// `dx == dy == Dr_Intra_Derivative[45] == 64`, so every § 7.13.2.8 projection has
+// `shift == 0`: the luma IDIF 4-tap (`enableIdif == 1`) collapses to
+// `Dr_Interp_Filter[0] == {0, 128, 0, 0}` → `Edge[base]`, bit-identical to the
+// chroma bilinear branch (`enableIdif == 0`) over the **non-flat** edge, so the
+// shared bilinear middle-angle predictor is bit-exact for D135 in both planes. The
+// prior brick rejected this frame (`general_intra_multiblock_directional_luma` for
+// luma, `general_intra_directional_chroma_neighbour` for chroma). avmdec and dav2d
+// agree on the decoded output (md5 9ff7e4d46c0dd4fa979070ce4ca4dd1c) and splot
+// reproduces it byte-for-byte.
+const RDIR_FIXTURE: &[u8] =
+    include_bytes!("../../../../tests/conformance/vectors/valid/syn-rdir-intra-128x64-q80.ivf");
+
+#[test]
+fn rdir_neighbour_directional_d135_intra_frame_decodes_to_oracle() {
+    use splot_recon::{BitDepth, PixelFormat, PlaneSize};
+
+    let frame = decode_general_intra_luma(RDIR_FIXTURE);
+    assert_eq!(frame.bit_depth(), BitDepth::Eight);
+    assert_eq!(frame.pixel_format(), PixelFormat::Yuv420);
+    assert_eq!(frame.y().visible_size(), PlaneSize::new(128, 64).unwrap());
+    assert_eq!(
+        frame.u().unwrap().visible_size(),
+        PlaneSize::new(64, 32).unwrap()
+    );
+
+    let y = frame.y().samples();
+    let at = |r: usize, c: usize| y[r * 128 + c];
+    // LEFT superblock: SMOOTH_V — constant across columns within a row, increasing
+    // top-to-bottom (the non-DC prediction plus AC residual over the real left edge).
+    assert!(
+        (0..64).all(|c| at(20, c) == at(20, 0)),
+        "left superblock must be constant across columns within a row (SMOOTH_V)"
+    );
+    assert!(
+        at(0, 0) < at(63, 0),
+        "left superblock increases top-to-bottom"
+    );
+    // RIGHT superblock: D135 — a genuine 135-degree directional pattern (varies
+    // across columns within its top row, not flat/row-constant) reconstructed over
+    // the real left-neighbour edge plus residual.
+    assert!(
+        (1..64).any(|c| at(0, 64 + c) != at(0, 64)),
+        "right superblock top row must vary across columns (directional D135, not flat)"
+    );
+    let distinct = y.iter().collect::<std::collections::BTreeSet<_>>().len();
+    assert!(distinct > 4, "luma should be a non-flat reconstruction");
+    // Chroma is flat (U=120, V=130). The right superblock's chroma still runs the
+    // **neighbour-having** directional-follow D135 path
+    // (`reconstruct_general_intra_directional_neighbour_block_into`, chroma_x == 32
+    // so x > 0), reading the real reconstructed left chroma column via the
+    // §7.13.2.8 bilinear branch; over the uniform left chroma edge the D135 sample
+    // copy plus the all-zero chroma residual reconstructs flat — the path is
+    // exercised, and bit-exactness against the oracle confirms correctness.
+    assert!(frame.u().unwrap().samples().iter().all(|&s| s == 120));
+    assert!(frame.v().unwrap().samples().iter().all(|&s| s == 130));
+
+    // Frame hash pins splot's output, which reproduces avmdec's and dav2d's raw
+    // output byte-for-byte (verified locally; md5 9ff7e4d46c0dd4fa979070ce4ca4dd1c).
+    let hash = splot_recon::DecodedFrameHashInput::new(&frame)
+        .compute_hash()
+        .to_hex();
+    assert_eq!(
+        hash,
+        "9ea9254abc7d7507558099d5ae3e78eaf5d88625e1cc8184038321650b2b54a4"
+    );
+}
