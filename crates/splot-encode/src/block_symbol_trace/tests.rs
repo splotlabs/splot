@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 //! Tests for the private encoder block-symbol trace composition
-//! (`block_symbol_trace.rs`), split out to keep the parent file under the
+//! (the `block_symbol_trace` module), split out to keep each file under the
 //! 1000-line source budget.
 
 use super::*;
