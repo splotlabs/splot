@@ -19,7 +19,7 @@ use splot_core::annexb::ObuEnvelope;
 use splot_core::bitio::BitReader;
 use splot_core::headers::frame::{
     FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode, FrameHeaderParseStatus,
-    FrameReferenceStateView, FrameSize, TxMode, parse_frame_header_core,
+    FrameReferenceStateView, FrameSize, InterpolationFilter, TxMode, parse_frame_header_core,
 };
 use splot_core::headers::sequence::SequenceHeader;
 use splot_core::span::ByteOffset;
@@ -434,10 +434,24 @@ fn validate_inter_frame_core(core: &FrameHeaderCore, offset: ByteOffset) -> Resu
             .ccso_params
             .as_ref()
             .is_none_or(|ccso| ccso.ccso_frame_flag.is_some() || !ccso.planes.is_empty())
-        || core
-            .inter_tail
-            .as_ref()
-            .is_none_or(|tail| tail.apply_grain || tail.tx_mode != TxMode::Largest)
+        || core.inter_tail.as_ref().is_none_or(|tail| {
+            // §5.20.7.1 calls `read_skip_mode()` (which reads a `skip_mode` symbol when
+            // `skip_mode_present` and compound refs are allowed) BEFORE `read_is_inter()`.
+            // The verified subset's block decode reads `is_inter` first, so a frame with
+            // `skip_mode_present` set would desync — reject it here.
+            tail.apply_grain || tail.tx_mode != TxMode::Largest || tail.skip_mode_present
+        })
+        // §5.20.7.6: a SWITCHABLE interpolation filter makes a NEARMV/NEWMV block read an
+        // `interp_filter` symbol, and any frame-enabled motion mode makes the block read a
+        // motion-mode (`inter_intra` / warp) symbol — neither of which the verified zero-MV
+        // skip subset reads. Reject so an admitted inter frame can never silently desync the
+        // §8.2 arithmetic decoder past the `exit_symbol()` bit-count backstop.
+        || core.inter.as_ref().is_none_or(|inter| {
+            inter.interpolation_filter == Some(InterpolationFilter::Switchable)
+                || inter
+                    .frame_enabled_motion_modes
+                    .is_some_and(|modes| modes.iter().any(|&enabled| enabled))
+        })
     {
         return Err(unsupported_at(
             "inter_unsupported_frame_tools",
