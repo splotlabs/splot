@@ -355,31 +355,25 @@ fn general_intra_fixtures_decode_to_distinct_pinned_hashes() {
 }
 
 #[test]
-fn decode_two_frame_inter_fixture_is_rejected_at_inter_frame_today() {
-    // DECODE-FIRST-INTER-FRAME-FRONTIER honesty pin. The committed
-    // syn-2frame-inter-64x64.ivf is the verified first-inter decode target:
-    // frame 0 is an OBU_CLOSED_LOOP_KEY intra key frame, frame 1 is an
-    // OBU_REGULAR_TILE_GROUP inter frame. avmdec and dav2d decode the whole
-    // stream identically (frame 1 == a straight copy of frame 0).
-    //
-    // The multi-frame planner + runtime loop now admit the inter
-    // OBU_REGULAR_TILE_GROUP and walk the frames in order, and the KEY frame now
-    // decodes bit-exact: the general-intra frontier reconstructs its non-follow
-    // H_PRED chroma (uv_mode == 6 over a DC luma) at the no-neighbour top-left
-    // 64x64 block (verified against avmdec: the key frame is Y=100/U=120/V=130).
-    // The honest rejection has therefore moved to the INTER frame itself: the
-    // runtime decodes the key frame, then rejects the inter
-    // OBU_REGULAR_TILE_GROUP (at its byte offset 100) with a structured
-    // decode/unsupported-feature diagnostic and NO output (the inter header shared
-    // tail, the inter mode info, the motion vectors, and the motion compensation
-    // are not yet implemented). When the inter slice lands this flips to a
-    // bit-exact two-frame decode.
+fn decode_two_frame_inter_fixture_decodes_both_frames_bit_exact() {
+    // DECODE-FIRST-INTER-FRAME-FRONTIER: the committed syn-2frame-inter-64x64.ivf is
+    // the verified first-inter decode target. Frame 0 is an OBU_CLOSED_LOOP_KEY intra
+    // key frame; frame 1 is an OBU_REGULAR_TILE_GROUP inter frame (single reference,
+    // is_inter == 1, skip == 1, the single-reference zero-MV NEARMV mode, no
+    // residual, so §7.13.3.18 zero-fraction motion compensation reduces to a straight
+    // copy of the co-located key block). avmdec --rawvideo --i420 and
+    // dav2d --demuxer ivf decode the whole stream byte-for-byte identically:
+    // decoded-output md5 4e1bd39f0b541ef1f479cff049e6985c over 12288 bytes (two flat
+    // 64x64 4:2:0 frames; frame 1 == a copy of frame 0). The runtime now decodes both
+    // frames: the key frame via the general-intra frontier, then the inter frame via
+    // the new inter frontier (real §5.18.2 header parse, §5.20 inter mode_info symbol
+    // reads, §7.11 zero-MV derivation, §7.13.3.18 copy, validated by §8.2.4
+    // exit_symbol()). This replaces the prior inter_frame_decode_unimplemented reject.
     let input = conformance_vector("syn-2frame-inter-64x64.ivf");
     let output = temp_output("yuv");
 
     let out = splot(&[
         "decode",
-        "--json",
         "--output-format",
         "raw",
         input.to_str().unwrap(),
@@ -387,19 +381,23 @@ fn decode_two_frame_inter_fixture_is_rejected_at_inter_frame_today() {
         output.to_str().unwrap(),
     ]);
 
-    assert_eq!(out.status.code(), Some(1));
-    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(json["rule_id"], "decode/unsupported-feature");
-    assert_eq!(json["feature_id"], "DECODE-MINIMAL-TIER-RUNTIME-SUCCESS");
     assert_eq!(
-        json["unsupported_reason"],
-        "inter_frame_decode_unimplemented"
+        out.status.code(),
+        Some(0),
+        "the two-frame inter fixture must decode successfully: {}",
+        String::from_utf8_lossy(&out.stderr)
     );
-    assert_eq!(json["byte_offset"], 100);
-    assert!(
-        !output.exists(),
-        "rejected inter decode must not write an output file"
-    );
+    let decoded = std::fs::read(&output).expect("decoded raw output");
+    // 2 frames * 64x64 luma + 2 * 32x32 (U + V) = 2 * (4096 + 2 * 1024) = 12288 bytes.
+    assert_eq!(decoded.len(), 12288, "two flat 8-bit 4:2:0 64x64 frames");
+    // avmdec / dav2d oracle: both frames are flat (Y=100, U=120, V=130), and frame 1
+    // is a byte-exact copy of frame 0 (the zero-MV motion-compensation copy).
+    let frame_bytes = 6144;
+    let (frame0, frame1) = decoded.split_at(frame_bytes);
+    assert_eq!(frame0, frame1, "inter frame 1 is a copy of key frame 0");
+    assert!(frame0[..4096].iter().all(|&s| s == 100), "luma flat 100");
+    assert!(frame0[4096..5120].iter().all(|&s| s == 120), "U flat 120");
+    assert!(frame0[5120..].iter().all(|&s| s == 130), "V flat 130");
 }
 
 #[test]

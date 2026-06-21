@@ -6,9 +6,10 @@
 //! Feature tracking: `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER`.
 
 use splot_core::tables::cdf::{
-    DEFAULT_DC_SIGN_CDF, DEFAULT_EOB_EXTRA_CDF, DEFAULT_EOB_PT_16_CDF, DEFAULT_EOB_PT_32_CDF,
-    DEFAULT_EOB_PT_64_CDF, DEFAULT_EOB_PT_128_CDF, DEFAULT_EOB_PT_256_CDF, DEFAULT_EOB_PT_512_CDF,
-    DEFAULT_EOB_PT_1024_CDF, DEFAULT_TXB_SKIP_CDF, DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF,
+    DEFAULT_DC_SIGN_CDF, DEFAULT_DRL_MODE_CDF, DEFAULT_EOB_EXTRA_CDF, DEFAULT_EOB_PT_16_CDF,
+    DEFAULT_EOB_PT_32_CDF, DEFAULT_EOB_PT_64_CDF, DEFAULT_EOB_PT_128_CDF, DEFAULT_EOB_PT_256_CDF,
+    DEFAULT_EOB_PT_512_CDF, DEFAULT_EOB_PT_1024_CDF, DEFAULT_IS_INTER_CDF, DEFAULT_SINGLE_MODE_CDF,
+    DEFAULT_SKIP_CDF, DEFAULT_TXB_SKIP_CDF, DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF,
     DEFAULT_V_TXB_SKIP_CDF, DEFAULT_Y_MODE_INDEX_CDF, DEFAULT_Y_MODE_OFFSET_CDF,
     DEFAULT_Y_MODE_SET_CDF,
 };
@@ -33,6 +34,15 @@ const UV_MODE_CONTEXTS: usize = 2;
 const V_TXB_SKIP_CONTEXTS: usize = 12;
 const DC_SIGN_GROUPS: usize = 2;
 const DC_SIGN_CONTEXTS: usize = 3;
+// §3 IS_INTER_CONTEXTS / SKIP_CONTEXTS / SINGLE_MODE_CONTEXTS: the §8.3.2 inter
+// mode_info CDF banks consumed by the first-inter-frame decode.
+const IS_INTER_CONTEXTS: usize = 4;
+const SKIP_CONTEXTS: usize = 6;
+const SINGLE_MODE_CONTEXTS: usize = 5;
+// §9.3 `Default_Drl_Mode_Cdf[ 3 ][ DRL_MODE_CONTEXTS ][ 3 ]`: the first axis is the
+// §5.20.7.8 `read_drl_idx` `Min(idx, 2)` index; the second is `NewMvContext`.
+const DRL_MODE_IDX_BANKS: usize = 3;
+const DRL_MODE_CONTEXTS: usize = 5;
 
 pub(crate) type YModeSetCdfRow = [i32; Y_MODE_SET_CDF_ROW_LEN];
 pub(crate) type YModeIndexCdfRows = [[i32; INTRA_MODE_CDF_ROW_LEN]; Y_MODE_INDEX_CONTEXTS];
@@ -51,6 +61,13 @@ pub(crate) type EobExtraCdfRows = [[i32; CDF_ROW_LEN]; COEFF_CDF_Q_CONTEXTS];
 // Above/Left DC-context buffers (deferred with the coeffs() loop).
 pub(crate) type DcSignCdfRows =
     [[[[[i32; CDF_ROW_LEN]; DC_SIGN_CONTEXTS]; DC_SIGN_GROUPS]; PLANE_TYPES]; COEFF_CDF_Q_CONTEXTS];
+// §9.3 inter mode_info banks. `is_inter` / `skip` are binary (width 3 ==
+// `CDF_ROW_LEN`); `single_mode` is the 3-ary (NEARMV/GLOBALMV/NEWMV) symbol whose
+// `[SINGLE_MODE_CONTEXTS][3 + 1]` row keeps the §9.3 width (3 symbols + count).
+pub(crate) type IsInterCdfRows = [[i32; CDF_ROW_LEN]; IS_INTER_CONTEXTS];
+pub(crate) type SkipCdfRows = [[i32; CDF_ROW_LEN]; SKIP_CONTEXTS];
+pub(crate) type SingleModeCdfRows = [[i32; 4]; SINGLE_MODE_CONTEXTS];
+pub(crate) type DrlModeCdfRows = [[[i32; CDF_ROW_LEN]; DRL_MODE_CONTEXTS]; DRL_MODE_IDX_BANKS];
 
 // The §9.3 `eob_pt` CDF family: one bank per transform-size class, each
 // `[coeff_cdf_q_ctx][eobCtx][N]` with a class-specific symbol width N. §8.3.2
@@ -150,6 +167,30 @@ pub(crate) enum BlockCdfSelector {
         /// DC-sign context (`0..DC_SIGN_CONTEXTS`).
         ctx: usize,
     },
+    /// `TileIsInterCdf[ctx]` (AV2 § 8.3.2): the `read_is_inter` decision.
+    IsInter {
+        /// `is_inter` context index (`0..IS_INTER_CONTEXTS`).
+        ctx: usize,
+    },
+    /// `TileSkipCdf[ctx]` (AV2 § 8.3.2): the `read_skip` decision.
+    Skip {
+        /// `skip_flag` context index (`0..SKIP_CONTEXTS`).
+        ctx: usize,
+    },
+    /// `TileSingleModeCdf[NewMvContext]` (AV2 § 8.3.2): the single-reference inter
+    /// `single_mode` symbol (`YMode = NEARMV + single_mode`).
+    SingleMode {
+        /// `NewMvContext` (`0..SINGLE_MODE_CONTEXTS`).
+        ctx: usize,
+    },
+    /// `TileDrlModeCdf[Min(idx, 2)][NewMvContext]` (AV2 § 8.3.2): the §5.20.7.8
+    /// `read_drl_idx` `drl_mode` symbol for a non-skip-mode, non-TIP reference.
+    DrlMode {
+        /// `Min(idx, 2)` index bank (`0..DRL_MODE_IDX_BANKS`).
+        idx: usize,
+        /// `NewMvContext` (`0..DRL_MODE_CONTEXTS`).
+        ctx: usize,
+    },
     /// Coefficient base/base-EOB/base-range and IDTX CDF rows.
     Coeff(CoeffCdfSelector),
 }
@@ -172,6 +213,10 @@ pub(crate) struct BlockCdfRows {
     pub(super) eob_pt_512: EobPt512CdfRows,
     pub(super) eob_pt_1024: EobPt1024CdfRows,
     pub(super) dc_sign: DcSignCdfRows,
+    pub(super) is_inter: IsInterCdfRows,
+    pub(super) skip: SkipCdfRows,
+    pub(super) single_mode: SingleModeCdfRows,
+    pub(super) drl_mode: DrlModeCdfRows,
     pub(super) coeff: CoeffCdfRows,
 }
 
@@ -193,6 +238,10 @@ impl BlockCdfRows {
             eob_pt_512: DEFAULT_EOB_PT_512_CDF,
             eob_pt_1024: DEFAULT_EOB_PT_1024_CDF,
             dc_sign: DEFAULT_DC_SIGN_CDF,
+            is_inter: DEFAULT_IS_INTER_CDF,
+            skip: DEFAULT_SKIP_CDF,
+            single_mode: DEFAULT_SINGLE_MODE_CDF,
+            drl_mode: DEFAULT_DRL_MODE_CDF,
             coeff: CoeffCdfRows::from_defaults(),
         }
     }
@@ -310,6 +359,57 @@ impl BlockCdfRows {
                         max_exclusive: DC_SIGN_CONTEXTS,
                     },
                 )?;
+                Ok(row.as_slice())
+            }
+            BlockCdfSelector::IsInter { ctx } => {
+                let row = self
+                    .is_inter
+                    .get(ctx)
+                    .ok_or(TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::IsInter,
+                        index_name: "ctx",
+                        actual: ctx,
+                        max_exclusive: IS_INTER_CONTEXTS,
+                    })?;
+                Ok(row.as_slice())
+            }
+            BlockCdfSelector::Skip { ctx } => {
+                let row = self.skip.get(ctx).ok_or(TileCdfError::SelectorOutOfRange {
+                    array: TileCdfArray::Skip,
+                    index_name: "ctx",
+                    actual: ctx,
+                    max_exclusive: SKIP_CONTEXTS,
+                })?;
+                Ok(row.as_slice())
+            }
+            BlockCdfSelector::SingleMode { ctx } => {
+                let row = self
+                    .single_mode
+                    .get(ctx)
+                    .ok_or(TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::SingleMode,
+                        index_name: "ctx",
+                        actual: ctx,
+                        max_exclusive: SINGLE_MODE_CONTEXTS,
+                    })?;
+                Ok(row.as_slice())
+            }
+            BlockCdfSelector::DrlMode { idx, ctx } => {
+                let bank = self
+                    .drl_mode
+                    .get(idx)
+                    .ok_or(TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::DrlMode,
+                        index_name: "idx",
+                        actual: idx,
+                        max_exclusive: DRL_MODE_IDX_BANKS,
+                    })?;
+                let row = bank.get(ctx).ok_or(TileCdfError::SelectorOutOfRange {
+                    array: TileCdfArray::DrlMode,
+                    index_name: "ctx",
+                    actual: ctx,
+                    max_exclusive: DRL_MODE_CONTEXTS,
+                })?;
                 Ok(row.as_slice())
             }
             BlockCdfSelector::Coeff(selector) => self.coeff.row(selector),
@@ -439,6 +539,65 @@ impl BlockCdfRows {
                 )?;
                 Ok(row.as_mut_slice())
             }
+            BlockCdfSelector::IsInter { ctx } => {
+                let max_exclusive = self.is_inter.len();
+                let row = self
+                    .is_inter
+                    .get_mut(ctx)
+                    .ok_or(TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::IsInter,
+                        index_name: "ctx",
+                        actual: ctx,
+                        max_exclusive,
+                    })?;
+                Ok(row.as_mut_slice())
+            }
+            BlockCdfSelector::Skip { ctx } => {
+                let max_exclusive = self.skip.len();
+                let row = self
+                    .skip
+                    .get_mut(ctx)
+                    .ok_or(TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::Skip,
+                        index_name: "ctx",
+                        actual: ctx,
+                        max_exclusive,
+                    })?;
+                Ok(row.as_mut_slice())
+            }
+            BlockCdfSelector::SingleMode { ctx } => {
+                let max_exclusive = self.single_mode.len();
+                let row =
+                    self.single_mode
+                        .get_mut(ctx)
+                        .ok_or(TileCdfError::SelectorOutOfRange {
+                            array: TileCdfArray::SingleMode,
+                            index_name: "ctx",
+                            actual: ctx,
+                            max_exclusive,
+                        })?;
+                Ok(row.as_mut_slice())
+            }
+            BlockCdfSelector::DrlMode { idx, ctx } => {
+                let bank_len = self.drl_mode.len();
+                let bank = self
+                    .drl_mode
+                    .get_mut(idx)
+                    .ok_or(TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::DrlMode,
+                        index_name: "idx",
+                        actual: idx,
+                        max_exclusive: bank_len,
+                    })?;
+                let ctx_len = bank.len();
+                let row = bank.get_mut(ctx).ok_or(TileCdfError::SelectorOutOfRange {
+                    array: TileCdfArray::DrlMode,
+                    index_name: "ctx",
+                    actual: ctx,
+                    max_exclusive: ctx_len,
+                })?;
+                Ok(row.as_mut_slice())
+            }
             BlockCdfSelector::Coeff(selector) => self.coeff.row_mut(selector),
         }
     }
@@ -506,6 +665,35 @@ impl BlockCdfRows {
         {
             avg_cdf_row(frame_row, tile_row, tile_num, num_log2);
         }
+        for ctx in 0..IS_INTER_CONTEXTS {
+            avg_cdf_row(
+                &mut self.is_inter[ctx],
+                &tile.is_inter[ctx],
+                tile_num,
+                num_log2,
+            );
+        }
+        for ctx in 0..SKIP_CONTEXTS {
+            avg_cdf_row(&mut self.skip[ctx], &tile.skip[ctx], tile_num, num_log2);
+        }
+        for ctx in 0..SINGLE_MODE_CONTEXTS {
+            avg_cdf_row(
+                &mut self.single_mode[ctx],
+                &tile.single_mode[ctx],
+                tile_num,
+                num_log2,
+            );
+        }
+        for idx in 0..DRL_MODE_IDX_BANKS {
+            for ctx in 0..DRL_MODE_CONTEXTS {
+                avg_cdf_row(
+                    &mut self.drl_mode[idx][ctx],
+                    &tile.drl_mode[idx][ctx],
+                    tile_num,
+                    num_log2,
+                );
+            }
+        }
         self.coeff.avg_from_tile(tile_num, &tile.coeff, num_log2);
     }
 
@@ -541,6 +729,20 @@ impl BlockCdfRows {
         scale_eob_pt_bank(&mut self.eob_pt_1024);
         for row in self.dc_sign.iter_mut().flatten().flatten().flatten() {
             scale_cdf_count(row);
+        }
+        for ctx in 0..IS_INTER_CONTEXTS {
+            scale_cdf_count(&mut self.is_inter[ctx]);
+        }
+        for ctx in 0..SKIP_CONTEXTS {
+            scale_cdf_count(&mut self.skip[ctx]);
+        }
+        for ctx in 0..SINGLE_MODE_CONTEXTS {
+            scale_cdf_count(&mut self.single_mode[ctx]);
+        }
+        for idx in 0..DRL_MODE_IDX_BANKS {
+            for ctx in 0..DRL_MODE_CONTEXTS {
+                scale_cdf_count(&mut self.drl_mode[idx][ctx]);
+            }
         }
         self.coeff.scale_counts_for_frame_end_update();
     }

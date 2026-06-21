@@ -67,7 +67,7 @@ pub(crate) fn encode_y4m_stream_from_plan(
                 DecodeOutputError::y4m(DecodeOutputOperation::SerializeY4m, source)
             })?;
         for output in &outputs {
-            writer.write_frame(&output.frame).map_err(|source| {
+            writer.write_frame(output.frame()).map_err(|source| {
                 DecodeOutputError::y4m(DecodeOutputOperation::SerializeY4m, source)
             })?;
         }
