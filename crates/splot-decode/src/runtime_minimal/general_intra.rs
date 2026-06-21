@@ -1071,6 +1071,12 @@ fn general_intra_residual_error(
             "general intra cardinal (V_PRED / H_PRED) prediction is missing its required reconstructed neighbour edge (V_PRED needs the §7.13.2.1 above row, H_PRED needs the left column)",
             GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
         ),
+        GeneralIntraResidualError::CardinalModeInMiddleAnglePath => general_intra_unsupported(
+            "general_intra_cardinal_in_middle_angle_path",
+            Some(offset),
+            "general intra cardinal (V_PRED / H_PRED) mode reached the §7.13.2.8 middle-angle path (which only covers D135); cardinal modes must be dispatched to the cardinal copy reconstruction",
+            GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
+        ),
     }
 }
 

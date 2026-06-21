@@ -132,6 +132,16 @@ pub(crate) enum GeneralIntraResidualError {
     /// is relaxed without supplying the edge.
     #[error("general intra cardinal directional prediction is missing its required neighbour edge")]
     MissingCardinalEdge,
+    /// A cardinal `V_PRED` / `H_PRED` mode reached the § 7.13.2.8 middle-angle
+    /// (`90 < pAngle < 180`) mapping, which only covers `D135`. The dispatch routes
+    /// cardinal modes to the dedicated copy predictor
+    /// (`reconstruct_general_intra_cardinal_neighbour_block_into`), so this is
+    /// unreachable in correct operation; it is a defensive guard for a dispatch
+    /// regression (returned rather than panicking, per the no-panic policy).
+    #[error(
+        "general intra cardinal (V_PRED/H_PRED) mode reached the middle-angle path; it must be dispatched to the cardinal copy reconstruction"
+    )]
+    CardinalModeInMiddleAnglePath,
 }
 
 /// OR-reduces a `u32` context line over `[start, start + len)` (clamped to the

@@ -1041,7 +1041,7 @@ fn middle_directional_angle(
     match mode {
         SupportedDirectionalLumaMode::D135 => Ok(IntraMiddleDirectionalAngle::D135),
         SupportedDirectionalLumaMode::Vertical | SupportedDirectionalLumaMode::Horizontal => {
-            Err(GeneralIntraResidualError::MissingCardinalEdge)
+            Err(GeneralIntraResidualError::CardinalModeInMiddleAnglePath)
         }
     }
 }
