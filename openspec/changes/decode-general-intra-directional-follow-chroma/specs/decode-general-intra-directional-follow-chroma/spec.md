@@ -15,14 +15,15 @@ deferred. For the no-neighbour top-left block the decoder SHALL build the
 § 7.13.2.1 chroma edges as the flat fallbacks (8-bit: `AboveRow[k] = 127`,
 `LeftCol[k] = 129`, shared corner `128`), run the § 7.13.2.8 middle-angle
 (pAngle 135) prediction — where `dx = dy = Dr_Intra_Derivative[45] = 64` give
-`shift == 0` so the chroma IDIF reduces to a sample copy, bit-identical to the
-`enableIdif == 0` bilinear predictor — and add the § 5.20.7.27 chroma residual (or
+`shift == 0` so the §7.13.2.8 bilinear predictor (`enableIdif == 0` for chroma,
+since `enableIdif = plane == 0`) is a sample copy of the flat fallback edge — and add the § 5.20.7.27 chroma residual (or
 write the bare prediction for an `all_zero` block) for both the U and V planes.
 The decoder SHALL gate this directional-follow chroma to the top-left
 (no-neighbour) 64x64 superblock (`n4w == 16`) and SHALL reject — with a structured
 `decode/unsupported-feature` diagnostic — a neighbour-having directional chroma
-block (which needs the real § 7.13.2.8 chroma IDIF 4-tap, since the bilinear
-reduction equals IDIF only over a flat edge), other directional chroma angles or a
+block (the §7.13.2.8 chroma prediction is the bilinear branch, since
+`enableIdif = plane == 0` is 0 for U/V, and the bilinear prediction over a real
+non-flat edge is not yet verified), other directional chroma angles or a
 non-zero `AngleDeltaUV`, CfL (`UV_CFL_PRED`) / CCTX / MHCCP chroma, and the
 non-follow `D135_PRED` scan pairing. The reconstruction SHALL be guarded by the
 § 8.2.4 `exit_symbol()` bit-exactness check and SHALL NOT invoke AVM or dav2d.
@@ -52,8 +53,9 @@ non-follow `D135_PRED` scan pairing. The reconstruction SHALL be guarded by the
 - **WHEN** a general intra block resolves to the directional-follow D135 chroma
   mode at a superblock position that is not the top-left (no-neighbour) block
 - **THEN** the decoder emits a structured `decode/unsupported-feature` diagnostic
-  (the neighbour-having directional chroma needs the real § 7.13.2.8 chroma IDIF
-  4-tap interpolation, not yet implemented) rather than decoding over an unverified
+  (the neighbour-having directional chroma uses the § 7.13.2.8 bilinear branch —
+  `enableIdif = plane == 0` is 0 for U/V — over a real non-flat edge, not yet
+  verified) rather than decoding over an unverified
   prediction
 
 #### Scenario: CfL / CCTX / MHCCP chroma stays rejected

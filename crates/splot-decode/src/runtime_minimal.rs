@@ -988,11 +988,12 @@ fn decode_one_general_intra_block(
     };
     // The directional-follow D135 chroma predictor is verified bit-exact only for
     // the top-left no-neighbour block, where the § 7.13.2.1 edges reduce to the
-    // flat fallback so the § 7.13.2.8 `enableIdif == 0` bilinear reduction equals
-    // the spec IDIF 4-tap interpolation (bilinear equals IDIF only for a flat
-    // edge). Over a real reconstructed neighbour edge it needs the genuine
-    // § 7.13.2.8 chroma IDIF (a separate brick), so gate it to the no-neighbour
-    // top-left full superblock.
+    // flat fallback so the § 7.13.2.8 prediction is constant. Chroma directional
+    // prediction always takes the bilinear branch — § 7.13.2.8 sets
+    // `enableIdif = (plane == 0)`, so `enableIdif == 0` for U/V and the IDIF 4-tap
+    // is luma-only — but over a real reconstructed NON-FLAT neighbour edge that
+    // bilinear prediction reads the real edge samples, which is not yet verified
+    // (a separate brick), so gate it to the no-neighbour top-left full superblock.
     let chroma_is_top_left = frontier.r == 0 && frontier.c == 0;
     if supported_chroma == crate::tile_payload::SupportedChromaMode::D135Follow
         && !(chroma_is_top_left && n4w == 16)
@@ -1000,7 +1001,7 @@ fn decode_one_general_intra_block(
         return Err(general_intra_unsupported(
             "general_intra_directional_chroma_neighbour",
             Some(tile_offset),
-            "general intra directional-follow (D135) chroma prediction is only supported for the top-left (no-neighbour) 64x64 superblock block; over a real reconstructed neighbour edge it needs the §7.13.2.8 IDIF 4-tap interpolation (bilinear equals IDIF only for a flat edge), which is not yet implemented",
+            "general intra directional-follow (D135) chroma prediction is only supported for the top-left (no-neighbour) 64x64 superblock block, where the §7.13.2.1 edges are the flat fallback; chroma directional prediction uses the §7.13.2.8 bilinear branch (enableIdif = plane == 0, so enableIdif == 0 for U/V), and over a real reconstructed non-flat neighbour edge that bilinear prediction is not yet verified",
             GENERAL_INTRA_MODE_SPEC_SECTION,
         ));
     }

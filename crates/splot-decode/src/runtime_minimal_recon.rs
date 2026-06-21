@@ -200,9 +200,10 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into(
 /// fallbacks (`AboveRow[k] = 127`, `LeftCol[k] = 129`, corner `128`) and the
 /// `enable_intra_edge_filter` / IDIF / upsample edge synthesis is a no-op. pAngle
 /// 135 has `dx == dy == Dr_Intra_Derivative[45] == 64`, so every projection lands
-/// on an integer sample (`shift == 0`) and the chroma IDIF reduces to a sample
-/// copy — bit-identical to the `enableIdif == 0` bilinear middle-angle predictor
-/// for this angle (verified bit-exact against avmdec/dav2d). Chroma never uses the
+/// on an integer sample (`shift == 0`) and the § 7.13.2.8 bilinear middle-angle
+/// predictor (`enableIdif == 0` for chroma, since `enableIdif = plane == 0`, so the
+/// IDIF 4-tap is luma-only) is a sample copy of the flat fallback edge for this
+/// angle (verified bit-exact against avmdec/dav2d). Chroma never uses the
 /// § 7.14.4 TCQ dqDenom term (luma DCT_DCT only), so `use_tcq` is `false`.
 fn reconstruct_general_intra_chroma_directional_first_into(
     workspace: &mut CurrentFrameWorkspace<u8>,

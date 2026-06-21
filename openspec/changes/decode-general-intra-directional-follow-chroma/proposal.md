@@ -63,7 +63,7 @@ directional fixtures.
   `docs/LOCAL-REFERENCE-EVIDENCE.toml`, `tests/conformance/manifest.toml`, and
   generated status docs.
 - No dependency graph, encoder, or validator changes. Neighbour-having directional
-  chroma over a real non-flat edge (real § 7.13.2.8 chroma IDIF), other directional
+  chroma over a real non-flat edge (the § 7.13.2.8 chroma prediction is bilinear, enableIdif = plane == 0 = 0 for U/V, not yet verified over a real edge), other directional
   chroma angles and non-zero `AngleDeltaUV`, the non-follow `D135_PRED` scan
   pairing, CfL/CCTX/MHCCP chroma, SMOOTH_V/H / PAETH chroma, sub-superblock chroma,
   non-64x64 frames, inter prediction, and in-loop filters remain out of scope.

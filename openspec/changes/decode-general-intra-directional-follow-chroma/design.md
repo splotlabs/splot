@@ -30,19 +30,19 @@ so it is in scope.
   pairing is left deferred (no oracle fixture reaches it).
 - **Reuse the luma directional predictor on the chroma plane.** pAngle 135 is a
   § 7.13.2.8 "middle" angle with `dx = dy = Dr_Intra_Derivative[45] = 64`, so every
-  projection lands on an integer sample (`shift == 0`) and the chroma IDIF reduces
-  to a sample copy — bit-identical to the `enableIdif == 0` bilinear
-  `predict_intra_middle_directional_angle_rect_into`. The new
+  projection lands on an integer sample (`shift == 0`) and the § 7.13.2.8 bilinear
+  predictor (`enableIdif == 0` for chroma, since `enableIdif = plane == 0`) is a
+  sample copy — `predict_intra_middle_directional_angle_rect_into`. The new
   `reconstruct_general_intra_chroma_directional_first_into` calls the same
   `predict_directional_noneighbour` helper the luma D135 path uses (building the
   § 7.13.2.1 fallback edges with the shared corner) and adds the § 5.20.7.27 chroma
   residual through `reconstruct_general_intra_block_with_prediction` with the chroma
   plane id and `use_tcq == false` (chroma never uses the § 7.14.4 TCQ dqDenom term).
 - **Gate to the top-left no-neighbour 64x64 superblock.** Over a real reconstructed
-  neighbour edge the `enableIdif == 0` bilinear reduction no longer equals the spec
-  IDIF 4-tap interpolation (bilinear equals IDIF only for a flat edge), so the
-  directional chroma over a neighbour edge needs the genuine § 7.13.2.8 chroma IDIF
-  (a separate brick). The runtime rejects a neighbour-having `D135Follow` chroma
+  non-flat neighbour edge the § 7.13.2.8 chroma bilinear prediction (`enableIdif ==
+  0` for chroma, since `enableIdif = plane == 0`) reads the real edge samples, so
+  the directional chroma over a neighbour edge is not yet verified (a separate
+  brick). The runtime rejects a neighbour-having `D135Follow` chroma
   block with a structured `decode/unsupported-feature` diagnostic
   (`general_intra_directional_chroma_neighbour`).
 - **Keep CfL/CCTX/MHCCP out of scope.** Those return `UV_CFL_PRED` at § 5.20.5.3 /
