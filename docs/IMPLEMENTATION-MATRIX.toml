@@ -4899,6 +4899,41 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-COEFF-GENERAL-WALK-EOB-EXTRA-BITS"
+name = "Encoder general LF coefficient walk: eob 5-10 (eob_extra_bit literals)"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20.7.27", "8.2.5", "8.3.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/coefficient_tokenization"
+openspec_change = "coeff-general-walk-eob-extra-bits"
+tracking_issue = ""
+owner = "encoder"
+risk = "medium"
+notes = "Private, non-emitting encoder coefficient tokenizer. Sub-brick 5c-ii: lifts `tokenize_general_lf_luma_block` from eob 1-4 to eob 1-10 (the full 4x4 low-frequency region), adding the §8.2.5 `eob_extra_bit` bypass literals for eobPt 4 and 5. EOB MAPPING (mirrors decoder `nonzero_coeff_eob`): eob 5-8 -> eobPt 4 (`eob_pt_16` symbol 3, base 5, 1 `eob_extra_bit`); eob 9-10 -> eobPt 5 (symbol 4, base 9, 2 `eob_extra_bit`s). offset = eob - base; eob_extra (CDF high bit) = (offset >> (eobPt-3)) & 1; eob_extra_bits (packed low bits) = offset & ((1<<(eobPt-3))-1). BIT ORDER is load-bearing and §8.2 self-consistency CANNOT catch a reversal (encode + recover agree while mis-decoding) -- the `eob_extra_bit` literals are emitted MSB-FIRST via `BlockSymbolToken::bypass(1, bit)` for i in (0..width).rev(), mirrored from the §5.20.7.27 spec loop (`for i = eobPt-4 down to 0`) AND the decoder `read_literal` (`value = (value<<1)|bit`, MSB-first); a 5-agent adversarial review confirmed the order is correct (eob=10's asymmetric [0,1] would mis-decode to 11 if LSB-first). LF BOUNDARY verified vs decoder `get_lf_limits` (row+col < 4, NOT scan index): the 4x4 2D scan indices 0..=9 all have row+col <= 3, scan 10 (raster 13, diagonal 4) is the first high-frequency coefficient, so eob 1-10 are entirely LF and reuse the 5c-i hole-free `[q][ctx]` banks (NO new CDF rows; max reachable contexts base-eob 3<4, base 20<33, br 13<14). eob >= 11 (a nonzero at scan index >= 10) rejected (HF is a later sub-brick). §8.2 SELF-CONSISTENCY only; decoder context + eob_extra_bit-order conformance proven at the deferred splot-decode cross-check. Tests split general_walk_tests.rs (eob<=2) / general_walk_eob_extra_tests.rs (eob 3-10) to stay under the 1000-line budget. Out of scope: high-frequency coefficients (scan >= 10), magnitudes > 7 (golomb), chroma coefficient coding, non-4x4 sizes, non-DCT_DCT, packets."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-encode/src/coefficient_tokenization/general_walk_eob_extra_tests.rs",
+]
+commands = ["cargo test -p splot-encode general_walk --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-INTRA-BLOCK-TRACE-TWO-COEFF"
 name = "Encoder eob=2 multi-coefficient block trace"
 category = "encoder"
