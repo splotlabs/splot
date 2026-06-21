@@ -942,6 +942,14 @@ const fn coeff_cdf_q_context(qindex: u32) -> usize {
 mod cdf_rows;
 use cdf_rows::CoefficientTokenCdfRows;
 
+mod general_walk;
+// The general low-frequency base-tier walk (`ENC-COEFF-GENERAL-WALK-LF-BASE`) and
+// its § 8.2 self-consistency recovery proof. Re-exported for the upcoming
+// multi-coefficient tokenizer wiring and the sibling tests; not yet referenced by
+// non-test code in this module.
+#[allow(unused_imports)]
+pub(crate) use general_walk::{recover_quant_from_tokens, tokenize_general_lf_luma_block};
+
 #[cfg(test)]
 #[path = "coefficient_tokenization_tests.rs"]
 mod tests;
