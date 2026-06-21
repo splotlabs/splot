@@ -11209,6 +11209,7 @@ tests = [
     "crates/splot-decode/src/runtime_minimal.rs::general_intra_tests::q80_intra_frame_reconstructs_flat_planes",
     "crates/splot-decode/src/runtime_minimal.rs::general_intra_tests::q80_intra_frame_hash_is_stable",
     "crates/splot-decode/src/runtime_minimal.rs::general_intra_tests::q180_cos_intra_frame_decodes_multi_coefficient_luma",
+    "crates/splot-decode/src/runtime_minimal.rs::general_intra_tests::luma_skip_fixture_decodes_skip_branch_through_general_path",
     "crates/splot-cli/tests/decode_cli.rs::decode_general_intra_fixture_reconstructs_full_frame",
 ]
 commands = [
@@ -11221,6 +11222,7 @@ commands = [
 fixtures = [
     "tests/conformance/vectors/valid/syn-flat-intra-64x64-q80.ivf",
     "tests/conformance/vectors/valid/syn-cos-intra-64x64-q180.ivf",
+    "tests/conformance/vectors/valid/syn-flat-intra-64x64-minimal.ivf",
     "crates/splot-decode/src/tile_payload/general_intra_residual.rs",
     "crates/splot-decode/src/runtime_minimal.rs",
     "crates/splot-decode/src/runtime_minimal_recon.rs",
@@ -15789,7 +15791,6 @@ tests = [
     "crates/splot-decode/src/tile_payload/cdf/block_read.rs::tests::update_mode_controls_only_selected_block_symbol_rows",
     "crates/splot-decode/src/tile_payload/block_symbol.rs::tests::traced_symbol_mismatch_fails_closed_and_rolls_back_cdfs",
     "crates/splot-decode/src/tile_payload/block_symbol.rs::tests::invalid_cdf_row_reports_parse_failure_and_preserves_rows",
-    "crates/splot-decode/src/runtime_minimal.rs::general_intra_tests::luma_skip_fixture_decodes_skip_branch_through_general_path",
     "crates/splot-decode/src/tile_payload/runtime_frontier.rs::tests::block_symbol_trace_rejects_legacy_inverted_skip",
     "crates/splot-decode/src/runtime_hash.rs::tests::minimal_fixture_decodes_to_hash_report",
     "crates/splot-decode/src/runtime_hash.rs::tests::decoded_hash_is_deterministic_across_thread_policies",
@@ -15859,7 +15860,6 @@ perf = "not-applicable"
 tests = [
     "crates/splot-decode/src/runtime_minimal_recon.rs::tests::traced_luma_dc_chroma_h_pred_reconstruction_predicts_visible_samples",
     "crates/splot-decode/src/runtime_minimal_recon.rs::tests::traced_luma_dc_chroma_h_pred_reconstruction_hash_matches_minimal_contract",
-    "crates/splot-decode/src/runtime_minimal.rs::general_intra_tests::luma_skip_fixture_decodes_skip_branch_through_general_path",
     "crates/splot-decode/src/runtime_hash.rs::tests::minimal_fixture_decodes_to_hash_report",
     "crates/splot-decode/src/runtime_hash.rs::tests::decoded_hash_is_deterministic_across_thread_policies",
     "crates/splot-decode/src/runtime_hash.rs::tests::output_byte_limit_fails_before_hash_report",

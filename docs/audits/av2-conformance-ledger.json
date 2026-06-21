@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "148f3e3fdc59ad87635ab0d00fdb94601865c460",
+  "audited_commit": "79cb1622a0ce9b2a5e0a6c5c4faf242555767239",
   "outcome": "success",
   "files": [
     {
@@ -4784,7 +4784,7 @@
     },
     {
       "path": "docs/DECODER-SUPPORT-MATRIX.toml",
-      "sha256": "6c5042ae5ff22c4a438e9f08b060d1994ff85b3699bffb7cc1c54c2b47c2dc33",
+      "sha256": "f322b5fbd4b7d8550a4ce2e82190ef2ed2ec9d98bf32443332f06cce862bc2e6",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-8.2-SYMBOL-DECODER",
@@ -4963,7 +4963,7 @@
     },
     {
       "path": "docs/DECODER-SUPPORT-STATUS.md",
-      "sha256": "5d58532b4b5be999f6b9135b9a88c04952688c02e27f2198c89f78fd68d30c9a",
+      "sha256": "bb793d2677dc2c53ce46c19432052bb1dad48643b143089295ff413830e48be3",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-8.2-SYMBOL-DECODER",
@@ -5627,7 +5627,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "c8a38316d0b661a174d9cfed21174f0521deaf68cdd5c5b6cf20571b54910116",
+      "sha256": "c51af747ed6ee99c31c6035ee376d84f671a3cd46a7aeb1d82c08a6b7c75bcb8",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.10-RG",
@@ -6732,7 +6732,7 @@
     },
     {
       "path": "fuzz/fuzz_targets/decode_runtime_raw_bytes.rs",
-      "sha256": "e3c5e9f58e3579c79f70867ef3d02ff64bc02edc4065b95651f9f6672c9ddfc6",
+      "sha256": "4f68dc4f075ab53890e04241b7b2ff23c9a5def63ceff51cd238c92a1d03014d",
       "scope_kind": "fuzz",
       "feature_ids": [
         "CONF-DECODE-RUNTIME-RAW-FUZZ"
@@ -6741,7 +6741,7 @@
     },
     {
       "path": "fuzz/fuzz_targets/decode_runtime_y4m_bytes.rs",
-      "sha256": "febb463aecb2526e13ca9c7367ccd728639232cc6b31c526b5bdc61071a01c32",
+      "sha256": "a08b32eef7d3f9b659b459b4ba21f311188f9ede530cd25dcaf63403d79770fa",
       "scope_kind": "fuzz",
       "feature_ids": [
         "CONF-DECODE-RUNTIME-Y4M-FUZZ"
