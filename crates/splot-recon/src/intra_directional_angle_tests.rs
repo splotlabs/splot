@@ -33,6 +33,80 @@ fn d45_prediction_uses_above_edge_and_edge_end_fallback() {
 }
 
 #[test]
+fn d45_one_sided_idif_matches_bilinear_copy_for_shift_zero() {
+    // pAngle 45 has `shift == 0` for every projection, so the §7.13.2.8 IDIF
+    // 4-tap (`Dr_Interp_Filter[0] == {0, 128, 0, 0}`) reduces to the sample copy
+    // `AboveRow[base]`, bit-identical to the bilinear one-sided branch. The IDIF
+    // above edge spans logical `-2 ..= w + h + 1` (length `w + h + 4 == 12` for
+    // 4x4): slice[0] = logical -2 (corner ext), slice[1] = logical -1 (corner),
+    // slice[2 + k] = logical k. The logical samples 0..=7 mirror the bilinear
+    // `d45_prediction_uses_above_edge_and_edge_end_fallback` test (10..80), so the
+    // output must match it exactly.
+    let above_idif = [5, 5, 10, 20, 30, 40, 50, 60, 70, 80, 80, 80];
+    let mut output = [0u8; 16];
+
+    predict_intra_directional_angle_rect_one_sided_idif_into(
+        BitDepth::Eight,
+        rect_size(2, 2),
+        IntraDirectionalAngle::D45,
+        IntraDirectionalAngleIdifEdges::above(&above_idif),
+        &mut output,
+        4,
+    )
+    .unwrap();
+
+    assert_eq!(
+        output,
+        [
+            20, 30, 40, 50, 30, 40, 50, 60, 40, 50, 60, 70, 50, 60, 70, 80
+        ]
+    );
+}
+
+#[test]
+fn d45_one_sided_idif_clamps_base_at_max_base_x() {
+    // The bottom-right sample of a 4x4 D45 block projects `base = (3 + 1) + 3 = 7
+    // == maxBaseX`, still within the IDIF range; `base == maxBaseX + 1` would clamp
+    // to `AboveRow[maxBaseX]`. Use a strictly-increasing edge so the clamp is
+    // observable: `AboveRow[7] == 80`, and the extension slots `AboveRow[8] ==
+    // AboveRow[9] == 80` (so even at the boundary the copy stays 80).
+    let above_idif = [0, 0, 1, 2, 3, 4, 5, 6, 7, 80, 80, 80];
+    let mut output = [0u8; 16];
+
+    predict_intra_directional_angle_rect_one_sided_idif_into(
+        BitDepth::Eight,
+        rect_size(2, 2),
+        IntraDirectionalAngle::D45,
+        IntraDirectionalAngleIdifEdges::above(&above_idif),
+        &mut output,
+        4,
+    )
+    .unwrap();
+
+    // pred[i][j] = AboveRow[i + 1 + j], logical 1..=7 -> slice 3..=9.
+    assert_eq!(output, [2, 3, 4, 5, 3, 4, 5, 6, 4, 5, 6, 7, 5, 6, 7, 80]);
+}
+
+#[test]
+fn d45_one_sided_idif_rejects_wrong_length_edge() {
+    // The IDIF above edge must be `w + h + 4` samples (12 for 4x4); a shorter edge
+    // is rejected before any output mutation.
+    let above_idif = [0u8; 8];
+    let mut output = [0u8; 16];
+
+    let result = predict_intra_directional_angle_rect_one_sided_idif_into(
+        BitDepth::Eight,
+        rect_size(2, 2),
+        IntraDirectionalAngle::D45,
+        IntraDirectionalAngleIdifEdges::above(&above_idif),
+        &mut output,
+        4,
+    );
+    assert!(result.is_err());
+    assert_eq!(output, [0u8; 16]);
+}
+
+#[test]
 fn d67_prediction_matches_non_idif_bilinear_formula() {
     let above = [0, 32, 64, 96, 128, 160, 192, 224];
     let mut output = [0u8; 16];

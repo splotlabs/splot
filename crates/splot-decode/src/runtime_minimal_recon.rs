@@ -7,10 +7,13 @@
 
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DecodedFrame, DecodedFrameInfo, IntraCardinalDirection,
-    IntraCardinalEdges, IntraMiddleDirectionalAngle, IntraMiddleDirectionalAngleEdges,
+    IntraCardinalEdges, IntraDirectionalAngle, IntraDirectionalAngleEdges,
+    IntraDirectionalAngleIdifEdges, IntraMiddleDirectionalAngle, IntraMiddleDirectionalAngleEdges,
     IntraMiddleDirectionalAngleIdifEdges, IntraRectBlockSize, IntraSmoothEdges, IntraSmoothMode,
     IntraSquareBlockSize, OutputIndex, PixelFormat, PlaneId, PlaneRect, PlaneSize,
     predict_intra_cardinal_directional_rect_into, predict_intra_dc_rect_value,
+    predict_intra_directional_angle_rect_into,
+    predict_intra_directional_angle_rect_one_sided_idif_into,
     predict_intra_middle_directional_angle_rect_idif_into,
     predict_intra_middle_directional_angle_rect_into, predict_intra_smooth_rect_into,
 };
@@ -283,6 +286,26 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into(
                 false,
             )
         }
+        // Directional-follow D45 chroma (§7.13.2.8 ZONE-1 step 1, pAngle 45) over
+        // the real reconstructed §7.13.2.1 chroma above row + above-right. Chroma
+        // takes the `enableIdif == 0` bilinear one-sided branch (`enableIdif =
+        // plane == 0` is `0` for U/V), which for D45 (`shift == 0`) is the sample
+        // copy `AboveRow[base]`. The luma gate guarantees the D45 block is at a
+        // row>0, non-first-column, non-rightmost position with a real decoded
+        // above-right, so the half-resolution chroma block has the matching real
+        // neighbours. Chroma never uses the §7.14.4 TCQ dqDenom term.
+        SupportedChromaMode::D45Follow => reconstruct_general_intra_one_sided_neighbour_block_into(
+            workspace,
+            block,
+            SupportedDirectionalLumaMode::D45,
+            plane_id,
+            x,
+            y,
+            log2_side,
+            qindex,
+            num4_above_right,
+            false,
+        ),
     }
 }
 
@@ -927,6 +950,205 @@ pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into(
     Ok(())
 }
 
+/// Reconstructs one neighbour-having ZONE-1 ONE-SIDED directional block — D45
+/// (§ 7.13.2.8 step 1, pAngle 45) — over the § 7.13.2.1 above row PLUS the real
+/// reconstructed above-right read from the partially-built frame, adds the
+/// decoded residual (or writes the bare prediction for an `all_zero` block), and
+/// stores the result so later blocks read it as a neighbour.
+///
+/// Zone-1 (`pAngle < 90`, `needRight`) projects UP-AND-RIGHT into the above-right:
+/// `pred[i][j]` reads `AboveRow[base]` with `base = (i + 1 + j)` (D45,
+/// `dx = Dr_Intra_Derivative[45] = 64`, shift always `0`), up to
+/// `base == maxBaseX == w + h - 1`. So unlike the middle angles (which stay
+/// within `AboveRow[0..w)`), this reads `h` real reconstructed above-right
+/// samples. § 7.13.2.1 fills `AboveRow[i] = CurrFrame[plane][y - 1][Min(aboveLimit,
+/// x + i)]` for `i in 0..w + h`, with `aboveLimit = Min(maxX, x + w +
+/// 4 * num4AboveRight - 1)` (8-bit, `MrlIndex == 0`, `aboveMrlIndex == 0`); the
+/// `num4_above_right` (in plane 4x4 units, from § 5.20.7.25 `count_top_right_avail`
+/// over the § 5.20.2.3 `BlockDecoded` state) bounds how far the real above-right
+/// extends before the spec clamps to `CurrFrame[plane][y - 1][aboveLimit]`. The
+/// corner `AboveRow[-1] = CurrFrame[plane][y - 1][x - 1]` is read directly.
+///
+/// The block is gated (by the caller) to a row > 0, non-first-column,
+/// non-rightmost full 64x64 superblock (`haveLeft && haveAbove`, a real decoded
+/// above-right superblock in frame). `enable_intra_edge_filter == 0` /
+/// `MrlIndex == 0` keep the § 7.13.2.7 edge-filter / corner-filter / upsample
+/// synthesis a no-op, and `enable_ibp == 0` keeps `useIBP == 0` (§ 7.13.2.7 gates
+/// `useIBP` on `pAngle < 90`, so the IBP secondary blend is skipped only when
+/// `enable_ibp` is off). Luma uses the § 7.13.2.8 IDIF 4-tap
+/// (`enableIdif = plane == 0`); for D45 every `shift == 0`, so the IDIF reduces to
+/// the sample copy `AboveRow[base]`, bit-identical to the chroma bilinear branch
+/// over the same real reconstructed above-right.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn reconstruct_general_intra_one_sided_neighbour_block_into(
+    workspace: &mut CurrentFrameWorkspace<u8>,
+    block: &LumaCoeffBlock,
+    mode: SupportedDirectionalLumaMode,
+    plane_id: PlaneId,
+    x: usize,
+    y: usize,
+    log2_side: u32,
+    qindex: u32,
+    num4_above_right: usize,
+    use_tcq: bool,
+) -> core::result::Result<(), GeneralIntraResidualError> {
+    let side = 1usize << log2_side;
+    let log2 = u8::try_from(log2_side).unwrap_or(u8::MAX);
+    let block_size = IntraRectBlockSize::new(log2, log2).map_err(recon_err)?;
+    let p_angle = one_sided_p_angle(mode)?;
+    // §7.13.2.1 above row + above-right; the corner is the real diagonally-above-
+    // left sample. The zone-1 block is gated to a row>0, non-first-column position
+    // (`haveLeft && haveAbove`), so both the above row and the corner are real.
+    let above_idif =
+        build_one_sided_above_idif_edge(workspace, plane_id, x, y, side, num4_above_right)?;
+    let mut prediction = vec![0u8; side * side];
+    // §7.13.2.8 `enableIdif = plane == 0`: luma uses the IDIF 4-tap; chroma uses
+    // the `enableIdif == 0` bilinear one-sided branch. For D45 (`shift == 0`) both
+    // reduce to the same sample copy `AboveRow[base]`, so the result is bit-exact
+    // either way, but the plane dispatch keeps the spec contract exact.
+    if matches!(plane_id, PlaneId::Y) {
+        predict_intra_directional_angle_rect_one_sided_idif_into(
+            BitDepth::Eight,
+            block_size,
+            IntraDirectionalAngle::try_from_p_angle(p_angle).map_err(recon_err)?,
+            IntraDirectionalAngleIdifEdges::above(&above_idif),
+            &mut prediction,
+            side,
+        )
+        .map_err(recon_err)?;
+    } else {
+        // The chroma bilinear one-sided predictor reads the logical above edge
+        // `AboveRow[0..w+h)` (length `w + h`); drop the IDIF `-2`/`-1` corner
+        // prefix (slice indices 0,1) to recover that view.
+        let above_bilinear = &above_idif[2..2 + side + side];
+        predict_intra_directional_angle_rect_into(
+            BitDepth::Eight,
+            block_size,
+            IntraDirectionalAngle::try_from_p_angle(p_angle).map_err(recon_err)?,
+            IntraDirectionalAngleEdges::above(above_bilinear),
+            &mut prediction,
+            side,
+        )
+        .map_err(recon_err)?;
+    }
+    let out = if block.all_zero {
+        prediction
+    } else {
+        reconstruct_general_intra_block_with_prediction(
+            &block.quant,
+            &prediction,
+            qindex,
+            plane_id,
+            log2_side,
+            use_tcq,
+        )?
+    };
+    workspace
+        .write_rect_block(plane_id, x, y, block_size, &out)
+        .map_err(recon_err)?;
+    Ok(())
+}
+
+/// Maps a supported ZONE-1 one-sided directional mode to its § 9.2 pAngle. Only
+/// D45 (pAngle 45) is supported; the other modes use dedicated predictors and are
+/// rejected here (defensive: the dispatch routes them away first).
+fn one_sided_p_angle(
+    mode: SupportedDirectionalLumaMode,
+) -> core::result::Result<u16, GeneralIntraResidualError> {
+    match mode {
+        SupportedDirectionalLumaMode::D45 => Ok(45),
+        SupportedDirectionalLumaMode::D113
+        | SupportedDirectionalLumaMode::D135
+        | SupportedDirectionalLumaMode::D157
+        | SupportedDirectionalLumaMode::Vertical
+        | SupportedDirectionalLumaMode::Horizontal => {
+            Err(GeneralIntraResidualError::CardinalModeInMiddleAnglePath)
+        }
+    }
+}
+
+/// Builds the § 7.13.2.8 ZONE-1 IDIF above edge `AboveRow[-2 ..= w + h + 1]`
+/// (length `w + h + 4` for `MrlIndex == 0`, `slice[0]` = logical `-2`) for a
+/// neighbour-having (`haveLeft && haveAbove`) one-sided block.
+///
+/// Per § 7.13.2.1: the in-row samples `AboveRow[i]` for `i in 0..w + h` are
+/// `CurrFrame[plane][y - 1][Min(aboveLimit, x + i)]`, the corner `AboveRow[-1]` is
+/// `CurrFrame[plane][y - 1][x - 1]`. Per § 7.13.2.8 the edge is then extended:
+/// `AboveRow[minBase - 1] = AboveRow[minBase]` (here `AboveRow[-2] = AboveRow[-1]`)
+/// and `AboveRow[maxBase + 1] = AboveRow[maxBase + 2] = AboveRow[maxBase]` (the
+/// two trailing samples repeat the clamped last in-row sample). `aboveLimit =
+/// Min(maxX, x + w + 4 * num4AboveRight - 1)`.
+fn build_one_sided_above_idif_edge(
+    workspace: &CurrentFrameWorkspace<u8>,
+    plane_id: PlaneId,
+    x: usize,
+    y: usize,
+    side: usize,
+    num4_above_right: usize,
+) -> core::result::Result<Vec<u8>, GeneralIntraResidualError> {
+    let above_row = y
+        .checked_sub(1)
+        .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
+    let corner_col = x
+        .checked_sub(1)
+        .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
+    // §7.13.2.1 maxX = ((MiCols * MI_SIZE) >> SubsamplingX) - 1, i.e. the plane's
+    // last reconstructed column. The plane storage width equals the plane frame
+    // width for these multiple-of-64 frames.
+    let plane = workspace.plane(plane_id).map_err(recon_err)?;
+    let storage_width = plane.storage_size().width();
+    let max_x = storage_width
+        .checked_sub(1)
+        .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
+    // aboveLimit = Min(maxX, x + w + 4 * num4AboveRight - 1).
+    let above_right_extent = side
+        .checked_add(num4_above_right.saturating_mul(4))
+        .and_then(|v| v.checked_sub(1))
+        .and_then(|v| x.checked_add(v));
+    let above_limit = above_right_extent.map_or(max_x, |limit| limit.min(max_x));
+
+    // maxBaseX = w + h - 1 (mrlIndex 0). The IDIF logical range is -2..=maxBaseX+2
+    // (slice length maxBaseX + 5 = w + h + 4): logical -2 (slice 0), -1 corner
+    // (slice 1), 0..=maxBaseX (slices 2..=maxBaseX+2), and the two trailing
+    // extension samples maxBaseX+1 (slice maxBaseX+3), maxBaseX+2 (slice maxBaseX+4).
+    let max_base_x = side
+        .checked_add(side)
+        .and_then(|v| v.checked_sub(1))
+        .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
+    let edge_len = max_base_x
+        .checked_add(5)
+        .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
+    let mut above = vec![0u8; edge_len];
+    // Logical -1 corner -> slice index 1; -2 -> slice index 0.
+    let corner = workspace
+        .reconstructed_sample(plane_id, corner_col, above_row)
+        .map_err(recon_err)?;
+    above[0] = corner; // logical -2 = AboveRow[-1] (spec extension)
+    above[1] = corner; // logical -1
+    // In-row samples logical 0..=maxBaseX -> slice indices 2..=maxBaseX+2.
+    for i in 0..=max_base_x {
+        let column = x.saturating_add(i).min(above_limit);
+        let sample = workspace
+            .reconstructed_sample(plane_id, column, above_row)
+            .map_err(recon_err)?;
+        let slot = i
+            .checked_add(2)
+            .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
+        above[slot] = sample;
+    }
+    // §7.13.2.8 trailing extension: AboveRow[maxBaseX+1] = AboveRow[maxBaseX+2] =
+    // AboveRow[maxBaseX]; copy the clamped last in-row sample into both trailing
+    // slots (maxBaseX+3, maxBaseX+4).
+    let last_in_row = above[max_base_x + 2];
+    if let Some(slot) = above.get_mut(max_base_x + 3) {
+        *slot = last_in_row;
+    }
+    if let Some(slot) = above.get_mut(max_base_x + 4) {
+        *slot = last_in_row;
+    }
+    Ok(above)
+}
+
 /// Reconstructs one neighbour-having CARDINAL directional luma block — `V_PRED`
 /// (§ 7.13.2.8 step 4, pAngle 90) or `H_PRED` (step 5, pAngle 180) — over the
 /// § 7.13.2.1 edge read from the partially-built frame's **real reconstructed
@@ -1157,7 +1379,12 @@ fn middle_directional_angle(
         SupportedDirectionalLumaMode::D113 => Ok(IntraMiddleDirectionalAngle::D113),
         SupportedDirectionalLumaMode::D135 => Ok(IntraMiddleDirectionalAngle::D135),
         SupportedDirectionalLumaMode::D157 => Ok(IntraMiddleDirectionalAngle::D157),
-        SupportedDirectionalLumaMode::Vertical | SupportedDirectionalLumaMode::Horizontal => {
+        // The cardinal copy modes and the ZONE-1 one-sided D45 mode use dedicated
+        // predictors and never reach the middle-angle path; return an error
+        // (defensive: the dispatch routes them away first).
+        SupportedDirectionalLumaMode::Vertical
+        | SupportedDirectionalLumaMode::Horizontal
+        | SupportedDirectionalLumaMode::D45 => {
             Err(GeneralIntraResidualError::CardinalModeInMiddleAnglePath)
         }
     }
