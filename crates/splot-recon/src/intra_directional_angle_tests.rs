@@ -107,6 +107,110 @@ fn d45_one_sided_idif_rejects_wrong_length_edge() {
 }
 
 #[test]
+fn d203_one_sided_idif_interpolates_real_left_column() {
+    // §7.13.2.8 step 3 (zone-3, pAngle 203): the symmetric mirror of D45.
+    // `dy = Dr_Intra_Derivative[270 - 203] = Dr_Intra_Derivative[67] = 24`,
+    // `idx = (j + 1) * dy`, `base = (idx >> 6) + i`, `shift = (idx >> 1) & 0x1F`.
+    // For 4x4 the shifts (j = 0..3) are {12, 24, 4, 16} — genuinely nonzero, so
+    // the IDIF 4-tap `Dr_Interp_Filter` interpolates over the left column (NOT a
+    // degenerate copy like D45). The left IDIF edge spans logical `-2 ..= w + h + 1`
+    // (length 12 for 4x4): slice[0] = logical -2, slice[1] = logical -1 (corner),
+    // slice[2 + k] = logical k. The reference output is computed by the §7.13.2.8
+    // step-3 formula over the strictly-increasing edge 10..80.
+    let left_idif = [5, 5, 10, 20, 30, 40, 50, 60, 70, 80, 80, 80];
+    let mut output = [0u8; 16];
+
+    predict_intra_directional_angle_rect_one_sided_idif_into(
+        BitDepth::Eight,
+        rect_size(2, 2),
+        IntraDirectionalAngle::D203,
+        IntraDirectionalAngleIdifEdges::left(&left_idif),
+        &mut output,
+        4,
+    )
+    .unwrap();
+
+    assert_eq!(
+        output,
+        [
+            13, 17, 21, 25, 24, 28, 31, 35, 34, 38, 41, 45, 44, 48, 51, 55
+        ]
+    );
+}
+
+#[test]
+fn d203_one_sided_idif_rejects_above_edge() {
+    // D203 is a LEFT-reading zone-3 angle; an above-edge set does not match its
+    // required edge and is rejected before any output mutation.
+    let above_idif = [5, 5, 10, 20, 30, 40, 50, 60, 70, 80, 80, 80];
+    let mut output = [0u8; 16];
+
+    let result = predict_intra_directional_angle_rect_one_sided_idif_into(
+        BitDepth::Eight,
+        rect_size(2, 2),
+        IntraDirectionalAngle::D203,
+        IntraDirectionalAngleIdifEdges::above(&above_idif),
+        &mut output,
+        4,
+    );
+    assert!(result.is_err());
+    assert_eq!(output, [0u8; 16]);
+}
+
+#[test]
+fn d203_one_sided_idif_rejects_wrong_length_edge() {
+    // The IDIF left edge must be `w + h + 4` samples (12 for 4x4); a shorter edge
+    // is rejected before any output mutation.
+    let left_idif = [0u8; 8];
+    let mut output = [0u8; 16];
+
+    let result = predict_intra_directional_angle_rect_one_sided_idif_into(
+        BitDepth::Eight,
+        rect_size(2, 2),
+        IntraDirectionalAngle::D203,
+        IntraDirectionalAngleIdifEdges::left(&left_idif),
+        &mut output,
+        4,
+    );
+    assert!(result.is_err());
+    assert_eq!(output, [0u8; 16]);
+}
+
+#[test]
+fn d203_one_sided_idif_matches_bilinear_for_flat_left_column() {
+    // Over a FLAT left column the §7.13.2.8 step-3 IDIF (luma) and the bilinear
+    // one-sided branch (chroma) both reduce to the flat value (the filter taps sum
+    // to 128, `Round2(128 * v, 7) == v`). This mirrors the flat-chroma D203-follow
+    // path in the committed fixture.
+    let flat_idif = [120u8; 12];
+    let flat_bilinear = [120u8; 8];
+    let mut idif_output = [0u8; 16];
+    let mut bilinear_output = [0u8; 16];
+
+    predict_intra_directional_angle_rect_one_sided_idif_into(
+        BitDepth::Eight,
+        rect_size(2, 2),
+        IntraDirectionalAngle::D203,
+        IntraDirectionalAngleIdifEdges::left(&flat_idif),
+        &mut idif_output,
+        4,
+    )
+    .unwrap();
+    predict_intra_directional_angle_rect_into(
+        BitDepth::Eight,
+        rect_size(2, 2),
+        IntraDirectionalAngle::D203,
+        IntraDirectionalAngleEdges::left(&flat_bilinear),
+        &mut bilinear_output,
+        4,
+    )
+    .unwrap();
+
+    assert_eq!(idif_output, [120u8; 16]);
+    assert_eq!(bilinear_output, [120u8; 16]);
+}
+
+#[test]
 fn d67_prediction_matches_non_idif_bilinear_formula() {
     let above = [0, 32, 64, 96, 128, 160, 192, 224];
     let mut output = [0u8; 16];
