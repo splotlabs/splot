@@ -405,6 +405,94 @@ pub(crate) fn general_intra_64x64_luma_two_nonzero_base_tokens(
     Ok(tokens)
 }
 
+/// AV2 §5.20.7.27 eob=3 EOB signaling + the scan-index-1 `coeff_base` low-frequency context.
+/// `eob_pt_1024` symbol 2 -> eobPt 3 -> eob = ((1<<(eobPt-2))+1) + eob_extra = 3 (with the
+/// `eob_extra` CDF bit 0; the `eob_extra_bit` § 8.2.5 bypass width is eobPt-3 = 0, so no bypass
+/// literal). Scan index 1 (raster 32) is off the EOB coefficient's significant-neighbour set, so
+/// its non-EOB `coeff_base` low-frequency context is `9` (`coeff_base_lf_luma_context`, verified).
+const EOB3_EOB_PT_SYMBOL: u8 = 2;
+const EOB3_EOB_EXTRA_SYMBOL: u8 = 0;
+const EOB3_SCAN1_COEFF_BASE_CTX: usize = 9;
+
+/// Returns the ordered general `TX_64X64` luma **eob=3 base-pass** tokens for a block whose only
+/// nonzero coefficient is a level-4 AC at scan index 2 (raster 1, the horizontal frequency-1
+/// position), with scan indices 1 and 0 zero. This is the first eob>2 block — it exercises the
+/// `eob_extra` CDF symbol. The sequence is `txb_skip == 0`, `eob_pt_1024 == 2`, `eob_extra == 0`,
+/// then the base pass over the reverse scan `c = 2,1,0`: the AC `coeff_base_eob` (level 4 ->
+/// symbol 3) at ctx 1, the scan-index-1 `coeff_base` (level 0) at ctx 9, and the DC `coeff_base`
+/// (level 0) at ctx 2 (the level-4 AC raises the DC's significant-neighbour sum to the same band
+/// as the visible-AC frame). The caller appends the single AC `sign_bit` § 8.2.5 bypass (scan
+/// index 2, the only nonzero coefficient). `TX_64X64` is DCT-only, so no transform-type symbol.
+pub(crate) fn general_intra_64x64_luma_eob3_base_tokens(
+    coeff_cdf_q_ctx: usize,
+) -> Result<Vec<CoefficientEntropyToken>> {
+    let mut tokens = Vec::new();
+    tokens
+        .try_reserve_exact(6)
+        .map_err(|_| Error::CoefficientTokenizationAllocationFailed {
+            context: "general eob=3 luma base tokens",
+        })?;
+    // luma `txb_skip == 0` (coded) at the TX_64X64 context.
+    tokens.push(CoefficientEntropyToken {
+        syntax: CoefficientTokenSyntax::AllZero,
+        selector: CoefficientCdfRowSelector::TxbSkip {
+            coeff_cdf_q_ctx,
+            plane_type: LUMA_PLANE_TYPE,
+            tx_size: TX_SIZE_64X64_CTX,
+            ctx: TXB_SKIP_CTX_NEUTRAL,
+        },
+        symbol: false as u8,
+    });
+    // `eob_pt_1024 == 2` -> eobPt 3.
+    tokens.push(CoefficientEntropyToken {
+        syntax: CoefficientTokenSyntax::EobPt1024,
+        selector: CoefficientCdfRowSelector::EobPt1024 {
+            coeff_cdf_q_ctx,
+            eob_ctx: EOB_CTX_LUMA_INTRA,
+        },
+        symbol: EOB3_EOB_PT_SYMBOL,
+    });
+    // `eob_extra == 0` -> eob = 3 (no eob_extra_bit bypass for eobPt 3).
+    tokens.push(CoefficientEntropyToken {
+        syntax: CoefficientTokenSyntax::EobExtra,
+        selector: CoefficientCdfRowSelector::EobExtra { coeff_cdf_q_ctx },
+        symbol: EOB3_EOB_EXTRA_SYMBOL,
+    });
+    // Base pass c=2 (EOB AC at scan idx 2): coeff_base_eob (level 4 -> symbol 3) at ctx 1.
+    tokens.push(CoefficientEntropyToken {
+        syntax: CoefficientTokenSyntax::CoeffBaseEob,
+        selector: CoefficientCdfRowSelector::CoeffBaseLfEob {
+            coeff_cdf_q_ctx,
+            tx_size: TX_SIZE_64X64_CTX,
+            ctx: COEFF_BASE_LF_EOB_CTX_EOB2_AC,
+        },
+        symbol: VISIBLE_AC_LEVEL - 1,
+    });
+    // Base pass c=1 (scan idx 1, level 0): coeff_base at the off-axis ctx 9.
+    tokens.push(CoefficientEntropyToken {
+        syntax: CoefficientTokenSyntax::CoeffBase,
+        selector: CoefficientCdfRowSelector::CoeffBaseLf {
+            coeff_cdf_q_ctx,
+            tx_size: TX_SIZE_64X64_CTX,
+            ctx: EOB3_SCAN1_COEFF_BASE_CTX,
+            tcq_ctx: COEFF_BASE_LF_TCQ_CTX_NEUTRAL,
+        },
+        symbol: 0,
+    });
+    // Base pass c=0 (DC, level 0): coeff_base at ctx 2 (level-4 AC neighbour sum).
+    tokens.push(CoefficientEntropyToken {
+        syntax: CoefficientTokenSyntax::CoeffBase,
+        selector: CoefficientCdfRowSelector::CoeffBaseLf {
+            coeff_cdf_q_ctx,
+            tx_size: TX_SIZE_64X64_CTX,
+            ctx: VISIBLE_AC_DC_CTX,
+            tcq_ctx: COEFF_BASE_LF_TCQ_CTX_NEUTRAL,
+        },
+        symbol: 0,
+    });
+    Ok(tokens)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {

@@ -5585,6 +5585,39 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-GENERAL-INTRA-EOB3"
+name = "First eob>2 intra frame (eob_extra)"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20.7.27", "8.3.2", "8.2.5", "8.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/general_intra_trace/multi_coeff.rs"
+openspec_change = "encoder-general-intra-eob3"
+tracking_issue = ""
+owner = "encoder"
+risk = "low"
+notes = "Decodable-tile arc: the FIRST eob>2 frame + the FIRST eob_extra CDF symbol (the gateway to arbitrary-length blocks). emit_minimal_intra_eob3_ivf() (splot-encode public) codes a 64x64 luma block with eob=3: a single nonzero level-4 AC at scan index 2 (raster 1, HORIZONTAL freq-1), scan 1 + DC zero, U/V skipped. EOB = eob_pt_1024 symbol 2 (eobPt 3) + eob_extra CDF symbol 0 (eob=3; the eob_extra_bit bypass width = eobPt-3 = 0, so NO bypass literal). NEW MACHINERY: CoefficientTokenSyntax::EobExtra + CoefficientCdfRowSelector::EobExtra (TileEobExtraCdf[q], context-free apart from q-ctx; DEFAULT_EOB_EXTRA_CDF=[[i32;3];4]) + closed_loop no-op arm + 2 BlockSymbolTraceCdfRows rows (eob_extra + the scan-index-1 coeff_base low-frequency ctx 9). general_intra_64x64_luma_eob3_base_tokens (txb_skip=0, eob_pt_1024=2, eob_extra=0, then reverse-scan base pass c=2,1,0: AC coeff_base_eob ctx1, scan1 coeff_base ctx9 [NEW], DC coeff_base ctx2). Composer + emit in the split's general_intra_trace/multi_coeff.rs. Contexts COMPUTED empirically (coeff_base_lf_luma_context: scan1->9, DC->2 for AC level 4). REUSES eob_pt_1024, txb_skip, coeff_base_eob ctx1, coeff_base DC ctx2 (visible-AC row), dc_sign. `splot decode` reconstructs a HORIZONTAL cosine (the transpose of the visible-AC vertical): each luma COLUMN constant, left 8 cols=129, middle 48=128, right 8=127; U/V flat 128. Plan derived by a 5-agent investigation Workflow (which self-corrected an agent's eob_pt 'base=5' error to symbol 2 + eob_extra 0). decode_check=done; avm_diff=not-applicable. Encoder-mission-DRIVEN (owner=encoder). FOLLOW-UPS: eob_pt>3 (eob_extra_bit bypass tail), 2-D multi-coeff, larger magnitudes (coeff_br/golomb), block_symbol_trace.rs split (recurring 1000-line budget). HONEST SCOPE: first eob>2 frame; NOT a general encoder, NOT receive_packet, NOT Baseline Encoder Profile v1."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-cli/tests/encode_decode_roundtrip.rs::encoder_eob3_ivf_decodes_to_a_horizontal_cosine_luma", "crates/splot-encode/src/general_intra_trace/multi_coeff.rs::tests::general_eob3_block_trace_roundtrips_through_one_coder"]
+commands = ["cargo test -p splot-cli --test encode_decode_roundtrip --locked", "cargo test -p splot-encode eob3 --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-RECON-DEPENDENCY"
 name = "Encoder reconstruction dependency boundary"
 category = "encoder"
