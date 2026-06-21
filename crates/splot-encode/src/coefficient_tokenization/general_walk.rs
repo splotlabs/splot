@@ -565,7 +565,7 @@ fn read_eob_from_tokens(tokens: &[BlockSymbolToken], index: &mut usize) -> Resul
     // eobPt 3: the next token is the `eob_extra` CDF flag; `eob = 3 + flag`.
     let extra_token = coeff_token_at(tokens, index)?;
     if !matches!(extra_token.syntax(), CoefficientTokenSyntax::EobExtra) {
-        return Err(Error::CoefficientTokenizationAllocationFailed {
+        return Err(Error::CoefficientTokenizationMalformedTokenTrace {
             context: "general LF recovery expected an eob_extra token",
         });
     }
