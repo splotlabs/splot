@@ -26,9 +26,11 @@ through the existing `splot-recon` inverse transform used as the oracle.
   narrowing (a typed error, never a wrap/panic, for out-of-domain residuals).
 - The existing flat `dct_dct_4x4_dc_only` is left unchanged (the closed loop still
   uses it); a test proves the full DCT reproduces it bit-exactly on uniform input.
-- Re-export `DCT_KERNEL4` from `splot-recon` (it already depends on `splot-tables`)
-  so the encoder forward transform consumes the same single generated § 9 kernel
-  the decoder inverse uses — no crate dependency-graph change.
+- Depend on `splot-tables` directly (`splot-encode` → `splot-tables`) so the
+  encoder forward transform consumes the same single generated § 9 `DCT_KERNEL4`
+  the decoder inverse uses. `splot-tables` is the dependency-free § 9 tables crate
+  AGENTS.md § 2 permits any crate to depend on; the dependency rules (AGENTS.md,
+  `INTERNAL_DEP_RULES`) are updated to record the new edge.
 - Add the `ForwardTransformCoefficientRangeExceeded` typed error.
 - No quantization change, no transform selection, no syntax, no packet output.
 
@@ -53,7 +55,7 @@ residue.
 ## Impact
 
 - Affected code: `crates/splot-encode/src/forward_transform.rs`,
-  `crates/splot-encode/src/error.rs`, `crates/splot-recon/src/lib.rs` (re-export).
+  `crates/splot-encode/src/error.rs`, `crates/splot-encode/Cargo.toml` (+ `splot-tables` dep), `AGENTS.md` and `xtask` `INTERNAL_DEP_RULES` (record the `splot-encode` → `splot-tables` edge).
 - Scope (explicitly NOT claimed here): forward quantization, transform/size/type
   selection, transform sizes other than 4x4, transform types other than DCT_DCT,
   chroma, bit depths other than 8, coefficient tokenization, packet output, CLI

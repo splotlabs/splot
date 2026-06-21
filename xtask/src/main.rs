@@ -1138,7 +1138,12 @@ const INTERNAL_DEP_RULES: &[(&str, &[&str])] = &[
     ("splot-validate", &["splot-core"]),
     (
         "splot-encode",
-        &["splot-core", "splot-parallel", "splot-recon"],
+        &[
+            "splot-core",
+            "splot-parallel",
+            "splot-recon",
+            "splot-tables",
+        ],
     ),
     (
         "splot-cli",

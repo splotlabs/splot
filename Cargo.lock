@@ -769,6 +769,7 @@ dependencies = [
  "splot-core",
  "splot-parallel",
  "splot-recon",
+ "splot-tables",
  "thiserror",
 ]
 

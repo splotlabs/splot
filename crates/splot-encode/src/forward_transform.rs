@@ -30,27 +30,14 @@
 #![allow(dead_code)]
 
 use splot_recon::{PlaneId, PlaneRect};
+// The AV2 § 9 4-point DCT kernel (`Dct4` basis), from the generated single-source
+// `splot-tables` § 9 tables (the same kernel the decoder inverse uses), so a
+// generator/spec correction updates both directions at once and the forward kernel
+// cannot drift from the decoder's. `splot-tables` is the dependency-free § 9 tables
+// crate AGENTS.md § 2 permits any crate to depend on.
+use splot_tables::tables::transform_1d::DCT_KERNEL4;
 
 use crate::error::{Error, Result};
-
-/// The AV2 § 9 4-point DCT kernel (`Dct4` basis).
-///
-/// This is the encoder's own forward-transform constant. AV2 specifies no forward
-/// transform, so the forward DCT is encoder policy that derives its kernel from the
-/// spec § 9 `Dct4` basis — it is **not** a decoder-table import (routing a generated
-/// `splot-tables` table through the `splot-recon` reconstruction edge is outside
-/// that edge's allowed scope per AGENTS.md § 2; a direct `splot-encode` →
-/// `splot-tables` edge is a crate-dependency-graph change deferred to the
-/// maintainer). It necessarily equals the decoder's `splot-tables` `DCT_KERNEL4`
-/// (that is what makes the round trip work), and the round-trip tests through the
-/// `splot-recon` inverse enforce it: any divergence from the spec kernel breaks the
-/// `<= 5` reconstruction bound, so these values cannot silently desync.
-const DCT_KERNEL4: [[i32; 4]; 4] = [
-    [64, 64, 64, 64],
-    [83, 35, -35, -83],
-    [64, -64, -64, 64],
-    [35, -83, 83, -35],
-];
 
 const DCT_DCT_4X4_WIDTH: usize = 4;
 const DCT_DCT_4X4_HEIGHT: usize = 4;
