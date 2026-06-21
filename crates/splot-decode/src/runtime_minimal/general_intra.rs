@@ -522,8 +522,26 @@ fn decode_one_general_intra_block(
     let directional_luma_has_neighbour = supported_directional_luma.is_some() && !is_top_left;
     if !modes.luma_is_dc() {
         match (supported_nondc_luma, supported_directional_luma) {
+            // Plain SMOOTH at the no-neighbour top-left block. Its § 7.13.2.13
+            // predictor reads BOTH the above-right sentinel `AboveRow[w]` (the
+            // top-right) AND the below-left sentinel `LeftCol[h]`; at the top-left
+            // block both are the § 7.13.2.1 no-neighbour fallback (8-bit `127` /
+            // `129`), so the 2-D interpolation is fully deterministic over the
+            // verified fallback edges. Gated to the verified 64x64 superblock
+            // (`n4w == 16`, TX_64X64 -> TX_SET_DCTONLY): a sub-64x64 plain-SMOOTH
+            // block can signal a mode-dependent (non-DCT) transform type that is
+            // not yet decoded, and the neighbour-having plain-SMOOTH above-right /
+            // below-left sentinel paths are not yet covered by an oracle fixture,
+            // so they are rejected below.
+            (Some(SupportedNonDcLumaMode::Smooth), _) if is_top_left && n4w == FULL_SB_N4_LUMA => {}
             // SMOOTH_V / SMOOTH_H at the no-neighbour top-left block.
-            (Some(_), _) if is_top_left && n4w >= NON_DC_MIN_N4 => {}
+            (
+                Some(
+                    SupportedNonDcLumaMode::SmoothVertical
+                    | SupportedNonDcLumaMode::SmoothHorizontal,
+                ),
+                _,
+            ) if is_top_left && n4w >= NON_DC_MIN_N4 => {}
             // SMOOTH_V / SMOOTH_H neighbour-having full-superblock block at ANY
             // superblock position in the 2-D grid. First superblock row
             // (`haveAbove == 0`): reads the real § 7.13.2.1 reconstructed LEFT

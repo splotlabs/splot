@@ -80,6 +80,16 @@ description = "Single-block 8-bit 4:2:0 intra key frame (IVF, 64x64) from a proj
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-smooth-intra-64x64-q124.ivf"
+description = "Single-block 8-bit 4:2:0 intra key frame (IVF, 64x64) from a project-owned 2-D smooth luma surface with broad decode tools disabled at base_q_idx 124, so the whole frame is one 64x64 plain SMOOTH_PRED luma block (canonical section 9.2 mode 9, DC chroma) over the section 7.13.2.1 no-neighbour fallback edges plus AC residual. Distinct from SMOOTH_V/H, the section 7.13.2.13 predictor blends BOTH the above row + top-right sentinel AboveRow[w] AND the left column + bottom-left sentinel LeftCol[h] (all the no-neighbour fallback at the top-left block), so the reconstructed luma rises along both the top row and the left column (neither is constant). The first general-intra plain-SMOOTH (2-D) decode target whose avmdec and dav2d raw outputs agree (md5 82d0f23be478479c9835e9a76e4a879c) and splot reproduces byte-for-byte; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-smoothnondc-intra-64x64-q132.ivf"
+description = "Negative decode-boundary companion to syn-smooth (IVF, 64x64, base_q_idx 132): a project-owned 2-D smooth single block whose luma the encoder also codes as plain SMOOTH_PRED (mode 9) but whose chroma is a NON-DC mode (uv_mode 6 -> H_PRED). avmdec and dav2d agree (md5 70494255beb63103c97422e327243319) and the stream validates clean, but splot's general-intra decoder still REJECTS it with the structured decode/unsupported-feature diagnostic general_intra_non_dc_chroma_mode -- the plain-SMOOTH luma admission this brick adds is gated to the supported (DC) chroma subset, so a plain-SMOOTH luma block with non-DC chroma is not decoded. Pins the verified-subset boundary."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-2sb-intra-128x64-q80.ivf"
 description = "Multi-superblock 8-bit 4:2:0 intra key frame (IVF, 128x64) from a project-owned two-superblock luma input (left flat 80, right flat 180) with broad decode tools disabled at base_q_idx 80, so the frame is two 64x64 DC_PRED superblocks where the right superblock DC-predicts from the left neighbour (flat chroma U=120 V=130, the right superblock chroma coded as SMOOTH_PRED); the first general-intra multi-superblock (non-64x64) decode target whose avmdec and dav2d raw outputs agree and splot reproduces byte-for-byte; validates clean."
 expect = "clean"

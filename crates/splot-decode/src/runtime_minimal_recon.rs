@@ -329,6 +329,7 @@ pub(crate) fn reconstruct_general_intra_luma_nondc_neighbour_block_into(
     num4_above_right: usize,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     let smooth_mode = match mode {
+        SupportedNonDcLumaMode::Smooth => IntraSmoothMode::Smooth,
         SupportedNonDcLumaMode::SmoothVertical => IntraSmoothMode::SmoothVertical,
         SupportedNonDcLumaMode::SmoothHorizontal => IntraSmoothMode::SmoothHorizontal,
     };
@@ -608,6 +609,7 @@ fn predict_nondc_noneighbour_smooth(
     side: usize,
 ) -> core::result::Result<Vec<u8>, GeneralIntraResidualError> {
     let smooth_mode = match mode {
+        SupportedNonDcLumaMode::Smooth => IntraSmoothMode::Smooth,
         SupportedNonDcLumaMode::SmoothVertical => IntraSmoothMode::SmoothVertical,
         SupportedNonDcLumaMode::SmoothHorizontal => IntraSmoothMode::SmoothHorizontal,
     };
