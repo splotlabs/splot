@@ -214,15 +214,16 @@ fn general_lf_recover_quant_is_deterministic() {
 
 #[test]
 fn general_lf_rejects_out_of_scope() {
-    // A nonzero at scan index >= 2 (raster position 1 = scan index 2) is rejected.
+    // A nonzero at scan index >= 4 (eob >= 5, raster position 5 = scan index 4) is
+    // rejected: eob >= 5 needs the deferred `eob_extra_bit` bypass literals.
     let mut quant = [0i32; TX_4X4_COEFF_COUNT];
-    quant[1] = 1; // raster 1 is scan index 2 in the 4x4 2D order.
+    quant[5] = 1; // raster 5 is scan index 4 in the 4x4 2D order [0,4,1,8,5,...].
     let err = tokenize_general_lf_luma_block(&quant, Q_CTX).unwrap_err();
     assert!(matches!(
         err,
         Error::CoefficientTokenizationUnsupportedEob {
-            scan_index: 2,
-            position: 1,
+            scan_index: 4,
+            position: 5,
             value: 1,
             max_scan_index: MAX_GENERAL_LF_SCAN_INDEX,
         }
@@ -652,4 +653,194 @@ fn general_lf_eob2_dc_br_ctx_mid_routes_and_roundtrips() {
     let proof = roundtrip_block_symbol_trace(&trace).unwrap();
     assert!(!proof.bytes().is_empty());
     assert_eq!(recover_quant_from_tokens(&trace, Q_CTX).unwrap(), quant);
+}
+
+/// The 4x4 2D scan raster positions for scan indices 0..=3 (`[0, 4, 1, 8, ...]`):
+/// scan 0 → raster 0 (DC), scan 1 → raster 4, scan 2 → raster 1, scan 3 → raster 8.
+const SCAN_RASTER_0_3: [usize; 4] = [0, 4, 1, 8];
+
+/// Builds a signed raster `[i32; 16]` from `eob` magnitudes assigned to scan
+/// positions 0..eob, with a deterministic asymmetric sign pattern (scan-even
+/// negative, scan-odd positive) so a swapped sign order cannot masquerade as a
+/// match. `mags[c]` is the unsigned magnitude at scan index `c`.
+fn scan_block(eob: usize, mags: &[u32]) -> [i32; TX_4X4_COEFF_COUNT] {
+    let mut quant = [0i32; TX_4X4_COEFF_COUNT];
+    for (c, &mag) in mags.iter().enumerate().take(eob) {
+        if mag == 0 {
+            continue;
+        }
+        let raster = SCAN_RASTER_0_3[c];
+        // Asymmetric: even scan index negative, odd positive.
+        let value = if c % 2 == 0 {
+            -(mag as i32)
+        } else {
+            mag as i32
+        };
+        quant[raster] = value;
+    }
+    quant
+}
+
+#[test]
+fn general_lf_eob3_all_mag1_exact_stream() {
+    // eob == 3, all three coefficients magnitude 1. Scan positions raster [0, 4, 1].
+    // Signs: scan 0 (DC) negative, scan 1 (AC raster 4) positive, scan 2 (AC raster 1)
+    // negative.
+    let quant = scan_block(3, &[1, 1, 1]);
+    assert_eq!(quant[0], -1);
+    assert_eq!(quant[4], 1);
+    assert_eq!(quant[1], -1);
+
+    let trace = tokenize_general_lf_luma_block(&quant, Q_CTX).unwrap();
+
+    // all_zero(0), eob_pt_16(2), eob_extra(0), then the reverse-scan base pass over
+    // c = 2,1,0: scan-2 EOB coeff_base_eob, scan-1 coeff_base, DC coeff_base; then the
+    // reverse-scan sign pass (scan-2 bypass, scan-1 bypass, DC dc_sign); then U/V
+    // all_zero(1). No coeff_br (all magnitudes 1 < the base tier).
+    // = 3 header + 3 base + 3 sign + 2 chroma = 11 tokens.
+    assert_eq!(trace.len(), 11);
+
+    // eob_pt_16 symbol 2 (eobPt 3).
+    assert!(
+        matches!(trace[1], BlockSymbolToken::Coeff(c)
+            if matches!(c.syntax(), CoefficientTokenSyntax::EobPt16) && c.symbol() == 2),
+        "eob_pt_16 symbol 2 (eobPt 3)"
+    );
+    // eob_extra flag 0 (eob 3 = 3 + 0).
+    assert!(
+        matches!(trace[2], BlockSymbolToken::Coeff(c)
+            if matches!(c.syntax(), CoefficientTokenSyntax::EobExtra) && c.symbol() == 0),
+        "eob_extra flag 0 (eob 3)"
+    );
+    // Scan-2 EOB coeff_base_eob at coeff_base_eob_ctx(c=2) = 1, level 1 → symbol 0.
+    assert!(
+        matches!(trace[3], BlockSymbolToken::Coeff(c)
+            if matches!(c.selector(), CoefficientCdfRowSelector::CoeffBaseLfEob { ctx: 1, .. })
+                && c.symbol() == 0),
+        "scan-2 coeff_base_eob at ctx 1 (coeff_base_eob_ctx(c=2)), symbol 0"
+    );
+
+    // Full ordered symbol stream:
+    // all_zero(0), eob_pt(2), eob_extra(0),
+    // base: scan-2 eob(0), scan-1 base(1), DC base(1),
+    // sign: scan-2 bypass(neg→1), scan-1 bypass(pos→0), DC dc_sign(neg→1),
+    // chroma U(1), V(1).
+    assert_eq!(
+        trace.iter().map(|t| t.symbol()).collect::<Vec<_>>(),
+        vec![0, 2, 0, 0, 1, 1, 1, 0, 1, 1, 1]
+    );
+
+    let proof = roundtrip_block_symbol_trace(&trace).unwrap();
+    assert!(!proof.bytes().is_empty());
+    let recovered = recover_quant_from_tokens(&trace, Q_CTX).unwrap();
+    assert_eq!(recovered, quant);
+}
+
+#[test]
+fn general_lf_eob4_all_mag1_exact_stream() {
+    // eob == 4, all four coefficients magnitude 1. Scan positions raster [0, 4, 1, 8].
+    let quant = scan_block(4, &[1, 1, 1, 1]);
+    assert_eq!(quant[0], -1);
+    assert_eq!(quant[4], 1);
+    assert_eq!(quant[1], -1);
+    assert_eq!(quant[8], 1);
+
+    let trace = tokenize_general_lf_luma_block(&quant, Q_CTX).unwrap();
+
+    // 3 header + 4 base + 4 sign + 2 chroma = 13 tokens.
+    assert_eq!(trace.len(), 13);
+
+    // eob_pt_16 symbol 2 (eobPt 3).
+    assert!(
+        matches!(trace[1], BlockSymbolToken::Coeff(c)
+            if matches!(c.syntax(), CoefficientTokenSyntax::EobPt16) && c.symbol() == 2),
+        "eob_pt_16 symbol 2 (eobPt 3)"
+    );
+    // eob_extra flag 1 (eob 4 = 3 + 1).
+    assert!(
+        matches!(trace[2], BlockSymbolToken::Coeff(c)
+            if matches!(c.syntax(), CoefficientTokenSyntax::EobExtra) && c.symbol() == 1),
+        "eob_extra flag 1 (eob 4)"
+    );
+    // Scan-3 EOB coeff_base_eob at coeff_base_eob_ctx(c=3) = 2, level 1 → symbol 0.
+    assert!(
+        matches!(trace[3], BlockSymbolToken::Coeff(c)
+            if matches!(c.selector(), CoefficientCdfRowSelector::CoeffBaseLfEob { ctx: 2, .. })
+                && c.symbol() == 0),
+        "scan-3 coeff_base_eob at ctx 2 (coeff_base_eob_ctx(c=3)), symbol 0"
+    );
+
+    let proof = roundtrip_block_symbol_trace(&trace).unwrap();
+    assert!(!proof.bytes().is_empty());
+    let recovered = recover_quant_from_tokens(&trace, Q_CTX).unwrap();
+    assert_eq!(recovered, quant);
+}
+
+/// EXHAUSTIVE routing fuzz: enumerate every in-scope eob 3..=4 block over a
+/// magnitude tier set chosen to hit the base/`coeff_br` boundaries ({0,1,4,5,7}),
+/// with the eob-1 (EOB) position forced nonzero and all lower positions free
+/// (including 0). Every such block MUST tokenize, roundtrip through
+/// `roundtrip_block_symbol_trace` (so every reached `coeff_base`/`coeff_base_eob`/
+/// `coeff_br`/`eob_extra` CDF context is routed), and recover via
+/// `recover_quant_from_tokens` exactly. This is how the complete reachable context
+/// set is discovered — an unrouted context fails `roundtrip_block_symbol_trace`
+/// with `BlockSymbolTraceUnsupportedSelector` rather than producing wrong output.
+#[test]
+fn general_lf_eob3_4_exhaustive_routing_fuzz() {
+    // {0, 1, 4, 5, 7}: 0 (zero non-EOB), 1 (base low), 4 (base max, no coeff_br),
+    // 5 (first coeff_br), 7 (coeff_br max). The EOB position never takes 0.
+    const TIERS: [u32; 5] = [0, 1, 4, 5, 7];
+    const NONZERO_TIERS: [u32; 4] = [1, 4, 5, 7];
+
+    let mut covered = 0usize;
+    for eob in 3..=4usize {
+        // The EOB coefficient (scan index eob-1) must be nonzero.
+        for &eob_mag in &NONZERO_TIERS {
+            // Lower positions (scan 0..eob-1) range over the full tier set (incl. 0).
+            let lower = eob - 1;
+            let combos = TIERS.len().pow(lower as u32);
+            for combo in 0..combos {
+                let mut mags = [0u32; 4];
+                let mut rem = combo;
+                for slot in mags.iter_mut().take(lower) {
+                    *slot = TIERS[rem % TIERS.len()];
+                    rem /= TIERS.len();
+                }
+                mags[eob - 1] = eob_mag;
+
+                let quant = scan_block(eob, &mags);
+                let trace = tokenize_general_lf_luma_block(&quant, Q_CTX);
+                assert!(
+                    trace.is_ok(),
+                    "tokenize failed eob {eob} mags {mags:?}: {trace:?}"
+                );
+                let trace = trace.unwrap();
+                // An unrouted CDF context surfaces here as
+                // `BlockSymbolTraceUnsupportedSelector` rather than a wrong hash.
+                let proof = roundtrip_block_symbol_trace(&trace);
+                assert!(
+                    proof.is_ok(),
+                    "roundtrip failed (unrouted ctx?) eob {eob} mags {mags:?}: {proof:?}"
+                );
+                let proof = proof.unwrap();
+                assert!(
+                    !proof.bytes().is_empty(),
+                    "empty proof eob {eob} mags {mags:?}"
+                );
+                let recovered = recover_quant_from_tokens(&trace, Q_CTX);
+                assert!(
+                    recovered.is_ok(),
+                    "recover failed eob {eob} mags {mags:?}: {recovered:?}"
+                );
+                assert_eq!(
+                    recovered.unwrap(),
+                    quant,
+                    "recover != input eob {eob} mags {mags:?}"
+                );
+                covered += 1;
+            }
+        }
+    }
+    // eob 3: 4 eob-mags * 5^2 lower = 100; eob 4: 4 * 5^3 = 500. Total 600.
+    assert_eq!(covered, 600, "expected 600 enumerated in-scope blocks");
 }

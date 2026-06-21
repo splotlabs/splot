@@ -70,6 +70,15 @@ const EOB_EXTRA_CDF_ROW_LEN: usize = 3;
 const COEFF_BASE_LF_EOB_CDF_ROW_LEN: usize = 6;
 const COEFF_BASE_LF_EOB_UV_CDF_ROW_LEN: usize = 6;
 const COEFF_BR_LF_CDF_ROW_LEN: usize = 5;
+// AV2 § 8.3.2 context-dimension counts of the generated default CDF tables, used to
+// size the 4x4 low-frequency context banks below. Sizing these banks to the full
+// generated context dimension makes the 4x4 LF tier hole-free: any reachable
+// `coeff_base` / `coeff_base_eob` / `coeff_br` low-frequency context routes to a
+// real generated default row (`DEFAULT_COEFF_BASE_LF_CDF` has `33` contexts,
+// `DEFAULT_COEFF_BASE_LF_EOB_CDF` has `4`, `DEFAULT_COEFF_BR_LF_CDF` has `14`).
+const COEFF_BASE_LF_CTX_COUNT: usize = 33;
+const COEFF_BASE_LF_EOB_CTX_COUNT: usize = 4;
+const COEFF_BR_LF_CTX_COUNT: usize = 14;
 const DC_SIGN_CDF_ROW_LEN: usize = 3;
 const TILE_ORIGIN_Y_MODE_INDEX_CTX: usize = 0;
 const NON_DIRECTIONAL_UV_MODE_CTX: usize = 0;

@@ -4866,6 +4866,39 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-COEFF-GENERAL-WALK-EOB-EXTRA"
+name = "Encoder general LF coefficient walk: eob 3-4 (eob_extra flag)"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20.7.27", "8.3.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/coefficient_tokenization"
+openspec_change = "coeff-general-walk-eob-extra"
+tracking_issue = ""
+owner = "encoder"
+risk = "medium"
+notes = "Private, non-emitting encoder coefficient tokenizer. Sub-brick 5c-i: lifts `tokenize_general_lf_luma_block` from eob<=2 to eob 3 and 4, adding the §5.20.7.27 `eob_extra` CDF flag and walking 3-4 coefficients. EOB SIGNALING (mirrors the decoder `nonzero_coeff_eob`): `eob_pt_16` symbol = eobPt-1 (fixed from the prior eob-1, which coincided for eob<=2 because eobPt==eob there); eob 3 and 4 -> eobPt 3 -> `eob_pt_16` symbol 2, then the `eob_extra` CDF flag = eob-3 (eob 3->0, eob 4->1); eobPt 3 has eobPt-3=0 `eob_extra_bit` literals so NONE emitted (eob 5..=10 with extra-bit literals is a later sub-brick — a nonzero at scan index>=4 is rejected with CoefficientTokenizationUnsupportedEob). Reuses a new `eob_extra_token` constructor over the existing `EobExtra` selector + `DEFAULT_EOB_EXTRA_CDF` row (indexed only by q-ctx), the existing `coeff_base_eob_ctx` / `coeff_base_lf_luma_context` / `coeff_br_lf_luma_context` helpers (all raster positions {0,4,1,8} are §8.3.2 low-frequency), and the sign/chroma tail. recover_quant reads the `eob_extra` flag after `eob_pt_16` (eob = 3 + flag). HOLE-FREE ROUTING: a 600-block exhaustive fuzz (eob 3-4 x EOB position {1,4,5,7} x lower positions {0,1,4,5,7} x asymmetric signs) revealed the full reachable 4x4-LF context set, so the three 4x4-LF CDF tables were REFACTORED into context-indexed banks sized to the full generated context dimension (coeff_base_lf 33 ctx, coeff_base_lf_eob 4 ctx, coeff_br_lf 14 ctx; TCQ-neutral, q-ctx 0, bounds-checked `row_mut` arms; sourced from splot-core DEFAULT tables, no invented values) — making the entire 4x4-LF tier free of single-context routing holes. §8.2 SELF-CONSISTENCY only, NOT decoder context conformance (deferred cross-check). Out of scope (later sub-bricks): eob>4 / `eob_extra_bit` literals, magnitudes >7 (golomb), high-frequency coefficients, chroma coefficient coding, sizes other than 4x4, types other than DCT_DCT, packet output."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/coefficient_tokenization/general_walk_tests.rs"]
+commands = ["cargo test -p splot-encode general_walk --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-INTRA-BLOCK-TRACE-TWO-COEFF"
 name = "Encoder eob=2 multi-coefficient block trace"
 category = "encoder"

@@ -46,7 +46,8 @@ mod multi_coeff;
 // referenced by non-test code in this module.
 #[allow(unused_imports)]
 pub(crate) use multi_coeff::{
-    coded_luma_all_zero_token, coeff_base_lf_eob_token, coeff_br_lf_token, eob_pt_16_token,
+    coded_luma_all_zero_token, coeff_base_lf_eob_token, coeff_br_lf_token, eob_extra_token,
+    eob_pt_16_token,
 };
 
 mod transform_type;

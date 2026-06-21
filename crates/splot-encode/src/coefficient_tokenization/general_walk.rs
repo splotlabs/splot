@@ -6,14 +6,26 @@
 //!
 //! This walks an arbitrary quantized 4x4 DCT_DCT luma `Quant[16]` block whose
 //! nonzero coefficients all sit in the low-frequency end-of-block window (scan
-//! indices `0..=1`, eob `<= 2`), and emits the ordered § 5.20.7.27 coefficient token
-//! stream the decoder coefficient loop reads: the luma `txb_skip`, `eob_pt_16`, the
+//! indices `0..=3`, eob `<= 4`), and emits the ordered § 5.20.7.27 coefficient token
+//! stream the decoder coefficient loop reads: the luma `txb_skip`, `eob_pt_16`, an
+//! optional `eob_extra` CDF flag (read only when eobPt `>= 3`, i.e. eob `>= 3`), the
 //! reverse-scan `coeff_base_eob` / `coeff_base` base pass (with the running-`Level[]`
 //! § 8.3.2 LF luma context from [`super::coeff_base_lf_luma_context`]), the
 //! reverse-scan interleaved sign pass (`dc_sign` CDF for the DC, `sign_bit` § 8.2.5
 //! bypass for the AC), and the all-zero chroma U/V `txb_skip` tail. It reuses the
 //! existing token constructors and CDF routing; it never invents AV2 CDF values or
 //! contexts.
+//!
+//! EOB SIGNALING (mirrors the decoder `nonzero_coeff_eob`,
+//! `crates/splot-decode/src/tile_payload/coeff_loop.rs`): `eob_pt_16` carries
+//! `eobPt - 1`. eob 1 → eobPt 1, eob 2 → eobPt 2 (both eobPt `< 3`, NO `eob_extra`).
+//! eob 3 and 4 → eobPt 3: emit `eob_pt_16` symbol 2, then the `eob_extra` CDF flag
+//! `eob - 3` (eob 3 → flag 0, eob 4 → flag 1). For eobPt `p` the decoder base is
+//! `(1 << (p - 2)) + 1` and `eob = base + (eob_extra << (p - 3)) + eob_extra_bits`;
+//! for `p == 3` that is `3 + eob_extra` and the `eob_extra_bit` bypass width is
+//! `p - 3 == 0`, so NO bypass literal is emitted here. eob `>= 5` (a nonzero at scan
+//! index `>= 4`, eobPt `>= 4`) adds `eob_extra_bit` bypass literals and is a deferred
+//! sub-brick — rejected with [`Error::CoefficientTokenizationUnsupportedEob`].
 //!
 //! BOTH coefficients of an eob `<= 2` block may now have a base-range magnitude
 //! `1..=7`: a magnitude `> 4` emits a `coeff_br` token right after its
@@ -43,8 +55,8 @@ use super::{
     CoefficientEntropyToken, CoefficientTokenSyntax, EOB_CTX_LUMA_INTRA, LF_NUM_BASE_LEVELS,
     MAX_BASE_BR_MAGNITUDE, chroma_u_all_zero_token, chroma_v_all_zero_token,
     coded_luma_all_zero_token, coeff_base_lf_eob_token, coeff_base_lf_luma_context,
-    coeff_base_lf_token, coeff_br_lf_luma_context, coeff_br_lf_token, eob_pt_16_token,
-    luma_all_zero_token, luma_dc_sign_token,
+    coeff_base_lf_token, coeff_br_lf_luma_context, coeff_br_lf_token, eob_extra_token,
+    eob_pt_16_token, luma_all_zero_token, luma_dc_sign_token,
 };
 use crate::block_symbol_trace::BlockSymbolToken;
 use crate::error::{Error, Result};
@@ -62,8 +74,14 @@ const TX_4X4_COEFF_COUNT: usize = TX_4X4_WIDTH * TX_4X4_HEIGHT;
 const TX_4X4_BWL: u32 = 2;
 /// `tcq_ctx = (tcqState >> 1) & 1` is 0 when TCQ is off.
 const COEFF_BASE_LF_TCQ_CTX_NEUTRAL: usize = 0;
-/// The largest nonzero scan index this brick covers (eob `<= 2`).
-const MAX_GENERAL_LF_SCAN_INDEX: usize = 1;
+/// The largest nonzero scan index this brick covers (eob `<= 4`, eobPt 3). eob `>= 5`
+/// (a nonzero at scan index `>= 4`, eobPt `>= 4`) needs `eob_extra_bit` bypass
+/// literals and is a deferred sub-brick.
+const MAX_GENERAL_LF_SCAN_INDEX: usize = 3;
+/// The smallest eob (eobPt `>= 3`) that carries the § 5.20.7.27 `eob_extra` CDF
+/// flag. For this brick the only eobPt-3 values are eob 3 (flag 0) and eob 4
+/// (flag 1); eobPt 3 has `eobPt - 3 == 0` `eob_extra_bit` bypass literals.
+const MIN_EOB_WITH_EXTRA: usize = 3;
 /// The neutral V-plane `txb_skip` context for an all-zero U/V tail (no `EobU`).
 const V_TXB_SKIP_CTX_NEUTRAL: usize = 0;
 /// AV2 § 8.3.2 `SIG_COEF_CONTEXTS_EOB` base used by `coeff_base_eob_ctx`; the
@@ -136,11 +154,16 @@ pub(crate) fn tokenize_general_lf_luma_block(
     let base_pass = compose_base_pass(quant, &scan, eob, coeff_cdf_q_ctx)?;
     let sign_pass = compose_sign_pass(quant, &scan, eob, coeff_cdf_q_ctx)?;
 
-    // luma all_zero + eob_pt_16 + base pass + sign pass + chroma U + chroma V.
+    // An eobPt-3 block (eob 3 or 4) carries one extra `eob_extra` CDF token after
+    // `eob_pt_16`. eobPt < 3 (eob 1 or 2) carries none.
+    let has_eob_extra = eob >= MIN_EOB_WITH_EXTRA;
+    let header_len = if has_eob_extra { 5 } else { 4 };
+
+    // luma all_zero + eob_pt_16 [+ eob_extra] + base pass + sign pass + chroma U/V.
     let total = base_pass
         .len()
         .checked_add(sign_pass.len())
-        .and_then(|n| n.checked_add(4))
+        .and_then(|n| n.checked_add(header_len))
         .ok_or(Error::CoefficientTokenizationAllocationFailed {
             context: "general LF coded block trace length",
         })?;
@@ -159,6 +182,14 @@ pub(crate) fn tokenize_general_lf_luma_block(
         EOB_CTX_LUMA_INTRA,
         eob_pt_16_symbol(eob),
     )));
+    if has_eob_extra {
+        // eobPt 3: emit the `eob_extra` CDF flag `eob - 3` (eob 3 → 0, eob 4 → 1).
+        // eobPt 3 has `eobPt - 3 == 0` `eob_extra_bit` literals, so no bypass follows.
+        trace.push(BlockSymbolToken::Coeff(eob_extra_token(
+            coeff_cdf_q_ctx,
+            eob - MIN_EOB_WITH_EXTRA != 0,
+        )));
+    }
     trace.extend(base_pass.into_iter().map(BlockSymbolToken::Coeff));
     trace.extend(sign_pass);
     trace.push(BlockSymbolToken::Coeff(chroma_u_all_zero_token(
@@ -177,10 +208,12 @@ pub(crate) fn tokenize_general_lf_luma_block(
 ///
 /// This is § 8.2 self-consistency, not decoder/AVM verification: the same code
 /// authored the emission and this inverse. It walks the trace's base-pass and
-/// sign-pass tokens (skipping the `all_zero` / `eob_pt_16` / chroma tail), pairs
-/// each base level with its reverse-scan sign, and writes the signed value at the
-/// scan-derived raster position. An all-zero trace (single `all_zero == 1`)
-/// recovers the zero block.
+/// sign-pass tokens (skipping the `all_zero` / `eob_pt_16` / `eob_extra` / chroma
+/// tail), pairs each base level with its reverse-scan sign, and writes the signed
+/// value at the scan-derived raster position. The `eob_extra` flag (present when
+/// eobPt `>= 3`, i.e. eob `>= 3`) is consumed by [`read_eob_from_tokens`] to
+/// recover the eob. An all-zero trace (single `all_zero == 1`) recovers the zero
+/// block.
 pub(crate) fn recover_quant_from_tokens(
     tokens: &[BlockSymbolToken],
     coeff_cdf_q_ctx: usize,
@@ -199,10 +232,10 @@ pub(crate) fn recover_quant_from_tokens(
     skip_expected_all_zero(tokens, &mut index, coeff_cdf_q_ctx)?;
     let eob = read_eob_from_tokens(tokens, &mut index)?;
 
-    // Base pass: `eob` reverse-scan coefficients, levels only. EITHER coefficient
-    // (the EOB coefficient at offset 0, or the non-EOB coefficient) may be followed by
-    // an interleaved `coeff_br` token that refines its level (mirroring the emission
-    // in `compose_base_pass`).
+    // Base pass: `eob` reverse-scan coefficients, levels only. ANY coefficient (the
+    // EOB coefficient at offset 0, or a non-EOB coefficient) may be followed by an
+    // interleaved `coeff_br` token that refines its level (mirroring the emission in
+    // `compose_base_pass`); a zero non-EOB coefficient has level 0 and no `coeff_br`.
     let mut levels = [0u32; TX_4X4_COEFF_COUNT];
     for offset in 0..eob {
         let c = eob - 1 - offset;
@@ -268,12 +301,14 @@ fn end_of_block(quant: &[i32; TX_4X4_COEFF_COUNT], scan: &[u16; TX_4X4_COEFF_COU
     eob
 }
 
-/// Rejects any nonzero outside the supported low-frequency window or magnitude
-/// tier. BOTH the end-of-block coefficient (scan index `eob - 1`, coded with
-/// `coeff_base_eob` + optional `coeff_br`) and every non-EOB coefficient (coded with
-/// `coeff_base` + optional `coeff_br`) may now have magnitude
-/// `1..=MAX_BASE_BR_MAGNITUDE` (`7`). A magnitude `> 7` (`maxLevel`-and-above, the
-/// § 5.20.7.28 `read_quant` golomb tail) is a later sub-brick and is rejected.
+/// Rejects any nonzero outside the supported low-frequency window (scan indices
+/// `0..=MAX_GENERAL_LF_SCAN_INDEX`, eob `<= 4`) or magnitude tier. BOTH the
+/// end-of-block coefficient (scan index `eob - 1`, coded with `coeff_base_eob` +
+/// optional `coeff_br`) and every non-EOB coefficient (coded with `coeff_base` +
+/// optional `coeff_br`) may have magnitude `1..=MAX_BASE_BR_MAGNITUDE` (`7`). A
+/// magnitude `> 7` (`maxLevel`-and-above, the § 5.20.7.28 `read_quant` golomb tail)
+/// is a later sub-brick and is rejected, as is a nonzero at scan index `>= 4`
+/// (eob `>= 5`, which needs `eob_extra_bit` bypass literals).
 fn validate_general_lf_scope(
     quant: &[i32; TX_4X4_COEFF_COUNT],
     scan: &[u16; TX_4X4_COEFF_COUNT],
@@ -464,10 +499,14 @@ const fn coeff_base_eob_ctx(c: usize) -> usize {
     }
 }
 
-/// Returns the `eob_pt_16` symbol for a low-frequency eob (`eob <= 2`): symbol
-/// `eob - 1` (eobPt `eob`, no extra bits for eobPt `< 3`).
+/// Returns the `eob_pt_16` symbol (`eobPt - 1`) for a low-frequency eob
+/// (`eob <= 4`). The `eob_pt_16` symbol carries `eobPt - 1`, NOT `eob - 1`: for
+/// eobPt `< 3` (eob 1 or 2) `eobPt == eob`, so the symbol is `eob - 1`; for eob 3
+/// and 4 (both eobPt 3) the symbol is the constant `2` and the `eob_extra` flag
+/// distinguishes eob 3 from 4.
 const fn eob_pt_16_symbol(eob: usize) -> u8 {
-    (eob - 1) as u8
+    let eob_pt = if eob >= MIN_EOB_WITH_EXTRA { 3 } else { eob };
+    (eob_pt - 1) as u8
 }
 
 /// Returns the constant § 8.3.2 `coeff_br` low-frequency luma context for the EOB
@@ -510,10 +549,27 @@ fn skip_expected_all_zero(
     Ok(())
 }
 
-/// Reads the eob from the `eob_pt_16` token at the cursor (`eob = symbol + 1`).
+/// Reads the eob from the `eob_pt_16` token at the cursor and, when its symbol
+/// selects eobPt `>= 3` (symbol `2`, eobPt `eob_pt_16 + 1 == 3`), the interleaved
+/// `eob_extra` CDF flag that follows it. The `eob_pt_16` symbol is `eobPt - 1`; for
+/// eobPt `< 3` `eob == eobPt` so `eob = symbol + 1`, and for eobPt 3
+/// `eob = 3 + eob_extra` (flag 0 → eob 3, flag 1 → eob 4). This mirrors the
+/// emission in [`tokenize_general_lf_luma_block`] (and the decoder
+/// `nonzero_coeff_eob`); eobPt 3 has no `eob_extra_bit` bypass literals (width
+/// `eobPt - 3 == 0`).
 fn read_eob_from_tokens(tokens: &[BlockSymbolToken], index: &mut usize) -> Result<usize> {
-    let token = coeff_token_at(tokens, index)?;
-    Ok(usize::from(token.symbol()) + 1)
+    let eob_pt = usize::from(coeff_token_at(tokens, index)?.symbol()) + 1;
+    if eob_pt < MIN_EOB_WITH_EXTRA {
+        return Ok(eob_pt);
+    }
+    // eobPt 3: the next token is the `eob_extra` CDF flag; `eob = 3 + flag`.
+    let extra_token = coeff_token_at(tokens, index)?;
+    if !matches!(extra_token.syntax(), CoefficientTokenSyntax::EobExtra) {
+        return Err(Error::CoefficientTokenizationAllocationFailed {
+            context: "general LF recovery expected an eob_extra token",
+        });
+    }
+    Ok(MIN_EOB_WITH_EXTRA + usize::from(extra_token.symbol()))
 }
 
 /// Recovers the base level of one base-pass coefficient: the EOB coefficient
