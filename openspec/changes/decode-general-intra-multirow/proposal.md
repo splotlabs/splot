@@ -1,5 +1,7 @@
 ## Why
 
+> **Historical note.** This change predates `decode-minimal-fixture-avm-skip-polarity`, which retired the frozen `base_q_idx == 255` committed minimal fixture (`syn-flat-intra-64x64-minimal.ivf`) and replaced it with an AVM/dav2d-conformant `base_q_idx` 210 luma-skip stream that routes through the general intra path. References below to the committed minimal fixture as the frozen `base_q_idx == 255` anchor — and to keeping that committed fixture's hash byte-identical — are historical; the routing rule (a `base_q_idx == 255` frame falls through to the frozen gate) still holds.
+
 The general intra decode admits a single superblock row (width a multiple of 64,
 height exactly 64). The §5.20.2.1 superblock raster loop already iterates rows and
 columns and the DC path already reads above neighbours, so a single COLUMN of

@@ -10555,7 +10555,7 @@ tests = [
     "crates/splot-decode/src/tile_payload/cdf/coeff_context.rs::tests::idtx_sign_ctx_level_threshold_raises_nonzero_context",
     "crates/splot-decode/src/tile_payload/cdf/coeff_context.rs::tests::idtx_sign_ctx_skips_missing_edge_neighbours",
     "crates/splot-decode/src/tile_payload/cdf/coeff_context.rs::tests::idtx_sign_ctx_is_total_for_short_slices_and_pathological_geometry",
-    "crates/splot-decode/src/runtime_minimal.rs::general_intra_tests::luma_skip_fixture_decodes_skip_branch_through_general_path",
+    "crates/splot-decode/src/tile_payload/runtime_frontier.rs::tests::block_symbol_trace_rejects_legacy_inverted_skip",
 ]
 commands = [
     "cargo test -p splot-decode tile_payload --locked",

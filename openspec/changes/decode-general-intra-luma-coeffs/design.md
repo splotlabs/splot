@@ -1,5 +1,7 @@
 ## Context
 
+> **Historical note.** This change predates `decode-minimal-fixture-avm-skip-polarity`, which retired the frozen `base_q_idx == 255` committed minimal fixture (`syn-flat-intra-64x64-minimal.ivf`) and replaced it with an AVM/dav2d-conformant `base_q_idx` 210 luma-skip stream that routes through the general intra path. References below to the committed minimal fixture as the frozen `base_q_idx == 255` anchor — and to keeping that committed fixture's hash byte-identical — are historical; the routing rule (a `base_q_idx == 255` frame falls through to the frozen gate) still holds.
+
 The general intra frame path decodes mode info and then returns
 `general_intra_residual_decode_unimplemented`. The coefficient-loop machinery
 (`apply_coeff_use_fsc_branch_from_frame_facts` and the ordinary nonzero pass)
