@@ -55,6 +55,11 @@ description = "Multi-block 8-bit 4:2:0 intra key frame (IVF, 64x64) from a proje
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-deep-intra-64x64-q120.ivf"
+description = "Two-level partition-tree 8-bit 4:2:0 intra key frame (IVF, 64x64) from a project-owned input whose top-left 32x32 holds a 16x16 checkerboard (240/20/20/240) over three distinct flat 32x32 quadrants (TR 130, BL 70, BR 200), with broad decode tools disabled at base_q_idx 120, so the 64x64 superblock SPLITs into four 32x32 and the top-left 32x32 SPLITs AGAIN into four square 16x16 DC_PRED blocks (the other three quadrants stay square 32x32 DC_PRED). One partition level deeper than syn-quad: each 16x16 leaf DC-predicts (section 7.13.2.4) from its already-reconstructed sibling 16x16 neighbour INSIDE the parent 32x32 sub-block, exercising the section 5.20.4.1 partition recursion's 16x16 SPLIT children; the first general-intra sub-32x32 (deeper square split) decode target whose avmdec and dav2d raw outputs agree (md5 5e3484135608ea2cd1457d4c50df7855) and splot reproduces byte-for-byte; validates clean."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-vsmooth-intra-64x64-q120.ivf"
 description = "Single-block 8-bit 4:2:0 intra key frame (IVF, 64x64) from a project-owned vertical-gradient luma input with broad decode tools disabled at base_q_idx 120, so the whole frame is one 64x64 SMOOTH_V_PRED luma block (DC chroma) over the section 7.13.2.1 no-neighbour fallback edges plus AC residual; the first general-intra non-DC (smooth vertical) decode target whose avmdec and dav2d raw outputs agree and splot reproduces byte-for-byte; validates clean."
 expect = "clean"

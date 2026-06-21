@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 355 feature(s).
+Matrix version 1. Last reviewed 2026-06-15. 356 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -280,6 +280,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `DECODE-GENERAL-INTRA-LUMA-COEFFS` | General intra luma coefficient decode | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/general_intra_residual.rs` |
 | `DECODE-GENERAL-INTRA-FRAME-RECON` | General intra full frame reconstruction | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | partial | `crates/splot-decode/src/tile_payload/general_intra_residual.rs` |
 | `DECODE-GENERAL-INTRA-MULTIBLOCK` | General intra multi-block partition decode | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | partial | `crates/splot-decode/src/tile_payload/partition_traversal.rs` |
+| `DECODE-GENERAL-INTRA-DEEP-SPLIT` | General intra deeper (sub-32x32) square SPLIT partition decode | infrastructure | infrastructure | done | n/a | partial | n/a | n/a | n/a | partial | done | partial | `crates/splot-decode/src/tile_payload/partition_traversal.rs` |
 | `DECODE-GENERAL-INTRA-NONDC-LUMA-SMOOTH` | General intra single-block non-DC luma (smooth) decode | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | partial | `crates/splot-decode/src/runtime_minimal_recon.rs` |
 | `DECODE-GENERAL-INTRA-ANGLE` | General intra single-block directional-angle luma (D135) decode | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | partial | `crates/splot-decode/src/runtime_minimal_recon.rs` |
 | `DECODE-GENERAL-INTRA-MB-NEIGHBOUR-SMOOTH` | General intra multi-block non-DC luma over a reconstructed neighbour edge | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | partial | `crates/splot-decode/src/runtime_minimal_recon.rs` |
