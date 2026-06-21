@@ -19,4 +19,5 @@ workspace = true
 splot-core.workspace = true
 splot-parallel.workspace = true
 splot-recon.workspace = true
+splot-tables.workspace = true
 thiserror.workspace = true
