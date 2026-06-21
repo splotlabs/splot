@@ -22,7 +22,8 @@ use crate::coefficient_tokenization::{
     chroma_v_all_zero_token, general_intra_32x32_chroma_u_all_zero_token,
     general_intra_32x32_chroma_u_dc_coded_tokens, general_intra_32x32_chroma_v_dc_coded_tokens,
     general_intra_64x64_luma_all_zero_token, general_intra_64x64_luma_dc_coded_tokens,
-    general_intra_64x64_luma_two_coeff_tokens, general_intra_64x64_luma_visible_ac_tokens,
+    general_intra_64x64_luma_two_coeff_tokens, general_intra_64x64_luma_two_nonzero_tokens,
+    general_intra_64x64_luma_visible_ac_tokens,
 };
 use crate::error::{Error, Result};
 use crate::partition_emission::emit_root_do_split_none;
@@ -32,9 +33,8 @@ use crate::partition_emission::emit_root_do_split_none;
 /// `syn-flat-intra-64x64-q80` fixture's `base_q_idx == 80` selects).
 const SKIP_FRAME_COEFF_CDF_Q_CTX: usize = 0;
 
-/// The § 8.3.2 neutral V `txb_skip` context: `0`. For this skip block the chroma
-/// block equals its transform size and the U plane is all-zero (`EobU == 0`), so
-/// neither the chroma-larger-than-tx (`+3`) nor the `EobU != 0` (`+6`) term applies.
+/// The § 8.3.2 neutral V `txb_skip` context: `0`. For these frames the chroma block equals its
+/// transform and U is all-zero (`EobU == 0`), so neither the `+3` nor the `+6` term applies.
 const V_TXB_SKIP_CTX_NEUTRAL: usize = 0;
 
 /// Composes the complete ordered general intra DC skip-block trace read on the AV2
@@ -78,14 +78,11 @@ pub(crate) fn compose_general_intra_dc_skip_block_trace() -> Result<Vec<BlockSym
 }
 
 /// The unsigned luma DC magnitude the coded frame emits: `6` (`coeff_base_eob` saturated at
-/// `4`, level 5, plus `coeff_br == 1`). Negative, it dequantizes to a flat luma reconstruction
-/// of `127` at `base_q_idx == 80`.
-///
-/// It is the largest magnitude that stays **below the § 5.20.7.28 golomb threshold** on this
-/// frame: the minimal sequence header's luma uses TCQ, so `read_quant` reads a golomb bypass
-/// tail once `quant >= maxLevel - allowTcq == 7`. Magnitude `7` (the q80 fixture's luma level,
-/// reconstructing to `100`) would need that golomb tail, which the coded token set does not yet
-/// model — a follow-up brick.
+/// `4`, level 5, plus `coeff_br == 1`). Negative, it reconstructs flat luma `127` at
+/// `base_q_idx == 80`. It is the largest magnitude **below the § 5.20.7.28 golomb threshold** on
+/// this frame: the minimal header's luma uses TCQ, so `read_quant` reads a golomb tail once
+/// `quant >= maxLevel - allowTcq == 7`. Magnitude `7` (the q80 luma level, reconstructing `100`)
+/// would need that tail — a follow-up brick.
 const CODED_LUMA_DC_MAGNITUDE: u32 = 6;
 
 /// Composes the general intra DC coded-block trace: like
@@ -516,6 +513,63 @@ pub fn emit_minimal_intra_visible_ac_ivf() -> Result<Vec<u8>> {
     .map_err(|source| Error::MinimalIntraSkipIvf { source })
 }
 
+/// The DC sign for the two-nonzero-coefficient block: positive (`dc_sign == 0`).
+const TWO_NONZERO_DC_NEGATIVE: bool = false;
+
+/// Composes the general intra eob=2 **two-nonzero-coefficient** luma block trace: `do_split`,
+/// the mode prefix, a coded luma block carrying a level-4 AC at scan index 1 and a level-1 DC at
+/// scan index 0 (the base pass, then the DC `dc_sign` and the AC `sign_bit` bypass in scan
+/// order), then skipped U and V. This is the first block where two coefficients are nonzero, so
+/// the reconstruction is the visible-AC vertical cosine superimposed on a DC offset.
+fn compose_general_intra_two_nonzero_block_trace() -> Result<Vec<BlockSymbolToken>> {
+    let modes = compose_minimal_intra_dc_block_mode_trace()?;
+    let luma = general_intra_64x64_luma_two_nonzero_tokens(
+        SKIP_FRAME_COEFF_CDF_Q_CTX,
+        TWO_NONZERO_DC_NEGATIVE,
+    )?;
+    let total = modes
+        .len()
+        .checked_add(luma.len())
+        .and_then(|n| n.checked_add(4)) // do_split + AC sign + U skip + V skip
+        .ok_or(Error::BlockSymbolTraceAllocationFailed {
+            context: "general two-nonzero block trace length",
+        })?;
+    let mut trace = Vec::new();
+    trace
+        .try_reserve_exact(total)
+        .map_err(|_| Error::BlockSymbolTraceAllocationFailed {
+            context: "general two-nonzero block trace",
+        })?;
+    trace.push(BlockSymbolToken::Partition(emit_root_do_split_none()));
+    trace.extend(modes.into_iter().map(BlockSymbolToken::Mode));
+    trace.extend(luma.into_iter().map(BlockSymbolToken::Coeff));
+    // The AC `sign_bit` § 8.2.5 bypass follows the DC `dc_sign` (sign pass, scan order).
+    trace.push(BlockSymbolToken::bypass(CHROMA_SIGN_BIT_WIDTH, 0));
+    trace.push(BlockSymbolToken::Coeff(
+        general_intra_32x32_chroma_u_all_zero_token(SKIP_FRAME_COEFF_CDF_Q_CTX),
+    ));
+    trace.push(BlockSymbolToken::Coeff(chroma_v_all_zero_token(
+        SKIP_FRAME_COEFF_CDF_Q_CTX,
+        V_TXB_SKIP_CTX_NEUTRAL,
+    )));
+    Ok(trace)
+}
+
+/// Emits a complete, decodable AV2 IVF stream for one 64x64 all-intra `OBU_CLOSED_LOOP_KEY`
+/// frame whose luma block carries **two nonzero coefficients** — a level-4 AC at scan index 1
+/// and a level-1 DC at scan index 0 (eob=2, U and V skipped). This is the encoder's first block
+/// with more than one nonzero coefficient; the reconstruction is the visible-AC vertical cosine
+/// superimposed on a DC offset. The cross-crate decode oracle lives in `splot-cli`.
+pub fn emit_minimal_intra_two_nonzero_ivf() -> Result<Vec<u8>> {
+    let trace = compose_general_intra_two_nonzero_block_trace()?;
+    let tile_data = encode_block_symbol_trace(&trace)?;
+    splot_core::headers::frame::encode_minimal_intra_clk_ivf_with_base_q_idx(
+        SKIP_FRAME_BASE_Q_IDX,
+        &tile_data,
+    )
+    .map_err(|source| Error::MinimalIntraSkipIvf { source })
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -895,6 +949,51 @@ mod tests {
         assert_ne!(visible, emit_minimal_intra_two_coeff_ivf().unwrap());
         assert_eq!(visible, emit_minimal_intra_visible_ac_ivf().unwrap());
         let parsed = splot_core::ivf::parse_ivf_partial(&visible);
+        assert!(parsed.error.is_none());
+        assert_eq!(parsed.frames.len(), 1);
+    }
+
+    #[test]
+    fn composes_general_two_nonzero_block_trace_in_order() {
+        let trace = compose_general_intra_two_nonzero_block_trace().unwrap();
+
+        // do_split, 3 modes, 5 coded-luma (txb_skip, eob_pt, AC base_eob, DC base, DC dc_sign),
+        // AC sign bypass, U skip, V skip = 12 tokens.
+        assert_eq!(trace.len(), 12);
+        assert!(matches!(trace[0], BlockSymbolToken::Partition(_)));
+        // The AC sign_bit bypass follows the DC dc_sign (sign pass, scan order).
+        assert!(matches!(
+            trace[9],
+            BlockSymbolToken::Bypass { width: 1, value: 0 }
+        ));
+        // do_split, modes 0/0/0; luma txb_skip=0, eob_pt_1024=1, AC coeff_base_eob=3 (level 4),
+        // DC coeff_base=1 (level 1), DC dc_sign=0 (positive); AC sign=0; U/V txb_skip=1.
+        assert_eq!(
+            trace.iter().map(|token| token.symbol()).collect::<Vec<_>>(),
+            vec![0, 0, 0, 0, 0, 1, 3, 1, 0, 0, 1, 1]
+        );
+    }
+
+    #[test]
+    fn general_two_nonzero_block_trace_roundtrips_through_one_coder() {
+        let trace = compose_general_intra_two_nonzero_block_trace().unwrap();
+        let proof = roundtrip_block_symbol_trace(&trace).unwrap();
+        assert_eq!(
+            proof.decoded_symbols(),
+            &[0, 0, 0, 0, 0, 1, 3, 1, 0, 0, 1, 1]
+        );
+        assert_eq!(proof.symbol_count(), 12);
+        assert!(!proof.bytes().is_empty());
+    }
+
+    #[test]
+    fn emit_minimal_intra_two_nonzero_ivf_differs_from_visible_ac_and_is_deterministic() {
+        let two = emit_minimal_intra_two_nonzero_ivf().unwrap();
+        assert!(!two.is_empty());
+        // Distinct from the single-nonzero (visible-AC) frame: it adds the nonzero DC + its sign.
+        assert_ne!(two, emit_minimal_intra_visible_ac_ivf().unwrap());
+        assert_eq!(two, emit_minimal_intra_two_nonzero_ivf().unwrap());
+        let parsed = splot_core::ivf::parse_ivf_partial(&two);
         assert!(parsed.error.is_none());
         assert_eq!(parsed.frames.len(), 1);
     }

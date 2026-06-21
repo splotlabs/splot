@@ -365,3 +365,67 @@ fn encoder_visible_ac_ivf_decodes_to_a_vertical_cosine_luma() {
         "expected flat 128 chroma"
     );
 }
+
+/// The encoder's first block with **two nonzero coefficients**: a level-4 AC at scan index 1 and
+/// a level-1 DC at scan index 0 (eob=2, U and V skipped). This exercises the DC `coeff_base`
+/// nonzero path and the sign pass with two signs in scan order — the DC `dc_sign` (CDF) then the
+/// AC `sign_bit` (bypass). `splot decode` reconstructs the visible-AC vertical cosine superimposed
+/// on the DC offset: each luma row constant, the top 14 rows 129 and the rest 128.
+#[test]
+fn encoder_two_nonzero_ivf_decodes_to_a_cosine_plus_dc_offset() {
+    let ivf = splot_encode::emit_minimal_intra_two_nonzero_ivf().expect("emit the two-nonzero IVF");
+
+    let input = temp_path("two-nonzero-input", "ivf");
+    let output = temp_path("two-nonzero-output", "raw");
+    std::fs::write(&input, &ivf).expect("write the emitted IVF");
+
+    let status = Command::new(env!("CARGO_BIN_EXE_splot"))
+        .args([
+            "decode",
+            input.to_str().expect("utf-8 input path"),
+            "--output",
+            output.to_str().expect("utf-8 output path"),
+            "--output-format",
+            "raw",
+        ])
+        .status()
+        .expect("run the splot binary");
+
+    let raw = std::fs::read(&output);
+    let _ = std::fs::remove_file(&input);
+    let _ = std::fs::remove_file(&output);
+
+    assert!(
+        status.success(),
+        "splot decode of the two-nonzero IVF failed"
+    );
+    let raw = raw.expect("read the decoded raw output");
+    assert_eq!(raw.len(), 6144, "unexpected decoded frame size");
+
+    let luma = &raw[..4096];
+    // The AC is the lowest vertical frequency, so each row is constant across columns.
+    for row in 0..64 {
+        let r = &luma[row * 64..(row + 1) * 64];
+        assert!(
+            r.iter().all(|&s| s == r[0]),
+            "luma row {row} is not constant across columns"
+        );
+    }
+    // Cosine + DC offset: top 14 rows 129, the remaining 50 rows 128 (deterministic).
+    let row_value = |row: usize| luma[row * 64];
+    for row in 0..14 {
+        assert_eq!(row_value(row), 129, "top band row {row}");
+    }
+    for row in 14..64 {
+        assert_eq!(row_value(row), 128, "lower band row {row}");
+    }
+    assert!(
+        luma.iter().any(|&s| s != 128),
+        "expected a non-flat luma plane"
+    );
+    // Chroma is untouched (U and V skipped) -> flat 128.
+    assert!(
+        raw[4096..].iter().all(|&s| s == 128),
+        "expected flat 128 chroma"
+    );
+}

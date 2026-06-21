@@ -337,6 +337,75 @@ pub(crate) fn general_intra_64x64_luma_visible_ac_tokens(
     Ok(tokens)
 }
 
+/// The DC coefficient level for the two-nonzero-coefficient block: `1` (the smallest nonzero
+/// level, a single non-EOB `coeff_base` symbol with no `coeff_br` tail). Its sign is CDF-coded
+/// (`dc_sign`).
+const TWO_NONZERO_DC_LEVEL: u8 = 1;
+
+/// Returns the ordered general `TX_64X64` luma eob=2 tokens for a block with **two nonzero
+/// coefficients**: a level-4 AC at scan index 1 and a level-1 DC at scan index 0. This is the
+/// first block where more than one coefficient is nonzero. The sequence is the base pass
+/// (`txb_skip == 0`, `eob_pt_1024 == 1`, AC `coeff_base_eob` symbol 3 at ctx 1, DC `coeff_base`
+/// symbol 1 at the AC-level-derived ctx 2) then the sign pass in scan order: the DC `dc_sign`
+/// (CDF), and — appended by the caller — the AC `sign_bit` § 8.2.5 bypass. The DC context is the
+/// same ctx 2 as the visible-AC frame (it depends on the AC neighbour level, not the DC's own
+/// value). `TX_64X64` is DCT-only, so no transform-type symbol is read.
+pub(crate) fn general_intra_64x64_luma_two_nonzero_tokens(
+    coeff_cdf_q_ctx: usize,
+    dc_negative: bool,
+) -> Result<Vec<CoefficientEntropyToken>> {
+    let mut tokens = Vec::new();
+    tokens
+        .try_reserve_exact(5)
+        .map_err(|_| Error::CoefficientTokenizationAllocationFailed {
+            context: "general two-nonzero-coefficient luma tokens",
+        })?;
+    // luma `txb_skip == 0` (coded) at the TX_64X64 context.
+    tokens.push(CoefficientEntropyToken {
+        syntax: CoefficientTokenSyntax::AllZero,
+        selector: CoefficientCdfRowSelector::TxbSkip {
+            coeff_cdf_q_ctx,
+            plane_type: LUMA_PLANE_TYPE,
+            tx_size: TX_SIZE_64X64_CTX,
+            ctx: TXB_SKIP_CTX_NEUTRAL,
+        },
+        symbol: false as u8,
+    });
+    // `eob_pt_1024 == 1` -> eob 2.
+    tokens.push(CoefficientEntropyToken {
+        syntax: CoefficientTokenSyntax::EobPt1024,
+        selector: CoefficientCdfRowSelector::EobPt1024 {
+            coeff_cdf_q_ctx,
+            eob_ctx: EOB_CTX_LUMA_INTRA,
+        },
+        symbol: 1,
+    });
+    // Base pass: AC coeff_base_eob (level 4 -> symbol 3) at ctx 1.
+    tokens.push(CoefficientEntropyToken {
+        syntax: CoefficientTokenSyntax::CoeffBaseEob,
+        selector: CoefficientCdfRowSelector::CoeffBaseLfEob {
+            coeff_cdf_q_ctx,
+            tx_size: TX_SIZE_64X64_CTX,
+            ctx: COEFF_BASE_LF_EOB_CTX_EOB2_AC,
+        },
+        symbol: VISIBLE_AC_LEVEL - 1,
+    });
+    // Base pass: DC coeff_base (level 1) at the AC-level-derived ctx 2.
+    tokens.push(CoefficientEntropyToken {
+        syntax: CoefficientTokenSyntax::CoeffBase,
+        selector: CoefficientCdfRowSelector::CoeffBaseLf {
+            coeff_cdf_q_ctx,
+            tx_size: TX_SIZE_64X64_CTX,
+            ctx: VISIBLE_AC_DC_CTX,
+            tcq_ctx: COEFF_BASE_LF_TCQ_CTX_NEUTRAL,
+        },
+        symbol: TWO_NONZERO_DC_LEVEL,
+    });
+    // Sign pass (scan order): the DC `dc_sign` is CDF-coded. The caller appends the AC `sign_bit`.
+    tokens.push(luma_dc_sign_token(coeff_cdf_q_ctx, dc_negative));
+    Ok(tokens)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {

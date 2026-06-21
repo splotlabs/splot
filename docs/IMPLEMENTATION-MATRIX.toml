@@ -5552,6 +5552,39 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-GENERAL-INTRA-TWO-NONZERO"
+name = "First two-nonzero-coefficient intra block"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20.7.27", "8.3.2", "8.2.5", "8.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/general_intra_trace.rs"
+openspec_change = "encoder-general-intra-two-nonzero"
+tracking_issue = ""
+owner = "encoder"
+risk = "low"
+notes = "Decodable-tile arc: the FIRST block with TWO NONZERO COEFFICIENTS (every prior coded block had exactly one nonzero coeff: a single DC or single AC). emit_minimal_intra_two_nonzero_ivf() (splot-encode public) codes a level-4 AC at scan index 1 AND a level-1 DC at scan index 0 in one eob=2 block. KEY NEW MACHINERY: the non-EOB coeff_base NONZERO path (DC coeff_base symbol 1, not 0) + the SIGN PASS WITH TWO SIGNS in scan order \u2014 the DC dc_sign (CDF) then the AC sign_bit (\u00a78.2.5 bypass). general_intra_64x64_luma_two_nonzero_tokens: base pass (txb_skip=0, eob_pt_1024=1, AC coeff_base_eob symbol 3 at ctx 1, DC coeff_base symbol 1 at ctx 2) then DC dc_sign; caller appends AC sign_bit. NO NEW CDF ROWS (reuses the #399 visible-AC ctx-2 DC coeff_base row + the shared dc_sign row). The DC coeff_base ctx stays 2 (depends on the AC neighbour level, not the DC's own value). `splot decode` reconstructs the visible-AC cosine superimposed on a DC offset: each luma row constant, top 14 rows=129, rest=128; U/V flat 128 (deterministic, asserted exactly). The splot-encode test asserts the IVF DIFFERS from the visible-AC frame. decode_check=done; avm_diff=not-applicable. Encoder-mission-DRIVEN (owner=encoder). FOLLOW-UPS: eob>2 (eob_extra), 2-D/horizontal coefficients, larger magnitudes (coeff_br/golomb). HONEST SCOPE: first 2-nonzero-coeff block; NOT a general encoder, NOT receive_packet, NOT Baseline Encoder Profile v1."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-cli/tests/encode_decode_roundtrip.rs::encoder_two_nonzero_ivf_decodes_to_a_cosine_plus_dc_offset", "crates/splot-encode/src/general_intra_trace.rs::tests::general_two_nonzero_block_trace_roundtrips_through_one_coder"]
+commands = ["cargo test -p splot-cli --test encode_decode_roundtrip --locked", "cargo test -p splot-encode two_nonzero --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-RECON-DEPENDENCY"
 name = "Encoder reconstruction dependency boundary"
 category = "encoder"
