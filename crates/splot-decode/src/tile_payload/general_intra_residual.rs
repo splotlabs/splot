@@ -21,7 +21,7 @@
 //! step unsupported) rather than committed to runtime decode state.
 
 use splot_core::symbol::SymbolDecoder;
-use splot_core::tables::conversion::{TX_SIZE_SQR, TX_SIZE_SQR_UP};
+use splot_core::tables::conversion::{TX_HEIGHT, TX_SIZE_SQR, TX_SIZE_SQR_UP, TX_WIDTH};
 use splot_recon::{
     BitDepth, DequantBlockParams, InverseTransform2dOuter, PlaneId, QuantizerDeltas, ReconError,
     ac_quantizer, dc_quantizer, reconstruct_transform_block_residual,
@@ -160,8 +160,13 @@ fn coeff_ctx_err(source: TileCoeffStateError) -> GeneralIntraResidualError {
     GeneralIntraResidualError::CoeffContextState { source }
 }
 
-/// Decodes the AV2 § 5.20.7.27 `coeffs()` syntax for one square transform block
-/// of any plane in the general intra multi-block walk.
+/// Decodes the AV2 § 5.20.7.27 `coeffs()` syntax for one transform block of any
+/// plane in the general intra multi-block walk. `tx_size` is the full § 9.2
+/// `TX_SIZES_ALL` index, so square (e.g. `TX_64X64`) and rectangular (e.g.
+/// `TX_64X32`) transforms are both handled: the above context span is
+/// `Tx_Width[txSz] >> 2` and the left context span is `Tx_Height[txSz] >> 2`,
+/// and the nonzero coefficient geometry (scan, eob class, dequant, transform)
+/// already reads width and height independently from the conversion tables.
 ///
 /// The § 8.3.2 `txb_skip` (`all_zero`) context is derived from the persistent
 /// neighbour context lines (`context`): luma uses
@@ -185,24 +190,26 @@ pub(crate) fn decode_general_intra_plane_coeffs(
 ) -> Result<LumaCoeffBlock, GeneralIntraResidualError> {
     let x4 = start_x >> 2;
     let y4 = start_y >> 2;
-    // Square transform: w4 == h4 == Tx_Width[txSz] >> 2 == 1 << tx_size.
-    let span4 = 1usize << tx_size;
+    // AV2 § 5.20.7.27: the above (`txw4`) and left (`txh4`) context spans are the
+    // transform block's width / height in 4x4 units, `Tx_Width[txSz] >> 2` and
+    // `Tx_Height[txSz] >> 2`, read from the generated § 9.2 conversion tables. For
+    // a square transform `w4 == h4 == 1 << tx_size`; for a rectangular transform
+    // (e.g. TX_64X32) they differ, so the above context line is OR-reduced over the
+    // width span and the left context line over the height span.
+    let w4 = usize::try_from(TX_WIDTH.get(tx_size).copied().unwrap_or(0)).unwrap_or(0) >> 2;
+    let h4 = usize::try_from(TX_HEIGHT.get(tx_size).copied().unwrap_or(0)).unwrap_or(0) >> 2;
     let frame_facts = work_unit.coeff_frame_facts();
     let coeff_cdf_q_ctx = coeff_cdf_q_ctx_from_base_q_idx(frame_facts.base_q_idx());
     let tx_size_ctx = txb_skip_tx_size_ctx(tx_size);
 
-    let above_level_or = or_u32(
-        context.above_level(plane).map_err(coeff_ctx_err)?,
-        x4,
-        span4,
-    );
-    let left_level_or = or_u32(context.left_level(plane).map_err(coeff_ctx_err)?, y4, span4);
+    let above_level_or = or_u32(context.above_level(plane).map_err(coeff_ctx_err)?, x4, w4);
+    let left_level_or = or_u32(context.left_level(plane).map_err(coeff_ctx_err)?, y4, h4);
     let selector = match plane {
         2 => {
             let above_nz = above_level_or != 0
-                || or_u8(context.above_dc(plane).map_err(coeff_ctx_err)?, x4, span4) != 0;
+                || or_u8(context.above_dc(plane).map_err(coeff_ctx_err)?, x4, w4) != 0;
             let left_nz = left_level_or != 0
-                || or_u8(context.left_dc(plane).map_err(coeff_ctx_err)?, y4, span4) != 0;
+                || or_u8(context.left_dc(plane).map_err(coeff_ctx_err)?, y4, h4) != 0;
             TileCdfSelector::VTxbSkip {
                 coeff_cdf_q_ctx,
                 ctx: v_txb_skip_ctx(above_nz, left_nz, false, eob_u_nonzero),
@@ -210,9 +217,9 @@ pub(crate) fn decode_general_intra_plane_coeffs(
         }
         1 => {
             let above_nz = above_level_or != 0
-                || or_u8(context.above_dc(plane).map_err(coeff_ctx_err)?, x4, span4) != 0;
+                || or_u8(context.above_dc(plane).map_err(coeff_ctx_err)?, x4, w4) != 0;
             let left_nz = left_level_or != 0
-                || or_u8(context.left_dc(plane).map_err(coeff_ctx_err)?, y4, span4) != 0;
+                || or_u8(context.left_dc(plane).map_err(coeff_ctx_err)?, y4, h4) != 0;
             TileCdfSelector::TxbSkip {
                 coeff_cdf_q_ctx,
                 plane_type: 0,
@@ -242,8 +249,8 @@ pub(crate) fn decode_general_intra_plane_coeffs(
                 plane,
                 x4,
                 y4,
-                w4: span4,
-                h4: span4,
+                w4,
+                h4,
                 cul_level: 0,
                 dc_category: 0,
             })
@@ -390,6 +397,90 @@ pub(crate) fn reconstruct_general_intra_block_with_prediction(
     let mut out = vec![0u8; samples];
     reconstruct_transform_block_residual(
         prediction,
+        quant,
+        &params,
+        &transform,
+        &mut dequant_scratch,
+        &mut residual_scratch,
+        &mut out,
+    )
+    .map_err(|source| GeneralIntraResidualError::Reconstruct { source })?;
+    Ok(out)
+}
+
+/// Reconstructs one **rectangular** intra plane block from the decoded `Quant[]`
+/// of its single DC_PRED transform block over a flat DC prediction `dc_sample`.
+///
+/// This is the rectangular generalisation of [`reconstruct_general_intra_block`]:
+/// `log2_width` and `log2_height` are the block's original (unadjusted) §7.15.4
+/// transform dimensions and may differ (e.g. a 64x32 `TX_64X32` block has
+/// `log2_width == 6`, `log2_height == 5`). It composes the §7.14.4 dequantization
+/// over the adjusted `Min(1<<log2_w, 32) x Min(1<<log2_h, 32)` coefficient grid,
+/// the §7.15.4 inverse transform (which applies the §7.15.4.1 √2 rescale when
+/// `|log2_w - log2_h|` is odd), and the §7.14.3 residual addition over the flat
+/// §7.13.2 DC prediction. `qindex == base_q_idx` for this minimal-tool frame.
+/// Chroma never uses the §7.14.4 TCQ `dqDenom` term (luma DCT_DCT only), so
+/// `use_tcq` is `false` for chroma callers.
+pub(crate) fn reconstruct_general_intra_block_rect(
+    quant: &[i32],
+    dc_sample: u8,
+    qindex: u32,
+    plane_id: PlaneId,
+    log2_width: u32,
+    log2_height: u32,
+    use_tcq: bool,
+) -> Result<Vec<u8>, GeneralIntraResidualError> {
+    let orig_w = 1usize << log2_width;
+    let orig_h = 1usize << log2_height;
+    let prediction = vec![dc_sample; orig_w * orig_h];
+
+    let adj_w = 1usize << log2_width.min(5);
+    let adj_h = 1usize << log2_height.min(5);
+    let adjusted = adj_w * adj_h;
+    if quant.len() != adjusted {
+        return Err(GeneralIntraResidualError::QuantLength {
+            expected: adjusted,
+            actual: quant.len(),
+        });
+    }
+    let samples = orig_w * orig_h;
+    let deltas = QuantizerDeltas {
+        y_dc: 0,
+        u_dc: 0,
+        v_dc: 0,
+        u_ac: 0,
+        v_ac: 0,
+    };
+    // AV2 §7.14.4: dqDenom = 1 << shift, shift = (pels > 256) + (pels > 1024) over
+    // the ORIGINAL (unadjusted) dimensions, plus 1 when TCQ applies (luma DCT_DCT
+    // non-lossless non-FSC with allow_tcq; chroma never).
+    let pels = (orig_w * orig_h) as u32;
+    let dq_shift = u32::from(pels > 256) + u32::from(pels > 1024) + u32::from(use_tcq);
+    let dq_denom = 1u32 << dq_shift;
+    let params = DequantBlockParams {
+        dc_quant: dc_quantizer(plane_id, qindex, deltas, BitDepth::Eight),
+        ac_quant: ac_quantizer(plane_id, qindex, deltas, BitDepth::Eight),
+        tx_width: adj_w,
+        tx_height: adj_h,
+        dq_denom,
+        bit_depth: BitDepth::Eight,
+    };
+    let transform = InverseTransform2dOuter::resolve(
+        DCT_DCT,
+        log2_width,
+        log2_height,
+        false,
+        false,
+        BitDepth::Eight,
+        None,
+    )
+    .map_err(|source| GeneralIntraResidualError::Reconstruct { source })?;
+
+    let mut dequant_scratch = vec![0i32; adjusted];
+    let mut residual_scratch = vec![0i32; samples];
+    let mut out = vec![0u8; samples];
+    reconstruct_transform_block_residual(
+        &prediction,
         quant,
         &params,
         &transform,

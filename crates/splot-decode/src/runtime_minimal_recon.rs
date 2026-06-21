@@ -22,7 +22,8 @@ use crate::Result;
 use crate::tile_payload::{
     GeneralIntraResidualError, LumaCoeffBlock, MinimalRuntimeReconstructionTrace,
     SupportedChromaMode, SupportedDirectionalLumaMode, SupportedNonDcLumaMode,
-    reconstruct_general_intra_block, reconstruct_general_intra_block_with_prediction,
+    reconstruct_general_intra_block, reconstruct_general_intra_block_rect,
+    reconstruct_general_intra_block_with_prediction,
 };
 
 const MINIMAL_LUMA_WIDTH: usize = 64;
@@ -130,6 +131,61 @@ pub(crate) fn reconstruct_general_intra_block_into(
         vec![dc; side * side]
     } else {
         reconstruct_general_intra_block(&block.quant, dc, qindex, plane_id, log2_side, use_tcq)?
+    };
+    workspace
+        .write_rect_block(plane_id, x, y, block_size, &out)
+        .map_err(recon_err)?;
+    Ok(())
+}
+
+/// Reconstructs one **rectangular** DC_PRED plane block in decode order into the
+/// workspace, the rectangular generalisation of [`reconstruct_general_intra_block_into`].
+///
+/// `log2_width` and `log2_height` are the block's §7.15.4 transform dimensions
+/// and may differ (e.g. a 64x32 `TX_64X32` luma block has `log2_width == 6`,
+/// `log2_height == 5`; its 4:2:0 chroma is a 32x16 `TX_32X16` block). The §7.13.2
+/// DC prediction is read from the partially-built frame's neighbours over the
+/// rectangular block (`intra_dc_edges_for_rect` / `predict_intra_dc_rect_value`
+/// already accept a rectangular [`IntraRectBlockSize`]); an `all_zero` block
+/// writes the flat prediction, otherwise the §7.14.4 / §7.15.4 / §7.14.3
+/// dequant + inverse-transform + residual reconstruction is added (with the
+/// §7.15.4.1 √2 rescale when the log2 ratio is odd). The result is written back
+/// so later blocks read it as a neighbour. Chroma never uses the §7.14.4 TCQ
+/// `dqDenom` term (luma DCT_DCT only).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn reconstruct_general_intra_block_rect_into(
+    workspace: &mut CurrentFrameWorkspace<u8>,
+    block: &LumaCoeffBlock,
+    plane_id: PlaneId,
+    x: usize,
+    y: usize,
+    log2_width: u32,
+    log2_height: u32,
+    qindex: u32,
+    use_tcq: bool,
+) -> core::result::Result<(), GeneralIntraResidualError> {
+    let width = 1usize << log2_width;
+    let height = 1usize << log2_height;
+    let log2_w = u8::try_from(log2_width).unwrap_or(u8::MAX);
+    let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
+    let block_size = IntraRectBlockSize::new(log2_w, log2_h).map_err(recon_err)?;
+    let edges = workspace
+        .intra_dc_edges_for_rect(plane_id, x, y, block_size)
+        .map_err(recon_err)?;
+    let dc = predict_intra_dc_rect_value(BitDepth::Eight, block_size, edges.as_dc_edges())
+        .map_err(recon_err)?;
+    let out = if block.all_zero {
+        vec![dc; width * height]
+    } else {
+        reconstruct_general_intra_block_rect(
+            &block.quant,
+            dc,
+            qindex,
+            plane_id,
+            log2_width,
+            log2_height,
+            use_tcq,
+        )?
     };
     workspace
         .write_rect_block(plane_id, x, y, block_size, &out)
