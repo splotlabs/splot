@@ -103,6 +103,20 @@ const COEFF_BR_LF_CTX_DC: usize = 0;
 // the decoder `CoeffBrContext::ctx` reduces to the constant `mag (0) + 7 = 7` (the
 // `is_lf` branch). See `coefficient_tokenization::general_walk`.
 const COEFF_BR_LF_CTX_EOB_AC: usize = 7;
+// The § 8.3.2 `coeff_br` low-frequency luma context for the NON-EOB DC (raster 0)
+// when its already-written EOB AC neighbour has magnitude `1..=2`: the `coeff_br`
+// magnitude sum clamps the neighbour to `MAX_BASE_BR_RANGE - 1 = 5`, so the sum is
+// `1..=2`, `mag = Min((sum + 1) >> 1, 6) = 1`, and the DC `self.pos == 0` branch of
+// `CoeffBrContext::ctx` yields `1`. See `coefficient_tokenization::general_walk`.
+const COEFF_BR_LF_CTX_DC_BR_AC_LOW: usize = 1;
+// The § 8.3.2 `coeff_br` low-frequency luma context for the NON-EOB DC when its EOB
+// AC neighbour has magnitude `3..=4`: the sum is `3..=4`, so
+// `mag = Min((sum + 1) >> 1, 6) = 2`, and the DC `self.pos == 0` branch yields `2`.
+const COEFF_BR_LF_CTX_DC_BR_AC_MID: usize = 2;
+// The § 8.3.2 `coeff_br` low-frequency luma context for the NON-EOB DC when its EOB
+// AC neighbour has magnitude `5..=7`: the clamp pins the neighbour to 5, so
+// `mag = Min((5 + 1) >> 1, 6) = 3`, and the DC `self.pos == 0` branch yields `3`.
+const COEFF_BR_LF_CTX_DC_BR_AC_HIGH: usize = 3;
 // The DC `coeff_base` low-frequency context when its sole significant neighbour —
 // the EOB AC at scan pos 1 — has magnitude `>= 5`: the `coeff_base` `magLimit`
 // clamps the neighbour to 5, so `mag = 5`, `ctx = (5 + 1) >> 1 = 3`, capped by the

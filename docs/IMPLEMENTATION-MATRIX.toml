@@ -4833,6 +4833,39 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-COEFF-GENERAL-WALK-DC-BR"
+name = "Encoder general LF coefficient walk: non-EOB DC coeff_br (data-dependent)"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20.7.27", "8.3.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/coefficient_tokenization"
+openspec_change = "coeff-general-walk-dc-br"
+tracking_issue = ""
+owner = "encoder"
+risk = "medium"
+notes = "Private, non-emitting encoder coefficient tokenizer. Sub-brick 5b-ii. Extends `tokenize_general_lf_luma_block` so the NON-EOB coefficient (the DC at scan index 0 when eob==2) may also carry magnitude 1..=7 via an interleaved §5.20.7.27 `coeff_br`; with 5b-i (the EOB coeff_br) both coefficients of an eob<=2 LF block now span 1..=7. Unlike the EOB coeff (constant `coeff_br` context, empty Level[]), the non-EOB DC's `coeff_br` context is DATA-DEPENDENT — derived from the running Level[] (the already-written EOB AC neighbour) by a new `coeff_br_lf_luma_context` helper that mirrors the decoder `CoeffBrContext::ctx` (coeff_context.rs): num=3 (2D luma), clamp=MAX_BASE_BR_RANGE-1=5, mag=Min((neighbour-sum+1)>>1,6), DC (pos0, class0)->mag. CRITICAL: the decoder `Mag_Ref_Offset_With_Tx_Class[class]` EQUALS the first 3 entries of `splot_core::tables::conversion::SIG_REF_DIFF_OFFSET[class]` (verified all 3 classes), so the helper reuses the already-imported splot-core offset table — NO hand-coded table, NO splot-decode dependency. For the eob=2 DC the only significant neighbour is the EOB AC (raster 4), so the DC `coeff_br` ctx is 1/2/3 by the AC magnitude (1-2->1, 3-4->2, 5-7->3). `coeff_base` symbol = min(mag,5), `coeff_br` symbol = mag-5; `recover_quant_from_tokens` reads the interleaved `coeff_br` for every base-pass coefficient (EOB level = coeff_base_eob+1+coeff_br; non-EOB level = coeff_base+coeff_br). §8.2 SELF-CONSISTENCY only, NOT decoder conformance (deferred cross-check). Adds the routed CoeffBrLf ctx-1 and ctx-3 CDF rows (from the generated splot-core DEFAULT_COEFF_BR_LF_CDF). Keeps the TCQ-off precondition (mag<=7, no read_quant tail at allow_tcq=0). Out of scope (later sub-bricks): magnitudes >7 (golomb), eob>2 / eob_extra, high-frequency coefficients, chroma coefficient coding, sizes other than 4x4, types other than DCT_DCT, packet output."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/coefficient_tokenization/general_walk_tests.rs"]
+commands = ["cargo test -p splot-encode general_walk --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-INTRA-BLOCK-TRACE-TWO-COEFF"
 name = "Encoder eob=2 multi-coefficient block trace"
 category = "encoder"

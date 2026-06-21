@@ -21,6 +21,19 @@ use super::{
 const COEFF_BASE_LF_NEAR_DC_MAG_LIMIT: u32 = 5;
 const COEFF_BASE_MAG_LIMIT: u32 = 3;
 
+/// AV2 § 3 `MAX_BASE_BR_RANGE` = `COEFF_BASE_RANGE (3) + NUM_BASE_LEVELS (2) + 1`
+/// (`03-symbols.md`): the `coeff_br` magnitude-sum clamp is `MAX_BASE_BR_RANGE - 1`.
+/// A single integer, not a table (the decoder's private
+/// `coeff_context::MAX_BASE_BR_RANGE`); kept local here so the encoder does not
+/// reach into `splot-decode`.
+const MAX_BASE_BR_RANGE: u32 = 6;
+/// The 2D luma `coeff_br` neighbour count (`num`) for the § 8.3.2 magnitude sum
+/// (`Min((mag + 1) >> 1, 6)`).
+const COEFF_BR_LF_LUMA_NUM: usize = 3;
+/// The `coeff_br` context low-frequency / non-DC offset (`mag + 7`) of the § 8.3.2
+/// `CoeffBrContext::ctx` luma branch.
+const COEFF_BR_LF_NON_DC_OFFSET: usize = 7;
+
 /// Derives the AV2 § 8.3.2 `coeff_base` low-frequency LUMA CDF context for a
 /// low-frequency luma coefficient at scan position `pos`, given the per-block
 /// `Level[]` magnitudes (row-major, `txw`-wide; `level[row * txw + col]`).
@@ -88,6 +101,72 @@ pub(crate) fn coeff_base_lf_luma_context(
         } else {
             LF_SIG_COEF_CONTEXTS_2D + 7 + ctx.min(4)
         }
+    }
+}
+
+/// Derives the AV2 § 8.3.2 `coeff_br` low-frequency LUMA CDF context for a
+/// low-frequency luma coefficient at scan position `pos`, given the per-block
+/// `Level[]` magnitudes (row-major, `txw`-wide; `level[row * txw + col]`).
+///
+/// This mirrors the decoder's `CoeffBrContext::ctx` low-frequency luma branch
+/// (`crates/splot-decode/src/tile_payload/cdf/coeff_context.rs`, AV2 § 8.3.2): it
+/// sums the up-to-three neighbour `Level[]` magnitudes (each clamped to
+/// `MAX_BASE_BR_RANGE - 1 = 5`) at the first `COEFF_BR_LF_LUMA_NUM (3)`
+/// `SIG_REF_DIFF_OFFSET` offsets for the transform class — those first three entries
+/// equal the decoder's `Mag_Ref_Offset_With_Tx_Class[class]` — forms
+/// `mag = Min((sum + 1) >> 1, 6)`, then offsets it: `pos == 0` (the DC, class 0)
+/// yields `mag`, and a non-DC low-frequency luma position yields `mag + 7`. We only
+/// call it for the DC here (so the result is `mag`), but the non-DC branch is kept to
+/// match the decoder exactly.
+///
+/// `tx_class` is `0` = `TX_CLASS_2D`, `1` = `TX_CLASS_HORIZ`, `2` = `TX_CLASS_VERT`
+/// (out-of-range treated as 2D). It is total and panic-free: geometry is saturating
+/// and out-of-range or short-slice neighbour reads contribute `0` (the spec's
+/// `refRow < txh && refCol < txw` guard). It is scoped to low-frequency LUMA
+/// coefficients (chroma and the high-frequency bands are out of scope for this
+/// brick).
+pub(crate) fn coeff_br_lf_luma_context(
+    pos: usize,
+    bwl: u32,
+    txw: usize,
+    txh: usize,
+    tx_class: usize,
+    level: &[u32],
+) -> usize {
+    let row = pos.checked_shr(bwl).unwrap_or(0);
+    let col = pos - row.checked_shl(bwl).unwrap_or(0);
+    let class_idx = if tx_class < 3 { tx_class } else { 0 };
+    let clamp = MAX_BASE_BR_RANGE - 1;
+    let mut mag: u32 = 0;
+    let mut idx = 0;
+    while idx < COEFF_BR_LF_LUMA_NUM {
+        let off = SIG_REF_DIFF_OFFSET[class_idx][idx];
+        let ref_row = row.saturating_add(off[0] as usize);
+        let ref_col = col.saturating_add(off[1] as usize);
+        if ref_row < txh && ref_col < txw {
+            let flat = ref_row.saturating_mul(txw).saturating_add(ref_col);
+            if flat < level.len() {
+                let v = level[flat];
+                mag += if v < clamp { v } else { clamp };
+            }
+        }
+        idx += 1;
+    }
+    let halved = (mag + 1) >> 1;
+    let mag = (if halved < 6 { halved } else { 6 }) as usize;
+    if pos == 0 {
+        // The DC takes the `self.pos == 0` branch of `CoeffBrContext::ctx`: under a
+        // 2D class (`class_idx == 0`) the context is `mag`, under a 1-D class it is
+        // `mag + 7`. Only the 2D DCT_DCT path is exercised by the general LF walk
+        // today; the 1-D branch mirrors the decoder faithfully for later reuse.
+        if class_idx != 0 {
+            mag + COEFF_BR_LF_NON_DC_OFFSET
+        } else {
+            mag
+        }
+    } else {
+        // A non-DC low-frequency luma coefficient takes the `self.is_lf` branch.
+        mag + COEFF_BR_LF_NON_DC_OFFSET
     }
 }
 

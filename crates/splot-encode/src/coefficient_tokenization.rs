@@ -37,7 +37,9 @@ mod coeff_base_lf;
 // Re-exported for the sibling tests and the upcoming eob>1 trace brick; not yet
 // referenced by non-test code in this module.
 #[allow(unused_imports)]
-pub(crate) use coeff_base_lf::{coeff_base_lf_luma_context, coeff_base_lf_token};
+pub(crate) use coeff_base_lf::{
+    coeff_base_lf_luma_context, coeff_base_lf_token, coeff_br_lf_luma_context,
+};
 
 mod multi_coeff;
 // Re-exported for the sibling tests and the upcoming eob>1 trace brick; not yet
@@ -105,6 +107,23 @@ const COEFF_BR_LF_CTX_DC: usize = 0;
 // yields `mag + 7 == 7`. (The DC EOB coefficient at `pos == 0` takes the
 // `self.pos == 0` branch and yields `mag == 0`, the existing `COEFF_BR_LF_CTX_DC`.)
 const COEFF_BR_LF_CTX_EOB_AC: usize = 7;
+// The § 8.3.2 `coeff_br` low-frequency luma context for the NON-EOB DC at raster
+// position 0 when its sole significant neighbour — the already-written EOB AC at
+// scan pos 1 — has magnitude `1..=2`. The `coeff_br` magnitude sum clamps the
+// neighbour to `MAX_BASE_BR_RANGE - 1 = 5`, so for AC mag `1..=2` the sum is `1..=2`,
+// `mag = Min((sum + 1) >> 1, 6) = 1`, and the DC (`pos == 0`) `self.pos == 0` branch
+// of `CoeffBrContext::ctx` yields `mag == 1` (see `coeff_br_lf_luma_context`).
+const COEFF_BR_LF_CTX_DC_BR_AC_LOW: usize = 1;
+// The § 8.3.2 `coeff_br` low-frequency luma context for the NON-EOB DC when its EOB
+// AC neighbour has magnitude `3..=4`: the sum is `3..=4`, so
+// `mag = Min((sum + 1) >> 1, 6) = 2`, and the DC `self.pos == 0` branch yields `2`
+// (see `coeff_br_lf_luma_context`).
+const COEFF_BR_LF_CTX_DC_BR_AC_MID: usize = 2;
+// The § 8.3.2 `coeff_br` low-frequency luma context for the NON-EOB DC when its EOB
+// AC neighbour has magnitude `5..=7`: the clamp pins the neighbour to 5, so
+// `mag = Min((5 + 1) >> 1, 6) = 3`, and the DC `self.pos == 0` branch yields `3`
+// (see `coeff_br_lf_luma_context`).
+const COEFF_BR_LF_CTX_DC_BR_AC_HIGH: usize = 3;
 // The § 8.3.2 `coeff_base` low-frequency luma context for the DC of the minimal
 // eob=2 trace (the only `coeff_base_lf` consumer): an AC coefficient of level 1 at
 // scan pos 1 is the DC's sole significant neighbour, so `mag = 1`, `ctx = 1`, and
