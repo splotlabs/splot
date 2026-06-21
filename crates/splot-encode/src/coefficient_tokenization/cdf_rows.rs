@@ -11,6 +11,10 @@ use super::*;
 pub(crate) struct CoefficientTokenCdfRows {
     txb_skip: [[i32; 3]; COEFF_CDF_Q_CONTEXTS],
     eob_pt_16: [[i32; 6]; COEFF_CDF_Q_CONTEXTS],
+    // The §5.20.7.27 `eob_extra` binary CDF, indexed only by the coefficient
+    // CDF q-context (no per-eobPt context). Routes the `eob_extra_token` through
+    // this generic entropy proof, mirroring its block-symbol-trace routing.
+    eob_extra: [[i32; 3]; COEFF_CDF_Q_CONTEXTS],
     coeff_base_lf_eob: [[i32; 6]; COEFF_CDF_Q_CONTEXTS],
     coeff_base_lf_eob_ac: [[i32; 6]; COEFF_CDF_Q_CONTEXTS],
     coeff_base_lf: [[i32; COEFF_BASE_LF_CDF_ROW_LEN]; COEFF_CDF_Q_CONTEXTS],
@@ -56,6 +60,7 @@ impl CoefficientTokenCdfRows {
                 DEFAULT_EOB_PT_16_CDF[2][EOB_CTX_LUMA_INTRA],
                 DEFAULT_EOB_PT_16_CDF[3][EOB_CTX_LUMA_INTRA],
             ],
+            eob_extra: DEFAULT_EOB_EXTRA_CDF,
             coeff_base_lf_eob: [
                 DEFAULT_COEFF_BASE_LF_EOB_CDF[0][TX_SIZE_4X4_CTX][COEFF_BASE_LF_EOB_CTX_DC],
                 DEFAULT_COEFF_BASE_LF_EOB_CDF[1][TX_SIZE_4X4_CTX][COEFF_BASE_LF_EOB_CTX_DC],
@@ -166,6 +171,11 @@ impl CoefficientTokenCdfRows {
                 eob_ctx: EOB_CTX_LUMA_INTRA,
             } if coeff_cdf_q_ctx < COEFF_CDF_Q_CONTEXTS => {
                 Ok(self.eob_pt_16[coeff_cdf_q_ctx].as_mut_slice())
+            }
+            CoefficientCdfRowSelector::EobExtra { coeff_cdf_q_ctx }
+                if coeff_cdf_q_ctx < COEFF_CDF_Q_CONTEXTS =>
+            {
+                Ok(self.eob_extra[coeff_cdf_q_ctx].as_mut_slice())
             }
             CoefficientCdfRowSelector::CoeffBaseLfEob {
                 coeff_cdf_q_ctx,

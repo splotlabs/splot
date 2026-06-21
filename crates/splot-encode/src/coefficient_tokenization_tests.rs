@@ -699,6 +699,24 @@ fn coeff_base_lf_token_roundtrips_through_generic_helper() {
 }
 
 #[test]
+fn eob_extra_token_roundtrips_through_entropy_proof() {
+    // The `eob_extra` token (eobPt 3 EOB refinement) routes through the generic
+    // `roundtrip_entropy_tokens` CDF-row router, not only the block-symbol wrapper:
+    // its `EobExtra` selector has a `TileEobExtraCdf[q]` row arm. Both flags (eob 3
+    // and eob 4) roundtrip.
+    for flag in [false, true] {
+        let token = eob_extra_token(0, flag);
+        assert!(matches!(
+            token.selector(),
+            CoefficientCdfRowSelector::EobExtra { coeff_cdf_q_ctx: 0 }
+        ));
+        let proof = roundtrip_entropy_tokens(&[token]).unwrap();
+        assert_eq!(proof.decoded_symbols(), &[u8::from(flag)]);
+        assert_eq!(proof.symbol_count(), 1);
+    }
+}
+
+#[test]
 fn multi_coeff_token_accessors_carry_expected_symbols() {
     // coded all_zero == 0 (block has coefficients).
     assert_eq!(coded_luma_all_zero_token(0).symbol(), 0);
