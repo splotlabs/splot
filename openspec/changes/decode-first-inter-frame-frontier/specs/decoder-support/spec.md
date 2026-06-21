@@ -21,9 +21,14 @@ out of scope as deferred work, and SHALL NOT claim any inter frame decode.
 - **AND** it does not claim inter frame-header parse, inter mode_info, motion
   compensation, or multi-frame output
 
-#### Scenario: Coverage tracks the first inter decode target
+#### Scenario: Inter decode conformance coverage is deferred
 - **WHEN** decoder conformance coverage is generated
-- **THEN** the tile group / payload syntax coverage includes row
-  `first-inter-frame-frontier` and Feature ID
-  `DECODE-FIRST-INTER-FRAME-FRONTIER`
-- **AND** broader inter decode coverage remains partial
+- **THEN** the tile group / payload syntax coverage remains partial for inter
+  decode, because this frontier brick decodes no inter frame (it only commits the
+  verified target fixture and pins the honest planner rejection)
+- **AND** a dedicated `first-inter-frame-frontier` decoder conformance coverage
+  row is deferred until the inter decode slice lands (§ 7.7 `get_ref_frames()` →
+  the § 5.18.2 inter header tail → multi-frame planner/runtime → § 7.23 reference
+  retention → § 5.20 inter mode_info → § 7.11 MV → § 7.13.3.18 motion
+  compensation → frame output), at which point the row reflects real coverage
+  rather than a planned target

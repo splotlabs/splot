@@ -1,7 +1,8 @@
 ## 1. Tracking
 
 - [x] 1.1 Add `DECODE-FIRST-INTER-FRAME-FRONTIER` to the implementation matrix.
-- [x] 1.2 Add decoder support and conformance coverage rows for `first-inter-frame-frontier`.
+- [x] 1.2 Add the decoder support row for `first-inter-frame-frontier`.
+- [ ] 1.2a (deferred) Add the decoder conformance coverage row — deferred until the inter decode slice lands (this frontier brick decodes no inter frame, so a coverage row would overstate; tracked in the support matrix + manifest meanwhile).
 - [x] 1.3 Add the `syn-2frame-inter-64x64.ivf` fixture, conformance manifest entry, and reciprocal LOCAL-REFERENCE-EVIDENCE entry.
 
 ## 2. Fixture verification
