@@ -11083,6 +11083,56 @@ fixtures = [
 diagnostics = ["decode/unsupported-feature"]
 
 [[feature]]
+id = "DECODE-GENERAL-INTRA-DEEP-SPLIT"
+name = "General intra deeper (sub-32x32) square SPLIT partition decode"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.20.2.3", "5.20.3.1", "5.20.4.1", "7.13.2.4"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-2-3",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-1",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-4-1",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-4",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/tile_payload/partition_traversal.rs"
+openspec_change = "decode-general-intra-deep-split"
+tracking_issue = ""
+owner = "decoder"
+risk = "low"
+notes = "Proves the general intra decode handles a partition tree TWO levels deep: a 64x64 superblock SPLITs into four 32x32 quadrants and one 32x32 SPLITs AGAIN into four square 16x16 DC_PRED leaves (the other three quadrants stay 32x32 DC_PRED). One level deeper than the `syn-quad` merged-quad case (a single 32x32 split). The §5.20.4.1 partition recursion (`child_calls` PARTITION_SPLIT) already pushes the 16x16 children depth-first, and each 16x16 leaf's §7.13.2.4 DC prediction reads its in-frame left column and above row from the persistent `CurrentFrameWorkspace`; the §5.20.2.3 left-and-above availability for the DC predictor is frame-position-based (`x==0` and `y==0`), so a sub-32x32 16x16 leaf correctly DC-predicts from the already-reconstructed sibling 16x16 neighbour INSIDE the parent 32x32 sub-block with no §5.20.2.3 `BlockDecoded` flag state required (the DC predictor never reads the above-right or below-left sentinels that `BlockDecoded` gates). No production code changed: the deeper square DC split is bit-identical to the verified shared `reconstruct_general_intra_block_into` and partition-walk code, just at a smaller transform log2 and one recursion level deeper. The committed `syn-deep-intra-64x64-q120.ivf` decodes bit-exactly to the avmdec and dav2d oracle (raw md5 5e3484135608ea2cd1457d4c50df7855, pinned frame hash `73123e51c66787b59fb6b93a6221e9d78a550c6e0d1c4e0c1adfd21a41ed39ab`), guarded by the §8.2.4 `exit_symbol()` bit-exactness check. Still deferred: the §5.20.2.3 per-block `BlockDecoded` flag state itself, which is only needed for non-DC or SMOOTH sub-superblock blocks that read the §7.13.2.1 above-right or below-left sentinels (those modes stay gated to the full 64x64 superblock); rectangular-leaf and non-DC sub-32x32 partitions still reject with `decode/unsupported-feature`; non-64x64 frames, inter prediction, in-loop filters, and live AVM and dav2d in CI remain future work."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "partial"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "partial"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/runtime_minimal.rs::general_intra_tests::deep_split_sub_32x32_intra_frame_decodes_to_oracle",
+]
+commands = [
+    "cargo test -p splot-decode general_intra --locked",
+    "cargo test -p splot-cli --test conformance --locked",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-decoder-conformance-coverage",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "tests/conformance/vectors/valid/syn-deep-intra-64x64-q120.ivf",
+    "crates/splot-decode/src/tile_payload/partition_traversal.rs",
+    "crates/splot-decode/src/runtime_minimal/general_intra.rs",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
 id = "DECODE-GENERAL-INTRA-NONDC-LUMA-SMOOTH"
 name = "General intra single-block non-DC luma (smooth) decode"
 category = "infrastructure"

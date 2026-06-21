@@ -158,6 +158,72 @@ fn quad_multiblock_intra_frame_decodes_to_oracle() {
     );
 }
 
+// A 64x64 two-level partition tree: the 64x64 superblock SPLITs into four
+// 32x32 quadrants and the top-left 32x32 SPLITs AGAIN into four 16x16 DC_PRED
+// blocks (the other three quadrants stay 32x32 DC_PRED). One level deeper than
+// the merged `syn-quad` case: each 16x16 leaf DC-predicts from its
+// already-reconstructed 16x16 neighbour INSIDE the parent 32x32 sub-block
+// (the §5.20.4.1 partition recursion pushes the 16x16 SPLIT children, and the
+// §7.13.2.4 DC predictor reads the in-frame left column / above row that those
+// sibling 16x16 blocks just wrote). avmdec and dav2d agree on the decoded
+// output (md5 5e348413...).
+const DEEP_SPLIT_FIXTURE: &[u8] =
+    include_bytes!("../../../../tests/conformance/vectors/valid/syn-deep-intra-64x64-q120.ivf");
+
+#[test]
+fn deep_split_sub_32x32_intra_frame_decodes_to_oracle() {
+    use splot_recon::{BitDepth, PixelFormat, PlaneSize};
+
+    let options = DecodeOptions::default();
+    let context =
+        DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).expect("context");
+    let plan = context
+        .plan_bytes(DEEP_SPLIT_FIXTURE, options)
+        .expect("plan");
+    let frame = decode_minimal_frame_from_plan(DEEP_SPLIT_FIXTURE, options, &plan)
+        .expect("decode")
+        .frame;
+
+    assert_eq!(frame.bit_depth(), BitDepth::Eight);
+    assert_eq!(frame.pixel_format(), PixelFormat::Yuv420);
+    assert_eq!(frame.y().visible_size(), PlaneSize::new(64, 64).unwrap());
+
+    // The top-left 32x32 holds four distinct flat 16x16 DC blocks; the other
+    // three 32x32 quadrants are flat DC. Sampling each block centre proves the
+    // deeper SPLIT decoded the right per-block DC values (each from a
+    // reconstructed sibling neighbour), matching the avmdec/dav2d oracle.
+    let y = frame.y().samples();
+    let at = |col: usize, row: usize| y[row * 64 + col];
+    // Top-left 32x32 -> four 16x16 leaves: TL/TR/BL/BR centres.
+    assert_eq!(
+        (at(8, 8), at(24, 8), at(8, 24), at(24, 24)),
+        (240, 21, 21, 240)
+    );
+    // The remaining three 32x32 quadrants (TR / BL / BR) stay DC.
+    assert_eq!((at(48, 16), at(16, 48), at(48, 48)), (130, 70, 200));
+
+    // Chroma is near-flat DC (U around 120, V 130), matching the oracle.
+    assert!(
+        frame
+            .u()
+            .unwrap()
+            .samples()
+            .iter()
+            .all(|&s| s == 120 || s == 121)
+    );
+    assert!(frame.v().unwrap().samples().iter().all(|&s| s == 130));
+
+    // Frame hash pins splot's output, which reproduces avmdec's and dav2d's raw
+    // output byte-for-byte (verified locally, md5 5e348413...).
+    let hash = splot_recon::DecodedFrameHashInput::new(&frame)
+        .compute_hash()
+        .to_hex();
+    assert_eq!(
+        hash,
+        "73123e51c66787b59fb6b93a6221e9d78a550c6e0d1c4e0c1adfd21a41ed39ab"
+    );
+}
+
 // A 128x64 multi-superblock intra frame: two 64x64 DC_PRED superblocks (left
 // flat luma 80, right flat luma 180). The right superblock DC-predicts its
 // luma from the already-reconstructed left-superblock neighbour, and codes
