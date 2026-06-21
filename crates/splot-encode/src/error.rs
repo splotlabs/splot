@@ -463,6 +463,22 @@ pub enum Error {
         max_magnitude: u32,
     },
 
+    /// A general-walk block has a nonzero coefficient outside the current
+    /// low-frequency end-of-block window (scan indices `0..=max_scan_index`).
+    #[error(
+        "encoder general-walk coefficient tokenization supports only nonzeros at scan indices 0..={max_scan_index}; scan index {scan_index} (raster position {position}) is {value}"
+    )]
+    CoefficientTokenizationUnsupportedEob {
+        /// Scan index of the out-of-window nonzero coefficient.
+        scan_index: usize,
+        /// Row-major raster position of the out-of-window nonzero coefficient.
+        position: usize,
+        /// Out-of-window coefficient value.
+        value: i32,
+        /// Maximum supported nonzero scan index for the current general-walk tier.
+        max_scan_index: usize,
+    },
+
     /// A chroma coefficient magnitude is outside the current coded-chroma tier.
     #[error(
         "encoder coded chroma coefficient tokenization for plane {plane:?} magnitude {magnitude} is outside the current base tier (1..={max_magnitude})"

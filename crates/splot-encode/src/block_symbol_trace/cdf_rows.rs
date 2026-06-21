@@ -33,6 +33,7 @@ pub(super) struct BlockSymbolTraceCdfRows {
     coeff_base_lf_eob_ac: [i32; COEFF_BASE_LF_EOB_CDF_ROW_LEN],
     coeff_base_lf_eob_ac_tx64: [i32; COEFF_BASE_LF_EOB_CDF_ROW_LEN],
     coeff_base_lf_dc: [i32; COEFF_BASE_LF_CDF_ROW_LEN],
+    coeff_base_lf_dc_4x4_mag3: [i32; COEFF_BASE_LF_CDF_ROW_LEN],
     coeff_base_lf_dc_tx64: [i32; COEFF_BASE_LF_CDF_ROW_LEN],
     coeff_base_lf_dc_tx64_visible_ac: [i32; COEFF_BASE_LF_CDF_ROW_LEN],
     coeff_base_lf_ac_tx64_ctx9: [i32; COEFF_BASE_LF_CDF_ROW_LEN],
@@ -80,6 +81,8 @@ impl BlockSymbolTraceCdfRows {
                 [TX_SIZE_64X64_CTX][COEFF_BASE_LF_EOB_CTX_EOB2_AC],
             coeff_base_lf_dc: DEFAULT_COEFF_BASE_LF_CDF[MINIMAL_COEFF_CDF_Q_CTX][TX_SIZE_4X4_CTX]
                 [COEFF_BASE_LF_CTX_EOB2_DC][COEFF_BASE_LF_TCQ_CTX_NEUTRAL],
+            coeff_base_lf_dc_4x4_mag3: DEFAULT_COEFF_BASE_LF_CDF[MINIMAL_COEFF_CDF_Q_CTX]
+                [TX_SIZE_4X4_CTX][COEFF_BASE_LF_CTX_4X4_DC_MAG3][COEFF_BASE_LF_TCQ_CTX_NEUTRAL],
             coeff_base_lf_dc_tx64: DEFAULT_COEFF_BASE_LF_CDF[MINIMAL_COEFF_CDF_Q_CTX]
                 [TX_SIZE_64X64_CTX][COEFF_BASE_LF_CTX_EOB2_DC][COEFF_BASE_LF_TCQ_CTX_NEUTRAL],
             coeff_base_lf_dc_tx64_visible_ac: DEFAULT_COEFF_BASE_LF_CDF[MINIMAL_COEFF_CDF_Q_CTX]
@@ -200,6 +203,12 @@ impl BlockSymbolTraceCdfRows {
                     ctx: COEFF_BASE_LF_CTX_EOB2_DC,
                     tcq_ctx: COEFF_BASE_LF_TCQ_CTX_NEUTRAL,
                 } => Ok(self.coeff_base_lf_dc.as_mut_slice()),
+                CoefficientCdfRowSelector::CoeffBaseLf {
+                    coeff_cdf_q_ctx: MINIMAL_COEFF_CDF_Q_CTX,
+                    tx_size: TX_SIZE_4X4_CTX,
+                    ctx: COEFF_BASE_LF_CTX_4X4_DC_MAG3,
+                    tcq_ctx: COEFF_BASE_LF_TCQ_CTX_NEUTRAL,
+                } => Ok(self.coeff_base_lf_dc_4x4_mag3.as_mut_slice()),
                 CoefficientCdfRowSelector::CoeffBaseLf {
                     coeff_cdf_q_ctx: MINIMAL_COEFF_CDF_Q_CTX,
                     tx_size: TX_SIZE_64X64_CTX,

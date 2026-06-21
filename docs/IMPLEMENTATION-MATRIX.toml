@@ -4767,6 +4767,39 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-COEFF-GENERAL-WALK-LF-BASE"
+name = "Encoder general LF base-tier coefficient walk (eob<=2)"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20.7.27", "8.3.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/coefficient_tokenization"
+openspec_change = "coeff-general-walk-lf-base"
+tracking_issue = ""
+owner = "encoder"
+risk = "medium"
+notes = "Private, non-emitting encoder coefficient tokenizer. Sub-brick 5a of the general multi-coefficient tokenizer (the encoder coeff loop inverting the splot-decode coeff loop). `tokenize_general_lf_luma_block` (coefficient_tokenization/general_walk.rs) walks an ARBITRARY quantized 4x4 DCT_DCT luma Quant[16] whose nonzeros sit at scan indices 0..=1 (eob<=2, the §8.3.2 low-frequency region) with base-tier magnitudes 1..=4 (no coeff_br, no golomb), and emits the ordered §5.20.7.27 token stream: coded all_zero(0), eob_pt_16(eob-1), reverse-scan base pass (coeff_base_eob at the EOB coeff with coeff_base_eob_ctx; coeff_base for the rest with the §8.3.2 LF luma context DERIVED from the running Level[] via coeff_base_lf_luma_context, NOT pinned), reverse-scan interleaved sign pass (dc_sign CDF for the (0,0) DC, sign_bit bypass for AC under TX_CLASS_2D), then chroma U/V all_zero(1). Non-EOB coeff_base symbol = min(mag, LF_NUM_BASE_LEVELS+1)=min(mag,5) (level=symbol); EOB coeff_base_eob level = min(mag,5) (symbol=level-1) — mirrors the decode-verified luma_dc_coded_tokens decomposition. recover_quant_from_tokens re-reads the emitted stream in the same reverse-scan order and rebuilds the signed Quant[16]; proven == input over ASYMMETRIC values (DC=-2, AC=+3) so a swapped AC-before-DC sign order or a level/position transposition is caught. This is §8.2 SELF-CONSISTENCY ONLY (the encoder authored both emission and inverse); CONTEXT CONFORMANCE vs a real decoder is a deferred splot-decode cross-check sub-brick, NOT claimed here. Out of scope (rejected with typed errors or later bricks): nonzero at scan index>=2 (eob>2 / HF / eob_extra), |quant|>4 (coeff_br/golomb), chroma coefficient coding, transform sizes other than 4x4, types other than DCT_DCT, intra_tx_type/sec_tx_type signaling (assumed silent: DCTONLY/reduced_tx_set==2 + enable_intra_ist==0), packet output."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/coefficient_tokenization/general_walk_tests.rs"]
+commands = ["cargo test -p splot-encode general_walk --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-INTRA-BLOCK-TRACE-TWO-COEFF"
 name = "Encoder eob=2 multi-coefficient block trace"
 category = "encoder"
