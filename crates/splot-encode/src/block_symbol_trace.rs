@@ -3,35 +3,23 @@
 
 //! Private encoder block-symbol trace composition.
 //!
-//! This module is the home for the growing ordered block-symbol trace, the minimal-tier
+//! This module is the home for the growing ordered block-symbol trace — the minimal-tier
 //! composers plus the shared `BlockSymbolTraceCdfRows`. The trace advances, in order: the
-//! § 5.20.5.3 mode prefix (`ENC-INTRA-BLOCK-MODE-TRACE`), the per-plane § 5.20.7.27 `txb_skip`
-//! all-zero block (`…-LUMA-SKIP`, `…-CHROMA-SKIP`), the coded single-DC magnitude vocabulary
-//! (`…-CODED-DC` `eob_pt_16`/`coeff_base_eob`/`dc_sign`, `…-CODED-BR` `coeff_br`,
-//! `…-BYPASS-LITERAL` § 8.2.5 literals, `…-CODED-CHROMA-DC` U-plane DC with the § 8.3.2 chroma
-//! contexts, `…-GOLOMB-FINITE`/`…-GOLOMB-PREFIX` § 5.20.7.28 `read_quant` tails up to magnitude
-//! 525), and the minimal eob=2 multi-coefficient block (`…-TWO-COEFF` AC + zero DC with a
-//! `Level[]`-derived `coeff_base` context, `…-TWO-COEFF-TX-TYPE` adding the § 5.20.8.2
-//! `intra_tx_type`, `…-IST` adding the `sec_tx_type` IST symbol). It reuses the merged mode
-//! emitters and the coefficient tokenization tokens
+//! § 5.20.5.3 mode prefix, the per-plane § 5.20.7.27 `txb_skip` all-zero block, the coded
+//! single-DC magnitude vocabulary (`eob_pt_16`/`coeff_base_eob`/`coeff_br`/`dc_sign`, the § 8.2.5
+//! bypass literals, the U-plane chroma DC, and the § 5.20.7.28 `read_quant` golomb tails up to
+//! magnitude 525), and the minimal eob=2 multi-coefficient block (alone, or with the § 5.20.8.2
+//! `intra_tx_type` and `sec_tx_type` IST symbols)
 //! (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3`).
 //!
-//! On the general intra tile path the decoder reads the § 5.20.3.2 `do_split` partition
-//! flag first, then AV2 § 5.20.5.3 `intra_frame_mode_info()` (`read_intra_y_mode()` then
-//! `read_intra_uv_mode()`) before `residual()`, so the ordered trace is the partition flag,
-//! then the mode prefix, then the residual symbols; the unified `BlockSymbolToken` spans
-//! partition, mode, and coefficient kinds, and `roundtrip_block_symbol_trace` proves the
-//! combined sequence through one § 8.2 coder with shared CDF state, routing each token to
-//! its scoped CDF row from `splot-core` defaults.
-//!
-//! Its coefficient coverage is the single-DC magnitude vocabulary plus the minimal
-//! eob=2 multi-coefficient block (alone, with the `TX_SET_INTRA_1` `intra_tx_type`
-//! symbol, or with both that and the `sec_tx_type` IST symbol). It does not emit
-//! eob > 2, luma DC beyond the golomb-prefix cap (525), high-frequency coefficients,
-//! the `most_probable_stx_set` IST-set symbol, non-`TX_SET_INTRA_1` / non-`DC_PRED`
-//! transform types, the chroma base-range/golomb tiers, V-plane coded coefficients,
-//! partition splits beyond the root `PARTITION_NONE`, tile CDF lifecycle, packets, a
-//! public encoder API, or modes beyond the DC minimal tier.
+//! The unified `BlockSymbolToken` spans partition, mode, and coefficient kinds, and
+//! `roundtrip_block_symbol_trace` proves the combined sequence through one § 8.2 coder with
+//! shared CDF state, routing each token to its scoped `splot-core` default CDF row. The
+//! `BlockSymbolTraceCdfRows` table here is shared with the general-path composers in
+//! `general_intra_trace` (which add `eob_extra` and the higher eob/scan contexts); these
+//! minimal composers themselves do not emit eob > 2, the chroma base-range/golomb tiers, V-plane
+//! coded coefficients, partition splits beyond the root `PARTITION_NONE`, tile CDF lifecycle,
+//! packets, a public encoder API, or modes beyond the DC minimal tier.
 
 #![allow(dead_code)]
 
@@ -39,10 +27,10 @@ use splot_core::symbol::{Symbol, SymbolDecoder, SymbolDecoderConfig};
 use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig};
 use splot_core::tables::cdf::{
     DEFAULT_COEFF_BASE_LF_CDF, DEFAULT_COEFF_BASE_LF_EOB_CDF, DEFAULT_COEFF_BASE_LF_EOB_UV_CDF,
-    DEFAULT_COEFF_BR_LF_CDF, DEFAULT_DC_SIGN_CDF, DEFAULT_DO_SPLIT_CDF, DEFAULT_EOB_PT_16_CDF,
-    DEFAULT_EOB_PT_1024_CDF, DEFAULT_INTRA_TX_TYPE_SET1_CDF, DEFAULT_SEC_TX_TYPE_CDF,
-    DEFAULT_TXB_SKIP_CDF, DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF, DEFAULT_V_TXB_SKIP_CDF,
-    DEFAULT_Y_MODE_INDEX_CDF, DEFAULT_Y_MODE_SET_CDF,
+    DEFAULT_COEFF_BR_LF_CDF, DEFAULT_DC_SIGN_CDF, DEFAULT_DO_SPLIT_CDF, DEFAULT_EOB_EXTRA_CDF,
+    DEFAULT_EOB_PT_16_CDF, DEFAULT_EOB_PT_1024_CDF, DEFAULT_INTRA_TX_TYPE_SET1_CDF,
+    DEFAULT_SEC_TX_TYPE_CDF, DEFAULT_TXB_SKIP_CDF, DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF,
+    DEFAULT_V_TXB_SKIP_CDF, DEFAULT_Y_MODE_INDEX_CDF, DEFAULT_Y_MODE_SET_CDF,
 };
 
 use crate::coefficient_tokenization::{
@@ -72,6 +60,8 @@ const V_TXB_SKIP_CDF_ROW_LEN: usize = 3;
 const EOB_PT_16_CDF_ROW_LEN: usize = 6;
 /// `TileEobPt1024Cdf` rows hold 8 symbols (`[i32; 9]`).
 const EOB_PT_1024_CDF_ROW_LEN: usize = 9;
+/// `TileEobExtraCdf` is a binary CDF: `[cdf0, count, 0]` (length 3).
+const EOB_EXTRA_CDF_ROW_LEN: usize = 3;
 const COEFF_BASE_LF_EOB_CDF_ROW_LEN: usize = 6;
 const COEFF_BASE_LF_EOB_UV_CDF_ROW_LEN: usize = 6;
 const COEFF_BR_LF_CDF_ROW_LEN: usize = 5;
@@ -129,11 +119,14 @@ const SEC_TX_TYPE_IST_OFF_SYMBOL: u8 = 0;
 const SEC_TX_TYPE_INTRA_CDF_ROW_LEN: usize = 5;
 const COEFF_BASE_LF_EOB_CTX_EOB2_AC: usize = 1;
 const COEFF_BASE_LF_CTX_EOB2_DC: usize = 1;
-// The DC `coeff_base` low-frequency context for a *visible* eob=2 block: a larger AC level
-// (4) at scan index 1 raises the DC's § 8.3.2 significant-neighbour sum, mapping the DC to
-// low-frequency context 2 (vs context 1 for the minimal level-1 AC). Derived per AC level by
-// `coeff_base_lf_luma_context`; pinned for the level-4 visible-AC frame.
+// The DC `coeff_base` low-frequency context for a *visible* eob=2/eob=3 block: a level-4 AC
+// neighbour raises the DC's § 8.3.2 significant-neighbour sum to low-frequency context 2 (vs 1
+// for the minimal level-1 AC). Per-AC-level, via `coeff_base_lf_luma_context`.
 const COEFF_BASE_LF_CTX_VISIBLE_AC_DC: usize = 2;
+// The non-EOB `coeff_base` low-frequency context for scan index 1 (raster 32) in the eob=3 block
+// whose only nonzero coefficient is the EOB at scan index 2 (raster 1): that EOB is not a § 8.3.2
+// neighbour of (1,0), so the off-axis band maps to `min(0,6) + 9 = 9` (verified).
+const COEFF_BASE_LF_CTX_AC_BAND_BASE: usize = 9;
 const COEFF_BASE_LF_TCQ_CTX_NEUTRAL: usize = 0;
 const COEFF_BASE_LF_CDF_ROW_LEN: usize = 7;
 // The minimal eob=2 block's coefficient levels: a single AC of level 1 at scan
@@ -783,6 +776,7 @@ struct BlockSymbolTraceCdfRows {
     eob_pt_16: [i32; EOB_PT_16_CDF_ROW_LEN],
     eob_pt_1024: [i32; EOB_PT_1024_CDF_ROW_LEN],
     eob_pt_1024_chroma: [i32; EOB_PT_1024_CDF_ROW_LEN],
+    eob_extra: [i32; EOB_EXTRA_CDF_ROW_LEN],
     coeff_base_lf_eob_tx64: [i32; COEFF_BASE_LF_EOB_CDF_ROW_LEN],
     intra_tx_type_set1_4x4: [i32; INTRA_TX_TYPE_SET1_CDF_ROW_LEN],
     sec_tx_type_intra_4x4: [i32; SEC_TX_TYPE_INTRA_CDF_ROW_LEN],
@@ -792,6 +786,7 @@ struct BlockSymbolTraceCdfRows {
     coeff_base_lf_dc: [i32; COEFF_BASE_LF_CDF_ROW_LEN],
     coeff_base_lf_dc_tx64: [i32; COEFF_BASE_LF_CDF_ROW_LEN],
     coeff_base_lf_dc_tx64_visible_ac: [i32; COEFF_BASE_LF_CDF_ROW_LEN],
+    coeff_base_lf_ac_tx64_ctx9: [i32; COEFF_BASE_LF_CDF_ROW_LEN],
     coeff_br_lf: [i32; COEFF_BR_LF_CDF_ROW_LEN],
     dc_sign: [i32; DC_SIGN_CDF_ROW_LEN],
     v_txb_skip_eobu: [i32; V_TXB_SKIP_CDF_ROW_LEN],
@@ -820,6 +815,7 @@ impl BlockSymbolTraceCdfRows {
             eob_pt_16: DEFAULT_EOB_PT_16_CDF[MINIMAL_COEFF_CDF_Q_CTX][EOB_CTX_LUMA_INTRA],
             eob_pt_1024: DEFAULT_EOB_PT_1024_CDF[MINIMAL_COEFF_CDF_Q_CTX][EOB_CTX_LUMA_INTRA],
             eob_pt_1024_chroma: DEFAULT_EOB_PT_1024_CDF[MINIMAL_COEFF_CDF_Q_CTX][EOB_CTX_CHROMA],
+            eob_extra: DEFAULT_EOB_EXTRA_CDF[MINIMAL_COEFF_CDF_Q_CTX],
             coeff_base_lf_eob_tx64: DEFAULT_COEFF_BASE_LF_EOB_CDF[MINIMAL_COEFF_CDF_Q_CTX]
                 [TX_SIZE_64X64_CTX][COEFF_BASE_LF_EOB_CTX_DC],
             intra_tx_type_set1_4x4: DEFAULT_INTRA_TX_TYPE_SET1_CDF
@@ -838,6 +834,8 @@ impl BlockSymbolTraceCdfRows {
                 [TX_SIZE_64X64_CTX][COEFF_BASE_LF_CTX_EOB2_DC][COEFF_BASE_LF_TCQ_CTX_NEUTRAL],
             coeff_base_lf_dc_tx64_visible_ac: DEFAULT_COEFF_BASE_LF_CDF[MINIMAL_COEFF_CDF_Q_CTX]
                 [TX_SIZE_64X64_CTX][COEFF_BASE_LF_CTX_VISIBLE_AC_DC][COEFF_BASE_LF_TCQ_CTX_NEUTRAL],
+            coeff_base_lf_ac_tx64_ctx9: DEFAULT_COEFF_BASE_LF_CDF[MINIMAL_COEFF_CDF_Q_CTX]
+                [TX_SIZE_64X64_CTX][COEFF_BASE_LF_CTX_AC_BAND_BASE][COEFF_BASE_LF_TCQ_CTX_NEUTRAL],
             coeff_br_lf: DEFAULT_COEFF_BR_LF_CDF[MINIMAL_COEFF_CDF_Q_CTX][COEFF_BR_LF_CTX_DC],
             dc_sign: DEFAULT_DC_SIGN_CDF[MINIMAL_COEFF_CDF_Q_CTX][DC_SIGN_PLANE_TYPE_LUMA]
                 [DC_SIGN_GROUP_VISIBLE][DC_SIGN_CTX_NEUTRAL],
@@ -915,6 +913,9 @@ impl BlockSymbolTraceCdfRows {
                     coeff_cdf_q_ctx: MINIMAL_COEFF_CDF_Q_CTX,
                     eob_ctx: EOB_CTX_CHROMA,
                 } => Ok(self.eob_pt_1024_chroma.as_mut_slice()),
+                CoefficientCdfRowSelector::EobExtra {
+                    coeff_cdf_q_ctx: MINIMAL_COEFF_CDF_Q_CTX,
+                } => Ok(self.eob_extra.as_mut_slice()),
                 CoefficientCdfRowSelector::CoeffBaseLfEob {
                     coeff_cdf_q_ctx: MINIMAL_COEFF_CDF_Q_CTX,
                     tx_size: TX_SIZE_64X64_CTX,
@@ -959,6 +960,12 @@ impl BlockSymbolTraceCdfRows {
                     ctx: COEFF_BASE_LF_CTX_VISIBLE_AC_DC,
                     tcq_ctx: COEFF_BASE_LF_TCQ_CTX_NEUTRAL,
                 } => Ok(self.coeff_base_lf_dc_tx64_visible_ac.as_mut_slice()),
+                CoefficientCdfRowSelector::CoeffBaseLf {
+                    coeff_cdf_q_ctx: MINIMAL_COEFF_CDF_Q_CTX,
+                    tx_size: TX_SIZE_64X64_CTX,
+                    ctx: COEFF_BASE_LF_CTX_AC_BAND_BASE,
+                    tcq_ctx: COEFF_BASE_LF_TCQ_CTX_NEUTRAL,
+                } => Ok(self.coeff_base_lf_ac_tx64_ctx9.as_mut_slice()),
                 CoefficientCdfRowSelector::CoeffBrLf {
                     coeff_cdf_q_ctx: MINIMAL_COEFF_CDF_Q_CTX,
                     ctx: COEFF_BR_LF_CTX_DC,

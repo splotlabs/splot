@@ -434,3 +434,68 @@ fn encoder_two_nonzero_ivf_decodes_to_a_cosine_plus_dc_offset() {
         "expected flat 128 chroma"
     );
 }
+
+/// The encoder's first frame with **eob > 2**: the luma block has eob=3 with a single nonzero
+/// level-4 AC at scan index 2 (raster 1, the horizontal frequency-1 position), U and V skipped.
+/// This exercises the `eob_extra` CDF symbol (`eob_pt_1024 == 2`, `eob_extra == 0` -> eob 3) — the
+/// gateway to arbitrary-length blocks. `splot decode` reconstructs a horizontal low-frequency
+/// cosine (the transpose of the visible-AC vertical cosine): each column is constant, the left 8
+/// columns are 129, the middle 48 are 128, and the right 8 are 127.
+#[test]
+fn encoder_eob3_ivf_decodes_to_a_horizontal_cosine_luma() {
+    let ivf = splot_encode::emit_minimal_intra_eob3_ivf().expect("emit the eob=3 IVF");
+
+    let input = temp_path("eob3-input", "ivf");
+    let output = temp_path("eob3-output", "raw");
+    std::fs::write(&input, &ivf).expect("write the emitted IVF");
+
+    let status = Command::new(env!("CARGO_BIN_EXE_splot"))
+        .args([
+            "decode",
+            input.to_str().expect("utf-8 input path"),
+            "--output",
+            output.to_str().expect("utf-8 output path"),
+            "--output-format",
+            "raw",
+        ])
+        .status()
+        .expect("run the splot binary");
+
+    let raw = std::fs::read(&output);
+    let _ = std::fs::remove_file(&input);
+    let _ = std::fs::remove_file(&output);
+
+    assert!(status.success(), "splot decode of the eob=3 IVF failed");
+    let raw = raw.expect("read the decoded raw output");
+    assert_eq!(raw.len(), 6144, "unexpected decoded frame size");
+
+    let luma = &raw[..4096];
+    // The AC is the lowest horizontal frequency, so each column is constant down its 64 rows.
+    for col in 0..64 {
+        let first = luma[col];
+        assert!(
+            (0..64).all(|row| luma[row * 64 + col] == first),
+            "luma column {col} is not constant down its rows"
+        );
+    }
+    // The horizontal cosine: left 8 columns 129, middle 48 columns 128, right 8 columns 127.
+    let col_value = |col: usize| luma[col];
+    for col in 0..8 {
+        assert_eq!(col_value(col), 129, "left band column {col}");
+    }
+    for col in 8..56 {
+        assert_eq!(col_value(col), 128, "middle band column {col}");
+    }
+    for col in 56..64 {
+        assert_eq!(col_value(col), 127, "right band column {col}");
+    }
+    assert!(
+        luma.iter().any(|&s| s != 128),
+        "expected a non-flat luma plane"
+    );
+    // Chroma is untouched (U and V skipped) -> flat 128.
+    assert!(
+        raw[4096..].iter().all(|&s| s == 128),
+        "expected flat 128 chroma"
+    );
+}

@@ -55,8 +55,9 @@ pub(crate) use transform_type::{intra_tx_type_set1_token, sec_tx_type_intra_toke
 mod general_coded;
 pub(crate) use general_coded::{
     general_intra_32x32_chroma_u_dc_coded_tokens, general_intra_32x32_chroma_v_dc_coded_tokens,
-    general_intra_64x64_luma_dc_coded_tokens, general_intra_64x64_luma_two_coeff_tokens,
-    general_intra_64x64_luma_two_nonzero_base_tokens, general_intra_64x64_luma_visible_ac_tokens,
+    general_intra_64x64_luma_dc_coded_tokens, general_intra_64x64_luma_eob3_base_tokens,
+    general_intra_64x64_luma_two_coeff_tokens, general_intra_64x64_luma_two_nonzero_base_tokens,
+    general_intra_64x64_luma_visible_ac_tokens,
 };
 
 const DCT_DCT_4X4_WIDTH: usize = 4;
@@ -556,6 +557,10 @@ pub(crate) enum CoefficientTokenSyntax {
     /// EOB-point size class (1024 scan positions), distinct from `eob_pt_16` only in
     /// which `TileEobPt*Cdf` bank it reads.
     EobPt1024,
+    /// `eob_extra` in AV2 § 5.20.7.27 — the CDF-coded first refinement bit read when
+    /// `eob_pt >= 3`. (Any further refinement bits are `eob_extra_bit` § 8.2.5 bypass
+    /// literals, modeled by [`CoefficientTokenSyntax`] callers via the bypass token kind.)
+    EobExtra,
     /// `coeff_base_eob` in AV2 § 5.20.7.27.
     CoeffBaseEob,
     /// `coeff_base` (the non-EOB base level) in AV2 § 5.20.7.27.
@@ -578,6 +583,7 @@ impl CoefficientTokenSyntax {
             Self::AllZero => "all_zero",
             Self::EobPt16 => "eob_pt_16",
             Self::EobPt1024 => "eob_pt_1024",
+            Self::EobExtra => "eob_extra",
             Self::CoeffBaseEob => "coeff_base_eob",
             Self::CoeffBase => "coeff_base",
             Self::IntraTxType => "intra_tx_type",
@@ -609,6 +615,9 @@ pub(crate) enum CoefficientCdfRowSelector {
         coeff_cdf_q_ctx: usize,
         eob_ctx: usize,
     },
+    /// `TileEobExtraCdf[coeff_cdf_q_ctx]` (the `eob_extra` CDF; indexed only by the
+    /// coefficient-CDF q-context — no `txSz`/`eobPt` dimension).
+    EobExtra { coeff_cdf_q_ctx: usize },
     /// `TileCoeffBaseLfEobCdf[coeff_cdf_q_ctx][tx_size][ctx]`.
     CoeffBaseLfEob {
         coeff_cdf_q_ctx: usize,
@@ -654,6 +663,7 @@ impl CoefficientCdfRowSelector {
             }
             Self::EobPt16 { .. } => CoefficientTokenSyntax::EobPt16.as_str(),
             Self::EobPt1024 { .. } => CoefficientTokenSyntax::EobPt1024.as_str(),
+            Self::EobExtra { .. } => CoefficientTokenSyntax::EobExtra.as_str(),
             Self::CoeffBrLf { .. } => CoefficientTokenSyntax::CoeffBr.as_str(),
             Self::CoeffBaseLf { .. } => CoefficientTokenSyntax::CoeffBase.as_str(),
             Self::IntraTxTypeSet1 { .. } => CoefficientTokenSyntax::IntraTxType.as_str(),

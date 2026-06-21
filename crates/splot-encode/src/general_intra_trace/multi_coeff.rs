@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! The general intra eob=2 multi-coefficient block composers (two-coeff, visible-AC,
-//! two-nonzero) and IVF emitters.
+//! The general intra multi-coefficient block composers (eob=2 two-coeff, visible-AC,
+//! two-nonzero; eob=3) and IVF emitters.
 
 use super::{
     CHROMA_SIGN_BIT_WIDTH, SKIP_FRAME_BASE_Q_IDX, SKIP_FRAME_COEFF_CDF_Q_CTX,
@@ -13,8 +13,9 @@ use crate::block_symbol_trace::{
 };
 use crate::coefficient_tokenization::{
     chroma_v_all_zero_token, general_intra_32x32_chroma_u_all_zero_token,
-    general_intra_64x64_luma_two_coeff_tokens, general_intra_64x64_luma_two_nonzero_base_tokens,
-    general_intra_64x64_luma_visible_ac_tokens, luma_dc_sign_token,
+    general_intra_64x64_luma_eob3_base_tokens, general_intra_64x64_luma_two_coeff_tokens,
+    general_intra_64x64_luma_two_nonzero_base_tokens, general_intra_64x64_luma_visible_ac_tokens,
+    luma_dc_sign_token,
 };
 use crate::error::{Error, Result};
 use crate::partition_emission::emit_root_do_split_none;
@@ -196,11 +197,113 @@ pub fn emit_minimal_intra_two_nonzero_ivf() -> Result<Vec<u8>> {
     .map_err(|source| Error::MinimalIntraSkipIvf { source })
 }
 
+/// Composes the general intra **eob=3** luma block trace: `do_split`, the mode prefix, the
+/// coded luma base pass (a single nonzero level-4 AC at scan index 2 — raster 1, the horizontal
+/// frequency-1 position — with scan indices 1 and 0 zero), then the single AC `sign_bit` § 8.2.5
+/// bypass, then skipped U and V. This is the first eob>2 block: it exercises the `eob_extra` CDF
+/// symbol (`eob_pt_1024 == 2`, `eob_extra == 0` -> eob 3). The level-4 AC at the horizontal
+/// frequency reconstructs a horizontal low-frequency cosine (the transpose of the visible-AC
+/// vertical cosine).
+fn compose_general_intra_eob3_block_trace() -> Result<Vec<BlockSymbolToken>> {
+    let modes = compose_minimal_intra_dc_block_mode_trace()?;
+    let luma = general_intra_64x64_luma_eob3_base_tokens(SKIP_FRAME_COEFF_CDF_Q_CTX)?;
+    let total = modes
+        .len()
+        .checked_add(luma.len())
+        .and_then(|n| n.checked_add(4)) // do_split + AC sign + U skip + V skip
+        .ok_or(Error::BlockSymbolTraceAllocationFailed {
+            context: "general eob=3 block trace length",
+        })?;
+    let mut trace = Vec::new();
+    trace
+        .try_reserve_exact(total)
+        .map_err(|_| Error::BlockSymbolTraceAllocationFailed {
+            context: "general eob=3 block trace",
+        })?;
+    trace.push(BlockSymbolToken::Partition(emit_root_do_split_none()));
+    trace.extend(modes.into_iter().map(BlockSymbolToken::Mode));
+    trace.extend(luma.into_iter().map(BlockSymbolToken::Coeff));
+    // The single AC (scan index 2) `sign_bit` § 8.2.5 bypass — the only nonzero coefficient,
+    // positive. The reverse-scan sign pass has nothing else to emit (scan 1 and the DC are zero).
+    trace.push(BlockSymbolToken::bypass(CHROMA_SIGN_BIT_WIDTH, 0));
+    trace.push(BlockSymbolToken::Coeff(
+        general_intra_32x32_chroma_u_all_zero_token(SKIP_FRAME_COEFF_CDF_Q_CTX),
+    ));
+    trace.push(BlockSymbolToken::Coeff(chroma_v_all_zero_token(
+        SKIP_FRAME_COEFF_CDF_Q_CTX,
+        V_TXB_SKIP_CTX_NEUTRAL,
+    )));
+    Ok(trace)
+}
+
+/// Emits a complete, decodable AV2 IVF stream for one 64x64 all-intra `OBU_CLOSED_LOOP_KEY`
+/// frame whose luma block has **eob=3** — a single nonzero level-4 AC at scan index 2 (the
+/// horizontal frequency-1 position), U and V skipped.
+///
+/// This is the encoder's first frame with `eob > 2`: it exercises the `eob_extra` CDF symbol
+/// (the gateway to arbitrary-length blocks). The level-4 AC reconstructs a horizontal
+/// low-frequency cosine. The cross-crate decode oracle lives in `splot-cli`.
+pub fn emit_minimal_intra_eob3_ivf() -> Result<Vec<u8>> {
+    let trace = compose_general_intra_eob3_block_trace()?;
+    let tile_data = encode_block_symbol_trace(&trace)?;
+    splot_core::headers::frame::encode_minimal_intra_clk_ivf_with_base_q_idx(
+        SKIP_FRAME_BASE_Q_IDX,
+        &tile_data,
+    )
+    .map_err(|source| Error::MinimalIntraSkipIvf { source })
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::block_symbol_trace::roundtrip_block_symbol_trace;
+
+    #[test]
+    fn composes_general_eob3_block_trace_in_order() {
+        let trace = compose_general_intra_eob3_block_trace().unwrap();
+
+        // do_split, 3 modes, 6 coded-luma base (txb_skip, eob_pt, eob_extra, AC base_eob,
+        // scan1 base, DC base), AC sign bypass, U skip, V skip = 13 tokens.
+        assert_eq!(trace.len(), 13);
+        assert!(matches!(trace[0], BlockSymbolToken::Partition(_)));
+        // The single AC sign_bit bypass follows the base pass (scan 1 and DC are zero).
+        assert!(matches!(
+            trace[10],
+            BlockSymbolToken::Bypass { width: 1, value: 0 }
+        ));
+        // do_split, modes 0/0/0; luma txb_skip=0, eob_pt_1024=2 (eob 3), eob_extra=0, AC
+        // coeff_base_eob=3 (level 4), scan1 coeff_base=0, DC coeff_base=0, AC sign=0; U/V=1.
+        assert_eq!(
+            trace.iter().map(|token| token.symbol()).collect::<Vec<_>>(),
+            vec![0, 0, 0, 0, 0, 2, 0, 3, 0, 0, 0, 1, 1]
+        );
+    }
+
+    #[test]
+    fn general_eob3_block_trace_roundtrips_through_one_coder() {
+        let trace = compose_general_intra_eob3_block_trace().unwrap();
+        let proof = roundtrip_block_symbol_trace(&trace).unwrap();
+        assert_eq!(
+            proof.decoded_symbols(),
+            &[0, 0, 0, 0, 0, 2, 0, 3, 0, 0, 0, 1, 1]
+        );
+        assert_eq!(proof.symbol_count(), 13);
+        assert!(!proof.bytes().is_empty());
+    }
+
+    #[test]
+    fn emit_minimal_intra_eob3_ivf_differs_from_visible_ac_and_is_deterministic() {
+        let eob3 = emit_minimal_intra_eob3_ivf().unwrap();
+        assert!(!eob3.is_empty());
+        // Distinct from the eob=2 visible-AC frame: it carries the eob_extra symbol + a
+        // horizontal (not vertical) AC.
+        assert_ne!(eob3, emit_minimal_intra_visible_ac_ivf().unwrap());
+        assert_eq!(eob3, emit_minimal_intra_eob3_ivf().unwrap());
+        let parsed = splot_core::ivf::parse_ivf_partial(&eob3);
+        assert!(parsed.error.is_none());
+        assert_eq!(parsed.frames.len(), 1);
+    }
 
     #[test]
     fn composes_general_two_coeff_block_trace_in_order() {
