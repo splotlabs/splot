@@ -634,3 +634,22 @@ fn general_lf_sign_swap_negative_test() {
     assert_eq!(recovered, quant);
     assert_ne!(recovered, swapped);
 }
+
+#[test]
+fn general_lf_eob2_dc_br_ctx_mid_routes_and_roundtrips() {
+    // Regression for the ctx-2 routing hole (#422): an in-scope eob==2 block whose
+    // EOB AC has magnitude 3..=4 derives a NON-EOB DC coeff_br at ctx 2 (between the
+    // routed ctx 1 and ctx 3). Such a block must tokenize AND roundtrip — i.e. the
+    // ctx-2 CDF row must be routed — not fail with UnsupportedSelector.
+    assert_eq!(
+        derived_dc_br_ctx(4),
+        2,
+        "AC magnitude 4 derives DC coeff_br ctx 2"
+    );
+    // DC = -6 (non-EOB, magnitude > 4 → coeff_br at ctx 2), AC = +4 (EOB).
+    let quant = dc_ac_block(-6, 4);
+    let trace = tokenize_general_lf_luma_block(&quant, Q_CTX).unwrap();
+    let proof = roundtrip_block_symbol_trace(&trace).unwrap();
+    assert!(!proof.bytes().is_empty());
+    assert_eq!(recover_quant_from_tokens(&trace, Q_CTX).unwrap(), quant);
+}

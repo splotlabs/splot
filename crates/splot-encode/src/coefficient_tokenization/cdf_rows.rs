@@ -23,6 +23,9 @@ pub(crate) struct CoefficientTokenCdfRows {
     // The non-EOB DC `coeff_br` row when its EOB AC neighbour has magnitude `1..=2`
     // (derived ctx `1`, see `COEFF_BR_LF_CTX_DC_BR_AC_LOW`).
     coeff_br_lf_dc_ac_low: [[i32; 5]; COEFF_CDF_Q_CONTEXTS],
+    // The non-EOB DC `coeff_br` row when its EOB AC neighbour has magnitude `3..=4`
+    // (derived ctx `2`, see `COEFF_BR_LF_CTX_DC_BR_AC_MID`).
+    coeff_br_lf_dc_ac_mid: [[i32; 5]; COEFF_CDF_Q_CONTEXTS],
     // The non-EOB DC `coeff_br` row when its EOB AC neighbour has magnitude `5..=7`
     // (derived ctx `3`, see `COEFF_BR_LF_CTX_DC_BR_AC_HIGH`).
     coeff_br_lf_dc_ac_high: [[i32; 5]; COEFF_CDF_Q_CONTEXTS],
@@ -102,6 +105,12 @@ impl CoefficientTokenCdfRows {
                 DEFAULT_COEFF_BR_LF_CDF[1][COEFF_BR_LF_CTX_DC_BR_AC_LOW],
                 DEFAULT_COEFF_BR_LF_CDF[2][COEFF_BR_LF_CTX_DC_BR_AC_LOW],
                 DEFAULT_COEFF_BR_LF_CDF[3][COEFF_BR_LF_CTX_DC_BR_AC_LOW],
+            ],
+            coeff_br_lf_dc_ac_mid: [
+                DEFAULT_COEFF_BR_LF_CDF[0][COEFF_BR_LF_CTX_DC_BR_AC_MID],
+                DEFAULT_COEFF_BR_LF_CDF[1][COEFF_BR_LF_CTX_DC_BR_AC_MID],
+                DEFAULT_COEFF_BR_LF_CDF[2][COEFF_BR_LF_CTX_DC_BR_AC_MID],
+                DEFAULT_COEFF_BR_LF_CDF[3][COEFF_BR_LF_CTX_DC_BR_AC_MID],
             ],
             coeff_br_lf_dc_ac_high: [
                 DEFAULT_COEFF_BR_LF_CDF[0][COEFF_BR_LF_CTX_DC_BR_AC_HIGH],
@@ -205,6 +214,12 @@ impl CoefficientTokenCdfRows {
                 ctx: COEFF_BR_LF_CTX_DC_BR_AC_LOW,
             } if coeff_cdf_q_ctx < COEFF_CDF_Q_CONTEXTS => {
                 Ok(self.coeff_br_lf_dc_ac_low[coeff_cdf_q_ctx].as_mut_slice())
+            }
+            CoefficientCdfRowSelector::CoeffBrLf {
+                coeff_cdf_q_ctx,
+                ctx: COEFF_BR_LF_CTX_DC_BR_AC_MID,
+            } if coeff_cdf_q_ctx < COEFF_CDF_Q_CONTEXTS => {
+                Ok(self.coeff_br_lf_dc_ac_mid[coeff_cdf_q_ctx].as_mut_slice())
             }
             CoefficientCdfRowSelector::CoeffBrLf {
                 coeff_cdf_q_ctx,

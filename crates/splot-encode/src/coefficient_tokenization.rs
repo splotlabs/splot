@@ -115,6 +115,11 @@ const COEFF_BR_LF_CTX_EOB_AC: usize = 7;
 // of `CoeffBrContext::ctx` yields `mag == 1` (see `coeff_br_lf_luma_context`).
 const COEFF_BR_LF_CTX_DC_BR_AC_LOW: usize = 1;
 // The § 8.3.2 `coeff_br` low-frequency luma context for the NON-EOB DC when its EOB
+// AC neighbour has magnitude `3..=4`: the sum is `3..=4`, so
+// `mag = Min((sum + 1) >> 1, 6) = 2`, and the DC `self.pos == 0` branch yields `2`
+// (see `coeff_br_lf_luma_context`).
+const COEFF_BR_LF_CTX_DC_BR_AC_MID: usize = 2;
+// The § 8.3.2 `coeff_br` low-frequency luma context for the NON-EOB DC when its EOB
 // AC neighbour has magnitude `5..=7`: the clamp pins the neighbour to 5, so
 // `mag = Min((5 + 1) >> 1, 6) = 3`, and the DC `self.pos == 0` branch yields `3`
 // (see `coeff_br_lf_luma_context`).
