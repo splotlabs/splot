@@ -230,8 +230,10 @@ impl Context {
 
         let info = frame.info();
         self.validate_frame_info(info)?;
-        // Retain the visible samples: the borrowed `Frame` does not outlive this call, so
-        // `receive_packet` needs an owned copy to honestly inspect the input later.
+        // splot-copy-ok: retain the visible input samples as owned buffers — the borrowed `Frame`
+        // does not outlive `send_frame`, so `receive_packet` must own a copy to inspect the pixels
+        // (and choose/produce the encode) after the borrow ends. This is the deliberate
+        // input-materialization boundary of the push/pull encoder.
         self.input_queue.push_back(QueuedFrame {
             info,
             y: frame.y().visible_rows().flatten().copied().collect(),
