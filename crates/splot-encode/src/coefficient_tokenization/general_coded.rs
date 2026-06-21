@@ -271,9 +271,9 @@ pub(crate) fn general_intra_64x64_luma_two_coeff_tokens(
 /// tail (`coeff_base_eob` symbol `LF_NUM_BASE_LEVELS - 1` = 3; `needs_br` is `level > 4`) — dequantizes to a residual large
 /// enough to reconstruct a visibly non-flat (low-frequency cosine) luma plane.
 const VISIBLE_AC_LEVEL: u8 = 4;
-/// The DC `coeff_base` low-frequency context for the level-5 AC: `coeff_base_lf_luma_context`
-/// maps the larger significant-neighbour magnitude to context `2` (vs `1` for level 1). Pinned
-/// here and asserted against the derivation in this module's tests.
+/// The DC `coeff_base` low-frequency context for the level-4 AC: `coeff_base_lf_luma_context`
+/// maps the larger significant-neighbour magnitude to context `2` (vs `1` for level 1, and `3`
+/// for level 5). Pinned here and asserted against the derivation in this module's tests.
 const VISIBLE_AC_DC_CTX: usize = 2;
 
 /// Returns the ordered general `TX_64X64` luma eob=2 tokens for a **visibly non-flat** block:
@@ -335,4 +335,49 @@ pub(crate) fn general_intra_64x64_luma_visible_ac_tokens(
         symbol: 0,
     });
     Ok(tokens)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::{VISIBLE_AC_DC_CTX, VISIBLE_AC_LEVEL};
+    use crate::coefficient_tokenization::coeff_base_lf_luma_context;
+    use splot_recon::{TransformClass, coefficient_scan_order};
+
+    // The DC `coeff_base` low-frequency context is derived from the AC coefficient's level via
+    // § 8.3.2 `coeff_base_lf_luma_context`, so it is AC-level-dependent. This pins the derivation
+    // the `VISIBLE_AC_DC_CTX` doc cites: in the 32x32 (`TX_64X64`-coded) 2-D scan the single AC
+    // sits at scan index 1 (raster row 1 col 0, the DC's vertical neighbour), and the DC context
+    // is `(min(level, 5) + 1) >> 1` mapped to the low-frequency bands.
+    fn dc_ctx_for_ac_level(level: u32) -> usize {
+        const W: usize = 32;
+        const H: usize = 32;
+        const BWL: u32 = 5; // log2(32)
+        let mut scan = vec![0u16; W * H];
+        coefficient_scan_order(W, H, TransformClass::TwoD, &mut scan).unwrap();
+        let ac_pos = scan[1] as usize;
+        let mut levels = vec![0u32; W * H];
+        levels[ac_pos] = level;
+        coeff_base_lf_luma_context(0, BWL, W, H, 0, 0, &levels)
+    }
+
+    #[test]
+    fn visible_ac_dc_context_matches_the_level_4_derivation() {
+        assert_eq!(VISIBLE_AC_LEVEL, 4);
+        assert_eq!(
+            dc_ctx_for_ac_level(VISIBLE_AC_LEVEL as u32),
+            VISIBLE_AC_DC_CTX
+        );
+        assert_eq!(VISIBLE_AC_DC_CTX, 2);
+    }
+
+    #[test]
+    fn dc_context_is_ac_level_dependent() {
+        // Level 1-2 -> ctx 1, 3-4 -> ctx 2 (the visible-AC frame), 5+ -> ctx 3.
+        assert_eq!(dc_ctx_for_ac_level(1), 1);
+        assert_eq!(dc_ctx_for_ac_level(2), 1);
+        assert_eq!(dc_ctx_for_ac_level(3), 2);
+        assert_eq!(dc_ctx_for_ac_level(4), 2);
+        assert_eq!(dc_ctx_for_ac_level(5), 3);
+    }
 }

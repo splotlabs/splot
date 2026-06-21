@@ -463,9 +463,9 @@ pub fn emit_minimal_intra_two_coeff_ivf() -> Result<Vec<u8>> {
 }
 
 /// Composes the general intra eob=2 **visible** multi-coefficient luma block trace: `do_split`,
-/// the mode prefix, a coded luma block carrying a single nonzero AC coefficient of level 5 at
+/// the mode prefix, a coded luma block carrying a single nonzero AC coefficient of level 4 at
 /// scan index 1 with a zero DC, then the AC `sign_bit` § 8.2.5 bypass, then skipped U and V.
-/// Unlike the minimal level-1 AC (which rounds back to flat 128), the level-5 AC dequantizes to
+/// Unlike the minimal level-1 AC (which rounds back to flat 128), the level-4 AC dequantizes to
 /// a residual that reconstructs a visibly non-flat (low-frequency cosine) luma plane.
 fn compose_general_intra_visible_ac_block_trace() -> Result<Vec<BlockSymbolToken>> {
     let modes = compose_minimal_intra_dc_block_mode_trace()?;
@@ -498,13 +498,14 @@ fn compose_general_intra_visible_ac_block_trace() -> Result<Vec<BlockSymbolToken
 }
 
 /// Emits a complete, decodable AV2 IVF stream for one 64x64 all-intra `OBU_CLOSED_LOOP_KEY`
-/// frame whose luma block carries a single nonzero **level-5 AC** coefficient (eob=2, U and V
+/// frame whose luma block carries a single nonzero **level-4 AC** coefficient (eob=2, U and V
 /// skipped), reconstructing a **visibly non-flat** low-frequency cosine luma plane.
 ///
 /// This is the encoder's first frame where a coefficient visibly shapes the reconstruction
 /// (every prior frame was flat). It builds on `emit_minimal_intra_two_coeff_ivf` (the level-1
-/// AC, sub-visible) by raising the AC to the largest `coeff_base_eob` base level so the
-/// dequantized residual survives rounding. The cross-crate decode oracle lives in `splot-cli`.
+/// AC, sub-visible) by raising the AC to level 4 — the largest `coeff_base_eob` base level with
+/// no `coeff_br` tail — so the dequantized residual survives rounding. The cross-crate decode
+/// oracle lives in `splot-cli`.
 pub fn emit_minimal_intra_visible_ac_ivf() -> Result<Vec<u8>> {
     let trace = compose_general_intra_visible_ac_block_trace()?;
     let tile_data = encode_block_symbol_trace(&trace)?;
