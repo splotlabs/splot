@@ -43,7 +43,9 @@ mod multi_coeff;
 // Re-exported for the sibling tests and the upcoming eob>1 trace brick; not yet
 // referenced by non-test code in this module.
 #[allow(unused_imports)]
-pub(crate) use multi_coeff::{coded_luma_all_zero_token, coeff_base_lf_eob_token, eob_pt_16_token};
+pub(crate) use multi_coeff::{
+    coded_luma_all_zero_token, coeff_base_lf_eob_token, coeff_br_lf_token, eob_pt_16_token,
+};
 
 mod transform_type;
 // Re-exported for the sibling tests and the general eob>1 trace bricks; the
@@ -93,6 +95,16 @@ const COEFF_BASE_LF_EOB_CTX_DC: usize = 0;
 // h=4) = SIG_COEF_CONTEXTS_EOB - 3 = 1` (`c <= numCoeffs/8 = 2`).
 const COEFF_BASE_LF_EOB_CTX_EOB2_AC: usize = 1;
 const COEFF_BR_LF_CTX_DC: usize = 0;
+// The § 8.3.2 `coeff_br` low-frequency luma context for the EOB coefficient at a
+// non-zero raster position (an AC, eob == 2). In the reverse-scan base pass the EOB
+// coefficient is visited FIRST, so the running `Level[]` is all-zero when its
+// `coeff_br` context is derived. Mirroring the decoder `CoeffBrContext::ctx` with an
+// empty `Level[]` (`crates/splot-decode/src/tile_payload/cdf/coeff_context.rs`,
+// the `ctx` method): the neighbour sum `mag` is 0, `Min((0 + 1) >> 1, 6) = 0`, and
+// for a 2D low-frequency luma coefficient at a non-zero `pos` the `self.is_lf` branch
+// yields `mag + 7 == 7`. (The DC EOB coefficient at `pos == 0` takes the
+// `self.pos == 0` branch and yields `mag == 0`, the existing `COEFF_BR_LF_CTX_DC`.)
+const COEFF_BR_LF_CTX_EOB_AC: usize = 7;
 // The § 8.3.2 `coeff_base` low-frequency luma context for the DC of the minimal
 // eob=2 trace (the only `coeff_base_lf` consumer): an AC coefficient of level 1 at
 // scan pos 1 is the DC's sole significant neighbour, so `mag = 1`, `ctx = 1`, and
@@ -100,6 +112,12 @@ const COEFF_BR_LF_CTX_DC: usize = 0;
 // (see `coeff_base_lf_luma_context`). `tcq_ctx = (tcqState >> 1) & 1` is 0 when TCQ
 // is off.
 const COEFF_BASE_LF_CTX_EOB2_DC: usize = 1;
+// The § 8.3.2 `coeff_base` low-frequency luma context for the DC when its sole
+// significant neighbour — the EOB AC at scan pos 1 — has magnitude `>= 5`: the
+// `coeff_base` `magLimit` clamps the neighbour to 5, so `mag = 5`,
+// `ctx = (5 + 1) >> 1 = 3`, and the low-frequency `c == 0` band yields
+// `ctx.min(8) = 3` (see `coeff_base_lf_luma_context`).
+const COEFF_BASE_LF_CTX_EOB2_DC_BR: usize = 3;
 const COEFF_BASE_LF_TCQ_CTX_NEUTRAL: usize = 0;
 const COEFF_BASE_LF_CDF_ROW_LEN: usize = 7;
 // AV2 §8.3.2 Table 8.2: `intra_tx_type` for `TX_SET_INTRA_1` uses

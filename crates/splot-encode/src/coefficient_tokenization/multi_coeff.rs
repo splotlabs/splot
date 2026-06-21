@@ -61,3 +61,25 @@ pub(crate) const fn coeff_base_lf_eob_token(
         symbol: level.saturating_sub(1),
     }
 }
+
+/// Returns the AV2 § 5.20.7.27 low-frequency `coeff_br` (base-range) token at the
+/// given § 8.3.2 `coeff_br` context (`TileCoeffBrLfCdf[coeff_cdf_q_ctx][ctx]`). The
+/// `coeff_br` symbol refines a coefficient whose `coeff_base` / `coeff_base_eob`
+/// level reached its maximum (`LF_NUM_BASE_LEVELS + 1`), adding
+/// `symbol` (`0..COEFF_BASE_RANGE`, i.e. `0..=2`) to the level. The caller resolves
+/// `ctx` (a constant for the reverse-scan EOB coefficient, whose running `Level[]`
+/// is empty; see the general-walk EOB `coeff_br` context constants).
+pub(crate) const fn coeff_br_lf_token(
+    coeff_cdf_q_ctx: usize,
+    ctx: usize,
+    symbol: u8,
+) -> CoefficientEntropyToken {
+    CoefficientEntropyToken {
+        syntax: CoefficientTokenSyntax::CoeffBr,
+        selector: CoefficientCdfRowSelector::CoeffBrLf {
+            coeff_cdf_q_ctx,
+            ctx,
+        },
+        symbol,
+    }
+}
