@@ -140,6 +140,16 @@ description = "Full 2-D grid 8-bit 4:2:0 intra key frame (IVF, 192x128, three su
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-vpred-intra-64x128-q160.ivf"
+description = "Single-column multi-superblock-row 8-bit 4:2:0 intra key frame (IVF, 64x128) from a project-owned column-constant luma input (each column a distinct value, identical down all rows; flat chroma) with broad decode tools disabled at base_q_idx 160, so the TOP 64x64 superblock codes DC_PRED and the BOTTOM 64x64 superblock (frontier row 16) codes the cardinal section 7.13.2.8 V_PRED (pAngle 90) luma mode. V_PRED is decoded via the section 5.20.5.3 direct first-mode-set y_mode_index 5 (NOT the y_mode_offset escape): modeIdx 5 -> get_intra_y_mode_set returns Default_Mode_List_Y[0] (17) biased to modeDelta 22 -> Reordered_Y_Mode[7] == V_PRED, AngleDeltaY 0; the section 8.3.2 y_mode_index ctx is 0 (the DC above neighbour stored IntraJointMode 0). V_PRED is a pure VERTICAL copy (pred[i][j] = AboveRow[j]) of the REAL reconstructed section 7.13.2.1 above row (the bottom row of the already-decoded top superblock, haveAbove 1) plus residual; it reads no corner, no left, no IDIF, no useIBP (section 7.13.2.7 gates useIBP on pAngle < 90 or > 180). The chroma codes uv_mode 0 over the directional V_PRED luma, so section 5.20.5.3 returns UVMode == V_PRED (the directional-follow branch, AngleDeltaUV 0): a cardinal copy of the real above chroma row. The first general-intra cardinal V_PRED decode target; avmdec and dav2d raw outputs agree (md5 d35b827668076a934bb6c21717f9a8f9) and splot reproduces byte-for-byte; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-hpred-intra-128x64-q180.ivf"
+description = "Multi-superblock 8-bit 4:2:0 intra key frame (IVF, 128x64) from a project-owned row-constant luma input (each row a distinct value, identical across all columns; flat chroma) with broad decode tools disabled at base_q_idx 180, so the LEFT 64x64 superblock codes DC_PRED and the RIGHT 64x64 superblock (frontier col 16) codes the cardinal section 7.13.2.8 H_PRED (pAngle 180) luma mode. H_PRED is decoded via the section 5.20.5.3 direct first-mode-set y_mode_index 6 (NOT the escape): modeIdx 6 -> Default_Mode_List_Y[1] (45) biased to modeDelta 50 -> Reordered_Y_Mode[11] == H_PRED, AngleDeltaY 0; the section 8.3.2 ctx is 0 (the DC left neighbour stored IntraJointMode 0). H_PRED is a pure HORIZONTAL copy (pred[i][j] = LeftCol[i]) of the REAL reconstructed section 7.13.2.1 left column (the right column of the already-decoded left superblock, haveLeft 1) plus residual; it reads no corner, no above, no IDIF, no useIBP. The chroma codes uv_mode 0 over the directional H_PRED luma, so section 5.20.5.3 returns UVMode == H_PRED (directional follow): a cardinal copy of the real left chroma column. The first general-intra cardinal H_PRED decode target; avmdec and dav2d raw outputs agree (md5 aac61b219518ce5057a6284262ac3bb9) and splot reproduces byte-for-byte; validates clean."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-key-inter-64x64.ivf"
 description = "Key frame plus two inter frames (IVF, 64x64) from project-owned synthetic input; validates clean."
 expect = "clean"

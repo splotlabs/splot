@@ -124,6 +124,14 @@ pub(crate) enum GeneralIntraResidualError {
         "general intra directional prediction over a real above-neighbour edge is not yet supported"
     )]
     UnsupportedDirectionalAboveEdge,
+    /// A § 7.13.2.8 cardinal directional block (`V_PRED` pAngle 90 / `H_PRED`
+    /// pAngle 180) was reached without its required reconstructed neighbour edge:
+    /// `V_PRED` needs the real § 7.13.2.1 above row (`haveAbove == 1`), `H_PRED`
+    /// needs the real left column (`haveLeft == 1`). The admission gate only
+    /// admits these when the edge is present, so this is reached only if that gate
+    /// is relaxed without supplying the edge.
+    #[error("general intra cardinal directional prediction is missing its required neighbour edge")]
+    MissingCardinalEdge,
 }
 
 /// OR-reduces a `u32` context line over `[start, start + len)` (clamped to the

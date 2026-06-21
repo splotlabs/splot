@@ -445,6 +445,34 @@ fn decode_one_general_intra_block(
             GENERAL_INTRA_MODE_SPEC_SECTION,
         ));
     }
+    // Cardinal directional-follow V_PRED / H_PRED chroma: a degenerate §7.13.2.8
+    // copy of the real reconstructed §7.13.2.1 above row (V, chroma `frontier.r !=
+    // 0`) or left column (H, chroma `frontier.c != 0`). It couples with the
+    // matching neighbour-having cardinal luma block (`uv_mode == 0` follow). Gated
+    // to the full 64x64 superblock (`n4w == 16`), mirroring the luma gate; a chroma
+    // block on the first superblock row (V) / first superblock column (H) would
+    // read the §7.13.2.1 no-neighbour fallback, which is not what the luma gate
+    // admits, so reject it.
+    if supported_chroma == crate::tile_payload::SupportedChromaMode::VerticalFollow
+        && !(frontier.r != 0 && n4w == FULL_SB_N4_CHROMA_GATE)
+    {
+        return Err(general_intra_unsupported(
+            "general_intra_cardinal_vertical_chroma",
+            Some(tile_offset),
+            "general intra directional-follow V_PRED (pAngle 90) chroma prediction is only supported for a row>0 full 64x64 superblock block reading the real reconstructed §7.13.2.1 above row; a first-superblock-row or sub-partitioned block is not yet covered by an oracle fixture",
+            GENERAL_INTRA_MODE_SPEC_SECTION,
+        ));
+    }
+    if supported_chroma == crate::tile_payload::SupportedChromaMode::HorizontalFollow
+        && !(frontier.c != 0 && n4w == FULL_SB_N4_CHROMA_GATE)
+    {
+        return Err(general_intra_unsupported(
+            "general_intra_cardinal_horizontal_chroma",
+            Some(tile_offset),
+            "general intra directional-follow H_PRED (pAngle 180) chroma prediction is only supported for a non-first-column full 64x64 superblock block reading the real reconstructed §7.13.2.1 left column; a first-superblock-column or sub-partitioned block is not yet covered by an oracle fixture",
+            GENERAL_INTRA_MODE_SPEC_SECTION,
+        ));
+    }
     // §7.13.2.1: the SMOOTH chroma path builds the §7.13.2.13 bottom-left
     // (`LeftCol[h]`) sentinel by edge-clamping (repeating the last in-block
     // neighbour sample). In raster decode order a full-superblock block's
@@ -622,6 +650,51 @@ fn decode_one_general_intra_block(
                     GENERAL_INTRA_MODE_SPEC_SECTION,
                 ));
             }
+            // Cardinal V_PRED (§7.13.2.8 step 4, pAngle 90): a pure VERTICAL copy
+            // of the §7.13.2.1 above row (`pred[i][j] = AboveRow[j]`). It reads ONLY
+            // the real reconstructed above row, so it needs a row>0 full-superblock
+            // block (`frontier.r != 0`, `haveAbove == 1`); `intra_dc_edges_for_rect`
+            // returns `CurrFrame[0][y-1][x..x+w)`. The escape/first-set decode was
+            // resolved with a non-directional joint-mode neighbour (`ctx == 0`; a
+            // directional neighbour would have been rejected earlier as the
+            // unmodelled §5.20.5.3 directional-neighbour reorder). The cardinal copy
+            // has NO IDIF, NO corner, NO `useIBP` (§7.13.2.7 gates `useIBP` on
+            // `pAngle < 90 || pAngle > 180`), so it is bit-exact over the non-flat
+            // real above row; `enable_intra_edge_filter == 0` / `MrlIndex == 0` keep
+            // the §7.13.2.7 edge-filter step a no-op (and §7.13.2.7 skips it entirely
+            // for `pAngle == 90`). Gated to the full 64x64 superblock (`n4w == 16`,
+            // TX_64X64 -> TX_SET_DCTONLY); a row 0 V_PRED block reads the §7.13.2.1
+            // no-neighbour above fallback and is not covered by an oracle fixture, so
+            // it is rejected by the generic directional arm below.
+            (_, Some(SupportedDirectionalLumaMode::Vertical))
+                if frontier.r != 0 && n4w == FULL_SB_N4_LUMA => {}
+            (_, Some(SupportedDirectionalLumaMode::Vertical)) => {
+                return Err(general_intra_unsupported(
+                    "general_intra_cardinal_vertical_unverified",
+                    Some(tile_offset),
+                    "general intra cardinal V_PRED (pAngle 90) luma prediction is only verified for a row>0 full 64x64 superblock block reading the real reconstructed §7.13.2.1 above row; a first-superblock-row (haveAbove == 0) or sub-partitioned V_PRED block is not yet covered by an oracle fixture",
+                    GENERAL_INTRA_MODE_SPEC_SECTION,
+                ));
+            }
+            // Cardinal H_PRED (§7.13.2.8 step 5, pAngle 180): a pure HORIZONTAL copy
+            // of the §7.13.2.1 left column (`pred[i][j] = LeftCol[i]`). It reads ONLY
+            // the real reconstructed left column, so it needs a non-first-column
+            // full-superblock block (`frontier.c != 0`, `haveLeft == 1`);
+            // `intra_dc_edges_for_rect` returns `CurrFrame[0][y..y+h)][x-1]`. Same
+            // ctx == 0 / no-IDIF / no-useIBP argument as V_PRED above (§7.13.2.7 skips
+            // the edge filter for `pAngle == 180` too). Gated to the full 64x64
+            // superblock (`n4w == 16`); a first-superblock-column H_PRED block reads
+            // the §7.13.2.1 no-neighbour left fallback and is rejected below.
+            (_, Some(SupportedDirectionalLumaMode::Horizontal))
+                if frontier.c != 0 && n4w == FULL_SB_N4_LUMA => {}
+            (_, Some(SupportedDirectionalLumaMode::Horizontal)) => {
+                return Err(general_intra_unsupported(
+                    "general_intra_cardinal_horizontal_unverified",
+                    Some(tile_offset),
+                    "general intra cardinal H_PRED (pAngle 180) luma prediction is only verified for a non-first-column full 64x64 superblock block reading the real reconstructed §7.13.2.1 left column; a first-superblock-column (haveLeft == 0) or sub-partitioned H_PRED block is not yet covered by an oracle fixture",
+                    GENERAL_INTRA_MODE_SPEC_SECTION,
+                ));
+            }
             // Directional D135: top-left no-neighbour full superblock.
             (_, Some(_)) if is_top_left && n4w == FULL_SB_N4_LUMA => {}
             // Directional D135 at a first-superblock-row (`frontier.r == 0`),
@@ -725,6 +798,31 @@ fn decode_one_general_intra_block(
                 workspace,
                 &luma,
                 mode,
+                luma_x,
+                luma_y,
+                luma_log2,
+                qindex,
+                luma_use_tcq,
+            )
+            .map_err(|error| general_intra_residual_error(error, tile_offset))?
+        }
+        // Neighbour-having CARDINAL V_PRED / H_PRED luma: a degenerate §7.13.2.8
+        // copy of the real reconstructed §7.13.2.1 above row (V, pAngle 90) or left
+        // column (H, pAngle 180). No IDIF, no corner, no useIBP, bit-exact over the
+        // non-flat real edge.
+        (
+            None,
+            Some(SupportedDirectionalLumaMode::Vertical | SupportedDirectionalLumaMode::Horizontal),
+        ) if directional_luma_has_neighbour => {
+            let direction = match supported_directional_luma {
+                Some(SupportedDirectionalLumaMode::Vertical) => IntraCardinalDirection::Vertical,
+                _ => IntraCardinalDirection::Horizontal,
+            };
+            crate::runtime_minimal_recon::reconstruct_general_intra_cardinal_neighbour_block_into(
+                workspace,
+                &luma,
+                direction,
+                PlaneId::Y,
                 luma_x,
                 luma_y,
                 luma_log2,
@@ -965,6 +1063,12 @@ fn general_intra_residual_error(
             "general_intra_directional_above_edge",
             Some(offset),
             "general intra directional prediction over a real reconstructed above-neighbour edge needs the §7.13.2.1 corner sample CurrFrame[plane][y-1][x-1] (D135 reads the corner on its main diagonal), which is not yet modelled",
+            GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
+        ),
+        GeneralIntraResidualError::MissingCardinalEdge => general_intra_unsupported(
+            "general_intra_cardinal_missing_edge",
+            Some(offset),
+            "general intra cardinal (V_PRED / H_PRED) prediction is missing its required reconstructed neighbour edge (V_PRED needs the §7.13.2.1 above row, H_PRED needs the left column)",
             GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
         ),
     }
