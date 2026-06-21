@@ -630,7 +630,17 @@ pub fn encode_minimal_intra_clk_ivf_with_base_q_idx(
     encode_minimal_intra_clk_ivf_impl(base_q_idx, tile_data)
 }
 
-fn encode_minimal_intra_clk_ivf_impl(
+/// Assembles the canonical minimal-intra 64x64 single-picture intra **temporal unit** (one coded
+/// access unit) with a caller-chosen `base_q_idx`: the AV2 Annex B temporal unit —
+/// `OBU_TEMPORAL_DELIMITER`, `OBU_SEQUENCE_HEADER`, then the `OBU_CLOSED_LOOP_KEY` frame OBU, each
+/// in Annex B framing, in the order the decoder's minimal tier requires. This is the access-unit
+/// bytes *inside* [`encode_minimal_intra_clk_ivf_with_base_q_idx`]'s IVF frame, without the IVF
+/// file header / per-frame record — so it is self-delimiting and decodes directly (the decoder
+/// auto-detects it as Annex B), and concatenating several yields a valid Annex B stream.
+///
+/// `base_q_idx <= 90` selects coefficient CDF q-context 0, matching a `tile_data` coded at that
+/// q-context. `base_q_idx` must be nonzero. `tile_data` is the § 8.2 coded tile bytes (`>= 1`).
+pub fn encode_minimal_intra_clk_temporal_unit_with_base_q_idx(
     base_q_idx: u8,
     tile_data: &[u8],
 ) -> Result<Vec<u8>, MinimalIntraIvfError> {
@@ -640,6 +650,15 @@ fn encode_minimal_intra_clk_ivf_impl(
     temporal_unit.extend_from_slice(&encode_minimal_intra_clk_annexb_obu_impl(
         base_q_idx, tile_data,
     )?);
+    Ok(temporal_unit)
+}
+
+fn encode_minimal_intra_clk_ivf_impl(
+    base_q_idx: u8,
+    tile_data: &[u8],
+) -> Result<Vec<u8>, MinimalIntraIvfError> {
+    let temporal_unit =
+        encode_minimal_intra_clk_temporal_unit_with_base_q_idx(base_q_idx, tile_data)?;
 
     // IVF container: one AV02 64x64 frame carrying the temporal unit (the frozen-tier shape;
     // the timebase 30/1 and frame count 1 match the committed conformance vector's header).

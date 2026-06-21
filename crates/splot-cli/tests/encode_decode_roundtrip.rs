@@ -559,3 +559,98 @@ fn encoder_2d_ivf_decodes_to_a_diagonal_gradient_luma() {
         "expected flat 128 chroma"
     );
 }
+
+/// Milestone A keystone: the encoder produces a real packet through the **public Context API**,
+/// and that packet decodes back to the input. An all-128 64x64 frame has zero residual against
+/// the §7.13.2 no-neighbour DC predictor, so `Context::send_frame` + `receive_packet` emit the
+/// skip frame, and `splot decode` reconstructs it bit-exactly: decode(encode(input)) == input.
+/// This proves the lifecycle wiring (not just the bare emitter), and the honesty invariant —
+/// the output decodes to the input, never a canned frame.
+#[test]
+fn context_encodes_all_128_frame_to_a_packet_that_decodes_to_all_128() {
+    use splot_encode::{
+        Context, EncoderConfig, EncoderRuntimeConfig, FlushStatus, Frame, FrameId, FrameInfo,
+        FramePlaneInput, FramePlanesInput, PlaneRect, PlaneSize, ReceivePacketStatus,
+        SendFrameStatus,
+    };
+
+    // The all-128 input: 64x64 4:2:0 8-bit (Y 4096, U 1024, V 1024).
+    let y = vec![128_u8; 64 * 64];
+    let u = vec![128_u8; 32 * 32];
+    let v = vec![128_u8; 32 * 32];
+    let info = FrameInfo::yuv420_8bit(FrameId::new(0), PlaneSize::new(64, 64).unwrap());
+    let frame = Frame::from_planes(
+        info,
+        FramePlanesInput::yuv(
+            FramePlaneInput::new(&y, 64, PlaneRect::new(0, 0, 64, 64).unwrap()),
+            FramePlaneInput::new(&u, 32, PlaneRect::new(0, 0, 32, 32).unwrap()),
+            FramePlaneInput::new(&v, 32, PlaneRect::new(0, 0, 32, 32).unwrap()),
+        ),
+    )
+    .expect("build the all-128 input frame");
+
+    let mut ctx = Context::new(EncoderConfig::new(64, 64), EncoderRuntimeConfig::default())
+        .expect("build the encoder context");
+    assert!(matches!(
+        ctx.send_frame(&frame).expect("send_frame"),
+        SendFrameStatus::Accepted { .. }
+    ));
+    assert!(matches!(
+        ctx.flush().expect("flush"),
+        FlushStatus::Draining { .. }
+    ));
+    let status = ctx.receive_packet().expect("receive_packet");
+    assert!(
+        matches!(status, ReceivePacketStatus::Packet(_)),
+        "expected a packet from the public Context, got {status:?}"
+    );
+    let packet_data = match status {
+        ReceivePacketStatus::Packet(packet) => packet.data,
+        _ => Vec::new(), // unreachable: the assert above guarantees a Packet
+    };
+    assert!(!packet_data.is_empty(), "the packet must carry coded bytes");
+
+    // The packet is one coded access unit (an Annex B temporal unit), not a container file. Mux
+    // it into an IVF — the consumer's job — for the decoder (whose minimal runtime accepts the
+    // IVF fixture shape; the access unit is exactly the IVF frame payload).
+    let mut ivf = Vec::new();
+    splot_core::ivf::write_ivf_header(
+        &mut ivf,
+        &splot_core::ivf::IvfHeader::new(*b"AV02", 64, 64, 30, 1, 1),
+    )
+    .expect("write the IVF header");
+    splot_core::ivf::write_ivf_frame(&mut ivf, 0, &packet_data).expect("mux the packet into IVF");
+
+    // Decode and assert the reconstruction equals the encoder input (all 128).
+    let input = temp_path("ctx-encode-input", "ivf");
+    let output = temp_path("ctx-encode-output", "raw");
+    std::fs::write(&input, &ivf).expect("write the muxed IVF");
+
+    let status = Command::new(env!("CARGO_BIN_EXE_splot"))
+        .args([
+            "decode",
+            input.to_str().expect("utf-8 input path"),
+            "--output",
+            output.to_str().expect("utf-8 output path"),
+            "--output-format",
+            "raw",
+        ])
+        .status()
+        .expect("run the splot binary");
+
+    let raw = std::fs::read(&output);
+    let _ = std::fs::remove_file(&input);
+    let _ = std::fs::remove_file(&output);
+
+    assert!(
+        status.success(),
+        "splot decode of the Context packet failed"
+    );
+    let raw = raw.expect("read the decoded raw output");
+    assert_eq!(raw.len(), 6144, "unexpected decoded frame size");
+    // The honesty invariant: decode(encode(all-128)) == all-128.
+    assert!(
+        raw.iter().all(|&s| s == 128),
+        "the decoded frame must equal the all-128 encoder input",
+    );
+}

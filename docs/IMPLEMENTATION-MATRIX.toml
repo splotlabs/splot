@@ -5651,6 +5651,39 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-CONTEXT-RECEIVE-PACKET"
+name = "Public Context emits a real packet (Milestone A keystone)"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["7.13.2", "5.20", "8.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/context.rs"
+openspec_change = "encoder-context-receive-packet"
+tracking_issue = ""
+owner = "encoder"
+risk = "low"
+notes = "MILESTONE A KEYSTONE: the FIRST real packet through the PUBLIC encoder API. Context::receive_packet (splot-encode public push/pull lifecycle) now returns a real decodable AV2 Packet from a send_frame input \u2014 for the subset the minimal encoder encodes LOSSLESSLY: a 64x64 8-bit YUV420 frame whose every visible Y/U/V sample == the 128 \u00a77.13.2 no-neighbour DC predictor. Such a frame has ZERO residual, so the (decode-proven) skip frame reconstructs flat-128 == the input. Packet.data carries ONE CODED ACCESS UNIT (the Annex B temporal unit via emit_minimal_intra_skip_temporal_unit / the new splot-core encode_minimal_intra_clk_temporal_unit_with_base_q_idx), NOT a full IVF file (Codex #409 P2: a packet must be an access unit so consumers can mux many into one stream; emitting an IVF file per packet would double the DKIF header). HONESTY INVARIANT: decode(encode(input)) == input (proven by the cross-crate e2e oracle driving the public Context: send_frame -> flush -> receive_packet -> Packet[access unit] -> mux into IVF -> splot decode -> all-128). Wiring: input_queue changed from VecDeque<FrameInfo> to a private QueuedFrame owning the visible Y/U/V samples (the borrowed Frame doesn't outlive send_frame, so receive_packet needs an owned copy to inspect). receive_packet: 64x64 all-128 -> skip Packet; any other frame retired WITHOUT a packet (NO canned/wrong output); emitter failure -> Failed (terminal). 18 Context unit tests (16 existing backward-compatible + supported/unsupported) + the e2e oracle. Stale 'no packet production' lib/context module docs updated. USER (maintainer) EXPLICITLY AUTHORIZED Milestone A (\u00a710) 'go for milestone A'. \u00a710 FOLLOW-UPS (maintainer-gated, NOT in this deterministic brick): uniform-V forward quant (dequant-inversion vs real forward DCT), non-uniform DC approximation, mode decision, transform-type selection, RDO/rate-control, larger sizes, a cli `encode` command + typed error for unsupported input. decode_check=done; avm_diff=not-applicable. Encoder-mission-DRIVEN (owner=encoder). HONEST SCOPE: first public-API packet, lossless ONLY for all-128; NOT a general encoder, NOT Baseline Encoder Profile v1."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-cli/tests/encode_decode_roundtrip.rs::context_encodes_all_128_frame_to_a_packet_that_decodes_to_all_128", "crates/splot-encode/src/context.rs::tests::receive_packet_encodes_a_64x64_all_128_frame_to_the_skip_packet"]
+commands = ["cargo test -p splot-cli --test encode_decode_roundtrip --locked", "cargo test -p splot-encode context:: --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-RECON-DEPENDENCY"
 name = "Encoder reconstruction dependency boundary"
 category = "encoder"
