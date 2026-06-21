@@ -265,6 +265,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.20.2.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-2-3) | Clear block decoded flags function | `DECODE-GENERAL-INTRA-DEEP-SPLIT` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.2.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-2-3) | Clear block decoded flags function | `DECODE-GENERAL-INTRA-GRID` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.2.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-2-3) | Clear block decoded flags function | `DECODE-GENERAL-INTRA-GRID-NEIGHBOUR-NONDC` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 5.20.2.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-2-3) | Clear block decoded flags function | `DECODE-GENERAL-INTRA-GRID-SMOOTH-H-ABOVE-RIGHT` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.3.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-1) | Decode partition syntax | `CONF-TILE-PAYLOAD-DECODE-FUZZ` | ✅ | — | — | ✅ | 2 |
 | [§ 5.20.3.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-1) | Decode partition syntax | `DECODE-GENERAL-INTRA-DEEP-SPLIT` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.3.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-1) | Decode partition syntax | `DECODE-GENERAL-INTRA-FRAME-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
@@ -300,6 +301,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.20.5.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3) | Intra frame mode info syntax | `DECODE-GENERAL-INTRA-DIRECTIONAL-FOLLOW-CHROMA` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.5.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3) | Intra frame mode info syntax | `DECODE-GENERAL-INTRA-DIRECTIONAL-NEIGHBOUR-CTX` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.5.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3) | Intra frame mode info syntax | `DECODE-GENERAL-INTRA-GRID-NEIGHBOUR-NONDC` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 5.20.5.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3) | Intra frame mode info syntax | `DECODE-GENERAL-INTRA-GRID-SMOOTH-H-ABOVE-RIGHT` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.5.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3) | Intra frame mode info syntax | `DECODE-GENERAL-INTRA-MB-NEIGHBOUR-SMOOTH` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.5.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3) | Intra frame mode info syntax | `DECODE-GENERAL-INTRA-MULTIBLOCK` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.5.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3) | Intra frame mode info syntax | `DECODE-GENERAL-INTRA-NEIGHBOUR-DIRECTIONAL` | ✅ | 🟡 | — | ✅ | 1 |
@@ -329,6 +331,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.20.7.25](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-25) | Get TX size function | `DECODE-GENERAL-INTRA-BLOCK-DECODED` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.25](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-25) | Get TX size function | `DECODE-GENERAL-INTRA-GRID` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.25](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-25) | Get TX size function | `DECODE-GENERAL-INTRA-GRID-NEIGHBOUR-NONDC` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 5.20.7.25](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-25) | Get TX size function | `DECODE-GENERAL-INTRA-GRID-SMOOTH-H-ABOVE-RIGHT` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.26](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-26) | Get plane residual size function | `DECODE-TILE-PARTITION-ALLOWED-BOUNDARY` | ✅ | — | — | ✅ | — |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-COEFF-ALL-ZERO-BLOCK-STATE` | ✅ | — | — | ✅ | 1 |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-COEFF-ALL-ZERO-CONTEXT-STATE` | ✅ | — | — | ✅ | 1 |
@@ -393,6 +396,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-GENERAL-INTRA-DIRECTIONAL-NEIGHBOUR-CTX` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-GENERAL-INTRA-FRAME-RECON` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-GENERAL-INTRA-GRID-NEIGHBOUR-NONDC` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-GENERAL-INTRA-GRID-SMOOTH-H-ABOVE-RIGHT` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-GENERAL-INTRA-LUMA-COEFFS` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-GENERAL-INTRA-MB-NEIGHBOUR-SMOOTH` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-GENERAL-INTRA-MULTIBLOCK` | ✅ | 🟡 | — | ✅ | 1 |
@@ -705,6 +709,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.13.2.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-1) | General | `DECODE-GENERAL-INTRA-DIRECTIONAL-FOLLOW-CHROMA` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.13.2.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-1) | General | `DECODE-GENERAL-INTRA-GRID` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.13.2.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-1) | General | `DECODE-GENERAL-INTRA-GRID-NEIGHBOUR-NONDC` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 7.13.2.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-1) | General | `DECODE-GENERAL-INTRA-GRID-SMOOTH-H-ABOVE-RIGHT` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.13.2.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-1) | General | `DECODE-GENERAL-INTRA-MB-NEIGHBOUR-SMOOTH` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.13.2.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-1) | General | `DECODE-GENERAL-INTRA-NEIGHBOUR-DIRECTIONAL` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.13.2.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-1) | General | `DECODE-GENERAL-INTRA-NON64-MULTISB` | ✅ | 🟡 | — | ✅ | 1 |
@@ -754,6 +759,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.13.2.13](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-13) | Smooth intra prediction process | `DECODE-GENERAL-INTRA-DIRECTIONAL-NEIGHBOUR-CTX` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.13.2.13](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-13) | Smooth intra prediction process | `DECODE-GENERAL-INTRA-GRID` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.13.2.13](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-13) | Smooth intra prediction process | `DECODE-GENERAL-INTRA-GRID-NEIGHBOUR-NONDC` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 7.13.2.13](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-13) | Smooth intra prediction process | `DECODE-GENERAL-INTRA-GRID-SMOOTH-H-ABOVE-RIGHT` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.13.2.13](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-13) | Smooth intra prediction process | `DECODE-GENERAL-INTRA-MB-NEIGHBOUR-SMOOTH` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.13.2.13](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-13) | Smooth intra prediction process | `DECODE-GENERAL-INTRA-NON64-MULTISB` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.13.2.13](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-13) | Smooth intra prediction process | `DECODE-GENERAL-INTRA-NONDC-LUMA-SMOOTH` | ✅ | 🟡 | — | ✅ | 1 |

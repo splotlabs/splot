@@ -485,16 +485,21 @@ fn build_smooth_edges(
 }
 
 /// Resolves the AV2 § 7.13.2.1 top-right sentinel `AboveRow[w]` for a SMOOTH
-/// chroma block in this single-tile minimal path.
+/// block (luma or chroma — the derivation is plane-independent) in this
+/// single-tile minimal path.
 ///
 /// Per § 7.13.2.1, when `haveAbove == 1` the sentinel is
 /// `CurrFrame[plane][y - 1][Min(aboveLimit, x + w)]` with
 /// `aboveLimit = Min(maxX, x + w + 4 * num4AboveRight - 1)` (8-bit, `MrlIndex == 0`,
 /// `aboveMrlIndex == 0`). When `num4AboveRight == 0` (no decoded above-right) or
-/// the block already touches the chroma frame right edge (`x + w > maxX`), this
+/// the block already touches the plane's frame right edge (`x + w > maxX`), this
 /// reduces to the clamped last in-block above sample, so `None` is returned to
 /// keep the [`build_smooth_edges`] clamp. When `haveAbove == 0` the
 /// sentinel is not read from the above-right at all, so `None` is returned.
+///
+/// For a luma (`sub_x == 0`) `SMOOTH_H_PRED` full-superblock block at superblock
+/// row > 0 this reads the real reconstructed bottom row of the already-decoded
+/// diagonally-above-right superblock (the `syn-shgrid` fixture pins it bit-exact).
 fn resolve_smooth_above_right_sentinel(
     workspace: &CurrentFrameWorkspace<u8>,
     plane_id: PlaneId,
