@@ -278,9 +278,12 @@ fn decode_hash_json_success_for_minimal_fixture() {
         frame["hashes"][0]["byte_stream_id"],
         "av2-output-samples-v1"
     );
+    // SHA-256 of the decoded raw planar output. The conformant luma-skip fixture
+    // routes through the general intra path; avmdec and dav2d both decode it to
+    // this output (docs/LOCAL-REFERENCE-EVIDENCE.toml).
     assert_eq!(
         frame["hashes"][0]["digest_hex"],
-        "dd244844938e78b226240de27e9c0acd39fc7ec2c1631319d13250fbe5f08496"
+        "92c4477c8b50d5646c6ed5351cbb8f4fc04517ba39354a127c306e196fd059af"
     );
 }
 
@@ -314,25 +317,41 @@ fn decode_general_intra_fixture_reconstructs_full_frame() {
 }
 
 #[test]
-fn decode_general_intra_routing_does_not_disturb_frozen_minimal_hash() {
-    // Regression guard: routing general intra frames must leave the committed
-    // frozen base_q_idx==255 minimal-tier hash contract byte-identical.
-    let input = conformance_vector("syn-flat-intra-64x64-minimal.ivf");
+fn general_intra_fixtures_decode_to_distinct_pinned_hashes() {
+    // Both committed minimal-tool intra fixtures route through the general intra
+    // path: the former frozen base_q_idx==255 minimal fixture was retired (its
+    // hand-retimed tile payload was inverted vs the AVM all_zero skip polarity
+    // and rejected by avmdec) and replaced with an avmdec/dav2d-conformant
+    // luma-skip stream. Each must decode to its own pinned hash with no
+    // cross-fixture state bleed.
+    let cases = [
+        (
+            "syn-flat-intra-64x64-minimal.ivf",
+            "92c4477c8b50d5646c6ed5351cbb8f4fc04517ba39354a127c306e196fd059af",
+        ),
+        (
+            "syn-flat-intra-64x64-q80.ivf",
+            "ce9c46b1078b9dd593254837ead7dcd6cee8b3ec6cc3c7d34f54fb08df703979",
+        ),
+    ];
 
-    let out = splot(&[
-        "decode",
-        "--json",
-        "--output-format",
-        "hash",
-        input.to_str().unwrap(),
-    ]);
+    for (name, expected) in cases {
+        let input = conformance_vector(name);
+        let out = splot(&[
+            "decode",
+            "--json",
+            "--output-format",
+            "hash",
+            input.to_str().unwrap(),
+        ]);
 
-    assert_eq!(out.status.code(), Some(0));
-    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(
-        json["frames"][0]["hashes"][0]["digest_hex"],
-        "dd244844938e78b226240de27e9c0acd39fc7ec2c1631319d13250fbe5f08496"
-    );
+        assert_eq!(out.status.code(), Some(0), "{name} should decode");
+        let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(
+            json["frames"][0]["hashes"][0]["digest_hex"], expected,
+            "unexpected hash for {name}"
+        );
+    }
 }
 
 #[test]

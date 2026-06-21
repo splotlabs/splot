@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "54b1d940c65fab4c16332c10b686202229da053e",
+  "audited_commit": "8653dc7b0312e15b876cbef99cee31d7f5fc772e",
   "outcome": "success",
   "files": [
     {
@@ -200,14 +200,14 @@
     },
     {
       "path": ".github/workflows/ci.yml",
-      "sha256": "5db1923d7f2c4ccfe1d16a0135ed6b075ad13afe5930efa3bddfe8c173b05b79",
+      "sha256": "2e5c7eb12c2073a51ed93e709744e6519b2637408d94a843aaa3d719900c0405",
       "scope_kind": "automation",
       "feature_ids": [],
       "outcome": "success"
     },
     {
       "path": ".github/workflows/claude-review.yml",
-      "sha256": "99672df3e2813ac3525be59e4918a25382e63558982dd84d5b885ec347a1e9b7",
+      "sha256": "a28ed044a743d3ea148e21b96518a2cb2131daac0aad663191102fb08b3b928d",
       "scope_kind": "automation",
       "feature_ids": [],
       "outcome": "success"
@@ -239,7 +239,7 @@
     },
     {
       "path": "Cargo.lock",
-      "sha256": "449e9213643c1635e6ab0d5e881cdd31a3e5b97777a91ac9dbda598943b35971",
+      "sha256": "a3481b3331f64e00c33a41638934240033e8e6497ddf8bd90d62d91f5d6022b9",
       "scope_kind": "repository-process",
       "feature_ids": [],
       "outcome": "success"
@@ -255,7 +255,7 @@
     },
     {
       "path": "_typos.toml",
-      "sha256": "bcad26da5164695b7d65b592c17eff1b480ffde5fca541b94ce3645095cdcd37",
+      "sha256": "97a221ac6aa0f11c8e62bbf20b844bf2336e9abf347bf296bc1833dc9b513cb9",
       "scope_kind": "repository-process",
       "feature_ids": [
         "AV2-5.17.5-METADATA-HDR-CLL"
@@ -356,7 +356,7 @@
     },
     {
       "path": "crates/splot-cli/tests/decode_cli.rs",
-      "sha256": "1e822d61b1d2d715a1b0fa946e48030d7af35320cd316a8b9f66318b63b41554",
+      "sha256": "0fca9f1c1fb3d66cdac26db2a1fd3dbfa3ee6925041e402d1245e99b229d7dac",
       "scope_kind": "workspace:splot-cli",
       "feature_ids": [
         "DECODE-BYTE-STREAM-PLANNER",
@@ -368,7 +368,7 @@
     },
     {
       "path": "crates/splot-cli/tests/decode_raw_cli.rs",
-      "sha256": "03358ce2d8623a5f188a7d537641e0031d04a3f4d4f0d489cdabbc875515dc0f",
+      "sha256": "2f84017314cc8bc881eebb4848311107b6d43c7c10ccf05d8ded30b9ac561382",
       "scope_kind": "workspace:splot-cli",
       "feature_ids": [
         "DECODE-MINIMAL-RAW-RUNTIME-OUTPUT",
@@ -378,7 +378,7 @@
     },
     {
       "path": "crates/splot-cli/tests/decode_y4m_cli.rs",
-      "sha256": "3821a53249a5d3bf71440fdbc129ccc763f3fff7619059d619affea69c3b4907",
+      "sha256": "ffa6e15eb8223ca7ff646e63e71f698cd9f16a94fa3dd80b6f3a86f2ba65d6e7",
       "scope_kind": "workspace:splot-cli",
       "feature_ids": [
         "DECODE-MINIMAL-TIER-RUNTIME-SUCCESS",
@@ -389,6 +389,13 @@
     {
       "path": "crates/splot-cli/tests/encode_cli.rs",
       "sha256": "9a7f07653d093525cf45c2a9bddd615a181c6005abf3d79ac82c67ca87d142c5",
+      "scope_kind": "workspace:splot-cli",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-cli/tests/encode_decode_roundtrip.rs",
+      "sha256": "cb441564133818a17da4aa4e74634b29237f9b85c2e1711fd4f62728f84e49b0",
       "scope_kind": "workspace:splot-cli",
       "feature_ids": [],
       "outcome": "success"
@@ -730,6 +737,13 @@
       "outcome": "success"
     },
     {
+      "path": "crates/splot-core/src/coefficient.rs",
+      "sha256": "e9fce9fe59c9053616046303d7966205829872bc1a6a23762c0a170741927da2",
+      "scope_kind": "workspace:splot-core",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
       "path": "crates/splot-core/src/error.rs",
       "sha256": "c05728401902579081739b5b5a31708beb362251dc136101560eac66bb9ae038",
       "scope_kind": "workspace:splot-core",
@@ -797,6 +811,23 @@
       "outcome": "success"
     },
     {
+      "path": "crates/splot-core/src/headers/frame/encoder_input.rs",
+      "sha256": "c273e9bdcdbd96935caf03b0d25ce33f8fffb6dd00894c431a341a8ef0995f2a",
+      "scope_kind": "workspace:splot-core",
+      "feature_ids": [
+        "ENC-FRAME-HEADER-CORE-ASSEMBLER",
+        "ENC-MINIMAL-CLK-BASE-Q-IDX",
+        "ENC-MINIMAL-INTRA-CLK-ANNEXB-OBU",
+        "ENC-MINIMAL-INTRA-IVF",
+        "ENC-MINIMAL-INTRA-TILE-GROUP-OBU",
+        "ENC-SEQUENCE-HEADER-OBU",
+        "ENC-TEMPORAL-DELIMITER-OBU",
+        "ENC-WRITER-INPUT-INTER-VIEW",
+        "ENC-WRITER-INPUT-SEQ-VIEW"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "crates/splot-core/src/headers/frame/filtering.rs",
       "sha256": "3c24403f623ad3df802e4b86e728b624d2d1820623605bc8c1d4aa39b5d2fae1",
       "scope_kind": "workspace:splot-core",
@@ -816,7 +847,7 @@
     },
     {
       "path": "crates/splot-core/src/headers/frame/info.rs",
-      "sha256": "19e5e1dcd4f549b80332c93a108736a34f7e278b925661fb8f177216b1e0ac95",
+      "sha256": "10c9e329d9e06821ebeafb4ca15878722f57a89b9d6774d23e3d427f86fceccb",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-5.18.2-FRAME-HEADER-INFO",
@@ -834,7 +865,7 @@
     },
     {
       "path": "crates/splot-core/src/headers/frame/mod.rs",
-      "sha256": "71de473d7057bdd2cde91e362f49a297c50768870b5a4664059a42ac3bfee03c",
+      "sha256": "40222a0d5dc504521932c733a534d5701176b927d37a962bc1922b0b0e4e71f9",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-5.18-FRAME-HEADER",
@@ -992,11 +1023,13 @@
     },
     {
       "path": "crates/splot-core/src/headers/tile_group.rs",
-      "sha256": "33bb328dde35ce96d2cc402ece8ad45557f3e9379a300115b0bf664a83c1848f",
+      "sha256": "54472cdc69011a51be55a8c7ea756e5492e687caa730fb1e5f9e1dbbe4dc360b",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-5.19-TILE-GROUP",
-        "AV2-5.20-TILE-GROUP-PAYLOAD"
+        "AV2-5.20-TILE-GROUP-PAYLOAD",
+        "ENC-WRITER-INPUT-FRAMING",
+        "ENC-WRITER-INPUT-STRUCTURE"
       ],
       "outcome": "success"
     },
@@ -1030,7 +1063,7 @@
     },
     {
       "path": "crates/splot-core/src/lib.rs",
-      "sha256": "68f47493b61965d08e5bc605a9f083d424cd046b6d2f75cd482f11a066566a62",
+      "sha256": "fa11f5e35caf0d56355601ce81044505fc1dd91c148ca167c319030651f0b30e",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-IVF-CONTAINER",
@@ -1349,14 +1382,14 @@
     },
     {
       "path": "crates/splot-core/src/write/frame_header_core_proptests.rs",
-      "sha256": "301ffeeeaaae2a85c940c117af4ded25b1845a41300fe989544cc8cd5cffbe0a",
+      "sha256": "c3f279b3a64f5160c1f439d970e42534856dab5b89af2a67a25939256d1bcff0",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [],
       "outcome": "success"
     },
     {
       "path": "crates/splot-core/src/write/frame_header_core_tests.rs",
-      "sha256": "4a6b70263e94e0457f070b0e1ae37f1f3d3733735df22c0a74608c7fa689d8b6",
+      "sha256": "6572462d02d765cca3035514eb7bf9886d18b698c904aa698f25c7846cd98339",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-5.18.2-FRAME-HEADER-INFO",
@@ -1688,7 +1721,7 @@
     },
     {
       "path": "crates/splot-core/src/write/tile_group_obu_tests.rs",
-      "sha256": "25912003affee3d28f86e23b13cc13393b4c7d627717c74967554454c180b5a2",
+      "sha256": "418e780a9a3d8013c6c3215bb41f014acfd16212ae514880d20951273f25221f",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [],
       "outcome": "success"
@@ -1835,7 +1868,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_hash.rs",
-      "sha256": "3f8ed364b4282cf115ecceb8c23bf09b7b0be0a59cc57dca16f7e852037e2e9f",
+      "sha256": "9f07ee64a274285209d6bb607a213361922bff8d2f345f36709a0bfb58ddb337",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-MINIMAL-TIER-RUNTIME-SUCCESS"
@@ -1844,25 +1877,57 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal.rs",
-      "sha256": "c518e3a3b88f1623a436fa66ae800c6d045f82eace7706547417067b79b89063",
+      "sha256": "84e600a4a84869e25ca224b4cd7f2d4e753a389522141e2c11738589dc5915a5",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
+        "DECODE-GENERAL-INTRA-FRAME-FRONTIER",
+        "DECODE-GENERAL-INTRA-GRID-NEIGHBOUR-NONDC",
+        "DECODE-GENERAL-INTRA-GRID-SMOOTH-H-ABOVE-RIGHT",
+        "DECODE-GENERAL-INTRA-MULTIROW",
         "DECODE-MINIMAL-TIER-RUNTIME-SUCCESS"
       ],
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/runtime_minimal_recon.rs",
-      "sha256": "834134326723c42d06e8166d83120821acaf871bed57a3d3d903fedf1af1e0f4",
+      "path": "crates/splot-decode/src/runtime_minimal/general_intra.rs",
+      "sha256": "8e194aed4e60afda91a891a9b8ba85ee4d40eba0f94e8afcb1dba829a856b55c",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
+        "DECODE-GENERAL-INTRA-ANGLE-D113",
+        "DECODE-GENERAL-INTRA-ANGLE-D45",
+        "DECODE-GENERAL-INTRA-FRAME-FRONTIER"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-decode/src/runtime_minimal/general_intra_tests.rs",
+      "sha256": "045d3de3ca1333e1908f0f285da19aa1c86290ec76fda0983721454fe9776c2a",
+      "scope_kind": "workspace:splot-decode",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-decode/src/runtime_minimal_recon.rs",
+      "sha256": "ac5d7353ad70140356d1f3bef06f6489d0e0d9bd2fffe19aefb124fe4dbda95a",
+      "scope_kind": "workspace:splot-decode",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-ANGLE",
+        "DECODE-GENERAL-INTRA-CARDINAL",
+        "DECODE-GENERAL-INTRA-DIRECTIONAL-CORNER",
+        "DECODE-GENERAL-INTRA-DIRECTIONAL-FOLLOW-CHROMA",
+        "DECODE-GENERAL-INTRA-GRID",
+        "DECODE-GENERAL-INTRA-IDIF-D157",
+        "DECODE-GENERAL-INTRA-MB-NEIGHBOUR-SMOOTH",
+        "DECODE-GENERAL-INTRA-NEIGHBOUR-DIRECTIONAL",
+        "DECODE-GENERAL-INTRA-NONDC-LUMA-SMOOTH",
+        "DECODE-GENERAL-INTRA-NONDC-LUMA-SMOOTH-PLAIN",
         "DECODE-MINIMAL-INTRA-RECONSTRUCTION-FRONTIER"
       ],
       "outcome": "success"
     },
     {
       "path": "crates/splot-decode/src/runtime_raw.rs",
-      "sha256": "dcb9747d82cecc43f97409621b1674f27c225785d9801d9b36662216daeb9271",
+      "sha256": "7c0e5c46a3373267e1162c19612f8df44960344becc64243c12db4c9a7acd871",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-MINIMAL-RAW-RUNTIME-OUTPUT"
@@ -1871,7 +1936,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_y4m.rs",
-      "sha256": "ccc2cec00e3cb2215ff4a6873771683918b116e227850d91355f4e1792e7234d",
+      "sha256": "0c0e22416bb1468ad1d016741ef5715a4060f33a4a6de1d83f81af9baa511944",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-Y4M-RUNTIME-OUTPUT"
@@ -1896,7 +1961,7 @@
     },
     {
       "path": "crates/splot-decode/src/tile_payload.rs",
-      "sha256": "def712270ce1e85b56cdb1c0e707a156cb9afee597d241fb1f3d3519b9892f6c",
+      "sha256": "f0ac82587749da831ca0fa02d61f62fea2227c646903748bb4cdb60d4688b87b",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-TILE-PAYLOAD-BOUNDARY"
@@ -1904,8 +1969,17 @@
       "outcome": "success"
     },
     {
+      "path": "crates/splot-decode/src/tile_payload/block_decoded_state.rs",
+      "sha256": "2f4545d2754040fc4cabff86b4c793d5dba59201591db6c59109f6beb1c7d2f6",
+      "scope_kind": "workspace:splot-decode",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-BLOCK-DECODED"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "crates/splot-decode/src/tile_payload/block_symbol.rs",
-      "sha256": "03ee3de510f2e6689bc2f3a164fc3819400a737a407df60c1f775738d6c4469a",
+      "sha256": "2cb02cb5ec3c8b91501a70d0a3b8ebd852ff4cdd4b6eb0c32ec6bea13a5ada83",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-COEFF-RUNTIME-FRAME-ENTRY-HANDOFF",
@@ -1917,7 +1991,7 @@
     },
     {
       "path": "crates/splot-decode/src/tile_payload/cdf.rs",
-      "sha256": "67d5c05605c0dea619c54020e1e5eb36983d535f6f7d036c8af7ea1ad291c743",
+      "sha256": "6cba3e912bcfa1aff59e11b314fc1b81748d43e02b035d57170a2cd54145ecb3",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-TILE-CDF-SAVE-LIFECYCLE-BOUNDARY",
@@ -1927,9 +2001,10 @@
     },
     {
       "path": "crates/splot-decode/src/tile_payload/cdf/block_context.rs",
-      "sha256": "421bfe061fc793c0ae2708bb1704efac508742b1b58fc5f19600e9c614b95d1f",
+      "sha256": "2fcfa2e875873a6b17b34f51021fe236db1ded701bd567e88f88e067699b0945",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
+        "DECODE-GENERAL-INTRA-ANGLE",
         "DECODE-TILE-CDF-SELECTION-BOUNDARY"
       ],
       "outcome": "success"
@@ -1945,7 +2020,7 @@
     },
     {
       "path": "crates/splot-decode/src/tile_payload/cdf/block_rows.rs",
-      "sha256": "3cac4f693be9b50a3a0e6a6d64548c66c5b8dc84ee7dca2ffc79bb64389d9102",
+      "sha256": "fa76d77eb5ef80ceb0fd6eb0710aabecaeb3fc041703d17f94e176d56f0dcd6f",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER"
@@ -1954,7 +2029,7 @@
     },
     {
       "path": "crates/splot-decode/src/tile_payload/cdf/coeff_context.rs",
-      "sha256": "28379a5bf9077c87559b6d408778207d791c80eb6d7392971a141c8e7e14772b",
+      "sha256": "cf1cdd044bb48fff0921a5cad49e8457d407d942e20a0f3a2f9c5b68d29c3316",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-TILE-CDF-SELECTION-BOUNDARY"
@@ -2048,7 +2123,7 @@
     },
     {
       "path": "crates/splot-decode/src/tile_payload/coeff_loop/base_symbol_tests.rs",
-      "sha256": "e1d22da4647cdc0f552dad7b140544dcb964af5ddfab46fe872c72a8f5ba7dd8",
+      "sha256": "3cfbec92efa1f2a52964d6eeb690e3896f94f679c9f9a217a897e599985ccb87",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
@@ -2140,7 +2215,7 @@
     },
     {
       "path": "crates/splot-decode/src/tile_payload/coeff_loop/max_level.rs",
-      "sha256": "be783fd8df73d6bd0dc87818d026152b14e778a7e75426641f575808e615cdd4",
+      "sha256": "2a258f51449adcb08b61fda79b4a8c7e607a0393e5bbf52233dfdb604d74cce4",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-COEFF-MAX-LEVEL-DERIVE",
@@ -2254,7 +2329,7 @@
     },
     {
       "path": "crates/splot-decode/src/tile_payload/coeff_loop/read_quant.rs",
-      "sha256": "6d3ab67d893b066df71404a0e18e814a0b97d9da8e6a768523b15c0a07543147",
+      "sha256": "01eccc6243fcc914d23850e57f0477e0c0bdf0aaef593ab0b35a79ff80642195",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-COEFF-READ-QUANT-SYNTAX"
@@ -2328,6 +2403,26 @@
       "outcome": "success"
     },
     {
+      "path": "crates/splot-decode/src/tile_payload/general_intra_block.rs",
+      "sha256": "c0bc98af0d6c2ccc4eef68aabe95817719c7620b09fa273b98cc2d6e3a2cc3a8",
+      "scope_kind": "workspace:splot-decode",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-BLOCK-MODES",
+        "DECODE-GENERAL-INTRA-DIRECTIONAL-NEIGHBOUR-CTX"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-decode/src/tile_payload/general_intra_residual.rs",
+      "sha256": "6fb45c31d1859cc724c19793fc2682f7995f02d0a3570290891dcab3a58b2c8a",
+      "scope_kind": "workspace:splot-decode",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-FRAME-RECON",
+        "DECODE-GENERAL-INTRA-LUMA-COEFFS"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "crates/splot-decode/src/tile_payload/input.rs",
       "sha256": "6620a3e5d2e201a2941b333a14dc36efea18407a7fadbdc419039e5a30e7d5ee",
       "scope_kind": "workspace:splot-decode",
@@ -2337,8 +2432,17 @@
       "outcome": "success"
     },
     {
+      "path": "crates/splot-decode/src/tile_payload/intra_joint_modes.rs",
+      "sha256": "4d54b51eb1c38d425ee431fcf161f846a3f077213c0cd2bdb58033012152fcc5",
+      "scope_kind": "workspace:splot-decode",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-MB-NEIGHBOUR-SMOOTH"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "crates/splot-decode/src/tile_payload/mi_size_state.rs",
-      "sha256": "371ce098d13b59323cbce33cbdbc5c2f7cf2cfe1146105b01b89617bbf40f2b5",
+      "sha256": "fdc44203fb7195ad51db90802c60c499ce127837a3416dd73f990b25ea2067c8",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-TILE-MI-SIZE-STATE-BOUNDARY"
@@ -2381,9 +2485,12 @@
     },
     {
       "path": "crates/splot-decode/src/tile_payload/partition_traversal.rs",
-      "sha256": "1f193618d76aa41c9968be31f994e3c0309c1352b2a513abe1e581e7396e6f37",
+      "sha256": "003b3b4b5b47a7b6734b10aa9e590b9ef2546c938d1e80fe82d626a826be7030",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
+        "DECODE-GENERAL-INTRA-DEEP-SPLIT",
+        "DECODE-GENERAL-INTRA-MULTIBLOCK",
+        "DECODE-GENERAL-INTRA-NON64-MULTISB",
         "DECODE-TILE-PARTITION-TRAVERSAL-BOUNDARY"
       ],
       "outcome": "success"
@@ -2399,7 +2506,7 @@
     },
     {
       "path": "crates/splot-decode/src/tile_payload/runtime_frontier.rs",
-      "sha256": "d4447d8c17d778b30db1609552799cad4e8b73b42683a3ef3955a569608217a6",
+      "sha256": "1980e840523ed384a0a9ac170f7aa8191ea9ae85c283ce62030616c4a58a0a61",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER",
@@ -2425,31 +2532,128 @@
       "outcome": "success"
     },
     {
-      "path": "crates/splot-encode/src/block_symbol_trace.rs",
-      "sha256": "584e3bfd4a766afdc45015001d88ee915e2e953b36db4120a29550aa24e52c4b",
+      "path": "crates/splot-encode/src/block_symbol_trace/cdf_rows.rs",
+      "sha256": "8c8eb2fcbdec4b6fc985add2fcb4a3c6ee22f1567609ee21a1dacfcf22d5c57e",
       "scope_kind": "workspace:splot-encode",
       "feature_ids": [
+        "ENC-BLOCK-SYMBOL-ENCODE",
         "ENC-INTRA-BLOCK-MODE-TRACE",
         "ENC-INTRA-BLOCK-TRACE-BYPASS-LITERAL",
         "ENC-INTRA-BLOCK-TRACE-CHROMA-SKIP",
-        "ENC-INTRA-BLOCK-TRACE-CODED-BR",
         "ENC-INTRA-BLOCK-TRACE-CODED-CHROMA-DC",
         "ENC-INTRA-BLOCK-TRACE-CODED-DC",
         "ENC-INTRA-BLOCK-TRACE-GOLOMB-FINITE",
-        "ENC-INTRA-BLOCK-TRACE-LUMA-SKIP"
+        "ENC-INTRA-BLOCK-TRACE-GOLOMB-PREFIX",
+        "ENC-INTRA-BLOCK-TRACE-IST",
+        "ENC-INTRA-BLOCK-TRACE-LUMA-SKIP",
+        "ENC-INTRA-BLOCK-TRACE-TWO-COEFF",
+        "ENC-INTRA-BLOCK-TRACE-TWO-COEFF-TX-TYPE"
       ],
       "outcome": "success"
     },
     {
-      "path": "crates/splot-encode/src/block_symbol_trace_tests.rs",
-      "sha256": "ca9b945b1c0a80e9ddea8e6f3300bf3246595cdcb86aa515819fda1921a394b2",
+      "path": "crates/splot-encode/src/block_symbol_trace/coder.rs",
+      "sha256": "076e24e8b91ed6a04c5f31aa67e0cf3e75ef2819adc6399ddbe8e541818cbd10",
       "scope_kind": "workspace:splot-encode",
-      "feature_ids": [],
+      "feature_ids": [
+        "ENC-BLOCK-SYMBOL-ENCODE",
+        "ENC-INTRA-BLOCK-MODE-TRACE",
+        "ENC-INTRA-BLOCK-TRACE-BYPASS-LITERAL",
+        "ENC-INTRA-BLOCK-TRACE-CHROMA-SKIP",
+        "ENC-INTRA-BLOCK-TRACE-CODED-CHROMA-DC",
+        "ENC-INTRA-BLOCK-TRACE-CODED-DC",
+        "ENC-INTRA-BLOCK-TRACE-GOLOMB-FINITE",
+        "ENC-INTRA-BLOCK-TRACE-GOLOMB-PREFIX",
+        "ENC-INTRA-BLOCK-TRACE-IST",
+        "ENC-INTRA-BLOCK-TRACE-LUMA-SKIP",
+        "ENC-INTRA-BLOCK-TRACE-TWO-COEFF",
+        "ENC-INTRA-BLOCK-TRACE-TWO-COEFF-TX-TYPE"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-encode/src/block_symbol_trace/compose.rs",
+      "sha256": "9f337143a5123185357747c680d4c5bedbca00ec194bfc7e134fa3ce53ad074e",
+      "scope_kind": "workspace:splot-encode",
+      "feature_ids": [
+        "ENC-BLOCK-SYMBOL-ENCODE",
+        "ENC-INTRA-BLOCK-MODE-TRACE",
+        "ENC-INTRA-BLOCK-TRACE-BYPASS-LITERAL",
+        "ENC-INTRA-BLOCK-TRACE-CHROMA-SKIP",
+        "ENC-INTRA-BLOCK-TRACE-CODED-CHROMA-DC",
+        "ENC-INTRA-BLOCK-TRACE-CODED-DC",
+        "ENC-INTRA-BLOCK-TRACE-GOLOMB-FINITE",
+        "ENC-INTRA-BLOCK-TRACE-GOLOMB-PREFIX",
+        "ENC-INTRA-BLOCK-TRACE-IST",
+        "ENC-INTRA-BLOCK-TRACE-LUMA-SKIP",
+        "ENC-INTRA-BLOCK-TRACE-TWO-COEFF",
+        "ENC-INTRA-BLOCK-TRACE-TWO-COEFF-TX-TYPE"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-encode/src/block_symbol_trace/golomb.rs",
+      "sha256": "c4580df01bc0141113421c9e782537948164a937c3ab58c6e47b4c1b4e8cc556",
+      "scope_kind": "workspace:splot-encode",
+      "feature_ids": [
+        "ENC-BLOCK-SYMBOL-ENCODE",
+        "ENC-INTRA-BLOCK-MODE-TRACE",
+        "ENC-INTRA-BLOCK-TRACE-BYPASS-LITERAL",
+        "ENC-INTRA-BLOCK-TRACE-CHROMA-SKIP",
+        "ENC-INTRA-BLOCK-TRACE-CODED-CHROMA-DC",
+        "ENC-INTRA-BLOCK-TRACE-CODED-DC",
+        "ENC-INTRA-BLOCK-TRACE-GOLOMB-FINITE",
+        "ENC-INTRA-BLOCK-TRACE-GOLOMB-PREFIX",
+        "ENC-INTRA-BLOCK-TRACE-IST",
+        "ENC-INTRA-BLOCK-TRACE-LUMA-SKIP",
+        "ENC-INTRA-BLOCK-TRACE-TWO-COEFF",
+        "ENC-INTRA-BLOCK-TRACE-TWO-COEFF-TX-TYPE"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-encode/src/block_symbol_trace/mod.rs",
+      "sha256": "23d3016de33d752b731de40d73691cfef4dfdb7a7af6ee66ca2bc7cdbf3a4078",
+      "scope_kind": "workspace:splot-encode",
+      "feature_ids": [
+        "ENC-BLOCK-SYMBOL-ENCODE",
+        "ENC-INTRA-BLOCK-MODE-TRACE",
+        "ENC-INTRA-BLOCK-TRACE-BYPASS-LITERAL",
+        "ENC-INTRA-BLOCK-TRACE-CHROMA-SKIP",
+        "ENC-INTRA-BLOCK-TRACE-CODED-CHROMA-DC",
+        "ENC-INTRA-BLOCK-TRACE-CODED-DC",
+        "ENC-INTRA-BLOCK-TRACE-GOLOMB-FINITE",
+        "ENC-INTRA-BLOCK-TRACE-GOLOMB-PREFIX",
+        "ENC-INTRA-BLOCK-TRACE-IST",
+        "ENC-INTRA-BLOCK-TRACE-LUMA-SKIP",
+        "ENC-INTRA-BLOCK-TRACE-TWO-COEFF",
+        "ENC-INTRA-BLOCK-TRACE-TWO-COEFF-TX-TYPE"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-encode/src/block_symbol_trace/tests.rs",
+      "sha256": "44bf4366ebf8aace14ee038b3a56d5b77b31aabf9bae6d8177fe17f4c30138f0",
+      "scope_kind": "workspace:splot-encode",
+      "feature_ids": [
+        "ENC-BLOCK-SYMBOL-ENCODE",
+        "ENC-INTRA-BLOCK-MODE-TRACE",
+        "ENC-INTRA-BLOCK-TRACE-BYPASS-LITERAL",
+        "ENC-INTRA-BLOCK-TRACE-CHROMA-SKIP",
+        "ENC-INTRA-BLOCK-TRACE-CODED-CHROMA-DC",
+        "ENC-INTRA-BLOCK-TRACE-CODED-DC",
+        "ENC-INTRA-BLOCK-TRACE-GOLOMB-FINITE",
+        "ENC-INTRA-BLOCK-TRACE-GOLOMB-PREFIX",
+        "ENC-INTRA-BLOCK-TRACE-IST",
+        "ENC-INTRA-BLOCK-TRACE-LUMA-SKIP",
+        "ENC-INTRA-BLOCK-TRACE-TWO-COEFF",
+        "ENC-INTRA-BLOCK-TRACE-TWO-COEFF-TX-TYPE"
+      ],
       "outcome": "success"
     },
     {
       "path": "crates/splot-encode/src/closed_loop.rs",
-      "sha256": "785cadfd109f27ba4fbb097956819b8421b4fc7c29099a141eb17481e54e844a",
+      "sha256": "7d16d36c91328fb2d2115b8d2604baecbb0f443589980f0e2bd2ef1775682135",
       "scope_kind": "workspace:splot-encode",
       "feature_ids": [
         "ENC-CLOSED-LOOP-RECONSTRUCTION-MINIMAL"
@@ -2458,17 +2662,63 @@
     },
     {
       "path": "crates/splot-encode/src/coefficient_tokenization.rs",
-      "sha256": "149b4ce8b1f2afd8a2486bd9fa52750d51c8e6a921213a75b65d0b7c647ca520",
+      "sha256": "d9d682e2dbaa809c5cf0d3de4a33939b2752fb7548d01a962c99c3aa61ec2446",
       "scope_kind": "workspace:splot-encode",
       "feature_ids": [
+        "ENC-COEFF-BASE-LF-CONTEXT",
+        "ENC-COEFF-BASE-LF-TOKEN",
         "ENC-COEFFICIENT-TOKENIZATION-MINIMAL",
-        "ENC-INTRA-BLOCK-TRACE-CODED-BR"
+        "ENC-INTRA-BLOCK-TRACE-CODED-BR",
+        "ENC-SEC-TX-TYPE-TOKEN"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-encode/src/coefficient_tokenization/cdf_rows.rs",
+      "sha256": "b588613a57cb1aa3e6421df0b1a923fbe7f01fac972a2c81b0f8ed68bdd1daa7",
+      "scope_kind": "workspace:splot-encode",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-encode/src/coefficient_tokenization/coeff_base_lf.rs",
+      "sha256": "85a42db15dfd6505dfa9fc37c47404e0c3571f552a053db6629bf46b6072548e",
+      "scope_kind": "workspace:splot-encode",
+      "feature_ids": [
+        "ENC-COEFF-BASE-LF-CONTEXT",
+        "ENC-COEFF-BASE-LF-TOKEN"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-encode/src/coefficient_tokenization/general_coded.rs",
+      "sha256": "d21c6dc819f0e8664e0bc77110ace7b177526356c8debda66ceb198cd8d859ac",
+      "scope_kind": "workspace:splot-encode",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-encode/src/coefficient_tokenization/multi_coeff.rs",
+      "sha256": "08d05c2862bf8922a88c3fd6fbeb7618564408ff0f772870769ff7aee2f412c4",
+      "scope_kind": "workspace:splot-encode",
+      "feature_ids": [
+        "ENC-COEFF-MULTI-TOKENS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-encode/src/coefficient_tokenization/transform_type.rs",
+      "sha256": "4dbb23dbc070f90e4ad55b480312bbff549f876ae76847a28773b5df941a5a88",
+      "scope_kind": "workspace:splot-encode",
+      "feature_ids": [
+        "ENC-INTRA-TX-TYPE-TOKEN",
+        "ENC-SEC-TX-TYPE-TOKEN"
       ],
       "outcome": "success"
     },
     {
       "path": "crates/splot-encode/src/coefficient_tokenization_tests.rs",
-      "sha256": "b34daaebcbaa33df93a1b29ea03cf354a31c98d28a8895c85eaf4cc949d4be6e",
+      "sha256": "ade1cc058aa1bb876a4cf28c9f4036a0e157c4333cb930b610f1263d0e20ab25",
       "scope_kind": "workspace:splot-encode",
       "feature_ids": [],
       "outcome": "success"
@@ -2502,7 +2752,7 @@
     },
     {
       "path": "crates/splot-encode/src/error.rs",
-      "sha256": "599dc4fa8c8012537d07fb8ff42f851db3504f023fee26aa0fff856c966e6e38",
+      "sha256": "9e0f9c240d04c32b211b498b0c278b521dd8b370377dd0e508c5e7703a00633f",
       "scope_kind": "workspace:splot-encode",
       "feature_ids": [],
       "outcome": "success"
@@ -2522,6 +2772,57 @@
       "scope_kind": "workspace:splot-encode",
       "feature_ids": [
         "ENC-Y4M-INPUT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-encode/src/general_intra_trace/chroma.rs",
+      "sha256": "5bee2c3634d335b0d234e10541eaaba501c8f09e39f6e5c8f14db1d533146df4",
+      "scope_kind": "workspace:splot-encode",
+      "feature_ids": [
+        "ENC-GENERAL-INTRA-ALL-PLANES-CODED",
+        "ENC-GENERAL-INTRA-CODED-CHROMA-DC",
+        "ENC-GENERAL-INTRA-CODED-CHROMA-V-DC"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-encode/src/general_intra_trace/coded_dc.rs",
+      "sha256": "068269b30a7aa6ba8fda51048ffe3fc2a777f7dcd8e3f8b7a2512315ab5441a8",
+      "scope_kind": "workspace:splot-encode",
+      "feature_ids": [
+        "ENC-GENERAL-INTRA-CODED-LUMA-DC"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-encode/src/general_intra_trace/mod.rs",
+      "sha256": "c4cef9c41e2f879f40cd4b6e7d5280d6cd3311a1352f74440761d07f2bd04bcc",
+      "scope_kind": "workspace:splot-encode",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-encode/src/general_intra_trace/multi_coeff.rs",
+      "sha256": "0492cd073bbadc38dad28af799b7a4c38b902d5a43da9a4d63d2631aa7535aba",
+      "scope_kind": "workspace:splot-encode",
+      "feature_ids": [
+        "ENC-GENERAL-INTRA-2D",
+        "ENC-GENERAL-INTRA-EOB3",
+        "ENC-GENERAL-INTRA-TWO-COEFF",
+        "ENC-GENERAL-INTRA-TWO-NONZERO",
+        "ENC-GENERAL-INTRA-VISIBLE-AC"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-encode/src/general_intra_trace/skip.rs",
+      "sha256": "65f2703f75b8b657cf465553bc0b8eb6ff3b0ff9bf3fe73a9b5848c837f812e9",
+      "scope_kind": "workspace:splot-encode",
+      "feature_ids": [
+        "ENC-GENERAL-INTRA-SKIP-BLOCK-TRACE",
+        "ENC-GENERAL-INTRA-SKIP-TILE-DATA",
+        "ENC-MINIMAL-INTRA-SKIP-IVF"
       ],
       "outcome": "success"
     },
@@ -2553,9 +2854,18 @@
     },
     {
       "path": "crates/splot-encode/src/lib.rs",
-      "sha256": "6c1d813c87689d520ec4f13c68093593ce8fa21b9dd3c1c29e4f4541a784c043",
+      "sha256": "9017933382251d74caf68f8eb3f6a5780ccd687c91768a990d2a49b321e939b6",
       "scope_kind": "workspace:splot-encode",
       "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-encode/src/partition_emission.rs",
+      "sha256": "42c73bec4242841d7977a14936d04aedaa2dd75a1bab56fd9135b197e0c48c37",
+      "scope_kind": "workspace:splot-encode",
+      "feature_ids": [
+        "ENC-DO-SPLIT-PARTITION-SYMBOL"
+      ],
       "outcome": "success"
     },
     {
@@ -2679,6 +2989,18 @@
       "outcome": "success"
     },
     {
+      "path": "crates/splot-recon/src/deblock_filter.rs",
+      "sha256": "add1852d168f41f1525b9f65f545a2cf3f8fdc751f286c5ff58dc216a8edffed",
+      "scope_kind": "workspace:splot-recon",
+      "feature_ids": [
+        "RECON-DEBLOCK-ADAPTIVE-STRENGTH",
+        "RECON-DEBLOCK-FILTER-CHOICE",
+        "RECON-DEBLOCK-FILTER-MAX-WIDTH",
+        "RECON-DEBLOCK-SAMPLE-FILTER"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "crates/splot-recon/src/dequant.rs",
       "sha256": "e7c990f9a62f4ee8274baa1fd086421303b6ceb3abde957d8f729167aec52637",
       "scope_kind": "workspace:splot-recon",
@@ -2700,7 +3022,7 @@
     },
     {
       "path": "crates/splot-recon/src/error.rs",
-      "sha256": "d6065ef5c9e686e2d6055a2019af748ca303eaedda2a345e84672576c6a8932f",
+      "sha256": "d2d3caa09368abd0dc73915a1e23afaed5a0cdae832668fd6548828da8864a07",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [],
       "outcome": "success"
@@ -2782,7 +3104,7 @@
     },
     {
       "path": "crates/splot-recon/src/intra_directional_angle.rs",
-      "sha256": "e149a11556fb2b62281e4729e415f462bd518b5ac16539f3bb8931abd1ba2117",
+      "sha256": "0914e517c67b65eef939e996a464160297b81fd91c154e14bdb97c8b465f4f01",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [
         "RECON-INTRA-MIDDLE-DIRECTIONAL-ANGLE-PREDICTION",
@@ -2792,7 +3114,7 @@
     },
     {
       "path": "crates/splot-recon/src/intra_directional_angle_tests.rs",
-      "sha256": "c5e273e7e83178d66b553ea1b56ae69190b1c39a96edf2da8955276c6988547d",
+      "sha256": "83eb33c24a7f5247f413130a978cff3eacf38f542e7f04e533a151bfc56bd273",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [],
       "outcome": "success"
@@ -2836,26 +3158,34 @@
     },
     {
       "path": "crates/splot-recon/src/inverse_transform_2d_outer.rs",
-      "sha256": "f80b3f1c10ae3c8adea1456189c8b55aa7344db0ff554f56c8c58d27796caae5",
+      "sha256": "410cd8b6af0604de661c16053af30de272a92e2aa612486c47c1d3f43c55f846",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [
-        "RECON-INVERSE-TRANSFORM-2D-OUTER"
+        "RECON-GET-TRANSFORM-1D-TYPE",
+        "RECON-INVERSE-TRANSFORM-2D-OUTER",
+        "RECON-RESOLVE-2D-TRANSFORM-PARAMS",
+        "RECON-TRANSFORM-SHIFT-LOOKUP"
       ],
       "outcome": "success"
     },
     {
       "path": "crates/splot-recon/src/lib.rs",
-      "sha256": "9f782770f7687ecf52aaf4ffe428d9266bbe7c25e79843dd1aba3052f970169b",
+      "sha256": "77ad32a1d2cc2174bb3d08b3ef56e15f40c3263689f32636f1137cbe6b6f92af",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [
         "INFRA-RECON-FRAME-PLANE-TYPES",
         "INFRA-ZERO-COPY-MEDIA-POLICY",
         "RECON-COEFFICIENT-SCAN-ORDER",
         "RECON-CURRENT-FRAME-WORKSPACE",
+        "RECON-DEBLOCK-ADAPTIVE-STRENGTH",
+        "RECON-DEBLOCK-FILTER-CHOICE",
+        "RECON-DEBLOCK-FILTER-MAX-WIDTH",
+        "RECON-DEBLOCK-SAMPLE-FILTER",
         "RECON-DEQUANT-PROCESS",
         "RECON-DEQUANT-QM-WEIGHT",
         "RECON-DEQUANT-QUANTIZER-INDEX-RESOLUTION",
         "RECON-DEQUANT-QUANTIZER-LOOKUP",
+        "RECON-DPCM-DIRECTION",
         "RECON-FRAME-HASH-DIGEST",
         "RECON-GET-TRANSFORM-1D-TYPE",
         "RECON-GET-TX-CLASS",
@@ -2873,8 +3203,11 @@
         "RECON-INVERSE-TRANSFORM-2D",
         "RECON-INVERSE-TRANSFORM-2D-OUTER",
         "RECON-INVERSE-TRANSFORM-MATRIX-FREE",
+        "RECON-RECONSTRUCT-TRANSFORM-BLOCK",
         "RECON-REFERENCE-FRAME-STORE",
         "RECON-RESIDUAL-ADDITION",
+        "RECON-RESOLVE-2D-TRANSFORM-PARAMS",
+        "RECON-SECONDARY-INVERSE-TRANSFORM",
         "RECON-TRANSFORM-SHIFT-LOOKUP",
         "RECON-WORKSPACE-DIRECTIONAL-ANGLE-PREDICTION",
         "RECON-Y4M-OUTPUT-WRITER"
@@ -2898,6 +3231,15 @@
       "outcome": "success"
     },
     {
+      "path": "crates/splot-recon/src/reconstruct_block.rs",
+      "sha256": "1f65fabdf22a3598ed73201265aafaee277fc952c2b3399aa0a160ae784629ad",
+      "scope_kind": "workspace:splot-recon",
+      "feature_ids": [
+        "RECON-RECONSTRUCT-TRANSFORM-BLOCK"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "crates/splot-recon/src/reference.rs",
       "sha256": "70072ef34722e8c13f21d2c57289b46b69f096feebd3e0a344a8ba323ec92fc2",
       "scope_kind": "workspace:splot-recon",
@@ -2907,10 +3249,20 @@
       "outcome": "success"
     },
     {
-      "path": "crates/splot-recon/src/transform_params.rs",
-      "sha256": "0ceeb0308fda789acd893d8ad1afd289669961175dc96276c6725b1a24666727",
+      "path": "crates/splot-recon/src/secondary_transform.rs",
+      "sha256": "e22d40d61aaf481d0908d5f5e0b8dd48dc660b34c342900b6a76519262caa20e",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [
+        "RECON-SECONDARY-INVERSE-TRANSFORM"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-recon/src/transform_params.rs",
+      "sha256": "28f26c137e4965ac923a44e1c06137b833d496b8a5e68109db9fd3f79475c6b1",
+      "scope_kind": "workspace:splot-recon",
+      "feature_ids": [
+        "RECON-DPCM-DIRECTION",
         "RECON-GET-TRANSFORM-1D-TYPE",
         "RECON-TRANSFORM-SHIFT-LOOKUP"
       ],
@@ -2927,7 +3279,7 @@
     },
     {
       "path": "crates/splot-recon/src/workspace.rs",
-      "sha256": "33f29a9cb5ca922308d2fe4e1e7492f83dd1602ce1be062a5195df0734773aa9",
+      "sha256": "db798039a3e9764dcb1a12a03c220635d533ee4415dd8dde91d6688231abeeef",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [
         "RECON-CURRENT-FRAME-WORKSPACE",
@@ -2955,7 +3307,7 @@
     },
     {
       "path": "crates/splot-recon/src/workspace_intra_directional_angle.rs",
-      "sha256": "1e31abd5dc3a3644fcf1ebc40e823117dc5f3b984ea3f38c577f17ca73a4b2a9",
+      "sha256": "179be6c05e61d255352b6dc7f0d94c76cb2cebdbbb6ef6dff7a394d0d5df88af",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [
         "RECON-WORKSPACE-DIRECTIONAL-ANGLE-PREDICTION"
@@ -2964,14 +3316,14 @@
     },
     {
       "path": "crates/splot-recon/src/workspace_intra_directional_angle_tests.rs",
-      "sha256": "d1a76aa5e82ce6562f524fb5a2d70e79044b46c63ce56ca78d3be7e763f8d128",
+      "sha256": "cc35083ed5e66f1fbba8c5f3568d8e2d77c9944418c4ca81004f5dea507262cc",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [],
       "outcome": "success"
     },
     {
       "path": "crates/splot-recon/src/workspace_tests.rs",
-      "sha256": "ce7eb9f03105e9c9cccd46891e87c242c8358c756b7259cdc851faeef728c053",
+      "sha256": "5d5b69e6bd038da751df5ea517ba350730e97238f128403fc5ec74419039d819",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [],
       "outcome": "success"
@@ -4185,7 +4537,7 @@
     },
     {
       "path": "docs/DECODER-ROADMAP.md",
-      "sha256": "751671fe20edc6edd0cde86de57c2798a99ba153cbc73e68b0442e7f6553e337",
+      "sha256": "bdd730c05582cb509e1577cbc720015ff7f0b442ec1a5a5268d08addbfcbf8eb",
       "scope_kind": "docs",
       "feature_ids": [
         "DECODE-COEFF-ALL-ZERO-BLOCK-STATE",
@@ -4248,6 +4600,10 @@
         "DECODE-COEFF-USE-FSC-BRANCH-HANDOFF",
         "DECODE-COEFF-USE-FSC-CONDITION-HANDOFF",
         "DECODE-COEFF-USE-FSC-SHARED-FACTS-HANDOFF",
+        "DECODE-GENERAL-INTRA-BLOCK-MODES",
+        "DECODE-GENERAL-INTRA-FRAME-FRONTIER",
+        "DECODE-GENERAL-INTRA-FRAME-RECON",
+        "DECODE-GENERAL-INTRA-LUMA-COEFFS",
         "DECODE-MINIMAL-INTRA-RECONSTRUCTION-FRONTIER",
         "DECODE-MINIMAL-RAW-RUNTIME-OUTPUT",
         "DECODE-MINIMAL-TIER-RUNTIME-SUCCESS",
@@ -4266,24 +4622,32 @@
         "DOC-MINIMAL-DECODE-TIER-CONTRACT",
         "INFRA-PARALLEL-RUNTIME-POLICY",
         "RECON-COEFFICIENT-SCAN-ORDER",
+        "RECON-DEBLOCK-ADAPTIVE-STRENGTH",
+        "RECON-DEBLOCK-FILTER-CHOICE",
+        "RECON-DEBLOCK-FILTER-MAX-WIDTH",
+        "RECON-DEBLOCK-SAMPLE-FILTER",
         "RECON-DEQUANT-PROCESS",
         "RECON-DEQUANT-QM-WEIGHT",
         "RECON-DEQUANT-QUANTIZER-INDEX-RESOLUTION",
         "RECON-DEQUANT-QUANTIZER-LOOKUP",
+        "RECON-DPCM-DIRECTION",
         "RECON-GET-TRANSFORM-1D-TYPE",
         "RECON-GET-TX-CLASS",
         "RECON-INVERSE-TRANSFORM-1D",
         "RECON-INVERSE-TRANSFORM-2D",
         "RECON-INVERSE-TRANSFORM-2D-OUTER",
         "RECON-INVERSE-TRANSFORM-MATRIX-FREE",
+        "RECON-RECONSTRUCT-TRANSFORM-BLOCK",
         "RECON-RESIDUAL-ADDITION",
+        "RECON-RESOLVE-2D-TRANSFORM-PARAMS",
+        "RECON-SECONDARY-INVERSE-TRANSFORM",
         "RECON-TRANSFORM-SHIFT-LOOKUP"
       ],
       "outcome": "success"
     },
     {
       "path": "docs/DECODER-SPEC-COVERAGE.md",
-      "sha256": "a442d50ec2b7283ef89f103331683b7be3aa808bcfac0d9bb3c9609b73970bd0",
+      "sha256": "4adbe6178ab09442e8064beccd81dea19bda14e92e678bb6513cc0c18183b84b",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-8.2-SYMBOL-DECODER",
@@ -4359,6 +4723,13 @@
         "DECODE-COEFF-USE-FSC-CONDITION-HANDOFF",
         "DECODE-COEFF-USE-FSC-SHARED-FACTS-HANDOFF",
         "DECODE-CONTEXT-TILE-PAYLOAD-HANDOFF",
+        "DECODE-GENERAL-INTRA-BLOCK-DECODED",
+        "DECODE-GENERAL-INTRA-BLOCK-MODES",
+        "DECODE-GENERAL-INTRA-DEEP-SPLIT",
+        "DECODE-GENERAL-INTRA-FRAME-FRONTIER",
+        "DECODE-GENERAL-INTRA-FRAME-RECON",
+        "DECODE-GENERAL-INTRA-LUMA-COEFFS",
+        "DECODE-GENERAL-INTRA-MULTIBLOCK",
         "DECODE-MINIMAL-RAW-RUNTIME-OUTPUT",
         "DECODE-MODE-TO-TXFM-SYMBOLIC-TABLE",
         "DECODE-STREAM-STATE-PLANNER",
@@ -4373,10 +4744,15 @@
         "INFRA-RECON-FRAME-PLANE-TYPES",
         "RECON-COEFFICIENT-SCAN-ORDER",
         "RECON-CURRENT-FRAME-WORKSPACE",
+        "RECON-DEBLOCK-ADAPTIVE-STRENGTH",
+        "RECON-DEBLOCK-FILTER-CHOICE",
+        "RECON-DEBLOCK-FILTER-MAX-WIDTH",
+        "RECON-DEBLOCK-SAMPLE-FILTER",
         "RECON-DEQUANT-PROCESS",
         "RECON-DEQUANT-QM-WEIGHT",
         "RECON-DEQUANT-QUANTIZER-INDEX-RESOLUTION",
         "RECON-DEQUANT-QUANTIZER-LOOKUP",
+        "RECON-DPCM-DIRECTION",
         "RECON-FRAME-HASH-DIGEST",
         "RECON-GET-TRANSFORM-1D-TYPE",
         "RECON-GET-TX-CLASS",
@@ -4393,8 +4769,11 @@
         "RECON-INVERSE-TRANSFORM-2D",
         "RECON-INVERSE-TRANSFORM-2D-OUTER",
         "RECON-INVERSE-TRANSFORM-MATRIX-FREE",
+        "RECON-RECONSTRUCT-TRANSFORM-BLOCK",
         "RECON-REFERENCE-FRAME-STORE",
         "RECON-RESIDUAL-ADDITION",
+        "RECON-RESOLVE-2D-TRANSFORM-PARAMS",
+        "RECON-SECONDARY-INVERSE-TRANSFORM",
         "RECON-TRANSFORM-SHIFT-LOOKUP",
         "RECON-WORKSPACE-DIRECTIONAL-ANGLE-PREDICTION",
         "RECON-Y4M-OUTPUT-WRITER"
@@ -4403,7 +4782,7 @@
     },
     {
       "path": "docs/DECODER-SUPPORT-MATRIX.toml",
-      "sha256": "8bca5b8bf2c1810467dd0ae3a22e4d3c26fd1ae8bdeddedcde5a805fa837afd3",
+      "sha256": "ea978000a65ff5d91b6fceda37cbd5bbc7960b40ff2a125a1add4591987f7b1c",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-8.2-SYMBOL-DECODER",
@@ -4481,6 +4860,30 @@
         "DECODE-COEFF-USE-FSC-CONDITION-HANDOFF",
         "DECODE-COEFF-USE-FSC-SHARED-FACTS-HANDOFF",
         "DECODE-CONTEXT-TILE-PAYLOAD-HANDOFF",
+        "DECODE-GENERAL-INTRA-ANGLE",
+        "DECODE-GENERAL-INTRA-ANGLE-D113",
+        "DECODE-GENERAL-INTRA-ANGLE-D45",
+        "DECODE-GENERAL-INTRA-BLOCK-DECODED",
+        "DECODE-GENERAL-INTRA-BLOCK-MODES",
+        "DECODE-GENERAL-INTRA-CARDINAL",
+        "DECODE-GENERAL-INTRA-DEEP-SPLIT",
+        "DECODE-GENERAL-INTRA-DIRECTIONAL-CORNER",
+        "DECODE-GENERAL-INTRA-DIRECTIONAL-FOLLOW-CHROMA",
+        "DECODE-GENERAL-INTRA-DIRECTIONAL-NEIGHBOUR-CTX",
+        "DECODE-GENERAL-INTRA-FRAME-FRONTIER",
+        "DECODE-GENERAL-INTRA-FRAME-RECON",
+        "DECODE-GENERAL-INTRA-GRID",
+        "DECODE-GENERAL-INTRA-GRID-NEIGHBOUR-NONDC",
+        "DECODE-GENERAL-INTRA-GRID-SMOOTH-H-ABOVE-RIGHT",
+        "DECODE-GENERAL-INTRA-IDIF-D157",
+        "DECODE-GENERAL-INTRA-LUMA-COEFFS",
+        "DECODE-GENERAL-INTRA-MB-NEIGHBOUR-SMOOTH",
+        "DECODE-GENERAL-INTRA-MULTIBLOCK",
+        "DECODE-GENERAL-INTRA-MULTIROW",
+        "DECODE-GENERAL-INTRA-NEIGHBOUR-DIRECTIONAL",
+        "DECODE-GENERAL-INTRA-NON64-MULTISB",
+        "DECODE-GENERAL-INTRA-NONDC-LUMA-SMOOTH",
+        "DECODE-GENERAL-INTRA-NONDC-LUMA-SMOOTH-PLAIN",
         "DECODE-LIMITS-RUNTIME-API",
         "DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER",
         "DECODE-MINIMAL-INTRA-RECONSTRUCTION-FRONTIER",
@@ -4516,10 +4919,15 @@
         "INFRA-SHARED-SPEC-TABLES",
         "RECON-COEFFICIENT-SCAN-ORDER",
         "RECON-CURRENT-FRAME-WORKSPACE",
+        "RECON-DEBLOCK-ADAPTIVE-STRENGTH",
+        "RECON-DEBLOCK-FILTER-CHOICE",
+        "RECON-DEBLOCK-FILTER-MAX-WIDTH",
+        "RECON-DEBLOCK-SAMPLE-FILTER",
         "RECON-DEQUANT-PROCESS",
         "RECON-DEQUANT-QM-WEIGHT",
         "RECON-DEQUANT-QUANTIZER-INDEX-RESOLUTION",
         "RECON-DEQUANT-QUANTIZER-LOOKUP",
+        "RECON-DPCM-DIRECTION",
         "RECON-FRAME-HASH-DIGEST",
         "RECON-GET-TRANSFORM-1D-TYPE",
         "RECON-GET-TX-CLASS",
@@ -4536,8 +4944,11 @@
         "RECON-INVERSE-TRANSFORM-2D",
         "RECON-INVERSE-TRANSFORM-2D-OUTER",
         "RECON-INVERSE-TRANSFORM-MATRIX-FREE",
+        "RECON-RECONSTRUCT-TRANSFORM-BLOCK",
         "RECON-REFERENCE-FRAME-STORE",
         "RECON-RESIDUAL-ADDITION",
+        "RECON-RESOLVE-2D-TRANSFORM-PARAMS",
+        "RECON-SECONDARY-INVERSE-TRANSFORM",
         "RECON-TRANSFORM-SHIFT-LOOKUP",
         "RECON-WORKSPACE-DIRECTIONAL-ANGLE-PREDICTION",
         "RECON-Y4M-OUTPUT-WRITER",
@@ -4549,7 +4960,7 @@
     },
     {
       "path": "docs/DECODER-SUPPORT-STATUS.md",
-      "sha256": "69bffceb482aaaa8ca4f1883769d5331b206a7f7de537b7260e814d8824e5356",
+      "sha256": "bd4cd85ae0bbacd6291ad08800cdfef5aafb1df7f9eb7bdb983fcc007c875bd8",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-8.2-SYMBOL-DECODER",
@@ -4627,6 +5038,30 @@
         "DECODE-COEFF-USE-FSC-CONDITION-HANDOFF",
         "DECODE-COEFF-USE-FSC-SHARED-FACTS-HANDOFF",
         "DECODE-CONTEXT-TILE-PAYLOAD-HANDOFF",
+        "DECODE-GENERAL-INTRA-ANGLE",
+        "DECODE-GENERAL-INTRA-ANGLE-D113",
+        "DECODE-GENERAL-INTRA-ANGLE-D45",
+        "DECODE-GENERAL-INTRA-BLOCK-DECODED",
+        "DECODE-GENERAL-INTRA-BLOCK-MODES",
+        "DECODE-GENERAL-INTRA-CARDINAL",
+        "DECODE-GENERAL-INTRA-DEEP-SPLIT",
+        "DECODE-GENERAL-INTRA-DIRECTIONAL-CORNER",
+        "DECODE-GENERAL-INTRA-DIRECTIONAL-FOLLOW-CHROMA",
+        "DECODE-GENERAL-INTRA-DIRECTIONAL-NEIGHBOUR-CTX",
+        "DECODE-GENERAL-INTRA-FRAME-FRONTIER",
+        "DECODE-GENERAL-INTRA-FRAME-RECON",
+        "DECODE-GENERAL-INTRA-GRID",
+        "DECODE-GENERAL-INTRA-GRID-NEIGHBOUR-NONDC",
+        "DECODE-GENERAL-INTRA-GRID-SMOOTH-H-ABOVE-RIGHT",
+        "DECODE-GENERAL-INTRA-IDIF-D157",
+        "DECODE-GENERAL-INTRA-LUMA-COEFFS",
+        "DECODE-GENERAL-INTRA-MB-NEIGHBOUR-SMOOTH",
+        "DECODE-GENERAL-INTRA-MULTIBLOCK",
+        "DECODE-GENERAL-INTRA-MULTIROW",
+        "DECODE-GENERAL-INTRA-NEIGHBOUR-DIRECTIONAL",
+        "DECODE-GENERAL-INTRA-NON64-MULTISB",
+        "DECODE-GENERAL-INTRA-NONDC-LUMA-SMOOTH",
+        "DECODE-GENERAL-INTRA-NONDC-LUMA-SMOOTH-PLAIN",
         "DECODE-LIMITS-RUNTIME-API",
         "DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER",
         "DECODE-MINIMAL-INTRA-RECONSTRUCTION-FRONTIER",
@@ -4661,10 +5096,15 @@
         "INFRA-RECON-FRAME-PLANE-TYPES",
         "RECON-COEFFICIENT-SCAN-ORDER",
         "RECON-CURRENT-FRAME-WORKSPACE",
+        "RECON-DEBLOCK-ADAPTIVE-STRENGTH",
+        "RECON-DEBLOCK-FILTER-CHOICE",
+        "RECON-DEBLOCK-FILTER-MAX-WIDTH",
+        "RECON-DEBLOCK-SAMPLE-FILTER",
         "RECON-DEQUANT-PROCESS",
         "RECON-DEQUANT-QM-WEIGHT",
         "RECON-DEQUANT-QUANTIZER-INDEX-RESOLUTION",
         "RECON-DEQUANT-QUANTIZER-LOOKUP",
+        "RECON-DPCM-DIRECTION",
         "RECON-FRAME-HASH-DIGEST",
         "RECON-GET-TRANSFORM-1D-TYPE",
         "RECON-GET-TX-CLASS",
@@ -4681,8 +5121,11 @@
         "RECON-INVERSE-TRANSFORM-2D",
         "RECON-INVERSE-TRANSFORM-2D-OUTER",
         "RECON-INVERSE-TRANSFORM-MATRIX-FREE",
+        "RECON-RECONSTRUCT-TRANSFORM-BLOCK",
         "RECON-REFERENCE-FRAME-STORE",
         "RECON-RESIDUAL-ADDITION",
+        "RECON-RESOLVE-2D-TRANSFORM-PARAMS",
+        "RECON-SECONDARY-INVERSE-TRANSFORM",
         "RECON-TRANSFORM-SHIFT-LOOKUP",
         "RECON-WORKSPACE-DIRECTIONAL-ANGLE-PREDICTION",
         "RECON-Y4M-OUTPUT-WRITER",
@@ -4694,13 +5137,17 @@
     },
     {
       "path": "docs/ENCODER-GAP-AUDIT.md",
-      "sha256": "14050d778cc09674a6a1dc5cd0cd1788543ad024669166879d5b57975f2df83b",
+      "sha256": "736ecbb127218865d267bf71d4e290af5404b779feb263efc9199152e2b2f257",
       "scope_kind": "docs",
       "feature_ids": [
         "CONF-AVM-DIFF-HARNESS",
         "DOC-ENCODER-PROGRAM-CONTRACT",
         "ENC-BITSTREAM-WRITER",
+        "ENC-BLOCK-SYMBOL-ENCODE",
         "ENC-CLOSED-LOOP-RECONSTRUCTION-MINIMAL",
+        "ENC-COEFF-BASE-LF-CONTEXT",
+        "ENC-COEFF-BASE-LF-TOKEN",
+        "ENC-COEFF-MULTI-TOKENS",
         "ENC-COEFFICIENT-TOKENIZATION-MINIMAL",
         "ENC-CONTEXT-STATE-MACHINE",
         "ENC-FORWARD-TRANSFORM-FOUNDATION",
@@ -4711,14 +5158,21 @@
         "ENC-INTRA-BLOCK-TRACE-CODED-CHROMA-DC",
         "ENC-INTRA-BLOCK-TRACE-CODED-DC",
         "ENC-INTRA-BLOCK-TRACE-GOLOMB-FINITE",
+        "ENC-INTRA-BLOCK-TRACE-GOLOMB-PREFIX",
+        "ENC-INTRA-BLOCK-TRACE-IST",
         "ENC-INTRA-BLOCK-TRACE-LUMA-SKIP",
+        "ENC-INTRA-BLOCK-TRACE-TWO-COEFF",
+        "ENC-INTRA-BLOCK-TRACE-TWO-COEFF-TX-TYPE",
         "ENC-INTRA-MODE-SYMBOL-EMISSION",
+        "ENC-INTRA-TX-TYPE-TOKEN",
         "ENC-MINIMAL-HEADER-PLAN",
         "ENC-QUANTIZATION-V0",
         "ENC-RESIDUAL-FOUNDATION",
+        "ENC-SEC-TX-TYPE-TOKEN",
         "ENC-SPEED-PRESETS",
         "ENC-SYNTAX-IR",
         "ENC-UV-MODE-SYMBOL-EMISSION",
+        "ENC-WRITER-INPUT-FRAMING",
         "ENC-Y4M-INPUT"
       ],
       "outcome": "success"
@@ -4734,7 +5188,7 @@
     },
     {
       "path": "docs/ENCODER-ROADMAP.md",
-      "sha256": "3929c8e5df871c09be6d3d643812f2604d63dc6ba142ce4010da2e70f9b59017",
+      "sha256": "459f748fdb4ac469563fc20034a6f8f0c99e36a15f8db36cee16fe40e9ec0d04",
       "scope_kind": "docs",
       "feature_ids": [
         "CONF-AVM-DIFF-HARNESS",
@@ -4751,7 +5205,7 @@
     },
     {
       "path": "docs/FEATURE-STATUS.md",
-      "sha256": "1242cdc8cf65040f5cf59f6254cd606ffa3964ff93aedaa9297a6af4b59535c8",
+      "sha256": "f00f8d7a06628767a6b4312b8ef3b0cbb416b0b9d4de59bfa787f5bac3f8f6fc",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.10-RG",
@@ -4949,6 +5403,30 @@
         "DECODE-COEFF-USE-FSC-CONDITION-HANDOFF",
         "DECODE-COEFF-USE-FSC-SHARED-FACTS-HANDOFF",
         "DECODE-CONTEXT-TILE-PAYLOAD-HANDOFF",
+        "DECODE-GENERAL-INTRA-ANGLE",
+        "DECODE-GENERAL-INTRA-ANGLE-D113",
+        "DECODE-GENERAL-INTRA-ANGLE-D45",
+        "DECODE-GENERAL-INTRA-BLOCK-DECODED",
+        "DECODE-GENERAL-INTRA-BLOCK-MODES",
+        "DECODE-GENERAL-INTRA-CARDINAL",
+        "DECODE-GENERAL-INTRA-DEEP-SPLIT",
+        "DECODE-GENERAL-INTRA-DIRECTIONAL-CORNER",
+        "DECODE-GENERAL-INTRA-DIRECTIONAL-FOLLOW-CHROMA",
+        "DECODE-GENERAL-INTRA-DIRECTIONAL-NEIGHBOUR-CTX",
+        "DECODE-GENERAL-INTRA-FRAME-FRONTIER",
+        "DECODE-GENERAL-INTRA-FRAME-RECON",
+        "DECODE-GENERAL-INTRA-GRID",
+        "DECODE-GENERAL-INTRA-GRID-NEIGHBOUR-NONDC",
+        "DECODE-GENERAL-INTRA-GRID-SMOOTH-H-ABOVE-RIGHT",
+        "DECODE-GENERAL-INTRA-IDIF-D157",
+        "DECODE-GENERAL-INTRA-LUMA-COEFFS",
+        "DECODE-GENERAL-INTRA-MB-NEIGHBOUR-SMOOTH",
+        "DECODE-GENERAL-INTRA-MULTIBLOCK",
+        "DECODE-GENERAL-INTRA-MULTIROW",
+        "DECODE-GENERAL-INTRA-NEIGHBOUR-DIRECTIONAL",
+        "DECODE-GENERAL-INTRA-NON64-MULTISB",
+        "DECODE-GENERAL-INTRA-NONDC-LUMA-SMOOTH",
+        "DECODE-GENERAL-INTRA-NONDC-LUMA-SMOOTH-PLAIN",
         "DECODE-LIMITS-RUNTIME-API",
         "DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER",
         "DECODE-MINIMAL-INTRA-RECONSTRUCTION-FRONTIER",
@@ -4987,10 +5465,27 @@
         "DOC-VALIDATOR-EXAMPLES",
         "DOC-VALIDATOR-ROADMAP",
         "ENC-BITSTREAM-WRITER",
+        "ENC-BLOCK-SYMBOL-ENCODE",
         "ENC-CLOSED-LOOP-RECONSTRUCTION-MINIMAL",
+        "ENC-COEFF-BASE-LF-CONTEXT",
+        "ENC-COEFF-BASE-LF-TOKEN",
+        "ENC-COEFF-MULTI-TOKENS",
         "ENC-COEFFICIENT-TOKENIZATION-MINIMAL",
         "ENC-CONTEXT-STATE-MACHINE",
+        "ENC-DO-SPLIT-PARTITION-SYMBOL",
         "ENC-FORWARD-TRANSFORM-FOUNDATION",
+        "ENC-FRAME-HEADER-CORE-ASSEMBLER",
+        "ENC-GENERAL-INTRA-2D",
+        "ENC-GENERAL-INTRA-ALL-PLANES-CODED",
+        "ENC-GENERAL-INTRA-CODED-CHROMA-DC",
+        "ENC-GENERAL-INTRA-CODED-CHROMA-V-DC",
+        "ENC-GENERAL-INTRA-CODED-LUMA-DC",
+        "ENC-GENERAL-INTRA-EOB3",
+        "ENC-GENERAL-INTRA-SKIP-BLOCK-TRACE",
+        "ENC-GENERAL-INTRA-SKIP-TILE-DATA",
+        "ENC-GENERAL-INTRA-TWO-COEFF",
+        "ENC-GENERAL-INTRA-TWO-NONZERO",
+        "ENC-GENERAL-INTRA-VISIBLE-AC",
         "ENC-INTRA-BLOCK-MODE-TRACE",
         "ENC-INTRA-BLOCK-TRACE-BYPASS-LITERAL",
         "ENC-INTRA-BLOCK-TRACE-CHROMA-SKIP",
@@ -4998,17 +5493,34 @@
         "ENC-INTRA-BLOCK-TRACE-CODED-CHROMA-DC",
         "ENC-INTRA-BLOCK-TRACE-CODED-DC",
         "ENC-INTRA-BLOCK-TRACE-GOLOMB-FINITE",
+        "ENC-INTRA-BLOCK-TRACE-GOLOMB-PREFIX",
+        "ENC-INTRA-BLOCK-TRACE-IST",
         "ENC-INTRA-BLOCK-TRACE-LUMA-SKIP",
+        "ENC-INTRA-BLOCK-TRACE-TWO-COEFF",
+        "ENC-INTRA-BLOCK-TRACE-TWO-COEFF-TX-TYPE",
         "ENC-INTRA-MODE-SYMBOL-EMISSION",
         "ENC-INTRA-TOY-V0",
+        "ENC-INTRA-TX-TYPE-TOKEN",
+        "ENC-MINIMAL-CLK-BASE-Q-IDX",
         "ENC-MINIMAL-HEADER-PLAN",
+        "ENC-MINIMAL-INTRA-CLK-ANNEXB-OBU",
+        "ENC-MINIMAL-INTRA-IVF",
+        "ENC-MINIMAL-INTRA-SKIP-IVF",
+        "ENC-MINIMAL-INTRA-TILE-GROUP-OBU",
         "ENC-QUANTIZATION-V0",
         "ENC-RATE-CONTROL-V0",
         "ENC-RECON-DEPENDENCY",
         "ENC-RESIDUAL-FOUNDATION",
+        "ENC-SEC-TX-TYPE-TOKEN",
+        "ENC-SEQUENCE-HEADER-OBU",
         "ENC-SPEED-PRESETS",
         "ENC-SYNTAX-IR",
+        "ENC-TEMPORAL-DELIMITER-OBU",
         "ENC-UV-MODE-SYMBOL-EMISSION",
+        "ENC-WRITER-INPUT-FRAMING",
+        "ENC-WRITER-INPUT-INTER-VIEW",
+        "ENC-WRITER-INPUT-SEQ-VIEW",
+        "ENC-WRITER-INPUT-STRUCTURE",
         "ENC-Y4M-INPUT",
         "INFRA-DECODER-CRATE-SCAFFOLDING",
         "INFRA-PARALLEL-RUNTIME-POLICY",
@@ -5017,10 +5529,15 @@
         "INFRA-ZERO-COPY-MEDIA-POLICY",
         "RECON-COEFFICIENT-SCAN-ORDER",
         "RECON-CURRENT-FRAME-WORKSPACE",
+        "RECON-DEBLOCK-ADAPTIVE-STRENGTH",
+        "RECON-DEBLOCK-FILTER-CHOICE",
+        "RECON-DEBLOCK-FILTER-MAX-WIDTH",
+        "RECON-DEBLOCK-SAMPLE-FILTER",
         "RECON-DEQUANT-PROCESS",
         "RECON-DEQUANT-QM-WEIGHT",
         "RECON-DEQUANT-QUANTIZER-INDEX-RESOLUTION",
         "RECON-DEQUANT-QUANTIZER-LOOKUP",
+        "RECON-DPCM-DIRECTION",
         "RECON-FRAME-HASH-DIGEST",
         "RECON-GET-TRANSFORM-1D-TYPE",
         "RECON-GET-TX-CLASS",
@@ -5038,8 +5555,11 @@
         "RECON-INVERSE-TRANSFORM-2D",
         "RECON-INVERSE-TRANSFORM-2D-OUTER",
         "RECON-INVERSE-TRANSFORM-MATRIX-FREE",
+        "RECON-RECONSTRUCT-TRANSFORM-BLOCK",
         "RECON-REFERENCE-FRAME-STORE",
         "RECON-RESIDUAL-ADDITION",
+        "RECON-RESOLVE-2D-TRANSFORM-PARAMS",
+        "RECON-SECONDARY-INVERSE-TRANSFORM",
         "RECON-TRANSFORM-SHIFT-LOOKUP",
         "RECON-WORKSPACE-DIRECTIONAL-ANGLE-PREDICTION",
         "RECON-Y4M-OUTPUT-WRITER",
@@ -5101,7 +5621,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "cf0b18c0365fbda53f6d554afab28ef4ecc9791106f577d29616754d9f86a7a3",
+      "sha256": "4b977e12474ae0a13f72d2122d8c6a0678482057a0a164b0f2950039b4512b84",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.10-RG",
@@ -5299,6 +5819,30 @@
         "DECODE-COEFF-USE-FSC-CONDITION-HANDOFF",
         "DECODE-COEFF-USE-FSC-SHARED-FACTS-HANDOFF",
         "DECODE-CONTEXT-TILE-PAYLOAD-HANDOFF",
+        "DECODE-GENERAL-INTRA-ANGLE",
+        "DECODE-GENERAL-INTRA-ANGLE-D113",
+        "DECODE-GENERAL-INTRA-ANGLE-D45",
+        "DECODE-GENERAL-INTRA-BLOCK-DECODED",
+        "DECODE-GENERAL-INTRA-BLOCK-MODES",
+        "DECODE-GENERAL-INTRA-CARDINAL",
+        "DECODE-GENERAL-INTRA-DEEP-SPLIT",
+        "DECODE-GENERAL-INTRA-DIRECTIONAL-CORNER",
+        "DECODE-GENERAL-INTRA-DIRECTIONAL-FOLLOW-CHROMA",
+        "DECODE-GENERAL-INTRA-DIRECTIONAL-NEIGHBOUR-CTX",
+        "DECODE-GENERAL-INTRA-FRAME-FRONTIER",
+        "DECODE-GENERAL-INTRA-FRAME-RECON",
+        "DECODE-GENERAL-INTRA-GRID",
+        "DECODE-GENERAL-INTRA-GRID-NEIGHBOUR-NONDC",
+        "DECODE-GENERAL-INTRA-GRID-SMOOTH-H-ABOVE-RIGHT",
+        "DECODE-GENERAL-INTRA-IDIF-D157",
+        "DECODE-GENERAL-INTRA-LUMA-COEFFS",
+        "DECODE-GENERAL-INTRA-MB-NEIGHBOUR-SMOOTH",
+        "DECODE-GENERAL-INTRA-MULTIBLOCK",
+        "DECODE-GENERAL-INTRA-MULTIROW",
+        "DECODE-GENERAL-INTRA-NEIGHBOUR-DIRECTIONAL",
+        "DECODE-GENERAL-INTRA-NON64-MULTISB",
+        "DECODE-GENERAL-INTRA-NONDC-LUMA-SMOOTH",
+        "DECODE-GENERAL-INTRA-NONDC-LUMA-SMOOTH-PLAIN",
         "DECODE-LIMITS-RUNTIME-API",
         "DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER",
         "DECODE-MINIMAL-INTRA-RECONSTRUCTION-FRONTIER",
@@ -5337,10 +5881,27 @@
         "DOC-VALIDATOR-EXAMPLES",
         "DOC-VALIDATOR-ROADMAP",
         "ENC-BITSTREAM-WRITER",
+        "ENC-BLOCK-SYMBOL-ENCODE",
         "ENC-CLOSED-LOOP-RECONSTRUCTION-MINIMAL",
+        "ENC-COEFF-BASE-LF-CONTEXT",
+        "ENC-COEFF-BASE-LF-TOKEN",
+        "ENC-COEFF-MULTI-TOKENS",
         "ENC-COEFFICIENT-TOKENIZATION-MINIMAL",
         "ENC-CONTEXT-STATE-MACHINE",
+        "ENC-DO-SPLIT-PARTITION-SYMBOL",
         "ENC-FORWARD-TRANSFORM-FOUNDATION",
+        "ENC-FRAME-HEADER-CORE-ASSEMBLER",
+        "ENC-GENERAL-INTRA-2D",
+        "ENC-GENERAL-INTRA-ALL-PLANES-CODED",
+        "ENC-GENERAL-INTRA-CODED-CHROMA-DC",
+        "ENC-GENERAL-INTRA-CODED-CHROMA-V-DC",
+        "ENC-GENERAL-INTRA-CODED-LUMA-DC",
+        "ENC-GENERAL-INTRA-EOB3",
+        "ENC-GENERAL-INTRA-SKIP-BLOCK-TRACE",
+        "ENC-GENERAL-INTRA-SKIP-TILE-DATA",
+        "ENC-GENERAL-INTRA-TWO-COEFF",
+        "ENC-GENERAL-INTRA-TWO-NONZERO",
+        "ENC-GENERAL-INTRA-VISIBLE-AC",
         "ENC-INTRA-BLOCK-MODE-TRACE",
         "ENC-INTRA-BLOCK-TRACE-BYPASS-LITERAL",
         "ENC-INTRA-BLOCK-TRACE-CHROMA-SKIP",
@@ -5348,17 +5909,34 @@
         "ENC-INTRA-BLOCK-TRACE-CODED-CHROMA-DC",
         "ENC-INTRA-BLOCK-TRACE-CODED-DC",
         "ENC-INTRA-BLOCK-TRACE-GOLOMB-FINITE",
+        "ENC-INTRA-BLOCK-TRACE-GOLOMB-PREFIX",
+        "ENC-INTRA-BLOCK-TRACE-IST",
         "ENC-INTRA-BLOCK-TRACE-LUMA-SKIP",
+        "ENC-INTRA-BLOCK-TRACE-TWO-COEFF",
+        "ENC-INTRA-BLOCK-TRACE-TWO-COEFF-TX-TYPE",
         "ENC-INTRA-MODE-SYMBOL-EMISSION",
         "ENC-INTRA-TOY-V0",
+        "ENC-INTRA-TX-TYPE-TOKEN",
+        "ENC-MINIMAL-CLK-BASE-Q-IDX",
         "ENC-MINIMAL-HEADER-PLAN",
+        "ENC-MINIMAL-INTRA-CLK-ANNEXB-OBU",
+        "ENC-MINIMAL-INTRA-IVF",
+        "ENC-MINIMAL-INTRA-SKIP-IVF",
+        "ENC-MINIMAL-INTRA-TILE-GROUP-OBU",
         "ENC-QUANTIZATION-V0",
         "ENC-RATE-CONTROL-V0",
         "ENC-RECON-DEPENDENCY",
         "ENC-RESIDUAL-FOUNDATION",
+        "ENC-SEC-TX-TYPE-TOKEN",
+        "ENC-SEQUENCE-HEADER-OBU",
         "ENC-SPEED-PRESETS",
         "ENC-SYNTAX-IR",
+        "ENC-TEMPORAL-DELIMITER-OBU",
         "ENC-UV-MODE-SYMBOL-EMISSION",
+        "ENC-WRITER-INPUT-FRAMING",
+        "ENC-WRITER-INPUT-INTER-VIEW",
+        "ENC-WRITER-INPUT-SEQ-VIEW",
+        "ENC-WRITER-INPUT-STRUCTURE",
         "ENC-Y4M-INPUT",
         "INFRA-DECODER-CRATE-SCAFFOLDING",
         "INFRA-PARALLEL-RUNTIME-POLICY",
@@ -5367,10 +5945,15 @@
         "INFRA-ZERO-COPY-MEDIA-POLICY",
         "RECON-COEFFICIENT-SCAN-ORDER",
         "RECON-CURRENT-FRAME-WORKSPACE",
+        "RECON-DEBLOCK-ADAPTIVE-STRENGTH",
+        "RECON-DEBLOCK-FILTER-CHOICE",
+        "RECON-DEBLOCK-FILTER-MAX-WIDTH",
+        "RECON-DEBLOCK-SAMPLE-FILTER",
         "RECON-DEQUANT-PROCESS",
         "RECON-DEQUANT-QM-WEIGHT",
         "RECON-DEQUANT-QUANTIZER-INDEX-RESOLUTION",
         "RECON-DEQUANT-QUANTIZER-LOOKUP",
+        "RECON-DPCM-DIRECTION",
         "RECON-FRAME-HASH-DIGEST",
         "RECON-GET-TRANSFORM-1D-TYPE",
         "RECON-GET-TX-CLASS",
@@ -5388,8 +5971,11 @@
         "RECON-INVERSE-TRANSFORM-2D",
         "RECON-INVERSE-TRANSFORM-2D-OUTER",
         "RECON-INVERSE-TRANSFORM-MATRIX-FREE",
+        "RECON-RECONSTRUCT-TRANSFORM-BLOCK",
         "RECON-REFERENCE-FRAME-STORE",
         "RECON-RESIDUAL-ADDITION",
+        "RECON-RESOLVE-2D-TRANSFORM-PARAMS",
+        "RECON-SECONDARY-INVERSE-TRANSFORM",
         "RECON-TRANSFORM-SHIFT-LOOKUP",
         "RECON-WORKSPACE-DIRECTIONAL-ANGLE-PREDICTION",
         "RECON-Y4M-OUTPUT-WRITER",
@@ -5412,17 +5998,40 @@
     },
     {
       "path": "docs/LOCAL-REFERENCE-EVIDENCE.toml",
-      "sha256": "cfe6a9167989cb98ce9ba5dbd4c2ddad5510928f5f077aa4b5e3ec56ff1b7b68",
+      "sha256": "54f8cceb6d35738efa156cdca6ce94cde66a92bded15e5d9f52c3dde0b2f1635",
       "scope_kind": "docs",
       "feature_ids": [
+        "DECODE-GENERAL-INTRA-ANGLE",
+        "DECODE-GENERAL-INTRA-ANGLE-D113",
+        "DECODE-GENERAL-INTRA-ANGLE-D45",
+        "DECODE-GENERAL-INTRA-BLOCK-DECODED",
+        "DECODE-GENERAL-INTRA-CARDINAL",
+        "DECODE-GENERAL-INTRA-DEEP-SPLIT",
+        "DECODE-GENERAL-INTRA-DIRECTIONAL-CORNER",
+        "DECODE-GENERAL-INTRA-DIRECTIONAL-FOLLOW-CHROMA",
+        "DECODE-GENERAL-INTRA-DIRECTIONAL-NEIGHBOUR-CTX",
+        "DECODE-GENERAL-INTRA-FRAME-FRONTIER",
+        "DECODE-GENERAL-INTRA-FRAME-RECON",
+        "DECODE-GENERAL-INTRA-GRID",
+        "DECODE-GENERAL-INTRA-GRID-NEIGHBOUR-NONDC",
+        "DECODE-GENERAL-INTRA-GRID-SMOOTH-H-ABOVE-RIGHT",
+        "DECODE-GENERAL-INTRA-IDIF-D157",
+        "DECODE-GENERAL-INTRA-MB-NEIGHBOUR-SMOOTH",
+        "DECODE-GENERAL-INTRA-MULTIBLOCK",
+        "DECODE-GENERAL-INTRA-MULTIROW",
+        "DECODE-GENERAL-INTRA-NEIGHBOUR-DIRECTIONAL",
+        "DECODE-GENERAL-INTRA-NON64-MULTISB",
+        "DECODE-GENERAL-INTRA-NONDC-LUMA-SMOOTH",
+        "DECODE-GENERAL-INTRA-NONDC-LUMA-SMOOTH-PLAIN",
         "DOC-DETERMINISTIC-FRAME-HASH-CONTRACT",
-        "RECON-HASH-INPUT-SERIALIZATION"
+        "RECON-HASH-INPUT-SERIALIZATION",
+        "RECON-INTRA-ONE-SIDED-DIRECTIONAL-ANGLE-PREDICTION"
       ],
       "outcome": "success"
     },
     {
       "path": "docs/SPEC-COVERAGE.md",
-      "sha256": "4d3e4368055e0d35196028a7a2cb2ef263b719c9eef1a442c9da97e4e1056061",
+      "sha256": "68ea1b53d24a426b2767d907766adec80f2a5ca646f9aa1c8196813cece81150",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.10-RG",
@@ -5620,6 +6229,30 @@
         "DECODE-COEFF-USE-FSC-CONDITION-HANDOFF",
         "DECODE-COEFF-USE-FSC-SHARED-FACTS-HANDOFF",
         "DECODE-CONTEXT-TILE-PAYLOAD-HANDOFF",
+        "DECODE-GENERAL-INTRA-ANGLE",
+        "DECODE-GENERAL-INTRA-ANGLE-D113",
+        "DECODE-GENERAL-INTRA-ANGLE-D45",
+        "DECODE-GENERAL-INTRA-BLOCK-DECODED",
+        "DECODE-GENERAL-INTRA-BLOCK-MODES",
+        "DECODE-GENERAL-INTRA-CARDINAL",
+        "DECODE-GENERAL-INTRA-DEEP-SPLIT",
+        "DECODE-GENERAL-INTRA-DIRECTIONAL-CORNER",
+        "DECODE-GENERAL-INTRA-DIRECTIONAL-FOLLOW-CHROMA",
+        "DECODE-GENERAL-INTRA-DIRECTIONAL-NEIGHBOUR-CTX",
+        "DECODE-GENERAL-INTRA-FRAME-FRONTIER",
+        "DECODE-GENERAL-INTRA-FRAME-RECON",
+        "DECODE-GENERAL-INTRA-GRID",
+        "DECODE-GENERAL-INTRA-GRID-NEIGHBOUR-NONDC",
+        "DECODE-GENERAL-INTRA-GRID-SMOOTH-H-ABOVE-RIGHT",
+        "DECODE-GENERAL-INTRA-IDIF-D157",
+        "DECODE-GENERAL-INTRA-LUMA-COEFFS",
+        "DECODE-GENERAL-INTRA-MB-NEIGHBOUR-SMOOTH",
+        "DECODE-GENERAL-INTRA-MULTIBLOCK",
+        "DECODE-GENERAL-INTRA-MULTIROW",
+        "DECODE-GENERAL-INTRA-NEIGHBOUR-DIRECTIONAL",
+        "DECODE-GENERAL-INTRA-NON64-MULTISB",
+        "DECODE-GENERAL-INTRA-NONDC-LUMA-SMOOTH",
+        "DECODE-GENERAL-INTRA-NONDC-LUMA-SMOOTH-PLAIN",
         "DECODE-LIMITS-RUNTIME-API",
         "DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER",
         "DECODE-MINIMAL-INTRA-RECONSTRUCTION-FRONTIER",
@@ -5658,10 +6291,27 @@
         "DOC-VALIDATOR-EXAMPLES",
         "DOC-VALIDATOR-ROADMAP",
         "ENC-BITSTREAM-WRITER",
+        "ENC-BLOCK-SYMBOL-ENCODE",
         "ENC-CLOSED-LOOP-RECONSTRUCTION-MINIMAL",
+        "ENC-COEFF-BASE-LF-CONTEXT",
+        "ENC-COEFF-BASE-LF-TOKEN",
+        "ENC-COEFF-MULTI-TOKENS",
         "ENC-COEFFICIENT-TOKENIZATION-MINIMAL",
         "ENC-CONTEXT-STATE-MACHINE",
+        "ENC-DO-SPLIT-PARTITION-SYMBOL",
         "ENC-FORWARD-TRANSFORM-FOUNDATION",
+        "ENC-FRAME-HEADER-CORE-ASSEMBLER",
+        "ENC-GENERAL-INTRA-2D",
+        "ENC-GENERAL-INTRA-ALL-PLANES-CODED",
+        "ENC-GENERAL-INTRA-CODED-CHROMA-DC",
+        "ENC-GENERAL-INTRA-CODED-CHROMA-V-DC",
+        "ENC-GENERAL-INTRA-CODED-LUMA-DC",
+        "ENC-GENERAL-INTRA-EOB3",
+        "ENC-GENERAL-INTRA-SKIP-BLOCK-TRACE",
+        "ENC-GENERAL-INTRA-SKIP-TILE-DATA",
+        "ENC-GENERAL-INTRA-TWO-COEFF",
+        "ENC-GENERAL-INTRA-TWO-NONZERO",
+        "ENC-GENERAL-INTRA-VISIBLE-AC",
         "ENC-INTRA-BLOCK-MODE-TRACE",
         "ENC-INTRA-BLOCK-TRACE-BYPASS-LITERAL",
         "ENC-INTRA-BLOCK-TRACE-CHROMA-SKIP",
@@ -5669,17 +6319,34 @@
         "ENC-INTRA-BLOCK-TRACE-CODED-CHROMA-DC",
         "ENC-INTRA-BLOCK-TRACE-CODED-DC",
         "ENC-INTRA-BLOCK-TRACE-GOLOMB-FINITE",
+        "ENC-INTRA-BLOCK-TRACE-GOLOMB-PREFIX",
+        "ENC-INTRA-BLOCK-TRACE-IST",
         "ENC-INTRA-BLOCK-TRACE-LUMA-SKIP",
+        "ENC-INTRA-BLOCK-TRACE-TWO-COEFF",
+        "ENC-INTRA-BLOCK-TRACE-TWO-COEFF-TX-TYPE",
         "ENC-INTRA-MODE-SYMBOL-EMISSION",
         "ENC-INTRA-TOY-V0",
+        "ENC-INTRA-TX-TYPE-TOKEN",
+        "ENC-MINIMAL-CLK-BASE-Q-IDX",
         "ENC-MINIMAL-HEADER-PLAN",
+        "ENC-MINIMAL-INTRA-CLK-ANNEXB-OBU",
+        "ENC-MINIMAL-INTRA-IVF",
+        "ENC-MINIMAL-INTRA-SKIP-IVF",
+        "ENC-MINIMAL-INTRA-TILE-GROUP-OBU",
         "ENC-QUANTIZATION-V0",
         "ENC-RATE-CONTROL-V0",
         "ENC-RECON-DEPENDENCY",
         "ENC-RESIDUAL-FOUNDATION",
+        "ENC-SEC-TX-TYPE-TOKEN",
+        "ENC-SEQUENCE-HEADER-OBU",
         "ENC-SPEED-PRESETS",
         "ENC-SYNTAX-IR",
+        "ENC-TEMPORAL-DELIMITER-OBU",
         "ENC-UV-MODE-SYMBOL-EMISSION",
+        "ENC-WRITER-INPUT-FRAMING",
+        "ENC-WRITER-INPUT-INTER-VIEW",
+        "ENC-WRITER-INPUT-SEQ-VIEW",
+        "ENC-WRITER-INPUT-STRUCTURE",
         "ENC-Y4M-INPUT",
         "INFRA-DECODER-CRATE-SCAFFOLDING",
         "INFRA-PARALLEL-RUNTIME-POLICY",
@@ -5688,10 +6355,15 @@
         "INFRA-ZERO-COPY-MEDIA-POLICY",
         "RECON-COEFFICIENT-SCAN-ORDER",
         "RECON-CURRENT-FRAME-WORKSPACE",
+        "RECON-DEBLOCK-ADAPTIVE-STRENGTH",
+        "RECON-DEBLOCK-FILTER-CHOICE",
+        "RECON-DEBLOCK-FILTER-MAX-WIDTH",
+        "RECON-DEBLOCK-SAMPLE-FILTER",
         "RECON-DEQUANT-PROCESS",
         "RECON-DEQUANT-QM-WEIGHT",
         "RECON-DEQUANT-QUANTIZER-INDEX-RESOLUTION",
         "RECON-DEQUANT-QUANTIZER-LOOKUP",
+        "RECON-DPCM-DIRECTION",
         "RECON-FRAME-HASH-DIGEST",
         "RECON-GET-TRANSFORM-1D-TYPE",
         "RECON-GET-TX-CLASS",
@@ -5709,8 +6381,11 @@
         "RECON-INVERSE-TRANSFORM-2D",
         "RECON-INVERSE-TRANSFORM-2D-OUTER",
         "RECON-INVERSE-TRANSFORM-MATRIX-FREE",
+        "RECON-RECONSTRUCT-TRANSFORM-BLOCK",
         "RECON-REFERENCE-FRAME-STORE",
         "RECON-RESIDUAL-ADDITION",
+        "RECON-RESOLVE-2D-TRANSFORM-PARAMS",
+        "RECON-SECONDARY-INVERSE-TRANSFORM",
         "RECON-TRANSFORM-SHIFT-LOOKUP",
         "RECON-WORKSPACE-DIRECTIONAL-ANGLE-PREDICTION",
         "RECON-Y4M-OUTPUT-WRITER",
@@ -5888,7 +6563,7 @@
     },
     {
       "path": "docs/spec-coverage-writer.md",
-      "sha256": "4f4830b454363c09766651ab8ce483c908f6c58dbdb04782b373319764eee4e2",
+      "sha256": "c7f6c9055a47df441ea75dad70c09cbaa2493985e5f1bbea3d990f76fff58141",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.10-RG",
@@ -5978,7 +6653,18 @@
         "AV2-5.9.5-ATLAS-BASIC-INFO",
         "AV2-B-ANNEXB-OBU-ENVELOPE",
         "AV2-IVF-CONTAINER",
-        "ENC-BITSTREAM-WRITER"
+        "ENC-BITSTREAM-WRITER",
+        "ENC-FRAME-HEADER-CORE-ASSEMBLER",
+        "ENC-MINIMAL-CLK-BASE-Q-IDX",
+        "ENC-MINIMAL-INTRA-CLK-ANNEXB-OBU",
+        "ENC-MINIMAL-INTRA-IVF",
+        "ENC-MINIMAL-INTRA-TILE-GROUP-OBU",
+        "ENC-SEQUENCE-HEADER-OBU",
+        "ENC-TEMPORAL-DELIMITER-OBU",
+        "ENC-WRITER-INPUT-FRAMING",
+        "ENC-WRITER-INPUT-INTER-VIEW",
+        "ENC-WRITER-INPUT-SEQ-VIEW",
+        "ENC-WRITER-INPUT-STRUCTURE"
       ],
       "outcome": "success"
     },
@@ -6026,7 +6712,7 @@
     },
     {
       "path": "fuzz/fuzz_targets/decode_runtime_hash_bytes.rs",
-      "sha256": "d49114c04d9edc5986ee71fb67b789102d20efa03305c4bdbed31dd9a4d6afb5",
+      "sha256": "d4f3fbd02d2215f451218e4d3cde01973a5ec533d54407df193cdf43bd9ab6ca",
       "scope_kind": "fuzz",
       "feature_ids": [
         "CONF-DECODE-RUNTIME-HASH-FUZZ"
@@ -6035,7 +6721,7 @@
     },
     {
       "path": "fuzz/fuzz_targets/decode_runtime_raw_bytes.rs",
-      "sha256": "b33bc8d49699ca73021b55191de73f679232ced9704c22177ba7bca0e12bd51a",
+      "sha256": "e3c5e9f58e3579c79f70867ef3d02ff64bc02edc4065b95651f9f6672c9ddfc6",
       "scope_kind": "fuzz",
       "feature_ids": [
         "CONF-DECODE-RUNTIME-RAW-FUZZ"
@@ -6044,7 +6730,7 @@
     },
     {
       "path": "fuzz/fuzz_targets/decode_runtime_y4m_bytes.rs",
-      "sha256": "09cc90cae3b90564285592556d8ead85cfd45d0e34e991947018a4c29354ba32",
+      "sha256": "febb463aecb2526e13ca9c7367ccd728639232cc6b31c526b5bdc61071a01c32",
       "scope_kind": "fuzz",
       "feature_ids": [
         "CONF-DECODE-RUNTIME-Y4M-FUZZ"
@@ -15111,6 +15797,42 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/archive/2026-06-19-encoder-block-symbol-encode/design.md",
+      "sha256": "7691d4d75633d9d6d4ceada5973892c8cd3ed6a42c45d4275f22347a4dd2f765",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-BLOCK-SYMBOL-ENCODE"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-19-encoder-block-symbol-encode/proposal.md",
+      "sha256": "ee3e89f736d2fa365673919cc81d98b85f95d84a1ccdb6820a827c12d2cfd711",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-BLOCK-SYMBOL-ENCODE"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-19-encoder-block-symbol-encode/specs/encoder-tools/spec.md",
+      "sha256": "d4fadc6f33ea615e6cfc3697af6bb537708be486536352c366136e82f53c2317",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-BLOCK-SYMBOL-ENCODE"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-19-encoder-block-symbol-encode/tasks.md",
+      "sha256": "b4db63dd70694f2d22f370969347c7efa0410025b518f977934e2e572843baa5",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-BLOCK-SYMBOL-ENCODE"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/archive/2026-06-19-encoder-block-trace-bypass-literal/.openspec.yaml",
       "sha256": "d36d5ade13d63079e8fac69f1e3c45e2ee23d6b22c94f88c6a340556a023f11c",
       "scope_kind": "openspec",
@@ -15372,6 +16094,80 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/archive/2026-06-19-encoder-block-trace-golomb-prefix/design.md",
+      "sha256": "6168568748dd4196e3072ed86b97d2253bffc254d049072f0dd537b47c3fc32d",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-INTRA-BLOCK-TRACE-GOLOMB-FINITE",
+        "ENC-INTRA-BLOCK-TRACE-GOLOMB-PREFIX"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-19-encoder-block-trace-golomb-prefix/proposal.md",
+      "sha256": "730fbadaf06da01f15b2643e67031b46babbd82908c444e4c492928ee99ccf3a",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-INTRA-BLOCK-TRACE-GOLOMB-PREFIX"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-19-encoder-block-trace-golomb-prefix/specs/encoder-tools/spec.md",
+      "sha256": "81eda0658beea7890fe809b8bcd499a2e2a5162c54188e7d9bea496b21de2c0c",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-INTRA-BLOCK-TRACE-GOLOMB-PREFIX"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-19-encoder-block-trace-golomb-prefix/tasks.md",
+      "sha256": "d0f7685a21456bdc8f613a4af8a1a5fa6534190457941934e4cac77f98d6d00c",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-INTRA-BLOCK-TRACE-GOLOMB-PREFIX"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-19-encoder-block-trace-ist/design.md",
+      "sha256": "0f7155b82b2ede7ed541a51f26a8ef2cb8489dd498fa560995d8d9b38d3262dd",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-INTRA-BLOCK-TRACE-IST"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-19-encoder-block-trace-ist/proposal.md",
+      "sha256": "fd145b9250693da02ed8de87ac923a74422a98b0a2ac33d12ad995fc9c19f39b",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-INTRA-BLOCK-TRACE-IST",
+        "ENC-SEC-TX-TYPE-TOKEN"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-19-encoder-block-trace-ist/specs/encoder-tools/spec.md",
+      "sha256": "2a24766a25bac3386640d3f0625e095cbaa9b0db6bffadc426083a8281dd98e8",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-INTRA-BLOCK-TRACE-IST"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-19-encoder-block-trace-ist/tasks.md",
+      "sha256": "9ebf5902fba20232ef85a51c2e2c5cfd9d2e73049e76acdfecf04e0153ba24c0",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-INTRA-BLOCK-TRACE-IST"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/archive/2026-06-19-encoder-block-trace-luma-skip/.openspec.yaml",
       "sha256": "d36d5ade13d63079e8fac69f1e3c45e2ee23d6b22c94f88c6a340556a023f11c",
       "scope_kind": "openspec",
@@ -15413,6 +16209,80 @@
       "scope_kind": "openspec",
       "feature_ids": [
         "ENC-INTRA-BLOCK-TRACE-LUMA-SKIP"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-19-encoder-block-trace-two-coeff-tx-type/design.md",
+      "sha256": "462c4136485e47460c0acf69d971a6802c049abb9e55a9c43eb330a6a3cd02fd",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-INTRA-BLOCK-TRACE-TWO-COEFF-TX-TYPE"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-19-encoder-block-trace-two-coeff-tx-type/proposal.md",
+      "sha256": "faa13895937d5eabfce04499009b5caca4eb6fab7ef98fbebb3e8e2376fc84fb",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-INTRA-BLOCK-TRACE-TWO-COEFF",
+        "ENC-INTRA-BLOCK-TRACE-TWO-COEFF-TX-TYPE",
+        "ENC-INTRA-TX-TYPE-TOKEN"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-19-encoder-block-trace-two-coeff-tx-type/specs/encoder-tools/spec.md",
+      "sha256": "8229fd5c8be9c6032e4b32eb5a8b281ed90f2ad4809b9eac2e75e27072f30846",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-INTRA-BLOCK-TRACE-TWO-COEFF-TX-TYPE"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-19-encoder-block-trace-two-coeff-tx-type/tasks.md",
+      "sha256": "387113cb8c75e447d2368054d5fcd9f36f642c912ac782ab5b38b742664714a1",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-INTRA-BLOCK-TRACE-TWO-COEFF-TX-TYPE"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-19-encoder-block-trace-two-coeff/design.md",
+      "sha256": "120ca7fe39855694f42b1b6a1cf6979bf084ee5bf2111cd16f1c4127d4b8aab8",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-INTRA-BLOCK-TRACE-TWO-COEFF"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-19-encoder-block-trace-two-coeff/proposal.md",
+      "sha256": "2664fc5171413146497d1f2ff3b2d751456b5f6e95c5dbdf9d1b3df32fbe7f06",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-INTRA-BLOCK-TRACE-TWO-COEFF"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-19-encoder-block-trace-two-coeff/specs/encoder-tools/spec.md",
+      "sha256": "48af0dc8531dbd2946cc8c1afcadc906ede61266304f3ebf8cbefc33e46c2ff4",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-INTRA-BLOCK-TRACE-TWO-COEFF"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-19-encoder-block-trace-two-coeff/tasks.md",
+      "sha256": "17ef6feede20bea82ca3baa3f69fd4bded5b94ecb449bf74f62b2a64bea7d707",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-INTRA-BLOCK-TRACE-TWO-COEFF"
       ],
       "outcome": "success"
     },
@@ -15460,6 +16330,116 @@
       "scope_kind": "openspec",
       "feature_ids": [
         "ENC-CLOSED-LOOP-RECONSTRUCTION-MINIMAL"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-19-encoder-coeff-base-lf-context/design.md",
+      "sha256": "c3b0c57ed1cd353d7246c5cd2786a013e4c21a8286ee71a7ad22ddf382a64b5d",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-COEFF-BASE-LF-CONTEXT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-19-encoder-coeff-base-lf-context/proposal.md",
+      "sha256": "ceb9c8dac2e53050f52296de2050667f7af75578135fe442493448d537e73533",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-COEFF-BASE-LF-CONTEXT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-19-encoder-coeff-base-lf-context/specs/encoder-tools/spec.md",
+      "sha256": "1a1bc69c679235962e7fa7120f034d6b67f1d61499a252ad142b786e64390dca",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-COEFF-BASE-LF-CONTEXT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-19-encoder-coeff-base-lf-context/tasks.md",
+      "sha256": "2d553d2d678f97891b1b66b38b2627b546a5b25cbee8bd415583ea3fc28a34d5",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-COEFF-BASE-LF-CONTEXT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-19-encoder-coeff-base-lf-token/design.md",
+      "sha256": "61bc6febbe195ab700bbdaddb17ea09542655913324e0a2a21ae727929d482fc",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-COEFF-BASE-LF-CONTEXT",
+        "ENC-COEFF-BASE-LF-TOKEN"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-19-encoder-coeff-base-lf-token/proposal.md",
+      "sha256": "bf67385922c6001fa073722e09cb56c10476681f8c04642b1fc151a6320b5bb8",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-COEFF-BASE-LF-CONTEXT",
+        "ENC-COEFF-BASE-LF-TOKEN"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-19-encoder-coeff-base-lf-token/specs/encoder-tools/spec.md",
+      "sha256": "de0dc1b5483b3dc2afac34ff7508e66b41ccee4f4ef0a3b00ebfe7637679b7f2",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-COEFF-BASE-LF-TOKEN"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-19-encoder-coeff-base-lf-token/tasks.md",
+      "sha256": "b086fa755589b210f2eca8b0e22912aa699549a0b0c26643625b81bb2cc3d9ac",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-COEFF-BASE-LF-TOKEN"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-19-encoder-coeff-multi-coeff-tokens/design.md",
+      "sha256": "21894bdd27210267536804e978751ec7257e2d43a46f8de2f8cafbd20de98574",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-COEFF-MULTI-TOKENS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-19-encoder-coeff-multi-coeff-tokens/proposal.md",
+      "sha256": "c74e327d9f4ccf5a48dba4b3ff2898afdeaeda2c0b687d2e951126a102a0994d",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-COEFF-MULTI-TOKENS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-19-encoder-coeff-multi-coeff-tokens/specs/encoder-tools/spec.md",
+      "sha256": "29064e9e22bb966ad87ead970d260ade2a61f3c11932fea1d12fdd63203b2b76",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-COEFF-MULTI-TOKENS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-19-encoder-coeff-multi-coeff-tokens/tasks.md",
+      "sha256": "10667b562a4b3dcae2f2c5695fdae12fe3e09c0827e49cb9df212c6ab480b24f",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-COEFF-MULTI-TOKENS"
       ],
       "outcome": "success"
     },
@@ -15558,6 +16538,80 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/archive/2026-06-19-encoder-intra-tx-type-token/design.md",
+      "sha256": "53edd72c539af3e53a7fd84cb54108ce55f9327178305fa93d5d5a5dc8d26240",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-INTRA-TX-TYPE-TOKEN"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-19-encoder-intra-tx-type-token/proposal.md",
+      "sha256": "41144117adccc5202f49cf4b1d8f85306ceac4c89e683f4d922ad1a3573b7ff1",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-INTRA-TX-TYPE-TOKEN"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-19-encoder-intra-tx-type-token/specs/encoder-tools/spec.md",
+      "sha256": "40d039d28493ee7305507a4980c995275b12efb962396c1e52e995c127cf28ed",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-INTRA-TX-TYPE-TOKEN"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-19-encoder-intra-tx-type-token/tasks.md",
+      "sha256": "ae64905780000d83e2f6929facbc20b6ee02a03414b57391ddb4ba583574afaa",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-INTRA-TX-TYPE-TOKEN"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-19-encoder-sec-tx-type-token/design.md",
+      "sha256": "09607713f66128d74e8a8ae3735fad535ef3048397f6fa982ffb81cdd30dee3d",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-SEC-TX-TYPE-TOKEN"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-19-encoder-sec-tx-type-token/proposal.md",
+      "sha256": "43b0bed68e30713e6fd5669af249ad69936880e9dee569975dee77a2fa4136b7",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-INTRA-BLOCK-TRACE-TWO-COEFF-TX-TYPE",
+        "ENC-INTRA-TX-TYPE-TOKEN",
+        "ENC-SEC-TX-TYPE-TOKEN"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-19-encoder-sec-tx-type-token/specs/encoder-tools/spec.md",
+      "sha256": "3ac16ac959019501b6b915d8030814e5bf550b2b862870d8e5f8d590a8f4f68f",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-SEC-TX-TYPE-TOKEN"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-19-encoder-sec-tx-type-token/tasks.md",
+      "sha256": "74b4c12bf2b05aef9107d3a8259210d541fd60ff8cd1c8004240ce61ac78eb6f",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-SEC-TX-TYPE-TOKEN"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/archive/2026-06-19-encoder-uv-mode-emission/.openspec.yaml",
       "sha256": "d36d5ade13d63079e8fac69f1e3c45e2ee23d6b22c94f88c6a340556a023f11c",
       "scope_kind": "openspec",
@@ -15599,6 +16653,385 @@
       "scope_kind": "openspec",
       "feature_ids": [
         "ENC-UV-MODE-SYMBOL-EMISSION"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-20-encoder-annexb-obu-wrapper/design.md",
+      "sha256": "c9733a84bd572b15d9b063deb795ad4f3aa0da4567b3f59fbbe600d7368e7f8c",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-20-encoder-annexb-obu-wrapper/proposal.md",
+      "sha256": "abb8e9bc3a501c1d19c1066d9cb1216de18f8a12293b24df932990ba5a59e8f3",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-MINIMAL-INTRA-CLK-ANNEXB-OBU"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-20-encoder-annexb-obu-wrapper/specs/encoder-tools/spec.md",
+      "sha256": "871e9c67b8e4f671398952aaf4c7dfb5cfea2e77538ace1d46d83f3514ab9cb7",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-MINIMAL-INTRA-CLK-ANNEXB-OBU"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-20-encoder-annexb-obu-wrapper/tasks.md",
+      "sha256": "19e4669922b1de9aeed418ca252c4c4fd487c1c67ada119f73b85f498ff7ef82",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-MINIMAL-INTRA-CLK-ANNEXB-OBU"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-20-encoder-coreseq-inter-ctor/design.md",
+      "sha256": "a8d96ebbd2d6b12abeba1b4a06a02c023ca82a93a3a5a57c967a357d399df03c",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-WRITER-INPUT-INTER-VIEW"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-20-encoder-coreseq-inter-ctor/proposal.md",
+      "sha256": "e76360f64122be86268b4057706577fec93a83cdd016a6b3d441fb599639f6c6",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-WRITER-INPUT-INTER-VIEW"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-20-encoder-coreseq-inter-ctor/specs/encoder-tools/spec.md",
+      "sha256": "ccf366a0ead5bae3bffa5ec2ff2e868c8c533282657b467d927b319583a59962",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-WRITER-INPUT-INTER-VIEW"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-20-encoder-coreseq-inter-ctor/tasks.md",
+      "sha256": "ad95424864632a94425f043922c7ae38e400db23548a8ca78a03ba663f08d761",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-WRITER-INPUT-INTER-VIEW"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-20-encoder-coreseqview-ctor/design.md",
+      "sha256": "5daab979d145869904eb2c95c7f03166f2803c799bf640352d58d350e4505091",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-WRITER-INPUT-SEQ-VIEW"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-20-encoder-coreseqview-ctor/proposal.md",
+      "sha256": "9534fe7d0f6e58cef8246fb86b0c4bb0358c4e688bbd3f05ea6da77ef5a8bf34",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-WRITER-INPUT-SEQ-VIEW"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-20-encoder-coreseqview-ctor/specs/encoder-tools/spec.md",
+      "sha256": "453ae0cf897e0185ae7cb3d2394f44d923531853632a6499f973e47e1ec22116",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-WRITER-INPUT-SEQ-VIEW"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-20-encoder-coreseqview-ctor/tasks.md",
+      "sha256": "46df3fcf235ee969c92123be2d3fb8d8484f69af1e07d9be2db05cb53fdf806b",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-WRITER-INPUT-SEQ-VIEW"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-20-encoder-do-split-partition-symbol/design.md",
+      "sha256": "0965d22f9938fdc5254472edc8e5d1d92795eb6ee8477f7475053fdc40916985",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-20-encoder-do-split-partition-symbol/proposal.md",
+      "sha256": "8dc35a5ee4040c1398d1d4ddda22634e1388cf4e74e107e6e0f024ec89d1450b",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-DO-SPLIT-PARTITION-SYMBOL"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-20-encoder-do-split-partition-symbol/specs/encoder-tools/spec.md",
+      "sha256": "374dcfa4a76b50d7f1047b41ba4ed9cb68203e968ea3274e9f8a241373dc4a6c",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-DO-SPLIT-PARTITION-SYMBOL"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-20-encoder-do-split-partition-symbol/tasks.md",
+      "sha256": "414fcf1e62c6e2d4c55545e3e244e01a08be121edf88645cc6e9f8536c7cf091",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-DO-SPLIT-PARTITION-SYMBOL"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-20-encoder-frame-header-core-assembler/design.md",
+      "sha256": "a59a7c377b5ee419268c1eed6c10bc227332a74ccb98ffb43f6768e3f6e528d1",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-20-encoder-frame-header-core-assembler/proposal.md",
+      "sha256": "2b40eee06d45c92072bdc3f47bc79e63a3d84a941b4c02ff893f44e41b7dd09f",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-FRAME-HEADER-CORE-ASSEMBLER"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-20-encoder-frame-header-core-assembler/specs/encoder-tools/spec.md",
+      "sha256": "0163139e522d7874e120bfbdd7b540ff0f2ccdfa124bd739a557220d577a1a16",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-FRAME-HEADER-CORE-ASSEMBLER"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-20-encoder-frame-header-core-assembler/tasks.md",
+      "sha256": "a1daa20b20319c05a2da260ddadcb20109d42a91193d21143041b7f6d47716c2",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-FRAME-HEADER-CORE-ASSEMBLER"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-20-encoder-ivf-temporal-unit/design.md",
+      "sha256": "3a7e814170cc3c16d64957f1aed1afe81a4ec1608a4b001248c7bca3e092ecc3",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-20-encoder-ivf-temporal-unit/proposal.md",
+      "sha256": "b73eb347d930f9df0839fab9494ce782414bbf8f71bb52b9e30028e343a341b4",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-MINIMAL-INTRA-IVF"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-20-encoder-ivf-temporal-unit/specs/encoder-tools/spec.md",
+      "sha256": "0cc334dbf305c1efff20dc798f7125bfa1ccd5d91a816cbfe2ce6151c911e878",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-MINIMAL-INTRA-IVF"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-20-encoder-ivf-temporal-unit/tasks.md",
+      "sha256": "90bd752a81b2f9ff9883cd5ab473dc344ac25faba1537350b05cdeae3a2c4053",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-MINIMAL-INTRA-IVF"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-20-encoder-sequence-header-obu/design.md",
+      "sha256": "f5599283818bae878c09a81fd08ac99310c766696e64095bfd4089e42ce4ae8d",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-20-encoder-sequence-header-obu/proposal.md",
+      "sha256": "3fc4a53647fd08e2a2eb7f4fba355d38410e6b74bc16c11be46fe8acfe4a20f6",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-SEQUENCE-HEADER-OBU"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-20-encoder-sequence-header-obu/specs/encoder-tools/spec.md",
+      "sha256": "d83b4be3d2965389e6a2b594e9f13da6499376a8d0adaaf73a9dc4ab0335c064",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-SEQUENCE-HEADER-OBU"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-20-encoder-sequence-header-obu/tasks.md",
+      "sha256": "7ba9ef0f5cd6b9dbcd6483b5d5d4dd85c8bffd8915ee2ea39bf622c757d938a2",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-SEQUENCE-HEADER-OBU"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-20-encoder-temporal-delimiter-obu/proposal.md",
+      "sha256": "a99652bded10f4c3e2976552e5bd1e26da217d9835d410c3e71b15cc0246cbdc",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-TEMPORAL-DELIMITER-OBU"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-20-encoder-temporal-delimiter-obu/specs/encoder-tools/spec.md",
+      "sha256": "d52925f2a3df6cf2fecd41d3a9edf192a572d26fd34326e54946550d6af8b3da",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-TEMPORAL-DELIMITER-OBU"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-20-encoder-temporal-delimiter-obu/tasks.md",
+      "sha256": "c6ede5678c732d6bcf048c21562551c5441fac8212a530b87fbef92999fb8d63",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-TEMPORAL-DELIMITER-OBU"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-20-encoder-tile-group-obu-callsite/design.md",
+      "sha256": "00e5cf5f84b7dc91ec5bb4f27833ae32a2e969e2904670de85d1fd40be2cd760",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-20-encoder-tile-group-obu-callsite/proposal.md",
+      "sha256": "6c160d1b468955316a597d1ddde3b99abf34ddcf09a0653455c97f3c6ace334f",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-MINIMAL-INTRA-TILE-GROUP-OBU"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-20-encoder-tile-group-obu-callsite/specs/encoder-tools/spec.md",
+      "sha256": "406fdf5904a617451f554ddb1753eb9cf82f22a9fbdde06fc1aa6e7cf255dd72",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-MINIMAL-INTRA-TILE-GROUP-OBU"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-20-encoder-tile-group-obu-callsite/tasks.md",
+      "sha256": "e7746827a0e5a1e4221a0682a2292912f45e1457f26d3cfbcbb995ef7d992345",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-MINIMAL-INTRA-TILE-GROUP-OBU"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-20-encoder-writer-input-framing/design.md",
+      "sha256": "36467145daef3e227de7c82147743aa51c0f5cbfb6653b70155d039c6934bd66",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.20-TILE-GROUP-PAYLOAD",
+        "ENC-WRITER-INPUT-FRAMING"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-20-encoder-writer-input-framing/proposal.md",
+      "sha256": "daf8e4f2bfc512e811a6a3fafc3665b0bac49f7687e84b7b7a4340716541dcec",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-WRITER-INPUT-FRAMING"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-20-encoder-writer-input-framing/specs/encoder-tools/spec.md",
+      "sha256": "923e9adcd4f9fa11c7755943c932511931cdf8ee8647c9b5a102ca0d72021e8c",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-WRITER-INPUT-FRAMING"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-20-encoder-writer-input-framing/tasks.md",
+      "sha256": "e5c16111e32c5e2ca89a469b8259a31f2d5ec9a9c383ea14daf1c9e30f1d76aa",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-WRITER-INPUT-FRAMING"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-20-encoder-writer-input-structure/design.md",
+      "sha256": "0e7c3bd6027fd5156a11b9edb5627767bdd7566c34d6df53d2fea295f87745e3",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.19-TILE-GROUP",
+        "ENC-WRITER-INPUT-FRAMING",
+        "ENC-WRITER-INPUT-STRUCTURE"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-20-encoder-writer-input-structure/proposal.md",
+      "sha256": "692186fdf3a43dee380730a3a3ac1aec787bceb6fbbcb380015db5c6ff996d64",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-WRITER-INPUT-FRAMING",
+        "ENC-WRITER-INPUT-STRUCTURE"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-20-encoder-writer-input-structure/specs/encoder-tools/spec.md",
+      "sha256": "2affcf8e11b2af9bc93f52b624be00c63df0799df4d185d98b396fe8eac7115c",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-WRITER-INPUT-STRUCTURE"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/archive/2026-06-20-encoder-writer-input-structure/tasks.md",
+      "sha256": "9483d9cd84af9d6772fa2f8505f476c855c3dd7d16f255a48d094dfe55e4579e",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-WRITER-INPUT-STRUCTURE"
       ],
       "outcome": "success"
     },
@@ -18120,6 +19553,1177 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/decode-general-intra-angle-d113/design.md",
+      "sha256": "7a40346a32739ffe8c333c61da6724366707ee9d19fe969b496cb2c2c94ae7a0",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-DIRECTIONAL-CORNER",
+        "DECODE-GENERAL-INTRA-IDIF-D157"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-angle-d113/proposal.md",
+      "sha256": "3237ea7cecee6120c24905154759af1dd6532a27f6dd29b2c5fd9fff3f1184f3",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-ANGLE-D113",
+        "DECODE-GENERAL-INTRA-DIRECTIONAL-CORNER",
+        "DECODE-GENERAL-INTRA-IDIF-D157"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-angle-d113/specs/decode-general-intra-angle-d113/spec.md",
+      "sha256": "a10981e55d1d5407caf59e1d092af3e3f523b7dacc5b6cc912636475146ba2bd",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-angle-d113/specs/decoder-support/spec.md",
+      "sha256": "b54a6525a32477fb0bc0aa100fb275adc16c8b93ca94003ea395c14520e5f790",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-ANGLE-D113"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-angle-d113/tasks.md",
+      "sha256": "c53919edc13e268cc9db0c4909ffd746415e35c34d2e292aca830222cf816214",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-ANGLE-D113"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-angle-d45/design.md",
+      "sha256": "a5655b08334b26a006ffa4f3e538a20b71255ff70caca95c1419a6e30638574c",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-ANGLE-D45"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-angle-d45/proposal.md",
+      "sha256": "80881424dd43da42b2ec25d9353a8c4fd95c1983c0c7f6ae4d092aa4ac5ff77f",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-ANGLE-D45",
+        "RECON-INTRA-ONE-SIDED-DIRECTIONAL-ANGLE-PREDICTION"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-angle-d45/specs/decode-general-intra-angle-d45/spec.md",
+      "sha256": "f33035d1814c0957699e13843d02ce137397be3bdcf67e247794993eddd17aab",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-angle-d45/specs/decoder-support/spec.md",
+      "sha256": "4f6ffd5eee087ceb74ba3b5f9f19bb247cda33e9bcb036be4538af7f9baa4d0b",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-ANGLE-D45"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-angle-d45/tasks.md",
+      "sha256": "a7b6e78125b48c8f3d93464d9edc3a925facd7af1ad4d6d2747160d832a21126",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-ANGLE-D45",
+        "RECON-INTRA-ONE-SIDED-DIRECTIONAL-ANGLE-PREDICTION"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-angle/.openspec.yaml",
+      "sha256": "8a4137773cbe7231c2199b8ff92658f41f82afaceb51b0d54edb1c154fee5014",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-angle/design.md",
+      "sha256": "949510d5fa80eadd3f5e6fa072d775248febcef7badea465c6b33bb3caf07fc3",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-angle/proposal.md",
+      "sha256": "2b1886e7ae7f8b876a6c07d2de47e3beaac5167e4bdf73a2bac8704f4e551ca5",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-ANGLE"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-angle/specs/decode-general-intra-angle/spec.md",
+      "sha256": "545aa51f166b23e642bb388954aeb4f9093572e5e9d8302e9d1534c7951c17a2",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-angle/specs/decoder-support/spec.md",
+      "sha256": "e3a7160ccc1939eefb31bd7dd1b31403679f1c606d6ef4b85793f89d4d62e8b9",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-ANGLE"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-angle/tasks.md",
+      "sha256": "296201019fd0e40f2749362e10175f12acf72673bc9ee0d80cec647d955d2638",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-ANGLE"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-block-decoded/.openspec.yaml",
+      "sha256": "ed138d7231a82c3d7badf725aae3eabea38551615fe37435aa9f9f52bb7dfa01",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-block-decoded/design.md",
+      "sha256": "d6e5f8e15207f2cbdb1d2693064caee3bae96d6c371c44e79a79abc1a8b5ea9f",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-block-decoded/proposal.md",
+      "sha256": "0cfa79838389ef44876b1358704b5659c7e431d88361dfca8fb30fa58841765d",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-BLOCK-DECODED"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-block-decoded/specs/decode-general-intra-block-decoded/spec.md",
+      "sha256": "e2da6e563337924d8dd7c2b80d45a353d7d3e59c6ea98d452ada39acbe36c183",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-block-decoded/specs/decoder-support/spec.md",
+      "sha256": "88070b36883ae28fe290217f781d4c229a94f3077ba290653b3b2a422a8f9f0e",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-BLOCK-DECODED"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-block-decoded/tasks.md",
+      "sha256": "a258bd268965785b03a35e72a53e215e8a8609cdc6e712d705199d2053e82af9",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-BLOCK-DECODED"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-block-modes/.openspec.yaml",
+      "sha256": "8a4137773cbe7231c2199b8ff92658f41f82afaceb51b0d54edb1c154fee5014",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-block-modes/design.md",
+      "sha256": "2c2102f1f5c419979f48446ad8f4a8c39a18d71c4b0c0e0312595328b18c93ae",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-block-modes/proposal.md",
+      "sha256": "59453c0c766b64fb4d8e18cb85e8b1ed1fa43f9e462b29e401f6e82500f28e24",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-BLOCK-MODES",
+        "DECODE-GENERAL-INTRA-FRAME-FRONTIER"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-block-modes/specs/decode-general-intra-block-modes/spec.md",
+      "sha256": "8da8a35dc9a38e96f5c7388530649f018efacfc56b1999aa512b6430a02b92c6",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-block-modes/specs/decoder-support/spec.md",
+      "sha256": "c0f43ff02544683110249d09d6fbaecd649f1761bf7ac2bf016e555ad0834f79",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-BLOCK-MODES"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-block-modes/tasks.md",
+      "sha256": "b04ad7afdb57b4b33801aa87e632a85924718ab2a394ecb8347e5ff8e3ba1799",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-BLOCK-MODES"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-cardinal/.openspec.yaml",
+      "sha256": "ed138d7231a82c3d7badf725aae3eabea38551615fe37435aa9f9f52bb7dfa01",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-cardinal/design.md",
+      "sha256": "8c26e212cad03ae8aaade8ed4444f996eec00d523fec77df9c8301a70cb913d4",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-cardinal/proposal.md",
+      "sha256": "1b14f438e2d3b16c067a1c6ea309c14e6f84c6b67874d2596b68ae91a47d4126",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-CARDINAL"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-cardinal/specs/decode-general-intra-cardinal/spec.md",
+      "sha256": "75620427121af7ba6365b96f4f93a030f1333bd60ef573c84edb1c5a744c391f",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-cardinal/specs/decoder-support/spec.md",
+      "sha256": "eb20ab50d8939cf27796fa1ba63a55c0d90f4f0e469855bf17e169dba437262d",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-CARDINAL"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-cardinal/tasks.md",
+      "sha256": "adb8c3f8a2a82df3bdc15e5ddab419d5265aa028e9cfcbc40d1fcfead4d4dde9",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-CARDINAL"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-deep-split/.openspec.yaml",
+      "sha256": "ed138d7231a82c3d7badf725aae3eabea38551615fe37435aa9f9f52bb7dfa01",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-deep-split/design.md",
+      "sha256": "e9b06f68ec9a930f0b2ad1abec4d32e37bb83cda850838b666ab775d6c6be5da",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-deep-split/proposal.md",
+      "sha256": "837b57cd4c751e3bbac1686135c6b810f94920b465fb703321032491cb4ac8ef",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-DEEP-SPLIT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-deep-split/specs/decode-general-intra-deep-split/spec.md",
+      "sha256": "c2e4f64b785d017448715cf87f33a686fe0a9325e9368a988d528f35c0b8cad2",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-deep-split/specs/decoder-support/spec.md",
+      "sha256": "821091740a08f80dcf3b322314a28ea5f57b4bc64ef036023bfc75a9053db79a",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-DEEP-SPLIT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-deep-split/tasks.md",
+      "sha256": "70ed2c54cd9ec4fd7f6aceb4d07d8f7bc99f783bd3df7b7b1cb04116562978ce",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-DEEP-SPLIT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-directional-corner/design.md",
+      "sha256": "8765498a9b4b9dfe8ae116f8e76fcc6d9104786abe34deda6d29029a45d10139",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-GRID",
+        "DECODE-GENERAL-INTRA-IDIF-D157",
+        "DECODE-GENERAL-INTRA-NEIGHBOUR-DIRECTIONAL"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-directional-corner/proposal.md",
+      "sha256": "9d61cffdb930d633a81c1b12796bfa4424a5836449e6e33dc0eb58672062b78a",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-DIRECTIONAL-CORNER"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-directional-corner/specs/decode-general-intra-directional-corner/spec.md",
+      "sha256": "0d2e66a5de4d6218f6afc64a2257f3d1fde133b868753d05c68a3e947678646e",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-directional-corner/specs/decoder-support/spec.md",
+      "sha256": "27ca1977d517b8c762cbf1763d1c94afe6a53cbf1f3e5c65e569423ca7804a00",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-DIRECTIONAL-CORNER"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-directional-corner/tasks.md",
+      "sha256": "446198078890535f9824eec874ef7cc059fb99f0a7bc49884a4166e3918019f9",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-DIRECTIONAL-CORNER"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-directional-follow-chroma/design.md",
+      "sha256": "7d6d7b7ebd5a5552db60962ad9e0d6625e3077baac15263c5573bcbecd12c920",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-ANGLE"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-directional-follow-chroma/proposal.md",
+      "sha256": "df57b7bef0b0dc9803fcfd8a0df6c8f8977d01712ca38cc17ddafc2f51c0a301",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-ANGLE",
+        "DECODE-GENERAL-INTRA-DIRECTIONAL-FOLLOW-CHROMA"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-directional-follow-chroma/specs/decode-general-intra-directional-follow-chroma/spec.md",
+      "sha256": "d6d7cde5ac5a0d9bb20c3e8c788f11f793b6c347487b8da7831aa0dd90e45793",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-directional-follow-chroma/specs/decoder-support/spec.md",
+      "sha256": "170f1e71d34370f8ff660824b026749c1c342d597b60e5e4db4499a70390d33a",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-DIRECTIONAL-FOLLOW-CHROMA"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-directional-follow-chroma/tasks.md",
+      "sha256": "9daa5553005fd8fbbbf64a088f490beddeeba59942dd18e9d3cdb14c89047364",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-DIRECTIONAL-FOLLOW-CHROMA"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-directional-neighbour-ctx/design.md",
+      "sha256": "71d180e8b7965489f4f194fcfe6da686b9c3ed6153c971533ec25224c9791c86",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-DIRECTIONAL-FOLLOW-CHROMA",
+        "DECODE-GENERAL-INTRA-MB-NEIGHBOUR-SMOOTH"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-directional-neighbour-ctx/proposal.md",
+      "sha256": "d140282728f23235ec305524b5e253eef2ea459a60be6ecf4b21615a6d801903",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-DIRECTIONAL-FOLLOW-CHROMA",
+        "DECODE-GENERAL-INTRA-DIRECTIONAL-NEIGHBOUR-CTX",
+        "DECODE-GENERAL-INTRA-MB-NEIGHBOUR-SMOOTH"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-directional-neighbour-ctx/specs/decode-general-intra-directional-neighbour-ctx/spec.md",
+      "sha256": "3384ff50f339d7b02f96f2fb36255a6b50f56880974d4bd28f290cfbc242d9c5",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-directional-neighbour-ctx/specs/decoder-support/spec.md",
+      "sha256": "1ec8ee6ab7c33642fe4f8a710d71fb09b0d9a486d2bc61682267b2ecff5b44a2",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-DIRECTIONAL-NEIGHBOUR-CTX"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-directional-neighbour-ctx/tasks.md",
+      "sha256": "da0960f5c93d6771947888e4818cc88d82678a06f17c6f1fdcbd673c2cf1fc3d",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-DIRECTIONAL-NEIGHBOUR-CTX"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-frame-frontier/.openspec.yaml",
+      "sha256": "d36d5ade13d63079e8fac69f1e3c45e2ee23d6b22c94f88c6a340556a023f11c",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-frame-frontier/design.md",
+      "sha256": "4c75e4fdc4a1421acd842b3b76663205e9e29f15d38f726ecd103d9e82c091e1",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-FRAME-FRONTIER"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-frame-frontier/proposal.md",
+      "sha256": "e08126768feea7c91414ff11a017b831f6f37561e9d57cc262db189cf9d250d9",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-FRAME-FRONTIER"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-frame-frontier/specs/decode-general-intra-frame-frontier/spec.md",
+      "sha256": "13a98928d8d1dddf547473e6bbaadbcc12849add3561af020a66fec7ca313569",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-FRAME-FRONTIER"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-frame-frontier/specs/decoder-support/spec.md",
+      "sha256": "7a28d04ac9d29cacdf99811c6c50585a090b65d08953c21fe6449f92473b53f2",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-FRAME-FRONTIER"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-frame-frontier/tasks.md",
+      "sha256": "53aa5ba917f50ef4f6fd4f6d900cb7a7135c668dafc2801e2a0fc2b096d29c19",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-FRAME-FRONTIER"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-frame-recon/.openspec.yaml",
+      "sha256": "8a4137773cbe7231c2199b8ff92658f41f82afaceb51b0d54edb1c154fee5014",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-frame-recon/design.md",
+      "sha256": "c955abd6ba10785a45f73234c0b2c6f57acfcae33e0a549cd780cb0ca904d0fb",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-frame-recon/proposal.md",
+      "sha256": "91c9e424289206401705517db6d9818cf630e7dd3011a2c3d166b7f44ddb1ffd",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-FRAME-RECON"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-frame-recon/specs/decode-general-intra-frame-recon/spec.md",
+      "sha256": "f50227f2d9dd24998f9012a7ae5b6442bb7ca5333a7b21730db0266b5ee391af",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-frame-recon/specs/decoder-support/spec.md",
+      "sha256": "a86cdcf032ef74a64534a23706546566a06a9a9796a94860de93ee9ca2d10597",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-FRAME-RECON"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-frame-recon/tasks.md",
+      "sha256": "bf0461780ca2bd2a128cdc9ee1a03d137cb97700cb122771621a1d69f14c87a9",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-FRAME-RECON"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-grid-neighbour-nondc/design.md",
+      "sha256": "f921c53b2b5b453df8992e5f78282ee3c4e2ea6f100fb1b1f9555a3d07f35291",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-GRID",
+        "DECODE-GENERAL-INTRA-MB-NEIGHBOUR-SMOOTH"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-grid-neighbour-nondc/proposal.md",
+      "sha256": "cc865d70679d8fc2b3aab15994fecf9773c466280d635791a649a4419c30998d",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-GRID",
+        "DECODE-GENERAL-INTRA-GRID-NEIGHBOUR-NONDC"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-grid-neighbour-nondc/specs/decode-general-intra-grid-neighbour-nondc/spec.md",
+      "sha256": "6958e1571238936f7538404417c70a20c6ed9edcb117bf9155b80b7fdd1756cb",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-grid-neighbour-nondc/specs/decoder-support/spec.md",
+      "sha256": "06e4cd9c26ba53668c3e81e1e9cc960c23ed332e8f3363157bf5b9a346603d6b",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-GRID-NEIGHBOUR-NONDC"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-grid-neighbour-nondc/tasks.md",
+      "sha256": "030ac432986c7bf140264688cf6a61d3e461fa856125806160ea809b8ed2c78d",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-GRID-NEIGHBOUR-NONDC"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-grid-smooth-h-above-right/design.md",
+      "sha256": "e2fc18f3a6534d2bbcd178d57f30b759f2d2bb964d34c64c8294aa6700f03600",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-GRID",
+        "DECODE-GENERAL-INTRA-GRID-NEIGHBOUR-NONDC"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-grid-smooth-h-above-right/proposal.md",
+      "sha256": "d0c3c92e6869be240fba6dfe85a48f586a9e8fa7a47d4cb2b20de9e70f906a35",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-GRID",
+        "DECODE-GENERAL-INTRA-GRID-NEIGHBOUR-NONDC",
+        "DECODE-GENERAL-INTRA-GRID-SMOOTH-H-ABOVE-RIGHT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-grid-smooth-h-above-right/specs/decode-general-intra-grid-smooth-h-above-right/spec.md",
+      "sha256": "fb18001db7d8be97b7d7b060ed7abf7dd2936fd5386730c6a6fb469c7be9f084",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-grid-smooth-h-above-right/specs/decoder-support/spec.md",
+      "sha256": "3541d8a1379ae58cee92b0d02889da6d2659d260003d56329f879ce8f0766bab",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-GRID-SMOOTH-H-ABOVE-RIGHT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-grid-smooth-h-above-right/tasks.md",
+      "sha256": "a8ad85170ad7323e172d4b30bcbe84de75d404f54d9ada4f27869718fea394a7",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-GRID-SMOOTH-H-ABOVE-RIGHT"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-grid/.openspec.yaml",
+      "sha256": "8a4137773cbe7231c2199b8ff92658f41f82afaceb51b0d54edb1c154fee5014",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-grid/design.md",
+      "sha256": "761938824e4c91cc2ab3006acff7c9132414b43e7bee2ffe20bca7141e7dfc55",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-MULTIROW"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-grid/proposal.md",
+      "sha256": "7d4aaa313a99c1aa73af47228a18f3f07bc978d992958935e3ebc49bc32ca0c1",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-GRID"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-grid/specs/decode-general-intra-grid/spec.md",
+      "sha256": "75af1fcffcdc693738f87a3a6252721be064942f78680e7a887250573508e1ad",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-grid/specs/decoder-support/spec.md",
+      "sha256": "97e3d2e5d3d77bc00ef514ae3c96c0339a9e030b7e1d3f5fee6e852ffd3fcaeb",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-GRID"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-grid/tasks.md",
+      "sha256": "677c483416077af18e3e6c5c989033dadf78af366bfa6e1ea6e09000dd5f87bb",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-GRID"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-idif-d157/design.md",
+      "sha256": "8efc5ee2187a6d192fb12127c17f4d6a2c1a40bd3bea4e9203ac5dcb5c79cb5e",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-idif-d157/proposal.md",
+      "sha256": "402fcf83450abd0870d81e038ee1fbcb483d2297b459ad004eb94d231875e13d",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-IDIF-D157",
+        "RECON-INTRA-MIDDLE-DIRECTIONAL-ANGLE-PREDICTION"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-idif-d157/specs/decode-general-intra-idif-d157/spec.md",
+      "sha256": "a4a0e099f1138190bd5f71c6bfb1a52fbcb3bf51aa8c099083cbbaf7f4a426af",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-idif-d157/specs/decoder-support/spec.md",
+      "sha256": "cd4951226970ad3980ef0bbc50ea43eb9b66a45bb30b54a60cc0fd0208bc73af",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-IDIF-D157"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-idif-d157/tasks.md",
+      "sha256": "78b69ca333d5508ec57ab12978b4b3ccc1cf99c95ef9f921f27b3c183961bd33",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-IDIF-D157",
+        "RECON-INTRA-MIDDLE-DIRECTIONAL-ANGLE-PREDICTION"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-luma-coeffs/.openspec.yaml",
+      "sha256": "8a4137773cbe7231c2199b8ff92658f41f82afaceb51b0d54edb1c154fee5014",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-luma-coeffs/design.md",
+      "sha256": "68aa9a683e6bc0d0a8235cceb75418a0dcc59e8c6a35dd8149dd8c4293149e6a",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-luma-coeffs/proposal.md",
+      "sha256": "a81388d5fc6865f0866a3ef00b52e2dc115fc2c17340093ff4af993cacba3b14",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-LUMA-COEFFS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-luma-coeffs/specs/decode-general-intra-luma-coeffs/spec.md",
+      "sha256": "512f4d093f4004c0bb728f824b2dc6881e7f7de86c91f72c9a09231c7c331245",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-luma-coeffs/specs/decoder-support/spec.md",
+      "sha256": "3bbad793ab6f34fad53aaad321ca210d93c57d80178bd262695e09112f90ed90",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-LUMA-COEFFS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-luma-coeffs/tasks.md",
+      "sha256": "7f61aa181b1d34e11224db9edfa009cb359b7e2f08b55b5f817c2fc115684402",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-LUMA-COEFFS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-mb-neighbour-smooth/.openspec.yaml",
+      "sha256": "8a4137773cbe7231c2199b8ff92658f41f82afaceb51b0d54edb1c154fee5014",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-mb-neighbour-smooth/design.md",
+      "sha256": "07625f4f29f97ff9ff5ed3fa92b5007bfe4b8ea422993de158806dc193093cc6",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-ANGLE",
+        "DECODE-GENERAL-INTRA-MB-NEIGHBOUR-SMOOTH"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-mb-neighbour-smooth/proposal.md",
+      "sha256": "ff565ed8250fc0eee25961dc0b90a57ad6c4691bbca0ee364715e4218f08b264",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-ANGLE",
+        "DECODE-GENERAL-INTRA-MB-NEIGHBOUR-SMOOTH"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-mb-neighbour-smooth/specs/decode-general-intra-mb-neighbour-smooth/spec.md",
+      "sha256": "ded7a54e9441d5d9b94b0bcee77a55108513a32818e013e3a3dfc6926babc1af",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-mb-neighbour-smooth/specs/decoder-support/spec.md",
+      "sha256": "d70e609dba2815fa8d36735ea68992ed5a6f75456579595561a404fd1e62a005",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-MB-NEIGHBOUR-SMOOTH"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-mb-neighbour-smooth/tasks.md",
+      "sha256": "900e853bfa360be4bad55856f21df74968fb002cd70c83cac5d1738bf76f4ec1",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-MB-NEIGHBOUR-SMOOTH"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-multiblock/.openspec.yaml",
+      "sha256": "8a4137773cbe7231c2199b8ff92658f41f82afaceb51b0d54edb1c154fee5014",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-multiblock/design.md",
+      "sha256": "139558e6dee1ad04a9e03bb04d7a2ca9100578d97670f462a00a7338380a1f24",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-multiblock/proposal.md",
+      "sha256": "aa9a4e9eda005a2b578d13d084d898c24b334c8e5036ceb9e3be7ef87c047548",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-MULTIBLOCK"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-multiblock/specs/decode-general-intra-multiblock/spec.md",
+      "sha256": "a20b7c1f9b6d21b8ad599a5121f2a441e76f27fd224f4afbfe288c53ffb98f95",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-multiblock/specs/decoder-support/spec.md",
+      "sha256": "c56fcea4e54c54f7c88737a7e55ab1131baf97409ca0f8abde28473dd01f9460",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-MULTIBLOCK"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-multiblock/tasks.md",
+      "sha256": "e5539f8273f1e623e9336d30b97a01b96f2819e6a05eaf069731d43a20aa52bd",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-MULTIBLOCK"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-multirow/.openspec.yaml",
+      "sha256": "8a4137773cbe7231c2199b8ff92658f41f82afaceb51b0d54edb1c154fee5014",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-multirow/design.md",
+      "sha256": "2d5bb5225be13505767dbb84270dafe0ef401456b532aa965d88962bc629dad4",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-NON64-MULTISB"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-multirow/proposal.md",
+      "sha256": "5d8760496fd55b612d54b1613ffc368b213f9815312941e2a8157e0436d2a301",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-MULTIROW"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-multirow/specs/decode-general-intra-multirow/spec.md",
+      "sha256": "340f66e613e1cb7a0e365db3bd9d253e074b7366623376eaf86b1ef50c295c78",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-multirow/specs/decoder-support/spec.md",
+      "sha256": "200f54c011b5d7d9d46a16fe1d4988668747f7c0e2dabc3ddf819054dea5cc89",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-MULTIROW"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-multirow/tasks.md",
+      "sha256": "3ecedcc441f3c702380023ba0314751dbf1b95f528ca05759441468c23642ae3",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-MULTIROW"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-neighbour-directional/.openspec.yaml",
+      "sha256": "ed138d7231a82c3d7badf725aae3eabea38551615fe37435aa9f9f52bb7dfa01",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-neighbour-directional/design.md",
+      "sha256": "93f0345f87b34a54fd2c3934e2752130640fb8963f4219ca03c2267b16692b22",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-ANGLE",
+        "DECODE-GENERAL-INTRA-DIRECTIONAL-FOLLOW-CHROMA"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-neighbour-directional/proposal.md",
+      "sha256": "9186c926b5c70619a145a5a935b9f6b2f31d9a55d3414abce05d02fd047b2656",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-ANGLE",
+        "DECODE-GENERAL-INTRA-DIRECTIONAL-FOLLOW-CHROMA",
+        "DECODE-GENERAL-INTRA-NEIGHBOUR-DIRECTIONAL"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-neighbour-directional/specs/decode-general-intra-neighbour-directional/spec.md",
+      "sha256": "6ba8409b6646e5d7029263903de123c20dedee9b03083dd369fb398e76e257d4",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-neighbour-directional/specs/decoder-support/spec.md",
+      "sha256": "7f7de1b1258e99b8ede7886267873b551fede7e47622ddb43222074a67aa0011",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-NEIGHBOUR-DIRECTIONAL"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-neighbour-directional/tasks.md",
+      "sha256": "c2a4a7c7a32cb6cfa7f2295ecdb496b165b5cb0b57b461d8db1418d8e620fdf4",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-NEIGHBOUR-DIRECTIONAL"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-non64-multisb/design.md",
+      "sha256": "a79e9abe93389ec9d8e6ab37db7f83d2df99ea43c0071e1409def7b08822e514",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-non64-multisb/proposal.md",
+      "sha256": "1c51f171a9123928ebfbcae23c35cd66f7e54c1a03a7a94b533c4b9ad1a36107",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-NON64-MULTISB"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-non64-multisb/specs/decode-general-intra-non64-multisb/spec.md",
+      "sha256": "9e6762b877146948e0f30eb59c8dbf101482a3bf7d3fc48de2965bf15d79c83e",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-non64-multisb/specs/decoder-support/spec.md",
+      "sha256": "154b2e07a51cd5e230b1ecf77de2ce7988c808bda0f0f3ee755aa8daf35899f6",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-NON64-MULTISB"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-non64-multisb/tasks.md",
+      "sha256": "4624865f3825456007f58872f088cf4d4a73477fa9127f4d34f2333fa8537a58",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-NON64-MULTISB"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-nondc-smooth-plain/design.md",
+      "sha256": "c987ab68cd261595c55969a9e337c40ac7de4aa76fd0b0e388cd0208786e82a3",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-nondc-smooth-plain/proposal.md",
+      "sha256": "462f21e21811ec414cccfdb6eacf582d8104b930de37c869dd8da1b8031aa34b",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-NONDC-LUMA-SMOOTH-PLAIN"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-nondc-smooth-plain/specs/decode-general-intra-nondc-smooth-plain/spec.md",
+      "sha256": "284f52602be210409986e70340b8fe041ab1a6aca67858d6ced4d94a266b759f",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-nondc-smooth-plain/specs/decoder-support/spec.md",
+      "sha256": "53d0d8c8b04ea9b37571ee1bb78896f39010c8986fb245dc4d49a4977f141d1b",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-NONDC-LUMA-SMOOTH-PLAIN"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-nondc-smooth-plain/tasks.md",
+      "sha256": "d27d20d93670c3f868c47a342f8edbd5e28ea90424e9a33479d807408891a375",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-NONDC-LUMA-SMOOTH-PLAIN"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-nondc-smooth/.openspec.yaml",
+      "sha256": "8a4137773cbe7231c2199b8ff92658f41f82afaceb51b0d54edb1c154fee5014",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-nondc-smooth/design.md",
+      "sha256": "b1660b6dd6eeebd7d028cc3cae1f192d4843fd7983b7f217100b19c592d8e36d",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-nondc-smooth/proposal.md",
+      "sha256": "48cc5c25f9ad0f8311efb0c8bfaaf114c367e5ddf4ea64149a5a0f637463e456",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-NONDC-LUMA-SMOOTH"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-nondc-smooth/specs/decode-general-intra-nondc-smooth/spec.md",
+      "sha256": "d270c652a624a308ad2b14869a9663d1fbf49e6d1ae3d76217f2f191a2c5fa7e",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-nondc-smooth/specs/decoder-support/spec.md",
+      "sha256": "a297953e50450dd782a17de2582b789cadf9981e5794b297fb1f05d478aaafe8",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-NONDC-LUMA-SMOOTH"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-nondc-smooth/tasks.md",
+      "sha256": "5970022047950469d42d261390d95cf59b6586ddd2d0ffd9ea520a066f472201",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-NONDC-LUMA-SMOOTH"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-minimal-fixture-avm-skip-polarity/.openspec.yaml",
+      "sha256": "ed138d7231a82c3d7badf725aae3eabea38551615fe37435aa9f9f52bb7dfa01",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-minimal-fixture-avm-skip-polarity/design.md",
+      "sha256": "726bff123ef9c6a769851a9cbb0cf12ab3f955f141e1a61f404fd424d1206f45",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-minimal-fixture-avm-skip-polarity/proposal.md",
+      "sha256": "6a5b6e1d7dca65506ed92be86222961abd2d636249b4e22446230796a3ed5bdb",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-FRAME-RECON"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-minimal-fixture-avm-skip-polarity/specs/decoder-support/spec.md",
+      "sha256": "37c1652923e5a0070912added3609a6d0747810a388049fa8e0251c1fa9aec1c",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-FRAME-RECON"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-minimal-fixture-avm-skip-polarity/tasks.md",
+      "sha256": "b1a829a49b9a89794b195bd3961bd48fae5410ca4fec9547dc2f0e84c7ebdd59",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/decode-mode-to-txfm-table/.openspec.yaml",
       "sha256": "d36d5ade13d63079e8fac69f1e3c45e2ee23d6b22c94f88c6a340556a023f11c",
       "scope_kind": "openspec",
@@ -18212,6 +20816,569 @@
       "scope_kind": "openspec",
       "feature_ids": [
         "DECODE-TX-SIZE-SYMBOLIC-TABLES"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/encoder-general-intra-2d/proposal.md",
+      "sha256": "078b27d18486a117db9fab769afc8b78ed105e44b1df356e57dde0ca1e49f45b",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-GENERAL-INTRA-2D"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/encoder-general-intra-2d/specs/encoder-tools/spec.md",
+      "sha256": "f8194e98767a789c7094c6c04da44686fcdadabdfa6caff8241032b3add78bd5",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-GENERAL-INTRA-2D"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/encoder-general-intra-2d/tasks.md",
+      "sha256": "312ef8cbda83efca18792e4503b22f4b249fbc1b8a554630254c15d51b3f58af",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-GENERAL-INTRA-2D"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/encoder-general-intra-all-planes-coded/proposal.md",
+      "sha256": "19c94d1efec6a7fe6c6db6edbf447d21220201795c672013104733df9843f0dd",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-GENERAL-INTRA-ALL-PLANES-CODED"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/encoder-general-intra-all-planes-coded/specs/encoder-tools/spec.md",
+      "sha256": "1982a3a2bd1d7e6fd50fdbda25392b296e2eb8441e01151efa769b1eb8538ee9",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-GENERAL-INTRA-ALL-PLANES-CODED"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/encoder-general-intra-all-planes-coded/tasks.md",
+      "sha256": "1ad716560b1e63c7f8e9d2e5d77ec3f816a2a4d67d4132585601639d6023cde4",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-GENERAL-INTRA-ALL-PLANES-CODED"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/encoder-general-intra-coded-chroma-dc/proposal.md",
+      "sha256": "511ab1e7f42a7fd849ff1cb3196b084ef2ef16211ebf269be72289bbcad645e4",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-GENERAL-INTRA-CODED-CHROMA-DC"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/encoder-general-intra-coded-chroma-dc/specs/encoder-tools/spec.md",
+      "sha256": "1eeeba8b5cb1ce3f6ec81dabf3d176e1f153ed13c4b3c13d4fdbc67a20ef685d",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-GENERAL-INTRA-CODED-CHROMA-DC"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/encoder-general-intra-coded-chroma-dc/tasks.md",
+      "sha256": "457966e2a2fdf045d0d927b94241e95cc35854a326c5b547ad0571a609d87adf",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-GENERAL-INTRA-CODED-CHROMA-DC"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/encoder-general-intra-coded-chroma-v-dc/proposal.md",
+      "sha256": "c534790aa0018664a60b37c071b9d1d693732f2cba01b4fab81c487a948249a1",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-GENERAL-INTRA-CODED-CHROMA-V-DC"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/encoder-general-intra-coded-chroma-v-dc/specs/encoder-tools/spec.md",
+      "sha256": "e51c8e7813c95659dfc9206259dbe21f3f807e5faeb177197964bca2ed378730",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-GENERAL-INTRA-CODED-CHROMA-V-DC"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/encoder-general-intra-coded-chroma-v-dc/tasks.md",
+      "sha256": "4b9f9f615a04be4fca8c4dc4818b87bcb42e7410e8dec4d62ab671d129f36bbf",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-GENERAL-INTRA-CODED-CHROMA-V-DC"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/encoder-general-intra-coded-luma-dc/design.md",
+      "sha256": "c305c4d72d4b39f096379615f061e91b6b278691ada11632d2ffd3839685185b",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/encoder-general-intra-coded-luma-dc/proposal.md",
+      "sha256": "09d7e89526646a39b472509bc62e978ab567d1f708d26094315584f3060d0961",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-GENERAL-INTRA-CODED-LUMA-DC"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/encoder-general-intra-coded-luma-dc/specs/encoder-tools/spec.md",
+      "sha256": "1cccd100e4b9d242351bae13171f02a77cc827e7cbd8e7027309607551eb5da4",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-GENERAL-INTRA-CODED-LUMA-DC"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/encoder-general-intra-coded-luma-dc/tasks.md",
+      "sha256": "b947ff8df492358b4d8ce5f4b5b70f3f641719d7401d238bccb5d1ab745f2840",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-GENERAL-INTRA-CODED-LUMA-DC"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/encoder-general-intra-eob3/proposal.md",
+      "sha256": "c9409478b2e503b125b5a369ea4f364a15847c711d734b07a36e312f36f78103",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-GENERAL-INTRA-EOB3"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/encoder-general-intra-eob3/specs/encoder-tools/spec.md",
+      "sha256": "c15f2f3a36e51c7c54d668d70c1538da929b6bc10be5fa5355ad2ce11fe64d3b",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-GENERAL-INTRA-EOB3"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/encoder-general-intra-eob3/tasks.md",
+      "sha256": "2f433412fb7fa2945244b13212a68c17a54cdaec15495815ef03068958d23953",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-GENERAL-INTRA-EOB3"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/encoder-general-intra-skip-block-trace/design.md",
+      "sha256": "73f28b7f22200aba9bac546de11ccfcba25fa30b6ff83d1f1470b7b616d9e329",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/encoder-general-intra-skip-block-trace/proposal.md",
+      "sha256": "4e529be95ab910fb4308fc6419408e10f218de19372c083b9714565110e3ad6c",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-GENERAL-INTRA-SKIP-BLOCK-TRACE"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/encoder-general-intra-skip-block-trace/specs/encoder-tools/spec.md",
+      "sha256": "578d92cda07f1e3a1f2e98391af46ee8f851ab77760a2000eca6929098fd4d15",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-GENERAL-INTRA-SKIP-BLOCK-TRACE"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/encoder-general-intra-skip-block-trace/tasks.md",
+      "sha256": "8222a803fe6cbcf18d2101d675022dbaa0bae929dda53ad7d63a16b0bfa2835d",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-GENERAL-INTRA-SKIP-BLOCK-TRACE"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/encoder-general-intra-skip-tile-data/design.md",
+      "sha256": "29c8c1e7c2eefd6ff5bcb5684282da9d080c50b391a1f462850f73f448897662",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/encoder-general-intra-skip-tile-data/proposal.md",
+      "sha256": "ec2cee39318e64efaa3501f14f93ffb935d694a19d027da8e9af24a9edf718bd",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-GENERAL-INTRA-SKIP-TILE-DATA"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/encoder-general-intra-skip-tile-data/specs/encoder-tools/spec.md",
+      "sha256": "3e12ccf85dd47fe1758a094ddb01563c4cc6365f7677759462b16dc1557cbb83",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-GENERAL-INTRA-SKIP-TILE-DATA"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/encoder-general-intra-skip-tile-data/tasks.md",
+      "sha256": "9d02efa05e73c93cbd29e8fd0fe68aaa1bc36ed00c182818ff3984c7d55eb5b5",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-GENERAL-INTRA-SKIP-TILE-DATA"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/encoder-general-intra-two-coeff/proposal.md",
+      "sha256": "c3eaca5da4647d257e1e70855916892b18759a063f958228059d24d54b1602d8",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-GENERAL-INTRA-TWO-COEFF"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/encoder-general-intra-two-coeff/specs/encoder-tools/spec.md",
+      "sha256": "d5a3c33f959c8f9292df4acc389eaf98d37d9cebc88292b15e2de76fac5d4d87",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-GENERAL-INTRA-TWO-COEFF"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/encoder-general-intra-two-coeff/tasks.md",
+      "sha256": "4b774d0bdda9b2bbec5bbddb1e5e21d05979791ca4f8ee24574af058483002c3",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-GENERAL-INTRA-TWO-COEFF"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/encoder-general-intra-two-nonzero/proposal.md",
+      "sha256": "1e98513f9d167ec98ddaf34c2ce6a3d0f1aa09705b467df5d29159b376bde23e",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-GENERAL-INTRA-TWO-NONZERO"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/encoder-general-intra-two-nonzero/specs/encoder-tools/spec.md",
+      "sha256": "7f194036c5104168d9850a83563942a9753ab8d98b614d5d91c80d25f2b20037",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-GENERAL-INTRA-TWO-NONZERO"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/encoder-general-intra-two-nonzero/tasks.md",
+      "sha256": "7ca48cb39c371ec5fc05321d8fb00abdb1ead14670a3f1004a9b29529d78f79b",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-GENERAL-INTRA-TWO-NONZERO"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/encoder-general-intra-visible-ac/proposal.md",
+      "sha256": "ab762d69c9bb5bb1ce0ee6f0c59c53e1e78da58c025b1918546c18c5f6e2746c",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-GENERAL-INTRA-VISIBLE-AC"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/encoder-general-intra-visible-ac/specs/encoder-tools/spec.md",
+      "sha256": "769af03d5320f3ec6e556a0c613959d93e7302a785a80e438418e0c5201921ba",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-GENERAL-INTRA-VISIBLE-AC"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/encoder-general-intra-visible-ac/tasks.md",
+      "sha256": "5acf13cf9b746cef1508cc91a6d502f56fcd169dff9e76aa2467cc3d645cc1af",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-GENERAL-INTRA-VISIBLE-AC"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/encoder-minimal-clk-base-q-idx/design.md",
+      "sha256": "13331e785c7a864903b854b4d0209928a39e41b4b3f918343097a4a77f496b71",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/encoder-minimal-clk-base-q-idx/proposal.md",
+      "sha256": "40648743a5a62c416c56b7e4a67028eb8c6a3c7b2fceb6565ba5f32ec4351fac",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-MINIMAL-CLK-BASE-Q-IDX"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/encoder-minimal-clk-base-q-idx/specs/encoder-tools/spec.md",
+      "sha256": "ddb2a08fbc43f1817acd6a720023732a655d654f10d6445a3f8b1c2d3b140356",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-MINIMAL-CLK-BASE-Q-IDX"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/encoder-minimal-clk-base-q-idx/tasks.md",
+      "sha256": "c0e0952f057141eb9efcea9b6be67b2028805c297cb65d23c167bfd9bbcdcd64",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-MINIMAL-CLK-BASE-Q-IDX"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/encoder-minimal-intra-skip-ivf/design.md",
+      "sha256": "dee4402e8bb0c61e04ccc0bcd453159e4e79f4e54885c7faf5a040936fa38620",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/encoder-minimal-intra-skip-ivf/proposal.md",
+      "sha256": "3d6927ade7dd2a09b3555322f06676aa4cc406a0ca9f43b10e52a4b108aba0e1",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-MINIMAL-INTRA-SKIP-IVF"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/encoder-minimal-intra-skip-ivf/specs/encoder-tools/spec.md",
+      "sha256": "a93a6b1ddeff098dd4647ff3f21989e576f21acf1a7c3c7691c87be2d8f1b2d8",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-MINIMAL-INTRA-SKIP-IVF"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/encoder-minimal-intra-skip-ivf/tasks.md",
+      "sha256": "32bd6a9f066bd4294d08532e4fe083128edc31bfd86cebed432ee43ca31b7a30",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-MINIMAL-INTRA-SKIP-IVF"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/recon-deblock-adaptive-strength/.openspec.yaml",
+      "sha256": "d36d5ade13d63079e8fac69f1e3c45e2ee23d6b22c94f88c6a340556a023f11c",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/recon-deblock-adaptive-strength/design.md",
+      "sha256": "f238e596c1eb29870ab912643584e5ef664e2d87ceed290bf3c7c753c5e4881c",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "RECON-DEBLOCK-FILTER-MAX-WIDTH",
+        "RECON-DEBLOCK-SAMPLE-FILTER"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/recon-deblock-adaptive-strength/proposal.md",
+      "sha256": "f5b6fd510b9b16f1aa354466cddcde672909ad40e80ebd468e8613a7c53fc77e",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "RECON-DEBLOCK-ADAPTIVE-STRENGTH",
+        "RECON-DEBLOCK-FILTER-MAX-WIDTH",
+        "RECON-DEBLOCK-SAMPLE-FILTER"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/recon-deblock-adaptive-strength/specs/decoder-support/spec.md",
+      "sha256": "114b2be54d215998cc42692be9a28c3c4d92d9b470335c48997245c5e1a3eed9",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "RECON-DEBLOCK-ADAPTIVE-STRENGTH"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/recon-deblock-adaptive-strength/tasks.md",
+      "sha256": "e0a5bfe245ccd9697f0d67147d80fdc4fa74aecdf81b2baa5fe5def6941707f2",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "RECON-DEBLOCK-ADAPTIVE-STRENGTH"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/recon-deblock-filter-choice/.openspec.yaml",
+      "sha256": "d36d5ade13d63079e8fac69f1e3c45e2ee23d6b22c94f88c6a340556a023f11c",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/recon-deblock-filter-choice/design.md",
+      "sha256": "c8fc1b5ad26f10145dc911109bfabe63f12548f7e19a7c9b43b2a7937c7e3a39",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "RECON-DEBLOCK-SAMPLE-FILTER"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/recon-deblock-filter-choice/proposal.md",
+      "sha256": "50eeffac896c7e2c2d5671734083b309ded8afbb0a98f81a45d5b9ee6d9ad483",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "RECON-DEBLOCK-ADAPTIVE-STRENGTH",
+        "RECON-DEBLOCK-FILTER-CHOICE",
+        "RECON-DEBLOCK-FILTER-MAX-WIDTH",
+        "RECON-DEBLOCK-SAMPLE-FILTER"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/recon-deblock-filter-choice/specs/decoder-support/spec.md",
+      "sha256": "3b8de13e537bb233611c44df9d88fc75517dc04659da269246da6b2ec59877ed",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "RECON-DEBLOCK-FILTER-CHOICE"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/recon-deblock-filter-choice/tasks.md",
+      "sha256": "36779f7466438cb7d1347dcfe12349a629e7085cfec40c252c2712b8bac289bd",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "RECON-DEBLOCK-FILTER-CHOICE"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/recon-deblock-filter-max-width/.openspec.yaml",
+      "sha256": "d36d5ade13d63079e8fac69f1e3c45e2ee23d6b22c94f88c6a340556a023f11c",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/recon-deblock-filter-max-width/design.md",
+      "sha256": "bb5d90dba2da31fea6d7d84860249cc579a8ca94280bc595b68cc9c8b2001395",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "RECON-DEBLOCK-SAMPLE-FILTER"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/recon-deblock-filter-max-width/proposal.md",
+      "sha256": "92c2efb7d1c7dfeae653014f7c9a9d2494bc6548a1a10b632152f0855e6120dd",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "RECON-DEBLOCK-FILTER-MAX-WIDTH",
+        "RECON-DEBLOCK-SAMPLE-FILTER"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/recon-deblock-filter-max-width/specs/decoder-support/spec.md",
+      "sha256": "ea34d2b92f54608da84cc31a94de18efb4e7931c993b4286f7b71cde22a05400",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "RECON-DEBLOCK-FILTER-MAX-WIDTH"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/recon-deblock-filter-max-width/tasks.md",
+      "sha256": "42f472a5a1fa5c3660f0cba8526d865d6f6a6a9e53a472b20139ea24f3d6a8a8",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "RECON-DEBLOCK-FILTER-MAX-WIDTH"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/recon-deblock-sample-filter/.openspec.yaml",
+      "sha256": "d36d5ade13d63079e8fac69f1e3c45e2ee23d6b22c94f88c6a340556a023f11c",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/recon-deblock-sample-filter/design.md",
+      "sha256": "f8362c0c3737a3b89654da5abadc9124b1d168d49f4d162d55ac9bc8eb40d65a",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/recon-deblock-sample-filter/proposal.md",
+      "sha256": "ea4006c405d92481ffbfcf1f18c80ee323883db78af559b0a876b5f922677fe7",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "RECON-DEBLOCK-SAMPLE-FILTER"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/recon-deblock-sample-filter/specs/decoder-support/spec.md",
+      "sha256": "6cb9821324c7014a21d2ae6ddbc09fb10f2f8d4b0eac32dab158d5fa138dce12",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "RECON-DEBLOCK-SAMPLE-FILTER"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/recon-deblock-sample-filter/tasks.md",
+      "sha256": "74c57b031b5fcd0d20102ee6037068ddcbbd5874f27a9f5f07d3509a5faa90bd",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "RECON-DEBLOCK-SAMPLE-FILTER"
       ],
       "outcome": "success"
     },
@@ -18385,6 +21552,52 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/recon-dpcm-direction/.openspec.yaml",
+      "sha256": "d36d5ade13d63079e8fac69f1e3c45e2ee23d6b22c94f88c6a340556a023f11c",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/recon-dpcm-direction/design.md",
+      "sha256": "0da0232ef0e353b965ef885a659e797ffb0980bbae1bf4777c2a3f0d80b575c3",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "RECON-GET-TRANSFORM-1D-TYPE",
+        "RECON-INVERSE-TRANSFORM-2D-OUTER",
+        "RECON-RESOLVE-2D-TRANSFORM-PARAMS",
+        "RECON-TRANSFORM-SHIFT-LOOKUP"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/recon-dpcm-direction/proposal.md",
+      "sha256": "b7204328366c4ab0c476660a8bea75e2440c924b7b53bf602a65049737437d6b",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "RECON-DPCM-DIRECTION"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/recon-dpcm-direction/specs/decoder-support/spec.md",
+      "sha256": "5e61bcff302cde0c06545ba52f00c5411331573c5b56985f4f045eca4a3f2bfe",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "RECON-DPCM-DIRECTION"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/recon-dpcm-direction/tasks.md",
+      "sha256": "d500161b44bffc62a2e94fa78105ea3db8ab935695e46819dcf0884bc9833c80",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "RECON-DPCM-DIRECTION"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/recon-inverse-transform-1d/.openspec.yaml",
       "sha256": "bd868bb3d0e2aa6f81c5273c4dd053ba9913d1bdc6612a012cd88901f2119012",
       "scope_kind": "openspec",
@@ -18510,6 +21723,49 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/recon-reconstruct-transform-block/.openspec.yaml",
+      "sha256": "d36d5ade13d63079e8fac69f1e3c45e2ee23d6b22c94f88c6a340556a023f11c",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/recon-reconstruct-transform-block/design.md",
+      "sha256": "46b752cfb9371dc0eab41bcff0912d580d77df3974bab9a0d8664eb62fd3dfc3",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "RECON-RESIDUAL-ADDITION"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/recon-reconstruct-transform-block/proposal.md",
+      "sha256": "47d28845ce2cbc32882b28563dc9f3401e9aa61c410db8d7a419225358e9eb41",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "RECON-RECONSTRUCT-TRANSFORM-BLOCK"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/recon-reconstruct-transform-block/specs/decoder-support/spec.md",
+      "sha256": "7fe9184e6b6e49b4c30bbd55b5df089a69b83b3b71907b76e85bf17970a96591",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "RECON-RECONSTRUCT-TRANSFORM-BLOCK"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/recon-reconstruct-transform-block/tasks.md",
+      "sha256": "bff2486444cceb33bb84400eee60bc39e9ea822805997a8dec8226e46cbbebf0",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "RECON-RECONSTRUCT-TRANSFORM-BLOCK"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/recon-reference-frame-store-refresh-flags/.openspec.yaml",
       "sha256": "453f9679cbcdf8fdf778223211b7443785d8257615e83c53e16725a17a7b83cb",
       "scope_kind": "openspec",
@@ -18600,6 +21856,95 @@
       "scope_kind": "openspec",
       "feature_ids": [
         "RECON-RESIDUAL-ADDITION"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/recon-resolve-2d-transform-params/.openspec.yaml",
+      "sha256": "d36d5ade13d63079e8fac69f1e3c45e2ee23d6b22c94f88c6a340556a023f11c",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/recon-resolve-2d-transform-params/design.md",
+      "sha256": "ee91b22bba566b2cbbf44c5c16cceccc8b1c784e46b88cf2a42be38bc97c9ead",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "RECON-GET-TRANSFORM-1D-TYPE",
+        "RECON-INVERSE-TRANSFORM-2D-OUTER",
+        "RECON-TRANSFORM-SHIFT-LOOKUP"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/recon-resolve-2d-transform-params/proposal.md",
+      "sha256": "fd0c57b5c9267e7092b475cf1c07b2b4c8d2aec7c92a4dcc363522e3d507c730",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "RECON-GET-TRANSFORM-1D-TYPE",
+        "RECON-INVERSE-TRANSFORM-2D-OUTER",
+        "RECON-RESOLVE-2D-TRANSFORM-PARAMS",
+        "RECON-TRANSFORM-SHIFT-LOOKUP"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/recon-resolve-2d-transform-params/specs/decoder-support/spec.md",
+      "sha256": "500b93a1e2404b4310ee6acd95c485d4aafe0115d5810ce4ec32b58c4f760005",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "RECON-RESOLVE-2D-TRANSFORM-PARAMS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/recon-resolve-2d-transform-params/tasks.md",
+      "sha256": "aa0727afecceb6c007bb51d78225060b638e210b242d78f77e4072295726a355",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "RECON-RESOLVE-2D-TRANSFORM-PARAMS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/recon-secondary-inverse-transform/.openspec.yaml",
+      "sha256": "d36d5ade13d63079e8fac69f1e3c45e2ee23d6b22c94f88c6a340556a023f11c",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/recon-secondary-inverse-transform/design.md",
+      "sha256": "c823d8b1d106b2b398e5dbcbe487f9bc83cd90b6b5cdcecfef1b58c8bbc38c93",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/recon-secondary-inverse-transform/proposal.md",
+      "sha256": "3e0b4b927301c1eba42c2d65ba845b25d069fde292362f5a9b6b42a1905cfd25",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "RECON-SECONDARY-INVERSE-TRANSFORM"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/recon-secondary-inverse-transform/specs/decoder-support/spec.md",
+      "sha256": "1a0a35411a3da772feeebc77376d89ad0ef5faf65f244114184479b5e4d29e30",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "RECON-SECONDARY-INVERSE-TRANSFORM"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/recon-secondary-inverse-transform/tasks.md",
+      "sha256": "24fd1a5628b2a70e725e2837d874880550ca9cb571dbefcc7ed812320bb7ffd4",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "RECON-SECONDARY-INVERSE-TRANSFORM"
       ],
       "outcome": "success"
     },
@@ -19069,7 +22414,7 @@
     },
     {
       "path": "openspec/specs/encoder-tools/spec.md",
-      "sha256": "6dabe826b2899e2feb6ed2a2acd03249935b522f12fbb79e8431a7cee9082c73",
+      "sha256": "c61e11adae672f3f2bbb198206d919e344f488d8df64ce2219fa511a7bac5849",
       "scope_kind": "openspec",
       "feature_ids": [
         "AV2-5.18.1-FRAME-HEADER-GENERAL",
@@ -19088,9 +22433,15 @@
         "AV2-5.4-SEQUENCE-HEADER",
         "AV2-IVF-CONTAINER",
         "ENC-BITSTREAM-WRITER",
+        "ENC-BLOCK-SYMBOL-ENCODE",
         "ENC-CLOSED-LOOP-RECONSTRUCTION-MINIMAL",
+        "ENC-COEFF-BASE-LF-CONTEXT",
+        "ENC-COEFF-BASE-LF-TOKEN",
+        "ENC-COEFF-MULTI-TOKENS",
         "ENC-COEFFICIENT-TOKENIZATION-MINIMAL",
+        "ENC-DO-SPLIT-PARTITION-SYMBOL",
         "ENC-FORWARD-TRANSFORM-FOUNDATION",
+        "ENC-FRAME-HEADER-CORE-ASSEMBLER",
         "ENC-INTRA-BLOCK-MODE-TRACE",
         "ENC-INTRA-BLOCK-TRACE-BYPASS-LITERAL",
         "ENC-INTRA-BLOCK-TRACE-CHROMA-SKIP",
@@ -19098,14 +22449,29 @@
         "ENC-INTRA-BLOCK-TRACE-CODED-CHROMA-DC",
         "ENC-INTRA-BLOCK-TRACE-CODED-DC",
         "ENC-INTRA-BLOCK-TRACE-GOLOMB-FINITE",
+        "ENC-INTRA-BLOCK-TRACE-GOLOMB-PREFIX",
+        "ENC-INTRA-BLOCK-TRACE-IST",
         "ENC-INTRA-BLOCK-TRACE-LUMA-SKIP",
+        "ENC-INTRA-BLOCK-TRACE-TWO-COEFF",
+        "ENC-INTRA-BLOCK-TRACE-TWO-COEFF-TX-TYPE",
         "ENC-INTRA-MODE-SYMBOL-EMISSION",
         "ENC-INTRA-TOY-V0",
+        "ENC-INTRA-TX-TYPE-TOKEN",
+        "ENC-MINIMAL-INTRA-CLK-ANNEXB-OBU",
+        "ENC-MINIMAL-INTRA-IVF",
+        "ENC-MINIMAL-INTRA-TILE-GROUP-OBU",
         "ENC-QUANTIZATION-V0",
         "ENC-RATE-CONTROL-V0",
         "ENC-RESIDUAL-FOUNDATION",
+        "ENC-SEC-TX-TYPE-TOKEN",
+        "ENC-SEQUENCE-HEADER-OBU",
         "ENC-SPEED-PRESETS",
-        "ENC-UV-MODE-SYMBOL-EMISSION"
+        "ENC-TEMPORAL-DELIMITER-OBU",
+        "ENC-UV-MODE-SYMBOL-EMISSION",
+        "ENC-WRITER-INPUT-FRAMING",
+        "ENC-WRITER-INPUT-INTER-VIEW",
+        "ENC-WRITER-INPUT-SEQ-VIEW",
+        "ENC-WRITER-INPUT-STRUCTURE"
       ],
       "outcome": "success"
     },
@@ -19345,7 +22711,7 @@
     },
     {
       "path": "tests/conformance/manifest.toml",
-      "sha256": "52d2f132e929d5df8db83459860272b21d163c17fa1fed1e8725be63c37cf5b0",
+      "sha256": "c30970498c16a684a8d76488632c887b8c0fb7aeba53f7a7b4ce680ebdba2605",
       "scope_kind": "conformance-corpus",
       "feature_ids": [
         "CONF-AVM-VALID-STREAMS"
@@ -19374,8 +22740,120 @@
       "outcome": "success"
     },
     {
+      "path": "tests/conformance/vectors/valid/syn-2sb-intra-128x64-q80.ivf",
+      "sha256": "867b2640febf24415f587cf0536199ddf572465bdda4a3b564eb100b2033c4c9",
+      "scope_kind": "conformance-corpus",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "tests/conformance/vectors/valid/syn-2sbcol-intra-64x128-q80.ivf",
+      "sha256": "763dd3a52884b80d39d3c6cdfe06504aecd32c4e59ca1302ce7f269e7081927f",
+      "scope_kind": "conformance-corpus",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "tests/conformance/vectors/valid/syn-cos-intra-64x64-q180.ivf",
+      "sha256": "1235ed7c3ce9afa5b5cac873459de631176a2b1fef0ea381cad23d4670cbcd59",
+      "scope_kind": "conformance-corpus",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "tests/conformance/vectors/valid/syn-d113-intra-128x128-q80.ivf",
+      "sha256": "f80ece1da803a496a48c92a56c39aa92fde41cfc7cc217f9b875e60a0f131126",
+      "scope_kind": "conformance-corpus",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "tests/conformance/vectors/valid/syn-d135row-intra-128x128-q80.ivf",
+      "sha256": "bea01a0fbefa560e40681294c284d60adb4b848fcb4493511fe6f8c141edb36e",
+      "scope_kind": "conformance-corpus",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "tests/conformance/vectors/valid/syn-d157-intra-128x64-q80.ivf",
+      "sha256": "07b44aa966c0ae08adae16915684bb40301e5e08743779828f0ae0c00259a20e",
+      "scope_kind": "conformance-corpus",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "tests/conformance/vectors/valid/syn-d45-intra-192x128-q80.ivf",
+      "sha256": "cf887e04ba417fa74a5d97fde25ce92c915fc66f55bf4d9fe4cedb15002eaebe",
+      "scope_kind": "conformance-corpus",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "tests/conformance/vectors/valid/syn-deep-intra-64x64-q120.ivf",
+      "sha256": "a098548db459b488eed1baeb61f998fabe7eca042b1bbcf2c538fb85da6fd33d",
+      "scope_kind": "conformance-corpus",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "tests/conformance/vectors/valid/syn-dfchroma-intra-64x64-q80.ivf",
+      "sha256": "8903ee176510027c35105f28e832ff9fe6c06ca72a7bda3010b2ea543bf07974",
+      "scope_kind": "conformance-corpus",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "tests/conformance/vectors/valid/syn-dirneigh-intra-128x64-q80.ivf",
+      "sha256": "13c34ba0c880c90510f8ff5ff5ff97daac704933e6e003d04a20cea825583b78",
+      "scope_kind": "conformance-corpus",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
       "path": "tests/conformance/vectors/valid/syn-flat-intra-64x64-minimal.ivf",
-      "sha256": "5eae07c8cd3396acf66706dc1e84d4efbd18bcd7751180756fc680d22511707e",
+      "sha256": "161c475afdf5b4067ab93bdc9699187ef023b1a7e1fb619fec114a961781298e",
+      "scope_kind": "conformance-corpus",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "tests/conformance/vectors/valid/syn-flat-intra-64x64-minimal.raw",
+      "sha256": "92c4477c8b50d5646c6ed5351cbb8f4fc04517ba39354a127c306e196fd059af",
+      "scope_kind": "conformance-corpus",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "tests/conformance/vectors/valid/syn-flat-intra-64x64-q80.ivf",
+      "sha256": "19f422ac63056ae799157daf1954715c33028002baafb399731c9e768204c7ef",
+      "scope_kind": "conformance-corpus",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "tests/conformance/vectors/valid/syn-grid-intra-128x128-q80.ivf",
+      "sha256": "6a24b14cbbd7563bfd99ef25216c77309cc2c7c8755b13bb11db7a3aac1b193e",
+      "scope_kind": "conformance-corpus",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "tests/conformance/vectors/valid/syn-hedge-intra-64x64-q80.ivf",
+      "sha256": "9bc90cb41d63f9b8b093549743a7eead75d5d5e56d3060d34ebbc0ec14d79c94",
+      "scope_kind": "conformance-corpus",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "tests/conformance/vectors/valid/syn-hpred-intra-128x64-q180.ivf",
+      "sha256": "889d9a329b7b36a5da9907083c27acdb2c96f41c465a2c753a086d441d60b85a",
+      "scope_kind": "conformance-corpus",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "tests/conformance/vectors/valid/syn-hsmooth-intra-64x64-q120.ivf",
+      "sha256": "17997ec86b177e4033e6cc518b2fed6d2ccde6fd5a53496c1a555dcc0a39df68",
       "scope_kind": "conformance-corpus",
       "feature_ids": [],
       "outcome": "success"
@@ -19416,8 +22894,85 @@
       "outcome": "success"
     },
     {
+      "path": "tests/conformance/vectors/valid/syn-mbvg-intra-128x64-q80.ivf",
+      "sha256": "3ddf52a253e3406a7ebe20df45cb6b39e6a5f177fe5a8a2d1672f8a47102a564",
+      "scope_kind": "conformance-corpus",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
       "path": "tests/conformance/vectors/valid/syn-ops-64x64.ivf",
       "sha256": "fca2a05ac5b2e63b1cf2a2fa8e6f6cd5da51c06852fe6816022626db50b2a3af",
+      "scope_kind": "conformance-corpus",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "tests/conformance/vectors/valid/syn-quad-intra-64x64-q80.ivf",
+      "sha256": "b18c0c01f873000bb10deaad07af9e99870691dc9880f456da061cc0435df2e6",
+      "scope_kind": "conformance-corpus",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "tests/conformance/vectors/valid/syn-rdir-intra-128x64-q80.ivf",
+      "sha256": "36f0ed8d6040fdd41d1019a28dabaa33ca6a7d685b894b00a80451e925e27b57",
+      "scope_kind": "conformance-corpus",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "tests/conformance/vectors/valid/syn-shgrid-intra-128x128-q80.ivf",
+      "sha256": "5cbdf29bbb94adb156abe4c4263620fabf988798fc5006d50abf3525a48964be",
+      "scope_kind": "conformance-corpus",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "tests/conformance/vectors/valid/syn-shsplit-intra-64x64-q80.ivf",
+      "sha256": "0e4487b499ed356684963686b8fea994d33c59f4019f4759d15d3b68075a2803",
+      "scope_kind": "conformance-corpus",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "tests/conformance/vectors/valid/syn-smooth-intra-64x64-q124.ivf",
+      "sha256": "508f4fb479e3f8238c928b097bb14cca334a03314ab46f68294b795b6f995a21",
+      "scope_kind": "conformance-corpus",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "tests/conformance/vectors/valid/syn-smoothnondc-intra-64x64-q132.ivf",
+      "sha256": "5b1c76e8424aa02c402e501809c9f2410aafac029143fd4581bedb2eb624fb29",
+      "scope_kind": "conformance-corpus",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "tests/conformance/vectors/valid/syn-svsplit-intra-64x64-q140.ivf",
+      "sha256": "853d7fbf7537953d4d5b17a2ffcf86cd956385dcfdf3003cff6cbee8819fcab1",
+      "scope_kind": "conformance-corpus",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "tests/conformance/vectors/valid/syn-vgrid-intra-192x128-q120.ivf",
+      "sha256": "b2bc34d7a9dec2bf8a46770f1ebb374448bfe93bf32dc39608f3b42cbdfd897b",
+      "scope_kind": "conformance-corpus",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "tests/conformance/vectors/valid/syn-vpred-intra-64x128-q160.ivf",
+      "sha256": "633cff9c1764da40024e67d857854f46085d1d025a31a6e1c48352c58b871ba6",
+      "scope_kind": "conformance-corpus",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "tests/conformance/vectors/valid/syn-vsmooth-intra-64x64-q120.ivf",
+      "sha256": "ba11f9b284081e29b9c05afef6dfffdf4d6a50765dfc642fb1face0d181afab2",
       "scope_kind": "conformance-corpus",
       "feature_ids": [],
       "outcome": "success"
@@ -19458,7 +23013,7 @@
     },
     {
       "path": "xtask/src/decoder_conformance_coverage.rs",
-      "sha256": "27d2b4ab634059b4c1774617551b53489af2323c4558fbf63220d5fea7a4997c",
+      "sha256": "f689bf8d7a01e03b7d17393da8d3ac8646a25273607262ebe99454ba4eac146f",
       "scope_kind": "workspace:xtask",
       "feature_ids": [
         "AV2-8.2-SYMBOL-DECODER",
@@ -19534,6 +23089,13 @@
         "DECODE-COEFF-USE-FSC-CONDITION-HANDOFF",
         "DECODE-COEFF-USE-FSC-SHARED-FACTS-HANDOFF",
         "DECODE-CONTEXT-TILE-PAYLOAD-HANDOFF",
+        "DECODE-GENERAL-INTRA-BLOCK-DECODED",
+        "DECODE-GENERAL-INTRA-BLOCK-MODES",
+        "DECODE-GENERAL-INTRA-DEEP-SPLIT",
+        "DECODE-GENERAL-INTRA-FRAME-FRONTIER",
+        "DECODE-GENERAL-INTRA-FRAME-RECON",
+        "DECODE-GENERAL-INTRA-LUMA-COEFFS",
+        "DECODE-GENERAL-INTRA-MULTIBLOCK",
         "DECODE-MINIMAL-RAW-RUNTIME-OUTPUT",
         "DECODE-MODE-TO-TXFM-SYMBOLIC-TABLE",
         "DECODE-STREAM-STATE-PLANNER",
@@ -19548,10 +23110,15 @@
         "INFRA-RECON-FRAME-PLANE-TYPES",
         "RECON-COEFFICIENT-SCAN-ORDER",
         "RECON-CURRENT-FRAME-WORKSPACE",
+        "RECON-DEBLOCK-ADAPTIVE-STRENGTH",
+        "RECON-DEBLOCK-FILTER-CHOICE",
+        "RECON-DEBLOCK-FILTER-MAX-WIDTH",
+        "RECON-DEBLOCK-SAMPLE-FILTER",
         "RECON-DEQUANT-PROCESS",
         "RECON-DEQUANT-QM-WEIGHT",
         "RECON-DEQUANT-QUANTIZER-INDEX-RESOLUTION",
         "RECON-DEQUANT-QUANTIZER-LOOKUP",
+        "RECON-DPCM-DIRECTION",
         "RECON-FRAME-HASH-DIGEST",
         "RECON-GET-TRANSFORM-1D-TYPE",
         "RECON-GET-TX-CLASS",
@@ -19568,8 +23135,11 @@
         "RECON-INVERSE-TRANSFORM-2D",
         "RECON-INVERSE-TRANSFORM-2D-OUTER",
         "RECON-INVERSE-TRANSFORM-MATRIX-FREE",
+        "RECON-RECONSTRUCT-TRANSFORM-BLOCK",
         "RECON-REFERENCE-FRAME-STORE",
         "RECON-RESIDUAL-ADDITION",
+        "RECON-RESOLVE-2D-TRANSFORM-PARAMS",
+        "RECON-SECONDARY-INVERSE-TRANSFORM",
         "RECON-TRANSFORM-SHIFT-LOOKUP",
         "RECON-WORKSPACE-DIRECTIONAL-ANGLE-PREDICTION",
         "RECON-Y4M-OUTPUT-WRITER",
@@ -19692,7 +23262,7 @@
     },
     {
       "path": "xtask/src/source_lines.rs",
-      "sha256": "ec45c8104733020ef5222d902b094f383fe44808016a0032973361c6d4775082",
+      "sha256": "e3c686828c3c8198ea61babb68230b35422181f578212627dd9f55b6454962bc",
       "scope_kind": "workspace:xtask",
       "feature_ids": [
         "XTASK-SOURCE-LINES"

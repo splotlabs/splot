@@ -1786,3 +1786,61 @@ fn d45_neighbour_one_sided_above_right_intra_frame_decodes_to_oracle() {
         "d08056c0d1ed3f379e3072c7f1ebced04da0f6df994efd0b5f8d39b76c0b683f"
     );
 }
+
+// The committed minimal-tool intra fixture: an avmenc base_q_idx 210 key frame
+// (broad tools, DIP, and tx-partition disabled) whose single 64x64 luma block
+// quantizes to an all-zero residual, so it is coded as a skipped transform block
+// (§5.20.7.27 `all_zero == 1`), while the chroma planes carry a real coded
+// residual. This replaced the retired hand-retimed "minimal" frozen-tier fixture
+// (which coded the skip symbol with inverted polarity and was rejected by
+// avmdec). avmdec and dav2d agree on the raw output
+// (docs/LOCAL-REFERENCE-EVIDENCE.toml).
+const SKIP_FIXTURE: &[u8] =
+    include_bytes!("../../../../tests/conformance/vectors/valid/syn-flat-intra-64x64-minimal.ivf");
+
+#[test]
+fn luma_skip_fixture_decodes_skip_branch_through_general_path() {
+    use splot_recon::{BitDepth, PixelFormat, PlaneSize};
+
+    let options = DecodeOptions::default();
+    let context =
+        DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).expect("context");
+    let plan = context.plan_bytes(SKIP_FIXTURE, options).expect("plan");
+    let frame = decode_minimal_frame_from_plan(SKIP_FIXTURE, options, &plan)
+        .expect("decode")
+        .frame;
+
+    assert_eq!(frame.bit_depth(), BitDepth::Eight);
+    assert_eq!(frame.pixel_format(), PixelFormat::Yuv420);
+    assert_eq!(frame.y().visible_size(), PlaneSize::new(64, 64).unwrap());
+
+    // The §5.20.7.27 luma transform block is `all_zero == 1` (skipped): with no
+    // available neighbours the §7.13.2.4 DC predictor is 128 and no residual is
+    // added, so the whole luma plane is flat 128. This is the first conformant,
+    // oracle-anchored exercise of the luma skip branch in the real decoder.
+    let y = frame.y().samples();
+    assert!(
+        y.iter().all(|&s| s == 128),
+        "luma must be the flat 128 skip block; first samples: {:?}",
+        &y[..8]
+    );
+
+    // The chroma transform blocks are NOT skipped: they carry a real coded
+    // residual, so the chroma planes are not flat.
+    let u = frame.u().unwrap().samples();
+    assert!(
+        u.iter().any(|&s| s != u[0]),
+        "U must carry a coded (non-flat) residual; first samples: {:?}",
+        &u[..8]
+    );
+
+    // SHA-256 of the decoded raw planar output, == avmdec == dav2d (raw md5
+    // f618317b0391acb8a88fe9e3f962441e; docs/LOCAL-REFERENCE-EVIDENCE.toml).
+    let hash = splot_recon::DecodedFrameHashInput::new(&frame)
+        .compute_hash()
+        .to_hex();
+    assert_eq!(
+        hash,
+        "92c4477c8b50d5646c6ed5351cbb8f4fc04517ba39354a127c306e196fd059af"
+    );
+}

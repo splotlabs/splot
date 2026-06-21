@@ -180,10 +180,15 @@ mod tests {
         DecodeContext::new(DecodeRuntimeConfig::new(threads)).unwrap()
     }
 
+    // Y4M framing header (unchanged 64x64 4:2:0 at 30 fps) followed by the
+    // decoded raw planar output of the committed conformant luma-skip fixture
+    // (luma flat 128 skip block; chroma a real coded residual). The raw planar
+    // bytes are the committed avmdec/dav2d-agreed reference next to the fixture.
     fn expected_minimal_y4m() -> Vec<u8> {
         let mut bytes = b"YUV4MPEG2 W64 H64 F30:1 Ip A0:0 C420\nFRAME\n".to_vec();
-        bytes.extend(core::iter::repeat_n(128, 64 * 64));
-        bytes.extend(core::iter::repeat_n(129, 32 * 32 + 32 * 32));
+        bytes.extend_from_slice(include_bytes!(
+            "../../../tests/conformance/vectors/valid/syn-flat-intra-64x64-minimal.raw"
+        ));
         bytes
     }
 
