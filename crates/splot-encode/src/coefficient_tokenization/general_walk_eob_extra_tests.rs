@@ -411,3 +411,19 @@ fn general_lf_eob5_10_bounded_routing_fuzz() {
         "the bounded fuzz must cover at least one block"
     );
 }
+
+#[test]
+fn recover_rejects_out_of_range_eob_pt_without_panicking() {
+    // A malformed trace whose `eob_pt_16` symbol selects an eobPt far beyond the
+    // supported range (the symbol is a `u8`) must return a typed error, NOT panic on
+    // the `1 << (eobPt - 3)` shift in `read_eob_from_tokens`.
+    let trace = vec![
+        BlockSymbolToken::Coeff(coded_luma_all_zero_token(Q_CTX)),
+        BlockSymbolToken::Coeff(eob_pt_16_token(Q_CTX, EOB_CTX_LUMA_INTRA, 200)),
+    ];
+    let err = recover_quant_from_tokens(&trace, Q_CTX).unwrap_err();
+    assert!(matches!(
+        err,
+        Error::CoefficientTokenizationMalformedTokenTrace { .. }
+    ));
+}

@@ -671,6 +671,16 @@ fn read_eob_from_tokens(tokens: &[BlockSymbolToken], index: &mut usize) -> Resul
     if eob_pt < MIN_EOB_WITH_EXTRA {
         return Ok(eob_pt);
     }
+    // Reject an out-of-range eobPt from a malformed trace BEFORE the `1 << width`
+    // shift below: a large `eob_pt_16` symbol (the symbol is a `u8`, so eobPt can be
+    // up to 256) would otherwise shift by `>= usize::BITS` and panic, violating the
+    // library no-panic error model. A well-formed trace from this tokenizer never
+    // exceeds `MAX_GENERAL_EOB_PT` (5).
+    if eob_pt > MAX_GENERAL_EOB_PT {
+        return Err(Error::CoefficientTokenizationMalformedTokenTrace {
+            context: "general LF recovery eob_pt_16 symbol out of range",
+        });
+    }
     // eobPt >= 3: the next token is the `eob_extra` CDF flag (the HIGH refinement bit).
     let extra_token = coeff_token_at(tokens, index)?;
     if !matches!(extra_token.syntax(), CoefficientTokenSyntax::EobExtra) {
