@@ -60,6 +60,16 @@ description = "Two-level partition-tree 8-bit 4:2:0 intra key frame (IVF, 64x64)
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-shsplit-intra-64x64-q80.ivf"
+description = "Two-block-deep partition-tree 8-bit 4:2:0 intra key frame (IVF, 64x64) from a project-owned input whose 64x64 superblock SPLITs into four 32x32 squares (encoded with --min-partition-size=32 --max-partition-size=32): top-left flat 50, top-right flat 210, bottom-right flat 130 (all DC_PRED), and a bottom-left 32x32 horizontal-ramp coded SMOOTH_H_PRED (DC chroma U=120 V=130). The decisive element: the bottom-left 32x32 (superblock-relative MI (8, 0)) is a SPLIT child whose section 7.13.2.1 above-right sentinel AboveRow[w] reads the REAL reconstructed bottom-left corner (210) of the already-decoded top-right 32x32 sibling, per section 5.20.7.25 count_top_right_avail (num4AboveRight 8) over the section 5.20.2.3 per-block BlockDecoded state -- NOT the edge-clamped own-above last sample (50). The reconstructed bottom-left right column is pulled to 211 (toward the 210 above-right), not ~51 (the clamp), proving the BlockDecoded path. The prior brick rejected this (general_intra_multiblock_non_dc_subblock); the first general-intra sub-superblock (SPLIT-child) non-DC SMOOTH_H decode reading a real above-right sentinel, and the first luma (sub_x=0) above-right VALUE oracle anchor. avmdec and dav2d raw outputs agree (md5 88ea298073104752646aab5f718fdc31) and splot reproduces byte-for-byte; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-svsplit-intra-64x64-q140.ivf"
+description = "Negative decode-boundary companion to syn-shsplit (IVF, 64x64, base_q_idx 140): a project-owned input whose 64x64 superblock SPLITs into four 32x32 squares (--min-partition-size=32 --max-partition-size=32) with a vertical-ramp bottom-left and flat chroma. avmdec and dav2d agree (md5 f64f680fa0eb63eb4f0fc5101afa0da9) and the stream validates clean, but the encoder codes a SMOOTH chroma sub-block, so splot's general-intra decoder still REJECTS it with the structured decode/unsupported-feature diagnostic general_intra_smooth_chroma_subblock -- the SMOOTH CHROMA sub-block above-right / below-left sentinel path (section 7.13.2.1 over section 5.20.2.3 BlockDecoded) is NOT lifted by the SMOOTH_H luma brick and remains deferred. Pins the verified-subset boundary: the new BlockDecoded above-right path admits only what syn-shsplit proves bit-exact, not chroma sub-blocks."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-vsmooth-intra-64x64-q120.ivf"
 description = "Single-block 8-bit 4:2:0 intra key frame (IVF, 64x64) from a project-owned vertical-gradient luma input with broad decode tools disabled at base_q_idx 120, so the whole frame is one 64x64 SMOOTH_V_PRED luma block (DC chroma) over the section 7.13.2.1 no-neighbour fallback edges plus AC residual; the first general-intra non-DC (smooth vertical) decode target whose avmdec and dav2d raw outputs agree and splot reproduces byte-for-byte; validates clean."
 expect = "clean"

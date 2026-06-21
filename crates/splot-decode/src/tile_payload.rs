@@ -15,6 +15,7 @@
     )
 )]
 
+mod block_decoded_state;
 mod block_symbol;
 mod cdf;
 mod coeff_loop;
@@ -46,6 +47,7 @@ use crate::{
     DecodeLimits, DecodeObuSourceKind, UNSUPPORTED_FEATURE_RULE_ID,
 };
 
+pub(crate) use block_decoded_state::TileBlockDecodedState;
 pub(crate) use block_symbol::MinimalBlockSymbolTraceError;
 pub(crate) use cdf::block_context::{
     SupportedChromaMode, SupportedDirectionalLumaMode, SupportedNonDcLumaMode,

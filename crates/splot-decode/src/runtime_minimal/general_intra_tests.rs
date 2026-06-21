@@ -561,6 +561,97 @@ fn hsmooth_single_block_intra_frame_decodes_to_oracle() {
     );
 }
 
+// A 64x64 superblock SPLIT into four 32x32 squares (TL flat 50, TR flat 210,
+// BR flat 130, all DC_PRED) with a bottom-left 32x32 horizontal-ramp coded
+// SMOOTH_H_PRED. The bottom-left 32x32 is a SPLIT child (superblock-relative MI
+// (8, 0)) whose §7.13.2.1 above-right sentinel `AboveRow[w]` reads the real
+// reconstructed bottom-left corner (210) of the already-decoded top-right 32x32
+// sibling, via §5.20.7.25 `count_top_right_avail` over the §5.20.2.3 per-block
+// `BlockDecoded` state — NOT the edge-clamped own-above last sample (50). avmdec
+// and dav2d agree on the decoded output (md5 88ea298073104752646aab5f718fdc31).
+const SHSPLIT_FIXTURE: &[u8] =
+    include_bytes!("../../../../tests/conformance/vectors/valid/syn-shsplit-intra-64x64-q80.ivf");
+
+#[test]
+fn smooth_h_split_subblock_reads_decoded_above_right_sibling() {
+    use splot_recon::{BitDepth, PixelFormat, PlaneSize};
+
+    let frame = decode_general_intra_luma(SHSPLIT_FIXTURE);
+    assert_eq!(frame.bit_depth(), BitDepth::Eight);
+    assert_eq!(frame.pixel_format(), PixelFormat::Yuv420);
+    assert_eq!(frame.y().visible_size(), PlaneSize::new(64, 64).unwrap());
+
+    let y = frame.y().samples();
+    let at = |col: usize, row: usize| y[row * 64 + col];
+    // The three flat DC quadrants reconstruct to their input levels.
+    assert_eq!((at(16, 16), at(48, 16), at(48, 48)), (50, 210, 130));
+    // The decisive proof: the bottom-left 32x32 SMOOTH_H block's right column is
+    // pulled toward the REAL above-right sentinel (the top-right sibling's
+    // reconstructed corner, 210), not the §7.13.2.1 edge clamp of its own above
+    // row (~50). If the old clamp were used the right column would be ~51.
+    assert!(
+        at(31, 32) > 200,
+        "bottom-left SMOOTH_H right column must read the real above-right sentinel (210), got {}",
+        at(31, 32)
+    );
+    // Its left column stays near the no-left/has-above LeftCol source (50).
+    assert!(
+        at(0, 32) < 70,
+        "bottom-left SMOOTH_H left column should stay near the above-row source (~50), got {}",
+        at(0, 32)
+    );
+    // Chroma is distinct flat DC per 16x16 chroma quadrant (TL/TR/BL/BR), the
+    // §7.13.2.4 DC reconstruction the encoder chose (no CFL).
+    let u = frame.u().unwrap().samples();
+    let v = frame.v().unwrap().samples();
+    let cu = |col: usize, row: usize| u[row * 32 + col];
+    let cv = |col: usize, row: usize| v[row * 32 + col];
+    assert_eq!(
+        (cu(8, 8), cu(24, 8), cu(8, 24), cu(24, 24)),
+        (110, 140, 100, 160)
+    );
+    assert_eq!(
+        (cv(8, 8), cv(24, 8), cv(8, 24), cv(24, 24)),
+        (120, 135, 150, 115)
+    );
+
+    // Frame hash pins splot's output, which reproduces avmdec's and dav2d's raw
+    // output byte-for-byte (verified locally; md5 88ea2980...).
+    let hash = splot_recon::DecodedFrameHashInput::new(&frame)
+        .compute_hash()
+        .to_hex();
+    assert_eq!(
+        hash,
+        "296f15949d88b26b5797bffdb15c6c36dc46bf6976bad59f7995e2443e1b418a"
+    );
+}
+
+// Negative decode-boundary companion to syn-shsplit: a 64x64 superblock SPLIT
+// into four 32x32 squares whose encoder codes a SMOOTH chroma sub-block. The
+// SMOOTH_H *luma* sub-block above-right path this brick lifts does NOT extend to
+// SMOOTH *chroma* sub-blocks (whose §7.13.2.1 above-right / below-left sentinel
+// over §5.20.2.3 BlockDecoded is a separate, not-yet-fixtured path), so the
+// general-intra decoder still rejects this stream with a structured
+// decode/unsupported-feature diagnostic rather than producing wrong output.
+const SVSPLIT_FIXTURE: &[u8] =
+    include_bytes!("../../../../tests/conformance/vectors/valid/syn-svsplit-intra-64x64-q140.ivf");
+
+#[test]
+fn smooth_chroma_split_subblock_still_rejects() {
+    use crate::error::DecodeError;
+
+    let options = DecodeOptions::default();
+    let context =
+        DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).expect("context");
+    let plan = context.plan_bytes(SVSPLIT_FIXTURE, options).expect("plan");
+    let reason = match decode_minimal_frame_from_plan(SVSPLIT_FIXTURE, options, &plan) {
+        Ok(_) => panic!("SMOOTH chroma sub-block must still be rejected, not decoded"),
+        Err(DecodeError::UnsupportedFeature { unsupported }) => unsupported.reason(),
+        Err(other) => panic!("expected an unsupported-feature rejection, got {other:?}"),
+    };
+    assert_eq!(reason, "general_intra_smooth_chroma_subblock");
+}
+
 // Single-block directional intra: a 64x64 block the encoder codes as the
 // § 5.20.5.3 `y_mode_offset` escape (`y_mode_set == 0`,
 // `y_mode_index == MODE_INDEX_COUNT - 1`, `y_mode_offset == 3`), which

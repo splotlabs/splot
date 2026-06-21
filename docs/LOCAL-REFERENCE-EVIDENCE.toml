@@ -376,6 +376,110 @@ left = "avm-deep-raw-md5"
 right = "dav2d-deep-raw-md5"
 
 [[evidence]]
+id = "lref-avm-dav2d-syn-shsplit-intra-64x64-q80"
+feature_id = "DECODE-GENERAL-INTRA-BLOCK-DECODED"
+decoder_support_rows = ["general-intra-block-decoded"]
+kind = "reference-output-agreement"
+summary = "Local AVM and dav2d raw decoder output MD5 digests agreed for the 8-bit 64x64 partition-tree intra IVF fixture at base_q_idx 80 whose 64x64 superblock SPLITs into four 32x32 squares with a SMOOTH_H_PRED bottom-left sub-block. The bottom-left 32x32 SPLIT child reads its §7.13.2.1 above-right sentinel AboveRow[w] from the already-decoded top-right 32x32 sibling per §5.20.7.25 count_top_right_avail over the §5.20.2.3 per-block BlockDecoded state (num4AboveRight 8, the real reconstructed corner 210), NOT the edge clamp (~50); the first general-intra sub-superblock SMOOTH_H above-right decode target and the first luma (sub_x=0) above-right VALUE oracle anchor."
+recorded_at = "2026-06-21"
+
+[[evidence.fixture]]
+id = "input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-shsplit-intra-64x64-q80.ivf"
+sha256 = "0e4487b499ed356684963686b8fea994d33c59f4019f4759d15d3b68075a2803"
+size_bytes = 106
+format = "ivf"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Generated locally from a project-owned synthetic input (64x64: TL flat 50, TR flat 210, BR flat 130, a bottom-left 32x32 horizontal ramp from ~50 to ~210, distinct flat chroma) with broad decode tools disabled and --min-partition-size=32 --max-partition-size=32 forcing four 32x32 squares, so the encoder codes the bottom-left 32x32 as SMOOTH_H_PRED reading the decoded top-right sibling as its above-right sentinel; AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avm"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "457cd58681a747465661baccb1f32095bc5b7774"
+version_summary = "AVM checkout HEAD 457cd58681a747465661baccb1f32095bc5b7774, exact binary build commit not separately archived."
+command_summary = "Local avmdec --rawvideo --i420 output MD5 for {fixture:input}."
+output_digest_id = "avm-shsplit-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "88ea298073104752646aab5f718fdc31"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.reference_run]]
+id = "dav2d"
+tool = "dav2d"
+executable_name = "dav2d"
+tool_role = "decode-reference"
+source_url = "https://code.videolan.org/videolan/dav2d"
+revision = "f4f96cb06bb3cd3f31e29e1f190f1c0e373ab352"
+version_summary = "dav2d 0.0.1-191-gf4f96cb0 (commit f4f96cb0), decoded with --demuxer ivf."
+command_summary = "Local dav2d --demuxer ivf raw decoder output MD5 for {fixture:input}."
+output_digest_id = "dav2d-shsplit-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "88ea298073104752646aab5f718fdc31"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-shsplit-raw-md5"
+right = "dav2d-shsplit-raw-md5"
+
+[[evidence]]
+id = "lref-avm-dav2d-syn-svsplit-intra-64x64-q140"
+feature_id = "DECODE-GENERAL-INTRA-BLOCK-DECODED"
+decoder_support_rows = ["general-intra-block-decoded"]
+kind = "reference-output-agreement"
+summary = "Local AVM and dav2d raw decoder output MD5 digests agreed for the 8-bit 64x64 partition-tree intra IVF fixture at base_q_idx 140 (negative decode-boundary companion to syn-shsplit): its 64x64 superblock SPLITs into four 32x32 squares but the encoder codes a SMOOTH chroma sub-block, which the SMOOTH_H luma BlockDecoded brick does NOT lift, so splot still rejects it with a structured decode/unsupported-feature diagnostic (general_intra_smooth_chroma_subblock) while the stream validates clean and both reference decoders agree. Pins the verified-subset boundary: the new above-right path admits only the SMOOTH_H luma sub-block that syn-shsplit proves bit-exact, not chroma sub-blocks."
+recorded_at = "2026-06-21"
+
+[[evidence.fixture]]
+id = "input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-svsplit-intra-64x64-q140.ivf"
+sha256 = "853d7fbf7537953d4d5b17a2ffcf86cd956385dcfdf3003cff6cbee8819fcab1"
+size_bytes = 88
+format = "ivf"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Generated locally from a project-owned synthetic input (64x64: TL flat 50, TR flat 210, BR flat 130, a bottom-left 32x32 vertical ramp, uniform flat chroma) with broad decode tools disabled and --min-partition-size=32 --max-partition-size=32 forcing four 32x32 squares; at base_q_idx 140 the encoder codes a SMOOTH chroma sub-block; AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avm"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "457cd58681a747465661baccb1f32095bc5b7774"
+version_summary = "AVM checkout HEAD 457cd58681a747465661baccb1f32095bc5b7774, exact binary build commit not separately archived."
+command_summary = "Local avmdec --rawvideo --i420 output MD5 for {fixture:input}."
+output_digest_id = "avm-svsplit-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "f64f680fa0eb63eb4f0fc5101afa0da9"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.reference_run]]
+id = "dav2d"
+tool = "dav2d"
+executable_name = "dav2d"
+tool_role = "decode-reference"
+source_url = "https://code.videolan.org/videolan/dav2d"
+revision = "f4f96cb06bb3cd3f31e29e1f190f1c0e373ab352"
+version_summary = "dav2d 0.0.1-191-gf4f96cb0 (commit f4f96cb0), decoded with --demuxer ivf."
+command_summary = "Local dav2d --demuxer ivf raw decoder output MD5 for {fixture:input}."
+output_digest_id = "dav2d-svsplit-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "f64f680fa0eb63eb4f0fc5101afa0da9"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-svsplit-raw-md5"
+right = "dav2d-svsplit-raw-md5"
+
+[[evidence]]
 id = "lref-avm-dav2d-syn-vsmooth-intra-64x64-q120"
 feature_id = "DECODE-GENERAL-INTRA-NONDC-LUMA-SMOOTH"
 decoder_support_rows = ["general-intra-nondc-luma-smooth"]
