@@ -24,8 +24,9 @@ use splot_core::symbol::SymbolDecoder;
 
 use super::DecodeTileWorkUnit;
 use super::cdf::block_context::{
-    IntraYMode, MODE_INDEX_COUNT, SupportedChromaMode, SupportedDirectionalLumaMode,
-    SupportedNonDcLumaMode, reconstruct_minimal_y_mode, reconstruct_y_mode_offset_escape_top_left,
+    IntraYMode, MODE_INDEX_COUNT, NON_DIRECTIONAL_MODES_COUNT, SupportedChromaMode,
+    SupportedDirectionalLumaMode, SupportedNonDcLumaMode, reconstruct_minimal_y_mode,
+    reconstruct_y_mode_first_set_directional_top_left, reconstruct_y_mode_offset_escape_top_left,
     supported_chroma_mode, uv_mode_ctx,
 };
 use super::cdf::block_read::BlockSymbolTraceReadError;
@@ -252,6 +253,36 @@ pub(crate) fn decode_general_intra_block_modes(
                 },
             )?;
             (escape.y_mode, escape.angle_delta_y, escape.intra_joint_mode)
+        } else if y_mode_set == 0
+            && usize::from(y_mode_index) >= NON_DIRECTIONAL_MODES_COUNT
+            && y_mode_index < MODE_INDEX_COUNT - 1
+        {
+            // §5.20.5.3 direct first-mode-set DIRECTIONAL `y_mode_index` (no
+            // `y_mode_offset` escape): `NON_DIRECTIONAL_MODES_COUNT <= y_mode_index
+            // < MODE_INDEX_COUNT - 1`. `modeIdx == y_mode_index`, so
+            // `get_intra_y_mode_set(modeIdx)` selects from `Default_Mode_List_Y`.
+            // The cardinal `V_PRED` (`y_mode_index == 5`, `AngleDeltaY == 0`,
+            // pAngle 90) and `H_PRED` (`y_mode_index == 6`, pAngle 180) reach
+            // here. With a directional joint-mode neighbour (`mode_ctx != 0`,
+            // § 8.3.2) the § 5.20.5.3 selection loop pre-selects neighbour modes
+            // ahead of the `Default_Mode_List_Y` scan, reordering the candidate
+            // list; that reorder is not modelled, so reject (no extra symbol was
+            // read for this branch — `y_mode_index` is already consumed).
+            if mode_ctx != 0 {
+                return Err(
+                    GeneralIntraBlockModeError::UnsupportedDirectionalNeighbourReorder {
+                        ctx: mode_ctx,
+                        y_mode_offset: y_mode_index,
+                    },
+                );
+            }
+            let result = reconstruct_y_mode_first_set_directional_top_left(y_mode_index).ok_or(
+                GeneralIntraBlockModeError::UnsupportedYMode {
+                    y_mode_set,
+                    y_mode_index,
+                },
+            )?;
+            (result.y_mode, result.angle_delta_y, result.intra_joint_mode)
         } else {
             let y_mode = reconstruct_minimal_y_mode(y_mode_set, y_mode_index).ok_or(
                 GeneralIntraBlockModeError::UnsupportedYMode {

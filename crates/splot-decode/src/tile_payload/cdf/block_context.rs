@@ -24,7 +24,7 @@
 
 /// AV2 § 3 `NON_DIRECTIONAL_MODES_COUNT`: the number of non-directional intra
 /// modes (intra modes `0..5`); a mode value at or above this is directional.
-const NON_DIRECTIONAL_MODES_COUNT: usize = 5;
+pub(crate) const NON_DIRECTIONAL_MODES_COUNT: usize = 5;
 
 /// AV2 `DC_PRED` intra mode value (intra mode `0`); also the value
 /// `get_joint_mode` returns for an out-of-frame neighbour (§ 5 `get_joint_mode`).
@@ -82,8 +82,12 @@ impl IntraYMode {
     pub(crate) const DC_PRED: Self = Self(0);
 
     /// First directional mode value (`V_PRED`), the lower `is_directional_mode`
-    /// bound (§ 5 `is_directional_mode`).
+    /// bound (§ 5 `is_directional_mode`). `Mode_To_Angle[V_PRED] == 90`
+    /// (§ 9.2), the cardinal vertical (`pAngle 90`) directional mode.
     const V_PRED: u8 = 1;
+    /// AV2 § 9.2 `H_PRED` canonical luma mode value. `Mode_To_Angle[H_PRED] ==
+    /// 180` (§ 9.2), the cardinal horizontal (`pAngle 180`) directional mode.
+    const H_PRED: u8 = 2;
     /// Last directional mode value (`D67_PRED`), the upper `is_directional_mode`
     /// bound (§ 5 `is_directional_mode`).
     const D67_PRED: u8 = 8;
@@ -120,12 +124,20 @@ impl IntraYMode {
 
     /// Maps this luma mode to the directional-angle predictor the general intra
     /// decode currently reconstructs bit-exact against the AVM/dav2d oracle, or
-    /// `None` for every other mode. Only `D135_PRED` (pAngle 135, a § 7.13.2.8
-    /// "middle" angle) is supported, and only over the § 7.13.2.1 no-neighbour
-    /// fallback edges; the remaining directional modes and the
-    /// `enable_intra_edge_filter` / IDIF / upsample edge synthesis are deferred.
+    /// `None` for every other mode. Supported:
+    /// - `V_PRED` (pAngle 90) and `H_PRED` (pAngle 180): the two cardinal
+    ///   § 7.13.2.8 directions whose prediction is a degenerate sample copy
+    ///   (step 4 / step 5: `pred[i][j] = AboveRow[j]` / `LeftCol[i]`), reading
+    ///   ONLY the above row (V) or the left column (H) — no corner, no IDIF, no
+    ///   `useIBP` (which requires `pAngle < 90 || pAngle > 180`).
+    /// - `D135_PRED` (pAngle 135), a § 7.13.2.8 "middle" angle.
+    ///
+    /// `None` for every other directional mode and for any non-zero
+    /// `AngleDeltaY` (the caller filters those out before this is reached).
     pub(crate) const fn supported_directional(self) -> Option<SupportedDirectionalLumaMode> {
         match self.0 {
+            Self::V_PRED => Some(SupportedDirectionalLumaMode::Vertical),
+            Self::H_PRED => Some(SupportedDirectionalLumaMode::Horizontal),
             Self::D135_PRED => Some(SupportedDirectionalLumaMode::D135),
             _ => None,
         }
@@ -150,14 +162,20 @@ pub(crate) enum SupportedNonDcLumaMode {
 
 /// The directional-angle luma intra modes the general intra decode can
 /// reconstruct today — a strict subset of the § 9.2 directional modes, gated to
-/// those proven bit-exact against the AVM/dav2d oracle. Only `D135_PRED`
-/// (pAngle 135, `AngleDeltaY == 0`) is supported, and only for the top-left
-/// no-neighbour block where the § 7.13.2.8 prediction edges reduce to the
-/// § 7.13.2.1 flat fallbacks and the `enable_intra_edge_filter` / IDIF / upsample
-/// edge synthesis are no-ops. The other directional modes and angle deltas need
-/// their own verified oracle fixtures and remain deferred.
+/// those proven bit-exact against the AVM/dav2d oracle, all with
+/// `AngleDeltaY == 0`. The other directional modes, the IDIF edge synthesis for
+/// non-cardinal angles, and non-zero angle deltas need their own verified oracle
+/// fixtures and remain deferred.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SupportedDirectionalLumaMode {
+    /// AV2 `V_PRED` (§ 7.13.2.8 step 4, pAngle 90): a pure VERTICAL copy
+    /// (`pred[i][j] = AboveRow[j]`, each row equals the § 7.13.2.1 above row).
+    /// Reads only the above row — no corner, no left, no IDIF/upsample.
+    Vertical,
+    /// AV2 `H_PRED` (§ 7.13.2.8 step 5, pAngle 180): a pure HORIZONTAL copy
+    /// (`pred[i][j] = LeftCol[i]`, each column equals the § 7.13.2.1 left
+    /// column). Reads only the left column — no corner, no above, no IDIF.
+    Horizontal,
     /// AV2 `D135_PRED` (§ 7.13.2.8 directional prediction at pAngle 135).
     D135,
 }
@@ -183,11 +201,24 @@ pub(crate) enum SupportedChromaMode {
     /// is a sample copy), so it is verified bit-exact only for the top-left
     /// no-neighbour block; neighbour-having directional chroma is deferred.
     D135Follow,
+    /// AV2 `V_PRED` directional-follow chroma (§ 7.13.2.8 step 4, pAngle 90,
+    /// `AngleDeltaUV == 0`). Resolved when the decoded `uv_mode == 0` over a
+    /// `V_PRED` luma mode makes § 5.20.5.3 `get_intra_uv_mode_set` return `YMode
+    /// == V_PRED`; the spec sets `AngleDeltaUV = AngleDeltaY` (`0`). The cardinal
+    /// copy of the § 7.13.2.1 above row needs no IDIF (chroma `enableIdif == 0`
+    /// anyway), so it is bit-exact over a real reconstructed above row.
+    VerticalFollow,
+    /// AV2 `H_PRED` directional-follow chroma (§ 7.13.2.8 step 5, pAngle 180,
+    /// `AngleDeltaUV == 0`): the cardinal copy of the § 7.13.2.1 left column.
+    HorizontalFollow,
 }
 
 /// AV2 § 9.2 canonical chroma mode values from `Default_Mode_List_Uv`:
-/// `DC_PRED == 0`, `D135_PRED == 4`, `SMOOTH_PRED == 9`.
+/// `DC_PRED == 0`, `V_PRED == 1`, `H_PRED == 2`, `D135_PRED == 4`,
+/// `SMOOTH_PRED == 9`.
 const DC_PRED_VALUE: u8 = 0;
+const V_PRED_VALUE: u8 = 1;
+const H_PRED_VALUE: u8 = 2;
 const D135_PRED_VALUE: u8 = 4;
 const SMOOTH_PRED_VALUE: u8 = 9;
 
@@ -267,6 +298,18 @@ pub(crate) fn supported_chroma_mode(
         // follow branch (`uv_mode == 0`, directional luma) and `YMode == D135`.
         D135_PRED_VALUE if uv_mode == 0 && y_mode.is_directional() => {
             Some(SupportedChromaMode::D135Follow)
+        }
+        // Cardinal directional-follow V_PRED / H_PRED chroma: `uv_mode == 0` over a
+        // cardinal directional luma (`YMode == V_PRED` / `H_PRED`) makes § 5.20.5.3
+        // return `YMode`, with `AngleDeltaUV = AngleDeltaY == 0`. The cardinal copy
+        // reads only the § 7.13.2.1 above row (V) or left column (H); chroma uses no
+        // IDIF, so it is bit-exact over a real reconstructed edge. Require the follow
+        // branch (`uv_mode == 0`) to keep the verified subset narrow.
+        V_PRED_VALUE if uv_mode == 0 && y_mode.is_directional() => {
+            Some(SupportedChromaMode::VerticalFollow)
+        }
+        H_PRED_VALUE if uv_mode == 0 && y_mode.is_directional() => {
+            Some(SupportedChromaMode::HorizontalFollow)
         }
         _ => None,
     }
@@ -410,6 +453,52 @@ pub(crate) fn reconstruct_y_mode_offset_escape_top_left(
     }
     // modeIdx = y_mode_index + y_mode_offset, with y_mode_index == MODE_INDEX_COUNT - 1.
     let mode_idx = usize::from(MODE_INDEX_COUNT - 1) + usize::from(y_mode_offset);
+    resolve_y_mode_top_left(mode_idx)
+}
+
+/// Reconstructs the typed luma `YMode` and `AngleDeltaY` for a **direct
+/// first-mode-set** `y_mode_index` that selects a directional mode, at the
+/// top-left-equivalent block with **no in-frame directional joint-mode
+/// neighbours** (`ctx == 0`, § 8.3.2).
+///
+/// This is the AV2 § 5.20.5.3 `read_intra_y_mode` `y_mode_set == 0` branch with
+/// `NON_DIRECTIONAL_MODES_COUNT <= y_mode_index < MODE_INDEX_COUNT - 1` (the
+/// `y_mode_offset` escape only fires at `y_mode_index == MODE_INDEX_COUNT - 1`).
+/// Then `modeIdx == y_mode_index` directly (no `y_mode_offset` is read), and
+/// `get_intra_y_mode_set(modeIdx)` reduces to the same `Default_Mode_List_Y`
+/// scan as the escape because `ctx == 0` means no directional neighbour is
+/// pre-selected (the § 5.20.5.3 selection loop has `count == 0`). The cardinal
+/// `V_PRED` (`modeIdx == 5`, `Default_Mode_List_Y[0] == 17 == V_PRED + 4 * 4`,
+/// `modeDelta == 22`, `AngleDeltaY == 0`) and `H_PRED` (`modeIdx == 6`,
+/// `Default_Mode_List_Y[1] == 45`, `modeDelta == 50`, `AngleDeltaY == 0`) reach
+/// this path; their `Mode_To_Angle` is 90 / 180 (§ 9.2).
+///
+/// Returns `None` for a `y_mode_index` below `NON_DIRECTIONAL_MODES_COUNT` (a
+/// non-directional first-set index, handled by [`reconstruct_minimal_y_mode`]),
+/// at or above `MODE_INDEX_COUNT - 1` (the escape, handled by
+/// [`reconstruct_y_mode_offset_escape_top_left`]), or for any arithmetic that
+/// escapes the table bounds.
+//
+// TODO(spec: DECODE-GENERAL-INTRA-ANGLE): only the `ctx == 0` (no
+// directional-neighbour reorder) first-set directional reconstruction is
+// modelled; the in-frame directional-neighbour reorder of `get_intra_y_mode_set`
+// remains deferred (the caller rejects `ctx != 0` for this path).
+pub(crate) fn reconstruct_y_mode_first_set_directional_top_left(
+    y_mode_index: u8,
+) -> Option<YModeEscapeResult> {
+    if y_mode_index < (NON_DIRECTIONAL_MODES_COUNT as u8) || y_mode_index >= MODE_INDEX_COUNT - 1 {
+        return None;
+    }
+    // §5.20.5.3 `y_mode_set == 0`, non-escape: modeIdx = y_mode_index.
+    resolve_y_mode_top_left(usize::from(y_mode_index))
+}
+
+/// Resolves a § 5.20.5.3 `modeIdx` to the typed `YMode`, `AngleDeltaY`, and
+/// stored `IntraJointMode` (`modeDelta`) for the top-left no-directional-neighbour
+/// (`ctx == 0`) case, shared by the `y_mode_offset` escape and the direct
+/// first-set directional path. Returns `None` for any arithmetic that escapes the
+/// `Default_Mode_List_Y` / `Reordered_Y_Mode` table bounds.
+fn resolve_y_mode_top_left(mode_idx: usize) -> Option<YModeEscapeResult> {
     // get_intra_y_mode_set, top-left no-directional-neighbour case. This is the
     // AV2 § 5.20.5.3 `IntraJointMode` (`modeDelta`) stored for the § 8.3.2
     // neighbour context; it is also `>= NON_DIRECTIONAL_MODES_COUNT` for the
@@ -746,5 +835,80 @@ mod tests {
         // A directional Default_Mode_List_Uv entry (e.g. V_PRED at index 5) is not
         // a supported chroma predictor.
         assert_eq!(supported_chroma_mode(dc, 5), None);
+    }
+
+    #[test]
+    fn first_set_directional_reconstructs_v_pred_for_index_five() {
+        // §5.20.5.3 direct first-mode-set: y_mode_set == 0, y_mode_index == 5
+        // (< MODE_INDEX_COUNT - 1, so no escape). modeIdx == 5;
+        // get_intra_y_mode_set(5) (top-left, no directional neighbour) =
+        // Default_Mode_List_Y[5 - 5] + 5 = 17 + 5 = 22; directional: 22 - 5 = 17;
+        // Reordered_Y_Mode[17 / 7 + 5] = Reordered_Y_Mode[7] = V_PRED;
+        // AngleDeltaY = 17 % 7 - 3 = 0.
+        let result = reconstruct_y_mode_first_set_directional_top_left(5)
+            .expect("y_mode_index 5 reconstructs V_PRED");
+        assert_eq!(result.y_mode, IntraYMode(IntraYMode::V_PRED));
+        assert_eq!(result.angle_delta_y, 0);
+        assert_eq!(result.intra_joint_mode, 22);
+        assert_eq!(
+            result.y_mode.supported_directional(),
+            Some(SupportedDirectionalLumaMode::Vertical)
+        );
+    }
+
+    #[test]
+    fn first_set_directional_reconstructs_h_pred_for_index_six() {
+        // modeIdx == 6; get_intra_y_mode_set(6) = Default_Mode_List_Y[1] + 5 =
+        // 45 + 5 = 50; directional: 50 - 5 = 45; Reordered_Y_Mode[45 / 7 + 5] =
+        // Reordered_Y_Mode[11] = H_PRED; AngleDeltaY = 45 % 7 - 3 = 0.
+        let result = reconstruct_y_mode_first_set_directional_top_left(6)
+            .expect("y_mode_index 6 reconstructs H_PRED");
+        assert_eq!(result.y_mode, IntraYMode(IntraYMode::H_PRED));
+        assert_eq!(result.angle_delta_y, 0);
+        assert_eq!(result.intra_joint_mode, 50);
+        assert_eq!(
+            result.y_mode.supported_directional(),
+            Some(SupportedDirectionalLumaMode::Horizontal)
+        );
+    }
+
+    #[test]
+    fn first_set_directional_rejects_non_directional_or_escape_indices() {
+        // y_mode_index < NON_DIRECTIONAL_MODES_COUNT is the non-directional prefix
+        // (handled by reconstruct_minimal_y_mode), and y_mode_index >=
+        // MODE_INDEX_COUNT - 1 is the escape (handled by the escape reconstructor),
+        // so neither is reconstructed by the first-set directional path.
+        for index in 0..(NON_DIRECTIONAL_MODES_COUNT as u8) {
+            assert!(reconstruct_y_mode_first_set_directional_top_left(index).is_none());
+        }
+        assert!(reconstruct_y_mode_first_set_directional_top_left(MODE_INDEX_COUNT - 1).is_none());
+        assert!(reconstruct_y_mode_first_set_directional_top_left(u8::MAX).is_none());
+    }
+
+    #[test]
+    fn supported_chroma_mode_cardinal_follow_resolves_v_and_h_for_uv_mode_zero() {
+        // §5.20.5.3: with a directional luma, uv_mode 0 returns YMode itself
+        // (`AngleDeltaUV = AngleDeltaY`). For V_PRED / H_PRED that is the cardinal
+        // directional-follow chroma the decode now reconstructs.
+        let v = IntraYMode(IntraYMode::V_PRED);
+        let h = IntraYMode(IntraYMode::H_PRED);
+        assert_eq!(get_intra_uv_mode_set(v, 0), Some(IntraYMode::V_PRED));
+        assert_eq!(get_intra_uv_mode_set(h, 0), Some(IntraYMode::H_PRED));
+        assert_eq!(
+            supported_chroma_mode(v, 0),
+            Some(SupportedChromaMode::VerticalFollow)
+        );
+        assert_eq!(
+            supported_chroma_mode(h, 0),
+            Some(SupportedChromaMode::HorizontalFollow)
+        );
+    }
+
+    #[test]
+    fn supported_chroma_mode_cardinal_luma_with_dc_chroma_resolves_dc() {
+        // A cardinal directional luma (V_PRED) with DC chroma: uv_mode 1 ->
+        // after modeIdx -= 1 the first Default_Mode_List_Uv entry (DC_PRED).
+        let v = IntraYMode(IntraYMode::V_PRED);
+        assert_eq!(supported_chroma_mode(v, 1), Some(SupportedChromaMode::Dc));
     }
 }

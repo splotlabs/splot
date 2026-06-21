@@ -1264,3 +1264,159 @@ fn rdir_neighbour_directional_d135_intra_frame_decodes_to_oracle() {
         "9ea9254abc7d7507558099d5ae3e78eaf5d88625e1cc8184038321650b2b54a4"
     );
 }
+
+// A single-column multi-superblock-row 64x128 frame whose TOP 64x64 superblock is
+// DC_PRED and whose BOTTOM 64x64 superblock (`frontier.r == 16`, `frontier.c == 0`)
+// codes the cardinal §7.13.2.8 V_PRED (pAngle 90) luma mode over a vertical
+// continuation. V_PRED is decoded via the §5.20.5.3 direct first-mode-set
+// `y_mode_index == 5` (NOT the `y_mode_offset` escape): `modeIdx == 5`,
+// `get_intra_y_mode_set` -> `Default_Mode_List_Y[0] == 17`, `modeDelta == 22`,
+// `Reordered_Y_Mode[7] == V_PRED`, `AngleDeltaY == 0`. The §8.3.2 `y_mode_index`
+// ctx is 0 (the DC above neighbour stored `IntraJointMode 0 < 5`). V_PRED is a pure
+// VERTICAL copy (`pred[i][j] = AboveRow[j]`) of the REAL reconstructed §7.13.2.1
+// above row (the bottom row of the already-decoded top superblock, `haveAbove == 1`);
+// it reads no corner, no left, no IDIF, and no `useIBP` (§7.13.2.7 gates `useIBP`
+// on `pAngle < 90 || pAngle > 180`). The chroma codes `uv_mode == 0` over the
+// directional V_PRED luma, so §5.20.5.3 returns `UVMode == V_PRED` (the
+// directional-follow branch, `AngleDeltaUV == 0`): a cardinal copy of the real
+// reconstructed above chroma row. The prior brick rejected this frame
+// (`general_intra_unsupported_y_mode` at the bottom block's `y_mode_index == 5`).
+// avmdec and dav2d agree on the decoded output (raw md5
+// d35b827668076a934bb6c21717f9a8f9); the first general-intra cardinal V_PRED decode.
+const VPRED_FIXTURE: &[u8] =
+    include_bytes!("../../../../tests/conformance/vectors/valid/syn-vpred-intra-64x128-q160.ivf");
+
+#[test]
+fn vpred_cardinal_multirow_intra_frame_decodes_to_oracle() {
+    use splot_recon::{BitDepth, PixelFormat, PlaneSize};
+
+    let frame = decode_general_intra_luma(VPRED_FIXTURE);
+    assert_eq!(frame.bit_depth(), BitDepth::Eight);
+    assert_eq!(frame.pixel_format(), PixelFormat::Yuv420);
+    assert_eq!(frame.y().visible_size(), PlaneSize::new(64, 128).unwrap());
+    assert_eq!(
+        frame.u().unwrap().visible_size(),
+        PlaneSize::new(32, 64).unwrap()
+    );
+
+    let y = frame.y().samples();
+    let at = |r: usize, c: usize| y[r * 64 + c];
+
+    // The bottom superblock (rows 64..128) is V_PRED: a pure vertical copy of the
+    // §7.13.2.1 above row, so every column is CONSTANT down the block (the AC
+    // residual is all-zero for this fixture), proving the vertical copy ran.
+    for c in (0..64).step_by(8) {
+        assert!(
+            (64..128).all(|r| at(r, c) == at(64, c)),
+            "bottom superblock column {c} must be constant down the block (V_PRED vertical copy)"
+        );
+    }
+    // V_PRED is NOT DC: the columns vary strongly across the block width (the
+    // copied above row is a column gradient), so a flat DC reconstruction is ruled
+    // out.
+    assert!(
+        at(64, 0) < at(64, 63),
+        "bottom superblock must vary across columns (V_PRED copies the column-varying above row), not flat DC"
+    );
+    // The bottom superblock continues the top superblock's column pattern (it reads
+    // the real reconstructed above row, not the §7.13.2.1 no-above flat fallback
+    // 127): the seam is near-continuous, far from a 127 jump.
+    assert!(
+        at(64, 0).abs_diff(at(63, 0)) < 16,
+        "bottom superblock top row must continue the real above row, not jump to the 127 fallback"
+    );
+    let distinct = y.iter().collect::<std::collections::BTreeSet<_>>().len();
+    assert!(distinct > 4, "luma should be a non-flat reconstruction");
+    // Chroma is uniform; the bottom chroma block runs the directional-follow
+    // V_PRED chroma path (cardinal copy of the real above chroma row) and
+    // reconstructs flat over the uniform chroma input. Bit-exactness vs the oracle
+    // confirms the path is correct.
+    let u = frame.u().unwrap().samples();
+    let v = frame.v().unwrap().samples();
+    assert!(u.iter().all(|&s| s == u[0]), "chroma U must be uniform");
+    assert!(v.iter().all(|&s| s == v[0]), "chroma V must be uniform");
+
+    // Frame hash pins splot's output, which reproduces avmdec's and dav2d's raw
+    // output byte-for-byte (verified locally; md5 d35b827668076a934bb6c21717f9a8f9).
+    let hash = splot_recon::DecodedFrameHashInput::new(&frame)
+        .compute_hash()
+        .to_hex();
+    assert_eq!(
+        hash,
+        "5b2761c0d2eb2502af5cbe544b2cadbb676a4b84b60953d86a3e42d7df910e39"
+    );
+}
+
+// A multi-superblock 128x64 frame whose LEFT 64x64 superblock is DC_PRED and whose
+// RIGHT 64x64 superblock (`frontier.r == 0`, `frontier.c == 16`) codes the cardinal
+// §7.13.2.8 H_PRED (pAngle 180) luma mode over a horizontal continuation. H_PRED is
+// decoded via the §5.20.5.3 direct first-mode-set `y_mode_index == 6` (NOT the
+// escape): `modeIdx == 6`, `Default_Mode_List_Y[1] == 45`, `modeDelta == 50`,
+// `Reordered_Y_Mode[11] == H_PRED`, `AngleDeltaY == 0`. The §8.3.2 ctx is 0 (the DC
+// left neighbour stored `IntraJointMode 0 < 5`). H_PRED is a pure HORIZONTAL copy
+// (`pred[i][j] = LeftCol[i]`) of the REAL reconstructed §7.13.2.1 left column (the
+// right column of the already-decoded left superblock, `haveLeft == 1`); it reads no
+// corner, no above, no IDIF, no `useIBP`. The chroma codes `uv_mode == 0` over the
+// directional H_PRED luma, so §5.20.5.3 returns `UVMode == H_PRED` (directional
+// follow): a cardinal copy of the real left chroma column. The prior brick rejected
+// this frame (`general_intra_unsupported_y_mode` at the right block's
+// `y_mode_index == 6`). avmdec and dav2d agree on the decoded output (raw md5
+// aac61b219518ce5057a6284262ac3bb9); the first general-intra cardinal H_PRED decode.
+const HPRED_FIXTURE: &[u8] =
+    include_bytes!("../../../../tests/conformance/vectors/valid/syn-hpred-intra-128x64-q180.ivf");
+
+#[test]
+fn hpred_cardinal_multicolumn_intra_frame_decodes_to_oracle() {
+    use splot_recon::{BitDepth, PixelFormat, PlaneSize};
+
+    let frame = decode_general_intra_luma(HPRED_FIXTURE);
+    assert_eq!(frame.bit_depth(), BitDepth::Eight);
+    assert_eq!(frame.pixel_format(), PixelFormat::Yuv420);
+    assert_eq!(frame.y().visible_size(), PlaneSize::new(128, 64).unwrap());
+    assert_eq!(
+        frame.u().unwrap().visible_size(),
+        PlaneSize::new(64, 32).unwrap()
+    );
+
+    let y = frame.y().samples();
+    let at = |r: usize, c: usize| y[r * 128 + c];
+
+    // The right superblock (cols 64..128) is H_PRED: a pure horizontal copy of the
+    // §7.13.2.1 left column, so every row is CONSTANT across the block (all-zero AC
+    // residual), proving the horizontal copy ran.
+    for r in (0..64).step_by(8) {
+        assert!(
+            (64..128).all(|c| at(r, c) == at(r, 64)),
+            "right superblock row {r} must be constant across columns (H_PRED horizontal copy)"
+        );
+    }
+    // H_PRED is NOT DC: the rows vary strongly down the block (the copied left
+    // column is a row gradient), so a flat DC reconstruction is ruled out.
+    assert!(
+        at(0, 64) < at(63, 64),
+        "right superblock must vary down rows (H_PRED copies the row-varying left column), not flat DC"
+    );
+    // The right superblock continues the left superblock's row pattern (it reads
+    // the real reconstructed left column, not the §7.13.2.1 no-left flat fallback):
+    // the seam is near-continuous.
+    assert!(
+        at(0, 64).abs_diff(at(0, 63)) < 16,
+        "right superblock left column must continue the real left neighbour, not jump to a fallback"
+    );
+    let distinct = y.iter().collect::<std::collections::BTreeSet<_>>().len();
+    assert!(distinct > 4, "luma should be a non-flat reconstruction");
+    let u = frame.u().unwrap().samples();
+    let v = frame.v().unwrap().samples();
+    assert!(u.iter().all(|&s| s == u[0]), "chroma U must be uniform");
+    assert!(v.iter().all(|&s| s == v[0]), "chroma V must be uniform");
+
+    // Frame hash pins splot's output, which reproduces avmdec's and dav2d's raw
+    // output byte-for-byte (verified locally; md5 aac61b219518ce5057a6284262ac3bb9).
+    let hash = splot_recon::DecodedFrameHashInput::new(&frame)
+        .compute_hash()
+        .to_hex();
+    assert_eq!(
+        hash,
+        "826cea4e59f8280b538c3efc26e7be72cd1912aa19f235ebf3f862fc8832a885"
+    );
+}

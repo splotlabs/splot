@@ -19,7 +19,7 @@ use splot_core::span::ByteOffset;
 use splot_core::stream::{ParsedBitstream, ParsedIvfBitstream, parse_bitstream_partial};
 use splot_core::symbol::{SymbolDecoder, SymbolDecoderSummary};
 use splot_core::types::ObuType;
-use splot_recon::{DecodedFrame, PlaneId};
+use splot_recon::{DecodedFrame, IntraCardinalDirection, PlaneId};
 
 use crate::error::{DecodeError, DecodeUnsupportedFeature, Result};
 use crate::tile_payload::{
@@ -27,8 +27,8 @@ use crate::tile_payload::{
     FrameCandidateTileBoundaryInput, FrameCandidateTileFacts, GeneralIntraBlockModeError,
     GeneralIntraResidualError, MinimalBlockSymbolTraceError,
     MinimalRuntimeBlockSymbolFrontierError, MinimalRuntimePartitionFrontierError,
-    MinimalRuntimeReconstructionTrace, SupportedNonDcLumaMode, TileGroupPositionFacts,
-    TilePartitionTraversalError,
+    MinimalRuntimeReconstructionTrace, SupportedDirectionalLumaMode, SupportedNonDcLumaMode,
+    TileGroupPositionFacts, TilePartitionTraversalError,
 };
 use crate::{
     DecodeLimitError, DecodeLimitName, DecodeLimitOp, DecodeOptions, DecodePlannedObu,
