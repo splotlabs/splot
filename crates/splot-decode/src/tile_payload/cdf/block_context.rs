@@ -92,6 +92,13 @@ impl IntraYMode {
     /// bound (§ 5 `is_directional_mode`).
     const D67_PRED: u8 = 8;
 
+    /// AV2 § 9.2 `D113_PRED` canonical luma mode value (`Mode_To_Angle[D113_PRED]
+    /// == 113`, § 9.2), a § 7.13.2.8 middle directional mode (`90 < pAngle < 180`)
+    /// whose `dx == Dr_Intra_Derivative[180 - 113] == Dr_Intra_Derivative[67] ==
+    /// 24` and `dy == Dr_Intra_Derivative[113 - 90] == Dr_Intra_Derivative[23] ==
+    /// 170` (vertical-leaning) make most of its above-branch projections fall on a
+    /// nonzero `shift`, genuinely exercising the luma § 7.13.2.8 IDIF 4-tap.
+    const D113_PRED: u8 = 5;
     /// AV2 § 9.2 `D135_PRED` canonical luma mode value (a § 7.13.2.8 middle
     /// directional mode the general intra decode reconstructs bit-exact).
     const D135_PRED: u8 = 4;
@@ -134,10 +141,12 @@ impl IntraYMode {
     ///   (step 4 / step 5: `pred[i][j] = AboveRow[j]` / `LeftCol[i]`), reading
     ///   ONLY the above row (V) or the left column (H) — no corner, no IDIF, no
     ///   `useIBP` (which requires `pAngle < 90 || pAngle > 180`).
-    /// - `D135_PRED` (pAngle 135) and `D157_PRED` (pAngle 157), two § 7.13.2.8
-    ///   "middle" angles. D135's projections all have `shift == 0` (the IDIF
-    ///   4-tap reduces to a copy); D157's nonzero-shift projections exercise the
-    ///   real luma IDIF 4-tap filter.
+    /// - `D113_PRED` (pAngle 113), `D135_PRED` (pAngle 135) and `D157_PRED`
+    ///   (pAngle 157), three § 7.13.2.8 "middle" angles. D135's projections all
+    ///   have `shift == 0` (the IDIF 4-tap reduces to a copy); D113's (mostly
+    ///   above-branch, vertical-leaning) and D157's (mostly left-branch,
+    ///   horizontal-leaning) nonzero-shift projections exercise the real luma
+    ///   IDIF 4-tap filter.
     ///
     /// `None` for every other directional mode and for any non-zero
     /// `AngleDeltaY` (the caller filters those out before this is reached).
@@ -145,6 +154,7 @@ impl IntraYMode {
         match self.0 {
             Self::V_PRED => Some(SupportedDirectionalLumaMode::Vertical),
             Self::H_PRED => Some(SupportedDirectionalLumaMode::Horizontal),
+            Self::D113_PRED => Some(SupportedDirectionalLumaMode::D113),
             Self::D135_PRED => Some(SupportedDirectionalLumaMode::D135),
             Self::D157_PRED => Some(SupportedDirectionalLumaMode::D157),
             _ => None,
@@ -184,6 +194,14 @@ pub(crate) enum SupportedDirectionalLumaMode {
     /// (`pred[i][j] = LeftCol[i]`, each column equals the § 7.13.2.1 left
     /// column). Reads only the left column — no corner, no above, no IDIF.
     Horizontal,
+    /// AV2 `D113_PRED` (§ 7.13.2.8 directional prediction at pAngle 113,
+    /// `dx == Dr_Intra_Derivative[180 - 113] == Dr_Intra_Derivative[67] == 24`,
+    /// `dy == Dr_Intra_Derivative[113 - 90] == Dr_Intra_Derivative[23] == 170`).
+    /// Vertical-leaning (`pAngle` near 90): most projections take the above
+    /// branch (`base >= -(1 + mrlIndex)`) and land on a nonzero `shift`, so the
+    /// § 7.13.2.8 luma IDIF 4-tap `Dr_Interp_Filter` genuinely interpolates over
+    /// the real reconstructed above row + corner.
+    D113,
     /// AV2 `D135_PRED` (§ 7.13.2.8 directional prediction at pAngle 135). All
     /// projections have `shift == 0`, so the luma IDIF 4-tap reduces to a sample
     /// copy (bit-identical to the bilinear branch).
@@ -216,6 +234,15 @@ pub(crate) enum SupportedChromaMode {
     /// is a sample copy), so it is verified bit-exact only for the top-left
     /// no-neighbour block; neighbour-having directional chroma is deferred.
     D135Follow,
+    /// AV2 `D113_PRED` directional-follow chroma prediction (§ 7.13.2.8,
+    /// pAngle 113, `AngleDeltaUV == 0`). Resolved when the decoded
+    /// `uv_mode == 0` over a `D113_PRED` luma mode makes § 5.20.5.3
+    /// `get_intra_uv_mode_set` return `YMode == D113_PRED` (the directional-follow
+    /// branch, `AngleDeltaUV = AngleDeltaY == 0`). Chroma uses the
+    /// `enableIdif == 0` bilinear branch (`enableIdif = plane == 0`, `0` for
+    /// U/V), reading the real reconstructed § 7.13.2.1 above row / left column /
+    /// corner; the spec-mandated chroma branch IS bilinear, so it is bit-exact.
+    D113Follow,
     /// AV2 `D157_PRED` directional-follow chroma prediction (§ 7.13.2.8,
     /// pAngle 157, `AngleDeltaUV == 0`). Resolved when the decoded
     /// `uv_mode == 0` over a `D157_PRED` luma mode makes § 5.20.5.3
@@ -243,6 +270,7 @@ pub(crate) enum SupportedChromaMode {
 const DC_PRED_VALUE: u8 = 0;
 const V_PRED_VALUE: u8 = 1;
 const H_PRED_VALUE: u8 = 2;
+const D113_PRED_VALUE: u8 = 5;
 const D135_PRED_VALUE: u8 = 4;
 const D157_PRED_VALUE: u8 = 6;
 const SMOOTH_PRED_VALUE: u8 = 9;
@@ -323,6 +351,13 @@ pub(crate) fn supported_chroma_mode(
         // follow branch (`uv_mode == 0`, directional luma) and `YMode == D135`.
         D135_PRED_VALUE if uv_mode == 0 && y_mode.is_directional() => {
             Some(SupportedChromaMode::D135Follow)
+        }
+        // Directional-follow D113 chroma: `uv_mode == 0` over a directional luma
+        // makes § 5.20.5.3 return `YMode` (`AngleDeltaUV = AngleDeltaY`). Only the
+        // luma D113 (`AngleDeltaY == 0`) follow is verified, so require both the
+        // follow branch (`uv_mode == 0`, directional luma) and `YMode == D113`.
+        D113_PRED_VALUE if uv_mode == 0 && y_mode.is_directional() => {
+            Some(SupportedChromaMode::D113Follow)
         }
         // Directional-follow D157 chroma: `uv_mode == 0` over a directional luma
         // makes § 5.20.5.3 return `YMode` (`AngleDeltaUV = AngleDeltaY`). Only the
@@ -819,11 +854,15 @@ mod tests {
     }
 
     #[test]
-    fn supported_directional_admits_d135_and_d157_but_rejects_other_middle_angles() {
-        // §7.13.2.8 middle-angle luma IDIF support: D135 (value 4) and D157
-        // (value 6) are admitted; the other middle/one-sided directional modes
-        // (D113 value 5, D45 value 3, D67 value 8, D203 value 7) are NOT, because
-        // only D135 and D157 are oracle-verified.
+    fn supported_directional_admits_middle_angles_but_rejects_one_sided_angles() {
+        // §7.13.2.8 middle-angle luma IDIF support: the three "middle" angles
+        // D113 (value 5), D135 (value 4) and D157 (value 6) are admitted; the
+        // one-sided directional modes (D45 value 3, D67 value 8, D203 value 7)
+        // are NOT, because only the middle angles are oracle-verified.
+        assert_eq!(
+            IntraYMode(IntraYMode::D113_PRED).supported_directional(),
+            Some(SupportedDirectionalLumaMode::D113)
+        );
         assert_eq!(
             IntraYMode(IntraYMode::D135_PRED).supported_directional(),
             Some(SupportedDirectionalLumaMode::D135)
@@ -832,10 +871,43 @@ mod tests {
             IntraYMode(IntraYMode::D157_PRED).supported_directional(),
             Some(SupportedDirectionalLumaMode::D157)
         );
-        // D113 (value 5), D45 (3), D203 (7), D67 (8) remain unsupported.
-        for value in [5u8, 3, 7, 8] {
+        // D45 (3), D203 (7), D67 (8) remain unsupported (one-sided angles).
+        for value in [3u8, 7, 8] {
             assert_eq!(IntraYMode(value).supported_directional(), None);
         }
+    }
+
+    #[test]
+    fn supported_chroma_mode_directional_follow_resolves_d113_for_uv_mode_zero() {
+        // §5.20.5.3: with a directional luma, uv_mode 0 returns YMode itself
+        // (`AngleDeltaUV = AngleDeltaY`). For YMode == D113_PRED that is the
+        // directional-follow D113 chroma the decode now reconstructs.
+        let d113 = IntraYMode(IntraYMode::D113_PRED);
+        assert_eq!(get_intra_uv_mode_set(d113, 0), Some(IntraYMode::D113_PRED));
+        assert_eq!(
+            supported_chroma_mode(d113, 0),
+            Some(SupportedChromaMode::D113Follow)
+        );
+    }
+
+    #[test]
+    fn y_mode_offset_escape_reconstructs_d113() {
+        // The §5.20.5.3 `y_mode_offset` escape (`y_mode_set == 0`,
+        // `y_mode_index == MODE_INDEX_COUNT - 1`, top-left no-directional-neighbour
+        // ctx == 0) with `y_mode_offset == 2` reconstructs D113: modeIdx = 7 + 2 =
+        // 9; get_intra_y_mode_set(9) (no directional neighbour) =
+        // Default_Mode_List_Y[9 - 5] + 5 = Default_Mode_List_Y[4] + 5 = 24 + 5 =
+        // 29; modeDelta 29 -> (29 - 5) = 24, Reordered_Y_Mode[24 / 7 + 5] =
+        // Reordered_Y_Mode[8] = D113_PRED (5); AngleDeltaY = (24 % 7) - 3 = 0.
+        let escape = reconstruct_y_mode_offset_escape_top_left(2)
+            .expect("y_mode_offset 2 reconstructs a mode");
+        assert_eq!(escape.y_mode, IntraYMode(IntraYMode::D113_PRED));
+        assert_eq!(escape.angle_delta_y, 0);
+        assert_eq!(escape.intra_joint_mode, 29);
+        assert_eq!(
+            escape.y_mode.supported_directional(),
+            Some(SupportedDirectionalLumaMode::D113)
+        );
     }
 
     #[test]

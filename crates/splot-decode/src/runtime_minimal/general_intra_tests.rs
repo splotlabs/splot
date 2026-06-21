@@ -1582,3 +1582,99 @@ fn d135row_neighbour_directional_row_gt0_corner_intra_frame_decodes_to_oracle() 
         "85583e5a46ac6a2db97854b86f643735c1b9710bee2c2d2bc65d1aa5a16fe3a1"
     );
 }
+
+// A full 2-D grid 128x128 frame (two superblock columns by two rows) whose
+// top-left / top-right / bottom-left 64x64 superblocks are DC_PRED (the top
+// row uniform 100, the bottom-left a vertical gradient coded DC) and whose
+// BOTTOM-RIGHT 64x64 superblock (`frontier.r == 16`, `frontier.c == 16`,
+// `haveLeft && haveAbove`) codes the §7.13.2.8 D113_PRED directional mode (the
+// §5.20.5.3 y_mode_offset escape `y_mode_offset == 2` -> modeIdx 9 -> modeDelta
+// 29 -> Reordered_Y_Mode[8] == D113_PRED == canonical mode 5, §8.3.2 ctx == 0,
+// AngleDeltaY 0) plus its uv_mode == 0 directional-follow D113 chroma.
+//
+// The decisive element: D113 is VERTICAL-LEANING — `dx == Dr_Intra_Derivative[180
+// - 113] == Dr_Intra_Derivative[67] == 24` and `dy == Dr_Intra_Derivative[113 -
+// 90] == Dr_Intra_Derivative[23] == 170`. Most projections take the §7.13.2.8
+// above branch (`base >= -(1 + mrlIndex)`) and land on a NONZERO `shift` (2940 of
+// the 4096 luma samples, confirmed by the generator), so the luma §7.13.2.8 IDIF
+// 4-tap `Dr_Interp_Filter` genuinely interpolates over the **real reconstructed**
+// above row + diagonally-above-left corner `CurrFrame[plane][y-1][x-1]` — unlike
+// D135 (all `shift == 0`, the IDIF reduces to a copy). The bottom-right block's
+// §7.13.2.1 edges read the real reconstructed above row (the top-right
+// superblock's bottom row, flat 100), the left column (the bottom-left
+// superblock's right column, a vertical gradient) AND the real corner (the
+// top-left superblock's bottom-right sample, 100), supplied by
+// `build_directional_middle_edges`'s `(true, true)` arm via `reconstructed_sample`.
+// Chroma takes the `enableIdif == 0` bilinear branch (the spec-mandated chroma
+// branch) over the real reconstructed neighbours. The OLD code rejected this frame
+// (`general_intra_non_dc_chroma_mode` for chroma, because D113 was an unmapped
+// directional luma mode). avmdec and dav2d agree on the decoded output (raw md5
+// ba857e73ad624d0409d1189b387d1ef7); the first general-intra D113 (vertical-leaning
+// middle-angle) decode genuinely exercising the §7.13.2.8 luma IDIF over a real
+// above row + corner.
+const D113_FIXTURE: &[u8] =
+    include_bytes!("../../../../tests/conformance/vectors/valid/syn-d113-intra-128x128-q80.ivf");
+
+#[test]
+fn d113_neighbour_directional_idif_above_intra_frame_decodes_to_oracle() {
+    use splot_recon::{BitDepth, PixelFormat, PlaneSize};
+
+    let frame = decode_general_intra_luma(D113_FIXTURE);
+    assert_eq!(frame.bit_depth(), BitDepth::Eight);
+    assert_eq!(frame.pixel_format(), PixelFormat::Yuv420);
+    assert_eq!(frame.y().visible_size(), PlaneSize::new(128, 128).unwrap());
+    assert_eq!(
+        frame.u().unwrap().visible_size(),
+        PlaneSize::new(64, 64).unwrap()
+    );
+
+    let y = frame.y().samples();
+    let at = |r: usize, c: usize| y[r * 128 + c];
+    // Top superblock row is flat 100 (DC).
+    assert!(
+        (0..64).all(|r| (0..128).all(|c| at(r, c) == 100)),
+        "top superblock row must reconstruct flat 100 (DC)"
+    );
+    // BOTTOM-RIGHT superblock (rows 64..128, cols 64..128): D113 reading the real
+    // §7.13.2.1 above row + corner + left column. D113's main diagonal copies the
+    // real corner / flat above row (100); a no-corner fallback would be 128.
+    assert_eq!(
+        at(64, 64),
+        100,
+        "bottom-right D113 top-left sample must copy the real corner / flat above (100)"
+    );
+    // D113 is vertical-leaning: the above branch (upper-right region) copies the
+    // flat above row (100), while the left branch (lower-left region, dy=170)
+    // projects the real reconstructed bottom-left right column (a vertical
+    // gradient) up-right, so the bottom row varies across columns and the block is
+    // genuinely non-flat and not row/col-constant (which would be H/V_PRED).
+    assert!(
+        (1..64).any(|c| at(127, 64 + c) != at(127, 64)),
+        "bottom-right D113 bottom row must vary across columns (directional, not flat / H_PRED)"
+    );
+    assert!(
+        at(127, 64) != 100,
+        "bottom-right D113 left-branch must propagate the real left column (not flat DC)"
+    );
+    let distinct = y.iter().collect::<std::collections::BTreeSet<_>>().len();
+    assert!(distinct > 4, "luma should be a non-flat reconstruction");
+    // Chroma is flat (U=120, V=130): the bottom-right chroma runs the row>0
+    // neighbour-having directional-follow D113 chroma path (the §7.13.2.8 bilinear
+    // branch over the real reconstructed corner + above row + left column, all
+    // uniform) and reconstructs flat. The decode reaches this path because
+    // `uv_mode == 0` over the D113 luma resolves to D113-follow chroma (verified
+    // via instrumentation: `chroma == Some(D113Follow)`).
+    assert!(frame.u().unwrap().samples().iter().all(|&s| s == 120));
+    assert!(frame.v().unwrap().samples().iter().all(|&s| s == 130));
+
+    // Frame hash pins splot's output, which reproduces avmdec's and dav2d's raw
+    // output byte-for-byte (verified locally; raw md5
+    // ba857e73ad624d0409d1189b387d1ef7).
+    let hash = splot_recon::DecodedFrameHashInput::new(&frame)
+        .compute_hash()
+        .to_hex();
+    assert_eq!(
+        hash,
+        "d32bc2b11585e7ea55f0d2401f18402c55e781c0a861bb613b55f5dc26a2a395"
+    );
+}

@@ -207,6 +207,28 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into(
                 false,
             )
         }
+        // Directional-follow D113 chroma over the real reconstructed §7.13.2.1
+        // above row / left column / corner. Chroma takes the `enableIdif == 0`
+        // bilinear branch (`enableIdif = plane == 0`, `0` for U/V), which IS the
+        // spec-mandated chroma branch, so it is bit-exact. The luma gate
+        // guarantees the D113 block is at a row>0, non-first-column position, so
+        // the chroma block has the matching real reconstructed neighbours (no
+        // top-left no-neighbour D113 chroma path is admitted). The `(true, true)`
+        // edge builder supplies the real diagonally-above-left chroma corner.
+        SupportedChromaMode::D113Follow => {
+            reconstruct_general_intra_directional_neighbour_block_into(
+                workspace,
+                block,
+                SupportedDirectionalLumaMode::D113,
+                plane_id,
+                x,
+                y,
+                log2_side,
+                qindex,
+                // Chroma never uses the §7.14.4 TCQ dqDenom term (luma DCT_DCT only).
+                false,
+            )
+        }
         // Directional-follow D157 chroma over a real reconstructed §7.13.2.1 left
         // chroma column. Chroma takes the `enableIdif == 0` bilinear branch
         // (`plane != 0`); over a flat real chroma edge the D157 bilinear projection
@@ -1132,6 +1154,7 @@ fn middle_directional_angle(
     mode: SupportedDirectionalLumaMode,
 ) -> core::result::Result<IntraMiddleDirectionalAngle, GeneralIntraResidualError> {
     match mode {
+        SupportedDirectionalLumaMode::D113 => Ok(IntraMiddleDirectionalAngle::D113),
         SupportedDirectionalLumaMode::D135 => Ok(IntraMiddleDirectionalAngle::D135),
         SupportedDirectionalLumaMode::D157 => Ok(IntraMiddleDirectionalAngle::D157),
         SupportedDirectionalLumaMode::Vertical | SupportedDirectionalLumaMode::Horizontal => {

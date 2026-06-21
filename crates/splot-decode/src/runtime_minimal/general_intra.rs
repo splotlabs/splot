@@ -457,6 +457,22 @@ fn decode_one_general_intra_block(
             GENERAL_INTRA_MODE_SPEC_SECTION,
         ));
     }
+    // Directional-follow D113 chroma: only the neighbour-having row>0,
+    // non-first-column position is fixtured (it couples with the D113 luma block,
+    // which is gated identically). Chroma takes the `enableIdif == 0` bilinear
+    // branch — the spec-mandated chroma branch (`enableIdif = plane == 0`) — over
+    // the real reconstructed §7.13.2.1 above row + left column + diagonally-above
+    // -left corner, so it is bit-exact against avmdec/dav2d.
+    if supported_chroma == crate::tile_payload::SupportedChromaMode::D113Follow
+        && !(frontier.r != 0 && frontier.c != 0 && n4w == FULL_SB_N4_CHROMA_GATE)
+    {
+        return Err(general_intra_unsupported(
+            "general_intra_directional_d113_chroma_neighbour",
+            Some(tile_offset),
+            "general intra directional-follow (D113) chroma prediction is only supported for a row>0, non-first-column neighbour-having full 64x64 superblock block reading the real reconstructed §7.13.2.1 above row + left column + diagonally-above-left corner; the top-left, first-row, first-column, sub-partitioned, and non-64x64 D113-follow chroma positions are deferred until an oracle fixture pins them",
+            GENERAL_INTRA_MODE_SPEC_SECTION,
+        ));
+    }
     // Directional-follow D157 chroma: only the neighbour-having
     // `frontier.r == 0 && frontier.c != 0` position is fixtured (it couples with
     // the D157 luma block, which is gated identically). Chroma takes the
@@ -750,6 +766,43 @@ fn decode_one_general_intra_block(
                     "general_intra_d157_unverified_position",
                     Some(tile_offset),
                     "general intra directional D157 (pAngle 157) luma IDIF prediction is only verified for a first-superblock-row, non-first-column full 64x64 superblock block (haveLeft && !haveAbove, real reconstructed §7.13.2.1 left column); the top-left no-neighbour, first-column, sub-partitioned, and row>0 D157 positions read the §7.13.2.1 corner / above row that no oracle fixture pins yet, so they are deferred",
+                    GENERAL_INTRA_MODE_SPEC_SECTION,
+                ));
+            }
+            // Directional D113 (§7.13.2.8 middle angle, pAngle 113) at a row>0,
+            // NON-first-column full-superblock block (`frontier.r != 0 &&
+            // frontier.c != 0`, `haveLeft && haveAbove`), reading the **real
+            // reconstructed** §7.13.2.1 above row, left column, AND the
+            // diagonally-above-left corner `CurrFrame[plane][y-1][x-1]`. D113 is
+            // vertical-leaning (`dx == Dr_Intra_Derivative[180 - 113] ==
+            // Dr_Intra_Derivative[67] == 24`, `dy == Dr_Intra_Derivative[113 - 90]
+            // == Dr_Intra_Derivative[23] == 170`): most projections take the above
+            // branch (`base >= -(1 + mrlIndex)`) and land on a NONZERO `shift`, so
+            // the §7.13.2.8 luma IDIF 4-tap `Dr_Interp_Filter` genuinely
+            // interpolates over the real above row + corner (unlike D135, whose
+            // `shift == 0` reduces the IDIF to a copy). The corner read
+            // `AboveRow[-1] == LeftCol[-1] == CurrFrame[plane][y-1][x-1]` is
+            // supplied by [`build_directional_middle_edges`]'s `(true, true)` arm
+            // via `reconstructed_sample`. The D113 escape (`y_mode_offset == 2`,
+            // §5.20.5.3 modeIdx 9 -> modeDelta 29 -> Reordered_Y_Mode[8] == D113,
+            // AngleDeltaY 0) is decoded with a non-directional joint-mode neighbour
+            // (`ctx == 0`; a directional neighbour reorder is rejected earlier).
+            // `enable_intra_edge_filter == 0` / `MrlIndex == 0` keep the §7.13.2.x
+            // edge-filter / upsample synthesis a no-op.
+            //
+            // Gated to the row>0 non-first-column position (`haveLeft &&
+            // haveAbove`): a first-superblock-row D113 block (`haveAbove == 0`)
+            // would read the §7.13.2.1 above fallback that no oracle fixture pins,
+            // and D113 reads the real above row (so first-row is degenerate). The
+            // first-column, top-left, sub-partitioned, and non-64x64 D113 positions
+            // are rejected below.
+            (_, Some(SupportedDirectionalLumaMode::D113))
+                if frontier.r != 0 && frontier.c != 0 && n4w == FULL_SB_N4_LUMA => {}
+            (_, Some(SupportedDirectionalLumaMode::D113)) => {
+                return Err(general_intra_unsupported(
+                    "general_intra_d113_unverified_position",
+                    Some(tile_offset),
+                    "general intra directional D113 (pAngle 113) luma IDIF prediction is only verified for a row>0, non-first-column full 64x64 superblock block (haveLeft && haveAbove, real reconstructed §7.13.2.1 above row + left column + diagonally-above-left corner); the top-left no-neighbour, first-row, first-column, sub-partitioned, and non-64x64 D113 positions read the §7.13.2.1 above row / corner that no oracle fixture pins yet, so they are deferred",
                     GENERAL_INTRA_MODE_SPEC_SECTION,
                 ));
             }
