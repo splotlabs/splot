@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 374 feature(s).
+Matrix version 1. Last reviewed 2026-06-15. 375 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -130,6 +130,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `ENC-FWD-QUANT-PER-COEFF-AC` | Encoder per-coefficient forward quantizer over a real 4x4 block | encoder | encoder-tool | done | done | n/a | n/a | n/a | done | n/a | done | n/a | `crates/splot-encode/src/quantization.rs` |
 | `ENC-COEFFICIENT-TOKENIZATION-MINIMAL` | Encoder coefficient tokenization minimal | encoder | encoder-tool | done | done | n/a | n/a | n/a | done | n/a | done | n/a | `crates/splot-encode/src/coefficient_tokenization.rs` |
 | `ENC-CLOSED-LOOP-RECONSTRUCTION-MINIMAL` | Encoder closed-loop reconstruction minimal | encoder | encoder-tool | done | done | n/a | n/a | n/a | done | n/a | done | n/a | `crates/splot-encode/src/closed_loop.rs` |
+| `ENC-CLOSED-LOOP-NONUNIFORM-4X4` | Encoder non-uniform 4x4 luma closed-loop reconstruction | encoder | encoder-tool | done | done | n/a | n/a | n/a | done | n/a | done | n/a | `crates/splot-encode/src/closed_loop.rs` |
 | `ENC-INTRA-MODE-SYMBOL-EMISSION` | Encoder intra-mode symbol emission | encoder | encoder-tool | done | done | n/a | n/a | n/a | done | n/a | done | n/a | `crates/splot-encode/src/intra_mode_emission.rs` |
 | `ENC-UV-MODE-SYMBOL-EMISSION` | Encoder chroma uv_mode symbol emission | encoder | encoder-tool | done | done | n/a | n/a | n/a | done | n/a | done | n/a | `crates/splot-encode/src/intra_mode_emission.rs` |
 | `ENC-INTRA-BLOCK-MODE-TRACE` | Encoder intra-block mode trace composition | encoder | encoder-tool | done | done | n/a | n/a | n/a | done | n/a | done | n/a | `crates/splot-encode/src/block_symbol_trace` |

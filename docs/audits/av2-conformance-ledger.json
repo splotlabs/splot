@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "90e64f4e9bc2c84bab896168149684619dfbc2d8",
+  "audited_commit": "76a9493c8c9f7463802d6caee213c5250ab8e05b",
   "outcome": "success",
   "files": [
     {
@@ -2655,9 +2655,10 @@
     },
     {
       "path": "crates/splot-encode/src/closed_loop.rs",
-      "sha256": "7d16d36c91328fb2d2115b8d2604baecbb0f443589980f0e2bd2ef1775682135",
+      "sha256": "91592eae002df74bf983f60e825a1cc56eb208f78c56fee5a38543440141d9ee",
       "scope_kind": "workspace:splot-encode",
       "feature_ids": [
+        "ENC-CLOSED-LOOP-NONUNIFORM-4X4",
         "ENC-CLOSED-LOOP-RECONSTRUCTION-MINIMAL"
       ],
       "outcome": "success"
@@ -2874,7 +2875,7 @@
     },
     {
       "path": "crates/splot-encode/src/quantization.rs",
-      "sha256": "0694f8e4b4da2e5a300d06896bc4fbb307f7afb216cd858d1b027feafd3561b3",
+      "sha256": "df1c8ef9286ddce5815d0021a7ec08cc3d9184337753cdfe026b3551ef5fbe72",
       "scope_kind": "workspace:splot-encode",
       "feature_ids": [
         "ENC-FWD-QUANT-PER-COEFF-AC",
@@ -5214,7 +5215,7 @@
     },
     {
       "path": "docs/FEATURE-STATUS.md",
-      "sha256": "c55ae6fc52eb439a6fd257bbf6f167958558db9ab3a29e89f3cc2055c0b6ba7d",
+      "sha256": "a5d25b8c12d213946e7a01b5d776b6248032371e73c4f91cdb1026ebc987c5e5",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.10-RG",
@@ -5477,6 +5478,7 @@
         "DOC-VALIDATOR-ROADMAP",
         "ENC-BITSTREAM-WRITER",
         "ENC-BLOCK-SYMBOL-ENCODE",
+        "ENC-CLOSED-LOOP-NONUNIFORM-4X4",
         "ENC-CLOSED-LOOP-RECONSTRUCTION-MINIMAL",
         "ENC-COEFF-BASE-LF-CONTEXT",
         "ENC-COEFF-BASE-LF-TOKEN",
@@ -5635,7 +5637,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "0d5e322e1c182e066c7a39ea47677c3196ddf206a009218a5edbc463d453e374",
+      "sha256": "97168acfdd4bfa5f82ab09278578836769d93818c97c7bb0456edac41d1555d5",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.10-RG",
@@ -5898,6 +5900,7 @@
         "DOC-VALIDATOR-ROADMAP",
         "ENC-BITSTREAM-WRITER",
         "ENC-BLOCK-SYMBOL-ENCODE",
+        "ENC-CLOSED-LOOP-NONUNIFORM-4X4",
         "ENC-CLOSED-LOOP-RECONSTRUCTION-MINIMAL",
         "ENC-COEFF-BASE-LF-CONTEXT",
         "ENC-COEFF-BASE-LF-TOKEN",
@@ -6052,7 +6055,7 @@
     },
     {
       "path": "docs/SPEC-COVERAGE.md",
-      "sha256": "e91968b359be007c3c94ab392449ef6fa27d3b44ffdc06a77e7829e2957ffc8f",
+      "sha256": "d31f291e94a56fa9e88ac40a8b44bda1487adcfbd1a1367704b7e46413553118",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.10-RG",
@@ -6315,6 +6318,7 @@
         "DOC-VALIDATOR-ROADMAP",
         "ENC-BITSTREAM-WRITER",
         "ENC-BLOCK-SYMBOL-ENCODE",
+        "ENC-CLOSED-LOOP-NONUNIFORM-4X4",
         "ENC-CLOSED-LOOP-RECONSTRUCTION-MINIMAL",
         "ENC-COEFF-BASE-LF-CONTEXT",
         "ENC-COEFF-BASE-LF-TOKEN",
@@ -17083,6 +17087,33 @@
       "scope_kind": "openspec",
       "feature_ids": [
         "CONF-AVM-DIFF-HARNESS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/closed-loop-nonuniform-4x4/proposal.md",
+      "sha256": "ace7d186c9411618b9bdd8ad87faa9261e6fcdfc1547479cf7ded75d2c8a6ee2",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-CLOSED-LOOP-NONUNIFORM-4X4"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/closed-loop-nonuniform-4x4/specs/encoder-tools/spec.md",
+      "sha256": "11095367b61d6ee018e6f9a913e2937f1c588231e73ca7a319bf198d32cd9cf2",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-CLOSED-LOOP-NONUNIFORM-4X4"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/closed-loop-nonuniform-4x4/tasks.md",
+      "sha256": "0bc3f3fc67e574570ceca5a2ea268d62a62a05f4a42fee4ccc4e90ce0c37bf99",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-CLOSED-LOOP-NONUNIFORM-4X4"
       ],
       "outcome": "success"
     },
