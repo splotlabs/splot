@@ -543,7 +543,12 @@ fn derived_boundary_rejects_unsupported_position_and_frame_paths() {
                 42,
                 false,
             ),
-            FrameCandidateTileUnsupportedReason::NonIntraFrame,
+            // A `ClosedLoopKey` candidate that claims `frame_is_intra == false` is an
+            // inconsistent (obu_type, frame_is_intra) pairing: the inter path requires
+            // an `OBU_REGULAR_TILE_GROUP` candidate, so `validate_supported_position`
+            // rejects it as `CandidateNotFrame` (DECODE-FIRST-INTER-FRAME-FRONTIER
+            // admits only the intra-key / inter-regular-tile-group pairings).
+            FrameCandidateTileUnsupportedReason::CandidateNotFrame,
         ),
         (
             base_position(),

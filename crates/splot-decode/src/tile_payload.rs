@@ -52,6 +52,7 @@ pub(crate) use block_symbol::MinimalBlockSymbolTraceError;
 pub(crate) use cdf::block_context::{
     SupportedChromaMode, SupportedDirectionalLumaMode, SupportedNonDcLumaMode,
 };
+pub(crate) use cdf::{TileCdfSelector, TileCdfSubset};
 pub(crate) use coeff_state::TileCoeffContextState;
 pub(crate) use general_intra_block::{
     GeneralIntraBlockModeError, GeneralIntraBlockModes, decode_general_intra_block_modes,
@@ -831,30 +832,37 @@ pub(crate) fn plan_tile_payload_boundary<'a>(
             ),
         ));
     }
-    if input.frame.obu_type != ObuType::ClosedLoopKey {
-        return Err(TilePayloadBoundaryError::Unsupported(
-            unsupported_without_tile(
-                TilePayloadUnsupportedReason::NonClosedLoopKey,
-                input.payload_base,
-                "only OBU_CLOSED_LOOP_KEY is inside the current tile payload boundary tier.",
-            ),
-        ));
-    }
-    if !input.frame.is_frame_intra {
-        return Err(TilePayloadBoundaryError::Unsupported(
-            unsupported_without_tile(
-                TilePayloadUnsupportedReason::NonIntraFrame,
-                input.payload_base,
-                "inter-only tile payload behavior is outside the current tile payload boundary tier.",
-            ),
-        ));
+    // The tile payload boundary tier admits an intra `OBU_CLOSED_LOOP_KEY` frame and
+    // an inter `OBU_REGULAR_TILE_GROUP` frame (DECODE-FIRST-INTER-FRAME-FRONTIER).
+    // Each pairing carries the matching `is_frame_intra` flag; any other
+    // (obu_type, is_frame_intra) combination stays outside the tier.
+    match (input.frame.obu_type, input.frame.is_frame_intra) {
+        (ObuType::ClosedLoopKey, true) | (ObuType::RegularTileGroup, false) => {}
+        (ObuType::RegularTileGroup, true) | (_, false) => {
+            return Err(TilePayloadBoundaryError::Unsupported(
+                unsupported_without_tile(
+                    TilePayloadUnsupportedReason::NonIntraFrame,
+                    input.payload_base,
+                    "inter-only tile payload behavior is outside the current tile payload boundary tier.",
+                ),
+            ));
+        }
+        _ => {
+            return Err(TilePayloadBoundaryError::Unsupported(
+                unsupported_without_tile(
+                    TilePayloadUnsupportedReason::NonClosedLoopKey,
+                    input.payload_base,
+                    "only OBU_CLOSED_LOOP_KEY (intra) or OBU_REGULAR_TILE_GROUP (inter) is inside the current tile payload boundary tier.",
+                ),
+            ));
+        }
     }
     if !input.frame.is_complete_intra_first_tile_group {
         return Err(TilePayloadBoundaryError::Unsupported(
             unsupported_without_tile(
                 TilePayloadUnsupportedReason::MissingCompleteIntraFirstTileGroup,
                 input.payload_base,
-                "tile payload planning requires a complete intra first tile group in the minimal tier.",
+                "tile payload planning requires a complete first tile group in the minimal tier.",
             ),
         ));
     }

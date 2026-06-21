@@ -27,7 +27,7 @@ use super::{
 };
 use crate::{
     DecodeLimitError, DecodeLimitName, DecodeLimitOp, DecodeLimits, DecodeObuSourceKind,
-    DecodePlannedObu, DecodePlannedObuRole, DecodeStreamPlan,
+    DecodePlannedObu, DecodeStreamPlan,
 };
 
 /// Sequence CDF facts needed by the tile CDF save policy.
@@ -146,6 +146,96 @@ impl<'a> FrameCandidateTileFacts<'a> {
         Ok(Self {
             obu_type: core.obu_type,
             frame_is_intra: true,
+            is_bridge: false,
+            tile_cols: tile_info.tile_cols,
+            tile_rows: tile_info.tile_rows,
+            mi_col_starts: &tile_info.mi_col_starts,
+            mi_row_starts: &tile_info.mi_row_starts,
+            tile_cols_log2: tile_info.tile_cols_log2,
+            tile_rows_log2: tile_info.tile_rows_log2,
+            tile_size_bytes: tile_info.tile_size_bytes,
+            context_update_tile_id: tile_info.context_update_tile_id,
+            base_q_idx: quant.base_q_idx,
+            coeff_frame_facts,
+            disable_cdf_update,
+            tile_group_structure_start_bits: core.consumed_bits.checked_add(1).ok_or(
+                DecodeLimitError::ArithmeticOverflow {
+                    name: DecodeLimitName::MaxInputBytes,
+                    op: DecodeLimitOp::Add,
+                    left: core.consumed_bits,
+                    right: 1,
+                },
+            )?,
+        })
+    }
+
+    /// Derives normalized tile facts from a state-aware **inter** frame-header core
+    /// parse (AV2 § 5.18.2 `InterHeaderComplete`).
+    ///
+    /// This mirrors [`Self::from_frame_core`] for the inter path: the tile geometry,
+    /// `base_q_idx`, `disable_cdf_update`, and coefficient frame facts are read from
+    /// the same shared `core` fields, but `reduced_tx_set` comes from the parsed
+    /// `core.inter_tail` (the inter tail) instead of `core.intra_tail`, and the
+    /// completion gate is `InterHeaderComplete` with `frame_is_intra == false`.
+    ///
+    /// # Errors
+    /// Returns a local derivation error when the frame header did not reach the
+    /// complete inter path or lacks facts required by the tile boundary.
+    pub(crate) fn from_inter_frame_core(
+        core: &'a FrameHeaderCore,
+        coeff: FrameCandidateCoeffFacts,
+    ) -> Result<Self, FrameCandidateTileBoundaryError> {
+        if core.status != FrameHeaderParseStatus::InterHeaderComplete {
+            return Err(FrameCandidateTileBoundaryError::Unsupported {
+                reason: FrameCandidateTileUnsupportedReason::IncompleteFrameHeader,
+            });
+        }
+        if core.frame_is_intra != Some(false) {
+            return Err(FrameCandidateTileBoundaryError::Unsupported {
+                reason: FrameCandidateTileUnsupportedReason::NonIntraFrame,
+            });
+        }
+        if core.is_bridge {
+            return Err(FrameCandidateTileBoundaryError::Unsupported {
+                reason: FrameCandidateTileUnsupportedReason::BridgeFrame,
+            });
+        }
+        let tile_info = core
+            .tile_info
+            .as_ref()
+            .ok_or(FrameCandidateTileBoundaryError::MissingFact { fact: "tile_info" })?;
+        let quant =
+            core.quantization_params
+                .ok_or(FrameCandidateTileBoundaryError::MissingFact {
+                    fact: "quantization_params",
+                })?;
+        let disable_cdf_update =
+            core.disable_cdf_update
+                .ok_or(FrameCandidateTileBoundaryError::MissingFact {
+                    fact: "disable_cdf_update",
+                })?;
+        let lossless = core
+            .lossless_info
+            .ok_or(FrameCandidateTileBoundaryError::MissingFact {
+                fact: "lossless_info",
+            })?;
+        let tail = core
+            .inter_tail
+            .as_ref()
+            .ok_or(FrameCandidateTileBoundaryError::MissingFact { fact: "inter_tail" })?;
+        let coeff_frame_facts = TileCoeffFrameFacts::new(
+            coeff.enable_fsc,
+            coeff.enable_chroma_dctonly,
+            usize::from(tail.reduced_tx_set),
+            lossless.lossless_array,
+            lossless.allow_tcq,
+            lossless.allow_parity_hiding,
+            quant.base_q_idx,
+        );
+
+        Ok(Self {
+            obu_type: core.obu_type,
+            frame_is_intra: false,
             is_bridge: false,
             tile_cols: tile_info.tile_cols,
             tile_rows: tile_info.tile_rows,
@@ -496,7 +586,9 @@ fn validate_candidate(
             FrameCandidateTileMalformed::CandidateNotInPlan,
         ));
     }
-    if candidate.role() != DecodePlannedObuRole::FrameCandidate {
+    // Accept an intra key `FrameCandidate` or an inter `InterFrameCandidate`
+    // (DECODE-FIRST-INTER-FRAME-FRONTIER); `is_frame_candidate()` covers both.
+    if !candidate.role().is_frame_candidate() {
         return Err(FrameCandidateTileBoundaryError::Unsupported {
             reason: FrameCandidateTileUnsupportedReason::CandidateNotFrame,
         });
@@ -635,15 +727,22 @@ fn validate_supported_position(
             reason: FrameCandidateTileUnsupportedReason::BridgeFrame,
         });
     }
-    if !facts.frame_is_intra {
-        return Err(FrameCandidateTileBoundaryError::Unsupported {
-            reason: FrameCandidateTileUnsupportedReason::NonIntraFrame,
-        });
-    }
-    if candidate.obu_type() != ObuType::ClosedLoopKey {
-        return Err(FrameCandidateTileBoundaryError::Unsupported {
-            reason: FrameCandidateTileUnsupportedReason::CandidateNotFrame,
-        });
+    // The tile-payload boundary is supported for an intra `OBU_CLOSED_LOOP_KEY` frame
+    // and for an inter `OBU_REGULAR_TILE_GROUP` frame (DECODE-FIRST-INTER-FRAME-FRONTIER).
+    // An intra frame must carry the key OBU type, and an inter frame the regular
+    // tile-group OBU type; any other (frame_is_intra, obu_type) pairing is rejected.
+    match (facts.frame_is_intra, candidate.obu_type()) {
+        (true, ObuType::ClosedLoopKey) | (false, ObuType::RegularTileGroup) => {}
+        (false, _) => {
+            return Err(FrameCandidateTileBoundaryError::Unsupported {
+                reason: FrameCandidateTileUnsupportedReason::CandidateNotFrame,
+            });
+        }
+        (true, _) => {
+            return Err(FrameCandidateTileBoundaryError::Unsupported {
+                reason: FrameCandidateTileUnsupportedReason::CandidateNotFrame,
+            });
+        }
     }
     if facts.tile_cols != 1 || facts.tile_rows != 1 {
         return Err(FrameCandidateTileBoundaryError::Unsupported {

@@ -19,7 +19,9 @@ use splot_core::span::ByteOffset;
 use splot_core::stream::{ParsedBitstream, ParsedIvfBitstream, parse_bitstream_partial};
 use splot_core::symbol::{SymbolDecoder, SymbolDecoderSummary};
 use splot_core::types::ObuType;
-use splot_recon::{DecodedFrame, IntraCardinalDirection, PlaneId};
+use splot_recon::{
+    DecodedFrame, IntraCardinalDirection, PlaneId, ReferenceFrameStore, ReferenceSlot,
+};
 
 use crate::error::{DecodeError, DecodeUnsupportedFeature, Result};
 use crate::tile_payload::{
@@ -69,6 +71,13 @@ pub(crate) struct MinimalRuntimeFrame {
     pub(crate) frame: DecodedFrame<u8>,
     pub(crate) frame_rate_numerator: u32,
     pub(crate) frame_rate_denominator: u32,
+}
+
+impl MinimalRuntimeFrame {
+    /// Borrows the decoded frame for output / hashing / §7.23 reference retention.
+    pub(crate) fn frame(&self) -> &DecodedFrame<u8> {
+        &self.frame
+    }
 }
 
 /// Decodes the leading closed-loop-key frame into a single [`MinimalRuntimeFrame`].
@@ -250,28 +259,174 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
     )?;
     frames.push(key_frame);
 
-    // The minimal tier decodes only the first (key) frame so far. Reject any further
-    // frame candidate with a structured diagnostic so no fabricated output is
-    // produced, using the reason that matches the candidate's actual OBU type (a
-    // following inter `OBU_REGULAR_TILE_GROUP` vs. another key frame), rather than
-    // assuming every follow-up frame is inter. Tracked by
-    // `DECODE-FIRST-INTER-FRAME-FRONTIER`.
+    // Decode each following frame candidate in stream order. So far only a single
+    // following inter `OBU_REGULAR_TILE_GROUP` frame is decoded (the verified
+    // single-reference zero-MV skip subset); any other follow-up frame, or anything
+    // outside that subset, is rejected with a structured diagnostic so no fabricated
+    // output is produced. Tracked by `DECODE-FIRST-INTER-FRAME-FRONTIER`.
     if let Some(next_candidate) = candidates.next() {
-        return Err(match next_candidate.obu_type() {
-            ObuType::RegularTileGroup => unsupported_at(
-                "inter_frame_decode_unimplemented",
-                next_candidate.offset(),
-                "minimal tier decodes only the first (key) frame so far; the following inter frame (OBU_REGULAR_TILE_GROUP) is admitted at the planner but not yet decoded (the inter decode path — header shared tail, §5.20 inter mode info, §7.11 motion vectors, §7.13.3.18 motion compensation — is unimplemented)",
-            ),
-            _ => unsupported_at(
+        match next_candidate.obu_type() {
+            ObuType::RegularTileGroup => {
+                let inter_frame = decode_following_inter_frame(
+                    plan,
+                    next_candidate,
+                    bytes,
+                    ivf,
+                    &sequence,
+                    options,
+                    header,
+                    // §7.23 reference retention: the key frame's decoded planes are
+                    // the reference for the inter frame.
+                    frames[0].frame(),
+                )?;
+                frames.push(inter_frame);
+            }
+            _ => {
+                return Err(unsupported_at(
+                    "multiple_frames_unimplemented",
+                    next_candidate.offset(),
+                    "minimal tier decodes only the first frame plus one following inter frame so far; a following frame candidate (e.g. a second key frame) is admitted at the planner but decoding it is not yet implemented",
+                ));
+            }
+        }
+        if let Some(extra) = candidates.next() {
+            return Err(unsupported_at(
                 "multiple_frames_unimplemented",
-                next_candidate.offset(),
-                "minimal tier decodes only the first frame so far; a following frame candidate (e.g. a second key frame) is admitted at the planner but decoding more than the first frame is not yet implemented",
-            ),
-        });
+                extra.offset(),
+                "minimal tier decodes at most one key frame followed by one inter frame so far; a third frame candidate is admitted at the planner but not yet decoded",
+            ));
+        }
     }
 
     Ok(frames)
+}
+
+/// Decodes a single following inter `OBU_REGULAR_TILE_GROUP` frame using the decoded
+/// key frame as the §7.23 reference. Builds the reference store (the key frame is
+/// retained per the key §7.20 `refresh_frame_flags = allFrames`) and the §5.18.2
+/// reference-state metadata, then delegates to [`inter::decode_minimal_inter_frame`].
+#[allow(clippy::too_many_arguments)]
+fn decode_following_inter_frame(
+    plan: &DecodeStreamPlan,
+    candidate: &DecodePlannedObu,
+    bytes: &[u8],
+    ivf: &ParsedIvfBitstream<'_>,
+    sequence: &SequenceHeader,
+    options: DecodeOptions,
+    header: IvfHeader,
+    key_reference: &DecodedFrame<u8>,
+) -> Result<MinimalRuntimeFrame> {
+    // Resolve the inter frame's OBU envelope: it is the second IVF frame's
+    // OBU_REGULAR_TILE_GROUP (the second IVF frame is [TD, OBU_REGULAR_TILE_GROUP]).
+    let inter_ivf_frame = ivf.frames.get(1).ok_or_else(|| {
+        unsupported(
+            "missing_inter_ivf_frame",
+            None,
+            "minimal tier requires a second IVF frame for the inter candidate",
+        )
+    })?;
+    let [td_envelope, inter_envelope] = match inter_ivf_frame.obus.as_slice() {
+        [td, inter] => [*td, *inter],
+        _ => {
+            return Err(unsupported(
+                "unexpected_inter_obu_order",
+                None,
+                "minimal tier requires the inter frame as a temporal delimiter + OBU_REGULAR_TILE_GROUP",
+            ));
+        }
+    };
+    require_obu_type(
+        td_envelope,
+        ObuType::TemporalDelimiter,
+        "missing_inter_temporal_delimiter",
+    )?;
+    require_obu_type(
+        inter_envelope,
+        ObuType::RegularTileGroup,
+        "missing_inter_regular_tile_group",
+    )?;
+    if inter_envelope.offset != candidate.offset() {
+        return Err(unsupported_at(
+            "inter_candidate_offset_mismatch",
+            candidate.offset(),
+            "the planned inter candidate offset does not match the second IVF frame's OBU_REGULAR_TILE_GROUP",
+        ));
+    }
+
+    // §7.23 reference retention: a key frame's §7.20 refresh_frame_flags refreshes
+    // every active reference slot with the just-decoded frame. Build a reference
+    // store that borrows the key frame for each active slot, plus the parallel
+    // §7.7/§7.23 reference metadata (RefValid / RefOrderHint / dims) the §5.18.2
+    // inter header parse reads.
+    let num_ref_frames = usize::from(
+        sequence
+            .inter
+            .as_ref()
+            .ok_or_else(|| {
+                unsupported(
+                    "missing_sequence_inter_config",
+                    None,
+                    "minimal inter decode requires the sequence inter config (NumRefFrames)",
+                )
+            })?
+            .num_ref_frames,
+    );
+    if num_ref_frames == 0 || num_ref_frames > ReferenceSlot::MAX_SLOTS {
+        return Err(unsupported(
+            "unsupported_num_ref_frames",
+            None,
+            "minimal inter decode requires 1..=16 active reference slots",
+        ));
+    }
+    let mut store: ReferenceFrameStore<&DecodedFrame<u8>> =
+        ReferenceFrameStore::with_capacity(num_ref_frames)
+            .map_err(|source| DecodeError::Reconstruction { source })?;
+    let key_size = key_reference.y().visible_size();
+    let key_width = key_size.width() as u32;
+    let key_height = key_size.height() as u32;
+    let mut ref_valid = vec![false; num_ref_frames];
+    let mut ref_order_hint = vec![0u32; num_ref_frames];
+    let mut ref_frame_width = vec![0u32; num_ref_frames];
+    let mut ref_frame_height = vec![0u32; num_ref_frames];
+    // VERIFIED-SUBSET DISCIPLINE: model exactly one valid reference slot (slot 0).
+    // §7.20 a key frame refreshes EVERY active slot with the same decoded frame, but
+    // the §7.7 implicit reference-map derivation is only exact (and parser-modeled)
+    // when at most one slot is proven-valid (otherwise the §7.7 ranking depends on
+    // unmodeled scoring inputs and the inter header stops with UnmodeledDerivation).
+    // With a single decoded key frame as the sole reference, slot 0 is the verified
+    // reference: the inter frame's ref_frame_idx[0] resolves to it. (The key frame is
+    // physically retained in slot 0; a richer multi-reference §7.7 derivation is a
+    // later brick.)
+    const VERIFIED_REFERENCE_SLOT: usize = 0;
+    let slot = ReferenceSlot::new(VERIFIED_REFERENCE_SLOT)
+        .map_err(|source| DecodeError::Reconstruction { source })?;
+    store
+        .put(slot, key_reference)
+        .map_err(|source| DecodeError::Reconstruction { source })?;
+    ref_valid[VERIFIED_REFERENCE_SLOT] = true;
+    // The committed minimal fixture's key frame carries order_hint 0.
+    ref_order_hint[VERIFIED_REFERENCE_SLOT] = 0;
+    ref_frame_width[VERIFIED_REFERENCE_SLOT] = key_width;
+    ref_frame_height[VERIFIED_REFERENCE_SLOT] = key_height;
+
+    let reference = inter::InterReferenceState {
+        store: &store,
+        ref_valid,
+        ref_order_hint,
+        ref_frame_width,
+        ref_frame_height,
+    };
+
+    inter::decode_minimal_inter_frame(
+        plan,
+        candidate,
+        bytes,
+        inter_envelope,
+        sequence,
+        options,
+        header,
+        &reference,
+    )
 }
 
 /// Validates the planned stream shape for the multi-frame runtime and returns the
@@ -702,6 +857,7 @@ fn validate_frame_core(core: &FrameHeaderCore, offset: ByteOffset) -> Result<()>
 }
 
 mod general_intra;
+mod inter;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -725,6 +881,46 @@ fn derive_tile_plan<'a>(
     })?;
     let coeff = FrameCandidateCoeffFacts::new(tq.enable_fsc, tq.enable_chroma_dctonly);
     let facts = FrameCandidateTileFacts::from_frame_core(core, coeff)
+        .map_err(decode_tile_boundary_error)?;
+    let cdf = FrameCandidateCdfFacts::new(tq.enable_avg_cdf, tq.avg_cdf_type != 0);
+    let input = FrameCandidateTileBoundaryInput::new(
+        plan,
+        candidate,
+        bytes,
+        envelope,
+        TileGroupPositionFacts::new(true, true),
+        facts,
+        cdf,
+        options.limits(),
+    );
+    crate::tile_payload::plan_derived_tile_payload_boundary(input)
+        .map_err(decode_tile_boundary_error)
+}
+
+/// Derives the inter frame's tile-payload plan (DECODE-FIRST-INTER-FRAME-FRONTIER).
+///
+/// Mirrors [`derive_tile_plan`] but uses the inter tile-facts derivation
+/// ([`FrameCandidateTileFacts::from_inter_frame_core`]) so the geometry / base_q_idx
+/// / disable_cdf_update / coefficient facts are read from the parsed §5.18.2 inter
+/// header (`InterHeaderComplete`).
+fn derive_inter_tile_plan<'a>(
+    plan: &'a DecodeStreamPlan,
+    candidate: &'a DecodePlannedObu,
+    bytes: &'a [u8],
+    envelope: ObuEnvelope<'a>,
+    sequence: &'a SequenceHeader,
+    core: &'a FrameHeaderCore,
+    options: DecodeOptions,
+) -> Result<crate::tile_payload::DecodeTilePayloadPlan<'a>> {
+    let tq = sequence.transform_quant_entropy.as_ref().ok_or_else(|| {
+        unsupported_at(
+            "missing_tq_entropy_config",
+            envelope.offset,
+            "minimal tier requires sequence transform/quant/entropy config",
+        )
+    })?;
+    let coeff = FrameCandidateCoeffFacts::new(tq.enable_fsc, tq.enable_chroma_dctonly);
+    let facts = FrameCandidateTileFacts::from_inter_frame_core(core, coeff)
         .map_err(decode_tile_boundary_error)?;
     let cdf = FrameCandidateCdfFacts::new(tq.enable_avg_cdf, tq.avg_cdf_type != 0);
     let input = FrameCandidateTileBoundaryInput::new(

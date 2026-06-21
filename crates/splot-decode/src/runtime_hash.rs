@@ -25,8 +25,8 @@ pub(crate) fn decode_hash_report_from_plan(
     let outputs = crate::runtime_minimal::decode_minimal_frames_from_plan(bytes, options, plan)?;
     let mut report_frames = Vec::with_capacity(outputs.len());
     for output in &outputs {
-        let hash = DecodedFrameHashInput::new(&output.frame).compute_hash();
-        report_frames.push(hash_frame_from_decoded(&output.frame, hash.to_hex()));
+        let hash = DecodedFrameHashInput::new(output.frame()).compute_hash();
+        report_frames.push(hash_frame_from_decoded(output.frame(), hash.to_hex()));
     }
 
     Ok(DecodeHashReport::raw_intermediate_output(

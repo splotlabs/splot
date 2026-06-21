@@ -372,8 +372,6 @@ pub(crate) enum TilePartitionTraversalError {
 /// Unsupported traversal-frontier path.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TilePartitionTraversalUnsupported {
-    /// Non-intra paths remain outside this frontier.
-    NonIntra,
     /// SDP luma/chroma partition side effects remain outside this frontier.
     Sdp,
     /// Extended SDP region signaling remains outside this frontier.
@@ -407,11 +405,14 @@ pub(crate) fn plan_tile_partition_traversal_cursor<'payload>(
             TilePartitionTraversalUnsupported::ExtendedSdp,
         ));
     }
-    if !frame.frame_is_intra {
-        return Err(TilePartitionTraversalError::Unsupported(
-            TilePartitionTraversalUnsupported::NonIntra,
-        ));
-    }
+    // The §5.20.3.1 partition syntax (`read_partition` -> `do_split` / `rect_type` /
+    // …) is frame-type agnostic: the CDF contexts carry `frame_is_intra` via the
+    // partition-structure `PlaneStart`, so the same traversal walks an intra
+    // `OBU_CLOSED_LOOP_KEY` tile and an inter `OBU_REGULAR_TILE_GROUP` tile. The
+    // inter path is admitted here (DECODE-FIRST-INTER-FRAME-FRONTIER); the inter leaf
+    // callback reads the §5.20.7.6 inter `mode_info` instead of intra modes, and the
+    // §8.2.4 `exit_symbol()` check the caller runs guards bit-exactness so a wrong
+    // partition read for an unverified inter shape is rejected, never confident-wrong.
     // AV2 §5.20.3.1 invokes §5.20.10.4 `read_lr()` at the root before
     // `read_partition`; keep that syntax explicit until this frontier models it.
     if frame.loop_restoration == TilePartitionLoopRestorationState::UnsupportedReadLrSyntax {
@@ -561,12 +562,11 @@ where
         &TileBlockDecodedState,
     ) -> Result<u8, E>,
 {
-    if !frame.frame_is_intra {
-        return Err(TilePartitionTraversalError::Unsupported(
-            TilePartitionTraversalUnsupported::NonIntra,
-        )
-        .into());
-    }
+    // The §5.20.3.1 partition tree walk is frame-type agnostic (see the cursor
+    // planner's note): it walks an intra `OBU_CLOSED_LOOP_KEY` tile and an inter
+    // `OBU_REGULAR_TILE_GROUP` tile (DECODE-FIRST-INTER-FRAME-FRONTIER). The inter
+    // leaf callback reads the §5.20.7.6 inter `mode_info`, and the caller's §8.2.4
+    // `exit_symbol()` check guards bit-exactness.
     if frame.loop_restoration == TilePartitionLoopRestorationState::UnsupportedReadLrSyntax {
         return Err(TilePartitionTraversalError::Unsupported(
             TilePartitionTraversalUnsupported::ReadLoopRestoration,

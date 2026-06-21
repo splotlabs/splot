@@ -22,7 +22,7 @@ pub(crate) fn encode_raw_stream_from_plan(
         crate::runtime_minimal::decode_minimal_frames_from_plan(bitstream, options, plan)?;
     let mut bytes = Vec::new();
     for output in &outputs {
-        let raw = DecodedFrameHashInput::new(&output.frame);
+        let raw = DecodedFrameHashInput::new(output.frame());
         bytes.try_reserve_exact(raw.byte_len()?).map_err(|source| {
             DecodeOutputError::io(
                 DecodeOutputOperation::SerializeRaw,

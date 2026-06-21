@@ -370,6 +370,30 @@ pub(crate) enum TileCdfSelector {
         /// DC-sign context (caller-resolved from the Above/Left DC contexts).
         ctx: usize,
     },
+    /// `TileIsInterCdf[ctx]` (AV2 § 8.3.2): the `read_is_inter` decision.
+    IsInter {
+        /// `is_inter` context index.
+        ctx: usize,
+    },
+    /// `TileSkipCdf[ctx]` (AV2 § 8.3.2): the `read_skip` decision.
+    Skip {
+        /// `skip_flag` context index.
+        ctx: usize,
+    },
+    /// `TileSingleModeCdf[NewMvContext]` (AV2 § 8.3.2): the single-reference inter
+    /// `single_mode` symbol.
+    SingleMode {
+        /// `NewMvContext`.
+        ctx: usize,
+    },
+    /// `TileDrlModeCdf[Min(idx, 2)][NewMvContext]` (AV2 § 8.3.2): the §5.20.7.8
+    /// `read_drl_idx` `drl_mode` symbol.
+    DrlMode {
+        /// `Min(idx, 2)` index bank.
+        idx: usize,
+        /// `NewMvContext`.
+        ctx: usize,
+    },
     /// Coefficient base/base-EOB/base-range and IDTX CDF rows.
     Coeff(CoeffCdfSelector),
 }
@@ -435,6 +459,14 @@ pub(crate) enum TileCdfArray {
     CoeffBrIdtx,
     /// `TileIdtxSignCdf`.
     IdtxSign,
+    /// `TileIsInterCdf`.
+    IsInter,
+    /// `TileSkipCdf`.
+    Skip,
+    /// `TileSingleModeCdf`.
+    SingleMode,
+    /// `TileDrlModeCdf`.
+    DrlMode,
 }
 
 impl TileCdfArray {
@@ -469,6 +501,10 @@ impl TileCdfArray {
             Self::CoeffBrLf => "TileCoeffBrLfCdf",
             Self::CoeffBrIdtx => "TileCoeffBrIdtxCdf",
             Self::IdtxSign => "TileIdtxSignCdf",
+            Self::IsInter => "TileIsInterCdf",
+            Self::Skip => "TileSkipCdf",
+            Self::SingleMode => "TileSingleModeCdf",
+            Self::DrlMode => "TileDrlModeCdf",
         }
     }
 }
@@ -833,6 +869,14 @@ impl TileCdfRows {
                 group,
                 ctx,
             }),
+            TileCdfSelector::IsInter { ctx } => self.block.row(BlockCdfSelector::IsInter { ctx }),
+            TileCdfSelector::Skip { ctx } => self.block.row(BlockCdfSelector::Skip { ctx }),
+            TileCdfSelector::SingleMode { ctx } => {
+                self.block.row(BlockCdfSelector::SingleMode { ctx })
+            }
+            TileCdfSelector::DrlMode { idx, ctx } => {
+                self.block.row(BlockCdfSelector::DrlMode { idx, ctx })
+            }
             TileCdfSelector::Coeff(selector) => self.block.row(BlockCdfSelector::Coeff(selector)),
         }
     }
@@ -957,6 +1001,16 @@ impl TileCdfRows {
                 group,
                 ctx,
             }),
+            TileCdfSelector::IsInter { ctx } => {
+                self.block.row_mut(BlockCdfSelector::IsInter { ctx })
+            }
+            TileCdfSelector::Skip { ctx } => self.block.row_mut(BlockCdfSelector::Skip { ctx }),
+            TileCdfSelector::SingleMode { ctx } => {
+                self.block.row_mut(BlockCdfSelector::SingleMode { ctx })
+            }
+            TileCdfSelector::DrlMode { idx, ctx } => {
+                self.block.row_mut(BlockCdfSelector::DrlMode { idx, ctx })
+            }
             TileCdfSelector::Coeff(selector) => {
                 self.block.row_mut(BlockCdfSelector::Coeff(selector))
             }
