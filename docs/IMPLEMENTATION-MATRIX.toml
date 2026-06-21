@@ -5618,6 +5618,39 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-GENERAL-INTRA-2D"
+name = "First 2-D intra reconstruction"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20.7.27", "8.3.2", "8.2.5", "8.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/general_intra_trace/multi_coeff.rs"
+openspec_change = "encoder-general-intra-2d"
+tracking_issue = ""
+owner = "encoder"
+risk = "low"
+notes = "Decodable-tile arc: the FIRST 2-D (non-separable) reconstruction + the first block with TWO nonzero non-EOB sign bypasses. emit_minimal_intra_2d_ivf() (splot-encode public) codes a 64x64 eob=3 luma block with TWO nonzero level-4 ACs: scan index 1 (raster 32, VERTICAL freq-1, NEGATIVE) + scan index 2 (raster 1, HORIZONTAL freq-1, POSITIVE, the EOB), zero DC, U/V skipped. The two cosines superimpose into a DIAGONAL GRADIENT (neither rows nor columns constant). general_intra_64x64_luma_2d_base_tokens: txb_skip=0, eob_pt_1024=2, eob_extra=0, then reverse-scan base pass c=2,1,0: scan2 coeff_base_eob ctx1 symbol3, scan1 coeff_base ctx9 symbol4 (level 4 = LF_NUM_BASE_LEVELS, NO coeff_br), DC coeff_base ctx4 (NEW row; two level-4 AC neighbours sum to mag 8 -> (8+1)>>1=4). Composer appends the two AC sign_bit \u00a78.2.5 bypasses in reverse-scan order (scan2 positive, scan1 negative). ASYMMETRIC signs PROVE the 2-sign-bypass order (a wrong order mirrors the diagonal) \u2014 applying [[decode-verify-asymmetric-values]]. REUSES eob_pt_1024/eob_extra/scan1-ctx9/scan2-eob-ctx1. Contexts computed empirically. `splot decode` -> 3x3 band grid (rows/cols at 4/32/60) [[128,127,127],[129,128,127],[129,129,128]]; U/V flat 128. First brick after BOTH splits (#403 general_intra_trace, #406 block_symbol_trace) -> no budget pressure. decode_check=done; avm_diff=not-applicable. Encoder-mission-DRIVEN (owner=encoder). HONEST SCOPE: first 2-D reconstruction; NOT a general encoder, NOT receive_packet, NOT Baseline Encoder Profile v1."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-cli/tests/encode_decode_roundtrip.rs::encoder_2d_ivf_decodes_to_a_diagonal_gradient_luma", "crates/splot-encode/src/general_intra_trace/multi_coeff.rs::tests::general_2d_block_trace_roundtrips_through_one_coder"]
+commands = ["cargo test -p splot-cli --test encode_decode_roundtrip --locked", "cargo test -p splot-encode _2d_ --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-RECON-DEPENDENCY"
 name = "Encoder reconstruction dependency boundary"
 category = "encoder"

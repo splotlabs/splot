@@ -13,9 +13,9 @@ use crate::block_symbol_trace::{
 };
 use crate::coefficient_tokenization::{
     chroma_v_all_zero_token, general_intra_32x32_chroma_u_all_zero_token,
-    general_intra_64x64_luma_eob3_base_tokens, general_intra_64x64_luma_two_coeff_tokens,
-    general_intra_64x64_luma_two_nonzero_base_tokens, general_intra_64x64_luma_visible_ac_tokens,
-    luma_dc_sign_token,
+    general_intra_64x64_luma_2d_base_tokens, general_intra_64x64_luma_eob3_base_tokens,
+    general_intra_64x64_luma_two_coeff_tokens, general_intra_64x64_luma_two_nonzero_base_tokens,
+    general_intra_64x64_luma_visible_ac_tokens, luma_dc_sign_token,
 };
 use crate::error::{Error, Result};
 use crate::partition_emission::emit_root_do_split_none;
@@ -253,11 +253,124 @@ pub fn emit_minimal_intra_eob3_ivf() -> Result<Vec<u8>> {
     .map_err(|source| Error::MinimalIntraSkipIvf { source })
 }
 
+/// The scan-1 (vertical) AC sign for the 2-D block: NEGATIVE. With the scan-2 (horizontal) AC
+/// positive, the two `sign_bit` bypasses carry different values, so only the spec-correct
+/// reverse-scan order (scan 2 before scan 1) reconstructs consistently — the oracle proves it.
+const COEFF_2D_SCAN1_NEGATIVE: bool = true;
+
+/// Composes the general intra eob=3 **2-D** luma block trace: `do_split`, the mode prefix, the
+/// coded luma base pass (two nonzero level-4 ACs — scan 1 vertical + scan 2 horizontal — with a
+/// zero DC), then the two AC `sign_bit` § 8.2.5 bypasses in reverse-scan order (scan 2 positive,
+/// then scan 1 negative), then skipped U and V. This is the first block whose reconstruction
+/// varies in both dimensions: the horizontal and vertical low-frequency cosines superimposed.
+fn compose_general_intra_2d_block_trace() -> Result<Vec<BlockSymbolToken>> {
+    let modes = compose_minimal_intra_dc_block_mode_trace()?;
+    let luma = general_intra_64x64_luma_2d_base_tokens(SKIP_FRAME_COEFF_CDF_Q_CTX)?;
+    let total = modes
+        .len()
+        .checked_add(luma.len())
+        .and_then(|n| n.checked_add(5)) // do_split + 2 AC signs + U skip + V skip
+        .ok_or(Error::BlockSymbolTraceAllocationFailed {
+            context: "general 2-D block trace length",
+        })?;
+    let mut trace = Vec::new();
+    trace
+        .try_reserve_exact(total)
+        .map_err(|_| Error::BlockSymbolTraceAllocationFailed {
+            context: "general 2-D block trace",
+        })?;
+    trace.push(BlockSymbolToken::Partition(emit_root_do_split_none()));
+    trace.extend(modes.into_iter().map(BlockSymbolToken::Mode));
+    trace.extend(luma.into_iter().map(BlockSymbolToken::Coeff));
+    // Sign pass, reverse scan `c = 2,1`: the scan-2 AC `sign_bit` (positive) precedes the scan-1
+    // AC `sign_bit` (negative). Both are § 8.2.5 bypass literals (non-DC, non-axis under 2D).
+    trace.push(BlockSymbolToken::bypass(CHROMA_SIGN_BIT_WIDTH, 0));
+    trace.push(BlockSymbolToken::bypass(
+        CHROMA_SIGN_BIT_WIDTH,
+        COEFF_2D_SCAN1_NEGATIVE as u32,
+    ));
+    trace.push(BlockSymbolToken::Coeff(
+        general_intra_32x32_chroma_u_all_zero_token(SKIP_FRAME_COEFF_CDF_Q_CTX),
+    ));
+    trace.push(BlockSymbolToken::Coeff(chroma_v_all_zero_token(
+        SKIP_FRAME_COEFF_CDF_Q_CTX,
+        V_TXB_SKIP_CTX_NEUTRAL,
+    )));
+    Ok(trace)
+}
+
+/// Emits a complete, decodable AV2 IVF stream for one 64x64 all-intra `OBU_CLOSED_LOOP_KEY`
+/// frame whose luma block has **eob=3 with two nonzero level-4 ACs** — a positive horizontal AC
+/// (scan 2) and a negative vertical AC (scan 1), U and V skipped.
+///
+/// This is the encoder's first frame whose reconstruction varies in **both** dimensions: the
+/// horizontal and vertical low-frequency cosines superimposed (with opposite signs). The
+/// cross-crate decode oracle lives in `splot-cli`.
+pub fn emit_minimal_intra_2d_ivf() -> Result<Vec<u8>> {
+    let trace = compose_general_intra_2d_block_trace()?;
+    let tile_data = encode_block_symbol_trace(&trace)?;
+    splot_core::headers::frame::encode_minimal_intra_clk_ivf_with_base_q_idx(
+        SKIP_FRAME_BASE_Q_IDX,
+        &tile_data,
+    )
+    .map_err(|source| Error::MinimalIntraSkipIvf { source })
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::block_symbol_trace::roundtrip_block_symbol_trace;
+
+    #[test]
+    fn composes_general_2d_block_trace_in_order() {
+        let trace = compose_general_intra_2d_block_trace().unwrap();
+
+        // do_split, 3 modes, 6 coded-luma base (txb_skip, eob_pt, eob_extra, scan2 base_eob,
+        // scan1 base, DC base), 2 AC sign bypasses, U skip, V skip = 14 tokens.
+        assert_eq!(trace.len(), 14);
+        assert!(matches!(trace[0], BlockSymbolToken::Partition(_)));
+        // Reverse-scan sign pass: scan-2 sign_bit (positive) then scan-1 sign_bit (negative).
+        assert!(matches!(
+            trace[10],
+            BlockSymbolToken::Bypass { width: 1, value: 0 }
+        ));
+        assert!(matches!(
+            trace[11],
+            BlockSymbolToken::Bypass { width: 1, value: 1 }
+        ));
+        // do_split, modes 0/0/0; txb_skip=0, eob_pt_1024=2, eob_extra=0, scan2 coeff_base_eob=3
+        // (level 4), scan1 coeff_base=4 (level 4), DC coeff_base=0; scan2 sign=0, scan1 sign=1;
+        // U/V txb_skip=1.
+        assert_eq!(
+            trace.iter().map(|token| token.symbol()).collect::<Vec<_>>(),
+            vec![0, 0, 0, 0, 0, 2, 0, 3, 4, 0, 0, 1, 1, 1]
+        );
+    }
+
+    #[test]
+    fn general_2d_block_trace_roundtrips_through_one_coder() {
+        let trace = compose_general_intra_2d_block_trace().unwrap();
+        let proof = roundtrip_block_symbol_trace(&trace).unwrap();
+        assert_eq!(
+            proof.decoded_symbols(),
+            &[0, 0, 0, 0, 0, 2, 0, 3, 4, 0, 0, 1, 1, 1]
+        );
+        assert_eq!(proof.symbol_count(), 14);
+        assert!(!proof.bytes().is_empty());
+    }
+
+    #[test]
+    fn emit_minimal_intra_2d_ivf_differs_from_eob3_and_is_deterministic() {
+        let two_d = emit_minimal_intra_2d_ivf().unwrap();
+        assert!(!two_d.is_empty());
+        // Distinct from the single-AC eob=3 frame: it adds the scan-1 nonzero AC + its sign.
+        assert_ne!(two_d, emit_minimal_intra_eob3_ivf().unwrap());
+        assert_eq!(two_d, emit_minimal_intra_2d_ivf().unwrap());
+        let parsed = splot_core::ivf::parse_ivf_partial(&two_d);
+        assert!(parsed.error.is_none());
+        assert_eq!(parsed.frames.len(), 1);
+    }
 
     #[test]
     fn composes_general_eob3_block_trace_in_order() {
