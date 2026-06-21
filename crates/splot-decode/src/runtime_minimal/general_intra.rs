@@ -561,25 +561,23 @@ fn decode_one_general_intra_block(
             // VALUE (`AboveRow[w]`), so the row>0 above-row path is exactly what
             // the committed `syn-vgrid` fixture oracle-verifies.
             (Some(SupportedNonDcLumaMode::SmoothVertical), _) if n4w == FULL_SB_N4_LUMA => {}
-            // SMOOTH_H reads the above-right sentinel VALUE (`AboveRow[w]`, the
-            // top-right). In the first superblock row (`haveAbove == 0`) that is
-            // the § 7.13.2.1 no-neighbour fallback (the shared edge builder is
-            // verified and the value is the fallback). At row>0 it would be the
-            // **real reconstructed** above-right of a decoded neighbour — a luma
-            // (`sub_x == 0`) above-right VALUE path no oracle fixture has exercised
-            // yet (the SMOOTH chroma grid verifies only `sub_x == 1`, and SMOOTH_V
-            // row>0 ignores the value), so it is deferred until a SMOOTH_H luma
-            // grid fixture pins it.
-            (Some(SupportedNonDcLumaMode::SmoothHorizontal), _)
-                if n4w == FULL_SB_N4_LUMA && frontier.r == 0 => {}
-            (Some(SupportedNonDcLumaMode::SmoothHorizontal), _) if n4w == FULL_SB_N4_LUMA => {
-                return Err(general_intra_unsupported(
-                    "general_intra_smooth_h_above_right_unverified",
-                    Some(tile_offset),
-                    "general intra SMOOTH_H luma at superblock row > 0 reads the §7.13.2.1 real reconstructed above-right sentinel value (AboveRow[w]); that luma (sub_x=0) above-right value path is not yet covered by an oracle fixture (only SMOOTH_V row>0, which ignores the above-right value, and the sub_x=1 SMOOTH chroma grid are verified), so it is deferred to a dedicated SMOOTH_H luma grid fixture",
-                    GENERAL_INTRA_MODE_SPEC_SECTION,
-                ));
-            }
+            // SMOOTH_H full-superblock block reads the above-right sentinel VALUE
+            // (`AboveRow[w]`, the top-right) at ANY 2-D grid position. In the first
+            // superblock row (`haveAbove == 0`) that is the § 7.13.2.1 no-neighbour
+            // fallback (the shared edge builder is verified and the value is the
+            // fallback). At a row>0 superblock the § 7.13.2.1 top-right sentinel is
+            // the **real reconstructed** bottom row of the already-decoded
+            // diagonally-above-right superblock, resolved by
+            // `luma_num4_above_right_from_block_decoded` (§ 5.20.7.25
+            // `count_top_right_avail` over the § 5.20.2.3 `BlockDecoded` state) and
+            // `resolve_smooth_above_right_sentinel` — the same plane-general
+            // machinery the SMOOTH chroma grid path already uses for `sub_x == 1`,
+            // now exercised for the luma (`sub_x == 0`) above-right VALUE. Smooth
+            // prediction is linear interpolation over those edges (no
+            // `enable_intra_edge_filter` / IDIF / upsample synthesis), so the
+            // non-flat real above-right reconstructs bit-exact against the
+            // AVM/dav2d oracle (the `syn-shgrid` fixture pins it).
+            (Some(SupportedNonDcLumaMode::SmoothHorizontal), _) if n4w == FULL_SB_N4_LUMA => {}
             (Some(_), _) if is_top_left => {
                 return Err(general_intra_unsupported(
                     "general_intra_non_dc_non_dctonly_size",

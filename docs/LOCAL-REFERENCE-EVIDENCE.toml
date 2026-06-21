@@ -1052,6 +1052,58 @@ left = "avm-vgrid-raw-md5"
 right = "dav2d-vgrid-raw-md5"
 
 [[evidence]]
+id = "lref-avm-dav2d-syn-shgrid-intra-128x128-q80"
+feature_id = "DECODE-GENERAL-INTRA-GRID-SMOOTH-H-ABOVE-RIGHT"
+decoder_support_rows = ["general-intra-grid-smooth-h-above-right"]
+kind = "reference-output-agreement"
+summary = "Local AVM and dav2d raw decoder output MD5 digests agreed for the 8-bit 128x128 full 2-D grid intra IVF fixture at base_q_idx 80 (two superblock columns by two rows): the bottom-left 64x64 superblock codes SMOOTH_H_PRED luma over a horizontal gradient with DC chroma; the top-left and bottom-right superblocks are DC luma; the top-right superblock is DC luma with full-superblock SMOOTH chroma. The decisive block is the row>0, non-rightmost SMOOTH_H_PRED luma superblock at the bottom-left (frontier row 16, col 0): its §7.13.2.13 predH2 reads the top-right sentinel AboveRow[w], which at this row>0 superblock is the REAL reconstructed bottom row of the already-decoded diagonally-above-right superblock (the top-right superblock, distinct flat luma 200). §5.20.7.25 count_top_right_avail over the §5.20.2.3 BlockDecoded state yields num4AboveRight 16, so the §7.13.2.1 AboveRow[w] resolver returns the real above-right (200), NOT the edge-clamp (100, the bottom-left's own above sample); the first general-intra full-superblock SMOOTH_H luma (sub_x=0) cross-superblock above-right VALUE oracle anchor, lifting the prior general_intra_smooth_h_above_right_unverified deferral for the full-superblock arm."
+recorded_at = "2026-06-21"
+
+[[evidence.fixture]]
+id = "input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-shgrid-intra-128x128-q80.ivf"
+sha256 = "5cbdf29bbb94adb156abe4c4263620fabf988798fc5006d50abf3525a48964be"
+size_bytes = 119
+format = "ivf"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Generated locally from a project-owned 128x128 YUV input (bottom-left 64x64 luma a horizontal gradient 40 -> 220, top-right 64x64 luma flat 200, top-left/bottom-right luma flat 100; per-superblock-quadrant distinct flat chroma) with broad decode tools (incl. GDF, CDEF, deblocking, restoration, CCSO, CfL, MHCCP, CCTX, IBP, intra edge filter, ist, intra-dip, idtx-intra, mrls, palette, bawp, fsc, sdp, tx-partition, and ext/uneven/rect partitions) disabled and --sb-size=64 --min/max-partition-size=64 forcing a 64x64 superblock grid, so the encoder codes the bottom-left superblock as SMOOTH_H_PRED luma reading the decoded top-right superblock as its cross-superblock above-right sentinel; AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avm"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "457cd58681a747465661baccb1f32095bc5b7774"
+version_summary = "AVM checkout HEAD 457cd58681a747465661baccb1f32095bc5b7774, exact binary build commit not separately archived."
+command_summary = "Local avmdec --rawvideo --i420 output MD5 for {fixture:input}."
+output_digest_id = "avm-shgrid-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "fe420ce870c13a8055aa83fd5aa64740"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.reference_run]]
+id = "dav2d"
+tool = "dav2d"
+executable_name = "dav2d"
+tool_role = "decode-reference"
+source_url = "https://code.videolan.org/videolan/dav2d"
+revision = "f4f96cb06bb3cd3f31e29e1f190f1c0e373ab352"
+version_summary = "dav2d 0.0.1-191-gf4f96cb0 (commit f4f96cb0), decoded with --demuxer ivf; exact version output not archived."
+command_summary = "Local dav2d --demuxer ivf raw decoder output MD5 for {fixture:input}."
+output_digest_id = "dav2d-shgrid-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "fe420ce870c13a8055aa83fd5aa64740"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-shgrid-raw-md5"
+right = "dav2d-shgrid-raw-md5"
+
+[[evidence]]
 id = "lref-avm-dav2d-syn-dirneigh-intra-128x64-q80"
 feature_id = "DECODE-GENERAL-INTRA-DIRECTIONAL-NEIGHBOUR-CTX"
 decoder_support_rows = ["general-intra-directional-neighbour-ctx"]
