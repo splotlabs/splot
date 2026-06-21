@@ -12106,6 +12106,60 @@ fixtures = [
 diagnostics = ["decode/unsupported-feature"]
 
 [[feature]]
+id = "DECODE-GENERAL-INTRA-ANGLE-D113"
+name = "General intra D113 vertical-leaning luma IDIF + follow chroma over a real above edge"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.20.5.3", "5.20.7.27", "7.13.2.1", "7.13.2.7", "7.13.2.8", "8.2.4", "9.2"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-1",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-7",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-8",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/runtime_minimal/general_intra.rs"
+openspec_change = "decode-general-intra-angle-d113"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Completes the §7.13.2.8 MIDDLE-angle zone (`90 < pAngle < 180`, D135 + D157 already done) by admitting the §7.13.2.8 D113_PRED directional luma mode (pAngle 113, canonical §9.2 mode 5, `AngleDeltaY == 0`) over a REAL reconstructed above edge plus its `uv_mode == 0` directional-follow D113 chroma. D113 is VERTICAL-LEANING (pAngle near 90): `dx = Dr_Intra_Derivative[180 - 113] = Dr_Intra_Derivative[67] = 24` and `dy = Dr_Intra_Derivative[113 - 90] = Dr_Intra_Derivative[23] = 170` (§9.2, confirmed against the committed `Mode_To_Angle[5] == 113` and the `Dr_Intra_Derivative[90]` table). Most projections take the §7.13.2.8 ABOVE branch (`base >= -(1 + mrlIndex)`) and land on a NONZERO `shift` for 2940 of the 4096 luma samples (confirmed by temporary instrumentation, since removed), so it genuinely exercises the luma §7.13.2.8 IDIF 4-tap `Dr_Interp_Filter` over the real reconstructed above row + diagonally-above-left corner — unlike D135 (every `shift == 0`, the IDIF reduces to a sample copy) and complementary to D157 (mostly LEFT-branch). This is purely a wiring + fixture brick: the §7.13.2.8 luma IDIF 4-tap kernel (`predict_intra_middle_directional_angle_rect_idif_into`, DECODE-GENERAL-INTRA-IDIF-D157 / RECON-INTRA-MIDDLE-DIRECTIONAL-ANGLE-PREDICTION) and the real §7.13.2.1 corner builder (`build_directional_middle_edges` `(true, true)` arm reading `CurrFrame[plane][y-1][x-1]`, DECODE-GENERAL-INTRA-DIRECTIONAL-CORNER) both already exist and are reused UNCHANGED. The runtime maps mode value 5 to `SupportedDirectionalLumaMode::D113` (`IntraYMode::supported_directional`) and pAngle 113 to `IntraMiddleDirectionalAngle::D113` (`middle_directional_angle`), routing the neighbour-having luma D113 block to `reconstruct_general_intra_directional_neighbour_block_into` (luma `enableIdif == 1` IDIF path) and the D113-follow chroma (`SupportedChromaMode::D113Follow`, resolved when `uv_mode == 0` over the D113 luma makes §5.20.5.3 return `UVMode == D113_PRED`, `AngleDeltaUV == 0`) to the same function on the chroma plane (the `enableIdif == 0` bilinear branch). D113 was decoded via the §5.20.5.3 `y_mode_offset` escape (`y_mode_index == MODE_INDEX_COUNT - 1`, `y_mode_offset == 2` -> modeIdx 9 -> modeDelta 29 -> `Reordered_Y_Mode[8] == D113_PRED`) at §8.3.2 ctx == 0 (the DC neighbour stored a non-directional `IntraJointMode 0`). The committed `syn-d113-intra-128x128-q80.ivf` (128x128 = two superblock columns by two rows: top-left / top-right / bottom-left 64x64 superblocks DC_PRED — uniform top 100, bottom-left a vertical gradient coded DC; BOTTOM-RIGHT 64x64 superblock at `frontier.r == 16, frontier.c == 16, haveLeft && haveAbove` codes D113_PRED luma via the §5.20.5.3 y_mode_offset escape at §8.3.2 ctx == 0 plus `uv_mode == 0` directional-follow D113 chroma) decodes bit-exactly to the avmdec AND dav2d oracle (raw output md5 ba857e73ad624d0409d1189b387d1ef7; pinned splot frame hash d32bc2b11585e7ea55f0d2401f18402c55e781c0a861bb613b55f5dc26a2a395), guarded by the §8.2.4 `exit_symbol()` bit-exactness check. Confirmed by temporary instrumentation (since removed): the bottom-right block decodes `y_mode == IntraYMode(5)` (canonical D113), `angle_delta_y == 0`, `frontier.r == 16` (row>0), `dir == Some(D113)`, `chroma == Some(D113Follow)`. The OLD code rejected this exact frame (`general_intra_non_dc_chroma_mode`, verified by building origin/main and decoding the fixture). All existing general-intra fixtures still decode bit-exact (the D135/D157/cardinal/SMOOTH arms are byte-identical), and a still-unsupported angle (D45 value 3, D67 value 8, D203 value 7, the one-sided angles) still rejects (`supported_directional` returns None -> `general_intra_unsupported_luma_mode`). Scope: D113 luma + D113-follow chroma on a row>0, NON-first-column full 64x64 superblock (`frontier.r != 0 && frontier.c != 0`, `n4w == 16`, `haveLeft && haveAbove`) reading the real reconstructed §7.13.2.1 above row + left column + diagonally-above-left corner. Out of scope (still rejected / deferred): the top-left no-neighbour, first-row (`haveAbove == 0`, the degenerate above-fallback), first-column, sub-partitioned, and non-64x64 D113 positions (`general_intra_d113_unverified_position` / `general_intra_directional_d113_chroma_neighbour`), the one-sided angles D45/D67/D203 (`RECON-INTRA-ONE-SIDED-DIRECTIONAL-ANGLE-PREDICTION` has no IDIF wiring), non-zero angle deltas, MRL, directional IBP, wide-angle, the directional-neighbour (ctx != 0) escape reorder, sub-superblock non-DC blocks, multiple tiles, inter prediction, in-loop filters, and live AVM/dav2d in CI."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "partial"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "partial"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/runtime_minimal.rs::general_intra_tests::d113_neighbour_directional_idif_above_intra_frame_decodes_to_oracle",
+    "crates/splot-decode/src/tile_payload/cdf/block_context.rs::tests::supported_directional_admits_middle_angles_but_rejects_one_sided_angles",
+    "crates/splot-decode/src/tile_payload/cdf/block_context.rs::tests::y_mode_offset_escape_reconstructs_d113",
+    "crates/splot-recon/src/intra_directional_angle.rs::tests::d113_middle_prediction_matches_non_idif_bilinear_formula",
+]
+commands = [
+    "cargo test -p splot-decode general_intra --locked",
+    "cargo test -p splot-decode block_context --locked",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "tests/conformance/vectors/valid/syn-d113-intra-128x128-q80.ivf",
+    "crates/splot-decode/src/runtime_minimal/general_intra.rs",
+    "crates/splot-decode/src/runtime_minimal_recon.rs",
+    "crates/splot-decode/src/tile_payload/cdf/block_context.rs",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
 id = "DECODE-COEFF-FSC-SCAN-WALK"
 name = "Coefficient FSC scan walk"
 category = "infrastructure"
