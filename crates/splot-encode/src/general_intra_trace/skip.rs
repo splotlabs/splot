@@ -85,11 +85,42 @@ pub fn emit_minimal_intra_skip_ivf() -> Result<Vec<u8>> {
     .map_err(|source| Error::MinimalIntraSkipIvf { source })
 }
 
+/// Emits the minimal intra skip frame as a single coded **access unit** — the AV2 Annex B
+/// temporal unit (`OBU_TEMPORAL_DELIMITER` + `OBU_SEQUENCE_HEADER` + the `OBU_CLOSED_LOOP_KEY`
+/// frame OBU), without the IVF file wrapper. This is the access-unit form
+/// `Context::receive_packet` returns in a `Packet`: it is self-delimiting (the decoder
+/// auto-detects it as Annex B) and concatenating packets yields a valid stream, unlike emitting a
+/// full IVF *file* per packet.
+pub(crate) fn emit_minimal_intra_skip_temporal_unit() -> Result<Vec<u8>> {
+    let tile_data = encode_general_intra_dc_skip_tile_data()?;
+    splot_core::headers::frame::encode_minimal_intra_clk_temporal_unit_with_base_q_idx(
+        SKIP_FRAME_BASE_Q_IDX,
+        &tile_data,
+    )
+    .map_err(|source| Error::MinimalIntraSkipIvf { source })
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
     use crate::block_symbol_trace::roundtrip_block_symbol_trace;
+
+    #[test]
+    fn skip_temporal_unit_is_the_skip_ivf_frame_payload() {
+        // The access unit is exactly the bytes muxed into the IVF frame: an IVF made of the
+        // canonical AV02 64x64 header plus this temporal unit equals the standalone skip IVF.
+        let temporal_unit = emit_minimal_intra_skip_temporal_unit().unwrap();
+        let mut ivf = Vec::new();
+        splot_core::ivf::write_ivf_header(
+            &mut ivf,
+            &splot_core::ivf::IvfHeader::new(*b"AV02", 64, 64, 30, 1, 1),
+        )
+        .unwrap();
+        splot_core::ivf::write_ivf_frame(&mut ivf, 0, &temporal_unit).unwrap();
+        assert_eq!(ivf, emit_minimal_intra_skip_ivf().unwrap());
+    }
 
     #[test]
     fn composes_general_skip_block_trace_in_order() {

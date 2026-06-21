@@ -3,8 +3,13 @@
 
 //! Push/pull encoder API surface.
 //!
-//! The lifecycle is implemented as deterministic state plumbing, but no coded
-//! packet production exists yet.
+//! The lifecycle is deterministic state plumbing. [`Context::receive_packet`] now produces a real
+//! [`Packet`] — one coded access unit (the AV2 Annex B temporal unit, not a container file) — for
+//! the input subset the minimal encoder can encode losslessly: a 64x64 frame whose every visible
+//! sample is the 128 no-neighbour DC predictor, encoded as the skip frame, whose flat-128
+//! reconstruction equals the input. A consumer muxes packets into a container (e.g. IVF) to store
+//! or decode them. Any other frame is retired without a packet; broader input handling (forward
+//! quantization, larger sizes, real residual) is future work.
 
 use core::num::NonZeroUsize;
 use std::collections::VecDeque;
@@ -19,11 +24,31 @@ use crate::runtime::{EncoderRuntimeConfig, SpeedPreset};
 const INPUT_QUEUE_CAPACITY: usize = 1;
 const OUTPUT_QUEUE_CAPACITY: usize = 0;
 
-/// An output coded packet.
+/// An output coded packet: the bytes of one coded access unit (an AV2 Annex B temporal
+/// unit). A consumer muxes packets into a container (e.g. IVF) to store or decode them.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Packet {
     /// Coded bytes for one access unit.
     pub data: Vec<u8>,
+}
+
+/// The AV2 § 7.13.2 no-neighbour DC predictor sample for 8-bit content: `128`. A frame whose
+/// every visible sample equals this value has zero residual against the predictor, so a skip
+/// (all-zero residual) frame reconstructs it bit-exactly.
+const NO_NEIGHBOUR_DC_PREDICTOR_8BIT: u8 = 128;
+
+/// The frozen square dimension the minimal skip emitter
+/// ([`crate::general_intra_trace::emit_minimal_intra_skip_ivf`]) produces: 64x64.
+const SUPPORTED_FRAME_DIMENSION: usize = 64;
+
+/// A queued input frame with its visible samples owned, so [`Context::receive_packet`] can
+/// inspect the pixels after the borrowed [`Frame`] has gone out of scope.
+#[derive(Debug)]
+struct QueuedFrame {
+    info: FrameInfo,
+    y: Vec<u8>,
+    u: Vec<u8>,
+    v: Vec<u8>,
 }
 
 /// Current encoder context lifecycle state.
@@ -99,7 +124,7 @@ pub struct Context {
     runtime: EncoderRuntimeConfig,
     pool: WorkerPool,
     state: EncoderState,
-    input_queue: VecDeque<FrameInfo>,
+    input_queue: VecDeque<QueuedFrame>,
     output_queue: VecDeque<Packet>,
 }
 
@@ -205,7 +230,16 @@ impl Context {
 
         let info = frame.info();
         self.validate_frame_info(info)?;
-        self.input_queue.push_back(info);
+        // splot-copy-ok: retain the visible input samples as owned buffers — the borrowed `Frame`
+        // does not outlive `send_frame`, so `receive_packet` must own a copy to inspect the pixels
+        // (and choose/produce the encode) after the borrow ends. This is the deliberate
+        // input-materialization boundary of the push/pull encoder.
+        self.input_queue.push_back(QueuedFrame {
+            info,
+            y: frame.y().visible_rows().flatten().copied().collect(),
+            u: frame.u().visible_rows().flatten().copied().collect(),
+            v: frame.v().visible_rows().flatten().copied().collect(),
+        });
         Ok(SendFrameStatus::Accepted {
             queued_frames: self.input_queue.len(),
             queue_capacity: INPUT_QUEUE_CAPACITY,
@@ -229,12 +263,25 @@ impl Context {
             return Ok(ReceivePacketStatus::Packet(packet));
         }
 
-        if self.input_queue.pop_front().is_some() {
-            if self.state == EncoderState::Draining && self.input_queue.is_empty() {
-                self.state = EncoderState::Finished;
-                return Ok(ReceivePacketStatus::Finished);
+        if let Some(frame) = self.input_queue.pop_front() {
+            match Self::try_emit_supported_packet(&frame) {
+                Ok(Some(packet)) => return Ok(ReceivePacketStatus::Packet(packet)),
+                Ok(None) => {
+                    // The input is outside the subset the minimal encoder can honestly encode
+                    // (64x64, every visible sample == the 128 DC predictor). Retire it without
+                    // a packet — never a canned packet that ignores the input.
+                    if self.state == EncoderState::Draining && self.input_queue.is_empty() {
+                        self.state = EncoderState::Finished;
+                        return Ok(ReceivePacketStatus::Finished);
+                    }
+                    return Ok(ReceivePacketStatus::NeedMoreData);
+                }
+                Err(error) => {
+                    self.state = EncoderState::Failed;
+                    self.input_queue.clear();
+                    return Err(error);
+                }
             }
-            return Ok(ReceivePacketStatus::NeedMoreData);
         }
 
         if self.state == EncoderState::Draining {
@@ -243,6 +290,35 @@ impl Context {
         }
 
         Ok(ReceivePacketStatus::NeedMoreData)
+    }
+
+    /// Produces a coded packet for the input subset the minimal encoder can encode losslessly:
+    /// a 64x64 frame whose every visible Y/U/V sample is the 128 no-neighbour DC predictor. Such
+    /// a frame has zero residual, so the skip frame's flat-128 reconstruction equals the input.
+    ///
+    /// Returns `Ok(None)` for any other frame (a different size or any non-128 sample) — the
+    /// encoder cannot yet honestly encode it, so the caller retires it without a packet rather
+    /// than emit output that would not decode back to the input.
+    ///
+    /// # Errors
+    /// Returns the underlying [`Error`] if the skip emitter fails to assemble the container.
+    fn try_emit_supported_packet(frame: &QueuedFrame) -> Result<Option<Packet>> {
+        let size = frame.info.visible_luma_size();
+        if size.width() != SUPPORTED_FRAME_DIMENSION || size.height() != SUPPORTED_FRAME_DIMENSION {
+            return Ok(None);
+        }
+        let is_flat_predictor =
+            |plane: &[u8]| plane.iter().all(|&s| s == NO_NEIGHBOUR_DC_PREDICTOR_8BIT);
+        if !is_flat_predictor(&frame.y)
+            || !is_flat_predictor(&frame.u)
+            || !is_flat_predictor(&frame.v)
+        {
+            return Ok(None);
+        }
+        // The packet carries one coded access unit (the Annex B temporal unit), not a full IVF
+        // file — so a consumer can mux multiple packets into a stream.
+        let data = crate::general_intra_trace::emit_minimal_intra_skip_temporal_unit()?;
+        Ok(Some(Packet { data }))
     }
 
     /// Flushes the encoder, signalling end of input.
@@ -338,6 +414,64 @@ mod tests {
             ),
         )
         .unwrap()
+    }
+
+    fn frame_64x64<'a>(y: &'a [u8], u: &'a [u8], v: &'a [u8]) -> Frame<'a> {
+        crate::frame::Frame::from_planes(
+            crate::frame::FrameInfo::yuv420_8bit(crate::frame::FrameId::new(0), size(64, 64)),
+            crate::frame::FramePlanesInput::yuv(
+                crate::frame::FramePlaneInput::new(y, 64, rect(64, 64)),
+                crate::frame::FramePlaneInput::new(u, 32, rect(32, 32)),
+                crate::frame::FramePlaneInput::new(v, 32, rect(32, 32)),
+            ),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn receive_packet_encodes_a_64x64_all_128_frame_to_the_skip_packet() {
+        let mut ctx =
+            Context::new(EncoderConfig::new(64, 64), EncoderRuntimeConfig::default()).unwrap();
+        let y = [128_u8; 64 * 64];
+        let u = [128_u8; 32 * 32];
+        let v = [128_u8; 32 * 32];
+        assert!(matches!(
+            ctx.send_frame(&frame_64x64(&y, &u, &v)).unwrap(),
+            SendFrameStatus::Accepted { .. }
+        ));
+        assert!(matches!(ctx.flush().unwrap(), FlushStatus::Draining { .. }));
+        // The public lifecycle now yields a REAL packet — one coded access unit (the Annex B
+        // temporal unit of the decode-proven minimal skip frame), not a full IVF file.
+        let status = ctx.receive_packet().unwrap();
+        assert!(
+            matches!(&status, ReceivePacketStatus::Packet(packet)
+                if !packet.data.is_empty()
+                    && packet.data
+                        == crate::general_intra_trace::emit_minimal_intra_skip_temporal_unit()
+                            .unwrap()),
+            "expected the minimal skip access unit, got {status:?}"
+        );
+        // The single frame is consumed; the next pull finishes the stream.
+        assert_eq!(ctx.receive_packet().unwrap(), ReceivePacketStatus::Finished);
+        assert_eq!(ctx.state(), EncoderState::Finished);
+    }
+
+    #[test]
+    fn receive_packet_retires_a_non_flat_64x64_frame_without_a_packet() {
+        let mut ctx =
+            Context::new(EncoderConfig::new(64, 64), EncoderRuntimeConfig::default()).unwrap();
+        let mut y = [128_u8; 64 * 64];
+        y[0] = 100; // a single non-predictor sample: not honestly encodable yet.
+        let u = [128_u8; 32 * 32];
+        let v = [128_u8; 32 * 32];
+        assert!(matches!(
+            ctx.send_frame(&frame_64x64(&y, &u, &v)).unwrap(),
+            SendFrameStatus::Accepted { .. }
+        ));
+        assert!(matches!(ctx.flush().unwrap(), FlushStatus::Draining { .. }));
+        // No canned packet: the unsupported frame is retired and the stream finishes.
+        assert_eq!(ctx.receive_packet().unwrap(), ReceivePacketStatus::Finished);
+        assert_eq!(ctx.queued_output_packets(), 0);
     }
 
     #[test]

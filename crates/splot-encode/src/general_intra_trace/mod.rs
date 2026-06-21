@@ -25,7 +25,8 @@ mod skip;
 // `#![allow(dead_code)]` policy).
 #[allow(unused_imports)]
 pub(crate) use skip::{
-    compose_general_intra_dc_skip_block_trace, encode_general_intra_dc_skip_tile_data,
+    compose_general_intra_dc_skip_block_trace, emit_minimal_intra_skip_temporal_unit,
+    encode_general_intra_dc_skip_tile_data,
 };
 
 pub use chroma::{

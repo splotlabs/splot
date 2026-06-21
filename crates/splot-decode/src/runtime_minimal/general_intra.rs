@@ -873,6 +873,48 @@ fn decode_one_general_intra_block(
                     GENERAL_INTRA_MODE_SPEC_SECTION,
                 ));
             }
+            // Directional D203 (§7.13.2.8 ZONE-3 one-sided angle, pAngle 203) at a
+            // FIRST-superblock-row, NON-first-column full-superblock block
+            // (`frontier.r == 0 && frontier.c != 0`, `haveAbove == 0 &&
+            // haveLeft == 1`). The symmetric mirror of D45: unlike the §7.13.2.8
+            // "middle" angles (which read `LeftCol[0..h)`), D203 projects
+            // DOWN-AND-LEFT into the below-left (`idx = (j + 1) * dy`,
+            // `base = (idx >> 6) + i`, up to `maxBaseY == w + h - 1`), reading the
+            // real reconstructed left column (the right column of the already-decoded
+            // left superblock) supplied by [`build_one_sided_left_idif_edge`] via
+            // §7.13.2.1 `LeftCol[i] = CurrFrame[plane][Min(leftLimit, y+i)][x-1]`
+            // with `leftLimit` bounded by `num4BelowLeft` (§5.20.7.25
+            // `count_bottom_left_avail` over the §5.20.2.3 `BlockDecoded` state). In
+            // raster order `num4BelowLeft == 0` for this position (no block
+            // below-left is decoded yet), so the below-left clamps to the last left
+            // sample. At `haveAbove == 0` the corner is `CurrFrame[plane][y][x-1]`.
+            //
+            // D203 is decoded via the §5.20.5.3 `y_mode_offset` escape
+            // (`y_mode_offset == 7` -> modeIdx 7 -> modeDelta 8+... ->
+            // Reordered_Y_Mode == D203_PRED == canonical mode 7, §8.3.2 ctx == 0,
+            // AngleDeltaY 0). D203's `dy == Dr_Intra_Derivative[270-203] ==
+            // Dr_Intra_Derivative[67] == 24` makes most projections land on a
+            // nonzero `shift`, so the §7.13.2.8 luma IDIF 4-tap genuinely
+            // interpolates over the real reconstructed left column. `enable_ibp == 0`
+            // keeps `useIBP == 0` (§7.13.2.7 gates `useIBP` on `pAngle > 180`), and
+            // `enable_intra_edge_filter == 0` / `MrlIndex == 0` keep the §7.13.2.x
+            // edge-filter / upsample synthesis a no-op.
+            //
+            // Gated to the first-superblock-row non-first-column position: the
+            // top-left no-neighbour, row>0, first-column (no real left column),
+            // sub-partitioned, and non-64x64 D203 positions read the §7.13.2.1 left
+            // column / below-left / corner that no oracle fixture pins yet, so they
+            // are rejected below.
+            (_, Some(SupportedDirectionalLumaMode::D203))
+                if frontier.r == 0 && frontier.c != 0 && n4w == FULL_SB_N4_LUMA => {}
+            (_, Some(SupportedDirectionalLumaMode::D203)) => {
+                return Err(general_intra_unsupported(
+                    "general_intra_d203_unverified_position",
+                    Some(tile_offset),
+                    "general intra directional D203 (pAngle 203, §7.13.2.8 zone-3 one-sided) luma prediction is only verified for a first-superblock-row, non-first-column full 64x64 superblock block (haveAbove == 0 && haveLeft == 1, with a real reconstructed left column supplying the §7.13.2.1 left column CurrFrame[plane][Min(leftLimit, y+i)][x-1]); the top-left no-neighbour, first-column (no real left column), row>0, sub-partitioned, and non-64x64 D203 positions read the §7.13.2.1 left column / below-left / corner that no oracle fixture pins yet, so they are deferred",
+                    GENERAL_INTRA_MODE_SPEC_SECTION,
+                ));
+            }
             // Directional D135: top-left no-neighbour full superblock.
             (_, Some(_)) if is_top_left && n4w == FULL_SB_N4_LUMA => {}
             // Directional D135 at a first-superblock-row (`frontier.r == 0`),
@@ -1051,6 +1093,28 @@ fn decode_one_general_intra_block(
             )
             .map_err(|error| general_intra_residual_error(error, tile_offset))?
         }
+        // Neighbour-having ZONE-3 one-sided D203 luma over the real §7.13.2.1
+        // reconstructed left column + below-left (the §7.13.2.8 step-3 IDIF). D203's
+        // `dy == 24` makes most projections land on a nonzero `shift`, so the luma
+        // IDIF 4-tap genuinely interpolates over the real reconstructed left column.
+        // `num4BelowLeft` (§5.20.7.25 `count_bottom_left_avail` over the §5.20.2.3
+        // `BlockDecoded` state) is `0` in raster order for this position, so the
+        // below-left clamps to the last in-block left sample.
+        (None, Some(SupportedDirectionalLumaMode::D203)) if directional_luma_has_neighbour => {
+            let num4_below_left = full_sb_num4_below_left(frontier.r, n4h, 0);
+            crate::runtime_minimal_recon::reconstruct_general_intra_one_sided_left_neighbour_block_into(
+                workspace,
+                &luma,
+                PlaneId::Y,
+                luma_x,
+                luma_y,
+                luma_log2,
+                qindex,
+                num4_below_left,
+                luma_use_tcq,
+            )
+            .map_err(|error| general_intra_residual_error(error, tile_offset))?
+        }
         (None, Some(mode)) if directional_luma_has_neighbour => {
             // Neighbour-having D135 luma over the real §7.13.2.1 reconstructed left
             // column (the §7.13.2.8 IDIF, which for D135 `shift == 0` is the same
@@ -1109,6 +1173,11 @@ fn decode_one_general_intra_block(
         // already-decoded superblock sits to this superblock's upper-right.
         let num4_above_right =
             full_sb_num4_above_right(frontier.c, n4w, mi_cols, FRAME_420_SUBSAMPLING_X);
+        // §7.13.2.1 `num4BelowLeft` for the full-superblock chroma block, from
+        // §5.20.7.25 `count_bottom_left_avail` over the §5.20.2.3 `BlockDecoded`
+        // state. The D203-follow zone-3 chroma reads the chroma below-left; in
+        // raster order it is `0` for this first-superblock-row position.
+        let num4_below_left = full_sb_num4_below_left(frontier.r, n4h, FRAME_420_SUBSAMPLING_Y);
         let u = crate::tile_payload::decode_general_intra_plane_coeffs(
             work_unit, symbols, coeff_ctx, 1, chroma_tx, chroma_x, chroma_y, false, uv_mode,
         )
@@ -1123,6 +1192,7 @@ fn decode_one_general_intra_block(
             qindex,
             supported_chroma,
             num4_above_right,
+            num4_below_left,
         )
         .map_err(|error| general_intra_residual_error(error, tile_offset))?;
         let v = crate::tile_payload::decode_general_intra_plane_coeffs(
@@ -1147,6 +1217,7 @@ fn decode_one_general_intra_block(
             qindex,
             supported_chroma,
             num4_above_right,
+            num4_below_left,
         )
         .map_err(|error| general_intra_residual_error(error, tile_offset))?;
     }
@@ -1158,6 +1229,9 @@ fn decode_one_general_intra_block(
 
 /// 4:2:0 chroma horizontal subsampling (`SubsamplingX == 1`).
 const FRAME_420_SUBSAMPLING_X: usize = 1;
+
+/// 4:2:0 chroma vertical subsampling (`SubsamplingY == 1`).
+const FRAME_420_SUBSAMPLING_Y: usize = 1;
 
 /// Derives AV2 § 7.13.2.1 `num4AboveRight` (in plane 4x4 units) for a
 /// full-superblock transform block, faithfully to § 5.20.7.25
@@ -1192,6 +1266,29 @@ pub(super) fn full_sb_num4_above_right(
         }
     }
     num_top_right
+}
+
+/// Derives AV2 § 7.13.2.1 `num4BelowLeft` (in plane 4x4 units) for a
+/// full-superblock transform block, faithfully to § 5.20.7.25
+/// `count_bottom_left_avail` over the § 5.20.2.3 `BlockDecoded` state. The plane
+/// is selected by `sub_y` (`0` for luma, `1` for 4:2:0 chroma).
+///
+/// `count_bottom_left_avail(plane, x4, y4, h4)` scans
+/// `BlockDecoded[plane][y4 + h4 + i][x4 - 1]` for `i in 0..h4`. For a full 64x64
+/// superblock the block coincides with the superblock, so its sub-block MI
+/// position within the superblock is `(0, 0)`: it scans
+/// `BlockDecoded[plane][h4 + i][-1]`, the column to the left of the superblock at
+/// rows BELOW the superblock. In raster decode order those below-left rows belong
+/// to superblocks that have not been decoded yet (a first-superblock-row block has
+/// no decoded superblock below it), and `clear_block_decoded_flags` (§ 5.20.2.3)
+/// does not mark the below-left rows decoded, so the count is `0`. This matches
+/// the spec loop's first-iteration `break`.
+fn full_sb_num4_below_left(_r: usize, _n4h: usize, _sub_y: usize) -> usize {
+    // For the verified first-superblock-row, non-first-column position the
+    // below-left rows are not yet decoded in raster order (no decoded superblock
+    // below this one), so §5.20.7.25 `count_bottom_left_avail` returns 0 and the
+    // §7.13.2.1 below-left clamps to the last in-block left sample.
+    0
 }
 
 /// Derives AV2 § 7.13.2.1 `num4AboveRight` (in luma 4x4 units) for an arbitrary

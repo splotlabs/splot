@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "8653dc7b0312e15b876cbef99cee31d7f5fc772e",
+  "audited_commit": "42800d3ba38fa864c3d23e9adbe954775446f96c",
   "outcome": "success",
   "files": [
     {
@@ -395,7 +395,7 @@
     },
     {
       "path": "crates/splot-cli/tests/encode_decode_roundtrip.rs",
-      "sha256": "cb441564133818a17da4aa4e74634b29237f9b85c2e1711fd4f62728f84e49b0",
+      "sha256": "b2db49466c5f9986dd7299ec808597c1b74dec9457eda5c241df3d5faa894880",
       "scope_kind": "workspace:splot-cli",
       "feature_ids": [],
       "outcome": "success"
@@ -812,7 +812,7 @@
     },
     {
       "path": "crates/splot-core/src/headers/frame/encoder_input.rs",
-      "sha256": "c273e9bdcdbd96935caf03b0d25ce33f8fffb6dd00894c431a341a8ef0995f2a",
+      "sha256": "bf5a457c7049be9e7805f67bef681a54acf73a765494c8a9b319135f292c55ed",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "ENC-FRAME-HEADER-CORE-ASSEMBLER",
@@ -865,7 +865,7 @@
     },
     {
       "path": "crates/splot-core/src/headers/frame/mod.rs",
-      "sha256": "40222a0d5dc504521932c733a534d5701176b927d37a962bc1922b0b0e4e71f9",
+      "sha256": "bfe880d79ca5a58a18e4ca72152229e621cdf527dfa1aa2e1afdd19b4ed9749c",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-5.18-FRAME-HEADER",
@@ -1890,10 +1890,11 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/general_intra.rs",
-      "sha256": "8e194aed4e60afda91a891a9b8ba85ee4d40eba0f94e8afcb1dba829a856b55c",
+      "sha256": "3ebc1b76a2c31511e561814fd0379104fa93dd22f54358eda47ca35d68ac4000",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-GENERAL-INTRA-ANGLE-D113",
+        "DECODE-GENERAL-INTRA-ANGLE-D203",
         "DECODE-GENERAL-INTRA-ANGLE-D45",
         "DECODE-GENERAL-INTRA-FRAME-FRONTIER"
       ],
@@ -1901,14 +1902,28 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/general_intra_tests.rs",
-      "sha256": "045d3de3ca1333e1908f0f285da19aa1c86290ec76fda0983721454fe9776c2a",
+      "sha256": "5af64a0dd4eea53166ec6366649cabbadba9977a3b80549ed7403d3a9a287d7b",
+      "scope_kind": "workspace:splot-decode",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-decode/src/runtime_minimal/general_intra_tests.rs",
+      "sha256": "5af64a0dd4eea53166ec6366649cabbadba9977a3b80549ed7403d3a9a287d7b",
+      "scope_kind": "workspace:splot-decode",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-decode/src/runtime_minimal/general_intra_tests.rs",
+      "sha256": "5af64a0dd4eea53166ec6366649cabbadba9977a3b80549ed7403d3a9a287d7b",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal_recon.rs",
-      "sha256": "ac5d7353ad70140356d1f3bef06f6489d0e0d9bd2fffe19aefb124fe4dbda95a",
+      "sha256": "9e3862f407ddaa8d25eb38856735f34e4dacf8247d3ea134d481c8094293c03d",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-GENERAL-INTRA-ANGLE",
@@ -2001,7 +2016,7 @@
     },
     {
       "path": "crates/splot-decode/src/tile_payload/cdf/block_context.rs",
-      "sha256": "2fcfa2e875873a6b17b34f51021fe236db1ded701bd567e88f88e067699b0945",
+      "sha256": "d5572b4180809310e6c3c871ad5fc3a1478b0aca6c07c62e44c85749b3e69735",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-GENERAL-INTRA-ANGLE",
@@ -2734,9 +2749,10 @@
     },
     {
       "path": "crates/splot-encode/src/context.rs",
-      "sha256": "f2f1e67e5a294e0a09140de1535343d12155304f774bd15991e62a2f7ce7317d",
+      "sha256": "1795f9033dafa3bbe336084f875dddec2415ff02ba182499ba507f9399f7916c",
       "scope_kind": "workspace:splot-encode",
       "feature_ids": [
+        "ENC-CONTEXT-RECEIVE-PACKET",
         "ENC-CONTEXT-STATE-MACHINE",
         "ENC-INTRA-TOY-V0",
         "ENC-RATE-CONTROL-V0"
@@ -2797,7 +2813,7 @@
     },
     {
       "path": "crates/splot-encode/src/general_intra_trace/mod.rs",
-      "sha256": "c4cef9c41e2f879f40cd4b6e7d5280d6cd3311a1352f74440761d07f2bd04bcc",
+      "sha256": "7a77755bc13187f0595430ce469522edcdf5441bc8646913e7cb62774f8b258b",
       "scope_kind": "workspace:splot-encode",
       "feature_ids": [],
       "outcome": "success"
@@ -2817,7 +2833,7 @@
     },
     {
       "path": "crates/splot-encode/src/general_intra_trace/skip.rs",
-      "sha256": "65f2703f75b8b657cf465553bc0b8eb6ff3b0ff9bf3fe73a9b5848c837f812e9",
+      "sha256": "b856dd6a5ce171cf4a29a87233ac8c99f24deb2490cd80442a9d5248396e8e30",
       "scope_kind": "workspace:splot-encode",
       "feature_ids": [
         "ENC-GENERAL-INTRA-SKIP-BLOCK-TRACE",
@@ -2854,7 +2870,7 @@
     },
     {
       "path": "crates/splot-encode/src/lib.rs",
-      "sha256": "9017933382251d74caf68f8eb3f6a5780ccd687c91768a990d2a49b321e939b6",
+      "sha256": "212542966329a3f917561e1166013e89bc31e4893b4d16899ee1d1d2b2994fd8",
       "scope_kind": "workspace:splot-encode",
       "feature_ids": [],
       "outcome": "success"
@@ -3104,7 +3120,7 @@
     },
     {
       "path": "crates/splot-recon/src/intra_directional_angle.rs",
-      "sha256": "0914e517c67b65eef939e996a464160297b81fd91c154e14bdb97c8b465f4f01",
+      "sha256": "7a7ba42112c70dca11011ad77cd36ffb012d8b1d04a813cc860d246148a24c71",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [
         "RECON-INTRA-MIDDLE-DIRECTIONAL-ANGLE-PREDICTION",
@@ -3114,7 +3130,7 @@
     },
     {
       "path": "crates/splot-recon/src/intra_directional_angle_tests.rs",
-      "sha256": "83eb33c24a7f5247f413130a978cff3eacf38f542e7f04e533a151bfc56bd273",
+      "sha256": "b3f35678bfd9bc50a6bd93d6d61b30ba1c8cfde914be12b1da90d3807514221e",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [],
       "outcome": "success"
@@ -4782,7 +4798,7 @@
     },
     {
       "path": "docs/DECODER-SUPPORT-MATRIX.toml",
-      "sha256": "ea978000a65ff5d91b6fceda37cbd5bbc7960b40ff2a125a1add4591987f7b1c",
+      "sha256": "6c5042ae5ff22c4a438e9f08b060d1994ff85b3699bffb7cc1c54c2b47c2dc33",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-8.2-SYMBOL-DECODER",
@@ -4862,6 +4878,7 @@
         "DECODE-CONTEXT-TILE-PAYLOAD-HANDOFF",
         "DECODE-GENERAL-INTRA-ANGLE",
         "DECODE-GENERAL-INTRA-ANGLE-D113",
+        "DECODE-GENERAL-INTRA-ANGLE-D203",
         "DECODE-GENERAL-INTRA-ANGLE-D45",
         "DECODE-GENERAL-INTRA-BLOCK-DECODED",
         "DECODE-GENERAL-INTRA-BLOCK-MODES",
@@ -4960,7 +4977,7 @@
     },
     {
       "path": "docs/DECODER-SUPPORT-STATUS.md",
-      "sha256": "bd4cd85ae0bbacd6291ad08800cdfef5aafb1df7f9eb7bdb983fcc007c875bd8",
+      "sha256": "5d58532b4b5be999f6b9135b9a88c04952688c02e27f2198c89f78fd68d30c9a",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-8.2-SYMBOL-DECODER",
@@ -5040,6 +5057,7 @@
         "DECODE-CONTEXT-TILE-PAYLOAD-HANDOFF",
         "DECODE-GENERAL-INTRA-ANGLE",
         "DECODE-GENERAL-INTRA-ANGLE-D113",
+        "DECODE-GENERAL-INTRA-ANGLE-D203",
         "DECODE-GENERAL-INTRA-ANGLE-D45",
         "DECODE-GENERAL-INTRA-BLOCK-DECODED",
         "DECODE-GENERAL-INTRA-BLOCK-MODES",
@@ -5205,7 +5223,7 @@
     },
     {
       "path": "docs/FEATURE-STATUS.md",
-      "sha256": "f00f8d7a06628767a6b4312b8ef3b0cbb416b0b9d4de59bfa787f5bac3f8f6fc",
+      "sha256": "00ad82056a438c0065a3f4640a0bdcdfa7f781d3b1d001038ea784978a52ef74",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.10-RG",
@@ -5405,6 +5423,7 @@
         "DECODE-CONTEXT-TILE-PAYLOAD-HANDOFF",
         "DECODE-GENERAL-INTRA-ANGLE",
         "DECODE-GENERAL-INTRA-ANGLE-D113",
+        "DECODE-GENERAL-INTRA-ANGLE-D203",
         "DECODE-GENERAL-INTRA-ANGLE-D45",
         "DECODE-GENERAL-INTRA-BLOCK-DECODED",
         "DECODE-GENERAL-INTRA-BLOCK-MODES",
@@ -5471,6 +5490,7 @@
         "ENC-COEFF-BASE-LF-TOKEN",
         "ENC-COEFF-MULTI-TOKENS",
         "ENC-COEFFICIENT-TOKENIZATION-MINIMAL",
+        "ENC-CONTEXT-RECEIVE-PACKET",
         "ENC-CONTEXT-STATE-MACHINE",
         "ENC-DO-SPLIT-PARTITION-SYMBOL",
         "ENC-FORWARD-TRANSFORM-FOUNDATION",
@@ -5621,7 +5641,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "4b977e12474ae0a13f72d2122d8c6a0678482057a0a164b0f2950039b4512b84",
+      "sha256": "c8a38316d0b661a174d9cfed21174f0521deaf68cdd5c5b6cf20571b54910116",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.10-RG",
@@ -5821,6 +5841,7 @@
         "DECODE-CONTEXT-TILE-PAYLOAD-HANDOFF",
         "DECODE-GENERAL-INTRA-ANGLE",
         "DECODE-GENERAL-INTRA-ANGLE-D113",
+        "DECODE-GENERAL-INTRA-ANGLE-D203",
         "DECODE-GENERAL-INTRA-ANGLE-D45",
         "DECODE-GENERAL-INTRA-BLOCK-DECODED",
         "DECODE-GENERAL-INTRA-BLOCK-MODES",
@@ -5887,6 +5908,7 @@
         "ENC-COEFF-BASE-LF-TOKEN",
         "ENC-COEFF-MULTI-TOKENS",
         "ENC-COEFFICIENT-TOKENIZATION-MINIMAL",
+        "ENC-CONTEXT-RECEIVE-PACKET",
         "ENC-CONTEXT-STATE-MACHINE",
         "ENC-DO-SPLIT-PARTITION-SYMBOL",
         "ENC-FORWARD-TRANSFORM-FOUNDATION",
@@ -5998,11 +6020,12 @@
     },
     {
       "path": "docs/LOCAL-REFERENCE-EVIDENCE.toml",
-      "sha256": "54f8cceb6d35738efa156cdca6ce94cde66a92bded15e5d9f52c3dde0b2f1635",
+      "sha256": "9c651e651ca00db18006b7f35b84078c3fc5e1d2a071933683ceccaeebcd3d74",
       "scope_kind": "docs",
       "feature_ids": [
         "DECODE-GENERAL-INTRA-ANGLE",
         "DECODE-GENERAL-INTRA-ANGLE-D113",
+        "DECODE-GENERAL-INTRA-ANGLE-D203",
         "DECODE-GENERAL-INTRA-ANGLE-D45",
         "DECODE-GENERAL-INTRA-BLOCK-DECODED",
         "DECODE-GENERAL-INTRA-CARDINAL",
@@ -6031,7 +6054,7 @@
     },
     {
       "path": "docs/SPEC-COVERAGE.md",
-      "sha256": "68ea1b53d24a426b2767d907766adec80f2a5ca646f9aa1c8196813cece81150",
+      "sha256": "ee794b8e03e03a9697c9ff581fb69ff640df648ae56aa3c2faf99f1a21ee6295",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.10-RG",
@@ -6231,6 +6254,7 @@
         "DECODE-CONTEXT-TILE-PAYLOAD-HANDOFF",
         "DECODE-GENERAL-INTRA-ANGLE",
         "DECODE-GENERAL-INTRA-ANGLE-D113",
+        "DECODE-GENERAL-INTRA-ANGLE-D203",
         "DECODE-GENERAL-INTRA-ANGLE-D45",
         "DECODE-GENERAL-INTRA-BLOCK-DECODED",
         "DECODE-GENERAL-INTRA-BLOCK-MODES",
@@ -6297,6 +6321,7 @@
         "ENC-COEFF-BASE-LF-TOKEN",
         "ENC-COEFF-MULTI-TOKENS",
         "ENC-COEFFICIENT-TOKENIZATION-MINIMAL",
+        "ENC-CONTEXT-RECEIVE-PACKET",
         "ENC-CONTEXT-STATE-MACHINE",
         "ENC-DO-SPLIT-PARTITION-SYMBOL",
         "ENC-FORWARD-TRANSFORM-FOUNDATION",
@@ -19599,6 +19624,51 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/decode-general-intra-angle-d203/design.md",
+      "sha256": "ad5aba6b5c940ab087e7228981a6d19accc7d36d6be2f4209175b6c1cdf1c581",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-ANGLE-D203"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-angle-d203/proposal.md",
+      "sha256": "faa8d90e0d173b6744eb52a6dba2647bd6ed8cfe709e038c0376a557e775c463",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-ANGLE-D203",
+        "RECON-INTRA-ONE-SIDED-DIRECTIONAL-ANGLE-PREDICTION"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-angle-d203/specs/decode-general-intra-angle-d203/spec.md",
+      "sha256": "c1ac8e29a2aed209c44ed293e323f08ebc06cadc6a978bb13714527b33fa8a15",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-angle-d203/specs/decoder-support/spec.md",
+      "sha256": "58c7fdffb1546b0086685cad21f6f512f582e85d9e471785f99f480f27ff3094",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-ANGLE-D203"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-general-intra-angle-d203/tasks.md",
+      "sha256": "d65605efa504a0ce00355f809ce52fa385e6dfd0c6363014453df9948403efeb",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-GENERAL-INTRA-ANGLE-D203",
+        "RECON-INTRA-ONE-SIDED-DIRECTIONAL-ANGLE-PREDICTION"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/decode-general-intra-angle-d45/design.md",
       "sha256": "a5655b08334b26a006ffa4f3e538a20b71255ff70caca95c1419a6e30638574c",
       "scope_kind": "openspec",
@@ -20816,6 +20886,40 @@
       "scope_kind": "openspec",
       "feature_ids": [
         "DECODE-TX-SIZE-SYMBOLIC-TABLES"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/encoder-context-receive-packet/proposal.md",
+      "sha256": "39010f732800c14c35f260be44d64820744ee97948fe91bf46695bd8cc6ef9fb",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/encoder-context-receive-packet/specs/encoder-api/spec.md",
+      "sha256": "cf43f443bc734ba938d921b7f02b1aed9d0ce05b993e693a3a88ea6198025e20",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-CONTEXT-RECEIVE-PACKET"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/encoder-context-receive-packet/specs/encoder-tools/spec.md",
+      "sha256": "4b9547dff4fb01aac878d6d79a2e5b08874aa8fcbd17549afe8d05d1d958bd74",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-CONTEXT-RECEIVE-PACKET"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/encoder-context-receive-packet/tasks.md",
+      "sha256": "fc3fa3e7c8507216419be7cbf0ecb39f3ab28336813ea127f481603ec897ef66",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-CONTEXT-RECEIVE-PACKET"
       ],
       "outcome": "success"
     },
@@ -22711,7 +22815,7 @@
     },
     {
       "path": "tests/conformance/manifest.toml",
-      "sha256": "c30970498c16a684a8d76488632c887b8c0fb7aeba53f7a7b4ce680ebdba2605",
+      "sha256": "28f196ed4797b7a744cad6ca781781204c55a87b3d64f8cb44be4c18a141f806",
       "scope_kind": "conformance-corpus",
       "feature_ids": [
         "CONF-AVM-VALID-STREAMS"
@@ -22777,6 +22881,13 @@
     {
       "path": "tests/conformance/vectors/valid/syn-d157-intra-128x64-q80.ivf",
       "sha256": "07b44aa966c0ae08adae16915684bb40301e5e08743779828f0ae0c00259a20e",
+      "scope_kind": "conformance-corpus",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "tests/conformance/vectors/valid/syn-d203-intra-128x64-q80.ivf",
+      "sha256": "a0a430c366116e4826c35dc2393da677078168436183fcf4c06c71fe2d681553",
       "scope_kind": "conformance-corpus",
       "feature_ids": [],
       "outcome": "success"

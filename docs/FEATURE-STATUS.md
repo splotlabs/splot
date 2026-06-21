@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 369 feature(s).
+Matrix version 1. Last reviewed 2026-06-15. 371 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -172,6 +172,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `ENC-GENERAL-INTRA-TWO-NONZERO` | First two-nonzero-coefficient intra block | encoder | encoder-tool | done | done | n/a | n/a | done | done | done | done | n/a | `crates/splot-encode/src/general_intra_trace/multi_coeff.rs` |
 | `ENC-GENERAL-INTRA-EOB3` | First eob>2 intra frame (eob_extra) | encoder | encoder-tool | done | done | n/a | n/a | done | done | done | done | n/a | `crates/splot-encode/src/general_intra_trace/multi_coeff.rs` |
 | `ENC-GENERAL-INTRA-2D` | First 2-D intra reconstruction | encoder | encoder-tool | done | done | n/a | n/a | done | done | done | done | n/a | `crates/splot-encode/src/general_intra_trace/multi_coeff.rs` |
+| `ENC-CONTEXT-RECEIVE-PACKET` | Public Context emits a real packet (Milestone A keystone) | encoder | encoder-tool | done | done | n/a | n/a | done | done | done | done | n/a | `crates/splot-encode/src/context.rs` |
 | `ENC-RECON-DEPENDENCY` | Encoder reconstruction dependency boundary | encoder | infrastructure | done | done | n/a | n/a | n/a | n/a | n/a | done | n/a | `crates/splot-encode/src/recon_boundary.rs` |
 | `ENC-INTRA-TOY-V0` | Minimal toy intra encoder path | encoder | encoder-tool | partial | todo | n/a | n/a | todo | todo | todo | todo | pending | `crates/splot-encode/src/context.rs` |
 | `ENC-RATE-CONTROL-V0` | Initial rate control strategy | encoder | encoder-tool | partial | todo | n/a | n/a | n/a | todo | n/a | todo | n/a | `crates/splot-encode/src/context.rs` |
@@ -304,6 +305,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `DECODE-GENERAL-INTRA-DIRECTIONAL-CORNER` | General intra row>0 directional reconstruction reads the real §7.13.2.1 corner | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | partial | `crates/splot-decode/src/runtime_minimal_recon.rs` |
 | `DECODE-GENERAL-INTRA-ANGLE-D113` | General intra D113 vertical-leaning luma IDIF + follow chroma over a real above edge | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | partial | `crates/splot-decode/src/runtime_minimal/general_intra.rs` |
 | `DECODE-GENERAL-INTRA-ANGLE-D45` | General intra D45 zone-1 one-sided luma + follow chroma reading the real above-right | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | partial | `crates/splot-decode/src/runtime_minimal/general_intra.rs` |
+| `DECODE-GENERAL-INTRA-ANGLE-D203` | General intra D203 zone-3 one-sided luma + follow chroma reading the real left column | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | partial | `crates/splot-decode/src/runtime_minimal/general_intra.rs` |
 | `DECODE-COEFF-FSC-SCAN-WALK` | Coefficient FSC scan walk | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/coeff_loop/scan_walk.rs` |
 | `DECODE-COEFF-BASE-CDF-ROWS` | Coefficient base CDF rows | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/cdf/coeff_rows.rs` |
 | `DECODE-COEFF-IDTX-CDF-ROWS` | Coefficient IDTX CDF rows | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/cdf/coeff_rows.rs` |
