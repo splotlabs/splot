@@ -140,6 +140,18 @@ const COEFF_BASE_LF_CTX_EOB2_DC: usize = 1;
 const COEFF_BASE_LF_CTX_EOB2_DC_BR: usize = 3;
 const COEFF_BASE_LF_TCQ_CTX_NEUTRAL: usize = 0;
 const COEFF_BASE_LF_CDF_ROW_LEN: usize = 7;
+// AV2 §8.3.2 context-dimension counts of the generated default 4x4 low-frequency
+// CDF tables. The `CoefficientTokenCdfRows` entropy-proof router sizes its 4x4-LF
+// banks to these full context dimensions so any reachable `coeff_base` /
+// `coeff_base_eob` / `coeff_br` low-frequency context routes to a real generated
+// default row (the same hole-free banking the block-symbol router uses):
+// `DEFAULT_COEFF_BASE_LF_CDF` has 33 contexts, `DEFAULT_COEFF_BASE_LF_EOB_CDF` 4,
+// `DEFAULT_COEFF_BR_LF_CDF` 14.
+const COEFF_BASE_LF_CTX_COUNT: usize = 33;
+const COEFF_BASE_LF_EOB_CTX_COUNT: usize = 4;
+const COEFF_BR_LF_CTX_COUNT: usize = 14;
+const COEFF_BASE_LF_EOB_CDF_ROW_LEN: usize = 6;
+const COEFF_BR_LF_CDF_ROW_LEN: usize = 5;
 // AV2 §8.3.2 Table 8.2: `intra_tx_type` for `TX_SET_INTRA_1` uses
 // `TileIntraTxTypeSet1Cdf[Tx_Size_Sqr[txSz]]`; `Tx_Size_Sqr[TX_4X4] = 0`. The CDF
 // has one row per `Tx_Size_Sqr` value (3 rows).
