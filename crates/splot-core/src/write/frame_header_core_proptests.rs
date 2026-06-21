@@ -207,6 +207,7 @@ mod proptests {
                 disable_loopfilters_across_tiles: false,
                 cdef_on_skip_txfm: CdefOnSkipTxfm::Adaptive,
                 df_par_bits_minus_2: 0,
+                enable_df_sub_pu: false,
                 single_picture_header_flag: false,
             },
             restoration: CoreSeqRestorationView {

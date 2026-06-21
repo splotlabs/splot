@@ -1922,4 +1922,150 @@ mod tests {
             "two valid slots need the unmodeled § 7.7 scoring inputs — no guessing"
         );
     }
+
+    /// AV2 § 5.18.2 — drive the REAL `syn-2frame-inter-64x64` fixture's inter frame through
+    /// `parse_frame_header_core` with the post-key reference state, and prove the inter
+    /// frame header now parses END-TO-END through its § 5.18.2 shared tail and inter-specific
+    /// arms, reaching the terminal `FrameHeaderParseStatus::InterHeaderComplete`.
+    ///
+    /// The fixture (`--enable-global-motion=1 --qp=80 --sb-size=64`) is a `OBU_CLOSED_LOOP_KEY`
+    /// key + an `OBU_REGULAR_TILE_GROUP` inter frame: a single 64x64 zero-MV skip block,
+    /// `explicitRefFrameMap == 0`, `NumTotalRefs == 1`, `TipFrameMode == TIP_FRAME_DISABLED`,
+    /// `!IsBridge`, `!bru_inactive`, broad tools off, exactly the minimal subset the shared
+    /// tail models. The asserted values are derived from the § 5.18.2 spec + the fixture
+    /// sequence config (the hand-decoded 56-bit inter payload: 27-bit control region + 21-bit
+    /// shared tail + 8-bit § 5.19 tile-group tail) and confirmed against the bit-exact
+    /// avmdec/dav2d decode the fixture records. The bit-level proof is that the parse consumes
+    /// EXACTLY the shared-tail field sequence and reaches `InterHeaderComplete` — possible only
+    /// if every field width / presence (tile_info / quant / segmentation / deblocking's inter
+    /// allow_df_sub_pu arm / the inter coding-mode arms / global_motion / film_grain) was read
+    /// at the right bit.
+    #[test]
+    fn frame_header_core_inter_fixture_reaches_inter_header_complete() {
+        use crate::headers::frame::info::{
+            FrameHeaderParseInput, FrameHeaderParseMode, FrameHeaderParseStatus,
+            parse_frame_header_core,
+        };
+        use crate::headers::frame::tail::TxMode;
+        use crate::headers::sequence::SequenceHeader;
+        use crate::obu::{ParsedObu, PayloadStatus};
+        use crate::stream::{ParsedBitstream, parse_bitstream_partial};
+
+        let data = include_bytes!(
+            "../../../../../tests/conformance/vectors/valid/syn-2frame-inter-64x64.ivf"
+        );
+        let ParsedBitstream::Ivf(ivf) = parse_bitstream_partial(data) else {
+            panic!("fixture is an IVF container");
+        };
+        let mut seq_header: Option<SequenceHeader> = None;
+        let mut inter_obu: Option<crate::annexb::ObuEnvelope<'_>> = None;
+        for frame in &ivf.frames {
+            for obu in &frame.obus {
+                match obu.header.obu_type {
+                    ObuType::SequenceHeader => {
+                        if let Ok(PayloadStatus::Parsed(ParsedObu::SequenceHeader(sh))) =
+                            obu.payload_status()
+                        {
+                            seq_header = Some(*sh);
+                        }
+                    }
+                    ObuType::RegularTileGroup if inter_obu.is_none() => {
+                        inter_obu = Some(*obu);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let seq_header = seq_header.expect("fixture has a sequence header");
+        let inter_obu = inter_obu.expect("fixture has a regular tile group (inter) frame");
+
+        // Post-key § 7.23 reference state: only slot 0 valid (OrderHint 0, 64x64).
+        let mut ref_valid = [false; NUM_REF_FRAMES];
+        let mut ref_oh = [0u32; NUM_REF_FRAMES];
+        let mut ref_w = [0u32; NUM_REF_FRAMES];
+        let mut ref_h = [0u32; NUM_REF_FRAMES];
+        ref_valid[0] = true;
+        ref_oh[0] = 0;
+        ref_w[0] = 64;
+        ref_h[0] = 64;
+        let reference_state =
+            FrameReferenceStateView::from_slots(&ref_valid, &ref_oh, &ref_w, &ref_h);
+
+        let mut reader = BitReader::new(inter_obu.payload, inter_obu.payload_offset());
+        let input = FrameHeaderParseInput {
+            obu_type: inter_obu.header.obu_type,
+            first_picture_in_tu: false,
+            active_sequence: Some(&seq_header),
+            mfh_record: None,
+            reference_state,
+            mode: FrameHeaderParseMode::Core,
+        };
+        let core = parse_frame_header_core(&mut reader, &input).unwrap();
+
+        // The inter frame header is now PARSED TO COMPLETION through the shared tail.
+        assert_eq!(
+            core.status,
+            FrameHeaderParseStatus::InterHeaderComplete,
+            "the minimal-subset inter frame parses its whole § 5.18.2 shared tail"
+        );
+        assert!(
+            !core.status.is_truncated_in_modeled_region(),
+            "a complete header is not a truncation"
+        );
+        assert_eq!(core.frame_type, Some(FrameType::Inter));
+
+        // The inter control region still converged on the shared tail (the precondition).
+        let inter = core.inter.as_ref().expect("inter control region parsed");
+        assert_eq!(inter.stop, Some(InterStop::ReachedSharedTail));
+        assert_eq!(inter.explicit_ref_frame_map, Some(false));
+        assert_eq!(inter.num_total_refs, Some(1));
+        assert_eq!(inter.ref_frame_idx, vec![0]);
+
+        // Shared-tail facts (provenance: hand-decoded 56-bit payload vs the § 5.18.2 spec +
+        // the fixture sequence config; confirmed bit-exact vs avmdec/dav2d by the fixture).
+        let tile_info = core.tile_info.as_ref().expect("tile_info parsed");
+        assert_eq!(
+            tile_info.tile_cols, 1,
+            "single 64x64 superblock -> one tile"
+        );
+        assert_eq!(tile_info.tile_rows, 1);
+        let quant = core
+            .quantization_params
+            .as_ref()
+            .expect("quantization_params parsed");
+        assert_eq!(
+            quant.base_q_idx, 119,
+            "base_q_idx f(8) for the qp80 inter frame"
+        );
+        let seg = core
+            .segmentation_params
+            .as_ref()
+            .expect("segmentation parsed");
+        assert!(
+            !seg.segmentation_enabled,
+            "the minimal fixture disables segmentation"
+        );
+        let deblocking = core
+            .deblocking_filter_params
+            .as_ref()
+            .expect("deblocking parsed");
+        assert_eq!(
+            deblocking.apply_deblocking_filter, [false; 4],
+            "deblocking is off for the flat copy frame"
+        );
+
+        // Inter-tail facts.
+        let tail = core.inter_tail.as_ref().expect("inter tail parsed");
+        assert_eq!(tail.tx_mode, TxMode::Largest, "tx_mode_select == 0");
+        assert!(!tail.reference_select, "single-reference frame");
+        assert!(!tail.skip_mode_present);
+        assert!(!tail.allow_bawp, "enable_bawp off");
+        assert!(!tail.allow_warpmv_mode, "no DELTAWARP motion mode enabled");
+        assert_eq!(tail.reduced_tx_set, 0);
+        assert!(
+            !tail.use_global_motion,
+            "global motion enabled in the sequence but unused by this frame"
+        );
+        assert!(!tail.apply_grain, "no film grain applied");
+    }
 }
