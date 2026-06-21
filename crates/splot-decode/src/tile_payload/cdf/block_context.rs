@@ -88,6 +88,11 @@ impl IntraYMode {
     /// AV2 § 9.2 `H_PRED` canonical luma mode value. `Mode_To_Angle[H_PRED] ==
     /// 180` (§ 9.2), the cardinal horizontal (`pAngle 180`) directional mode.
     const H_PRED: u8 = 2;
+    /// AV2 § 9.2 `D45_PRED` canonical luma mode value (`Mode_To_Angle[D45_PRED]
+    /// == 45`, § 9.2), the § 7.13.2.8 ZONE-1 one-sided directional mode
+    /// (`pAngle < 90`, step 1) whose `dx == Dr_Intra_Derivative[45] == 64`
+    /// projects up-and-right into the above-right (`base == i + 1 + j`).
+    const D45_PRED: u8 = 3;
     /// Last directional mode value (`D67_PRED`), the upper `is_directional_mode`
     /// bound (§ 5 `is_directional_mode`).
     const D67_PRED: u8 = 8;
@@ -154,6 +159,7 @@ impl IntraYMode {
         match self.0 {
             Self::V_PRED => Some(SupportedDirectionalLumaMode::Vertical),
             Self::H_PRED => Some(SupportedDirectionalLumaMode::Horizontal),
+            Self::D45_PRED => Some(SupportedDirectionalLumaMode::D45),
             Self::D113_PRED => Some(SupportedDirectionalLumaMode::D113),
             Self::D135_PRED => Some(SupportedDirectionalLumaMode::D135),
             Self::D157_PRED => Some(SupportedDirectionalLumaMode::D157),
@@ -211,6 +217,18 @@ pub(crate) enum SupportedDirectionalLumaMode {
     /// 24`). Its nonzero-shift projections genuinely interpolate via the
     /// § 7.13.2.8 luma IDIF 4-tap `Dr_Interp_Filter`.
     D157,
+    /// AV2 `D45_PRED` (§ 7.13.2.8 directional prediction at pAngle 45, the
+    /// ZONE-1 one-sided angle `pAngle < 90`, step 1, `dx ==
+    /// Dr_Intra_Derivative[45] == 64`). Unlike the "middle" angles (which read
+    /// `AboveRow[0..w)` / `LeftCol[0..h)`), the zone-1 projection reads the above
+    /// row AND projects up-and-right into the ABOVE-RIGHT (`base = (i + 1 + j)`,
+    /// up to `maxBaseX == w + h - 1`), reading the real reconstructed above-right
+    /// samples. Every D45 projection has `shift == 0` (`(i + 1) * 64 >> 1 & 0x1F
+    /// == 0`), so the § 7.13.2.8 luma IDIF 4-tap reduces to the sample copy
+    /// `AboveRow[base]` (bit-identical to the bilinear branch) — but it still
+    /// reads far into the real reconstructed above-right, the one-sided zone the
+    /// middle angles never touch.
+    D45,
 }
 
 /// The chroma intra modes the general intra decode can reconstruct today — the
@@ -262,6 +280,15 @@ pub(crate) enum SupportedChromaMode {
     /// AV2 `H_PRED` directional-follow chroma (§ 7.13.2.8 step 5, pAngle 180,
     /// `AngleDeltaUV == 0`): the cardinal copy of the § 7.13.2.1 left column.
     HorizontalFollow,
+    /// AV2 `D45_PRED` directional-follow chroma (§ 7.13.2.8 ZONE-1 step 1,
+    /// pAngle 45, `AngleDeltaUV == 0`). Resolved when the decoded `uv_mode == 0`
+    /// over a `D45_PRED` luma mode makes § 5.20.5.3 `get_intra_uv_mode_set`
+    /// return `YMode == D45_PRED`; the spec sets `AngleDeltaUV = AngleDeltaY`
+    /// (`0`). Chroma uses the `enableIdif == 0` bilinear one-sided predictor
+    /// (chroma `enableIdif = plane == 0` is `0`); for D45 every projection has
+    /// `shift == 0`, so the bilinear branch is the sample copy `AboveRow[base]`,
+    /// reading the real reconstructed chroma above row + above-right.
+    D45Follow,
 }
 
 /// AV2 § 9.2 canonical chroma mode values from `Default_Mode_List_Uv`:
@@ -270,6 +297,7 @@ pub(crate) enum SupportedChromaMode {
 const DC_PRED_VALUE: u8 = 0;
 const V_PRED_VALUE: u8 = 1;
 const H_PRED_VALUE: u8 = 2;
+const D45_PRED_VALUE: u8 = 3;
 const D113_PRED_VALUE: u8 = 5;
 const D135_PRED_VALUE: u8 = 4;
 const D157_PRED_VALUE: u8 = 6;
@@ -377,6 +405,13 @@ pub(crate) fn supported_chroma_mode(
         }
         H_PRED_VALUE if uv_mode == 0 && y_mode.is_directional() => {
             Some(SupportedChromaMode::HorizontalFollow)
+        }
+        // Directional-follow D45 chroma: `uv_mode == 0` over the zone-1 D45 luma
+        // makes § 5.20.5.3 return `YMode == D45_PRED` (`AngleDeltaUV =
+        // AngleDeltaY == 0`). Chroma uses the bilinear one-sided predictor; for
+        // D45 (`shift == 0`) that is the sample copy `AboveRow[base]`.
+        D45_PRED_VALUE if uv_mode == 0 && y_mode.is_directional() => {
+            Some(SupportedChromaMode::D45Follow)
         }
         _ => None,
     }
@@ -854,11 +889,16 @@ mod tests {
     }
 
     #[test]
-    fn supported_directional_admits_middle_angles_but_rejects_one_sided_angles() {
+    fn supported_directional_admits_middle_and_d45_but_rejects_other_one_sided_angles() {
         // §7.13.2.8 middle-angle luma IDIF support: the three "middle" angles
-        // D113 (value 5), D135 (value 4) and D157 (value 6) are admitted; the
-        // one-sided directional modes (D45 value 3, D67 value 8, D203 value 7)
-        // are NOT, because only the middle angles are oracle-verified.
+        // D113 (value 5), D135 (value 4) and D157 (value 6) are admitted, plus
+        // the ZONE-1 one-sided angle D45 (value 3, pAngle 45) whose projection
+        // reads the above-right; the OTHER one-sided directional modes (D67
+        // value 8, D203 value 7) are NOT, because only D45 is oracle-verified.
+        assert_eq!(
+            IntraYMode(IntraYMode::D45_PRED).supported_directional(),
+            Some(SupportedDirectionalLumaMode::D45)
+        );
         assert_eq!(
             IntraYMode(IntraYMode::D113_PRED).supported_directional(),
             Some(SupportedDirectionalLumaMode::D113)
@@ -871,8 +911,8 @@ mod tests {
             IntraYMode(IntraYMode::D157_PRED).supported_directional(),
             Some(SupportedDirectionalLumaMode::D157)
         );
-        // D45 (3), D203 (7), D67 (8) remain unsupported (one-sided angles).
-        for value in [3u8, 7, 8] {
+        // D203 (7), D67 (8) remain unsupported (other one-sided angles).
+        for value in [7u8, 8] {
             assert_eq!(IntraYMode(value).supported_directional(), None);
         }
     }

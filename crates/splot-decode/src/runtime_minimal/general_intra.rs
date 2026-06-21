@@ -488,6 +488,28 @@ fn decode_one_general_intra_block(
             GENERAL_INTRA_MODE_SPEC_SECTION,
         ));
     }
+    // Directional-follow D45 chroma (§7.13.2.8 ZONE-1 one-sided): only the
+    // neighbour-having row>0, non-first-column, NON-rightmost position is fixtured
+    // (it couples with the D45 luma block, gated identically). Chroma takes the
+    // `enableIdif == 0` bilinear one-sided branch over the real reconstructed
+    // §7.13.2.1 above row + above-right; for D45 (`shift == 0`) it is the sample
+    // copy `AboveRow[base]`, bit-exact. The chroma above-right availability is
+    // derived for the chroma plane (`sub_x == 1`) so the half-resolution block's
+    // decoded above-right is counted; a rightmost superblock (no decoded
+    // above-right) is rejected.
+    if supported_chroma == crate::tile_payload::SupportedChromaMode::D45Follow
+        && !(frontier.r != 0
+            && frontier.c != 0
+            && n4w == FULL_SB_N4_CHROMA_GATE
+            && full_sb_num4_above_right(frontier.c, n4w, mi_cols, 1) > 0)
+    {
+        return Err(general_intra_unsupported(
+            "general_intra_directional_d45_chroma_neighbour",
+            Some(tile_offset),
+            "general intra directional-follow (D45) chroma prediction is only supported for a row>0, non-first-column, non-rightmost neighbour-having full 64x64 superblock block reading the real reconstructed §7.13.2.1 above row + above-right; the top-left, first-row, first-column, rightmost, sub-partitioned, and non-64x64 D45-follow chroma positions are deferred until an oracle fixture pins them",
+            GENERAL_INTRA_MODE_SPEC_SECTION,
+        ));
+    }
     // Cardinal directional-follow V_PRED / H_PRED chroma: a degenerate §7.13.2.8
     // copy of the real reconstructed §7.13.2.1 above row (V, chroma `frontier.r !=
     // 0`) or left column (H, chroma `frontier.c != 0`). It couples with the
@@ -806,6 +828,51 @@ fn decode_one_general_intra_block(
                     GENERAL_INTRA_MODE_SPEC_SECTION,
                 ));
             }
+            // Directional D45 (§7.13.2.8 ZONE-1 one-sided angle, pAngle 45) at a
+            // row>0, NON-first-column, NON-rightmost full-superblock block
+            // (`frontier.r != 0 && frontier.c != 0`, `haveLeft && haveAbove`, with
+            // a real already-decoded above-right superblock in frame). Unlike the
+            // §7.13.2.8 "middle" angles (which read `AboveRow[0..w)`), D45 projects
+            // UP-AND-RIGHT into the above-right (`base = i + 1 + j`, up to
+            // `maxBaseX == w + h - 1`), so it reads `h` real reconstructed
+            // above-right samples (the bottom row of the diagonally-above-right
+            // superblock) supplied by [`build_one_sided_above_idif_edge`] via
+            // §7.13.2.1 `AboveRow[i] = CurrFrame[plane][y-1][Min(aboveLimit, x+i)]`
+            // with `aboveLimit` bounded by `num4AboveRight` (§5.20.7.25
+            // `count_top_right_avail` over the §5.20.2.3 `BlockDecoded` state). The
+            // corner `AboveRow[-1] = CurrFrame[plane][y-1][x-1]` is read directly.
+            //
+            // D45 is decoded via the §5.20.5.3 `y_mode_offset` escape
+            // (`y_mode_offset == 0` -> modeIdx 7 -> modeDelta 8 ->
+            // Reordered_Y_Mode[5] == D45_PRED == canonical mode 3, §8.3.2 ctx == 0,
+            // AngleDeltaY 0). Every D45 projection has `shift == 0`
+            // (`(i+1) * Dr_Intra_Derivative[45] == (i+1) * 64`, `(idx >> 1) & 0x1F
+            // == 0`), so the §7.13.2.8 luma IDIF 4-tap reduces to the sample copy
+            // `AboveRow[base]` — but it still reads far into the REAL reconstructed
+            // above-right, the one-sided zone the middle angles never touch.
+            // `enable_ibp == 0` keeps `useIBP == 0` (§7.13.2.7 gates `useIBP` on
+            // `pAngle < 90`), and `enable_intra_edge_filter == 0` / `MrlIndex == 0`
+            // keep the §7.13.2.x edge-filter / upsample synthesis a no-op.
+            //
+            // Gated to the row>0 non-first-column NON-rightmost position
+            // (`full_sb_num4_above_right(c, n4w, mi_cols, 0) > 0`): the rightmost
+            // column has no decoded above-right superblock, so its above-right
+            // would clamp (degenerate) and is deferred; the top-left, first-row,
+            // first-column, sub-partitioned, and non-64x64 D45 positions are
+            // rejected below.
+            (_, Some(SupportedDirectionalLumaMode::D45))
+                if frontier.r != 0
+                    && frontier.c != 0
+                    && n4w == FULL_SB_N4_LUMA
+                    && full_sb_num4_above_right(frontier.c, n4w, mi_cols, 0) > 0 => {}
+            (_, Some(SupportedDirectionalLumaMode::D45)) => {
+                return Err(general_intra_unsupported(
+                    "general_intra_d45_unverified_position",
+                    Some(tile_offset),
+                    "general intra directional D45 (pAngle 45, §7.13.2.8 zone-1 one-sided) luma prediction is only verified for a row>0, non-first-column, non-rightmost full 64x64 superblock block (haveLeft && haveAbove, with a real decoded above-right superblock supplying the §7.13.2.1 above-right CurrFrame[plane][y-1][x+i]); the top-left no-neighbour, first-row, first-column, rightmost (no decoded above-right), sub-partitioned, and non-64x64 D45 positions read the §7.13.2.1 above-right that no oracle fixture pins yet, so they are deferred",
+                    GENERAL_INTRA_MODE_SPEC_SECTION,
+                ));
+            }
             // Directional D135: top-left no-neighbour full superblock.
             (_, Some(_)) if is_top_left && n4w == FULL_SB_N4_LUMA => {}
             // Directional D135 at a first-superblock-row (`frontier.r == 0`),
@@ -957,6 +1024,29 @@ fn decode_one_general_intra_block(
                 luma_y,
                 luma_log2,
                 qindex,
+                luma_use_tcq,
+            )
+            .map_err(|error| general_intra_residual_error(error, tile_offset))?
+        }
+        // Neighbour-having ZONE-1 one-sided D45 luma over the real §7.13.2.1
+        // reconstructed above row + above-right (the §7.13.2.8 step-1 IDIF, which
+        // for D45 `shift == 0` is the sample copy `AboveRow[base]` reading far into
+        // the real reconstructed above-right). `num4AboveRight` (§5.20.7.25
+        // `count_top_right_avail` over the §5.20.2.3 `BlockDecoded` state) bounds
+        // the real above-right extent; the luma gate guarantees it is nonzero.
+        (None, Some(SupportedDirectionalLumaMode::D45)) if directional_luma_has_neighbour => {
+            let num4_above_right =
+                full_sb_num4_above_right(frontier.c, n4w, mi_cols, 0);
+            crate::runtime_minimal_recon::reconstruct_general_intra_one_sided_neighbour_block_into(
+                workspace,
+                &luma,
+                SupportedDirectionalLumaMode::D45,
+                PlaneId::Y,
+                luma_x,
+                luma_y,
+                luma_log2,
+                qindex,
+                num4_above_right,
                 luma_use_tcq,
             )
             .map_err(|error| general_intra_residual_error(error, tile_offset))?

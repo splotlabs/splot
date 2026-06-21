@@ -332,6 +332,46 @@ impl<'a, T: ReconSample> IntraMiddleDirectionalAngleIdifEdges<'a, T> {
     }
 }
 
+/// Caller-provided prepared above edge for the luma IDIF zone-1 one-sided
+/// AV2 §7.13.2.8 prediction (`pAngle < 90`, step 1, `enableIdif == 1`).
+///
+/// The zone-1 step reads `AboveRow[base + t - 1]` for `t = 0..3` with
+/// `base = (idx >> 6) + j` projecting up-and-right into the above-right, so it
+/// indexes far past `AboveRow[w - 1]`: up to `base == maxBaseX` (with
+/// `maxBaseX = w + h - 1 + (mrlIndex << 1)`), reading `AboveRow[maxBaseX + 2]`.
+/// The §7.13.2.8 edge extension fills `AboveRow[maxBase + 1] = AboveRow[maxBase + 2]
+/// = AboveRow[maxBase]` and `AboveRow[minBase - 1] = AboveRow[minBase]`
+/// (`minBase = -(1 + mrlIndex) == -1` for `mrlIndex == 0`). The prepared slice
+/// therefore spans the logical range `-2 ..= w + h + 1` (length `w + h + 4` for
+/// `mrlIndex == 0`): `slice[0]` is logical `-2`, `slice[1]` the `-1` corner, and
+/// `slice[index + 2]` logical index `index`.
+///
+/// AV2 §7.13.2.1 edge availability and fallback preparation (including reading
+/// the real reconstructed above-right `CurrFrame[plane][y - 1][Min(aboveLimit,
+/// x + i)]` for `i >= w` via §5.20.7.25 `count_top_right_avail` /
+/// §5.20.2.3 `BlockDecoded`), the §7.13.2.8 spec edge extension, MRL, and angle
+/// deltas remain outside this type.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct IntraDirectionalAngleIdifEdges<'a, T: ReconSample> {
+    above_idif: &'a [T],
+}
+
+impl<'a, T: ReconSample> IntraDirectionalAngleIdifEdges<'a, T> {
+    /// Creates a zone-1 IDIF above-edge set from the prepared above samples.
+    ///
+    /// `above_idif` spans the logical range `-2 ..= w + h + 1` (length
+    /// `w + h + 4` for `mrlIndex == 0`): `slice[0]` is logical `-2`, `slice[1]`
+    /// the `-1` corner, `slice[index + 2]` logical index `index`.
+    pub const fn above(above_idif: &'a [T]) -> Self {
+        Self { above_idif }
+    }
+
+    /// Returns the prepared zone-1 IDIF above edge samples.
+    pub const fn above_idif(self) -> &'a [T] {
+        self.above_idif
+    }
+}
+
 /// Writes a supported one-sided AV2 §7.13.2.8 directional prediction into caller storage.
 ///
 /// This primitive intentionally covers only chroma/no-IDIF/no-MRL one-sided
@@ -496,6 +536,82 @@ pub fn predict_intra_middle_directional_angle_rect_idif_from_p_angle_into<T: Rec
 ) -> Result<()> {
     let angle = IntraMiddleDirectionalAngle::try_from_p_angle(p_angle)?;
     predict_intra_middle_directional_angle_rect_idif_into(
+        bit_depth,
+        size,
+        angle,
+        edges,
+        output,
+        stride_samples,
+    )
+}
+
+/// Writes a supported luma IDIF zone-1 one-sided AV2 §7.13.2.8 directional
+/// prediction (`pAngle < 90`, step 1, `enableIdif == 1`) into caller storage.
+///
+/// This is the luma counterpart of the bilinear one-sided
+/// [`predict_intra_directional_angle_rect_into`] for the ABOVE-reading zone-1
+/// angle (D45). It implements AV2 §7.13.2.8 step 1: for each predicted sample
+/// `dx = Dr_Intra_Derivative[pAngle]`, `idx = (i + 1 + mrlIndex) * dx`,
+/// `base = (idx >> 6) + j`, `shift = (idx >> 1) & 0x1F`,
+/// `maxBaseX = w + h - 1 + (mrlIndex << 1)`. When `base < maxBaseX + 1` the
+/// 4-tap IDIF interpolates `s = Σ(t=0..3) Dr_Interp_Filter[shift][t] *
+/// AboveRow[base + t - 1]`, `pred[i][j] = Clip1(Round2(s, 7))`; otherwise
+/// `pred[i][j] = AboveRow[maxBaseX]`. The zone-1 projection reads the above row
+/// AND the above-right (`base` up to `maxBaseX`), so callers supply the wider
+/// IDIF above edge `AboveRow[-2 ..= w + h + 1]` (length `w + h + 4` for
+/// `mrlIndex == 0`); slice index zero is the logical `-2` sample.
+///
+/// For pAngle 45 (`dx = Dr_Intra_Derivative[45] = 64`) every projection has
+/// `shift == 0`, so the IDIF 4-tap reduces to the copy `AboveRow[base]`
+/// (bit-identical to the bilinear branch) — but it still reads far into the
+/// real reconstructed above-right (the one-sided zone the middle-angle path
+/// never touches). This primitive covers only the no-MRL zone-1 above angle
+/// (pAngle 45) over already-prepared edges; `mrlIndex == 0` is assumed.
+///
+/// `output` points at the top-left destination sample and `stride_samples` is
+/// the distance between adjacent output rows.
+///
+/// # Errors
+/// Returns [`ReconError`] for unsupported sample type/bit depth combinations,
+/// an unsupported pAngle, a wrong-length prepared edge, out-of-range edge
+/// samples, a too-small stride, a too-small output buffer, or checked
+/// arithmetic overflow.
+pub fn predict_intra_directional_angle_rect_one_sided_idif_into<T: ReconSample>(
+    bit_depth: BitDepth,
+    size: IntraRectBlockSize,
+    angle: IntraDirectionalAngle,
+    edges: IntraDirectionalAngleIdifEdges<'_, T>,
+    output: &mut [T],
+    stride_samples: usize,
+) -> Result<()> {
+    let above = validate_one_sided_idif_inputs(
+        bit_depth,
+        size,
+        angle,
+        edges,
+        output.len(),
+        stride_samples,
+    )?;
+    write_one_sided_idif_prediction(bit_depth, size, angle, above, output, stride_samples)
+}
+
+/// Writes a supported luma IDIF zone-1 one-sided directional prediction from a
+/// raw AV2 pAngle.
+///
+/// # Errors
+/// In addition to [`predict_intra_directional_angle_rect_one_sided_idif_into`]
+/// errors, returns [`ReconError::UnsupportedIntraDirectionalAngle`] before
+/// output mutation when `p_angle` is not a supported zone-1 above angle.
+pub fn predict_intra_directional_angle_rect_one_sided_idif_from_p_angle_into<T: ReconSample>(
+    bit_depth: BitDepth,
+    size: IntraRectBlockSize,
+    p_angle: u16,
+    edges: IntraDirectionalAngleIdifEdges<'_, T>,
+    output: &mut [T],
+    stride_samples: usize,
+) -> Result<()> {
+    let angle = IntraDirectionalAngle::try_from_p_angle(p_angle)?;
+    predict_intra_directional_angle_rect_one_sided_idif_into(
         bit_depth,
         size,
         angle,
@@ -903,6 +1019,164 @@ fn write_prediction<T: ReconSample>(
         }
     }
 
+    Ok(())
+}
+
+/// Validates the zone-1 one-sided IDIF inputs and returns the prepared above
+/// edge. The supported zone-1 above angle (D45) reads only the above edge.
+fn validate_one_sided_idif_inputs<'a, T: ReconSample>(
+    bit_depth: BitDepth,
+    size: IntraRectBlockSize,
+    angle: IntraDirectionalAngle,
+    edges: IntraDirectionalAngleIdifEdges<'a, T>,
+    output_len: usize,
+    stride_samples: usize,
+) -> Result<&'a [T]> {
+    validate_sample_type::<T>(bit_depth)?;
+    validate_output_shape(size, output_len, stride_samples)?;
+    // Only the ABOVE-reading zone-1 angle (D45) is supported by this primitive.
+    if !matches!(angle.branch(), DirectionalAngleBranch::Above { .. })
+        || angle.required_edge() != IntraDirectionalAngleEdge::Above
+    {
+        return Err(ReconError::UnsupportedIntraDirectionalAngle {
+            p_angle: angle.p_angle(),
+        });
+    }
+    let above = edges.above_idif;
+    let above_len = required_one_sided_idif_above_len(size)?;
+    validate_edge(
+        IntraDirectionalAngleEdge::Above,
+        above,
+        above_len,
+        bit_depth,
+    )?;
+    validate_one_sided_idif_index_bounds(size, angle, above.len())?;
+    Ok(above)
+}
+
+/// Zone-1 IDIF above edge length: logical `-2 ..= w + h + 1` is `w + h + 4`
+/// samples (`mrlIndex == 0`).
+fn required_one_sided_idif_above_len(size: IntraRectBlockSize) -> Result<usize> {
+    required_edge_len(size)?
+        .checked_add(4)
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "one-sided directional angle IDIF above edge length",
+        })
+}
+
+fn validate_one_sided_idif_index_bounds(
+    size: IntraRectBlockSize,
+    angle: IntraDirectionalAngle,
+    above_len: usize,
+) -> Result<()> {
+    let derivative = one_sided_above_derivative(angle);
+    let max_base_x = one_sided_max_base_x(size)?;
+    for row in 0..size.height() {
+        for column in 0..size.width() {
+            let reference = one_sided_above_reference(row, column, derivative)?;
+            // §7.13.2.8: for `base < maxBaseX + enableIdif` (== `maxBaseX + 1`
+            // for luma) the IDIF 4-tap reads `AboveRow[base - 1 ..= base + 2]`;
+            // otherwise the spec reads the single clamp `AboveRow[maxBaseX]`.
+            // Validate whichever index range the write path will actually touch.
+            if reference.base <= max_base_x {
+                for tap in 0..(DR_INTERP_FILTER_TAPS as i64) {
+                    let logical = reference.base.checked_add(tap - 1).ok_or(
+                        ReconError::ArithmeticOverflow {
+                            context: "one-sided directional angle IDIF tap index",
+                        },
+                    )?;
+                    logical_idif_edge_offset(logical, above_len)?;
+                }
+            } else {
+                logical_idif_edge_offset(max_base_x, above_len)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct OneSidedAboveReference {
+    base: i64,
+    shift: u16,
+}
+
+/// The §7.13.2.8 step-1 derivative `dx = Dr_Intra_Derivative[pAngle]` for the
+/// zone-1 above-reading angle.
+fn one_sided_above_derivative(angle: IntraDirectionalAngle) -> i64 {
+    match angle.branch() {
+        DirectionalAngleBranch::Above { derivative }
+        | DirectionalAngleBranch::Left { derivative } => i64::from(derivative),
+    }
+}
+
+/// §7.13.2.8 `maxBaseX = w + h - 1 + (mrlIndex << 1)` (`mrlIndex == 0`).
+fn one_sided_max_base_x(size: IntraRectBlockSize) -> Result<i64> {
+    let max_base =
+        required_edge_len(size)?
+            .checked_sub(1)
+            .ok_or(ReconError::ArithmeticOverflow {
+                context: "one-sided directional angle maxBaseX",
+            })?;
+    i64::try_from(max_base).map_err(|_| ReconError::ArithmeticOverflow {
+        context: "one-sided directional angle maxBaseX range",
+    })
+}
+
+/// AV2 §7.13.2.8 step 1 (`pAngle < 90`) projection for one predicted sample:
+/// `idx = (i + 1) * dx`, `base = (idx >> 6) + j`, `shift = (idx >> 1) & 0x1F`
+/// (`mrlIndex == 0`).
+fn one_sided_above_reference(
+    row: usize,
+    column: usize,
+    derivative: i64,
+) -> Result<OneSidedAboveReference> {
+    let row_plus_one =
+        checked_usize_plus_one_i64(row, "one-sided directional angle above row index")?;
+    let idx = row_plus_one
+        .checked_mul(derivative)
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "one-sided directional angle above derivative product",
+        })?;
+    let column_i64 = i64::try_from(column).map_err(|_| ReconError::ArithmeticOverflow {
+        context: "one-sided directional angle above column index",
+    })?;
+    let base = (idx >> 6)
+        .checked_add(column_i64)
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "one-sided directional angle above base index",
+        })?;
+    Ok(OneSidedAboveReference {
+        base,
+        shift: directional_shift(idx),
+    })
+}
+
+fn write_one_sided_idif_prediction<T: ReconSample>(
+    bit_depth: BitDepth,
+    size: IntraRectBlockSize,
+    angle: IntraDirectionalAngle,
+    above: &[T],
+    output: &mut [T],
+    stride_samples: usize,
+) -> Result<()> {
+    let derivative = one_sided_above_derivative(angle);
+    let max_base_x = one_sided_max_base_x(size)?;
+    for row in 0..size.height() {
+        let row_start = row * stride_samples;
+        for column in 0..size.width() {
+            let reference = one_sided_above_reference(row, column, derivative)?;
+            let value = if reference.base <= max_base_x {
+                // §7.13.2.8: `base < maxBaseX + enableIdif` (== `maxBaseX + 1`
+                // for luma), i.e. `base <= maxBaseX`. The 4-tap IDIF interpolates.
+                idif_tap(above, reference.base, reference.shift, bit_depth)?
+            } else {
+                // `base >= maxBaseX + enableIdif`: `pred = AboveRow[maxBaseX]`.
+                logical_idif_edge_sample(above, max_base_x)?.to_u16()
+            };
+            output[row_start + column] = T::try_from_u16(value)?;
+        }
+    }
     Ok(())
 }
 
