@@ -45,6 +45,13 @@ is a later sub-brick.
   (+ tests), `multi_coeff.rs` (`coeff_br_lf_token`), `coefficient_tokenization.rs`,
   `block_symbol_trace/{cdf_rows,mod}.rs` + `coefficient_tokenization/cdf_rows.rs`
   (routed CDF rows).
+- Assumes TCQ off (`allow_tcq == 0`, as the minimal intra path is with
+  `enable_tcq == false`): §5.20.7.28 `read_quant` fires when
+  `level >= maxLevel - allow_tcq` and LF luma `maxLevel == 8`, so magnitude up to 7
+  carries no `read_quant` tail at `allow_tcq == 0`. Under TCQ the threshold drops to
+  7 and a level-7 coefficient would need a `read_quant` tail — that TCQ interaction
+  (and the general golomb tail) is a deferred sub-brick; this tokenizer must not be
+  reused on a TCQ-enabled block.
 - Scope (explicitly NOT claimed): the non-EOB coefficient's data-dependent
   `coeff_br`, magnitudes beyond 7 (golomb), eob > 2 / eob_extra, high-frequency or
   chroma coefficients, sizes other than 4x4, types other than DCT_DCT, packets, and

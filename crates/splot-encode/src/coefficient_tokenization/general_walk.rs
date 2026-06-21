@@ -101,6 +101,17 @@ const COEFF_BR_LF_CTX_EOB_AC: usize = 7;
 /// - [`Error::CoefficientTokenizationUnsupportedMagnitude`] when the EOB coefficient
 ///   magnitude exceeds `MAX_BASE_BR_MAGNITUDE` or a non-EOB coefficient magnitude
 ///   exceeds the base tier (`MAX_BASE_EOB_MAGNITUDE`).
+///
+/// # Preconditions
+/// Assumes **TCQ is off** (`allow_tcq == 0`), as the minimal intra encoder path is
+/// (`enable_tcq == false` in the sequence header). The § 5.20.7.28 `read_quant`
+/// threshold is `level >= maxLevel - allow_tcq`; for low-frequency luma
+/// `maxLevel == 8`, so with `allow_tcq == 0` a magnitude up to `7` (the EOB
+/// `coeff_br` cap) carries **no** `read_quant` bypass tail. Under TCQ the threshold
+/// drops to `7`, so a level-7 coefficient would need a `read_quant` tail and this
+/// tokenizer's stream would desynchronize a TCQ-enabled decoder — that TCQ
+/// interaction (and the general golomb tail for `maxLevel`+) is a deferred
+/// sub-brick. Do not reuse this tokenizer on a TCQ-enabled block.
 pub(crate) fn tokenize_general_lf_luma_block(
     quant: &[i32; TX_4X4_COEFF_COUNT],
     coeff_cdf_q_ctx: usize,
