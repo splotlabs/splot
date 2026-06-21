@@ -170,9 +170,11 @@ pub use intra_directional::{
 };
 pub use intra_directional_angle::{
     IntraDirectionalAngle, IntraDirectionalAngleEdge, IntraDirectionalAngleEdges,
-    IntraMiddleDirectionalAngle, IntraMiddleDirectionalAngleEdges,
+    IntraDirectionalAngleIdifEdges, IntraMiddleDirectionalAngle, IntraMiddleDirectionalAngleEdges,
     IntraMiddleDirectionalAngleIdifEdges, predict_intra_directional_angle_rect_from_p_angle_into,
     predict_intra_directional_angle_rect_into,
+    predict_intra_directional_angle_rect_one_sided_idif_from_p_angle_into,
+    predict_intra_directional_angle_rect_one_sided_idif_into,
     predict_intra_middle_directional_angle_rect_from_p_angle_into,
     predict_intra_middle_directional_angle_rect_idif_from_p_angle_into,
     predict_intra_middle_directional_angle_rect_idif_into,

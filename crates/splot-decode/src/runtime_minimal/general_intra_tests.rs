@@ -1678,3 +1678,111 @@ fn d113_neighbour_directional_idif_above_intra_frame_decodes_to_oracle() {
         "d32bc2b11585e7ea55f0d2401f18402c55e781c0a861bb613b55f5dc26a2a395"
     );
 }
+
+// A 192x128 frame (three superblock columns by two rows) whose top-left,
+// top-middle, top-right and bottom-left 64x64 superblocks are DC_PRED (the
+// top-right DC block carries a horizontal-gradient residual, so it reconstructs
+// NON-FLAT), and whose BOTTOM-MIDDLE 64x64 superblock (`frontier.r == 16`,
+// `frontier.c == 16`, `haveLeft && haveAbove`, NON-rightmost so a decoded
+// above-right superblock is in frame) codes the §7.13.2.8 ZONE-1 one-sided
+// D45_PRED directional mode (the §5.20.5.3 `y_mode_offset` escape
+// `y_mode_offset == 0` -> modeIdx 7 -> modeDelta 8 -> Reordered_Y_Mode[5] ==
+// D45_PRED == canonical mode 3, §8.3.2 ctx == 0, AngleDeltaY 0) plus its
+// uv_mode == 0 directional-follow D45 chroma.
+//
+// The decisive element: D45 is the ZONE-1 one-sided angle (`pAngle < 90`,
+// `needRight`). Its `dx == Dr_Intra_Derivative[45] == 64` projects UP-AND-RIGHT
+// into the above-right: `pred[i][j] = AboveRow[base]` with `base = i + 1 + j`, up
+// to `maxBaseX == w + h - 1 == 127`. Unlike the §7.13.2.8 "middle" angles (which
+// stay within `AboveRow[0..w)`), the upper-right triangle of this block reads `h`
+// REAL reconstructed above-right samples — the bottom row of the already-decoded
+// top-right superblock (a horizontal gradient, 32 distinct values 42..228, NOT
+// flat). The §7.13.2.1 above row is `CurrFrame[0][63][Min(aboveLimit, 64 + i)]`
+// with `aboveLimit = Min(maxX = 191, 64 + 64 + 4 * num4AboveRight - 1)` and
+// `num4AboveRight == 16` (the full above-right superblock, §5.20.7.25
+// `count_top_right_avail` over §5.20.2.3 `BlockDecoded`), so columns 64..127 read
+// the flat above-middle bottom row (128) and columns 128..191 the non-flat
+// above-right. Every D45 projection has `shift == 0` (`(i + 1) * 64 >> 1 & 0x1F ==
+// 0`), so the §7.13.2.8 luma IDIF 4-tap reduces to the sample copy
+// `AboveRow[base]` — but it still reads far into the real reconstructed
+// above-right, the one-sided zone the middle angles never touch. The OLD code
+// rejected this frame (`general_intra_unsupported_y_mode`, because D45's
+// `supported_directional()` returned `None`). avmdec and dav2d agree on the
+// decoded output (raw md5 8fe6a134c01b0d20be4016348ccd3b99); the first
+// general-intra ZONE-1 one-sided D45 decode reading a real reconstructed
+// above-right.
+const D45_FIXTURE: &[u8] =
+    include_bytes!("../../../../tests/conformance/vectors/valid/syn-d45-intra-192x128-q80.ivf");
+
+#[test]
+fn d45_neighbour_one_sided_above_right_intra_frame_decodes_to_oracle() {
+    use splot_recon::{BitDepth, PixelFormat, PlaneSize};
+
+    let frame = decode_general_intra_luma(D45_FIXTURE);
+    assert_eq!(frame.bit_depth(), BitDepth::Eight);
+    assert_eq!(frame.pixel_format(), PixelFormat::Yuv420);
+    assert_eq!(frame.y().visible_size(), PlaneSize::new(192, 128).unwrap());
+    assert_eq!(
+        frame.u().unwrap().visible_size(),
+        PlaneSize::new(96, 64).unwrap()
+    );
+
+    let y = frame.y().samples();
+    let at = |r: usize, c: usize| y[r * 192 + c];
+    // BOTTOM-MIDDLE superblock (rows 64..128, cols 64..128): D45 reading the real
+    // §7.13.2.1 above row (flat 128) for the lower-left triangle and the real
+    // reconstructed above-right (the top-right superblock's non-flat bottom row,
+    // 42..228) for the upper-right triangle.
+    //
+    // pred[0][0] = AboveRow[1] = the flat above-middle row (128); a no-above-right
+    // read of the lower-left triangle stays flat.
+    assert_eq!(
+        at(64, 64),
+        128,
+        "D45 block top-left must copy the flat above-middle row (128)"
+    );
+    // pred[0][63] = AboveRow[64] = the FIRST above-right sample (the top-right
+    // superblock's reconstructed bottom-row left edge, the gradient's low end ~42),
+    // NOT the flat 128 the middle angles would clamp to. This is the decisive
+    // ZONE-1 above-right read.
+    assert!(
+        at(64, 127) != 128,
+        "D45 block top-right must read the non-flat real above-right (not the flat above-middle 128)"
+    );
+    assert!(
+        at(64, 127) < 100,
+        "D45 block top-right must propagate the real above-right gradient low end (~42)"
+    );
+    // The block must be genuinely directional (non-flat, not row/col-constant).
+    let block: Vec<u8> = (0..64)
+        .flat_map(|i| (0..64).map(move |j| at(64 + i, 64 + j)))
+        .collect();
+    let distinct = block
+        .iter()
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
+    assert!(
+        distinct > 4,
+        "D45 block must be a non-flat directional reconstruction reading the above-right"
+    );
+
+    // Chroma is flat (U=120, V=130): the bottom-middle chroma runs the row>0
+    // non-rightmost neighbour-having directional-follow D45 chroma path (the
+    // §7.13.2.8 bilinear one-sided branch over the real reconstructed above row +
+    // above-right, all uniform 120/130), so it reconstructs flat. The decode
+    // reaches this path because `uv_mode == 0` over the D45 luma resolves to
+    // D45-follow chroma.
+    assert!(frame.u().unwrap().samples().iter().all(|&s| s == 120));
+    assert!(frame.v().unwrap().samples().iter().all(|&s| s == 130));
+
+    // Frame hash pins splot's output, which reproduces avmdec's and dav2d's raw
+    // output byte-for-byte (verified locally; raw md5
+    // 8fe6a134c01b0d20be4016348ccd3b99).
+    let hash = splot_recon::DecodedFrameHashInput::new(&frame)
+        .compute_hash()
+        .to_hex();
+    assert_eq!(
+        hash,
+        "d08056c0d1ed3f379e3072c7f1ebced04da0f6df994efd0b5f8d39b76c0b683f"
+    );
+}
