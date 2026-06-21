@@ -408,8 +408,8 @@ pub fn emit_minimal_intra_all_planes_coded_ivf() -> Result<Vec<u8>> {
 /// Composes the general intra eob=2 multi-coefficient luma block trace: `do_split`, the mode
 /// prefix, a coded luma block carrying a single nonzero AC coefficient (level 1) at scan index
 /// 1 with a zero DC (`txb_skip == 0`, `eob_pt_1024 == 1`, AC `coeff_base_eob`, DC `coeff_base`,
-/// then the AC `sign_bit` § 8.2.5 bypass), then skipped U and V. Unlike the DC-only frames an
-/// AC coefficient reconstructs to a non-flat (low-frequency cosine) luma pattern.
+/// then the AC `sign_bit` § 8.2.5 bypass), then skipped U and V. The minimal level-1 AC residual
+/// is sub-visible, so the reconstruction is flat 128 (see `emit_minimal_intra_two_coeff_ivf`).
 fn compose_general_intra_two_coeff_block_trace() -> Result<Vec<BlockSymbolToken>> {
     let modes = compose_minimal_intra_dc_block_mode_trace()?;
     let luma = general_intra_64x64_luma_two_coeff_tokens(SKIP_FRAME_COEFF_CDF_Q_CTX)?;
@@ -444,9 +444,14 @@ fn compose_general_intra_two_coeff_block_trace() -> Result<Vec<BlockSymbolToken>
 /// Emits a complete, decodable AV2 IVF stream for one 64x64 all-intra `OBU_CLOSED_LOOP_KEY`
 /// frame whose luma block carries a single nonzero **AC** coefficient (eob=2, U and V skipped).
 ///
-/// This is the encoder's first multi-coefficient (`eob > 1`) frame: unlike the DC-only frames,
-/// an AC coefficient reconstructs to a non-flat low-frequency cosine pattern across the luma
-/// plane, with flat 128 chroma. The cross-crate decode oracle lives in `splot-cli`.
+/// This is the encoder's first multi-coefficient (`eob > 1`) frame, exercising the scan walk
+/// and the non-EOB `coeff_base` pass. The single AC coefficient is the minimal **level 1**,
+/// whose dequantized residual is sub-visible (it rounds to ~0), so the decoded frame is flat at
+/// 128 — distinct from a skip frame only in the entropy stream, not yet the reconstruction. A
+/// visibly non-flat (cosine) AC needs a larger magnitude, whose `Level[]`-derived DC
+/// `coeff_base` context differs and is computed per AC level; that is a follow-up. The
+/// cross-crate decode oracle (it validates the eob=2 stream and reconstructs the frame) lives in
+/// `splot-cli`.
 pub fn emit_minimal_intra_two_coeff_ivf() -> Result<Vec<u8>> {
     let trace = compose_general_intra_two_coeff_block_trace()?;
     let tile_data = encode_block_symbol_trace(&trace)?;
