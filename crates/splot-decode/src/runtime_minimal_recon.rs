@@ -152,7 +152,9 @@ pub(crate) fn reconstruct_general_intra_block_into(
 /// transform block, derived by the caller from § 5.20.7.25 `count_top_right_avail`
 /// over the § 5.20.2.3 `BlockDecoded` state; it selects the SMOOTH top-right
 /// sentinel `AboveRow[w]` between the real reconstructed above-right sample and
-/// the clamped last in-block above sample.
+/// the clamped last in-block above sample. `num4_below_left` is the symmetric
+/// § 7.13.2.1 `num4BelowLeft` (§ 5.20.7.25 `count_bottom_left_avail`) bounding the
+/// real below-left for the D203-follow zone-3 chroma (`0` in raster order).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_chroma_block_into(
     workspace: &mut CurrentFrameWorkspace<u8>,
@@ -164,6 +166,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into(
     qindex: u32,
     mode: SupportedChromaMode,
     num4_above_right: usize,
+    num4_below_left: usize,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     match mode {
         // Chroma never uses the §7.14.4 TCQ dqDenom term (luma DCT_DCT only), so
@@ -306,6 +309,27 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into(
             num4_above_right,
             false,
         ),
+        // Directional-follow D203 chroma (§7.13.2.8 ZONE-3 step 3, pAngle 203) over
+        // the real reconstructed §7.13.2.1 chroma left column + below-left. Chroma
+        // takes the `enableIdif == 0` bilinear one-sided branch (`enableIdif =
+        // plane == 0` is `0` for U/V), the spec-mandated chroma branch. The luma
+        // gate guarantees the D203 block is at a first-superblock-row,
+        // non-first-column position with a real reconstructed left column, so the
+        // half-resolution chroma block has the matching real left neighbour.
+        // Chroma never uses the §7.14.4 TCQ dqDenom term.
+        SupportedChromaMode::D203Follow => {
+            reconstruct_general_intra_one_sided_left_neighbour_block_into(
+                workspace,
+                block,
+                plane_id,
+                x,
+                y,
+                log2_side,
+                qindex,
+                num4_below_left,
+                false,
+            )
+        }
     }
 }
 
@@ -1049,15 +1073,16 @@ pub(crate) fn reconstruct_general_intra_one_sided_neighbour_block_into(
     Ok(())
 }
 
-/// Maps a supported ZONE-1 one-sided directional mode to its § 9.2 pAngle. Only
-/// D45 (pAngle 45) is supported; the other modes use dedicated predictors and are
-/// rejected here (defensive: the dispatch routes them away first).
+/// Maps a supported ZONE-1 above-reading one-sided directional mode to its § 9.2
+/// pAngle. Only D45 (pAngle 45) is supported here; the other modes use dedicated
+/// predictors and are rejected (defensive: the dispatch routes them away first).
 fn one_sided_p_angle(
     mode: SupportedDirectionalLumaMode,
 ) -> core::result::Result<u16, GeneralIntraResidualError> {
     match mode {
         SupportedDirectionalLumaMode::D45 => Ok(45),
-        SupportedDirectionalLumaMode::D113
+        SupportedDirectionalLumaMode::D203
+        | SupportedDirectionalLumaMode::D113
         | SupportedDirectionalLumaMode::D135
         | SupportedDirectionalLumaMode::D157
         | SupportedDirectionalLumaMode::Vertical
@@ -1147,6 +1172,190 @@ fn build_one_sided_above_idif_edge(
         *slot = last_in_row;
     }
     Ok(above)
+}
+
+/// Reconstructs one neighbour-having ZONE-3 ONE-SIDED directional block — D203
+/// (§ 7.13.2.8 step 3, pAngle 203) — over the § 7.13.2.1 left column PLUS the
+/// real reconstructed below-left read from the partially-built frame, adds the
+/// decoded residual (or writes the bare prediction for an `all_zero` block), and
+/// stores the result so later blocks read it as a neighbour.
+///
+/// Zone-3 (`pAngle > 180`, `needBottom`) is the symmetric mirror of zone-1 D45:
+/// `dy = Dr_Intra_Derivative[270 - 203] = Dr_Intra_Derivative[67] = 24`,
+/// `idx = (j + 1) * dy`, `base = (idx >> 6) + i`, projecting DOWN-AND-LEFT into
+/// the below-left up to `base == maxBaseY == w + h - 1`. So unlike the middle
+/// angles (which stay within `LeftCol[0..h)`), this reads `w` below-left samples.
+/// § 7.13.2.1 fills `LeftCol[i] = CurrFrame[plane][Min(leftLimit, y + i)][x - 1]`
+/// for `i in 0..w + h`, with `leftLimit = Min(maxY, y + h + 4 * num4BelowLeft - 1)`
+/// (8-bit, `MrlIndex == 0`); the `num4_below_left` (in plane 4x4 units, from
+/// § 5.20.7.25 `count_bottom_left_avail` over the § 5.20.2.3 `BlockDecoded` state)
+/// bounds how far the real below-left extends before the spec clamps to
+/// `CurrFrame[plane][leftLimit][x - 1]`. In raster order `num4_below_left == 0`
+/// for the gated position (no block below-left is decoded yet), so the below-left
+/// samples are the clamped repeat of the last in-block left sample.
+///
+/// The block is gated (by the caller) to a first-superblock-row
+/// (`frontier.r == 0`, `haveAbove == 0`), non-first-column (`haveLeft == 1`) full
+/// 64x64 superblock, so the real reconstructed left column is the right column of
+/// the already-decoded left superblock. At `haveAbove == 0 && haveLeft == 1`,
+/// § 7.13.2.1 sets the corner `LeftCol[-1] = AboveRow[-1] =
+/// CurrFrame[plane][y][x - 1]` (the top-left sample of the left column).
+/// `enable_intra_edge_filter == 0` / `MrlIndex == 0` keep the § 7.13.2.7
+/// edge-filter / corner-filter / upsample synthesis a no-op, and `enable_ibp == 0`
+/// keeps `useIBP == 0` (§ 7.13.2.7 gates `useIBP` on `pAngle > 180`). Luma uses
+/// the § 7.13.2.8 IDIF 4-tap (`enableIdif = plane == 0`); D203's `dy == 24` lands
+/// most projections on a nonzero `shift`, so the IDIF genuinely interpolates over
+/// the real reconstructed left column. Chroma uses the spec-mandated bilinear
+/// one-sided branch (`enableIdif == 0` for U/V) over the same prepared left edge.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn reconstruct_general_intra_one_sided_left_neighbour_block_into(
+    workspace: &mut CurrentFrameWorkspace<u8>,
+    block: &LumaCoeffBlock,
+    plane_id: PlaneId,
+    x: usize,
+    y: usize,
+    log2_side: u32,
+    qindex: u32,
+    num4_below_left: usize,
+    use_tcq: bool,
+) -> core::result::Result<(), GeneralIntraResidualError> {
+    let side = 1usize << log2_side;
+    let log2 = u8::try_from(log2_side).unwrap_or(u8::MAX);
+    let block_size = IntraRectBlockSize::new(log2, log2).map_err(recon_err)?;
+    // §7.13.2.1 left column + below-left; at the gated first-superblock-row,
+    // non-first-column position (`haveAbove == 0 && haveLeft == 1`) the corner is
+    // `CurrFrame[plane][y][x-1]` and the left column is the real reconstructed
+    // right column of the already-decoded left superblock.
+    let left_idif =
+        build_one_sided_left_idif_edge(workspace, plane_id, x, y, side, num4_below_left)?;
+    let mut prediction = vec![0u8; side * side];
+    // §7.13.2.8 `enableIdif = plane == 0`: luma uses the zone-3 IDIF 4-tap; chroma
+    // uses the `enableIdif == 0` bilinear one-sided branch (the spec-mandated
+    // chroma branch). Both read the same prepared left edge.
+    if matches!(plane_id, PlaneId::Y) {
+        predict_intra_directional_angle_rect_one_sided_idif_into(
+            BitDepth::Eight,
+            block_size,
+            IntraDirectionalAngle::D203,
+            IntraDirectionalAngleIdifEdges::left(&left_idif),
+            &mut prediction,
+            side,
+        )
+        .map_err(recon_err)?;
+    } else {
+        // The chroma bilinear one-sided predictor reads the logical left edge
+        // `LeftCol[0..w+h)` (length `w + h`); drop the IDIF `-2`/`-1` corner
+        // prefix (slice indices 0,1) to recover that view.
+        let left_bilinear = &left_idif[2..2 + side + side];
+        predict_intra_directional_angle_rect_into(
+            BitDepth::Eight,
+            block_size,
+            IntraDirectionalAngle::D203,
+            IntraDirectionalAngleEdges::left(left_bilinear),
+            &mut prediction,
+            side,
+        )
+        .map_err(recon_err)?;
+    }
+    let out = if block.all_zero {
+        prediction
+    } else {
+        reconstruct_general_intra_block_with_prediction(
+            &block.quant,
+            &prediction,
+            qindex,
+            plane_id,
+            log2_side,
+            use_tcq,
+        )?
+    };
+    workspace
+        .write_rect_block(plane_id, x, y, block_size, &out)
+        .map_err(recon_err)?;
+    Ok(())
+}
+
+/// Builds the § 7.13.2.8 ZONE-3 IDIF left edge `LeftCol[-2 ..= w + h + 1]`
+/// (length `w + h + 4` for `MrlIndex == 0`, `slice[0]` = logical `-2`) for a
+/// first-superblock-row, non-first-column (`haveAbove == 0 && haveLeft == 1`)
+/// one-sided block.
+///
+/// Per § 7.13.2.1 (the `haveLeft == 1` left-column branch): the in-column samples
+/// `LeftCol[i]` for `i in 0..w + h` are `CurrFrame[plane][Min(leftLimit, y + i)]
+/// [x - 1]` with `leftLimit = Min(maxY, y + h + 4 * num4BelowLeft - 1)`. At
+/// `haveAbove == 0 && haveLeft == 1` the corner `LeftCol[-1] = AboveRow[-1] =
+/// CurrFrame[plane][y][x - 1]` (the top of the left column). Per § 7.13.2.8 the
+/// edge is then extended: `LeftCol[minBase - 1] = LeftCol[minBase]` (here
+/// `LeftCol[-2] = LeftCol[-1]`) and `LeftCol[maxBase + 1] = LeftCol[maxBase + 2]
+/// = LeftCol[maxBase]` (the two trailing samples repeat the clamped last in-column
+/// sample).
+fn build_one_sided_left_idif_edge(
+    workspace: &CurrentFrameWorkspace<u8>,
+    plane_id: PlaneId,
+    x: usize,
+    y: usize,
+    side: usize,
+    num4_below_left: usize,
+) -> core::result::Result<Vec<u8>, GeneralIntraResidualError> {
+    let left_col = x
+        .checked_sub(1)
+        .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
+    // §7.13.2.1 maxY = ((MiRows * MI_SIZE) >> SubsamplingY) - 1, i.e. the plane's
+    // last reconstructed row. The plane storage height equals the plane frame
+    // height for these multiple-of-64 frames.
+    let plane = workspace.plane(plane_id).map_err(recon_err)?;
+    let storage_height = plane.storage_size().height();
+    let max_y = storage_height
+        .checked_sub(1)
+        .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
+    // leftLimit = Min(maxY, y + h + 4 * num4BelowLeft - 1).
+    let below_left_extent = side
+        .checked_add(num4_below_left.saturating_mul(4))
+        .and_then(|v| v.checked_sub(1))
+        .and_then(|v| y.checked_add(v));
+    let left_limit = below_left_extent.map_or(max_y, |limit| limit.min(max_y));
+
+    // maxBaseY = w + h - 1 (mrlIndex 0). The IDIF logical range is -2..=maxBaseY+2
+    // (slice length maxBaseY + 5 = w + h + 4): logical -2 (slice 0), -1 corner
+    // (slice 1), 0..=maxBaseY (slices 2..=maxBaseY+2), and the two trailing
+    // extension samples maxBaseY+1 (slice maxBaseY+3), maxBaseY+2 (slice maxBaseY+4).
+    let max_base_y = side
+        .checked_add(side)
+        .and_then(|v| v.checked_sub(1))
+        .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
+    let edge_len = max_base_y
+        .checked_add(5)
+        .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
+    let mut left = vec![0u8; edge_len];
+    // §7.13.2.1 (haveAbove == 0 && haveLeft == 1): corner LeftCol[-1] =
+    // CurrFrame[plane][y][x-1]. Logical -1 -> slice index 1; -2 -> slice index 0.
+    let corner = workspace
+        .reconstructed_sample(plane_id, left_col, y)
+        .map_err(recon_err)?;
+    left[0] = corner; // logical -2 = LeftCol[-1] (spec extension)
+    left[1] = corner; // logical -1
+    // In-column samples logical 0..=maxBaseY -> slice indices 2..=maxBaseY+2.
+    for i in 0..=max_base_y {
+        let row = y.saturating_add(i).min(left_limit);
+        let sample = workspace
+            .reconstructed_sample(plane_id, left_col, row)
+            .map_err(recon_err)?;
+        let slot = i
+            .checked_add(2)
+            .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
+        left[slot] = sample;
+    }
+    // §7.13.2.8 trailing extension: LeftCol[maxBaseY+1] = LeftCol[maxBaseY+2] =
+    // LeftCol[maxBaseY]; copy the clamped last in-column sample into both trailing
+    // slots (maxBaseY+3, maxBaseY+4).
+    let last_in_col = left[max_base_y + 2];
+    if let Some(slot) = left.get_mut(max_base_y + 3) {
+        *slot = last_in_col;
+    }
+    if let Some(slot) = left.get_mut(max_base_y + 4) {
+        *slot = last_in_col;
+    }
+    Ok(left)
 }
 
 /// Reconstructs one neighbour-having CARDINAL directional luma block — `V_PRED`
@@ -1379,12 +1588,13 @@ fn middle_directional_angle(
         SupportedDirectionalLumaMode::D113 => Ok(IntraMiddleDirectionalAngle::D113),
         SupportedDirectionalLumaMode::D135 => Ok(IntraMiddleDirectionalAngle::D135),
         SupportedDirectionalLumaMode::D157 => Ok(IntraMiddleDirectionalAngle::D157),
-        // The cardinal copy modes and the ZONE-1 one-sided D45 mode use dedicated
-        // predictors and never reach the middle-angle path; return an error
-        // (defensive: the dispatch routes them away first).
+        // The cardinal copy modes and the one-sided angles (zone-1 D45,
+        // zone-3 D203) use dedicated predictors and never reach the middle-angle
+        // path; return an error (defensive: the dispatch routes them away first).
         SupportedDirectionalLumaMode::Vertical
         | SupportedDirectionalLumaMode::Horizontal
-        | SupportedDirectionalLumaMode::D45 => {
+        | SupportedDirectionalLumaMode::D45
+        | SupportedDirectionalLumaMode::D203 => {
             Err(GeneralIntraResidualError::CardinalModeInMiddleAnglePath)
         }
     }

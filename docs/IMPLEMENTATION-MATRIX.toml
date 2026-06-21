@@ -12243,7 +12243,7 @@ perf = "not-applicable"
 [feature.proof]
 tests = [
     "crates/splot-decode/src/runtime_minimal.rs::general_intra_tests::d113_neighbour_directional_idif_above_intra_frame_decodes_to_oracle",
-    "crates/splot-decode/src/tile_payload/cdf/block_context.rs::tests::supported_directional_admits_middle_and_d45_but_rejects_other_one_sided_angles",
+    "crates/splot-decode/src/tile_payload/cdf/block_context.rs::tests::supported_directional_admits_middle_d45_and_d203_but_rejects_d67",
     "crates/splot-decode/src/tile_payload/cdf/block_context.rs::tests::y_mode_offset_escape_reconstructs_d113",
     "crates/splot-recon/src/intra_directional_angle.rs::tests::d113_middle_prediction_matches_non_idif_bilinear_formula",
 ]
@@ -12298,7 +12298,7 @@ perf = "not-applicable"
 [feature.proof]
 tests = [
     "crates/splot-decode/src/runtime_minimal.rs::general_intra_tests::d45_neighbour_one_sided_above_right_intra_frame_decodes_to_oracle",
-    "crates/splot-decode/src/tile_payload/cdf/block_context.rs::tests::supported_directional_admits_middle_and_d45_but_rejects_other_one_sided_angles",
+    "crates/splot-decode/src/tile_payload/cdf/block_context.rs::tests::supported_directional_admits_middle_d45_and_d203_but_rejects_d67",
     "crates/splot-recon/src/intra_directional_angle.rs::tests::d45_one_sided_idif_matches_bilinear_copy_for_shift_zero",
     "crates/splot-recon/src/intra_directional_angle.rs::tests::d45_one_sided_idif_clamps_base_at_max_base_x",
 ]
@@ -12310,6 +12310,62 @@ commands = [
 ]
 fixtures = [
     "tests/conformance/vectors/valid/syn-d45-intra-192x128-q80.ivf",
+    "crates/splot-decode/src/runtime_minimal/general_intra.rs",
+    "crates/splot-decode/src/runtime_minimal_recon.rs",
+    "crates/splot-recon/src/intra_directional_angle.rs",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
+id = "DECODE-GENERAL-INTRA-ANGLE-D203"
+name = "General intra D203 zone-3 one-sided luma + follow chroma reading the real left column"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.20.5.3", "5.20.7.25", "5.20.7.27", "7.13.2.1", "7.13.2.7", "7.13.2.8", "8.2.4", "9.2"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-25",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-1",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-7",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-8",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/runtime_minimal/general_intra.rs"
+openspec_change = "decode-general-intra-angle-d203"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Opens the §7.13.2.8 ZONE-3 one-sided angle zone (`pAngle > 180`, `needBottom`) — the symmetric MIRROR of the D45 zone-1 brick (DECODE-GENERAL-INTRA-ANGLE-D45) — by admitting the §7.13.2.8 D203_PRED directional luma mode (pAngle 203, canonical §9.2 mode 7, `AngleDeltaY == 0`) over a REAL reconstructed left column plus its `uv_mode == 0` directional-follow D203 chroma. Unlike the §7.13.2.8 MIDDLE angles (D113/D135/D157, `90 < pAngle < 180`, which read `AboveRow[0..w)` / `LeftCol[0..h)`), the zone-3 step-3 projection reads DOWN-AND-LEFT into the BELOW-LEFT: `idx = (j + 1) * dy`, `base = (idx >> 6) + i` (`dy = Dr_Intra_Derivative[270 - 203] = Dr_Intra_Derivative[67] = 24`, §9.2), up to `maxBaseY = w + h - 1 = 127` for a 64x64 block. This brick GENERALISES the zone-1 luma IDIF kernel in `splot-recon` to both one-sided directions (`predict_intra_directional_angle_rect_one_sided_idif_into` now dispatches on the angle branch; `IntraDirectionalAngleIdifEdges::left` carries the prepared left edge): it implements §7.13.2.8 step 3 (`shift = (idx >> 1) & 0x1F`; for `base < maxBaseY + 1` the 4-tap `s = Σ(t=0..3) Dr_Interp_Filter[shift][t] * LeftCol[base + t - 1]; pred = Clip1(Round2(s, 7))`, else `pred = LeftCol[maxBaseY]`) over the wider left edge `LeftCol[-2 ..= w + h + 1]` (length `w + h + 4`, slice index 0 = logical `-2`), reusing the existing §7.13.2.8 / §9.2 `Dr_Interp_Filter[32][4]` table UNCHANGED. Unlike D45 (`dx = 64`, every `shift == 0`, the IDIF reduces to a sample copy), D203's `dy = 24` lands most projections on a NONZERO shift, so the luma §7.13.2.8 IDIF 4-tap genuinely interpolates over the real reconstructed left column. The runtime maps mode value 7 to `SupportedDirectionalLumaMode::D203` (`IntraYMode::supported_directional`) and routes the neighbour-having luma D203 block to the new `reconstruct_general_intra_one_sided_left_neighbour_block_into`, which builds the §7.13.2.1 left edge `LeftCol[i] = CurrFrame[plane][Min(leftLimit, y+i)][x-1]` (`leftLimit = Min(maxY, y + h + 4 * num4BelowLeft - 1)`, `num4BelowLeft` from §5.20.7.25 `count_bottom_left_avail` over the §5.20.2.3 `BlockDecoded` state, `0` in raster order so the below-left clamps) + the corner `LeftCol[-1] = CurrFrame[plane][y][x-1]` (the `haveAbove == 0 && haveLeft == 1` §7.13.2.1 branch), plus the §7.13.2.8 edge extensions, then runs the luma IDIF kernel; the D203-follow chroma (`SupportedChromaMode::D203Follow`, resolved when `uv_mode == 0` over the D203 luma makes §5.20.5.3 return `UVMode == D203_PRED`, `AngleDeltaUV == 0`) routes to the same function on the chroma plane (the `enableIdif == 0` bilinear one-sided branch, the spec-mandated chroma branch). `enable_ibp == 0` keeps `useIBP == 0` (§7.13.2.7 gates `useIBP` on `pAngle > 180`); `enable_intra_edge_filter == 0` / `MrlIndex == 0` keep the §7.13.2.x edge-filter / upsample synthesis a no-op. The committed `syn-d203-intra-128x64-q80.ivf` (128x64 = two superblock columns by one row: LEFT 64x64 superblock DC_PRED carrying a vertical-gradient residual so its right column reconstructs NON-FLAT, 32 distinct values 31..210; RIGHT 64x64 superblock at `frontier.r == 0, frontier.c == 16, haveAbove == 0 && haveLeft == 1`, codes D203_PRED luma plus `uv_mode == 0` directional-follow D203 chroma) decodes bit-exactly to the avmdec AND dav2d oracle (raw output md5 2789636ec6bca9efcac829bbd7ca3712; pinned splot frame hash 3b95907f8808cc9d0bdd2eb376c8726019f7a4490cf8ecfcccab883fb11f8a3f), guarded by the §8.2.4 `exit_symbol()` bit-exactness check. The D203 block reads the real reconstructed left column (the left superblock's non-flat right column gradient) and reconstructs as 181 distinct values, genuinely directional. The OLD code rejected this exact frame (`general_intra_d203_unverified_position` / D203's `supported_directional()` returned None). All existing general-intra fixtures still decode bit-exact (the V/H/D45/D113/D135/D157/cardinal/SMOOTH/DC arms are byte-identical), and the last still-unsupported one-sided angle (D67 value 8) still rejects (`supported_directional` returns None). Scope: D203 luma + D203-follow chroma on a FIRST-superblock-row, NON-first-column full 64x64 superblock (`frontier.r == 0 && frontier.c != 0`, `n4w == 16`, `haveAbove == 0 && haveLeft == 1`) reading the real reconstructed §7.13.2.1 left column. Out of scope (still rejected / deferred): the top-left no-neighbour, first-column (no real left column), row>0, sub-partitioned, and non-64x64 D203 positions (`general_intra_d203_unverified_position`), the remaining one-sided angle D67 (zone-1, needs an encoder-selectable fixture), non-zero angle deltas, MRL, directional IBP, wide-angle, the directional-neighbour (ctx != 0) escape reorder, a non-zero `num4BelowLeft` real below-left, multiple tiles, inter prediction, in-loop filters, and live AVM/dav2d in CI."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "partial"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "partial"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/runtime_minimal.rs::general_intra_tests::d203_neighbour_one_sided_left_intra_frame_decodes_to_oracle",
+    "crates/splot-decode/src/tile_payload/cdf/block_context.rs::tests::supported_directional_admits_middle_d45_and_d203_but_rejects_d67",
+    "crates/splot-decode/src/tile_payload/cdf/block_context.rs::tests::supported_chroma_mode_directional_follow_resolves_d203_for_uv_mode_zero",
+    "crates/splot-recon/src/intra_directional_angle.rs::tests::d203_one_sided_idif_interpolates_real_left_column",
+    "crates/splot-recon/src/intra_directional_angle.rs::tests::d203_one_sided_idif_rejects_above_edge",
+]
+commands = [
+    "cargo test -p splot-decode general_intra --locked",
+    "cargo test -p splot-recon d203_one_sided --locked",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "tests/conformance/vectors/valid/syn-d203-intra-128x64-q80.ivf",
     "crates/splot-decode/src/runtime_minimal/general_intra.rs",
     "crates/splot-decode/src/runtime_minimal_recon.rs",
     "crates/splot-recon/src/intra_directional_angle.rs",

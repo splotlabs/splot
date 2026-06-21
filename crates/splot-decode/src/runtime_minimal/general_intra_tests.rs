@@ -1786,3 +1786,93 @@ fn d45_neighbour_one_sided_above_right_intra_frame_decodes_to_oracle() {
         "d08056c0d1ed3f379e3072c7f1ebced04da0f6df994efd0b5f8d39b76c0b683f"
     );
 }
+
+// 8-bit 4:2:0 intra key frame (IVF, 128x64, two superblock columns by one row)
+// whose LEFT 64x64 superblock is DC_PRED carrying a vertical-gradient residual
+// (so it reconstructs NON-FLAT, its right column 32 distinct values 31..210) and
+// whose RIGHT 64x64 superblock (frontier.r 0, frontier.c 16, haveAbove == 0,
+// haveLeft == 1) codes the §7.13.2.8 ZONE-3 one-sided D203_PRED directional luma
+// mode (canonical mode 7, pAngle 203, AngleDeltaY 0) plus its uv_mode 0
+// directional-follow D203 chroma. D203 is the symmetric mirror of D45: its
+// `dy = Dr_Intra_Derivative[270 - 203] = Dr_Intra_Derivative[67] = 24` projects
+// DOWN-AND-LEFT (`idx = (j + 1) * dy`, `base = (idx >> 6) + i`, up to
+// `maxBaseY = w + h - 1 = 127`), reading the real reconstructed left column (the
+// already-decoded left superblock's right column) via §7.13.2.1 `LeftCol[i] =
+// CurrFrame[plane][Min(leftLimit, y + i)][x - 1]`. Unlike D45 (`shift == 0`),
+// D203's nonzero shifts genuinely exercise the §7.13.2.8 luma IDIF 4-tap. At
+// `frontier.r == 0` the below-left clamps (`num4BelowLeft == 0`, §5.20.7.25
+// `count_bottom_left_avail`) and the corner is `CurrFrame[plane][y][x - 1]`. The
+// OLD code rejected this frame (`general_intra_d203_unverified_position` /
+// `supported_directional()` returned `None`). avmdec and dav2d agree on the
+// decoded output (raw md5 2789636ec6bca9efcac829bbd7ca3712); the first
+// general-intra ZONE-3 one-sided D203 decode reading a real reconstructed left
+// column.
+const D203_FIXTURE: &[u8] =
+    include_bytes!("../../../../tests/conformance/vectors/valid/syn-d203-intra-128x64-q80.ivf");
+
+#[test]
+fn d203_neighbour_one_sided_left_intra_frame_decodes_to_oracle() {
+    use splot_recon::{BitDepth, PixelFormat, PlaneSize};
+
+    let frame = decode_general_intra_luma(D203_FIXTURE);
+    assert_eq!(frame.bit_depth(), BitDepth::Eight);
+    assert_eq!(frame.pixel_format(), PixelFormat::Yuv420);
+    assert_eq!(frame.y().visible_size(), PlaneSize::new(128, 64).unwrap());
+    assert_eq!(
+        frame.u().unwrap().visible_size(),
+        PlaneSize::new(64, 32).unwrap()
+    );
+
+    let y = frame.y().samples();
+    let at = |r: usize, c: usize| y[r * 128 + c];
+    // RIGHT superblock (rows 0..64, cols 64..128): D203 reading the real
+    // §7.13.2.1 left column (the left superblock's reconstructed right column, a
+    // vertical gradient 31..210) and the clamped below-left.
+    //
+    // pred[0][0] reads `LeftCol[base]` with `base = ((0 + 1) * 24 >> 6) + 0 = 0`,
+    // the top of the real left column (~31), NOT a flat fallback.
+    assert!(
+        at(0, 64) < 60,
+        "D203 block top-left must read the real left column gradient low end (~31)"
+    );
+    // pred[0][63] projects down-and-left into the lower part of the left column
+    // (`base = ((63 + 1) * 24 >> 6) + 0 = 24`), so the top-right sample reads a
+    // MUCH higher gradient value than the top-left — the decisive ZONE-3
+    // down-and-left read (a middle/cardinal angle could not produce this).
+    assert!(
+        at(0, 127) > at(0, 64) + 30,
+        "D203 block top-right must project down-and-left into the lower left column (a higher gradient value than the top-left)"
+    );
+    // The block must be genuinely directional (non-flat, not row/col-constant).
+    let block: Vec<u8> = (0..64)
+        .flat_map(|i| (0..64).map(move |j| at(i, 64 + j)))
+        .collect();
+    let distinct = block
+        .iter()
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
+    assert!(
+        distinct > 4,
+        "D203 block must be a non-flat directional reconstruction reading the left column"
+    );
+
+    // Chroma is flat (U=120, V=130): the right chroma superblock runs the
+    // first-superblock-row, non-first-column directional-follow D203 chroma path
+    // (the §7.13.2.8 bilinear one-sided branch over the real reconstructed left
+    // column, all uniform 120/130), so it reconstructs flat. The decode reaches
+    // this path because `uv_mode == 0` over the D203 luma resolves to D203-follow
+    // chroma.
+    assert!(frame.u().unwrap().samples().iter().all(|&s| s == 120));
+    assert!(frame.v().unwrap().samples().iter().all(|&s| s == 130));
+
+    // Frame hash pins splot's output, which reproduces avmdec's and dav2d's raw
+    // output byte-for-byte (verified locally; raw md5
+    // 2789636ec6bca9efcac829bbd7ca3712).
+    let hash = splot_recon::DecodedFrameHashInput::new(&frame)
+        .compute_hash()
+        .to_hex();
+    assert_eq!(
+        hash,
+        "3b95907f8808cc9d0bdd2eb376c8726019f7a4490cf8ecfcccab883fb11f8a3f"
+    );
+}
