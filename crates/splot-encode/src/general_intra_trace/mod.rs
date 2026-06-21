@@ -34,7 +34,7 @@ pub use chroma::{
 };
 pub use coded_dc::emit_minimal_intra_coded_dc_ivf;
 pub use multi_coeff::{
-    emit_minimal_intra_eob3_ivf, emit_minimal_intra_two_coeff_ivf,
+    emit_minimal_intra_2d_ivf, emit_minimal_intra_eob3_ivf, emit_minimal_intra_two_coeff_ivf,
     emit_minimal_intra_two_nonzero_ivf, emit_minimal_intra_visible_ac_ivf,
 };
 pub use skip::emit_minimal_intra_skip_ivf;

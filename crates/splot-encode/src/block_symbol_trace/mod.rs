@@ -132,6 +132,10 @@ const COEFF_BASE_LF_CTX_VISIBLE_AC_DC: usize = 2;
 // whose only nonzero coefficient is the EOB at scan index 2 (raster 1): that EOB is not a § 8.3.2
 // neighbour of (1,0), so the off-axis band maps to `min(0,6) + 9 = 9` (verified).
 const COEFF_BASE_LF_CTX_AC_BAND_BASE: usize = 9;
+// The DC `coeff_base` low-frequency context for the eob=3 **2-D** block: two level-4 AC
+// neighbours (scan 1 vertical at raster 32, scan 2 horizontal at raster 1) sum to § 8.3.2
+// magnitude 8, mapping the DC to low-frequency context `(8+1)>>1 = 4` (verified).
+const COEFF_BASE_LF_CTX_2D_DC: usize = 4;
 const COEFF_BASE_LF_TCQ_CTX_NEUTRAL: usize = 0;
 const COEFF_BASE_LF_CDF_ROW_LEN: usize = 7;
 // The minimal eob=2 block's coefficient levels: a single AC of level 1 at scan

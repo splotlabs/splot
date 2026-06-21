@@ -499,3 +499,63 @@ fn encoder_eob3_ivf_decodes_to_a_horizontal_cosine_luma() {
         "expected flat 128 chroma"
     );
 }
+
+/// The encoder's first **2-D reconstruction**: eob=3 with two nonzero level-4 ACs — a positive
+/// horizontal AC at scan index 2 and a negative vertical AC at scan index 1 (U and V skipped).
+/// This is the first block whose decode varies in BOTH dimensions (neither rows nor columns are
+/// constant) — the horizontal and vertical low-frequency cosines superimposed with opposite
+/// signs, giving a diagonal gradient. The asymmetric AC signs also prove the reverse-scan
+/// two-`sign_bit` order: a wrong order would mirror the diagonal. `splot decode` reconstructs the
+/// 3x3 band grid (rows/cols sampled at 4/32/60): [[128,127,127],[129,128,127],[129,129,128]].
+#[test]
+fn encoder_2d_ivf_decodes_to_a_diagonal_gradient_luma() {
+    let ivf = splot_encode::emit_minimal_intra_2d_ivf().expect("emit the 2-D IVF");
+
+    let input = temp_path("twod-input", "ivf");
+    let output = temp_path("twod-output", "raw");
+    std::fs::write(&input, &ivf).expect("write the emitted IVF");
+
+    let status = Command::new(env!("CARGO_BIN_EXE_splot"))
+        .args([
+            "decode",
+            input.to_str().expect("utf-8 input path"),
+            "--output",
+            output.to_str().expect("utf-8 output path"),
+            "--output-format",
+            "raw",
+        ])
+        .status()
+        .expect("run the splot binary");
+
+    let raw = std::fs::read(&output);
+    let _ = std::fs::remove_file(&input);
+    let _ = std::fs::remove_file(&output);
+
+    assert!(status.success(), "splot decode of the 2-D IVF failed");
+    let raw = raw.expect("read the decoded raw output");
+    assert_eq!(raw.len(), 6144, "unexpected decoded frame size");
+
+    let luma = &raw[..4096];
+    let px = |row: usize, col: usize| luma[row * 64 + col];
+    // Genuinely 2-D: neither all rows nor all columns are constant.
+    let any_row_varies = (0..64).any(|r| (0..64).any(|c| px(r, c) != px(r, 0)));
+    let any_col_varies = (0..64).any(|c| (0..64).any(|r| px(r, c) != px(0, c)));
+    assert!(
+        any_row_varies && any_col_varies,
+        "expected a genuinely 2-D (non-separable) luma"
+    );
+    // The 3x3 band grid (deterministic): a diagonal gradient. A wrong sign order would mirror it.
+    let expected = [[128u8, 127, 127], [129, 128, 127], [129, 129, 128]];
+    let rows = [4usize, 32, 60];
+    let cols = [4usize, 32, 60];
+    for (ri, &r) in rows.iter().enumerate() {
+        for (ci, &c) in cols.iter().enumerate() {
+            assert_eq!(px(r, c), expected[ri][ci], "2-D band ({r},{c})");
+        }
+    }
+    // Chroma is untouched (U and V skipped) -> flat 128.
+    assert!(
+        raw[4096..].iter().all(|&s| s == 128),
+        "expected flat 128 chroma"
+    );
+}

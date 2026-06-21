@@ -493,6 +493,86 @@ pub(crate) fn general_intra_64x64_luma_eob3_base_tokens(
     Ok(tokens)
 }
 
+/// The DC `coeff_base` low-frequency context for the eob=3 2-D block: two level-4 AC neighbours
+/// (scan 1 + scan 2) sum to § 8.3.2 magnitude 8, mapping the DC to context `(8+1)>>1 = 4`.
+const COEFF_2D_DC_CTX: usize = 4;
+
+/// Returns the ordered general `TX_64X64` luma **eob=3 2-D base-pass** tokens for a block with
+/// two nonzero level-4 ACs — scan index 1 (raster 32, vertical frequency 1) and scan index 2
+/// (raster 1, horizontal frequency 1, the EOB) — with a zero DC. This is the first block whose
+/// reconstruction varies in both dimensions (the vertical + horizontal cosines superimposed). The
+/// sequence is `txb_skip == 0`, `eob_pt_1024 == 2`, `eob_extra == 0`, then the base pass over the
+/// reverse scan `c = 2,1,0`: the EOB AC `coeff_base_eob` (level 4 -> symbol 3) at ctx 1, the
+/// scan-1 AC `coeff_base` (level 4, no `coeff_br` since 4 == LF_NUM_BASE_LEVELS) at ctx 9, and the
+/// DC `coeff_base` (level 0) at ctx 4. The caller appends the two AC `sign_bit` § 8.2.5 bypasses
+/// in reverse-scan order (scan 2 then scan 1). `TX_64X64` is DCT-only — no transform-type symbol.
+pub(crate) fn general_intra_64x64_luma_2d_base_tokens(
+    coeff_cdf_q_ctx: usize,
+) -> Result<Vec<CoefficientEntropyToken>> {
+    let mut tokens = Vec::new();
+    tokens
+        .try_reserve_exact(6)
+        .map_err(|_| Error::CoefficientTokenizationAllocationFailed {
+            context: "general 2-D luma base tokens",
+        })?;
+    tokens.push(CoefficientEntropyToken {
+        syntax: CoefficientTokenSyntax::AllZero,
+        selector: CoefficientCdfRowSelector::TxbSkip {
+            coeff_cdf_q_ctx,
+            plane_type: LUMA_PLANE_TYPE,
+            tx_size: TX_SIZE_64X64_CTX,
+            ctx: TXB_SKIP_CTX_NEUTRAL,
+        },
+        symbol: false as u8,
+    });
+    tokens.push(CoefficientEntropyToken {
+        syntax: CoefficientTokenSyntax::EobPt1024,
+        selector: CoefficientCdfRowSelector::EobPt1024 {
+            coeff_cdf_q_ctx,
+            eob_ctx: EOB_CTX_LUMA_INTRA,
+        },
+        symbol: EOB3_EOB_PT_SYMBOL,
+    });
+    tokens.push(CoefficientEntropyToken {
+        syntax: CoefficientTokenSyntax::EobExtra,
+        selector: CoefficientCdfRowSelector::EobExtra { coeff_cdf_q_ctx },
+        symbol: EOB3_EOB_EXTRA_SYMBOL,
+    });
+    // c=2 (EOB AC, scan idx 2): coeff_base_eob (level 4 -> symbol 3) at ctx 1.
+    tokens.push(CoefficientEntropyToken {
+        syntax: CoefficientTokenSyntax::CoeffBaseEob,
+        selector: CoefficientCdfRowSelector::CoeffBaseLfEob {
+            coeff_cdf_q_ctx,
+            tx_size: TX_SIZE_64X64_CTX,
+            ctx: COEFF_BASE_LF_EOB_CTX_EOB2_AC,
+        },
+        symbol: VISIBLE_AC_LEVEL - 1,
+    });
+    // c=1 (AC, scan idx 1, level 4): coeff_base at ctx 9 (no coeff_br, 4 == LF_NUM_BASE_LEVELS).
+    tokens.push(CoefficientEntropyToken {
+        syntax: CoefficientTokenSyntax::CoeffBase,
+        selector: CoefficientCdfRowSelector::CoeffBaseLf {
+            coeff_cdf_q_ctx,
+            tx_size: TX_SIZE_64X64_CTX,
+            ctx: EOB3_SCAN1_COEFF_BASE_CTX,
+            tcq_ctx: COEFF_BASE_LF_TCQ_CTX_NEUTRAL,
+        },
+        symbol: VISIBLE_AC_LEVEL,
+    });
+    // c=0 (DC, level 0): coeff_base at ctx 4 (the two-AC-neighbour band).
+    tokens.push(CoefficientEntropyToken {
+        syntax: CoefficientTokenSyntax::CoeffBase,
+        selector: CoefficientCdfRowSelector::CoeffBaseLf {
+            coeff_cdf_q_ctx,
+            tx_size: TX_SIZE_64X64_CTX,
+            ctx: COEFF_2D_DC_CTX,
+            tcq_ctx: COEFF_BASE_LF_TCQ_CTX_NEUTRAL,
+        },
+        symbol: 0,
+    });
+    Ok(tokens)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
