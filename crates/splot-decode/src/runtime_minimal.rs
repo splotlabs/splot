@@ -957,9 +957,11 @@ fn decode_one_general_intra_block(
     }
 
     // The block's § 8.3.2 `y_mode_index` context is derived from the already-
-    // decoded left/above neighbours' stored `IntraJointMode` (§ 5.20.5.3); a
-    // directional neighbour (`ctx != 0`) is rejected inside the mode decode
-    // before any symbol is read (the unverified-CDF reject for codex P2 / #383).
+    // decoded left/above neighbours' stored `IntraJointMode` (§ 5.20.5.3). A
+    // directional neighbour raises `ctx` to `1` or `2`, selecting the
+    // `TileYModeIndexCdf[ctx]` row; the non-directional luma decode over that row
+    // is now handled (only the `y_mode_offset` escape's §5.20.5.3
+    // directional-neighbour reorder is still deferred inside the mode decode).
     let modes = crate::tile_payload::decode_general_intra_block_modes(
         work_unit,
         symbols,
@@ -1414,11 +1416,11 @@ fn general_intra_block_mode_error(
             "general intra decode rejected an out-of-range chroma uv_mode index",
             GENERAL_INTRA_MODE_SPEC_SECTION,
         ),
-        GeneralIntraBlockModeError::UnsupportedYModeIndexContext { .. } => {
+        GeneralIntraBlockModeError::UnsupportedDirectionalNeighbourReorder { .. } => {
             general_intra_unsupported(
-                "general_intra_directional_neighbour_y_mode_index_ctx",
+                "general_intra_directional_neighbour_reorder",
                 Some(offset),
-                "general intra directional-neighbour y_mode_index context (ctx != 0) is not yet verified",
+                "general intra y_mode_offset escape over a directional joint-mode neighbour needs the §5.20.5.3 directional-neighbour mode reorder (resolving to a directional mode that needs the deferred §7.13.2.8 luma IDIF)",
                 GENERAL_INTRA_MODE_SPEC_SECTION,
             )
         }
@@ -2337,6 +2339,73 @@ mod general_intra_tests {
         assert_eq!(
             hash,
             "269b4969800751c63f7f0605f1f7b8f178f7bf85590ec62fe64313ff394d6dfd"
+        );
+    }
+
+    // A 128x64 multi-superblock intra frame whose LEFT 64x64 codes as § 7.13.2.8
+    // `D135_PRED` luma (the § 5.20.5.3 `y_mode_offset` escape, `IntraJointMode 36`,
+    // 40/210 anti-diagonal hedge) and whose RIGHT 64x64 codes as `SMOOTH_V_PRED`
+    // luma over a vertical gradient (flat chroma U=120 V=130). The RIGHT block's
+    // left neighbour stored the directional `IntraJointMode 36`
+    // (`>= NON_DIRECTIONAL_MODES_COUNT`), so its § 8.3.2 `y_mode_index` ctx is 1 and
+    // it reads from `TileYModeIndexCdf[1]` — the first general-intra
+    // directional-neighbour (`ctx != 0`) `y_mode_index` decode (the earlier code
+    // rejected this exact frame, `general_intra_directional_neighbour_y_mode_index_ctx`).
+    // Its `modeIdx == y_mode_index == 2 < NON_DIRECTIONAL_MODES_COUNT` passes through
+    // § 5.20.5.3 `get_intra_y_mode_set` unchanged (the reorder fires only for
+    // `modeIdx >= 5`) -> `Reordered_Y_Mode[2] == SMOOTH_V_PRED`. avmdec and dav2d
+    // agree (md5 1a84b6545ee333b98cdf1982fd18310a). Rationale in the matrix row.
+    const DIRNEIGH_FIXTURE: &[u8] = include_bytes!(
+        "../../../tests/conformance/vectors/valid/syn-dirneigh-intra-128x64-q80.ivf"
+    );
+
+    #[test]
+    fn dirneigh_directional_neighbour_ctx_intra_frame_decodes_to_oracle() {
+        use splot_recon::{BitDepth, PixelFormat, PlaneSize};
+
+        let frame = decode_general_intra_luma(DIRNEIGH_FIXTURE);
+        assert_eq!(frame.bit_depth(), BitDepth::Eight);
+        assert_eq!(frame.pixel_format(), PixelFormat::Yuv420);
+        assert_eq!(frame.y().visible_size(), PlaneSize::new(128, 64).unwrap());
+        assert_eq!(
+            frame.u().unwrap().visible_size(),
+            PlaneSize::new(64, 32).unwrap()
+        );
+
+        let y = frame.y().samples();
+        let at = |r: usize, c: usize| y[r * 128 + c];
+        // LEFT superblock: D135 anti-diagonal hedge — a genuine directional pattern
+        // (varies across columns in its top row, not flat/row-constant) that darkens
+        // top-to-bottom.
+        assert!(
+            (1..64).any(|c| at(0, c) != at(0, 0)),
+            "left superblock top row must vary across columns (directional, not flat)"
+        );
+        assert!(at(0, 0) < at(63, 0), "left darkens top-to-bottom");
+        // RIGHT superblock: SMOOTH_V — constant across columns within a row, with a
+        // vertical gradient increasing top-to-bottom (the ctx==1 decode resolved to
+        // SMOOTH_V_PRED and ran the non-DC prediction plus AC residual).
+        assert!(
+            (64..128).all(|c| at(20, c) == at(20, 64)),
+            "right superblock must be constant across columns within a row (SMOOTH_V)"
+        );
+        assert!(
+            at(0, 64) < at(63, 64),
+            "right increases top-to-bottom (SMOOTH_V)"
+        );
+        // Chroma is flat (U=120, V=130) across both superblocks.
+        assert!(frame.u().unwrap().samples().iter().all(|&s| s == 120));
+        assert!(frame.v().unwrap().samples().iter().all(|&s| s == 130));
+
+        // Frame hash pins splot's output, which reproduces avmdec's and dav2d's raw
+        // output byte-for-byte (verified locally; md5
+        // 1a84b6545ee333b98cdf1982fd18310a).
+        let hash = splot_recon::DecodedFrameHashInput::new(&frame)
+            .compute_hash()
+            .to_hex();
+        assert_eq!(
+            hash,
+            "ad1515885df5620a31c37f855934ae2432167edbf1b1b62081552b9df3957426"
         );
     }
 

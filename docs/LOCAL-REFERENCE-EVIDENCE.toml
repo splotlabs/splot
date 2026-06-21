@@ -790,3 +790,55 @@ output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
 kind = "digest-equality"
 left = "avm-vgrid-raw-md5"
 right = "dav2d-vgrid-raw-md5"
+
+[[evidence]]
+id = "lref-avm-dav2d-syn-dirneigh-intra-128x64-q80"
+feature_id = "DECODE-GENERAL-INTRA-DIRECTIONAL-NEIGHBOUR-CTX"
+decoder_support_rows = ["general-intra-directional-neighbour-ctx"]
+kind = "reference-output-agreement"
+summary = "Local AVM and dav2d raw decoder output MD5 digests agreed for the 8-bit 128x64 multi-superblock intra IVF fixture at base_q_idx 80 whose LEFT 64x64 superblock codes as the §7.13.2.8 D135_PRED directional mode (the §5.20.5.3 y_mode_offset escape, IntraJointMode 36, top 40 over bottom 210 anti-diagonal hedge) and whose RIGHT 64x64 superblock codes as SMOOTH_V_PRED over a vertical gradient (top 30, bottom 210; flat chroma U=120 V=130). The decisive element: the right superblock's left neighbour stored the directional IntraJointMode 36 (>= NON_DIRECTIONAL_MODES_COUNT 5), so its §8.3.2 y_mode_index context is 1 and it reads y_mode_set+y_mode_index from TileYModeIndexCdf[1] — the first general-intra directional-neighbour (ctx != 0) y_mode_index decode, which the prior brick rejected with general_intra_directional_neighbour_y_mode_index_ctx. The right modeIdx (== y_mode_index 2 < NON_DIRECTIONAL_MODES_COUNT) passes through §5.20.5.3 get_intra_y_mode_set unchanged (the directional-neighbour reorder loop fires only for modeIdx >= 5), giving Reordered_Y_Mode[2] == SMOOTH_V_PRED over the real reconstructed left-neighbour edge. The §5.20.5.3 in-frame directional-neighbour reorder (reachable only via the y_mode_offset escape) and a directional neighbour-reading luma block needing the real §7.13.2.8 IDIF remain out of scope and rejected."
+recorded_at = "2026-06-21"
+
+[[evidence.fixture]]
+id = "input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-dirneigh-intra-128x64-q80.ivf"
+sha256 = "13c34ba0c880c90510f8ff5ff5ff97daac704933e6e003d04a20cea825583b78"
+size_bytes = 136
+format = "ivf"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Generated locally from a project-owned 128x64 YUV input (left 64x64 a top 40 over bottom 210 split anti-diagonal hedge, right 64x64 a vertical gradient top 30 -> bottom 210, flat chroma U=120 V=130) with broad decode tools (incl. GDF, CDEF, deblocking, restoration, CfL, MHCCP, CCTX, IBP, angle-delta, intra edge filter, ist, intra-dip, idtx-intra, mrls, palette, bawp, rectangular/extended/uneven partitions, sdp, fsc, tx-partition) disabled and --sb-size=64 --min/max-partition-size=64 forcing a 64x64 superblock grid, so the encoder codes the left superblock as D135_PRED and the right as SMOOTH_V_PRED; AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avm"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "457cd58681a747465661baccb1f32095bc5b7774"
+version_summary = "AVM checkout HEAD 457cd58681a747465661baccb1f32095bc5b7774, exact binary build commit not separately archived."
+command_summary = "Local avmdec --rawvideo --i420 output MD5 for {fixture:input}."
+output_digest_id = "avm-dirneigh-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "1a84b6545ee333b98cdf1982fd18310a"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.reference_run]]
+id = "dav2d"
+tool = "dav2d"
+executable_name = "dav2d"
+tool_role = "decode-reference"
+source_url = "https://code.videolan.org/videolan/dav2d"
+revision = "f4f96cb06bb3cd3f31e29e1f190f1c0e373ab352"
+version_summary = "dav2d 0.0.1-191-gf4f96cb0 (commit f4f96cb0), decoded with --demuxer ivf; exact version output not archived."
+command_summary = "Local dav2d --demuxer ivf raw decoder output MD5 for {fixture:input}."
+output_digest_id = "dav2d-dirneigh-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "1a84b6545ee333b98cdf1982fd18310a"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-dirneigh-raw-md5"
+right = "dav2d-dirneigh-raw-md5"

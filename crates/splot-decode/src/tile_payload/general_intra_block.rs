@@ -144,21 +144,25 @@ pub(crate) enum GeneralIntraBlockModeError {
         /// Decoded `uv_mode` value.
         uv_mode: u8,
     },
-    /// The block's AV2 § 8.3.2 `y_mode_index` neighbour context computed to a
-    /// non-zero value because an already-decoded left/above neighbour stored a
-    /// directional `IntraJointMode` (`>= NON_DIRECTIONAL_MODES_COUNT`). Only the
-    /// `ctx == 0` (non-directional / out-of-frame neighbours) `y_mode_index`
-    /// CDF selection is verified bit-exact against the AVM/dav2d oracle, so the
-    /// directional-neighbour `ctx != 0` selection is rejected before any
-    /// `y_mode_set` / `y_mode_index` symbol is read rather than decoded with an
-    /// unverified CDF row. The `ctx != 0` decode (and an oracle fixture that
-    /// reaches it) is deferred to a future increment.
+    /// The block hit the AV2 § 5.20.5.3 `y_mode_offset` escape
+    /// (`y_mode_set == 0`, `y_mode_index == MODE_INDEX_COUNT - 1`) while it has a
+    /// directional joint-mode neighbour (`ctx != 0`). The escape's `modeIdx` is
+    /// `>= NON_DIRECTIONAL_MODES_COUNT`, so `get_intra_y_mode_set` enters its
+    /// directional selection loop, which preselects the neighbours' (and, for
+    /// `Block_Width * Block_Height > 64`, their ±1..4 expanded) modes ahead of the
+    /// `Default_Mode_List_Y` scan — a reorder
+    /// [`reconstruct_y_mode_offset_escape_top_left`] does not model. The resolved
+    /// mode would be directional (needing the deferred § 7.13.2.8 luma IDIF), so it
+    /// is deferred to a future increment. The `y_mode_offset` symbol has already
+    /// been consumed when this is returned.
     #[error(
-        "general intra mode-info directional-neighbour y_mode_index context (ctx {ctx}) is not yet verified"
+        "general intra mode-info y_mode_offset escape with a directional neighbour (ctx {ctx}, y_mode_offset {y_mode_offset}) needs the unmodelled §5.20.5.3 directional-neighbour reorder"
     )]
-    UnsupportedYModeIndexContext {
+    UnsupportedDirectionalNeighbourReorder {
         /// The computed § 8.3.2 `y_mode_index` context (`1` or `2`).
         ctx: usize,
+        /// The decoded `y_mode_offset` whose escape `modeIdx` needs the reorder.
+        y_mode_offset: u8,
     },
 }
 
@@ -181,16 +185,14 @@ pub(crate) fn decode_general_intra_block_modes(
 ) -> Result<GeneralIntraBlockModes, GeneralIntraBlockModeError> {
     // AV2 § 8.3.2 `y_mode_index` / `y_mode_offset` CDF context, derived from the
     // already-decoded left/above neighbours' stored `IntraJointMode` (§ 5.20.5.3
-    // `get_joint_mode`). Only the `ctx == 0` selection (non-directional /
-    // out-of-frame neighbours) is verified bit-exact against the AVM/dav2d
-    // oracle; a directional neighbour (`ctx != 0`) selects an unverified
-    // `y_mode_index` CDF row, so it is rejected BEFORE any `y_mode_set` /
-    // `y_mode_index` symbol is read (reading with the wrong CDF would misdecode,
-    // and the verified-subset admission keeps every confident decode bit-exact).
+    // `get_joint_mode`). `ctx` is `0`, `1`, or `2` — the number of directional
+    // (`>= NON_DIRECTIONAL_MODES_COUNT`) left/above neighbours — and indexes the
+    // `TileYModeIndexCdf[ctx]` / `TileYModeOffsetCdf[ctx]` banks. The full `0..=2`
+    // range is now used directly (the `ctx != 0` selection is verified bit-exact
+    // against the AVM/dav2d oracle: a block whose left neighbour is the D135
+    // directional superblock decodes its non-directional luma mode with the
+    // `ctx == 1` CDF row, `syn-dirneigh-intra-128x64-q80`).
     let mode_ctx = joint_modes.y_mode_index_ctx(block_r, block_c, block_n4w, block_n4h);
-    if mode_ctx != 0 {
-        return Err(GeneralIntraBlockModeError::UnsupportedYModeIndexContext { ctx: mode_ctx });
-    }
 
     let cdfs = work_unit.cdf_mut().tile_cdfs_mut();
 
@@ -211,11 +213,22 @@ pub(crate) fn decode_general_intra_block_modes(
     //
     // For `y_mode_set == 0`, `y_mode_index == MODE_INDEX_COUNT - 1` is the
     // `y_mode_offset` escape (§ 5.20.5.3): read `y_mode_offset` (§ 8.3.2
-    // `TileYModeOffsetCdf[ctx]`, sharing the `y_mode_index` context) and resolve
-    // the directional mode at the no-neighbour tile origin. Otherwise the
-    // non-directional `Reordered_Y_Mode` prefix maps the index directly and
-    // `IntraJointMode == modeDelta == y_mode_index` (`modeIdx < NON_DIRECTIONAL_MODES_COUNT`
-    // passes through `get_intra_y_mode_set` unchanged, § 5.20.5.3 line 11036).
+    // `TileYModeOffsetCdf[ctx]`, sharing the `y_mode_index` context). The escape's
+    // `modeIdx == (MODE_INDEX_COUNT - 1) + y_mode_offset` is always
+    // `>= NON_DIRECTIONAL_MODES_COUNT`, so `get_intra_y_mode_set(modeIdx)` enters
+    // its directional selection loop (§ 5.20.5.3 lines 11120-11176). When there is
+    // a directional joint-mode neighbour (`mode_ctx != 0`) that loop preselects the
+    // neighbours' modes (and, for `Block_Width * Block_Height > 64`, their ±1..4
+    // expansion) BEFORE the `Default_Mode_List_Y` scan, reordering the candidate
+    // list; [`reconstruct_y_mode_offset_escape_top_left`] only models the
+    // no-directional-neighbour case (both `get_joint_mode` out of frame /
+    // non-directional, `count == 0`). The directional-neighbour escape resolves to
+    // a directional `YMode`, which needs the deferred § 7.13.2.8 luma IDIF anyway,
+    // so it is rejected here (the symbol has been consumed; the caller surfaces it
+    // as an unsupported feature). Otherwise the non-directional `Reordered_Y_Mode`
+    // prefix maps the index directly and `IntraJointMode == modeDelta == y_mode_index`
+    // (`modeIdx < NON_DIRECTIONAL_MODES_COUNT` passes through `get_intra_y_mode_set`
+    // unchanged regardless of neighbours, § 5.20.5.3 lines 11036 + 11117-11118).
     let (y_mode, angle_delta_y, intra_joint_mode) =
         if y_mode_set == 0 && y_mode_index == MODE_INDEX_COUNT - 1 {
             let y_mode_offset = read_symbol(
@@ -224,6 +237,14 @@ pub(crate) fn decode_general_intra_block_modes(
                 TileCdfSelector::YModeOffset { ctx: mode_ctx },
                 Y_MODE_OFFSET_REASON,
             )?;
+            if mode_ctx != 0 {
+                return Err(
+                    GeneralIntraBlockModeError::UnsupportedDirectionalNeighbourReorder {
+                        ctx: mode_ctx,
+                        y_mode_offset,
+                    },
+                );
+            }
             let escape = reconstruct_y_mode_offset_escape_top_left(y_mode_offset).ok_or(
                 GeneralIntraBlockModeError::UnsupportedYMode {
                     y_mode_set,
@@ -274,6 +295,11 @@ pub(crate) fn decode_general_intra_block_modes(
         return Err(GeneralIntraBlockModeError::InvalidUvMode { uv_mode });
     }
 
+    if std::env::var("SPLOT_DBG_MODE").is_ok() {
+        eprintln!(
+            "DBG block r={block_r} c={block_c} ctx={mode_ctx} y_mode_set={y_mode_set} y_mode_index={y_mode_index} y_mode={y_mode:?} angle={angle_delta_y} joint={intra_joint_mode} uv_mode={uv_mode}"
+        );
+    }
     Ok(GeneralIntraBlockModes {
         y_mode,
         angle_delta_y,
@@ -476,19 +502,19 @@ mod tests {
     }
 
     #[test]
-    fn directional_neighbour_ctx_is_rejected_without_reading_symbols() {
+    fn directional_neighbour_ctx_reads_with_the_real_context() {
         // A left neighbour storing a directional IntraJointMode (D135, modeDelta
-        // 36 >= 5) makes the § 8.3.2 `y_mode_index` context 1; the unverified
-        // ctx != 0 selection is rejected BEFORE any symbol is read (the codex P2
-        // / latent #383 fix). The symbol decoder must be untouched.
+        // 36 >= 5) makes the § 8.3.2 `y_mode_index` context 1. The decode no longer
+        // rejects ctx != 0: it reads `y_mode_set` / `y_mode_index` from the real
+        // `TileYModeIndexCdf[1]` row (verified bit-exact by the
+        // `syn-dirneigh-intra-128x64-q80` oracle fixture), consuming symbols.
         let mut work_unit = make_work_unit(&PAYLOAD);
         let mut symbols = symbols_at_block_frontier(&mut work_unit);
         let symbol_count_before = symbols.symbol_count();
-        let consumed_before = symbols.consumed_bits();
         let mut joint_modes = empty_joint_modes();
         joint_modes.record_block(0, 0, SB_N4, SB_N4, D135_JOINT_MODE);
 
-        let err = decode_general_intra_block_modes(
+        let modes = decode_general_intra_block_modes(
             &mut work_unit,
             &mut symbols,
             &joint_modes,
@@ -497,14 +523,12 @@ mod tests {
             SB_N4,
             SB_N4,
         )
-        .unwrap_err();
+        .unwrap();
 
-        assert!(matches!(
-            err,
-            GeneralIntraBlockModeError::UnsupportedYModeIndexContext { ctx: 1 }
-        ));
-        // No `y_mode_set` / `y_mode_index` symbol was read.
-        assert_eq!(symbols.symbol_count(), symbol_count_before);
-        assert_eq!(symbols.consumed_bits(), consumed_before);
+        // Symbols were consumed (the ctx != 0 read is no longer short-circuited).
+        assert!(symbols.symbol_count() > symbol_count_before);
+        // The reconstructed mode is a valid luma intra mode and (for this trace) a
+        // non-directional one — the verified neighbour-reading subset.
+        assert!(!modes.y_mode.is_directional());
     }
 }
