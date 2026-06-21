@@ -36,6 +36,7 @@ use crate::types::ObuType;
 mod config;
 mod encoder_input;
 mod filtering;
+mod get_ref_frames;
 mod global_motion;
 mod info;
 mod inter;

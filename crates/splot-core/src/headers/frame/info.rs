@@ -1328,7 +1328,8 @@ fn parse_inter_path(
         core.frame_size_override_flag = Some(frame_size_override_flag);
 
         // mirror :4367: order_hint f(OrderHintBits); OrderHintLsbs = order_hint.
-        core.order_hint_lsb = Some(read_f(reader, seq.order_hint_bits)?);
+        let order_hint = read_f(reader, seq.order_hint_bits)?;
+        core.order_hint_lsb = Some(order_hint);
 
         let inter_seq = build_inter_seq_view(seq);
         let ctx = InterFrameContext {
@@ -1337,6 +1338,7 @@ fn parse_inter_path(
             is_bridge: false, // bridge frames take parse_bridge_inter_path, not this path
             bridge_frame_ref_idx: None,
             cur_mfh_id_is_zero: core.cur_mfh_id.is_zero(),
+            order_hint,
         };
 
         parse_inter_control_into(
@@ -1466,6 +1468,9 @@ fn parse_bridge_inter_path(
         is_bridge: true,
         bridge_frame_ref_idx: Some(bridge_frame_ref_idx),
         cur_mfh_id_is_zero: core.cur_mfh_id.is_zero(),
+        // The bridge arm derives NumTotalRefs = 1 / ref_frame_idx[0] = bridge_frame_ref_idx
+        // (mirror :4597/:4615) without calling get_ref_frames(); order_hint is inert here.
+        order_hint: 0,
     };
 
     // The control region's facts accumulate in a caller-owned `control` so an EOF inside a
@@ -2182,7 +2187,7 @@ fn read_refresh_frame_flags(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::error::Error;
