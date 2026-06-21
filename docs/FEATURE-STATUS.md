@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 354 feature(s).
+Matrix version 1. Last reviewed 2026-06-15. 355 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -289,6 +289,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `DECODE-GENERAL-INTRA-GRID-NEIGHBOUR-NONDC` | General intra 2-D grid non-DC SMOOTH luma over a real reconstructed above row | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | partial | `crates/splot-decode/src/runtime_minimal.rs` |
 | `DECODE-GENERAL-INTRA-DIRECTIONAL-NEIGHBOUR-CTX` | General intra directional-neighbour (ctx != 0) y_mode_index decode | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | partial | `crates/splot-decode/src/tile_payload/general_intra_block.rs` |
 | `DECODE-GENERAL-INTRA-DIRECTIONAL-FOLLOW-CHROMA` | General intra single-block directional-follow (D135) chroma decode | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | partial | `crates/splot-decode/src/runtime_minimal_recon.rs` |
+| `DECODE-GENERAL-INTRA-NEIGHBOUR-DIRECTIONAL` | General intra neighbour-having directional (D135) luma + follow chroma over a real edge | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | partial | `crates/splot-decode/src/runtime_minimal_recon.rs` |
 | `DECODE-COEFF-FSC-SCAN-WALK` | Coefficient FSC scan walk | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/coeff_loop/scan_walk.rs` |
 | `DECODE-COEFF-BASE-CDF-ROWS` | Coefficient base CDF rows | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/cdf/coeff_rows.rs` |
 | `DECODE-COEFF-IDTX-CDF-ROWS` | Coefficient IDTX CDF rows | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/cdf/coeff_rows.rs` |

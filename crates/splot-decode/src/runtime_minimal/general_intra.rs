@@ -49,7 +49,27 @@ pub(super) fn route_general_minimal_intra(
             // DC block (any non-first superblock / split block) would reconstruct
             // wrong pixels under IBP. Reject `enable_ibp` until the IBP DC process
             // is modelled (all committed fixtures are encoded with enable_ibp = 0).
-            .is_some_and(|intra| !intra.enable_dip && !intra.enable_ibp)
+            //
+            // §5.20.5.3 `read_intra_y_mode` reads `mrl_index` (an `S()` arithmetic
+            // symbol; conditionally `mrl_sec_index`) when
+            // `enable_mrls && is_directional_mode(YMode)`. The general path reads no
+            // MRL symbol, so an `enable_mrls` stream with a directional (D135) block
+            // would desync the §8.2 arithmetic decoder at the skipped read. §7.13.2
+            // runs the §7.13.2.18 intra edge filter on the prediction edges before
+            // directional prediction when `enable_intra_edge_filter == 1 && MrlIndex
+            // == 0`; the general path applies no edge filter, so over a real
+            // (non-flat) neighbour edge a directional block would reconstruct wrong
+            // pixels. Reject both until the MRL syntax and the §7.13.2.18 edge filter
+            // are modelled (all committed general fixtures are encoded with
+            // `enable_mrls == enable_intra_edge_filter == 0`; the frozen minimal-tier
+            // fixture carries `enable_intra_edge_filter == 1` but routes here as false
+            // via its `base_q_idx` and never reaches directional prediction).
+            .is_some_and(|intra| {
+                !intra.enable_dip
+                    && !intra.enable_ibp
+                    && !intra.enable_mrls
+                    && !intra.enable_intra_edge_filter
+            })
         && sequence
             .partition
             .is_some_and(|partition| !partition.enable_sdp)
@@ -397,22 +417,29 @@ fn decode_one_general_intra_block(
             GENERAL_INTRA_MODE_SPEC_SECTION,
         ));
     };
-    // The directional-follow D135 chroma predictor is verified bit-exact only for
-    // the top-left no-neighbour block, where the § 7.13.2.1 edges reduce to the
-    // flat fallback so the § 7.13.2.8 prediction is constant. Chroma directional
-    // prediction always takes the bilinear branch — § 7.13.2.8 sets
-    // `enableIdif = (plane == 0)`, so `enableIdif == 0` for U/V and the IDIF 4-tap
-    // is luma-only — but over a real reconstructed NON-FLAT neighbour edge that
-    // bilinear prediction reads the real edge samples, which is not yet verified
-    // (a separate brick), so gate it to the no-neighbour top-left full superblock.
+    // The directional-follow D135 chroma predictor is verified bit-exact for the
+    // top-left no-neighbour 64x64 superblock (the §7.13.2.1 flat-fallback edges)
+    // AND for a first-superblock-row (`frontier.r == 0`, `haveAbove == 0`),
+    // non-top-left full-superblock block whose §7.13.2.1 chroma edges are the
+    // **real reconstructed** left column of the already-decoded left neighbour.
+    // Chroma directional prediction always takes the §7.13.2.8 bilinear branch
+    // (`enableIdif = plane == 0`, so `enableIdif == 0` for U/V); for D135
+    // (`shift == 0`) that bilinear branch is the sample copy `Edge[base]`, which is
+    // bit-identical to the luma IDIF even over the non-flat real chroma edge
+    // (verified against avmdec/dav2d). It couples with the neighbour-having D135
+    // luma block (`uv_mode == 0` directional-follow). Gated to the first superblock
+    // row (`frontier.r == 0`): a row>0 D135-follow chroma block reads the real above
+    // row, deferred with the row>0 luma D135 until a fixture pins it.
     let chroma_is_top_left = frontier.r == 0 && frontier.c == 0;
+    const FULL_SB_N4_CHROMA_GATE: usize = 16;
+    let chroma_neighbour_ok = frontier.r == 0 && n4w == FULL_SB_N4_CHROMA_GATE;
     if supported_chroma == crate::tile_payload::SupportedChromaMode::D135Follow
-        && !(chroma_is_top_left && n4w == 16)
+        && !((chroma_is_top_left && n4w == FULL_SB_N4_CHROMA_GATE) || chroma_neighbour_ok)
     {
         return Err(general_intra_unsupported(
             "general_intra_directional_chroma_neighbour",
             Some(tile_offset),
-            "general intra directional-follow (D135) chroma prediction is only supported for the top-left (no-neighbour) 64x64 superblock block, where the §7.13.2.1 edges are the flat fallback; chroma directional prediction uses the §7.13.2.8 bilinear branch (enableIdif = plane == 0, so enableIdif == 0 for U/V), and over a real reconstructed non-flat neighbour edge that bilinear prediction is not yet verified",
+            "general intra directional-follow (D135) chroma prediction is only supported for the top-left (no-neighbour) 64x64 superblock block and for a first-superblock-row neighbour-having full 64x64 superblock block (real reconstructed left column); a row > 0 D135-follow chroma block reads the §7.13.2.1 real reconstructed above row, which is deferred until an oracle fixture pins it",
             GENERAL_INTRA_MODE_SPEC_SECTION,
         ));
     }
@@ -484,6 +511,13 @@ fn decode_one_general_intra_block(
     // same plane-general edge builder + above-right resolver, so both cases share
     // one bit-exact path.
     let nondc_luma_has_neighbour = supported_nondc_luma.is_some() && !is_top_left;
+    // True when a directional (D135) luma block reads a **real** reconstructed
+    // neighbour edge. The gate above admits this only for a first-superblock-row
+    // (`frontier.r == 0`, `haveAbove == 0`) full-superblock block, whose left
+    // neighbour is non-directional (`ctx == 0`) and supplies the real §7.13.2.1
+    // reconstructed left column; D135 (`shift == 0`) is a sample copy over that
+    // non-flat edge, bit-identical for the luma IDIF and the chroma bilinear branch.
+    let directional_luma_has_neighbour = supported_directional_luma.is_some() && !is_top_left;
     if !modes.luma_is_dc() {
         match (supported_nondc_luma, supported_directional_luma) {
             // SMOOTH_V / SMOOTH_H at the no-neighbour top-left block.
@@ -542,13 +576,43 @@ fn decode_one_general_intra_block(
                     GENERAL_INTRA_MODE_SPEC_SECTION,
                 ));
             }
-            // Directional D135: top-left no-neighbour full superblock only.
+            // Directional D135: top-left no-neighbour full superblock.
             (_, Some(_)) if is_top_left && n4w == FULL_SB_N4_LUMA => {}
+            // Directional D135 at a first-superblock-row (`frontier.r == 0`),
+            // non-top-left full-superblock block, reading a **real reconstructed**
+            // neighbour edge. The D135 escape was decoded with a non-directional
+            // joint-mode neighbour (`ctx == 0`; a directional neighbour would have
+            // been rejected earlier as the unmodelled §5.20.5.3 directional-neighbour
+            // reorder), so the left neighbour is DC / SMOOTH and supplies the real
+            // §7.13.2.1 reconstructed left column. At `frontier.r == 0`,
+            // `haveAbove == 0`, so §7.13.2.1 fills `AboveRow` with the repeated first
+            // left sample (`CurrFrame[plane][y][x-1]`) and `LeftCol` with the real
+            // left column. pAngle 135 has `dx == dy == Dr_Intra_Derivative[45] == 64`,
+            // so every projection has `shift == 0`: the §7.13.2.8 IDIF 4-tap
+            // (`enableIdif == 1` for luma) reduces to `Dr_Interp_Filter[0] =
+            // {0, 128, 0, 0}`, i.e. `Edge[base]`, bit-identical to the bilinear branch
+            // **even over the non-flat real left column** (verified bit-exact against
+            // avmdec/dav2d). `enable_intra_edge_filter == 0` / `MrlIndex == 0` keep
+            // the edge-filter / upsample synthesis a no-op.
+            //
+            // Gated to `frontier.r == 0`: a row>0 D135 block reads the real above row
+            // (the §7.13.2.1 `haveAbove == 1` corner path), which is bit-exact by the
+            // same `shift == 0` argument but is not yet covered by an oracle fixture,
+            // so it is deferred to a dedicated row>0 D135 grid fixture.
+            (_, Some(_)) if frontier.r == 0 && n4w == FULL_SB_N4_LUMA => {}
+            (_, Some(_)) if !is_top_left && frontier.r != 0 => {
+                return Err(general_intra_unsupported(
+                    "general_intra_multirow_directional_luma",
+                    Some(tile_offset),
+                    "general intra directional (D135) luma prediction over a real reconstructed neighbour is only verified for the first superblock row (haveAbove == 0, real left column); a row > 0 D135 block reads the §7.13.2.1 real reconstructed above row, which is bit-exact by the same shift == 0 argument but is not yet covered by an oracle fixture, so it is deferred",
+                    GENERAL_INTRA_MODE_SPEC_SECTION,
+                ));
+            }
             (_, Some(_)) if !is_top_left => {
                 return Err(general_intra_unsupported(
-                    "general_intra_multiblock_directional_luma",
+                    "general_intra_multiblock_directional_subblock",
                     Some(tile_offset),
-                    "general intra directional (D135) luma prediction is only supported for the top-left (no-neighbour) block; over a real reconstructed neighbour edge it needs the §7.13.2.8 IDIF 4-tap interpolation (bilinear equals IDIF only for a flat edge), which is not yet implemented",
+                    "general intra multi-block directional (D135) luma prediction over a reconstructed neighbour is only supported for full 64x64 superblock blocks; sub-partitioned directional blocks need the §5.20.2.3 per-block BlockDecoded update for the §7.13.2.1 neighbours and the mode-dependent transform type, which is not yet modelled",
                     GENERAL_INTRA_MODE_SPEC_SECTION,
                 ));
             }
@@ -607,6 +671,23 @@ fn decode_one_general_intra_block(
                 workspace,
                 &luma,
                 mode,
+                luma_x,
+                luma_y,
+                luma_log2,
+                qindex,
+                luma_use_tcq,
+            )
+            .map_err(|error| general_intra_residual_error(error, tile_offset))?
+        }
+        (None, Some(mode)) if directional_luma_has_neighbour => {
+            // Neighbour-having D135 luma over the real §7.13.2.1 reconstructed left
+            // column (the §7.13.2.8 IDIF, which for D135 `shift == 0` is the same
+            // sample copy as bilinear, bit-exact over the non-flat edge).
+            crate::runtime_minimal_recon::reconstruct_general_intra_directional_neighbour_block_into(
+                workspace,
+                &luma,
+                mode,
+                PlaneId::Y,
                 luma_x,
                 luma_y,
                 luma_log2,
