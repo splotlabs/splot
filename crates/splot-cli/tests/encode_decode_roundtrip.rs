@@ -366,11 +366,14 @@ fn encoder_visible_ac_ivf_decodes_to_a_vertical_cosine_luma() {
     );
 }
 
-/// The encoder's first block with **two nonzero coefficients**: a level-4 AC at scan index 1 and
-/// a level-1 DC at scan index 0 (eob=2, U and V skipped). This exercises the DC `coeff_base`
-/// nonzero path and the sign pass with two signs in scan order — the DC `dc_sign` (CDF) then the
-/// AC `sign_bit` (bypass). `splot decode` reconstructs the visible-AC vertical cosine superimposed
-/// on the DC offset: each luma row constant, the top 14 rows 129 and the rest 128.
+/// The encoder's first block with **two nonzero coefficients**: a positive level-4 AC at scan
+/// index 1 and a **negative** level-1 DC at scan index 0 (eob=2, U and V skipped). This exercises
+/// the DC `coeff_base` nonzero path and the AV2 §5.20.7.27 reverse-scan sign pass (`c = eob-1 ..
+/// 0`): the AC `sign_bit` bypass (c=1) then the DC `dc_sign` CDF (c=0). The negative DC makes the
+/// reconstruction sign-order-sensitive — the wrong order would brighten rather than darken the
+/// lower band — so this oracle genuinely proves the ordering. `splot decode` reconstructs the
+/// cosine superimposed on the negative DC offset: each luma row constant, the top 50 rows 128 and
+/// the bottom 14 rows 127.
 #[test]
 fn encoder_two_nonzero_ivf_decodes_to_a_cosine_plus_dc_offset() {
     let ivf = splot_encode::emit_minimal_intra_two_nonzero_ivf().expect("emit the two-nonzero IVF");
@@ -411,13 +414,15 @@ fn encoder_two_nonzero_ivf_decodes_to_a_cosine_plus_dc_offset() {
             "luma row {row} is not constant across columns"
         );
     }
-    // Cosine + DC offset: top 14 rows 129, the remaining 50 rows 128 (deterministic).
+    // Cosine + negative DC offset: top 50 rows 128, the bottom 14 rows 127 (deterministic).
+    // Under the wrong (DC-first) sign order the bottom band would be 129 instead, so this
+    // assertion fails fast on a sign-order regression.
     let row_value = |row: usize| luma[row * 64];
-    for row in 0..14 {
-        assert_eq!(row_value(row), 129, "top band row {row}");
+    for row in 0..50 {
+        assert_eq!(row_value(row), 128, "top band row {row}");
     }
-    for row in 14..64 {
-        assert_eq!(row_value(row), 128, "lower band row {row}");
+    for row in 50..64 {
+        assert_eq!(row_value(row), 127, "bottom band row {row}");
     }
     assert!(
         luma.iter().any(|&s| s != 128),

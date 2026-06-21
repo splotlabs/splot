@@ -22,8 +22,8 @@ use crate::coefficient_tokenization::{
     chroma_v_all_zero_token, general_intra_32x32_chroma_u_all_zero_token,
     general_intra_32x32_chroma_u_dc_coded_tokens, general_intra_32x32_chroma_v_dc_coded_tokens,
     general_intra_64x64_luma_all_zero_token, general_intra_64x64_luma_dc_coded_tokens,
-    general_intra_64x64_luma_two_coeff_tokens, general_intra_64x64_luma_two_nonzero_tokens,
-    general_intra_64x64_luma_visible_ac_tokens,
+    general_intra_64x64_luma_two_coeff_tokens, general_intra_64x64_luma_two_nonzero_base_tokens,
+    general_intra_64x64_luma_visible_ac_tokens, luma_dc_sign_token,
 };
 use crate::error::{Error, Result};
 use crate::partition_emission::emit_root_do_split_none;
@@ -513,24 +513,26 @@ pub fn emit_minimal_intra_visible_ac_ivf() -> Result<Vec<u8>> {
     .map_err(|source| Error::MinimalIntraSkipIvf { source })
 }
 
-/// The DC sign for the two-nonzero-coefficient block: positive (`dc_sign == 0`).
-const TWO_NONZERO_DC_NEGATIVE: bool = false;
+/// The DC sign for the two-nonzero-coefficient block: **negative** (`dc_sign == 1`). A negative
+/// DC makes the oracle genuinely exercise the AV2 § 5.20.7.27 reverse-scan sign order: with both
+/// signs positive the block reconstructs identically under either sign order, so an ordering bug
+/// would pass undetected. With the DC negative and the AC positive, only the spec-correct order
+/// (AC `sign_bit` before DC `dc_sign`) reconstructs consistently.
+const TWO_NONZERO_DC_NEGATIVE: bool = true;
 
 /// Composes the general intra eob=2 **two-nonzero-coefficient** luma block trace: `do_split`,
-/// the mode prefix, a coded luma block carrying a level-4 AC at scan index 1 and a level-1 DC at
-/// scan index 0 (the base pass, then the DC `dc_sign` and the AC `sign_bit` bypass in scan
-/// order), then skipped U and V. This is the first block where two coefficients are nonzero, so
-/// the reconstruction is the visible-AC vertical cosine superimposed on a DC offset.
+/// the mode prefix, the coded luma base pass (a level-4 AC at scan index 1 and a level-1 DC at
+/// scan index 0), then the sign pass in AV2 § 5.20.7.27 order `c = eob-1 .. 0` (reverse scan):
+/// the AC `sign_bit` § 8.2.5 bypass (c=1) FIRST, then the DC `dc_sign` CDF symbol (c=0). U and V
+/// are skipped. This is the first block where two coefficients are nonzero; the reconstruction is
+/// the visible-AC vertical cosine superimposed on the negative DC offset.
 fn compose_general_intra_two_nonzero_block_trace() -> Result<Vec<BlockSymbolToken>> {
     let modes = compose_minimal_intra_dc_block_mode_trace()?;
-    let luma = general_intra_64x64_luma_two_nonzero_tokens(
-        SKIP_FRAME_COEFF_CDF_Q_CTX,
-        TWO_NONZERO_DC_NEGATIVE,
-    )?;
+    let luma = general_intra_64x64_luma_two_nonzero_base_tokens(SKIP_FRAME_COEFF_CDF_Q_CTX)?;
     let total = modes
         .len()
         .checked_add(luma.len())
-        .and_then(|n| n.checked_add(4)) // do_split + AC sign + U skip + V skip
+        .and_then(|n| n.checked_add(5)) // do_split + AC sign + DC sign + U skip + V skip
         .ok_or(Error::BlockSymbolTraceAllocationFailed {
             context: "general two-nonzero block trace length",
         })?;
@@ -543,8 +545,13 @@ fn compose_general_intra_two_nonzero_block_trace() -> Result<Vec<BlockSymbolToke
     trace.push(BlockSymbolToken::Partition(emit_root_do_split_none()));
     trace.extend(modes.into_iter().map(BlockSymbolToken::Mode));
     trace.extend(luma.into_iter().map(BlockSymbolToken::Coeff));
-    // The AC `sign_bit` § 8.2.5 bypass follows the DC `dc_sign` (sign pass, scan order).
+    // Sign pass, reverse scan (`c = eob-1 .. 0`): the AC `sign_bit` § 8.2.5 bypass (c=1) is
+    // emitted FIRST, then the DC `dc_sign` CDF symbol (c=0).
     trace.push(BlockSymbolToken::bypass(CHROMA_SIGN_BIT_WIDTH, 0));
+    trace.push(BlockSymbolToken::Coeff(luma_dc_sign_token(
+        SKIP_FRAME_COEFF_CDF_Q_CTX,
+        TWO_NONZERO_DC_NEGATIVE,
+    )));
     trace.push(BlockSymbolToken::Coeff(
         general_intra_32x32_chroma_u_all_zero_token(SKIP_FRAME_COEFF_CDF_Q_CTX),
     ));
@@ -556,10 +563,12 @@ fn compose_general_intra_two_nonzero_block_trace() -> Result<Vec<BlockSymbolToke
 }
 
 /// Emits a complete, decodable AV2 IVF stream for one 64x64 all-intra `OBU_CLOSED_LOOP_KEY`
-/// frame whose luma block carries **two nonzero coefficients** — a level-4 AC at scan index 1
-/// and a level-1 DC at scan index 0 (eob=2, U and V skipped). This is the encoder's first block
-/// with more than one nonzero coefficient; the reconstruction is the visible-AC vertical cosine
-/// superimposed on a DC offset. The cross-crate decode oracle lives in `splot-cli`.
+/// frame whose luma block carries **two nonzero coefficients** — a positive level-4 AC at scan
+/// index 1 and a **negative** level-1 DC at scan index 0 (eob=2, U and V skipped). This is the
+/// encoder's first block with more than one nonzero coefficient; it exercises the AV2 § 5.20.7.27
+/// reverse-scan sign pass (AC `sign_bit` before DC `dc_sign`). The reconstruction is the
+/// visible-AC vertical cosine superimposed on the negative DC offset. The cross-crate decode
+/// oracle lives in `splot-cli`.
 pub fn emit_minimal_intra_two_nonzero_ivf() -> Result<Vec<u8>> {
     let trace = compose_general_intra_two_nonzero_block_trace()?;
     let tile_data = encode_block_symbol_trace(&trace)?;
@@ -957,20 +966,22 @@ mod tests {
     fn composes_general_two_nonzero_block_trace_in_order() {
         let trace = compose_general_intra_two_nonzero_block_trace().unwrap();
 
-        // do_split, 3 modes, 5 coded-luma (txb_skip, eob_pt, AC base_eob, DC base, DC dc_sign),
-        // AC sign bypass, U skip, V skip = 12 tokens.
+        // do_split, 3 modes, 4 coded-luma base (txb_skip, eob_pt, AC base_eob, DC base),
+        // AC sign bypass, DC dc_sign, U skip, V skip = 12 tokens.
         assert_eq!(trace.len(), 12);
         assert!(matches!(trace[0], BlockSymbolToken::Partition(_)));
-        // The AC sign_bit bypass follows the DC dc_sign (sign pass, scan order).
+        // Reverse-scan sign pass (§5.20.7.27 c=eob-1..0): the AC sign_bit bypass (c=1) comes
+        // FIRST, then the DC dc_sign CDF symbol (c=0).
         assert!(matches!(
-            trace[9],
+            trace[8],
             BlockSymbolToken::Bypass { width: 1, value: 0 }
         ));
+        assert!(matches!(trace[9], BlockSymbolToken::Coeff(_)));
         // do_split, modes 0/0/0; luma txb_skip=0, eob_pt_1024=1, AC coeff_base_eob=3 (level 4),
-        // DC coeff_base=1 (level 1), DC dc_sign=0 (positive); AC sign=0; U/V txb_skip=1.
+        // DC coeff_base=1 (level 1); AC sign=0 (positive); DC dc_sign=1 (negative); U/V txb_skip=1.
         assert_eq!(
             trace.iter().map(|token| token.symbol()).collect::<Vec<_>>(),
-            vec![0, 0, 0, 0, 0, 1, 3, 1, 0, 0, 1, 1]
+            vec![0, 0, 0, 0, 0, 1, 3, 1, 0, 1, 1, 1]
         );
     }
 
@@ -980,7 +991,7 @@ mod tests {
         let proof = roundtrip_block_symbol_trace(&trace).unwrap();
         assert_eq!(
             proof.decoded_symbols(),
-            &[0, 0, 0, 0, 0, 1, 3, 1, 0, 0, 1, 1]
+            &[0, 0, 0, 0, 0, 1, 3, 1, 0, 1, 1, 1]
         );
         assert_eq!(proof.symbol_count(), 12);
         assert!(!proof.bytes().is_empty());

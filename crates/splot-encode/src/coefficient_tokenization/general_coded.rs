@@ -342,23 +342,24 @@ pub(crate) fn general_intra_64x64_luma_visible_ac_tokens(
 /// (`dc_sign`).
 const TWO_NONZERO_DC_LEVEL: u8 = 1;
 
-/// Returns the ordered general `TX_64X64` luma eob=2 tokens for a block with **two nonzero
-/// coefficients**: a level-4 AC at scan index 1 and a level-1 DC at scan index 0. This is the
-/// first block where more than one coefficient is nonzero. The sequence is the base pass
-/// (`txb_skip == 0`, `eob_pt_1024 == 1`, AC `coeff_base_eob` symbol 3 at ctx 1, DC `coeff_base`
-/// symbol 1 at the AC-level-derived ctx 2) then the sign pass in scan order: the DC `dc_sign`
-/// (CDF), and — appended by the caller — the AC `sign_bit` § 8.2.5 bypass. The DC context is the
-/// same ctx 2 as the visible-AC frame (it depends on the AC neighbour level, not the DC's own
-/// value). `TX_64X64` is DCT-only, so no transform-type symbol is read.
-pub(crate) fn general_intra_64x64_luma_two_nonzero_tokens(
+/// Returns the ordered general `TX_64X64` luma eob=2 **base-pass** tokens for a block with two
+/// nonzero coefficients — a level-4 AC at scan index 1 and a level-1 DC at scan index 0 — up to
+/// but excluding the signs: `txb_skip == 0`, `eob_pt_1024 == 1`, the AC `coeff_base_eob` (symbol
+/// 3 at ctx 1), and the DC `coeff_base` (symbol 1 at the AC-level-derived ctx 2). The DC context
+/// is the same ctx 2 as the visible-AC frame (it depends on the AC neighbour level, not the DC's
+/// own value). `TX_64X64` is DCT-only, so no transform-type symbol is read.
+///
+/// The caller emits the two signs **after** these tokens, in the AV2 § 5.20.7.27 sign-pass order
+/// `c = eob-1 .. 0` (reverse scan): the AC `sign_bit` § 8.2.5 bypass (c=1) FIRST, then the DC
+/// `dc_sign` CDF symbol (c=0) — see [`luma_dc_sign_token`].
+pub(crate) fn general_intra_64x64_luma_two_nonzero_base_tokens(
     coeff_cdf_q_ctx: usize,
-    dc_negative: bool,
 ) -> Result<Vec<CoefficientEntropyToken>> {
     let mut tokens = Vec::new();
     tokens
-        .try_reserve_exact(5)
+        .try_reserve_exact(4)
         .map_err(|_| Error::CoefficientTokenizationAllocationFailed {
-            context: "general two-nonzero-coefficient luma tokens",
+            context: "general two-nonzero-coefficient luma base tokens",
         })?;
     // luma `txb_skip == 0` (coded) at the TX_64X64 context.
     tokens.push(CoefficientEntropyToken {
@@ -401,8 +402,6 @@ pub(crate) fn general_intra_64x64_luma_two_nonzero_tokens(
         },
         symbol: TWO_NONZERO_DC_LEVEL,
     });
-    // Sign pass (scan order): the DC `dc_sign` is CDF-coded. The caller appends the AC `sign_bit`.
-    tokens.push(luma_dc_sign_token(coeff_cdf_q_ctx, dc_negative));
     Ok(tokens)
 }
 
