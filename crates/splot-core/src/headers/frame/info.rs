@@ -201,6 +201,26 @@ pub enum FrameHeaderParseStatus {
     /// by the rest of `tile_group_obu()` (§ 5.19), whose `trailing_bits()` reachability
     /// is tracked separately (AV2-5.19-TILE-GROUP / NumFrameHeaderBits).
     IntraHeaderComplete,
+    /// A non-intra frame header was consumed in full through its § 5.18.2 shared tail and
+    /// inter-specific arms. After the inter control region reached
+    /// [`InterStop::ReachedSharedTail`](crate::headers::frame::inter::InterStop), the shared
+    /// tail parsed `tile_info()` (§ 5.18.7.2), `quantization_params()` (§ 5.18.6.1),
+    /// `segmentation_params()` (§ 5.18.7.1), `setup_qm_params()` (§ 5.18.6.2),
+    /// `delta_q_params()` (§ 5.18.7.8), the § 5.18.2 lossless / `allow_tcq` /
+    /// `allow_parity_hiding` derivation, the loop-filter cluster (`deblocking_filter_params()`
+    /// with the inter `allow_df_sub_pu` arm, `gdf_params()`, `cdef_params()`, `lr_params()`,
+    /// `ccso_params()`), and the inter tail (`read_tx_mode()` § 5.18.8.1,
+    /// `frame_reference_mode()`'s `reference_select` § 5.18.8.3, `skip_mode_params()`'s
+    /// `skip_mode_present` § 5.18.8.2, the gated `allow_bawp` / `allow_warpmv_mode`,
+    /// `reduced_tx_set`, `global_motion_params()` § 5.18.9.1, and `film_grain_config()`
+    /// § 5.18.10.1), reaching the terminal. The frame header is complete; the inter facts are
+    /// on `core.inter` and the shared-tail facts on the shared `core` fields
+    /// (`tile_info`/`quantization_params`/…). No full-payload trailing-bits conformance is
+    /// implied (§ 5.19 tile data follows). Only reached for the minimal-tool single-reference
+    /// inter subset the shared tail models exactly; anything outside it (segmentation on,
+    /// `use_global_motion` warp models, the TIP / bridge return arms) stays an honest
+    /// [`Self::UnsupportedUntilFeature`] coverage stop.
+    InterHeaderComplete,
     /// An intra frame's control region was read through `disable_cdf_update`,
     /// `tile_info()` (§ 5.18.7.2), `quantization_params()` (§ 5.18.6.1),
     /// `segmentation_params()` (§ 5.18.7.1), `setup_qm_params()` (§ 5.18.6.2),
@@ -306,6 +326,7 @@ impl FrameHeaderParseStatus {
             Self::CoreFieldsOnly => "core_fields_only",
             Self::ShowExistingFrameComplete => "show_existing_frame_complete",
             Self::IntraHeaderComplete => "intra_header_complete",
+            Self::InterHeaderComplete => "inter_header_complete",
             Self::StoppedBeforeLoopRestorationParams => "stopped_before_loop_restoration_params",
             Self::StoppedBeforeReadTxMode => "stopped_before_read_tx_mode",
             Self::StoppedBeforeWienerNsFilter { .. } => "stopped_before_wienerns_filter",
@@ -691,6 +712,13 @@ pub struct FrameHeaderCore {
     /// `Some` only when the intra path parsed to completion
     /// ([`FrameHeaderParseStatus::IntraHeaderComplete`]).
     pub intra_tail: Option<FrameHeaderTail>,
+    /// The parsed § 5.18.2 inter-tail coding-mode arms (mirror :5307-5341): `read_tx_mode()`,
+    /// `frame_reference_mode()`'s `reference_select`, `skip_mode_params()`'s
+    /// `skip_mode_present`, the gated `allow_bawp` / `allow_warpmv_mode`, `reduced_tx_set`,
+    /// `global_motion_params()`'s `use_global_motion`, and `film_grain_config()`'s
+    /// `apply_grain`. `Some` only when the inter path parsed to completion
+    /// ([`FrameHeaderParseStatus::InterHeaderComplete`]).
+    pub inter_tail: Option<crate::headers::frame::inter_shared_tail::InterTail>,
     /// The show-existing-frame `film_grain_config()` (§ 5.18.10.1, mirror :4186). `Some`
     /// only on the SEF path once it parsed to completion
     /// ([`FrameHeaderParseStatus::ShowExistingFrameComplete`]); the SEF path reads only
@@ -756,6 +784,12 @@ pub struct CoreSeqInterView {
     pub(crate) seq_frame_motion_modes_present_flag: bool,
     pub(crate) seq_enabled_motion_modes: [bool; MOTION_MODES],
     pub(crate) enable_opfl_refine: u8,
+    /// `enable_bawp` (AV2 § 5.4.6): gates the § 5.18.2 inter-tail `allow_bawp` `f(1)`
+    /// read (`!FrameIsIntra && enable_bawp`, mirror :5313).
+    pub(crate) enable_bawp: bool,
+    /// `enable_global_motion` (AV2 § 5.4.6): gates `global_motion_params()`'s inter arm
+    /// (`!FrameIsIntra && enable_global_motion`, § 5.18.9.1 mirror :7792).
+    pub(crate) enable_global_motion: bool,
 }
 
 /// Sequence-derived scalars the core parser needs, gathered from a fully parsed
@@ -872,6 +906,8 @@ impl CoreSeqView {
                 seq_frame_motion_modes_present_flag: inter.seq_frame_motion_modes_present_flag,
                 seq_enabled_motion_modes: inter.seq_enabled_motion_modes,
                 enable_opfl_refine: inter.enable_opfl_refine,
+                enable_bawp: inter.enable_bawp,
+                enable_global_motion: inter.enable_global_motion,
             },
             quant: CoreSeqQuantView::from_sequence_configs(general, tq),
             seg: CoreSeqSegView::from_sequence_config(segment),
@@ -884,6 +920,9 @@ impl CoreSeqView {
                 disable_loopfilters_across_tiles: filter.disable_loopfilters_across_tiles,
                 cdef_on_skip_txfm: filter.cdef_on_skip_txfm,
                 df_par_bits_minus_2: filter.df_par_bits_minus_2,
+                // AV2 § 5.4.6: enable_df_sub_pu lives in the inter config; it gates the
+                // § 5.18.5.2 inter-path allow_df_sub_pu read (inert on the intra path).
+                enable_df_sub_pu: inter.enable_df_sub_pu,
                 single_picture_header_flag: general.single_picture_header_flag,
             },
             // AV2 § 5.4.10: the loop-restoration tool flags consumed by lr_params().
@@ -1110,6 +1149,7 @@ pub(crate) fn init_core_from_prefix(
         lr_params_partial: None,
         ccso_params: None,
         intra_tail: None,
+        inter_tail: None,
         sef_film_grain: None,
         sef_trailing_bits: None,
         inter: None,
@@ -1289,18 +1329,22 @@ pub(crate) fn parse_core_body(
     parse_inter_path(reader, core, seq, frame_type, reference_state)
 }
 
-/// Parses the non-intra `frame_header_info()` path (AV2 § 5.18.2, mirror :4351-5181):
-/// `frame_size_override_flag`, `order_hint`, then the reference control region via
-/// [`parse_inter_control_into`](crate::headers::frame::inter::parse_inter_control_into), converging
-/// into the shared tail (`tile_info()` onward) where the parse reached it.
+/// Parses the non-intra `frame_header_info()` path (AV2 § 5.18.2, mirror :4351-5343):
+/// `frame_size_override_flag`, `order_hint`, the reference control region via
+/// [`parse_inter_control_into`](crate::headers::frame::inter::parse_inter_control_into), and —
+/// when that region reaches
+/// [`InterStop::ReachedSharedTail`](crate::headers::frame::inter::InterStop) — the § 5.18.2
+/// shared tail via
+/// [`parse_inter_shared_tail`](crate::headers::frame::inter_shared_tail::parse_inter_shared_tail).
 ///
-/// Whatever [`InterStop`](crate::headers::frame::inter::InterStop) the control region
-/// reaches — including [`InterStop::ReachedSharedTail`](crate::headers::frame::inter::InterStop)
-/// — the inter facts are recorded on `core.inter` and the parse stops here with the
-/// unsupported-coverage [`FrameHeaderParseStatus`]; the distinct stop class is preserved on
-/// `core.inter.stop`. Continuing into the shared structure cluster (the same
-/// `tile_info()` → quant → segmentation → … path the intra tail uses, with inter inputs)
-/// is the next phase.
+/// On `ReachedSharedTail` the shared tail parses `tile_info()` → `quantization_params()` →
+/// `segmentation_params()` → … → the inter coding-mode arms → `film_grain_config()` for the
+/// modeled minimal-tool single-reference inter subset, reaching the terminal
+/// [`FrameHeaderParseStatus::InterHeaderComplete`] (or an honest
+/// [`FrameHeaderParseStatus::UnsupportedUntilFeature`] for anything outside that subset). On
+/// any other [`InterStop`](crate::headers::frame::inter::InterStop) the parse stops in the
+/// control region with the unsupported-coverage status; the distinct stop class stays on
+/// `core.inter.stop`. The inter facts are recorded on `core.inter` either way.
 fn parse_inter_path(
     reader: &mut BitReader<'_>,
     core: &mut FrameHeaderCore,
@@ -1308,13 +1352,19 @@ fn parse_inter_path(
     frame_type: FrameType,
     reference_state: &FrameReferenceStateView<'_>,
 ) -> Result<()> {
-    use crate::headers::frame::inter::{InterFrameContext, parse_inter_control_into};
+    use crate::headers::frame::inter::{InterFrameContext, InterStop, parse_inter_control_into};
+    use crate::headers::frame::inter_shared_tail::parse_inter_shared_tail;
 
     let obu_type = core.obu_type;
 
     // The control region's facts accumulate in a caller-owned `control` so an EOF inside a
     // modeled field preserves the fields parsed before it (codex F2).
     let mut control = crate::headers::frame::inter::InterControl::default();
+
+    // `shared_tail_ran` records whether the shared-tail parser set `core.status` itself
+    // (the `ReachedSharedTail` continuation); `finish_inter_control` must then leave the
+    // status untouched on `Ok`.
+    let mut shared_tail_ran = false;
 
     let result = (|| -> Result<()> {
         // mirror :4353-4365: frame_size_override_flag. SWITCH_FRAME forces 1 (no bit);
@@ -1348,10 +1398,32 @@ fn parse_inter_path(
             reference_state,
             frame_size_override_flag,
             &mut control,
-        )
+        )?;
+
+        // mirror :5183: when the control region converged on the shared tail, continue into
+        // it. The shared tail reads from `control` (NumTotalRefs / ref_frame_idx /
+        // frame_enabled_motion_modes) and the already-set `core` output flags / frame size;
+        // it sets `core.status` itself (InterHeaderComplete or an honest coverage stop). An
+        // EOF inside the modeled tail propagates out of this closure and
+        // `finish_inter_control` converts it to StoppedInsideInterControl with the facts
+        // parsed so far preserved. The control facts are lifted onto `core.inter` AFTER the
+        // tail runs (it borrows `control`), so a non-tail-EOF still preserves them.
+        if control.stop == Some(InterStop::ReachedSharedTail) {
+            // The shared tail's tile_info() needs the reference-grounded FrameWidth/Height
+            // (the control region resolved it on `control.frame_size`); lift it onto `core`
+            // BEFORE the tail runs so the tile/GDF/LR geometry derivations see it. (The
+            // refresh-flags / disable_cdf_update lift stays in finish_inter_control_with_tail;
+            // only the size is read by the shared tail.) When the size is genuinely unknown
+            // (a hit on an unmodeled ref slot), it stays None and the shared tail stops
+            // honestly at its own frame_size guard.
+            core.frame_size = control.frame_size;
+            shared_tail_ran = true;
+            parse_inter_shared_tail(reader, core, seq, &control, frame_type)?;
+        }
+        Ok(())
     })();
 
-    finish_inter_control(core, control, result)
+    finish_inter_control_with_tail(core, control, result, shared_tail_ran)
 }
 
 /// Records a parsed inter / bridge `control` onto `core` and sets the terminal status,
@@ -1396,6 +1468,63 @@ fn finish_inter_control(
         }
         // EOF inside the modeled § 5.18.2 control region: a payload-bounds truncation, not a
         // hard parse error. Keep the preserved facts and surface the truncation status.
+        Err(Error::UnexpectedEof { .. }) => {
+            core.status = FrameHeaderParseStatus::StoppedInsideInterControl;
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// Like [`finish_inter_control`], but for the non-bridge inter path that may have continued
+/// past `InterStop::ReachedSharedTail` into the § 5.18.2 shared tail
+/// ([`parse_inter_shared_tail`](crate::headers::frame::inter_shared_tail::parse_inter_shared_tail)).
+///
+/// `shared_tail_ran` is `true` when the shared-tail parser was invoked (the control region
+/// reached `ReachedSharedTail`). In that case the shared-tail parser already set `core.status`
+/// (the terminal [`FrameHeaderParseStatus::InterHeaderComplete`], an honest
+/// [`FrameHeaderParseStatus::UnsupportedUntilFeature`] coverage stop, or
+/// [`FrameHeaderParseStatus::StoppedBeforeWienerNsFilter`]), so on `Ok` the status is left
+/// untouched. When `shared_tail_ran` is `false` (any other control-region stop) the status
+/// is set to the unsupported-coverage class exactly as [`finish_inter_control`] does. An
+/// [`Error::UnexpectedEof`] from anywhere in the closure — the control region OR the shared
+/// tail — is converted to the facts-preserving
+/// [`FrameHeaderParseStatus::StoppedInsideInterControl`] (both are modeled § 5.18.2 regions).
+fn finish_inter_control_with_tail(
+    core: &mut FrameHeaderCore,
+    control: crate::headers::frame::inter::InterControl,
+    result: Result<()>,
+    shared_tail_ran: bool,
+) -> Result<()> {
+    // Lift the inter reference-grounded frame size / refresh flags onto the core so existing
+    // state-supported diagnostics and the inspector see whatever parsed before any EOF. The
+    // shared tail already wrote the cluster facts (tile/quant/segmentation/…) onto `core`;
+    // these lift the control-region facts that live only on `control`.
+    if let Some(size) = control.frame_size {
+        core.frame_size = Some(size);
+    }
+    if let Some(flags) = control.refresh_frame_flags {
+        core.refresh_frame_flags = Some(flags);
+    }
+    core.disable_cdf_update = control.disable_cdf_update;
+    core.inter = Some(control);
+
+    match result {
+        Ok(()) => {
+            if !shared_tail_ran {
+                // A control-region coverage stop short of the shared tail (TIP-as-output,
+                // bru-inactive / bridge, poisoned / unmodeled derivation): the shared tail
+                // is unmodeled by construction here, so the unsupported-coverage status.
+                core.status = FrameHeaderParseStatus::UnsupportedUntilFeature {
+                    feature_id: FRAME_HEADER_INFO_FEATURE,
+                };
+            }
+            // shared_tail_ran: parse_inter_shared_tail set the terminal status itself; leave it.
+            Ok(())
+        }
+        // EOF inside the modeled § 5.18.2 control region OR shared tail: a payload-bounds
+        // truncation, not a hard parse error. Keep the preserved facts and surface the
+        // truncation status.
         Err(Error::UnexpectedEof { .. }) => {
             core.status = FrameHeaderParseStatus::StoppedInsideInterControl;
             Ok(())
@@ -1992,6 +2121,9 @@ fn parse_filter_cluster(
         coded_lossless,
         seq.quant.num_planes,
         seq.filter.df_par_bits_minus_2,
+        // AV2 § 5.18.5.2 (mirror :5935): allow_df_sub_pu is read only on the
+        // FrameType == INTER_FRAME path; this is the intra cluster, so it never fires.
+        false,
         mfh_deblocking,
     )?);
 
@@ -4204,9 +4336,13 @@ mod tests {
     fn frame_header_core_inter_explicit_map_reaches_shared_tail() {
         // Regular tile group, INTER, with the sequence explicit_ref_frame_map on: the
         // inter control region parses the explicit map, frame size, MV precision, the
-        // interpolation filter, and motion modes, converging into the shared tail (the
-        // core status is the unsupported-coverage class; the shared tail needs inter inputs
-        // the shared cluster does not yet accept).
+        // interpolation filter, and motion modes, converging into the shared tail
+        // (InterStop::ReachedSharedTail). The hand-built payload ends EXACTLY at that
+        // boundary (right after disable_cdf_update), so the parse now CONTINUES into the
+        // § 5.18.2 shared tail (tile_info() onward) and runs out of bits inside it — a
+        // facts-preserving truncation (StoppedInsideInterControl), with the control-region
+        // facts intact. (The positive end-to-end completion is proven against the real
+        // fixture in inter.rs::frame_header_core_inter_fixture_reaches_inter_header_complete.)
         let mut seq = base_seq();
         seq.inter.explicit_ref_frame_map = true;
         seq.inter.enable_ref_frame_mvs = true;
@@ -4237,6 +4373,7 @@ mod tests {
 
         assert_eq!(core.frame_type, Some(FrameType::Inter));
         let inter = core.inter.as_ref().unwrap();
+        // The control region's facts are all preserved through the shared-tail truncation.
         assert_eq!(inter.explicit_ref_frame_map, Some(true));
         assert_eq!(inter.num_total_refs, Some(1));
         assert_eq!(inter.ref_frame_idx, vec![2]);
@@ -4252,9 +4389,204 @@ mod tests {
             inter.stop,
             Some(crate::headers::frame::inter::InterStop::ReachedSharedTail)
         );
-        // The core status is the unsupported-coverage class (the shared tail needs inter
-        // inputs not yet threaded), never a truncation.
+        // The payload ends at the shared-tail boundary, so continuing into tile_info() runs
+        // out of bits: a facts-preserving truncation in the modeled region.
+        assert_eq!(
+            core.status,
+            FrameHeaderParseStatus::StoppedInsideInterControl
+        );
+        assert!(core.status.is_truncated_in_modeled_region());
+    }
+
+    /// A 64x64 minimal-tool inter sequence view matching the verified
+    /// `syn-2frame-inter-64x64` fixture's config: a single reusable uniform 1x1 tile (so
+    /// `tile_info()` reads no bits), restoration and CCSO disabled (the shared-tail admission
+    /// gate's verified subset), and `enable_df_sub_pu` on (so the inter deblocking arm reads
+    /// `allow_df_sub_pu`). Used to build COMPLETE inter headers in the focused tests below.
+    fn minimal_inter_seq_64() -> CoreSeqView {
+        use crate::tile::TileParams;
+        let mut seq = CoreSeqView::new_minimal_intra(64, 64).expect("64x64 is valid");
+        // Implicit reference map (the fixture path) + ref-frame-mvs available.
+        seq.inter.explicit_ref_frame_map = false;
+        seq.inter.enable_ref_frame_mvs = true;
+        seq.filter.enable_df_sub_pu = true;
+        // A reusable uniform single tile so tile_info() reads 0 bits (the fixture layout).
+        seq.tile.seq_tile_info_present_flag = true;
+        seq.tile.allow_tile_info_change = false;
+        seq.tile.seq_tile_params = Some(TileParams {
+            tile_cols: 1,
+            tile_rows: 1,
+            tile_cols_log2: 0,
+            tile_rows_log2: 0,
+            sb_cols: 1,
+            sb_rows: 1,
+            uniform_spacing: true,
+            covers_cols: true,
+            covers_rows: true,
+        });
+        seq
+    }
+
+    /// Builds the inter control-region prefix (activation + output flags + the implicit-map
+    /// reference control region) for `minimal_inter_seq_64`, up to and including
+    /// `disable_cdf_update` (the shared-tail boundary, mirror :5041). The caller appends the
+    /// shared tail. With one valid reference slot the implicit `get_ref_frames()` derives
+    /// `NumTotalRefs == 1`, `ref_frame_idx == [0]` (no bits).
+    fn minimal_inter_control_prefix(bits: &mut Bits) {
+        bits.uvlc(0); // cur_mfh_id == 0
+        bits.uvlc(0); // seq_header_id_in_frame_header
+        bits.bit(1); // frame_is_inter == 1
+        bits.bit(1); // immediate_output_frame == 1 -> implicit_output_frame inferred 0 (no bit)
+        bits.bit(0); // frame_size_override_flag
+        bits.f(1, 4); // order_hint
+        bits.bit(0); // signal_primary_ref_frame
+        bits.bit(0); // disable_cross_frame_cdf_init
+        bits.f(0, 8); // refresh_frame_flags f(NumRefFrames == 8)
+        // explicit_ref_frame_map seq flag off -> get_ref_frames(0) -> NumTotalRefs == 1,
+        // ref_frame_idx == [0] (no bits). num_total_refs == 1 -> no tmvp.
+        bits.bit(0); // use_ref_frame_mvs = 0
+        // non-override, cur_mfh_id == 0 -> frame_size() default dims (no bits).
+        // TIP gate false (enable_tip off). frame_opfl_refine_type(): no bits.
+        bits.bit(0); // intrabc_params(): allow_intrabc = 0
+        bits.bit(0); // use_qtr_precision_mv = 0
+        bits.bit(0); // allow_high_precision_mv = 0 -> HALF_PEL
+        bits.bit(1); // is_filter_switchable = 1
+        // motion modes: seq_frame_motion_modes_present_flag false -> no bits.
+        bits.bit(0); // disable_cdf_update f(1), the shared-tail boundary.
+    }
+
+    /// The post-key reference state the fixture parse uses: only slot 0 valid (OrderHint 0,
+    /// 64x64), so the implicit map resolves to the single-reference case.
+    fn one_valid_ref_64() -> (
+        [bool; NUM_REF_FRAMES],
+        [u32; NUM_REF_FRAMES],
+        [u32; NUM_REF_FRAMES],
+        [u32; NUM_REF_FRAMES],
+    ) {
+        let mut ref_valid = [false; NUM_REF_FRAMES];
+        let ref_oh = [0u32; NUM_REF_FRAMES];
+        let mut ref_w = [0u32; NUM_REF_FRAMES];
+        let mut ref_h = [0u32; NUM_REF_FRAMES];
+        ref_valid[0] = true;
+        ref_w[0] = 64;
+        ref_h[0] = 64;
+        (ref_valid, ref_oh, ref_w, ref_h)
+    }
+
+    #[test]
+    fn frame_header_core_inter_shared_tail_reads_inter_arms_with_asymmetric_values() {
+        // A COMPLETE minimal-tool inter header: the control prefix + the § 5.18.2 shared tail
+        // with ASYMMETRIC inter-tail values (reference_select == 1, skip_mode_present == 1,
+        // tx_mode_select == 1) so a swap of the two adjacent f(1) reads would be caught (the
+        // asymmetric-value discipline). Reaches InterHeaderComplete with the exact values.
+        let seq = minimal_inter_seq_64();
+        let mut bits = Bits::default();
+        minimal_inter_control_prefix(&mut bits);
+        // --- shared tail ---
+        // tile_info(): reusable uniform 1x1 -> 0 bits.
+        bits.f(90, 8); // quantization_params(): base_q_idx f(8) (asymmetric, != 0)
+        bits.bit(0); // segmentation_params(): segmentation_enabled = 0
+        bits.bit(0); // setup_qm_params(): using_qmatrix = 0
+        bits.bit(0); // delta_q_params(): base_q>0 -> delta_q_present = 0
+        // lossless: enable_tcq/parity off -> no bits.
+        // deblocking_filter_params(): inter, enable_df_sub_pu on -> allow_df_sub_pu f(1).
+        bits.bit(0); // allow_df_sub_pu
+        bits.bit(0); // apply_deblocking_filter[0]
+        bits.bit(0); // apply_deblocking_filter[1]
+        // both 0 -> no chroma pair, no df_delta_q. gdf/cdef/lr/ccso disabled -> 0 bits.
+        bits.bit(1); // read_tx_mode(): tx_mode_select = 1 -> TX_MODE_SELECT
+        bits.bit(1); // frame_reference_mode(): reference_select = 1
+        bits.bit(1); // skip_mode_params(): skip_mode_present = 1 (skipModeAllowed)
+        // allow_bawp: enable_bawp off -> no bit. allow_warpmv_mode: no DELTAWARP -> no bit.
+        bits.f(2, 2); // reduced_tx_set f(2) = 2
+        // global_motion_params(): enable_global_motion off -> intra-arm return, no bits.
+        bits.bit(0); // film_grain_config(): apply_grain = 0 (output frame, grain present)
+        let data = bits.into_bytes();
+        let (rv, roh, rw, rh) = one_valid_ref_64();
+        let rs = FrameReferenceStateView::from_slots(&rv, &roh, &rw, &rh);
+        let (core, _) =
+            parse_body_with_ref(&data, ObuType::RegularTileGroup, false, &seq, None, &rs).unwrap();
+        assert_eq!(core.status, FrameHeaderParseStatus::InterHeaderComplete);
+        let quant = core.quantization_params.as_ref().unwrap();
+        assert_eq!(quant.base_q_idx, 90);
+        let tail = core.inter_tail.as_ref().expect("inter tail parsed");
+        assert_eq!(tail.tx_mode, TxMode::Select);
+        assert!(
+            tail.reference_select,
+            "reference_select f(1) == 1 read distinctly"
+        );
+        assert!(
+            tail.skip_mode_present,
+            "skip_mode_present f(1) == 1 read distinctly"
+        );
+        assert!(!tail.allow_bawp);
+        assert!(!tail.allow_warpmv_mode);
+        assert_eq!(tail.reduced_tx_set, 2);
+        assert!(!tail.use_global_motion);
+        assert!(!tail.apply_grain);
+    }
+
+    #[test]
+    fn frame_header_core_inter_shared_tail_segmentation_on_stops_unmodeled() {
+        // segmentation_enabled == 1 on the inter path: the § 5.18.7.1 update_map /
+        // temporal arms depend on the unmodeled DerivedPrimaryRefFrame ranking, so the
+        // shared tail stops honestly at UnsupportedUntilFeature (a coverage stop, not a
+        // truncation), with the control-region facts preserved.
+        let seq = minimal_inter_seq_64();
+        let mut bits = Bits::default();
+        minimal_inter_control_prefix(&mut bits);
+        bits.f(90, 8); // base_q_idx
+        bits.bit(1); // segmentation_enabled = 1 -> honest stop right after this bit
+        bits.f(0, 8); // padding (never read)
+        let data = bits.into_bytes();
+        let (rv, roh, rw, rh) = one_valid_ref_64();
+        let rs = FrameReferenceStateView::from_slots(&rv, &roh, &rw, &rh);
+        let (core, _) =
+            parse_body_with_ref(&data, ObuType::RegularTileGroup, false, &seq, None, &rs).unwrap();
+        assert!(matches!(
+            core.status,
+            FrameHeaderParseStatus::UnsupportedUntilFeature { .. }
+        ));
         assert!(!core.status.is_truncated_in_modeled_region());
+        // The control region reached the shared tail; the enabled-segmentation stop happens
+        // before the shared facts are stored, so no inter tail is produced.
+        assert_eq!(
+            core.inter.as_ref().unwrap().stop,
+            Some(crate::headers::frame::inter::InterStop::ReachedSharedTail)
+        );
+        assert!(core.inter_tail.is_none());
+    }
+
+    #[test]
+    fn frame_header_core_inter_shared_tail_ccso_on_stops_before_any_tail_bit() {
+        // enable_ccso == true puts the inter ccso reuse arm in play, which the shared
+        // (intra-arm) parser does not model. The admission gate stops BEFORE reading any
+        // shared-tail bit (setup_qm stays None), so no possibly-misaligned using_qmatrix is
+        // ever exposed. The control region's facts are still preserved.
+        let mut seq = minimal_inter_seq_64();
+        seq.ccso.enable_ccso = true;
+        let mut bits = Bits::default();
+        minimal_inter_control_prefix(&mut bits);
+        // The shared tail would follow, but the admission gate stops first; pad anyway.
+        bits.f(0, 16);
+        let data = bits.into_bytes();
+        let (rv, roh, rw, rh) = one_valid_ref_64();
+        let rs = FrameReferenceStateView::from_slots(&rv, &roh, &rw, &rh);
+        let (core, _) =
+            parse_body_with_ref(&data, ObuType::RegularTileGroup, false, &seq, None, &rs).unwrap();
+        assert!(matches!(
+            core.status,
+            FrameHeaderParseStatus::UnsupportedUntilFeature { .. }
+        ));
+        assert!(
+            core.quantization_params.is_none() && core.setup_qm_params.is_none(),
+            "the admission gate stops before any shared-tail bit, so no setup_qm is exposed"
+        );
+        // The control region reached the shared tail (the precondition for the gate).
+        assert_eq!(
+            core.inter.as_ref().unwrap().stop,
+            Some(crate::headers::frame::inter::InterStop::ReachedSharedTail)
+        );
     }
 
     #[test]
@@ -4710,6 +5042,7 @@ mod proptests {
                     disable_loopfilters_across_tiles: flags[3],
                     cdef_on_skip_txfm: skip_txfm,
                     df_par_bits_minus_2,
+                    enable_df_sub_pu: false,
                     single_picture_header_flag: false,
                 },
             )
@@ -4806,6 +5139,8 @@ mod proptests {
                             seq_frame_motion_modes_present_flag: flags[2],
                             seq_enabled_motion_modes: [false, flags[0], flags[1], flags[2], false],
                             enable_opfl_refine: scc.1,
+                            enable_bawp: flags[0],
+                            enable_global_motion: flags[1],
                         },
                         quant,
                         seg,

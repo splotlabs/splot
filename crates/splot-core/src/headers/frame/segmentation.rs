@@ -118,6 +118,27 @@ pub struct SegmentationParams {
     pub last_active_seg_id: u8,
 }
 
+impl SegmentationParams {
+    /// The `segmentation_enabled == 0` result (AV2 § 5.18.7.1): every feature disabled, all
+    /// derived flags `0`. This is the value `parse_segmentation_params` returns for the
+    /// disabled path (after reading only the `segmentation_enabled` `f(1)` bit), exposed so a
+    /// caller that has already read that bit (e.g. the inter shared tail, which reads
+    /// `segmentation_enabled` itself to gate the unmodeled enabled-segmentation inter arm) can
+    /// reuse it without re-reading.
+    #[must_use]
+    pub(crate) const fn disabled() -> Self {
+        Self {
+            segmentation_enabled: false,
+            reuse_seg_info: false,
+            features: [[SegmentFeature::DISABLED; SEG_LVL_MAX]; MAX_SEGMENTS],
+            segmentation_update_map: false,
+            segmentation_temporal_update: false,
+            seg_id_pre_skip: false,
+            last_active_seg_id: 0,
+        }
+    }
+}
+
 /// Parses `segmentation_params()` (AV2 v1.0.0 § 5.18.7.1,
 /// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-7-1`) on the intra path.
 ///

@@ -61,6 +61,7 @@ mod tests {
             disable_loopfilters_across_tiles: false,
             cdef_on_skip_txfm: CdefOnSkipTxfm::Adaptive,
             df_par_bits_minus_2: 0,
+            enable_df_sub_pu: false,
             single_picture_header_flag: false,
         }
     }
@@ -93,9 +94,17 @@ mod tests {
     ) {
         let data = bits.into_bytes();
         let mut rd = reader(&data);
-        let params =
-            parse_deblocking_filter_params(&mut rd, coded_lossless, num_planes, df_par_bits_minus_2, mfh)
-                .unwrap();
+        // The writer inverts the intra deblocking arm (FrameType != INTER_FRAME), so the
+        // round-trip drives parse with `read_allow_df_sub_pu == false` (no inter bit).
+        let params = parse_deblocking_filter_params(
+            &mut rd,
+            coded_lossless,
+            num_planes,
+            df_par_bits_minus_2,
+            false,
+            mfh,
+        )
+        .unwrap();
         let consumed = rd.consumed_bits();
         let mut writer = BitWriter::new();
         write_deblocking_filter_params(
@@ -114,6 +123,7 @@ mod tests {
             coded_lossless,
             num_planes,
             df_par_bits_minus_2,
+            false,
             mfh,
         )
         .unwrap();

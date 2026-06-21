@@ -58,6 +58,8 @@ impl CoreSeqInterView {
             // MOTION_MODES == 5 (§3); hardcoded here since the const is private to `info`.
             seq_enabled_motion_modes: [false; 5],
             enable_opfl_refine: 0,
+            enable_bawp: false,
+            enable_global_motion: false,
         }
     }
 }
@@ -167,6 +169,7 @@ impl CoreSeqView {
                 disable_loopfilters_across_tiles: false,
                 cdef_on_skip_txfm: CdefOnSkipTxfm::Adaptive,
                 df_par_bits_minus_2: 0,
+                enable_df_sub_pu: false,
                 single_picture_header_flag: false,
             },
             restoration: CoreSeqRestorationView {
