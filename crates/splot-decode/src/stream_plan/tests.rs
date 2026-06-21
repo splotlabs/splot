@@ -11,6 +11,8 @@ const OBU_SEQUENCE_HEADER: u8 = 0x04;
 const OBU_TEMPORAL_DELIMITER: u8 = 0x08;
 const OBU_CLOSED_LOOP_KEY: u8 = 0x10;
 const OBU_OPEN_LOOP_KEY: u8 = 0x14;
+// `obu_type` 7 (`OBU_REGULAR_TILE_GROUP`) packed into bits 6..2 (`7 << 2`).
+const OBU_REGULAR_TILE_GROUP: u8 = 0x1C;
 const OBU_METADATA_SHORT: u8 = 0x20;
 const OBU_MSDO: u8 = 0x50;
 const OBU_PADDING: u8 = 0x64;
@@ -87,6 +89,33 @@ fn raw_annex_b_plan_preserves_order_and_roles() {
             .all(|obu| obu.source_kind() == DecodeObuSourceKind::AnnexB)
     );
     assert!(obus.iter().all(|obu| obu.ivf_frame().is_none()));
+}
+
+#[test]
+fn regular_tile_group_is_admitted_as_inter_frame_candidate() {
+    // AV2 § 5.2.1 / § 5.19: an OBU_REGULAR_TILE_GROUP carries a non-key (inter)
+    // frame. The multi-frame planner admits it as an inter frame candidate so the
+    // runtime loop can reach it; both a key and an inter frame count toward the
+    // frame-candidate total (DECODE-FIRST-INTER-FRAME-FRONTIER).
+    let bytes = [
+        obu(OBU_TEMPORAL_DELIMITER).as_slice(),
+        obu(OBU_SEQUENCE_HEADER).as_slice(),
+        obu(OBU_CLOSED_LOOP_KEY).as_slice(),
+        obu(OBU_TEMPORAL_DELIMITER).as_slice(),
+        obu(OBU_REGULAR_TILE_GROUP).as_slice(),
+    ]
+    .concat();
+
+    let plan = plan(&bytes);
+    let obus: Vec<_> = plan.obus().collect();
+
+    assert_eq!(plan.frame_candidate_count(), 2);
+    assert_eq!(plan.frame_candidates().count(), 1);
+    assert_eq!(plan.frame_candidates_all().count(), 2);
+    assert_eq!(obus[2].role(), DecodePlannedObuRole::FrameCandidate);
+    assert_eq!(obus[4].role(), DecodePlannedObuRole::InterFrameCandidate);
+    assert!(obus[2].role().is_frame_candidate());
+    assert!(obus[4].role().is_frame_candidate());
 }
 
 #[test]

@@ -15,17 +15,23 @@ pub(crate) fn encode_raw_stream_from_plan(
     options: DecodeOptions,
     plan: &DecodeStreamPlan,
 ) -> Result<Vec<u8>> {
-    let output = crate::runtime_minimal::decode_minimal_frame_from_plan(bitstream, options, plan)?;
-    let raw = DecodedFrameHashInput::new(&output.frame);
+    // Decode every displayed frame in output order and concatenate their raw visible
+    // sample bytes (AV2 § 6.18). A single-frame intra stream emits one frame,
+    // byte-identical to the prior single-frame behavior.
+    let outputs =
+        crate::runtime_minimal::decode_minimal_frames_from_plan(bitstream, options, plan)?;
     let mut bytes = Vec::new();
-    bytes.try_reserve_exact(raw.byte_len()?).map_err(|source| {
-        DecodeOutputError::io(
-            DecodeOutputOperation::SerializeRaw,
-            std::io::Error::other(format!("raw output allocation failed: {source}")),
-        )
-    })?;
-    raw.write_to(&mut bytes)
-        .map_err(|source| DecodeOutputError::io(DecodeOutputOperation::SerializeRaw, source))?;
+    for output in &outputs {
+        let raw = DecodedFrameHashInput::new(&output.frame);
+        bytes.try_reserve_exact(raw.byte_len()?).map_err(|source| {
+            DecodeOutputError::io(
+                DecodeOutputOperation::SerializeRaw,
+                std::io::Error::other(format!("raw output allocation failed: {source}")),
+            )
+        })?;
+        raw.write_to(&mut bytes)
+            .map_err(|source| DecodeOutputError::io(DecodeOutputOperation::SerializeRaw, source))?;
+    }
     options
         .limits()
         .ensure(crate::DecodeLimitName::MaxOutputBytes, bytes.len() as u64)?;
