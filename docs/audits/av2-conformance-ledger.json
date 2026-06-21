@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "a1f2ebc3fc537eec7f6e7b2c74cbefc8ee5e80ed",
+  "audited_commit": "c1c073996cd98e85e2ddaf2ae633108c136e0070",
   "outcome": "success",
   "files": [
     {
@@ -838,6 +838,15 @@
       "outcome": "success"
     },
     {
+      "path": "crates/splot-core/src/headers/frame/get_ref_frames.rs",
+      "sha256": "19915b494fbf9113ad4bf48a23fe0ca31f11a79ccc636c05c4de1e595b2c8b07",
+      "scope_kind": "workspace:splot-core",
+      "feature_ids": [
+        "AV2-7.7-GET-REF-FRAMES"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "crates/splot-core/src/headers/frame/global_motion.rs",
       "sha256": "1d082e14e422ffd455d920728c297a9888630875e5dadda503925dc339f42663",
       "scope_kind": "workspace:splot-core",
@@ -848,7 +857,7 @@
     },
     {
       "path": "crates/splot-core/src/headers/frame/info.rs",
-      "sha256": "10c9e329d9e06821ebeafb4ca15878722f57a89b9d6774d23e3d427f86fceccb",
+      "sha256": "9455fa94721e77cb65a60d7b748647e07c7293d9c98295a84b632ddf421697a2",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-5.18.2-FRAME-HEADER-INFO",
@@ -859,14 +868,14 @@
     },
     {
       "path": "crates/splot-core/src/headers/frame/inter.rs",
-      "sha256": "e3ffea652016a0b77d46ac2de6a07b3a7cdc709ecfea6b8c8cf5947b031a3501",
+      "sha256": "a4975be930d595622a1d9237976579a90d0f7ba56206d8daa2cf7f6143cda7b0",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [],
       "outcome": "success"
     },
     {
       "path": "crates/splot-core/src/headers/frame/mod.rs",
-      "sha256": "bfe880d79ca5a58a18e4ca72152229e621cdf527dfa1aa2e1afdd19b4ed9749c",
+      "sha256": "db772d59f26dffbb40226e140096e02975fa53edb8ddc6ed6f0f5be1b1a2d504",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-5.18-FRAME-HEADER",
@@ -2537,7 +2546,7 @@
     },
     {
       "path": "crates/splot-encode/src/block_symbol_trace/cdf_rows.rs",
-      "sha256": "8c8eb2fcbdec4b6fc985add2fcb4a3c6ee22f1567609ee21a1dacfcf22d5c57e",
+      "sha256": "8164604f19282236123ddc59c9a36de7b6ff08f525ecea988a6055dfbbce6cdf",
       "scope_kind": "workspace:splot-encode",
       "feature_ids": [
         "ENC-BLOCK-SYMBOL-ENCODE",
@@ -2617,7 +2626,7 @@
     },
     {
       "path": "crates/splot-encode/src/block_symbol_trace/mod.rs",
-      "sha256": "23d3016de33d752b731de40d73691cfef4dfdb7a7af6ee66ca2bc7cdbf3a4078",
+      "sha256": "1ac529d175196867dc4f388ee37416a0d46a48eeddb96c5e4ac2cffe9b29cfea",
       "scope_kind": "workspace:splot-encode",
       "feature_ids": [
         "ENC-BLOCK-SYMBOL-ENCODE",
@@ -2667,11 +2676,12 @@
     },
     {
       "path": "crates/splot-encode/src/coefficient_tokenization.rs",
-      "sha256": "d9d682e2dbaa809c5cf0d3de4a33939b2752fb7548d01a962c99c3aa61ec2446",
+      "sha256": "96d779df8a95571d974e7c0eabfa6b366ff0d1abefb2baec17087b991341971e",
       "scope_kind": "workspace:splot-encode",
       "feature_ids": [
         "ENC-COEFF-BASE-LF-CONTEXT",
         "ENC-COEFF-BASE-LF-TOKEN",
+        "ENC-COEFF-GENERAL-WALK-LF-BASE",
         "ENC-COEFFICIENT-TOKENIZATION-MINIMAL",
         "ENC-INTRA-BLOCK-TRACE-CODED-BR",
         "ENC-SEC-TX-TYPE-TOKEN"
@@ -2682,7 +2692,9 @@
       "path": "crates/splot-encode/src/coefficient_tokenization/cdf_rows.rs",
       "sha256": "b588613a57cb1aa3e6421df0b1a923fbe7f01fac972a2c81b0f8ed68bdd1daa7",
       "scope_kind": "workspace:splot-encode",
-      "feature_ids": [],
+      "feature_ids": [
+        "ENC-COEFF-GENERAL-WALK-LF-BASE"
+      ],
       "outcome": "success"
     },
     {
@@ -2691,7 +2703,8 @@
       "scope_kind": "workspace:splot-encode",
       "feature_ids": [
         "ENC-COEFF-BASE-LF-CONTEXT",
-        "ENC-COEFF-BASE-LF-TOKEN"
+        "ENC-COEFF-BASE-LF-TOKEN",
+        "ENC-COEFF-GENERAL-WALK-LF-BASE"
       ],
       "outcome": "success"
     },
@@ -2699,7 +2712,27 @@
       "path": "crates/splot-encode/src/coefficient_tokenization/general_coded.rs",
       "sha256": "d21c6dc819f0e8664e0bc77110ace7b177526356c8debda66ceb198cd8d859ac",
       "scope_kind": "workspace:splot-encode",
-      "feature_ids": [],
+      "feature_ids": [
+        "ENC-COEFF-GENERAL-WALK-LF-BASE"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-encode/src/coefficient_tokenization/general_walk.rs",
+      "sha256": "0f18408ce08b2f39d3e529aaa54328a6ee4500b9ac1ad4247eb21274cfd92c3c",
+      "scope_kind": "workspace:splot-encode",
+      "feature_ids": [
+        "ENC-COEFF-GENERAL-WALK-LF-BASE"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-encode/src/coefficient_tokenization/general_walk_tests.rs",
+      "sha256": "171ca7a7716b67d77d5e7b22cc36120cacd10fc494650fda85290d6f437cd9e3",
+      "scope_kind": "workspace:splot-encode",
+      "feature_ids": [
+        "ENC-COEFF-GENERAL-WALK-LF-BASE"
+      ],
       "outcome": "success"
     },
     {
@@ -2707,6 +2740,7 @@
       "sha256": "08d05c2862bf8922a88c3fd6fbeb7618564408ff0f772870769ff7aee2f412c4",
       "scope_kind": "workspace:splot-encode",
       "feature_ids": [
+        "ENC-COEFF-GENERAL-WALK-LF-BASE",
         "ENC-COEFF-MULTI-TOKENS"
       ],
       "outcome": "success"
@@ -2716,6 +2750,7 @@
       "sha256": "4dbb23dbc070f90e4ad55b480312bbff549f876ae76847a28773b5df941a5a88",
       "scope_kind": "workspace:splot-encode",
       "feature_ids": [
+        "ENC-COEFF-GENERAL-WALK-LF-BASE",
         "ENC-INTRA-TX-TYPE-TOKEN",
         "ENC-SEC-TX-TYPE-TOKEN"
       ],
@@ -2758,7 +2793,7 @@
     },
     {
       "path": "crates/splot-encode/src/error.rs",
-      "sha256": "515beaabcf88388f14812bba7e8ad2c722b7040e17630a2c7ff969d42ebbb6ff",
+      "sha256": "63a69a462edfe2dccfd6e4f0be577a41dc3cf9ff0459a14bc3cc202598260a84",
       "scope_kind": "workspace:splot-encode",
       "feature_ids": [],
       "outcome": "success"
@@ -5219,7 +5254,7 @@
     },
     {
       "path": "docs/FEATURE-STATUS.md",
-      "sha256": "e4d700d2e6ba9a4aea29bfe14d95022bb67af6f260755af24184e4763e5671a7",
+      "sha256": "a94181f5b60017584b8923dbedb6cce9154139b7e2dbe48803eee7505488a6e6",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.10-RG",
@@ -5323,6 +5358,7 @@
         "AV2-7.3.8-HLS-AVAILABILITY",
         "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY",
         "AV2-7.4-RANDOM-ACCESS",
+        "AV2-7.7-GET-REF-FRAMES",
         "AV2-8.2-SYMBOL-DECODER",
         "AV2-9-ADDITIONAL-TABLES",
         "AV2-A-LEVELS-TIERS",
@@ -5487,6 +5523,7 @@
         "ENC-CLOSED-LOOP-RECONSTRUCTION-MINIMAL",
         "ENC-COEFF-BASE-LF-CONTEXT",
         "ENC-COEFF-BASE-LF-TOKEN",
+        "ENC-COEFF-GENERAL-WALK-LF-BASE",
         "ENC-COEFF-MULTI-TOKENS",
         "ENC-COEFFICIENT-TOKENIZATION-MINIMAL",
         "ENC-CONTEXT-RECEIVE-PACKET",
@@ -5642,7 +5679,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "847fcfa3a78cca620ddbe259ef543f6f0d094eb544f70e8ca48ccada0e50bd64",
+      "sha256": "7232dc3f3a6ba0bb363aa727565d01d14f4da8688509bf2bb1ccb37bf28eddc1",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.10-RG",
@@ -5746,6 +5783,7 @@
         "AV2-7.3.8-HLS-AVAILABILITY",
         "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY",
         "AV2-7.4-RANDOM-ACCESS",
+        "AV2-7.7-GET-REF-FRAMES",
         "AV2-8.2-SYMBOL-DECODER",
         "AV2-9-ADDITIONAL-TABLES",
         "AV2-A-LEVELS-TIERS",
@@ -5910,6 +5948,7 @@
         "ENC-CLOSED-LOOP-RECONSTRUCTION-MINIMAL",
         "ENC-COEFF-BASE-LF-CONTEXT",
         "ENC-COEFF-BASE-LF-TOKEN",
+        "ENC-COEFF-GENERAL-WALK-LF-BASE",
         "ENC-COEFF-MULTI-TOKENS",
         "ENC-COEFFICIENT-TOKENIZATION-MINIMAL",
         "ENC-CONTEXT-RECEIVE-PACKET",
@@ -6062,7 +6101,7 @@
     },
     {
       "path": "docs/SPEC-COVERAGE.md",
-      "sha256": "2d8322cbb26a3e9326cd2b36181bd0fc603c0d91f42974915474df6433bd669e",
+      "sha256": "5134ff70c7ef50914be3bb51b1cea0e3c62e91aa296a8f7108b790cc02aa9f2e",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.10-RG",
@@ -6166,6 +6205,7 @@
         "AV2-7.3.8-HLS-AVAILABILITY",
         "AV2-7.3.9-LONG-TERM-REFERENCE-AVAILABILITY",
         "AV2-7.4-RANDOM-ACCESS",
+        "AV2-7.7-GET-REF-FRAMES",
         "AV2-8.2-SYMBOL-DECODER",
         "AV2-9-ADDITIONAL-TABLES",
         "AV2-A-LEVELS-TIERS",
@@ -6330,6 +6370,7 @@
         "ENC-CLOSED-LOOP-RECONSTRUCTION-MINIMAL",
         "ENC-COEFF-BASE-LF-CONTEXT",
         "ENC-COEFF-BASE-LF-TOKEN",
+        "ENC-COEFF-GENERAL-WALK-LF-BASE",
         "ENC-COEFF-MULTI-TOKENS",
         "ENC-COEFFICIENT-TOKENIZATION-MINIMAL",
         "ENC-CONTEXT-RECEIVE-PACKET",
@@ -17834,6 +17875,33 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/coeff-general-walk-lf-base/proposal.md",
+      "sha256": "dea988d413f66012d567719bccf8a821e83d6adc6455a5b8dd5f9405a31116d1",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-COEFF-GENERAL-WALK-LF-BASE"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/coeff-general-walk-lf-base/specs/encoder-tools/spec.md",
+      "sha256": "27c1128359ea651279ebb7bed7019199c7bf6cdfea8f45e4463c5c6f734c9e7c",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-COEFF-GENERAL-WALK-LF-BASE"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/coeff-general-walk-lf-base/tasks.md",
+      "sha256": "09ad105a47337a9d8d652c0189d893bfcfef396acb64abd756a00d07f73182a4",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "ENC-COEFF-GENERAL-WALK-LF-BASE"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/coeff-idtx-cdf-rows/.openspec.yaml",
       "sha256": "d36d5ade13d63079e8fac69f1e3c45e2ee23d6b22c94f88c6a340556a023f11c",
       "scope_kind": "openspec",
@@ -20882,6 +20950,43 @@
       "scope_kind": "openspec",
       "feature_ids": [
         "DECODE-GENERAL-INTRA-RECT-PARTITION"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-inter-ref-frame-map/design.md",
+      "sha256": "056edd6581e77f8151d4e7ed8b3dd0ee766bbb5b82f0aacca3381697457669e7",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-inter-ref-frame-map/proposal.md",
+      "sha256": "e119c3c9b09934e78778c5164e917a3fe162feb899462c6867250389bd459cc8",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.18.2-FRAME-HEADER-INFO",
+        "AV2-7.7-GET-REF-FRAMES"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-inter-ref-frame-map/specs/bitstream/spec.md",
+      "sha256": "879ee9078c0a56d14bab4e035d26cee1d0e523736f3b6e091f3f66d124ef233a",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.18.2-FRAME-HEADER-INFO",
+        "AV2-7.7-GET-REF-FRAMES"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-inter-ref-frame-map/tasks.md",
+      "sha256": "56843dd10fcdd82fd6ca346ec407869e7fec11eb1a54c86c6479a51e280b23fc",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "AV2-5.18.2-FRAME-HEADER-INFO",
+        "AV2-7.7-GET-REF-FRAMES"
       ],
       "outcome": "success"
     },
