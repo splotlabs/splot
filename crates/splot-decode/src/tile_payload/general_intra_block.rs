@@ -87,7 +87,8 @@ impl GeneralIntraBlockModes {
     /// for non-directional modes and the not-yet-supported directional modes /
     /// non-zero angle deltas (see [`IntraYMode::supported_directional`]). A
     /// directional mode with a non-zero `AngleDeltaY` is reported as unsupported
-    /// because only `AngleDeltaY == 0` (pAngle 135) is verified.
+    /// because only `AngleDeltaY == 0` (the cardinal pAngles 90/180 and the
+    /// middle pAngles 135/157) is verified.
     pub(crate) fn supported_directional_luma(&self) -> Option<SupportedDirectionalLumaMode> {
         if self.angle_delta_y != 0 {
             return None;

@@ -1420,3 +1420,81 @@ fn hpred_cardinal_multicolumn_intra_frame_decodes_to_oracle() {
         "826cea4e59f8280b538c3efc26e7be72cd1912aa19f235ebf3f862fc8832a885"
     );
 }
+
+// A multi-superblock 128x64 frame whose LEFT 64x64 superblock is SMOOTH_V_PRED
+// (a smooth vertical gradient, non-directional, so the right superblock's §8.3.2
+// `y_mode_index` ctx is 0) and whose RIGHT 64x64 superblock (`frontier.r == 0`,
+// `frontier.c == 16`, `haveLeft && !haveAbove`) codes the §7.13.2.8 D157_PRED
+// directional mode (the §5.20.5.3 `y_mode_offset` escape, `AngleDeltaY == 0`,
+// pAngle 157) plus its `uv_mode == 0` directional-follow D157 chroma. The RIGHT
+// block content is a "D157-exact" construction: the input was built by running
+// the §7.13.2.8 D157 predictor over a vertical-gradient left column, so avmenc
+// codes D157 with near-zero residual.
+//
+// The decisive element: D157 has `dx == Dr_Intra_Derivative[23] == 170` and
+// `dy == Dr_Intra_Derivative[67] == 24`, so the §7.13.2.8 projection lands on a
+// nonzero `shift` for 2940 of the 3344 left-branch samples (verified via
+// instrumentation). Unlike D135 (all `shift == 0`, the IDIF reduces to a copy),
+// D157 genuinely exercises the luma IDIF 4-tap `Dr_Interp_Filter` over the real
+// reconstructed left column — this is the brick that oracle-proves the IDIF
+// kernel. Chroma takes the `enableIdif == 0` bilinear branch over the flat real
+// chroma edge. The prior brick rejected this frame
+// (`general_intra_non_dc_chroma_mode`, because D157 was an unmapped mode).
+// avmdec and dav2d agree on the decoded output (raw sha256
+// bf93ca6b8f55e1fb7db2584f3e3821ad67f21018b774c6e326634362ee5ef046, md5
+// c8698fdb7628843971bc9e37a82391ae) and splot reproduces it byte-for-byte.
+const D157_FIXTURE: &[u8] =
+    include_bytes!("../../../../tests/conformance/vectors/valid/syn-d157-intra-128x64-q80.ivf");
+
+#[test]
+fn d157_neighbour_directional_idif_intra_frame_decodes_to_oracle() {
+    use splot_recon::{BitDepth, PixelFormat, PlaneSize};
+
+    let frame = decode_general_intra_luma(D157_FIXTURE);
+    assert_eq!(frame.bit_depth(), BitDepth::Eight);
+    assert_eq!(frame.pixel_format(), PixelFormat::Yuv420);
+    assert_eq!(frame.y().visible_size(), PlaneSize::new(128, 64).unwrap());
+    assert_eq!(
+        frame.u().unwrap().visible_size(),
+        PlaneSize::new(64, 32).unwrap()
+    );
+
+    let y = frame.y().samples();
+    let at = |r: usize, c: usize| y[r * 128 + c];
+    // LEFT superblock: SMOOTH_V — constant across columns within a row, increasing
+    // top-to-bottom.
+    assert!(
+        (0..64).all(|c| at(20, c) == at(20, 0)),
+        "left superblock must be constant across columns within a row (SMOOTH_V)"
+    );
+    assert!(
+        at(0, 0) < at(63, 0),
+        "left superblock increases top-to-bottom"
+    );
+    // RIGHT superblock: D157 — a genuine directional pattern. Because pAngle 157 is
+    // a shallow-from-horizontal angle the bottom rows vary strongly across columns
+    // (the IDIF 4-tap interpolating the projected left column), so the block is
+    // neither flat nor row-constant (which would be DC / H_PRED).
+    assert!(
+        (1..64).any(|c| at(63, 64 + c) != at(63, 64)),
+        "right superblock bottom row must vary across columns (directional D157, not flat / H_PRED)"
+    );
+    let distinct = y.iter().collect::<std::collections::BTreeSet<_>>().len();
+    assert!(distinct > 4, "luma should be a non-flat reconstruction");
+    // Chroma is flat (U=120, V=130): the right superblock runs the neighbour-having
+    // directional-follow D157 chroma path (the §7.13.2.8 bilinear branch over the
+    // flat real reconstructed left chroma column) and reconstructs flat.
+    assert!(frame.u().unwrap().samples().iter().all(|&s| s == 120));
+    assert!(frame.v().unwrap().samples().iter().all(|&s| s == 130));
+
+    // Frame hash pins splot's output, which reproduces avmdec's and dav2d's raw
+    // output byte-for-byte (verified locally; raw sha256
+    // bf93ca6b8f55e1fb7db2584f3e3821ad67f21018b774c6e326634362ee5ef046).
+    let hash = splot_recon::DecodedFrameHashInput::new(&frame)
+        .compute_hash()
+        .to_hex();
+    assert_eq!(
+        hash,
+        "bf93ca6b8f55e1fb7db2584f3e3821ad67f21018b774c6e326634362ee5ef046"
+    );
+}

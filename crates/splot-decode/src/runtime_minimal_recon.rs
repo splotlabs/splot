@@ -8,10 +8,11 @@
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DecodedFrame, DecodedFrameInfo, IntraCardinalDirection,
     IntraCardinalEdges, IntraMiddleDirectionalAngle, IntraMiddleDirectionalAngleEdges,
-    IntraRectBlockSize, IntraSmoothEdges, IntraSmoothMode, IntraSquareBlockSize, OutputIndex,
-    PixelFormat, PlaneId, PlaneRect, PlaneSize, predict_intra_cardinal_directional_rect_into,
-    predict_intra_dc_rect_value, predict_intra_middle_directional_angle_rect_into,
-    predict_intra_smooth_rect_into,
+    IntraMiddleDirectionalAngleIdifEdges, IntraRectBlockSize, IntraSmoothEdges, IntraSmoothMode,
+    IntraSquareBlockSize, OutputIndex, PixelFormat, PlaneId, PlaneRect, PlaneSize,
+    predict_intra_cardinal_directional_rect_into, predict_intra_dc_rect_value,
+    predict_intra_middle_directional_angle_rect_idif_into,
+    predict_intra_middle_directional_angle_rect_into, predict_intra_smooth_rect_into,
 };
 
 use crate::Result;
@@ -197,6 +198,27 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into(
                 workspace,
                 block,
                 SupportedDirectionalLumaMode::D135,
+                plane_id,
+                x,
+                y,
+                log2_side,
+                qindex,
+                // Chroma never uses the §7.14.4 TCQ dqDenom term (luma DCT_DCT only).
+                false,
+            )
+        }
+        // Directional-follow D157 chroma over a real reconstructed §7.13.2.1 left
+        // chroma column. Chroma takes the `enableIdif == 0` bilinear branch
+        // (`plane != 0`); over a flat real chroma edge the D157 bilinear projection
+        // is bit-exact. The luma gate guarantees the D157 block is at a
+        // first-superblock-row, non-first-column position, so the chroma block has
+        // the matching real reconstructed left neighbour (no top-left no-neighbour
+        // D157 chroma path is admitted).
+        SupportedChromaMode::D157Follow => {
+            reconstruct_general_intra_directional_neighbour_block_into(
+                workspace,
+                block,
+                SupportedDirectionalLumaMode::D157,
                 plane_id,
                 x,
                 y,
@@ -812,17 +834,34 @@ pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into(
     let (left, above) =
         build_directional_middle_edges(edges.left_samples(), have_left, have_above, side)?;
     let angle = middle_directional_angle(mode)?;
-    let middle_edges = IntraMiddleDirectionalAngleEdges::both(&left, &above);
     let mut prediction = vec![0u8; side * side];
-    predict_intra_middle_directional_angle_rect_into(
-        BitDepth::Eight,
-        block_size,
-        angle,
-        middle_edges,
-        &mut prediction,
-        side,
-    )
-    .map_err(recon_err)?;
+    // §7.13.2.8 `enableIdif = plane == 0`: luma uses the IDIF 4-tap (which for
+    // D135 `shift == 0` is the same sample copy as bilinear, but for D157 `shift
+    // != 0` genuinely interpolates); chroma uses the `enableIdif == 0` bilinear
+    // branch. The chroma callers only pass D135 (shift == 0), so both branches
+    // agree there, but the plane dispatch keeps the spec contract exact.
+    if matches!(plane_id, PlaneId::Y) {
+        let (left_idif, above_idif) = extend_directional_middle_idif_edges(&left, &above)?;
+        predict_intra_middle_directional_angle_rect_idif_into(
+            BitDepth::Eight,
+            block_size,
+            angle,
+            IntraMiddleDirectionalAngleIdifEdges::both(&left_idif, &above_idif),
+            &mut prediction,
+            side,
+        )
+        .map_err(recon_err)?;
+    } else {
+        predict_intra_middle_directional_angle_rect_into(
+            BitDepth::Eight,
+            block_size,
+            angle,
+            IntraMiddleDirectionalAngleEdges::both(&left, &above),
+            &mut prediction,
+            side,
+        )
+        .map_err(recon_err)?;
+    }
     let out = if block.all_zero {
         prediction
     } else {
@@ -1040,10 +1079,41 @@ fn middle_directional_angle(
 ) -> core::result::Result<IntraMiddleDirectionalAngle, GeneralIntraResidualError> {
     match mode {
         SupportedDirectionalLumaMode::D135 => Ok(IntraMiddleDirectionalAngle::D135),
+        SupportedDirectionalLumaMode::D157 => Ok(IntraMiddleDirectionalAngle::D157),
         SupportedDirectionalLumaMode::Vertical | SupportedDirectionalLumaMode::Horizontal => {
             Err(GeneralIntraResidualError::CardinalModeInMiddleAnglePath)
         }
     }
+}
+
+/// Extends the §7.13.2.1 logical `LeftCol[-1..h)` / `AboveRow[-1..w)` edges
+/// (length `side + 1`, index 0 = the `-1` corner) to the wider IDIF logical
+/// range `Edge[-2..=side+1]` (length `side + 4`, index 0 = logical `-2`) for the
+/// §7.13.2.8 luma IDIF 4-tap, which reads `Edge[base - 1 ..= base + 2]`. The
+/// extension follows §7.13.2.8: `Edge[minBase - 1] = Edge[minBase]`
+/// (`Edge[-2] = Edge[-1]`, the repeated corner) and, for the middle branch
+/// (`90 < pAngle < 180`), `Edge[side] = Edge[side + 1] = Edge[side - 1]` (the
+/// repeated last in-block edge sample).
+fn extend_directional_middle_idif_edges(
+    left: &[u8],
+    above: &[u8],
+) -> core::result::Result<(Vec<u8>, Vec<u8>), GeneralIntraResidualError> {
+    Ok((
+        extend_one_middle_idif_edge(left),
+        extend_one_middle_idif_edge(above),
+    ))
+}
+
+fn extend_one_middle_idif_edge(edge: &[u8]) -> Vec<u8> {
+    // `edge` is `Edge[-1..side)`: index 0 = `-1` (corner), index `k + 1` = k.
+    let corner = edge.first().copied().unwrap_or(NONEIGHBOUR_CORNER_8BIT);
+    let last = edge.last().copied().unwrap_or(corner);
+    let mut out = Vec::with_capacity(edge.len() + 3);
+    out.push(corner); // logical -2 == Edge[-1]
+    out.extend_from_slice(edge); // logical -1..side-1
+    out.push(last); // logical side == Edge[side - 1]
+    out.push(last); // logical side + 1 == Edge[side - 1]
+    out
 }
 
 fn recon_err(source: splot_recon::ReconError) -> GeneralIntraResidualError {

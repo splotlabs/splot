@@ -6,7 +6,7 @@
 //! Feature tracking: `RECON-INTRA-ONE-SIDED-DIRECTIONAL-ANGLE-PREDICTION`,
 //! `RECON-INTRA-MIDDLE-DIRECTIONAL-ANGLE-PREDICTION`.
 
-use crate::intra_dc_math::{round2, validate_output_shape, validate_sample_type};
+use crate::intra_dc_math::{clip1, round2, validate_output_shape, validate_sample_type};
 use crate::{BitDepth, IntraRectBlockSize, ReconError, ReconSample, Result};
 
 const ANGLE_D45: u16 = 45;
@@ -23,6 +23,36 @@ const DR_INTRA_DERIVATIVE_23: u16 = 170;
 const DR_INTRA_DERIVATIVE_45: u16 = 64;
 // AV2 v1.0.0 §9.2 `Dr_Intra_Derivative[67]`.
 const DR_INTRA_DERIVATIVE_67: u16 = 24;
+
+/// Number of `shift` rows in the §7.13.2.8 IDIF filter table.
+const DR_INTERP_FILTER_SHIFTS: usize = 32;
+/// Number of taps per §7.13.2.8 IDIF filter row.
+const DR_INTERP_FILTER_TAPS: usize = 4;
+/// `Round2` shift applied to the §7.13.2.8 IDIF 4-tap sum (`pred = Clip1(Round2(s, 7))`).
+const DR_INTERP_FILTER_ROUND: u8 = 7;
+
+/// AV2 v1.0.0 §7.13.2.8 `Dr_Interp_Filter[32][4]` interpolation filter taps,
+/// used when `enableIdif == 1` (luma): `s = Σ(t=0..3) Dr_Interp_Filter[shift][t]
+/// * Edge[base + t - 1]; pred = Clip1(Round2(s, 7))`. Copied verbatim from the
+/// committed spec mirror
+/// `docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-8`. Row 0
+/// (`shift == 0`) is `{0, 128, 0, 0}`, so the 4-tap reduces to
+/// `Clip1(Round2(128 * Edge[base], 7)) == Edge[base]` — a sample copy
+/// identical to the `enableIdif == 0` bilinear branch at `shift == 0`.
+#[rustfmt::skip]
+const DR_INTERP_FILTER: [[i32; DR_INTERP_FILTER_TAPS]; DR_INTERP_FILTER_SHIFTS] = [
+    [0, 128, 0, 0],     [-2, 127, 4, -1],   [-3, 125, 8, -2],
+    [-5, 123, 13, -3],  [-6, 121, 17, -4],  [-7, 118, 22, -5],
+    [-9, 116, 27, -6],  [-9, 112, 32, -7],  [-10, 109, 37, -8],
+    [-11, 106, 41, -8], [-11, 102, 46, -9], [-12, 98, 52, -10],
+    [-12, 94, 56, -10], [-12, 90, 61, -11], [-12, 85, 66, -11],
+    [-12, 81, 71, -12], [-12, 76, 76, -12], [-12, 71, 81, -12],
+    [-11, 66, 85, -12], [-11, 61, 90, -12], [-10, 56, 94, -12],
+    [-10, 52, 98, -12], [-9, 46, 102, -11], [-8, 41, 106, -11],
+    [-8, 37, 109, -10], [-7, 32, 112, -9],  [-6, 27, 116, -9],
+    [-5, 22, 118, -7],  [-4, 17, 121, -6],  [-3, 13, 123, -5],
+    [-2, 8, 125, -3],   [-1, 4, 127, -2],
+];
 
 /// Supported one-sided directional-angle pAngle.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -253,6 +283,55 @@ impl<'a, T: ReconSample> IntraMiddleDirectionalAngleEdges<'a, T> {
     }
 }
 
+/// Caller-provided prepared edge samples for the luma IDIF middle
+/// AV2 §7.13.2.8 prediction (`enableIdif == 1`).
+///
+/// The §7.13.2.8 IDIF 4-tap reads `Edge[base + t - 1]` for `t = 0..3`, i.e.
+/// `Edge[base - 1 ..= base + 2]`, so the prepared edges span the logical range
+/// `-2 ..= side + 1`: the spec extends `LeftCol[minBase - 1] = LeftCol[minBase]`
+/// (with `minBase = -1` for `mrlIndex == 0`) and, for `90 < pAngle < 180`,
+/// `LeftCol[h] = LeftCol[h + 1] = LeftCol[h - 1]` (and the analogous
+/// `AboveRow[w] = AboveRow[w + 1] = AboveRow[w - 1]`). Each supplied slice maps
+/// `slice[0]` to logical `-2`, `slice[1]` to the logical `-1` corner, and
+/// `slice[index + 2]` to logical index `index`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct IntraMiddleDirectionalAngleIdifEdges<'a, T: ReconSample> {
+    left_idif: Option<&'a [T]>,
+    above_idif: Option<&'a [T]>,
+}
+
+impl<'a, T: ReconSample> IntraMiddleDirectionalAngleIdifEdges<'a, T> {
+    /// Creates an IDIF middle-edge set from optional left and above edges.
+    ///
+    /// Each slice spans the logical range `-2 ..= side + 1` (length `side + 4`):
+    /// `slice[0]` is logical `-2`, `slice[1]` the `-1` corner, `slice[index + 2]`
+    /// logical index `index`. AV2 §7.13.2.1 edge availability, fallback
+    /// preparation, the §7.13.2.8 spec edge extension, MRL, and angle deltas
+    /// remain outside this type.
+    pub const fn new(left_idif: Option<&'a [T]>, above_idif: Option<&'a [T]>) -> Self {
+        Self {
+            left_idif,
+            above_idif,
+        }
+    }
+
+    /// Creates an IDIF edge set with both logical `LeftCol[-2..=h+1]` and
+    /// `AboveRow[-2..=w+1]` available.
+    pub const fn both(left_idif: &'a [T], above_idif: &'a [T]) -> Self {
+        Self::new(Some(left_idif), Some(above_idif))
+    }
+
+    /// Returns prepared IDIF left edge samples when available.
+    pub const fn left_idif(self) -> Option<&'a [T]> {
+        self.left_idif
+    }
+
+    /// Returns prepared IDIF above edge samples when available.
+    pub const fn above_idif(self) -> Option<&'a [T]> {
+        self.above_idif
+    }
+}
+
 /// Writes a supported one-sided AV2 §7.13.2.8 directional prediction into caller storage.
 ///
 /// This primitive intentionally covers only chroma/no-IDIF/no-MRL one-sided
@@ -354,6 +433,78 @@ pub fn predict_intra_middle_directional_angle_rect_from_p_angle_into<T: ReconSam
     )
 }
 
+/// Writes a supported luma IDIF middle AV2 §7.13.2.8 directional prediction
+/// (`enableIdif == 1`) into caller storage.
+///
+/// This is the luma counterpart of
+/// [`predict_intra_middle_directional_angle_rect_into`]: it applies the
+/// §7.13.2.8 4-tap interpolation filter `Dr_Interp_Filter` instead of the
+/// chroma `enableIdif == 0` bilinear branch. For each predicted sample the
+/// projected `base`/`shift` are derived exactly as in the bilinear path, then
+/// `s = Σ(t=0..3) Dr_Interp_Filter[shift][t] * Edge[base + t - 1]` and
+/// `pred[i][j] = Clip1(Round2(s, 7))`. At `shift == 0` the filter row is
+/// `{0, 128, 0, 0}`, so the result reduces to `Edge[base]` — bit-identical to
+/// the bilinear branch (e.g. every pAngle 135 projection has `shift == 0`).
+///
+/// Callers provide the wider IDIF edges `AboveRow[-2..=w+1]` and
+/// `LeftCol[-2..=h+1]` (length `side + 4`); slice index zero is the logical
+/// `-2` sample (the §7.13.2.8 `LeftCol[minBase - 1]` / spec edge extension).
+/// `output` points at the top-left destination sample and `stride_samples` is
+/// the distance between adjacent output rows. This primitive covers only the
+/// no-MRL middle pAngles `113`, `135`, and `157` over already-prepared edges.
+///
+/// # Errors
+/// Returns [`ReconError`] for unsupported sample type/bit depth combinations,
+/// unsupported pAngles, missing or wrong-length prepared edges, out-of-range
+/// edge samples, a too-small stride, a too-small output buffer, or checked
+/// arithmetic overflow.
+pub fn predict_intra_middle_directional_angle_rect_idif_into<T: ReconSample>(
+    bit_depth: BitDepth,
+    size: IntraRectBlockSize,
+    angle: IntraMiddleDirectionalAngle,
+    edges: IntraMiddleDirectionalAngleIdifEdges<'_, T>,
+    output: &mut [T],
+    stride_samples: usize,
+) -> Result<()> {
+    let context =
+        validate_middle_idif_inputs(bit_depth, size, angle, edges, output.len(), stride_samples)?;
+    write_middle_idif_prediction(
+        bit_depth,
+        size,
+        angle,
+        context.left,
+        context.above,
+        output,
+        stride_samples,
+    )
+}
+
+/// Writes a supported luma IDIF middle directional prediction from a raw AV2
+/// pAngle.
+///
+/// # Errors
+/// In addition to [`predict_intra_middle_directional_angle_rect_idif_into`]
+/// errors, returns [`ReconError::UnsupportedIntraMiddleDirectionalAngle`] before
+/// output mutation when `p_angle` is not `113`, `135`, or `157`.
+pub fn predict_intra_middle_directional_angle_rect_idif_from_p_angle_into<T: ReconSample>(
+    bit_depth: BitDepth,
+    size: IntraRectBlockSize,
+    p_angle: u16,
+    edges: IntraMiddleDirectionalAngleIdifEdges<'_, T>,
+    output: &mut [T],
+    stride_samples: usize,
+) -> Result<()> {
+    let angle = IntraMiddleDirectionalAngle::try_from_p_angle(p_angle)?;
+    predict_intra_middle_directional_angle_rect_idif_into(
+        bit_depth,
+        size,
+        angle,
+        edges,
+        output,
+        stride_samples,
+    )
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DirectionalAngleBranch {
     Above { derivative: u16 },
@@ -380,6 +531,12 @@ struct ValidatedInputs<'a, T: ReconSample> {
 
 #[derive(Clone, Copy, Debug)]
 struct ValidatedMiddleInputs<'a, T: ReconSample> {
+    left: &'a [T],
+    above: &'a [T],
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ValidatedMiddleIdifInputs<'a, T: ReconSample> {
     left: &'a [T],
     above: &'a [T],
 }
@@ -458,6 +615,93 @@ fn validate_middle_inputs<'a, T: ReconSample>(
     validate_middle_index_bounds(size, angle, left.len(), above.len())?;
 
     Ok(ValidatedMiddleInputs { left, above })
+}
+
+fn validate_middle_idif_inputs<'a, T: ReconSample>(
+    bit_depth: BitDepth,
+    size: IntraRectBlockSize,
+    angle: IntraMiddleDirectionalAngle,
+    edges: IntraMiddleDirectionalAngleIdifEdges<'a, T>,
+    output_len: usize,
+    stride_samples: usize,
+) -> Result<ValidatedMiddleIdifInputs<'a, T>> {
+    validate_sample_type::<T>(bit_depth)?;
+    validate_output_shape(size, output_len, stride_samples)?;
+
+    let left = edges
+        .left_idif
+        .ok_or(ReconError::IntraMiddleDirectionalAngleEdgeUnavailable {
+            angle,
+            edge: IntraDirectionalAngleEdge::Left,
+        })?;
+    let above = edges
+        .above_idif
+        .ok_or(ReconError::IntraMiddleDirectionalAngleEdgeUnavailable {
+            angle,
+            edge: IntraDirectionalAngleEdge::Above,
+        })?;
+
+    let left_len = required_middle_idif_left_len(size)?;
+    let above_len = required_middle_idif_above_len(size)?;
+    validate_middle_edge(IntraDirectionalAngleEdge::Left, left, left_len, bit_depth)?;
+    validate_middle_edge(
+        IntraDirectionalAngleEdge::Above,
+        above,
+        above_len,
+        bit_depth,
+    )?;
+
+    validate_middle_idif_index_bounds(size, angle, left.len(), above.len())?;
+
+    Ok(ValidatedMiddleIdifInputs { left, above })
+}
+
+/// IDIF left edge length: logical `-2 ..= h + 1` is `h + 4` samples.
+fn required_middle_idif_left_len(size: IntraRectBlockSize) -> Result<usize> {
+    size.height()
+        .checked_add(4)
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "middle directional angle IDIF left edge length",
+        })
+}
+
+/// IDIF above edge length: logical `-2 ..= w + 1` is `w + 4` samples.
+fn required_middle_idif_above_len(size: IntraRectBlockSize) -> Result<usize> {
+    size.width()
+        .checked_add(4)
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "middle directional angle IDIF above edge length",
+        })
+}
+
+fn validate_middle_idif_index_bounds(
+    size: IntraRectBlockSize,
+    angle: IntraMiddleDirectionalAngle,
+    left_len: usize,
+    above_len: usize,
+) -> Result<()> {
+    let branch = angle.branch()?;
+    for row in 0..size.height() {
+        for column in 0..size.width() {
+            let reference = middle_sample_reference(row, column, branch)?;
+            let len = match reference.edge {
+                IntraDirectionalAngleEdge::Left => left_len,
+                IntraDirectionalAngleEdge::Above => above_len,
+            };
+            // The §7.13.2.8 IDIF 4-tap reads `Edge[base - 1 ..= base + 2]`.
+            for tap in 0..(DR_INTERP_FILTER_TAPS as i64) {
+                let logical =
+                    reference
+                        .base
+                        .checked_add(tap - 1)
+                        .ok_or(ReconError::ArithmeticOverflow {
+                            context: "middle directional angle IDIF tap index",
+                        })?;
+                logical_idif_edge_offset(logical, len)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn required_edge_len(size: IntraRectBlockSize) -> Result<usize> {
@@ -696,6 +940,102 @@ fn write_middle_prediction<T: ReconSample>(
     }
 
     Ok(())
+}
+
+fn write_middle_idif_prediction<T: ReconSample>(
+    bit_depth: BitDepth,
+    size: IntraRectBlockSize,
+    angle: IntraMiddleDirectionalAngle,
+    left: &[T],
+    above: &[T],
+    output: &mut [T],
+    stride_samples: usize,
+) -> Result<()> {
+    let branch = angle.branch()?;
+    for row in 0..size.height() {
+        let row_start = row * stride_samples;
+        for column in 0..size.width() {
+            let reference = middle_sample_reference(row, column, branch)?;
+            let edge = match reference.edge {
+                IntraDirectionalAngleEdge::Left => left,
+                IntraDirectionalAngleEdge::Above => above,
+            };
+            let value = idif_tap(edge, reference.base, reference.shift, bit_depth)?;
+            output[row_start + column] = T::try_from_u16(value)?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Computes one §7.13.2.8 IDIF sample: `s = Σ(t=0..3) Dr_Interp_Filter[shift][t]
+/// * Edge[base + t - 1]`, then `Clip1(Round2(s, 7))`. The 4-tap sum is signed
+/// (the filter has negative taps), so `Round2` floors the signed value and
+/// `Clip1` clamps a negative result to `0`.
+fn idif_tap<T: ReconSample>(edge: &[T], base: i64, shift: u16, bit_depth: BitDepth) -> Result<u16> {
+    let taps = DR_INTERP_FILTER
+        .get(usize::from(shift))
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "middle directional angle IDIF shift index",
+        })?;
+    let mut sum: i64 = 0;
+    for (tap_index, &tap) in taps.iter().enumerate() {
+        let logical =
+            base.checked_add(tap_index as i64 - 1)
+                .ok_or(ReconError::ArithmeticOverflow {
+                    context: "middle directional angle IDIF tap index",
+                })?;
+        let sample = i64::from(logical_idif_edge_sample(edge, logical)?.to_u16());
+        let term = i64::from(tap)
+            .checked_mul(sample)
+            .ok_or(ReconError::ArithmeticOverflow {
+                context: "middle directional angle IDIF tap product",
+            })?;
+        sum = sum
+            .checked_add(term)
+            .ok_or(ReconError::ArithmeticOverflow {
+                context: "middle directional angle IDIF tap sum",
+            })?;
+    }
+    Ok(idif_round2_clip(sum, bit_depth))
+}
+
+/// AV2 §4 `Clip1(Round2(s, 7))` for a signed IDIF sum: `Round2(x, n) =
+/// ⌊(x + 2^(n-1)) / 2^n⌋` (floor, via arithmetic shift on the signed value),
+/// then clamp to `0..=max_sample`.
+fn idif_round2_clip(sum: i64, bit_depth: BitDepth) -> u16 {
+    let rounded = (sum + (1i64 << (DR_INTERP_FILTER_ROUND - 1))) >> DR_INTERP_FILTER_ROUND;
+    if rounded <= 0 {
+        return 0;
+    }
+    let max = i64::from(bit_depth.max_sample());
+    let clamped = rounded.min(max);
+    // `clamped` is in `0..=max_sample`, so the cast and clip1 are exact.
+    clip1(clamped as u16, bit_depth)
+}
+
+fn logical_idif_edge_sample<T: ReconSample>(samples: &[T], logical_index: i64) -> Result<T> {
+    let offset = logical_idif_edge_offset(logical_index, samples.len())?;
+    Ok(samples[offset])
+}
+
+/// Maps an IDIF logical edge index (`-2 ..= side + 1`) to a slice offset:
+/// `slice[0]` is logical `-2`, so `offset = logical_index + 2`.
+fn logical_idif_edge_offset(logical_index: i64, len: usize) -> Result<usize> {
+    let shifted = logical_index
+        .checked_add(2)
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "middle directional angle IDIF logical edge offset",
+        })?;
+    let offset = usize::try_from(shifted).map_err(|_| ReconError::ArithmeticOverflow {
+        context: "middle directional angle IDIF logical edge coverage",
+    })?;
+    if offset >= len {
+        return Err(ReconError::ArithmeticOverflow {
+            context: "middle directional angle IDIF logical edge coverage",
+        });
+    }
+    Ok(offset)
 }
 
 fn middle_sample_reference(
