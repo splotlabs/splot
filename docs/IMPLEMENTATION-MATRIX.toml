@@ -12525,6 +12525,60 @@ fixtures = [
 diagnostics = ["decode/unsupported-feature"]
 
 [[feature]]
+id = "DECODE-FIRST-INTER-FRAME-FRONTIER"
+name = "First inter frame decode frontier (verified target)"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.2.1", "5.18.2", "5.19", "5.20", "6.18", "7.7", "7.13.3.18", "7.23"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-2-1",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-19",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-18",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-7",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-18",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-23",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/stream_plan.rs"
+openspec_change = "decode-first-inter-frame-frontier"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Opens the INTER decode arc (the gate to real content) by committing its verified target fixture and pinning the honest current rejection, ahead of the full inter decode slice. The committed `syn-2frame-inter-64x64.ivf` (project-owned flat synthetic input — luma 100, U 120, V 130, both frames identical; broad decode tools disabled; `--enable-global-motion=1 --qp=80 --sb-size=64 --min/max-partition-size=64`) is a minimal two-frame stream: frame 0 = OBU_TEMPORAL_DELIMITER + OBU_SEQUENCE_HEADER + OBU_CLOSED_LOOP_KEY (a single flat 64x64 intra key block already decoded bit-exact by the general-intra runtime), frame 1 = OBU_TEMPORAL_DELIMITER + OBU_REGULAR_TILE_GROUP (a single 64x64 inter block, single reference, GLOBALMV/NEARESTMV with zero MV and skip=1, so §7.13.3.18 zero-fraction motion compensation reduces to a straight copy of the co-located key block; no residual). avmdec --rawvideo --i420 and dav2d --demuxer ivf decode the whole stream byte-for-byte identically (decoded-output md5 4e1bd39f0b541ef1f479cff049e6985c, 12288 bytes; frame 1 == a copy of frame 0), recorded in `docs/LOCAL-REFERENCE-EVIDENCE.toml` (`lref-avm-dav2d-syn-2frame-inter-64x64`). The fixture validates clean and is registered in the conformance corpus. splot does NOT yet decode the inter frame: the initial stream planner accepts only OBU_CLOSED_LOOP_KEY as a frame candidate (§5.2.1), so the inter OBU_REGULAR_TILE_GROUP is rejected up front with a structured `decode/unsupported-feature` diagnostic and NO output — pinned by `decode_two_frame_inter_fixture_is_rejected_at_planner_today` (no fabricated inter decode). The full inter slice (multi-frame planner + runtime loop, §7.23 reference retention into splot-recon `ReferenceFrameStore`, the §5.18.2 inter frame-header shared tail, §5.20 inter mode_info, §7.11 zero-MV derivation, §7.13.3.18 copy, frame-1 output) remains TODO; the empirically-established next blocker is the §7.7 `get_ref_frames()` implicit reference-map derivation (this fixture uses PRIMARY_REF_CHOOSE + implicit ref map — the dav2d-compatible path; `--explicit-ref-frame-map=1` makes dav2d diverge from avmdec, so it is not usable), which the §5.18.2 inter frame-header parser stops at with `InterStop::UnmodeledDerivation` and must be modeled before the inter header (NumTotalRefs / ref_frame_idx[] and thus all later bit positions) resolves. This row is the verified-target + honest-state pin; it does not itself decode the inter frame."
+
+[feature.status]
+mapped = "done"
+types = "todo"
+parse = "todo"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "todo"
+tests = "done"
+avm_diff = "todo"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-cli/tests/decode_cli.rs::decode_two_frame_inter_fixture_is_rejected_at_planner_today",
+    "crates/splot-cli/tests/conformance.rs::conformance_corpus_matches_manifest",
+]
+commands = [
+    "cargo test -p splot-cli --test decode_cli --locked",
+    "cargo test -p splot-cli --test conformance --locked",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-decoder-conformance-coverage",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "tests/conformance/vectors/valid/syn-2frame-inter-64x64.ivf",
+    "crates/splot-cli/tests/decode_cli.rs",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
 id = "DECODE-COEFF-FSC-SCAN-WALK"
 name = "Coefficient FSC scan walk"
 category = "infrastructure"
