@@ -40,6 +40,7 @@ mod get_ref_frames;
 mod global_motion;
 mod info;
 mod inter;
+mod inter_shared_tail;
 mod quant;
 mod restoration;
 mod segmentation;

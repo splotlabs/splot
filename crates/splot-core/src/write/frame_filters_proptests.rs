@@ -81,6 +81,7 @@ mod proptests {
                 coded_lossless,
                 num_planes,
                 df_par_bits_minus_2,
+                false,
                 view.as_ref(),
             ) {
                 let mut writer = BitWriter::new();
@@ -99,6 +100,7 @@ mod proptests {
                     coded_lossless,
                     num_planes,
                     df_par_bits_minus_2,
+                    false,
                     view.as_ref(),
                 )
                 .unwrap();
@@ -167,6 +169,7 @@ mod proptests {
                 disable_loopfilters_across_tiles,
                 cdef_on_skip_txfm: CdefOnSkipTxfm::Adaptive,
                 df_par_bits_minus_2: 0,
+                enable_df_sub_pu: false,
                 single_picture_header_flag,
             };
             let geometry = GdfGeometry {
@@ -215,6 +218,7 @@ mod proptests {
                 disable_loopfilters_across_tiles,
                 cdef_on_skip_txfm: CdefOnSkipTxfm::Adaptive,
                 df_par_bits_minus_2: 0,
+                enable_df_sub_pu: false,
                 single_picture_header_flag,
             };
             let geometry = GdfGeometry {
@@ -258,6 +262,7 @@ mod proptests {
                 disable_loopfilters_across_tiles: false,
                 cdef_on_skip_txfm,
                 df_par_bits_minus_2: 0,
+                enable_df_sub_pu: false,
                 single_picture_header_flag,
             };
             let packed = pack(&bits);
@@ -296,6 +301,7 @@ mod proptests {
                 disable_loopfilters_across_tiles: false,
                 cdef_on_skip_txfm,
                 df_par_bits_minus_2: 0,
+                enable_df_sub_pu: false,
                 single_picture_header_flag,
             };
             let strengths = sets

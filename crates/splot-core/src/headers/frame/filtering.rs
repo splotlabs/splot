@@ -72,6 +72,10 @@ pub struct CoreSeqFilterView {
     /// `df_par_bits_minus_2` (AV2 § 5.4.10): `dfParBits = df_par_bits_minus_2 + 2`
     /// is the `df_delta_q[i]` width (§ 5.18.5.2).
     pub df_par_bits_minus_2: u8,
+    /// `enable_df_sub_pu` (AV2 § 5.4.10): gates the `allow_df_sub_pu` `f(1)` read in
+    /// `deblocking_filter_params()` on the inter path (`enable_df_sub_pu && FrameType ==
+    /// INTER_FRAME`, § 5.18.5.2 mirror :5935). Inert on the intra / switch path.
+    pub enable_df_sub_pu: bool,
     /// `single_picture_header_flag` (AV2 § 5.4.1): infers `gdf_frame_enable` /
     /// `cdef_frame_enable` to `1` without reading a bit (§ 5.18.7.9 / § 5.18.7.10).
     pub single_picture_header_flag: bool,
@@ -171,9 +175,12 @@ pub struct CdefParams {
 /// Parses `deblocking_filter_params()` (AV2 v1.0.0 § 5.18.5.2,
 /// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-5-2`).
 ///
-/// On the intra path `FrameType != INTER_FRAME`, so the `allow_df_sub_pu` read (gated
-/// on `enable_df_sub_pu && FrameType == INTER_FRAME`) never fires — its derivation is
-/// outside this structure's bit reads and is therefore not modeled here.
+/// `read_allow_df_sub_pu` is the caller-derived `enable_df_sub_pu && FrameType ==
+/// INTER_FRAME` gate (mirror :5935). On the intra / switch / SEF / writer paths it is
+/// `false` (`FrameType != INTER_FRAME`), so the `allow_df_sub_pu` `f(1)` read does not
+/// fire; on the inter path the caller passes `true` exactly when the sequence enabled the
+/// tool, so the bit is consumed for alignment (the parsed `allow_df_sub_pu` value drives
+/// reconstruction this phase does not model, so it is read but not surfaced).
 ///
 /// `coded_lossless` is the frame `CodedLossless`; `num_planes` is `NumPlanes`
 /// (`Monochrome ? 1 : 3`, § 6.4.1); `df_par_bits_minus_2` is the § 5.4.10 sequence
@@ -192,6 +199,7 @@ pub fn parse_deblocking_filter_params(
     coded_lossless: bool,
     num_planes: u8,
     df_par_bits_minus_2: u8,
+    read_allow_df_sub_pu: bool,
     mfh: Option<&MfhDeblockingView>,
 ) -> Result<DeblockingFilterParams> {
     // AV2 § 5.18.5.2: if ( CodedLossless ) apply_deblocking_filter[0..4] = 0; return.
@@ -203,9 +211,14 @@ pub fn parse_deblocking_filter_params(
         });
     }
 
-    // AV2 § 5.18.5.2: allow_df_sub_pu is read only when
-    // `enable_df_sub_pu && FrameType == INTER_FRAME`. The intra path is never an
-    // INTER_FRAME, so the else-branch infers it to 0 with no bit read.
+    // AV2 § 5.18.5.2 (mirror :5935): if ( enable_df_sub_pu && FrameType == INTER_FRAME )
+    // allow_df_sub_pu f(1); else allow_df_sub_pu = 0 (no bit). The caller folds the
+    // sequence `enable_df_sub_pu` and the `FrameType == INTER_FRAME` test into
+    // `read_allow_df_sub_pu`. The parsed value feeds the deblocking reconstruction this
+    // phase does not model, so it is consumed for alignment only.
+    if read_allow_df_sub_pu {
+        let _allow_df_sub_pu = reader.read_bit()? != 0;
+    }
 
     let mut apply_deblocking_filter = [false; 4];
     // AV2 § 5.18.5.2: if ( mfh_deblocking_filter_update[cur_mfh_id] ) copy the MFH's
@@ -645,6 +658,7 @@ mod tests {
             disable_loopfilters_across_tiles: false,
             cdef_on_skip_txfm: CdefOnSkipTxfm::Adaptive,
             df_par_bits_minus_2: 0,
+            enable_df_sub_pu: false,
             single_picture_header_flag: false,
         }
     }
@@ -667,7 +681,7 @@ mod tests {
     #[test]
     fn deblocking_coded_lossless_reads_no_bits() {
         let mut r = reader(&[]);
-        let params = parse_deblocking_filter_params(&mut r, true, 3, 0, None).unwrap();
+        let params = parse_deblocking_filter_params(&mut r, true, 3, 0, false, None).unwrap();
         assert_eq!(params.apply_deblocking_filter, [false; 4]);
         assert_eq!(params.df_delta_q, [0; 4]);
         assert_eq!(r.consumed_bits(), 0);
@@ -692,10 +706,52 @@ mod tests {
         // i == 3: apply == 0 -> DfDeltaQ[3] = 0.
         let data = bits.into_bytes();
         let mut r = reader(&data);
-        let params = parse_deblocking_filter_params(&mut r, false, 3, 0, None).unwrap();
+        let params = parse_deblocking_filter_params(&mut r, false, 3, 0, false, None).unwrap();
         assert_eq!(params.apply_deblocking_filter, [true, false, true, false]);
         assert_eq!(params.df_delta_q_present, [true, false, true, false]);
         assert_eq!(params.df_delta_q, [1, 0, -2, 0]);
+    }
+
+    #[test]
+    fn deblocking_inter_reads_allow_df_sub_pu_before_apply() {
+        // AV2 § 5.18.5.2 (mirror :5935): on the inter path (read_allow_df_sub_pu == true)
+        // allow_df_sub_pu f(1) is read FIRST, then apply_deblocking_filter[0]/[1]. The
+        // parsed allow_df_sub_pu drives reconstruction, not the returned struct, so the
+        // proof is the bit ALIGNMENT: with allow_df_sub_pu == 1 consumed first, the
+        // following apply bits land where expected.
+        let mut bits = Bits::default();
+        bits.bit(1); // allow_df_sub_pu (consumed, not surfaced)
+        bits.bit(1); // apply_deblocking_filter[0]
+        bits.bit(0); // apply_deblocking_filter[1]
+        // luma flag set -> chroma pair read.
+        bits.bit(0); // apply_deblocking_filter[2]
+        bits.bit(0); // apply_deblocking_filter[3]
+        // i == 0: present == 0 -> DfDeltaQ[0] = 0.
+        bits.bit(0); // df_delta_q_present[0]
+        let data = bits.into_bytes();
+        let mut r = reader(&data);
+        let params = parse_deblocking_filter_params(&mut r, false, 3, 0, true, None).unwrap();
+        assert_eq!(params.apply_deblocking_filter, [true, false, false, false]);
+        // 1 (allow_df_sub_pu) + 2 (apply[0]/[1]) + 2 (chroma pair) + 1 (df_delta_q_present[0]).
+        assert_eq!(r.consumed_bits(), 6);
+    }
+
+    #[test]
+    fn deblocking_intra_skips_allow_df_sub_pu() {
+        // read_allow_df_sub_pu == false (intra / switch path): no allow_df_sub_pu bit; the
+        // first read IS apply_deblocking_filter[0].
+        let mut bits = Bits::default();
+        bits.bit(1); // apply_deblocking_filter[0]
+        bits.bit(0); // apply_deblocking_filter[1]
+        bits.bit(0); // apply_deblocking_filter[2]
+        bits.bit(0); // apply_deblocking_filter[3]
+        bits.bit(0); // df_delta_q_present[0]
+        let data = bits.into_bytes();
+        let mut r = reader(&data);
+        let params = parse_deblocking_filter_params(&mut r, false, 3, 0, false, None).unwrap();
+        assert_eq!(params.apply_deblocking_filter, [true, false, false, false]);
+        // No allow_df_sub_pu bit: 2 (apply[0]/[1]) + 2 (chroma pair) + 1 (present[0]).
+        assert_eq!(r.consumed_bits(), 5);
     }
 
     #[test]
@@ -711,7 +767,7 @@ mod tests {
         bits.bit(0); // df_delta_q_present[1] == 0 -> DfDeltaQ[1] = DfDeltaQ[0] == 1
         let data = bits.into_bytes();
         let mut r = reader(&data);
-        let params = parse_deblocking_filter_params(&mut r, false, 1, 0, None).unwrap();
+        let params = parse_deblocking_filter_params(&mut r, false, 1, 0, false, None).unwrap();
         assert_eq!(params.apply_deblocking_filter, [true, true, false, false]);
         assert_eq!(params.df_delta_q_present, [true, false, false, false]);
         assert_eq!(params.df_delta_q, [1, 1, 0, 0]);
@@ -728,7 +784,7 @@ mod tests {
         bits.bit(0); // df_delta_q_present[1]
         let data = bits.into_bytes();
         let mut r = reader(&data);
-        let params = parse_deblocking_filter_params(&mut r, false, 1, 0, None).unwrap();
+        let params = parse_deblocking_filter_params(&mut r, false, 1, 0, false, None).unwrap();
         assert_eq!(params.apply_deblocking_filter, [true, true, false, false]);
         assert_eq!(params.df_delta_q, [0; 4]);
     }
@@ -749,7 +805,8 @@ mod tests {
         bits.bit(0); // df_delta_q_present[3]
         let data = bits.into_bytes();
         let mut r = reader(&data);
-        let params = parse_deblocking_filter_params(&mut r, false, 3, 0, Some(&mfh)).unwrap();
+        let params =
+            parse_deblocking_filter_params(&mut r, false, 3, 0, false, Some(&mfh)).unwrap();
         assert_eq!(params.apply_deblocking_filter, [true, false, true, true]);
         assert_eq!(params.df_delta_q, [0; 4]);
         // 3 present bits read, no apply bits.
@@ -769,7 +826,8 @@ mod tests {
         // both luma flags 0 -> no chroma pair.
         let data = bits.into_bytes();
         let mut r = reader(&data);
-        let params = parse_deblocking_filter_params(&mut r, false, 3, 0, Some(&mfh)).unwrap();
+        let params =
+            parse_deblocking_filter_params(&mut r, false, 3, 0, false, Some(&mfh)).unwrap();
         assert_eq!(params.apply_deblocking_filter, [false; 4]);
         assert_eq!(r.consumed_bits(), 2);
     }
@@ -778,7 +836,7 @@ mod tests {
     fn deblocking_eof_is_structured_error() {
         let mut r = reader(&[]);
         assert!(matches!(
-            parse_deblocking_filter_params(&mut r, false, 3, 0, None),
+            parse_deblocking_filter_params(&mut r, false, 3, 0, false, None),
             Err(Error::UnexpectedEof { .. })
         ));
     }
@@ -794,7 +852,7 @@ mod tests {
         bits.f(20, 5); // df_delta_q[0] == 20 -> 20 - 16 == 4
         let data = bits.into_bytes();
         let mut r = reader(&data);
-        let params = parse_deblocking_filter_params(&mut r, false, 1, 3, None).unwrap();
+        let params = parse_deblocking_filter_params(&mut r, false, 1, 3, false, None).unwrap();
         assert_eq!(params.df_delta_q[0], 4);
     }
 
@@ -814,7 +872,7 @@ mod tests {
         for df_par_bits_minus_2 in [31u8, 32, 200, u8::MAX] {
             let mut r = reader(&data);
             let result =
-                parse_deblocking_filter_params(&mut r, false, 1, df_par_bits_minus_2, None);
+                parse_deblocking_filter_params(&mut r, false, 1, df_par_bits_minus_2, false, None);
             assert!(
                 matches!(result, Err(Error::BitWidthTooLarge { .. })),
                 "df_par_bits_minus_2 == {df_par_bits_minus_2} must yield BitWidthTooLarge, got {result:?}"
@@ -838,7 +896,7 @@ mod tests {
         bits.f(1, 32); // df_delta_q[0] == 1 -> 1 - 2^31 == i32::MIN + 1
         let data = bits.into_bytes();
         let mut r = reader(&data);
-        let params = parse_deblocking_filter_params(&mut r, false, 1, 30, None).unwrap();
+        let params = parse_deblocking_filter_params(&mut r, false, 1, 30, false, None).unwrap();
         assert_eq!(params.df_delta_q[0], (1i64 - (1i64 << 31)) as i32);
     }
 
@@ -1152,6 +1210,9 @@ mod proptests {
             // sequence parser's f(2) read, so df_par_bits_minus_2 outside 0..=3 must not
             // panic (it returns a structured BitWidthTooLarge instead).
             df_par_bits_minus_2 in any::<u8>(),
+            // The inter-path allow_df_sub_pu gate (enable_df_sub_pu && INTER): both arms
+            // must stay panic-free.
+            read_allow_df_sub_pu in any::<bool>(),
             mfh in proptest::option::of((any::<bool>(), any::<[bool; 4]>())),
         ) {
             let view = mfh.map(|(update, apply)| MfhDeblockingView {
@@ -1164,6 +1225,7 @@ mod proptests {
                 coded_lossless,
                 num_planes,
                 df_par_bits_minus_2,
+                read_allow_df_sub_pu,
                 view.as_ref(),
             );
         }
@@ -1192,6 +1254,7 @@ mod proptests {
                 disable_loopfilters_across_tiles,
                 cdef_on_skip_txfm: CdefOnSkipTxfm::Adaptive,
                 df_par_bits_minus_2: 0,
+                enable_df_sub_pu: false,
                 single_picture_header_flag,
             };
             let geometry = GdfGeometry {
@@ -1224,6 +1287,7 @@ mod proptests {
                 disable_loopfilters_across_tiles: false,
                 cdef_on_skip_txfm,
                 df_par_bits_minus_2: 0,
+                enable_df_sub_pu: false,
                 single_picture_header_flag,
             };
             let mut reader = BitReader::new(&data, ByteOffset::new(0));
