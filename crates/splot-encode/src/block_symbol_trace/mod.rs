@@ -124,6 +124,13 @@ const SEC_TX_TYPE_IST_OFF_SYMBOL: u8 = 0;
 const SEC_TX_TYPE_INTRA_CDF_ROW_LEN: usize = 5;
 const COEFF_BASE_LF_EOB_CTX_EOB2_AC: usize = 1;
 const COEFF_BASE_LF_CTX_EOB2_DC: usize = 1;
+// The DC `coeff_base` low-frequency context for the general 4x4 LF walk's eob=2
+// asymmetric test block (DC=-2, AC=+3 at scan index 1 = raster 4 = row 1 col 0):
+// the level-3 AC neighbour raises the DC's § 8.3.2 significant-neighbour sum to
+// `mag = min(3, 5) = 3`, so `ctx = (3 + 1) >> 1 = 2` (the low-frequency `c == 0`
+// band caps at 8). Derived per-AC-level via `coeff_base_lf_luma_context`; routed
+// for the `TX_SIZE_4X4_CTX` general LF walk.
+const COEFF_BASE_LF_CTX_4X4_DC_MAG3: usize = 2;
 // The DC `coeff_base` low-frequency context for a *visible* eob=2/eob=3 block: a level-4 AC
 // neighbour raises the DC's § 8.3.2 significant-neighbour sum to low-frequency context 2 (vs 1
 // for the minimal level-1 AC). Per-AC-level, via `coeff_base_lf_luma_context`.
