@@ -5453,6 +5453,39 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-GENERAL-INTRA-ALL-PLANES-CODED"
+name = "All-planes-coded intra frame"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20.7.27", "8.2.5", "8.3.2", "8.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/general_intra_trace.rs"
+openspec_change = "encoder-general-intra-all-planes-coded"
+tracking_issue = ""
+owner = "encoder"
+risk = "low"
+notes = "Decodable-tile arc: the FIRST ALL-PLANES-CODED frame (luma + U + V all coded at once), mirroring the q80 fixture's structure. emit_minimal_intra_all_planes_coded_ivf() (splot-encode public) -> `splot decode` -> every plane flat 127 (cross-crate oracle). Composer = do_split + modes + coded luma (TX_64X64, dc_sign CDF) + coded U (TX_32X32, sign_bit bypass) + coded V (TX_32X32, sign_bit bypass) at the EobU!=0 V txb_skip ctx 6 (since U is coded). Parameterizes general_intra_32x32_chroma_v_dc_coded_tokens by the V txb_skip ctx (V-only caller passes neutral 0, all-planes passes 6). REUSES all coded-DC tokens + CDF rows (NO new rows). 17-token trace. Magnitudes: luma 6, chroma 4 (sub-golomb). Proves the encoder can code all planes simultaneously incl. the V-EobU interaction - a step toward the byte-exact-q80 holy grail (which additionally needs the \u00a75.20.7.28 golomb tail for q80's luma level 7 -> Y=100). decode_check=done (splot-decode); avm_diff=not-applicable. Encoder-mission-DRIVEN (owner=encoder). HONEST SCOPE: all-planes-coded sub-golomb; NOT byte-exact q80, NOT a general encoder, NOT receive_packet, NOT Baseline Encoder Profile v1."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-cli/tests/encode_decode_roundtrip.rs::encoder_all_planes_coded_ivf_decodes_to_a_flat_127_frame", "crates/splot-encode/src/general_intra_trace.rs::tests::general_all_planes_coded_block_trace_roundtrips_through_one_coder"]
+commands = ["cargo test -p splot-cli --test encode_decode_roundtrip --locked", "cargo test -p splot-encode all_planes --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-RECON-DEPENDENCY"
 name = "Encoder reconstruction dependency boundary"
 category = "encoder"
