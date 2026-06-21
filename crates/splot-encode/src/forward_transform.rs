@@ -6,8 +6,8 @@
 //! This module advances `ENC-FORWARD-TRANSFORM-FOUNDATION` (the DC-only flat
 //! foundation) and `ENC-FORWARD-TRANSFORM-DCT-4X4` (the real 4x4 DCT_DCT). It is
 //! an encoder-policy arithmetic stage, not a normative AV2 decoding process: AV2
-//! specifies only the *inverse* transform, so the forward transform is derived as
-//! its numerical inverse.
+//! specifies only the *inverse* transform, so the forward transform is derived from
+//! it (a true inverse for the flat subset, bounded for general AC — see below).
 //!
 //! [`ForwardTransformBlock::dct_dct_4x4`] is the real 4x4 DCT_DCT: it maps any
 //! signed residual block to all 16 row-major coefficients via the transposed § 9
@@ -29,9 +29,28 @@
 
 #![allow(dead_code)]
 
-use splot_recon::{DCT_KERNEL4, PlaneId, PlaneRect};
+use splot_recon::{PlaneId, PlaneRect};
 
 use crate::error::{Error, Result};
+
+/// The AV2 § 9 4-point DCT kernel (`Dct4` basis).
+///
+/// This is the encoder's own forward-transform constant. AV2 specifies no forward
+/// transform, so the forward DCT is encoder policy that derives its kernel from the
+/// spec § 9 `Dct4` basis — it is **not** a decoder-table import (routing a generated
+/// `splot-tables` table through the `splot-recon` reconstruction edge is outside
+/// that edge's allowed scope per AGENTS.md § 2; a direct `splot-encode` →
+/// `splot-tables` edge is a crate-dependency-graph change deferred to the
+/// maintainer). It necessarily equals the decoder's `splot-tables` `DCT_KERNEL4`
+/// (that is what makes the round trip work), and the round-trip tests through the
+/// `splot-recon` inverse enforce it: any divergence from the spec kernel breaks the
+/// `<= 5` reconstruction bound, so these values cannot silently desync.
+const DCT_KERNEL4: [[i32; 4]; 4] = [
+    [64, 64, 64, 64],
+    [83, 35, -35, -83],
+    [64, -64, -64, 64],
+    [35, -83, 83, -35],
+];
 
 const DCT_DCT_4X4_WIDTH: usize = 4;
 const DCT_DCT_4X4_HEIGHT: usize = 4;
@@ -119,13 +138,16 @@ impl ForwardTransformBlock {
     /// Computes the real 4x4 DCT_DCT forward transform: all 16 row-major
     /// coefficients of `residual` (any signed 4x4 block, uniform or not).
     ///
-    /// This is the numerical inverse of `splot-recon`'s § 7.15.4 4x4 DCT_DCT
-    /// inverse transform: a row pass then a column pass through the transposed § 9
-    /// [`DCT_KERNEL4`], with the [`FORWARD_ROW_SHIFT`] / [`FORWARD_COL_SHIFT`]
-    /// down-shifts. A uniform residual `v` maps to `coefficients[0] = v * 32` with
-    /// every AC coefficient `0`, exactly matching [`Self::dct_dct_4x4_dc_only`].
-    /// General AC content reconstructs through the decoder inverse only within a
-    /// small bound (the non-orthogonality residue), not bit-exactly.
+    /// The forward transform is **paired with** (derived from) `splot-recon`'s
+    /// § 7.15.4 4x4 DCT_DCT inverse — the transposed § 9 [`DCT_KERNEL4`] applied as a
+    /// row pass then a column pass with the [`FORWARD_ROW_SHIFT`] /
+    /// [`FORWARD_COL_SHIFT`] down-shifts. It is a true inverse **only for the flat
+    /// (DC-only) subset**: a uniform residual `v` maps to `coefficients[0] = v * 32`,
+    /// every AC coefficient `0`, exactly matching [`Self::dct_dct_4x4_dc_only`], and
+    /// reconstructs bit-exactly. For general AC content the reconstruction is
+    /// **bounded, not bit-exact** (the AV2 integer DCT4 odd basis rows are not
+    /// orthonormal; observed `<= 5` over the tested 8-bit domain) — callers MUST NOT
+    /// assume bit-exact AC recovery; later quantization absorbs the residue.
     ///
     /// # Errors
     /// Returns [`Error::ForwardTransformUnsupportedShape`] if `block` is not 4x4,

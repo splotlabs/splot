@@ -200,13 +200,6 @@ pub use reference::{
     ReferenceRefreshMask, ReferenceRefreshOutcome, ReferenceRefreshSlots, ReferenceSlot,
 };
 pub use secondary_transform::{SecondaryInverseTransform, secondary_inverse_transform};
-/// The AV2 4-point DCT kernel (`Dct4` basis, `[[i32; 4]; 4]`), re-exported from the
-/// generated `splot-tables` § 9 transform tables. The decoder inverse transform
-/// ([`inverse_transform_1d`]) and the encoder forward transform (`splot-encode`)
-/// both consume this single source, so the forward transform stays the exact
-/// numerical inverse of the decoder kernel and a table correction cannot desync the
-/// two directions.
-pub use splot_tables::tables::transform_1d::DCT_KERNEL4;
 pub use transform_params::{TransformPass, dpcm_direction, get_transform_1d_type, transform_shift};
 pub use views::{FrameMut, FrameRef, PlaneMut, PlaneMutRows, PlaneRef, PlaneRefRows};
 pub use workspace::{
