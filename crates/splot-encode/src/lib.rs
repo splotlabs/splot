@@ -4,18 +4,19 @@
 //! `splot-encode` — API surface for the future AV2 encoder.
 //!
 //! This crate fixes the *shape* of the encoder API (configuration, borrowed frame
-//! input views, explicit retained input sharing, and a push/pull [`Context`])
-//! without implementing coded packet production. The push/pull lifecycle is
-//! deterministic and typed, but [`Context::receive_packet`] cannot yet return a
-//! real AV2 packet. Nothing in the repository depends on this crate except
-//! `splot-cli`.
+//! input views, explicit retained input sharing, and a push/pull [`Context`]).
+//! The push/pull lifecycle is deterministic and typed, and
+//! [`Context::receive_packet`] now returns a real, decodable AV2 packet for the
+//! input subset the minimal encoder can encode losslessly (a 64x64 all-128
+//! frame — encoded as the skip frame, which decodes back to the input). Nothing
+//! in the repository depends on this crate except `splot-cli`.
 //!
-//! The [`Context`] now owns a [`splot_parallel::WorkerPool`] configured by an
+//! The [`Context`] owns a [`splot_parallel::WorkerPool`] configured by an
 //! [`EncoderRuntimeConfig`] thread-count policy; thread count is a runtime knob
 //! and never affects bitstream output.
 //! The crate uses `splot-recon`'s validated plane/view geometry for its borrowed
-//! input API. Closed-loop reconstruction, lookahead materialization, and coded
-//! packet production remain future work.
+//! input API. Forward quantization of arbitrary input, closed-loop reconstruction,
+//! lookahead materialization, and rate control remain future work.
 //!
 //! Licensed under PolyForm Noncommercial 1.0.0; commercial use requires a
 //! separate written license from Bartosz Tomczyk.
