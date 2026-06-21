@@ -215,7 +215,10 @@ fn workspace_directional_angle_accepts_10_bit_u16_samples() {
 }
 
 #[test]
-fn workspace_directional_angle_rejects_luma_until_idif_is_supported() {
+fn workspace_one_sided_directional_angle_still_rejects_luma() {
+    // The one-sided pAngles (45/67/203) have no §7.13.2.8 IDIF coverage yet, so
+    // the one-sided luma path still rejects (the IDIF brick covers only the
+    // middle pAngles 113/135/157).
     let block = rect_block(2, 2);
     let mut workspace = workspace(BitDepth::Eight, 8, 8, 0_u8);
 
@@ -235,22 +238,79 @@ fn workspace_directional_angle_rejects_luma_until_idif_is_supported() {
             }
         ) if rect == PlaneRect::new(1, 1, 4, 4).unwrap()
     ));
-    assert!(matches!(
-        workspace.predict_intra_middle_directional_angle_rect(
-            PlaneId::Y,
+}
+
+#[test]
+fn workspace_middle_directional_luma_d135_idif_matches_chroma_bilinear() {
+    // §7.13.2.8 D135 (`dx == dy == 64`) projects every sample with `shift == 0`,
+    // so the luma IDIF 4-tap (`Dr_Interp_Filter[0] == {0, 128, 0, 0}`) reduces to
+    // a sample copy, bit-identical to the chroma `enableIdif == 0` bilinear branch
+    // over the SAME reconstructed edges. The luma middle path is now supported (no
+    // longer rejected): build an identical edge layout in a luma (Monochrome) and
+    // a chroma (4:4:4 U) workspace and assert the two agree.
+    let block = rect_block(2, 2);
+    let target = rect(1, 1, block.width(), block.height());
+    // Logical AboveRow[-1..w) / LeftCol[-1..h) live at (x-1, y-1..) of the rect.
+    let above_row = [40_u8, 48, 56, 64];
+    let left_col = [50_u8, 58, 66, 74];
+    let corner = 32_u8;
+
+    // Luma (Monochrome) workspace: seed the corner, above row, and left column.
+    let mut luma = workspace(BitDepth::Eight, 8, 8, 0_u8);
+    luma.write_rect(PlaneId::Y, rect(0, 0, 1, 1), &[corner], 1)
+        .unwrap();
+    luma.write_rect(
+        PlaneId::Y,
+        rect(1, 0, above_row.len(), 1),
+        &above_row,
+        above_row.len(),
+    )
+    .unwrap();
+    for (i, sample) in left_col.iter().enumerate() {
+        luma.write_rect(PlaneId::Y, rect(0, 1 + i, 1, 1), &[*sample], 1)
+            .unwrap();
+    }
+    luma.predict_intra_middle_directional_angle_rect(
+        PlaneId::Y,
+        1,
+        1,
+        block,
+        IntraMiddleDirectionalAngle::D135,
+    )
+    .unwrap();
+
+    // Chroma (4:4:4 U) workspace with the identical edge layout.
+    let mut chroma = workspace_with_format(BitDepth::Eight, PixelFormat::Yuv444, 8, 8, 0_u8);
+    chroma
+        .write_rect(PlaneId::U, rect(0, 0, 1, 1), &[corner], 1)
+        .unwrap();
+    chroma
+        .write_rect(
+            PlaneId::U,
+            rect(1, 0, above_row.len(), 1),
+            &above_row,
+            above_row.len(),
+        )
+        .unwrap();
+    for (i, sample) in left_col.iter().enumerate() {
+        chroma
+            .write_rect(PlaneId::U, rect(0, 1 + i, 1, 1), &[*sample], 1)
+            .unwrap();
+    }
+    chroma
+        .predict_intra_middle_directional_angle_rect(
+            PlaneId::U,
             1,
             1,
             block,
-            IntraMiddleDirectionalAngle::D135
-        ),
-        Err(
-            ReconError::WorkspaceDirectionalAngleIntraPredictionLumaIdifUnsupported {
-                plane: PlaneId::Y,
-                p_angle: 135,
-                rect
-            }
-        ) if rect == PlaneRect::new(1, 1, 4, 4).unwrap()
-    ));
+            IntraMiddleDirectionalAngle::D135,
+        )
+        .unwrap();
+
+    assert_eq!(
+        workspace_rect_samples(&luma, PlaneId::Y, target),
+        workspace_rect_samples(&chroma, PlaneId::U, target),
+    );
 }
 
 #[test]

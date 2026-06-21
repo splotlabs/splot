@@ -415,7 +415,7 @@ fn decode_one_general_intra_block(
         return Err(general_intra_unsupported(
             "general_intra_non_dc_chroma_mode",
             Some(tile_offset),
-            "general intra reconstruction only supports DC, SMOOTH, and D135 directional-follow chroma prediction; other non-DC chroma (uv_mode) modes are not yet implemented",
+            "general intra reconstruction only supports DC, SMOOTH, the cardinal V/H directional-follow, and the D135 / D157 directional-follow chroma prediction; other non-DC chroma (uv_mode) modes are not yet implemented",
             GENERAL_INTRA_MODE_SPEC_SECTION,
         ));
     };
@@ -442,6 +442,21 @@ fn decode_one_general_intra_block(
             "general_intra_directional_chroma_neighbour",
             Some(tile_offset),
             "general intra directional-follow (D135) chroma prediction is only supported for the top-left (no-neighbour) 64x64 superblock block and for a first-superblock-row neighbour-having full 64x64 superblock block (real reconstructed left column); a row > 0 D135-follow chroma block reads the §7.13.2.1 real reconstructed above row, which is deferred until an oracle fixture pins it",
+            GENERAL_INTRA_MODE_SPEC_SECTION,
+        ));
+    }
+    // Directional-follow D157 chroma: only the neighbour-having
+    // `frontier.r == 0 && frontier.c != 0` position is fixtured (it couples with
+    // the D157 luma block, which is gated identically). Chroma takes the
+    // `enableIdif == 0` bilinear branch over the real reconstructed §7.13.2.1 left
+    // chroma column; over a flat real chroma edge that projection is bit-exact.
+    if supported_chroma == crate::tile_payload::SupportedChromaMode::D157Follow
+        && !(frontier.r == 0 && frontier.c != 0 && n4w == FULL_SB_N4_CHROMA_GATE)
+    {
+        return Err(general_intra_unsupported(
+            "general_intra_directional_d157_chroma_neighbour",
+            Some(tile_offset),
+            "general intra directional-follow (D157) chroma prediction is only supported for a first-superblock-row, non-first-column neighbour-having full 64x64 superblock block reading the real reconstructed §7.13.2.1 left chroma column; the top-left, first-column, sub-partitioned, and row>0 D157-follow chroma positions are deferred until an oracle fixture pins them",
             GENERAL_INTRA_MODE_SPEC_SECTION,
         ));
     }
@@ -692,6 +707,37 @@ fn decode_one_general_intra_block(
                     "general_intra_cardinal_horizontal_unverified",
                     Some(tile_offset),
                     "general intra cardinal H_PRED (pAngle 180) luma prediction is only verified for a non-first-column full 64x64 superblock block reading the real reconstructed §7.13.2.1 left column; a first-superblock-column (haveLeft == 0) or sub-partitioned H_PRED block is not yet covered by an oracle fixture",
+                    GENERAL_INTRA_MODE_SPEC_SECTION,
+                ));
+            }
+            // Directional D157 (§7.13.2.8 middle angle, pAngle 157) at a
+            // first-superblock-row, NON-first-column full-superblock block
+            // (`frontier.r == 0 && frontier.c != 0`, `haveLeft && !haveAbove`),
+            // reading the **real reconstructed** §7.13.2.1 left column. Unlike
+            // D135, D157's projections (`dx == Dr_Intra_Derivative[23] == 170`,
+            // `dy == Dr_Intra_Derivative[67] == 24`) mostly have `shift != 0`, so
+            // the luma IDIF 4-tap `Dr_Interp_Filter` genuinely interpolates and
+            // differs from the bilinear branch — this is the brick that
+            // oracle-verifies the real luma IDIF kernel. At `haveLeft &&
+            // !haveAbove` the §7.13.2.1 corner `AboveRow[-1] == LeftCol[-1]` is the
+            // repeated first left sample (`CurrFrame[plane][y][x-1]`), so the
+            // few above-branch corner reads (`above_base == -1`) are correct and
+            // the deferred real-above corner is NOT a blocker. The D157 escape was
+            // decoded with a non-directional joint-mode neighbour (`ctx == 0`).
+            // `enable_intra_edge_filter == 0` / `MrlIndex == 0` keep the
+            // §7.13.2.x edge-filter / upsample synthesis a no-op.
+            //
+            // D157 is gated tighter than D135 (no top-left no-neighbour block, no
+            // first-column block): only the `frontier.c != 0` first-row position is
+            // fixtured. The top-left and row>0 D157 positions read the §7.13.2.1
+            // no-neighbour / real-above corner that no oracle fixture pins yet.
+            (_, Some(SupportedDirectionalLumaMode::D157))
+                if frontier.r == 0 && frontier.c != 0 && n4w == FULL_SB_N4_LUMA => {}
+            (_, Some(SupportedDirectionalLumaMode::D157)) => {
+                return Err(general_intra_unsupported(
+                    "general_intra_d157_unverified_position",
+                    Some(tile_offset),
+                    "general intra directional D157 (pAngle 157) luma IDIF prediction is only verified for a first-superblock-row, non-first-column full 64x64 superblock block (haveLeft && !haveAbove, real reconstructed §7.13.2.1 left column); the top-left no-neighbour, first-column, sub-partitioned, and row>0 D157 positions read the §7.13.2.1 corner / above row that no oracle fixture pins yet, so they are deferred",
                     GENERAL_INTRA_MODE_SPEC_SECTION,
                 ));
             }
