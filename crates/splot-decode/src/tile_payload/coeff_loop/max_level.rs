@@ -7,17 +7,14 @@
 
 use std::collections::TryReserveError;
 
-// `COEFF_BASE_RANGE` and `LF_NUM_BASE_LEVELS` are shared AV2 § 3 constants; re-export
-// them from their canonical home so the coeff_loop subtree's `super::max_level::…`
-// imports keep resolving against a single definition.
-pub(crate) use splot_core::coefficient::{COEFF_BASE_RANGE, LF_NUM_BASE_LEVELS};
+// `COEFF_BASE_RANGE`, `LF_NUM_BASE_LEVELS`, and `NUM_BASE_LEVELS` are shared AV2 § 3
+// constants; re-export them from their canonical home so the coeff_loop subtree's
+// `super::max_level::…` imports keep resolving against a single definition (the encoder
+// also consumes `NUM_BASE_LEVELS` from `splot_core::coefficient`).
+pub(crate) use splot_core::coefficient::{COEFF_BASE_RANGE, LF_NUM_BASE_LEVELS, NUM_BASE_LEVELS};
 
 use super::quant_pass::CoeffQuantPassInput;
 use super::scan_walk::{CoeffScanEntry, NonZeroCoeffScanWalk};
-
-/// AV2 § 3 `NUM_BASE_LEVELS` (`03-symbols.md:585`): the non-low-frequency base-level
-/// threshold. Decode-local (no encoder consumer).
-pub(crate) const NUM_BASE_LEVELS: u32 = 2;
 
 /// Caller-resolved transform class for ordinary coefficient syntax.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
