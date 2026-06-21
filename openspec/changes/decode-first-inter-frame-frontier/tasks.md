@@ -2,7 +2,7 @@
 
 - [x] 1.1 Add `DECODE-FIRST-INTER-FRAME-FRONTIER` to the implementation matrix.
 - [x] 1.2 Add the decoder support row for `first-inter-frame-frontier`.
-- [ ] 1.2a (deferred) Add the decoder conformance coverage row — deferred until the inter decode slice lands (this frontier brick decodes no inter frame, so a coverage row would overstate; tracked in the support matrix + manifest meanwhile).
+- [x] 1.2a The decoder conformance coverage now reflects real inter decode: the inter frontier's spec sections (§5.18.2, §5.20, §7.11, §7.13.3.18, §7.23) map to the existing `frame-header-state` / `tile-group-and-payload-syntax` / `prediction-process` / `reference-frame-management` coverage rows, regenerated from the updated `first-inter-frame-frontier` support row (no longer overstating, since the inter frame decodes bit-exact).
 - [x] 1.3 Add the `syn-2frame-inter-64x64.ivf` fixture, conformance manifest entry, and reciprocal LOCAL-REFERENCE-EVIDENCE entry.
 
 ## 2. Fixture verification
@@ -14,18 +14,18 @@
 
 ## 3. Honest current state
 
-- [x] 3.1 Pin the honest rejection: `splot decode --output-format raw` on the inter fixture returns `decode/unsupported-feature` (OBU_REGULAR_TILE_GROUP not yet a frame candidate, § 5.2.1) with NO output, via `decode_two_frame_inter_fixture_is_rejected_at_planner_today`.
+- [x] 3.1 The prior honest rejection (`decode/unsupported-feature` at the planner, then at the inter frame) is now superseded: `splot decode --output-format raw` on the inter fixture decodes BOTH frames bit-exact (whole-stream md5 4e1bd39f0b541ef1f479cff049e6985c), pinned by `decode_two_frame_inter_fixture_decodes_both_frames_bit_exact`.
 - [x] 3.2 Confirm all existing intra fixtures still decode bit-exact (no regression).
 
-## 4. Inter decode slice (deferred — the full INTER arc)
+## 4. Inter decode slice (the full INTER arc — LANDED, bit-exact)
 
-- [ ] 4.1 (deferred) Model the § 7.7 `get_ref_frames()` implicit reference-map derivation in `splot-core` so the § 5.18.2 inter frame-header parse resolves NumTotalRefs / ref_frame_idx[] (the empirically-established blocker; the parser stops at `InterStop::UnmodeledDerivation`).
-- [ ] 4.2 (deferred) Continue the § 5.18.2 inter frame-header shared tail (tile_info → quantization → segmentation → filters → frame_reference_mode → skip_mode_params → global_motion_params → film_grain).
-- [ ] 4.3 (deferred) Relax the stream planner (`classify_obu`) + minimal-tier shape gates to accept the inter OBU_REGULAR_TILE_GROUP as a second frame candidate, and add a multi-frame runtime loop emitting N frames.
-- [ ] 4.4 (deferred) Retain the decoded key as a reference (§ 7.23) in a splot-recon `ReferenceFrameStore`.
-- [ ] 4.5 (deferred) Decode the § 5.20 inter mode_info for one block (skip_mode / is_inter / skip / ref_frames / single-ref GLOBALMV-NEARESTMV / DRL) consuming the inter CDFs, gated to the verified zero-MV skip subset and rejecting everything else with structured diagnostics.
-- [ ] 4.6 (deferred) Derive MV = (0, 0) for the GLOBALMV/NEARESTMV-zero case (§ 7.11) with an `Mv` newtype.
-- [ ] 4.7 (deferred) Run § 7.13.3.18 zero-fraction motion compensation (copy the co-located block from the reference) and wire frame 1 to output, proving bit-exact equality to avmdec == dav2d and pinning the frame hash.
+- [x] 4.1 Model the § 7.7 `get_ref_frames()` implicit reference-map derivation (already modeled in `splot-core`); the runtime supplies a one-valid-slot `FrameReferenceStateView` so the § 5.18.2 inter parse resolves NumTotalRefs == 1 / ref_frame_idx == [0] exactly (no longer stopping at `InterStop::UnmodeledDerivation`).
+- [x] 4.2 Continue the § 5.18.2 inter frame-header shared tail to InterHeaderComplete (tile_info → quantization → segmentation → filters → frame_reference_mode → skip_mode_params → global_motion_params → film_grain); already modeled in `splot-core`, now driven from the runtime with the post-key reference state.
+- [x] 4.3 The stream planner accepts the inter OBU_REGULAR_TILE_GROUP as a second frame candidate; the multi-frame runtime loop decodes the key frame then the inter frame and emits both.
+- [x] 4.4 Retain the decoded key as a reference (§ 7.23) in a splot-recon `ReferenceFrameStore<&DecodedFrame<u8>>` (zero-copy borrow).
+- [x] 4.5 Decode the § 5.20.7.6 inter mode_info for one block (is_inter / skip / single_mode / read_drl_idx; read_skip_mode / single_ref / read_motion_mode read no symbols in this subset) consuming new inter CDFs (is_inter / skip / single_mode / drl_mode), gated to the verified single-reference zero-MV skip subset and rejecting everything else with structured diagnostics. The actual mode is NEARMV (single_mode == 0).
+- [x] 4.6 Derive MV = (0, 0) for the zero-MV NEARMV/GLOBALMV case (§ 7.11) with an `Mv` newtype.
+- [x] 4.7 Run § 7.13.3.18 zero-fraction motion compensation (copy the co-located reference planes) and wire frame 1 to output, proving bit-exact equality to avmdec == dav2d (whole-stream md5 4e1bd39f0b541ef1f479cff049e6985c) guarded by § 8.2.4 exit_symbol().
 
 ## 5. Documentation And Verification
 

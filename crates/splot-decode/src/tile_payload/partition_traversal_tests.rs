@@ -467,14 +467,17 @@ fn unsupported_gates_are_explicit() {
         )
     ));
 
+    // An inter frame (frame_is_intra == false) is now ADMITTED by the §5.20.3.1
+    // partition traversal (DECODE-FIRST-INTER-FRAME-FRONTIER): the partition syntax
+    // is frame-type agnostic, so the cursor walks the inter tile the same as an intra
+    // tile (the inter leaf reads §5.20.7.6 inter mode_info and the caller's §8.2.4
+    // exit_symbol() guards bit-exactness). The traversal therefore no longer rejects
+    // a non-intra frame here; it succeeds over this single-block flat payload.
     let mut work_unit = make_work_unit(&[0x00, 0x80], CdfUpdateMode::Enabled);
     let mut inter = frame(BLOCK_32X32);
     inter.frame_is_intra = false;
-    let err = frontier(&mut work_unit, inter, context()).unwrap_err();
-    assert!(matches!(
-        err,
-        TilePartitionTraversalError::Unsupported(TilePartitionTraversalUnsupported::NonIntra)
-    ));
+    let plan = frontier(&mut work_unit, inter, context()).unwrap();
+    assert_eq!(plan.symbol_count_after(), 1);
 
     let mut work_unit = make_work_unit(&[0x00, 0x80], CdfUpdateMode::Enabled);
     let mut bru = frame(BLOCK_32X32);
