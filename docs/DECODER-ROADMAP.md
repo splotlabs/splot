@@ -156,7 +156,18 @@ choice (`deblock_filter_choice`; `RECON-DEBLOCK-FILTER-CHOICE`) selects the filt
 width from the two perpendicular edge sample lines and the `qThr`/`sideThr`
 threshold cascade, leaving the § 7.17.6 filter-level selection and the
 § 7.17.1 / § 7.17.2 edge traversal (and CDEF, CCSO, loop restoration, GDF) to
-future rows. `splot-decode`
+future rows. The § 7.13.3.18 block inter prediction (sub-pel motion
+compensation) kernel is available as a scheduler-free `splot-recon` primitive
+(`subpel_predict_block`; `RECON-SUBPEL-MC`): the separable interpolation-filter
+convolution (a horizontal filter pass into an intermediate array then a vertical
+pass) over the verbatim § 7.13.3.18 `Subpel_Filters[6][16][8]` coefficients
+selected by the § 6 `interp` (with the small-block 4-tap substitution) and the
+sub-pel phase, the § 7.13.3.16 `InterRound0`/`InterRound1` rounding, and the final
+§ 4.8 `Clip1` for the single-reference (non-compound) write, over caller-resolved
+§ 7.13.3.17 `startX`/`startY`/`stepX`/`stepY` scaling and a clipped reference-border
+view, leaving the § 7.13.3.17 motion-vector scaling, compound/mask-blend
+prediction, § 7.13.3.19 block warp, intra block copy, and the § 5.20.7 `read_mv` /
+`interp_filter` symbol decode and runtime wiring to future rows. `splot-decode`
 also has crate-private tile coefficient state buffers
 (`DECODE-TILE-COEFF-STATE-BUFFERS`): transform-block-local § 5.20.7.27
 `Level[]` / `QuantSign[]` arrays and three-plane above/left level/DC context
