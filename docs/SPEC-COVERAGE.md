@@ -282,6 +282,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.20.2.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-2-3) | Clear block decoded flags function | `DECODE-GENERAL-INTRA-GRID-SMOOTH-H-ABOVE-RIGHT` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3) | Partition structures | `DECODE-INTER-GRID-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 5.20.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3) | Partition structures | `DECODE-INTER-MULTI-SB-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
+| [§ 5.20.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3) | Partition structures | `DECODE-INTER-MVORDER-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 5.20.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3) | Partition structures | `DECODE-INTER-MVSTACK-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 5.20.3.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-1) | Decode partition syntax | `CONF-TILE-PAYLOAD-DECODE-FUZZ` | ✅ | — | — | ✅ | 2 |
 | [§ 5.20.3.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-1) | Decode partition syntax | `DECODE-GENERAL-INTRA-DEEP-SPLIT` | ✅ | 🟡 | — | ✅ | 1 |
@@ -355,8 +356,10 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.20.7.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-2) | Inter segment ID syntax | `DECODE-INTER-MVSTACK-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 5.20.7.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-6) | Inter block mode info syntax | `DECODE-INTER-GRID-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 5.20.7.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-6) | Inter block mode info syntax | `DECODE-INTER-MULTI-SB-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
+| [§ 5.20.7.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-6) | Inter block mode info syntax | `DECODE-INTER-MVORDER-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 5.20.7.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-6) | Inter block mode info syntax | `DECODE-INTER-MVSTACK-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 5.20.7.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-6) | Inter block mode info syntax | `DECODE-INTER-SUBPEL-MV` | ✅ | ✅ | — | ✅ | 1 |
+| [§ 5.20.7.8](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-8) | Read drl idx syntax | `DECODE-INTER-MVORDER-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 5.20.7.8](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-8) | Read drl idx syntax | `DECODE-INTER-MVSTACK-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 5.20.7.13](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-13) | Assign MV syntax | `DECODE-INTER-SUBPEL-MV` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 5.20.7.20](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-20) | MV syntax | `DECODE-INTER-SUBPEL-MV` | ✅ | ✅ | — | ✅ | 1 |
@@ -765,12 +768,16 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.7](./spec/av2/1.0.0/07-decoding-process.md#s-7-7) | Get ref frames process | `DECODE-FIRST-INTER-FRAME-FRONTIER` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 7.11.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-11-2) | Find mode context process | `DECODE-INTER-GRID-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 7.11.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-11-2) | Find mode context process | `DECODE-INTER-MULTI-SB-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
+| [§ 7.11.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-11-2) | Find mode context process | `DECODE-INTER-MVORDER-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 7.11.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-11-2) | Find mode context process | `DECODE-INTER-MVSTACK-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 7.11.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-11-3) | Scan point context process | `DECODE-INTER-MVSTACK-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 7.12.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-12-2) | Find MV stack process | `DECODE-INTER-GRID-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 7.12.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-12-2) | Find MV stack process | `DECODE-INTER-MULTI-SB-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
+| [§ 7.12.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-12-2) | Find MV stack process | `DECODE-INTER-MVORDER-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 7.12.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-12-2) | Find MV stack process | `DECODE-INTER-MVSTACK-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 7.12.2.6](./spec/av2/1.0.0/07-decoding-process.md#s-7-12-2-6) | Scan point process | `DECODE-INTER-GRID-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
+| [§ 7.12.2.6](./spec/av2/1.0.0/07-decoding-process.md#s-7-12-2-6) | Scan point process | `DECODE-INTER-MVORDER-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
+| [§ 7.12.2.12](./spec/av2/1.0.0/07-decoding-process.md#s-7-12-2-12) | Search stack process | `DECODE-INTER-MVORDER-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 7.13.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2) | Intra prediction process | `DECODE-GENERAL-INTRA-FRAME-RECON` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.13.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2) | Intra prediction process | `DECODE-GENERAL-INTRA-MULTIBLOCK` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.13.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2) | Intra prediction process | `DECODE-GENERAL-INTRA-MULTIROW` | ✅ | 🟡 | — | ✅ | 1 |
@@ -867,6 +874,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.13.3.18](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-18) | Block inter prediction process | `DECODE-FIRST-INTER-FRAME-FRONTIER` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 7.13.3.18](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-18) | Block inter prediction process | `DECODE-INTER-GRID-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 7.13.3.18](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-18) | Block inter prediction process | `DECODE-INTER-MULTI-SB-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
+| [§ 7.13.3.18](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-18) | Block inter prediction process | `DECODE-INTER-MVORDER-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 7.13.3.18](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-18) | Block inter prediction process | `DECODE-INTER-MVSTACK-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 7.13.3.18](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-18) | Block inter prediction process | `DECODE-INTER-SUBPEL-MV` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 7.13.3.18](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-18) | Block inter prediction process | `RECON-SUBPEL-MC` | ✅ | — | ✅ | ✅ | — |

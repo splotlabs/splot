@@ -332,6 +332,42 @@ clean."""
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-2frame-inter-mvorder-64x64.ivf"
+description = """
+Two-frame multi-block inter stream (IVF, 64x64) with DISTINCT per-block motion \
+vectors, from a project-owned synthetic input (four flat 32x32 luma quadrants \
+100 (top-left) / 150 (top-right) / 60 (bottom-left) / 200 (bottom-right), flat \
+chroma; frame 1 = frame 0 shifted per quadrant by a DIFFERENT amount — top-left \
++8, top-right -4, bottom-left +4, bottom-right -4 luma samples, edge-clamped), with \
+broad decode tools (incl. GDF, cdef, deblocking, restoration, ccso, cfl, mhccp, \
+cctx, qm, ibp, angle-delta, ist, inter-ist, intra-dip, idtx-intra, smooth-intra, \
+paeth-intra, bawp, cwp, tcq, trellis, warp, tip, opfl-refine, refinemv, \
+masked/wedge/interintra/onesided/diff-wtd compound, joint-mvd, adaptive-mvd, \
+flex-mvres, ref-frame-mvs, refmvbank, drl-reorder, mv-traj, high-motion, \
+inter-ddt, skip-mode, bru, global-motion, tx-partition, ext/uneven partitions) \
+disabled and --qp=80 --sb-size=64 --min-partition-size=32 --max-partition-size=32 \
+--enable-rect-partitions=1. Frame 0 = OBU_TEMPORAL_DELIMITER + \
+OBU_SEQUENCE_HEADER + OBU_CLOSED_LOOP_KEY (DC_PRED intra blocks, decodable by the \
+general-intra runtime). Frame 1 = OBU_TEMPORAL_DELIMITER + OBU_REGULAR_TILE_GROUP, \
+the 64x64 superblock SPLIT into four 32x32 single-reference inter blocks (all \
+skip=1, no residual). UNLIKE the identical-MV mvstack fixtures, every block here \
+carries a DISTINCT MV: block 0 @ MI(0,0) NEWMV col 64 (+8 pel), block 1 @ MI(0,8) \
+NEWMV col -32 (-4 pel), block 2 @ MI(8,0) NEWMV col 32 (+4 pel), and the interior \
+block 3 @ MI(8,8) is NEARMV with RefMvIdx 1 over a §7.12.2 spatial MV stack whose \
+slot 0 is the LEFT neighbour (block 2, col 32) and slot 1 is the ABOVE neighbour \
+(block 1, col -32): RefMvIdx 1 reconstructs col -32 directly (no NEWMV delta). This \
+makes the §7.12.2 left-before-above scan-point ORDERING and the §5.20.7.8 DRL \
+slot-1 selection FALSIFIABLE — a wrong stack order would reconstruct block 3 from \
+col 32 (the left neighbour) and mismatch the oracle. Because every leaf is 32x32 \
+(Block_Width / Block_Height == 32, not > 32), the §7.12.2.20 large-block MVP \
+combinations do not apply, so this pins the spatial ordering without that step. \
+avmdec --rawvideo --i420 and dav2d --demuxer ivf raw outputs agree byte-for-byte \
+(decoded-output md5 284e1450b42180f02de7415ab0367bfe, 12288 bytes). The committed \
+verified target for the distinct-neighbour-MV ordering brick \
+(DECODE-INTER-MVORDER-SPATIAL); validates clean."""
+expect = "clean"
+
+[[vector]]
 path = "vectors/invalid/syn-key-intra-64x64-truncated.ivf"
 description = """
 The intra key-frame vector truncated to 100 bytes (mid-payload): the IVF frame \

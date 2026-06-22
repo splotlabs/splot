@@ -262,6 +262,82 @@ fn duplicate_mv_neighbours_merge_to_one_stack_entry() {
 }
 
 #[test]
+fn distinct_left_and_above_mvs_order_left_before_above() {
+    // DECODE-INTER-MVORDER-SPATIAL: the discriminating case the identical-MV
+    // fixtures could not exercise. Block 3 @ MI(8,8) (the bottom-right 32x32 leaf)
+    // has a LEFT neighbour (block 2 @ MI(8,0)) carrying col 32 and an ABOVE
+    // neighbour (block 1 @ MI(0,8)) carrying a DIFFERENT col -32. The §7.12.2
+    // ordered scan visits the left probe (step 7, scan_point(bh4-1, -1) = MI(15,7),
+    // inside block 2) BEFORE the above probe (step 8, scan_point(-1, bw4-1) =
+    // MI(7,15), inside block 1), so the stack must place the LEFT MV (col 32) at
+    // slot 0 and the ABOVE MV (col -32) at slot 1. The committed
+    // syn-2frame-inter-mvorder-64x64.ivf decodes block 3 as NEARMV RefMvIdx 1 ->
+    // col -32 bit-exactly vs avmdec AND dav2d, so a reversed (above-before-left)
+    // order would mis-decode it. The §7.12.2.20 large-block step is inapplicable
+    // (Block_Width / Block_Height == 32, not > 32).
+    let mut grid = NeighbourMvGrid::new(MI_DIM, MI_DIM).unwrap();
+    // Block 0 @ MI(0,0): the (-1,-1) corner neighbour of block 3, col 64.
+    record_inter(
+        &mut grid,
+        0,
+        0,
+        NeighbourYMode::NewMv,
+        Mv { row: 0, col: 64 },
+        true,
+    );
+    // Block 1 @ MI(0,8): block 3's ABOVE neighbour, col -32.
+    record_inter(
+        &mut grid,
+        0,
+        N4_32,
+        NeighbourYMode::NewMv,
+        Mv { row: 0, col: -32 },
+        true,
+    );
+    // Block 2 @ MI(8,0): block 3's LEFT neighbour, col 32.
+    record_inter(
+        &mut grid,
+        N4_32,
+        0,
+        NeighbourYMode::NewMv,
+        Mv { row: 0, col: 32 },
+        true,
+    );
+    let block3 = block_at(N4_32, N4_32); // MI(8, 8)
+
+    let stack = find_mv_stack(&grid, &block3, Mv::ZERO);
+    // Slot 0 is the LEFT neighbour's MV (col 32), slot 1 is the ABOVE neighbour's
+    // (col -32) — left-before-above, the order the oracle-pinned fixture requires.
+    assert_eq!(
+        stack.candidate(0),
+        Mv { row: 0, col: 32 },
+        "slot 0 = the LEFT neighbour (block 2) MV"
+    );
+    assert_eq!(
+        stack.candidate(1),
+        Mv { row: 0, col: -32 },
+        "slot 1 = the ABOVE neighbour (block 1) MV"
+    );
+    // The (-1,-1) corner (block 0, col 64) follows as a distinct entry, then the
+    // zero global-MV fallback (distinct again), giving four candidates total.
+    assert_eq!(
+        stack.candidate(2),
+        Mv { row: 0, col: 64 },
+        "slot 2 = the corner MV"
+    );
+    assert_eq!(
+        stack.candidate(3),
+        Mv::ZERO,
+        "slot 3 = the zero global fallback"
+    );
+    assert_eq!(
+        stack.num_mv_found(),
+        4,
+        "three distinct neighbour MVs + the zero global fallback"
+    );
+}
+
+#[test]
 fn clamp_keeps_small_mvs_unchanged() {
     // The fixture's MV (col 48 = +6 full pels) is far inside the §5.20.9.4 /
     // §5.20.9.5 clamp bounds, so clamping is a no-op.
