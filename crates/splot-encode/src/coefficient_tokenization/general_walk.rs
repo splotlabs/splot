@@ -77,7 +77,7 @@
 //! `eob_extra_bits = offset & ((1 << (eobPt - 3)) - 1)`. NOTE: for the `eob_pt_256` /
 //! `eob_pt_1024` size classes a `eob_pt_*` symbol of 7 instead carries an
 //! `eob_pt_extra` refinement to eobPt 7..=8 — that refinement (eobPt `> 6`) is OUT OF
-//! SCOPE for the 16x16 base pass (eob `<= 32`, eobPt `<= 5`, symbol `<= 4`).
+//! SCOPE for the 16x16 base pass (eob `<= 32`, eobPt `<= 6`, symbol `<= 5`).
 //!
 //! `eob_extra_bit` BIT ORDER (load-bearing, mirrored from decoder/spec — the § 8.2
 //! roundtrip CANNOT catch a bit-order error): the spec loop emits the bit for

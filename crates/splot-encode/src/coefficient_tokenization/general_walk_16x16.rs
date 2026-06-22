@@ -6,7 +6,7 @@
 //!
 //! This is the size-generic [`super::general_walk::tokenize_general_luma_block`]
 //! specialized to a `Quant[256]` block with [`TxGeom::TX_16X16`] and the base-pass eob
-//! window (eob `1..=32`, eobPt `<= 5`, the `eob_pt_256` symbol `<= 4`). It reuses ONE
+//! window (eob `1..=32`, eobPt `<= 6`, the `eob_pt_256` symbol `<= 5`). It reuses ONE
 //! codepath with the 4x4 walk: only the [`TxGeom`] descriptor differs (coeff_count
 //! 256, `bwl = 4`, the § 8.3.2 `coeff_base_eob_ctx` band breaks at `numCoeffs / 8 = 32`
 //! & `numCoeffs / 4 = 64`, the 16x16 2D scan order, the `eob_pt_256` size class, and
