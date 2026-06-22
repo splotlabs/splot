@@ -39,9 +39,11 @@ use crate::tile_payload::{TileCdfSelector, TileCdfSubset};
 #[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum SingleRefReadError {
-    /// `num_total_refs` was less than 2, so `read_single_ref` would read no
-    /// `single_ref` symbol (the spec only calls it when `NumTotalRefs >= 2`).
-    #[error("read_single_ref requires NumTotalRefs >= 2, got {num_total_refs}")]
+    /// `num_total_refs` was 0. AV2 § 6.19.7.11 requires `NumTotalRefs > 0` for any
+    /// inter frame, and § 5.20.7.12 computes `NumTotalRefs - 1`, which would
+    /// underflow at 0. (`NumTotalRefs == 1` is LEGAL: the § 5.20.7.12 loop is empty
+    /// and returns 0 with no `single_ref` symbol read — that is not an error.)
+    #[error("read_single_ref requires NumTotalRefs > 0 (§6.19.7.11), got {num_total_refs}")]
     InsufficientRefs {
         /// The caller-supplied `NumTotalRefs`.
         num_total_refs: usize,
@@ -78,9 +80,13 @@ pub(crate) enum SingleRefReadError {
 /// `contexts` supplies the per-decision § 8.3.2 context for each `ref` index; it
 /// MUST hold at least `num_total_refs - 1` entries.
 ///
+/// For `num_total_refs == 1` the § 5.20.7.12 loop is empty, so it returns 0 with
+/// no `single_ref` symbol read (the legal one-reference case).
+///
 /// # Errors
-/// Returns [`SingleRefReadError::InsufficientRefs`] when `num_total_refs < 2` (the
-/// spec never calls `read_single_ref` for a single reference),
+/// Returns [`SingleRefReadError::InsufficientRefs`] when `num_total_refs == 0`
+/// (§ 6.19.7.11 requires `NumTotalRefs > 0`; the spec computes `NumTotalRefs - 1`,
+/// which underflows at 0),
 /// [`SingleRefReadError::MissingContext`] when `contexts` is shorter than the
 /// `num_total_refs - 1` decisions, or [`SingleRefReadError::SymbolRead`] when a
 /// `single_ref` symbol cannot be read (an out-of-range CDF selector or a § 8.2
@@ -96,7 +102,7 @@ pub(crate) fn read_single_ref(
     num_total_refs: usize,
     contexts: &[usize],
 ) -> Result<usize, SingleRefReadError> {
-    if num_total_refs < 2 {
+    if num_total_refs == 0 {
         return Err(SingleRefReadError::InsufficientRefs { num_total_refs });
     }
     // §5.20.7.12: for ( ref = 0; ref < NumTotalRefs - 1; ref++ ).

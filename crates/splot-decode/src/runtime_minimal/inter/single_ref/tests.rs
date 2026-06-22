@@ -220,15 +220,31 @@ fn single_ref_context_indexing_is_load_bearing() {
 }
 
 #[test]
-fn single_ref_rejects_insufficient_refs() {
+fn single_ref_num_total_refs_one_returns_zero_without_reading() {
+    // §5.20.7.12 with NumTotalRefs == 1: the loop is empty, so RefFrame[0] == 0 is
+    // returned with NO single_ref symbol read. This is the legal one-reference case
+    // (§6.19.7.11 only requires NumTotalRefs > 0), NOT an error.
     let mut dec_tile = FrameCdfSubset::from_defaults().tile_copy();
     let payload = [0x80u8, 0x00];
     let mut symbols = symbol_decoder(&payload);
     let before = symbols.consumed_bits();
-    let err = read_single_ref(&mut dec_tile, &mut symbols, 1, &[]).unwrap_err();
+    let selection = read_single_ref(&mut dec_tile, &mut symbols, 1, &[]).unwrap();
+    assert_eq!(selection, 0, "NumTotalRefs == 1 -> RefFrame[0] == 0");
+    // No symbol was read (the empty loop).
+    assert_eq!(symbols.consumed_bits(), before);
+}
+
+#[test]
+fn single_ref_rejects_zero_refs() {
+    // §6.19.7.11 requires NumTotalRefs > 0; 0 would underflow NumTotalRefs - 1.
+    let mut dec_tile = FrameCdfSubset::from_defaults().tile_copy();
+    let payload = [0x80u8, 0x00];
+    let mut symbols = symbol_decoder(&payload);
+    let before = symbols.consumed_bits();
+    let err = read_single_ref(&mut dec_tile, &mut symbols, 0, &[]).unwrap_err();
     assert!(matches!(
         err,
-        SingleRefReadError::InsufficientRefs { num_total_refs: 1 }
+        SingleRefReadError::InsufficientRefs { num_total_refs: 0 }
     ));
     // The rejection happens before any symbol read.
     assert_eq!(symbols.consumed_bits(), before);
