@@ -19,12 +19,15 @@ use splot_core::annexb::ObuEnvelope;
 use splot_core::bitio::BitReader;
 use splot_core::headers::frame::{
     FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode, FrameHeaderParseStatus,
-    FrameReferenceStateView, FrameSize, InterpolationFilter, TxMode, parse_frame_header_core,
+    FrameReferenceStateView, FrameSize, TxMode, parse_frame_header_core,
 };
 use splot_core::headers::sequence::SequenceHeader;
 use splot_core::span::ByteOffset;
 use splot_core::types::ObuType;
-use splot_recon::{DecodedFrame, ReferenceFrameStore, ReferenceSlot};
+use splot_recon::{
+    DecodedFrame, InterpolationFilter as ReconInterpolationFilter, ReferenceFrameStore,
+    ReferenceSlot,
+};
 
 use super::{
     DecodeOptions, DecodePlannedObu, DecodeStreamPlan, IvfHeader, MinimalRuntimeFrame, Result,
@@ -50,6 +53,9 @@ const SINGLE_MODE_NEARMV: u8 = 0;
 /// AV2 § 5.20.7.6 `single_mode == 1` -> `YMode = GLOBALMV` (the zero-MV mode over
 /// identity global motion).
 const SINGLE_MODE_GLOBALMV: u8 = 1;
+/// AV2 § 5.20.7.6 `single_mode == 2` -> `YMode = NEWMV` (reads a § 5.20.7.20
+/// SHELL-coded MV delta over the no-neighbour zero predictor).
+const SINGLE_MODE_NEWMV: u8 = 2;
 
 /// A modelled motion vector in eighth-pel units (AV2 § 7.11). The verified subset
 /// only produces the zero vector; the newtype keeps the MV result explicit at the
@@ -63,14 +69,9 @@ pub(super) struct Mv {
 }
 
 impl Mv {
-    /// The zero motion vector (`GLOBALMV` over identity global motion, AV2 § 7.11).
+    /// The zero motion vector (`GLOBALMV` over identity global motion / the
+    /// no-neighbour zero predictor, AV2 § 7.11).
     const ZERO: Self = Self { row: 0, col: 0 };
-
-    /// Whether both components are zero (the § 7.13.3.18 zero-fraction full-pel
-    /// copy case).
-    const fn is_zero(self) -> bool {
-        self.row == 0 && self.col == 0
-    }
 }
 
 /// Decodes the minimal inter frame, given the post-key reference store, and returns
@@ -106,7 +107,7 @@ pub(super) fn decode_minimal_inter_frame(
 
     // §5.18.2 inter frame-header parse using the post-key reference state.
     let core = parse_inter_frame_core(frame_envelope, sequence, reference)?;
-    validate_inter_frame_core(&core, offset)?;
+    validate_inter_frame_core(&core, sequence, offset)?;
 
     let frame_size = core.frame_size.ok_or_else(|| {
         unsupported_at(
@@ -228,10 +229,24 @@ pub(super) fn decode_minimal_inter_frame(
     };
     ensure_runtime_limits(limits, frame_width, frame_height, tile_size)?;
 
+    // §5.20.7.6: the block's interpolation filter. For the SWITCHABLE frame filter
+    // the block reads an `interp_filter` symbol; for a fixed frame filter the block
+    // inherits it. The block decode resolves this and returns the recon-side filter
+    // selector.
+    let interpolation_filter = inter.interpolation_filter.ok_or_else(|| {
+        unsupported_at(
+            "inter_missing_interpolation_filter",
+            offset,
+            "minimal inter decode requires a parsed §5.18.5.1 interpolation_filter",
+            SPEC_MC,
+        )
+    })?;
+
     // Decode the §5.20 inter mode info from the tile arithmetic stream and confirm
     // §8.2.4 exit_symbol(); the partition walk + symbol reads + exit check make this
-    // a real decode, not a canned copy.
-    let mv = decode_inter_block_and_mv(
+    // a real decode, not a canned copy. Returns the §7.11 motion vector and the
+    // §5.20.7.6 block interpolation filter.
+    let block = decode_inter_block_and_mv(
         plan,
         candidate,
         bytes,
@@ -239,27 +254,37 @@ pub(super) fn decode_minimal_inter_frame(
         sequence,
         &core,
         options,
+        interpolation_filter,
     )?;
 
-    // §7.13.3.18 zero-fraction motion compensation: a straight copy of the
-    // co-located reference block. For the full-frame zero-MV block this copies the
-    // whole reference plane into the current frame.
-    if !mv.is_zero() {
-        return Err(unsupported_at(
-            "inter_nonzero_mv",
-            offset,
-            "minimal inter decode only supports the zero motion vector (sub-pel / non-zero MV motion compensation is not yet implemented)",
-            SPEC_MV,
-        ));
-    }
-    let frame =
-        motion_compensate_zero_mv_copy(ref_frame, frame_width, frame_height, offset, limits)?;
+    // §7.13.3.17 motion-vector scaling + §7.13.3.18 block inter prediction over the
+    // unscaled reference. The zero-fraction (zero-MV) case reduces inside the kernel
+    // to a straight reference-sample copy.
+    let frame = motion_compensate_inter_block(
+        ref_frame,
+        block.mv,
+        block.interp,
+        frame_width,
+        frame_height,
+        offset,
+        limits,
+    )?;
 
     Ok(MinimalRuntimeFrame {
         frame,
         frame_rate_numerator: header.timebase_denominator,
         frame_rate_denominator: header.timebase_numerator,
     })
+}
+
+/// The decoded single inter block: its §7.11 motion vector and the §5.20.7.6
+/// block interpolation filter (mapped to the recon-side §7.13.3.18 selector).
+#[derive(Clone, Copy, Debug)]
+pub(super) struct InterBlock {
+    /// The decoded §7.11 motion vector (eighth-pel units).
+    pub(super) mv: Mv,
+    /// The §7.13.3.18 interpolation filter the block uses for motion compensation.
+    pub(super) interp: ReconInterpolationFilter,
 }
 
 /// The post-key reference state the inter decode consumes: the §7.23
@@ -348,7 +373,11 @@ fn parse_inter_frame_core(
 
 /// Gates the parsed inter frame header to the verified minimal subset (no tools, no
 /// filters, no grain, single 64x64 tile, an immediate-output inter frame).
-fn validate_inter_frame_core(core: &FrameHeaderCore, offset: ByteOffset) -> Result<()> {
+fn validate_inter_frame_core(
+    core: &FrameHeaderCore,
+    sequence: &SequenceHeader,
+    offset: ByteOffset,
+) -> Result<()> {
     if core.status != FrameHeaderParseStatus::InterHeaderComplete {
         return Err(unsupported_at(
             "inter_incomplete_frame_header",
@@ -441,16 +470,34 @@ fn validate_inter_frame_core(core: &FrameHeaderCore, offset: ByteOffset) -> Resu
             // `skip_mode_present` set would desync — reject it here.
             tail.apply_grain || tail.tx_mode != TxMode::Largest || tail.skip_mode_present
         })
-        // §5.20.7.6: a SWITCHABLE interpolation filter makes a NEARMV/NEWMV block read an
-        // `interp_filter` symbol, and any frame-enabled motion mode makes the block read a
-        // motion-mode (`inter_intra` / warp) symbol — neither of which the verified zero-MV
-        // skip subset reads. Reject so an admitted inter frame can never silently desync the
-        // §8.2 arithmetic decoder past the `exit_symbol()` bit-count backstop.
-        || core.inter.as_ref().is_none_or(|inter| {
-            inter.interpolation_filter == Some(InterpolationFilter::Switchable)
-                || inter
+        // §5.20.7.6: any frame-enabled motion mode makes the block read a motion-mode
+        // (`inter_intra` / warp / local-warp) symbol the verified SIMPLE-mode block does
+        // not read. A SWITCHABLE interpolation filter IS admitted (the block decode reads
+        // the per-block `interp_filter` symbol); a fixed frame filter supplies it with no
+        // symbol. Reject so an admitted inter frame can never silently desync the §8.2
+        // arithmetic decoder past the `exit_symbol()` bit-count backstop.
+        || core
+            .inter
+            .as_ref()
+            .is_none_or(|inter| {
+                inter
                     .frame_enabled_motion_modes
                     .is_some_and(|modes| modes.iter().any(|&enabled| enabled))
+            })
+        // §5.20.7.6 MvPrecision derivation: `enable_flex_mvres && UsePerBlockMvPrecision
+        // && has_newmv` reads `use_most_probable_precision` (and maybe `pb_mv_precision`)
+        // before assign_mv; `enable_adaptive_mvd` allows `use_amvd` after single_mode. The
+        // verified NEWMV block reads neither, so reject a frame whose sequence enables
+        // flexible MV resolution or adaptive MVD. `enable_bawp` (-> `allow_bawp` per §5.18.2)
+        // makes §5.20.7.6 read a `use_bawp` symbol after single_mode for an unscaled
+        // single-ref block with Min(w,h) >= 8 and YMode != GLOBALMV (i.e. exactly the
+        // verified NEARMV/NEWMV 64x64 block) that this decoder does not read — reject it so
+        // an admitted frame can never desync the §8.2 decoder past the bit-count-only
+        // `exit_symbol()` backstop.
+        || sequence.inter.as_ref().is_none_or(|seq_inter| {
+            seq_inter.enable_flex_mvres
+                || seq_inter.enable_adaptive_mvd
+                || seq_inter.enable_bawp
         })
     {
         return Err(unsupported_at(
@@ -465,9 +512,11 @@ fn validate_inter_frame_core(core: &FrameHeaderCore, offset: ByteOffset) -> Resu
 
 mod block;
 mod mc;
+mod mv_scaling;
+mod read_mv;
 
 use block::decode_inter_block_and_mv;
-use mc::motion_compensate_zero_mv_copy;
+use mc::motion_compensate_inter_block;
 
 #[cfg(test)]
 mod tests;
