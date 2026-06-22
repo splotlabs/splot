@@ -45,6 +45,15 @@ const _ASSERT_COEFF_COUNT: () = assert!(TX_16X16_COEFF_COUNT == TxGeom::TX_16X16
 /// eob `>= 33` (eobPt `>= 7`) is a later brick and is rejected with a typed error.
 const MAX_16X16_BASE_EOB_PT: usize = 6;
 
+/// The largest eobPt the FULL 16x16 walk admits (eob `1..=256` → eobPt `1..=9`, the
+/// whole `eob_pt_256` range). eobPt 7 (eob 33..=64) is the plain `eob_pt_256` symbol 6;
+/// eobPt 8 (eob 65..=128) and eobPt 9 (eob 129..=256) BOTH use symbol 7 plus the 1-bit
+/// `eob_pt_extra` refinement (`ENC-COEFF-TOKENIZE-16X16-REFINE`). The `eob_extra` /
+/// `eob_extra_bit` layer is unchanged (it keys on eobPt): eobPt 7 / 8 / 9 carry
+/// `eobPt - 3 = 4 / 5 / 6` `eob_extra_bit` literals. eob `>= 257` (eobPt `>= 10`) is
+/// beyond the 256-coefficient block and is rejected with a typed error.
+const MAX_16X16_FULL_EOB_PT: usize = 9;
+
 /// Tokenizes an arbitrary 16x16 DCT_DCT luma `Quant[256]` block in the base pass (eob
 /// `1..=32`) into the ordered AV2 § 5.20.7.27 block-symbol trace: the luma `txb_skip`
 /// at the `TX_16X16` `txSzCtx`, the `eob_pt_256` size-class EOB symbol (plus the
@@ -80,6 +89,48 @@ pub(crate) fn tokenize_general_16x16_luma_block(
     )
 }
 
+/// Tokenizes an arbitrary 16x16 DCT_DCT luma `Quant[256]` block over the FULL eob range
+/// (eob `1..=256`, eobPt `1..=9`) into the ordered AV2 § 5.20.7.27 block-symbol trace
+/// (`ENC-COEFF-TOKENIZE-16X16-REFINE`). This extends [`tokenize_general_16x16_luma_block`]
+/// (the base pass, eob `1..=32`) to the entire `eob_pt_256` size class by admitting the
+/// symbol-7 `eob_pt_extra` refinement:
+///
+/// - eob `33..=64` (eobPt 7): the plain `eob_pt_256` symbol 6 + `eob_extra` +
+///   `eobPt - 3 = 4` `eob_extra_bit` literals.
+/// - eob `65..=128` (eobPt 8): `eob_pt_256` symbol 7 + an `eob_pt_extra` bypass bit `0`
+///   + `eob_extra` + `5` `eob_extra_bit` literals.
+/// - eob `129..=256` (eobPt 9): `eob_pt_256` symbol 7 + an `eob_pt_extra` bypass bit `1`
+///   + `eob_extra` + `6` `eob_extra_bit` literals.
+///
+/// Apart from the EOB signaling, this is byte-identical to the base pass: the SAME
+/// reverse-scan `coeff_base` / `coeff_br` / sign / golomb passes over the SAME 16x16
+/// § 8.3.2 contexts. An all-zero block emits exactly one luma `all_zero == 1` token (no
+/// chroma tail). Errors:
+///
+/// - [`crate::error::Error::CoefficientTokenizationUnsupportedEob`] when a nonzero sits
+///   past scan index 255 (eob `> 256`, which a `Quant[256]` block cannot reach), and
+/// - [`crate::error::Error::CoefficientTokenizationUnsupportedMagnitude`] when a
+///   golomb-range coefficient's § 5.20.7.28 extension exceeds the per-`m` golomb cap.
+///
+/// # Preconditions
+/// Assumes **TCQ is off** (`allow_tcq == 0`), as the minimal/general intra encoder path
+/// is. Do not reuse on a TCQ-enabled block (the `read_quant` threshold drops by 1).
+pub(crate) fn tokenize_general_16x16_luma_block_full(
+    quant: &[i32; TX_16X16_COEFF_COUNT],
+    coeff_cdf_q_ctx: usize,
+) -> Result<Vec<BlockSymbolToken>> {
+    tokenize_general_luma_block(
+        quant,
+        TxGeom::TX_16X16,
+        MAX_16X16_FULL_EOB_PT,
+        coeff_cdf_q_ctx,
+    )
+}
+
 #[cfg(test)]
 #[path = "general_walk_16x16_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "general_walk_16x16_refine_tests.rs"]
+mod refine_tests;

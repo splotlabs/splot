@@ -21,8 +21,8 @@
 //! splot-decode cross-check brick.
 
 use super::general_walk::{
-    MAX_GENERAL_EOB_PT, MIN_EOB_WITH_EXTRA, TxGeom, build_scan, eob_base_for_pt,
-    general_walk_max_level_for_pos, scan_pos,
+    EOB_PT_256_EXTRA_SYMBOL, EOB_PT_WITH_EXTRA, MAX_GENERAL_EOB_PT, MIN_EOB_WITH_EXTRA, TxGeom,
+    build_scan, eob_base_for_pt, general_walk_max_level_for_pos, scan_pos,
 };
 use super::general_walk_golomb::{
     golomb_params_from_hr_level_avg, next_hr_level_avg, recover_read_quant_golomb_tail,
@@ -190,12 +190,17 @@ fn skip_expected_all_zero(
 
 /// Reads the eob from the `eob_pt_*` token at the cursor and, when its symbol selects
 /// eobPt `>= 3`, the interleaved `eob_extra` CDF flag and the `eobPt - 3`
-/// `eob_extra_bit` bypass literals that follow it. The `eob_pt_*` symbol is `eobPt - 1`;
-/// for eobPt `< 3` `eob == eobPt` so `eob = symbol + 1`. For eobPt `>= 3`,
-/// `eob = base + (eob_extra << (eobPt - 3)) + eob_extra_bits`. The `eob_extra_bit`
-/// literals are read back MSB-first (the same order they were emitted).
+/// `eob_extra_bit` bypass literals that follow it. The `eob_pt_*` symbol is `eobPt - 1`
+/// for eobPt `1..=7`; for the `eob_pt_256` symbol 7 the eobPt is instead
+/// `8 + eob_pt_extra`, read from a 1-bit `eob_pt_extra` bypass literal that immediately
+/// follows the symbol ([`read_eob_pt`]). For eobPt `< 3` `eob == eobPt` so
+/// `eob = symbol + 1`. For eobPt `>= 3`,
+/// `eob = base + (eob_extra << (eobPt - 3)) + eob_extra_bits`. The `eob_pt_extra` bit
+/// (when present) and the `eob_extra_bit` literals are read back MSB-first (the same
+/// order they were emitted). The exact inverse of the decoder `read_nonzero_coeff_eob`
+/// / `resolved_eob_pt` (`crates/splot-decode/src/tile_payload/coeff_loop.rs`).
 fn read_eob_from_tokens(tokens: &[BlockSymbolToken], index: &mut usize) -> Result<usize> {
-    let eob_pt = usize::from(coeff_token_at(tokens, index)?.symbol()) + 1;
+    let eob_pt = read_eob_pt(tokens, index)?;
     if eob_pt < MIN_EOB_WITH_EXTRA {
         return Ok(eob_pt);
     }
@@ -226,9 +231,32 @@ fn read_eob_from_tokens(tokens: &[BlockSymbolToken], index: &mut usize) -> Resul
     Ok(base + extra + eob_extra_bits)
 }
 
-/// Reads one `eob_extra_bit` bypass literal (`bypass(1, bit)`) at the cursor and
-/// advances it, returning its `0`/`1` value. Errors if the token is not a width-1
-/// bypass literal.
+/// Reads the eobPt from the `eob_pt_*` symbol token at the cursor (and, for the
+/// `eob_pt_256` symbol 7, the 1-bit `eob_pt_extra` bypass literal that immediately
+/// follows it). For symbol `0..=6` the eobPt is `symbol + 1`. For symbol 7
+/// ([`EOB_PT_256_EXTRA_SYMBOL`]) the eobPt is `8 + eob_pt_extra` (eobPt 8 → bit 0,
+/// eobPt 9 → bit 1), the EXACT inverse of the decoder `resolved_eob_pt`'s
+/// `8 + eob_pt_extra`. A symbol `> 7` is rejected (no modeled `eob_pt_*` class has a
+/// larger symbol).
+fn read_eob_pt(tokens: &[BlockSymbolToken], index: &mut usize) -> Result<usize> {
+    let symbol = coeff_token_at(tokens, index)?.symbol();
+    if symbol < EOB_PT_256_EXTRA_SYMBOL {
+        return Ok(usize::from(symbol) + 1);
+    }
+    if symbol > EOB_PT_256_EXTRA_SYMBOL {
+        return Err(Error::CoefficientTokenizationMalformedTokenTrace {
+            context: "general walk recovery eob_pt symbol out of range",
+        });
+    }
+    // Symbol 7: the next token is the `eob_pt_extra` width-1 bypass literal; eobPt is
+    // `8 + eob_pt_extra` (mirroring `resolved_eob_pt`).
+    let eob_pt_extra = read_eob_extra_bit(tokens, index)?;
+    Ok(EOB_PT_WITH_EXTRA + eob_pt_extra)
+}
+
+/// Reads one `eob_extra_bit` (or `eob_pt_extra`) bypass literal (`bypass(1, bit)`) at
+/// the cursor and advances it, returning its `0`/`1` value. Errors if the token is not
+/// a width-1 bypass literal.
 fn read_eob_extra_bit(tokens: &[BlockSymbolToken], index: &mut usize) -> Result<usize> {
     match next_token(tokens, index)? {
         BlockSymbolToken::Bypass { width: 1, value } => Ok(value as usize),

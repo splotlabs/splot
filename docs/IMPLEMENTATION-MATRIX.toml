@@ -5171,6 +5171,39 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-COEFF-TOKENIZE-16X16-REFINE"
+name = "Encoder 16x16 luma full-range coefficient tokenization (eob_pt_extra refinement)"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20.7.27", "8.3.2", "8.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/coefficient_tokenization/general_walk_16x16.rs"
+openspec_change = "encoder-coeff-tokenize-16x16-refine"
+tracking_issue = ""
+owner = "encoder"
+risk = "medium"
+notes = "Minimal-working-encoder GEOMETRY UNLOCK part 2, sub-brick 4c (COMPLETES the 16x16 luma coefficient tokenizer): adds the genuinely-NEW eob_pt_256 symbol-7 eob_pt_extra refinement, extending the size-generic walk to the FULL eob range (eob 1..=256, eobPt 1..=9). New full entry tokenize_general_16x16_luma_block_full (the base entry tokenize_general_16x16_luma_block keeps its eob<=32 / max_eob_pt=6 reject contract UNCHANGED — a separate function, not a mutation). THE eobPt<->eob<->symbol<->extra TABLE: eobPt 7 (eob 33..=64, base 33) → eob_pt_256 symbol 6, NO eob_pt_extra, 4 eob_extra_bit; eobPt 8 (eob 65..=128, base 65) → symbol 7, eob_pt_extra=0, 5 eob_extra_bit; eobPt 9 (eob 129..=256, base 129) → symbol 7, eob_pt_extra=1, 6 eob_extra_bit. THE NEW BEHAVIOR: eobPt 8 AND 9 BOTH emit eob_pt_256 symbol 7 (NOT 7 and 8); a 1-bit eob_pt_extra bypass literal (value eobPt-8) emitted AFTER the symbol and BEFORE eob_extra distinguishes them. MIRRORS the decoder VERBATIM (the §8.2 roundtrip is SELF-CONSISTENCY, cannot catch a context/symbol/order mismatch): eob_pt_symbol returns 7 for both eobPt>=8 (== resolved_eob_pt's 8+eob_pt_extra); eob_pt_extra_width returns 1 only for (Pt256, symbol 7); read_nonzero_coeff_eob read order (symbol → eob_pt_extra read_literal(1) → eob_extra CDF → eob_extra_bit literals, all MSB-first); nonzero_coeff_eob eob = base + (eob_extra<<(eobPt-3)) + eob_extra_bits. 4x4 + 16x16 BASE PASS BYTE-IDENTICAL (eob_pt_symbol only diverges at eobPt>=8, eob_pt_extra None below 8): proven by base_pass_eob_32_unchanged_by_full_entry (full==base token-for-token at eob 32) + all 325 splot-encode tests pass. §8.2 ORACLE: 9 tests incl. hand-asserted eobPt-8 sequence [EobPt256=7,Bypass=0,EobExtra=0,1,1,1,1,1] + eobPt-9 [EobPt256=7,Bypass=1,EobExtra=1,0,0,0,1,1,1] + near-full eob 256 + eobpt_8_and_9_share_symbol_7 + eob_pt_extra_bit_position + asymmetric mixed signs. Built by an isolated worktree agent then read-only reviewed (symbol-7 spot-check vs resolved_eob_pt + byte-identity via full suite). recover side: new read_eob_pt for symbol-7 recovery. files: general_walk.rs(963)+general_walk_recover.rs(334)+general_walk_16x16.rs(136)+NEW general_walk_16x16_refine_tests.rs(319); check-source-lines ok. decode_check=not-applicable (§8.2 self-consistency; real decode at the packet brick); avm_diff=not-applicable. With this the 16x16 DCT_DCT luma coefficient tokenizer is COMPLETE (eob 1-256, every position, every magnitude incl. golomb). NEXT: 4d (verify golomb over 16x16, near-free, size-independent) then recursive-split-emission + per-block driver toward the arbitrary-frame milestone."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/coefficient_tokenization/general_walk_16x16_refine_tests.rs"]
+commands = ["cargo test -p splot-encode general_walk_16x16 --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-INTRA-BLOCK-TRACE-TWO-COEFF"
 name = "Encoder eob=2 multi-coefficient block trace"
 category = "encoder"

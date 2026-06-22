@@ -74,10 +74,23 @@
 //! `eob_extra_bit` literals (the LOW refinement bits) and computes
 //! `eob = base + (eob_extra << (eobPt - 3)) + eob_extra_bits`. From the input eob this
 //! brick derives `offset = eob - base`, `eob_extra = (offset >> (eobPt - 3)) & 1`, and
-//! `eob_extra_bits = offset & ((1 << (eobPt - 3)) - 1)`. NOTE: for the `eob_pt_256` /
-//! `eob_pt_1024` size classes a `eob_pt_*` symbol of 7 instead carries an
-//! `eob_pt_extra` refinement to eobPt 7..=8 — that refinement (eobPt `> 6`) is OUT OF
-//! SCOPE for the 16x16 base pass (eob `<= 32`, eobPt `<= 6`, symbol `<= 5`).
+//! `eob_extra_bits = offset & ((1 << (eobPt - 3)) - 1)`.
+//!
+//! `eob_pt_256` SYMBOL-7 `eob_pt_extra` REFINEMENT (eobPt 8 / 9, eob `65..=256`,
+//! `ENC-COEFF-TOKENIZE-16X16-REFINE`): for the `eob_pt_256` size class the
+//! `eob_pt_*` symbol caps at 7. eobPt 7 (eob `33..=64`, base 33) is the plain symbol 6,
+//! NO `eob_pt_extra`. But eobPt 8 (eob `65..=128`, base 65) AND eobPt 9 (eob
+//! `129..=256`, base 129) BOTH emit symbol 7, and a 1-bit `eob_pt_extra` bypass literal
+//! — emitted AFTER the `eob_pt_256` symbol and BEFORE `eob_extra` — distinguishes them
+//! (eobPt 8 → bit 0, eobPt 9 → bit 1, i.e. `eob_pt_extra = eobPt - 8`). The decoder
+//! `read_nonzero_coeff_eob` reads it as `read_literal(1)` and `resolved_eob_pt` maps
+//! `eobPt = 8 + eob_pt_extra`; this walk is the EXACT inverse
+//! ([`eob_pt_symbol`] returns 7 for both, [`eob_pt_extra_for_eob_pt`] returns the bit).
+//! The `eob_extra` / `eob_extra_bit` layer below is unchanged — it keys on `eobPt`, so
+//! eobPt 7 / 8 / 9 carry `eobPt - 3 = 4 / 5 / 6` `eob_extra_bit` literals. The plain
+//! [`tokenize_general_luma_block`] window is bounded by its `max_eob_pt`; only the FULL
+//! 16x16 entry ([`super::general_walk_16x16::tokenize_general_16x16_luma_block_full`])
+//! admits eobPt up to 9.
 //!
 //! `eob_extra_bit` BIT ORDER (load-bearing, mirrored from decoder/spec — the § 8.2
 //! roundtrip CANNOT catch a bit-order error): the spec loop emits the bit for
@@ -141,11 +154,26 @@ const COEFF_BASE_LF_TCQ_CTX_NEUTRAL: usize = 0;
 /// The decoder base for eobPt 3 is `(1 << (3 - 2)) + 1 == 3`. Shared with
 /// [`super::general_walk_recover`].
 pub(super) const MIN_EOB_WITH_EXTRA: usize = 3;
-/// The largest eobPt the size-generic recovery accepts: eobPt 6 (eob 17..=32, the
-/// 16x16 base-pass cap). It carries `eobPt - 3 == 3` `eob_extra_bit` literals. The 4x4
-/// walk never produces an eob past 16 (eobPt 5), so this is the recovery upper bound
-/// shared by both sizes. Shared with [`super::general_walk_recover`].
-pub(super) const MAX_GENERAL_EOB_PT: usize = 6;
+/// The largest eobPt the size-generic recovery accepts: eobPt 9 (eob 129..=256, the
+/// `eob_pt_256` FULL range cap). eobPt 9 carries the `eob_pt_256` symbol-7
+/// `eob_pt_extra` refinement bit plus `eobPt - 3 == 6` `eob_extra_bit` literals. The
+/// 4x4 walk never produces an eob past 16 (eobPt 5) and the 16x16 BASE pass caps at
+/// eobPt 6; this is the recovery upper bound shared by the FULL 16x16 walk
+/// (`tokenize_general_16x16_luma_block_full`). Shared with
+/// [`super::general_walk_recover`].
+pub(super) const MAX_GENERAL_EOB_PT: usize = 9;
+/// The smallest eobPt that uses the `eob_pt_256` symbol-7 `eob_pt_extra` refinement
+/// (eobPt 8, eob 65..=128, base 65). Below it the `eob_pt_*` symbol alone (`eobPt - 1`)
+/// determines eobPt; at-or-above it both eobPt 8 and 9 share symbol 7 and the
+/// `eob_pt_extra` bit (`eobPt - 8`) distinguishes them. Mirrors the decoder
+/// `resolved_eob_pt`. Shared with [`super::general_walk_recover`].
+pub(super) const EOB_PT_WITH_EXTRA: usize = 8;
+/// The `eob_pt_256` size-class symbol that carries the `eob_pt_extra` refinement
+/// (symbol 7). Both eobPt 8 and eobPt 9 are emitted as this symbol; the `eob_pt_extra`
+/// bypass bit selects between them. Mirrors `eob_pt_extra_width`'s
+/// `(EobPtSize::Pt256, 7)` match arm in the decoder. Shared with
+/// [`super::general_walk_recover`].
+pub(super) const EOB_PT_256_EXTRA_SYMBOL: u8 = 7;
 /// The neutral V-plane `txb_skip` context for an all-zero U/V tail (no `EobU`).
 const V_TXB_SKIP_CTX_NEUTRAL: usize = 0;
 /// The § 8.3.2 `coeff_br` low-frequency luma context for the EOB coefficient at the DC
@@ -282,9 +310,15 @@ pub(super) fn tokenize_general_luma_block(
     } else {
         (false, 0, 0)
     };
-    // Header: luma all_zero + eob_pt_*, plus (when refined) the `eob_extra` flag and
-    // `eob_extra_width` `eob_extra_bit` bypass literals.
+    // The `eob_pt_256` symbol-7 `eob_pt_extra` bypass bit (eobPt 8 / 9 only): emitted
+    // AFTER the `eob_pt_256` symbol and BEFORE the `eob_extra` CDF flag. `None` for
+    // every other eobPt (the 4x4 `eob_pt_16` class never reaches symbol 7).
+    let eob_pt_extra_bit = eob_pt_extra_for_eob_pt(eob_pt);
+    // Header: luma all_zero + eob_pt_*, plus the optional `eob_pt_extra` bypass bit,
+    // plus (when refined) the `eob_extra` flag and `eob_extra_width` `eob_extra_bit`
+    // bypass literals.
     let header_len = 2usize
+        + usize::from(eob_pt_extra_bit.is_some())
         + usize::from(has_eob_extra)
         + if has_eob_extra {
             eob_extra_width as usize
@@ -321,6 +355,13 @@ pub(super) fn tokenize_general_luma_block(
         EOB_CTX_LUMA_INTRA,
         eob_pt_symbol(eob),
     )));
+    if let Some(bit) = eob_pt_extra_bit {
+        // The `eob_pt_256` `eob_pt_extra` refinement (eobPt 8 → 0, eobPt 9 → 1): a
+        // width-1 bypass literal read by the decoder AFTER the `eob_pt_256` symbol and
+        // BEFORE `eob_extra` (`read_nonzero_coeff_eob`, the `read_eob_literal(.., width,
+        // "eob_pt_extra")` call). Mirrors `resolved_eob_pt`'s `8 + eob_pt_extra`.
+        trace.push(BlockSymbolToken::bypass(1, bit));
+    }
     if has_eob_extra {
         // Emit the `eob_extra` CDF flag (the HIGH refinement bit), then the
         // `eob_extra_width` `eob_extra_bit` bypass literals (the LOW refinement bits)
@@ -828,10 +869,41 @@ pub(super) const fn eob_base_for_pt(eob_pt: usize) -> usize {
     }
 }
 
-/// Returns the `eob_pt_*` symbol (`eobPt - 1`) for an eob in `1..=32`. The size-class
-/// `eob_pt_*` symbol carries `eobPt - 1`, NOT `eob - 1`.
+/// Returns the `eob_pt_*` symbol for an eob. For eobPt `1..=7` the symbol is
+/// `eobPt - 1` (the size-class symbol carries `eobPt - 1`, NOT `eob - 1`). For the
+/// `eob_pt_256` size class BOTH eobPt 8 and eobPt 9 are carried by symbol **7**: the
+/// decoder `resolved_eob_pt` (`crates/splot-decode/src/tile_payload/coeff_loop.rs`)
+/// reads an `eob_pt_extra` bypass bit only when the symbol is 7 and maps
+/// `eobPt = 8 + eob_pt_extra`, so the symbol alone cannot distinguish them — the
+/// `eob_pt_extra` bit ([`eob_pt_extra_for_eob_pt`]) does. Mirrors the decoder
+/// `resolved_eob_pt` inverse.
 const fn eob_pt_symbol(eob: usize) -> u8 {
-    (eob_pt_from_eob(eob) - 1) as u8
+    let eob_pt = eob_pt_from_eob(eob);
+    if eob_pt >= EOB_PT_WITH_EXTRA {
+        // eobPt 8 and 9 BOTH map to `eob_pt_256` symbol 7; the `eob_pt_extra` bit
+        // distinguishes them. Mirrors `resolved_eob_pt`'s `8 + eob_pt_extra`.
+        EOB_PT_256_EXTRA_SYMBOL
+    } else {
+        (eob_pt - 1) as u8
+    }
+}
+
+/// Whether the `eob_pt_256` `eob_pt_extra` bypass bit is emitted for an eob, and its
+/// value. The decoder reads `eob_pt_extra` (a 1-bit bypass literal) ONLY for the
+/// `eob_pt_256` size class when the `eob_pt_256` symbol is 7 (eobPt `>= 8`), and maps
+/// `eobPt = 8 + eob_pt_extra` (`resolved_eob_pt`,
+/// `crates/splot-decode/src/tile_payload/coeff_loop.rs` ~606): eobPt 8 → bit 0, eobPt
+/// 9 → bit 1. For every other eobPt (and for the 4x4 `eob_pt_16` class, which never
+/// reaches symbol 7) NO `eob_pt_extra` bit is emitted (`None`). This is the EXACT
+/// inverse of `resolved_eob_pt` for eobPt 8 and 9.
+const fn eob_pt_extra_for_eob_pt(eob_pt: usize) -> Option<u32> {
+    if eob_pt >= EOB_PT_WITH_EXTRA {
+        // eobPt 8 → eob_pt_extra 0; eobPt 9 → eob_pt_extra 1. The decoder computes
+        // `eobPt = 8 + eob_pt_extra`, so `eob_pt_extra = eobPt - 8`.
+        Some((eob_pt - EOB_PT_WITH_EXTRA) as u32)
+    } else {
+        None
+    }
 }
 
 /// Derives the § 5.20.7.27 `(eob_extra, eob_extra_bits, width)` refinement for an eob
