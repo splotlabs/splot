@@ -28,7 +28,13 @@
 //!   § 7.12.2.10 Add reference motion vector process + § 7.12.2.12 Search stack
 //!   process), the `numNearest` sort gate (§ 7.12.2.19 Sorting process), and the
 //!   extra-search global-MV fallback (§ 7.12.2.20 Extra search process) +
-//!   clamping (§ 7.12.2.23 Clamping process) ([`find_mv_stack`]).
+//!   clamping (§ 7.12.2.23 Clamping process) ([`find_mv_stack`]). The per-neighbour
+//!   scan-point ORDERING (left-before-above precedence) and the § 5.20.7.8 DRL
+//!   slot selection are oracle-PINNED by the committed
+//!   `syn-2frame-inter-mvorder-64x64.ivf` (`DECODE-INTER-MVORDER-SPATIAL`): four
+//!   32x32 leaves with DISTINCT MVs whose interior NEARMV block selects RefMvIdx 1
+//!   (the above neighbour) over a stack whose slot 0 is the left neighbour, so a
+//!   reversed order would mis-decode it (avmdec + dav2d bit-exact).
 //!
 //! ## What is deferred (`TODO(spec: DECODE-INTER-MVSTACK-SPATIAL)`)
 //!
@@ -45,8 +51,14 @@
 //!   the `useSort` constraint path); the caller rejects `enable_drl_reorder`.
 //! - Global (warp) motion: the caller rejects `use_global_motion`, so the
 //!   § 7.12.2.1 Setup global MV process yields the zero vector for every list.
-//! - The § 7.12.2.20 large-block (> 32x32) extra MVP-combination candidates,
-//!   the intrabc block-vector candidates, and the warp-bank candidates.
+//! - The § 7.12.2.20 large-block (Block_Width > 32 AND Block_Height > 32) extra
+//!   MVP-combination candidates, the intrabc block-vector candidates, and the
+//!   warp-bank candidates. The committed distinct-MV fixture
+//!   (`DECODE-INTER-MVORDER-SPATIAL`) pins the spatial ordering with 32x32 leaves
+//!   (Block_Width / Block_Height == 32, NOT > 32), for which § 7.12.2.20 large-block
+//!   is correctly inapplicable, so it does not exercise that step; the > 32x32 MVP
+//!   combinations remain deferred and guarded by the § 5.20.7.8
+//!   `inter_block_drl_idx_out_of_range` reject (see [`extra_search`]).
 
 use super::Mv;
 

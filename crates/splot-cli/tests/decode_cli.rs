@@ -621,6 +621,63 @@ fn decode_grid_inter_fixture_decodes_bit_exact() {
 }
 
 #[test]
+fn decode_distinct_mv_inter_fixture_decodes_bit_exact() {
+    // DECODE-INTER-MVORDER-SPATIAL: the committed syn-2frame-inter-mvorder-64x64.ivf
+    // CLOSES the verified-subset honesty gap left by the identical-MV inter fixtures
+    // (mvstack / multi-SB / grid all propagated ONE col-48 MV, so the §7.12.2 stack
+    // collapsed and the per-neighbour ORDERING was exercised-but-not-discriminated).
+    // Frame 0 is a general-intra DC_PRED key frame (four flat 32x32 quadrants
+    // 100/150/60/200); frame 1 is an OBU_REGULAR_TILE_GROUP inter frame whose 64x64
+    // superblock is §5.20.3 SPLIT into four 32x32 single-reference inter blocks, all
+    // skip=1, each carrying a DISTINCT MV: block 0 @ MI(0,0) NEWMV col 64, block 1 @
+    // MI(0,8) NEWMV col -32, block 2 @ MI(8,0) NEWMV col 32, and the INTERIOR block 3
+    // @ MI(8,8) NEARMV RefMvIdx 1 over a stack whose slot 0 is the LEFT neighbour
+    // (col 32) and slot 1 is the ABOVE neighbour (col -32), reconstructing col -32 —
+    // pinning the §7.12.2 left-before-above ordering and the §5.20.7.8 DRL slot-1
+    // selection (a reversed order would reconstruct from col 32 and mismatch). Every
+    // leaf is 32x32 (not > 32), so the §7.12.2.20 large-block MVP step is
+    // inapplicable. avmdec --rawvideo --i420 and dav2d --demuxer ivf decode the whole
+    // stream byte-for-byte identically (decoded-output md5
+    // 284e1450b42180f02de7415ab0367bfe over 12288 bytes). NO step is hardcoded: the
+    // §8.2.4 exit_symbol() check guards bit-exactness.
+    let input = conformance_vector("syn-2frame-inter-mvorder-64x64.ivf");
+    let output = temp_output("yuv");
+
+    let out = splot(&[
+        "decode",
+        "--output-format",
+        "raw",
+        input.to_str().unwrap(),
+        "-o",
+        output.to_str().unwrap(),
+    ]);
+
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "the distinct-MV inter fixture must decode successfully: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let decoded = std::fs::read(&output).expect("decoded raw output");
+    assert_eq!(decoded.len(), 12288, "two 8-bit 4:2:0 64x64 frames");
+    let frame_bytes = 6144;
+    let (frame0, frame1) = decoded.split_at(frame_bytes);
+    // Frame 1's luma differs from frame 0 (the distinct per-quadrant horizontal
+    // motion shifts the quadrant content), proving the distinct neighbour-predicted
+    // MVs are genuinely applied; the chroma is flat 128 and unchanged.
+    assert_ne!(
+        &frame0[..4096],
+        &frame1[..4096],
+        "inter luma differs from the key (distinct neighbour-predicted MVs)"
+    );
+    assert_eq!(
+        &frame0[4096..],
+        &frame1[4096..],
+        "inter chroma equals key chroma (flat, MVs are horizontal)"
+    );
+}
+
+#[test]
 fn decode_hash_json_success_creates_no_implicit_output_file() {
     let input = conformance_vector("syn-flat-intra-64x64-minimal.ivf");
     let cwd = temp_dir("minimal-hash-cwd");
