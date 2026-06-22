@@ -6187,6 +6187,39 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-DECIDE-RATE-CONTROLLER"
+name = "Encoder decision seam: RateController (constant-QP)"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.18.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/decide.rs"
+openspec_change = "encoder-decide-rate-controller"
+tracking_issue = ""
+owner = "encoder"
+risk = "low"
+notes = "Minimal-working-encoder ARCHITECTURE brick: the FIRST decision SEAM of the maintainer-approved (2026-06-22) 5-seam design (RateController/PartitionDecider/IntraModeDecider/TransformDecider/CostModel), each a trait with a trivial Fixed*/Constant* impl now so the rav1e/SVT-AV1 optimization features land later as ADDITIVE swaps behind the same trait, never a rewrite. Adds the `decide` module + the RateController trait (frame_base_q_idx -> u8; grows into per-SB/block qp deltas + CRF/2-pass/CBR/VBR + lambda<->QP) + the ConstantQp impl (returns the configured EncoderConfig.qp). Context now HOLDS a ConstantQp rate_controller (built in Context::new from config.qp); receive_packet obtains base_q_idx via rate_controller.frame_base_q_idx() instead of reading config.qp directly — installing the seam in the encode lifecycle. BYTE-IDENTICAL output (ConstantQp::frame_base_q_idx()==config.qp), proven by the unchanged cross-tool oracle (decode(encode(all-128))==all-128 at qp 80 AND 40). rav1e/SVT-AV1 inform the seam STRUCTURE only (docs/references/), never AV2 syntax/tables/CDFs; rate/cost estimates (later seams) derive from the AV2 entropy coder, not AV1 rate tables. decode_check=done (oracle unchanged); avm_diff=not-applicable. Encoder-mission-DRIVEN (owner=encoder). HONEST SCOPE: one decision seam + its trivial constant impl; NOT real rate control, NOT a general encoder, NOT Baseline Encoder Profile v1."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/decide.rs::tests::constant_qp_returns_the_configured_quantizer", "crates/splot-cli/tests/encode_decode_roundtrip.rs::context_encodes_all_128_frame_to_a_packet_that_decodes_to_all_128"]
+commands = ["cargo test -p splot-encode decide:: --locked", "cargo test -p splot-cli --test encode_decode_roundtrip --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-RECON-DEPENDENCY"
 name = "Encoder reconstruction dependency boundary"
 category = "encoder"
