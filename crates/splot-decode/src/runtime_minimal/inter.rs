@@ -28,7 +28,7 @@ use splot_core::headers::frame::{
     FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode, FrameHeaderParseStatus,
     FrameReferenceStateView, TxMode, parse_frame_header_core,
 };
-use splot_core::headers::sequence::SequenceHeader;
+use splot_core::headers::sequence::{SequenceHeader, SuperblockSize};
 use splot_core::span::ByteOffset;
 use splot_core::types::ObuType;
 use splot_recon::{
@@ -608,6 +608,23 @@ fn validate_inter_frame_core(
             "inter_unsupported_frame_size",
             offset,
             "minimal inter decode accepts a single superblock row (height 64, width a multiple of 64); the single-SB column and the 2-D multi-superblock grid are not yet fixtured",
+            SPEC_HEADER,
+        ));
+    }
+    // The dimension gate above assumes 64x64 superblocks (the verified fixtures use
+    // --sb-size 64): a `width` multiple of 64 is the SB count only when each SB is
+    // 64 wide. A stream signalled with 128x128 / 256x256 superblocks would make a
+    // 128x64 frame ONE boundary-clipped superblock (not the verified row of two
+    // 64x64 SBs), with unfixtured block geometry / MV-stack behaviour, so reject
+    // unless seq_sb_size (§5.18.7.6) is 64x64.
+    if sequence
+        .partition
+        .is_none_or(|partition| partition.seq_sb_size() != SuperblockSize::Block64x64)
+    {
+        return Err(unsupported_at(
+            "inter_unsupported_superblock_size",
+            offset,
+            "minimal inter decode requires 64x64 sequence superblocks; 128x128 / 256x256 superblocks are not yet modelled",
             SPEC_HEADER,
         ));
     }

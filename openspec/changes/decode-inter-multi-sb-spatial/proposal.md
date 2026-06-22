@@ -20,11 +20,12 @@ boundary from the spatial-neighbour MV stack. Both oracles agree byte-for-byte.
 - Add Feature ID `DECODE-INTER-MULTI-SB-SPATIAL`.
 - Lift the § 5.18.3 inter frame-size gate in `validate_inter_frame_core` from
   exactly 64x64 to a single superblock ROW (height 64, width a positive multiple
-  of 64) OR single superblock COLUMN (width 64, height a positive multiple of 64)
-  of 64x64 superblocks. This is the only decoder change: the § 5.20.2.1 SB raster
-  loop, the frame-wide `find_mv_stack` grid, `decode_inter_blocks`, and the
-  tile-payload boundary derivation were already geometry-agnostic and are
-  unchanged.
+  of 64) of 64x64 superblocks (gated to `seq_sb_size == 64x64`). The single-SB
+  column (width 64, height > 64) is analytically correct + locally verified but
+  REJECTED pending its own committed fixture (deferred). This is the only decoder
+  change: the § 5.20.2.1 SB raster loop, the frame-wide `find_mv_stack` grid,
+  `decode_inter_blocks`, and the tile-payload boundary derivation were already
+  geometry-agnostic and are unchanged.
 - Add the project-owned `syn-2sb-inter-128x64-q80.ivf` fixture (frame 0 = two
   DC_PRED intra 64x64 superblocks; frame 1 = two 64x64 single-reference inter
   blocks, SB0 NEWMV + SB1 NEARMV reusing SB0's MV across the superblock boundary,
