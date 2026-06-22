@@ -229,15 +229,26 @@ fn general_lf_rejects_out_of_scope() {
     // The boundary constant is now the last 4x4 scan index.
     assert_eq!(MAX_GENERAL_SCAN_INDEX, 15);
 
-    // A low-frequency magnitude > 7 (past the LF base-range tier) is rejected via the
-    // magnitude error.
-    let big = dc_ac_block(8, 1);
-    let err = tokenize_general_lf_luma_block(&big, Q_CTX).unwrap_err();
+    // A low-frequency magnitude 8 (the LF `maxLevel`) is no longer rejected: it is the
+    // FIRST § 5.20.7.28 `read_quant` golomb coefficient (the
+    // `ENC-COEFF-GENERAL-WALK-GOLOMB` tier, a single golomb coefficient with `m = 1`).
+    // It now tokenizes and roundtrips. (`MAX_BASE_BR_MAGNITUDE` is still the no-golomb
+    // LF cap.)
+    assert_eq!(MAX_BASE_BR_MAGNITUDE, 7);
+    let golomb = dc_ac_block(8, 1);
+    let trace = tokenize_general_lf_luma_block(&golomb, Q_CTX).unwrap();
+    let recovered = recover_quant_from_tokens(&trace, Q_CTX).unwrap();
+    assert_eq!(recovered, golomb);
+
+    // A magnitude above the golomb cap 525 is still rejected (the wider-`coeff_rem`
+    // extension is a later widening).
+    let too_big = dc_ac_block(526, 1);
+    let err = tokenize_general_lf_luma_block(&too_big, Q_CTX).unwrap_err();
     assert!(matches!(
         err,
         Error::CoefficientTokenizationUnsupportedMagnitude {
-            magnitude: 8,
-            max_magnitude: MAX_BASE_BR_MAGNITUDE,
+            magnitude: 526,
+            max_magnitude: 525,
             ..
         }
     ));
@@ -585,39 +596,32 @@ fn general_lf_both_coeffs_br() {
 }
 
 #[test]
-fn general_lf_eob2_rejects_oversized() {
-    // Both coefficients now accept magnitude `1..=7`; only a magnitude `> 7` (the
-    // `read_quant` golomb tail) is rejected, at EITHER position.
+fn general_lf_eob2_single_golomb_accepted_double_rejected() {
+    // A SINGLE golomb-range coefficient (magnitude at-or-above the LF `maxLevel` 8) is
+    // now in scope at EITHER position (the `ENC-COEFF-GENERAL-WALK-GOLOMB` tier).
 
-    // The EOB AC magnitude limit is 7; magnitude 8 is rejected.
-    let big_ac = dc_ac_block(-1, 8);
-    let err = tokenize_general_lf_luma_block(&big_ac, Q_CTX).unwrap_err();
+    // The EOB AC at magnitude 8 (golomb), DC at level 1: a single golomb coefficient,
+    // accepted and roundtrips.
+    let golomb_ac = dc_ac_block(-1, 8);
+    let trace = tokenize_general_lf_luma_block(&golomb_ac, Q_CTX).unwrap();
+    assert_eq!(recover_quant_from_tokens(&trace, Q_CTX).unwrap(), golomb_ac);
+
+    // The non-EOB DC at magnitude 8 (golomb), AC at level 1: also a single golomb
+    // coefficient, accepted and roundtrips.
+    let golomb_dc = dc_ac_block(8, 1);
+    let trace = tokenize_general_lf_luma_block(&golomb_dc, Q_CTX).unwrap();
+    assert_eq!(recover_quant_from_tokens(&trace, Q_CTX).unwrap(), golomb_dc);
+
+    // TWO golomb-range coefficients (both DC and AC at magnitude 8) need the running
+    // `hrLevelAvg` predictor (sub-brick 5e-ii) and are rejected with the typed error.
+    let two_golomb = dc_ac_block(8, 8);
+    let err = tokenize_general_lf_luma_block(&two_golomb, Q_CTX).unwrap_err();
     assert!(
         matches!(
             err,
-            Error::CoefficientTokenizationUnsupportedMagnitude {
-                magnitude: 8,
-                max_magnitude: MAX_BASE_BR_MAGNITUDE,
-                ..
-            }
+            Error::CoefficientTokenizationMultipleGolombCoefficients { count: 2, .. }
         ),
-        "EOB AC magnitude 8 exceeds the base-range tier (7): {err:?}"
-    );
-
-    // The non-EOB DC magnitude limit is now also 7; magnitude 8 at the DC (with an AC
-    // making it non-EOB) is rejected.
-    let big_dc = dc_ac_block(8, 1);
-    let err = tokenize_general_lf_luma_block(&big_dc, Q_CTX).unwrap_err();
-    assert!(
-        matches!(
-            err,
-            Error::CoefficientTokenizationUnsupportedMagnitude {
-                magnitude: 8,
-                max_magnitude: MAX_BASE_BR_MAGNITUDE,
-                ..
-            }
-        ),
-        "non-EOB DC magnitude 8 exceeds the base-range tier (7): {err:?}"
+        "two golomb coefficients must be rejected: {err:?}"
     );
 }
 

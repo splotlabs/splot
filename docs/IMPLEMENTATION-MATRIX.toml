@@ -5002,6 +5002,41 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-COEFF-GENERAL-WALK-GOLOMB"
+name = "Encoder general coefficient walk: read_quant golomb tail (single golomb coefficient)"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20.7.27", "5.20.7.28"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/coefficient_tokenization"
+openspec_change = "coeff-general-walk-golomb"
+tracking_issue = ""
+owner = "encoder"
+risk = "medium"
+notes = "Private, non-emitting encoder coefficient tokenizer. Sub-brick 5e: adds the AV2 §5.20.7.28 read_quant golomb tail for a coefficient whose magnitude is beyond the base-range cap (LF magnitude >= maxLevel 8, HF >= maxLevel 6). Scoped to ONE golomb coefficient per block (hrLevelAvg = 0 -> golomb parameter m = Clip3(1,6,GetMsb(0)) = 1, the case the existing DC golomb composers already implement); a block with >= 2 golomb-range coefficients is rejected with CoefficientTokenizationMultipleGolombCoefficients (multi-coefficient hrLevelAvg threading is 5e-ii). INTEGRATION (corrected by the 4-agent investigation): §5.20.7.27 has TWO reverse-scan loops; read_quant fires in the SIGN+QUANT pass, so the golomb bypass bits follow each coefficient's sign token in compose_sign_pass, NOT the base pass (the base pass saturates base+coeff_br to maxLevel). m=1 emission: FINITE-Q (x<10): (x>>1) zeros + 1 + L(1, x&1); GOLOMB-PREFIX (x>=10): 5 q-zeros + (length-2) zeros + 1 + L(length, coeff_rem), length=floor(log2(x-6)) (golomb_golomb.rs push_read_quant_golomb_tail, mirroring block_symbol_trace/golomb.rs + the decoder read_quant.rs). x = magnitude - maxLevel is capped at GOLOMB_X_MAX=517 (keeps the golomb-prefix length <= 8; LF magnitude <= 525, HF <= 523) -- a load-bearing per-position acceptance gate (a position-independent magnitude<=525 cap would let an HF coefficient reach length-9 prefixes that break the §8.2 recovery). New module split: the §8.2 recovery half moved to general_walk_recover.rs (general_walk.rs kept under the 1000-line budget); the golomb emission/recovery lives in general_walk_golomb.rs. §8.2 SELF-CONSISTENCY only (the golomb bit VALUES are independently checked by exact bypass-stream assertions mirrored from the decoder); decoder context/table conformance deferred to the splot-decode cross-check. Out of scope: >= 2 golomb coefficients (5e-ii), chroma, non-4x4, non-DCT_DCT, packets. NOTE: the build agent's general_walk.rs changes were clobbered by a stray git restore in the review workflow and re-applied by a recovery agent (the golomb logic + integration were already verified correct + the x<=517 cap is a review-found fix)."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-encode/src/coefficient_tokenization/general_walk_golomb_tests.rs",
+]
+commands = ["cargo test -p splot-encode general_walk --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-INTRA-BLOCK-TRACE-TWO-COEFF"
 name = "Encoder eob=2 multi-coefficient block trace"
 category = "encoder"

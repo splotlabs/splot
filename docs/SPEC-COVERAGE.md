@@ -440,6 +440,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `ENC-COEFF-GENERAL-WALK-DC-BR` | ✅ | — | — | ✅ | — |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `ENC-COEFF-GENERAL-WALK-EOB-EXTRA` | ✅ | — | — | ✅ | — |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `ENC-COEFF-GENERAL-WALK-EOB-EXTRA-BITS` | ✅ | — | — | ✅ | — |
+| [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `ENC-COEFF-GENERAL-WALK-GOLOMB` | ✅ | — | — | ✅ | — |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `ENC-COEFF-GENERAL-WALK-HF-EOB11` | ✅ | — | — | ✅ | — |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `ENC-COEFF-GENERAL-WALK-HF-MULTI` | ✅ | — | — | ✅ | — |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `ENC-COEFF-GENERAL-WALK-LF-BASE` | ✅ | — | — | ✅ | — |
@@ -481,6 +482,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.20.7.28](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-28) | Read quantized coefficient syntax | `DECODE-COEFF-QUANT-STATE-WRITE` | ✅ | — | — | ✅ | 1 |
 | [§ 5.20.7.28](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-28) | Read quantized coefficient syntax | `DECODE-COEFF-READ-QUANT-SYNTAX` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.28](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-28) | Read quantized coefficient syntax | `DECODE-COEFF-STATE-CONTEXT-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 5.20.7.28](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-28) | Read quantized coefficient syntax | `ENC-COEFF-GENERAL-WALK-GOLOMB` | ✅ | — | — | ✅ | — |
 | [§ 5.20.7.28](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-28) | Read quantized coefficient syntax | `ENC-COEFFICIENT-TOKENIZATION-MINIMAL` | ✅ | — | — | ✅ | — |
 | [§ 5.20.7.28](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-28) | Read quantized coefficient syntax | `ENC-GENERAL-INTRA-CODED-LUMA-DC` | ✅ | — | — | ✅ | — |
 | [§ 5.20.7.28](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-28) | Read quantized coefficient syntax | `ENC-INTRA-BLOCK-TRACE-BYPASS-LITERAL` | ✅ | — | — | ✅ | — |

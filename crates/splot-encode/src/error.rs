@@ -463,6 +463,23 @@ pub enum Error {
         max_magnitude: u32,
     },
 
+    /// A general-walk block has two-or-more coefficients in the § 5.20.7.28
+    /// `read_quant` golomb range (magnitude at-or-above their position `maxLevel`).
+    /// The current single-golomb-coefficient tier emits the `m = 1` golomb tail with
+    /// `hrLevelAvg == 0`; a second golomb coefficient needs the running `hrLevelAvg`
+    /// predictor threaded across coefficients (sub-brick 5e-ii) and is rejected.
+    #[error(
+        "encoder general-walk coefficient tokenization supports at most one golomb-range coefficient per block (m=1, hrLevelAvg=0); this block has {count} (positions {first_position} and {second_position})"
+    )]
+    CoefficientTokenizationMultipleGolombCoefficients {
+        /// Number of golomb-range coefficients found in the block.
+        count: usize,
+        /// Row-major raster position of the first golomb-range coefficient.
+        first_position: usize,
+        /// Row-major raster position of the second golomb-range coefficient.
+        second_position: usize,
+    },
+
     /// A general-walk block has a nonzero coefficient outside the current
     /// low-frequency end-of-block window (scan indices `0..=max_scan_index`).
     #[error(
