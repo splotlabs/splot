@@ -13358,6 +13358,63 @@ fixtures = [
 diagnostics = ["decode/unsupported-feature"]
 
 [[feature]]
+id = "DECODE-INTER-MVORDER-SPATIAL"
+name = "distinct-neighbour-MV §7.12.2 stack ordering (left-before-above)"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.20.3", "5.20.7.6", "5.20.7.8", "7.11.2", "7.12.2", "7.12.2.6", "7.12.2.12", "7.13.3.18"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-6",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-8",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-11-2",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-12-2",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-12-2-6",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-12-2-12",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-18",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/runtime_minimal/inter/find_mv_stack.rs"
+openspec_change = "decode-inter-mvorder-spatial"
+tracking_issue = ""
+owner = "decoder"
+risk = "low"
+notes = "CLOSES the verified-subset honesty gap left by every prior inter fixture: DECODE-INTER-MVSTACK-SPATIAL / DECODE-INTER-MULTI-SB-SPATIAL / DECODE-INTER-GRID-SPATIAL all propagated ONE identical motion vector (SB0/block0 NEWMV col 48; later blocks NEARMV reusing col 48), so the §7.12.2 spatial MV stack collapsed to a single entry and the per-neighbour scan-point ORDERING (which-neighbour-wins, left vs above precedence with DISTINCT MVs) plus the §5.20.7.8 DRL slot selection were EXERCISED-BUT-NOT-DISCRIMINATED — a wrong order decoded identically and §8.2.4 exit_symbol() (bit-count-only) could not catch it. The committed `syn-2frame-inter-mvorder-64x64.ivf` (project-owned synthetic input: frame 0 four flat 32x32 luma quadrants 100/150/60/200 + flat chroma, frame 1 = each quadrant shifted by a DIFFERENT amount — top-left +8, top-right -4, bottom-left +4, bottom-right -4 luma samples, edge-clamped; same broad-decode-tools-disabled flags as the mvstack fixture: `--qp 80 --sb-size 64 --min-partition-size 32 --max-partition-size 32 --enable-rect-partitions=1`) is a two-frame 64x64 stream: frame 0 = OBU_CLOSED_LOOP_KEY (DC_PRED intra blocks), frame 1 = OBU_REGULAR_TILE_GROUP whose 64x64 superblock is §5.20.3 SPLIT into four 32x32 single-reference inter blocks, all skip==1, each carrying a DISTINCT MV (confirmed via temporary splot instrumentation, since removed): block 0 @ MI(0,0) NEWMV col 64 (+8 pel), block 1 @ MI(0,8) NEWMV col -32 (-4 pel), block 2 @ MI(8,0) NEWMV col 32 (+4 pel), and the INTERIOR block 3 @ MI(8,8) NEARMV RefMvIdx 1. DONE (the ordering is now oracle-PINNED): `splot decode syn-2frame-inter-mvorder-64x64.ivf --output-format raw` reproduces the whole-stream md5 284e1450b42180f02de7415ab0367bfe (12288 bytes) byte-for-byte vs avmdec --rawvideo --i420 and dav2d --demuxer ivf (recorded in `docs/LOCAL-REFERENCE-EVIDENCE.toml`, `lref-avm-dav2d-syn-2frame-inter-mvorder-64x64`). Block 3's §7.12.2 stack is [col 32 (slot 0 = the LEFT neighbour, block 2, from the step-7 scan_point(bh4-1,-1) probe), col -32 (slot 1 = the ABOVE neighbour, block 1, from the step-8 scan_point(-1,bw4-1) probe), col 64 (the (-1,-1) corner, block 0), col 0 (the zero global fallback)]: RefMvIdx 1 reconstructs col -32 (the ABOVE neighbour) DIRECTLY (NEARMV, no delta), so a reversed (above-before-left) scan order would reconstruct block 3 from col 32 and mis-decode it. NO decoder change was needed: find_mv_stack's §7.12.2.6 ordered spatial scan and the §7.12.2.12 search-stack dedupe were ALREADY CORRECT; this brick is a fixture + tests + honesty brick proving them. FALSIFIABILITY was verified locally: temporarily swapping scan steps 7 and 8 flips slots 0/1 (the find_mv_stack unit test `distinct_left_and_above_mvs_order_left_before_above` then fails: slot 0 becomes col -32) AND changes the inter-frame decode hash (the `mvorder_fixture_per_frame_hash_is_stable` test then fails: 889d89f6... instead of 3c2a8c85...), proving the fixture genuinely discriminates the ordering. SCOPE OF PROOF (honest): because every leaf is exactly 32x32 (Block_Width / Block_Height == 32, NOT > 32), the §7.12.2.20 large-block (> 32x32) extra MVP combinations are correctly INAPPLICABLE, so this brick pins the spatial ordering WITHOUT implementing §7.12.2.20; that step remains DEFERRED (TODO(spec: DECODE-INTER-MVSTACK-SPATIAL)) and guarded by the §5.20.7.8 inter_block_drl_idx_out_of_range reject for the > 32x32 leaves it does not yet model. All existing inter (zero-MV 4e1bd39f, sub-pel a0e82de3, residual ab2b067a, mvstack e5b581a5, SB-row 477a993d, grid 897bf67e) and general-intra fixtures stay byte-identical (no regression). The deferred §7.12.2 temporal/compound/warp/ref-MV-bank/derived-SMVP/DRL-reorder/scan-col candidates remain unmodelled; in-loop filters and live AVM/dav2d invocation in CI remain unimplemented."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "done"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "todo"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/runtime_minimal/inter/tests.rs::mvorder_fixture_decodes_two_frames",
+    "crates/splot-decode/src/runtime_minimal/inter/tests.rs::mvorder_fixture_per_frame_hash_is_stable",
+    "crates/splot-decode/src/runtime_minimal/inter/find_mv_stack/tests.rs::distinct_left_and_above_mvs_order_left_before_above",
+    "crates/splot-cli/tests/decode_cli.rs::decode_distinct_mv_inter_fixture_decodes_bit_exact",
+    "crates/splot-cli/tests/conformance.rs::conformance_corpus_matches_manifest",
+]
+commands = [
+    "cargo test -p splot-decode --locked",
+    "cargo test -p splot-cli --test decode_cli --locked",
+    "cargo test -p splot-cli --test conformance --locked",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-decoder-conformance-coverage",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "tests/conformance/vectors/valid/syn-2frame-inter-mvorder-64x64.ivf",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
 id = "DECODE-COEFF-FSC-SCAN-WALK"
 name = "Coefficient FSC scan walk"
 category = "infrastructure"

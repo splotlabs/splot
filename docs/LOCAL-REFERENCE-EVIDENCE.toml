@@ -1936,6 +1936,58 @@ left = "avm-grid-inter-128x128-raw-md5"
 right = "dav2d-grid-inter-128x128-raw-md5"
 
 [[evidence]]
+id = "lref-avm-dav2d-syn-2frame-inter-mvorder-64x64"
+feature_id = "DECODE-INTER-MVORDER-SPATIAL"
+decoder_support_rows = ["inter-mvorder-spatial"]
+kind = "reference-output-agreement"
+summary = "Local AVM and dav2d raw decoder output MD5 digests agreed for the two-frame 8-bit 4:2:0 DISTINCT-neighbour-MV inter IVF fixture (a 64x64 frame whose inter superblock is §5.20.3 SPLIT into four 32x32 single-reference inter blocks, all skip==1, no residual, each carrying a DIFFERENT motion vector — block 0 at MI(0,0) NEWMV col 64 == +8 full pels, block 1 at MI(0,8) NEWMV col -32 == -4 full pels, block 2 at MI(8,0) NEWMV col 32 == +4 full pels, and the interior block 3 at MI(8,8) NEARMV RefMvIdx 1), which CLOSES the verified-subset honesty gap left by the identical-MV inter fixtures (mvstack, multi-SB, 2-D-grid all propagated ONE identical col-48 MV, so the §7.12.2 spatial MV stack collapsed to a single entry and the per-neighbour scan-point ORDERING and §5.20.7.8 DRL slot selection were exercised but not bit-exactly discriminated; §8.2.4 exit_symbol() is bit-count-only and could not catch a wrong order). Block 3's §7.12.2 MV stack is [col 32 (slot 0 = the LEFT neighbour, block 2, from the §7.12.2.6 step-7 scan_point(bh4-1,-1) probe), col -32 (slot 1 = the ABOVE neighbour, block 1, from the step-8 scan_point(-1,bw4-1) probe), col 64 (the (-1,-1) corner, block 0), col 0 (the zero global fallback)], and the decoded RefMvIdx 1 reconstructs col -32 (the ABOVE neighbour) DIRECTLY (NEARMV, no delta), so a reversed (above-before-left) scan order would reconstruct block 3 from col 32 and mismatch the oracle. splot reproduces the whole raw output byte-for-byte. find_mv_stack's §7.12.2.6 spatial scan order and §7.12.2.12 search-stack dedupe were ALREADY CORRECT (no decoder change); falsifiability was verified locally by temporarily swapping scan steps 7 and 8, which flips slots 0/1 and changes the inter-frame decode hash, failing both the unit and decode tests. Because every leaf is exactly 32x32 (Block_Width and Block_Height == 32, not > 32), the §7.12.2.20 large-block extra MVP combinations are INAPPLICABLE, so this pins the spatial ordering without implementing §7.12.2.20 (which stays deferred for the > 32x32 leaves it does not yet model)."
+recorded_at = "2026-06-22"
+
+[[evidence.fixture]]
+id = "input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-2frame-inter-mvorder-64x64.ivf"
+sha256 = "236955d7e1a2c5c121db28458af03e3861f4c8ad9045e70c4d6c4289093e5b96"
+size_bytes = 122
+format = "ivf"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Generated locally with avmenc from a project-owned synthetic Y4M (64x64 4:2:0; frame 0 = four flat 32x32 luma quadrants top-left-100 top-right-150 bottom-left-60 bottom-right-200 + flat chroma 128,128; frame 1 = frame 0 shifted per quadrant by a DIFFERENT amount — top-left +8, top-right -4, bottom-left +4, bottom-right -4 luma samples, edge-clamped) at --qp 80 --sb-size 64 --min-partition-size 32 --max-partition-size 32 --enable-rect-partitions=1 with broad decode tools (incl. GDF, cdef, deblocking, restoration, ccso, cfl, mhccp, cctx, qm, ibp, angle-delta, ist, inter-ist, intra-dip, idtx-intra, smooth-intra, paeth-intra, bawp, cwp, tcq, trellis, all warp modes, tip, opfl-refine, refinemv, masked-wedge-interintra-onesided-diffwtd compound, joint-mvd, adaptive-mvd, flex-mvres, ref-frame-mvs, refmvbank, drl-reorder, mv-traj, high-motion, inter-ddt, skip-mode, bru, global-motion, tx-partition, ext-uneven partitions) disabled, so the encoder codes frame 0 as DC_PRED intra blocks and frame 1 as a 64x64 SPLIT into four 32x32 single-reference inter blocks with DISTINCT MVs (block 0 NEWMV col 64, block 1 NEWMV col -32, block 2 NEWMV col 32, block 3 NEARMV RefMvIdx 1 reconstructing col -32 from the §7.12.2 stack, all skip=1); the per-quadrant distinct shifts force distinct per-block MVs (unlike the uniform-shift mvstack fixture that collapses to one MV), and the max-partition-size 32 constraint forces the inter split. The encode is deterministic (a byte-identical re-encode reproduces the committed IVF). AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avm"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "457cd58681a747465661baccb1f32095bc5b7774"
+version_summary = "AVM checkout HEAD 457cd58681a747465661baccb1f32095bc5b7774, exact binary build commit not separately archived."
+command_summary = "Local avmdec --rawvideo --i420 output MD5 for {fixture:input}."
+output_digest_id = "avm-mvorder-inter-64x64-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "284e1450b42180f02de7415ab0367bfe"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.reference_run]]
+id = "dav2d"
+tool = "dav2d"
+executable_name = "dav2d"
+tool_role = "decode-reference"
+source_url = "https://code.videolan.org/videolan/dav2d"
+revision = "f4f96cb06bb3cd3f31e29e1f190f1c0e373ab352"
+version_summary = "dav2d 0.0.1-191-gf4f96cb0 (commit f4f96cb0), decoded with --demuxer ivf; exact version output not archived."
+command_summary = "Local dav2d --demuxer ivf output MD5 for {fixture:input}."
+output_digest_id = "dav2d-mvorder-inter-64x64-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "284e1450b42180f02de7415ab0367bfe"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-mvorder-inter-64x64-raw-md5"
+right = "dav2d-mvorder-inter-64x64-raw-md5"
+
+[[evidence]]
 id = "lref-avm-dav2d-syn-flat-intra-64x64-minimal-skip"
 feature_id = "DECODE-GENERAL-INTRA-FRAME-RECON"
 decoder_support_rows = ["general-intra-frame-recon"]

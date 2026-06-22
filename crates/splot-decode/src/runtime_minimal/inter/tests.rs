@@ -86,6 +86,26 @@ const MULTI_SB_INTER_FIXTURE: &[u8] =
 const GRID_INTER_FIXTURE: &[u8] =
     include_bytes!("../../../../../tests/conformance/vectors/valid/syn-grid-inter-128x128-q80.ivf");
 
+/// The first bit-exact DISTINCT-neighbour-MV inter fixture: a 64x64 frame is a
+/// §5.20.3 SPLIT into four 32x32 inter blocks, each carrying a DIFFERENT motion
+/// vector (UNLIKE the identical-MV mvstack fixtures whose stack collapses to one
+/// entry). Frame 0 is a general-intra DC_PRED key frame (four flat 32x32 quadrants
+/// 100/150/60/200, flat chroma); frame 1 shifts each quadrant by a distinct amount.
+/// Block 0 @ MI(0,0) is NEWMV col 64 (+8 pel), block 1 @ MI(0,8) NEWMV col -32
+/// (-4 pel), block 2 @ MI(8,0) NEWMV col 32 (+4 pel), and the interior block 3 @
+/// MI(8,8) is NEARMV with RefMvIdx 1: its §7.12.2 spatial stack is
+/// `[col 32 (LEFT = block 2), col -32 (ABOVE = block 1), col 64, col 0]`, so
+/// RefMvIdx 1 reconstructs col -32 (the ABOVE neighbour) directly — pinning the
+/// §7.12.2 left-before-above scan-point ORDERING and the §5.20.7.8 DRL slot-1
+/// selection. Every leaf is 32x32 (Block_Width / Block_Height == 32, not > 32), so
+/// the §7.12.2.20 large-block MVP combinations do not apply. avmdec
+/// `--rawvideo --i420` and `dav2d --demuxer ivf` decode the whole stream
+/// byte-for-byte identically (oracle MD5 `284e1450b42180f02de7415ab0367bfe`,
+/// 12288 bytes).
+const MVORDER_INTER_FIXTURE: &[u8] = include_bytes!(
+    "../../../../../tests/conformance/vectors/valid/syn-2frame-inter-mvorder-64x64.ivf"
+);
+
 // avmdec / dav2d both decode every plane of both frames to these flat values.
 const FLAT_LUMA: u8 = 100;
 const FLAT_CHROMA_U: u8 = 120;
@@ -520,5 +540,63 @@ fn grid_fixture_per_frame_hash_is_stable() {
     assert_ne!(
         key_hash, inter_hash,
         "the 2-D-grid inter frame must differ from the key frame (real cross-SB MV shift)"
+    );
+}
+
+/// The committed DISTINCT-neighbour-MV fixture decodes a 64x64 key frame + one
+/// 64x64 multi-block inter frame (a §5.20.3 SPLIT into four 32x32 inter blocks
+/// with four DIFFERENT motion vectors).
+#[test]
+fn mvorder_fixture_decodes_two_frames() {
+    use splot_recon::{BitDepth, PixelFormat, PlaneSize};
+
+    let frames = decode_fixture(MVORDER_INTER_FIXTURE);
+    assert_eq!(
+        frames.len(),
+        2,
+        "the distinct-MV stream decodes a key frame + one inter frame"
+    );
+    for (index, output) in frames.iter().enumerate() {
+        let frame = output.frame();
+        assert_eq!(frame.bit_depth(), BitDepth::Eight, "frame {index}");
+        assert_eq!(frame.pixel_format(), PixelFormat::Yuv420, "frame {index}");
+        assert_eq!(
+            frame.y().visible_size(),
+            PlaneSize::new(64, 64).unwrap(),
+            "frame {index}"
+        );
+    }
+}
+
+/// Regression pin for the per-frame decode hash of the DISTINCT-neighbour-MV
+/// fixture. The raw decoded output (both frames concatenated I420) matches avmdec
+/// `--rawvideo --i420` and `dav2d --demuxer ivf` byte-for-byte (oracle MD5
+/// `284e1450b42180f02de7415ab0367bfe`, 12288 bytes, recorded in
+/// `docs/LOCAL-REFERENCE-EVIDENCE.toml`); these `splot-dfh-sha256-v1` per-frame
+/// hashes are splot's internal regression anchors for that bit-exact output. The
+/// interior block 3 @ MI(8,8) is NEARMV RefMvIdx 1 over a §7.12.2 spatial stack
+/// whose slot 0 is its LEFT neighbour (col 32) and slot 1 is its ABOVE neighbour
+/// (col -32); reconstructing col -32 confirms the left-before-above ordering. A
+/// wrong stack order would reconstruct block 3 from col 32 and change this hash.
+#[test]
+fn mvorder_fixture_per_frame_hash_is_stable() {
+    let frames = decode_fixture(MVORDER_INTER_FIXTURE);
+    let key_hash = splot_recon::DecodedFrameHashInput::new(frames[0].frame())
+        .compute_hash()
+        .to_hex();
+    let inter_hash = splot_recon::DecodedFrameHashInput::new(frames[1].frame())
+        .compute_hash()
+        .to_hex();
+    assert_eq!(
+        key_hash, "3ddad4a90c482c106f9389ef55bc87beeaf772f4bec2041da4555bbd8deb6142",
+        "distinct-MV key-frame hash"
+    );
+    assert_eq!(
+        inter_hash, "3c2a8c85c4ba4be4fa82aecbefe92baa1567f2a9c45ea88f8275c21414480ad9",
+        "distinct-MV inter-frame hash"
+    );
+    assert_ne!(
+        key_hash, inter_hash,
+        "the distinct-MV inter frame must differ from the key frame"
     );
 }
