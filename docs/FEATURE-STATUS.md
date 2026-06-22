@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 394 feature(s).
+Matrix version 1. Last reviewed 2026-06-15. 395 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -127,6 +127,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `ENC-RESIDUAL-FOUNDATION` | Encoder residual foundation | encoder | encoder-tool | done | done | n/a | n/a | n/a | done | n/a | done | n/a | `crates/splot-encode/src/residual.rs` |
 | `ENC-FORWARD-TRANSFORM-FOUNDATION` | Encoder forward transform foundation | encoder | encoder-tool | done | done | n/a | n/a | n/a | done | n/a | done | n/a | `crates/splot-encode/src/forward_transform.rs` |
 | `ENC-FORWARD-TRANSFORM-DCT-4X4` | Encoder 4x4 DCT_DCT forward transform | encoder | encoder-tool | done | done | n/a | n/a | n/a | done | n/a | done | n/a | `crates/splot-encode/src/forward_transform.rs` |
+| `ENC-FORWARD-TRANSFORM-DCT-16X16` | Encoder 16x16 DCT_DCT forward transform + quantizer | encoder | encoder-tool | done | done | n/a | n/a | n/a | done | n/a | done | n/a | `crates/splot-encode/src/forward_transform_16x16.rs` |
 | `ENC-QUANTIZATION-V0` | Encoder quantization v0 | encoder | encoder-tool | done | done | n/a | n/a | n/a | done | n/a | done | n/a | `crates/splot-encode/src/quantization.rs` |
 | `ENC-FWD-QUANT-PER-COEFF-AC` | Encoder per-coefficient forward quantizer over a real 4x4 block | encoder | encoder-tool | done | done | n/a | n/a | n/a | done | n/a | done | n/a | `crates/splot-encode/src/quantization.rs` |
 | `ENC-COEFFICIENT-TOKENIZATION-MINIMAL` | Encoder coefficient tokenization minimal | encoder | encoder-tool | done | done | n/a | n/a | n/a | done | n/a | done | n/a | `crates/splot-encode/src/coefficient_tokenization.rs` |
