@@ -33,10 +33,11 @@ use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig};
 use splot_core::tables::cdf::{
     DEFAULT_COEFF_BASE_CDF, DEFAULT_COEFF_BASE_EOB_CDF, DEFAULT_COEFF_BASE_LF_CDF,
     DEFAULT_COEFF_BASE_LF_EOB_CDF, DEFAULT_COEFF_BASE_LF_EOB_UV_CDF, DEFAULT_COEFF_BR_CDF,
-    DEFAULT_COEFF_BR_LF_CDF, DEFAULT_DC_SIGN_CDF, DEFAULT_DO_SPLIT_CDF, DEFAULT_EOB_EXTRA_CDF,
-    DEFAULT_EOB_PT_16_CDF, DEFAULT_EOB_PT_1024_CDF, DEFAULT_INTRA_TX_TYPE_SET1_CDF,
-    DEFAULT_SEC_TX_TYPE_CDF, DEFAULT_TXB_SKIP_CDF, DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF,
-    DEFAULT_V_TXB_SKIP_CDF, DEFAULT_Y_MODE_INDEX_CDF, DEFAULT_Y_MODE_SET_CDF,
+    DEFAULT_COEFF_BR_LF_CDF, DEFAULT_DC_SIGN_CDF, DEFAULT_DO_SPLIT_CDF,
+    DEFAULT_DO_SQUARE_SPLIT_CDF, DEFAULT_EOB_EXTRA_CDF, DEFAULT_EOB_PT_16_CDF,
+    DEFAULT_EOB_PT_1024_CDF, DEFAULT_INTRA_TX_TYPE_SET1_CDF, DEFAULT_SEC_TX_TYPE_CDF,
+    DEFAULT_TXB_SKIP_CDF, DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF, DEFAULT_V_TXB_SKIP_CDF,
+    DEFAULT_Y_MODE_INDEX_CDF, DEFAULT_Y_MODE_SET_CDF,
 };
 
 use crate::coefficient_tokenization::{
@@ -54,7 +55,8 @@ use crate::intra_mode_emission::{
     emit_minimal_dc_luma_intra_mode,
 };
 use crate::partition_emission::{
-    PartitionCdfRowSelector, PartitionToken, ROOT_64X64_DO_SPLIT_CTX, ROOT_PARTITION_PLANE_START,
+    PartitionCdfRowSelector, PartitionToken, ROOT_64X64_DO_SPLIT_CTX,
+    ROOT_64X64_DO_SQUARE_SPLIT_CTX, ROOT_PARTITION_PLANE_START,
 };
 
 const Y_MODE_SET_CDF_ROW_LEN: usize = 5;
@@ -62,6 +64,8 @@ const INTRA_MODE_CDF_ROW_LEN: usize = 9;
 const TXB_SKIP_CDF_ROW_LEN: usize = 3;
 /// `TileDoSplitCdf` is a binary CDF: `[cdf0, count, 0]` (length 3).
 const DO_SPLIT_CDF_ROW_LEN: usize = 3;
+/// `TileDoSquareSplitCdf` is a binary CDF: `[cdf0, count, 0]` (length 3).
+const DO_SQUARE_SPLIT_CDF_ROW_LEN: usize = 3;
 const V_TXB_SKIP_CDF_ROW_LEN: usize = 3;
 const EOB_PT_16_CDF_ROW_LEN: usize = 6;
 /// `TileEobPt1024Cdf` rows hold 8 symbols (`[i32; 9]`).
