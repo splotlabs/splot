@@ -1,18 +1,21 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Single-golomb-coefficient general-walk tests
-//! (`ENC-COEFF-GENERAL-WALK-GOLOMB`, sub-brick 5e): a 4x4 luma block with at most ONE
-//! coefficient whose magnitude reaches its position `maxLevel` (LF `8`, HF `6`) and
-//! therefore carries the AV2 § 5.20.7.28 `read_quant` golomb tail. With a single
-//! golomb coefficient `hrLevelAvg == 0` when its `read_quant` fires, so the golomb
-//! parameter `m = Clip3(1, 6, GetMsb(0)) = 1` — the same case the DC golomb composers
-//! (`crates/splot-encode/src/block_symbol_trace/golomb.rs`) already implement.
+//! General-walk golomb-tail tests (`ENC-COEFF-GENERAL-WALK-GOLOMB`, sub-brick 5e, plus
+//! `ENC-COEFF-GENERAL-WALK-GOLOMB-MULTI`, sub-brick 5e-ii): a 4x4 luma block with one
+//! or more coefficients whose magnitude reaches its position `maxLevel` (LF `8`, HF
+//! `6`) and therefore carries the AV2 § 5.20.7.28 `read_quant` golomb tail. With a
+//! SINGLE golomb coefficient `hrLevelAvg == 0` when its `read_quant` fires, so the
+//! golomb parameter `m = Clip3(1, 6, GetMsb(0)) = 1` — the same case the DC golomb
+//! composers (`crates/splot-encode/src/block_symbol_trace/golomb.rs`) implement. With
+//! MULTIPLE golomb coefficients the running `hrLevelAvg` predictor is threaded across
+//! them in reverse scan (`c = eob-1 .. 0`), so the later golomb coefficients' `m`
+//! rises above `1` (their `coeff_rem` widens to `L(m)`).
 //!
 //! These tests assert the exact § 8.2.5 bypass-bit sequence of the golomb tail
-//! (mirrored from the decoder `read_quant` and the spec § 5.20.7.28), the § 8.2
-//! roundtrip, and that `recover_quant_from_tokens` reproduces the input exactly. A
-//! block with two-or-more golomb coefficients (sub-brick 5e-ii) is rejected.
+//! (mirrored from the decoder `read_quant` and the spec § 5.20.7.28) — including the
+//! m>1 second-coefficient stream — the § 8.2 roundtrip, and that
+//! `recover_quant_from_tokens` reproduces the input exactly.
 //!
 //! HONESTY: the `roundtrip_block_symbol_trace` / `recover_quant_from_tokens` proofs
 //! are AV2 § 8.2 SELF-CONSISTENCY — the same code authored the emission and its
@@ -356,32 +359,146 @@ fn rejects_magnitude_above_golomb_cap() {
 }
 
 #[test]
-fn rejects_two_golomb_coefficients() {
-    // TWO coefficients reaching their position `maxLevel` need the running
-    // `hrLevelAvg` predictor (sub-brick 5e-ii) and are rejected with the typed error.
-    // Two LF golomb coefficients (scan 0 DC and scan 1 AC, both magnitude 10).
-    let quant = scan_block(2, &[10, 10]);
-    let err = tokenize_general_lf_luma_block(&quant, Q_CTX).unwrap_err();
-    assert!(
-        matches!(
-            err,
-            Error::CoefficientTokenizationMultipleGolombCoefficients { count: 2, .. }
-        ),
-        "two golomb coefficients must be rejected; got {err:?}"
+fn two_lf_golomb_coefficients_drive_m_above_one_exact_stream() {
+    // TWO golomb coefficients in one block (sub-brick 5e-ii): the running `hrLevelAvg`
+    // predictor is threaded across them in reverse scan (`c = eob-1 .. 0`), so the
+    // SECOND golomb coefficient's golomb parameter `m` rises above the `m = 1` single-
+    // golomb case. eob 2: scan 0 = DC (raster 0), scan 1 = AC (raster 4). Reverse scan
+    // visits the AC FIRST (offset 0, `hrLevelAvg == 0` → m = 1), then the DC.
+    //
+    // AC magnitude 16 (LF maxLevel 8): x = 8, m = 1, prefix_x_min = cMax<<m = 5<<1 =
+    // 10, so finite-q: q = 8 >> 1 = 4, coeff_rem = 8 & 1 = 0 as L(1). Tail =
+    // [0,0,0,0, 1 (terminator), L(1, 0)]. Then `hrLevelAvg = (8 + 0) >> 1 = 4`.
+    //
+    // DC magnitude 20 (LF maxLevel 8): x = 12. With `hrLevelAvg == 4`, m =
+    // Clip3(1, 6, GetMsb(4)) = 2, k = 3, cMax = Min(6, 6) = 6, prefix_x_min = 6<<2 =
+    // 24, so finite-q: q = 12 >> 2 = 3, coeff_rem = 12 & 3 = 0 as L(2) — a TWO-bit
+    // remainder, the load-bearing m>1 difference. Tail = [0,0,0, 1 (terminator),
+    // L(2, 0)].
+    let quant = scan_block(2, &[20, 16]);
+    // Asymmetric signs (scan_block): scan-even (DC, scan 0) negative, scan-odd (AC,
+    // scan 1) positive.
+    assert_eq!(quant[0], -20); // DC
+    assert_eq!(quant[4], 16); // AC
+
+    let trace = tokenize_general_lf_luma_block(&quant, Q_CTX).unwrap();
+
+    // The sign+golomb run after the base pass: in reverse scan the AC (scan 1) is
+    // visited first (its `sign_bit` bypass then its m=1 golomb tail), then the DC (its
+    // `dc_sign` CDF token then its m=2 golomb tail). Collect every bypass literal and
+    // assert the two tails appear in order. The DC `dc_sign` is a Coeff token, so the
+    // bypass stream is: AC sign_bit, AC tail, DC tail, plus the eob<3 header has NO
+    // eob_extra bits (eob 2 < 3), and the chroma tail is Coeff. So the full bypass
+    // stream is exactly: [AC sign=1], [AC tail], [DC tail].
+    let bypasses: Vec<_> = trace
+        .iter()
+        .copied()
+        .filter(|t| matches!(t, BlockSymbolToken::Bypass { .. }))
+        .collect();
+    assert_eq!(
+        bypasses,
+        vec![
+            // AC `sign_bit` (positive → 0).
+            BlockSymbolToken::bypass(1, 0),
+            // AC golomb tail (m = 1, finite-q x = 8): four q-zeros, terminator, L(1, 0).
+            BlockSymbolToken::bypass(1, 0),
+            BlockSymbolToken::bypass(1, 0),
+            BlockSymbolToken::bypass(1, 0),
+            BlockSymbolToken::bypass(1, 0),
+            BlockSymbolToken::bypass(1, 1),
+            BlockSymbolToken::bypass(1, 0),
+            // DC golomb tail (m = 2, finite-q x = 12): three q-zeros, terminator,
+            // L(2, 0) — the m>1 two-bit coeff_rem.
+            BlockSymbolToken::bypass(1, 0),
+            BlockSymbolToken::bypass(1, 0),
+            BlockSymbolToken::bypass(1, 0),
+            BlockSymbolToken::bypass(1, 1),
+            BlockSymbolToken::bypass(2, 0),
+        ],
+        "two-golomb m=1-then-m=2 exact bypass stream; bypasses = {bypasses:?}"
     );
 
-    // One LF golomb (scan 0) plus one HF golomb (scan 10, eob 11): still two golomb
-    // coefficients, rejected.
-    let mut mags = [1u32; 11];
-    mags[0] = 10; // LF golomb
-    mags[10] = 8; // HF golomb (maxLevel 6)
-    let quant = scan_block(11, &mags);
-    let err = tokenize_general_lf_luma_block(&quant, Q_CTX).unwrap_err();
-    assert!(
-        matches!(
-            err,
-            Error::CoefficientTokenizationMultipleGolombCoefficients { count: 2, .. }
-        ),
-        "an LF + HF golomb pair must be rejected; got {err:?}"
-    );
+    let proof = roundtrip_block_symbol_trace(&trace).unwrap();
+    assert!(!proof.bytes().is_empty());
+    assert_eq!(recover_quant_from_tokens(&trace, Q_CTX).unwrap(), quant);
+}
+
+#[test]
+fn multiple_golomb_coefficients_bounded_fuzz_roundtrips() {
+    // A bounded fuzz over blocks with 2-3 golomb coefficients at varied magnitudes and
+    // positions (LF and HF), asymmetric signs (scan_block: scan-even negative, scan-odd
+    // positive). Every block must tokenize, roundtrip, and recover exactly — proving the
+    // running `hrLevelAvg` predictor is threaded identically by the emission and the
+    // § 8.2 self-consistency recovery across multiple golomb coefficients.
+    //
+    // Each case lists (eob, golomb-scan-index -> magnitude). The non-golomb scan-prefix
+    // positions are fixed at base-low magnitude 1.
+    let cases: &[(usize, &[(usize, u32)])] = &[
+        // Two LF golomb coefficients (DC + AC), small finite-q extensions.
+        (2, &[(0, 10), (1, 12)]),
+        // Two LF golomb coefficients driving m up (large then larger).
+        (3, &[(0, 30), (2, 60)]),
+        // Two LF golomb coefficients, golomb-prefix extensions.
+        (4, &[(0, 50), (3, 200)]),
+        // Three LF golomb coefficients across the LF region.
+        (5, &[(0, 18), (2, 40), (4, 120)]),
+        // One LF golomb (DC) + one HF golomb (scan 10, raster 13), eob 11.
+        (11, &[(0, 25), (10, 16)]),
+        // Two HF golomb coefficients (scan 10 + scan 11), eob 12, mixed LF/HF caps.
+        (12, &[(10, 20), (11, 48)]),
+        // Three golomb coefficients spanning LF and HF, eob 13.
+        (13, &[(0, 40), (10, 18), (12, 100)]),
+    ];
+
+    let mut covered = 0usize;
+    for &(eob, golomb) in cases {
+        let mut mags = vec![1u32; eob];
+        for &(scan, mag) in golomb {
+            mags[scan] = mag;
+        }
+        let quant = scan_block(eob, &mags);
+        let trace = tokenize_general_lf_luma_block(&quant, Q_CTX);
+        assert!(
+            trace.is_ok(),
+            "tokenize failed eob {eob} golomb {golomb:?}: {trace:?}"
+        );
+        let trace = trace.unwrap();
+        let proof = roundtrip_block_symbol_trace(&trace);
+        assert!(
+            proof.is_ok(),
+            "roundtrip failed eob {eob} golomb {golomb:?}: {proof:?}"
+        );
+        assert!(!proof.unwrap().bytes().is_empty());
+        let recovered = recover_quant_from_tokens(&trace, Q_CTX);
+        assert!(
+            recovered.is_ok(),
+            "recover failed eob {eob} golomb {golomb:?}: {recovered:?}"
+        );
+        assert_eq!(
+            recovered.unwrap(),
+            quant,
+            "recover != input eob {eob} golomb {golomb:?}"
+        );
+        covered += 1;
+    }
+    assert_eq!(covered, cases.len());
+}
+
+#[test]
+fn two_golomb_prefix_coefficients_with_high_m_roundtrips() {
+    // A golomb-PREFIX coefficient at m>1: the first golomb coefficient drives
+    // `hrLevelAvg` high enough that the second takes the golomb-prefix path with m>1
+    // (length = golomb_zeros + k, coeff_rem = L(length)). eob 2: AC (scan 1) first,
+    // then DC (scan 0).
+    //
+    // AC magnitude 525 (LF maxLevel 8): x = 517, m = 1, golomb-prefix (x >= 10).
+    // `hrLevelAvg = (517 + 0) >> 1 = 258`. DC sees m = Clip3(1, 6, GetMsb(258)) =
+    // Clip3(1, 6, 8) = 6 — the m clamp upper bound. DC magnitude 300 (LF maxLevel 8):
+    // x = 292; with m = 6, cMax = 6, prefix_x_min = 6<<6 = 384, so x = 292 < 384 →
+    // finite-q with a SIX-bit coeff_rem (the maximum m).
+    let quant = scan_block(2, &[300, 525]);
+    let trace = tokenize_general_lf_luma_block(&quant, Q_CTX).unwrap();
+    let proof = roundtrip_block_symbol_trace(&trace).unwrap();
+    assert!(!proof.bytes().is_empty());
+    assert_eq!(recover_quant_from_tokens(&trace, Q_CTX).unwrap(), quant);
 }

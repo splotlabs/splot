@@ -596,9 +596,11 @@ fn general_lf_both_coeffs_br() {
 }
 
 #[test]
-fn general_lf_eob2_single_golomb_accepted_double_rejected() {
-    // A SINGLE golomb-range coefficient (magnitude at-or-above the LF `maxLevel` 8) is
-    // now in scope at EITHER position (the `ENC-COEFF-GENERAL-WALK-GOLOMB` tier).
+fn general_lf_eob2_single_and_double_golomb_accepted() {
+    // A golomb-range coefficient (magnitude at-or-above the LF `maxLevel` 8) is in
+    // scope at EITHER position (the `ENC-COEFF-GENERAL-WALK-GOLOMB` tier), and MULTIPLE
+    // golomb coefficients per block are now supported via the threaded `hrLevelAvg`
+    // predictor (`ENC-COEFF-GENERAL-WALK-GOLOMB-MULTI`, sub-brick 5e-ii).
 
     // The EOB AC at magnitude 8 (golomb), DC at level 1: a single golomb coefficient,
     // accepted and roundtrips.
@@ -612,16 +614,17 @@ fn general_lf_eob2_single_golomb_accepted_double_rejected() {
     let trace = tokenize_general_lf_luma_block(&golomb_dc, Q_CTX).unwrap();
     assert_eq!(recover_quant_from_tokens(&trace, Q_CTX).unwrap(), golomb_dc);
 
-    // TWO golomb-range coefficients (both DC and AC at magnitude 8) need the running
-    // `hrLevelAvg` predictor (sub-brick 5e-ii) and are rejected with the typed error.
+    // TWO golomb-range coefficients (both DC and AC at magnitude 8) are now accepted:
+    // the running `hrLevelAvg` is threaded across them in reverse scan, so the second
+    // (the DC, visited last) derives its golomb parameters from the AC's extension.
+    // Must tokenize, roundtrip, and recover exactly.
     let two_golomb = dc_ac_block(8, 8);
-    let err = tokenize_general_lf_luma_block(&two_golomb, Q_CTX).unwrap_err();
-    assert!(
-        matches!(
-            err,
-            Error::CoefficientTokenizationMultipleGolombCoefficients { count: 2, .. }
-        ),
-        "two golomb coefficients must be rejected: {err:?}"
+    let trace = tokenize_general_lf_luma_block(&two_golomb, Q_CTX).unwrap();
+    let proof = roundtrip_block_symbol_trace(&trace).unwrap();
+    assert!(!proof.bytes().is_empty());
+    assert_eq!(
+        recover_quant_from_tokens(&trace, Q_CTX).unwrap(),
+        two_golomb
     );
 }
 

@@ -111,9 +111,16 @@
 //! magnitude `7`); the HF EOB coefficient saturates at the lower `NUM_BASE_LEVELS + 1`
 //! (max magnitude `5`).
 //!
-//! Anything outside that window — a nonzero at scan index `>= 16` (eob `>= 17`,
-//! impossible for a 4x4 block), an LF magnitude `> 7`, or an HF magnitude `> 5` (the
-//! `read_quant` golomb tail) — is rejected with a typed error.
+//! A magnitude at-or-above its position `maxLevel` (LF `8`, HF `6`) is a § 5.20.7.28
+//! `read_quant` GOLOMB coefficient: its base+`coeff_br` level saturates at `maxLevel`
+//! and the extension `x = magnitude - maxLevel` is coded in the golomb tail (sign
+//! pass). MULTIPLE golomb coefficients per block are supported — the running
+//! `hrLevelAvg` predictor is threaded across them in reverse scan, so each golomb
+//! coefficient's golomb parameter `m` (and thus its supported magnitude cap) varies
+//! (`ENC-COEFF-GENERAL-WALK-GOLOMB-MULTI`). Only two things are rejected with a typed
+//! error: a nonzero at scan index `>= 16` (eob `>= 17`, impossible for a 4x4 block),
+//! and a golomb extension beyond the per-`m` cap (the golomb-prefix `length` would
+//! exceed `8`).
 //!
 //! HONESTY: the [`recover_quant_from_tokens`] proof is § 8.2 SELF-CONSISTENCY. The
 //! same code authored the emission and its inverse, so it proves the encoder's
@@ -125,7 +132,10 @@
 
 use splot_recon::{PlaneId, PlaneRect, TransformClass, coefficient_scan_order};
 
-use super::general_walk_golomb::{push_read_quant_golomb_tail, read_quant_golomb_tail_len};
+use super::general_walk_golomb::{
+    golomb_params_from_hr_level_avg, golomb_x_max, next_hr_level_avg, push_read_quant_golomb_tail,
+    read_quant_golomb_tail_len,
+};
 use super::{
     COEFF_BASE_RANGE, CoefficientEntropyToken, EOB_CTX_LUMA_INTRA, LF_NUM_BASE_LEVELS,
     MAX_BASE_BR_MAGNITUDE, NUM_BASE_LEVELS, chroma_u_all_zero_token, chroma_v_all_zero_token,
@@ -216,18 +226,6 @@ const LF_DIAGONAL_LIMIT_4X4: usize = 4;
 /// 5` (mirroring the decoder `derive_coeff_max_level` HF branch). A higher-magnitude
 /// HF coefficient (the golomb tail) is a later sub-brick and is rejected.
 const MAX_HF_BASE_BR_MAGNITUDE: u32 = NUM_BASE_LEVELS + COEFF_BASE_RANGE;
-/// AV2 § 5.20.7.28 `read_quant` golomb extension cap for the single golomb
-/// coefficient (`m = 1`, `hrLevelAvg == 0`). The golomb tail
-/// ([`super::general_walk_golomb`]) is the `m = 1` case, whose golomb-prefix
-/// `length = GetMsb(x - 6)` must stay `<= GOLOMB_PREFIX_LENGTH_MAX (8)` for the
-/// § 8.2 self-consistency recovery to read it back. `x = 517` gives `xm6 = 511`,
-/// `length = GetMsb(511) = 8` (the boundary); `x = 518` would overflow to length 9.
-/// So the per-coefficient golomb extension `x = magnitude - maxLevel` is capped at
-/// `GOLOMB_X_MAX`, which keeps LF magnitude `<= maxLevel(8) + 517 = 525` and HF
-/// magnitude `<= maxLevel(6) + 517 = 523`, both length `<= 8`. The over-cap rejection
-/// reports the per-position `max_level + GOLOMB_X_MAX` (LF `525`, HF `523`) so the
-/// rejected magnitude always strictly exceeds the reported `max_magnitude`.
-const GOLOMB_X_MAX: u32 = 517;
 /// The LF luma `maxLevel` (`LF_NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1 = 8`): the
 /// level at which the § 5.20.7.28 `read_quant` golomb tail fires for a low-frequency
 /// coefficient (with TCQ off; see [`general_walk_max_level_for_pos`]).
@@ -257,10 +255,12 @@ const HF_GOLOMB_MAX_LEVEL: u32 = MAX_HF_BASE_BR_MAGNITUDE + 1;
 /// - [`Error::CoefficientTokenizationUnsupportedEob`] when a nonzero coefficient
 ///   sits at a scan index `> MAX_GENERAL_SCAN_INDEX` (`15`, i.e. eob `>= 17`, which is
 ///   impossible for a 4x4 block), and
-/// - [`Error::CoefficientTokenizationUnsupportedMagnitude`] when any coefficient
-///   magnitude exceeds its position-dependent base-range cap — `MAX_BASE_BR_MAGNITUDE`
-///   (`7`) at a low-frequency position, `MAX_HF_BASE_BR_MAGNITUDE` (`5`) at a
-///   high-frequency one.
+/// - [`Error::CoefficientTokenizationUnsupportedMagnitude`] when a golomb-range
+///   coefficient's § 5.20.7.28 extension `x = magnitude - maxLevel` exceeds the per-`m`
+///   golomb cap [`golomb_x_max`] (so the golomb-prefix `length` would exceed `8`).
+///   MULTIPLE golomb coefficients per block are supported: their golomb parameter `m`
+///   varies as the running `hrLevelAvg` is threaded across them in reverse scan, so
+///   the cap is per-coefficient.
 ///
 /// # Preconditions
 /// Assumes **TCQ is off** (`allow_tcq == 0`), as the minimal intra encoder path is
@@ -422,20 +422,21 @@ fn end_of_block(quant: &[i32; TX_4X4_COEFF_COUNT], scan: &[u16; TX_4X4_COEFF_COU
 /// optional `coeff_br`) may have any magnitude up to its position golomb cap: a
 /// magnitude below its `maxLevel` (LF `8`, HF `6`) is the plain base+`coeff_br` tier;
 /// a magnitude at-or-above its `maxLevel` is a § 5.20.7.28 `read_quant` GOLOMB
-/// coefficient (`ENC-COEFF-GENERAL-WALK-GOLOMB`), now allowed, subject to two limits:
+/// coefficient (`ENC-COEFF-GENERAL-WALK-GOLOMB`/`ENC-COEFF-GENERAL-WALK-GOLOMB-MULTI`).
 ///
-/// - SINGLE golomb coefficient per block: this brick emits the golomb tail with the
-///   constant `hrLevelAvg == 0` predictor (the `m = 1` case). A SECOND golomb-range
-///   coefficient needs the running `hrLevelAvg` threaded across coefficients
-///   (sub-brick 5e-ii) and is rejected with
-///   [`Error::CoefficientTokenizationMultipleGolombCoefficients`].
-/// - GOLOMB extension cap: the golomb-prefix `length` must stay `<= 8` for the § 8.2
-///   self-consistency recovery, so the per-coefficient golomb extension
-///   `x = magnitude - maxLevel` is capped at [`GOLOMB_X_MAX`] (`517`). That keeps an
-///   LF golomb magnitude `<= 525` and an HF one `<= 523` (both `length <= 8`); a
-///   larger extension is rejected with
-///   [`Error::CoefficientTokenizationUnsupportedMagnitude`] (reporting the
-///   per-position `max_level + GOLOMB_X_MAX` — `525` LF, `523` HF).
+/// MULTIPLE golomb coefficients per block are now supported (sub-brick 5e-ii): the
+/// running `hrLevelAvg` predictor is threaded across them in reverse scan
+/// (`c = eob-1 .. 0`), so each golomb coefficient's `m = Clip3(1, 6,
+/// GetMsb(hrLevelAvg))` (and therefore its golomb cap) varies. This validation walks
+/// the SAME reverse-scan order, deriving each golomb coefficient's `m` from the
+/// running `hrLevelAvg`, then capping its golomb extension `x = magnitude - maxLevel`
+/// at the per-`m` [`golomb_x_max`] (so the golomb-prefix `length` stays `<= 8` and the
+/// § 8.2 self-consistency recovery can read it back) and updating `hrLevelAvg` with
+/// the same `(x + hrLevelAvg) >> 1` formula the emission and recovery use. A larger
+/// extension is rejected with
+/// [`Error::CoefficientTokenizationUnsupportedMagnitude`] (reporting the per-position
+/// per-`m` cap `max_level + golomb_x_max(m)`, which is `>= max_level`, so the rejected
+/// magnitude always strictly exceeds the reported `max_magnitude`).
 ///
 /// A nonzero at scan index `>= 16` (eob `>= 17`, impossible for a 4x4 block) is
 /// rejected as before.
@@ -444,60 +445,56 @@ fn validate_general_lf_scope(
     scan: &[u16; TX_4X4_COEFF_COUNT],
     eob: usize,
 ) -> Result<()> {
-    // Count golomb-range coefficients (magnitude at-or-above the position `maxLevel`)
-    // and remember the first two raster positions: this brick emits only ONE golomb
-    // tail (the constant `hrLevelAvg == 0` `m = 1` case), so a second one is rejected.
-    let mut golomb_count = 0usize;
-    let mut first_golomb_pos = 0usize;
-    let mut second_golomb_pos = 0usize;
-
+    // First reject any nonzero outside the supported scan window (forward scan, so the
+    // smallest offending scan index is reported).
     for (c, &raster) in scan.iter().enumerate() {
         let value = quant[raster as usize];
         if value == 0 {
             continue;
         }
-        let pos = raster as usize;
         if c > MAX_GENERAL_SCAN_INDEX {
             return Err(Error::CoefficientTokenizationUnsupportedEob {
                 scan_index: c,
-                position: pos,
+                position: raster as usize,
                 value,
                 max_scan_index: MAX_GENERAL_SCAN_INDEX,
             });
         }
-        let magnitude = value.unsigned_abs();
-        let max_level = general_walk_max_level_for_pos(pos);
-        if magnitude >= max_level {
-            // A § 5.20.7.28 `read_quant` golomb coefficient. Cap its golomb extension
-            // `x = magnitude - maxLevel` at `GOLOMB_X_MAX` (so the golomb-prefix
-            // `length` stays `<= 8` and the § 8.2 recovery can read it back). Report the
-            // PER-POSITION cap `max_level + GOLOMB_X_MAX` (LF `525`, HF `523`) so the
-            // rejected magnitude always strictly exceeds the reported `max_magnitude`.
-            let x = magnitude - max_level;
-            if x > GOLOMB_X_MAX {
-                return Err(Error::CoefficientTokenizationUnsupportedMagnitude {
-                    plane: PLANE_Y,
-                    block: lf_block_rect()?,
-                    coefficient_index: pos,
-                    magnitude,
-                    max_magnitude: max_level + GOLOMB_X_MAX,
-                });
-            }
-            golomb_count += 1;
-            if golomb_count == 1 {
-                first_golomb_pos = pos;
-            } else if golomb_count == 2 {
-                second_golomb_pos = pos;
-            }
-        }
     }
 
-    if golomb_count >= 2 {
-        return Err(Error::CoefficientTokenizationMultipleGolombCoefficients {
-            count: golomb_count,
-            first_position: first_golomb_pos,
-            second_position: second_golomb_pos,
-        });
+    // Thread the running `hrLevelAvg` across the golomb coefficients in reverse scan
+    // (`c = eob-1 .. 0`), the SAME order `compose_sign_pass` and `recover_quant_from_tokens`
+    // walk. Each golomb coefficient's `m` (and thus its extension cap) is derived from
+    // the `hrLevelAvg` entering it; `hrLevelAvg` updates by `(x + hrLevelAvg) >> 1`.
+    let mut hr_level_avg = 0u32;
+    for offset in 0..eob {
+        let c = eob - 1 - offset;
+        let pos = scan_pos(scan, c)?;
+        let value = quant[pos];
+        if value == 0 {
+            continue;
+        }
+        let magnitude = value.unsigned_abs();
+        let max_level = general_walk_max_level_for_pos(pos);
+        if magnitude < max_level {
+            continue;
+        }
+        // A § 5.20.7.28 `read_quant` golomb coefficient. Derive its `m` from the
+        // running `hrLevelAvg`, cap its golomb extension `x = magnitude - maxLevel` at
+        // the per-`m` cap, then thread `hrLevelAvg` to the next golomb coefficient.
+        let params = golomb_params_from_hr_level_avg(hr_level_avg);
+        let x = magnitude - max_level;
+        let x_max = golomb_x_max(params);
+        if x > x_max {
+            return Err(Error::CoefficientTokenizationUnsupportedMagnitude {
+                plane: PLANE_Y,
+                block: lf_block_rect()?,
+                coefficient_index: pos,
+                magnitude,
+                max_magnitude: max_level + x_max,
+            });
+        }
+        hr_level_avg = next_hr_level_avg(x, hr_level_avg);
     }
     debug_assert!((1..=MAX_GENERAL_SCAN_INDEX + 1).contains(&eob));
     Ok(())
@@ -740,31 +737,42 @@ fn compose_base_pass(
 /// golomb tail emitted RIGHT AFTER its sign token (§ 5.20.7.27 reads sign then
 /// `read_quant` per coefficient). The base pass already saturated the
 /// base+`coeff_br` level to `maxLevel`; the golomb tail codes the extension
-/// `x = magnitude - maxLevel`. Only the single golomb coefficient per block reaches
-/// the tail (multi-golomb blocks are rejected upstream by
-/// [`validate_general_lf_scope`]).
+/// `x = magnitude - maxLevel`.
+///
+/// MULTIPLE golomb coefficients per block are supported (sub-brick 5e-ii): the running
+/// `hrLevelAvg` predictor (init `0`) is threaded across the golomb coefficients in
+/// this reverse-scan order. Each golomb coefficient derives its golomb parameters
+/// (`m = Clip3(1, 6, GetMsb(hrLevelAvg))`, `k`, `cMax`) from the `hrLevelAvg` entering
+/// it, emits its tail with those parameters, then updates
+/// `hrLevelAvg = (x + hrLevelAvg) >> 1` (the decoder's `lvlShift == 0` formula). The
+/// FIRST golomb coefficient sees `hrLevelAvg == 0` → `m == 1` (byte-identical to the
+/// original single-golomb sub-brick 5e tail).
 fn compose_sign_pass(
     quant: &[i32; TX_4X4_COEFF_COUNT],
     scan: &[u16; TX_4X4_COEFF_COUNT],
     eob: usize,
     coeff_cdf_q_ctx: usize,
 ) -> Result<Vec<BlockSymbolToken>> {
-    // Reserve one sign token per nonzero coefficient plus, for the single golomb
-    // coefficient, its golomb-tail bypass literals. `validate_general_lf_scope`
-    // guarantees at most one golomb-range coefficient, so summing every coefficient's
-    // tail length is an exact (here, single-entry) upper bound.
+    // Reserve one sign token per nonzero coefficient plus, for every golomb
+    // coefficient, its golomb-tail bypass literals. The reservation threads the SAME
+    // running `hrLevelAvg` as the emission loop so each tail length is computed with
+    // the same per-coefficient golomb parameters — an exact upper bound.
     let mut reserve = eob;
+    let mut hr_level_avg = 0u32;
     for offset in 0..eob {
         let c = eob - 1 - offset;
         let pos = scan_pos(scan, c)?;
         let magnitude = quant[pos].unsigned_abs();
         let max_level = general_walk_max_level_for_pos(pos);
         if magnitude >= max_level {
+            let x = magnitude - max_level;
+            let params = golomb_params_from_hr_level_avg(hr_level_avg);
             reserve = reserve
-                .checked_add(read_quant_golomb_tail_len(magnitude - max_level))
+                .checked_add(read_quant_golomb_tail_len(x, params))
                 .ok_or(Error::CoefficientTokenizationAllocationFailed {
                     context: "general LF sign pass golomb reservation",
                 })?;
+            hr_level_avg = next_hr_level_avg(x, hr_level_avg);
         }
     }
     let mut tokens = Vec::new();
@@ -774,6 +782,8 @@ fn compose_sign_pass(
         }
     })?;
 
+    // Reset the predictor for the emission loop (it walks the same reverse-scan order).
+    let mut hr_level_avg = 0u32;
     for offset in 0..eob {
         let c = eob - 1 - offset;
         let pos = scan_pos(scan, c)?;
@@ -797,11 +807,15 @@ fn compose_sign_pass(
         // § 5.20.7.27: the sign+quant pass reads the sign then `read_quant`. A
         // coefficient whose magnitude reached its position `maxLevel` carries the
         // § 5.20.7.28 golomb tail (the extension `x = magnitude - maxLevel`) right
-        // after its sign token.
+        // after its sign token. The golomb parameters come from the running
+        // `hrLevelAvg`, which then updates for the next golomb coefficient.
         let magnitude = value.unsigned_abs();
         let max_level = general_walk_max_level_for_pos(pos);
         if magnitude >= max_level {
-            push_read_quant_golomb_tail(&mut tokens, magnitude - max_level)?;
+            let x = magnitude - max_level;
+            let params = golomb_params_from_hr_level_avg(hr_level_avg);
+            push_read_quant_golomb_tail(&mut tokens, x, params)?;
+            hr_level_avg = next_hr_level_avg(x, hr_level_avg);
         }
     }
     Ok(tokens)

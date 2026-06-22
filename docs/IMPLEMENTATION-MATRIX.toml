@@ -5037,6 +5037,41 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-COEFF-GENERAL-WALK-GOLOMB-MULTI"
+name = "Encoder general coefficient walk: multiple read_quant golomb coefficients"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20.7.27", "5.20.7.28"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/coefficient_tokenization"
+openspec_change = "coeff-general-walk-golomb-multi"
+tracking_issue = ""
+owner = "encoder"
+risk = "medium"
+notes = "Private, non-emitting encoder coefficient tokenizer. Sub-brick 5e-ii completes the read_quant golomb tier: lifts the single-golomb-coefficient restriction (5e) to an ARBITRARY number of §5.20.7.28 golomb coefficients per 4x4 luma block by threading the running `hrLevelAvg` predictor, which makes the golomb parameter `m` vary per coefficient. Mirrors the decoder read_quant.rs: per golomb coefficient (reverse-scan sign+quant pass) `m = Clip3(1,6,GetMsb(hrLevelAvg))`, `k = m+1`, `cMax = Min(m+4,6)`; emit the general-m tail (FINITE-Q `x<cMax<<m`: q zeros + 1 + coeff_rem `x&((1<<m)-1)` as `L(m)` [vs the m=1 `L(1)`]; GOLOMB-PREFIX: cMax zeros + golomb-length unary + coeff_rem `L(length)`); then update `hrLevelAvg = (x + hrLevelAvg) >> 1` (lvlShift=0). The SAME threading runs in compose_sign_pass (reserve + emit), validate_general_lf_scope (per-m cap), and recover_quant_from_tokens — all init 0, all reverse-scan, all via `next_hr_level_avg`. Per-m magnitude cap `golomb_x_max(m) = bias + (1<<(GOLOMB_PREFIX_LENGTH_MAX+1)) - 1` keeps every golomb-prefix length <= 8 (m=1 -> 517 unchanged; m=6 -> 767). The first golomb coefficient sees hrLevelAvg=0 -> m=1, so the 5e single-golomb path is byte-identical. Removes the now-unused CoefficientTokenizationMultipleGolombCoefficients error. §8.2 SELF-CONSISTENCY (golomb bit values checked by exact bypass-stream assertions, incl. a hand-verified m=2 second-coefficient stream, mirrored from the decoder). Out of scope: chroma, non-4x4, non-DCT_DCT, packets, decoder context/table conformance (deferred to the splot-decode cross-check). With this the 4x4 DCT_DCT luma coefficient tokenizer is COMPLETE (eob 1-16, every position, every magnitude including the multi-golomb tail)."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-encode/src/coefficient_tokenization/general_walk_golomb_tests.rs",
+]
+commands = ["cargo test -p splot-encode general_walk --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-INTRA-BLOCK-TRACE-TWO-COEFF"
 name = "Encoder eob=2 multi-coefficient block trace"
 category = "encoder"
