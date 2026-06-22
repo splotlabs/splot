@@ -397,11 +397,16 @@ const INTER_UV_MODE_DC: usize = 0;
 /// TX_32X32 && txSzSqr >= TX_32X32), so § 5.20.8.2 `transform_type()` reads NO
 /// `inter_tx_type` symbol (`set == 0`) and `PlaneTxType = DCT_DCT`. The caller's
 /// `residual_tools_present` gate rejects `enable_inter_ist` before this runs, so
-/// no `sec_tx_type` symbol is read either. The chroma TX_32X32 transform also
-/// falls in the DCT-only set, so this reuses the intra DCT_DCT coefficient loop
-/// with `is_inter == true` (the only inter-specific contexts are the § 8.3.2
-/// `TileTxbSkipCdf[is_inter]` bank and the `eobCtx = is_inter` luma EOB context,
-/// both threaded through `decode_general_intra_plane_coeffs`).
+/// no `sec_tx_type` symbol is read either. The chroma tx type is *derived*, not
+/// signalled — § 5.20.8.2 reads no chroma `tx_type` symbol (for an inter TX_32X32
+/// chroma block § 5.20.8.3 `get_tx_set` is `TX_SET_DCT_IDTX`, not the DCT-only
+/// branch, but chroma forces `DCT_DCT`), so this reuses the intra DCT_DCT
+/// coefficient loop with `is_inter == true` (the only inter-specific contexts are
+/// the § 8.3.2 `TileTxbSkipCdf[is_inter || fsc_mode]` bank and the `eobCtx =
+/// is_inter` luma EOB context, both threaded through
+/// `decode_general_intra_plane_coeffs`). The verified fixture's chroma is
+/// `all_zero` (inter chroma == flat key chroma), so this luma-residual + chroma-
+/// skip path is oracle-exact; a coded *chroma* inter residual is not yet exercised.
 fn read_inter_residual(
     work_unit: &mut DecodeTileWorkUnit<'_>,
     symbols: &mut SymbolDecoder<'_>,
