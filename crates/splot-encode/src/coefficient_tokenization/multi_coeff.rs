@@ -8,6 +8,7 @@
 //! budget. The eob > 1 trace brick composes these with `coeff_base_lf_token` and
 //! the per-plane all-zero tokens.
 
+use super::general_walk_geom::EobPtKind;
 use super::{
     CoefficientCdfRowSelector, CoefficientEntropyToken, CoefficientTokenSyntax, TX_SIZE_4X4_CTX,
     all_zero_token,
@@ -41,6 +42,39 @@ pub(crate) const fn eob_pt_16_token(
     }
 }
 
+/// Returns the AV2 § 5.20.7.27 EOB-point token for the given size class
+/// ([`EobPtKind`]) carrying the given EOB-point symbol at the given EOB context. For
+/// [`EobPtKind::Pt16`] this is the `eob_pt_16` `TileEobPt16Cdf` token (the SAME as
+/// [`eob_pt_16_token`]); for [`EobPtKind::Pt256`] it is the `eob_pt_256`
+/// `TileEobPt256Cdf` token (the `TX_16X16` 256-position size class added by brick 4a).
+/// The EOB-point symbol carries `eobPt - 1` in both classes; only the CDF bank the
+/// symbol reads differs.
+pub(crate) const fn eob_pt_token(
+    kind: EobPtKind,
+    coeff_cdf_q_ctx: usize,
+    eob_ctx: usize,
+    symbol: u8,
+) -> CoefficientEntropyToken {
+    match kind {
+        EobPtKind::Pt16 => CoefficientEntropyToken {
+            syntax: CoefficientTokenSyntax::EobPt16,
+            selector: CoefficientCdfRowSelector::EobPt16 {
+                coeff_cdf_q_ctx,
+                eob_ctx,
+            },
+            symbol,
+        },
+        EobPtKind::Pt256 => CoefficientEntropyToken {
+            syntax: CoefficientTokenSyntax::EobPt256,
+            selector: CoefficientCdfRowSelector::EobPt256 {
+                coeff_cdf_q_ctx,
+                eob_ctx,
+            },
+            symbol,
+        },
+    }
+}
+
 /// Returns the AV2 § 5.20.7.27 `eob_extra` token carrying the given binary flag
 /// (`TileEobExtraCdf[coeff_cdf_q_ctx]`; the `eob_extra` CDF is indexed only by the
 /// coefficient CDF q-context, with no per-symbol/eobPt context — see
@@ -68,11 +102,25 @@ pub(crate) const fn coeff_base_lf_eob_token(
     ctx: usize,
     level: u8,
 ) -> CoefficientEntropyToken {
+    coeff_base_lf_eob_token_sized(coeff_cdf_q_ctx, TX_SIZE_4X4_CTX, ctx, level)
+}
+
+/// The `tx_size`-parameterized form of [`coeff_base_lf_eob_token`]: the same
+/// low-frequency `coeff_base_eob` token (`TileCoeffBaseLfEobCdf[q][tx_size][ctx]`,
+/// `symbol = level - 1`) at the caller-resolved `tx_size` `txSzCtx` (so the general
+/// walk emits the `TX_16X16` row for a 16x16 block). The 4x4 form delegates here with
+/// `TX_SIZE_4X4_CTX`, so its emitted token stays byte-identical.
+pub(crate) const fn coeff_base_lf_eob_token_sized(
+    coeff_cdf_q_ctx: usize,
+    tx_size: usize,
+    ctx: usize,
+    level: u8,
+) -> CoefficientEntropyToken {
     CoefficientEntropyToken {
         syntax: CoefficientTokenSyntax::CoeffBaseEob,
         selector: CoefficientCdfRowSelector::CoeffBaseLfEob {
             coeff_cdf_q_ctx,
-            tx_size: TX_SIZE_4X4_CTX,
+            tx_size,
             ctx,
         },
         symbol: level.saturating_sub(1),
@@ -115,11 +163,24 @@ pub(crate) const fn coeff_base_hf_eob_token(
     ctx: usize,
     level: u8,
 ) -> CoefficientEntropyToken {
+    coeff_base_hf_eob_token_sized(coeff_cdf_q_ctx, TX_SIZE_4X4_CTX, ctx, level)
+}
+
+/// The `tx_size`-parameterized form of [`coeff_base_hf_eob_token`]: the same 4-symbol
+/// HIGH-frequency `coeff_base_eob` token (`TileCoeffBaseEobCdf[q][tx_size][ctx]`,
+/// `symbol = level - 1`) at the caller-resolved `tx_size` `txSzCtx`. The 4x4 form
+/// delegates here with `TX_SIZE_4X4_CTX`.
+pub(crate) const fn coeff_base_hf_eob_token_sized(
+    coeff_cdf_q_ctx: usize,
+    tx_size: usize,
+    ctx: usize,
+    level: u8,
+) -> CoefficientEntropyToken {
     CoefficientEntropyToken {
         syntax: CoefficientTokenSyntax::CoeffBaseEob,
         selector: CoefficientCdfRowSelector::CoeffBaseEob {
             coeff_cdf_q_ctx,
-            tx_size: TX_SIZE_4X4_CTX,
+            tx_size,
             ctx,
         },
         symbol: level.saturating_sub(1),
@@ -146,11 +207,25 @@ pub(crate) const fn coeff_base_hf_token(
     tcq_ctx: usize,
     level: u8,
 ) -> CoefficientEntropyToken {
+    coeff_base_hf_token_sized(coeff_cdf_q_ctx, TX_SIZE_4X4_CTX, ctx, tcq_ctx, level)
+}
+
+/// The `tx_size`-parameterized form of [`coeff_base_hf_token`]: the same 4-symbol
+/// HIGH-frequency non-EOB `coeff_base` token (`TileCoeffBaseCdf[q][tx_size][ctx][tcq]`,
+/// `symbol = level`) at the caller-resolved `tx_size` `txSzCtx`. The 4x4 form
+/// delegates here with `TX_SIZE_4X4_CTX`.
+pub(crate) const fn coeff_base_hf_token_sized(
+    coeff_cdf_q_ctx: usize,
+    tx_size: usize,
+    ctx: usize,
+    tcq_ctx: usize,
+    level: u8,
+) -> CoefficientEntropyToken {
     CoefficientEntropyToken {
         syntax: CoefficientTokenSyntax::CoeffBase,
         selector: CoefficientCdfRowSelector::CoeffBase {
             coeff_cdf_q_ctx,
-            tx_size: TX_SIZE_4X4_CTX,
+            tx_size,
             ctx,
             tcq_ctx,
         },

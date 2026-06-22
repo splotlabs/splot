@@ -279,11 +279,26 @@ pub(crate) const fn coeff_base_lf_token(
     tcq_ctx: usize,
     level: u8,
 ) -> CoefficientEntropyToken {
+    coeff_base_lf_token_sized(coeff_cdf_q_ctx, TX_SIZE_4X4_CTX, ctx, tcq_ctx, level)
+}
+
+/// The `tx_size`-parameterized form of [`coeff_base_lf_token`]: the same non-EOB
+/// low-frequency luma `coeff_base` token (`TileCoeffBaseLfCdf[q][tx_size][ctx][tcq]`,
+/// `symbol = level`) at the caller-resolved `tx_size` `txSzCtx` (so the general walk
+/// emits the `TX_16X16` row for a 16x16 block). The 4x4 form delegates here with
+/// `TX_SIZE_4X4_CTX`, so its emitted token stays byte-identical.
+pub(crate) const fn coeff_base_lf_token_sized(
+    coeff_cdf_q_ctx: usize,
+    tx_size: usize,
+    ctx: usize,
+    tcq_ctx: usize,
+    level: u8,
+) -> CoefficientEntropyToken {
     CoefficientEntropyToken {
         syntax: CoefficientTokenSyntax::CoeffBase,
         selector: CoefficientCdfRowSelector::CoeffBaseLf {
             coeff_cdf_q_ctx,
-            tx_size: TX_SIZE_4X4_CTX,
+            tx_size,
             ctx,
             tcq_ctx,
         },

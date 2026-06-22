@@ -33,13 +33,15 @@ use splot_recon::{PlaneId, PlaneRect, TransformClass, coefficient_scan_order};
 use crate::error::{Error, Result};
 use crate::quantization::QuantizedTransformBlock;
 
+mod general_walk_geom;
+
 mod coeff_base_lf;
 // Re-exported for the sibling tests and the upcoming eob>1 trace brick; not yet
 // referenced by non-test code in this module.
 #[allow(unused_imports)]
 pub(crate) use coeff_base_lf::{
     coeff_base_hf_luma_context, coeff_base_lf_luma_context, coeff_base_lf_token,
-    coeff_br_lf_luma_context,
+    coeff_base_lf_token_sized, coeff_br_lf_luma_context,
 };
 
 mod multi_coeff;
@@ -47,9 +49,10 @@ mod multi_coeff;
 // referenced by non-test code in this module.
 #[allow(unused_imports)]
 pub(crate) use multi_coeff::{
-    coded_luma_all_zero_token, coeff_base_hf_eob_token, coeff_base_hf_token,
-    coeff_base_lf_eob_token, coeff_br_hf_token, coeff_br_lf_token, eob_extra_token,
-    eob_pt_16_token,
+    coded_luma_all_zero_token, coeff_base_hf_eob_token, coeff_base_hf_eob_token_sized,
+    coeff_base_hf_token, coeff_base_hf_token_sized, coeff_base_lf_eob_token,
+    coeff_base_lf_eob_token_sized, coeff_br_hf_token, coeff_br_lf_token, eob_extra_token,
+    eob_pt_16_token, eob_pt_token,
 };
 
 mod transform_type;
@@ -232,7 +235,30 @@ pub(crate) fn tokenize_quantized_4x4_dct_dct_dc_only(
 /// This is the first `residual()` symbol of an all-zero luma block; no further
 /// luma coefficient symbols follow it.
 pub(crate) const fn luma_all_zero_token(coeff_cdf_q_ctx: usize) -> CoefficientEntropyToken {
-    all_zero_token(coeff_cdf_q_ctx, true)
+    luma_all_zero_token_sized(coeff_cdf_q_ctx, TX_SIZE_4X4_CTX)
+}
+
+/// Returns the AV2 § 5.20.7.27 luma `all_zero` (`txb_skip == 1`) token at the neutral
+/// spatial context for a transform of the given § 8.3.2 `txSzCtx` (`tx_size`). The
+/// `all_zero` path of the size-generic general walk uses this so a 16x16 all-zero block
+/// routes its `txb_skip` through the `TX_16X16` row, not the `TX_4X4` row (the coded path
+/// already routes through `geom.tx_size_ctx`). The CDF row is keyed by
+/// `(q, plane, tx_size, ctx)` — symbol-agnostic — so this shares the same row as the
+/// coded `txb_skip == 0` at the same size.
+pub(crate) const fn luma_all_zero_token_sized(
+    coeff_cdf_q_ctx: usize,
+    tx_size: usize,
+) -> CoefficientEntropyToken {
+    CoefficientEntropyToken {
+        syntax: CoefficientTokenSyntax::AllZero,
+        selector: CoefficientCdfRowSelector::TxbSkip {
+            coeff_cdf_q_ctx,
+            plane_type: LUMA_PLANE_TYPE,
+            tx_size,
+            ctx: TXB_SKIP_CTX_NEUTRAL,
+        },
+        symbol: true as u8,
+    }
 }
 
 /// Returns the AV2 § 5.20.7.27 U-plane `all_zero` (`txb_skip`) token for an
@@ -970,6 +996,26 @@ const fn all_zero_token(coeff_cdf_q_ctx: usize, all_zero: bool) -> CoefficientEn
     }
 }
 
+/// Returns the AV2 § 5.20.7.27 luma `all_zero == 0` (`txb_skip`) token for a *coded*
+/// block at the given `tx_size` `txSzCtx` and the neutral luma context. The general
+/// walk uses this for a non-4x4 block (e.g. the 16x16 base pass) so its `txb_skip`
+/// routes the size's `TileTxbSkipCdf[q][luma][txSz][ctx]` row.
+pub(crate) const fn coded_luma_all_zero_token_sized(
+    coeff_cdf_q_ctx: usize,
+    tx_size: usize,
+) -> CoefficientEntropyToken {
+    CoefficientEntropyToken {
+        syntax: CoefficientTokenSyntax::AllZero,
+        selector: CoefficientCdfRowSelector::TxbSkip {
+            coeff_cdf_q_ctx,
+            plane_type: LUMA_PLANE_TYPE,
+            tx_size,
+            ctx: TXB_SKIP_CTX_NEUTRAL,
+        },
+        symbol: false as u8,
+    }
+}
+
 const fn coeff_cdf_q_context(qindex: u32) -> usize {
     if qindex <= COEFF_CDF_Q_CTX_0_MAX_QINDEX {
         0
@@ -997,6 +1043,14 @@ mod general_walk;
 #[allow(unused_imports)]
 pub(crate) use general_walk::tokenize_general_lf_luma_block;
 
+mod general_walk_16x16;
+// The general 16x16 DCT_DCT luma base-pass entry
+// (`ENC-COEFF-TOKENIZE-16X16-BASE`): the size-generic general walk specialized to a
+// `Quant[256]` block in the base pass (eob 1..=32, eobPt <= 5). Re-exported for the
+// sibling §8.2 roundtrip tests; not yet referenced by non-test code in this module.
+#[allow(unused_imports)]
+pub(crate) use general_walk_16x16::tokenize_general_16x16_luma_block;
+
 mod general_walk_golomb;
 // The § 5.20.7.28 `read_quant` golomb tail (emission + recovery) for the general
 // walk's single golomb coefficient, split out to keep each file under the 1000-line
@@ -1008,7 +1062,7 @@ mod general_walk_recover;
 // each file under the 1000-line source budget. Re-exported for the sibling tests;
 // not yet referenced by non-test code in this module.
 #[allow(unused_imports)]
-pub(crate) use general_walk_recover::recover_quant_from_tokens;
+pub(crate) use general_walk_recover::{recover_quant_from_tokens, recover_quant_from_tokens_geom};
 
 #[cfg(test)]
 #[path = "coefficient_tokenization_tests.rs"]
