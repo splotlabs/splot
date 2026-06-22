@@ -81,35 +81,6 @@ impl Mv {
     const ZERO: Self = Self { row: 0, col: 0 };
 }
 
-/// AV2 § 5 (mirror `docs/spec/av2/1.0.0/05-syntax-structures.md` :5426-5430)
-/// `load_cdfs` precondition: a conformant decoder loads a prior frame's saved CDFs
-/// iff `primary_ref_frame` names a real reference AND `disable_cross_frame_cdf_init`
-/// is 0. The minimal decoder does NOT model `load_cdfs` (every frame decodes from
-/// the default `init_*_cdfs` state), so the caller uses this to reject a frame that
-/// would inherit a prior ADAPTED frame's CDFs (a §7.23 cross-frame CDF flow that
-/// would otherwise desync).
-///
-/// "Names a real reference" means a RESOLVED `primary_ref_frame` in
-/// `0..PRIMARY_REF_NONE` (0..=6). `PRIMARY_REF_NONE` (7) decodes from default, and
-/// `PRIMARY_REF_CHOOSE` (8) — the unsignalled placeholder splot does NOT resolve —
-/// is also treated as "does not load": the committed broad-tools-off fixtures all
-/// carry `primary_ref_frame == PRIMARY_REF_CHOOSE` and decode bit-exact vs avmdec
-/// AND dav2d even with an ADAPTED key, so for the admitted subset CHOOSE does not
-/// become a desyncing adapted-CDF load. Resolving `PRIMARY_REF_CHOOSE` and the
-/// per-slot adaptation tracking it would need is a named follow-on; a `None`
-/// `primary_ref_frame` (no complete control region) is also "does not load".
-fn inter_loads_cross_frame_cdfs(
-    primary_ref_frame: Option<u8>,
-    disable_cross_frame_cdf_init: Option<bool>,
-) -> bool {
-    /// `PRIMARY_REF_NONE` (AV2 v1.0.0 § 3): values `0..PRIMARY_REF_NONE` are resolved
-    /// real references; `PRIMARY_REF_NONE` (7) and `PRIMARY_REF_CHOOSE` (8) are not.
-    const PRIMARY_REF_NONE: u8 = 7;
-    let loads_primary = matches!(primary_ref_frame, Some(p) if p < PRIMARY_REF_NONE);
-    let cross_frame_init_enabled = disable_cross_frame_cdf_init != Some(true);
-    loads_primary && cross_frame_init_enabled
-}
-
 /// Decodes the minimal inter frame, given the post-key reference store, and returns
 /// its displayed frame. The reference for slot `ref_frame_idx[0]` must be present.
 ///
@@ -129,7 +100,6 @@ pub(super) fn decode_minimal_inter_frame(
     options: DecodeOptions,
     header: IvfHeader,
     reference: &InterReferenceState<'_>,
-    prior_frame_adapted_cdfs: bool,
 ) -> Result<(MinimalRuntimeFrame, FrameHeaderCore)> {
     let offset = frame_envelope.offset;
 
@@ -150,30 +120,101 @@ pub(super) fn decode_minimal_inter_frame(
     // decodes every frame from the default (init_*_cdfs) entropy state and does NOT
     // model the §7.23 save_cdfs / §5 load_cdfs cross-frame CDF flow. A conformant
     // decoder loads a prior frame's SAVED (post-decode — adapted when
-    // disable_cdf_update == 0) CDFs iff `primary_ref_frame != PRIMARY_REF_NONE` AND
-    // `disable_cross_frame_cdf_init == 0` (§5 mirror :5426-5430). If THIS frame loads
-    // cross-frame CDFs AND any prior frame (the key OR an earlier inter) adapted, the
-    // default-CDF decode would desync from the conformant adapted-CDF decode — a
-    // §8.2.4 exit_symbol()-passable confident-wrong frame — so reject it before the
-    // tile entropy decode. This is precise (it does NOT reject a frame that does not
-    // load, nor a load from a non-adapted source), so the committed single-reference
-    // fixtures (whose inter frames do not load an adapted source) stay byte-identical;
-    // a default-cdf-update stream that loads an adapted frame is rejected, not
-    // mis-decoded.
-    let loads = inter_loads_cross_frame_cdfs(
-        core.inter
-            .as_ref()
-            .and_then(|inter| inter.primary_ref_frame),
-        core.inter
-            .as_ref()
-            .and_then(|inter| inter.disable_cross_frame_cdf_init),
-    );
-    if prior_frame_adapted_cdfs && loads {
+    // disable_cdf_update == 0) CDFs from `ref_frame_idx[primary_ref_frame]` iff §5
+    // `set_primary_ref_frame_and_ctx` resolves `primary_ref_frame` to a real reference
+    // AND `disable_cross_frame_cdf_init == 0` (mirror :5411-5430). The resolution RESOLVES
+    // `PRIMARY_REF_CHOOSE` (the unsignalled placeholder) to `DerivedPrimaryRefFrame` via
+    // `choose_primary_secondary_ref_frame` — so a CHOOSE frame can name a real ADAPTED
+    // inter reference, which the prior `CHOOSE -> no load` shortcut wrongly let bypass the
+    // guard. Resolve the actual loaded slot and reject (rather than confidently
+    // mis-decode from defaults) ONLY when THAT slot's saved CDFs were adapted. This is
+    // PER-SLOT (not "any prior frame adapted"): the committed fixtures resolve CHOOSE to
+    // PRIMARY_REF_NONE (their valid slots hold the KEY frame, which the inter-only
+    // resolution skips) or to a NON-adapted inter slot, so they stay byte-identical; a
+    // stream loading an adapted slot's CDFs is rejected, not mis-decoded.
+    let current_base_q_idx = core.quantization_params.map(|q| q.base_q_idx).unwrap_or(0);
+    let current_order_hint = i32::try_from(core.order_hint_lsb.unwrap_or(0)).unwrap_or(i32::MAX);
+    if let Some(inter_ctrl) = core.inter.as_ref() {
+        let load = resolve_cdf_load(
+            inter_ctrl.signal_primary_ref_frame,
+            inter_ctrl.primary_ref_frame,
+            inter_ctrl.disable_cross_frame_cdf_init,
+            &inter_ctrl.ref_frame_idx,
+            &reference.ref_is_inter,
+            &reference.ref_base_q_idx,
+            &reference.ref_order_hint,
+            &reference.ref_frame_width,
+            &reference.ref_frame_height,
+            current_base_q_idx,
+            current_order_hint,
+        );
+        if let ResolvedCdfLoad::LoadSlot(slot) = load {
+            let slot_adapted = reference.ref_adapted.get(slot as usize).copied() == Some(true);
+            if slot_adapted {
+                return Err(unsupported_at(
+                    "inter_cdf_inheritance_unmodeled",
+                    offset,
+                    "minimal multi-reference decode does not model §7.23 cross-frame CDF save/load; an inter frame whose §5-resolved primary_ref_frame loads a prior ADAPTED reference slot's CDFs is rejected before any output",
+                    SPEC_HEADER,
+                ));
+            }
+        }
+    }
+
+    // P2 ORDER-HINT WRAP GUARD: §7.7 / choose_primary_secondary_ref_frame rank by
+    // RefOrderHint, which must be the UNWRAPPED OrderHint (get_disp_order_hint(), mirror
+    // :4375 / :5368-5381). The minimal buffer stores OrderHintLsbs, which equals OrderHint
+    // only while the distinct GOP order hints span LESS than one OrderHintBits window.
+    // Reject before output when the history (the prior valid slots' RefOrderHint plus this
+    // frame's order_hint_lsb) is not provably non-wrapping, so a wrapped LSB never
+    // mis-orders the ranking. The committed fixtures have small monotonic order hints
+    // (0,1,2) with OrderHintBits 4/7, so this never fires for them.
+    let order_hint_bits = sequence
+        .inter
+        .as_ref()
+        .map(|seq_inter| u32::from(seq_inter.order_hint_bits))
+        .unwrap_or(0);
+    let this_order_hint = core.order_hint_lsb.unwrap_or(0);
+    if !order_hint_history_unwrapped(
+        &reference.ref_valid,
+        &reference.ref_order_hint,
+        order_hint_bits,
+        this_order_hint,
+    ) {
         return Err(unsupported_at(
-            "inter_cdf_inheritance_unmodeled",
+            "inter_order_hint_wrapped",
             offset,
-            "minimal multi-reference decode does not model §7.23 cross-frame CDF save/load; an inter frame that loads (primary_ref_frame != PRIMARY_REF_NONE with cross-frame CDF init enabled) a prior adapted frame's CDFs is rejected before any output",
-            SPEC_HEADER,
+            "minimal multi-reference decode stores RefOrderHint as OrderHintLsbs (the unwrapped OrderHint only while the GOP fits in one OrderHintBits window); an order-hint-wrapped reference history would mis-order the §7.7 ranking, so it is rejected before any output",
+            SPEC_REFERENCE,
+        ));
+    }
+
+    // VERIFIED-SUBSET DISCIPLINE (§7.12 temporal motion-vector prediction): the §7.12.2
+    // find_mv_stack temporal candidate process (use_ref_frame_mvs == 1) reads a prior
+    // frame's SAVED motion field (SavedMvs / SavedRefFrames, §7.23). The minimal reference
+    // buffer stores DECODED PLANES only — no SavedMvs — so a NEARMV / NEWMV block that
+    // draws a temporal candidate (even at the top-left block) would predict its MV from an
+    // empty (wrong) stack and confidently mis-decode. The first inter frame over a KEY-only
+    // history has no inter reference's motion field to draw from (a key stores none), but
+    // once an INTER reference has been retained a later use_ref_frame_mvs frame could. Reject
+    // such a frame before any output. (The committed fixtures all carry
+    // enable_ref_frame_mvs == 0 / use_ref_frame_mvs == 0, so this never fires for them.)
+    let uses_temporal_mvs = sequence
+        .inter
+        .as_ref()
+        .is_some_and(|seq_inter| seq_inter.enable_ref_frame_mvs)
+        || core
+            .inter
+            .as_ref()
+            .and_then(|inter| inter.use_ref_frame_mvs)
+            == Some(true);
+    let has_retained_inter_reference = reference.ref_is_inter.iter().any(|&is_inter| is_inter);
+    if uses_temporal_mvs && has_retained_inter_reference {
+        return Err(unsupported_at(
+            "inter_temporal_mvs_unmodeled",
+            offset,
+            "minimal multi-reference decode does not model §7.23 SavedMvs; an inter frame using temporal MVs (enable_ref_frame_mvs / use_ref_frame_mvs) after an inter reference has been retained is rejected before any output",
+            SPEC_MV,
         ));
     }
 
@@ -590,6 +631,15 @@ pub(super) struct InterReferenceState<'a> {
     /// [`FrameReferenceStateView::from_slots_with_base_q_idx`] so the two-valid-slot
     /// derivation is exact.
     pub(super) ref_base_q_idx: Vec<u32>,
+    /// `RefFrameType[i] == INTER_FRAME` per slot (§7.23 :14110). The §5
+    /// `choose_primary_secondary_ref_frame` CHOOSE-resolution loop (mirror :5468-5495)
+    /// scores ONLY inter-typed slots, so this gates which slot a `signal_primary_ref_frame
+    /// == 0` (PRIMARY_REF_CHOOSE) frame can resolve its primary reference to.
+    pub(super) ref_is_inter: Vec<bool>,
+    /// Whether the frame stored in slot `i` ADAPTED its CDFs (`disable_cdf_update == 0`).
+    /// The §7.23 cross-frame CDF-load reject fires only when the RESOLVED loaded slot's
+    /// saved CDFs are adapted (the minimal decoder does not model `load_cdfs`).
+    pub(super) ref_adapted: Vec<bool>,
 }
 
 impl<'a> InterReferenceState<'a> {
@@ -845,6 +895,10 @@ fn validate_inter_frame_core(
 }
 
 mod block;
+// AV2 § 5 / § 7.7 cross-frame reference-state resolution (CDF-load decision incl. the
+// PRIMARY_REF_CHOOSE resolution, and the order-hint wrap check) used by the
+// verified-subset rejects below; split out by `DECODE-INTER-MULTIREF-RUNTIME` follow-up.
+mod cross_frame;
 mod find_mv_stack;
 mod mc;
 mod mv_scaling;
@@ -857,6 +911,7 @@ mod read_mv;
 mod single_ref;
 
 use block::decode_inter_blocks;
+use cross_frame::{ResolvedCdfLoad, order_hint_history_unwrapped, resolve_cdf_load};
 
 #[cfg(test)]
 mod tests;

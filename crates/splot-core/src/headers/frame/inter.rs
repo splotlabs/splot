@@ -1007,14 +1007,30 @@ fn derive_implicit_ref_map(
         .filter(|v| **v)
         .count();
     // With two or more valid references the § 7.7 ranking scores each slot's
-    // `RefBaseQIdx` (the `q` term). The single-spatial-layer minimal frame makes every
-    // other scoring input deterministic (distinct per-slot `RefCounter` via the `first`
-    // dedup rule, `AllowedFrames == -1`, all layers depend, layer ids 0), so the ONLY
-    // unmodeled input is `RefBaseQIdx`. When the caller models it the derivation is
-    // exact; without it (the historical `from_slots` view) the multi-valid-slot ranking
-    // stays an honest `UnmodeledDerivation` stop.
-    if valid_count > 1 && reference_state.ref_base_q_idx.is_none() {
-        return None;
+    // `RefBaseQIdx` (the `q` term), and tie-breaks on `RefOrderHint` and the per-slot
+    // dimensions (the `is_ref_better` distance/ratio terms). The single-spatial-layer
+    // minimal frame makes every OTHER scoring input deterministic (distinct per-slot
+    // `RefCounter` via the `first` dedup rule, `AllowedFrames == -1`, all layers depend,
+    // layer ids 0). So the multi-valid-slot derivation is exact ONLY when the caller
+    // actually supplies all of `RefBaseQIdx` / `RefOrderHint` / dims AS COMPLETE PARALLEL
+    // SLICES covering every active slot. If any is unmodeled (`None`) or a short slice
+    // that would silently default the missing entries to zero, the ranking would be
+    // derived from fabricated state — so stay an honest `UnmodeledDerivation` stop (the
+    // historical `from_slots` view, with no `RefBaseQIdx`, falls here too). For two or
+    // more valid slots the resolution-scoring `is_ref_better` distance term also needs the
+    // current frame size, so require it once `check_res` is set.
+    if valid_count > 1 {
+        let covers_active =
+            |slice: Option<&[u32]>| slice.is_some_and(|s| s.len() >= num_ref_frames);
+        let ranking_inputs_complete = ref_valid.len() >= num_ref_frames
+            && covers_active(reference_state.ref_base_q_idx)
+            && covers_active(reference_state.ref_order_hint)
+            && covers_active(reference_state.ref_frame_width)
+            && covers_active(reference_state.ref_frame_height)
+            && (!check_res || frame_size.is_some());
+        if !ranking_inputs_complete {
+            return None;
+        }
     }
 
     let ref_order_hint = reference_state.ref_order_hint;
@@ -1553,6 +1569,47 @@ mod tests {
         let ref_w = [64u32; NUM_REF_FRAMES];
         let ref_h = [64u32; NUM_REF_FRAMES];
         let rs = FrameReferenceStateView::from_slots(&ref_valid, &ref_oh, &ref_w, &ref_h);
+        let control = parse_inter_control(&mut reader, &seq, &ctx, &rs, false).unwrap();
+        assert_eq!(control.num_total_refs, None);
+        assert_eq!(control.stop, Some(InterStop::UnmodeledDerivation));
+    }
+
+    /// AV2 § 7.7 — INCOMPLETE ranking inputs over TWO valid slots STAY an honest
+    /// `UnmodeledDerivation` stop even though `RefBaseQIdx` is present: a `RefOrderHint`
+    /// slice SHORTER than the active reference-slot count cannot cover both valid slots, so
+    /// `derive_implicit_ref_map` must NOT silently default the missing slot's order hint to
+    /// zero and derive `ref_frame_idx` from fabricated state. This is the parser-side proof
+    /// of the `DECODE-INTER-MULTIREF-RUNTIME` completeness gate.
+    #[test]
+    fn inter_implicit_map_two_valid_slots_incomplete_ranking_inputs_stop_unmodeled() {
+        let mut bits = Bits::default();
+        bits.bit(0); // signal_primary_ref_frame
+        bits.bit(0); // disable_cross_frame_cdf_init
+        bits.f(0, 8); // refresh_frame_flags f(8)
+        let data = bits.into_bytes();
+        let mut reader = BitReader::new(&data, ByteOffset::new(0));
+        let mut seq = inter_seq();
+        seq.explicit_ref_frame_map = false;
+        let mut ctx = inter_ctx();
+        ctx.order_hint = 10;
+        let mut ref_valid = [false; NUM_REF_FRAMES];
+        ref_valid[0] = true;
+        ref_valid[1] = true;
+        // A short RefOrderHint slice (1 entry) cannot cover both valid slots: slot 1's order
+        // hint would silently default to 0 if admitted. The completeness gate must reject.
+        let ref_oh_short = [8u32];
+        let ref_w = [4096u32; NUM_REF_FRAMES];
+        let ref_h = [2304u32; NUM_REF_FRAMES];
+        let mut ref_q = [0u32; NUM_REF_FRAMES];
+        ref_q[0] = 40;
+        ref_q[1] = 40;
+        let rs = FrameReferenceStateView::from_slots_with_base_q_idx(
+            &ref_valid,
+            &ref_oh_short,
+            &ref_w,
+            &ref_h,
+            &ref_q,
+        );
         let control = parse_inter_control(&mut reader, &seq, &ctx, &rs, false).unwrap();
         assert_eq!(control.num_total_refs, None);
         assert_eq!(control.stop, Some(InterStop::UnmodeledDerivation));

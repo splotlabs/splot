@@ -292,16 +292,14 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
     // `DECODE-FIRST-INTER-FRAME-FRONTIER`).
     // VERIFIED-SUBSET DISCIPLINE (CDF inheritance): the decoder decodes every frame
     // from the default (init_*_cdfs) entropy state and does NOT model the §7.23
-    // save_cdfs / §5 load_cdfs cross-frame CDF flow. Track whether any prior frame
-    // (the KEY or an earlier inter) ADAPTED its CDFs (disable_cdf_update == 0); an
-    // inter frame that then LOADS cross-frame CDFs (per §5 :5426-5430,
-    // primary_ref_frame != PRIMARY_REF_NONE with cross-frame CDF init enabled) from
-    // such an adapted source would desync, so decode_minimal_inter_frame rejects it
-    // before output. Initialised from the key frame's own adaptation, so a first
-    // inter frame that loads the key's adapted CDFs is also caught. The committed
-    // fixtures are encoded with cdf-update-mode 0 (every frame disable_cdf_update ==
-    // 1), so the flag stays false and nothing is rejected.
-    let mut prior_frame_adapted_cdfs = key_core.disable_cdf_update != Some(true);
+    // save_cdfs / §5 load_cdfs cross-frame CDF flow. Each refreshed slot records (per
+    // slot) whether its stored frame ADAPTED its CDFs (disable_cdf_update == 0) and its
+    // RefFrameType; decode_minimal_inter_frame resolves §5 set_primary_ref_frame_and_ctx
+    // (including the PRIMARY_REF_CHOOSE resolution) and rejects ONLY when the RESOLVED
+    // loaded slot adapted. The committed fixtures resolve to PRIMARY_REF_NONE or a
+    // non-adapted slot, so nothing is rejected.
+    // The key frame's §7.23 adaptation state is already recorded in the reference buffer
+    // by `reference.update(0, ...)` above (via `frame_ref_update_from_core`).
     // Each following frame candidate maps to IVF frame index 1, 2, ... (the leading
     // key frame is IVF frame 0).
     for (ivf_frame_index, next_candidate) in (1usize..).zip(candidates) {
@@ -320,10 +318,15 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
                         "minimal multi-reference decode is verified only for up to two valid reference slots; a third valid slot needs a richer §7.7 ranking / multi-decision single_ref that is not yet fixtured",
                     ));
                 }
-                // The §7.23 cross-frame CDF-inheritance reject (a frame loading a prior
-                // adapted frame's CDFs, which the decoder does not model) is applied inside
-                // decode_minimal_inter_frame, which has the parsed primary_ref_frame /
-                // disable_cross_frame_cdf_init and rejects BEFORE the tile entropy decode.
+                // The P2 order-hint wrap guard (the stored RefOrderHint is the unwrapped
+                // OrderHint only while the GOP fits in one OrderHintBits window) is applied
+                // inside decode_minimal_inter_frame, which has the parsed order_hint_lsb and
+                // the reference history, and rejects BEFORE any output.
+                // The §7.23 cross-frame CDF-inheritance reject (a frame whose §5-resolved
+                // primary_ref_frame loads a prior adapted slot's CDFs, which the decoder
+                // does not model) is applied inside decode_minimal_inter_frame, which has the
+                // parsed primary_ref_frame / disable_cross_frame_cdf_init / ref_frame_idx and
+                // rejects BEFORE the tile entropy decode.
                 // Build the §7.23 reference store from the frames decoded so far, then
                 // decode this inter frame over it. `build_store` borrows `frames`; the
                 // borrow ends when the inter decode returns its owned frame.
@@ -335,6 +338,8 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
                     ref_frame_width: meta.ref_frame_width,
                     ref_frame_height: meta.ref_frame_height,
                     ref_base_q_idx: meta.ref_base_q_idx,
+                    ref_is_inter: meta.ref_is_inter,
+                    ref_adapted: meta.ref_adapted,
                 };
                 let (inter_frame, inter_core) = inter::decode_minimal_inter_frame(
                     plan,
@@ -345,15 +350,8 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
                     options,
                     header,
                     &inter_state,
-                    prior_frame_adapted_cdfs,
                 )?;
                 drop(store);
-                // Record whether THIS inter frame adapted its CDFs (disable_cdf_update ==
-                // 0), so a later frame that loads its CDFs is rejected. Monotonic: once any
-                // prior frame (the key or an inter) adapted, the flag stays set.
-                if inter_core.disable_cdf_update != Some(true) {
-                    prior_frame_adapted_cdfs = true;
-                }
                 let frame_index = frames.len();
                 frames.push(inter_frame);
                 reference.update(
@@ -760,10 +758,15 @@ fn parse_frame_core(
 
 /// Extracts the AV2 § 7.23 reference frame update inputs from a parsed frame header.
 ///
-/// For the minimal multi-frame subset OrderHint equals `OrderHintLsbs` (the small GOP
-/// fits in `OrderHintBits`, and § 7.7 scores via `get_relative_dist`, which is
-/// wrap-aware), and there is no segmentation / delta-Q so `qindex == base_q_idx`. The
-/// caller applies the refresh into the [`reference_buffer::RuntimeReferenceBuffer`].
+/// The stored `RefOrderHint[i]` is the UNWRAPPED `OrderHint` (`get_disp_order_hint()`,
+/// mirror :4375 / § 7.23 :14123), not the raw `OrderHintLsbs`. The minimal multi-frame
+/// subset is admitted only when the GOP never wraps `OrderHintBits` (enforced by
+/// [`order_hint_history_unwrapped`] before any inter decode), so within the admitted
+/// subset `OrderHint == OrderHintLsbs` exactly; a wrapping history is rejected rather
+/// than stored with a stale small LSB value that a § 7.7 /
+/// `choose_primary_secondary_ref_frame` ranking would mis-order. There is no
+/// segmentation / delta-Q so `qindex == base_q_idx`. The caller applies the refresh into
+/// the [`reference_buffer::RuntimeReferenceBuffer`].
 fn frame_ref_update_from_core(
     core: &FrameHeaderCore,
     offset: ByteOffset,
@@ -775,6 +778,9 @@ fn frame_ref_update_from_core(
             "minimal multi-frame decode requires a parsed refresh_frame_flags for the §7.23 update",
         )
     })?;
+    // The admitted (non-wrapping) subset makes OrderHint == OrderHintLsbs exactly; a
+    // wrapping history is rejected up front, so storing the LSBs here is the unwrapped
+    // OrderHint for every admitted stream.
     let order_hint = core.order_hint_lsb.unwrap_or(0);
     let frame_size = core.frame_size.ok_or_else(|| {
         unsupported_at(
@@ -793,6 +799,14 @@ fn frame_ref_update_from_core(
                 "minimal multi-frame decode requires a parsed base_q_idx for the §7.23 update",
             )
         })?;
+    // §7.23 :14110 RefFrameType[i] = FrameType: the minimal subset stores either the CLK
+    // KEY_FRAME or an INTER_FRAME, so `!is_key_frame` is exactly RefFrameType == INTER_FRAME
+    // (the §5 choose_primary_secondary_ref_frame candidate filter). A SWITCH frame is not
+    // admitted here (the validators require a non-key inter frame or the CLK key).
+    let is_inter = !core.is_key_frame;
+    // Whether this frame ADAPTED its CDFs (disable_cdf_update == 0): recorded per slot so a
+    // later frame's cross-frame CDF-load reject keys on the RESOLVED loaded slot.
+    let adapted = core.disable_cdf_update != Some(true);
     Ok(reference_buffer::FrameRefUpdate {
         refresh_frame_flags,
         order_hint,
@@ -800,6 +814,8 @@ fn frame_ref_update_from_core(
         height: frame_size.height,
         base_q_idx,
         is_key_or_switch: core.is_key_frame,
+        is_inter,
+        adapted,
     })
 }
 
