@@ -2,7 +2,7 @@
 
 ### Requirement: RateController quantizer-decision seam
 
-The encoder SHALL take the frame quantizer (`base_q_idx`, AV2 § 5.18.2) behind a
+The encoder SHALL take the frame quantizer (`base_q_idx`, AV2 § 5.18.6.1) behind a
 `RateController` trait seam, so a rate-controlled implementation can replace the fixed one
 without changing the header writer or the coefficient path. The minimal encoder SHALL
 install a `ConstantQp` controller built from `EncoderConfig.qp`, and emission SHALL obtain

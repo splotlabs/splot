@@ -25,8 +25,8 @@
 //! (`encode_block_symbol_trace`), never from AV1 rate tables — rav1e and SVT-AV1 inform the
 //! *structure* of these seams only (see `docs/references/`), not AV2 syntax or numbers.
 
-/// The quantizer-decision seam: chooses the frame's `base_q_idx` (AV2 § 5.18.2;
-/// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2`), and — in later phases —
+/// The quantizer-decision seam: chooses the frame's `base_q_idx` (AV2 § 5.18.6.1;
+/// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-6-1`), and — in later phases —
 /// per-superblock / per-block quantizer deltas and frame-type-aware quantizers.
 ///
 /// The minimal encoder is constant-QP ([`ConstantQp`]); rate-controlled implementations

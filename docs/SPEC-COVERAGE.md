@@ -195,8 +195,6 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.18.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2) | Frame header info syntax | `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS` | ✅ | 🟡 | ✅ | ✅ | 3 |
 | [§ 5.18.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2) | Frame header info syntax | `DECODE-TILE-PAYLOAD-INPUT-DERIVATION` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 5.18.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2) | Frame header info syntax | `DECODE-Y4M-RUNTIME-OUTPUT` | ✅ | 🟡 | ✅ | ✅ | 4 |
-| [§ 5.18.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2) | Frame header info syntax | `ENC-CONFIG-QP-FIELD` | ✅ | — | — | ✅ | — |
-| [§ 5.18.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2) | Frame header info syntax | `ENC-DECIDE-RATE-CONTROLLER` | ✅ | — | — | ✅ | — |
 | [§ 5.18.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2) | Frame header info syntax | `ENC-FRAME-HEADER-CORE-ASSEMBLER` | ✅ | — | — | ✅ | — |
 | [§ 5.18.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2) | Frame header info syntax | `ENC-MINIMAL-CLK-BASE-Q-IDX` | ✅ | — | — | ✅ | — |
 | [§ 5.18.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2) | Frame header info syntax | `ENC-MINIMAL-INTRA-SKIP-IVF` | ✅ | — | — | ✅ | — |
@@ -213,6 +211,8 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.18.5.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-5-2) | Deblocking filter params syntax | `AV2-5.18.5-FILTERING` | ✅ | 🟡 | — | 🟡 | — |
 | [§ 5.18.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-6) | Quantization structures | `AV2-5.18.6-QUANTIZATION` | ✅ | 🟡 | 🟡 | 🟡 | 4 |
 | [§ 5.18.6.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-6-1) | Quantization params syntax | `DECODE-TILE-PAYLOAD-INPUT-DERIVATION` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 5.18.6.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-6-1) | Quantization params syntax | `ENC-CONFIG-QP-FIELD` | ✅ | — | — | ✅ | — |
+| [§ 5.18.6.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-6-1) | Quantization params syntax | `ENC-DECIDE-RATE-CONTROLLER` | ✅ | — | — | ✅ | — |
 | [§ 5.18.7](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-7) | Segmentation and tiling structures | `AV2-5.18.7-SEGMENTATION-TILING` | ✅ | 🟡 | 🟡 | 🟡 | 5 |
 | [§ 5.18.7.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-7-2) | Tile info syntax | `DECODE-LIMITS-RUNTIME-API` | ✅ | — | — | ✅ | — |
 | [§ 5.18.7.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-7-2) | Tile info syntax | `DECODE-TILE-PAYLOAD-INPUT-DERIVATION` | ✅ | 🟡 | — | ✅ | 2 |
