@@ -114,7 +114,7 @@ use super::{
     coded_luma_all_zero_token, coeff_base_hf_eob_token_sized, coeff_base_hf_luma_context,
     coeff_base_hf_token_sized, coeff_base_lf_eob_token_sized, coeff_base_lf_luma_context,
     coeff_base_lf_token_sized, coeff_br_hf_token, coeff_br_lf_luma_context, coeff_br_lf_token,
-    eob_extra_token, eob_pt_token, luma_all_zero_token, luma_dc_sign_token,
+    eob_extra_token, eob_pt_token, luma_all_zero_token_sized, luma_dc_sign_token,
 };
 // Re-exported only for the sibling 4x4 test modules' `eob_pt_16_token` references; the
 // size-generic walk uses `eob_pt_token` instead.
@@ -225,10 +225,12 @@ pub(crate) fn tokenize_general_lf_luma_block(
 /// entry uses, parameterized by [`TxGeom`] (so the 16x16 base pass reuses it).
 ///
 /// `quant` is the row-major signed quantized block (`quant.len() == geom.coeff_count`);
-/// `max_eob_pt` is the largest eobPt this caller admits (5 for the 4x4 full walk, 5
-/// for the 16x16 base pass). An eob whose eobPt exceeds `max_eob_pt` is rejected with
-/// [`Error::CoefficientTokenizationUnsupportedEob`] (the eob `>= 33` 16x16 case needs
-/// the `eob_pt_256` symbol-7 `eob_pt_extra` refinement, the next brick). Errors:
+/// `max_eob_pt` is the largest eobPt this caller admits (`5` for the 4x4 full walk —
+/// eob `<= 16`; `6` for the 16x16 base pass — eob `<= 32`). An eob whose eobPt exceeds
+/// `max_eob_pt` is rejected with [`Error::CoefficientTokenizationUnsupportedEob`]: the
+/// 16x16 eobPt `>= 7` cases (eob `>= 33`) are deferred to a later brick — and eob `>= 65`
+/// (eobPt `>= 8`, i.e. `eob_pt_256 == 7`) additionally requires the `eob_pt_extra`
+/// refinement, which neither the base pass nor that next brick's lower range needs. Errors:
 ///
 /// - [`Error::CoefficientTokenizationUnsupportedEob`] when a nonzero sits at a scan
 ///   index `> geom.max_scan_index` (eob `> geom.coeff_count`) or the eob's eobPt
@@ -256,8 +258,12 @@ pub(super) fn tokenize_general_luma_block(
             .map_err(|_| Error::CoefficientTokenizationAllocationFailed {
                 context: "general walk all-zero block trace",
             })?;
-        trace.push(BlockSymbolToken::Coeff(luma_all_zero_token(
+        // Route the all-zero `txb_skip` through `geom.tx_size_ctx` so a 16x16 all-zero block
+        // uses the `TX_16X16` row (not `TX_4X4`); for the 4x4 geom this is byte-identical to
+        // `luma_all_zero_token` (`tx_size == TX_SIZE_4X4_CTX`).
+        trace.push(BlockSymbolToken::Coeff(luma_all_zero_token_sized(
             coeff_cdf_q_ctx,
+            geom.tx_size_ctx,
         )));
         return Ok(trace);
     }

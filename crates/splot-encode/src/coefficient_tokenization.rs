@@ -235,7 +235,30 @@ pub(crate) fn tokenize_quantized_4x4_dct_dct_dc_only(
 /// This is the first `residual()` symbol of an all-zero luma block; no further
 /// luma coefficient symbols follow it.
 pub(crate) const fn luma_all_zero_token(coeff_cdf_q_ctx: usize) -> CoefficientEntropyToken {
-    all_zero_token(coeff_cdf_q_ctx, true)
+    luma_all_zero_token_sized(coeff_cdf_q_ctx, TX_SIZE_4X4_CTX)
+}
+
+/// Returns the AV2 § 5.20.7.27 luma `all_zero` (`txb_skip == 1`) token at the neutral
+/// spatial context for a transform of the given § 8.3.2 `txSzCtx` (`tx_size`). The
+/// `all_zero` path of the size-generic general walk uses this so a 16x16 all-zero block
+/// routes its `txb_skip` through the `TX_16X16` row, not the `TX_4X4` row (the coded path
+/// already routes through `geom.tx_size_ctx`). The CDF row is keyed by
+/// `(q, plane, tx_size, ctx)` — symbol-agnostic — so this shares the same row as the
+/// coded `txb_skip == 0` at the same size.
+pub(crate) const fn luma_all_zero_token_sized(
+    coeff_cdf_q_ctx: usize,
+    tx_size: usize,
+) -> CoefficientEntropyToken {
+    CoefficientEntropyToken {
+        syntax: CoefficientTokenSyntax::AllZero,
+        selector: CoefficientCdfRowSelector::TxbSkip {
+            coeff_cdf_q_ctx,
+            plane_type: LUMA_PLANE_TYPE,
+            tx_size,
+            ctx: TXB_SKIP_CTX_NEUTRAL,
+        },
+        symbol: true as u8,
+    }
 }
 
 /// Returns the AV2 § 5.20.7.27 U-plane `all_zero` (`txb_skip`) token for an

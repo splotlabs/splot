@@ -112,10 +112,17 @@ fn all_zero_16x16_block_emits_single_all_zero_token() {
     let quant = [0i32; COEFF_COUNT];
     let trace = tokenize_general_16x16_luma_block(&quant, Q_CTX).unwrap();
     assert_eq!(trace.len(), 1);
+    // The all-zero `txb_skip` (symbol 1) MUST carry the TX_16X16 txSzCtx, not TX_4X4 — the
+    // CDF row is keyed by tx_size, so a 4x4-context all-zero token would desync a real
+    // decoder (a mismatch the §8.2 self-consistency roundtrip cannot catch).
     assert!(matches!(
         trace[0],
         BlockSymbolToken::Coeff(c) if c.symbol() == 1
             && matches!(c.syntax(), CoefficientTokenSyntax::AllZero)
+            && matches!(
+                c.selector(),
+                CoefficientCdfRowSelector::TxbSkip { tx_size: TX_SIZE_16X16_CTX, .. }
+            )
     ));
     let recovered = recover_quant_from_tokens_geom(&trace, TxGeom::TX_16X16, Q_CTX).unwrap();
     assert_eq!(recovered, vec![0i32; COEFF_COUNT]);
