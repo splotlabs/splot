@@ -47,6 +47,15 @@ pub(crate) struct CoefficientTokenCdfRows {
     // reaches the constant ctx 0; sizing the full ctx-7 dimension makes the tier
     // hole-free for the later non-EOB HF sub-brick.
     coeff_br_hf: [[[i32; COEFF_BR_CDF_ROW_LEN]; COEFF_BR_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS],
+    // The 4x4 HIGH-frequency non-EOB `coeff_base` bank at the neutral TCQ context,
+    // indexed by `[q][ctx]` over the full §8.3.2 HF `coeff_base` context dimension
+    // (`COEFF_BASE_CTX_COUNT`, 20; 4-symbol rows). Sourced from
+    // `DEFAULT_COEFF_BASE_CDF[q][TX_SIZE_4X4_CTX][ctx][COEFF_BASE_LF_TCQ_CTX_NEUTRAL]`
+    // (distinct from the 6-symbol LF `coeff_base_lf` bank). The general HF walk derives
+    // this context from the running `Level[]` (`coeff_base_hf_luma_context`); for 4x4
+    // 2D the reachable contexts are roughly 0..9, but sizing the full ctx-20 dimension
+    // makes the HF non-EOB base tier hole-free.
+    coeff_base_hf: [[[i32; COEFF_BASE_CDF_ROW_LEN]; COEFF_BASE_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS],
     dc_sign: [[i32; 3]; COEFF_CDF_Q_CONTEXTS],
     chroma_u_txb_skip: [[i32; 3]; COEFF_CDF_Q_CONTEXTS],
     chroma_eob_pt_16: [[i32; 6]; COEFF_CDF_Q_CONTEXTS],
@@ -117,6 +126,26 @@ fn coeff_base_lf_bank()
     bank
 }
 
+/// Builds the 4x4 HIGH-frequency non-EOB `coeff_base` bank `[q][ctx]` at the neutral
+/// TCQ context from the generated `DEFAULT_COEFF_BASE_CDF[q][4x4][ctx][tcq]` table
+/// (4-symbol rows). Total and panic-free: every index is a const within the table
+/// dimensions.
+fn coeff_base_hf_bank()
+-> [[[i32; COEFF_BASE_CDF_ROW_LEN]; COEFF_BASE_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS] {
+    let mut bank = [[[0i32; COEFF_BASE_CDF_ROW_LEN]; COEFF_BASE_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS];
+    let mut q = 0;
+    while q < COEFF_CDF_Q_CONTEXTS {
+        let mut ctx = 0;
+        while ctx < COEFF_BASE_CTX_COUNT {
+            bank[q][ctx] =
+                DEFAULT_COEFF_BASE_CDF[q][TX_SIZE_4X4_CTX][ctx][COEFF_BASE_LF_TCQ_CTX_NEUTRAL];
+            ctx += 1;
+        }
+        q += 1;
+    }
+    bank
+}
+
 impl CoefficientTokenCdfRows {
     pub(crate) fn from_defaults() -> Self {
         Self {
@@ -138,6 +167,7 @@ impl CoefficientTokenCdfRows {
             coeff_br_lf: DEFAULT_COEFF_BR_LF_CDF,
             coeff_base_eob_hf: coeff_base_eob_hf_bank(),
             coeff_br_hf: DEFAULT_COEFF_BR_CDF,
+            coeff_base_hf: coeff_base_hf_bank(),
             dc_sign: [
                 DEFAULT_DC_SIGN_CDF[0][LUMA_PLANE_TYPE][DC_SIGN_GROUP_VISIBLE][DC_SIGN_CTX_NEUTRAL],
                 DEFAULT_DC_SIGN_CDF[1][LUMA_PLANE_TYPE][DC_SIGN_GROUP_VISIBLE][DC_SIGN_CTX_NEUTRAL],
@@ -225,6 +255,14 @@ impl CoefficientTokenCdfRows {
                 ctx,
             } if coeff_cdf_q_ctx < COEFF_CDF_Q_CONTEXTS && ctx < COEFF_BR_CTX_COUNT => {
                 Ok(self.coeff_br_hf[coeff_cdf_q_ctx][ctx].as_mut_slice())
+            }
+            CoefficientCdfRowSelector::CoeffBase {
+                coeff_cdf_q_ctx,
+                tx_size: TX_SIZE_4X4_CTX,
+                ctx,
+                tcq_ctx: COEFF_BASE_LF_TCQ_CTX_NEUTRAL,
+            } if coeff_cdf_q_ctx < COEFF_CDF_Q_CONTEXTS && ctx < COEFF_BASE_CTX_COUNT => {
+                Ok(self.coeff_base_hf[coeff_cdf_q_ctx][ctx].as_mut_slice())
             }
             CoefficientCdfRowSelector::DcSign {
                 coeff_cdf_q_ctx,

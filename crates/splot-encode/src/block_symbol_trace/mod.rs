@@ -31,12 +31,12 @@
 use splot_core::symbol::{Symbol, SymbolDecoder, SymbolDecoderConfig};
 use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig};
 use splot_core::tables::cdf::{
-    DEFAULT_COEFF_BASE_EOB_CDF, DEFAULT_COEFF_BASE_LF_CDF, DEFAULT_COEFF_BASE_LF_EOB_CDF,
-    DEFAULT_COEFF_BASE_LF_EOB_UV_CDF, DEFAULT_COEFF_BR_CDF, DEFAULT_COEFF_BR_LF_CDF,
-    DEFAULT_DC_SIGN_CDF, DEFAULT_DO_SPLIT_CDF, DEFAULT_EOB_EXTRA_CDF, DEFAULT_EOB_PT_16_CDF,
-    DEFAULT_EOB_PT_1024_CDF, DEFAULT_INTRA_TX_TYPE_SET1_CDF, DEFAULT_SEC_TX_TYPE_CDF,
-    DEFAULT_TXB_SKIP_CDF, DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF, DEFAULT_V_TXB_SKIP_CDF,
-    DEFAULT_Y_MODE_INDEX_CDF, DEFAULT_Y_MODE_SET_CDF,
+    DEFAULT_COEFF_BASE_CDF, DEFAULT_COEFF_BASE_EOB_CDF, DEFAULT_COEFF_BASE_LF_CDF,
+    DEFAULT_COEFF_BASE_LF_EOB_CDF, DEFAULT_COEFF_BASE_LF_EOB_UV_CDF, DEFAULT_COEFF_BR_CDF,
+    DEFAULT_COEFF_BR_LF_CDF, DEFAULT_DC_SIGN_CDF, DEFAULT_DO_SPLIT_CDF, DEFAULT_EOB_EXTRA_CDF,
+    DEFAULT_EOB_PT_16_CDF, DEFAULT_EOB_PT_1024_CDF, DEFAULT_INTRA_TX_TYPE_SET1_CDF,
+    DEFAULT_SEC_TX_TYPE_CDF, DEFAULT_TXB_SKIP_CDF, DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF,
+    DEFAULT_V_TXB_SKIP_CDF, DEFAULT_Y_MODE_INDEX_CDF, DEFAULT_Y_MODE_SET_CDF,
 };
 
 use crate::coefficient_tokenization::{
@@ -89,6 +89,13 @@ const COEFF_BASE_EOB_CTX_COUNT: usize = 4;
 const COEFF_BR_CTX_COUNT: usize = 7;
 const COEFF_BASE_EOB_CDF_ROW_LEN: usize = 4;
 const COEFF_BR_CDF_ROW_LEN: usize = 5;
+// AV2 § 8.3.2 context-dimension counts of the generated HIGH-frequency non-EOB
+// `coeff_base` table `DEFAULT_COEFF_BASE_CDF` (dims `[q][tx_size][ctx][tcq][row]`): it
+// has `COEFF_BASE_CTX_COUNT` (20) `coeff_base` contexts (the decoder
+// `COEFF_BASE_CONTEXTS`) and a 4-symbol row (`[i32; 5]`). Sizing the bank to the full
+// generated context dimension keeps the HF non-EOB base tier hole-free.
+const COEFF_BASE_CTX_COUNT: usize = 20;
+const COEFF_BASE_CDF_ROW_LEN: usize = 5;
 const DC_SIGN_CDF_ROW_LEN: usize = 3;
 const TILE_ORIGIN_Y_MODE_INDEX_CTX: usize = 0;
 const NON_DIRECTIONAL_UV_MODE_CTX: usize = 0;

@@ -347,35 +347,24 @@ fn hf_tokens_route_through_entropy_token_proof() {
 }
 
 #[test]
-fn general_hf_rejects_eob12_scan_index_11() {
+fn general_hf_eob12_scan_index_11_now_in_scope() {
     // A nonzero at scan index 11 (raster 10 in the order [..,13,10,..], row 2 + col 2 =
-    // diagonal 4) is the SECOND high-frequency coefficient, eob 12 — beyond this
-    // brick's eob-11 window (a later sub-brick). It is rejected with the typed
-    // unsupported-eob error.
+    // diagonal 4) is the SECOND high-frequency coefficient, eob 12. The
+    // `ENC-COEFF-GENERAL-WALK-HF-MULTI` sub-brick lifted the gate to eob 16, so it is
+    // now in scope (its detailed non-EOB HF behaviour is covered in
+    // `general_walk_hf_multi_tests`). The boundary is the last 4x4 scan index 15.
+    assert_eq!(MAX_GENERAL_SCAN_INDEX, 15);
     let mut quant = [0i32; TX_4X4_COEFF_COUNT];
-    quant[10] = 1; // raster 10 is scan index 11.
-    let err = tokenize_general_lf_luma_block(&quant, Q_CTX).unwrap_err();
-    assert!(matches!(
-        err,
-        Error::CoefficientTokenizationUnsupportedEob {
-            scan_index: 11,
-            position: 10,
-            value: 1,
-            max_scan_index: MAX_GENERAL_SCAN_INDEX,
-        }
-    ));
+    quant[10] = 1; // raster 10 is scan index 11 → eob 12.
+    let trace = tokenize_general_lf_luma_block(&quant, Q_CTX).unwrap();
+    let recovered = recover_quant_from_tokens(&trace, Q_CTX).unwrap();
+    assert_eq!(recovered, quant);
 
     // An eob-11 block whose HF EOB coefficient additionally has a nonzero at scan index
-    // 11 (eob 12) is likewise rejected.
+    // 11 (eob 12) is likewise in scope and roundtrips.
     let mut quant = scan_block(11, &[1; 11]);
     quant[10] = 1; // adds scan index 11 → eob 12.
-    let err = tokenize_general_lf_luma_block(&quant, Q_CTX).unwrap_err();
-    assert!(matches!(
-        err,
-        Error::CoefficientTokenizationUnsupportedEob {
-            scan_index: 11,
-            max_scan_index: MAX_GENERAL_SCAN_INDEX,
-            ..
-        }
-    ));
+    let trace = tokenize_general_lf_luma_block(&quant, Q_CTX).unwrap();
+    let recovered = recover_quant_from_tokens(&trace, Q_CTX).unwrap();
+    assert_eq!(recovered, quant);
 }

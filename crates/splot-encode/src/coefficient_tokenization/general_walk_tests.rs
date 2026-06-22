@@ -216,24 +216,21 @@ fn general_lf_recover_quant_is_deterministic() {
 
 #[test]
 fn general_lf_rejects_out_of_scope() {
-    // A nonzero at scan index >= 11 (eob >= 12) is rejected: scan index 11 (raster 10
-    // in the order [0,4,1,8,5,2,12,9,6,3,13,10,...], row 2 + col 2 = diagonal 4) is the
-    // SECOND high-frequency coefficient, beyond this brick's eob-11 window (the first
-    // HF coefficient, scan index 10 = raster 13, is now supported). A later sub-brick.
+    // The walk now covers the FULL 4x4 scan (eob <= 16): a nonzero at scan index 11
+    // (raster 10, the second high-frequency coefficient) is no longer out of scope.
+    // A 4x4 block has only 16 scan positions, so a scan index `>= 16` (eob `>= 17`)
+    // cannot exist; the only remaining out-of-scope rejection is the magnitude tier.
     let mut quant = [0i32; TX_4X4_COEFF_COUNT];
-    quant[10] = 1; // raster 10 is scan index 11 in the order.
-    let err = tokenize_general_lf_luma_block(&quant, Q_CTX).unwrap_err();
-    assert!(matches!(
-        err,
-        Error::CoefficientTokenizationUnsupportedEob {
-            scan_index: 11,
-            position: 10,
-            value: 1,
-            max_scan_index: MAX_GENERAL_SCAN_INDEX,
-        }
-    ));
+    quant[10] = 1; // raster 10 is scan index 11 — now in scope.
+    assert!(
+        tokenize_general_lf_luma_block(&quant, Q_CTX).is_ok(),
+        "scan index 11 (eob 12) is now in scope"
+    );
+    // The boundary constant is now the last 4x4 scan index.
+    assert_eq!(MAX_GENERAL_SCAN_INDEX, 15);
 
-    // A magnitude > 7 (past the base-range tier) is rejected via the magnitude error.
+    // A low-frequency magnitude > 7 (past the LF base-range tier) is rejected via the
+    // magnitude error.
     let big = dc_ac_block(8, 1);
     let err = tokenize_general_lf_luma_block(&big, Q_CTX).unwrap_err();
     assert!(matches!(

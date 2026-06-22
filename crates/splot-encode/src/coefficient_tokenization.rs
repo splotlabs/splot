@@ -22,9 +22,9 @@
 
 use splot_core::coefficient::{COEFF_BASE_RANGE, LF_NUM_BASE_LEVELS, NUM_BASE_LEVELS};
 use splot_core::tables::cdf::{
-    DEFAULT_COEFF_BASE_EOB_CDF, DEFAULT_COEFF_BASE_LF_CDF, DEFAULT_COEFF_BASE_LF_EOB_CDF,
-    DEFAULT_COEFF_BASE_LF_EOB_UV_CDF, DEFAULT_COEFF_BR_CDF, DEFAULT_COEFF_BR_LF_CDF,
-    DEFAULT_DC_SIGN_CDF, DEFAULT_EOB_EXTRA_CDF, DEFAULT_EOB_PT_16_CDF,
+    DEFAULT_COEFF_BASE_CDF, DEFAULT_COEFF_BASE_EOB_CDF, DEFAULT_COEFF_BASE_LF_CDF,
+    DEFAULT_COEFF_BASE_LF_EOB_CDF, DEFAULT_COEFF_BASE_LF_EOB_UV_CDF, DEFAULT_COEFF_BR_CDF,
+    DEFAULT_COEFF_BR_LF_CDF, DEFAULT_DC_SIGN_CDF, DEFAULT_EOB_EXTRA_CDF, DEFAULT_EOB_PT_16_CDF,
     DEFAULT_INTRA_TX_TYPE_SET1_CDF, DEFAULT_SEC_TX_TYPE_CDF, DEFAULT_TXB_SKIP_CDF,
 };
 use splot_recon::{PlaneId, PlaneRect, TransformClass, coefficient_scan_order};
@@ -37,7 +37,8 @@ mod coeff_base_lf;
 // referenced by non-test code in this module.
 #[allow(unused_imports)]
 pub(crate) use coeff_base_lf::{
-    coeff_base_lf_luma_context, coeff_base_lf_token, coeff_br_lf_luma_context,
+    coeff_base_hf_luma_context, coeff_base_lf_luma_context, coeff_base_lf_token,
+    coeff_br_lf_luma_context,
 };
 
 mod multi_coeff;
@@ -45,8 +46,9 @@ mod multi_coeff;
 // referenced by non-test code in this module.
 #[allow(unused_imports)]
 pub(crate) use multi_coeff::{
-    coded_luma_all_zero_token, coeff_base_hf_eob_token, coeff_base_lf_eob_token, coeff_br_hf_token,
-    coeff_br_lf_token, eob_extra_token, eob_pt_16_token,
+    coded_luma_all_zero_token, coeff_base_hf_eob_token, coeff_base_hf_token,
+    coeff_base_lf_eob_token, coeff_br_hf_token, coeff_br_lf_token, eob_extra_token,
+    eob_pt_16_token,
 };
 
 mod transform_type;
@@ -161,6 +163,15 @@ const COEFF_BASE_EOB_CTX_COUNT: usize = 4;
 const COEFF_BR_CTX_COUNT: usize = 7;
 const COEFF_BASE_EOB_CDF_ROW_LEN: usize = 4;
 const COEFF_BR_CDF_ROW_LEN: usize = 5;
+// AV2 §8.3.2 context-dimension counts of the generated default HIGH-frequency non-EOB
+// `coeff_base` table `DEFAULT_COEFF_BASE_CDF` (dims `[q][tx_size][ctx][tcq][row]`):
+// it has `COEFF_BASE_CTX_COUNT` (20) `coeff_base` contexts (the decoder
+// `COEFF_BASE_CONTEXTS`) and a 4-symbol row (`[i32; 5]`). For 4x4 2D the reachable HF
+// positions are diagonals 4..=6, so the reachable context is roughly 0..9, but the
+// bank is sized to the full 20 for hole-free routing (exactly as the LF bank is sized
+// to its full 33).
+const COEFF_BASE_CTX_COUNT: usize = 20;
+const COEFF_BASE_CDF_ROW_LEN: usize = 5;
 // AV2 §8.3.2 Table 8.2: `intra_tx_type` for `TX_SET_INTRA_1` uses
 // `TileIntraTxTypeSet1Cdf[Tx_Size_Sqr[txSz]]`; `Tx_Size_Sqr[TX_4X4] = 0`. The CDF
 // has one row per `Tx_Size_Sqr` value (3 rows).
@@ -692,6 +703,21 @@ pub(crate) enum CoefficientCdfRowSelector {
         ctx: usize,
         tcq_ctx: usize,
     },
+    /// `TileCoeffBaseCdf[coeff_cdf_q_ctx][tx_size][ctx][tcq_ctx]` (the non-EOB
+    /// HIGH-frequency luma `coeff_base` CDF; AV2 § 8.3.2 `DEFAULT_COEFF_BASE_CDF`,
+    /// dims `[q][tx_size][ctx][tcq][row]` with a 4-symbol row). Distinct from
+    /// [`Self::CoeffBaseLf`]: the HF non-EOB base CDF is 4-symbol (vs the LF 6-symbol
+    /// `DEFAULT_COEFF_BASE_LF_CDF`), and the HF `coeff_base` context
+    /// (`coeff_base_hf_luma_context`) has no near-DC `magLimit = 5` carve-out and no
+    /// DC band (see the decoder `CoeffBaseContext::select` `is_lf == false` branch in
+    /// `crates/splot-decode/src/tile_payload/cdf/coeff_context.rs:428-440`).
+    /// `tcq_ctx = (tcqState >> 1) & 1` is 0 when TCQ is off.
+    CoeffBase {
+        coeff_cdf_q_ctx: usize,
+        tx_size: usize,
+        ctx: usize,
+        tcq_ctx: usize,
+    },
     /// `TileDcSignCdf[coeff_cdf_q_ctx][plane_type][group][ctx]`.
     DcSign {
         coeff_cdf_q_ctx: usize,
@@ -743,7 +769,9 @@ impl CoefficientCdfRowSelector {
             Self::CoeffBrLf { .. } | Self::CoeffBr { .. } => {
                 CoefficientTokenSyntax::CoeffBr.as_str()
             }
-            Self::CoeffBaseLf { .. } => CoefficientTokenSyntax::CoeffBase.as_str(),
+            Self::CoeffBaseLf { .. } | Self::CoeffBase { .. } => {
+                CoefficientTokenSyntax::CoeffBase.as_str()
+            }
             Self::CoeffBaseEob { .. } => CoefficientTokenSyntax::CoeffBaseEob.as_str(),
             Self::IntraTxTypeSet1 { .. } => CoefficientTokenSyntax::IntraTxType.as_str(),
             Self::SecTxTypeIntra { .. } => CoefficientTokenSyntax::SecTxType.as_str(),

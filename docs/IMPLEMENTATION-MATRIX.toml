@@ -4967,6 +4967,41 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-COEFF-GENERAL-WALK-HF-MULTI"
+name = "Encoder general coefficient walk: eob 12-16 (non-EOB high-frequency coefficients)"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20.7.27", "8.3.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/coefficient_tokenization"
+openspec_change = "coeff-general-walk-hf-multi"
+tracking_issue = ""
+owner = "encoder"
+risk = "medium"
+notes = "Private, non-emitting encoder coefficient tokenizer. Sub-brick 5d-ii completes the 4x4 luma coefficient walk: lifts `tokenize_general_lf_luma_block` from eob 11 to eob 16 (the full 4x4 scan), adding the NON-EOB high-frequency `coeff_base` family (scan positions 11..=15 now carry non-EOB HF coefficients). The encoder now tokenizes any 4x4 DCT_DCT luma block from eob 1 to 16. Adds `coeff_base_hf_luma_context` (decoder CoeffBaseContext::select is_lf=false branch, coeff_context.rs:428-440): same neighbour mag-sum as LF but magLimit=3 for EVERY neighbour (NO low-frequency near-DC magLimit=5 carve-out, NO c==0/DC special case), ctx2=min((mag+1)>>1,4), 2D bands row+col<6 -> ctx2, <8 -> +5, else +10. Routes the new `CoeffBase` selector + `coeff_base_hf_token` (level capped at NUM_BASE_LEVELS+1=3, the 4-symbol `DEFAULT_COEFF_BASE_CDF`, sized to the full 20-context dimension hole-free) through BOTH §8.2 proof routers. compose_base_pass selects per NON-EOB coefficient by `is_lf_position(pos)` (LF -> coeff_base_lf, HF -> coeff_base_hf). Reuses all 5d-i HF infrastructure (the HF coeff_br, MAX_HF_BASE_BR_MAGNITUDE=5 cap, NUM_BASE_LEVELS). LF + 5d-i HF-EOB paths byte-identical. 4-agent adversarially reviewed (HF context divergences, level cap/overflow sweep, dual-router parity, LF preservation — all correct). §8.2 SELF-CONSISTENCY only; decoder context/table conformance deferred to the splot-decode cross-check. Out of scope: golomb magnitudes (>5 HF / >7 LF, 5e), chroma, non-4x4 sizes, non-DCT_DCT, packets. (general_walk.rs is at the 1000-line limit; the recovery half splits out in 5e.)"
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-encode/src/coefficient_tokenization/general_walk_hf_multi_tests.rs",
+]
+commands = ["cargo test -p splot-encode general_walk --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-INTRA-BLOCK-TRACE-TWO-COEFF"
 name = "Encoder eob=2 multi-coefficient block trace"
 category = "encoder"

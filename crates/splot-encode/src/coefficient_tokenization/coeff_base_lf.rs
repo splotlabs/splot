@@ -21,6 +21,20 @@ use super::{
 const COEFF_BASE_LF_NEAR_DC_MAG_LIMIT: u32 = 5;
 const COEFF_BASE_MAG_LIMIT: u32 = 3;
 
+// AV2 § 8.3.2 `coeff_base` HIGH-frequency luma 2D band boundaries and offsets
+// (mirroring the decoder `CoeffBaseContext` HF branch, `is_lf == false`,
+// `class_idx == 0`): `ctx2 = min(ctx, 4)`; `row + col < 6 -> ctx2`,
+// `row + col < 8 -> ctx2 + 5`, else `ctx2 + 10`. The 1-D classes map to
+// `ctx2 + 15`. There is NO near-DC `magLimit = 5` carve-out and NO `c == 0` / DC
+// special case (both are low-frequency only): every HF neighbour clamps to
+// `COEFF_BASE_MAG_LIMIT = 3`.
+const COEFF_BASE_HF_CTX2_CLAMP: usize = 4;
+const COEFF_BASE_HF_2D_BAND0_DIAGONAL: usize = 6;
+const COEFF_BASE_HF_2D_BAND1_DIAGONAL: usize = 8;
+const COEFF_BASE_HF_2D_BAND1_OFFSET: usize = 5;
+const COEFF_BASE_HF_2D_BAND2_OFFSET: usize = 10;
+const COEFF_BASE_HF_1D_OFFSET: usize = 15;
+
 /// AV2 § 3 `MAX_BASE_BR_RANGE` = `COEFF_BASE_RANGE (3) + NUM_BASE_LEVELS (2) + 1`
 /// (`03-symbols.md`): the `coeff_br` magnitude-sum clamp is `MAX_BASE_BR_RANGE - 1`.
 /// A single integer, not a table (the decoder's private
@@ -101,6 +115,78 @@ pub(crate) fn coeff_base_lf_luma_context(
         } else {
             LF_SIG_COEF_CONTEXTS_2D + 7 + ctx.min(4)
         }
+    }
+}
+
+/// Derives the AV2 § 8.3.2 `coeff_base` HIGH-frequency LUMA CDF context for a
+/// high-frequency luma coefficient at scan position `pos`, given the per-block
+/// `Level[]` magnitudes (row-major, `txw`-wide; `level[row * txw + col]`).
+///
+/// This mirrors the decoder's `CoeffBaseContext` HIGH-frequency luma branch
+/// (`crates/splot-decode/src/tile_payload/cdf/coeff_context.rs:428-440`, AV2
+/// § 8.3.2, the `is_lf == false`, `plane == 0` path). It shares the
+/// significant-neighbour magnitude-sum loop with [`coeff_base_lf_luma_context`]
+/// (`num = SIG_REF_DIFF_OFFSET_NUM = 5`, the `SIG_REF_DIFF_OFFSET[class][0..5]`
+/// offsets, saturating geometry, the `flat < level.len()` guard), but DIVERGES from
+/// the low-frequency branch in three ways:
+///
+/// - `magLimit` is `COEFF_BASE_MAG_LIMIT = 3` for EVERY neighbour — there is NO
+///   low-frequency near-DC `magLimit = 5` carve-out (the LF `class_idx == 0 || idx
+///   < 2` case),
+/// - there is NO `c == 0` / DC special case (low-frequency only), and
+/// - the context is `ctx = (mag + 1) >> 1`, `ctx2 = min(ctx, 4)`, then for the 2D
+///   class (`class_idx == 0`) banded by raster diagonal: `row + col < 6 -> ctx2`,
+///   `row + col < 8 -> ctx2 + 5`, else `ctx2 + 10`; the 1-D classes map to
+///   `ctx2 + 15`.
+///
+/// `tx_class` is `0` = `TX_CLASS_2D`, `1` = `TX_CLASS_HORIZ`, `2` = `TX_CLASS_VERT`
+/// (out-of-range treated as 2D). It is total and panic-free: geometry is saturating
+/// and out-of-range or short-slice neighbour reads contribute `0` (the spec's
+/// `refRow < txh && refCol < txw` guard). It is scoped to HIGH-frequency LUMA
+/// coefficients; chroma and the low-frequency bands are out of scope here (use
+/// [`coeff_base_lf_luma_context`] for the latter).
+pub(crate) fn coeff_base_hf_luma_context(
+    pos: usize,
+    bwl: u32,
+    txw: usize,
+    txh: usize,
+    tx_class: usize,
+    level: &[u32],
+) -> usize {
+    let row = pos.checked_shr(bwl).unwrap_or(0);
+    let col = pos - row.checked_shl(bwl).unwrap_or(0);
+    let class_idx = if tx_class < 3 { tx_class } else { 0 };
+    let mut mag: u32 = 0;
+    let mut idx = 0;
+    while idx < SIG_REF_DIFF_OFFSET_NUM {
+        let off = SIG_REF_DIFF_OFFSET[class_idx][idx];
+        let ref_row = row.saturating_add(off[0] as usize);
+        let ref_col = col.saturating_add(off[1] as usize);
+        // HF: every neighbour clamps to `magLimit = 3` (no near-DC carve-out).
+        if ref_row < txh && ref_col < txw {
+            let flat = ref_row.saturating_mul(txw).saturating_add(ref_col);
+            if flat < level.len() {
+                let v = level[flat];
+                mag += if v < COEFF_BASE_MAG_LIMIT {
+                    v
+                } else {
+                    COEFF_BASE_MAG_LIMIT
+                };
+            }
+        }
+        idx += 1;
+    }
+    let ctx2 = (((mag + 1) >> 1) as usize).min(COEFF_BASE_HF_CTX2_CLAMP);
+    if class_idx == 0 {
+        if row + col < COEFF_BASE_HF_2D_BAND0_DIAGONAL {
+            ctx2
+        } else if row + col < COEFF_BASE_HF_2D_BAND1_DIAGONAL {
+            ctx2 + COEFF_BASE_HF_2D_BAND1_OFFSET
+        } else {
+            ctx2 + COEFF_BASE_HF_2D_BAND2_OFFSET
+        }
+    } else {
+        ctx2 + COEFF_BASE_HF_1D_OFFSET
     }
 }
 
