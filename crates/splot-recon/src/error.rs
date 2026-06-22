@@ -644,6 +644,14 @@ pub enum ReconError {
         /// The derived intermediate-array height.
         intermediate_height: usize,
     },
+    /// Two § 7.13.3.18 compound predictors being blended did not cover the same
+    /// number of output samples.
+    CompoundBlendLengthMismatch {
+        /// Left predictor sample count.
+        left_len: usize,
+        /// Right predictor sample count.
+        right_len: usize,
+    },
 }
 
 impl fmt::Display for ReconError {
@@ -1201,6 +1209,13 @@ impl fmt::Display for ReconError {
             } => write!(
                 f,
                 "subpel vertical-pass base row {base} exceeds intermediate height {intermediate_height}"
+            ),
+            Self::CompoundBlendLengthMismatch {
+                left_len,
+                right_len,
+            } => write!(
+                f,
+                "compound blend predictor length mismatch: left {left_len} samples, right {right_len} samples"
             ),
         }
     }

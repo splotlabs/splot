@@ -12,9 +12,11 @@ use splot_core::tables::cdf::{
     DEFAULT_COEFF_BASE_LF_EOB_CDF, DEFAULT_COEFF_BASE_LF_EOB_UV_CDF, DEFAULT_COEFF_BASE_LF_UV_CDF,
     DEFAULT_COEFF_BASE_PH_CDF, DEFAULT_COEFF_BASE_UV_CDF, DEFAULT_COEFF_BR_CDF,
     DEFAULT_COEFF_BR_IDTX_CDF, DEFAULT_COEFF_BR_LF_CDF, DEFAULT_COEFF_BR_UV_CDF,
+    DEFAULT_COMP_GROUP_IDX_CDF, DEFAULT_COMP_MODE_CDF, DEFAULT_COMP_REF0_CDF,
+    DEFAULT_COMP_REF1_CDF, DEFAULT_COMPOUND_MODE_NON_JOINT_CDF, DEFAULT_CWP_IDX_CDF,
     DEFAULT_DC_SIGN_CDF, DEFAULT_EOB_EXTRA_CDF, DEFAULT_EOB_PT_16_CDF, DEFAULT_EOB_PT_32_CDF,
     DEFAULT_EOB_PT_64_CDF, DEFAULT_EOB_PT_128_CDF, DEFAULT_EOB_PT_256_CDF, DEFAULT_EOB_PT_512_CDF,
-    DEFAULT_EOB_PT_1024_CDF, DEFAULT_IDTX_SIGN_CDF, DEFAULT_TXB_SKIP_CDF,
+    DEFAULT_EOB_PT_1024_CDF, DEFAULT_IDTX_SIGN_CDF, DEFAULT_IS_JOINT_CDF, DEFAULT_TXB_SKIP_CDF,
     DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF, DEFAULT_V_TXB_SKIP_CDF, DEFAULT_Y_MODE_INDEX_CDF,
     DEFAULT_Y_MODE_SET_CDF,
 };
@@ -46,6 +48,16 @@ fn frame_cdf_subset_copies_generated_defaults_without_aliasing() {
     );
     assert_eq!(frame.rows().v_txb_skip(), &DEFAULT_V_TXB_SKIP_CDF);
     assert_eq!(frame.rows().eob_extra(), &DEFAULT_EOB_EXTRA_CDF);
+    assert_eq!(frame.rows().comp_mode(), &DEFAULT_COMP_MODE_CDF);
+    assert_eq!(frame.rows().is_joint(), &DEFAULT_IS_JOINT_CDF);
+    assert_eq!(
+        frame.rows().compound_mode_non_joint(),
+        &DEFAULT_COMPOUND_MODE_NON_JOINT_CDF
+    );
+    assert_eq!(frame.rows().comp_group_idx(), &DEFAULT_COMP_GROUP_IDX_CDF);
+    assert_eq!(frame.rows().cwp_idx(), &DEFAULT_CWP_IDX_CDF);
+    assert_eq!(frame.rows().comp_ref0(), &DEFAULT_COMP_REF0_CDF);
+    assert_eq!(frame.rows().comp_ref1(), &DEFAULT_COMP_REF1_CDF);
 
     let mut tile = frame.tile_copy();
     tile.rows_mut().do_split[0][0][0] = 1234;
@@ -97,6 +109,155 @@ fn frame_cdf_subset_copies_generated_defaults_without_aliasing() {
         })
         .unwrap(),
         DEFAULT_DO_UNEVEN_4WAY_PARTITION_CDF[0][8].as_slice()
+    );
+}
+
+#[test]
+fn compound_inter_cdf_selectors_load_defaults_and_bound_contexts() {
+    let frame = FrameCdfSubset::from_defaults();
+    let mut tile = frame.tile_copy();
+
+    for (ctx, expected) in DEFAULT_COMP_MODE_CDF.iter().enumerate() {
+        assert_eq!(
+            tile.row(TileCdfSelector::CompMode { ctx }).unwrap(),
+            expected.as_slice(),
+            "comp_mode ctx {ctx}"
+        );
+    }
+    for (ctx, expected) in DEFAULT_IS_JOINT_CDF.iter().enumerate() {
+        assert_eq!(
+            tile.row(TileCdfSelector::IsJoint { ctx }).unwrap(),
+            expected.as_slice(),
+            "is_joint ctx {ctx}"
+        );
+    }
+    for (ctx, expected) in DEFAULT_COMPOUND_MODE_NON_JOINT_CDF.iter().enumerate() {
+        assert_eq!(
+            tile.row(TileCdfSelector::CompoundModeNonJoint { ctx })
+                .unwrap(),
+            expected.as_slice(),
+            "compound_mode_non_joint ctx {ctx}"
+        );
+    }
+    for (ctx, expected) in DEFAULT_COMP_GROUP_IDX_CDF.iter().enumerate() {
+        assert_eq!(
+            tile.row(TileCdfSelector::CompGroupIdx { ctx }).unwrap(),
+            expected.as_slice(),
+            "comp_group_idx ctx {ctx}"
+        );
+    }
+    for (idx, expected) in DEFAULT_CWP_IDX_CDF.iter().enumerate() {
+        assert_eq!(
+            tile.row(TileCdfSelector::CwpIdx { idx }).unwrap(),
+            expected.as_slice(),
+            "cwp_idx idx {idx}"
+        );
+    }
+    for (ctx, ref_rows) in DEFAULT_COMP_REF0_CDF.iter().enumerate() {
+        for (ref_idx, expected) in ref_rows.iter().enumerate() {
+            assert_eq!(
+                tile.row(TileCdfSelector::CompRef0 { ctx, ref_idx })
+                    .unwrap(),
+                expected.as_slice(),
+                "comp_ref0 ctx {ctx} ref {ref_idx}"
+            );
+        }
+    }
+    for (ctx, bit_banks) in DEFAULT_COMP_REF1_CDF.iter().enumerate() {
+        for (bit_type, ref_rows) in bit_banks.iter().enumerate() {
+            for (ref_idx, expected) in ref_rows.iter().enumerate() {
+                assert_eq!(
+                    tile.row(TileCdfSelector::CompRef1 {
+                        ctx,
+                        bit_type,
+                        ref_idx
+                    })
+                    .unwrap(),
+                    expected.as_slice(),
+                    "comp_ref1 ctx {ctx} bit_type {bit_type} ref {ref_idx}"
+                );
+            }
+        }
+    }
+
+    tile.with_row_mut(TileCdfSelector::CompMode { ctx: 0 }, |row| row[0] = 12_345)
+        .unwrap();
+    assert_eq!(
+        frame.rows().comp_mode()[0],
+        DEFAULT_COMP_MODE_CDF[0],
+        "tile_copy mutation must not alias frame defaults"
+    );
+
+    assert_eq!(
+        tile.row(TileCdfSelector::CompMode { ctx: 5 }).unwrap_err(),
+        TileCdfError::SelectorOutOfRange {
+            array: TileCdfArray::CompMode,
+            index_name: "ctx",
+            actual: 5,
+            max_exclusive: 5,
+        }
+    );
+    assert_eq!(
+        tile.row(TileCdfSelector::IsJoint { ctx: 2 }).unwrap_err(),
+        TileCdfError::SelectorOutOfRange {
+            array: TileCdfArray::IsJoint,
+            index_name: "ctx",
+            actual: 2,
+            max_exclusive: 2,
+        }
+    );
+    assert_eq!(
+        tile.row(TileCdfSelector::CompoundModeNonJoint { ctx: 5 })
+            .unwrap_err(),
+        TileCdfError::SelectorOutOfRange {
+            array: TileCdfArray::CompoundModeNonJoint,
+            index_name: "ctx",
+            actual: 5,
+            max_exclusive: 5,
+        }
+    );
+    assert_eq!(
+        tile.row(TileCdfSelector::CompGroupIdx { ctx: 12 })
+            .unwrap_err(),
+        TileCdfError::SelectorOutOfRange {
+            array: TileCdfArray::CompGroupIdx,
+            index_name: "ctx",
+            actual: 12,
+            max_exclusive: 12,
+        }
+    );
+    assert_eq!(
+        tile.row(TileCdfSelector::CwpIdx { idx: 4 }).unwrap_err(),
+        TileCdfError::SelectorOutOfRange {
+            array: TileCdfArray::CwpIdx,
+            index_name: "idx",
+            actual: 4,
+            max_exclusive: 4,
+        }
+    );
+    assert_eq!(
+        tile.row(TileCdfSelector::CompRef0 { ctx: 3, ref_idx: 0 })
+            .unwrap_err(),
+        TileCdfError::SelectorOutOfRange {
+            array: TileCdfArray::CompRef0,
+            index_name: "ctx",
+            actual: 3,
+            max_exclusive: 3,
+        }
+    );
+    assert_eq!(
+        tile.row(TileCdfSelector::CompRef1 {
+            ctx: 3,
+            bit_type: 0,
+            ref_idx: 0
+        })
+        .unwrap_err(),
+        TileCdfError::SelectorOutOfRange {
+            array: TileCdfArray::CompRef1,
+            index_name: "ctx",
+            actual: 3,
+            max_exclusive: 3,
+        }
     );
 }
 

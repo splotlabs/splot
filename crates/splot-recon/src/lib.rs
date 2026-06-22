@@ -217,7 +217,7 @@ pub use reference::{
 pub use secondary_transform::{SecondaryInverseTransform, secondary_inverse_transform};
 pub use subpel_mc::{
     InterpolationFilter, ReferencePlaneView, SUBPEL_FILTERS, SubpelPredictParams,
-    subpel_predict_block,
+    blend_compound_average_equal, subpel_predict_block, subpel_predict_block_compound_intermediate,
 };
 pub use transform_params::{TransformPass, dpcm_direction, get_transform_1d_type, transform_shift};
 pub use views::{FrameMut, FrameRef, PlaneMut, PlaneMutRows, PlaneRef, PlaneRefRows};

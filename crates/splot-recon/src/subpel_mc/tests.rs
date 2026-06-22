@@ -418,6 +418,62 @@ fn ten_bit_clip_uses_full_range() {
 }
 
 #[test]
+fn compound_intermediate_keeps_unclipped_prescaled_predictor() {
+    // §7.13.3.18 compound uses InterRound1=7, so a full-pel flat 8-bit sample is
+    // kept as 16 * sample until §7.13.3.16 performs the compound blend and final
+    // Clip1. This guards against accidentally reusing the single-reference
+    // clipped output as a compound predictor.
+    let ref_w = 8usize;
+    let ref_h = 8usize;
+    let samples = build_ref(vec![255u16; ref_w * ref_h], ref_w, ref_h);
+    let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
+    let params = full_pel_params(
+        InterpolationFilter::EightTap,
+        4,
+        4,
+        2,
+        2,
+        ref_w as i64,
+        ref_h as i64,
+    );
+
+    let intermediate = subpel_predict_block_compound_intermediate(&view, &params).unwrap();
+    let prescale = 1i32 << (INTER_ROUND1_NON_COMPOUND - INTER_ROUND1_COMPOUND);
+    assert!(
+        intermediate.iter().all(|&sample| sample == 255 * prescale),
+        "compound intermediate: {intermediate:?}"
+    );
+
+    let blended =
+        blend_compound_average_equal(&intermediate, &intermediate, BitDepth::Eight).unwrap();
+    assert!(
+        blended.iter().all(|&sample| sample == 255),
+        "equal-weight blend clips after averaging: {blended:?}"
+    );
+}
+
+#[test]
+fn compound_equal_average_blend_rounds_and_clips() {
+    // `CWP_EQUAL == 8` simplifies to Round2(pred0 + pred1, 5) for the AV2
+    // compound rounding constants, then Clip1.
+    let left = [20 * 16, 60 * 16, 255 * 16];
+    let right = [44 * 16, 120 * 16, 255 * 16];
+    let out = blend_compound_average_equal(&left, &right, BitDepth::Eight).unwrap();
+    assert_eq!(out, [32, 90, 255]);
+}
+
+#[test]
+fn compound_blend_rejects_length_mismatch() {
+    assert!(matches!(
+        blend_compound_average_equal(&[0], &[0, 1], BitDepth::Eight),
+        Err(ReconError::CompoundBlendLengthMismatch {
+            left_len: 1,
+            right_len: 2
+        })
+    ));
+}
+
+#[test]
 fn small_block_uses_four_tap_filter() {
     // §7.13.3.18: a w<=4 block substitutes the 4-tap filter (index 4 for EIGHTTAP)
     // in the horizontal pass; a h<=4 block does so in the vertical pass. The

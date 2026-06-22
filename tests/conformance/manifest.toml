@@ -398,6 +398,26 @@ multi-reference runtime brick (DECODE-INTER-MULTIREF-RUNTIME); validates clean."
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-3frame-compound-average-64x64.ivf"
+description = """
+Three-frame COMPOUND-AVERAGE inter stream (IVF, 64x64) from project-owned \
+synthetic 8-bit 4:2:0 input: frame 0 is a smooth low-frequency DC_PRED intra \
+surface, frame 1 is the same surface plus an 8x8 checker delta and is coded as a \
+single-reference NEWMV inter block, and frame 2 is the per-pixel average of frames \
+0 and 1. The encode uses --qp=96, --sb-size=64, --min/max-partition-size=64, \
+--max-reference-frames=2, --cdf-update-mode=0, broad decode tools disabled, and \
+--enable-onesided-comp=1 while CWP, masked compound, TIP, refine-MV, OPFL, warped \
+motion, temporal MV, and residual-altering inter tools remain disabled. AVM \
+inspect shows frame 2 is a single 64x64 NEAR_NEARMV compound block over refs \
+[0, 1], compound_type 0, skip=1, and both MVs zero; the pre-change decoder reaches \
+the structured decode/unsupported-feature inter_reference_select gate. avmdec \
+--rawvideo --i420 and dav2d --demuxer ivf --muxer yuv decode the whole stream \
+byte-for-byte identically (decoded-output md5 34074c6945348b146f84551a20d9affd, \
+18432 bytes). The committed verified target for the minimal equal-weight \
+compound-average brick (DECODE-INTER-COMPOUND-AVERAGE); validates clean."""
+expect = "clean"
+
+[[vector]]
 path = "vectors/invalid/syn-key-intra-64x64-truncated.ivf"
 description = """
 The intra key-frame vector truncated to 100 bytes (mid-payload): the IVF frame \

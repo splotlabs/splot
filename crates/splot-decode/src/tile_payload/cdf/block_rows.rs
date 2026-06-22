@@ -6,10 +6,12 @@
 //! Feature tracking: `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER`.
 
 use splot_core::tables::cdf::{
-    DEFAULT_COL_MV_GREATER_CDF, DEFAULT_COL_MV_INDEX_CDF, DEFAULT_DC_SIGN_CDF,
+    DEFAULT_COL_MV_GREATER_CDF, DEFAULT_COL_MV_INDEX_CDF, DEFAULT_COMP_GROUP_IDX_CDF,
+    DEFAULT_COMP_MODE_CDF, DEFAULT_COMP_REF0_CDF, DEFAULT_COMP_REF1_CDF,
+    DEFAULT_COMPOUND_MODE_NON_JOINT_CDF, DEFAULT_CWP_IDX_CDF, DEFAULT_DC_SIGN_CDF,
     DEFAULT_DRL_MODE_CDF, DEFAULT_EOB_EXTRA_CDF, DEFAULT_EOB_PT_16_CDF, DEFAULT_EOB_PT_32_CDF,
     DEFAULT_EOB_PT_64_CDF, DEFAULT_EOB_PT_128_CDF, DEFAULT_EOB_PT_256_CDF, DEFAULT_EOB_PT_512_CDF,
-    DEFAULT_EOB_PT_1024_CDF, DEFAULT_INTERP_FILTER_CDF, DEFAULT_IS_INTER_CDF,
+    DEFAULT_EOB_PT_1024_CDF, DEFAULT_INTERP_FILTER_CDF, DEFAULT_IS_INTER_CDF, DEFAULT_IS_JOINT_CDF,
     DEFAULT_JOINT_SHELL_LAST_TWO_CLASSES_CDF, DEFAULT_JOINT_SHELL_SET_CDF,
     DEFAULT_JOINT_SHELL6_CLASS0_CDF, DEFAULT_JOINT_SHELL6_CLASS1_CDF,
     DEFAULT_SHELL_OFFSET_CLASS2_CDF, DEFAULT_SHELL_OFFSET_LOW_CLASS_CDF,
@@ -55,6 +57,16 @@ const DRL_MODE_CONTEXTS: usize = 5;
 // (`0..NumTotalRefs - 1`).
 const REF_CONTEXTS: usize = 3;
 const REFS_PER_FRAME_MINUS_1: usize = 6;
+// §9.3 compound mode_info banks used by §5.20.7.10 / §5.20.7.6 for the
+// two-reference compound-average subset. `comp_mode` and `is_joint` are binary
+// rows; `compound_mode_non_joint` has five symbols plus a count slot.
+const COMP_MODE_CONTEXTS: usize = 5;
+const IS_JOINT_CONTEXTS: usize = 2;
+const COMPOUND_MODE_CONTEXTS: usize = 5;
+const COMPOUND_MODE_NON_JOINT_CDF_ROW_LEN: usize = 6;
+const COMP_GROUP_IDX_CONTEXTS: usize = 12;
+const CWP_IDX_CONTEXTS: usize = 4;
+const COMP_REF1_BIT_TYPES: usize = 2;
 // §9.3 / §8.3.2 SHELL-coded `read_mv` (§5.20.7.20) CDF banks for the verified
 // EighthPel (`MvPrecision == MV_PRECISION_EIGHTH_PEL`, P == 6) subset. Only the
 // P == 6 `shell_class` bank pair is wired; other precisions are rejected by the
@@ -99,6 +111,16 @@ pub(crate) type DrlModeCdfRows = [[[i32; CDF_ROW_LEN]; DRL_MODE_CONTEXTS]; DRL_M
 // §9.3 `Default_Single_Ref_Cdf[ REF_CONTEXTS ][ REFS_PER_FRAME - 1 ][ 3 ]`: the
 // binary §5.20.7.12 `single_ref` symbol keeps the generic width 3 (`CDF_ROW_LEN`).
 pub(crate) type SingleRefCdfRows = [[[i32; CDF_ROW_LEN]; REFS_PER_FRAME_MINUS_1]; REF_CONTEXTS];
+// §9.3 compound inter mode_info banks.
+pub(crate) type CompModeCdfRows = [[i32; CDF_ROW_LEN]; COMP_MODE_CONTEXTS];
+pub(crate) type IsJointCdfRows = [[i32; CDF_ROW_LEN]; IS_JOINT_CONTEXTS];
+pub(crate) type CompoundModeNonJointCdfRows =
+    [[i32; COMPOUND_MODE_NON_JOINT_CDF_ROW_LEN]; COMPOUND_MODE_CONTEXTS];
+pub(crate) type CompGroupIdxCdfRows = [[i32; CDF_ROW_LEN]; COMP_GROUP_IDX_CONTEXTS];
+pub(crate) type CwpIdxCdfRows = [[i32; CDF_ROW_LEN]; CWP_IDX_CONTEXTS];
+pub(crate) type CompRef0CdfRows = [[[i32; CDF_ROW_LEN]; REFS_PER_FRAME_MINUS_1]; REF_CONTEXTS];
+pub(crate) type CompRef1CdfRows =
+    [[[[i32; CDF_ROW_LEN]; REFS_PER_FRAME_MINUS_1]; COMP_REF1_BIT_TYPES]; REF_CONTEXTS];
 // §9.3 SHELL-coded `read_mv` banks. `shell_set` / `joint_shell_last_two_classes` /
 // `shell_offset_class2` are binary (width 3 == `CDF_ROW_LEN`). The P == 6 EighthPel
 // `shell_class` banks are width 9 (8 shell-class symbols + count). The offset / col
@@ -244,6 +266,51 @@ pub(crate) enum BlockCdfSelector {
         /// The §5.20.7.12 loop counter `ref` (`0..REFS_PER_FRAME_MINUS_1`).
         ref_idx: usize,
     },
+    /// `TileCompModeCdf[ctx]` (AV2 § 8.3.2): the §5.20.7.10 `comp_mode` symbol.
+    CompMode {
+        /// §8.3.2 compound-reference mode context (`0..COMP_MODE_CONTEXTS`).
+        ctx: usize,
+    },
+    /// `TileIsJointCdf[ctx]` (AV2 § 8.3.2): the §5.20.7.6 `is_joint` symbol.
+    IsJoint {
+        /// §8.3.2 `is_joint` context (`0..IS_JOINT_CONTEXTS`).
+        ctx: usize,
+    },
+    /// `TileCompoundModeNonJointCdf[NewMvContext]` (AV2 § 8.3.2): the
+    /// §5.20.7.6 non-joint compound mode symbol.
+    CompoundModeNonJoint {
+        /// `NewMvContext` (`0..COMPOUND_MODE_CONTEXTS`).
+        ctx: usize,
+    },
+    /// `TileCompGroupIdxCdf[ctx]` (AV2 § 8.3.2): the §5.20.7.16
+    /// `comp_group_idx` symbol.
+    CompGroupIdx {
+        /// `comp_group_idx` context (`0..COMP_GROUP_IDX_CONTEXTS`).
+        ctx: usize,
+    },
+    /// `TileCwpIdxCdf[idx]` (AV2 § 8.3.2): the §5.20.7.6 `cwp_idx` symbol.
+    CwpIdx {
+        /// CWP truncated-unary index (`0..CWP_IDX_CONTEXTS`).
+        idx: usize,
+    },
+    /// `TileCompRef0Cdf[ctx][ref]` (AV2 § 8.3.2): the §5.20.7.11 `comp_ref`
+    /// symbol before any compound reference has been found.
+    CompRef0 {
+        /// §8.3.2 neighbour-derived comp_ref context (`0..REF_CONTEXTS`).
+        ctx: usize,
+        /// The §5.20.7.11 loop counter `ref` (`0..REFS_PER_FRAME_MINUS_1`).
+        ref_idx: usize,
+    },
+    /// `TileCompRef1Cdf[ctx][bitType][ref]` (AV2 § 8.3.2): the §5.20.7.11
+    /// `comp_ref` symbol after the first compound reference has been found.
+    CompRef1 {
+        /// §8.3.2 neighbour-derived comp_ref context (`0..REF_CONTEXTS`).
+        ctx: usize,
+        /// Same-side/opposite-side bit type (`0..COMP_REF1_BIT_TYPES`).
+        bit_type: usize,
+        /// The §5.20.7.11 loop counter `ref` (`0..REFS_PER_FRAME_MINUS_1`).
+        ref_idx: usize,
+    },
     /// `TileJointShellSetCdf[MvCtx]` (AV2 § 8.3.2): the §5.20.7.20 `shell_set`
     /// binary symbol (MvCtx == 0 — single-context).
     JointShellSet,
@@ -317,6 +384,13 @@ pub(crate) struct BlockCdfRows {
     pub(super) single_mode: SingleModeCdfRows,
     pub(super) drl_mode: DrlModeCdfRows,
     pub(super) single_ref: SingleRefCdfRows,
+    pub(super) comp_mode: CompModeCdfRows,
+    pub(super) is_joint: IsJointCdfRows,
+    pub(super) compound_mode_non_joint: CompoundModeNonJointCdfRows,
+    pub(super) comp_group_idx: CompGroupIdxCdfRows,
+    pub(super) cwp_idx: CwpIdxCdfRows,
+    pub(super) comp_ref0: CompRef0CdfRows,
+    pub(super) comp_ref1: CompRef1CdfRows,
     pub(super) joint_shell_set: JointShellSetCdfRow,
     pub(super) joint_shell6_class0: JointShell6ClassCdfRow,
     pub(super) joint_shell6_class1: JointShell6ClassCdfRow,
@@ -353,6 +427,13 @@ impl BlockCdfRows {
             single_mode: DEFAULT_SINGLE_MODE_CDF,
             drl_mode: DEFAULT_DRL_MODE_CDF,
             single_ref: DEFAULT_SINGLE_REF_CDF,
+            comp_mode: DEFAULT_COMP_MODE_CDF,
+            is_joint: DEFAULT_IS_JOINT_CDF,
+            compound_mode_non_joint: DEFAULT_COMPOUND_MODE_NON_JOINT_CDF,
+            comp_group_idx: DEFAULT_COMP_GROUP_IDX_CDF,
+            cwp_idx: DEFAULT_CWP_IDX_CDF,
+            comp_ref0: DEFAULT_COMP_REF0_CDF,
+            comp_ref1: DEFAULT_COMP_REF1_CDF,
             joint_shell_set: DEFAULT_JOINT_SHELL_SET_CDF,
             joint_shell6_class0: DEFAULT_JOINT_SHELL6_CLASS0_CDF,
             joint_shell6_class1: DEFAULT_JOINT_SHELL6_CLASS1_CDF,
@@ -549,6 +630,113 @@ impl BlockCdfRows {
                     actual: ref_idx,
                     max_exclusive: REFS_PER_FRAME_MINUS_1,
                 })?;
+                Ok(row.as_slice())
+            }
+            BlockCdfSelector::CompMode { ctx } => {
+                let row = self
+                    .comp_mode
+                    .get(ctx)
+                    .ok_or(TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::CompMode,
+                        index_name: "ctx",
+                        actual: ctx,
+                        max_exclusive: COMP_MODE_CONTEXTS,
+                    })?;
+                Ok(row.as_slice())
+            }
+            BlockCdfSelector::IsJoint { ctx } => {
+                let row = self
+                    .is_joint
+                    .get(ctx)
+                    .ok_or(TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::IsJoint,
+                        index_name: "ctx",
+                        actual: ctx,
+                        max_exclusive: IS_JOINT_CONTEXTS,
+                    })?;
+                Ok(row.as_slice())
+            }
+            BlockCdfSelector::CompoundModeNonJoint { ctx } => {
+                let row = self.compound_mode_non_joint.get(ctx).ok_or(
+                    TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::CompoundModeNonJoint,
+                        index_name: "ctx",
+                        actual: ctx,
+                        max_exclusive: COMPOUND_MODE_CONTEXTS,
+                    },
+                )?;
+                Ok(row.as_slice())
+            }
+            BlockCdfSelector::CompGroupIdx { ctx } => {
+                let row = self
+                    .comp_group_idx
+                    .get(ctx)
+                    .ok_or(TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::CompGroupIdx,
+                        index_name: "ctx",
+                        actual: ctx,
+                        max_exclusive: COMP_GROUP_IDX_CONTEXTS,
+                    })?;
+                Ok(row.as_slice())
+            }
+            BlockCdfSelector::CwpIdx { idx } => {
+                let row = self
+                    .cwp_idx
+                    .get(idx)
+                    .ok_or(TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::CwpIdx,
+                        index_name: "idx",
+                        actual: idx,
+                        max_exclusive: CWP_IDX_CONTEXTS,
+                    })?;
+                Ok(row.as_slice())
+            }
+            BlockCdfSelector::CompRef0 { ctx, ref_idx } => {
+                let bank = self
+                    .comp_ref0
+                    .get(ctx)
+                    .ok_or(TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::CompRef0,
+                        index_name: "ctx",
+                        actual: ctx,
+                        max_exclusive: REF_CONTEXTS,
+                    })?;
+                let row = bank.get(ref_idx).ok_or(TileCdfError::SelectorOutOfRange {
+                    array: TileCdfArray::CompRef0,
+                    index_name: "ref",
+                    actual: ref_idx,
+                    max_exclusive: REFS_PER_FRAME_MINUS_1,
+                })?;
+                Ok(row.as_slice())
+            }
+            BlockCdfSelector::CompRef1 {
+                ctx,
+                bit_type,
+                ref_idx,
+            } => {
+                let bank = self
+                    .comp_ref1
+                    .get(ctx)
+                    .ok_or(TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::CompRef1,
+                        index_name: "ctx",
+                        actual: ctx,
+                        max_exclusive: REF_CONTEXTS,
+                    })?;
+                let bit_bank = bank.get(bit_type).ok_or(TileCdfError::SelectorOutOfRange {
+                    array: TileCdfArray::CompRef1,
+                    index_name: "bit_type",
+                    actual: bit_type,
+                    max_exclusive: COMP_REF1_BIT_TYPES,
+                })?;
+                let row = bit_bank
+                    .get(ref_idx)
+                    .ok_or(TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::CompRef1,
+                        index_name: "ref",
+                        actual: ref_idx,
+                        max_exclusive: REFS_PER_FRAME_MINUS_1,
+                    })?;
                 Ok(row.as_slice())
             }
             BlockCdfSelector::JointShellSet => Ok(self.joint_shell_set.as_slice()),
@@ -830,6 +1018,127 @@ impl BlockCdfRows {
                     })?;
                 Ok(row.as_mut_slice())
             }
+            BlockCdfSelector::CompMode { ctx } => {
+                let max_exclusive = self.comp_mode.len();
+                let row = self
+                    .comp_mode
+                    .get_mut(ctx)
+                    .ok_or(TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::CompMode,
+                        index_name: "ctx",
+                        actual: ctx,
+                        max_exclusive,
+                    })?;
+                Ok(row.as_mut_slice())
+            }
+            BlockCdfSelector::IsJoint { ctx } => {
+                let max_exclusive = self.is_joint.len();
+                let row = self
+                    .is_joint
+                    .get_mut(ctx)
+                    .ok_or(TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::IsJoint,
+                        index_name: "ctx",
+                        actual: ctx,
+                        max_exclusive,
+                    })?;
+                Ok(row.as_mut_slice())
+            }
+            BlockCdfSelector::CompoundModeNonJoint { ctx } => {
+                let max_exclusive = self.compound_mode_non_joint.len();
+                let row = self.compound_mode_non_joint.get_mut(ctx).ok_or(
+                    TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::CompoundModeNonJoint,
+                        index_name: "ctx",
+                        actual: ctx,
+                        max_exclusive,
+                    },
+                )?;
+                Ok(row.as_mut_slice())
+            }
+            BlockCdfSelector::CompGroupIdx { ctx } => {
+                let max_exclusive = self.comp_group_idx.len();
+                let row =
+                    self.comp_group_idx
+                        .get_mut(ctx)
+                        .ok_or(TileCdfError::SelectorOutOfRange {
+                            array: TileCdfArray::CompGroupIdx,
+                            index_name: "ctx",
+                            actual: ctx,
+                            max_exclusive,
+                        })?;
+                Ok(row.as_mut_slice())
+            }
+            BlockCdfSelector::CwpIdx { idx } => {
+                let max_exclusive = self.cwp_idx.len();
+                let row = self
+                    .cwp_idx
+                    .get_mut(idx)
+                    .ok_or(TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::CwpIdx,
+                        index_name: "idx",
+                        actual: idx,
+                        max_exclusive,
+                    })?;
+                Ok(row.as_mut_slice())
+            }
+            BlockCdfSelector::CompRef0 { ctx, ref_idx } => {
+                let bank_len = self.comp_ref0.len();
+                let bank = self
+                    .comp_ref0
+                    .get_mut(ctx)
+                    .ok_or(TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::CompRef0,
+                        index_name: "ctx",
+                        actual: ctx,
+                        max_exclusive: bank_len,
+                    })?;
+                let ref_len = bank.len();
+                let row = bank
+                    .get_mut(ref_idx)
+                    .ok_or(TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::CompRef0,
+                        index_name: "ref",
+                        actual: ref_idx,
+                        max_exclusive: ref_len,
+                    })?;
+                Ok(row.as_mut_slice())
+            }
+            BlockCdfSelector::CompRef1 {
+                ctx,
+                bit_type,
+                ref_idx,
+            } => {
+                let bank_len = self.comp_ref1.len();
+                let bank = self
+                    .comp_ref1
+                    .get_mut(ctx)
+                    .ok_or(TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::CompRef1,
+                        index_name: "ctx",
+                        actual: ctx,
+                        max_exclusive: bank_len,
+                    })?;
+                let bit_len = bank.len();
+                let bit_bank = bank
+                    .get_mut(bit_type)
+                    .ok_or(TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::CompRef1,
+                        index_name: "bit_type",
+                        actual: bit_type,
+                        max_exclusive: bit_len,
+                    })?;
+                let ref_len = bit_bank.len();
+                let row = bit_bank
+                    .get_mut(ref_idx)
+                    .ok_or(TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::CompRef1,
+                        index_name: "ref",
+                        actual: ref_idx,
+                        max_exclusive: ref_len,
+                    })?;
+                Ok(row.as_mut_slice())
+            }
             BlockCdfSelector::JointShellSet => Ok(self.joint_shell_set.as_mut_slice()),
             BlockCdfSelector::JointShell6Class { shell_set } => match shell_set {
                 0 => Ok(self.joint_shell6_class0.as_mut_slice()),
@@ -1012,6 +1321,68 @@ impl BlockCdfRows {
                 );
             }
         }
+        for ctx in 0..COMP_MODE_CONTEXTS {
+            avg_cdf_row(
+                &mut self.comp_mode[ctx],
+                &tile.comp_mode[ctx],
+                tile_num,
+                num_log2,
+            );
+        }
+        for ctx in 0..IS_JOINT_CONTEXTS {
+            avg_cdf_row(
+                &mut self.is_joint[ctx],
+                &tile.is_joint[ctx],
+                tile_num,
+                num_log2,
+            );
+        }
+        for ctx in 0..COMPOUND_MODE_CONTEXTS {
+            avg_cdf_row(
+                &mut self.compound_mode_non_joint[ctx],
+                &tile.compound_mode_non_joint[ctx],
+                tile_num,
+                num_log2,
+            );
+        }
+        for ctx in 0..COMP_GROUP_IDX_CONTEXTS {
+            avg_cdf_row(
+                &mut self.comp_group_idx[ctx],
+                &tile.comp_group_idx[ctx],
+                tile_num,
+                num_log2,
+            );
+        }
+        for idx in 0..CWP_IDX_CONTEXTS {
+            avg_cdf_row(
+                &mut self.cwp_idx[idx],
+                &tile.cwp_idx[idx],
+                tile_num,
+                num_log2,
+            );
+        }
+        for ctx in 0..REF_CONTEXTS {
+            for ref_idx in 0..REFS_PER_FRAME_MINUS_1 {
+                avg_cdf_row(
+                    &mut self.comp_ref0[ctx][ref_idx],
+                    &tile.comp_ref0[ctx][ref_idx],
+                    tile_num,
+                    num_log2,
+                );
+            }
+        }
+        for ctx in 0..REF_CONTEXTS {
+            for bit_type in 0..COMP_REF1_BIT_TYPES {
+                for ref_idx in 0..REFS_PER_FRAME_MINUS_1 {
+                    avg_cdf_row(
+                        &mut self.comp_ref1[ctx][bit_type][ref_idx],
+                        &tile.comp_ref1[ctx][bit_type][ref_idx],
+                        tile_num,
+                        num_log2,
+                    );
+                }
+            }
+        }
         avg_cdf_row(
             &mut self.joint_shell_set,
             &tile.joint_shell_set,
@@ -1137,6 +1508,27 @@ impl BlockCdfRows {
                 scale_cdf_count(&mut self.single_ref[ctx][ref_idx]);
             }
         }
+        for ctx in 0..COMP_MODE_CONTEXTS {
+            scale_cdf_count(&mut self.comp_mode[ctx]);
+        }
+        for ctx in 0..IS_JOINT_CONTEXTS {
+            scale_cdf_count(&mut self.is_joint[ctx]);
+        }
+        for ctx in 0..COMPOUND_MODE_CONTEXTS {
+            scale_cdf_count(&mut self.compound_mode_non_joint[ctx]);
+        }
+        for ctx in 0..COMP_GROUP_IDX_CONTEXTS {
+            scale_cdf_count(&mut self.comp_group_idx[ctx]);
+        }
+        for idx in 0..CWP_IDX_CONTEXTS {
+            scale_cdf_count(&mut self.cwp_idx[idx]);
+        }
+        for row in self.comp_ref0.iter_mut().flatten() {
+            scale_cdf_count(row);
+        }
+        for row in self.comp_ref1.iter_mut().flatten().flatten() {
+            scale_cdf_count(row);
+        }
         scale_cdf_count(&mut self.joint_shell_set);
         scale_cdf_count(&mut self.joint_shell6_class0);
         scale_cdf_count(&mut self.joint_shell6_class1);
@@ -1188,6 +1580,41 @@ impl BlockCdfRows {
     #[cfg(test)]
     pub(crate) const fn eob_extra(&self) -> &EobExtraCdfRows {
         &self.eob_extra
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn comp_mode(&self) -> &CompModeCdfRows {
+        &self.comp_mode
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn is_joint(&self) -> &IsJointCdfRows {
+        &self.is_joint
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn compound_mode_non_joint(&self) -> &CompoundModeNonJointCdfRows {
+        &self.compound_mode_non_joint
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn comp_group_idx(&self) -> &CompGroupIdxCdfRows {
+        &self.comp_group_idx
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn cwp_idx(&self) -> &CwpIdxCdfRows {
+        &self.cwp_idx
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn comp_ref0(&self) -> &CompRef0CdfRows {
+        &self.comp_ref0
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn comp_ref1(&self) -> &CompRef1CdfRows {
+        &self.comp_ref1
     }
 }
 

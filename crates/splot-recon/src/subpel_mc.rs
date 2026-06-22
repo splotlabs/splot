@@ -42,9 +42,17 @@ const SUBPEL_MASK: i64 = (1 << SUBPEL_BITS) - 1;
 /// pass. Fixed at 3.
 const INTER_ROUND0: u32 = 3;
 
+/// AV2 § 7.13.3.18 `FILTER_BITS`: every `Subpel_Filters` row sums to
+/// `1 << FILTER_BITS`.
+const FILTER_BITS: u32 = 7;
+
 /// AV2 § 7.13.3.16 `InterRound1`: the down-shift after the vertical filter pass
 /// for the non-compound (`isCompound == 0`) prediction this kernel produces.
 const INTER_ROUND1_NON_COMPOUND: u32 = 11;
+
+/// AV2 § 7.13.3.16 `InterRound1`: the down-shift after the vertical filter pass
+/// for compound (`isCompound == 1`) predictors, before § 7.13.3.16 blending.
+const INTER_ROUND1_COMPOUND: u32 = 7;
 
 /// AV2 § 6 `EIGHTTAP` interpolation filter index.
 const EIGHTTAP: u8 = 0;
@@ -391,6 +399,71 @@ pub fn subpel_predict_block(
     reference: &ReferencePlaneView<'_>,
     params: &SubpelPredictParams,
 ) -> Result<Vec<u16>> {
+    let output = subpel_predict_block_internal(reference, params, INTER_ROUND1_NON_COMPOUND)?;
+    let max_sample = i64::from(params.bit_depth.max_sample());
+    Ok(output
+        .into_iter()
+        .map(|pred| clip3(0, max_sample, i64::from(pred)) as u16)
+        .collect())
+}
+
+/// Runs the AV2 § 7.13.3.18 separable interpolation-filter convolution for one
+/// reference list of a compound inter block and returns the row-major `w * h`
+/// intermediate `Preds[refList]` values after `Round2(s, InterRound1)` but
+/// before any § 7.13.3.16 compound averaging, masking, or final `Clip1`.
+///
+/// The supported source-backed subset currently consumes this for
+/// COMPOUND_AVERAGE / CWP_EQUAL blocks. Keeping it unclipped is intentional:
+/// § 7.13.3.18 only clips the single-reference write path; compound predictors
+/// are clipped after the § 7.13.3.16 blend.
+pub fn subpel_predict_block_compound_intermediate(
+    reference: &ReferencePlaneView<'_>,
+    params: &SubpelPredictParams,
+) -> Result<Vec<i32>> {
+    subpel_predict_block_internal(reference, params, INTER_ROUND1_COMPOUND)
+}
+
+/// Blends two § 7.13.3.18 compound intermediate predictors with § 7.13.3.16
+/// COMPOUND_AVERAGE and `CWP_EQUAL` (`cwpWeight == 8`), then applies the final
+/// § 4.8 `Clip1`.
+///
+/// With `InterRound0 == 3`, compound `InterRound1 == 7`, and `FILTER_BITS == 7`,
+/// `InterPostRound == 4`; the equal-weight formula
+/// `Round2(8 * p0 + 8 * p1, 4 + InterPostRound)` simplifies exactly to
+/// `Round2(p0 + p1, 1 + InterPostRound)`.
+pub fn blend_compound_average_equal(
+    pred0: &[i32],
+    pred1: &[i32],
+    bit_depth: BitDepth,
+) -> Result<Vec<u16>> {
+    if pred0.len() != pred1.len() {
+        return Err(ReconError::CompoundBlendLengthMismatch {
+            left_len: pred0.len(),
+            right_len: pred1.len(),
+        });
+    }
+
+    let max_sample = i64::from(bit_depth.max_sample());
+    let shift = 1 + compound_inter_post_round();
+    Ok(pred0
+        .iter()
+        .zip(pred1.iter())
+        .map(|(&left, &right)| {
+            let blended = round2(i64::from(left) + i64::from(right), shift);
+            clip3(0, max_sample, blended) as u16
+        })
+        .collect())
+}
+
+const fn compound_inter_post_round() -> u32 {
+    2 * FILTER_BITS - (INTER_ROUND0 + INTER_ROUND1_COMPOUND)
+}
+
+fn subpel_predict_block_internal(
+    reference: &ReferencePlaneView<'_>,
+    params: &SubpelPredictParams,
+    inter_round1: u32,
+) -> Result<Vec<i32>> {
     let SubpelPredictParams {
         interp,
         w,
@@ -403,7 +476,7 @@ pub fn subpel_predict_block(
         first_y,
         last_x,
         last_y,
-        bit_depth,
+        bit_depth: _,
     } = *params;
 
     if w == 0 {
@@ -456,8 +529,6 @@ pub fn subpel_predict_block(
             context: "subpel horizontal coordinate",
         })?;
 
-    let max_sample = i64::from(bit_depth.max_sample());
-
     // Horizontal pass: §7.13.3.18 small-block substitution keys on w.
     let h_filter = interp.pass_index(w as u32);
     let h_filter_rows = &SUBPEL_FILTERS[h_filter as usize];
@@ -488,7 +559,7 @@ pub fn subpel_predict_block(
     let v_filter = interp.pass_index(h as u32);
     let v_filter_rows = &SUBPEL_FILTERS[v_filter as usize];
 
-    let mut output = vec![0u16; w * h];
+    let mut output = vec![0i32; w * h];
     for r in 0..h {
         let p = (start_y & 1023) + step_y * r as i64;
         let phase = ((p >> 6) & SUBPEL_MASK) as usize;
@@ -511,9 +582,7 @@ pub fn subpel_predict_block(
                 let row = base + t;
                 s += i64::from(tap) * i64::from(intermediate[row * w + c]);
             }
-            let pred = round2(s, INTER_ROUND1_NON_COMPOUND);
-            // §7.13.3 single-reference write: CurrFrame = Clip1(Preds[0][i][j]).
-            output[r * w + c] = clip3(0, max_sample, pred) as u16;
+            output[r * w + c] = round2(s, inter_round1) as i32;
         }
     }
 
