@@ -20,12 +20,11 @@
 
 #![allow(dead_code)]
 
-use splot_core::coefficient::{COEFF_BASE_RANGE, LF_NUM_BASE_LEVELS};
-use splot_core::symbol::{Symbol, SymbolDecoder, SymbolDecoderConfig};
-use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig};
+use splot_core::coefficient::{COEFF_BASE_RANGE, LF_NUM_BASE_LEVELS, NUM_BASE_LEVELS};
 use splot_core::tables::cdf::{
-    DEFAULT_COEFF_BASE_LF_CDF, DEFAULT_COEFF_BASE_LF_EOB_CDF, DEFAULT_COEFF_BASE_LF_EOB_UV_CDF,
-    DEFAULT_COEFF_BR_LF_CDF, DEFAULT_DC_SIGN_CDF, DEFAULT_EOB_EXTRA_CDF, DEFAULT_EOB_PT_16_CDF,
+    DEFAULT_COEFF_BASE_EOB_CDF, DEFAULT_COEFF_BASE_LF_CDF, DEFAULT_COEFF_BASE_LF_EOB_CDF,
+    DEFAULT_COEFF_BASE_LF_EOB_UV_CDF, DEFAULT_COEFF_BR_CDF, DEFAULT_COEFF_BR_LF_CDF,
+    DEFAULT_DC_SIGN_CDF, DEFAULT_EOB_EXTRA_CDF, DEFAULT_EOB_PT_16_CDF,
     DEFAULT_INTRA_TX_TYPE_SET1_CDF, DEFAULT_SEC_TX_TYPE_CDF, DEFAULT_TXB_SKIP_CDF,
 };
 use splot_recon::{PlaneId, PlaneRect, TransformClass, coefficient_scan_order};
@@ -46,8 +45,8 @@ mod multi_coeff;
 // referenced by non-test code in this module.
 #[allow(unused_imports)]
 pub(crate) use multi_coeff::{
-    coded_luma_all_zero_token, coeff_base_lf_eob_token, coeff_br_lf_token, eob_extra_token,
-    eob_pt_16_token,
+    coded_luma_all_zero_token, coeff_base_hf_eob_token, coeff_base_lf_eob_token, coeff_br_hf_token,
+    coeff_br_lf_token, eob_extra_token, eob_pt_16_token,
 };
 
 mod transform_type;
@@ -152,6 +151,16 @@ const COEFF_BASE_LF_EOB_CTX_COUNT: usize = 4;
 const COEFF_BR_LF_CTX_COUNT: usize = 14;
 const COEFF_BASE_LF_EOB_CDF_ROW_LEN: usize = 6;
 const COEFF_BR_LF_CDF_ROW_LEN: usize = 5;
+// AV2 §8.3.2 context-dimension counts of the generated default HIGH-frequency CDF
+// tables (distinct from the LF banks above): `DEFAULT_COEFF_BASE_EOB_CDF` is
+// `[q][tx_size][ctx][row]` with `4` `coeff_base_eob` contexts and a 4-symbol row
+// (`[i32; 4]`); `DEFAULT_COEFF_BR_CDF` is `[q][ctx][row]` (NO transform-size
+// dimension) with `7` `coeff_br` contexts and a 5-entry row. Sizing the HF banks to
+// these full context dimensions makes the entropy-proof HF tier hole-free.
+const COEFF_BASE_EOB_CTX_COUNT: usize = 4;
+const COEFF_BR_CTX_COUNT: usize = 7;
+const COEFF_BASE_EOB_CDF_ROW_LEN: usize = 4;
+const COEFF_BR_CDF_ROW_LEN: usize = 5;
 // AV2 §8.3.2 Table 8.2: `intra_tx_type` for `TX_SET_INTRA_1` uses
 // `TileIntraTxTypeSet1Cdf[Tx_Size_Sqr[txSz]]`; `Tx_Size_Sqr[TX_4X4] = 0`. The CDF
 // has one row per `Tx_Size_Sqr` value (3 rows).
@@ -694,6 +703,23 @@ pub(crate) enum CoefficientCdfRowSelector {
     VTxbSkip { coeff_cdf_q_ctx: usize, ctx: usize },
     /// `TileCoeffBrLfCdf[coeff_cdf_q_ctx][ctx]` (the low-frequency `coeff_br` CDF).
     CoeffBrLf { coeff_cdf_q_ctx: usize, ctx: usize },
+    /// `TileCoeffBaseEobCdf[coeff_cdf_q_ctx][tx_size][ctx]` (the HIGH-frequency
+    /// `coeff_base_eob` CDF; AV2 § 8.3.2 `DEFAULT_COEFF_BASE_EOB_CDF`). Distinct from
+    /// [`Self::CoeffBaseLfEob`]: the HF EOB-position base CDF is 4-symbol (vs the LF
+    /// 6-symbol `DEFAULT_COEFF_BASE_LF_EOB_CDF`). The `coeff_base_eob` *context*
+    /// (`coeff_base_eob_ctx`) is LF/HF-independent and is shared with the LF path.
+    CoeffBaseEob {
+        coeff_cdf_q_ctx: usize,
+        tx_size: usize,
+        ctx: usize,
+    },
+    /// `TileCoeffBrCdf[coeff_cdf_q_ctx][ctx]` (the HIGH-frequency base-range CDF; AV2
+    /// § 8.3.2 `DEFAULT_COEFF_BR_CDF`, dims `[q][ctx][row]` with NO transform-size
+    /// dimension). Distinct from [`Self::CoeffBrLf`]: the HF `coeff_br` context for a
+    /// non-DC luma coefficient is plain `mag` (range `0..=6`) with NO `+7` offset (the
+    /// LF non-DC branch adds `+7`; see the decoder `CoeffBrContext::ctx` `is_lf=false`
+    /// branch in `crates/splot-decode/src/tile_payload/cdf/coeff_context.rs`).
+    CoeffBr { coeff_cdf_q_ctx: usize, ctx: usize },
     /// `TileCoeffBaseLfEobUvCdf[coeff_cdf_q_ctx][ctx]` (the chroma low-frequency
     /// `coeff_base_eob` CDF).
     CoeffBaseLfEobUv { coeff_cdf_q_ctx: usize, ctx: usize },
@@ -714,8 +740,11 @@ impl CoefficientCdfRowSelector {
             Self::EobPt16 { .. } => CoefficientTokenSyntax::EobPt16.as_str(),
             Self::EobPt1024 { .. } => CoefficientTokenSyntax::EobPt1024.as_str(),
             Self::EobExtra { .. } => CoefficientTokenSyntax::EobExtra.as_str(),
-            Self::CoeffBrLf { .. } => CoefficientTokenSyntax::CoeffBr.as_str(),
+            Self::CoeffBrLf { .. } | Self::CoeffBr { .. } => {
+                CoefficientTokenSyntax::CoeffBr.as_str()
+            }
             Self::CoeffBaseLf { .. } => CoefficientTokenSyntax::CoeffBase.as_str(),
+            Self::CoeffBaseEob { .. } => CoefficientTokenSyntax::CoeffBaseEob.as_str(),
             Self::IntraTxTypeSet1 { .. } => CoefficientTokenSyntax::IntraTxType.as_str(),
             Self::SecTxTypeIntra { .. } => CoefficientTokenSyntax::SecTxType.as_str(),
             Self::CoeffBaseLfEob { .. } | Self::CoeffBaseLfEobUv { .. } => {
@@ -753,94 +782,6 @@ impl CoefficientEntropyToken {
     const fn syntax_name(self) -> &'static str {
         self.syntax.as_str()
     }
-}
-
-/// Result of proving token values through AV2 § 8.2 symbol bytes.
-#[derive(Debug, Eq, PartialEq)]
-pub(crate) struct CoefficientTokenRoundtrip {
-    bytes: Vec<u8>,
-    decoded_symbols: Vec<u8>,
-    symbol_count: u64,
-}
-
-impl CoefficientTokenRoundtrip {
-    /// Returns finalized symbol payload bytes.
-    pub(crate) fn bytes(&self) -> &[u8] {
-        &self.bytes
-    }
-
-    /// Returns decoded token symbols in order.
-    pub(crate) fn decoded_symbols(&self) -> &[u8] {
-        &self.decoded_symbols
-    }
-
-    /// Returns the decoder's final symbol count.
-    pub(crate) const fn symbol_count(&self) -> u64 {
-        self.symbol_count
-    }
-}
-
-/// Writes token records with the § 8.2 symbol encoder and decodes them back.
-pub(crate) fn roundtrip_entropy_tokens(
-    tokens: &[CoefficientEntropyToken],
-) -> Result<CoefficientTokenRoundtrip> {
-    let mut encode_cdfs = CoefficientTokenCdfRows::from_defaults();
-    let mut encoder = SymbolEncoder::with_config(
-        SymbolEncoderConfig::new()
-            .with_max_output_bytes(64)
-            .with_max_operations(64),
-    );
-    for token in tokens.iter().copied() {
-        encoder
-            .write_symbol(
-                encode_cdfs.row_mut(token.selector())?,
-                Symbol::new(token.symbol()),
-            )
-            .map_err(|source| Error::CoefficientTokenizationSymbolWrite {
-                syntax: token.syntax_name(),
-                source,
-            })?;
-    }
-    let output = encoder
-        .finish()
-        .map_err(|source| Error::CoefficientTokenizationSymbolEncodeFinish { source })?;
-    let bytes = output.into_bytes();
-
-    let mut decode_cdfs = CoefficientTokenCdfRows::from_defaults();
-    let mut decoder = SymbolDecoder::with_config(&bytes, SymbolDecoderConfig::new())
-        .map_err(|source| Error::CoefficientTokenizationSymbolDecodeInit { source })?;
-    let mut decoded_symbols = Vec::new();
-    decoded_symbols
-        .try_reserve_exact(tokens.len())
-        .map_err(|_| Error::CoefficientTokenizationAllocationFailed {
-            context: "roundtrip decoded symbols",
-        })?;
-    for token in tokens.iter().copied() {
-        let decoded = decoder
-            .read_symbol(decode_cdfs.row_mut(token.selector())?)
-            .map_err(|source| Error::CoefficientTokenizationSymbolRead {
-                syntax: token.syntax_name(),
-                source,
-            })?
-            .get();
-        if decoded != token.symbol() {
-            return Err(Error::CoefficientTokenizationSymbolMismatch {
-                syntax: token.syntax_name(),
-                expected: token.symbol(),
-                actual: decoded,
-            });
-        }
-        decoded_symbols.push(decoded);
-    }
-    let summary = decoder
-        .finish()
-        .map_err(|source| Error::CoefficientTokenizationSymbolDecodeFinish { source })?;
-
-    Ok(CoefficientTokenRoundtrip {
-        bytes,
-        decoded_symbols,
-        symbol_count: summary.symbol_count,
-    })
 }
 
 fn tokenize_coefficients(
@@ -990,7 +931,11 @@ const fn coeff_cdf_q_context(qindex: u32) -> usize {
 }
 
 mod cdf_rows;
-use cdf_rows::CoefficientTokenCdfRows;
+
+mod entropy_proof;
+// Referenced only by the sibling §8.2 roundtrip tests, not by non-test code.
+#[allow(unused_imports)]
+pub(crate) use entropy_proof::roundtrip_entropy_tokens;
 
 mod general_walk;
 // The general low-frequency base-tier walk (`ENC-COEFF-GENERAL-WALK-LF-BASE`) and

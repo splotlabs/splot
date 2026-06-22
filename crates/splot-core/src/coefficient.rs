@@ -40,9 +40,17 @@ pub const COEFF_BASE_RANGE: u32 = 3;
 /// low frequency coefficients for deciding to read coeff_br"; `= LF_BASE_SYMBOLS - 2
 /// = 4`): the low-frequency base-level threshold. In § 5.20.7.27 a low-frequency
 /// coefficient reads `coeff_br` when its level exceeds `LF_NUM_BASE_LEVELS` (the
-/// non-low-frequency threshold is the distinct, decode-local `NUM_BASE_LEVELS = 2`,
-/// `03-symbols.md:585`).
+/// non-low-frequency threshold is the distinct [`NUM_BASE_LEVELS`], `= 2`).
 pub const LF_NUM_BASE_LEVELS: u32 = 4;
+
+/// AV2 § 3 `NUM_BASE_LEVELS` (`03-symbols.md:585`, "Number of quantizer base
+/// levels"): the HIGH-frequency (non-low-frequency) base-level threshold. In
+/// § 5.20.7.27 a high-frequency coefficient reads `coeff_br` when its level exceeds
+/// `NUM_BASE_LEVELS`, and its `coeff_base_eob` / `coeff_base` level saturates at
+/// `NUM_BASE_LEVELS + 1 = 3` before `coeff_br` extends it (vs the low-frequency
+/// [`LF_NUM_BASE_LEVELS`] `= 4`). The HF `coeff_base_eob` CDF is correspondingly
+/// 4-entry (3-symbol) where the LF one is 6-entry (5-symbol).
+pub const NUM_BASE_LEVELS: u32 = 2;
 
 #[cfg(test)]
 mod tests {
