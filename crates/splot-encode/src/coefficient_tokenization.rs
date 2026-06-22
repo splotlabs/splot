@@ -25,7 +25,8 @@ use splot_core::tables::cdf::{
     DEFAULT_COEFF_BASE_CDF, DEFAULT_COEFF_BASE_EOB_CDF, DEFAULT_COEFF_BASE_LF_CDF,
     DEFAULT_COEFF_BASE_LF_EOB_CDF, DEFAULT_COEFF_BASE_LF_EOB_UV_CDF, DEFAULT_COEFF_BR_CDF,
     DEFAULT_COEFF_BR_LF_CDF, DEFAULT_DC_SIGN_CDF, DEFAULT_EOB_EXTRA_CDF, DEFAULT_EOB_PT_16_CDF,
-    DEFAULT_INTRA_TX_TYPE_SET1_CDF, DEFAULT_SEC_TX_TYPE_CDF, DEFAULT_TXB_SKIP_CDF,
+    DEFAULT_EOB_PT_256_CDF, DEFAULT_INTRA_TX_TYPE_SET1_CDF, DEFAULT_SEC_TX_TYPE_CDF,
+    DEFAULT_TXB_SKIP_CDF,
 };
 use splot_recon::{PlaneId, PlaneRect, TransformClass, coefficient_scan_order};
 
@@ -59,11 +60,17 @@ mod transform_type;
 pub(crate) use transform_type::{intra_tx_type_set1_token, sec_tx_type_intra_token};
 
 mod general_coded;
+// `general_intra_16x16_luma_dc_coded_tokens` (`ENC-COEFF-TOKENIZE-16X16-DC`) is the
+// smallest 16x16 slice: exercised by the sibling §8.2 roundtrip tests but not yet wired
+// into a `general_intra_trace` composer (the downstream brick), so its re-export is
+// test-only for now.
+#[allow(unused_imports)]
 pub(crate) use general_coded::{
-    general_intra_32x32_chroma_u_dc_coded_tokens, general_intra_32x32_chroma_v_dc_coded_tokens,
-    general_intra_64x64_luma_2d_base_tokens, general_intra_64x64_luma_dc_coded_tokens,
-    general_intra_64x64_luma_eob3_base_tokens, general_intra_64x64_luma_two_coeff_tokens,
-    general_intra_64x64_luma_two_nonzero_base_tokens, general_intra_64x64_luma_visible_ac_tokens,
+    general_intra_16x16_luma_dc_coded_tokens, general_intra_32x32_chroma_u_dc_coded_tokens,
+    general_intra_32x32_chroma_v_dc_coded_tokens, general_intra_64x64_luma_2d_base_tokens,
+    general_intra_64x64_luma_dc_coded_tokens, general_intra_64x64_luma_eob3_base_tokens,
+    general_intra_64x64_luma_two_coeff_tokens, general_intra_64x64_luma_two_nonzero_base_tokens,
+    general_intra_64x64_luma_visible_ac_tokens,
 };
 
 const DCT_DCT_4X4_WIDTH: usize = 4;
@@ -85,6 +92,12 @@ const TX_SIZE_4X4_CTX: usize = 0;
 // transform read `tx_size: 4`, its 32x32 chroma U transform read `tx_size: 3`).
 const TX_SIZE_64X64_CTX: usize = 4;
 const TX_SIZE_32X32_CTX: usize = 3;
+// AV2 § 8.3.2 `txSzCtx = ((TX_SIZE_SQR[txSz] + TX_SIZE_SQR_UP[txSz] + 1) >> 1)`. For a
+// square `TX_16X16` that is `(2 + 2 + 1) >> 1 == 2` (`TX_SIZE_SQR[TX_16X16] ==
+// TX_SIZE_SQR_UP[TX_16X16] == 2` in `crates/splot-core/src/tables/conversion.rs`),
+// cross-checking the decoder's `TX_16X16_CONTEXT == 2`
+// (`crates/splot-decode/src/tile_payload/coeff_loop/fsc_level_pass.rs`).
+const TX_SIZE_16X16_CTX: usize = 2;
 const TXB_SKIP_CTX_NEUTRAL: usize = 0;
 // AV2 § 8.3.2: the U-plane `txb_skip` context adds a fixed +6 to the
 // neutral (above==0, left==0) base context.
@@ -627,6 +640,9 @@ pub(crate) enum CoefficientTokenSyntax {
     /// EOB-point size class (1024 scan positions), distinct from `eob_pt_16` only in
     /// which `TileEobPt*Cdf` bank it reads.
     EobPt1024,
+    /// `eob_pt_256` in AV2 § 5.20.7.27 — the `eob_pt` symbol for the `TX_16X16`
+    /// EOB-point size class (256 scan positions, `eobMultisize == 4`).
+    EobPt256,
     /// `eob_extra` in AV2 § 5.20.7.27 — the CDF-coded first refinement bit read when
     /// `eob_pt >= 3`. (Any further refinement bits are `eob_extra_bit` § 8.2.5 bypass
     /// literals, modeled by [`CoefficientTokenSyntax`] callers via the bypass token kind.)
@@ -653,6 +669,7 @@ impl CoefficientTokenSyntax {
             Self::AllZero => "all_zero",
             Self::EobPt16 => "eob_pt_16",
             Self::EobPt1024 => "eob_pt_1024",
+            Self::EobPt256 => "eob_pt_256",
             Self::EobExtra => "eob_extra",
             Self::CoeffBaseEob => "coeff_base_eob",
             Self::CoeffBase => "coeff_base",
@@ -682,6 +699,12 @@ pub(crate) enum CoefficientCdfRowSelector {
     /// `TileEobPt1024Cdf[coeff_cdf_q_ctx][eob_ctx]` (the `TX_64X64` EOB-point size
     /// class).
     EobPt1024 {
+        coeff_cdf_q_ctx: usize,
+        eob_ctx: usize,
+    },
+    /// `TileEobPt256Cdf[coeff_cdf_q_ctx][eob_ctx]` (the `TX_16X16` EOB-point size
+    /// class).
+    EobPt256 {
         coeff_cdf_q_ctx: usize,
         eob_ctx: usize,
     },
@@ -765,6 +788,7 @@ impl CoefficientCdfRowSelector {
             }
             Self::EobPt16 { .. } => CoefficientTokenSyntax::EobPt16.as_str(),
             Self::EobPt1024 { .. } => CoefficientTokenSyntax::EobPt1024.as_str(),
+            Self::EobPt256 { .. } => CoefficientTokenSyntax::EobPt256.as_str(),
             Self::EobExtra { .. } => CoefficientTokenSyntax::EobExtra.as_str(),
             Self::CoeffBrLf { .. } | Self::CoeffBr { .. } => {
                 CoefficientTokenSyntax::CoeffBr.as_str()

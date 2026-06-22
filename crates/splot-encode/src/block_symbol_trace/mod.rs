@@ -35,9 +35,9 @@ use splot_core::tables::cdf::{
     DEFAULT_COEFF_BASE_LF_EOB_CDF, DEFAULT_COEFF_BASE_LF_EOB_UV_CDF, DEFAULT_COEFF_BR_CDF,
     DEFAULT_COEFF_BR_LF_CDF, DEFAULT_DC_SIGN_CDF, DEFAULT_DO_SPLIT_CDF,
     DEFAULT_DO_SQUARE_SPLIT_CDF, DEFAULT_EOB_EXTRA_CDF, DEFAULT_EOB_PT_16_CDF,
-    DEFAULT_EOB_PT_1024_CDF, DEFAULT_INTRA_TX_TYPE_SET1_CDF, DEFAULT_SEC_TX_TYPE_CDF,
-    DEFAULT_TXB_SKIP_CDF, DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF, DEFAULT_V_TXB_SKIP_CDF,
-    DEFAULT_Y_MODE_INDEX_CDF, DEFAULT_Y_MODE_SET_CDF,
+    DEFAULT_EOB_PT_256_CDF, DEFAULT_EOB_PT_1024_CDF, DEFAULT_INTRA_TX_TYPE_SET1_CDF,
+    DEFAULT_SEC_TX_TYPE_CDF, DEFAULT_TXB_SKIP_CDF, DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF,
+    DEFAULT_V_TXB_SKIP_CDF, DEFAULT_Y_MODE_INDEX_CDF, DEFAULT_Y_MODE_SET_CDF,
 };
 
 use crate::coefficient_tokenization::{
@@ -70,6 +70,8 @@ const V_TXB_SKIP_CDF_ROW_LEN: usize = 3;
 const EOB_PT_16_CDF_ROW_LEN: usize = 6;
 /// `TileEobPt1024Cdf` rows hold 8 symbols (`[i32; 9]`).
 const EOB_PT_1024_CDF_ROW_LEN: usize = 9;
+/// `TileEobPt256Cdf` rows hold 8 symbols (`[i32; 9]`).
+const EOB_PT_256_CDF_ROW_LEN: usize = 9;
 /// `TileEobExtraCdf` is a binary CDF: `[cdf0, count, 0]` (length 3).
 const EOB_EXTRA_CDF_ROW_LEN: usize = 3;
 const COEFF_BASE_LF_EOB_CDF_ROW_LEN: usize = 6;
@@ -114,6 +116,10 @@ const TX_SIZE_4X4_CTX: usize = 0;
 // `coefficient_tokenization`; both empirically confirmed against the decoder).
 const TX_SIZE_64X64_CTX: usize = 4;
 const TX_SIZE_32X32_CTX: usize = 3;
+// AV2 § 8.3.2 `txb_skip`/`coeff_base_eob` `txSzCtx` for the `TX_16X16` luma transform:
+// `(TX_SIZE_SQR[TX_16X16] + TX_SIZE_SQR_UP[TX_16X16] + 1) >> 1 == (2 + 2 + 1) >> 1 == 2`
+// (see `coefficient_tokenization`; cross-checks the decoder's `TX_16X16_CONTEXT == 2`).
+const TX_SIZE_16X16_CTX: usize = 2;
 const TXB_SKIP_CTX_NEUTRAL: usize = 0;
 const CHROMA_U_TXB_SKIP_CTX_NEUTRAL: usize = 6;
 const V_TXB_SKIP_CTX_NEUTRAL: usize = 0;

@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 397 feature(s).
+Matrix version 1. Last reviewed 2026-06-15. 398 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -156,6 +156,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `ENC-COEFF-GENERAL-WALK-HF-MULTI` | Encoder general coefficient walk: eob 12-16 (non-EOB high-frequency coefficients) | encoder | encoder-tool | done | done | n/a | n/a | n/a | done | n/a | done | n/a | `crates/splot-encode/src/coefficient_tokenization` |
 | `ENC-COEFF-GENERAL-WALK-GOLOMB` | Encoder general coefficient walk: read_quant golomb tail (single golomb coefficient) | encoder | encoder-tool | done | done | n/a | n/a | n/a | done | n/a | done | n/a | `crates/splot-encode/src/coefficient_tokenization` |
 | `ENC-COEFF-GENERAL-WALK-GOLOMB-MULTI` | Encoder general coefficient walk: multiple read_quant golomb coefficients | encoder | encoder-tool | done | done | n/a | n/a | n/a | done | n/a | done | n/a | `crates/splot-encode/src/coefficient_tokenization` |
+| `ENC-COEFF-TOKENIZE-16X16-DC` | Encoder 16x16 luma DC coefficient tokenization | encoder | encoder-tool | done | done | n/a | n/a | n/a | done | n/a | done | n/a | `crates/splot-encode/src/coefficient_tokenization/general_coded.rs` |
 | `ENC-INTRA-BLOCK-TRACE-TWO-COEFF` | Encoder eob=2 multi-coefficient block trace | encoder | encoder-tool | done | done | n/a | n/a | n/a | done | n/a | done | n/a | `crates/splot-encode/src/block_symbol_trace` |
 | `ENC-INTRA-TX-TYPE-TOKEN` | Encoder intra_tx_type TX_SET_INTRA_1 token | encoder | encoder-tool | done | done | n/a | n/a | n/a | done | n/a | done | n/a | `crates/splot-encode/src/coefficient_tokenization/transform_type.rs` |
 | `ENC-INTRA-BLOCK-TRACE-TWO-COEFF-TX-TYPE` | Encoder eob=2 trace with TX_SET_INTRA_1 intra_tx_type | encoder | encoder-tool | done | done | n/a | n/a | n/a | done | n/a | done | n/a | `crates/splot-encode/src/block_symbol_trace` |
