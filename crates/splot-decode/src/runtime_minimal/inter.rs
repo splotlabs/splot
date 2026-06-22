@@ -3,25 +3,32 @@
 
 //! First inter-frame decode frontier for the shared minimal-tier runtime.
 //!
-//! Decodes the verified minimal inter subset: a single 64x64 `OBU_REGULAR_TILE_GROUP`
-//! frame with one reference, `skip_mode == 0`, `is_inter == 1`, `skip == 1`, the
-//! single-reference zero-MV `GLOBALMV` mode, no residual, and § 7.13.3.18
-//! zero-fraction motion compensation (a straight copy of the co-located reference
-//! block). Everything outside that subset is rejected with a structured
-//! `decode/unsupported-feature` diagnostic BEFORE any wrong output, so splot never
-//! emits a confident-but-unverified inter frame.
+//! Decodes the verified minimal inter subset: an `OBU_REGULAR_TILE_GROUP` frame
+//! with one reference, `skip_mode == 0`, `is_inter == 1`, the single-reference
+//! NEARMV / GLOBALMV / NEWMV modes, `skip ∈ {0, 1}`, and § 7.13.3.17 / § 7.13.3.18
+//! block inter prediction (zero-fraction reduces to a straight copy; sub-pel runs
+//! the interpolation-filter convolution). The frame may now be a MULTI-SUPERBLOCK
+//! single superblock ROW (height 64, width a positive multiple of 64) OR single
+//! superblock COLUMN (width 64, height a positive multiple of 64) of 64x64
+//! superblocks: the § 5.20.2.1 raster loop (in the shared partition walker)
+//! decodes each superblock in turn, and a later superblock's block predicts its
+//! motion vector from the immediately-prior superblock's reconstructed-edge
+//! neighbour via the frame-wide § 7.11 / § 7.12 `find_mv_stack` grid. Everything
+//! outside that subset is rejected with a structured `decode/unsupported-feature`
+//! diagnostic BEFORE any wrong output, so splot never emits a
+//! confident-but-unverified inter frame.
 //!
 //! Feature tracking: `DECODE-FIRST-INTER-FRAME-FRONTIER`,
 //! `DECODE-INTER-MODE-INFO`, `DECODE-INTER-ZERO-MV`,
-//! `DECODE-INTER-MOTION-COMPENSATION`.
+//! `DECODE-INTER-MOTION-COMPENSATION`, `DECODE-INTER-MULTI-SB-SPATIAL`.
 
 use splot_core::annexb::ObuEnvelope;
 use splot_core::bitio::BitReader;
 use splot_core::headers::frame::{
     FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode, FrameHeaderParseStatus,
-    FrameReferenceStateView, FrameSize, TxMode, parse_frame_header_core,
+    FrameReferenceStateView, TxMode, parse_frame_header_core,
 };
-use splot_core::headers::sequence::SequenceHeader;
+use splot_core::headers::sequence::{SequenceHeader, SuperblockSize};
 use splot_core::span::ByteOffset;
 use splot_core::types::ObuType;
 use splot_recon::{
@@ -533,7 +540,8 @@ fn parse_inter_frame_core(
 }
 
 /// Gates the parsed inter frame header to the verified minimal subset (no tools, no
-/// filters, no grain, single 64x64 tile, an immediate-output inter frame).
+/// filters, no grain, one tile, an immediate-output inter frame) whose geometry is a
+/// single superblock row or single superblock column of 64x64 superblocks.
 fn validate_inter_frame_core(
     core: &FrameHeaderCore,
     sequence: &SequenceHeader,
@@ -563,20 +571,62 @@ fn validate_inter_frame_core(
             SPEC_HEADER,
         ));
     }
-    match core.frame_size {
-        Some(FrameSize {
-            width: super::MINIMAL_WIDTH,
-            height: super::MINIMAL_HEIGHT,
-            ..
-        }) => {}
-        _ => {
-            return Err(unsupported_at(
-                "inter_unsupported_frame_size",
-                offset,
-                "minimal inter decode currently accepts only the verified 64x64 frame size",
-                SPEC_HEADER,
-            ));
-        }
+    // §5.18.3 / §5.20.2.1: the inter decode tiles the frame into 64x64 superblocks
+    // (the verified subset is sb_size 64), iterating them in the §5.20.2.1 raster
+    // loop with later superblocks predicting their MV from the already-decoded
+    // left/above neighbour blocks (the frame-wide §7.12.2 find_mv_stack grid). The
+    // admitted geometry is a SINGLE superblock ROW (height == 64, width a positive
+    // multiple of 64) OR a SINGLE superblock COLUMN (width == 64, height a positive
+    // multiple of 64): the verified §7.12.2 spatial scan + §7.12.2 step-15
+    // `isSbBorder` derivation are proven over a 1-D superblock line where every
+    // cross-superblock neighbour is the immediately-prior superblock's reconstructed
+    // edge. A full 2-D superblock grid (both dimensions > 64) is rejected: a
+    // non-leftmost, non-top superblock's §7.12.2 above-right / below-left scan
+    // positions reach a not-yet-decoded superblock, a case this kernel does not yet
+    // model. The single-64x64 frame is the degenerate 1x1 line and stays admitted.
+    let Some(frame_size) = core.frame_size else {
+        return Err(unsupported_at(
+            "inter_unsupported_frame_size",
+            offset,
+            "minimal inter decode requires a parsed frame size",
+            SPEC_HEADER,
+        ));
+    };
+    let width = frame_size.width;
+    let height = frame_size.height;
+    // Admit only the committed single-superblock ROW (height 64, width a positive
+    // multiple of 64). The single-SB COLUMN path is analytically correct (the
+    // frame-wide §7.12.2 grid + the isSbBorder above-probe reach the SB above) and
+    // was verified locally, but it has no committed 3-oracle fixture, so the
+    // verified-subset discipline keeps it OUT of the admitted set until a
+    // syn-2sbcol-inter fixture is committed (deferred follow-on). The single 64x64
+    // case is `width == height == 64` (a one-SB row).
+    let single_sb_row =
+        height == super::MINIMAL_HEIGHT && width != 0 && width.is_multiple_of(super::MINIMAL_WIDTH);
+    if !single_sb_row {
+        return Err(unsupported_at(
+            "inter_unsupported_frame_size",
+            offset,
+            "minimal inter decode accepts a single superblock row (height 64, width a multiple of 64); the single-SB column and the 2-D multi-superblock grid are not yet fixtured",
+            SPEC_HEADER,
+        ));
+    }
+    // The dimension gate above assumes 64x64 superblocks (the verified fixtures use
+    // --sb-size 64): a `width` multiple of 64 is the SB count only when each SB is
+    // 64 wide. A stream signalled with 128x128 / 256x256 superblocks would make a
+    // 128x64 frame ONE boundary-clipped superblock (not the verified row of two
+    // 64x64 SBs), with unfixtured block geometry / MV-stack behaviour, so reject
+    // unless seq_sb_size (§5.18.7.6) is 64x64.
+    if sequence
+        .partition
+        .is_none_or(|partition| partition.seq_sb_size() != SuperblockSize::Block64x64)
+    {
+        return Err(unsupported_at(
+            "inter_unsupported_superblock_size",
+            offset,
+            "minimal inter decode requires 64x64 sequence superblocks; 128x128 / 256x256 superblocks are not yet modelled",
+            SPEC_HEADER,
+        ));
     }
     let Some(tile_info) = core.tile_info.as_ref() else {
         return Err(unsupported_at(

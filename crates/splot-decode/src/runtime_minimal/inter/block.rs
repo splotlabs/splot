@@ -541,16 +541,25 @@ fn decode_one_inter_block(
         // coefficient path the verified subset only models for the DCT-only,
         // no-IST / no-DDT / no-CCTX / no-FSC / no-IDTX-intra case. The residual is
         // additionally only modelled for the single full-superblock 64x64 block
-        // (TX_64X64 luma / TX_32X32 chroma); a multi-block skip == 0 residual needs
-        // per-block TX sizes (a future brick), so reject it here.
-        // TODO(spec: DECODE-INTER-MVSTACK-SPATIAL): per-block (sub-64x64) skip == 0
-        // residual transform sizes.
+        // (TX_64X64 luma / TX_32X32 chroma) of a SINGLE-superblock (64x64) frame; a
+        // multi-block OR multi-superblock skip == 0 residual needs per-block TX sizes
+        // (a future brick), so reject it here. The `mi_rows`/`mi_cols > FULL_SB_N4`
+        // guards cover the multi-superblock frame case (e.g. a 128x64 row where SB0 is
+        // a top-left 64x64 block but the frame still has a second superblock).
+        // TODO(spec: DECODE-INTER-MVSTACK-SPATIAL): per-block (sub-64x64) and
+        // multi-superblock skip == 0 residual transform sizes.
         const FULL_SB_N4: usize = 16;
-        if n4w != FULL_SB_N4 || n4h != FULL_SB_N4 || mi_row != 0 || mi_col != 0 {
+        if n4w != FULL_SB_N4
+            || n4h != FULL_SB_N4
+            || mi_row != 0
+            || mi_col != 0
+            || mi_rows > FULL_SB_N4
+            || mi_cols > FULL_SB_N4
+        {
             return Err(unsupported_at(
                 "inter_block_multiblock_residual",
                 tile_offset,
-                "minimal inter decode only models a skip == 0 residual for the single top-left 64x64 block; a multi-block residual needs per-block transform sizes",
+                "minimal inter decode only models a skip == 0 residual for the single top-left 64x64 block of a single-superblock frame; a multi-block or multi-superblock residual needs per-block transform sizes",
                 SPEC_MODE_INFO,
             ));
         }

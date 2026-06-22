@@ -55,6 +55,21 @@ const TWO_FRAME_MVSTACK_FIXTURE: &[u8] = include_bytes!(
     "../../../../../tests/conformance/vectors/valid/syn-2frame-inter-mvstack-64x64.ivf"
 );
 
+/// The first bit-exact MULTI-SUPERBLOCK inter fixture: a 128x64 frame is two
+/// horizontally-adjacent 64x64 superblocks. Frame 0 is a general-intra DC_PRED key
+/// frame (left SB flat 100, right SB flat 150, flat chroma); frame 1 is a
+/// single-reference inter frame whose two superblocks are each a single 64x64 inter
+/// block. SB0 @ MI(0,0) is NEWMV with a non-zero MV (col 48 = +6 full pels in
+/// eighth-pel units); SB1 @ MI(0,16) — in the SECOND superblock — is NEARMV that
+/// predicts SB0's MV across the superblock boundary from the frame-wide §7.11/§7.12
+/// spatial-neighbour MV stack (find_mv_stack); both skip=1 (no residual). avmdec
+/// `--rawvideo --i420` and `dav2d --demuxer ivf` decode the whole stream
+/// byte-for-byte identically (oracle MD5 `477a993d671e93d37b92a0d368c238ff`,
+/// 24576 bytes). The OLD single-64x64 inter decoder rejected this fixture
+/// ("currently accepts only the verified 64x64 frame size").
+const MULTI_SB_INTER_FIXTURE: &[u8] =
+    include_bytes!("../../../../../tests/conformance/vectors/valid/syn-2sb-inter-128x64-q80.ivf");
+
 // avmdec / dav2d both decode every plane of both frames to these flat values.
 const FLAT_LUMA: u8 = 100;
 const FLAT_CHROMA_U: u8 = 120;
@@ -377,5 +392,61 @@ fn mvstack_fixture_per_frame_hash_is_stable() {
     assert_ne!(
         key_hash, inter_hash,
         "the multi-block inter frame must differ from the key frame"
+    );
+}
+
+/// The committed multi-SUPERBLOCK fixture decodes a 128x64 key frame + one
+/// 128x64 multi-superblock inter frame (two 64x64 superblocks).
+#[test]
+fn multi_sb_fixture_decodes_two_frames() {
+    use splot_recon::{BitDepth, PixelFormat, PlaneSize};
+
+    let frames = decode_fixture(MULTI_SB_INTER_FIXTURE);
+    assert_eq!(
+        frames.len(),
+        2,
+        "the multi-superblock stream decodes a key frame + one inter frame"
+    );
+    for (index, output) in frames.iter().enumerate() {
+        let frame = output.frame();
+        assert_eq!(frame.bit_depth(), BitDepth::Eight, "frame {index}");
+        assert_eq!(frame.pixel_format(), PixelFormat::Yuv420, "frame {index}");
+        assert_eq!(
+            frame.y().visible_size(),
+            PlaneSize::new(128, 64).unwrap(),
+            "frame {index} is a 128x64 two-superblock frame"
+        );
+    }
+}
+
+/// Regression pin for the per-frame decode hash of the multi-superblock fixture.
+/// The raw decoded output (both frames concatenated I420) matches avmdec
+/// `--rawvideo --i420` and `dav2d --demuxer ivf` byte-for-byte (oracle MD5
+/// `477a993d671e93d37b92a0d368c238ff`, recorded in
+/// `docs/LOCAL-REFERENCE-EVIDENCE.toml`); these `splot-dfh-sha256-v1` per-frame
+/// hashes are splot's internal regression anchors for that bit-exact output. The
+/// inter frame is reconstructed from the §7.11/§7.12 neighbour-predicted MVs of
+/// its two superblocks (SB0 NEWMV, SB1 NEARMV reusing SB0's MV across the
+/// superblock boundary).
+#[test]
+fn multi_sb_fixture_per_frame_hash_is_stable() {
+    let frames = decode_fixture(MULTI_SB_INTER_FIXTURE);
+    let key_hash = splot_recon::DecodedFrameHashInput::new(frames[0].frame())
+        .compute_hash()
+        .to_hex();
+    let inter_hash = splot_recon::DecodedFrameHashInput::new(frames[1].frame())
+        .compute_hash()
+        .to_hex();
+    assert_eq!(
+        key_hash, "2dc3b82d7f75dd5f400474fbf370a9acc2e631f65e2cc1263d0ec0684b14da15",
+        "multi-superblock key-frame hash"
+    );
+    assert_eq!(
+        inter_hash, "dc9b4c4aef4e6dc1afa43ed16a93c17dd2fab9c1e61b5ab97dbae863d62a7ebd",
+        "multi-superblock inter-frame hash"
+    );
+    assert_ne!(
+        key_hash, inter_hash,
+        "the multi-superblock inter frame must differ from the key frame (real cross-SB MV shift)"
     );
 }

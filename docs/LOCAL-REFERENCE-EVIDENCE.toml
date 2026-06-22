@@ -1832,6 +1832,58 @@ left = "avm-2frame-inter-mvstack-raw-md5"
 right = "dav2d-2frame-inter-mvstack-raw-md5"
 
 [[evidence]]
+id = "lref-avm-dav2d-syn-2sb-inter-128x64-q80"
+feature_id = "DECODE-INTER-MULTI-SB-SPATIAL"
+decoder_support_rows = ["inter-multi-sb-spatial"]
+kind = "reference-output-agreement"
+summary = "Local AVM and dav2d raw decoder output MD5 digests agreed for the two-frame 8-bit 4:2:0 MULTI-SUPERBLOCK inter IVF fixture (a 128x64 frame of two horizontally-adjacent 64x64 superblocks: 1 general-intra DC_PRED key frame of two flat superblocks 100,150 + 1 single-reference inter frame whose two superblocks are each a single 64x64 inter block — SB0 at MI(0,0) is NEWMV with a non-zero MV col 48 == +6 full pels, and SB1 at MI(0,16), in the SECOND superblock, is NEARMV that predicts SB0's MV across the superblock boundary from the frame-wide §7.11/§7.12 spatial-neighbour MV stack; both skip==1, no residual), the first multi-superblock neighbour-predicted-MV decode target and a prerequisite for real-content scale (ac0ej3 is 1920x1080). Frame 1 reconstructs each superblock's §7.13.3.18 motion-compensated copy at its own position, and splot reproduces that raw output byte-for-byte. The only decoder change over the multi-block single-superblock target is the §5.18.3 frame-size gate, lifted from exactly 64x64 to a single superblock row or column of 64x64 superblocks; the §5.20.2.1 raster loop and the frame-wide find_mv_stack grid were already geometry-agnostic. This proves the cross-superblock spatial MV prediction (SB1 in the 2nd superblock predicting SB0's MV)."
+recorded_at = "2026-06-22"
+
+[[evidence.fixture]]
+id = "input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-2sb-inter-128x64-q80.ivf"
+sha256 = "199d8b5d3989d61843c3edadcd9fca21dc0c66f055afb03b9e17b26860ecba64"
+size_bytes = 115
+format = "ivf"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Generated locally with avmenc from a project-owned synthetic Y4M (128x64 4:2:0; frame 0 = two flat 64x64 luma superblocks left-100 right-150 + flat chroma 120,130; frame 1 = frame 0 shifted left 6 luma samples, edge-clamped) at --qp 80 --sb-size 64 --min-partition-size 64 --max-partition-size 64 with broad decode tools (incl. GDF, cdef, deblocking, restoration, ccso, cfl, mhccp, cctx, qm, ibp, mrls, intra-edge-filter, angle-delta, ist, inter-ist, intra-dip, idtx-intra, smooth-intra, paeth-intra, bawp, cwp, tcq, trellis, all warp modes, tip, opfl-refine, refinemv, masked-wedge-interintra-onesided-diffwtd compound, joint-mvd, adaptive-mvd, flex-mvres, ref-frame-mvs, refmvbank, drl-reorder, mv-traj, high-motion, inter-ddt, skip-mode, bru, global-motion, tx-partition, rect-ext-uneven partitions, parity-hiding, mvd-sign-derive) disabled, so the encoder codes frame 0 as two DC_PRED intra superblocks and frame 1 as two 64x64 single-reference inter blocks (one per superblock; SB0 NEWMV, SB1 NEARMV reusing SB0's MV across the superblock boundary via the §7.12.2 MV stack, both skip=1); the min-and-max-partition-size 64 constraint forces one 64x64 block per superblock so the second superblock exercises the cross-superblock neighbour-MV prediction. AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avm"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "457cd58681a747465661baccb1f32095bc5b7774"
+version_summary = "AVM checkout HEAD 457cd58681a747465661baccb1f32095bc5b7774, exact binary build commit not separately archived."
+command_summary = "Local avmdec --rawvideo --i420 output MD5 for {fixture:input}."
+output_digest_id = "avm-2sb-inter-128x64-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "477a993d671e93d37b92a0d368c238ff"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.reference_run]]
+id = "dav2d"
+tool = "dav2d"
+executable_name = "dav2d"
+tool_role = "decode-reference"
+source_url = "https://code.videolan.org/videolan/dav2d"
+revision = "f4f96cb06bb3cd3f31e29e1f190f1c0e373ab352"
+version_summary = "dav2d 0.0.1-191-gf4f96cb0 (commit f4f96cb0), decoded with --demuxer ivf; exact version output not archived."
+command_summary = "Local dav2d --demuxer ivf output MD5 for {fixture:input}."
+output_digest_id = "dav2d-2sb-inter-128x64-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "477a993d671e93d37b92a0d368c238ff"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-2sb-inter-128x64-raw-md5"
+right = "dav2d-2sb-inter-128x64-raw-md5"
+
+[[evidence]]
 id = "lref-avm-dav2d-syn-flat-intra-64x64-minimal-skip"
 feature_id = "DECODE-GENERAL-INTRA-FRAME-RECON"
 decoder_support_rows = ["general-intra-frame-recon"]
