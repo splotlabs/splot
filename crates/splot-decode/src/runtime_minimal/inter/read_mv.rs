@@ -50,9 +50,10 @@ const NUM_CTX_COL_MV_INDEX: usize = 4;
 const MV_LOW: i32 = -(1 << 16);
 const MV_UPP: i32 = 1 << 16;
 
-/// AV2 § 5.20.7.13 `mv_clamp_to_integer(v)`. A no-op for the small shell
-/// magnitudes the verified subset produces, but applied faithfully.
-const fn mv_clamp_to_integer(v: i32) -> i32 {
+/// AV2 § 5.20.7.13 `mv_clamp_to_integer(v)`. A no-op for the small magnitudes the
+/// verified subset produces, but applied faithfully. The caller forms
+/// `BlockMvs[0][comp] = mv_clamp_to_integer(PredMvs[0][comp] + diffMvs[0][comp])`.
+pub(super) const fn mv_clamp_to_integer(v: i32) -> i32 {
     if v < MV_LOW + 1 {
         MV_LOW + 8
     } else if v > MV_UPP - 1 {
@@ -63,11 +64,13 @@ const fn mv_clamp_to_integer(v: i32) -> i32 {
 }
 
 /// Reads the § 5.20.7.20 SHELL-coded MV delta and applies the § 5.20.7.13 sign
-/// pass for the verified single-reference EighthPel NEWMV block, returning the
-/// signed `diffMv = (row, col)` in eighth-pel units. `PredMvs[0]` is the zero
-/// no-neighbour predictor, so the caller adds (0, 0) and clamps; this returns the
-/// clamped block MV directly.
-pub(super) fn read_newmv_block_mv(
+/// pass for the single-reference EighthPel NEWMV block, returning the **signed MV
+/// difference** `diffMv = (row, col)` in eighth-pel units. The caller adds the
+/// § 7.12.2 stack predictor (`PredMvs[0]`) and applies § 5.20.7.13
+/// `mv_clamp_to_integer` to form the block MV; this function does not add a
+/// predictor or clamp (the predictor is the stack-selected candidate, which may be
+/// a neighbour's MV, not necessarily zero).
+pub(super) fn read_newmv_block_mvd(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
     tile_offset: ByteOffset,
@@ -84,12 +87,9 @@ pub(super) fn read_newmv_block_mv(
     let row = apply_sign(diff_row, symbols, tile_offset)?;
     let col = apply_sign(diff_col, symbols, tile_offset)?;
 
-    // §5.20.7.13: BlockMvs[0][comp] = mv_clamp_to_integer(PredMvs[0][comp] +
-    // diffMvs[0][comp]); PredMvs[0] == (0, 0) for the no-neighbour block.
-    Ok(Mv {
-        row: mv_clamp_to_integer(row),
-        col: mv_clamp_to_integer(col),
-    })
+    // §5.20.7.13: diffMvs[0][comp] (the raw signed MV difference); the caller forms
+    // BlockMvs[0][comp] = mv_clamp_to_integer(PredMvs[0][comp] + diffMvs[0][comp]).
+    Ok(Mv { row, col })
 }
 
 /// AV2 § 5.20.7.20 `read_mv()` magnitude path for EighthPel: returns the unsigned

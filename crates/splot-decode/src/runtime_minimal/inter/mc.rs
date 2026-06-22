@@ -22,35 +22,44 @@ use splot_recon::{
 
 use super::mv_scaling::derive_plane_scaling;
 use super::{Mv, SPEC_MC, unsupported_at};
-use crate::DecodeLimits;
 use crate::Result;
 use crate::error::DecodeError;
 use splot_core::span::ByteOffset;
 
-/// Builds the current inter frame workspace by § 7.13.3.18 motion-compensating
-/// every plane of `reference` with the decoded `mv` and `interp` filter. The
-/// reference must be unscaled and the same size as the current frame (checked by
-/// the caller). The workspace is returned **unfrozen** so the caller can add a
-/// § 5.20.7.27 residual over the prediction (skip == 0) before freezing.
-pub(super) fn motion_compensate_inter_workspace(
+/// A motion-compensated block's luma-space rectangle (the § 7.13.3.18 region the
+/// block covers). For the full-frame single block this is the whole frame; for a
+/// multi-block partition each leaf block carries its own rect.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct McBlockRect {
+    /// Luma-space top-left x (samples).
+    pub(super) luma_x: usize,
+    /// Luma-space top-left y (samples).
+    pub(super) luma_y: usize,
+    /// Block width in luma samples.
+    pub(super) luma_w: usize,
+    /// Block height in luma samples.
+    pub(super) luma_h: usize,
+}
+
+/// Motion-compensates one block (§ 7.13.3.18) into an existing workspace, for
+/// every plane. `rect` is the block's luma-space rectangle; chroma uses the
+/// 4:2:0-subsampled rectangle and the same luma MV (the § 7.13.3.17 scaling does
+/// the `(2 * mv) >> subsampling` adjustment). Used by both the full-frame single
+/// block and each leaf block of a multi-block partition.
+pub(super) fn motion_compensate_block_into(
+    workspace: &mut CurrentFrameWorkspace<u8>,
     reference: &DecodedFrame<u8>,
+    rect: McBlockRect,
     mv: Mv,
     interp: InterpolationFilter,
-    frame_width: u32,
-    frame_height: u32,
     offset: ByteOffset,
-    _limits: DecodeLimits,
-) -> Result<CurrentFrameWorkspace<u8>> {
-    let mut workspace = crate::runtime_minimal_recon::new_general_intra_workspace(
-        frame_width as usize,
-        frame_height as usize,
-    )?;
-
+) -> Result<()> {
     // 4:2:0 luma full-resolution; chroma half-resolution (subsampling 1/1).
     predict_plane(
-        &mut workspace,
+        workspace,
         reference,
         PlaneId::Y,
+        rect,
         mv,
         interp,
         0,
@@ -58,9 +67,10 @@ pub(super) fn motion_compensate_inter_workspace(
         offset,
     )?;
     predict_plane(
-        &mut workspace,
+        workspace,
         reference,
         PlaneId::U,
+        rect,
         mv,
         interp,
         1,
@@ -68,52 +78,29 @@ pub(super) fn motion_compensate_inter_workspace(
         offset,
     )?;
     predict_plane(
-        &mut workspace,
+        workspace,
         reference,
         PlaneId::V,
+        rect,
         mv,
         interp,
         1,
         1,
         offset,
     )?;
-
-    Ok(workspace)
+    Ok(())
 }
 
-/// Builds the current inter frame by § 7.13.3.18 motion-compensating every plane
-/// of `reference` with the decoded `mv` and `interp` filter, then freezing the
-/// workspace. The `skip == 1` (no-residual) path: the MC prediction is the
-/// reconstruction.
-pub(super) fn motion_compensate_inter_block(
-    reference: &DecodedFrame<u8>,
-    mv: Mv,
-    interp: InterpolationFilter,
-    frame_width: u32,
-    frame_height: u32,
-    offset: ByteOffset,
-    limits: DecodeLimits,
-) -> Result<DecodedFrame<u8>> {
-    let workspace = motion_compensate_inter_workspace(
-        reference,
-        mv,
-        interp,
-        frame_width,
-        frame_height,
-        offset,
-        limits,
-    )?;
-    Ok(workspace.freeze()?)
-}
-
-/// Motion-compensates one plane: gathers the unscaled reference plane samples,
-/// derives the § 7.13.3.17 scaling / § 7.13.3.18 clip bounds, runs the
-/// convolution, and writes the predicted block into the workspace plane.
+/// Motion-compensates one plane of one block: gathers the unscaled reference
+/// plane samples, derives the § 7.13.3.17 scaling / § 7.13.3.18 clip bounds for
+/// the block's plane-space rectangle, runs the convolution, and writes the
+/// predicted block into the workspace plane at its plane-space position.
 #[allow(clippy::too_many_arguments)]
 fn predict_plane(
     workspace: &mut CurrentFrameWorkspace<u8>,
     reference: &DecodedFrame<u8>,
     plane: PlaneId,
+    rect: McBlockRect,
     mv: Mv,
     interp: InterpolationFilter,
     sub_x: u32,
@@ -129,17 +116,18 @@ fn predict_plane(
         ));
     };
     let visible = ref_plane.visible_size();
-    let width = visible.width();
-    let height = visible.height();
+    let ref_width = visible.width();
+    let ref_height = visible.height();
 
     // Gather the reference's visible rows (storage padding excluded) into a packed
-    // u16 buffer for the §7.13.3.18 convolution view.
-    let mut samples: Vec<u16> = Vec::with_capacity(width.saturating_mul(height));
+    // u16 buffer for the §7.13.3.18 convolution view (the whole reference plane;
+    // the kernel clips block sampling to it).
+    let mut samples: Vec<u16> = Vec::with_capacity(ref_width.saturating_mul(ref_height));
     let rows: VisibleRows<'_, u8> = ref_plane.visible_rows();
     for row in rows {
         samples.extend(row.iter().map(|&s| u16::from(s)));
     }
-    let view = ReferencePlaneView::new(&samples, width, height)
+    let view = ReferencePlaneView::new(&samples, ref_width, ref_height)
         .map_err(|source| DecodeError::Reconstruction { source })?;
 
     // The reference MI grid: luma MI units of the (square) frame. RefMiCols/Rows are
@@ -150,24 +138,29 @@ fn predict_plane(
     let ref_mi_cols = (luma_visible.width() as i64) / 4;
     let ref_mi_rows = (luma_visible.height() as i64) / 4;
 
-    // The block covers the full plane at plane-space (0, 0).
+    // The block's plane-space position + size (luma rect subsampled per plane).
+    let plane_x = rect.luma_x >> sub_x;
+    let plane_y = rect.luma_y >> sub_y;
+    let block_w = rect.luma_w >> sub_x;
+    let block_h = rect.luma_h >> sub_y;
+
     let scaling = derive_plane_scaling(
-        0,
-        0,
+        plane_x as i64,
+        plane_y as i64,
         i64::from(mv.row),
         i64::from(mv.col),
         sub_x,
         sub_y,
         ref_mi_cols,
         ref_mi_rows,
-        width as i64,
-        height as i64,
+        block_w as i64,
+        block_h as i64,
     );
 
     let params = SubpelPredictParams {
         interp,
-        w: width,
-        h: height,
+        w: block_w,
+        h: block_h,
         start_x: scaling.start_x,
         start_y: scaling.start_y,
         step_x: scaling.step_x,
@@ -189,10 +182,10 @@ fn predict_plane(
         .map(|&v| u8::try_from(v).unwrap_or(u8::MAX))
         .collect();
 
-    let rect = PlaneRect::new(0, 0, width, height)
+    let rect = PlaneRect::new(plane_x, plane_y, block_w, block_h)
         .map_err(|source| DecodeError::Reconstruction { source })?;
     workspace
-        .write_rect(plane, rect, &packed, width)
+        .write_rect(plane, rect, &packed, block_w)
         .map_err(|source| DecodeError::Reconstruction { source })?;
     Ok(())
 }

@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 388 feature(s); 335 cite a spec section.
+Matrix version 1. Last reviewed 2026-06-15. 390 feature(s); 337 cite a spec section.
 
 One row per (spec section, feature) pair, in spec order; a feature citing both a syntax and a semantics section appears under both. The canonical status source is [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); the full per-feature ledger is [FEATURE-STATUS.md](./FEATURE-STATUS.md).
 
@@ -274,6 +274,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.20.2.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-2-3) | Clear block decoded flags function | `DECODE-GENERAL-INTRA-GRID` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.2.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-2-3) | Clear block decoded flags function | `DECODE-GENERAL-INTRA-GRID-NEIGHBOUR-NONDC` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.2.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-2-3) | Clear block decoded flags function | `DECODE-GENERAL-INTRA-GRID-SMOOTH-H-ABOVE-RIGHT` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 5.20.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3) | Partition structures | `DECODE-INTER-MVSTACK-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 5.20.3.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-1) | Decode partition syntax | `CONF-TILE-PAYLOAD-DECODE-FUZZ` | ✅ | — | — | ✅ | 2 |
 | [§ 5.20.3.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-1) | Decode partition syntax | `DECODE-GENERAL-INTRA-DEEP-SPLIT` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.3.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-1) | Decode partition syntax | `DECODE-GENERAL-INTRA-FRAME-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
@@ -342,7 +343,10 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.20.6.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-6-1) | TX size syntax | `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER` | ✅ | 🟡 | — | ✅ | 4 |
 | [§ 5.20.6.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-6-2) | Block TX size syntax | `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER` | ✅ | 🟡 | — | ✅ | 4 |
 | [§ 5.20.7](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7) | Motion vector and prediction structures | `DECODE-INTER-RESIDUAL-DCT` | ✅ | ✅ | — | ✅ | 1 |
+| [§ 5.20.7.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-2) | Inter segment ID syntax | `DECODE-INTER-MVSTACK-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
+| [§ 5.20.7.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-6) | Inter block mode info syntax | `DECODE-INTER-MVSTACK-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 5.20.7.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-6) | Inter block mode info syntax | `DECODE-INTER-SUBPEL-MV` | ✅ | ✅ | — | ✅ | 1 |
+| [§ 5.20.7.8](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-8) | Read drl idx syntax | `DECODE-INTER-MVSTACK-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 5.20.7.13](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-13) | Assign MV syntax | `DECODE-INTER-SUBPEL-MV` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 5.20.7.20](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-20) | MV syntax | `DECODE-INTER-SUBPEL-MV` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 5.20.7.23](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-23) | Residual syntax | `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER` | ✅ | 🟡 | — | ✅ | 4 |
@@ -747,6 +751,9 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.5](./spec/av2/1.0.0/07-decoding-process.md#s-7-5) | Frame end update CDF process | `DECODE-TILE-CDF-SAVE-LIFECYCLE-BOUNDARY` | ✅ | ✅ | — | ✅ | 2 |
 | [§ 7.7](./spec/av2/1.0.0/07-decoding-process.md#s-7-7) | Get ref frames process | `AV2-7.7-GET-REF-FRAMES` | ✅ | 🟡 | — | ✅ | — |
 | [§ 7.7](./spec/av2/1.0.0/07-decoding-process.md#s-7-7) | Get ref frames process | `DECODE-FIRST-INTER-FRAME-FRONTIER` | ✅ | ✅ | — | ✅ | 1 |
+| [§ 7.11.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-11-2) | Find mode context process | `DECODE-INTER-MVSTACK-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
+| [§ 7.11.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-11-3) | Scan point context process | `DECODE-INTER-MVSTACK-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
+| [§ 7.12.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-12-2) | Find MV stack process | `DECODE-INTER-MVSTACK-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 7.13.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2) | Intra prediction process | `DECODE-GENERAL-INTRA-FRAME-RECON` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.13.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2) | Intra prediction process | `DECODE-GENERAL-INTRA-MULTIBLOCK` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.13.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2) | Intra prediction process | `DECODE-GENERAL-INTRA-MULTIROW` | ✅ | 🟡 | — | ✅ | 1 |
@@ -841,6 +848,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.13.3.16](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-16) | Rounding variables derivation process | `RECON-SUBPEL-MC` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.13.3.17](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-17) | Motion vector scaling process | `DECODE-INTER-SUBPEL-MV` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 7.13.3.18](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-18) | Block inter prediction process | `DECODE-FIRST-INTER-FRAME-FRONTIER` | ✅ | ✅ | — | ✅ | 1 |
+| [§ 7.13.3.18](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-18) | Block inter prediction process | `DECODE-INTER-MVSTACK-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 7.13.3.18](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-18) | Block inter prediction process | `DECODE-INTER-SUBPEL-MV` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 7.13.3.18](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-18) | Block inter prediction process | `RECON-SUBPEL-MC` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.13.3.22](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-22) | Resolve divisor process | `CONF-RECON-INTRA-PREDICTION-FUZZ` | ✅ | — | — | ✅ | — |

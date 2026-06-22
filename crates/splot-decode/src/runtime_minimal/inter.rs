@@ -243,10 +243,12 @@ pub(super) fn decode_minimal_inter_frame(
     })?;
 
     // Decode the §5.20 inter mode info from the tile arithmetic stream and confirm
-    // §8.2.4 exit_symbol(); the partition walk + symbol reads + exit check make this
-    // a real decode, not a canned copy. Returns the §7.11 motion vector and the
-    // §5.20.7.6 block interpolation filter.
-    let block = decode_inter_block_and_mv(
+    // §8.2.4 exit_symbol(); the partition walk + per-block symbol reads + exit check
+    // make this a real decode, not a canned copy. Returns each §5.20.3 leaf block's
+    // §7.11/§7.12 motion vector (predicted from its spatial neighbours via the
+    // find_mv_stack kernel) and the §5.20.7.6 block interpolation filter, in decode
+    // order.
+    let blocks = decode_inter_blocks(
         plan,
         candidate,
         bytes,
@@ -258,61 +260,66 @@ pub(super) fn decode_minimal_inter_frame(
     )?;
 
     // §7.13.3.17 motion-vector scaling + §7.13.3.18 block inter prediction over the
-    // unscaled reference. The zero-fraction (zero-MV) case reduces inside the kernel
-    // to a straight reference-sample copy.
-    let frame = match block.residual.as_ref() {
-        // skip == 1: the MC prediction is the reconstruction (no residual).
-        None => motion_compensate_inter_block(
-            ref_frame,
-            block.mv,
-            block.interp,
-            frame_width,
-            frame_height,
-            offset,
-            limits,
-        )?,
-        // skip == 0: build the MC prediction workspace, then add the §5.20.7.27
-        // residual over it per plane (§7.14.4 dequant + §7.15.4 inverse transform +
-        // §7.14.3 residual add) before freezing.
-        Some(residual) => {
-            let mut workspace = motion_compensate_inter_workspace(
-                ref_frame,
-                block.mv,
-                block.interp,
-                frame_width,
-                frame_height,
+    // unscaled reference, per placed block. The zero-fraction (zero-MV) case reduces
+    // inside the kernel to a straight reference-sample copy. Each block writes its
+    // own luma-space rectangle, so the multi-block partition reconstructs the whole
+    // frame from its per-block MVs.
+    let mut workspace = crate::runtime_minimal_recon::new_general_intra_workspace(
+        frame_width as usize,
+        frame_height as usize,
+    )?;
+    // §7.14.2 qindex == base_q_idx (no segmentation / delta-Q in this subset);
+    // resolved once and reused for any skip == 0 block.
+    let qindex = core
+        .quantization_params
+        .map(|quant| quant.base_q_idx)
+        .ok_or_else(|| {
+            unsupported_at(
+                "inter_missing_base_q",
                 offset,
-                limits,
-            )?;
-            // §7.14.2 qindex == base_q_idx (no segmentation / delta-Q in this subset).
-            let qindex = core
-                .quantization_params
-                .map(|quant| quant.base_q_idx)
-                .ok_or_else(|| {
-                    unsupported_at(
-                        "inter_missing_base_q",
-                        offset,
-                        "minimal inter residual decode requires a parsed base_q_idx",
-                        SPEC_HEADER,
-                    )
-                })?;
-            // §7.14.4 TCQ dqDenom term: applies to the luma DCT_DCT (TX_CLASS_2D)
-            // non-lossless non-FSC block when the frame's `allow_tcq` is set; chroma
-            // never. Read the real §5.18.2 `allow_tcq` rather than assuming it.
-            let luma_use_tcq = core
-                .lossless_info
-                .as_ref()
-                .is_some_and(|lossless| lossless.allow_tcq);
+                "minimal inter residual decode requires a parsed base_q_idx",
+                SPEC_HEADER,
+            )
+        })?;
+    // §7.14.4 TCQ dqDenom term: applies to the luma DCT_DCT (TX_CLASS_2D)
+    // non-lossless non-FSC block when the frame's `allow_tcq` is set; chroma never.
+    let luma_use_tcq = core
+        .lossless_info
+        .as_ref()
+        .is_some_and(|lossless| lossless.allow_tcq);
+
+    for placed in &blocks {
+        let rect = mc::McBlockRect {
+            luma_x: placed.luma_x,
+            luma_y: placed.luma_y,
+            luma_w: placed.luma_w,
+            luma_h: placed.luma_h,
+        };
+        // §7.13.3.18 motion-compensate the block into its frame position.
+        mc::motion_compensate_block_into(
+            &mut workspace,
+            ref_frame,
+            rect,
+            placed.block.mv,
+            placed.block.interp,
+            offset,
+        )?;
+        // skip == 0: add the §5.20.7.27 residual over the MC prediction
+        // (§7.14.4 dequant + §7.15.4 inverse transform + §7.14.3 residual add).
+        if let Some(residual) = placed.block.residual.as_ref() {
             add_inter_residual_to_workspace(
                 &mut workspace,
                 residual,
+                placed.luma_x,
+                placed.luma_y,
                 qindex,
                 luma_use_tcq,
                 offset,
             )?;
-            workspace.freeze()?
         }
-    };
+    }
+
+    let frame = workspace.freeze()?;
 
     Ok(MinimalRuntimeFrame {
         frame,
@@ -327,12 +334,21 @@ const INTER_LUMA_LOG2_SIDE: u32 = 6;
 const INTER_CHROMA_LOG2_SIDE: u32 = 5;
 
 /// Adds the decoded § 5.20.7.27 inter residual to the § 7.13.3.18 MC prediction
-/// already in `workspace`, per plane (Y/U/V). The luma DCT_DCT block uses the
-/// § 7.14.4 TCQ `dqDenom` term when `luma_use_tcq` (the frame's `allow_tcq`);
-/// chroma never does. An `all_zero` plane is a no-op (the MC prediction stands).
+/// already in `workspace`, per plane (Y/U/V), at the block's luma-space position
+/// `(luma_x, luma_y)`. The luma DCT_DCT block uses the § 7.14.4 TCQ `dqDenom`
+/// term when `luma_use_tcq` (the frame's `allow_tcq`); chroma never does. An
+/// `all_zero` plane is a no-op (the MC prediction stands).
+///
+/// The residual is read for the verified single 64x64 block only (TX_64X64 luma
+/// / TX_32X32 chroma), so the only `skip == 0` block reaches here at the frame
+/// origin. A multi-block `skip == 0` residual (per-block TX sizes) is a future
+/// brick; the block decode rejects it before this point.
+#[allow(clippy::too_many_arguments)]
 fn add_inter_residual_to_workspace(
     workspace: &mut splot_recon::CurrentFrameWorkspace<u8>,
     residual: &InterResidual,
+    luma_x: usize,
+    luma_y: usize,
     qindex: u32,
     luma_use_tcq: bool,
     offset: ByteOffset,
@@ -346,14 +362,17 @@ fn add_inter_residual_to_workspace(
             SPEC_MC,
         )
     };
+    // 4:2:0 chroma plane position is the luma position halved.
+    let chroma_x = luma_x >> 1;
+    let chroma_y = luma_y >> 1;
     // §7.14.4: the luma DCT_DCT block adds the TCQ dqDenom term when allow_tcq;
     // chroma never does.
     crate::runtime_minimal_recon::reconstruct_inter_block_residual_into(
         workspace,
         &residual.luma,
         ReconPlaneId::Y,
-        0,
-        0,
+        luma_x,
+        luma_y,
         INTER_LUMA_LOG2_SIDE,
         qindex,
         luma_use_tcq,
@@ -363,8 +382,8 @@ fn add_inter_residual_to_workspace(
         workspace,
         &residual.u,
         ReconPlaneId::U,
-        0,
-        0,
+        chroma_x,
+        chroma_y,
         INTER_CHROMA_LOG2_SIDE,
         qindex,
         false,
@@ -374,8 +393,8 @@ fn add_inter_residual_to_workspace(
         workspace,
         &residual.v,
         ReconPlaneId::V,
-        0,
-        0,
+        chroma_x,
+        chroma_y,
         INTER_CHROMA_LOG2_SIDE,
         qindex,
         false,
@@ -397,6 +416,24 @@ pub(super) struct InterBlock {
     /// `None` for a `skip == 1` block (no residual is read or added). Each entry
     /// is the plane's single transform-block coefficient decode (luma first).
     pub(super) residual: Option<InterResidual>,
+}
+
+/// A decoded inter block placed in the frame: its luma-space rectangle plus the
+/// decoded [`InterBlock`]. A multi-block partition returns one per §5.20.3 leaf
+/// block in decode (DFS) order; each is motion-compensated (and residual-added)
+/// independently into the shared frame workspace.
+#[derive(Clone, Debug)]
+pub(super) struct PlacedInterBlock {
+    /// Luma-space top-left x (samples).
+    pub(super) luma_x: usize,
+    /// Luma-space top-left y (samples).
+    pub(super) luma_y: usize,
+    /// Block width in luma samples.
+    pub(super) luma_w: usize,
+    /// Block height in luma samples.
+    pub(super) luma_h: usize,
+    /// The decoded block (MV, interp filter, optional residual).
+    pub(super) block: InterBlock,
 }
 
 /// The decoded §5.20.7.27 inter residual for one 64x64 block: the per-plane
@@ -635,12 +672,12 @@ fn validate_inter_frame_core(
 }
 
 mod block;
+mod find_mv_stack;
 mod mc;
 mod mv_scaling;
 mod read_mv;
 
-use block::decode_inter_block_and_mv;
-use mc::{motion_compensate_inter_block, motion_compensate_inter_workspace};
+use block::decode_inter_blocks;
 
 #[cfg(test)]
 mod tests;
