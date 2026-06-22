@@ -1,8 +1,9 @@
 ## Why
 
 The inter decoder decodes a MULTI-SUPERBLOCK inter frame, but only a single
-superblock ROW (height 64) or column (width 64) of 64x64 superblocks
-(`DECODE-INTER-MULTI-SB-SPATIAL`). Real content needs a full 2-D superblock GRID:
+superblock ROW (height 64) of 64x64 superblocks (`DECODE-INTER-MULTI-SB-SPATIAL`
+admitted the ROW only; the single-SB column was analytically verified but REJECTED
+pending its own committed fixture). Real content needs a full 2-D superblock GRID:
 `ac0ej3` is 1920x1080, a 30x17 grid of 64x64 superblocks, so decoding a frame
 whose width AND height are both greater than 64 is the next prerequisite for
 real-content scale.
@@ -29,8 +30,11 @@ spatial-neighbour MV stack. Both oracles agree byte-for-byte.
 
 - Add Feature ID `DECODE-INTER-GRID-SPATIAL`.
 - Lift the § 5.18.3 inter frame-size gate in `validate_inter_frame_core` from a
-  single superblock ROW/column to a full 2-D superblock GRID (width AND height
-  each a positive multiple of 64), still gated to `seq_sb_size == 64x64`. This is
+  single superblock ROW to a full 2-D superblock GRID (width AND height each a
+  positive multiple of 64), still gated to `seq_sb_size == 64x64`. This brick is
+  also the first to admit the single-SB column (width 64, height > 64), as a
+  degenerate 1-D case of the grid (its distinguishing vertical above-SB-boundary
+  prediction is exercised by the grid fixture's SB2). This is
   the ONLY decoder change: the § 5.20.2.1 SB raster loop, the frame-wide
   `find_mv_stack` grid (already modelling § 7.12.2.6 availability via the
   `NeighbourMvGrid::get` "unwritten cell -> None" rule), `decode_inter_blocks`,
@@ -77,3 +81,21 @@ spatial-neighbour MV stack. Both oracles agree byte-for-byte.
   deferred temporal / compound / warp / ref-MV-bank / derived-SMVP / DRL-reorder
   MV candidates remain out of scope (rejected with a structured diagnostic before
   any output).
+- Scope of what the fixture PROVES: this brick proves the 2-D-grid geometry and
+  the cross-SB-row MV-stack AVAILABILITY (a decoded earlier-row superblock
+  contributes a candidate, not the zero global-MV fallback). Because every block
+  in the committed fixture reconstructs the SAME MV (col 48), it does NOT
+  discriminate the per-neighbour stack ORDERING (left vs above precedence when
+  neighbours hold distinct MVs); and the § 7.12.2.20 large-block (> 32x32) mixed
+  MVP candidates apply to the verified 64x64 leaves but are deferred (kept safe by
+  the identical-MV fixture coincidence and the § 5.20.7.8 DRL-out-of-range reject).
+  Both are spec-faithful but await a committed distinct-neighbour-MV fixture
+  (TODO(spec: DECODE-INTER-MVSTACK-SPATIAL)) — a tracked follow-on, not regressed
+  here (the all-equal-MV property is inherited from the single-row/SB bricks; this
+  brick does not modify `find_mv_stack`).
+- The wide grid gate (admitting any width % 64 == 0 && height % 64 == 0) is a
+  geometric generalization of the committed 128x128 fixture, mirroring the intra
+  `DECODE-GENERAL-INTRA-GRID` precedent (which admits arbitrary grids from a single
+  128x128 fixture). The 128x128 fixture exercises the qualitative neighbour
+  relationships (left, above, above-left, above-right in-frame and out-of-frame,
+  no-left corner) that a larger grid repeats.

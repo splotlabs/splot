@@ -474,8 +474,21 @@ pub(super) fn find_mv_stack(
 
     // §7.12.2 step 22: the Extra search process (§7.12.2.20). Clamp the existing
     // candidates, then add the global MV candidate if not already present. The
-    // large-block (> 32x32) MVP combinations and warp/intrabc candidates are
-    // deferred (the verified block is <= 32x32 single-reference non-intrabc).
+    // large-block (Block_Width > 32 AND Block_Height > 32) MVP combinations
+    // (insert_mvp_candidate(0,1)/(1,0)/(0,2)/(2,0)/(1,2)/(2,1)) and the warp /
+    // intrabc candidates are DEFERRED. NB: the admitted leaves are >= 32x32 with NO
+    // upper bound (block.rs MIN_INTER_LEAF_N4 gates only the lower edge), so the
+    // verified 64x64 grid / superblock blocks ARE > 32x32 and the §7.12.2.20
+    // large-block step DOES apply to them. It is currently kept safe only because
+    // (a) every committed-fixture neighbour MV is identical, so the mixed MVP
+    // candidates coincide with existing stack entries (nothing appended, NumMvFound
+    // unchanged), and (b) the §7.12.2.20 candidates would be appended AFTER the
+    // spatial + global entries, so a RefMvIdx selecting a mixed-only slot lands past
+    // this shorter stack and is rejected by the §5.20.7.8
+    // inter_block_drl_idx_out_of_range guard rather than mis-decoding. A committed
+    // distinct-neighbour-MV fixture is required to verify the large-block step.
+    // TODO(spec: DECODE-INTER-MVSTACK-SPATIAL): §7.12.2.20 large-block (>32x32) MVP
+    // combinations + warp / intrabc candidates.
     extra_search(block, global_mv, &mut entries);
 
     // §7.12.2 step 23: the Clamping process (§7.12.2.23). Clamp every candidate.
@@ -574,10 +587,14 @@ fn search_stack(cand_mv: Mv, weight: u32, entries: &mut Vec<MvStackEntry>) {
     }
 }
 
-/// AV2 § 7.12.2.20 Extra search process (single prediction, non-intrabc,
-/// <= 32x32, no warp): clamp the existing candidates, then add the global MV if
-/// it is not already present. Large-block MVP combinations and warp/intrabc
-/// candidates are deferred.
+/// AV2 § 7.12.2.20 Extra search process (single prediction, non-intrabc, no
+/// warp): clamp the existing candidates, then add the global MV if it is not
+/// already present. The large-block (Block_Width > 32 AND Block_Height > 32) MVP
+/// combinations and the warp / intrabc candidates are deferred. NB: the admitted
+/// leaves are >= 32x32 with no upper bound, so the verified 64x64 blocks are
+/// larger than 32x32 and the large-block step applies to them; it is kept safe
+/// only by the identical-MV fixtures and the §5.20.7.8 DRL-out-of-range reject
+/// (see the call-site note in [`find_mv_stack`]).
 fn extra_search(block: &MvBlockContext, global_mv: Mv, entries: &mut Vec<MvStackEntry>) {
     // §7.12.2.20: clamp each candidate (the per-list clamp, single list here).
     for entry in entries.iter_mut() {

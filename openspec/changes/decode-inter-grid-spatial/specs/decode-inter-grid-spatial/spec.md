@@ -32,7 +32,7 @@ the already-decoded neighbours (the § 5.20.7.2 `is_inter` / `skip_flag` context
 and the § 7.11.2 NewMvContext), and the whole decode SHALL be guarded by § 8.2.4
 `exit_symbol()` so that a wrong symbol read is rejected rather than emitting a
 confident-but-wrong frame. The decoder SHALL NOT hardcode the motion vectors. The
-existing single-superblock and single-superblock-row/column inter fixtures and all
+existing single-superblock and single-superblock-row inter fixtures and all
 general-intra fixtures SHALL continue to decode bit-exact.
 
 The decoder SHALL reject, with a structured `decode/unsupported-feature`
@@ -41,6 +41,20 @@ partial frame size (a width or height that is not a multiple of 64), a
 multi-superblock skip == 0 residual, and the deferred temporal / compound / warp /
 ref-MV-bank / derived-SMVP / DRL-reorder MV candidates (once a block has a decoded
 neighbour).
+
+The committed fixture proves the 2-D-grid geometry and the cross-superblock-row
+MV-stack AVAILABILITY (a decoded earlier-row superblock contributes a candidate,
+not the zero global-MV fallback). Because every block reconstructs the SAME motion
+vector, the fixture does NOT discriminate the per-neighbour stack ORDERING (left
+vs above precedence when neighbours hold distinct MVs); and the § 7.12.2.20
+large-block (> 32x32) mixed MVP candidates — which DO apply to the verified 64x64
+leaves — are deferred (kept safe only by the identical-MV coincidence and the
+§ 5.20.7.8 DRL-out-of-range reject). Both are spec-faithful but await a committed
+distinct-neighbour-MV fixture (a tracked follow-on); this brick does not modify
+`find_mv_stack` (the property is inherited from the single-row/SB bricks). The wide
+grid admission (any width and height each a multiple of 64) is a geometric
+generalization of the committed 128x128 fixture, mirroring the intra
+general-grid precedent.
 
 #### Scenario: 2-D-grid inter fixture decodes bit-exact to both oracles
 - **WHEN** `splot decode --output-format raw` is given
