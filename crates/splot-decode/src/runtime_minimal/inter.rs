@@ -488,11 +488,17 @@ fn validate_inter_frame_core(
         // && has_newmv` reads `use_most_probable_precision` (and maybe `pb_mv_precision`)
         // before assign_mv; `enable_adaptive_mvd` allows `use_amvd` after single_mode. The
         // verified NEWMV block reads neither, so reject a frame whose sequence enables
-        // flexible MV resolution or adaptive MVD.
-        || sequence
-            .inter
-            .as_ref()
-            .is_none_or(|seq_inter| seq_inter.enable_flex_mvres || seq_inter.enable_adaptive_mvd)
+        // flexible MV resolution or adaptive MVD. `enable_bawp` (-> `allow_bawp` per §5.18.2)
+        // makes §5.20.7.6 read a `use_bawp` symbol after single_mode for an unscaled
+        // single-ref block with Min(w,h) >= 8 and YMode != GLOBALMV (i.e. exactly the
+        // verified NEARMV/NEWMV 64x64 block) that this decoder does not read — reject it so
+        // an admitted frame can never desync the §8.2 decoder past the bit-count-only
+        // `exit_symbol()` backstop.
+        || sequence.inter.as_ref().is_none_or(|seq_inter| {
+            seq_inter.enable_flex_mvres
+                || seq_inter.enable_adaptive_mvd
+                || seq_inter.enable_bawp
+        })
     {
         return Err(unsupported_at(
             "inter_unsupported_frame_tools",
