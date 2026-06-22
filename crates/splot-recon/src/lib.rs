@@ -50,12 +50,25 @@
 //! level), and the § 7.17.7.2 deblocking filter-choice process
 //! ([`deblock_filter_choice`], the chosen filter width from the two perpendicular
 //! edge sample lines, the estimated second derivatives, and the `qThr`/`sideThr`
-//! threshold cascade over the caller-resolved `Q_First` table); it does not
+//! threshold cascade over the caller-resolved `Q_First` table), and the
+//! § 7.13.3.18 block inter prediction (sub-pel motion compensation) kernel
+//! ([`subpel_predict_block`], the separable interpolation-filter convolution: a
+//! horizontal filter pass into an intermediate array then a vertical pass, the
+//! verbatim § 7.13.3.18 [`SUBPEL_FILTERS`] `[6][16][8]` coefficients selected by
+//! the § 6 `interp` with the small-block 4-tap substitution and the sub-pel phase
+//! `(p >> 6) & SUBPEL_MASK`, the § 7.13.3.16 `InterRound0` / `InterRound1`
+//! rounding, and the final § 4.8 `Clip1` for the single-reference (non-compound)
+//! write, over caller-resolved § 7.13.3.17 `startX`/`startY`/`stepX`/`stepY`
+//! scaling and a clipped [`ReferencePlaneView`] border extension); it does not
 //! implement the rest of the § 7.17 deblocking edge traversal and § 7.17.6 filter-level derivation,
 //! the other loop filters (CDEF, CCSO, loop restoration, GDF), byte-consuming
 //! decode, full
 //! reconstruction, the § 7.14.4 `shift` derivation
 //! or the user-defined `UserQm` matrices,
+//! the § 7.13.3.17 motion-vector scaling (the caller resolves
+//! `startX`/`startY`/`stepX`/`stepY`), the § 7.13.3 compound / mask-blend /
+//! distance-weighted prediction, the § 7.13.3.19 block warp, the § 7.13.3
+//! reference-area clipping selection, intra block copy,
 //! runtime CLI Y4M output, or full AV2
 //! reference refresh semantics.
 //!
@@ -100,7 +113,8 @@
 //! `RECON-DEBLOCK-SAMPLE-FILTER`,
 //! `RECON-DEBLOCK-FILTER-MAX-WIDTH`,
 //! `RECON-DEBLOCK-ADAPTIVE-STRENGTH`,
-//! `RECON-DEBLOCK-FILTER-CHOICE`.
+//! `RECON-DEBLOCK-FILTER-CHOICE`,
+//! `RECON-SUBPEL-MC`.
 //!
 //! Licensed under PolyForm Noncommercial 1.0.0; commercial use requires a
 //! separate written license from Bartosz Tomczyk.
@@ -130,6 +144,7 @@ mod reconstruct;
 mod reconstruct_block;
 mod reference;
 mod secondary_transform;
+mod subpel_mc;
 mod transform_params;
 mod views;
 mod workspace;
@@ -200,6 +215,10 @@ pub use reference::{
     ReferenceRefreshMask, ReferenceRefreshOutcome, ReferenceRefreshSlots, ReferenceSlot,
 };
 pub use secondary_transform::{SecondaryInverseTransform, secondary_inverse_transform};
+pub use subpel_mc::{
+    InterpolationFilter, ReferencePlaneView, SUBPEL_FILTERS, SubpelPredictParams,
+    subpel_predict_block,
+};
 pub use transform_params::{TransformPass, dpcm_direction, get_transform_1d_type, transform_shift};
 pub use views::{FrameMut, FrameRef, PlaneMut, PlaneMutRows, PlaneRef, PlaneRefRows};
 pub use workspace::{
