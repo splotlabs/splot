@@ -13,9 +13,10 @@ use splot_core::tables::cdf::{
     DEFAULT_JOINT_SHELL_LAST_TWO_CLASSES_CDF, DEFAULT_JOINT_SHELL_SET_CDF,
     DEFAULT_JOINT_SHELL6_CLASS0_CDF, DEFAULT_JOINT_SHELL6_CLASS1_CDF,
     DEFAULT_SHELL_OFFSET_CLASS2_CDF, DEFAULT_SHELL_OFFSET_LOW_CLASS_CDF,
-    DEFAULT_SHELL_OFFSET_OTHER_CLASS_CDF, DEFAULT_SINGLE_MODE_CDF, DEFAULT_SKIP_CDF,
-    DEFAULT_TXB_SKIP_CDF, DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF, DEFAULT_V_TXB_SKIP_CDF,
-    DEFAULT_Y_MODE_INDEX_CDF, DEFAULT_Y_MODE_OFFSET_CDF, DEFAULT_Y_MODE_SET_CDF,
+    DEFAULT_SHELL_OFFSET_OTHER_CLASS_CDF, DEFAULT_SINGLE_MODE_CDF, DEFAULT_SINGLE_REF_CDF,
+    DEFAULT_SKIP_CDF, DEFAULT_TXB_SKIP_CDF, DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF,
+    DEFAULT_V_TXB_SKIP_CDF, DEFAULT_Y_MODE_INDEX_CDF, DEFAULT_Y_MODE_OFFSET_CDF,
+    DEFAULT_Y_MODE_SET_CDF,
 };
 
 use super::coeff_rows::{CoeffCdfRows, CoeffCdfSelector};
@@ -47,6 +48,13 @@ const SINGLE_MODE_CONTEXTS: usize = 5;
 // §5.20.7.8 `read_drl_idx` `Min(idx, 2)` index; the second is `NewMvContext`.
 const DRL_MODE_IDX_BANKS: usize = 3;
 const DRL_MODE_CONTEXTS: usize = 5;
+// §9.3 `Default_Single_Ref_Cdf[ REF_CONTEXTS ][ REFS_PER_FRAME - 1 ][ 3 ]`: the
+// §5.20.7.12 `read_single_ref` binary `single_ref` symbol's CDF banks. The first
+// axis is the §8.3.2 neighbour-derived `ctx` (`av2_get_ref_pred_context`, the same
+// derivation as `comp_ref`); the second is the `read_single_ref` loop counter `ref`
+// (`0..NumTotalRefs - 1`).
+const REF_CONTEXTS: usize = 3;
+const REFS_PER_FRAME_MINUS_1: usize = 6;
 // §9.3 / §8.3.2 SHELL-coded `read_mv` (§5.20.7.20) CDF banks for the verified
 // EighthPel (`MvPrecision == MV_PRECISION_EIGHTH_PEL`, P == 6) subset. Only the
 // P == 6 `shell_class` bank pair is wired; other precisions are rejected by the
@@ -88,6 +96,9 @@ pub(crate) type IsInterCdfRows = [[i32; CDF_ROW_LEN]; IS_INTER_CONTEXTS];
 pub(crate) type SkipCdfRows = [[i32; CDF_ROW_LEN]; SKIP_CONTEXTS];
 pub(crate) type SingleModeCdfRows = [[i32; 4]; SINGLE_MODE_CONTEXTS];
 pub(crate) type DrlModeCdfRows = [[[i32; CDF_ROW_LEN]; DRL_MODE_CONTEXTS]; DRL_MODE_IDX_BANKS];
+// §9.3 `Default_Single_Ref_Cdf[ REF_CONTEXTS ][ REFS_PER_FRAME - 1 ][ 3 ]`: the
+// binary §5.20.7.12 `single_ref` symbol keeps the generic width 3 (`CDF_ROW_LEN`).
+pub(crate) type SingleRefCdfRows = [[[i32; CDF_ROW_LEN]; REFS_PER_FRAME_MINUS_1]; REF_CONTEXTS];
 // §9.3 SHELL-coded `read_mv` banks. `shell_set` / `joint_shell_last_two_classes` /
 // `shell_offset_class2` are binary (width 3 == `CDF_ROW_LEN`). The P == 6 EighthPel
 // `shell_class` banks are width 9 (8 shell-class symbols + count). The offset / col
@@ -225,6 +236,14 @@ pub(crate) enum BlockCdfSelector {
         /// `NewMvContext` (`0..DRL_MODE_CONTEXTS`).
         ctx: usize,
     },
+    /// `TileSingleRefCdf[ctx][ref]` (AV2 § 8.3.2): the §5.20.7.12 `read_single_ref`
+    /// binary `single_ref` symbol for a per-decision context/loop-index pair.
+    SingleRef {
+        /// §8.3.2 neighbour-derived single_ref context (`0..REF_CONTEXTS`).
+        ctx: usize,
+        /// The §5.20.7.12 loop counter `ref` (`0..REFS_PER_FRAME_MINUS_1`).
+        ref_idx: usize,
+    },
     /// `TileJointShellSetCdf[MvCtx]` (AV2 § 8.3.2): the §5.20.7.20 `shell_set`
     /// binary symbol (MvCtx == 0 — single-context).
     JointShellSet,
@@ -297,6 +316,7 @@ pub(crate) struct BlockCdfRows {
     pub(super) skip: SkipCdfRows,
     pub(super) single_mode: SingleModeCdfRows,
     pub(super) drl_mode: DrlModeCdfRows,
+    pub(super) single_ref: SingleRefCdfRows,
     pub(super) joint_shell_set: JointShellSetCdfRow,
     pub(super) joint_shell6_class0: JointShell6ClassCdfRow,
     pub(super) joint_shell6_class1: JointShell6ClassCdfRow,
@@ -332,6 +352,7 @@ impl BlockCdfRows {
             skip: DEFAULT_SKIP_CDF,
             single_mode: DEFAULT_SINGLE_MODE_CDF,
             drl_mode: DEFAULT_DRL_MODE_CDF,
+            single_ref: DEFAULT_SINGLE_REF_CDF,
             joint_shell_set: DEFAULT_JOINT_SHELL_SET_CDF,
             joint_shell6_class0: DEFAULT_JOINT_SHELL6_CLASS0_CDF,
             joint_shell6_class1: DEFAULT_JOINT_SHELL6_CLASS1_CDF,
@@ -509,6 +530,24 @@ impl BlockCdfRows {
                     index_name: "ctx",
                     actual: ctx,
                     max_exclusive: DRL_MODE_CONTEXTS,
+                })?;
+                Ok(row.as_slice())
+            }
+            BlockCdfSelector::SingleRef { ctx, ref_idx } => {
+                let bank = self
+                    .single_ref
+                    .get(ctx)
+                    .ok_or(TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::SingleRef,
+                        index_name: "ctx",
+                        actual: ctx,
+                        max_exclusive: REF_CONTEXTS,
+                    })?;
+                let row = bank.get(ref_idx).ok_or(TileCdfError::SelectorOutOfRange {
+                    array: TileCdfArray::SingleRef,
+                    index_name: "ref",
+                    actual: ref_idx,
+                    max_exclusive: REFS_PER_FRAME_MINUS_1,
                 })?;
                 Ok(row.as_slice())
             }
@@ -769,6 +808,28 @@ impl BlockCdfRows {
                 })?;
                 Ok(row.as_mut_slice())
             }
+            BlockCdfSelector::SingleRef { ctx, ref_idx } => {
+                let bank_len = self.single_ref.len();
+                let bank =
+                    self.single_ref
+                        .get_mut(ctx)
+                        .ok_or(TileCdfError::SelectorOutOfRange {
+                            array: TileCdfArray::SingleRef,
+                            index_name: "ctx",
+                            actual: ctx,
+                            max_exclusive: bank_len,
+                        })?;
+                let ref_len = bank.len();
+                let row = bank
+                    .get_mut(ref_idx)
+                    .ok_or(TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::SingleRef,
+                        index_name: "ref",
+                        actual: ref_idx,
+                        max_exclusive: ref_len,
+                    })?;
+                Ok(row.as_mut_slice())
+            }
             BlockCdfSelector::JointShellSet => Ok(self.joint_shell_set.as_mut_slice()),
             BlockCdfSelector::JointShell6Class { shell_set } => match shell_set {
                 0 => Ok(self.joint_shell6_class0.as_mut_slice()),
@@ -941,6 +1002,16 @@ impl BlockCdfRows {
                 );
             }
         }
+        for ctx in 0..REF_CONTEXTS {
+            for ref_idx in 0..REFS_PER_FRAME_MINUS_1 {
+                avg_cdf_row(
+                    &mut self.single_ref[ctx][ref_idx],
+                    &tile.single_ref[ctx][ref_idx],
+                    tile_num,
+                    num_log2,
+                );
+            }
+        }
         avg_cdf_row(
             &mut self.joint_shell_set,
             &tile.joint_shell_set,
@@ -1059,6 +1130,11 @@ impl BlockCdfRows {
         for idx in 0..DRL_MODE_IDX_BANKS {
             for ctx in 0..DRL_MODE_CONTEXTS {
                 scale_cdf_count(&mut self.drl_mode[idx][ctx]);
+            }
+        }
+        for ctx in 0..REF_CONTEXTS {
+            for ref_idx in 0..REFS_PER_FRAME_MINUS_1 {
+                scale_cdf_count(&mut self.single_ref[ctx][ref_idx]);
             }
         }
         scale_cdf_count(&mut self.joint_shell_set);

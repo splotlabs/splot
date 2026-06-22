@@ -33,9 +33,7 @@ mod runtime_frontier;
 
 use core::fmt;
 
-use cdf::{
-    FrameCdfSubset, TileCdfError, TileCdfPolicyInput, TileCdfWorkUnitBoundary, tile_cdf_save_policy,
-};
+use cdf::{TileCdfError, TileCdfPolicyInput, TileCdfWorkUnitBoundary, tile_cdf_save_policy};
 use splot_core::headers::tile_group::{TileFramingDefect, TileGroupFraming};
 use splot_core::segment::MAX_SEGMENTS;
 use splot_core::span::{ByteOffset, ByteSpan};
@@ -52,7 +50,7 @@ pub(crate) use block_symbol::MinimalBlockSymbolTraceError;
 pub(crate) use cdf::block_context::{
     SupportedChromaMode, SupportedDirectionalLumaMode, SupportedNonDcLumaMode,
 };
-pub(crate) use cdf::{TileCdfSelector, TileCdfSubset};
+pub(crate) use cdf::{FrameCdfSubset, TileCdfSelector, TileCdfSubset};
 pub(crate) use coeff_state::TileCoeffContextState;
 pub(crate) use general_intra_block::{
     GeneralIntraBlockModeError, GeneralIntraBlockModes, decode_general_intra_block_modes,

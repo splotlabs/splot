@@ -731,6 +731,11 @@ mod find_mv_stack;
 mod mc;
 mod mv_scaling;
 mod read_mv;
+// AV2 § 5.20.7.12 `read_single_ref` entropy element. Loaded-but-unwired: proven
+// bit-exact via a `SymbolEncoder` round-trip (`DECODE-INTER-SINGLE-REF-SYMBOL`);
+// the runtime wiring + § 8.3.2 neighbour-context derivation are the multi-reference
+// follow-on (`read_single_ref` is only read when `NumTotalRefs >= 2`).
+mod single_ref;
 
 use block::decode_inter_blocks;
 
