@@ -39,6 +39,14 @@ use splot_tables::tables::transform_1d::DCT_KERNEL4;
 
 use crate::error::{Error, Result};
 
+// Re-export the sibling 16x16 forward transform (`ENC-FORWARD-TRANSFORM-DCT-16X16`),
+// split into `forward_transform_16x16` only to keep each source file under the
+// project's 1000-line budget, so callers reach both block sizes through this module.
+// The re-export is not yet consumed inside the crate (the 16x16 path has no production
+// caller wired in this brick), so it is allowed-unused like the modules' `dead_code`.
+#[allow(unused_imports)]
+pub(crate) use crate::forward_transform_16x16::ForwardTransformBlock16x16;
+
 const DCT_DCT_4X4_WIDTH: usize = 4;
 const DCT_DCT_4X4_HEIGHT: usize = 4;
 const DCT_DCT_4X4_COEFF_COUNT: usize = DCT_DCT_4X4_WIDTH * DCT_DCT_4X4_HEIGHT;
