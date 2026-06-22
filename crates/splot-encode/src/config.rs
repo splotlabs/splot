@@ -55,7 +55,8 @@ pub struct EncoderConfig {
     /// Chroma subsampling (placeholder).
     pub chroma_subsampling: ChromaSubsampling,
     /// The fixed quantizer index used for every frame: the frame-header `base_q_idx`
-    /// (AV2 § 5.18.2) and — once the lossy coefficient path is wired into
+    /// (AV2 § 5.18.2; `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2`) and — once
+    /// the lossy coefficient path is wired into
     /// `receive_packet` — the quantizer's qindex, both read from this single field so
     /// the two cannot diverge. The minimal encoder is constant-QP; per-frame and
     /// per-block rate control are a later phase behind a `RateController` seam.
