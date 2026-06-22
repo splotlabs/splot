@@ -5105,6 +5105,39 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-COEFF-TOKENIZE-16X16-DC"
+name = "Encoder 16x16 luma DC coefficient tokenization"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20.7.27", "8.3.2", "8.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/coefficient_tokenization/general_coded.rs"
+openspec_change = "encoder-coeff-tokenize-16x16-dc"
+tracking_issue = ""
+owner = "encoder"
+risk = "medium"
+notes = "Minimal-working-encoder GEOMETRY UNLOCK part 2, sub-brick 4a (of the 16x16 coefficient tokenizer; the 16x16 forward DCT+quant = ENC-FORWARD-TRANSFORM-DCT-16X16 landed). The SMALLEST 16x16 coefficient-tokenization slice: a single coded DC (eob=1) in a 16x16 DCT_DCT luma block. general_intra_16x16_luma_dc_coded_tokens emits [txb_skip=0 at TX_SIZE_16X16_CTX, eob_pt_256 symbol 0, coeff_base_eob LF at TX_SIZE_16X16_CTX DC ctx 0, optional coeff_br (size-independent), dc_sign] (+ chroma U/V all-zero tail). NEW: TX_SIZE_16X16_CTX=2 (= (TX_SIZE_SQR[TX_16X16]+TX_SIZE_SQR_UP+1)>>1; cross-checked vs decoder TX_16X16_CONTEXT=2 fsc_level_pass.rs:23); the eob_pt_256 family (CoefficientTokenSyntax::EobPt256 + CoefficientCdfRowSelector::EobPt256, indexing DEFAULT_EOB_PT_256_CDF[q][eob_ctx] 8-symbol rows — 16x16 is EobPtSize::Pt256 since eobMultisize=min(4,5)+min(4,5)-4=4, vs the 4x4's eob_pt_16). DUAL-ROUTER: the EobPt256 arm + the new TX_16X16 banks (luma_txb_skip_16x16, coeff_base_lf_eob_tx16, eob_pt_256) added to BOTH the entropy-proof router (coefficient_tokenization/cdf_rows.rs) AND the trace router (block_symbol_trace/cdf_rows.rs). §8.2 SELF-CONSISTENCY ORACLE: the luma DC stream roundtrips through roundtrip_entropy_tokens; the full block (+chroma tail) through roundtrip_block_symbol_trace; an ASYMMETRIC negative DC magnitude (lesson: symmetric/zero values mask sign/bit-order bugs exit_symbol won't catch). The §8.2 roundtrip proves self-consistency NOT decoder-conformance, so the load-bearing facts (TX_SIZE_16X16_CTX, eob_pt_256 symbol 0, the LF coeff_base_eob DC ctx 0, eob_ctx 0) were MIRRORED VERBATIM from the decoder source-of-truth (eob_pt_size_from_tx_log2, coeff_base_eob_ctx, fsc_level_pass) and read-only spot-checked; bit-exact decode-verify is deferred to the packet path (later brick). Built by an isolated worktree agent then read-only reviewed. decode_check=not-applicable (§8.2 self-consistency; real decode at the packet brick); avm_diff=not-applicable. Encoder-mission-DRIVEN. This row does NOT claim eob>1, the eob_pt_extra refinement (eobPt 8/9 — sub-brick 4c), HF coefficients (4b/4c), golomb (4d), tile/packet emission, or the 16x16 intra_tx_type/sec_tx_type signaling (downstream wiring brick). NEXT: 4b (16x16 LF base pass eob 2..32) then 4c (HF + eob_pt_256 eob_pt_extra refinement)."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/coefficient_tokenization_tests.rs"]
+commands = ["cargo test -p splot-encode coefficient_tokenization --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-INTRA-BLOCK-TRACE-TWO-COEFF"
 name = "Encoder eob=2 multi-coefficient block trace"
 category = "encoder"
