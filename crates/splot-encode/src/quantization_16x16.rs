@@ -28,7 +28,8 @@ use splot_recon::{
 
 use crate::error::{Error, Result};
 use crate::forward_transform_16x16::{
-    DCT_DCT_16X16_COEFF_COUNT, DCT_DCT_16X16_HEIGHT, DCT_DCT_16X16_WIDTH, ForwardTransformBlock16x16,
+    DCT_DCT_16X16_COEFF_COUNT, DCT_DCT_16X16_HEIGHT, DCT_DCT_16X16_WIDTH,
+    ForwardTransformBlock16x16,
 };
 
 const DEQUANT_ROUNDING_SCALE: u128 = 8;
@@ -417,13 +418,9 @@ mod tests {
         // levels appear (not a DC-only degenerate case).
         let residual = ac_residual();
         let transformed = forward(&residual);
-        let block = QuantizedTransformBlock16x16::dct_dct_16x16(
-            &transformed,
-            ReconBitDepth::Eight,
-            1,
-            1,
-        )
-        .unwrap();
+        let block =
+            QuantizedTransformBlock16x16::dct_dct_16x16(&transformed, ReconBitDepth::Eight, 1, 1)
+                .unwrap();
         let coeffs = transformed.coefficients();
         let (dcq, acq) = (block.dc_quantizer(), block.ac_quantizer());
         let mut expected = [0; DCT_DCT_16X16_COEFF_COUNT];
@@ -490,10 +487,16 @@ mod tests {
             for (&got, &want) in reconstructed.iter().zip(residual.iter()) {
                 let err = (got - want).abs();
                 worst = worst.max(err);
-                assert!(err <= BOUND, "residual {residual:?}: err {err} exceeds bound {BOUND}");
+                assert!(
+                    err <= BOUND,
+                    "residual {residual:?}: err {err} exceeds bound {BOUND}"
+                );
             }
         }
-        assert!(worst >= 1, "expected a non-trivial quant error, got {worst}");
+        assert!(
+            worst >= 1,
+            "expected a non-trivial quant error, got {worst}"
+        );
     }
 
     #[test]
@@ -502,7 +505,11 @@ mod tests {
         // residual reconstructs bit-exactly through quant + dequant + inverse.
         for v in [-127, -8, -1, 0, 1, 7, 127] {
             let block = quantized(&uniform(v), 0);
-            assert_eq!(inverse_16x16_dct_dct(block.dequantized()), uniform(v), "v {v}");
+            assert_eq!(
+                inverse_16x16_dct_dct(block.dequantized()),
+                uniform(v),
+                "v {v}"
+            );
         }
     }
 

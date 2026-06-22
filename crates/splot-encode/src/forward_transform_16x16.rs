@@ -215,10 +215,7 @@ fn forward_round2(value: i64, shift: u32) -> i64 {
 /// analytic inverse of the 1D inverse DCT. The kernel matrix is asymmetric, so the
 /// `[r][i]` orientation is load-bearing. The 16-tap sum accumulates in `i64`
 /// (`|kernel| <= 90`; the largest pass product stays well within `i64`).
-fn forward_dct16_1d(
-    input: &[i64; DCT_DCT_16X16_WIDTH],
-    shift: u32,
-) -> [i64; DCT_DCT_16X16_WIDTH] {
+fn forward_dct16_1d(input: &[i64; DCT_DCT_16X16_WIDTH], shift: u32) -> [i64; DCT_DCT_16X16_WIDTH] {
     let mut out = [0i64; DCT_DCT_16X16_WIDTH];
     for (r, slot) in out.iter_mut().enumerate() {
         let mut sum = 0i64;
@@ -282,7 +279,11 @@ mod tests {
             let mut expected = [0; DCT_DCT_16X16_COEFF_COUNT];
             expected[0] = v * 128;
             assert_eq!(block.coefficients(), &expected, "v {v}");
-            assert_eq!(inverse_16x16_dct_dct(block.coefficients()), uniform(v), "v {v}");
+            assert_eq!(
+                inverse_16x16_dct_dct(block.coefficients()),
+                uniform(v),
+                "v {v}"
+            );
         }
     }
 
@@ -315,7 +316,9 @@ mod tests {
         // `7680 * 1024 >> 13 = 960`. The odd horizontal frequencies pick up the rest.
         assert_eq!(
             &coeffs[..DCT_DCT_16X16_WIDTH],
-            &[960, -586, 0, -64, 0, -22, 0, -10, 0, -5, 0, -3, 0, -1, 0, -2]
+            &[
+                960, -586, 0, -64, 0, -22, 0, -10, 0, -5, 0, -3, 0, -1, 0, -2
+            ]
         );
     }
 
@@ -358,17 +361,17 @@ mod tests {
             for sample in &mut residual {
                 *sample = next();
             }
-            let block = ForwardTransformBlock16x16::dct_dct_16x16(
-                PlaneId::Y,
-                rect(16, 16),
-                &residual,
-            )
-            .unwrap();
+            let block =
+                ForwardTransformBlock16x16::dct_dct_16x16(PlaneId::Y, rect(16, 16), &residual)
+                    .unwrap();
             let reconstructed = inverse_16x16_dct_dct(block.coefficients());
             for (&got, &want) in reconstructed.iter().zip(residual.iter()) {
                 let err = (got - want).abs();
                 worst = worst.max(err);
-                assert!(err <= BOUND, "residual {residual:?}: err {err} exceeds bound {BOUND}");
+                assert!(
+                    err <= BOUND,
+                    "residual {residual:?}: err {err} exceeds bound {BOUND}"
+                );
             }
         }
         // The sweep actually exercises AC content up to the bound (not a degenerate
@@ -380,12 +383,9 @@ mod tests {
     fn out_of_range_residual_errors_without_panicking() {
         // A residual far outside the 8-bit domain yields a coefficient beyond i32; the
         // checked narrowing returns a typed error rather than panicking/wrapping.
-        let err = ForwardTransformBlock16x16::dct_dct_16x16(
-            PlaneId::Y,
-            rect(16, 16),
-            &uniform(i32::MAX),
-        )
-        .unwrap_err();
+        let err =
+            ForwardTransformBlock16x16::dct_dct_16x16(PlaneId::Y, rect(16, 16), &uniform(i32::MAX))
+                .unwrap_err();
         assert!(matches!(
             err,
             Error::ForwardTransformCoefficientRangeExceeded {
