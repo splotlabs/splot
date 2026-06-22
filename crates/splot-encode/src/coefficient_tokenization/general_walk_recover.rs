@@ -10,8 +10,9 @@
 //!
 //! [`recover_quant_from_tokens`] re-reads an emitted token stream in the same
 //! reverse-scan order and rebuilds the signed `[i32; 16]` raster block, proving the
-//! encoder's emitted (level, sign, position) triples — and, at a single golomb-range
-//! coefficient, its § 5.20.7.28 `read_quant` golomb tail — are internally reversible.
+//! encoder's emitted (level, sign, position) triples — and, at every golomb-range
+//! coefficient, its § 5.20.7.28 `read_quant` golomb tail with the running `hrLevelAvg`
+//! predictor threaded across them — are internally reversible.
 //!
 //! HONESTY: this proof is § 8.2 SELF-CONSISTENCY, not decoder/AVM verification. The
 //! same code authored the emission and this inverse, so it proves the round trip is
@@ -27,7 +28,9 @@ use super::general_walk::{
     MAX_GENERAL_EOB_PT, MIN_EOB_WITH_EXTRA, eob_base_for_pt, general_walk_max_level_for_pos,
     scan_2d_4x4, scan_pos,
 };
-use super::general_walk_golomb::recover_read_quant_golomb_tail;
+use super::general_walk_golomb::{
+    golomb_params_from_hr_level_avg, next_hr_level_avg, recover_read_quant_golomb_tail,
+};
 use super::{CoefficientEntropyToken, CoefficientTokenSyntax, coded_luma_all_zero_token};
 use crate::block_symbol_trace::BlockSymbolToken;
 use crate::error::{Error, Result};
@@ -46,9 +49,11 @@ const TX_4X4_COEFF_COUNT: usize = 16;
 /// value at the scan-derived raster position. A coefficient whose recovered
 /// base+`coeff_br` level reaches its position `maxLevel` additionally carries a
 /// § 5.20.7.28 `read_quant` golomb tail right after its sign token; the tail is read
-/// back and `x = magnitude - maxLevel` is added to the recovered magnitude (the
-/// single-golomb-coefficient `m = 1` case — see
-/// [`super::general_walk::recover_read_quant_golomb_tail`]). The `eob_extra` flag
+/// back and `x = magnitude - maxLevel` is added to the recovered magnitude. MULTIPLE
+/// golomb coefficients are supported: the running `hrLevelAvg` predictor is threaded
+/// across them in reverse scan so each tail's golomb parameter `m` matches the
+/// emission (see [`super::general_walk_golomb::recover_read_quant_golomb_tail`]). The
+/// `eob_extra` flag
 /// (present when eobPt `>= 3`, i.e. eob `>= 3`) is consumed by
 /// [`read_eob_from_tokens`] to recover the eob. An all-zero trace (single
 /// `all_zero == 1`) recovers the zero block.
@@ -91,6 +96,11 @@ pub(crate) fn recover_quant_from_tokens(
     // whose recovered level reached its position `maxLevel` carries a § 5.20.7.28
     // `read_quant` golomb tail right after its sign token (the sign+quant pass reads
     // the sign first, then `read_quant`); the tail recovers `x = magnitude - maxLevel`.
+    // MULTIPLE golomb coefficients are supported (sub-brick 5e-ii): the running
+    // `hrLevelAvg` predictor (init `0`) is threaded across them in this reverse-scan
+    // order, exactly as the emission side does, so each golomb coefficient's `m` (and
+    // therefore the parameters used to read its tail back) matches.
+    let mut hr_level_avg = 0u32;
     for offset in 0..eob {
         let c = eob - 1 - offset;
         let pos = scan_pos(&scan, c)?;
@@ -102,10 +112,13 @@ pub(crate) fn recover_quant_from_tokens(
         // A coefficient whose recovered base+`coeff_br` level reached its position
         // `maxLevel` carries a § 5.20.7.28 `read_quant` golomb tail right after its
         // sign token (the sign+quant pass reads the sign first, then `read_quant`);
-        // the tail recovers `x = magnitude - maxLevel`.
+        // the tail recovers `x = magnitude - maxLevel`. The golomb parameters come from
+        // the running `hrLevelAvg`, which then updates for the next golomb coefficient.
         let max_level = general_walk_max_level_for_pos(pos);
         let magnitude = if level >= max_level {
-            let x = recover_read_quant_golomb_tail(tokens, &mut index)?;
+            let params = golomb_params_from_hr_level_avg(hr_level_avg);
+            let x = recover_read_quant_golomb_tail(tokens, &mut index, params)?;
+            hr_level_avg = next_hr_level_avg(x, hr_level_avg);
             max_level
                 .checked_add(x)
                 .ok_or(Error::CoefficientTokenizationMalformedTokenTrace {
