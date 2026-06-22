@@ -32,6 +32,21 @@ pub(crate) struct CoefficientTokenCdfRows {
     // `coeff_br` context dimension (`COEFF_BR_LF_CTX_COUNT`; no transform-size
     // dimension). `DEFAULT_COEFF_BR_LF_CDF` is already `[q][ctx][row]`.
     coeff_br_lf: [[[i32; COEFF_BR_LF_CDF_ROW_LEN]; COEFF_BR_LF_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS],
+    // The 4x4 HIGH-frequency `coeff_base_eob` bank, indexed by `[q][ctx]` over the
+    // full §8.3.2 HF `coeff_base_eob` context dimension (`COEFF_BASE_EOB_CTX_COUNT`,
+    // 4-symbol rows). Sourced from `DEFAULT_COEFF_BASE_EOB_CDF[q][TX_SIZE_4X4_CTX][ctx]`
+    // (distinct from the 6-symbol LF `coeff_base_lf_eob` bank). The eob-11 HF EOB
+    // coefficient reaches `coeff_base_eob_ctx(10) = 3`; sizing the full ctx-4 dimension
+    // makes the HF EOB tier hole-free.
+    coeff_base_eob_hf:
+        [[[i32; COEFF_BASE_EOB_CDF_ROW_LEN]; COEFF_BASE_EOB_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS],
+    // The HIGH-frequency `coeff_br` bank, indexed by `[q][ctx]` over the full §8.3.2 HF
+    // `coeff_br` context dimension (`COEFF_BR_CTX_COUNT`, 7; no transform-size
+    // dimension). `DEFAULT_COEFF_BR_CDF` is already `[q][ctx][row]` (distinct from the
+    // LF `coeff_br_lf` bank, which has 14 contexts). The eob-11 HF EOB `coeff_br`
+    // reaches the constant ctx 0; sizing the full ctx-7 dimension makes the tier
+    // hole-free for the later non-EOB HF sub-brick.
+    coeff_br_hf: [[[i32; COEFF_BR_CDF_ROW_LEN]; COEFF_BR_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS],
     dc_sign: [[i32; 3]; COEFF_CDF_Q_CONTEXTS],
     chroma_u_txb_skip: [[i32; 3]; COEFF_CDF_Q_CONTEXTS],
     chroma_eob_pt_16: [[i32; 6]; COEFF_CDF_Q_CONTEXTS],
@@ -56,6 +71,25 @@ fn coeff_base_lf_eob_bank()
         let mut ctx = 0;
         while ctx < COEFF_BASE_LF_EOB_CTX_COUNT {
             bank[q][ctx] = DEFAULT_COEFF_BASE_LF_EOB_CDF[q][TX_SIZE_4X4_CTX][ctx];
+            ctx += 1;
+        }
+        q += 1;
+    }
+    bank
+}
+
+/// Builds the 4x4 HIGH-frequency `coeff_base_eob` bank `[q][ctx]` from the generated
+/// `DEFAULT_COEFF_BASE_EOB_CDF[q][4x4][ctx]` table (4-symbol rows). Total and
+/// panic-free: every index is a const within the table dimensions.
+fn coeff_base_eob_hf_bank()
+-> [[[i32; COEFF_BASE_EOB_CDF_ROW_LEN]; COEFF_BASE_EOB_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS] {
+    let mut bank =
+        [[[0i32; COEFF_BASE_EOB_CDF_ROW_LEN]; COEFF_BASE_EOB_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS];
+    let mut q = 0;
+    while q < COEFF_CDF_Q_CONTEXTS {
+        let mut ctx = 0;
+        while ctx < COEFF_BASE_EOB_CTX_COUNT {
+            bank[q][ctx] = DEFAULT_COEFF_BASE_EOB_CDF[q][TX_SIZE_4X4_CTX][ctx];
             ctx += 1;
         }
         q += 1;
@@ -102,6 +136,8 @@ impl CoefficientTokenCdfRows {
             coeff_base_lf_eob: coeff_base_lf_eob_bank(),
             coeff_base_lf: coeff_base_lf_bank(),
             coeff_br_lf: DEFAULT_COEFF_BR_LF_CDF,
+            coeff_base_eob_hf: coeff_base_eob_hf_bank(),
+            coeff_br_hf: DEFAULT_COEFF_BR_CDF,
             dc_sign: [
                 DEFAULT_DC_SIGN_CDF[0][LUMA_PLANE_TYPE][DC_SIGN_GROUP_VISIBLE][DC_SIGN_CTX_NEUTRAL],
                 DEFAULT_DC_SIGN_CDF[1][LUMA_PLANE_TYPE][DC_SIGN_GROUP_VISIBLE][DC_SIGN_CTX_NEUTRAL],
@@ -176,6 +212,19 @@ impl CoefficientTokenCdfRows {
                 ctx,
             } if coeff_cdf_q_ctx < COEFF_CDF_Q_CONTEXTS && ctx < COEFF_BR_LF_CTX_COUNT => {
                 Ok(self.coeff_br_lf[coeff_cdf_q_ctx][ctx].as_mut_slice())
+            }
+            CoefficientCdfRowSelector::CoeffBaseEob {
+                coeff_cdf_q_ctx,
+                tx_size: TX_SIZE_4X4_CTX,
+                ctx,
+            } if coeff_cdf_q_ctx < COEFF_CDF_Q_CONTEXTS && ctx < COEFF_BASE_EOB_CTX_COUNT => {
+                Ok(self.coeff_base_eob_hf[coeff_cdf_q_ctx][ctx].as_mut_slice())
+            }
+            CoefficientCdfRowSelector::CoeffBr {
+                coeff_cdf_q_ctx,
+                ctx,
+            } if coeff_cdf_q_ctx < COEFF_CDF_Q_CONTEXTS && ctx < COEFF_BR_CTX_COUNT => {
+                Ok(self.coeff_br_hf[coeff_cdf_q_ctx][ctx].as_mut_slice())
             }
             CoefficientCdfRowSelector::DcSign {
                 coeff_cdf_q_ctx,

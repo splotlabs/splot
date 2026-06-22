@@ -50,6 +50,19 @@ pub(super) struct BlockSymbolTraceCdfRows {
     // (`coeff_br_lf_luma_context`); sizing the full generated context dimension makes
     // the LF `coeff_br` tier hole-free.
     coeff_br_lf: [[i32; COEFF_BR_LF_CDF_ROW_LEN]; COEFF_BR_LF_CTX_COUNT],
+    // The 4x4 HIGH-frequency `coeff_base_eob` bank, indexed by the § 8.3.2
+    // `coeff_base_eob` context (`COEFF_BASE_EOB_CTX_COUNT` contexts, 4-symbol rows),
+    // from the generated `DEFAULT_COEFF_BASE_EOB_CDF[q][4x4][ctx]` (distinct from the
+    // 6-symbol LF `coeff_base_lf_eob_4x4` bank). The eob-11 HF EOB coefficient reaches
+    // `coeff_base_eob_ctx(10) = 3`; sizing the full ctx dimension keeps the HF EOB
+    // tier hole-free.
+    coeff_base_eob_hf_4x4: [[i32; COEFF_BASE_EOB_CDF_ROW_LEN]; COEFF_BASE_EOB_CTX_COUNT],
+    // The HIGH-frequency `coeff_br` bank, indexed by the § 8.3.2 HF `coeff_br` context
+    // (`COEFF_BR_CTX_COUNT`, 7; no transform-size dimension), from the generated
+    // `DEFAULT_COEFF_BR_CDF[q][ctx]` (distinct from the 14-context LF `coeff_br_lf`
+    // bank). The eob-11 HF EOB `coeff_br` reaches the constant ctx 0; sizing the full
+    // ctx-7 dimension keeps the tier hole-free for the later non-EOB HF sub-brick.
+    coeff_br_hf: [[i32; COEFF_BR_CDF_ROW_LEN]; COEFF_BR_CTX_COUNT],
     dc_sign: [i32; DC_SIGN_CDF_ROW_LEN],
     v_txb_skip_eobu: [i32; V_TXB_SKIP_CDF_ROW_LEN],
     chroma_eob_pt_16: [i32; EOB_PT_16_CDF_ROW_LEN],
@@ -113,6 +126,9 @@ impl BlockSymbolTraceCdfRows {
             coeff_base_lf_dc_tx64_2d: DEFAULT_COEFF_BASE_LF_CDF[MINIMAL_COEFF_CDF_Q_CTX]
                 [TX_SIZE_64X64_CTX][COEFF_BASE_LF_CTX_2D_DC][COEFF_BASE_LF_TCQ_CTX_NEUTRAL],
             coeff_br_lf: DEFAULT_COEFF_BR_LF_CDF[MINIMAL_COEFF_CDF_Q_CTX],
+            coeff_base_eob_hf_4x4: DEFAULT_COEFF_BASE_EOB_CDF[MINIMAL_COEFF_CDF_Q_CTX]
+                [TX_SIZE_4X4_CTX],
+            coeff_br_hf: DEFAULT_COEFF_BR_CDF[MINIMAL_COEFF_CDF_Q_CTX],
             dc_sign: DEFAULT_DC_SIGN_CDF[MINIMAL_COEFF_CDF_Q_CTX][DC_SIGN_PLANE_TYPE_LUMA]
                 [DC_SIGN_GROUP_VISIBLE][DC_SIGN_CTX_NEUTRAL],
             v_txb_skip_eobu: DEFAULT_V_TXB_SKIP_CDF[MINIMAL_COEFF_CDF_Q_CTX]
@@ -251,6 +267,17 @@ impl BlockSymbolTraceCdfRows {
                     coeff_cdf_q_ctx: MINIMAL_COEFF_CDF_Q_CTX,
                     ctx,
                 } if ctx < COEFF_BR_LF_CTX_COUNT => Ok(self.coeff_br_lf[ctx].as_mut_slice()),
+                CoefficientCdfRowSelector::CoeffBaseEob {
+                    coeff_cdf_q_ctx: MINIMAL_COEFF_CDF_Q_CTX,
+                    tx_size: TX_SIZE_4X4_CTX,
+                    ctx,
+                } if ctx < COEFF_BASE_EOB_CTX_COUNT => {
+                    Ok(self.coeff_base_eob_hf_4x4[ctx].as_mut_slice())
+                }
+                CoefficientCdfRowSelector::CoeffBr {
+                    coeff_cdf_q_ctx: MINIMAL_COEFF_CDF_Q_CTX,
+                    ctx,
+                } if ctx < COEFF_BR_CTX_COUNT => Ok(self.coeff_br_hf[ctx].as_mut_slice()),
                 CoefficientCdfRowSelector::DcSign {
                     coeff_cdf_q_ctx: MINIMAL_COEFF_CDF_Q_CTX,
                     plane_type: DC_SIGN_PLANE_TYPE_LUMA,

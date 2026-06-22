@@ -4934,6 +4934,39 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-COEFF-GENERAL-WALK-HF-EOB11"
+name = "Encoder general coefficient walk: eob 11 (first high-frequency coefficient)"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20.7.27", "8.3.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/coefficient_tokenization"
+openspec_change = "coeff-general-walk-hf-eob11"
+tracking_issue = ""
+owner = "encoder"
+risk = "medium"
+notes = "Private, non-emitting encoder coefficient tokenizer. Sub-brick 5d-i: lifts `tokenize_general_lf_luma_block` from eob 1-10 (the whole 4x4 low-frequency region) to eob 11 — the FIRST high-frequency coefficient. In the 4x4 2D scan, scan index 10 = raster 13 = (row 3, col 1), `row+col = 4` -> the first HF position (`get_lf_limits` luma 2D = `row+col < 4`). So eob 11 = 10 LF coeffs (scan 0-9) + one HF coeff (the EOB coeff at scan 10). Exercises the HF EOB `coeff_base_eob` + its optional HF `coeff_br`; the non-EOB HF `coeff_base` is deferred to 5d-ii (no eob-11 block has a non-EOB HF coeff). THREE HF DIVERGENCES vs LF (each a silent bit-mismatch if copied from LF, all decoder-verified + 4-agent adversarially reviewed): (1) HF uses `NUM_BASE_LEVELS = 2` (added to splot-core; the decoder's local const, AV2 §3) NOT LF's `LF_NUM_BASE_LEVELS = 4`, so the HF EOB level saturates at `NUM_BASE_LEVELS+1 = 3` into the 3-symbol `DEFAULT_COEFF_BASE_EOB_CDF` (vs LF's 5-symbol `_LF_EOB_CDF`), and the HF no-golomb magnitude cap is `NUM_BASE_LEVELS+COEFF_BASE_RANGE = 5` (vs LF 7) -- position-aware, the LF path is byte-identical. (2) HF `coeff_br` context is plain `mag` (NO `+7` offset; LF non-DC adds +7) -> `DEFAULT_COEFF_BR_CDF` (7 ctx, no tx_size) vs `_LF` (14 ctx); EOB coeff has empty Level[] -> HF br ctx 0. (3) coeff_base_eob CONTEXT shared (coeff_base_eob_ctx(10)=3) but TABLE 4-symbol. NEW selectors `CoeffBaseEob`/`CoeffBr` + tokens + banks added to BOTH §8.2 routers (dual-router). Per-coefficient `is_lf = (row+col<4)` recomputed in compose_base_pass (NOT a scan-index switch). eob >= 12 (scan >= 11) rejected (5d-ii). §8.2 SELF-CONSISTENCY only; decoder context/table conformance deferred to the splot-decode cross-check. Split the §8.2 proof harness into entropy_proof.rs to keep the parent under 1000 lines. Out of scope: non-EOB HF coeffs (5d-ii), golomb magnitudes, chroma, non-4x4, non-DCT_DCT, packets."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/coefficient_tokenization/general_walk_hf_tests.rs"]
+commands = ["cargo test -p splot-encode general_walk --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-INTRA-BLOCK-TRACE-TWO-COEFF"
 name = "Encoder eob=2 multi-coefficient block trace"
 category = "encoder"

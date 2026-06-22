@@ -100,3 +100,54 @@ pub(crate) const fn coeff_br_lf_token(
         symbol,
     }
 }
+
+/// Returns the AV2 § 5.20.7.27 HIGH-frequency `coeff_base_eob` token for the
+/// EOB-position coefficient of base `level`
+/// (`TileCoeffBaseEobCdf[coeff_cdf_q_ctx][tx_size][ctx]`, the 4-symbol HF table
+/// `DEFAULT_COEFF_BASE_EOB_CDF`). The EOB base level is `coeff_base_eob + 1`, so the
+/// symbol is `level - 1` — the SAME level mapping as the LF
+/// [`coeff_base_lf_eob_token`]; only the CDF table/selector differs (the HF table is
+/// 4-symbol vs the LF 6-symbol `DEFAULT_COEFF_BASE_LF_EOB_CDF`). The `coeff_base_eob`
+/// `ctx` is LF/HF-independent (`coeff_base_eob_ctx`). The caller guarantees
+/// `level >= 1`; `level == 0` saturates to symbol 0.
+pub(crate) const fn coeff_base_hf_eob_token(
+    coeff_cdf_q_ctx: usize,
+    ctx: usize,
+    level: u8,
+) -> CoefficientEntropyToken {
+    CoefficientEntropyToken {
+        syntax: CoefficientTokenSyntax::CoeffBaseEob,
+        selector: CoefficientCdfRowSelector::CoeffBaseEob {
+            coeff_cdf_q_ctx,
+            tx_size: TX_SIZE_4X4_CTX,
+            ctx,
+        },
+        symbol: level.saturating_sub(1),
+    }
+}
+
+/// Returns the AV2 § 5.20.7.27 HIGH-frequency `coeff_br` (base-range) token at the
+/// given § 8.3.2 `coeff_br` context (`TileCoeffBrCdf[coeff_cdf_q_ctx][ctx]`, the HF
+/// table `DEFAULT_COEFF_BR_CDF`, which has NO transform-size dimension). The
+/// `coeff_br` symbol refines a coefficient whose HF `coeff_base_eob` / `coeff_base`
+/// level reached its maximum (`NUM_BASE_LEVELS + 1 == 3`, the HF base-level cap — NOT
+/// the LF `LF_NUM_BASE_LEVELS + 1 == 5`), adding `symbol`
+/// (`0..COEFF_BASE_RANGE`, i.e. `0..=2`) to the level — the SAME refinement as the LF
+/// [`coeff_br_lf_token`]; only the CDF table/selector and the context derivation
+/// differ (the HF non-DC luma `coeff_br` context is plain `mag`, with NO `+7`
+/// offset). The caller resolves `ctx` (a constant `0` for the reverse-scan EOB
+/// coefficient, whose running `Level[]` is empty → `mag == 0`).
+pub(crate) const fn coeff_br_hf_token(
+    coeff_cdf_q_ctx: usize,
+    ctx: usize,
+    symbol: u8,
+) -> CoefficientEntropyToken {
+    CoefficientEntropyToken {
+        syntax: CoefficientTokenSyntax::CoeffBr,
+        selector: CoefficientCdfRowSelector::CoeffBr {
+            coeff_cdf_q_ctx,
+            ctx,
+        },
+        symbol,
+    }
+}

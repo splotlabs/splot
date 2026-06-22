@@ -51,6 +51,8 @@ fn derived_dc_br_ctx(ac_mag: u32) -> usize {
         TX_4X4_WIDTH,
         TX_4X4_HEIGHT,
         TRANSFORM_CLASS_2D,
+        // The DC takes the `pos == 0` branch (independent of `is_lf`); the DC is LF.
+        true,
         &level,
     )
 }
@@ -214,19 +216,20 @@ fn general_lf_recover_quant_is_deterministic() {
 
 #[test]
 fn general_lf_rejects_out_of_scope() {
-    // A nonzero at scan index >= 10 (eob >= 11, raster position 13 = scan index 10) is
-    // rejected: scan index 10 (raster 13, row 3 + col 1 = diagonal 4) is the first
-    // HIGH-frequency coefficient of the 4x4 2D block (a later sub-brick).
+    // A nonzero at scan index >= 11 (eob >= 12) is rejected: scan index 11 (raster 10
+    // in the order [0,4,1,8,5,2,12,9,6,3,13,10,...], row 2 + col 2 = diagonal 4) is the
+    // SECOND high-frequency coefficient, beyond this brick's eob-11 window (the first
+    // HF coefficient, scan index 10 = raster 13, is now supported). A later sub-brick.
     let mut quant = [0i32; TX_4X4_COEFF_COUNT];
-    quant[13] = 1; // raster 13 is scan index 10 in the order [0,4,1,8,5,2,12,9,6,3,13,...].
+    quant[10] = 1; // raster 10 is scan index 11 in the order.
     let err = tokenize_general_lf_luma_block(&quant, Q_CTX).unwrap_err();
     assert!(matches!(
         err,
         Error::CoefficientTokenizationUnsupportedEob {
-            scan_index: 10,
-            position: 13,
+            scan_index: 11,
+            position: 10,
             value: 1,
-            max_scan_index: MAX_GENERAL_LF_SCAN_INDEX,
+            max_scan_index: MAX_GENERAL_SCAN_INDEX,
         }
     ));
 
@@ -404,6 +407,7 @@ fn coeff_br_lf_luma_context_matches_decoder_derivation() {
             TX_4X4_WIDTH,
             TX_4X4_HEIGHT,
             TRANSFORM_CLASS_2D,
+            true,
             &[0u32; TX_4X4_COEFF_COUNT],
         ),
         0
