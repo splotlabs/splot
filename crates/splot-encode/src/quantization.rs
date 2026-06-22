@@ -27,6 +27,14 @@ use splot_recon::{
 use crate::error::{Error, Result};
 use crate::forward_transform::ForwardTransformBlock;
 
+// Re-export the sibling 16x16 quantizer (`ENC-FORWARD-TRANSFORM-DCT-16X16`), split
+// into `quantization_16x16` only to keep each source file under the project's
+// 1000-line budget, so callers reach both block sizes through this module. The
+// re-export is not yet consumed inside the crate (the 16x16 path has no production
+// caller wired in this brick), so it is allowed-unused like the modules' `dead_code`.
+#[allow(unused_imports)]
+pub(crate) use crate::quantization_16x16::QuantizedTransformBlock16x16;
+
 const DCT_DCT_4X4_WIDTH: usize = 4;
 const DCT_DCT_4X4_HEIGHT: usize = 4;
 const DCT_DCT_4X4_COEFF_COUNT: usize = DCT_DCT_4X4_WIDTH * DCT_DCT_4X4_HEIGHT;
