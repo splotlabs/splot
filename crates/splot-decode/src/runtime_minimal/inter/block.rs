@@ -359,16 +359,21 @@ fn decode_one_inter_block(
         ));
     }
 
-    // §7.12.2.5 scan_col (find_mv_stack step 16, deltaCol = -3) is deferred. For a
-    // >= 32x32 (>= 8-MI) leaf the `MiCol - 3` probe lands inside the immediate-left
-    // block's base column, so the §7.12.2.6 guard cannot add a distinct candidate
-    // and the omission is a provable no-op. For a sub-32x32 leaf WITH a decoded
-    // neighbour the guard can fire and append a stack candidate this kernel omits,
-    // so a DRL index that selects it would resolve a WRONG MV — and scan_col reads
-    // no symbol, so the §8.2.4 exit_symbol() bit-count check cannot catch it. Reject
-    // a sub-32x32 inter leaf once a neighbour exists (a no-neighbour leaf stays a
-    // no-op and remains admitted).
-    // 32x32 == 8 4x4-MI units; scan_col(-3) is a provable no-op at >= 32x32.
+    // §7.12.2.5 scan_col (find_mv_stack step 16, deltaCol = -3) is deferred. The
+    // §7.12.2.6 guard fires when `MiColBase[MiCol-3] != MiColBase[MiCol-1]` — i.e.
+    // when a base-column boundary falls between `MiCol-3` and `MiCol-1`. Creating
+    // such a boundary requires a sub-32x32 block somewhere in that 2-MI span, and by
+    // §5.20.3 DFS decode order that sub-32x32 block (which has its own decoded
+    // neighbour) is reached EARLIER and rejected by this same gate — so any frame
+    // that could make scan_col append a distinct candidate is rejected before a
+    // >= 32x32 leaf reaches here. (The narrower "the left block is also >= 32x32"
+    // claim is not independently true; DFS ordering is what makes the gate sound.)
+    // For a sub-32x32 leaf WITH a decoded neighbour scan_col can fire and append a
+    // stack candidate this kernel omits, so a DRL index that selects it resolves a
+    // WRONG MV — and scan_col reads no symbol, so §8.2.4 exit_symbol() (bit-count
+    // only) cannot catch it. Reject a sub-32x32 inter leaf once a neighbour exists
+    // (a no-neighbour leaf stays a no-op and remains admitted).
+    // 32x32 == 8 4x4-MI units.
     const SCAN_COL_NOOP_MIN_N4: usize = 8;
     if neighbour_ctx.has_neighbour && (n4w < SCAN_COL_NOOP_MIN_N4 || n4h < SCAN_COL_NOOP_MIN_N4) {
         return Err(unsupported_at(
