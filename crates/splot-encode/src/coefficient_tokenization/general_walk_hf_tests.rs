@@ -241,7 +241,7 @@ fn general_hf_magnitude_at_hf_maxlevel_is_golomb() {
     let recovered = recover_quant_from_tokens(&trace, Q_CTX).unwrap();
     assert_eq!(recovered, quant);
 
-    // A magnitude above the golomb cap 525 at an HF position is still rejected.
+    // A magnitude above the HF golomb cap 523 at an HF position is still rejected.
     let mut mags = [1u32; 11];
     mags[10] = 526;
     let quant = scan_block(11, &mags);
@@ -251,7 +251,7 @@ fn general_hf_magnitude_at_hf_maxlevel_is_golomb() {
             err,
             Error::CoefficientTokenizationUnsupportedMagnitude {
                 magnitude: 526,
-                max_magnitude: 525,
+                max_magnitude: 523,
                 coefficient_index: 13,
                 ..
             }

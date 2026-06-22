@@ -224,16 +224,10 @@ const MAX_HF_BASE_BR_MAGNITUDE: u32 = NUM_BASE_LEVELS + COEFF_BASE_RANGE;
 /// `length = GetMsb(511) = 8` (the boundary); `x = 518` would overflow to length 9.
 /// So the per-coefficient golomb extension `x = magnitude - maxLevel` is capped at
 /// `GOLOMB_X_MAX`, which keeps LF magnitude `<= maxLevel(8) + 517 = 525` and HF
-/// magnitude `<= maxLevel(6) + 517 = 523`, both length `<= 8`. This is a tighter
-/// per-position bound than the position-independent reported cap below.
+/// magnitude `<= maxLevel(6) + 517 = 523`, both length `<= 8`. The over-cap rejection
+/// reports the per-position `max_level + GOLOMB_X_MAX` (LF `525`, HF `523`) so the
+/// rejected magnitude always strictly exceeds the reported `max_magnitude`.
 const GOLOMB_X_MAX: u32 = 517;
-/// The position-independent `max_magnitude` value reported in the
-/// [`Error::CoefficientTokenizationUnsupportedMagnitude`] when a golomb extension
-/// `x > GOLOMB_X_MAX`. It is the LF golomb cap (`LF maxLevel 8 + GOLOMB_X_MAX 517 =
-/// 525`); the per-position acceptance gate (`x <= GOLOMB_X_MAX`) is the load-bearing
-/// length-`<= 8` bound, so an HF coefficient is actually accepted only up to
-/// magnitude `523` while the reported cap stays the round `525`.
-const GOLOMB_REPORTED_MAX_MAGNITUDE: u32 = LF_GOLOMB_MAX_LEVEL + GOLOMB_X_MAX;
 /// The LF luma `maxLevel` (`LF_NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1 = 8`): the
 /// level at which the § 5.20.7.28 `read_quant` golomb tail fires for a low-frequency
 /// coefficient (with TCQ off; see [`general_walk_max_level_for_pos`]).
@@ -440,8 +434,8 @@ fn end_of_block(quant: &[i32; TX_4X4_COEFF_COUNT], scan: &[u16; TX_4X4_COEFF_COU
 ///   `x = magnitude - maxLevel` is capped at [`GOLOMB_X_MAX`] (`517`). That keeps an
 ///   LF golomb magnitude `<= 525` and an HF one `<= 523` (both `length <= 8`); a
 ///   larger extension is rejected with
-///   [`Error::CoefficientTokenizationUnsupportedMagnitude`] (reporting the round
-///   [`GOLOMB_REPORTED_MAX_MAGNITUDE`] `525`).
+///   [`Error::CoefficientTokenizationUnsupportedMagnitude`] (reporting the
+///   per-position `max_level + GOLOMB_X_MAX` — `525` LF, `523` HF).
 ///
 /// A nonzero at scan index `>= 16` (eob `>= 17`, impossible for a 4x4 block) is
 /// rejected as before.
@@ -476,8 +470,9 @@ fn validate_general_lf_scope(
         if magnitude >= max_level {
             // A § 5.20.7.28 `read_quant` golomb coefficient. Cap its golomb extension
             // `x = magnitude - maxLevel` at `GOLOMB_X_MAX` (so the golomb-prefix
-            // `length` stays `<= 8` and the § 8.2 recovery can read it back). Reporting
-            // the round position-independent `GOLOMB_REPORTED_MAX_MAGNITUDE` (525).
+            // `length` stays `<= 8` and the § 8.2 recovery can read it back). Report the
+            // PER-POSITION cap `max_level + GOLOMB_X_MAX` (LF `525`, HF `523`) so the
+            // rejected magnitude always strictly exceeds the reported `max_magnitude`.
             let x = magnitude - max_level;
             if x > GOLOMB_X_MAX {
                 return Err(Error::CoefficientTokenizationUnsupportedMagnitude {
@@ -485,7 +480,7 @@ fn validate_general_lf_scope(
                     block: lf_block_rect()?,
                     coefficient_index: pos,
                     magnitude,
-                    max_magnitude: GOLOMB_REPORTED_MAX_MAGNITUDE,
+                    max_magnitude: max_level + GOLOMB_X_MAX,
                 });
             }
             golomb_count += 1;
@@ -529,9 +524,9 @@ const fn is_lf_position(pos: usize) -> bool {
 /// [`super::general_walk_recover`].
 pub(super) const fn general_walk_max_level_for_pos(pos: usize) -> u32 {
     if is_lf_position(pos) {
-        MAX_BASE_BR_MAGNITUDE + 1
+        LF_GOLOMB_MAX_LEVEL
     } else {
-        MAX_HF_BASE_BR_MAGNITUDE + 1
+        HF_GOLOMB_MAX_LEVEL
     }
 }
 

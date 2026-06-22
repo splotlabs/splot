@@ -487,7 +487,7 @@ fn general_hf_non_eob_magnitude_at_hf_maxlevel_is_golomb() {
             err,
             Error::CoefficientTokenizationUnsupportedMagnitude {
                 magnitude: 526,
-                max_magnitude: 525,
+                max_magnitude: 523,
                 coefficient_index: 13,
                 ..
             }
