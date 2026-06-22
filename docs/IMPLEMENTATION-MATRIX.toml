@@ -9225,6 +9225,59 @@ fixtures = [
 diagnostics = []
 
 [[feature]]
+id = "RECON-SUBPEL-MC"
+name = "Sub-pel inter prediction convolution kernel"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["4.8", "7.13.3.16", "7.13.3.18"]
+sources = [
+    "docs/spec/av2/1.0.0/04-conventions.md#s-4-8",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-16",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-18",
+]
+crate = "splot-recon"
+module = "crates/splot-recon/src/subpel_mc.rs"
+openspec_change = "recon-subpel-mc"
+tracking_issue = ""
+owner = "decoder"
+risk = "low"
+notes = "Adds the AV2 §7.13.3.18 block inter prediction (sub-pel motion compensation) kernel to splot-recon: `subpel_predict_block(reference, params) -> Result<Vec<u16>>`, the separable interpolation-filter convolution that produces the single-reference (non-compound) prediction block. The horizontal pass builds an intermediateHeight*w array `intermediate[r][c] = Round2(Σ Subpel_Filters[filter][(p>>6)&SUBPEL_MASK][t] * ref[Clip3(firstY,lastY,(y>>10)+r-3)][Clip3(firstX,lastX,(p>>10)+t-3)], InterRound0)` with `p = startX + stepX*c`; the vertical pass produces `Preds[r][c] = Round2(Σ Subpel_Filters[filter][(p>>6)&SUBPEL_MASK][t] * intermediate[(p>>10)+t][c], InterRound1)` with `p = (startY & 1023) + stepY*r`, and the kernel applies the final §7.13.3 single-reference write `Clip1(Preds[0][i][j])`. InterRound0 is 3 and InterRound1 is 11 (non-compound) per §7.13.3.16. The §7.13.3.18 small-block substitution (`dim <= 4` maps EIGHTTAP/EIGHTTAP_SHARP to the 4-tap index 4 and EIGHTTAP_SMOOTH to index 5) is applied per pass keyed on w (horizontal) and h (vertical). The §9 `Subpel_Filters[6][16][8]` table is transcribed verbatim from §7.13.3.18, diff-verified, with a test asserting every row sums to 128 (1<<FILTER_BITS) and all taps are even (the spec invariant) plus distinctive-row spot checks. The reference is a `ReferencePlaneView` over a row-major width*height u16 buffer; the §7.13.3.18 Clip3 to `[firstX,lastX]x[firstY,lastY]` plus the view's own dimension clamp implement the §7.11.3.x reference-border extension without copying a padded plane. The §7.13.3.17 motion-vector scaling (startX/startY/stepX/stepY), the §7.13.3.18 reference-clipping region (firstX/firstY/lastX/lastY), the §6 interp_filter, the block dimensions, and the reference samples are caller-resolved. Total and panic-free: the constructor validates the width*height buffer length and non-zero dimensions, the convolution rejects a zero/oversized (>128) block and a negative step, the intermediateHeight derivation guarantees the vertical-pass base+7 row is in range (with an explicit guard), and the i64 filter sums cannot overflow for in-range samples. Strictly additive and no-output-change (`pub` items with no rewiring), so the minimal flat-intra and zero-MV inter fixture snapshots stay byte-identical. Completeness is proven by hand-anchored worked examples (a full-pel position is a bit-exact reference copy; a flat reference reconstructs flat for any phase; a hand-computed EIGHTTAP_SHARP half-pel; the border-extension corner case; 10-bit Clip1; the small-block 4-tap substitution) plus a 2000-case deterministic-LCG property test comparing `subpel_predict_block` against an independent in-test re-trace of the §7.13.3.18 pseudocode over varied content, block sizes, filters, and sub-pel phases, and the error cases. This row does not implement the §7.13.3.17 motion-vector scaling, the §7.13.3 compound / mask-blend / distance-weighted prediction, the §7.13.3.19 block warp, the §7.13.3 reference-area clipping selection, intra block copy, the §5.20.7 read_mv / interp_filter symbol decode, the inter mode_info or partition syntax, or wiring into the runtime decode path."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "done"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-recon/src/subpel_mc/tests.rs::tests::full_pel_zero_fraction_is_exact_copy",
+    "crates/splot-recon/src/subpel_mc/tests.rs::tests::half_pel_horizontal_worked_example",
+    "crates/splot-recon/src/subpel_mc/tests.rs::tests::matches_independent_reference_over_many_cases",
+    "crates/splot-recon/src/subpel_mc/tests.rs::tests::subpel_filters_table_shape_and_sums",
+]
+commands = [
+    "cargo test -p splot-recon subpel --locked",
+    "cargo clippy -p splot-recon --all-targets --locked -- -D warnings",
+    "cargo xtask check-source-lines",
+    "cargo xtask check-dependency-direction",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-recon/src/subpel_mc.rs",
+    "crates/splot-recon/src/subpel_mc/tests.rs",
+    "crates/splot-recon/src/lib.rs",
+]
+diagnostics = []
+
+[[feature]]
 id = "RECON-INVERSE-TRANSFORM-2D"
 name = "2D matrix inverse transform core (row-then-column)"
 category = "infrastructure"

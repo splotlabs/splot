@@ -612,6 +612,38 @@ pub enum ReconError {
         /// Derived flattened position within the matrix row.
         position: usize,
     },
+    /// A § 7.13.3.18 sub-pel motion-compensation reference-plane sample buffer
+    /// length did not equal `width * height`.
+    SubpelReferencePlaneMismatch {
+        /// Expected length (`width * height`).
+        expected: usize,
+        /// Supplied reference-plane sample-buffer length.
+        actual: usize,
+    },
+    /// A § 7.13.3.18 sub-pel motion-compensation block dimension exceeded the
+    /// supported maximum (a 128-sample super-block side).
+    SubpelBlockDimensionUnsupported {
+        /// Supplied block width (`w`).
+        w: usize,
+        /// Supplied block height (`h`).
+        h: usize,
+    },
+    /// A § 7.13.3.18 sub-pel motion-compensation step was negative (the
+    /// § 7.13.3.17 scaling steps are non-negative).
+    SubpelNegativeStep {
+        /// Supplied horizontal step (`stepX`).
+        step_x: i64,
+        /// Supplied vertical step (`stepY`).
+        step_y: i64,
+    },
+    /// A § 7.13.3.18 sub-pel vertical-pass intermediate row index reached past
+    /// the derived `intermediateHeight`.
+    SubpelIntermediateOutOfRange {
+        /// The vertical-pass base row (`p >> SCALE_SUBPEL_BITS`).
+        base: usize,
+        /// The derived intermediate-array height.
+        intermediate_height: usize,
+    },
 }
 
 impl fmt::Display for ReconError {
@@ -1150,6 +1182,25 @@ impl fmt::Display for ReconError {
             } => write!(
                 f,
                 "quantization-matrix index out of range: seg_level {seg_level}, qm_offset {qm_offset}, position {position}"
+            ),
+            Self::SubpelReferencePlaneMismatch { expected, actual } => write!(
+                f,
+                "subpel reference plane buffer mismatch: expected {expected} samples, got {actual}"
+            ),
+            Self::SubpelBlockDimensionUnsupported { w, h } => write!(
+                f,
+                "unsupported subpel block dimension {w}x{h}; each side must be at most 128"
+            ),
+            Self::SubpelNegativeStep { step_x, step_y } => write!(
+                f,
+                "subpel motion-compensation step must be non-negative: step_x {step_x}, step_y {step_y}"
+            ),
+            Self::SubpelIntermediateOutOfRange {
+                base,
+                intermediate_height,
+            } => write!(
+                f,
+                "subpel vertical-pass base row {base} exceeds intermediate height {intermediate_height}"
             ),
         }
     }
