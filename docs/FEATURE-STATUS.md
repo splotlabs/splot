@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 394 feature(s).
+Matrix version 1. Last reviewed 2026-06-15. 395 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -329,6 +329,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `DECODE-INTER-RESIDUAL-DCT` | Inter block residual decode (skip == 0, DCT_DCT) | infrastructure | infrastructure | done | done | done | n/a | n/a | n/a | done | done | todo | `crates/splot-decode/src/runtime_minimal/inter/block.rs` |
 | `DECODE-INTER-MVSTACK-SPATIAL` | Multi-block inter MV stack (spatial neighbour prediction) | infrastructure | infrastructure | done | done | done | n/a | n/a | n/a | done | done | todo | `crates/splot-decode/src/runtime_minimal/inter/find_mv_stack.rs` |
 | `DECODE-INTER-MULTI-SB-SPATIAL` | Multi-superblock inter frame (cross-superblock MV prediction) | infrastructure | infrastructure | done | done | done | n/a | n/a | n/a | done | done | todo | `crates/splot-decode/src/runtime_minimal/inter.rs` |
+| `DECODE-INTER-GRID-SPATIAL` | 2-D-grid inter frame (cross-superblock-row MV prediction) | infrastructure | infrastructure | done | done | done | n/a | n/a | n/a | done | done | todo | `crates/splot-decode/src/runtime_minimal/inter.rs` |
 | `DECODE-COEFF-FSC-SCAN-WALK` | Coefficient FSC scan walk | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/coeff_loop/scan_walk.rs` |
 | `DECODE-COEFF-BASE-CDF-ROWS` | Coefficient base CDF rows | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/cdf/coeff_rows.rs` |
 | `DECODE-COEFF-IDTX-CDF-ROWS` | Coefficient IDTX CDF rows | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/cdf/coeff_rows.rs` |

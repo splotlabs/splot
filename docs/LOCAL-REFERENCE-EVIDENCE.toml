@@ -1836,7 +1836,7 @@ id = "lref-avm-dav2d-syn-2sb-inter-128x64-q80"
 feature_id = "DECODE-INTER-MULTI-SB-SPATIAL"
 decoder_support_rows = ["inter-multi-sb-spatial"]
 kind = "reference-output-agreement"
-summary = "Local AVM and dav2d raw decoder output MD5 digests agreed for the two-frame 8-bit 4:2:0 MULTI-SUPERBLOCK inter IVF fixture (a 128x64 frame of two horizontally-adjacent 64x64 superblocks: 1 general-intra DC_PRED key frame of two flat superblocks 100,150 + 1 single-reference inter frame whose two superblocks are each a single 64x64 inter block — SB0 at MI(0,0) is NEWMV with a non-zero MV col 48 == +6 full pels, and SB1 at MI(0,16), in the SECOND superblock, is NEARMV that predicts SB0's MV across the superblock boundary from the frame-wide §7.11/§7.12 spatial-neighbour MV stack; both skip==1, no residual), the first multi-superblock neighbour-predicted-MV decode target and a prerequisite for real-content scale (ac0ej3 is 1920x1080). Frame 1 reconstructs each superblock's §7.13.3.18 motion-compensated copy at its own position, and splot reproduces that raw output byte-for-byte. The only decoder change over the multi-block single-superblock target is the §5.18.3 frame-size gate, lifted from exactly 64x64 to a single superblock row or column of 64x64 superblocks; the §5.20.2.1 raster loop and the frame-wide find_mv_stack grid were already geometry-agnostic. This proves the cross-superblock spatial MV prediction (SB1 in the 2nd superblock predicting SB0's MV)."
+summary = "Local AVM and dav2d raw decoder output MD5 digests agreed for the two-frame 8-bit 4:2:0 MULTI-SUPERBLOCK inter IVF fixture (a 128x64 frame of two horizontally-adjacent 64x64 superblocks: 1 general-intra DC_PRED key frame of two flat superblocks 100,150 + 1 single-reference inter frame whose two superblocks are each a single 64x64 inter block — SB0 at MI(0,0) is NEWMV with a non-zero MV col 48 == +6 full pels, and SB1 at MI(0,16), in the SECOND superblock, is NEARMV that predicts SB0's MV across the superblock boundary from the frame-wide §7.11/§7.12 spatial-neighbour MV stack; both skip==1, no residual), the first multi-superblock neighbour-predicted-MV decode target and a prerequisite for real-content scale (ac0ej3 is 1920x1080). Frame 1 reconstructs each superblock's §7.13.3.18 motion-compensated copy at its own position, and splot reproduces that raw output byte-for-byte. The only decoder change over the multi-block single-superblock target is the §5.18.3 frame-size gate, lifted from exactly 64x64 to a single superblock row (height 64, width a positive multiple of 64) of 64x64 superblocks (this brick admitted the ROW only; the single-SB column was rejected pending its own fixture); the §5.20.2.1 raster loop and the frame-wide find_mv_stack grid were already geometry-agnostic. This proves the cross-superblock spatial MV prediction (SB1 in the 2nd superblock predicting SB0's MV)."
 recorded_at = "2026-06-22"
 
 [[evidence.fixture]]
@@ -1882,6 +1882,58 @@ output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
 kind = "digest-equality"
 left = "avm-2sb-inter-128x64-raw-md5"
 right = "dav2d-2sb-inter-128x64-raw-md5"
+
+[[evidence]]
+id = "lref-avm-dav2d-syn-grid-inter-128x128-q80"
+feature_id = "DECODE-INTER-GRID-SPATIAL"
+decoder_support_rows = ["inter-grid-spatial"]
+kind = "reference-output-agreement"
+summary = "Local AVM and dav2d raw decoder output MD5 digests agreed for the two-frame 8-bit 4:2:0 2-D-GRID inter IVF fixture (a 128x128 frame = a 2x2 grid of 64x64 superblocks: 1 general-intra DC_PRED key frame of four flat superblocks 100/150/80/200 + 1 single-reference inter frame whose four superblocks are each a single 64x64 inter block, all skip==1, no residual — SB0 at MI(0,0) is NEWMV with a non-zero MV col 48 == +6 full pels, and SB1 at MI(0,16), SB2 at MI(16,0), SB3 at MI(16,16) are NEARMV that predict SB0's MV from the frame-wide §7.11/§7.12 spatial-neighbour MV stack; SB2 and SB3 are in the SECOND superblock ROW, so they predict SB0's MV ACROSS the superblock-ROW boundary — the exact case the single-superblock-row brick DECODE-INTER-MULTI-SB-SPATIAL deferred), the first 2-D-grid neighbour-predicted-MV inter decode target and a further prerequisite for real-content scale (ac0ej3 is 1920x1080). Frame 1 reconstructs each superblock's §7.13.3.18 motion-compensated copy at its own position, and splot reproduces that raw output byte-for-byte. The only decoder change over the single-superblock-row target is the §5.18.3 frame-size gate, lifted from a single superblock row (the prior brick DECODE-INTER-MULTI-SB-SPATIAL admitted the ROW only; the column was rejected pending a fixture) to a full 2-D grid (width AND height each a positive multiple of 64); the §5.20.2.1 raster loop (sb_row outer, sb_col inner) and the frame-wide find_mv_stack grid were already geometry-agnostic, and the §7.12.2.6 availability gate (is_inside && RefFrames-written, modelled by NeighbourMvGrid::get returning None for an out-of-bounds or undecoded MI cell) keeps a probe into a not-yet-decoded superblock from contributing a candidate. This proves the cross-superblock-ROW spatial MV-stack AVAILABILITY (SB2/SB3 in the second SB row predict SB0's MV, not the zero global-MV fallback). It does NOT discriminate the per-neighbour stack ORDERING: every block reconstructs the SAME MV (col 48), so a wrong left-vs-above precedence among identical-value candidates would decode identically; and the §7.12.2.20 large-block (>32x32) mixed MVP step (which applies to the 64x64 leaves) is deferred, kept safe by the identical-MV coincidence + the §5.20.7.8 DRL-out-of-range reject. Both await a committed distinct-neighbour-MV fixture (deferred follow-on)."
+recorded_at = "2026-06-22"
+
+[[evidence.fixture]]
+id = "input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-grid-inter-128x128-q80.ivf"
+sha256 = "2a3932e6a533de228073209baba77c2de70655fa538d11d35fc3844a7b079f0d"
+size_bytes = 125
+format = "ivf"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Generated locally with avmenc from a project-owned synthetic Y4M (128x128 4:2:0; frame 0 = four flat 64x64 luma superblocks top-left-100 top-right-150 bottom-left-80 bottom-right-200 + flat chroma 120,130; frame 1 = frame 0 shifted left 6 luma samples, edge-clamped) at --qp 80 --sb-size 64 --min-partition-size 64 --max-partition-size 64 with broad decode tools (incl. GDF, cdef, deblocking, restoration, ccso, cfl, mhccp, cctx, qm, ibp, mrls, intra-edge-filter, angle-delta, ist, inter-ist, intra-dip, idtx-intra, smooth-intra, paeth-intra, bawp, cwp, tcq, trellis, all warp modes, tip, opfl-refine, refinemv, masked-wedge-interintra-onesided-diffwtd compound, joint-mvd, adaptive-mvd, flex-mvres, ref-frame-mvs, refmvbank, drl-reorder, mv-traj, high-motion, inter-ddt, skip-mode, bru, global-motion, tx-partition, rect-ext-uneven partitions, parity-hiding, mvd-sign-derive) disabled, so the encoder codes frame 0 as four DC_PRED intra superblocks and frame 1 as four 64x64 single-reference inter blocks (one per superblock; SB0 NEWMV, SB1/SB2/SB3 NEARMV reusing SB0's MV via the §7.12.2 MV stack, SB2/SB3 across the superblock-row boundary, all skip=1); the min-and-max-partition-size 64 constraint forces one 64x64 block per superblock so the second superblock row exercises the cross-superblock-row neighbour-MV prediction. The encode is deterministic (a byte-identical re-encode reproduces the committed IVF). AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avm"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "457cd58681a747465661baccb1f32095bc5b7774"
+version_summary = "AVM checkout HEAD 457cd58681a747465661baccb1f32095bc5b7774, exact binary build commit not separately archived."
+command_summary = "Local avmdec --rawvideo --i420 output MD5 for {fixture:input}."
+output_digest_id = "avm-grid-inter-128x128-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "897bf67e72ec04cb7275fae08eab700c"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.reference_run]]
+id = "dav2d"
+tool = "dav2d"
+executable_name = "dav2d"
+tool_role = "decode-reference"
+source_url = "https://code.videolan.org/videolan/dav2d"
+revision = "f4f96cb06bb3cd3f31e29e1f190f1c0e373ab352"
+version_summary = "dav2d 0.0.1-191-gf4f96cb0 (commit f4f96cb0), decoded with --demuxer ivf --muxer yuv; exact version output not archived."
+command_summary = "Local dav2d --demuxer ivf --muxer yuv output MD5 for {fixture:input}."
+output_digest_id = "dav2d-grid-inter-128x128-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "897bf67e72ec04cb7275fae08eab700c"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-grid-inter-128x128-raw-md5"
+right = "dav2d-grid-inter-128x128-raw-md5"
 
 [[evidence]]
 id = "lref-avm-dav2d-syn-flat-intra-64x64-minimal-skip"
