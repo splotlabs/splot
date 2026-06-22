@@ -730,9 +730,10 @@ fn multiref_fixture_per_frame_hash_is_stable() {
 /// CHOOSE never resolves to an adapted-CDF load there.
 #[test]
 fn choose_primary_ref_frame_skips_non_inter_slots() {
-    use super::cross_frame::choose_primary_ref_frame as choose;
+    use super::cross_frame::choose_primary_secondary_ref_frame as choose;
     const PRIMARY_REF_NONE: u8 = 7;
-    // ref_frame_idx = [0]; slot 0 holds a KEY frame (is_inter == false).
+    // ref_frame_idx = [0]; slot 0 holds a KEY frame (is_inter == false). Unsignalled CHOOSE
+    // (signal=false, primary_ref_frame=8) takes the ranking.
     let ref_frame_idx = [0u32];
     let is_inter = [false, false];
     let base_q = [70u32, 0];
@@ -740,7 +741,19 @@ fn choose_primary_ref_frame_skips_non_inter_slots() {
     let w = [64u32, 0];
     let h = [64u32, 0];
     assert_eq!(
-        choose(&ref_frame_idx, &is_inter, &base_q, &oh, &w, &h, 70, 1),
+        choose(
+            Some(false),
+            Some(8),
+            &ref_frame_idx,
+            &is_inter,
+            &base_q,
+            &oh,
+            &w,
+            &h,
+            70,
+            1
+        )
+        .0,
         PRIMARY_REF_NONE,
         "a KEY-only reference history resolves CHOOSE to PRIMARY_REF_NONE"
     );
@@ -748,7 +761,19 @@ fn choose_primary_ref_frame_skips_non_inter_slots() {
     // ref_frame_idx).
     let is_inter = [true, false];
     assert_eq!(
-        choose(&ref_frame_idx, &is_inter, &base_q, &oh, &w, &h, 70, 1),
+        choose(
+            Some(false),
+            Some(8),
+            &ref_frame_idx,
+            &is_inter,
+            &base_q,
+            &oh,
+            &w,
+            &h,
+            70,
+            1
+        )
+        .0,
         0,
         "an INTER reference resolves CHOOSE to its ref_frame_idx index"
     );
@@ -758,19 +783,34 @@ fn choose_primary_ref_frame_skips_non_inter_slots() {
 /// candidates the lower `qpDiff = Abs(RefBaseQIdx - base_q_idx)` wins.
 #[test]
 fn choose_primary_ref_frame_ranks_two_inter_slots_by_qp_diff() {
-    use super::cross_frame::choose_primary_ref_frame as choose;
+    use super::cross_frame::choose_primary_secondary_ref_frame as choose;
     // ref_frame_idx = [0, 1]; both inter. base_q_idx == 100. Slot 0 q=70 (diff 30),
-    // slot 1 q=109 (diff 9): slot 1 (index 1) wins on the smaller qpDiff.
+    // slot 1 q=109 (diff 9): slot 1 (index 1) wins on the smaller qpDiff; slot 0 is secondary.
     let ref_frame_idx = [0u32, 1];
     let is_inter = [true, true];
     let base_q = [70u32, 109];
     let oh = [1u32, 2];
     let w = [64u32, 64];
     let h = [64u32, 64];
+    let (primary, secondary) = choose(
+        Some(false),
+        Some(8),
+        &ref_frame_idx,
+        &is_inter,
+        &base_q,
+        &oh,
+        &w,
+        &h,
+        100,
+        3,
+    );
     assert_eq!(
-        choose(&ref_frame_idx, &is_inter, &base_q, &oh, &w, &h, 100, 3),
-        1,
+        primary, 1,
         "the smaller |RefBaseQIdx - base_q_idx| (slot 1) is the derived primary"
+    );
+    assert_eq!(
+        secondary, 0,
+        "the other inter candidate (slot 0) is the derived secondary"
     );
 }
 
@@ -803,12 +843,20 @@ fn resolve_cdf_load_models_choose_resolution_and_load_decision() {
         &oh,
         &w,
         &h,
-        130, // current base_q_idx
-        2,   // current order hint
+        130,   // current base_q_idx
+        2,     // current order hint
+        false, // enable_avg_cdf
+        1,     // avg_cdf_type
     );
     assert!(
-        matches!(load, ResolvedCdfLoad::LoadSlot(1)),
-        "CHOOSE resolves to the inter slot 1 -> load_cdfs(ref_frame_idx[1] == slot 1)"
+        matches!(
+            load,
+            ResolvedCdfLoad::LoadSlot {
+                primary: 1,
+                blend: None
+            }
+        ),
+        "CHOOSE resolves to the inter slot 1 -> load_cdfs(ref_frame_idx[1] == slot 1), no blend"
     );
 
     // A KEY-ONLY history (no inter candidate) resolves CHOOSE to PRIMARY_REF_NONE -> Default
@@ -826,6 +874,8 @@ fn resolve_cdf_load_models_choose_resolution_and_load_decision() {
         &h,
         130,
         2,
+        false, // enable_avg_cdf
+        1,     // avg_cdf_type
     );
     assert!(
         matches!(load, ResolvedCdfLoad::Default),
@@ -845,6 +895,8 @@ fn resolve_cdf_load_models_choose_resolution_and_load_decision() {
         &h,
         130,
         2,
+        false, // enable_avg_cdf
+        1,     // avg_cdf_type
     );
     assert!(
         matches!(load, ResolvedCdfLoad::Default),
@@ -864,9 +916,11 @@ fn resolve_cdf_load_models_choose_resolution_and_load_decision() {
         &h,
         130,
         2,
+        false, // enable_avg_cdf
+        1,     // avg_cdf_type
     );
     assert!(
-        matches!(load, ResolvedCdfLoad::LoadSlot(1)),
+        matches!(load, ResolvedCdfLoad::LoadSlot { primary: 1, .. }),
         "an explicit primary_ref_frame loads ref_frame_idx[primary_ref_frame]"
     );
 
@@ -883,6 +937,8 @@ fn resolve_cdf_load_models_choose_resolution_and_load_decision() {
         &h,
         130,
         2,
+        false, // enable_avg_cdf
+        1,     // avg_cdf_type
     );
     assert!(
         matches!(load, ResolvedCdfLoad::Default),
@@ -917,45 +973,134 @@ fn resolve_cdf_load_signal_primary_overrides_ranking_even_with_no_inter_candidat
         &h,
         130,
         2,
+        false, // enable_avg_cdf
+        1,     // avg_cdf_type
     );
     assert!(
-        matches!(load, ResolvedCdfLoad::LoadSlot(0)),
+        matches!(load, ResolvedCdfLoad::LoadSlot { primary: 0, .. }),
         "a signalled primary overrides the (NONE) ranking -> LoadSlot(0), so an adapted slot 0 is rejected, not silently decoded from defaults"
     );
 }
 
+#[test]
+fn resolve_cdf_load_reports_blend_slot_only_when_a_secondary_exists() {
+    use super::cross_frame::{ResolvedCdfLoad, resolve_cdf_load as resolve};
+    let base_q = [70u32, 109];
+    let oh = [0u32, 1];
+    let w = [64u32, 64];
+    let h = [64u32, 64];
+    // §5 :5431-5439 blend_cdfs: with enable_avg_cdf && avg_cdf_type == 0 and TWO inter
+    // candidates, the second-best (derivedSecondary) is the blendFrame; resolve reports its
+    // slot so the caller rejects only an ADAPTED blend. base_q [70,109] @ current 70 -> slot 0
+    // is primary (qpDiff 0), slot 1 secondary -> blend slot = ref_frame_idx[1] == 1.
+    let load = resolve(
+        Some(false),
+        Some(8),
+        Some(false),
+        &[0u32, 1],
+        &[true, true],
+        &base_q,
+        &oh,
+        &w,
+        &h,
+        70,
+        2,
+        true, // enable_avg_cdf
+        0,    // avg_cdf_type
+    );
+    assert!(
+        matches!(
+            load,
+            ResolvedCdfLoad::LoadSlot {
+                primary: 0,
+                blend: Some(1)
+            }
+        ),
+        "two inter candidates -> primary slot 0, blend slot 1 (the derivedSecondary)"
+    );
+    // ONE inter candidate -> no derivedSecondary -> blendFrame NONE -> blend None (the
+    // committed multiref class: a loading frame with one inter reference does NOT blend).
+    let load = resolve(
+        Some(false),
+        Some(8),
+        Some(false),
+        &[0u32, 1],
+        &[false, true],
+        &base_q,
+        &oh,
+        &w,
+        &h,
+        70,
+        2,
+        true,
+        0,
+    );
+    assert!(
+        matches!(
+            load,
+            ResolvedCdfLoad::LoadSlot {
+                primary: 1,
+                blend: None
+            }
+        ),
+        "one inter candidate -> blendFrame NONE -> no blend"
+    );
+    // codex's case: a SIGNALLED primary equal to the sole derived inter primary has
+    // blendFrame == derivedSecondary == NONE -> no blend (NOT over-rejected by a `signalled`
+    // proxy). ref_frame_idx[0] is the only inter; signalled primary 0 == derivedPrimary 0.
+    let load = resolve(
+        Some(true),
+        Some(0),
+        Some(false),
+        &[0u32],
+        &[true],
+        &[70u32],
+        &[0u32],
+        &[64u32],
+        &[64u32],
+        70,
+        2,
+        true,
+        0,
+    );
+    assert!(
+        matches!(
+            load,
+            ResolvedCdfLoad::LoadSlot {
+                primary: 0,
+                blend: None
+            }
+        ),
+        "a signalled primary == the sole inter ref has no secondary -> blend None, not rejected"
+    );
+}
+
 /// AV2 § 5.18.2 `get_disp_order_hint` — the stored RefOrderHint (= OrderHintLsbs) is the
-/// unwrapped OrderHint only while the GOP order hints span less than HALF an OrderHintBits
-/// window; the correction fires once `maxDisp - LSB >= window/2`. A small forward history
-/// (key 0, then 1/2, the committed fixtures with OrderHintBits 4/7) is non-wrapping; a span
-/// reaching half the window — including a `monotonic_output_order_flag == 0` wrap-back — is
-/// rejected (the loose full-window bound used to admit it and mis-order the § 7.7 ranking).
+/// unwrapped OrderHint unless the DIRECTIONAL wrap correction fires, which happens only when
+/// the max prior valid reference's order hint exceeds this frame's LSB by at least HALF an
+/// OrderHintBits window (`maxDisp - LSB >= window/2`, a `monotonic_output_order_flag == 0`
+/// wrap-back). FORWARD frames (`LSB >= maxDisp`) are never corrected and are admitted even
+/// with a large span; only the wrap-back direction is rejected.
 #[test]
 fn order_hint_history_wrap_guard() {
     use super::cross_frame::order_hint_history_unwrapped as unwrapped;
-    let ref_valid = [true, false, false, false];
-    let ref_oh = [0u32, 0, 0, 0]; // slot 0 (key) at order hint 0
     // order_hint_bits 0 -> trivially non-wrapping (no order-hint signaling).
-    assert!(unwrapped(&ref_valid, &ref_oh, 0, 5));
-    // Forward within HALF a window (window 1<<4 == 16, half 8): key 0, next 1 -> 1 < 8 ok.
-    assert!(unwrapped(&ref_valid, &ref_oh, 4, 1));
-    // A span >= half a window can trigger the get_disp_order_hint correction, so it is
-    // rejected even though it is < a FULL window: next 15 spans 15 (>= 8) -> rejected.
-    assert!(!unwrapped(&ref_valid, &ref_oh, 4, 15));
-    // The wrap-back the loose full-window bound used to ADMIT: refs {0, 15}, next LSB 0,
-    // window 16 -> span 15 >= half (8) -> REJECTED (get_disp_order_hint corrects the 0,
-    // so the stored LSB would mis-order the §7.7 ranking).
-    let wrap_valid = [true, true, false, false];
-    let wrap_oh = [0u32, 15, 0, 0];
-    assert!(!unwrapped(&wrap_valid, &wrap_oh, 4, 0));
-    // A small forward span stays admitted under the half-window bound, and a tighter window
-    // rejects it: refs {0, 2}, next 3 spans 3 -> bits 4 (half 8) ok, bits 3 (half 4) ok,
-    // bits 2 (half 2) rejected.
-    let fwd_valid = [true, true, false, false];
-    let fwd_oh = [0u32, 2, 0, 0];
-    assert!(unwrapped(&fwd_valid, &fwd_oh, 4, 3));
-    assert!(unwrapped(&fwd_valid, &fwd_oh, 3, 3));
-    assert!(!unwrapped(&fwd_valid, &fwd_oh, 2, 3));
+    assert!(unwrapped(&[true], &[0u32], 0, 5));
+    // FORWARD frames are always exact (currentLSB >= maxDisp -> no correction), even with a
+    // large span: prior {0}, window 1<<4 == 16, next 1 / 9 / 15 -> all admitted.
+    assert!(unwrapped(&[true], &[0u32], 4, 1));
+    assert!(unwrapped(&[true], &[0u32], 4, 9)); // the forward span the symmetric bound wrongly rejected
+    assert!(unwrapped(&[true], &[0u32], 4, 15));
+    // WRAP-BACK (a small LSB after a larger prior hint) is corrected -> rejected: prior {15},
+    // next 0, window 16 -> maxDisp - LSB = 15 >= half(8) -> rejected.
+    assert!(!unwrapped(&[true], &[15u32], 4, 0));
+    // The threshold is exactly half a window: prior {8}, next 0, bits 4 (half 8) -> 8 >= 8
+    // rejected; prior {7}, next 0 -> 7 < 8 admitted.
+    assert!(!unwrapped(&[true], &[8u32], 4, 0));
+    assert!(unwrapped(&[true], &[7u32], 4, 0));
+    // maxDisp is taken over ALL valid prior slots: prior {0, 12}, next 1, bits 4 -> maxDisp
+    // 12, 12 - 1 = 11 >= 8 -> rejected (slot 1 wraps relative to the current frame).
+    assert!(!unwrapped(&[true, true], &[0u32, 12], 4, 1));
 }
 
 /// `FloorLog2` (AV2 § 4): the MSB index, 0 for 0.

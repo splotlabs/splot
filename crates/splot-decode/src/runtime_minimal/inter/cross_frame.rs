@@ -30,9 +30,15 @@ pub(super) enum ResolvedCdfLoad {
     /// (or resolved to it via `DerivedPrimaryRefFrame == PRIMARY_REF_NONE`), OR
     /// `disable_cross_frame_cdf_init == 1`. No saved-CDF inheritance.
     Default,
-    /// The frame loads `ref_frame_idx[primary_ref_frame]`'s saved CDFs; this is the
-    /// resolved § 7.23 buffer slot.
-    LoadSlot(u32),
+    /// The frame loads `ref_frame_idx[primary_ref_frame]`'s saved CDFs (`primary`), and —
+    /// when the § 5 :5431-5439 `blend_cdfs` arm applies (`enable_avg_cdf && !avg_cdf_type`
+    /// and `blendFrame != PRIMARY_REF_NONE`) — ALSO blends the secondary slot (`blend`).
+    LoadSlot {
+        /// The resolved § 7.23 buffer slot whose saved CDFs `load_cdfs` loads.
+        primary: u32,
+        /// The § 5 :5431-5439 `blend_cdfs` secondary slot, when a blend occurs; else `None`.
+        blend: Option<u32>,
+    },
 }
 
 /// Models AV2 § 5 `set_primary_ref_frame_and_ctx`'s CDF-load decision (mirror :5411-5430),
@@ -69,9 +75,16 @@ pub(super) fn resolve_cdf_load(
     ref_frame_height: &[u32],
     current_base_q_idx: u32,
     current_order_hint: i32,
+    enable_avg_cdf: bool,
+    avg_cdf_type: u8,
 ) -> ResolvedCdfLoad {
-    // mirror :5468-5495: the inter-only qpDiff ranking (the unsignalled derived primary).
-    let ranked = choose_primary_ref_frame(
+    // mirror :5412-5413: (DerivedPrimaryRefFrame, derivedSecondaryRefFrame) =
+    // choose_primary_secondary_ref_frame(), which already folds in the :5497-5508
+    // signal_primary_ref_frame override (the signalled primary overrides the inter-only
+    // ranking even with no candidate — cross-checked vs AVM pred_common.c).
+    let (derived, derived_secondary) = choose_primary_secondary_ref_frame(
+        signal_primary_ref_frame,
+        primary_ref_frame,
         ref_frame_idx,
         ref_is_inter,
         ref_base_q_idx,
@@ -81,22 +94,9 @@ pub(super) fn resolve_cdf_load(
         current_base_q_idx,
         current_order_hint,
     );
-    // mirror :5497-5508 (cross-checked vs AVM av2/common/pred_common.c
-    // set_primary_ref_frame_and_ctx): when signal_primary_ref_frame == 1 the
-    // choose_primary_secondary_ref_frame tail UNCONDITIONALLY overrides
-    // DerivedPrimaryRefFrame to the signalled primary_ref_frame (whatever the inter-only
-    // ranking found — even NONE). So the §5 DerivedPrimaryRefFrame is the signalled
-    // primary for signal==1, and the ranking otherwise. (Without this, a signal==1 frame
-    // whose signalled primary names an adapted slot but whose ranking returns NONE would
-    // collapse to Default below and bypass the adapted-load reject -> confident-wrong.)
-    let derived = if signal_primary_ref_frame == Some(true) {
-        primary_ref_frame.unwrap_or(PRIMARY_REF_NONE)
-    } else {
-        ranked
-    };
     // mirror :5414-5416: PRIMARY_REF_CHOOSE -> DerivedPrimaryRefFrame (the unsignalled
-    // placeholder only; a signalled frame already carries its real primary_ref_frame, and
-    // `derived` above equals it).
+    // placeholder; a signalled frame carries its real primary_ref_frame, which the override
+    // already folded into `derived`).
     let mut primary = match primary_ref_frame {
         Some(PRIMARY_REF_CHOOSE) => derived,
         Some(p) => p,
@@ -110,33 +110,60 @@ pub(super) fn resolve_cdf_load(
         primary = PRIMARY_REF_NONE;
         cross_frame_init_disabled = true;
     }
-    // mirror :5426-5430: NONE || disable_cross_frame_cdf_init -> init_non_coeff_cdfs();
-    // else load_cdfs(ref_frame_idx[primary_ref_frame]).
+    // mirror :5426-5430: NONE || disable_cross_frame_cdf_init -> init_non_coeff_cdfs().
     if primary == PRIMARY_REF_NONE || cross_frame_init_disabled {
         return ResolvedCdfLoad::Default;
     }
-    match ref_frame_idx.get(primary as usize) {
-        Some(&slot) => ResolvedCdfLoad::LoadSlot(slot),
+    // mirror :5424: load_cdfs(ref_frame_idx[primary_ref_frame]).
+    let Some(&primary_slot) = ref_frame_idx.get(primary as usize) else {
         // A primary index past ref_frame_idx[] cannot resolve a slot; treat as no load
         // (the inter validators reject an out-of-range ref_frame_idx independently).
-        None => ResolvedCdfLoad::Default,
+        return ResolvedCdfLoad::Default;
+    };
+    // mirror :5431-5439: the §5 blend_cdfs secondary load. blendFrame =
+    // (primary_ref_frame == DerivedPrimaryRefFrame) ? derivedSecondaryRefFrame :
+    // DerivedPrimaryRefFrame; blend_cdfs(ref_frame_idx[blendFrame]) runs when
+    // enable_avg_cdf && !avg_cdf_type && blendFrame != PRIMARY_REF_NONE (the verified subset
+    // has bru_inactive == 0). Report the blend slot so the caller can reject only an ACTUAL
+    // adapted blend (a frame with no second loadable reference does not blend).
+    let blend = if enable_avg_cdf && avg_cdf_type == 0 {
+        let blend_frame = if primary == derived {
+            derived_secondary
+        } else {
+            derived
+        };
+        if blend_frame == PRIMARY_REF_NONE {
+            None
+        } else {
+            ref_frame_idx.get(blend_frame as usize).copied()
+        }
+    } else {
+        None
+    };
+    ResolvedCdfLoad::LoadSlot {
+        primary: primary_slot,
+        blend,
     }
 }
 
-/// `choose_primary_secondary_ref_frame()` primary index (AV2 § 5 mirror :5451-5510),
-/// returning `DerivedPrimaryRefFrame` (the `primary` slot index `i` into `ref_frame_idx`,
-/// or [`PRIMARY_REF_NONE`]).
+/// `choose_primary_secondary_ref_frame()` (AV2 § 5 mirror :5451-5510), returning
+/// `(DerivedPrimaryRefFrame, derivedSecondaryRefFrame)` as `primary` / `secondary` slot
+/// indices into `ref_frame_idx` (or [`PRIMARY_REF_NONE`]).
 ///
 /// This is the inter-only, single-spatial-layer reduction the minimal subset needs: the
 /// loop scores each `i` in `0..NumTotalRefs` whose `ref_frame_idx[i]` slot is
 /// `RefFrameType == INTER_FRAME` (mirror :5470 — a key / intra-only reference is skipped),
 /// by `qpDiff = Abs(RefBaseQIdx - base_q_idx)` then the `is_ref_better` order-hint
-/// tie-break (mirror :5476-5486). `first_slot_with_ref` (distinct slots) and the
-/// `RESTRICTED_OH` exclusion are no-ops for the verified subset. `signal_primary_ref_frame`
-/// is handled by the caller (it only renames the result), so this returns the unsignalled
-/// derived primary.
+/// tie-break (mirror :5476-5495), tracking BOTH the best (primary) and second-best
+/// (secondary) candidate. `first_slot_with_ref` (distinct slots) and the `RESTRICTED_OH`
+/// exclusion are no-ops for the verified subset. The `signal_primary_ref_frame` tail
+/// (mirror :5497-5508) UNCONDITIONALLY overrides the derived primary to the signalled
+/// `primary_ref_frame` (demoting the ranking primary to secondary), so a signalled frame's
+/// derived primary is its signalled value even with no inter ranking candidate.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn choose_primary_ref_frame(
+pub(super) fn choose_primary_secondary_ref_frame(
+    signal_primary_ref_frame: Option<bool>,
+    primary_ref_frame: Option<u8>,
     ref_frame_idx: &[u32],
     ref_is_inter: &[bool],
     ref_base_q_idx: &[u32],
@@ -145,11 +172,15 @@ pub(super) fn choose_primary_ref_frame(
     ref_frame_height: &[u32],
     current_base_q_idx: u32,
     current_order_hint: i32,
-) -> u8 {
+) -> (u8, u8) {
     let mut primary: u8 = PRIMARY_REF_NONE;
     let mut primary_qp_diff: i64 = 512;
     let mut primary_d: i32 = 0;
     let mut primary_ratio: i32 = 0;
+    let mut secondary: u8 = PRIMARY_REF_NONE;
+    let mut secondary_qp_diff: i64 = 512;
+    let mut secondary_d: i32 = 0;
+    let mut secondary_ratio: i32 = 0;
     for (i, &slot) in ref_frame_idx.iter().enumerate() {
         let slot = slot as usize;
         // mirror :5470: RefFrameType[idx] == INTER_FRAME (&& first_slot_with_ref &&
@@ -172,13 +203,39 @@ pub(super) fn choose_primary_ref_frame(
             || (qp_diff == primary_qp_diff
                 && is_ref_better(current_order_hint, d, primary_d, d_ratio, primary_ratio))
         {
+            // mirror :5478-5485: the old primary becomes the secondary.
+            secondary = primary;
+            secondary_qp_diff = primary_qp_diff;
+            secondary_d = primary_d;
+            secondary_ratio = primary_ratio;
             primary = i;
             primary_qp_diff = qp_diff;
             primary_d = d;
             primary_ratio = d_ratio;
+        } else if qp_diff < secondary_qp_diff
+            || (qp_diff == secondary_qp_diff
+                && is_ref_better(current_order_hint, d, secondary_d, d_ratio, secondary_ratio))
+        {
+            secondary = i;
+            secondary_qp_diff = qp_diff;
+            secondary_d = d;
+            secondary_ratio = d_ratio;
         }
     }
-    primary
+    // mirror :5497-5508: the signal_primary_ref_frame override.
+    if signal_primary_ref_frame == Some(true) {
+        let signalled = primary_ref_frame.unwrap_or(PRIMARY_REF_NONE);
+        if signalled == PRIMARY_REF_NONE {
+            primary = PRIMARY_REF_NONE;
+            secondary = PRIMARY_REF_NONE;
+        } else if signalled != primary {
+            if secondary == PRIMARY_REF_NONE || secondary == signalled {
+                secondary = primary;
+            }
+            primary = signalled;
+        }
+    }
+    (primary, secondary)
 }
 
 /// `is_ref_better(refDisp, bestDisp, refRatio, bestRatio)` (AV2 § 5 mirror :5512-5522).
@@ -218,14 +275,16 @@ pub(super) fn floor_log2(x: u64) -> i32 {
 /// (`get_disp_order_hint()`, AV2 § 5.18.2 mirror :5368-5381) for every frame.
 ///
 /// `get_disp_order_hint()` (AV2 § 5.18.2 mirror :5368-5381) applies its wrap correction to
-/// a frame whenever `maxDisp - (window >> 1) - OrderHintLsbs >= 0`, i.e. once the
-/// max prior order hint exceeds this frame's LSB by at least HALF a window
-/// (`window == 1 << OrderHintBits`). So the stored LSB equals the unwrapped `OrderHint`
-/// for every frame ONLY while the whole history spans strictly less than half a window;
-/// a `monotonic_output_order_flag == 0` wrap-back history (a small LSB after large ones)
-/// would otherwise pass a full-window check yet be corrected, mis-ordering the § 7.7
-/// ranking. Returns `true` iff `max - min < (1 << order_hint_bits) / 2`.
-/// `order_hint_bits == 0` (no order-hint signaling) is trivially non-wrapping.
+/// THIS frame's LSB whenever `maxDisp - (window >> 1) - OrderHintLsbs >= 0`, i.e. once the
+/// max prior valid reference's order hint exceeds this frame's LSB by at least HALF a window
+/// (`window == 1 << OrderHintBits`) — a DIRECTIONAL (wrap-back) condition: a small LSB after
+/// larger prior hints. A forward frame (`currentLSB >= maxDisp`) is never corrected, so a
+/// large FORWARD span is exact and admitted; only a `monotonic_output_order_flag == 0`
+/// wrap-back is corrected and would mis-order the § 7.7 ranking. Each prior reference was
+/// itself checked non-wrapping at its own decode (so its stored hint is exact); the § 7.7
+/// `get_relative_dist` then merely clamps, so only this frame vs the max prior hint matters.
+/// Returns `true` iff `maxDisp - next_order_hint_lsb < (1 << order_hint_bits) / 2`.
+/// `order_hint_bits == 0` (no order-hint signaling) or no prior reference is non-wrapping.
 pub(super) fn order_hint_history_unwrapped(
     ref_valid: &[bool],
     ref_order_hint: &[u32],
@@ -238,15 +297,16 @@ pub(super) fn order_hint_history_unwrapped(
     // Half the OrderHintBits window — the get_disp_order_hint correction threshold
     // (conformant order_hint_bits is 1..=8; clamp the shift to stay panic-free).
     let half_window = 1u32 << (order_hint_bits.min(31).saturating_sub(1));
-    let mut min = next_order_hint_lsb;
-    let mut max = next_order_hint_lsb;
-    for (i, &valid) in ref_valid.iter().enumerate() {
-        if !valid {
-            continue;
-        }
-        let oh = ref_order_hint.get(i).copied().unwrap_or(0);
-        min = min.min(oh);
-        max = max.max(oh);
+    let max_prior = ref_valid
+        .iter()
+        .enumerate()
+        .filter(|(_, valid)| **valid)
+        .map(|(i, _)| ref_order_hint.get(i).copied().unwrap_or(0))
+        .max();
+    match max_prior {
+        // The correction fires only in the wrap-back direction (max prior hint ahead of this
+        // frame's LSB by >= half a window); saturating_sub makes a forward frame yield 0.
+        Some(max_disp) => max_disp.saturating_sub(next_order_hint_lsb) < half_window,
+        None => true,
     }
-    max - min < half_window
 }

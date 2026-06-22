@@ -60,14 +60,15 @@ when an unrelated earlier frame adapted.
 
 ### Requirement: Reject temporal-MV frames after retaining an inter reference
 The decoder SHALL reject, with a structured `decode/unsupported-feature` diagnostic
-BEFORE any output, an inter frame that uses temporal motion vectors
-(`enable_ref_frame_mvs` or `use_ref_frame_mvs`) once an INTER reference has been
-retained in the § 7.23 buffer, because the buffer stores no § 7.23 `SavedMvs` and a
-§ 7.12 temporal candidate would be predicted from an empty (wrong) stack.
+BEFORE any output, an inter frame whose PARSED per-frame `use_ref_frame_mvs == 1`
+(§ 5.18.2) once an INTER reference has been retained in the § 7.23 buffer, because the
+buffer stores no § 7.23 `SavedMvs` and a § 7.12 temporal candidate would be predicted
+from an empty (wrong) stack. A TMVP-capable sequence (`enable_ref_frame_mvs == 1`)
+whose frame parsed `use_ref_frame_mvs == 0` draws no temporal candidate and is admitted.
 
 #### Scenario: a temporal-MV frame over a retained inter reference is rejected
-- **WHEN** a later inter frame has `enable_ref_frame_mvs == 1` or
-  `use_ref_frame_mvs == 1` and an inter reference is already retained
+- **WHEN** a later inter frame has the parsed `use_ref_frame_mvs == 1` and an inter
+  reference is already retained
 - **THEN** the decoder emits `decode/unsupported-feature`
   (`inter_temporal_mvs_unmodeled`) and produces no output
 
@@ -77,15 +78,17 @@ BEFORE any output, an order-hint-wrapped reference history. It stores each slot'
 `RefOrderHint` as the parsed `OrderHintLsbs`, which equals the unwrapped `OrderHint`
 (`get_disp_order_hint()`, AV2 § 5.18.2 mirror :5368-5381) only while the history span
 is small enough that the wrap correction never fires — the correction applies once
-`maxDisp - OrderHintLsbs >= (1 << OrderHintBits) / 2` (HALF a window). The reject
-therefore fires for a reference history whose distinct order hints span at least HALF
-a `(1 << OrderHintBits)` window (including a `monotonic_output_order_flag == 0`
-wrap-back), where the stored `OrderHintLsbs` could differ from the unwrapped
-`OrderHint` and mis-order the § 7.7 / `choose_primary_secondary_ref_frame` ranking.
+`maxDisp - OrderHintLsbs >= (1 << OrderHintBits) / 2` (HALF a window) — a DIRECTIONAL
+wrap-back condition (a small LSB after larger prior hints). The reject therefore fires
+ONLY when the max prior valid reference's order hint exceeds this frame's LSB by at
+least HALF a `(1 << OrderHintBits)` window (a `monotonic_output_order_flag == 0`
+wrap-back); a FORWARD frame (`LSB >= maxDisp`, any span) is exact and admitted. A
+rejected wrap-back's stored `OrderHintLsbs` would differ from the unwrapped `OrderHint`
+and mis-order the § 7.7 / `choose_primary_secondary_ref_frame` ranking.
 
-#### Scenario: a wrapping order-hint history is rejected
-- **WHEN** the prior valid slots' order hints plus the current frame's order hint
-  span at least HALF an `OrderHintBits` window (e.g. a wrap-back: refs {0, 15}, next
+#### Scenario: a wrap-back order-hint history is rejected
+- **WHEN** the max prior valid reference's order hint exceeds the current frame's LSB
+  by at least HALF an `OrderHintBits` window (e.g. a wrap-back: refs {0, 15}, next
   order hint 0, `OrderHintBits` 4)
 - **THEN** the decoder emits `decode/unsupported-feature`
   (`inter_order_hint_wrapped`) and produces no output
@@ -96,17 +99,17 @@ BEFORE any output, a loading inter frame that would invoke the AV2 § 5 :5431-54
 `blend_cdfs(ref_frame_idx[blendFrame])` secondary CDF load, because it models no
 `blend_cdfs`. Inside the `load_cdfs` arm a conformant decoder ALSO blends when
 `enable_avg_cdf == 1`, `avg_cdf_type == 0`, `blendFrame != PRIMARY_REF_NONE`, and
-`!bru_inactive`; the reject therefore fires for a loading frame whose sequence has
-`enable_avg_cdf == 1` and `avg_cdf_type == 0` AND that has a second loadable reference
-(`blendFrame != NONE`: a second INTER candidate `derivedSecondary` for an unsignalled
-frame, conservatively any signalled frame). A loading frame with no second loadable
-reference (one INTER reference, unsignalled — the committed multi-reference fixture)
-does NOT blend and SHALL stay admitted.
+`!bru_inactive`. `blendFrame` is derived precisely (mirror :5432: it is
+`derivedSecondaryRefFrame` when `primary_ref_frame == DerivedPrimaryRefFrame`, else
+`DerivedPrimaryRefFrame`). Because `blend_cdfs(default, default) == default` is harmless
+(== the minimal decoder's default), the reject fires ONLY when the resolved blend slot
+itself ADAPTED (`disable_cdf_update == 0`). A loading frame with no `blendFrame`
+(`PRIMARY_REF_NONE`: one INTER reference, unsignalled — the committed multi-reference
+fixture) or whose blend slot did NOT adapt does NOT desync and SHALL stay admitted.
 
-#### Scenario: a blend-enabled frame with a second reference is rejected
+#### Scenario: a blend of an adapted secondary reference is rejected
 - **WHEN** a loading inter frame's sequence has `enable_avg_cdf == 1` and
-  `avg_cdf_type == 0` and it has a second loadable reference (a second inter
-  candidate, or it is signalled)
+  `avg_cdf_type == 0` and its `blendFrame` resolves to a retained ADAPTED reference slot
 - **THEN** the decoder emits `decode/unsupported-feature`
   (`inter_blend_cdf_unmodeled`) and produces no output
 

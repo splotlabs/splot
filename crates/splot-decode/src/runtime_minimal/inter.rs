@@ -135,6 +135,10 @@ pub(super) fn decode_minimal_inter_frame(
     let current_base_q_idx = core.quantization_params.map(|q| q.base_q_idx).unwrap_or(0);
     let current_order_hint = i32::try_from(core.order_hint_lsb.unwrap_or(0)).unwrap_or(i32::MAX);
     if let Some(inter_ctrl) = core.inter.as_ref() {
+        let (enable_avg_cdf, avg_cdf_type) = sequence
+            .transform_quant_entropy
+            .as_ref()
+            .map_or((false, 1u8), |tq| (tq.enable_avg_cdf, tq.avg_cdf_type));
         let load = resolve_cdf_load(
             inter_ctrl.signal_primary_ref_frame,
             inter_ctrl.primary_ref_frame,
@@ -147,10 +151,11 @@ pub(super) fn decode_minimal_inter_frame(
             &reference.ref_frame_height,
             current_base_q_idx,
             current_order_hint,
+            enable_avg_cdf,
+            avg_cdf_type,
         );
-        if let ResolvedCdfLoad::LoadSlot(slot) = load {
-            let slot_adapted = reference.ref_adapted.get(slot as usize).copied() == Some(true);
-            if slot_adapted {
+        if let ResolvedCdfLoad::LoadSlot { primary, blend } = load {
+            if reference.ref_adapted.get(primary as usize).copied() == Some(true) {
                 return Err(unsupported_at(
                     "inter_cdf_inheritance_unmodeled",
                     offset,
@@ -158,31 +163,20 @@ pub(super) fn decode_minimal_inter_frame(
                     SPEC_HEADER,
                 ));
             }
-            // §5 :5431-5439: inside the load_cdfs arm a conformant decoder ALSO calls
-            // blend_cdfs(ref_frame_idx[blendFrame]) when enable_avg_cdf && !avg_cdf_type
-            // (&& blendFrame != NONE && !bru_inactive) — a SECONDARY saved-CDF load over the
-            // primary. The minimal decoder models NO blend_cdfs, so reject a loading frame
-            // that would actually blend a second reference. blendFrame != NONE requires a
-            // SECOND loadable reference: for an unsignalled (CHOOSE) frame that is a second
-            // inter candidate (derivedSecondary, == inter_ref_count >= 2); a signalled frame
-            // can blend the derived primary even with one inter candidate, so it is rejected
-            // conservatively. A frame with no second reference (the committed multiref: ONE
-            // inter reference, unsignalled) does NOT blend and stays admitted — no regression.
-            let blend_enabled = sequence
-                .transform_quant_entropy
-                .as_ref()
-                .is_some_and(|tq| tq.enable_avg_cdf && tq.avg_cdf_type == 0);
-            let inter_ref_count = inter_ctrl
-                .ref_frame_idx
-                .iter()
-                .filter(|&&s| reference.ref_is_inter.get(s as usize).copied() == Some(true))
-                .count();
-            let signalled = inter_ctrl.signal_primary_ref_frame == Some(true);
-            if blend_enabled && (signalled || inter_ref_count >= 2) {
+            // §5 :5431-5439: the load_cdfs arm ALSO blend_cdfs(ref_frame_idx[blendFrame]) the
+            // SECONDARY slot when enable_avg_cdf && !avg_cdf_type && blendFrame != NONE. The
+            // minimal decoder models no blend_cdfs, but blend_cdfs(default, default) == default,
+            // so a blend of two NON-adapted slots == splot's default (harmless); only an
+            // ADAPTED blend slot desyncs. resolve_cdf_load reports the blend slot only when a
+            // blend actually occurs (a frame with no second loadable reference -> None -> the
+            // committed multiref, one inter reference, stays admitted). Reject an adapted blend.
+            if let Some(blend_slot) = blend
+                && reference.ref_adapted.get(blend_slot as usize).copied() == Some(true)
+            {
                 return Err(unsupported_at(
                     "inter_blend_cdf_unmodeled",
                     offset,
-                    "minimal multi-reference decode does not model the §5 blend_cdfs secondary CDF load (enable_avg_cdf && avg_cdf_type == 0 with a second loadable reference); such a loading inter frame is rejected before any output",
+                    "minimal multi-reference decode does not model the §5 blend_cdfs secondary CDF load; an inter frame that blends a prior ADAPTED reference slot's CDFs (enable_avg_cdf && avg_cdf_type == 0) is rejected before any output",
                     SPEC_HEADER,
                 ));
             }
@@ -227,15 +221,15 @@ pub(super) fn decode_minimal_inter_frame(
     // once an INTER reference has been retained a later use_ref_frame_mvs frame could. Reject
     // such a frame before any output. (The committed fixtures all carry
     // enable_ref_frame_mvs == 0 / use_ref_frame_mvs == 0, so this never fires for them.)
-    let uses_temporal_mvs = sequence
+    // Key on the PARSED per-frame use_ref_frame_mvs bit (§5.18.2): a TMVP-capable sequence
+    // (enable_ref_frame_mvs == 1) whose frame parsed use_ref_frame_mvs == 0 draws no temporal
+    // candidate and is admitted; the bit is inferred 0 (None here) when the sequence does not
+    // enable it. (The committed fixtures parse use_ref_frame_mvs == 0.)
+    let uses_temporal_mvs = core
         .inter
         .as_ref()
-        .is_some_and(|seq_inter| seq_inter.enable_ref_frame_mvs)
-        || core
-            .inter
-            .as_ref()
-            .and_then(|inter| inter.use_ref_frame_mvs)
-            == Some(true);
+        .and_then(|inter| inter.use_ref_frame_mvs)
+        == Some(true);
     let has_retained_inter_reference = reference.ref_is_inter.iter().any(|&is_inter| is_inter);
     if uses_temporal_mvs && has_retained_inter_reference {
         return Err(unsupported_at(
