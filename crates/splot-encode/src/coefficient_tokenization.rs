@@ -966,12 +966,25 @@ mod entropy_proof;
 pub(crate) use entropy_proof::roundtrip_entropy_tokens;
 
 mod general_walk;
-// The general low-frequency base-tier walk (`ENC-COEFF-GENERAL-WALK-LF-BASE`) and
-// its § 8.2 self-consistency recovery proof. Re-exported for the upcoming
-// multi-coefficient tokenizer wiring and the sibling tests; not yet referenced by
-// non-test code in this module.
+// The general 4x4 luma coefficient-tokenization walk
+// (`ENC-COEFF-GENERAL-WALK-LF-BASE` and its HF / golomb extensions). Re-exported
+// for the upcoming multi-coefficient tokenizer wiring and the sibling tests; not yet
+// referenced by non-test code in this module.
 #[allow(unused_imports)]
-pub(crate) use general_walk::{recover_quant_from_tokens, tokenize_general_lf_luma_block};
+pub(crate) use general_walk::tokenize_general_lf_luma_block;
+
+mod general_walk_golomb;
+// The § 5.20.7.28 `read_quant` golomb tail (emission + recovery) for the general
+// walk's single golomb coefficient, split out to keep each file under the 1000-line
+// source budget. Consumed by `general_walk` (emission) and `general_walk_recover`
+// (recovery); no parent re-export needed.
+
+mod general_walk_recover;
+// The § 8.2 self-consistency recovery inverse of `general_walk`, split out to keep
+// each file under the 1000-line source budget. Re-exported for the sibling tests;
+// not yet referenced by non-test code in this module.
+#[allow(unused_imports)]
+pub(crate) use general_walk_recover::recover_quant_from_tokens;
 
 #[cfg(test)]
 #[path = "coefficient_tokenization_tests.rs"]

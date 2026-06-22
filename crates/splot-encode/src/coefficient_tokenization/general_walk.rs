@@ -125,16 +125,23 @@
 
 use splot_recon::{PlaneId, PlaneRect, TransformClass, coefficient_scan_order};
 
+use super::general_walk_golomb::{push_read_quant_golomb_tail, read_quant_golomb_tail_len};
 use super::{
-    COEFF_BASE_RANGE, CoefficientEntropyToken, CoefficientTokenSyntax, EOB_CTX_LUMA_INTRA,
-    LF_NUM_BASE_LEVELS, MAX_BASE_BR_MAGNITUDE, NUM_BASE_LEVELS, chroma_u_all_zero_token,
-    chroma_v_all_zero_token, coded_luma_all_zero_token, coeff_base_hf_eob_token,
-    coeff_base_hf_luma_context, coeff_base_hf_token, coeff_base_lf_eob_token,
-    coeff_base_lf_luma_context, coeff_base_lf_token, coeff_br_hf_token, coeff_br_lf_luma_context,
-    coeff_br_lf_token, eob_extra_token, eob_pt_16_token, luma_all_zero_token, luma_dc_sign_token,
+    COEFF_BASE_RANGE, CoefficientEntropyToken, EOB_CTX_LUMA_INTRA, LF_NUM_BASE_LEVELS,
+    MAX_BASE_BR_MAGNITUDE, NUM_BASE_LEVELS, chroma_u_all_zero_token, chroma_v_all_zero_token,
+    coded_luma_all_zero_token, coeff_base_hf_eob_token, coeff_base_hf_luma_context,
+    coeff_base_hf_token, coeff_base_lf_eob_token, coeff_base_lf_luma_context, coeff_base_lf_token,
+    coeff_br_hf_token, coeff_br_lf_luma_context, coeff_br_lf_token, eob_extra_token,
+    eob_pt_16_token, luma_all_zero_token, luma_dc_sign_token,
 };
 use crate::block_symbol_trace::BlockSymbolToken;
 use crate::error::{Error, Result};
+
+// The § 8.2 self-consistency recovery inverse moved to `general_walk_recover`; it is
+// re-exported here so the sibling test modules resolve it through `super::*`. Only the
+// test modules reference it, so the lib-only build sees it as unused.
+#[allow(unused_imports)]
+pub(super) use super::general_walk_recover::recover_quant_from_tokens;
 
 /// The luma plane identity for general-walk diagnostics.
 const PLANE_Y: PlaneId = PlaneId::Y;
@@ -159,13 +166,14 @@ const COEFF_BASE_LF_TCQ_CTX_NEUTRAL: usize = 0;
 const MAX_GENERAL_SCAN_INDEX: usize = 15;
 /// The smallest eob (eobPt `>= 3`) that carries the § 5.20.7.27 `eob_extra` CDF
 /// flag. The decoder base for eobPt 3 is `(1 << (3 - 2)) + 1 == 3`, so eob 3 is the
-/// smallest refined eob.
-const MIN_EOB_WITH_EXTRA: usize = 3;
+/// smallest refined eob. Shared with [`super::general_walk_recover`].
+pub(super) const MIN_EOB_WITH_EXTRA: usize = 3;
 /// The largest eobPt this brick reaches: eob 9..=16 → eobPt 5 (`eob_pt_16` symbol
 /// 4). eobPt 5 carries `eobPt - 3 == 2` `eob_extra_bit` literals and (base 9) spans
 /// the full eob 9..=16 (eob_extra 0 → 9..=12, eob_extra 1 → 13..=16). A 4x4 block
-/// cannot reach eobPt 6 (its base is 17 > 16).
-const MAX_GENERAL_EOB_PT: usize = 5;
+/// cannot reach eobPt 6 (its base is 17 > 16). Shared with
+/// [`super::general_walk_recover`].
+pub(super) const MAX_GENERAL_EOB_PT: usize = 5;
 /// The neutral V-plane `txb_skip` context for an all-zero U/V tail (no `EobU`).
 const V_TXB_SKIP_CTX_NEUTRAL: usize = 0;
 /// AV2 § 8.3.2 `SIG_COEF_CONTEXTS_EOB` base used by `coeff_base_eob_ctx`; the
@@ -208,6 +216,32 @@ const LF_DIAGONAL_LIMIT_4X4: usize = 4;
 /// 5` (mirroring the decoder `derive_coeff_max_level` HF branch). A higher-magnitude
 /// HF coefficient (the golomb tail) is a later sub-brick and is rejected.
 const MAX_HF_BASE_BR_MAGNITUDE: u32 = NUM_BASE_LEVELS + COEFF_BASE_RANGE;
+/// AV2 § 5.20.7.28 `read_quant` golomb extension cap for the single golomb
+/// coefficient (`m = 1`, `hrLevelAvg == 0`). The golomb tail
+/// ([`super::general_walk_golomb`]) is the `m = 1` case, whose golomb-prefix
+/// `length = GetMsb(x - 6)` must stay `<= GOLOMB_PREFIX_LENGTH_MAX (8)` for the
+/// § 8.2 self-consistency recovery to read it back. `x = 517` gives `xm6 = 511`,
+/// `length = GetMsb(511) = 8` (the boundary); `x = 518` would overflow to length 9.
+/// So the per-coefficient golomb extension `x = magnitude - maxLevel` is capped at
+/// `GOLOMB_X_MAX`, which keeps LF magnitude `<= maxLevel(8) + 517 = 525` and HF
+/// magnitude `<= maxLevel(6) + 517 = 523`, both length `<= 8`. This is a tighter
+/// per-position bound than the position-independent reported cap below.
+const GOLOMB_X_MAX: u32 = 517;
+/// The position-independent `max_magnitude` value reported in the
+/// [`Error::CoefficientTokenizationUnsupportedMagnitude`] when a golomb extension
+/// `x > GOLOMB_X_MAX`. It is the LF golomb cap (`LF maxLevel 8 + GOLOMB_X_MAX 517 =
+/// 525`); the per-position acceptance gate (`x <= GOLOMB_X_MAX`) is the load-bearing
+/// length-`<= 8` bound, so an HF coefficient is actually accepted only up to
+/// magnitude `523` while the reported cap stays the round `525`.
+const GOLOMB_REPORTED_MAX_MAGNITUDE: u32 = LF_GOLOMB_MAX_LEVEL + GOLOMB_X_MAX;
+/// The LF luma `maxLevel` (`LF_NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1 = 8`): the
+/// level at which the § 5.20.7.28 `read_quant` golomb tail fires for a low-frequency
+/// coefficient (with TCQ off; see [`general_walk_max_level_for_pos`]).
+const LF_GOLOMB_MAX_LEVEL: u32 = MAX_BASE_BR_MAGNITUDE + 1;
+/// The HF luma `maxLevel` (`NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1 = 6`): the level
+/// at which the § 5.20.7.28 `read_quant` golomb tail fires for a high-frequency
+/// coefficient.
+const HF_GOLOMB_MAX_LEVEL: u32 = MAX_HF_BASE_BR_MAGNITUDE + 1;
 
 /// Tokenizes an arbitrary 4x4 DCT_DCT luma `Quant[16]` block in the general walk
 /// window (eob `<= 16`: the full 4x4 scan — the low-frequency region scan `0..=9`
@@ -349,76 +383,10 @@ pub(crate) fn tokenize_general_lf_luma_block(
     Ok(trace)
 }
 
-/// Re-reads the emitted token stream in the same reverse-scan order and rebuilds
-/// the signed `[i32; 16]` raster block, proving the encoder's emitted
-/// (level, sign, position) triples are internally reversible.
-///
-/// This is § 8.2 self-consistency, not decoder/AVM verification: the same code
-/// authored the emission and this inverse. It walks the trace's base-pass and
-/// sign-pass tokens (skipping the `all_zero` / `eob_pt_16` / `eob_extra` / chroma
-/// tail), pairs each base level with its reverse-scan sign, and writes the signed
-/// value at the scan-derived raster position. The `eob_extra` flag (present when
-/// eobPt `>= 3`, i.e. eob `>= 3`) is consumed by [`read_eob_from_tokens`] to
-/// recover the eob. An all-zero trace (single `all_zero == 1`) recovers the zero
-/// block.
-pub(crate) fn recover_quant_from_tokens(
-    tokens: &[BlockSymbolToken],
-    coeff_cdf_q_ctx: usize,
-) -> Result<[i32; TX_4X4_COEFF_COUNT]> {
-    let scan = scan_2d_4x4()?;
-    let mut quant = [0i32; TX_4X4_COEFF_COUNT];
-
-    // An all-zero block trace is the single luma `all_zero == 1` token.
-    if tokens.len() == 1 {
-        return Ok(quant);
-    }
-
-    // Locate the `eob_pt_16` token to recover eob, then walk the base pass
-    // (`eob` coefficient tokens) and the interleaved sign pass that follows it.
-    let mut index = 0usize;
-    skip_expected_all_zero(tokens, &mut index, coeff_cdf_q_ctx)?;
-    let eob = read_eob_from_tokens(tokens, &mut index)?;
-
-    // Base pass: `eob` reverse-scan coefficients, levels only. ANY coefficient (the
-    // EOB coefficient at offset 0, or a non-EOB coefficient) may be followed by an
-    // interleaved `coeff_br` token that refines its level (mirroring the emission in
-    // `compose_base_pass`); a zero non-EOB coefficient has level 0 and no `coeff_br`.
-    // Recovery is keyed on token SYNTAX (`CoeffBaseEob` / `CoeffBase` / `CoeffBr`), so
-    // the HF tokens — which share those syntaxes but route different CDF tables —
-    // recover identically to the LF tokens (the non-EOB level mapping is the same).
-    let mut levels = [0u32; TX_4X4_COEFF_COUNT];
-    for offset in 0..eob {
-        let c = eob - 1 - offset;
-        let pos = scan_pos(&scan, c)?;
-        let token = coeff_token_at(tokens, &mut index)?;
-        let mut level = recover_base_level(token, offset);
-        level += recover_interleaved_coeff_br(tokens, &mut index)?;
-        levels[pos] = level;
-    }
-
-    // Sign pass: reverse-scan, interleaved per nonzero coefficient.
-    for offset in 0..eob {
-        let c = eob - 1 - offset;
-        let pos = scan_pos(&scan, c)?;
-        let level = levels[pos];
-        if level == 0 {
-            continue;
-        }
-        let negative = read_sign_from_tokens(tokens, &mut index)?;
-        let signed = if negative {
-            -(level as i32)
-        } else {
-            level as i32
-        };
-        quant[pos] = signed;
-    }
-
-    Ok(quant)
-}
-
 /// Builds the AV2 2D scan order for the 4x4 DCT_DCT block
-/// (`[0, 4, 1, 8, 5, 2, 12, 9, 6, 3, 13, 10, 7, 14, 11, 15]`).
-fn scan_2d_4x4() -> Result<[u16; TX_4X4_COEFF_COUNT]> {
+/// (`[0, 4, 1, 8, 5, 2, 12, 9, 6, 3, 13, 10, 7, 14, 11, 15]`). Shared with
+/// [`super::general_walk_recover`].
+pub(super) fn scan_2d_4x4() -> Result<[u16; TX_4X4_COEFF_COUNT]> {
     let mut scan = [0u16; TX_4X4_COEFF_COUNT];
     coefficient_scan_order(TX_4X4_WIDTH, TX_4X4_HEIGHT, TransformClass::TwoD, &mut scan).map_err(
         |_| Error::CoefficientTokenizationAllocationFailed {
@@ -457,51 +425,84 @@ fn end_of_block(quant: &[i32; TX_4X4_COEFF_COUNT], scan: &[u16; TX_4X4_COEFF_COU
 /// high-frequency tail (scan `10..=15`, rasters 13, 10, 7, 14, 11, 15). BOTH the
 /// end-of-block coefficient (scan index `eob - 1`, coded with `coeff_base_eob` +
 /// optional `coeff_br`) and every non-EOB coefficient (coded with `coeff_base` +
-/// optional `coeff_br`) may have a base-range magnitude up to its position cap. The
-/// cap is region-dependent: a low-frequency coefficient reaches
-/// `MAX_BASE_BR_MAGNITUDE` (`7`), a high-frequency one only `MAX_HF_BASE_BR_MAGNITUDE`
-/// (`5`). A magnitude above the cap (`maxLevel`-and-above, the § 5.20.7.28
-/// `read_quant` golomb tail) is a later sub-brick and is rejected, as is a nonzero at
-/// scan index `>= 16` (eob `>= 17`, impossible for a 4x4 block).
+/// optional `coeff_br`) may have any magnitude up to its position golomb cap: a
+/// magnitude below its `maxLevel` (LF `8`, HF `6`) is the plain base+`coeff_br` tier;
+/// a magnitude at-or-above its `maxLevel` is a § 5.20.7.28 `read_quant` GOLOMB
+/// coefficient (`ENC-COEFF-GENERAL-WALK-GOLOMB`), now allowed, subject to two limits:
+///
+/// - SINGLE golomb coefficient per block: this brick emits the golomb tail with the
+///   constant `hrLevelAvg == 0` predictor (the `m = 1` case). A SECOND golomb-range
+///   coefficient needs the running `hrLevelAvg` threaded across coefficients
+///   (sub-brick 5e-ii) and is rejected with
+///   [`Error::CoefficientTokenizationMultipleGolombCoefficients`].
+/// - GOLOMB extension cap: the golomb-prefix `length` must stay `<= 8` for the § 8.2
+///   self-consistency recovery, so the per-coefficient golomb extension
+///   `x = magnitude - maxLevel` is capped at [`GOLOMB_X_MAX`] (`517`). That keeps an
+///   LF golomb magnitude `<= 525` and an HF one `<= 523` (both `length <= 8`); a
+///   larger extension is rejected with
+///   [`Error::CoefficientTokenizationUnsupportedMagnitude`] (reporting the round
+///   [`GOLOMB_REPORTED_MAX_MAGNITUDE`] `525`).
+///
+/// A nonzero at scan index `>= 16` (eob `>= 17`, impossible for a 4x4 block) is
+/// rejected as before.
 fn validate_general_lf_scope(
     quant: &[i32; TX_4X4_COEFF_COUNT],
     scan: &[u16; TX_4X4_COEFF_COUNT],
     eob: usize,
 ) -> Result<()> {
+    // Count golomb-range coefficients (magnitude at-or-above the position `maxLevel`)
+    // and remember the first two raster positions: this brick emits only ONE golomb
+    // tail (the constant `hrLevelAvg == 0` `m = 1` case), so a second one is rejected.
+    let mut golomb_count = 0usize;
+    let mut first_golomb_pos = 0usize;
+    let mut second_golomb_pos = 0usize;
+
     for (c, &raster) in scan.iter().enumerate() {
         let value = quant[raster as usize];
         if value == 0 {
             continue;
         }
+        let pos = raster as usize;
         if c > MAX_GENERAL_SCAN_INDEX {
             return Err(Error::CoefficientTokenizationUnsupportedEob {
                 scan_index: c,
-                position: raster as usize,
+                position: pos,
                 value,
                 max_scan_index: MAX_GENERAL_SCAN_INDEX,
             });
         }
         let magnitude = value.unsigned_abs();
-        // Every coefficient carries a `coeff_br` extension; only a magnitude past the
-        // base-range cap (the `read_quant` golomb tail) is rejected. The cap is
-        // region-dependent: an LF coefficient (`coeff_base_eob`/`coeff_base` saturating
-        // at `LF_NUM_BASE_LEVELS + 1`) reaches `MAX_BASE_BR_MAGNITUDE` (7), an HF
-        // coefficient (saturating at `NUM_BASE_LEVELS + 1`) only `MAX_HF_BASE_BR_MAGNITUDE`
-        // (5) — mirroring the decoder `derive_coeff_max_level` `maxLevel` per region.
-        let max_magnitude = if is_lf_position(raster as usize) {
-            MAX_BASE_BR_MAGNITUDE
-        } else {
-            MAX_HF_BASE_BR_MAGNITUDE
-        };
-        if magnitude > max_magnitude {
-            return Err(Error::CoefficientTokenizationUnsupportedMagnitude {
-                plane: PLANE_Y,
-                block: lf_block_rect()?,
-                coefficient_index: raster as usize,
-                magnitude,
-                max_magnitude,
-            });
+        let max_level = general_walk_max_level_for_pos(pos);
+        if magnitude >= max_level {
+            // A § 5.20.7.28 `read_quant` golomb coefficient. Cap its golomb extension
+            // `x = magnitude - maxLevel` at `GOLOMB_X_MAX` (so the golomb-prefix
+            // `length` stays `<= 8` and the § 8.2 recovery can read it back). Reporting
+            // the round position-independent `GOLOMB_REPORTED_MAX_MAGNITUDE` (525).
+            let x = magnitude - max_level;
+            if x > GOLOMB_X_MAX {
+                return Err(Error::CoefficientTokenizationUnsupportedMagnitude {
+                    plane: PLANE_Y,
+                    block: lf_block_rect()?,
+                    coefficient_index: pos,
+                    magnitude,
+                    max_magnitude: GOLOMB_REPORTED_MAX_MAGNITUDE,
+                });
+            }
+            golomb_count += 1;
+            if golomb_count == 1 {
+                first_golomb_pos = pos;
+            } else if golomb_count == 2 {
+                second_golomb_pos = pos;
+            }
         }
+    }
+
+    if golomb_count >= 2 {
+        return Err(Error::CoefficientTokenizationMultipleGolombCoefficients {
+            count: golomb_count,
+            first_position: first_golomb_pos,
+            second_position: second_golomb_pos,
+        });
     }
     debug_assert!((1..=MAX_GENERAL_SCAN_INDEX + 1).contains(&eob));
     Ok(())
@@ -516,6 +517,22 @@ const fn is_lf_position(pos: usize) -> bool {
     let row = pos >> TX_4X4_BWL;
     let col = pos - (row << TX_4X4_BWL);
     row + col < LF_DIAGONAL_LIMIT_4X4
+}
+
+/// Returns the AV2 § 5.20.7.27/§ 5.20.7.28 `maxLevel` for the 4x4 luma 2D coefficient
+/// at raster position `pos` — the level at which `read_quant` fires (with TCQ off, so
+/// `read_quant` is invoked when `level >= maxLevel`). A low-frequency coefficient
+/// saturates its base+`coeff_br` at `MAX_BASE_BR_MAGNITUDE` (`7`), so its `maxLevel`
+/// is `8` ([`LF_GOLOMB_MAX_LEVEL`]); a high-frequency coefficient saturates at
+/// `MAX_HF_BASE_BR_MAGNITUDE` (`5`), so its `maxLevel` is `6` ([`HF_GOLOMB_MAX_LEVEL`]).
+/// Mirrors the decoder `derive_coeff_max_level` per region. Shared with
+/// [`super::general_walk_recover`].
+pub(super) const fn general_walk_max_level_for_pos(pos: usize) -> u32 {
+    if is_lf_position(pos) {
+        MAX_BASE_BR_MAGNITUDE + 1
+    } else {
+        MAX_HF_BASE_BR_MAGNITUDE + 1
+    }
 }
 
 /// Composes the reverse-scan base pass over `c = eob - 1 .. 0` using a running
@@ -583,7 +600,12 @@ fn compose_base_pass(
                     eob_level,
                 ));
                 if magnitude > LF_NUM_BASE_LEVELS {
-                    let br_symbol = (magnitude - (LF_NUM_BASE_LEVELS + 1)) as u8;
+                    // Saturate the base+`coeff_br` level at the LF `maxLevel` 8: a golomb
+                    // coefficient (magnitude `>= maxLevel`) pins `coeff_br` to its max
+                    // symbol `COEFF_BASE_RANGE` and codes the remainder in the
+                    // § 5.20.7.28 golomb tail (appended in the sign pass).
+                    let br_symbol =
+                        (magnitude - (LF_NUM_BASE_LEVELS + 1)).min(COEFF_BASE_RANGE) as u8;
                     tokens.push(coeff_br_lf_token(
                         coeff_cdf_q_ctx,
                         eob_coeff_br_ctx(pos),
@@ -604,7 +626,10 @@ fn compose_base_pass(
                     eob_level,
                 ));
                 if magnitude > NUM_BASE_LEVELS {
-                    let br_symbol = (magnitude - (NUM_BASE_LEVELS + 1)) as u8;
+                    // Saturate the base+`coeff_br` level at the HF `maxLevel` 6: a golomb
+                    // coefficient pins `coeff_br` to its max symbol `COEFF_BASE_RANGE`
+                    // and codes the remainder in the golomb tail (sign pass).
+                    let br_symbol = (magnitude - (NUM_BASE_LEVELS + 1)).min(COEFF_BASE_RANGE) as u8;
                     tokens.push(coeff_br_hf_token(
                         coeff_cdf_q_ctx,
                         HF_COEFF_BR_CTX_EOB,
@@ -654,7 +679,10 @@ fn compose_base_pass(
                     true,
                     &level,
                 );
-                let br_symbol = (magnitude - (LF_NUM_BASE_LEVELS + 1)) as u8;
+                // Saturate at the LF `maxLevel` 8: a golomb coefficient pins the
+                // `coeff_br` symbol to `COEFF_BASE_RANGE` and codes the rest in the
+                // golomb tail (sign pass).
+                let br_symbol = (magnitude - (LF_NUM_BASE_LEVELS + 1)).min(COEFF_BASE_RANGE) as u8;
                 tokens.push(coeff_br_lf_token(coeff_cdf_q_ctx, br_ctx, br_symbol));
             }
         } else {
@@ -697,7 +725,10 @@ fn compose_base_pass(
                     false,
                     &level,
                 );
-                let br_symbol = (magnitude - (NUM_BASE_LEVELS + 1)) as u8;
+                // Saturate at the HF `maxLevel` 6: a golomb coefficient pins the
+                // `coeff_br` symbol to `COEFF_BASE_RANGE` and codes the rest in the
+                // golomb tail (sign pass).
+                let br_symbol = (magnitude - (NUM_BASE_LEVELS + 1)).min(COEFF_BASE_RANGE) as u8;
                 tokens.push(coeff_br_hf_token(coeff_cdf_q_ctx, br_ctx, br_symbol));
             }
         }
@@ -707,21 +738,46 @@ fn compose_base_pass(
     Ok(tokens)
 }
 
-/// Composes the reverse-scan, interleaved sign pass over `c = eob - 1 .. 0`: a
+/// Composes the reverse-scan, interleaved sign+quant pass over `c = eob - 1 .. 0`: a
 /// `dc_sign` CDF token for the DC at raster position 0, a `sign_bit` bypass for
-/// every other coefficient, and no sign for a zero coefficient.
+/// every other coefficient, no sign for a zero coefficient, and — for a coefficient
+/// whose magnitude reaches its position `maxLevel` — the § 5.20.7.28 `read_quant`
+/// golomb tail emitted RIGHT AFTER its sign token (§ 5.20.7.27 reads sign then
+/// `read_quant` per coefficient). The base pass already saturated the
+/// base+`coeff_br` level to `maxLevel`; the golomb tail codes the extension
+/// `x = magnitude - maxLevel`. Only the single golomb coefficient per block reaches
+/// the tail (multi-golomb blocks are rejected upstream by
+/// [`validate_general_lf_scope`]).
 fn compose_sign_pass(
     quant: &[i32; TX_4X4_COEFF_COUNT],
     scan: &[u16; TX_4X4_COEFF_COUNT],
     eob: usize,
     coeff_cdf_q_ctx: usize,
 ) -> Result<Vec<BlockSymbolToken>> {
+    // Reserve one sign token per nonzero coefficient plus, for the single golomb
+    // coefficient, its golomb-tail bypass literals. `validate_general_lf_scope`
+    // guarantees at most one golomb-range coefficient, so summing every coefficient's
+    // tail length is an exact (here, single-entry) upper bound.
+    let mut reserve = eob;
+    for offset in 0..eob {
+        let c = eob - 1 - offset;
+        let pos = scan_pos(scan, c)?;
+        let magnitude = quant[pos].unsigned_abs();
+        let max_level = general_walk_max_level_for_pos(pos);
+        if magnitude >= max_level {
+            reserve = reserve
+                .checked_add(read_quant_golomb_tail_len(magnitude - max_level))
+                .ok_or(Error::CoefficientTokenizationAllocationFailed {
+                    context: "general LF sign pass golomb reservation",
+                })?;
+        }
+    }
     let mut tokens = Vec::new();
-    tokens
-        .try_reserve_exact(eob)
-        .map_err(|_| Error::CoefficientTokenizationAllocationFailed {
+    tokens.try_reserve_exact(reserve).map_err(|_| {
+        Error::CoefficientTokenizationAllocationFailed {
             context: "general LF sign pass tokens",
-        })?;
+        }
+    })?;
 
     for offset in 0..eob {
         let c = eob - 1 - offset;
@@ -742,6 +798,15 @@ fn compose_sign_pass(
         } else {
             // Every non-DC luma sign under TX_CLASS_2D is a § 8.2.5 `sign_bit` bypass.
             tokens.push(BlockSymbolToken::bypass(1, u32::from(negative)));
+        }
+        // § 5.20.7.27: the sign+quant pass reads the sign then `read_quant`. A
+        // coefficient whose magnitude reached its position `maxLevel` carries the
+        // § 5.20.7.28 golomb tail (the extension `x = magnitude - maxLevel`) right
+        // after its sign token.
+        let magnitude = value.unsigned_abs();
+        let max_level = general_walk_max_level_for_pos(pos);
+        if magnitude >= max_level {
+            push_read_quant_golomb_tail(&mut tokens, magnitude - max_level)?;
         }
     }
     Ok(tokens)
@@ -785,7 +850,8 @@ const fn eob_pt_from_eob(eob: usize) -> usize {
 /// Returns the decoder eob base for `eobPt`: `(eobPt < 2) ? eobPt :
 /// (1 << (eobPt - 2)) + 1` (eobPt 1 → 1, 2 → 2, 3 → 3, 4 → 5, 5 → 9). Mirrors
 /// `nonzero_coeff_eob` (`crates/splot-decode/src/tile_payload/coeff_loop.rs`).
-const fn eob_base_for_pt(eob_pt: usize) -> usize {
+/// Shared with [`super::general_walk_recover`].
+pub(super) const fn eob_base_for_pt(eob_pt: usize) -> usize {
     if eob_pt < 2 {
         eob_pt
     } else {
@@ -828,8 +894,9 @@ const fn eob_coeff_br_ctx(pos: usize) -> usize {
     }
 }
 
-/// Returns `scan[c]` as a raster position, validating the scan index.
-fn scan_pos(scan: &[u16; TX_4X4_COEFF_COUNT], c: usize) -> Result<usize> {
+/// Returns `scan[c]` as a raster position, validating the scan index. Shared with
+/// [`super::general_walk_recover`].
+pub(super) fn scan_pos(scan: &[u16; TX_4X4_COEFF_COUNT], c: usize) -> Result<usize> {
     scan.get(c).map(|&raster| raster as usize).ok_or(
         Error::CoefficientTokenizationAllocationFailed {
             context: "general LF scan index out of range",
@@ -837,155 +904,13 @@ fn scan_pos(scan: &[u16; TX_4X4_COEFF_COUNT], c: usize) -> Result<usize> {
     )
 }
 
-/// Skips the leading coded luma `all_zero == 0` token during recovery, asserting
-/// it is present.
-fn skip_expected_all_zero(
-    tokens: &[BlockSymbolToken],
-    index: &mut usize,
-    coeff_cdf_q_ctx: usize,
-) -> Result<()> {
-    let token = coeff_token_at(tokens, index)?;
-    let expected = coded_luma_all_zero_token(coeff_cdf_q_ctx);
-    if token != expected {
-        return Err(Error::CoefficientTokenizationAllocationFailed {
-            context: "general LF recovery expected coded all_zero token",
-        });
-    }
-    Ok(())
-}
-
-/// Reads the eob from the `eob_pt_16` token at the cursor and, when its symbol
-/// selects eobPt `>= 3`, the interleaved `eob_extra` CDF flag and the `eobPt - 3`
-/// `eob_extra_bit` bypass literals that follow it. The `eob_pt_16` symbol is
-/// `eobPt - 1`; for eobPt `< 3` `eob == eobPt` so `eob = symbol + 1`. For
-/// eobPt `>= 3`, `eob = base + (eob_extra << (eobPt - 3)) + eob_extra_bits` where
-/// `base = eob_base_for_pt(eobPt)`, mirroring the emission in
-/// [`tokenize_general_lf_luma_block`] (and the decoder `nonzero_coeff_eob`).
-///
-/// The `eob_extra_bit` literals are read back MSB-first (bit `eobPt - 4` down to bit
-/// 0), the SAME order they were emitted (see the module `eob_extra_bit` BIT ORDER
-/// note); `eob_extra_bits` accumulates `(value << 1) | bit`, matching the decoder's
-/// `read_literal`.
-fn read_eob_from_tokens(tokens: &[BlockSymbolToken], index: &mut usize) -> Result<usize> {
-    let eob_pt = usize::from(coeff_token_at(tokens, index)?.symbol()) + 1;
-    if eob_pt < MIN_EOB_WITH_EXTRA {
-        return Ok(eob_pt);
-    }
-    // Reject an out-of-range eobPt from a malformed trace BEFORE the `1 << width`
-    // shift below: a large `eob_pt_16` symbol (the symbol is a `u8`, so eobPt can be
-    // up to 256) would otherwise shift by `>= usize::BITS` and panic, violating the
-    // library no-panic error model. A well-formed trace from this tokenizer never
-    // exceeds `MAX_GENERAL_EOB_PT` (5).
-    if eob_pt > MAX_GENERAL_EOB_PT {
-        return Err(Error::CoefficientTokenizationMalformedTokenTrace {
-            context: "general LF recovery eob_pt_16 symbol out of range",
-        });
-    }
-    // eobPt >= 3: the next token is the `eob_extra` CDF flag (the HIGH refinement bit).
-    let extra_token = coeff_token_at(tokens, index)?;
-    if !matches!(extra_token.syntax(), CoefficientTokenSyntax::EobExtra) {
-        return Err(Error::CoefficientTokenizationMalformedTokenTrace {
-            context: "general LF recovery expected an eob_extra token",
-        });
-    }
-    let eob_extra = extra_token.symbol() != 0;
-    // Then `eobPt - 3` `eob_extra_bit` bypass literals (the LOW refinement bits),
-    // MSB-first. Reassemble `eob_extra_bits` the way the decoder `read_literal` does.
-    let width = eob_pt - MIN_EOB_WITH_EXTRA;
-    let mut eob_extra_bits = 0usize;
-    for _ in 0..width {
-        let bit = read_eob_extra_bit(tokens, index)?;
-        eob_extra_bits = (eob_extra_bits << 1) | bit;
-    }
-    let base = eob_base_for_pt(eob_pt);
-    let extra = if eob_extra { 1usize << width } else { 0 };
-    Ok(base + extra + eob_extra_bits)
-}
-
-/// Reads one `eob_extra_bit` bypass literal (`bypass(1, bit)`) at the cursor and
-/// advances it, returning its `0`/`1` value. Errors if the token is not a width-1
-/// bypass literal.
-fn read_eob_extra_bit(tokens: &[BlockSymbolToken], index: &mut usize) -> Result<usize> {
-    match next_token(tokens, index)? {
-        BlockSymbolToken::Bypass { width: 1, value } => Ok(value as usize),
-        _ => Err(Error::CoefficientTokenizationMalformedTokenTrace {
-            context: "general LF recovery expected an eob_extra_bit bypass literal",
-        }),
-    }
-}
-
-/// Recovers the base level of one base-pass coefficient: the EOB coefficient
-/// (`offset == 0`) carries `coeff_base_eob` with `level = symbol + 1`; a non-EOB
-/// `coeff_base` carries `level = symbol`.
-fn recover_base_level(token: CoefficientEntropyToken, offset: usize) -> u32 {
-    if offset == 0 {
-        u32::from(token.symbol()) + 1
-    } else {
-        u32::from(token.symbol())
-    }
-}
-
-/// Reads the optional interleaved `coeff_br` refinement that follows a base-pass
-/// coefficient's `coeff_base_eob` / `coeff_base`: when the next token is a
-/// `coeff_br`, it is consumed and its symbol is returned (the level increment);
-/// otherwise the cursor is left untouched and `0` is returned. Both the EOB
-/// coefficient and the non-EOB coefficient may carry one, so every base-pass
-/// coefficient peeks for it.
-fn recover_interleaved_coeff_br(tokens: &[BlockSymbolToken], index: &mut usize) -> Result<u32> {
-    match tokens.get(*index) {
-        Some(BlockSymbolToken::Coeff(coeff))
-            if matches!(coeff.syntax(), CoefficientTokenSyntax::CoeffBr) =>
-        {
-            *index += 1;
-            Ok(u32::from(coeff.symbol()))
-        }
-        _ => Ok(0),
-    }
-}
-
-/// Reads one sign from the cursor: a `dc_sign` CDF token (`symbol == 1` negative)
-/// or a `sign_bit` bypass literal (`value == 1` negative).
-fn read_sign_from_tokens(tokens: &[BlockSymbolToken], index: &mut usize) -> Result<bool> {
-    let token = next_token(tokens, index)?;
-    match token {
-        BlockSymbolToken::Coeff(coeff) => Ok(coeff.symbol() != 0),
-        BlockSymbolToken::Bypass { value, .. } => Ok(value != 0),
-        _ => Err(Error::CoefficientTokenizationAllocationFailed {
-            context: "general LF recovery expected a sign token",
-        }),
-    }
-}
-
-/// Returns the coefficient token at the cursor and advances it, or an error if the
-/// token is not a coefficient token.
-fn coeff_token_at(
-    tokens: &[BlockSymbolToken],
-    index: &mut usize,
-) -> Result<CoefficientEntropyToken> {
-    match next_token(tokens, index)? {
-        BlockSymbolToken::Coeff(coeff) => Ok(coeff),
-        _ => Err(Error::CoefficientTokenizationAllocationFailed {
-            context: "general LF recovery expected a coefficient token",
-        }),
-    }
-}
-
-/// Returns the token at the cursor and advances it.
-fn next_token(tokens: &[BlockSymbolToken], index: &mut usize) -> Result<BlockSymbolToken> {
-    let token =
-        tokens
-            .get(*index)
-            .copied()
-            .ok_or(Error::CoefficientTokenizationAllocationFailed {
-                context: "general LF recovery token cursor out of range",
-            })?;
-    *index += 1;
-    Ok(token)
-}
-
 #[cfg(test)]
 #[path = "general_walk_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "general_walk_golomb_tests.rs"]
+mod golomb_tests;
 
 #[cfg(test)]
 #[path = "general_walk_eob_extra_tests.rs"]

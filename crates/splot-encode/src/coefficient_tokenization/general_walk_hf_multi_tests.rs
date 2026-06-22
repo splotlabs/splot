@@ -465,35 +465,44 @@ fn general_hf_rejects_eob17_impossible_for_4x4() {
 }
 
 #[test]
-fn general_hf_rejects_non_eob_hf_magnitude_above_cap() {
-    // A NON-EOB high-frequency coefficient at magnitude 6 (> the HF cap 5) needs the
-    // § 5.20.7.28 `read_quant` golomb tail and is rejected — even though the SAME
-    // magnitude at an LF position is in scope (LF cap 7). Use eob 13 so scan 10
-    // (raster 13) is a non-EOB HF coefficient, and give it magnitude 6.
+fn general_hf_non_eob_magnitude_at_hf_maxlevel_is_golomb() {
+    // A NON-EOB high-frequency coefficient at magnitude 6 (the HF `maxLevel`) is now a
+    // § 5.20.7.28 `read_quant` golomb coefficient (the `ENC-COEFF-GENERAL-WALK-GOLOMB`
+    // tier). Use eob 13 so scan 10 (raster 13) is a non-EOB HF coefficient at
+    // magnitude 6 (the only golomb coefficient): it tokenizes and roundtrips.
     let mut mags = [1u32; 13];
     mags[10] = 6;
+    let quant = scan_block(13, &mags);
+    let trace = tokenize_general_lf_luma_block(&quant, Q_CTX).unwrap();
+    let recovered = recover_quant_from_tokens(&trace, Q_CTX).unwrap();
+    assert_eq!(recovered, quant);
+
+    // A magnitude above the golomb cap 525 at the non-EOB HF position is rejected.
+    let mut mags = [1u32; 13];
+    mags[10] = 526;
     let quant = scan_block(13, &mags);
     let err = tokenize_general_lf_luma_block(&quant, Q_CTX).unwrap_err();
     assert!(
         matches!(
             err,
             Error::CoefficientTokenizationUnsupportedMagnitude {
-                magnitude: 6,
-                max_magnitude: 5,
+                magnitude: 526,
+                max_magnitude: 525,
                 coefficient_index: 13,
                 ..
             }
         ),
-        "non-EOB HF magnitude 6 must be rejected with max_magnitude 5; got {err:?}"
+        "non-EOB HF magnitude 526 (above the golomb cap) must be rejected; got {err:?}"
     );
 
     // The same magnitude 6 at an LF position (scan index 0 = DC) inside an eob-13 block
-    // is accepted (LF cap 7).
+    // is also in scope: at the LF `maxLevel` 8 it is a base-range coefficient (cap 7),
+    // and at magnitude 6 (< 8) plain base+`coeff_br`, accepted.
     let mut mags = [1u32; 13];
     mags[0] = 6;
     let quant = scan_block(13, &mags);
     assert!(
         tokenize_general_lf_luma_block(&quant, Q_CTX).is_ok(),
-        "LF magnitude 6 (within the LF cap 7) must be accepted"
+        "LF magnitude 6 (within the LF base-range cap 7) must be accepted"
     );
 }
