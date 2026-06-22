@@ -6154,6 +6154,39 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-CONFIG-QP-FIELD"
+name = "Encoder config single fixed-quantizer (qp) source"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.18.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/config.rs"
+openspec_change = "encoder-config-qp-field"
+tracking_issue = ""
+owner = "encoder"
+risk = "low"
+notes = "Minimal-working-encoder FOUNDATION brick 1 (of the maintainer-directed 2026-06-22 arc: minimal working encoder -> layered rav1e/SVT-AV1 optimization features -> AV2-specific). Adds a single `qp: u8` field to EncoderConfig (DEFAULT_QP=80, the AVM/dav2d-validated syn-flat-intra-64x64-q80 value) threaded into the frame-header base_q_idx (§5.18.2) via the new emit_minimal_intra_skip_temporal_unit_with_base_q_idx; receive_packet reads self.config.qp. Establishes EncoderConfig.qp as the single fixed-quantizer source so the qindex literals cannot diverge: the frame-header base_q_idx reads config.qp NOW; the quantizer qindex (FixedQuantizationParams, today passed explicitly in tests) will read the same field once the lossy coefficient path is wired into receive_packet (brick 6). Today only the public base_q_idx path is unified, so this PRE-EMPTS the latent two-literal hazard rather than removing an active divergence. Establishes the RateController seam's foundation (the minimal encoder is constant-QP; per-frame/block rate control is a later phase). Supported qp range restricted to 1..=90 (SUPPORTED_SKIP_QP), the range whose coefficient CDF q-context is 0 (matching the decoder's current placeholder q-context); qp outside that range retires the frame without a packet (honest 'not yet'), with a TODO(spec: ENC-CONFIG-QP-FIELD) to widen via the get_qctx mapping once it co-evolves with the decoder. DECODE-VERIFIED: the cross-crate oracle now runs at TWO quantizers — the default 80 AND a non-default 40 — each proving decode(encode(all-128))==all-128 (a skip frame's all-zero residual reconstructs flat-128 independent of base_q_idx, so the qp threading is proven decode-correct, not just byte-different). Pure foundation: no new decoder surface, route-agnostic (independent of the geometry-fork Route A/B choice). decode_check=done; avm_diff=not-applicable. Encoder-mission-DRIVEN (owner=encoder). HONEST SCOPE: a config field + base_q_idx threading; NOT real residual coding, NOT rate control, NOT a general encoder, NOT Baseline Encoder Profile v1."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-cli/tests/encode_decode_roundtrip.rs::context_encodes_all_128_frame_at_non_default_qp_that_decodes_to_all_128", "crates/splot-encode/src/context.rs::tests::receive_packet_encodes_a_64x64_all_128_frame_to_the_skip_packet"]
+commands = ["cargo test -p splot-cli --test encode_decode_roundtrip --locked", "cargo test -p splot-encode context:: --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-RECON-DEPENDENCY"
 name = "Encoder reconstruction dependency boundary"
 category = "encoder"

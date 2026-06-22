@@ -568,6 +568,23 @@ fn encoder_2d_ivf_decodes_to_a_diagonal_gradient_luma() {
 /// the output decodes to the input, never a canned frame.
 #[test]
 fn context_encodes_all_128_frame_to_a_packet_that_decodes_to_all_128() {
+    assert_all_128_roundtrips_at_qp(splot_encode::DEFAULT_QP);
+}
+
+/// The `EncoderConfig::qp` field is the single fixed-quantizer source: it threads into the
+/// frame-header `base_q_idx`, so a non-default `qp` produces a different (still decodable) stream.
+/// A skip frame's all-zero residual reconstructs flat-128 independent of `base_q_idx`, so this
+/// proves the qp threading decodes bit-exactly at a non-default quantizer (40, in the supported
+/// q-context-0 range) — not just at the default 80.
+#[test]
+fn context_encodes_all_128_frame_at_non_default_qp_that_decodes_to_all_128() {
+    assert_all_128_roundtrips_at_qp(40);
+}
+
+/// Encodes an all-128 64x64 frame through the public Context at the given fixed `qp`, muxes the
+/// packet into an IVF, decodes it with the `splot` binary, and asserts the reconstruction is the
+/// all-128 input. Shared by the default-qp and non-default-qp oracles.
+fn assert_all_128_roundtrips_at_qp(qp: u8) {
     use splot_encode::{
         Context, EncoderConfig, EncoderRuntimeConfig, FlushStatus, Frame, FrameId, FrameInfo,
         FramePlaneInput, FramePlanesInput, PlaneRect, PlaneSize, ReceivePacketStatus,
@@ -589,8 +606,10 @@ fn context_encodes_all_128_frame_to_a_packet_that_decodes_to_all_128() {
     )
     .expect("build the all-128 input frame");
 
-    let mut ctx = Context::new(EncoderConfig::new(64, 64), EncoderRuntimeConfig::default())
-        .expect("build the encoder context");
+    let mut config = EncoderConfig::new(64, 64);
+    config.qp = qp;
+    let mut ctx =
+        Context::new(config, EncoderRuntimeConfig::default()).expect("build the encoder context");
     assert!(matches!(
         ctx.send_frame(&frame).expect("send_frame"),
         SendFrameStatus::Accepted { .. }

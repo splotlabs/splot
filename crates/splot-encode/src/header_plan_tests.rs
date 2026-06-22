@@ -33,6 +33,7 @@ fn config(
         height,
         bit_depth,
         chroma_subsampling,
+        qp: crate::config::DEFAULT_QP,
     }
 }
 
