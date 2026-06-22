@@ -394,6 +394,47 @@ pub(crate) enum TileCdfSelector {
         /// `NewMvContext`.
         ctx: usize,
     },
+    /// `TileJointShellSetCdf[MvCtx]` (AV2 § 8.3.2): the §5.20.7.20 `shell_set`
+    /// symbol (single-context MvCtx == 0).
+    JointShellSet,
+    /// `TileJointShellPClassQCdf[MvCtx]` for the verified EighthPel precision
+    /// (P == 6, AV2 § 8.3.2): `shell_set` selects the `Q` bank.
+    JointShell6Class {
+        /// `Q == shell_set` (`0..2`).
+        shell_set: usize,
+    },
+    /// `TileJointShellLastTwoClassesCdf[MvCtx]` (AV2 § 8.3.2): the EighthPel
+    /// `joint_shell_last_two_classes` symbol.
+    JointShellLastTwo,
+    /// `TileShellOffsetLowClassCdf[MvCtx][shellClass]` (AV2 § 8.3.2).
+    ShellOffsetLowClass {
+        /// `shellClass` (`0` or `1`).
+        shell_class: usize,
+    },
+    /// `TileShellOffsetClass2Cdf[MvCtx]` (AV2 § 8.3.2).
+    ShellOffsetClass2,
+    /// `TileShellOffsetOtherClassCdf[MvCtx][i]` (AV2 § 8.3.2).
+    ShellOffsetOtherClass {
+        /// The §5.20.7.20 loop counter `i`.
+        i: usize,
+    },
+    /// `TileColMvGreaterCdf[MvCtx][i]` (AV2 § 8.3.2).
+    ColMvGreater {
+        /// The §5.20.7.20 truncated-unary loop counter `i`.
+        i: usize,
+    },
+    /// `TileColMvIndexCdf[MvCtx][Min(shellClass, NUM_CTX_COL_MV_INDEX - 1)]`
+    /// (AV2 § 8.3.2).
+    ColMvIndex {
+        /// `Min(shellClass, NUM_CTX_COL_MV_INDEX - 1)`.
+        ctx: usize,
+    },
+    /// `TileInterpFilterCdf[ctx]` (AV2 § 8.3.2): the §5.20.7.6 SWITCHABLE
+    /// `interp_filter` symbol.
+    InterpFilter {
+        /// The §8.3.2 interp-filter context.
+        ctx: usize,
+    },
     /// Coefficient base/base-EOB/base-range and IDTX CDF rows.
     Coeff(CoeffCdfSelector),
 }
@@ -467,6 +508,24 @@ pub(crate) enum TileCdfArray {
     SingleMode,
     /// `TileDrlModeCdf`.
     DrlMode,
+    /// `TileJointShellSetCdf`.
+    JointShellSet,
+    /// `TileJointShell6ClassCdf` (the EighthPel P == 6 `shell_class` bank pair).
+    JointShell6Class,
+    /// `TileJointShellLastTwoClassesCdf`.
+    JointShellLastTwo,
+    /// `TileShellOffsetLowClassCdf`.
+    ShellOffsetLowClass,
+    /// `TileShellOffsetClass2Cdf`.
+    ShellOffsetClass2,
+    /// `TileShellOffsetOtherClassCdf`.
+    ShellOffsetOtherClass,
+    /// `TileColMvGreaterCdf`.
+    ColMvGreater,
+    /// `TileColMvIndexCdf`.
+    ColMvIndex,
+    /// `TileInterpFilterCdf`.
+    InterpFilter,
 }
 
 impl TileCdfArray {
@@ -505,6 +564,15 @@ impl TileCdfArray {
             Self::Skip => "TileSkipCdf",
             Self::SingleMode => "TileSingleModeCdf",
             Self::DrlMode => "TileDrlModeCdf",
+            Self::JointShellSet => "TileJointShellSetCdf",
+            Self::JointShell6Class => "TileJointShell6ClassCdf",
+            Self::JointShellLastTwo => "TileJointShellLastTwoClassesCdf",
+            Self::ShellOffsetLowClass => "TileShellOffsetLowClassCdf",
+            Self::ShellOffsetClass2 => "TileShellOffsetClass2Cdf",
+            Self::ShellOffsetOtherClass => "TileShellOffsetOtherClassCdf",
+            Self::ColMvGreater => "TileColMvGreaterCdf",
+            Self::ColMvIndex => "TileColMvIndexCdf",
+            Self::InterpFilter => "TileInterpFilterCdf",
         }
     }
 }
@@ -877,6 +945,31 @@ impl TileCdfRows {
             TileCdfSelector::DrlMode { idx, ctx } => {
                 self.block.row(BlockCdfSelector::DrlMode { idx, ctx })
             }
+            TileCdfSelector::JointShellSet => self.block.row(BlockCdfSelector::JointShellSet),
+            TileCdfSelector::JointShell6Class { shell_set } => {
+                self.block.row(BlockCdfSelector::JointShell6Class { shell_set })
+            }
+            TileCdfSelector::JointShellLastTwo => {
+                self.block.row(BlockCdfSelector::JointShellLastTwo)
+            }
+            TileCdfSelector::ShellOffsetLowClass { shell_class } => self
+                .block
+                .row(BlockCdfSelector::ShellOffsetLowClass { shell_class }),
+            TileCdfSelector::ShellOffsetClass2 => {
+                self.block.row(BlockCdfSelector::ShellOffsetClass2)
+            }
+            TileCdfSelector::ShellOffsetOtherClass { i } => {
+                self.block.row(BlockCdfSelector::ShellOffsetOtherClass { i })
+            }
+            TileCdfSelector::ColMvGreater { i } => {
+                self.block.row(BlockCdfSelector::ColMvGreater { i })
+            }
+            TileCdfSelector::ColMvIndex { ctx } => {
+                self.block.row(BlockCdfSelector::ColMvIndex { ctx })
+            }
+            TileCdfSelector::InterpFilter { ctx } => {
+                self.block.row(BlockCdfSelector::InterpFilter { ctx })
+            }
             TileCdfSelector::Coeff(selector) => self.block.row(BlockCdfSelector::Coeff(selector)),
         }
     }
@@ -1010,6 +1103,31 @@ impl TileCdfRows {
             }
             TileCdfSelector::DrlMode { idx, ctx } => {
                 self.block.row_mut(BlockCdfSelector::DrlMode { idx, ctx })
+            }
+            TileCdfSelector::JointShellSet => self.block.row_mut(BlockCdfSelector::JointShellSet),
+            TileCdfSelector::JointShell6Class { shell_set } => self
+                .block
+                .row_mut(BlockCdfSelector::JointShell6Class { shell_set }),
+            TileCdfSelector::JointShellLastTwo => {
+                self.block.row_mut(BlockCdfSelector::JointShellLastTwo)
+            }
+            TileCdfSelector::ShellOffsetLowClass { shell_class } => self
+                .block
+                .row_mut(BlockCdfSelector::ShellOffsetLowClass { shell_class }),
+            TileCdfSelector::ShellOffsetClass2 => {
+                self.block.row_mut(BlockCdfSelector::ShellOffsetClass2)
+            }
+            TileCdfSelector::ShellOffsetOtherClass { i } => self
+                .block
+                .row_mut(BlockCdfSelector::ShellOffsetOtherClass { i }),
+            TileCdfSelector::ColMvGreater { i } => {
+                self.block.row_mut(BlockCdfSelector::ColMvGreater { i })
+            }
+            TileCdfSelector::ColMvIndex { ctx } => {
+                self.block.row_mut(BlockCdfSelector::ColMvIndex { ctx })
+            }
+            TileCdfSelector::InterpFilter { ctx } => {
+                self.block.row_mut(BlockCdfSelector::InterpFilter { ctx })
             }
             TileCdfSelector::Coeff(selector) => {
                 self.block.row_mut(BlockCdfSelector::Coeff(selector))
