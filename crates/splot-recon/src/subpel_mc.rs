@@ -52,6 +52,10 @@ const EIGHTTAP: u8 = 0;
 const EIGHTTAP_SMOOTH: u8 = 1;
 /// AV2 § 6 `EIGHTTAP_SHARP` interpolation filter index.
 const EIGHTTAP_SHARP: u8 = 2;
+/// AV2 § 6 `BILINEAR` interpolation filter index. The 2-tap bilinear filter has no
+/// 4-tap small-block substitution (it is already short), so it keeps index 3 for
+/// every block size.
+const BILINEAR: u8 = 3;
 
 /// `Subpel_Filters` index for the 4-tap version of the `EIGHTTAP` filter
 /// (selected for small blocks, AV2 § 7.13.3.18).
@@ -213,27 +217,33 @@ pub enum InterpolationFilter {
     EightTapSmooth,
     /// `EIGHTTAP_SHARP` (`interp_filter == 2`).
     EightTapSharp,
+    /// `BILINEAR` (`interp_filter == 3`). The 2-tap bilinear filter has no 4-tap
+    /// small-block substitution — it keeps index 3 for every block size.
+    Bilinear,
 }
 
 impl InterpolationFilter {
     /// The base `Subpel_Filters` index for this filter (`EIGHTTAP == 0`,
-    /// `EIGHTTAP_SMOOTH == 1`, `EIGHTTAP_SHARP == 2`).
+    /// `EIGHTTAP_SMOOTH == 1`, `EIGHTTAP_SHARP == 2`, `BILINEAR == 3`).
     const fn base_index(self) -> u8 {
         match self {
             Self::EightTap => EIGHTTAP,
             Self::EightTapSmooth => EIGHTTAP_SMOOTH,
             Self::EightTapSharp => EIGHTTAP_SHARP,
+            Self::Bilinear => BILINEAR,
         }
     }
 
     /// Applies the AV2 § 7.13.3.18 small-block (`dim <= 4`) substitution: an
-    /// `EIGHTTAP` / `EIGHTTAP_SHARP` filter maps to the 4-tap index 4, and
-    /// `EIGHTTAP_SMOOTH` maps to the 4-tap index 5.
+    /// `EIGHTTAP` / `EIGHTTAP_SHARP` filter maps to the 4-tap index 4,
+    /// `EIGHTTAP_SMOOTH` maps to the 4-tap index 5, and `BILINEAR` (already a
+    /// 2-tap filter) keeps index 3.
     const fn pass_index(self, dim: u32) -> u8 {
         if dim <= SMALL_BLOCK_DIM {
             match self {
                 Self::EightTap | Self::EightTapSharp => SMALL_BLOCK_EIGHTTAP,
                 Self::EightTapSmooth => SMALL_BLOCK_EIGHTTAP_SMOOTH,
+                Self::Bilinear => BILINEAR,
             }
         } else {
             self.base_index()
@@ -418,18 +428,32 @@ pub fn subpel_predict_block(
     }
 
     // §7.13.3.18 intermediateHeight =
-    //   (((h - 1) * yStep + (1 << SCALE_SUBPEL_BITS) - 1) >> SCALE_SUBPEL_BITS) + 8
+    //   (((h - 1) * yStep + (1 << SCALE_SUBPEL_BITS) - 1) >> SCALE_SUBPEL_BITS) + 8.
+    // Use checked arithmetic so a caller-supplied (e.g. fuzzed) `step_y` can never
+    // overflow i64 before the typed-error path runs — keeping this public API
+    // panic-free. This also bounds the vertical-pass `step_y * r` (r < h), since
+    // `(h - 1) * step_y` is its maximum.
     let h_i64 = h as i64;
-    let intermediate_height_i64 =
-        (((h_i64 - 1) * step_y + (1 << SCALE_SUBPEL_BITS) - 1) >> SCALE_SUBPEL_BITS) + 8;
-    if intermediate_height_i64 <= 0 {
-        return Err(ReconError::ArithmeticOverflow {
+    let intermediate_height_i64 = (h_i64 - 1)
+        .checked_mul(step_y)
+        .and_then(|p| p.checked_add((1 << SCALE_SUBPEL_BITS) - 1))
+        .map(|p| (p >> SCALE_SUBPEL_BITS) + 8)
+        .filter(|&v| v > 0)
+        .ok_or(ReconError::ArithmeticOverflow {
             context: "subpel intermediate height",
-        });
-    }
+        })?;
     let intermediate_height =
         usize::try_from(intermediate_height_i64).map_err(|_| ReconError::ArithmeticOverflow {
             context: "subpel intermediate height",
+        })?;
+    // The horizontal pass reads `p = start_x + step_x * c` for `c` in `0..w`; bound
+    // the maximum (`c == w - 1`) with checked arithmetic so the inner loop cannot
+    // overflow for caller-supplied `start_x` / `step_x`.
+    (w as i64 - 1)
+        .checked_mul(step_x)
+        .and_then(|m| start_x.checked_add(m))
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "subpel horizontal coordinate",
         })?;
 
     let max_sample = i64::from(bit_depth.max_sample());

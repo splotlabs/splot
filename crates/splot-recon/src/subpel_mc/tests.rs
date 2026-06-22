@@ -88,11 +88,13 @@ fn reference_subpel(
         InterpolationFilter::EightTap => 0,
         InterpolationFilter::EightTapSmooth => 1,
         InterpolationFilter::EightTapSharp => 2,
+        InterpolationFilter::Bilinear => 3,
     };
     if w <= 4 {
         h_filter = match params.interp {
             InterpolationFilter::EightTap | InterpolationFilter::EightTapSharp => 4,
             InterpolationFilter::EightTapSmooth => 5,
+            InterpolationFilter::Bilinear => 3,
         };
     }
     let mut intermediate = vec![0i64; intermediate_height * w];
@@ -116,11 +118,13 @@ fn reference_subpel(
         InterpolationFilter::EightTap => 0,
         InterpolationFilter::EightTapSmooth => 1,
         InterpolationFilter::EightTapSharp => 2,
+        InterpolationFilter::Bilinear => 3,
     };
     if h <= 4 {
         v_filter = match params.interp {
             InterpolationFilter::EightTap | InterpolationFilter::EightTapSharp => 4,
             InterpolationFilter::EightTapSmooth => 5,
+            InterpolationFilter::Bilinear => 3,
         };
     }
     let mut out = vec![0u16; w * h];
@@ -343,6 +347,7 @@ fn matches_independent_reference_over_many_cases() {
         InterpolationFilter::EightTap,
         InterpolationFilter::EightTapSmooth,
         InterpolationFilter::EightTapSharp,
+        InterpolationFilter::Bilinear,
     ];
     let dims = [2usize, 4, 8, 16];
 
@@ -482,6 +487,27 @@ fn rejects_negative_step() {
     assert!(matches!(
         subpel_predict_block(&view, &params),
         Err(ReconError::SubpelNegativeStep { .. })
+    ));
+}
+
+#[test]
+fn rejects_overflowing_step_without_panic() {
+    let samples = build_ref(vec![0u16; 16], 4, 4);
+    let view = ReferencePlaneView::new(&samples, 4, 4).unwrap();
+    // A huge step_y overflows `(h - 1) * step_y`; the public kernel must return a
+    // typed error rather than panic (debug) or wrap (release).
+    let mut params = full_pel_params(InterpolationFilter::EightTap, 4, 4, 0, 0, 4, 4);
+    params.step_y = i64::MAX;
+    assert!(matches!(
+        subpel_predict_block(&view, &params),
+        Err(ReconError::ArithmeticOverflow { .. })
+    ));
+    // A huge step_x overflows `start_x + step_x * (w - 1)` likewise.
+    let mut params = full_pel_params(InterpolationFilter::EightTap, 4, 4, 0, 0, 4, 4);
+    params.step_x = i64::MAX;
+    assert!(matches!(
+        subpel_predict_block(&view, &params),
+        Err(ReconError::ArithmeticOverflow { .. })
     ));
 }
 
