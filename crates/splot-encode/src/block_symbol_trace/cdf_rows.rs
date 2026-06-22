@@ -63,6 +63,14 @@ pub(super) struct BlockSymbolTraceCdfRows {
     // bank). The eob-11 HF EOB `coeff_br` reaches the constant ctx 0; sizing the full
     // ctx-7 dimension keeps the tier hole-free for the later non-EOB HF sub-brick.
     coeff_br_hf: [[i32; COEFF_BR_CDF_ROW_LEN]; COEFF_BR_CTX_COUNT],
+    // The 4x4 HIGH-frequency non-EOB `coeff_base` bank at the neutral TCQ context,
+    // indexed by the § 8.3.2 HF `coeff_base` context (`COEFF_BASE_CTX_COUNT`, 20;
+    // 4-symbol rows), from the generated `DEFAULT_COEFF_BASE_CDF[q][4x4][ctx][tcq]`
+    // (distinct from the 6-symbol LF `coeff_base_lf_4x4` bank). The general HF walk
+    // derives this context from the running `Level[]` (`coeff_base_hf_luma_context`);
+    // for 4x4 2D the reachable contexts are roughly 0..9, but sizing the full ctx-20
+    // dimension keeps the HF non-EOB base tier hole-free.
+    coeff_base_hf_4x4: [[i32; COEFF_BASE_CDF_ROW_LEN]; COEFF_BASE_CTX_COUNT],
     dc_sign: [i32; DC_SIGN_CDF_ROW_LEN],
     v_txb_skip_eobu: [i32; V_TXB_SKIP_CDF_ROW_LEN],
     chroma_eob_pt_16: [i32; EOB_PT_16_CDF_ROW_LEN],
@@ -78,6 +86,22 @@ fn coeff_base_lf_4x4_bank() -> [[i32; COEFF_BASE_LF_CDF_ROW_LEN]; COEFF_BASE_LF_
     let mut ctx = 0;
     while ctx < COEFF_BASE_LF_CTX_COUNT {
         bank[ctx] = DEFAULT_COEFF_BASE_LF_CDF[MINIMAL_COEFF_CDF_Q_CTX][TX_SIZE_4X4_CTX][ctx]
+            [COEFF_BASE_LF_TCQ_CTX_NEUTRAL];
+        ctx += 1;
+    }
+    bank
+}
+
+/// Builds the 4x4 HIGH-frequency non-EOB `coeff_base` bank at the neutral TCQ context
+/// by extracting the `tcq = COEFF_BASE_LF_TCQ_CTX_NEUTRAL` row at every § 8.3.2 HF
+/// context from the generated `DEFAULT_COEFF_BASE_CDF[q][4x4][ctx][tcq]` table
+/// (4-symbol rows), at the minimal coefficient-CDF q-context. Total and panic-free:
+/// every index is a const within the table dimensions.
+fn coeff_base_hf_4x4_bank() -> [[i32; COEFF_BASE_CDF_ROW_LEN]; COEFF_BASE_CTX_COUNT] {
+    let mut bank = [[0i32; COEFF_BASE_CDF_ROW_LEN]; COEFF_BASE_CTX_COUNT];
+    let mut ctx = 0;
+    while ctx < COEFF_BASE_CTX_COUNT {
+        bank[ctx] = DEFAULT_COEFF_BASE_CDF[MINIMAL_COEFF_CDF_Q_CTX][TX_SIZE_4X4_CTX][ctx]
             [COEFF_BASE_LF_TCQ_CTX_NEUTRAL];
         ctx += 1;
     }
@@ -129,6 +153,7 @@ impl BlockSymbolTraceCdfRows {
             coeff_base_eob_hf_4x4: DEFAULT_COEFF_BASE_EOB_CDF[MINIMAL_COEFF_CDF_Q_CTX]
                 [TX_SIZE_4X4_CTX],
             coeff_br_hf: DEFAULT_COEFF_BR_CDF[MINIMAL_COEFF_CDF_Q_CTX],
+            coeff_base_hf_4x4: coeff_base_hf_4x4_bank(),
             dc_sign: DEFAULT_DC_SIGN_CDF[MINIMAL_COEFF_CDF_Q_CTX][DC_SIGN_PLANE_TYPE_LUMA]
                 [DC_SIGN_GROUP_VISIBLE][DC_SIGN_CTX_NEUTRAL],
             v_txb_skip_eobu: DEFAULT_V_TXB_SKIP_CDF[MINIMAL_COEFF_CDF_Q_CTX]
@@ -278,6 +303,12 @@ impl BlockSymbolTraceCdfRows {
                     coeff_cdf_q_ctx: MINIMAL_COEFF_CDF_Q_CTX,
                     ctx,
                 } if ctx < COEFF_BR_CTX_COUNT => Ok(self.coeff_br_hf[ctx].as_mut_slice()),
+                CoefficientCdfRowSelector::CoeffBase {
+                    coeff_cdf_q_ctx: MINIMAL_COEFF_CDF_Q_CTX,
+                    tx_size: TX_SIZE_4X4_CTX,
+                    ctx,
+                    tcq_ctx: COEFF_BASE_LF_TCQ_CTX_NEUTRAL,
+                } if ctx < COEFF_BASE_CTX_COUNT => Ok(self.coeff_base_hf_4x4[ctx].as_mut_slice()),
                 CoefficientCdfRowSelector::DcSign {
                     coeff_cdf_q_ctx: MINIMAL_COEFF_CDF_Q_CTX,
                     plane_type: DC_SIGN_PLANE_TYPE_LUMA,

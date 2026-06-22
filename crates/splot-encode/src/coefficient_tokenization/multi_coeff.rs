@@ -126,6 +126,38 @@ pub(crate) const fn coeff_base_hf_eob_token(
     }
 }
 
+/// Returns the AV2 § 5.20.7.27 HIGH-frequency non-EOB `coeff_base` token for a
+/// high-frequency luma coefficient of base `level`
+/// (`TileCoeffBaseCdf[coeff_cdf_q_ctx][tx_size][ctx][tcq_ctx]`, the 4-symbol HF table
+/// `DEFAULT_COEFF_BASE_CDF`). A non-EOB base level equals the decoded symbol (NO
+/// `+1`), so the symbol is `level` directly — the SAME level mapping as the LF
+/// [`coeff_base_lf_token`]; only the CDF table/selector and the context derivation
+/// differ. The HF base level saturates at `NUM_BASE_LEVELS + 1 == 3` (a 4-symbol CDF
+/// row), NOT the LF `LF_NUM_BASE_LEVELS + 1 == 5` (a 6-symbol row); `coeff_br`
+/// refines when the magnitude exceeds `NUM_BASE_LEVELS`. The `ctx` is the § 8.3.2
+/// high-frequency context (see `coeff_base_hf_luma_context`); `tcq_ctx =
+/// (tcqState >> 1) & 1`, which is 0 when TCQ is off. Distinct from
+/// [`coeff_base_lf_token`]: the HF `coeff_base` CDF (`DEFAULT_COEFF_BASE_CDF`) is
+/// 4-symbol vs the LF 6-symbol `DEFAULT_COEFF_BASE_LF_CDF`, and the HF context has no
+/// near-DC `magLimit = 5` carve-out and no DC band.
+pub(crate) const fn coeff_base_hf_token(
+    coeff_cdf_q_ctx: usize,
+    ctx: usize,
+    tcq_ctx: usize,
+    level: u8,
+) -> CoefficientEntropyToken {
+    CoefficientEntropyToken {
+        syntax: CoefficientTokenSyntax::CoeffBase,
+        selector: CoefficientCdfRowSelector::CoeffBase {
+            coeff_cdf_q_ctx,
+            tx_size: TX_SIZE_4X4_CTX,
+            ctx,
+            tcq_ctx,
+        },
+        symbol: level,
+    }
+}
+
 /// Returns the AV2 § 5.20.7.27 HIGH-frequency `coeff_br` (base-range) token at the
 /// given § 8.3.2 `coeff_br` context (`TileCoeffBrCdf[coeff_cdf_q_ctx][ctx]`, the HF
 /// table `DEFAULT_COEFF_BR_CDF`, which has NO transform-size dimension). The
