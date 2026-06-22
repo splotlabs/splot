@@ -368,6 +368,36 @@ verified target for the distinct-neighbour-MV ordering brick \
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-3frame-multiref-64x64.ivf"
+description = """
+Three-frame MULTI-REFERENCE inter stream (IVF, 64x64) from a project-owned flat \
+synthetic input (frame 0 luma 100 / U 120 / V 130; frame 1 AND frame 2 luma 160 / \
+U 90 / V 70 — frames 1 and 2 are identical to each other but DISTINCT from the key), \
+with broad decode tools disabled and --qp=80 --sb-size=64 \
+--min-partition-size=64 --max-partition-size=64 --enable-global-motion=1 \
+--cdf-update-mode=0. Frame 0 = OBU_TEMPORAL_DELIMITER + OBU_SEQUENCE_HEADER + \
+OBU_CLOSED_LOOP_KEY (a flat 64x64 DC_PRED intra key block, §7.20 refresh_frame_flags \
+allFrames so §7.23 :14100 marks ONLY slot 0 RefValid). Frame 1 = \
+OBU_TEMPORAL_DELIMITER + OBU_REGULAR_TILE_GROUP (a single 64x64 single-reference \
+inter block, §7.7 NumTotalRefs == 1 -> ref_frame_idx [0] -> slot 0 == the key; \
+refresh_frame_flags refreshes slot 1, so §7.23 retains frame 1 as a SECOND valid \
+reference). Frame 2 = OBU_TEMPORAL_DELIMITER + OBU_REGULAR_TILE_GROUP referencing \
+TWO valid slots: §7.7 ranks ref_frame_idx [0, 1] (NumTotalRefs == 2, the key in \
+slot 0 + frame 1 in slot 1), and the §5.20.7.6 block reads §5.20.7.12 single_ref \
+(over the §8.3.2 no-neighbour context 1) -> RefFrame[0] == 1 -> ref_frame_idx[1] == \
+slot 1, motion-compensating frame 1 (luma 160), NOT the key (luma 100). The ASYMMETRY \
+(frame 2 reconstructs to frame 1's 160, distinct from the key's 100) FALSIFIES a wrong \
+slot-0 read. cdf-update-mode 0 keeps every frame's disable_cdf_update == 1 so no CDF \
+adaptation propagates (the decoder decodes from the default §8.3.2 entropy state; \
+§7.23 cross-frame CDF save/load is not modeled, and a frame inheriting an adapted \
+inter frame's CDFs is rejected with decode/unsupported-feature \
+inter_cdf_inheritance_unmodeled). avmdec --rawvideo --i420 and dav2d --demuxer ivf \
+--muxer yuv decode the whole stream byte-for-byte identically (decoded-output md5 \
+861078138ab514bd847ccfe22ac44fa1, 18432 bytes); the committed verified target for the \
+multi-reference runtime brick (DECODE-INTER-MULTIREF-RUNTIME); validates clean."""
+expect = "clean"
+
+[[vector]]
 path = "vectors/invalid/syn-key-intra-64x64-truncated.ivf"
 description = """
 The intra key-frame vector truncated to 100 bytes (mid-payload): the IVF frame \

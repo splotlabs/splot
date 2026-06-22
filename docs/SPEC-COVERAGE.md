@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 401 feature(s); 348 cite a spec section.
+Matrix version 1. Last reviewed 2026-06-15. 400 feature(s); 347 cite a spec section.
 
 One row per (spec section, feature) pair, in spec order; a feature citing both a syntax and a semantics section appears under both. The canonical status source is [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); the full per-feature ledger is [FEATURE-STATUS.md](./FEATURE-STATUS.md).
 
@@ -356,12 +356,15 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.20.7.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-2) | Inter segment ID syntax | `DECODE-INTER-MVSTACK-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 5.20.7.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-6) | Inter block mode info syntax | `DECODE-INTER-GRID-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 5.20.7.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-6) | Inter block mode info syntax | `DECODE-INTER-MULTI-SB-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
+| [§ 5.20.7.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-6) | Inter block mode info syntax | `DECODE-INTER-MULTIREF-RUNTIME` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 5.20.7.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-6) | Inter block mode info syntax | `DECODE-INTER-MVORDER-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 5.20.7.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-6) | Inter block mode info syntax | `DECODE-INTER-MVSTACK-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 5.20.7.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-6) | Inter block mode info syntax | `DECODE-INTER-SUBPEL-MV` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 5.20.7.8](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-8) | Read drl idx syntax | `DECODE-INTER-MVORDER-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 5.20.7.8](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-8) | Read drl idx syntax | `DECODE-INTER-MVSTACK-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
-| [§ 5.20.7.12](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-12) | Read single ref syntax | `DECODE-INTER-SINGLE-REF-SYMBOL` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 5.20.7.10](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-10) | Ref frames syntax | `DECODE-INTER-MULTIREF-RUNTIME` | ✅ | ✅ | — | ✅ | 1 |
+| [§ 5.20.7.12](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-12) | Read single ref syntax | `DECODE-INTER-MULTIREF-RUNTIME` | ✅ | ✅ | — | ✅ | 1 |
+| [§ 5.20.7.12](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-12) | Read single ref syntax | `DECODE-INTER-SINGLE-REF-SYMBOL` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 5.20.7.13](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-13) | Assign MV syntax | `DECODE-INTER-SUBPEL-MV` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 5.20.7.20](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-20) | MV syntax | `DECODE-INTER-SUBPEL-MV` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 5.20.7.23](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-23) | Residual syntax | `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER` | ✅ | 🟡 | — | ✅ | 4 |
@@ -467,9 +470,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `ENC-COEFF-GENERAL-WALK-HF-MULTI` | ✅ | — | — | ✅ | — |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `ENC-COEFF-GENERAL-WALK-LF-BASE` | ✅ | — | — | ✅ | — |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `ENC-COEFF-MULTI-TOKENS` | ✅ | — | — | ✅ | — |
-| [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `ENC-COEFF-TOKENIZE-16X16-BASE` | ✅ | — | — | ✅ | — |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `ENC-COEFF-TOKENIZE-16X16-DC` | ✅ | — | — | ✅ | — |
-| [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `ENC-COEFF-TOKENIZE-16X16-REFINE` | ✅ | — | — | ✅ | — |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `ENC-COEFFICIENT-TOKENIZATION-MINIMAL` | ✅ | — | — | ✅ | — |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `ENC-GENERAL-INTRA-2D` | ✅ | — | — | ✅ | — |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `ENC-GENERAL-INTRA-ALL-PLANES-CODED` | ✅ | — | — | ✅ | — |
@@ -769,6 +770,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.5](./spec/av2/1.0.0/07-decoding-process.md#s-7-5) | Frame end update CDF process | `DECODE-TILE-CDF-SAVE-LIFECYCLE-BOUNDARY` | ✅ | ✅ | — | ✅ | 2 |
 | [§ 7.7](./spec/av2/1.0.0/07-decoding-process.md#s-7-7) | Get ref frames process | `AV2-7.7-GET-REF-FRAMES` | ✅ | 🟡 | — | ✅ | — |
 | [§ 7.7](./spec/av2/1.0.0/07-decoding-process.md#s-7-7) | Get ref frames process | `DECODE-FIRST-INTER-FRAME-FRONTIER` | ✅ | ✅ | — | ✅ | 1 |
+| [§ 7.7](./spec/av2/1.0.0/07-decoding-process.md#s-7-7) | Get ref frames process | `DECODE-INTER-MULTIREF-RUNTIME` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 7.11.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-11-2) | Find mode context process | `DECODE-INTER-GRID-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 7.11.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-11-2) | Find mode context process | `DECODE-INTER-MULTI-SB-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 7.11.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-11-2) | Find mode context process | `DECODE-INTER-MVORDER-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
@@ -935,6 +937,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.17.5](./spec/av2/1.0.0/07-decoding-process.md#s-7-17-5) | Adaptive filter strength process | `RECON-DEBLOCK-ADAPTIVE-STRENGTH` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.17.7.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-17-7-1) | General | `RECON-DEBLOCK-SAMPLE-FILTER` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.17.7.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-17-7-2) | Filter choice process | `RECON-DEBLOCK-FILTER-CHOICE` | ✅ | — | ✅ | ✅ | — |
+| [§ 7.20](./spec/av2/1.0.0/07-decoding-process.md#s-7-20) | Loop restoration process | `DECODE-INTER-MULTIREF-RUNTIME` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 7.21](./spec/av2/1.0.0/07-decoding-process.md#s-7-21) | Output processes | `CLI-DECODE-HASH-OUTPUT` | ✅ | — | — | ✅ | 3 |
 | [§ 7.21](./spec/av2/1.0.0/07-decoding-process.md#s-7-21) | Output processes | `CONF-DECODE-RUNTIME-HASH-FUZZ` | ✅ | — | — | ✅ | 3 |
 | [§ 7.21](./spec/av2/1.0.0/07-decoding-process.md#s-7-21) | Output processes | `DECODE-LIMITS-RUNTIME-API` | ✅ | — | — | ✅ | — |
@@ -973,6 +976,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.23](./spec/av2/1.0.0/07-decoding-process.md#s-7-23) | Reference frame update process | `AV2-7.23-REFERENCE-FRAME-UPDATE` | ✅ | — | 🟡 | ✅ | 1 |
 | [§ 7.23](./spec/av2/1.0.0/07-decoding-process.md#s-7-23) | Reference frame update process | `CONF-RECON-FRAME-PLANE-TYPES-FUZZ` | ✅ | — | — | ✅ | — |
 | [§ 7.23](./spec/av2/1.0.0/07-decoding-process.md#s-7-23) | Reference frame update process | `DECODE-FIRST-INTER-FRAME-FRONTIER` | ✅ | ✅ | — | ✅ | 1 |
+| [§ 7.23](./spec/av2/1.0.0/07-decoding-process.md#s-7-23) | Reference frame update process | `DECODE-INTER-MULTIREF-RUNTIME` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 7.23](./spec/av2/1.0.0/07-decoding-process.md#s-7-23) | Reference frame update process | `DECODE-LIMITS-RUNTIME-API` | ✅ | — | — | ✅ | — |
 | [§ 7.23](./spec/av2/1.0.0/07-decoding-process.md#s-7-23) | Reference frame update process | `DOC-DECODER-OUTPUT-EQUIVALENCE-CONTRACT` | ✅ | — | — | ✅ | — |
 | [§ 7.23](./spec/av2/1.0.0/07-decoding-process.md#s-7-23) | Reference frame update process | `INFRA-RECON-FRAME-PLANE-TYPES` | ✅ | — | — | ✅ | — |
@@ -985,9 +989,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 8.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2) | Parsing process for symbol decoder | `ENC-BLOCK-SYMBOL-ENCODE` | ✅ | — | — | ✅ | — |
 | [§ 8.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2) | Parsing process for symbol decoder | `ENC-COEFF-BASE-LF-TOKEN` | ✅ | — | — | ✅ | — |
 | [§ 8.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2) | Parsing process for symbol decoder | `ENC-COEFF-MULTI-TOKENS` | ✅ | — | — | ✅ | — |
-| [§ 8.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2) | Parsing process for symbol decoder | `ENC-COEFF-TOKENIZE-16X16-BASE` | ✅ | — | — | ✅ | — |
 | [§ 8.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2) | Parsing process for symbol decoder | `ENC-COEFF-TOKENIZE-16X16-DC` | ✅ | — | — | ✅ | — |
-| [§ 8.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2) | Parsing process for symbol decoder | `ENC-COEFF-TOKENIZE-16X16-REFINE` | ✅ | — | — | ✅ | — |
 | [§ 8.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2) | Parsing process for symbol decoder | `ENC-COEFFICIENT-TOKENIZATION-MINIMAL` | ✅ | — | — | ✅ | — |
 | [§ 8.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2) | Parsing process for symbol decoder | `ENC-CONTEXT-RECEIVE-PACKET` | ✅ | — | — | ✅ | — |
 | [§ 8.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2) | Parsing process for symbol decoder | `ENC-DO-SPLIT-PARTITION-SYMBOL` | ✅ | — | — | ✅ | — |
@@ -1114,7 +1116,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 8.2.6](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-6) | Symbol decoding process | `DECODE-COEFF-IDTX-CDF-ROWS` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 8.2.6](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-6) | Symbol decoding process | `DECODE-COEFF-NONZERO-BLOCK-STATE` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 8.2.6](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-6) | Symbol decoding process | `DECODE-COEFF-SIGN-SYMBOL-READ` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 8.2.6](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-6) | Symbol decoding process | `DECODE-INTER-SINGLE-REF-SYMBOL` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 8.2.6](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-6) | Symbol decoding process | `DECODE-INTER-SINGLE-REF-SYMBOL` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 8.2.6](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-6) | Symbol decoding process | `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER` | ✅ | 🟡 | — | ✅ | 4 |
 | [§ 8.2.6](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-6) | Symbol decoding process | `DECODE-MINIMAL-RAW-RUNTIME-OUTPUT` | ✅ | 🟡 | ✅ | ✅ | 4 |
 | [§ 8.2.6](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-6) | Symbol decoding process | `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS` | ✅ | 🟡 | ✅ | ✅ | 3 |
@@ -1171,7 +1173,8 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-GENERAL-INTRA-LUMA-COEFFS` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-GENERAL-INTRA-MB-NEIGHBOUR-SMOOTH` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-GENERAL-INTRA-MULTIBLOCK` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-INTER-SINGLE-REF-SYMBOL` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-INTER-MULTIREF-RUNTIME` | ✅ | ✅ | — | ✅ | 1 |
+| [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-INTER-SINGLE-REF-SYMBOL` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER` | ✅ | 🟡 | — | ✅ | 4 |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-MINIMAL-RAW-RUNTIME-OUTPUT` | ✅ | 🟡 | ✅ | ✅ | 4 |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS` | ✅ | 🟡 | ✅ | ✅ | 3 |
@@ -1193,9 +1196,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `ENC-COEFF-GENERAL-WALK-HF-MULTI` | ✅ | — | — | ✅ | — |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `ENC-COEFF-GENERAL-WALK-LF-BASE` | ✅ | — | — | ✅ | — |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `ENC-COEFF-MULTI-TOKENS` | ✅ | — | — | ✅ | — |
-| [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `ENC-COEFF-TOKENIZE-16X16-BASE` | ✅ | — | — | ✅ | — |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `ENC-COEFF-TOKENIZE-16X16-DC` | ✅ | — | — | ✅ | — |
-| [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `ENC-COEFF-TOKENIZE-16X16-REFINE` | ✅ | — | — | ✅ | — |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `ENC-COEFFICIENT-TOKENIZATION-MINIMAL` | ✅ | — | — | ✅ | — |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `ENC-DO-SPLIT-PARTITION-SYMBOL` | ✅ | — | — | ✅ | — |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `ENC-GENERAL-INTRA-2D` | ✅ | — | — | ✅ | — |
@@ -1287,7 +1288,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-COEFF-IDTX-CDF-ROWS` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-COEFF-NONZERO-BLOCK-STATE` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-COEFF-SIGN-SYMBOL-READ` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-INTER-SINGLE-REF-SYMBOL` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-INTER-SINGLE-REF-SYMBOL` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER` | ✅ | 🟡 | — | ✅ | 4 |
 | [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-TILE-CDF-SAVE-LIFECYCLE-BOUNDARY` | ✅ | ✅ | — | ✅ | 2 |
 | [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-TILE-CDF-SELECTION-BOUNDARY` | ✅ | 🟡 | — | ✅ | 1 |

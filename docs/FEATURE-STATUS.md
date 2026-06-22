@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 401 feature(s).
+Matrix version 1. Last reviewed 2026-06-15. 400 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -157,8 +157,6 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `ENC-COEFF-GENERAL-WALK-GOLOMB` | Encoder general coefficient walk: read_quant golomb tail (single golomb coefficient) | encoder | encoder-tool | done | done | n/a | n/a | n/a | done | n/a | done | n/a | `crates/splot-encode/src/coefficient_tokenization` |
 | `ENC-COEFF-GENERAL-WALK-GOLOMB-MULTI` | Encoder general coefficient walk: multiple read_quant golomb coefficients | encoder | encoder-tool | done | done | n/a | n/a | n/a | done | n/a | done | n/a | `crates/splot-encode/src/coefficient_tokenization` |
 | `ENC-COEFF-TOKENIZE-16X16-DC` | Encoder 16x16 luma DC coefficient tokenization | encoder | encoder-tool | done | done | n/a | n/a | n/a | done | n/a | done | n/a | `crates/splot-encode/src/coefficient_tokenization/general_coded.rs` |
-| `ENC-COEFF-TOKENIZE-16X16-BASE` | Encoder 16x16 luma base-pass coefficient tokenization (size-generic walk) | encoder | encoder-tool | done | done | n/a | n/a | n/a | done | n/a | done | n/a | `crates/splot-encode/src/coefficient_tokenization/general_walk_16x16.rs` |
-| `ENC-COEFF-TOKENIZE-16X16-REFINE` | Encoder 16x16 luma full-range coefficient tokenization (eob_pt_extra refinement) | encoder | encoder-tool | done | done | n/a | n/a | n/a | done | n/a | done | n/a | `crates/splot-encode/src/coefficient_tokenization/general_walk_16x16.rs` |
 | `ENC-INTRA-BLOCK-TRACE-TWO-COEFF` | Encoder eob=2 multi-coefficient block trace | encoder | encoder-tool | done | done | n/a | n/a | n/a | done | n/a | done | n/a | `crates/splot-encode/src/block_symbol_trace` |
 | `ENC-INTRA-TX-TYPE-TOKEN` | Encoder intra_tx_type TX_SET_INTRA_1 token | encoder | encoder-tool | done | done | n/a | n/a | n/a | done | n/a | done | n/a | `crates/splot-encode/src/coefficient_tokenization/transform_type.rs` |
 | `ENC-INTRA-BLOCK-TRACE-TWO-COEFF-TX-TYPE` | Encoder eob=2 trace with TX_SET_INTRA_1 intra_tx_type | encoder | encoder-tool | done | done | n/a | n/a | n/a | done | n/a | done | n/a | `crates/splot-encode/src/block_symbol_trace` |
@@ -335,7 +333,8 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `DECODE-INTER-MULTI-SB-SPATIAL` | Multi-superblock inter frame (cross-superblock MV prediction) | infrastructure | infrastructure | done | done | done | n/a | n/a | n/a | done | done | todo | `crates/splot-decode/src/runtime_minimal/inter.rs` |
 | `DECODE-INTER-GRID-SPATIAL` | 2-D-grid inter frame (cross-superblock-row MV prediction) | infrastructure | infrastructure | done | done | done | n/a | n/a | n/a | done | done | todo | `crates/splot-decode/src/runtime_minimal/inter.rs` |
 | `DECODE-INTER-MVORDER-SPATIAL` | distinct-neighbour-MV §7.12.2 stack ordering (left-before-above) | infrastructure | infrastructure | done | done | done | n/a | n/a | n/a | done | done | todo | `crates/splot-decode/src/runtime_minimal/inter/find_mv_stack.rs` |
-| `DECODE-INTER-SINGLE-REF-SYMBOL` | §5.20.7.12 single_ref entropy element (SymbolEncoder round-trip) | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/runtime_minimal/inter/single_ref.rs` |
+| `DECODE-INTER-SINGLE-REF-SYMBOL` | §5.20.7.12 single_ref entropy element (SymbolEncoder round-trip) | infrastructure | infrastructure | done | done | done | n/a | n/a | n/a | done | done | n/a | `crates/splot-decode/src/runtime_minimal/inter/single_ref.rs` |
+| `DECODE-INTER-MULTIREF-RUNTIME` | multi-reference inter runtime (§7.7 two-valid-slot map + §7.20/§7.23 retention + §5.20.7.12 single_ref wiring) | infrastructure | infrastructure | done | done | done | n/a | n/a | n/a | done | done | todo | `crates/splot-decode/src/runtime_minimal/reference_buffer.rs` |
 | `DECODE-COEFF-FSC-SCAN-WALK` | Coefficient FSC scan walk | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/coeff_loop/scan_walk.rs` |
 | `DECODE-COEFF-BASE-CDF-ROWS` | Coefficient base CDF rows | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/cdf/coeff_rows.rs` |
 | `DECODE-COEFF-IDTX-CDF-ROWS` | Coefficient IDTX CDF rows | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/cdf/coeff_rows.rs` |

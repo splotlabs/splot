@@ -16,15 +16,16 @@
 //! `av2/decoder/decodemv.c` and `av2_get_pred_cdf_single_ref` in
 //! `av2/common/pred_common.h`, which index `single_ref_cdf[ctx][ref]` identically).
 //!
-//! This element is NOT yet runtime-reachable: `read_single_ref` is only read when
-//! `NumTotalRefs >= 2`, which requires at least two valid reference slots — a
-//! larger multi-reference runtime brick (§ 7.7 two-valid-slot feed plus a >= 3
-//! frame reference-retention loop). This module proves the entropy element
-//! bit-exact through a `SymbolEncoder` round-trip; the § 8.3.2 neighbour-context
-//! derivation and the runtime wiring (relaxing the `NumTotalRefs == 1` gate) are
-//! the explicit follow-on (the multi-reference brick).
+//! This element is runtime-reachable since `DECODE-INTER-MULTIREF-RUNTIME`: the
+//! inter block decode reads `single_ref` when § 7.7 yields `NumTotalRefs == 2`
+//! (two valid reference slots, retained by the § 7.20 / § 7.23 reference-store
+//! update over a >= 3-frame stream). The § 8.3.2 neighbour `single_ref` context is
+//! derived in [`super::find_mv_stack::BlockNeighbourContext::single_ref_ctx`]
+//! (the comp_ref `count_refs` process); a `SymbolEncoder` round-trip still pins the
+//! entropy element bit-exact.
 //!
-//! Feature tracking: `DECODE-INTER-SINGLE-REF-SYMBOL`.
+//! Feature tracking: `DECODE-INTER-SINGLE-REF-SYMBOL`,
+//! `DECODE-INTER-MULTIREF-RUNTIME`.
 
 use splot_core::symbol::SymbolDecoder;
 
@@ -32,11 +33,8 @@ use crate::tile_payload::{TileCdfSelector, TileCdfSubset};
 
 /// AV2 § 5.20.7.12 `read_single_ref` error.
 ///
-/// `allow(dead_code)` in non-test builds: this entropy element is intentionally
-/// loaded-but-unwired (it is only read at runtime once `NumTotalRefs >= 2`, which
-/// the deferred multi-reference brick enables). It is exercised by the
-/// `SymbolEncoder` round-trip tests; the runtime wiring removes this allow.
-#[cfg_attr(not(test), allow(dead_code))]
+/// Runtime-reachable since `DECODE-INTER-MULTIREF-RUNTIME`: the inter block decode
+/// reads `single_ref` when § 7.7 yields `NumTotalRefs == 2`.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum SingleRefReadError {
     /// `num_total_refs` was 0. AV2 § 6.19.7.11 requires `NumTotalRefs > 0` for any
@@ -91,11 +89,6 @@ pub(crate) enum SingleRefReadError {
 /// `num_total_refs - 1` decisions, or [`SingleRefReadError::SymbolRead`] when a
 /// `single_ref` symbol cannot be read (an out-of-range CDF selector or a § 8.2
 /// symbol-decode failure, e.g. a truncated tile payload).
-///
-/// `allow(dead_code)` in non-test builds: see [`SingleRefReadError`] — this is the
-/// loaded-but-unwired § 5.20.7.12 entropy element, proven by the round-trip tests
-/// until the multi-reference runtime brick wires it.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn read_single_ref(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,

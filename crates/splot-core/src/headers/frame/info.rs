@@ -417,6 +417,14 @@ pub struct FrameReferenceStateView<'a> {
     pub ref_frame_width: Option<&'a [u32]>,
     /// `RefFrameHeight[ i ]` per reference slot, when modeled.
     pub ref_frame_height: Option<&'a [u32]>,
+    /// `RefBaseQIdx[ i ]` per reference slot (AV2 § 7.23), when modeled. This is a
+    /// § 7.7 `get_ref_frames()` scoring input: with **two or more** valid reference
+    /// slots the implicit reference-map ranking depends on it, so the inter parser
+    /// can only lift its at-most-one-valid-slot gate once the caller supplies it.
+    /// `None` (the [`Self::from_slots`] constructor) keeps the historical
+    /// at-most-one-valid-slot behavior — the unmodeled `RefBaseQIdx` makes a
+    /// multi-valid-slot derivation an honest `UnmodeledDerivation` stop.
+    pub ref_base_q_idx: Option<&'a [u32]>,
 }
 
 impl<'a> FrameReferenceStateView<'a> {
@@ -429,16 +437,23 @@ impl<'a> FrameReferenceStateView<'a> {
             ref_order_hint: None,
             ref_frame_width: None,
             ref_frame_height: None,
+            ref_base_q_idx: None,
         }
     }
 
     /// Builds a reference state from the caller's modeled `RefValid[]` / `RefOrderHint[]`
-    /// / `RefFrameWidth[]` / `RefFrameHeight[]` slices (AV2 § 7.23).
+    /// / `RefFrameWidth[]` / `RefFrameHeight[]` slices (AV2 § 7.23), with `RefBaseQIdx`
+    /// unmodeled.
     ///
     /// The slices are parallel, one entry per reference slot. The caller (the validator's
     /// § 7.23 buffer model) owns the backing storage; the view borrows it for the parse.
     /// A `cur_mfh_id == 0` / intra parse does not read these today — the constructor is
     /// the forward-plumbing entry point for the § 5.18 inter reference paths.
+    ///
+    /// Because `RefBaseQIdx` is left unmodeled, a § 7.7 derivation that finds **two or
+    /// more** valid slots stays an honest `UnmodeledDerivation` stop (the ranking needs
+    /// the per-slot quantizer). Use [`Self::from_slots_with_base_q_idx`] when the caller
+    /// models `RefBaseQIdx` and needs the multi-valid-slot ranking.
     #[must_use]
     pub const fn from_slots(
         ref_valid: &'a [bool],
@@ -451,6 +466,33 @@ impl<'a> FrameReferenceStateView<'a> {
             ref_order_hint: Some(ref_order_hint),
             ref_frame_width: Some(ref_frame_width),
             ref_frame_height: Some(ref_frame_height),
+            ref_base_q_idx: None,
+        }
+    }
+
+    /// Builds a reference state that additionally models `RefBaseQIdx[]` (AV2 § 7.23),
+    /// the per-slot quantizer the § 7.7 `get_ref_frames()` ranking scores.
+    ///
+    /// The five slices are parallel, one entry per reference slot. Supplying
+    /// `RefBaseQIdx` lets the inter parser run the § 7.7 ranking over **two or more**
+    /// valid reference slots (the multi-reference case): every other § 7.7 scoring input
+    /// is deterministic for the single-spatial-layer minimal frame (distinct per-slot
+    /// `RefCounter`, `AllowedFrames == -1`, all layers depend), so with `RefBaseQIdx`
+    /// modeled the derivation is exact rather than an `UnmodeledDerivation` stop.
+    #[must_use]
+    pub const fn from_slots_with_base_q_idx(
+        ref_valid: &'a [bool],
+        ref_order_hint: &'a [u32],
+        ref_frame_width: &'a [u32],
+        ref_frame_height: &'a [u32],
+        ref_base_q_idx: &'a [u32],
+    ) -> Self {
+        Self {
+            ref_valid: Some(ref_valid),
+            ref_order_hint: Some(ref_order_hint),
+            ref_frame_width: Some(ref_frame_width),
+            ref_frame_height: Some(ref_frame_height),
+            ref_base_q_idx: Some(ref_base_q_idx),
         }
     }
 }

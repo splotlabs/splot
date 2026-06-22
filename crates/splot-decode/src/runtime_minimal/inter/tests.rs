@@ -600,3 +600,123 @@ fn mvorder_fixture_per_frame_hash_is_stable() {
         "the distinct-MV inter frame must differ from the key frame"
     );
 }
+
+/// The committed three-frame MULTI-REFERENCE fixture (DECODE-INTER-MULTIREF-RUNTIME):
+/// frame 0 a flat DC_PRED intra key (luma 100), frame 1 a single-reference inter
+/// block (§7.7 NumTotalRefs == 1, the key) reconstructing luma 160 and refreshing a
+/// SECOND reference slot, and frame 2 an inter block over TWO valid references (§7.7
+/// ref_frame_idx [0, 1]) whose §5.20.7.12 single_ref selects slot 1 (the retained
+/// frame 1, luma 160), NOT the key (luma 100). Encoded with --cdf-update-mode=0 so
+/// no CDF adaptation propagates. avmdec `--rawvideo --i420` and `dav2d --demuxer ivf
+/// --muxer yuv` decode the whole stream byte-for-byte identically (oracle MD5
+/// `861078138ab514bd847ccfe22ac44fa1`, 18432 bytes).
+const MULTIREF_FIXTURE: &[u8] =
+    include_bytes!("../../../../../tests/conformance/vectors/valid/syn-3frame-multiref-64x64.ivf");
+
+/// The committed multi-reference fixture decodes all THREE frames bit-exact.
+#[test]
+fn multiref_fixture_decodes_three_frames_bit_exact() {
+    use splot_recon::{BitDepth, PixelFormat, PlaneSize};
+
+    let frames = decode_fixture(MULTIREF_FIXTURE);
+    assert_eq!(
+        frames.len(),
+        3,
+        "the stream decodes a key frame + two inter frames"
+    );
+    // avmdec / dav2d both decode frame 0 to luma 100 / U 120 / V 130 and frames 1 and
+    // 2 to luma 160 / U 90 / V 70.
+    let expected: [(u8, u8, u8); 3] = [(100, 120, 130), (160, 90, 70), (160, 90, 70)];
+    for (index, output) in frames.iter().enumerate() {
+        let frame = output.frame();
+        assert_eq!(frame.bit_depth(), BitDepth::Eight, "frame {index}");
+        assert_eq!(frame.pixel_format(), PixelFormat::Yuv420, "frame {index}");
+        assert_eq!(
+            frame.y().visible_size(),
+            PlaneSize::new(64, 64).unwrap(),
+            "frame {index}"
+        );
+        let (y, u, v) = expected[index];
+        assert!(
+            frame.y().samples().iter().all(|&s| s == y),
+            "frame {index} luma must be flat {y}"
+        );
+        assert!(
+            frame.u().unwrap().samples().iter().all(|&s| s == u),
+            "frame {index} U must be flat {u}"
+        );
+        assert!(
+            frame.v().unwrap().samples().iter().all(|&s| s == v),
+            "frame {index} V must be flat {v}"
+        );
+    }
+}
+
+/// THE asymmetric retention proof: frame 2 reads the RETAINED inter frame (frame 1,
+/// slot 1) via the §5.20.7.12 single_ref read, NOT the key (slot 0). Frame 1 and
+/// frame 2 reconstruct identically (luma 160), and both DIFFER from the key (luma
+/// 100) — so a wrong slot-0 selection would reconstruct frame 2 to the key's 100 and
+/// fail this test. This proves the §7.7 two-valid-slot map + §7.23 retention +
+/// single_ref selection genuinely read frame 1's samples.
+#[test]
+fn multiref_frame2_reads_retained_inter_frame_not_key() {
+    let frames = decode_fixture(MULTIREF_FIXTURE);
+    let key = frames[0].frame();
+    let inter1 = frames[1].frame();
+    let inter2 = frames[2].frame();
+    // Frame 2 == frame 1 (it copied the retained inter frame).
+    assert_eq!(
+        inter2.y().samples(),
+        inter1.y().samples(),
+        "frame 2 luma must equal the retained frame 1 (slot 1)"
+    );
+    assert_eq!(
+        inter2.u().unwrap().samples(),
+        inter1.u().unwrap().samples(),
+        "frame 2 U must equal the retained frame 1 (slot 1)"
+    );
+    assert_eq!(
+        inter2.v().unwrap().samples(),
+        inter1.v().unwrap().samples(),
+        "frame 2 V must equal the retained frame 1 (slot 1)"
+    );
+    // Frame 2 != the key: a wrong slot-0 (key) selection would have matched the key.
+    assert_ne!(
+        inter2.y().samples(),
+        key.y().samples(),
+        "frame 2 luma must DIFFER from the key (slot 0) — proving it read slot 1, not slot 0"
+    );
+}
+
+/// Per-frame decode-hash regression pin for the multi-reference fixture.
+#[test]
+fn multiref_fixture_per_frame_hash_is_stable() {
+    let frames = decode_fixture(MULTIREF_FIXTURE);
+    let hash = |i: usize| {
+        splot_recon::DecodedFrameHashInput::new(frames[i].frame())
+            .compute_hash()
+            .to_hex()
+    };
+    let key_hash = hash(0);
+    let inter1_hash = hash(1);
+    let inter2_hash = hash(2);
+    assert_eq!(
+        key_hash, "ce9c46b1078b9dd593254837ead7dcd6cee8b3ec6cc3c7d34f54fb08df703979",
+        "multi-reference key-frame hash"
+    );
+    assert_eq!(
+        inter1_hash, "7dad863f3e72b5785012a4e0497e9eb0eab98281bec147f7fb81240aa5116e1b",
+        "multi-reference frame-1 hash"
+    );
+    assert_eq!(
+        inter2_hash, "7dad863f3e72b5785012a4e0497e9eb0eab98281bec147f7fb81240aa5116e1b",
+        "multi-reference frame-2 hash (== retained frame 1)"
+    );
+    // Frames 1 and 2 reconstruct identically (frame 2 copied the retained frame 1);
+    // both differ from the key.
+    assert_eq!(inter1_hash, inter2_hash, "frame 2 == retained frame 1");
+    assert_ne!(
+        key_hash, inter1_hash,
+        "the inter frames differ from the key"
+    );
+}

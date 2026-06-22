@@ -494,3 +494,47 @@ fn bottom_right_sb_predicts_from_decoded_above_and_left() {
         "RefMvIdx 0 predicts the propagated MV in the bottom-right SB"
     );
 }
+
+/// AV2 § 8.3.2 `single_ref` context (the comp_ref `count_refs` process,
+/// `docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2` line 1094 / 1060): for a
+/// NO-NEIGHBOUR block both `count_refs(0)` and `count_refs(1)` are 0, so
+/// `this_ref_count == next_refs_count` and the context is 1. This is the verified
+/// multi-reference fixture's frame-2 block context (cross-checked vs AVM
+/// `av2_get_ref_pred_context` returning 1 when all neighbour ref counts are 0).
+#[test]
+fn single_ref_ctx_no_neighbour_is_one() {
+    let grid = NeighbourMvGrid::new(MI_DIM, MI_DIM).unwrap();
+    let block0 = block_at(0, 0);
+    let nctx = block_neighbour_ctx(&grid, &block0);
+    assert!(
+        !nctx.has_neighbour,
+        "top-left block has no decoded neighbour"
+    );
+    // ref == 0, NumTotalRefs == 2: thisRefCount(0) == nextRefsCount(count_refs(1)) == 0
+    // -> ctx 1.
+    assert_eq!(
+        nctx.single_ref_ctx(0, 2),
+        Some(1),
+        "no-neighbour single_ref context is 1 (both count_refs are 0)"
+    );
+}
+
+/// AV2 § 8.3.2 `single_ref` context (`count_refs`): a single decoded inter neighbour
+/// referencing frame 0 makes `count_refs(0) == 1 > count_refs(1) == 0`, so the
+/// context is 2 (`thisRefCount > nextRefsCount`). This pins the count-based ctx
+/// derivation beyond the no-neighbour case (it is not exercised by a committed
+/// fixture yet — the runtime gates single_ref to the no-neighbour block — but it
+/// proves the §8.3.2 formula is implemented, not hardcoded to 1).
+#[test]
+fn single_ref_ctx_counts_a_ref0_neighbour() {
+    let grid = grid_with_block0(); // block 0 @ MI(0,0) inter, ref 0
+    let block1 = block_at(0, N4_32); // MI(0, 8): block 0 is its left/above-buffer neighbour
+    let nctx = block_neighbour_ctx(&grid, &block1);
+    assert!(nctx.has_neighbour, "block 1 has a decoded neighbour");
+    // count_refs(0) == 1 (block 0 refs frame 0), count_refs(1) == 0 -> 1 > 0 -> ctx 2.
+    assert_eq!(
+        nctx.single_ref_ctx(0, 2),
+        Some(2),
+        "a ref-0 neighbour makes thisRefCount > nextRefsCount -> ctx 2"
+    );
+}
