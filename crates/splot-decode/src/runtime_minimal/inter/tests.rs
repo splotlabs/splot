@@ -41,6 +41,20 @@ const TWO_FRAME_RESIDUAL_FIXTURE: &[u8] = include_bytes!(
     "../../../../../tests/conformance/vectors/valid/syn-2frame-inter-residual-64x64.ivf"
 );
 
+/// The first bit-exact MULTI-BLOCK inter fixture: frame 0 is a general-intra
+/// DC_PRED key frame (four flat 32x32 quadrants); frame 1 is a single-reference
+/// inter frame whose 64x64 superblock is SPLIT into four 32x32 inter blocks.
+/// Block 0 @ MI(0,0) is NEWMV with a non-zero MV (col 48 = +6 full pels); the
+/// later three blocks are NEARMV that predict block 0's MV from the §7.11/§7.12
+/// spatial-neighbour MV stack (find_mv_stack). All blocks are skip=1 (no
+/// residual). avmdec `--rawvideo --i420` and `dav2d --demuxer ivf` decode the
+/// whole stream byte-for-byte identically (oracle MD5
+/// `e5b581a55433785c0071b635d5642083`). The OLD single-block inter decoder
+/// rejected this fixture ("only supports a single top-left 64x64 inter block").
+const TWO_FRAME_MVSTACK_FIXTURE: &[u8] = include_bytes!(
+    "../../../../../tests/conformance/vectors/valid/syn-2frame-inter-mvstack-64x64.ivf"
+);
+
 // avmdec / dav2d both decode every plane of both frames to these flat values.
 const FLAT_LUMA: u8 = 100;
 const FLAT_CHROMA_U: u8 = 120;
@@ -308,5 +322,60 @@ fn residual_fixture_per_frame_hash_is_stable() {
     assert_ne!(
         key_hash, inter_hash,
         "the residual inter frame must differ from the key frame"
+    );
+}
+
+/// The committed multi-block fixture decodes a key frame + one multi-block inter
+/// frame (a §5.20.3 SPLIT into four 32x32 inter blocks).
+#[test]
+fn mvstack_fixture_decodes_two_frames() {
+    use splot_recon::{BitDepth, PixelFormat, PlaneSize};
+
+    let frames = decode_fixture(TWO_FRAME_MVSTACK_FIXTURE);
+    assert_eq!(
+        frames.len(),
+        2,
+        "the multi-block stream decodes a key frame + one inter frame"
+    );
+    for (index, output) in frames.iter().enumerate() {
+        let frame = output.frame();
+        assert_eq!(frame.bit_depth(), BitDepth::Eight, "frame {index}");
+        assert_eq!(frame.pixel_format(), PixelFormat::Yuv420, "frame {index}");
+        assert_eq!(
+            frame.y().visible_size(),
+            PlaneSize::new(64, 64).unwrap(),
+            "frame {index}"
+        );
+    }
+}
+
+/// Regression pin for the per-frame decode hash of the multi-block MV-stack
+/// fixture. The raw decoded output (both frames concatenated I420) matches avmdec
+/// `--rawvideo --i420` and `dav2d --demuxer ivf` byte-for-byte (oracle MD5
+/// `e5b581a55433785c0071b635d5642083`, recorded in
+/// `docs/LOCAL-REFERENCE-EVIDENCE.toml`); these `splot-dfh-sha256-v1` per-frame
+/// hashes are splot's internal regression anchors for that bit-exact output. The
+/// inter frame is reconstructed from the §7.11/§7.12 neighbour-predicted MVs of
+/// its four 32x32 blocks (block 0 NEWMV, the rest NEARMV reusing block 0's MV).
+#[test]
+fn mvstack_fixture_per_frame_hash_is_stable() {
+    let frames = decode_fixture(TWO_FRAME_MVSTACK_FIXTURE);
+    let key_hash = splot_recon::DecodedFrameHashInput::new(frames[0].frame())
+        .compute_hash()
+        .to_hex();
+    let inter_hash = splot_recon::DecodedFrameHashInput::new(frames[1].frame())
+        .compute_hash()
+        .to_hex();
+    assert_eq!(
+        key_hash, "37d5a851609575dcceec47aa4b53043fa04f36cb483c40925913b8adfd91504f",
+        "multi-block key-frame hash"
+    );
+    assert_eq!(
+        inter_hash, "b39afe593c1046b080efea9c8bf76242dba2a4965a556d7ed31bcf0fca444fc1",
+        "multi-block inter-frame hash"
+    );
+    assert_ne!(
+        key_hash, inter_hash,
+        "the multi-block inter frame must differ from the key frame"
     );
 }

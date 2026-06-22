@@ -460,6 +460,57 @@ fn decode_two_frame_inter_residual_fixture_decodes_bit_exact() {
 }
 
 #[test]
+fn decode_two_frame_inter_mvstack_fixture_decodes_bit_exact() {
+    // DECODE-INTER-MVSTACK-SPATIAL: the committed syn-2frame-inter-mvstack-64x64.ivf
+    // is the verified first MULTI-BLOCK neighbour-predicted-MV target. Frame 0 is a
+    // general-intra DC_PRED key frame; frame 1 is an OBU_REGULAR_TILE_GROUP inter
+    // frame whose 64x64 superblock is §5.20.3 SPLIT into four 32x32 single-reference
+    // inter blocks: block 0 @ MI(0,0) is NEWMV with a non-zero MV (col 48 = +6 full
+    // pels) and the later three blocks are NEARMV that predict block 0's MV from the
+    // §7.11/§7.12 spatial-neighbour MV stack (find_mv_stack); all skip=1. avmdec
+    // --rawvideo --i420 and dav2d --demuxer ivf decode the whole stream byte-for-byte
+    // identically (decoded-output md5 e5b581a55433785c0071b635d5642083 over 12288
+    // bytes). The OLD single-block inter decoder rejected this fixture. NO step is
+    // hardcoded: the §8.2.4 exit_symbol() check guards bit-exactness, so a wrong
+    // mode / DRL / MV / context read rejects rather than emitting a wrong frame.
+    let input = conformance_vector("syn-2frame-inter-mvstack-64x64.ivf");
+    let output = temp_output("yuv");
+
+    let out = splot(&[
+        "decode",
+        "--output-format",
+        "raw",
+        input.to_str().unwrap(),
+        "-o",
+        output.to_str().unwrap(),
+    ]);
+
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "the multi-block inter fixture must decode successfully: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let decoded = std::fs::read(&output).expect("decoded raw output");
+    assert_eq!(decoded.len(), 12288, "two 8-bit 4:2:0 64x64 frames");
+    let frame_bytes = 6144;
+    let (frame0, frame1) = decoded.split_at(frame_bytes);
+    // Frame 1's luma differs from frame 0 (the +6-pel horizontal motion shifts the
+    // quadrant content), proving the inter MVs are genuinely applied (not a copy);
+    // the chroma is flat and unchanged.
+    assert_ne!(
+        &frame0[..4096],
+        &frame1[..4096],
+        "inter luma differs from the key (real neighbour-predicted MVs)"
+    );
+    assert_eq!(
+        &frame0[4096..],
+        &frame1[4096..],
+        "inter chroma equals key chroma (flat, MV is horizontal)"
+    );
+}
+
+#[test]
 fn decode_hash_json_success_creates_no_implicit_output_file() {
     let input = conformance_vector("syn-flat-intra-64x64-minimal.ivf");
     let cwd = temp_dir("minimal-hash-cwd");
