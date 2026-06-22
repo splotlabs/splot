@@ -81,6 +81,35 @@ impl Mv {
     const ZERO: Self = Self { row: 0, col: 0 };
 }
 
+/// AV2 § 5 (mirror `docs/spec/av2/1.0.0/05-syntax-structures.md` :5426-5430)
+/// `load_cdfs` precondition: a conformant decoder loads a prior frame's saved CDFs
+/// iff `primary_ref_frame` names a real reference AND `disable_cross_frame_cdf_init`
+/// is 0. The minimal decoder does NOT model `load_cdfs` (every frame decodes from
+/// the default `init_*_cdfs` state), so the caller uses this to reject a frame that
+/// would inherit a prior ADAPTED frame's CDFs (a §7.23 cross-frame CDF flow that
+/// would otherwise desync).
+///
+/// "Names a real reference" means a RESOLVED `primary_ref_frame` in
+/// `0..PRIMARY_REF_NONE` (0..=6). `PRIMARY_REF_NONE` (7) decodes from default, and
+/// `PRIMARY_REF_CHOOSE` (8) — the unsignalled placeholder splot does NOT resolve —
+/// is also treated as "does not load": the committed broad-tools-off fixtures all
+/// carry `primary_ref_frame == PRIMARY_REF_CHOOSE` and decode bit-exact vs avmdec
+/// AND dav2d even with an ADAPTED key, so for the admitted subset CHOOSE does not
+/// become a desyncing adapted-CDF load. Resolving `PRIMARY_REF_CHOOSE` and the
+/// per-slot adaptation tracking it would need is a named follow-on; a `None`
+/// `primary_ref_frame` (no complete control region) is also "does not load".
+fn inter_loads_cross_frame_cdfs(
+    primary_ref_frame: Option<u8>,
+    disable_cross_frame_cdf_init: Option<bool>,
+) -> bool {
+    /// `PRIMARY_REF_NONE` (AV2 v1.0.0 § 3): values `0..PRIMARY_REF_NONE` are resolved
+    /// real references; `PRIMARY_REF_NONE` (7) and `PRIMARY_REF_CHOOSE` (8) are not.
+    const PRIMARY_REF_NONE: u8 = 7;
+    let loads_primary = matches!(primary_ref_frame, Some(p) if p < PRIMARY_REF_NONE);
+    let cross_frame_init_enabled = disable_cross_frame_cdf_init != Some(true);
+    loads_primary && cross_frame_init_enabled
+}
+
 /// Decodes the minimal inter frame, given the post-key reference store, and returns
 /// its displayed frame. The reference for slot `ref_frame_idx[0]` must be present.
 ///
@@ -100,7 +129,8 @@ pub(super) fn decode_minimal_inter_frame(
     options: DecodeOptions,
     header: IvfHeader,
     reference: &InterReferenceState<'_>,
-) -> Result<MinimalRuntimeFrame> {
+    prior_frame_adapted_cdfs: bool,
+) -> Result<(MinimalRuntimeFrame, FrameHeaderCore)> {
     let offset = frame_envelope.offset;
 
     if frame_envelope.header.obu_type != ObuType::RegularTileGroup {
@@ -115,6 +145,37 @@ pub(super) fn decode_minimal_inter_frame(
     // §5.18.2 inter frame-header parse using the post-key reference state.
     let core = parse_inter_frame_core(frame_envelope, sequence, reference)?;
     validate_inter_frame_core(&core, sequence, offset)?;
+
+    // VERIFIED-SUBSET DISCIPLINE (§7.23 cross-frame CDF save/load): the decoder
+    // decodes every frame from the default (init_*_cdfs) entropy state and does NOT
+    // model the §7.23 save_cdfs / §5 load_cdfs cross-frame CDF flow. A conformant
+    // decoder loads a prior frame's SAVED (post-decode — adapted when
+    // disable_cdf_update == 0) CDFs iff `primary_ref_frame != PRIMARY_REF_NONE` AND
+    // `disable_cross_frame_cdf_init == 0` (§5 mirror :5426-5430). If THIS frame loads
+    // cross-frame CDFs AND any prior frame (the key OR an earlier inter) adapted, the
+    // default-CDF decode would desync from the conformant adapted-CDF decode — a
+    // §8.2.4 exit_symbol()-passable confident-wrong frame — so reject it before the
+    // tile entropy decode. This is precise (it does NOT reject a frame that does not
+    // load, nor a load from a non-adapted source), so the committed single-reference
+    // fixtures (whose inter frames do not load an adapted source) stay byte-identical;
+    // a default-cdf-update stream that loads an adapted frame is rejected, not
+    // mis-decoded.
+    let loads = inter_loads_cross_frame_cdfs(
+        core.inter
+            .as_ref()
+            .and_then(|inter| inter.primary_ref_frame),
+        core.inter
+            .as_ref()
+            .and_then(|inter| inter.disable_cross_frame_cdf_init),
+    );
+    if prior_frame_adapted_cdfs && loads {
+        return Err(unsupported_at(
+            "inter_cdf_inheritance_unmodeled",
+            offset,
+            "minimal multi-reference decode does not model §7.23 cross-frame CDF save/load; an inter frame that loads (primary_ref_frame != PRIMARY_REF_NONE with cross-frame CDF init enabled) a prior adapted frame's CDFs is rejected before any output",
+            SPEC_HEADER,
+        ));
+    }
 
     let frame_size = core.frame_size.ok_or_else(|| {
         unsupported_at(
@@ -140,23 +201,32 @@ pub(super) fn decode_minimal_inter_frame(
             SPEC_HEADER,
         )
     })?;
+    // §5.20.7.10 read_ref_frames / §5.20.7.12 read_single_ref: the verified subset now
+    // admits SINGLE-reference prediction with NumTotalRefs ∈ {1, 2}. For NumTotalRefs ==
+    // 1 the §5.20.7.12 loop is empty (no `single_ref` symbol) and RefFrame[0] == 0; for
+    // NumTotalRefs == 2 the block reads ONE `single_ref` symbol selecting RefFrame[0] ∈
+    // {0, 1}, then the reference slot is ref_frame_idx[RefFrame[0]]. NumTotalRefs > 2 (more
+    // single_ref decisions) and any compound mode stay rejected before output.
     let num_total_refs = inter.num_total_refs.unwrap_or(0);
-    if num_total_refs != 1 {
+    if num_total_refs != 1 && num_total_refs != 2 {
         return Err(unsupported_at(
             "inter_unsupported_num_total_refs",
             offset,
-            "minimal inter decode only supports a single reference frame (NumTotalRefs == 1); read_single_ref would otherwise read a single_ref symbol",
+            "minimal inter decode supports single-reference prediction with NumTotalRefs ∈ {1, 2}; NumTotalRefs > 2 would read additional single_ref symbols this subset does not model",
             SPEC_MODE_INFO,
         ));
     }
-    let ref_slot = inter.ref_frame_idx.first().copied().ok_or_else(|| {
-        unsupported_at(
+    // The §7.7-derived reference map: ref_frame_idx[r] is the buffer slot the block's
+    // RefFrame[0] == r selects. The block decode reads single_ref to pick `r`.
+    let ref_frame_idx = inter.ref_frame_idx.clone();
+    if ref_frame_idx.len() != num_total_refs as usize || ref_frame_idx.is_empty() {
+        return Err(unsupported_at(
             "inter_missing_ref_frame_idx",
             offset,
-            "minimal inter decode requires a derived ref_frame_idx[0]",
+            "minimal inter decode requires a derived ref_frame_idx[] of length NumTotalRefs",
             SPEC_HEADER,
-        )
-    })?;
+        ));
+    }
 
     // §5.18.8.3 frame_reference_mode: reference_select must be 0 so read_ref_frames
     // infers comp_mode == SINGLE_REFERENCE with no comp_mode symbol read.
@@ -188,25 +258,30 @@ pub(super) fn decode_minimal_inter_frame(
         ));
     }
 
-    // Reference plane geometry must match the current frame (no scaling).
-    let ref_frame = reference.frame_for_slot(ref_slot).ok_or_else(|| {
-        unsupported_at(
-            "inter_missing_reference_frame",
-            offset,
-            "minimal inter decode requires the referenced frame to be present in the reference store",
-            SPEC_REFERENCE,
-        )
-    })?;
-    let ref_luma = ref_frame.y();
-    if ref_luma.visible_size().width() != frame_width as usize
-        || ref_luma.visible_size().height() != frame_height as usize
-    {
-        return Err(unsupported_at(
-            "inter_reference_resolution_mismatch",
-            offset,
-            "minimal inter decode only supports an unscaled reference (reference size must equal the current frame size)",
-            SPEC_MC,
-        ));
+    // Every reference the §7.7 map names must be present in the §7.23 store and unscaled
+    // (reference size == current frame size): a block's single_ref read can select ANY of
+    // the NumTotalRefs slots, so validate them all up front before any output.
+    for (r, &slot) in ref_frame_idx.iter().enumerate() {
+        let ref_frame = reference.frame_for_slot(slot).ok_or_else(|| {
+            unsupported_at(
+                "inter_missing_reference_frame",
+                offset,
+                "minimal inter decode requires every §7.7-mapped reference to be present in the §7.23 store",
+                SPEC_REFERENCE,
+            )
+        })?;
+        let ref_luma = ref_frame.y();
+        if ref_luma.visible_size().width() != frame_width as usize
+            || ref_luma.visible_size().height() != frame_height as usize
+        {
+            let _ = r;
+            return Err(unsupported_at(
+                "inter_reference_resolution_mismatch",
+                offset,
+                "minimal inter decode only supports unscaled references (every §7.7-mapped reference size must equal the current frame size)",
+                SPEC_MC,
+            ));
+        }
     }
 
     // Enforce the configured decode limits before allocating the output frame.
@@ -264,6 +339,7 @@ pub(super) fn decode_minimal_inter_frame(
         &core,
         options,
         interpolation_filter,
+        num_total_refs as usize,
     )?;
 
     // §7.13.3.17 motion-vector scaling + §7.13.3.18 block inter prediction over the
@@ -302,6 +378,29 @@ pub(super) fn decode_minimal_inter_frame(
             luma_w: placed.luma_w,
             luma_h: placed.luma_h,
         };
+        // §5.20.7.12: the block's RefFrame[0] indexes ref_frame_idx[] to its §7.23 store
+        // slot. For NumTotalRefs == 1 this is always ref_frame_idx[0]; for NumTotalRefs ==
+        // 2 the block's single_ref read selected RefFrame[0] ∈ {0, 1}. Resolve the actual
+        // decoded reference frame per block (all slots were validated present + unscaled).
+        let ref_slot = ref_frame_idx
+            .get(placed.block.ref_frame0 as usize)
+            .copied()
+            .ok_or_else(|| {
+                unsupported_at(
+                    "inter_block_ref_frame_out_of_range",
+                    offset,
+                    "a decoded block's RefFrame[0] indexed past the §7.7 ref_frame_idx map",
+                    SPEC_MODE_INFO,
+                )
+            })?;
+        let ref_frame = reference.frame_for_slot(ref_slot).ok_or_else(|| {
+            unsupported_at(
+                "inter_missing_reference_frame",
+                offset,
+                "the block's selected §7.23 reference is not present in the store",
+                SPEC_REFERENCE,
+            )
+        })?;
         // §7.13.3.18 motion-compensate the block into its frame position.
         mc::motion_compensate_block_into(
             &mut workspace,
@@ -328,11 +427,17 @@ pub(super) fn decode_minimal_inter_frame(
 
     let frame = workspace.freeze()?;
 
-    Ok(MinimalRuntimeFrame {
-        frame,
-        frame_rate_numerator: header.timebase_denominator,
-        frame_rate_denominator: header.timebase_numerator,
-    })
+    // Return the parsed §5.18.2 core alongside the decoded frame so the multi-frame
+    // driver can apply the §7.23 reference frame update (refresh_frame_flags / OrderHint
+    // / base_q_idx / dims) without re-parsing the header.
+    Ok((
+        MinimalRuntimeFrame {
+            frame,
+            frame_rate_numerator: header.timebase_denominator,
+            frame_rate_denominator: header.timebase_numerator,
+        },
+        core,
+    ))
 }
 
 /// AV2 § 9.2 transform log2 sides for the verified single 64x64 inter block: the
@@ -415,6 +520,11 @@ fn add_inter_residual_to_workspace(
 /// and — for a `skip == 0` block — the §5.20.7.27 per-plane coded residual.
 #[derive(Clone, Debug)]
 pub(super) struct InterBlock {
+    /// §5.20.7.12 `RefFrame[0]`: the block's reference index into the §7.7
+    /// `ref_frame_idx[]` map (0 for the NumTotalRefs == 1 single reference, or the
+    /// decoded `single_ref` selection 0/1 for NumTotalRefs == 2). The caller resolves
+    /// the §7.23 store slot as `ref_frame_idx[ref_frame0]`.
+    pub(super) ref_frame0: i8,
     /// The decoded §7.11 motion vector (eighth-pel units).
     pub(super) mv: Mv,
     /// The §7.13.3.18 interpolation filter the block uses for motion compensation.
@@ -474,6 +584,12 @@ pub(super) struct InterReferenceState<'a> {
     pub(super) ref_frame_width: Vec<u32>,
     /// `RefFrameHeight[i]` per slot.
     pub(super) ref_frame_height: Vec<u32>,
+    /// `RefBaseQIdx[i]` per slot (§7.23). The §7.7 `get_ref_frames()` ranking scores
+    /// this when two or more slots are valid (the multi-reference case); a single valid
+    /// slot ignores it. Threaded into the §5.18.2 header parse via
+    /// [`FrameReferenceStateView::from_slots_with_base_q_idx`] so the two-valid-slot
+    /// derivation is exact.
+    pub(super) ref_base_q_idx: Vec<u32>,
 }
 
 impl<'a> InterReferenceState<'a> {
@@ -483,13 +599,15 @@ impl<'a> InterReferenceState<'a> {
         self.store.get(slot).ok().flatten().copied()
     }
 
-    /// Builds the §5.18.2 frame-header reference-state view borrowing this state.
+    /// Builds the §5.18.2 frame-header reference-state view borrowing this state,
+    /// modeling `RefBaseQIdx` so the §7.7 two-valid-slot ranking resolves exactly.
     fn header_view(&self) -> FrameReferenceStateView<'_> {
-        FrameReferenceStateView::from_slots(
+        FrameReferenceStateView::from_slots_with_base_q_idx(
             &self.ref_valid,
             &self.ref_order_hint,
             &self.ref_frame_width,
             &self.ref_frame_height,
+            &self.ref_base_q_idx,
         )
     }
 }
@@ -731,10 +849,11 @@ mod find_mv_stack;
 mod mc;
 mod mv_scaling;
 mod read_mv;
-// AV2 § 5.20.7.12 `read_single_ref` entropy element. Loaded-but-unwired: proven
-// bit-exact via a `SymbolEncoder` round-trip (`DECODE-INTER-SINGLE-REF-SYMBOL`);
-// the runtime wiring + § 8.3.2 neighbour-context derivation are the multi-reference
-// follow-on (`read_single_ref` is only read when `NumTotalRefs >= 2`).
+// AV2 § 5.20.7.12 `read_single_ref` entropy element, WIRED by
+// `DECODE-INTER-MULTIREF-RUNTIME`: the block decode reads `single_ref` when § 7.7
+// yields `NumTotalRefs == 2` (the § 8.3.2 ctx comes from
+// `find_mv_stack::BlockNeighbourContext::single_ref_ctx`). Still proven bit-exact by a
+// `SymbolEncoder` round-trip (`DECODE-INTER-SINGLE-REF-SYMBOL`).
 mod single_ref;
 
 use block::decode_inter_blocks;

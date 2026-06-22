@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 401 feature(s).
+Matrix version 1. Last reviewed 2026-06-15. 402 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -335,7 +335,8 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `DECODE-INTER-MULTI-SB-SPATIAL` | Multi-superblock inter frame (cross-superblock MV prediction) | infrastructure | infrastructure | done | done | done | n/a | n/a | n/a | done | done | todo | `crates/splot-decode/src/runtime_minimal/inter.rs` |
 | `DECODE-INTER-GRID-SPATIAL` | 2-D-grid inter frame (cross-superblock-row MV prediction) | infrastructure | infrastructure | done | done | done | n/a | n/a | n/a | done | done | todo | `crates/splot-decode/src/runtime_minimal/inter.rs` |
 | `DECODE-INTER-MVORDER-SPATIAL` | distinct-neighbour-MV §7.12.2 stack ordering (left-before-above) | infrastructure | infrastructure | done | done | done | n/a | n/a | n/a | done | done | todo | `crates/splot-decode/src/runtime_minimal/inter/find_mv_stack.rs` |
-| `DECODE-INTER-SINGLE-REF-SYMBOL` | §5.20.7.12 single_ref entropy element (SymbolEncoder round-trip) | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/runtime_minimal/inter/single_ref.rs` |
+| `DECODE-INTER-SINGLE-REF-SYMBOL` | §5.20.7.12 single_ref entropy element (SymbolEncoder round-trip) | infrastructure | infrastructure | done | done | done | n/a | n/a | n/a | done | done | n/a | `crates/splot-decode/src/runtime_minimal/inter/single_ref.rs` |
+| `DECODE-INTER-MULTIREF-RUNTIME` | multi-reference inter runtime (§7.7 two-valid-slot map + §7.20/§7.23 retention + §5.20.7.12 single_ref wiring) | infrastructure | infrastructure | done | done | done | n/a | n/a | n/a | done | done | todo | `crates/splot-decode/src/runtime_minimal/reference_buffer.rs` |
 | `DECODE-COEFF-FSC-SCAN-WALK` | Coefficient FSC scan walk | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/coeff_loop/scan_walk.rs` |
 | `DECODE-COEFF-BASE-CDF-ROWS` | Coefficient base CDF rows | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/cdf/coeff_rows.rs` |
 | `DECODE-COEFF-IDTX-CDF-ROWS` | Coefficient IDTX CDF rows | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/cdf/coeff_rows.rs` |

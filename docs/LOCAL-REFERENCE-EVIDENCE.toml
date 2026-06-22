@@ -1988,6 +1988,58 @@ left = "avm-mvorder-inter-64x64-raw-md5"
 right = "dav2d-mvorder-inter-64x64-raw-md5"
 
 [[evidence]]
+id = "lref-avm-dav2d-syn-3frame-multiref-64x64"
+feature_id = "DECODE-INTER-MULTIREF-RUNTIME"
+decoder_support_rows = ["inter-multiref-runtime"]
+kind = "reference-output-agreement"
+summary = "Local AVM and dav2d raw decoder output MD5 digests agreed for the three-frame 8-bit 4:2:0 MULTI-REFERENCE inter IVF fixture (64x64): frame 0 a flat DC_PRED intra key (luma 100), frame 1 a single-reference (§7.7 NumTotalRefs == 1, ref_frame_idx [0] == the key) 64x64 inter block reconstructing luma 160 and refreshing reference slot 1 (so §7.23 retains frame 1 as a SECOND valid reference), and frame 2 a 64x64 inter block over TWO valid references (§7.7 ranks ref_frame_idx [0, 1] == [key slot 0, frame-1 slot 1], NumTotalRefs == 2). Frame 2 reads the §5.20.7.12 single_ref symbol (over the §8.3.2 no-neighbour comp_ref/count_refs context 1) -> RefFrame[0] == 1 -> ref_frame_idx[1] == slot 1, motion-compensating the RETAINED frame 1 (luma 160), NOT the key (luma 100). The ASYMMETRY (frame 2 reconstructs to 160, distinct from the key's 100) makes a wrong slot-0 read FALSIFIABLE: splot instrumentation confirmed frame 2's block decodes ref_frame0 == 1 from a real single_ref read, and the reconstructed luma is 160 (frame 1) not 100 (key). splot reproduces the whole raw output byte-for-byte. This is the FIRST splot decode to (a) retain a second decoded (inter) frame in the §7.23 reference buffer, (b) run the §7.7 implicit reference-map ranking over two valid slots (the FrameReferenceStateView now models RefBaseQIdx, the only §7.7 scoring input the single-spatial-layer minimal frame leaves non-deterministic, lifting the at-most-one-valid-slot UnmodeledDerivation gate), and (c) wire the §5.20.7.12 read_single_ref entropy element to a runtime block decode. The fixture is encoded with --cdf-update-mode=0 so every frame has disable_cdf_update == 1: no CDF adaptation propagates, and the decoder (which does not model §7.23 cross-frame CDF save-load) decodes every frame from the default §8.3.2 entropy state. A frame that would inherit an adapted inter frame's CDFs is rejected with decode/unsupported-feature inter_cdf_inheritance_unmodeled; NumTotalRefs > 2, compound, and a 4th frame are likewise rejected before any output."
+recorded_at = "2026-06-22"
+
+[[evidence.fixture]]
+id = "input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-3frame-multiref-64x64.ivf"
+sha256 = "7f2d6a2f0cf2c4248a12e598d74efdf7e63e012902c6bf2de29b455c07a57e0d"
+size_bytes = 143
+format = "ivf"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Generated locally with avmenc from a project-owned synthetic Y4M (64x64 4:2:0, three frames: frame 0 luma 100, U 120, V 130; frames 1 and 2 luma 160, U 90, V 70 — frames 1 and 2 identical to each other but DISTINCT from the key) at --qp 80 --sb-size 64 --min-partition-size 64 --max-partition-size 64 --enable-global-motion=1 --cdf-update-mode=0 --kf-min-dist 9999 --kf-max-dist 9999 --lag-in-frames 0 with broad decode tools (incl. GDF, cdef, deblocking, restoration, ccso, pc-wiener, wiener-nonsep, cfl, mhccp, cctx, qm, ibp, angle-delta, intra-edge-filter, ist, inter-ist, intra-dip, idtx-intra, flip-idtx, mrls, palette, intrabc, fsc, sdp, extended-sdp, tx-partition, rect/ext/uneven partitions, smooth-intra, paeth-intra, bawp, cwp, parity-hiding, tcq, trellis, all warp modes, tip, opfl-refine, refinemv, masked/wedge/interintra/onesided/diff-wtd compound, joint-mvd, adaptive-mvd, flex-mvres, ref-frame-mvs, refmvbank, drl-reorder, mv-traj, high-motion, inter-ddt, skip-mode, bru) disabled, so the encoder codes frame 0 as a single flat 64x64 DC_PRED intra key block (refresh_frame_flags allFrames), frame 1 as a single 64x64 single-reference inter block referencing slot 0 (the key) and refreshing slot 1, and frame 2 as a single 64x64 single-reference inter block whose §7.7 map is ref_frame_idx [0, 1] (NumTotalRefs 2) and whose single_ref selects slot 1 (the retained frame 1). cdf-update-mode 0 keeps disable_cdf_update == 1 on every frame so no CDF adaptation propagates. The encode is deterministic (a byte-identical re-encode reproduces the committed IVF). AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avm"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "457cd58681a747465661baccb1f32095bc5b7774"
+version_summary = "AVM checkout HEAD 457cd58681a747465661baccb1f32095bc5b7774, exact binary build commit not separately archived."
+command_summary = "Local avmdec --rawvideo --i420 output MD5 for {fixture:input}."
+output_digest_id = "avm-multiref-3frame-64x64-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "861078138ab514bd847ccfe22ac44fa1"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.reference_run]]
+id = "dav2d"
+tool = "dav2d"
+executable_name = "dav2d"
+tool_role = "decode-reference"
+source_url = "https://code.videolan.org/videolan/dav2d"
+revision = "f4f96cb06bb3cd3f31e29e1f190f1c0e373ab352"
+version_summary = "dav2d 0.0.1-191-gf4f96cb0 (commit f4f96cb0), decoded with --demuxer ivf --muxer yuv; exact version output not archived."
+command_summary = "Local dav2d --demuxer ivf --muxer yuv output MD5 for {fixture:input}."
+output_digest_id = "dav2d-multiref-3frame-64x64-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "861078138ab514bd847ccfe22ac44fa1"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-multiref-3frame-64x64-raw-md5"
+right = "dav2d-multiref-3frame-64x64-raw-md5"
+
+[[evidence]]
 id = "lref-avm-dav2d-syn-flat-intra-64x64-minimal-skip"
 feature_id = "DECODE-GENERAL-INTRA-FRAME-RECON"
 decoder_support_rows = ["general-intra-frame-recon"]

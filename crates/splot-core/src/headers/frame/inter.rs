@@ -1000,20 +1000,27 @@ fn derive_implicit_ref_map(
     let ref_valid = reference_state.ref_valid?;
     let num_ref_frames = (seq.num_ref_frames as usize).min(NUM_REF_FRAMES);
 
-    // Count the proven-valid slots within the active range; gate to <= 1.
+    // Count the proven-valid slots within the active range.
     let valid_count = ref_valid
         .iter()
         .take(num_ref_frames)
         .filter(|v| **v)
         .count();
-    if valid_count > 1 {
-        // >= 2 valid references: the § 7.7 ranking depends on the unmodeled scoring inputs.
+    // With two or more valid references the § 7.7 ranking scores each slot's
+    // `RefBaseQIdx` (the `q` term). The single-spatial-layer minimal frame makes every
+    // other scoring input deterministic (distinct per-slot `RefCounter` via the `first`
+    // dedup rule, `AllowedFrames == -1`, all layers depend, layer ids 0), so the ONLY
+    // unmodeled input is `RefBaseQIdx`. When the caller models it the derivation is
+    // exact; without it (the historical `from_slots` view) the multi-valid-slot ranking
+    // stays an honest `UnmodeledDerivation` stop.
+    if valid_count > 1 && reference_state.ref_base_q_idx.is_none() {
         return None;
     }
 
     let ref_order_hint = reference_state.ref_order_hint;
     let ref_w = reference_state.ref_frame_width;
     let ref_h = reference_state.ref_frame_height;
+    let ref_base_q_idx = reference_state.ref_base_q_idx;
 
     // Build the per-slot § 7.7 input from the modeled view, defaulting the unmodeled scoring
     // fields. With <= 1 valid slot these defaults cannot change the result: a distinct
@@ -1044,6 +1051,9 @@ fn derive_implicit_ref_map(
         slot.counter = i as u32; // distinct per slot (dedup is a no-op for <= 1 valid)
         slot.width = ref_w.and_then(|s| s.get(i).copied()).unwrap_or(0);
         slot.height = ref_h.and_then(|s| s.get(i).copied()).unwrap_or(0);
+        // §7.7 `q` scoring term. Modeled only on the multi-valid-slot path (it cannot
+        // change the result for <= 1 valid slot, so a `None` view keeps the default 0).
+        slot.base_q_idx = ref_base_q_idx.and_then(|s| s.get(i).copied()).unwrap_or(0);
     }
 
     let (frame_width, frame_height) = frame_size.map(|fs| (fs.width, fs.height)).unwrap_or((0, 0));
@@ -1463,6 +1473,82 @@ mod tests {
         let mut ref_valid = [false; NUM_REF_FRAMES];
         ref_valid[0] = true;
         ref_valid[2] = true;
+        let ref_oh = [0u32; NUM_REF_FRAMES];
+        let ref_w = [64u32; NUM_REF_FRAMES];
+        let ref_h = [64u32; NUM_REF_FRAMES];
+        let rs = FrameReferenceStateView::from_slots(&ref_valid, &ref_oh, &ref_w, &ref_h);
+        let control = parse_inter_control(&mut reader, &seq, &ctx, &rs, false).unwrap();
+        assert_eq!(control.num_total_refs, None);
+        assert_eq!(control.stop, Some(InterStop::UnmodeledDerivation));
+    }
+
+    /// AV2 § 7.7 — with `RefBaseQIdx` modeled, the implicit map over TWO valid slots is
+    /// derived EXACTLY (the multi-reference brick `DECODE-INTER-MULTIREF-RUNTIME`). This
+    /// is the parser-side proof that `from_slots_with_base_q_idx` lifts the at-most-one
+    /// gate: with order_hint 10, slot 0 (oh 8, q 40) and slot 1 (oh 5, q 40), both past
+    /// references at equal dims, § 7.7 ranks slot 0 (score -248) before slot 1 (-220), so
+    /// `NumTotalRefs == 2` and `ref_frame_idx == [0, 1]`, mirroring the
+    /// `get_ref_frames::two_distinct_refs_rank_by_score` table-level worked example.
+    #[test]
+    fn inter_implicit_map_two_valid_slots_with_base_q_idx_ranks_exact() {
+        let mut bits = Bits::default();
+        bits.bit(0); // signal_primary_ref_frame
+        bits.bit(0); // disable_cross_frame_cdf_init (not TIP)
+        bits.f(0, 8); // refresh_frame_flags f(NumRefFrames)
+        // Implicit map: ref_frame_idx are derived (no bits). Continue the control region.
+        bits.bit(0); // use_ref_frame_mvs = 0 (NumTotalRefs > 1, but mvs off -> no tmvp bits)
+        bits.bit(0); // intrabc_params(): allow_intrabc = 0
+        bits.bit(0); // use_qtr_precision_mv = 0
+        bits.bit(0); // allow_high_precision_mv = 0 -> HALF_PEL
+        bits.bit(0); // is_filter_switchable = 0
+        bits.f(2, 2); // interpolation_filter = 2
+        bits.bit(0); // disable_cdf_update f(1)
+        let data = bits.into_bytes();
+        let mut reader = BitReader::new(&data, ByteOffset::new(0));
+        let mut seq = inter_seq();
+        seq.explicit_ref_frame_map = false;
+        let mut ctx = inter_ctx();
+        ctx.order_hint = 10;
+        let mut ref_valid = [false; NUM_REF_FRAMES];
+        ref_valid[0] = true;
+        ref_valid[1] = true;
+        let mut ref_oh = [0u32; NUM_REF_FRAMES];
+        ref_oh[0] = 8;
+        ref_oh[1] = 5;
+        // Resolution-compatible dims so the checkRes == 1 valid_ref_frame_size gate keeps
+        // both slots (the test frame size is the cur_mfh_id == 0 sequence maxima).
+        let ref_w = [4096u32; NUM_REF_FRAMES];
+        let ref_h = [2304u32; NUM_REF_FRAMES];
+        let mut ref_q = [0u32; NUM_REF_FRAMES];
+        ref_q[0] = 40;
+        ref_q[1] = 40;
+        let rs = FrameReferenceStateView::from_slots_with_base_q_idx(
+            &ref_valid, &ref_oh, &ref_w, &ref_h, &ref_q,
+        );
+        let control = parse_inter_control(&mut reader, &seq, &ctx, &rs, false).unwrap();
+        assert_eq!(control.num_total_refs, Some(2));
+        assert_eq!(control.ref_frame_idx, vec![0, 1]);
+        assert_eq!(control.stop, Some(InterStop::ReachedSharedTail));
+    }
+
+    /// AV2 § 7.7 — even with TWO valid slots, a `from_slots` view (no `RefBaseQIdx`) STAYS
+    /// an honest `UnmodeledDerivation` stop: the `from_slots_with_base_q_idx` constructor is
+    /// the ONLY way to lift the gate, so the historical callers are unaffected.
+    #[test]
+    fn inter_implicit_map_two_valid_slots_without_base_q_idx_stops_unmodeled() {
+        let mut bits = Bits::default();
+        bits.bit(0); // signal_primary_ref_frame
+        bits.bit(0); // disable_cross_frame_cdf_init
+        bits.f(0, 8); // refresh_frame_flags f(8)
+        let data = bits.into_bytes();
+        let mut reader = BitReader::new(&data, ByteOffset::new(0));
+        let mut seq = inter_seq();
+        seq.explicit_ref_frame_map = false;
+        let mut ctx = inter_ctx();
+        ctx.order_hint = 10;
+        let mut ref_valid = [false; NUM_REF_FRAMES];
+        ref_valid[0] = true;
+        ref_valid[1] = true;
         let ref_oh = [0u32; NUM_REF_FRAMES];
         let ref_w = [64u32; NUM_REF_FRAMES];
         let ref_h = [64u32; NUM_REF_FRAMES];

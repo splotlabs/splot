@@ -13531,16 +13531,16 @@ openspec_change = "decode-inter-single-ref-symbol"
 tracking_issue = ""
 owner = "decoder"
 risk = "low"
-notes = "Adds the AV2 §5.20.7.12 `read_single_ref` entropy element — the leaf prerequisite for multi-reference inter decode that two prior investigations found blocked on it (it is only read when `NumTotalRefs >= 2`, which needs >= 2 valid reference slots = a >= 3-frame runtime loop + reference retention + the §7.7 two-valid-slot feed, all separate larger bricks). `read_single_ref` (crates/splot-decode/src/runtime_minimal/inter/single_ref.rs) loops `ref` from 0 to `NumTotalRefs - 2`, reads one binary `single_ref` symbol per `ref` over `TileSingleRefCdf[ctx][ref]` (the §8.3.2 row, `ctx` computed as for `comp_ref` per docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2 line 1094), returns `ref` on the first `1` and `NumTotalRefs - 1` when all are `0` — matching the §5.20.7.12 mirror (docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-12) and AVM `read_single_ref` (av2/decoder/decodemv.c) + `av2_get_pred_cdf_single_ref` (av2/common/pred_common.h), which index `single_ref_cdf[ctx][ref]` identically. New `TileSingleRefCdf` rows from `DEFAULT_SINGLE_REF_CDF` ([REF_CONTEXTS=3][REFS_PER_FRAME - 1=6][3]) thread through the Block/Tile CDF subsets (selector, row/row_mut, §8.2.4 averaging, frame-end count scaling), mirroring `TileDrlModeCdf`. PROVEN bit-exact by a `SymbolEncoder` <-> `read_single_ref` round-trip over every selectable `RefFrame[0]` (0..=NumTotalRefs - 1) across NumTotalRefs 2..=7 with DISTINCT per-decision contexts (asymmetric, so a transposed tree decision or wrong CDF-row index changes the decoded value); `exit_symbol()` bit-count consistency is asserted. Falsifiability VERIFIED: transposing the CDF-row index (`ctx` <-> `ref`) breaks the round-trip tests. The §8.3.2 context derivation is caller-supplied here; the contexts are driven directly by the round-trip. The reader uses typed errors only and is panic-free (NumTotalRefs == 1 returns 0 via the empty §5.20.7.12 loop with no symbol read [the legal one-reference case, §6.19.7.11 requires NumTotalRefs > 0], NumTotalRefs == 0 typed-error [it would underflow NumTotalRefs - 1], missing-context, out-of-range-context, and short-buffer cases proven). This feature remains PARTIAL: it is LOADED-BUT-UNWIRED — `read_single_ref` is not wired into the runtime decode path and the `NumTotalRefs == 1` runtime gate is NOT relaxed, so decode output is unchanged and all existing inter (zero-MV 4e1bd39f, sub-pel a0e82de3, residual ab2b067a, mvstack e5b581a5, SB-row 477a993d, grid 897bf67e, mvorder 284e1450) and general-intra (e.g. grid dd2fa84f) fixtures decode byte-identical. NAMED FOLLOW-ON (the multi-reference runtime brick): the §8.3.2 neighbour-derived `single_ref` context derivation (`av2_get_ref_pred_context` / `count_refs`), relaxing the `NumTotalRefs == 1` gate, the §7.7 two-valid-slot reference feed, the >= 3 frame reference-retention loop, and `read_compound_ref` (§5.20.7.11, the compound sibling) are all out of scope."
+notes = "Adds the AV2 §5.20.7.12 `read_single_ref` entropy element — the leaf prerequisite for multi-reference inter decode that two prior investigations found blocked on it (it is only read when `NumTotalRefs >= 2`, which needs >= 2 valid reference slots = a >= 3-frame runtime loop + reference retention + the §7.7 two-valid-slot feed, all separate larger bricks). `read_single_ref` (crates/splot-decode/src/runtime_minimal/inter/single_ref.rs) loops `ref` from 0 to `NumTotalRefs - 2`, reads one binary `single_ref` symbol per `ref` over `TileSingleRefCdf[ctx][ref]` (the §8.3.2 row, `ctx` computed as for `comp_ref` per docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2 line 1094), returns `ref` on the first `1` and `NumTotalRefs - 1` when all are `0` — matching the §5.20.7.12 mirror (docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-12) and AVM `read_single_ref` (av2/decoder/decodemv.c) + `av2_get_pred_cdf_single_ref` (av2/common/pred_common.h), which index `single_ref_cdf[ctx][ref]` identically. New `TileSingleRefCdf` rows from `DEFAULT_SINGLE_REF_CDF` ([REF_CONTEXTS=3][REFS_PER_FRAME - 1=6][3]) thread through the Block/Tile CDF subsets (selector, row/row_mut, §8.2.4 averaging, frame-end count scaling), mirroring `TileDrlModeCdf`. PROVEN bit-exact by a `SymbolEncoder` <-> `read_single_ref` round-trip over every selectable `RefFrame[0]` (0..=NumTotalRefs - 1) across NumTotalRefs 2..=7 with DISTINCT per-decision contexts (asymmetric, so a transposed tree decision or wrong CDF-row index changes the decoded value); `exit_symbol()` bit-count consistency is asserted. Falsifiability VERIFIED: transposing the CDF-row index (`ctx` <-> `ref`) breaks the round-trip tests. The §8.3.2 context derivation is caller-supplied here; the contexts are driven directly by the round-trip. The reader uses typed errors only and is panic-free (NumTotalRefs == 1 returns 0 via the empty §5.20.7.12 loop with no symbol read [the legal one-reference case, §6.19.7.11 requires NumTotalRefs > 0], NumTotalRefs == 0 typed-error [it would underflow NumTotalRefs - 1], missing-context, out-of-range-context, and short-buffer cases proven). This feature is now WIRED by DECODE-INTER-MULTIREF-RUNTIME: `read_single_ref` IS called from the runtime block decode (between read_skip and single_mode) when §7.7 yields `NumTotalRefs == 2`, the `NumTotalRefs == 1` gate is relaxed to admit NumTotalRefs ∈ {1, 2}, and the §8.3.2 neighbour-derived `single_ref` context is supplied by `BlockNeighbourContext::single_ref_ctx` (the comp_ref `count_refs` process, cross-checked vs AVM `av2_get_ref_pred_context`). The committed `syn-3frame-multiref-64x64.ivf` proves the runtime read bit-exact (frame 2 selects RefFrame[0] == 1 -> the retained inter frame). The SymbolEncoder round-trip still pins the entropy element. STILL out of scope (DECODE-INTER-MULTIREF-RUNTIME follow-on): NumTotalRefs > 2 (multi-decision single_ref), a neighbour-having single_ref context, and `read_compound_ref` (§5.20.7.11, the compound sibling)."
 
 [feature.status]
 mapped = "done"
 types = "done"
-parse = "partial"
+parse = "done"
 validate = "not-applicable"
 write = "not-applicable"
 encode = "not-applicable"
-decode_check = "partial"
+decode_check = "done"
 tests = "done"
 avm_diff = "not-applicable"
 perf = "not-applicable"
@@ -13565,6 +13565,67 @@ commands = [
 fixtures = [
     "crates/splot-decode/src/runtime_minimal/inter/single_ref.rs",
     "crates/splot-decode/src/runtime_minimal/inter/single_ref/tests.rs",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
+id = "DECODE-INTER-MULTIREF-RUNTIME"
+name = "multi-reference inter runtime (§7.7 two-valid-slot map + §7.20/§7.23 retention + §5.20.7.12 single_ref wiring)"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.20.7.6", "5.20.7.10", "5.20.7.12", "7.7", "7.20", "7.23", "8.3.2"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-6",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-10",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-12",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-7",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-23",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/runtime_minimal/reference_buffer.rs"
+openspec_change = "decode-inter-multiref-runtime"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "THE fundamental capability for real sequences: decode a frame that selects among TWO valid decoded references, retaining a prior decoded INTER frame as a reference. The committed `syn-3frame-multiref-64x64.ivf` (project-owned flat synthetic input: frame 0 luma 100 / U 120 / V 130; frames 1 AND 2 luma 160 / U 90 / V 70 — frames 1 and 2 identical to each other but DISTINCT from the key; `--qp 80 --sb-size 64 --min/max-partition-size 64 --enable-global-motion=1 --cdf-update-mode=0`, broad decode tools disabled) is a three-frame 64x64 stream: frame 0 = OBU_CLOSED_LOOP_KEY (flat DC_PRED intra; §7.20 refresh_frame_flags allFrames -> §7.23 :14100 marks ONLY slot 0 RefValid), frame 1 = OBU_REGULAR_TILE_GROUP (single-reference inter, §7.7 NumTotalRefs == 1 -> ref_frame_idx [0] == the key; refresh_frame_flags slot 1, so §7.23 retains frame 1 as a SECOND valid reference), frame 2 = OBU_REGULAR_TILE_GROUP over TWO valid slots (§7.7 ranks ref_frame_idx [0, 1], NumTotalRefs == 2) whose §5.20.7.6 block reads §5.20.7.12 single_ref (over the §8.3.2 no-neighbour comp_ref/count_refs context 1) -> RefFrame[0] == 1 -> ref_frame_idx[1] == slot 1, motion-compensating the RETAINED frame 1 (luma 160), NOT the key (luma 100). DONE: `splot decode syn-3frame-multiref-64x64.ivf --output-format raw` reproduces the whole-stream md5 861078138ab514bd847ccfe22ac44fa1 (18432 bytes) byte-for-byte vs avmdec --rawvideo --i420 and dav2d --demuxer ivf --muxer yuv (recorded in docs/LOCAL-REFERENCE-EVIDENCE.toml `lref-avm-dav2d-syn-3frame-multiref-64x64`). ASYMMETRIC PROOF: frame 2 reconstructs to 160 (frame 1), distinct from the key's 100, so a wrong slot-0 read is falsifiable; a reference-retention test asserts frame 2's luma equals frame 1's and differs from the key's. THREE pieces wired: (1) splot-core `FrameReferenceStateView` now models `RefBaseQIdx` (the new `from_slots_with_base_q_idx` constructor) — the ONLY §7.7 scoring input the single-spatial-layer minimal frame leaves non-deterministic (AllowedFrames == -1, all layers depend, layer ids 0; a shared RefCounter from a multi-bit refresh is harmless because §7.7 new_score_or_dist drops the duplicate by identical orderHint/score/mLayer), so `derive_implicit_ref_map` lifts its `valid_count > 1 -> UnmodeledDerivation` gate when RefBaseQIdx is modeled and runs the real §7.7 ranking over two valid slots (proven by `inter_implicit_map_two_valid_slots_with_base_q_idx_ranks_exact`); the historical `from_slots` view STAYS an UnmodeledDerivation stop. (2) splot-decode `RuntimeReferenceBuffer` (reference_buffer.rs) applies the §7.23 reference frame update per frame's refresh_frame_flags (KEY/SWITCH: RefValid[i] = first, mirror :14100; inter: RefValid[i] = 1), storing RefValid/RefOrderHint/RefFrameWidth/Height/RefBaseQIdx + the decoded frame index, and builds the borrowed ReferenceFrameStore for the next inter frame; the multi-frame driver decodes a key + up to two inter frames (3 + 2*(N-1) OBUs). (3) the block decode wires §5.20.7.12 read_single_ref between read_skip and single_mode when NumTotalRefs == 2 (DECODE-INTER-SINGLE-REF-SYMBOL is now WIRED), deriving the §8.3.2 single_ref context from the neighbour count_refs (`BlockNeighbourContext::single_ref_ctx`, cross-checked vs AVM `av2_get_ref_pred_context`); RefFrame[0] resolves the per-block reference slot via ref_frame_idx. VERIFIED-SUBSET DISCIPLINE (rejected before output): NumTotalRefs > 2 (more single_ref decisions), compound / reference_select, a 4th frame, a neighbour-having single_ref block (the §8.3.2 ctx is gated to the no-neighbour ctx 1 the fixture proves), more than two valid reference slots, and — crucially — an inter frame that would LOAD a prior ADAPTED frame's CDFs, the key OR an earlier inter (the decoder does not model §7.23 cross-frame CDF save-load; a conformant decoder loads iff primary_ref_frame names a RESOLVED real ref (< PRIMARY_REF_NONE) && disable_cross_frame_cdf_init == 0 per §5 :5426-5430; inter_cdf_inheritance_unmodeled — applied inside decode_minimal_inter_frame before the tile decode — rejects such an inter frame when any prior frame, key or inter, adapted. PRIMARY_REF_CHOOSE (8, the unsignalled placeholder splot does NOT resolve) is treated as no-load: every committed fixture carries primary_ref == PRIMARY_REF_CHOOSE and decodes bit-exact vs both oracles EVEN WITH an adapted key (the existing 2-frame inter fixtures have disable_cdf_update == 0 keys), so for the admitted subset CHOOSE is not a desyncing load; resolving CHOOSE is a follow-on, and the fixture additionally uses cdf-update-mode 0 to keep disable_cdf_update == 1 on every frame). All existing inter (zero-MV 4e1bd39f, sub-pel a0e82de3, residual ab2b067a, mvstack e5b581a5, mvorder 284e1450, SB-row 477a993d, grid 897bf67e) and general-intra (grid dd2fa84f) fixtures stay byte-identical (no regression). NAMED FOLLOW-ON: §7.23 cross-frame CDF save-load (so cdf-update-mode != 0 streams decode), NumTotalRefs > 2 (multi-decision single_ref), neighbour-having single_ref context, compound references (read_compound_ref §5.20.7.11), temporal MV (ref-frame-mvs), and the deferred §7.12.2 ref-MV-bank/DRL-reorder/warp candidates."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "done"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "todo"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/runtime_minimal/inter/tests.rs::multiref_fixture_decodes_three_frames_bit_exact",
+    "crates/splot-decode/src/runtime_minimal/inter/tests.rs::multiref_frame2_reads_retained_inter_frame_not_key",
+    "crates/splot-decode/src/runtime_minimal/inter/tests.rs::multiref_fixture_per_frame_hash_is_stable",
+    "crates/splot-decode/src/runtime_minimal/inter/find_mv_stack/tests.rs::single_ref_ctx_no_neighbour_is_one",
+    "crates/splot-decode/src/runtime_minimal/reference_buffer.rs::tests::key_refresh_marks_only_first_slot_valid",
+    "crates/splot-decode/src/runtime_minimal/reference_buffer.rs::tests::inter_refresh_adds_a_second_valid_slot",
+    "crates/splot-core/src/headers/frame/inter.rs::tests::inter_implicit_map_two_valid_slots_with_base_q_idx_ranks_exact",
+    "crates/splot-core/src/headers/frame/inter.rs::tests::inter_implicit_map_two_valid_slots_without_base_q_idx_stops_unmodeled",
+    "crates/splot-cli/tests/decode_cli.rs::decode_multiref_three_frame_fixture_is_bit_exact",
+    "crates/splot-cli/tests/conformance.rs::conformance_corpus_matches_manifest",
+]
+commands = [
+    "cargo test -p splot-core --locked",
+    "cargo test -p splot-decode --locked",
+    "cargo test -p splot-cli --test decode_cli --locked",
+    "cargo test -p splot-cli --test conformance --locked",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-decoder-conformance-coverage",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "tests/conformance/vectors/valid/syn-3frame-multiref-64x64.ivf",
 ]
 diagnostics = ["decode/unsupported-feature"]
 

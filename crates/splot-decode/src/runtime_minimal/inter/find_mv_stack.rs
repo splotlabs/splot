@@ -270,6 +270,50 @@ pub(super) struct BlockNeighbourContext {
     /// caller can admit the deferred tools for a no-neighbour block but must reject
     /// them once a neighbour exists.
     pub(super) has_neighbour: bool,
+    /// AV2 § 8.3.2 `single_ref` / `comp_ref` neighbour reference counts
+    /// (`neighbors_ref_counts` / `count_refs`): `ref_counts[r]` is the number of
+    /// neighbour-line-buffer entries (the up-to-2 § 5.20.7.2 `add_neighbor` cells,
+    /// matching AVM `MAX_NUM_NEIGHBORS == 2`) whose single reference frame is `r`.
+    /// Only single-reference neighbours contribute (the verified subset has no
+    /// compound neighbour), and a non-inter neighbour (`ref_frame0 < 0`) contributes
+    /// none. Indexed `0..MAX_NEIGHBOUR_REFS`.
+    ref_counts: [u8; BlockNeighbourContext::MAX_NEIGHBOUR_REFS],
+}
+
+impl BlockNeighbourContext {
+    /// The number of single-reference frame indices the § 8.3.2 `single_ref` context
+    /// counts over (the verified subset's NumTotalRefs ∈ {1, 2}; the largest index a
+    /// `single_ref` decision can reference is `NumTotalRefs - 1 == 1`).
+    const MAX_NEIGHBOUR_REFS: usize = 2;
+
+    /// AV2 § 8.3.2 `single_ref` context for decision `ref` over `num_total_refs`
+    /// (the CDF-selection process shared with `comp_ref`,
+    /// `docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2` line 1094 / 1060):
+    ///
+    /// ```text
+    /// thisRefCount = count_refs(ref)
+    /// nextRefsCount = sum(count_refs(i) for i in ref+1 .. num_total_refs)
+    /// ctx = (thisRefCount == nextRefsCount) ? 1
+    ///     : (thisRefCount < nextRefsCount)  ? 0 : 2
+    /// ```
+    ///
+    /// Cross-checked against AVM `av2_get_ref_pred_context`
+    /// (`av2/common/pred_common.c`). Returns `None` when `ref + 1` is at/beyond the
+    /// modelled count range (the verified subset only reads `ref == 0`).
+    pub(super) fn single_ref_ctx(&self, ref_idx: usize, num_total_refs: usize) -> Option<usize> {
+        let this_count = u32::from(*self.ref_counts.get(ref_idx)?);
+        let mut next_count = 0u32;
+        for i in (ref_idx + 1)..num_total_refs {
+            next_count += u32::from(*self.ref_counts.get(i)?);
+        }
+        Some(if this_count == next_count {
+            1
+        } else if this_count < next_count {
+            0
+        } else {
+            2
+        })
+    }
 }
 
 /// Derives the § 5.20.7.2 neighbour buffer (`NPosBuf` / `NNumBuf` / `NIntra` /
@@ -338,10 +382,25 @@ pub(super) fn block_neighbour_ctx(
         skip_ctx += usize::from(cell.skip);
     }
 
+    // §8.3.2 single_ref / comp_ref neighbour reference counts (AVM
+    // `av2_collect_neighbors_ref_counts`): tally each inter single-reference
+    // neighbour's RefFrame[0] into ref_counts[r]. The verified subset has no compound
+    // neighbour (no RefFrame[1] term) and a non-inter cell (ref_frame0 < 0) is skipped.
+    let mut ref_counts = [0u8; BlockNeighbourContext::MAX_NEIGHBOUR_REFS];
+    for cell in buf.iter().take(num_buf) {
+        if cell.is_inter && cell.ref_frame0 >= 0 {
+            let r = cell.ref_frame0 as usize;
+            if let Some(slot) = ref_counts.get_mut(r) {
+                *slot = slot.saturating_add(1);
+            }
+        }
+    }
+
     BlockNeighbourContext {
         is_inter_ctx,
         skip_ctx,
         has_neighbour: num_buf >= 1,
+        ref_counts,
     }
 }
 

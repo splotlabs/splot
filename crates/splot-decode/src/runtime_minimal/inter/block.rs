@@ -67,6 +67,7 @@ pub(super) fn decode_inter_blocks(
     core: &FrameHeaderCore,
     options: DecodeOptions,
     frame_interpolation_filter: FrameInterpolationFilter,
+    num_total_refs: usize,
 ) -> Result<Vec<PlacedInterBlock>> {
     let offset = frame_envelope.offset;
     let mut tile_plan = super::super::derive_inter_tile_plan(
@@ -211,6 +212,7 @@ pub(super) fn decode_inter_blocks(
                 frame_interpolation_filter,
                 residual_tools_present,
                 mv_stack_tools_present,
+                num_total_refs,
                 tile_offset,
             )?;
             decoded_blocks.push(placed);
@@ -299,6 +301,7 @@ fn decode_one_inter_block(
     frame_interpolation_filter: FrameInterpolationFilter,
     residual_tools_present: bool,
     mv_stack_tools_present: bool,
+    num_total_refs: usize,
     tile_offset: ByteOffset,
 ) -> Result<PlacedInterBlock> {
     // The block's geometry in 4x4 MI units + luma samples. The single-block gate is
@@ -323,8 +326,12 @@ fn decode_one_inter_block(
     let mi_row = frontier.r;
     let mi_col = frontier.c;
 
-    // §7.11/§7.12 block context for the spatial neighbour scan.
-    let block_ctx = MvBlockContext {
+    // §7.11/§7.12 block context for the spatial neighbour scan. `ref_frame0` is the
+    // §5.20.7.12 single-reference index, resolved from the `single_ref` read below; it is
+    // updated before the §7.12.2 find_mv_stack scan (which matches neighbours by
+    // RefFrame[0]) and the §5.20.4.1 record_block grid write. The neighbour-context and
+    // find_mode_ctx probes do not read ref_frame0, so the placeholder is harmless there.
+    let mut block_ctx = MvBlockContext {
         mi_row,
         mi_col,
         bw4: n4w,
@@ -427,6 +434,61 @@ fn decode_one_inter_block(
             SPEC_MODE_INFO,
         ));
     }
+
+    // §5.20.7.6 inter_block_mode_info -> §5.20.7.10 read_ref_frames -> §5.20.7.12
+    // read_single_ref: reference_select == 0 (the frame gate) infers comp_mode ==
+    // SINGLE_REFERENCE, so RefFrame[0] = read_single_ref(). For NumTotalRefs == 1 the
+    // loop is empty (no symbol) and RefFrame[0] == 0; for NumTotalRefs == 2 it reads ONE
+    // `single_ref` symbol over TileSingleRefCdf[ctx][0] where ctx is the §8.3.2
+    // neighbour-derived single_ref context (= comp_ref ctx). This read precedes
+    // find_mode_ctx / single_mode in the §5.20.7.6 syntax order. The verified subset
+    // gates the NumTotalRefs == 2 read to a NO-NEIGHBOUR block (ctx provably 1, both
+    // count_refs == 0): a neighbour-having block needs the full §8.3.2 count_refs over a
+    // neighbour line buffer this kernel only counts for the immediate cells, and no
+    // fixture proves it bit-exact, so reject it.
+    let ref_frame0: i8 = if num_total_refs >= 2 {
+        if neighbour_ctx.has_neighbour {
+            return Err(unsupported_at(
+                "inter_block_single_ref_with_neighbour",
+                tile_offset,
+                "minimal inter decode reads single_ref only for a no-neighbour block (the §8.3.2 ctx is provably 1); a neighbour-having NumTotalRefs == 2 block is not yet fixtured",
+                SPEC_MODE_INFO,
+            ));
+        }
+        let ctx = neighbour_ctx
+            .single_ref_ctx(0, num_total_refs)
+            .ok_or_else(|| {
+                unsupported_at(
+                    "inter_block_single_ref_ctx",
+                    tile_offset,
+                    "minimal inter decode could not derive the §8.3.2 single_ref context",
+                    SPEC_MODE_INFO,
+                )
+            })?;
+        let contexts = [ctx];
+        let selected = super::single_ref::read_single_ref(cdfs, symbols, num_total_refs, &contexts)
+            .map_err(|_| {
+                unsupported_at(
+                    "inter_block_single_ref_read",
+                    tile_offset,
+                    "minimal inter decode could not read the §5.20.7.12 single_ref symbol",
+                    SPEC_MODE_INFO,
+                )
+            })?;
+        i8::try_from(selected).map_err(|_| {
+            unsupported_at(
+                "inter_block_single_ref_value",
+                tile_offset,
+                "minimal inter decode read an out-of-range single_ref selection",
+                SPEC_MODE_INFO,
+            )
+        })?
+    } else {
+        // §5.20.7.12 NumTotalRefs == 1: empty loop -> RefFrame[0] == 0, no symbol read.
+        SINGLE_REF_FRAME0
+    };
+    // The §7.12.2 MV-stack scan + §5.20.4.1 grid write use the resolved RefFrame[0].
+    block_ctx.ref_frame0 = ref_frame0;
 
     // §5.20.7.6 single_mode: TileSingleModeCdf[NewMvContext]. NewMvContext is the
     // §7.11.2 find-mode-context output: 0 for a no-neighbour block, or up to 3 when
@@ -595,7 +657,7 @@ fn decode_one_inter_block(
         n4w,
         n4h,
         true,
-        SINGLE_REF_FRAME0,
+        ref_frame0,
         y_mode,
         mv,
         skip == 1,
@@ -607,6 +669,7 @@ fn decode_one_inter_block(
         luma_w: n4w * 4,
         luma_h: n4h * 4,
         block: InterBlock {
+            ref_frame0,
             mv,
             interp,
             residual,

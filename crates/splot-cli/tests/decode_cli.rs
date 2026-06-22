@@ -678,6 +678,69 @@ fn decode_distinct_mv_inter_fixture_decodes_bit_exact() {
 }
 
 #[test]
+fn decode_multiref_three_frame_fixture_is_bit_exact() {
+    // DECODE-INTER-MULTIREF-RUNTIME: the committed syn-3frame-multiref-64x64.ivf is the
+    // verified multi-reference target. Frame 0 is an OBU_CLOSED_LOOP_KEY flat intra key
+    // (luma 100); frame 1 is an OBU_REGULAR_TILE_GROUP single-reference inter block
+    // (§7.7 NumTotalRefs == 1, the key) reconstructing luma 160 and refreshing a SECOND
+    // reference slot; frame 2 is an OBU_REGULAR_TILE_GROUP inter block over TWO valid
+    // references (§7.7 ref_frame_idx [0, 1]) whose §5.20.7.12 single_ref selects slot 1
+    // (the RETAINED frame 1, luma 160), NOT the key (luma 100). Encoded with
+    // --cdf-update-mode=0 so no CDF adaptation propagates. avmdec --rawvideo --i420 and
+    // dav2d --demuxer ivf --muxer yuv decode the whole stream byte-for-byte identically
+    // (decoded-output md5 861078138ab514bd847ccfe22ac44fa1 over 18432 bytes: three flat
+    // 8-bit 4:2:0 64x64 frames).
+    let input = conformance_vector("syn-3frame-multiref-64x64.ivf");
+    let output = temp_output("yuv");
+
+    let out = splot(&[
+        "decode",
+        "--output-format",
+        "raw",
+        input.to_str().unwrap(),
+        "-o",
+        output.to_str().unwrap(),
+    ]);
+
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "the multi-reference 3-frame fixture must decode successfully: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let decoded = std::fs::read(&output).expect("decoded raw output");
+    // 3 frames * (64x64 luma + 2 * 32x32 chroma) = 3 * 6144 = 18432 bytes.
+    assert_eq!(decoded.len(), 18432, "three flat 8-bit 4:2:0 64x64 frames");
+    let frame_bytes = 6144;
+    let frame0 = &decoded[..frame_bytes];
+    let frame1 = &decoded[frame_bytes..2 * frame_bytes];
+    let frame2 = &decoded[2 * frame_bytes..];
+    // Frame 0 (key) is flat luma 100; frames 1 and 2 are flat luma 160.
+    assert!(
+        frame0[..4096].iter().all(|&s| s == 100),
+        "key luma flat 100"
+    );
+    assert!(
+        frame1[..4096].iter().all(|&s| s == 160),
+        "frame 1 luma flat 160"
+    );
+    assert!(
+        frame2[..4096].iter().all(|&s| s == 160),
+        "frame 2 luma flat 160"
+    );
+    // ASYMMETRIC PROOF: frame 2 reads the retained frame 1 (slot 1, luma 160), NOT the
+    // key (slot 0, luma 100). Frame 2 == frame 1 and frame 2 != frame 0.
+    assert_eq!(
+        frame2, frame1,
+        "frame 2 reads the retained inter frame (slot 1)"
+    );
+    assert_ne!(
+        frame2, frame0,
+        "frame 2 must DIFFER from the key (proving single_ref selected slot 1, not slot 0)"
+    );
+}
+
+#[test]
 fn decode_hash_json_success_creates_no_implicit_output_file() {
     let input = conformance_vector("syn-flat-intra-64x64-minimal.ivf");
     let cwd = temp_dir("minimal-hash-cwd");
