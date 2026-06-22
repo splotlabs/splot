@@ -15,7 +15,8 @@ use super::{
     CHROMA_U_TXB_SKIP_CTX_NEUTRAL, COEFF_BASE_LF_EOB_CTX_DC, COEFF_BR_LF_CTX_DC,
     CoefficientCdfRowSelector, CoefficientEntropyToken, CoefficientTokenSyntax, EOB_CTX_CHROMA,
     EOB_CTX_LUMA_INTRA, INTRA_NON_FSC_TXB_SKIP_BANK, LUMA_PLANE_TYPE, MAX_BASE_EOB_MAGNITUDE,
-    TX_SIZE_32X32_CTX, TX_SIZE_64X64_CTX, TXB_SKIP_CTX_NEUTRAL, luma_dc_sign_token,
+    TX_SIZE_16X16_CTX, TX_SIZE_32X32_CTX, TX_SIZE_64X64_CTX, TXB_SKIP_CTX_NEUTRAL,
+    luma_dc_sign_token,
 };
 use crate::error::{Error, Result};
 
@@ -67,6 +68,80 @@ pub(crate) fn general_intra_64x64_luma_dc_coded_tokens(
         selector: CoefficientCdfRowSelector::CoeffBaseLfEob {
             coeff_cdf_q_ctx,
             tx_size: TX_SIZE_64X64_CTX,
+            ctx: COEFF_BASE_LF_EOB_CTX_DC,
+        },
+        symbol: magnitude.min(LF_NUM_BASE_LEVELS + 1).saturating_sub(1) as u8,
+    });
+    if needs_br {
+        tokens.push(CoefficientEntropyToken {
+            syntax: CoefficientTokenSyntax::CoeffBr,
+            selector: CoefficientCdfRowSelector::CoeffBrLf {
+                coeff_cdf_q_ctx,
+                ctx: COEFF_BR_LF_CTX_DC,
+            },
+            symbol: magnitude.saturating_sub(LF_NUM_BASE_LEVELS + 1) as u8,
+        });
+    }
+    tokens.push(luma_dc_sign_token(coeff_cdf_q_ctx, negative));
+    Ok(tokens)
+}
+
+/// Returns the ordered AV2 § 5.20.7.27 coded luma DC-only coefficient tokens for the
+/// **general** intra decode path's single `TX_16X16` transform: a single nonzero DC of
+/// unsigned `magnitude` (`1..=MAX_BASE_BR_MAGNITUDE`) and the given sign.
+///
+/// The `TX_16X16` counterpart of [`general_intra_64x64_luma_dc_coded_tokens`]: identical token
+/// sequence (`txb_skip == 0`, `eob_pt == 0`, `coeff_base_eob`, optional `coeff_br`, `dc_sign`)
+/// except the `txb_skip` and `coeff_base_eob` use the `TX_16X16` `txSzCtx` (`2`,
+/// [`TX_SIZE_16X16_CTX`]) and the EOB symbol is `eob_pt_256` (the 256-position size class:
+/// `eobMultisize = Min(4, 5) + Min(4, 5) - 4 = 4`) rather than `eob_pt_16`/`eob_pt_1024`. For
+/// eob == 1 the `eob_pt_256` symbol is `0` (eobPt 1 → eob 1: no `eob_pt_extra`/`eob_extra` simple
+/// path). The DC is at scan position 0 (`row + col == 0 < 4`, the size-independent low-frequency
+/// region), so its `coeff_base_eob` reads the low-frequency EOB bank
+/// (`TileCoeffBaseLfEobCdf[q][TX_16X16][ctx 0]`) — mirroring the decoder's `coeff_base_eob_ctx(c =
+/// 0) == 0` (`SIG_COEF_CONTEXTS_EOB - 4`). The `coeff_br` and `dc_sign` rows are shared with the
+/// minimal/64x64 tiers (their selectors carry no `tx_size`). The arithmetic is saturating so the
+/// function is total for any input; `tokenize_coefficients` validates the magnitude bound.
+pub(crate) fn general_intra_16x16_luma_dc_coded_tokens(
+    coeff_cdf_q_ctx: usize,
+    magnitude: u32,
+    negative: bool,
+) -> Result<Vec<CoefficientEntropyToken>> {
+    debug_assert!(magnitude >= 1, "coded DC magnitude must be nonzero");
+    let needs_br = magnitude > LF_NUM_BASE_LEVELS;
+    let len = if needs_br { 5 } else { 4 };
+    let mut tokens = Vec::new();
+    tokens
+        .try_reserve_exact(len)
+        .map_err(|_| Error::CoefficientTokenizationAllocationFailed {
+            context: "general coded 16x16 DC coefficient tokens",
+        })?;
+    // luma `txb_skip == 0` (coded) at the TX_16X16 context.
+    tokens.push(CoefficientEntropyToken {
+        syntax: CoefficientTokenSyntax::AllZero,
+        selector: CoefficientCdfRowSelector::TxbSkip {
+            coeff_cdf_q_ctx,
+            plane_type: LUMA_PLANE_TYPE,
+            tx_size: TX_SIZE_16X16_CTX,
+            ctx: TXB_SKIP_CTX_NEUTRAL,
+        },
+        symbol: false as u8,
+    });
+    // `eob_pt_256 == 0` -> eobPt 1 -> a single EOB coefficient at scan position 0
+    // (no `eob_pt_extra`, no `eob_extra`).
+    tokens.push(CoefficientEntropyToken {
+        syntax: CoefficientTokenSyntax::EobPt256,
+        selector: CoefficientCdfRowSelector::EobPt256 {
+            coeff_cdf_q_ctx,
+            eob_ctx: EOB_CTX_LUMA_INTRA,
+        },
+        symbol: 0,
+    });
+    tokens.push(CoefficientEntropyToken {
+        syntax: CoefficientTokenSyntax::CoeffBaseEob,
+        selector: CoefficientCdfRowSelector::CoeffBaseLfEob {
+            coeff_cdf_q_ctx,
+            tx_size: TX_SIZE_16X16_CTX,
             ctx: COEFF_BASE_LF_EOB_CTX_DC,
         },
         symbol: magnitude.min(LF_NUM_BASE_LEVELS + 1).saturating_sub(1) as u8,

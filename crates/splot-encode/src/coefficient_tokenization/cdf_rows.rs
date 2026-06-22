@@ -10,7 +10,18 @@ use super::*;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CoefficientTokenCdfRows {
     txb_skip: [[i32; 3]; COEFF_CDF_Q_CONTEXTS],
+    // The luma `txb_skip` row at the `TX_16X16` `txSzCtx` (2), for the general 16x16
+    // intra DC tokenizer. `DEFAULT_TXB_SKIP_CDF` is `[q][bank][txSz][ctx]`; sized to
+    // the q dimension at the fixed (luma bank, TX_16X16, neutral ctx) cell.
+    txb_skip_16x16: [[i32; 3]; COEFF_CDF_Q_CONTEXTS],
     eob_pt_16: [[i32; 6]; COEFF_CDF_Q_CONTEXTS],
+    // The luma intra `eob_pt_256` row (the `TX_16X16` EOB-point size class), indexed by
+    // `[q]` at the fixed luma-intra eob context. `DEFAULT_EOB_PT_256_CDF` rows hold 8
+    // symbols (`[i32; 9]`).
+    eob_pt_256: [[i32; 9]; COEFF_CDF_Q_CONTEXTS],
+    // The `TX_16X16` low-frequency `coeff_base_eob` DC row, indexed by `[q]` at the
+    // fixed (TX_16X16, DC ctx 0) cell of `DEFAULT_COEFF_BASE_LF_EOB_CDF[q][txSz][ctx]`.
+    coeff_base_lf_eob_16x16: [[i32; COEFF_BASE_LF_EOB_CDF_ROW_LEN]; COEFF_CDF_Q_CONTEXTS],
     // The §5.20.7.27 `eob_extra` binary CDF, indexed only by the coefficient
     // CDF q-context (no per-eobPt context). Routes the `eob_extra_token` through
     // this generic entropy proof, mirroring its block-symbol-trace routing.
@@ -155,11 +166,29 @@ impl CoefficientTokenCdfRows {
                 DEFAULT_TXB_SKIP_CDF[2][LUMA_PLANE_TYPE][TX_SIZE_4X4_CTX][TXB_SKIP_CTX_NEUTRAL],
                 DEFAULT_TXB_SKIP_CDF[3][LUMA_PLANE_TYPE][TX_SIZE_4X4_CTX][TXB_SKIP_CTX_NEUTRAL],
             ],
+            txb_skip_16x16: [
+                DEFAULT_TXB_SKIP_CDF[0][LUMA_PLANE_TYPE][TX_SIZE_16X16_CTX][TXB_SKIP_CTX_NEUTRAL],
+                DEFAULT_TXB_SKIP_CDF[1][LUMA_PLANE_TYPE][TX_SIZE_16X16_CTX][TXB_SKIP_CTX_NEUTRAL],
+                DEFAULT_TXB_SKIP_CDF[2][LUMA_PLANE_TYPE][TX_SIZE_16X16_CTX][TXB_SKIP_CTX_NEUTRAL],
+                DEFAULT_TXB_SKIP_CDF[3][LUMA_PLANE_TYPE][TX_SIZE_16X16_CTX][TXB_SKIP_CTX_NEUTRAL],
+            ],
             eob_pt_16: [
                 DEFAULT_EOB_PT_16_CDF[0][EOB_CTX_LUMA_INTRA],
                 DEFAULT_EOB_PT_16_CDF[1][EOB_CTX_LUMA_INTRA],
                 DEFAULT_EOB_PT_16_CDF[2][EOB_CTX_LUMA_INTRA],
                 DEFAULT_EOB_PT_16_CDF[3][EOB_CTX_LUMA_INTRA],
+            ],
+            eob_pt_256: [
+                DEFAULT_EOB_PT_256_CDF[0][EOB_CTX_LUMA_INTRA],
+                DEFAULT_EOB_PT_256_CDF[1][EOB_CTX_LUMA_INTRA],
+                DEFAULT_EOB_PT_256_CDF[2][EOB_CTX_LUMA_INTRA],
+                DEFAULT_EOB_PT_256_CDF[3][EOB_CTX_LUMA_INTRA],
+            ],
+            coeff_base_lf_eob_16x16: [
+                DEFAULT_COEFF_BASE_LF_EOB_CDF[0][TX_SIZE_16X16_CTX][COEFF_BASE_LF_EOB_CTX_DC],
+                DEFAULT_COEFF_BASE_LF_EOB_CDF[1][TX_SIZE_16X16_CTX][COEFF_BASE_LF_EOB_CTX_DC],
+                DEFAULT_COEFF_BASE_LF_EOB_CDF[2][TX_SIZE_16X16_CTX][COEFF_BASE_LF_EOB_CTX_DC],
+                DEFAULT_COEFF_BASE_LF_EOB_CDF[3][TX_SIZE_16X16_CTX][COEFF_BASE_LF_EOB_CTX_DC],
             ],
             eob_extra: DEFAULT_EOB_EXTRA_CDF,
             coeff_base_lf_eob: coeff_base_lf_eob_bank(),
@@ -211,11 +240,25 @@ impl CoefficientTokenCdfRows {
             } if coeff_cdf_q_ctx < COEFF_CDF_Q_CONTEXTS => {
                 Ok(self.txb_skip[coeff_cdf_q_ctx].as_mut_slice())
             }
+            CoefficientCdfRowSelector::TxbSkip {
+                coeff_cdf_q_ctx,
+                plane_type: LUMA_PLANE_TYPE,
+                tx_size: TX_SIZE_16X16_CTX,
+                ctx: TXB_SKIP_CTX_NEUTRAL,
+            } if coeff_cdf_q_ctx < COEFF_CDF_Q_CONTEXTS => {
+                Ok(self.txb_skip_16x16[coeff_cdf_q_ctx].as_mut_slice())
+            }
             CoefficientCdfRowSelector::EobPt16 {
                 coeff_cdf_q_ctx,
                 eob_ctx: EOB_CTX_LUMA_INTRA,
             } if coeff_cdf_q_ctx < COEFF_CDF_Q_CONTEXTS => {
                 Ok(self.eob_pt_16[coeff_cdf_q_ctx].as_mut_slice())
+            }
+            CoefficientCdfRowSelector::EobPt256 {
+                coeff_cdf_q_ctx,
+                eob_ctx: EOB_CTX_LUMA_INTRA,
+            } if coeff_cdf_q_ctx < COEFF_CDF_Q_CONTEXTS => {
+                Ok(self.eob_pt_256[coeff_cdf_q_ctx].as_mut_slice())
             }
             CoefficientCdfRowSelector::EobExtra { coeff_cdf_q_ctx }
                 if coeff_cdf_q_ctx < COEFF_CDF_Q_CONTEXTS =>
@@ -228,6 +271,13 @@ impl CoefficientTokenCdfRows {
                 ctx,
             } if coeff_cdf_q_ctx < COEFF_CDF_Q_CONTEXTS && ctx < COEFF_BASE_LF_EOB_CTX_COUNT => {
                 Ok(self.coeff_base_lf_eob[coeff_cdf_q_ctx][ctx].as_mut_slice())
+            }
+            CoefficientCdfRowSelector::CoeffBaseLfEob {
+                coeff_cdf_q_ctx,
+                tx_size: TX_SIZE_16X16_CTX,
+                ctx: COEFF_BASE_LF_EOB_CTX_DC,
+            } if coeff_cdf_q_ctx < COEFF_CDF_Q_CONTEXTS => {
+                Ok(self.coeff_base_lf_eob_16x16[coeff_cdf_q_ctx].as_mut_slice())
             }
             CoefficientCdfRowSelector::CoeffBaseLf {
                 coeff_cdf_q_ctx,

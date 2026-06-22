@@ -395,6 +395,101 @@ fn dc_tokens_roundtrip_through_symbol_coder() {
 }
 
 #[test]
+fn general_intra_16x16_luma_dc_coded_tokens_use_eob_pt_256_and_tx_16x16() {
+    // Magnitude 6 (negative, asymmetric — NOT 0 or a symmetric value, so a sign/bit
+    // order bug cannot hide behind exit_symbol's bit-count-only check): txb_skip=0,
+    // eob_pt_256=0, coeff_base_eob=4, coeff_br=1, dc_sign=1.
+    let tokens = general_intra_16x16_luma_dc_coded_tokens(0, 6, true).unwrap();
+    let syntaxes: Vec<_> = tokens.iter().map(|t| t.syntax()).collect();
+    assert_eq!(
+        syntaxes,
+        vec![
+            CoefficientTokenSyntax::AllZero,
+            CoefficientTokenSyntax::EobPt256,
+            CoefficientTokenSyntax::CoeffBaseEob,
+            CoefficientTokenSyntax::CoeffBr,
+            CoefficientTokenSyntax::DcSign,
+        ]
+    );
+    // The luma txb_skip and coeff_base_eob use the TX_16X16 txSzCtx (2); the EOB symbol
+    // is the 256-position size class.
+    assert!(matches!(
+        tokens[0].selector(),
+        CoefficientCdfRowSelector::TxbSkip {
+            tx_size: TX_SIZE_16X16_CTX,
+            ..
+        }
+    ));
+    assert!(matches!(
+        tokens[1].selector(),
+        CoefficientCdfRowSelector::EobPt256 {
+            coeff_cdf_q_ctx: 0,
+            eob_ctx: EOB_CTX_LUMA_INTRA,
+        }
+    ));
+    assert!(matches!(
+        tokens[2].selector(),
+        CoefficientCdfRowSelector::CoeffBaseLfEob {
+            tx_size: TX_SIZE_16X16_CTX,
+            ctx: COEFF_BASE_LF_EOB_CTX_DC,
+            ..
+        }
+    ));
+    let symbols: Vec<_> = tokens.iter().map(|t| t.symbol()).collect();
+    assert_eq!(symbols, vec![0, 0, 4, 1, 1]);
+
+    // A sub-base magnitude (2 <= LF_NUM_BASE_LEVELS) omits the coeff_br token.
+    let small = general_intra_16x16_luma_dc_coded_tokens(0, 2, false).unwrap();
+    assert_eq!(small.len(), 4);
+    assert!(
+        small
+            .iter()
+            .all(|t| t.syntax() != CoefficientTokenSyntax::CoeffBr)
+    );
+}
+
+#[test]
+fn general_intra_16x16_luma_dc_tokens_roundtrip_through_entropy_proof() {
+    // The 16x16 luma single-coded-DC token stream (txb_skip, eob_pt_256, coeff_base_eob,
+    // coeff_br, dc_sign), proved through one § 8.2 SymbolEncoder↔decoder pass with the
+    // EobPt256 + TX_16X16 banks newly routed in the entropy-proof CDF router. The DC value
+    // is an ASYMMETRIC, nonzero magnitude (6, negative) so a sign/bit-order desync that
+    // exit_symbol's bit-count-only check cannot catch is exposed.
+    let tokens = general_intra_16x16_luma_dc_coded_tokens(0, 6, true).unwrap();
+    let expected: Vec<u8> = tokens.iter().map(|token| token.symbol()).collect();
+    assert_eq!(expected, vec![0, 0, 4, 1, 1]);
+
+    let proof = roundtrip_entropy_tokens(&tokens).unwrap();
+    assert_eq!(proof.decoded_symbols(), expected.as_slice());
+    assert_eq!(proof.symbol_count(), tokens.len() as u64);
+    assert!(!proof.bytes().is_empty());
+}
+
+#[test]
+fn general_intra_16x16_luma_dc_block_with_chroma_tail_roundtrips_through_one_coder() {
+    // The full 16x16 single-coded-DC block: the luma DC token stream followed by the
+    // chroma U/V all-zero tail (the 4x4-chroma `TxbSkip`/`VTxbSkip` tokens shared with the
+    // existing 4x4/64x64 DC path), proved through one § 8.2 coder via the block-symbol
+    // router (which routes the V-plane `all_zero` the entropy-proof router does not). The
+    // DC value is ASYMMETRIC and nonzero (6, negative) so a sign/bit-order desync shows.
+    use crate::block_symbol_trace::{BlockSymbolToken, roundtrip_block_symbol_trace};
+
+    let luma = general_intra_16x16_luma_dc_coded_tokens(0, 6, true).unwrap();
+    let mut trace: Vec<BlockSymbolToken> = luma.into_iter().map(BlockSymbolToken::Coeff).collect();
+    trace.push(BlockSymbolToken::Coeff(chroma_u_all_zero_token(0)));
+    trace.push(BlockSymbolToken::Coeff(chroma_v_all_zero_token(0, 0)));
+
+    let expected: Vec<u8> = trace.iter().map(|token| token.symbol()).collect();
+    // luma txb_skip=0, eob_pt_256=0, coeff_base_eob=4, coeff_br=1, dc_sign=1, U=1, V=1.
+    assert_eq!(expected, vec![0, 0, 4, 1, 1, 1, 1]);
+
+    let proof = roundtrip_block_symbol_trace(&trace).unwrap();
+    assert_eq!(proof.decoded_symbols(), expected.as_slice());
+    assert_eq!(proof.symbol_count(), trace.len() as u64);
+    assert!(!proof.bytes().is_empty());
+}
+
+#[test]
 fn rejects_non_luma_plane() {
     let coefficients = [0; DCT_DCT_4X4_COEFF_COUNT];
     let err =

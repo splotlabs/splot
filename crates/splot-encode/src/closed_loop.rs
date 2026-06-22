@@ -453,6 +453,7 @@ mod tests {
                 CoefficientTokenSyntax::AllZero
                 | CoefficientTokenSyntax::EobPt16
                 | CoefficientTokenSyntax::EobPt1024
+                | CoefficientTokenSyntax::EobPt256
                 | CoefficientTokenSyntax::EobExtra
                 | CoefficientTokenSyntax::CoeffBase
                 | CoefficientTokenSyntax::IntraTxType
