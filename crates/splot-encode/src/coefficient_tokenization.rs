@@ -1050,6 +1050,13 @@ mod general_walk_16x16;
 // sibling §8.2 roundtrip tests; not yet referenced by non-test code in this module.
 #[allow(unused_imports)]
 pub(crate) use general_walk_16x16::tokenize_general_16x16_luma_block;
+// The general 16x16 DCT_DCT luma FULL-range entry
+// (`ENC-COEFF-TOKENIZE-16X16-REFINE`): the same walk over the WHOLE `eob_pt_256` range
+// (eob 1..=256, eobPt <= 9), adding the symbol-7 `eob_pt_extra` refinement for eobPt 8
+// and 9. Re-exported for the sibling §8.2 roundtrip tests; not yet referenced by
+// non-test code in this module.
+#[allow(unused_imports)]
+pub(crate) use general_walk_16x16::tokenize_general_16x16_luma_block_full;
 
 mod general_walk_golomb;
 // The § 5.20.7.28 `read_quant` golomb tail (emission + recovery) for the general
