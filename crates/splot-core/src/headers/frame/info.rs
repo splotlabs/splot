@@ -476,9 +476,13 @@ impl<'a> FrameReferenceStateView<'a> {
     /// The five slices are parallel, one entry per reference slot. Supplying
     /// `RefBaseQIdx` lets the inter parser run the § 7.7 ranking over **two or more**
     /// valid reference slots (the multi-reference case): every other § 7.7 scoring input
-    /// is deterministic for the single-spatial-layer minimal frame (distinct per-slot
-    /// `RefCounter`, `AllowedFrames == -1`, all layers depend), so with `RefBaseQIdx`
-    /// modeled the derivation is exact rather than an `UnmodeledDerivation` stop.
+    /// is deterministic for the single-spatial-layer minimal frame (`AllowedFrames == -1`,
+    /// all layers depend). The committed fixtures refresh one slot per frame, so the
+    /// per-slot `RefCounter`s are naturally distinct; and even were two slots to hold one
+    /// frame (a shared `RefCounter`, e.g. `refresh_frame_flags` with multiple bits), the
+    /// § 7.7 `new_score_or_dist` step still drops the duplicate by identical
+    /// `(orderHint, score, mLayer)`. So with `RefBaseQIdx` modeled the derivation is exact
+    /// rather than an `UnmodeledDerivation` stop.
     #[must_use]
     pub const fn from_slots_with_base_q_idx(
         ref_valid: &'a [bool],

@@ -27,15 +27,17 @@
 //! ## What the caller must supply vs default
 //!
 //! § 7.7 reads saved reference state the validator's § 7.23 buffer models in part
-//! ([`super::FrameReferenceStateView`] carries `RefValid` / `RefOrderHint` / dims) and in
-//! part does NOT yet model (`RefBaseQIdx`, `RefCounter`, `RefMLayerId`, `RefTLayerId`, the
-//! per-frame `AllowedFrames`, the `TLayerDependencyMap` / `MLayerDependencyMap`). The caller
-//! passes whatever it can prove; for the single-spatial-layer minimal inter frame the
-//! unmodeled facts are deterministic (one TU layer → all dependency maps `1`,
-//! `AllowedFrames == -1`, `RefCounter` distinct-per-valid-slot already captured by
-//! `RefValid`'s `first` rule), so the result is exact. The inter parser gates the call to the
-//! at-most-one-valid-reference case (see [`super::inter`]); a richer reference state needing
-//! the unmodeled scoring inputs stays an honest `UnmodeledDerivation` stop there.
+//! ([`super::FrameReferenceStateView`] carries `RefValid` / `RefOrderHint` / dims, and — via
+//! [`super::FrameReferenceStateView::from_slots_with_base_q_idx`] — `RefBaseQIdx`) and in
+//! part does NOT yet model (`RefCounter`, `RefMLayerId`, `RefTLayerId`, the per-frame
+//! `AllowedFrames`, the `TLayerDependencyMap` / `MLayerDependencyMap`). The caller passes
+//! whatever it can prove; for the single-spatial-layer minimal inter frame the unmodeled
+//! facts are deterministic (one TU layer → all dependency maps `1`, `AllowedFrames == -1`,
+//! and the `new_score_or_dist` dedup makes a shared `RefCounter` harmless), so the result is
+//! exact. With `RefBaseQIdx` supplied (the `from_slots_with_base_q_idx` caller) the inter
+//! parser admits the multi-reference (>= 2 valid slot) case; the
+//! [`super::FrameReferenceStateView::from_slots`] caller (no `RefBaseQIdx`) still stops at an
+//! honest `UnmodeledDerivation` for > 1 valid slot.
 
 /// `NUM_REF_FRAMES` (AV2 v1.0.0 § 3): the number of reference-frame buffer slots.
 pub(crate) const NUM_REF_FRAMES: usize = 16;
@@ -273,10 +275,14 @@ pub(crate) fn get_ref_frames(input: &GetRefFramesInput, check_res: bool) -> GetR
             // The spec writes `Min(tDist, DECAY_DIST_CAP)` (upper bound only); `tDist`
             // can be negative here (it includes `obu_mlayer_id - RefMLayerId[i]`), for
             // which a literal index is out of bounds, so the lower clamp to 0 keeps the
-            // array access total and panic-free. This lower bound is dead in the current
-            // at-most-one-valid-reference gated wiring (no cross-reference ranking runs);
+            // array access total and panic-free. Cross-reference ranking now DOES run over
+            // >= 2 valid slots (DECODE-INTER-MULTIREF-RUNTIME), but this negative-tDist path
+            // stays unreachable: derive_implicit_ref_map forces obu_mlayer_id == 0 and every
+            // RefMLayerId == 0 (single spatial layer), so tDist = Abs(dispDiff) >= 0. The
+            // lower clamp is kept for panic-safety.
             // TODO(spec: AV2-7.7-GET-REF-FRAMES): re-validate the tDist < 0 score against a
-            // multi-reference avmdec/dav2d oracle when the >=2-reference ranking is wired.
+            // multi-reference avmdec/dav2d oracle if a multi-layer reference (obu_mlayer_id
+            // > 0 or RefMLayerId[i] > 0) is ever admitted.
             let cap = i64::from(DECAY_DIST_CAP);
             let lookup_idx = t_dist.clamp(0, cap) as usize;
             DIST_SCORE_LOOKUP[lookup_idx] + (t_dist - cap).max(0) + i64::from(q)

@@ -35,10 +35,20 @@ The decoder SHALL reject, with a structured `decode/unsupported-feature`
 diagnostic BEFORE producing any output, every case outside the verified subset:
 `NumTotalRefs > 2`, compound prediction / `reference_select`, more than two valid
 reference slots, a fourth frame, a `single_ref` block that has a decoded neighbour
-(the § 8.3.2 context is verified only for the no-neighbour context 1), and a frame
-that would inherit an ADAPTED inter frame's CDFs (the decoder does not model the
-§ 7.23 cross-frame CDF save/load, so a multi-frame stream whose earlier inter
-frames have `disable_cdf_update == 0` is rejected).
+(the § 8.3.2 context is verified only for the no-neighbour context 1), and an inter
+frame that would LOAD a prior ADAPTED frame's CDFs. The decoder does not model the
+§ 7.23 cross-frame CDF save/load (every frame decodes from the default
+`init_*_cdfs` state); a conformant decoder loads a prior frame's saved CDFs iff
+`primary_ref_frame` names a real reference and `disable_cross_frame_cdf_init == 0`
+(§ 5 :5426-5430), so an inter frame whose RESOLVED `primary_ref_frame` is a real
+reference (`0..PRIMARY_REF_NONE`) with cross-frame CDF init enabled, when ANY prior
+frame — the key OR an earlier inter — adapted (`disable_cdf_update == 0`), is
+rejected before the tile entropy decode. `PRIMARY_REF_CHOOSE` (the unsignalled
+placeholder splot does not resolve) is treated as no-load: every committed
+broad-tools-off fixture carries `primary_ref_frame == PRIMARY_REF_CHOOSE` and
+decodes bit-exact vs both oracles even with an adapted key, so for the admitted
+subset CHOOSE does not become a desyncing load (resolving `PRIMARY_REF_CHOOSE` is a
+named follow-on).
 
 #### Scenario: the three-frame multi-reference fixture decodes bit-exact
 - **WHEN** `splot decode syn-3frame-multiref-64x64.ivf --output-format raw` runs
@@ -70,7 +80,9 @@ frames have `disable_cdf_update == 0` is rejected).
 #### Scenario: cases outside the verified subset are rejected before output
 - **WHEN** a stream presents more than two valid reference slots, `NumTotalRefs >
   2`, a compound reference, a fourth frame, a neighbour-having `single_ref` block,
-  or a frame that would inherit an adapted inter frame's CDFs
+  or an inter frame that would load a prior adapted frame's CDFs (the key or an
+  earlier inter, via `primary_ref_frame != PRIMARY_REF_NONE` with cross-frame CDF
+  init enabled)
 - **THEN** the decoder emits a structured `decode/unsupported-feature` diagnostic
   and produces no output, never a confident-but-unverified frame
 

@@ -720,3 +720,39 @@ fn multiref_fixture_per_frame_hash_is_stable() {
         "the inter frames differ from the key"
     );
 }
+
+#[test]
+fn inter_loads_cross_frame_cdfs_matches_the_spec_load_precondition() {
+    use super::inter_loads_cross_frame_cdfs as loads;
+    // §5 (mirror :5426-5430): load_cdfs runs iff primary_ref_frame names a RESOLVED real
+    // reference (0..PRIMARY_REF_NONE, i.e. 0..=6) AND disable_cross_frame_cdf_init == 0.
+    // Loads: a resolved real primary reference with cross-frame CDF init enabled.
+    assert!(
+        loads(Some(0), Some(false)),
+        "primary_ref 0, init enabled -> loads"
+    );
+    assert!(
+        loads(Some(6), None),
+        "primary_ref 6, init flag absent (enabled) -> loads"
+    );
+    assert!(
+        loads(Some(3), Some(false)),
+        "primary_ref 3, init enabled -> loads"
+    );
+    // Does NOT load: PRIMARY_REF_NONE (7) regardless of the init flag.
+    assert!(!loads(Some(7), Some(false)), "PRIMARY_REF_NONE -> no load");
+    assert!(!loads(Some(7), None), "PRIMARY_REF_NONE -> no load");
+    // Does NOT load: PRIMARY_REF_CHOOSE (8) — the unsignalled placeholder splot does not
+    // resolve (the committed fixtures carry it and decode bit-exact vs both oracles).
+    assert!(
+        !loads(Some(8), Some(false)),
+        "PRIMARY_REF_CHOOSE -> no load"
+    );
+    assert!(!loads(Some(8), None), "PRIMARY_REF_CHOOSE -> no load");
+    // Does NOT load: cross-frame CDF init disabled (decode from default).
+    assert!(!loads(Some(0), Some(true)), "init disabled -> no load");
+    assert!(!loads(Some(5), Some(true)), "init disabled -> no load");
+    // Does NOT load: no parsed primary_ref_frame (no complete control region).
+    assert!(!loads(None, Some(false)), "no primary_ref_frame -> no load");
+    assert!(!loads(None, None), "no fields -> no load");
+}

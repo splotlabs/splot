@@ -290,16 +290,18 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
     // compound or NumTotalRefs > 2 frame) is rejected with a structured diagnostic
     // before any output. Tracked by `DECODE-INTER-MULTIREF-RUNTIME` (layered on
     // `DECODE-FIRST-INTER-FRAME-FRONTIER`).
-    // VERIFIED-SUBSET DISCIPLINE (CDF inheritance): the decoder does NOT model the
-    // §7.23 save_cdfs / §5.20.2 load_previous_segment_ids cross-frame CDF save/load —
-    // every frame is decoded from the default (init_*_cdfs) entropy state. That is
-    // bit-exact ONLY when no frame a later frame inherits CDFs from ever adapted them.
-    // A frame inherits an inter frame's CDFs when its `primary_ref_frame` points at a
-    // slot holding that inter frame and `disable_cdf_update == 0`. The committed
-    // multi-reference fixture is encoded with cdf-update-mode 0 (every frame
-    // `disable_cdf_update == 1`), so no adaptation propagates. Track whether any prior
-    // inter frame adapted; reject a later inter frame that could inherit it.
-    let mut prior_inter_adapted_cdfs = false;
+    // VERIFIED-SUBSET DISCIPLINE (CDF inheritance): the decoder decodes every frame
+    // from the default (init_*_cdfs) entropy state and does NOT model the §7.23
+    // save_cdfs / §5 load_cdfs cross-frame CDF flow. Track whether any prior frame
+    // (the KEY or an earlier inter) ADAPTED its CDFs (disable_cdf_update == 0); an
+    // inter frame that then LOADS cross-frame CDFs (per §5 :5426-5430,
+    // primary_ref_frame != PRIMARY_REF_NONE with cross-frame CDF init enabled) from
+    // such an adapted source would desync, so decode_minimal_inter_frame rejects it
+    // before output. Initialised from the key frame's own adaptation, so a first
+    // inter frame that loads the key's adapted CDFs is also caught. The committed
+    // fixtures are encoded with cdf-update-mode 0 (every frame disable_cdf_update ==
+    // 1), so the flag stays false and nothing is rejected.
+    let mut prior_frame_adapted_cdfs = key_core.disable_cdf_update != Some(true);
     // Each following frame candidate maps to IVF frame index 1, 2, ... (the leading
     // key frame is IVF frame 0).
     for (ivf_frame_index, next_candidate) in (1usize..).zip(candidates) {
@@ -318,18 +320,10 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
                         "minimal multi-reference decode is verified only for up to two valid reference slots; a third valid slot needs a richer §7.7 ranking / multi-decision single_ref that is not yet fixtured",
                     ));
                 }
-                // A frame that could inherit a prior INTER frame's adapted CDFs (any frame
-                // after the first inter frame) requires that no prior inter frame adapted —
-                // otherwise the default-CDF decode desyncs. The first inter frame inherits
-                // only the key (intra; its inter-mode CDFs are untouched defaults), so it is
-                // unaffected.
-                if ivf_frame_index >= 2 && prior_inter_adapted_cdfs {
-                    return Err(unsupported_at(
-                        "inter_cdf_inheritance_unmodeled",
-                        next_candidate.offset(),
-                        "minimal multi-reference decode requires every prior inter frame to have disable_cdf_update == 1 (the decoder does not model §7.23 cross-frame CDF save/load); a later frame that inherits an adapted inter frame's CDFs is rejected",
-                    ));
-                }
+                // The §7.23 cross-frame CDF-inheritance reject (a frame loading a prior
+                // adapted frame's CDFs, which the decoder does not model) is applied inside
+                // decode_minimal_inter_frame, which has the parsed primary_ref_frame /
+                // disable_cross_frame_cdf_init and rejects BEFORE the tile entropy decode.
                 // Build the §7.23 reference store from the frames decoded so far, then
                 // decode this inter frame over it. `build_store` borrows `frames`; the
                 // borrow ends when the inter decode returns its owned frame.
@@ -351,12 +345,14 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
                     options,
                     header,
                     &inter_state,
+                    prior_frame_adapted_cdfs,
                 )?;
                 drop(store);
                 // Record whether THIS inter frame adapted its CDFs (disable_cdf_update ==
-                // 0), so a later frame inheriting from it is rejected above.
+                // 0), so a later frame that loads its CDFs is rejected. Monotonic: once any
+                // prior frame (the key or an inter) adapted, the flag stays set.
                 if inter_core.disable_cdf_update != Some(true) {
-                    prior_inter_adapted_cdfs = true;
+                    prior_frame_adapted_cdfs = true;
                 }
                 let frame_index = frames.len();
                 frames.push(inter_frame);

@@ -81,6 +81,35 @@ impl Mv {
     const ZERO: Self = Self { row: 0, col: 0 };
 }
 
+/// AV2 § 5 (mirror `docs/spec/av2/1.0.0/05-syntax-structures.md` :5426-5430)
+/// `load_cdfs` precondition: a conformant decoder loads a prior frame's saved CDFs
+/// iff `primary_ref_frame` names a real reference AND `disable_cross_frame_cdf_init`
+/// is 0. The minimal decoder does NOT model `load_cdfs` (every frame decodes from
+/// the default `init_*_cdfs` state), so the caller uses this to reject a frame that
+/// would inherit a prior ADAPTED frame's CDFs (a §7.23 cross-frame CDF flow that
+/// would otherwise desync).
+///
+/// "Names a real reference" means a RESOLVED `primary_ref_frame` in
+/// `0..PRIMARY_REF_NONE` (0..=6). `PRIMARY_REF_NONE` (7) decodes from default, and
+/// `PRIMARY_REF_CHOOSE` (8) — the unsignalled placeholder splot does NOT resolve —
+/// is also treated as "does not load": the committed broad-tools-off fixtures all
+/// carry `primary_ref_frame == PRIMARY_REF_CHOOSE` and decode bit-exact vs avmdec
+/// AND dav2d even with an ADAPTED key, so for the admitted subset CHOOSE does not
+/// become a desyncing adapted-CDF load. Resolving `PRIMARY_REF_CHOOSE` and the
+/// per-slot adaptation tracking it would need is a named follow-on; a `None`
+/// `primary_ref_frame` (no complete control region) is also "does not load".
+fn inter_loads_cross_frame_cdfs(
+    primary_ref_frame: Option<u8>,
+    disable_cross_frame_cdf_init: Option<bool>,
+) -> bool {
+    /// `PRIMARY_REF_NONE` (AV2 v1.0.0 § 3): values `0..PRIMARY_REF_NONE` are resolved
+    /// real references; `PRIMARY_REF_NONE` (7) and `PRIMARY_REF_CHOOSE` (8) are not.
+    const PRIMARY_REF_NONE: u8 = 7;
+    let loads_primary = matches!(primary_ref_frame, Some(p) if p < PRIMARY_REF_NONE);
+    let cross_frame_init_enabled = disable_cross_frame_cdf_init != Some(true);
+    loads_primary && cross_frame_init_enabled
+}
+
 /// Decodes the minimal inter frame, given the post-key reference store, and returns
 /// its displayed frame. The reference for slot `ref_frame_idx[0]` must be present.
 ///
@@ -100,6 +129,7 @@ pub(super) fn decode_minimal_inter_frame(
     options: DecodeOptions,
     header: IvfHeader,
     reference: &InterReferenceState<'_>,
+    prior_frame_adapted_cdfs: bool,
 ) -> Result<(MinimalRuntimeFrame, FrameHeaderCore)> {
     let offset = frame_envelope.offset;
 
@@ -115,6 +145,37 @@ pub(super) fn decode_minimal_inter_frame(
     // §5.18.2 inter frame-header parse using the post-key reference state.
     let core = parse_inter_frame_core(frame_envelope, sequence, reference)?;
     validate_inter_frame_core(&core, sequence, offset)?;
+
+    // VERIFIED-SUBSET DISCIPLINE (§7.23 cross-frame CDF save/load): the decoder
+    // decodes every frame from the default (init_*_cdfs) entropy state and does NOT
+    // model the §7.23 save_cdfs / §5 load_cdfs cross-frame CDF flow. A conformant
+    // decoder loads a prior frame's SAVED (post-decode — adapted when
+    // disable_cdf_update == 0) CDFs iff `primary_ref_frame != PRIMARY_REF_NONE` AND
+    // `disable_cross_frame_cdf_init == 0` (§5 mirror :5426-5430). If THIS frame loads
+    // cross-frame CDFs AND any prior frame (the key OR an earlier inter) adapted, the
+    // default-CDF decode would desync from the conformant adapted-CDF decode — a
+    // §8.2.4 exit_symbol()-passable confident-wrong frame — so reject it before the
+    // tile entropy decode. This is precise (it does NOT reject a frame that does not
+    // load, nor a load from a non-adapted source), so the committed single-reference
+    // fixtures (whose inter frames do not load an adapted source) stay byte-identical;
+    // a default-cdf-update stream that loads an adapted frame is rejected, not
+    // mis-decoded.
+    let loads = inter_loads_cross_frame_cdfs(
+        core.inter
+            .as_ref()
+            .and_then(|inter| inter.primary_ref_frame),
+        core.inter
+            .as_ref()
+            .and_then(|inter| inter.disable_cross_frame_cdf_init),
+    );
+    if prior_frame_adapted_cdfs && loads {
+        return Err(unsupported_at(
+            "inter_cdf_inheritance_unmodeled",
+            offset,
+            "minimal multi-reference decode does not model §7.23 cross-frame CDF save/load; an inter frame that loads (primary_ref_frame != PRIMARY_REF_NONE with cross-frame CDF init enabled) a prior adapted frame's CDFs is rejected before any output",
+            SPEC_HEADER,
+        ));
+    }
 
     let frame_size = core.frame_size.ok_or_else(|| {
         unsupported_at(
