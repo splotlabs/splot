@@ -41,6 +41,16 @@ const NO_NEIGHBOUR_DC_PREDICTOR_8BIT: u8 = 128;
 /// ([`crate::general_intra_trace::emit_minimal_intra_skip_ivf`]) produces: 64x64.
 const SUPPORTED_FRAME_DIMENSION: usize = 64;
 
+/// The `base_q_idx` range the minimal skip path can honestly emit: `1..=90`. Within this
+/// range the decoder's coefficient CDF q-context is `0` (matching the skip tile's coding);
+/// the skip block's all-zero residual makes the flat-128 reconstruction independent of the
+/// exact `base_q_idx`. Above 90 the q-context derivation is not yet modeled, and `0`
+/// (lossless) is excluded from this minimal tier.
+//
+// TODO(spec: ENC-CONFIG-QP-FIELD): widen once the `get_qctx` mapping lands (co-evolving
+// with the decoder's currently-placeholder q-context).
+const SUPPORTED_SKIP_QP: core::ops::RangeInclusive<u8> = 1..=90;
+
 /// A queued input frame with its visible samples owned, so [`Context::receive_packet`] can
 /// inspect the pixels after the borrowed [`Frame`] has gone out of scope.
 #[derive(Debug)]
@@ -264,7 +274,7 @@ impl Context {
         }
 
         if let Some(frame) = self.input_queue.pop_front() {
-            match Self::try_emit_supported_packet(&frame) {
+            match self.try_emit_supported_packet(&frame) {
                 Ok(Some(packet)) => return Ok(ReceivePacketStatus::Packet(packet)),
                 Ok(None) => {
                     // The input is outside the subset the minimal encoder can honestly encode
@@ -295,16 +305,21 @@ impl Context {
     /// Produces a coded packet for the input subset the minimal encoder can encode losslessly:
     /// a 64x64 frame whose every visible Y/U/V sample is the 128 no-neighbour DC predictor. Such
     /// a frame has zero residual, so the skip frame's flat-128 reconstruction equals the input.
+    /// The frame is muxed at the configured fixed quantizer [`EncoderConfig::qp`](crate::EncoderConfig::qp).
     ///
-    /// Returns `Ok(None)` for any other frame (a different size or any non-128 sample) — the
-    /// encoder cannot yet honestly encode it, so the caller retires it without a packet rather
-    /// than emit output that would not decode back to the input.
+    /// Returns `Ok(None)` for any other frame (a different size or any non-128 sample), or when
+    /// the configured `qp` is outside the range whose coefficient CDF q-context the encoder
+    /// currently models (see [`SUPPORTED_SKIP_QP`]) — the encoder cannot yet honestly encode it,
+    /// so the caller retires it without a packet rather than emit output that would not decode.
     ///
     /// # Errors
     /// Returns the underlying [`Error`] if the skip emitter fails to assemble the container.
-    fn try_emit_supported_packet(frame: &QueuedFrame) -> Result<Option<Packet>> {
+    fn try_emit_supported_packet(&self, frame: &QueuedFrame) -> Result<Option<Packet>> {
         let size = frame.info.visible_luma_size();
         if size.width() != SUPPORTED_FRAME_DIMENSION || size.height() != SUPPORTED_FRAME_DIMENSION {
+            return Ok(None);
+        }
+        if !SUPPORTED_SKIP_QP.contains(&self.config.qp) {
             return Ok(None);
         }
         let is_flat_predictor =
@@ -317,7 +332,10 @@ impl Context {
         }
         // The packet carries one coded access unit (the Annex B temporal unit), not a full IVF
         // file — so a consumer can mux multiple packets into a stream.
-        let data = crate::general_intra_trace::emit_minimal_intra_skip_temporal_unit()?;
+        let data =
+            crate::general_intra_trace::emit_minimal_intra_skip_temporal_unit_with_base_q_idx(
+                self.config.qp,
+            )?;
         Ok(Some(Packet { data }))
     }
 

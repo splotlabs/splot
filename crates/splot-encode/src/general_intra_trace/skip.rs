@@ -92,10 +92,25 @@ pub fn emit_minimal_intra_skip_ivf() -> Result<Vec<u8>> {
 /// auto-detects it as Annex B) and concatenating packets yields a valid stream, unlike emitting a
 /// full IVF *file* per packet.
 pub(crate) fn emit_minimal_intra_skip_temporal_unit() -> Result<Vec<u8>> {
+    emit_minimal_intra_skip_temporal_unit_with_base_q_idx(SKIP_FRAME_BASE_Q_IDX)
+}
+
+/// Emits the minimal intra skip frame access unit (see [`emit_minimal_intra_skip_temporal_unit`])
+/// muxed at a caller-chosen `base_q_idx` (AV2 § 5.18.2). The DC skip block has an all-zero
+/// residual, so its flat reconstruction is independent of `base_q_idx`; only the frame-header
+/// quantizer field changes. The tile's coefficient CDF q-context stays
+/// [`SKIP_FRAME_COEFF_CDF_Q_CTX`] (`0`), which matches the decoder's current q-context for the
+/// supported `base_q_idx` range; callers (`Context`) restrict `base_q_idx` to that range.
+//
+// TODO(spec: ENC-CONFIG-QP-FIELD): derive the coefficient CDF q-context from `base_q_idx`
+// (the §8.3.2 `get_qctx` thresholds) so the full quantizer range is supported, co-evolving with
+// the decoder's q-context (currently a documented placeholder pinned to 0).
+pub(crate) fn emit_minimal_intra_skip_temporal_unit_with_base_q_idx(
+    base_q_idx: u8,
+) -> Result<Vec<u8>> {
     let tile_data = encode_general_intra_dc_skip_tile_data()?;
     splot_core::headers::frame::encode_minimal_intra_clk_temporal_unit_with_base_q_idx(
-        SKIP_FRAME_BASE_Q_IDX,
-        &tile_data,
+        base_q_idx, &tile_data,
     )
     .map_err(|source| Error::MinimalIntraSkipIvf { source })
 }

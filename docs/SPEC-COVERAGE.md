@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 391 feature(s); 338 cite a spec section.
+Matrix version 1. Last reviewed 2026-06-15. 392 feature(s); 339 cite a spec section.
 
 One row per (spec section, feature) pair, in spec order; a feature citing both a syntax and a semantics section appears under both. The canonical status source is [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); the full per-feature ledger is [FEATURE-STATUS.md](./FEATURE-STATUS.md).
 
@@ -195,6 +195,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.18.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2) | Frame header info syntax | `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS` | ✅ | 🟡 | ✅ | ✅ | 3 |
 | [§ 5.18.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2) | Frame header info syntax | `DECODE-TILE-PAYLOAD-INPUT-DERIVATION` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 5.18.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2) | Frame header info syntax | `DECODE-Y4M-RUNTIME-OUTPUT` | ✅ | 🟡 | ✅ | ✅ | 4 |
+| [§ 5.18.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2) | Frame header info syntax | `ENC-CONFIG-QP-FIELD` | ✅ | — | — | ✅ | — |
 | [§ 5.18.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2) | Frame header info syntax | `ENC-FRAME-HEADER-CORE-ASSEMBLER` | ✅ | — | — | ✅ | — |
 | [§ 5.18.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2) | Frame header info syntax | `ENC-MINIMAL-CLK-BASE-Q-IDX` | ✅ | — | — | ✅ | — |
 | [§ 5.18.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2) | Frame header info syntax | `ENC-MINIMAL-INTRA-SKIP-IVF` | ✅ | — | — | ✅ | — |

@@ -44,7 +44,7 @@ mod syntax_ir;
 const _: fn() -> usize = core_boundary::dependency_marker;
 const _: fn() -> usize = recon_boundary::dependency_marker;
 
-pub use config::{BitDepth, ChromaSubsampling, EncoderConfig};
+pub use config::{BitDepth, ChromaSubsampling, DEFAULT_QP, EncoderConfig};
 pub use context::{
     Context, EncoderOperation, EncoderState, FlushStatus, Packet, ReceivePacketStatus,
     SendFrameStatus,
