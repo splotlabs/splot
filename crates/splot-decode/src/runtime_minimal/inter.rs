@@ -158,6 +158,34 @@ pub(super) fn decode_minimal_inter_frame(
                     SPEC_HEADER,
                 ));
             }
+            // §5 :5431-5439: inside the load_cdfs arm a conformant decoder ALSO calls
+            // blend_cdfs(ref_frame_idx[blendFrame]) when enable_avg_cdf && !avg_cdf_type
+            // (&& blendFrame != NONE && !bru_inactive) — a SECONDARY saved-CDF load over the
+            // primary. The minimal decoder models NO blend_cdfs, so reject a loading frame
+            // that would actually blend a second reference. blendFrame != NONE requires a
+            // SECOND loadable reference: for an unsignalled (CHOOSE) frame that is a second
+            // inter candidate (derivedSecondary, == inter_ref_count >= 2); a signalled frame
+            // can blend the derived primary even with one inter candidate, so it is rejected
+            // conservatively. A frame with no second reference (the committed multiref: ONE
+            // inter reference, unsignalled) does NOT blend and stays admitted — no regression.
+            let blend_enabled = sequence
+                .transform_quant_entropy
+                .as_ref()
+                .is_some_and(|tq| tq.enable_avg_cdf && tq.avg_cdf_type == 0);
+            let inter_ref_count = inter_ctrl
+                .ref_frame_idx
+                .iter()
+                .filter(|&&s| reference.ref_is_inter.get(s as usize).copied() == Some(true))
+                .count();
+            let signalled = inter_ctrl.signal_primary_ref_frame == Some(true);
+            if blend_enabled && (signalled || inter_ref_count >= 2) {
+                return Err(unsupported_at(
+                    "inter_blend_cdf_unmodeled",
+                    offset,
+                    "minimal multi-reference decode does not model the §5 blend_cdfs secondary CDF load (enable_avg_cdf && avg_cdf_type == 0 with a second loadable reference); such a loading inter frame is rejected before any output",
+                    SPEC_HEADER,
+                ));
+            }
         }
     }
 

@@ -8,8 +8,13 @@ inter frame would load a prior frame's saved CDFs, INCLUDING the
 `choose_primary_secondary_ref_frame` (mirror :5451-5510). The resolution loop SHALL
 score ONLY reference slots whose `RefFrameType == INTER_FRAME` (mirror :5470), by
 `qpDiff = Abs(RefBaseQIdx - base_q_idx)` with the `is_ref_better` order-hint
-tie-break, so a key / intra-only reference history resolves
-`PRIMARY_REF_CHOOSE` to `PRIMARY_REF_NONE` (no load).
+tie-break, so a key / intra-only reference history resolves an UNSIGNALLED
+`PRIMARY_REF_CHOOSE` to `PRIMARY_REF_NONE` (no load). When
+`signal_primary_ref_frame == 1`, the § 5 :5497-5508 tail SHALL override
+`DerivedPrimaryRefFrame` to the signalled `primary_ref_frame` UNCONDITIONALLY
+(regardless of the inter-only ranking result), so a signalled frame whose primary
+names an adapted slot — even with no inter ranking candidate — loads that slot (and
+is rejected below), rather than collapsing to `PRIMARY_REF_NONE` / no-load.
 
 The decoder SHALL reject, with a structured `decode/unsupported-feature` diagnostic
 BEFORE any output, an inter frame whose RESOLVED `primary_ref_frame` loads a
@@ -32,6 +37,14 @@ rejected on this basis.
 - **THEN** `choose_primary_secondary_ref_frame` resolves `PRIMARY_REF_CHOOSE` to
   `PRIMARY_REF_NONE`, the frame loads no cross-frame CDFs, and it is NOT rejected on
   the CDF-inheritance basis (the committed 2-frame inter fixtures, byte-identical)
+
+#### Scenario: a signalled primary overrides the ranking and loads its slot
+- **WHEN** an inter frame has `signal_primary_ref_frame == 1` and a `primary_ref_frame`
+  naming a retained slot for which the inter-only ranking finds no candidate
+- **THEN** the signalled `primary_ref_frame` overrides `DerivedPrimaryRefFrame`, the
+  frame loads `ref_frame_idx[primary_ref_frame]`, and it is rejected
+  (`inter_cdf_inheritance_unmodeled`) when that slot is adapted — never silently
+  decoded from default CDFs
 
 ### Requirement: Per-slot CDF adaptation tracking
 The decoder SHALL record, per § 7.23 reference slot, whether the frame stored there
@@ -59,18 +72,43 @@ retained in the § 7.23 buffer, because the buffer stores no § 7.23 `SavedMvs` 
   (`inter_temporal_mvs_unmodeled`) and produces no output
 
 ### Requirement: Reject order-hint-wrapped reference histories
-The decoder SHALL store each slot's `RefOrderHint` as the unwrapped `OrderHint`
-(`get_disp_order_hint()`, AV2 § 5.18.2 mirror :5368-5381) and SHALL reject, with a
-structured `decode/unsupported-feature` diagnostic BEFORE any output, a reference
-history whose distinct order hints span a full `(1 << OrderHintBits)` window — where
-the stored `OrderHintLsbs` could differ from the unwrapped `OrderHint` and mis-order
-the § 7.7 / `choose_primary_secondary_ref_frame` ranking.
+The decoder SHALL reject, with a structured `decode/unsupported-feature` diagnostic
+BEFORE any output, an order-hint-wrapped reference history. It stores each slot's
+`RefOrderHint` as the parsed `OrderHintLsbs`, which equals the unwrapped `OrderHint`
+(`get_disp_order_hint()`, AV2 § 5.18.2 mirror :5368-5381) only while the history span
+is small enough that the wrap correction never fires — the correction applies once
+`maxDisp - OrderHintLsbs >= (1 << OrderHintBits) / 2` (HALF a window). The reject
+therefore fires for a reference history whose distinct order hints span at least HALF
+a `(1 << OrderHintBits)` window (including a `monotonic_output_order_flag == 0`
+wrap-back), where the stored `OrderHintLsbs` could differ from the unwrapped
+`OrderHint` and mis-order the § 7.7 / `choose_primary_secondary_ref_frame` ranking.
 
 #### Scenario: a wrapping order-hint history is rejected
 - **WHEN** the prior valid slots' order hints plus the current frame's order hint
-  span at least one `OrderHintBits` window
+  span at least HALF an `OrderHintBits` window (e.g. a wrap-back: refs {0, 15}, next
+  order hint 0, `OrderHintBits` 4)
 - **THEN** the decoder emits `decode/unsupported-feature`
   (`inter_order_hint_wrapped`) and produces no output
+
+### Requirement: Reject the §5 blend_cdfs secondary CDF load
+The decoder SHALL reject, with a structured `decode/unsupported-feature` diagnostic
+BEFORE any output, a loading inter frame that would invoke the AV2 § 5 :5431-5439
+`blend_cdfs(ref_frame_idx[blendFrame])` secondary CDF load, because it models no
+`blend_cdfs`. Inside the `load_cdfs` arm a conformant decoder ALSO blends when
+`enable_avg_cdf == 1`, `avg_cdf_type == 0`, `blendFrame != PRIMARY_REF_NONE`, and
+`!bru_inactive`; the reject therefore fires for a loading frame whose sequence has
+`enable_avg_cdf == 1` and `avg_cdf_type == 0` AND that has a second loadable reference
+(`blendFrame != NONE`: a second INTER candidate `derivedSecondary` for an unsignalled
+frame, conservatively any signalled frame). A loading frame with no second loadable
+reference (one INTER reference, unsignalled — the committed multi-reference fixture)
+does NOT blend and SHALL stay admitted.
+
+#### Scenario: a blend-enabled frame with a second reference is rejected
+- **WHEN** a loading inter frame's sequence has `enable_avg_cdf == 1` and
+  `avg_cdf_type == 0` and it has a second loadable reference (a second inter
+  candidate, or it is signalled)
+- **THEN** the decoder emits `decode/unsupported-feature`
+  (`inter_blend_cdf_unmodeled`) and produces no output
 
 ### Requirement: Require complete reference state before multi-reference ranking
 The decoder SHALL keep the AV2 § 7.7 `derive_implicit_ref_map`

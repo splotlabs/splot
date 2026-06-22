@@ -890,10 +890,46 @@ fn resolve_cdf_load_models_choose_resolution_and_load_decision() {
     );
 }
 
+#[test]
+fn resolve_cdf_load_signal_primary_overrides_ranking_even_with_no_inter_candidate() {
+    use super::cross_frame::{ResolvedCdfLoad, resolve_cdf_load as resolve};
+    // §5 :5497-5508: with signal_primary_ref_frame == 1 the signalled primary_ref_frame
+    // overrides DerivedPrimaryRefFrame UNCONDITIONALLY — even when the inter-only ranking
+    // finds no candidate. Here ref_frame_idx[0] is the KEY (non-inter) slot and there is no
+    // inter slot, so the ranking returns PRIMARY_REF_NONE; a signalled primary 0 must still
+    // resolve to LoadSlot(0) so the caller's adapted-slot reject is REACHABLE, NOT the
+    // Default the ranking-only resolution would (wrongly) produce — the P1 under-reject.
+    let ref_frame_idx = [0u32];
+    let is_inter = [false]; // KEY-only history: no inter ranking candidate
+    let base_q = [70u32];
+    let oh = [0u32];
+    let w = [64u32];
+    let h = [64u32];
+    let load = resolve(
+        Some(true), // signal_primary_ref_frame == 1
+        Some(0),    // signalled primary_ref_frame 0 (the KEY slot)
+        Some(false),
+        &ref_frame_idx,
+        &is_inter,
+        &base_q,
+        &oh,
+        &w,
+        &h,
+        130,
+        2,
+    );
+    assert!(
+        matches!(load, ResolvedCdfLoad::LoadSlot(0)),
+        "a signalled primary overrides the (NONE) ranking -> LoadSlot(0), so an adapted slot 0 is rejected, not silently decoded from defaults"
+    );
+}
+
 /// AV2 § 5.18.2 `get_disp_order_hint` — the stored RefOrderHint (= OrderHintLsbs) is the
-/// unwrapped OrderHint only while the GOP order hints span LESS than one OrderHintBits
-/// window. A small monotonic history (key 0, then 1, the committed fixtures with
-/// OrderHintBits 4/7) is non-wrapping; a history that spans the full window is rejected.
+/// unwrapped OrderHint only while the GOP order hints span less than HALF an OrderHintBits
+/// window; the correction fires once `maxDisp - LSB >= window/2`. A small forward history
+/// (key 0, then 1/2, the committed fixtures with OrderHintBits 4/7) is non-wrapping; a span
+/// reaching half the window — including a `monotonic_output_order_flag == 0` wrap-back — is
+/// rejected (the loose full-window bound used to admit it and mis-order the § 7.7 ranking).
 #[test]
 fn order_hint_history_wrap_guard() {
     use super::cross_frame::order_hint_history_unwrapped as unwrapped;
@@ -901,18 +937,25 @@ fn order_hint_history_wrap_guard() {
     let ref_oh = [0u32, 0, 0, 0]; // slot 0 (key) at order hint 0
     // order_hint_bits 0 -> trivially non-wrapping (no order-hint signaling).
     assert!(unwrapped(&ref_valid, &ref_oh, 0, 5));
-    // Next frame order_hint 1 with the key at 0, window 1<<4 == 16: 1 - 0 < 16 -> ok.
+    // Forward within HALF a window (window 1<<4 == 16, half 8): key 0, next 1 -> 1 < 8 ok.
     assert!(unwrapped(&ref_valid, &ref_oh, 4, 1));
-    // LSB 15 with the key at 0 still fits (15 < 16)...
-    assert!(unwrapped(&ref_valid, &ref_oh, 4, 15));
-    // ...but 16 spans the full window (16 - 0 == 16, not < 16) -> rejected (potential wrap).
-    assert!(!unwrapped(&ref_valid, &ref_oh, 4, 16));
-    // Two valid slots at 0 and 10; a next frame at 1 spans 10 - 1 == 9 (< 16) -> ok, but a
-    // tighter window (order_hint_bits 3, window 8) rejects (9 not < 8).
-    let ref_valid2 = [true, true, false, false];
-    let ref_oh2 = [0u32, 10, 0, 0];
-    assert!(unwrapped(&ref_valid2, &ref_oh2, 4, 1));
-    assert!(!unwrapped(&ref_valid2, &ref_oh2, 3, 1));
+    // A span >= half a window can trigger the get_disp_order_hint correction, so it is
+    // rejected even though it is < a FULL window: next 15 spans 15 (>= 8) -> rejected.
+    assert!(!unwrapped(&ref_valid, &ref_oh, 4, 15));
+    // The wrap-back the loose full-window bound used to ADMIT: refs {0, 15}, next LSB 0,
+    // window 16 -> span 15 >= half (8) -> REJECTED (get_disp_order_hint corrects the 0,
+    // so the stored LSB would mis-order the §7.7 ranking).
+    let wrap_valid = [true, true, false, false];
+    let wrap_oh = [0u32, 15, 0, 0];
+    assert!(!unwrapped(&wrap_valid, &wrap_oh, 4, 0));
+    // A small forward span stays admitted under the half-window bound, and a tighter window
+    // rejects it: refs {0, 2}, next 3 spans 3 -> bits 4 (half 8) ok, bits 3 (half 4) ok,
+    // bits 2 (half 2) rejected.
+    let fwd_valid = [true, true, false, false];
+    let fwd_oh = [0u32, 2, 0, 0];
+    assert!(unwrapped(&fwd_valid, &fwd_oh, 4, 3));
+    assert!(unwrapped(&fwd_valid, &fwd_oh, 3, 3));
+    assert!(!unwrapped(&fwd_valid, &fwd_oh, 2, 3));
 }
 
 /// `FloorLog2` (AV2 § 4): the MSB index, 0 for 0.

@@ -46,13 +46,16 @@ pub(super) enum ResolvedCdfLoad {
 /// resolve to a real ADAPTED inter reference, which the prior `CHOOSE -> no load` shortcut
 /// silently let bypass the guard.
 ///
-/// `signal_primary_ref_frame == Some(true)` keeps the explicitly-signalled
-/// `primary_ref_frame`; `Some(false)` (or `None`) resolves CHOOSE. The
-/// `choose_primary_secondary_ref_frame` ranking (mirror :5468-5495) scores ONLY
+/// `DerivedPrimaryRefFrame` is the §5 :5497-5508 signal-overridden value: when
+/// `signal_primary_ref_frame == Some(true)` it is the explicitly-signalled
+/// `primary_ref_frame` itself (the inter-only ranking is overridden — so a signalled
+/// primary CAN change the resolved load slot, including to an adapted non-inter slot the
+/// ranking would not pick); when unsignalled it is the
+/// `choose_primary_secondary_ref_frame` ranking (mirror :5468-5495), which scores ONLY
 /// `RefFrameType == INTER_FRAME` slots (`ref_is_inter`), excludes `RESTRICTED_OH`
 /// (not produced here), and `first_slot_with_ref` is a no-op (distinct slots), so a key /
 /// intra-only reference history resolves to `PRIMARY_REF_NONE` (the [`ResolvedCdfLoad::Default`]
-/// arm) — exactly the committed 2-frame fixtures, whose only valid slot holds the KEY frame.
+/// arm) — exactly the committed 2-frame fixtures (unsignalled CHOOSE, KEY-only valid slot).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn resolve_cdf_load(
     signal_primary_ref_frame: Option<bool>,
@@ -67,8 +70,8 @@ pub(super) fn resolve_cdf_load(
     current_base_q_idx: u32,
     current_order_hint: i32,
 ) -> ResolvedCdfLoad {
-    // mirror :5412-5413: (DerivedPrimaryRefFrame, _) = choose_primary_secondary_ref_frame().
-    let derived = choose_primary_ref_frame(
+    // mirror :5468-5495: the inter-only qpDiff ranking (the unsignalled derived primary).
+    let ranked = choose_primary_ref_frame(
         ref_frame_idx,
         ref_is_inter,
         ref_base_q_idx,
@@ -78,17 +81,28 @@ pub(super) fn resolve_cdf_load(
         current_base_q_idx,
         current_order_hint,
     );
-    // mirror :5414-5416: PRIMARY_REF_CHOOSE -> DerivedPrimaryRefFrame.
+    // mirror :5497-5508 (cross-checked vs AVM av2/common/pred_common.c
+    // set_primary_ref_frame_and_ctx): when signal_primary_ref_frame == 1 the
+    // choose_primary_secondary_ref_frame tail UNCONDITIONALLY overrides
+    // DerivedPrimaryRefFrame to the signalled primary_ref_frame (whatever the inter-only
+    // ranking found — even NONE). So the §5 DerivedPrimaryRefFrame is the signalled
+    // primary for signal==1, and the ranking otherwise. (Without this, a signal==1 frame
+    // whose signalled primary names an adapted slot but whose ranking returns NONE would
+    // collapse to Default below and bypass the adapted-load reject -> confident-wrong.)
+    let derived = if signal_primary_ref_frame == Some(true) {
+        primary_ref_frame.unwrap_or(PRIMARY_REF_NONE)
+    } else {
+        ranked
+    };
+    // mirror :5414-5416: PRIMARY_REF_CHOOSE -> DerivedPrimaryRefFrame (the unsignalled
+    // placeholder only; a signalled frame already carries its real primary_ref_frame, and
+    // `derived` above equals it).
     let mut primary = match primary_ref_frame {
         Some(PRIMARY_REF_CHOOSE) => derived,
         Some(p) => p,
         // A None primary (no complete control region) -> conservatively NONE (no load).
         None => PRIMARY_REF_NONE,
     };
-    // The signal flag does not change the resolved load slot in this subset (a signalled
-    // primary keeps its value; an unsignalled CHOOSE took the derived value above), but it
-    // is part of the §5 contract — record it for clarity.
-    let _ = signal_primary_ref_frame;
     // mirror :5417-5422: DerivedPrimaryRefFrame == NONE || primary_ref_frame == NONE
     // -> primary = NONE, disable_cross_frame_cdf_init = 1.
     let mut cross_frame_init_disabled = disable_cross_frame_cdf_init == Some(true);
@@ -203,11 +217,14 @@ pub(super) fn floor_log2(x: u64) -> i32 {
 /// the stored `RefOrderHint` (= `OrderHintLsbs`) equals the unwrapped `OrderHint`
 /// (`get_disp_order_hint()`, AV2 § 5.18.2 mirror :5368-5381) for every frame.
 ///
-/// `get_disp_order_hint()` returns `OrderHintLsbs` unchanged unless a wrap correction
-/// applies, which can only matter once the distinct GOP order hints span a full
-/// `(1 << OrderHintBits)` window. Returns `true` iff every order hint in the history lies
-/// within a window strictly smaller than `(1 << order_hint_bits)` (so the
-/// `OrderHintBits`-wide LSBs identify each frame's display order with no aliasing).
+/// `get_disp_order_hint()` (AV2 § 5.18.2 mirror :5368-5381) applies its wrap correction to
+/// a frame whenever `maxDisp - (window >> 1) - OrderHintLsbs >= 0`, i.e. once the
+/// max prior order hint exceeds this frame's LSB by at least HALF a window
+/// (`window == 1 << OrderHintBits`). So the stored LSB equals the unwrapped `OrderHint`
+/// for every frame ONLY while the whole history spans strictly less than half a window;
+/// a `monotonic_output_order_flag == 0` wrap-back history (a small LSB after large ones)
+/// would otherwise pass a full-window check yet be corrected, mis-ordering the § 7.7
+/// ranking. Returns `true` iff `max - min < (1 << order_hint_bits) / 2`.
 /// `order_hint_bits == 0` (no order-hint signaling) is trivially non-wrapping.
 pub(super) fn order_hint_history_unwrapped(
     ref_valid: &[bool],
@@ -218,9 +235,9 @@ pub(super) fn order_hint_history_unwrapped(
     if order_hint_bits == 0 {
         return true;
     }
-    // The OrderHintBits window (conformant order_hint_bits is 1..=8; clamp the shift to
-    // stay panic-free for any parsed value).
-    let window = 1u32 << order_hint_bits.min(31);
+    // Half the OrderHintBits window — the get_disp_order_hint correction threshold
+    // (conformant order_hint_bits is 1..=8; clamp the shift to stay panic-free).
+    let half_window = 1u32 << (order_hint_bits.min(31).saturating_sub(1));
     let mut min = next_order_hint_lsb;
     let mut max = next_order_hint_lsb;
     for (i, &valid) in ref_valid.iter().enumerate() {
@@ -231,5 +248,5 @@ pub(super) fn order_hint_history_unwrapped(
         min = min.min(oh);
         max = max.max(oh);
     }
-    max - min < window
+    max - min < half_window
 }
