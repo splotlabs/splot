@@ -25,8 +25,8 @@ use splot_core::headers::sequence::SequenceHeader;
 use splot_core::span::ByteOffset;
 use splot_core::types::ObuType;
 use splot_recon::{
-    DecodedFrame, InterpolationFilter as ReconInterpolationFilter, ReferenceFrameStore,
-    ReferenceSlot,
+    DecodedFrame, InterpolationFilter as ReconInterpolationFilter, PlaneId as ReconPlaneId,
+    ReferenceFrameStore, ReferenceSlot,
 };
 
 use super::{
@@ -260,15 +260,59 @@ pub(super) fn decode_minimal_inter_frame(
     // §7.13.3.17 motion-vector scaling + §7.13.3.18 block inter prediction over the
     // unscaled reference. The zero-fraction (zero-MV) case reduces inside the kernel
     // to a straight reference-sample copy.
-    let frame = motion_compensate_inter_block(
-        ref_frame,
-        block.mv,
-        block.interp,
-        frame_width,
-        frame_height,
-        offset,
-        limits,
-    )?;
+    let frame = match block.residual.as_ref() {
+        // skip == 1: the MC prediction is the reconstruction (no residual).
+        None => motion_compensate_inter_block(
+            ref_frame,
+            block.mv,
+            block.interp,
+            frame_width,
+            frame_height,
+            offset,
+            limits,
+        )?,
+        // skip == 0: build the MC prediction workspace, then add the §5.20.7.27
+        // residual over it per plane (§7.14.4 dequant + §7.15.4 inverse transform +
+        // §7.14.3 residual add) before freezing.
+        Some(residual) => {
+            let mut workspace = motion_compensate_inter_workspace(
+                ref_frame,
+                block.mv,
+                block.interp,
+                frame_width,
+                frame_height,
+                offset,
+                limits,
+            )?;
+            // §7.14.2 qindex == base_q_idx (no segmentation / delta-Q in this subset).
+            let qindex = core
+                .quantization_params
+                .map(|quant| quant.base_q_idx)
+                .ok_or_else(|| {
+                    unsupported_at(
+                        "inter_missing_base_q",
+                        offset,
+                        "minimal inter residual decode requires a parsed base_q_idx",
+                        SPEC_HEADER,
+                    )
+                })?;
+            // §7.14.4 TCQ dqDenom term: applies to the luma DCT_DCT (TX_CLASS_2D)
+            // non-lossless non-FSC block when the frame's `allow_tcq` is set; chroma
+            // never. Read the real §5.18.2 `allow_tcq` rather than assuming it.
+            let luma_use_tcq = core
+                .lossless_info
+                .as_ref()
+                .is_some_and(|lossless| lossless.allow_tcq);
+            add_inter_residual_to_workspace(
+                &mut workspace,
+                residual,
+                qindex,
+                luma_use_tcq,
+                offset,
+            )?;
+            workspace.freeze()?
+        }
+    };
 
     Ok(MinimalRuntimeFrame {
         frame,
@@ -277,14 +321,94 @@ pub(super) fn decode_minimal_inter_frame(
     })
 }
 
-/// The decoded single inter block: its §7.11 motion vector and the §5.20.7.6
-/// block interpolation filter (mapped to the recon-side §7.13.3.18 selector).
-#[derive(Clone, Copy, Debug)]
+/// AV2 § 9.2 transform log2 sides for the verified single 64x64 inter block: the
+/// luma TX_64X64 (`log2 == 6`) and the 4:2:0 chroma TX_32X32 (`log2 == 5`).
+const INTER_LUMA_LOG2_SIDE: u32 = 6;
+const INTER_CHROMA_LOG2_SIDE: u32 = 5;
+
+/// Adds the decoded § 5.20.7.27 inter residual to the § 7.13.3.18 MC prediction
+/// already in `workspace`, per plane (Y/U/V). The luma DCT_DCT block uses the
+/// § 7.14.4 TCQ `dqDenom` term when `luma_use_tcq` (the frame's `allow_tcq`);
+/// chroma never does. An `all_zero` plane is a no-op (the MC prediction stands).
+fn add_inter_residual_to_workspace(
+    workspace: &mut splot_recon::CurrentFrameWorkspace<u8>,
+    residual: &InterResidual,
+    qindex: u32,
+    luma_use_tcq: bool,
+    offset: ByteOffset,
+) -> Result<()> {
+    let map_recon = |error| {
+        let _ = error;
+        unsupported_at(
+            "inter_residual_reconstruct",
+            offset,
+            "minimal inter residual reconstruction failed",
+            SPEC_MC,
+        )
+    };
+    // §7.14.4: the luma DCT_DCT block adds the TCQ dqDenom term when allow_tcq;
+    // chroma never does.
+    crate::runtime_minimal_recon::reconstruct_inter_block_residual_into(
+        workspace,
+        &residual.luma,
+        ReconPlaneId::Y,
+        0,
+        0,
+        INTER_LUMA_LOG2_SIDE,
+        qindex,
+        luma_use_tcq,
+    )
+    .map_err(map_recon)?;
+    crate::runtime_minimal_recon::reconstruct_inter_block_residual_into(
+        workspace,
+        &residual.u,
+        ReconPlaneId::U,
+        0,
+        0,
+        INTER_CHROMA_LOG2_SIDE,
+        qindex,
+        false,
+    )
+    .map_err(map_recon)?;
+    crate::runtime_minimal_recon::reconstruct_inter_block_residual_into(
+        workspace,
+        &residual.v,
+        ReconPlaneId::V,
+        0,
+        0,
+        INTER_CHROMA_LOG2_SIDE,
+        qindex,
+        false,
+    )
+    .map_err(map_recon)?;
+    Ok(())
+}
+
+/// The decoded single inter block: its §7.11 motion vector, the §5.20.7.6
+/// block interpolation filter (mapped to the recon-side §7.13.3.18 selector),
+/// and — for a `skip == 0` block — the §5.20.7.27 per-plane coded residual.
+#[derive(Clone, Debug)]
 pub(super) struct InterBlock {
     /// The decoded §7.11 motion vector (eighth-pel units).
     pub(super) mv: Mv,
     /// The §7.13.3.18 interpolation filter the block uses for motion compensation.
     pub(super) interp: ReconInterpolationFilter,
+    /// The decoded §5.20.7.27 residual for the Y/U/V planes when `skip == 0`;
+    /// `None` for a `skip == 1` block (no residual is read or added). Each entry
+    /// is the plane's single transform-block coefficient decode (luma first).
+    pub(super) residual: Option<InterResidual>,
+}
+
+/// The decoded §5.20.7.27 inter residual for one 64x64 block: the per-plane
+/// Y/U/V transform-block coefficient decodes, in plane (decode) order.
+#[derive(Clone, Debug)]
+pub(super) struct InterResidual {
+    /// Luma (Y) transform-block coefficients.
+    pub(super) luma: crate::tile_payload::LumaCoeffBlock,
+    /// Chroma U transform-block coefficients.
+    pub(super) u: crate::tile_payload::LumaCoeffBlock,
+    /// Chroma V transform-block coefficients.
+    pub(super) v: crate::tile_payload::LumaCoeffBlock,
 }
 
 /// The post-key reference state the inter decode consumes: the §7.23
@@ -516,7 +640,7 @@ mod mv_scaling;
 mod read_mv;
 
 use block::decode_inter_block_and_mv;
-use mc::motion_compensate_inter_block;
+use mc::{motion_compensate_inter_block, motion_compensate_inter_workspace};
 
 #[cfg(test)]
 mod tests;

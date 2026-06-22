@@ -222,6 +222,29 @@ the first sub-pel inter decode brick (DECODE-INTER-SUBPEL-MV); validates clean."
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-2frame-inter-residual-64x64.ivf"
+description = """
+Two-frame inter-residual stream (IVF, 64x64) from a project-owned flat-100 luma \
++ flat chroma frame 0 plus a low-frequency smooth luma delta on frame 1, with \
+broad decode tools (incl. GDF, intra-dip, intra-edge-filter, bawp, cwp, \
+flex-mvres, adaptive-mvd, warp, tip, refinemv, opfl-refine, \
+masked/wedge/interintra/onesided/diff-wtd compound, joint-mvd, ref-frame-mvs, \
+inter-ist, inter-ddt, cctx, fsc, idtx-intra) disabled and --enable-global-motion=1 \
+--qp=80 --sb-size=64 --min/max-partition-size=64. Frame 0 = OBU_TEMPORAL_DELIMITER \
++ OBU_SEQUENCE_HEADER + OBU_CLOSED_LOOP_KEY (single flat 64x64 DC_PRED intra key \
+block, decodable by the general-intra runtime). Frame 1 = OBU_TEMPORAL_DELIMITER + \
+OBU_REGULAR_TILE_GROUP (single 64x64 single-reference zero-MV NEARMV inter block \
+with skip=0: a §5.20.7.27 luma DCT_DCT coded residual added over the §7.13.3.18 \
+zero-fraction copy of frame 0; the flat chroma carries no residual). The §5.20.8.3 \
+get_tx_set returns TX_SET_DCTONLY for the TX_64X64 luma / TX_32X32 chroma, so no \
+inter_tx_type symbol is read and PlaneTxType == DCT_DCT. avmdec --rawvideo --i420 \
+and dav2d --demuxer ivf raw outputs agree byte-for-byte (decoded-output md5 \
+ab2b067aed48cf46035fa031cefb3ab1, 12288 bytes; frame 1 luma differs from frame 0, \
+chroma flat). The committed verified target for the first inter-residual decode \
+brick (DECODE-INTER-RESIDUAL-DCT); validates clean."""
+expect = "clean"
+
+[[vector]]
 path = "vectors/invalid/syn-key-intra-64x64-truncated.ivf"
 description = """
 The intra key-frame vector truncated to 100 bytes (mid-payload): the IVF frame \

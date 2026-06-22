@@ -20,13 +20,14 @@ use splot_recon::InterpolationFilter as ReconInterpolationFilter;
 use super::super::{DecodeOptions, DecodePlannedObu, DecodeStreamPlan, Result};
 use super::read_mv::read_newmv_block_mv;
 use super::{
-    InterBlock, Mv, SINGLE_MODE_GLOBALMV, SINGLE_MODE_NEARMV, SINGLE_MODE_NEWMV, SPEC_MODE_INFO,
-    unsupported_at,
+    InterBlock, InterResidual, Mv, SINGLE_MODE_GLOBALMV, SINGLE_MODE_NEARMV, SINGLE_MODE_NEWMV,
+    SPEC_MODE_INFO, unsupported_at,
 };
 use crate::tile_payload::{
     DecodeBlockFrontier, DecodeTileWorkUnit, GeneralIntraMultiblockError,
-    GeneralIntraTreeWalkError, TileCdfSelector, TileCdfSubset, TilePartitionTraversalError,
-    decode_general_intra_multiblock_tree,
+    GeneralIntraTreeWalkError, TileCdfSelector, TileCdfSubset, TileCoeffContextState,
+    TilePartitionTraversalError, decode_general_intra_multiblock_tree,
+    decode_general_intra_plane_coeffs, frame_mi_dimensions,
 };
 
 /// AV2 § 8.3.2 `interp_filter` context for the verified single-reference
@@ -87,6 +88,45 @@ pub(super) fn decode_inter_block_and_mv(
             )
         })?;
 
+    // §5.20.7.27 coefficient neighbour-context state for the inter residual
+    // (skip == 0). A skip == 1 block reads no coefficients and never touches it;
+    // it is sized to the frame MI grid like the intra path.
+    let (mi_rows, mi_cols) = frame_mi_dimensions(core).map_err(|_| {
+        unsupported_at(
+            "inter_mi_dimensions",
+            offset,
+            "minimal inter decode requires the frame MI dimensions for the residual context",
+            SPEC_MODE_INFO,
+        )
+    })?;
+    let mut coeff_ctx = TileCoeffContextState::new(mi_rows, mi_cols).map_err(|_| {
+        unsupported_at(
+            "inter_coeff_context_state",
+            offset,
+            "minimal inter decode could not allocate the §5.20.7.27 residual context",
+            SPEC_MODE_INFO,
+        )
+    })?;
+
+    // §5.20.8.2 transform_type() / §5.20.7.27 coeffs(): the verified skip == 0
+    // residual is read as a single DCT_DCT TX_64X64 luma + TX_32X32 chroma transform
+    // block (§5.20.8.3 get_tx_set returns TX_SET_DCTONLY for those sizes, so no
+    // inter_tx_type symbol). `enable_inter_ist` would make transform_type() read a
+    // `sec_tx_type` symbol (eob > 3, DCT_DCT, >= 16x16); `enable_inter_ddt` adds an
+    // inter data-driven transform type; `enable_cctx` adds a cross-chroma-component
+    // transform symbol; `enable_fsc` / `enable_idtx_intra` change the §8.3.2
+    // `txb_skip` / IDTX coefficient path. The residual decode reads none of these,
+    // so a skip == 0 block whose sequence enables any of them is rejected (a skip ==
+    // 1 block reads no residual and is unaffected — the existing skip == 1 sub-pel
+    // fixture enables enable_inter_ist/inter_ddt and must still decode).
+    let residual_tools_present = sequence.transform_quant_entropy.is_none_or(|tq| {
+        tq.enable_inter_ist
+            || tq.enable_inter_ddt
+            || tq.enable_cctx
+            || tq.enable_fsc
+            || tq.enable_idtx_intra
+    });
+
     // A single decoded inter block captured from the one closure invocation. The
     // closure runs exactly once for the single 64x64 NONE block; the partition walk
     // records the (intra) joint-mode grid for that block, which inter blocks set to
@@ -103,8 +143,10 @@ pub(super) fn decode_inter_block_and_mv(
                 work_unit,
                 symbols,
                 frontier,
+                &mut coeff_ctx,
                 max_drl_bits_minus_1,
                 frame_interpolation_filter,
+                residual_tools_present,
                 tile_offset,
             )?;
             decoded_block = Some(block);
@@ -116,10 +158,11 @@ pub(super) fn decode_inter_block_and_mv(
     .map_err(|error| map_inter_multiblock_error(error, tile_offset))?;
 
     // §8.2.4 exit_symbol(): the decoded block must consume the whole tile payload
-    // (skip == 1 -> no residual). A failure means the symbol reads were not
-    // bit-exact, so reject rather than emit wrong output. This is the backstop that
-    // proves every §5.20.7.6 / §5.20.7.20 symbol read (mode, DRL, shell MV,
-    // interp_filter) was bit-exact.
+    // (mode info, and for skip == 0 the §5.20.7.27 residual coefficients). A
+    // failure means the symbol reads were not bit-exact, so reject rather than
+    // emit wrong output. This is the backstop that proves every §5.20.7.6 /
+    // §5.20.7.20 / §5.20.7.27 symbol read (mode, DRL, shell MV, interp_filter,
+    // residual coeffs) was bit-exact.
     symbols.exit_symbol().map_err(|_| {
         unsupported_at(
             "inter_exit_symbol",
@@ -161,12 +204,15 @@ pub(super) fn decode_inter_block_and_mv(
 /// (`enable_flex_mvres == 0` -> `MvPrecision == FrameMvPrecision`). Any deviation
 /// from this exact subset desynchronises the § 8.2 arithmetic decoder and fails the
 /// caller's `exit_symbol()` check.
+#[allow(clippy::too_many_arguments)]
 fn decode_one_inter_block(
     work_unit: &mut DecodeTileWorkUnit<'_>,
     symbols: &mut SymbolDecoder<'_>,
     frontier: &DecodeBlockFrontier,
+    coeff_ctx: &mut TileCoeffContextState,
     max_drl_bits_minus_1: u32,
     frame_interpolation_filter: FrameInterpolationFilter,
+    residual_tools_present: bool,
     tile_offset: ByteOffset,
 ) -> Result<InterBlock> {
     // Gate to the single full-superblock 64x64 NONE block at the top-left, no
@@ -214,15 +260,19 @@ fn decode_one_inter_block(
     }
 
     // §5.20.5.10 read_skip: TileSkipCdf[ctx]. NNumBuf == 0 and skip_mode == 0 ->
-    // ctx == 0. Must decode to skip == 1 (no residual coefficients to read).
+    // ctx == 0. The verified subset admits skip == 1 (no residual, the §7.13.3.18
+    // MC prediction is the reconstruction) and skip == 0 (a coded §5.20.7.27
+    // residual added over the MC prediction). Any other value desyncs the §8.2
+    // decoder and fails the caller's exit_symbol() backstop.
     let skip = cdfs
         .read_block_symbol_trace(TileCdfSelector::Skip { ctx: 0 }, symbols)
         .map_err(|_| symbol_read_error(tile_offset))?;
-    if skip.get() != 1 {
+    let skip = skip.get();
+    if skip != 0 && skip != 1 {
         return Err(unsupported_at(
-            "inter_block_not_skip",
+            "inter_block_unexpected_skip",
             tile_offset,
-            "minimal inter decode only supports skip == 1 blocks (no residual); a coded-residual inter block is not yet implemented",
+            "minimal inter decode read an out-of-range skip value",
             SPEC_MODE_INFO,
         ));
     }
@@ -294,7 +344,123 @@ fn decode_one_inter_block(
         tile_offset,
     )?;
 
-    Ok(InterBlock { mv, interp })
+    // §5.20.7 decode_block: after mode_info, read_block_tx_size() reads no symbol
+    // under TX_MODE_LARGEST (read_tx_size returns 0 -> TxSize = maxRectTxSize =
+    // TX_64X64 for the 64x64 block). Then for skip == 0 residual() reads the
+    // §5.20.7.27 coefficients per plane (Y, U, V). skip == 1 reads none.
+    let residual = if skip == 0 {
+        // A skip == 0 block reads the §5.20.7.27 residual, whose transform-type /
+        // coefficient path the verified subset only models for the DCT-only,
+        // no-IST / no-DDT / no-CCTX / no-FSC / no-IDTX-intra case. Reject otherwise
+        // (a skip == 1 block never reaches here, so a sub-pel skip == 1 fixture with
+        // those tools enabled still decodes).
+        if residual_tools_present {
+            return Err(unsupported_at(
+                "inter_block_residual_tools",
+                tile_offset,
+                "minimal inter residual decode requires the DCT-only transform subset (no inter-IST / inter-DDT / CCTX / FSC / IDTX-intra)",
+                SPEC_MODE_INFO,
+            ));
+        }
+        Some(read_inter_residual(
+            work_unit,
+            symbols,
+            coeff_ctx,
+            tile_offset,
+        )?)
+    } else {
+        None
+    };
+
+    Ok(InterBlock {
+        mv,
+        interp,
+        residual,
+    })
+}
+
+/// AV2 § 9.2 `TX_SIZES_ALL` index of `TX_64X64` (the single luma transform for
+/// the 64x64 inter block under TX_MODE_LARGEST; § 5.20.6.1 read_tx_size returns 0
+/// and TxSize = maxRectTxSize = TX_64X64) and `TX_32X32` (its 4:2:0 chroma).
+const TX_64X64: usize = 4;
+const TX_32X32: usize = 3;
+/// `UV_DC_PRED` (= 0): inter blocks have no UV intra mode, so the §5.20.7.27
+/// nonzero coefficient pass reads no chroma intra-mode-dependent transform type;
+/// DCT_DCT is forced for the 64x64/32x32 DCT-only inter transform set.
+const INTER_UV_MODE_DC: usize = 0;
+
+/// Reads the AV2 § 5.20.7.27 residual coefficients for the single 64x64 inter
+/// block (`skip == 0`): the luma TX_64X64 transform block, then the U and V
+/// TX_32X32 chroma transform blocks, all `is_inter == 1`.
+///
+/// § 5.20.8.3 `get_tx_set(TX_64X64, 0)` returns `TX_SET_DCTONLY` (txSzSqrUp >
+/// TX_32X32 && txSzSqr >= TX_32X32), so § 5.20.8.2 `transform_type()` reads NO
+/// `inter_tx_type` symbol (`set == 0`) and `PlaneTxType = DCT_DCT`. The caller's
+/// `residual_tools_present` gate rejects `enable_inter_ist` before this runs, so
+/// no `sec_tx_type` symbol is read either. The chroma TX_32X32 transform also
+/// falls in the DCT-only set, so this reuses the intra DCT_DCT coefficient loop
+/// with `is_inter == true` (the only inter-specific contexts are the § 8.3.2
+/// `TileTxbSkipCdf[is_inter]` bank and the `eobCtx = is_inter` luma EOB context,
+/// both threaded through `decode_general_intra_plane_coeffs`).
+fn read_inter_residual(
+    work_unit: &mut DecodeTileWorkUnit<'_>,
+    symbols: &mut SymbolDecoder<'_>,
+    coeff_ctx: &mut TileCoeffContextState,
+    tile_offset: ByteOffset,
+) -> Result<InterResidual> {
+    // The single 64x64 block at the tile origin: luma plane-sample (0, 0),
+    // 4:2:0 chroma plane-sample (0, 0). (Gated to the top-left 64x64 block
+    // above.)
+    let luma = decode_general_intra_plane_coeffs(
+        work_unit,
+        symbols,
+        coeff_ctx,
+        0,
+        TX_64X64,
+        0,
+        0,
+        false,
+        INTER_UV_MODE_DC,
+        true,
+    )
+    .map_err(|_| residual_read_error(tile_offset))?;
+    let u = decode_general_intra_plane_coeffs(
+        work_unit,
+        symbols,
+        coeff_ctx,
+        1,
+        TX_32X32,
+        0,
+        0,
+        false,
+        INTER_UV_MODE_DC,
+        true,
+    )
+    .map_err(|_| residual_read_error(tile_offset))?;
+    // §5.20.7.27 v_txb_skip uses EobU != 0 (the U plane's eob); pass !u.all_zero.
+    let v = decode_general_intra_plane_coeffs(
+        work_unit,
+        symbols,
+        coeff_ctx,
+        2,
+        TX_32X32,
+        0,
+        0,
+        !u.all_zero,
+        INTER_UV_MODE_DC,
+        true,
+    )
+    .map_err(|_| residual_read_error(tile_offset))?;
+    Ok(InterResidual { luma, u, v })
+}
+
+fn residual_read_error(tile_offset: ByteOffset) -> super::super::DecodeError {
+    unsupported_at(
+        "inter_block_residual_parse",
+        tile_offset,
+        "minimal inter block §5.20.7.27 residual coefficients could not be parsed from the tile payload",
+        SPEC_MODE_INFO,
+    )
 }
 
 /// AV2 § 5.20.7.6 `interp_filter` resolution for the verified single-reference

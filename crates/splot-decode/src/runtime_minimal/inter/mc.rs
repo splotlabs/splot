@@ -27,10 +27,12 @@ use crate::Result;
 use crate::error::DecodeError;
 use splot_core::span::ByteOffset;
 
-/// Builds the current inter frame by § 7.13.3.18 motion-compensating every plane
-/// of `reference` with the decoded `mv` and `interp` filter. The reference must
-/// be unscaled and the same size as the current frame (checked by the caller).
-pub(super) fn motion_compensate_inter_block(
+/// Builds the current inter frame workspace by § 7.13.3.18 motion-compensating
+/// every plane of `reference` with the decoded `mv` and `interp` filter. The
+/// reference must be unscaled and the same size as the current frame (checked by
+/// the caller). The workspace is returned **unfrozen** so the caller can add a
+/// § 5.20.7.27 residual over the prediction (skip == 0) before freezing.
+pub(super) fn motion_compensate_inter_workspace(
     reference: &DecodedFrame<u8>,
     mv: Mv,
     interp: InterpolationFilter,
@@ -38,7 +40,7 @@ pub(super) fn motion_compensate_inter_block(
     frame_height: u32,
     offset: ByteOffset,
     _limits: DecodeLimits,
-) -> Result<DecodedFrame<u8>> {
+) -> Result<CurrentFrameWorkspace<u8>> {
     let mut workspace = crate::runtime_minimal_recon::new_general_intra_workspace(
         frame_width as usize,
         frame_height as usize,
@@ -76,6 +78,31 @@ pub(super) fn motion_compensate_inter_block(
         offset,
     )?;
 
+    Ok(workspace)
+}
+
+/// Builds the current inter frame by § 7.13.3.18 motion-compensating every plane
+/// of `reference` with the decoded `mv` and `interp` filter, then freezing the
+/// workspace. The `skip == 1` (no-residual) path: the MC prediction is the
+/// reconstruction.
+pub(super) fn motion_compensate_inter_block(
+    reference: &DecodedFrame<u8>,
+    mv: Mv,
+    interp: InterpolationFilter,
+    frame_width: u32,
+    frame_height: u32,
+    offset: ByteOffset,
+    limits: DecodeLimits,
+) -> Result<DecodedFrame<u8>> {
+    let workspace = motion_compensate_inter_workspace(
+        reference,
+        mv,
+        interp,
+        frame_width,
+        frame_height,
+        offset,
+        limits,
+    )?;
     Ok(workspace.freeze()?)
 }
 
