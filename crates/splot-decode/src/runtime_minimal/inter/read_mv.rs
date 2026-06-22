@@ -131,7 +131,11 @@ fn read_shell_diff(
     // shellClassOffset derivation.
     let shell_class_offset = read_shell_class_offset(cdfs, symbols, shell_class, tile_offset)?;
 
-    let shell_class_base_index: i64 = if shell_class == 0 { 0 } else { 1 << shell_class };
+    let shell_class_base_index: i64 = if shell_class == 0 {
+        0
+    } else {
+        1 << shell_class
+    };
     let shell_index = shell_class_base_index + shell_class_offset;
 
     if shell_index <= 0 {

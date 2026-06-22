@@ -937,9 +937,9 @@ impl TileCdfRows {
                 self.block.row(BlockCdfSelector::DrlMode { idx, ctx })
             }
             TileCdfSelector::JointShellSet => self.block.row(BlockCdfSelector::JointShellSet),
-            TileCdfSelector::JointShell6Class { shell_set } => {
-                self.block.row(BlockCdfSelector::JointShell6Class { shell_set })
-            }
+            TileCdfSelector::JointShell6Class { shell_set } => self
+                .block
+                .row(BlockCdfSelector::JointShell6Class { shell_set }),
             TileCdfSelector::JointShellLastTwo => {
                 self.block.row(BlockCdfSelector::JointShellLastTwo)
             }
@@ -949,9 +949,9 @@ impl TileCdfRows {
             TileCdfSelector::ShellOffsetClass2 => {
                 self.block.row(BlockCdfSelector::ShellOffsetClass2)
             }
-            TileCdfSelector::ShellOffsetOtherClass { i } => {
-                self.block.row(BlockCdfSelector::ShellOffsetOtherClass { i })
-            }
+            TileCdfSelector::ShellOffsetOtherClass { i } => self
+                .block
+                .row(BlockCdfSelector::ShellOffsetOtherClass { i }),
             TileCdfSelector::ColMvGreater { i } => {
                 self.block.row(BlockCdfSelector::ColMvGreater { i })
             }

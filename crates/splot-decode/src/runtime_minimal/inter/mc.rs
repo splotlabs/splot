@@ -45,9 +45,36 @@ pub(super) fn motion_compensate_inter_block(
     )?;
 
     // 4:2:0 luma full-resolution; chroma half-resolution (subsampling 1/1).
-    predict_plane(&mut workspace, reference, PlaneId::Y, mv, interp, 0, 0, offset)?;
-    predict_plane(&mut workspace, reference, PlaneId::U, mv, interp, 1, 1, offset)?;
-    predict_plane(&mut workspace, reference, PlaneId::V, mv, interp, 1, 1, offset)?;
+    predict_plane(
+        &mut workspace,
+        reference,
+        PlaneId::Y,
+        mv,
+        interp,
+        0,
+        0,
+        offset,
+    )?;
+    predict_plane(
+        &mut workspace,
+        reference,
+        PlaneId::U,
+        mv,
+        interp,
+        1,
+        1,
+        offset,
+    )?;
+    predict_plane(
+        &mut workspace,
+        reference,
+        PlaneId::V,
+        mv,
+        interp,
+        1,
+        1,
+        offset,
+    )?;
 
     Ok(workspace.freeze()?)
 }

@@ -28,20 +28,12 @@ const MI_SIZE: i64 = 4;
 
 /// AV2 § 4.8 `Round2(x, n)` for non-negative `n`, computed in `i64`.
 const fn round2(x: i64, n: u32) -> i64 {
-    if n == 0 {
-        x
-    } else {
-        (x + (1 << (n - 1))) >> n
-    }
+    if n == 0 { x } else { (x + (1 << (n - 1))) >> n }
 }
 
 /// AV2 § 4.8 `Round2Signed(x, n)`.
 const fn round2_signed(x: i64, n: u32) -> i64 {
-    if x >= 0 {
-        round2(x, n)
-    } else {
-        -round2(-x, n)
-    }
+    if x >= 0 { round2(x, n) } else { -round2(-x, n) }
 }
 
 /// AV2 § 4.8 `Clip3(low, high, value)`.
