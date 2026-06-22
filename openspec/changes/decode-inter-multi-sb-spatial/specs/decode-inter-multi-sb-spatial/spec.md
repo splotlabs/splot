@@ -3,8 +3,7 @@
 ### Requirement: Multi-superblock inter frame with cross-superblock MV prediction
 The decoder SHALL decode a multi-superblock single-reference inter frame whose
 geometry is a single superblock ROW (height 64, width a positive multiple of 64)
-OR single superblock COLUMN (width 64, height a positive multiple of 64) of 64x64
-superblocks, iterated by the AV2 § 5.20.2.1 `decode_tile()` superblock raster
+of 64x64 superblocks, iterated by the AV2 § 5.20.2.1 `decode_tile()` superblock raster
 loop, where a block in a later superblock predicts its motion vector from the
 immediately-prior superblock's reconstructed-edge neighbour across the superblock
 boundary via the frame-wide § 7.11.2 mode context process and the § 7.12.2 Find MV
@@ -33,10 +32,12 @@ existing single-superblock inter fixtures and all general-intra fixtures SHALL
 continue to decode bit-exact.
 
 The decoder SHALL reject, with a structured `decode/unsupported-feature`
-diagnostic and no output, any frame outside the verified subset, including: a full
-2-D superblock grid (both dimensions greater than 64), a multi-superblock
-skip == 0 residual, and the deferred temporal / compound / warp / ref-MV-bank /
-derived-SMVP / DRL-reorder MV candidates.
+diagnostic and no output, any frame outside the verified subset, including: a
+single-superblock COLUMN (width 64, height greater than 64 — analytically correct
+and locally verified, but deferred until its own committed 3-oracle fixture
+lands), a full 2-D superblock grid (both dimensions greater than 64), a
+multi-superblock skip == 0 residual, and the deferred temporal / compound / warp /
+ref-MV-bank / derived-SMVP / DRL-reorder MV candidates.
 
 #### Scenario: Multi-superblock inter fixture decodes bit-exact to both oracles
 - **WHEN** `splot decode --output-format raw` is given

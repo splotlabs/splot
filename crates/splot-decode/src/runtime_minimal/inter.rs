@@ -594,16 +594,20 @@ fn validate_inter_frame_core(
     };
     let width = frame_size.width;
     let height = frame_size.height;
+    // Admit only the committed single-superblock ROW (height 64, width a positive
+    // multiple of 64). The single-SB COLUMN path is analytically correct (the
+    // frame-wide §7.12.2 grid + the isSbBorder above-probe reach the SB above) and
+    // was verified locally, but it has no committed 3-oracle fixture, so the
+    // verified-subset discipline keeps it OUT of the admitted set until a
+    // syn-2sbcol-inter fixture is committed (deferred follow-on). The single 64x64
+    // case is `width == height == 64` (a one-SB row).
     let single_sb_row =
         height == super::MINIMAL_HEIGHT && width != 0 && width.is_multiple_of(super::MINIMAL_WIDTH);
-    let single_sb_col = width == super::MINIMAL_WIDTH
-        && height != 0
-        && height.is_multiple_of(super::MINIMAL_HEIGHT);
-    if !single_sb_row && !single_sb_col {
+    if !single_sb_row {
         return Err(unsupported_at(
             "inter_unsupported_frame_size",
             offset,
-            "minimal inter decode accepts a single superblock row (height 64) or single superblock column (width 64) of 64x64 superblocks; a 2-D multi-superblock grid is not yet modelled",
+            "minimal inter decode accepts a single superblock row (height 64, width a multiple of 64); the single-SB column and the 2-D multi-superblock grid are not yet fixtured",
             SPEC_HEADER,
         ));
     }
