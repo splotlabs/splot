@@ -12875,6 +12875,60 @@ fixtures = [
 diagnostics = ["decode/unsupported-feature"]
 
 [[feature]]
+id = "DECODE-INTER-SUBPEL-MV"
+name = "Sub-pel inter frame decode (NEWMV + interpolation-filter convolution)"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.20.7.6", "5.20.7.13", "5.20.7.20", "7.13.3.17", "7.13.3.18"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-6",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-13",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-20",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-17",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-18",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/runtime_minimal/inter/read_mv.rs"
+openspec_change = "decode-inter-subpel-mv"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Extends the inter decode arc from the zero-MV copy (DECODE-FIRST-INTER-FRAME-FRONTIER) to a real sub-pel NEWMV block, wiring the merged §7.13.3.18 convolution kernel (RECON-SUBPEL-MC) into the decode path. The committed `syn-2frame-subpel-inter-64x64.ivf` (project-owned synthetic horizontal half-cosine luma + flat chroma; frame 1 shifted right by half a sample; broad decode tools incl. GDF/intra-dip/bawp/cwp/flex-mvres/adaptive-mvd/global-motion/warp/tip/refinemv/opfl-refine/masked-interintra-compound/joint-mvd/ref-frame-mvs disabled; `--qp 180 --sb-size 64 --min/max-partition-size 64`) is a two-frame stream: frame 0 = OBU_CLOSED_LOOP_KEY (a single 64x64 DC_PRED intra key block with a low-frequency AC residual, decoded by the general-intra frontier), frame 1 = OBU_REGULAR_TILE_GROUP (a single 64x64 single-reference NEWMV inter block, EighthPel (0, -4) horizontal half-sample sub-pel MV, SWITCHABLE EIGHTTAP_SHARP interpolation filter, skip=1, no residual). DONE (the first sub-pel inter frame decodes BIT-EXACT): `splot decode syn-2frame-subpel-inter-64x64.ivf --output-format raw` reproduces the whole-stream md5 a0e82de3a95bb4b519c4c84ffa2ba816 (12288 bytes) byte-for-byte vs avmdec --rawvideo --i420 and dav2d --demuxer ivf (recorded in `docs/LOCAL-REFERENCE-EVIDENCE.toml`, `lref-avm-dav2d-syn-2frame-subpel-inter-64x64`). NO step is hardcoded — the §8.2.4 exit_symbol() check over the inter tile guards bit-exactness, so a wrong MV/filter symbol read would reject, never emit a confident-wrong frame. Pipeline (on top of DECODE-FIRST-INTER-FRAME-FRONTIER): the §5.20.7.6 block decode admits single_mode==2 (NEWMV), reads its DRL (read_drl_idx over TileDrlModeCdf[Min(idx,2)][0]), then the §5.20.7.20 SHELL-coded read_mv (shell_set -> TileJointShellSetCdf; shell_class -> TileJointShell6ClassCdf[shell_set] for the EighthPel P==6 precision; shell_offset_low_class/class2/other_class; col_mv_greater/col_remainder NS(n)/col_mv_index; with one §5.20.7.13 mv_sign L(1) bypass bit per nonzero component — sign derivation is disabled for EighthPel) over the zero no-neighbour predictor, then the §5.20.7.6 interp_filter symbol (TileInterpFilterCdf[ctx=3] when the frame filter is SWITCHABLE and needs_interp_filter() is 1). The decoded MV (0, -4) drives the §7.13.3.17 motion_vector_scaling (identity scale -> startX/startY with the eighth-pel fractional phase, stepX==stepY==1024) and §7.13.3.18 firstX/firstY/lastX/lastY clip bounds per plane (luma + 4:2:0 chroma via the (2*mv)>>sub adjustment), fed to splot-recon `subpel_predict_block` (the merged separable interpolation-filter convolution). New tile/block CDF banks (joint_shell_set, the P==6 shell_class pair, joint_shell_last_two_classes, shell_offset_low_class/class2/other_class, col_mv_greater, col_mv_index, interp_filter) thread through the Block/Tile CDF subsets from the generated §9.3 defaults. Pinned by `subpel_fixture_decodes_two_frames`, `subpel_inter_frame_differs_from_key_frame`, `subpel_fixture_per_frame_hash_is_stable` (splot-decode) plus the read_mv/mv_scaling unit tests; the zero-MV inter (4e1bd39f) and the general-intra fixtures stay byte-identical (no regression). VERIFIED-SUBSET DISCIPLINE: everything outside the single-reference NEWMV (or zero-MV NEARMV/GLOBALMV) skip==1 EighthPel SWITCHABLE-or-fixed-filter subset (residual skip==0, compound, multi-reference, non-64x64, motion modes, OBMC, warp, flex-mvres, adaptive-mvd, bawp, cwp) is rejected with a structured decode/unsupported-feature diagnostic BEFORE any output. avm_diff remains todo (live AVM/dav2d differential in CI); the local oracle agreement is recorded in `docs/LOCAL-REFERENCE-EVIDENCE.toml`."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "done"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "todo"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/runtime_minimal/inter/tests.rs::subpel_fixture_decodes_two_frames",
+    "crates/splot-decode/src/runtime_minimal/inter/tests.rs::subpel_inter_frame_differs_from_key_frame",
+    "crates/splot-decode/src/runtime_minimal/inter/tests.rs::subpel_fixture_per_frame_hash_is_stable",
+    "crates/splot-decode/src/runtime_minimal/inter/read_mv/tests.rs::read_ns_returns_values_in_range",
+    "crates/splot-decode/src/runtime_minimal/inter/mv_scaling.rs::fractional_mv_produces_subpel_phase",
+    "crates/splot-cli/tests/conformance.rs::conformance_corpus_matches_manifest",
+]
+commands = [
+    "cargo test -p splot-decode --locked",
+    "cargo test -p splot-cli --test conformance --locked",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-decoder-conformance-coverage",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "tests/conformance/vectors/valid/syn-2frame-subpel-inter-64x64.ivf",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
 id = "DECODE-COEFF-FSC-SCAN-WALK"
 name = "Coefficient FSC scan walk"
 category = "infrastructure"

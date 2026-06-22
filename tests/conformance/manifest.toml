@@ -202,6 +202,26 @@ brick (DECODE-FIRST-INTER-FRAME-FRONTIER); validates clean."""
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-2frame-subpel-inter-64x64.ivf"
+description = """
+Two-frame sub-pel inter stream (IVF, 64x64) from a project-owned synthetic \
+horizontal half-cosine luma + flat chroma input with broad decode tools \
+(incl. GDF, intra-dip, bawp, cwp, flex-mvres, adaptive-mvd, global-motion, warp, \
+tip, refinemv, opfl-refine, masked/interintra compound, joint-mvd, ref-frame-mvs) \
+disabled and --qp=180 --sb-size=64 --min/max-partition-size=64. Frame 0 = \
+OBU_TEMPORAL_DELIMITER + OBU_SEQUENCE_HEADER + OBU_CLOSED_LOOP_KEY (single 64x64 \
+DC_PRED intra key block with a low-frequency AC residual, decodable by the \
+general-intra runtime). Frame 1 = OBU_TEMPORAL_DELIMITER + OBU_REGULAR_TILE_GROUP \
+(single 64x64 single-reference NEWMV inter block, EighthPel (0, -4) horizontal \
+half-sample sub-pel motion vector, SWITCHABLE EIGHTTAP_SHARP interpolation filter, \
+skip=1 so the §7.13.3.18 separable interpolation-filter convolution reconstructs a \
+fractionally-shifted prediction with no residual). avmdec --rawvideo --i420 and \
+dav2d --demuxer ivf raw outputs agree byte-for-byte (decoded-output md5 \
+a0e82de3a95bb4b519c4c84ffa2ba816, 12288 bytes). The committed verified target for \
+the first sub-pel inter decode brick (DECODE-INTER-SUBPEL-MV); validates clean."""
+expect = "clean"
+
+[[vector]]
 path = "vectors/invalid/syn-key-intra-64x64-truncated.ivf"
 description = """
 The intra key-frame vector truncated to 100 bytes (mid-payload): the IVF frame \
