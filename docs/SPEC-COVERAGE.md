@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 388 feature(s); 335 cite a spec section.
+Matrix version 1. Last reviewed 2026-06-15. 390 feature(s); 337 cite a spec section.
 
 One row per (spec section, feature) pair, in spec order; a feature citing both a syntax and a semantics section appears under both. The canonical status source is [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); the full per-feature ledger is [FEATURE-STATUS.md](./FEATURE-STATUS.md).
 
@@ -298,6 +298,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.20.3.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-2) | Read partition syntax | `DECODE-Y4M-RUNTIME-OUTPUT` | ✅ | 🟡 | ✅ | ✅ | 4 |
 | [§ 5.20.3.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-2) | Read partition syntax | `ENC-DO-SPLIT-PARTITION-SYMBOL` | ✅ | — | — | ✅ | — |
 | [§ 5.20.3.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-2) | Read partition syntax | `ENC-GENERAL-INTRA-SKIP-BLOCK-TRACE` | ✅ | — | — | ✅ | — |
+| [§ 5.20.3.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-2) | Read partition syntax | `ENC-PARTITION-DO-SQUARE-SPLIT` | ✅ | — | — | ✅ | — |
 | [§ 5.20.4.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-4-1) | Decode block syntax | `DECODE-GENERAL-INTRA-DEEP-SPLIT` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.4.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-4-1) | Decode block syntax | `DECODE-GENERAL-INTRA-MULTIBLOCK` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.4.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-4-1) | Decode block syntax | `DECODE-GENERAL-INTRA-MULTIROW` | ✅ | 🟡 | — | ✅ | 1 |
@@ -972,6 +973,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 8.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2) | Parsing process for symbol decoder | `ENC-INTRA-BLOCK-TRACE-TWO-COEFF-TX-TYPE` | ✅ | — | — | ✅ | — |
 | [§ 8.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2) | Parsing process for symbol decoder | `ENC-INTRA-TX-TYPE-TOKEN` | ✅ | — | — | ✅ | — |
 | [§ 8.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2) | Parsing process for symbol decoder | `ENC-MINIMAL-INTRA-SKIP-IVF` | ✅ | — | — | ✅ | — |
+| [§ 8.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2) | Parsing process for symbol decoder | `ENC-PARTITION-DO-SQUARE-SPLIT` | ✅ | — | — | ✅ | — |
 | [§ 8.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2) | Parsing process for symbol decoder | `ENC-SEC-TX-TYPE-TOKEN` | ✅ | — | — | ✅ | — |
 | [§ 8.2.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-2) | Initialization process for symbol decoder | `AV2-8.2-SYMBOL-DECODER` | ✅ | ✅ | ✅ | ✅ | — |
 | [§ 8.2.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-2-2) | Initialization process for symbol decoder | `CONF-SYMBOL-DECODER-FUZZ` | ✅ | — | — | ✅ | — |
@@ -1164,6 +1166,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `ENC-INTRA-BLOCK-TRACE-TWO-COEFF-TX-TYPE` | ✅ | — | — | ✅ | — |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `ENC-INTRA-MODE-SYMBOL-EMISSION` | ✅ | — | — | ✅ | — |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `ENC-INTRA-TX-TYPE-TOKEN` | ✅ | — | — | ✅ | — |
+| [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `ENC-PARTITION-DO-SQUARE-SPLIT` | ✅ | — | — | ✅ | — |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `ENC-SEC-TX-TYPE-TOKEN` | ✅ | — | — | ✅ | — |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `ENC-UV-MODE-SYMBOL-EMISSION` | ✅ | — | — | ✅ | — |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `RECON-GET-TX-CLASS` | ✅ | — | ✅ | ✅ | — |

@@ -14,6 +14,7 @@ use super::*;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct BlockSymbolTraceCdfRows {
     do_split_root: [i32; DO_SPLIT_CDF_ROW_LEN],
+    do_square_split_root: [i32; DO_SQUARE_SPLIT_CDF_ROW_LEN],
     y_mode_set: [i32; Y_MODE_SET_CDF_ROW_LEN],
     y_mode_index_tile_origin: [i32; INTRA_MODE_CDF_ROW_LEN],
     uv_mode_non_directional: [i32; INTRA_MODE_CDF_ROW_LEN],
@@ -113,6 +114,8 @@ impl BlockSymbolTraceCdfRows {
         Self {
             do_split_root: DEFAULT_DO_SPLIT_CDF[ROOT_PARTITION_PLANE_START]
                 [ROOT_64X64_DO_SPLIT_CTX],
+            do_square_split_root: DEFAULT_DO_SQUARE_SPLIT_CDF[ROOT_PARTITION_PLANE_START]
+                [ROOT_64X64_DO_SQUARE_SPLIT_CTX],
             y_mode_set: DEFAULT_Y_MODE_SET_CDF,
             y_mode_index_tile_origin: DEFAULT_Y_MODE_INDEX_CDF[TILE_ORIGIN_Y_MODE_INDEX_CTX],
             uv_mode_non_directional: DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF
@@ -177,6 +180,10 @@ impl BlockSymbolTraceCdfRows {
                     plane_start: ROOT_PARTITION_PLANE_START,
                     ctx: ROOT_64X64_DO_SPLIT_CTX,
                 } => Ok(self.do_split_root.as_mut_slice()),
+                PartitionCdfRowSelector::DoSquareSplit {
+                    plane_start: ROOT_PARTITION_PLANE_START,
+                    ctx: ROOT_64X64_DO_SQUARE_SPLIT_CTX,
+                } => Ok(self.do_square_split_root.as_mut_slice()),
                 _ => Err(Error::BlockSymbolTraceUnsupportedSelector { index }),
             },
             BlockSymbolToken::Mode(mode) => match mode.selector() {

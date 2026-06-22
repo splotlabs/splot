@@ -781,3 +781,20 @@ fn root_do_split_none_roundtrips_as_partition_none() {
     assert_eq!(proof.decoded_symbols(), &[0]);
     assert_eq!(proof.symbol_count(), 1);
 }
+
+#[test]
+fn root_partition_split_roundtrips_as_do_split_then_do_square_split() {
+    // The §5.20.3.2 PARTITION_SPLIT decision at the root 64x64 superblock: the decoder reads
+    // `do_split == true` then `do_square_split == true` (the 4-way square split). This is the
+    // foundational "emit a split" trace — the first time the encoder codes do_split=1, and the
+    // first do_square_split token. Each round-trips through one §8.2 coder at its decoder-mirrored
+    // row: TileDoSplitCdf[0][12] then TileDoSquareSplitCdf[0][0].
+    let trace = vec![
+        BlockSymbolToken::Partition(crate::partition_emission::emit_root_do_split_split()),
+        BlockSymbolToken::Partition(crate::partition_emission::emit_root_do_square_split_square()),
+    ];
+
+    let proof = roundtrip_block_symbol_trace(&trace).unwrap();
+    assert_eq!(proof.decoded_symbols(), &[1, 1]);
+    assert_eq!(proof.symbol_count(), 2);
+}

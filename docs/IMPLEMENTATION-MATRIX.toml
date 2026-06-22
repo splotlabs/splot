@@ -5659,6 +5659,39 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-PARTITION-DO-SQUARE-SPLIT"
+name = "Encoder root do_square_split partition symbol (PARTITION_SPLIT)"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20.3.2", "8.3.2", "8.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/partition_emission.rs"
+openspec_change = "encoder-partition-do-square-split"
+tracking_issue = ""
+owner = "encoder"
+risk = "low"
+notes = "Partition-recursion BRICK 1: the do_square_split partition flag, the second symbol the decoder reads for a non-PARTITION_NONE square block (§5.20.3.2; decoder partition.rs reads do_split then do_square_split). Extends partition_emission: PartitionSyntax::DoSquareSplit + PartitionCdfRowSelector::DoSquareSplit{plane_start,ctx} + emit_root_do_split_split() (do_split==true, REUSING the existing TileDoSplitCdf[0][12] row, symbol 1) + emit_root_do_square_split_square() (do_square_split==true = the 4-way square split / PARTITION_SPLIT, TileDoSquareSplitCdf[0][0]). The do_square_split root ctx = 0 (DERIVED from the decoder do_square_split_selector: ctx = (MiSize==BLOCK_256X256)*4 + left_smaller*2 + above_smaller; at the tile-origin 64x64 all three bits are 0 — 64x64!=256x256, both neighbours out of frame — distinct from do_split's Partition_Size_Adjust-based ctx 12). Routes a do_square_split_root CDF row (DEFAULT_DO_SQUARE_SPLIT_CDF[0][0]) through BlockSymbolTraceCdfRows + row_mut (partition tokens are block_symbol_trace-only; NOT in the coefficient_tokenization entropy router). ORACLE = §8.2 roundtrip: the [do_split=1, do_square_split=1] PARTITION_SPLIT trace decodes back to [1,1] (symbol_count 2) through one §8.2 coder — the FIRST time the encoder codes do_split=1 and the first do_square_split token. This is the prerequisite syntax for descending the 64→32→16→8→4 partition tree (needed both by the general_walk 4x4 decode cross-check and by §10 real-frame partitioning). All crate-private, no dependency-graph change. Encoder-mission-DRIVEN (owner=encoder). HONEST SCOPE: ONE PRIVATE PARTITION SYMBOL at the root ctx — it does NOT claim the full partition recursion (sub-64x64 per-quadrant neighbour contexts), a 4x4-tx block, a decodable split frame, receive_packet output, or Baseline Encoder Profile v1. NEXT: sub-64x64 do_split/do_square_split contexts + the DFS quadrant recursion."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/partition_emission.rs::tests::emit_root_do_square_split_square_is_partition_split_at_ctx_0", "crates/splot-encode/src/block_symbol_trace/tests.rs::root_partition_split_roundtrips_as_do_split_then_do_square_split"]
+commands = ["cargo test -p splot-encode block_symbol_trace --locked", "cargo test -p splot-encode partition --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-GENERAL-INTRA-SKIP-BLOCK-TRACE"
 name = "Encoder general-intra DC skip-block trace"
 category = "encoder"
