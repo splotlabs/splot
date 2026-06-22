@@ -41,10 +41,17 @@ as the named follow-on (the multi-reference runtime brick).
 - **THEN** the asymmetric round-trip no longer recovers the encoded selection or
   fails `exit_symbol()`, so the tree shape and `[ctx][ref]` indexing are pinned
 
-#### Scenario: NumTotalRefs below two is a typed error before any read
-- **WHEN** `read_single_ref` is called with `NumTotalRefs < 2`
-- **THEN** it returns a typed error before consuming any symbol bit (the spec
-  only calls `read_single_ref` when `NumTotalRefs >= 2`)
+#### Scenario: NumTotalRefs == 1 returns the only reference with no symbol read
+- **WHEN** `read_single_ref` is called with `NumTotalRefs == 1`
+- **THEN** it returns `0` (`NumTotalRefs - 1`) without consuming any symbol bit,
+  because the § 5.20.7.12 loop is empty (the legal one-reference case; § 6.19.7.11
+  only requires `NumTotalRefs > 0`)
+
+#### Scenario: NumTotalRefs == 0 is a typed error before any read
+- **WHEN** `read_single_ref` is called with `NumTotalRefs == 0`
+- **THEN** it returns a typed error before consuming any symbol bit (§ 6.19.7.11
+  requires `NumTotalRefs > 0`; the spec computes `NumTotalRefs - 1`, which would
+  underflow at 0)
 
 #### Scenario: invalid inputs are typed errors, not panics
 - **WHEN** `read_single_ref` is given fewer contexts than decisions, an

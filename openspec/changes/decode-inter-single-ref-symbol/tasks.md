@@ -32,9 +32,10 @@
       contexts, asserting the decoded selection equals the encoded one and
       `exit_symbol()` is consistent.
 - [x] 4.2 Sweep `NumTotalRefs` from 2 to REFS_PER_FRAME with distinct contexts.
-- [x] 4.3 Add a context-indexing falsifiability witness, a `NumTotalRefs < 2`
-      reject, a missing-context typed error, an out-of-range context typed error,
-      and a short-buffer panic-free case.
+- [x] 4.3 Add a context-indexing falsifiability witness, a `NumTotalRefs == 1`
+      empty-loop-returns-0 case, a `NumTotalRefs == 0` reject, a missing-context
+      typed error, an out-of-range context typed error, and a short-buffer
+      panic-free case.
 
 ## 5. Verify + gate
 - [x] 5.1 Confirm falsifiability: a transposed CDF-row index (`ctx` <-> `ref`)
