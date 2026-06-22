@@ -721,38 +721,422 @@ fn multiref_fixture_per_frame_hash_is_stable() {
     );
 }
 
+/// AV2 § 5 `choose_primary_secondary_ref_frame` (mirror :5468-5495): the
+/// CHOOSE-resolution loop scores ONLY `RefFrameType == INTER_FRAME` slots, so a
+/// reference history whose valid slot holds the KEY frame resolves to
+/// `PRIMARY_REF_NONE` (8 == PRIMARY_REF_CHOOSE is the input value; 7 ==
+/// PRIMARY_REF_NONE is the result). This is the GROUND-TRUTH behaviour of the
+/// committed 2-frame fixtures (their only valid slot holds the CLK KEY frame), so
+/// CHOOSE never resolves to an adapted-CDF load there.
 #[test]
-fn inter_loads_cross_frame_cdfs_matches_the_spec_load_precondition() {
-    use super::inter_loads_cross_frame_cdfs as loads;
-    // §5 (mirror :5426-5430): load_cdfs runs iff primary_ref_frame names a RESOLVED real
-    // reference (0..PRIMARY_REF_NONE, i.e. 0..=6) AND disable_cross_frame_cdf_init == 0.
-    // Loads: a resolved real primary reference with cross-frame CDF init enabled.
-    assert!(
-        loads(Some(0), Some(false)),
-        "primary_ref 0, init enabled -> loads"
+fn choose_primary_ref_frame_skips_non_inter_slots() {
+    use super::cross_frame::choose_primary_secondary_ref_frame as choose;
+    const PRIMARY_REF_NONE: u8 = 7;
+    // ref_frame_idx = [0]; slot 0 holds a KEY frame (is_inter == false). Unsignalled CHOOSE
+    // (signal=false, primary_ref_frame=8) takes the ranking.
+    let ref_frame_idx = [0u32];
+    let is_inter = [false, false];
+    let base_q = [70u32, 0];
+    let oh = [0u32, 0];
+    let w = [64u32, 0];
+    let h = [64u32, 0];
+    assert_eq!(
+        choose(
+            Some(false),
+            Some(8),
+            &ref_frame_idx,
+            &is_inter,
+            &base_q,
+            &oh,
+            &w,
+            &h,
+            70,
+            1
+        )
+        .0,
+        PRIMARY_REF_NONE,
+        "a KEY-only reference history resolves CHOOSE to PRIMARY_REF_NONE"
+    );
+    // Now slot 0 holds an INTER frame: it becomes the derived primary (index 0 into
+    // ref_frame_idx).
+    let is_inter = [true, false];
+    assert_eq!(
+        choose(
+            Some(false),
+            Some(8),
+            &ref_frame_idx,
+            &is_inter,
+            &base_q,
+            &oh,
+            &w,
+            &h,
+            70,
+            1
+        )
+        .0,
+        0,
+        "an INTER reference resolves CHOOSE to its ref_frame_idx index"
+    );
+}
+
+/// AV2 § 5 `choose_primary_secondary_ref_frame` (mirror :5476-5495): with two inter
+/// candidates the lower `qpDiff = Abs(RefBaseQIdx - base_q_idx)` wins.
+#[test]
+fn choose_primary_ref_frame_ranks_two_inter_slots_by_qp_diff() {
+    use super::cross_frame::choose_primary_secondary_ref_frame as choose;
+    // ref_frame_idx = [0, 1]; both inter. base_q_idx == 100. Slot 0 q=70 (diff 30),
+    // slot 1 q=109 (diff 9): slot 1 (index 1) wins on the smaller qpDiff; slot 0 is secondary.
+    let ref_frame_idx = [0u32, 1];
+    let is_inter = [true, true];
+    let base_q = [70u32, 109];
+    let oh = [1u32, 2];
+    let w = [64u32, 64];
+    let h = [64u32, 64];
+    let (primary, secondary) = choose(
+        Some(false),
+        Some(8),
+        &ref_frame_idx,
+        &is_inter,
+        &base_q,
+        &oh,
+        &w,
+        &h,
+        100,
+        3,
+    );
+    assert_eq!(
+        primary, 1,
+        "the smaller |RefBaseQIdx - base_q_idx| (slot 1) is the derived primary"
+    );
+    assert_eq!(
+        secondary, 0,
+        "the other inter candidate (slot 0) is the derived secondary"
+    );
+}
+
+/// AV2 § 5 `set_primary_ref_frame_and_ctx` (mirror :5411-5430) — the CDF-load decision
+/// after resolving `PRIMARY_REF_CHOOSE`. A CHOOSE frame over a KEY-only history resolves to
+/// PRIMARY_REF_NONE -> `Default` (no load); over an ADAPTED inter slot it resolves to
+/// `LoadSlot(slot)` -> the caller rejects. cross-frame-init-disabled is always `Default`.
+#[test]
+fn resolve_cdf_load_models_choose_resolution_and_load_decision() {
+    use super::cross_frame::{ResolvedCdfLoad, resolve_cdf_load as resolve};
+    // ref_frame_idx = [0, 1]: slot 0 is the KEY frame (is_inter false), slot 1 is an inter
+    // frame. base_q matches the 3-frame fixture (key q70, inter1 q109), current q at slot 2.
+    let ref_frame_idx = [0u32, 1];
+    let is_inter = [false, true]; // slot 0 key, slot 1 inter
+    let base_q = [70u32, 109];
+    let oh = [0u32, 1];
+    let w = [64u32, 64];
+    let h = [64u32, 64];
+
+    // CHOOSE (signal=false, prf=8) over this history resolves DerivedPrimaryRefFrame to
+    // index 1 (the only inter candidate). If slot 1 is NOT adapted, the caller would not
+    // reject; resolve_cdf_load reports LoadSlot(1) (ref_frame_idx[1] == slot 1).
+    let load = resolve(
+        Some(false),
+        Some(8),     // PRIMARY_REF_CHOOSE
+        Some(false), // cross-frame init enabled
+        &ref_frame_idx,
+        &is_inter,
+        &base_q,
+        &oh,
+        &w,
+        &h,
+        130,   // current base_q_idx
+        2,     // current order hint
+        false, // enable_avg_cdf
+        1,     // avg_cdf_type
     );
     assert!(
-        loads(Some(6), None),
-        "primary_ref 6, init flag absent (enabled) -> loads"
+        matches!(
+            load,
+            ResolvedCdfLoad::LoadSlot {
+                primary: 1,
+                blend: None
+            }
+        ),
+        "CHOOSE resolves to the inter slot 1 -> load_cdfs(ref_frame_idx[1] == slot 1), no blend"
+    );
+
+    // A KEY-ONLY history (no inter candidate) resolves CHOOSE to PRIMARY_REF_NONE -> Default
+    // (no load), exactly the committed 2-frame fixtures.
+    let key_only_is_inter = [false, false];
+    let load = resolve(
+        Some(false),
+        Some(8),
+        Some(false),
+        &[0u32],
+        &key_only_is_inter,
+        &base_q,
+        &oh,
+        &w,
+        &h,
+        130,
+        2,
+        false, // enable_avg_cdf
+        1,     // avg_cdf_type
     );
     assert!(
-        loads(Some(3), Some(false)),
-        "primary_ref 3, init enabled -> loads"
+        matches!(load, ResolvedCdfLoad::Default),
+        "CHOOSE over a KEY-only history resolves to PRIMARY_REF_NONE -> Default (no load)"
     );
-    // Does NOT load: PRIMARY_REF_NONE (7) regardless of the init flag.
-    assert!(!loads(Some(7), Some(false)), "PRIMARY_REF_NONE -> no load");
-    assert!(!loads(Some(7), None), "PRIMARY_REF_NONE -> no load");
-    // Does NOT load: PRIMARY_REF_CHOOSE (8) — the unsignalled placeholder splot does not
-    // resolve (the committed fixtures carry it and decode bit-exact vs both oracles).
+
+    // cross-frame CDF init disabled -> always Default even with an inter candidate.
+    let load = resolve(
+        Some(false),
+        Some(8),
+        Some(true), // disable_cross_frame_cdf_init == 1
+        &ref_frame_idx,
+        &is_inter,
+        &base_q,
+        &oh,
+        &w,
+        &h,
+        130,
+        2,
+        false, // enable_avg_cdf
+        1,     // avg_cdf_type
+    );
     assert!(
-        !loads(Some(8), Some(false)),
-        "PRIMARY_REF_CHOOSE -> no load"
+        matches!(load, ResolvedCdfLoad::Default),
+        "disable_cross_frame_cdf_init == 1 -> Default (init_non_coeff_cdfs)"
     );
-    assert!(!loads(Some(8), None), "PRIMARY_REF_CHOOSE -> no load");
-    // Does NOT load: cross-frame CDF init disabled (decode from default).
-    assert!(!loads(Some(0), Some(true)), "init disabled -> no load");
-    assert!(!loads(Some(5), Some(true)), "init disabled -> no load");
-    // Does NOT load: no parsed primary_ref_frame (no complete control region).
-    assert!(!loads(None, Some(false)), "no primary_ref_frame -> no load");
-    assert!(!loads(None, None), "no fields -> no load");
+
+    // An EXPLICIT primary_ref_frame (signal=true) naming an inter slot loads it.
+    let load = resolve(
+        Some(true),
+        Some(1), // primary_ref_frame == 1 (ref_frame_idx[1] == slot 1)
+        Some(false),
+        &ref_frame_idx,
+        &is_inter,
+        &base_q,
+        &oh,
+        &w,
+        &h,
+        130,
+        2,
+        false, // enable_avg_cdf
+        1,     // avg_cdf_type
+    );
+    assert!(
+        matches!(load, ResolvedCdfLoad::LoadSlot { primary: 1, .. }),
+        "an explicit primary_ref_frame loads ref_frame_idx[primary_ref_frame]"
+    );
+
+    // An explicit PRIMARY_REF_NONE (7) is always Default.
+    let load = resolve(
+        Some(true),
+        Some(7),
+        Some(false),
+        &ref_frame_idx,
+        &is_inter,
+        &base_q,
+        &oh,
+        &w,
+        &h,
+        130,
+        2,
+        false, // enable_avg_cdf
+        1,     // avg_cdf_type
+    );
+    assert!(
+        matches!(load, ResolvedCdfLoad::Default),
+        "explicit PRIMARY_REF_NONE -> Default"
+    );
+}
+
+#[test]
+fn resolve_cdf_load_signal_primary_overrides_ranking_even_with_no_inter_candidate() {
+    use super::cross_frame::{ResolvedCdfLoad, resolve_cdf_load as resolve};
+    // §5 :5497-5508: with signal_primary_ref_frame == 1 the signalled primary_ref_frame
+    // overrides DerivedPrimaryRefFrame UNCONDITIONALLY — even when the inter-only ranking
+    // finds no candidate. Here ref_frame_idx[0] is the KEY (non-inter) slot and there is no
+    // inter slot, so the ranking returns PRIMARY_REF_NONE; a signalled primary 0 must still
+    // resolve to LoadSlot(0) so the caller's adapted-slot reject is REACHABLE, NOT the
+    // Default the ranking-only resolution would (wrongly) produce — the P1 under-reject.
+    let ref_frame_idx = [0u32];
+    let is_inter = [false]; // KEY-only history: no inter ranking candidate
+    let base_q = [70u32];
+    let oh = [0u32];
+    let w = [64u32];
+    let h = [64u32];
+    let load = resolve(
+        Some(true), // signal_primary_ref_frame == 1
+        Some(0),    // signalled primary_ref_frame 0 (the KEY slot)
+        Some(false),
+        &ref_frame_idx,
+        &is_inter,
+        &base_q,
+        &oh,
+        &w,
+        &h,
+        130,
+        2,
+        false, // enable_avg_cdf
+        1,     // avg_cdf_type
+    );
+    assert!(
+        matches!(load, ResolvedCdfLoad::LoadSlot { primary: 0, .. }),
+        "a signalled primary overrides the (NONE) ranking -> LoadSlot(0), so an adapted slot 0 is rejected, not silently decoded from defaults"
+    );
+}
+
+#[test]
+fn resolve_cdf_load_reports_blend_slot_only_when_a_secondary_exists() {
+    use super::cross_frame::{ResolvedCdfLoad, resolve_cdf_load as resolve};
+    let base_q = [70u32, 109];
+    let oh = [0u32, 1];
+    let w = [64u32, 64];
+    let h = [64u32, 64];
+    // §5 :5431-5439 blend_cdfs: with enable_avg_cdf && avg_cdf_type == 0 and TWO inter
+    // candidates, the second-best (derivedSecondary) is the blendFrame; resolve reports its
+    // slot so the caller rejects only an ADAPTED blend. base_q [70,109] @ current 70 -> slot 0
+    // is primary (qpDiff 0), slot 1 secondary -> blend slot = ref_frame_idx[1] == 1.
+    let load = resolve(
+        Some(false),
+        Some(8),
+        Some(false),
+        &[0u32, 1],
+        &[true, true],
+        &base_q,
+        &oh,
+        &w,
+        &h,
+        70,
+        2,
+        true, // enable_avg_cdf
+        0,    // avg_cdf_type
+    );
+    assert!(
+        matches!(
+            load,
+            ResolvedCdfLoad::LoadSlot {
+                primary: 0,
+                blend: Some(1)
+            }
+        ),
+        "two inter candidates -> primary slot 0, blend slot 1 (the derivedSecondary)"
+    );
+    // ONE inter candidate -> no derivedSecondary -> blendFrame NONE -> blend None (the
+    // committed multiref class: a loading frame with one inter reference does NOT blend).
+    let load = resolve(
+        Some(false),
+        Some(8),
+        Some(false),
+        &[0u32, 1],
+        &[false, true],
+        &base_q,
+        &oh,
+        &w,
+        &h,
+        70,
+        2,
+        true,
+        0,
+    );
+    assert!(
+        matches!(
+            load,
+            ResolvedCdfLoad::LoadSlot {
+                primary: 1,
+                blend: None
+            }
+        ),
+        "one inter candidate -> blendFrame NONE -> no blend"
+    );
+    // codex's case: a SIGNALLED primary equal to the sole derived inter primary has
+    // blendFrame == derivedSecondary == NONE -> no blend (NOT over-rejected by a `signalled`
+    // proxy). ref_frame_idx[0] is the only inter; signalled primary 0 == derivedPrimary 0.
+    let load = resolve(
+        Some(true),
+        Some(0),
+        Some(false),
+        &[0u32],
+        &[true],
+        &[70u32],
+        &[0u32],
+        &[64u32],
+        &[64u32],
+        70,
+        2,
+        true,
+        0,
+    );
+    assert!(
+        matches!(
+            load,
+            ResolvedCdfLoad::LoadSlot {
+                primary: 0,
+                blend: None
+            }
+        ),
+        "a signalled primary == the sole inter ref has no secondary -> blend None, not rejected"
+    );
+}
+
+#[test]
+fn resolve_cdf_load_rejects_out_of_range_signalled_primary() {
+    use super::cross_frame::{ResolvedCdfLoad, resolve_cdf_load as resolve};
+    // §6.17.2: primary_ref_frame < NumTotalRefs. A signalled primary 6 (< PRIMARY_REF_NONE)
+    // with a single reference (ref_frame_idx.len() == 1) is out of range -> non-conformant ->
+    // OutOfRangePrimary (the caller rejects it before output), NOT a silent Default decode.
+    let load = resolve(
+        Some(true),
+        Some(6),
+        Some(false),
+        &[0u32], // one reference: index 6 is out of bounds
+        &[true],
+        &[70u32],
+        &[0u32],
+        &[64u32],
+        &[64u32],
+        70,
+        2,
+        false,
+        1,
+    );
+    assert!(
+        matches!(load, ResolvedCdfLoad::OutOfRangePrimary),
+        "a signalled primary >= NumTotalRefs is OutOfRangePrimary (rejected, not Default)"
+    );
+}
+
+/// AV2 § 5.18.2 `get_disp_order_hint` — the stored RefOrderHint (= OrderHintLsbs) is the
+/// unwrapped OrderHint unless the DIRECTIONAL wrap correction fires, which happens only when
+/// the max prior valid reference's order hint exceeds this frame's LSB by at least HALF an
+/// OrderHintBits window (`maxDisp - LSB >= window/2`, a `monotonic_output_order_flag == 0`
+/// wrap-back). FORWARD frames (`LSB >= maxDisp`) are never corrected and are admitted even
+/// with a large span; only the wrap-back direction is rejected.
+#[test]
+fn order_hint_history_wrap_guard() {
+    use super::cross_frame::order_hint_history_unwrapped as unwrapped;
+    // order_hint_bits 0 -> trivially non-wrapping (no order-hint signaling).
+    assert!(unwrapped(&[true], &[0u32], 0, 5));
+    // FORWARD frames are always exact (currentLSB >= maxDisp -> no correction), even with a
+    // large span: prior {0}, window 1<<4 == 16, next 1 / 9 / 15 -> all admitted.
+    assert!(unwrapped(&[true], &[0u32], 4, 1));
+    assert!(unwrapped(&[true], &[0u32], 4, 9)); // the forward span the symmetric bound wrongly rejected
+    assert!(unwrapped(&[true], &[0u32], 4, 15));
+    // WRAP-BACK (a small LSB after a larger prior hint) is corrected -> rejected: prior {15},
+    // next 0, window 16 -> maxDisp - LSB = 15 >= half(8) -> rejected.
+    assert!(!unwrapped(&[true], &[15u32], 4, 0));
+    // The threshold is exactly half a window: prior {8}, next 0, bits 4 (half 8) -> 8 >= 8
+    // rejected; prior {7}, next 0 -> 7 < 8 admitted.
+    assert!(!unwrapped(&[true], &[8u32], 4, 0));
+    assert!(unwrapped(&[true], &[7u32], 4, 0));
+    // maxDisp is taken over ALL valid prior slots: prior {0, 12}, next 1, bits 4 -> maxDisp
+    // 12, 12 - 1 = 11 >= 8 -> rejected (slot 1 wraps relative to the current frame).
+    assert!(!unwrapped(&[true, true], &[0u32, 12], 4, 1));
+}
+
+/// `FloorLog2` (AV2 § 4): the MSB index, 0 for 0.
+#[test]
+fn floor_log2_matches_msb_index() {
+    use super::cross_frame::floor_log2;
+    assert_eq!(floor_log2(0), 0);
+    assert_eq!(floor_log2(1), 0);
+    assert_eq!(floor_log2(2), 1);
+    assert_eq!(floor_log2(64 * 64), 12); // 4096 == 1 << 12
+    assert_eq!(floor_log2(4095), 11);
 }

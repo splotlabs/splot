@@ -29,7 +29,10 @@ use super::MinimalRuntimeFrame;
 struct Slot {
     /// `RefValid[i]` (§ 7.23): whether the slot holds a usable reference frame.
     valid: bool,
-    /// `RefOrderHint[i]` (§ 7.23): the stored frame's display order hint.
+    /// `RefOrderHint[i]` (§ 7.23): the stored frame's display order hint (the UNWRAPPED
+    /// `OrderHint` from `get_disp_order_hint()`, mirror :4375 / § 7.23 :14123 — NOT the
+    /// raw `OrderHintLsbs`), so a § 7.7 / `choose_primary_secondary_ref_frame` ranking is
+    /// wrap-correct when `OrderHintBits` would otherwise truncate it.
     order_hint: u32,
     /// `RefFrameWidth[i]` (§ 7.23).
     width: u32,
@@ -37,6 +40,18 @@ struct Slot {
     height: u32,
     /// `RefBaseQIdx[i]` (§ 7.23): the stored frame's `base_q_idx` (a § 7.7 score input).
     base_q_idx: u32,
+    /// `RefFrameType[i] == INTER_FRAME` (§ 7.23 :14110): whether the stored frame is an
+    /// inter frame. The § 5 `choose_primary_secondary_ref_frame` CHOOSE-resolution loop
+    /// (mirror :5468-5495) scores ONLY inter-typed reference slots, so a key / intra-only
+    /// reference can never be the resolved `primary_ref_frame` (and so never triggers the
+    /// cross-frame CDF-load reject).
+    is_inter: bool,
+    /// Whether the frame stored in this slot ADAPTED its CDFs (`disable_cdf_update == 0`).
+    /// A later frame that loads THIS slot's saved CDFs (§ 7.23 save / § 5 `load_cdfs`)
+    /// would inherit an adapted entropy state the minimal decoder does not model, so the
+    /// per-slot flag drives the cross-frame CDF-inheritance reject against the RESOLVED
+    /// loaded slot (not a coarse "any prior frame adapted").
+    adapted: bool,
     /// The index of the decoded frame stored in this slot, or `None` when empty.
     frame_index: Option<usize>,
 }
@@ -48,6 +63,8 @@ impl Slot {
         width: 0,
         height: 0,
         base_q_idx: 0,
+        is_inter: false,
+        adapted: false,
         frame_index: None,
     };
 }
@@ -69,6 +86,13 @@ pub(super) struct FrameRefUpdate {
     /// first refreshed slot becomes valid, the rest invalid); `false` (an inter frame)
     /// sets every refreshed slot `RefValid[i] = 1`.
     pub(super) is_key_or_switch: bool,
+    /// `FrameType == INTER_FRAME` for the stored frame (§ 7.23 :14110 `RefFrameType`).
+    /// Drives the § 5 `choose_primary_secondary_ref_frame` inter-only candidate filter.
+    pub(super) is_inter: bool,
+    /// Whether the stored frame ADAPTED its CDFs (`disable_cdf_update == 0`). Recorded
+    /// per slot so a later frame's cross-frame CDF-load reject fires only when the
+    /// RESOLVED loaded slot's saved CDFs are adapted.
+    pub(super) adapted: bool,
 }
 
 /// The minimal-tier § 7.23 reference-frame buffer over `num_ref_frames` active slots.
@@ -124,6 +148,8 @@ impl RuntimeReferenceBuffer {
             slot.width = update.width;
             slot.height = update.height;
             slot.base_q_idx = update.base_q_idx;
+            slot.is_inter = update.is_inter;
+            slot.adapted = update.adapted;
             slot.frame_index = Some(frame_index);
         }
         let _ = self.frame_counter; // RefCounter is naturally distinct in this subset.
@@ -155,6 +181,8 @@ impl RuntimeReferenceBuffer {
             meta.ref_frame_width[i] = slot.width;
             meta.ref_frame_height[i] = slot.height;
             meta.ref_base_q_idx[i] = slot.base_q_idx;
+            meta.ref_is_inter[i] = slot.is_inter;
+            meta.ref_adapted[i] = slot.adapted;
             if !slot.valid {
                 continue;
             }
@@ -196,6 +224,10 @@ pub(super) struct ReferenceMetadata {
     pub(super) ref_frame_height: Vec<u32>,
     /// `RefBaseQIdx[i]` per slot.
     pub(super) ref_base_q_idx: Vec<u32>,
+    /// `RefFrameType[i] == INTER_FRAME` per slot (§ 7.23).
+    pub(super) ref_is_inter: Vec<bool>,
+    /// Whether the frame stored in slot `i` adapted its CDFs.
+    pub(super) ref_adapted: Vec<bool>,
 }
 
 impl ReferenceMetadata {
@@ -206,6 +238,8 @@ impl ReferenceMetadata {
             ref_frame_width: vec![0; num],
             ref_frame_height: vec![0; num],
             ref_base_q_idx: vec![0; num],
+            ref_is_inter: vec![false; num],
+            ref_adapted: vec![false; num],
         }
     }
 }
@@ -223,6 +257,8 @@ mod tests {
             height: 64,
             base_q_idx: 70,
             is_key_or_switch: true,
+            is_inter: false,
+            adapted: false,
         }
     }
 
@@ -255,6 +291,8 @@ mod tests {
                 height: 64,
                 base_q_idx: 109,
                 is_key_or_switch: false,
+                is_inter: true,
+                adapted: false,
             },
         );
         assert_eq!(buf.valid_count(), 2);
@@ -263,6 +301,35 @@ mod tests {
         assert_eq!(buf.slots[1].order_hint, 1);
         assert_eq!(buf.slots[1].base_q_idx, 109);
         assert_eq!(buf.slots[1].frame_index, Some(1));
+        assert!(buf.slots[1].is_inter);
+        assert!(!buf.slots[1].adapted);
+    }
+
+    /// AV2 § 7.23 — per-slot CDF adaptation: an inter frame refreshed with
+    /// `disable_cdf_update == 0` records `adapted == true` only in ITS refreshed slot,
+    /// leaving an earlier non-adapted slot's flag clear. This is the precise per-slot
+    /// state the cross-frame CDF-load reject keys on (vs a coarse "any prior adapted").
+    #[test]
+    fn per_slot_adaptation_is_tracked_independently() {
+        let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
+        buf.update(0, key_update()); // slot 0: key, not adapted
+        buf.update(
+            1,
+            FrameRefUpdate {
+                refresh_frame_flags: 1 << 1, // slot 1
+                order_hint: 1,
+                width: 64,
+                height: 64,
+                base_q_idx: 109,
+                is_key_or_switch: false,
+                is_inter: true,
+                adapted: true, // this inter frame adapted its CDFs
+            },
+        );
+        assert!(!buf.slots[0].adapted);
+        assert!(buf.slots[1].adapted);
+        assert!(!buf.slots[0].is_inter);
+        assert!(buf.slots[1].is_inter);
     }
 
     #[test]
