@@ -1078,7 +1078,7 @@ fn resolve_cdf_load_reports_blend_slot_only_when_a_secondary_exists() {
 #[test]
 fn resolve_cdf_load_rejects_out_of_range_signalled_primary() {
     use super::cross_frame::{ResolvedCdfLoad, resolve_cdf_load as resolve};
-    // §6.19.2: primary_ref_frame < NumTotalRefs. A signalled primary 6 (< PRIMARY_REF_NONE)
+    // §6.17.2: primary_ref_frame < NumTotalRefs. A signalled primary 6 (< PRIMARY_REF_NONE)
     // with a single reference (ref_frame_idx.len() == 1) is out of range -> non-conformant ->
     // OutOfRangePrimary (the caller rejects it before output), NOT a silent Default decode.
     let load = resolve(

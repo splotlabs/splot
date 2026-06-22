@@ -158,7 +158,7 @@ pub(super) fn decode_minimal_inter_frame(
             return Err(unsupported_at(
                 "inter_primary_ref_out_of_range",
                 offset,
-                "minimal multi-reference decode rejects a non-conformant signalled primary_ref_frame that names a reference >= NumTotalRefs (out of ref_frame_idx bounds, §6.19.2) before any output",
+                "minimal multi-reference decode rejects a non-conformant signalled primary_ref_frame that names a reference >= NumTotalRefs (out of ref_frame_idx bounds, §6.17.2) before any output",
                 SPEC_HEADER,
             ));
         }

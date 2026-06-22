@@ -49,7 +49,7 @@ rejected on this basis.
 #### Scenario: an out-of-range signalled primary reference is rejected
 - **WHEN** an inter frame has `signal_primary_ref_frame == 1` and a `primary_ref_frame`
   that is a real reference (`< PRIMARY_REF_NONE`) but `>= NumTotalRefs` (out of
-  `ref_frame_idx` bounds, non-conformant per § 6.19.2)
+  `ref_frame_idx` bounds, non-conformant per § 6.17.2)
 - **THEN** the decoder emits `decode/unsupported-feature`
   (`inter_primary_ref_out_of_range`) and produces no output, rather than decoding from
   default CDFs
