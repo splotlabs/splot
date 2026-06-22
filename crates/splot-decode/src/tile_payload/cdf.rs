@@ -394,6 +394,15 @@ pub(crate) enum TileCdfSelector {
         /// `NewMvContext`.
         ctx: usize,
     },
+    /// `TileSingleRefCdf[ctx][ref]` (AV2 § 8.3.2): the §5.20.7.12 `read_single_ref`
+    /// binary `single_ref` symbol.
+    SingleRef {
+        /// §8.3.2 neighbour-derived single_ref context (same derivation as
+        /// `comp_ref`).
+        ctx: usize,
+        /// The §5.20.7.12 loop counter `ref`.
+        ref_idx: usize,
+    },
     /// `TileJointShellSetCdf[MvCtx]` (AV2 § 8.3.2): the §5.20.7.20 `shell_set`
     /// symbol (single-context MvCtx == 0).
     JointShellSet,
@@ -508,6 +517,8 @@ pub(crate) enum TileCdfArray {
     SingleMode,
     /// `TileDrlModeCdf`.
     DrlMode,
+    /// `TileSingleRefCdf`.
+    SingleRef,
     /// `TileJointShell6ClassCdf` (the EighthPel P == 6 `shell_class` bank pair).
     JointShell6Class,
     /// `TileShellOffsetLowClassCdf`.
@@ -558,6 +569,7 @@ impl TileCdfArray {
             Self::Skip => "TileSkipCdf",
             Self::SingleMode => "TileSingleModeCdf",
             Self::DrlMode => "TileDrlModeCdf",
+            Self::SingleRef => "TileSingleRefCdf",
             Self::JointShell6Class => "TileJointShell6ClassCdf",
             Self::ShellOffsetLowClass => "TileShellOffsetLowClassCdf",
             Self::ShellOffsetOtherClass => "TileShellOffsetOtherClassCdf",
@@ -936,6 +948,9 @@ impl TileCdfRows {
             TileCdfSelector::DrlMode { idx, ctx } => {
                 self.block.row(BlockCdfSelector::DrlMode { idx, ctx })
             }
+            TileCdfSelector::SingleRef { ctx, ref_idx } => {
+                self.block.row(BlockCdfSelector::SingleRef { ctx, ref_idx })
+            }
             TileCdfSelector::JointShellSet => self.block.row(BlockCdfSelector::JointShellSet),
             TileCdfSelector::JointShell6Class { shell_set } => self
                 .block
@@ -1095,6 +1110,9 @@ impl TileCdfRows {
             TileCdfSelector::DrlMode { idx, ctx } => {
                 self.block.row_mut(BlockCdfSelector::DrlMode { idx, ctx })
             }
+            TileCdfSelector::SingleRef { ctx, ref_idx } => self
+                .block
+                .row_mut(BlockCdfSelector::SingleRef { ctx, ref_idx }),
             TileCdfSelector::JointShellSet => self.block.row_mut(BlockCdfSelector::JointShellSet),
             TileCdfSelector::JointShell6Class { shell_set } => self
                 .block
