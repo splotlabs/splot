@@ -359,6 +359,26 @@ fn decode_one_inter_block(
         ));
     }
 
+    // §7.12.2.5 scan_col (find_mv_stack step 16, deltaCol = -3) is deferred. For a
+    // >= 32x32 (>= 8-MI) leaf the `MiCol - 3` probe lands inside the immediate-left
+    // block's base column, so the §7.12.2.6 guard cannot add a distinct candidate
+    // and the omission is a provable no-op. For a sub-32x32 leaf WITH a decoded
+    // neighbour the guard can fire and append a stack candidate this kernel omits,
+    // so a DRL index that selects it would resolve a WRONG MV — and scan_col reads
+    // no symbol, so the §8.2.4 exit_symbol() bit-count check cannot catch it. Reject
+    // a sub-32x32 inter leaf once a neighbour exists (a no-neighbour leaf stays a
+    // no-op and remains admitted).
+    // 32x32 == 8 4x4-MI units; scan_col(-3) is a provable no-op at >= 32x32.
+    const SCAN_COL_NOOP_MIN_N4: usize = 8;
+    if neighbour_ctx.has_neighbour && (n4w < SCAN_COL_NOOP_MIN_N4 || n4h < SCAN_COL_NOOP_MIN_N4) {
+        return Err(unsupported_at(
+            "inter_block_subblock_scan_col_with_neighbour",
+            tile_offset,
+            "minimal inter decode defers §7.12.2.5 scan_col, a no-op only for >= 32x32 leaves; a sub-32x32 inter leaf with a decoded neighbour is rejected",
+            super::SPEC_MV,
+        ));
+    }
+
     let cdfs = work_unit.cdf_mut().tile_cdfs_mut();
 
     // §5.20.7.3 read_is_inter: TileIsInterCdf[ctx], ctx from §5.20.7.2 / §8.3.2
@@ -504,6 +524,7 @@ fn decode_one_inter_block(
         symbols,
         frame_interpolation_filter,
         single_mode,
+        neighbour_ctx.has_neighbour,
         tile_offset,
     )?;
 
@@ -682,6 +703,7 @@ fn resolve_interp_filter(
     symbols: &mut SymbolDecoder<'_>,
     frame_interpolation_filter: FrameInterpolationFilter,
     single_mode: u8,
+    has_neighbour: bool,
     tile_offset: ByteOffset,
 ) -> Result<ReconInterpolationFilter> {
     match frame_interpolation_filter {
@@ -695,6 +717,22 @@ fn resolve_interp_filter(
             // the per-block symbol.
             if single_mode == SINGLE_MODE_GLOBALMV {
                 return Ok(ReconInterpolationFilter::EightTap);
+            }
+            // §8.3.2 interp_filter ctx is neighbour-dependent (it folds in
+            // InterpFilters[neighbour] for a matching-reference neighbour); this kernel
+            // models only the no-neighbour ctx == 3. A NEARMV/NEWMV block WITH a decoded
+            // neighbour would read the wrong CDF row, so reject a SWITCHABLE filter once
+            // a neighbour exists (the no-neighbour single-block sub-pel fixture still
+            // decodes; the multi-block fixture uses a fixed frame filter, so neither is
+            // affected). A wrong CDF row usually shifts the bit count, but a coincidental
+            // same-length decode would pass §8.2.4 exit_symbol() with a wrong filter.
+            if has_neighbour {
+                return Err(unsupported_at(
+                    "inter_block_interp_filter_neighbour_ctx",
+                    tile_offset,
+                    "minimal inter decode models only the no-neighbour §8.3.2 interp_filter context; a SWITCHABLE frame filter with a decoded neighbour is rejected",
+                    SPEC_MODE_INFO,
+                ));
             }
             let symbol = cdfs
                 .read_block_symbol_trace(
