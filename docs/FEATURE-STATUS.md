@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 394 feature(s).
+Matrix version 1. Last reviewed 2026-06-15. 393 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -187,8 +187,6 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `ENC-GENERAL-INTRA-EOB3` | First eob>2 intra frame (eob_extra) | encoder | encoder-tool | done | done | n/a | n/a | done | done | done | done | n/a | `crates/splot-encode/src/general_intra_trace/multi_coeff.rs` |
 | `ENC-GENERAL-INTRA-2D` | First 2-D intra reconstruction | encoder | encoder-tool | done | done | n/a | n/a | done | done | done | done | n/a | `crates/splot-encode/src/general_intra_trace/multi_coeff.rs` |
 | `ENC-CONTEXT-RECEIVE-PACKET` | Public Context emits a real packet (Milestone A keystone) | encoder | encoder-tool | done | done | n/a | n/a | done | done | done | done | n/a | `crates/splot-encode/src/context.rs` |
-| `ENC-CONFIG-QP-FIELD` | Encoder config single fixed-quantizer (qp) source | encoder | encoder-tool | done | done | n/a | n/a | done | done | done | done | n/a | `crates/splot-encode/src/config.rs` |
-| `ENC-DECIDE-RATE-CONTROLLER` | Encoder decision seam: RateController (constant-QP) | encoder | encoder-tool | done | done | n/a | n/a | done | done | done | done | n/a | `crates/splot-encode/src/decide.rs` |
 | `ENC-RECON-DEPENDENCY` | Encoder reconstruction dependency boundary | encoder | infrastructure | done | done | n/a | n/a | n/a | n/a | n/a | done | n/a | `crates/splot-encode/src/recon_boundary.rs` |
 | `ENC-INTRA-TOY-V0` | Minimal toy intra encoder path | encoder | encoder-tool | partial | todo | n/a | n/a | todo | todo | todo | todo | pending | `crates/splot-encode/src/context.rs` |
 | `ENC-RATE-CONTROL-V0` | Initial rate control strategy | encoder | encoder-tool | partial | todo | n/a | n/a | n/a | todo | n/a | todo | n/a | `crates/splot-encode/src/context.rs` |
@@ -329,6 +327,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `DECODE-INTER-RESIDUAL-DCT` | Inter block residual decode (skip == 0, DCT_DCT) | infrastructure | infrastructure | done | done | done | n/a | n/a | n/a | done | done | todo | `crates/splot-decode/src/runtime_minimal/inter/block.rs` |
 | `DECODE-INTER-MVSTACK-SPATIAL` | Multi-block inter MV stack (spatial neighbour prediction) | infrastructure | infrastructure | done | done | done | n/a | n/a | n/a | done | done | todo | `crates/splot-decode/src/runtime_minimal/inter/find_mv_stack.rs` |
 | `DECODE-INTER-MULTI-SB-SPATIAL` | Multi-superblock inter frame (cross-superblock MV prediction) | infrastructure | infrastructure | done | done | done | n/a | n/a | n/a | done | done | todo | `crates/splot-decode/src/runtime_minimal/inter.rs` |
+| `DECODE-INTER-GRID-SPATIAL` | 2-D-grid inter frame (cross-superblock-row MV prediction) | infrastructure | infrastructure | done | done | done | n/a | n/a | n/a | done | done | todo | `crates/splot-decode/src/runtime_minimal/inter.rs` |
 | `DECODE-COEFF-FSC-SCAN-WALK` | Coefficient FSC scan walk | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/coeff_loop/scan_walk.rs` |
 | `DECODE-COEFF-BASE-CDF-ROWS` | Coefficient base CDF rows | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/cdf/coeff_rows.rs` |
 | `DECODE-COEFF-IDTX-CDF-ROWS` | Coefficient IDTX CDF rows | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | n/a | `crates/splot-decode/src/tile_payload/cdf/coeff_rows.rs` |

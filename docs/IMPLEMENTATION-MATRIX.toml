@@ -13267,6 +13267,64 @@ fixtures = [
 diagnostics = ["decode/unsupported-feature"]
 
 [[feature]]
+id = "DECODE-INTER-GRID-SPATIAL"
+name = "2-D-grid inter frame (cross-superblock-row MV prediction)"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.18.3", "5.20.2.1", "5.20.3", "5.20.7.6", "7.11.2", "7.12.2", "7.12.2.6", "7.13.3.18"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-3",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-2-1",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-6",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-11-2",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-12-2",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-12-2-6",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-18",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/runtime_minimal/inter.rs"
+openspec_change = "decode-inter-grid-spatial"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Widens the inter decode arc from a single superblock ROW/column (DECODE-INTER-MULTI-SB-SPATIAL) to a full 2-D superblock GRID: width AND height each a positive multiple of 64, iterated by the §5.20.2.1 decode_tile() raster loop (sb_row outer, sb_col inner), where a block in the SECOND superblock ROW predicts its motion vector from an already-decoded SB-row-0 superblock ACROSS the superblock-row boundary via the frame-wide §7.11/§7.12 find_mv_stack grid — a further prerequisite for real-content scale (ac0ej3 is 1920x1080). The committed `syn-grid-inter-128x128-q80.ivf` (project-owned synthetic input: frame 0 four flat 64x64 luma superblocks 100/150/80/200 + flat chroma, frame 1 shifted left 6 luma samples; broad decode tools incl. GDF/cdef/deblocking/restoration/ccso/cfl/mhccp/cctx/qm/ibp/mrls/intra-edge-filter/angle-delta/ist/inter-ist/intra-dip/idtx-intra/smooth-intra/paeth-intra/bawp/cwp/tcq/trellis/all-warp/tip/opfl-refine/refinemv/masked-wedge-interintra-onesided-diffwtd-compound/joint-mvd/adaptive-mvd/flex-mvres/ref-frame-mvs/refmvbank/drl-reorder/mv-traj/high-motion/inter-ddt/skip-mode/bru/global-motion/tx-partition/rect/ext/uneven-partitions/parity-hiding/mvd-sign-derive disabled; `--qp 80 --sb-size 64 --min-partition-size 64 --max-partition-size 64`) is a two-frame 128x128 stream: frame 0 = OBU_CLOSED_LOOP_KEY (four DC_PRED intra superblocks, decoded by the general-intra 2-D grid frontier), frame 1 = OBU_REGULAR_TILE_GROUP whose four 64x64 superblocks are each a single 64x64 single-reference inter block, all skip==1. DONE (the first 2-D-grid inter frame decodes BIT-EXACT): `splot decode syn-grid-inter-128x128-q80.ivf --output-format raw` reproduces the whole-stream md5 897bf67e72ec04cb7275fae08eab700c (49152 bytes) byte-for-byte vs avmdec --rawvideo --i420 and dav2d --demuxer ivf (recorded in `docs/LOCAL-REFERENCE-EVIDENCE.toml`, `lref-avm-dav2d-syn-grid-inter-128x128-q80`). Confirmed via splot's own instrumentation: SB0 @ MI(0,0) is NEWMV with mv (col 48 = +6 full pels, eighth-pel units, ref 0, has_neighbour=false); SB1 @ MI(0,16), SB2 @ MI(16,0), SB3 @ MI(16,16) are NEARMV (has_neighbour=true, NewMvContext 3) that reconstruct (col 48) from SB0 via the §7.12.2 stack — SB2/SB3, in the SECOND superblock ROW, predict across the superblock-row boundary (NOT the zero fallback). NO step is hardcoded — the §8.2.4 exit_symbol() check guards bit-exactness, so a wrong §5.20.7.6 mode / §5.20.7.8 DRL / §5.20.7.20 MV / neighbour-context read rejects rather than emitting a confident-wrong frame. Pipeline: the ONLY decoder change over DECODE-INTER-MULTI-SB-SPATIAL is the §5.18.3 frame-size gate in validate_inter_frame_core — it now admits a full 2-D grid (width AND height each a multiple of 64) instead of a single SB row/column. NO find_mv_stack change was needed: the §7.12.2.6 Scan point process invokes the add-reference-MV step only when `is_inside(mvRow, mvCol)` AND `RefFrames[mvRow][mvCol][0] has been written for this frame (this checks that the candidate location has been decoded)` — both conditions are already modelled by `NeighbourMvGrid::get` returning None for an out-of-bounds position (is_inside == 0) OR an undecoded MI cell (RefFrames not yet written). Because the §5.20.2.1 loop decodes every superblock in raster order and `record_block` writes each block's MI cells before the next block's scan, a later superblock's above / above-right / below-left probe into a not-yet-decoded superblock reads an unwritten cell -> None -> no candidate, exactly as the spec's availability gate prescribes (verified by the new find_mv_stack unit tests `second_sb_row_block_predicts_above_sb_mv_across_sb_row_boundary` and `undecoded_later_sb_column_yields_no_candidate`). VERIFIED-SUBSET DISCIPLINE: a partial (non-multiple-of-64) frame size is REJECTED (inter_unsupported_frame_size); the skip == 0 residual is still gated to the top-left 64x64 block (inter_block_multiblock_residual), so the admitted grid frame is skip == 1 and a multi-superblock skip==0 residual stays rejected; the existing >= 32x32-leaf / single-reference / no-tools / spatial-only-find_mv_stack gates are unchanged, so all existing inter (zero-MV 4e1bd39f, sub-pel a0e82de3, residual ab2b067a, mvstack e5b581a5, SB-row 477a993d) and general-intra fixtures stay byte-identical (no regression). The deferred §7.12.2 temporal/compound/warp/ref-MV-bank/derived-SMVP/DRL-reorder candidates inherited from DECODE-INTER-MVSTACK-SPATIAL remain rejected once a block has a decoded neighbour. avm_diff remains todo (live AVM/dav2d differential in CI); the local oracle agreement is recorded in `docs/LOCAL-REFERENCE-EVIDENCE.toml`."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "done"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "todo"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/runtime_minimal/inter/tests.rs::grid_fixture_decodes_two_frames",
+    "crates/splot-decode/src/runtime_minimal/inter/tests.rs::grid_fixture_per_frame_hash_is_stable",
+    "crates/splot-decode/src/runtime_minimal/inter/find_mv_stack/tests.rs::second_sb_row_block_predicts_above_sb_mv_across_sb_row_boundary",
+    "crates/splot-decode/src/runtime_minimal/inter/find_mv_stack/tests.rs::undecoded_later_sb_column_yields_no_candidate",
+    "crates/splot-cli/tests/decode_cli.rs::decode_grid_inter_fixture_decodes_bit_exact",
+    "crates/splot-cli/tests/conformance.rs::conformance_corpus_matches_manifest",
+]
+commands = [
+    "cargo test -p splot-decode --locked",
+    "cargo test -p splot-cli --test decode_cli --locked",
+    "cargo test -p splot-cli --test conformance --locked",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-decoder-conformance-coverage",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "tests/conformance/vectors/valid/syn-grid-inter-128x128-q80.ivf",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
 id = "DECODE-COEFF-FSC-SCAN-WALK"
 name = "Coefficient FSC scan walk"
 category = "infrastructure"

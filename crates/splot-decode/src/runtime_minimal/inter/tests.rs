@@ -70,6 +70,22 @@ const TWO_FRAME_MVSTACK_FIXTURE: &[u8] = include_bytes!(
 const MULTI_SB_INTER_FIXTURE: &[u8] =
     include_bytes!("../../../../../tests/conformance/vectors/valid/syn-2sb-inter-128x64-q80.ivf");
 
+/// The first bit-exact 2-D-GRID inter fixture: a 128x128 frame is a 2x2 grid of
+/// 64x64 superblocks. Frame 0 is a general-intra DC_PRED key frame (four flat
+/// 64x64 luma superblocks 100/150/80/200, flat chroma); frame 1 is a
+/// single-reference inter frame whose four superblocks are each a single 64x64
+/// inter block, all skip=1 (no residual). SB0 @ MI(0,0) is NEWMV (col 48 = +6
+/// full pels, eighth-pel units, has_neighbour=false); SB1 @ MI(0,16), SB2 @
+/// MI(16,0), and SB3 @ MI(16,16) are NEARMV that reconstruct SB0's MV from the
+/// frame-wide §7.11/§7.12 spatial-neighbour MV stack — SB2 and SB3 (in the SECOND
+/// superblock ROW) predict across the SB-ROW boundary, the exact case the
+/// single-SB-row brick deferred. avmdec `--rawvideo --i420` and `dav2d --demuxer
+/// ivf` decode the whole stream byte-for-byte identically (oracle MD5
+/// `897bf67e72ec04cb7275fae08eab700c`, 49152 bytes). The single-SB-row inter
+/// decoder rejected this fixture (`inter_unsupported_frame_size`).
+const GRID_INTER_FIXTURE: &[u8] =
+    include_bytes!("../../../../../tests/conformance/vectors/valid/syn-grid-inter-128x128-q80.ivf");
+
 // avmdec / dav2d both decode every plane of both frames to these flat values.
 const FLAT_LUMA: u8 = 100;
 const FLAT_CHROMA_U: u8 = 120;
@@ -448,5 +464,61 @@ fn multi_sb_fixture_per_frame_hash_is_stable() {
     assert_ne!(
         key_hash, inter_hash,
         "the multi-superblock inter frame must differ from the key frame (real cross-SB MV shift)"
+    );
+}
+
+/// The committed 2-D-GRID fixture decodes a 128x128 key frame + one 128x128
+/// 2x2-superblock-grid inter frame.
+#[test]
+fn grid_fixture_decodes_two_frames() {
+    use splot_recon::{BitDepth, PixelFormat, PlaneSize};
+
+    let frames = decode_fixture(GRID_INTER_FIXTURE);
+    assert_eq!(
+        frames.len(),
+        2,
+        "the 2-D-grid stream decodes a key frame + one inter frame"
+    );
+    for (index, output) in frames.iter().enumerate() {
+        let frame = output.frame();
+        assert_eq!(frame.bit_depth(), BitDepth::Eight, "frame {index}");
+        assert_eq!(frame.pixel_format(), PixelFormat::Yuv420, "frame {index}");
+        assert_eq!(
+            frame.y().visible_size(),
+            PlaneSize::new(128, 128).unwrap(),
+            "frame {index} is a 128x128 2x2-superblock-grid frame"
+        );
+    }
+}
+
+/// Regression pin for the per-frame decode hash of the 2-D-grid fixture. The raw
+/// decoded output (both frames concatenated I420) matches avmdec `--rawvideo
+/// --i420` and `dav2d --demuxer ivf` byte-for-byte (oracle MD5
+/// `897bf67e72ec04cb7275fae08eab700c`, 49152 bytes, recorded in
+/// `docs/LOCAL-REFERENCE-EVIDENCE.toml`); these `splot-dfh-sha256-v1` per-frame
+/// hashes are splot's internal regression anchors for that bit-exact output. The
+/// inter frame is reconstructed from the §7.11/§7.12 neighbour-predicted MVs of
+/// its four superblocks, two of which (SB2/SB3 in the second superblock ROW)
+/// predict SB0's MV across the superblock-row boundary.
+#[test]
+fn grid_fixture_per_frame_hash_is_stable() {
+    let frames = decode_fixture(GRID_INTER_FIXTURE);
+    let key_hash = splot_recon::DecodedFrameHashInput::new(frames[0].frame())
+        .compute_hash()
+        .to_hex();
+    let inter_hash = splot_recon::DecodedFrameHashInput::new(frames[1].frame())
+        .compute_hash()
+        .to_hex();
+    assert_eq!(
+        key_hash, "5619e639914803867ca0bdeb12bff97e808788607f992c661a7bcfc0bea4911a",
+        "2-D-grid key-frame hash"
+    );
+    assert_eq!(
+        inter_hash, "f23ded7e9197d7c9b0a2fdc5cdc649c079cd1fb8a1c79e913b72fb74f0c502db",
+        "2-D-grid inter-frame hash"
+    );
+    assert_ne!(
+        key_hash, inter_hash,
+        "the 2-D-grid inter frame must differ from the key frame (real cross-SB MV shift)"
     );
 }

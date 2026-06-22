@@ -286,3 +286,135 @@ fn record_block_marks_every_covered_cell() {
     let ctx = find_mode_ctx(&grid, &block1);
     assert_eq!(ctx.new_mv_context, 3, "both left probes see block 0");
 }
+
+// --- DECODE-INTER-GRID-SPATIAL: 2-D superblock-grid availability ---------------
+
+/// A full 64x64 superblock is 16 MI units wide / high.
+const N4_64: usize = 16;
+/// The 128x128 (2x2 superblock) grid MI dimensions.
+const GRID_MI_DIM: usize = 32;
+
+/// One full-64x64-superblock block context in the 128x128 grid (`bw4 = bh4 = 16`,
+/// `sb_h4 = 16`).
+fn sb_block_at(mi_row: usize, mi_col: usize) -> MvBlockContext {
+    MvBlockContext {
+        mi_row,
+        mi_col,
+        bw4: N4_64,
+        bh4: N4_64,
+        sb_h4: SB_H4_64,
+        ref_frame0: 0,
+        mi_rows: GRID_MI_DIM,
+        mi_cols: GRID_MI_DIM,
+    }
+}
+
+/// Records a full-64x64-superblock inter block into the grid.
+fn record_sb(
+    grid: &mut NeighbourMvGrid,
+    r: usize,
+    c: usize,
+    mode: NeighbourYMode,
+    mv: Mv,
+    skip: bool,
+) {
+    grid.record_block(r, c, N4_64, N4_64, true, 0, mode, mv, skip);
+}
+
+#[test]
+fn second_sb_row_block_predicts_above_sb_mv_across_sb_row_boundary() {
+    // The 2-D-grid gap: a superblock in SB ROW 1 must predict an SB-ROW-0
+    // superblock's MV across the superblock-row boundary via the frame-wide
+    // §7.12.2 spatial stack. The §5.20.2.1 raster loop decodes SB row 0 fully
+    // before SB row 1, so SB0 @ MI(0,0) (NEWMV, col 48) is already recorded when
+    // SB2 @ MI(16,0) decodes; SB2's §7.12.2 above probes (deltaRow == -1) land in
+    // SB0's decoded bottom edge -> RefMvIdx 0 reconstructs SB0's MV. This is the
+    // exact case the single-SB-row brick (DECODE-INTER-MULTI-SB-SPATIAL) deferred.
+    let mut grid = NeighbourMvGrid::new(GRID_MI_DIM, GRID_MI_DIM).unwrap();
+    record_sb(&mut grid, 0, 0, NeighbourYMode::NewMv, BLOCK0_MV, true);
+    let sb2 = sb_block_at(N4_64, 0); // MI(16, 0), SB row 1, col 0
+
+    let ctx = find_mode_ctx(&grid, &sb2);
+    // §7.11.2: aboveA = scan_point_ctx(-1, bw4 - 1) = MI(15, 15) -> SB0,
+    // aboveB = scan_point_ctx(-1, 0) = MI(15, 0) -> SB0. Both above probes hit the
+    // NEWMV SB across the SB-row boundary -> NewMvCount 2, nearestMatch (above 1) =
+    // 1, NewMvContext = 1 + 2 = 3.
+    assert_eq!(
+        ctx.new_mv_count, 2,
+        "both above probes hit SB0 across SB row"
+    );
+    assert_eq!(ctx.new_mv_context, 3, "above-SB NewMvContext");
+
+    let nctx = block_neighbour_ctx(&grid, &sb2);
+    assert!(
+        nctx.has_neighbour,
+        "SB2 in SB row 1 has a decoded above neighbour (SB0)"
+    );
+
+    let stack = find_mv_stack(&grid, &sb2, Mv::ZERO);
+    assert_eq!(
+        stack.candidate(0),
+        BLOCK0_MV,
+        "RefMvIdx 0 predicts SB0's MV across the SB-row boundary"
+    );
+}
+
+#[test]
+fn undecoded_later_sb_column_yields_no_candidate() {
+    // §7.12.2.6 availability: the scan invokes the add-reference-MV step only when
+    // `is_inside(mvRow, mvCol)` AND `RefFrames[mvRow][mvCol][0] has been written for
+    // this frame`. A grid cell for a not-yet-decoded superblock returns `None`
+    // (unwritten) and must NOT contribute a candidate, so a non-top SB whose only
+    // would-be neighbour is a LATER (undecoded) SB column finds only the zero
+    // global-MV fallback. Here SB1 @ MI(0,16) (SB row 0, col 1) has its LEFT
+    // neighbour SB0 undecoded (empty grid) and the SB to its right (MI(0,16)+) also
+    // undecoded: the stack must be the zero fallback alone.
+    let grid = NeighbourMvGrid::new(GRID_MI_DIM, GRID_MI_DIM).unwrap();
+    let sb1 = sb_block_at(0, N4_64); // MI(0, 16), no decoded neighbour at all
+
+    let nctx = block_neighbour_ctx(&grid, &sb1);
+    assert!(
+        !nctx.has_neighbour,
+        "an SB whose neighbours are all undecoded has no neighbour"
+    );
+
+    let stack = find_mv_stack(&grid, &sb1, Mv::ZERO);
+    assert_eq!(
+        stack.num_mv_found(),
+        1,
+        "undecoded neighbours contribute no candidate"
+    );
+    assert_eq!(
+        stack.candidate(0),
+        Mv::ZERO,
+        "only the zero global-MV fallback"
+    );
+}
+
+#[test]
+fn bottom_right_sb_predicts_from_decoded_above_and_left() {
+    // The last superblock in the 2x2 grid, SB3 @ MI(16,16) (SB row 1, col 1),
+    // decodes after SB0/SB1/SB2 in raster order. Its left neighbour (SB2 @
+    // MI(16,0)) and above neighbour (SB1 @ MI(0,16)) are both decoded and carry
+    // SB0's MV (col 48), so the §7.12.2 stack heads with that MV — the full 2-D
+    // grid reconstruction has every later SB predicting from its already-decoded
+    // raster-order neighbours.
+    let mut grid = NeighbourMvGrid::new(GRID_MI_DIM, GRID_MI_DIM).unwrap();
+    record_sb(&mut grid, 0, 0, NeighbourYMode::NewMv, BLOCK0_MV, true); // SB0
+    record_sb(&mut grid, 0, N4_64, NeighbourYMode::Other, BLOCK0_MV, true); // SB1
+    record_sb(&mut grid, N4_64, 0, NeighbourYMode::Other, BLOCK0_MV, true); // SB2
+    let sb3 = sb_block_at(N4_64, N4_64); // MI(16, 16)
+
+    let nctx = block_neighbour_ctx(&grid, &sb3);
+    assert!(
+        nctx.has_neighbour,
+        "SB3 has decoded above + left neighbours"
+    );
+
+    let stack = find_mv_stack(&grid, &sb3, Mv::ZERO);
+    assert_eq!(
+        stack.candidate(0),
+        BLOCK0_MV,
+        "RefMvIdx 0 predicts the propagated MV in the bottom-right SB"
+    );
+}

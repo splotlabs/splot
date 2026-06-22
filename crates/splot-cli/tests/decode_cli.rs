@@ -566,6 +566,61 @@ fn decode_multi_sb_inter_fixture_decodes_bit_exact() {
 }
 
 #[test]
+fn decode_grid_inter_fixture_decodes_bit_exact() {
+    // DECODE-INTER-GRID-SPATIAL: the committed syn-grid-inter-128x128-q80.ivf is the
+    // verified first 2-D-GRID inter target. The 128x128 frame is a 2x2 grid of 64x64
+    // superblocks. Frame 0 is a general-intra DC_PRED key frame (four flat 64x64
+    // superblocks 100/150/80/200); frame 1 is an OBU_REGULAR_TILE_GROUP inter frame
+    // whose four superblocks are each a single 64x64 inter block, all skip=1: SB0 @
+    // MI(0,0) is NEWMV with a non-zero MV (col 48 = +6 full pels), and SB1 @ MI(0,16),
+    // SB2 @ MI(16,0), SB3 @ MI(16,16) are NEARMV that predict SB0's MV via the
+    // frame-wide §7.11/§7.12 spatial-neighbour MV stack — SB2 and SB3 (in the SECOND
+    // superblock ROW) predict across the SB-ROW boundary, the case the single-SB-row
+    // brick deferred. avmdec --rawvideo --i420 and dav2d --demuxer ivf decode the whole
+    // stream byte-for-byte identically (decoded-output md5
+    // 897bf67e72ec04cb7275fae08eab700c over 49152 bytes). The single-SB-row inter
+    // decoder rejected this fixture (inter_unsupported_frame_size). NO step is
+    // hardcoded: the §8.2.4 exit_symbol() check guards bit-exactness.
+    let input = conformance_vector("syn-grid-inter-128x128-q80.ivf");
+    let output = temp_output("yuv");
+
+    let out = splot(&[
+        "decode",
+        "--output-format",
+        "raw",
+        input.to_str().unwrap(),
+        "-o",
+        output.to_str().unwrap(),
+    ]);
+
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "the 2-D-grid inter fixture must decode successfully: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let decoded = std::fs::read(&output).expect("decoded raw output");
+    assert_eq!(decoded.len(), 49152, "two 8-bit 4:2:0 128x128 frames");
+    let frame_bytes = 24576;
+    let (frame0, frame1) = decoded.split_at(frame_bytes);
+    let luma_bytes = 16384;
+    // Frame 1's luma differs from frame 0 (the +6-pel horizontal motion shifts the
+    // superblock content left across the superblock boundaries), proving the
+    // cross-superblock neighbour-predicted MVs are genuinely applied; chroma is flat
+    // and unchanged.
+    assert_ne!(
+        &frame0[..luma_bytes],
+        &frame1[..luma_bytes],
+        "inter luma differs from the key (real cross-SB neighbour-predicted MVs)"
+    );
+    assert_eq!(
+        &frame0[luma_bytes..],
+        &frame1[luma_bytes..],
+        "inter chroma equals key chroma (flat, MV is horizontal)"
+    );
+}
+
+#[test]
 fn decode_hash_json_success_creates_no_implicit_output_file() {
     let input = conformance_vector("syn-flat-intra-64x64-minimal.ivf");
     let cwd = temp_dir("minimal-hash-cwd");

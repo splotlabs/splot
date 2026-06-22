@@ -299,6 +299,39 @@ verified target for the first multi-superblock inter decode brick \
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-grid-inter-128x128-q80.ivf"
+description = """
+Two-frame 2-D-GRID inter stream (IVF, 128x128 = a 2x2 grid of 64x64 superblocks) \
+from a project-owned synthetic input (four flat 64x64 luma superblocks 100 \
+(top-left) / 150 (top-right) / 80 (bottom-left) / 200 (bottom-right), flat chroma; \
+frame 1 shifted left 6 luma samples, edge-clamped), with broad decode tools (incl. \
+GDF, cdef, deblocking, restoration, ccso, cfl, mhccp, cctx, qm, ibp, mrls, \
+intra-edge-filter, angle-delta, ist, inter-ist, intra-dip, idtx-intra, \
+smooth-intra, paeth-intra, bawp, cwp, tcq, trellis, warp, tip, opfl-refine, \
+refinemv, masked/wedge/interintra/onesided/diff-wtd compound, joint-mvd, \
+adaptive-mvd, flex-mvres, ref-frame-mvs, refmvbank, drl-reorder, mv-traj, \
+high-motion, inter-ddt, skip-mode, bru, global-motion, tx-partition, \
+rect/ext/uneven partitions, parity-hiding, mvd-sign-derive) disabled and --qp=80 \
+--sb-size=64 --min-partition-size=64 --max-partition-size=64. Frame 0 = \
+OBU_TEMPORAL_DELIMITER + OBU_SEQUENCE_HEADER + OBU_CLOSED_LOOP_KEY (four DC_PRED \
+intra superblocks, decodable by the general-intra runtime 2-D grid path). \
+Frame 1 = OBU_TEMPORAL_DELIMITER + OBU_REGULAR_TILE_GROUP, four 64x64 \
+single-reference inter blocks (one per superblock), all skip=1 (no residual): \
+SB0 @ MI(0,0) is NEWMV with a non-zero MV (col 48 = +6 full pels, eighth-pel \
+units), and SB1 @ MI(0,16), SB2 @ MI(16,0), SB3 @ MI(16,16) are NEARMV that \
+predict SB0's MV from the frame-wide §7.11/§7.12 spatial-neighbour MV stack \
+(find_mv_stack); SB2 and SB3 — in the SECOND superblock ROW — predict across the \
+superblock-ROW boundary. The §5.20.2.1 decode_tile() raster loop (sb_row outer, \
+sb_col inner) iterates the four superblocks; the §7.12.2.6 availability gate \
+(is_inside && RefFrames written) keeps a probe into a not-yet-decoded superblock \
+from contributing a candidate. avmdec --rawvideo --i420 and dav2d --demuxer ivf \
+raw outputs agree byte-for-byte (decoded-output md5 \
+897bf67e72ec04cb7275fae08eab700c, 49152 bytes). The committed verified target for \
+the first 2-D-grid inter decode brick (DECODE-INTER-GRID-SPATIAL); validates \
+clean."""
+expect = "clean"
+
+[[vector]]
 path = "vectors/invalid/syn-key-intra-64x64-truncated.ivf"
 description = """
 The intra key-frame vector truncated to 100 bytes (mid-payload): the IVF frame \
