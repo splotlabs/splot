@@ -573,17 +573,23 @@ fn validate_inter_frame_core(
     }
     // §5.18.3 / §5.20.2.1: the inter decode tiles the frame into 64x64 superblocks
     // (the verified subset is sb_size 64), iterating them in the §5.20.2.1 raster
-    // loop with later superblocks predicting their MV from the already-decoded
-    // left/above neighbour blocks (the frame-wide §7.12.2 find_mv_stack grid). The
-    // admitted geometry is a SINGLE superblock ROW (height == 64, width a positive
-    // multiple of 64) OR a SINGLE superblock COLUMN (width == 64, height a positive
-    // multiple of 64): the verified §7.12.2 spatial scan + §7.12.2 step-15
-    // `isSbBorder` derivation are proven over a 1-D superblock line where every
-    // cross-superblock neighbour is the immediately-prior superblock's reconstructed
-    // edge. A full 2-D superblock grid (both dimensions > 64) is rejected: a
-    // non-leftmost, non-top superblock's §7.12.2 above-right / below-left scan
-    // positions reach a not-yet-decoded superblock, a case this kernel does not yet
-    // model. The single-64x64 frame is the degenerate 1x1 line and stays admitted.
+    // loop (sb_row outer, sb_col inner) with later superblocks predicting their MV
+    // from the already-decoded left/above neighbour blocks (the frame-wide §7.12.2
+    // find_mv_stack grid). The admitted geometry is now a full 2-D superblock GRID:
+    // width AND height each a positive multiple of 64. The §7.12.2.6 Scan point
+    // process invokes the add-reference-MV step only when `is_inside(mvRow, mvCol)`
+    // AND `RefFrames[mvRow][mvCol][0] has been written for this frame (this checks
+    // that the candidate location has been decoded)` — both conditions are modelled
+    // by `find_mv_stack`'s `NeighbourMvGrid::get`, which returns `None` for an
+    // out-of-bounds position (`is_inside == 0`) OR an undecoded MI cell (RefFrames
+    // not yet written). Because the §5.20.2.1 loop decodes every superblock in raster
+    // order and `record_block` writes each block's MI cells before the next block's
+    // scan, a later superblock's above / above-right / below-left probe that lands in
+    // a not-yet-decoded superblock reads an unwritten cell -> `None` -> no candidate,
+    // exactly as the spec's "has been written for this frame" gate prescribes. (A
+    // probe to the right within the SAME superblock row reaches a later SB column,
+    // which is undecoded -> `None`; a probe above reaches the prior, decoded SB row.)
+    // The single-64x64 frame is the degenerate 1x1 grid and stays admitted.
     let Some(frame_size) = core.frame_size else {
         return Err(unsupported_at(
             "inter_unsupported_frame_size",
@@ -594,20 +600,19 @@ fn validate_inter_frame_core(
     };
     let width = frame_size.width;
     let height = frame_size.height;
-    // Admit only the committed single-superblock ROW (height 64, width a positive
-    // multiple of 64). The single-SB COLUMN path is analytically correct (the
-    // frame-wide §7.12.2 grid + the isSbBorder above-probe reach the SB above) and
-    // was verified locally, but it has no committed 3-oracle fixture, so the
-    // verified-subset discipline keeps it OUT of the admitted set until a
-    // syn-2sbcol-inter fixture is committed (deferred follow-on). The single 64x64
-    // case is `width == height == 64` (a one-SB row).
-    let single_sb_row =
-        height == super::MINIMAL_HEIGHT && width != 0 && width.is_multiple_of(super::MINIMAL_WIDTH);
-    if !single_sb_row {
+    // Admit the committed 2-D superblock GRID: width and height each a positive
+    // multiple of 64 (so the §5.20.2.1 raster loop tiles the frame into whole 64x64
+    // superblocks with no boundary clipping). The single-SB row (height 64) and the
+    // single-SB column (width 64) are the degenerate 1-D cases of the same grid.
+    let superblock_grid = width != 0
+        && height != 0
+        && width.is_multiple_of(super::MINIMAL_WIDTH)
+        && height.is_multiple_of(super::MINIMAL_HEIGHT);
+    if !superblock_grid {
         return Err(unsupported_at(
             "inter_unsupported_frame_size",
             offset,
-            "minimal inter decode accepts a single superblock row (height 64, width a multiple of 64); the single-SB column and the 2-D multi-superblock grid are not yet fixtured",
+            "minimal inter decode accepts a 2-D grid of 64x64 superblocks (width and height each a positive multiple of 64); a partial (non-multiple-of-64) frame is not yet fixtured",
             SPEC_HEADER,
         ));
     }
