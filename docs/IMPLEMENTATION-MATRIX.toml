@@ -5138,6 +5138,39 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-COEFF-TOKENIZE-16X16-BASE"
+name = "Encoder 16x16 luma base-pass coefficient tokenization (size-generic walk)"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20.7.27", "8.3.2", "8.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/coefficient_tokenization/general_walk_16x16.rs"
+openspec_change = "encoder-coeff-tokenize-16x16-base"
+tracking_issue = ""
+owner = "encoder"
+risk = "medium"
+notes = "Minimal-working-encoder GEOMETRY UNLOCK part 2, sub-brick 4b: makes the GENERAL coefficient walk SIZE-GENERIC and adds the 16x16 luma BASE PASS (eob 1..=32). Refactor: a new TxGeom descriptor (width/height/bwl/coeff_count/max_scan_index/num_coeffs/tx_size_ctx/eob_pt_kind) + EobPtKind{Pt16,Pt256} (general_walk_geom.rs) threads one codepath tokenize_general_luma_block(quant,&geom,max_eob_pt,q_ctx) over both 4x4 and 16x16; the public 4x4 entry tokenize_general_lf_luma_block keeps its signature and delegates with TxGeom::TX_4X4. 4x4 BYTE-IDENTICAL: all 55 existing general_walk tests + 36 general_intra_trace frame tests (the 4x4 path is decode-verified in main via real frames) pass UNCHANGED (316/316 splot-encode tests green). New tokenize_general_16x16_luma_block(&[i32;256],q_ctx) covers eob 1..=32 (eobPt 1..=6, eob_pt_256 symbols 0..=5 — NO eob_pt_extra refinement, symbol 7 is the next brick 4c; eob_extra/eob_extra_bit layer applies at eobPt>=3, eobPt 6 carries 3 MSB-first eob_extra_bit literals); eob>32 (eobPt>=7) rejected with Error::CoefficientTokenizationUnsupportedEob. Reuses 4a's EobPt256 selector + TX_16X16 banks. The decoder §8.3.2 context functions are already size-generic (bwl/txw/txh) so the encoder's coeff_base_lf/hf/br mirrors only needed the 16x16 geometry passed in (no new context logic). MIRRORED VERBATIM from the decoder (the §8.2 roundtrip proves self-consistency NOT decoder-conformance): coeff_base_eob_ctx_geom == decoder coeff_base_eob_ctx (band breaks num_coeffs/8 & /4 = 32 & 64 for 256; test asserts ctx(32)=1/ctx(33)=2/ctx(64)=2/ctx(65)=3, read-only spot-checked identical to coeff_context.rs:91-106); LF boundary row+col<4 (size-independent); eob->eobPt arithmetic; eob_pt_256 symbol=eobPt-1; eob_extra width eobPt-3 MSB-first; HF/LF coeff_base + coeff_br (+7 LF / no-+7 HF / DC pos==0). §8.2 ORACLE: 10 tests over ASYMMETRIC mixed-sign 16x16 blocks (DC-only, DC+AC, LF-region, HF coeff at scan>=10, eob~32 with the [1,1,1] eob_extra_bit assertion, sign-swap negative). Split into general_walk_geom.rs(91)/general_walk_16x16.rs(85)/general_walk_16x16_tests.rs(308); general_walk.rs shrank 934->885; check-source-lines ok. Built by an isolated worktree agent (2nd attempt; 1st spuriously returned 0-tool-use) then read-only reviewed (4x4 byte-identity via full suite + band-break mirroring spot-check). decode_check=not-applicable (§8.2 self-consistency; real decode at the packet brick); avm_diff=not-applicable. This row does NOT claim the eob_pt_extra refinement (eobPt 8/9, eob..256 — 4c), golomb-over-16x16 verification (4d), packet emission, or the 16x16 intra_tx_type/sec_tx_type signaling (downstream). NEXT: 4c (eob_pt_256 eob_pt_extra refinement)."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/coefficient_tokenization/general_walk_16x16_tests.rs"]
+commands = ["cargo test -p splot-encode general_walk_16x16 --locked", "cargo test -p splot-encode general_walk --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-INTRA-BLOCK-TRACE-TWO-COEFF"
 name = "Encoder eob=2 multi-coefficient block trace"
 category = "encoder"
