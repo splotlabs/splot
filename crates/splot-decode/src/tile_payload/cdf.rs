@@ -508,16 +508,10 @@ pub(crate) enum TileCdfArray {
     SingleMode,
     /// `TileDrlModeCdf`.
     DrlMode,
-    /// `TileJointShellSetCdf`.
-    JointShellSet,
     /// `TileJointShell6ClassCdf` (the EighthPel P == 6 `shell_class` bank pair).
     JointShell6Class,
-    /// `TileJointShellLastTwoClassesCdf`.
-    JointShellLastTwo,
     /// `TileShellOffsetLowClassCdf`.
     ShellOffsetLowClass,
-    /// `TileShellOffsetClass2Cdf`.
-    ShellOffsetClass2,
     /// `TileShellOffsetOtherClassCdf`.
     ShellOffsetOtherClass,
     /// `TileColMvGreaterCdf`.
@@ -564,11 +558,8 @@ impl TileCdfArray {
             Self::Skip => "TileSkipCdf",
             Self::SingleMode => "TileSingleModeCdf",
             Self::DrlMode => "TileDrlModeCdf",
-            Self::JointShellSet => "TileJointShellSetCdf",
             Self::JointShell6Class => "TileJointShell6ClassCdf",
-            Self::JointShellLastTwo => "TileJointShellLastTwoClassesCdf",
             Self::ShellOffsetLowClass => "TileShellOffsetLowClassCdf",
-            Self::ShellOffsetClass2 => "TileShellOffsetClass2Cdf",
             Self::ShellOffsetOtherClass => "TileShellOffsetOtherClassCdf",
             Self::ColMvGreater => "TileColMvGreaterCdf",
             Self::ColMvIndex => "TileColMvIndexCdf",
