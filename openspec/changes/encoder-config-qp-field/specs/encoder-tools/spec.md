@@ -3,7 +3,7 @@
 ### Requirement: single fixed-quantizer source
 
 The encoder SHALL read its fixed quantizer from one `EncoderConfig.qp` field, threading it
-into the frame-header `base_q_idx` (AV2 § 5.18.2), so the quantizer index cannot diverge
+into the frame-header `base_q_idx` (AV2 § 5.18.6.1), so the quantizer index cannot diverge
 across the bitstream. For `qp` outside the modeled coefficient-CDF-q-context range
 (`1..=90`), `receive_packet` SHALL retire the frame without emitting a packet rather than
 emit output it cannot honestly decode. This is tracked by `ENC-CONFIG-QP-FIELD`.

@@ -17,6 +17,7 @@ use std::collections::VecDeque;
 use splot_parallel::{ThreadCount, WorkerPool};
 
 use crate::config::EncoderConfig;
+use crate::decide::{ConstantQp, RateController};
 use crate::error::{Error, Result};
 use crate::frame::{Frame, FrameInfo};
 use crate::runtime::{EncoderRuntimeConfig, SpeedPreset};
@@ -132,6 +133,9 @@ pub enum FlushStatus {
 pub struct Context {
     config: EncoderConfig,
     runtime: EncoderRuntimeConfig,
+    /// The quantizer-decision seam. The minimal encoder installs a constant-QP controller
+    /// built from [`EncoderConfig::qp`]; a rate-controlled implementation swaps in here.
+    rate_controller: ConstantQp,
     pool: WorkerPool,
     state: EncoderState,
     input_queue: VecDeque<QueuedFrame>,
@@ -146,9 +150,11 @@ impl Context {
     /// Returns [`crate::Error::Pool`] if the worker pool cannot be constructed.
     pub fn new(config: EncoderConfig, runtime: EncoderRuntimeConfig) -> Result<Self> {
         let pool = WorkerPool::new(runtime.thread_count)?;
+        let rate_controller = ConstantQp::new(config.qp);
         Ok(Self {
             config,
             runtime,
+            rate_controller,
             pool,
             state: EncoderState::Accepting,
             input_queue: VecDeque::with_capacity(INPUT_QUEUE_CAPACITY),
@@ -319,7 +325,10 @@ impl Context {
         if size.width() != SUPPORTED_FRAME_DIMENSION || size.height() != SUPPORTED_FRAME_DIMENSION {
             return Ok(None);
         }
-        if !SUPPORTED_SKIP_QP.contains(&self.config.qp) {
+        // The quantizer comes from the RateController seam (a constant-QP controller for the
+        // minimal encoder); a rate-controlled implementation would choose it per frame here.
+        let base_q_idx = self.rate_controller.frame_base_q_idx();
+        if !SUPPORTED_SKIP_QP.contains(&base_q_idx) {
             return Ok(None);
         }
         let is_flat_predictor =
@@ -334,7 +343,7 @@ impl Context {
         // file — so a consumer can mux multiple packets into a stream.
         let data =
             crate::general_intra_trace::emit_minimal_intra_skip_temporal_unit_with_base_q_idx(
-                self.config.qp,
+                base_q_idx,
             )?;
         Ok(Some(Packet { data }))
     }
