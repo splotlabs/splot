@@ -359,27 +359,27 @@ fn decode_one_inter_block(
         ));
     }
 
-    // §7.12.2.5 scan_col (find_mv_stack step 16, deltaCol = -3) is deferred. The
-    // §7.12.2.6 guard fires when `MiColBase[MiCol-3] != MiColBase[MiCol-1]` — i.e.
-    // when a base-column boundary falls between `MiCol-3` and `MiCol-1`. Creating
-    // such a boundary requires a sub-32x32 block somewhere in that 2-MI span, and by
-    // §5.20.3 DFS decode order that sub-32x32 block (which has its own decoded
-    // neighbour) is reached EARLIER and rejected by this same gate — so any frame
-    // that could make scan_col append a distinct candidate is rejected before a
-    // >= 32x32 leaf reaches here. (The narrower "the left block is also >= 32x32"
-    // claim is not independently true; DFS ordering is what makes the gate sound.)
-    // For a sub-32x32 leaf WITH a decoded neighbour scan_col can fire and append a
-    // stack candidate this kernel omits, so a DRL index that selects it resolves a
-    // WRONG MV — and scan_col reads no symbol, so §8.2.4 exit_symbol() (bit-count
-    // only) cannot catch it. Reject a sub-32x32 inter leaf once a neighbour exists
-    // (a no-neighbour leaf stays a no-op and remains admitted).
+    // Reject ANY sub-32x32 inter leaf (Min(w, h) < 32, i.e. < 8 4x4-MI units),
+    // regardless of neighbour. The verified inter subset is >= 32x32 leaves (the
+    // single 64x64 block plus the 32x32 SPLIT fixtures); no fixture admits a sub-32
+    // leaf, and they carry several §5.20.7 special cases this kernel does not model:
+    //  - §5.20.7.6 needs_interp_filter()'s GLOBALMV "no interp_filter symbol"
+    //    shortcut is gated on Min(w, h) >= 8 (a sub-8 SWITCHABLE GLOBALMV leaf reads
+    //    the symbol this code would skip);
+    //  - §5.20.7.3 derives is_inter for a SHARED-tree sub-8 leaf (MiSize !=
+    //    ChromaMiSize) WITHOUT reading TileIsInterCdf, which this code always reads;
+    //  - §7.12.2.5 scan_col(-3) is a no-op only when no sub-32 block creates a fine
+    //    column boundary — rejecting every sub-32 leaf removes any such boundary, so
+    //    scan_col is unconditionally a no-op for the admitted >= 32x32 leaves.
+    // Each of these would desync the §8.2 stream past the bit-count-only §8.2.4
+    // exit_symbol() backstop. Rejecting the whole sub-32 set keeps them out.
     // 32x32 == 8 4x4-MI units.
-    const SCAN_COL_NOOP_MIN_N4: usize = 8;
-    if neighbour_ctx.has_neighbour && (n4w < SCAN_COL_NOOP_MIN_N4 || n4h < SCAN_COL_NOOP_MIN_N4) {
+    const MIN_INTER_LEAF_N4: usize = 8;
+    if n4w < MIN_INTER_LEAF_N4 || n4h < MIN_INTER_LEAF_N4 {
         return Err(unsupported_at(
-            "inter_block_subblock_scan_col_with_neighbour",
+            "inter_block_subblock_unverified_size",
             tile_offset,
-            "minimal inter decode defers §7.12.2.5 scan_col, a no-op only for >= 32x32 leaves; a sub-32x32 inter leaf with a decoded neighbour is rejected",
+            "minimal inter decode is verified only for >= 32x32 leaves; a sub-32x32 inter leaf is rejected (it carries §5.20.7.6 needs_interp_filter / §5.20.7.3 shared-tree is_inter / §7.12.2.5 scan_col special cases this kernel does not model)",
             super::SPEC_MV,
         ));
     }
