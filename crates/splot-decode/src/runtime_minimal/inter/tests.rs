@@ -1075,6 +1075,33 @@ fn resolve_cdf_load_reports_blend_slot_only_when_a_secondary_exists() {
     );
 }
 
+#[test]
+fn resolve_cdf_load_rejects_out_of_range_signalled_primary() {
+    use super::cross_frame::{ResolvedCdfLoad, resolve_cdf_load as resolve};
+    // §6.19.2: primary_ref_frame < NumTotalRefs. A signalled primary 6 (< PRIMARY_REF_NONE)
+    // with a single reference (ref_frame_idx.len() == 1) is out of range -> non-conformant ->
+    // OutOfRangePrimary (the caller rejects it before output), NOT a silent Default decode.
+    let load = resolve(
+        Some(true),
+        Some(6),
+        Some(false),
+        &[0u32], // one reference: index 6 is out of bounds
+        &[true],
+        &[70u32],
+        &[0u32],
+        &[64u32],
+        &[64u32],
+        70,
+        2,
+        false,
+        1,
+    );
+    assert!(
+        matches!(load, ResolvedCdfLoad::OutOfRangePrimary),
+        "a signalled primary >= NumTotalRefs is OutOfRangePrimary (rejected, not Default)"
+    );
+}
+
 /// AV2 § 5.18.2 `get_disp_order_hint` — the stored RefOrderHint (= OrderHintLsbs) is the
 /// unwrapped OrderHint unless the DIRECTIONAL wrap correction fires, which happens only when
 /// the max prior valid reference's order hint exceeds this frame's LSB by at least HALF an

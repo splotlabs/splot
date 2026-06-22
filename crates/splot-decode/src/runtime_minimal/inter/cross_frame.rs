@@ -39,6 +39,11 @@ pub(super) enum ResolvedCdfLoad {
         /// The § 5 :5431-5439 `blend_cdfs` secondary slot, when a blend occurs; else `None`.
         blend: Option<u32>,
     },
+    /// A signalled `primary_ref_frame` named a real reference (`< PRIMARY_REF_NONE`) that is
+    /// `>= NumTotalRefs` (out of `ref_frame_idx` bounds) — a NON-conformant frame
+    /// (§ 6.19.2 requires `primary_ref_frame < NumTotalRefs`). The caller rejects it rather
+    /// than decoding from default CDFs, since the minimal path runs no later range rule.
+    OutOfRangePrimary,
 }
 
 /// Models AV2 § 5 `set_primary_ref_frame_and_ctx`'s CDF-load decision (mirror :5411-5430),
@@ -116,9 +121,11 @@ pub(super) fn resolve_cdf_load(
     }
     // mirror :5424: load_cdfs(ref_frame_idx[primary_ref_frame]).
     let Some(&primary_slot) = ref_frame_idx.get(primary as usize) else {
-        // A primary index past ref_frame_idx[] cannot resolve a slot; treat as no load
-        // (the inter validators reject an out-of-range ref_frame_idx independently).
-        return ResolvedCdfLoad::Default;
+        // mirror § 6.19.2 (primary_ref_frame < NumTotalRefs): a real primary index past
+        // ref_frame_idx[] is a NON-conformant frame; reject it (the minimal path runs no later
+        // range rule). The derived (ranking) primary is always in range, so this only fires
+        // for a signalled out-of-range primary_ref_frame.
+        return ResolvedCdfLoad::OutOfRangePrimary;
     };
     // mirror :5431-5439: the §5 blend_cdfs secondary load. blendFrame =
     // (primary_ref_frame == DerivedPrimaryRefFrame) ? derivedSecondaryRefFrame :

@@ -154,6 +154,14 @@ pub(super) fn decode_minimal_inter_frame(
             enable_avg_cdf,
             avg_cdf_type,
         );
+        if let ResolvedCdfLoad::OutOfRangePrimary = load {
+            return Err(unsupported_at(
+                "inter_primary_ref_out_of_range",
+                offset,
+                "minimal multi-reference decode rejects a non-conformant signalled primary_ref_frame that names a reference >= NumTotalRefs (out of ref_frame_idx bounds, §6.19.2) before any output",
+                SPEC_HEADER,
+            ));
+        }
         if let ResolvedCdfLoad::LoadSlot { primary, blend } = load {
             if reference.ref_adapted.get(primary as usize).copied() == Some(true) {
                 return Err(unsupported_at(

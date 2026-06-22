@@ -46,6 +46,14 @@ rejected on this basis.
   (`inter_cdf_inheritance_unmodeled`) when that slot is adapted — never silently
   decoded from default CDFs
 
+#### Scenario: an out-of-range signalled primary reference is rejected
+- **WHEN** an inter frame has `signal_primary_ref_frame == 1` and a `primary_ref_frame`
+  that is a real reference (`< PRIMARY_REF_NONE`) but `>= NumTotalRefs` (out of
+  `ref_frame_idx` bounds, non-conformant per § 6.19.2)
+- **THEN** the decoder emits `decode/unsupported-feature`
+  (`inter_primary_ref_out_of_range`) and produces no output, rather than decoding from
+  default CDFs
+
 ### Requirement: Per-slot CDF adaptation tracking
 The decoder SHALL record, per § 7.23 reference slot, whether the frame stored there
 ADAPTED its CDFs (`disable_cdf_update == 0`), and SHALL key the cross-frame
