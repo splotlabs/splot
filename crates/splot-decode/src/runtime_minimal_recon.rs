@@ -193,6 +193,59 @@ pub(crate) fn reconstruct_general_intra_block_rect_into(
     Ok(())
 }
 
+/// Adds a decoded § 5.20.7.27 inter residual onto the § 7.13.3.18
+/// motion-compensated prediction already written into the workspace plane.
+///
+/// `workspace` already holds the inter predictor for the whole plane (the
+/// `motion_compensate_inter_block` output frozen into a workspace, or written
+/// per-plane). This reads the predicted samples of the square block at `(x, y)`
+/// (side `1 << log2_side`), composes the § 7.14.4 dequantization, § 7.15.4
+/// inverse transform, and § 7.14.3 residual addition over them (via
+/// [`reconstruct_general_intra_block_with_prediction`], which is the §7.14.3
+/// reconstruction over an arbitrary per-sample prediction — identical for inter
+/// and intra), then writes the reconstructed block back. An `all_zero` block
+/// leaves the prediction untouched (the residual is zero), so this is a no-op
+/// for the skipped-transform case. `qindex == base_q_idx` for the minimal-tool
+/// frame; `use_tcq` adds the § 7.14.4 TCQ `dqDenom` term (luma DCT_DCT only).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn reconstruct_inter_block_residual_into(
+    workspace: &mut CurrentFrameWorkspace<u8>,
+    block: &LumaCoeffBlock,
+    plane_id: PlaneId,
+    x: usize,
+    y: usize,
+    log2_side: u32,
+    qindex: u32,
+    use_tcq: bool,
+) -> core::result::Result<(), GeneralIntraResidualError> {
+    if block.all_zero {
+        // §5.20.7.27 all_zero == 1: no residual, the MC prediction is the
+        // reconstruction. Leave the workspace prediction in place.
+        return Ok(());
+    }
+    let side = 1usize << log2_side;
+    let log2 = u8::try_from(log2_side).unwrap_or(u8::MAX);
+    let block_size = IntraRectBlockSize::new(log2, log2).map_err(recon_err)?;
+    let rect = PlaneRect::new(x, y, side, side).map_err(recon_err)?;
+    // Gather the §7.13.3.18 motion-compensated prediction for this block.
+    let mut prediction = Vec::with_capacity(side * side);
+    for row in workspace.rect_rows(plane_id, rect).map_err(recon_err)? {
+        prediction.extend_from_slice(row);
+    }
+    let out = reconstruct_general_intra_block_with_prediction(
+        &block.quant,
+        &prediction,
+        qindex,
+        plane_id,
+        log2_side,
+        use_tcq,
+    )?;
+    workspace
+        .write_rect_block(plane_id, x, y, block_size, &out)
+        .map_err(recon_err)?;
+    Ok(())
+}
+
 /// Reconstructs one square chroma plane block in decode order into the
 /// workspace, dispatching on the resolved § 5.20.5.3 `UVMode`:
 ///

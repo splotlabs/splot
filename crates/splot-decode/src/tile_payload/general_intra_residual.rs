@@ -187,6 +187,7 @@ pub(crate) fn decode_general_intra_plane_coeffs(
     start_y: usize,
     eob_u_nonzero: bool,
     uv_mode: usize,
+    is_inter: bool,
 ) -> Result<LumaCoeffBlock, GeneralIntraResidualError> {
     let x4 = start_x >> 2;
     let y4 = start_y >> 2;
@@ -204,6 +205,12 @@ pub(crate) fn decode_general_intra_plane_coeffs(
 
     let above_level_or = or_u32(context.above_level(plane).map_err(coeff_ctx_err)?, x4, w4);
     let left_level_or = or_u32(context.left_level(plane).map_err(coeff_ctx_err)?, y4, h4);
+    // AV2 § 8.3.2 `all_zero` (txb_skip): for plane 0/1 the cdf is
+    // `TileTxbSkipCdf[is_inter || fsc_mode][txSzCtx][ctx]`. `fsc_mode` is false on
+    // this path (the general intra / inter frontier rejects FSC), so the second
+    // index is `is_inter`. (The V plane uses the separate `TileVTxbSkipCdf[ctx]`,
+    // which carries no inter/intra split.)
+    let txb_skip_intra_inter = usize::from(is_inter);
     let selector = match plane {
         2 => {
             let above_nz = above_level_or != 0
@@ -222,14 +229,14 @@ pub(crate) fn decode_general_intra_plane_coeffs(
                 || or_u8(context.left_dc(plane).map_err(coeff_ctx_err)?, y4, h4) != 0;
             TileCdfSelector::TxbSkip {
                 coeff_cdf_q_ctx,
-                plane_type: 0,
+                plane_type: txb_skip_intra_inter,
                 tx_size: tx_size_ctx,
                 ctx: usize::from(above_nz) + usize::from(left_nz) + 6,
             }
         }
         _ => TileCdfSelector::TxbSkip {
             coeff_cdf_q_ctx,
-            plane_type: 0,
+            plane_type: txb_skip_intra_inter,
             tx_size: tx_size_ctx,
             ctx: txb_skip_ctx_luma(above_level_or, left_level_or, true, false),
         },
@@ -274,7 +281,7 @@ pub(crate) fn decode_general_intra_plane_coeffs(
             geometry,
             plane_tx_type: DCT_DCT,
             fsc_mode: false,
-            is_inter: false,
+            is_inter,
             segment_id: SEGMENT_ID,
         },
         ordinary: CoeffUseFscFrameOrdinaryFacts {

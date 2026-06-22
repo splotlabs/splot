@@ -1728,6 +1728,58 @@ left = "avm-2frame-subpel-inter-raw-md5"
 right = "dav2d-2frame-subpel-inter-raw-md5"
 
 [[evidence]]
+id = "lref-avm-dav2d-syn-2frame-inter-residual-64x64"
+feature_id = "DECODE-INTER-RESIDUAL-DCT"
+decoder_support_rows = ["inter-residual-dct"]
+kind = "reference-output-agreement"
+summary = "Local AVM and dav2d raw decoder output MD5 digests agreed for the two-frame 8-bit 4:2:0 inter-residual IVF fixture (1 general-intra flat-100 DC_PRED key frame + 1 single-reference zero-MV NEARMV inter frame with skip=0 carrying a low-frequency §5.20.7.27 luma DCT_DCT residual added over the §7.13.3.18 zero-fraction copy; flat chroma, no chroma residual), the first inter-residual decode target; frame 1 reconstructs the §7.14.4 dequantized then §7.15.4 inverse-transformed then §7.14.3 residual-added luma over the MC prediction, and splot reproduces that raw output byte-for-byte."
+recorded_at = "2026-06-22"
+
+[[evidence.fixture]]
+id = "input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-2frame-inter-residual-64x64.ivf"
+sha256 = "f540bef2f8e5ab510e7ac3c061379fe6fdefb3b0ca68334ac9dcf3b038e3d6a5"
+size_bytes = 115
+format = "ivf"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Generated locally with avmenc from a project-owned synthetic Y4M (frame 0 flat luma 100 + flat chroma; frame 1 = frame 0 plus a small smooth low-frequency luma delta) at --enable-global-motion=1 --qp 80 --sb-size 64 --min/max-partition-size 64 with broad decode tools (incl. GDF, intra-dip, intra-edge-filter, bawp, cwp, flex-mvres, adaptive-mvd, all warp modes, tip, refinemv, opfl-refine, masked/wedge/interintra/onesided/diff-wtd compound, joint-mvd, ref-frame-mvs, inter-ist, inter-ddt, cctx, fsc, idtx-intra) disabled, so the encoder codes frame 0 as a single 64x64 DC_PRED intra key block and frame 1 as a single 64x64 single-reference zero-MV NEARMV skip=0 inter block whose only coded residual is a low-frequency luma DCT_DCT transform block; AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avm"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "457cd58681a747465661baccb1f32095bc5b7774"
+version_summary = "AVM checkout HEAD 457cd58681a747465661baccb1f32095bc5b7774, exact binary build commit not separately archived."
+command_summary = "Local avmdec --rawvideo --i420 output MD5 for {fixture:input}."
+output_digest_id = "avm-2frame-inter-residual-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "ab2b067aed48cf46035fa031cefb3ab1"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.reference_run]]
+id = "dav2d"
+tool = "dav2d"
+executable_name = "dav2d"
+tool_role = "decode-reference"
+source_url = "https://code.videolan.org/videolan/dav2d"
+revision = "f4f96cb06bb3cd3f31e29e1f190f1c0e373ab352"
+version_summary = "dav2d 0.0.1-191-gf4f96cb0 (commit f4f96cb0), decoded with --demuxer ivf; exact version output not archived."
+command_summary = "Local dav2d --demuxer ivf output MD5 for {fixture:input}."
+output_digest_id = "dav2d-2frame-inter-residual-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "ab2b067aed48cf46035fa031cefb3ab1"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-2frame-inter-residual-raw-md5"
+right = "dav2d-2frame-inter-residual-raw-md5"
+
+[[evidence]]
 id = "lref-avm-dav2d-syn-flat-intra-64x64-minimal-skip"
 feature_id = "DECODE-GENERAL-INTRA-FRAME-RECON"
 decoder_support_rows = ["general-intra-frame-recon"]

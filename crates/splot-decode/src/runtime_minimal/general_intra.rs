@@ -1038,7 +1038,7 @@ fn decode_one_general_intra_block(
     let luma_x = frontier.c * 4;
     let luma_y = frontier.r * 4;
     let luma = crate::tile_payload::decode_general_intra_plane_coeffs(
-        work_unit, symbols, coeff_ctx, 0, luma_tx, luma_x, luma_y, false, uv_mode,
+        work_unit, symbols, coeff_ctx, 0, luma_tx, luma_x, luma_y, false, uv_mode, false,
     )
     .map_err(|error| general_intra_residual_error(error, tile_offset))?;
     match (supported_nondc_luma, supported_directional_luma) {
@@ -1218,7 +1218,7 @@ fn decode_one_general_intra_block(
         // raster order it is `0` for this first-superblock-row position.
         let num4_below_left = full_sb_num4_below_left(frontier.r, n4h, FRAME_420_SUBSAMPLING_Y);
         let u = crate::tile_payload::decode_general_intra_plane_coeffs(
-            work_unit, symbols, coeff_ctx, 1, chroma_tx, chroma_x, chroma_y, false, uv_mode,
+            work_unit, symbols, coeff_ctx, 1, chroma_tx, chroma_x, chroma_y, false, uv_mode, false,
         )
         .map_err(|error| general_intra_residual_error(error, tile_offset))?;
         crate::runtime_minimal_recon::reconstruct_general_intra_chroma_block_into(
@@ -1244,6 +1244,7 @@ fn decode_one_general_intra_block(
             chroma_y,
             !u.all_zero,
             uv_mode,
+            false,
         )
         .map_err(|error| general_intra_residual_error(error, tile_offset))?;
         crate::runtime_minimal_recon::reconstruct_general_intra_chroma_block_into(
@@ -1351,7 +1352,7 @@ fn decode_one_general_intra_rect_block(
     let luma_x = frontier.c * 4;
     let luma_y = frontier.r * 4;
     let luma = crate::tile_payload::decode_general_intra_plane_coeffs(
-        work_unit, symbols, coeff_ctx, 0, luma_tx, luma_x, luma_y, false, uv_mode,
+        work_unit, symbols, coeff_ctx, 0, luma_tx, luma_x, luma_y, false, uv_mode, false,
     )
     .map_err(|error| general_intra_residual_error(error, tile_offset))?;
     // §7.14.4 TCQ dqDenom applies to the luma DCT_DCT (TX_CLASS_2D) non-lossless
@@ -1387,7 +1388,7 @@ fn decode_one_general_intra_rect_block(
         let chroma_x = frontier.c * 2;
         let chroma_y = frontier.r * 2;
         let u = crate::tile_payload::decode_general_intra_plane_coeffs(
-            work_unit, symbols, coeff_ctx, 1, chroma_tx, chroma_x, chroma_y, false, uv_mode,
+            work_unit, symbols, coeff_ctx, 1, chroma_tx, chroma_x, chroma_y, false, uv_mode, false,
         )
         .map_err(|error| general_intra_residual_error(error, tile_offset))?;
         crate::runtime_minimal_recon::reconstruct_general_intra_block_rect_into(
@@ -1412,6 +1413,7 @@ fn decode_one_general_intra_rect_block(
             chroma_y,
             !u.all_zero,
             uv_mode,
+            false,
         )
         .map_err(|error| general_intra_residual_error(error, tile_offset))?;
         crate::runtime_minimal_recon::reconstruct_general_intra_block_rect_into(

@@ -31,6 +31,16 @@ const TWO_FRAME_SUBPEL_FIXTURE: &[u8] = include_bytes!(
     "../../../../../tests/conformance/vectors/valid/syn-2frame-subpel-inter-64x64.ivf"
 );
 
+/// The first bit-exact inter-residual fixture: frame 0 is a general-intra DC_PRED
+/// flat-100 key frame; frame 1 is a single-reference zero-MV inter frame with
+/// `skip == 0` carrying a low-frequency §5.20.7.27 luma DCT_DCT residual (flat
+/// chroma, no residual) added over the §7.13.3.18 zero-fraction copy of frame 0.
+/// avmdec `--rawvideo --i420` and `dav2d --demuxer ivf` decode the whole stream
+/// byte-for-byte identically (oracle MD5 `ab2b067aed48cf46035fa031cefb3ab1`).
+const TWO_FRAME_RESIDUAL_FIXTURE: &[u8] = include_bytes!(
+    "../../../../../tests/conformance/vectors/valid/syn-2frame-inter-residual-64x64.ivf"
+);
+
 // avmdec / dav2d both decode every plane of both frames to these flat values.
 const FLAT_LUMA: u8 = 100;
 const FLAT_CHROMA_U: u8 = 120;
@@ -194,4 +204,109 @@ fn two_frame_inter_fixture_per_frame_hash_is_stable() {
         .compute_hash()
         .to_hex();
     assert_eq!(key_hash, inter_hash, "inter frame hash == key frame hash");
+}
+
+/// The committed inter-residual fixture decodes a key frame + one `skip == 0`
+/// inter frame (a §5.20.7.27 coded residual over the zero-MV MC prediction).
+#[test]
+fn residual_fixture_decodes_two_frames() {
+    use splot_recon::{BitDepth, PixelFormat, PlaneSize};
+
+    let frames = decode_fixture(TWO_FRAME_RESIDUAL_FIXTURE);
+    assert_eq!(
+        frames.len(),
+        2,
+        "the residual stream decodes a key frame + one inter frame"
+    );
+    for (index, output) in frames.iter().enumerate() {
+        let frame = output.frame();
+        assert_eq!(frame.bit_depth(), BitDepth::Eight, "frame {index}");
+        assert_eq!(frame.pixel_format(), PixelFormat::Yuv420, "frame {index}");
+        assert_eq!(
+            frame.y().visible_size(),
+            PlaneSize::new(64, 64).unwrap(),
+            "frame {index}"
+        );
+    }
+}
+
+/// The `skip == 0` inter frame is NOT a copy of the key frame: the §5.20.7.27
+/// decoded residual (§7.14.4 dequant + §7.15.4 inverse transform + §7.14.3 add)
+/// over the zero-MV §7.13.3.18 copy genuinely changes the luma. The chroma carries
+/// no residual (the encoder coded a luma-only residual), so it stays flat and
+/// equals the key chroma. This distinguishes the residual decode from the bare
+/// zero-MV copy: if the residual were dropped, frame 1 would equal frame 0.
+#[test]
+fn residual_inter_frame_differs_from_key_frame() {
+    let frames = decode_fixture(TWO_FRAME_RESIDUAL_FIXTURE);
+    let key = frames[0].frame();
+    let inter = frames[1].frame();
+    // The key frame is flat (Y=100, U=120, V=130) per the avmdec/dav2d oracle.
+    assert!(
+        key.y().samples().iter().all(|&s| s == FLAT_LUMA),
+        "key luma must be flat {FLAT_LUMA}"
+    );
+    assert_ne!(
+        key.y().samples(),
+        inter.y().samples(),
+        "the residual inter luma must differ from the flat key luma (real residual)"
+    );
+    // The decoded residual is luma-only; the inter chroma equals the key chroma.
+    assert_eq!(
+        key.u().unwrap().samples(),
+        inter.u().unwrap().samples(),
+        "U: no chroma residual"
+    );
+    assert_eq!(
+        key.v().unwrap().samples(),
+        inter.v().unwrap().samples(),
+        "V: no chroma residual"
+    );
+    assert!(
+        inter
+            .u()
+            .unwrap()
+            .samples()
+            .iter()
+            .all(|&s| s == FLAT_CHROMA_U),
+        "inter U flat {FLAT_CHROMA_U}"
+    );
+    assert!(
+        inter
+            .v()
+            .unwrap()
+            .samples()
+            .iter()
+            .all(|&s| s == FLAT_CHROMA_V),
+        "inter V flat {FLAT_CHROMA_V}"
+    );
+}
+
+/// Regression pin for the per-frame decode hash of the inter-residual fixture.
+/// The raw decoded output (both frames concatenated I420) matches avmdec
+/// `--rawvideo --i420` and `dav2d --demuxer ivf` byte-for-byte (oracle MD5
+/// `ab2b067aed48cf46035fa031cefb3ab1`, recorded in
+/// `docs/LOCAL-REFERENCE-EVIDENCE.toml`); these `splot-dfh-sha256-v1` per-frame
+/// hashes are splot's internal regression anchors for that bit-exact output.
+#[test]
+fn residual_fixture_per_frame_hash_is_stable() {
+    let frames = decode_fixture(TWO_FRAME_RESIDUAL_FIXTURE);
+    let key_hash = splot_recon::DecodedFrameHashInput::new(frames[0].frame())
+        .compute_hash()
+        .to_hex();
+    let inter_hash = splot_recon::DecodedFrameHashInput::new(frames[1].frame())
+        .compute_hash()
+        .to_hex();
+    assert_eq!(
+        key_hash, "ce9c46b1078b9dd593254837ead7dcd6cee8b3ec6cc3c7d34f54fb08df703979",
+        "residual key-frame hash"
+    );
+    assert_eq!(
+        inter_hash, "6bc96c12710ebe225b994c8e70e253e7159cd3fe49da61de5ad2558c207e26d8",
+        "residual inter-frame hash"
+    );
+    assert_ne!(
+        key_hash, inter_hash,
+        "the residual inter frame must differ from the key frame"
+    );
 }

@@ -401,6 +401,65 @@ fn decode_two_frame_inter_fixture_decodes_both_frames_bit_exact() {
 }
 
 #[test]
+fn decode_two_frame_inter_residual_fixture_decodes_bit_exact() {
+    // DECODE-INTER-RESIDUAL-DCT: the committed syn-2frame-inter-residual-64x64.ivf is
+    // the verified first inter-residual (skip == 0) target. Frame 0 is an
+    // OBU_CLOSED_LOOP_KEY flat-100 intra key frame; frame 1 is an
+    // OBU_REGULAR_TILE_GROUP inter frame (single reference, is_inter == 1, skip == 0,
+    // zero-MV NEARMV, a §5.20.7.27 luma DCT_DCT residual added over the §7.13.3.18
+    // zero-fraction copy of frame 0; flat chroma carries no residual). avmdec
+    // --rawvideo --i420 and dav2d --demuxer ivf decode the whole stream byte-for-byte
+    // identically (decoded-output md5 ab2b067aed48cf46035fa031cefb3ab1 over 12288
+    // bytes). The runtime decodes the residual coefficients (§5.20.7.27 with the
+    // is_inter txb_skip / eob contexts), dequantizes (§7.14.4), inverse-transforms
+    // (§7.15.4), and adds the residual (§7.14.3) over the MC prediction, all guarded
+    // by §8.2.4 exit_symbol() (NO hardcoding; a wrong residual symbol read rejects).
+    let input = conformance_vector("syn-2frame-inter-residual-64x64.ivf");
+    let output = temp_output("yuv");
+
+    let out = splot(&[
+        "decode",
+        "--output-format",
+        "raw",
+        input.to_str().unwrap(),
+        "-o",
+        output.to_str().unwrap(),
+    ]);
+
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "the inter-residual fixture must decode successfully: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let decoded = std::fs::read(&output).expect("decoded raw output");
+    assert_eq!(decoded.len(), 12288, "two 8-bit 4:2:0 64x64 frames");
+    let frame_bytes = 6144;
+    let (frame0, frame1) = decoded.split_at(frame_bytes);
+    // Frame 0 (key) is flat per the oracle; frame 1's luma differs (a real residual)
+    // while its chroma stays flat (luma-only residual).
+    assert!(
+        frame0[..4096].iter().all(|&s| s == 100),
+        "key luma flat 100"
+    );
+    assert_ne!(
+        &frame0[..4096],
+        &frame1[..4096],
+        "inter luma differs from the key (real residual, not a copy)"
+    );
+    assert_eq!(
+        &frame0[4096..],
+        &frame1[4096..],
+        "inter chroma equals key chroma (no chroma residual)"
+    );
+    assert!(
+        frame1[4096..5120].iter().all(|&s| s == 120),
+        "inter U flat 120"
+    );
+    assert!(frame1[5120..].iter().all(|&s| s == 130), "inter V flat 130");
+}
+
+#[test]
 fn decode_hash_json_success_creates_no_implicit_output_file() {
     let input = conformance_vector("syn-flat-intra-64x64-minimal.ivf");
     let cwd = temp_dir("minimal-hash-cwd");
