@@ -4,11 +4,12 @@
 
 The decoder support model SHALL track `RECON-LOOP-RESTORATION-SOURCE-READ` as a
 distinct `splot-recon` row named `loop-restoration-source-read`. The row SHALL
-mark only the AV2 section 7.20.2 source-sample immutable frame read as supported
-over caller-resolved luma bounds, sequence subsampling, and caller-supplied
-`CurrFrame` / `CdefFrame` views. It SHALL keep full loop restoration, Wiener NS
-invocation, PC-Wiener classification, GDF, BRU, runtime decode wiring, and
-ac0ej3 decode partial or unsupported until separately proven.
+mark only the AV2 section 7.20.2 source-sample immutable coded-storage frame
+read as supported over caller-resolved luma bounds, sequence subsampling, and
+caller-supplied `CurrFrame` / `CdefFrame` views. It SHALL keep full loop
+restoration, Wiener NS invocation, PC-Wiener classification, GDF, BRU, runtime
+decode wiring, and ac0ej3 decode partial or unsupported until separately
+proven.
 
 #### Scenario: Matrix records narrow loop-restoration frame-read progress
 

@@ -11,15 +11,17 @@ has chosen `CurrFrame` or `CdefFrame`.
   `LoopRestorationSourceSample` and the selected sample value.
 - Add `loop_restoration_source_sample_value(plane, x, y, bounds, curr_frame,
   cdef_frame)` in `crates/splot-recon/src/loop_restoration.rs`.
-- Require `curr_frame.info() == cdef_frame.info()` so a source switch cannot
-  silently mix different frame geometry or output metadata.
-- Use the existing `FrameRef::plane` and `PlaneRef::visible_rows` APIs for the
-  read. The helper treats the selector's returned coordinates as visible-plane
-  coordinates and lets `PlaneRef` handle any non-zero visible origin in the
-  backing storage.
-- Return typed `ReconError` values for frame metadata mismatch, missing selected
-  chroma plane, and caller-resolved bounds that address outside the selected
-  visible plane.
+- Require `curr_frame.info() == cdef_frame.info()` and matching selected-plane
+  view geometry so a source switch cannot silently mix frame metadata, visible
+  origins, or strides.
+- Read the selector's returned current-plane coordinates as absolute
+  coded-storage coordinates in the selected `PlaneRef` backing buffer. The
+  helper does not apply a non-zero visible crop origin before computing
+  `y * stride + x`.
+- Return typed `ReconError` values for frame metadata or plane-view geometry
+  mismatch, missing selected chroma plane, caller-resolved bounds outside the
+  selected coded plane, unsupported sample storage for the frame bit depth, and
+  source samples outside the active bit-depth range.
 
 ## Out Of Scope
 

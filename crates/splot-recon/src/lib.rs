@@ -56,7 +56,7 @@
 //! current-stripe source choice, and two-line out-of-stripe clamp over
 //! caller-resolved luma bounds) plus immutable frame-view sample reader
 //! ([`loop_restoration_source_sample_value`], the selected `CurrFrame`/`CdefFrame`
-//! visible-plane read), and the
+//! coded-storage read), and the
 //! § 7.20.3 luma non-separable Wiener filter primitive
 //! ([`wiener_ns_filter_luma_block`], the luma `Wiener_Ns_Config_Y` tap
 //! accumulation over caller-resolved source samples, subclasses, coefficients,

@@ -12,16 +12,19 @@
 - [x] 2.2 Reuse `loop_restoration_source_sample` for section 7.20.2 coordinate
   clipping and source selection, then read from the selected immutable
   `FrameRef`.
-- [x] 2.3 Add typed errors for mismatched source-frame metadata and
-  out-of-visible-plane selected samples.
+- [x] 2.3 Add typed errors for mismatched source-frame metadata or plane-view
+  geometry, out-of-coded-plane selected samples, and bit-depth/sample-range
+  violations.
 - [x] 2.4 Export the helper and update crate docs.
 
 ## 3. Tests
 
 - [x] 3.1 Add focused tests for in-stripe `CdefFrame` reads and out-of-stripe
   `CurrFrame` reads after the two-line clamp.
-- [x] 3.2 Add focused tests for chroma reads, visible-rect origins, mismatched
-  frame metadata, out-of-visible-plane bounds, and missing chroma planes.
+- [x] 3.2 Add focused tests for chroma reads, coded-storage reads under a
+  visible crop, mismatched frame metadata and plane-view geometry,
+  out-of-coded-plane bounds, bit-depth/sample-range failures, and missing chroma
+  planes.
 
 ## 4. Validation And PR Discipline
 

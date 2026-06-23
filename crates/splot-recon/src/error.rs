@@ -652,17 +652,17 @@ pub enum ReconError {
         field: &'static str,
     },
     /// A caller-resolved AV2 § 7.20.2 loop-restoration source sample fell
-    /// outside the selected frame view's visible plane.
+    /// outside the selected frame view's coded plane storage.
     LoopRestorationSourceSampleOutOfBounds {
         /// Plane whose source sample was requested.
         plane: PlaneId,
-        /// Requested visible-plane x coordinate.
+        /// Requested coded-plane x coordinate.
         x: usize,
-        /// Requested visible-plane y coordinate.
+        /// Requested coded-plane y coordinate.
         y: usize,
-        /// Visible plane width.
+        /// Coded plane width.
         width: usize,
-        /// Visible plane height.
+        /// Coded plane height.
         height: usize,
     },
     /// A § 7.14.4 dequantization block had an unsupported transform shape.
@@ -1303,7 +1303,7 @@ impl fmt::Display for ReconError {
                 height,
             } => write!(
                 f,
-                "loop-restoration source-sample {} coordinate ({x}, {y}) is outside visible plane {width}x{height}",
+                "loop-restoration source-sample {} coordinate ({x}, {y}) is outside coded plane {width}x{height}",
                 plane.name()
             ),
             Self::InvalidDequantBlockShape {
