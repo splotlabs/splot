@@ -260,8 +260,9 @@ restoration support.
 
 #### Scenario: ac0ej3 reaches Wiener NS frontier
 
-- **WHEN** `splot decode /Users/bartosztomczyk/Documents/SplotLabs/ac0ej3.ivf`
-  runs with default decode limits
+- **WHEN** `splot decode` runs against the local ac0ej3 mission fixture selected
+  via `SPLOT_AC0EJ3_IVF` or the documented `$HOME/Documents/SplotLabs/ac0ej3.ivf`
+  fallback with default decode limits
 - **THEN** it rejects before output with `unsupported_reason =
   "unsupported_wienerns_filter"`
 - **AND** the diagnostic tracks `DECODE-AC0EJ3-WIENERNS-FRONTIER`

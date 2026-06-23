@@ -89,9 +89,9 @@ this capability.
 
 #### Scenario: Unsupported paths stay explicit
 - **WHEN** traversal input requires SDP, PC-Wiener LR unit syntax, switchable LR
-  unit syntax, per-unit Wiener coefficient syntax, BRU-active behavior, bridge
-  behavior, broad inter-only behavior, or block syntax beyond partition
-  traversal
+  unit syntax, retaining or applying per-unit Wiener coefficients, BRU-active
+  behavior, bridge behavior, broad inter-only behavior, or block syntax beyond
+  partition traversal
 - **THEN** the boundary returns an explicit unsupported/residual frontier result
   tied to `tile-partition-traversal-boundary`
 - **AND** no public CLI success path or decoder support row is promoted by this

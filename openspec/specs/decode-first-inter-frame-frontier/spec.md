@@ -5,11 +5,11 @@
 Capture the completed OpenSpec requirements synchronized for `decode-first-inter-frame-frontier`.
 
 ## Requirements
-### Requirement: First inter frame decode target and honest rejection
+### Requirement: First inter frame decode target and verified subset
 The project SHALL commit a minimal two-frame inter decode target
 `syn-2frame-inter-64x64.ivf` whose frame 0 is an OBU_CLOSED_LOOP_KEY intra key
 frame and whose frame 1 is an OBU_REGULAR_TILE_GROUP inter frame coding a single
-64x64 block, single reference, GLOBALMV/NEARESTMV with zero MV and skip=1 so that
+64x64 block, single reference, GLOBALMV/NEARMV with zero MV and skip=1 so that
 AV2 § 7.13.3.18 zero-fraction motion compensation reduces to a straight copy of
 the co-located key block (no residual). The fixture SHALL be locally verified so
 that avmdec `--rawvideo --i420` and dav2d `--demuxer ivf` decode the whole stream
@@ -18,13 +18,14 @@ byte-for-byte identically (decoded-output md5
 frame 0, and SHALL be registered in the conformance corpus validating clean with
 a reciprocal LOCAL-REFERENCE-EVIDENCE entry.
 
-Until the inter decode slice lands, the decoder SHALL reject the inter frame
-honestly: the initial stream planner accepts only OBU_CLOSED_LOOP_KEY as a frame
-candidate (§ 5.2.1), so an OBU_REGULAR_TILE_GROUP SHALL be rejected with a
-structured `decode/unsupported-feature` diagnostic and SHALL produce no output.
-The decoder SHALL NOT fabricate an inter decode, SHALL NOT emit partial or wrong
-output for the inter frame, and SHALL leave all existing intra fixtures decoding
-bit-exact.
+The decoder SHALL decode this verified single-reference zero-MV inter subset
+bit-exact: the planner SHALL admit the inter `OBU_REGULAR_TILE_GROUP`, the
+runtime SHALL retain the decoded key frame as an AV2 §7.23 reference, the inter
+header SHALL parse to completion, the tile payload SHALL read the supported
+single-reference skip-mode inter `mode_info`, and motion compensation SHALL copy
+the co-located key-frame block before output. The row SHALL remain partial: any
+inter syntax outside the verified single-reference zero-MV skip subset SHALL fail
+closed with a structured `decode/unsupported-feature` diagnostic before output.
 
 #### Scenario: Inter fixture validates clean and is oracle-verified
 - **WHEN** `splot validate` is given `syn-2frame-inter-64x64.ivf`
@@ -33,13 +34,12 @@ bit-exact.
   decode the stream to the identical raw output (md5
   `4e1bd39f0b541ef1f479cff049e6985c`)
 
-#### Scenario: Inter frame is rejected at the planner without output
+#### Scenario: Inter frame decodes bit-exact
 - **WHEN** `splot decode --output-format raw` is given
   `syn-2frame-inter-64x64.ivf` with an output path
-- **THEN** it fails with a structured `decode/unsupported-feature` diagnostic
-  whose feature id is `DECODE-STREAM-STATE-PLANNER` and whose obu type is
-  `OBU_REGULAR_TILE_GROUP`
-- **AND** no output file is written
+- **THEN** it succeeds and writes 12288 bytes of raw 8-bit 4:2:0 output whose md5
+  is `4e1bd39f0b541ef1f479cff049e6985c`
+- **AND** frame 1 is byte-identical to frame 0
 
 #### Scenario: Existing intra fixtures are unchanged
 - **WHEN** `splot decode` is given the existing general intra fixtures

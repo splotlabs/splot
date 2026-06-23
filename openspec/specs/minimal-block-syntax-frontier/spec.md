@@ -44,11 +44,3 @@ exercises this frozen trace's happy path.
 - **THEN** the decoder keeps failing closed with `decode/unsupported-feature`
   rather than claiming broad `decode_block()`, `decode_tile()`, or reconstruction
   support
-
-#### Scenario: Traced minimal block symbols are accepted
-- **WHEN** the minimal runtime reaches the first root `decode_block()` frontier for the committed 64x64 flat intra fixture
-- **THEN** the tile-payload frontier consumes the traced `y_mode_set`, `y_mode_index`, luma/U all-zero transform, `uv_mode`, and V all-zero transform symbols and validates `exit_symbol()`
-
-#### Scenario: Output identity is preserved
-- **WHEN** the committed minimal fixture is decoded through hash or Y4M output
-- **THEN** the output hash and Y4M bytes remain byte-identical to the pre-change supported minimal tier

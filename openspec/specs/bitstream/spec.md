@@ -1378,13 +1378,16 @@ the § 7.7 spec text, never from AVM source.
 
 The § 5.18.2 inter control parser SHALL consult the `get_ref_frames()` model at
 its `get_ref_frames(0)` (mirror :4607) and `get_ref_frames(1)` (mirror :4647)
-call sites, GATED to the at-most-one-valid-reference case the modeled reference
-state can resolve exactly. On that gated path it SHALL advance past
-`InterStop::UnmodeledDerivation` and parse the inter control region to the shared
-tail (`InterStop::ReachedSharedTail`). A richer reference state (two or more
-proven-valid slots, or no modeled reference view) SHALL keep the honest
-`InterStop::UnmodeledDerivation` stop with facts preserved. This is parse-level
-only; no decode output changes.
+call sites. The parser SHALL resolve the at-most-one-valid-reference case exactly
+from modeled `RefValid` state. When the caller supplies complete §7.7 ranking
+inputs for two or more valid slots (`RefBaseQIdx`, `RefOrderHint`,
+`RefFrameWidth`, `RefFrameHeight`, and current frame size when `checkRes` needs
+it), the parser SHALL run the real §7.7 ranking and derive `NumTotalRefs` and
+`ref_frame_idx` instead of stopping. A missing modeled reference view, a
+multi-valid-slot view without `RefBaseQIdx`, or any incomplete ranking-input
+slice SHALL keep the honest `InterStop::UnmodeledDerivation` stop with facts
+preserved. This is parse-level only; decode-output support is tracked by the
+runtime inter rows.
 
 #### Scenario: implicit-map inter frame reaches the shared tail
 
@@ -1394,8 +1397,17 @@ only; no decode output changes.
 - **THEN** the inter control region reaches `InterStop::ReachedSharedTail` with
   `NumTotalRefs == 1` and `ref_frame_idx == [0]`
 
-#### Scenario: ambiguous reference state stays unmodeled
+#### Scenario: two valid slots rank when complete inputs are modeled
 
-- **WHEN** the modeled reference state proves two or more valid slots
-- **THEN** the implicit map stops with `InterStop::UnmodeledDerivation` (no
-  guessing the § 7.7 scoring inputs the model does not carry)
+- **WHEN** two valid reference slots are present through
+  `FrameReferenceStateView::from_slots_with_base_q_idx` with complete parallel
+  §7.7 ranking-input slices
+- **THEN** the implicit map derives the ranked `ref_frame_idx` list and reaches
+  `InterStop::ReachedSharedTail`
+
+#### Scenario: incomplete or unmodeled ranking state stays unmodeled
+
+- **WHEN** two or more valid reference slots are present but the reference-state
+  view omits `RefBaseQIdx` or provides an incomplete §7.7 ranking-input slice
+- **THEN** the implicit map stops with `InterStop::UnmodeledDerivation` rather
+  than deriving `ref_frame_idx` from fabricated defaults

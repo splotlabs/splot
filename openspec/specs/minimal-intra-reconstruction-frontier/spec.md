@@ -53,21 +53,3 @@ remains in code and stays covered by its `runtime_minimal_recon` unit tests.
   general directional prediction, residual/transform reconstruction, loop
   filtering, reference refresh, film grain, raw output, or complete decoder
   conformance
-
-#### Scenario: Minimal fixture reconstructs through the workspace
-- **WHEN** the committed minimal IVF fixture passes the current minimal plan,
-  tile, partition, block-symbol, and `exit_symbol()` checks
-- **THEN** the runtime constructs the decoded frame by using `splot-recon`
-  workspace operations, luma DC intra prediction, explicit traced chroma
-  `H_PRED` handling, and freezing the workspace into a `DecodedFrame`
-
-#### Scenario: Hash output records spec-correct chroma H_PRED samples
-- **WHEN** the committed minimal fixture is decoded with hash output
-- **THEN** the decoded-frame hash report records the deterministic
-  `minimal-intra-8bit420-hash-v1` raw-intermediate output with luma DC samples
-  and top-left chroma H_PRED fallback samples
-
-#### Scenario: Y4M output records spec-correct chroma H_PRED samples
-- **WHEN** the committed minimal fixture is decoded with Y4M output
-- **THEN** the emitted Y4M stream contains luma DC samples and top-left chroma
-  H_PRED fallback samples without using the old neutral-chroma fallback

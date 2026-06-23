@@ -76,19 +76,22 @@ The decoder support model SHALL track `DECODE-TILE-PARTITION-TRAVERSAL-BOUNDARY`
 as a distinct crate-private row named `tile-partition-traversal-boundary`. The
 row SHALL mark only the partition traversal frontier to the first
 `decode_block()` boundary plus the narrow frame-level Wiener NS LR unit syntax
-frontier tracked by `DECODE-AC0EJ3-LR-UNIT-SYNTAX-FRONTIER` as supported, and
-SHALL keep broader `tile-payload-decode`, `symbol-decoder`, CDF lifecycle,
-runtime decode output, block syntax, `MiSizes` mutation, loop-restoration
-filtering, and reconstruction rows honest when they remain partial.
+and source-bounds frontiers tracked by `DECODE-AC0EJ3-LR-UNIT-SYNTAX-FRONTIER`
+and `DECODE-AC0EJ3-LR-SOURCE-BOUNDS-FRONTIER` as supported, and SHALL keep
+broader `tile-payload-decode`, `symbol-decoder`, CDF lifecycle, runtime decode
+output, block syntax, `MiSizes` mutation, loop-restoration filtering, and
+reconstruction rows honest when they remain partial.
 
 #### Scenario: Traversal row is supported without broad decode overclaim
 - **WHEN** the decoder support matrix is regenerated after this change
 - **THEN** `tile-partition-traversal-boundary` appears with Feature ID
   `DECODE-TILE-PARTITION-TRAVERSAL-BOUNDARY`
 - **AND** it cites AV2 §5.20.3.1, §5.20.3.2, §5.20.9.1, §5.20.10.4,
-  §5.20.10.5, §8.3.2, and §9.2 as applicable evidence sections
-- **AND** it identifies §5.20.10.6 per-unit coefficient parsing,
-  loop-restoration filtering, and reconstruction as outside this boundary
+  §5.20.10.5, §5.20.10.6, §8.3.2, and §9.2 as applicable evidence sections
+- **AND** it identifies per-unit coefficient exposure/application,
+  loop-restoration filtering, and reconstruction as outside this boundary while
+  allowing the narrow §5.20.10.6 syntax consumption needed by
+  `DECODE-AC0EJ3-LR-SOURCE-BOUNDS-FRONTIER`
 - **AND** it does not cite §5.20.4.1 as parsed or tested evidence while block
   syntax remains outside this boundary
 - **AND** `tile-payload-decode` remains partial for full `decode_tile()`, block
@@ -100,7 +103,13 @@ filtering, and reconstruction rows honest when they remain partial.
 - **THEN** the traversal row names focused crate-private tests for prefix
   child-call ordering, frontier records, transactional CDF handling, checked
   arithmetic/resource failures, unsupported SDP/BRU/inter gates, and supported
-  frame-level Wiener NS LR unit symbol consumption
+  frame-level Wiener NS LR unit/source-bounds syntax consumption
+
+### Requirement: Generated decoder support status
+The repository SHALL generate a committed decoder support status document from
+`docs/DECODER-SUPPORT-MATRIX.toml`. The generated document SHALL summarize row
+counts by status and tier, list each row with its spec sections and tests, and
+name any local reference evidence as portable metadata only.
 
 #### Scenario: Matrix is rendered
 - **WHEN** `cargo xtask decoder-support --format markdown --output docs/DECODER-SUPPORT-STATUS.md` runs
