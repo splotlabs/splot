@@ -1269,6 +1269,8 @@ fn derive_wienerns_lr_source_read_frontier(
             .samples_resolved
             .checked_add(block_samples)
             .ok_or_else(|| source_read_arithmetic_overflow("wiener ns lr source sample count"))?;
+        // Source-read derivation resolves luma and chroma samples; the existing
+        // per-frame sample cap is the closest decoder work budget for this frontier.
         limits.ensure(
             DecodeLimitName::MaxLumaSamplesPerFrame,
             u64::try_from(next_samples)

@@ -1333,6 +1333,92 @@ fn wienerns_lr_source_read_frontier_failures_stay_structured() {
 }
 
 #[test]
+fn wienerns_lr_source_read_frontier_rejects_monochrome_chroma_plane() {
+    let blocks = [WienerNsLrSourceBlock {
+        plane: 1,
+        ..wienerns_lr_source_block()
+    }];
+
+    let error = super::super::derive_wienerns_lr_source_read_frontier(
+        &blocks,
+        ChromaFormatIdc::Monochrome,
+        ByteOffset::new(74),
+        DecodeLimits::unlimited(),
+    )
+    .unwrap_err();
+
+    let unsupported = match error {
+        DecodeError::UnsupportedFeature { unsupported } => unsupported,
+        _ => panic!("monochrome chroma-plane request must be unsupported-feature"),
+    };
+    assert_eq!(
+        unsupported.reason(),
+        "unsupported_wienerns_lr_source_chroma_plane"
+    );
+    assert_eq!(unsupported.matrix_row(), "ac0ej3-lr-source-read-frontier");
+    assert_eq!(
+        unsupported.feature_id(),
+        "DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER"
+    );
+    assert_eq!(unsupported.spec_section(), "7.20.2");
+    assert_eq!(unsupported.byte_offset(), Some(ByteOffset::new(74)));
+}
+
+#[test]
+fn wienerns_lr_source_read_frontier_rejects_unsupported_plane_index() {
+    let blocks = [WienerNsLrSourceBlock {
+        plane: 3,
+        ..wienerns_lr_source_block()
+    }];
+
+    let error = super::super::derive_wienerns_lr_source_read_frontier(
+        &blocks,
+        ChromaFormatIdc::Yuv420,
+        ByteOffset::new(74),
+        DecodeLimits::unlimited(),
+    )
+    .unwrap_err();
+
+    let unsupported = match error {
+        DecodeError::UnsupportedFeature { unsupported } => unsupported,
+        _ => panic!("unsupported plane index must be unsupported-feature"),
+    };
+    assert_eq!(unsupported.reason(), "unsupported_wienerns_lr_source_plane");
+    assert_eq!(unsupported.matrix_row(), "ac0ej3-lr-source-read-frontier");
+    assert_eq!(
+        unsupported.feature_id(),
+        "DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER"
+    );
+    assert_eq!(unsupported.spec_section(), "7.20.2");
+    assert_eq!(unsupported.byte_offset(), Some(ByteOffset::new(74)));
+}
+
+#[test]
+fn wienerns_lr_source_read_frontier_limit_errors_stay_limits() {
+    let blocks = [wienerns_lr_source_block()];
+    let limits =
+        DecodeLimits::unlimited().with_max_luma_samples_per_frame(DecodeLimitThreshold::Max(15));
+
+    let error = super::super::derive_wienerns_lr_source_read_frontier(
+        &blocks,
+        ChromaFormatIdc::Yuv420,
+        ByteOffset::new(74),
+        limits,
+    )
+    .unwrap_err();
+
+    match error {
+        DecodeError::Limit { source } => {
+            assert_eq!(source.name(), DecodeLimitName::MaxLumaSamplesPerFrame);
+            let check = source.check().expect("limit failure carries check");
+            assert_eq!(check.threshold(), DecodeLimitThreshold::Max(15));
+            assert_eq!(check.actual(), 16);
+        }
+        _ => panic!("source-read sample budget failures must remain resource-limit diagnostics"),
+    }
+}
+
+#[test]
 fn wienerns_lr_unit_frontier_limit_errors_stay_limits() {
     let source = DecodeLimits::unlimited()
         .with_max_tile_partition_steps(DecodeLimitThreshold::Max(0))
