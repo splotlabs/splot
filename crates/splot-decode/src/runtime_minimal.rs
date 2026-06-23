@@ -188,8 +188,10 @@ fn decode_minimal_key_frame(
 
 /// Multi-frame minimal-tier runtime driver (AV2 § 5.2.1, § 5.19, § 6.18).
 ///
-/// Decodes the leading closed-loop-key frame (IVF frame 0), then walks any further
-/// inter frame candidates in stream order. Each displayed frame becomes one
+/// Decodes the leading closed-loop-key frame, then walks any further
+/// inter frame candidates in planned OBU stream order. IVF records are treated as
+/// container payload groups and are not required to map one-to-one to decoded
+/// frames. Each displayed frame becomes one
 /// [`MinimalRuntimeFrame`]; the key frame's decoded planes are retained as the
 /// reference state the inter frame consumes (§ 7.23). A single-frame intra stream
 /// still yields a one-element vector, byte-identical to the single-frame entry.
@@ -300,13 +302,10 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
     // non-adapted slot, so nothing is rejected.
     // The key frame's §7.23 adaptation state is already recorded in the reference buffer
     // by `reference.update(0, ...)` above (via `frame_ref_update_from_core`).
-    // Each following frame candidate maps to IVF frame index 1, 2, ... (the leading
-    // key frame is IVF frame 0).
-    for (ivf_frame_index, next_candidate) in (1usize..).zip(candidates) {
+    for next_candidate in candidates {
         match next_candidate.obu_type() {
             ObuType::RegularTileGroup => {
-                let inter_envelope =
-                    following_inter_envelope(ivf, ivf_frame_index, next_candidate)?;
+                let inter_envelope = following_inter_envelope(ivf, next_candidate)?;
                 // VERIFIED-SUBSET DISCIPLINE: the §7.7 ranking + single_ref wiring is
                 // proven bit-exact only for up to TWO valid reference slots (NumTotalRefs
                 // ∈ {1, 2}). Reject before output if the buffer already holds more — a
@@ -372,49 +371,52 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
     Ok(frames)
 }
 
-/// Resolves the `OBU_REGULAR_TILE_GROUP` envelope for the following inter frame at
-/// `ivf_frame_index` (each non-leading IVF frame is `[TD, OBU_REGULAR_TILE_GROUP]`),
-/// validating the OBU order and that it matches the planned candidate offset.
+/// Resolves the `OBU_REGULAR_TILE_GROUP` envelope for a following inter frame by
+/// planned OBU offset. An IVF frame record is only a non-normative byte envelope:
+/// the verified subset accepts one or more `[TD, OBU_REGULAR_TILE_GROUP]` pairs in
+/// IVF payload order, while still requiring each following inter candidate to be
+/// immediately preceded by a temporal delimiter.
 fn following_inter_envelope<'a>(
     ivf: &'a ParsedIvfBitstream<'a>,
-    ivf_frame_index: usize,
     candidate: &DecodePlannedObu,
 ) -> Result<ObuEnvelope<'a>> {
-    let inter_ivf_frame = ivf.frames.get(ivf_frame_index).ok_or_else(|| {
-        unsupported(
-            "missing_inter_ivf_frame",
-            None,
-            "minimal tier requires an IVF frame for each following inter candidate",
-        )
-    })?;
-    let [td_envelope, inter_envelope] = match inter_ivf_frame.obus.as_slice() {
-        [td, inter] => [*td, *inter],
-        _ => {
-            return Err(unsupported(
-                "unexpected_inter_obu_order",
-                None,
-                "minimal tier requires each inter frame as a temporal delimiter + OBU_REGULAR_TILE_GROUP",
+    for ivf_frame in &ivf.frames {
+        let Some(position) = ivf_frame
+            .obus
+            .iter()
+            .position(|envelope| envelope.offset == candidate.offset())
+        else {
+            continue;
+        };
+        let inter_envelope = ivf_frame.obus[position];
+        require_obu_type(
+            inter_envelope,
+            ObuType::RegularTileGroup,
+            "missing_inter_regular_tile_group",
+        )?;
+        let Some(td_envelope) = position
+            .checked_sub(1)
+            .and_then(|previous| ivf_frame.obus.get(previous))
+            .copied()
+        else {
+            return Err(unsupported_at(
+                "missing_inter_temporal_delimiter",
+                candidate.offset(),
+                "minimal tier requires each following inter frame candidate to be immediately preceded by OBU_TEMPORAL_DELIMITER in its IVF payload",
             ));
-        }
-    };
-    require_obu_type(
-        td_envelope,
-        ObuType::TemporalDelimiter,
-        "missing_inter_temporal_delimiter",
-    )?;
-    require_obu_type(
-        inter_envelope,
-        ObuType::RegularTileGroup,
-        "missing_inter_regular_tile_group",
-    )?;
-    if inter_envelope.offset != candidate.offset() {
-        return Err(unsupported_at(
-            "inter_candidate_offset_mismatch",
-            candidate.offset(),
-            "the planned inter candidate offset does not match its IVF frame's OBU_REGULAR_TILE_GROUP",
-        ));
+        };
+        require_obu_type(
+            td_envelope,
+            ObuType::TemporalDelimiter,
+            "missing_inter_temporal_delimiter",
+        )?;
+        return Ok(inter_envelope);
     }
-    Ok(inter_envelope)
+    Err(unsupported_at(
+        "missing_inter_ivf_obu",
+        candidate.offset(),
+        "the planned inter candidate offset was not found in the parsed IVF payloads",
+    ))
 }
 
 /// The largest frame-candidate count the multi-frame runtime admits: a key frame
@@ -425,8 +427,9 @@ const MAX_MULTIFRAME_CANDIDATES: u64 = 3;
 /// Validates the planned stream shape for the multi-frame runtime and returns the
 /// number of accepted frame candidates (1 for a single intra key, 2 for a key plus one
 /// inter frame, 3 for a key plus two inter frames). The shape is otherwise the minimal
-/// tier's: no source warnings, one base-layer sequence header, exactly one IVF frame per
-/// frame candidate plus the leading temporal delimiters.
+/// tier's: no source warnings, one base-layer sequence header, and the traced
+/// `[TD, SEQ, CLK] + [TD, OBU_REGULAR_TILE_GROUP]...` OBU order. IVF frame records
+/// are a non-normative container grouping and are validated separately.
 fn ensure_multiframe_plan_shape(plan: &DecodeStreamPlan) -> Result<u64> {
     let frame_count = plan.frame_candidate_count();
     if frame_count == 0 || frame_count > MAX_MULTIFRAME_CANDIDATES {
@@ -450,11 +453,13 @@ fn ensure_multiframe_plan_shape(plan: &DecodeStreamPlan) -> Result<u64> {
     }
 }
 
-/// Container-shape gate for the multi-frame runtime: an `AV02` IVF with exactly
-/// `frame_count` positive-sized frames and no container warnings or errors.
+/// Container-shape gate for the multi-frame runtime: an `AV02` IVF with positive-sized
+/// records and no container warnings or errors. The IVF header's `frame_count` is a
+/// container-record count when present (and is often zero in real streams), not the
+/// AV2 decoded frame-candidate count.
 fn require_multiframe_ivf<'a>(
     parsed: &'a ParsedBitstream<'a>,
-    frame_count: u64,
+    _frame_count: u64,
 ) -> Result<(&'a ParsedIvfBitstream<'a>, IvfHeader)> {
     let ParsedBitstream::Ivf(ivf) = parsed else {
         return Err(unsupported(
@@ -470,18 +475,23 @@ fn require_multiframe_ivf<'a>(
             "minimal tier requires a complete IVF header",
         ));
     };
+    let parsed_frame_count = ivf.frames.len() as u64;
+    let header_frame_count = u64::from(header.frame_count);
+    let header_count_matches = header_frame_count == 0 || header_frame_count == parsed_frame_count;
+    let all_frame_records_positive = ivf.frames.iter().all(|frame| frame.frame.size > 0);
     if header.fourcc != *b"AV02"
         || header.width == 0
         || header.height == 0
-        || u64::from(header.frame_count) != frame_count
-        || ivf.frames.len() as u64 != frame_count
+        || ivf.frames.is_empty()
+        || !header_count_matches
+        || !all_frame_records_positive
         || !ivf.warnings.is_empty()
         || ivf.error.is_some()
     {
         return Err(unsupported(
             "unsupported_ivf_shape",
             None,
-            "minimal tier requires the planned count of positive-sized AV02 IVF frames with no container warnings",
+            "minimal tier requires positive-sized AV02 IVF frame records with no container warnings; declared IVF frame_count must be zero or match the parsed record count",
         ));
     }
     Ok((ivf, header))

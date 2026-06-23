@@ -15,6 +15,9 @@
 
 use splot_parallel::ThreadCount;
 
+use splot_core::ivf::{write_ivf_frame, write_ivf_header};
+use splot_core::stream::{ParsedBitstream, parse_bitstream_partial};
+
 use super::super::{MinimalRuntimeFrame, decode_minimal_frames_from_plan};
 use super::block::interp_filter_no_neighbour_ctx;
 use super::compound_is_joint_context_from_order_hints;
@@ -615,6 +618,39 @@ fn mvorder_fixture_per_frame_hash_is_stable() {
 const MULTIREF_FIXTURE: &[u8] =
     include_bytes!("../../../../../tests/conformance/vectors/valid/syn-3frame-multiref-64x64.ivf");
 
+fn repack_multiref_last_two_frames_into_one_ivf_record() -> Vec<u8> {
+    let ParsedBitstream::Ivf(parsed) = parse_bitstream_partial(MULTIREF_FIXTURE) else {
+        panic!("multiref fixture is IVF");
+    };
+    assert!(parsed.error.is_none());
+    assert!(parsed.warnings.is_empty());
+    assert_eq!(parsed.frames.len(), 3);
+
+    let mut header = parsed.header.expect("multiref fixture has an IVF header");
+    header.frame_count = 2;
+
+    let mut bytes = Vec::new();
+    write_ivf_header(&mut bytes, &header).expect("write repacked IVF header");
+    write_ivf_frame(
+        &mut bytes,
+        parsed.frames[0].frame.pts,
+        parsed.frames[0].frame.payload,
+    )
+    .expect("write first repacked IVF record");
+
+    let mut grouped_inter_payload = Vec::new();
+    grouped_inter_payload.extend_from_slice(parsed.frames[1].frame.payload);
+    grouped_inter_payload.extend_from_slice(parsed.frames[2].frame.payload);
+    write_ivf_frame(
+        &mut bytes,
+        parsed.frames[1].frame.pts,
+        &grouped_inter_payload,
+    )
+    .expect("write grouped inter IVF record");
+
+    bytes
+}
+
 /// The committed three-frame COMPOUND_AVERAGE fixture
 /// (DECODE-INTER-COMPOUND-AVERAGE): frame 0 is a general-intra DC_PRED
 /// low-frequency key frame, frame 1 is a single-reference NEWMV inter frame, and
@@ -663,6 +699,32 @@ fn multiref_fixture_decodes_three_frames_bit_exact() {
         assert!(
             frame.v().unwrap().samples().iter().all(|&s| s == v),
             "frame {index} V must be flat {v}"
+        );
+    }
+}
+
+#[test]
+fn multiref_fixture_decodes_when_two_frame_units_share_one_ivf_record() {
+    let repacked = repack_multiref_last_two_frames_into_one_ivf_record();
+    let original = decode_fixture(MULTIREF_FIXTURE);
+    let grouped = decode_fixture(&repacked);
+
+    assert_eq!(grouped.len(), original.len());
+    for (index, (actual, expected)) in grouped.iter().zip(original.iter()).enumerate() {
+        assert_eq!(
+            actual.frame().y().samples(),
+            expected.frame().y().samples(),
+            "repacked frame {index} luma"
+        );
+        assert_eq!(
+            actual.frame().u().unwrap().samples(),
+            expected.frame().u().unwrap().samples(),
+            "repacked frame {index} U"
+        );
+        assert_eq!(
+            actual.frame().v().unwrap().samples(),
+            expected.frame().v().unwrap().samples(),
+            "repacked frame {index} V"
         );
     }
 }
