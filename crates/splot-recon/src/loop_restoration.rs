@@ -143,6 +143,7 @@ pub fn loop_restoration_source_sample(
 /// Returns typed [`ReconError`] values when selector bounds are invalid, the two
 /// frame views do not describe the same frame metadata, the selected chroma
 /// plane is absent, selected plane view geometry differs between source frames,
+/// caller-resolved chroma subsampling does not match the source frame format,
 /// the backing storage cannot cover the coded plane coordinate, or the selected
 /// sample cannot represent the frame bit depth.
 pub fn loop_restoration_source_sample_value<T: ReconSample>(
@@ -159,8 +160,10 @@ pub fn loop_restoration_source_sample_value<T: ReconSample>(
         });
     }
 
-    let sample = loop_restoration_source_sample(plane, x, y, bounds)?;
+    validate_source_bounds(bounds)?;
     validate_source_plane_pair(plane, curr_frame, cdef_frame)?;
+    validate_source_subsampling_matches_frame(plane, bounds, curr_frame.info())?;
+    let sample = loop_restoration_source_sample(plane, x, y, bounds)?;
     let source_frame = match sample.source {
         LoopRestorationSource::CurrFrame => curr_frame,
         LoopRestorationSource::CdefFrame => cdef_frame,
@@ -186,6 +189,28 @@ fn validate_source_plane_pair<T: ReconSample>(
     {
         return Err(ReconError::LoopRestorationSourceFrameMismatch {
             field: "plane view geometry",
+        });
+    }
+    Ok(())
+}
+
+fn validate_source_subsampling_matches_frame(
+    plane: PlaneId,
+    bounds: &LoopRestorationSourceBounds,
+    info: DecodedFrameInfo,
+) -> Result<()> {
+    if matches!(plane, PlaneId::Y) {
+        return Ok(());
+    }
+    let expected_x = info.pixel_format().subsampling_x();
+    let expected_y = info.pixel_format().subsampling_y();
+    if bounds.subsampling_x != expected_x || bounds.subsampling_y != expected_y {
+        return Err(ReconError::LoopRestorationSourceSubsamplingMismatch {
+            plane,
+            subsampling_x: bounds.subsampling_x,
+            subsampling_y: bounds.subsampling_y,
+            expected_x,
+            expected_y,
         });
     }
     Ok(())
@@ -371,6 +396,21 @@ mod tests {
             crate::PlaneRef::new(y, 4, rect(0, 0, 4, 4)).unwrap(),
             Some(crate::PlaneRef::new(u, 2, rect(0, 0, 2, 2)).unwrap()),
             Some(crate::PlaneRef::new(v, 2, rect(0, 0, 2, 2)).unwrap()),
+        )
+        .unwrap()
+    }
+
+    fn yuv444_frame<'a>(
+        frame_info: DecodedFrameInfo,
+        y: &'a [u8],
+        u: &'a [u8],
+        v: &'a [u8],
+    ) -> FrameRef<'a, u8> {
+        FrameRef::new(
+            frame_info,
+            crate::PlaneRef::new(y, 4, rect(0, 0, 4, 4)).unwrap(),
+            Some(crate::PlaneRef::new(u, 4, rect(0, 0, 4, 4)).unwrap()),
+            Some(crate::PlaneRef::new(v, 4, rect(0, 0, 4, 4)).unwrap()),
         )
         .unwrap()
     }
@@ -879,6 +919,43 @@ mod tests {
                 sample_index: 0,
                 value: 1024,
                 max: 1023,
+            }
+        );
+    }
+
+    #[test]
+    fn sample_value_rejects_chroma_subsampling_mismatch_for_yuv444() {
+        let frame_info = info(PixelFormat::Yuv444, size(4, 4), rect(0, 0, 4, 4));
+        let curr_y = [10_u8; 16];
+        let cdef_y = [11_u8; 16];
+        let curr_u = [1_u8; 16];
+        let curr_v = [2_u8; 16];
+        let cdef_u = [3_u8; 16];
+        let cdef_v = [4_u8; 16];
+        let curr = yuv444_frame(frame_info, &curr_y, &curr_u, &curr_v);
+        let cdef = yuv444_frame(frame_info, &cdef_y, &cdef_u, &cdef_v);
+        let bounds = LoopRestorationSourceBounds {
+            luma_start_x: 0,
+            luma_end_x: 3,
+            luma_start_y: 0,
+            luma_end_y: 3,
+            luma_stripe_start_y: 0,
+            luma_stripe_end_y: 3,
+            subsampling_x: 1,
+            subsampling_y: 1,
+        };
+
+        let err = loop_restoration_source_sample_value(PlaneId::U, 2, 2, &bounds, curr, cdef)
+            .unwrap_err();
+
+        assert_eq!(
+            err,
+            ReconError::LoopRestorationSourceSubsamplingMismatch {
+                plane: PlaneId::U,
+                subsampling_x: 1,
+                subsampling_y: 1,
+                expected_x: 0,
+                expected_y: 0,
             }
         );
     }

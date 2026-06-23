@@ -13,8 +13,8 @@
   clipping and source selection, then read from the selected immutable
   `FrameRef`.
 - [x] 2.3 Add typed errors for mismatched source-frame metadata or plane-view
-  geometry, out-of-coded-plane selected samples, and bit-depth/sample-range
-  violations.
+  geometry, chroma-subsampling mismatch, out-of-coded-plane selected samples,
+  and bit-depth/sample-range violations.
 - [x] 2.4 Export the helper and update crate docs.
 
 ## 3. Tests
@@ -23,8 +23,8 @@
   `CurrFrame` reads after the two-line clamp.
 - [x] 3.2 Add focused tests for chroma reads, coded-storage reads under a
   visible crop, mismatched frame metadata and plane-view geometry,
-  out-of-coded-plane bounds, bit-depth/sample-range failures, and missing chroma
-  planes.
+  chroma-subsampling mismatch, out-of-coded-plane bounds, bit-depth/sample-range
+  failures, and missing chroma planes.
 
 ## 4. Validation And PR Discipline
 

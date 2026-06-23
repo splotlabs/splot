@@ -14,11 +14,11 @@ the resolved sample lies above or below the current stripe, read from
 the returned current-plane coordinates as absolute coded-storage coordinates
 through immutable `FrameRef` / `PlaneRef` views without allocating or mutating
 caller-owned frame data. It SHALL validate matching source-frame metadata,
-matching selected-plane view geometry, coded-plane bounds, sample storage
-support for the active bit depth, and source sample range. It SHALL NOT derive
-restoration-unit bounds, traverse loop restoration, apply Wiener NS/chroma
-Wiener NS/PC-Wiener/GDF/BRU filters, wire runtime decode, or produce ac0ej3
-output.
+matching selected-plane view geometry, caller-resolved chroma subsampling
+against the source frame pixel format, coded-plane bounds, sample storage support
+for the active bit depth, and source sample range. It SHALL NOT derive
+restoration-unit bounds, traverse loop restoration, apply Wiener NS/chroma Wiener
+NS/PC-Wiener/GDF/BRU filters, wire runtime decode, or produce ac0ej3 output.
 
 #### Scenario: Source reads follow section 7.20.2 frame selection
 
@@ -34,8 +34,10 @@ output.
 
 - **WHEN** `loop_restoration_source_sample_value` is called with mismatched
   `CurrFrame` / `CdefFrame` metadata or selected-plane view geometry, a selected
-  sample outside the coded plane, unsupported sample storage for the active bit
-  depth, an out-of-range source sample, or an absent selected chroma plane
+  chroma plane whose caller-resolved subsampling does not match the frame pixel
+  format, a selected sample outside the coded plane, unsupported sample storage
+  for the active bit depth, an out-of-range source sample, or an absent selected
+  chroma plane
 - **THEN** it returns a typed `ReconError`
 - **AND** it does not allocate, mutate caller-owned frame data, or invoke a
   runtime decoder

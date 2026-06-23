@@ -19,9 +19,10 @@ has chosen `CurrFrame` or `CdefFrame`.
   helper does not apply a non-zero visible crop origin before computing
   `y * stride + x`.
 - Return typed `ReconError` values for frame metadata or plane-view geometry
-  mismatch, missing selected chroma plane, caller-resolved bounds outside the
-  selected coded plane, unsupported sample storage for the frame bit depth, and
-  source samples outside the active bit-depth range.
+  mismatch, caller-resolved chroma subsampling that does not match the source
+  frame pixel format, missing selected chroma plane, caller-resolved bounds
+  outside the selected coded plane, unsupported sample storage for the frame bit
+  depth, and source samples outside the active bit-depth range.
 
 ## Out Of Scope
 
