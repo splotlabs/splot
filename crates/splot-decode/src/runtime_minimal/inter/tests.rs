@@ -22,7 +22,7 @@ use splot_core::obu::{ParsedObu, PayloadStatus};
 use splot_core::span::ByteOffset;
 use splot_core::stream::{ParsedBitstream, ParsedIvfFrame, parse_bitstream_partial};
 use splot_core::types::ObuType;
-use splot_recon::{LoopRestorationSource, PlaneId, ReconError};
+use splot_recon::{LoopRestorationSource, LoopRestorationSourceBounds, PlaneId, ReconError};
 
 use super::super::{MinimalRuntimeFrame, decode_minimal_frames_from_plan};
 use super::block::interp_filter_no_neighbour_ctx;
@@ -1275,6 +1275,7 @@ fn wienerns_lr_source_block() -> WienerNsLrSourceBlock {
         luma_end_x: 15,
         luma_start_y: 0,
         luma_end_y: 15,
+        luma_frame_end_y: 15,
         luma_stripe_start_y: 8,
         luma_stripe_end_y: 10,
     }
@@ -1343,6 +1344,49 @@ fn wienerns_lr_source_read_frontier_includes_chroma_luma_source_reads() {
             x: 0,
             y: 6,
             source: LoopRestorationSource::CurrFrame,
+        })
+    );
+}
+
+#[test]
+fn wienerns_lr_chroma_luma_source_reads_use_frame_y_clip() {
+    let mut frontier = super::super::WienerNsLrSourceReadFrontier {
+        blocks_resolved: 0,
+        output_samples_resolved: 0,
+        source_reads_resolved: 0,
+        curr_frame_source_reads: 0,
+        cdef_frame_source_reads: 0,
+        first_sample: None,
+    };
+    let bounds = LoopRestorationSourceBounds {
+        luma_start_x: 0,
+        luma_end_x: 127,
+        luma_start_y: 0,
+        luma_end_y: 127,
+        luma_stripe_start_y: 0,
+        luma_stripe_end_y: 127,
+        subsampling_x: 1,
+        subsampling_y: 1,
+    };
+
+    super::super::record_wienerns_lr_chroma_luma_source_reads(
+        &mut frontier,
+        DecodeLimits::unlimited(),
+        0,
+        80,
+        255,
+        &bounds,
+    )
+    .expect("chroma luma-source read accounting");
+
+    assert_eq!(frontier.source_reads_resolved, 4);
+    assert_eq!(
+        frontier.first_sample,
+        Some(super::super::WienerNsLrSourceReadSample {
+            plane: PlaneId::Y,
+            x: 0,
+            y: 127,
+            source: LoopRestorationSource::CdefFrame,
         })
     );
 }

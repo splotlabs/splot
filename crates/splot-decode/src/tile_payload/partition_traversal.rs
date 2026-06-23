@@ -394,6 +394,9 @@ pub(crate) struct WienerNsLrSourceBlock {
     pub(crate) luma_start_y: usize,
     /// Inclusive `LumaEndY` bound from AV2 §7.20.1.
     pub(crate) luma_end_y: usize,
+    /// Inclusive full-frame luma bottom coordinate for AV2 §7.20.3
+    /// `get_luma_sample` `lastY`.
+    pub(crate) luma_frame_end_y: usize,
     /// Inclusive `LumaStripeStartY` bound from AV2 §7.20.1.
     pub(crate) luma_stripe_start_y: usize,
     /// Inclusive `LumaStripeEndY` bound from AV2 §7.20.1.
@@ -1510,6 +1513,11 @@ fn lr_source_block_for(
         checked_mul("lr_luma_end_y", luma_end_y_mi, MI_SIZE)?,
         1,
     )?;
+    let luma_frame_end_y = checked_sub(
+        "lr_luma_frame_end_y",
+        checked_mul("lr_luma_frame_end_y", input.frame.mi_rows, MI_SIZE)?,
+        1,
+    )?;
     let local_row = checked_sub("lr_source_local_row", row, input.tile_bounds.mi_row_start)?;
     let luma_y = checked_mul("lr_source_luma_y", local_row, MI_SIZE)?;
     let stripe_num = checked_add("lr_source_stripe_num", luma_y, 8)? / 64;
@@ -1541,6 +1549,7 @@ fn lr_source_block_for(
         luma_end_x,
         luma_start_y,
         luma_end_y,
+        luma_frame_end_y,
         luma_stripe_start_y,
         luma_stripe_end_y,
     })

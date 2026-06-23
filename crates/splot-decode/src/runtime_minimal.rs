@@ -123,6 +123,7 @@ struct WienerNsLrSourceReadSample {
     source: LoopRestorationSource,
 }
 
+// AV2 §7.20.3 `Wiener_Ns_Config_Y` source taps, stored as `(dy, dx)`.
 const WIENER_NS_LUMA_SOURCE_TAPS: [(isize, isize); 32] = [
     (1, 0),
     (-1, 0),
@@ -158,6 +159,7 @@ const WIENER_NS_LUMA_SOURCE_TAPS: [(isize, isize); 32] = [
     (-3, 3),
 ];
 
+// AV2 §7.20.3 `Wiener_Ns_Config_Uv` source taps, stored as `(dy, dx)`.
 const WIENER_NS_CHROMA_SOURCE_TAPS: [(isize, isize); 12] = [
     (1, 0),
     (-1, 0),
@@ -1343,6 +1345,7 @@ fn derive_wienerns_lr_source_read_frontier(
                     plane,
                     x,
                     y,
+                    block.luma_frame_end_y,
                     &bounds,
                 )?;
             }
@@ -1361,6 +1364,7 @@ fn derive_wienerns_lr_output_sample_source_reads(
     plane: PlaneId,
     x: isize,
     y: isize,
+    luma_frame_end_y: usize,
     bounds: &LoopRestorationSourceBounds,
 ) -> Result<()> {
     record_wienerns_lr_source_read(summary, limits, plane, x, y, bounds)?;
@@ -1378,11 +1382,25 @@ fn derive_wienerns_lr_output_sample_source_reads(
                 let tap_y = source_read_coordinate_add(y, dy, "wiener ns lr chroma tap y")?;
                 record_wienerns_lr_source_read(summary, limits, plane, tap_x, tap_y, bounds)?;
             }
-            record_wienerns_lr_chroma_luma_source_reads(summary, limits, x, y, bounds)?;
+            record_wienerns_lr_chroma_luma_source_reads(
+                summary,
+                limits,
+                x,
+                y,
+                luma_frame_end_y,
+                bounds,
+            )?;
             for (dy, dx) in WIENER_NS_CHROMA_SOURCE_TAPS {
                 let tap_x = source_read_coordinate_add(x, dx, "wiener ns lr chroma luma tap x")?;
                 let tap_y = source_read_coordinate_add(y, dy, "wiener ns lr chroma luma tap y")?;
-                record_wienerns_lr_chroma_luma_source_reads(summary, limits, tap_x, tap_y, bounds)?;
+                record_wienerns_lr_chroma_luma_source_reads(
+                    summary,
+                    limits,
+                    tap_x,
+                    tap_y,
+                    luma_frame_end_y,
+                    bounds,
+                )?;
             }
         }
     }
@@ -1446,6 +1464,7 @@ fn record_wienerns_lr_chroma_luma_source_reads(
     limits: DecodeLimits,
     chroma_x: isize,
     chroma_y: isize,
+    luma_frame_end_y: usize,
     bounds: &LoopRestorationSourceBounds,
 ) -> Result<()> {
     let sub_x = usize::from(bounds.subsampling_x);
@@ -1458,8 +1477,7 @@ fn record_wienerns_lr_chroma_luma_source_reads(
         .luma_end_x
         .checked_sub(sub_x)
         .ok_or_else(|| source_read_arithmetic_overflow("wiener ns lr luma source last x"))?;
-    let last_y = bounds
-        .luma_end_y
+    let last_y = luma_frame_end_y
         .checked_sub(sub_y)
         .ok_or_else(|| source_read_arithmetic_overflow("wiener ns lr luma source last y"))?;
     let luma_x = clip_source_read_coordinate(
