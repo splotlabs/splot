@@ -977,8 +977,10 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.20.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-1) | Loop restore block process | `DECODE-AC0EJ3-LR-SOURCE-BOUNDS-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.20.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-1) | Loop restore block process | `DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 7.20.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-2) | Get source sample process | `DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 7.20.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-2) | Get source sample process | `DECODE-LIMITS-RUNTIME-API` | ✅ | — | — | ✅ | — |
 | [§ 7.20.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-2) | Get source sample process | `RECON-LOOP-RESTORATION-SOURCE-READ` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.20.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-2) | Get source sample process | `RECON-LOOP-RESTORATION-SOURCE-SAMPLE` | ✅ | — | ✅ | ✅ | — |
+| [§ 7.20.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-3) | Non-separable Wiener filter process | `DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 7.20.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-3) | Non-separable Wiener filter process | `RECON-WIENERNS-CHROMA-FILTER-PRIMITIVE` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.20.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-3) | Non-separable Wiener filter process | `RECON-WIENERNS-FILTER-PRIMITIVE` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.21](./spec/av2/1.0.0/07-decoding-process.md#s-7-21) | Output processes | `CLI-DECODE-HASH-OUTPUT` | ✅ | — | — | ✅ | 3 |
