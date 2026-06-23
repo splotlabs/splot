@@ -51,6 +51,10 @@
 //! ([`deblock_filter_choice`], the chosen filter width from the two perpendicular
 //! edge sample lines, the estimated second derivatives, and the `qThr`/`sideThr`
 //! threshold cascade over the caller-resolved `Q_First` table), and the
+//! § 7.20.2 loop-restoration source-sample selector
+//! ([`loop_restoration_source_sample`], the allowed-extent clipping,
+//! current-stripe source choice, and two-line out-of-stripe clamp over
+//! caller-resolved luma bounds), and the
 //! § 7.20.3 luma non-separable Wiener filter primitive
 //! ([`wiener_ns_filter_luma_block`], the luma `Wiener_Ns_Config_Y` tap
 //! accumulation over caller-resolved source samples, subclasses, coefficients,
@@ -65,7 +69,7 @@
 //! write, over caller-resolved § 7.13.3.17 `startX`/`startY`/`stepX`/`stepY`
 //! scaling and a clipped [`ReferencePlaneView`] border extension); it does not
 //! implement the rest of the § 7.17 deblocking edge traversal and § 7.17.6 filter-level derivation,
-//! the other loop filters (CDEF, CCSO, loop restoration, GDF), byte-consuming
+//! the other loop filters (CDEF, CCSO, full loop restoration traversal/filtering, GDF), byte-consuming
 //! decode, full
 //! reconstruction, the § 7.14.4 `shift` derivation
 //! or the user-defined `UserQm` matrices,
@@ -118,6 +122,7 @@
 //! `RECON-DEBLOCK-FILTER-MAX-WIDTH`,
 //! `RECON-DEBLOCK-ADAPTIVE-STRENGTH`,
 //! `RECON-DEBLOCK-FILTER-CHOICE`,
+//! `RECON-LOOP-RESTORATION-SOURCE-SAMPLE`,
 //! `RECON-WIENERNS-FILTER-PRIMITIVE`,
 //! `RECON-SUBPEL-MC`.
 //!
@@ -144,6 +149,7 @@ mod intra_smooth;
 mod inverse_transform;
 mod inverse_transform_2d;
 mod inverse_transform_2d_outer;
+mod loop_restoration;
 mod plane;
 mod reconstruct;
 mod reconstruct_block;
@@ -212,6 +218,10 @@ pub use inverse_transform::{
 pub use inverse_transform_2d::{InverseTransform2d, InverseTransform2dDim, inverse_transform_2d};
 pub use inverse_transform_2d_outer::{
     DpcmDirection, InverseTransform2dOuter, inverse_transform_2d_outer,
+};
+pub use loop_restoration::{
+    LoopRestorationSource, LoopRestorationSourceBounds, LoopRestorationSourceSample,
+    loop_restoration_source_sample,
 };
 pub use plane::{Plane, VisibleRows};
 pub use reconstruct::reconstruct_add_residual;

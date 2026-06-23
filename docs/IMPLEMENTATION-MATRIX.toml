@@ -9594,6 +9594,64 @@ fixtures = [
 diagnostics = []
 
 [[feature]]
+id = "RECON-LOOP-RESTORATION-SOURCE-SAMPLE"
+name = "Loop restoration source-sample selector"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["7.20.2"]
+sources = [
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-20-2",
+]
+crate = "splot-recon"
+module = "crates/splot-recon/src/loop_restoration.rs"
+openspec_change = "recon-loop-restoration-source-sample"
+tracking_issue = ""
+owner = "decoder"
+risk = "low"
+notes = "Adds a scheduler-free `splot-recon` AV2 §7.20.2 get source sample selector `loop_restoration_source_sample(plane, x, y, bounds)`. The helper takes caller-resolved luma `LumaStartX`, `LumaEndX`, `LumaStartY`, `LumaEndY`, `LumaStripeStartY`, `LumaStripeEndY`, plus sequence subsampling, derives plane subsampling as zero for luma and sequence subsampling for chroma, clips source coordinates to the luma-derived plane extents, selects `CdefFrame` for coordinates inside the current stripe, and selects `CurrFrame` above or below the stripe while clamping to at most two lines outside it. It returns only the clipped plane coordinates and selected source enum; callers still own frame storage reads, §7.20.1 loop-restoration traversal, restoration-unit selection, Wiener NS/PC-Wiener/GDF filtering, and runtime output. Bounds and subsampling are validated before resolution with typed `ReconError` failures, and the out-of-stripe two-line limits use saturating arithmetic to keep the helper total for extreme caller-supplied bounds. Strictly additive and no-output-change: a `pub` selector with no runtime reconstruction rewiring, so the current ac0ej3 path still rejects active loop-restoration units before output. Proven by focused luma in-stripe CdefFrame selection, above/below stripe CurrFrame selection with two-line clamping, chroma subsampled extents, luma ignoring sequence subsampling, invalid subsampling, invalid luma ranges, and stripe-bound errors. This row does not implement frame reads, full loop restoration traversal, Wiener NS filtering, chroma Wiener NS filtering, PC-Wiener classification, GDF, BRU, runtime decode wiring, 10-bit output, or successful ac0ej3 decode."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "done"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-recon/src/loop_restoration.rs::tests::luma_inside_stripe_reads_cdef_frame",
+    "crates/splot-recon/src/loop_restoration.rs::tests::luma_above_stripe_reads_curr_frame_clamped_to_two_lines",
+    "crates/splot-recon/src/loop_restoration.rs::tests::luma_below_stripe_reads_curr_frame_clamped_to_two_lines",
+    "crates/splot-recon/src/loop_restoration.rs::tests::chroma_uses_subsampled_bounds_and_stripe",
+    "crates/splot-recon/src/loop_restoration.rs::tests::luma_ignores_sequence_subsampling",
+    "crates/splot-recon/src/loop_restoration.rs::tests::rejects_invalid_subsampling",
+    "crates/splot-recon/src/loop_restoration.rs::tests::rejects_invalid_luma_range",
+    "crates/splot-recon/src/loop_restoration.rs::tests::rejects_stripe_outside_luma_range",
+    "crates/splot-recon/src/loop_restoration.rs::tests::rejects_inverted_stripe_range",
+    "crates/splot-recon/src/loop_restoration.rs::tests::rejects_unrepresentable_luma_bound",
+]
+commands = [
+    "cargo test -p splot-recon loop_restoration --locked",
+    "cargo clippy -p splot-recon --all-targets --locked -- -D warnings",
+    "RUSTDOCFLAGS=\"-D warnings\" cargo doc -p splot-recon --no-deps --locked",
+    "cargo xtask check-dependency-direction",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-decoder-conformance-coverage",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-recon/src/loop_restoration.rs",
+    "crates/splot-recon/src/error.rs",
+    "crates/splot-recon/src/lib.rs",
+]
+diagnostics = []
+
+[[feature]]
 id = "RECON-WIENERNS-FILTER-PRIMITIVE"
 name = "Wiener NS luma filter primitive"
 category = "infrastructure"

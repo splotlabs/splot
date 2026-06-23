@@ -631,6 +631,20 @@ pub enum ReconError {
         /// Maximum sample value allowed by the active bit depth.
         max: u16,
     },
+    /// Caller-resolved AV2 § 7.20.2 loop-restoration source-sample luma bounds
+    /// were internally inconsistent.
+    LoopRestorationSourceInvalidBounds {
+        /// Invalid field or derived range.
+        field: &'static str,
+    },
+    /// Caller-resolved AV2 § 7.20.2 chroma subsampling values were outside the
+    /// AV2 `0..=1` domain.
+    LoopRestorationSourceInvalidSubsampling {
+        /// Supplied `SubsamplingX`.
+        subsampling_x: u8,
+        /// Supplied `SubsamplingY`.
+        subsampling_y: u8,
+    },
     /// A § 7.14.4 dequantization block had an unsupported transform shape.
     InvalidDequantBlockShape {
         /// Supplied dequantized transform-block width.
@@ -1246,6 +1260,16 @@ impl fmt::Display for ReconError {
             Self::WienerNsFilterSourceSampleOutOfRange { x, y, value, max } => write!(
                 f,
                 "Wiener NS source sample at ({x}, {y}) has value {value}, exceeding active bit-depth max {max}"
+            ),
+            Self::LoopRestorationSourceInvalidBounds { field } => {
+                write!(f, "invalid loop-restoration source-sample {field}")
+            }
+            Self::LoopRestorationSourceInvalidSubsampling {
+                subsampling_x,
+                subsampling_y,
+            } => write!(
+                f,
+                "invalid loop-restoration source-sample subsampling ({subsampling_x}, {subsampling_y}); expected each in 0..=1"
             ),
             Self::InvalidDequantBlockShape {
                 tx_width,
