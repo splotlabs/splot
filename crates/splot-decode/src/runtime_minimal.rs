@@ -1144,7 +1144,7 @@ fn incomplete_intra_header_error(
         FrameHeaderParseStatus::StoppedBeforeWienerNsFilter { .. } => unsupported_feature_at(
             "unsupported_wienerns_filter",
             offset,
-            "minimal runtime reached AV2 §5.18.7.11 read_wienerns_filter() before the frame-level Wiener NS bank decode is modeled",
+            "minimal runtime reached read_wienerns_filter() (§5.20.10.6) from AV2 §5.18.7.11 lr_params() before the frame-level Wiener NS bank decode is modeled",
             AC0EJ3_WIENERNS_MATRIX_ROW,
             AC0EJ3_WIENERNS_FEATURE_ID,
             "5.18.7.11",
