@@ -6,13 +6,13 @@
 ## 2. Implementation
 
 - [x] 2.1 Add crate-private source-read frontier state for active Wiener NS LR source blocks.
-- [x] 2.2 Reuse `splot-recon` loop-restoration source selection/read primitives for supported active blocks.
+- [x] 2.2 Reuse `splot-recon` loop-restoration source selection primitives for supported active block centers.
 - [x] 2.3 Move the live ac0ej3 runtime diagnostic from the source-bounds frontier to the source-read frontier.
-- [x] 2.4 Keep §7.20.3 filtering, decoded-frame allocation, reference refresh, hash, raw, and Y4M output unsupported.
+- [x] 2.4 Keep complete Wiener tap reads, chroma luma-source reads, §7.20.3 filtering, decoded-frame allocation, reference refresh, hash, raw, and Y4M output unsupported.
 
 ## 3. Verification
 
-- [x] 3.1 Add focused tests for successful source-read frontier derivation and transactional failures.
+- [x] 3.1 Add focused tests for center-source frontier derivation and transactional failures.
 - [x] 3.2 Add or update the local ac0ej3 ignored CLI test to assert the new live diagnostic.
 - [x] 3.3 Run `openspec validate decode-ac0ej3-lr-source-read-frontier --no-interactive`, focused decode/recon tests, feature/support checks, conformance, and `cargo xtask ci`.
 

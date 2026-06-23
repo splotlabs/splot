@@ -34,8 +34,8 @@ use crate::tile_payload::{
     TileGroupPositionFacts, TilePartitionTraversalError,
 };
 use crate::{
-    DecodeLimitError, DecodeLimitName, DecodeLimitOp, DecodeLimits, DecodeOptions,
-    DecodePlannedObu, DecodeStreamPlan,
+    DecodeLimitError, DecodeLimitName, DecodeLimitOp, DecodeOptions, DecodePlannedObu,
+    DecodeStreamPlan,
 };
 
 /// Stable id for the first supported runtime decode tier.
@@ -95,23 +95,23 @@ impl MinimalRuntimeFrame {
     not(test),
     allow(
         dead_code,
-        reason = "private source-read frontier proof state is consumed by tests until filtering uses it"
+        reason = "private source-read frontier proof state is consumed by tests until filtering owns full tap coverage"
     )
 )]
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct WienerNsLrSourceReadFrontier {
-    blocks_resolved: usize,
-    samples_resolved: usize,
-    curr_frame_samples: usize,
-    cdef_frame_samples: usize,
-    first_sample: Option<WienerNsLrSourceReadSample>,
+    blocks_checked: usize,
+    center_samples_checked: usize,
+    curr_frame_center_samples: usize,
+    cdef_frame_center_samples: usize,
+    first_center_sample: Option<WienerNsLrSourceReadSample>,
 }
 
 #[cfg_attr(
     not(test),
     allow(
         dead_code,
-        reason = "private source-read frontier proof state is consumed by tests until filtering uses it"
+        reason = "private source-read frontier proof state is consumed by tests until filtering owns full tap coverage"
     )
 )]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1237,7 +1237,6 @@ fn ensure_wienerns_lr_unit_runtime_frontier(
             lr_frontier.active_source_blocks(),
             sequence.general.chroma_format_idc,
             key_envelope.offset,
-            options.limits(),
         )?;
         Err(wienerns_lr_source_read_runtime_error(key_envelope.offset))
     } else {
@@ -1249,15 +1248,14 @@ fn derive_wienerns_lr_source_read_frontier(
     active_source_blocks: &[crate::tile_payload::WienerNsLrSourceBlock],
     chroma_format: ChromaFormatIdc,
     offset: ByteOffset,
-    limits: DecodeLimits,
 ) -> Result<WienerNsLrSourceReadFrontier> {
     let (subsampling_x, subsampling_y) = chroma_subsampling(chroma_format);
     let mut summary = WienerNsLrSourceReadFrontier {
-        blocks_resolved: 0,
-        samples_resolved: 0,
-        curr_frame_samples: 0,
-        cdef_frame_samples: 0,
-        first_sample: None,
+        blocks_checked: 0,
+        center_samples_checked: 0,
+        curr_frame_center_samples: 0,
+        cdef_frame_center_samples: 0,
+        first_center_sample: None,
     };
 
     for block in active_source_blocks {
@@ -1266,16 +1264,9 @@ fn derive_wienerns_lr_source_read_frontier(
             source_read_arithmetic_overflow("wiener ns lr source block sample count")
         })?;
         let next_samples = summary
-            .samples_resolved
+            .center_samples_checked
             .checked_add(block_samples)
             .ok_or_else(|| source_read_arithmetic_overflow("wiener ns lr source sample count"))?;
-        // Source-read derivation resolves luma and chroma samples; the existing
-        // per-frame sample cap is the closest decoder work budget for this frontier.
-        limits.ensure(
-            DecodeLimitName::MaxLumaSamplesPerFrame,
-            u64::try_from(next_samples)
-                .map_err(|_| source_read_arithmetic_overflow("wiener ns lr source limit"))?,
-        )?;
 
         let bounds = LoopRestorationSourceBounds {
             luma_start_x: block.luma_start_x,
@@ -1301,8 +1292,8 @@ fn derive_wienerns_lr_source_read_frontier(
                     source_read_arithmetic_overflow("wiener ns lr source x coordinate")
                 })?;
                 let sample = loop_restoration_source_sample(plane, x, y, &bounds)?;
-                if summary.first_sample.is_none() {
-                    summary.first_sample = Some(WienerNsLrSourceReadSample {
+                if summary.first_center_sample.is_none() {
+                    summary.first_center_sample = Some(WienerNsLrSourceReadSample {
                         plane,
                         x: sample.x,
                         y: sample.y,
@@ -1311,16 +1302,20 @@ fn derive_wienerns_lr_source_read_frontier(
                 }
                 match sample.source {
                     LoopRestorationSource::CurrFrame => {
-                        summary.curr_frame_samples =
-                            summary.curr_frame_samples.checked_add(1).ok_or_else(|| {
+                        summary.curr_frame_center_samples = summary
+                            .curr_frame_center_samples
+                            .checked_add(1)
+                            .ok_or_else(|| {
                                 source_read_arithmetic_overflow(
                                     "wiener ns lr curr-frame source count",
                                 )
                             })?;
                     }
                     LoopRestorationSource::CdefFrame => {
-                        summary.cdef_frame_samples =
-                            summary.cdef_frame_samples.checked_add(1).ok_or_else(|| {
+                        summary.cdef_frame_center_samples = summary
+                            .cdef_frame_center_samples
+                            .checked_add(1)
+                            .ok_or_else(|| {
                                 source_read_arithmetic_overflow(
                                     "wiener ns lr cdef-frame source count",
                                 )
@@ -1329,11 +1324,11 @@ fn derive_wienerns_lr_source_read_frontier(
                 }
             }
         }
-        summary.blocks_resolved = summary
-            .blocks_resolved
+        summary.blocks_checked = summary
+            .blocks_checked
             .checked_add(1)
             .ok_or_else(|| source_read_arithmetic_overflow("wiener ns lr source block count"))?;
-        summary.samples_resolved = next_samples;
+        summary.center_samples_checked = next_samples;
     }
     Ok(summary)
 }
@@ -1416,7 +1411,7 @@ fn wienerns_lr_source_read_runtime_error(offset: ByteOffset) -> DecodeError {
     unsupported_feature_at(
         "unsupported_wienerns_lr_source_read",
         offset,
-        "minimal runtime consumed active AV2 §5.20.10.4/§5.20.10.5 frame-level Wiener NS LR unit syntax, retained per-unit selection state, derived active §7.20.1 loop-restoration source-bound facts, and resolved §7.20.2 loop-restoration source-read state, but does not yet apply §7.20.3 filtering before output",
+        "minimal runtime consumed active AV2 §5.20.10.4/§5.20.10.5 frame-level Wiener NS LR unit syntax, retained per-unit selection state, derived active §7.20.1 loop-restoration source-bound facts, and reached the §7.20.2 source-read boundary; complete Wiener tap and chroma luma-source reads plus §7.20.3 filtering are not yet applied before output",
         AC0EJ3_LR_SOURCE_READ_MATRIX_ROW,
         AC0EJ3_LR_SOURCE_READ_FEATURE_ID,
         "7.20.2",
