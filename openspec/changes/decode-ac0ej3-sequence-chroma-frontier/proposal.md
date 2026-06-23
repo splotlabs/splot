@@ -20,7 +20,7 @@ allocation.
 
 ## Scope
 
-- Spec sections: AV2 v1.0.0 § 5.20.5.6 and § 5.18.2.
+- Spec sections: AV2 v1.0.0 § 5.20.5.6 and § 5.4.5.
 - Crates/modules: `crates/splot-decode/src/runtime_minimal.rs` and focused
   runtime/CLI regressions.
 - CLI/docs/tests: local `ac0ej3` diagnostic regression, sequence chroma-tool

@@ -116,6 +116,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.4.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-4-3) | Sequence partition config syntax | `AV2-5.4.3-SEQUENCE-PARTITION-CONFIG` | ✅ | ✅ | 🟡 | ✅ | — |
 | [§ 5.4.4](./spec/av2/1.0.0/05-syntax-structures.md#s-5-4-4) | Sequence segment config syntax | `AV2-5.4.4-SEQUENCE-SEGMENT-CONFIG` | ✅ | ✅ | 🟡 | ✅ | — |
 | [§ 5.4.5](./spec/av2/1.0.0/05-syntax-structures.md#s-5-4-5) | Sequence intra config syntax | `AV2-5.4.5-SEQUENCE-INTRA-CONFIG` | ✅ | ✅ | 🟡 | ✅ | — |
+| [§ 5.4.5](./spec/av2/1.0.0/05-syntax-structures.md#s-5-4-5) | Sequence intra config syntax | `DECODE-AC0EJ3-SEQUENCE-CHROMA-FRONTIER` | ✅ | ✅ | ✅ | ✅ | 1 |
 | [§ 5.4.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-4-6) | Sequence inter config syntax | `AV2-5.4.6-SEQUENCE-INTER-CONFIG` | ✅ | ✅ | ✅ | ✅ | 1 |
 | [§ 5.4.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-4-6) | Sequence inter config syntax | `ENC-FRAME-HEADER-CORE-ASSEMBLER` | ✅ | — | — | ✅ | — |
 | [§ 5.4.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-4-6) | Sequence inter config syntax | `ENC-WRITER-INPUT-INTER-VIEW` | ✅ | — | — | ✅ | — |
@@ -189,7 +190,6 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.18.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2) | Frame header info syntax | `AV2-5.18.2-FRAME-HEADER-INFO` | ✅ | 🟡 | 🟡 | ✅ | 9 |
 | [§ 5.18.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2) | Frame header info syntax | `AV2-7.7-GET-REF-FRAMES` | ✅ | 🟡 | — | ✅ | — |
 | [§ 5.18.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2) | Frame header info syntax | `DECODE-AC0EJ3-LEADING-OBU-GATE` | ✅ | 🟡 | ✅ | ✅ | 1 |
-| [§ 5.18.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2) | Frame header info syntax | `DECODE-AC0EJ3-SEQUENCE-CHROMA-FRONTIER` | ✅ | ✅ | ✅ | ✅ | 1 |
 | [§ 5.18.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2) | Frame header info syntax | `DECODE-COEFF-FRAME-FACTS-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.18.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2) | Frame header info syntax | `DECODE-COEFF-PARITY-TCQ-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.18.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2) | Frame header info syntax | `DECODE-FIRST-INTER-FRAME-FRONTIER` | ✅ | ✅ | — | ✅ | 1 |

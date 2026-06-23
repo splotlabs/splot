@@ -10426,9 +10426,9 @@ id = "DECODE-AC0EJ3-SEQUENCE-CHROMA-FRONTIER"
 name = "ac0ej3 sequence chroma tool frontier"
 category = "infrastructure"
 kind = "infrastructure"
-spec_sections = ["5.18.2", "5.20.5.6"]
+spec_sections = ["5.4.5", "5.20.5.6"]
 sources = [
-    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-4-5",
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-6",
 ]
 crate = "splot-decode"
@@ -10437,7 +10437,7 @@ openspec_change = "decode-ac0ej3-sequence-chroma-frontier"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Moves the sequence-level CfL/MHCCP runtime gate out of `validate_sequence` and into the pre-tile decode boundary. AV2 §5.18.2 carries the sequence-level `enable_cfl_intra` and `enable_mhccp` flags, and §5.20.5.6 can require extra `is_cfl`, `UV_CFL_PRED`, or `is_mhccp_allowed` mode-info syntax only when reachable block conditions allow those branches. The minimal runtime now parses those sequence flags, parses the leading key-frame header first, and then rejects CfL/MHCCP before any tile mode-info symbol can be skipped or any `DecodedFrame<u8>` can be allocated. The local ac0ej3 mission stream therefore advances past the former sequence CFL gate and fails closed at the key-frame header parse frontier (`incomplete_frame_header`, byte offset 74), matching the current parser's `stopped_before_wienerns_filter` key-frame header status. This row does not implement CfL prediction, MHCCP prediction, `is_cfl` CDFs, `read_cfl_alphas`, 10-bit reconstruction/output, key-frame loop filters, or successful ac0ej3 decode."
+notes = "Moves the sequence-level CfL/MHCCP runtime gate out of `validate_sequence` and into the pre-tile decode boundary. AV2 §5.4.5 carries the sequence-level `enable_cfl_intra` and `enable_mhccp` flags, and §5.20.5.6 can require extra `is_cfl`, `UV_CFL_PRED`, or `is_mhccp_allowed` mode-info syntax only when reachable block conditions allow those branches. The minimal runtime now parses those sequence flags, parses the leading key-frame header first, and then rejects CfL/MHCCP before any tile mode-info symbol can be skipped or any `DecodedFrame<u8>` can be allocated. The local ac0ej3 mission stream therefore advances past the former sequence CFL gate and fails closed at the key-frame header parse frontier (`incomplete_frame_header`, byte offset 74), matching the current parser's `stopped_before_wienerns_filter` key-frame header status. This row does not implement CfL prediction, MHCCP prediction, `is_cfl` CDFs, `read_cfl_alphas`, 10-bit reconstruction/output, key-frame loop filters, or successful ac0ej3 decode."
 
 [feature.status]
 mapped = "done"
