@@ -87,6 +87,34 @@ Per-feature support status stays in
 only the citation surface for tile partition syntax, semantics, and parsing
 helpers.
 
+## Decoder inter prediction surface
+
+Minimal decoder inter/compound work uses these local mirror citations:
+
+- AV2 § 5.20.7.6 inter block mode info syntax:
+  [`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-6`](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-6).
+- AV2 § 5.20.7.10 reference-frame syntax and § 5.20.7.11 compound reference
+  syntax:
+  [`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-10`](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-10) and
+  [`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-11`](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-11).
+- AV2 § 5.20.7.13 assign-MV syntax, § 5.20.7.16 compound-type syntax, and
+  § 5.20.7.17 refine-MV syntax:
+  [`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-13`](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-13),
+  [`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-16`](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-16), and
+  [`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-17`](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-17).
+- AV2 § 7.13.3.16 rounding variable derivation and § 7.13.3.18 block inter
+  prediction:
+  [`docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-16`](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-16) and
+  [`docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-18`](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-18).
+- AV2 § 8.3.2 syntax-element CDF selection for inter syntax symbols:
+  [`docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2`](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2).
+
+Per-feature support status stays in
+[`IMPLEMENTATION-MATRIX.toml`](./IMPLEMENTATION-MATRIX.toml) and
+[`DECODER-SUPPORT-MATRIX.toml`](./DECODER-SUPPORT-MATRIX.toml); this section is
+only the citation surface for inter block syntax, compound prediction, and
+motion-compensation helpers.
+
 ## Non-normative containers
 
 IVF support (`AV2-IVF-CONTAINER`) is tracked in the implementation matrix because

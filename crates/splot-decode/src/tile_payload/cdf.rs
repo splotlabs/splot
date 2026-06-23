@@ -403,6 +403,51 @@ pub(crate) enum TileCdfSelector {
         /// The §5.20.7.12 loop counter `ref`.
         ref_idx: usize,
     },
+    /// `TileCompModeCdf[ctx]` (AV2 § 8.3.2): the §5.20.7.10 `comp_mode` symbol.
+    CompMode {
+        /// §8.3.2 compound-reference mode context.
+        ctx: usize,
+    },
+    /// `TileIsJointCdf[ctx]` (AV2 § 8.3.2): the §5.20.7.6 `is_joint` symbol.
+    IsJoint {
+        /// §8.3.2 `is_joint` context.
+        ctx: usize,
+    },
+    /// `TileCompoundModeNonJointCdf[NewMvContext]` (AV2 § 8.3.2): the
+    /// §5.20.7.6 non-joint compound mode symbol.
+    CompoundModeNonJoint {
+        /// `NewMvContext`.
+        ctx: usize,
+    },
+    /// `TileCompGroupIdxCdf[ctx]` (AV2 § 8.3.2): the §5.20.7.16
+    /// `comp_group_idx` symbol.
+    CompGroupIdx {
+        /// `comp_group_idx` context.
+        ctx: usize,
+    },
+    /// `TileCwpIdxCdf[idx]` (AV2 § 8.3.2): the §5.20.7.6 `cwp_idx` symbol.
+    CwpIdx {
+        /// CWP truncated-unary index.
+        idx: usize,
+    },
+    /// `TileCompRef0Cdf[ctx][ref]` (AV2 § 8.3.2): the §5.20.7.11 `comp_ref`
+    /// symbol before any compound reference has been found.
+    CompRef0 {
+        /// §8.3.2 neighbour-derived comp_ref context.
+        ctx: usize,
+        /// The §5.20.7.11 loop counter `ref`.
+        ref_idx: usize,
+    },
+    /// `TileCompRef1Cdf[ctx][bitType][ref]` (AV2 § 8.3.2): the §5.20.7.11
+    /// `comp_ref` symbol after the first compound reference has been found.
+    CompRef1 {
+        /// §8.3.2 neighbour-derived comp_ref context.
+        ctx: usize,
+        /// Same-side/opposite-side bit type.
+        bit_type: usize,
+        /// The §5.20.7.11 loop counter `ref`.
+        ref_idx: usize,
+    },
     /// `TileJointShellSetCdf[MvCtx]` (AV2 § 8.3.2): the §5.20.7.20 `shell_set`
     /// symbol (single-context MvCtx == 0).
     JointShellSet,
@@ -519,6 +564,20 @@ pub(crate) enum TileCdfArray {
     DrlMode,
     /// `TileSingleRefCdf`.
     SingleRef,
+    /// `TileCompModeCdf`.
+    CompMode,
+    /// `TileIsJointCdf`.
+    IsJoint,
+    /// `TileCompoundModeNonJointCdf`.
+    CompoundModeNonJoint,
+    /// `TileCompGroupIdxCdf`.
+    CompGroupIdx,
+    /// `TileCwpIdxCdf`.
+    CwpIdx,
+    /// `TileCompRef1Cdf`.
+    CompRef1,
+    /// `TileCompRef0Cdf`.
+    CompRef0,
     /// `TileJointShell6ClassCdf` (the EighthPel P == 6 `shell_class` bank pair).
     JointShell6Class,
     /// `TileShellOffsetLowClassCdf`.
@@ -570,6 +629,13 @@ impl TileCdfArray {
             Self::SingleMode => "TileSingleModeCdf",
             Self::DrlMode => "TileDrlModeCdf",
             Self::SingleRef => "TileSingleRefCdf",
+            Self::CompMode => "TileCompModeCdf",
+            Self::IsJoint => "TileIsJointCdf",
+            Self::CompoundModeNonJoint => "TileCompoundModeNonJointCdf",
+            Self::CompGroupIdx => "TileCompGroupIdxCdf",
+            Self::CwpIdx => "TileCwpIdxCdf",
+            Self::CompRef0 => "TileCompRef0Cdf",
+            Self::CompRef1 => "TileCompRef1Cdf",
             Self::JointShell6Class => "TileJointShell6ClassCdf",
             Self::ShellOffsetLowClass => "TileShellOffsetLowClassCdf",
             Self::ShellOffsetOtherClass => "TileShellOffsetOtherClassCdf",
@@ -951,6 +1017,27 @@ impl TileCdfRows {
             TileCdfSelector::SingleRef { ctx, ref_idx } => {
                 self.block.row(BlockCdfSelector::SingleRef { ctx, ref_idx })
             }
+            TileCdfSelector::CompMode { ctx } => self.block.row(BlockCdfSelector::CompMode { ctx }),
+            TileCdfSelector::IsJoint { ctx } => self.block.row(BlockCdfSelector::IsJoint { ctx }),
+            TileCdfSelector::CompoundModeNonJoint { ctx } => self
+                .block
+                .row(BlockCdfSelector::CompoundModeNonJoint { ctx }),
+            TileCdfSelector::CompGroupIdx { ctx } => {
+                self.block.row(BlockCdfSelector::CompGroupIdx { ctx })
+            }
+            TileCdfSelector::CwpIdx { idx } => self.block.row(BlockCdfSelector::CwpIdx { idx }),
+            TileCdfSelector::CompRef0 { ctx, ref_idx } => {
+                self.block.row(BlockCdfSelector::CompRef0 { ctx, ref_idx })
+            }
+            TileCdfSelector::CompRef1 {
+                ctx,
+                bit_type,
+                ref_idx,
+            } => self.block.row(BlockCdfSelector::CompRef1 {
+                ctx,
+                bit_type,
+                ref_idx,
+            }),
             TileCdfSelector::JointShellSet => self.block.row(BlockCdfSelector::JointShellSet),
             TileCdfSelector::JointShell6Class { shell_set } => self
                 .block
@@ -1113,6 +1200,31 @@ impl TileCdfRows {
             TileCdfSelector::SingleRef { ctx, ref_idx } => self
                 .block
                 .row_mut(BlockCdfSelector::SingleRef { ctx, ref_idx }),
+            TileCdfSelector::CompMode { ctx } => {
+                self.block.row_mut(BlockCdfSelector::CompMode { ctx })
+            }
+            TileCdfSelector::IsJoint { ctx } => {
+                self.block.row_mut(BlockCdfSelector::IsJoint { ctx })
+            }
+            TileCdfSelector::CompoundModeNonJoint { ctx } => self
+                .block
+                .row_mut(BlockCdfSelector::CompoundModeNonJoint { ctx }),
+            TileCdfSelector::CompGroupIdx { ctx } => {
+                self.block.row_mut(BlockCdfSelector::CompGroupIdx { ctx })
+            }
+            TileCdfSelector::CwpIdx { idx } => self.block.row_mut(BlockCdfSelector::CwpIdx { idx }),
+            TileCdfSelector::CompRef0 { ctx, ref_idx } => self
+                .block
+                .row_mut(BlockCdfSelector::CompRef0 { ctx, ref_idx }),
+            TileCdfSelector::CompRef1 {
+                ctx,
+                bit_type,
+                ref_idx,
+            } => self.block.row_mut(BlockCdfSelector::CompRef1 {
+                ctx,
+                bit_type,
+                ref_idx,
+            }),
             TileCdfSelector::JointShellSet => self.block.row_mut(BlockCdfSelector::JointShellSet),
             TileCdfSelector::JointShell6Class { shell_set } => self
                 .block
@@ -1243,6 +1355,41 @@ impl TileCdfRows {
     #[cfg(test)]
     pub(crate) const fn eob_extra(&self) -> &block_rows::EobExtraCdfRows {
         self.block.eob_extra()
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn comp_mode(&self) -> &block_rows::CompModeCdfRows {
+        self.block.comp_mode()
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn is_joint(&self) -> &block_rows::IsJointCdfRows {
+        self.block.is_joint()
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn compound_mode_non_joint(&self) -> &block_rows::CompoundModeNonJointCdfRows {
+        self.block.compound_mode_non_joint()
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn comp_group_idx(&self) -> &block_rows::CompGroupIdxCdfRows {
+        self.block.comp_group_idx()
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn cwp_idx(&self) -> &block_rows::CwpIdxCdfRows {
+        self.block.cwp_idx()
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn comp_ref0(&self) -> &block_rows::CompRef0CdfRows {
+        self.block.comp_ref0()
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn comp_ref1(&self) -> &block_rows::CompRef1CdfRows {
+        self.block.comp_ref1()
     }
 }
 

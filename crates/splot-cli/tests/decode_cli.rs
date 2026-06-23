@@ -741,6 +741,65 @@ fn decode_multiref_three_frame_fixture_is_bit_exact() {
 }
 
 #[test]
+fn decode_compound_average_three_frame_fixture_is_bit_exact() {
+    // DECODE-INTER-COMPOUND-AVERAGE: the committed
+    // syn-3frame-compound-average-64x64.ivf is the verified two-reference
+    // COMPOUND_AVERAGE target. Frame 0 is a general-intra low-frequency key frame,
+    // frame 1 is a single-reference NEWMV inter frame, and frame 2 is a
+    // `reference_select` compound block over refs [0, 1] with non-joint NEAR_NEARMV,
+    // zero MVs, skip=1, COMPOUND_AVERAGE, and CWP/masks disabled. avmdec
+    // --rawvideo --i420 and dav2d --demuxer ivf --muxer yuv decode the whole stream
+    // byte-for-byte identically (raw SHA-256
+    // 2b4f716243d9f5c30a244ecc6f7fdcb5bef804d2ba353a21d670d686cfe63ff4; raw MD5
+    // 34074c6945348b146f84551a20d9affd).
+    let input = conformance_vector("syn-3frame-compound-average-64x64.ivf");
+    let output = temp_output("yuv");
+
+    let out = splot(&[
+        "decode",
+        "--output-format",
+        "raw",
+        input.to_str().unwrap(),
+        "-o",
+        output.to_str().unwrap(),
+    ]);
+
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "the compound-average 3-frame fixture must decode successfully: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let decoded = std::fs::read(&output).expect("decoded raw output");
+    // 3 frames * (64x64 luma + 2 * 32x32 chroma) = 3 * 6144 = 18432 bytes.
+    assert_eq!(decoded.len(), 18432, "three 8-bit 4:2:0 64x64 frames");
+    let frame_bytes = 6144;
+    let frame0 = &decoded[..frame_bytes];
+    let frame1 = &decoded[frame_bytes..2 * frame_bytes];
+    let frame2 = &decoded[2 * frame_bytes..];
+    assert_rounded_average(frame0, frame1, frame2);
+    assert_ne!(frame2, frame0, "compound frame differs from ref 0");
+    assert_ne!(frame2, frame1, "compound frame differs from ref 1");
+}
+
+fn assert_rounded_average(ref0: &[u8], ref1: &[u8], compound: &[u8]) {
+    assert_eq!(ref0.len(), ref1.len(), "reference frame lengths");
+    assert_eq!(ref0.len(), compound.len(), "compound frame length");
+    for (index, ((&a, &b), &actual)) in ref0
+        .iter()
+        .zip(ref1.iter())
+        .zip(compound.iter())
+        .enumerate()
+    {
+        let expected = ((u16::from(a) + u16::from(b) + 1) >> 1) as u8;
+        assert_eq!(
+            actual, expected,
+            "compound raw sample {index}: rounded average of refs"
+        );
+    }
+}
+
+#[test]
 fn decode_hash_json_success_creates_no_implicit_output_file() {
     let input = conformance_vector("syn-flat-intra-64x64-minimal.ivf");
     let cwd = temp_dir("minimal-hash-cwd");

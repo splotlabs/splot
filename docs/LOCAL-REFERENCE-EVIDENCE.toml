@@ -2040,6 +2040,58 @@ left = "avm-multiref-3frame-64x64-raw-md5"
 right = "dav2d-multiref-3frame-64x64-raw-md5"
 
 [[evidence]]
+id = "lref-avm-dav2d-syn-3frame-compound-average-64x64"
+feature_id = "DECODE-INTER-COMPOUND-AVERAGE"
+decoder_support_rows = ["inter-compound-average"]
+kind = "reference-output-agreement"
+summary = "Local AVM and dav2d raw decoder output MD5 digests agreed for the three-frame 8-bit 4:2:0 COMPOUND-AVERAGE inter IVF fixture (64x64): frame 0 is a smooth low-frequency DC_PRED intra surface, frame 1 is the same surface plus an 8x8 checker delta and is coded as a single-reference NEWMV inter block, and frame 2 is the per-pixel average of frames 0 and 1. AVM inspect confirms frame 2 is a single NEAR_NEARMV compound block over refs [0, 1], compound_type 0, skip=1, and both MVs zero; the pre-change decoder rejects the stream at the structured decode/unsupported-feature inter_reference_select gate."
+recorded_at = "2026-06-22"
+
+[[evidence.fixture]]
+id = "input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-3frame-compound-average-64x64.ivf"
+sha256 = "bee855a9500da46c2ab20e4af63f180784b9d3ed12764cc65ac3a9444b7e2f2a"
+size_bytes = 353
+format = "ivf"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Generated locally with avmenc from a project-owned synthetic Y4M (64x64 4:2:0, three frames: frame 0 is a smooth low-frequency luma surface with flat chroma U 120, V 130; frame 1 is frame 0 plus an 8x8 checker delta of +/-8 luma samples; frame 2 is the rounded per-pixel average of frames 0 and 1) at --qp 96 --sb-size 64 --min-partition-size 64 --max-partition-size 64 --max-reference-frames 2 --cdf-update-mode=0 --kf-min-dist 9999 --kf-max-dist 9999 --lag-in-frames 0 with broad decode tools disabled and --enable-onesided-comp=1 while CWP, masked/interintra/diff-wtd compound, TIP, refine-MV, OPFL, warped motion, temporal MV, global motion, inter DDT/IST, skip-mode, BRU, GDF, CDEF, deblocking, restoration, CCSO, PC-Wiener, Wiener-nonsep, CfL, MHCCP, CCTX, QM, IBP, angle-delta, intra-edge-filter, IST, intra-DIP, IDTX, FSC, SDP, tx-partition, rect/ext/uneven partitions, smooth/Paeth intra, BAWP, TCQ, trellis, joint-MVD, adaptive-MVD, flex-MVres, ref-frame-MVs, refmvbank, DRL reorder, MV trajectory, high-motion, keyframe filtering, alt-ref, and overlay are disabled. AVM inspect reports frame 2 as NEAR_NEARMV, refs [0, 1], compound_type 0, skip=1, and MVs [0, 0] for both refs. AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avm"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "457cd58681a747465661baccb1f32095bc5b7774"
+version_summary = "AVM checkout HEAD 457cd58681a747465661baccb1f32095bc5b7774, exact binary build commit not separately archived."
+command_summary = "Local avmdec --rawvideo --i420 output MD5 for {fixture:input}."
+output_digest_id = "avm-compound-average-3frame-64x64-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "34074c6945348b146f84551a20d9affd"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.reference_run]]
+id = "dav2d"
+tool = "dav2d"
+executable_name = "dav2d"
+tool_role = "decode-reference"
+source_url = "https://code.videolan.org/videolan/dav2d"
+revision = "f4f96cb06bb3cd3f31e29e1f190f1c0e373ab352"
+version_summary = "dav2d 0.0.1-191-gf4f96cb0 (commit f4f96cb0), decoded with --demuxer ivf --muxer yuv; exact version output not archived."
+command_summary = "Local dav2d --demuxer ivf --muxer yuv output MD5 for {fixture:input}."
+output_digest_id = "dav2d-compound-average-3frame-64x64-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "34074c6945348b146f84551a20d9affd"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-compound-average-3frame-64x64-raw-md5"
+right = "dav2d-compound-average-3frame-64x64-raw-md5"
+
+[[evidence]]
 id = "lref-avm-dav2d-syn-flat-intra-64x64-minimal-skip"
 feature_id = "DECODE-GENERAL-INTRA-FRAME-RECON"
 decoder_support_rows = ["general-intra-frame-recon"]

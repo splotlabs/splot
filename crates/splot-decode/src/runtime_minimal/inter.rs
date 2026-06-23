@@ -26,7 +26,7 @@ use splot_core::annexb::ObuEnvelope;
 use splot_core::bitio::BitReader;
 use splot_core::headers::frame::{
     FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode, FrameHeaderParseStatus,
-    FrameReferenceStateView, TxMode, parse_frame_header_core,
+    FrameReferenceStateView, TipFrameMode, TxMode, parse_frame_header_core,
 };
 use splot_core::headers::sequence::{SequenceHeader, SuperblockSize};
 use splot_core::span::ByteOffset;
@@ -47,6 +47,9 @@ const FEATURE_ID: &str = "DECODE-FIRST-INTER-FRAME-FRONTIER";
 const MATRIX_ROW: &str = "first-inter-frame-frontier";
 const TIER_ID: &str = "general-inter-8bit420-frontier-v1";
 const REMEDIATION: &str = "Inter decode is limited to the verified single-reference zero-MV skip subset; track DECODE-FIRST-INTER-FRAME-FRONTIER.";
+const COMPOUND_FEATURE_ID: &str = "DECODE-INTER-COMPOUND-AVERAGE";
+const COMPOUND_MATRIX_ROW: &str = "inter-compound-average";
+const COMPOUND_REMEDIATION: &str = "Compound inter decode is limited to the verified two-reference COMPOUND_AVERAGE/CWP_EQUAL skipped 64x64 fixture; track DECODE-INTER-COMPOUND-AVERAGE.";
 
 const SPEC_HEADER: &str = "5.18.2";
 const SPEC_MODE_INFO: &str = "5.20.7.6";
@@ -259,11 +262,9 @@ pub(super) fn decode_minimal_inter_frame(
     let frame_width = frame_size.width;
     let frame_height = frame_size.height;
 
-    // §5.20.7.10 read_ref_frames: comp_mode == SINGLE_REFERENCE for this subset
-    // (reference_select == 0), and read_single_ref() reads NO symbol when
-    // NumTotalRefs == 1 (its loop bound `0 < NumTotalRefs - 1` is empty), returning
-    // RefFrame[0] = 0. The reference slot is ref_frame_idx[RefFrame[0]] =
-    // ref_frame_idx[0].
+    // §5.20.7.10 read_ref_frames: the single-reference subset reads single_ref
+    // when NumTotalRefs == 2; the compound-average subset reads comp_mode and then
+    // takes the NumTotalRefs == 2 implicit compound ref pair [0, 1].
     let inter = core.inter.as_ref().ok_or_else(|| {
         unsupported_at(
             "inter_missing_control_region",
@@ -272,14 +273,30 @@ pub(super) fn decode_minimal_inter_frame(
             SPEC_HEADER,
         )
     })?;
-    // §5.20.7.10 read_ref_frames / §5.20.7.12 read_single_ref: the verified subset now
-    // admits SINGLE-reference prediction with NumTotalRefs ∈ {1, 2}. For NumTotalRefs ==
-    // 1 the §5.20.7.12 loop is empty (no `single_ref` symbol) and RefFrame[0] == 0; for
-    // NumTotalRefs == 2 the block reads ONE `single_ref` symbol selecting RefFrame[0] ∈
-    // {0, 1}, then the reference slot is ref_frame_idx[RefFrame[0]]. NumTotalRefs > 2 (more
-    // single_ref decisions) and any compound mode stay rejected before output.
+    let tail = core.inter_tail.as_ref().ok_or_else(|| {
+        unsupported_at(
+            "inter_missing_tail",
+            offset,
+            "minimal inter decode requires the parsed §5.18.2 inter tail",
+            SPEC_HEADER,
+        )
+    })?;
+    // §5.20.7.10 read_ref_frames / §5.20.7.12 read_single_ref / §5.20.7.11
+    // read_compound_ref: the verified single-reference subset admits NumTotalRefs
+    // ∈ {1, 2}. The verified compound-average subset admits only NumTotalRefs == 2
+    // so RefFrame[0] == 0 / RefFrame[1] == 1 are implicit and no comp_ref symbol is
+    // read.
     let num_total_refs = inter.num_total_refs.unwrap_or(0);
-    if num_total_refs != 1 && num_total_refs != 2 {
+    if tail.reference_select {
+        if num_total_refs != 2 {
+            return Err(unsupported_compound_at(
+                "compound_unsupported_num_total_refs",
+                offset,
+                "minimal compound-average decode requires NumTotalRefs == 2 so read_compound_ref selects implicit RefFrame[0,1] without comp_ref symbols",
+                SPEC_MODE_INFO,
+            ));
+        }
+    } else if num_total_refs != 1 && num_total_refs != 2 {
         return Err(unsupported_at(
             "inter_unsupported_num_total_refs",
             offset,
@@ -299,24 +316,17 @@ pub(super) fn decode_minimal_inter_frame(
         ));
     }
 
-    // §5.18.8.3 frame_reference_mode: reference_select must be 0 so read_ref_frames
-    // infers comp_mode == SINGLE_REFERENCE with no comp_mode symbol read.
-    let tail = core.inter_tail.as_ref().ok_or_else(|| {
-        unsupported_at(
-            "inter_missing_tail",
+    let compound_is_joint_ctx = if tail.reference_select {
+        validate_compound_sequence_subset(sequence, &core, offset)?;
+        Some(compound_is_joint_context(
+            &ref_frame_idx,
+            reference,
+            current_order_hint,
             offset,
-            "minimal inter decode requires the parsed §5.18.2 inter tail",
-            SPEC_HEADER,
-        )
-    })?;
-    if tail.reference_select {
-        return Err(unsupported_at(
-            "inter_reference_select",
-            offset,
-            "minimal inter decode only supports reference_select == 0 (no compound reference selection)",
-            SPEC_MODE_INFO,
-        ));
-    }
+        )?)
+    } else {
+        None
+    };
     // §5.18.9 global motion: the verified subset is identity global motion, so
     // GLOBALMV yields a zero MV. use_global_motion == 0 means GmType == IDENTITY for
     // every reference (the parser does not model warp global-motion params).
@@ -411,6 +421,12 @@ pub(super) fn decode_minimal_inter_frame(
         options,
         interpolation_filter,
         num_total_refs as usize,
+        tail.reference_select,
+        compound_is_joint_ctx,
+        sequence
+            .inter
+            .as_ref()
+            .map_or(0, |seq_inter| seq_inter.num_same_ref_compound),
     )?;
 
     // §7.13.3.17 motion-vector scaling + §7.13.3.18 block inter prediction over the
@@ -453,34 +469,38 @@ pub(super) fn decode_minimal_inter_frame(
         // slot. For NumTotalRefs == 1 this is always ref_frame_idx[0]; for NumTotalRefs ==
         // 2 the block's single_ref read selected RefFrame[0] ∈ {0, 1}. Resolve the actual
         // decoded reference frame per block (all slots were validated present + unscaled).
-        let ref_slot = ref_frame_idx
-            .get(placed.block.ref_frame0 as usize)
-            .copied()
-            .ok_or_else(|| {
-                unsupported_at(
-                    "inter_block_ref_frame_out_of_range",
-                    offset,
-                    "a decoded block's RefFrame[0] indexed past the §7.7 ref_frame_idx map",
-                    SPEC_MODE_INFO,
-                )
-            })?;
-        let ref_frame = reference.frame_for_slot(ref_slot).ok_or_else(|| {
-            unsupported_at(
-                "inter_missing_reference_frame",
-                offset,
-                "the block's selected §7.23 reference is not present in the store",
-                SPEC_REFERENCE,
-            )
-        })?;
-        // §7.13.3.18 motion-compensate the block into its frame position.
-        mc::motion_compensate_block_into(
-            &mut workspace,
-            ref_frame,
-            rect,
-            placed.block.mv,
-            placed.block.interp,
+        let ref_frame0 = resolve_block_reference_frame(
+            &ref_frame_idx,
+            reference,
+            placed.block.ref_frame0,
             offset,
         )?;
+        if let Some(ref_frame1) = placed.block.ref_frame1 {
+            let ref_frame1 =
+                resolve_block_reference_frame(&ref_frame_idx, reference, ref_frame1, offset)?;
+            mc::motion_compensate_compound_average_block_into(
+                &mut workspace,
+                mc::CompoundMcBlock {
+                    reference0: ref_frame0,
+                    reference1: ref_frame1,
+                    rect,
+                    mv0: placed.block.mv,
+                    mv1: placed.block.mv1,
+                    interp: placed.block.interp,
+                },
+                offset,
+            )?;
+        } else {
+            // §7.13.3.18 motion-compensate the block into its frame position.
+            mc::motion_compensate_block_into(
+                &mut workspace,
+                ref_frame0,
+                rect,
+                placed.block.mv,
+                placed.block.interp,
+                offset,
+            )?;
+        }
         // skip == 0: add the §5.20.7.27 residual over the MC prediction
         // (§7.14.4 dequant + §7.15.4 inverse transform + §7.14.3 residual add).
         if let Some(residual) = placed.block.residual.as_ref() {
@@ -509,6 +529,178 @@ pub(super) fn decode_minimal_inter_frame(
         },
         core,
     ))
+}
+
+fn resolve_block_reference_frame<'a>(
+    ref_frame_idx: &[u32],
+    reference: &'a InterReferenceState<'a>,
+    ref_frame: i8,
+    offset: ByteOffset,
+) -> Result<&'a DecodedFrame<u8>> {
+    let ref_slot = ref_frame_idx
+        .get(ref_frame as usize)
+        .copied()
+        .ok_or_else(|| {
+            unsupported_at(
+                "inter_block_ref_frame_out_of_range",
+                offset,
+                "a decoded block's RefFrame indexed past the §7.7 ref_frame_idx map",
+                SPEC_MODE_INFO,
+            )
+        })?;
+    reference.frame_for_slot(ref_slot).ok_or_else(|| {
+        unsupported_at(
+            "inter_missing_reference_frame",
+            offset,
+            "the block's selected §7.23 reference is not present in the store",
+            SPEC_REFERENCE,
+        )
+    })
+}
+
+fn validate_compound_sequence_subset(
+    sequence: &SequenceHeader,
+    core: &FrameHeaderCore,
+    offset: ByteOffset,
+) -> Result<()> {
+    let Some(seq_inter) = sequence.inter.as_ref() else {
+        return Err(unsupported_compound_at(
+            "compound_missing_sequence_inter",
+            offset,
+            "minimal compound-average decode requires the parsed inter sequence tools",
+            SPEC_MODE_INFO,
+        ));
+    };
+    if seq_inter.enable_masked_compound {
+        return Err(unsupported_compound_at(
+            "compound_masked_compound_enabled",
+            offset,
+            "minimal compound-average decode requires enable_masked_compound == 0 so §5.20.7.16 cannot signal wedge or difference-weighted compound masks",
+            SPEC_MODE_INFO,
+        ));
+    }
+    if seq_inter.enable_cwp {
+        return Err(unsupported_compound_at(
+            "compound_cwp_enabled",
+            offset,
+            "minimal compound-average decode requires enable_cwp == 0; compound weighted prediction is deferred to a separate fixture-proven brick",
+            SPEC_MODE_INFO,
+        ));
+    }
+    if seq_inter.enable_imp_msk_bld {
+        return Err(unsupported_compound_at(
+            "compound_implicit_mask_enabled",
+            offset,
+            "minimal compound-average decode requires enable_imp_msk_bld == 0 so §7.13.3.16 cannot enter implicit masked blending",
+            SPEC_MC,
+        ));
+    }
+    if seq_inter.enable_opfl_refine != 0 {
+        return Err(unsupported_compound_at(
+            "compound_opfl_refine_enabled",
+            offset,
+            "minimal compound-average decode requires enable_opfl_refine == REFINE_NONE; optical-flow refinement is not modelled",
+            SPEC_MODE_INFO,
+        ));
+    }
+    if seq_inter.enable_refinemv {
+        return Err(unsupported_compound_at(
+            "compound_refinemv_enabled",
+            offset,
+            "minimal compound-average decode requires enable_refinemv == 0 so §5.20.7.17 reads no refine-MV syntax and cannot adjust compound MVs",
+            SPEC_MODE_INFO,
+        ));
+    }
+    if seq_inter.enable_tip {
+        return Err(unsupported_compound_at(
+            "compound_tip_enabled",
+            offset,
+            "minimal compound-average decode requires enable_tip == 0 so read_ref_frames does not enter TIP syntax before comp_mode",
+            SPEC_MODE_INFO,
+        ));
+    }
+    let tip_frame_mode = core.inter.as_ref().and_then(|inter| inter.tip_frame_mode);
+    if tip_frame_mode != Some(TipFrameMode::Disabled) {
+        return Err(unsupported_compound_at(
+            "compound_active_tip_frame_mode",
+            offset,
+            "minimal compound-average decode requires no active TIP frame mode so read_ref_frames does not read a tip_mode symbol before comp_mode",
+            SPEC_MODE_INFO,
+        ));
+    }
+    Ok(())
+}
+
+fn compound_is_joint_context(
+    ref_frame_idx: &[u32],
+    reference: &InterReferenceState<'_>,
+    current_order_hint: i32,
+    offset: ByteOffset,
+) -> Result<usize> {
+    if ref_frame_idx.len() != 2 {
+        return Err(unsupported_compound_at(
+            "compound_missing_ref_frame_idx",
+            offset,
+            "minimal compound-average decode requires exactly two §7.7 reference-map entries",
+            SPEC_MODE_INFO,
+        ));
+    }
+    let ref_order_hint = |ref_idx: usize| -> Result<i32> {
+        let slot = *ref_frame_idx.get(ref_idx).ok_or_else(|| {
+            unsupported_compound_at(
+                "compound_ref_frame_idx_out_of_range",
+                offset,
+                "minimal compound-average decode could not resolve a compound RefFrame through ref_frame_idx[]",
+                SPEC_MODE_INFO,
+            )
+        })?;
+        reference
+            .ref_order_hint
+            .get(slot as usize)
+            .copied()
+            .map(|hint| i32::try_from(hint).unwrap_or(i32::MAX))
+            .ok_or_else(|| {
+                unsupported_compound_at(
+                    "compound_reference_order_hint",
+                    offset,
+                    "minimal compound-average decode requires RefOrderHint for both compound references",
+                    SPEC_REFERENCE,
+                )
+            })
+    };
+    let first_order_hint = ref_order_hint(0)?;
+    let second_order_hint = ref_order_hint(1)?;
+    Ok(compound_is_joint_context_from_order_hints(
+        first_order_hint,
+        second_order_hint,
+        current_order_hint,
+    ))
+}
+
+fn compound_is_joint_context_from_order_hints(
+    first_order_hint: i32,
+    second_order_hint: i32,
+    current_order_hint: i32,
+) -> usize {
+    let first_dist = get_relative_dist(first_order_hint, current_order_hint).abs();
+    let second_dist = get_relative_dist(second_order_hint, current_order_hint).abs();
+    let first_side = get_relative_dist(first_order_hint, current_order_hint);
+    let second_side = get_relative_dist(second_order_hint, current_order_hint);
+    // §8.3.2 `is_same_side()` is strict: references at the current frame's order hint
+    // are neither before nor after it, so zero-distance references are not same-side.
+    let same_side = (first_side < 0 && second_side < 0) || (first_side > 0 && second_side > 0);
+    // §8.3.2 also ORs the `RESTRICTED_OH` mismatch term. The verified subset does not
+    // model restricted references here; omitting that term is over-reject-only because it
+    // can only raise the context to 1, and the compound gate admits only context 1.
+    usize::from(same_side || first_dist != second_dist)
+}
+
+fn get_relative_dist(a: i32, b: i32) -> i32 {
+    // The compound-average subset is admitted only after `order_hint_history_unwrapped`
+    // proves no §5.18.2 order-hint wrap correction occurred, so the simplified clamped
+    // distance is exact for the currently verified streams. Full modular
+    // `get_relative_dist` is deferred to a broader order-hint/reference-state brick.
+    (a - b).clamp(-127, 127)
 }
 
 /// AV2 § 9.2 transform log2 sides for the verified single 64x64 inter block: the
@@ -586,9 +778,10 @@ fn add_inter_residual_to_workspace(
     Ok(())
 }
 
-/// The decoded single inter block: its §7.11 motion vector, the §5.20.7.6
-/// block interpolation filter (mapped to the recon-side §7.13.3.18 selector),
-/// and — for a `skip == 0` block — the §5.20.7.27 per-plane coded residual.
+/// The decoded inter block: its reference index or indices, §7.11 motion vector
+/// or vectors, the §5.20.7.6 block interpolation filter (mapped to the recon-side
+/// §7.13.3.18 selector), and — for a `skip == 0` block — the §5.20.7.27
+/// per-plane coded residual.
 #[derive(Clone, Debug)]
 pub(super) struct InterBlock {
     /// §5.20.7.12 `RefFrame[0]`: the block's reference index into the §7.7
@@ -596,8 +789,14 @@ pub(super) struct InterBlock {
     /// decoded `single_ref` selection 0/1 for NumTotalRefs == 2). The caller resolves
     /// the §7.23 store slot as `ref_frame_idx[ref_frame0]`.
     pub(super) ref_frame0: i8,
-    /// The decoded §7.11 motion vector (eighth-pel units).
+    /// §5.20.7.11 `RefFrame[1]` for the compound subset; `None` for single
+    /// prediction.
+    pub(super) ref_frame1: Option<i8>,
+    /// The decoded list-0 §7.11 motion vector (eighth-pel units).
     pub(super) mv: Mv,
+    /// The decoded list-1 §7.11 motion vector (eighth-pel units), used only when
+    /// `ref_frame1` is present.
+    pub(super) mv1: Mv,
     /// The §7.13.3.18 interpolation filter the block uses for motion compensation.
     pub(super) interp: ReconInterpolationFilter,
     /// The decoded §5.20.7.27 residual for the Y/U/V planes when `skip == 0`;
@@ -925,6 +1124,7 @@ fn validate_inter_frame_core(
 }
 
 mod block;
+mod compound;
 // AV2 § 5 / § 7.7 cross-frame reference-state resolution (CDF-load decision incl. the
 // PRIMARY_REF_CHOOSE resolution, and the order-hint wrap check) used by the
 // verified-subset rejects below; split out by `DECODE-INTER-MULTIREF-RUNTIME` follow-up.
@@ -961,6 +1161,26 @@ fn unsupported_at(
             spec_section,
             message,
             REMEDIATION,
+            Some(byte_offset),
+        )),
+    }
+}
+
+fn unsupported_compound_at(
+    reason: &'static str,
+    byte_offset: ByteOffset,
+    message: &'static str,
+    spec_section: &'static str,
+) -> DecodeError {
+    DecodeError::UnsupportedFeature {
+        unsupported: Box::new(DecodeUnsupportedFeature::new(
+            reason,
+            TIER_ID,
+            COMPOUND_MATRIX_ROW,
+            COMPOUND_FEATURE_ID,
+            spec_section,
+            message,
+            COMPOUND_REMEDIATION,
             Some(byte_offset),
         )),
     }

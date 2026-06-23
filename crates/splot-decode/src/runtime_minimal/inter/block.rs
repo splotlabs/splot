@@ -22,6 +22,7 @@ use splot_core::symbol::SymbolDecoder;
 use splot_recon::InterpolationFilter as ReconInterpolationFilter;
 
 use super::super::{DecodeOptions, DecodePlannedObu, DecodeStreamPlan, Result};
+use super::compound::{CompoundParseInput, read_compound_average_syntax};
 use super::find_mv_stack::{
     MvBlockContext, NeighbourMvGrid, NeighbourYMode, block_neighbour_ctx, find_mode_ctx,
     find_mv_stack,
@@ -29,7 +30,7 @@ use super::find_mv_stack::{
 use super::read_mv::{mv_clamp_to_integer, read_newmv_block_mvd};
 use super::{
     InterBlock, InterResidual, Mv, PlacedInterBlock, SINGLE_MODE_GLOBALMV, SINGLE_MODE_NEARMV,
-    SINGLE_MODE_NEWMV, SPEC_MODE_INFO, unsupported_at,
+    SINGLE_MODE_NEWMV, SPEC_MODE_INFO, unsupported_at, unsupported_compound_at,
 };
 use crate::tile_payload::{
     DecodeBlockFrontier, DecodeTileWorkUnit, GeneralIntraMultiblockError,
@@ -38,13 +39,13 @@ use crate::tile_payload::{
     decode_general_intra_plane_coeffs, frame_mi_dimensions,
 };
 
-/// AV2 § 8.3.2 `interp_filter` context for the verified single-reference block
-/// (single ref -> `is_inter_ref_frame(RefFrame[1]) * 4 == 0`). With no decoded
-/// neighbours `NNum == 0` gives `ctx == 3`; the verified subset only reads the
-/// per-block `interp_filter` symbol when the frame filter is SWITCHABLE, which
-/// the fixture's fixed frame filter is not, so this no-neighbour context is the
-/// only one exercised.
-const INTERP_FILTER_CTX_NO_NEIGHBOUR: usize = 3;
+/// AV2 § 8.3.2 no-neighbour `interp_filter` context base: `leftType` and
+/// `aboveType` both default to 3 before any `RefFrame[1]` compound-reference offset.
+const INTERP_FILTER_CTX_NO_NEIGHBOUR_BASE: usize = 3;
+
+/// AV2 § 8.3.2 `interp_filter` context offset for compound prediction:
+/// `is_inter_ref_frame(RefFrame[1]) * 4`.
+const INTERP_FILTER_CTX_SECOND_REF_INTER_OFFSET: usize = 4;
 
 /// `RefFrame[0]` for the verified single-reference subset: `read_ref_frames`
 /// returns `RefFrame[0] == 0` (LAST_FRAME) when `NumTotalRefs == 1`.
@@ -68,6 +69,9 @@ pub(super) fn decode_inter_blocks(
     options: DecodeOptions,
     frame_interpolation_filter: FrameInterpolationFilter,
     num_total_refs: usize,
+    reference_select: bool,
+    compound_is_joint_ctx: Option<usize>,
+    num_same_ref_compound: u8,
 ) -> Result<Vec<PlacedInterBlock>> {
     let offset = frame_envelope.offset;
     let mut tile_plan = super::super::derive_inter_tile_plan(
@@ -213,6 +217,9 @@ pub(super) fn decode_inter_blocks(
                 residual_tools_present,
                 mv_stack_tools_present,
                 num_total_refs,
+                reference_select,
+                compound_is_joint_ctx,
+                num_same_ref_compound,
                 tile_offset,
             )?;
             decoded_blocks.push(placed);
@@ -230,12 +237,21 @@ pub(super) fn decode_inter_blocks(
     // §5.20.7.20 / §5.20.7.27 symbol read (mode, DRL, shell MV, interp_filter,
     // residual coeffs) was bit-exact.
     symbols.exit_symbol().map_err(|_| {
-        unsupported_at(
-            "inter_exit_symbol",
-            tile_offset,
-            "minimal inter tile payload did not satisfy §8.2.4 exit_symbol() after the decoded inter block",
-            SPEC_MODE_INFO,
-        )
+        if reference_select {
+            unsupported_compound_at(
+                "compound_exit_symbol",
+                tile_offset,
+                "minimal compound-average tile payload did not satisfy §8.2.4 exit_symbol() after the decoded compound inter block",
+                SPEC_MODE_INFO,
+            )
+        } else {
+            unsupported_at(
+                "inter_exit_symbol",
+                tile_offset,
+                "minimal inter tile payload did not satisfy §8.2.4 exit_symbol() after the decoded inter block",
+                SPEC_MODE_INFO,
+            )
+        }
     })?;
 
     if decoded_blocks.is_empty() {
@@ -302,6 +318,9 @@ fn decode_one_inter_block(
     residual_tools_present: bool,
     mv_stack_tools_present: bool,
     num_total_refs: usize,
+    reference_select: bool,
+    compound_is_joint_ctx: Option<usize>,
+    num_same_ref_compound: u8,
     tile_offset: ByteOffset,
 ) -> Result<PlacedInterBlock> {
     // The block's geometry in 4x4 MI units + luma samples. The single-block gate is
@@ -433,6 +452,92 @@ fn decode_one_inter_block(
             "minimal inter decode read an out-of-range skip value",
             SPEC_MODE_INFO,
         ));
+    }
+
+    if reference_select {
+        let is_joint_ctx = compound_is_joint_ctx.ok_or_else(|| {
+            unsupported_compound_at(
+                "compound_missing_is_joint_context",
+                tile_offset,
+                "minimal compound-average decode requires the frame-level §8.3.2 is_joint context",
+                SPEC_MODE_INFO,
+            )
+        })?;
+        let compound = read_compound_average_syntax(
+            cdfs,
+            symbols,
+            CompoundParseInput {
+                num_total_refs,
+                num_same_ref_compound,
+                has_neighbour: neighbour_ctx.has_neighbour,
+                new_mv_context: mode_ctx.new_mv_context,
+                is_joint_ctx,
+                skip,
+                n4w,
+                n4h,
+                mi_row,
+                mi_col,
+                mi_rows,
+                mi_cols,
+            },
+            tile_offset,
+        )?;
+        let ref_mv_idx0 = read_drl_idx(
+            cdfs,
+            symbols,
+            mode_ctx.new_mv_context,
+            max_drl_bits_minus_1,
+            tile_offset,
+        )?;
+        let ref_mv_idx1 = read_drl_idx(
+            cdfs,
+            symbols,
+            mode_ctx.new_mv_context,
+            max_drl_bits_minus_1,
+            tile_offset,
+        )?;
+        if ref_mv_idx0 != 0 || ref_mv_idx1 != 0 {
+            return Err(unsupported_compound_at(
+                "compound_block_drl_idx",
+                tile_offset,
+                "minimal compound-average decode only supports the no-neighbour NEAR_NEARMV DRL indices RefMvIdx0 == 0 and RefMvIdx1 == 0",
+                SPEC_MODE_INFO,
+            ));
+        }
+        let interp = resolve_interp_filter(
+            cdfs,
+            symbols,
+            frame_interpolation_filter,
+            SINGLE_MODE_NEARMV,
+            true,
+            neighbour_ctx.has_neighbour,
+            tile_offset,
+        )?;
+        mv_grid.record_block(
+            mi_row,
+            mi_col,
+            n4w,
+            n4h,
+            true,
+            compound.ref_frame0,
+            NeighbourYMode::Other,
+            compound.mv0,
+            true,
+        );
+        return Ok(PlacedInterBlock {
+            luma_x: mi_col * 4,
+            luma_y: mi_row * 4,
+            luma_w: n4w * 4,
+            luma_h: n4h * 4,
+            block: InterBlock {
+                ref_frame0: compound.ref_frame0,
+                ref_frame1: Some(compound.ref_frame1),
+                mv: compound.mv0,
+                mv1: compound.mv1,
+                interp,
+                residual: None,
+            },
+        });
     }
 
     // §5.20.7.6 inter_block_mode_info -> §5.20.7.10 read_ref_frames -> §5.20.7.12
@@ -591,6 +696,7 @@ fn decode_one_inter_block(
         symbols,
         frame_interpolation_filter,
         single_mode,
+        false,
         neighbour_ctx.has_neighbour,
         tile_offset,
     )?;
@@ -670,7 +776,9 @@ fn decode_one_inter_block(
         luma_h: n4h * 4,
         block: InterBlock {
             ref_frame0,
+            ref_frame1: None,
             mv,
+            mv1: Mv::ZERO,
             interp,
             residual,
         },
@@ -766,20 +874,21 @@ fn residual_read_error(tile_offset: ByteOffset) -> super::super::DecodeError {
     )
 }
 
-/// AV2 § 5.20.7.6 `interp_filter` resolution for the verified single-reference
-/// no-neighbour block, mapped to the recon-side § 7.13.3.18 filter.
+/// AV2 § 5.20.7.6 `interp_filter` resolution for the verified no-neighbour
+/// inter block, mapped to the recon-side § 7.13.3.18 filter.
 ///
 /// A fixed frame filter supplies the block filter directly (no symbol). A
 /// SWITCHABLE frame filter reads the per-block `interp_filter` symbol
 /// (`TileInterpFilterCdf[ctx]`) when `needs_interp_filter()` is 1. For the verified
 /// `motion_mode == SIMPLE` block `needs_interp_filter()` returns 0 only for a large
-/// (>= 8x8) GLOBALMV block (which then uses EIGHTTAP); NEARMV / NEWMV always read
-/// the symbol.
+/// (>= 8x8) GLOBALMV block (which then uses EIGHTTAP); NEARMV / NEWMV and the
+/// verified compound NEAR_NEARMV path always read the symbol.
 fn resolve_interp_filter(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
     frame_interpolation_filter: FrameInterpolationFilter,
-    single_mode: u8,
+    mode_for_needs_interp_filter: u8,
+    ref_frame1_is_inter: bool,
     has_neighbour: bool,
     tile_offset: ByteOffset,
 ) -> Result<ReconInterpolationFilter> {
@@ -792,17 +901,19 @@ fn resolve_interp_filter(
             // §5.20.7.6 needs_interp_filter(): the 64x64 block is large, so a GLOBALMV
             // block returns 0 (EIGHTTAP, no symbol); NEARMV / NEWMV return 1 and read
             // the per-block symbol.
-            if single_mode == SINGLE_MODE_GLOBALMV {
+            if mode_for_needs_interp_filter == SINGLE_MODE_GLOBALMV {
                 return Ok(ReconInterpolationFilter::EightTap);
             }
             // §8.3.2 interp_filter ctx is neighbour-dependent (it folds in
             // InterpFilters[neighbour] for a matching-reference neighbour); this kernel
-            // models only the no-neighbour ctx == 3. A NEARMV/NEWMV block WITH a decoded
-            // neighbour would read the wrong CDF row, so reject a SWITCHABLE filter once
-            // a neighbour exists (the no-neighbour single-block sub-pel fixture still
-            // decodes; the multi-block fixture uses a fixed frame filter, so neither is
-            // affected). A wrong CDF row usually shifts the bit count, but a coincidental
-            // same-length decode would pass §8.2.4 exit_symbol() with a wrong filter.
+            // models only the no-neighbour rows: ctx 3 for single-reference prediction
+            // and ctx 7 for compound prediction after the RefFrame[1] inter-reference
+            // offset. A NEARMV/NEWMV block WITH a decoded neighbour would read the wrong
+            // CDF row, so reject a SWITCHABLE filter once a neighbour exists (the
+            // no-neighbour single-block sub-pel fixture still decodes; the multi-block
+            // fixture uses a fixed frame filter, so neither is affected). A wrong CDF row
+            // usually shifts the bit count, but a coincidental same-length decode would
+            // pass §8.2.4 exit_symbol() with a wrong filter.
             if has_neighbour {
                 return Err(unsupported_at(
                     "inter_block_interp_filter_neighbour_ctx",
@@ -814,7 +925,7 @@ fn resolve_interp_filter(
             let symbol = cdfs
                 .read_block_symbol_trace(
                     TileCdfSelector::InterpFilter {
-                        ctx: INTERP_FILTER_CTX_NO_NEIGHBOUR,
+                        ctx: interp_filter_no_neighbour_ctx(ref_frame1_is_inter),
                     },
                     symbols,
                 )
@@ -828,6 +939,11 @@ fn resolve_interp_filter(
             SPEC_MODE_INFO,
         )),
     }
+}
+
+pub(super) fn interp_filter_no_neighbour_ctx(ref_frame1_is_inter: bool) -> usize {
+    INTERP_FILTER_CTX_NO_NEIGHBOUR_BASE
+        + usize::from(ref_frame1_is_inter) * INTERP_FILTER_CTX_SECOND_REF_INTER_OFFSET
 }
 
 /// Maps a decoded `interp_filter` symbol (`0..3`) to the recon § 7.13.3.18 filter.

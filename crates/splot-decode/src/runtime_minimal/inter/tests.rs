@@ -16,6 +16,8 @@
 use splot_parallel::ThreadCount;
 
 use super::super::{MinimalRuntimeFrame, decode_minimal_frames_from_plan};
+use super::block::interp_filter_no_neighbour_ctx;
+use super::compound_is_joint_context_from_order_hints;
 use crate::{DecodeContext, DecodeOptions, DecodeRuntimeConfig};
 
 const TWO_FRAME_INTER_FIXTURE: &[u8] =
@@ -613,6 +615,19 @@ fn mvorder_fixture_per_frame_hash_is_stable() {
 const MULTIREF_FIXTURE: &[u8] =
     include_bytes!("../../../../../tests/conformance/vectors/valid/syn-3frame-multiref-64x64.ivf");
 
+/// The committed three-frame COMPOUND_AVERAGE fixture
+/// (DECODE-INTER-COMPOUND-AVERAGE): frame 0 is a general-intra DC_PRED
+/// low-frequency key frame, frame 1 is a single-reference NEWMV inter frame, and
+/// frame 2 is a `reference_select` compound block over refs [0, 1] with non-joint
+/// `NEAR_NEARMV`, zero MVs, `skip == 1`, `COMPOUND_AVERAGE`, and CWP/masks disabled.
+/// avmdec `--rawvideo --i420` and dav2d `--demuxer ivf --muxer yuv` decode the
+/// whole stream byte-for-byte identically (raw SHA-256
+/// `2b4f716243d9f5c30a244ecc6f7fdcb5bef804d2ba353a21d670d686cfe63ff4`, raw MD5
+/// `34074c6945348b146f84551a20d9affd`).
+const COMPOUND_AVERAGE_FIXTURE: &[u8] = include_bytes!(
+    "../../../../../tests/conformance/vectors/valid/syn-3frame-compound-average-64x64.ivf"
+);
+
 /// The committed multi-reference fixture decodes all THREE frames bit-exact.
 #[test]
 fn multiref_fixture_decodes_three_frames_bit_exact() {
@@ -719,6 +734,96 @@ fn multiref_fixture_per_frame_hash_is_stable() {
         key_hash, inter1_hash,
         "the inter frames differ from the key"
     );
+}
+
+#[test]
+fn compound_average_fixture_decodes_three_frames_bit_exact() {
+    use splot_recon::{BitDepth, PixelFormat, PlaneSize};
+
+    let frames = decode_fixture(COMPOUND_AVERAGE_FIXTURE);
+    assert_eq!(
+        frames.len(),
+        3,
+        "the stream decodes a key frame + two inter frames"
+    );
+    for (index, output) in frames.iter().enumerate() {
+        let frame = output.frame();
+        assert_eq!(frame.bit_depth(), BitDepth::Eight, "frame {index}");
+        assert_eq!(frame.pixel_format(), PixelFormat::Yuv420, "frame {index}");
+        assert_eq!(
+            frame.y().visible_size(),
+            PlaneSize::new(64, 64).unwrap(),
+            "frame {index}"
+        );
+    }
+
+    let frame0 = frames[0].frame();
+    let frame1 = frames[1].frame();
+    let frame2 = frames[2].frame();
+    assert_rounded_average(
+        frame0.y().samples(),
+        frame1.y().samples(),
+        frame2.y().samples(),
+    );
+    assert_rounded_average(
+        frame0.u().unwrap().samples(),
+        frame1.u().unwrap().samples(),
+        frame2.u().unwrap().samples(),
+    );
+    assert_rounded_average(
+        frame0.v().unwrap().samples(),
+        frame1.v().unwrap().samples(),
+        frame2.v().unwrap().samples(),
+    );
+    assert_ne!(
+        frame2.y().samples(),
+        frame0.y().samples(),
+        "compound frame differs from ref 0"
+    );
+    assert_ne!(
+        frame2.y().samples(),
+        frame1.y().samples(),
+        "compound frame differs from ref 1"
+    );
+}
+
+#[test]
+fn compound_average_fixture_per_frame_hash_is_stable() {
+    let frames = decode_fixture(COMPOUND_AVERAGE_FIXTURE);
+    let hashes = frames
+        .iter()
+        .map(|output| {
+            splot_recon::DecodedFrameHashInput::new(output.frame())
+                .compute_hash()
+                .to_hex()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        hashes,
+        [
+            "1a1ba40dd0e16691bef8752aa946e3a56a6c76730e08d9a662cd8844da5855d1",
+            "0024c5dc9c6fdd85a3f231bc64f6d6668231dc963fb00d16e841a7f525d0b0d2",
+            "c00f8963a73155a6c970e8a025332b0865a728c2b5915ab1ad75051f47a35d9e",
+        ],
+        "compound-average per-frame hashes"
+    );
+}
+
+fn assert_rounded_average(ref0: &[u8], ref1: &[u8], compound: &[u8]) {
+    assert_eq!(ref0.len(), ref1.len(), "reference plane lengths");
+    assert_eq!(ref0.len(), compound.len(), "compound plane length");
+    for (index, ((&a, &b), &actual)) in ref0
+        .iter()
+        .zip(ref1.iter())
+        .zip(compound.iter())
+        .enumerate()
+    {
+        let expected = ((u16::from(a) + u16::from(b) + 1) >> 1) as u8;
+        assert_eq!(
+            actual, expected,
+            "compound sample {index}: rounded average of refs"
+        );
+    }
 }
 
 /// AV2 § 5 `choose_primary_secondary_ref_frame` (mirror :5468-5495): the
@@ -1128,6 +1233,39 @@ fn order_hint_history_wrap_guard() {
     // maxDisp is taken over ALL valid prior slots: prior {0, 12}, next 1, bits 4 -> maxDisp
     // 12, 12 - 1 = 11 >= 8 -> rejected (slot 1 wraps relative to the current frame).
     assert!(!unwrapped(&[true, true], &[0u32, 12], 4, 1));
+}
+
+/// AV2 §8.3.2 `is_same_side()` uses strict signs: a reference with zero relative
+/// distance is neither before nor after the current frame. This keeps zero/zero
+/// compound refs on `TileIsJointCdf[0]` rather than accidentally admitting them
+/// through the verified ctx-1 compound-average subset.
+#[test]
+fn compound_is_joint_context_uses_strict_same_side_signs() {
+    let ctx = compound_is_joint_context_from_order_hints;
+
+    assert_eq!(ctx(10, 10, 10), 0, "zero/zero distances are not same-side");
+    assert_eq!(ctx(9, 9, 10), 1, "both past references are same-side");
+    assert_eq!(ctx(11, 11, 10), 1, "both future references are same-side");
+    assert_eq!(
+        ctx(9, 11, 10),
+        0,
+        "opposite-side equal-distance references stay context 0"
+    );
+    assert_eq!(
+        ctx(9, 12, 10),
+        1,
+        "opposite-side unequal-distance references still use context 1"
+    );
+}
+
+/// AV2 §8.3.2 `interp_filter` starts at no-neighbour type 3, then adds
+/// `is_inter_ref_frame(RefFrame[1]) * 4`. The verified compound-average path has
+/// an inter second reference, so a SWITCHABLE compound block must read
+/// `TileInterpFilterCdf[7]`, not the single-reference row 3.
+#[test]
+fn interp_filter_no_neighbour_context_accounts_for_compound_second_ref() {
+    assert_eq!(interp_filter_no_neighbour_ctx(false), 3);
+    assert_eq!(interp_filter_no_neighbour_ctx(true), 7);
 }
 
 /// `FloorLog2` (AV2 § 4): the MSB index, 0 for 0.
