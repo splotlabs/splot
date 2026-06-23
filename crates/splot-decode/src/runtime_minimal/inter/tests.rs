@@ -1190,7 +1190,63 @@ fn ten_bit_minimal_stream_reaches_runtime_storage_gate() {
 }
 
 #[test]
-fn leading_key_payload_extra_obu_reaches_sequence_tool_gate_after_10bit_sequence() {
+fn cfl_sequence_tool_rejects_before_tile_decode() {
+    let (mut sequence, _) = fixture_sequence_and_quantization(TWO_FRAME_INTER_FIXTURE);
+    sequence
+        .intra
+        .as_mut()
+        .expect("fixture has sequence intra config")
+        .enable_cfl_intra = true;
+
+    let Err(error) = super::super::ensure_sequence_chroma_tools_before_tile_decode(
+        &sequence,
+        ByteOffset::new(47),
+    ) else {
+        panic!("CFL-enabled sequence must fail closed before tile mode-info decode");
+    };
+    let unsupported = match error {
+        DecodeError::UnsupportedFeature { unsupported } => unsupported,
+        _ => panic!("CFL tool gate must be an unsupported-feature error"),
+    };
+    assert_eq!(unsupported.reason(), "unsupported_cfl_intra");
+    assert_eq!(unsupported.matrix_row(), "ac0ej3-sequence-chroma-frontier");
+    assert_eq!(
+        unsupported.feature_id(),
+        "DECODE-AC0EJ3-SEQUENCE-CHROMA-FRONTIER"
+    );
+    assert_eq!(unsupported.spec_section(), "5.20.5.6");
+}
+
+#[test]
+fn mhccp_sequence_tool_rejects_before_tile_decode() {
+    let (mut sequence, _) = fixture_sequence_and_quantization(TWO_FRAME_INTER_FIXTURE);
+    sequence
+        .intra
+        .as_mut()
+        .expect("fixture has sequence intra config")
+        .enable_mhccp = true;
+
+    let Err(error) = super::super::ensure_sequence_chroma_tools_before_tile_decode(
+        &sequence,
+        ByteOffset::new(47),
+    ) else {
+        panic!("MHCCP-enabled sequence must fail closed before tile mode-info decode");
+    };
+    let unsupported = match error {
+        DecodeError::UnsupportedFeature { unsupported } => unsupported,
+        _ => panic!("MHCCP tool gate must be an unsupported-feature error"),
+    };
+    assert_eq!(unsupported.reason(), "unsupported_mhccp");
+    assert_eq!(unsupported.matrix_row(), "ac0ej3-sequence-chroma-frontier");
+    assert_eq!(
+        unsupported.feature_id(),
+        "DECODE-AC0EJ3-SEQUENCE-CHROMA-FRONTIER"
+    );
+    assert_eq!(unsupported.spec_section(), "5.20.5.6");
+}
+
+#[test]
+fn leading_key_payload_extra_obu_reaches_chroma_tool_gate_after_key_header() {
     let repacked = repack_first_record_with_extra_regular_tile_group(TEN_BIT_INTRA_FIXTURE);
     let options = DecodeOptions::default();
     let context =
@@ -1203,7 +1259,17 @@ fn leading_key_payload_extra_obu_reaches_sequence_tool_gate_after_10bit_sequence
     let Err(error) = decode_minimal_frames_from_plan(&repacked, options, &plan) else {
         panic!("10-bit leading payload with an extra OBU must fail closed");
     };
-    assert_eq!(unsupported_reason(error), "unsupported_cfl_intra");
+    let unsupported = match error {
+        DecodeError::UnsupportedFeature { unsupported } => unsupported,
+        _ => panic!("leading payload must be an unsupported-feature error"),
+    };
+    assert_eq!(unsupported.reason(), "unsupported_cfl_intra");
+    assert_eq!(unsupported.matrix_row(), "ac0ej3-sequence-chroma-frontier");
+    assert_eq!(
+        unsupported.feature_id(),
+        "DECODE-AC0EJ3-SEQUENCE-CHROMA-FRONTIER"
+    );
+    assert_eq!(unsupported.spec_section(), "5.20.5.6");
 }
 
 #[test]

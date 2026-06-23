@@ -1027,9 +1027,9 @@ Mission-scale IVF streams are no longer rejected solely because they contain
 more than three frame candidates; terminal `ivf/trailing-partial-frame-header`
 warnings are permitted, while fatal IVF errors and non-terminal warning kinds
 remain outside the tier. The current local `ac0ej3.ivf` first runtime stop is
-`unsupported_cfl_intra`: the runtime now accepts the conformant 10-bit sequence
-header far enough to reach the next unsupported sequence-tool gate before any
-caller-visible output.
+`incomplete_frame_header` at byte offset 74: the runtime now accepts the
+conformant 10-bit sequence value and parses sequence chroma-tool flags far enough
+to reach the key-frame header parse frontier before any caller-visible output.
 
 The CLI renders diagnostics as text by default and as JSON with
 `splot decode --json`. Library-facing decode diagnostics must preserve stable

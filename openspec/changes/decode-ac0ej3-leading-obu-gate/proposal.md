@@ -20,8 +20,9 @@ supports 8-bit decoded samples.
 - Pin the leading payload ordering so the local mission regression parses the
   leading sequence before any additional leading-payload OBU rejection. This
   originally surfaced `unsupported_bit_depth`; the follow-on
-  `decode-ac0ej3-10bit-sequence-frontier` change moves the live gate to
-  `unsupported_cfl_intra`.
+  `decode-ac0ej3-10bit-sequence-frontier` and
+  `decode-ac0ej3-sequence-chroma-frontier` changes move the live gate to
+  `incomplete_frame_header`.
 
 ## Impact
 
