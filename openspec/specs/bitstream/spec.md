@@ -1339,3 +1339,75 @@ SHALL be gated on AVM differential confirmation.
 - **THEN** the fields parsed before the EOF are preserved on `core.inter` and the
   parser reports `FrameHeaderParseStatus::StoppedInsideInterControl`
 
+### Requirement: implicit reference-map ranking (get_ref_frames)
+
+The frame-header model SHALL provide a typed, total, panic-free `get_ref_frames()`
+(§ 7.7) derivation computing `NumTotalRefs` and `ref_frame_idx[]` from explicit
+per-slot reference state (`RefValid`, `RefOrderHint`, `RefBaseQIdx`, `RefCounter`,
+`RefMLayerId`, `RefTLayerId`, `RefFrameWidth/Height`) and per-frame inputs
+(`OrderHint`, `obu_mlayer_id`/`obu_tlayer_id`, `AllowedFrames`, the layer
+dependency maps, `checkRes`). It SHALL implement the spec ranking exactly — the
+`first_slot_with_ref` distinct-reference detection, the `valid_ref_frame_size`
+resolution gate, the per-reference scoring (`Dist_Score_Lookup`, the `maxDisp` and
+decay arms, the `refRatio` penalty, `tDist`), `get_relative_dist` (§ 5.18.3.1),
+`new_score_or_dist`, the `get_unmapped_ref` over-selection drop, the
+`bubble_sort_ref_scores` sort, the `NumTotalRefs = Min(NRanked,
+ActiveNumRefFrames)` cut, and the trailing restricted-frame append — derived from
+the § 7.7 spec text, never from AVM source.
+
+#### Scenario: minimal single-reference post-key frame
+
+- **WHEN** exactly one reference slot is valid (the post-CLK-key state) with the
+  current frame's `OrderHint`
+- **THEN** `get_ref_frames()` returns `NumTotalRefs == 1` and `ref_frame_idx ==
+  [theSlot]` for both `checkRes == 0` and `checkRes == 1`
+
+#### Scenario: resolution gate drops an incompatible reference on the second call
+
+- **WHEN** a single valid reference is outside the current frame's § 7.7
+  resolution window
+- **THEN** the `checkRes == 0` call admits it but the `checkRes == 1` call drops
+  it (`NumTotalRefs == 0`)
+
+#### Scenario: distinct references rank by score
+
+- **WHEN** two distinct valid references are present
+- **THEN** `ref_frame_idx` lists them in ascending § 7.7 score order
+
+### Requirement: implicit reference map in the inter control region
+
+The § 5.18.2 inter control parser SHALL consult the `get_ref_frames()` model at
+its `get_ref_frames(0)` (mirror :4607) and `get_ref_frames(1)` (mirror :4647)
+call sites. The parser SHALL resolve the at-most-one-valid-reference case exactly
+from modeled `RefValid` state. When the caller supplies complete §7.7 ranking
+inputs for two or more valid slots (`RefBaseQIdx`, `RefOrderHint`,
+`RefFrameWidth`, `RefFrameHeight`, and current frame size when `checkRes` needs
+it), the parser SHALL run the real §7.7 ranking and derive `NumTotalRefs` and
+`ref_frame_idx` instead of stopping. A missing modeled reference view, a
+multi-valid-slot view without `RefBaseQIdx`, or any incomplete ranking-input
+slice SHALL keep the honest `InterStop::UnmodeledDerivation` stop with facts
+preserved. This is parse-level only; decode-output support is tracked by the
+runtime inter rows.
+
+#### Scenario: implicit-map inter frame reaches the shared tail
+
+- **WHEN** the minimal `OBU_CLOSED_LOOP_KEY` key + `OBU_REGULAR_TILE_GROUP` inter
+  fixture's inter frame is parsed with the post-key reference state (one valid
+  slot)
+- **THEN** the inter control region reaches `InterStop::ReachedSharedTail` with
+  `NumTotalRefs == 1` and `ref_frame_idx == [0]`
+
+#### Scenario: two valid slots rank when complete inputs are modeled
+
+- **WHEN** two valid reference slots are present through
+  `FrameReferenceStateView::from_slots_with_base_q_idx` with complete parallel
+  §7.7 ranking-input slices
+- **THEN** the implicit map derives the ranked `ref_frame_idx` list and reaches
+  `InterStop::ReachedSharedTail`
+
+#### Scenario: incomplete or unmodeled ranking state stays unmodeled
+
+- **WHEN** two or more valid reference slots are present but the reference-state
+  view omits `RefBaseQIdx` or provides an incomplete §7.7 ranking-input slice
+- **THEN** the implicit map stops with `InterStop::UnmodeledDerivation` rather
+  than deriving `ref_frame_idx` from fabricated defaults

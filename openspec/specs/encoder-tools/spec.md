@@ -2647,3 +2647,152 @@ tile, a frame, a packet, or `Context::receive_packet` output.
 - **AND** no documentation or matrix row SHALL claim a tile, a frame, a packet, or Baseline
   Encoder Profile v1 output from it.
 
+### Requirement: First decodable coded-DC intra frame
+
+`splot-encode` SHALL emit a complete, decodable AV2 IVF for one 64x64 all-intra
+`OBU_CLOSED_LOOP_KEY` frame whose luma block carries a single coded DC coefficient (U and V
+skipped), tracked by `ENC-GENERAL-INTRA-CODED-LUMA-DC`, via `emit_minimal_intra_coded_dc_ivf()`.
+The luma DC SHALL be coded at the general `TX_64X64` contexts (`txb_skip == 0`, the `eob_pt_1024`
+EOB symbol, `coeff_base_eob`, optional `coeff_br`, `dc_sign`), and decoding with `splot-decode`
+SHALL reconstruct a flat luma plane carrying the dequantized residual. This is the encoder's
+first decodable output with a coded coefficient; it is not a general encoder or Baseline Encoder
+Profile v1.
+
+#### Scenario: The emitted coded stream decodes to a flat 127 luma frame
+
+- **WHEN** `emit_minimal_intra_coded_dc_ivf()` produces an IVF and `splot decode --output-format
+  raw` decodes it
+- **THEN** decoding SHALL succeed
+- **AND** the decoded frame SHALL be 6144 bytes (8-bit 4:2:0 64x64)
+- **AND** the luma plane SHALL be flat `127` (the `128` predictor plus the dequantized negative
+  DC residual)
+- **AND** the chroma planes SHALL be flat `128` (skipped).
+
+#### Scenario: The coded luma tokens target the general EOB and transform contexts
+
+- **WHEN** the coded luma DC tokens are emitted
+- **THEN** the EOB symbol SHALL be `eob_pt_1024` (the 1024-position size class)
+- **AND** the `txb_skip` and `coeff_base_eob` symbols SHALL use the `TX_64X64` `txSzCtx`.
+
+#### Scenario: The bridge does not produce packets
+
+- **WHEN** the coded-DC emitter is available
+- **THEN** `Context::receive_packet` SHALL continue to return no coded packet
+- **AND** no documentation or matrix row SHALL claim a general encoder or Baseline Encoder
+  Profile v1 output from it.
+
+### Requirement: Encoder general-intra DC skip-block trace
+
+The encoder block-symbol trace SHALL compose the complete ordered AV2 general intra decode
+symbol stream for one undivided 64x64 DC skip (all-zero) superblock, tracked by
+`ENC-GENERAL-INTRA-SKIP-BLOCK-TRACE`: the § 5.20.3.2 `do_split == false` flag, the § 5.20.5.3
+mode-info prefix (`y_mode_set`, `y_mode_index`, `uv_mode`), then the per-plane § 5.20.7.27
+`all_zero` (`txb_skip`) symbols for luma, U, and V. It SHALL code the luma and U `txb_skip`
+symbols at the general 64x64-leaf transform contexts (`TX_64X64` luma, `TX_32X32` chroma) and
+compose through the existing block-symbol-trace § 8.2 coder. It SHALL NOT claim a `tile_data`
+payload, a tile, a frame, a packet, or `Context::receive_packet` output.
+
+#### Scenario: The general skip-block trace round-trips
+
+- **WHEN** the general intra DC skip-block trace is composed
+- **THEN** it SHALL be the ordered seven-symbol trace `[do_split, y_mode_set, y_mode_index,
+  uv_mode, luma all_zero, U all_zero, V all_zero]` with symbols `[0, 0, 0, 0, 1, 1, 1]`
+- **AND** round-tripping it through one § 8.2 coder SHALL decode to `[0, 0, 0, 0, 1, 1, 1]`
+  with `symbol_count == 7`.
+
+#### Scenario: The general txb_skip tokens target the 64x64-leaf transform contexts
+
+- **WHEN** the general luma and U `all_zero` tokens are emitted
+- **THEN** the luma token SHALL select the `TX_64X64` `txb_skip` row (`txSzCtx 4`, `ctx 0`)
+- **AND** the U token SHALL select the `TX_32X32` `txb_skip` row (`txSzCtx 3`, `ctx 6`).
+
+#### Scenario: The bridge does not produce packets
+
+- **WHEN** the general skip-block composer is available
+- **THEN** `Context::receive_packet` SHALL continue to return no coded packet
+- **AND** no documentation or matrix row SHALL claim a tile, a frame, a packet, or Baseline
+  Encoder Profile v1 output from it.
+
+### Requirement: Encoder general-intra DC skip tile_data bytes
+
+The encoder SHALL finalize the general-intra DC skip-block symbol trace into its AV2 § 8.2.4
+`tile_data` bytes, tracked by `ENC-GENERAL-INTRA-SKIP-TILE-DATA`. These bytes SHALL be the
+entropy-coded payload a single-tile general intra frame carries directly — consumed by the
+decoder from byte 0 via § 8.2.2 `init_symbol` with no structural prefix. The function SHALL
+NOT claim a tile-group OBU, a frame, a packet, `Context::receive_packet` output, or a decode;
+container assembly and the cross-crate decode oracle are later bricks.
+
+#### Scenario: The skip tile_data is the proven trace's finalized bytes
+
+- **WHEN** the general intra DC skip `tile_data` is emitted
+- **THEN** the bytes SHALL be non-empty
+- **AND** they SHALL equal the § 8.2.4-finalized bytes of the brick-2 skip-block trace, which
+  round-trips through one § 8.2 coder to `[0, 0, 0, 0, 1, 1, 1]`
+- **AND** emission SHALL be deterministic.
+
+#### Scenario: The bridge does not produce packets
+
+- **WHEN** the skip `tile_data` emitter is available
+- **THEN** `Context::receive_packet` SHALL continue to return no coded packet
+- **AND** no documentation or matrix row SHALL claim a tile-group OBU, a frame, a packet, or
+  Baseline Encoder Profile v1 output from it.
+
+### Requirement: base_q_idx-parameterized minimal CLK container
+
+The encoder writer bridge SHALL assemble the minimal `OBU_CLOSED_LOOP_KEY` IVF container at a
+caller-chosen `base_q_idx`, tracked by `ENC-MINIMAL-CLK-BASE-Q-IDX`, so a frame can be muxed
+whose decoder-derived coefficient CDF q-context matches the coded `tile_data` (`base_q_idx <=
+90` selects q-context 0). The frozen no-arg assemblers SHALL keep their `base_q_idx == 255`
+behavior unchanged. A `base_q_idx == 0` SHALL be rejected with a typed error (it would make
+`CodedLossless == 1` and change the § 5.18.2 body layout the canonical writer does not model).
+
+#### Scenario: base_q_idx 80 reproduces the AVM-validated fixture
+
+- **WHEN** the minimal CLK IVF is assembled at `base_q_idx == 80` with the
+  `syn-flat-intra-64x64-q80.ivf` fixture's own `tile_data`
+- **THEN** the emitted bytes SHALL equal that AVM- and dav2d-validated fixture exactly.
+
+#### Scenario: base_q_idx 0 is rejected
+
+- **WHEN** the minimal CLK IVF is requested at `base_q_idx == 0`
+- **THEN** assembly SHALL fail with a typed `LosslessBaseQIdx` error before any bytes are
+  produced.
+
+#### Scenario: the bridge does not decode
+
+- **WHEN** the `base_q_idx`-parameterized container is available
+- **THEN** no documentation or matrix row SHALL claim a decode, a coded skip frame, CLI
+  success, or Baseline Encoder Profile v1 output from it; the cross-crate decode oracle is a
+  later brick.
+
+### Requirement: First decodable minimal intra skip IVF
+
+`splot-encode` SHALL emit a complete, decodable AV2 IVF stream for one 64x64 all-intra
+`OBU_CLOSED_LOOP_KEY` DC skip frame, tracked by `ENC-MINIMAL-INTRA-SKIP-IVF`, via
+`emit_minimal_intra_skip_ivf()`. The stream SHALL pair the general-intra DC skip `tile_data`
+with the `base_q_idx`-80 minimal CLK container, and decoding it with `splot-decode` SHALL
+reconstruct a flat frame (every sample the § 7.13.2 no-neighbour DC predictor). This is the
+encoder's first decodable output; it is not a general encoder, a `Context::receive_packet`
+packet, or Baseline Encoder Profile v1.
+
+#### Scenario: The emitted skip stream decodes to a flat frame
+
+- **WHEN** `emit_minimal_intra_skip_ivf()` produces an IVF and `splot decode --output-format
+  raw` decodes it
+- **THEN** decoding SHALL succeed
+- **AND** the decoded frame SHALL be 6144 bytes (8-bit 4:2:0 64x64)
+- **AND** every sample SHALL be `128` (the flat no-neighbour DC reconstruction of the skip
+  block).
+
+#### Scenario: The emitted stream is a single-frame AV02 IVF
+
+- **WHEN** `emit_minimal_intra_skip_ivf()` produces an IVF
+- **THEN** the bytes SHALL parse as exactly one frame in an `AV02` 64x64 IVF
+- **AND** emission SHALL be deterministic.
+
+#### Scenario: The bridge does not produce packets
+
+- **WHEN** the skip IVF emitter is available
+- **THEN** `Context::receive_packet` SHALL continue to return no coded packet
+- **AND** no documentation or matrix row SHALL claim a general encoder or Baseline Encoder
+  Profile v1 output from it.
