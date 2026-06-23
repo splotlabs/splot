@@ -10737,14 +10737,11 @@ tests = [
     "crates/splot-decode/src/tile_payload/partition_traversal_tests.rs::frame_level_wiener_ns_multi_unit_root_counts_every_covered_unit",
     "crates/splot-decode/src/tile_payload/partition_traversal_tests.rs::root_lr_frontier_honors_zero_step_limit_before_lr_symbol",
     "crates/splot-decode/src/tile_payload/partition_traversal_tests.rs::root_lr_frontier_rejects_sdp_chroma_lr_before_reading_symbols",
-    "crates/splot-decode/src/runtime_minimal/inter/tests.rs::parsed_wienerns_bank_reports_next_runtime_frontier",
     "crates/splot-decode/src/runtime_minimal/inter/tests.rs::wienerns_lr_unit_frontier_limit_errors_stay_limits",
-    "crates/splot-cli/tests/decode_cli.rs::local_ac0ej3_reaches_current_runtime_gate_without_output",
 ]
 commands = [
     "cargo test -p splot-decode partition_traversal --locked",
     "cargo test -p splot-decode wienerns --locked",
-    "cargo test -p splot-cli --test decode_cli local_ac0ej3_reaches_current_runtime_gate_without_output -- --ignored",
     "cargo xtask check-feature-status",
     "cargo xtask check-decoder-support",
 ]
