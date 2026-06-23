@@ -1027,8 +1027,8 @@ Mission-scale IVF streams are no longer rejected solely because they contain
 more than three frame candidates; terminal `ivf/trailing-partial-frame-header`
 warnings are permitted, while fatal IVF errors and non-terminal warning kinds
 remain outside the tier. The current local `ac0ej3.ivf` first runtime stop is
-`unexpected_obu_order` at the unsupported leading CLK-plus-tile-group framing
-shape.
+`unsupported_bit_depth` after the runtime validates the leading 10-bit sequence
+header and before it attempts any caller-visible output.
 
 The CLI renders diagnostics as text by default and as JSON with
 `splot decode --json`. Library-facing decode diagnostics must preserve stable
