@@ -10327,12 +10327,12 @@ id = "DECODE-AC0EJ3-LEADING-OBU-GATE"
 name = "ac0ej3 leading payload gate"
 category = "infrastructure"
 kind = "infrastructure"
-spec_sections = ["Annex B.2", "Annex B.3", "5.2", "5.18.2", "5.19", "7.1"]
+spec_sections = ["Annex B.2", "Annex B.3", "5.2", "5.18.2"]
 sources = [
+    "docs/spec/av2/1.0.0/annex-b-length-delimited-bitstream-format.md#s-annex-b-2",
+    "docs/spec/av2/1.0.0/annex-b-length-delimited-bitstream-format.md#s-annex-b-3",
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-2",
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2",
-    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-19",
-    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-1",
 ]
 crate = "splot-decode"
 module = "crates/splot-decode/src/runtime_minimal.rs"

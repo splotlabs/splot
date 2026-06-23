@@ -232,7 +232,6 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.19](./spec/av2/1.0.0/05-syntax-structures.md#s-5-19) | Tile group OBU syntax | `CONF-DECODE-RUNTIME-RAW-FUZZ` | ✅ | — | — | ✅ | 4 |
 | [§ 5.19](./spec/av2/1.0.0/05-syntax-structures.md#s-5-19) | Tile group OBU syntax | `CONF-DECODE-RUNTIME-Y4M-FUZZ` | ✅ | — | — | ✅ | 4 |
 | [§ 5.19](./spec/av2/1.0.0/05-syntax-structures.md#s-5-19) | Tile group OBU syntax | `CONF-TILE-PAYLOAD-DECODE-FUZZ` | ✅ | — | — | ✅ | 2 |
-| [§ 5.19](./spec/av2/1.0.0/05-syntax-structures.md#s-5-19) | Tile group OBU syntax | `DECODE-AC0EJ3-LEADING-OBU-GATE` | ✅ | 🟡 | ✅ | ✅ | 1 |
 | [§ 5.19](./spec/av2/1.0.0/05-syntax-structures.md#s-5-19) | Tile group OBU syntax | `DECODE-FIRST-INTER-FRAME-FRONTIER` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 5.19](./spec/av2/1.0.0/05-syntax-structures.md#s-5-19) | Tile group OBU syntax | `DECODE-LIMITS-RUNTIME-API` | ✅ | — | — | ✅ | — |
 | [§ 5.19](./spec/av2/1.0.0/05-syntax-structures.md#s-5-19) | Tile group OBU syntax | `DECODE-MINIMAL-RAW-RUNTIME-OUTPUT` | ✅ | 🟡 | ✅ | ✅ | 4 |
@@ -748,7 +747,6 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-1) | General decoding process | `CONF-DECODE-RUNTIME-RAW-FUZZ` | ✅ | — | — | ✅ | 4 |
 | [§ 7.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-1) | General decoding process | `CONF-DECODE-RUNTIME-Y4M-FUZZ` | ✅ | — | — | ✅ | 4 |
 | [§ 7.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-1) | General decoding process | `CONF-RECON-FRAME-PLANE-TYPES-FUZZ` | ✅ | — | — | ✅ | — |
-| [§ 7.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-1) | General decoding process | `DECODE-AC0EJ3-LEADING-OBU-GATE` | ✅ | 🟡 | ✅ | ✅ | 1 |
 | [§ 7.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-1) | General decoding process | `DECODE-BYTE-STREAM-PLANNER` | ✅ | ✅ | — | ✅ | 3 |
 | [§ 7.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-1) | General decoding process | `DECODE-CONTEXT-TILE-PAYLOAD-HANDOFF` | ✅ | — | — | ✅ | 2 |
 | [§ 7.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-1) | General decoding process | `DECODE-LIMITS-RUNTIME-API` | ✅ | — | — | ✅ | — |

@@ -796,7 +796,7 @@ fn reject_extra_leading_key_payload_obus(obus: &[ObuEnvelope<'_>]) -> Result<()>
     Err(unsupported_at(
         "unexpected_leading_obu_after_key",
         extra.offset,
-        "minimal tier validates the leading sequence header before rejecting additional OBUs after the closed-loop-key OBU; decoding extra frame units in the leading key IVF payload is not implemented yet",
+        "minimal tier does not decode extra OBUs after the leading closed-loop-key OBU",
     ))
 }
 
