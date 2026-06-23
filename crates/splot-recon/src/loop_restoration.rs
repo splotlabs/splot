@@ -30,7 +30,9 @@ pub enum LoopRestorationSource {
 /// `LumaStartY`, `LumaEndY`, `LumaStripeStartY`, and `LumaStripeEndY` from the
 /// loop-restore-block process. `subsampling_x` and `subsampling_y` are the
 /// sequence `SubsamplingX` / `SubsamplingY` values used for chroma planes; luma
-/// samples always use zero subsampling regardless of these fields.
+/// samples always use zero subsampling regardless of these fields. The stripe y
+/// range is treated as the caller-resolved subrange of the allowed luma y
+/// extent and is rejected if it is inconsistent with that extent.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LoopRestorationSourceBounds {
     /// Inclusive minimum luma x coordinate available to loop restoration.
@@ -138,7 +140,7 @@ pub fn loop_restoration_source_sample(
 ///
 /// # Errors
 /// Returns typed [`ReconError`] values when selector bounds are invalid, the two
-/// frame views do not describe the same frame geometry, the selected chroma
+/// frame views do not describe the same frame metadata, the selected chroma
 /// plane is absent, or the caller-resolved bounds address a sample outside the
 /// selected plane's visible rectangle.
 pub fn loop_restoration_source_sample_value<T: ReconSample>(
