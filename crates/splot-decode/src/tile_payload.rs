@@ -67,6 +67,7 @@ pub(crate) use input::{
 };
 pub(crate) use intra_joint_modes::TileIntraJointModeState;
 pub(crate) use partition_traversal::TilePartitionTraversalError;
+pub(crate) use partition_traversal::WienerNsLrSourceBlock;
 pub(crate) use partition_traversal::{DecodeBlockFrontier, GeneralIntraTreeWalkError};
 pub(crate) use runtime_frontier::{
     GeneralIntraMultiblockError, MinimalRuntimeBlockSymbolFrontierError,

@@ -19,7 +19,10 @@ use splot_core::span::ByteOffset;
 use splot_core::stream::{ParsedBitstream, ParsedIvfBitstream, parse_bitstream_partial};
 use splot_core::symbol::{SymbolDecoder, SymbolDecoderSummary};
 use splot_core::types::ObuType;
-use splot_recon::{DecodedFrame, DecodedFrameHashInput, IntraCardinalDirection, PlaneId};
+use splot_recon::{
+    DecodedFrame, DecodedFrameHashInput, IntraCardinalDirection, LoopRestorationSource,
+    LoopRestorationSourceBounds, PlaneId, loop_restoration_source_sample,
+};
 
 use crate::error::{DecodeError, DecodeUnsupportedFeature, Result};
 use crate::tile_payload::{
@@ -31,8 +34,8 @@ use crate::tile_payload::{
     TileGroupPositionFacts, TilePartitionTraversalError,
 };
 use crate::{
-    DecodeLimitError, DecodeLimitName, DecodeLimitOp, DecodeOptions, DecodePlannedObu,
-    DecodeStreamPlan,
+    DecodeLimitError, DecodeLimitName, DecodeLimitOp, DecodeLimits, DecodeOptions,
+    DecodePlannedObu, DecodeStreamPlan,
 };
 
 /// Stable id for the first supported runtime decode tier.
@@ -50,8 +53,8 @@ const AC0EJ3_WIENERNS_FEATURE_ID: &str = "DECODE-AC0EJ3-WIENERNS-FRONTIER";
 const AC0EJ3_WIENERNS_MATRIX_ROW: &str = "ac0ej3-wienerns-frontier";
 const AC0EJ3_LR_UNIT_SELECTIONS_FEATURE_ID: &str = "DECODE-AC0EJ3-LR-UNIT-SELECTIONS-FRONTIER";
 const AC0EJ3_LR_UNIT_SELECTIONS_MATRIX_ROW: &str = "ac0ej3-lr-unit-selections-frontier";
-const AC0EJ3_LR_SOURCE_BOUNDS_FEATURE_ID: &str = "DECODE-AC0EJ3-LR-SOURCE-BOUNDS-FRONTIER";
-const AC0EJ3_LR_SOURCE_BOUNDS_MATRIX_ROW: &str = "ac0ej3-lr-source-bounds-frontier";
+const AC0EJ3_LR_SOURCE_READ_FEATURE_ID: &str = "DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER";
+const AC0EJ3_LR_SOURCE_READ_MATRIX_ROW: &str = "ac0ej3-lr-source-read-frontier";
 const MINIMAL_WIDTH: u32 = 64;
 const MINIMAL_HEIGHT: u32 = 64;
 const MINIMAL_TRACE_SYMBOLS: u64 = 6;
@@ -86,6 +89,37 @@ impl MinimalRuntimeFrame {
     pub(crate) fn frame(&self) -> &DecodedFrame<u8> {
         &self.frame
     }
+}
+
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "private source-read frontier proof state is consumed by tests until filtering uses it"
+    )
+)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct WienerNsLrSourceReadFrontier {
+    blocks_resolved: usize,
+    samples_resolved: usize,
+    curr_frame_samples: usize,
+    cdef_frame_samples: usize,
+    first_sample: Option<WienerNsLrSourceReadSample>,
+}
+
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "private source-read frontier proof state is consumed by tests until filtering uses it"
+    )
+)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct WienerNsLrSourceReadSample {
+    plane: PlaneId,
+    x: usize,
+    y: usize,
+    source: LoopRestorationSource,
 }
 
 /// Decodes the leading closed-loop-key frame into a single [`MinimalRuntimeFrame`].
@@ -1199,9 +1233,148 @@ fn ensure_wienerns_lr_unit_runtime_frontier(
     if lr_frontier.all_lr_units_inactive() {
         Ok(())
     } else if !lr_frontier.active_source_blocks().is_empty() {
-        Err(wienerns_lr_source_bounds_runtime_error(key_envelope.offset))
+        let _source_read_frontier = derive_wienerns_lr_source_read_frontier(
+            lr_frontier.active_source_blocks(),
+            sequence.general.chroma_format_idc,
+            key_envelope.offset,
+            options.limits(),
+        )?;
+        Err(wienerns_lr_source_read_runtime_error(key_envelope.offset))
     } else {
         Err(wienerns_lr_unit_runtime_error(key_envelope.offset))
+    }
+}
+
+fn derive_wienerns_lr_source_read_frontier(
+    active_source_blocks: &[crate::tile_payload::WienerNsLrSourceBlock],
+    chroma_format: ChromaFormatIdc,
+    offset: ByteOffset,
+    limits: DecodeLimits,
+) -> Result<WienerNsLrSourceReadFrontier> {
+    let (subsampling_x, subsampling_y) = chroma_subsampling(chroma_format);
+    let mut summary = WienerNsLrSourceReadFrontier {
+        blocks_resolved: 0,
+        samples_resolved: 0,
+        curr_frame_samples: 0,
+        cdef_frame_samples: 0,
+        first_sample: None,
+    };
+
+    for block in active_source_blocks {
+        let plane = wienerns_lr_source_plane(block.plane, chroma_format, offset)?;
+        let block_samples = block.width.checked_mul(block.height).ok_or_else(|| {
+            source_read_arithmetic_overflow("wiener ns lr source block sample count")
+        })?;
+        let next_samples = summary
+            .samples_resolved
+            .checked_add(block_samples)
+            .ok_or_else(|| source_read_arithmetic_overflow("wiener ns lr source sample count"))?;
+        limits.ensure(
+            DecodeLimitName::MaxLumaSamplesPerFrame,
+            u64::try_from(next_samples)
+                .map_err(|_| source_read_arithmetic_overflow("wiener ns lr source limit"))?,
+        )?;
+
+        let bounds = LoopRestorationSourceBounds {
+            luma_start_x: block.luma_start_x,
+            luma_end_x: block.luma_end_x,
+            luma_start_y: block.luma_start_y,
+            luma_end_y: block.luma_end_y,
+            luma_stripe_start_y: block.luma_stripe_start_y,
+            luma_stripe_end_y: block.luma_stripe_end_y,
+            subsampling_x,
+            subsampling_y,
+        };
+        for y_offset in 0..block.height {
+            let y = block.y.checked_add(y_offset).ok_or_else(|| {
+                source_read_arithmetic_overflow("wiener ns lr source y coordinate")
+            })?;
+            let y = isize::try_from(y)
+                .map_err(|_| source_read_arithmetic_overflow("wiener ns lr source y coordinate"))?;
+            for x_offset in 0..block.width {
+                let x = block.x.checked_add(x_offset).ok_or_else(|| {
+                    source_read_arithmetic_overflow("wiener ns lr source x coordinate")
+                })?;
+                let x = isize::try_from(x).map_err(|_| {
+                    source_read_arithmetic_overflow("wiener ns lr source x coordinate")
+                })?;
+                let sample = loop_restoration_source_sample(plane, x, y, &bounds)?;
+                if summary.first_sample.is_none() {
+                    summary.first_sample = Some(WienerNsLrSourceReadSample {
+                        plane,
+                        x: sample.x,
+                        y: sample.y,
+                        source: sample.source,
+                    });
+                }
+                match sample.source {
+                    LoopRestorationSource::CurrFrame => {
+                        summary.curr_frame_samples =
+                            summary.curr_frame_samples.checked_add(1).ok_or_else(|| {
+                                source_read_arithmetic_overflow(
+                                    "wiener ns lr curr-frame source count",
+                                )
+                            })?;
+                    }
+                    LoopRestorationSource::CdefFrame => {
+                        summary.cdef_frame_samples =
+                            summary.cdef_frame_samples.checked_add(1).ok_or_else(|| {
+                                source_read_arithmetic_overflow(
+                                    "wiener ns lr cdef-frame source count",
+                                )
+                            })?;
+                    }
+                }
+            }
+        }
+        summary.blocks_resolved = summary
+            .blocks_resolved
+            .checked_add(1)
+            .ok_or_else(|| source_read_arithmetic_overflow("wiener ns lr source block count"))?;
+        summary.samples_resolved = next_samples;
+    }
+    Ok(summary)
+}
+
+const fn chroma_subsampling(chroma_format: ChromaFormatIdc) -> (u8, u8) {
+    match chroma_format {
+        ChromaFormatIdc::Yuv420 | ChromaFormatIdc::Monochrome => (1, 1),
+        ChromaFormatIdc::Yuv444 => (0, 0),
+        ChromaFormatIdc::Yuv422 => (1, 0),
+    }
+}
+
+fn wienerns_lr_source_plane(
+    plane: usize,
+    chroma_format: ChromaFormatIdc,
+    offset: ByteOffset,
+) -> Result<PlaneId> {
+    match plane {
+        0 => Ok(PlaneId::Y),
+        1 if chroma_format != ChromaFormatIdc::Monochrome => Ok(PlaneId::U),
+        2 if chroma_format != ChromaFormatIdc::Monochrome => Ok(PlaneId::V),
+        1 | 2 => Err(unsupported_feature_at(
+            "unsupported_wienerns_lr_source_chroma_plane",
+            offset,
+            "minimal runtime reached a Wiener NS LR source-read request for a chroma plane in a monochrome sequence",
+            AC0EJ3_LR_SOURCE_READ_MATRIX_ROW,
+            AC0EJ3_LR_SOURCE_READ_FEATURE_ID,
+            "7.20.2",
+        )),
+        _ => Err(unsupported_feature_at(
+            "unsupported_wienerns_lr_source_plane",
+            offset,
+            "minimal runtime reached a Wiener NS LR source-read request for an unsupported plane index",
+            AC0EJ3_LR_SOURCE_READ_MATRIX_ROW,
+            AC0EJ3_LR_SOURCE_READ_FEATURE_ID,
+            "7.20.2",
+        )),
+    }
+}
+
+fn source_read_arithmetic_overflow(context: &'static str) -> DecodeError {
+    DecodeError::Reconstruction {
+        source: splot_recon::ReconError::ArithmeticOverflow { context },
     }
 }
 
@@ -1237,14 +1410,14 @@ fn wienerns_lr_unit_runtime_error(offset: ByteOffset) -> DecodeError {
     )
 }
 
-fn wienerns_lr_source_bounds_runtime_error(offset: ByteOffset) -> DecodeError {
+fn wienerns_lr_source_read_runtime_error(offset: ByteOffset) -> DecodeError {
     unsupported_feature_at(
-        "unsupported_wienerns_lr_source_bounds",
+        "unsupported_wienerns_lr_source_read",
         offset,
-        "minimal runtime consumed active AV2 §5.20.10.4/§5.20.10.5 frame-level Wiener NS LR unit syntax, retained per-unit selection state, and derived active §7.20.1 loop-restoration source-bound facts, but does not yet read loop-restoration source frames or apply §7.20.3 filtering before output",
-        AC0EJ3_LR_SOURCE_BOUNDS_MATRIX_ROW,
-        AC0EJ3_LR_SOURCE_BOUNDS_FEATURE_ID,
-        "7.20.1",
+        "minimal runtime consumed active AV2 §5.20.10.4/§5.20.10.5 frame-level Wiener NS LR unit syntax, retained per-unit selection state, derived active §7.20.1 loop-restoration source-bound facts, and resolved §7.20.2 loop-restoration source-read state, but does not yet apply §7.20.3 filtering before output",
+        AC0EJ3_LR_SOURCE_READ_MATRIX_ROW,
+        AC0EJ3_LR_SOURCE_READ_FEATURE_ID,
+        "7.20.2",
     )
 }
 
