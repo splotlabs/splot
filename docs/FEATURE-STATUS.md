@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 413 feature(s).
+Matrix version 1. Last reviewed 2026-06-15. 414 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -265,6 +265,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `RECON-DEBLOCK-ADAPTIVE-STRENGTH` | Deblocking adaptive filter strength derivation | infrastructure | infrastructure | done | done | n/a | done | n/a | n/a | done | done | n/a | `crates/splot-recon/src/deblock_filter.rs` |
 | `RECON-DEBLOCK-FILTER-CHOICE` | Deblocking filter-choice width derivation | infrastructure | infrastructure | done | done | n/a | done | n/a | n/a | done | done | n/a | `crates/splot-recon/src/deblock_filter.rs` |
 | `RECON-LOOP-RESTORATION-SOURCE-SAMPLE` | Loop restoration source-sample selector | infrastructure | infrastructure | done | done | n/a | done | n/a | n/a | done | done | n/a | `crates/splot-recon/src/loop_restoration.rs` |
+| `RECON-LOOP-RESTORATION-SOURCE-READ` | Loop restoration source-sample frame read | infrastructure | infrastructure | done | done | n/a | done | n/a | n/a | done | done | n/a | `crates/splot-recon/src/loop_restoration.rs` |
 | `RECON-WIENERNS-FILTER-PRIMITIVE` | Wiener NS luma filter primitive | infrastructure | infrastructure | done | done | n/a | done | n/a | n/a | done | done | n/a | `crates/splot-recon/src/wienerns_filter.rs` |
 | `RECON-SUBPEL-MC` | Sub-pel inter prediction convolution kernel | infrastructure | infrastructure | done | done | n/a | done | n/a | n/a | done | done | n/a | `crates/splot-recon/src/subpel_mc.rs` |
 | `RECON-INVERSE-TRANSFORM-2D` | 2D matrix inverse transform core (row-then-column) | infrastructure | infrastructure | done | done | n/a | done | n/a | n/a | done | done | n/a | `crates/splot-recon/src/inverse_transform_2d.rs` |

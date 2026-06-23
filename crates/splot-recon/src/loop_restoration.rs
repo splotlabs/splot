@@ -6,12 +6,14 @@
 //! This module implements the scheduler-free AV2 § 7.20.2 source-sample
 //! coordinate and source-frame selection process
 //! ([`07-decoding-process.md`](../../../docs/spec/av2/1.0.0/07-decoding-process.md#s-7-20-2)).
-//! It does not read frame storage itself. Instead, it returns the clipped plane
-//! coordinates and whether the caller must read `CurrFrame` or `CdefFrame`.
+//! It also exposes an immutable frame-view wrapper that reads the selected
+//! `CurrFrame` or `CdefFrame` sample after the same selector has resolved the
+//! source coordinates.
 //!
-//! Feature tracking: `RECON-LOOP-RESTORATION-SOURCE-SAMPLE`.
+//! Feature tracking: `RECON-LOOP-RESTORATION-SOURCE-SAMPLE`,
+//! `RECON-LOOP-RESTORATION-SOURCE-READ`.
 
-use crate::{PlaneId, ReconError, Result};
+use crate::{FrameRef, PlaneId, ReconError, ReconSample, Result};
 
 /// Source frame selected by AV2 § 7.20.2 for a loop-restoration sample.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -58,6 +60,15 @@ pub struct LoopRestorationSourceSample {
     pub y: usize,
     /// Frame array the caller must sample.
     pub source: LoopRestorationSource,
+}
+
+/// Resolved AV2 § 7.20.2 source sample plus the selected frame value.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LoopRestorationSourceSampleValue<T: ReconSample> {
+    /// Source sample coordinate and frame selection.
+    pub sample: LoopRestorationSourceSample,
+    /// Sample value read from the selected immutable frame view.
+    pub value: T,
 }
 
 /// Resolves the AV2 § 7.20.2 loop-restoration source sample.
@@ -112,6 +123,87 @@ pub fn loop_restoration_source_sample(
         y: clipped_y as usize,
         source,
     })
+}
+
+/// Resolves and reads the AV2 § 7.20.2 loop-restoration source sample.
+///
+/// This composes [`loop_restoration_source_sample`] with immutable
+/// [`FrameRef`] reads. `curr_frame` is the pre-CDEF/CCSO `CurrFrame` source,
+/// and `cdef_frame` is the post-CDEF/CCSO `CdefFrame` source named by AV2
+/// § 7.20.2
+/// ([`07-decoding-process.md`](../../../docs/spec/av2/1.0.0/07-decoding-process.md#s-7-20-2)).
+/// Input and returned coordinates are relative to the selected plane's visible
+/// rectangle; the underlying [`FrameRef`] may still point at strided storage
+/// with a non-zero visible origin.
+///
+/// # Errors
+/// Returns typed [`ReconError`] values when selector bounds are invalid, the two
+/// frame views do not describe the same frame geometry, the selected chroma
+/// plane is absent, or the caller-resolved bounds address a sample outside the
+/// selected plane's visible rectangle.
+pub fn loop_restoration_source_sample_value<T: ReconSample>(
+    plane: PlaneId,
+    x: isize,
+    y: isize,
+    bounds: &LoopRestorationSourceBounds,
+    curr_frame: FrameRef<'_, T>,
+    cdef_frame: FrameRef<'_, T>,
+) -> Result<LoopRestorationSourceSampleValue<T>> {
+    if curr_frame.info() != cdef_frame.info() {
+        return Err(ReconError::LoopRestorationSourceFrameMismatch {
+            field: "frame metadata",
+        });
+    }
+
+    let sample = loop_restoration_source_sample(plane, x, y, bounds)?;
+    let source_frame = match sample.source {
+        LoopRestorationSource::CurrFrame => curr_frame,
+        LoopRestorationSource::CdefFrame => cdef_frame,
+    };
+    let value = read_frame_sample(source_frame, plane, sample.x, sample.y)?;
+
+    Ok(LoopRestorationSourceSampleValue { sample, value })
+}
+
+fn read_frame_sample<T: ReconSample>(
+    frame: FrameRef<'_, T>,
+    plane: PlaneId,
+    x: usize,
+    y: usize,
+) -> Result<T> {
+    let Some(plane_ref) = frame.plane(plane) else {
+        return Err(ReconError::MissingChromaPlane { plane });
+    };
+    let visible_size = plane_ref.visible_size();
+    if x >= visible_size.width() || y >= visible_size.height() {
+        return Err(ReconError::LoopRestorationSourceSampleOutOfBounds {
+            plane,
+            x,
+            y,
+            width: visible_size.width(),
+            height: visible_size.height(),
+        });
+    }
+
+    let Some(row) = plane_ref.visible_rows().nth(y) else {
+        return Err(ReconError::LoopRestorationSourceSampleOutOfBounds {
+            plane,
+            x,
+            y,
+            width: visible_size.width(),
+            height: visible_size.height(),
+        });
+    };
+    let Some(sample) = row.get(x) else {
+        return Err(ReconError::LoopRestorationSourceSampleOutOfBounds {
+            plane,
+            x,
+            y,
+            width: visible_size.width(),
+            height: visible_size.height(),
+        });
+    };
+    Ok(*sample)
 }
 
 fn validate_source_bounds(bounds: &LoopRestorationSourceBounds) -> Result<()> {
@@ -172,6 +264,7 @@ const fn clip3(value: isize, min: isize, max: isize) -> isize {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use crate::{BitDepth, DecodedFrameInfo, OutputIndex, PixelFormat, PlaneRect, PlaneSize};
 
     const BOUNDS_420: LoopRestorationSourceBounds = LoopRestorationSourceBounds {
         luma_start_x: 0,
@@ -183,6 +276,55 @@ mod tests {
         subsampling_x: 1,
         subsampling_y: 1,
     };
+
+    fn size(width: usize, height: usize) -> PlaneSize {
+        PlaneSize::new(width, height).unwrap()
+    }
+
+    fn rect(x: usize, y: usize, width: usize, height: usize) -> PlaneRect {
+        PlaneRect::new(x, y, width, height).unwrap()
+    }
+
+    fn info(pixel_format: PixelFormat, coded: PlaneSize, visible: PlaneRect) -> DecodedFrameInfo {
+        DecodedFrameInfo::new(
+            OutputIndex::new(0),
+            BitDepth::Eight,
+            pixel_format,
+            coded,
+            visible,
+        )
+        .unwrap()
+    }
+
+    fn yuv420_frame<'a>(
+        frame_info: DecodedFrameInfo,
+        y: &'a [u8],
+        u: &'a [u8],
+        v: &'a [u8],
+    ) -> FrameRef<'a, u8> {
+        FrameRef::new(
+            frame_info,
+            crate::PlaneRef::new(y, 4, rect(0, 0, 4, 4)).unwrap(),
+            Some(crate::PlaneRef::new(u, 2, rect(0, 0, 2, 2)).unwrap()),
+            Some(crate::PlaneRef::new(v, 2, rect(0, 0, 2, 2)).unwrap()),
+        )
+        .unwrap()
+    }
+
+    fn monochrome_frame<'a>(
+        frame_info: DecodedFrameInfo,
+        y: &'a [u8],
+        stride_samples: usize,
+        visible_rect: PlaneRect,
+    ) -> FrameRef<'a, u8> {
+        FrameRef::new(
+            frame_info,
+            crate::PlaneRef::new(y, stride_samples, visible_rect).unwrap(),
+            None,
+            None,
+        )
+        .unwrap()
+    }
 
     #[test]
     fn luma_inside_stripe_reads_cdef_frame() {
@@ -340,5 +482,237 @@ mod tests {
                 context: "loop restoration max x",
             }
         );
+    }
+
+    #[test]
+    fn sample_value_reads_cdef_frame_inside_stripe() {
+        let frame_info = info(PixelFormat::Yuv420, size(4, 4), rect(0, 0, 4, 4));
+        let curr_y = [10_u8; 16];
+        let cdef_y = [
+            100, 101, 102, 103, 110, 111, 112, 113, 120, 121, 122, 123, 130, 131, 132, 133,
+        ];
+        let curr_uv = [20_u8; 4];
+        let cdef_u = [30_u8; 4];
+        let cdef_v = [40_u8; 4];
+        let curr = yuv420_frame(frame_info, &curr_y, &curr_uv, &curr_uv);
+        let cdef = yuv420_frame(frame_info, &cdef_y, &cdef_u, &cdef_v);
+        let bounds = LoopRestorationSourceBounds {
+            luma_start_x: 0,
+            luma_end_x: 3,
+            luma_start_y: 0,
+            luma_end_y: 3,
+            luma_stripe_start_y: 0,
+            luma_stripe_end_y: 3,
+            subsampling_x: 1,
+            subsampling_y: 1,
+        };
+
+        let sample =
+            loop_restoration_source_sample_value(PlaneId::Y, 2, 1, &bounds, curr, cdef).unwrap();
+
+        assert_eq!(
+            sample,
+            LoopRestorationSourceSampleValue {
+                sample: LoopRestorationSourceSample {
+                    x: 2,
+                    y: 1,
+                    source: LoopRestorationSource::CdefFrame,
+                },
+                value: 112,
+            }
+        );
+    }
+
+    #[test]
+    fn sample_value_reads_curr_frame_above_stripe_after_two_line_clamp() {
+        let frame_info = info(PixelFormat::Monochrome, size(4, 8), rect(0, 0, 4, 8));
+        let curr_y = [
+            0, 1, 2, 3, 10, 11, 12, 13, 20, 21, 22, 23, 30, 31, 32, 33, 40, 41, 42, 43, 50, 51, 52,
+            53, 60, 61, 62, 63, 70, 71, 72, 73,
+        ];
+        let cdef_y = [200_u8; 32];
+        let curr = monochrome_frame(frame_info, &curr_y, 4, rect(0, 0, 4, 8));
+        let cdef = monochrome_frame(frame_info, &cdef_y, 4, rect(0, 0, 4, 8));
+        let bounds = LoopRestorationSourceBounds {
+            luma_start_x: 0,
+            luma_end_x: 3,
+            luma_start_y: 0,
+            luma_end_y: 7,
+            luma_stripe_start_y: 4,
+            luma_stripe_end_y: 7,
+            subsampling_x: 0,
+            subsampling_y: 0,
+        };
+
+        let sample =
+            loop_restoration_source_sample_value(PlaneId::Y, 1, -5, &bounds, curr, cdef).unwrap();
+
+        assert_eq!(
+            sample,
+            LoopRestorationSourceSampleValue {
+                sample: LoopRestorationSourceSample {
+                    x: 1,
+                    y: 2,
+                    source: LoopRestorationSource::CurrFrame,
+                },
+                value: 21,
+            }
+        );
+    }
+
+    #[test]
+    fn sample_value_reads_chroma_cdef_frame_with_subsampled_bounds() {
+        let frame_info = info(PixelFormat::Yuv420, size(4, 4), rect(0, 0, 4, 4));
+        let curr_y = [10_u8; 16];
+        let cdef_y = [11_u8; 16];
+        let curr_u = [1, 2, 3, 4];
+        let curr_v = [5, 6, 7, 8];
+        let cdef_u = [20, 21, 22, 23];
+        let cdef_v = [30, 31, 32, 33];
+        let curr = yuv420_frame(frame_info, &curr_y, &curr_u, &curr_v);
+        let cdef = yuv420_frame(frame_info, &cdef_y, &cdef_u, &cdef_v);
+        let bounds = LoopRestorationSourceBounds {
+            luma_start_x: 0,
+            luma_end_x: 3,
+            luma_start_y: 0,
+            luma_end_y: 3,
+            luma_stripe_start_y: 0,
+            luma_stripe_end_y: 3,
+            subsampling_x: 1,
+            subsampling_y: 1,
+        };
+
+        let sample =
+            loop_restoration_source_sample_value(PlaneId::U, 3, 3, &bounds, curr, cdef).unwrap();
+
+        assert_eq!(
+            sample,
+            LoopRestorationSourceSampleValue {
+                sample: LoopRestorationSourceSample {
+                    x: 1,
+                    y: 1,
+                    source: LoopRestorationSource::CdefFrame,
+                },
+                value: 23,
+            }
+        );
+    }
+
+    #[test]
+    fn sample_value_reads_visible_rect_relative_coordinates() {
+        let frame_info = info(PixelFormat::Monochrome, size(4, 4), rect(1, 1, 2, 2));
+        let curr_y = [0_u8; 16];
+        let cdef_y = [0, 1, 2, 3, 10, 11, 12, 13, 20, 21, 22, 23, 30, 31, 32, 33];
+        let curr = monochrome_frame(frame_info, &curr_y, 4, rect(1, 1, 2, 2));
+        let cdef = monochrome_frame(frame_info, &cdef_y, 4, rect(1, 1, 2, 2));
+        let bounds = LoopRestorationSourceBounds {
+            luma_start_x: 0,
+            luma_end_x: 1,
+            luma_start_y: 0,
+            luma_end_y: 1,
+            luma_stripe_start_y: 0,
+            luma_stripe_end_y: 1,
+            subsampling_x: 0,
+            subsampling_y: 0,
+        };
+
+        let sample =
+            loop_restoration_source_sample_value(PlaneId::Y, 1, 1, &bounds, curr, cdef).unwrap();
+
+        assert_eq!(sample.value, 22);
+    }
+
+    #[test]
+    fn sample_value_rejects_mismatched_frame_info() {
+        let curr_info = info(PixelFormat::Monochrome, size(4, 4), rect(0, 0, 4, 4));
+        let cdef_info = DecodedFrameInfo::new(
+            OutputIndex::new(1),
+            BitDepth::Eight,
+            PixelFormat::Monochrome,
+            size(4, 4),
+            rect(0, 0, 4, 4),
+        )
+        .unwrap();
+        let curr_y = [10_u8; 16];
+        let cdef_y = [20_u8; 16];
+        let curr = monochrome_frame(curr_info, &curr_y, 4, rect(0, 0, 4, 4));
+        let cdef = monochrome_frame(cdef_info, &cdef_y, 4, rect(0, 0, 4, 4));
+        let bounds = LoopRestorationSourceBounds {
+            luma_start_x: 0,
+            luma_end_x: 3,
+            luma_start_y: 0,
+            luma_end_y: 3,
+            luma_stripe_start_y: 0,
+            luma_stripe_end_y: 3,
+            subsampling_x: 0,
+            subsampling_y: 0,
+        };
+
+        let err = loop_restoration_source_sample_value(PlaneId::Y, 0, 0, &bounds, curr, cdef)
+            .unwrap_err();
+
+        assert_eq!(
+            err,
+            ReconError::LoopRestorationSourceFrameMismatch {
+                field: "frame metadata",
+            }
+        );
+    }
+
+    #[test]
+    fn sample_value_rejects_sample_outside_visible_plane() {
+        let frame_info = info(PixelFormat::Monochrome, size(4, 4), rect(0, 0, 4, 4));
+        let curr_y = [10_u8; 16];
+        let cdef_y = [20_u8; 16];
+        let curr = monochrome_frame(frame_info, &curr_y, 4, rect(0, 0, 4, 4));
+        let cdef = monochrome_frame(frame_info, &cdef_y, 4, rect(0, 0, 4, 4));
+        let bounds = LoopRestorationSourceBounds {
+            luma_start_x: 0,
+            luma_end_x: 3,
+            luma_start_y: 0,
+            luma_end_y: 7,
+            luma_stripe_start_y: 0,
+            luma_stripe_end_y: 7,
+            subsampling_x: 0,
+            subsampling_y: 0,
+        };
+
+        let err = loop_restoration_source_sample_value(PlaneId::Y, 0, 6, &bounds, curr, cdef)
+            .unwrap_err();
+
+        assert_eq!(
+            err,
+            ReconError::LoopRestorationSourceSampleOutOfBounds {
+                plane: PlaneId::Y,
+                x: 0,
+                y: 6,
+                width: 4,
+                height: 4,
+            }
+        );
+    }
+
+    #[test]
+    fn sample_value_rejects_missing_chroma_plane() {
+        let frame_info = info(PixelFormat::Monochrome, size(4, 4), rect(0, 0, 4, 4));
+        let curr_y = [10_u8; 16];
+        let cdef_y = [20_u8; 16];
+        let curr = monochrome_frame(frame_info, &curr_y, 4, rect(0, 0, 4, 4));
+        let cdef = monochrome_frame(frame_info, &cdef_y, 4, rect(0, 0, 4, 4));
+        let bounds = LoopRestorationSourceBounds {
+            luma_start_x: 0,
+            luma_end_x: 3,
+            luma_start_y: 0,
+            luma_end_y: 3,
+            luma_stripe_start_y: 0,
+            luma_stripe_end_y: 3,
+            subsampling_x: 0,
+            subsampling_y: 0,
+        };
+
+        let err = loop_restoration_source_sample_value(PlaneId::U, 0, 0, &bounds, curr, cdef)
+            .unwrap_err();
+
+        assert_eq!(err, ReconError::MissingChromaPlane { plane: PlaneId::U });
     }
 }
