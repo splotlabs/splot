@@ -363,7 +363,7 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
                 return Err(unsupported_at(
                     "multiple_frames_unimplemented",
                     next_candidate.offset(),
-                    "minimal tier decodes a key frame followed by single-reference inter frames; a non-inter following frame candidate (e.g. a second key frame) is admitted at the planner but decoding it is not yet implemented",
+                    "minimal tier decodes a key frame followed by single-reference inter frames; a following frame candidate outside that runtime subset (for example, a second key frame or TIP frame) is admitted at the planner but decoding it is not yet implemented",
                 ));
             }
         }

@@ -778,12 +778,13 @@ fn classify_obu(
         ObuType::TemporalDelimiter | ObuType::Padding => Ok(DecodePlannedObuRole::Global),
         ObuType::SequenceHeader => Ok(DecodePlannedObuRole::SelectedLayerState),
         ObuType::ClosedLoopKey => Ok(DecodePlannedObuRole::FrameCandidate),
-        // AV2 § 5.2.1 / § 5.19: an `OBU_REGULAR_TILE_GROUP` carries (a tile group of)
-        // a non-key frame; the *first* tile group of a frame holds the frame header.
-        // The planner admits it as an inter frame candidate so the multi-frame runtime
-        // can reach it; the actual inter frame decode (header shared tail, § 5.20 mode
-        // info, motion compensation) is gated and tracked by
-        // `DECODE-FIRST-INTER-FRAME-FRONTIER`.
+        // AV2 § 5.2.1 / § 5.19: `OBU_REGULAR_TILE_GROUP` carries a tile group of a
+        // non-key frame, and the first tile group holds that frame's header.
+        // `OBU_REGULAR_TIP` is a §5.2.1 `frame_header(1)` OBU, not a tile-group OBU,
+        // but it is still a selected-layer frame candidate for traversal. The planner
+        // admits both so the multi-frame runtime can reach them; the actual inter/TIP
+        // frame decode (header shared tail, § 5.20 mode info, motion compensation) is
+        // gated and tracked by `DECODE-FIRST-INTER-FRAME-FRONTIER`.
         // TODO(spec: DECODE-FIRST-INTER-FRAME-FRONTIER): this admits EVERY regular tile
         // group as a distinct frame candidate. A single inter frame may span multiple
         // `OBU_REGULAR_TILE_GROUP` OBUs (§ 5.19 tile-group continuation,
@@ -794,7 +795,9 @@ fn classify_obu(
         // masked today by the minimal runtime's strict one-`OBU_REGULAR_TILE_GROUP`
         // shape gate (`ensure_multiframe_plan_shape`); refine when multi-tile-group
         // inter frames are supported.
-        ObuType::RegularTileGroup => Ok(DecodePlannedObuRole::InterFrameCandidate),
+        ObuType::RegularTileGroup | ObuType::RegularTip => {
+            Ok(DecodePlannedObuRole::InterFrameCandidate)
+        }
         ObuType::Msdo
         | ObuType::LayerConfigurationRecord
         | ObuType::AtlasSegment
@@ -807,14 +810,14 @@ fn classify_obu(
         obu_type
             if obu_type.is_tile_group()
                 || obu_type.is_sef()
-                || obu_type.is_tip_frame()
+                || obu_type == ObuType::LeadingTip
                 || obu_type == ObuType::BridgeFrame =>
         {
             unsupported(
                 DecodeUnsupportedReason::UnsupportedFrameObu,
                 envelope,
                 "5.2.1",
-                "only OBU_CLOSED_LOOP_KEY and OBU_REGULAR_TILE_GROUP are accepted as frame candidates by the initial decode stream planner",
+                "only OBU_CLOSED_LOOP_KEY, OBU_REGULAR_TILE_GROUP, and OBU_REGULAR_TIP are accepted as frame candidates by the initial decode stream planner",
             )
         }
         ObuType::Reserved0 | ObuType::Reserved(_) => unsupported(

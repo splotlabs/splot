@@ -261,7 +261,11 @@ enforcement and diagnostics exist.
 
 - **WHEN** a caller constructs default decode options or default decode limits
 - **THEN** the runtime API returns finite nonzero thresholds suitable for CI and
-  fuzzing rather than AV2 normative conformance limits
+  fuzzing and current large-stream decoder-mission traversal rather than AV2
+  normative conformance limits
+- **AND** the default OBU and frame-count thresholds are large enough for the
+  current `ac0ej3.ivf` target's inspected 12964 OBU stream to advance past the
+  prior `max_frames_to_decode = 128` planner gate
 - **AND** tests pin the default thresholds so policy changes are explicit
 
 #### Scenario: Allocation is gated by limits
@@ -1050,16 +1054,17 @@ OBUs must have `obu_xlayer_id == 0`, `obu_tlayer_id == 0`, and
 constraints for OBU types that require or forbid `GLOBAL_XLAYER_ID`. It SHALL
 preserve AV2 bitstream/container order for raw Annex B and IVF-wrapped Annex B
 parser output, including byte offsets and IVF frame context where present. It
-SHALL treat `OBU_CLOSED_LOOP_KEY` as the only frame candidate in this slice,
-and SHALL reject multistream/layer-selection structures, invalid xlayer scope,
-non-base layers, unsupported frame-carrying OBUs, malformed parsed sources, and
-resource-limit failures transactionally.
+SHALL treat `OBU_CLOSED_LOOP_KEY`, `OBU_REGULAR_TILE_GROUP`, and
+`OBU_REGULAR_TIP` as selected frame candidates in this slice, and SHALL reject
+multistream/layer-selection structures, invalid xlayer scope, non-base layers,
+unsupported frame-carrying OBUs, malformed parsed sources, and resource-limit
+failures transactionally.
 
 The planner SHALL enforce only the resource limits it can derive honestly from
 the parsed stream model: `max_input_bytes` before planner traversal,
 `max_obus` before adding the next planned OBU, `max_ivf_frame_records` before
 traversing the next IVF frame record, and `max_frames_to_decode` before
-accepting the next closed-loop-key frame candidate. Raw-byte traversal is
+accepting the next selected frame candidate. Raw-byte traversal is
 specified separately by the byte-consuming decode stream planner requirement.
 
 #### Scenario: Raw Annex B is planned in order
@@ -1093,7 +1098,7 @@ specified separately by the byte-consuming decode stream planner requirement.
 
 - **WHEN** the supplied input length exceeds `max_input_bytes`, traversed OBU
   count would exceed `max_obus`, traversed IVF frame records would exceed
-  `max_ivf_frame_records`, or accepted closed-loop-key frame candidates would
+  `max_ivf_frame_records`, or accepted selected frame candidates would
   exceed `max_frames_to_decode`
 - **THEN** `DecodeContext::plan_stream` returns a typed local limit error
 - **AND** it returns no partial `DecodeStreamPlan`

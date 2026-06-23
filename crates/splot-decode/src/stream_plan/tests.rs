@@ -13,6 +13,8 @@ const OBU_CLOSED_LOOP_KEY: u8 = 0x10;
 const OBU_OPEN_LOOP_KEY: u8 = 0x14;
 // `obu_type` 7 (`OBU_REGULAR_TILE_GROUP`) packed into bits 6..2 (`7 << 2`).
 const OBU_REGULAR_TILE_GROUP: u8 = 0x1C;
+// `obu_type` 14 (`OBU_REGULAR_TIP`) packed into bits 6..2 (`14 << 2`).
+const OBU_REGULAR_TIP: u8 = 0x38;
 const OBU_METADATA_SHORT: u8 = 0x20;
 const OBU_MSDO: u8 = 0x50;
 const OBU_PADDING: u8 = 0x64;
@@ -109,12 +111,39 @@ fn regular_tile_group_is_admitted_as_inter_frame_candidate() {
     let plan = plan(&bytes);
     let obus: Vec<_> = plan.obus().collect();
 
+    assert_eq!(plan_bytes(&bytes), plan);
     assert_eq!(plan.frame_candidate_count(), 2);
     assert_eq!(plan.frame_candidates().count(), 1);
     assert_eq!(plan.frame_candidates_all().count(), 2);
     assert_eq!(obus[2].role(), DecodePlannedObuRole::FrameCandidate);
     assert_eq!(obus[4].role(), DecodePlannedObuRole::InterFrameCandidate);
     assert!(obus[2].role().is_frame_candidate());
+    assert!(obus[4].role().is_frame_candidate());
+}
+
+#[test]
+fn regular_tip_is_admitted_as_inter_frame_candidate() {
+    // AV2 § 5.2.1 names OBU_REGULAR_TIP as a coded-frame OBU type. The planner
+    // admits it so large real streams reach the runtime's honest unsupported gate;
+    // no TIP decode support is claimed here.
+    let bytes = [
+        obu(OBU_TEMPORAL_DELIMITER).as_slice(),
+        obu(OBU_SEQUENCE_HEADER).as_slice(),
+        obu(OBU_CLOSED_LOOP_KEY).as_slice(),
+        obu(OBU_TEMPORAL_DELIMITER).as_slice(),
+        obu(OBU_REGULAR_TIP).as_slice(),
+    ]
+    .concat();
+
+    let plan = plan(&bytes);
+    let obus: Vec<_> = plan.obus().collect();
+
+    assert_eq!(plan_bytes(&bytes), plan);
+    assert_eq!(plan.frame_candidate_count(), 2);
+    assert_eq!(plan.frame_candidates().count(), 1);
+    assert_eq!(plan.frame_candidates_all().count(), 2);
+    assert_eq!(obus[2].role(), DecodePlannedObuRole::FrameCandidate);
+    assert_eq!(obus[4].role(), DecodePlannedObuRole::InterFrameCandidate);
     assert!(obus[4].role().is_frame_candidate());
 }
 

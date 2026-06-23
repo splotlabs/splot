@@ -72,6 +72,14 @@ fn default_max_input_bytes() -> u64 {
         .expect("default max_input_bytes is finite")
 }
 
+fn default_max_obus() -> u64 {
+    DecodeOptions::default()
+        .limits()
+        .max_obus()
+        .max_value()
+        .expect("default max_obus is finite")
+}
+
 fn temp_output(extension: &str) -> PathBuf {
     temp_path("output", extension)
 }
@@ -988,7 +996,8 @@ fn decode_unsupported_structure_json_mode_uses_planner_metadata() {
 
 #[test]
 fn decode_resource_limit_json_mode_reports_limit_values() {
-    let limit_input = repeated_sequence_header_obus(4_097);
+    let max_obus = default_max_obus();
+    let limit_input = repeated_sequence_header_obus((max_obus + 1).try_into().unwrap());
     let input = temp_input("av2", &limit_input);
     let output = temp_output("hashes");
     let original_output = b"resource-limit output sentinel";
@@ -1014,8 +1023,8 @@ fn decode_resource_limit_json_mode_reports_limit_values() {
     assert_eq!(json["feature_id"], "DOC-DECODE-LIMITS-CONTRACT");
     assert_eq!(json["detail_kind"], "resource_limit");
     assert_eq!(json["limit_name"], "max_obus");
-    assert_eq!(json["limit"], 4_096);
-    assert_eq!(json["actual"], 4_097);
+    assert_eq!(json["limit"], serde_json::json!(max_obus));
+    assert_eq!(json["actual"], serde_json::json!(max_obus + 1));
     assert_eq!(json["unit"], "count");
     assert_eq!(json["output_format"], "hash");
     assert_eq!(
