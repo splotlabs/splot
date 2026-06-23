@@ -488,6 +488,15 @@ fn root_lr_frontier_consumes_only_frame_level_wiener_ns_symbols() {
     assert!(root.consumed_bits_after() > 0);
     assert_eq!(root.lr_units_consumed(), 1);
     assert_eq!(root.active_wiener_ns_units(), 0);
+    assert_eq!(
+        root.selections(),
+        &[WienerNsLrUnitSelection {
+            plane: 0,
+            unit_row: 0,
+            unit_col: 0,
+            active: false,
+        }]
+    );
     assert!(root.all_lr_units_inactive());
 }
 
@@ -508,6 +517,15 @@ fn root_lr_frontier_reports_active_frame_level_wiener_ns_unit() {
     assert_eq!(root.symbol_count_after(), 1);
     assert_eq!(root.lr_units_consumed(), 1);
     assert_eq!(root.active_wiener_ns_units(), 1);
+    assert_eq!(
+        root.selections(),
+        &[WienerNsLrUnitSelection {
+            plane: 0,
+            unit_row: 0,
+            unit_col: 0,
+            active: true,
+        }]
+    );
     assert!(!root.all_lr_units_inactive());
 }
 
@@ -577,6 +595,35 @@ fn frame_level_wiener_ns_multi_unit_root_counts_every_covered_unit() {
     assert_eq!(root.symbol_count_after(), 4);
     assert_eq!(root.lr_units_consumed(), 4);
     assert_eq!(root.active_wiener_ns_units(), 0);
+    assert_eq!(
+        root.selections(),
+        &[
+            WienerNsLrUnitSelection {
+                plane: 0,
+                unit_row: 0,
+                unit_col: 0,
+                active: false,
+            },
+            WienerNsLrUnitSelection {
+                plane: 0,
+                unit_row: 0,
+                unit_col: 1,
+                active: false,
+            },
+            WienerNsLrUnitSelection {
+                plane: 0,
+                unit_row: 1,
+                unit_col: 0,
+                active: false,
+            },
+            WienerNsLrUnitSelection {
+                plane: 0,
+                unit_row: 1,
+                unit_col: 1,
+                active: false,
+            },
+        ]
+    );
     assert!(root.all_lr_units_inactive());
 }
 
