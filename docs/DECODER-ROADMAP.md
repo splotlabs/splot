@@ -801,6 +801,12 @@ then reuses the same selected-frame-candidate limit and unsupported-structure
 classification as the parsed planner. It is still plan-only and does not parse
 tile payloads or allocate decoded frames.
 
+The minimal multiframe runtime treats IVF records as non-normative container
+groups for the verified three-frame inter subset: following inter candidates are
+resolved by planned OBU offset and may share an IVF record as long as each is
+immediately preceded by `OBU_TEMPORAL_DELIMITER`. This does not increase the
+three-frame runtime cap or broaden AV2 tool support.
+
 ## Decoded Frame and Plane Model Contract
 
 Decoded-frame data structures must preserve AV2 output semantics while
