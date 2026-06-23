@@ -7,7 +7,7 @@
 
 - [x] 2.1 Add crate-private source-read frontier state for active Wiener NS LR source blocks.
 - [x] 2.2 Reuse `splot-recon` loop-restoration source selection/read primitives for supported output, tap, and luma-source coordinates.
-- [x] 2.3 Move the live ac0ej3 runtime diagnostic from the source-bounds frontier to the source-read frontier.
+- [x] 2.3 Move the live ac0ej3 runtime diagnostic from the source-bounds frontier to the classified/source-read frontier.
 - [x] 2.4 Keep source sample value reads, §7.20.3 filtering, decoded-frame allocation, reference refresh, hash, raw, and Y4M output unsupported.
 
 ## 3. Verification

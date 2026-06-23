@@ -4,11 +4,19 @@
 
 The tile partition traversal boundary and minimal runtime SHALL advance active
 frame-level Wiener NS loop-restoration source-bound facts to a fail-closed
-source-read frontier for `DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER`. The frontier
-SHALL use caller-resolved AV2 §7.20.1 bounds to attempt AV2 §7.20.2 source
-sample selection/read state for supported active block output samples,
+classified/source-read frontier for `DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER`.
+The frontier SHALL gate active classified luma before §7.20.4, SHALL use
+caller-resolved AV2 §7.20.1 bounds to attempt AV2 §7.20.2 source sample
+selection/read state for supported unclassified active block output samples,
 §7.20.3 Wiener tap coordinates, and chroma luma-source coordinates, and MUST
-NOT apply §7.20.3 filtering or produce decoded output.
+NOT apply §7.20.3/§7.20.4 filtering or produce decoded output.
+
+#### Scenario: Classified luma is gated before source reads
+
+- **WHEN** retained active luma Wiener NS source-bound facts use more than one
+  frame-level filter class
+- **THEN** the runtime emits a structured unsupported diagnostic for the
+  §7.20.4 classified-luma boundary before deriving source reads
 
 #### Scenario: Active source reads are attempted after bounds
 
@@ -37,13 +45,13 @@ NOT apply §7.20.3 filtering or produce decoded output.
 - **AND** it is not rejected solely because source-read operations exceed
   `DecodeLimitName::MaxLumaSamplesPerFrame`
 
-#### Scenario: Source reads remain fail-closed before filtering
+#### Scenario: Source reads and classification remain fail-closed before filtering
 
-- **WHEN** the active source-read boundary is reached for the local ac0ej3 mission
-  stream
+- **WHEN** the active classified/source-read boundary is reached for the local
+  ac0ej3 mission stream
 - **THEN** the runtime emits a structured unsupported diagnostic for the
-  source-read/filtering frontier
-- **AND** no source sample value reads, §7.20.3 Wiener NS filtering,
+  classified/source-read/filtering frontier
+- **AND** no source sample value reads, §7.20.3/§7.20.4 filtering,
   decoded-frame allocation, reference refresh, hash, raw, or Y4M output is
   produced
 

@@ -1487,30 +1487,43 @@ fn wienerns_lr_source_read_frontier_rejects_unsupported_plane_index() {
 
 #[test]
 fn wienerns_lr_source_read_frontier_limit_errors_stay_limits() {
-    let blocks = [wienerns_lr_source_block()];
-    let limits = DecodeLimits::unlimited()
-        .with_max_loop_restoration_source_reads(DecodeLimitThreshold::Max(527));
-
-    let error = super::super::derive_wienerns_lr_source_read_frontier(
-        &blocks,
+    let DecodeError::Limit { source } = super::super::derive_wienerns_lr_source_read_frontier(
+        &[wienerns_lr_source_block()],
         ChromaFormatIdc::Yuv420,
         ByteOffset::new(74),
-        limits,
+        DecodeLimits::unlimited()
+            .with_max_loop_restoration_source_reads(DecodeLimitThreshold::Max(527)),
     )
-    .unwrap_err();
+    .unwrap_err() else {
+        panic!("source-read operation budget failures must remain resource-limit diagnostics");
+    };
 
-    match error {
-        DecodeError::Limit { source } => {
-            assert_eq!(
-                source.name(),
-                DecodeLimitName::MaxLoopRestorationSourceReads
-            );
-            let check = source.check().expect("limit failure carries check");
-            assert_eq!(check.threshold(), DecodeLimitThreshold::Max(527));
-            assert_eq!(check.actual(), 528);
-        }
-        _ => panic!("source-read operation budget failures must remain resource-limit diagnostics"),
-    }
+    assert_eq!(source.name().as_str(), "max_loop_restoration_source_reads");
+    let check = source.check().expect("limit failure carries check");
+    assert_eq!(check.threshold(), DecodeLimitThreshold::Max(527));
+    assert_eq!(check.actual(), 528);
+}
+
+#[test]
+fn wienerns_lr_source_read_frontier_preflights_budget_before_enumeration() {
+    let DecodeError::Limit { source } = super::super::derive_wienerns_lr_source_read_frontier(
+        &[WienerNsLrSourceBlock {
+            luma_start_x: 32,
+            luma_end_x: 31,
+            ..wienerns_lr_source_block()
+        }],
+        ChromaFormatIdc::Yuv420,
+        ByteOffset::new(74),
+        DecodeLimits::unlimited()
+            .with_max_loop_restoration_source_reads(DecodeLimitThreshold::Max(527)),
+    )
+    .unwrap_err() else {
+        panic!("source-read operation budget must fail before source-bound selection");
+    };
+
+    assert_eq!(source.name().as_str(), "max_loop_restoration_source_reads");
+    let check = source.check().expect("limit failure carries check");
+    assert_eq!(check.actual(), 528);
 }
 
 #[test]

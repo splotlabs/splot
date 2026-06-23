@@ -1,11 +1,12 @@
 ## Why
 
 The ac0ej3 runtime now derives active Wiener NS LR source-bound facts, but the
-live fail-closed diagnostic still stops before the §7.20.2 source-read boundary.
-The next small decoder brick is to prove that supported active blocks can resolve
-their output, Wiener tap, and chroma luma-source coordinates through the
-caller-provided source selector while remaining fail-closed before source sample
-value reads, filtering, or output.
+live fail-closed diagnostic still stops before the next source-read/classification
+boundary. The next small decoder brick is to prove that supported unclassified
+active blocks can resolve their output, Wiener tap, and chroma luma-source
+coordinates through the caller-provided source selector, while classified luma
+stops honestly before §7.20.4 classification and all paths remain fail-closed
+before source sample value reads, filtering, or output.
 
 ## What Changes
 
@@ -15,8 +16,10 @@ value reads, filtering, or output.
   sample selection for active Wiener NS output, tap, and luma-source coordinates
   using the existing `splot-recon` loop-restoration source selection primitive.
 - Move the local ac0ej3 runtime diagnostic from
-  `unsupported_wienerns_lr_source_bounds` to a new source-read frontier reason.
-- Keep source sample value reads, §7.20.3 Wiener NS filtering, PC-Wiener
+  `unsupported_wienerns_lr_source_bounds` to the classified/source-read frontier
+  row, using a §7.20.4 classified-luma reason when that process precedes source
+  reads.
+- Keep source sample value reads, §7.20.3 Wiener NS filtering, §7.20.4/PC-Wiener
   classification, 10-bit reconstruction/output, reference refresh, and
   successful ac0ej3 decode unsupported.
 

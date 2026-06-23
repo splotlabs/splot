@@ -78,7 +78,7 @@ fn default_options_and_limits_are_finite_and_pinned() {
         (
             DecodeLimitName::MaxLoopRestorationSourceReads,
             limits.max_loop_restoration_source_reads(),
-            4_096 * 4_096 * 96,
+            8 * 1024 * 1024,
         ),
         (
             DecodeLimitName::MaxOutputBytes,

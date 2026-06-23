@@ -58,6 +58,29 @@ fn resource_limit_report_has_measured_values() {
 }
 
 #[test]
+fn lr_source_read_limit_report_cites_source_read_process() {
+    let source = DecodeLimits::unlimited()
+        .with_max_loop_restoration_source_reads(DecodeLimitThreshold::Max(0))
+        .ensure(DecodeLimitName::MaxLoopRestorationSourceReads, 1)
+        .unwrap_err();
+    let error = DecodeError::Limit { source };
+
+    let report = DecodeDiagnosticReport::from_decode_error(&error).unwrap();
+
+    assert_eq!(report.diagnostic.rule_id, RESOURCE_LIMIT_RULE_ID);
+    assert_eq!(report.diagnostic.spec_section, Some("7.20.2"));
+    let DecodeDiagnosticDetails::ResourceLimit(details) = report.details else {
+        panic!("expected resource-limit details");
+    };
+    assert_eq!(
+        details.limit_name,
+        DecodeLimitName::MaxLoopRestorationSourceReads.as_str()
+    );
+    assert_eq!(details.limit, Some(0));
+    assert_eq!(details.actual, Some(1));
+}
+
+#[test]
 fn unsupported_structure_report_uses_planner_metadata() {
     let error = plan_byte_stream(&[0x01, 0x14], DecodeOptions::default()).unwrap_err();
 

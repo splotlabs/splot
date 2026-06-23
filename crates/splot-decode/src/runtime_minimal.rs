@@ -1286,6 +1286,11 @@ fn ensure_wienerns_lr_unit_runtime_frontier(
     if lr_frontier.all_lr_units_inactive() {
         Ok(())
     } else if !lr_frontier.active_source_blocks().is_empty() {
+        ensure_wienerns_lr_source_read_preconditions(
+            core,
+            lr_frontier.active_source_blocks(),
+            key_envelope.offset,
+        )?;
         let _source_read_frontier = derive_wienerns_lr_source_read_frontier(
             lr_frontier.active_source_blocks(),
             sequence.general.chroma_format_idc,
@@ -1304,6 +1309,12 @@ fn derive_wienerns_lr_source_read_frontier(
     offset: ByteOffset,
     limits: DecodeLimits,
 ) -> Result<WienerNsLrSourceReadFrontier> {
+    let expected_reads =
+        estimate_wienerns_lr_source_reads(active_source_blocks, chroma_format, offset)?;
+    limits.ensure(
+        DecodeLimitName::MaxLoopRestorationSourceReads,
+        expected_reads,
+    )?;
     let (subsampling_x, subsampling_y) = chroma_subsampling(chroma_format);
     let mut summary = WienerNsLrSourceReadFrontier {
         blocks_resolved: 0,
@@ -1356,6 +1367,44 @@ fn derive_wienerns_lr_source_read_frontier(
             .ok_or_else(|| source_read_arithmetic_overflow("wiener ns lr source block count"))?;
     }
     Ok(summary)
+}
+
+fn estimate_wienerns_lr_source_reads(
+    active_source_blocks: &[crate::tile_payload::WienerNsLrSourceBlock],
+    chroma_format: ChromaFormatIdc,
+    offset: ByteOffset,
+) -> Result<u64> {
+    active_source_blocks.iter().try_fold(0u64, |total, block| {
+        let plane = wienerns_lr_source_plane(block.plane, chroma_format, offset)?;
+        let output_samples =
+            u64::try_from(block.width)
+                .map_err(|_| source_read_arithmetic_overflow("wiener ns lr source-read width"))?
+                .checked_mul(u64::try_from(block.height).map_err(|_| {
+                    source_read_arithmetic_overflow("wiener ns lr source-read height")
+                })?)
+                .ok_or_else(|| {
+                    source_read_arithmetic_overflow("wiener ns lr source-read block samples")
+                })?;
+        total
+            .checked_add(
+                output_samples
+                    .checked_mul(reads_per_wienerns_lr_output(plane))
+                    .ok_or_else(|| {
+                        source_read_arithmetic_overflow("wiener ns lr source-read block total")
+                    })?,
+            )
+            .ok_or_else(|| source_read_arithmetic_overflow("wiener ns lr source-read total"))
+    })
+}
+
+const fn reads_per_wienerns_lr_output(plane: PlaneId) -> u64 {
+    match plane {
+        PlaneId::Y => 1 + WIENER_NS_LUMA_SOURCE_TAPS.len() as u64,
+        PlaneId::U | PlaneId::V => {
+            let chroma_center_and_taps = 1 + WIENER_NS_CHROMA_SOURCE_TAPS.len() as u64;
+            chroma_center_and_taps + chroma_center_and_taps * 4
+        }
+    }
 }
 
 fn derive_wienerns_lr_output_sample_source_reads(
@@ -1624,6 +1673,31 @@ fn has_wienerns_frame_filter_bank(core: &FrameHeaderCore) -> bool {
             .iter()
             .any(|plane| plane.frame_filter_bank.is_some())
     })
+}
+
+fn ensure_wienerns_lr_source_read_preconditions(
+    core: &FrameHeaderCore,
+    active_source_blocks: &[crate::tile_payload::WienerNsLrSourceBlock],
+    offset: ByteOffset,
+) -> Result<()> {
+    if active_source_blocks.iter().any(|block| block.plane == 0)
+        && core.lr_params.as_ref().is_some_and(|lr| {
+            lr.planes.first().is_some_and(|plane| {
+                plane.frame_filters_on
+                    && plane.num_filter_classes.is_some_and(|classes| classes > 1)
+            })
+        })
+    {
+        return Err(unsupported_feature_at(
+            "unsupported_wienerns_classified_luma",
+            offset,
+            "minimal runtime reached an active luma Wiener NS LR unit whose frame-level bank has NumFilterClasses greater than 1; AV2 §7.20.1 routes that case through the §7.20.4 pixel-classified Wiener filter process before the §7.20.3 source-read frontier",
+            AC0EJ3_LR_SOURCE_READ_MATRIX_ROW,
+            AC0EJ3_LR_SOURCE_READ_FEATURE_ID,
+            "7.20.4",
+        ));
+    }
+    Ok(())
 }
 
 fn wienerns_lr_unit_runtime_error(offset: ByteOffset) -> DecodeError {
