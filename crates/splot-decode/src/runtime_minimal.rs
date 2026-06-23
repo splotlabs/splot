@@ -14,12 +14,12 @@ use splot_core::headers::frame::{
 use splot_core::headers::sequence::{
     BitDepthIdc, ChromaFormatIdc, SequenceHeader, parse_sequence_header,
 };
-use splot_core::ivf::IvfHeader;
+use splot_core::ivf::{IvfHeader, IvfWarning};
 use splot_core::span::ByteOffset;
 use splot_core::stream::{ParsedBitstream, ParsedIvfBitstream, parse_bitstream_partial};
 use splot_core::symbol::{SymbolDecoder, SymbolDecoderSummary};
 use splot_core::types::ObuType;
-use splot_recon::{DecodedFrame, IntraCardinalDirection, PlaneId};
+use splot_recon::{DecodedFrame, DecodedFrameHashInput, IntraCardinalDirection, PlaneId};
 
 use crate::error::{DecodeError, DecodeUnsupportedFeature, Result};
 use crate::tile_payload::{
@@ -267,6 +267,16 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
     let mut reference = reference_buffer::RuntimeReferenceBuffer::new(num_ref_frames)?;
 
     let mut frames = Vec::new();
+    let mut retained_frame_bytes = 0;
+    let mut next_unvalidated_following_ivf_record = 1;
+    ensure_output_frame_count_limit(options.limits(), 1)?;
+    let key_core = parse_frame_core(key_envelope, &sequence)?;
+    ensure_retained_frame_byte_limits_for_core(
+        options.limits(),
+        retained_frame_bytes,
+        &key_core,
+        key_envelope.offset,
+    )?;
     let key_frame = decode_minimal_key_frame(
         bytes,
         options,
@@ -276,10 +286,11 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
         &sequence,
         header,
     )?;
+    retained_frame_bytes =
+        ensure_retained_frame_byte_limits(options.limits(), retained_frame_bytes, &key_frame)?;
     frames.push(key_frame);
     // §7.20 / §7.23: retain the decoded key frame in the slots its refresh_frame_flags
     // names (a CLK key uses allFrames, so §7.23 :14100 marks only slot 0 valid).
-    let key_core = parse_frame_core(key_envelope, &sequence)?;
     reference.update(
         0,
         frame_ref_update_from_core(&key_core, key_envelope.offset)?,
@@ -305,7 +316,14 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
     for next_candidate in candidates {
         match next_candidate.obu_type() {
             ObuType::RegularTileGroup => {
-                let inter_envelope = following_inter_envelope(ivf, next_candidate)?;
+                let next_output_frame_count =
+                    checked_add(DecodeLimitName::MaxOutputFrames, frames.len() as u64, 1)?;
+                ensure_output_frame_count_limit(options.limits(), next_output_frame_count)?;
+                let inter_envelope = following_inter_envelope(
+                    ivf,
+                    next_candidate,
+                    &mut next_unvalidated_following_ivf_record,
+                )?;
                 // VERIFIED-SUBSET DISCIPLINE: the §7.7 ranking + single_ref wiring is
                 // proven bit-exact only for up to TWO valid reference slots (NumTotalRefs
                 // ∈ {1, 2}). Reject before output if the buffer already holds more — a
@@ -340,19 +358,37 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
                     ref_is_inter: meta.ref_is_inter,
                     ref_adapted: meta.ref_adapted,
                 };
+                let inter_core = inter::parse_validated_inter_frame_core(
+                    inter_envelope,
+                    &sequence,
+                    &inter_state,
+                )?;
+                ensure_retained_frame_byte_limits_for_core(
+                    options.limits(),
+                    retained_frame_bytes,
+                    &inter_core,
+                    inter_envelope.offset,
+                )?;
                 let (inter_frame, inter_core) = inter::decode_minimal_inter_frame(
                     plan,
                     next_candidate,
                     bytes,
                     inter_envelope,
+                    inter_core,
                     &sequence,
                     options,
                     header,
                     &inter_state,
                 )?;
+                let next_retained_frame_bytes = ensure_retained_frame_byte_limits(
+                    options.limits(),
+                    retained_frame_bytes,
+                    &inter_frame,
+                )?;
                 drop(store);
                 let frame_index = frames.len();
                 frames.push(inter_frame);
+                retained_frame_bytes = next_retained_frame_bytes;
                 reference.update(
                     frame_index,
                     frame_ref_update_from_core(&inter_core, inter_envelope.offset)?,
@@ -373,14 +409,17 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
 
 /// Resolves the `OBU_REGULAR_TILE_GROUP` envelope for a following inter frame by
 /// planned OBU offset. An IVF frame record is only a non-normative byte envelope:
-/// the verified subset accepts one or more `[TD, OBU_REGULAR_TILE_GROUP]` pairs in
-/// IVF payload order, while still requiring each following inter candidate to be
-/// immediately preceded by a temporal delimiter.
+/// before each candidate is decoded, the runtime lazily validates every
+/// following IVF payload up to and including the candidate's payload as complete
+/// `[TD, OBU_REGULAR_TILE_GROUP]` pairs. That catches candidate-less state OBUs
+/// before they can make a later frame decode against stale sequence state, while
+/// malformed future records do not pre-empt an earlier candidate's runtime gate.
 fn following_inter_envelope<'a>(
     ivf: &'a ParsedIvfBitstream<'a>,
     candidate: &DecodePlannedObu,
+    next_unvalidated_following_ivf_record: &mut usize,
 ) -> Result<ObuEnvelope<'a>> {
-    for ivf_frame in &ivf.frames {
+    for (ivf_frame_index, ivf_frame) in ivf.frames.iter().enumerate() {
         let Some(position) = ivf_frame
             .obus
             .iter()
@@ -388,6 +427,11 @@ fn following_inter_envelope<'a>(
         else {
             continue;
         };
+        require_following_ivf_obu_order_through(
+            ivf,
+            next_unvalidated_following_ivf_record,
+            ivf_frame_index,
+        )?;
         let inter_envelope = ivf_frame.obus[position];
         require_obu_type(
             inter_envelope,
@@ -419,44 +463,90 @@ fn following_inter_envelope<'a>(
     ))
 }
 
-/// The largest frame-candidate count the multi-frame runtime admits: a key frame
-/// followed by up to two single-reference inter frames (the committed 3-frame
-/// multi-reference fixture). A 4th frame is rejected — not yet fixtured bit-exact.
-const MAX_MULTIFRAME_CANDIDATES: u64 = 3;
+fn require_following_ivf_obu_order_through(
+    ivf: &ParsedIvfBitstream<'_>,
+    next_unvalidated_following_ivf_record: &mut usize,
+    target_ivf_frame_index: usize,
+) -> Result<()> {
+    let validation_end = target_ivf_frame_index.saturating_add(1);
+    for frame in ivf
+        .frames
+        .iter()
+        .take(validation_end)
+        .skip(*next_unvalidated_following_ivf_record)
+    {
+        require_inter_obu_order(frame.obus.as_slice())?;
+    }
+    *next_unvalidated_following_ivf_record =
+        (*next_unvalidated_following_ivf_record).max(validation_end);
+    Ok(())
+}
+
+fn require_inter_obu_order(obus: &[ObuEnvelope<'_>]) -> Result<()> {
+    for (index, envelope) in obus.iter().enumerate() {
+        let expected = if index % 2 == 0 {
+            ObuType::TemporalDelimiter
+        } else {
+            ObuType::RegularTileGroup
+        };
+        if envelope.header.obu_type != expected {
+            return Err(unsupported_at(
+                "unexpected_inter_obu_order",
+                envelope.offset,
+                "minimal tier requires following inter IVF payloads to contain only [OBU_TEMPORAL_DELIMITER, OBU_REGULAR_TILE_GROUP] frame units before each inter candidate",
+            ));
+        }
+    }
+    if !obus.len().is_multiple_of(2) {
+        let offset = obus
+            .last()
+            .map_or(ByteOffset::new(0), |envelope| envelope.offset);
+        return Err(unsupported_at(
+            "unexpected_inter_obu_order",
+            offset,
+            "minimal tier requires following inter IVF payloads to contain complete [OBU_TEMPORAL_DELIMITER, OBU_REGULAR_TILE_GROUP] frame units",
+        ));
+    }
+    Ok(())
+}
 
 /// Validates the planned stream shape for the multi-frame runtime: one accepted
-/// frame candidate for a single intra key, two for a key plus one inter frame, or
-/// three for a key plus two inter frames. The shape is otherwise the minimal tier's:
-/// no source warnings, one base-layer sequence header, and the traced
-/// `[TD, SEQ, CLK] + [TD, OBU_REGULAR_TILE_GROUP]...` OBU order. IVF frame records
-/// are a non-normative container grouping and are validated separately.
+/// frame candidate for a single intra key, followed by zero or more frame candidates
+/// the runtime will attempt in stream order. The shape stays the minimal tier's:
+/// one base-layer sequence header, and enough planned OBUs for the leading
+/// `[TD, SEQ, CLK]` key frame. Container warning policy is enforced by
+/// `require_multiframe_ivf`, which permits only terminal trailing partial IVF
+/// headers. Each following
+/// `OBU_REGULAR_TILE_GROUP` is validated by `following_inter_envelope`; non-inter
+/// frame candidates fail closed before output because every following IVF payload
+/// must contain only complete `[OBU_TEMPORAL_DELIMITER, OBU_REGULAR_TILE_GROUP]`
+/// frame-unit pairs. Unverified reference/tool states fail at their precise
+/// runtime gates before caller-visible output.
 fn ensure_multiframe_plan_shape(plan: &DecodeStreamPlan) -> Result<()> {
     let frame_count = plan.frame_candidate_count();
-    if frame_count == 0 || frame_count > MAX_MULTIFRAME_CANDIDATES {
+    if frame_count == 0 {
         return Err(unsupported(
             "unsupported_frame_candidate_count",
             None,
-            "minimal tier supports a single key frame followed by up to two single-reference inter frames",
+            "minimal tier requires at least one selected key frame candidate",
         ));
     }
-    // OBU layout: frame 0 = [TD, SEQ, CLK] (3 OBUs); each further inter frame adds
-    // [TD, OBU_REGULAR_TILE_GROUP] (2 OBUs), so N frames => 3 + 2*(N - 1) OBUs.
-    let expected_obu_count = 3 + 2 * (frame_count - 1);
-    if plan.source_warnings().is_empty() && plan.obu_count() == expected_obu_count {
+    if plan.obu_count() >= 3 {
         Ok(())
     } else {
         Err(unsupported(
             "unexpected_planned_stream_shape",
             None,
-            "minimal tier requires the traced one-, two-, or three-frame OBU layout with no source warnings",
+            "minimal tier requires a leading [TD, SEQ, CLK] frame unit",
         ))
     }
 }
 
 /// Container-shape gate for the multi-frame runtime: an `AV02` IVF with positive-sized
-/// records and no container warnings or errors. The IVF header's `frame_count` is a
-/// container-record count when present (and is often zero in real streams), not the
-/// AV2 decoded frame-candidate count.
+/// records, no fatal container errors, and only terminal trailing partial IVF
+/// header warnings. The IVF header's `frame_count` is a container-record count
+/// when present (and is often zero in real streams), not the AV2 decoded
+/// frame-candidate count.
 fn require_multiframe_ivf<'a>(
     parsed: &'a ParsedBitstream<'a>,
 ) -> Result<(&'a ParsedIvfBitstream<'a>, IvfHeader)> {
@@ -484,16 +574,87 @@ fn require_multiframe_ivf<'a>(
         || ivf.frames.is_empty()
         || !header_count_matches
         || !all_frame_records_positive
-        || !ivf.warnings.is_empty()
+        || !supported_ivf_warnings(&ivf.warnings)
         || ivf.error.is_some()
     {
         return Err(unsupported(
             "unsupported_ivf_shape",
             None,
-            "minimal tier requires positive-sized AV02 IVF frame records with no container warnings; declared IVF frame_count must be zero or match the parsed record count",
+            "minimal tier requires positive-sized AV02 IVF frame records with no fatal container errors and only terminal trailing partial-frame-header warnings; declared IVF frame_count must be zero or match the parsed record count",
         ));
     }
     Ok((ivf, header))
+}
+
+fn supported_ivf_warnings(warnings: &[IvfWarning]) -> bool {
+    warnings
+        .iter()
+        .all(|warning| matches!(warning, IvfWarning::TrailingPartialFrameHeader { .. }))
+}
+
+fn ensure_output_frame_count_limit(
+    limits: crate::DecodeLimits,
+    output_frame_count: u64,
+) -> Result<()> {
+    limits.ensure(DecodeLimitName::MaxOutputFrames, output_frame_count)?;
+    Ok(())
+}
+
+fn ensure_retained_frame_byte_limits(
+    limits: crate::DecodeLimits,
+    retained_frame_bytes: u64,
+    frame: &MinimalRuntimeFrame,
+) -> Result<u64> {
+    let frame_bytes = retained_decoded_frame_bytes(frame)?;
+    ensure_retained_frame_byte_limits_for_bytes(limits, retained_frame_bytes, frame_bytes)
+}
+
+fn ensure_retained_frame_byte_limits_for_core(
+    limits: crate::DecodeLimits,
+    retained_frame_bytes: u64,
+    core: &FrameHeaderCore,
+    offset: ByteOffset,
+) -> Result<u64> {
+    let frame_size = core.frame_size.ok_or_else(|| {
+        unsupported_at(
+            "missing_frame_size_for_retained_limit",
+            offset,
+            "minimal runtime requires parsed frame dimensions before charging retained decoded-frame bytes",
+        )
+    })?;
+    let frame_bytes = decoded_frame_byte_budget(frame_size).map(|budget| budget.decoded_bytes)?;
+    ensure_retained_frame_byte_limits_for_bytes(limits, retained_frame_bytes, frame_bytes)
+}
+
+fn ensure_retained_frame_byte_limits_for_bytes(
+    limits: crate::DecodeLimits,
+    retained_frame_bytes: u64,
+    frame_bytes: u64,
+) -> Result<u64> {
+    let next_retained_frame_bytes = checked_add(
+        DecodeLimitName::MaxOutputBytes,
+        retained_frame_bytes,
+        frame_bytes,
+    )?;
+    // The runtime report retains every decoded frame, so this is a
+    // conservative upper bound for the live reference-store bytes.
+    limits.ensure(
+        DecodeLimitName::MaxReferenceStoreBytes,
+        next_retained_frame_bytes,
+    )?;
+    limits.ensure(DecodeLimitName::MaxOutputBytes, next_retained_frame_bytes)?;
+    Ok(next_retained_frame_bytes)
+}
+
+fn retained_decoded_frame_bytes(frame: &MinimalRuntimeFrame) -> Result<u64> {
+    let byte_len = DecodedFrameHashInput::new(frame.frame()).byte_len()?;
+    Ok(byte_len as u64)
+}
+
+struct DecodedFrameByteBudget {
+    luma_samples: u64,
+    chroma_samples: u64,
+    decoded_bytes: u64,
 }
 
 fn verify_flat_minimal_tile_trace(
@@ -1072,35 +1233,45 @@ fn ensure_runtime_limits(
     height: u32,
     tile_payload_bytes: u64,
 ) -> Result<()> {
-    limits.ensure(DecodeLimitName::MaxOutputFrames, 1)?;
     limits.ensure(DecodeLimitName::MaxFrameWidth, u64::from(width))?;
     limits.ensure(DecodeLimitName::MaxFrameHeight, u64::from(height))?;
+    let budget = decoded_frame_byte_budget(FrameSize::new(width, height))?;
+    limits.ensure(DecodeLimitName::MaxLumaSamplesPerFrame, budget.luma_samples)?;
+    limits.ensure(DecodeLimitName::MaxDecodedFrameBytes, budget.decoded_bytes)?;
+    limits.ensure(DecodeLimitName::MaxOutputBytes, budget.decoded_bytes)?;
+    limits.ensure(DecodeLimitName::MaxTileCount, 1)?;
+    limits.ensure(DecodeLimitName::MaxTilePayloadBytes, tile_payload_bytes)?;
+    limits.ensure_allocation_len(DecodeLimitName::MaxDecodedFrameBytes, budget.luma_samples)?;
+    limits.ensure_allocation_len(DecodeLimitName::MaxDecodedFrameBytes, budget.chroma_samples)?;
+    Ok(())
+}
+
+fn decoded_frame_byte_budget(frame_size: FrameSize) -> Result<DecodedFrameByteBudget> {
     let luma_samples = checked_mul(
         DecodeLimitName::MaxLumaSamplesPerFrame,
-        u64::from(width),
-        u64::from(height),
+        u64::from(frame_size.width),
+        u64::from(frame_size.height),
     )?;
-    limits.ensure(DecodeLimitName::MaxLumaSamplesPerFrame, luma_samples)?;
     // AV2 §5.3.2 4:2:0 chroma plane size uses `(dimension + subsamplingX) >> 1`
     // rounding. Equivalent to `dimension / 2` for the admitted even (multiple-of-64)
     // sizes, but written spec-faithfully so a future size relaxation stays correct.
+    let chroma_width = (u64::from(frame_size.width) + 1) >> 1;
+    let chroma_height = (u64::from(frame_size.height) + 1) >> 1;
     let chroma_samples = checked_mul(
         DecodeLimitName::MaxLumaSamplesPerFrame,
-        u64::from((width + 1) >> 1),
-        u64::from((height + 1) >> 1),
+        chroma_width,
+        chroma_height,
     )?;
     let decoded_bytes = checked_add(
         DecodeLimitName::MaxDecodedFrameBytes,
         luma_samples,
         checked_mul(DecodeLimitName::MaxDecodedFrameBytes, chroma_samples, 2)?,
     )?;
-    limits.ensure(DecodeLimitName::MaxDecodedFrameBytes, decoded_bytes)?;
-    limits.ensure(DecodeLimitName::MaxOutputBytes, decoded_bytes)?;
-    limits.ensure(DecodeLimitName::MaxTileCount, 1)?;
-    limits.ensure(DecodeLimitName::MaxTilePayloadBytes, tile_payload_bytes)?;
-    limits.ensure_allocation_len(DecodeLimitName::MaxDecodedFrameBytes, luma_samples)?;
-    limits.ensure_allocation_len(DecodeLimitName::MaxDecodedFrameBytes, chroma_samples)?;
-    Ok(())
+    Ok(DecodedFrameByteBudget {
+        luma_samples,
+        chroma_samples,
+        decoded_bytes,
+    })
 }
 
 fn checked_add(

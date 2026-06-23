@@ -16,6 +16,7 @@ static TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
 const PLANABLE_CLOSED_LOOP_KEY: &[u8] = &[0x01, 0x10];
 const UNSUPPORTED_OPEN_LOOP_KEY: &[u8] = &[0x01, 0x14];
 const MALFORMED_ANNEX_B: &[u8] = &[0x05, 0x10];
+const LOCAL_AC0EJ3_ENV: &str = "SPLOT_AC0EJ3_IVF";
 
 fn splot(args: &[&str]) -> Output {
     std::process::Command::new(env!("CARGO_BIN_EXE_splot"))
@@ -54,6 +55,16 @@ fn conformance_vector(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/conformance/vectors/valid")
         .join(name)
+}
+
+fn local_ac0ej3_path() -> PathBuf {
+    std::env::var_os(LOCAL_AC0EJ3_ENV)
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .map(|home| PathBuf::from(home).join("Documents/SplotLabs/ac0ej3.ivf"))
+        })
+        .expect("set SPLOT_AC0EJ3_IVF or HOME for the ignored local ac0ej3 regression")
 }
 
 fn repeated_sequence_header_obus(count: usize) -> Vec<u8> {
@@ -245,6 +256,41 @@ fn decode_hash_output_format_json_emits_same_diagnostic() {
     assert_eq!(
         json["unsupported_reason"],
         "unexpected_planned_stream_shape"
+    );
+    assert_eq!(json["tier_id"], "minimal-intra-8bit420-hash-v1");
+    assert_eq!(json["output_format"], "hash");
+}
+
+#[test]
+#[ignore = "requires local mission fixture; set SPLOT_AC0EJ3_IVF or place it at $HOME/Documents/SplotLabs/ac0ej3.ivf"]
+fn local_ac0ej3_reaches_current_runtime_gate_without_output() {
+    let input = local_ac0ej3_path();
+    assert!(
+        input.is_file(),
+        "local ac0ej3 fixture not found at {}; set {LOCAL_AC0EJ3_ENV}",
+        input.display()
+    );
+
+    let out = splot(&[
+        "decode",
+        "--json",
+        "--output-format",
+        "hash",
+        input.to_str().unwrap(),
+    ]);
+
+    assert_eq!(out.status.code(), Some(1));
+    assert!(out.stderr.is_empty(), "stderr was not empty");
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["rule_id"], "decode/unsupported-feature");
+    assert_eq!(json["spec_section"], "7.1");
+    assert_eq!(json["matrix_row"], "minimal-decode-tier-contract");
+    assert_eq!(json["feature_id"], "DECODE-MINIMAL-TIER-RUNTIME-SUCCESS");
+    assert_eq!(json["detail_kind"], "unsupported_feature");
+    assert_eq!(json["unsupported_reason"], "unexpected_obu_order");
+    assert_ne!(
+        json["unsupported_reason"], "unsupported_frame_candidate_count",
+        "ac0ej3 must advance past the former total frame-count gate"
     );
     assert_eq!(json["tier_id"], "minimal-intra-8bit420-hash-v1");
     assert_eq!(json["output_format"], "hash");

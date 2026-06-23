@@ -26,7 +26,9 @@ use super::super::{MinimalRuntimeFrame, decode_minimal_frames_from_plan};
 use super::block::interp_filter_no_neighbour_ctx;
 use super::compound_is_joint_context_from_order_hints;
 use crate::error::{DecodeError, Result};
-use crate::{DecodeContext, DecodeOptions, DecodeRuntimeConfig};
+use crate::{
+    DecodeContext, DecodeLimitName, DecodeLimitThreshold, DecodeOptions, DecodeRuntimeConfig,
+};
 
 const TWO_FRAME_INTER_FIXTURE: &[u8] =
     include_bytes!("../../../../../tests/conformance/vectors/valid/syn-2frame-inter-64x64.ivf");
@@ -123,10 +125,17 @@ const FLAT_CHROMA_V: u8 = 130;
 
 fn decode_fixture(bytes: &[u8]) -> Vec<MinimalRuntimeFrame> {
     let options = DecodeOptions::default();
+    decode_fixture_with_options(bytes, options).expect("decode")
+}
+
+fn decode_fixture_with_options(
+    bytes: &[u8],
+    options: DecodeOptions,
+) -> Result<Vec<MinimalRuntimeFrame>> {
     let context =
         DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).expect("context");
     let plan = context.plan_bytes(bytes, options).expect("plan");
-    decode_minimal_frames_from_plan(bytes, options, &plan).expect("decode")
+    decode_minimal_frames_from_plan(bytes, options, &plan)
 }
 
 fn decode_frames() -> Vec<MinimalRuntimeFrame> {
@@ -215,7 +224,12 @@ fn decode_inter_blocks_after_quantization_mutation(
     );
 
     let inter_candidate = candidates.next().expect("fixture has an inter candidate");
-    let inter_envelope = super::super::following_inter_envelope(&parsed, inter_candidate)?;
+    let mut next_unvalidated_following_ivf_record = 1;
+    let inter_envelope = super::super::following_inter_envelope(
+        &parsed,
+        inter_candidate,
+        &mut next_unvalidated_following_ivf_record,
+    )?;
     let (store, meta) = reference.build_store(&frames)?;
     let inter_state = super::InterReferenceState {
         store: &store,
@@ -877,6 +891,150 @@ fn repack_multiref_first_inter_td_separate_from_tile_group() -> Vec<u8> {
     bytes
 }
 
+fn repack_multiref_first_inter_with_extra_sequence_header() -> Vec<u8> {
+    let ParsedBitstream::Ivf(parsed) = parse_bitstream_partial(MULTIREF_FIXTURE) else {
+        panic!("multiref fixture is IVF");
+    };
+    assert!(parsed.error.is_none());
+    assert!(parsed.warnings.is_empty());
+    assert_eq!(parsed.frames.len(), 3);
+    assert_eq!(parsed.frames[0].obus.len(), 3);
+
+    let mut header = parsed.header.expect("multiref fixture has an IVF header");
+    header.frame_count = 3;
+
+    let sequence_start = obu_end_in_ivf_payload(&parsed.frames[0], 0);
+    let sequence_end = obu_end_in_ivf_payload(&parsed.frames[0], 1);
+    let sequence_obu = &parsed.frames[0].frame.payload[sequence_start..sequence_end];
+
+    let mut state_prefixed_inter_payload = Vec::new();
+    state_prefixed_inter_payload.extend_from_slice(sequence_obu);
+    state_prefixed_inter_payload.extend_from_slice(parsed.frames[1].frame.payload);
+
+    let mut bytes = Vec::new();
+    write_ivf_header(&mut bytes, &header).expect("write repacked IVF header");
+    write_ivf_frame(
+        &mut bytes,
+        parsed.frames[0].frame.pts,
+        parsed.frames[0].frame.payload,
+    )
+    .expect("write first repacked IVF record");
+    write_ivf_frame(
+        &mut bytes,
+        parsed.frames[1].frame.pts,
+        &state_prefixed_inter_payload,
+    )
+    .expect("write state-prefixed inter IVF record");
+    write_ivf_frame(
+        &mut bytes,
+        parsed.frames[2].frame.pts,
+        parsed.frames[2].frame.payload,
+    )
+    .expect("write third repacked IVF record");
+
+    bytes
+}
+
+fn repack_multiref_first_inter_with_trailing_sequence_header() -> Vec<u8> {
+    let ParsedBitstream::Ivf(parsed) = parse_bitstream_partial(MULTIREF_FIXTURE) else {
+        panic!("multiref fixture is IVF");
+    };
+    assert!(parsed.error.is_none());
+    assert!(parsed.warnings.is_empty());
+    assert_eq!(parsed.frames.len(), 3);
+    assert_eq!(parsed.frames[0].obus.len(), 3);
+
+    let mut header = parsed.header.expect("multiref fixture has an IVF header");
+    header.frame_count = 3;
+
+    let sequence_start = obu_end_in_ivf_payload(&parsed.frames[0], 0);
+    let sequence_end = obu_end_in_ivf_payload(&parsed.frames[0], 1);
+    let sequence_obu = &parsed.frames[0].frame.payload[sequence_start..sequence_end];
+
+    let mut state_trailing_inter_payload = Vec::new();
+    state_trailing_inter_payload.extend_from_slice(parsed.frames[1].frame.payload);
+    state_trailing_inter_payload.extend_from_slice(sequence_obu);
+
+    let mut bytes = Vec::new();
+    write_ivf_header(&mut bytes, &header).expect("write repacked IVF header");
+    write_ivf_frame(
+        &mut bytes,
+        parsed.frames[0].frame.pts,
+        parsed.frames[0].frame.payload,
+    )
+    .expect("write first repacked IVF record");
+    write_ivf_frame(
+        &mut bytes,
+        parsed.frames[1].frame.pts,
+        &state_trailing_inter_payload,
+    )
+    .expect("write state-trailing inter IVF record");
+    write_ivf_frame(
+        &mut bytes,
+        parsed.frames[2].frame.pts,
+        parsed.frames[2].frame.payload,
+    )
+    .expect("write third repacked IVF record");
+
+    bytes
+}
+
+fn append_multiref_third_frame_as_fourth_ivf_record() -> Vec<u8> {
+    let ParsedBitstream::Ivf(parsed) = parse_bitstream_partial(MULTIREF_FIXTURE) else {
+        panic!("multiref fixture is IVF");
+    };
+    assert!(parsed.error.is_none());
+    assert!(parsed.warnings.is_empty());
+    assert_eq!(parsed.frames.len(), 3);
+
+    let mut header = parsed.header.expect("multiref fixture has an IVF header");
+    header.frame_count = 4;
+
+    let mut bytes = Vec::new();
+    write_ivf_header(&mut bytes, &header).expect("write four-frame IVF header");
+    for frame in &parsed.frames {
+        write_ivf_frame(&mut bytes, frame.frame.pts, frame.frame.payload)
+            .expect("write original IVF record");
+    }
+    // Reusing the already oracle-proven third frame payload gives the runtime a
+    // fourth planned inter candidate without inventing new syntax bytes. After the
+    // original frame 2 refreshes slot 2, the reference buffer has three valid slots,
+    // so this extra candidate must fail at the precise reference-state gate.
+    write_ivf_frame(&mut bytes, 3, parsed.frames[2].frame.payload)
+        .expect("write repeated fourth IVF record");
+
+    bytes
+}
+
+fn append_future_state_record_after_fourth_multiref_candidate() -> Vec<u8> {
+    let ParsedBitstream::Ivf(parsed) = parse_bitstream_partial(MULTIREF_FIXTURE) else {
+        panic!("multiref fixture is IVF");
+    };
+    assert!(parsed.error.is_none());
+    assert!(parsed.warnings.is_empty());
+    assert_eq!(parsed.frames.len(), 3);
+    assert_eq!(parsed.frames[0].obus.len(), 3);
+
+    let mut header = parsed.header.expect("multiref fixture has an IVF header");
+    header.frame_count = 5;
+
+    let sequence_start = obu_end_in_ivf_payload(&parsed.frames[0], 0);
+    let sequence_end = obu_end_in_ivf_payload(&parsed.frames[0], 1);
+    let sequence_obu = &parsed.frames[0].frame.payload[sequence_start..sequence_end];
+
+    let mut bytes = Vec::new();
+    write_ivf_header(&mut bytes, &header).expect("write five-frame IVF header");
+    for frame in &parsed.frames {
+        write_ivf_frame(&mut bytes, frame.frame.pts, frame.frame.payload)
+            .expect("write original IVF record");
+    }
+    write_ivf_frame(&mut bytes, 3, parsed.frames[2].frame.payload)
+        .expect("write repeated fourth IVF record");
+    write_ivf_frame(&mut bytes, 4, sequence_obu).expect("write future state IVF record");
+
+    bytes
+}
+
 /// The committed three-frame COMPOUND_AVERAGE fixture
 /// (DECODE-INTER-COMPOUND-AVERAGE): frame 0 is a general-intra DC_PRED
 /// low-frequency key frame, frame 1 is a single-reference NEWMV inter frame, and
@@ -969,7 +1127,136 @@ fn multiref_fixture_rejects_when_inter_tile_group_starts_ivf_record() {
         DecodeError::UnsupportedFeature { unsupported } => unsupported.reason(),
         _ => panic!("record-leading tile group must be an unsupported-feature error"),
     };
-    assert_eq!(reason, "missing_inter_temporal_delimiter");
+    assert_eq!(reason, "unexpected_inter_obu_order");
+}
+
+#[test]
+fn multiref_runtime_rejects_state_obu_before_following_inter_candidate() {
+    let repacked = repack_multiref_first_inter_with_extra_sequence_header();
+    let options = DecodeOptions::default();
+    let context =
+        DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).expect("context");
+    let plan = context.plan_bytes(&repacked, options).expect("plan");
+    assert_eq!(
+        plan.frame_candidate_count(),
+        3,
+        "test fixture must retain the key plus two inter frame candidates"
+    );
+    let Err(error) = decode_minimal_frames_from_plan(&repacked, options, &plan) else {
+        panic!("extra state before a following inter candidate must fail closed");
+    };
+    assert_eq!(unsupported_reason(error), "unexpected_inter_obu_order");
+}
+
+#[test]
+fn multiref_runtime_rejects_state_obu_after_inter_candidate_before_next_frame() {
+    let repacked = repack_multiref_first_inter_with_trailing_sequence_header();
+    let options = DecodeOptions::default();
+    let context =
+        DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).expect("context");
+    let plan = context.plan_bytes(&repacked, options).expect("plan");
+    assert_eq!(
+        plan.frame_candidate_count(),
+        3,
+        "test fixture must retain the key plus two inter frame candidates"
+    );
+    let Err(error) = decode_minimal_frames_from_plan(&repacked, options, &plan) else {
+        panic!("state after one inter candidate and before the next must fail closed");
+    };
+    assert_eq!(unsupported_reason(error), "unexpected_inter_obu_order");
+}
+
+#[test]
+fn four_frame_multiref_reaches_too_many_valid_references_gate() {
+    let four_frame = append_multiref_third_frame_as_fourth_ivf_record();
+    let options = DecodeOptions::default();
+    let context =
+        DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).expect("context");
+    let plan = context.plan_bytes(&four_frame, options).expect("plan");
+    assert_eq!(
+        plan.frame_candidate_count(),
+        4,
+        "test fixture must exercise the former total frame-count gate"
+    );
+    let Err(error) = decode_minimal_frames_from_plan(&four_frame, options, &plan) else {
+        panic!("a fourth multiref frame must still fail closed before output");
+    };
+    assert_eq!(unsupported_reason(error), "inter_too_many_valid_references");
+}
+
+#[test]
+fn multiref_runtime_does_not_preflight_future_ivf_records_before_reference_gate() {
+    let future_state = append_future_state_record_after_fourth_multiref_candidate();
+    let options = DecodeOptions::default();
+    let context =
+        DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).expect("context");
+    let plan = context.plan_bytes(&future_state, options).expect("plan");
+    assert_eq!(
+        plan.frame_candidate_count(),
+        4,
+        "test fixture keeps the malformed state-only IVF record after the fourth candidate"
+    );
+    let Err(error) = decode_minimal_frames_from_plan(&future_state, options, &plan) else {
+        panic!("a fourth multiref frame must still fail closed before output");
+    };
+    assert_eq!(unsupported_reason(error), "inter_too_many_valid_references");
+}
+
+#[test]
+fn multiref_runtime_enforces_cumulative_output_frame_limit() {
+    let options = DecodeOptions::default().with_limits(
+        DecodeOptions::default()
+            .limits()
+            .with_max_output_frames(DecodeLimitThreshold::Max(2)),
+    );
+    let Err(error) = decode_fixture_with_options(MULTIREF_FIXTURE, options) else {
+        panic!("three-frame multiref fixture must exceed max_output_frames=2");
+    };
+    let DecodeError::Limit { source } = error else {
+        panic!("expected max_output_frames resource-limit error");
+    };
+    assert_eq!(source.name(), DecodeLimitName::MaxOutputFrames);
+    let check = source.check().expect("limit failure carries check");
+    assert_eq!(check.actual(), 3);
+    assert_eq!(check.threshold(), DecodeLimitThreshold::Max(2));
+}
+
+#[test]
+fn multiref_runtime_enforces_cumulative_reference_store_byte_limit() {
+    let options = DecodeOptions::default().with_limits(
+        DecodeOptions::default()
+            .limits()
+            .with_max_reference_store_bytes(DecodeLimitThreshold::Max(12_288)),
+    );
+    let Err(error) = decode_fixture_with_options(MULTIREF_FIXTURE, options) else {
+        panic!("three-frame multiref fixture must exceed two retained frame byte budget");
+    };
+    let DecodeError::Limit { source } = error else {
+        panic!("expected max_reference_store_bytes resource-limit error");
+    };
+    assert_eq!(source.name(), DecodeLimitName::MaxReferenceStoreBytes);
+    let check = source.check().expect("limit failure carries check");
+    assert_eq!(check.actual(), 18_432);
+    assert_eq!(check.threshold(), DecodeLimitThreshold::Max(12_288));
+}
+
+#[test]
+fn multiref_runtime_enforces_cumulative_output_byte_limit() {
+    let options = DecodeOptions::default().with_limits(
+        DecodeOptions::default()
+            .limits()
+            .with_max_output_bytes(DecodeLimitThreshold::Max(12_288)),
+    );
+    let Err(error) = decode_fixture_with_options(MULTIREF_FIXTURE, options) else {
+        panic!("three-frame multiref fixture must exceed two output frame byte budget");
+    };
+    let DecodeError::Limit { source } = error else {
+        panic!("expected max_output_bytes resource-limit error");
+    };
+    assert_eq!(source.name(), DecodeLimitName::MaxOutputBytes);
+    let check = source.check().expect("limit failure carries check");
+    assert_eq!(check.actual(), 18_432);
+    assert_eq!(check.threshold(), DecodeLimitThreshold::Max(12_288));
 }
 
 /// THE asymmetric retention proof: frame 2 reads the RETAINED inter frame (frame 1,
