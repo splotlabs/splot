@@ -1073,8 +1073,9 @@ fn read_wiener_ns_lr_unit(
         .get()
         != 0;
     lr_activity.record(use_wiener_ns)?;
-    // AV2 §5.20.10.5 maps `use_wiener_ns == 0` to `RESTORE_NONE`; only active
-    // `RESTORE_WIENER_NONSEP` units enter the §5.20.10.6 filter branch.
+    // AV2 §5.20.10.5 maps `use_wiener_ns == 0` to `RESTORE_NONE`; §5.20.10.6
+    // then returns immediately for this frontier's `readFrameFilters == 0`
+    // frame-filter planes, so each LR unit consumes exactly this one symbol.
     Ok(())
 }
 
