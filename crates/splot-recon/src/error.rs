@@ -645,6 +645,40 @@ pub enum ReconError {
         /// Supplied `SubsamplingY`.
         subsampling_y: u8,
     },
+    /// Caller-resolved AV2 § 7.20.2 chroma subsampling values did not match
+    /// the selected source frame format.
+    LoopRestorationSourceSubsamplingMismatch {
+        /// Chroma plane whose source sample was requested.
+        plane: PlaneId,
+        /// Supplied `SubsamplingX`.
+        subsampling_x: u8,
+        /// Supplied `SubsamplingY`.
+        subsampling_y: u8,
+        /// Expected `SubsamplingX` for the source frame format.
+        expected_x: u8,
+        /// Expected `SubsamplingY` for the source frame format.
+        expected_y: u8,
+    },
+    /// The caller supplied different frame metadata for the § 7.20.2
+    /// `CurrFrame` and `CdefFrame` source views.
+    LoopRestorationSourceFrameMismatch {
+        /// Mismatched frame field.
+        field: &'static str,
+    },
+    /// A caller-resolved AV2 § 7.20.2 loop-restoration source sample fell
+    /// outside the selected frame view's coded plane storage.
+    LoopRestorationSourceSampleOutOfBounds {
+        /// Plane whose source sample was requested.
+        plane: PlaneId,
+        /// Requested coded-plane x coordinate.
+        x: usize,
+        /// Requested coded-plane y coordinate.
+        y: usize,
+        /// Coded plane width.
+        width: usize,
+        /// Coded plane height.
+        height: usize,
+    },
     /// A § 7.14.4 dequantization block had an unsupported transform shape.
     InvalidDequantBlockShape {
         /// Supplied dequantized transform-block width.
@@ -1270,6 +1304,32 @@ impl fmt::Display for ReconError {
             } => write!(
                 f,
                 "invalid loop-restoration source-sample subsampling ({subsampling_x}, {subsampling_y}); expected each in 0..=1"
+            ),
+            Self::LoopRestorationSourceSubsamplingMismatch {
+                plane,
+                subsampling_x,
+                subsampling_y,
+                expected_x,
+                expected_y,
+            } => write!(
+                f,
+                "loop-restoration source-sample {} subsampling ({subsampling_x}, {subsampling_y}) does not match frame format ({expected_x}, {expected_y})",
+                plane.name()
+            ),
+            Self::LoopRestorationSourceFrameMismatch { field } => write!(
+                f,
+                "loop-restoration source-sample {field} mismatch between CurrFrame and CdefFrame"
+            ),
+            Self::LoopRestorationSourceSampleOutOfBounds {
+                plane,
+                x,
+                y,
+                width,
+                height,
+            } => write!(
+                f,
+                "loop-restoration source-sample {} coordinate ({x}, {y}) is outside coded plane {width}x{height}",
+                plane.name()
             ),
             Self::InvalidDequantBlockShape {
                 tx_width,

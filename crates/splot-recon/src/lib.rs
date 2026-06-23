@@ -54,7 +54,9 @@
 //! § 7.20.2 loop-restoration source-sample selector
 //! ([`loop_restoration_source_sample`], the allowed-extent clipping,
 //! current-stripe source choice, and two-line out-of-stripe clamp over
-//! caller-resolved luma bounds), and the
+//! caller-resolved luma bounds) plus immutable frame-view sample reader
+//! ([`loop_restoration_source_sample_value`], the selected `CurrFrame`/`CdefFrame`
+//! coded-storage read), and the
 //! § 7.20.3 luma non-separable Wiener filter primitive
 //! ([`wiener_ns_filter_luma_block`], the luma `Wiener_Ns_Config_Y` tap
 //! accumulation over caller-resolved source samples, subclasses, coefficients,
@@ -123,6 +125,7 @@
 //! `RECON-DEBLOCK-ADAPTIVE-STRENGTH`,
 //! `RECON-DEBLOCK-FILTER-CHOICE`,
 //! `RECON-LOOP-RESTORATION-SOURCE-SAMPLE`,
+//! `RECON-LOOP-RESTORATION-SOURCE-READ`,
 //! `RECON-WIENERNS-FILTER-PRIMITIVE`,
 //! `RECON-SUBPEL-MC`.
 //!
@@ -221,7 +224,8 @@ pub use inverse_transform_2d_outer::{
 };
 pub use loop_restoration::{
     LoopRestorationSource, LoopRestorationSourceBounds, LoopRestorationSourceSample,
-    loop_restoration_source_sample,
+    LoopRestorationSourceSampleValue, loop_restoration_source_sample,
+    loop_restoration_source_sample_value,
 };
 pub use plane::{Plane, VisibleRows};
 pub use reconstruct::reconstruct_add_residual;
