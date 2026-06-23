@@ -296,8 +296,8 @@ pub(crate) fn parse_inter_shared_tail(
 
     // mirror :5303: lr_params() (§ 5.18.7.11). The inter temporal-prediction arm was excluded
     // by the admission gate above (restoration off OR NumTotalRefs == 0), so the shared
-    // intra-arm parser is bit-identical here. A plane signalling frame_filters_on still reaches
-    // the unmodeled read_wienerns_filter() decode, an honest stop.
+    // intra-arm parser is bit-identical here. A plane signalling frame_filters_on consumes
+    // the fixed-coded read_wienerns_filter() bank and preserves it on the completed LR model.
     let lr_geometry = LrGeometry::new(seq.tile.frame_sb_size(false), seq.chroma_format_idc);
     match parse_lr_params(
         reader,

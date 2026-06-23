@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 407 feature(s); 354 cite a spec section.
+Matrix version 1. Last reviewed 2026-06-15. 408 feature(s); 355 cite a spec section.
 
 One row per (spec section, feature) pair, in spec order; a feature citing both a syntax and a semantics section appears under both. The canonical status source is [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); the full per-feature ledger is [FEATURE-STATUS.md](./FEATURE-STATUS.md).
 
@@ -224,6 +224,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.18.7.5](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-7-5) | Uniform spacing function | `AV2-5.18.7.3-TILE-PARAMS` | ✅ | ✅ | ✅ | ✅ | 4 |
 | [§ 5.18.7.7](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-7-7) | Tile size calculation function | `AV2-5.18.7.3-TILE-PARAMS` | ✅ | ✅ | ✅ | ✅ | 4 |
 | [§ 5.18.7.8](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-7-8) | Quantizer index delta parameters syntax | `AV2-5.18.6-QUANTIZATION` | ✅ | 🟡 | 🟡 | 🟡 | 4 |
+| [§ 5.18.7.11](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-7-11) | Loop restoration params syntax | `DECODE-AC0EJ3-WIENERNS-BANK-FRONTIER` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 5.18.7.11](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-7-11) | Loop restoration params syntax | `DECODE-AC0EJ3-WIENERNS-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.18.8](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-8) | Transform and coding mode structures | `AV2-5.18.8-TRANSFORM-CODING-MODES` | ✅ | 🟡 | — | ✅ | — |
 | [§ 5.18.9](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-9) | Global motion structures | `AV2-5.18.9-GLOBAL-MOTION` | ✅ | 🟡 | — | ✅ | — |
@@ -550,6 +551,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.20.8.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-3) | Get transform set function | `DECODE-COEFF-ORDINARY-BRANCH-TX-SET-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.8.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-3) | Get transform set function | `DECODE-INTER-RESIDUAL-DCT` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 5.20.9.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-9-1) | Is inside function | `DECODE-TILE-PARTITION-TRAVERSAL-BOUNDARY` | ✅ | ✅ | — | ✅ | — |
+| [§ 5.20.10.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-6) | Read Wiener NS syntax | `DECODE-AC0EJ3-WIENERNS-BANK-FRONTIER` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 5.20.10.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-6) | Read Wiener NS syntax | `DECODE-AC0EJ3-WIENERNS-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
 
 ## Chapter 6 — Syntax structures semantics

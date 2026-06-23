@@ -447,13 +447,12 @@ The inter-path arms of every child remain partial/todo.
   on the parsed fields, so no diagnostic was added.
 - **Landed** (OpenSpec `frame-loop-restoration-ccso-params`): the intra-path stop
   advances past `lr_params()` (§ 5.18.7.11) and `ccso_params()` (§ 5.18.7.12), so
-  the terminal intra stop status is now `StoppedBeforeReadTxMode` (the next
-  unparsed structure is `read_tx_mode()`, § 5.18.8.1). On the intra path
+  the terminal intra path now continues into the later tail. On the intra path
   `NumTotalRefs == 0`, so `lr_params()`'s temporal-prediction arm and
-  `ccso_params()`'s reuse arm are dead. When an `lr_params()` plane signals a
-  frame-level Wiener filter, the parser stops honestly with
-  `StoppedBeforeWienerNsFilter` before the unmodeled `read_wienerns_filter()` bank
-  decode. § 6.17.7.8 yields two locally decidable diagnostics:
+  `ccso_params()`'s reuse arm are dead. The fixed-coded frame-level
+  `read_wienerns_filter()` bank is now parsed into `LrPlaneParams` when an
+  `lr_params()` plane signals `frame_filters_on`; loop-restoration reconstruction
+  remains a decoder/runtime frontier. § 6.17.7.8 yields two locally decidable diagnostics:
   `frame-header/ccso-ext-filter-reserved` (`ccso_ext_filter != 7`) and
   `frame-header/ccso-max-band-out-of-range` (`1 << ccso_max_band_log2 <=
   CCSO_BAND_NUM`). The § 6.17.7.7 lr size / RU-divisibility bounds and the
@@ -561,7 +560,7 @@ The inter-path arms of every child remain partial/todo.
   reachable only once the inter frame-header path derives `use_bru`/`bru_inactive`), and the
   cross-tile-group continuity / last-group `tg_end == NumTiles - 1` § 6.18 clauses (need
   prior-tile-group state threaded through the segmenter). Also remaining: the
-  `read_wienerns_filter()` frame-level Wiener bank decode,
+  entropy-coded LR unit Wiener syntax and loop-restoration reconstruction,
   the inter frame-header paths (including the inter § 5.18.8 coding-mode arms and the inter
   `cur_mfh_id > 0` arms; the § 5.18.9 inter global-motion arm — `use_global_motion`, the
   `our_ref ns(NumTotalRefs+1)` base selection, and the full § 5.18.9.2-.6 subexp decode

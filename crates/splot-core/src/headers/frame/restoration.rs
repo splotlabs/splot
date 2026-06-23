@@ -25,26 +25,23 @@
 //! `enable_ccso` gates `ccso_params()` ([`CoreSeqRestorationView`] /
 //! [`CoreSeqCcsoView`]).
 //!
-//! **Honest stop inside `lr_params()`.** When a plane signals
-//! `frame_filters_on[plane] == 1` (the `RESTORE_WIENER_NONSEP` / `RESTORE_SWITCHABLE`
-//! frame-level-filter arm), `lr_params()` calls `read_wienerns_filter(plane, 0, 0, 1)`
-//! (§ 5.18.7.11, mirror :7377) at its tail. That sub-call decodes a Wiener non-separable
-//! filter bank: `search_frame_filters()`, `predict_group()`, and
-//! `decode_signed_subexp_with_ref()` over the `Wiener_Ns_Taps_*` tables — a large,
-//! entropy-adjacent body not yet modeled. This parser therefore reads `lr_params()` in
-//! full up to (but not into) that loop and reports the honest stop
-//! [`LrParseOutcome::StoppedBeforeWienerNsFilter`] when any plane has
-//! `frame_filters_on` set; the common all-zero case (no frame-level Wiener filter) parses
-//! to completion. This mirrors the PR #57 precedent of stopping at the first structure that
-//! needs unmodeled machinery rather than guessing.
+//! **Frame-level Wiener NS bank.** When a plane signals `frame_filters_on[plane] == 1`
+//! (the `RESTORE_WIENER_NONSEP` / `RESTORE_SWITCHABLE` frame-level-filter arm),
+//! `lr_params()` calls `read_wienerns_filter(plane, 0, 0, 1)` (§ 5.18.7.11, mirror :7377)
+//! at its tail. The fixed-coded frame-level path of that sub-call is modeled in
+//! [`wienerns`]: it preserves the parsed `FrameLrWienerNs` class bank on
+//! [`LrPlaneParams::frame_filter_bank`]. Entropy-coded LR unit filters
+//! (`readFrameFilters == 0`), temporal-copy Wiener state, and reconstruction remain out of
+//! scope for this parser surface.
 
 use crate::bitio::BitReader;
 use crate::error::Result;
 use crate::headers::sequence::{ChromaFormatIdc, SuperblockSize};
 
-/// Matrix Feature ID for the `read_wienerns_filter()` frame-level Wiener bank decode that
-/// `lr_params()` enters when a plane signals `frame_filters_on` (§ 5.18.7.11, mirror :7377).
-pub(crate) const WIENERNS_FILTER_FEATURE: &str = "AV2-5.18.7-SEGMENTATION-TILING";
+mod wienerns;
+
+use wienerns::parse_frame_wiener_ns_filter;
+pub use wienerns::{WienerNsFrameFilterBank, WienerNsFrameFilterClass};
 
 /// `RESTORATION_TILESIZE_MAX` (AV2 v1.0.0 § 3, `docs/spec/av2/1.0.0/03-symbols.md`):
 /// maximum size of a loop-restoration tile. Exposed `pub(crate)` so the § 5.18.7.11 writer
@@ -225,7 +222,7 @@ impl LrGeometry {
 }
 
 /// One plane's parsed `lr_params()` per-plane state (AV2 § 5.18.7.11).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LrPlaneParams {
     /// `FrameRestorationType[plane]` (selected via `tool_index ns(n)`).
     pub restoration_type: FrameRestorationType,
@@ -235,6 +232,10 @@ pub struct LrPlaneParams {
     /// `frame_filters_on[0]` and not temporal — always non-temporal on the intra path);
     /// `None` when not signalled.
     pub num_filter_classes: Option<u8>,
+    /// Parsed frame-level `FrameLrWienerNs[plane]` bank from
+    /// `read_wienerns_filter(plane, 0, 0, 1)` (§ 5.20.10.6), present only when
+    /// [`Self::frame_filters_on`] is `true` and the fixed-coded frame-level bank parsed.
+    pub frame_filter_bank: Option<WienerNsFrameFilterBank>,
 }
 
 /// Parsed `lr_params()` (AV2 v1.0.0 § 5.18.7.11) on the intra path.
@@ -252,22 +253,18 @@ pub struct LrParams {
     pub loop_restoration_size: [u32; 3],
 }
 
-/// The partially-parsed `lr_params()` facts committed before the honest
+/// The partially-parsed `lr_params()` facts committed before a reserved
 /// [`LrParseOutcome::StoppedBeforeWienerNsFilter`] stop (AV2 v1.0.0 § 5.18.7.11).
 ///
-/// When a plane signals `frame_filters_on[plane]`, `lr_params()` reads every modeled
-/// field — the per-plane `indexToTool` selection, `frame_filters_on`, the luma
-/// `NumFilterClasses`, and the luma/chroma size-signaling flags — **before** it would
-/// enter the unmodeled `read_wienerns_filter()` bank decode (mirror :7377). Those facts
-/// are real and consumed; this struct carries them so consumers (inspect, the validator)
-/// see the parsed prefix instead of an opaque `None`.
+/// The fixed-coded frame-level `read_wienerns_filter()` bank is now modeled as part of a
+/// complete [`LrParams`] value. This type remains separate for out-of-tree compatibility
+/// and for future unsupported Wiener branches that may be detected only after the
+/// `lr_params()` prefix has been consumed.
 ///
 /// This is deliberately a *distinct* type from [`LrParams`]: a complete parse yields
 /// `LrParams`, a stopped parse yields `LrPartialParams`. The two are never interchangeable,
-/// so no consumer can mistake a partial parse for a complete one (a partial parse never
-/// observed the frame-level Wiener bank that follows). The fields mirror the completed
-/// `LrParams` fields up to the stop point; `loop_restoration_size` is derived because the
-/// size-signaling phase completes before the Wiener loop.
+/// so no consumer can mistake a partial parse for a complete one. The fields mirror the
+/// completed `LrParams` fields up to the stop point.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct LrPartialParams {
@@ -283,16 +280,14 @@ pub struct LrPartialParams {
 /// The result of attempting to parse `lr_params()` on the intra path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LrParseOutcome {
-    /// `lr_params()` parsed to completion (no plane signalled a frame-level Wiener
-    /// filter, so `read_wienerns_filter()` read nothing).
+    /// `lr_params()` parsed to completion.
     Parsed(LrParams),
-    /// A plane signalled `frame_filters_on[plane]`, so the structure entered
-    /// `read_wienerns_filter(plane, 0, 0, 1)` (§ 5.18.7.11, mirror :7377). That
-    /// frame-level Wiener bank decode is not yet modeled; the honest stop carries the
-    /// blocking Feature ID and the partially-parsed LR facts committed up to the loop. No
-    /// bits past the last completed read were consumed.
+    /// Reserved for a future unsupported `read_wienerns_filter()` branch whose presence is
+    /// known before its bits can be safely modeled. The fixed-coded frame-level path
+    /// (`readFrameFilters == 1`) is parsed to completion and stored on
+    /// [`LrPlaneParams::frame_filter_bank`].
     StoppedBeforeWienerNsFilter {
-        /// Implementation-matrix Feature ID for the `read_wienerns_filter()` coverage.
+        /// Implementation-matrix Feature ID for the blocking `read_wienerns_filter()` branch.
         feature_id: &'static str,
         /// The LR facts parsed before the stop (per-plane tool/frame_filters_on/classes,
         /// `UsesLr`, and the derived `LoopRestorationSize`).
@@ -309,8 +304,9 @@ pub enum LrParseOutcome {
 /// `FrameIsIntra` so `numRefFrames == 0`: the temporal-prediction arm and its
 /// `temporal_pred_flag` / `rst_ref_pic_idx` reads are dead.
 ///
-/// Returns [`LrParseOutcome::StoppedBeforeWienerNsFilter`] (never an error) when a plane
-/// signals a frame-level Wiener filter — the `read_wienerns_filter()` decode is unmodeled.
+/// When a plane signals a frame-level Wiener filter, this consumes the fixed-coded
+/// `read_wienerns_filter(plane, 0, 0, 1)` path and stores the resulting class bank on the
+/// corresponding [`LrPlaneParams`].
 ///
 /// # Errors
 /// Returns [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof) if the payload
@@ -337,10 +333,6 @@ pub fn parse_lr_params(
     let mut uses_luma_lr = false;
     let mut uses_chroma_lr = false;
     let mut planes: Vec<LrPlaneParams> = Vec::with_capacity(usize::from(num_planes));
-    // `frame_filters_on` triggering the unmodeled read_wienerns_filter loop: once any plane
-    // sets it, the structure's tail `read_wienerns_filter()` is unmodeled, so we stop after
-    // finishing every plain (f/ns) read in the per-plane and size-signaling phases.
-    let mut any_frame_filters_on = false;
 
     // AV2 § 5.18.7.11: for ( plane = 0; plane < NumPlanes; plane++ ).
     for plane in 0..usize::from(num_planes) {
@@ -373,7 +365,6 @@ pub fn parse_lr_params(
             // frame_filters_on[plane] f(1).
             frame_filters_on = reader.read_bit()? != 0;
             if frame_filters_on {
-                any_frame_filters_on = true;
                 // AV2 § 5.18.7.11: numRefFrames = (FrameIsIntra || FrameType == SWITCH_FRAME)
                 // ? 0 : NumTotalRefs. On the intra path FrameIsIntra, so numRefFrames == 0:
                 // temporal_pred_flag[plane] is NOT read (gated on numRefFrames > 0) and the
@@ -397,6 +388,7 @@ pub fn parse_lr_params(
             restoration_type,
             frame_filters_on,
             num_filter_classes,
+            frame_filter_bank: None,
         });
     }
 
@@ -429,20 +421,18 @@ pub fn parse_lr_params(
 
     // AV2 § 5.18.7.11 (mirror :7373-7381): for each plane with frame_filters_on[plane] &&
     // !temporal_pred_flag[plane], read_wienerns_filter(plane, 0, 0, 1). On the intra path
-    // temporal_pred_flag is always 0, so any frame_filters_on plane enters the unmodeled
-    // read_wienerns_filter() decode. Stop honestly there rather than guessing the bank decode.
-    if any_frame_filters_on {
-        // The per-plane and size-signaling phases above are complete, so UsesLr and the
-        // derived LoopRestorationSize are exact facts; carry them with the per-plane state
-        // so consumers see the parsed prefix rather than an opaque stop.
-        return Ok(LrParseOutcome::StoppedBeforeWienerNsFilter {
-            feature_id: WIENERNS_FILTER_FEATURE,
-            partial: LrPartialParams {
-                uses_lr,
-                planes,
-                loop_restoration_size,
-            },
-        });
+    // temporal_pred_flag is always 0. The fixed-coded readFrameFilters path is modeled in
+    // the Wiener NS submodule and preserved on the per-plane state.
+    for (plane, plane_params) in planes.iter_mut().enumerate() {
+        if plane_params.frame_filters_on {
+            let classes = if plane == 0 {
+                plane_params.num_filter_classes.unwrap_or(1)
+            } else {
+                1
+            };
+            plane_params.frame_filter_bank =
+                Some(parse_frame_wiener_ns_filter(reader, plane, classes, view)?);
+        }
     }
 
     Ok(LrParseOutcome::Parsed(LrParams {
@@ -790,6 +780,12 @@ mod tests {
         }
     }
 
+    fn restoration_enabled_without_luma_pc() -> CoreSeqRestorationView {
+        let mut view = restoration_enabled();
+        view.lr_pc_wiener_disabled = true;
+        view
+    }
+
     fn geom_128_420() -> LrGeometry {
         LrGeometry::new(SuperblockSize::Block128x128, ChromaFormatIdc::Yuv420)
     }
@@ -896,47 +892,55 @@ mod tests {
     }
 
     #[test]
-    fn lr_frame_filters_on_stops_before_wienerns() {
-        // Luma tool_index selects RESTORE_WIENER_NONSEP (2); frame_filters_on == 1 ->
-        // num_filter_classes_idx f(3) read, then the structure would enter
-        // read_wienerns_filter -> honest stop. The size-signaling phase still runs first.
+    fn lr_frame_filters_on_parses_wienerns_bank() {
+        // Luma PC-Wiener is disabled, so the luma tool table is [NONE, WIENER_NONSEP].
+        // The frame-level Wiener NS bank takes the fixed-coded readFrameFilters path and
+        // parses to completion after the size-signaling phase.
         let mut bits = Bits::default();
-        bits.ns(2, 4); // plane 0 tool_index == 2 -> RESTORE_WIENER_NONSEP
+        bits.ns(1, 2); // plane 0 tool_index == 1 -> RESTORE_WIENER_NONSEP
         bits.bit(1); // frame_filters_on[0] == 1
-        bits.f(4, 3); // num_filter_classes_idx == 4 -> Decode_Num_Filter_Classes[4] == 6
+        bits.f(1, 3); // num_filter_classes_idx == 1 -> Decode_Num_Filter_Classes[1] == 2
         bits.ns(0, 2); // plane 1 -> RESTORE_NONE
         bits.ns(0, 2); // plane 2 -> RESTORE_NONE
         // usesLumaLr -> luma size flag (half size).
         bits.bit(1);
+        // read_wienerns_filter(0, 0, 0, 1): class 0 match is inferred zero; class 1
+        // matches prior class 0 with a one-bit subexp value; both classes are merged.
+        bits.bit(0); // class 1 match_index == 1
+        bits.bit(1); // merged[0]
+        bits.bit(1); // merged[1]
         let data = bits.into_bytes();
         let mut r = reader(&data);
         let outcome = parse_lr_params(
             &mut r,
             false,
             3,
-            &restoration_enabled(),
+            &restoration_enabled_without_luma_pc(),
             geom_128_420(),
             100,
         )
         .unwrap();
         match outcome {
-            LrParseOutcome::StoppedBeforeWienerNsFilter {
-                feature_id,
-                partial,
-            } => {
-                assert_eq!(feature_id, WIENERNS_FILTER_FEATURE);
+            LrParseOutcome::Parsed(params) => {
                 assert_eq!(
-                    partial.planes[0].restoration_type,
+                    params.planes[0].restoration_type,
                     FrameRestorationType::WienerNonsep
                 );
-                assert!(partial.planes[0].frame_filters_on);
-                assert_eq!(partial.planes[0].num_filter_classes, Some(6));
-                // UsesLr and the size-signaling flags are derived before the stop: luma
-                // RESTORE_WIENER_NONSEP uses LR, and lr_luma_use_half_size -> 512 >> 1.
-                assert!(partial.uses_lr);
-                assert_eq!(partial.loop_restoration_size[0], 256);
+                assert!(params.planes[0].frame_filters_on);
+                assert_eq!(params.planes[0].num_filter_classes, Some(2));
+                assert!(params.uses_lr);
+                assert_eq!(params.loop_restoration_size[0], 256);
+                let bank = params.planes[0]
+                    .frame_filter_bank
+                    .as_ref()
+                    .expect("frame_filters_on carries the parsed bank");
+                assert_eq!(bank.classes.len(), 2);
+                assert_eq!(bank.classes[0].match_index, 0);
+                assert_eq!(bank.classes[1].match_index, 1);
+                assert!(bank.classes.iter().all(|class| class.merged));
+                assert!(bank.classes.iter().all(|class| class.coeffs == vec![0; 16]));
             }
-            other => panic!("expected StoppedBeforeWienerNsFilter, got {other:?}"),
+            other => panic!("expected Parsed, got {other:?}"),
         }
     }
 

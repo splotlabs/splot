@@ -74,12 +74,10 @@
 //!   ([`FrameHeaderParseStatus::IntraHeaderComplete`]). A payload EOF inside the tail
 //!   preserves every earlier fact and reports
 //!   [`FrameHeaderParseStatus::StoppedInsideIntraTail`]. When a plane in `lr_params()`
-//!   signals `frame_filters_on`, the structure reaches the unmodeled
-//!   `read_wienerns_filter()` frame-level Wiener bank decode and the parser stops with
-//!   [`FrameHeaderParseStatus::StoppedBeforeWienerNsFilter`] (the control-region and
-//!   pre-Wiener facts preserved). A payload that runs out **inside** the loop-filter
-//!   cluster (deblocking through ccso) instead keeps the already-parsed control-region
-//!   facts and reports the truncation as
+//!   signals `frame_filters_on`, the fixed-coded frame-level
+//!   `read_wienerns_filter()` bank is parsed into `lr_params()`. A payload that runs out
+//!   **inside** the loop-filter cluster (deblocking through ccso, including the bank)
+//!   keeps the already-parsed control-region facts and reports the truncation as
 //!   [`FrameHeaderParseStatus::StoppedInsideFilterParams`] rather than failing the whole
 //!   parse (so earlier state-supported diagnostics still see the facts). On the
 //!   `cur_mfh_id > 0` path the resolved in-band multi-frame header's § 5.7 state is
@@ -246,15 +244,15 @@ pub enum FrameHeaderParseStatus {
     /// this variant is retained for completeness and out-of-tree compatibility but is
     /// no longer produced by the in-tree parser.
     StoppedBeforeReadTxMode,
-    /// An intra frame parsed through `cdef_params()` and into `lr_params()`
-    /// (§ 5.18.7.11), but a plane signalled `frame_filters_on[plane]`, so the structure
-    /// reached `read_wienerns_filter(plane, 0, 0, 1)` (mirror :7377) — a frame-level Wiener
-    /// non-separable bank decode (`search_frame_filters()`, `predict_group()`,
-    /// `decode_signed_subexp_with_ref()`) this phase does not model. The control-region and
-    /// pre-Wiener `lr_params()` facts are intact and exposed; `read_tx_mode()` and beyond
-    /// are unreached. `feature_id` is the implementation-matrix row for the missing decode.
+    /// Reserved for an unsupported loop-restoration branch discovered before `lr_params()`
+    /// can be represented completely. The fixed-coded frame-level
+    /// `read_wienerns_filter(plane, 0, 0, 1)` path (mirror :7377; § 5.20.10.6) is now
+    /// modeled and stored on [`super::LrPlaneParams::frame_filter_bank`], so this status is
+    /// not produced for that path by the in-tree parser. It remains a non-truncation coverage
+    /// stop for out-of-tree compatibility and future unsupported Wiener branches.
+    /// `feature_id` is the implementation-matrix row for the missing decode.
     StoppedBeforeWienerNsFilter {
-        /// Implementation-matrix Feature ID for the unmodeled `read_wienerns_filter()`.
+        /// Implementation-matrix Feature ID for the unsupported `read_wienerns_filter()` branch.
         feature_id: &'static str,
     },
     /// An intra frame's control region was read in full through the § 5.18.2
@@ -734,19 +732,17 @@ pub struct FrameHeaderCore {
     /// it is parsed **after** `gdf_params()`.
     pub cdef_params: Option<CdefParams>,
     /// Parsed `lr_params()` (AV2 § 5.18.7.11), when reached on the intra tail (after
-    /// `cdef_params()`) **and parsed to completion**. `None` when the parse stopped before
-    /// it, or stopped inside the unmodeled frame-level Wiener bank decode — in the latter
-    /// case the parsed prefix lives in [`Self::lr_params_partial`] instead (see
-    /// [`FrameHeaderParseStatus::StoppedBeforeWienerNsFilter`]). This field always means a
-    /// *complete* `lr_params()` parse, so consumers cannot mistake partial state for it.
+    /// `cdef_params()`) **and parsed to completion**. If a plane signals the fixed-coded
+    /// frame-level Wiener NS bank, that bank is part of this complete value via
+    /// [`super::LrPlaneParams::frame_filter_bank`]. `None` when the parse stopped before
+    /// `lr_params()` or in a reserved unsupported branch.
     pub lr_params: Option<LrParams>,
-    /// The partial `lr_params()` facts committed before the honest
-    /// [`FrameHeaderParseStatus::StoppedBeforeWienerNsFilter`] stop (AV2 § 5.18.7.11): the
-    /// per-plane restoration types, `frame_filters_on`, the luma `NumFilterClasses`, the
-    /// derived `UsesLr`, and the `LoopRestorationSize` size flags. `Some` only on that stop
-    /// (mutually exclusive with [`Self::lr_params`]); `None` otherwise. Kept separate from
-    /// [`Self::lr_params`] so a partial parse is never mistaken for a complete one — the
-    /// frame-level Wiener bank that follows was not parsed.
+    /// Partial `lr_params()` facts committed before a reserved
+    /// [`FrameHeaderParseStatus::StoppedBeforeWienerNsFilter`] coverage stop (AV2
+    /// § 5.18.7.11). The fixed-coded frame-level Wiener NS bank is now modeled, so this is
+    /// retained for out-of-tree compatibility and future unsupported branches. When set it
+    /// is mutually exclusive with [`Self::lr_params`], preserving the distinction between a
+    /// complete and partial `lr_params()` parse.
     pub lr_params_partial: Option<LrPartialParams>,
     /// Parsed `ccso_params()` (AV2 § 5.18.7.12), when reached. Per § 5.18.2 call order it
     /// is parsed **after** `lr_params()`.
@@ -1529,8 +1525,8 @@ fn finish_inter_control(
 /// `shared_tail_ran` is `true` when the shared-tail parser was invoked (the control region
 /// reached `ReachedSharedTail`). In that case the shared-tail parser already set `core.status`
 /// (the terminal [`FrameHeaderParseStatus::InterHeaderComplete`], an honest
-/// [`FrameHeaderParseStatus::UnsupportedUntilFeature`] coverage stop, or
-/// [`FrameHeaderParseStatus::StoppedBeforeWienerNsFilter`]), so on `Ok` the status is left
+/// [`FrameHeaderParseStatus::UnsupportedUntilFeature`] coverage stop, or a reserved
+/// [`FrameHeaderParseStatus::StoppedBeforeWienerNsFilter`] branch), so on `Ok` the status is left
 /// untouched. When `shared_tail_ran` is `false` (any other control-region stop) the status
 /// is set to the unsupported-coverage class exactly as [`finish_inter_control`] does. An
 /// [`Error::UnexpectedEof`] from anywhere in the closure — the control region OR the shared
@@ -2139,14 +2135,13 @@ fn parse_intra_structures(
 /// intra tail is parsed (see [`parse_intra_tail_structures`]), and the terminal
 /// [`FrameHeaderParseStatus::IntraHeaderComplete`] is set (or
 /// [`FrameHeaderParseStatus::StoppedInsideIntraTail`] when the payload runs out mid-tail).
-/// When a plane signals a frame-level Wiener filter, `lr_params()` reaches the unmodeled
-/// `read_wienerns_filter()` decode: this function sets
-/// [`FrameHeaderParseStatus::StoppedBeforeWienerNsFilter`] and returns `Ok(())` (the
-/// control-region facts are preserved and the partial `lr_params()` prefix is stored on
-/// `core.lr_params_partial`, leaving `core.lr_params` `None`). On error the partially-read
-/// fields stay `None`; the caller decides whether a payload EOF in the loop-filter cluster
-/// (deblocking through ccso) is a truncation (`StoppedInsideFilterParams`) or a hard
-/// failure (a tail EOF is handled here as `StoppedInsideIntraTail`).
+/// When a plane signals a frame-level Wiener filter, `lr_params()` consumes the fixed-coded
+/// `read_wienerns_filter()` bank and stores it on the completed `core.lr_params`. A reserved
+/// [`FrameHeaderParseStatus::StoppedBeforeWienerNsFilter`] outcome remains possible only for
+/// unsupported future branches. On error the partially-read fields stay `None`; the caller
+/// decides whether a payload EOF in the loop-filter cluster (deblocking through ccso) is a
+/// truncation (`StoppedInsideFilterParams`) or a hard failure (a tail EOF is handled here as
+/// `StoppedInsideIntraTail`).
 ///
 /// # Errors
 /// Returns [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof) if the payload
@@ -2215,10 +2210,9 @@ fn parse_filter_cluster(
 
     // AV2 § 5.18.7.11: lr_params() (loop restoration). On the intra path FrameIsIntra, so
     // numRefFrames == 0 and the temporal-prediction arm is dead; the SbSize and chroma
-    // subsampling drive the size signaling. A plane signalling frame_filters_on enters the
-    // unmodeled read_wienerns_filter() decode, which stops the parse honestly: the partial
-    // lr facts parsed up to that loop are surfaced on core.lr_params_partial (not
-    // core.lr_params, which means a complete parse) so consumers see the parsed prefix.
+    // subsampling drive the size signaling. A plane signalling frame_filters_on consumes
+    // the fixed-coded read_wienerns_filter() bank and stores it on the completed
+    // LrPlaneParams.
     let lr_geometry = LrGeometry::new(seq.tile.frame_sb_size(true), seq.chroma_format_idc);
     // base_q_idx feeds the spec's get_filter_set_index derivation only (SubclassLookup); it
     // signals no bits. It is `Some` here because quantization_params() always parses before
@@ -2242,12 +2236,9 @@ fn parse_filter_cluster(
             feature_id,
             partial,
         } => {
-            // The frame-level Wiener bank decode is unmodeled; stop honestly. The
-            // control-region facts and the cdef/lr-pre-Wiener reads above are preserved.
-            // The partial lr_params facts parsed up to the loop (per-plane types,
-            // frame_filters_on, NumFilterClasses, UsesLr, size flags) were really consumed,
-            // so surface them on the dedicated partial field rather than discarding them.
-            // `lr_params` stays None (no complete parse) so the two can never be confused.
+            // Reserved unsupported branch. Surface the real prefix on the dedicated partial
+            // field; `lr_params` stays None so partial and complete parses cannot be
+            // confused.
             core.lr_params_partial = Some(partial);
             core.status = FrameHeaderParseStatus::StoppedBeforeWienerNsFilter { feature_id };
             return Ok(());
@@ -2912,62 +2903,66 @@ mod tests {
     }
 
     #[test]
-    fn frame_header_core_frame_filters_on_stops_before_wienerns() {
-        // A luma plane selects RESTORE_WIENER_NONSEP and signals frame_filters_on -> the
-        // structure reaches the unmodeled read_wienerns_filter() decode, so the parse stops
-        // honestly with StoppedBeforeWienerNsFilter and the pre-Wiener facts are preserved.
+    fn frame_header_core_frame_filters_on_parses_wienerns_bank() {
+        // A luma plane selects RESTORE_WIENER_NONSEP and signals frame_filters_on. The
+        // frame-level read_wienerns_filter(0, 0, 0, 1) path parses a two-class merged bank,
+        // then ccso_params() and the intra tail complete.
         let mut seq = byte_aligned_filter_seq();
         seq.restoration.enable_restoration = true;
+        seq.restoration.lr_pc_wiener_disabled = true;
         seq.restoration.lr_uv_pc_wiener_disabled = true;
-        seq.ccso.enable_ccso = true; // ccso never reached (lr stops first)
+        seq.ccso.enable_ccso = true;
         let mut bits = intra_body_up_to_filter_cluster();
         bits.bit(0); // apply_deblocking_filter[0]
         bits.bit(0); // apply_deblocking_filter[1]
-        // lr_params(): plane 0 tool_index ns(4) == 2 -> RESTORE_WIENER_NONSEP.
-        bits.ns(2, 4); // plane 0 -> RESTORE_WIENER_NONSEP
+        // lr_params(): luma PC-Wiener disabled, so tool_index ns(2) == 1 selects
+        // RESTORE_WIENER_NONSEP.
+        bits.ns(1, 2); // plane 0 -> RESTORE_WIENER_NONSEP
         bits.bit(1); // frame_filters_on[0] == 1
-        bits.f(2, 3); // num_filter_classes_idx == 2 -> Decode_Num_Filter_Classes[2] == 3
+        bits.f(1, 3); // num_filter_classes_idx == 1 -> Decode_Num_Filter_Classes[1] == 2
         bits.ns(0, 2); // plane 1 -> RESTORE_NONE
         bits.ns(0, 2); // plane 2 -> RESTORE_NONE
-        bits.bit(1); // lr_luma_use_half_size (size signaling still runs before the stop)
+        bits.bit(1); // lr_luma_use_half_size
+        // read_wienerns_filter(0, 0, 0, 1): class 1 matches prior class 0; both merged.
+        bits.bit(0); // class 1 match_index == 1
+        bits.bit(1); // merged[0]
+        bits.bit(1); // merged[1]
+        // ccso_params(): not single picture -> ccso_frame_flag f(1) == 1, then all planes
+        // ccso_planes == 0.
+        bits.bit(1); // ccso_frame_flag
+        bits.bit(0); // ccso_planes[0]
+        bits.bit(0); // ccso_planes[1]
+        bits.bit(0); // ccso_planes[2]
+        // §5.18.2 tail.
+        bits.bit(1); // tx_mode_select = 1 -> TX_MODE_SELECT
+        bits.f(3, 2); // reduced_tx_set = 3
         let data = bits.into_bytes();
         let (core, _) = parse_body(&data, ObuType::ClosedLoopKey, true, &seq).unwrap();
-        assert_eq!(
-            core.status,
-            FrameHeaderParseStatus::StoppedBeforeWienerNsFilter {
-                feature_id: "AV2-5.18.7-SEGMENTATION-TILING"
-            }
-        );
-        // The pre-cluster facts and the deblocking/cdef reads before the stop survive; the
-        // lr_params field stays None (the structure did not complete) and ccso is unreached.
+        assert_eq!(core.status, FrameHeaderParseStatus::IntraHeaderComplete);
         assert_eq!(core.frame_size, Some(FrameSize::new(16, 16)));
         assert!(core.deblocking_filter_params.is_some());
-        assert_eq!(core.lr_params, None);
-        assert_eq!(core.ccso_params, None);
-        // The lr_params() prefix parsed before the Wiener stop is preserved on the dedicated
-        // partial field (facts-preservation invariant): the per-plane types,
-        // frame_filters_on, the luma NumFilterClasses, UsesLr, and the size flags are real
-        // consumed facts and must not be discarded.
-        let partial = core
-            .lr_params_partial
-            .as_ref()
-            .expect("the partial lr_params facts parsed before the Wiener stop are preserved");
-        assert!(partial.uses_lr, "luma RESTORE_WIENER_NONSEP uses LR");
-        assert_eq!(partial.planes.len(), 3);
+        assert_eq!(core.lr_params_partial, None);
+        let lr = core.lr_params.as_ref().expect("lr_params parsed fully");
+        assert!(lr.uses_lr, "luma RESTORE_WIENER_NONSEP uses LR");
+        assert_eq!(lr.planes.len(), 3);
         assert_eq!(
-            partial.planes[0].restoration_type,
+            lr.planes[0].restoration_type,
             FrameRestorationType::WienerNonsep
         );
-        assert!(partial.planes[0].frame_filters_on);
-        // num_filter_classes_idx == 2 -> Decode_Num_Filter_Classes[2] == 3.
-        assert_eq!(partial.planes[0].num_filter_classes, Some(3));
-        assert_eq!(
-            partial.planes[1].restoration_type,
-            FrameRestorationType::None
-        );
-        assert!(!partial.planes[1].frame_filters_on);
-        // lr_luma_use_half_size -> 512 >> 1 == 256 (size flags read before the stop).
-        assert_eq!(partial.loop_restoration_size[0], 256);
+        assert!(lr.planes[0].frame_filters_on);
+        assert_eq!(lr.planes[0].num_filter_classes, Some(2));
+        let bank = lr.planes[0]
+            .frame_filter_bank
+            .as_ref()
+            .expect("frame_filters_on carries the parsed bank");
+        assert_eq!(bank.classes.len(), 2);
+        assert_eq!(bank.classes[1].match_index, 1);
+        assert!(bank.classes.iter().all(|class| class.merged));
+        assert_eq!(lr.planes[1].restoration_type, FrameRestorationType::None);
+        assert!(!lr.planes[1].frame_filters_on);
+        assert_eq!(lr.loop_restoration_size[0], 256);
+        assert!(core.ccso_params.is_some());
+        assert!(core.intra_tail.is_some());
     }
 
     #[test]

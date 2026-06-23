@@ -1027,10 +1027,10 @@ Mission-scale IVF streams are no longer rejected solely because they contain
 more than three frame candidates; terminal `ivf/trailing-partial-frame-header`
 warnings are permitted, while fatal IVF errors and non-terminal warning kinds
 remain outside the tier. The current local `ac0ej3.ivf` first runtime stop is
-`unsupported_wienerns_filter` at byte offset 74: the runtime now accepts the
-conformant 10-bit sequence value, parses sequence chroma-tool flags, and maps the
-key-frame header parser's AV2 §5.18.7.11 `read_wienerns_filter()` coverage stop
-to a precise fail-closed diagnostic before any caller-visible output.
+`unsupported_wienerns_filter_bank` at byte offset 74: the runtime now accepts the
+conformant 10-bit sequence value, parses sequence chroma-tool flags, parses the
+key-frame header's fixed-coded AV2 §5.20.10.6 `read_wienerns_filter()` bank, and
+then rejects loop-restoration reconstruction before any caller-visible output.
 
 The CLI renders diagnostics as text by default and as JSON with
 `splot decode --json`. Library-facing decode diagnostics must preserve stable

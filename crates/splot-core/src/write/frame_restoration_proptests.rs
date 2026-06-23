@@ -58,9 +58,10 @@ mod proptests {
     proptest! {
         // ===== lr_params (§ 5.18.7.11) =====
 
-        /// Every parser-reachable lr_params that parses to completion round-trips: parse random
-        /// bits + gating, then re-emit and reparse to the same model. `StoppedBeforeWienerNsFilter`
-        /// outcomes are skipped (the frame_filters_on arm is the hard residual, not writable).
+        /// Every parser-reachable lr_params on the writer-supported surface round-trips: parse
+        /// random bits + gating, then re-emit and reparse to the same model. Parsed
+        /// frame-level Wiener NS banks are skipped because the writer still treats
+        /// `frame_filters_on` as a hard residual.
         #[test]
         fn lr_round_trips(
             coded_lossless in any::<bool>(),
@@ -91,6 +92,11 @@ mod proptests {
                 geometry,
                 base_q_idx,
             ) {
+                if params.planes.iter().any(|plane| {
+                    plane.frame_filters_on || plane.frame_filter_bank.is_some()
+                }) {
+                    return Ok(());
+                }
                 let mut writer = BitWriter::new();
                 write_lr_params(
                     &mut writer,
@@ -160,6 +166,7 @@ mod proptests {
                     restoration_type,
                     frame_filters_on,
                     num_filter_classes,
+                    frame_filter_bank: None,
                 })
                 .collect();
             let params = LrParams {

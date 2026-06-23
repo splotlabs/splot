@@ -96,7 +96,7 @@ pub(crate) use quant::get_qindex_ignore_delta_q;
 pub use restoration::{
     CCSO_BAND_NUM, CcsoParams, CcsoPlaneParams, CoreSeqCcsoView, CoreSeqRestorationView,
     FrameRestorationType, LrGeometry, LrParams, LrParseOutcome, LrPartialParams, LrPlaneParams,
-    parse_ccso_params, parse_lr_params,
+    WienerNsFrameFilterBank, WienerNsFrameFilterClass, parse_ccso_params, parse_lr_params,
 };
 /// The § 5.18.7.11 / § 5.18.7.12 helpers and constants the
 /// [`crate::write::frame_restoration`] writer shares with the parser so the two never drift:

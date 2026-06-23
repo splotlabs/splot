@@ -20,14 +20,12 @@
 //! [`LrGeometry`]) and validates the whole structure before any bit is written
 //! (reject-before-write): every reject path leaves `writer.bit_len() == 0`.
 //!
-//! **Hard residual — `frame_filters_on` is unwritable (§ 5.18.7.11).** A *complete*
-//! [`LrParams`] can never carry `frame_filters_on == true` on any plane: the parser returns
-//! [`LrParseOutcome::StoppedBeforeWienerNsFilter`](crate::headers::frame::LrParseOutcome) — a
-//! stop, not a complete parse — the moment any plane signals it, because the frame-level
-//! `read_wienerns_filter()` Wiener bank is unmodeled. So a model with `frame_filters_on` set is
-//! not parser-reachable and is rejected here ([`WriteError::NonCanonicalFrameHeader`] with
-//! `what == "lr_frame_filters_on"`). This writer ships the `frame_filters_on == false` surface
-//! only; the `frame_filters_on == true` arm lands with the Wiener-bank writer.
+//! **Hard residual — `frame_filters_on` is unwritable (§ 5.18.7.11).** The parser can model
+//! the fixed-coded frame-level `read_wienerns_filter()` bank, but this writer does not yet
+//! emit that bank. A model with `frame_filters_on` set is still rejected here
+//! ([`WriteError::NonCanonicalFrameHeader`] with `what == "lr_frame_filters_on"`). This
+//! writer ships the `frame_filters_on == false` surface only; the `frame_filters_on == true`
+//! arm lands with the Wiener-bank writer.
 
 use crate::headers::frame::{
     CCSO_INPUT_INTERVAL, CcsoParams, CoreSeqCcsoView, CoreSeqRestorationView, FrameRestorationType,
@@ -55,8 +53,8 @@ const CCSO_OFFSET_IDX_MAX: u8 = 7;
 /// which signals no bits); it is threaded to mirror the parser signature.
 ///
 /// **Hard residual.** A plane carrying `frame_filters_on == true` is rejected up front
-/// (`what == "lr_frame_filters_on"`): a complete `LrParams` can never have it set (see the
-/// module docs), so such a model is not parser-reachable and is unwritable.
+/// (`what == "lr_frame_filters_on"`): this writer does not yet emit frame-level
+/// `read_wienerns_filter()` bank syntax.
 ///
 /// When `coded_lossless || !view.enable_restoration` the parser writes no bits and leaves
 /// `uses_lr == false`, `planes` empty, and `loop_restoration_size == default_restoration_size`,
@@ -66,9 +64,10 @@ const CCSO_OFFSET_IDX_MAX: u8 = 7;
 /// validated before any bit is written (reject-before-write).
 ///
 /// # Errors
-/// [`WriteError::NonCanonicalFrameHeader`] for any model the § 5.18.7.11 parser could not have
-/// produced: a plane with `frame_filters_on` (`lr_frame_filters_on`); a disabled-arm model that
-/// is non-default (`lr_disabled`); a plane count that disagrees with `num_planes`
+/// [`WriteError::NonCanonicalFrameHeader`] for any model this writer does not support or the
+/// § 5.18.7.11 parser could not have produced: a plane with `frame_filters_on`
+/// (`lr_frame_filters_on`); stray bank data (`lr_frame_filter_bank`); a disabled-arm model
+/// that is non-default (`lr_disabled`); a plane count that disagrees with `num_planes`
 /// (`lr_num_planes`); a restoration type absent from the (tool-disabled) `indexToTool` table
 /// (`lr_tool_index`); a non-`None` `num_filter_classes` (`lr_num_filter_classes`); a stored
 /// `loop_restoration_size` that is not the inferred default for an unused luma/chroma plane or
@@ -155,12 +154,16 @@ fn check_lr_encodable(
     view: &CoreSeqRestorationView,
     geometry: LrGeometry,
 ) -> WriteResult<LrPlan> {
-    // Hard residual (§ 5.18.7.11): a complete LrParams can never carry frame_filters_on; such a
-    // plane forces LrParseOutcome::StoppedBeforeWienerNsFilter (a stop, not a complete parse),
-    // so the model is unwritable. Reject it before anything else.
+    // Hard residual (§ 5.18.7.11 / § 5.20.10.6): the parser can carry a completed
+    // frame-level Wiener NS bank, but this writer does not yet emit that syntax.
     if params.planes.iter().any(|p| p.frame_filters_on) {
         return Err(WriteError::NonCanonicalFrameHeader {
             what: "lr_frame_filters_on",
+        });
+    }
+    if params.planes.iter().any(|p| p.frame_filter_bank.is_some()) {
+        return Err(WriteError::NonCanonicalFrameHeader {
+            what: "lr_frame_filter_bank",
         });
     }
 
