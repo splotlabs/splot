@@ -9594,6 +9594,66 @@ fixtures = [
 diagnostics = []
 
 [[feature]]
+id = "RECON-WIENERNS-FILTER-PRIMITIVE"
+name = "Wiener NS luma filter primitive"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["7.20.3"]
+sources = [
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-20-3",
+]
+crate = "splot-recon"
+module = "crates/splot-recon/src/wienerns_filter.rs"
+openspec_change = "recon-wienerns-filter-primitive"
+tracking_issue = ""
+owner = "decoder"
+risk = "low"
+notes = "Adds a scheduler-free `splot-recon` AV2 §7.20.3 luma non-separable Wiener filter primitive `wiener_ns_filter_luma_block(output, params, source_sample)`. For each output sample, it reads the caller-resolved center sample, initializes `s = m << WIENER_NS_PREC_BITS` (`WIENER_NS_PREC_BITS = 7`), walks the verbatim `Wiener_Ns_Config_Y` tap table (`WIENER_NS_LUMA_TAPS = 32`, `WIENER_NS_LUMA_COEFFS = 16`), adds `(tap - m) * coeffs_by_class[subclass][idx]`, then writes `Clip1(Round2(s, 7))` into the caller's strided output. The caller resolves §7.20.2 source-sample clipping/stripe behavior, frame/restoration-unit traversal, frame-level-vs-unit coefficient selection, and any §7.20.4 pixel-classified Wiener subclass mapping. The primitive supports one class for the whole block or a row-major per-sample subclass map. It computes into a temporary buffer and validates dimensions, output stride/length, coefficient-class presence, subclass length/range, sample storage, and source sample range before mutating output, with typed `ReconError` failures. Strictly additive and no-output-change: a `pub` primitive with no runtime decode rewiring, so the current ac0ej3 path still rejects at `unsupported_wienerns_filter_bank`. Proven by zero-coefficient source-copy, hand-computed tap accumulation, subclass selection, 8-bit and 10-bit Clip1 clamps, fail-atomic output shape/class/subclass/source-sample errors, and u8-vs-10-bit storage rejection. This row does not implement chroma Wiener NS filtering, §7.20.2 source-sample clipping itself, §7.20 loop-restoration traversal, restoration-unit syntax, temporal/reference Wiener state, PC-Wiener classification, runtime decode wiring, or successful ac0ej3 decode."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "done"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-recon/src/wienerns_filter.rs::tests::zero_coefficients_copy_source_samples",
+    "crates/splot-recon/src/wienerns_filter.rs::tests::hand_computed_luma_tap_accumulation",
+    "crates/splot-recon/src/wienerns_filter.rs::tests::subclass_selects_coefficients_per_sample",
+    "crates/splot-recon/src/wienerns_filter.rs::tests::clip1_clamps_eight_bit_output",
+    "crates/splot-recon/src/wienerns_filter.rs::tests::ten_bit_u16_output_is_supported_and_clamped",
+    "crates/splot-recon/src/wienerns_filter.rs::tests::rejects_invalid_output_stride_fail_atomically",
+    "crates/splot-recon/src/wienerns_filter.rs::tests::rejects_short_output_fail_atomically",
+    "crates/splot-recon/src/wienerns_filter.rs::tests::rejects_missing_coefficient_classes_fail_atomically",
+    "crates/splot-recon/src/wienerns_filter.rs::tests::rejects_short_subclass_map_fail_atomically",
+    "crates/splot-recon/src/wienerns_filter.rs::tests::rejects_out_of_range_subclass_fail_atomically",
+    "crates/splot-recon/src/wienerns_filter.rs::tests::rejects_source_sample_out_of_range_fail_atomically",
+    "crates/splot-recon/src/wienerns_filter.rs::tests::rejects_u8_storage_for_ten_bit",
+]
+commands = [
+    "cargo test -p splot-recon wienerns_filter --locked",
+    "cargo clippy -p splot-recon --all-targets --locked -- -D warnings",
+    "RUSTDOCFLAGS=\"-D warnings\" cargo doc -p splot-recon --no-deps --locked",
+    "cargo xtask check-dependency-direction",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-decoder-conformance-coverage",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-recon/src/wienerns_filter.rs",
+    "crates/splot-recon/src/error.rs",
+    "crates/splot-recon/src/lib.rs",
+]
+diagnostics = []
+
+[[feature]]
 id = "RECON-SUBPEL-MC"
 name = "Sub-pel inter prediction convolution kernel"
 category = "infrastructure"

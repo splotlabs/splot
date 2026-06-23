@@ -585,6 +585,52 @@ pub enum ReconError {
         /// Supplied sample-line length.
         len: usize,
     },
+    /// A § 7.20.3 Wiener NS filter output stride was smaller than the block width.
+    WienerNsFilterOutputStrideTooSmall {
+        /// Supplied output stride in samples.
+        stride_samples: usize,
+        /// Required block width in samples.
+        width: usize,
+    },
+    /// A § 7.20.3 Wiener NS filter output buffer did not contain the strided
+    /// block area.
+    WienerNsFilterOutputTooSmall {
+        /// Minimum required sample count.
+        expected: usize,
+        /// Supplied output buffer length.
+        actual: usize,
+    },
+    /// A § 7.20.3 Wiener NS filter was supplied with no coefficient classes.
+    WienerNsFilterMissingClasses,
+    /// A § 7.20.3 Wiener NS luma subclass map did not cover every output sample.
+    WienerNsFilterSubclassMapTooShort {
+        /// Required subclass count (`width * height`).
+        expected: usize,
+        /// Supplied subclass count.
+        actual: usize,
+    },
+    /// A § 7.20.3 Wiener NS luma subclass index exceeded the supplied coefficient
+    /// class count.
+    WienerNsFilterSubclassOutOfRange {
+        /// Zero-based output sample index whose subclass was invalid.
+        sample_index: usize,
+        /// Supplied subclass index.
+        subclass: usize,
+        /// Supplied coefficient class count.
+        classes: usize,
+    },
+    /// A source sample supplied to a § 7.20.3 Wiener NS filter exceeded the active
+    /// decoded bit-depth range.
+    WienerNsFilterSourceSampleOutOfRange {
+        /// Block-relative source x coordinate requested by the tap.
+        x: isize,
+        /// Block-relative source y coordinate requested by the tap.
+        y: isize,
+        /// Observed source sample value.
+        value: u16,
+        /// Maximum sample value allowed by the active bit depth.
+        max: u16,
+    },
     /// A § 7.14.4 dequantization block had an unsupported transform shape.
     InvalidDequantBlockShape {
         /// Supplied dequantized transform-block width.
@@ -1167,6 +1213,39 @@ impl fmt::Display for ReconError {
             } => write!(
                 f,
                 "deblocking filter line too short: boundary {boundary}, max_width_neg {max_width_neg}, width {width}, len {len}"
+            ),
+            Self::WienerNsFilterOutputStrideTooSmall {
+                stride_samples,
+                width,
+            } => write!(
+                f,
+                "Wiener NS filter output stride {stride_samples} samples is smaller than block width {width}"
+            ),
+            Self::WienerNsFilterOutputTooSmall { expected, actual } => write!(
+                f,
+                "Wiener NS filter output buffer too small: expected at least {expected} samples, got {actual}"
+            ),
+            Self::WienerNsFilterMissingClasses => {
+                write!(
+                    f,
+                    "Wiener NS filter requires at least one coefficient class"
+                )
+            }
+            Self::WienerNsFilterSubclassMapTooShort { expected, actual } => write!(
+                f,
+                "Wiener NS subclass map too short: expected at least {expected} entries, got {actual}"
+            ),
+            Self::WienerNsFilterSubclassOutOfRange {
+                sample_index,
+                subclass,
+                classes,
+            } => write!(
+                f,
+                "Wiener NS subclass {subclass} at sample {sample_index} is outside {classes} coefficient classes"
+            ),
+            Self::WienerNsFilterSourceSampleOutOfRange { x, y, value, max } => write!(
+                f,
+                "Wiener NS source sample at ({x}, {y}) has value {value}, exceeding active bit-depth max {max}"
             ),
             Self::InvalidDequantBlockShape {
                 tx_width,

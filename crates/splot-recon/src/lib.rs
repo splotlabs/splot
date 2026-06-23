@@ -51,6 +51,10 @@
 //! ([`deblock_filter_choice`], the chosen filter width from the two perpendicular
 //! edge sample lines, the estimated second derivatives, and the `qThr`/`sideThr`
 //! threshold cascade over the caller-resolved `Q_First` table), and the
+//! § 7.20.3 luma non-separable Wiener filter primitive
+//! ([`wiener_ns_filter_luma_block`], the luma `Wiener_Ns_Config_Y` tap
+//! accumulation over caller-resolved source samples, subclasses, coefficients,
+//! and bit depth), and the
 //! § 7.13.3.18 block inter prediction (sub-pel motion compensation) kernel
 //! ([`subpel_predict_block`], the separable interpolation-filter convolution: a
 //! horizontal filter pass into an intermediate array then a vertical pass, the
@@ -69,7 +73,7 @@
 //! `startX`/`startY`/`stepX`/`stepY`), the § 7.13.3 compound / mask-blend /
 //! distance-weighted prediction, the § 7.13.3.19 block warp, the § 7.13.3
 //! reference-area clipping selection, intra block copy,
-//! runtime CLI Y4M output, or full AV2
+//! chroma Wiener NS loop restoration, runtime CLI Y4M output, or full AV2
 //! reference refresh semantics.
 //!
 //! The ownership model is view-first ([`docs/ZERO_COPY.md`](../../../docs/ZERO_COPY.md)):
@@ -114,6 +118,7 @@
 //! `RECON-DEBLOCK-FILTER-MAX-WIDTH`,
 //! `RECON-DEBLOCK-ADAPTIVE-STRENGTH`,
 //! `RECON-DEBLOCK-FILTER-CHOICE`,
+//! `RECON-WIENERNS-FILTER-PRIMITIVE`,
 //! `RECON-SUBPEL-MC`.
 //!
 //! Licensed under PolyForm Noncommercial 1.0.0; commercial use requires a
@@ -147,6 +152,7 @@ mod secondary_transform;
 mod subpel_mc;
 mod transform_params;
 mod views;
+mod wienerns_filter;
 mod workspace;
 mod y4m;
 
@@ -221,6 +227,9 @@ pub use subpel_mc::{
 };
 pub use transform_params::{TransformPass, dpcm_direction, get_transform_1d_type, transform_shift};
 pub use views::{FrameMut, FrameRef, PlaneMut, PlaneMutRows, PlaneRef, PlaneRefRows};
+pub use wienerns_filter::{
+    WIENER_NS_LUMA_COEFFS, WIENER_NS_LUMA_TAPS, WienerNsLumaFilter, wiener_ns_filter_luma_block,
+};
 pub use workspace::{
     CurrentFrameIntraEdges, CurrentFramePlane, CurrentFrameWorkspace, WorkspaceRectRows,
 };

@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 408 feature(s); 355 cite a spec section.
+Matrix version 1. Last reviewed 2026-06-15. 409 feature(s); 356 cite a spec section.
 
 One row per (spec section, feature) pair, in spec order; a feature citing both a syntax and a semantics section appears under both. The canonical status source is [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); the full per-feature ledger is [FEATURE-STATUS.md](./FEATURE-STATUS.md).
 
@@ -957,6 +957,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.17.7.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-17-7-1) | General | `RECON-DEBLOCK-SAMPLE-FILTER` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.17.7.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-17-7-2) | Filter choice process | `RECON-DEBLOCK-FILTER-CHOICE` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.20](./spec/av2/1.0.0/07-decoding-process.md#s-7-20) | Loop restoration process | `DECODE-INTER-MULTIREF-RUNTIME` | ✅ | ✅ | — | ✅ | 1 |
+| [§ 7.20.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-3) | Non-separable Wiener filter process | `RECON-WIENERNS-FILTER-PRIMITIVE` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.21](./spec/av2/1.0.0/07-decoding-process.md#s-7-21) | Output processes | `CLI-DECODE-HASH-OUTPUT` | ✅ | — | — | ✅ | 3 |
 | [§ 7.21](./spec/av2/1.0.0/07-decoding-process.md#s-7-21) | Output processes | `CONF-DECODE-RUNTIME-HASH-FUZZ` | ✅ | — | — | ✅ | 3 |
 | [§ 7.21](./spec/av2/1.0.0/07-decoding-process.md#s-7-21) | Output processes | `DECODE-LIMITS-RUNTIME-API` | ✅ | — | — | ✅ | — |
