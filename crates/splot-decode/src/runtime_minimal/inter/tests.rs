@@ -1176,7 +1176,17 @@ fn ten_bit_minimal_stream_reaches_runtime_storage_gate() {
     else {
         panic!("10-bit sequence must fail closed before 8-bit runtime output");
     };
-    assert_eq!(unsupported_reason(error), "unsupported_bit_depth");
+    let unsupported = match error {
+        DecodeError::UnsupportedFeature { unsupported } => unsupported,
+        _ => panic!("10-bit storage gate must be an unsupported-feature error"),
+    };
+    assert_eq!(unsupported.reason(), "unsupported_bit_depth");
+    assert_eq!(unsupported.matrix_row(), "ac0ej3-10bit-sequence-frontier");
+    assert_eq!(
+        unsupported.feature_id(),
+        "DECODE-AC0EJ3-10BIT-SEQUENCE-FRONTIER"
+    );
+    assert_eq!(unsupported.spec_section(), "6.4.1");
 }
 
 #[test]
