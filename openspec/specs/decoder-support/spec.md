@@ -122,6 +122,22 @@ remain partial.
   child-call ordering, frontier records, transactional CDF handling, checked
   arithmetic/resource failures, and unsupported SDP/BRU/inter gates
 
+### Requirement: ac0ej3 LR Source-Read Frontier Support Row
+The decoder support model SHALL track
+`DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER` as a distinct ac0ej3 support row. The
+row SHALL describe that the minimal runtime derives active §7.20.1 source-bound
+facts, reaches the §7.20.2 source-read boundary, and still fails closed before
+complete Wiener tap reads, chroma luma-source reads, loop-restoration filtering,
+reconstruction output, or successful ac0ej3 decode.
+
+#### Scenario: Matrix evidence records the source-read boundary
+- **WHEN** decoder support status is validated
+- **THEN** `ac0ej3-lr-source-read-frontier` remains partial
+- **AND** the row lists focused tests proving center-source frontier behavior and
+  the live ac0ej3 runtime diagnostic
+- **AND** the previous `unsupported_wienerns_lr_source_bounds` reason is no
+  longer the live ac0ej3 frontier
+
 ### Requirement: Generated decoder support status
 The repository SHALL generate a committed decoder support status document from
 `docs/DECODER-SUPPORT-MATRIX.toml`. The generated document SHALL summarize row

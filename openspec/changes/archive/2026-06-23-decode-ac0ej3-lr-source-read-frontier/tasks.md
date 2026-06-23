@@ -18,4 +18,4 @@
 
 ## 4. PR Discipline
 
-- [ ] 4.1 Create a ready PR only; request Claude and Codex reviews, wait for both latest-head responses, and address actionable feedback before merge.
+- [x] 4.1 Create a ready PR only; request Claude and Codex reviews, wait for both latest-head responses, and address actionable feedback before merge.
