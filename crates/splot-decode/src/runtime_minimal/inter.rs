@@ -88,10 +88,12 @@ impl Mv {
 /// Decodes the minimal inter frame, given the post-key reference store, and returns
 /// its displayed frame. The reference for slot `ref_frame_idx[0]` must be present.
 ///
-/// This actually parses the § 5.18.2 inter frame header (to
-/// [`FrameHeaderParseStatus::InterHeaderComplete`]), walks the § 5.20.3 partition
-/// tree, reads the § 5.20.7.6 inter `mode_info` (`is_inter` / `skip` / `single_mode`)
-/// from the tile arithmetic stream, derives the § 7.11 zero motion vector, runs the
+/// The caller provides the already-validated § 5.18.2 inter frame header core
+/// (parsed to [`FrameHeaderParseStatus::InterHeaderComplete`]) so the runtime can
+/// charge decoded-frame byte limits before reconstruction without parsing the
+/// same header twice. This function walks the § 5.20.3 partition tree, reads the
+/// § 5.20.7.6 inter `mode_info` (`is_inter` / `skip` / `single_mode`) from the
+/// tile arithmetic stream, derives the § 7.11 zero motion vector, runs the
 /// § 7.13.3.18 zero-fraction motion-compensation copy, and validates § 8.2.4
 /// `exit_symbol()`. No step is hardcoded: a wrong symbol read fails `exit_symbol()`.
 #[allow(clippy::too_many_arguments)]
@@ -100,6 +102,7 @@ pub(super) fn decode_minimal_inter_frame(
     candidate: &DecodePlannedObu,
     bytes: &[u8],
     frame_envelope: ObuEnvelope<'_>,
+    core: FrameHeaderCore,
     sequence: &SequenceHeader,
     options: DecodeOptions,
     header: IvfHeader,
@@ -115,10 +118,6 @@ pub(super) fn decode_minimal_inter_frame(
             SPEC_HEADER,
         ));
     }
-
-    // §5.18.2 inter frame-header parse using the post-key reference state.
-    let core = parse_inter_frame_core(frame_envelope, sequence, reference)?;
-    validate_inter_frame_core(&core, sequence, offset)?;
 
     // VERIFIED-SUBSET DISCIPLINE (§7.23 cross-frame CDF save/load): the decoder
     // decodes every frame from the default (init_*_cdfs) entropy state and does NOT
@@ -890,6 +889,18 @@ impl<'a> InterReferenceState<'a> {
             &self.ref_base_q_idx,
         )
     }
+}
+
+/// Parses and validates the §5.18.2 inter frame header using the post-key
+/// reference state.
+pub(super) fn parse_validated_inter_frame_core(
+    envelope: ObuEnvelope<'_>,
+    sequence: &SequenceHeader,
+    reference: &InterReferenceState<'_>,
+) -> Result<FrameHeaderCore> {
+    let core = parse_inter_frame_core(envelope, sequence, reference)?;
+    validate_inter_frame_core(&core, sequence, envelope.offset)?;
+    Ok(core)
 }
 
 /// Parses the §5.18.2 inter frame header to [`FrameHeaderParseStatus::InterHeaderComplete`]

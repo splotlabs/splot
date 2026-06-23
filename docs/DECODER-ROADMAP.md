@@ -1008,7 +1008,7 @@ diagnostic after byte planning succeeds:
   "spec_section": "7.1",
   "matrix_row": "minimal-decode-tier-contract",
   "feature_id": "DECODE-MINIMAL-TIER-RUNTIME-SUCCESS",
-  "message": "minimal tier requires exactly three planned OBUs, one frame candidate, and no source warnings",
+  "message": "minimal tier requires a leading [TD, SEQ, CLK] frame unit",
   "remediation": "Use a stream inside minimal-intra-8bit420-hash-v1 or wait for the referenced decoder support row.",
   "detail_kind": "unsupported_feature",
   "unsupported_reason": "unexpected_planned_stream_shape",
@@ -1023,6 +1023,12 @@ such as `unsupported_reason`, `obu_type`, and `byte_offset`.
 Runtime hash tier rejections use `minimal-decode-tier-contract` /
 `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS` metadata plus `unsupported_reason`,
 `tier_id`, and an optional byte offset.
+Mission-scale IVF streams are no longer rejected solely because they contain
+more than three frame candidates; terminal `ivf/trailing-partial-frame-header`
+warnings are permitted, while fatal IVF errors and non-terminal warning kinds
+remain outside the tier. The current local `ac0ej3.ivf` first runtime stop is
+`unexpected_obu_order` at the unsupported leading CLK-plus-tile-group framing
+shape.
 
 The CLI renders diagnostics as text by default and as JSON with
 `splot decode --json`. Library-facing decode diagnostics must preserve stable
