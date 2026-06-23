@@ -13,7 +13,11 @@ frontier boundary tracked by Feature ID
 partition-size table, allowed-partition derivation, partition decision,
 partition-entry symbol read, and partition CDF context boundaries to advance
 from a supported minimal intra tile partition root to the first
-`decode_block()` frontier.
+`decode_block()` frontier. When the caller supplies the narrow frame-level
+Wiener NS loop-restoration state tracked by
+`DECODE-AC0EJ3-LR-UNIT-SYNTAX-FRONTIER`, the boundary SHALL first consume the
+covered AV2 §5.20.10.4/§5.20.10.5 `read_lr()` / `use_wiener_ns` symbols and
+then continue partition traversal from the resulting live symbol cursor.
 
 #### Scenario: Frontier uses existing partition components
 - **WHEN** the frontier boundary reads a partition decision for a supported
@@ -26,8 +30,9 @@ from a supported minimal intra tile partition root to the first
   `tile-partition-symbol-read-boundary`
 - **AND** it resolves the final decision through
   `tile-partition-decision-boundary`
-- **AND** it gates §5.20.10.4 root `read_lr()` syntax with explicit typed
-  unsupported state before any partition-entry symbol is read
+- **AND** it consumes supported frame-level Wiener NS LR unit symbols before the
+  first partition-entry symbol when loop restoration is active for that narrow
+  state
 
 #### Scenario: Prefix child calls are emitted in spec order
 - **WHEN** a supported frontier selects `PARTITION_HORZ`, `PARTITION_VERT`,
@@ -76,15 +81,17 @@ back to the work unit only after a frontier is planned successfully.
 ### Requirement: Traversal Scope Honesty
 The traversal frontier boundary SHALL reject or defer unsupported paths with typed
 crate-private errors and SHALL NOT expand public decode support beyond the
-matrix row. SDP, BRU-active, bridge, inter/mixed-region, broad `decode_tile()`,
-`decode_block()` syntax, `MiSizes` mutation, reconstruction, output, CDF
-copyback/averaging, block-decoder continuation APIs, and reference refresh
-behavior remain outside this capability.
+matrix row. SDP, BRU-active, bridge, broad inter/mixed-region behavior, broad
+`decode_tile()`, unsupported loop-restoration variants, `decode_block()` syntax,
+`MiSizes` mutation, reconstruction, output, CDF copyback/averaging,
+block-decoder continuation APIs, and reference refresh behavior remain outside
+this capability.
 
 #### Scenario: Unsupported paths stay explicit
-- **WHEN** traversal input requires SDP, §5.20.10.4 root `read_lr()` syntax,
-  BRU-active behavior, bridge behavior, inter-only behavior, or block syntax
-  beyond partition traversal
+- **WHEN** traversal input requires SDP, PC-Wiener LR unit syntax, switchable LR
+  unit syntax, retaining or applying per-unit Wiener coefficients, BRU-active
+  behavior, bridge behavior, broad inter-only behavior, or block syntax beyond
+  partition traversal
 - **THEN** the boundary returns an explicit unsupported/residual frontier result
   tied to `tile-partition-traversal-boundary`
 - **AND** no public CLI success path or decoder support row is promoted by this
@@ -116,6 +123,84 @@ or expanding the frontier beyond §5.20.3.1 partition traversal.
 - **THEN** the bridge asserts the frontier before §5.20.4.1 `decode_block()`
 - **AND** it does not mutate `MiSizes`, parse block syntax, reconstruct pixels,
   update references, emit output, or perform CDF copyback/averaging
+
+### Requirement: Frame-level Wiener NS LR Unit Activity Summary
+The tile partition traversal boundary SHALL report how many supported
+frame-level Wiener NS LR units were consumed and how many selected
+`RESTORE_WIENER_NONSEP` from the AV2 §5.20.10.5 `use_wiener_ns` symbol. A
+`use_wiener_ns` value of zero SHALL be counted as an inactive `RESTORE_NONE`
+unit, and a non-zero value SHALL be counted as an active
+`RESTORE_WIENER_NONSEP` unit. The boundary SHALL preserve the existing
+transactional CDF behavior: failed traversal attempts MUST NOT commit LR-unit
+CDF mutations.
+
+#### Scenario: Inactive frame-level units are reported
+- **WHEN** a supported superblock-root LR frontier consumes frame-level Wiener
+  NS units whose `use_wiener_ns` symbols all select zero
+- **THEN** the frontier reports the consumed unit count
+- **AND** it reports zero active Wiener NS units
+- **AND** it commits the same CDF updates and symbol position as the existing LR
+  syntax frontier
+
+#### Scenario: Active frame-level units are reported
+- **WHEN** a supported superblock-root LR frontier consumes a frame-level Wiener
+  NS unit whose `use_wiener_ns` symbol selects non-zero
+- **THEN** the frontier reports at least one active Wiener NS unit
+- **AND** callers can fail closed before claiming loop-restoration
+  reconstruction or output support
+
+#### Scenario: Rejected LR paths stay transactional
+- **WHEN** the LR frontier fails due to a resource limit, unsupported SDP plane
+  range, unsupported LR variant, or invalid unit geometry
+- **THEN** the work unit's tile CDF subset remains unchanged
+- **AND** no inactive-or-active LR-unit support claim is made for that input
+
+### Requirement: Active Wiener NS LR Source-Bounds Frontier
+
+The tile partition traversal boundary SHALL retain active frame-level Wiener NS
+loop-restoration source-bound facts for the supported root LR frontier.
+For each retained block, the facts SHALL identify the plane, luma 4x4 row and
+column, selected LR unit row and column, current-plane block coordinates and
+size, and the caller-resolved AV2 §7.20.1 luma source/stripe bounds. Failed
+source-bound derivation MUST NOT commit LR-unit CDF mutations.
+
+When an active Wiener NS LR unit reaches AV2 §5.20.10.6 with
+`readFrameFilters == 0`, the boundary SHALL consume the entropy-coded per-unit
+Wiener NS filter syntax needed to complete `read_lr()` before retaining the
+source-bound facts. The decoded coefficients SHALL NOT be exposed as
+reconstruction support by this boundary.
+
+#### Scenario: Active source bounds are retained for a supported root unit
+
+- **WHEN** a supported root LR frontier consumes an active
+  frame-level Wiener NS unit
+- **THEN** the frontier includes active source-bound facts for the covered
+  loop-restore blocks
+- **AND** each retained block cites the active unit row and column selected by
+  the already-consumed LR unit syntax
+- **AND** each retained block includes the §7.20.1 luma source and stripe bounds
+
+#### Scenario: Per-unit Wiener NS filter syntax completes before bounds
+
+- **WHEN** an active Wiener NS unit uses `readFrameFilters == 0`
+- **THEN** the boundary consumes the required §5.20.10.6 per-unit filter syntax
+- **AND** source-bound facts are retained only after that syntax succeeds
+- **AND** the decoded filter coefficients are not reported as reconstruction
+  output
+
+#### Scenario: Inactive units do not retain active source blocks
+
+- **WHEN** a supported root LR frontier consumes only inactive frame-level
+  Wiener NS units
+- **THEN** the frontier preserves the inactive unit selections
+- **AND** the active source-bound list is empty
+
+#### Scenario: Tile-clamped source bounds follow the sequence filter flag
+
+- **WHEN** an active LR unit is consumed for a tile range smaller than the frame
+- **AND** loop filters are disabled across tiles
+- **THEN** retained source-bound facts use the tile MI range for `LumaStart*`
+  and `LumaEnd*`
 
 ### Requirement: Active Wiener NS LR Source-Read Frontier
 The tile partition traversal boundary and minimal runtime SHALL advance active
@@ -149,3 +234,68 @@ decoded output.
   diagnostic
 - **AND** LR CDF mutations and retained frontier state are not committed past
   the failed read boundary
+
+### Requirement: Frame-Level Wiener NS LR Unit Selection State
+
+The tile partition traversal boundary SHALL preserve the supported frame-level
+Wiener NS LR-unit selections in syntax order. Each selection SHALL identify the
+plane, the absolute LR unit row and column after tile-origin offset adjustment,
+and whether AV2 §5.20.10.5 `use_wiener_ns` selected active
+`RESTORE_WIENER_NONSEP`. The boundary SHALL preserve existing aggregate consumed
+and active unit counts, and failed traversal attempts MUST NOT commit LR-unit CDF
+mutations.
+
+#### Scenario: Inactive unit selection is retained
+
+- **WHEN** a supported superblock-root LR frontier consumes an inactive
+  frame-level Wiener NS unit
+- **THEN** the frontier includes one selection with the corresponding plane,
+  unit row, unit column, and `active = false`
+- **AND** the aggregate active count remains zero
+
+#### Scenario: Active unit selection is retained
+
+- **WHEN** a supported superblock-root LR frontier consumes an active
+  frame-level Wiener NS unit
+- **THEN** the frontier includes one selection with the corresponding plane,
+  unit row, unit column, and `active = true`
+- **AND** callers can continue to fail closed before claiming loop-restoration
+  reconstruction or output support
+
+#### Scenario: Multi-unit syntax order is retained
+
+- **WHEN** a supported superblock-root LR frontier covers multiple frame-level
+  Wiener NS LR units
+- **THEN** the frontier's selections are ordered by the §5.20.10.4 unit-row loop
+  and then the unit-column loop
+- **AND** each stored coordinate uses the tile-origin-adjusted LR unit index
+
+### Requirement: Frame-level Wiener NS LR Unit Syntax Frontier
+The traversal frontier boundary SHALL model the ac0ej3 frame-level Wiener NS LR
+unit syntax tracked by `DECODE-AC0EJ3-LR-UNIT-SYNTAX-FRONTIER`. For each covered
+AV2 §5.20.10.4 restoration unit whose plane has
+`FrameRestorationType == RESTORE_WIENER_NONSEP` and `frame_filters_on == true`,
+the boundary SHALL consume one `use_wiener_ns S()` symbol from
+`TileUseWienerNsCdf`, record/count the resulting LR type as either
+`RESTORE_WIENER_NONSEP` or `RESTORE_NONE`, and skip the per-unit
+`read_wienerns_filter(..., readFrameFilters == 0)` coefficient body exactly as
+§5.20.10.6 specifies for frame-level filters.
+
+#### Scenario: Frame-level Wiener NS units precede partition syntax
+- **WHEN** a supported tile root covers one or more frame-level Wiener NS LR
+  units before partition traversal
+- **THEN** the traversal consumes the matching number of `use_wiener_ns` symbols
+  before the first partition-entry symbol
+- **AND** the resulting `decode_block()` frontier checkpoint reflects both the
+  LR unit symbols and partition symbols already consumed
+
+#### Scenario: SDP LR plane ranges remain unsupported
+- **WHEN** an intra SDP root would require frame-level Wiener NS LR symbols for
+  a non-luma `PlaneStart..PlaneEnd` range
+- **THEN** the traversal rejects the SDP path before reading LR unit symbols
+
+#### Scenario: Non-frame-level LR remains unsupported
+- **WHEN** loop restoration uses PC-Wiener, switchable restoration, or Wiener NS
+  without a frame-level bank for the active plane
+- **THEN** the traversal rejects the input with a typed unsupported
+  loop-restoration frontier before reading partition symbols
