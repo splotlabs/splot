@@ -1226,17 +1226,21 @@ fn parsed_wienerns_bank_reports_next_runtime_frontier() {
     assert_eq!(unsupported.reason(), "unsupported_active_wienerns_lr_units");
     assert_eq!(
         unsupported.matrix_row(),
-        "ac0ej3-inactive-lr-units-frontier"
+        "ac0ej3-lr-unit-selections-frontier"
     );
     assert_eq!(
         unsupported.feature_id(),
-        "DECODE-AC0EJ3-INACTIVE-LR-UNITS-FRONTIER"
+        "DECODE-AC0EJ3-LR-UNIT-SELECTIONS-FRONTIER"
     );
     assert_eq!(unsupported.spec_section(), "5.20.10.5");
     assert_eq!(unsupported.byte_offset(), Some(ByteOffset::new(74)));
     assert!(
         unsupported.message().contains("RESTORE_WIENER_NONSEP"),
         "message should make clear that an active LR unit is the unsupported frontier"
+    );
+    assert!(
+        unsupported.message().contains("per-unit selection state"),
+        "message should make clear that the retained selection frontier owns the diagnostic"
     );
     assert!(
         unsupported
