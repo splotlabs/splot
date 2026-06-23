@@ -424,13 +424,13 @@ fn following_inter_envelope<'a>(
 /// multi-reference fixture). A 4th frame is rejected — not yet fixtured bit-exact.
 const MAX_MULTIFRAME_CANDIDATES: u64 = 3;
 
-/// Validates the planned stream shape for the multi-frame runtime and returns the
-/// number of accepted frame candidates (1 for a single intra key, 2 for a key plus one
-/// inter frame, 3 for a key plus two inter frames). The shape is otherwise the minimal
-/// tier's: no source warnings, one base-layer sequence header, and the traced
+/// Validates the planned stream shape for the multi-frame runtime: one accepted
+/// frame candidate for a single intra key, two for a key plus one inter frame, or
+/// three for a key plus two inter frames. The shape is otherwise the minimal tier's:
+/// no source warnings, one base-layer sequence header, and the traced
 /// `[TD, SEQ, CLK] + [TD, OBU_REGULAR_TILE_GROUP]...` OBU order. IVF frame records
 /// are a non-normative container grouping and are validated separately.
-fn ensure_multiframe_plan_shape(plan: &DecodeStreamPlan) -> Result<u64> {
+fn ensure_multiframe_plan_shape(plan: &DecodeStreamPlan) -> Result<()> {
     let frame_count = plan.frame_candidate_count();
     if frame_count == 0 || frame_count > MAX_MULTIFRAME_CANDIDATES {
         return Err(unsupported(
@@ -443,7 +443,7 @@ fn ensure_multiframe_plan_shape(plan: &DecodeStreamPlan) -> Result<u64> {
     // [TD, OBU_REGULAR_TILE_GROUP] (2 OBUs), so N frames => 3 + 2*(N - 1) OBUs.
     let expected_obu_count = 3 + 2 * (frame_count - 1);
     if plan.source_warnings().is_empty() && plan.obu_count() == expected_obu_count {
-        Ok(frame_count)
+        Ok(())
     } else {
         Err(unsupported(
             "unexpected_planned_stream_shape",
