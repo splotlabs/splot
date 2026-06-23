@@ -27,6 +27,51 @@ const BLOCK_8X32: usize = 21;
 const BLOCK_32X8: usize = 22;
 const BLOCK_64X64: usize = 12;
 const MI_SIZE: usize = 4;
+const LR_BANK_SIZE: usize = 4;
+const WIENER_NS_LUMA_COEFFS: usize = 16;
+const WIENER_NS_CHROMA_COEFFS: usize = 18;
+const WIENER_NS_SHORT_COEFFS: usize = 6;
+const WIENER_NS_LUMA_SUBSETS: usize = 4;
+const WIENER_NS_CHROMA_SUBSETS: usize = 3;
+const WIENER_NS_TAPS_K: [[u8; WIENER_NS_CHROMA_COEFFS]; 2] = [
+    [6, 6, 5, 5, 5, 5, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4],
+    [6, 6, 5, 5, 5, 5, 5, 5, 5, 5, 4, 4, 4, 4, 4, 4, 4, 4],
+];
+const WIENER_NS_TAPS_PRESENT: [[[bool; WIENER_NS_CHROMA_COEFFS]; WIENER_NS_LUMA_SUBSETS]; 2] = [
+    [
+        [
+            true, true, true, true, true, true, false, false, false, false, false, false, false,
+            false, false, false, false, false,
+        ],
+        [
+            true, true, false, false, false, false, true, true, true, true, true, true, false,
+            false, false, false, false, false,
+        ],
+        [
+            true, true, true, true, true, true, true, true, true, true, true, true, false, false,
+            false, false, false, false,
+        ],
+        [
+            true, true, true, true, true, true, true, true, true, true, true, true, true, true,
+            true, true, false, false,
+        ],
+    ],
+    [
+        [
+            true, true, true, true, true, true, false, false, false, false, false, false, false,
+            false, false, false, false, false,
+        ],
+        [
+            true, true, true, true, true, true, true, true, true, true, false, false, false, false,
+            false, false, false, false,
+        ],
+        [
+            true, true, true, true, true, true, true, true, true, true, true, true, true, true,
+            true, true, true, true,
+        ],
+        [false; WIENER_NS_CHROMA_COEFFS],
+    ],
+];
 
 /// Decoder support matrix row for this traversal frontier.
 pub(crate) const TILE_PARTITION_TRAVERSAL_MATRIX_ROW: &str = "tile-partition-traversal-boundary";
@@ -82,15 +127,21 @@ pub(crate) enum TilePartitionLoopRestorationState {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TilePartitionWienerNsLoopRestorationState {
     plane_enabled: [bool; 3],
+    frame_filters_on: [bool; 3],
     unit_size: [usize; 3],
 }
 
 impl TilePartitionWienerNsLoopRestorationState {
     /// Creates checked-copyable Wiener NS LR unit facts for the active frame.
     #[must_use]
-    pub(crate) const fn new(plane_enabled: [bool; 3], unit_size: [usize; 3]) -> Self {
+    pub(crate) const fn new(
+        plane_enabled: [bool; 3],
+        frame_filters_on: [bool; 3],
+        unit_size: [usize; 3],
+    ) -> Self {
         Self {
             plane_enabled,
+            frame_filters_on,
             unit_size,
         }
     }
@@ -108,6 +159,7 @@ pub(crate) struct TilePartitionFrameFacts {
     frame_is_intra: bool,
     enable_sdp: bool,
     enable_extended_sdp: bool,
+    disable_loopfilters_across_tiles: bool,
     loop_restoration: TilePartitionLoopRestorationState,
     features: PartitionFeatureFlags,
     max_pb_aspect_ratio: usize,
@@ -128,6 +180,7 @@ impl TilePartitionFrameFacts {
         frame_is_intra: bool,
         enable_sdp: bool,
         enable_extended_sdp: bool,
+        disable_loopfilters_across_tiles: bool,
         loop_restoration: TilePartitionLoopRestorationState,
         features: PartitionFeatureFlags,
         max_pb_aspect_ratio: usize,
@@ -144,6 +197,7 @@ impl TilePartitionFrameFacts {
             frame_is_intra,
             enable_sdp,
             enable_extended_sdp,
+            disable_loopfilters_across_tiles,
             loop_restoration,
             features,
             max_pb_aspect_ratio,
@@ -295,6 +349,7 @@ pub(crate) struct TileLoopRestorationRootFrontier {
     lr_units_consumed: usize,
     active_wiener_ns_units: usize,
     selections: Vec<WienerNsLrUnitSelection>,
+    active_source_blocks: Vec<WienerNsLrSourceBlock>,
 }
 
 /// Caller-visible selection state for one supported Wiener NS LR unit.
@@ -308,6 +363,41 @@ pub(crate) struct WienerNsLrUnitSelection {
     pub(crate) unit_col: usize,
     /// Whether AV2 §5.20.10.5 selected `RESTORE_WIENER_NONSEP`.
     pub(crate) active: bool,
+}
+
+/// Caller-visible §7.20.1 source-bound facts for one active Wiener NS LR block.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct WienerNsLrSourceBlock {
+    /// Plane whose active LR unit covers the block.
+    pub(crate) plane: usize,
+    /// Loop-restore block row in luma 4x4 units.
+    pub(crate) row: usize,
+    /// Loop-restore block column in luma 4x4 units.
+    pub(crate) col: usize,
+    /// Absolute LR unit row selected for this block.
+    pub(crate) unit_row: usize,
+    /// Absolute LR unit column selected for this block.
+    pub(crate) unit_col: usize,
+    /// Block x coordinate in current-plane samples.
+    pub(crate) x: usize,
+    /// Block y coordinate in current-plane samples.
+    pub(crate) y: usize,
+    /// Block width in current-plane samples.
+    pub(crate) width: usize,
+    /// Block height in current-plane samples.
+    pub(crate) height: usize,
+    /// Inclusive `LumaStartX` bound from AV2 §7.20.1.
+    pub(crate) luma_start_x: usize,
+    /// Inclusive `LumaEndX` bound from AV2 §7.20.1.
+    pub(crate) luma_end_x: usize,
+    /// Inclusive `LumaStartY` bound from AV2 §7.20.1.
+    pub(crate) luma_start_y: usize,
+    /// Inclusive `LumaEndY` bound from AV2 §7.20.1.
+    pub(crate) luma_end_y: usize,
+    /// Inclusive `LumaStripeStartY` bound from AV2 §7.20.1.
+    pub(crate) luma_stripe_start_y: usize,
+    /// Inclusive `LumaStripeEndY` bound from AV2 §7.20.1.
+    pub(crate) luma_stripe_end_y: usize,
 }
 
 impl TileLoopRestorationRootFrontier {
@@ -341,6 +431,12 @@ impl TileLoopRestorationRootFrontier {
         &self.selections
     }
 
+    /// Active Wiener NS blocks with caller-resolved §7.20.1 source bounds.
+    #[must_use]
+    pub(crate) fn active_source_blocks(&self) -> &[WienerNsLrSourceBlock] {
+        &self.active_source_blocks
+    }
+
     /// Whether every consumed LR unit selected `RESTORE_NONE`.
     #[must_use]
     pub(crate) const fn all_lr_units_inactive(&self) -> bool {
@@ -353,9 +449,25 @@ struct WienerNsLrUnitActivity {
     units_consumed: usize,
     active_units: usize,
     selections: Vec<WienerNsLrUnitSelection>,
+    active_source_blocks: Vec<WienerNsLrSourceBlock>,
+    unit_filter_state: WienerNsUnitFilterState,
+    retain_source_blocks: bool,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct WienerNsUnitFilterState {
+    bank_size: [usize; 3],
+    bank_ptr: [usize; 3],
 }
 
 impl WienerNsLrUnitActivity {
+    fn retaining_source_blocks() -> Self {
+        Self {
+            retain_source_blocks: true,
+            ..Self::default()
+        }
+    }
+
     fn record(
         &mut self,
         plane: usize,
@@ -373,6 +485,24 @@ impl WienerNsLrUnitActivity {
             unit_col,
             active,
         });
+        Ok(())
+    }
+
+    fn record_source_block(
+        &mut self,
+        block: WienerNsLrSourceBlock,
+        limits: DecodeLimits,
+    ) -> Result<(), TilePartitionTraversalError> {
+        if !self.retain_source_blocks {
+            return Ok(());
+        }
+        let next_len = checked_add(
+            "lr_active_source_blocks",
+            self.active_source_blocks.len(),
+            1,
+        )?;
+        limits.ensure_allocation_len(DecodeLimitName::MaxLumaSamplesPerFrame, next_len as u64)?;
+        self.active_source_blocks.push(block);
         Ok(())
     }
 }
@@ -547,7 +677,7 @@ pub(crate) fn consume_tile_loop_restoration_root_frontier(
     }
 
     let mut cdfs = work_unit.cdf().tile_cdfs().clone();
-    let mut lr_activity = WienerNsLrUnitActivity::default();
+    let mut lr_activity = WienerNsLrUnitActivity::retaining_source_blocks();
     let config = SymbolDecoderConfig::new().with_cdf_update_mode(work_unit.cdf().update_mode());
     let mut symbols = SymbolDecoder::with_base_and_config(
         work_unit.tile_bytes(),
@@ -571,6 +701,7 @@ pub(crate) fn consume_tile_loop_restoration_root_frontier(
             &mut cdfs,
             &mut symbols,
             &mut lr_activity,
+            limits,
         )?;
     }
     *work_unit.cdf_mut().tile_cdfs_mut() = cdfs;
@@ -580,6 +711,7 @@ pub(crate) fn consume_tile_loop_restoration_root_frontier(
         lr_units_consumed: lr_activity.units_consumed,
         active_wiener_ns_units: lr_activity.active_units,
         selections: lr_activity.selections,
+        active_source_blocks: lr_activity.active_source_blocks,
     })
 }
 
@@ -655,6 +787,7 @@ pub(crate) fn plan_tile_partition_traversal_cursor<'payload>(
             &mut cdfs,
             &mut symbols,
             &mut lr_activity,
+            limits,
         )?;
 
         let symbol_count_before = symbols.symbol_count();
@@ -852,6 +985,7 @@ where
                     work_unit.cdf_mut().tile_cdfs_mut(),
                     &mut symbols,
                     &mut lr_activity,
+                    limits,
                 )?;
 
                 let decision = mi_size_state
@@ -971,6 +1105,7 @@ fn read_loop_restoration_for_call(
     cdfs: &mut super::cdf::TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
     lr_activity: &mut WienerNsLrUnitActivity,
+    limits: DecodeLimits,
 ) -> Result<(), TilePartitionTraversalError> {
     // AV2 §5.20.3.1 invokes §5.20.10.4 `read_lr()` only for superblock-root
     // partition calls (`SbSize == bSize`), before `read_partition`.
@@ -995,6 +1130,7 @@ fn read_loop_restoration_for_call(
         read_wiener_ns_lr_units_for_plane(
             plane,
             lr.unit_size[plane],
+            lr.frame_filters_on[plane],
             frame,
             call,
             tile_bounds,
@@ -1003,6 +1139,7 @@ fn read_loop_restoration_for_call(
             cdfs,
             symbols,
             lr_activity,
+            limits,
         )?;
     }
     Ok(())
@@ -1012,6 +1149,7 @@ fn read_loop_restoration_for_call(
 fn read_wiener_ns_lr_units_for_plane(
     plane: usize,
     unit_size: usize,
+    frame_filters_on: bool,
     frame: TilePartitionFrameFacts,
     call: TilePartitionCall,
     tile_bounds: TilePartitionBounds,
@@ -1020,6 +1158,7 @@ fn read_wiener_ns_lr_units_for_plane(
     cdfs: &mut super::cdf::TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
     lr_activity: &mut WienerNsLrUnitActivity,
+    limits: DecodeLimits,
 ) -> Result<(), TilePartitionTraversalError> {
     if unit_size == 0 {
         return Err(
@@ -1089,7 +1228,31 @@ fn read_wiener_ns_lr_units_for_plane(
         for unit_col in unit_col_start..unit_col_end {
             let unit_row = checked_add("lr_unit_row", unit_row, lr_row_offset)?;
             let unit_col = checked_add("lr_unit_col", unit_col, lr_col_offset)?;
-            read_wiener_ns_lr_unit(plane, unit_row, unit_col, cdfs, symbols, lr_activity)?;
+            let active = read_wiener_ns_lr_unit(
+                plane,
+                frame_filters_on,
+                unit_row,
+                unit_col,
+                cdfs,
+                symbols,
+                lr_activity,
+            )?;
+            if active {
+                record_active_wiener_ns_source_blocks_for_unit(
+                    LrSourceBlockDerivation {
+                        plane,
+                        unit_size,
+                        unit_row,
+                        unit_col,
+                        frame,
+                        tile_bounds,
+                        sub_x,
+                        sub_y,
+                    },
+                    limits,
+                    lr_activity,
+                )?;
+            }
         }
     }
     Ok(())
@@ -1097,12 +1260,13 @@ fn read_wiener_ns_lr_units_for_plane(
 
 fn read_wiener_ns_lr_unit(
     plane: usize,
+    frame_filters_on: bool,
     unit_row: usize,
     unit_col: usize,
     cdfs: &mut super::cdf::TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
     lr_activity: &mut WienerNsLrUnitActivity,
-) -> Result<(), TilePartitionTraversalError> {
+) -> Result<bool, TilePartitionTraversalError> {
     let use_wiener_ns = cdfs
         .with_row_mut(super::cdf::TileCdfSelector::UseWienerNs, |row| {
             symbols.read_symbol(row)
@@ -1110,10 +1274,276 @@ fn read_wiener_ns_lr_unit(
         .get()
         != 0;
     lr_activity.record(plane, unit_row, unit_col, use_wiener_ns)?;
-    // AV2 §5.20.10.5 maps `use_wiener_ns == 0` to `RESTORE_NONE`; §5.20.10.6
-    // then returns immediately for this frontier's `readFrameFilters == 0`
-    // frame-filter planes, so each LR unit consumes exactly this one symbol.
+    // AV2 §5.20.10.5 maps `use_wiener_ns == 0` to `RESTORE_NONE`; active
+    // units immediately invoke §5.20.10.6 with `readFrameFilters == 0`.
+    if use_wiener_ns && !frame_filters_on {
+        read_wiener_ns_unit_filter(plane, cdfs, symbols, &mut lr_activity.unit_filter_state)?;
+    }
+    Ok(use_wiener_ns)
+}
+
+fn read_wiener_ns_unit_filter(
+    plane: usize,
+    cdfs: &mut super::cdf::TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    state: &mut WienerNsUnitFilterState,
+) -> Result<(), TilePartitionTraversalError> {
+    // This is the entropy-coded `readFrameFilters == 0` branch of AV2
+    // §5.20.10.6. The current frontier consumes syntax and CDF updates only; the
+    // decoded coefficients stay outside runtime reconstruction until §7.20.3 is
+    // implemented.
+    let merged = symbols.read_literal(1)? != 0;
+    let previous_bank_size = state.bank_size[plane];
+    for _ in 0..previous_bank_size.saturating_sub(1) {
+        let use_bank = symbols.read_literal(1)? != 0;
+        if use_bank {
+            break;
+        }
+    }
+    if merged {
+        if state.bank_size[plane] == 0 {
+            state.bank_size[plane] = 1;
+        }
+        return Ok(());
+    }
+
+    if state.bank_size[plane] < LR_BANK_SIZE {
+        state.bank_ptr[plane] = state.bank_size[plane];
+        state.bank_size[plane] = checked_add("wiener_ns_bank_size", state.bank_size[plane], 1)?;
+    } else {
+        state.bank_ptr[plane] =
+            checked_add("wiener_ns_bank_ptr", state.bank_ptr[plane], 1)? % LR_BANK_SIZE;
+    }
+
+    let subset = read_wiener_ns_subset_symbol(plane, cdfs, symbols)?;
+    let wiener_ns_uv_sym = if plane > 0 && subset > 0 {
+        cdfs.with_row_mut(super::cdf::TileCdfSelector::WienerNsUvSym, |row| {
+            symbols.read_symbol(row)
+        })??
+        .get()
+            != 0
+    } else {
+        false
+    };
+
+    let plane_index = usize::from(plane > 0);
+    let n_coeffs = if plane > 0 {
+        WIENER_NS_CHROMA_COEFFS
+    } else {
+        WIENER_NS_LUMA_COEFFS
+    };
+    let mut j = 0usize;
+    while j < n_coeffs {
+        if WIENER_NS_TAPS_PRESENT[plane_index][subset][j] {
+            read_wiener_ns_4part(WIENER_NS_TAPS_K[plane_index][j], cdfs, symbols)?;
+        }
+        if plane > 0 && j >= WIENER_NS_SHORT_COEFFS && wiener_ns_uv_sym {
+            j = checked_add("wiener_ns_coeff_index", j, 2)?;
+        } else {
+            j = checked_add("wiener_ns_coeff_index", j, 1)?;
+        }
+    }
     Ok(())
+}
+
+fn read_wiener_ns_subset_symbol(
+    plane: usize,
+    cdfs: &mut super::cdf::TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+) -> Result<usize, TilePartitionTraversalError> {
+    let num_subsets = if plane > 0 {
+        WIENER_NS_CHROMA_SUBSETS
+    } else {
+        WIENER_NS_LUMA_SUBSETS
+    };
+    let mut subset = 0usize;
+    while subset < num_subsets.saturating_sub(1) {
+        let wiener_ns_length = cdfs.with_row_mut(
+            super::cdf::TileCdfSelector::WienerNsLength {
+                plane_ctx: plane.min(1),
+            },
+            |row| symbols.read_symbol(row),
+        )??;
+        if wiener_ns_length.get() == 0 {
+            break;
+        }
+        subset = checked_add("wiener_ns_subset", subset, 1)?;
+    }
+    Ok(subset)
+}
+
+fn read_wiener_ns_4part(
+    k: u8,
+    cdfs: &mut super::cdf::TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+) -> Result<(), TilePartitionTraversalError> {
+    let num = checked_sub("wiener_ns_4part_num", 6, usize::from(k))?;
+    let wiener_ns_base = cdfs
+        .with_row_mut(super::cdf::TileCdfSelector::WienerNsBase, |row| {
+            symbols.read_symbol(row)
+        })??
+        .get() as usize;
+    let bits_base = checked_sub("wiener_ns_4part_bits", 2, num)?;
+    let bits = checked_add("wiener_ns_4part_bits", bits_base, wiener_ns_base.max(1))?;
+    let bits =
+        u32::try_from(bits).map_err(|_| TilePartitionTraversalError::CoordinateOverflow {
+            coordinate: "wiener_ns_4part_bits",
+            base: bits,
+            offset: 0,
+        })?;
+    let _ = symbols.read_literal(bits)?;
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+struct LrSourceBlockDerivation {
+    plane: usize,
+    unit_size: usize,
+    unit_row: usize,
+    unit_col: usize,
+    frame: TilePartitionFrameFacts,
+    tile_bounds: TilePartitionBounds,
+    sub_x: usize,
+    sub_y: usize,
+}
+
+fn record_active_wiener_ns_source_blocks_for_unit(
+    input: LrSourceBlockDerivation,
+    limits: DecodeLimits,
+    lr_activity: &mut WienerNsLrUnitActivity,
+) -> Result<(), TilePartitionTraversalError> {
+    if !lr_activity.retain_source_blocks {
+        return Ok(());
+    }
+    for row in input.tile_bounds.mi_row_start..input.tile_bounds.mi_row_end {
+        for col in input.tile_bounds.mi_col_start..input.tile_bounds.mi_col_end {
+            let (unit_row, unit_col) = lr_unit_for_block(input, row, col)?;
+            if unit_row == input.unit_row && unit_col == input.unit_col {
+                let block = lr_source_block_for(input, row, col)?;
+                lr_activity.record_source_block(block, limits)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn lr_unit_for_block(
+    input: LrSourceBlockDerivation,
+    row: usize,
+    col: usize,
+) -> Result<(usize, usize), TilePartitionTraversalError> {
+    let mi_cols = checked_sub(
+        "lr_source_mi_cols",
+        input.tile_bounds.mi_col_end,
+        input.tile_bounds.mi_col_start,
+    )?;
+    let mi_rows = checked_sub(
+        "lr_source_mi_rows",
+        input.tile_bounds.mi_row_end,
+        input.tile_bounds.mi_row_start,
+    )?;
+    let frame_cols = checked_mul_shifted("lr_source_frame_cols", mi_cols, MI_SIZE, input.sub_x)?;
+    let frame_rows = checked_mul_shifted("lr_source_frame_rows", mi_rows, MI_SIZE, input.sub_y)?;
+    let unit_rows = count_units_in_frame(input.unit_size, frame_rows)?;
+    let unit_cols = count_units_in_frame(input.unit_size, frame_cols)?;
+    let lr_row_offset = checked_mul_shifted(
+        "lr_source_row_offset",
+        input.tile_bounds.mi_row_start,
+        MI_SIZE,
+        input.sub_y,
+    )? / input.unit_size;
+    let lr_col_offset = checked_mul_shifted(
+        "lr_source_col_offset",
+        input.tile_bounds.mi_col_start,
+        MI_SIZE,
+        input.sub_x,
+    )? / input.unit_size;
+    let local_row = checked_sub("lr_source_row", row, input.tile_bounds.mi_row_start)?;
+    let local_col = checked_sub("lr_source_col", col, input.tile_bounds.mi_col_start)?;
+    let row_sample = checked_mul("lr_source_unit_row_sample", local_row, MI_SIZE)?;
+    let row_sample = checked_add("lr_source_unit_row_sample", row_sample, 8)?;
+    let row_sample = row_sample >> input.sub_y;
+    let col_sample =
+        checked_mul_shifted("lr_source_unit_col_sample", local_col, MI_SIZE, input.sub_x)?;
+    let unit_row = checked_add(
+        "lr_source_unit_row",
+        lr_row_offset,
+        (row_sample / input.unit_size).min(unit_rows.saturating_sub(1)),
+    )?;
+    let unit_col = checked_add(
+        "lr_source_unit_col",
+        lr_col_offset,
+        (col_sample / input.unit_size).min(unit_cols.saturating_sub(1)),
+    )?;
+    Ok((unit_row, unit_col))
+}
+
+fn lr_source_block_for(
+    input: LrSourceBlockDerivation,
+    row: usize,
+    col: usize,
+) -> Result<WienerNsLrSourceBlock, TilePartitionTraversalError> {
+    let x = checked_mul_shifted("lr_source_x", col, MI_SIZE, input.sub_x)?;
+    let y = checked_mul_shifted("lr_source_y", row, MI_SIZE, input.sub_y)?;
+    let width = MI_SIZE >> input.sub_x;
+    let height = MI_SIZE >> input.sub_y;
+    let (luma_start_x_mi, luma_end_x_mi, luma_start_y_mi, luma_end_y_mi) =
+        if input.frame.disable_loopfilters_across_tiles {
+            (
+                input.tile_bounds.mi_col_start,
+                input.tile_bounds.mi_col_end,
+                input.tile_bounds.mi_row_start,
+                input.tile_bounds.mi_row_end,
+            )
+        } else {
+            (0, input.frame.mi_cols, 0, input.frame.mi_rows)
+        };
+    let luma_start_x = checked_mul("lr_luma_start_x", luma_start_x_mi, MI_SIZE)?;
+    let luma_start_y = checked_mul("lr_luma_start_y", luma_start_y_mi, MI_SIZE)?;
+    let luma_end_x = checked_sub(
+        "lr_luma_end_x",
+        checked_mul("lr_luma_end_x", luma_end_x_mi, MI_SIZE)?,
+        1,
+    )?;
+    let luma_end_y = checked_sub(
+        "lr_luma_end_y",
+        checked_mul("lr_luma_end_y", luma_end_y_mi, MI_SIZE)?,
+        1,
+    )?;
+    let local_row = checked_sub("lr_source_local_row", row, input.tile_bounds.mi_row_start)?;
+    let luma_y = checked_mul("lr_source_luma_y", local_row, MI_SIZE)?;
+    let stripe_num = checked_add("lr_source_stripe_num", luma_y, 8)? / 64;
+    let stripe_base = checked_add(
+        "lr_source_stripe_base",
+        checked_mul(
+            "lr_source_stripe_base",
+            input.tile_bounds.mi_row_start,
+            MI_SIZE,
+        )?,
+        checked_mul("lr_source_stripe_base", stripe_num, 64)?,
+    )?;
+    let luma_stripe_start_y = stripe_base
+        .checked_sub(8)
+        .map_or(luma_start_y, |start| luma_start_y.max(start));
+    let luma_stripe_end_y = luma_end_y.min(checked_add("lr_source_stripe_end_y", stripe_base, 55)?);
+
+    Ok(WienerNsLrSourceBlock {
+        plane: input.plane,
+        row,
+        col,
+        unit_row: input.unit_row,
+        unit_col: input.unit_col,
+        x,
+        y,
+        width,
+        height,
+        luma_start_x,
+        luma_end_x,
+        luma_start_y,
+        luma_end_y,
+        luma_stripe_start_y,
+        luma_stripe_end_y,
+    })
 }
 
 fn count_units_in_frame(

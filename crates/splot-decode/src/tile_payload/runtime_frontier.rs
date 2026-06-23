@@ -302,6 +302,11 @@ pub(crate) fn minimal_partition_frame_facts(
     let chroma = sequence.general.chroma_format_idc;
     let num_planes = if chroma.is_monochrome() { 1 } else { 3 };
     let (subsampling_x, subsampling_y) = chroma_subsampling(chroma);
+    let filter = sequence
+        .filter
+        .ok_or(MinimalRuntimePartitionFrontierError::MissingFact {
+            fact: "sequence.filter",
+        })?;
     let loop_restoration = match core.lr_params.as_ref() {
         Some(lr) => loop_restoration_state(lr, num_planes),
         None => {
@@ -319,6 +324,7 @@ pub(crate) fn minimal_partition_frame_facts(
         frame_is_intra,
         partition.enable_sdp,
         partition.enable_extended_sdp,
+        filter.disable_loopfilters_across_tiles,
         loop_restoration,
         PartitionFeatureFlags::new(
             partition.enable_ext_partitions,
@@ -335,6 +341,7 @@ fn loop_restoration_state(lr: &LrParams, num_planes: usize) -> TilePartitionLoop
         return TilePartitionLoopRestorationState::NoSyntax;
     }
     let mut plane_enabled = [false; 3];
+    let mut frame_filters_on = [false; 3];
     let mut unit_size = [0usize; 3];
     for plane in 0..num_planes.min(3) {
         let Some(params) = lr.planes.get(plane) else {
@@ -342,22 +349,26 @@ fn loop_restoration_state(lr: &LrParams, num_planes: usize) -> TilePartitionLoop
         };
         match params.restoration_type {
             FrameRestorationType::None => {}
-            FrameRestorationType::WienerNonsep
-                if params.frame_filters_on && params.frame_filter_bank.is_some() =>
-            {
+            FrameRestorationType::WienerNonsep => {
+                if params.frame_filters_on && params.frame_filter_bank.is_none() {
+                    return TilePartitionLoopRestorationState::UnsupportedReadLrSyntax;
+                }
                 plane_enabled[plane] = true;
+                frame_filters_on[plane] = params.frame_filters_on;
                 unit_size[plane] = lr.loop_restoration_size[plane] as usize;
             }
-            FrameRestorationType::PcWiener
-            | FrameRestorationType::WienerNonsep
-            | FrameRestorationType::Switchable => {
+            FrameRestorationType::PcWiener | FrameRestorationType::Switchable => {
                 return TilePartitionLoopRestorationState::UnsupportedReadLrSyntax;
             }
         }
     }
     if plane_enabled.iter().any(|enabled| *enabled) {
         TilePartitionLoopRestorationState::FrameWienerNs(
-            TilePartitionWienerNsLoopRestorationState::new(plane_enabled, unit_size),
+            TilePartitionWienerNsLoopRestorationState::new(
+                plane_enabled,
+                frame_filters_on,
+                unit_size,
+            ),
         )
     } else {
         TilePartitionLoopRestorationState::UnsupportedReadLrSyntax
