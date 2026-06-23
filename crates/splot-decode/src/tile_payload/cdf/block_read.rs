@@ -75,6 +75,7 @@ mod tests {
                 coeff_cdf_q_ctx: 1,
                 ctx: 3,
             },
+            TileCdfSelector::UseWienerNs,
         ];
         let frame = FrameCdfSubset::from_defaults();
 
@@ -145,6 +146,7 @@ mod tests {
                 coeff_cdf_q_ctx: 1,
                 ctx: 3,
             },
+            TileCdfSelector::UseWienerNs,
         ];
         let untouched = TileCdfSelector::DoSplit {
             plane_start: 0,

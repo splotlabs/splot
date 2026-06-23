@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 409 feature(s).
+Matrix version 1. Last reviewed 2026-06-15. 410 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -284,6 +284,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `DECODE-AC0EJ3-SEQUENCE-CHROMA-FRONTIER` | ac0ej3 sequence chroma tool frontier | infrastructure | infrastructure | done | n/a | done | done | n/a | n/a | done | done | n/a | `crates/splot-decode/src/runtime_minimal.rs` |
 | `DECODE-AC0EJ3-WIENERNS-FRONTIER` | ac0ej3 Wiener NS frame-header frontier | infrastructure | infrastructure | done | n/a | partial | n/a | n/a | n/a | done | done | n/a | `crates/splot-decode/src/runtime_minimal.rs` |
 | `DECODE-AC0EJ3-WIENERNS-BANK-FRONTIER` | ac0ej3 Wiener NS frame-filter bank frontier | infrastructure | infrastructure | done | done | done | n/a | n/a | n/a | done | done | n/a | `crates/splot-core/src/headers/frame/restoration/wienerns.rs` |
+| `DECODE-AC0EJ3-LR-UNIT-SYNTAX-FRONTIER` | ac0ej3 Wiener NS LR unit syntax frontier | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | done | done | n/a | `crates/splot-decode/src/tile_payload/partition_traversal.rs` |
 | `DECODE-Y4M-RUNTIME-OUTPUT` | Minimal-tier runtime Y4M output | infrastructure | infrastructure | done | done | partial | done | n/a | n/a | done | done | n/a | `crates/splot-decode/src/runtime_y4m.rs` |
 | `DECODE-MINIMAL-RAW-RUNTIME-OUTPUT` | Minimal-tier runtime raw output | infrastructure | infrastructure | done | done | partial | done | n/a | n/a | done | done | n/a | `crates/splot-decode/src/runtime_raw.rs` |
 | `INFRA-DECODER-CRATE-SCAFFOLDING` | Decoder and reconstruction crate scaffolding | infrastructure | infrastructure | done | n/a | n/a | done | n/a | n/a | n/a | done | n/a | `crates/splot-decode/src/lib.rs` |

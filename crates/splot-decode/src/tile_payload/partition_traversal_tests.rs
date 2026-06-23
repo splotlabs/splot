@@ -52,6 +52,12 @@ fn frame(sb_size: usize) -> TilePartitionFrameFacts {
     .unwrap()
 }
 
+fn frame_level_wiener_ns(unit_size: usize) -> TilePartitionLoopRestorationState {
+    TilePartitionLoopRestorationState::FrameWienerNs(
+        TilePartitionWienerNsLoopRestorationState::new([true, false, false], [unit_size, 0, 0]),
+    )
+}
+
 fn make_work_unit(
     payload: &'static [u8],
     update_mode: CdfUpdateMode,
@@ -431,6 +437,83 @@ fn read_lr_gate_precedes_partition_symbol_reads() {
         )
     ));
     assert_eq!(work_unit.cdf().tile_cdfs(), &before);
+}
+
+#[test]
+fn frame_level_wiener_ns_lr_symbol_precedes_partition_read() {
+    let mut work_unit = make_work_unit(&[0x00, 0x00, 0x80], CdfUpdateMode::Enabled);
+    let before_use_wiener_ns = *work_unit.cdf().tile_cdfs().rows().use_wiener_ns();
+    let mut facts = frame(BLOCK_32X32);
+    facts.loop_restoration = frame_level_wiener_ns(256);
+
+    let plan = frontier(&mut work_unit, facts, context()).unwrap();
+
+    assert_eq!(plan.steps().len(), 1);
+    assert_eq!(plan.steps()[0].decision.partition, PartitionType::None);
+    assert_eq!(plan.steps()[0].symbol_count_before, 1);
+    assert_eq!(plan.steps()[0].symbol_count_after, 2);
+    assert_eq!(plan.frontier().symbol_count_before_block, 2);
+    assert_eq!(
+        plan.frontier().symbol_checkpoint_before_block.symbol_count,
+        2
+    );
+    assert_ne!(
+        work_unit.cdf().tile_cdfs().rows().use_wiener_ns(),
+        &before_use_wiener_ns,
+        "successful LR unit reads commit the tile-local UseWienerNs CDF row"
+    );
+}
+
+#[test]
+fn root_lr_frontier_consumes_only_frame_level_wiener_ns_symbols() {
+    let mut work_unit = make_work_unit(&[0x00, 0x80], CdfUpdateMode::Enabled);
+    let mut facts = frame(BLOCK_32X32);
+    facts.loop_restoration = frame_level_wiener_ns(256);
+
+    let root = consume_tile_loop_restoration_root_frontier(TilePartitionTraversalInput::new(
+        &mut work_unit,
+        facts,
+        context(),
+        DecodeLimits::DEFAULT,
+    ))
+    .unwrap();
+
+    assert_eq!(root.symbol_count_after(), 1);
+    assert!(root.consumed_bits_after() > 0);
+}
+
+#[test]
+fn frame_level_wiener_ns_multi_unit_root_counts_every_covered_unit() {
+    let mut work_unit = make_work_unit(&[0x00; 12], CdfUpdateMode::Enabled);
+    let mut facts = frame(BLOCK_128X128);
+    facts.loop_restoration = frame_level_wiener_ns(64);
+
+    let root = consume_tile_loop_restoration_root_frontier(TilePartitionTraversalInput::new(
+        &mut work_unit,
+        facts,
+        context(),
+        DecodeLimits::DEFAULT,
+    ))
+    .unwrap();
+
+    assert_eq!(root.symbol_count_after(), 4);
+}
+
+#[test]
+fn frame_level_wiener_ns_rejects_invalid_unit_size_before_partition_read() {
+    let mut work_unit = make_work_unit(&[0x00, 0x80], CdfUpdateMode::Enabled);
+    let mut facts = frame(BLOCK_32X32);
+    facts.loop_restoration = frame_level_wiener_ns(0);
+
+    let err = frontier(&mut work_unit, facts, context()).unwrap_err();
+
+    assert!(matches!(
+        err,
+        TilePartitionTraversalError::InvalidLoopRestorationUnitSize {
+            plane: 0,
+            unit_size: 0
+        }
+    ));
 }
 
 #[test]

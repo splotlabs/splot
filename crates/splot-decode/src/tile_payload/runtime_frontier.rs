@@ -9,7 +9,7 @@
 
 use core::mem::size_of;
 
-use splot_core::headers::frame::FrameHeaderCore;
+use splot_core::headers::frame::{FrameHeaderCore, FrameRestorationType, LrParams};
 use splot_core::headers::sequence::{ChromaFormatIdc, SequenceHeader, SuperblockSize};
 use splot_core::symbol::{SymbolDecoder, SymbolDecoderSummary};
 
@@ -23,7 +23,8 @@ use super::partition_allowed::PartitionFeatureFlags;
 use super::partition_traversal::{
     DecodeBlockFrontier, GeneralIntraTreeWalkError, TilePartitionBruState, TilePartitionFrameFacts,
     TilePartitionLoopRestorationState, TilePartitionTraversalError, TilePartitionTraversalInput,
-    TilePartitionTraversalPlan, decode_general_intra_partition_tree,
+    TilePartitionTraversalPlan, TilePartitionWienerNsLoopRestorationState,
+    consume_tile_loop_restoration_root_frontier, decode_general_intra_partition_tree,
     plan_tile_partition_traversal_cursor,
 };
 use crate::{DecodeLimitError, DecodeLimitName, DecodeLimitOp, DecodeLimits};
@@ -152,6 +153,25 @@ pub(crate) fn plan_minimal_runtime_block_symbol_frontier<'payload>(
     })
 }
 
+/// Consumes the supported superblock-root LR unit syntax and stops before
+/// partition or block syntax.
+pub(crate) fn consume_minimal_runtime_lr_unit_frontier(
+    work_unit: &mut DecodeTileWorkUnit<'_>,
+    sequence: &SequenceHeader,
+    core: &FrameHeaderCore,
+    limits: DecodeLimits,
+) -> Result<(), MinimalRuntimePartitionFrontierError> {
+    let frame = minimal_partition_frame_facts(sequence, core)?;
+    let (mi_rows, mi_cols) = frame_mi_dimensions(core)?;
+    let mi_size_state = TileMiSizeState::new(mi_rows, mi_cols, frame.sb_size())?;
+    mi_size_state.with_context_state(|context| {
+        consume_tile_loop_restoration_root_frontier(TilePartitionTraversalInput::new(
+            work_unit, frame, context, limits,
+        ))
+    })??;
+    Ok(())
+}
+
 /// Error from the general intra multi-block tree decode, separating the frame
 /// setup (frame facts / MI dimensions / MI-size allocation) from the partition
 /// tree walk (whose leaf error `E` is the caller's per-block decode error).
@@ -271,8 +291,7 @@ pub(crate) fn minimal_partition_frame_facts(
     let num_planes = if chroma.is_monochrome() { 1 } else { 3 };
     let (subsampling_x, subsampling_y) = chroma_subsampling(chroma);
     let loop_restoration = match core.lr_params.as_ref() {
-        Some(lr) if !lr.uses_lr => TilePartitionLoopRestorationState::NoSyntax,
-        Some(_) => TilePartitionLoopRestorationState::UnsupportedReadLrSyntax,
+        Some(lr) => loop_restoration_state(lr, num_planes),
         None => {
             return Err(MinimalRuntimePartitionFrontierError::MissingFact { fact: "lr_params" });
         }
@@ -297,6 +316,40 @@ pub(crate) fn minimal_partition_frame_facts(
         num_planes > 1,
         TilePartitionBruState::Active,
     )?)
+}
+
+fn loop_restoration_state(lr: &LrParams, num_planes: usize) -> TilePartitionLoopRestorationState {
+    if !lr.uses_lr {
+        return TilePartitionLoopRestorationState::NoSyntax;
+    }
+    let mut plane_enabled = [false; 3];
+    let mut unit_size = [0usize; 3];
+    for plane in 0..num_planes.min(3) {
+        let Some(params) = lr.planes.get(plane) else {
+            return TilePartitionLoopRestorationState::UnsupportedReadLrSyntax;
+        };
+        match params.restoration_type {
+            FrameRestorationType::None => {}
+            FrameRestorationType::WienerNonsep
+                if params.frame_filters_on && params.frame_filter_bank.is_some() =>
+            {
+                plane_enabled[plane] = true;
+                unit_size[plane] = lr.loop_restoration_size[plane] as usize;
+            }
+            FrameRestorationType::PcWiener
+            | FrameRestorationType::WienerNonsep
+            | FrameRestorationType::Switchable => {
+                return TilePartitionLoopRestorationState::UnsupportedReadLrSyntax;
+            }
+        }
+    }
+    if plane_enabled.iter().any(|enabled| *enabled) {
+        TilePartitionLoopRestorationState::FrameWienerNs(
+            TilePartitionWienerNsLoopRestorationState::new(plane_enabled, unit_size),
+        )
+    } else {
+        TilePartitionLoopRestorationState::UnsupportedReadLrSyntax
+    }
 }
 
 pub(crate) fn frame_mi_dimensions(

@@ -16,9 +16,9 @@ use splot_core::tables::cdf::{
     DEFAULT_JOINT_SHELL6_CLASS0_CDF, DEFAULT_JOINT_SHELL6_CLASS1_CDF,
     DEFAULT_SHELL_OFFSET_CLASS2_CDF, DEFAULT_SHELL_OFFSET_LOW_CLASS_CDF,
     DEFAULT_SHELL_OFFSET_OTHER_CLASS_CDF, DEFAULT_SINGLE_MODE_CDF, DEFAULT_SINGLE_REF_CDF,
-    DEFAULT_SKIP_CDF, DEFAULT_TXB_SKIP_CDF, DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF,
-    DEFAULT_V_TXB_SKIP_CDF, DEFAULT_Y_MODE_INDEX_CDF, DEFAULT_Y_MODE_OFFSET_CDF,
-    DEFAULT_Y_MODE_SET_CDF,
+    DEFAULT_SKIP_CDF, DEFAULT_TXB_SKIP_CDF, DEFAULT_USE_WIENER_NS_CDF,
+    DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF, DEFAULT_V_TXB_SKIP_CDF, DEFAULT_Y_MODE_INDEX_CDF,
+    DEFAULT_Y_MODE_OFFSET_CDF, DEFAULT_Y_MODE_SET_CDF,
 };
 
 use super::coeff_rows::{CoeffCdfRows, CoeffCdfSelector};
@@ -121,6 +121,7 @@ pub(crate) type CwpIdxCdfRows = [[i32; CDF_ROW_LEN]; CWP_IDX_CONTEXTS];
 pub(crate) type CompRef0CdfRows = [[[i32; CDF_ROW_LEN]; REFS_PER_FRAME_MINUS_1]; REF_CONTEXTS];
 pub(crate) type CompRef1CdfRows =
     [[[[i32; CDF_ROW_LEN]; REFS_PER_FRAME_MINUS_1]; COMP_REF1_BIT_TYPES]; REF_CONTEXTS];
+pub(crate) type UseWienerNsCdfRow = [i32; CDF_ROW_LEN];
 // §9.3 SHELL-coded `read_mv` banks. `shell_set` / `joint_shell_last_two_classes` /
 // `shell_offset_class2` are binary (width 3 == `CDF_ROW_LEN`). The P == 6 EighthPel
 // `shell_class` banks are width 9 (8 shell-class symbols + count). The offset / col
@@ -357,6 +358,9 @@ pub(crate) enum BlockCdfSelector {
         /// The §8.3.2 interp-filter context (`0..INTERP_FILTER_CONTEXTS`).
         ctx: usize,
     },
+    /// `TileUseWienerNsCdf` (AV2 § 8.3.2): the §5.20.10.5 `use_wiener_ns`
+    /// binary symbol.
+    UseWienerNs,
     /// Coefficient base/base-EOB/base-range and IDTX CDF rows.
     Coeff(CoeffCdfSelector),
 }
@@ -401,6 +405,7 @@ pub(crate) struct BlockCdfRows {
     pub(super) col_mv_greater: ColMvGreaterCdfRows,
     pub(super) col_mv_index: ColMvIndexCdfRows,
     pub(super) interp_filter: InterpFilterCdfRows,
+    pub(super) use_wiener_ns: UseWienerNsCdfRow,
     pub(super) coeff: CoeffCdfRows,
 }
 
@@ -444,6 +449,7 @@ impl BlockCdfRows {
             col_mv_greater: DEFAULT_COL_MV_GREATER_CDF,
             col_mv_index: DEFAULT_COL_MV_INDEX_CDF,
             interp_filter: DEFAULT_INTERP_FILTER_CDF,
+            use_wiener_ns: DEFAULT_USE_WIENER_NS_CDF,
             coeff: CoeffCdfRows::from_defaults(),
         }
     }
@@ -810,6 +816,7 @@ impl BlockCdfRows {
                     })?;
                 Ok(row.as_slice())
             }
+            BlockCdfSelector::UseWienerNs => Ok(self.use_wiener_ns.as_slice()),
             BlockCdfSelector::Coeff(selector) => self.coeff.row(selector),
         }
     }
@@ -1215,6 +1222,7 @@ impl BlockCdfRows {
                         })?;
                 Ok(row.as_mut_slice())
             }
+            BlockCdfSelector::UseWienerNs => Ok(self.use_wiener_ns.as_mut_slice()),
             BlockCdfSelector::Coeff(selector) => self.coeff.row_mut(selector),
         }
     }
@@ -1453,6 +1461,12 @@ impl BlockCdfRows {
                 num_log2,
             );
         }
+        avg_cdf_row(
+            &mut self.use_wiener_ns,
+            &tile.use_wiener_ns,
+            tile_num,
+            num_log2,
+        );
         self.coeff.avg_from_tile(tile_num, &tile.coeff, num_log2);
     }
 
@@ -1549,6 +1563,7 @@ impl BlockCdfRows {
         for ctx in 0..INTERP_FILTER_CONTEXTS {
             scale_cdf_count(&mut self.interp_filter[ctx]);
         }
+        scale_cdf_count(&mut self.use_wiener_ns);
         self.coeff.scale_counts_for_frame_end_update();
     }
 
@@ -1615,6 +1630,11 @@ impl BlockCdfRows {
     #[cfg(test)]
     pub(crate) const fn comp_ref1(&self) -> &CompRef1CdfRows {
         &self.comp_ref1
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn use_wiener_ns(&self) -> &UseWienerNsCdfRow {
+        &self.use_wiener_ns
     }
 }
 
