@@ -16,7 +16,7 @@
 use splot_parallel::ThreadCount;
 
 use splot_core::headers::frame::QuantizationParams;
-use splot_core::headers::sequence::SequenceHeader;
+use splot_core::headers::sequence::{ChromaFormatIdc, SequenceHeader};
 use splot_core::ivf::{write_ivf_frame, write_ivf_header};
 use splot_core::obu::{ParsedObu, PayloadStatus};
 use splot_core::stream::{ParsedBitstream, ParsedIvfFrame, parse_bitstream_partial};
@@ -25,7 +25,7 @@ use splot_core::types::ObuType;
 use super::super::{MinimalRuntimeFrame, decode_minimal_frames_from_plan};
 use super::block::interp_filter_no_neighbour_ctx;
 use super::compound_is_joint_context_from_order_hints;
-use crate::error::DecodeError;
+use crate::error::{DecodeError, Result};
 use crate::{DecodeContext, DecodeOptions, DecodeRuntimeConfig};
 
 const TWO_FRAME_INTER_FIXTURE: &[u8] =
@@ -166,6 +166,113 @@ fn fixture_sequence_and_quantization(bytes: &[u8]) -> (SequenceHeader, Quantizat
             .quantization_params
             .expect("key core parsed quantization params"),
     )
+}
+
+fn decode_inter_blocks_after_quantization_mutation(
+    bytes: &[u8],
+    mutate: impl FnOnce(&mut QuantizationParams),
+) -> Result<usize> {
+    let options = DecodeOptions::default();
+    let context =
+        DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).expect("context");
+    let plan = context.plan_bytes(bytes, options).expect("plan");
+    let ParsedBitstream::Ivf(parsed) = parse_bitstream_partial(bytes) else {
+        panic!("fixture is IVF");
+    };
+    assert!(parsed.error.is_none());
+    assert!(parsed.warnings.is_empty());
+    let header = parsed.header.expect("fixture carries an IVF header");
+    let first_ivf_frame = parsed.frames.first().expect("fixture carries a key frame");
+    let [_td_envelope, sequence_envelope, key_envelope] =
+        super::super::require_minimal_obu_order(first_ivf_frame.obus.as_slice())?;
+    let sequence = super::super::parse_sequence(sequence_envelope)?;
+
+    let mut candidates = plan.frame_candidates_all();
+    let key_candidate = candidates.next().expect("fixture has a key candidate");
+    let key_frame = super::super::decode_minimal_key_frame(
+        bytes,
+        options,
+        &plan,
+        key_candidate,
+        key_envelope,
+        &sequence,
+        header,
+    )?;
+    let key_core = super::super::parse_frame_core(key_envelope, &sequence)?;
+    let num_ref_frames = usize::from(
+        sequence
+            .inter
+            .as_ref()
+            .expect("fixture sequence has inter config")
+            .num_ref_frames,
+    );
+    let mut reference =
+        super::super::reference_buffer::RuntimeReferenceBuffer::new(num_ref_frames)?;
+    let frames = vec![key_frame];
+    reference.update(
+        0,
+        super::super::frame_ref_update_from_core(&key_core, key_envelope.offset)?,
+    );
+
+    let inter_candidate = candidates.next().expect("fixture has an inter candidate");
+    let inter_envelope = super::super::following_inter_envelope(&parsed, inter_candidate)?;
+    let (store, meta) = reference.build_store(&frames)?;
+    let inter_state = super::InterReferenceState {
+        store: &store,
+        ref_valid: meta.ref_valid,
+        ref_order_hint: meta.ref_order_hint,
+        ref_frame_width: meta.ref_frame_width,
+        ref_frame_height: meta.ref_frame_height,
+        ref_base_q_idx: meta.ref_base_q_idx,
+        ref_is_inter: meta.ref_is_inter,
+        ref_adapted: meta.ref_adapted,
+    };
+    let mut core = super::parse_inter_frame_core(inter_envelope, &sequence, &inter_state)?;
+    mutate(
+        core.quantization_params
+            .as_mut()
+            .expect("fixture inter core has quantization params"),
+    );
+    super::validate_inter_frame_core(&core, &sequence, inter_envelope.offset)?;
+    let inter = core
+        .inter
+        .as_ref()
+        .expect("fixture inter core has inter control");
+    let tail = core
+        .inter_tail
+        .as_ref()
+        .expect("fixture inter core has inter tail");
+    assert!(
+        !tail.reference_select,
+        "helper covers single-reference fixtures"
+    );
+    let blocks = super::block::decode_inter_blocks(
+        &plan,
+        inter_candidate,
+        bytes,
+        inter_envelope,
+        &sequence,
+        &core,
+        options,
+        inter
+            .interpolation_filter
+            .expect("fixture has interpolation filter"),
+        inter.num_total_refs.expect("fixture has NumTotalRefs") as usize,
+        tail.reference_select,
+        None,
+        sequence
+            .inter
+            .as_ref()
+            .map_or(0, |seq_inter| seq_inter.num_same_ref_compound),
+    )?;
+    Ok(blocks.len())
+}
+
+fn unsupported_reason(error: DecodeError) -> &'static str {
+    match error {
+        DecodeError::UnsupportedFeature { unsupported } => unsupported.reason(),
+        _ => panic!("expected unsupported-feature error"),
+    }
 }
 
 #[test]
@@ -338,6 +445,31 @@ fn residual_fixture_decodes_two_frames() {
             "frame {index}"
         );
     }
+}
+
+#[test]
+fn skip_zero_residual_rejects_nonzero_effective_quantizer_deltas() {
+    let Err(error) =
+        decode_inter_blocks_after_quantization_mutation(TWO_FRAME_RESIDUAL_FIXTURE, |quant| {
+            quant.delta_q_y_dc = 1;
+        })
+    else {
+        panic!("skip == 0 residual with non-zero effective deltas must fail closed");
+    };
+    assert_eq!(
+        unsupported_reason(error),
+        "inter_block_residual_quantizer_delta"
+    );
+}
+
+#[test]
+fn skip_one_inter_allows_nonzero_effective_quantizer_deltas() {
+    let blocks =
+        decode_inter_blocks_after_quantization_mutation(TWO_FRAME_INTER_FIXTURE, |quant| {
+            quant.delta_q_y_dc = 1;
+        })
+        .expect("skip == 1 reads no residual and must not hit the residual dequant guard");
+    assert_eq!(blocks, 1);
 }
 
 /// The `skip == 0` inter frame is NOT a copy of the key frame: the §5.20.7.27
@@ -1424,6 +1556,16 @@ fn effective_quantizer_delta_gate_includes_frame_and_sequence_offsets() {
     assert!(
         super::effective_quantizer_deltas_are_zero(&sequence, &quantization),
         "parsed frame deltas may cancel sequence base deltas; the gate checks the effective sums"
+    );
+
+    sequence.general.chroma_format_idc = ChromaFormatIdc::Monochrome;
+    quantization.delta_q_u_dc = 5;
+    quantization.delta_q_v_dc = -7;
+    quantization.delta_q_u_ac = 11;
+    quantization.delta_q_v_ac = -13;
+    assert!(
+        super::effective_quantizer_deltas_are_zero(&sequence, &quantization),
+        "monochrome streams ignore chroma delta sums"
     );
 }
 

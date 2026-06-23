@@ -25,8 +25,9 @@
 use splot_core::annexb::ObuEnvelope;
 use splot_core::bitio::BitReader;
 use splot_core::headers::frame::{
-    FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode, FrameHeaderParseStatus,
-    FrameReferenceStateView, QuantizationParams, TipFrameMode, TxMode, parse_frame_header_core,
+    CoreSeqQuantView, FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode,
+    FrameHeaderParseStatus, FrameReferenceStateView, QuantizationParams, TipFrameMode, TxMode,
+    parse_frame_header_core,
 };
 use splot_core::headers::sequence::{SequenceHeader, SuperblockSize};
 use splot_core::span::ByteOffset;
@@ -56,10 +57,6 @@ const SPEC_MODE_INFO: &str = "5.20.7.6";
 const SPEC_MV: &str = "7.11";
 const SPEC_MC: &str = "7.13.3.18";
 const SPEC_REFERENCE: &str = "7.23";
-/// AV2 § 3 `DELTA_DCQUANT_MIN` (`docs/spec/av2/1.0.0/03-definitions.md#s-3`):
-/// `DELTA_DCQUANT_MAX - (1 << DELTA_DCQUANT_BITS) + 1`, with `DELTA_DCQUANT_BITS = 5`
-/// and `DELTA_DCQUANT_MAX = 1 << 3`.
-const DELTA_DCQUANT_MIN: i32 = -23;
 
 /// AV2 § 5.20.7.6 `single_mode == 0` -> `YMode = NEARMV` (the zero-MV mode over an
 /// empty no-neighbour § 7.10 MV stack this frontier reconstructs).
@@ -1054,9 +1051,7 @@ fn validate_inter_frame_core(
     // §5.18 tool disabled, matching the flat synthetic fixture.
     if core
         .quantization_params
-        .is_none_or(|quant| {
-            quant.base_q_idx == 0 || !effective_quantizer_deltas_are_zero(sequence, &quant)
-        })
+        .is_none_or(|quant| quant.base_q_idx == 0)
         || core
             .segmentation_params
             .as_ref()
@@ -1122,7 +1117,7 @@ fn validate_inter_frame_core(
         return Err(unsupported_at(
             "inter_unsupported_frame_tools",
             offset,
-            "minimal inter decode requires the verified no-tool, no-filter, no-grain, zero-effective-quantizer-delta, TX_MODE_LARGEST inter frame header",
+            "minimal inter decode requires the verified no-tool, no-filter, no-grain, TX_MODE_LARGEST inter frame header",
             SPEC_HEADER,
         ));
     }
@@ -1136,33 +1131,14 @@ fn effective_quantizer_deltas_are_zero(
     let Some(tq) = sequence.transform_quant_entropy.as_ref() else {
         return false;
     };
-    let monochrome = sequence.general.chroma_format_idc.is_monochrome();
-    let base_y_dc_delta_q = if tq.equal_ac_dc_q {
-        0
-    } else {
-        base_delta_q(tq.base_y_dc_delta_q)
-    };
-    let base_uv_dc_delta_q = if monochrome {
-        0
-    } else {
-        base_delta_q(tq.base_uv_dc_delta_q)
-    };
-    let base_uv_ac_delta_q = if monochrome {
-        0
-    } else {
-        base_delta_q(tq.base_uv_ac_delta_q)
-    };
+    let seq_quant = CoreSeqQuantView::from_sequence_configs(&sequence.general, tq);
 
-    quantization.delta_q_y_dc + base_y_dc_delta_q == 0
-        && (monochrome
-            || (quantization.delta_q_u_dc + base_uv_dc_delta_q == 0
-                && quantization.delta_q_v_dc + base_uv_dc_delta_q == 0
-                && quantization.delta_q_u_ac + base_uv_ac_delta_q == 0
-                && quantization.delta_q_v_ac + base_uv_ac_delta_q == 0))
-}
-
-const fn base_delta_q(raw: u8) -> i32 {
-    DELTA_DCQUANT_MIN + raw as i32
+    quantization.delta_q_y_dc + seq_quant.base_y_dc_delta_q == 0
+        && (seq_quant.num_planes == 1
+            || (quantization.delta_q_u_dc + seq_quant.base_uv_dc_delta_q == 0
+                && quantization.delta_q_v_dc + seq_quant.base_uv_dc_delta_q == 0
+                && quantization.delta_q_u_ac + seq_quant.base_uv_ac_delta_q == 0
+                && quantization.delta_q_v_ac + seq_quant.base_uv_ac_delta_q == 0))
 }
 
 mod block;

@@ -13269,6 +13269,9 @@ tests = [
     "crates/splot-decode/src/runtime_minimal/inter/tests.rs::residual_fixture_decodes_two_frames",
     "crates/splot-decode/src/runtime_minimal/inter/tests.rs::residual_inter_frame_differs_from_key_frame",
     "crates/splot-decode/src/runtime_minimal/inter/tests.rs::residual_fixture_per_frame_hash_is_stable",
+    "crates/splot-decode/src/runtime_minimal/inter/tests.rs::effective_quantizer_delta_gate_includes_frame_and_sequence_offsets",
+    "crates/splot-decode/src/runtime_minimal/inter/tests.rs::skip_zero_residual_rejects_nonzero_effective_quantizer_deltas",
+    "crates/splot-decode/src/runtime_minimal/inter/tests.rs::skip_one_inter_allows_nonzero_effective_quantizer_deltas",
     "crates/splot-cli/tests/decode_cli.rs::decode_two_frame_inter_residual_fixture_decodes_bit_exact",
     "crates/splot-cli/tests/conformance.rs::conformance_corpus_matches_manifest",
 ]

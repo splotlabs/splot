@@ -116,7 +116,7 @@ impl CoreSeqQuantView {
     /// `BaseUVDcDeltaQ = BaseUVAcDeltaQ` when `equal_ac_dc_q`, which the parsed
     /// config already mirrors into `base_uv_dc_delta_q`).
     #[must_use]
-    pub(crate) fn from_sequence_configs(
+    pub fn from_sequence_configs(
         general: &SequenceHeaderGeneral,
         tq: &SequenceTqEntropyConfig,
     ) -> Self {
