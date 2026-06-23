@@ -97,19 +97,23 @@ honestly partial or unsupported.
 The decoder support model SHALL track `DECODE-TILE-PARTITION-TRAVERSAL-BOUNDARY`
 as a distinct crate-private row named `tile-partition-traversal-boundary`. The
 row SHALL mark only the partition traversal frontier to the first
-`decode_block()` boundary as supported, and SHALL keep broader
-`tile-payload-decode`, `symbol-decoder`, CDF lifecycle, runtime decode output,
-block syntax, `MiSizes` mutation, and reconstruction rows honest when they
-remain partial.
+`decode_block()` boundary plus the narrow frame-level Wiener NS LR unit syntax
+and source-bounds frontiers tracked by `DECODE-AC0EJ3-LR-UNIT-SYNTAX-FRONTIER`
+and `DECODE-AC0EJ3-LR-SOURCE-BOUNDS-FRONTIER` as supported, and SHALL keep
+broader `tile-payload-decode`, `symbol-decoder`, CDF lifecycle, runtime decode
+output, block syntax, `MiSizes` mutation, loop-restoration filtering, and
+reconstruction rows honest when they remain partial.
 
 #### Scenario: Traversal row is supported without broad decode overclaim
 - **WHEN** the decoder support matrix is regenerated after this change
 - **THEN** `tile-partition-traversal-boundary` appears with Feature ID
   `DECODE-TILE-PARTITION-TRAVERSAL-BOUNDARY`
-- **AND** it cites AV2 §5.20.3.1, §5.20.3.2, §5.20.9.1, §8.3.2, and §9.2 as
-  applicable evidence sections
-- **AND** it does not cite §5.20.10.4/§5.20.10.5 as parsed or tested evidence
-  while loop-restoration syntax remains outside this boundary
+- **AND** it cites AV2 §5.20.3.1, §5.20.3.2, §5.20.9.1, §5.20.10.4,
+  §5.20.10.5, §5.20.10.6, §8.3.2, and §9.2 as applicable evidence sections
+- **AND** it identifies per-unit coefficient exposure/application,
+  loop-restoration filtering, and reconstruction as outside this boundary while
+  allowing the narrow §5.20.10.6 syntax consumption needed by
+  `DECODE-AC0EJ3-LR-SOURCE-BOUNDS-FRONTIER`
 - **AND** it does not cite §5.20.4.1 as parsed or tested evidence while block
   syntax remains outside this boundary
 - **AND** `tile-payload-decode` remains partial for full `decode_tile()`, block
@@ -120,7 +124,8 @@ remain partial.
 - **WHEN** `cargo xtask check-decoder-support` validates the matrix
 - **THEN** the traversal row names focused crate-private tests for prefix
   child-call ordering, frontier records, transactional CDF handling, checked
-  arithmetic/resource failures, and unsupported SDP/BRU/inter gates
+  arithmetic/resource failures, unsupported SDP/BRU/inter gates, and supported
+  frame-level Wiener NS LR unit/source-bounds syntax consumption
 
 ### Requirement: ac0ej3 LR Source-Read Frontier Support Row
 The decoder support model SHALL track
@@ -3779,3 +3784,1953 @@ separately implemented.
 - **AND** it does not claim sign reads, nonzero `Quant[]` output, `read_quant`,
   reconstruction, external decoder invocation, public API, or broad runtime
   `decode_tile()` support
+
+### Requirement: Coefficient base derived level pass support row
+The decoder support model SHALL track `DECODE-COEFF-BASE-DERIVED-LEVEL-PASS` as
+a distinct crate-private row named `coeff-base-derived-level-pass`. The row SHALL
+mark only the loaded ordinary non-FSC first pass from nonzero block start through
+local `Level[]` writes and first-pass TCQ/parity summary as partial
+coefficient-loop support.
+
+#### Scenario: Matrix records state-derived first-pass support
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support
+  matrix
+- **THEN** `coeff-base-derived-level-pass` appears with Feature ID
+  `DECODE-COEFF-BASE-DERIVED-LEVEL-PASS`
+- **AND** it cites AV2 § 5.20.7.27 and § 8.3.2 as syntax/selector evidence
+- **AND** it names tests for state-derived selector ordering, immediate level
+  writes, TCQ selector-state updates, parity summary updates, and preflight
+  failure preservation
+- **AND** it does not claim runtime `coeffs()` integration, runtime scan-table or
+  transform fact derivation, sign-source selection, quant reads, tile
+  context-line commits, dequantization, inverse transform, residual add,
+  reconstruction, reference refresh, AVM/dav2d evidence, public APIs, or full
+  decoder conformance
+
+#### Scenario: Generated docs remain honest
+- **WHEN** feature status, spec coverage, decoder support, and decoder
+  conformance coverage status documents are regenerated
+- **THEN** the new row remains partial until a later runtime `coeffs()`
+  integration change proves reachable decode behavior
+
+### Requirement: Coefficient base Ph CDF row support status
+
+The decoder support model SHALL track
+`DECODE-COEFF-BASE-PH-CDF-ROW` as a distinct crate-private row named
+`coeff-base-ph-cdf-row`. The row SHALL mark only parity-hidden coefficient base
+CDF row loading, selection, lifecycle handling, and loaded-but-unwired
+state-derived first-pass consumption as partial support, and SHALL keep runtime
+nonzero coefficient decode, tile context writes, dequantization, reconstruction,
+output, reference refresh, public APIs, and AVM/dav2d evidence unsupported until
+separately implemented.
+
+#### Scenario: Matrix records the Ph CDF row boundary
+
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support
+  matrix
+- **THEN** `coeff-base-ph-cdf-row` appears with Feature ID
+  `DECODE-COEFF-BASE-PH-CDF-ROW`
+- **AND** it cites AV2 §8.3.2 and §9.3 for CDF selection and generated default
+  row evidence
+- **AND** it names focused CDF row and first-pass hidden-parity tests
+- **AND** broad runtime `coeffs()`, reconstruction, output, and reference
+  support remain partial or unsupported in their existing rows
+
+### Requirement: Track Coefficient CDF Q-Context Handoff
+
+The decoder support matrix and decoder conformance coverage tooling SHALL track
+`DECODE-COEFF-CDF-Q-CONTEXT-HANDOFF` as a partial loaded-but-unwired
+decoder-support row linked to AV2 § 3, § 5.20.7.27, § 6.17.2, and the existing
+shared-facts `useFsc` handoff row.
+
+#### Scenario: support matrix includes the row
+
+- **WHEN** decoder support status is generated
+- **THEN** it includes a partial row for
+  `DECODE-COEFF-CDF-Q-CONTEXT-HANDOFF` describing the crate-private wrapper that
+  derives `coeff_cdf_q_ctx` from frame `base_q_idx` before delegating to the
+  shared-facts `useFsc` handoff
+- **AND** it records that runtime `coeffs()` integration, full CDF lifecycle
+  wiring, full `compute_tx_type`, runtime fact derivation, dequantization,
+  reconstruction, output, and reference refresh remain unsupported.
+
+#### Scenario: conformance coverage maps the row
+
+- **WHEN** decoder conformance coverage is checked
+- **THEN** the coefficient syntax and decoder support coverage groups reference
+  `DECODE-COEFF-CDF-Q-CONTEXT-HANDOFF`.
+
+### Requirement: Track Coefficient Frame-Facts Handoff
+
+The decoder support matrix and decoder conformance coverage tooling SHALL track
+`DECODE-COEFF-FRAME-FACTS-HANDOFF` as a partial loaded-but-unwired
+decoder-support row linked to AV2 § 5.4.8, § 5.18.2, § 5.20.7.27, § 6.4.8,
+and the existing base-q `useFsc` handoff row.
+
+#### Scenario: support matrix includes the row
+
+- **WHEN** decoder support status is generated
+- **THEN** it includes a partial row for `DECODE-COEFF-FRAME-FACTS-HANDOFF`
+  describing the crate-private wrapper that derives frame/sequence facts before
+  delegating to the base-q `useFsc` handoff
+- **AND** it records that runtime `coeffs()` integration, full
+  `compute_tx_type`, runtime block syntax traversal, dequantization,
+  reconstruction, output, and reference refresh remain unsupported.
+
+#### Scenario: conformance coverage maps the row
+
+- **WHEN** decoder conformance coverage is checked
+- **THEN** the coefficient syntax and decoder support coverage groups reference
+  `DECODE-COEFF-FRAME-FACTS-HANDOFF`.
+
+### Requirement: Coefficient FSC branch handoff support status
+
+The decoder support model SHALL track `DECODE-COEFF-FSC-BRANCH-HANDOFF` as a
+distinct crate-private partial decoder boundary named `coeff-fsc-branch-handoff`.
+The row SHALL mark only loaded-but-unwired FSC/IDTX nonzero coefficient branch
+composition as partial support, and SHALL keep runtime `coeffs()`,
+dequantization, reconstruction, output, reference refresh, public APIs, and
+AVM/dav2d evidence unsupported until separately implemented.
+
+#### Scenario: Matrix records the FSC branch handoff boundary
+
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support
+  matrix
+- **THEN** `coeff-fsc-branch-handoff` appears with Feature ID
+  `DECODE-COEFF-FSC-BRANCH-HANDOFF`
+- **AND** it cites AV2 §5.20.7.27 for the `useFsc` nonzero branch and FSC scan
+  loops plus §5.20.7.28 for the quant syntax reached by that branch
+- **AND** it names focused tests for explicit-pipeline equivalence,
+  all-zero-routing rejection, invalid scan rejection, and chroma-routing
+  rejection
+- **AND** broad runtime `coeffs()`, reconstruction, output, and reference
+  support remain partial or unsupported in their existing rows
+
+### Requirement: Decoder support tracks FSC branch scan-order handoff
+The decoder support matrix and decoder conformance coverage tooling SHALL track `DECODE-COEFF-FSC-BRANCH-SCAN-ORDER` as a partial loaded-but-unwired decoder-support row linked to AV2 § 5.20.7.27, § 5.20.7.30, § 8.3.2, and the generated § 9.2 transform-size tables.
+
+#### Scenario: Tracking rows stay synchronized
+- **WHEN** the FSC branch scan-order handoff is implemented
+- **THEN** `docs/IMPLEMENTATION-MATRIX.toml`, `docs/DECODER-SUPPORT-MATRIX.toml`, `xtask/src/decoder_conformance_coverage.rs`, and the generated status docs MUST include the new Feature ID/support row without marking runtime `coeffs()` or broad decode support complete
+
+### Requirement: Coefficient FSC segment handoff support status
+
+The decoder support model SHALL track
+`DECODE-COEFF-FSC-BRANCH-SEG-EOB-HANDOFF` as a distinct crate-private partial
+decoder boundary named `coeff-fsc-branch-seg-eob-handoff`.
+
+#### Scenario: Matrix records the FSC segment handoff boundary
+
+- **WHEN** decoder support status is generated
+- **THEN** `coeff-fsc-branch-seg-eob-handoff` appears with Feature ID
+  `DECODE-COEFF-FSC-BRANCH-SEG-EOB-HANDOFF`
+- **AND** the row remains partial because runtime `coeffs()` and scan derivation
+  are not wired
+
+#### Scenario: Conformance coverage links the feature
+
+- **WHEN** decoder conformance coverage is checked
+- **THEN** the FSC coefficient coverage group references both support row
+  `coeff-fsc-branch-seg-eob-handoff` and Feature ID
+  `DECODE-COEFF-FSC-BRANCH-SEG-EOB-HANDOFF`
+
+### Requirement: Track FSC Branch Tx-Size Handoff
+
+The decoder support matrix and decoder conformance coverage tooling SHALL track
+`DECODE-COEFF-FSC-BRANCH-TX-SIZE-HANDOFF` as a partial loaded-but-unwired
+decoder-support row linked to AV2 § 5.20.7.27, § 5.20.7.30, § 8.3.2, and the
+generated § 9.2 transform-size tables.
+
+#### Scenario: support matrix includes the row
+
+- **WHEN** decoder support status is generated
+- **THEN** it includes a partial row for
+  `DECODE-COEFF-FSC-BRANCH-TX-SIZE-HANDOFF` describing the crate-private FSC
+  tx-size fact handoff and its remaining runtime/dequant/reconstruction gaps.
+
+#### Scenario: conformance coverage maps the row
+
+- **WHEN** decoder conformance coverage is checked
+- **THEN** the coefficient syntax and decoder support coverage groups reference
+  `DECODE-COEFF-FSC-BRANCH-TX-SIZE-HANDOFF`.
+
+### Requirement: Coefficient FSC context commit support status
+
+The decoder support model SHALL track
+`DECODE-COEFF-FSC-CONTEXT-COMMIT` as a distinct crate-private partial decoder
+boundary named `coeff-fsc-context-commit`. The row SHALL mark only
+loaded-but-unwired FSC/IDTX nonzero coefficient pass composition with
+end-of-`coeffs()` tile coefficient context-line commits as partial support, and
+SHALL keep runtime nonzero coefficient decode, dequantization, reconstruction,
+output, reference refresh, public APIs, and AVM/dav2d evidence unsupported until
+separately implemented.
+
+#### Scenario: Matrix records the FSC context commit boundary
+
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support
+  matrix
+- **THEN** `coeff-fsc-context-commit` appears with Feature ID
+  `DECODE-COEFF-FSC-CONTEXT-COMMIT`
+- **AND** it cites AV2 §5.20.7.27 for the end-of-`coeffs()` level/DC context
+  update and §5.20.7.28 for the quant syntax whose result feeds that update
+- **AND** it names focused tests for successful above/left context writes,
+  FSC-pass failure preserving context state, and invalid context-update facts
+  preserving context state
+- **AND** broad runtime `coeffs()`, reconstruction, output, and reference
+  support remain partial or unsupported in their existing rows
+
+### Requirement: Coefficient FSC level pass support status
+
+The decoder support model SHALL track `DECODE-COEFF-FSC-LEVEL-PASS` as a
+distinct crate-private row named `coeff-fsc-level-pass`. The row SHALL mark only
+loaded-but-unwired FSC/IDTX level symbol sequencing and local `Level[]` writes
+as partial support, and SHALL keep runtime `useFsc`, IDTX sign reads,
+`read_quant`, nonzero `QuantSign[]` and `Quant[]`, dequantization,
+reconstruction, output, reference refresh, public APIs, and AVM/dav2d evidence
+unsupported until separately implemented.
+
+#### Scenario: Matrix records the FSC level boundary
+
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support
+  matrix
+- **THEN** `coeff-fsc-level-pass` appears with Feature ID
+  `DECODE-COEFF-FSC-LEVEL-PASS`
+- **AND** it cites AV2 sections 5.20.7.27 and 8.3.2 for FSC level symbol order
+  and selector derivation
+- **AND** it names focused FSC level-pass tests
+- **AND** broad runtime `coeffs()`, reconstruction, output, and reference
+  support remain partial or unsupported in their existing rows
+
+### Requirement: Decoder support tracks FSC quant pass
+The decoder support model SHALL track `DECODE-COEFF-FSC-QUANT-PASS` as a
+distinct partial decoder-support row.
+
+#### Scenario: FSC quant support row exists
+- **WHEN** decoder support status is generated
+- **THEN** it includes a partial row for `DECODE-COEFF-FSC-QUANT-PASS` describing
+  the loaded-but-unwired FSC interleaved sign/`read_quant` and signed `Quant[]`
+  pass, its local tests, and the remaining runtime `coeffs()`, context commit,
+  dequantization, reconstruction, output, reference, inter-prediction, and filter
+  gaps
+
+### Requirement: Decoder conformance coverage maps FSC quant pass
+The decoder conformance coverage model SHALL map `DECODE-COEFF-FSC-QUANT-PASS`
+to the decode-relevant coefficient syntax and symbol/CDF coverage groups.
+
+#### Scenario: FSC quant coverage appears in generated docs
+- **WHEN** decoder conformance coverage is generated
+- **THEN** the `tile-group-and-payload-syntax` and `symbol-and-cdf-process`
+  coverage groups reference `DECODE-COEFF-FSC-QUANT-PASS`
+
+### Requirement: Coefficient FSC scan walk support status
+
+The decoder support model SHALL track `DECODE-COEFF-FSC-SCAN-WALK` as a distinct
+crate-private row named `coeff-fsc-scan-walk`. The row SHALL mark only checked
+FSC/IDTX scan-window derivation as partial support, and SHALL keep runtime
+`useFsc` symbol sequencing, nonzero coefficient state writes, dequantization,
+reconstruction, output, reference refresh, public APIs, and AVM/dav2d evidence
+unsupported until separately implemented.
+
+#### Scenario: Matrix records the FSC scan boundary
+
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support
+  matrix
+- **THEN** `coeff-fsc-scan-walk` appears with Feature ID
+  `DECODE-COEFF-FSC-SCAN-WALK`
+- **AND** it cites AV2 §5.20.7.27 for the `bob = segEob - eob` scan window
+- **AND** it names focused FSC scan-walk tests
+- **AND** broad runtime `coeffs()`, reconstruction, output, and reference
+  support remain partial or unsupported in their existing rows
+
+### Requirement: Coefficient FSC sign pass support status
+
+The decoder support model SHALL track `DECODE-COEFF-FSC-SIGN-PASS` as a
+distinct crate-private row named `coeff-fsc-sign-pass`. The row SHALL mark only
+loaded-but-unwired FSC/IDTX sign symbol sequencing and local `QuantSign[]`
+writes as partial support, and SHALL keep runtime `useFsc`, `read_quant`,
+nonzero `Quant[]`, dequantization, reconstruction, output, reference refresh,
+public APIs, and AVM/dav2d evidence unsupported until separately implemented.
+
+#### Scenario: Matrix records the FSC sign boundary
+
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support
+  matrix
+- **THEN** `coeff-fsc-sign-pass` appears with Feature ID
+  `DECODE-COEFF-FSC-SIGN-PASS`
+- **AND** it cites AV2 sections 5.20.7.27 and 8.3.2 for FSC sign symbol order
+  and selector derivation
+- **AND** it names focused FSC sign-pass tests
+- **AND** broad runtime `coeffs()`, reconstruction, output, and reference
+  support remain partial or unsupported in their existing rows
+
+### Requirement: Coefficient IDTX CDF row support status
+
+The decoder support model SHALL track `DECODE-COEFF-IDTX-CDF-ROWS` as a
+distinct crate-private row named `coeff-idtx-cdf-rows`. The row SHALL mark only
+FSC/IDTX coefficient CDF row loading, selection, lifecycle handling, and mutable
+symbol-reader handoff as partial support, and SHALL keep runtime `useFsc`
+coefficient symbol sequencing, nonzero coefficient state writes, dequantization,
+reconstruction, output, reference refresh, public APIs, and AVM/dav2d evidence
+unsupported until separately implemented.
+
+#### Scenario: Matrix records the IDTX CDF row boundary
+
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support
+  matrix
+- **THEN** `coeff-idtx-cdf-rows` appears with Feature ID
+  `DECODE-COEFF-IDTX-CDF-ROWS`
+- **AND** it cites AV2 §5.20.7.27, §8.3.2, and §9.3 for syntax, CDF selection,
+  and generated default row evidence
+- **AND** it names focused CDF row tests
+- **AND** broad runtime `coeffs()`, reconstruction, output, and reference
+  support remain partial or unsupported in their existing rows
+
+### Requirement: Coefficient maxLevel derivation support row
+The decoder support model SHALL track `DECODE-COEFF-MAX-LEVEL-DERIVE` as a
+distinct crate-private row named `coeff-max-level-derive`. The row SHALL mark
+only ordinary non-FSC `maxLevel` derivation as partial coefficient-loop support
+and SHALL keep runtime `coeffs()` integration, dequantization, reconstruction,
+broad `decode_tile()`, and byte-identical decode honestly partial or
+unsupported.
+
+#### Scenario: Matrix records narrow derivation support
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support
+  matrix
+- **THEN** `coeff-max-level-derive` appears with Feature ID
+  `DECODE-COEFF-MAX-LEVEL-DERIVE`
+- **AND** it cites AV2 § 5.20.7.27 as syntax evidence
+- **AND** it names tests for transform-class/plane low-frequency limits, hidden
+  final-entry override, quant-pass input conversion, and totality
+- **AND** it does not claim runtime coefficient-loop execution, selector or
+  scan-table derivation, dequantization, inverse transform, residual add,
+  reconstruction, reference refresh, AVM/dav2d evidence, public APIs, or full
+  decoder conformance
+
+#### Scenario: Generated docs remain honest
+- **WHEN** feature status, spec coverage, decoder support, and decoder
+  conformance coverage status documents are regenerated
+- **THEN** the new row remains partial until a later runtime `coeffs()`
+  integration change proves reachable decode behavior
+
+### Requirement: Coefficient nonzero context commit support status
+
+The decoder support model SHALL track
+`DECODE-COEFF-NONZERO-CONTEXT-COMMIT` as a distinct crate-private partial
+decoder boundary named `coeff-nonzero-context-commit`. The row SHALL mark only
+loaded-but-unwired ordinary non-FSC nonzero coefficient pass composition with
+end-of-`coeffs()` tile coefficient context-line commits as partial support, and
+SHALL keep runtime nonzero coefficient decode, dequantization, reconstruction,
+output, reference refresh, public APIs, and AVM/dav2d evidence unsupported
+until separately implemented.
+
+#### Scenario: Matrix records the nonzero context commit boundary
+
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support
+  matrix
+- **THEN** `coeff-nonzero-context-commit` appears with Feature ID
+  `DECODE-COEFF-NONZERO-CONTEXT-COMMIT`
+- **AND** it cites AV2 §5.20.7.27 for the end-of-`coeffs()` level/DC context
+  update and §5.20.7.28 for the quant syntax whose result feeds that update
+- **AND** it names focused tests for successful above/left context writes,
+  ordinary-pass failure preserving context state, and invalid context-update
+  facts preserving context state
+- **AND** broad runtime `coeffs()`, reconstruction, output, and reference
+  support remain partial or unsupported in their existing rows
+
+### Requirement: Ordinary branch adjusted transform-size support row
+The decoder support model SHALL track
+`DECODE-COEFF-ORDINARY-BRANCH-ADJUSTED-TX-SIZE` as a distinct partial decoder
+row for the loaded-but-unwired ordinary coefficient branch. The row SHALL record
+that adjusted transform-size dimensions are derived for ordinary base contexts
+from generated AV2 section 9.2 tables while keeping runtime coefficient-loop
+integration, `txSzCtx`, `compute_tx_type`, scan derivation, dequantization,
+reconstruction, output, reference refresh, and broad `decode_block()` /
+`decode_tile()` support honestly unsupported or partial.
+
+#### Scenario: Matrix records adjusted-size handoff
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support
+  matrix
+- **THEN** the adjusted-size ordinary branch row appears with Feature ID
+  `DECODE-COEFF-ORDINARY-BRANCH-ADJUSTED-TX-SIZE`
+- **AND** it names focused ordinary branch tests plus the feature/status checks
+- **AND** it does not claim runtime coefficient-loop integration or decoded
+  output changes
+
+#### Scenario: Generated support docs include the row
+- **WHEN** decoder support and conformance coverage status documents are
+  regenerated
+- **THEN** the new row is included with status `partial`
+
+### Requirement: chroma-inter TxTypes ordinary branch support row
+
+The decoder support model SHALL track
+`DECODE-COEFF-ORDINARY-BRANCH-CHROMA-INTER-TXTYPES-HANDOFF` as a distinct
+loaded-but-unwired ordinary coefficient branch infrastructure row. The row SHALL
+record AV2 section 5.20.7.29 chroma-inter `TxTypes[y4][x4]` transform-type
+derivation, focused ordinary branch tests, and the remaining runtime decoder
+gaps.
+
+#### Scenario: Chroma-inter TxTypes handoff appears in decoder support
+
+- **WHEN** decoder support status is generated
+- **THEN** it SHALL include a partial row with Feature ID
+  `DECODE-COEFF-ORDINARY-BRANCH-CHROMA-INTER-TXTYPES-HANDOFF`
+- **AND** the row SHALL state that runtime `coeffs()` wiring, frame-state
+  `TxTypes`/`MiRow`/`MiCol`/subsampling derivation, FSC/IDTX lossless handling,
+  reconstruction, output, and AVM/dav2d proof remain unsupported
+
+### Requirement: Ordinary branch coeffs geometry handoff support row
+The decoder support model SHALL track
+`DECODE-COEFF-ORDINARY-BRANCH-COEFFS-GEOMETRY-HANDOFF` as a distinct
+crate-private row named `coeff-ordinary-branch-coeffs-geometry-handoff`. The row
+SHALL mark only the ordinary branch `coeffs()` geometry to block geometry
+handoff as partial support, SHALL cite AV2 v1.0.0 section 5.20.7.27, and SHALL
+keep `txSz` table lookup, `compute_tx_type`, scan derivation, runtime `coeffs()`
+wiring, dequantization, reconstruction, output, reference refresh, and broad
+`decode_block()` / `decode_tile()` support honestly unsupported or partial.
+
+#### Scenario: Matrix records narrow support
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support
+  matrix
+- **THEN** `coeff-ordinary-branch-coeffs-geometry-handoff` appears with Feature
+  ID `DECODE-COEFF-ORDINARY-BRANCH-COEFFS-GEOMETRY-HANDOFF`
+- **AND** it names focused unit tests proving nonzero branch equivalence and
+  all-zero preservation
+- **AND** it does not claim `txSz` table lookup, runtime coefficient loop
+  integration, scan order derivation, transform-type computation,
+  dequantization, reconstruction, output, reference refresh, AVM/dav2d
+  evidence, or full decoder conformance
+
+#### Scenario: Generated support docs include the row
+- **WHEN** decoder support and conformance coverage status documents are
+  regenerated
+- **THEN** the new row is included in the generated status and coverage
+  documents with status `partial`
+
+### Requirement: directional UV ordinary branch support row
+
+The decoder support model SHALL track
+`DECODE-COEFF-ORDINARY-BRANCH-DIRECTIONAL-UV-HANDOFF` as a distinct
+loaded-but-unwired ordinary coefficient branch infrastructure row. The row SHALL
+record AV2 section 5.20.7.29 directional `UVMode` transform-type derivation,
+generated table use, focused ordinary branch tests, and the remaining runtime
+decoder gaps.
+
+#### Scenario: Directional UV handoff appears in decoder support
+
+- **WHEN** decoder support status is generated
+- **THEN** it SHALL include a partial row with Feature ID
+  `DECODE-COEFF-ORDINARY-BRANCH-DIRECTIONAL-UV-HANDOFF`
+- **AND** the row SHALL state that runtime `coeffs()` wiring, luma/inter
+  `TxTypes` lookup, FSC/IDTX lossless handling, reconstruction, output, and
+  AVM/dav2d proof remain unsupported
+
+### Requirement: Ordinary branch geometry handoff support row
+The decoder support model SHALL track
+`DECODE-COEFF-ORDINARY-BRANCH-GEOMETRY-HANDOFF` as a distinct crate-private row
+named `coeff-ordinary-branch-geometry-handoff`. The row SHALL mark only the
+ordinary branch block-start geometry to state-context geometry handoff as partial
+support, SHALL cite AV2 v1.0.0 section 5.20.7.27, and SHALL keep raw
+`startX`/`startY`/`txSz` derivation, `compute_tx_type`, scan derivation, runtime
+`coeffs()` wiring, dequantization, reconstruction, output, reference refresh,
+and broad `decode_block()` / `decode_tile()` support honestly unsupported or
+partial.
+
+#### Scenario: Matrix records narrow support
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support
+  matrix
+- **THEN** `coeff-ordinary-branch-geometry-handoff` appears with Feature ID
+  `DECODE-COEFF-ORDINARY-BRANCH-GEOMETRY-HANDOFF`
+- **AND** it names focused unit tests proving nonzero branch equivalence and
+  all-zero preservation
+- **AND** it does not claim raw transform-block geometry derivation, runtime
+  coefficient loop integration, scan order derivation, transform-type
+  computation, dequantization, reconstruction, output, reference refresh,
+  AVM/dav2d evidence, or full decoder conformance
+
+#### Scenario: Generated support docs include the row
+- **WHEN** decoder support and conformance coverage status documents are
+  regenerated
+- **THEN** the new row is included in the generated status and coverage
+  documents with status `partial`
+
+### Requirement: Coefficient ordinary branch handoff support row
+The decoder support model SHALL track `DECODE-COEFF-ORDINARY-BRANCH-HANDOFF`
+as a distinct partial `splot-decode` row named
+`coeff-ordinary-branch-handoff`. The row SHALL cite AV2 § 5.20.7.27,
+§ 5.20.7.28, § 8.2.5, and § 8.3.2, SHALL record focused tests for all-zero
+preservation, nonzero ordinary handoff success, and failure state preservation,
+and SHALL keep full runtime `coeffs()`, transform syntax derivation,
+dequantization, reconstruction, output, reference refresh, AVM/dav2d evidence,
+and public APIs out of scope.
+
+#### Scenario: Matrix records narrow branch support
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support
+  matrix
+- **THEN** row `coeff-ordinary-branch-handoff` appears with Feature ID
+  `DECODE-COEFF-ORDINARY-BRANCH-HANDOFF`
+- **AND** it is marked partial rather than supported for full runtime decode
+- **AND** it does not claim dequantization, inverse transform, residual add,
+  reconstruction, output, reference refresh, or AVM/dav2d invocation
+
+#### Scenario: Coverage tracks the new coefficient handoff
+- **WHEN** decoder conformance coverage is generated
+- **THEN** the tile group / payload syntax coverage and symbol/CDF process
+  coverage include row `coeff-ordinary-branch-handoff` and Feature ID
+  `DECODE-COEFF-ORDINARY-BRANCH-HANDOFF`
+- **AND** broader tile payload and symbol/CDF coverage remain partial
+
+### Requirement: lossless ordinary branch support row
+
+The decoder support model SHALL track
+`DECODE-COEFF-ORDINARY-BRANCH-LOSSLESS-HANDOFF` as a distinct
+loaded-but-unwired ordinary coefficient branch infrastructure row. The row SHALL
+cite AV2 v1.0.0 §5.20.7.27, §5.20.7.29, §5.20.8.3, and §9.2; SHALL name
+focused ordinary-branch tests as proof; and SHALL keep FSC/IDTX lossless cases,
+inter/luma transform-state lookup, frame-state parsing, runtime `coeffs()`,
+dequantization, reconstruction, output, reference refresh, and external decoder
+invocation as residual work.
+
+#### Scenario: Support matrix records lossless handoff only
+
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support
+  matrix
+- **THEN** a `coeff-ordinary-branch-lossless-handoff` row appears with Feature
+  ID `DECODE-COEFF-ORDINARY-BRANCH-LOSSLESS-HANDOFF`
+- **AND** broad coefficient-loop and runtime decode rows remain partial or
+  unsupported until separately implemented
+
+### Requirement: luma TxTypes ordinary branch support row
+
+The decoder support model SHALL track
+`DECODE-COEFF-ORDINARY-BRANCH-LUMA-TXTYPES-HANDOFF` as a distinct
+loaded-but-unwired ordinary coefficient branch infrastructure row. The row SHALL
+record AV2 section 5.20.7.29 luma `TxTypes` transform-type derivation, focused
+ordinary branch tests, and the remaining runtime decoder gaps.
+
+#### Scenario: Luma TxTypes handoff appears in decoder support
+
+- **WHEN** decoder support status is generated
+- **THEN** it SHALL include a partial row with Feature ID
+  `DECODE-COEFF-ORDINARY-BRANCH-LUMA-TXTYPES-HANDOFF`
+- **AND** the row SHALL state that runtime `coeffs()` wiring, frame-state
+  `TxTypes` derivation, chroma inter lookup, FSC/IDTX lossless handling,
+  reconstruction, output, and AVM/dav2d proof remain unsupported
+
+### Requirement: Mode_To_Txfm ordinary branch support row
+
+The decoder support model SHALL track
+`DECODE-COEFF-ORDINARY-BRANCH-MODE-TO-TXFM-HANDOFF` as a distinct
+loaded-but-unwired ordinary coefficient branch infrastructure row. The row SHALL
+cite AV2 v1.0.0 §5.20.7.27, §5.20.7.29, and §9.2; SHALL name focused
+ordinary-branch tests as proof; and SHALL keep full `compute_tx_type`,
+`get_tx_set`, frame-state derivation of `enable_chroma_dctonly`, directional
+wide-angle mapping, luma/inter/lossless branches, runtime `coeffs()`,
+dequantization, reconstruction, output, reference refresh, and external decoder
+invocation as residual work.
+
+#### Scenario: Support matrix records subset handoff only
+
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support
+  matrix
+- **THEN** a `coeff-ordinary-branch-mode-to-txfm-handoff` row appears with
+  Feature ID `DECODE-COEFF-ORDINARY-BRANCH-MODE-TO-TXFM-HANDOFF`
+- **AND** broad coefficient-loop and runtime decode rows remain partial or
+  unsupported until separately implemented
+
+### Requirement: Ordinary branch plane-type handoff support row
+The decoder support model SHALL track
+`DECODE-COEFF-ORDINARY-BRANCH-PLANE-TYPE-HANDOFF` as a distinct crate-private
+row named `coeff-ordinary-branch-plane-type-handoff`. The row SHALL mark only
+the ordinary branch `plane -> plane_type` handoff as partial support, SHALL cite
+AV2 v1.0.0 section 5.20.7.27, and SHALL keep `compute_tx_type`, scan derivation,
+runtime `coeffs()` wiring, dequantization, reconstruction, output, reference
+refresh, and broad `decode_block()` / `decode_tile()` support honestly
+unsupported or partial.
+
+#### Scenario: Matrix records narrow support
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support
+  matrix
+- **THEN** `coeff-ordinary-branch-plane-type-handoff` appears with Feature ID
+  `DECODE-COEFF-ORDINARY-BRANCH-PLANE-TYPE-HANDOFF`
+- **AND** it names focused unit tests proving nonzero branch equivalence and
+  all-zero preservation
+- **AND** it does not claim runtime coefficient loop integration, scan order
+  derivation, transform-type computation, dequantization, reconstruction,
+  output, reference refresh, AVM/dav2d evidence, or full decoder conformance
+
+#### Scenario: Generated support docs include the row
+- **WHEN** decoder support and conformance coverage status documents are
+  regenerated
+- **THEN** the new row is included in the generated status and coverage
+  documents with status `partial`
+
+### Requirement: Ordinary branch scan-order support row
+The decoder support model SHALL track
+`DECODE-COEFF-ORDINARY-BRANCH-SCAN-ORDER` as a distinct partial decoder row for
+the loaded-but-unwired ordinary coefficient branch. The row SHALL record that
+scan order is derived from AV2 section 5.20.7.30 while keeping runtime
+coefficient-loop integration, `compute_tx_type`, dequantization,
+reconstruction, output, reference refresh, and broad `decode_block()` /
+`decode_tile()` support honestly unsupported or partial.
+
+#### Scenario: Matrix records scan-order handoff
+
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support
+  matrix
+- **THEN** the scan-order ordinary branch row appears with Feature ID
+  `DECODE-COEFF-ORDINARY-BRANCH-SCAN-ORDER`
+- **AND** it names focused ordinary branch tests plus the feature/status checks
+- **AND** it does not claim runtime coefficient-loop integration or decoded
+  output changes
+
+#### Scenario: Generated support docs include the row
+
+- **WHEN** decoder support and conformance coverage status documents are
+  regenerated
+- **THEN** the new row is included with status `partial`
+
+### Requirement: Ordinary branch transform-class handoff support row
+The decoder support model SHALL track
+`DECODE-COEFF-ORDINARY-BRANCH-TX-CLASS-HANDOFF` as a distinct crate-private row
+named `coeff-ordinary-branch-tx-class-handoff`. The row SHALL mark only the
+ordinary branch `PlaneTxType -> txClass` handoff as partial support, SHALL cite
+AV2 v1.0.0 section 5.20.7.27 and section 8.3.2, and SHALL keep
+`compute_tx_type`, scan derivation, runtime `coeffs()` wiring, dequantization,
+reconstruction, output, reference refresh, and broad `decode_block()` /
+`decode_tile()` support honestly unsupported or partial.
+
+#### Scenario: Matrix records narrow support
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support
+  matrix
+- **THEN** `coeff-ordinary-branch-tx-class-handoff` appears with Feature ID
+  `DECODE-COEFF-ORDINARY-BRANCH-TX-CLASS-HANDOFF`
+- **AND** it names focused unit tests proving nonzero branch equivalence and
+  all-zero preservation
+- **AND** it does not claim runtime transform-type computation, scan order
+  derivation, nonzero coefficient runtime integration, dequantization,
+  reconstruction, output, reference refresh, AVM/dav2d evidence, or full decoder
+  conformance
+
+#### Scenario: Generated support docs include the row
+- **WHEN** decoder support and conformance coverage status documents are
+  regenerated
+- **THEN** the new row is included in the generated status and coverage
+  documents with status `partial`
+
+### Requirement: get_tx_set ordinary branch support row
+
+The decoder support model SHALL track
+`DECODE-COEFF-ORDINARY-BRANCH-TX-SET-HANDOFF` as a distinct loaded-but-unwired
+ordinary coefficient branch infrastructure row. The row SHALL cite AV2 v1.0.0
+§5.20.7.27, §5.20.7.29, §5.20.8.3, and §9.2; SHALL name focused ordinary-branch
+tests as proof; and SHALL keep frame-state parsing, full `compute_tx_type`,
+luma/inter/lossless branches, directional wide-angle mapping, runtime
+`coeffs()`, dequantization, reconstruction, output, reference refresh, and
+external decoder invocation as residual work.
+
+#### Scenario: Support matrix records txSet handoff only
+
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support
+  matrix
+- **THEN** a `coeff-ordinary-branch-tx-set-handoff` row appears with Feature ID
+  `DECODE-COEFF-ORDINARY-BRANCH-TX-SET-HANDOFF`
+- **AND** broad coefficient-loop and runtime decode rows remain partial or
+  unsupported until separately implemented
+
+### Requirement: Ordinary branch transform-size-context support row
+The decoder support model SHALL track
+`DECODE-COEFF-ORDINARY-BRANCH-TX-SIZE-CONTEXT` as a distinct partial decoder row
+for the loaded-but-unwired ordinary coefficient branch. The row SHALL record
+that `txSzCtx` is derived from generated AV2 section 9.2 tables while keeping
+runtime coefficient-loop integration, `compute_tx_type`, scan derivation,
+dequantization, reconstruction, output, reference refresh, and broad
+`decode_block()` / `decode_tile()` support honestly unsupported or partial.
+
+#### Scenario: Matrix records transform-size-context handoff
+
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support
+  matrix
+- **THEN** the transform-size-context ordinary branch row appears with Feature ID
+  `DECODE-COEFF-ORDINARY-BRANCH-TX-SIZE-CONTEXT`
+- **AND** it names focused ordinary branch tests plus the feature/status checks
+- **AND** it does not claim runtime coefficient-loop integration or decoded
+  output changes
+
+#### Scenario: Generated support docs include the row
+
+- **WHEN** decoder support and conformance coverage status documents are
+  regenerated
+- **THEN** the new row is included with status `partial`
+
+### Requirement: Ordinary branch tx size dimensions support row
+The decoder support model SHALL track
+`DECODE-COEFF-ORDINARY-BRANCH-TX-SIZE-DIMENSIONS` as a distinct crate-private
+row named `coeff-ordinary-branch-tx-size-dimensions`. The row SHALL mark only
+the ordinary branch `txSz` to generated width/height dimension handoff as
+partial support, SHALL cite AV2 v1.0.0 sections 5.20.7.27 and 9.2, and SHALL
+keep `Tx_Size_Sqr`, `txSzCtx`, `Adjusted_Tx_Size`, `compute_tx_type`, scan
+derivation, runtime `coeffs()` wiring, dequantization, reconstruction, output,
+reference refresh, and broad `decode_block()` / `decode_tile()` support honestly
+unsupported or partial.
+
+#### Scenario: Matrix records narrow support
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support
+  matrix
+- **THEN** `coeff-ordinary-branch-tx-size-dimensions` appears with Feature ID
+  `DECODE-COEFF-ORDINARY-BRANCH-TX-SIZE-DIMENSIONS`
+- **AND** it names focused unit tests proving nonzero branch equivalence,
+  all-zero preservation, and invalid-`txSz` fail-atomic behavior
+- **AND** it does not claim `txSzCtx` derivation, adjusted transform-size
+  derivation, runtime coefficient loop integration, scan order derivation,
+  transform-type computation, dequantization, reconstruction, output, reference
+  refresh, AVM/dav2d evidence, or full decoder conformance
+
+#### Scenario: Generated support docs include the row
+- **WHEN** decoder support and conformance coverage status documents are
+  regenerated
+- **THEN** the new row is included in the generated status and coverage
+  documents with status `partial`
+
+### Requirement: Coefficient ordinary derived-base pass support status
+
+The decoder support model SHALL track
+`DECODE-COEFF-ORDINARY-DERIVED-BASE-PASS` as a distinct crate-private partial
+decoder boundary named `coeff-ordinary-derived-base-pass`. The row SHALL mark
+only loaded-but-unwired ordinary non-FSC coefficient pass composition with
+derived base/level first-pass facts as partial support, and SHALL keep runtime
+nonzero coefficient decode, tile context writes, dequantization, reconstruction,
+output, reference refresh, public APIs, and AVM/dav2d evidence unsupported until
+separately implemented.
+
+#### Scenario: Matrix records the derived-base ordinary pass
+
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support
+  matrix
+- **THEN** `coeff-ordinary-derived-base-pass` appears with Feature ID
+  `DECODE-COEFF-ORDINARY-DERIVED-BASE-PASS`
+- **AND** it cites AV2 §5.20.7.27 and §5.20.7.28 for the first-pass and
+  second-pass coefficient syntax sequence
+- **AND** it names focused tests for explicit/derived equivalence, hidden
+  parity summary handoff, and first-pass preflight failure
+- **AND** broad runtime `coeffs()`, reconstruction, output, and reference
+  support remain partial or unsupported in their existing rows
+
+### Requirement: Coefficient ordinary derived-sign pass support status
+
+The decoder support model SHALL track
+`DECODE-COEFF-ORDINARY-DERIVED-SIGN-PASS` as a distinct crate-private partial
+decoder boundary named `coeff-ordinary-derived-sign-pass`. The row SHALL mark
+only loaded-but-unwired ordinary non-FSC coefficient pass composition with
+derived base/level first-pass facts and derived sign sources as partial support,
+and SHALL keep runtime nonzero coefficient decode, tile context writes,
+dequantization, reconstruction, output, reference refresh, public APIs, and
+AVM/dav2d evidence unsupported until separately implemented.
+
+#### Scenario: Matrix records the derived-sign ordinary pass
+
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support
+  matrix
+- **THEN** `coeff-ordinary-derived-sign-pass` appears with Feature ID
+  `DECODE-COEFF-ORDINARY-DERIVED-SIGN-PASS`
+- **AND** it cites AV2 §5.20.7.27, §5.20.7.28, and §8.3.2 for the base,
+  sign-source, sign-read, and quant syntax sequence
+- **AND** it names focused tests for explicit/derived equivalence,
+  hidden-parity sign derivation, and invalid derived sign selectors without
+  quant consumption
+- **AND** broad runtime `coeffs()`, reconstruction, output, and reference
+  support remain partial or unsupported in their existing rows
+
+### Requirement: Coefficient ordinary pass composition support row
+The decoder support model SHALL track `DECODE-COEFF-ORDINARY-PASS-COMPOSE` as a
+distinct crate-private row named `coeff-ordinary-pass-compose`. The row SHALL
+mark only the loaded ordinary non-FSC composition from nonzero block start
+through signed `Quant[]` writes as partial coefficient-loop support.
+
+#### Scenario: Matrix records narrow ordinary pass support
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support
+  matrix
+- **THEN** `coeff-ordinary-pass-compose` appears with Feature ID
+  `DECODE-COEFF-ORDINARY-PASS-COMPOSE`
+- **AND** it cites AV2 § 5.20.7.27, § 5.20.7.28, and § 8.2.5 as syntax
+  evidence
+- **AND** it names tests for successful composition and failed-boundary
+  preservation
+- **AND** it does not claim runtime evolving base selector derivation,
+  post-level sign-source selection, runtime scan-table or transform fact
+  derivation, tile context-line commits, dequantization, inverse transform,
+  residual add, reconstruction, reference refresh, AVM/dav2d evidence, public
+  APIs, or full decoder conformance
+
+#### Scenario: Generated docs remain honest
+- **WHEN** feature status, spec coverage, decoder support, and decoder
+  conformance coverage status documents are regenerated
+- **THEN** the new row remains partial until a later runtime `coeffs()`
+  integration change proves reachable decode behavior
+
+### Requirement: Track Coefficient Parity and TCQ Handoff
+
+The decoder support matrix and decoder conformance coverage tooling SHALL track
+`DECODE-COEFF-PARITY-TCQ-HANDOFF` as a partial loaded-but-unwired
+decoder-support row linked to AV2 § 5.18.2, § 5.20.7.27, and the existing
+coefficient frame-facts/base-q `useFsc` handoff rows.
+
+#### Scenario: support matrix includes the row
+
+- **WHEN** decoder support status is generated
+- **THEN** it includes a partial row for `DECODE-COEFF-PARITY-TCQ-HANDOFF`
+  describing the crate-private derivation of `parityHiding` and `useTcq` from
+  parsed frame flags and block facts before base-q delegation
+- **AND** it records that runtime `coeffs()` integration, full
+  `compute_tx_type`, runtime block syntax traversal, segment-map derivation,
+  dequantization, reconstruction, output, and reference refresh remain
+  unsupported.
+
+#### Scenario: conformance coverage maps the row
+
+- **WHEN** decoder conformance coverage is checked
+- **THEN** the coefficient syntax and decoder support coverage groups reference
+  `DECODE-COEFF-PARITY-TCQ-HANDOFF`.
+
+### Requirement: Coefficient quant-pass composition support row
+The decoder support model SHALL track `DECODE-COEFF-QUANT-PASS-COMPOSE` as a
+distinct crate-private row named `coeff-quant-pass-compose`. The row SHALL mark
+only ordinary non-FSC `read_quant` to `Quant[]` composition as partial
+coefficient-loop support, SHALL cite focused self-contained tests, and SHALL
+keep runtime `coeffs()` integration, dequantization, reconstruction, broad
+`decode_tile()`, and byte-identical decode honestly partial or unsupported.
+
+#### Scenario: Matrix records narrow composition support
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support
+  matrix
+- **THEN** `coeff-quant-pass-compose` appears with Feature ID
+  `DECODE-COEFF-QUANT-PASS-COMPOSE`
+- **AND** it cites AV2 § 5.20.7.27 and § 5.20.7.28 as syntax evidence
+- **AND** it names tests for positive composition, hidden-parity composition,
+  TCQ composition, and no-consumption plus no-mutation caller-fact failures
+- **AND** it does not claim runtime coefficient-loop execution, selector or
+  scan-table derivation, dequantization, inverse transform, residual add,
+  reconstruction, reference refresh, AVM/dav2d evidence, public APIs, or full
+  decoder conformance
+
+#### Scenario: Generated docs remain honest
+- **WHEN** feature status, spec coverage, decoder support, and decoder
+  conformance coverage status documents are regenerated
+- **THEN** the new row remains partial until a later runtime `coeffs()`
+  integration change proves reachable decode behavior
+
+### Requirement: Coefficient quant pass maxLevel handoff support row
+The decoder support model SHALL track
+`DECODE-COEFF-QUANT-PASS-MAXLEVEL-HANDOFF` as a distinct crate-private row named
+`coeff-quant-pass-maxlevel-handoff`. The row SHALL mark only the loaded
+ordinary non-FSC handoff from max-level derivation into quant-pass composition
+as partial coefficient-loop support.
+
+#### Scenario: Matrix records narrow handoff support
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support
+  matrix
+- **THEN** `coeff-quant-pass-maxlevel-handoff` appears with Feature ID
+  `DECODE-COEFF-QUANT-PASS-MAXLEVEL-HANDOFF`
+- **AND** it cites AV2 § 5.20.7.27 and § 5.20.7.28 as syntax evidence
+- **AND** it names tests for low-frequency max-level handoff, hidden final-entry
+  max-level handoff, and bad-fact no-consumption behavior
+- **AND** it does not claim runtime coefficient-loop execution, selector or
+  scan-table derivation, dequantization, inverse transform, residual add,
+  reconstruction, reference refresh, AVM/dav2d evidence, public APIs, or full
+  decoder conformance
+
+#### Scenario: Generated docs remain honest
+- **WHEN** feature status, spec coverage, decoder support, and decoder
+  conformance coverage status documents are regenerated
+- **THEN** the new row remains partial until a later runtime `coeffs()`
+  integration change proves reachable decode behavior
+
+### Requirement: Coefficient quantized-state support
+The decoder support model SHALL track `DECODE-COEFF-QUANT-STATE-WRITE` as a
+distinct crate-private row named `coeff-quant-state-write`. The row SHALL mark
+only ordinary non-FSC quantized-coefficient state writes from caller-provided
+`read_quant` outputs as implemented, and SHALL keep §5.20.7.28 `read_quant`
+syntax parsing, `QuantSign[]` writes, runtime `coeffs()`, dequantization,
+reconstruction, and broad `decode_block()` support partial or unsupported until
+separately implemented.
+
+#### Scenario: Matrix records narrow quant-state support
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support
+  matrix after this change
+- **THEN** `coeff-quant-state-write` appears with Feature ID
+  `DECODE-COEFF-QUANT-STATE-WRITE`
+- **AND** it cites AV2 §5.20.7.27 for `Quant[]`, `culLevel`, `dcCategory`,
+  hidden-parity, and TCQ state effects
+- **AND** it cites AV2 §5.20.7.28 only as the still-deferred source of
+  caller-provided quant values
+- **AND** it names focused tests for positive writes, hidden-parity and TCQ
+  adjustment, zero-level sign behavior, and mismatch rejection before mutation
+- **AND** it does not claim runtime `read_quant`, dequantization,
+  reconstruction, `QuantSign[]` writes, external decoder invocation, public API,
+  or broad runtime `decode_tile()` support
+
+### Requirement: Coefficient read-quant syntax support row
+The decoder support model SHALL track `DECODE-COEFF-READ-QUANT-SYNTAX` as a
+distinct crate-private row named `coeff-read-quant-syntax`. The row SHALL mark
+only AV2 § 5.20.7.28 `read_quant` literal syntax parsing as partial
+coefficient-loop support, SHALL cite focused self-contained tests, and SHALL
+keep runtime `coeffs()` integration, dequantization, reconstruction, broad
+`decode_tile()`, and byte-identical decode honestly partial or unsupported.
+
+#### Scenario: Matrix records narrow parser support
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support
+  matrix
+- **THEN** `coeff-read-quant-syntax` appears with Feature ID
+  `DECODE-COEFF-READ-QUANT-SYNTAX`
+- **AND** it cites AV2 § 5.20.7.28 as syntax evidence
+- **AND** it names tests for the threshold skip path, finite q-length path,
+  Golomb extension path, hidden DC and TCQ facts, malformed-prefix guards, and
+  overflow failures
+- **AND** it does not claim runtime coefficient-loop execution, nonzero
+  `Quant[]` production, dequantization, inverse transform, residual add,
+  reconstruction, reference refresh, AVM/dav2d evidence, public APIs, or full
+  decoder conformance
+
+#### Scenario: Generated docs remain honest
+- **WHEN** feature status, spec coverage, decoder support, and decoder
+  conformance coverage status documents are regenerated
+- **THEN** the new row remains partial until a later runtime `coeffs()`
+  integration change proves reachable decode behavior
+
+### Requirement: Track Runtime Coefficient Frame-Entry Handoff
+
+The decoder support matrix and decoder conformance coverage tooling SHALL track
+`DECODE-COEFF-RUNTIME-FRAME-ENTRY-HANDOFF` as a partial runtime all-zero
+coefficient handoff linked to the existing frame-facts coefficient wrapper.
+
+#### Scenario: support matrix includes the row
+
+- **WHEN** decoder support status is generated
+- **THEN** it includes a partial row for
+  `DECODE-COEFF-RUNTIME-FRAME-ENTRY-HANDOFF`
+- **AND** the row states that only the minimal runtime all-zero coefficient
+  entry uses the top frame-facts wrapper
+- **AND** it does not claim broad nonzero `coeffs()`, dequantization,
+  reconstruction, output expansion, reference refresh, or full decoder
+  conformance.
+
+#### Scenario: conformance coverage maps the row
+
+- **WHEN** decoder conformance coverage is checked
+- **THEN** the tile-group syntax and decoder support coverage groups reference
+  `DECODE-COEFF-RUNTIME-FRAME-ENTRY-HANDOFF`.
+
+### Requirement: Track runtime coefficient tx-size geometry handoff
+
+The decoder support matrix and decoder conformance coverage tooling SHALL track
+`DECODE-COEFF-RUNTIME-TX-SIZE-GEOMETRY-HANDOFF` as a partial runtime all-zero
+coefficient handoff that derives the minimal luma and V `txSz` wrapper inputs
+from traced transform geometry and generated AV2 section 9.2 transform-size
+tables.
+
+#### Scenario: support matrix includes the row
+
+- **WHEN** decoder support status is generated
+- **THEN** it includes a partial row for
+  `DECODE-COEFF-RUNTIME-TX-SIZE-GEOMETRY-HANDOFF`
+- **AND** the row states that only the minimal runtime all-zero coefficient
+  transform-size geometry handoff is implemented
+- **AND** it does not claim broad nonzero `coeffs()`, dequantization,
+  reconstruction, output expansion, reference refresh, or full decoder
+  conformance.
+
+#### Scenario: conformance coverage maps the row
+
+- **WHEN** decoder conformance coverage is checked
+- **THEN** the tile-group syntax and decoder support coverage groups reference
+  `DECODE-COEFF-RUNTIME-TX-SIZE-GEOMETRY-HANDOFF`.
+
+### Requirement: Coefficient sign-source derivation support status
+
+The decoder support model SHALL track `DECODE-COEFF-SIGN-SOURCE-DERIVE` as a
+distinct crate-private partial decoder boundary named
+`coeff-sign-source-derive`. The row SHALL mark only ordinary non-FSC
+coefficient sign-source derivation from local `Level[]`, hidden parity,
+transform class, plane, and DC contexts as partial support, and SHALL keep
+runtime nonzero coefficient decode, tile context writes, dequantization,
+reconstruction, output, reference refresh, public APIs, and AVM/dav2d evidence
+unsupported until separately implemented.
+
+#### Scenario: Matrix records sign-source derivation
+
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support
+  matrix
+- **THEN** `coeff-sign-source-derive` appears with Feature ID
+  `DECODE-COEFF-SIGN-SOURCE-DERIVE`
+- **AND** it cites AV2 §5.20.7.27 and §8.3.2 for the sign source branch and
+  `dc_sign` CDF context selection
+- **AND** it names focused tests for luma DC, horizontal-axis, vertical-axis,
+  generic sign-bit, skipped zero-level, hidden-parity, and state-error behavior
+- **AND** broad runtime `coeffs()`, reconstruction, output, and reference
+  support remain partial or unsupported in their existing rows
+
+### Requirement: Coefficient sign symbol-read support
+The decoder support model SHALL track `DECODE-COEFF-SIGN-SYMBOL-READ` as a
+distinct crate-private row named `coeff-sign-symbol-read`. The row SHALL mark
+only ordinary non-FSC coefficient sign CDF/literal sequencing over caller-owned
+source facts as implemented, and SHALL keep `QuantSign[]`, `Quant[]`,
+`read_quant`, reconstruction, and broad `decode_block()` support partial or
+unsupported until separately implemented.
+
+#### Scenario: Matrix records narrow sign-read support
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support
+  matrix after this change
+- **THEN** `coeff-sign-symbol-read` appears with Feature ID
+  `DECODE-COEFF-SIGN-SYMBOL-READ`
+- **AND** it cites AV2 §5.20.7.27 and §8.3.2 as the sign read-order and
+  `dc_sign` CDF-selection boundary
+- **AND** it names focused tests for mixed CDF/literal/skip reads, invalid
+  selector no-consumption behavior, input-count mismatch, missing required signs,
+  and scan-entry mismatch
+- **AND** it does not claim `QuantSign[]`, nonzero `Quant[]`, `read_quant`,
+  reconstruction, external decoder invocation, public API, or broad runtime
+  `decode_tile()` support
+
+### Requirement: Coefficient state context handoff support status
+
+The decoder support model SHALL track
+`DECODE-COEFF-STATE-CONTEXT-HANDOFF` as a distinct crate-private partial
+decoder boundary named `coeff-state-context-handoff`. The row SHALL mark only
+loaded-but-unwired ordinary non-FSC nonzero coefficient pass composition that
+reads sign-source DC contexts from tile coefficient state before committing the
+final context lines through that same state object, and SHALL keep runtime
+nonzero coefficient decode, dequantization, reconstruction, output, reference
+refresh, public APIs, and AVM/dav2d evidence unsupported until separately
+implemented.
+
+#### Scenario: Matrix records the state context handoff boundary
+
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support
+  matrix
+- **THEN** `coeff-state-context-handoff` appears with Feature ID
+  `DECODE-COEFF-STATE-CONTEXT-HANDOFF`
+- **AND** it cites AV2 §5.20.7.27 for sign-source context use and the
+  end-of-`coeffs()` level/DC context update
+- **AND** it names focused tests for successful read-before-write behavior,
+  ordinary-pass failure preserving context state, and invalid context-update
+  facts preserving context state
+- **AND** broad runtime `coeffs()`, reconstruction, output, and reference
+  support remain partial or unsupported in their existing rows
+
+### Requirement: Coefficient transform-class derivation support row
+The decoder support model SHALL track `DECODE-COEFF-TX-CLASS-DERIVE` as a
+distinct crate-private row named `coeff-tx-class-derive`. The row SHALL mark
+only the decode-local `PlaneTxType -> txClass` mapping and max-level handoff as
+partial support, SHALL cite AV2 v1.0.0 § 5.20.7.27 and § 8.3.2, and SHALL keep
+`compute_tx_type`, scan derivation, runtime `coeffs()` wiring, dequantization,
+reconstruction, output, reference refresh, and broad `decode_block()` /
+`decode_tile()` support honestly unsupported or partial.
+
+#### Scenario: Matrix records narrow support
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support
+  matrix
+- **THEN** `coeff-tx-class-derive` appears with Feature ID
+  `DECODE-COEFF-TX-CLASS-DERIVE`
+- **AND** it names focused unit tests proving the mapping and max-level handoff
+  equivalence
+- **AND** it does not claim runtime transform-type computation, scan order
+  derivation, nonzero coefficient runtime integration, dequantization,
+  reconstruction, output, reference refresh, AVM/dav2d evidence, or full decoder
+  conformance
+
+#### Scenario: Generated support docs include the row
+- **WHEN** decoder support and conformance coverage status documents are
+  regenerated
+- **THEN** the new row is included in the generated status and coverage
+  documents with status `partial`
+
+### Requirement: Track useFsc Branch Handoff
+
+The decoder support matrix and decoder conformance coverage tooling SHALL track
+`DECODE-COEFF-USE-FSC-BRANCH-HANDOFF` as a partial loaded-but-unwired
+decoder-support row linked to AV2 § 5.20.7.27 and the existing ordinary/FSC
+coefficient branch handoff rows.
+
+#### Scenario: support matrix includes the row
+
+- **WHEN** decoder support status is generated
+- **THEN** it includes a partial row for
+  `DECODE-COEFF-USE-FSC-BRANCH-HANDOFF` describing the crate-private selector
+  that routes all-zero to ordinary, nonzero `useFsc == false` to ordinary, and
+  nonzero `useFsc == true` to FSC
+- **AND** it records that runtime `useFsc` derivation, runtime `coeffs()`,
+  dequantization, reconstruction, output, and reference refresh remain
+  unsupported.
+
+#### Scenario: conformance coverage maps the row
+
+- **WHEN** decoder conformance coverage is checked
+- **THEN** the coefficient syntax and decoder support coverage groups reference
+  `DECODE-COEFF-USE-FSC-BRANCH-HANDOFF`.
+
+### Requirement: Track useFsc Condition Handoff
+
+The decoder support matrix and decoder conformance coverage tooling SHALL track
+`DECODE-COEFF-USE-FSC-CONDITION-HANDOFF` as a partial loaded-but-unwired
+decoder-support row linked to AV2 section 5.20.7.27 and the existing `useFsc`
+branch selector row.
+
+#### Scenario: support matrix includes the row
+
+- **WHEN** decoder support status is generated
+- **THEN** it includes a partial row for
+  `DECODE-COEFF-USE-FSC-CONDITION-HANDOFF` describing the crate-private wrapper
+  that derives `useFsc` from caller-resolved condition facts before delegating
+  to the existing selector
+- **AND** it records that runtime `coeffs()` integration, full
+  `compute_tx_type`, runtime fact derivation, dequantization, reconstruction,
+  output, and reference refresh remain unsupported.
+
+#### Scenario: conformance coverage maps the row
+
+- **WHEN** decoder conformance coverage is checked
+- **THEN** the coefficient syntax and decoder support coverage groups reference
+  `DECODE-COEFF-USE-FSC-CONDITION-HANDOFF`.
+
+### Requirement: Track useFsc Shared-Facts Handoff
+
+The decoder support matrix and decoder conformance coverage tooling SHALL track
+`DECODE-COEFF-USE-FSC-SHARED-FACTS-HANDOFF` as a partial loaded-but-unwired
+decoder-support row linked to AV2 section 5.20.7.27 and the existing `useFsc`
+branch and condition handoff rows.
+
+#### Scenario: support matrix includes the row
+
+- **WHEN** decoder support status is generated
+- **THEN** it includes a partial row for
+  `DECODE-COEFF-USE-FSC-SHARED-FACTS-HANDOFF` describing the crate-private
+  wrapper that derives `useFsc` from one shared nonzero fact packet and lazily
+  constructs only the selected lower branch input
+- **AND** it records that runtime `coeffs()` integration, full
+  `compute_tx_type`, runtime fact derivation, dequantization, reconstruction,
+  output, and reference refresh remain unsupported.
+
+#### Scenario: conformance coverage maps the row
+
+- **WHEN** decoder conformance coverage is checked
+- **THEN** the coefficient syntax and decoder support coverage groups reference
+  `DECODE-COEFF-USE-FSC-SHARED-FACTS-HANDOFF`.
+
+### Requirement: Active LR Unit Diagnostic Uses Selection Frontier
+
+The decoder support model SHALL report the live
+`unsupported_active_wienerns_lr_units` runtime diagnostic under
+`DECODE-AC0EJ3-LR-UNIT-SELECTIONS-FRONTIER` once the runtime has retained
+per-unit Wiener NS LR selection state. The diagnostic SHALL keep active
+`RESTORE_WIENER_NONSEP` units fail-closed before decoded-frame allocation,
+reference retention, hash, raw, Y4M, or any successful output path.
+
+#### Scenario: Local ac0ej3 gate cites selection state
+
+- **WHEN** the local ac0ej3 mission fixture reaches the active Wiener NS LR-unit
+  runtime gate
+- **THEN** the JSON diagnostic keeps reason
+  `unsupported_active_wienerns_lr_units`
+- **AND** it cites matrix row `ac0ej3-lr-unit-selections-frontier`
+- **AND** it cites Feature ID `DECODE-AC0EJ3-LR-UNIT-SELECTIONS-FRONTIER`
+- **AND** it does not claim loop-restoration reconstruction, 10-bit output,
+  reference refresh, raw/Y4M output, or successful ac0ej3 decode
+
+### Requirement: ac0ej3 Inactive LR Unit Frontier Support Row
+The decoder support model SHALL track
+`DECODE-AC0EJ3-INACTIVE-LR-UNITS-FRONTIER` as a distinct ac0ej3 support row.
+The row SHALL describe that the minimal runtime consumes the supported
+frame-level Wiener NS LR-unit syntax, distinguishes `RESTORE_NONE` units from
+active `RESTORE_WIENER_NONSEP` units, and only advances beyond the LR frontier
+when every consumed unit is inactive. The row SHALL NOT claim active
+loop-restoration filtering, 10-bit reconstruction/output, reference refresh,
+raw/Y4M output, or successful ac0ej3 decode.
+
+#### Scenario: Inactive LR units advance to the next true frontier
+- **WHEN** the local ac0ej3 key frame consumes supported frame-level Wiener NS
+  LR units and all consumed units select `RESTORE_NONE`
+- **THEN** the runtime does not emit `unsupported_wienerns_lr_unit_syntax`
+- **AND** it either reaches the next structured unsupported diagnostic or a
+  later supported runtime path without claiming loop-restoration filtering
+
+#### Scenario: Active LR units remain unsupported
+- **WHEN** a minimal-runtime input consumes a supported frame-level Wiener NS LR
+  unit that selects `RESTORE_WIENER_NONSEP`
+- **THEN** the runtime emits a structured `decode/unsupported-feature`
+  diagnostic before decoded-frame allocation, reference retention, hash, raw, or
+  Y4M output
+- **AND** the diagnostic identifies active Wiener NS loop-restoration
+  reconstruction as unsupported
+
+#### Scenario: Matrix evidence records the narrow boundary
+- **WHEN** decoder support status is validated
+- **THEN** `ac0ej3-inactive-lr-units-frontier` remains partial
+- **AND** the row lists tests proving inactive LR-unit advancement, active
+  LR-unit rejection, resource-limit preservation, and local ac0ej3 diagnostic
+  identity
+
+### Requirement: ac0ej3 LR Source-Bounds Frontier Support Row
+
+The decoder support model SHALL track
+`DECODE-AC0EJ3-LR-SOURCE-BOUNDS-FRONTIER` as a distinct ac0ej3 support row. The
+row SHALL describe that the minimal runtime consumes supported active
+Wiener NS LR-unit syntax, consumes required §5.20.10.6 per-unit filter syntax,
+retains per-unit selection state, derives active §7.20.1 source-bound facts, and
+still fails closed before
+source-frame reads, loop-restoration filtering, 10-bit output, or successful
+ac0ej3 decode.
+
+#### Scenario: Matrix evidence records the source-bounds boundary
+
+- **WHEN** decoder support status is validated
+- **THEN** `ac0ej3-lr-source-bounds-frontier` remains partial
+- **AND** the row lists tests proving active source-bound retention and the live
+  ac0ej3 runtime diagnostic
+- **AND** the live diagnostic reason is `unsupported_wienerns_lr_source_bounds`
+
+### Requirement: ac0ej3 LR Unit Selection Frontier Support Row
+
+The decoder support model SHALL track
+`DECODE-AC0EJ3-LR-UNIT-SELECTIONS-FRONTIER` as a distinct ac0ej3 support row.
+The row SHALL describe that the minimal runtime's traversal boundary retains
+supported frame-level Wiener NS LR-unit selections, including plane, unit row,
+unit column, and active/inactive state. The row SHALL NOT claim active
+loop-restoration filtering, 10-bit reconstruction/output, reference refresh,
+raw/Y4M output, or successful ac0ej3 decode.
+
+#### Scenario: Matrix evidence records the narrow selection boundary
+
+- **WHEN** decoder support status is validated
+- **THEN** `ac0ej3-lr-unit-selections-frontier` remains partial
+- **AND** the row lists tests proving inactive, active, and multi-unit selection
+  retention
+- **AND** the live ac0ej3 runtime diagnostic remains fail-closed before output
+
+### Requirement: ac0ej3 LR Unit Syntax Frontier Support Row
+The decoder support model SHALL track `DECODE-AC0EJ3-LR-UNIT-SYNTAX-FRONTIER`
+as a distinct ac0ej3 support row. The row SHALL describe that the local mission
+stream can parse the frame-level Wiener NS bank and consume the covered
+§5.20.10.4/§5.20.10.5 LR unit `use_wiener_ns` symbols, then fail closed with a
+structured `decode/unsupported-feature` diagnostic before loop-restoration
+filtering, 10-bit reconstruction/output, reference retention, hash, raw, or Y4M
+output.
+
+#### Scenario: Diagnostic resolves to support row
+- **WHEN** the minimal runtime reaches the ac0ej3 LR unit syntax frontier
+- **THEN** it emits `decode/unsupported-feature` with reason
+  `unsupported_wienerns_lr_unit_syntax`
+- **AND** the diagnostic has matrix row `ac0ej3-lr-unit-syntax-frontier`,
+  Feature ID `DECODE-AC0EJ3-LR-UNIT-SYNTAX-FRONTIER`, and AV2 spec section
+  `5.20.10.4`
+
+#### Scenario: Support row does not claim decode success
+- **WHEN** decoder support status is regenerated
+- **THEN** `ac0ej3-lr-unit-syntax-frontier` remains partial
+- **AND** the row states that it does not implement loop-restoration
+  reconstruction/filtering, 10-bit output, reference refresh, or successful
+  ac0ej3 decode
+
+### Requirement: Decoder support tracks ac0ej3 Wiener NS frontier
+
+The decoder support model SHALL include a partial row for
+`DECODE-AC0EJ3-WIENERNS-FRONTIER` named `ac0ej3-wienerns-frontier`. The row
+SHALL describe that the runtime surfaces the current ac0ej3 key-frame header
+coverage stop at AV2 5.18.7.11, where `lr_params()` reaches
+`read_wienerns_filter()`, while keeping Wiener NS syntax parsing,
+loop-restoration filtering, 10-bit reconstruction/output, and full ac0ej3 decode
+out of scope.
+
+#### Scenario: support row validates
+
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support
+  metadata
+- **THEN** the `ac0ej3-wienerns-frontier` row exists with Feature ID
+  `DECODE-AC0EJ3-WIENERNS-FRONTIER`
+- **AND** the row records focused runtime and local ac0ej3 regression tests
+
+#### Scenario: generated status remains honest
+
+- **WHEN** decoder support status is generated
+- **THEN** Wiener NS filter-bank decode, loop-restoration reconstruction, 10-bit
+  reconstruction/output, and successful ac0ej3 decode remain partial or
+  unsupported until separately implemented and proven
+
+### Requirement: First inter frame decode frontier support row
+The decoder support model SHALL track `DECODE-FIRST-INTER-FRAME-FRONTIER` as a
+distinct partial `splot-decode` row named `first-inter-frame-frontier`. The row
+SHALL cite AV2 § 5.2.1, § 5.18.2, § 5.19, § 5.20, § 6.18, § 7.7, § 7.13.3.18, and
+§ 7.23, SHALL record the honest planner-rejection test plus the conformance
+manifest test, and SHALL carry the reciprocal LOCAL-REFERENCE-EVIDENCE pointer
+for the two-frame inter fixture. The row SHALL keep the full inter decode slice
+(the § 7.7 `get_ref_frames()` derivation, the § 5.18.2 inter frame-header shared
+tail, the multi-frame planner/runtime, § 7.23 reference retention, § 5.20 inter
+mode_info, § 7.11 MV derivation, § 7.13.3.18 motion compensation, frame output)
+out of scope as deferred work, and SHALL NOT claim any inter frame decode.
+
+#### Scenario: Matrix records narrow first-inter-frontier support
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support
+  matrix
+- **THEN** row `first-inter-frame-frontier` appears with Feature ID
+  `DECODE-FIRST-INTER-FRAME-FRONTIER`
+- **AND** it is marked partial rather than supported for inter decode
+- **AND** it does not claim inter frame-header parse, inter mode_info, motion
+  compensation, or multi-frame output
+
+#### Scenario: Inter decode conformance coverage is deferred
+- **WHEN** decoder conformance coverage is generated
+- **THEN** the tile group / payload syntax coverage remains partial for inter
+  decode, because this frontier brick decodes no inter frame (it only commits the
+  verified target fixture and pins the honest planner rejection)
+- **AND** a dedicated `first-inter-frame-frontier` decoder conformance coverage
+  row is deferred until the inter decode slice lands (§ 7.7 `get_ref_frames()` →
+  the § 5.18.2 inter header tail → multi-frame planner/runtime → § 7.23 reference
+  retention → § 5.20 inter mode_info → § 7.11 MV → § 7.13.3.18 motion
+  compensation → frame output), at which point the row reflects real coverage
+  rather than a planned target
+
+### Requirement: General intra single-block directional-angle luma support row
+The decoder support model SHALL track `DECODE-GENERAL-INTRA-ANGLE` as a distinct
+partial `splot-decode` row named `general-intra-angle`. The row SHALL cite AV2
+§ 5.20.5.3, § 5.20.7.27, § 7.13.2.1, § 7.13.2.8, § 8.2.4, and § 9.2, SHALL record
+the directional oracle test and the `y_mode_offset` escape reconstruction test,
+SHALL carry the reciprocal LOCAL-REFERENCE-EVIDENCE pointer for the hedge
+directional fixture, and SHALL keep non-zero angle deltas, the other directional
+modes, multi-block directional prediction, directional chroma, and non-64x64
+frames out of scope.
+
+#### Scenario: Matrix records narrow directional-angle support
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support
+  matrix
+- **THEN** row `general-intra-angle` appears with Feature ID
+  `DECODE-GENERAL-INTRA-ANGLE`
+- **AND** it is marked partial rather than supported for full runtime decode
+- **AND** it does not claim non-zero angle deltas, the other directional modes,
+  multi-block directional prediction, directional chroma, or non-64x64 frames
+
+### Requirement: General intra D113 vertical-leaning angle support row
+The decoder support model SHALL track `DECODE-GENERAL-INTRA-ANGLE-D113` as a
+distinct partial `splot-decode` row named `general-intra-angle-d113`. The row SHALL
+cite AV2 § 5.20.5.3, § 5.20.7.27, § 7.13.2.1, § 7.13.2.7, § 7.13.2.8, and § 9.2,
+SHALL record the row>0 directional D113 luma IDIF + D113-follow chroma oracle test
+reading the real § 7.13.2.1 above row + left column + corner, SHALL carry the
+reciprocal LOCAL-REFERENCE-EVIDENCE pointer for the
+`syn-d113-intra-128x128-q80.ivf` fixture, and SHALL keep the top-left, first-row
+(`haveAbove == 0`), first-column, sub-partitioned, and non-64x64 D113 positions,
+the one-sided angles D45/D67/D203, non-zero angle deltas, the directional-neighbour
+(`ctx != 0`) escape reorder, and multiple tiles out of scope.
+
+#### Scenario: Matrix records the D113 vertical-leaning angle support
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support matrix
+- **THEN** row `general-intra-angle-d113` appears with Feature ID
+  `DECODE-GENERAL-INTRA-ANGLE-D113`
+- **AND** it is marked partial rather than supported for full runtime decode
+- **AND** it does not claim a top-left / first-row / first-column / sub-partitioned
+  / non-64x64 D113 position, the one-sided angles D45/D67/D203, non-zero angle
+  deltas, or multiple tiles
+
+### Requirement: General intra D203 zone-3 one-sided angle support row
+The decoder support model SHALL track `DECODE-GENERAL-INTRA-ANGLE-D203` as a
+distinct partial `splot-decode` row named `general-intra-angle-d203`. The row SHALL
+cite AV2 § 5.20.5.3, § 5.20.7.25, § 5.20.7.27, § 7.13.2.1, § 7.13.2.7, § 7.13.2.8,
+and § 9.2, SHALL record the first-superblock-row non-first-column zone-3 D203 luma
+IDIF + D203-follow chroma oracle test reading the real § 7.13.2.1 left column, SHALL
+carry the reciprocal LOCAL-REFERENCE-EVIDENCE pointer for the
+`syn-d203-intra-128x64-q80.ivf` fixture, and SHALL keep the top-left, first-column
+(no real left column), row>0, sub-partitioned, and non-64x64 D203 positions, the
+remaining one-sided angle D67, non-zero angle deltas, the directional-neighbour
+(`ctx != 0`) escape reorder, and multiple tiles out of scope.
+
+#### Scenario: Matrix records the D203 zone-3 one-sided angle support
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support matrix
+- **THEN** row `general-intra-angle-d203` appears with Feature ID
+  `DECODE-GENERAL-INTRA-ANGLE-D203`
+- **AND** it is marked partial rather than supported for full runtime decode
+- **AND** it does not claim a top-left / first-column / row>0 / sub-partitioned /
+  non-64x64 D203 position, the remaining one-sided angle D67, non-zero angle deltas,
+  or multiple tiles
+
+### Requirement: General intra D45 zone-1 one-sided angle support row
+The decoder support model SHALL track `DECODE-GENERAL-INTRA-ANGLE-D45` as a
+distinct partial `splot-decode` row named `general-intra-angle-d45`. The row SHALL
+cite AV2 § 5.20.5.3, § 5.20.7.25, § 5.20.7.27, § 7.13.2.1, § 7.13.2.7, § 7.13.2.8,
+and § 9.2, SHALL record the row>0 non-rightmost zone-1 D45 luma IDIF + D45-follow
+chroma oracle test reading the real § 7.13.2.1 above row + ABOVE-RIGHT + corner,
+SHALL carry the reciprocal LOCAL-REFERENCE-EVIDENCE pointer for the
+`syn-d45-intra-192x128-q80.ivf` fixture, and SHALL keep the top-left, first-row
+(`haveAbove == 0`), first-column, RIGHTMOST (no decoded above-right),
+sub-partitioned, and non-64x64 D45 positions, the other one-sided angles D67/D203,
+non-zero angle deltas, the directional-neighbour (`ctx != 0`) escape reorder, and
+multiple tiles out of scope.
+
+#### Scenario: Matrix records the D45 zone-1 one-sided angle support
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support matrix
+- **THEN** row `general-intra-angle-d45` appears with Feature ID
+  `DECODE-GENERAL-INTRA-ANGLE-D45`
+- **AND** it is marked partial rather than supported for full runtime decode
+- **AND** it does not claim a top-left / first-row / first-column / RIGHTMOST /
+  sub-partitioned / non-64x64 D45 position, the other one-sided angles D67/D203,
+  non-zero angle deltas, or multiple tiles
+
+### Requirement: General intra per-block BlockDecoded support row
+The decoder support model SHALL track `DECODE-GENERAL-INTRA-BLOCK-DECODED` as a
+distinct partial `splot-decode` row named `general-intra-block-decoded`. The row
+SHALL cite AV2 § 5.20.2.3, § 5.20.7.25, § 7.13.2.1, and § 7.13.2.13, SHALL record
+the SMOOTH_H split sub-block above-right oracle test, the SMOOTH chroma
+split-sub-block reject test, and the `BlockDecoded` grid unit test, SHALL carry
+the reciprocal LOCAL-REFERENCE-EVIDENCE pointers for the positive and negative
+fixtures, and SHALL keep SMOOTH_V below-left sub-block sentinels, SMOOTH chroma
+sub-blocks, directional sub-blocks, non-DCTONLY-size non-DC sub-blocks, non-64x64
+runtime beyond the existing subset, inter prediction, in-loop filters, and public
+APIs out of scope.
+
+#### Scenario: Matrix records narrow BlockDecoded support
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support
+  matrix
+- **THEN** row `general-intra-block-decoded` appears with Feature ID
+  `DECODE-GENERAL-INTRA-BLOCK-DECODED`
+- **AND** it is marked partial rather than supported for full runtime decode
+- **AND** it does not claim SMOOTH_V below-left sub-block sentinels, SMOOTH
+  chroma sub-blocks, or directional sub-blocks
+
+#### Scenario: Coverage tracks the new BlockDecoded decode
+- **WHEN** decoder conformance coverage is generated
+- **THEN** the tile group and payload syntax coverage includes row
+  `general-intra-block-decoded` and Feature ID
+  `DECODE-GENERAL-INTRA-BLOCK-DECODED`
+- **AND** broader tile payload coverage remains partial
+
+### Requirement: General intra block mode-info support row
+The decoder support model SHALL track `DECODE-GENERAL-INTRA-BLOCK-MODES` as a
+distinct partial `splot-decode` row named `general-intra-block-modes`. The row
+SHALL cite AV2 § 5.20.5.3 and § 8.3.2, SHALL record a unit test that
+reconstructs `DC_PRED` luma and a valid chroma mode in spec order and the CLI
+test that proves the general intra fixture decodes its modes and reaches the
+residual step, and SHALL keep typed `UVMode` reconstruction, coefficient
+symbol reads, `Quant` writes, dequantization, inverse transform, residual add,
+reconstruction, output, and public APIs out of scope.
+
+#### Scenario: Matrix records narrow mode-info support
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support
+  matrix
+- **THEN** row `general-intra-block-modes` appears with Feature ID
+  `DECODE-GENERAL-INTRA-BLOCK-MODES`
+- **AND** it is marked partial rather than supported for full runtime decode
+- **AND** it does not claim coefficient decode, dequantization, inverse
+  transform, residual add, reconstruction, or output
+
+#### Scenario: Coverage tracks the new mode-info decode
+- **WHEN** decoder conformance coverage is generated
+- **THEN** the tile group and payload syntax coverage includes row
+  `general-intra-block-modes` and Feature ID
+  `DECODE-GENERAL-INTRA-BLOCK-MODES`
+- **AND** broader tile payload coverage remains partial
+
+### Requirement: General intra cardinal directional support row
+The decoder support model SHALL track `DECODE-GENERAL-INTRA-CARDINAL` as a distinct
+partial `splot-decode` row named `general-intra-cardinal`. The row SHALL cite AV2
+§ 5.20.5.3, § 5.20.7.27, § 7.13.2.1, § 7.13.2.7, § 7.13.2.8, § 8.2.4, and § 9.2,
+SHALL record the cardinal V_PRED and H_PRED neighbour-having luma + follow chroma
+oracle tests, SHALL carry the reciprocal LOCAL-REFERENCE-EVIDENCE pointers for the
+`syn-vpred-intra-64x128-q160.ivf` and `syn-hpred-intra-128x64-q180.ivf` fixtures,
+and SHALL keep a first-superblock-row V_PRED / first-column H_PRED, a directional
+NEIGHBOUR (`ctx != 0`) cardinal escape, sub-superblock cardinal blocks, non-cardinal
+angles, non-zero angle deltas, the `y_second_mode` path, non-64x64 frames, and
+multiple tiles out of scope.
+
+#### Scenario: Matrix records the cardinal directional support
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support matrix
+- **THEN** row `general-intra-cardinal` appears with Feature ID
+  `DECODE-GENERAL-INTRA-CARDINAL`
+- **AND** it is marked partial rather than supported for full runtime decode
+- **AND** it does not claim a first-superblock-row V_PRED, a directional-neighbour
+  cardinal escape, non-cardinal angles, or multiple tiles
+
+### Requirement: General intra deeper square SPLIT decode support row
+The decoder support model SHALL track `DECODE-GENERAL-INTRA-DEEP-SPLIT` as a
+distinct partial `splot-decode` row named `general-intra-deep-split`. The row
+SHALL cite AV2 § 5.20.2.3, § 5.20.3.1, § 5.20.4.1, and § 7.13.2.10, SHALL record
+the deeper-split oracle test plus the single-level quad regression test, SHALL
+carry the reciprocal LOCAL-REFERENCE-EVIDENCE pointer for the two-level
+partition-tree fixture, and SHALL keep the § 5.20.2.3 `BlockDecoded` flag state,
+non-DC / rectangular-leaf sub-32x32 partitions, non-64x64 frames, inter
+prediction, in-loop filters, and public APIs out of scope.
+
+#### Scenario: Matrix records narrow deeper-split support
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support
+  matrix
+- **THEN** row `general-intra-deep-split` appears with Feature ID
+  `DECODE-GENERAL-INTRA-DEEP-SPLIT`
+- **AND** it is marked partial rather than supported for full runtime decode
+- **AND** it does not claim the § 5.20.2.3 `BlockDecoded` flag state, non-DC /
+  rectangular-leaf sub-32x32 partitions, or non-64x64 frames
+
+#### Scenario: Coverage tracks the new deeper-split decode
+- **WHEN** decoder conformance coverage is generated
+- **THEN** the tile group and payload syntax coverage includes row
+  `general-intra-deep-split` and Feature ID `DECODE-GENERAL-INTRA-DEEP-SPLIT`
+- **AND** broader tile payload coverage remains partial
+
+### Requirement: General intra row>0 directional corner support row
+The decoder support model SHALL track `DECODE-GENERAL-INTRA-DIRECTIONAL-CORNER` as
+a distinct partial `splot-decode` row named `general-intra-directional-corner`. The
+row SHALL cite AV2 § 5.20.5.3, § 5.20.7.27, § 7.13.2.1, § 7.13.2.7, § 7.13.2.8,
+and § 8.2.4, SHALL record the row>0 directional D135 luma + follow chroma oracle
+test reading the real § 7.13.2.1 corner, SHALL carry the reciprocal
+LOCAL-REFERENCE-EVIDENCE pointer for the `syn-d135row-intra-128x128-q80.ivf`
+fixture, and SHALL keep the row>0 first-column (`!haveLeft && haveAbove`) position,
+any row>0 D157, sub-superblock directional blocks, non-zero angle deltas, the
+directional-neighbour (`ctx != 0`) escape reorder, non-64x64 superblock blocks, and
+multiple tiles out of scope.
+
+#### Scenario: Matrix records the row>0 directional corner support
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support matrix
+- **THEN** row `general-intra-directional-corner` appears with Feature ID
+  `DECODE-GENERAL-INTRA-DIRECTIONAL-CORNER`
+- **AND** it is marked partial rather than supported for full runtime decode
+- **AND** it does not claim a row>0 first-column position, a row>0 D157 block,
+  sub-superblock directional blocks, non-zero angle deltas, or multiple tiles
+
+### Requirement: General intra directional-follow chroma support row
+The decoder support model SHALL track
+`DECODE-GENERAL-INTRA-DIRECTIONAL-FOLLOW-CHROMA` as a distinct partial
+`splot-decode` row named `general-intra-directional-follow-chroma`. The row SHALL
+cite AV2 § 5.20.5.3, § 5.20.7.27, § 7.13.2.1, § 7.13.2.8, § 8.2.4, and § 9.2,
+SHALL record the single-block 64x64 directional-follow D135 chroma oracle test,
+SHALL carry the reciprocal LOCAL-REFERENCE-EVIDENCE pointer for the
+`syn-dfchroma-intra-64x64-q80.ivf` fixture, and SHALL keep neighbour-having
+directional chroma, other directional chroma angles, the non-follow `D135_PRED`
+scan pairing, CfL/CCTX/MHCCP chroma, sub-superblock chroma, and multiple tiles out
+of scope.
+
+#### Scenario: Matrix records the directional-follow chroma support
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support matrix
+- **THEN** row `general-intra-directional-follow-chroma` appears with Feature ID
+  `DECODE-GENERAL-INTRA-DIRECTIONAL-FOLLOW-CHROMA`
+- **AND** it is marked partial rather than supported for full runtime decode
+- **AND** it does not claim neighbour-having directional chroma, CfL/CCTX/MHCCP
+  chroma, or multiple tiles
+
+### Requirement: General intra directional-neighbour y_mode_index support row
+The decoder support model SHALL track `DECODE-GENERAL-INTRA-DIRECTIONAL-NEIGHBOUR-CTX`
+as a distinct partial `splot-decode` row named
+`general-intra-directional-neighbour-ctx`. The row SHALL cite AV2 § 5.20.5.3,
+§ 5.20.5.5, § 5.20.7.27, § 7.13.2.13, and § 8.3.2, SHALL record the 128x64
+directional-neighbour SMOOTH_V luma oracle test, SHALL carry the reciprocal
+LOCAL-REFERENCE-EVIDENCE pointer for the 128x64 fixture, and SHALL keep the
+§ 5.20.5.3 in-frame directional-neighbour reorder, directional neighbour-reading
+luma over a real non-flat edge, the `y_mode_set != 0` path, sub-superblock non-DC
+blocks, and multiple tiles out of scope.
+
+#### Scenario: Matrix records the directional-neighbour ctx support
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support matrix
+- **THEN** row `general-intra-directional-neighbour-ctx` appears with Feature ID
+  `DECODE-GENERAL-INTRA-DIRECTIONAL-NEIGHBOUR-CTX`
+- **AND** it is marked partial rather than supported for full runtime decode
+- **AND** it does not claim the § 5.20.5.3 in-frame directional-neighbour reorder,
+  directional neighbour-reading luma, or multiple tiles
+
+### Requirement: General intra frame frontier support row
+The decoder support model SHALL track `DECODE-GENERAL-INTRA-FRAME-FRONTIER` as a
+distinct partial `splot-decode` row named `general-intra-frame-frontier`. The
+row SHALL cite AV2 § 5.18.2, § 5.20.1, § 5.20.3.1, and § 5.20.3.2, SHALL record
+focused tests for reaching the partition frontier on the committed
+`syn-flat-intra-64x64-q80.ivf` fixture and for the frozen-hash regression guard,
+and SHALL keep arbitrary intra mode decode, coefficient symbol reads, `Quant`
+writes, dequantization, inverse transform, residual add, reconstruction, output,
+reference refresh, and public APIs out of scope.
+
+#### Scenario: Matrix records narrow general intra frontier support
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support
+  matrix
+- **THEN** row `general-intra-frame-frontier` appears with Feature ID
+  `DECODE-GENERAL-INTRA-FRAME-FRONTIER`
+- **AND** it is marked partial rather than supported for full runtime decode
+- **AND** it does not claim coefficient decode, dequantization, inverse
+  transform, residual add, reconstruction, output, or reference refresh
+
+#### Scenario: Coverage tracks the new general intra frontier
+- **WHEN** decoder conformance coverage is generated
+- **THEN** the tile group and payload syntax coverage includes row
+  `general-intra-frame-frontier` and Feature ID
+  `DECODE-GENERAL-INTRA-FRAME-FRONTIER`
+- **AND** broader tile payload coverage remains partial
+
+### Requirement: General intra full frame reconstruction support row
+The decoder support model SHALL track `DECODE-GENERAL-INTRA-FRAME-RECON` as a
+distinct partial `splot-decode` row named `general-intra-frame-recon`. The row
+SHALL cite AV2 § 5.20.7.27, § 7.13.2, § 7.14.2, § 7.14.4, § 7.15.4, § 7.14.3,
+§ 8.2.4, and § 8.3.2, SHALL record the reconstructed-plane and frame-hash tests
+plus the CLI test proving the general intra fixture decodes bit-exactly to the
+avmdec/dav2d oracle, and SHALL keep split partitions, multiple blocks, multiple
+tiles, non-64x64 frames, chroma `cctx`/CfL, inter prediction, in-loop filters,
+and public APIs out of scope.
+
+#### Scenario: Matrix records narrow full frame reconstruction support
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support
+  matrix
+- **THEN** row `general-intra-frame-recon` appears with Feature ID
+  `DECODE-GENERAL-INTRA-FRAME-RECON`
+- **AND** it is marked partial rather than supported for full runtime decode
+- **AND** it does not claim split partitions, multiple blocks, multiple tiles,
+  inter prediction, or in-loop filters
+
+#### Scenario: Coverage tracks the new full frame reconstruction
+- **WHEN** decoder conformance coverage is generated
+- **THEN** the tile group and payload syntax coverage includes row
+  `general-intra-frame-recon` and Feature ID `DECODE-GENERAL-INTRA-FRAME-RECON`
+- **AND** broader tile payload coverage remains partial
+
+### Requirement: General intra full 2-D superblock grid support row
+The decoder support model SHALL track `DECODE-GENERAL-INTRA-GRID` as a distinct
+partial `splot-decode` row named `general-intra-grid`. The row SHALL cite AV2
+§ 5.18.3, § 5.20.2.3, § 5.20.7.25, § 7.13.2.1, and § 7.13.2.13, SHALL record the
+2-D grid 128x128 oracle test, the `num4AboveRight` derivation test, and the
+workspace `reconstructed_sample` test, SHALL carry the reciprocal
+LOCAL-REFERENCE-EVIDENCE pointer for the 128x128 fixture, and SHALL keep
+directional luma, SMOOTH chroma on sub-partitioned blocks, partial frames, and
+multiple tiles out of scope.
+
+#### Scenario: Matrix records the full 2-D superblock grid support
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support
+  matrix
+- **THEN** row `general-intra-grid` appears with Feature ID
+  `DECODE-GENERAL-INTRA-GRID`
+- **AND** it is marked partial rather than supported for full runtime decode
+- **AND** it does not claim directional luma, sub-partitioned SMOOTH chroma, or
+  multiple tiles
+
+### Requirement: General intra 2-D grid non-DC SMOOTH luma support row
+The decoder support model SHALL track `DECODE-GENERAL-INTRA-GRID-NEIGHBOUR-NONDC`
+as a distinct partial `splot-decode` row named
+`general-intra-grid-neighbour-nondc`. The row SHALL cite AV2 § 5.20.2.3,
+§ 5.20.5.3, § 5.20.7.25, § 5.20.7.27, § 7.13.2.1, and § 7.13.2.13, SHALL record
+the 2-D grid 192x128 row > 0 SMOOTH_V luma oracle test, SHALL carry the reciprocal
+LOCAL-REFERENCE-EVIDENCE pointer for the 192x128 fixture, and SHALL keep
+neighbour-having directional luma, the `ctx != 0` `y_mode_index` decode,
+sub-superblock (split) non-DC blocks, and multiple tiles out of scope.
+
+#### Scenario: Matrix records the 2-D grid non-DC SMOOTH luma support
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support matrix
+- **THEN** row `general-intra-grid-neighbour-nondc` appears with Feature ID
+  `DECODE-GENERAL-INTRA-GRID-NEIGHBOUR-NONDC`
+- **AND** it is marked partial rather than supported for full runtime decode
+- **AND** it does not claim neighbour-having directional luma, sub-partitioned
+  non-DC blocks, or multiple tiles
+
+### Requirement: General intra full-superblock SMOOTH_H luma above-right support row
+The decoder support model SHALL track
+`DECODE-GENERAL-INTRA-GRID-SMOOTH-H-ABOVE-RIGHT` as a distinct partial
+`splot-decode` row named `general-intra-grid-smooth-h-above-right`. The row SHALL
+cite AV2 § 5.20.2.3, § 5.20.5.3, § 5.20.7.25, § 5.20.7.27, § 7.13.2.1, and
+§ 7.13.2.13, SHALL record the 2-D grid 128x128 row > 0 SMOOTH_H luma
+cross-superblock above-right oracle test, SHALL carry the reciprocal
+LOCAL-REFERENCE-EVIDENCE pointer for the 128x128 fixture, and SHALL keep the
+SMOOTH_H SPLIT-child cross-superblock above-right, SMOOTH_V below-left sub-block
+sentinels, SMOOTH chroma sub-blocks, neighbour-having directional / PAETH luma,
+and multiple tiles out of scope.
+
+#### Scenario: Matrix records the SMOOTH_H luma above-right support
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support matrix
+- **THEN** row `general-intra-grid-smooth-h-above-right` appears with Feature ID
+  `DECODE-GENERAL-INTRA-GRID-SMOOTH-H-ABOVE-RIGHT`
+- **AND** it is marked partial rather than supported for full runtime decode
+- **AND** it does not claim SMOOTH_H sub-partitioned cross-superblock above-right,
+  SMOOTH chroma sub-blocks, neighbour-having directional luma, or multiple tiles
+
+### Requirement: General intra D157 luma IDIF support row
+The decoder support model SHALL track `DECODE-GENERAL-INTRA-IDIF-D157` as a distinct
+partial `splot-decode` row named `general-intra-idif-d157`. The row SHALL cite AV2
+§ 5.20.5.3, § 5.20.7.27, § 7.13.2.1, § 7.13.2.7, § 7.13.2.8, § 8.2.4, and § 9.2,
+SHALL record the D157 neighbour-having luma IDIF + follow chroma oracle test and the
+`splot-recon` IDIF 4-tap unit tests, SHALL carry the reciprocal
+LOCAL-REFERENCE-EVIDENCE pointer for the `syn-d157-intra-128x64-q80.ivf` fixture,
+and SHALL keep the top-left / first-column / sub-superblock / row>0 D157 positions,
+the other middle angle D113, the one-sided angles D45/D67/D203, non-zero angle
+deltas, the directional-neighbour (`ctx != 0`) escape reorder, non-64x64 frames, and
+multiple tiles out of scope.
+
+#### Scenario: Matrix records the D157 luma IDIF support
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support matrix
+- **THEN** row `general-intra-idif-d157` appears with Feature ID
+  `DECODE-GENERAL-INTRA-IDIF-D157`
+- **AND** it is marked partial rather than supported for full runtime decode
+- **AND** it does not claim a top-left / first-column / row>0 D157 position, the
+  D113 or one-sided angles, non-zero angle deltas, or multiple tiles
+
+### Requirement: General intra luma coefficient decode support row
+The decoder support model SHALL track `DECODE-GENERAL-INTRA-LUMA-COEFFS` as a
+distinct partial `splot-decode` row named `general-intra-luma-coeffs`. The row
+SHALL cite AV2 § 5.20.7.27 and § 8.3.2, SHALL record unit tests for the
+`txb_skip` transform-size context derivation and the CLI test proving the
+general intra fixture decodes its luma coefficients and reaches the chroma step,
+and SHALL keep chroma coefficient decode, dequantization, inverse transform,
+residual add, reconstruction, output, tile context-line commit, and public APIs
+out of scope.
+
+#### Scenario: Matrix records narrow luma coefficient support
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support
+  matrix
+- **THEN** row `general-intra-luma-coeffs` appears with Feature ID
+  `DECODE-GENERAL-INTRA-LUMA-COEFFS`
+- **AND** it is marked partial rather than supported for full runtime decode
+- **AND** it does not claim chroma coefficient decode, dequantization, inverse
+  transform, residual add, reconstruction, or output
+
+#### Scenario: Coverage tracks the new luma coefficient decode
+- **WHEN** decoder conformance coverage is generated
+- **THEN** the tile group and payload syntax coverage includes row
+  `general-intra-luma-coeffs` and Feature ID `DECODE-GENERAL-INTRA-LUMA-COEFFS`
+- **AND** broader tile payload coverage remains partial
+
+### Requirement: General intra multi-block non-DC luma neighbour-edge support row
+The decoder support model SHALL track `DECODE-GENERAL-INTRA-MB-NEIGHBOUR-SMOOTH` as a
+distinct partial `splot-decode` row named `general-intra-mb-neighbour-smooth`. The row
+SHALL cite AV2 § 5.20.5.3, § 5.20.7.27, § 7.13.2.1, § 7.13.2.13, § 8.2.4, and
+§ 9.2, SHALL record the multi-block SMOOTH_V neighbour-edge oracle test, SHALL
+carry the reciprocal LOCAL-REFERENCE-EVIDENCE pointer for the multi-block
+vertical-gradient fixture, and SHALL keep neighbour-having directional luma,
+sub-superblock non-DC blocks, the in-frame directional-neighbour `y_mode_index`
+reorder, non-DC chroma neighbour edges, and non-64x64-superblock non-DC blocks out
+of scope.
+
+#### Scenario: Matrix records narrow multi-block non-DC neighbour-edge support
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support
+  matrix
+- **THEN** row `general-intra-mb-neighbour-smooth` appears with Feature ID
+  `DECODE-GENERAL-INTRA-MB-NEIGHBOUR-SMOOTH`
+- **AND** it is marked partial rather than supported for full runtime decode
+- **AND** it does not claim neighbour-having directional luma, sub-superblock
+  non-DC blocks, the in-frame directional-neighbour reorder, non-DC chroma
+  neighbour edges, or non-64x64-superblock non-DC blocks
+
+### Requirement: General intra multi-block decode support row
+The decoder support model SHALL track `DECODE-GENERAL-INTRA-MULTIBLOCK` as a
+distinct partial `splot-decode` row named `general-intra-multiblock`. The row
+SHALL cite AV2 § 5.20.3.1, § 5.20.4.1, § 5.20.5.3, § 5.20.7.27, § 7.13.2,
+§ 8.2.4, and § 8.3.2, SHALL record the multi-block oracle test plus a
+single-block regression test, SHALL carry the reciprocal LOCAL-REFERENCE-EVIDENCE
+pointer for the four-quadrant fixture, and SHALL keep non-DC modes,
+rectangular-leaf partitions, multiple tiles, non-64x64 frames, and public APIs
+out of scope.
+
+#### Scenario: Matrix records narrow multi-block support
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support
+  matrix
+- **THEN** row `general-intra-multiblock` appears with Feature ID
+  `DECODE-GENERAL-INTRA-MULTIBLOCK`
+- **AND** it is marked partial rather than supported for full runtime decode
+- **AND** it does not claim non-DC modes, rectangular-leaf partitions, multiple
+  tiles, or non-64x64 frames
+
+#### Scenario: Coverage tracks the new multi-block decode
+- **WHEN** decoder conformance coverage is generated
+- **THEN** the tile group and payload syntax coverage includes row
+  `general-intra-multiblock` and Feature ID `DECODE-GENERAL-INTRA-MULTIBLOCK`
+- **AND** broader tile payload coverage remains partial
+
+### Requirement: General intra single-row-or-column multi-superblock support row
+The decoder support model SHALL track `DECODE-GENERAL-INTRA-MULTIROW` as a
+distinct partial `splot-decode` row named `general-intra-multirow`. The row SHALL
+cite AV2 § 5.18.3, § 5.20.2.1, § 5.20.4.1, and § 7.13.2, SHALL record the
+single-column 64x128 oracle test plus the single-row regression test, SHALL carry
+the reciprocal LOCAL-REFERENCE-EVIDENCE pointer for the 64x128 fixture, and SHALL
+keep 2-D grid frames, directional luma, SMOOTH chroma on sub-partitioned blocks,
+partial frames, and multiple tiles out of scope.
+
+#### Scenario: Matrix records the single-row-or-column multi-superblock support
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support
+  matrix
+- **THEN** row `general-intra-multirow` appears with Feature ID
+  `DECODE-GENERAL-INTRA-MULTIROW`
+- **AND** it is marked partial rather than supported for full runtime decode
+- **AND** it does not claim 2-D grid frames, directional luma, sub-partitioned
+  SMOOTH chroma, or multiple tiles
+
+### Requirement: General intra neighbour-having directional support row
+The decoder support model SHALL track
+`DECODE-GENERAL-INTRA-NEIGHBOUR-DIRECTIONAL` as a distinct partial `splot-decode`
+row named `general-intra-neighbour-directional`. The row SHALL cite AV2
+§ 5.20.5.3, § 5.20.7.27, § 7.13.2.1, § 7.13.2.8, § 8.2.4, and § 9.2, SHALL record
+the multi-superblock neighbour-having directional D135 luma + follow chroma oracle
+test, SHALL carry the reciprocal LOCAL-REFERENCE-EVIDENCE pointer for the
+`syn-rdir-intra-128x64-q80.ivf` fixture, and SHALL keep a row>0 D135 block, a
+directional NEIGHBOUR (`ctx != 0`) escape, sub-superblock directional blocks, other
+directional angles, non-zero angle deltas, non-64x64 frames, and multiple tiles out
+of scope.
+
+#### Scenario: Matrix records the neighbour-having directional support
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support matrix
+- **THEN** row `general-intra-neighbour-directional` appears with Feature ID
+  `DECODE-GENERAL-INTRA-NEIGHBOUR-DIRECTIONAL`
+- **AND** it is marked partial rather than supported for full runtime decode
+- **AND** it does not claim a row>0 D135 block, a directional-neighbour escape,
+  other directional angles, or multiple tiles
+
+### Requirement: General intra multi-superblock non-64x64 support row
+The decoder support model SHALL track `DECODE-GENERAL-INTRA-NON64-MULTISB` as a
+distinct partial `splot-decode` row named `general-intra-non64-multisb`. The row
+SHALL cite AV2 § 5.20.2.1, § 5.20.3.1, § 5.20.5.3, § 7.13.2.1, and § 7.13.2.13,
+SHALL record the two-superblock oracle test, SHALL carry the reciprocal
+LOCAL-REFERENCE-EVIDENCE pointer for the 128x64 fixture, and SHALL keep partial
+frames (non-multiple-of-64 sizes), non-DC/non-SMOOTH chroma, multiple tiles,
+inter prediction, and in-loop filters out of scope.
+
+#### Scenario: Matrix records narrow multi-superblock support
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support
+  matrix
+- **THEN** row `general-intra-non64-multisb` appears with Feature ID
+  `DECODE-GENERAL-INTRA-NON64-MULTISB`
+- **AND** it is marked partial rather than supported for full runtime decode
+- **AND** it does not claim partial-frame (non-multiple-of-64) sizes, multiple
+  tiles, inter prediction, or in-loop filters
+
+### Requirement: General intra single-block non-DC luma smooth support row
+The decoder support model SHALL track `DECODE-GENERAL-INTRA-NONDC-LUMA-SMOOTH` as
+a distinct partial `splot-decode` row named `general-intra-nondc-luma-smooth`.
+The row SHALL cite AV2 § 5.20.5.3, § 5.20.7.27, § 7.13.2.1, § 7.13.2.13, and
+§ 8.2.4, SHALL record the two smooth oracle tests, SHALL carry the reciprocal
+LOCAL-REFERENCE-EVIDENCE pointers for the vertical- and horizontal-gradient
+fixtures, and SHALL keep the remaining non-DC modes, directional modes,
+multi-block non-DC prediction, non-DC chroma, and non-64x64 frames out of scope.
+
+#### Scenario: Matrix records narrow non-DC smooth support
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support
+  matrix
+- **THEN** row `general-intra-nondc-luma-smooth` appears with Feature ID
+  `DECODE-GENERAL-INTRA-NONDC-LUMA-SMOOTH`
+- **AND** it is marked partial rather than supported for full runtime decode
+- **AND** it does not claim multi-block non-DC prediction, directional modes,
+  non-DC chroma, or non-64x64 frames
+
+### Requirement: General intra single-block plain SMOOTH luma support row
+The decoder support model SHALL track
+`DECODE-GENERAL-INTRA-NONDC-LUMA-SMOOTH-PLAIN` as a distinct partial
+`splot-decode` row named `general-intra-nondc-luma-smooth-plain`. The row SHALL
+cite AV2 § 5.20.5.3, § 5.20.7.27, § 7.13.2.1, § 7.13.2.13, § 8.2.4, and § 9.2,
+SHALL record the plain-SMOOTH oracle test and the non-DC-chroma rejection test,
+SHALL carry the reciprocal LOCAL-REFERENCE-EVIDENCE pointers for the positive
+2-D smooth fixture and the negative non-DC-chroma fixture, and SHALL keep
+neighbour-having plain SMOOTH, sub-64x64 plain SMOOTH, plain SMOOTH chroma,
+PAETH, and non-64x64 frames out of scope.
+
+#### Scenario: Matrix records narrow plain SMOOTH support
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support
+  matrix
+- **THEN** row `general-intra-nondc-luma-smooth-plain` appears with Feature ID
+  `DECODE-GENERAL-INTRA-NONDC-LUMA-SMOOTH-PLAIN`
+- **AND** it is marked partial rather than supported for full runtime decode
+- **AND** it does not claim neighbour-having plain SMOOTH, sub-64x64 plain
+  SMOOTH, plain SMOOTH chroma, or non-64x64 frames
+
+### Requirement: Decoder support tracks compound-average subset
+The decoder support model SHALL include a partial row for
+`DECODE-INTER-COMPOUND-AVERAGE` named `inter-compound-average`. The row SHALL
+describe the fixture-proven two-reference equal-weight compound-average subset,
+its `decode/unsupported-feature` gates, self-contained tests, and local-reference
+evidence pointer, while keeping broad compound inter decode partial or
+unsupported.
+
+#### Scenario: support row validates
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support
+  metadata
+- **THEN** the `inter-compound-average` row exists with Feature ID
+  `DECODE-INTER-COMPOUND-AVERAGE`
+- **AND** the row records tests and the local-reference evidence entry for the
+  committed fixture
+
+#### Scenario: status does not overclaim
+- **WHEN** decoder support status is generated
+- **THEN** broad compound, masked, CWP, optical-flow/refine-MV, temporal MV,
+  residual compound, and full AV2 decoder conformance remain partial or
+  unsupported until separately implemented and proven
+
+### Requirement: Conformant minimal luma-skip fixture and AVM all_zero skip polarity
+
+The committed `syn-flat-intra-64x64-minimal.ivf` fixture SHALL be an
+AVM/dav2d-conformant 8-bit 4:2:0 64x64 intra key frame whose single 64x64 luma
+transform block is coded as an all-zero (skipped) transform — AV2 § 5.20.7.27 /
+AVM `decodetxb.c` `all_zero == 1` — over a real coded chroma residual, and the
+frozen minimal-tier block-symbol trace SHALL assert that same `all_zero == 1` skip
+polarity for the luma and V `txb_skip` symbols rather than the inverted `== 0`.
+The fixture SHALL decode byte-for-byte identically under `avmdec` and `dav2d`
+(recorded as a `reference-output-agreement` entry in
+`docs/LOCAL-REFERENCE-EVIDENCE.toml`), and `splot` SHALL reproduce that raw output
+byte-for-byte through the general intra path (`DECODE-GENERAL-INTRA-FRAME-RECON`),
+not through the frozen `base_q_idx == 255` hand-traced path. The retired
+hand-retimed payload that coded the skip symbol with inverted polarity SHALL be
+rejected by the corrected frozen trace with a typed symbol-mismatch error. This
+requirement SHALL NOT change the general intra decode algorithm, remove the frozen
+minimal-tier code, or add new decode tools, partitions, in-loop filters, inter
+prediction, tiles, AVM/dav2d source, dependencies, or required CI jobs.
+
+#### Scenario: The conformant luma-skip fixture decodes bit-exact through the general path
+
+- **WHEN** `splot decode` runs on the committed `syn-flat-intra-64x64-minimal.ivf`
+  fixture
+- **THEN** it routes off the frozen `base_q_idx == 255` path into the general intra
+  path and decodes the luma plane as a flat all-zero (skipped) block at the
+  no-neighbour DC value 128 over a coded (non-flat) chroma residual
+- **AND** the decoded raw output is byte-for-byte identical to the `avmdec` and
+  `dav2d` raw output (raw md5 `f618317b…`; `splot-dfh-sha256-v1`
+  `92c4477c8b50d5646c6ed5351cbb8f4fc04517ba39354a127c306e196fd059af`)
+
+#### Scenario: The frozen trace asserts the AVM all_zero skip polarity
+
+- **WHEN** the frozen minimal-tier block-symbol trace consumes a transform block's
+  luma or V `txb_skip` symbol for a skipped (all-zero) transform
+- **THEN** it asserts the decoded `all_zero` symbol is `1` (the AVM skip value),
+  and the retired inverted-polarity payload (which decoded the symbol to `0`) is
+  rejected with a typed `expected: 1, actual: 0` symbol mismatch
+
+#### Scenario: The frozen base_q_idx==255 path remains without a committed conformant fixture
+
+- **WHEN** decoder support status is rendered
+- **THEN** the minimal-tier rows report that the committed fixture is decoded by
+  the general intra path with `avmdec`/`dav2d` agreement
+- **AND** the frozen `base_q_idx == 255` hand-traced path stays in code (with the
+  corrected skip polarity) but is no longer exercised by any committed conformant
+  fixture, because no AVM-producible 64x64 intra frame is an all-planes skip
+
+### Requirement: Mode_To_Txfm support row
+
+The decoder support model SHALL track `DECODE-MODE-TO-TXFM-SYMBOLIC-TABLE` as a
+distinct generated-table infrastructure row. The row SHALL cite AV2 v1.0.0 §3
+and §9.2, SHALL name generator and mirror-backed table tests as proof, and
+SHALL keep AV2 §5.20.7.29 `compute_tx_type()`, `TxTypes` tile state, transform
+set membership, runtime `coeffs()` wiring, dequantization, reconstruction,
+output, reference refresh, and external decoder invocation as unsupported or
+partial residual work.
+
+#### Scenario: Support matrix records generated table only
+
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support
+  matrix
+- **THEN** a `mode-to-txfm-symbolic-table` row appears with Feature ID
+  `DECODE-MODE-TO-TXFM-SYMBOLIC-TABLE`
+- **AND** the row names generator and core table spot tests as proof
+- **AND** broad coefficient-loop and runtime decode rows remain partial or
+  unsupported until separately implemented
+
+### Requirement: TxSize symbolic tables support row
+The decoder support model SHALL track `DECODE-TX-SIZE-SYMBOLIC-TABLES` as a
+distinct infrastructure row named `tx-size-symbolic-tables`. The row SHALL mark
+only generated AV2 section 9.2 TxSize enum-valued conversion table support as
+partial decoder infrastructure and SHALL keep runtime coefficient-loop wiring,
+`txSzCtx`, `compute_tx_type`, scan derivation, dequantization, reconstruction,
+output, reference refresh, and broad `decode_block()` / `decode_tile()` support
+honestly unsupported or partial.
+
+#### Scenario: Matrix records generated-table support
+- **WHEN** `cargo xtask check-decoder-support` validates the decoder support
+  matrix
+- **THEN** `tx-size-symbolic-tables` appears with Feature ID
+  `DECODE-TX-SIZE-SYMBOLIC-TABLES`
+- **AND** it names focused generator/table tests plus `cargo xtask gen-tables --check`
+- **AND** it does not claim runtime coefficient-loop integration or decoded
+  output changes
+
+#### Scenario: Generated support docs include the row
+- **WHEN** decoder support and conformance coverage status documents are
+  regenerated
+- **THEN** the new row is included in the generated status and coverage
+  documents with status `partial`
