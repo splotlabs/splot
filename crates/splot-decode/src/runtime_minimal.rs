@@ -42,6 +42,8 @@ const FEATURE_ID: &str = "DECODE-MINIMAL-TIER-RUNTIME-SUCCESS";
 const MATRIX_ROW: &str = "minimal-decode-tier-contract";
 const SPEC_SECTION: &str = "7.1";
 const REMEDIATION: &str = "Use a stream inside minimal-intra-8bit420-hash-v1 or wait for the referenced decoder support row.";
+const AC0EJ3_10BIT_FEATURE_ID: &str = "DECODE-AC0EJ3-10BIT-SEQUENCE-FRONTIER";
+const AC0EJ3_10BIT_MATRIX_ROW: &str = "ac0ej3-10bit-sequence-frontier";
 const MINIMAL_WIDTH: u32 = 64;
 const MINIMAL_HEIGHT: u32 = 64;
 const MINIMAL_TRACE_SYMBOLS: u64 = 6;
@@ -238,6 +240,7 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
     let sequence = parse_sequence(sequence_envelope)?;
     validate_sequence(&sequence, sequence_envelope.offset)?;
     reject_extra_leading_key_payload_obus(leading_obus)?;
+    ensure_8bit_runtime_storage(&sequence, sequence_envelope.offset)?;
 
     let mut candidates = plan.frame_candidates_all();
     let key_candidate = candidates.next().ok_or_else(|| {
@@ -847,14 +850,7 @@ fn validate_sequence(sequence: &SequenceHeader, offset: ByteOffset) -> Result<()
         return Err(unsupported_at(
             "unsupported_chroma_format",
             offset,
-            "minimal tier requires 8-bit 4:2:0 output",
-        ));
-    }
-    if general.bit_depth_idc != BitDepthIdc::Eight {
-        return Err(unsupported_at(
-            "unsupported_bit_depth",
-            offset,
-            "minimal tier requires 8-bit decoded samples",
+            "minimal tier requires YUV 4:2:0 output",
         ));
     }
     if general.max_tlayer_id.get() != 0 || general.max_mlayer_id.get() != 0 {
@@ -897,6 +893,20 @@ fn validate_sequence(sequence: &SequenceHeader, offset: ByteOffset) -> Result<()
             "unsupported_mhccp",
             offset,
             "minimal tier rejects MHCCP syntax before traced UV-mode hash verification",
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_8bit_runtime_storage(sequence: &SequenceHeader, offset: ByteOffset) -> Result<()> {
+    if sequence.general.bit_depth_idc != BitDepthIdc::Eight {
+        return Err(unsupported_feature_at(
+            "unsupported_bit_depth",
+            offset,
+            "minimal runtime parses 10-bit sequences but still stores decoded samples as 8-bit",
+            AC0EJ3_10BIT_MATRIX_ROW,
+            AC0EJ3_10BIT_FEATURE_ID,
+            "6.4.1",
         ));
     }
     Ok(())
@@ -1339,4 +1349,26 @@ fn unsupported_at(
     message: &'static str,
 ) -> DecodeError {
     unsupported(reason, Some(byte_offset), message)
+}
+
+fn unsupported_feature_at(
+    reason: &'static str,
+    byte_offset: ByteOffset,
+    message: &'static str,
+    matrix_row: &'static str,
+    feature_id: &'static str,
+    spec_section: &'static str,
+) -> DecodeError {
+    DecodeError::UnsupportedFeature {
+        unsupported: Box::new(DecodeUnsupportedFeature::new(
+            reason,
+            MINIMAL_INTRA_HASH_TIER_ID,
+            matrix_row,
+            feature_id,
+            spec_section,
+            message,
+            REMEDIATION,
+            Some(byte_offset),
+        )),
+    }
 }

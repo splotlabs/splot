@@ -16,9 +16,10 @@
 use splot_parallel::ThreadCount;
 
 use splot_core::headers::frame::QuantizationParams;
-use splot_core::headers::sequence::{ChromaFormatIdc, SequenceHeader};
+use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SequenceHeader};
 use splot_core::ivf::{write_ivf_frame, write_ivf_header};
 use splot_core::obu::{ParsedObu, PayloadStatus};
+use splot_core::span::ByteOffset;
 use splot_core::stream::{ParsedBitstream, ParsedIvfFrame, parse_bitstream_partial};
 use splot_core::types::ObuType;
 
@@ -1167,7 +1168,19 @@ fn multiref_fixture_rejects_when_inter_tile_group_starts_ivf_record() {
 }
 
 #[test]
-fn leading_key_payload_extra_obu_reaches_sequence_bit_depth_gate() {
+fn ten_bit_minimal_stream_reaches_runtime_storage_gate() {
+    let (mut sequence, _) = fixture_sequence_and_quantization(TWO_FRAME_INTER_FIXTURE);
+    sequence.general.bit_depth_idc = BitDepthIdc::Ten;
+
+    let Err(error) = super::super::ensure_8bit_runtime_storage(&sequence, ByteOffset::new(47))
+    else {
+        panic!("10-bit sequence must fail closed before 8-bit runtime output");
+    };
+    assert_eq!(unsupported_reason(error), "unsupported_bit_depth");
+}
+
+#[test]
+fn leading_key_payload_extra_obu_reaches_sequence_tool_gate_after_10bit_sequence() {
     let repacked = repack_first_record_with_extra_regular_tile_group(TEN_BIT_INTRA_FIXTURE);
     let options = DecodeOptions::default();
     let context =
@@ -1180,7 +1193,7 @@ fn leading_key_payload_extra_obu_reaches_sequence_bit_depth_gate() {
     let Err(error) = decode_minimal_frames_from_plan(&repacked, options, &plan) else {
         panic!("10-bit leading payload with an extra OBU must fail closed");
     };
-    assert_eq!(unsupported_reason(error), "unsupported_bit_depth");
+    assert_eq!(unsupported_reason(error), "unsupported_cfl_intra");
 }
 
 #[test]

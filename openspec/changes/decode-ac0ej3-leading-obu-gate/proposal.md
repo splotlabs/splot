@@ -17,8 +17,11 @@ supports 8-bit decoded samples.
   OBUs in that leading IVF payload.
 - Reject otherwise supported streams that carry extra leading-payload OBUs after
   the key frame before any caller-visible output.
-- Pin `ac0ej3.ivf` so the local mission regression now reaches
-  `unsupported_bit_depth` instead of `unexpected_obu_order`.
+- Pin the leading payload ordering so the local mission regression parses the
+  leading sequence before any additional leading-payload OBU rejection. This
+  originally surfaced `unsupported_bit_depth`; the follow-on
+  `decode-ac0ej3-10bit-sequence-frontier` change moves the live gate to
+  `unsupported_cfl_intra`.
 
 ## Impact
 

@@ -287,7 +287,11 @@ fn local_ac0ej3_reaches_current_runtime_gate_without_output() {
     assert_eq!(json["matrix_row"], "minimal-decode-tier-contract");
     assert_eq!(json["feature_id"], "DECODE-MINIMAL-TIER-RUNTIME-SUCCESS");
     assert_eq!(json["detail_kind"], "unsupported_feature");
-    assert_eq!(json["unsupported_reason"], "unsupported_bit_depth");
+    assert_eq!(json["unsupported_reason"], "unsupported_cfl_intra");
+    assert_ne!(
+        json["unsupported_reason"], "unsupported_bit_depth",
+        "ac0ej3 must advance past the former sequence bit-depth gate"
+    );
     assert_ne!(
         json["unsupported_reason"], "unsupported_frame_candidate_count",
         "ac0ej3 must advance past the former total frame-count gate"

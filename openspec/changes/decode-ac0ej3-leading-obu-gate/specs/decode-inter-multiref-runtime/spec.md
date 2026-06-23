@@ -20,14 +20,14 @@ loads, temporal MV state, unsupported tools, and unsupported geometry. This
 change SHALL NOT claim bit-exact decode for streams beyond the committed
 fixtures.
 
-#### Scenario: ac0ej3 reaches the sequence bit-depth gate
+#### Scenario: ac0ej3 parses the leading sequence before extra-payload rejection
 
 - **WHEN** `splot decode /Users/bartosztomczyk/Documents/SplotLabs/ac0ej3.ivf`
   runs with default decode limits
 - **THEN** it advances past the former leading
   `[TD, SEQ, CLK, OBU_REGULAR_TILE_GROUP]` shape gate
-- **AND** it emits the structured `decode/unsupported-feature` diagnostic with
-  `unsupported_reason = "unsupported_bit_depth"`
+- **AND** the leading sequence is parsed and validated before any diagnostic for
+  an additional OBU after the leading key OBU
 
 #### Scenario: extra leading-payload OBU still fails closed
 
