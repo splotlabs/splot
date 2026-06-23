@@ -20,6 +20,7 @@ use super::intra_joint_modes::{TileIntraJointModeState, TileIntraJointModeStateE
 use super::mi_size_state::{TileMiSizeState, TileMiSizeStateError};
 use super::partition::PartitionType;
 use super::partition_allowed::PartitionFeatureFlags;
+use super::partition_size::BlockSize;
 use super::partition_traversal::{
     DecodeBlockFrontier, GeneralIntraTreeWalkError, TilePartitionBruState, TilePartitionFrameFacts,
     TilePartitionLoopRestorationState, TilePartitionTraversalError, TilePartitionTraversalInput,
@@ -163,6 +164,7 @@ pub(crate) fn consume_minimal_runtime_lr_unit_frontier(
 ) -> Result<(), MinimalRuntimePartitionFrontierError> {
     let frame = minimal_partition_frame_facts(sequence, core)?;
     let (mi_rows, mi_cols) = frame_mi_dimensions(core)?;
+    ensure_mi_size_allocation_within_limits(mi_rows, mi_cols, frame.sb_size(), limits)?;
     let mi_size_state = TileMiSizeState::new(mi_rows, mi_cols, frame.sb_size())?;
     mi_size_state.with_context_state(|context| {
         consume_tile_loop_restoration_root_frontier(TilePartitionTraversalInput::new(
@@ -242,17 +244,7 @@ pub(crate) fn plan_minimal_runtime_partition_frontier<'payload>(
 ) -> Result<MinimalRuntimePartitionFrontier<'payload>, MinimalRuntimePartitionFrontierError> {
     let frame = minimal_partition_frame_facts(sequence, core)?;
     let (mi_rows, mi_cols) = frame_mi_dimensions(core)?;
-    let allocation = TileMiSizeState::allocation(mi_rows, mi_cols, frame.sb_size())?;
-    limits.ensure_allocation_len(
-        DecodeLimitName::MaxLumaSamplesPerFrame,
-        allocation.padded_grid_cells() as u64,
-    )?;
-    let allocation_bytes = checked_mul_u64(
-        DecodeLimitName::MaxDecodedFrameBytes,
-        allocation.entry_count() as u64,
-        size_of::<usize>() as u64,
-    )?;
-    limits.ensure_allocation_len(DecodeLimitName::MaxDecodedFrameBytes, allocation_bytes)?;
+    ensure_mi_size_allocation_within_limits(mi_rows, mi_cols, frame.sb_size(), limits)?;
 
     let mi_size_state = TileMiSizeState::new(mi_rows, mi_cols, frame.sb_size())?;
     let cursor = mi_size_state.with_context_state(|context| {
@@ -269,6 +261,26 @@ pub(crate) fn plan_minimal_runtime_partition_frontier<'payload>(
         mi_size_state,
         frontier,
     })
+}
+
+fn ensure_mi_size_allocation_within_limits(
+    mi_rows: usize,
+    mi_cols: usize,
+    sb_size: BlockSize,
+    limits: DecodeLimits,
+) -> Result<(), MinimalRuntimePartitionFrontierError> {
+    let allocation = TileMiSizeState::allocation(mi_rows, mi_cols, sb_size)?;
+    limits.ensure_allocation_len(
+        DecodeLimitName::MaxLumaSamplesPerFrame,
+        allocation.padded_grid_cells() as u64,
+    )?;
+    let allocation_bytes = checked_mul_u64(
+        DecodeLimitName::MaxDecodedFrameBytes,
+        allocation.entry_count() as u64,
+        size_of::<usize>() as u64,
+    )?;
+    limits.ensure_allocation_len(DecodeLimitName::MaxDecodedFrameBytes, allocation_bytes)?;
+    Ok(())
 }
 
 pub(crate) fn minimal_partition_frame_facts(
@@ -567,6 +579,53 @@ mod tests {
 
             let Err(err) =
                 plan_minimal_runtime_partition_frontier(work_unit, sequence, core, limits)
+            else {
+                panic!("expected MI-state byte limit");
+            };
+
+            let MinimalRuntimePartitionFrontierError::Limit(limit) = err else {
+                panic!("expected MI-state byte limit, got {err:?}");
+            };
+            assert_eq!(limit.name(), DecodeLimitName::MaxDecodedFrameBytes);
+            assert_eq!(
+                limit.actual(),
+                Some((2 * (256 + 16 + 16) * size_of::<usize>()) as u64)
+            );
+        });
+    }
+
+    #[test]
+    fn lr_unit_frontier_checks_padded_mi_state_cells_before_allocation() {
+        with_minimal_work_unit(LEGACY_INVERTED_SKIP_TRACE, |work_unit, sequence, core| {
+            let mut padded_core = core.clone();
+            let tile_info = padded_core.tile_info.as_mut().unwrap();
+            *tile_info.mi_row_starts.last_mut().unwrap() = 17;
+            *tile_info.mi_col_starts.last_mut().unwrap() = 16;
+            let limits = DecodeLimits::unlimited()
+                .with_max_luma_samples_per_frame(DecodeLimitThreshold::Max(300));
+
+            let Err(err) =
+                consume_minimal_runtime_lr_unit_frontier(work_unit, sequence, &padded_core, limits)
+            else {
+                panic!("expected padded MI-state limit");
+            };
+
+            let MinimalRuntimePartitionFrontierError::Limit(limit) = err else {
+                panic!("expected padded MI-state limit, got {err:?}");
+            };
+            assert_eq!(limit.name(), DecodeLimitName::MaxLumaSamplesPerFrame);
+            assert_eq!(limit.actual(), Some(512));
+        });
+    }
+
+    #[test]
+    fn lr_unit_frontier_checks_mi_state_byte_budget_before_allocation() {
+        with_minimal_work_unit(LEGACY_INVERTED_SKIP_TRACE, |work_unit, sequence, core| {
+            let limits = DecodeLimits::unlimited()
+                .with_max_decoded_frame_bytes(DecodeLimitThreshold::Max(1024));
+
+            let Err(err) =
+                consume_minimal_runtime_lr_unit_frontier(work_unit, sequence, core, limits)
             else {
                 panic!("expected MI-state byte limit");
             };

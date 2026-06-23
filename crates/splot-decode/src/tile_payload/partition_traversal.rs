@@ -458,7 +458,7 @@ pub(crate) fn consume_tile_loop_restoration_root_frontier(
         work_unit,
         frame,
         context: _,
-        limits: _,
+        limits,
     } = input;
     let extended_sdp_allowed = frame.enable_extended_sdp && !frame.frame_is_intra;
     if extended_sdp_allowed {
@@ -491,6 +491,7 @@ pub(crate) fn consume_tile_loop_restoration_root_frontier(
         frame.sb_size,
         frame.has_chroma,
     );
+    limits.ensure(DecodeLimitName::MaxTilePartitionSteps, 1)?;
     if root.r < frame.mi_rows && root.c < frame.mi_cols {
         ensure_supported_call(frame, root)?;
         read_loop_restoration_for_call(frame, root, tile_bounds, &mut cdfs, &mut symbols)?;
@@ -888,6 +889,11 @@ fn read_loop_restoration_for_call(
     let TilePartitionLoopRestorationState::FrameWienerNs(lr) = frame.loop_restoration else {
         return Ok(());
     };
+    if is_minimal_sdp_root(frame, call) {
+        return Err(TilePartitionTraversalError::Unsupported(
+            TilePartitionTraversalUnsupported::Sdp,
+        ));
+    }
 
     let w = call.b_size.num_4x4_wide()?;
     let h = call.b_size.num_4x4_high()?;

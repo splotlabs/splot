@@ -97,6 +97,11 @@ the boundary SHALL consume one `use_wiener_ns S()` symbol from
 - **AND** the resulting `decode_block()` frontier checkpoint reflects both the
   LR unit symbols and partition symbols already consumed
 
+#### Scenario: SDP LR plane ranges remain unsupported
+- **WHEN** an intra SDP root would require frame-level Wiener NS LR symbols for
+  a non-luma `PlaneStart..PlaneEnd` range
+- **THEN** the traversal rejects the SDP path before reading LR unit symbols
+
 #### Scenario: Non-frame-level LR remains unsupported
 - **WHEN** loop restoration uses PC-Wiener, switchable restoration, or Wiener NS
   without a frame-level bank for the active plane

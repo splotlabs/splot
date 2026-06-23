@@ -58,6 +58,12 @@ fn frame_level_wiener_ns(unit_size: usize) -> TilePartitionLoopRestorationState 
     )
 }
 
+fn frame_level_chroma_wiener_ns(unit_size: usize) -> TilePartitionLoopRestorationState {
+    TilePartitionLoopRestorationState::FrameWienerNs(
+        TilePartitionWienerNsLoopRestorationState::new([false, true, false], [0, unit_size, 0]),
+    )
+}
+
 fn make_work_unit(
     payload: &'static [u8],
     update_mode: CdfUpdateMode,
@@ -480,6 +486,55 @@ fn root_lr_frontier_consumes_only_frame_level_wiener_ns_symbols() {
 
     assert_eq!(root.symbol_count_after(), 1);
     assert!(root.consumed_bits_after() > 0);
+}
+
+#[test]
+fn root_lr_frontier_honors_zero_step_limit_before_lr_symbol() {
+    let mut work_unit = make_work_unit(&[0x00, 0x80], CdfUpdateMode::Enabled);
+    let before = work_unit.cdf().tile_cdfs().clone();
+    let mut facts = frame(BLOCK_32X32);
+    facts.loop_restoration = frame_level_wiener_ns(256);
+
+    let err = consume_tile_loop_restoration_root_frontier(TilePartitionTraversalInput::new(
+        &mut work_unit,
+        facts,
+        context(),
+        DecodeLimits::unlimited().with_max_tile_partition_steps(DecodeLimitThreshold::Max(0)),
+    ))
+    .unwrap_err();
+
+    assert!(matches!(
+        &err,
+        TilePartitionTraversalError::Limit(DecodeLimitError::LimitExceeded { .. })
+    ));
+    if let TilePartitionTraversalError::Limit(DecodeLimitError::LimitExceeded { check }) = err {
+        assert_eq!(check.name(), DecodeLimitName::MaxTilePartitionSteps);
+        assert_eq!(check.actual(), 1);
+    }
+    assert_eq!(work_unit.cdf().tile_cdfs(), &before);
+}
+
+#[test]
+fn root_lr_frontier_rejects_sdp_chroma_lr_before_reading_symbols() {
+    let mut work_unit = make_work_unit(&[0x00, 0x80], CdfUpdateMode::Enabled);
+    let before = work_unit.cdf().tile_cdfs().clone();
+    let mut facts = frame(BLOCK_64X64);
+    facts.enable_sdp = true;
+    facts.loop_restoration = frame_level_chroma_wiener_ns(256);
+
+    let err = consume_tile_loop_restoration_root_frontier(TilePartitionTraversalInput::new(
+        &mut work_unit,
+        facts,
+        context(),
+        DecodeLimits::DEFAULT,
+    ))
+    .unwrap_err();
+
+    assert!(matches!(
+        err,
+        TilePartitionTraversalError::Unsupported(TilePartitionTraversalUnsupported::Sdp)
+    ));
+    assert_eq!(work_unit.cdf().tile_cdfs(), &before);
 }
 
 #[test]
