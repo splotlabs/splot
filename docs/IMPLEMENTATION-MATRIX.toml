@@ -11050,13 +11050,14 @@ id = "DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER"
 name = "ac0ej3 Wiener NS LR source-read frontier"
 category = "infrastructure"
 kind = "infrastructure"
-spec_sections = ["5.20.10.4", "5.20.10.5", "5.20.10.6", "7.20.1", "7.20.2", "8.3.2", "9.3"]
+spec_sections = ["5.20.10.4", "5.20.10.5", "5.20.10.6", "7.20.1", "7.20.2", "7.20.3", "8.3.2", "9.3"]
 sources = [
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-4",
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-5",
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-6",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-20-1",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-20-2",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-20-3",
     "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2",
     "docs/spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3",
 ]
@@ -11066,7 +11067,7 @@ openspec_change = "decode-ac0ej3-lr-source-read-frontier"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Advances the ac0ej3 active Wiener NS LR frontier from retained §7.20.1 source-bound facts to the §7.20.2 source-read boundary. The minimal runtime receives active `WienerNsLrSourceBlock` facts from `TileLoopRestorationRootFrontier`, maps the sequence chroma format to AV2 chroma subsampling, and validates the block-center source selector for each supported active block sample through `splot_recon::loop_restoration_source_sample`. The private summary records checked block/center-sample counts, `CurrFrame` versus `CdefFrame` center selections, and the first selected center source sample without reading actual frame values because the current ac0ej3 path still lacks decoded current/CDEF frame storage and is still before the 10-bit runtime storage boundary. The local ac0ej3 fixture now fails closed with `unsupported_wienerns_lr_source_read` under this row at byte offset 74 after reaching the source-read boundary and before complete Wiener tap reads, chroma luma-source reads, §7.20.3 filtering, decoded-frame allocation, reference retention, hash, raw, or Y4M output. Source-read boundary failures remain structured decode errors and do not mutate retained source-bound facts. This row does not implement complete §7.20.2 source-read coverage for Wiener taps or chroma `get_luma_sample`, loop-restoration filtering/reconstruction, source sample value reads from real frame buffers, PC-Wiener classification, switchable LR, SDP PlaneStart/PlaneEnd LR traversal, temporal/reference Wiener state, 10-bit output/storage, reference refresh, hash/raw/Y4M output, or successful ac0ej3 decode."
+notes = "Advances the ac0ej3 active Wiener NS LR frontier from retained §7.20.1 source-bound facts to §7.20.2 source-read state. The minimal runtime receives active `WienerNsLrSourceBlock` facts from `TileLoopRestorationRootFrontier`, maps the sequence chroma format to AV2 chroma subsampling, and resolves every §7.20.3 output-sample center, Wiener tap coordinate, and chroma luma-source coordinate through `splot_recon::loop_restoration_source_sample`. The private summary records resolved block/output-sample/source-read counts, `CurrFrame` versus `CdefFrame` source-read selections, and the first selected source sample without reading actual frame values because the current ac0ej3 path still lacks decoded current/CDEF frame storage and is still before the 10-bit runtime storage boundary. Source-read derivation charges `MaxLoopRestorationSourceReads` instead of the coded luma-sample frame cap so valid multi-plane source-read work is not capped by `MaxLumaSamplesPerFrame`. The local ac0ej3 fixture now fails closed with `unsupported_wienerns_lr_source_read` under this row at byte offset 74 after §7.20.2 source-read state and before §7.20.3 filtering, decoded-frame allocation, reference retention, hash, raw, or Y4M output. Source-read derivation failures remain structured decode errors and do not mutate retained source-bound facts. This row does not implement loop-restoration filtering/reconstruction, source sample value reads from real frame buffers, PC-Wiener classification, chroma Wiener NS filtering, switchable LR, SDP PlaneStart/PlaneEnd LR traversal, temporal/reference Wiener state, 10-bit output/storage, reference refresh, hash/raw/Y4M output, or successful ac0ej3 decode."
 
 [feature.status]
 mapped = "done"
@@ -11082,7 +11083,9 @@ perf = "not-applicable"
 
 [feature.proof]
 tests = [
-    "crates/splot-decode/src/runtime_minimal/inter/tests.rs::wienerns_lr_source_read_frontier_checks_center_source_samples",
+    "crates/splot-decode/src/runtime_minimal/inter/tests.rs::wienerns_lr_source_read_frontier_resolves_source_samples",
+    "crates/splot-decode/src/runtime_minimal/inter/tests.rs::wienerns_lr_source_read_frontier_includes_chroma_luma_source_reads",
+    "crates/splot-decode/src/runtime_minimal/inter/tests.rs::wienerns_lr_source_read_frontier_does_not_charge_luma_sample_limit",
     "crates/splot-decode/src/runtime_minimal/inter/tests.rs::wienerns_lr_source_read_frontier_failures_stay_structured",
     "crates/splot-decode/src/runtime_minimal/inter/tests.rs::wienerns_lr_source_read_frontier_rejects_monochrome_chroma_plane",
     "crates/splot-decode/src/runtime_minimal/inter/tests.rs::wienerns_lr_source_read_frontier_rejects_unsupported_plane_index",
@@ -11499,7 +11502,7 @@ id = "DECODE-LIMITS-RUNTIME-API"
 name = "Decode limits runtime API"
 category = "infrastructure"
 kind = "infrastructure"
-spec_sections = ["4.11.6", "Annex B.2", "Annex B.3", "5.2.1", "6.4.1", "6.4.6", "5.18.4.1", "6.17.4.1", "5.18.4.4", "6.17.4.4", "5.18.7.2", "6.17.7.2", "5.19", "6.18", "5.20.1", "6.19.1", "7.1", "7.21", "7.23"]
+spec_sections = ["4.11.6", "Annex B.2", "Annex B.3", "5.2.1", "6.4.1", "6.4.6", "5.18.4.1", "6.17.4.1", "5.18.4.4", "6.17.4.4", "5.18.7.2", "6.17.7.2", "5.19", "6.18", "5.20.1", "6.19.1", "7.1", "7.20.2", "7.21", "7.23"]
 sources = [
     "docs/spec/av2/1.0.0/04-conventions.md#s-4-11-6",
     "docs/spec/av2/1.0.0/annex-b-length-delimited-bitstream-format.md#s-annex-b-2",
@@ -11518,6 +11521,7 @@ sources = [
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-1",
     "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-1",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-1",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-20-2",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-21",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-23",
 ]
@@ -11527,7 +11531,7 @@ openspec_change = "decode-limits-runtime-api"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Adds a source-backed, dependency-free `splot-decode` runtime API for caller-provided decode resource policy: `DecodeOptions`, `DecodeLimits`, typed limit names and units, thresholds, inclusive pure checks, local typed limit errors, checked arithmetic helpers, and allocation-size handoff checks. The API uses `max_ivf_frame_records`, `max_reference_slots`, `max_reference_store_bytes`, `max_tile_partition_steps`, and `max_tile_payload_bytes` to avoid overclaiming AV2 semantics, provides finite defaults plus explicit zero/unlimited constructors, and keeps all thresholds as repository policy rather than AV2 conformance limits. The pinned finite OBU/frame defaults are sized for the current ac0ej3 mission target's inspected 12964 OBU stream so the byte planner reaches the next runtime gate instead of stopping at the old 128-frame policy cap. This is policy infrastructure only: it does not consume bytes, allocate from bitstream-derived values, emit the planned resource-limit diagnostic, change CLI behavior, compute frame hashes, write Y4M, reconstruct pixels, store references, invoke external decoders, or change the dependency graph."
+notes = "Adds a source-backed, dependency-free `splot-decode` runtime API for caller-provided decode resource policy: `DecodeOptions`, `DecodeLimits`, typed limit names and units, thresholds, inclusive pure checks, local typed limit errors, checked arithmetic helpers, and allocation-size handoff checks. The API uses `max_ivf_frame_records`, `max_reference_slots`, `max_reference_store_bytes`, `max_tile_partition_steps`, `max_tile_payload_bytes`, and `max_loop_restoration_source_reads` to avoid overclaiming AV2 semantics, provides finite defaults plus explicit zero/unlimited constructors, and keeps all thresholds as repository policy rather than AV2 conformance limits. The pinned finite OBU/frame defaults are sized for the current ac0ej3 mission target's inspected 12964 OBU stream so the byte planner reaches the next runtime gate instead of stopping at the old 128-frame policy cap. This is policy infrastructure only: it does not consume bytes, allocate from bitstream-derived values, emit the planned resource-limit diagnostic, change CLI behavior, compute frame hashes, write Y4M, reconstruct pixels, store references, invoke external decoders, or change the dependency graph."
 
 [feature.status]
 mapped = "done"
