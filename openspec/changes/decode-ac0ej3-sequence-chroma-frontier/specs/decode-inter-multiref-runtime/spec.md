@@ -23,8 +23,8 @@ decode for CfL, MHCCP, 10-bit streams, or streams beyond the committed fixtures.
 - **WHEN** `splot decode /Users/bartosztomczyk/Documents/SplotLabs/ac0ej3.ivf`
   runs with default decode limits
 - **THEN** it advances past the former sequence CFL gate
-- **AND** it rejects before output at `unsupported_reason =
-  "incomplete_frame_header"`
+- **AND** after the follow-on Wiener NS frontier it rejects before output at
+  `unsupported_reason = "unsupported_wienerns_filter"`
 
 #### Scenario: sequence chroma tools stay fail-closed before tile decode
 

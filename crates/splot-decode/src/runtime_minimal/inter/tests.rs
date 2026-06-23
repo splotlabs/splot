@@ -15,7 +15,7 @@
 
 use splot_parallel::ThreadCount;
 
-use splot_core::headers::frame::QuantizationParams;
+use splot_core::headers::frame::{FrameHeaderParseStatus, QuantizationParams};
 use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SequenceHeader};
 use splot_core::ivf::{write_ivf_frame, write_ivf_header};
 use splot_core::obu::{ParsedObu, PayloadStatus};
@@ -1187,6 +1187,51 @@ fn ten_bit_minimal_stream_reaches_runtime_storage_gate() {
         "DECODE-AC0EJ3-10BIT-SEQUENCE-FRONTIER"
     );
     assert_eq!(unsupported.spec_section(), "6.4.1");
+}
+
+#[test]
+fn wienerns_header_status_reports_precise_runtime_frontier() {
+    let error = super::super::incomplete_intra_header_error(
+        FrameHeaderParseStatus::StoppedBeforeWienerNsFilter {
+            feature_id: "AV2-5.18.7-SEGMENTATION-TILING",
+        },
+        ByteOffset::new(74),
+    );
+    let unsupported = match error {
+        DecodeError::UnsupportedFeature { unsupported } => unsupported,
+        _ => panic!("Wiener NS frontier must be an unsupported-feature error"),
+    };
+
+    assert_eq!(unsupported.reason(), "unsupported_wienerns_filter");
+    assert_eq!(unsupported.matrix_row(), "ac0ej3-wienerns-frontier");
+    assert_eq!(unsupported.feature_id(), "DECODE-AC0EJ3-WIENERNS-FRONTIER");
+    assert_eq!(unsupported.spec_section(), "5.18.7.11");
+    assert_eq!(unsupported.byte_offset(), Some(ByteOffset::new(74)));
+    assert!(
+        unsupported.message().contains("read_wienerns_filter"),
+        "message should name the exact unmodeled parser subroutine"
+    );
+}
+
+#[test]
+fn non_wienerns_header_status_keeps_generic_incomplete_frontier() {
+    let error = super::super::incomplete_intra_header_error(
+        FrameHeaderParseStatus::ActivationFieldsOnly,
+        ByteOffset::new(74),
+    );
+    let unsupported = match error {
+        DecodeError::UnsupportedFeature { unsupported } => unsupported,
+        _ => panic!("incomplete header fallback must be an unsupported-feature error"),
+    };
+
+    assert_eq!(unsupported.reason(), "incomplete_frame_header");
+    assert_eq!(unsupported.matrix_row(), "minimal-decode-tier-contract");
+    assert_eq!(
+        unsupported.feature_id(),
+        "DECODE-MINIMAL-TIER-RUNTIME-SUCCESS"
+    );
+    assert_eq!(unsupported.spec_section(), "7.1");
+    assert_eq!(unsupported.byte_offset(), Some(ByteOffset::new(74)));
 }
 
 #[test]

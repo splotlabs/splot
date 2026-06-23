@@ -283,12 +283,16 @@ fn local_ac0ej3_reaches_current_runtime_gate_without_output() {
     assert!(out.stderr.is_empty(), "stderr was not empty");
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(json["rule_id"], "decode/unsupported-feature");
-    assert_eq!(json["spec_section"], "7.1");
-    assert_eq!(json["matrix_row"], "minimal-decode-tier-contract");
-    assert_eq!(json["feature_id"], "DECODE-MINIMAL-TIER-RUNTIME-SUCCESS");
+    assert_eq!(json["spec_section"], "5.18.7.11");
+    assert_eq!(json["matrix_row"], "ac0ej3-wienerns-frontier");
+    assert_eq!(json["feature_id"], "DECODE-AC0EJ3-WIENERNS-FRONTIER");
     assert_eq!(json["detail_kind"], "unsupported_feature");
-    assert_eq!(json["unsupported_reason"], "incomplete_frame_header");
+    assert_eq!(json["unsupported_reason"], "unsupported_wienerns_filter");
     assert_eq!(json["byte_offset"], 74);
+    assert_ne!(
+        json["unsupported_reason"], "incomplete_frame_header",
+        "ac0ej3 must report the precise Wiener NS parser frontier"
+    );
     assert_ne!(
         json["unsupported_reason"], "unsupported_cfl_intra",
         "ac0ej3 must advance past the former sequence CFL gate"

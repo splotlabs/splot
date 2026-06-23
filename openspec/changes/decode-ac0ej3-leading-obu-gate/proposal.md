@@ -21,8 +21,9 @@ supports 8-bit decoded samples.
   leading sequence before any additional leading-payload OBU rejection. This
   originally surfaced `unsupported_bit_depth`; the follow-on
   `decode-ac0ej3-10bit-sequence-frontier` and
-  `decode-ac0ej3-sequence-chroma-frontier` changes move the live gate to
-  `incomplete_frame_header`.
+  `decode-ac0ej3-sequence-chroma-frontier` changes move parsing to the key-frame
+  header, and `decode-ac0ej3-wienerns-frontier` now reports the live gate as
+  `unsupported_wienerns_filter`.
 
 ## Impact
 

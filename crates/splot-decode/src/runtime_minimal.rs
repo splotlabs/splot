@@ -46,6 +46,8 @@ const AC0EJ3_10BIT_FEATURE_ID: &str = "DECODE-AC0EJ3-10BIT-SEQUENCE-FRONTIER";
 const AC0EJ3_10BIT_MATRIX_ROW: &str = "ac0ej3-10bit-sequence-frontier";
 const AC0EJ3_CHROMA_FEATURE_ID: &str = "DECODE-AC0EJ3-SEQUENCE-CHROMA-FRONTIER";
 const AC0EJ3_CHROMA_MATRIX_ROW: &str = "ac0ej3-sequence-chroma-frontier";
+const AC0EJ3_WIENERNS_FEATURE_ID: &str = "DECODE-AC0EJ3-WIENERNS-FRONTIER";
+const AC0EJ3_WIENERNS_MATRIX_ROW: &str = "ac0ej3-wienerns-frontier";
 const MINIMAL_WIDTH: u32 = 64;
 const MINIMAL_HEIGHT: u32 = 64;
 const MINIMAL_TRACE_SYMBOLS: u64 = 6;
@@ -1129,13 +1131,30 @@ fn validate_frame_core(core: &FrameHeaderCore, offset: ByteOffset) -> Result<()>
 
 fn ensure_intra_header_complete(core: &FrameHeaderCore, offset: ByteOffset) -> Result<()> {
     if core.status != FrameHeaderParseStatus::IntraHeaderComplete {
-        return Err(unsupported_at(
+        return Err(incomplete_intra_header_error(core.status, offset));
+    }
+    Ok(())
+}
+
+fn incomplete_intra_header_error(
+    status: FrameHeaderParseStatus,
+    offset: ByteOffset,
+) -> DecodeError {
+    match status {
+        FrameHeaderParseStatus::StoppedBeforeWienerNsFilter { .. } => unsupported_feature_at(
+            "unsupported_wienerns_filter",
+            offset,
+            "minimal runtime reached read_wienerns_filter() (§5.20.10.6) from AV2 §5.18.7.11 lr_params() before the frame-level Wiener NS bank decode is modeled",
+            AC0EJ3_WIENERNS_MATRIX_ROW,
+            AC0EJ3_WIENERNS_FEATURE_ID,
+            "5.18.7.11",
+        ),
+        _ => unsupported_at(
             "incomplete_frame_header",
             offset,
             "minimal tier requires a complete intra frame header",
-        ));
+        ),
     }
-    Ok(())
 }
 
 mod general_intra;
