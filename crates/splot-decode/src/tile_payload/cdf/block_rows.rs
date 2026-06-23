@@ -17,7 +17,8 @@ use splot_core::tables::cdf::{
     DEFAULT_SHELL_OFFSET_CLASS2_CDF, DEFAULT_SHELL_OFFSET_LOW_CLASS_CDF,
     DEFAULT_SHELL_OFFSET_OTHER_CLASS_CDF, DEFAULT_SINGLE_MODE_CDF, DEFAULT_SINGLE_REF_CDF,
     DEFAULT_SKIP_CDF, DEFAULT_TXB_SKIP_CDF, DEFAULT_USE_WIENER_NS_CDF,
-    DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF, DEFAULT_V_TXB_SKIP_CDF, DEFAULT_Y_MODE_INDEX_CDF,
+    DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF, DEFAULT_V_TXB_SKIP_CDF, DEFAULT_WIENER_NS_BASE_CDF,
+    DEFAULT_WIENER_NS_LENGTH_CDF, DEFAULT_WIENER_NS_UV_SYM_CDF, DEFAULT_Y_MODE_INDEX_CDF,
     DEFAULT_Y_MODE_OFFSET_CDF, DEFAULT_Y_MODE_SET_CDF,
 };
 
@@ -83,6 +84,9 @@ const SHELL_OFFSET_OTHER_CLASS_BANKS: usize = 16;
 // §8.3.2 `interp_filter`: `TileInterpFilterCdf[ctx]`, `[[i32; 4]; 16]` (3 filter
 // symbols + count). The verified single-ref no-neighbour block uses ctx == 3.
 const INTERP_FILTER_CONTEXTS: usize = 16;
+// §8.3.2 Wiener NS filter syntax CDFs used by §5.20.10.6.
+const WIENER_NS_LENGTH_CONTEXTS: usize = 2;
+const WIENER_NS_BASE_CDF_ROW_LEN: usize = 5;
 
 pub(crate) type YModeSetCdfRow = [i32; Y_MODE_SET_CDF_ROW_LEN];
 pub(crate) type YModeIndexCdfRows = [[i32; INTRA_MODE_CDF_ROW_LEN]; Y_MODE_INDEX_CONTEXTS];
@@ -122,6 +126,9 @@ pub(crate) type CompRef0CdfRows = [[[i32; CDF_ROW_LEN]; REFS_PER_FRAME_MINUS_1];
 pub(crate) type CompRef1CdfRows =
     [[[[i32; CDF_ROW_LEN]; REFS_PER_FRAME_MINUS_1]; COMP_REF1_BIT_TYPES]; REF_CONTEXTS];
 pub(crate) type UseWienerNsCdfRow = [i32; CDF_ROW_LEN];
+pub(crate) type WienerNsLengthCdfRows = [[i32; CDF_ROW_LEN]; WIENER_NS_LENGTH_CONTEXTS];
+pub(crate) type WienerNsUvSymCdfRow = [i32; CDF_ROW_LEN];
+pub(crate) type WienerNsBaseCdfRow = [i32; WIENER_NS_BASE_CDF_ROW_LEN];
 // §9.3 SHELL-coded `read_mv` banks. `shell_set` / `joint_shell_last_two_classes` /
 // `shell_offset_class2` are binary (width 3 == `CDF_ROW_LEN`). The P == 6 EighthPel
 // `shell_class` banks are width 9 (8 shell-class symbols + count). The offset / col
@@ -361,6 +368,18 @@ pub(crate) enum BlockCdfSelector {
     /// `TileUseWienerNsCdf` (AV2 § 8.3.2): the §5.20.10.5 `use_wiener_ns`
     /// binary symbol.
     UseWienerNs,
+    /// `TileWienerNsLengthCdf[Min(plane, 1)]` (AV2 § 8.3.2): the
+    /// §5.20.10.6 `wiener_ns_length` binary symbol.
+    WienerNsLength {
+        /// `Min(plane, 1)`.
+        plane_ctx: usize,
+    },
+    /// `TileWienerNsUvSymCdf` (AV2 § 8.3.2): the §5.20.10.6
+    /// `wiener_ns_uv_sym` binary symbol.
+    WienerNsUvSym,
+    /// `TileWienerNsBaseCdf` (AV2 § 8.3.2): the §5.20.10.6
+    /// `wiener_ns_base` symbol used by `decode_4part`.
+    WienerNsBase,
     /// Coefficient base/base-EOB/base-range and IDTX CDF rows.
     Coeff(CoeffCdfSelector),
 }
@@ -406,6 +425,9 @@ pub(crate) struct BlockCdfRows {
     pub(super) col_mv_index: ColMvIndexCdfRows,
     pub(super) interp_filter: InterpFilterCdfRows,
     pub(super) use_wiener_ns: UseWienerNsCdfRow,
+    pub(super) wiener_ns_length: WienerNsLengthCdfRows,
+    pub(super) wiener_ns_uv_sym: WienerNsUvSymCdfRow,
+    pub(super) wiener_ns_base: WienerNsBaseCdfRow,
     pub(super) coeff: CoeffCdfRows,
 }
 
@@ -450,6 +472,9 @@ impl BlockCdfRows {
             col_mv_index: DEFAULT_COL_MV_INDEX_CDF,
             interp_filter: DEFAULT_INTERP_FILTER_CDF,
             use_wiener_ns: DEFAULT_USE_WIENER_NS_CDF,
+            wiener_ns_length: DEFAULT_WIENER_NS_LENGTH_CDF,
+            wiener_ns_uv_sym: DEFAULT_WIENER_NS_UV_SYM_CDF,
+            wiener_ns_base: DEFAULT_WIENER_NS_BASE_CDF,
             coeff: CoeffCdfRows::from_defaults(),
         }
     }
@@ -817,6 +842,19 @@ impl BlockCdfRows {
                 Ok(row.as_slice())
             }
             BlockCdfSelector::UseWienerNs => Ok(self.use_wiener_ns.as_slice()),
+            BlockCdfSelector::WienerNsLength { plane_ctx } => {
+                let row = self.wiener_ns_length.get(plane_ctx).ok_or(
+                    TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::WienerNsLength,
+                        index_name: "plane_ctx",
+                        actual: plane_ctx,
+                        max_exclusive: WIENER_NS_LENGTH_CONTEXTS,
+                    },
+                )?;
+                Ok(row.as_slice())
+            }
+            BlockCdfSelector::WienerNsUvSym => Ok(self.wiener_ns_uv_sym.as_slice()),
+            BlockCdfSelector::WienerNsBase => Ok(self.wiener_ns_base.as_slice()),
             BlockCdfSelector::Coeff(selector) => self.coeff.row(selector),
         }
     }
@@ -1223,6 +1261,20 @@ impl BlockCdfRows {
                 Ok(row.as_mut_slice())
             }
             BlockCdfSelector::UseWienerNs => Ok(self.use_wiener_ns.as_mut_slice()),
+            BlockCdfSelector::WienerNsLength { plane_ctx } => {
+                let max_exclusive = self.wiener_ns_length.len();
+                let row = self.wiener_ns_length.get_mut(plane_ctx).ok_or(
+                    TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::WienerNsLength,
+                        index_name: "plane_ctx",
+                        actual: plane_ctx,
+                        max_exclusive,
+                    },
+                )?;
+                Ok(row.as_mut_slice())
+            }
+            BlockCdfSelector::WienerNsUvSym => Ok(self.wiener_ns_uv_sym.as_mut_slice()),
+            BlockCdfSelector::WienerNsBase => Ok(self.wiener_ns_base.as_mut_slice()),
             BlockCdfSelector::Coeff(selector) => self.coeff.row_mut(selector),
         }
     }
@@ -1467,6 +1519,26 @@ impl BlockCdfRows {
             tile_num,
             num_log2,
         );
+        for ctx in 0..WIENER_NS_LENGTH_CONTEXTS {
+            avg_cdf_row(
+                &mut self.wiener_ns_length[ctx],
+                &tile.wiener_ns_length[ctx],
+                tile_num,
+                num_log2,
+            );
+        }
+        avg_cdf_row(
+            &mut self.wiener_ns_uv_sym,
+            &tile.wiener_ns_uv_sym,
+            tile_num,
+            num_log2,
+        );
+        avg_cdf_row(
+            &mut self.wiener_ns_base,
+            &tile.wiener_ns_base,
+            tile_num,
+            num_log2,
+        );
         self.coeff.avg_from_tile(tile_num, &tile.coeff, num_log2);
     }
 
@@ -1564,6 +1636,11 @@ impl BlockCdfRows {
             scale_cdf_count(&mut self.interp_filter[ctx]);
         }
         scale_cdf_count(&mut self.use_wiener_ns);
+        for ctx in 0..WIENER_NS_LENGTH_CONTEXTS {
+            scale_cdf_count(&mut self.wiener_ns_length[ctx]);
+        }
+        scale_cdf_count(&mut self.wiener_ns_uv_sym);
+        scale_cdf_count(&mut self.wiener_ns_base);
         self.coeff.scale_counts_for_frame_end_update();
     }
 
@@ -1635,6 +1712,21 @@ impl BlockCdfRows {
     #[cfg(test)]
     pub(crate) const fn use_wiener_ns(&self) -> &UseWienerNsCdfRow {
         &self.use_wiener_ns
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn wiener_ns_length(&self) -> &WienerNsLengthCdfRows {
+        &self.wiener_ns_length
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn wiener_ns_uv_sym(&self) -> &WienerNsUvSymCdfRow {
+        &self.wiener_ns_uv_sym
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn wiener_ns_base(&self) -> &WienerNsBaseCdfRow {
+        &self.wiener_ns_base
     }
 }
 

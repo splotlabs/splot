@@ -492,6 +492,18 @@ pub(crate) enum TileCdfSelector {
     /// `TileUseWienerNsCdf` (AV2 §8.3.2): the §5.20.10.5 `use_wiener_ns`
     /// binary symbol.
     UseWienerNs,
+    /// `TileWienerNsLengthCdf[Min(plane, 1)]` (AV2 §8.3.2): the
+    /// §5.20.10.6 `wiener_ns_length` binary symbol.
+    WienerNsLength {
+        /// `Min(plane, 1)`.
+        plane_ctx: usize,
+    },
+    /// `TileWienerNsUvSymCdf` (AV2 §8.3.2): the §5.20.10.6
+    /// `wiener_ns_uv_sym` binary symbol.
+    WienerNsUvSym,
+    /// `TileWienerNsBaseCdf` (AV2 §8.3.2): the §5.20.10.6
+    /// `wiener_ns_base` symbol used by `decode_4part`.
+    WienerNsBase,
     /// Coefficient base/base-EOB/base-range and IDTX CDF rows.
     Coeff(CoeffCdfSelector),
 }
@@ -593,6 +605,8 @@ pub(crate) enum TileCdfArray {
     ColMvIndex,
     /// `TileInterpFilterCdf`.
     InterpFilter,
+    /// `TileWienerNsLengthCdf`.
+    WienerNsLength,
 }
 
 impl TileCdfArray {
@@ -645,6 +659,7 @@ impl TileCdfArray {
             Self::ColMvGreater => "TileColMvGreaterCdf",
             Self::ColMvIndex => "TileColMvIndexCdf",
             Self::InterpFilter => "TileInterpFilterCdf",
+            Self::WienerNsLength => "TileWienerNsLengthCdf",
         }
     }
 }
@@ -1067,6 +1082,11 @@ impl TileCdfRows {
                 self.block.row(BlockCdfSelector::InterpFilter { ctx })
             }
             TileCdfSelector::UseWienerNs => self.block.row(BlockCdfSelector::UseWienerNs),
+            TileCdfSelector::WienerNsLength { plane_ctx } => self
+                .block
+                .row(BlockCdfSelector::WienerNsLength { plane_ctx }),
+            TileCdfSelector::WienerNsUvSym => self.block.row(BlockCdfSelector::WienerNsUvSym),
+            TileCdfSelector::WienerNsBase => self.block.row(BlockCdfSelector::WienerNsBase),
             TileCdfSelector::Coeff(selector) => self.block.row(BlockCdfSelector::Coeff(selector)),
         }
     }
@@ -1255,6 +1275,11 @@ impl TileCdfRows {
                 self.block.row_mut(BlockCdfSelector::InterpFilter { ctx })
             }
             TileCdfSelector::UseWienerNs => self.block.row_mut(BlockCdfSelector::UseWienerNs),
+            TileCdfSelector::WienerNsLength { plane_ctx } => self
+                .block
+                .row_mut(BlockCdfSelector::WienerNsLength { plane_ctx }),
+            TileCdfSelector::WienerNsUvSym => self.block.row_mut(BlockCdfSelector::WienerNsUvSym),
+            TileCdfSelector::WienerNsBase => self.block.row_mut(BlockCdfSelector::WienerNsBase),
             TileCdfSelector::Coeff(selector) => {
                 self.block.row_mut(BlockCdfSelector::Coeff(selector))
             }
@@ -1400,6 +1425,21 @@ impl TileCdfRows {
     #[cfg(test)]
     pub(crate) const fn use_wiener_ns(&self) -> &block_rows::UseWienerNsCdfRow {
         self.block.use_wiener_ns()
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn wiener_ns_length(&self) -> &block_rows::WienerNsLengthCdfRows {
+        self.block.wiener_ns_length()
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn wiener_ns_uv_sym(&self) -> &block_rows::WienerNsUvSymCdfRow {
+        self.block.wiener_ns_uv_sym()
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn wiener_ns_base(&self) -> &block_rows::WienerNsBaseCdfRow {
+        self.block.wiener_ns_base()
     }
 }
 

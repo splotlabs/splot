@@ -439,6 +439,7 @@ mod tests {
             true,
             true,
             false,
+            false,
             TilePartitionLoopRestorationState::NoSyntax,
             PartitionFeatureFlags::new(true, true),
             4,

@@ -50,6 +50,8 @@ const AC0EJ3_WIENERNS_FEATURE_ID: &str = "DECODE-AC0EJ3-WIENERNS-FRONTIER";
 const AC0EJ3_WIENERNS_MATRIX_ROW: &str = "ac0ej3-wienerns-frontier";
 const AC0EJ3_LR_UNIT_SELECTIONS_FEATURE_ID: &str = "DECODE-AC0EJ3-LR-UNIT-SELECTIONS-FRONTIER";
 const AC0EJ3_LR_UNIT_SELECTIONS_MATRIX_ROW: &str = "ac0ej3-lr-unit-selections-frontier";
+const AC0EJ3_LR_SOURCE_BOUNDS_FEATURE_ID: &str = "DECODE-AC0EJ3-LR-SOURCE-BOUNDS-FRONTIER";
+const AC0EJ3_LR_SOURCE_BOUNDS_MATRIX_ROW: &str = "ac0ej3-lr-source-bounds-frontier";
 const MINIMAL_WIDTH: u32 = 64;
 const MINIMAL_HEIGHT: u32 = 64;
 const MINIMAL_TRACE_SYMBOLS: u64 = 6;
@@ -1196,6 +1198,8 @@ fn ensure_wienerns_lr_unit_runtime_frontier(
     .map_err(|err| map_wienerns_lr_unit_frontier_error(err, key_envelope.offset))?;
     if lr_frontier.all_lr_units_inactive() {
         Ok(())
+    } else if !lr_frontier.active_source_blocks().is_empty() {
+        Err(wienerns_lr_source_bounds_runtime_error(key_envelope.offset))
     } else {
         Err(wienerns_lr_unit_runtime_error(key_envelope.offset))
     }
@@ -1230,6 +1234,17 @@ fn wienerns_lr_unit_runtime_error(offset: ByteOffset) -> DecodeError {
         AC0EJ3_LR_UNIT_SELECTIONS_MATRIX_ROW,
         AC0EJ3_LR_UNIT_SELECTIONS_FEATURE_ID,
         "5.20.10.5",
+    )
+}
+
+fn wienerns_lr_source_bounds_runtime_error(offset: ByteOffset) -> DecodeError {
+    unsupported_feature_at(
+        "unsupported_wienerns_lr_source_bounds",
+        offset,
+        "minimal runtime consumed active AV2 §5.20.10.4/§5.20.10.5 frame-level Wiener NS LR unit syntax, retained per-unit selection state, and derived active §7.20.1 loop-restoration source-bound facts, but does not yet read loop-restoration source frames or apply §7.20.3 filtering before output",
+        AC0EJ3_LR_SOURCE_BOUNDS_MATRIX_ROW,
+        AC0EJ3_LR_SOURCE_BOUNDS_FEATURE_ID,
+        "7.20.1",
     )
 }
 

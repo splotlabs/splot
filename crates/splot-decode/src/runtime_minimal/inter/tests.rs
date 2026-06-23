@@ -1217,36 +1217,34 @@ fn wienerns_header_status_reports_precise_runtime_frontier() {
 
 #[test]
 fn parsed_wienerns_bank_reports_next_runtime_frontier() {
-    let error = super::super::wienerns_lr_unit_runtime_error(ByteOffset::new(74));
+    let error = super::super::wienerns_lr_source_bounds_runtime_error(ByteOffset::new(74));
     let unsupported = match error {
         DecodeError::UnsupportedFeature { unsupported } => unsupported,
         _ => panic!("parsed Wiener NS bank frontier must be an unsupported-feature error"),
     };
 
-    assert_eq!(unsupported.reason(), "unsupported_active_wienerns_lr_units");
     assert_eq!(
-        unsupported.matrix_row(),
-        "ac0ej3-lr-unit-selections-frontier"
+        unsupported.reason(),
+        "unsupported_wienerns_lr_source_bounds"
     );
+    assert_eq!(unsupported.matrix_row(), "ac0ej3-lr-source-bounds-frontier");
     assert_eq!(
         unsupported.feature_id(),
-        "DECODE-AC0EJ3-LR-UNIT-SELECTIONS-FRONTIER"
+        "DECODE-AC0EJ3-LR-SOURCE-BOUNDS-FRONTIER"
     );
-    assert_eq!(unsupported.spec_section(), "5.20.10.5");
+    assert_eq!(unsupported.spec_section(), "7.20.1");
     assert_eq!(unsupported.byte_offset(), Some(ByteOffset::new(74)));
     assert!(
-        unsupported.message().contains("RESTORE_WIENER_NONSEP"),
-        "message should make clear that an active LR unit is the unsupported frontier"
+        unsupported.message().contains("source-bound facts"),
+        "message should make clear that source-bound derivation owns the diagnostic"
     );
     assert!(
         unsupported.message().contains("per-unit selection state"),
-        "message should make clear that the retained selection frontier owns the diagnostic"
+        "message should make clear that the prior retained selection frontier has advanced"
     );
     assert!(
-        unsupported
-            .message()
-            .contains("loop-restoration reconstruction"),
-        "message should make clear that parsing the bank is not reconstruction support"
+        unsupported.message().contains("§7.20.3 filtering"),
+        "message should make clear that filtering is not implemented"
     );
 }
 

@@ -43,6 +43,7 @@ fn frame(sb_size: usize) -> TilePartitionFrameFacts {
         true,
         false,
         false,
+        false,
         TilePartitionLoopRestorationState::NoSyntax,
         PartitionFeatureFlags::new(true, true),
         4,
@@ -54,13 +55,21 @@ fn frame(sb_size: usize) -> TilePartitionFrameFacts {
 
 fn frame_level_wiener_ns(unit_size: usize) -> TilePartitionLoopRestorationState {
     TilePartitionLoopRestorationState::FrameWienerNs(
-        TilePartitionWienerNsLoopRestorationState::new([true, false, false], [unit_size, 0, 0]),
+        TilePartitionWienerNsLoopRestorationState::new(
+            [true, false, false],
+            [true, false, false],
+            [unit_size, 0, 0],
+        ),
     )
 }
 
 fn frame_level_chroma_wiener_ns(unit_size: usize) -> TilePartitionLoopRestorationState {
     TilePartitionLoopRestorationState::FrameWienerNs(
-        TilePartitionWienerNsLoopRestorationState::new([false, true, false], [0, unit_size, 0]),
+        TilePartitionWienerNsLoopRestorationState::new(
+            [false, true, false],
+            [false, true, false],
+            [0, unit_size, 0],
+        ),
     )
 }
 
@@ -497,6 +506,7 @@ fn root_lr_frontier_consumes_only_frame_level_wiener_ns_symbols() {
             active: false,
         }]
     );
+    assert!(root.active_source_blocks().is_empty());
     assert!(root.all_lr_units_inactive());
 }
 
@@ -526,7 +536,105 @@ fn root_lr_frontier_reports_active_frame_level_wiener_ns_unit() {
             active: true,
         }]
     );
+    assert_eq!(root.active_source_blocks().len(), 4096);
+    assert_eq!(
+        root.active_source_blocks()[0],
+        WienerNsLrSourceBlock {
+            plane: 0,
+            row: 0,
+            col: 0,
+            unit_row: 0,
+            unit_col: 0,
+            x: 0,
+            y: 0,
+            width: 4,
+            height: 4,
+            luma_start_x: 0,
+            luma_end_x: 255,
+            luma_start_y: 0,
+            luma_end_y: 255,
+            luma_stripe_start_y: 0,
+            luma_stripe_end_y: 55,
+        }
+    );
     assert!(!root.all_lr_units_inactive());
+}
+
+#[test]
+fn wiener_ns_unit_filter_reads_use_bank_for_merged_units_after_bank_growth() {
+    let mut cdfs = FrameCdfSubset::from_defaults().tile_copy();
+    let mut state = WienerNsUnitFilterState::default();
+    let zero_payload = [0x00; 2048];
+    let one_payload = [0xFF; 32];
+    let config = SymbolDecoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Disabled);
+
+    for expected_bank_size in 1..=2 {
+        let mut symbols =
+            SymbolDecoder::with_base_and_config(&zero_payload, ByteOffset::new(0), config).unwrap();
+
+        read_wiener_ns_unit_filter(1, &mut cdfs, &mut symbols, &mut state).unwrap();
+
+        assert_eq!(state.bank_size[1], expected_bank_size);
+    }
+
+    let mut symbols =
+        SymbolDecoder::with_base_and_config(&one_payload, ByteOffset::new(0), config).unwrap();
+    let before = symbols.symbol_count();
+
+    read_wiener_ns_unit_filter(1, &mut cdfs, &mut symbols, &mut state).unwrap();
+
+    assert_eq!(
+        symbols.symbol_count() - before,
+        2,
+        "merged_param plus one use_bank literal must be consumed for bank_size == 2"
+    );
+    assert_eq!(state.bank_size[1], 2);
+}
+
+#[test]
+fn active_lr_source_blocks_track_stripe_bounds() {
+    let mut work_unit = make_work_unit(&[0xFF, 0x00, 0x80], CdfUpdateMode::Enabled);
+    let mut facts = frame(BLOCK_64X64);
+    facts.loop_restoration = frame_level_wiener_ns(256);
+
+    let root = consume_tile_loop_restoration_root_frontier(TilePartitionTraversalInput::new(
+        &mut work_unit,
+        facts,
+        context(),
+        DecodeLimits::DEFAULT,
+    ))
+    .unwrap();
+
+    assert_eq!(root.active_source_blocks().len(), 4096);
+    let second_stripe = root
+        .active_source_blocks()
+        .iter()
+        .find(|block| block.row == 14 && block.col == 0)
+        .unwrap();
+    assert_eq!(second_stripe.y, 56);
+    assert_eq!(second_stripe.luma_stripe_start_y, 56);
+    assert_eq!(second_stripe.luma_stripe_end_y, 119);
+}
+
+#[test]
+fn active_lr_source_bounds_clamp_to_tile_when_loopfilters_across_tiles_disabled() {
+    let mut work_unit =
+        make_work_unit_at(&[0xFF, 0x00, 0x80], CdfUpdateMode::Enabled, 0..32, 0..32);
+    let mut facts = frame(BLOCK_32X32);
+    facts.disable_loopfilters_across_tiles = true;
+    facts.loop_restoration = frame_level_wiener_ns(256);
+
+    let root = consume_tile_loop_restoration_root_frontier(TilePartitionTraversalInput::new(
+        &mut work_unit,
+        facts,
+        context(),
+        DecodeLimits::DEFAULT,
+    ))
+    .unwrap();
+
+    assert_eq!(root.active_source_blocks().len(), 1024);
+    assert_eq!(root.active_source_blocks()[0].luma_end_x, 127);
+    assert_eq!(root.active_source_blocks()[0].luma_end_y, 127);
 }
 
 #[test]
