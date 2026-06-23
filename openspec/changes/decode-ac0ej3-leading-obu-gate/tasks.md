@@ -10,7 +10,7 @@
 ## 2. Tests And Tracking
 
 - [x] 2.1 Add a self-contained 10-bit leading-extra-payload regression proving the
-      runtime reaches `unsupported_bit_depth`.
+      runtime parses the leading sequence before rejecting the extra OBU.
 - [x] 2.2 Add a self-contained 8-bit leading-extra-payload regression proving the
       runtime still fails closed at `unexpected_leading_obu_after_key`.
 - [x] 2.3 Update the local ac0ej3 CLI diagnostic regression to the new gate.

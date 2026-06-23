@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 404 feature(s); 351 cite a spec section.
+Matrix version 1. Last reviewed 2026-06-15. 405 feature(s); 352 cite a spec section.
 
 One row per (spec section, feature) pair, in spec order; a feature citing both a syntax and a semantics section appears under both. The canonical status source is [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); the full per-feature ledger is [FEATURE-STATUS.md](./FEATURE-STATUS.md).
 
@@ -574,6 +574,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 6.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1) | General sequence header OBU semantics | `CONF-RECON-FRAME-PLANE-TYPES-FUZZ` | ✅ | — | — | ✅ | — |
 | [§ 6.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1) | General sequence header OBU semantics | `CONF-RECON-INTRA-PREDICTION-FUZZ` | ✅ | — | — | ✅ | — |
 | [§ 6.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1) | General sequence header OBU semantics | `CONF-RECON-Y4M-OUTPUT-FUZZ` | ✅ | — | — | ✅ | — |
+| [§ 6.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1) | General sequence header OBU semantics | `DECODE-AC0EJ3-10BIT-SEQUENCE-FRONTIER` | ✅ | ✅ | ✅ | ✅ | 1 |
 | [§ 6.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1) | General sequence header OBU semantics | `DECODE-LIMITS-RUNTIME-API` | ✅ | — | — | ✅ | — |
 | [§ 6.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1) | General sequence header OBU semantics | `DECODE-MINIMAL-RAW-RUNTIME-OUTPUT` | ✅ | 🟡 | ✅ | ✅ | 4 |
 | [§ 6.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1) | General sequence header OBU semantics | `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS` | ✅ | 🟡 | ✅ | ✅ | 3 |
@@ -970,6 +971,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.21.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-21-2) | Intermediate output preparation process | `CONF-RECON-FRAME-HASH-FUZZ` | ✅ | — | — | ✅ | — |
 | [§ 7.21.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-21-2) | Intermediate output preparation process | `CONF-RECON-FRAME-PLANE-TYPES-FUZZ` | ✅ | — | — | ✅ | — |
 | [§ 7.21.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-21-2) | Intermediate output preparation process | `CONF-RECON-Y4M-OUTPUT-FUZZ` | ✅ | — | — | ✅ | — |
+| [§ 7.21.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-21-2) | Intermediate output preparation process | `DECODE-AC0EJ3-10BIT-SEQUENCE-FRONTIER` | ✅ | ✅ | ✅ | ✅ | 1 |
 | [§ 7.21.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-21-2) | Intermediate output preparation process | `DECODE-MINIMAL-INTRA-RECONSTRUCTION-FRONTIER` | ✅ | 🟡 | ✅ | ✅ | 4 |
 | [§ 7.21.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-21-2) | Intermediate output preparation process | `DECODE-MINIMAL-RAW-RUNTIME-OUTPUT` | ✅ | 🟡 | ✅ | ✅ | 4 |
 | [§ 7.21.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-21-2) | Intermediate output preparation process | `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS` | ✅ | 🟡 | ✅ | ✅ | 3 |
@@ -987,6 +989,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.22](./spec/av2/1.0.0/07-decoding-process.md#s-7-22) | Motion field motion vector storage process | `DOC-DECODER-OUTPUT-EQUIVALENCE-CONTRACT` | ✅ | — | — | ✅ | — |
 | [§ 7.23](./spec/av2/1.0.0/07-decoding-process.md#s-7-23) | Reference frame update process | `AV2-7.23-REFERENCE-FRAME-UPDATE` | ✅ | — | 🟡 | ✅ | 1 |
 | [§ 7.23](./spec/av2/1.0.0/07-decoding-process.md#s-7-23) | Reference frame update process | `CONF-RECON-FRAME-PLANE-TYPES-FUZZ` | ✅ | — | — | ✅ | — |
+| [§ 7.23](./spec/av2/1.0.0/07-decoding-process.md#s-7-23) | Reference frame update process | `DECODE-AC0EJ3-10BIT-SEQUENCE-FRONTIER` | ✅ | ✅ | ✅ | ✅ | 1 |
 | [§ 7.23](./spec/av2/1.0.0/07-decoding-process.md#s-7-23) | Reference frame update process | `DECODE-FIRST-INTER-FRAME-FRONTIER` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 7.23](./spec/av2/1.0.0/07-decoding-process.md#s-7-23) | Reference frame update process | `DECODE-INTER-MULTIREF-RUNTIME` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 7.23](./spec/av2/1.0.0/07-decoding-process.md#s-7-23) | Reference frame update process | `DECODE-LIMITS-RUNTIME-API` | ✅ | — | — | ✅ | — |
