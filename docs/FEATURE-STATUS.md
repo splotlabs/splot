@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 403 feature(s).
+Matrix version 1. Last reviewed 2026-06-15. 404 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -278,6 +278,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `DOC-DECODED-FRAME-PLANE-MODEL-CONTRACT` | Decoded frame and plane model contract documentation | docs | docs | done | n/a | n/a | n/a | n/a | n/a | n/a | done | n/a | `docs/DECODER-ROADMAP.md` |
 | `DOC-MINIMAL-DECODE-TIER-CONTRACT` | Minimal decode tier contract documentation | docs | docs | done | n/a | n/a | n/a | n/a | n/a | n/a | done | n/a | `docs/DECODER-ROADMAP.md` |
 | `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS` | Minimal-tier runtime hash success | infrastructure | infrastructure | done | done | partial | done | n/a | n/a | done | done | n/a | `crates/splot-decode/src/runtime_hash.rs` |
+| `DECODE-AC0EJ3-LEADING-OBU-GATE` | ac0ej3 leading payload gate | infrastructure | infrastructure | done | done | partial | done | n/a | n/a | done | done | n/a | `crates/splot-decode/src/runtime_minimal.rs` |
 | `DECODE-Y4M-RUNTIME-OUTPUT` | Minimal-tier runtime Y4M output | infrastructure | infrastructure | done | done | partial | done | n/a | n/a | done | done | n/a | `crates/splot-decode/src/runtime_y4m.rs` |
 | `DECODE-MINIMAL-RAW-RUNTIME-OUTPUT` | Minimal-tier runtime raw output | infrastructure | infrastructure | done | done | partial | done | n/a | n/a | done | done | n/a | `crates/splot-decode/src/runtime_raw.rs` |
 | `INFRA-DECODER-CRATE-SCAFFOLDING` | Decoder and reconstruction crate scaffolding | infrastructure | infrastructure | done | n/a | n/a | done | n/a | n/a | n/a | done | n/a | `crates/splot-decode/src/lib.rs` |

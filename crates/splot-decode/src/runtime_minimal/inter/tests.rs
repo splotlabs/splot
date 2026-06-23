@@ -804,6 +804,42 @@ fn mvorder_fixture_per_frame_hash_is_stable() {
 const MULTIREF_FIXTURE: &[u8] =
     include_bytes!("../../../../../tests/conformance/vectors/valid/syn-3frame-multiref-64x64.ivf");
 
+const TEN_BIT_INTRA_FIXTURE: &[u8] =
+    include_bytes!("../../../../../tests/conformance/vectors/valid/syn-intra-64x64-10bit.ivf");
+
+fn repack_first_record_with_extra_regular_tile_group(source: &[u8]) -> Vec<u8> {
+    let ParsedBitstream::Ivf(parsed) = parse_bitstream_partial(source) else {
+        panic!("source fixture is IVF");
+    };
+    assert!(parsed.error.is_none());
+    assert!(parsed.warnings.is_empty());
+    assert!(!parsed.frames.is_empty());
+
+    let ParsedBitstream::Ivf(inter_parsed) = parse_bitstream_partial(MULTIREF_FIXTURE) else {
+        panic!("multiref fixture is IVF");
+    };
+    assert!(inter_parsed.error.is_none());
+    assert!(inter_parsed.warnings.is_empty());
+    assert_eq!(inter_parsed.frames[1].obus.len(), 2);
+
+    let first_inter_td_end = obu_end_in_ivf_payload(&inter_parsed.frames[1], 0);
+    let first_inter_payload = inter_parsed.frames[1].frame.payload;
+
+    let mut leading_payload = Vec::new();
+    leading_payload.extend_from_slice(parsed.frames[0].frame.payload);
+    leading_payload.extend_from_slice(&first_inter_payload[first_inter_td_end..]);
+
+    let mut header = parsed.header.expect("source fixture has an IVF header");
+    header.frame_count = 1;
+
+    let mut bytes = Vec::new();
+    write_ivf_header(&mut bytes, &header).expect("write repacked IVF header");
+    write_ivf_frame(&mut bytes, parsed.frames[0].frame.pts, &leading_payload)
+        .expect("write leading IVF record with extra tile group");
+
+    bytes
+}
+
 fn repack_multiref_last_two_frames_into_one_ivf_record() -> Vec<u8> {
     let ParsedBitstream::Ivf(parsed) = parse_bitstream_partial(MULTIREF_FIXTURE) else {
         panic!("multiref fixture is IVF");
@@ -1128,6 +1164,43 @@ fn multiref_fixture_rejects_when_inter_tile_group_starts_ivf_record() {
         _ => panic!("record-leading tile group must be an unsupported-feature error"),
     };
     assert_eq!(reason, "unexpected_inter_obu_order");
+}
+
+#[test]
+fn leading_key_payload_extra_obu_reaches_sequence_bit_depth_gate() {
+    let repacked = repack_first_record_with_extra_regular_tile_group(TEN_BIT_INTRA_FIXTURE);
+    let options = DecodeOptions::default();
+    let context =
+        DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).expect("context");
+    let plan = context.plan_bytes(&repacked, options).expect("plan");
+    assert!(
+        plan.obu_count() >= 4,
+        "test fixture must keep an extra OBU after the leading key frame"
+    );
+    let Err(error) = decode_minimal_frames_from_plan(&repacked, options, &plan) else {
+        panic!("10-bit leading payload with an extra OBU must fail closed");
+    };
+    assert_eq!(unsupported_reason(error), "unsupported_bit_depth");
+}
+
+#[test]
+fn multiref_runtime_rejects_extra_obu_after_leading_key_payload() {
+    let repacked = repack_first_record_with_extra_regular_tile_group(MULTIREF_FIXTURE);
+    let options = DecodeOptions::default();
+    let context =
+        DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).expect("context");
+    let plan = context.plan_bytes(&repacked, options).expect("plan");
+    assert!(
+        plan.obu_count() >= 4,
+        "test fixture must keep an extra OBU after the leading key frame"
+    );
+    let Err(error) = decode_minimal_frames_from_plan(&repacked, options, &plan) else {
+        panic!("extra leading-payload OBU must fail closed before output");
+    };
+    assert_eq!(
+        unsupported_reason(error),
+        "unexpected_leading_obu_after_key"
+    );
 }
 
 #[test]

@@ -217,8 +217,8 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
             "minimal tier requires at least one IVF frame",
         )
     })?;
-    let [td_envelope, sequence_envelope, key_envelope] =
-        require_minimal_obu_order(first_ivf_frame.obus.as_slice())?;
+    let leading_obus = first_ivf_frame.obus.as_slice();
+    let [td_envelope, sequence_envelope, key_envelope] = require_minimal_obu_order(leading_obus)?;
     require_obu_type(
         td_envelope,
         ObuType::TemporalDelimiter,
@@ -237,6 +237,7 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
 
     let sequence = parse_sequence(sequence_envelope)?;
     validate_sequence(&sequence, sequence_envelope.offset)?;
+    reject_extra_leading_key_payload_obus(leading_obus)?;
 
     let mut candidates = plan.frame_candidates_all();
     let key_candidate = candidates.next().ok_or_else(|| {
@@ -779,13 +780,24 @@ fn validate_minimal_trace_summary(
 
 fn require_minimal_obu_order<'a>(obus: &'a [ObuEnvelope<'a>]) -> Result<[ObuEnvelope<'a>; 3]> {
     match obus {
-        [td, sequence, frame] => Ok([*td, *sequence, *frame]),
+        [td, sequence, frame, ..] => Ok([*td, *sequence, *frame]),
         _ => Err(unsupported(
             "unexpected_obu_order",
             None,
-            "minimal tier requires temporal delimiter, sequence header, and one closed-loop-key OBU",
+            "minimal tier requires a leading temporal delimiter, sequence header, and closed-loop-key OBU",
         )),
     }
+}
+
+fn reject_extra_leading_key_payload_obus(obus: &[ObuEnvelope<'_>]) -> Result<()> {
+    let Some(extra) = obus.get(3) else {
+        return Ok(());
+    };
+    Err(unsupported_at(
+        "unexpected_leading_obu_after_key",
+        extra.offset,
+        "minimal tier does not decode extra OBUs after the leading closed-loop-key OBU",
+    ))
 }
 
 fn require_obu_type(
