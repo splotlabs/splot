@@ -39,13 +39,13 @@ use crate::tile_payload::{
     decode_general_intra_plane_coeffs, frame_mi_dimensions,
 };
 
-/// AV2 § 8.3.2 `interp_filter` context for the verified single-reference block
-/// (single ref -> `is_inter_ref_frame(RefFrame[1]) * 4 == 0`). With no decoded
-/// neighbours `NNum == 0` gives `ctx == 3`; the verified subset only reads the
-/// per-block `interp_filter` symbol when the frame filter is SWITCHABLE, which
-/// the fixture's fixed frame filter is not, so this no-neighbour context is the
-/// only one exercised.
-const INTERP_FILTER_CTX_NO_NEIGHBOUR: usize = 3;
+/// AV2 § 8.3.2 no-neighbour `interp_filter` context base: `leftType` and
+/// `aboveType` both default to 3 before any `RefFrame[1]` compound-reference offset.
+const INTERP_FILTER_CTX_NO_NEIGHBOUR_BASE: usize = 3;
+
+/// AV2 § 8.3.2 `interp_filter` context offset for compound prediction:
+/// `is_inter_ref_frame(RefFrame[1]) * 4`.
+const INTERP_FILTER_CTX_SECOND_REF_INTER_OFFSET: usize = 4;
 
 /// `RefFrame[0]` for the verified single-reference subset: `read_ref_frames`
 /// returns `RefFrame[0] == 0` (LAST_FRAME) when `NumTotalRefs == 1`.
@@ -509,6 +509,7 @@ fn decode_one_inter_block(
             symbols,
             frame_interpolation_filter,
             SINGLE_MODE_NEARMV,
+            true,
             neighbour_ctx.has_neighbour,
             tile_offset,
         )?;
@@ -695,6 +696,7 @@ fn decode_one_inter_block(
         symbols,
         frame_interpolation_filter,
         single_mode,
+        false,
         neighbour_ctx.has_neighbour,
         tile_offset,
     )?;
@@ -872,20 +874,21 @@ fn residual_read_error(tile_offset: ByteOffset) -> super::super::DecodeError {
     )
 }
 
-/// AV2 § 5.20.7.6 `interp_filter` resolution for the verified single-reference
-/// no-neighbour block, mapped to the recon-side § 7.13.3.18 filter.
+/// AV2 § 5.20.7.6 `interp_filter` resolution for the verified no-neighbour
+/// inter block, mapped to the recon-side § 7.13.3.18 filter.
 ///
 /// A fixed frame filter supplies the block filter directly (no symbol). A
 /// SWITCHABLE frame filter reads the per-block `interp_filter` symbol
 /// (`TileInterpFilterCdf[ctx]`) when `needs_interp_filter()` is 1. For the verified
 /// `motion_mode == SIMPLE` block `needs_interp_filter()` returns 0 only for a large
-/// (>= 8x8) GLOBALMV block (which then uses EIGHTTAP); NEARMV / NEWMV always read
-/// the symbol.
+/// (>= 8x8) GLOBALMV block (which then uses EIGHTTAP); NEARMV / NEWMV and the
+/// verified compound NEAR_NEARMV path always read the symbol.
 fn resolve_interp_filter(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
     frame_interpolation_filter: FrameInterpolationFilter,
-    single_mode: u8,
+    mode_for_needs_interp_filter: u8,
+    ref_frame1_is_inter: bool,
     has_neighbour: bool,
     tile_offset: ByteOffset,
 ) -> Result<ReconInterpolationFilter> {
@@ -898,17 +901,19 @@ fn resolve_interp_filter(
             // §5.20.7.6 needs_interp_filter(): the 64x64 block is large, so a GLOBALMV
             // block returns 0 (EIGHTTAP, no symbol); NEARMV / NEWMV return 1 and read
             // the per-block symbol.
-            if single_mode == SINGLE_MODE_GLOBALMV {
+            if mode_for_needs_interp_filter == SINGLE_MODE_GLOBALMV {
                 return Ok(ReconInterpolationFilter::EightTap);
             }
             // §8.3.2 interp_filter ctx is neighbour-dependent (it folds in
             // InterpFilters[neighbour] for a matching-reference neighbour); this kernel
-            // models only the no-neighbour ctx == 3. A NEARMV/NEWMV block WITH a decoded
-            // neighbour would read the wrong CDF row, so reject a SWITCHABLE filter once
-            // a neighbour exists (the no-neighbour single-block sub-pel fixture still
-            // decodes; the multi-block fixture uses a fixed frame filter, so neither is
-            // affected). A wrong CDF row usually shifts the bit count, but a coincidental
-            // same-length decode would pass §8.2.4 exit_symbol() with a wrong filter.
+            // models only the no-neighbour rows: ctx 3 for single-reference prediction
+            // and ctx 7 for compound prediction after the RefFrame[1] inter-reference
+            // offset. A NEARMV/NEWMV block WITH a decoded neighbour would read the wrong
+            // CDF row, so reject a SWITCHABLE filter once a neighbour exists (the
+            // no-neighbour single-block sub-pel fixture still decodes; the multi-block
+            // fixture uses a fixed frame filter, so neither is affected). A wrong CDF row
+            // usually shifts the bit count, but a coincidental same-length decode would
+            // pass §8.2.4 exit_symbol() with a wrong filter.
             if has_neighbour {
                 return Err(unsupported_at(
                     "inter_block_interp_filter_neighbour_ctx",
@@ -920,7 +925,7 @@ fn resolve_interp_filter(
             let symbol = cdfs
                 .read_block_symbol_trace(
                     TileCdfSelector::InterpFilter {
-                        ctx: INTERP_FILTER_CTX_NO_NEIGHBOUR,
+                        ctx: interp_filter_no_neighbour_ctx(ref_frame1_is_inter),
                     },
                     symbols,
                 )
@@ -934,6 +939,11 @@ fn resolve_interp_filter(
             SPEC_MODE_INFO,
         )),
     }
+}
+
+pub(super) fn interp_filter_no_neighbour_ctx(ref_frame1_is_inter: bool) -> usize {
+    INTERP_FILTER_CTX_NO_NEIGHBOUR_BASE
+        + usize::from(ref_frame1_is_inter) * INTERP_FILTER_CTX_SECOND_REF_INTER_OFFSET
 }
 
 /// Maps a decoded `interp_filter` symbol (`0..3`) to the recon § 7.13.3.18 filter.

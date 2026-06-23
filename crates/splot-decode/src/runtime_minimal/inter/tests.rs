@@ -16,6 +16,7 @@
 use splot_parallel::ThreadCount;
 
 use super::super::{MinimalRuntimeFrame, decode_minimal_frames_from_plan};
+use super::block::interp_filter_no_neighbour_ctx;
 use super::compound_is_joint_context_from_order_hints;
 use crate::{DecodeContext, DecodeOptions, DecodeRuntimeConfig};
 
@@ -1255,6 +1256,16 @@ fn compound_is_joint_context_uses_strict_same_side_signs() {
         1,
         "opposite-side unequal-distance references still use context 1"
     );
+}
+
+/// AV2 §8.3.2 `interp_filter` starts at no-neighbour type 3, then adds
+/// `is_inter_ref_frame(RefFrame[1]) * 4`. The verified compound-average path has
+/// an inter second reference, so a SWITCHABLE compound block must read
+/// `TileInterpFilterCdf[7]`, not the single-reference row 3.
+#[test]
+fn interp_filter_no_neighbour_context_accounts_for_compound_second_ref() {
+    assert_eq!(interp_filter_no_neighbour_ctx(false), 3);
+    assert_eq!(interp_filter_no_neighbour_ctx(true), 7);
 }
 
 /// `FloorLog2` (AV2 § 4): the MSB index, 0 for 0.
