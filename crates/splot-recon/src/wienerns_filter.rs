@@ -1,16 +1,15 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! AV2 § 7.20.3 luma non-separable Wiener filter sample math.
+//! AV2 § 7.20.3 non-separable Wiener filter sample math.
 //!
 //! This module implements the scheduler-free luma portion of the AV2 § 7.20.3
 //! non-separable Wiener filter process
 //! ([`07-decoding-process.md`](../../../docs/spec/av2/1.0.0/07-decoding-process.md#s-7-20-3)).
 //! The caller resolves the § 7.20.2 source-sample process, frame/restoration-unit
 //! traversal, frame-vs-unit coefficient selection, and any § 7.20.4
-//! pixel-classified Wiener subclass mapping. Chroma Wiener NS filtering, luma
-//! downsampling for chroma, temporal/reference filter state, and runtime decode
-//! wiring stay outside this primitive.
+//! pixel-classified Wiener subclass mapping. Temporal/reference filter state and
+//! runtime decode wiring stay outside this primitive.
 //!
 //! Feature tracking: `RECON-WIENERNS-FILTER-PRIMITIVE`.
 
@@ -273,7 +272,6 @@ mod tests {
     use super::*;
 
     const ZERO: [i16; WIENER_NS_LUMA_COEFFS] = [0; WIENER_NS_LUMA_COEFFS];
-
     fn params<'a>(
         width: usize,
         height: usize,

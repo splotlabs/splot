@@ -631,6 +631,12 @@ pub enum ReconError {
         /// Maximum sample value allowed by the active bit depth.
         max: u16,
     },
+    /// A § 7.20.3 Wiener NS chroma filter was supplied an invalid
+    /// `cfl_ds_filter_index`.
+    WienerNsFilterInvalidCflDsFilterIndex {
+        /// Supplied index.
+        index: u8,
+    },
     /// Caller-resolved AV2 § 7.20.2 loop-restoration source-sample luma bounds
     /// were internally inconsistent.
     LoopRestorationSourceInvalidBounds {
@@ -1294,6 +1300,10 @@ impl fmt::Display for ReconError {
             Self::WienerNsFilterSourceSampleOutOfRange { x, y, value, max } => write!(
                 f,
                 "Wiener NS source sample at ({x}, {y}) has value {value}, exceeding active bit-depth max {max}"
+            ),
+            Self::WienerNsFilterInvalidCflDsFilterIndex { index } => write!(
+                f,
+                "invalid Wiener NS chroma cfl_ds_filter_index {index}; expected 0..=3"
             ),
             Self::LoopRestorationSourceInvalidBounds { field } => {
                 write!(f, "invalid loop-restoration source-sample {field}")
