@@ -668,15 +668,38 @@ fn compound_is_joint_context(
                 )
             })
     };
-    let first_dist = get_relative_dist(ref_order_hint(0)?, current_order_hint).abs();
-    let second_dist = get_relative_dist(ref_order_hint(1)?, current_order_hint).abs();
-    let first_side = get_relative_dist(ref_order_hint(0)?, current_order_hint);
-    let second_side = get_relative_dist(ref_order_hint(1)?, current_order_hint);
-    let same_side = (first_side <= 0 && second_side <= 0) || (first_side >= 0 && second_side >= 0);
-    Ok(usize::from(same_side || first_dist != second_dist))
+    let first_order_hint = ref_order_hint(0)?;
+    let second_order_hint = ref_order_hint(1)?;
+    Ok(compound_is_joint_context_from_order_hints(
+        first_order_hint,
+        second_order_hint,
+        current_order_hint,
+    ))
+}
+
+fn compound_is_joint_context_from_order_hints(
+    first_order_hint: i32,
+    second_order_hint: i32,
+    current_order_hint: i32,
+) -> usize {
+    let first_dist = get_relative_dist(first_order_hint, current_order_hint).abs();
+    let second_dist = get_relative_dist(second_order_hint, current_order_hint).abs();
+    let first_side = get_relative_dist(first_order_hint, current_order_hint);
+    let second_side = get_relative_dist(second_order_hint, current_order_hint);
+    // §8.3.2 `is_same_side()` is strict: references at the current frame's order hint
+    // are neither before nor after it, so zero-distance references are not same-side.
+    let same_side = (first_side < 0 && second_side < 0) || (first_side > 0 && second_side > 0);
+    // §8.3.2 also ORs the `RESTRICTED_OH` mismatch term. The verified subset does not
+    // model restricted references here; omitting that term is over-reject-only because it
+    // can only raise the context to 1, and the compound gate admits only context 1.
+    usize::from(same_side || first_dist != second_dist)
 }
 
 fn get_relative_dist(a: i32, b: i32) -> i32 {
+    // The compound-average subset is admitted only after `order_hint_history_unwrapped`
+    // proves no §5.18.2 order-hint wrap correction occurred, so the simplified clamped
+    // distance is exact for the currently verified streams. Full modular
+    // `get_relative_dist` is deferred to a broader order-hint/reference-state brick.
     (a - b).clamp(-127, 127)
 }
 

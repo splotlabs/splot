@@ -212,7 +212,7 @@ fn gate_compound_subset(input: CompoundParseInput, tile_offset: ByteOffset) -> R
         return Err(unsupported_compound_at(
             "compound_is_joint_context",
             tile_offset,
-            "minimal compound-average decode is verified only for the same-side, unequal-distance §8.3.2 is_joint context 1 fixture",
+            "minimal compound-average decode is verified only for the same-side or unequal-distance §8.3.2 is_joint context 1 fixture",
             SPEC_INTER_BLOCK_MODE_INFO,
         ));
     }

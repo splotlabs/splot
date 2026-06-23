@@ -16,6 +16,7 @@
 use splot_parallel::ThreadCount;
 
 use super::super::{MinimalRuntimeFrame, decode_minimal_frames_from_plan};
+use super::compound_is_joint_context_from_order_hints;
 use crate::{DecodeContext, DecodeOptions, DecodeRuntimeConfig};
 
 const TWO_FRAME_INTER_FIXTURE: &[u8] =
@@ -1231,6 +1232,29 @@ fn order_hint_history_wrap_guard() {
     // maxDisp is taken over ALL valid prior slots: prior {0, 12}, next 1, bits 4 -> maxDisp
     // 12, 12 - 1 = 11 >= 8 -> rejected (slot 1 wraps relative to the current frame).
     assert!(!unwrapped(&[true, true], &[0u32, 12], 4, 1));
+}
+
+/// AV2 §8.3.2 `is_same_side()` uses strict signs: a reference with zero relative
+/// distance is neither before nor after the current frame. This keeps zero/zero
+/// compound refs on `TileIsJointCdf[0]` rather than accidentally admitting them
+/// through the verified ctx-1 compound-average subset.
+#[test]
+fn compound_is_joint_context_uses_strict_same_side_signs() {
+    let ctx = compound_is_joint_context_from_order_hints;
+
+    assert_eq!(ctx(10, 10, 10), 0, "zero/zero distances are not same-side");
+    assert_eq!(ctx(9, 9, 10), 1, "both past references are same-side");
+    assert_eq!(ctx(11, 11, 10), 1, "both future references are same-side");
+    assert_eq!(
+        ctx(9, 11, 10),
+        0,
+        "opposite-side equal-distance references stay context 0"
+    );
+    assert_eq!(
+        ctx(9, 12, 10),
+        1,
+        "opposite-side unequal-distance references still use context 1"
+    );
 }
 
 /// `FloorLog2` (AV2 § 4): the MSB index, 0 for 0.
