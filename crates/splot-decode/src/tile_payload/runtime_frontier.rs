@@ -22,11 +22,11 @@ use super::partition::PartitionType;
 use super::partition_allowed::PartitionFeatureFlags;
 use super::partition_size::BlockSize;
 use super::partition_traversal::{
-    DecodeBlockFrontier, GeneralIntraTreeWalkError, TilePartitionBruState, TilePartitionFrameFacts,
-    TilePartitionLoopRestorationState, TilePartitionTraversalError, TilePartitionTraversalInput,
-    TilePartitionTraversalPlan, TilePartitionWienerNsLoopRestorationState,
-    consume_tile_loop_restoration_root_frontier, decode_general_intra_partition_tree,
-    plan_tile_partition_traversal_cursor,
+    DecodeBlockFrontier, GeneralIntraTreeWalkError, TileLoopRestorationRootFrontier,
+    TilePartitionBruState, TilePartitionFrameFacts, TilePartitionLoopRestorationState,
+    TilePartitionTraversalError, TilePartitionTraversalInput, TilePartitionTraversalPlan,
+    TilePartitionWienerNsLoopRestorationState, consume_tile_loop_restoration_root_frontier,
+    decode_general_intra_partition_tree, plan_tile_partition_traversal_cursor,
 };
 use crate::{DecodeLimitError, DecodeLimitName, DecodeLimitOp, DecodeLimits};
 
@@ -161,17 +161,17 @@ pub(crate) fn consume_minimal_runtime_lr_unit_frontier(
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
     limits: DecodeLimits,
-) -> Result<(), MinimalRuntimePartitionFrontierError> {
+) -> Result<TileLoopRestorationRootFrontier, MinimalRuntimePartitionFrontierError> {
     let frame = minimal_partition_frame_facts(sequence, core)?;
     let (mi_rows, mi_cols) = frame_mi_dimensions(core)?;
     ensure_mi_size_allocation_within_limits(mi_rows, mi_cols, frame.sb_size(), limits)?;
     let mi_size_state = TileMiSizeState::new(mi_rows, mi_cols, frame.sb_size())?;
-    mi_size_state.with_context_state(|context| {
+    let root = mi_size_state.with_context_state(|context| {
         consume_tile_loop_restoration_root_frontier(TilePartitionTraversalInput::new(
             work_unit, frame, context, limits,
         ))
     })??;
-    Ok(())
+    Ok(root)
 }
 
 /// Error from the general intra multi-block tree decode, separating the frame

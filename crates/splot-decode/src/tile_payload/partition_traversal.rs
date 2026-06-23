@@ -292,6 +292,8 @@ pub(crate) struct TilePartitionTraversalPlan {
 pub(crate) struct TileLoopRestorationRootFrontier {
     symbol_count_after: u64,
     consumed_bits_after: u64,
+    lr_units_consumed: usize,
+    active_wiener_ns_units: usize,
 }
 
 impl TileLoopRestorationRootFrontier {
@@ -305,6 +307,40 @@ impl TileLoopRestorationRootFrontier {
     #[must_use]
     pub(crate) const fn consumed_bits_after(self) -> u64 {
         self.consumed_bits_after
+    }
+
+    /// Number of supported frame-level Wiener NS LR units consumed.
+    #[must_use]
+    pub(crate) const fn lr_units_consumed(self) -> usize {
+        self.lr_units_consumed
+    }
+
+    /// Number of consumed LR units that selected `RESTORE_WIENER_NONSEP`.
+    #[must_use]
+    pub(crate) const fn active_wiener_ns_units(self) -> usize {
+        self.active_wiener_ns_units
+    }
+
+    /// Whether every consumed LR unit selected `RESTORE_NONE`.
+    #[must_use]
+    pub(crate) const fn all_lr_units_inactive(self) -> bool {
+        self.active_wiener_ns_units == 0
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct WienerNsLrUnitActivity {
+    units_consumed: usize,
+    active_units: usize,
+}
+
+impl WienerNsLrUnitActivity {
+    fn record(&mut self, active: bool) -> Result<(), TilePartitionTraversalError> {
+        self.units_consumed = checked_add("lr_units_consumed", self.units_consumed, 1)?;
+        if active {
+            self.active_units = checked_add("lr_active_wiener_ns_units", self.active_units, 1)?;
+        }
+        Ok(())
     }
 }
 
@@ -478,6 +514,7 @@ pub(crate) fn consume_tile_loop_restoration_root_frontier(
     }
 
     let mut cdfs = work_unit.cdf().tile_cdfs().clone();
+    let mut lr_activity = WienerNsLrUnitActivity::default();
     let config = SymbolDecoderConfig::new().with_cdf_update_mode(work_unit.cdf().update_mode());
     let mut symbols = SymbolDecoder::with_base_and_config(
         work_unit.tile_bytes(),
@@ -494,12 +531,21 @@ pub(crate) fn consume_tile_loop_restoration_root_frontier(
     limits.ensure(DecodeLimitName::MaxTilePartitionSteps, 1)?;
     if root.r < frame.mi_rows && root.c < frame.mi_cols {
         ensure_supported_call(frame, root)?;
-        read_loop_restoration_for_call(frame, root, tile_bounds, &mut cdfs, &mut symbols)?;
+        read_loop_restoration_for_call(
+            frame,
+            root,
+            tile_bounds,
+            &mut cdfs,
+            &mut symbols,
+            &mut lr_activity,
+        )?;
     }
     *work_unit.cdf_mut().tile_cdfs_mut() = cdfs;
     Ok(TileLoopRestorationRootFrontier {
         symbol_count_after: symbols.symbol_count(),
         consumed_bits_after: symbols.consumed_bits().get(),
+        lr_units_consumed: lr_activity.units_consumed,
+        active_wiener_ns_units: lr_activity.active_units,
     })
 }
 
@@ -545,6 +591,7 @@ pub(crate) fn plan_tile_partition_traversal_cursor<'payload>(
         work_unit.tile_byte_span().start,
         config,
     )?;
+    let mut lr_activity = WienerNsLrUnitActivity::default();
     let consumed_bits_before = symbols.consumed_bits().get();
     let tile_bounds = TilePartitionBounds::from_work_unit(work_unit);
     let root = TilePartitionCall::root(
@@ -567,7 +614,14 @@ pub(crate) fn plan_tile_partition_traversal_cursor<'payload>(
             continue;
         }
         ensure_supported_call(frame, call)?;
-        read_loop_restoration_for_call(frame, call, tile_bounds, &mut cdfs, &mut symbols)?;
+        read_loop_restoration_for_call(
+            frame,
+            call,
+            tile_bounds,
+            &mut cdfs,
+            &mut symbols,
+            &mut lr_activity,
+        )?;
 
         let symbol_count_before = symbols.symbol_count();
         let decision = read_frontier_partition_decision(
@@ -700,6 +754,7 @@ where
         config,
     )
     .map_err(TilePartitionTraversalError::from)?;
+    let mut lr_activity = WienerNsLrUnitActivity::default();
     let tile_bounds = TilePartitionBounds::from_work_unit(work_unit);
     // AV2 § 5.20.2.1 decode_tile(): iterate the tile's MI range as a raster grid
     // of superblocks, `sbSize4 = Num_4x4_Blocks_Wide[SbSize]` MI units apart.
@@ -762,6 +817,7 @@ where
                     tile_bounds,
                     work_unit.cdf_mut().tile_cdfs_mut(),
                     &mut symbols,
+                    &mut lr_activity,
                 )?;
 
                 let decision = mi_size_state
@@ -880,6 +936,7 @@ fn read_loop_restoration_for_call(
     tile_bounds: TilePartitionBounds,
     cdfs: &mut super::cdf::TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
+    lr_activity: &mut WienerNsLrUnitActivity,
 ) -> Result<(), TilePartitionTraversalError> {
     // AV2 §5.20.3.1 invokes §5.20.10.4 `read_lr()` only for superblock-root
     // partition calls (`SbSize == bSize`), before `read_partition`.
@@ -911,6 +968,7 @@ fn read_loop_restoration_for_call(
             h,
             cdfs,
             symbols,
+            lr_activity,
         )?;
     }
     Ok(())
@@ -927,6 +985,7 @@ fn read_wiener_ns_lr_units_for_plane(
     h: usize,
     cdfs: &mut super::cdf::TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
+    lr_activity: &mut WienerNsLrUnitActivity,
 ) -> Result<(), TilePartitionTraversalError> {
     if unit_size == 0 {
         return Err(
@@ -996,7 +1055,7 @@ fn read_wiener_ns_lr_units_for_plane(
         for unit_col in unit_col_start..unit_col_end {
             let _unit_row = checked_add("lr_unit_row", unit_row, lr_row_offset)?;
             let _unit_col = checked_add("lr_unit_col", unit_col, lr_col_offset)?;
-            read_wiener_ns_lr_unit(cdfs, symbols)?;
+            read_wiener_ns_lr_unit(cdfs, symbols, lr_activity)?;
         }
     }
     Ok(())
@@ -1005,16 +1064,17 @@ fn read_wiener_ns_lr_units_for_plane(
 fn read_wiener_ns_lr_unit(
     cdfs: &mut super::cdf::TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
+    lr_activity: &mut WienerNsLrUnitActivity,
 ) -> Result<(), TilePartitionTraversalError> {
-    let _use_wiener_ns = cdfs
+    let use_wiener_ns = cdfs
         .with_row_mut(super::cdf::TileCdfSelector::UseWienerNs, |row| {
             symbols.read_symbol(row)
         })??
         .get()
         != 0;
-    // AV2 §5.20.10.6 returns immediately for frame-level filters when
-    // `readFrameFilters == 0`; this frontier only consumes the §5.20.10.5
-    // `use_wiener_ns` LR type symbol and leaves reconstruction unsupported.
+    lr_activity.record(use_wiener_ns)?;
+    // AV2 §5.20.10.5 maps `use_wiener_ns == 0` to `RESTORE_NONE`; only active
+    // `RESTORE_WIENER_NONSEP` units enter the §5.20.10.6 filter branch.
     Ok(())
 }
 

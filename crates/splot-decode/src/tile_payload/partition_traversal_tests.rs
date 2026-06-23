@@ -486,6 +486,29 @@ fn root_lr_frontier_consumes_only_frame_level_wiener_ns_symbols() {
 
     assert_eq!(root.symbol_count_after(), 1);
     assert!(root.consumed_bits_after() > 0);
+    assert_eq!(root.lr_units_consumed(), 1);
+    assert_eq!(root.active_wiener_ns_units(), 0);
+    assert!(root.all_lr_units_inactive());
+}
+
+#[test]
+fn root_lr_frontier_reports_active_frame_level_wiener_ns_unit() {
+    let mut work_unit = make_work_unit(&[0xFF, 0x00, 0x80], CdfUpdateMode::Enabled);
+    let mut facts = frame(BLOCK_32X32);
+    facts.loop_restoration = frame_level_wiener_ns(256);
+
+    let root = consume_tile_loop_restoration_root_frontier(TilePartitionTraversalInput::new(
+        &mut work_unit,
+        facts,
+        context(),
+        DecodeLimits::DEFAULT,
+    ))
+    .unwrap();
+
+    assert_eq!(root.symbol_count_after(), 1);
+    assert_eq!(root.lr_units_consumed(), 1);
+    assert_eq!(root.active_wiener_ns_units(), 1);
+    assert!(!root.all_lr_units_inactive());
 }
 
 #[test]
@@ -552,6 +575,9 @@ fn frame_level_wiener_ns_multi_unit_root_counts_every_covered_unit() {
     .unwrap();
 
     assert_eq!(root.symbol_count_after(), 4);
+    assert_eq!(root.lr_units_consumed(), 4);
+    assert_eq!(root.active_wiener_ns_units(), 0);
+    assert!(root.all_lr_units_inactive());
 }
 
 #[test]

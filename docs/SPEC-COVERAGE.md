@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 410 feature(s); 357 cite a spec section.
+Matrix version 1. Last reviewed 2026-06-15. 411 feature(s); 358 cite a spec section.
 
 One row per (spec section, feature) pair, in spec order; a feature citing both a syntax and a semantics section appears under both. The canonical status source is [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); the full per-feature ledger is [FEATURE-STATUS.md](./FEATURE-STATUS.md).
 
@@ -551,10 +551,13 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.20.8.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-3) | Get transform set function | `DECODE-COEFF-ORDINARY-BRANCH-TX-SET-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.8.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-3) | Get transform set function | `DECODE-INTER-RESIDUAL-DCT` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 5.20.9.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-9-1) | Is inside function | `DECODE-TILE-PARTITION-TRAVERSAL-BOUNDARY` | ✅ | ✅ | — | ✅ | — |
+| [§ 5.20.10.4](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-4) | Read loop restoration syntax | `DECODE-AC0EJ3-INACTIVE-LR-UNITS-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 5.20.10.4](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-4) | Read loop restoration syntax | `DECODE-AC0EJ3-LR-UNIT-SYNTAX-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 5.20.10.4](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-4) | Read loop restoration syntax | `DECODE-TILE-PARTITION-TRAVERSAL-BOUNDARY` | ✅ | ✅ | — | ✅ | — |
+| [§ 5.20.10.5](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-5) | Read loop restoration unit syntax | `DECODE-AC0EJ3-INACTIVE-LR-UNITS-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 5.20.10.5](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-5) | Read loop restoration unit syntax | `DECODE-AC0EJ3-LR-UNIT-SYNTAX-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 5.20.10.5](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-5) | Read loop restoration unit syntax | `DECODE-TILE-PARTITION-TRAVERSAL-BOUNDARY` | ✅ | ✅ | — | ✅ | — |
+| [§ 5.20.10.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-6) | Read Wiener NS syntax | `DECODE-AC0EJ3-INACTIVE-LR-UNITS-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 5.20.10.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-6) | Read Wiener NS syntax | `DECODE-AC0EJ3-LR-UNIT-SYNTAX-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 5.20.10.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-6) | Read Wiener NS syntax | `DECODE-AC0EJ3-WIENERNS-BANK-FRONTIER` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 5.20.10.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-6) | Read Wiener NS syntax | `DECODE-AC0EJ3-WIENERNS-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
@@ -1167,6 +1170,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 8.3.1](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-1) | General | `DECODE-TILE-PARTITION-SYMBOL-READ-BOUNDARY` | ✅ | ✅ | — | ✅ | — |
 | [§ 8.3.1](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-1) | General | `DECODE-TILE-PARTITION-TRAVERSAL-BOUNDARY` | ✅ | ✅ | — | ✅ | — |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `CONF-TILE-PAYLOAD-DECODE-FUZZ` | ✅ | — | — | ✅ | 2 |
+| [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-AC0EJ3-INACTIVE-LR-UNITS-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-AC0EJ3-LR-UNIT-SYNTAX-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-COEFF-ALL-ZERO-BLOCK-STATE` | ✅ | — | — | ✅ | 1 |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-COEFF-ALL-ZERO-CONTEXT-STATE` | ✅ | — | — | ✅ | 1 |
@@ -1309,6 +1313,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `RECON-TRANSFORM-SHIFT-LOOKUP` | ✅ | — | ✅ | ✅ | — |
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `RECON-WORKSPACE-DIRECTIONAL-ANGLE-PREDICTION` | ✅ | — | ✅ | ✅ | — |
 | [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `CONF-TILE-PAYLOAD-DECODE-FUZZ` | ✅ | — | — | ✅ | 2 |
+| [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-AC0EJ3-INACTIVE-LR-UNITS-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-AC0EJ3-LR-UNIT-SYNTAX-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-COEFF-BASE-CDF-ROWS` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-COEFF-BASE-DERIVED-LEVEL-PASS` | ✅ | 🟡 | — | ✅ | 1 |

@@ -283,13 +283,16 @@ fn local_ac0ej3_reaches_current_runtime_gate_without_output() {
     assert!(out.stderr.is_empty(), "stderr was not empty");
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(json["rule_id"], "decode/unsupported-feature");
-    assert_eq!(json["spec_section"], "5.20.10.4");
-    assert_eq!(json["matrix_row"], "ac0ej3-lr-unit-syntax-frontier");
-    assert_eq!(json["feature_id"], "DECODE-AC0EJ3-LR-UNIT-SYNTAX-FRONTIER");
+    assert_eq!(json["spec_section"], "5.20.10.5");
+    assert_eq!(json["matrix_row"], "ac0ej3-inactive-lr-units-frontier");
+    assert_eq!(
+        json["feature_id"],
+        "DECODE-AC0EJ3-INACTIVE-LR-UNITS-FRONTIER"
+    );
     assert_eq!(json["detail_kind"], "unsupported_feature");
     assert_eq!(
         json["unsupported_reason"],
-        "unsupported_wienerns_lr_unit_syntax"
+        "unsupported_active_wienerns_lr_units"
     );
     assert_eq!(json["byte_offset"], 74);
     assert_ne!(
