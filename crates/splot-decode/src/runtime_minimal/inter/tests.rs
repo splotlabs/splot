@@ -1275,9 +1275,14 @@ fn wienerns_lr_source_block() -> WienerNsLrSourceBlock {
         luma_end_x: 15,
         luma_start_y: 0,
         luma_end_y: 15,
+        frame_luma_end_y: 15,
         luma_stripe_start_y: 8,
         luma_stripe_end_y: 10,
     }
+}
+
+fn wienerns_lr_source_read_config() -> super::super::WienerNsLrSourceReadConfig {
+    super::super::WienerNsLrSourceReadConfig::CONSERVATIVE
 }
 
 #[test]
@@ -1289,6 +1294,7 @@ fn wienerns_lr_source_read_frontier_resolves_source_samples() {
     let frontier = super::super::derive_wienerns_lr_source_read_frontier(
         &blocks,
         ChromaFormatIdc::Yuv420,
+        wienerns_lr_source_read_config(),
         ByteOffset::new(74),
         DecodeLimits::unlimited(),
     )
@@ -1324,6 +1330,7 @@ fn wienerns_lr_source_read_frontier_includes_chroma_luma_source_reads() {
     let frontier = super::super::derive_wienerns_lr_source_read_frontier(
         &blocks,
         ChromaFormatIdc::Yuv420,
+        wienerns_lr_source_read_config(),
         ByteOffset::new(74),
         DecodeLimits::unlimited(),
     )
@@ -1358,6 +1365,7 @@ fn wienerns_lr_source_read_frontier_failures_stay_structured() {
     let error = super::super::derive_wienerns_lr_source_read_frontier(
         &blocks,
         ChromaFormatIdc::Yuv420,
+        wienerns_lr_source_read_config(),
         ByteOffset::new(74),
         DecodeLimits::unlimited(),
     )
@@ -1390,6 +1398,7 @@ fn wienerns_lr_source_read_frontier_rejects_monochrome_chroma_plane() {
     let error = super::super::derive_wienerns_lr_source_read_frontier(
         &blocks,
         ChromaFormatIdc::Monochrome,
+        wienerns_lr_source_read_config(),
         ByteOffset::new(74),
         DecodeLimits::unlimited(),
     )
@@ -1422,6 +1431,7 @@ fn wienerns_lr_source_read_frontier_rejects_unsupported_plane_index() {
     let error = super::super::derive_wienerns_lr_source_read_frontier(
         &blocks,
         ChromaFormatIdc::Yuv420,
+        wienerns_lr_source_read_config(),
         ByteOffset::new(74),
         DecodeLimits::unlimited(),
     )
@@ -1450,6 +1460,7 @@ fn wienerns_lr_source_read_frontier_limit_errors_stay_limits() {
     let error = super::super::derive_wienerns_lr_source_read_frontier(
         &blocks,
         ChromaFormatIdc::Yuv420,
+        wienerns_lr_source_read_config(),
         ByteOffset::new(74),
         limits,
     )
@@ -1484,6 +1495,7 @@ fn wienerns_lr_source_read_frontier_does_not_charge_luma_sample_limit() {
     let frontier = super::super::derive_wienerns_lr_source_read_frontier(
         &blocks,
         ChromaFormatIdc::Yuv420,
+        wienerns_lr_source_read_config(),
         ByteOffset::new(74),
         limits,
     )

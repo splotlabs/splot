@@ -336,8 +336,8 @@ const fn resource_limit_spec_section(name: DecodeLimitName) -> Option<&'static s
         | DecodeLimitName::MaxTileCount
         | DecodeLimitName::MaxTilePartitionSteps
         | DecodeLimitName::MaxTilePayloadBytes
-        | DecodeLimitName::MaxLoopRestorationSourceReads
         | DecodeLimitName::MaxOutputBytes => Some("7.1"),
+        DecodeLimitName::MaxLoopRestorationSourceReads => Some("7.20.2"),
     }
 }
 

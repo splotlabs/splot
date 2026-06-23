@@ -132,17 +132,19 @@ reconstruction rows honest when they remain partial.
 The decoder support model SHALL track
 `DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER` as a distinct ac0ej3 support row. The
 row SHALL describe that the minimal runtime derives active §7.20.1 source-bound
-facts, reaches the §7.20.2 source-read boundary, and still fails closed before
-source sample value reads, loop-restoration filtering, reconstruction output, or
-successful ac0ej3 decode.
+facts, rejects the local ac0ej3 two-class luma bank at the §7.20.4
+pixel-classified Wiener boundary, and still fails closed before source sample
+value reads, loop-restoration filtering, reconstruction output, or successful
+ac0ej3 decode. The row SHALL also describe the non-classified source-read
+derivation that resolves §7.20.2 output/tap/chroma-luma coordinates.
 
 #### Scenario: Matrix evidence records the source-read boundary
 
 - **WHEN** decoder support status is validated
 - **THEN** `ac0ej3-lr-source-read-frontier` remains partial
 - **AND** the row lists focused tests proving source-read frontier behavior,
-  Wiener tap/luma-source coverage, source-read limit accounting, and the live
-  ac0ej3 runtime diagnostic
+  Wiener tap/luma-source coverage, source-read limit accounting, classified
+  Wiener ordering, and the live ac0ej3 runtime diagnostic
 - **AND** the previous `unsupported_wienerns_lr_source_bounds` reason is no
   longer the live ac0ej3 frontier
 

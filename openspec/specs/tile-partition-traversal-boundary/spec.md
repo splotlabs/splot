@@ -221,6 +221,15 @@ NOT apply §7.20.3 filtering or produce decoded output.
 - **AND** the previous source-bounds diagnostic is no longer the live ac0ej3
   frontier
 
+#### Scenario: Classified luma gates before source reads
+
+- **WHEN** an active luma Wiener NS block uses frame-level filters with
+  `NumFilterClasses > 1`
+- **THEN** the runtime emits a structured unsupported diagnostic for the §7.20.4
+  pixel-classified Wiener boundary
+- **AND** it does not claim the later §7.20.3 source-read/filtering frontier for
+  that block
+
 #### Scenario: Wiener taps and chroma luma-source reads are covered
 
 - **WHEN** the source-read frontier derives state for an active luma Wiener NS
@@ -238,13 +247,15 @@ NOT apply §7.20.3 filtering or produce decoded output.
 - **THEN** it is charged to `DecodeLimitName::MaxLoopRestorationSourceReads`
 - **AND** it is not rejected solely because source-read operations exceed
   `DecodeLimitName::MaxLumaSamplesPerFrame`
+- **AND** the exact source-read count is checked before enumerating source
+  coordinates
 
 #### Scenario: Source reads remain fail-closed before filtering
 
-- **WHEN** the active source-read boundary is reached for the local ac0ej3 mission
-  stream
+- **WHEN** the local ac0ej3 mission stream reaches active luma Wiener NS LR with
+  a two-class frame-level bank
 - **THEN** the runtime emits a structured unsupported diagnostic for the
-  source-read/filtering frontier
+  §7.20.4 classified-Wiener frontier
 - **AND** no source sample value reads, §7.20.3 Wiener NS filtering,
   decoded-frame allocation, reference refresh, hash, raw, or Y4M output is
   produced

@@ -553,6 +553,7 @@ fn root_lr_frontier_reports_active_frame_level_wiener_ns_unit() {
             luma_end_x: 255,
             luma_start_y: 0,
             luma_end_y: 255,
+            frame_luma_end_y: 255,
             luma_stripe_start_y: 0,
             luma_stripe_end_y: 55,
         }

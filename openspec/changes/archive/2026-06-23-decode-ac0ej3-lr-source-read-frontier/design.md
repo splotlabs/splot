@@ -11,8 +11,10 @@ The required source selection primitive already lives in `splot-recon`:
 `loop_restoration_source_sample` resolves whether a coordinate selects
 `CurrFrame` or `CdefFrame`; `loop_restoration_source_sample_value` remains a
 later frame-buffer read step. This brick wires only the selection primitive far
-enough to prove the runtime handoff reaches supported output-sample center,
-Wiener tap, and chroma luma-source sample selection transactionally.
+enough to prove the runtime handoff reaches supported non-classified
+output-sample center, Wiener tap, and chroma luma-source sample selection
+transactionally. When active luma uses a two-class frame-level bank, §7.20.4
+pixel classification remains an earlier fail-closed boundary.
 
 ## Goals / Non-Goals
 
@@ -20,7 +22,10 @@ Wiener tap, and chroma luma-source sample selection transactionally.
 
 - Add a distinct `DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER` matrix/support row.
 - Validate §7.20.2 source sample selections for retained active source-bound
-  facts using the existing `splot-recon` source-selection primitive.
+  facts using the existing `splot-recon` source-selection primitive on
+  non-classified paths.
+- Gate active multi-class luma at the earlier §7.20.4 pixel-classified Wiener
+  boundary before claiming §7.20.3 source reads.
 - Preserve fail-closed behavior: the local ac0ej3 fixture must still stop before
   filtering, decoded-frame allocation, reference refresh, hash, raw, or Y4M
   output.
@@ -44,9 +49,10 @@ Wiener tap, and chroma luma-source sample selection transactionally.
 - Charge source-read enumeration to `max_loop_restoration_source_reads`, not to
   `max_luma_samples_per_frame`, because chroma and luma-source reads can exceed
   the coded luma sample count for valid frames.
-- Keep the runtime diagnostic as the product of this brick. The new diagnostic
-  should prove the source-read boundary was reached, then explicitly name the
-  later filtering surface as unsupported.
+- Keep the runtime diagnostic as the product of this brick. Non-classified paths
+  should prove the source-read boundary was reached, while the local ac0ej3
+  two-class luma path should stop at the classified-Wiener boundary before the
+  later filtering surface.
 - Do not fabricate frame-buffer reads. Because the current ac0ej3 path cannot yet
   provide reconstructed 10-bit-compatible current/CDEF source buffers, the brick
   must retain a precise fail-closed diagnostic rather than reading sample values.
@@ -62,6 +68,9 @@ Wiener tap, and chroma luma-source sample selection transactionally.
 - It is easy to overclaim this as loop-restoration reconstruction. Mitigation:
   matrices, OpenSpec, and diagnostics must say source selection/read state only;
   sample value reads, filtering, and output remain unsupported.
-- The active source block list can be large. Mitigation: use the dedicated
-  source-read operation limit and keep the retained/read evidence root-frontier
+- It is easy to overclaim source-read ordering for classified luma. Mitigation:
+  gate `NumFilterClasses > 1` at §7.20.4 before source reads.
+- The active source block list can be large. Mitigation: preflight the exact
+  source-read operation count with the dedicated source-read limit before
+  enumerating coordinates and keep the retained/read evidence root-frontier
   scoped.
