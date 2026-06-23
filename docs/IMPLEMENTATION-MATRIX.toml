@@ -9725,7 +9725,7 @@ openspec_change = "recon-wienerns-filter-primitive"
 tracking_issue = ""
 owner = "decoder"
 risk = "low"
-notes = "Adds a scheduler-free `splot-recon` AV2 §7.20.3 luma non-separable Wiener filter primitive `wiener_ns_filter_luma_block(output, params, source_sample)`. For each output sample, it reads the caller-resolved center sample, initializes `s = m << WIENER_NS_PREC_BITS` (`WIENER_NS_PREC_BITS = 7`), walks the verbatim `Wiener_Ns_Config_Y` tap table (`WIENER_NS_LUMA_TAPS = 32`, `WIENER_NS_LUMA_COEFFS = 16`), adds `(tap - m) * coeffs_by_class[subclass][idx]`, then writes `Clip1(Round2(s, 7))` into the caller's strided output. The caller resolves §7.20.2 source-sample clipping/stripe behavior, frame/restoration-unit traversal, frame-level-vs-unit coefficient selection, and any §7.20.4 pixel-classified Wiener subclass mapping. The primitive supports one class for the whole block or a row-major per-sample subclass map. It computes into a temporary buffer and validates dimensions, output stride/length, coefficient-class presence, subclass length/range, sample storage, and source sample range before mutating output, with typed `ReconError` failures. Strictly additive and no-output-change: a `pub` primitive with no runtime reconstruction rewiring, so the current ac0ej3 path still rejects before output at the later LR-unit syntax frontier. Proven by zero-coefficient source-copy, hand-computed tap accumulation, subclass selection, 8-bit and 10-bit Clip1 clamps, fail-atomic output shape/class/subclass/source-sample errors, and u8-vs-10-bit storage rejection. This row does not implement chroma Wiener NS filtering, §7.20.2 source-sample clipping itself, §7.20 loop-restoration traversal, restoration-unit syntax, temporal/reference Wiener state, PC-Wiener classification, runtime decode wiring, or successful ac0ej3 decode."
+notes = "Adds a scheduler-free `splot-recon` AV2 §7.20.3 luma non-separable Wiener filter primitive `wiener_ns_filter_luma_block(output, params, source_sample)`. For each output sample, it reads the caller-resolved center sample, initializes `s = m << WIENER_NS_PREC_BITS` (`WIENER_NS_PREC_BITS = 7`), walks the verbatim `Wiener_Ns_Config_Y` tap table (`WIENER_NS_LUMA_TAPS = 32`, `WIENER_NS_LUMA_COEFFS = 16`), adds `(tap - m) * coeffs_by_class[subclass][idx]`, then writes `Clip1(Round2(s, 7))` into the caller's strided output. The caller resolves §7.20.2 source-sample clipping/stripe behavior, frame/restoration-unit traversal, frame-level-vs-unit coefficient selection, and any §7.20.4 pixel-classified Wiener subclass mapping. The primitive supports one class for the whole block or a row-major per-sample subclass map. It computes into a temporary buffer and validates dimensions, output stride/length, coefficient-class presence, subclass length/range, sample storage, and source sample range before mutating output, with typed `ReconError` failures. Strictly additive and no-output-change: a `pub` primitive with no runtime reconstruction rewiring, so the current ac0ej3 path still rejects before output at the later LR-unit syntax frontier. Proven by zero-coefficient source-copy, hand-computed tap accumulation, subclass selection, 8-bit and 10-bit Clip1 clamps, fail-atomic output shape/class/subclass/source-sample errors, and u8-vs-10-bit storage rejection. This luma row leaves the chroma branch to `RECON-WIENERNS-CHROMA-FILTER-PRIMITIVE`; it does not implement §7.20.2 source-sample clipping itself, §7.20 loop-restoration traversal, restoration-unit syntax, temporal/reference Wiener state, PC-Wiener classification, runtime decode wiring, or successful ac0ej3 decode."
 
 [feature.status]
 mapped = "done"
@@ -9765,6 +9765,71 @@ commands = [
 ]
 fixtures = [
     "crates/splot-recon/src/wienerns_filter.rs",
+    "crates/splot-recon/src/error.rs",
+    "crates/splot-recon/src/lib.rs",
+]
+diagnostics = []
+
+[[feature]]
+id = "RECON-WIENERNS-CHROMA-FILTER-PRIMITIVE"
+name = "Wiener NS chroma filter primitive"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["7.20.3"]
+sources = [
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-20-3",
+]
+crate = "splot-recon"
+module = "crates/splot-recon/src/wienerns_chroma_filter.rs"
+openspec_change = "recon-wienerns-chroma-filter-primitive"
+tracking_issue = ""
+owner = "decoder"
+risk = "low"
+notes = "Adds a scheduler-free `splot-recon` AV2 §7.20.3 chroma non-separable Wiener filter primitive `wiener_ns_filter_chroma_block(output, params, chroma_source_sample, luma_source_sample)`. For each output sample, it reads the caller-resolved center chroma sample, initializes `s = m << WIENER_NS_PREC_BITS` (`WIENER_NS_PREC_BITS = 7`), walks the verbatim `Wiener_Ns_Config_Uv` table (`WIENER_NS_CHROMA_TAPS = 12`, `WIENER_NS_CHROMA_COEFFS = 18`), adds chroma tap differences using coefficient indexes 0 through 5, derives `mLuma` through the §7.20.3 `get_luma_sample` process, adds luma tap differences using coefficient indexes 6 through 17, then writes `Clip1(Round2(s, 7))` into the caller's strided output. The caller resolves §7.20.2 source-sample clipping/stripe/source-frame behavior, frame/restoration-unit traversal, frame-level-vs-unit coefficient selection, and current-plane coordinate offsets. The primitive validates dimensions, output stride/length, chroma subsampling, luma bounds, `cfl_ds_filter_index`, sample storage, and source sample range before mutating output, with typed `ReconError` failures and a temporary output buffer for fail-atomicity. Strictly additive and no-output-change: a `pub` primitive with no runtime reconstruction rewiring, so the current ac0ej3 path still rejects before output at the LR source-bounds frontier. Proven by zero-coefficient chroma source-copy, hand-computed chroma tap accumulation, hand-computed luma tap contribution, 4:2:0 luma downsampling for `cfl_ds_filter_index` 0/1/3, 4:2:2 direct luma reads, 10-bit Clip1 clamp, fail-atomic output-shape/luma-bound/subsampling/filter-index/source-sample errors, and u8-vs-10-bit storage rejection through the shared sample-type guard. This row does not implement §7.20 loop-restoration traversal, §7.20.2 frame reads, coefficient bank selection, temporal/reference Wiener state, §7.20.4 PC-Wiener classification, GDF/BRU, runtime decode wiring, or successful ac0ej3 decode."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "done"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-recon/src/wienerns_chroma_filter.rs::tests::zero_coefficients_copy_source_samples",
+    "crates/splot-recon/src/wienerns_chroma_filter.rs::tests::hand_computed_chroma_tap_accumulation",
+    "crates/splot-recon/src/wienerns_chroma_filter.rs::tests::hand_computed_luma_tap_contribution_without_subsampling",
+    "crates/splot-recon/src/wienerns_chroma_filter.rs::tests::luma_420_filter_index_zero_averages_two_by_two",
+    "crates/splot-recon/src/wienerns_chroma_filter.rs::tests::luma_420_filter_index_one_uses_vertical_left_column",
+    "crates/splot-recon/src/wienerns_chroma_filter.rs::tests::luma_420_filter_index_three_maps_to_zero",
+    "crates/splot-recon/src/wienerns_chroma_filter.rs::tests::luma_422_reads_scaled_direct_luma_sample_without_420_filter",
+    "crates/splot-recon/src/wienerns_chroma_filter.rs::tests::clip1_clamps_ten_bit_output",
+    "crates/splot-recon/src/wienerns_chroma_filter.rs::tests::rejects_invalid_output_stride_fail_atomically",
+    "crates/splot-recon/src/wienerns_chroma_filter.rs::tests::rejects_short_output_fail_atomically",
+    "crates/splot-recon/src/wienerns_chroma_filter.rs::tests::rejects_invalid_subsampling_fail_atomically",
+    "crates/splot-recon/src/wienerns_chroma_filter.rs::tests::rejects_inverted_luma_x_bounds_fail_atomically",
+    "crates/splot-recon/src/wienerns_chroma_filter.rs::tests::rejects_luma_last_x_underflow_fail_atomically",
+    "crates/splot-recon/src/wienerns_chroma_filter.rs::tests::rejects_luma_last_y_underflow_fail_atomically",
+    "crates/splot-recon/src/wienerns_chroma_filter.rs::tests::rejects_invalid_cfl_filter_index_fail_atomically",
+    "crates/splot-recon/src/wienerns_chroma_filter.rs::tests::rejects_source_sample_out_of_range_fail_atomically",
+    "crates/splot-recon/src/wienerns_chroma_filter.rs::tests::rejects_luma_sample_out_of_range_fail_atomically",
+]
+commands = [
+    "cargo test -p splot-recon wienerns_chroma_filter --locked",
+    "cargo clippy -p splot-recon --all-targets --locked -- -D warnings",
+    "RUSTDOCFLAGS=\"-D warnings\" cargo doc -p splot-recon --no-deps --locked",
+    "cargo xtask check-dependency-direction",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-decoder-conformance-coverage",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-recon/src/wienerns_chroma_filter.rs",
     "crates/splot-recon/src/error.rs",
     "crates/splot-recon/src/lib.rs",
 ]

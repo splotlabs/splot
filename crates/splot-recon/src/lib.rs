@@ -60,7 +60,11 @@
 //! § 7.20.3 luma non-separable Wiener filter primitive
 //! ([`wiener_ns_filter_luma_block`], the luma `Wiener_Ns_Config_Y` tap
 //! accumulation over caller-resolved source samples, subclasses, coefficients,
-//! and bit depth), and the
+//! and bit depth), the § 7.20.3 chroma non-separable Wiener filter primitive
+//! ([`wiener_ns_filter_chroma_block`], the chroma `Wiener_Ns_Config_Uv` tap
+//! accumulation plus luma-tap contribution and 4:2:0 luma downsampling over
+//! caller-resolved source samples, coefficients, luma bounds, subsampling, and
+//! bit depth), and the
 //! § 7.13.3.18 block inter prediction (sub-pel motion compensation) kernel
 //! ([`subpel_predict_block`], the separable interpolation-filter convolution: a
 //! horizontal filter pass into an intermediate array then a vertical pass, the
@@ -79,7 +83,7 @@
 //! `startX`/`startY`/`stepX`/`stepY`), the § 7.13.3 compound / mask-blend /
 //! distance-weighted prediction, the § 7.13.3.19 block warp, the § 7.13.3
 //! reference-area clipping selection, intra block copy,
-//! chroma Wiener NS loop restoration, runtime CLI Y4M output, or full AV2
+//! full loop-restoration traversal/filtering, runtime CLI Y4M output, or full AV2
 //! reference refresh semantics.
 //!
 //! The ownership model is view-first ([`docs/ZERO_COPY.md`](../../../docs/ZERO_COPY.md)):
@@ -127,6 +131,7 @@
 //! `RECON-LOOP-RESTORATION-SOURCE-SAMPLE`,
 //! `RECON-LOOP-RESTORATION-SOURCE-READ`,
 //! `RECON-WIENERNS-FILTER-PRIMITIVE`,
+//! `RECON-WIENERNS-CHROMA-FILTER-PRIMITIVE`,
 //! `RECON-SUBPEL-MC`.
 //!
 //! Licensed under PolyForm Noncommercial 1.0.0; commercial use requires a
@@ -161,6 +166,7 @@ mod secondary_transform;
 mod subpel_mc;
 mod transform_params;
 mod views;
+mod wienerns_chroma_filter;
 mod wienerns_filter;
 mod workspace;
 mod y4m;
@@ -241,6 +247,10 @@ pub use subpel_mc::{
 };
 pub use transform_params::{TransformPass, dpcm_direction, get_transform_1d_type, transform_shift};
 pub use views::{FrameMut, FrameRef, PlaneMut, PlaneMutRows, PlaneRef, PlaneRefRows};
+pub use wienerns_chroma_filter::{
+    WIENER_NS_CHROMA_COEFFS, WIENER_NS_CHROMA_TAPS, WienerNsChromaFilter,
+    wiener_ns_filter_chroma_block,
+};
 pub use wienerns_filter::{
     WIENER_NS_LUMA_COEFFS, WIENER_NS_LUMA_TAPS, WienerNsLumaFilter, wiener_ns_filter_luma_block,
 };
