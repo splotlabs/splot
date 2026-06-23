@@ -44,6 +44,8 @@ const SPEC_SECTION: &str = "7.1";
 const REMEDIATION: &str = "Use a stream inside minimal-intra-8bit420-hash-v1 or wait for the referenced decoder support row.";
 const AC0EJ3_10BIT_FEATURE_ID: &str = "DECODE-AC0EJ3-10BIT-SEQUENCE-FRONTIER";
 const AC0EJ3_10BIT_MATRIX_ROW: &str = "ac0ej3-10bit-sequence-frontier";
+const AC0EJ3_CHROMA_FEATURE_ID: &str = "DECODE-AC0EJ3-SEQUENCE-CHROMA-FRONTIER";
+const AC0EJ3_CHROMA_MATRIX_ROW: &str = "ac0ej3-sequence-chroma-frontier";
 const MINIMAL_WIDTH: u32 = 64;
 const MINIMAL_HEIGHT: u32 = 64;
 const MINIMAL_TRACE_SYMBOLS: u64 = 6;
@@ -239,8 +241,15 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
 
     let sequence = parse_sequence(sequence_envelope)?;
     validate_sequence(&sequence, sequence_envelope.offset)?;
-    reject_extra_leading_key_payload_obus(leading_obus)?;
+
+    // Parse-only key-frame checks are safe before the 8-bit sample-storage boundary:
+    // they do not allocate `DecodedFrame<u8>` or emit output, and they let real mission
+    // streams fail at the next true header/tool frontier instead of at sequence flags.
+    let key_core = parse_frame_core(key_envelope, &sequence)?;
+    ensure_intra_header_complete(&key_core, key_envelope.offset)?;
+    ensure_sequence_chroma_tools_before_tile_decode(&sequence, sequence_envelope.offset)?;
     ensure_8bit_runtime_storage(&sequence, sequence_envelope.offset)?;
+    reject_extra_leading_key_payload_obus(leading_obus)?;
 
     let mut candidates = plan.frame_candidates_all();
     let key_candidate = candidates.next().ok_or_else(|| {
@@ -274,7 +283,6 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
     let mut retained_frame_bytes = 0;
     let mut next_unvalidated_following_ivf_record = 1;
     ensure_output_frame_count_limit(options.limits(), 1)?;
-    let key_core = parse_frame_core(key_envelope, &sequence)?;
     ensure_retained_frame_byte_limits_for_core(
         options.limits(),
         retained_frame_bytes,
@@ -874,6 +882,20 @@ fn validate_sequence(sequence: &SequenceHeader, offset: ByteOffset) -> Result<()
     // shape, and a single-picture sequence is just the one-frame case. Frame-header
     // bit layout differences (e.g. the `frame_size_override_flag` read) are handled
     // by `parse_frame_header_core` and proven bit-exact by the per-frame decode.
+    let _intra = sequence.intra.as_ref().ok_or_else(|| {
+        unsupported_at(
+            "missing_sequence_intra_config",
+            offset,
+            "minimal tier requires a fully parsed sequence intra config",
+        )
+    })?;
+    Ok(())
+}
+
+fn ensure_sequence_chroma_tools_before_tile_decode(
+    sequence: &SequenceHeader,
+    offset: ByteOffset,
+) -> Result<()> {
     let intra = sequence.intra.as_ref().ok_or_else(|| {
         unsupported_at(
             "missing_sequence_intra_config",
@@ -882,17 +904,23 @@ fn validate_sequence(sequence: &SequenceHeader, offset: ByteOffset) -> Result<()
         )
     })?;
     if intra.enable_cfl_intra {
-        return Err(unsupported_at(
+        return Err(unsupported_feature_at(
             "unsupported_cfl_intra",
             offset,
-            "minimal tier rejects CFL intra syntax before traced UV-mode hash verification",
+            "minimal tier parses the sequence CFL flag but still rejects before §5.20.5.6 is_cfl / UV_CFL_PRED mode-info syntax can be skipped",
+            AC0EJ3_CHROMA_MATRIX_ROW,
+            AC0EJ3_CHROMA_FEATURE_ID,
+            "5.20.5.6",
         ));
     }
     if intra.enable_mhccp {
-        return Err(unsupported_at(
+        return Err(unsupported_feature_at(
             "unsupported_mhccp",
             offset,
-            "minimal tier rejects MHCCP syntax before traced UV-mode hash verification",
+            "minimal tier parses the sequence MHCCP flag but still rejects before §5.20.5.6 is_mhccp_allowed / read_cfl_alphas syntax can be skipped",
+            AC0EJ3_CHROMA_MATRIX_ROW,
+            AC0EJ3_CHROMA_FEATURE_ID,
+            "5.20.5.6",
         ));
     }
     Ok(())
@@ -1012,13 +1040,7 @@ fn frame_ref_update_from_core(
 }
 
 fn validate_frame_core(core: &FrameHeaderCore, offset: ByteOffset) -> Result<()> {
-    if core.status != FrameHeaderParseStatus::IntraHeaderComplete {
-        return Err(unsupported_at(
-            "incomplete_frame_header",
-            offset,
-            "minimal tier requires a complete intra frame header",
-        ));
-    }
+    ensure_intra_header_complete(core, offset)?;
     if !core.cur_mfh_id.is_zero()
         || core.show_existing_frame != Some(false)
         || core.frame_is_intra != Some(true)
@@ -1096,6 +1118,17 @@ fn validate_frame_core(core: &FrameHeaderCore, offset: ByteOffset) -> Result<()>
             "unsupported_frame_tools",
             offset,
             "minimal runtime hash support requires the traced no-tool, no-filter, no-grain frame header",
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_intra_header_complete(core: &FrameHeaderCore, offset: ByteOffset) -> Result<()> {
+    if core.status != FrameHeaderParseStatus::IntraHeaderComplete {
+        return Err(unsupported_at(
+            "incomplete_frame_header",
+            offset,
+            "minimal tier requires a complete intra frame header",
         ));
     }
     Ok(())
