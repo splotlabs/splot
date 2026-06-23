@@ -203,9 +203,9 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
     plan: &DecodeStreamPlan,
     preflight: impl FnOnce(IvfHeader) -> Result<()>,
 ) -> Result<Vec<MinimalRuntimeFrame>> {
-    let frame_count = ensure_multiframe_plan_shape(plan)?;
+    ensure_multiframe_plan_shape(plan)?;
     let parsed = parse_bitstream_partial(bytes);
-    let (ivf, header) = require_multiframe_ivf(&parsed, frame_count)?;
+    let (ivf, header) = require_multiframe_ivf(&parsed)?;
     preflight(header)?;
 
     // The sequence header lives in the first IVF frame's OBU stream; it activates for
@@ -459,7 +459,6 @@ fn ensure_multiframe_plan_shape(plan: &DecodeStreamPlan) -> Result<u64> {
 /// AV2 decoded frame-candidate count.
 fn require_multiframe_ivf<'a>(
     parsed: &'a ParsedBitstream<'a>,
-    _frame_count: u64,
 ) -> Result<(&'a ParsedIvfBitstream<'a>, IvfHeader)> {
     let ParsedBitstream::Ivf(ivf) = parsed else {
         return Err(unsupported(

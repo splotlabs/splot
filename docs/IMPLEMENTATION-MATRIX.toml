@@ -13606,6 +13606,7 @@ perf = "not-applicable"
 tests = [
     "crates/splot-decode/src/runtime_minimal/inter/tests.rs::multiref_fixture_decodes_three_frames_bit_exact",
     "crates/splot-decode/src/runtime_minimal/inter/tests.rs::multiref_fixture_decodes_when_two_frame_units_share_one_ivf_record",
+    "crates/splot-decode/src/runtime_minimal/inter/tests.rs::multiref_fixture_rejects_when_inter_tile_group_starts_ivf_record",
     "crates/splot-decode/src/runtime_minimal/inter/tests.rs::multiref_frame2_reads_retained_inter_frame_not_key",
     "crates/splot-decode/src/runtime_minimal/inter/tests.rs::multiref_fixture_per_frame_hash_is_stable",
     "crates/splot-decode/src/runtime_minimal/inter/find_mv_stack/tests.rs::single_ref_ctx_no_neighbour_is_one",

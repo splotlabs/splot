@@ -16,11 +16,12 @@
 use splot_parallel::ThreadCount;
 
 use splot_core::ivf::{write_ivf_frame, write_ivf_header};
-use splot_core::stream::{ParsedBitstream, parse_bitstream_partial};
+use splot_core::stream::{ParsedBitstream, ParsedIvfFrame, parse_bitstream_partial};
 
 use super::super::{MinimalRuntimeFrame, decode_minimal_frames_from_plan};
 use super::block::interp_filter_no_neighbour_ctx;
 use super::compound_is_joint_context_from_order_hints;
+use crate::error::DecodeError;
 use crate::{DecodeContext, DecodeOptions, DecodeRuntimeConfig};
 
 const TWO_FRAME_INTER_FIXTURE: &[u8] =
@@ -651,6 +652,60 @@ fn repack_multiref_last_two_frames_into_one_ivf_record() -> Vec<u8> {
     bytes
 }
 
+fn obu_end_in_ivf_payload(frame: &ParsedIvfFrame<'_>, obu_index: usize) -> usize {
+    let envelope = frame.obus[obu_index];
+    let frame_start = frame.frame.payload_offset.get();
+    let end = envelope.offset.get() + u64::from(envelope.size);
+    usize::try_from(
+        end.checked_sub(frame_start)
+            .expect("OBU belongs to frame payload"),
+    )
+    .expect("OBU payload-relative end fits usize")
+}
+
+fn repack_multiref_first_inter_td_separate_from_tile_group() -> Vec<u8> {
+    let ParsedBitstream::Ivf(parsed) = parse_bitstream_partial(MULTIREF_FIXTURE) else {
+        panic!("multiref fixture is IVF");
+    };
+    assert!(parsed.error.is_none());
+    assert!(parsed.warnings.is_empty());
+    assert_eq!(parsed.frames.len(), 3);
+    assert_eq!(parsed.frames[1].obus.len(), 2);
+
+    let mut header = parsed.header.expect("multiref fixture has an IVF header");
+    header.frame_count = 3;
+
+    let first_inter_td_end = obu_end_in_ivf_payload(&parsed.frames[1], 0);
+    let first_inter_payload = parsed.frames[1].frame.payload;
+
+    let mut bytes = Vec::new();
+    write_ivf_header(&mut bytes, &header).expect("write repacked IVF header");
+    write_ivf_frame(
+        &mut bytes,
+        parsed.frames[0].frame.pts,
+        parsed.frames[0].frame.payload,
+    )
+    .expect("write first repacked IVF record");
+    write_ivf_frame(
+        &mut bytes,
+        parsed.frames[1].frame.pts,
+        &first_inter_payload[..first_inter_td_end],
+    )
+    .expect("write temporal-delimiter-only IVF record");
+
+    let mut record_leading_tile_group_payload = Vec::new();
+    record_leading_tile_group_payload.extend_from_slice(&first_inter_payload[first_inter_td_end..]);
+    record_leading_tile_group_payload.extend_from_slice(parsed.frames[2].frame.payload);
+    write_ivf_frame(
+        &mut bytes,
+        parsed.frames[2].frame.pts,
+        &record_leading_tile_group_payload,
+    )
+    .expect("write record-leading tile-group IVF record");
+
+    bytes
+}
+
 /// The committed three-frame COMPOUND_AVERAGE fixture
 /// (DECODE-INTER-COMPOUND-AVERAGE): frame 0 is a general-intra DC_PRED
 /// low-frequency key frame, frame 1 is a single-reference NEWMV inter frame, and
@@ -727,6 +782,23 @@ fn multiref_fixture_decodes_when_two_frame_units_share_one_ivf_record() {
             "repacked frame {index} V"
         );
     }
+}
+
+#[test]
+fn multiref_fixture_rejects_when_inter_tile_group_starts_ivf_record() {
+    let repacked = repack_multiref_first_inter_td_separate_from_tile_group();
+    let options = DecodeOptions::default();
+    let context =
+        DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).expect("context");
+    let plan = context.plan_bytes(&repacked, options).expect("plan");
+    let Err(error) = decode_minimal_frames_from_plan(&repacked, options, &plan) else {
+        panic!("record-leading tile group must fail closed");
+    };
+    let reason = match error {
+        DecodeError::UnsupportedFeature { unsupported } => unsupported.reason(),
+        _ => panic!("record-leading tile group must be an unsupported-feature error"),
+    };
+    assert_eq!(reason, "missing_inter_temporal_delimiter");
 }
 
 /// THE asymmetric retention proof: frame 2 reads the RETAINED inter frame (frame 1,
