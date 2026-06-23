@@ -63,7 +63,8 @@ and all existing intra fixtures SHALL keep decoding byte-identical.
 #### Scenario: Out-of-subset inter-residual facts are rejected without output
 - **WHEN** a `skip == 0` inter frame's sequence enables inter secondary
   transform, inter data-driven transform, cross-chroma-component transform,
-  forward skip coding, or intra IDTX
+  forward skip coding, intra IDTX, or a non-zero effective quantizer delta
+  (`DeltaQ* + Base*DeltaQ`)
 - **THEN** the decoder rejects it with a structured `decode/unsupported-feature`
   diagnostic and produces no output
 

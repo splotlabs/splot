@@ -30,7 +30,8 @@ use super::find_mv_stack::{
 use super::read_mv::{mv_clamp_to_integer, read_newmv_block_mvd};
 use super::{
     InterBlock, InterResidual, Mv, PlacedInterBlock, SINGLE_MODE_GLOBALMV, SINGLE_MODE_NEARMV,
-    SINGLE_MODE_NEWMV, SPEC_MODE_INFO, unsupported_at, unsupported_compound_at,
+    SINGLE_MODE_NEWMV, SPEC_MODE_INFO, effective_quantizer_deltas_are_zero, unsupported_at,
+    unsupported_compound_at,
 };
 use crate::tile_payload::{
     DecodeBlockFrontier, DecodeTileWorkUnit, GeneralIntraMultiblockError,
@@ -172,6 +173,10 @@ pub(super) fn decode_inter_blocks(
             || tq.enable_fsc
             || tq.enable_idtx_intra
     });
+    let residual_quantizer_deltas_are_zero = core
+        .quantization_params
+        .as_ref()
+        .is_some_and(|quant| effective_quantizer_deltas_are_zero(sequence, quant));
 
     // §7.12.2 find_mv_stack subset: the spatial single-prediction kernel models
     // neither the temporal scan (§7.12.2.7/§7.12.2.8, gated on use_ref_frame_mvs
@@ -215,6 +220,7 @@ pub(super) fn decode_inter_blocks(
                 max_drl_bits_minus_1,
                 frame_interpolation_filter,
                 residual_tools_present,
+                residual_quantizer_deltas_are_zero,
                 mv_stack_tools_present,
                 num_total_refs,
                 reference_select,
@@ -316,6 +322,7 @@ fn decode_one_inter_block(
     max_drl_bits_minus_1: u32,
     frame_interpolation_filter: FrameInterpolationFilter,
     residual_tools_present: bool,
+    residual_quantizer_deltas_are_zero: bool,
     mv_stack_tools_present: bool,
     num_total_refs: usize,
     reference_select: bool,
@@ -708,7 +715,8 @@ fn decode_one_inter_block(
         // A skip == 0 block reads the §5.20.7.27 residual, whose transform-type /
         // coefficient path the verified subset only models for the DCT-only,
         // no-IST / no-DDT / no-CCTX / no-FSC / no-IDTX-intra case. The residual is
-        // additionally only modelled for the single full-superblock 64x64 block
+        // additionally only modelled for zero effective quantizer deltas
+        // (`DeltaQ* + Base*DeltaQ`) and the single full-superblock 64x64 block
         // (TX_64X64 luma / TX_32X32 chroma) of a SINGLE-superblock (64x64) frame; a
         // multi-block OR multi-superblock skip == 0 residual needs per-block TX sizes
         // (a future brick), so reject it here. The `mi_rows`/`mi_cols > FULL_SB_N4`
@@ -716,6 +724,14 @@ fn decode_one_inter_block(
         // a top-left 64x64 block but the frame still has a second superblock).
         // TODO(spec: DECODE-INTER-MVSTACK-SPATIAL): per-block (sub-64x64) and
         // multi-superblock skip == 0 residual transform sizes.
+        if !residual_quantizer_deltas_are_zero {
+            return Err(unsupported_at(
+                "inter_block_residual_quantizer_delta",
+                tile_offset,
+                "minimal inter residual decode requires zero effective quantizer deltas (DeltaQ* + Base*DeltaQ) before using the verified zero-delta dequantization subset",
+                SPEC_MODE_INFO,
+            ));
+        }
         const FULL_SB_N4: usize = 16;
         if n4w != FULL_SB_N4
             || n4h != FULL_SB_N4

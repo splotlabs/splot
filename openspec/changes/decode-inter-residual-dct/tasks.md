@@ -22,6 +22,7 @@
 - [x] 4.1 Relax the inter block skip gate to admit `skip == 0` (capture the value) in addition to `skip == 1`.
 - [x] 4.2 After mode_info (read_block_tx_size reads no symbol under TX_MODE_LARGEST), read the § 5.20.7.27 residual for `skip == 0`: luma TX_64X64 then U/V TX_32X32 via the shared coefficient loop with `is_inter == true` and DCT_DCT (§ 5.20.8.3 get_tx_set returns TX_SET_DCTONLY for those sizes, so no inter_tx_type symbol).
 - [x] 4.3 Reject a `skip == 0` block whose sequence enables inter-IST / inter-DDT / CCTX / FSC / IDTX-intra (those change the transform-type / coefficient read the residual decode does not model) with a structured `decode/unsupported-feature` diagnostic before any output; a `skip == 1` block reads no residual and is unaffected.
+- [x] 4.4 Reject a `skip == 0` residual block with non-zero effective quantizer deltas (`DeltaQ* + Base*DeltaQ`) before the residual path uses the verified zero-delta dequantization subset; `skip == 1` blocks read no residual and are unaffected.
 
 ## 5. Residual reconstruction
 
@@ -32,4 +33,5 @@
 
 - [x] 6.1 `splot decode --output-format raw` on `syn-2frame-inter-residual-64x64.ivf` reproduces the whole-stream md5 `ab2b067aed48cf46035fa031cefb3ab1` byte-for-byte vs avmdec == dav2d, pinned by `residual_fixture_per_frame_hash_is_stable` and the CLI test.
 - [x] 6.2 The skip == 1 inter fixtures (zero-MV `4e1bd39f`, sub-pel `a0e82de3`) and the general-intra fixtures still decode byte-identical (no regression).
-- [x] 6.3 `cargo xtask ci` passes; `openspec validate --all --no-interactive` passes.
+- [x] 6.3 The zero-effective-delta residual gate is pinned by `effective_quantizer_delta_gate_includes_frame_and_sequence_offsets`, `skip_zero_residual_rejects_nonzero_effective_quantizer_deltas`, and `skip_one_inter_allows_nonzero_effective_quantizer_deltas`.
+- [x] 6.4 `cargo xtask ci` passes; `openspec validate --all --no-interactive` passes.

@@ -25,8 +25,9 @@
 use splot_core::annexb::ObuEnvelope;
 use splot_core::bitio::BitReader;
 use splot_core::headers::frame::{
-    FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode, FrameHeaderParseStatus,
-    FrameReferenceStateView, TipFrameMode, TxMode, parse_frame_header_core,
+    CoreSeqQuantView, FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode,
+    FrameHeaderParseStatus, FrameReferenceStateView, QuantizationParams, TipFrameMode, TxMode,
+    parse_frame_header_core,
 };
 use splot_core::headers::sequence::{SequenceHeader, SuperblockSize};
 use splot_core::span::ByteOffset;
@@ -1121,6 +1122,23 @@ fn validate_inter_frame_core(
         ));
     }
     Ok(())
+}
+
+fn effective_quantizer_deltas_are_zero(
+    sequence: &SequenceHeader,
+    quantization: &QuantizationParams,
+) -> bool {
+    let Some(tq) = sequence.transform_quant_entropy.as_ref() else {
+        return false;
+    };
+    let seq_quant = CoreSeqQuantView::from_sequence_configs(&sequence.general, tq);
+
+    quantization.delta_q_y_dc + seq_quant.base_y_dc_delta_q == 0
+        && (seq_quant.num_planes == 1
+            || (quantization.delta_q_u_dc + seq_quant.base_uv_dc_delta_q == 0
+                && quantization.delta_q_v_dc + seq_quant.base_uv_dc_delta_q == 0
+                && quantization.delta_q_u_ac + seq_quant.base_uv_ac_delta_q == 0
+                && quantization.delta_q_v_ac + seq_quant.base_uv_ac_delta_q == 0))
 }
 
 mod block;
