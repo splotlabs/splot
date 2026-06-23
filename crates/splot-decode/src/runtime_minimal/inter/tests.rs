@@ -15,8 +15,12 @@
 
 use splot_parallel::ThreadCount;
 
+use splot_core::headers::frame::QuantizationParams;
+use splot_core::headers::sequence::SequenceHeader;
 use splot_core::ivf::{write_ivf_frame, write_ivf_header};
+use splot_core::obu::{ParsedObu, PayloadStatus};
 use splot_core::stream::{ParsedBitstream, ParsedIvfFrame, parse_bitstream_partial};
+use splot_core::types::ObuType;
 
 use super::super::{MinimalRuntimeFrame, decode_minimal_frames_from_plan};
 use super::block::interp_filter_no_neighbour_ctx;
@@ -127,6 +131,41 @@ fn decode_fixture(bytes: &[u8]) -> Vec<MinimalRuntimeFrame> {
 
 fn decode_frames() -> Vec<MinimalRuntimeFrame> {
     decode_fixture(TWO_FRAME_INTER_FIXTURE)
+}
+
+fn fixture_sequence_and_quantization(bytes: &[u8]) -> (SequenceHeader, QuantizationParams) {
+    let ParsedBitstream::Ivf(parsed) = parse_bitstream_partial(bytes) else {
+        panic!("fixture is IVF");
+    };
+    assert!(parsed.error.is_none());
+    assert!(parsed.warnings.is_empty());
+    let sequence = parsed
+        .frames
+        .iter()
+        .flat_map(|frame| frame.obus.iter())
+        .find_map(
+            |envelope| match envelope.payload_status().expect("payload status") {
+                PayloadStatus::Parsed(ParsedObu::SequenceHeader(sequence)) => {
+                    Some((*sequence).clone())
+                }
+                _ => None,
+            },
+        )
+        .expect("fixture carries a sequence header");
+    let key = parsed
+        .frames
+        .iter()
+        .flat_map(|frame| frame.obus.iter())
+        .find(|envelope| envelope.header.obu_type == ObuType::ClosedLoopKey)
+        .copied()
+        .expect("fixture carries a closed-loop-key frame");
+    let key_core = super::super::parse_frame_core(key, &sequence).expect("parse key core");
+    (
+        sequence,
+        key_core
+            .quantization_params
+            .expect("key core parsed quantization params"),
+    )
 }
 
 #[test]
@@ -1338,6 +1377,53 @@ fn resolve_cdf_load_rejects_out_of_range_signalled_primary() {
     assert!(
         matches!(load, ResolvedCdfLoad::OutOfRangePrimary),
         "a signalled primary >= NumTotalRefs is OutOfRangePrimary (rejected, not Default)"
+    );
+}
+
+#[test]
+fn effective_quantizer_delta_gate_includes_frame_and_sequence_offsets() {
+    let (mut sequence, mut quantization) =
+        fixture_sequence_and_quantization(TWO_FRAME_RESIDUAL_FIXTURE);
+    let tq = sequence
+        .transform_quant_entropy
+        .as_mut()
+        .expect("fixture sequence has transform/quant/entropy config");
+
+    tq.equal_ac_dc_q = false;
+    tq.base_y_dc_delta_q = 23;
+    tq.base_uv_dc_delta_q = 23;
+    tq.base_uv_ac_delta_q = 23;
+    quantization.delta_q_y_dc = 0;
+    quantization.delta_q_u_dc = 0;
+    quantization.delta_q_u_ac = 0;
+    quantization.delta_q_v_dc = 0;
+    quantization.delta_q_v_ac = 0;
+    assert!(
+        super::effective_quantizer_deltas_are_zero(&sequence, &quantization),
+        "raw sequence base delta 23 maps to effective zero"
+    );
+
+    quantization.delta_q_y_dc = 1;
+    assert!(
+        !super::effective_quantizer_deltas_are_zero(&sequence, &quantization),
+        "a parsed frame DeltaQYDc would desync zero-delta dequantization"
+    );
+    quantization.delta_q_y_dc = 0;
+
+    sequence
+        .transform_quant_entropy
+        .as_mut()
+        .expect("sequence config")
+        .base_uv_ac_delta_q = 24;
+    assert!(
+        !super::effective_quantizer_deltas_are_zero(&sequence, &quantization),
+        "a non-zero sequence BaseUVAcDeltaQ would desync zero-delta dequantization"
+    );
+    quantization.delta_q_u_ac = -1;
+    quantization.delta_q_v_ac = -1;
+    assert!(
+        super::effective_quantizer_deltas_are_zero(&sequence, &quantization),
+        "parsed frame deltas may cancel sequence base deltas; the gate checks the effective sums"
     );
 }
 
