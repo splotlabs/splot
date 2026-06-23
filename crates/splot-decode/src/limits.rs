@@ -23,6 +23,7 @@ const DEFAULT_MAX_REFERENCE_STORE_BYTES: u64 = 256 * 1024 * 1024;
 const DEFAULT_MAX_TILE_COUNT: u64 = 4_096;
 const DEFAULT_MAX_TILE_PARTITION_STEPS: u64 = 1_048_576;
 const DEFAULT_MAX_TILE_PAYLOAD_BYTES: u64 = 16 * 1024 * 1024;
+const DEFAULT_MAX_LOOP_RESTORATION_SOURCE_READS: u64 = DEFAULT_MAX_TILE_PARTITION_STEPS * 16;
 const DEFAULT_MAX_OUTPUT_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_HOST_ALLOCATION_LEN: u64 = isize::MAX as u64;
 
@@ -80,6 +81,7 @@ pub struct DecodeLimits {
     max_tile_count: DecodeLimitThreshold,
     max_tile_partition_steps: DecodeLimitThreshold,
     max_tile_payload_bytes: DecodeLimitThreshold,
+    max_loop_restoration_source_reads: DecodeLimitThreshold,
     max_output_bytes: DecodeLimitThreshold,
 }
 
@@ -100,6 +102,9 @@ impl DecodeLimits {
         max_tile_count: DecodeLimitThreshold::Max(DEFAULT_MAX_TILE_COUNT),
         max_tile_partition_steps: DecodeLimitThreshold::Max(DEFAULT_MAX_TILE_PARTITION_STEPS),
         max_tile_payload_bytes: DecodeLimitThreshold::Max(DEFAULT_MAX_TILE_PAYLOAD_BYTES),
+        max_loop_restoration_source_reads: DecodeLimitThreshold::Max(
+            DEFAULT_MAX_LOOP_RESTORATION_SOURCE_READS,
+        ),
         max_output_bytes: DecodeLimitThreshold::Max(DEFAULT_MAX_OUTPUT_BYTES),
     };
 
@@ -131,6 +136,7 @@ impl DecodeLimits {
             max_tile_count: threshold,
             max_tile_partition_steps: threshold,
             max_tile_payload_bytes: threshold,
+            max_loop_restoration_source_reads: threshold,
             max_output_bytes: threshold,
         }
     }
@@ -153,6 +159,9 @@ impl DecodeLimits {
             DecodeLimitName::MaxTileCount => self.max_tile_count,
             DecodeLimitName::MaxTilePartitionSteps => self.max_tile_partition_steps,
             DecodeLimitName::MaxTilePayloadBytes => self.max_tile_payload_bytes,
+            DecodeLimitName::MaxLoopRestorationSourceReads => {
+                self.max_loop_restoration_source_reads
+            }
             DecodeLimitName::MaxOutputBytes => self.max_output_bytes,
         }
     }
@@ -185,6 +194,9 @@ impl DecodeLimits {
                 self.max_tile_partition_steps = threshold;
             }
             DecodeLimitName::MaxTilePayloadBytes => self.max_tile_payload_bytes = threshold,
+            DecodeLimitName::MaxLoopRestorationSourceReads => {
+                self.max_loop_restoration_source_reads = threshold;
+            }
             DecodeLimitName::MaxOutputBytes => self.max_output_bytes = threshold,
         }
         self
@@ -424,6 +436,21 @@ impl DecodeLimits {
         self.with_limit(DecodeLimitName::MaxTilePayloadBytes, threshold)
     }
 
+    /// Returns the maximum loop-restoration source-read operation threshold.
+    #[must_use]
+    pub const fn max_loop_restoration_source_reads(self) -> DecodeLimitThreshold {
+        self.threshold(DecodeLimitName::MaxLoopRestorationSourceReads)
+    }
+
+    /// Returns a copy with the maximum loop-restoration source-read operation threshold replaced.
+    #[must_use]
+    pub const fn with_max_loop_restoration_source_reads(
+        self,
+        threshold: DecodeLimitThreshold,
+    ) -> Self {
+        self.with_limit(DecodeLimitName::MaxLoopRestorationSourceReads, threshold)
+    }
+
     /// Returns the maximum output byte threshold.
     #[must_use]
     pub const fn max_output_bytes(self) -> DecodeLimitThreshold {
@@ -475,13 +502,15 @@ pub enum DecodeLimitName {
     MaxTilePartitionSteps,
     /// Maximum tile payload bytes.
     MaxTilePayloadBytes,
+    /// Maximum loop-restoration source-read operations.
+    MaxLoopRestorationSourceReads,
     /// Maximum output bytes.
     MaxOutputBytes,
 }
 
 impl DecodeLimitName {
     /// Stable list of every decode resource limit name.
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 16] = [
         Self::MaxInputBytes,
         Self::MaxObus,
         Self::MaxIvfFrameRecords,
@@ -496,6 +525,7 @@ impl DecodeLimitName {
         Self::MaxTileCount,
         Self::MaxTilePartitionSteps,
         Self::MaxTilePayloadBytes,
+        Self::MaxLoopRestorationSourceReads,
         Self::MaxOutputBytes,
     ];
 
@@ -517,6 +547,7 @@ impl DecodeLimitName {
             Self::MaxTileCount => "max_tile_count",
             Self::MaxTilePartitionSteps => "max_tile_partition_steps",
             Self::MaxTilePayloadBytes => "max_tile_payload_bytes",
+            Self::MaxLoopRestorationSourceReads => "max_loop_restoration_source_reads",
             Self::MaxOutputBytes => "max_output_bytes",
         }
     }
@@ -539,7 +570,8 @@ impl DecodeLimitName {
             | Self::MaxOutputFrames
             | Self::MaxReferenceSlots
             | Self::MaxTileCount
-            | Self::MaxTilePartitionSteps => DecodeLimitUnit::Count,
+            | Self::MaxTilePartitionSteps
+            | Self::MaxLoopRestorationSourceReads => DecodeLimitUnit::Count,
         }
     }
 }

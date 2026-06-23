@@ -22,12 +22,15 @@ use splot_core::obu::{ParsedObu, PayloadStatus};
 use splot_core::span::ByteOffset;
 use splot_core::stream::{ParsedBitstream, ParsedIvfFrame, parse_bitstream_partial};
 use splot_core::types::ObuType;
+use splot_recon::{LoopRestorationSource, PlaneId, ReconError};
 
 use super::super::{MinimalRuntimeFrame, decode_minimal_frames_from_plan};
 use super::block::interp_filter_no_neighbour_ctx;
 use super::compound_is_joint_context_from_order_hints;
 use crate::error::{DecodeError, Result};
-use crate::tile_payload::{MinimalRuntimePartitionFrontierError, TilePartitionTraversalError};
+use crate::tile_payload::{
+    MinimalRuntimePartitionFrontierError, TilePartitionTraversalError, WienerNsLrSourceBlock,
+};
 use crate::{
     DecodeContext, DecodeLimitName, DecodeLimitThreshold, DecodeLimits, DecodeOptions,
     DecodeRuntimeConfig,
@@ -1217,22 +1220,19 @@ fn wienerns_header_status_reports_precise_runtime_frontier() {
 
 #[test]
 fn parsed_wienerns_bank_reports_next_runtime_frontier() {
-    let error = super::super::wienerns_lr_source_bounds_runtime_error(ByteOffset::new(74));
+    let error = super::super::wienerns_lr_source_read_runtime_error(ByteOffset::new(74));
     let unsupported = match error {
         DecodeError::UnsupportedFeature { unsupported } => unsupported,
         _ => panic!("parsed Wiener NS bank frontier must be an unsupported-feature error"),
     };
 
-    assert_eq!(
-        unsupported.reason(),
-        "unsupported_wienerns_lr_source_bounds"
-    );
-    assert_eq!(unsupported.matrix_row(), "ac0ej3-lr-source-bounds-frontier");
+    assert_eq!(unsupported.reason(), "unsupported_wienerns_lr_source_read");
+    assert_eq!(unsupported.matrix_row(), "ac0ej3-lr-source-read-frontier");
     assert_eq!(
         unsupported.feature_id(),
-        "DECODE-AC0EJ3-LR-SOURCE-BOUNDS-FRONTIER"
+        "DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER"
     );
-    assert_eq!(unsupported.spec_section(), "7.20.1");
+    assert_eq!(unsupported.spec_section(), "7.20.2");
     assert_eq!(unsupported.byte_offset(), Some(ByteOffset::new(74)));
     assert!(
         unsupported.message().contains("source-bound facts"),
@@ -1243,9 +1243,267 @@ fn parsed_wienerns_bank_reports_next_runtime_frontier() {
         "message should make clear that the prior retained selection frontier has advanced"
     );
     assert!(
+        unsupported.message().contains("source-read state"),
+        "message should make clear that the source-read frontier has been reached"
+    );
+    assert!(
+        unsupported.message().contains("Wiener tap"),
+        "message should make clear that Wiener tap coordinates are included"
+    );
+    assert!(
+        unsupported.message().contains("source sample values"),
+        "message should make clear that value reads are still deferred"
+    );
+    assert!(
         unsupported.message().contains("§7.20.3 filtering"),
         "message should make clear that filtering is not implemented"
     );
+}
+
+fn wienerns_lr_source_block() -> WienerNsLrSourceBlock {
+    WienerNsLrSourceBlock {
+        plane: 0,
+        row: 0,
+        col: 0,
+        unit_row: 0,
+        unit_col: 0,
+        x: 0,
+        y: 6,
+        width: 4,
+        height: 4,
+        luma_start_x: 0,
+        luma_end_x: 15,
+        luma_start_y: 0,
+        luma_end_y: 15,
+        frame_luma_end_y: 15,
+        luma_stripe_start_y: 8,
+        luma_stripe_end_y: 10,
+    }
+}
+
+fn wienerns_lr_source_read_config() -> super::super::WienerNsLrSourceReadConfig {
+    super::super::WienerNsLrSourceReadConfig::CONSERVATIVE
+}
+
+#[test]
+fn wienerns_lr_source_read_frontier_resolves_source_samples() {
+    let blocks = [wienerns_lr_source_block()];
+    let expected_output_samples = 16;
+    let expected_source_reads = expected_output_samples * (1 + 32);
+
+    let frontier = super::super::derive_wienerns_lr_source_read_frontier(
+        &blocks,
+        ChromaFormatIdc::Yuv420,
+        wienerns_lr_source_read_config(),
+        ByteOffset::new(74),
+        DecodeLimits::unlimited(),
+    )
+    .expect("source-read frontier");
+
+    assert_eq!(frontier.blocks_resolved, 1);
+    assert_eq!(frontier.output_samples_resolved, expected_output_samples);
+    assert_eq!(frontier.source_reads_resolved, expected_source_reads);
+    assert_eq!(
+        frontier.curr_frame_source_reads + frontier.cdef_frame_source_reads,
+        expected_source_reads
+    );
+    assert_eq!(
+        frontier.first_sample,
+        Some(super::super::WienerNsLrSourceReadSample {
+            plane: PlaneId::Y,
+            x: 0,
+            y: 6,
+            source: LoopRestorationSource::CurrFrame,
+        })
+    );
+}
+
+#[test]
+fn wienerns_lr_source_read_frontier_includes_chroma_luma_source_reads() {
+    let blocks = [WienerNsLrSourceBlock {
+        plane: 1,
+        ..wienerns_lr_source_block()
+    }];
+    let expected_output_samples = 16;
+    let expected_source_reads = expected_output_samples * (1 + 12 + (1 + 12) * 4);
+
+    let frontier = super::super::derive_wienerns_lr_source_read_frontier(
+        &blocks,
+        ChromaFormatIdc::Yuv420,
+        wienerns_lr_source_read_config(),
+        ByteOffset::new(74),
+        DecodeLimits::unlimited(),
+    )
+    .expect("source-read frontier");
+
+    assert_eq!(frontier.blocks_resolved, 1);
+    assert_eq!(frontier.output_samples_resolved, expected_output_samples);
+    assert_eq!(frontier.source_reads_resolved, expected_source_reads);
+    assert_eq!(
+        frontier.curr_frame_source_reads + frontier.cdef_frame_source_reads,
+        expected_source_reads
+    );
+    assert_eq!(
+        frontier.first_sample,
+        Some(super::super::WienerNsLrSourceReadSample {
+            plane: PlaneId::U,
+            x: 0,
+            y: 6,
+            source: LoopRestorationSource::CurrFrame,
+        })
+    );
+}
+
+#[test]
+fn wienerns_lr_source_read_frontier_failures_stay_structured() {
+    let blocks = [WienerNsLrSourceBlock {
+        luma_start_x: 32,
+        luma_end_x: 31,
+        ..wienerns_lr_source_block()
+    }];
+
+    let error = super::super::derive_wienerns_lr_source_read_frontier(
+        &blocks,
+        ChromaFormatIdc::Yuv420,
+        wienerns_lr_source_read_config(),
+        ByteOffset::new(74),
+        DecodeLimits::unlimited(),
+    )
+    .unwrap_err();
+
+    match error {
+        DecodeError::Reconstruction { source } => {
+            assert_eq!(
+                source,
+                ReconError::LoopRestorationSourceInvalidBounds {
+                    field: "luma x range",
+                }
+            );
+        }
+        _ => panic!("source-read derivation failures must remain structured"),
+    }
+    assert_eq!(
+        blocks[0].luma_start_x, 32,
+        "source-read derivation must not mutate retained source-bound facts"
+    );
+}
+
+#[test]
+fn wienerns_lr_source_read_frontier_rejects_monochrome_chroma_plane() {
+    let blocks = [WienerNsLrSourceBlock {
+        plane: 1,
+        ..wienerns_lr_source_block()
+    }];
+
+    let error = super::super::derive_wienerns_lr_source_read_frontier(
+        &blocks,
+        ChromaFormatIdc::Monochrome,
+        wienerns_lr_source_read_config(),
+        ByteOffset::new(74),
+        DecodeLimits::unlimited(),
+    )
+    .unwrap_err();
+
+    let unsupported = match error {
+        DecodeError::UnsupportedFeature { unsupported } => unsupported,
+        _ => panic!("monochrome chroma-plane request must be unsupported-feature"),
+    };
+    assert_eq!(
+        unsupported.reason(),
+        "unsupported_wienerns_lr_source_chroma_plane"
+    );
+    assert_eq!(unsupported.matrix_row(), "ac0ej3-lr-source-read-frontier");
+    assert_eq!(
+        unsupported.feature_id(),
+        "DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER"
+    );
+    assert_eq!(unsupported.spec_section(), "7.20.2");
+    assert_eq!(unsupported.byte_offset(), Some(ByteOffset::new(74)));
+}
+
+#[test]
+fn wienerns_lr_source_read_frontier_rejects_unsupported_plane_index() {
+    let blocks = [WienerNsLrSourceBlock {
+        plane: 3,
+        ..wienerns_lr_source_block()
+    }];
+
+    let error = super::super::derive_wienerns_lr_source_read_frontier(
+        &blocks,
+        ChromaFormatIdc::Yuv420,
+        wienerns_lr_source_read_config(),
+        ByteOffset::new(74),
+        DecodeLimits::unlimited(),
+    )
+    .unwrap_err();
+
+    let unsupported = match error {
+        DecodeError::UnsupportedFeature { unsupported } => unsupported,
+        _ => panic!("unsupported plane index must be unsupported-feature"),
+    };
+    assert_eq!(unsupported.reason(), "unsupported_wienerns_lr_source_plane");
+    assert_eq!(unsupported.matrix_row(), "ac0ej3-lr-source-read-frontier");
+    assert_eq!(
+        unsupported.feature_id(),
+        "DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER"
+    );
+    assert_eq!(unsupported.spec_section(), "7.20.2");
+    assert_eq!(unsupported.byte_offset(), Some(ByteOffset::new(74)));
+}
+
+#[test]
+fn wienerns_lr_source_read_frontier_limit_errors_stay_limits() {
+    let blocks = [wienerns_lr_source_block()];
+    let limits = DecodeLimits::unlimited()
+        .with_max_loop_restoration_source_reads(DecodeLimitThreshold::Max(527));
+
+    let error = super::super::derive_wienerns_lr_source_read_frontier(
+        &blocks,
+        ChromaFormatIdc::Yuv420,
+        wienerns_lr_source_read_config(),
+        ByteOffset::new(74),
+        limits,
+    )
+    .unwrap_err();
+
+    match error {
+        DecodeError::Limit { source } => {
+            assert_eq!(
+                source.name(),
+                DecodeLimitName::MaxLoopRestorationSourceReads
+            );
+            let check = source.check().expect("limit failure carries check");
+            assert_eq!(check.threshold(), DecodeLimitThreshold::Max(527));
+            assert_eq!(check.actual(), 528);
+        }
+        _ => panic!("source-read operation budget failures must remain resource-limit diagnostics"),
+    }
+}
+
+#[test]
+fn wienerns_lr_source_read_frontier_does_not_charge_luma_sample_limit() {
+    let blocks = [
+        wienerns_lr_source_block(),
+        WienerNsLrSourceBlock {
+            plane: 1,
+            ..wienerns_lr_source_block()
+        },
+    ];
+    let limits =
+        DecodeLimits::unlimited().with_max_luma_samples_per_frame(DecodeLimitThreshold::Max(0));
+
+    let frontier = super::super::derive_wienerns_lr_source_read_frontier(
+        &blocks,
+        ChromaFormatIdc::Yuv420,
+        wienerns_lr_source_read_config(),
+        ByteOffset::new(74),
+        limits,
+    )
+    .expect("source-read frontier");
+
+    assert_eq!(frontier.blocks_resolved, 2);
+    assert_eq!(frontier.output_samples_resolved, 32);
+    assert_eq!(frontier.source_reads_resolved, 528 + 1040);
 }
 
 #[test]

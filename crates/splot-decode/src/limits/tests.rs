@@ -76,6 +76,11 @@ fn default_options_and_limits_are_finite_and_pinned() {
             16 * 1024 * 1024,
         ),
         (
+            DecodeLimitName::MaxLoopRestorationSourceReads,
+            limits.max_loop_restoration_source_reads(),
+            1_048_576 * 16,
+        ),
+        (
             DecodeLimitName::MaxOutputBytes,
             limits.max_output_bytes(),
             256 * 1024 * 1024,
@@ -129,6 +134,7 @@ fn limit_names_and_units_are_stable() {
             "max_tile_count",
             "max_tile_partition_steps",
             "max_tile_payload_bytes",
+            "max_loop_restoration_source_reads",
             "max_output_bytes",
         ]
     );
@@ -149,6 +155,7 @@ fn limit_names_and_units_are_stable() {
             DecodeLimitUnit::Count,
             DecodeLimitUnit::Count,
             DecodeLimitUnit::Bytes,
+            DecodeLimitUnit::Count,
             DecodeLimitUnit::Bytes,
         ]
     );
@@ -179,7 +186,8 @@ fn threshold_lookup_and_field_helpers_route_to_typed_names() {
         .with_max_tile_count(MAX(12))
         .with_max_tile_partition_steps(MAX(13))
         .with_max_tile_payload_bytes(MAX(14))
-        .with_max_output_bytes(MAX(15));
+        .with_max_loop_restoration_source_reads(MAX(15))
+        .with_max_output_bytes(MAX(16));
     let cases = [
         (DecodeLimitName::MaxInputBytes, limits.max_input_bytes(), 1),
         (DecodeLimitName::MaxObus, limits.max_obus(), 2),
@@ -236,9 +244,14 @@ fn threshold_lookup_and_field_helpers_route_to_typed_names() {
             14,
         ),
         (
+            DecodeLimitName::MaxLoopRestorationSourceReads,
+            limits.max_loop_restoration_source_reads(),
+            15,
+        ),
+        (
             DecodeLimitName::MaxOutputBytes,
             limits.max_output_bytes(),
-            15,
+            16,
         ),
     ];
 

@@ -761,6 +761,7 @@ The first contract covers:
 - `max_tile_count`;
 - `max_tile_partition_steps`;
 - `max_tile_payload_bytes`;
+- `max_loop_restoration_source_reads`;
 - `max_output_bytes`.
 
 The primary spec-derived surfaces are leb128 length fields (§ 4.11.6), Annex B
