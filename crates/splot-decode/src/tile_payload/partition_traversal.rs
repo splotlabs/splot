@@ -288,58 +288,91 @@ pub(crate) struct TilePartitionTraversalPlan {
 }
 
 /// Successful LR-unit root syntax frontier.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TileLoopRestorationRootFrontier {
     symbol_count_after: u64,
     consumed_bits_after: u64,
     lr_units_consumed: usize,
     active_wiener_ns_units: usize,
+    selections: Vec<WienerNsLrUnitSelection>,
+}
+
+/// Caller-visible selection state for one supported Wiener NS LR unit.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct WienerNsLrUnitSelection {
+    /// Plane whose LR unit syntax was consumed.
+    pub(crate) plane: usize,
+    /// Absolute LR unit row after tile-origin offset adjustment.
+    pub(crate) unit_row: usize,
+    /// Absolute LR unit column after tile-origin offset adjustment.
+    pub(crate) unit_col: usize,
+    /// Whether AV2 §5.20.10.5 selected `RESTORE_WIENER_NONSEP`.
+    pub(crate) active: bool,
 }
 
 impl TileLoopRestorationRootFrontier {
     /// Symbol count after consuming supported root LR syntax.
     #[must_use]
-    pub(crate) const fn symbol_count_after(self) -> u64 {
+    pub(crate) const fn symbol_count_after(&self) -> u64 {
         self.symbol_count_after
     }
 
     /// Consumed tile-payload bits after supported root LR syntax.
     #[must_use]
-    pub(crate) const fn consumed_bits_after(self) -> u64 {
+    pub(crate) const fn consumed_bits_after(&self) -> u64 {
         self.consumed_bits_after
     }
 
     /// Number of supported frame-level Wiener NS LR units consumed.
     #[must_use]
-    pub(crate) const fn lr_units_consumed(self) -> usize {
+    pub(crate) const fn lr_units_consumed(&self) -> usize {
         self.lr_units_consumed
     }
 
     /// Number of consumed LR units that selected `RESTORE_WIENER_NONSEP`.
     #[must_use]
-    pub(crate) const fn active_wiener_ns_units(self) -> usize {
+    pub(crate) const fn active_wiener_ns_units(&self) -> usize {
         self.active_wiener_ns_units
+    }
+
+    /// Supported frame-level Wiener NS LR unit selections in syntax order.
+    #[must_use]
+    pub(crate) fn selections(&self) -> &[WienerNsLrUnitSelection] {
+        &self.selections
     }
 
     /// Whether every consumed LR unit selected `RESTORE_NONE`.
     #[must_use]
-    pub(crate) const fn all_lr_units_inactive(self) -> bool {
+    pub(crate) const fn all_lr_units_inactive(&self) -> bool {
         self.active_wiener_ns_units == 0
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct WienerNsLrUnitActivity {
     units_consumed: usize,
     active_units: usize,
+    selections: Vec<WienerNsLrUnitSelection>,
 }
 
 impl WienerNsLrUnitActivity {
-    fn record(&mut self, active: bool) -> Result<(), TilePartitionTraversalError> {
+    fn record(
+        &mut self,
+        plane: usize,
+        unit_row: usize,
+        unit_col: usize,
+        active: bool,
+    ) -> Result<(), TilePartitionTraversalError> {
         self.units_consumed = checked_add("lr_units_consumed", self.units_consumed, 1)?;
         if active {
             self.active_units = checked_add("lr_active_wiener_ns_units", self.active_units, 1)?;
         }
+        self.selections.push(WienerNsLrUnitSelection {
+            plane,
+            unit_row,
+            unit_col,
+            active,
+        });
         Ok(())
     }
 }
@@ -546,6 +579,7 @@ pub(crate) fn consume_tile_loop_restoration_root_frontier(
         consumed_bits_after: symbols.consumed_bits().get(),
         lr_units_consumed: lr_activity.units_consumed,
         active_wiener_ns_units: lr_activity.active_units,
+        selections: lr_activity.selections,
     })
 }
 
@@ -1053,15 +1087,18 @@ fn read_wiener_ns_lr_units_for_plane(
 
     for unit_row in unit_row_start..unit_row_end {
         for unit_col in unit_col_start..unit_col_end {
-            let _unit_row = checked_add("lr_unit_row", unit_row, lr_row_offset)?;
-            let _unit_col = checked_add("lr_unit_col", unit_col, lr_col_offset)?;
-            read_wiener_ns_lr_unit(cdfs, symbols, lr_activity)?;
+            let unit_row = checked_add("lr_unit_row", unit_row, lr_row_offset)?;
+            let unit_col = checked_add("lr_unit_col", unit_col, lr_col_offset)?;
+            read_wiener_ns_lr_unit(plane, unit_row, unit_col, cdfs, symbols, lr_activity)?;
         }
     }
     Ok(())
 }
 
 fn read_wiener_ns_lr_unit(
+    plane: usize,
+    unit_row: usize,
+    unit_col: usize,
     cdfs: &mut super::cdf::TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
     lr_activity: &mut WienerNsLrUnitActivity,
@@ -1072,7 +1109,7 @@ fn read_wiener_ns_lr_unit(
         })??
         .get()
         != 0;
-    lr_activity.record(use_wiener_ns)?;
+    lr_activity.record(plane, unit_row, unit_col, use_wiener_ns)?;
     // AV2 §5.20.10.5 maps `use_wiener_ns == 0` to `RESTORE_NONE`; §5.20.10.6
     // then returns immediately for this frontier's `readFrameFilters == 0`
     // frame-filter planes, so each LR unit consumes exactly this one symbol.
