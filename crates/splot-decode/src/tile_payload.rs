@@ -71,8 +71,8 @@ pub(crate) use partition_traversal::{DecodeBlockFrontier, GeneralIntraTreeWalkEr
 pub(crate) use runtime_frontier::{
     GeneralIntraMultiblockError, MinimalRuntimeBlockSymbolFrontierError,
     MinimalRuntimePartitionFrontierError, MinimalRuntimeReconstructionTrace,
-    decode_general_intra_multiblock_tree, frame_mi_dimensions,
-    plan_minimal_runtime_block_symbol_frontier,
+    consume_minimal_runtime_lr_unit_frontier, decode_general_intra_multiblock_tree,
+    frame_mi_dimensions, plan_minimal_runtime_block_symbol_frontier,
 };
 
 pub(crate) const TILE_PAYLOAD_DECODE_MATRIX_ROW: &str = "tile-payload-decode";

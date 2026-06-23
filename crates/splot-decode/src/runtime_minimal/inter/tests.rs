@@ -27,8 +27,10 @@ use super::super::{MinimalRuntimeFrame, decode_minimal_frames_from_plan};
 use super::block::interp_filter_no_neighbour_ctx;
 use super::compound_is_joint_context_from_order_hints;
 use crate::error::{DecodeError, Result};
+use crate::tile_payload::{MinimalRuntimePartitionFrontierError, TilePartitionTraversalError};
 use crate::{
-    DecodeContext, DecodeLimitName, DecodeLimitThreshold, DecodeOptions, DecodeRuntimeConfig,
+    DecodeContext, DecodeLimitName, DecodeLimitThreshold, DecodeLimits, DecodeOptions,
+    DecodeRuntimeConfig,
 };
 
 const TWO_FRAME_INTER_FIXTURE: &[u8] =
@@ -1215,26 +1217,50 @@ fn wienerns_header_status_reports_precise_runtime_frontier() {
 
 #[test]
 fn parsed_wienerns_bank_reports_next_runtime_frontier() {
-    let error = super::super::wienerns_bank_runtime_error(ByteOffset::new(74));
+    let error = super::super::wienerns_lr_unit_runtime_error(ByteOffset::new(74));
     let unsupported = match error {
         DecodeError::UnsupportedFeature { unsupported } => unsupported,
         _ => panic!("parsed Wiener NS bank frontier must be an unsupported-feature error"),
     };
 
-    assert_eq!(unsupported.reason(), "unsupported_wienerns_filter_bank");
-    assert_eq!(unsupported.matrix_row(), "ac0ej3-wienerns-bank-frontier");
+    assert_eq!(unsupported.reason(), "unsupported_wienerns_lr_unit_syntax");
+    assert_eq!(unsupported.matrix_row(), "ac0ej3-lr-unit-syntax-frontier");
     assert_eq!(
         unsupported.feature_id(),
-        "DECODE-AC0EJ3-WIENERNS-BANK-FRONTIER"
+        "DECODE-AC0EJ3-LR-UNIT-SYNTAX-FRONTIER"
     );
-    assert_eq!(unsupported.spec_section(), "5.20.10.6");
+    assert_eq!(unsupported.spec_section(), "5.20.10.4");
     assert_eq!(unsupported.byte_offset(), Some(ByteOffset::new(74)));
+    assert!(
+        unsupported.message().contains("LR unit syntax"),
+        "message should make clear that LR unit syntax is consumed before reconstruction remains unsupported"
+    );
     assert!(
         unsupported
             .message()
             .contains("loop-restoration reconstruction"),
         "message should make clear that parsing the bank is not reconstruction support"
     );
+}
+
+#[test]
+fn wienerns_lr_unit_frontier_limit_errors_stay_limits() {
+    let source = DecodeLimits::unlimited()
+        .with_max_tile_partition_steps(DecodeLimitThreshold::Max(0))
+        .ensure(DecodeLimitName::MaxTilePartitionSteps, 1)
+        .unwrap_err();
+
+    let error = super::super::map_wienerns_lr_unit_frontier_error(
+        MinimalRuntimePartitionFrontierError::Traversal(TilePartitionTraversalError::Limit(source)),
+        ByteOffset::new(74),
+    );
+
+    match error {
+        DecodeError::Limit { source } => {
+            assert_eq!(source.name(), DecodeLimitName::MaxTilePartitionSteps);
+        }
+        _ => panic!("LR-unit limit failures must remain resource-limit diagnostics"),
+    }
 }
 
 #[test]

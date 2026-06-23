@@ -9608,7 +9608,7 @@ openspec_change = "recon-wienerns-filter-primitive"
 tracking_issue = ""
 owner = "decoder"
 risk = "low"
-notes = "Adds a scheduler-free `splot-recon` AV2 §7.20.3 luma non-separable Wiener filter primitive `wiener_ns_filter_luma_block(output, params, source_sample)`. For each output sample, it reads the caller-resolved center sample, initializes `s = m << WIENER_NS_PREC_BITS` (`WIENER_NS_PREC_BITS = 7`), walks the verbatim `Wiener_Ns_Config_Y` tap table (`WIENER_NS_LUMA_TAPS = 32`, `WIENER_NS_LUMA_COEFFS = 16`), adds `(tap - m) * coeffs_by_class[subclass][idx]`, then writes `Clip1(Round2(s, 7))` into the caller's strided output. The caller resolves §7.20.2 source-sample clipping/stripe behavior, frame/restoration-unit traversal, frame-level-vs-unit coefficient selection, and any §7.20.4 pixel-classified Wiener subclass mapping. The primitive supports one class for the whole block or a row-major per-sample subclass map. It computes into a temporary buffer and validates dimensions, output stride/length, coefficient-class presence, subclass length/range, sample storage, and source sample range before mutating output, with typed `ReconError` failures. Strictly additive and no-output-change: a `pub` primitive with no runtime decode rewiring, so the current ac0ej3 path still rejects at `unsupported_wienerns_filter_bank`. Proven by zero-coefficient source-copy, hand-computed tap accumulation, subclass selection, 8-bit and 10-bit Clip1 clamps, fail-atomic output shape/class/subclass/source-sample errors, and u8-vs-10-bit storage rejection. This row does not implement chroma Wiener NS filtering, §7.20.2 source-sample clipping itself, §7.20 loop-restoration traversal, restoration-unit syntax, temporal/reference Wiener state, PC-Wiener classification, runtime decode wiring, or successful ac0ej3 decode."
+notes = "Adds a scheduler-free `splot-recon` AV2 §7.20.3 luma non-separable Wiener filter primitive `wiener_ns_filter_luma_block(output, params, source_sample)`. For each output sample, it reads the caller-resolved center sample, initializes `s = m << WIENER_NS_PREC_BITS` (`WIENER_NS_PREC_BITS = 7`), walks the verbatim `Wiener_Ns_Config_Y` tap table (`WIENER_NS_LUMA_TAPS = 32`, `WIENER_NS_LUMA_COEFFS = 16`), adds `(tap - m) * coeffs_by_class[subclass][idx]`, then writes `Clip1(Round2(s, 7))` into the caller's strided output. The caller resolves §7.20.2 source-sample clipping/stripe behavior, frame/restoration-unit traversal, frame-level-vs-unit coefficient selection, and any §7.20.4 pixel-classified Wiener subclass mapping. The primitive supports one class for the whole block or a row-major per-sample subclass map. It computes into a temporary buffer and validates dimensions, output stride/length, coefficient-class presence, subclass length/range, sample storage, and source sample range before mutating output, with typed `ReconError` failures. Strictly additive and no-output-change: a `pub` primitive with no runtime reconstruction rewiring, so the current ac0ej3 path still rejects before output at the later LR-unit syntax frontier. Proven by zero-coefficient source-copy, hand-computed tap accumulation, subclass selection, 8-bit and 10-bit Clip1 clamps, fail-atomic output shape/class/subclass/source-sample errors, and u8-vs-10-bit storage rejection. This row does not implement chroma Wiener NS filtering, §7.20.2 source-sample clipping itself, §7.20 loop-restoration traversal, restoration-unit syntax, temporal/reference Wiener state, PC-Wiener classification, runtime decode wiring, or successful ac0ej3 decode."
 
 [feature.status]
 mapped = "done"
@@ -10334,7 +10334,7 @@ openspec_change = "decode-minimal-tier-runtime-success"
 tracking_issue = ""
 owner = "decoder"
 risk = "high"
-notes = "Adds the first runtime hash success path for the repository-owned `minimal-intra-8bit420-hash-v1` fixture-trace tier. `DecodeContext::decode_hash_report_bytes` reuses `plan_bytes`, rejects non-minimal plan shapes before reparsing, validates one 64x64 AV02 IVF stream shape (temporal delimiter, sequence header, one closed-loop-key frame candidate), gates profile/layer/chroma/frame-size/frame-tool/tile facts plus the runtime's 8-bit output-storage boundary, rejects reachable CFL intra and MHCCP before the traced UV-mode symbol path can skip §5.20.5.6 syntax, derives source-backed tile payload bytes through the existing §5.19/§5.20.1 boundary, consumes the root partition decision through the crate-private `DECODE-TILE-PARTITION-TRAVERSAL-BOUNDARY` frontier including the minimal root-SDP luma `PARTITION_NONE` redirect, then, for a `base_q_idx == 255` frame, verifies the remaining five traced flat-tile symbols with `SymbolDecoder::read_symbol()` over generated §9.3 CDF defaults and `exit_symbol()`. It checks frame/output/tile/allocation limits before allocation, hands the proven recipe to `DECODE-MINIMAL-INTRA-RECONSTRUCTION-FRONTIER`, and computes `splot-dfh-sha256-v1` for `raw_intermediate_output`. `splot decode --output-format hash --json` emits `splot.decode.hash_report` v1 with resolved thread-count metadata and exit code 0 for the committed minimal fixture; hash output ignores IVF timebase fields because it does not serialize frame-rate metadata. For multi-frame mission streams, the runtime no longer rejects solely on total frame-candidate count and permits only terminal trailing partial IVF header warnings; under `DECODE-AC0EJ3-10BIT-SEQUENCE-FRONTIER` the local ac0ej3 mission stream parses its leading 10-bit sequence header, under `DECODE-AC0EJ3-SEQUENCE-CHROMA-FRONTIER` it parses sequence chroma-tool flags, and under `DECODE-AC0EJ3-WIENERNS-BANK-FRONTIER` it parses the key frame's fixed-coded Wiener NS bank before rejecting loop-restoration reconstruction as `unsupported_wienerns_filter_bank`. Raw Annex B remains outside this runtime success tier; out-of-tier streams fail closed with `decode/unsupported-feature`; raw and Y4M file output for the same tier are tracked separately by `DECODE-MINIMAL-RAW-RUNTIME-OUTPUT` and `DECODE-Y4M-RUNTIME-OUTPUT`. This row does not claim full AV2 decode, Annex A conformance, recursive `decode_tile()`, broad partition traversal beyond the first frontier, broad §8.3 CDF selection, CDF lifecycle, intra/inter prediction coverage beyond the traced all-flat subset, 10-bit reconstruction/output, loop filters, film grain, reference refresh, metadata MD5 verification, or AVM/dav2d integration. The committed `syn-flat-intra-64x64-minimal.ivf` fixture was replaced with an AVM/dav2d-conformant luma-skip stream (base_q_idx 210) whose §5.20.7.27 luma transform block is `all_zero == 1` (skipped) over a coded chroma residual; it now routes off the frozen base_q_idx==255 path into the general intra path (`DECODE-GENERAL-INTRA-FRAME-RECON`), so this row's hash/raw/Y4M success path is exercised through that path, with avmdec/dav2d byte-for-byte agreement recorded in `docs/LOCAL-REFERENCE-EVIDENCE.toml`. The frozen base_q_idx==255 hand-traced symbol path remains in the code (its `txb_skip` assertions corrected to the AVM `all_zero == 1` skip polarity) but is no longer reached by a committed conformant fixture; the retired retimed payload coded that symbol with inverted polarity and is rejected by avmdec. The `splot-decode -> splot-recon` dependency edge is now active only for this narrow runtime decode/reconstruction/hash/raw/Y4M handoff."
+notes = "Adds the first runtime hash success path for the repository-owned `minimal-intra-8bit420-hash-v1` fixture-trace tier. `DecodeContext::decode_hash_report_bytes` reuses `plan_bytes`, rejects non-minimal plan shapes before reparsing, validates one 64x64 AV02 IVF stream shape (temporal delimiter, sequence header, one closed-loop-key frame candidate), gates profile/layer/chroma/frame-size/frame-tool/tile facts plus the runtime's 8-bit output-storage boundary, rejects reachable CFL intra and MHCCP before the traced UV-mode symbol path can skip §5.20.5.6 syntax, derives source-backed tile payload bytes through the existing §5.19/§5.20.1 boundary, consumes the root partition decision through the crate-private `DECODE-TILE-PARTITION-TRAVERSAL-BOUNDARY` frontier including the minimal root-SDP luma `PARTITION_NONE` redirect, then, for a `base_q_idx == 255` frame, verifies the remaining five traced flat-tile symbols with `SymbolDecoder::read_symbol()` over generated §9.3 CDF defaults and `exit_symbol()`. It checks frame/output/tile/allocation limits before allocation, hands the proven recipe to `DECODE-MINIMAL-INTRA-RECONSTRUCTION-FRONTIER`, and computes `splot-dfh-sha256-v1` for `raw_intermediate_output`. `splot decode --output-format hash --json` emits `splot.decode.hash_report` v1 with resolved thread-count metadata and exit code 0 for the committed minimal fixture; hash output ignores IVF timebase fields because it does not serialize frame-rate metadata. For multi-frame mission streams, the runtime no longer rejects solely on total frame-candidate count and permits only terminal trailing partial IVF header warnings; under `DECODE-AC0EJ3-10BIT-SEQUENCE-FRONTIER` the local ac0ej3 mission stream parses its leading 10-bit sequence header, under `DECODE-AC0EJ3-SEQUENCE-CHROMA-FRONTIER` it parses sequence chroma-tool flags, under `DECODE-AC0EJ3-WIENERNS-BANK-FRONTIER` it parses the key frame's fixed-coded Wiener NS bank, and under `DECODE-AC0EJ3-LR-UNIT-SYNTAX-FRONTIER` it consumes covered frame-level Wiener NS LR unit syntax before rejecting loop-restoration reconstruction as `unsupported_wienerns_lr_unit_syntax`. Raw Annex B remains outside this runtime success tier; out-of-tier streams fail closed with `decode/unsupported-feature`; raw and Y4M file output for the same tier are tracked separately by `DECODE-MINIMAL-RAW-RUNTIME-OUTPUT` and `DECODE-Y4M-RUNTIME-OUTPUT`. This row does not claim full AV2 decode, Annex A conformance, recursive `decode_tile()`, broad partition traversal beyond the first frontier, broad §8.3 CDF selection, CDF lifecycle, intra/inter prediction coverage beyond the traced all-flat subset, 10-bit reconstruction/output, loop filters, film grain, reference refresh, metadata MD5 verification, or AVM/dav2d integration. The committed `syn-flat-intra-64x64-minimal.ivf` fixture was replaced with an AVM/dav2d-conformant luma-skip stream (base_q_idx 210) whose §5.20.7.27 luma transform block is `all_zero == 1` (skipped) over a coded chroma residual; it now routes off the frozen base_q_idx==255 path into the general intra path (`DECODE-GENERAL-INTRA-FRAME-RECON`), so this row's hash/raw/Y4M success path is exercised through that path, with avmdec/dav2d byte-for-byte agreement recorded in `docs/LOCAL-REFERENCE-EVIDENCE.toml`. The frozen base_q_idx==255 hand-traced symbol path remains in the code (its `txb_skip` assertions corrected to the AVM `all_zero == 1` skip polarity) but is no longer reached by a committed conformant fixture; the retired retimed payload coded that symbol with inverted polarity and is rejected by avmdec. The `splot-decode -> splot-recon` dependency edge is now active only for this narrow runtime decode/reconstruction/hash/raw/Y4M handoff."
 
 [feature.status]
 mapped = "done"
@@ -10400,7 +10400,7 @@ openspec_change = "decode-ac0ej3-leading-obu-gate"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Advances the ac0ej3 mission stream past the previous leading IVF-payload shape gate. The runtime still requires the first three leading OBUs to be `[OBU_TEMPORAL_DELIMITER, OBU_SEQUENCE_HEADER, OBU_CLOSED_LOOP_KEY]`, but it now validates the leading sequence header before rejecting additional OBUs after the key. This initially made the local `ac0ej3.ivf` gate surface `unsupported_bit_depth` for its profile-0 10-bit 4:2:0 sequence; the follow-on `DECODE-AC0EJ3-10BIT-SEQUENCE-FRONTIER` accepts that conformant sequence value, `DECODE-AC0EJ3-SEQUENCE-CHROMA-FRONTIER` moves the sequence chroma-tool gate later, `DECODE-AC0EJ3-WIENERNS-FRONTIER` reported the former parser-only Wiener stop, and `DECODE-AC0EJ3-WIENERNS-BANK-FRONTIER` now reports the parsed-bank reconstruction frontier. Otherwise supported 8-bit streams with extra leading-payload OBUs still fail closed before output at `unexpected_leading_obu_after_key`. This row does not implement 10-bit decode, decoding extra frame units in the leading IVF payload, or any additional prediction/filter/residual/output behavior."
+notes = "Advances the ac0ej3 mission stream past the previous leading IVF-payload shape gate. The runtime still requires the first three leading OBUs to be `[OBU_TEMPORAL_DELIMITER, OBU_SEQUENCE_HEADER, OBU_CLOSED_LOOP_KEY]`, but it now validates the leading sequence header before rejecting additional OBUs after the key. This initially made the local `ac0ej3.ivf` gate surface `unsupported_bit_depth` for its profile-0 10-bit 4:2:0 sequence; the follow-on `DECODE-AC0EJ3-10BIT-SEQUENCE-FRONTIER` accepts that conformant sequence value, `DECODE-AC0EJ3-SEQUENCE-CHROMA-FRONTIER` moves the sequence chroma-tool gate later, `DECODE-AC0EJ3-WIENERNS-FRONTIER` reported the former parser-only Wiener stop, `DECODE-AC0EJ3-WIENERNS-BANK-FRONTIER` parsed the frame-level bank, and `DECODE-AC0EJ3-LR-UNIT-SYNTAX-FRONTIER` now reports the LR unit syntax reconstruction frontier. Otherwise supported 8-bit streams with extra leading-payload OBUs still fail closed before output at `unexpected_leading_obu_after_key`. This row does not implement 10-bit decode, decoding extra frame units in the leading IVF payload, or any additional prediction/filter/residual/output behavior."
 
 [feature.status]
 mapped = "done"
@@ -10447,7 +10447,7 @@ openspec_change = "decode-ac0ej3-10bit-sequence-frontier"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Moves the runtime's 8-bit-only sample-storage contract out of sequence validation and into the pre-decode boundary. AV2 §6.4.1 Table 6.3 maps `bit_depth_idc == 0` to a conformant 10-bit sequence, so `validate_sequence` now parses and validates that value instead of rejecting it as malformed for the tier. Before any key or inter frame can enter the current `DecodedFrame<u8>` reconstruction, reference retention, hash, raw, or Y4M paths, `ensure_8bit_runtime_storage` rejects non-8-bit sequences with `unsupported_bit_depth` under this feature row. The local ac0ej3 mission stream therefore advances past the former sequence bit-depth gate; the follow-on `DECODE-AC0EJ3-SEQUENCE-CHROMA-FRONTIER` moves sequence chroma-tool flags to a later pre-tile gate, `DECODE-AC0EJ3-WIENERNS-FRONTIER` recorded the former parser-only Wiener stop, and `DECODE-AC0EJ3-WIENERNS-BANK-FRONTIER` now surfaces `unsupported_wienerns_filter_bank` after the key-frame header parses the fixed-coded bank. This row does not implement 10-bit reconstruction, 10-bit output serialization, 10-bit reference storage, loop filters, or any successful 10-bit decode path."
+notes = "Moves the runtime's 8-bit-only sample-storage contract out of sequence validation and into the pre-decode boundary. AV2 §6.4.1 Table 6.3 maps `bit_depth_idc == 0` to a conformant 10-bit sequence, so `validate_sequence` now parses and validates that value instead of rejecting it as malformed for the tier. Before any key or inter frame can enter the current `DecodedFrame<u8>` reconstruction, reference retention, hash, raw, or Y4M paths, `ensure_8bit_runtime_storage` rejects non-8-bit sequences with `unsupported_bit_depth` under this feature row. The local ac0ej3 mission stream therefore advances past the former sequence bit-depth gate; the follow-on `DECODE-AC0EJ3-SEQUENCE-CHROMA-FRONTIER` moves sequence chroma-tool flags to a later pre-tile gate, `DECODE-AC0EJ3-WIENERNS-FRONTIER` recorded the former parser-only Wiener stop, `DECODE-AC0EJ3-WIENERNS-BANK-FRONTIER` parsed the fixed-coded bank, and `DECODE-AC0EJ3-LR-UNIT-SYNTAX-FRONTIER` now surfaces `unsupported_wienerns_lr_unit_syntax` after covered LR unit syntax is consumed. This row does not implement 10-bit reconstruction, 10-bit output serialization, 10-bit reference storage, loop filters, or any successful 10-bit decode path."
 
 [feature.status]
 mapped = "done"
@@ -10497,7 +10497,7 @@ openspec_change = "decode-ac0ej3-sequence-chroma-frontier"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Moves the sequence-level CfL/MHCCP runtime gate out of `validate_sequence` and into the pre-tile decode boundary. AV2 §5.4.5 carries the sequence-level `enable_cfl_intra` and `enable_mhccp` flags, and §5.20.5.6 can require extra `is_cfl`, `UV_CFL_PRED`, or `is_mhccp_allowed` mode-info syntax only when reachable block conditions allow those branches. The minimal runtime now parses those sequence flags, parses the leading key-frame header first, and then rejects CfL/MHCCP before any tile mode-info symbol can be skipped or any `DecodedFrame<u8>` can be allocated. The local ac0ej3 mission stream advanced past the former sequence CFL gate to the parser's `stopped_before_wienerns_filter` key-frame header status; `DECODE-AC0EJ3-WIENERNS-FRONTIER` mapped that status to `unsupported_wienerns_filter`, and `DECODE-AC0EJ3-WIENERNS-BANK-FRONTIER` now parses the fixed-coded bank and reports the loop-restoration reconstruction frontier. This row does not implement CfL prediction, MHCCP prediction, `is_cfl` CDFs, `read_cfl_alphas`, 10-bit reconstruction/output, key-frame loop filters, loop-restoration reconstruction, or successful ac0ej3 decode."
+	notes = "Moves the sequence-level CfL/MHCCP runtime gate out of `validate_sequence` and into the pre-tile decode boundary. AV2 §5.4.5 carries the sequence-level `enable_cfl_intra` and `enable_mhccp` flags, and §5.20.5.6 can require extra `is_cfl`, `UV_CFL_PRED`, or `is_mhccp_allowed` mode-info syntax only when reachable block conditions allow those branches. The minimal runtime now parses those sequence flags, parses the leading key-frame header first, and then rejects CfL/MHCCP before any tile mode-info symbol can be skipped or any `DecodedFrame<u8>` can be allocated. The local ac0ej3 mission stream advanced past the former sequence CFL gate to the parser's `stopped_before_wienerns_filter` key-frame header status; `DECODE-AC0EJ3-WIENERNS-FRONTIER` mapped that status to `unsupported_wienerns_filter`, `DECODE-AC0EJ3-WIENERNS-BANK-FRONTIER` parsed the fixed-coded bank, and `DECODE-AC0EJ3-LR-UNIT-SYNTAX-FRONTIER` now consumes the covered frame-level Wiener NS LR unit syntax before rejecting reconstruction. This row does not implement CfL prediction, MHCCP prediction, `is_cfl` CDFs, `read_cfl_alphas`, 10-bit reconstruction/output, key-frame loop filters, loop-restoration reconstruction, or successful ac0ej3 decode."
 
 [feature.status]
 mapped = "done"
@@ -10549,7 +10549,7 @@ openspec_change = "decode-ac0ej3-wienerns-frontier"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Historical fail-closed runtime diagnostic frontier for the ac0ej3 key frame when the frame-header parser reached AV2 §5.18.7.11 `lr_params()` and stopped before the fixed-coded `read_wienerns_filter(plane, 0, 0, 1)` bank. This row maps the reserved `FrameHeaderParseStatus::StoppedBeforeWienerNsFilter` status to the precise minimal-runtime diagnostic `unsupported_wienerns_filter`; non-Wiener partial intra headers continue to use the generic `incomplete_frame_header` fallback. The follow-on `DECODE-AC0EJ3-WIENERNS-BANK-FRONTIER` consumes the frame-level bank and moves the live ac0ej3 diagnostic to `unsupported_wienerns_filter_bank`. This row does not implement loop-restoration reconstruction/filtering, 10-bit reconstruction/output, key-frame loop filters, or successful ac0ej3 decode."
+	notes = "Historical fail-closed runtime diagnostic frontier for the ac0ej3 key frame when the frame-header parser reached AV2 §5.18.7.11 `lr_params()` and stopped before the fixed-coded `read_wienerns_filter(plane, 0, 0, 1)` bank. This row maps the reserved `FrameHeaderParseStatus::StoppedBeforeWienerNsFilter` status to the precise minimal-runtime diagnostic `unsupported_wienerns_filter`; non-Wiener partial intra headers continue to use the generic `incomplete_frame_header` fallback. `DECODE-AC0EJ3-WIENERNS-BANK-FRONTIER` superseded this parser stop by consuming the frame-level bank, and `DECODE-AC0EJ3-LR-UNIT-SYNTAX-FRONTIER` supersedes the live runtime gate by consuming covered LR unit syntax before rejecting reconstruction. This row does not implement loop-restoration reconstruction/filtering, 10-bit reconstruction/output, key-frame loop filters, or successful ac0ej3 decode."
 
 [feature.status]
 mapped = "done"
@@ -10597,7 +10597,7 @@ openspec_change = "decode-ac0ej3-wienerns-bank-frontier"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Parses and preserves the ac0ej3-proven AV2 §5.20.10.6 fixed-coded frame-level Wiener NS bank reached from §5.18.7.11 `lr_params()` when the key-frame luma plane signals `frame_filters_on`. The parser stores one `WienerNsFrameFilterBank` per signalled plane on `LrPlaneParams::frame_filter_bank`, including class match indices, merge flags, subsets, chroma symmetry flags, and decoded tap coefficients from `decode_signed_subexp_with_ref`; fixed-coded luma PC-Wiener match translation uses the existing generated table when sequence flags leave that group reachable. The live local ac0ej3 fixture now reaches `FrameHeaderParseStatus::IntraHeaderComplete`; inspect surfaces the parsed luma two-class bank, and minimal runtime fails closed at byte offset 74 with `unsupported_wienerns_filter_bank` under `ac0ej3-wienerns-bank-frontier` before any tile mode-info decode, `DecodedFrame<u8>` allocation, reference retention, hash, raw, or Y4M output. The writer still rejects serialized models carrying a frame-filter bank. This row does not claim entropy-coded LR unit syntax (`readFrameFilters == 0`), inter temporal-copy/reference-frame Wiener state, loop-restoration reconstruction/filtering, 10-bit reconstruction/output, key-frame loop filters, or successful ac0ej3 decode."
+	notes = "Historical fail-closed support row that parses and preserves the ac0ej3-proven AV2 §5.20.10.6 fixed-coded frame-level Wiener NS bank reached from §5.18.7.11 `lr_params()` when the key-frame luma plane signals `frame_filters_on`. The parser stores one `WienerNsFrameFilterBank` per signalled plane on `LrPlaneParams::frame_filter_bank`, including class match indices, merge flags, subsets, chroma symmetry flags, and decoded tap coefficients from `decode_signed_subexp_with_ref`; fixed-coded luma PC-Wiener match translation uses the existing generated table when sequence flags leave that group reachable. The local ac0ej3 fixture reaches `FrameHeaderParseStatus::IntraHeaderComplete`; inspect surfaces the parsed luma two-class bank. `DECODE-AC0EJ3-LR-UNIT-SYNTAX-FRONTIER` supersedes this row as the live runtime diagnostic by consuming the covered §5.20.10.4/§5.20.10.5 LR unit `use_wiener_ns` symbols before any `DecodedFrame<u8>` allocation, reference retention, hash, raw, or Y4M output. The writer still rejects serialized models carrying a frame-filter bank. This row does not claim broad entropy-coded LR unit syntax, inter temporal-copy/reference-frame Wiener state, loop-restoration reconstruction/filtering, 10-bit reconstruction/output, key-frame loop filters, or successful ac0ej3 decode."
 
 [feature.status]
 mapped = "done"
@@ -10634,6 +10634,68 @@ fixtures = [
     "crates/splot-decode/src/runtime_minimal.rs",
 ]
 diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
+id = "DECODE-AC0EJ3-LR-UNIT-SYNTAX-FRONTIER"
+name = "ac0ej3 Wiener NS LR unit syntax frontier"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.20.10.4", "5.20.10.5", "5.20.10.6", "8.3.2", "9.3"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-4",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-5",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-6",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2",
+    "docs/spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/tile_payload/partition_traversal.rs"
+openspec_change = "decode-ac0ej3-lr-unit-syntax-frontier"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Consumes the ac0ej3-proven frame-level Wiener NS LR unit syntax before the runtime reconstruction gate. `tile_payload/cdf/block_rows.rs` owns the generated `Default_Use_Wiener_Ns_Cdf` row inside the tile CDF subset; `partition_traversal.rs` calls AV2 §5.20.10.4 `read_lr()` only for superblock-root §5.20.3.1 calls, counts the covered restoration units for active `RESTORE_WIENER_NONSEP` planes with `frame_filters_on`, consumes one §5.20.10.5 `use_wiener_ns S()` symbol per covered unit, and intentionally skips the §5.20.10.6 per-unit coefficient body because frame-level filters make `read_wienerns_filter(..., readFrameFilters == 0)` return immediately. `runtime_minimal.rs` routes the local ac0ej3 key frame through this root LR-unit syntax consumer, preserves resource-limit errors as `decode/resource-limit`, then fails closed at byte offset 74 with `unsupported_wienerns_lr_unit_syntax` under `ac0ej3-lr-unit-syntax-frontier`. This row does not implement PC-Wiener, switchable LR, Wiener NS without a frame-level bank, SDP PlaneStart/PlaneEnd LR traversal, temporal/reference Wiener state, per-unit coefficient syntax beyond the frame-level no-op, loop-restoration reconstruction/filtering, 10-bit output/storage, reference refresh, hash/raw/Y4M output, or successful ac0ej3 decode."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "partial"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/tile_payload/cdf/tests.rs::frame_cdf_subset_copies_generated_defaults_without_aliasing",
+    "crates/splot-decode/src/tile_payload/cdf/block_read.rs::tests::reads_supported_block_symbol_rows",
+    "crates/splot-decode/src/tile_payload/cdf/block_read.rs::tests::update_mode_controls_only_selected_block_symbol_rows",
+    "crates/splot-decode/src/tile_payload/partition_traversal_tests.rs::frame_level_wiener_ns_lr_symbol_precedes_partition_read",
+    "crates/splot-decode/src/tile_payload/partition_traversal_tests.rs::root_lr_frontier_consumes_only_frame_level_wiener_ns_symbols",
+    "crates/splot-decode/src/tile_payload/partition_traversal_tests.rs::frame_level_wiener_ns_multi_unit_root_counts_every_covered_unit",
+    "crates/splot-decode/src/tile_payload/partition_traversal_tests.rs::frame_level_wiener_ns_rejects_invalid_unit_size_before_partition_read",
+    "crates/splot-decode/src/runtime_minimal/inter/tests.rs::parsed_wienerns_bank_reports_next_runtime_frontier",
+    "crates/splot-decode/src/runtime_minimal/inter/tests.rs::wienerns_lr_unit_frontier_limit_errors_stay_limits",
+    "crates/splot-cli/tests/decode_cli.rs::local_ac0ej3_reaches_current_runtime_gate_without_output",
+]
+commands = [
+    "cargo test -p splot-decode tile_payload::cdf --locked",
+    "cargo test -p splot-decode partition_traversal --locked",
+    "cargo test -p splot-decode wienerns --locked",
+    "cargo test -p splot-cli --test decode_cli local_ac0ej3_reaches_current_runtime_gate_without_output -- --ignored",
+    "cargo xtask check-feature-status",
+    "cargo xtask check-decoder-support",
+]
+fixtures = [
+    "local ac0ej3 mission fixture",
+    "crates/splot-decode/src/tile_payload/cdf.rs",
+    "crates/splot-decode/src/tile_payload/partition_traversal.rs",
+    "crates/splot-decode/src/runtime_minimal.rs",
+]
+diagnostics = ["decode/unsupported-feature", "decode/resource-limit"]
 
 [[feature]]
 id = "DECODE-Y4M-RUNTIME-OUTPUT"
@@ -17310,12 +17372,14 @@ id = "DECODE-TILE-PARTITION-TRAVERSAL-BOUNDARY"
 name = "Tile partition traversal frontier"
 category = "infrastructure"
 kind = "infrastructure"
-spec_sections = ["5.20.2.1", "5.20.3.1", "5.20.3.2", "5.20.9.1", "6.19.2.1", "6.19.3", "8.2.5", "8.2.6", "8.3.1", "8.3.2", "9.2"]
+spec_sections = ["5.20.2.1", "5.20.3.1", "5.20.3.2", "5.20.9.1", "5.20.10.4", "5.20.10.5", "6.19.2.1", "6.19.3", "8.2.5", "8.2.6", "8.3.1", "8.3.2", "9.2", "9.3"]
 sources = [
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-2-1",
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-1",
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-2",
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-9-1",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-4",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-5",
     "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-2-1",
     "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-3",
     "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-2-5",
@@ -17323,6 +17387,7 @@ sources = [
     "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-1",
     "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2",
     "docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2",
+    "docs/spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3",
 ]
 crate = "splot-decode"
 module = "crates/splot-decode/src/tile_payload/partition_traversal.rs"
@@ -17330,7 +17395,7 @@ openspec_change = "tile-partition-traversal-boundary"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Adds a crate-private AV2 §5.20.3.1 partition traversal frontier for the minimal intra tile tier. `partition_traversal.rs` composes the existing partition-size, allowed-set, CDF-context, symbol-read, and partition-decision boundaries to advance from a tile work unit to the first in-frame `decode_block()` frontier. It clones tile CDF rows transactionally, initializes a fresh §8.2 symbol decoder at the work-unit tile byte span, commits CDF mutations only after success, derives `AvailU` and `AvailL` from tile-local §5.20.9.1 bounds carried by the work unit, records the decision prefix, pending sibling child calls, symbol counters, block-frontier coordinates, and the §8.2 arithmetic decoder checkpoint before block syntax, and checks resource/coordinate failures with typed errors including a dedicated `max_tile_partition_steps` budget. The live-cursor helper remains crate-private so the minimal runtime can continue the existing traced symbols without a public checkpoint-resume API. The active extended-SDP path is computed as `enable_extended_sdp && !FrameIsIntra`, so an intra frame with only the sequence capability flag remains supported; the SDP surface is limited to the root intra `BLOCK_64X64` luma redirect that reaches `PARTITION_NONE` before the first block frontier for the minimal runtime fixture. This row does not implement full `decode_tile()` traversal, §5.20.2.1 setup side effects, non-flat or nested SDP, chroma SDP continuation, §5.20.10.4 loop-restoration `read_lr()` syntax, BRU, bridge, inter behavior, `decode_block()` syntax, direct MI-size/neighbor-state mutation beyond consuming caller-provided read-only views, `exit_symbol()`, Saved CDF copyback/averaging, reconstruction, output, reference refresh, public APIs, AVM/dav2d invocation, or scheduler/dependency changes. The separate crate-private MI-size mutation boundary is tracked by `DECODE-TILE-MI-SIZE-STATE-BOUNDARY`."
+notes = "Adds a crate-private AV2 §5.20.3.1 partition traversal frontier for the minimal intra tile tier. `partition_traversal.rs` composes the existing partition-size, allowed-set, CDF-context, symbol-read, and partition-decision boundaries to advance from a tile work unit to the first in-frame `decode_block()` frontier. It also consumes the narrow frame-level Wiener NS LR-unit syntax tracked by `DECODE-AC0EJ3-LR-UNIT-SYNTAX-FRONTIER`: for superblock-root calls only, it evaluates §5.20.10.4 unit coverage and reads §5.20.10.5 `use_wiener_ns` symbols from the tile CDF subset before the first partition symbol. It clones tile CDF rows transactionally, initializes a fresh §8.2 symbol decoder at the work-unit tile byte span, commits CDF mutations only after success, derives `AvailU` and `AvailL` from tile-local §5.20.9.1 bounds carried by the work unit, records the decision prefix, pending sibling child calls, symbol counters, block-frontier coordinates, and the §8.2 arithmetic decoder checkpoint before block syntax, and checks resource/coordinate failures with typed errors including a dedicated `max_tile_partition_steps` budget. The live-cursor helper remains crate-private so the minimal runtime can continue the existing traced symbols without a public checkpoint-resume API. The active extended-SDP path is computed as `enable_extended_sdp && !FrameIsIntra`, so an intra frame with only the sequence capability flag remains supported; the SDP surface is limited to the root intra `BLOCK_64X64` luma redirect that reaches `PARTITION_NONE` before the first block frontier for the minimal runtime fixture. If frame-level Wiener NS LR is active at an SDP root, the frontier rejects before LR symbol reads because it does not model SDP `PlaneStart..PlaneEnd` LR plane ranges. This row does not implement full `decode_tile()` traversal, §5.20.2.1 setup side effects, non-flat or nested SDP, chroma SDP continuation, SDP LR plane-range traversal, PC-Wiener, switchable LR, per-unit Wiener coefficient parsing, loop-restoration filtering, BRU, bridge, broad inter behavior, `decode_block()` syntax, direct MI-size/neighbor-state mutation beyond consuming caller-provided read-only views, `exit_symbol()`, Saved CDF copyback/averaging, reconstruction, output, reference refresh, public APIs, AVM/dav2d invocation, or scheduler/dependency changes. The separate crate-private MI-size mutation boundary is tracked by `DECODE-TILE-MI-SIZE-STATE-BOUNDARY`."
 
 [feature.status]
 mapped = "done"
@@ -17347,6 +17412,10 @@ perf = "not-applicable"
 [feature.proof]
 tests = [
     "crates/splot-decode/src/tile_payload/partition_traversal_tests.rs",
+    "crates/splot-decode/src/tile_payload/partition_traversal_tests.rs::frame_level_wiener_ns_lr_symbol_precedes_partition_read",
+    "crates/splot-decode/src/tile_payload/partition_traversal_tests.rs::root_lr_frontier_consumes_only_frame_level_wiener_ns_symbols",
+    "crates/splot-decode/src/tile_payload/partition_traversal_tests.rs::frame_level_wiener_ns_multi_unit_root_counts_every_covered_unit",
+    "crates/splot-decode/src/tile_payload/partition_traversal_tests.rs::frame_level_wiener_ns_rejects_invalid_unit_size_before_partition_read",
 ]
 commands = [
     "cargo test -p splot-decode partition_traversal --locked",

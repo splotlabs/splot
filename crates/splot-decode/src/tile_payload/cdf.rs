@@ -489,6 +489,9 @@ pub(crate) enum TileCdfSelector {
         /// The §8.3.2 interp-filter context.
         ctx: usize,
     },
+    /// `TileUseWienerNsCdf` (AV2 §8.3.2): the §5.20.10.5 `use_wiener_ns`
+    /// binary symbol.
+    UseWienerNs,
     /// Coefficient base/base-EOB/base-range and IDTX CDF rows.
     Coeff(CoeffCdfSelector),
 }
@@ -1063,6 +1066,7 @@ impl TileCdfRows {
             TileCdfSelector::InterpFilter { ctx } => {
                 self.block.row(BlockCdfSelector::InterpFilter { ctx })
             }
+            TileCdfSelector::UseWienerNs => self.block.row(BlockCdfSelector::UseWienerNs),
             TileCdfSelector::Coeff(selector) => self.block.row(BlockCdfSelector::Coeff(selector)),
         }
     }
@@ -1250,6 +1254,7 @@ impl TileCdfRows {
             TileCdfSelector::InterpFilter { ctx } => {
                 self.block.row_mut(BlockCdfSelector::InterpFilter { ctx })
             }
+            TileCdfSelector::UseWienerNs => self.block.row_mut(BlockCdfSelector::UseWienerNs),
             TileCdfSelector::Coeff(selector) => {
                 self.block.row_mut(BlockCdfSelector::Coeff(selector))
             }
@@ -1390,6 +1395,11 @@ impl TileCdfRows {
     #[cfg(test)]
     pub(crate) const fn comp_ref1(&self) -> &block_rows::CompRef1CdfRows {
         self.block.comp_ref1()
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn use_wiener_ns(&self) -> &block_rows::UseWienerNsCdfRow {
+        self.block.use_wiener_ns()
     }
 }
 

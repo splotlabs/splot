@@ -17,8 +17,8 @@ use splot_core::tables::cdf::{
     DEFAULT_DC_SIGN_CDF, DEFAULT_EOB_EXTRA_CDF, DEFAULT_EOB_PT_16_CDF, DEFAULT_EOB_PT_32_CDF,
     DEFAULT_EOB_PT_64_CDF, DEFAULT_EOB_PT_128_CDF, DEFAULT_EOB_PT_256_CDF, DEFAULT_EOB_PT_512_CDF,
     DEFAULT_EOB_PT_1024_CDF, DEFAULT_IDTX_SIGN_CDF, DEFAULT_IS_JOINT_CDF, DEFAULT_TXB_SKIP_CDF,
-    DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF, DEFAULT_V_TXB_SKIP_CDF, DEFAULT_Y_MODE_INDEX_CDF,
-    DEFAULT_Y_MODE_SET_CDF,
+    DEFAULT_USE_WIENER_NS_CDF, DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF, DEFAULT_V_TXB_SKIP_CDF,
+    DEFAULT_Y_MODE_INDEX_CDF, DEFAULT_Y_MODE_SET_CDF,
 };
 
 fn coeff(selector: CoeffCdfSelector) -> TileCdfSelector {
@@ -58,6 +58,7 @@ fn frame_cdf_subset_copies_generated_defaults_without_aliasing() {
     assert_eq!(frame.rows().cwp_idx(), &DEFAULT_CWP_IDX_CDF);
     assert_eq!(frame.rows().comp_ref0(), &DEFAULT_COMP_REF0_CDF);
     assert_eq!(frame.rows().comp_ref1(), &DEFAULT_COMP_REF1_CDF);
+    assert_eq!(frame.rows().use_wiener_ns(), &DEFAULT_USE_WIENER_NS_CDF);
 
     let mut tile = frame.tile_copy();
     tile.rows_mut().do_split[0][0][0] = 1234;

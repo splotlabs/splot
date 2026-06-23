@@ -26,6 +26,7 @@ use crate::{DecodeLimitError, DecodeLimitName, DecodeLimits};
 const BLOCK_8X32: usize = 21;
 const BLOCK_32X8: usize = 22;
 const BLOCK_64X64: usize = 12;
+const MI_SIZE: usize = 4;
 
 /// Decoder support matrix row for this traversal frontier.
 pub(crate) const TILE_PARTITION_TRAVERSAL_MATRIX_ROW: &str = "tile-partition-traversal-boundary";
@@ -71,8 +72,28 @@ pub(crate) enum TilePartitionBruState {
 pub(crate) enum TilePartitionLoopRestorationState {
     /// No §5.20.10.4 `read_lr()` syntax is needed before partition reads.
     NoSyntax,
+    /// Narrow frame-level Wiener NS LR unit syntax is supported before partition reads.
+    FrameWienerNs(TilePartitionWienerNsLoopRestorationState),
     /// Root `read_lr()` syntax remains outside this frontier.
     UnsupportedReadLrSyntax,
+}
+
+/// Narrow frame-level Wiener NS LR state supported by the traversal frontier.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct TilePartitionWienerNsLoopRestorationState {
+    plane_enabled: [bool; 3],
+    unit_size: [usize; 3],
+}
+
+impl TilePartitionWienerNsLoopRestorationState {
+    /// Creates checked-copyable Wiener NS LR unit facts for the active frame.
+    #[must_use]
+    pub(crate) const fn new(plane_enabled: [bool; 3], unit_size: [usize; 3]) -> Self {
+        Self {
+            plane_enabled,
+            unit_size,
+        }
+    }
 }
 
 /// Frame and sequence facts required by the traversal frontier.
@@ -266,6 +287,27 @@ pub(crate) struct TilePartitionTraversalPlan {
     symbol_count_after: u64,
 }
 
+/// Successful LR-unit root syntax frontier.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct TileLoopRestorationRootFrontier {
+    symbol_count_after: u64,
+    consumed_bits_after: u64,
+}
+
+impl TileLoopRestorationRootFrontier {
+    /// Symbol count after consuming supported root LR syntax.
+    #[must_use]
+    pub(crate) const fn symbol_count_after(self) -> u64 {
+        self.symbol_count_after
+    }
+
+    /// Consumed tile-payload bits after supported root LR syntax.
+    #[must_use]
+    pub(crate) const fn consumed_bits_after(self) -> u64 {
+        self.consumed_bits_after
+    }
+}
+
 impl TilePartitionTraversalPlan {
     /// Ordered partition decisions consumed before the block frontier.
     #[must_use]
@@ -333,6 +375,16 @@ pub(crate) enum TilePartitionTraversalError {
     /// Unsupported traversal path.
     #[error("partition traversal unsupported path: {0:?}")]
     Unsupported(TilePartitionTraversalUnsupported),
+    /// A coordinate subtraction underflowed.
+    #[error("{coordinate} coordinate underflow: {base} - {offset}")]
+    CoordinateUnderflow {
+        /// Coordinate name.
+        coordinate: &'static str,
+        /// Base coordinate.
+        base: usize,
+        /// Derived offset.
+        offset: usize,
+    },
     /// A coordinate addition overflowed.
     #[error("{coordinate} coordinate overflow: {base} + {offset}")]
     CoordinateOverflow {
@@ -352,6 +404,14 @@ pub(crate) enum TilePartitionTraversalError {
         left: usize,
         /// Right operand.
         right: usize,
+    },
+    /// Loop-restoration unit size was invalid for a supported LR plane.
+    #[error("loop restoration plane {plane} has invalid unit size {unit_size}")]
+    InvalidLoopRestorationUnitSize {
+        /// Plane index.
+        plane: usize,
+        /// Invalid `LoopRestorationSize[plane]`.
+        unit_size: usize,
     },
     /// A selected partition had no valid child size.
     #[error("partition traversal selected invalid child size for {partition:?} at bSize {b_size}")]
@@ -389,6 +449,60 @@ pub(crate) fn plan_tile_partition_traversal_frontier(
     Ok(plan_tile_partition_traversal_cursor(input)?.plan)
 }
 
+/// Consumes only the AV2 §5.20.10.4 superblock-root `read_lr()` syntax supported
+/// by this frontier and stops before §5.20.3.1 `read_partition`.
+pub(crate) fn consume_tile_loop_restoration_root_frontier(
+    input: TilePartitionTraversalInput<'_, '_, '_>,
+) -> Result<TileLoopRestorationRootFrontier, TilePartitionTraversalError> {
+    let TilePartitionTraversalInput {
+        work_unit,
+        frame,
+        context: _,
+        limits,
+    } = input;
+    let extended_sdp_allowed = frame.enable_extended_sdp && !frame.frame_is_intra;
+    if extended_sdp_allowed {
+        return Err(TilePartitionTraversalError::Unsupported(
+            TilePartitionTraversalUnsupported::ExtendedSdp,
+        ));
+    }
+    if frame.loop_restoration == TilePartitionLoopRestorationState::UnsupportedReadLrSyntax {
+        return Err(TilePartitionTraversalError::Unsupported(
+            TilePartitionTraversalUnsupported::ReadLoopRestoration,
+        ));
+    }
+    if frame.bru_state != TilePartitionBruState::Active {
+        return Err(TilePartitionTraversalError::Unsupported(
+            TilePartitionTraversalUnsupported::BruOrBridge,
+        ));
+    }
+
+    let mut cdfs = work_unit.cdf().tile_cdfs().clone();
+    let config = SymbolDecoderConfig::new().with_cdf_update_mode(work_unit.cdf().update_mode());
+    let mut symbols = SymbolDecoder::with_base_and_config(
+        work_unit.tile_bytes(),
+        work_unit.tile_byte_span().start,
+        config,
+    )?;
+    let tile_bounds = TilePartitionBounds::from_work_unit(work_unit);
+    let root = TilePartitionCall::root(
+        work_unit.mi_row_range().start as usize,
+        work_unit.mi_col_range().start as usize,
+        frame.sb_size,
+        frame.has_chroma,
+    );
+    limits.ensure(DecodeLimitName::MaxTilePartitionSteps, 1)?;
+    if root.r < frame.mi_rows && root.c < frame.mi_cols {
+        ensure_supported_call(frame, root)?;
+        read_loop_restoration_for_call(frame, root, tile_bounds, &mut cdfs, &mut symbols)?;
+    }
+    *work_unit.cdf_mut().tile_cdfs_mut() = cdfs;
+    Ok(TileLoopRestorationRootFrontier {
+        symbol_count_after: symbols.symbol_count(),
+        consumed_bits_after: symbols.consumed_bits().get(),
+    })
+}
+
 /// Plans the partition frontier and returns the live symbol cursor at it.
 pub(crate) fn plan_tile_partition_traversal_cursor<'payload>(
     input: TilePartitionTraversalInput<'_, 'payload, '_>,
@@ -413,8 +527,6 @@ pub(crate) fn plan_tile_partition_traversal_cursor<'payload>(
     // callback reads the §5.20.7.6 inter `mode_info` instead of intra modes, and the
     // §8.2.4 `exit_symbol()` check the caller runs guards bit-exactness so a wrong
     // partition read for an unverified inter shape is rejected, never confident-wrong.
-    // AV2 §5.20.3.1 invokes §5.20.10.4 `read_lr()` at the root before
-    // `read_partition`; keep that syntax explicit until this frontier models it.
     if frame.loop_restoration == TilePartitionLoopRestorationState::UnsupportedReadLrSyntax {
         return Err(TilePartitionTraversalError::Unsupported(
             TilePartitionTraversalUnsupported::ReadLoopRestoration,
@@ -455,6 +567,7 @@ pub(crate) fn plan_tile_partition_traversal_cursor<'payload>(
             continue;
         }
         ensure_supported_call(frame, call)?;
+        read_loop_restoration_for_call(frame, call, tile_bounds, &mut cdfs, &mut symbols)?;
 
         let symbol_count_before = symbols.symbol_count();
         let decision = read_frontier_partition_decision(
@@ -643,6 +756,13 @@ where
                     continue;
                 }
                 ensure_supported_call(frame, call)?;
+                read_loop_restoration_for_call(
+                    frame,
+                    call,
+                    tile_bounds,
+                    work_unit.cdf_mut().tile_cdfs_mut(),
+                    &mut symbols,
+                )?;
 
                 let decision = mi_size_state
                     .with_context_state(|context| {
@@ -752,6 +872,172 @@ fn ensure_supported_call(
         ));
     }
     Ok(())
+}
+
+fn read_loop_restoration_for_call(
+    frame: TilePartitionFrameFacts,
+    call: TilePartitionCall,
+    tile_bounds: TilePartitionBounds,
+    cdfs: &mut super::cdf::TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+) -> Result<(), TilePartitionTraversalError> {
+    // AV2 §5.20.3.1 invokes §5.20.10.4 `read_lr()` only for superblock-root
+    // partition calls (`SbSize == bSize`), before `read_partition`.
+    if call.b_size != frame.sb_size {
+        return Ok(());
+    }
+    let TilePartitionLoopRestorationState::FrameWienerNs(lr) = frame.loop_restoration else {
+        return Ok(());
+    };
+    if is_minimal_sdp_root(frame, call) {
+        return Err(TilePartitionTraversalError::Unsupported(
+            TilePartitionTraversalUnsupported::Sdp,
+        ));
+    }
+
+    let w = call.b_size.num_4x4_wide()?;
+    let h = call.b_size.num_4x4_high()?;
+    for plane in 0..frame.num_planes.min(3) {
+        if !lr.plane_enabled[plane] {
+            continue;
+        }
+        read_wiener_ns_lr_units_for_plane(
+            plane,
+            lr.unit_size[plane],
+            frame,
+            call,
+            tile_bounds,
+            w,
+            h,
+            cdfs,
+            symbols,
+        )?;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn read_wiener_ns_lr_units_for_plane(
+    plane: usize,
+    unit_size: usize,
+    frame: TilePartitionFrameFacts,
+    call: TilePartitionCall,
+    tile_bounds: TilePartitionBounds,
+    w: usize,
+    h: usize,
+    cdfs: &mut super::cdf::TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+) -> Result<(), TilePartitionTraversalError> {
+    if unit_size == 0 {
+        return Err(
+            TilePartitionTraversalError::InvalidLoopRestorationUnitSize { plane, unit_size },
+        );
+    }
+    let sub_x = if plane == 0 {
+        0
+    } else {
+        usize::from(frame.subsampling_x)
+    };
+    let sub_y = if plane == 0 {
+        0
+    } else {
+        usize::from(frame.subsampling_y)
+    };
+    let sample_step_x = MI_SIZE >> sub_x;
+    let sample_step_y = MI_SIZE >> sub_y;
+
+    let mi_cols = checked_sub(
+        "lr_mi_cols",
+        tile_bounds.mi_col_end,
+        tile_bounds.mi_col_start,
+    )?;
+    let mi_rows = checked_sub(
+        "lr_mi_rows",
+        tile_bounds.mi_row_end,
+        tile_bounds.mi_row_start,
+    )?;
+    let frame_cols = checked_mul_shifted("lr_frame_cols", mi_cols, MI_SIZE, sub_x)?;
+    let frame_rows = checked_mul_shifted("lr_frame_rows", mi_rows, MI_SIZE, sub_y)?;
+    let lr_row_offset =
+        checked_mul_shifted("lr_row_offset", tile_bounds.mi_row_start, MI_SIZE, sub_y)? / unit_size;
+    let lr_col_offset =
+        checked_mul_shifted("lr_col_offset", tile_bounds.mi_col_start, MI_SIZE, sub_x)? / unit_size;
+    let c = checked_sub("lr_c", call.c, tile_bounds.mi_col_start)?;
+    let r = checked_sub("lr_r", call.r, tile_bounds.mi_row_start)?;
+
+    let unit_rows = count_units_in_frame(unit_size, frame_rows)?;
+    let unit_cols = count_units_in_frame(unit_size, frame_cols)?;
+    let unit_row_start = ceil_unit_index(
+        checked_mul("lr_unit_row_start", r, sample_step_y)?,
+        unit_size,
+    )?;
+    let unit_col_start = ceil_unit_index(
+        checked_mul("lr_unit_col_start", c, sample_step_x)?,
+        unit_size,
+    )?;
+    let unit_row_end = unit_rows.min(ceil_unit_index(
+        checked_mul(
+            "lr_unit_row_end",
+            checked_add("lr_r_end", r, h)?,
+            sample_step_y,
+        )?,
+        unit_size,
+    )?);
+    let unit_col_end = unit_cols.min(ceil_unit_index(
+        checked_mul(
+            "lr_unit_col_end",
+            checked_add("lr_c_end", c, w)?,
+            sample_step_x,
+        )?,
+        unit_size,
+    )?);
+
+    for unit_row in unit_row_start..unit_row_end {
+        for unit_col in unit_col_start..unit_col_end {
+            let _unit_row = checked_add("lr_unit_row", unit_row, lr_row_offset)?;
+            let _unit_col = checked_add("lr_unit_col", unit_col, lr_col_offset)?;
+            read_wiener_ns_lr_unit(cdfs, symbols)?;
+        }
+    }
+    Ok(())
+}
+
+fn read_wiener_ns_lr_unit(
+    cdfs: &mut super::cdf::TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+) -> Result<(), TilePartitionTraversalError> {
+    let _use_wiener_ns = cdfs
+        .with_row_mut(super::cdf::TileCdfSelector::UseWienerNs, |row| {
+            symbols.read_symbol(row)
+        })??
+        .get()
+        != 0;
+    // AV2 §5.20.10.6 returns immediately for frame-level filters when
+    // `readFrameFilters == 0`; this frontier only consumes the §5.20.10.5
+    // `use_wiener_ns` LR type symbol and leaves reconstruction unsupported.
+    Ok(())
+}
+
+fn count_units_in_frame(
+    unit_size: usize,
+    frame_size: usize,
+) -> Result<usize, TilePartitionTraversalError> {
+    Ok(checked_add("lr_count_units", frame_size, unit_size >> 1)? / unit_size)
+        .map(|count| count.max(1))
+}
+
+fn ceil_unit_index(value: usize, unit_size: usize) -> Result<usize, TilePartitionTraversalError> {
+    let adjusted = checked_add("lr_unit_ceil", value, unit_size.saturating_sub(1))?;
+    Ok(adjusted / unit_size)
+}
+
+fn checked_mul_shifted(
+    coordinate: &'static str,
+    value: usize,
+    scale: usize,
+    shift: usize,
+) -> Result<usize, TilePartitionTraversalError> {
+    Ok(checked_mul(coordinate, value, scale)? >> shift)
 }
 
 fn read_frontier_partition_decision(
@@ -1215,23 +1501,39 @@ fn checked_add(
         })
 }
 
+fn checked_sub(
+    coordinate: &'static str,
+    base: usize,
+    offset: usize,
+) -> Result<usize, TilePartitionTraversalError> {
+    base.checked_sub(offset)
+        .ok_or(TilePartitionTraversalError::CoordinateUnderflow {
+            coordinate,
+            base,
+            offset,
+        })
+}
+
+fn checked_mul(
+    coordinate: &'static str,
+    left: usize,
+    right: usize,
+) -> Result<usize, TilePartitionTraversalError> {
+    left.checked_mul(right)
+        .ok_or(TilePartitionTraversalError::CoordinateOffsetOverflow {
+            coordinate,
+            left,
+            right,
+        })
+}
+
 fn checked_scaled_add(
     coordinate: &'static str,
     base: usize,
     scale: usize,
     value: usize,
 ) -> Result<usize, TilePartitionTraversalError> {
-    checked_add(
-        coordinate,
-        base,
-        scale
-            .checked_mul(value)
-            .ok_or(TilePartitionTraversalError::CoordinateOffsetOverflow {
-                coordinate,
-                left: scale,
-                right: value,
-            })?,
-    )
+    checked_add(coordinate, base, checked_mul(coordinate, scale, value)?)
 }
 
 #[cfg(test)]
