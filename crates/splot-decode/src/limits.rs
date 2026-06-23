@@ -8,10 +8,12 @@
 use core::fmt;
 
 const DEFAULT_MAX_INPUT_BYTES: u64 = 16 * 1024 * 1024;
-const DEFAULT_MAX_OBUS: u64 = 4_096;
+// Keep defaults finite, but size traversal counts so the current ac0ej3 mission
+// target can reach the runtime's honest unsupported-feature gates.
+const DEFAULT_MAX_OBUS: u64 = 16_384;
 const DEFAULT_MAX_IVF_FRAME_RECORDS: u64 = 4_096;
-const DEFAULT_MAX_FRAMES_TO_DECODE: u64 = 128;
-const DEFAULT_MAX_OUTPUT_FRAMES: u64 = 128;
+const DEFAULT_MAX_FRAMES_TO_DECODE: u64 = 8_192;
+const DEFAULT_MAX_OUTPUT_FRAMES: u64 = 8_192;
 const DEFAULT_MAX_FRAME_WIDTH: u64 = 4_096;
 const DEFAULT_MAX_FRAME_HEIGHT: u64 = 4_096;
 const DEFAULT_MAX_LUMA_SAMPLES_PER_FRAME: u64 = DEFAULT_MAX_FRAME_WIDTH * DEFAULT_MAX_FRAME_HEIGHT;

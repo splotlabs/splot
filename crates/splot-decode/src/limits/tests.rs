@@ -14,7 +14,7 @@ fn default_options_and_limits_are_finite_and_pinned() {
             limits.max_input_bytes(),
             16 * 1024 * 1024,
         ),
-        (DecodeLimitName::MaxObus, limits.max_obus(), 4_096),
+        (DecodeLimitName::MaxObus, limits.max_obus(), 16_384),
         (
             DecodeLimitName::MaxIvfFrameRecords,
             limits.max_ivf_frame_records(),
@@ -23,12 +23,12 @@ fn default_options_and_limits_are_finite_and_pinned() {
         (
             DecodeLimitName::MaxFramesToDecode,
             limits.max_frames_to_decode(),
-            128,
+            8_192,
         ),
         (
             DecodeLimitName::MaxOutputFrames,
             limits.max_output_frames(),
-            128,
+            8_192,
         ),
         (
             DecodeLimitName::MaxFrameWidth,

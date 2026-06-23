@@ -47,10 +47,10 @@ and now provides library-only stream planners over raw bytes and already parsed
 IVF/DKIF bytes with bounded traversal before returning the same
 `DecodeStreamPlan` as `DecodeContext::plan_stream`; both paths preserve raw
 Annex B / IVF OBU order and offset metadata, select only the base minimal-tier
-layer, treat `OBU_CLOSED_LOOP_KEY` as the only frame candidate, and reject
-malformed sources or unsupported structures transactionally. These APIs do not
-decode tile payloads, reconstruct pixels, produce hashes, write Y4M, or provide
-runtime decode output.
+layer, retain `OBU_CLOSED_LOOP_KEY`, `OBU_REGULAR_TILE_GROUP`, and
+`OBU_REGULAR_TIP` as selected frame candidates, and reject malformed sources or
+unsupported structures transactionally. These APIs do not decode tile payloads,
+reconstruct pixels, produce hashes, write Y4M, or provide runtime decode output.
 `splot-recon` now exposes immutable decoded output frame and plane model types
 with constructor invariants plus a bounded immutable reference-slot container,
 canonical decoded-frame hash input serialization, source-backed
@@ -786,12 +786,16 @@ byte-consuming decode boundary.
 `DecodeLimits::zero()` and `DecodeLimits::unlimited()` are explicit constructors
 for tests and callers; `DecodeLimits::default()` and `DecodeOptions::default()`
 use finite repository policy thresholds for CI, fuzzing, and early decoder work.
+The default OBU and frame-count thresholds are intentionally large enough for the
+current `ac0ej3.ivf` mission target's inspected 12964 OBU stream to advance past
+the old 128-frame planner cap into the next honest runtime gate; this remains
+local `splot` resource policy, not an AV2 conformance limit.
 
 `DecodeContext::plan_stream` applies only the limits it can derive from an
 already parsed stream: `max_input_bytes` from the caller-supplied input length,
 `max_obus` before adding each planned OBU, `max_ivf_frame_records` before
 traversing each IVF frame record, and `max_frames_to_decode` before accepting
-each closed-loop-key frame candidate. `DecodeContext::plan_bytes` is the first
+each selected frame candidate. `DecodeContext::plan_bytes` is the first
 raw byte-consuming planner: it performs bounded raw Annex B / IVF traversal and
 then reuses the same selected-frame-candidate limit and unsupported-structure
 classification as the parsed planner. It is still plan-only and does not parse

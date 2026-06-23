@@ -215,12 +215,12 @@ fn parse_bounded_ivf<'a>(input: &'a [u8], limits: DecodeLimits) -> Result<Parsed
 
 fn is_selected_frame_candidate(header: ObuHeader) -> bool {
     let selected_layer = DecodeLayerSelection::base();
-    // AV2 § 5.2.1: a key frame (`OBU_CLOSED_LOOP_KEY`) and an inter frame carried in
-    // an `OBU_REGULAR_TILE_GROUP` both count as selected-layer frame candidates for
-    // the `MaxFramesToDecode` limit, mirroring `classify_obu`'s frame-candidate roles.
+    // AV2 § 5.2.1: a key frame (`OBU_CLOSED_LOOP_KEY`) and non-key frames carried in
+    // `OBU_REGULAR_TILE_GROUP` or `OBU_REGULAR_TIP` count as selected-layer frame
+    // candidates for the `MaxFramesToDecode` limit, mirroring `classify_obu`.
     matches!(
         header.obu_type,
-        ObuType::ClosedLoopKey | ObuType::RegularTileGroup
+        ObuType::ClosedLoopKey | ObuType::RegularTileGroup | ObuType::RegularTip
     ) && header.temporal_layer_id == selected_layer.temporal_layer_id()
         && header.embedded_layer_id == selected_layer.embedded_layer_id()
         && header.extended_layer_id == selected_layer.extended_layer_id()
@@ -283,6 +283,24 @@ mod tests {
     #[test]
     fn raw_frame_candidate_limit_is_checked_before_later_malformed_bytes() {
         let bytes = [0x01, 0x10, 0x01, 0x10, 0x05, 0x10];
+        let options = DecodeOptions::new(
+            DecodeLimits::unlimited()
+                .with_max_frames_to_decode(crate::DecodeLimitThreshold::Max(1)),
+        );
+
+        let error = plan_byte_stream(&bytes, options).unwrap_err();
+
+        assert!(matches!(
+            error,
+            crate::DecodeError::Limit {
+                source
+            } if source.name() == DecodeLimitName::MaxFramesToDecode
+        ));
+    }
+
+    #[test]
+    fn raw_regular_tip_counts_toward_frame_candidate_limit() {
+        let bytes = [0x01, 0x10, 0x01, 0x38];
         let options = DecodeOptions::new(
             DecodeLimits::unlimited()
                 .with_max_frames_to_decode(crate::DecodeLimitThreshold::Max(1)),
