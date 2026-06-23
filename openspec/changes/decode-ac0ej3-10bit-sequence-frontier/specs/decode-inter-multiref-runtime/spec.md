@@ -10,8 +10,8 @@ The runtime SHALL continue to reject unsupported later frames before producing c
 
 - **WHEN** `splot decode /Users/bartosztomczyk/Documents/SplotLabs/ac0ej3.ivf` runs with default decode limits
 - **THEN** it advances past the former sequence bit-depth gate
-- **AND** after the follow-on sequence chroma frontier it rejects before output at
-  `unsupported_reason = "incomplete_frame_header"`
+- **AND** after the follow-on sequence chroma and Wiener NS frontiers it rejects
+  before output at `unsupported_reason = "unsupported_wienerns_filter"`
 
 #### Scenario: 10-bit single-frame stream still cannot enter 8-bit decode
 
