@@ -249,6 +249,10 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
     ensure_intra_header_complete(&key_core, key_envelope.offset)?;
     ensure_sequence_chroma_tools_before_tile_decode(&sequence, sequence_envelope.offset)?;
     ensure_8bit_runtime_storage(&sequence, sequence_envelope.offset)?;
+    // This structural gate intentionally runs after the parse-only header/tool
+    // checks above: later leading OBUs are outside `key_envelope`, so malformed
+    // key headers report their true frontier while otherwise-supported streams
+    // still reject extra leading OBUs before allocation or output.
     reject_extra_leading_key_payload_obus(leading_obus)?;
 
     let mut candidates = plan.frame_candidates_all();
@@ -882,13 +886,13 @@ fn validate_sequence(sequence: &SequenceHeader, offset: ByteOffset) -> Result<()
     // shape, and a single-picture sequence is just the one-frame case. Frame-header
     // bit layout differences (e.g. the `frame_size_override_flag` read) are handled
     // by `parse_frame_header_core` and proven bit-exact by the per-frame decode.
-    let _intra = sequence.intra.as_ref().ok_or_else(|| {
-        unsupported_at(
+    if sequence.intra.is_none() {
+        return Err(unsupported_at(
             "missing_sequence_intra_config",
             offset,
             "minimal tier requires a fully parsed sequence intra config",
-        )
-    })?;
+        ));
+    }
     Ok(())
 }
 
@@ -917,7 +921,7 @@ fn ensure_sequence_chroma_tools_before_tile_decode(
         return Err(unsupported_feature_at(
             "unsupported_mhccp",
             offset,
-            "minimal tier parses the sequence MHCCP flag but still rejects before §5.20.5.6 is_mhccp_allowed / read_cfl_alphas syntax can be skipped",
+            "minimal tier parses the sequence MHCCP flag but still rejects before §5.20.5.6 is_mhccp_allowed mode-info syntax can be skipped",
             AC0EJ3_CHROMA_MATRIX_ROW,
             AC0EJ3_CHROMA_FEATURE_ID,
             "5.20.5.6",

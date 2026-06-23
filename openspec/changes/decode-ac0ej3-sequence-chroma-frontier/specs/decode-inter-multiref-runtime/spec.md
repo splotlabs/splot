@@ -6,8 +6,8 @@ For the verified minimal multi-frame runtime subset, the decoder SHALL parse and
 validate sequence-level chroma prediction capability flags before deciding whether
 the current runtime can decode their reachable tile syntax. The runtime MUST
 reject CfL or MHCCP before tile mode-info symbols are decoded whenever §5.20.5.6
-could require `is_cfl`, `UV_CFL_PRED`, `read_cfl_alphas`, or MHCCP handling that
-the minimal runtime has not implemented.
+could require `is_cfl`, `UV_CFL_PRED`, `is_mhccp_allowed`, or related MHCCP
+handling that the minimal runtime has not implemented.
 
 The runtime SHALL continue to reject unsupported later frames before producing
 caller-visible output using the existing precise gates, including but not limited
