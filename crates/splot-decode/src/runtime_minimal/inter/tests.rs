@@ -1214,6 +1214,30 @@ fn wienerns_header_status_reports_precise_runtime_frontier() {
 }
 
 #[test]
+fn parsed_wienerns_bank_reports_next_runtime_frontier() {
+    let error = super::super::wienerns_bank_runtime_error(ByteOffset::new(74));
+    let unsupported = match error {
+        DecodeError::UnsupportedFeature { unsupported } => unsupported,
+        _ => panic!("parsed Wiener NS bank frontier must be an unsupported-feature error"),
+    };
+
+    assert_eq!(unsupported.reason(), "unsupported_wienerns_filter_bank");
+    assert_eq!(unsupported.matrix_row(), "ac0ej3-wienerns-bank-frontier");
+    assert_eq!(
+        unsupported.feature_id(),
+        "DECODE-AC0EJ3-WIENERNS-BANK-FRONTIER"
+    );
+    assert_eq!(unsupported.spec_section(), "5.20.10.6");
+    assert_eq!(unsupported.byte_offset(), Some(ByteOffset::new(74)));
+    assert!(
+        unsupported
+            .message()
+            .contains("loop-restoration reconstruction"),
+        "message should make clear that parsing the bank is not reconstruction support"
+    );
+}
+
+#[test]
 fn non_wienerns_header_status_keeps_generic_incomplete_frontier() {
     let error = super::super::incomplete_intra_header_error(
         FrameHeaderParseStatus::ActivationFieldsOnly,

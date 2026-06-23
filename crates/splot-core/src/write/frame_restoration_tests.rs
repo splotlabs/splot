@@ -14,6 +14,7 @@ mod tests {
     use crate::bitio::BitReader;
     use crate::headers::frame::{
         CcsoPlaneParams, LrParseOutcome, LrPlaneParams, parse_ccso_params, parse_lr_params,
+        WienerNsFrameFilterBank, WienerNsFrameFilterClass,
     };
     use crate::headers::sequence::{ChromaFormatIdc, SuperblockSize};
     use crate::span::ByteOffset;
@@ -311,16 +312,19 @@ mod tests {
                     restoration_type: FrameRestorationType::WienerNonsep,
                     frame_filters_on: true,
                     num_filter_classes: None,
+                    frame_filter_bank: None,
                 },
                 LrPlaneParams {
                     restoration_type: FrameRestorationType::None,
                     frame_filters_on: false,
                     num_filter_classes: None,
+                    frame_filter_bank: None,
                 },
                 LrPlaneParams {
                     restoration_type: FrameRestorationType::None,
                     frame_filters_on: false,
                     num_filter_classes: None,
+                    frame_filter_bank: None,
                 },
             ],
             loop_restoration_size: [256, 32, 32],
@@ -336,6 +340,38 @@ mod tests {
     }
 
     #[test]
+    fn lr_frame_filter_bank_is_rejected_until_writer_support() {
+        let geometry = geom(SuperblockSize::Block128x128, ChromaFormatIdc::Yuv420);
+        let params = LrParams {
+            uses_lr: false,
+            planes: vec![LrPlaneParams {
+                restoration_type: FrameRestorationType::None,
+                frame_filters_on: false,
+                num_filter_classes: None,
+                frame_filter_bank: Some(WienerNsFrameFilterBank {
+                    classes: vec![WienerNsFrameFilterClass {
+                        match_index: 0,
+                        merged: true,
+                        ref_bank: 0,
+                        subset: None,
+                        wiener_ns_uv_sym: false,
+                        coeffs: vec![0; 16],
+                    }],
+                }),
+            }],
+            loop_restoration_size: [64, 32, 32],
+        };
+        let mut writer = BitWriter::new();
+        assert!(matches!(
+            write_lr_params(&mut writer, &params, false, 1, &restoration_enabled(), geometry, 0),
+            Err(WriteError::NonCanonicalFrameHeader {
+                what: "lr_frame_filter_bank"
+            })
+        ));
+        assert_eq!(writer.bit_len(), 0);
+    }
+
+    #[test]
     fn lr_num_planes_mismatch_is_rejected() {
         let geometry = geom(SuperblockSize::Block128x128, ChromaFormatIdc::Yuv420);
         let params = LrParams {
@@ -344,6 +380,7 @@ mod tests {
                 restoration_type: FrameRestorationType::None,
                 frame_filters_on: false,
                 num_filter_classes: None,
+                    frame_filter_bank: None,
             }],
             loop_restoration_size: [64, 32, 32],
         };
@@ -369,16 +406,19 @@ mod tests {
                     restoration_type: FrameRestorationType::None,
                     frame_filters_on: false,
                     num_filter_classes: None,
+                    frame_filter_bank: None,
                 },
                 LrPlaneParams {
                     restoration_type: FrameRestorationType::PcWiener,
                     frame_filters_on: false,
                     num_filter_classes: None,
+                    frame_filter_bank: None,
                 },
                 LrPlaneParams {
                     restoration_type: FrameRestorationType::None,
                     frame_filters_on: false,
                     num_filter_classes: None,
+                    frame_filter_bank: None,
                 },
             ],
             loop_restoration_size: [64, 32, 32],
@@ -409,16 +449,19 @@ mod tests {
                     restoration_type: FrameRestorationType::None,
                     frame_filters_on: false,
                     num_filter_classes: None,
+                    frame_filter_bank: None,
                 },
                 LrPlaneParams {
                     restoration_type: FrameRestorationType::Switchable,
                     frame_filters_on: false,
                     num_filter_classes: None,
+                    frame_filter_bank: None,
                 },
                 LrPlaneParams {
                     restoration_type: FrameRestorationType::None,
                     frame_filters_on: false,
                     num_filter_classes: None,
+                    frame_filter_bank: None,
                 },
             ],
             loop_restoration_size: [64, 32, 32],
@@ -453,16 +496,19 @@ mod tests {
                     restoration_type: FrameRestorationType::None,
                     frame_filters_on: false,
                     num_filter_classes: None,
+                    frame_filter_bank: None,
                 },
                 LrPlaneParams {
                     restoration_type: FrameRestorationType::None,
                     frame_filters_on: false,
                     num_filter_classes: None,
+                    frame_filter_bank: None,
                 },
                 LrPlaneParams {
                     restoration_type: FrameRestorationType::None,
                     frame_filters_on: false,
                     num_filter_classes: None,
+                    frame_filter_bank: None,
                 },
             ],
             loop_restoration_size: [64, 32, 32],
@@ -485,16 +531,19 @@ mod tests {
                     restoration_type: FrameRestorationType::WienerNonsep,
                     frame_filters_on: false,
                     num_filter_classes: Some(6),
+                    frame_filter_bank: None,
                 },
                 LrPlaneParams {
                     restoration_type: FrameRestorationType::None,
                     frame_filters_on: false,
                     num_filter_classes: None,
+                    frame_filter_bank: None,
                 },
                 LrPlaneParams {
                     restoration_type: FrameRestorationType::None,
                     frame_filters_on: false,
                     num_filter_classes: None,
+                    frame_filter_bank: None,
                 },
             ],
             loop_restoration_size: [256, 32, 32],
@@ -521,16 +570,19 @@ mod tests {
                     restoration_type: FrameRestorationType::PcWiener,
                     frame_filters_on: false,
                     num_filter_classes: None,
+                    frame_filter_bank: None,
                 },
                 LrPlaneParams {
                     restoration_type: FrameRestorationType::None,
                     frame_filters_on: false,
                     num_filter_classes: None,
+                    frame_filter_bank: None,
                 },
                 LrPlaneParams {
                     restoration_type: FrameRestorationType::None,
                     frame_filters_on: false,
                     num_filter_classes: None,
+                    frame_filter_bank: None,
                 },
             ],
             // luma 512 >> 2 == 128 (shift 2, unreachable for 256x256); chroma default 32.
@@ -555,16 +607,19 @@ mod tests {
                     restoration_type: FrameRestorationType::PcWiener,
                     frame_filters_on: false,
                     num_filter_classes: None,
+                    frame_filter_bank: None,
                 },
                 LrPlaneParams {
                     restoration_type: FrameRestorationType::None,
                     frame_filters_on: false,
                     num_filter_classes: None,
+                    frame_filter_bank: None,
                 },
                 LrPlaneParams {
                     restoration_type: FrameRestorationType::None,
                     frame_filters_on: false,
                     num_filter_classes: None,
+                    frame_filter_bank: None,
                 },
             ],
             loop_restoration_size: [300, 32, 32],
@@ -588,16 +643,19 @@ mod tests {
                     restoration_type: FrameRestorationType::None,
                     frame_filters_on: false,
                     num_filter_classes: None,
+                    frame_filter_bank: None,
                 },
                 LrPlaneParams {
                     restoration_type: FrameRestorationType::None,
                     frame_filters_on: false,
                     num_filter_classes: None,
+                    frame_filter_bank: None,
                 },
                 LrPlaneParams {
                     restoration_type: FrameRestorationType::None,
                     frame_filters_on: false,
                     num_filter_classes: None,
+                    frame_filter_bank: None,
                 },
             ],
             loop_restoration_size: [64, 32, 32],
@@ -623,16 +681,19 @@ mod tests {
                     restoration_type: FrameRestorationType::None,
                     frame_filters_on: false,
                     num_filter_classes: None,
+                    frame_filter_bank: None,
                 },
                 LrPlaneParams {
                     restoration_type: FrameRestorationType::None,
                     frame_filters_on: false,
                     num_filter_classes: None,
+                    frame_filter_bank: None,
                 },
                 LrPlaneParams {
                     restoration_type: FrameRestorationType::None,
                     frame_filters_on: false,
                     num_filter_classes: None,
+                    frame_filter_bank: None,
                 },
             ],
             loop_restoration_size: [64, 32, 16],

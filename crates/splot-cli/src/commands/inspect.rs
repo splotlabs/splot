@@ -39,8 +39,8 @@ use splot_core::headers::frame::{
     FilmGrainConfig, FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode,
     FrameHeaderParseStatus, FrameHeaderPrefix, FrameHeaderTail, FrameReferenceStateView, GdfParams,
     InterControl, LosslessInfo, LrParams, LrPartialParams, LrPlaneParams, QuantizationParams,
-    SefTrailingBits, SegmentationParams, SetupQmParams, TileInfo, parse_frame_header_core,
-    parse_frame_header_prefix,
+    SefTrailingBits, SegmentationParams, SetupQmParams, TileInfo, WienerNsFrameFilterBank,
+    WienerNsFrameFilterClass, parse_frame_header_core, parse_frame_header_prefix,
 };
 use splot_core::headers::metadata::{MetadataUnit, parse_metadata_group, parse_metadata_short};
 use splot_core::headers::operating_point_set::{OperatingPointSet, parse_operating_point_set};
@@ -1321,6 +1321,8 @@ struct LrPlaneParamsView {
     frame_filters_on: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     num_filter_classes: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    frame_filter_bank: Option<WienerNsFrameFilterBankView>,
 }
 
 impl LrPlaneParamsView {
@@ -1329,6 +1331,53 @@ impl LrPlaneParamsView {
             restoration_type: plane.restoration_type.label(),
             frame_filters_on: plane.frame_filters_on,
             num_filter_classes: plane.num_filter_classes,
+            frame_filter_bank: plane
+                .frame_filter_bank
+                .as_ref()
+                .map(WienerNsFrameFilterBankView::new),
+        }
+    }
+}
+
+/// Parsed frame-level Wiener NS bank for `--json` (AV2 § 5.20.10.6).
+#[derive(Serialize)]
+struct WienerNsFrameFilterBankView {
+    classes: Vec<WienerNsFrameFilterClassView>,
+}
+
+impl WienerNsFrameFilterBankView {
+    fn new(bank: &WienerNsFrameFilterBank) -> Self {
+        Self {
+            classes: bank
+                .classes
+                .iter()
+                .map(WienerNsFrameFilterClassView::new)
+                .collect(),
+        }
+    }
+}
+
+/// One frame-level Wiener NS class for `--json` (AV2 § 5.20.10.6).
+#[derive(Serialize)]
+struct WienerNsFrameFilterClassView {
+    match_index: u8,
+    merged: bool,
+    ref_bank: u8,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    subset: Option<u8>,
+    wiener_ns_uv_sym: bool,
+    coeffs: Vec<i16>,
+}
+
+impl WienerNsFrameFilterClassView {
+    fn new(class: &WienerNsFrameFilterClass) -> Self {
+        Self {
+            match_index: class.match_index,
+            merged: class.merged,
+            ref_bank: class.ref_bank,
+            subset: class.subset,
+            wiener_ns_uv_sym: class.wiener_ns_uv_sym,
+            coeffs: class.coeffs.clone(),
         }
     }
 }
@@ -1353,11 +1402,11 @@ impl LrParamsView {
     }
 }
 
-/// The partial `lr_params()` facts for `--json` when the parse stopped before the unmodeled
-/// frame-level Wiener bank decode (AV2 § 5.18.7.11, the core
-/// `StoppedBeforeWienerNsFilter` status). This is surfaced under the distinct `lr_partial`
-/// key (never `lr`) so a stopped parse is never reported as a complete one; `stopped_before`
-/// records where the parse halted.
+/// The partial `lr_params()` facts for `--json` when the parse stopped in a reserved
+/// unsupported Wiener branch (AV2 § 5.18.7.11, the core
+/// `StoppedBeforeWienerNsFilter` status). The fixed-coded frame-level bank is now surfaced
+/// under `lr`; this distinct `lr_partial` key is retained so a stopped parse is never
+/// reported as a complete one.
 #[derive(Serialize)]
 struct LrPartialParamsView {
     stopped_before: &'static str,

@@ -21,10 +21,9 @@
 mod tests {
     use super::*;
     use crate::headers::frame::{
-        CoreSeqRestorationView, FrameHeaderParseStatus, FrameReferenceStateView, FrameSize,
-        init_core_from_prefix, parse_core_body, parse_frame_header_prefix,
+        FrameHeaderParseStatus, FrameReferenceStateView, FrameSize, init_core_from_prefix,
+        parse_core_body, parse_frame_header_prefix,
     };
-    use crate::headers::sequence::{ChromaFormatIdc, SuperblockSize};
 
     /// Parses a frame-header body (activation prefix + `parse_core_body`) against a directly
     /// built [`CoreSeqView`] / [`MfhFrameView`], the writer-test equivalent of the parser's
@@ -548,52 +547,37 @@ mod tests {
 
     #[test]
     fn reject_lr_params_partial_set() {
-        // `LrPartialParams` is #[non_exhaustive], so it cannot be built directly. Obtain a
-        // real partial straight from `parse_lr_params` (the same bits the restoration parser's
-        // `lr_frame_filters_on_stops_before_wienerns` test uses), then graft it onto a valid
-        // IntraHeaderComplete core so the dedicated `lr_params_partial` reject fires.
-        use crate::headers::frame::{LrGeometry, LrParseOutcome, parse_lr_params};
-        let restoration = CoreSeqRestorationView {
-            enable_restoration: true,
-            lr_pc_wiener_disabled: false,
-            lr_wiener_nonsep_disabled: false,
-            lr_uv_pc_wiener_disabled: true,
-            lr_uv_wiener_nonsep_disabled: false,
-        };
-        let geometry = LrGeometry::new(SuperblockSize::Block128x128, ChromaFormatIdc::Yuv420);
-        let mut bits = Bits::default();
-        // The known Wiener-stop bit pattern: plane-0 tool_index -> RESTORE_WIENER_NONSEP,
-        // frame_filters_on[0] == 1, num_filter_classes_idx, planes 1/2 RESTORE_NONE, luma size.
-        ns_bits(&mut bits, 2, 4); // plane 0 tool_index == 2 (n == 4 with these disables)
-        bits.bit(1); // frame_filters_on[0] == 1
-        bits.f(4, 3); // num_filter_classes_idx == 4
-        ns_bits(&mut bits, 0, 2); // plane 1 -> RESTORE_NONE
-        ns_bits(&mut bits, 0, 2); // plane 2 -> RESTORE_NONE
-        bits.bit(1); // luma size flag -> read_wienerns_filter (honest stop)
-        let mut data = bits.into_bytes();
-        data.extend_from_slice(&[0u8; 4]);
-        let mut reader = crate::bitio::BitReader::new(&data, crate::span::ByteOffset::new(0));
-        let outcome =
-            parse_lr_params(&mut reader, false, 3, &restoration, geometry, 100).unwrap();
-        let partial = match outcome {
-            LrParseOutcome::StoppedBeforeWienerNsFilter { partial, .. } => partial,
-            other => panic!("expected StoppedBeforeWienerNsFilter, got {other:?}"),
+        // The writer rejects any preserved partial LR facts on an otherwise complete core;
+        // in-crate tests can construct the non-exhaustive model directly.
+        use crate::headers::frame::{FrameRestorationType, LrPartialParams, LrPlaneParams};
+        let partial = LrPartialParams {
+            uses_lr: true,
+            planes: vec![
+                LrPlaneParams {
+                    restoration_type: FrameRestorationType::WienerNonsep,
+                    frame_filters_on: true,
+                    num_filter_classes: Some(6),
+                    frame_filter_bank: None,
+                },
+                LrPlaneParams {
+                    restoration_type: FrameRestorationType::None,
+                    frame_filters_on: false,
+                    num_filter_classes: None,
+                    frame_filter_bank: None,
+                },
+                LrPlaneParams {
+                    restoration_type: FrameRestorationType::None,
+                    frame_filters_on: false,
+                    num_filter_classes: None,
+                    frame_filter_bank: None,
+                },
+            ],
+            loop_restoration_size: [256, 32, 32],
         };
 
         let (mut core, seq) = valid_core();
         core.lr_params_partial = Some(partial);
         assert_rejected_what(&core, &seq, true, "lr_params_partial");
-    }
-
-    /// `ns(n)` encoding into a `Bits` builder, mirroring `info.rs::tests::Bits::ns`.
-    fn ns_bits(bits: &mut Bits, value: u32, n: u32) {
-        let w = u32::BITS - n.leading_zeros();
-        let m = (1u32 << w) - n;
-        if value < m {
-            bits.f(value, w - 1);
-        } else {
-            bits.f(value + m, w);
-        }
     }
 
     #[test]

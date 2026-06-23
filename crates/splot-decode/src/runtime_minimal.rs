@@ -48,6 +48,8 @@ const AC0EJ3_CHROMA_FEATURE_ID: &str = "DECODE-AC0EJ3-SEQUENCE-CHROMA-FRONTIER";
 const AC0EJ3_CHROMA_MATRIX_ROW: &str = "ac0ej3-sequence-chroma-frontier";
 const AC0EJ3_WIENERNS_FEATURE_ID: &str = "DECODE-AC0EJ3-WIENERNS-FRONTIER";
 const AC0EJ3_WIENERNS_MATRIX_ROW: &str = "ac0ej3-wienerns-frontier";
+const AC0EJ3_WIENERNS_BANK_FEATURE_ID: &str = "DECODE-AC0EJ3-WIENERNS-BANK-FRONTIER";
+const AC0EJ3_WIENERNS_BANK_MATRIX_ROW: &str = "ac0ej3-wienerns-bank-frontier";
 const MINIMAL_WIDTH: u32 = 64;
 const MINIMAL_HEIGHT: u32 = 64;
 const MINIMAL_TRACE_SYMBOLS: u64 = 6;
@@ -249,6 +251,7 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
     // streams fail at the next true header/tool frontier instead of at sequence flags.
     let key_core = parse_frame_core(key_envelope, &sequence)?;
     ensure_intra_header_complete(&key_core, key_envelope.offset)?;
+    ensure_wienerns_bank_runtime_frontier(&key_core, key_envelope.offset)?;
     ensure_sequence_chroma_tools_before_tile_decode(&sequence, sequence_envelope.offset)?;
     ensure_8bit_runtime_storage(&sequence, sequence_envelope.offset)?;
     // This structural gate intentionally runs after the parse-only header/tool
@@ -1047,6 +1050,7 @@ fn frame_ref_update_from_core(
 
 fn validate_frame_core(core: &FrameHeaderCore, offset: ByteOffset) -> Result<()> {
     ensure_intra_header_complete(core, offset)?;
+    ensure_wienerns_bank_runtime_frontier(core, offset)?;
     if !core.cur_mfh_id.is_zero()
         || core.show_existing_frame != Some(false)
         || core.frame_is_intra != Some(true)
@@ -1136,6 +1140,28 @@ fn ensure_intra_header_complete(core: &FrameHeaderCore, offset: ByteOffset) -> R
     Ok(())
 }
 
+fn ensure_wienerns_bank_runtime_frontier(core: &FrameHeaderCore, offset: ByteOffset) -> Result<()> {
+    if core.lr_params.as_ref().is_some_and(|lr| {
+        lr.planes
+            .iter()
+            .any(|plane| plane.frame_filter_bank.is_some())
+    }) {
+        return Err(wienerns_bank_runtime_error(offset));
+    }
+    Ok(())
+}
+
+fn wienerns_bank_runtime_error(offset: ByteOffset) -> DecodeError {
+    unsupported_feature_at(
+        "unsupported_wienerns_filter_bank",
+        offset,
+        "minimal runtime parsed the AV2 §5.20.10.6 frame-level Wiener NS bank but does not yet apply loop-restoration reconstruction before output",
+        AC0EJ3_WIENERNS_BANK_MATRIX_ROW,
+        AC0EJ3_WIENERNS_BANK_FEATURE_ID,
+        "5.20.10.6",
+    )
+}
+
 fn incomplete_intra_header_error(
     status: FrameHeaderParseStatus,
     offset: ByteOffset,
@@ -1144,7 +1170,7 @@ fn incomplete_intra_header_error(
         FrameHeaderParseStatus::StoppedBeforeWienerNsFilter { .. } => unsupported_feature_at(
             "unsupported_wienerns_filter",
             offset,
-            "minimal runtime reached read_wienerns_filter() (§5.20.10.6) from AV2 §5.18.7.11 lr_params() before the frame-level Wiener NS bank decode is modeled",
+            "minimal runtime reached an unsupported read_wienerns_filter() (§5.20.10.6) branch from AV2 §5.18.7.11 lr_params() before loop-restoration params could be modeled completely",
             AC0EJ3_WIENERNS_MATRIX_ROW,
             AC0EJ3_WIENERNS_FEATURE_ID,
             "5.18.7.11",
