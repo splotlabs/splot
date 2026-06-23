@@ -1031,9 +1031,10 @@ remain outside the tier. The current local `ac0ej3.ivf` first runtime stop is
 the conformant 10-bit sequence value, parses sequence chroma-tool flags, parses
 the key-frame header's fixed-coded AV2 §5.20.10.6 `read_wienerns_filter()` bank,
 consumes the supported frame-level §5.20.10.4/§5.20.10.5 LR unit symbols,
-distinguishes inactive `RESTORE_NONE` units from active `RESTORE_WIENER_NONSEP`
-units, and then rejects active loop-restoration reconstruction before any
-caller-visible output.
+retains each unit's plane/coordinate/active selection state, distinguishes
+inactive `RESTORE_NONE` units from active `RESTORE_WIENER_NONSEP` units, and
+then rejects active loop-restoration reconstruction under the selection-state
+frontier before any caller-visible output.
 
 The CLI renders diagnostics as text by default and as JSON with
 `splot decode --json`. Library-facing decode diagnostics must preserve stable

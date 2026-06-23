@@ -284,10 +284,10 @@ fn local_ac0ej3_reaches_current_runtime_gate_without_output() {
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(json["rule_id"], "decode/unsupported-feature");
     assert_eq!(json["spec_section"], "5.20.10.5");
-    assert_eq!(json["matrix_row"], "ac0ej3-inactive-lr-units-frontier");
+    assert_eq!(json["matrix_row"], "ac0ej3-lr-unit-selections-frontier");
     assert_eq!(
         json["feature_id"],
-        "DECODE-AC0EJ3-INACTIVE-LR-UNITS-FRONTIER"
+        "DECODE-AC0EJ3-LR-UNIT-SELECTIONS-FRONTIER"
     );
     assert_eq!(json["detail_kind"], "unsupported_feature");
     assert_eq!(

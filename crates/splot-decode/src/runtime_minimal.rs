@@ -48,8 +48,8 @@ const AC0EJ3_CHROMA_FEATURE_ID: &str = "DECODE-AC0EJ3-SEQUENCE-CHROMA-FRONTIER";
 const AC0EJ3_CHROMA_MATRIX_ROW: &str = "ac0ej3-sequence-chroma-frontier";
 const AC0EJ3_WIENERNS_FEATURE_ID: &str = "DECODE-AC0EJ3-WIENERNS-FRONTIER";
 const AC0EJ3_WIENERNS_MATRIX_ROW: &str = "ac0ej3-wienerns-frontier";
-const AC0EJ3_INACTIVE_LR_UNITS_FEATURE_ID: &str = "DECODE-AC0EJ3-INACTIVE-LR-UNITS-FRONTIER";
-const AC0EJ3_INACTIVE_LR_UNITS_MATRIX_ROW: &str = "ac0ej3-inactive-lr-units-frontier";
+const AC0EJ3_LR_UNIT_SELECTIONS_FEATURE_ID: &str = "DECODE-AC0EJ3-LR-UNIT-SELECTIONS-FRONTIER";
+const AC0EJ3_LR_UNIT_SELECTIONS_MATRIX_ROW: &str = "ac0ej3-lr-unit-selections-frontier";
 const MINIMAL_WIDTH: u32 = 64;
 const MINIMAL_HEIGHT: u32 = 64;
 const MINIMAL_TRACE_SYMBOLS: u64 = 6;
@@ -1226,9 +1226,9 @@ fn wienerns_lr_unit_runtime_error(offset: ByteOffset) -> DecodeError {
     unsupported_feature_at(
         "unsupported_active_wienerns_lr_units",
         offset,
-        "minimal runtime consumed the supported AV2 §5.20.10.4/§5.20.10.5 frame-level Wiener NS LR unit syntax and found at least one unit selecting RESTORE_WIENER_NONSEP, but does not yet apply active loop-restoration reconstruction before output",
-        AC0EJ3_INACTIVE_LR_UNITS_MATRIX_ROW,
-        AC0EJ3_INACTIVE_LR_UNITS_FEATURE_ID,
+        "minimal runtime consumed the supported AV2 §5.20.10.4/§5.20.10.5 frame-level Wiener NS LR unit syntax, retained per-unit selection state, and found at least one unit selecting RESTORE_WIENER_NONSEP, but does not yet apply active loop-restoration reconstruction before output",
+        AC0EJ3_LR_UNIT_SELECTIONS_MATRIX_ROW,
+        AC0EJ3_LR_UNIT_SELECTIONS_FEATURE_ID,
         "5.20.10.5",
     )
 }

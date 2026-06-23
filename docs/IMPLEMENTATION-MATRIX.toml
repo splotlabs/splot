@@ -10716,7 +10716,7 @@ openspec_change = "decode-ac0ej3-inactive-lr-units-frontier"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Records the semantic result of the ac0ej3-proven frame-level Wiener NS LR-unit syntax. `TileLoopRestorationRootFrontier` reports both consumed LR units and active units whose AV2 §5.20.10.5 `use_wiener_ns` symbol selects `RESTORE_WIENER_NONSEP`; inactive zero symbols select `RESTORE_NONE`. `runtime_minimal.rs` allows fully inactive LR-unit sets to continue to the next runtime gate, but the local ac0ej3 key frame has at least one active unit and therefore fails closed at byte offset 74 with `unsupported_active_wienerns_lr_units` under `ac0ej3-inactive-lr-units-frontier`. `DECODE-AC0EJ3-LR-UNIT-SELECTIONS-FRONTIER` supersedes this aggregate-only row by retaining each supported LR unit's plane and absolute unit coordinates. Resource-limit and unsupported traversal failures remain transactional and keep their previous diagnostics. This row does not implement active loop-restoration filtering/reconstruction, PC-Wiener, switchable LR, Wiener NS without a frame-level bank, SDP PlaneStart/PlaneEnd LR traversal, temporal/reference Wiener state, 10-bit output/storage, reference refresh, hash/raw/Y4M output, or successful ac0ej3 decode."
+notes = "Records the semantic result of the ac0ej3-proven frame-level Wiener NS LR-unit syntax. `TileLoopRestorationRootFrontier` reports both consumed LR units and active units whose AV2 §5.20.10.5 `use_wiener_ns` symbol selects `RESTORE_WIENER_NONSEP`; inactive zero symbols select `RESTORE_NONE`. `DECODE-AC0EJ3-LR-UNIT-SELECTIONS-FRONTIER` supersedes this aggregate-only row by retaining each supported LR unit's plane and absolute unit coordinates, and now owns the live `unsupported_active_wienerns_lr_units` diagnostic. Resource-limit and unsupported traversal failures remain transactional and keep their previous diagnostics. This row does not implement active loop-restoration filtering/reconstruction, PC-Wiener, switchable LR, Wiener NS without a frame-level bank, SDP PlaneStart/PlaneEnd LR traversal, temporal/reference Wiener state, 10-bit output/storage, reference refresh, hash/raw/Y4M output, or successful ac0ej3 decode."
 
 [feature.status]
 mapped = "done"
@@ -10737,14 +10737,11 @@ tests = [
     "crates/splot-decode/src/tile_payload/partition_traversal_tests.rs::frame_level_wiener_ns_multi_unit_root_counts_every_covered_unit",
     "crates/splot-decode/src/tile_payload/partition_traversal_tests.rs::root_lr_frontier_honors_zero_step_limit_before_lr_symbol",
     "crates/splot-decode/src/tile_payload/partition_traversal_tests.rs::root_lr_frontier_rejects_sdp_chroma_lr_before_reading_symbols",
-    "crates/splot-decode/src/runtime_minimal/inter/tests.rs::parsed_wienerns_bank_reports_next_runtime_frontier",
     "crates/splot-decode/src/runtime_minimal/inter/tests.rs::wienerns_lr_unit_frontier_limit_errors_stay_limits",
-    "crates/splot-cli/tests/decode_cli.rs::local_ac0ej3_reaches_current_runtime_gate_without_output",
 ]
 commands = [
     "cargo test -p splot-decode partition_traversal --locked",
     "cargo test -p splot-decode wienerns --locked",
-    "cargo test -p splot-cli --test decode_cli local_ac0ej3_reaches_current_runtime_gate_without_output -- --ignored",
     "cargo xtask check-feature-status",
     "cargo xtask check-decoder-support",
 ]
@@ -10775,7 +10772,7 @@ openspec_change = "decode-ac0ej3-lr-unit-selections-frontier"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Extends the ac0ej3-proven frame-level Wiener NS LR-unit syntax frontier from aggregate activity counts to concrete per-unit selection state. `TileLoopRestorationRootFrontier` now retains a syntax-ordered `WienerNsLrUnitSelection` list with each supported unit's plane, absolute LR unit row, absolute LR unit column, and active/inactive result from AV2 §5.20.10.5 `use_wiener_ns`. The aggregate consumed/active counters and inactive helper remain unchanged, and the minimal runtime still fails closed for the local ac0ej3 active unit at byte offset 74 with `unsupported_active_wienerns_lr_units` before decoded-frame allocation, reference retention, hash, raw, or Y4M output. Resource-limit and unsupported traversal failures remain transactional. This row does not implement active loop-restoration filtering/reconstruction, §7.20.2 source-sample clipping/stripe behavior, PC-Wiener classification, chroma Wiener NS filtering, switchable LR, Wiener NS without a frame-level bank, SDP PlaneStart/PlaneEnd LR traversal, temporal/reference Wiener state, 10-bit output/storage, reference refresh, hash/raw/Y4M output, or successful ac0ej3 decode."
+notes = "Extends the ac0ej3-proven frame-level Wiener NS LR-unit syntax frontier from aggregate activity counts to concrete per-unit selection state. `TileLoopRestorationRootFrontier` now retains a syntax-ordered `WienerNsLrUnitSelection` list with each supported unit's plane, absolute LR unit row, absolute LR unit column, and active/inactive result from AV2 §5.20.10.5 `use_wiener_ns`. The aggregate consumed/active counters and inactive helper remain unchanged, and the minimal runtime still fails closed for the local ac0ej3 active unit with `unsupported_active_wienerns_lr_units` under this row at byte offset 74 after retaining per-unit selection state and before decoded-frame allocation, reference retention, hash, raw, or Y4M output. Resource-limit and unsupported traversal failures remain transactional. This row does not implement active loop-restoration filtering/reconstruction, §7.20.2 source-sample clipping/stripe behavior, PC-Wiener classification, chroma Wiener NS filtering, switchable LR, Wiener NS without a frame-level bank, SDP PlaneStart/PlaneEnd LR traversal, temporal/reference Wiener state, 10-bit output/storage, reference refresh, hash/raw/Y4M output, or successful ac0ej3 decode."
 
 [feature.status]
 mapped = "done"
