@@ -8,7 +8,8 @@ use splot_core::headers::frame::{FrameHeaderCore, FrameRestorationType, LrPlaneP
 use splot_core::headers::sequence::{ChromaFormatIdc, SequenceHeader};
 use splot_core::span::ByteOffset;
 use splot_recon::{
-    LoopRestorationSource, LoopRestorationSourceBounds, PlaneId, loop_restoration_source_sample,
+    BitDepth, LoopRestorationSource, LoopRestorationSourceBounds, PcWienerClassifyParams,
+    PcWienerTxSkipLookup, PlaneId, ReconSample, loop_restoration_source_sample, pc_wiener_classify,
 };
 
 use crate::error::{DecodeError, Result};
@@ -16,7 +17,7 @@ use crate::tile_payload::{MinimalRuntimePartitionFrontierError, TilePartitionTra
 use crate::{DecodeLimitName, DecodeLimits, DecodeOptions, DecodePlannedObu, DecodeStreamPlan};
 
 use super::{
-    AC0EJ3_LR_CLASSIFIED_WIENER_FEATURE_ID, AC0EJ3_LR_CLASSIFIED_WIENER_MATRIX_ROW,
+    AC0EJ3_LR_CLASSIFIED_WIENER_VALUES_FEATURE_ID, AC0EJ3_LR_CLASSIFIED_WIENER_VALUES_MATRIX_ROW,
     AC0EJ3_LR_SOURCE_READ_FEATURE_ID, AC0EJ3_LR_SOURCE_READ_MATRIX_ROW,
     AC0EJ3_LR_UNIT_SELECTIONS_FEATURE_ID, AC0EJ3_LR_UNIT_SELECTIONS_MATRIX_ROW, derive_tile_plan,
     unsupported_at, unsupported_feature_at,
@@ -94,6 +95,36 @@ pub(super) struct WienerNsLrTxSkipLookup {
     pub(super) y: usize,
     pub(super) row: usize,
     pub(super) col: usize,
+}
+
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "private classified-Wiener value frontier proof state waits for real runtime storage"
+    )
+)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct WienerNsLrClassifiedWienerValuesFrontier {
+    pub(super) blocks_resolved: usize,
+    pub(super) filter_classes_resolved: usize,
+    pub(super) first_filter_class: Option<WienerNsLrFilterClassValue>,
+}
+
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "private classified-Wiener value frontier proof state waits for real runtime storage"
+    )
+)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct WienerNsLrFilterClassValue {
+    pub(super) x: usize,
+    pub(super) y: usize,
+    pub(super) row: usize,
+    pub(super) col: usize,
+    pub(super) class: u8,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -242,7 +273,7 @@ pub(super) fn ensure_wienerns_lr_unit_runtime_frontier(
                 options.limits(),
             )?;
         if classified_frontier.is_some() {
-            return Err(wienerns_lr_classified_wiener_runtime_error(
+            return Err(wienerns_lr_classified_wiener_values_runtime_error(
                 key_envelope.offset,
             ));
         }
@@ -462,6 +493,105 @@ fn derive_wienerns_lr_classified_wiener_frontier_after_preflight(
             .ok_or_else(|| source_read_arithmetic_overflow("pc wiener classified block count"))?;
     }
     Ok(summary)
+}
+
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "private classified-Wiener value frontier waits for decoded frame and tx-skip storage"
+    )
+)]
+pub(super) fn derive_wienerns_lr_classified_wiener_values_frontier<T, FS, FT>(
+    active_source_blocks: &[crate::tile_payload::WienerNsLrSourceBlock],
+    planes: &[LrPlaneParams],
+    bit_depth: BitDepth,
+    base_q_idx: u32,
+    mut source_sample: FS,
+    mut tx_skip: FT,
+) -> Result<Option<WienerNsLrClassifiedWienerValuesFrontier>>
+where
+    T: ReconSample,
+    FS: FnMut(isize, isize) -> T,
+    FT: FnMut(WienerNsLrTxSkipLookup) -> i32,
+{
+    if !wienerns_lr_uses_classified_luma(active_source_blocks, planes) {
+        return Ok(None);
+    }
+
+    let mut summary = WienerNsLrClassifiedWienerValuesFrontier {
+        blocks_resolved: 0,
+        filter_classes_resolved: 0,
+        first_filter_class: None,
+    };
+    for block in active_source_blocks
+        .iter()
+        .filter(|block| block.plane == PlaneId::Y.index())
+    {
+        let block_start_x = (block.x >> 6) << 6;
+        let block_end_x = pc_wiener_block_end_x(block, block_start_x)?;
+        let params = PcWienerClassifyParams {
+            x: usize_to_source_coordinate(block.x, "pc wiener classified block x")?,
+            y: usize_to_source_coordinate(block.y, "pc wiener classified block y")?,
+            bit_depth,
+            base_q_idx,
+            block_start_x,
+            block_end_x,
+            luma_stripe_start_y: block.luma_stripe_start_y,
+            luma_stripe_end_y: block.luma_stripe_end_y,
+            tile_start_y: mi_to_luma_start(
+                block.tile_mi_row_start,
+                "pc wiener classified tile start y",
+            )?,
+            tile_end_y: mi_to_luma_end(block.tile_mi_row_end, "pc wiener classified tile end y")?,
+        };
+        let classification =
+            pc_wiener_classify::<T, _, _>(&params, &mut source_sample, |lookup| {
+                tx_skip(wienerns_lr_tx_skip_lookup_from_pc(lookup))
+            })?;
+        record_wienerns_lr_filter_class(&mut summary, block, classification.class)?;
+    }
+    Ok(Some(summary))
+}
+
+fn record_wienerns_lr_filter_class(
+    summary: &mut WienerNsLrClassifiedWienerValuesFrontier,
+    block: &crate::tile_payload::WienerNsLrSourceBlock,
+    class: u8,
+) -> Result<()> {
+    let filter_class = WienerNsLrFilterClassValue {
+        x: block.x,
+        y: block.y,
+        row: block.y >> 2,
+        col: block.x >> 2,
+        class,
+    };
+    if summary.first_filter_class.is_none() {
+        summary.first_filter_class = Some(filter_class);
+    }
+    summary.blocks_resolved = summary
+        .blocks_resolved
+        .checked_add(1)
+        .ok_or_else(|| source_read_arithmetic_overflow("pc wiener classified value block count"))?;
+    summary.filter_classes_resolved =
+        summary
+            .filter_classes_resolved
+            .checked_add(1)
+            .ok_or_else(|| {
+                source_read_arithmetic_overflow("pc wiener classified filter-class count")
+            })?;
+    Ok(())
+}
+
+const fn wienerns_lr_tx_skip_lookup_from_pc(
+    lookup: PcWienerTxSkipLookup,
+) -> WienerNsLrTxSkipLookup {
+    WienerNsLrTxSkipLookup {
+        x: lookup.x,
+        y: lookup.y,
+        row: lookup.row,
+        col: lookup.col,
+    }
 }
 
 fn pc_wiener_block_end_x(
@@ -1104,13 +1234,15 @@ pub(super) fn wienerns_lr_source_read_runtime_error(offset: ByteOffset) -> Decod
     )
 }
 
-pub(super) fn wienerns_lr_classified_wiener_runtime_error(offset: ByteOffset) -> DecodeError {
+pub(super) fn wienerns_lr_classified_wiener_values_runtime_error(
+    offset: ByteOffset,
+) -> DecodeError {
     unsupported_feature_at(
-        "unsupported_wienerns_lr_classified_wiener_values",
+        "unsupported_wienerns_lr_classified_wiener_storage",
         offset,
-        "minimal runtime consumed active AV2 frame-level Wiener NS LR unit syntax, retained §7.20.1 source-bound and tile-bound facts, resolved §7.20.4 skip-filter classified-luma source-read and LrTxSkip lookup coordinates, and resolved the later §7.20.3 source-read state, but does not yet read source sample values or LrTxSkip values, derive FilterClass, or apply loop-restoration filtering before output",
-        AC0EJ3_LR_CLASSIFIED_WIENER_MATRIX_ROW,
-        AC0EJ3_LR_CLASSIFIED_WIENER_FEATURE_ID,
+        "minimal runtime consumed active AV2 frame-level Wiener NS LR unit syntax, retained §7.20.1 source-bound and tile-bound facts, resolved §7.20.4 skip-filter classified-luma source-read and LrTxSkip lookup coordinates, resolved the later §7.20.3 source-read state, and has value-capable FilterClass derivation for caller-supplied source samples and LrTxSkip values, but the live ac0ej3 path reaches loop restoration before decoded 10-bit CurrFrame/CdefFrame storage and before an LrTxSkip grid are retained; no real source sample values or LrTxSkip values are read, and loop-restoration filtering/output is not applied",
+        AC0EJ3_LR_CLASSIFIED_WIENER_VALUES_MATRIX_ROW,
+        AC0EJ3_LR_CLASSIFIED_WIENER_VALUES_FEATURE_ID,
         "7.20.4",
     )
 }

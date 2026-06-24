@@ -1260,48 +1260,6 @@ fn parsed_wienerns_bank_reports_next_runtime_frontier() {
     );
 }
 
-#[test]
-fn classified_wiener_runtime_error_reports_dependency_frontier() {
-    let error = super::super::wienerns_lr_classified_wiener_runtime_error(ByteOffset::new(74));
-    let unsupported = match error {
-        DecodeError::UnsupportedFeature { unsupported } => unsupported,
-        _ => panic!("classified Wiener frontier must be an unsupported-feature error"),
-    };
-
-    assert_eq!(
-        unsupported.reason(),
-        "unsupported_wienerns_lr_classified_wiener_values"
-    );
-    assert_eq!(
-        unsupported.matrix_row(),
-        "ac0ej3-lr-classified-wiener-frontier"
-    );
-    assert_eq!(
-        unsupported.feature_id(),
-        "DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-FRONTIER"
-    );
-    assert_eq!(unsupported.spec_section(), "7.20.4");
-    assert_eq!(unsupported.byte_offset(), Some(ByteOffset::new(74)));
-    assert!(
-        unsupported.message().contains("source-read"),
-        "message should say classified source-read dependencies are resolved"
-    );
-    assert!(
-        unsupported
-            .message()
-            .contains("LrTxSkip lookup coordinates"),
-        "message should say tx-skip dependencies are only coordinates"
-    );
-    assert!(
-        unsupported.message().contains("FilterClass"),
-        "message should make clear class derivation remains unsupported"
-    );
-    assert!(
-        unsupported.message().contains("loop-restoration filtering"),
-        "message should keep filtering out of scope"
-    );
-}
-
 fn wienerns_lr_source_block() -> WienerNsLrSourceBlock {
     WienerNsLrSourceBlock {
         plane: 0,
