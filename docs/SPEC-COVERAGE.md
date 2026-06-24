@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 422 feature(s); 369 cite a spec section.
+Matrix version 1. Last reviewed 2026-06-15. 423 feature(s); 370 cite a spec section.
 
 One row per (spec section, feature) pair, in spec order; a feature citing both a syntax and a semantics section appears under both. The canonical status source is [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); the full per-feature ledger is [FEATURE-STATUS.md](./FEATURE-STATUS.md).
 
@@ -384,6 +384,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.20.7.23](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-23) | Residual syntax | `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER` | ✅ | 🟡 | — | ✅ | 4 |
 | [§ 5.20.7.24](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-24) | Transform block syntax | `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER` | ✅ | 🟡 | — | ✅ | 4 |
 | [§ 5.20.7.24](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-24) | Transform block syntax | `DECODE-MINIMAL-INTRA-RECONSTRUCTION-FRONTIER` | ✅ | 🟡 | ✅ | ✅ | 4 |
+| [§ 5.20.7.25](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-25) | Get TX size function | `DECODE-AC0EJ3-LR-TX-SKIP-GRID-RETENTION` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.25](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-25) | Get TX size function | `DECODE-GENERAL-INTRA-ANGLE-D203` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.25](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-25) | Get TX size function | `DECODE-GENERAL-INTRA-ANGLE-D45` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.25](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-25) | Get TX size function | `DECODE-GENERAL-INTRA-BLOCK-DECODED` | ✅ | 🟡 | — | ✅ | 1 |
@@ -391,6 +392,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.20.7.25](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-25) | Get TX size function | `DECODE-GENERAL-INTRA-GRID-NEIGHBOUR-NONDC` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.25](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-25) | Get TX size function | `DECODE-GENERAL-INTRA-GRID-SMOOTH-H-ABOVE-RIGHT` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.26](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-26) | Get plane residual size function | `DECODE-TILE-PARTITION-ALLOWED-BOUNDARY` | ✅ | — | — | ✅ | — |
+| [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-AC0EJ3-LR-TX-SKIP-GRID-RETENTION` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-COEFF-ALL-ZERO-BLOCK-STATE` | ✅ | — | — | ✅ | 1 |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-COEFF-ALL-ZERO-CONTEXT-STATE` | ✅ | — | — | ✅ | 1 |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-COEFF-BASE-DERIVED-LEVEL-PASS` | ✅ | 🟡 | — | ✅ | 1 |
@@ -1013,6 +1015,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.20.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-4) | Pixel classified Wiener filter process | `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-VALUES` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.20.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-4) | Pixel classified Wiener filter process | `DECODE-AC0EJ3-LR-RUNTIME-STORAGE-RETENTION` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 7.20.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-4) | Pixel classified Wiener filter process | `DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 7.20.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-4) | Pixel classified Wiener filter process | `DECODE-AC0EJ3-LR-TX-SKIP-GRID-RETENTION` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.20.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-4) | Pixel classified Wiener filter process | `RECON-PC-WIENER-CLASSIFICATION` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.21](./spec/av2/1.0.0/07-decoding-process.md#s-7-21) | Output processes | `CLI-DECODE-HASH-OUTPUT` | ✅ | — | — | ✅ | 3 |
 | [§ 7.21](./spec/av2/1.0.0/07-decoding-process.md#s-7-21) | Output processes | `CONF-DECODE-RUNTIME-HASH-FUZZ` | ✅ | — | — | ✅ | 3 |
