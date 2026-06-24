@@ -48,10 +48,12 @@ use self::wienerns_lr::{
     derive_wienerns_lr_live_storage_allocation, derive_wienerns_lr_runtime_source_frontiers,
     derive_wienerns_lr_runtime_storage_retention_frontier, derive_wienerns_lr_source_read_frontier,
     derive_wienerns_lr_tx_skip_grid_retention, map_wienerns_lr_unit_frontier_error,
+    populate_wienerns_lr_live_tx_skip_from_transform_records,
     record_wienerns_lr_chroma_luma_source_reads,
-    wienerns_lr_classified_wiener_storage_runtime_error, wienerns_lr_live_storage_allocation_error,
+    wienerns_lr_classified_wiener_storage_runtime_error,
+    wienerns_lr_live_frame_samples_unpopulated_error, wienerns_lr_live_storage_allocation_error,
     wienerns_lr_runtime_storage_retention_error, wienerns_lr_source_read_config,
-    wienerns_lr_source_read_runtime_error,
+    wienerns_lr_source_read_runtime_error, wienerns_lr_tx_mode_select_transform_record_error,
 };
 
 /// Stable id for the first supported runtime decode tier.
@@ -85,8 +87,16 @@ const AC0EJ3_LR_CLASSIFIED_WIENER_STORAGE_MATRIX_ROW: &str = "ac0ej3-lr-classifi
 const AC0EJ3_LR_RUNTIME_STORAGE_RETENTION_FEATURE_ID: &str =
     "DECODE-AC0EJ3-LR-RUNTIME-STORAGE-RETENTION";
 const AC0EJ3_LR_RUNTIME_STORAGE_RETENTION_MATRIX_ROW: &str = "ac0ej3-lr-runtime-storage-retention";
+#[allow(
+    dead_code,
+    reason = "live storage-allocation diagnostic is retained for the helper-row regression test after the live path advanced"
+)]
 const AC0EJ3_LR_LIVE_STORAGE_ALLOCATION_FEATURE_ID: &str =
     "DECODE-AC0EJ3-LR-LIVE-STORAGE-ALLOCATION";
+#[allow(
+    dead_code,
+    reason = "live storage-allocation diagnostic is retained for the helper-row regression test after the live path advanced"
+)]
 const AC0EJ3_LR_LIVE_STORAGE_ALLOCATION_MATRIX_ROW: &str = "ac0ej3-lr-live-storage-allocation";
 #[allow(
     dead_code,
@@ -98,6 +108,10 @@ const AC0EJ3_LR_LIVE_TX_SKIP_GRID_FEATURE_ID: &str = "DECODE-AC0EJ3-LR-LIVE-TX-S
     reason = "live tx-skip grid population is a private prerequisite row until live tile records reach this frontier"
 )]
 const AC0EJ3_LR_LIVE_TX_SKIP_GRID_MATRIX_ROW: &str = "ac0ej3-lr-live-tx-skip-grid";
+const AC0EJ3_LR_LIVE_TRANSFORM_RECORD_HANDOFF_FEATURE_ID: &str =
+    "DECODE-AC0EJ3-LR-LIVE-TRANSFORM-RECORD-HANDOFF";
+const AC0EJ3_LR_LIVE_TRANSFORM_RECORD_HANDOFF_MATRIX_ROW: &str =
+    "ac0ej3-lr-live-transform-record-handoff";
 const MINIMAL_WIDTH: u32 = 64;
 const MINIMAL_HEIGHT: u32 = 64;
 const MINIMAL_TRACE_SYMBOLS: u64 = 6;
@@ -313,6 +327,7 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
         plan,
         key_candidate,
         key_envelope,
+        sequence_envelope.offset,
         &sequence,
         &key_core,
     )?;

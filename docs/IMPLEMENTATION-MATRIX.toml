@@ -10693,7 +10693,7 @@ openspec_change = "decode-ac0ej3-10bit-sequence-frontier"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Moves the runtime's 8-bit-only sample-storage contract out of sequence validation and into the pre-decode boundary. AV2 §6.4.1 Table 6.3 maps `bit_depth_idc == 0` to a conformant 10-bit sequence, so `validate_sequence` now parses and validates that value instead of rejecting it as malformed for the tier. Before any key or inter frame can enter the current `DecodedFrame<u8>` reconstruction, reference retention, hash, raw, or Y4M paths, `ensure_8bit_runtime_storage` rejects non-8-bit sequences with `unsupported_bit_depth` under this feature row. The local ac0ej3 mission stream therefore advances past the former sequence bit-depth gate; the follow-on `DECODE-AC0EJ3-SEQUENCE-CHROMA-FRONTIER` moves sequence chroma-tool flags to a later pre-tile gate, `DECODE-AC0EJ3-WIENERNS-FRONTIER` recorded the former parser-only Wiener stop, `DECODE-AC0EJ3-WIENERNS-BANK-FRONTIER` parsed the fixed-coded bank, `DECODE-AC0EJ3-LR-UNIT-SYNTAX-FRONTIER` consumed covered LR unit syntax, `DECODE-AC0EJ3-INACTIVE-LR-UNITS-FRONTIER` recorded aggregate active-unit state, `DECODE-AC0EJ3-LR-UNIT-SELECTIONS-FRONTIER` retained per-unit state, `DECODE-AC0EJ3-LR-SOURCE-BOUNDS-FRONTIER` derived active source-bound facts, `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-FRONTIER` resolves classified-Wiener dependency coordinates, and `DECODE-AC0EJ3-LR-LIVE-STORAGE-ALLOCATION` now surfaces the remaining live-storage boundary as `unsupported_wienerns_lr_live_storage_unpopulated`. This row does not implement 10-bit reconstruction, 10-bit output serialization, 10-bit reference storage, loop filters, or any successful 10-bit decode path."
+notes = "Moves the runtime's 8-bit-only sample-storage contract out of sequence validation and into the pre-decode boundary. AV2 §6.4.1 Table 6.3 maps `bit_depth_idc == 0` to a conformant 10-bit sequence, so `validate_sequence` now parses and validates that value instead of rejecting it as malformed for the tier. Before any key or inter frame can enter the current `DecodedFrame<u8>` reconstruction, reference retention, hash, raw, or Y4M paths, `ensure_8bit_runtime_storage` rejects non-8-bit sequences with `unsupported_bit_depth` under this feature row. The local ac0ej3 mission stream therefore advances past the former sequence bit-depth gate; the follow-on `DECODE-AC0EJ3-SEQUENCE-CHROMA-FRONTIER` moves sequence chroma-tool flags to a later pre-tile gate, `DECODE-AC0EJ3-WIENERNS-FRONTIER` recorded the former parser-only Wiener stop, `DECODE-AC0EJ3-WIENERNS-BANK-FRONTIER` parsed the fixed-coded bank, `DECODE-AC0EJ3-LR-UNIT-SYNTAX-FRONTIER` consumed covered LR unit syntax, `DECODE-AC0EJ3-INACTIVE-LR-UNITS-FRONTIER` recorded aggregate active-unit state, `DECODE-AC0EJ3-LR-UNIT-SELECTIONS-FRONTIER` retained per-unit state, `DECODE-AC0EJ3-LR-SOURCE-BOUNDS-FRONTIER` derived active source-bound facts, `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-FRONTIER` resolves classified-Wiener dependency coordinates, and `DECODE-AC0EJ3-LR-LIVE-TRANSFORM-RECORD-HANDOFF` now surfaces the local `TX_MODE_SELECT` transform-record boundary as `unsupported_wienerns_lr_tx_mode_select_transform_records`. This row does not implement 10-bit reconstruction, 10-bit output serialization, 10-bit reference storage, loop filters, or any successful 10-bit decode path."
 
 [feature.status]
 mapped = "done"
@@ -10962,7 +10962,7 @@ openspec_change = "decode-ac0ej3-inactive-lr-units-frontier"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Records the semantic result of the ac0ej3-proven frame-level Wiener NS LR-unit syntax. `TileLoopRestorationRootFrontier` reports both consumed LR units and active units whose AV2 §5.20.10.5 `use_wiener_ns` symbol selects `RESTORE_WIENER_NONSEP`; inactive zero symbols select `RESTORE_NONE`. `DECODE-AC0EJ3-LR-UNIT-SELECTIONS-FRONTIER` superseded this aggregate-only row by retaining each supported LR unit's plane and absolute unit coordinates, `DECODE-AC0EJ3-LR-SOURCE-BOUNDS-FRONTIER` derived active source-bound facts, `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-FRONTIER` resolved classified-Wiener dependency coordinates, and `DECODE-AC0EJ3-LR-LIVE-STORAGE-ALLOCATION` now owns the live `unsupported_wienerns_lr_live_storage_unpopulated` diagnostic. Resource-limit and unsupported traversal failures remain transactional and keep their previous diagnostics. This row does not implement active loop-restoration filtering/reconstruction, PC-Wiener, switchable LR, Wiener NS without a frame-level bank, SDP PlaneStart/PlaneEnd LR traversal, temporal/reference Wiener state, 10-bit output/storage, reference refresh, hash/raw/Y4M output, or successful ac0ej3 decode."
+notes = "Records the semantic result of the ac0ej3-proven frame-level Wiener NS LR-unit syntax. `TileLoopRestorationRootFrontier` reports both consumed LR units and active units whose AV2 §5.20.10.5 `use_wiener_ns` symbol selects `RESTORE_WIENER_NONSEP`; inactive zero symbols select `RESTORE_NONE`. `DECODE-AC0EJ3-LR-UNIT-SELECTIONS-FRONTIER` superseded this aggregate-only row by retaining each supported LR unit's plane and absolute unit coordinates, `DECODE-AC0EJ3-LR-SOURCE-BOUNDS-FRONTIER` derived active source-bound facts, `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-FRONTIER` resolved classified-Wiener dependency coordinates, and `DECODE-AC0EJ3-LR-LIVE-TRANSFORM-RECORD-HANDOFF` now owns the live `TX_MODE_SELECT` transform-record diagnostic. Resource-limit and unsupported traversal failures remain transactional and keep their previous diagnostics. This row does not implement active loop-restoration filtering/reconstruction, PC-Wiener, switchable LR, Wiener NS without a frame-level bank, SDP PlaneStart/PlaneEnd LR traversal, temporal/reference Wiener state, 10-bit output/storage, reference refresh, hash/raw/Y4M output, or successful ac0ej3 decode."
 
 [feature.status]
 mapped = "done"
@@ -11364,7 +11364,7 @@ openspec_change = "decode-ac0ej3-lr-tx-skip-grid-retention"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Fail-closed prerequisite row for retaining value-backed `LrTxSkip[y >> 2][x >> 2]` storage for the ac0ej3 two-class luma Wiener NS LR path. The decoder now has a private helper that accepts caller-provided luma transform records, derives each retained grid value with the AV2 §5.20.7.24 `skip_flag || (eob == 0)` rule, fills transform extents into the existing bounded `WienerNsLrTxSkipGrid`, and rejects incomplete, out-of-range, or conflicting records without fabricating defaults. The live ac0ej3 runtime now stops at `ac0ej3-lr-live-storage-allocation`; tile traversal does not yet feed real transform records into this grid helper, decoded sample population is still absent, and this row does not claim live `LrTxSkip` values, `FilterClass` grid retention, `SubclassLookup`, loop-restoration filtering/reconstruction, chroma Wiener NS filtering, 10-bit output, reference refresh, AVM/dav2d byte equality, or successful ac0ej3 decode."
+notes = "Fail-closed prerequisite row for retaining value-backed `LrTxSkip[y >> 2][x >> 2]` storage for the ac0ej3 two-class luma Wiener NS LR path. The decoder now has a private helper that accepts caller-provided luma transform records, derives each retained grid value with the AV2 §5.20.7.24 `skip_flag || (eob == 0)` rule, fills transform extents into the existing bounded `WienerNsLrTxSkipGrid`, and rejects incomplete, out-of-range, or conflicting records without fabricating defaults. `DECODE-AC0EJ3-LR-LIVE-TRANSFORM-RECORD-HANDOFF` now feeds fixed-largest transform records into live `LrTxSkip` storage and records the remaining local-stream `TX_MODE_SELECT` transform-record gap. This row does not claim live decoded samples, selectable transform partition parsing, `FilterClass` grid retention, `SubclassLookup`, loop-restoration filtering/reconstruction, chroma Wiener NS filtering, 10-bit output, reference refresh, AVM/dav2d byte equality, or successful ac0ej3 decode."
 
 [feature.status]
 mapped = "done"
@@ -11467,7 +11467,7 @@ openspec_change = "decode-ac0ej3-lr-live-storage-allocation"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Fail-closed support row for advancing the live ac0ej3 two-class luma Wiener NS LR path from storage-footprint planning to explicit allocation of private unpopulated live storage shells. After active LR unit syntax, source-bound/source-read state, classified-luma dependency coordinates, and runtime storage-retention limit checks have succeeded, the minimal runtime allocates active-bit-depth `CurrFrame` and `CdefFrame` shell buffers plus a frame-wide `LrTxSkip[y >> 2][x >> 2]` shell grid, all initialized as unpopulated `Option` storage with zero populated counts. The live ac0ej3 path now fails closed at byte offset 74 as `unsupported_wienerns_lr_live_storage_unpopulated`. The proof remains value-free: the runtime does not fabricate decoded frame samples or `LrTxSkip` values and does not call storage-backed `FilterClass` derivation with dummy data. This row does not claim decoded sample population, real `LrTxSkip` values, `FilterClass` grid retention, `SubclassLookup`, loop-restoration filtering/reconstruction, chroma Wiener NS filtering, 10-bit output, reference refresh, AVM/dav2d byte equality, or successful ac0ej3 decode."
+notes = "Fail-closed support row for advancing the live ac0ej3 two-class luma Wiener NS LR path from storage-footprint planning to explicit allocation of private unpopulated live storage shells. After active LR unit syntax, source-bound/source-read state, classified-luma dependency coordinates, and runtime storage-retention limit checks have succeeded, the minimal runtime allocates active-bit-depth `CurrFrame` and `CdefFrame` shell buffers plus a frame-wide `LrTxSkip[y >> 2][x >> 2]` shell grid, all initialized as unpopulated `Option` storage with zero populated counts. `DECODE-AC0EJ3-LR-LIVE-TRANSFORM-RECORD-HANDOFF` supersedes this row for the live byte-offset-74 diagnostic by populating fixed-largest `LrTxSkip` storage before failing closed, while the local ac0ej3 stream now stops earlier in that row at `unsupported_wienerns_lr_tx_mode_select_transform_records`. The proof remains value-free: the runtime does not fabricate decoded frame samples or call storage-backed `FilterClass` derivation with dummy data. This row does not claim decoded sample population, transform-derived `LrTxSkip` runtime success for `TX_MODE_SELECT`, `FilterClass` grid retention, `SubclassLookup`, loop-restoration filtering/reconstruction, chroma Wiener NS filtering, 10-bit output, reference refresh, AVM/dav2d byte equality, or successful ac0ej3 decode."
 
 [feature.status]
 mapped = "done"
@@ -11519,7 +11519,7 @@ openspec_change = "decode-ac0ej3-lr-live-tx-skip-grid"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Partial prerequisite row for populating the live ac0ej3 Wiener NS LR `LrTxSkip` shell after live storage allocation. The decoder-private live storage allocation can now accept a complete `WienerNsLrTxSkipGrid`, verify matching row and column dimensions plus unpopulated state before mutation, copy each retained value exactly into the allocated `Option<u8>` live grid slots, and reject dimension mismatches or re-population attempts as structured reconstruction errors without fabricating or overwriting values. The live ac0ej3 runtime still stops at `unsupported_wienerns_lr_live_storage_unpopulated`: tile traversal does not yet feed real transform records into this shell, decoded `CurrFrame` and `CdefFrame` samples remain unpopulated, and this row does not claim live tile-populated `LrTxSkip`, `FilterClass` grid retention, `SubclassLookup`, loop-restoration filtering or reconstruction, chroma Wiener NS filtering, 10-bit output, reference refresh, AVM and dav2d byte equality, or successful ac0ej3 decode."
+notes = "Partial prerequisite row for populating the live ac0ej3 Wiener NS LR `LrTxSkip` shell after live storage allocation. The decoder-private live storage allocation can now accept a complete `WienerNsLrTxSkipGrid`, verify matching row and column dimensions plus unpopulated state before mutation, copy each retained value exactly into the allocated `Option<u8>` live grid slots, and reject dimension mismatches or re-population attempts as structured reconstruction errors without fabricating or overwriting values. `DECODE-AC0EJ3-LR-LIVE-TRANSFORM-RECORD-HANDOFF` supersedes this helper-only row by feeding fixed-largest transform records into the live shell and by making the local `TX_MODE_SELECT` transform-record reader the current blocker. This row does not claim selectable transform partition parsing, decoded `CurrFrame`/`CdefFrame` sample population, `FilterClass` grid retention, `SubclassLookup`, loop-restoration filtering or reconstruction, chroma Wiener NS filtering, 10-bit output, reference refresh, AVM and dav2d byte equality, or successful ac0ej3 decode."
 
 [feature.status]
 mapped = "done"
@@ -11546,6 +11546,60 @@ commands = [
     "cargo xtask check-decoder-support",
 ]
 fixtures = [
+    "crates/splot-decode/src/runtime_minimal/inter/lr_live_storage_tests.rs",
+    "crates/splot-decode/src/runtime_minimal/wienerns_lr.rs",
+    "crates/splot-decode/src/runtime_minimal/wienerns_lr/live_storage.rs",
+]
+diagnostics = ["decode/unsupported-feature", "decode/resource-limit"]
+
+[[feature]]
+id = "DECODE-AC0EJ3-LR-LIVE-TRANSFORM-RECORD-HANDOFF"
+name = "ac0ej3 Wiener NS LR live transform-record handoff frontier"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.20.6.1", "5.20.7.27", "7.20.4"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-6-1",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-20-4",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/runtime_minimal/wienerns_lr.rs"
+openspec_change = "decode-ac0ej3-lr-live-transform-record-handoff"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Partial prerequisite row for handing parsed luma transform records into live ac0ej3 Wiener NS LR `LrTxSkip` storage. The runtime can derive a complete retained `WienerNsLrTxSkipGrid` from fixed-largest luma transform records, populate the live LR `LrTxSkip` shell, and then fail closed before decoded CurrFrame/CdefFrame sample population. The local ac0ej3 mission stream uses `TX_MODE_SELECT`, so it now fails closed at byte offset 74 as `unsupported_wienerns_lr_tx_mode_select_transform_records`; deriving that stream's real `LrTxSkip` grid requires §5.20.6.1 `read_tx_size` / `read_tx_partition` records first. This row does not claim selectable transform partition parsing, decoded sample population, `FilterClass` grid retention, `SubclassLookup`, loop-restoration filtering/reconstruction, chroma Wiener NS filtering, 10-bit output, reference refresh, AVM/dav2d byte equality, or successful ac0ej3 decode."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "partial"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/runtime_minimal/inter/lr_live_storage_tests.rs::wienerns_lr_live_transform_record_handoff_populates_tx_skip_without_frame_samples",
+    "crates/splot-decode/src/runtime_minimal/inter/lr_live_storage_tests.rs::wienerns_lr_tx_mode_select_transform_record_error_reports_handoff_frontier",
+    "crates/splot-decode/src/runtime_minimal/inter/lr_live_storage_tests.rs::wienerns_lr_live_frame_samples_unpopulated_error_reports_handoff_frontier",
+    "crates/splot-cli/tests/decode_cli.rs::local_ac0ej3_reaches_current_runtime_gate_without_output",
+]
+commands = [
+    "cargo test -p splot-decode wienerns_lr_live_transform_record --locked",
+    "cargo test -p splot-decode wienerns_lr_tx_mode_select_transform_record --locked",
+    "cargo test -p splot-cli --test decode_cli local_ac0ej3_reaches_current_runtime_gate_without_output --locked -- --ignored",
+    "cargo xtask check-feature-status",
+    "cargo xtask check-decoder-support",
+]
+fixtures = [
+    "local ac0ej3 mission fixture",
+    "crates/splot-cli/tests/decode_cli.rs",
     "crates/splot-decode/src/runtime_minimal/inter/lr_live_storage_tests.rs",
     "crates/splot-decode/src/runtime_minimal/wienerns_lr.rs",
     "crates/splot-decode/src/runtime_minimal/wienerns_lr/live_storage.rs",
