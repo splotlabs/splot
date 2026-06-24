@@ -128,7 +128,7 @@ by `cargo xtask check-dependency-direction`):
 
 rav1e and SVT-AV1 are engineering references only, never sources of AV2 syntax,
 code, tables, or constants. The canonical gate before any encoder work is
-[AGENTS.md](../AGENTS.md) § 1a; the research notes live under
+[AGENTS.md](../AGENTS.md) § 7; the research notes live under
 [docs/references/](./references/).
 
 ## Error model
