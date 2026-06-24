@@ -120,10 +120,10 @@ pub struct PcWienerClassification {
 /// # Errors
 ///
 /// Returns typed [`ReconError`] values for unsupported sample storage, invalid
-/// caller-resolved bounds, caller source-sample failures, source samples
-/// outside the active bit-depth range, `LrTxSkip` values outside `0..=1`, and
-/// arithmetic overflow in coordinate or LUT derivation. The function mutates no
-/// caller-owned output or grid state.
+/// caller-resolved bounds, caller source-sample or `LrTxSkip` lookup failures,
+/// source samples outside the active bit-depth range, `LrTxSkip` values outside
+/// `0..=1`, and arithmetic overflow in coordinate or LUT derivation. The
+/// function mutates no caller-owned output or grid state.
 pub fn pc_wiener_classify<T, FS, FT>(
     params: &PcWienerClassifyParams,
     mut source_sample: FS,
@@ -132,7 +132,7 @@ pub fn pc_wiener_classify<T, FS, FT>(
 where
     T: ReconSample,
     FS: FnMut(isize, isize) -> Result<T>,
-    FT: FnMut(PcWienerTxSkipLookup) -> i32,
+    FT: FnMut(PcWienerTxSkipLookup) -> Result<i32>,
 {
     validate_sample_type::<T>(params.bit_depth)?;
     validate_params(params)?;
@@ -150,7 +150,7 @@ where
                 })?;
             }
             let lookup = tx_skip_lookup(params, feature.x, feature_y)?;
-            let skip = tx_skip(lookup);
+            let skip = tx_skip(lookup)?;
             if !(0..=1).contains(&skip) {
                 return Err(ReconError::PcWienerInvalidTxSkip {
                     x: lookup.x,
@@ -476,7 +476,8 @@ mod tests {
     #[test]
     fn flat_source_without_skips_classifies_to_lut_zero() {
         let result =
-            pc_wiener_classify::<u8, _, _>(&params(BitDepth::Eight), |_, _| Ok(12), |_| 0).unwrap();
+            pc_wiener_classify::<u8, _, _>(&params(BitDepth::Eight), |_, _| Ok(12), |_| Ok(0))
+                .unwrap();
 
         assert_eq!(result.raw_features, [0, 0, 0, 0]);
         assert_eq!(result.features, [0, 0, 0, 0]);
@@ -495,7 +496,7 @@ mod tests {
                 let y = i64::try_from(y).unwrap();
                 Ok(u16::try_from(100 + x * x + 2 * y * y + 3 * x * y).unwrap())
             },
-            |_| 1,
+            |_| Ok(1),
         )
         .unwrap();
 
@@ -527,7 +528,7 @@ mod tests {
             |_, _| Ok(0),
             |lookup| {
                 first.get_or_insert(lookup);
-                0
+                Ok(0)
             },
         )
         .unwrap();
@@ -545,8 +546,9 @@ mod tests {
 
     #[test]
     fn rejects_source_samples_outside_bit_depth() {
-        let err = pc_wiener_classify::<u16, _, _>(&params(BitDepth::Eight), |_, _| Ok(256), |_| 0)
-            .unwrap_err();
+        let err =
+            pc_wiener_classify::<u16, _, _>(&params(BitDepth::Eight), |_, _| Ok(256), |_| Ok(0))
+                .unwrap_err();
 
         assert_eq!(
             err,
@@ -568,7 +570,7 @@ mod tests {
                     context: "test source sample",
                 })
             },
-            |_| 0,
+            |_| Ok(0),
         )
         .unwrap_err();
 
@@ -581,8 +583,29 @@ mod tests {
     }
 
     #[test]
+    fn propagates_tx_skip_lookup_errors() {
+        let err = pc_wiener_classify::<u8, _, _>(
+            &params(BitDepth::Eight),
+            |_, _| Ok(0),
+            |_| {
+                Err(ReconError::ArithmeticOverflow {
+                    context: "test tx-skip lookup",
+                })
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            err,
+            ReconError::ArithmeticOverflow {
+                context: "test tx-skip lookup",
+            }
+        );
+    }
+
+    #[test]
     fn rejects_non_boolean_tx_skip_values() {
-        let err = pc_wiener_classify::<u8, _, _>(&params(BitDepth::Eight), |_, _| Ok(0), |_| 2)
+        let err = pc_wiener_classify::<u8, _, _>(&params(BitDepth::Eight), |_, _| Ok(0), |_| Ok(2))
             .unwrap_err();
 
         assert_eq!(
@@ -599,7 +622,7 @@ mod tests {
 
     #[test]
     fn rejects_u8_storage_for_ten_bit_classification() {
-        let err = pc_wiener_classify::<u8, _, _>(&params(BitDepth::Ten), |_, _| Ok(0), |_| 0)
+        let err = pc_wiener_classify::<u8, _, _>(&params(BitDepth::Ten), |_, _| Ok(0), |_| Ok(0))
             .unwrap_err();
 
         assert_eq!(
@@ -616,7 +639,7 @@ mod tests {
         let mut params = params(BitDepth::Eight);
         params.block_start_x = 12;
         params.block_end_x = 10;
-        let err = pc_wiener_classify::<u8, _, _>(&params, |_, _| Ok(0), |_| 0).unwrap_err();
+        let err = pc_wiener_classify::<u8, _, _>(&params, |_, _| Ok(0), |_| Ok(0)).unwrap_err();
 
         assert_eq!(
             err,

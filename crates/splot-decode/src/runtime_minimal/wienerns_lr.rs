@@ -8,9 +8,10 @@ use splot_core::headers::frame::{FrameHeaderCore, FrameRestorationType, LrPlaneP
 use splot_core::headers::sequence::{ChromaFormatIdc, SequenceHeader};
 use splot_core::span::ByteOffset;
 use splot_recon::{
-    BitDepth, LoopRestorationSource, LoopRestorationSourceBounds, LoopRestorationSourceSample,
-    PcWienerClassifyParams, PcWienerTxSkipLookup, PlaneId, ReconError, ReconSample,
-    Result as ReconResult, loop_restoration_source_sample, pc_wiener_classify,
+    BitDepth, DecodedFrame, LoopRestorationSource, LoopRestorationSourceBounds,
+    LoopRestorationSourceSample, PcWienerClassifyParams, PcWienerTxSkipLookup, PlaneId, ReconError,
+    ReconSample, Result as ReconResult, loop_restoration_source_sample,
+    loop_restoration_source_sample_value, pc_wiener_classify,
 };
 
 use crate::error::{DecodeError, Result};
@@ -18,7 +19,7 @@ use crate::tile_payload::{MinimalRuntimePartitionFrontierError, TilePartitionTra
 use crate::{DecodeLimitName, DecodeLimits, DecodeOptions, DecodePlannedObu, DecodeStreamPlan};
 
 use super::{
-    AC0EJ3_LR_CLASSIFIED_WIENER_VALUES_FEATURE_ID, AC0EJ3_LR_CLASSIFIED_WIENER_VALUES_MATRIX_ROW,
+    AC0EJ3_LR_CLASSIFIED_WIENER_STORAGE_FEATURE_ID, AC0EJ3_LR_CLASSIFIED_WIENER_STORAGE_MATRIX_ROW,
     AC0EJ3_LR_SOURCE_READ_FEATURE_ID, AC0EJ3_LR_SOURCE_READ_MATRIX_ROW,
     AC0EJ3_LR_UNIT_SELECTIONS_FEATURE_ID, AC0EJ3_LR_UNIT_SELECTIONS_MATRIX_ROW, derive_tile_plan,
     unsupported_at, unsupported_feature_at,
@@ -102,6 +103,90 @@ pub(super) struct WienerNsLrTxSkipLookup {
     not(test),
     allow(
         dead_code,
+        reason = "private classified-Wiener storage proof waits for live tx-skip retention"
+    )
+)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct WienerNsLrTxSkipGrid {
+    rows: usize,
+    cols: usize,
+    values: Vec<u8>,
+}
+
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "private classified-Wiener storage proof waits for live tx-skip retention"
+    )
+)]
+impl WienerNsLrTxSkipGrid {
+    pub(super) fn new(rows: usize, cols: usize, values: Vec<u8>) -> ReconResult<Self> {
+        if rows == 0 || cols == 0 {
+            return Err(ReconError::PcWienerInvalidBounds {
+                field: "LrTxSkip grid dimensions",
+            });
+        }
+        let expected = rows
+            .checked_mul(cols)
+            .ok_or(ReconError::ArithmeticOverflow {
+                context: "LrTxSkip grid sample count",
+            })?;
+        if values.len() != expected {
+            return Err(ReconError::BufferLengthMismatch {
+                expected,
+                actual: values.len(),
+            });
+        }
+        Ok(Self { rows, cols, values })
+    }
+
+    fn lookup(&self, lookup: WienerNsLrTxSkipLookup) -> ReconResult<i32> {
+        if lookup.row >= self.rows || lookup.col >= self.cols {
+            return Err(ReconError::PcWienerInvalidBounds {
+                field: "LrTxSkip grid lookup",
+            });
+        }
+        let row_start =
+            lookup
+                .row
+                .checked_mul(self.cols)
+                .ok_or(ReconError::ArithmeticOverflow {
+                    context: "LrTxSkip grid row offset",
+                })?;
+        let index = row_start
+            .checked_add(lookup.col)
+            .ok_or(ReconError::ArithmeticOverflow {
+                context: "LrTxSkip grid sample offset",
+            })?;
+        let Some(value) = self.values.get(index) else {
+            return Err(ReconError::BufferLengthMismatch {
+                expected: index.saturating_add(1),
+                actual: self.values.len(),
+            });
+        };
+        Ok(i32::from(*value))
+    }
+}
+
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "private classified-Wiener storage proof waits for live frame and tx-skip retention"
+    )
+)]
+#[derive(Clone, Copy, Debug)]
+pub(super) struct WienerNsLrClassifiedWienerStorageInputs<'a, T: ReconSample> {
+    pub(super) curr_frame: &'a DecodedFrame<T>,
+    pub(super) cdef_frame: &'a DecodedFrame<T>,
+    pub(super) tx_skip_grid: &'a WienerNsLrTxSkipGrid,
+}
+
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
         reason = "private classified-Wiener value frontier proof state waits for real runtime storage"
     )
 )]
@@ -143,6 +228,7 @@ pub(super) struct WienerNsLrFilterClassValue {
 pub(super) struct WienerNsLrClassifiedWienerValueSourceSample {
     pub(super) input_x: isize,
     pub(super) input_y: isize,
+    pub(super) bounds: LoopRestorationSourceBounds,
     pub(super) sample: WienerNsLrSourceReadSample,
 }
 
@@ -292,7 +378,7 @@ pub(super) fn ensure_wienerns_lr_unit_runtime_frontier(
                 options.limits(),
             )?;
         if classified_frontier.is_some() {
-            return Err(wienerns_lr_classified_wiener_values_runtime_error(
+            return Err(wienerns_lr_classified_wiener_storage_runtime_error(
                 key_envelope.offset,
             ));
         }
@@ -538,8 +624,8 @@ pub(super) fn derive_wienerns_lr_classified_wiener_values_frontier<T, FS, FT>(
 ) -> Result<Option<WienerNsLrClassifiedWienerValuesFrontier>>
 where
     T: ReconSample,
-    FS: FnMut(WienerNsLrClassifiedWienerValueSourceSample) -> T,
-    FT: FnMut(WienerNsLrTxSkipLookup) -> i32,
+    FS: FnMut(WienerNsLrClassifiedWienerValueSourceSample) -> ReconResult<T>,
+    FT: FnMut(WienerNsLrTxSkipLookup) -> ReconResult<i32>,
 {
     let source_reads =
         count_wienerns_lr_classified_wiener_source_reads(active_source_blocks, planes)?;
@@ -597,6 +683,47 @@ where
     Ok(Some(summary))
 }
 
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "private classified-Wiener storage proof waits for live frame and tx-skip retention"
+    )
+)]
+pub(super) fn derive_wienerns_lr_classified_wiener_storage_frontier<T>(
+    active_source_blocks: &[crate::tile_payload::WienerNsLrSourceBlock],
+    planes: &[LrPlaneParams],
+    bit_depth: BitDepth,
+    base_q_idx: u32,
+    limits: DecodeLimits,
+    storage: WienerNsLrClassifiedWienerStorageInputs<'_, T>,
+) -> Result<Option<WienerNsLrClassifiedWienerValuesFrontier>>
+where
+    T: ReconSample,
+{
+    let curr_frame = storage.curr_frame.as_frame_ref();
+    let cdef_frame = storage.cdef_frame.as_frame_ref();
+    derive_wienerns_lr_classified_wiener_values_frontier(
+        active_source_blocks,
+        planes,
+        bit_depth,
+        base_q_idx,
+        limits,
+        |read| {
+            loop_restoration_source_sample_value(
+                PlaneId::Y,
+                read.input_x,
+                read.input_y,
+                &read.bounds,
+                curr_frame,
+                cdef_frame,
+            )
+            .map(|sample| sample.value)
+        },
+        |lookup| storage.tx_skip_grid.lookup(lookup),
+    )
+}
+
 fn read_wienerns_lr_classified_wiener_value_source_sample<T, FS>(
     summary: &mut WienerNsLrClassifiedWienerValuesFrontier,
     source_sample: &mut FS,
@@ -606,23 +733,26 @@ fn read_wienerns_lr_classified_wiener_value_source_sample<T, FS>(
 ) -> ReconResult<T>
 where
     T: ReconSample,
-    FS: FnMut(WienerNsLrClassifiedWienerValueSourceSample) -> T,
+    FS: FnMut(WienerNsLrClassifiedWienerValueSourceSample) -> ReconResult<T>,
 {
     let sample = loop_restoration_source_sample(PlaneId::Y, input_x, input_y, bounds)?;
-    let read =
-        record_wienerns_lr_classified_wiener_value_source_read(summary, input_x, input_y, sample)?;
-    Ok(source_sample(read))
+    let read = record_wienerns_lr_classified_wiener_value_source_read(
+        summary, input_x, input_y, *bounds, sample,
+    )?;
+    source_sample(read)
 }
 
 fn record_wienerns_lr_classified_wiener_value_source_read(
     summary: &mut WienerNsLrClassifiedWienerValuesFrontier,
     input_x: isize,
     input_y: isize,
+    bounds: LoopRestorationSourceBounds,
     sample: LoopRestorationSourceSample,
 ) -> ReconResult<WienerNsLrClassifiedWienerValueSourceSample> {
     let read = WienerNsLrClassifiedWienerValueSourceSample {
         input_x,
         input_y,
+        bounds,
         sample: WienerNsLrSourceReadSample {
             plane: PlaneId::Y,
             x: sample.x,
@@ -1341,15 +1471,15 @@ pub(super) fn wienerns_lr_source_read_runtime_error(offset: ByteOffset) -> Decod
     )
 }
 
-pub(super) fn wienerns_lr_classified_wiener_values_runtime_error(
+pub(super) fn wienerns_lr_classified_wiener_storage_runtime_error(
     offset: ByteOffset,
 ) -> DecodeError {
     unsupported_feature_at(
-        "unsupported_wienerns_lr_classified_wiener_storage",
+        "unsupported_wienerns_lr_classified_wiener_runtime_storage",
         offset,
-        "minimal runtime consumed active AV2 frame-level Wiener NS LR unit syntax, retained §7.20.1 source-bound and tile-bound facts, resolved §7.20.4 skip-filter classified-luma source-read and LrTxSkip lookup coordinates, resolved the later §7.20.3 source-read state, and has value-capable FilterClass derivation for caller-supplied source samples and LrTxSkip values, but the live ac0ej3 path reaches loop restoration before decoded 10-bit CurrFrame/CdefFrame storage and before an LrTxSkip grid are retained; no real source sample values or LrTxSkip values are read, and loop-restoration filtering/output is not applied",
-        AC0EJ3_LR_CLASSIFIED_WIENER_VALUES_MATRIX_ROW,
-        AC0EJ3_LR_CLASSIFIED_WIENER_VALUES_FEATURE_ID,
+        "minimal runtime consumed active AV2 frame-level Wiener NS LR unit syntax, retained §7.20.1 source-bound and tile-bound facts, resolved §7.20.4 skip-filter classified-luma source-read and LrTxSkip lookup coordinates, resolved the later §7.20.3 source-read state, and has storage-backed FilterClass derivation for decoded CurrFrame/CdefFrame views plus a bounded LrTxSkip grid, but the live ac0ej3 path reaches loop restoration before decoded 10-bit frame buffers and an LrTxSkip grid are retained for filtering; loop-restoration filtering/output/reference refresh is not applied",
+        AC0EJ3_LR_CLASSIFIED_WIENER_STORAGE_MATRIX_ROW,
+        AC0EJ3_LR_CLASSIFIED_WIENER_STORAGE_FEATURE_ID,
         "7.20.4",
     )
 }
