@@ -120,9 +120,10 @@ pub struct PcWienerClassification {
 /// # Errors
 ///
 /// Returns typed [`ReconError`] values for unsupported sample storage, invalid
-/// caller-resolved bounds, source samples outside the active bit-depth range,
-/// `LrTxSkip` values outside `0..=1`, and arithmetic overflow in coordinate or
-/// LUT derivation. The function mutates no caller-owned output or grid state.
+/// caller-resolved bounds, caller source-sample failures, source samples
+/// outside the active bit-depth range, `LrTxSkip` values outside `0..=1`, and
+/// arithmetic overflow in coordinate or LUT derivation. The function mutates no
+/// caller-owned output or grid state.
 pub fn pc_wiener_classify<T, FS, FT>(
     params: &PcWienerClassifyParams,
     mut source_sample: FS,
@@ -130,7 +131,7 @@ pub fn pc_wiener_classify<T, FS, FT>(
 ) -> Result<PcWienerClassification>
 where
     T: ReconSample,
-    FS: FnMut(isize, isize) -> T,
+    FS: FnMut(isize, isize) -> Result<T>,
     FT: FnMut(PcWienerTxSkipLookup) -> i32,
 {
     validate_sample_type::<T>(params.bit_depth)?;
@@ -220,7 +221,7 @@ fn pc_wiener_features<T, F>(
 ) -> Result<PcWienerFeatureValues>
 where
     T: ReconSample,
-    F: FnMut(isize, isize) -> T,
+    F: FnMut(isize, isize) -> Result<T>,
 {
     let block_end_plus_two = usize_to_isize(
         params
@@ -283,9 +284,9 @@ where
 fn source_value<T, F>(source_sample: &mut F, x: isize, y: isize, bit_depth: BitDepth) -> Result<i64>
 where
     T: ReconSample,
-    F: FnMut(isize, isize) -> T,
+    F: FnMut(isize, isize) -> Result<T>,
 {
-    let value = source_sample(x, y).to_u16();
+    let value = source_sample(x, y)?.to_u16();
     let max = bit_depth.max_sample();
     if value > max {
         return Err(ReconError::PcWienerSourceSampleOutOfRange { x, y, value, max });
@@ -475,7 +476,7 @@ mod tests {
     #[test]
     fn flat_source_without_skips_classifies_to_lut_zero() {
         let result =
-            pc_wiener_classify::<u8, _, _>(&params(BitDepth::Eight), |_, _| 12, |_| 0).unwrap();
+            pc_wiener_classify::<u8, _, _>(&params(BitDepth::Eight), |_, _| Ok(12), |_| 0).unwrap();
 
         assert_eq!(result.raw_features, [0, 0, 0, 0]);
         assert_eq!(result.features, [0, 0, 0, 0]);
@@ -492,7 +493,7 @@ mod tests {
             |x, y| {
                 let x = i64::try_from(x).unwrap();
                 let y = i64::try_from(y).unwrap();
-                u16::try_from(100 + x * x + 2 * y * y + 3 * x * y).unwrap()
+                Ok(u16::try_from(100 + x * x + 2 * y * y + 3 * x * y).unwrap())
             },
             |_| 1,
         )
@@ -523,7 +524,7 @@ mod tests {
         let mut first = None;
         pc_wiener_classify::<u8, _, _>(
             &params,
-            |_, _| 0,
+            |_, _| Ok(0),
             |lookup| {
                 first.get_or_insert(lookup);
                 0
@@ -544,7 +545,7 @@ mod tests {
 
     #[test]
     fn rejects_source_samples_outside_bit_depth() {
-        let err = pc_wiener_classify::<u16, _, _>(&params(BitDepth::Eight), |_, _| 256, |_| 0)
+        let err = pc_wiener_classify::<u16, _, _>(&params(BitDepth::Eight), |_, _| Ok(256), |_| 0)
             .unwrap_err();
 
         assert_eq!(
@@ -559,9 +560,30 @@ mod tests {
     }
 
     #[test]
+    fn propagates_source_sample_errors() {
+        let err = pc_wiener_classify::<u8, _, _>(
+            &params(BitDepth::Eight),
+            |_, _| {
+                Err(ReconError::ArithmeticOverflow {
+                    context: "test source sample",
+                })
+            },
+            |_| 0,
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            err,
+            ReconError::ArithmeticOverflow {
+                context: "test source sample",
+            }
+        );
+    }
+
+    #[test]
     fn rejects_non_boolean_tx_skip_values() {
-        let err =
-            pc_wiener_classify::<u8, _, _>(&params(BitDepth::Eight), |_, _| 0, |_| 2).unwrap_err();
+        let err = pc_wiener_classify::<u8, _, _>(&params(BitDepth::Eight), |_, _| Ok(0), |_| 2)
+            .unwrap_err();
 
         assert_eq!(
             err,
@@ -577,8 +599,8 @@ mod tests {
 
     #[test]
     fn rejects_u8_storage_for_ten_bit_classification() {
-        let err =
-            pc_wiener_classify::<u8, _, _>(&params(BitDepth::Ten), |_, _| 0, |_| 0).unwrap_err();
+        let err = pc_wiener_classify::<u8, _, _>(&params(BitDepth::Ten), |_, _| Ok(0), |_| 0)
+            .unwrap_err();
 
         assert_eq!(
             err,
@@ -594,7 +616,7 @@ mod tests {
         let mut params = params(BitDepth::Eight);
         params.block_start_x = 12;
         params.block_end_x = 10;
-        let err = pc_wiener_classify::<u8, _, _>(&params, |_, _| 0, |_| 0).unwrap_err();
+        let err = pc_wiener_classify::<u8, _, _>(&params, |_, _| Ok(0), |_| 0).unwrap_err();
 
         assert_eq!(
             err,
