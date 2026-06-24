@@ -722,7 +722,7 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                 || tq.enable_intra_ist
                 || tq.enable_inter_ist
             {
-                TransformToolResidualPolicy::AdmitDctOnly {
+                TransformToolResidualPolicy::AdmitTransformToolSubset {
                     luma: None,
                     active_intra_ist: ActiveIntraIstResidualPolicy::LrTxSkipRecordHandoff,
                     active_chroma: ActiveChromaResidualPolicy::LrTxSkipRecordHandoff,
@@ -1220,11 +1220,11 @@ fn luma_transform_tool_policy(
 ) -> TransformToolResidualPolicy {
     match policy {
         TransformToolResidualPolicy::Allow => TransformToolResidualPolicy::Allow,
-        TransformToolResidualPolicy::AdmitDctOnly {
+        TransformToolResidualPolicy::AdmitTransformToolSubset {
             active_intra_ist,
             active_chroma,
             ..
-        } => TransformToolResidualPolicy::AdmitDctOnly {
+        } => TransformToolResidualPolicy::AdmitTransformToolSubset {
             luma: Some(luma),
             active_intra_ist,
             active_chroma,
