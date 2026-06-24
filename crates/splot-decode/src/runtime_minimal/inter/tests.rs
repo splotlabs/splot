@@ -15,7 +15,7 @@
 
 use splot_parallel::ThreadCount;
 
-use splot_core::headers::frame::{FrameHeaderParseStatus, QuantizationParams};
+use splot_core::headers::frame::{FrameHeaderCore, FrameHeaderParseStatus, QuantizationParams};
 use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SequenceHeader};
 use splot_core::ivf::{write_ivf_frame, write_ivf_header};
 use splot_core::obu::{ParsedObu, PayloadStatus};
@@ -149,6 +149,16 @@ fn decode_frames() -> Vec<MinimalRuntimeFrame> {
 }
 
 fn fixture_sequence_and_quantization(bytes: &[u8]) -> (SequenceHeader, QuantizationParams) {
+    let (sequence, key_core) = fixture_sequence_and_key_core(bytes);
+    (
+        sequence,
+        key_core
+            .quantization_params
+            .expect("key core parsed quantization params"),
+    )
+}
+
+fn fixture_sequence_and_key_core(bytes: &[u8]) -> (SequenceHeader, FrameHeaderCore) {
     let ParsedBitstream::Ivf(parsed) = parse_bitstream_partial(bytes) else {
         panic!("fixture is IVF");
     };
@@ -175,12 +185,7 @@ fn fixture_sequence_and_quantization(bytes: &[u8]) -> (SequenceHeader, Quantizat
         .copied()
         .expect("fixture carries a closed-loop-key frame");
     let key_core = super::super::parse_frame_core(key, &sequence).expect("parse key core");
-    (
-        sequence,
-        key_core
-            .quantization_params
-            .expect("key core parsed quantization params"),
-    )
+    (sequence, key_core)
 }
 
 fn decode_inter_blocks_after_quantization_mutation(

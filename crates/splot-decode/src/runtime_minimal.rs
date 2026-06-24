@@ -42,9 +42,11 @@ use self::wienerns_lr::{
     WienerNsLrTxSkipGrid, WienerNsLrTxSkipLookup, derive_wienerns_lr_classified_wiener_frontier,
     derive_wienerns_lr_classified_wiener_storage_frontier,
     derive_wienerns_lr_classified_wiener_values_frontier,
-    derive_wienerns_lr_runtime_source_frontiers, derive_wienerns_lr_source_read_frontier,
+    derive_wienerns_lr_runtime_source_frontiers,
+    derive_wienerns_lr_runtime_storage_retention_frontier, derive_wienerns_lr_source_read_frontier,
     map_wienerns_lr_unit_frontier_error, record_wienerns_lr_chroma_luma_source_reads,
-    wienerns_lr_classified_wiener_storage_runtime_error, wienerns_lr_source_read_config,
+    wienerns_lr_classified_wiener_storage_runtime_error,
+    wienerns_lr_runtime_storage_retention_error, wienerns_lr_source_read_config,
     wienerns_lr_source_read_runtime_error,
 };
 
@@ -65,9 +67,20 @@ const AC0EJ3_LR_UNIT_SELECTIONS_FEATURE_ID: &str = "DECODE-AC0EJ3-LR-UNIT-SELECT
 const AC0EJ3_LR_UNIT_SELECTIONS_MATRIX_ROW: &str = "ac0ej3-lr-unit-selections-frontier";
 const AC0EJ3_LR_SOURCE_READ_FEATURE_ID: &str = "DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER";
 const AC0EJ3_LR_SOURCE_READ_MATRIX_ROW: &str = "ac0ej3-lr-source-read-frontier";
+#[allow(
+    dead_code,
+    reason = "classified-Wiener storage diagnostic is retained for the helper-row regression test after the live path advanced"
+)]
 const AC0EJ3_LR_CLASSIFIED_WIENER_STORAGE_FEATURE_ID: &str =
     "DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-STORAGE";
+#[allow(
+    dead_code,
+    reason = "classified-Wiener storage diagnostic is retained for the helper-row regression test after the live path advanced"
+)]
 const AC0EJ3_LR_CLASSIFIED_WIENER_STORAGE_MATRIX_ROW: &str = "ac0ej3-lr-classified-wiener-storage";
+const AC0EJ3_LR_RUNTIME_STORAGE_RETENTION_FEATURE_ID: &str =
+    "DECODE-AC0EJ3-LR-RUNTIME-STORAGE-RETENTION";
+const AC0EJ3_LR_RUNTIME_STORAGE_RETENTION_MATRIX_ROW: &str = "ac0ej3-lr-runtime-storage-retention";
 const MINIMAL_WIDTH: u32 = 64;
 const MINIMAL_HEIGHT: u32 = 64;
 const MINIMAL_TRACE_SYMBOLS: u64 = 6;

@@ -1,9 +1,4 @@
-## Purpose
-
-Track the ac0ej3 fail-closed runtime frontier for AV2 §7.20.4 classified-Wiener
-value derivation backed by decoded frame and `LrTxSkip` storage.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: ac0ej3 Classified Wiener Storage Frontier
 
