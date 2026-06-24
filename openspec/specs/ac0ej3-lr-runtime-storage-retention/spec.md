@@ -12,9 +12,9 @@ fail-closed ac0ej3 frontier after classified-Wiener storage-helper wiring. The
 runtime SHALL derive the two active-bit-depth loop-restoration frame-buffer
 storage shapes (`CurrFrame` and `CdefFrame`; 10-bit for the ac0ej3 mission
 stream) and the frame-wide `LrTxSkip` grid dimensions from parsed AV2
-sequence/frame facts, SHALL enforce existing decode limits for those retained
-storage shapes, and SHALL stop before any unpopulated storage is used as decoded
-source values.
+sequence/frame facts, SHALL enforce the per-frame decoded-frame limit and the
+aggregate retained-storage limit for those retained storage shapes, and SHALL
+stop before any unpopulated storage is used as decoded source values.
 
 #### Scenario: Live ac0ej3 reaches storage-retention frontier
 
@@ -32,7 +32,7 @@ source values.
 
 - **WHEN** caller-provided decode limits are lower than the derived
   active-bit-depth frame storage footprint (10-bit for the ac0ej3 mission
-  stream) or `LrTxSkip` storage footprint
+  stream) or aggregate retained-storage footprint including `LrTxSkip` storage
 - **THEN** the runtime returns `decode/resource-limit`
 - **AND** the runtime does not emit the storage-retention unsupported-feature
   diagnostic

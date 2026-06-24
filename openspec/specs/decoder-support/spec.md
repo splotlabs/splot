@@ -4263,8 +4263,10 @@ value/filtering gap, and the live ac0ej3 runtime diagnostic.
 The decoder support model SHALL track
 `DECODE-AC0EJ3-LR-RUNTIME-STORAGE-RETENTION` as a distinct ac0ej3 row named
 `ac0ej3-lr-runtime-storage-retention`. The row SHALL record that the live
-ac0ej3 path derives and limit-checks 10-bit loop-restoration frame-buffer shapes
-plus the frame-wide `LrTxSkip` grid before failing closed, and SHALL keep
+ac0ej3 path derives and limit-checks active-bit-depth loop-restoration
+frame-buffer shapes (10-bit for the ac0ej3 mission stream) plus the frame-wide
+`LrTxSkip` grid under the per-frame decoded-frame and aggregate
+retained-storage limits before failing closed, and SHALL keep
 decoded sample population, `FilterClass` grid retention, `SubclassLookup`,
 loop-restoration filtering, 10-bit output, reference refresh, and successful
 ac0ej3 decode unsupported until separately proven.

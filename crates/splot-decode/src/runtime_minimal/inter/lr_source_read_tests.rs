@@ -733,8 +733,9 @@ fn wienerns_lr_runtime_storage_retention_frontier_counts_ten_bit_buffers_and_tx_
 fn wienerns_lr_runtime_storage_retention_frontier_limits_total_storage_before_diagnostic() {
     let (mut sequence, core) = fixture_sequence_and_key_core(TWO_FRAME_INTER_FIXTURE);
     sequence.general.bit_depth_idc = BitDepthIdc::Ten;
-    let limits =
-        DecodeLimits::unlimited().with_max_decoded_frame_bytes(DecodeLimitThreshold::Max(12_288));
+    let limits = DecodeLimits::unlimited()
+        .with_max_decoded_frame_bytes(DecodeLimitThreshold::Max(12_288))
+        .with_max_reference_store_bytes(DecodeLimitThreshold::Max(24_831));
 
     let error = super::super::derive_wienerns_lr_runtime_storage_retention_frontier(
         &sequence,
@@ -746,9 +747,9 @@ fn wienerns_lr_runtime_storage_retention_frontier_limits_total_storage_before_di
 
     match error {
         DecodeError::Limit { source } => {
-            assert_eq!(source.name(), DecodeLimitName::MaxDecodedFrameBytes);
+            assert_eq!(source.name(), DecodeLimitName::MaxReferenceStoreBytes);
             let check = source.check().expect("limit failure carries check");
-            assert_eq!(check.threshold(), DecodeLimitThreshold::Max(12_288));
+            assert_eq!(check.threshold(), DecodeLimitThreshold::Max(24_831));
             assert_eq!(check.actual(), 24_832);
         }
         _ => panic!("storage retention must fail as a resource limit"),

@@ -460,7 +460,7 @@ pub(super) fn derive_wienerns_lr_runtime_storage_retention_frontier(
     }
 
     let retained_frame_buffer_bytes = checked_mul(
-        DecodeLimitName::MaxDecodedFrameBytes,
+        DecodeLimitName::MaxReferenceStoreBytes,
         budget.decoded_bytes,
         LR_RETAINED_FRAME_BUFFERS,
     )?;
@@ -477,16 +477,16 @@ pub(super) fn derive_wienerns_lr_runtime_storage_retention_frontier(
     // Budget retained `LrTxSkip` storage as one byte per value until the live
     // allocator chooses a packed or typed representation.
     let tx_skip_storage_bytes = checked_mul(
-        DecodeLimitName::MaxDecodedFrameBytes,
+        DecodeLimitName::MaxReferenceStoreBytes,
         tx_skip_values,
         LR_TX_SKIP_STORAGE_BYTES_PER_VALUE,
     )?;
     let total_storage_bytes = checked_add(
-        DecodeLimitName::MaxDecodedFrameBytes,
+        DecodeLimitName::MaxReferenceStoreBytes,
         retained_frame_buffer_bytes,
         tx_skip_storage_bytes,
     )?;
-    limits.ensure(DecodeLimitName::MaxDecodedFrameBytes, total_storage_bytes)?;
+    limits.ensure(DecodeLimitName::MaxReferenceStoreBytes, total_storage_bytes)?;
 
     Ok(WienerNsLrRuntimeStorageRetentionFrontier {
         bit_depth,
