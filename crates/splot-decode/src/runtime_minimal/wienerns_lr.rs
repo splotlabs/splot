@@ -4,9 +4,10 @@
 //! Wiener NS loop-restoration runtime frontier helpers.
 
 use splot_core::annexb::ObuEnvelope;
-use splot_core::headers::frame::{FrameHeaderCore, FrameRestorationType, LrPlaneParams};
+use splot_core::headers::frame::{FrameHeaderCore, FrameRestorationType, LrPlaneParams, TxMode};
 use splot_core::headers::sequence::{ChromaFormatIdc, SequenceHeader};
 use splot_core::span::ByteOffset;
+use splot_core::tables::conversion::{TX_HEIGHT_LOG2, TX_WIDTH_LOG2};
 use splot_recon::{
     BitDepth, DecodedFrame, LoopRestorationSource, LoopRestorationSourceBounds,
     LoopRestorationSourceSample, PcWienerClassifyParams, PcWienerTxSkipLookup, PlaneId, ReconError,
@@ -15,13 +16,20 @@ use splot_recon::{
 };
 
 use crate::error::{DecodeError, Result};
-use crate::tile_payload::{MinimalRuntimePartitionFrontierError, TilePartitionTraversalError};
+use crate::tile_payload::{
+    GeneralIntraBlockModeError, GeneralIntraMultiblockError, GeneralIntraResidualError,
+    GeneralIntraTreeWalkError, MinimalRuntimePartitionFrontierError, TileCoeffContextState,
+    TilePartitionTraversalError, decode_general_intra_block_modes,
+    decode_general_intra_multiblock_tree, decode_general_intra_plane_coeffs, frame_mi_dimensions,
+};
 use crate::{DecodeLimitName, DecodeLimits, DecodeOptions, DecodePlannedObu, DecodeStreamPlan};
 
 use super::limits::{checked_add, checked_mul, decoded_frame_storage_budget};
 use super::{
     AC0EJ3_LR_CLASSIFIED_WIENER_STORAGE_FEATURE_ID, AC0EJ3_LR_CLASSIFIED_WIENER_STORAGE_MATRIX_ROW,
     AC0EJ3_LR_LIVE_STORAGE_ALLOCATION_FEATURE_ID, AC0EJ3_LR_LIVE_STORAGE_ALLOCATION_MATRIX_ROW,
+    AC0EJ3_LR_LIVE_TRANSFORM_RECORD_HANDOFF_FEATURE_ID,
+    AC0EJ3_LR_LIVE_TRANSFORM_RECORD_HANDOFF_MATRIX_ROW,
     AC0EJ3_LR_RUNTIME_STORAGE_RETENTION_FEATURE_ID, AC0EJ3_LR_RUNTIME_STORAGE_RETENTION_MATRIX_ROW,
     AC0EJ3_LR_SOURCE_READ_FEATURE_ID, AC0EJ3_LR_SOURCE_READ_MATRIX_ROW,
     AC0EJ3_LR_UNIT_SELECTIONS_FEATURE_ID, AC0EJ3_LR_UNIT_SELECTIONS_MATRIX_ROW, derive_tile_plan,
@@ -550,8 +558,40 @@ pub(super) fn ensure_wienerns_lr_unit_runtime_frontier(
                 key_envelope.offset,
                 options.limits(),
             )?;
-            let _live_storage = derive_wienerns_lr_live_storage_allocation(storage_retention)?;
-            return Err(wienerns_lr_live_storage_allocation_error(
+            let tx_mode = core
+                .intra_tail
+                .as_ref()
+                .map(|tail| tail.tx_mode)
+                .ok_or_else(|| {
+                    wienerns_lr_live_transform_record_handoff_error(key_envelope.offset)
+                })?;
+            if tx_mode == TxMode::Select {
+                return Err(wienerns_lr_tx_mode_select_transform_record_error(
+                    key_envelope.offset,
+                ));
+            }
+            if tx_mode != TxMode::Largest {
+                return Err(wienerns_lr_live_transform_record_handoff_error(
+                    key_envelope.offset,
+                ));
+            }
+            let transform_handoff = derive_wienerns_lr_fixed_largest_transform_record_handoff(
+                bytes,
+                options,
+                plan,
+                key_candidate,
+                key_envelope,
+                sequence,
+                core,
+            )?;
+            let mut live_storage = derive_wienerns_lr_live_storage_allocation(storage_retention)?;
+            populate_wienerns_lr_live_tx_skip_from_transform_records(
+                &mut live_storage,
+                transform_handoff.tx_skip_rows,
+                transform_handoff.tx_skip_cols,
+                &transform_handoff.records,
+            )?;
+            return Err(wienerns_lr_live_frame_samples_unpopulated_error(
                 key_envelope.offset,
             ));
         }
@@ -656,6 +696,264 @@ pub(super) fn derive_wienerns_lr_live_storage_allocation(
     frontier: WienerNsLrRuntimeStorageRetentionFrontier,
 ) -> Result<WienerNsLrLiveStorageAllocation> {
     WienerNsLrLiveStorageAllocation::from_retention_frontier(frontier)
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct WienerNsLrLiveTransformRecordHandoff {
+    tx_skip_rows: usize,
+    tx_skip_cols: usize,
+    records: Vec<WienerNsLrTxSkipTransformRecord>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn derive_wienerns_lr_fixed_largest_transform_record_handoff(
+    bytes: &[u8],
+    options: DecodeOptions,
+    plan: &DecodeStreamPlan,
+    key_candidate: &DecodePlannedObu,
+    key_envelope: ObuEnvelope<'_>,
+    sequence: &SequenceHeader,
+    core: &FrameHeaderCore,
+) -> Result<WienerNsLrLiveTransformRecordHandoff> {
+    if sequence.general.chroma_format_idc != ChromaFormatIdc::Yuv420 {
+        return Err(wienerns_lr_live_transform_record_handoff_error(
+            key_envelope.offset,
+        ));
+    }
+    if core
+        .delta_q_params
+        .as_ref()
+        .is_some_and(|delta_q| delta_q.delta_q_present)
+    {
+        return Err(wienerns_lr_live_transform_record_handoff_error(
+            key_envelope.offset,
+        ));
+    }
+
+    let mut tile_plan = derive_tile_plan(
+        plan,
+        key_candidate,
+        bytes,
+        key_envelope,
+        sequence,
+        core,
+        options,
+    )?;
+    let tile = match tile_plan.work_units_mut() {
+        [tile] => tile,
+        [] => {
+            return Err(wienerns_lr_live_transform_record_handoff_error(
+                key_envelope.offset,
+            ));
+        }
+        work_units => {
+            return Err(wienerns_lr_live_transform_record_handoff_error(
+                work_units
+                    .first()
+                    .map_or(key_envelope.offset, |tile| tile.tile_byte_span().start),
+            ));
+        }
+    };
+    let tile_offset = tile.tile_byte_span().start;
+    let (tx_skip_rows, tx_skip_cols) = frame_mi_dimensions(core)
+        .map_err(|_| wienerns_lr_live_transform_record_handoff_error(tile_offset))?;
+    let mut coeff_ctx = TileCoeffContextState::new(tx_skip_rows, tx_skip_cols)
+        .map_err(|_| wienerns_lr_live_transform_record_handoff_error(tile_offset))?;
+    let mut records = Vec::new();
+    let limits = options.limits();
+
+    let symbols = decode_general_intra_multiblock_tree(
+        tile,
+        sequence,
+        core,
+        limits,
+        |work_unit, symbols, frontier, joint_modes, _block_decoded| {
+            let n4w = frontier
+                .b_size
+                .num_4x4_wide()
+                .map_err(|_| wienerns_lr_live_transform_record_handoff_error(tile_offset))?;
+            let n4h = frontier
+                .b_size
+                .num_4x4_high()
+                .map_err(|_| wienerns_lr_live_transform_record_handoff_error(tile_offset))?;
+            if n4w < 2 || n4h < 2 || !frontier.has_chroma {
+                return Err(wienerns_lr_live_transform_record_handoff_error(tile_offset));
+            }
+            let modes = decode_general_intra_block_modes(
+                work_unit,
+                symbols,
+                joint_modes,
+                frontier.r,
+                frontier.c,
+                n4w,
+                n4h,
+            )
+            .map_err(|error| wienerns_lr_live_transform_record_mode_error(error, tile_offset))?;
+
+            let luma_tx = fixed_largest_tx_size_from_4x4(n4w, n4h)
+                .ok_or_else(|| wienerns_lr_live_transform_record_handoff_error(tile_offset))?;
+            let luma_x = frontier.c * 4;
+            let luma_y = frontier.r * 4;
+            let luma = decode_general_intra_plane_coeffs(
+                work_unit,
+                symbols,
+                &mut coeff_ctx,
+                0,
+                luma_tx,
+                luma_x,
+                luma_y,
+                false,
+                usize::from(modes.uv_mode),
+                false,
+            )
+            .map_err(|error| {
+                wienerns_lr_live_transform_record_residual_error(error, tile_offset)
+            })?;
+            records
+                .try_reserve(1)
+                .map_err(|_| wienerns_lr_live_transform_record_handoff_error(tile_offset))?;
+            records.push(WienerNsLrTxSkipTransformRecord {
+                row: frontier.r,
+                col: frontier.c,
+                rows: n4h,
+                cols: n4w,
+                skip_flag: false,
+                eob: luma.eob,
+            });
+
+            let chroma_tx = fixed_largest_420_chroma_tx_size_from_luma_4x4(n4w, n4h)
+                .ok_or_else(|| wienerns_lr_live_transform_record_handoff_error(tile_offset))?;
+            let chroma_x = frontier.c * 2;
+            let chroma_y = frontier.r * 2;
+            let u = decode_general_intra_plane_coeffs(
+                work_unit,
+                symbols,
+                &mut coeff_ctx,
+                1,
+                chroma_tx,
+                chroma_x,
+                chroma_y,
+                false,
+                usize::from(modes.uv_mode),
+                false,
+            )
+            .map_err(|error| {
+                wienerns_lr_live_transform_record_residual_error(error, tile_offset)
+            })?;
+            let _v = decode_general_intra_plane_coeffs(
+                work_unit,
+                symbols,
+                &mut coeff_ctx,
+                2,
+                chroma_tx,
+                chroma_x,
+                chroma_y,
+                !u.all_zero,
+                usize::from(modes.uv_mode),
+                false,
+            )
+            .map_err(|error| {
+                wienerns_lr_live_transform_record_residual_error(error, tile_offset)
+            })?;
+            Ok(modes.intra_joint_mode)
+        },
+    )
+    .map_err(|error| map_wienerns_lr_transform_record_multiblock_error(error, tile_offset))?;
+
+    symbols
+        .exit_symbol()
+        .map_err(|_| wienerns_lr_live_transform_record_handoff_error(tile_offset))?;
+
+    Ok(WienerNsLrLiveTransformRecordHandoff {
+        tx_skip_rows,
+        tx_skip_cols,
+        records,
+    })
+}
+
+pub(super) fn populate_wienerns_lr_live_tx_skip_from_transform_records(
+    live_storage: &mut WienerNsLrLiveStorageAllocation,
+    rows: usize,
+    cols: usize,
+    records: &[WienerNsLrTxSkipTransformRecord],
+) -> Result<()> {
+    let grid = derive_wienerns_lr_tx_skip_grid_retention(rows, cols, records)
+        .map_err(|source| DecodeError::Reconstruction { source })?;
+    live_storage.populate_tx_skip_grid(&grid)
+}
+
+fn fixed_largest_tx_size_from_4x4(n4w: usize, n4h: usize) -> Option<usize> {
+    if n4w == 0 || n4h == 0 || !n4w.is_power_of_two() || !n4h.is_power_of_two() {
+        return None;
+    }
+    let w_log2 = n4w.trailing_zeros().checked_add(2)?;
+    let h_log2 = n4h.trailing_zeros().checked_add(2)?;
+    tx_size_from_log2(w_log2, h_log2)
+}
+
+fn fixed_largest_420_chroma_tx_size_from_luma_4x4(n4w: usize, n4h: usize) -> Option<usize> {
+    if n4w < 2 || n4h < 2 || !n4w.is_power_of_two() || !n4h.is_power_of_two() {
+        return None;
+    }
+    let luma_w_log2 = n4w.trailing_zeros().checked_add(2)?;
+    let luma_h_log2 = n4h.trailing_zeros().checked_add(2)?;
+    tx_size_from_log2(luma_w_log2.checked_sub(1)?, luma_h_log2.checked_sub(1)?)
+}
+
+fn tx_size_from_log2(w_log2: u32, h_log2: u32) -> Option<usize> {
+    let w = i32::try_from(w_log2).ok()?;
+    let h = i32::try_from(h_log2).ok()?;
+    TX_WIDTH_LOG2
+        .iter()
+        .zip(TX_HEIGHT_LOG2.iter())
+        .position(|(&tw, &th)| tw == w && th == h)
+}
+
+fn map_wienerns_lr_transform_record_multiblock_error(
+    error: GeneralIntraMultiblockError<DecodeError>,
+    tile_offset: ByteOffset,
+) -> DecodeError {
+    match error {
+        GeneralIntraMultiblockError::Setup(MinimalRuntimePartitionFrontierError::Limit(source))
+        | GeneralIntraMultiblockError::Setup(MinimalRuntimePartitionFrontierError::Traversal(
+            TilePartitionTraversalError::Limit(source),
+        ))
+        | GeneralIntraMultiblockError::Walk(GeneralIntraTreeWalkError::Traversal(
+            TilePartitionTraversalError::Limit(source),
+        )) => DecodeError::Limit { source },
+        GeneralIntraMultiblockError::Walk(GeneralIntraTreeWalkError::Leaf(error)) => error,
+        GeneralIntraMultiblockError::Setup(_) | GeneralIntraMultiblockError::Walk(_) => {
+            wienerns_lr_live_transform_record_handoff_error(tile_offset)
+        }
+    }
+}
+
+fn wienerns_lr_live_transform_record_mode_error(
+    _error: GeneralIntraBlockModeError,
+    offset: ByteOffset,
+) -> DecodeError {
+    unsupported_feature_at(
+        "unsupported_wienerns_lr_live_transform_record_mode_parse",
+        offset,
+        "minimal runtime reached active Wiener NS LR and tried to derive live LrTxSkip records from fixed-largest key-tile mode info, but the tile mode symbols are outside the transform-record handoff subset; selectable transform records, live samples, filtering, output, and reference refresh are not applied",
+        AC0EJ3_LR_LIVE_TRANSFORM_RECORD_HANDOFF_MATRIX_ROW,
+        AC0EJ3_LR_LIVE_TRANSFORM_RECORD_HANDOFF_FEATURE_ID,
+        "5.20.5.3",
+    )
+}
+
+fn wienerns_lr_live_transform_record_residual_error(
+    _error: GeneralIntraResidualError,
+    offset: ByteOffset,
+) -> DecodeError {
+    unsupported_feature_at(
+        "unsupported_wienerns_lr_live_transform_record_residual_parse",
+        offset,
+        "minimal runtime reached active Wiener NS LR and tried to derive live LrTxSkip records from fixed-largest key-tile transform coefficients, but the coefficient syntax is outside the transform-record handoff subset; selectable transform records, live samples, filtering, output, and reference refresh are not applied",
+        AC0EJ3_LR_LIVE_TRANSFORM_RECORD_HANDOFF_MATRIX_ROW,
+        AC0EJ3_LR_LIVE_TRANSFORM_RECORD_HANDOFF_FEATURE_ID,
+        "5.20.7.27",
+    )
 }
 
 const fn decoded_storage_bytes_per_sample(bit_depth: BitDepth) -> u64 {
@@ -1783,6 +2081,10 @@ pub(super) fn wienerns_lr_runtime_storage_retention_error(offset: ByteOffset) ->
     )
 }
 
+#[allow(
+    dead_code,
+    reason = "live storage-allocation diagnostic is retained for the helper-row regression test after the live path advanced"
+)]
 pub(super) fn wienerns_lr_live_storage_allocation_error(offset: ByteOffset) -> DecodeError {
     unsupported_feature_at(
         "unsupported_wienerns_lr_live_storage_unpopulated",
@@ -1790,6 +2092,39 @@ pub(super) fn wienerns_lr_live_storage_allocation_error(offset: ByteOffset) -> D
         "minimal runtime consumed active AV2 frame-level Wiener NS LR unit syntax, retained §7.20.1 source-bound and tile-bound facts, resolved §7.20.4 classified-luma source-read and LrTxSkip lookup coordinates, resolved later §7.20.3 source-read state, derived/limit-checked the live active-bit-depth CurrFrame/CdefFrame storage footprint plus the frame-wide LrTxSkip grid shape, and allocated private unpopulated CurrFrame, CdefFrame, and LrTxSkip storage shells, but tile reconstruction has not populated decoded frame samples or LrTxSkip values for storage-backed classification; FilterClass retention, loop-restoration filtering/output, and reference refresh are not applied",
         AC0EJ3_LR_LIVE_STORAGE_ALLOCATION_MATRIX_ROW,
         AC0EJ3_LR_LIVE_STORAGE_ALLOCATION_FEATURE_ID,
+        "7.20.4",
+    )
+}
+
+pub(super) fn wienerns_lr_tx_mode_select_transform_record_error(offset: ByteOffset) -> DecodeError {
+    unsupported_feature_at(
+        "unsupported_wienerns_lr_tx_mode_select_transform_records",
+        offset,
+        "minimal runtime consumed active AV2 frame-level Wiener NS LR unit syntax, derived live storage footprints, and reached the live LrTxSkip transform-record handoff, but the key frame uses TX_MODE_SELECT; deriving LrTxSkip from this stream requires §5.20.6.1 read_tx_size/read_tx_partition records before live samples, FilterClass retention, loop-restoration filtering/output, and reference refresh can run",
+        AC0EJ3_LR_LIVE_TRANSFORM_RECORD_HANDOFF_MATRIX_ROW,
+        AC0EJ3_LR_LIVE_TRANSFORM_RECORD_HANDOFF_FEATURE_ID,
+        "5.20.6.1",
+    )
+}
+
+pub(super) fn wienerns_lr_live_transform_record_handoff_error(offset: ByteOffset) -> DecodeError {
+    unsupported_feature_at(
+        "unsupported_wienerns_lr_live_transform_records",
+        offset,
+        "minimal runtime consumed active AV2 frame-level Wiener NS LR unit syntax, derived live storage footprints, and reached the live LrTxSkip transform-record handoff, but the tile transform records are outside the fixed-largest subset currently wired into live LR storage; selectable transform records, live samples, FilterClass retention, loop-restoration filtering/output, and reference refresh are not applied",
+        AC0EJ3_LR_LIVE_TRANSFORM_RECORD_HANDOFF_MATRIX_ROW,
+        AC0EJ3_LR_LIVE_TRANSFORM_RECORD_HANDOFF_FEATURE_ID,
+        "5.20.7.27",
+    )
+}
+
+pub(super) fn wienerns_lr_live_frame_samples_unpopulated_error(offset: ByteOffset) -> DecodeError {
+    unsupported_feature_at(
+        "unsupported_wienerns_lr_live_frame_samples_unpopulated",
+        offset,
+        "minimal runtime consumed active AV2 frame-level Wiener NS LR unit syntax, derived live storage footprints, derived live LrTxSkip values from fixed-largest tile transform records, and populated the live LrTxSkip shell, but decoded CurrFrame and CdefFrame samples are still unpopulated for storage-backed classification; FilterClass retention, loop-restoration filtering/output, and reference refresh are not applied",
+        AC0EJ3_LR_LIVE_TRANSFORM_RECORD_HANDOFF_MATRIX_ROW,
+        AC0EJ3_LR_LIVE_TRANSFORM_RECORD_HANDOFF_FEATURE_ID,
         "7.20.4",
     )
 }

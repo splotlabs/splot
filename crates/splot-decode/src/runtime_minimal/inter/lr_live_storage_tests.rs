@@ -164,6 +164,62 @@ fn wienerns_lr_live_tx_skip_grid_populates_retained_values_without_frame_samples
 }
 
 #[test]
+fn wienerns_lr_live_transform_record_handoff_populates_tx_skip_without_frame_samples() {
+    let mut allocation = valid_live_storage_allocation();
+    let records = [
+        super::super::WienerNsLrTxSkipTransformRecord {
+            row: 0,
+            col: 0,
+            rows: 8,
+            cols: 16,
+            skip_flag: false,
+            eob: 0,
+        },
+        super::super::WienerNsLrTxSkipTransformRecord {
+            row: 8,
+            col: 0,
+            rows: 8,
+            cols: 8,
+            skip_flag: false,
+            eob: 7,
+        },
+        super::super::WienerNsLrTxSkipTransformRecord {
+            row: 8,
+            col: 8,
+            rows: 8,
+            cols: 8,
+            skip_flag: true,
+            eob: 11,
+        },
+    ];
+
+    super::super::populate_wienerns_lr_live_tx_skip_from_transform_records(
+        &mut allocation,
+        16,
+        16,
+        &records,
+    )
+    .expect("populate from transform records");
+
+    assert_eq!(allocation.unpopulated_tx_skip_values(), 0);
+    assert_eq!(allocation.tx_skip_value(0, 0), Some(1));
+    assert_eq!(allocation.tx_skip_value(7, 15), Some(1));
+    assert_eq!(allocation.tx_skip_value(8, 0), Some(0));
+    assert_eq!(allocation.tx_skip_value(15, 7), Some(0));
+    assert_eq!(allocation.tx_skip_value(8, 8), Some(1));
+    assert_eq!(allocation.tx_skip_value(15, 15), Some(1));
+    assert_eq!(
+        allocation.unpopulated_frame_samples(),
+        64 * 64 * 3,
+        "transform-record handoff must not fabricate CurrFrame/CdefFrame samples"
+    );
+    assert!(
+        !allocation.is_fully_populated(),
+        "decoded frame shells remain unpopulated"
+    );
+}
+
+#[test]
 fn wienerns_lr_live_tx_skip_grid_rejects_dimension_mismatch_without_mutation() {
     let mut allocation = valid_live_storage_allocation();
     let bad_grid = tx_skip_grid(8, 32, 1);
@@ -277,5 +333,75 @@ fn wienerns_lr_live_storage_allocation_error_reports_unpopulated_boundary() {
     assert!(
         unsupported.message().contains("FilterClass retention"),
         "message should keep classification output out of scope"
+    );
+}
+
+#[test]
+fn wienerns_lr_tx_mode_select_transform_record_error_reports_handoff_frontier() {
+    let error =
+        super::super::wienerns_lr_tx_mode_select_transform_record_error(ByteOffset::new(74));
+    let unsupported = match error {
+        DecodeError::UnsupportedFeature { unsupported } => unsupported,
+        _ => panic!("tx-mode-select transform frontier must be an unsupported-feature error"),
+    };
+
+    assert_eq!(
+        unsupported.reason(),
+        "unsupported_wienerns_lr_tx_mode_select_transform_records"
+    );
+    assert_eq!(
+        unsupported.matrix_row(),
+        "ac0ej3-lr-live-transform-record-handoff"
+    );
+    assert_eq!(
+        unsupported.feature_id(),
+        "DECODE-AC0EJ3-LR-LIVE-TRANSFORM-RECORD-HANDOFF"
+    );
+    assert_eq!(unsupported.spec_section(), "5.20.6.1");
+    assert_eq!(unsupported.byte_offset(), Some(ByteOffset::new(74)));
+    assert!(
+        unsupported.message().contains("TX_MODE_SELECT"),
+        "message should name the selectable-transform blocker"
+    );
+    assert!(
+        unsupported
+            .message()
+            .contains("read_tx_size/read_tx_partition"),
+        "message should name the missing transform-record syntax"
+    );
+}
+
+#[test]
+fn wienerns_lr_live_frame_samples_unpopulated_error_reports_handoff_frontier() {
+    let error = super::super::wienerns_lr_live_frame_samples_unpopulated_error(ByteOffset::new(74));
+    let unsupported = match error {
+        DecodeError::UnsupportedFeature { unsupported } => unsupported,
+        _ => panic!("live frame-sample frontier must be an unsupported-feature error"),
+    };
+
+    assert_eq!(
+        unsupported.reason(),
+        "unsupported_wienerns_lr_live_frame_samples_unpopulated"
+    );
+    assert_eq!(
+        unsupported.matrix_row(),
+        "ac0ej3-lr-live-transform-record-handoff"
+    );
+    assert_eq!(
+        unsupported.feature_id(),
+        "DECODE-AC0EJ3-LR-LIVE-TRANSFORM-RECORD-HANDOFF"
+    );
+    assert_eq!(unsupported.spec_section(), "7.20.4");
+    assert!(
+        unsupported
+            .message()
+            .contains("populated the live LrTxSkip shell"),
+        "message should name the completed transform-record handoff"
+    );
+    assert!(
+        unsupported
+            .message()
+            .contains("CurrFrame and CdefFrame samples are still unpopulated"),
+        "message should stop before decoded samples"
     );
 }

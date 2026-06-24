@@ -283,25 +283,29 @@ fn local_ac0ej3_reaches_current_runtime_gate_without_output() {
     assert!(out.stderr.is_empty(), "stderr was not empty");
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(json["rule_id"], "decode/unsupported-feature");
-    assert_eq!(json["spec_section"], "7.20.4");
-    assert_eq!(json["matrix_row"], "ac0ej3-lr-live-storage-allocation");
+    assert_eq!(json["spec_section"], "5.20.6.1");
+    assert_eq!(
+        json["matrix_row"],
+        "ac0ej3-lr-live-transform-record-handoff"
+    );
     assert_eq!(
         json["feature_id"],
-        "DECODE-AC0EJ3-LR-LIVE-STORAGE-ALLOCATION"
+        "DECODE-AC0EJ3-LR-LIVE-TRANSFORM-RECORD-HANDOFF"
     );
     assert_eq!(json["detail_kind"], "unsupported_feature");
     assert_eq!(
         json["unsupported_reason"],
-        "unsupported_wienerns_lr_live_storage_unpopulated"
+        "unsupported_wienerns_lr_tx_mode_select_transform_records"
     );
     assert!(
-        json["message"]
-            .as_str()
-            .unwrap()
-            .contains("allocated private unpopulated CurrFrame"),
-        "diagnostic must describe unpopulated live storage shells"
+        json["message"].as_str().unwrap().contains("TX_MODE_SELECT"),
+        "diagnostic must describe the selectable-transform blocker"
     );
     assert_eq!(json["byte_offset"], 74);
+    assert_ne!(
+        json["unsupported_reason"], "unsupported_wienerns_lr_live_storage_unpopulated",
+        "ac0ej3 must advance past the former live-storage allocation gate"
+    );
     assert_ne!(
         json["unsupported_reason"], "unsupported_wienerns_filter_bank",
         "ac0ej3 must advance past the parsed frame-level Wiener NS bank frontier"
