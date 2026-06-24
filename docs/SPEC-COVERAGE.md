@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 417 feature(s); 364 cite a spec section.
+Matrix version 1. Last reviewed 2026-06-15. 418 feature(s); 365 cite a spec section.
 
 One row per (spec section, feature) pair, in spec order; a feature citing both a syntax and a semantics section appears under both. The canonical status source is [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); the full per-feature ledger is [FEATURE-STATUS.md](./FEATURE-STATUS.md).
 
@@ -552,18 +552,21 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.20.8.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-3) | Get transform set function | `DECODE-INTER-RESIDUAL-DCT` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 5.20.9.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-9-1) | Is inside function | `DECODE-TILE-PARTITION-TRAVERSAL-BOUNDARY` | ✅ | ✅ | — | ✅ | — |
 | [§ 5.20.10.4](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-4) | Read loop restoration syntax | `DECODE-AC0EJ3-INACTIVE-LR-UNITS-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 5.20.10.4](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-4) | Read loop restoration syntax | `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 5.20.10.4](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-4) | Read loop restoration syntax | `DECODE-AC0EJ3-LR-SOURCE-BOUNDS-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.10.4](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-4) | Read loop restoration syntax | `DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 5.20.10.4](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-4) | Read loop restoration syntax | `DECODE-AC0EJ3-LR-UNIT-SELECTIONS-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 5.20.10.4](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-4) | Read loop restoration syntax | `DECODE-AC0EJ3-LR-UNIT-SYNTAX-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 5.20.10.4](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-4) | Read loop restoration syntax | `DECODE-TILE-PARTITION-TRAVERSAL-BOUNDARY` | ✅ | ✅ | — | ✅ | — |
 | [§ 5.20.10.5](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-5) | Read loop restoration unit syntax | `DECODE-AC0EJ3-INACTIVE-LR-UNITS-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 5.20.10.5](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-5) | Read loop restoration unit syntax | `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 5.20.10.5](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-5) | Read loop restoration unit syntax | `DECODE-AC0EJ3-LR-SOURCE-BOUNDS-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.10.5](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-5) | Read loop restoration unit syntax | `DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 5.20.10.5](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-5) | Read loop restoration unit syntax | `DECODE-AC0EJ3-LR-UNIT-SELECTIONS-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 5.20.10.5](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-5) | Read loop restoration unit syntax | `DECODE-AC0EJ3-LR-UNIT-SYNTAX-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 5.20.10.5](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-5) | Read loop restoration unit syntax | `DECODE-TILE-PARTITION-TRAVERSAL-BOUNDARY` | ✅ | ✅ | — | ✅ | — |
 | [§ 5.20.10.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-6) | Read Wiener NS syntax | `DECODE-AC0EJ3-INACTIVE-LR-UNITS-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 5.20.10.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-6) | Read Wiener NS syntax | `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 5.20.10.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-6) | Read Wiener NS syntax | `DECODE-AC0EJ3-LR-SOURCE-BOUNDS-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.10.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-6) | Read Wiener NS syntax | `DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 5.20.10.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-6) | Read Wiener NS syntax | `DECODE-AC0EJ3-LR-UNIT-SELECTIONS-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
@@ -974,15 +977,19 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.17.7.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-17-7-1) | General | `RECON-DEBLOCK-SAMPLE-FILTER` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.17.7.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-17-7-2) | Filter choice process | `RECON-DEBLOCK-FILTER-CHOICE` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.20](./spec/av2/1.0.0/07-decoding-process.md#s-7-20) | Loop restoration process | `DECODE-INTER-MULTIREF-RUNTIME` | ✅ | ✅ | — | ✅ | 1 |
+| [§ 7.20.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-1) | Loop restore block process | `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 7.20.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-1) | Loop restore block process | `DECODE-AC0EJ3-LR-SOURCE-BOUNDS-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.20.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-1) | Loop restore block process | `DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 7.20.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-2) | Get source sample process | `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 7.20.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-2) | Get source sample process | `DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 7.20.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-2) | Get source sample process | `DECODE-LIMITS-RUNTIME-API` | ✅ | — | — | ✅ | — |
 | [§ 7.20.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-2) | Get source sample process | `RECON-LOOP-RESTORATION-SOURCE-READ` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.20.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-2) | Get source sample process | `RECON-LOOP-RESTORATION-SOURCE-SAMPLE` | ✅ | — | ✅ | ✅ | — |
+| [§ 7.20.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-3) | Non-separable Wiener filter process | `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 7.20.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-3) | Non-separable Wiener filter process | `DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 7.20.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-3) | Non-separable Wiener filter process | `RECON-WIENERNS-CHROMA-FILTER-PRIMITIVE` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.20.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-3) | Non-separable Wiener filter process | `RECON-WIENERNS-FILTER-PRIMITIVE` | ✅ | — | ✅ | ✅ | — |
+| [§ 7.20.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-4) | Pixel classified Wiener filter process | `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 7.20.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-4) | Pixel classified Wiener filter process | `DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 7.21](./spec/av2/1.0.0/07-decoding-process.md#s-7-21) | Output processes | `CLI-DECODE-HASH-OUTPUT` | ✅ | — | — | ✅ | 3 |
 | [§ 7.21](./spec/av2/1.0.0/07-decoding-process.md#s-7-21) | Output processes | `CONF-DECODE-RUNTIME-HASH-FUZZ` | ✅ | — | — | ✅ | 3 |
@@ -1189,6 +1196,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 8.3.1](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-1) | General | `DECODE-TILE-PARTITION-TRAVERSAL-BOUNDARY` | ✅ | ✅ | — | ✅ | — |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `CONF-TILE-PAYLOAD-DECODE-FUZZ` | ✅ | — | — | ✅ | 2 |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-AC0EJ3-INACTIVE-LR-UNITS-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-AC0EJ3-LR-SOURCE-BOUNDS-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-AC0EJ3-LR-UNIT-SELECTIONS-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
@@ -1335,6 +1343,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `RECON-WORKSPACE-DIRECTIONAL-ANGLE-PREDICTION` | ✅ | — | ✅ | ✅ | — |
 | [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `CONF-TILE-PAYLOAD-DECODE-FUZZ` | ✅ | — | — | ✅ | 2 |
 | [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-AC0EJ3-INACTIVE-LR-UNITS-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-AC0EJ3-LR-SOURCE-BOUNDS-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-AC0EJ3-LR-UNIT-SELECTIONS-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |

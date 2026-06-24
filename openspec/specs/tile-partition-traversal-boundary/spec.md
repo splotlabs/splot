@@ -210,7 +210,10 @@ source-read frontier for `DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER`. The frontier
 SHALL use caller-resolved AV2 §7.20.1 bounds to attempt AV2 §7.20.2 source
 sample selection/read state for supported active block output samples,
 §7.20.3 Wiener tap coordinates, and chroma luma-source coordinates, and MUST
-NOT apply §7.20.3 filtering or produce decoded output.
+NOT apply §7.20.3 filtering or produce decoded output. Until per-unit
+Wiener coefficient masks are retained, the frontier SHALL fail closed before
+source-read derivation for active chroma units whose filters are coded per
+unit rather than by a retained frame-level bank.
 
 #### Scenario: Active source reads are attempted after bounds
 
@@ -332,3 +335,16 @@ the boundary SHALL consume one `use_wiener_ns S()` symbol from
   without a frame-level bank for the active plane
 - **THEN** the traversal rejects the input with a typed unsupported
   loop-restoration frontier before reading partition symbols
+
+### Requirement: Active LR Source Blocks Retain Tile Bounds
+
+The tile partition traversal frontier SHALL retain the tile MI bounds needed by
+AV2 §7.20.4 for each active Wiener NS LR source block.
+
+#### Scenario: Runtime can derive classified Wiener clipping bounds
+
+- **WHEN** the runtime receives active Wiener NS LR source blocks from the tile
+  traversal frontier
+- **THEN** each block includes `MiRowStart`, `MiRowEnd`, `MiColStart`, and
+  `MiColEnd` facts sufficient to derive §7.20.4 `BlockEndX` and `get_tx_skip`
+  clipping without guessing from frame-wide source bounds.

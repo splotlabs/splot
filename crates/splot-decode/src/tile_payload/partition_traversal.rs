@@ -378,6 +378,14 @@ pub(crate) struct WienerNsLrSourceBlock {
     pub(crate) unit_row: usize,
     /// Absolute LR unit column selected for this block.
     pub(crate) unit_col: usize,
+    /// Tile `MiRowStart` bound used by AV2 §7.20.4 `get_tx_skip`.
+    pub(crate) tile_mi_row_start: usize,
+    /// Tile `MiRowEnd` bound used by AV2 §7.20.4 `get_tx_skip`.
+    pub(crate) tile_mi_row_end: usize,
+    /// Tile `MiColStart` bound retained with the LR block for symmetry.
+    pub(crate) tile_mi_col_start: usize,
+    /// Tile `MiColEnd` bound used by AV2 §7.20.4 `BlockEndX`.
+    pub(crate) tile_mi_col_end: usize,
     /// Block x coordinate in current-plane samples.
     pub(crate) x: usize,
     /// Block y coordinate in current-plane samples.
@@ -1541,6 +1549,10 @@ fn lr_source_block_for(
         col,
         unit_row: input.unit_row,
         unit_col: input.unit_col,
+        tile_mi_row_start: input.tile_bounds.mi_row_start,
+        tile_mi_row_end: input.tile_bounds.mi_row_end,
+        tile_mi_col_start: input.tile_bounds.mi_col_start,
+        tile_mi_col_end: input.tile_bounds.mi_col_end,
         x,
         y,
         width,
