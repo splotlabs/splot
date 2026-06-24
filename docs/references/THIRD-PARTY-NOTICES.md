@@ -254,7 +254,7 @@ Implement from AV2 spec and AVM. Do not copy third-party material.
 
 The repository commits a verbatim, versioned mirror of the AV2 specification under
 `docs/spec/av2/<version>/` so that `splot`'s "ground every claim in the spec"
-rule is enforceable offline (see AGENTS.md §6). This is a deliberate, recorded
+rule is enforceable offline (see AGENTS.md AV2 Spec and Diagnostics). This is a deliberate, recorded
 exception to the "do not copy third-party documentation" default (§3 Level 3),
 authorised by the maintainer.
 

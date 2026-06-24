@@ -9,7 +9,7 @@ instead of growing the root file.
 | Topic | File |
 |---|---|
 | Workspace ownership, dependency direction, concurrency, zero-copy | [architecture.md](./architecture.md) |
-| Unconditional engineering judgment and "lazy senior developer" rules | [`AGENTS.md` § 0](../../AGENTS.md#0-unconditional-agent-behavior) |
+| Unconditional engineering judgment and "lazy senior developer" rules | [`AGENTS.md` Unconditional Agent Behavior](../../AGENTS.md#0-unconditional-agent-behavior) |
 | Day-to-day contribution workflow, Feature IDs, OpenSpec, commits | [workflow.md](./workflow.md) |
 | Local commands, CI gates, generated-doc commands, fuzzing | [commands.md](./commands.md) |
 | Rust/library conventions, panic policy, docs, SPDX, source size | [coding-standards.md](./coding-standards.md) |

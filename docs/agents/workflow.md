@@ -76,6 +76,9 @@ Sync pushed feature branches by merging `main`; do not force-push a pushed
 branch just to sync it. The conventional-commit checker skips git-generated
 multi-parent sync commits whose subject starts with `Merge `.
 
+Use squash or rebase merges only when merging to `main`; generated GitHub merge
+commits are not Conventional Commit subjects.
+
 ## When to Ask
 
 Ask the maintainer before:

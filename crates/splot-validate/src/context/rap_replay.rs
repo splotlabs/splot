@@ -745,7 +745,7 @@ impl ValidatorContext {
     /// - For a kind the set *cannot* express — multi-frame headers, LCRs, atlas segments —
     ///   any Provided mode keeps the blanket suppression: such an OBU MAY exist externally
     ///   unenumerated (`ExternalHlsMode::Provided` is a *partial* declaration), so firing
-    ///   could be a false positive (zero-false-positive principle, AGENTS.md § 7).
+    ///   could be a false positive (zero-false-positive principle).
     ///
     /// The default `Disabled` mode (the caller asserts no external provision) lets every
     /// replay fire. The pending references for the unit are always drained inside

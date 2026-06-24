@@ -34,7 +34,7 @@ use splot_recon::{PlaneId, PlaneRect};
 // `splot-tables` § 9 tables (the same kernel the decoder inverse uses), so a
 // generator/spec correction updates both directions at once and the forward kernel
 // cannot drift from the decoder's. `splot-tables` is the dependency-free § 9 tables
-// crate AGENTS.md § 2 permits any crate to depend on.
+// crate the AGENTS.md Repository Boundaries allow any crate to depend on.
 use splot_tables::tables::transform_1d::DCT_KERNEL4;
 
 use crate::error::{Error, Result};

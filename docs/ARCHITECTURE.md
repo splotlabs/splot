@@ -1,8 +1,9 @@
 # Architecture
 
 This document covers the workspace split, the dependency rules, the error model,
-and the unsafe/SIMD policy; [AGENTS.md](../AGENTS.md) § 2 and § 5 remain
-canonical for the rules summarized here.
+and the unsafe/SIMD policy; the Repository Boundaries and Coding Standards
+sections of [AGENTS.md](../AGENTS.md) remain canonical for the rules summarized
+here.
 
 ## Crate dependency graph
 
@@ -27,8 +28,8 @@ xtask is standalone automation.
 fuzz lives outside the workspace and depends on splot-core only.
 ```
 
-**One-way dependency rule** (canonical: [AGENTS.md](../AGENTS.md) § 2; enforced
-by `cargo xtask check-dependency-direction`):
+**One-way dependency rule** (canonical: [AGENTS.md](../AGENTS.md) Repository
+Boundaries; enforced by `cargo xtask check-dependency-direction`):
 
 - `splot-core` depends on no other `splot-*` crate.
 - `splot-parallel` depends on no other `splot-*` crate.
@@ -127,13 +128,13 @@ by `cargo xtask check-dependency-direction`):
 ## Reference-informed encoder architecture
 
 rav1e and SVT-AV1 are engineering references only, never sources of AV2 syntax,
-code, tables, or constants. The canonical gate before any encoder work is
-[AGENTS.md](../AGENTS.md) § 7; the research notes live under
+code, tables, or constants. The canonical gate before any encoder work is the
+Encoder Reference Gate in [AGENTS.md](../AGENTS.md); the research notes live under
 [docs/references/](./references/).
 
 ## Error model
 
-(Canonical: [AGENTS.md](../AGENTS.md) § 5.)
+(Canonical: [AGENTS.md](../AGENTS.md) Coding Standards.)
 
 Libraries use typed errors (`thiserror`); `anyhow` is confined to `splot-cli` and
 `xtask`. Library code never panics on malformed input. Recognized-but-unmodeled

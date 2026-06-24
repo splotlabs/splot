@@ -20,8 +20,9 @@ cargo xtask ci
   bans licenses sources`, and `openspec validate --all --no-interactive`
 - repository gates listed below
 
-CI installs the external tools, so they always gate in CI. Locally,
-`cargo xtask ci` skips a missing external tool with an install hint.
+CI installs `typos`, `cargo-machete`, and `cargo-deny`, so those checks gate in
+CI. OpenSpec validation is conditional in CI and local runs: it runs when the
+`openspec` binary is present and otherwise prints a skip message.
 
 ## Focused Checks
 
@@ -35,7 +36,7 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
 typos
 cargo machete --with-metadata
 cargo deny check bans licenses sources
-openspec validate --all --no-interactive
+openspec validate --all --no-interactive   # run when openspec is installed
 ```
 
 ## Repository Gates

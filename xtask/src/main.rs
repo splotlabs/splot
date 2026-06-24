@@ -763,7 +763,7 @@ fn parse_commit_subjects(output: &str) -> Result<ListedCommits> {
         raw_count += 1;
         // A git-generated sync-merge commit (two or more parents AND the
         // stock "Merge …" subject) is exempt from the Conventional Commits
-        // subject rule (AGENTS.md §5.1): syncing a pushed feature branch with
+        // subject rule (docs/agents/workflow.md commit policy): syncing a pushed feature branch with
         // main requires a merge commit (force-pushing a branch under review is
         // not allowed), its subject cannot be rewritten afterwards, and the
         // squash merge to main drops it from the default branch. A merge
