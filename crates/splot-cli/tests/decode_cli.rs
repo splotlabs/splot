@@ -283,23 +283,23 @@ fn local_ac0ej3_reaches_current_runtime_gate_without_output() {
     assert!(out.stderr.is_empty(), "stderr was not empty");
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(json["rule_id"], "decode/unsupported-feature");
-    assert_eq!(json["spec_section"], "5.20.3.1");
-    assert_eq!(json["matrix_row"], "ac0ej3-luma-txtype-residual-handoff");
+    assert_eq!(json["spec_section"], "5.20.6.1");
+    assert_eq!(json["matrix_row"], "ac0ej3-selectable-transform-records");
     assert_eq!(
         json["feature_id"],
-        "DECODE-AC0EJ3-LUMA-TXTYPE-RESIDUAL-HANDOFF"
+        "DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS"
     );
     assert_eq!(json["detail_kind"], "unsupported_feature");
     assert_eq!(
         json["unsupported_reason"],
-        "unsupported_wienerns_lr_selectable_transform_records_chroma_offset_leaf"
+        "unsupported_wienerns_lr_selectable_transform_records_empty_transform"
     );
     assert!(
         json["message"]
             .as_str()
             .unwrap()
-            .contains("chroma-offset selectable transform-record leaf"),
-        "diagnostic must describe the chroma-offset frontier after luma transform-type handoff"
+            .contains("bounded selectable transform-record subcase"),
+        "diagnostic must describe the bounded selectable transform-record frontier"
     );
     assert_eq!(json["byte_offset"], 110);
     assert_ne!(
@@ -335,6 +335,11 @@ fn local_ac0ej3_reaches_current_runtime_gate_without_output() {
     assert_ne!(
         json["unsupported_reason"], "unsupported_wienerns_lr_live_transform_record_residual_parse",
         "ac0ej3 must advance past the former transform-record residual parse gate"
+    );
+    assert_ne!(
+        json["unsupported_reason"],
+        "unsupported_wienerns_lr_selectable_transform_records_chroma_offset_leaf",
+        "ac0ej3 must advance past the former chroma-offset selectable transform-record gate"
     );
     assert_ne!(
         json["unsupported_reason"], "unsupported_wienerns_filter_bank",

@@ -34,6 +34,7 @@ use super::cdf::TileCdfSelector;
 use super::cdf::block_context::IntraYMode;
 use super::cdf::block_context::{txb_skip_ctx_luma, v_txb_skip_ctx};
 use super::cdf::block_read::BlockSymbolTraceReadError;
+use super::coeff_loop::max_level::CoeffTransformClass;
 use super::coeff_loop::ordinary_pass::geometry::{
     CoeffOrdinaryBranchLosslessBaseConfig, CoeffOrdinaryStagedLosslessNonZeroInput,
     CoeffOrdinaryTxSizeGeometryConfig, apply_staged_nonzero_coeff_ordinary_branch_from_lossless,
@@ -58,6 +59,8 @@ use super::{DecodeTileWorkUnit, TileCdfSubset, TileCoeffFrameFacts};
 const TX_64X64: usize = 4;
 /// AV2 § 9.2 `TX_SIZES_ALL` index of `TX_8X8`.
 const TX_8X8: usize = 1;
+/// AV2 § 9.2 `TX_SIZES_ALL` index of `TX_16X16`.
+const TX_16X16: usize = 2;
 /// AV2 § 9.2 square-transform ordinal for `TX_32X32`, used by
 /// § 5.20.8.3 `get_tx_set`.
 const TX_32X32: usize = 3;
@@ -76,6 +79,8 @@ const DCT_DCT: usize = 0;
 const ADST_DCT: usize = 1;
 /// AV2 § 3 `DCT_ADST`.
 const DCT_ADST: usize = 2;
+/// AV2 § 3 `ADST_ADST`.
+const ADST_ADST: usize = 3;
 /// AV2 § 3 `FLIPADST_DCT`.
 const FLIPADST_DCT: usize = 4;
 /// AV2 § 3 `DCT_FLIPADST`.
@@ -624,6 +629,16 @@ fn staged_transform_tool_lossless_base_config(
     lossless: bool,
     metadata: TransformToolResidualMetadata,
 ) -> CoeffOrdinaryBranchLosslessBaseConfig {
+    let luma_tx_class = CoeffTransformClass::from_plane_tx_type(metadata.luma_tx_type);
+    let luma_transform_block = plane == 0;
+    let parity_hiding = frame_facts.allow_parity_hiding()
+        && !lossless
+        && luma_transform_block
+        && metadata.luma_tx_type != IDTX;
+    let use_tcq = frame_facts.allow_tcq()
+        && !lossless
+        && luma_transform_block
+        && luma_tx_class == CoeffTransformClass::TwoD;
     CoeffOrdinaryBranchLosslessBaseConfig {
         reduced_tx_set: frame_facts.reduced_tx_set(),
         enable_chroma_dctonly: frame_facts.enable_chroma_dctonly(),
@@ -631,8 +646,8 @@ fn staged_transform_tool_lossless_base_config(
         angle_delta_uv: 0,
         luma_tx_type: metadata.luma_tx_type,
         chroma_inter_tx_type: DCT_DCT,
-        parity_hiding: frame_facts.allow_parity_hiding() && !lossless && plane == 0,
-        use_tcq: frame_facts.allow_tcq() && !lossless && plane == 0,
+        parity_hiding,
+        use_tcq,
     }
 }
 
@@ -728,7 +743,8 @@ fn ensure_transform_tool_residual_handoff(
         && plane == 0
         && frame_facts.enable_intra_ist()
         && eob != 1
-        && eob <= dct_dct_ist_eob_limit(tx_size)?
+        && intra_ist_can_read_sec_tx_type(metadata.luma_tx_type)
+        && eob <= ist_eob_limit(tx_size, metadata.luma_tx_type)?
     {
         metadata.intra_ist = read_intra_ist_sec_tx(
             cdfs,
@@ -811,15 +827,19 @@ fn inter_ist_can_read_sec_tx(
 ) -> Result<bool, GeneralIntraResidualError> {
     let tx_width = tx_size_table_usize(&TX_WIDTH, "Tx_Width", tx_size)?;
     let tx_height = tx_size_table_usize(&TX_HEIGHT, "Tx_Height", tx_size)?;
-    Ok(tx_width >= 16 && tx_height >= 16 && eob <= dct_dct_ist_eob_limit(tx_size)?)
+    Ok(tx_width >= 16 && tx_height >= 16 && eob <= ist_eob_limit(tx_size, DCT_DCT)?)
 }
 
-fn dct_dct_ist_eob_limit(tx_size: usize) -> Result<usize, GeneralIntraResidualError> {
+const fn intra_ist_can_read_sec_tx_type(luma_tx_type: usize) -> bool {
+    matches!(luma_tx_type, DCT_DCT | ADST_ADST)
+}
+
+fn ist_eob_limit(tx_size: usize, tx_type: usize) -> Result<usize, GeneralIntraResidualError> {
     let tx_width = tx_size_table_usize(&TX_WIDTH, "Tx_Width", tx_size)?;
     let tx_height = tx_size_table_usize(&TX_HEIGHT, "Tx_Height", tx_size)?;
     if tx_width < 8 || tx_height < 8 {
         Ok(IST_4X4_HEIGHT)
-    } else if tx_size == TX_8X8 {
+    } else if tx_size == TX_8X8 || tx_type == ADST_ADST {
         Ok(IST_8X8_HEIGHT_RED)
     } else {
         Ok(IST_8X8_HEIGHT)
@@ -1400,6 +1420,25 @@ mod tests {
         })
     }
 
+    fn frame_facts_with_coeff_tools(
+        allow_tcq: bool,
+        allow_parity_hiding: bool,
+    ) -> TileCoeffFrameFacts {
+        TileCoeffFrameFacts::new(TileCoeffFrameFactsInput {
+            enable_fsc: false,
+            enable_idtx_intra: true,
+            enable_intra_ist: false,
+            enable_inter_ist: false,
+            enable_chroma_dctonly: false,
+            enable_cctx: false,
+            reduced_tx_set: 0,
+            lossless_array: [false; MAX_SEGMENTS],
+            allow_tcq,
+            allow_parity_hiding,
+            base_q_idx: 128,
+        })
+    }
+
     fn unsupported_reason<T>(result: Result<T, GeneralIntraResidualError>) -> Option<&'static str> {
         match result {
             Err(GeneralIntraResidualError::UnsupportedTransformToolResidual { reason }) => {
@@ -1631,6 +1670,67 @@ mod tests {
     }
 
     #[test]
+    fn luma_txtype_residual_lr_handoff_skips_intra_ist_for_non_sec_tx_type() {
+        let payload = encode_transform_symbols(&[(
+            TileCdfSelector::IntraTxTypeSet1 {
+                tx_size_sqr: TX_SIZE_SQR[TX_8X8] as usize,
+            },
+            2,
+        )]);
+        let leaked_payload: &'static [u8] = Box::leak(payload.into_boxed_slice());
+        let luma = LumaTransformTypeContext::new(IntraYMode::DC_PRED, 0);
+        let expected = md_idx_luma_tx_type(TX_8X8, luma, 2).unwrap();
+
+        let metadata = ensure_with_test_payload_and_policy(
+            frame_facts(false, true, false, false),
+            0,
+            TX_8X8,
+            false,
+            2,
+            Some(luma),
+            ActiveIntraIstResidualPolicy::LrTxSkipRecordHandoff,
+            ActiveChromaResidualPolicy::Reject,
+            leaked_payload,
+        )
+        .unwrap();
+
+        assert_ne!(expected, DCT_DCT);
+        assert_ne!(expected, ADST_ADST);
+        assert_eq!(metadata.luma_tx_type, expected);
+        assert_eq!(metadata.intra_ist, None);
+    }
+
+    #[test]
+    fn luma_txtype_residual_adst_adst_uses_reduced_ist_eob_limit() {
+        let payload = encode_transform_symbols(&[(
+            TileCdfSelector::IntraTxTypeSet1 {
+                tx_size_sqr: TX_SIZE_SQR[TX_16X16] as usize,
+            },
+            1,
+        )]);
+        let leaked_payload: &'static [u8] = Box::leak(payload.into_boxed_slice());
+        let luma = LumaTransformTypeContext::new(IntraYMode::DC_PRED, 0);
+        let expected = md_idx_luma_tx_type(TX_16X16, luma, 1).unwrap();
+
+        let metadata = ensure_with_test_payload_and_policy(
+            frame_facts(false, true, false, false),
+            0,
+            TX_16X16,
+            false,
+            IST_8X8_HEIGHT_RED + 1,
+            Some(luma),
+            ActiveIntraIstResidualPolicy::LrTxSkipRecordHandoff,
+            ActiveChromaResidualPolicy::Reject,
+            leaked_payload,
+        )
+        .unwrap();
+
+        assert_eq!(expected, ADST_ADST);
+        assert_eq!(metadata.luma_tx_type, ADST_ADST);
+        assert_eq!(metadata.intra_ist, None);
+    }
+
+    #[test]
     fn luma_txtype_residual_staged_base_config_uses_retained_luma_tx_type() {
         let luma = LumaTransformTypeContext::new(IntraYMode::DC_PRED, 0);
         let expected = md_idx_luma_tx_type(TX_8X8, luma, 1).unwrap();
@@ -1648,6 +1748,57 @@ mod tests {
 
         assert_ne!(expected, DCT_DCT);
         assert_eq!(config.luma_tx_type, expected);
+    }
+
+    #[test]
+    fn luma_txtype_residual_staged_base_config_derives_flags_for_2d_luma_tx_type() {
+        let config = staged_transform_tool_lossless_base_config(
+            frame_facts_with_coeff_tools(true, true),
+            0,
+            0,
+            false,
+            TransformToolResidualMetadata {
+                luma_tx_type: ADST_DCT,
+                ..TransformToolResidualMetadata::default()
+            },
+        );
+
+        assert!(config.parity_hiding);
+        assert!(config.use_tcq);
+    }
+
+    #[test]
+    fn luma_txtype_residual_staged_base_config_suppresses_parity_hiding_for_idtx() {
+        let config = staged_transform_tool_lossless_base_config(
+            frame_facts_with_coeff_tools(true, true),
+            0,
+            0,
+            false,
+            TransformToolResidualMetadata {
+                luma_tx_type: IDTX,
+                ..TransformToolResidualMetadata::default()
+            },
+        );
+
+        assert!(!config.parity_hiding);
+        assert!(config.use_tcq);
+    }
+
+    #[test]
+    fn luma_txtype_residual_staged_base_config_suppresses_tcq_for_1d_luma_tx_type() {
+        let config = staged_transform_tool_lossless_base_config(
+            frame_facts_with_coeff_tools(true, true),
+            0,
+            0,
+            false,
+            TransformToolResidualMetadata {
+                luma_tx_type: V_DCT,
+                ..TransformToolResidualMetadata::default()
+            },
+        );
+
+        assert!(config.parity_hiding);
+        assert!(!config.use_tcq);
     }
 
     #[test]
