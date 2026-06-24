@@ -361,6 +361,9 @@ fn coeff_ctx_err(source: TileCoeffStateError) -> GeneralIntraResidualError {
 /// context write is committed here; otherwise the nonzero coefficient pass reads
 /// `dc_sign` from `context` at `start_x`/`start_y` and commits its own context
 /// update internally. `start_x`/`start_y` are the block's plane-sample position.
+/// `tx_fills_block` is the caller-resolved § 8.3.2 fact `bw == w && bh == h`
+/// for luma `all_zero` context derivation; for V it drives the complementary
+/// `bw > w || bh > h` context term.
 /// `transform_tool_residual_policy` preserves the AV2 ordering: the helper
 /// always consumes the `all_zero` decision first, admits skipped transform
 /// blocks, and applies any transform-tool guard only before the nonzero
@@ -374,6 +377,7 @@ pub(crate) fn decode_general_intra_plane_coeffs(
     tx_size: usize,
     start_x: usize,
     start_y: usize,
+    tx_fills_block: bool,
     eob_u_nonzero: bool,
     uv_mode: usize,
     is_inter: bool,
@@ -409,7 +413,7 @@ pub(crate) fn decode_general_intra_plane_coeffs(
                 || or_u8(context.left_dc(plane).map_err(coeff_ctx_err)?, y4, h4) != 0;
             TileCdfSelector::VTxbSkip {
                 coeff_cdf_q_ctx,
-                ctx: v_txb_skip_ctx(above_nz, left_nz, false, eob_u_nonzero),
+                ctx: v_txb_skip_ctx(above_nz, left_nz, !tx_fills_block, eob_u_nonzero),
             }
         }
         1 => {
@@ -428,7 +432,7 @@ pub(crate) fn decode_general_intra_plane_coeffs(
             coeff_cdf_q_ctx,
             plane_type: txb_skip_intra_inter,
             tx_size: tx_size_ctx,
-            ctx: txb_skip_ctx_luma(above_level_or, left_level_or, true, false),
+            ctx: txb_skip_ctx_luma(above_level_or, left_level_or, tx_fills_block, false),
         },
     };
 

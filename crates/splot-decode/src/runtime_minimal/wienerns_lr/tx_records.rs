@@ -1164,6 +1164,11 @@ fn decode_luma_records_for_chunk(
         decoded_any = true;
         let residual_policy =
             luma_transform_tool_policy(transform_tool_residual_policy, luma_transform_type_context);
+        // AV2 § 5.20.7.24/§ 5.20.7.25 resolve `tx_size` per transform
+        // record; § 5.20.7.27 and § 5.20.7.30 then derive coefficient context
+        // spans and scan length from that record geometry. The § 8.3.2
+        // `all_zero` context also needs whether this record fills the current
+        // residual chunk, not merely whether the chunk is present.
         let luma = decode_general_intra_plane_coeffs(
             work_unit,
             symbols,
@@ -1172,6 +1177,7 @@ fn decode_luma_records_for_chunk(
             record.tx_size,
             mi_to_sample(record.col, tile_offset)?,
             mi_to_sample(record.row, tile_offset)?,
+            selectable_luma_tx_record_fills_chunk(record, chunk_rows, chunk_cols),
             false,
             uv_mode,
             false,
@@ -1254,6 +1260,7 @@ fn decode_chroma_group(
         chroma_tx,
         chroma_x,
         chroma_y,
+        true,
         false,
         uv_mode,
         false,
@@ -1274,6 +1281,7 @@ fn decode_chroma_group(
         chroma_tx,
         chroma_x,
         chroma_y,
+        true,
         !u.all_zero,
         uv_mode,
         false,
@@ -1682,6 +1690,14 @@ fn apply_tx_partition(
     }
 }
 
+fn selectable_luma_tx_record_fills_chunk(
+    record: SelectableLumaTxRecord,
+    chunk_rows: usize,
+    chunk_cols: usize,
+) -> bool {
+    record.rows == chunk_rows && record.cols == chunk_cols
+}
+
 fn read_tx_symbol(
     work_unit: &mut DecodeTileWorkUnit<'_>,
     symbols: &mut SymbolDecoder<'_>,
@@ -2013,6 +2029,7 @@ mod tests {
     use super::*;
 
     const TX_32X32: usize = 3;
+    const TX_64X64: usize = 4;
     const TX_4X32: usize = 19;
 
     fn cdef_state(rows: usize, cols: usize, sb_size4: usize) -> CdefState {
@@ -2156,6 +2173,44 @@ mod tests {
         assert!(!records[0].middle);
         assert!(records[1..].iter().all(|record| record.middle));
         assert!(records.iter().all(|record| record.scan_order));
+    }
+
+    #[test]
+    fn selectable_luma_record_fill_context_tracks_record_extent_not_chunk() {
+        let full_record = SelectableLumaTxRecord {
+            row: 0,
+            col: 0,
+            rows: 16,
+            cols: 16,
+            tx_size: TX_64X64,
+            middle: false,
+            scan_order: false,
+        };
+        assert!(selectable_luma_tx_record_fills_chunk(full_record, 16, 16));
+
+        let mut grid = SelectableLumaTxGrid::new(16, 16).unwrap();
+        apply_tx_partition(&mut grid, 0, 0, TX_64X64, TX_PARTITION_HORZ5).unwrap();
+
+        let records = grid.records_for_region(0, 0, 16, 16).unwrap();
+        assert_eq!(
+            records
+                .iter()
+                .map(|record| (record.row, record.col, record.rows, record.cols))
+                .collect::<Vec<_>>(),
+            vec![
+                (0, 0, 4, 8),
+                (0, 8, 4, 8),
+                (4, 0, 8, 16),
+                (12, 0, 4, 8),
+                (12, 8, 4, 8),
+            ]
+        );
+        assert!(
+            records
+                .iter()
+                .copied()
+                .all(|record| !selectable_luma_tx_record_fills_chunk(record, 16, 16))
+        );
     }
 
     #[test]
