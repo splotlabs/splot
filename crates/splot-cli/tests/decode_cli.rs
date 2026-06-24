@@ -283,25 +283,44 @@ fn local_ac0ej3_reaches_current_runtime_gate_without_output() {
     assert!(out.stderr.is_empty(), "stderr was not empty");
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(json["rule_id"], "decode/unsupported-feature");
-    assert_eq!(json["spec_section"], "5.20.6.1");
-    assert_eq!(
-        json["matrix_row"],
-        "ac0ej3-lr-live-transform-record-handoff"
-    );
-    assert_eq!(
-        json["feature_id"],
-        "DECODE-AC0EJ3-LR-LIVE-TRANSFORM-RECORD-HANDOFF"
-    );
+    assert_eq!(json["spec_section"], "5.20.7.29");
+    assert_eq!(json["matrix_row"], "ac0ej3-intra-ist-zero-frontier");
+    assert_eq!(json["feature_id"], "DECODE-AC0EJ3-INTRA-IST-ZERO-FRONTIER");
     assert_eq!(json["detail_kind"], "unsupported_feature");
     assert_eq!(
         json["unsupported_reason"],
-        "unsupported_wienerns_lr_tx_mode_select_transform_records"
+        "unsupported_dctonly_residual_intra_sec_tx_type"
     );
     assert!(
-        json["message"].as_str().unwrap().contains("TX_MODE_SELECT"),
-        "diagnostic must describe the selectable-transform blocker"
+        json["message"]
+            .as_str()
+            .unwrap()
+            .contains("read intra IST secondary-transform syntax"),
+        "diagnostic must describe the active residual blocker"
     );
-    assert_eq!(json["byte_offset"], 74);
+    assert_eq!(json["byte_offset"], 110);
+    assert_ne!(
+        json["unsupported_reason"],
+        "unsupported_wienerns_lr_selectable_transform_records_unsupported_intra_tool",
+        "ac0ej3 must advance past the former selectable intra-tool pre-tile gate"
+    );
+    assert_ne!(
+        json["unsupported_reason"], "unsupported_wienerns_lr_selectable_transform_records_ccso",
+        "ac0ej3 must advance past the former selectable CCSO pre-tile gate"
+    );
+    assert_ne!(
+        json["unsupported_reason"], "unsupported_wienerns_lr_live_transform_record_uv_mode",
+        "ac0ej3 must advance past the former SDP chroma uv-mode desync gate"
+    );
+    assert_ne!(
+        json["unsupported_reason"],
+        "unsupported_wienerns_lr_selectable_transform_records_block_shape",
+        "ac0ej3 must advance past the luma-only narrow selectable transform-record gate"
+    );
+    assert_ne!(
+        json["unsupported_reason"], "unsupported_wienerns_lr_live_transform_record_cfl_mode",
+        "ac0ej3 must advance past the active CfL mode-info gate"
+    );
     assert_ne!(
         json["unsupported_reason"], "unsupported_wienerns_lr_live_storage_unpopulated",
         "ac0ej3 must advance past the former live-storage allocation gate"

@@ -22,11 +22,12 @@ use super::partition::PartitionType;
 use super::partition_allowed::PartitionFeatureFlags;
 use super::partition_size::BlockSize;
 use super::partition_traversal::{
-    DecodeBlockFrontier, GeneralIntraTreeWalkError, TileLoopRestorationRootFrontier,
-    TilePartitionBruState, TilePartitionFrameFacts, TilePartitionLoopRestorationState,
-    TilePartitionTraversalError, TilePartitionTraversalInput, TilePartitionTraversalPlan,
-    TilePartitionWienerNsLoopRestorationState, consume_tile_loop_restoration_root_frontier,
-    decode_general_intra_partition_tree, plan_tile_partition_traversal_cursor,
+    DecodeBlockFrontier, GeneralIntraLeafMode, GeneralIntraTreeWalkError,
+    TileLoopRestorationRootFrontier, TilePartitionBruState, TilePartitionFrameFacts,
+    TilePartitionLoopRestorationState, TilePartitionTraversalError, TilePartitionTraversalInput,
+    TilePartitionTraversalPlan, TilePartitionWienerNsLoopRestorationState,
+    consume_tile_loop_restoration_root_frontier, decode_general_intra_partition_tree,
+    plan_tile_partition_traversal_cursor,
 };
 use crate::{DecodeLimitError, DecodeLimitName, DecodeLimitOp, DecodeLimits};
 
@@ -42,12 +43,6 @@ pub(crate) struct MinimalRuntimePartitionFrontier<'payload> {
 }
 
 impl<'payload> MinimalRuntimePartitionFrontier<'payload> {
-    /// Consumes the frontier and returns the live symbol decoder.
-    #[must_use]
-    pub(crate) fn into_symbol_decoder(self) -> SymbolDecoder<'payload> {
-        self.symbols
-    }
-
     /// Splits the frontier into the live symbol decoder and MI-size state.
     #[must_use]
     fn into_parts(
@@ -197,11 +192,11 @@ pub(crate) enum GeneralIntraMultiblockError<E> {
 /// the § 8.3.2 `y_mode_index` neighbour context) and the superblock-relative
 /// § 5.20.2.3 `BlockDecoded` state (read-only, for the § 7.13.2.1 above-right /
 /// below-left sentinel availability via § 5.20.7.25 `count_top_right_avail` /
-/// `count_bottom_left_avail`), and returns the block's reconstructed
-/// `IntraJointMode` (`= modeDelta`), which the walk then records into the grid
-/// for that block's MI region so later blocks see it as a neighbour. The walk
-/// clears `BlockDecoded` per superblock (§ 5.20.2.3 `clear_block_decoded_flags`)
-/// and marks each decoded transform block's 4x4 units after `on_leaf` returns.
+/// `count_bottom_left_avail`), and returns the block's luma mode state when the
+/// leaf has a luma side, which the walk records into the grids for later luma
+/// and SDP chroma neighbours. The walk clears `BlockDecoded` per superblock
+/// (§ 5.20.2.3 `clear_block_decoded_flags`) and marks each decoded transform
+/// block's 4x4 units after `on_leaf` returns.
 pub(crate) fn decode_general_intra_multiblock_tree<'payload, E, F>(
     work_unit: &mut DecodeTileWorkUnit<'payload>,
     sequence: &SequenceHeader,
@@ -216,7 +211,7 @@ where
         &DecodeBlockFrontier,
         &TileIntraJointModeState,
         &TileBlockDecodedState,
-    ) -> Result<u8, E>,
+    ) -> Result<GeneralIntraLeafMode, E>,
 {
     let frame = minimal_partition_frame_facts(sequence, core)?;
     let (mi_rows, mi_cols) = frame_mi_dimensions(core)?;
@@ -314,10 +309,12 @@ pub(crate) fn minimal_partition_frame_facts(
         }
     };
 
+    let sb_size_index = frame_sb_size_index(partition.seq_sb_size(), frame_is_intra);
+
     Ok(TilePartitionFrameFacts::new(
         mi_rows,
         mi_cols,
-        frame_sb_size_index(partition.seq_sb_size(), frame_is_intra),
+        sb_size_index,
         num_planes,
         subsampling_x,
         subsampling_y,
@@ -518,43 +515,32 @@ mod tests {
     ];
 
     #[test]
-    fn block_symbol_trace_rejects_legacy_inverted_skip() {
-        // Honesty regression: the frozen block-symbol trace now asserts the AVM
-        // skip polarity (luma all_zero == 1 for a skipped transform block). The
-        // retired payload coded that symbol as 0, so the trace fails closed with
-        // a typed mismatch on the luma txb_skip read (expected 1, decoded 0) and
-        // rolls back the tile CDFs it touched. The frozen partition frontier
-        // still traces this payload's partition tree, so the failure is at the
-        // block-symbol stage, not the partition stage.
+    fn legacy_inverted_skip_trace_fails_closed_before_output() {
+        // Honesty regression: the retired pre-AVM payload is still rejected before
+        // any output can be materialized. The current partition/frontier bridge
+        // reaches an unsupported frontier shape before the old inverted luma
+        // txb_skip mismatch; that is still the intended fail-closed behavior for
+        // this non-conformant fixture.
         with_minimal_work_unit(LEGACY_INVERTED_SKIP_TRACE, |work_unit, sequence, core| {
-            let symbols = plan_minimal_runtime_partition_frontier(
+            let err = match plan_minimal_runtime_partition_frontier(
                 work_unit,
                 sequence,
                 core,
                 DecodeLimits::DEFAULT,
-            )
-            .unwrap()
-            .into_symbol_decoder();
-            let before = work_unit.cdf().tile_cdfs().clone();
-            let saved_before = work_unit.cdf().saved_cdfs().clone();
-            let frame_before = work_unit.cdf().frame_cdfs().clone();
-
-            let err = consume_minimal_block_symbol_trace(work_unit, symbols).unwrap_err();
+            ) {
+                Ok(_) => panic!("retired payload unexpectedly reached the runtime frontier"),
+                Err(err) => err,
+            };
 
             assert!(
                 matches!(
                     err,
-                    MinimalBlockSymbolTraceError::UnexpectedSymbol {
-                        expected: 1,
-                        actual: 0,
-                        ..
+                    MinimalRuntimePartitionFrontierError::UnexpectedFrontier {
+                        reason: "unexpected_decode_block_frontier"
                     }
                 ),
-                "expected a luma txb_skip mismatch (expected 1, decoded 0), got {err:?}"
+                "expected the retired payload to fail closed at the runtime frontier, got {err:?}"
             );
-            assert_eq!(work_unit.cdf().tile_cdfs(), &before);
-            assert_eq!(work_unit.cdf().saved_cdfs(), &saved_before);
-            assert_eq!(work_unit.cdf().frame_cdfs(), &frame_before);
         });
     }
 
@@ -689,7 +675,7 @@ mod tests {
         let core = parse_frame_header_core(&mut frame_reader, &frame_input).unwrap();
 
         let tq = sequence.transform_quant_entropy.as_ref().unwrap();
-        let coeff = FrameCandidateCoeffFacts::new(tq.enable_fsc, tq.enable_chroma_dctonly);
+        let coeff = FrameCandidateCoeffFacts::from_tq(tq);
         let facts = FrameCandidateTileFacts::from_frame_core(&core, coeff).unwrap();
         let cdf = FrameCandidateCdfFacts::new(tq.enable_avg_cdf, tq.avg_cdf_type != 0);
         let input = FrameCandidateTileBoundaryInput::new(

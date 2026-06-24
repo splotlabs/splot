@@ -11,14 +11,18 @@ use splot_core::tables::conversion::{
 
 use super::super::super::cdf::TileCdfSubset;
 use super::super::super::coeff_state::TileCoeffContextState;
-use super::super::branch::NonZeroCoeffBlockStartInput;
+use super::super::base_level_pass::CoeffBaseDerivedLevelPassConfig;
+use super::super::branch::{NonZeroCoeffBlockStart, NonZeroCoeffBlockStartInput};
 use super::super::max_level::CoeffTransformClass;
 use super::super::scan_walk::{CoeffScanOrderError, derive_coeff_scan_order};
 use super::super::{AllZeroCoeffBlockInput, NonZeroCoeffEobContextInput};
 use super::{
     CoeffOrdinaryBranch, CoeffOrdinaryBranchError, CoeffOrdinaryBranchPlaneTxTypeBaseConfig,
     CoeffOrdinaryBranchPlaneTypeInput, CoeffOrdinaryBranchPlaneTypeNonZeroInput,
-    CoeffOrdinaryPlaneTypeStateContextConfig, apply_coeff_ordinary_branch_from_plane_type,
+    CoeffOrdinaryPlaneTypeStateContextConfig, CoeffOrdinaryStateContextConfig,
+    CoeffOrdinaryStateContextPassInput, NonZeroCoeffOrdinaryDerivedBasePass,
+    apply_coeff_ordinary_branch_from_plane_type,
+    apply_nonzero_coeff_ordinary_pass_with_state_context,
 };
 
 const DCT_DCT: usize = 0;
@@ -96,6 +100,14 @@ pub(crate) struct CoeffOrdinaryBranchTxSizeDimensionsNonZeroInput {
     pub(crate) lossless: bool,
 }
 
+struct CoeffOrdinaryStagedTxSizeDimensionsInput {
+    geometry: CoeffOrdinaryTxSizeGeometryConfig,
+    start: NonZeroCoeffBlockStart,
+    coeff_cdf_q_ctx: usize,
+    base_config: CoeffOrdinaryBranchTxSizeDimensionsBaseConfig,
+    lossless: bool,
+}
+
 /// Caller-selected ordinary coefficient branch before the `Mode_To_Txfm` subset.
 pub(crate) enum CoeffOrdinaryBranchModeToTxfmInput {
     /// Decoded `all_zero == 1`.
@@ -165,6 +177,22 @@ pub(crate) struct CoeffOrdinaryBranchLosslessNonZeroInput {
     ///
     /// Callers must route only the non-FSC lossless outcome represented by this
     /// wrapper. FSC/IDTX lossless handling is intentionally out of scope.
+    pub(crate) lossless: bool,
+}
+
+/// Caller-resolved staged nonzero ordinary branch after EOB has been read.
+pub(crate) struct CoeffOrdinaryStagedLosslessNonZeroInput {
+    /// Caller-resolved `coeffs()` geometry facts before table lookup.
+    pub(crate) geometry: CoeffOrdinaryTxSizeGeometryConfig,
+    /// Decoded EOB start and zeroed local coefficient state.
+    pub(crate) start: NonZeroCoeffBlockStart,
+    /// Coefficient-CDF quantization context.
+    pub(crate) coeff_cdf_q_ctx: usize,
+    /// Caller-resolved inter/intra flag for lower non-lossless derivation.
+    pub(crate) is_inter: bool,
+    /// Caller-resolved base facts before lossless transform-type selection.
+    pub(crate) base_config: CoeffOrdinaryBranchLosslessBaseConfig,
+    /// Caller-resolved AV2 § 5.20.7.29 `Lossless` flag.
     pub(crate) lossless: bool,
 }
 
@@ -660,6 +688,29 @@ pub(crate) fn apply_coeff_ordinary_branch_from_lossless(
     )
 }
 
+/// Runs the ordinary nonzero branch after the caller has already read EOB.
+///
+/// This is the staged counterpart to [`apply_coeff_ordinary_branch_from_lossless`]
+/// for AV2 § 5.20.7.27 callers that must inspect EOB before deciding whether
+/// post-EOB transform-tool syntax is active. It performs the same non-FSC
+/// transform-set, transform-type, scan, base-context, and context-line derivation
+/// as the non-staged path, but starts from the supplied
+/// [`NonZeroCoeffBlockStart`].
+pub(crate) fn apply_staged_nonzero_coeff_ordinary_branch_from_lossless(
+    state: &mut TileCoeffContextState,
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    input: CoeffOrdinaryStagedLosslessNonZeroInput,
+) -> Result<NonZeroCoeffOrdinaryDerivedBasePass, CoeffOrdinaryBranchError> {
+    apply_staged_nonzero_coeff_ordinary_branch_from_lossless_with_tables(
+        state,
+        cdfs,
+        symbols,
+        input,
+        DEFAULT_TX_SIZE_TABLES,
+    )
+}
+
 #[cfg(test)]
 pub(crate) fn apply_coeff_ordinary_branch_from_tx_size_dimensions_with_test_tables(
     state: &mut TileCoeffContextState,
@@ -791,6 +842,95 @@ fn apply_coeff_ordinary_branch_from_lossless_with_tables(
             )
         }
     }
+}
+
+fn apply_staged_nonzero_coeff_ordinary_branch_from_lossless_with_tables(
+    state: &mut TileCoeffContextState,
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    input: CoeffOrdinaryStagedLosslessNonZeroInput,
+    tables: CoeffOrdinaryTxSizeTables<'_>,
+) -> Result<NonZeroCoeffOrdinaryDerivedBasePass, CoeffOrdinaryBranchError> {
+    let CoeffOrdinaryStagedLosslessNonZeroInput {
+        geometry,
+        start,
+        coeff_cdf_q_ctx,
+        is_inter,
+        base_config,
+        lossless,
+    } = input;
+    let base_config = if lossless {
+        if is_inter {
+            return Err(CoeffOrdinaryBranchError::UnsupportedLosslessSubset { reason: "inter" });
+        }
+        base_config.lossless_tx_size_base_config()
+    } else {
+        let tx_set_base_config = base_config.tx_set_base_config();
+        let mode_to_txfm_base_config =
+            tx_set_base_config.mode_to_txfm_base_config(geometry, is_inter, tables)?;
+        mode_to_txfm_base_config.tx_size_base_config(geometry, is_inter, lossless, tables)?
+    };
+    apply_staged_nonzero_coeff_ordinary_pass_from_tx_size_dimensions_with_tables(
+        state,
+        cdfs,
+        symbols,
+        CoeffOrdinaryStagedTxSizeDimensionsInput {
+            geometry,
+            start,
+            coeff_cdf_q_ctx,
+            base_config,
+            lossless,
+        },
+        tables,
+    )
+}
+
+fn apply_staged_nonzero_coeff_ordinary_pass_from_tx_size_dimensions_with_tables(
+    state: &mut TileCoeffContextState,
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    input: CoeffOrdinaryStagedTxSizeDimensionsInput,
+    tables: CoeffOrdinaryTxSizeTables<'_>,
+) -> Result<NonZeroCoeffOrdinaryDerivedBasePass, CoeffOrdinaryBranchError> {
+    let raw_dimensions = tx_size_dimensions(tables, input.geometry.tx_size)?;
+    let adjusted_dimensions = adjusted_tx_size_dimensions(tables, input.geometry.tx_size)?;
+    let tx_size_ctx = tx_size_context(tables, input.geometry.tx_size)?;
+    let tx_class = CoeffTransformClass::from_plane_tx_type(input.base_config.plane_tx_type);
+    let scan = tx_size_scan(raw_dimensions, tx_class)?;
+    let x4 = input.geometry.start_x >> 2;
+    let y4 = input.geometry.start_y >> 2;
+    let w4 = raw_dimensions.tx_width >> 2;
+    let h4 = raw_dimensions.tx_height >> 2;
+    apply_nonzero_coeff_ordinary_pass_with_state_context(
+        state,
+        cdfs,
+        symbols,
+        CoeffOrdinaryStateContextPassInput {
+            start: input.start,
+            scan: &scan,
+            base_config: CoeffBaseDerivedLevelPassConfig {
+                coeff_cdf_q_ctx: input.coeff_cdf_q_ctx,
+                tx_size_ctx,
+                tx_width_log2: adjusted_dimensions.tx_width_log2,
+                tx_width: adjusted_dimensions.tx_width,
+                tx_height: adjusted_dimensions.tx_height,
+                plane: input.geometry.plane,
+                tx_class,
+                parity_hiding: input.base_config.parity_hiding,
+                use_tcq: input.base_config.use_tcq,
+            },
+            state_context: CoeffOrdinaryStateContextConfig {
+                coeff_cdf_q_ctx: input.coeff_cdf_q_ctx,
+                plane_type: usize::from(input.geometry.plane > 0),
+                x4,
+                y4,
+                w4,
+                h4,
+            },
+            lossless: input.lossless,
+        },
+    )
+    .map_err(CoeffOrdinaryBranchError::from)
 }
 
 fn apply_coeff_ordinary_branch_from_tx_size_dimensions_with_tables(

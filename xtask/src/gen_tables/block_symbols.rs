@@ -5,8 +5,18 @@
 
 use anyhow::{Result, bail};
 
-const TABLES_WITH_BLOCK_SYMBOLS: &[&str] = &["H_Partition_Midsize", "Partition_Subsize"];
-const TABLES_WITH_TX_SIZE_SYMBOLS: &[&str] = &["Adjusted_Tx_Size", "Tx_Size_Sqr", "Tx_Size_Sqr_Up"];
+const TABLES_WITH_BLOCK_SYMBOLS: &[&str] = &[
+    "H_Partition_Midsize",
+    "Partition_Subsize",
+    "Size_To_Tx_Type_Group_Vert_And_Horz",
+    "Size_To_Tx_Type_Group_Vert_Or_Horz",
+];
+const TABLES_WITH_TX_SIZE_SYMBOLS: &[&str] = &[
+    "Adjusted_Tx_Size",
+    "Max_Tx_Size_Rect",
+    "Tx_Size_Sqr",
+    "Tx_Size_Sqr_Up",
+];
 const TABLES_WITH_TX_TYPE_SYMBOLS: &[&str] = &["Mode_To_Txfm"];
 
 /// Resolves supported symbolic table bodies into numeric bodies.
@@ -199,7 +209,30 @@ mod tests {
 
     #[test]
     fn ignores_other_symbolic_tables() -> Result<()> {
-        assert_eq!(resolve_body("Max_Tx_Size_Rect", "{ TX_4X4 }")?, None);
+        assert_eq!(resolve_body("Unsupported_Table", "{ TX_4X4 }")?, None);
+        Ok(())
+    }
+
+    #[test]
+    fn resolves_selectable_transform_symbol_tables() -> Result<()> {
+        assert_eq!(
+            resolve_body("Max_Tx_Size_Rect", "{ TX_4X4, TX_64X64 }")?,
+            Some("{ 0, 4 }".to_string())
+        );
+        assert_eq!(
+            resolve_body(
+                "Size_To_Tx_Type_Group_Vert_And_Horz",
+                "{ BLOCK_4X4, BLOCK_INVALID }",
+            )?,
+            Some("{ 0, 29 }".to_string())
+        );
+        assert_eq!(
+            resolve_body(
+                "Size_To_Tx_Type_Group_Vert_Or_Horz",
+                "{ BLOCK_16X16, BLOCK_INVALID }",
+            )?,
+            Some("{ 6, 29 }".to_string())
+        );
         Ok(())
     }
 }

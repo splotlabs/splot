@@ -87,6 +87,37 @@ Per-feature support status stays in
 only the citation surface for tile partition syntax, semantics, and parsing
 helpers.
 
+## Decoder transform-size surface
+
+Decoder transform-record work uses these local mirror citations:
+
+- AV2 § 5.20.6.1 TX size syntax:
+  [`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-6-1`](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-6-1).
+- AV2 § 5.20.6.3 read TX partition syntax:
+  [`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-6-3`](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-6-3).
+- AV2 § 5.20.7.24 residual syntax, whose `skip_flag` participates in retained
+  `LrTxSkip` derivation:
+  [`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-24`](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-24).
+- AV2 § 5.20.7.27 coefficient syntax, which writes the `LrTxSkip` values read
+  by loop-restoration classification:
+  [`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27`](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27).
+- AV2 § 5.20.7.29 transform-type and secondary-transform syntax, including
+  the intra IST `sec_tx_type` branch used by current ac0ej3 residual frontiers:
+  [`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-29`](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-29).
+- AV2 § 7.20.4 pixel classified Wiener filter process:
+  [`docs/spec/av2/1.0.0/07-decoding-process.md#s-7-20-4`](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-4).
+- AV2 § 8.3.2 syntax-element CDF selection for transform and secondary-transform
+  symbols:
+  [`docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2`](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2).
+- AV2 § 9.3 default CDF tables for transform and secondary-transform rows:
+  [`docs/spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3`](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3).
+
+Per-feature support status stays in
+[`IMPLEMENTATION-MATRIX.toml`](./IMPLEMENTATION-MATRIX.toml) and
+[`DECODER-SUPPORT-MATRIX.toml`](./DECODER-SUPPORT-MATRIX.toml); this section is
+only the citation surface for transform-size syntax and the LR transform-record
+handoff.
+
 ## Decoder inter prediction surface
 
 Minimal decoder inter/compound work uses these local mirror citations:

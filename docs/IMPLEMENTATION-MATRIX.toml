@@ -11569,7 +11569,7 @@ openspec_change = "decode-ac0ej3-lr-live-transform-record-handoff"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Partial prerequisite row for handing parsed luma transform records into live ac0ej3 Wiener NS LR `LrTxSkip` storage. The runtime can derive a complete retained `WienerNsLrTxSkipGrid` from fixed-largest luma transform records, populate the live LR `LrTxSkip` shell, and then fail closed before decoded CurrFrame/CdefFrame sample population. The local ac0ej3 mission stream uses `TX_MODE_SELECT`, so it now fails closed at byte offset 74 as `unsupported_wienerns_lr_tx_mode_select_transform_records`; deriving that stream's real `LrTxSkip` grid requires §5.20.6.1 `read_tx_size` / `read_tx_partition` records first. This row does not claim selectable transform partition parsing, decoded sample population, `FilterClass` grid retention, `SubclassLookup`, loop-restoration filtering/reconstruction, chroma Wiener NS filtering, 10-bit output, reference refresh, AVM/dav2d byte equality, or successful ac0ej3 decode."
+notes = "Partial prerequisite row for handing parsed luma transform records into live ac0ej3 Wiener NS LR `LrTxSkip` storage. The runtime can derive a complete retained `WienerNsLrTxSkipGrid` from fixed-largest luma transform records, populate the live LR `LrTxSkip` shell, and then fail closed before decoded CurrFrame/CdefFrame sample population. The follow-on `DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS` row owns the local ac0ej3 stream's `TX_MODE_SELECT` transform-record path. This row does not claim decoded sample population, `FilterClass` grid retention, `SubclassLookup`, loop-restoration filtering/reconstruction, chroma Wiener NS filtering, 10-bit output, reference refresh, AVM/dav2d byte equality, or successful ac0ej3 decode."
 
 [feature.status]
 mapped = "done"
@@ -11605,6 +11605,468 @@ fixtures = [
     "crates/splot-decode/src/runtime_minimal/wienerns_lr/live_storage.rs",
 ]
 diagnostics = ["decode/unsupported-feature", "decode/resource-limit"]
+
+[[feature]]
+id = "DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS"
+name = "ac0ej3 selectable transform-record frontier"
+category = "infrastructure"
+kind = "bitstream-syntax"
+spec_sections = ["5.20.6.1", "5.20.6.3", "5.20.7.27", "7.20.4"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-6-1",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-6-3",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-20-4",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/runtime_minimal/wienerns_lr.rs"
+openspec_change = "decode-ac0ej3-selectable-transform-records"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Partial prerequisite row for parsing supported AV2 §5.20.6.1/§5.20.6.3 `TX_MODE_SELECT` luma transform-size records in the ac0ej3 Wiener NS LR runtime path. The local stream's active CfL mode-info prerequisite is tracked by `DECODE-AC0EJ3-CFL-CHROMA-MODE-FRONTIER`; follow-on rows admit the observed luma-only `BLOCK_4X32` transform leaf, retain SDP `CflAllowedInSdp`, and add the pre-tile unsupported-tool gate. The live ac0ej3 probe now advances past `unsupported_wienerns_lr_live_transform_record_uv_mode`; follow-on rows move it through the former pre-tile gate to `unsupported_wienerns_lr_live_transform_record_transform_tool_residual` at byte offset 110. This row feeds supported selectable luma transform extents and §5.20.7.27 coefficient `eob` facts into live `LrTxSkip` storage for admitted subsets only. It does not claim enabled MRL/DIP/intra-edge/IBP support, CfL prediction, decoded CurrFrame/CdefFrame sample population, `FilterClass` grid retention, `SubclassLookup`, loop-restoration filtering/reconstruction, chroma Wiener NS filtering, 10-bit output, reference refresh, AVM/dav2d byte equality, or successful ac0ej3 decode."
+
+[feature.status]
+mapped = "done"
+types = "partial"
+parse = "partial"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "partial"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = []
+fixtures = []
+diagnostics = ["decode/unsupported-feature", "decode/resource-limit"]
+
+[[feature]]
+id = "DECODE-AC0EJ3-SELECTABLE-NARROW-LUMA-RECORDS"
+name = "ac0ej3 selectable narrow luma records"
+category = "infrastructure"
+kind = "bitstream-syntax"
+spec_sections = ["5.20.6.1", "5.20.6.3", "5.20.7.24", "5.20.7.27", "7.20.4"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-6-1",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-6-3",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-24",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-20-4",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/runtime_minimal/wienerns_lr/tx_records.rs"
+openspec_change = "decode-ac0ej3-selectable-narrow-luma-records"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Partial prerequisite row for luma-only narrow selectable transform leaves in the local ac0ej3 Wiener NS LR runtime path. The transform-record parser admits the observed `BLOCK_4X32` luma-only leaf, retains its extents for `LrTxSkip`, and preserves fail-closed rejection for chroma-bearing narrow leaves so unsupported chroma records are not fabricated. The live ac0ej3 probe advances past `unsupported_wienerns_lr_selectable_transform_records_block_shape` and, after the SDP CfL-allowed and pre-tile gate slices, now reaches the follow-on active-tool row's `unsupported_wienerns_lr_live_transform_record_transform_tool_residual` frontier at byte offset 110. This row does not claim decoded CurrFrame/CdefFrame sample population, enabled MRL/DIP/intra-edge/IBP support, CfL prediction, chroma reconstruction, `FilterClass` grid retention, `SubclassLookup`, loop-restoration filtering/reconstruction, chroma Wiener NS filtering, 10-bit output, reference refresh, AVM/dav2d byte equality, or successful ac0ej3 decode."
+
+[feature.status]
+mapped = "done"
+types = "partial"
+parse = "partial"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/runtime_minimal/wienerns_lr/tx_records.rs::tests::selectable_leaf_shape_admits_observed_luma_only_block_4x32",
+    "crates/splot-decode/src/runtime_minimal/wienerns_lr/tx_records.rs::tests::selectable_leaf_shape_preserves_chroma_bearing_narrow_guard",
+    "crates/splot-decode/src/runtime_minimal/wienerns_lr/tx_records.rs::tests::selectable_tx_grid_records_observed_luma_only_block_4x32_region",
+    "crates/splot-cli/tests/decode_cli.rs::local_ac0ej3_reaches_current_runtime_gate_without_output",
+    "local ac0ej3 probe: unsupported_wienerns_lr_live_transform_record_transform_tool_residual at byte offset 110",
+]
+commands = [
+    "cargo test -p splot-decode runtime_minimal::wienerns_lr::tx_records --locked",
+    "cargo test -p splot-cli --test decode_cli local_ac0ej3_reaches_current_runtime_gate_without_output --locked -- --ignored",
+    "SPLOT_AC0EJ3_IVF=<local mission fixture> cargo run -p splot-cli --locked -- decode --json --output-format hash $SPLOT_AC0EJ3_IVF",
+    "cargo xtask check-feature-status",
+    "cargo xtask check-decoder-support",
+]
+fixtures = [
+    "local ac0ej3 mission fixture",
+    "crates/splot-cli/tests/decode_cli.rs",
+    "crates/splot-decode/src/runtime_minimal/wienerns_lr/tx_records.rs",
+    "crates/splot-decode/src/tile_payload/general_intra_residual.rs",
+    "crates/splot-decode/src/tile_payload/runtime_frontier.rs",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
+id = "DECODE-AC0EJ3-CFL-CHROMA-MODE-FRONTIER"
+name = "ac0ej3 CfL chroma mode frontier"
+category = "infrastructure"
+kind = "bitstream-syntax"
+spec_sections = ["5.20.5.6", "5.20.7.32", "6.19.7.4", "6.19.7.25", "8.3.2", "9.3"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-6",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-32",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-7-4",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-7-25",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2",
+    "docs/spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/tile_payload/general_intra_block.rs"
+openspec_change = "decode-ac0ej3-cfl-chroma-mode-frontier"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Partial runtime prerequisite row for the local ac0ej3 Wiener NS LR selectable-transform path. The tile CDF subset exposes generated AV2 §9.3 CfL index, sign, alpha, MHCCP, and MH direction rows through checked selectors, copy/average lifecycle, and frame-end scaling. General intra chroma mode-info consumes active §5.20.5.6 `is_cfl`, represents the typed chroma mode as §6.19.7.4 `UV_CFL_PRED`, consumes §5.20.7.32 `read_cfl_alphas()` in spec order with §8.3.2 alpha/MH direction contexts, and passes the typed `UV_CFL_PRED` value into coefficient transform-mode handoff so the symbol stream stays synchronized. The local ac0ej3 probe advances past `unsupported_wienerns_lr_live_transform_record_cfl_mode`; after the SDP CfL-allowed and pre-tile gate slices it now reaches the follow-on active-tool row's `unsupported_wienerns_lr_live_transform_record_transform_tool_residual` frontier at byte offset 110. This row does not claim CfL prediction, `CflRef` capture, alpha application, chroma reconstruction, enabled MRL/DIP/intra-edge/IBP support, decoded samples, loop-restoration filtering/output, 10-bit output, reference refresh, AVM/dav2d byte equality, or successful ac0ej3 decode."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "partial"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/tile_payload/general_intra_block.rs::tests::active_cfl_chroma_mode_returns_typed_uv_cfl_pred",
+    "crates/splot-decode/src/tile_payload/general_intra_block.rs::tests::read_cfl_alphas_consumes_explicit_sign_and_alpha_contexts",
+    "crates/splot-decode/src/tile_payload/general_intra_block.rs::tests::read_cfl_alphas_empty_payload_fails_exit_symbol_validation",
+    "crates/splot-decode/src/tile_payload/general_intra_block.rs::tests::cfl_alpha_contexts_match_spec_tables",
+    "crates/splot-decode/src/tile_payload/general_intra_block.rs::tests::cfl_mh_dir_size_group_uses_generated_size_group",
+    "crates/splot-decode/src/tile_payload/cdf/tests.rs::cfl_cdf_selectors_match_generated_defaults_and_check_bounds",
+    "local ac0ej3 probe: unsupported_wienerns_lr_live_transform_record_transform_tool_residual at byte offset 110",
+]
+commands = [
+    "cargo test -p splot-decode tile_payload::general_intra_block --locked",
+    "cargo test -p splot-decode tile_payload::cdf --locked",
+    "SPLOT_AC0EJ3_IVF=<local mission fixture> cargo run -p splot-cli --locked -- decode --json --output-format hash $SPLOT_AC0EJ3_IVF",
+    "cargo xtask check-feature-status",
+    "cargo xtask check-decoder-support",
+]
+fixtures = [
+    "local ac0ej3 mission fixture",
+    "crates/splot-decode/src/tile_payload/general_intra_block.rs",
+    "crates/splot-decode/src/tile_payload/cdf.rs",
+    "crates/splot-decode/src/tile_payload/cdf/block_rows.rs",
+    "crates/splot-decode/src/runtime_minimal/wienerns_lr.rs",
+    "crates/splot-decode/src/runtime_minimal/wienerns_lr/tx_records.rs",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
+id = "DECODE-AC0EJ3-SDP-CFL-ALLOWED-FRONTIER"
+name = "ac0ej3 SDP CflAllowedInSdp frontier"
+category = "infrastructure"
+kind = "bitstream-syntax"
+spec_sections = ["5.20.3.1", "5.20.5.6", "8.3.2"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-1",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-6",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/tile_payload/partition_traversal.rs"
+openspec_change = "decode-ac0ej3-sdp-cfl-allowed-frontier"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Partial runtime prerequisite row for retaining AV2 §5.20.3.1 `CflAllowedInSdp` through SDP partition traversal and applying it to AV2 §5.20.5.6 chroma mode-info in the ac0ej3 Wiener NS LR selectable-transform path. SDP `CHROMA_PART` leaves whose retained state disables CfL/MHCCP no longer read the `is_cfl` symbol before `uv_mode`, preventing the earlier symbol desynchronization. The live ac0ej3 probe advances past `unsupported_wienerns_lr_live_transform_record_uv_mode`; after the pre-tile gate slice it now reaches the follow-on active-tool row's `unsupported_wienerns_lr_live_transform_record_transform_tool_residual` frontier at byte offset 110. This row does not claim CfL prediction, MHCCP prediction, decoded chroma samples, decoded CurrFrame/CdefFrame sample population, loop-restoration filtering/output, reference refresh, AVM/dav2d byte equality, or successful ac0ej3 decode."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "partial"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/tile_payload/partition_traversal.rs::tests::sdp_cfl_allowed_state_tracks_top_luma_and_chroma_partitions",
+    "crates/splot-decode/src/tile_payload/partition_traversal.rs::tests::sdp_cfl_allowed_state_propagates_to_chroma_children",
+    "crates/splot-decode/src/tile_payload/general_intra_block.rs::tests::sdp_chroma_part_cfl_disallowed_reads_uv_mode_without_is_cfl",
+    "crates/splot-cli/tests/decode_cli.rs::local_ac0ej3_reaches_current_runtime_gate_without_output",
+    "local ac0ej3 probe: unsupported_wienerns_lr_live_transform_record_transform_tool_residual at byte offset 110",
+]
+commands = [
+    "cargo test -p splot-decode sdp_cfl_allowed_state --locked",
+    "cargo test -p splot-decode tile_payload::general_intra_block::tests::sdp_chroma_part_cfl_disallowed_reads_uv_mode_without_is_cfl --locked",
+    "cargo test -p splot-cli --test decode_cli local_ac0ej3_reaches_current_runtime_gate_without_output --locked -- --ignored",
+    "SPLOT_AC0EJ3_IVF=<local mission fixture> cargo run -p splot-cli --locked -- decode --json --output-format hash $SPLOT_AC0EJ3_IVF",
+    "cargo xtask check-feature-status",
+    "cargo xtask check-decoder-support",
+]
+fixtures = [
+    "local ac0ej3 mission fixture",
+    "crates/splot-cli/tests/decode_cli.rs",
+    "crates/splot-decode/src/tile_payload/partition_traversal.rs",
+    "crates/splot-decode/src/tile_payload/general_intra_block.rs",
+    "crates/splot-decode/src/runtime_minimal/wienerns_lr/tx_records.rs",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
+id = "DECODE-AC0EJ3-INTRA-PRELUDE-TX-FRONTIER"
+name = "ac0ej3 intra prelude transform frontier"
+category = "infrastructure"
+kind = "bitstream-syntax"
+spec_sections = ["5.20.5.3", "5.20.5.11", "5.20.6.1", "5.20.6.3", "5.20.10.1", "8.3.2"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-11",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-6-1",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-6-3",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-1",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/runtime_minimal/wienerns_lr/tx_records.rs"
+openspec_change = "decode-ac0ej3-sdp-cfl-allowed-frontier"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Partial runtime prerequisite row for the ac0ej3 Wiener NS LR selectable transform-record path. Before tile symbol consumption, the path now rejects enabled mode, coefficient, and filtering tools whose syntax is not intentionally consumed, addressing the pre-tile admission gap. For admitted luma/shared leaves it wires zero-only `use_intrabc`, CDEF strength-index state, and delta-Q prelude reads in AV2 §5.20.5.3 order before luma mode and §5.20.6 transform partition parsing, and rejects chroma-offset leaves before deriving chroma residual coordinates from the wrong luma leaf. The follow-on active-tool row supersedes this pre-tile gate; the current local ac0ej3 stream now stops at `unsupported_wienerns_lr_live_transform_record_transform_tool_residual` at byte offset 110. This row does not claim enabled MRL/DIP/intra-edge/IBP support, active IntrABC, GDF/CCSO syntax, decoded samples, loop-restoration filtering/output, reference refresh, AVM/dav2d byte equality, or successful ac0ej3 decode."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "partial"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/runtime_minimal/wienerns_lr/tx_records.rs::tests::selectable_tool_gate_admits_minimal_inert_selectable_intra_header",
+    "crates/splot-decode/src/runtime_minimal/wienerns_lr/tx_records.rs::tests::selectable_tool_gate_rejects_unsupported_intra_tools_before_tile_decode",
+    "crates/splot-decode/src/runtime_minimal/wienerns_lr/tx_records.rs::tests::cdef_index0_context_uses_zero_strength_neighbours_in_same_superblock",
+    "crates/splot-decode/src/runtime_minimal/wienerns_lr/tx_records.rs::tests::cdef_fill_units_uses_cdef_aligned_origin_and_block_extent",
+    "crates/splot-cli/tests/decode_cli.rs::local_ac0ej3_reaches_current_runtime_gate_without_output",
+    "local ac0ej3 probe: unsupported_wienerns_lr_live_transform_record_transform_tool_residual at byte offset 110",
+]
+commands = [
+    "cargo test -p splot-decode runtime_minimal::wienerns_lr::tx_records::tests::selectable_tool_gate --locked",
+    "cargo test -p splot-decode runtime_minimal::wienerns_lr::tx_records::tests::cdef --locked",
+    "cargo test -p splot-cli --test decode_cli local_ac0ej3_reaches_current_runtime_gate_without_output --locked -- --ignored",
+    "SPLOT_AC0EJ3_IVF=<local mission fixture> cargo run -p splot-cli --locked -- decode --json --output-format hash $SPLOT_AC0EJ3_IVF",
+    "cargo xtask check-feature-status",
+    "cargo xtask check-decoder-support",
+]
+fixtures = [
+    "local ac0ej3 mission fixture",
+    "crates/splot-cli/tests/decode_cli.rs",
+    "crates/splot-decode/src/runtime_minimal/wienerns_lr.rs",
+    "crates/splot-decode/src/runtime_minimal/wienerns_lr/tx_records.rs",
+    "crates/splot-decode/src/tile_payload/cdf.rs",
+    "crates/splot-decode/src/tile_payload/cdf/lifecycle.rs",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
+id = "DECODE-AC0EJ3-ACTIVE-INTRA-TOOL-FRONTIER"
+name = "ac0ej3 active intra tool frontier"
+category = "infrastructure"
+kind = "bitstream-syntax"
+spec_sections = ["5.20.5.5", "5.20.7.27", "8.3.2", "9.3"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-5",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2",
+    "docs/spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/runtime_minimal/wienerns_lr/tx_records.rs"
+openspec_change = "decode-ac0ej3-active-intra-tool-frontier"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Partial runtime prerequisite row for the ac0ej3 Wiener NS LR selectable transform-record path after the pre-tile gate. The runtime now exposes generated AV2 §9.3 MRL index and secondary-index CDF rows through the tile CDF subset, includes them in copy/average/frame-end lifecycle state, consumes §5.20.5.5 `mrl_index == 0` for directional luma modes when `enable_mrls` is set, and consumes then rejects active nonzero MRL before claiming MRL prediction semantics. The selectable transform-record path also relaxes enabled-but-inactive MRL/IBP/intra-edge-filter and transform-tool sequence flags plus parsed CCSO filter state from broad pre-tile rejection into active-use or later filter/output frontiers. For enabled transform tools whose active syntax is not implemented, the residual helper consumes the §5.20.7.27 `all_zero` decision, admits skipped transform blocks, and rejects nonzero residuals before reading coefficient syntax that would skip required `transform_type()`, CCTX, or IST branches. The live ac0ej3 probe advances past the former `unsupported_wienerns_lr_selectable_transform_records_unsupported_intra_tool` and `unsupported_wienerns_lr_selectable_transform_records_ccso` byte-74 gates and now stops at `unsupported_wienerns_lr_live_transform_record_transform_tool_residual` at byte offset 110. This row does not claim active MRL prediction, DIP, IBP prediction semantics, intra-edge filtering, broad transform-type parsing, CCTX, IST, decoded CurrFrame/CdefFrame sample population, CCSO/GDF/CDEF/loop-restoration filtering, output, reference refresh, AVM/dav2d byte equality, or successful ac0ej3 decode."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "partial"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/tile_payload/cdf/tests.rs::frame_cdf_subset_copies_generated_defaults_without_aliasing",
+    "crates/splot-decode/src/tile_payload/cdf/tests.rs::saved_copy_and_average_are_exact_for_supported_subset",
+    "crates/splot-decode/src/tile_payload/cdf/tests.rs::frame_end_update_copies_saved_rows_and_scales_counts",
+    "crates/splot-decode/src/tile_payload/cdf/tests.rs::tx_partition_rows_load_defaults_and_report_selector_errors",
+    "crates/splot-decode/src/tile_payload/general_intra_block.rs::tests::directional_luma_mrl_zero_is_consumed_when_mrls_are_enabled",
+    "crates/splot-decode/src/tile_payload/general_intra_block.rs::tests::active_mrl_mode_is_rejected_after_mrl_sec_index_is_consumed",
+    "crates/splot-decode/src/runtime_minimal/wienerns_lr/tx_records.rs::tests::selectable_tool_gate_admits_enabled_inactive_transform_and_mrl_tools",
+    "crates/splot-cli/tests/decode_cli.rs::local_ac0ej3_reaches_current_runtime_gate_without_output",
+    "local ac0ej3 probe: unsupported_wienerns_lr_live_transform_record_transform_tool_residual at byte offset 110",
+]
+commands = [
+    "cargo test -p splot-decode tile_payload::cdf --locked",
+    "cargo test -p splot-decode tile_payload::general_intra_block --locked",
+    "cargo test -p splot-decode runtime_minimal::wienerns_lr::tx_records --locked",
+    "cargo test -p splot-cli --test decode_cli local_ac0ej3_reaches_current_runtime_gate_without_output --locked -- --ignored",
+    "SPLOT_AC0EJ3_IVF=<local mission fixture> cargo run -p splot-cli --locked -- decode --json --output-format hash $SPLOT_AC0EJ3_IVF",
+]
+fixtures = [
+    "local ac0ej3 mission fixture",
+    "crates/splot-cli/tests/decode_cli.rs",
+    "crates/splot-decode/src/runtime_minimal/wienerns_lr.rs",
+    "crates/splot-decode/src/runtime_minimal/wienerns_lr/tx_records.rs",
+    "crates/splot-decode/src/tile_payload/cdf.rs",
+    "crates/splot-decode/src/tile_payload/cdf/lifecycle.rs",
+    "crates/splot-decode/src/tile_payload/general_intra_block.rs",
+    "crates/splot-decode/src/tile_payload/general_intra_residual.rs",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
+id = "DECODE-AC0EJ3-DCTONLY-RESIDUAL-FRONTIER"
+name = "ac0ej3 DCT-only residual frontier"
+category = "infrastructure"
+kind = "bitstream-syntax"
+spec_sections = ["5.20.7.27", "5.20.8.2", "5.20.8.3", "8.3.2", "9.2"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-2",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-3",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2",
+    "docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/tile_payload/general_intra_residual.rs"
+openspec_change = "decode-ac0ej3-dctonly-residual-frontier"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Partial runtime prerequisite row for the ac0ej3 Wiener NS LR selectable transform-record path. The residual helper carries typed sequence transform-tool facts into tile coefficient frame facts, consumes §5.20.7.27 `all_zero`, stages the nonzero EOB branch when transform tools are enabled, admits DCT_DCT residuals whose §5.20.8.2 path either reads no active transform_type syntax or reads supported active luma transform_type syntax that resolves back to DCT_DCT, and reports precise fail-closed diagnostics for non-DCT luma transform types and CCTX. The supported active luma subset covers TX_SET_INTRA_1/2 via generated MdIdx mapping plus wide/high long-transform sets via `is_long_side_dct` and `intra_tx_type_long` CDF rows. The follow-on `DECODE-AC0EJ3-INTRA-IST-ZERO-FRONTIER` supersedes this row's former blanket IST gate by reading intra `sec_tx_type` and now owns the live ac0ej3 active-secondary-transform diagnostic. This row does not claim non-DCT luma transform admission, CCTX, IST/secondary-transform semantics, decoded CurrFrame/CdefFrame sample population, loop-restoration filtering/output, reference refresh, AVM/dav2d byte equality, or successful ac0ej3 decode."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "partial"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/tile_payload/general_intra_residual.rs::tests::dctonly_residual_admits_luma_when_ist_cannot_read_after_eob_limit",
+    "crates/splot-decode/src/tile_payload/general_intra_residual.rs::tests::dctonly_residual_maps_nonzero_intra_tx_type_to_non_dct",
+    "crates/splot-decode/src/tile_payload/general_intra_residual.rs::tests::dctonly_residual_maps_intra_tx_type_zero_to_dct_dct",
+    "crates/splot-decode/src/tile_payload/general_intra_residual.rs::tests::dctonly_residual_long_set_maps_dct_symbol_only_for_long_side_dct",
+    "crates/splot-decode/src/tile_payload/general_intra_residual.rs::tests::dctonly_residual_rejects_u_plane_cctx_only_when_eob_requires_cctx_type",
+    "crates/splot-decode/src/tile_payload/cdf/tests.rs::tx_partition_rows_load_defaults_and_report_selector_errors",
+    "crates/splot-decode/src/tile_payload/cdf/block_read.rs::tests::reads_supported_block_symbol_rows",
+]
+commands = [
+    "cargo test -p splot-decode tile_payload::cdf --locked",
+    "cargo test -p splot-decode tile_payload::general_intra_residual --locked",
+]
+fixtures = [
+    "local ac0ej3 mission fixture",
+    "crates/splot-cli/tests/decode_cli.rs",
+    "crates/splot-decode/src/runtime_minimal.rs",
+    "crates/splot-decode/src/runtime_minimal/wienerns_lr.rs",
+    "crates/splot-decode/src/runtime_minimal/wienerns_lr/tx_records.rs",
+    "crates/splot-decode/src/tile_payload.rs",
+    "crates/splot-decode/src/tile_payload/cdf.rs",
+    "crates/splot-decode/src/tile_payload/cdf/block_read.rs",
+    "crates/splot-decode/src/tile_payload/cdf/block_rows.rs",
+    "crates/splot-decode/src/tile_payload/cdf/tests.rs",
+    "crates/splot-decode/src/tile_payload/general_intra_residual.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_pass/geometry.rs",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
+id = "DECODE-AC0EJ3-INTRA-IST-ZERO-FRONTIER"
+name = "ac0ej3 intra IST zero frontier"
+category = "infrastructure"
+kind = "bitstream-syntax"
+spec_sections = ["5.20.7.29", "8.3.2", "9.3"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-29",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2",
+    "docs/spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/tile_payload/general_intra_residual.rs"
+openspec_change = "decode-ac0ej3-intra-ist-zero-frontier"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Partial runtime prerequisite row for the ac0ej3 Wiener NS LR selectable transform-record residual path after DCT_DCT transform-type admission. The tile CDF subset now exposes generated AV2 §9.3 `TileSecTxTypeCdf`, `TileMostProbableStxSetCdf`, and `TileMostProbableStxSetAdstCdf` rows through the crate-private §8.3.2 selector boundary, including default copy, mutable symbol-read handoff, update-mode, and CDF lifecycle coverage. For the covered intra luma DCT_DCT residual subset, §5.20.7.29 now reads `sec_tx_type` when the intra IST branch is active, admits only `sec_tx_type == 0`, consumes `most_probable_stx_set` for nonzero DCT_DCT intra IST before failing closed, and reports the live ac0ej3 diagnostic as `unsupported_dctonly_residual_intra_sec_tx_type` at byte offset 110. This row does not claim active secondary inverse transforms, non-DCT luma transform admission, CCTX, decoded CurrFrame/CdefFrame sample population, loop-restoration filtering/output, reference refresh, AVM/dav2d byte equality, or successful ac0ej3 decode."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "partial"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/tile_payload/cdf/tests.rs::frame_cdf_subset_copies_generated_defaults_without_aliasing",
+    "crates/splot-decode/src/tile_payload/cdf/tests.rs::tx_partition_rows_load_defaults_and_report_selector_errors",
+    "crates/splot-decode/src/tile_payload/cdf/block_read.rs::tests::reads_supported_block_symbol_rows",
+    "crates/splot-decode/src/tile_payload/cdf/block_read.rs::tests::update_mode_controls_only_selected_block_symbol_rows",
+    "crates/splot-decode/src/tile_payload/general_intra_residual.rs::tests::dctonly_residual_admits_luma_when_intra_ist_reads_zero_sec_tx_type",
+    "crates/splot-decode/src/tile_payload/general_intra_residual.rs::tests::dctonly_residual_rejects_active_intra_ist_sec_tx_type",
+    "crates/splot-decode/src/tile_payload/general_intra_residual.rs::tests::dctonly_residual_rejects_intra_ist_without_luma_context",
+    "crates/splot-cli/tests/decode_cli.rs::local_ac0ej3_reaches_current_runtime_gate_without_output",
+    "local ac0ej3 probe: unsupported_dctonly_residual_intra_sec_tx_type at byte offset 110",
+]
+commands = [
+    "cargo test -p splot-decode tile_payload::cdf --locked",
+    "cargo test -p splot-decode tile_payload::general_intra_residual --locked",
+    "cargo test -p splot-cli --test decode_cli local_ac0ej3_reaches_current_runtime_gate_without_output --locked -- --ignored",
+    "SPLOT_AC0EJ3_IVF=<local mission fixture> cargo run -p splot-cli --locked -- decode --json --output-format hash $SPLOT_AC0EJ3_IVF",
+]
+fixtures = [
+    "local ac0ej3 mission fixture",
+    "crates/splot-cli/tests/decode_cli.rs",
+    "crates/splot-decode/src/runtime_minimal.rs",
+    "crates/splot-decode/src/runtime_minimal/wienerns_lr.rs",
+    "crates/splot-decode/src/tile_payload/cdf.rs",
+    "crates/splot-decode/src/tile_payload/cdf/block_read.rs",
+    "crates/splot-decode/src/tile_payload/cdf/block_rows.rs",
+    "crates/splot-decode/src/tile_payload/cdf/tests.rs",
+    "crates/splot-decode/src/tile_payload/general_intra_residual.rs",
+]
+diagnostics = ["decode/unsupported-feature"]
 
 [[feature]]
 id = "DECODE-Y4M-RUNTIME-OUTPUT"

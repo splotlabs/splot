@@ -30,6 +30,10 @@ pub static GAUSSIAN_SEQUENCE: [i32; 2048] = [56, 568, -180, 172, 124, -84, 172, 
 #[rustfmt::skip]
 pub static H_PARTITION_MIDSIZE: [i32; 29] = [29, 29, 29, 29, 1, 2, 3, 4, 5, 6, 7, 8, 9, 29, 29, 29, 29, 29, 29, 29, 29, 19, 20, 21, 22, 29, 29, 29, 29];
 
+/// `Max_Tx_Size_Rect[ BLOCK_SIZES ]` (AV2 § 9.2, generated from `docs/spec/av2/1.0.0/attachments/all_tables.h`).
+#[rustfmt::skip]
+pub static MAX_TX_SIZE_RECT: [i32; 29] = [0, 5, 6, 1, 7, 8, 2, 9, 10, 3, 11, 12, 4, 4, 4, 4, 4, 4, 4, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22];
+
 /// `Md_Idx_To_Type[EXT_TX_SIZES][INTRA_MODES][INTRA_TX_TYPES]` (AV2 § 9.2, generated from `docs/spec/av2/1.0.0/attachments/all_tables.h`).
 #[rustfmt::skip]
 pub static MD_IDX_TO_TYPE: [[[i32; 7]; 13]; 4] = [[[0, 3, 1, 2, 7, 8, 13], [0, 3, 1, 2, 7, 10, 12], [0, 3, 1, 2, 8, 11, 13], [0, 3, 1, 2, 6, 7, 8], [0, 3, 1, 2, 7, 8, 13], [0, 3, 1, 2, 7, 12, 14], [0, 3, 1, 2, 7, 8, 13], [0, 3, 1, 2, 8, 11, 13], [0, 3, 1, 2, 7, 10, 12], [0, 3, 1, 2, 6, 7, 8], [0, 3, 1, 2, 7, 8, 12], [0, 3, 1, 2, 7, 8, 13], [0, 3, 2, 10, 11, 12, 13]], [[0, 3, 1, 2, 4, 7, 8], [0, 3, 1, 2, 7, 6, 8], [0, 3, 1, 2, 8, 4, 7], [0, 3, 1, 2, 6, 7, 8], [0, 3, 1, 2, 5, 7, 8], [0, 3, 1, 2, 5, 7, 8], [0, 3, 1, 2, 4, 7, 8], [0, 3, 1, 2, 4, 8, 7], [0, 3, 1, 2, 5, 6, 7], [0, 3, 1, 2, 6, 7, 8], [0, 3, 1, 2, 4, 7, 8], [0, 3, 1, 2, 5, 7, 8], [0, 3, 1, 2, 10, 11, 13]], [[0, 3, 1, 2, 4, 7, 8], [0, 3, 1, 2, 5, 7, 8], [0, 3, 1, 2, 4, 8, 7], [0, 3, 1, 2, 4, 7, 8], [0, 3, 1, 2, 4, 7, 8], [0, 3, 1, 2, 5, 7, 8], [0, 3, 1, 2, 4, 7, 8], [0, 3, 1, 2, 4, 6, 8], [0, 3, 1, 2, 5, 7, 8], [0, 3, 1, 2, 4, 7, 8], [0, 3, 1, 2, 4, 7, 8], [0, 3, 1, 2, 5, 7, 8], [0, 3, 1, 2, 10, 11, 12]], [[0, 3, 1, 2, 4, 5, 6], [0, 3, 1, 2, 4, 5, 6], [0, 3, 1, 2, 4, 5, 6], [0, 3, 1, 2, 4, 5, 6], [0, 3, 1, 2, 4, 5, 6], [0, 3, 1, 2, 4, 5, 6], [0, 3, 1, 2, 4, 5, 6], [0, 3, 1, 2, 4, 5, 6], [0, 3, 1, 2, 4, 5, 6], [0, 3, 1, 2, 4, 5, 6], [0, 3, 1, 2, 4, 5, 6], [0, 3, 1, 2, 4, 5, 6], [0, 3, 1, 2, 4, 5, 6]]];
@@ -105,6 +109,14 @@ pub static SIZE_GROUP: [i32; 29] = [0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3, 3, 3, 3,
 /// `Size_To_Tx_Part_Group_Lookup[BLOCK_SIZES]` (AV2 § 9.2, generated from `docs/spec/av2/1.0.0/attachments/all_tables.h`).
 #[rustfmt::skip]
 pub static SIZE_TO_TX_PART_GROUP_LOOKUP: [i32; 29] = [0, 0, 0, 1, 2, 2, 3, 4, 4, 5, 6, 6, 7, 7, 7, 7, 7, 7, 7, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8];
+
+/// `Size_To_Tx_Type_Group_Vert_And_Horz[BLOCK_SIZES]` (AV2 § 9.2, generated from `docs/spec/av2/1.0.0/attachments/all_tables.h`).
+#[rustfmt::skip]
+pub static SIZE_TO_TX_TYPE_GROUP_VERT_AND_HORZ: [i32; 29] = [29, 29, 29, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 9, 9, 9, 9, 9, 9, 29, 29, 10, 11, 12, 13, 29, 29, 10, 11];
+
+/// `Size_To_Tx_Type_Group_Vert_Or_Horz[BLOCK_SIZES]` (AV2 § 9.2, generated from `docs/spec/av2/1.0.0/attachments/all_tables.h`).
+#[rustfmt::skip]
+pub static SIZE_TO_TX_TYPE_GROUP_VERT_OR_HORZ: [i32; 29] = [0, 0, 0, 29, 29, 29, 29, 29, 29, 29, 29, 29, 29, 29, 29, 29, 29, 29, 29, 1, 2, 29, 29, 29, 29, 1, 2, 29, 29];
 
 /// `Tx_Height[ TX_SIZES_ALL ]` (AV2 § 9.2, generated from `docs/spec/av2/1.0.0/attachments/all_tables.h`).
 #[rustfmt::skip]
