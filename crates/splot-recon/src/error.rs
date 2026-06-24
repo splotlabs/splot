@@ -637,6 +637,38 @@ pub enum ReconError {
         /// Supplied index.
         index: u8,
     },
+    /// Caller-resolved AV2 § 7.20.4 PC-Wiener classification bounds were
+    /// internally inconsistent.
+    PcWienerInvalidBounds {
+        /// Invalid field or derived range.
+        field: &'static str,
+    },
+    /// A source sample supplied to AV2 § 7.20.4 PC-Wiener classification exceeded
+    /// the active decoded bit-depth range.
+    PcWienerSourceSampleOutOfRange {
+        /// Source x coordinate requested by the classification feature.
+        x: isize,
+        /// Source y coordinate requested by the classification feature.
+        y: isize,
+        /// Observed source sample value.
+        value: u16,
+        /// Maximum sample value allowed by the active bit depth.
+        max: u16,
+    },
+    /// A caller-resolved AV2 § 7.20.4 `LrTxSkip` value was outside the boolean
+    /// domain.
+    PcWienerInvalidTxSkip {
+        /// Luma sample x coordinate after § 7.20.4 clipping.
+        x: usize,
+        /// Luma sample y coordinate after § 7.20.4 clipping.
+        y: usize,
+        /// Zero-based `LrTxSkip` row.
+        row: usize,
+        /// Zero-based `LrTxSkip` column.
+        col: usize,
+        /// Supplied value.
+        value: i32,
+    },
     /// Caller-resolved AV2 § 7.20.2 loop-restoration source-sample luma bounds
     /// were internally inconsistent.
     LoopRestorationSourceInvalidBounds {
@@ -1304,6 +1336,23 @@ impl fmt::Display for ReconError {
             Self::WienerNsFilterInvalidCflDsFilterIndex { index } => write!(
                 f,
                 "invalid Wiener NS chroma cfl_ds_filter_index {index}; expected 0..=3"
+            ),
+            Self::PcWienerInvalidBounds { field } => {
+                write!(f, "invalid PC-Wiener classification {field}")
+            }
+            Self::PcWienerSourceSampleOutOfRange { x, y, value, max } => write!(
+                f,
+                "PC-Wiener source sample at ({x}, {y}) has value {value}, exceeding active bit-depth max {max}"
+            ),
+            Self::PcWienerInvalidTxSkip {
+                x,
+                y,
+                row,
+                col,
+                value,
+            } => write!(
+                f,
+                "invalid PC-Wiener LrTxSkip value {value} at sample ({x}, {y}) grid ({row}, {col}); expected 0 or 1"
             ),
             Self::LoopRestorationSourceInvalidBounds { field } => {
                 write!(f, "invalid loop-restoration source-sample {field}")

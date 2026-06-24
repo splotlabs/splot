@@ -9,7 +9,9 @@
 //! dependency rule forbids `splot-recon` from depending on `splot-core`): the
 //! § 9.6 1D transform and § 9.7 secondary transform kernel tables (for the
 //! § 7.15 inverse transform) and the § 9.4 quantizer-matrix tables (for the
-//! § 7.14.4 dequantization). Every other § 9 table stays in `splot-core::tables`.
+//! § 7.14.4 dequantization), plus the § 9.8 loop-restoration tables needed by
+//! § 7.20.4 pixel-classified Wiener classification. Other § 9 tables stay in
+//! `splot-core::tables`.
 //!
 //! The tables are generated verbatim from the committed spec attachment by
 //! `cargo xtask gen-tables` (drift-checked in `cargo xtask ci`); this crate is
