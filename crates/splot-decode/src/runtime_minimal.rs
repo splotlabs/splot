@@ -36,8 +36,9 @@ use self::limits::{checked_add, decoded_frame_byte_budget};
 use self::wienerns_lr::ensure_wienerns_lr_unit_runtime_frontier;
 #[cfg(test)]
 use self::wienerns_lr::{
-    WIENER_NS_CHROMA_SOURCE_TAP_COUNT, WienerNsLrFilterClassValue, WienerNsLrSourceReadConfig,
-    WienerNsLrSourceReadFrontier, WienerNsLrSourceReadSample, WienerNsLrTxSkipLookup,
+    WIENER_NS_CHROMA_SOURCE_TAP_COUNT, WienerNsLrClassifiedWienerValueSourceSample,
+    WienerNsLrFilterClassValue, WienerNsLrSourceReadConfig, WienerNsLrSourceReadFrontier,
+    WienerNsLrSourceReadSample, WienerNsLrTxSkipLookup,
     derive_wienerns_lr_classified_wiener_frontier,
     derive_wienerns_lr_classified_wiener_values_frontier,
     derive_wienerns_lr_runtime_source_frontiers, derive_wienerns_lr_source_read_frontier,

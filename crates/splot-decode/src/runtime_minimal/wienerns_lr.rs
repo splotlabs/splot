@@ -8,8 +8,9 @@ use splot_core::headers::frame::{FrameHeaderCore, FrameRestorationType, LrPlaneP
 use splot_core::headers::sequence::{ChromaFormatIdc, SequenceHeader};
 use splot_core::span::ByteOffset;
 use splot_recon::{
-    BitDepth, LoopRestorationSource, LoopRestorationSourceBounds, PcWienerClassifyParams,
-    PcWienerTxSkipLookup, PlaneId, ReconSample, loop_restoration_source_sample, pc_wiener_classify,
+    BitDepth, LoopRestorationSource, LoopRestorationSourceBounds, LoopRestorationSourceSample,
+    PcWienerClassifyParams, PcWienerTxSkipLookup, PlaneId, ReconError, ReconSample,
+    Result as ReconResult, loop_restoration_source_sample, pc_wiener_classify,
 };
 
 use crate::error::{DecodeError, Result};
@@ -107,7 +108,11 @@ pub(super) struct WienerNsLrTxSkipLookup {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct WienerNsLrClassifiedWienerValuesFrontier {
     pub(super) blocks_resolved: usize,
+    pub(super) source_reads_resolved: usize,
+    pub(super) curr_frame_source_reads: usize,
+    pub(super) cdef_frame_source_reads: usize,
     pub(super) filter_classes_resolved: usize,
+    pub(super) first_sample: Option<WienerNsLrClassifiedWienerValueSourceSample>,
     pub(super) first_filter_class: Option<WienerNsLrFilterClassValue>,
 }
 
@@ -125,6 +130,20 @@ pub(super) struct WienerNsLrFilterClassValue {
     pub(super) row: usize,
     pub(super) col: usize,
     pub(super) class: u8,
+}
+
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "private classified-Wiener value frontier proof state waits for real runtime storage"
+    )
+)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct WienerNsLrClassifiedWienerValueSourceSample {
+    pub(super) input_x: isize,
+    pub(super) input_y: isize,
+    pub(super) sample: WienerNsLrSourceReadSample,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -464,16 +483,7 @@ fn derive_wienerns_lr_classified_wiener_frontier_after_preflight(
         .iter()
         .filter(|block| block.plane == PlaneId::Y.index())
     {
-        let bounds = LoopRestorationSourceBounds {
-            luma_start_x: block.luma_start_x,
-            luma_end_x: block.luma_end_x,
-            luma_start_y: block.luma_start_y,
-            luma_end_y: block.luma_end_y,
-            luma_stripe_start_y: block.luma_stripe_start_y,
-            luma_stripe_end_y: block.luma_stripe_end_y,
-            subsampling_x: 0,
-            subsampling_y: 0,
-        };
+        let bounds = wienerns_lr_classified_luma_source_bounds(block);
         let block_start_x = (block.x >> 6) << 6;
         let block_end_x = pc_wiener_block_end_x(block, block_start_x)?;
         let x = usize_to_source_coordinate(block.x, "pc wiener classified block x")?;
@@ -495,6 +505,21 @@ fn derive_wienerns_lr_classified_wiener_frontier_after_preflight(
     Ok(summary)
 }
 
+fn wienerns_lr_classified_luma_source_bounds(
+    block: &crate::tile_payload::WienerNsLrSourceBlock,
+) -> LoopRestorationSourceBounds {
+    LoopRestorationSourceBounds {
+        luma_start_x: block.luma_start_x,
+        luma_end_x: block.luma_end_x,
+        luma_start_y: block.luma_start_y,
+        luma_end_y: block.luma_end_y,
+        luma_stripe_start_y: block.luma_stripe_start_y,
+        luma_stripe_end_y: block.luma_stripe_end_y,
+        subsampling_x: 0,
+        subsampling_y: 0,
+    }
+}
+
 #[cfg_attr(
     not(test),
     allow(
@@ -507,27 +532,36 @@ pub(super) fn derive_wienerns_lr_classified_wiener_values_frontier<T, FS, FT>(
     planes: &[LrPlaneParams],
     bit_depth: BitDepth,
     base_q_idx: u32,
+    limits: DecodeLimits,
     mut source_sample: FS,
     mut tx_skip: FT,
 ) -> Result<Option<WienerNsLrClassifiedWienerValuesFrontier>>
 where
     T: ReconSample,
-    FS: FnMut(isize, isize) -> T,
+    FS: FnMut(WienerNsLrClassifiedWienerValueSourceSample) -> T,
     FT: FnMut(WienerNsLrTxSkipLookup) -> i32,
 {
-    if !wienerns_lr_uses_classified_luma(active_source_blocks, planes) {
+    let source_reads =
+        count_wienerns_lr_classified_wiener_source_reads(active_source_blocks, planes)?;
+    limits.ensure(DecodeLimitName::MaxLoopRestorationSourceReads, source_reads)?;
+    if source_reads == 0 {
         return Ok(None);
     }
 
     let mut summary = WienerNsLrClassifiedWienerValuesFrontier {
         blocks_resolved: 0,
+        source_reads_resolved: 0,
+        curr_frame_source_reads: 0,
+        cdef_frame_source_reads: 0,
         filter_classes_resolved: 0,
+        first_sample: None,
         first_filter_class: None,
     };
     for block in active_source_blocks
         .iter()
         .filter(|block| block.plane == PlaneId::Y.index())
     {
+        let bounds = wienerns_lr_classified_luma_source_bounds(block);
         let block_start_x = (block.x >> 6) << 6;
         let block_end_x = pc_wiener_block_end_x(block, block_start_x)?;
         let params = PcWienerClassifyParams {
@@ -545,13 +579,86 @@ where
             )?,
             tile_end_y: mi_to_luma_end(block.tile_mi_row_end, "pc wiener classified tile end y")?,
         };
-        let classification =
-            pc_wiener_classify::<T, _, _>(&params, &mut source_sample, |lookup| {
-                tx_skip(wienerns_lr_tx_skip_lookup_from_pc(lookup))
-            })?;
+        let classification = pc_wiener_classify::<T, _, _>(
+            &params,
+            |x, y| {
+                read_wienerns_lr_classified_wiener_value_source_sample(
+                    &mut summary,
+                    &mut source_sample,
+                    x,
+                    y,
+                    &bounds,
+                )
+            },
+            |lookup| tx_skip(wienerns_lr_tx_skip_lookup_from_pc(lookup)),
+        )?;
         record_wienerns_lr_filter_class(&mut summary, block, classification.class)?;
     }
     Ok(Some(summary))
+}
+
+fn read_wienerns_lr_classified_wiener_value_source_sample<T, FS>(
+    summary: &mut WienerNsLrClassifiedWienerValuesFrontier,
+    source_sample: &mut FS,
+    input_x: isize,
+    input_y: isize,
+    bounds: &LoopRestorationSourceBounds,
+) -> ReconResult<T>
+where
+    T: ReconSample,
+    FS: FnMut(WienerNsLrClassifiedWienerValueSourceSample) -> T,
+{
+    let sample = loop_restoration_source_sample(PlaneId::Y, input_x, input_y, bounds)?;
+    let read =
+        record_wienerns_lr_classified_wiener_value_source_read(summary, input_x, input_y, sample)?;
+    Ok(source_sample(read))
+}
+
+fn record_wienerns_lr_classified_wiener_value_source_read(
+    summary: &mut WienerNsLrClassifiedWienerValuesFrontier,
+    input_x: isize,
+    input_y: isize,
+    sample: LoopRestorationSourceSample,
+) -> ReconResult<WienerNsLrClassifiedWienerValueSourceSample> {
+    let read = WienerNsLrClassifiedWienerValueSourceSample {
+        input_x,
+        input_y,
+        sample: WienerNsLrSourceReadSample {
+            plane: PlaneId::Y,
+            x: sample.x,
+            y: sample.y,
+            source: sample.source,
+        },
+    };
+    if summary.first_sample.is_none() {
+        summary.first_sample = Some(read);
+    }
+    summary.source_reads_resolved =
+        summary
+            .source_reads_resolved
+            .checked_add(1)
+            .ok_or(ReconError::ArithmeticOverflow {
+                context: "pc wiener classified value source-read count",
+            })?;
+    match sample.source {
+        LoopRestorationSource::CurrFrame => {
+            summary.curr_frame_source_reads = summary
+                .curr_frame_source_reads
+                .checked_add(1)
+                .ok_or(ReconError::ArithmeticOverflow {
+                    context: "pc wiener classified value curr-frame source-read count",
+                })?;
+        }
+        LoopRestorationSource::CdefFrame => {
+            summary.cdef_frame_source_reads = summary
+                .cdef_frame_source_reads
+                .checked_add(1)
+                .ok_or(ReconError::ArithmeticOverflow {
+                    context: "pc wiener classified value cdef-frame source-read count",
+                })?;
+        }
+    }
+    Ok(read)
 }
 
 fn record_wienerns_lr_filter_class(

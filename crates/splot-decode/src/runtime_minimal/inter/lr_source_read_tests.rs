@@ -306,14 +306,19 @@ fn wienerns_lr_classified_wiener_values_frontier_derives_filter_class() {
     let planes = [lr_plane(true, Some(2), None)];
     let source_calls = Cell::new(0usize);
     let tx_skip_calls = Cell::new(0usize);
+    let first_source = Cell::new(None);
 
     let frontier = super::super::derive_wienerns_lr_classified_wiener_values_frontier::<u8, _, _>(
         &blocks,
         &planes,
         BitDepth::Eight,
         0,
-        |_, _| {
+        DecodeLimits::unlimited(),
+        |read| {
             source_calls.set(source_calls.get() + 1);
+            if first_source.get().is_none() {
+                first_source.set(Some(read));
+            }
             12
         },
         |_| {
@@ -325,7 +330,34 @@ fn wienerns_lr_classified_wiener_values_frontier_derives_filter_class() {
     .expect("classified luma is active");
 
     assert_eq!(frontier.blocks_resolved, 1);
+    assert_eq!(frontier.source_reads_resolved, 36 * 7);
+    assert_eq!(
+        frontier.curr_frame_source_reads + frontier.cdef_frame_source_reads,
+        frontier.source_reads_resolved
+    );
+    assert!(
+        frontier.curr_frame_source_reads > 0,
+        "boundary feature reads should select CurrFrame samples"
+    );
+    assert!(
+        frontier.cdef_frame_source_reads > 0,
+        "in-stripe feature reads should select CdefFrame samples"
+    );
     assert_eq!(frontier.filter_classes_resolved, 1);
+    assert_eq!(
+        first_source.get(),
+        Some(super::super::WienerNsLrClassifiedWienerValueSourceSample {
+            input_x: -1,
+            input_y: 5,
+            sample: super::super::WienerNsLrSourceReadSample {
+                plane: PlaneId::Y,
+                x: 0,
+                y: 6,
+                source: LoopRestorationSource::CurrFrame,
+            },
+        })
+    );
+    assert_eq!(frontier.first_sample, first_source.get());
     assert_eq!(
         frontier.first_filter_class,
         Some(super::super::WienerNsLrFilterClassValue {
@@ -341,6 +373,48 @@ fn wienerns_lr_classified_wiener_values_frontier_derives_filter_class() {
 }
 
 #[test]
+fn wienerns_lr_classified_wiener_values_frontier_preflights_limit_before_reads() {
+    let blocks = [wienerns_lr_source_block()];
+    let planes = [lr_plane(true, Some(2), None)];
+    let source_calls = Cell::new(0usize);
+    let tx_skip_calls = Cell::new(0usize);
+    let limits = DecodeLimits::unlimited()
+        .with_max_loop_restoration_source_reads(DecodeLimitThreshold::Max(0));
+
+    let error = super::super::derive_wienerns_lr_classified_wiener_values_frontier::<u8, _, _>(
+        &blocks,
+        &planes,
+        BitDepth::Eight,
+        0,
+        limits,
+        |_| {
+            source_calls.set(source_calls.get() + 1);
+            12
+        },
+        |_| {
+            tx_skip_calls.set(tx_skip_calls.get() + 1);
+            0
+        },
+    )
+    .unwrap_err();
+
+    match error {
+        DecodeError::Limit { source } => {
+            assert_eq!(
+                source.name(),
+                DecodeLimitName::MaxLoopRestorationSourceReads
+            );
+            let check = source.check().expect("limit failure carries check");
+            assert_eq!(check.threshold(), DecodeLimitThreshold::Max(0));
+            assert_eq!(check.actual(), 252);
+        }
+        _ => panic!("classified value reads must preflight source-read budget"),
+    }
+    assert_eq!(source_calls.get(), 0);
+    assert_eq!(tx_skip_calls.get(), 0);
+}
+
+#[test]
 fn wienerns_lr_classified_wiener_values_frontier_propagates_invalid_tx_skip() {
     let blocks = [wienerns_lr_source_block()];
     let planes = [lr_plane(true, Some(2), None)];
@@ -350,7 +424,8 @@ fn wienerns_lr_classified_wiener_values_frontier_propagates_invalid_tx_skip() {
         &planes,
         BitDepth::Eight,
         0,
-        |_, _| 12,
+        DecodeLimits::unlimited(),
+        |_| 12,
         |_| 2,
     )
     .unwrap_err();
