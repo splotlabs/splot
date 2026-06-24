@@ -284,15 +284,22 @@ fn local_ac0ej3_reaches_current_runtime_gate_without_output() {
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(json["rule_id"], "decode/unsupported-feature");
     assert_eq!(json["spec_section"], "7.20.4");
-    assert_eq!(json["matrix_row"], "ac0ej3-lr-runtime-storage-retention");
+    assert_eq!(json["matrix_row"], "ac0ej3-lr-live-storage-allocation");
     assert_eq!(
         json["feature_id"],
-        "DECODE-AC0EJ3-LR-RUNTIME-STORAGE-RETENTION"
+        "DECODE-AC0EJ3-LR-LIVE-STORAGE-ALLOCATION"
     );
     assert_eq!(json["detail_kind"], "unsupported_feature");
     assert_eq!(
         json["unsupported_reason"],
-        "unsupported_wienerns_lr_runtime_storage_unpopulated"
+        "unsupported_wienerns_lr_live_storage_unpopulated"
+    );
+    assert!(
+        json["message"]
+            .as_str()
+            .unwrap()
+            .contains("allocated private unpopulated CurrFrame"),
+        "diagnostic must describe unpopulated live storage shells"
     );
     assert_eq!(json["byte_offset"], 74);
     assert_ne!(
