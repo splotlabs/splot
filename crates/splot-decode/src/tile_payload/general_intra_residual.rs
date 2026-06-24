@@ -620,6 +620,8 @@ fn decode_staged_dctonly_nonzero_coeffs(
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct DctOnlyTransformToolResidualMetadata {
     intra_ist: Option<IntraIstSyntax>,
+    // TODO(spec: DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS): hand this
+    // syntax metadata to the next transform-record residual parser frontier.
     cctx_type: Option<usize>,
 }
 

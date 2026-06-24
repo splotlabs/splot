@@ -73,6 +73,8 @@ pub(in crate::runtime_minimal) struct WienerNsLrTxSkipTransformRecord {
     pub(in crate::runtime_minimal) cols: usize,
     pub(in crate::runtime_minimal) skip_flag: bool,
     pub(in crate::runtime_minimal) eob: usize,
+    // TODO(spec: DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS): feed retained
+    // IST syntax into the next transform-record residual parser frontier.
     pub(in crate::runtime_minimal) intra_ist: Option<IntraIstSyntax>,
 }
 
