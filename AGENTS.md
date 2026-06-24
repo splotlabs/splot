@@ -119,9 +119,7 @@ and zero-copy details live in [docs/agents/architecture.md](./docs/agents/archit
 - Create or update an OpenSpec change under `openspec/changes/` unless the work
   is trivial.
 - Commit subjects and pull request titles use Conventional Commits.
-- Ask before making algorithmic encoder choices, resolving ambiguous AV2 spec
-  interpretation, adding a third-party dependency, changing the dependency graph,
-  or changing legal/licensing terms.
+- Human sign-off triggers are listed in §10.
 
 Details: [docs/agents/workflow.md](./docs/agents/workflow.md).
 
@@ -188,3 +186,9 @@ Noncommercial 1.0.0, with narrow exceptions for generated assistant integrations
 and the quarantined AV2 spec mirror.
 
 Details: [docs/agents/licensing.md](./docs/agents/licensing.md).
+
+## 10. Human Sign-Off Triggers
+
+Ask before making algorithmic encoder choices, resolving ambiguous AV2 spec
+interpretation, adding a third-party dependency, changing the crate dependency
+graph, or changing legal/licensing terms.
