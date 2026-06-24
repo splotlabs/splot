@@ -137,14 +137,19 @@ pixel-classified Wiener boundary, and still fails closed before source sample
 value reads, loop-restoration filtering, reconstruction output, or successful
 ac0ej3 decode. The row SHALL also describe the non-classified source-read
 derivation that resolves §7.20.2 output/tap/chroma-luma coordinates.
+That derivation SHALL account for the parsed sequence `cfl_ds_filter_index`
+when recording 4:2:0 chroma luma-source reads and SHALL fail closed before
+source-read derivation for active unit-coded chroma Wiener filters whose
+per-unit coefficient masks are not retained.
 
 #### Scenario: Matrix evidence records the source-read boundary
 
 - **WHEN** decoder support status is validated
 - **THEN** `ac0ej3-lr-source-read-frontier` remains partial
 - **AND** the row lists focused tests proving source-read frontier behavior,
-  Wiener tap/luma-source coverage, source-read limit accounting, classified
-  Wiener ordering, and the live ac0ej3 runtime diagnostic
+  Wiener tap/luma-source coverage, `cfl_ds_filter_index` accounting,
+  unit-coded chroma fail-closed behavior, source-read limit accounting,
+  classified Wiener ordering, and the live ac0ej3 runtime diagnostic
 - **AND** the previous `unsupported_wienerns_lr_source_bounds` reason is no
   longer the live ac0ej3 frontier
 
@@ -4211,6 +4216,23 @@ wiring, dequantization, reconstruction, output, reference refresh, and broad
   regenerated
 - **THEN** the new row is included in the generated status and coverage
   documents with status `partial`
+
+### Requirement: ac0ej3 LR Classified Wiener Frontier Support Row
+
+The implementation matrix SHALL include
+`DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-FRONTIER` as a distinct ac0ej3 support row.
+The row SHALL describe the resolved §7.20.4 dependency frontier, the remaining
+value/filtering gap, and the live ac0ej3 runtime diagnostic.
+
+#### Scenario: Local ac0ej3 gate cites classified dependency frontier
+
+- **WHEN** the local ac0ej3 mission fixture reaches active luma Wiener NS LR with
+  more than one luma filter class
+- **THEN** the runtime diagnostic cites
+  `ac0ej3-lr-classified-wiener-frontier`
+- **AND** it uses feature id
+  `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-FRONTIER`
+- **AND** it remains an unsupported-feature diagnostic before output.
 
 ### Requirement: directional UV ordinary branch support row
 
