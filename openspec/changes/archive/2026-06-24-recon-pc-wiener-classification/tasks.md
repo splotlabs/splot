@@ -37,6 +37,6 @@
   decoder-support, decoder conformance coverage, and dependency-direction gates.
 - [x] 5.3 Re-run ac0ej3 hash decode to verify the frontier remains structured and
   honest until runtime value wiring exists.
-- [ ] 5.4 If all tasks complete and a PR is ready, sync/archive this OpenSpec
+- [x] 5.4 If all tasks complete and a PR is ready, sync/archive this OpenSpec
   change before merge, request Claude and Codex reviews, wait for both latest-head
   responses, and address actionable feedback before merging.
