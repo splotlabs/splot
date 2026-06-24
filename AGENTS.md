@@ -1,279 +1,190 @@
 # AGENTS.md
 
-Canonical instructions for humans and coding agents working in this repository.
-`CLAUDE.md` and `.github/copilot-instructions.md` point here; keep this file the
-single source of truth.
+Canonical entry point for humans and coding agents working in this repository.
+`CLAUDE.md` and `.github/copilot-instructions.md` point here; keep this file as
+the high-level source of truth and put workflow detail in `docs/agents/`.
 
-## 1. Project overview
+Start with [docs/agents/README.md](./docs/agents/README.md) when you need more
+than the rules below.
+
+## 0. Unconditional Agent Behavior
+
+Read and execute these rules before any task-specific workflow.
+
+1. Ask, do not assume. If interaction is available and ambiguity materially
+   changes intent, architecture, or requirements, ask before writing code. When
+   running unattended or when the ambiguity is non-blocking, pick the most
+   reasonable interpretation, proceed, and record the assumption.
+2. Fit the solution to the problem. Use the simplest solution for simple
+   problems and better designs only when the problem justifies them. Do not add
+   flexibility that is not needed yet.
+3. Keep the diff scoped. Do not touch unrelated code. If you discover bad code
+   or design smells outside the task, surface them separately instead of fixing
+   them opportunistically.
+4. Flag uncertainty explicitly. If a small, local, low-risk experiment would
+   clarify the issue, run it and bring the hypothesis and result back for
+   discussion. Do not present confidence as certainty.
+5. Suggest better paths when they matter. Prefer a durable improvement over a
+   tactical patch when the long-term impact is clearly better, and explain the
+   tradeoff.
+
+Work like a lazy senior developer: efficient, not careless. The best code is the
+code never written. After understanding the task and tracing the real flow end to
+end, stop at the first rung that holds:
+
+1. Does this need to be built at all?
+2. Does it already exist in this codebase?
+3. Does the standard library already do this?
+4. Does a native platform feature cover it?
+5. Does an already-installed dependency solve it?
+6. Can this be one line?
+7. Only then, write the minimum code that works.
+
+Lazy rules:
+
+- No abstractions that were not explicitly requested.
+- No new dependency if it can be avoided.
+- No boilerplate nobody asked for.
+- Prefer deletion over addition, boring over clever, and the fewest files
+  possible.
+- The shortest working diff wins only after the real problem is understood; the
+  smallest change in the wrong place is a second bug.
+- Question complex requests: ask whether the smaller alternative covers the real
+  need.
+- When two standard approaches are the same size, choose the edge-case-correct
+  one.
+- Mark intentional simplifications with a comment when the shortcut has a known
+  ceiling, such as a global lock, O(n²) scan, or naive heuristic. Name the
+  ceiling and the upgrade path.
+
+Bug fixes target root cause, not symptoms. For a touched function, inspect its
+callers and fix the shared function once when that is the smaller, correct
+change. Do not patch only the reported path while leaving sibling callers broken.
+
+Do not be lazy about understanding the problem, trust-boundary input validation,
+error handling that prevents data loss, security, accessibility, real-hardware
+calibration, or anything explicitly requested. Non-trivial logic needs one
+runnable check that would fail if the logic breaks; trivial one-liners do not.
+
+## 1. Project Overview
 
 `splot` is a Rust toolkit for the **AV2** video codec. It is **validator-first**:
-the first useful milestone is a safe AV2 bitstream validator and inspector. It is a
-solo-developer, source-available project optimized for maintainability, clear
-boundaries, and automation. Toolchain: Rust **1.96.0**, edition **2024**, resolver
-**3**.
+the first useful milestone is a safe AV2 bitstream validator and inspector. It is
+a solo-developer, source-available project optimized for maintainability, clear
+boundaries, and automation.
 
-## 1a. Encoder reference gate
+Toolchain: Rust **1.96.0**, edition **2024**, resolver **3**.
 
-Before changing `crates/splot-encode`, encoder-facing `splot-core` syntax/parsing code, or any
-encoder research documentation, read:
-
-1. `docs/references/ENCODER-RESEARCH-NOTES.md`
-2. `docs/references/THIRD-PARTY-NOTICES.md`
-3. `docs/references/RAV1E-SOURCE-MAP.md` when using Rust API, RDO, tiling, fuzzing, profiling, or
-   safe data-structure ideas from rav1e
-4. `docs/references/SVT-AV1-RESEARCH-MAPPING.md` when using production pipeline, mode-decision,
-   motion-estimation, rate-control, filter-search, threading, or SIMD ideas from SVT-AV1
-
-rav1e and SVT-AV1 are engineering inspiration only. Do not copy AV1 syntax, source code, tables,
-constants, entropy CDFs, comments, or prose. AV2 behavior must be derived from the AV2 specification
-and AVM. If a feature touches syntax, reconstruction, reference state, or layer behavior, find or create
-its row in `docs/IMPLEMENTATION-MATRIX.toml` before implementation (see the Feature tracking
-section); `docs/SPEC-MAPPING.md` holds the spec sources and rules, not per-feature status.
-
-## 2. Repository map and dependency direction
+## 2. Repository Boundaries
 
 ```text
 crates/splot-core      AV2 bitstream model + parsers (no other splot-* dependency)
 crates/splot-parallel  approved concurrency primitives (Rayon pool + bounded crossbeam queues); no other splot-* dependency
 crates/splot-tables    dependency-free generated AV2 § 9 spec tables shared across crates (no other splot-* dependency)
-crates/splot-recon     reconstruction primitives -> splot-tables (shared § 9 transform kernels + quantizer matrix)
-crates/splot-decode    decoder diagnostic API + stream planning + minimal hash/Y4M runtime -> splot-core, splot-parallel, splot-recon
-crates/splot-validate  parser-driven conformance diagnostics  -> splot-core
+crates/splot-recon     reconstruction primitives -> splot-tables
+crates/splot-decode    decoder diagnostics + planning + minimal hash/Y4M runtime -> splot-core, splot-parallel, splot-recon
+crates/splot-validate  parser-driven conformance diagnostics -> splot-core
 crates/splot-encode    future encoder API + borrowed input views -> splot-core, splot-parallel, splot-recon, splot-tables
 crates/splot-cli       thin `splot` binary -> splot-core, splot-parallel, splot-decode, splot-validate, splot-encode
-xtask                  standalone automation (no splot-* dependency)
-fuzz                   cargo-fuzz target (outside the workspace)
+xtask                  standalone automation
+fuzz                   cargo-fuzz target outside the workspace
 ```
 
-**Hard rule (one-way dependencies):**
+Hard dependency rules:
 
-- `splot-core` depends on no other `splot-*` crate.
-- `splot-parallel` depends on no other `splot-*` crate.
-- `splot-tables` depends on no other `splot-*` crate (and no external crate); it
-  holds only generated AV2 § 9 spec tables and may be depended on by any crate.
-- `splot-recon` depends only on `splot-tables` (the shared § 9 transform kernels
-  and quantizer matrix).
+- `splot-core`, `splot-parallel`, and `splot-tables` depend on no other
+  `splot-*` crate.
+- `splot-tables` has no external crate dependencies.
+- `splot-recon` depends only on `splot-tables`.
 - `splot-decode` depends only on `splot-core`, `splot-parallel`, and
-  `splot-recon`; the `splot-recon` edge is limited to runtime
-  decode/reconstruction/hash/Y4M output handoff code.
+  `splot-recon`.
 - `splot-validate` depends only on `splot-core`.
 - `splot-encode` depends only on `splot-core`, `splot-parallel`, `splot-recon`,
-  and `splot-tables` (the dependency-free § 9 tables crate any crate may depend
-  on; the encoder forward transform consumes its generated § 9 kernels directly,
-  not through `splot-recon`). The `splot-recon` edge is limited to borrowed
-  encoder input views plus private lower-level reconstruction-boundary
-  preparation until later encoder phases add closed-loop reconstruction APIs.
+  and `splot-tables`.
 - `splot-cli` depends only on `splot-core`, `splot-parallel`, `splot-decode`,
   `splot-validate`, and `splot-encode`.
 - Nothing depends on `splot-cli`.
 - Nothing depends on `splot-encode` except `splot-cli`.
 - `xtask` is standalone.
 
-This is enforced by `cargo xtask check-dependency-direction`.
-`cargo xtask check-concurrency-policy` additionally enforces the
-Rayon/`crossbeam-channel` concurrency-primitives policy: only `splot-parallel`
-may depend on those two crates (`docs/CONCURRENCY.md`). Crate responsibilities,
-the error model, and the unsafe/SIMD policy are expanded in
-[docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md); the review checklist is
-[docs/CODE_REVIEW.md](./docs/CODE_REVIEW.md).
+These rules are enforced by `cargo xtask check-dependency-direction`; concurrency
+and zero-copy details live in [docs/agents/architecture.md](./docs/agents/architecture.md).
 
-## 3. Before editing
+## 3. Operating Rules
 
-- Run `git status --short`.
-- Inspect the files you are about to change.
-- Preserve existing user work; never discard uncommitted changes.
+- Before editing, run `git status --short`, inspect the files you will change,
+  and preserve existing user work.
+- Every non-trivial change uses a stable Feature ID from
+  `docs/IMPLEMENTATION-MATRIX.toml`.
+- Create or update an OpenSpec change under `openspec/changes/` unless the work
+  is trivial.
+- Commit subjects and pull request titles use Conventional Commits.
+- Ask before making algorithmic encoder choices, resolving ambiguous AV2 spec
+  interpretation, adding a third-party dependency, changing the dependency graph,
+  or changing legal/licensing terms.
 
-## 4. Commands
+Details: [docs/agents/workflow.md](./docs/agents/workflow.md).
 
-```bash
-cargo xtask ci          # the acceptance gate: fmt + clippy + build + test + doctests
-                        # + typos + machete + deny + repo checks (external tools run-if-present)
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-cargo build --workspace --all-targets --locked
-cargo test --workspace --all-targets --locked
-cargo test --doc --workspace --locked      # doctests (not covered by --all-targets)
-RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked   # rustdoc gate (warnings denied)
-typos                                       # spell-check (config: _typos.toml)
-cargo machete --with-metadata               # unused-dependency check
-cargo deny check bans licenses sources      # offline supply-chain policy
-openspec validate --all --no-interactive    # OpenSpec specs + active changes (optional tool, run-if-present)
-cargo xtask audit                           # networked supply-chain advisories (cargo-deny)
-cargo xtask coverage                        # local HTML coverage report (cargo-llvm-cov)
-cargo xtask fuzz [--time <secs>]            # local fuzz smoke over every target (nightly + cargo-fuzz), default 30s each
-cargo xtask check-concurrency-policy        # enforce the concurrency-runtime policy (also part of `cargo xtask ci`)
-cargo xtask check-fixtures                  # verify tests/fixtures hashes + metadata vs MANIFEST.toml (also part of `cargo xtask ci`; see docs/FIXTURES.md)
-cargo xtask check-conventional-commits      # validates the current HEAD commit subject
-cargo +nightly fuzz run parse_obu   # full local fuzz run of one target (nightly-only; `cargo install cargo-fuzz --locked`).
-                                    # Targets: parse_obu, validate_bytes, parse_ivf, parse_bitstream, symbol_decoder_bytes, symbol_encoder_bytes, tile_payload_decode_bytes, decode_plan_bytes, decode_runtime_hash_bytes, decode_runtime_y4m_bytes, decode_runtime_raw_bytes, recon_frame_hash_bytes, recon_frame_plane_types_bytes, recon_reference_frame_store_bytes, recon_y4m_output_bytes, recon_intra_prediction_bytes, encoder_frame_input_views_bytes, encoder_context_state_machine_bytes, roundtrip_obu_bytes (`cargo +nightly fuzz list`).
-                                    # CI also runs a blocking per-target smoke (~45s each) over every target on every PR.
-```
+## 4. Acceptance Commands
 
-The external-tool checks (`typos`, `cargo-machete`, `cargo-deny`, `cargo-llvm-cov`,
-`cargo-fuzz`) are **external binaries, not cargo dependencies**. CI installs them so
-they always gate; locally `cargo xtask ci` runs each one if present and otherwise
-prints an install hint and continues.
+Use `cargo xtask ci` as the acceptance gate. It runs formatting, clippy, build,
+tests, doctests, rustdoc, run-if-present external checks, and repository gates.
 
-## 5. Coding conventions
+Common focused commands are listed in
+[docs/agents/commands.md](./docs/agents/commands.md).
 
-- **Library-first, thin CLI:** `splot-cli` only parses args, sets up logging,
-  reads/writes files, and calls library APIs. All logic lives in libraries.
-- **Errors:** libraries use typed errors with `thiserror`; `anyhow` is allowed only
-  in `splot-cli` and `xtask`.
-- **No runtime panics in libraries:** no `unwrap`, `expect`, `panic!`, `todo!`, or
-  `unimplemented!` reachable in library code. Stubs return
-  `Error::Unimplemented { feature }` or a structured `Diagnostic`.
-- **Strong types:** use newtypes/enums (`ObuType`, `TemporalLayerId`, `ByteOffset`,
-  …) at public boundaries, not bare integers.
-- **Public docs:** every public item has a doc comment; every crate has `//!` docs.
-- **SPDX headers:** every `.rs` file starts with the two-line SPDX header (enforced
-  by `cargo xtask check-license-headers`):
+## 5. Coding Standards
 
-  ```rust
-  // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
-  // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
-  ```
+- Library-first, thin CLI: codec and validation logic live in libraries.
+- Libraries use typed errors with `thiserror`; `anyhow` is allowed only in
+  `splot-cli` and `xtask`.
+- No runtime panics in libraries: no reachable `unwrap`, `expect`, `panic!`,
+  `todo!`, or `unimplemented!`.
+- Use strong types at public boundaries, not bare integers.
+- Every public item has a doc comment; every crate has `//!` docs.
+- Every `.rs` file starts with the required PolyForm SPDX header.
+- Rust source files should stay at or below 1000 physical lines; the hard cap is
+  2500 lines unless `xtask/src/source_lines.rs` documents an allowance.
+- `unsafe_code = "forbid"` across the workspace.
 
-- **Source file size budget:** Rust source files should stay at or below **1000
-  physical lines**. `cargo xtask check-source-lines` prints advisory warnings
-  above that soft limit and fails above the **2500-line hard cap** unless the file
-  has a documented temporary allowance in `xtask/src/source_lines.rs`. Split large
-  files by responsibility before adding new code; do not grow an allowlisted file
-  past its recorded cap without deliberately updating the allowance and rationale.
-- **Unsafe:** forbidden in the workspace (`unsafe_code = "forbid"`). Future SIMD/FFI
-  must live behind narrowly-scoped, documented, tested modules.
+Details: [docs/agents/coding-standards.md](./docs/agents/coding-standards.md).
 
-## 5.1 Commit messages
+## 6. AV2 Spec and Diagnostics
 
-Use Conventional Commits for every commit subject and pull request title:
+- Never invent AV2 syntax, constants, tables, or semantics.
+- Ground AV2 claims in the committed spec mirror under `docs/spec/av2/1.0.0/`.
+- Cite AV2 sections as `§ N.M` plus the mirror path.
+- The AV2 OBU header is § 5.2.2. Do not use AV1 OBU fields or tables.
+- Treat AVM as the differential-testing oracle.
+- Validator findings are structured data with stable `rule_id`, `severity`,
+  optional `spec_section`, optional offset, and `message`.
 
-```text
-<type>[optional scope][!]: <description>
-```
+Details: [docs/agents/av2-spec-and-diagnostics.md](./docs/agents/av2-spec-and-diagnostics.md).
 
-Allowed types are `build`, `chore`, `ci`, `docs`, `feat`, `fix`, `perf`,
-`refactor`, `revert`, `style`, and `test`. CI enforces this with
-`cargo xtask check-conventional-title` and `cargo xtask check-conventional-commits`
-(tracked as `XTASK-CONVENTIONAL-COMMITS`).
-Use squash or rebase merges only; generated GitHub merge commits are not
-Conventional Commits subjects.
-One exemption: a git-generated sync merge on a feature branch (a
-multi-parent commit whose subject starts with `Merge `) is skipped by
-`check-conventional-commits` — never force-push a pushed branch to sync it
-with `main`; merge `main` in instead. The squash merge to `main` drops the
-merge commit, so it never reaches the default branch.
+## 7. Encoder Reference Gate
 
-## 6. AV2 spec honesty
+Before changing `crates/splot-encode`, encoder-facing `splot-core`
+syntax/parsing code, or encoder research documentation, read the encoder
+reference gate in [docs/agents/encoder-reference-gate.md](./docs/agents/encoder-reference-gate.md).
 
-- **Never invent** AV2 syntax, constants, table contents, or semantics. If a detail
-  is not modeled, add `// TODO(spec: <FEATURE-ID>): <topic>` referencing the matrix
-  id (see the Feature tracking section); `cargo xtask check-feature-status` rejects
-  a bare or unknown spec TODO.
-- Cite the spec section in the doc comment or code comment for each syntax element.
-- The AV2 OBU header is from **§ 5.2.2**, not AV1. There is no AV1 OBU type table.
-- Treat **AVM** (<https://github.com/AOMediaCodec/avm>) as the differential-testing
-  oracle.
-- **The committed spec mirror is the single source of truth.** A faithful,
-  versioned copy of the spec lives at
-  [`docs/spec/av2/1.0.0/`](./docs/spec/av2/1.0.0/) (generated by
-  `scripts/spec/regenerate-av2-spec.sh`). Ground every AV2 syntax/semantics claim
-  in it — do not rely on memory or paraphrase. Find any section via
-  [`docs/spec/av2/1.0.0/index.md`](./docs/spec/av2/1.0.0/index.md) and cite it as
-  `§ N.M` plus the mirror path, e.g.
-  `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-16`. The PDF remains normative;
-  the mirror is a byte-faithful navigation/citation aid (verbatim spec text inside
-  fences). Treat the mirror as read-only third-party material — never hand-edit it
-  (the `cargo xtask check-spec-mirror` gate fails on drift); regenerate instead.
-- Normative reference: AV2 v1.0.0, <https://av2.aomedia.org/v1.0.0/index.html>.
-  See [docs/SPEC-MAPPING.md](./docs/SPEC-MAPPING.md).
+rav1e and SVT-AV1 are engineering inspiration only. AV2 behavior must come from
+the AV2 specification and AVM.
 
-## 7. Validator principle
+## 8. Testing and Audits
 
-Diagnostics are the product. Every finding is structured data: stable `rule_id`,
-`severity`, optional `spec_section`, optional byte/bit offset, and a human-readable
-`message`. The validator never "just logs".
+Testing priority is parser unit tests, property/fuzz no-panic coverage,
+`inspect` snapshots, conformance vectors, then AVM differential testing. Parser
+changes need positive, negative, and EOF cases.
 
-## 8. Testing expectations
+Audit procedures are intentionally not expanded here. Use the repo-local audit
+skills named in [docs/agents/audits.md](./docs/agents/audits.md).
 
-In priority order: parser unit tests (LEB128, OBU header, Annex B) → property/fuzz
-tests (parsers never panic) → `inspect` snapshots → conformance vectors → AVM
-differential testing. See [docs/TESTING.md](./docs/TESTING.md). Add positive,
-negative, and EOF cases for every parser change.
-
-## 8a. Audit protocols
-
-Use repo-local audit skills instead of expanding this file with full audit
-procedures:
-
-- Documentation/guidance audits: `.codex/skills/splot-doc-audit/SKILL.md` or
-  `.claude/skills/splot-doc-audit/SKILL.md` (`DOC-AUDIT-PROTOCOLS`).
-- Heavy AV2 conformance audits: `.codex/skills/splot-av2-conformance-audit/SKILL.md`
-  or `.claude/skills/splot-av2-conformance-audit/SKILL.md` (`XTASK-AUDIT-SCOPE`,
-  `DOC-AUDIT-PROTOCOLS`).
-
-Heavy audits must start from `cargo xtask audit-scope --format json` so changed
-files, force-wide triggers, future workspace members, and audit ledger state are
-selected deterministically. Do not rely on `.agents/skills/` as the only project
-skill location; mirror or generate into the agent-specific project skill paths
-above.
-
-## Feature tracking
-
-Every non-trivial change must use a stable Feature ID.
-
-The canonical status file is:
-
-```text
-docs/IMPLEMENTATION-MATRIX.toml
-```
-
-Before implementing a feature:
-
-1. Find or create a matrix row.
-2. Find or create an OpenSpec change under `openspec/changes/` unless the work is trivial.
-3. Use the Feature ID in code comments, diagnostics, tests, and PR text.
-4. Add `TODO(spec: FEATURE-ID): ...` for any intentionally unmapped AV2 detail.
-
-Before finishing:
-
-```bash
-cargo xtask feature-status
-cargo xtask check-feature-status
-cargo xtask ci
-```
-
-Do not mark a stage `done` unless tests/proof are recorded in the matrix. The
-schema, status model, and ID convention live in
-[docs/FEATURE-TRACKING.md](./docs/FEATURE-TRACKING.md) and
-[docs/IMPLEMENTATION-MATRIX.schema.md](./docs/IMPLEMENTATION-MATRIX.schema.md).
+Details: [docs/agents/testing.md](./docs/agents/testing.md).
 
 ## 9. Licensing
 
-`splot` project code, documentation, tests, fixtures, and automation are
-**PolyForm Noncommercial 1.0.0**. Commercial use requires a separate license.
+Project code, documentation, tests, fixtures, and automation are PolyForm
+Noncommercial 1.0.0, with narrow exceptions for generated assistant integrations
+and the quarantined AV2 spec mirror.
 
-Narrow exception (assistant integrations): OpenSpec-generated assistant
-integration files under `.claude/commands/opsx/`, `.claude/skills/openspec-*`,
-`.codex/skills/openspec-*`, `.github/prompts/opsx-*`, and
-`.github/skills/openspec-*` are **MIT** as generated by OpenSpec. Keep this
-material isolated to those paths, preserve generated license metadata when
-present, and do not copy it into `splot` source or original docs.
-
-Narrow exception (AV2 specification mirror): the committed spec mirror under
-`docs/spec/av2/<version>/` is verbatim **AOMedia copyright** material (© Alliance
-for Open Media), **not** PolyForm. It is a maintainer-approved, attributed,
-quarantined copy recorded in
-[`docs/references/THIRD-PARTY-NOTICES.md`](./docs/references/THIRD-PARTY-NOTICES.md).
-Keep it isolated to that path, do not add the PolyForm SPDX header to its files,
-and do not copy its text into `splot` source or original docs (cite it instead).
-
-Do not introduce any other mixed-license material without explicit maintainer
-approval and an update to `docs/references/THIRD-PARTY-NOTICES.md`.
-
-## 10. When to ask the human
-
-- Algorithmic encoder choices.
-- Ambiguous spec interpretation.
-- Adding a new third-party dependency.
-- Any change to the crate dependency graph.
-- Any legal/licensing change.
+Details: [docs/agents/licensing.md](./docs/agents/licensing.md).

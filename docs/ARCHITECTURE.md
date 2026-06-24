@@ -9,7 +9,7 @@ canonical for the rules summarized here.
 ```text
 splot-cli ───────┬──> splot-validate ───> splot-core
                  ├──> splot-decode   ───> splot-core, splot-parallel, splot-recon
-                 ├──> splot-encode   ───> splot-core, splot-parallel, splot-recon
+                 ├──> splot-encode   ───> splot-core, splot-parallel, splot-recon, splot-tables
                  ├──> splot-parallel
                  └──> splot-core
 
@@ -39,10 +39,10 @@ by `cargo xtask check-dependency-direction`):
   `splot-recon`; the `splot-recon` edge is limited to runtime
   decode/reconstruction/hash/Y4M output handoff code.
 - `splot-validate` depends only on `splot-core`.
-- `splot-encode` depends only on `splot-core`, `splot-parallel`, and
-  `splot-recon`; the `splot-recon` edge is limited to borrowed encoder input
-  views plus private lower-level reconstruction-boundary preparation until later
-  encoder phases add closed-loop reconstruction APIs.
+- `splot-encode` depends only on `splot-core`, `splot-parallel`, `splot-recon`,
+  and `splot-tables`; the `splot-recon` edge is limited to borrowed encoder
+  input views plus private lower-level reconstruction-boundary preparation until
+  later encoder phases add closed-loop reconstruction APIs.
 - `splot-cli` depends only on `splot-core`, `splot-decode`, `splot-parallel`,
   `splot-validate`, and `splot-encode`.
 - Nothing depends on `splot-cli`.
