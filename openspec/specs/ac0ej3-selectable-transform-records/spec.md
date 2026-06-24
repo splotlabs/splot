@@ -65,16 +65,18 @@ observed prelude and chroma-offset safety subcase has been consumed.
 The decoder SHALL track `DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS` as the
 owner of the bounded luma-only narrow selectable-record handoff. When the local
 ac0ej3 Wiener NS LR path reaches a supported luma-only narrow selectable leaf,
-the runtime SHALL retain the leaf's actual 4x4-grid extent as a
-`SelectableLumaTxRecord`, SHALL avoid fabricating broader max-rectangle
-transform cells outside that leaf, and SHALL remain fail-closed before decoded
-sample population or loop-restoration output.
+the runtime SHALL consume AV2 §5.20.6.3 partition syntax and, when applying the
+consumed partition would produce empty geometry, SHALL retain the leaf's actual
+4x4-grid extent as a `SelectableLumaTxRecord`. It SHALL avoid fabricating
+broader max-rectangle transform cells outside that leaf and SHALL remain
+fail-closed before decoded sample population or loop-restoration output.
 
-#### Scenario: Narrow luma leaf bypasses impossible empty transform partition
+#### Scenario: Narrow luma leaf falls back after empty partition geometry
 
 - **WHEN** the local ac0ej3 mission stream reaches a luma-only narrow selectable
   transform leaf
-- **AND** max-rectangle transform partitioning would derive a zero-width or
+- **AND** the runtime consumes the required transform-partition syntax
+- **AND** applying the consumed partition would derive a zero-width or
   zero-height subrecord for that leaf
 - **THEN** the runtime records the actual luma leaf extent instead
 - **AND** it advances past
@@ -93,7 +95,7 @@ sample population or loop-restoration output.
 #### Scenario: General zero geometry remains invalid
 
 - **WHEN** selectable transform partitioning outside the supported luma-only
-  narrow bypass derives a zero-width or zero-height transform record
+  narrow fallback derives a zero-width or zero-height transform record
 - **THEN** the runtime rejects the path with a structured unsupported-feature
   diagnostic
 - **AND** it does not populate fabricated transform cells or partial `LrTxSkip`

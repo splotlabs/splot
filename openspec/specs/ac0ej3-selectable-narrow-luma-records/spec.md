@@ -14,11 +14,13 @@ partial runtime prerequisite for the ac0ej3 Wiener NS LR path. When the local
 stream's selectable transform-record handoff reaches a supported luma-only SDP
 or narrow selectable leaf with valid nonzero luma dimensions, including the
 observed `BLOCK_8X32` and luma-only chroma-offset `BLOCK_4X32` cases, the
-runtime SHALL record the leaf's actual 4x4-grid extent and consume §5.20.7.27
-luma coefficient syntax needed to derive `LrTxSkip`, without requiring chroma
-syntax for that leaf. For this bounded actual-extent subset, the runtime SHALL
-not fabricate max-rectangle transform cells outside the leaf. The runtime SHALL
-remain fail-closed before decoded sample population or output.
+runtime SHALL consume AV2 §5.20.6.3 partition syntax and record the leaf's
+actual 4x4-grid extent when applying the consumed partition would produce empty
+geometry. It SHALL consume §5.20.7.27 luma coefficient syntax needed to derive
+`LrTxSkip`, without requiring chroma syntax for that leaf. For this bounded
+actual-extent subset, the runtime SHALL not fabricate max-rectangle transform
+cells outside the leaf. The runtime SHALL remain fail-closed before decoded
+sample population or output.
 
 #### Scenario: Luma-only narrow leaves advance the live frontier
 
@@ -38,8 +40,10 @@ The decoder SHALL keep
 `DECODE-AC0EJ3-SELECTABLE-NARROW-LUMA-RECORDS` as the prerequisite row for
 admitting luma-only narrow selectable leaves in the local ac0ej3 Wiener NS LR
 path. For the admitted narrow luma subset, transform-record derivation SHALL
-record the actual luma leaf width and height in 4x4 units and SHALL preserve the
-existing fail-closed guard for chroma-bearing narrow leaves.
+consume partition syntax and SHALL record the actual luma leaf width and height
+in 4x4 units only when applying the consumed partition would produce empty
+geometry. It SHALL preserve the existing fail-closed guard for chroma-bearing
+narrow leaves and SHALL not admit unobserved transposed narrow shapes.
 
 #### Scenario: Observed 8x32 luma-only leaf is retained
 
@@ -61,7 +65,7 @@ existing fail-closed guard for chroma-bearing narrow leaves.
   residual syntax
 - **THEN** the runtime rejects the path with a structured unsupported-feature
   diagnostic
-- **AND** it does not reuse the luma-only bypass for chroma coordinates
+- **AND** it does not reuse the luma-only fallback for chroma coordinates
 
 #### Scenario: Chroma claims remain excluded
 

@@ -1,10 +1,10 @@
 ## 1. Runtime Handoff
 
-- [x] 1.1 Add a narrow-luma selectable-record path that records the actual leaf
-  extent before max-rectangle partition parsing and admits luma-only
-  chroma-offset leaves.
+- [x] 1.1 Add a narrow-luma selectable-record path that consumes partition
+  syntax, records the actual leaf extent when consumed partition geometry is
+  empty, and admits luma-only chroma-offset leaves.
 - [x] 1.2 Preserve zero-width/zero-height transform-record rejection outside the
-  supported luma-only narrow bypass.
+  supported luma-only narrow fallback.
 - [x] 1.3 Retain skipped luma residuals with `skip_flag = true` and `eob = 0`
   when `all_zero` is decoded.
 

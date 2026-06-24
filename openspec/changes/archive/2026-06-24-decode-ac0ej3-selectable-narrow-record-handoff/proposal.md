@@ -2,8 +2,8 @@
 
 The local ac0ej3 stream now reaches a luma-only `BLOCK_8X32` selectable
 transform leaf whose max-rectangle `TX_8X32` partition path can collapse into a
-zero-width `VERT5` subrecord. That is a parsing dead end for the LR tx-skip
-handoff even though the supported luma-only narrow leaf already has an
+zero-width `VERT5` subrecord. That is a representation dead end for the LR
+tx-skip handoff even though the supported luma-only narrow leaf already has an
 unambiguous actual 8x32 extent. Once that leaf is retained, the stream also
 reaches a luma-only chroma-offset `BLOCK_4X32` leaf that can be handled with the
 same actual-extent luma record path without deriving chroma residual
@@ -13,8 +13,9 @@ coordinates.
 
 - Track `DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS` as the Feature ID for this
   bounded selectable-record handoff.
-- Retain supported luma-only narrow selectable leaves using their actual leaf
-  extents instead of attempting impossible max-rectangle partition subrecords.
+- Consume transform-partition syntax for supported luma-only narrow selectable
+  leaves, then retain their actual leaf extents when applying the consumed
+  partition would create impossible max-rectangle subrecords.
 - Admit luma-only chroma-offset narrow leaves while continuing to reject
   chroma-bearing offset leaves before chroma residual coordinate handoff.
 - Preserve skipped luma residual records as `skip_flag = true, eob = 0` so live
@@ -35,8 +36,9 @@ coordinates.
 
 ### Modified Capabilities
 
-- `ac0ej3-selectable-transform-records`: selectable record derivation admits the
-  observed luma-only narrow extent without fabricating broader transform cells.
+- `ac0ej3-selectable-transform-records`: selectable record derivation consumes
+  partition syntax and admits the observed luma-only narrow extent without
+  fabricating broader transform cells.
 - `ac0ej3-selectable-narrow-luma-records`: the narrow luma leaf handoff records
   actual 4x4-grid extents and preserves fail-closed behavior for chroma-bearing
   narrow and chroma-offset leaves.
