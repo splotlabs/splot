@@ -284,22 +284,22 @@ fn local_ac0ej3_reaches_current_runtime_gate_without_output() {
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(json["rule_id"], "decode/unsupported-feature");
     assert_eq!(json["spec_section"], "5.20.7.27");
-    assert_eq!(json["matrix_row"], "ac0ej3-selectable-transform-records");
+    assert_eq!(json["matrix_row"], "ac0ej3-dctonly-residual-frontier");
     assert_eq!(
         json["feature_id"],
-        "DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS"
+        "DECODE-AC0EJ3-DCTONLY-RESIDUAL-FRONTIER"
     );
     assert_eq!(json["detail_kind"], "unsupported_feature");
     assert_eq!(
         json["unsupported_reason"],
-        "unsupported_wienerns_lr_live_transform_record_residual_parse"
+        "unsupported_dctonly_residual_luma_tx_type"
     );
     assert!(
         json["message"]
             .as_str()
             .unwrap()
-            .contains("coefficient syntax is outside the transform-record handoff subset"),
-        "diagnostic must describe the active transform-record residual blocker"
+            .contains("outside the DCT_DCT-only transform-tool subset"),
+        "diagnostic must describe the active luma transform-type blocker"
     );
     assert_eq!(json["byte_offset"], 110);
     assert_ne!(
@@ -327,6 +327,10 @@ fn local_ac0ej3_reaches_current_runtime_gate_without_output() {
     assert_ne!(
         json["unsupported_reason"], "unsupported_wienerns_lr_live_storage_unpopulated",
         "ac0ej3 must advance past the former live-storage allocation gate"
+    );
+    assert_ne!(
+        json["unsupported_reason"], "unsupported_wienerns_lr_live_transform_record_residual_parse",
+        "ac0ej3 must advance past the former transform-record residual parse gate"
     );
     assert_ne!(
         json["unsupported_reason"], "unsupported_wienerns_filter_bank",

@@ -1,11 +1,4 @@
-# ac0ej3 Selectable Transform Records Specification
-
-## Purpose
-Define the fail-closed ac0ej3 Wiener NS loop-restoration frontier that parses
-supported `TX_MODE_SELECT` luma transform records and hands their `LrTxSkip`
-facts into live storage before decoded sample population is supported.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: ac0ej3 Selectable Transform Records
 
@@ -23,16 +16,15 @@ deriving those records, the active CfL prerequisite SHALL be tracked by
 `DECODE-AC0EJ3-CFL-CHROMA-MODE-FRONTIER` and SHALL not be counted as completed
 selectable-transform support until its syntax has been consumed. When the local
 stream reaches luma-only narrow SDP transform records, that prerequisite SHALL
-be tracked by
-`DECODE-AC0EJ3-SELECTABLE-NARROW-LUMA-RECORDS` until the observed luma-only
-subcase has been consumed. When the local stream reaches SDP chroma-part
-mode-info that depends on §5.20.3.1 `CflAllowedInSdp`, that prerequisite SHALL
-be tracked by `DECODE-AC0EJ3-SDP-CFL-ALLOWED-FRONTIER` until the observed
-syntax-synchronization subcase has been consumed. When the local stream reaches
-luma/shared mode-info prelude syntax (`use_intrabc`, CDEF, and delta-Q) before
-the selectable transform-record syntax, that prerequisite SHALL be tracked by
-`DECODE-AC0EJ3-INTRA-PRELUDE-TX-FRONTIER` until the observed prelude and
-chroma-offset safety subcase has been consumed.
+be tracked by `DECODE-AC0EJ3-SELECTABLE-NARROW-LUMA-RECORDS` until the observed
+luma-only subcase has been consumed. When the local stream reaches SDP
+chroma-part mode-info that depends on §5.20.3.1 `CflAllowedInSdp`, that
+prerequisite SHALL be tracked by `DECODE-AC0EJ3-SDP-CFL-ALLOWED-FRONTIER` until
+the observed syntax-synchronization subcase has been consumed. When the local
+stream reaches luma/shared mode-info prelude syntax (`use_intrabc`, CDEF, and
+delta-Q) before the selectable transform-record syntax, that prerequisite SHALL
+be tracked by `DECODE-AC0EJ3-INTRA-PRELUDE-TX-FRONTIER` until the observed
+prelude and chroma-offset safety subcase has been consumed.
 
 #### Scenario: Selectable records populate live tx-skip storage
 
