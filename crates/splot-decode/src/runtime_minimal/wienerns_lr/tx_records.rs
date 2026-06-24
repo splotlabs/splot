@@ -16,8 +16,9 @@ use splot_recon::{BitDepth, max_quantizer_index};
 
 use crate::error::Result;
 use crate::tile_payload::{
-    DecodeBlockFrontier, DecodeTileWorkUnit, GeneralIntraChromaModeContext,
-    GeneralIntraChromaToolConfig, GeneralIntraLeafMode, LumaTransformTypeContext, TileCdfSelector,
+    ActiveChromaResidualPolicy, ActiveIntraIstResidualPolicy, DecodeBlockFrontier,
+    DecodeTileWorkUnit, GeneralIntraChromaModeContext, GeneralIntraChromaToolConfig,
+    GeneralIntraLeafMode, IntraIstSyntax, LumaTransformTypeContext, TileCdfSelector,
     TileCoeffContextState, TransformToolResidualPolicy, decode_general_intra_block_modes,
     decode_general_intra_chroma_block_mode, decode_general_intra_luma_block_mode,
     decode_general_intra_multiblock_tree, decode_general_intra_plane_coeffs, frame_mi_dimensions,
@@ -72,6 +73,9 @@ pub(in crate::runtime_minimal) struct WienerNsLrTxSkipTransformRecord {
     pub(in crate::runtime_minimal) cols: usize,
     pub(in crate::runtime_minimal) skip_flag: bool,
     pub(in crate::runtime_minimal) eob: usize,
+    // TODO(spec: DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS): feed retained
+    // IST syntax into the next transform-record residual parser frontier.
+    pub(in crate::runtime_minimal) intra_ist: Option<IntraIstSyntax>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -718,7 +722,11 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                 || tq.enable_intra_ist
                 || tq.enable_inter_ist
             {
-                TransformToolResidualPolicy::AdmitDctOnly { luma: None }
+                TransformToolResidualPolicy::AdmitDctOnly {
+                    luma: None,
+                    active_intra_ist: ActiveIntraIstResidualPolicy::LrTxSkipRecordHandoff,
+                    active_chroma: ActiveChromaResidualPolicy::LrTxSkipRecordHandoff,
+                }
             } else {
                 TransformToolResidualPolicy::Allow
             }
@@ -1183,6 +1191,7 @@ fn decode_luma_records_for_chunk(
             cols: record.cols,
             skip_flag: false,
             eob: luma.eob,
+            intra_ist: luma.intra_ist,
         });
     }
     if decoded_any {
@@ -1201,9 +1210,15 @@ fn luma_transform_tool_policy(
 ) -> TransformToolResidualPolicy {
     match policy {
         TransformToolResidualPolicy::Allow => TransformToolResidualPolicy::Allow,
-        TransformToolResidualPolicy::AdmitDctOnly { .. } => {
-            TransformToolResidualPolicy::AdmitDctOnly { luma: Some(luma) }
-        }
+        TransformToolResidualPolicy::AdmitDctOnly {
+            active_intra_ist,
+            active_chroma,
+            ..
+        } => TransformToolResidualPolicy::AdmitDctOnly {
+            luma: Some(luma),
+            active_intra_ist,
+            active_chroma,
+        },
     }
 }
 
@@ -2224,6 +2239,7 @@ mod tests {
                 cols: record.cols,
                 skip_flag: false,
                 eob: usize::from(index == 0),
+                intra_ist: None,
             })
             .collect::<Vec<_>>();
 

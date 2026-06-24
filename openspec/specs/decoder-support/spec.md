@@ -4326,10 +4326,44 @@ active secondary transforms and successful ac0ej3 decode output.
 - **WHEN** decoder support status is generated
 - **THEN** `ac0ej3-intra-ist-zero-frontier` appears with Feature ID
   `DECODE-AC0EJ3-INTRA-IST-ZERO-FRONTIER`
-- **AND** it lists focused CDF/residual tests plus the local ac0ej3 runtime
-  probe
+- **AND** it lists focused CDF/residual tests for zero admission and
+  reconstruction-safe active rejection
 - **AND** it does not claim successful ac0ej3 decode, raw/Y4M output, reference
   refresh, or AVM/dav2d byte equality
+
+### Requirement: ac0ej3 active intra IST handoff support row
+
+The decoder support model SHALL track
+`DECODE-AC0EJ3-ACTIVE-INTRA-IST-HANDOFF` as a distinct partial ac0ej3 row named
+`ac0ej3-active-intra-ist-handoff`. The row SHALL describe that the minimal
+runtime consumes active AV2 §5.20.7.29 intra IST secondary-transform syntax for
+the Wiener NS LR tx-skip record path, records the active-IST metadata, and
+remains fail-closed before secondary inverse transforms, decoded samples,
+loop-restoration output, reference refresh, or successful ac0ej3 decode.
+
+#### Scenario: Matrix evidence records the active IST handoff boundary
+
+- **WHEN** `cargo xtask check-decoder-support` validates decoder support status
+- **THEN** `ac0ej3-active-intra-ist-handoff` appears with Feature ID
+  `DECODE-AC0EJ3-ACTIVE-INTRA-IST-HANDOFF`
+- **AND** the row cites AV2 §5.20.7.29, §7.20.4, §8.3.2, and the focused tests
+  plus the local ac0ej3 runtime probe
+- **AND** it does not claim secondary inverse-transform runtime wiring,
+  decoded frame samples, loop-restoration output, raw/Y4M output, reference
+  refresh, AVM/dav2d byte equality, or successful ac0ej3 decode
+
+### Requirement: ac0ej3 chroma CCTX handoff tracking
+
+Decoder support tracking SHALL record the ac0ej3 chroma CCTX metadata syntax
+handoff as a partial row that advances the live stream frontier without
+claiming CCTX reconstruction, chroma output, or successful ac0ej3 decode.
+
+#### Scenario: Live frontier evidence is recorded
+
+- **WHEN** the local `ac0ej3.ivf` probe advances after the chroma CCTX metadata
+  handoff
+- **THEN** the decoder support matrix records the new unsupported frontier,
+  feature ID, proof commands, and explicit non-goals
 
 ### Requirement: ac0ej3 LR Classified Wiener Frontier Support Row
 

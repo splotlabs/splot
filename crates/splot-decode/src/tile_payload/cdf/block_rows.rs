@@ -6,17 +6,17 @@
 //! Feature tracking: `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER`.
 
 use splot_core::tables::cdf::{
-    DEFAULT_CFL_ALPHA_CDF, DEFAULT_CFL_INDEX_CDF, DEFAULT_CFL_MH_DIR_CDF, DEFAULT_CFL_MHCCP_CDF,
-    DEFAULT_CFL_SIGN_CDF, DEFAULT_COL_MV_GREATER_CDF, DEFAULT_COL_MV_INDEX_CDF,
-    DEFAULT_COMP_GROUP_IDX_CDF, DEFAULT_COMP_MODE_CDF, DEFAULT_COMP_REF0_CDF,
-    DEFAULT_COMP_REF1_CDF, DEFAULT_COMPOUND_MODE_NON_JOINT_CDF, DEFAULT_CWP_IDX_CDF,
-    DEFAULT_DC_SIGN_CDF, DEFAULT_DRL_MODE_CDF, DEFAULT_EOB_EXTRA_CDF, DEFAULT_EOB_PT_16_CDF,
-    DEFAULT_EOB_PT_32_CDF, DEFAULT_EOB_PT_64_CDF, DEFAULT_EOB_PT_128_CDF, DEFAULT_EOB_PT_256_CDF,
-    DEFAULT_EOB_PT_512_CDF, DEFAULT_EOB_PT_1024_CDF, DEFAULT_INTERP_FILTER_CDF,
-    DEFAULT_INTRA_TX_TYPE_LONG_CDF, DEFAULT_INTRA_TX_TYPE_SET1_CDF, DEFAULT_INTRA_TX_TYPE_SET2_CDF,
-    DEFAULT_IS_CFL_CDF, DEFAULT_IS_INTER_CDF, DEFAULT_IS_JOINT_CDF, DEFAULT_IS_LONG_SIDE_DCT_CDF,
-    DEFAULT_JOINT_SHELL_LAST_TWO_CLASSES_CDF, DEFAULT_JOINT_SHELL_SET_CDF,
-    DEFAULT_JOINT_SHELL6_CLASS0_CDF, DEFAULT_JOINT_SHELL6_CLASS1_CDF,
+    DEFAULT_CCTX_TYPE_CDF, DEFAULT_CFL_ALPHA_CDF, DEFAULT_CFL_INDEX_CDF, DEFAULT_CFL_MH_DIR_CDF,
+    DEFAULT_CFL_MHCCP_CDF, DEFAULT_CFL_SIGN_CDF, DEFAULT_COL_MV_GREATER_CDF,
+    DEFAULT_COL_MV_INDEX_CDF, DEFAULT_COMP_GROUP_IDX_CDF, DEFAULT_COMP_MODE_CDF,
+    DEFAULT_COMP_REF0_CDF, DEFAULT_COMP_REF1_CDF, DEFAULT_COMPOUND_MODE_NON_JOINT_CDF,
+    DEFAULT_CWP_IDX_CDF, DEFAULT_DC_SIGN_CDF, DEFAULT_DRL_MODE_CDF, DEFAULT_EOB_EXTRA_CDF,
+    DEFAULT_EOB_PT_16_CDF, DEFAULT_EOB_PT_32_CDF, DEFAULT_EOB_PT_64_CDF, DEFAULT_EOB_PT_128_CDF,
+    DEFAULT_EOB_PT_256_CDF, DEFAULT_EOB_PT_512_CDF, DEFAULT_EOB_PT_1024_CDF,
+    DEFAULT_INTERP_FILTER_CDF, DEFAULT_INTRA_TX_TYPE_LONG_CDF, DEFAULT_INTRA_TX_TYPE_SET1_CDF,
+    DEFAULT_INTRA_TX_TYPE_SET2_CDF, DEFAULT_IS_CFL_CDF, DEFAULT_IS_INTER_CDF, DEFAULT_IS_JOINT_CDF,
+    DEFAULT_IS_LONG_SIDE_DCT_CDF, DEFAULT_JOINT_SHELL_LAST_TWO_CLASSES_CDF,
+    DEFAULT_JOINT_SHELL_SET_CDF, DEFAULT_JOINT_SHELL6_CLASS0_CDF, DEFAULT_JOINT_SHELL6_CLASS1_CDF,
     DEFAULT_MOST_PROBABLE_STX_SET_ADST_CDF, DEFAULT_MOST_PROBABLE_STX_SET_CDF,
     DEFAULT_SEC_TX_TYPE_CDF, DEFAULT_SHELL_OFFSET_CLASS2_CDF, DEFAULT_SHELL_OFFSET_LOW_CLASS_CDF,
     DEFAULT_SHELL_OFFSET_OTHER_CLASS_CDF, DEFAULT_SINGLE_MODE_CDF, DEFAULT_SINGLE_REF_CDF,
@@ -109,6 +109,7 @@ const SEC_TX_TYPE_TX_SIZE_CONTEXTS: usize = 5;
 const SEC_TX_TYPE_ROW_LEN: usize = 5;
 const MOST_PROBABLE_STX_SET_ROW_LEN: usize = 8;
 const MOST_PROBABLE_STX_SET_ADST_ROW_LEN: usize = 5;
+const CCTX_TYPE_CDF_ROW_LEN: usize = 8;
 
 pub(crate) type YModeSetCdfRow = [i32; Y_MODE_SET_CDF_ROW_LEN];
 pub(crate) type YModeIndexCdfRows = [[i32; INTRA_MODE_CDF_ROW_LEN]; Y_MODE_INDEX_CONTEXTS];
@@ -168,6 +169,7 @@ pub(crate) type SecTxTypeCdfRows =
     [[[i32; SEC_TX_TYPE_ROW_LEN]; SEC_TX_TYPE_TX_SIZE_CONTEXTS]; SEC_TX_TYPE_IS_INTER_CONTEXTS];
 pub(crate) type MostProbableStxSetCdfRow = [i32; MOST_PROBABLE_STX_SET_ROW_LEN];
 pub(crate) type MostProbableStxSetAdstCdfRow = [i32; MOST_PROBABLE_STX_SET_ADST_ROW_LEN];
+pub(crate) type CctxTypeCdfRow = [i32; CCTX_TYPE_CDF_ROW_LEN];
 // §9.3 SHELL-coded `read_mv` banks. `shell_set` / `joint_shell_last_two_classes` /
 // `shell_offset_class2` are binary (width 3 == `CDF_ROW_LEN`). The P == 6 EighthPel
 // `shell_class` banks are width 9 (8 shell-class symbols + count). The offset / col
@@ -471,6 +473,8 @@ pub(crate) enum BlockCdfSelector {
     MostProbableStxSet,
     /// `TileMostProbableStxSetAdstCdf` (AV2 § 8.3.2).
     MostProbableStxSetAdst,
+    /// `TileCctxTypeCdf` (AV2 § 8.3.2).
+    CctxType,
     /// Coefficient base/base-EOB/base-range and IDTX CDF rows.
     Coeff(CoeffCdfSelector),
 }
@@ -532,6 +536,7 @@ pub(crate) struct BlockCdfRows {
     pub(super) sec_tx_type: SecTxTypeCdfRows,
     pub(super) most_probable_stx_set: MostProbableStxSetCdfRow,
     pub(super) most_probable_stx_set_adst: MostProbableStxSetAdstCdfRow,
+    pub(super) cctx_type: CctxTypeCdfRow,
     pub(super) coeff: CoeffCdfRows,
 }
 
@@ -592,6 +597,7 @@ impl BlockCdfRows {
             sec_tx_type: DEFAULT_SEC_TX_TYPE_CDF,
             most_probable_stx_set: DEFAULT_MOST_PROBABLE_STX_SET_CDF,
             most_probable_stx_set_adst: DEFAULT_MOST_PROBABLE_STX_SET_ADST_CDF,
+            cctx_type: DEFAULT_CCTX_TYPE_CDF,
             coeff: CoeffCdfRows::from_defaults(),
         }
     }
@@ -1074,6 +1080,7 @@ impl BlockCdfRows {
             BlockCdfSelector::MostProbableStxSetAdst => {
                 Ok(self.most_probable_stx_set_adst.as_slice())
             }
+            BlockCdfSelector::CctxType => Ok(self.cctx_type.as_slice()),
             BlockCdfSelector::Coeff(selector) => self.coeff.row(selector),
         }
     }
@@ -1603,6 +1610,7 @@ impl BlockCdfRows {
             BlockCdfSelector::MostProbableStxSetAdst => {
                 Ok(self.most_probable_stx_set_adst.as_mut_slice())
             }
+            BlockCdfSelector::CctxType => Ok(self.cctx_type.as_mut_slice()),
             BlockCdfSelector::Coeff(selector) => self.coeff.row_mut(selector),
         }
     }
@@ -1941,6 +1949,7 @@ impl BlockCdfRows {
             tile_num,
             num_log2,
         );
+        avg_cdf_row(&mut self.cctx_type, &tile.cctx_type, tile_num, num_log2);
         self.coeff.avg_from_tile(tile_num, &tile.coeff, num_log2);
     }
 
@@ -2070,6 +2079,7 @@ impl BlockCdfRows {
         }
         scale_cdf_count(&mut self.most_probable_stx_set);
         scale_cdf_count(&mut self.most_probable_stx_set_adst);
+        scale_cdf_count(&mut self.cctx_type);
         self.coeff.scale_counts_for_frame_end_update();
     }
 
@@ -2221,6 +2231,11 @@ impl BlockCdfRows {
     #[cfg(test)]
     pub(crate) const fn most_probable_stx_set_adst(&self) -> &MostProbableStxSetAdstCdfRow {
         &self.most_probable_stx_set_adst
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn cctx_type(&self) -> &CctxTypeCdfRow {
+        &self.cctx_type
     }
 }
 

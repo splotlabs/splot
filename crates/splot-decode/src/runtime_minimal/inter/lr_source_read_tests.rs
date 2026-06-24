@@ -594,6 +594,7 @@ fn wienerns_lr_tx_skip_grid_retention_derives_spec_values() {
             cols: 1,
             skip_flag: false,
             eob: 7,
+            intra_ist: None,
         },
         super::super::WienerNsLrTxSkipTransformRecord {
             row: 0,
@@ -602,6 +603,7 @@ fn wienerns_lr_tx_skip_grid_retention_derives_spec_values() {
             cols: 2,
             skip_flag: true,
             eob: 7,
+            intra_ist: None,
         },
         super::super::WienerNsLrTxSkipTransformRecord {
             row: 1,
@@ -610,6 +612,7 @@ fn wienerns_lr_tx_skip_grid_retention_derives_spec_values() {
             cols: 3,
             skip_flag: false,
             eob: 0,
+            intra_ist: None,
         },
     ];
 
@@ -641,6 +644,7 @@ fn wienerns_lr_tx_skip_grid_retention_rejects_missing_cells() {
         cols: 1,
         skip_flag: false,
         eob: 7,
+        intra_ist: None,
     }];
 
     let error = super::super::derive_wienerns_lr_tx_skip_grid_retention(2, 2, &records)
@@ -663,6 +667,7 @@ fn wienerns_lr_tx_skip_grid_retention_rejects_out_of_range_record() {
         cols: 1,
         skip_flag: false,
         eob: 7,
+        intra_ist: None,
     }];
 
     let error = super::super::derive_wienerns_lr_tx_skip_grid_retention(2, 2, &records)
@@ -686,6 +691,7 @@ fn wienerns_lr_tx_skip_grid_retention_rejects_conflicting_records() {
             cols: 1,
             skip_flag: false,
             eob: 7,
+            intra_ist: None,
         },
         super::super::WienerNsLrTxSkipTransformRecord {
             row: 0,
@@ -694,6 +700,7 @@ fn wienerns_lr_tx_skip_grid_retention_rejects_conflicting_records() {
             cols: 1,
             skip_flag: true,
             eob: 7,
+            intra_ist: None,
         },
     ];
 

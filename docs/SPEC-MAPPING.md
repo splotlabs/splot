@@ -102,9 +102,12 @@ Decoder transform-record work uses these local mirror citations:
   by loop-restoration classification:
   [`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27`](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27).
 - AV2 § 5.20.7.29 transform-type and secondary-transform syntax, including
-  the intra IST `sec_tx_type` branch used by current ac0ej3 residual frontiers:
+  the intra IST `sec_tx_type` branch used by the ac0ej3 zero/frontier and
+  active LR tx-skip handoff rows:
   [`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-29`](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-29).
-- AV2 § 7.20.4 pixel classified Wiener filter process:
+- AV2 § 7.20.4 pixel classified Wiener filter process, including use of
+  retained `LrTxSkip` values derived after ac0ej3 transform-record syntax
+  handoff:
   [`docs/spec/av2/1.0.0/07-decoding-process.md#s-7-20-4`](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-4).
 - AV2 § 8.3.2 syntax-element CDF selection for transform and secondary-transform
   symbols:
