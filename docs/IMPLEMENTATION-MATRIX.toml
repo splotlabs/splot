@@ -11384,9 +11384,9 @@ perf = "not-applicable"
 
 [feature.proof]
 tests = [
-    "crates/splot-decode/src/runtime_minimal/inter/tests.rs::wienerns_lr_runtime_storage_retention_frontier_counts_ten_bit_buffers_and_tx_skip_grid",
-    "crates/splot-decode/src/runtime_minimal/inter/tests.rs::wienerns_lr_runtime_storage_retention_frontier_limits_total_storage_before_diagnostic",
-    "crates/splot-decode/src/runtime_minimal/inter/tests.rs::wienerns_lr_runtime_storage_retention_error_reports_unpopulated_boundary",
+    "crates/splot-decode/src/runtime_minimal/inter/lr_source_read_tests.rs::wienerns_lr_runtime_storage_retention_frontier_counts_ten_bit_buffers_and_tx_skip_grid",
+    "crates/splot-decode/src/runtime_minimal/inter/lr_source_read_tests.rs::wienerns_lr_runtime_storage_retention_frontier_limits_total_storage_before_diagnostic",
+    "crates/splot-decode/src/runtime_minimal/inter/lr_source_read_tests.rs::wienerns_lr_runtime_storage_retention_error_reports_unpopulated_boundary",
     "crates/splot-cli/tests/decode_cli.rs::local_ac0ej3_reaches_current_runtime_gate_without_output",
 ]
 commands = [

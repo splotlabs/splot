@@ -778,7 +778,9 @@ fn wienerns_lr_runtime_storage_retention_error_reports_unpopulated_boundary() {
     assert_eq!(unsupported.spec_section(), "7.20.4");
     assert_eq!(unsupported.byte_offset(), Some(ByteOffset::new(74)));
     assert!(
-        unsupported.message().contains("10-bit CurrFrame/CdefFrame"),
+        unsupported
+            .message()
+            .contains("active-bit-depth CurrFrame/CdefFrame"),
         "message should name the retained frame-storage shape"
     );
     assert!(
