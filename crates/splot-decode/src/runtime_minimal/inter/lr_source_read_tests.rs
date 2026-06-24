@@ -13,7 +13,9 @@ use splot_core::headers::frame::{
 use splot_core::headers::sequence::ChromaFormatIdc;
 use splot_core::span::ByteOffset;
 use splot_recon::{
-    BitDepth, LoopRestorationSource, LoopRestorationSourceBounds, PlaneId, ReconError,
+    BitDepth, DecodedFrame, DecodedFrameInfo, FramePlanes, LoopRestorationSource,
+    LoopRestorationSourceBounds, OutputIndex, PixelFormat, Plane, PlaneId, PlaneRect, PlaneSize,
+    ReconError,
 };
 
 use crate::error::DecodeError;
@@ -47,6 +49,52 @@ fn wienerns_lr_source_block() -> WienerNsLrSourceBlock {
 
 fn wienerns_lr_source_read_config() -> super::super::WienerNsLrSourceReadConfig {
     super::super::WienerNsLrSourceReadConfig::CONSERVATIVE
+}
+
+fn plane_size(width: usize, height: usize) -> PlaneSize {
+    PlaneSize::new(width, height).unwrap()
+}
+
+fn plane_rect(x: usize, y: usize, width: usize, height: usize) -> PlaneRect {
+    PlaneRect::new(x, y, width, height).unwrap()
+}
+
+fn flat_monochrome_frame_u16(value: u16) -> DecodedFrame<u16> {
+    let size = plane_size(16, 16);
+    let rect = plane_rect(0, 0, 16, 16);
+    let info = DecodedFrameInfo::new(
+        OutputIndex::new(0),
+        BitDepth::Ten,
+        PixelFormat::Monochrome,
+        size,
+        rect,
+    )
+    .unwrap();
+    DecodedFrame::try_new(
+        info,
+        FramePlanes::new(
+            Plane::from_vec(size, 16, rect, vec![value; 16 * 16]).unwrap(),
+            None,
+            None,
+        ),
+    )
+    .unwrap()
+}
+
+fn tx_skip_grid(values: Vec<u8>) -> super::super::WienerNsLrTxSkipGrid {
+    super::super::WienerNsLrTxSkipGrid::new(4, 4, values).unwrap()
+}
+
+fn storage_inputs<'a>(
+    curr_frame: &'a DecodedFrame<u16>,
+    cdef_frame: &'a DecodedFrame<u16>,
+    tx_skip_grid: &'a super::super::WienerNsLrTxSkipGrid,
+) -> super::super::WienerNsLrClassifiedWienerStorageInputs<'a, u16> {
+    super::super::WienerNsLrClassifiedWienerStorageInputs {
+        curr_frame,
+        cdef_frame,
+        tx_skip_grid,
+    }
 }
 
 #[test]
@@ -319,11 +367,11 @@ fn wienerns_lr_classified_wiener_values_frontier_derives_filter_class() {
             if first_source.get().is_none() {
                 first_source.set(Some(read));
             }
-            12
+            Ok(12)
         },
         |_| {
             tx_skip_calls.set(tx_skip_calls.get() + 1);
-            0
+            Ok(0)
         },
     )
     .expect("classified Wiener values frontier")
@@ -349,6 +397,16 @@ fn wienerns_lr_classified_wiener_values_frontier_derives_filter_class() {
         Some(super::super::WienerNsLrClassifiedWienerValueSourceSample {
             input_x: -1,
             input_y: 5,
+            bounds: LoopRestorationSourceBounds {
+                luma_start_x: 0,
+                luma_end_x: 15,
+                luma_start_y: 0,
+                luma_end_y: 15,
+                luma_stripe_start_y: 8,
+                luma_stripe_end_y: 10,
+                subsampling_x: 0,
+                subsampling_y: 0,
+            },
             sample: super::super::WienerNsLrSourceReadSample {
                 plane: PlaneId::Y,
                 x: 0,
@@ -389,11 +447,11 @@ fn wienerns_lr_classified_wiener_values_frontier_preflights_limit_before_reads()
         limits,
         |_| {
             source_calls.set(source_calls.get() + 1);
-            12
+            Ok(12)
         },
         |_| {
             tx_skip_calls.set(tx_skip_calls.get() + 1);
-            0
+            Ok(0)
         },
     )
     .unwrap_err();
@@ -425,8 +483,8 @@ fn wienerns_lr_classified_wiener_values_frontier_propagates_invalid_tx_skip() {
         BitDepth::Eight,
         0,
         DecodeLimits::unlimited(),
-        |_| 12,
-        |_| 2,
+        |_| Ok(12),
+        |_| Ok(2),
     )
     .unwrap_err();
 
@@ -448,25 +506,132 @@ fn wienerns_lr_classified_wiener_values_frontier_propagates_invalid_tx_skip() {
 }
 
 #[test]
-fn classified_wiener_values_runtime_error_reports_storage_frontier() {
+fn wienerns_lr_classified_wiener_storage_frontier_reads_frame_and_tx_skip_storage() {
+    let blocks = [wienerns_lr_source_block()];
+    let planes = [lr_plane(true, Some(2), None)];
+    let curr_frame = flat_monochrome_frame_u16(12);
+    let cdef_frame = flat_monochrome_frame_u16(12);
+    let tx_skip = tx_skip_grid(vec![0; 16]);
+
+    let frontier = super::super::derive_wienerns_lr_classified_wiener_storage_frontier(
+        &blocks,
+        &planes,
+        BitDepth::Ten,
+        0,
+        DecodeLimits::unlimited(),
+        storage_inputs(&curr_frame, &cdef_frame, &tx_skip),
+    )
+    .expect("storage-backed classified Wiener frontier")
+    .expect("classified luma is active");
+
+    assert_eq!(frontier.blocks_resolved, 1);
+    assert_eq!(frontier.source_reads_resolved, 36 * 7);
+    assert!(
+        frontier.curr_frame_source_reads > 0,
+        "storage adapter must read selected CurrFrame samples"
+    );
+    assert!(
+        frontier.cdef_frame_source_reads > 0,
+        "storage adapter must read selected CdefFrame samples"
+    );
+    assert_eq!(frontier.filter_classes_resolved, 1);
+    assert_eq!(
+        frontier.first_filter_class,
+        Some(super::super::WienerNsLrFilterClassValue {
+            x: 0,
+            y: 6,
+            row: 1,
+            col: 0,
+            class: 83,
+        })
+    );
+}
+
+#[test]
+fn wienerns_lr_classified_wiener_storage_frontier_propagates_tx_skip_grid_bounds() {
+    let blocks = [wienerns_lr_source_block()];
+    let planes = [lr_plane(true, Some(2), None)];
+    let curr_frame = flat_monochrome_frame_u16(12);
+    let cdef_frame = flat_monochrome_frame_u16(12);
+    let tx_skip = super::super::WienerNsLrTxSkipGrid::new(1, 1, vec![0]).unwrap();
+
+    let error = super::super::derive_wienerns_lr_classified_wiener_storage_frontier(
+        &blocks,
+        &planes,
+        BitDepth::Ten,
+        0,
+        DecodeLimits::unlimited(),
+        storage_inputs(&curr_frame, &cdef_frame, &tx_skip),
+    )
+    .unwrap_err();
+
+    match error {
+        DecodeError::Reconstruction {
+            source: ReconError::PcWienerInvalidBounds { field },
+        } => {
+            assert_eq!(field, "LrTxSkip grid lookup");
+        }
+        _ => panic!("tx-skip storage bounds must remain a structured reconstruction error"),
+    }
+}
+
+#[test]
+fn wienerns_lr_classified_wiener_storage_frontier_propagates_non_boolean_tx_skip() {
+    let blocks = [wienerns_lr_source_block()];
+    let planes = [lr_plane(true, Some(2), None)];
+    let curr_frame = flat_monochrome_frame_u16(12);
+    let cdef_frame = flat_monochrome_frame_u16(12);
+    let mut values = vec![0; 16];
+    values[8] = 2;
+    let tx_skip = tx_skip_grid(values);
+
+    let error = super::super::derive_wienerns_lr_classified_wiener_storage_frontier(
+        &blocks,
+        &planes,
+        BitDepth::Ten,
+        0,
+        DecodeLimits::unlimited(),
+        storage_inputs(&curr_frame, &cdef_frame, &tx_skip),
+    )
+    .unwrap_err();
+
+    match error {
+        DecodeError::Reconstruction {
+            source:
+                ReconError::PcWienerInvalidTxSkip {
+                    x,
+                    y,
+                    row,
+                    col,
+                    value,
+                },
+        } => {
+            assert_eq!((x, y, row, col, value), (0, 8, 2, 0, 2));
+        }
+        _ => panic!("non-boolean tx-skip storage must remain a structured reconstruction error"),
+    }
+}
+
+#[test]
+fn classified_wiener_storage_runtime_error_reports_retention_frontier() {
     let error =
-        super::super::wienerns_lr_classified_wiener_values_runtime_error(ByteOffset::new(74));
+        super::super::wienerns_lr_classified_wiener_storage_runtime_error(ByteOffset::new(74));
     let unsupported = match error {
         DecodeError::UnsupportedFeature { unsupported } => unsupported,
-        _ => panic!("classified Wiener value frontier must be an unsupported-feature error"),
+        _ => panic!("classified Wiener storage frontier must be an unsupported-feature error"),
     };
 
     assert_eq!(
         unsupported.reason(),
-        "unsupported_wienerns_lr_classified_wiener_storage"
+        "unsupported_wienerns_lr_classified_wiener_runtime_storage"
     );
     assert_eq!(
         unsupported.matrix_row(),
-        "ac0ej3-lr-classified-wiener-values"
+        "ac0ej3-lr-classified-wiener-storage"
     );
     assert_eq!(
         unsupported.feature_id(),
-        "DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-VALUES"
+        "DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-STORAGE"
     );
     assert_eq!(unsupported.spec_section(), "7.20.4");
     assert_eq!(unsupported.byte_offset(), Some(ByteOffset::new(74)));
@@ -481,20 +646,18 @@ fn classified_wiener_values_runtime_error_reports_storage_frontier() {
         "message should say tx-skip coordinates are resolved"
     );
     assert!(
-        unsupported.message().contains("value-capable FilterClass"),
-        "message should say caller-supplied value classification is wired"
+        unsupported.message().contains("storage-backed FilterClass"),
+        "message should say storage-backed classification is wired"
     );
     assert!(
         unsupported
             .message()
-            .contains("10-bit CurrFrame/CdefFrame storage"),
-        "message should name the remaining frame-storage boundary"
+            .contains("decoded 10-bit frame buffers"),
+        "message should name the remaining frame retention boundary"
     );
     assert!(
-        unsupported
-            .message()
-            .contains("no real source sample values"),
-        "message should not claim live frame-value reads"
+        unsupported.message().contains("retained for filtering"),
+        "message should not claim live filter-time storage retention"
     );
     assert!(
         unsupported.message().contains("loop-restoration filtering"),

@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 420 feature(s).
+Matrix version 1. Last reviewed 2026-06-15. 421 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -295,6 +295,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER` | ac0ej3 Wiener NS LR source-read frontier | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | done | done | n/a | `crates/splot-decode/src/runtime_minimal.rs` |
 | `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-FRONTIER` | ac0ej3 Wiener NS LR classified-Wiener frontier | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | done | done | n/a | `crates/splot-decode/src/runtime_minimal.rs` |
 | `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-VALUES` | ac0ej3 Wiener NS LR classified-Wiener values frontier | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | done | done | n/a | `crates/splot-decode/src/runtime_minimal.rs` |
+| `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-STORAGE` | ac0ej3 Wiener NS LR classified-Wiener storage frontier | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | done | done | n/a | `crates/splot-decode/src/runtime_minimal.rs` |
 | `DECODE-Y4M-RUNTIME-OUTPUT` | Minimal-tier runtime Y4M output | infrastructure | infrastructure | done | done | partial | done | n/a | n/a | done | done | n/a | `crates/splot-decode/src/runtime_y4m.rs` |
 | `DECODE-MINIMAL-RAW-RUNTIME-OUTPUT` | Minimal-tier runtime raw output | infrastructure | infrastructure | done | done | partial | done | n/a | n/a | done | done | n/a | `crates/splot-decode/src/runtime_raw.rs` |
 | `INFRA-DECODER-CRATE-SCAFFOLDING` | Decoder and reconstruction crate scaffolding | infrastructure | infrastructure | done | n/a | n/a | done | n/a | n/a | n/a | done | n/a | `crates/splot-decode/src/lib.rs` |
