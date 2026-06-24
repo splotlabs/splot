@@ -1,10 +1,4 @@
-## Purpose
-
-Track the ac0ej3 fail-closed runtime storage-footprint planning frontier after
-classified-Wiener storage-helper wiring, before explicit live storage shells or
-decoded sample values are populated.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: ac0ej3 LR Runtime Storage Retention Frontier
 
@@ -21,7 +15,6 @@ by `DECODE-AC0EJ3-LR-LIVE-STORAGE-ALLOCATION` once explicit unpopulated storage
 shells are allocated.
 
 #### Scenario: Storage-retention frontier derives live storage shapes
-
 - **WHEN** the local ac0ej3 mission stream reaches active classified-luma
   Wiener NS loop-restoration units
 - **THEN** the runtime derives the required active-bit-depth current/CDEF frame
@@ -31,7 +24,6 @@ shells are allocated.
   byte budgets are derived before live storage allocation
 
 #### Scenario: Storage footprint limits fail before unsupported diagnostic
-
 - **WHEN** caller-provided decode limits are lower than the derived
   active-bit-depth frame storage footprint (10-bit for the ac0ej3 mission
   stream) or aggregate retained-storage footprint including `LrTxSkip` storage
@@ -40,7 +32,6 @@ shells are allocated.
   diagnostic
 
 #### Scenario: No fabricated classification values
-
 - **WHEN** the runtime has only derived storage dimensions and byte budgets
 - **THEN** it SHALL NOT call the storage-backed `FilterClass` derivation helper
   with zero-filled or otherwise fabricated `CurrFrame`, `CdefFrame`, or

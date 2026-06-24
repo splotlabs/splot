@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 423 feature(s); 370 cite a spec section.
+Matrix version 1. Last reviewed 2026-06-15. 424 feature(s); 371 cite a spec section.
 
 One row per (spec section, feature) pair, in spec order; a feature citing both a syntax and a semantics section appears under both. The canonical status source is [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); the full per-feature ledger is [FEATURE-STATUS.md](./FEATURE-STATUS.md).
 
@@ -611,6 +611,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 6.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1) | General sequence header OBU semantics | `CONF-RECON-INTRA-PREDICTION-FUZZ` | ✅ | — | — | ✅ | — |
 | [§ 6.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1) | General sequence header OBU semantics | `CONF-RECON-Y4M-OUTPUT-FUZZ` | ✅ | — | — | ✅ | — |
 | [§ 6.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1) | General sequence header OBU semantics | `DECODE-AC0EJ3-10BIT-SEQUENCE-FRONTIER` | ✅ | ✅ | ✅ | ✅ | 1 |
+| [§ 6.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1) | General sequence header OBU semantics | `DECODE-AC0EJ3-LR-LIVE-STORAGE-ALLOCATION` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 6.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1) | General sequence header OBU semantics | `DECODE-AC0EJ3-LR-RUNTIME-STORAGE-RETENTION` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 6.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1) | General sequence header OBU semantics | `DECODE-LIMITS-RUNTIME-API` | ✅ | — | — | ✅ | — |
 | [§ 6.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1) | General sequence header OBU semantics | `DECODE-MINIMAL-RAW-RUNTIME-OUTPUT` | ✅ | 🟡 | ✅ | ✅ | 4 |
@@ -715,6 +716,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 6.17.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-1) | Frame size semantics | `AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS` | ✅ | — | 🟡 | ✅ | 18 |
 | [§ 6.17.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-1) | Frame size semantics | `CONF-RECON-FRAME-PLANE-TYPES-FUZZ` | ✅ | — | — | ✅ | — |
 | [§ 6.17.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-1) | Frame size semantics | `CONF-RECON-INTRA-PREDICTION-FUZZ` | ✅ | — | — | ✅ | — |
+| [§ 6.17.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-1) | Frame size semantics | `DECODE-AC0EJ3-LR-LIVE-STORAGE-ALLOCATION` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 6.17.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-1) | Frame size semantics | `DECODE-AC0EJ3-LR-RUNTIME-STORAGE-RETENTION` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 6.17.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-1) | Frame size semantics | `DECODE-LIMITS-RUNTIME-API` | ✅ | — | — | ✅ | — |
 | [§ 6.17.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-1) | Frame size semantics | `DECODE-MINIMAL-RAW-RUNTIME-OUTPUT` | ✅ | 🟡 | ✅ | ✅ | 4 |
@@ -998,6 +1000,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.20.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-2) | Get source sample process | `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 7.20.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-2) | Get source sample process | `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-STORAGE` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.20.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-2) | Get source sample process | `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-VALUES` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 7.20.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-2) | Get source sample process | `DECODE-AC0EJ3-LR-LIVE-STORAGE-ALLOCATION` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 7.20.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-2) | Get source sample process | `DECODE-AC0EJ3-LR-RUNTIME-STORAGE-RETENTION` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 7.20.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-2) | Get source sample process | `DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 7.20.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-2) | Get source sample process | `DECODE-LIMITS-RUNTIME-API` | ✅ | — | — | ✅ | — |
@@ -1006,6 +1009,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.20.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-3) | Non-separable Wiener filter process | `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 7.20.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-3) | Non-separable Wiener filter process | `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-STORAGE` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.20.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-3) | Non-separable Wiener filter process | `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-VALUES` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 7.20.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-3) | Non-separable Wiener filter process | `DECODE-AC0EJ3-LR-LIVE-STORAGE-ALLOCATION` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 7.20.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-3) | Non-separable Wiener filter process | `DECODE-AC0EJ3-LR-RUNTIME-STORAGE-RETENTION` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 7.20.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-3) | Non-separable Wiener filter process | `DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 7.20.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-3) | Non-separable Wiener filter process | `RECON-WIENERNS-CHROMA-FILTER-PRIMITIVE` | ✅ | — | ✅ | ✅ | — |
@@ -1013,6 +1017,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.20.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-4) | Pixel classified Wiener filter process | `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 7.20.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-4) | Pixel classified Wiener filter process | `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-STORAGE` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.20.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-4) | Pixel classified Wiener filter process | `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-VALUES` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 7.20.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-4) | Pixel classified Wiener filter process | `DECODE-AC0EJ3-LR-LIVE-STORAGE-ALLOCATION` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 7.20.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-4) | Pixel classified Wiener filter process | `DECODE-AC0EJ3-LR-RUNTIME-STORAGE-RETENTION` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 7.20.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-4) | Pixel classified Wiener filter process | `DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 7.20.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-4) | Pixel classified Wiener filter process | `DECODE-AC0EJ3-LR-TX-SKIP-GRID-RETENTION` | ✅ | 🟡 | — | ✅ | 1 |

@@ -36,18 +36,20 @@ use self::limits::{checked_add, decoded_frame_byte_budget};
 use self::wienerns_lr::ensure_wienerns_lr_unit_runtime_frontier;
 #[cfg(test)]
 use self::wienerns_lr::{
+    LR_LIVE_FRAME_SAMPLE_STORAGE_BYTES, LR_LIVE_TX_SKIP_STORAGE_BYTES_PER_VALUE,
     WIENER_NS_CHROMA_SOURCE_TAP_COUNT, WienerNsLrClassifiedWienerStorageInputs,
     WienerNsLrClassifiedWienerValueSourceSample, WienerNsLrFilterClassValue,
+    WienerNsLrLiveStorageAllocation, WienerNsLrRuntimeStorageRetentionFrontier,
     WienerNsLrSourceReadConfig, WienerNsLrSourceReadFrontier, WienerNsLrSourceReadSample,
     WienerNsLrTxSkipGrid, WienerNsLrTxSkipLookup, WienerNsLrTxSkipTransformRecord,
     derive_wienerns_lr_classified_wiener_frontier,
     derive_wienerns_lr_classified_wiener_storage_frontier,
     derive_wienerns_lr_classified_wiener_values_frontier,
-    derive_wienerns_lr_runtime_source_frontiers,
+    derive_wienerns_lr_live_storage_allocation, derive_wienerns_lr_runtime_source_frontiers,
     derive_wienerns_lr_runtime_storage_retention_frontier, derive_wienerns_lr_source_read_frontier,
     derive_wienerns_lr_tx_skip_grid_retention, map_wienerns_lr_unit_frontier_error,
     record_wienerns_lr_chroma_luma_source_reads,
-    wienerns_lr_classified_wiener_storage_runtime_error,
+    wienerns_lr_classified_wiener_storage_runtime_error, wienerns_lr_live_storage_allocation_error,
     wienerns_lr_runtime_storage_retention_error, wienerns_lr_source_read_config,
     wienerns_lr_source_read_runtime_error,
 };
@@ -83,6 +85,9 @@ const AC0EJ3_LR_CLASSIFIED_WIENER_STORAGE_MATRIX_ROW: &str = "ac0ej3-lr-classifi
 const AC0EJ3_LR_RUNTIME_STORAGE_RETENTION_FEATURE_ID: &str =
     "DECODE-AC0EJ3-LR-RUNTIME-STORAGE-RETENTION";
 const AC0EJ3_LR_RUNTIME_STORAGE_RETENTION_MATRIX_ROW: &str = "ac0ej3-lr-runtime-storage-retention";
+const AC0EJ3_LR_LIVE_STORAGE_ALLOCATION_FEATURE_ID: &str =
+    "DECODE-AC0EJ3-LR-LIVE-STORAGE-ALLOCATION";
+const AC0EJ3_LR_LIVE_STORAGE_ALLOCATION_MATRIX_ROW: &str = "ac0ej3-lr-live-storage-allocation";
 const MINIMAL_WIDTH: u32 = 64;
 const MINIMAL_HEIGHT: u32 = 64;
 const MINIMAL_TRACE_SYMBOLS: u64 = 6;

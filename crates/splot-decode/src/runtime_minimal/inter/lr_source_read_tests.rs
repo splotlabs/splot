@@ -843,13 +843,14 @@ fn wienerns_lr_runtime_storage_retention_frontier_counts_ten_bit_buffers_and_tx_
     assert_eq!(frontier.frame_buffer_bytes, 64 * 64 * 3 / 2 * 2);
     assert_eq!(
         frontier.retained_frame_buffer_bytes,
-        64 * 64 * 3 / 2 * 2 * 2
+        64 * 64 * 3 / 2 * super::super::LR_LIVE_FRAME_SAMPLE_STORAGE_BYTES * 2
     );
     assert_eq!((frontier.tx_skip_rows, frontier.tx_skip_cols), (16, 16));
     assert_eq!(frontier.tx_skip_values, 16 * 16);
     assert_eq!(
         frontier.total_storage_bytes,
-        frontier.retained_frame_buffer_bytes + frontier.tx_skip_values
+        frontier.retained_frame_buffer_bytes
+            + frontier.tx_skip_values * super::super::LR_LIVE_TX_SKIP_STORAGE_BYTES_PER_VALUE
     );
 }
 
@@ -857,9 +858,12 @@ fn wienerns_lr_runtime_storage_retention_frontier_counts_ten_bit_buffers_and_tx_
 fn wienerns_lr_runtime_storage_retention_frontier_limits_total_storage_before_diagnostic() {
     let (mut sequence, core) = fixture_sequence_and_key_core(TWO_FRAME_INTER_FIXTURE);
     sequence.general.bit_depth_idc = BitDepthIdc::Ten;
+    let actual_storage_bytes =
+        64_u64 * 64 * 3 / 2 * super::super::LR_LIVE_FRAME_SAMPLE_STORAGE_BYTES * 2
+            + 16_u64 * 16 * super::super::LR_LIVE_TX_SKIP_STORAGE_BYTES_PER_VALUE;
     let limits = DecodeLimits::unlimited()
         .with_max_decoded_frame_bytes(DecodeLimitThreshold::Max(12_288))
-        .with_max_reference_store_bytes(DecodeLimitThreshold::Max(24_831));
+        .with_max_reference_store_bytes(DecodeLimitThreshold::Max(actual_storage_bytes - 1));
 
     let error = super::super::derive_wienerns_lr_runtime_storage_retention_frontier(
         &sequence,
@@ -873,8 +877,11 @@ fn wienerns_lr_runtime_storage_retention_frontier_limits_total_storage_before_di
         DecodeError::Limit { source } => {
             assert_eq!(source.name(), DecodeLimitName::MaxReferenceStoreBytes);
             let check = source.check().expect("limit failure carries check");
-            assert_eq!(check.threshold(), DecodeLimitThreshold::Max(24_831));
-            assert_eq!(check.actual(), 24_832);
+            assert_eq!(
+                check.threshold(),
+                DecodeLimitThreshold::Max(actual_storage_bytes - 1)
+            );
+            assert_eq!(check.actual(), actual_storage_bytes);
         }
         _ => panic!("storage retention must fail as a resource limit"),
     }

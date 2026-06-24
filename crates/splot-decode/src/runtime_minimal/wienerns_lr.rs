@@ -21,6 +21,7 @@ use crate::{DecodeLimitName, DecodeLimits, DecodeOptions, DecodePlannedObu, Deco
 use super::limits::{checked_add, checked_mul, decoded_frame_storage_budget};
 use super::{
     AC0EJ3_LR_CLASSIFIED_WIENER_STORAGE_FEATURE_ID, AC0EJ3_LR_CLASSIFIED_WIENER_STORAGE_MATRIX_ROW,
+    AC0EJ3_LR_LIVE_STORAGE_ALLOCATION_FEATURE_ID, AC0EJ3_LR_LIVE_STORAGE_ALLOCATION_MATRIX_ROW,
     AC0EJ3_LR_RUNTIME_STORAGE_RETENTION_FEATURE_ID, AC0EJ3_LR_RUNTIME_STORAGE_RETENTION_MATRIX_ROW,
     AC0EJ3_LR_SOURCE_READ_FEATURE_ID, AC0EJ3_LR_SOURCE_READ_MATRIX_ROW,
     AC0EJ3_LR_UNIT_SELECTIONS_FEATURE_ID, AC0EJ3_LR_UNIT_SELECTIONS_MATRIX_ROW, derive_tile_plan,
@@ -36,7 +37,14 @@ const PC_WIENER_LAG: isize = 4;
 /// AV2 §7.20.4 `get_features`: m/up/down/upright/downleft/downright/upleft.
 const PC_WIENER_SOURCE_READS_PER_FEATURE: u64 = 7;
 const LR_RETAINED_FRAME_BUFFERS: u64 = 2;
-const LR_TX_SKIP_STORAGE_BYTES_PER_VALUE: u64 = 1;
+
+mod live_storage;
+
+pub(super) use self::live_storage::{
+    LR_LIVE_FRAME_SAMPLE_STORAGE_BYTES, LR_LIVE_TX_SKIP_STORAGE_BYTES_PER_VALUE,
+    WienerNsLrLiveStorageAllocation,
+};
+
 #[cfg_attr(
     not(test),
     allow(
@@ -536,13 +544,14 @@ pub(super) fn ensure_wienerns_lr_unit_runtime_frontier(
                 options.limits(),
             )?;
         if classified_frontier.is_some() {
-            let _storage_retention = derive_wienerns_lr_runtime_storage_retention_frontier(
+            let storage_retention = derive_wienerns_lr_runtime_storage_retention_frontier(
                 sequence,
                 core,
                 key_envelope.offset,
                 options.limits(),
             )?;
-            return Err(wienerns_lr_runtime_storage_retention_error(
+            let _live_storage = derive_wienerns_lr_live_storage_allocation(storage_retention)?;
+            return Err(wienerns_lr_live_storage_allocation_error(
                 key_envelope.offset,
             ));
         }
@@ -594,11 +603,21 @@ pub(super) fn derive_wienerns_lr_runtime_storage_retention_frontier(
         )?;
     }
 
+    let bytes_per_sample = decoded_storage_bytes_per_sample(bit_depth);
+    let decoded_sample_count = budget.decoded_bytes / bytes_per_sample;
+    let live_frame_buffer_bytes = checked_mul(
+        DecodeLimitName::MaxReferenceStoreBytes,
+        decoded_sample_count,
+        LR_LIVE_FRAME_SAMPLE_STORAGE_BYTES,
+    )?;
     let retained_frame_buffer_bytes = checked_mul(
         DecodeLimitName::MaxReferenceStoreBytes,
-        budget.decoded_bytes,
+        live_frame_buffer_bytes,
         LR_RETAINED_FRAME_BUFFERS,
     )?;
+    // Charge the private fail-closed live shell by its current `Option` slot
+    // sizes, not by compact AV2 payload bytes, so `MaxReferenceStoreBytes`
+    // bounds the allocation made before the unsupported-feature diagnostic.
     // `frame_mi_dimensions` only reports missing parsed facts or an unexpected
     // empty MI grid here; it does not wrap resource-limit failures.
     let (tx_skip_rows, tx_skip_cols) = crate::tile_payload::frame_mi_dimensions(core)
@@ -609,12 +628,10 @@ pub(super) fn derive_wienerns_lr_runtime_storage_retention_frontier(
         usize_to_storage_u64(tx_skip_cols, "LrTxSkip grid columns")?,
     )?;
     limits.ensure_allocation_len(DecodeLimitName::MaxDecodedFrameBytes, tx_skip_values)?;
-    // Budget retained `LrTxSkip` storage as one byte per value until the live
-    // allocator chooses a packed or typed representation.
     let tx_skip_storage_bytes = checked_mul(
         DecodeLimitName::MaxReferenceStoreBytes,
         tx_skip_values,
-        LR_TX_SKIP_STORAGE_BYTES_PER_VALUE,
+        LR_LIVE_TX_SKIP_STORAGE_BYTES_PER_VALUE,
     )?;
     let total_storage_bytes = checked_add(
         DecodeLimitName::MaxReferenceStoreBytes,
@@ -633,6 +650,12 @@ pub(super) fn derive_wienerns_lr_runtime_storage_retention_frontier(
         tx_skip_values,
         total_storage_bytes,
     })
+}
+
+pub(super) fn derive_wienerns_lr_live_storage_allocation(
+    frontier: WienerNsLrRuntimeStorageRetentionFrontier,
+) -> Result<WienerNsLrLiveStorageAllocation> {
+    WienerNsLrLiveStorageAllocation::from_retention_frontier(frontier)
 }
 
 const fn decoded_storage_bytes_per_sample(bit_depth: BitDepth) -> u64 {
@@ -1756,6 +1779,17 @@ pub(super) fn wienerns_lr_runtime_storage_retention_error(offset: ByteOffset) ->
         "minimal runtime consumed active AV2 frame-level Wiener NS LR unit syntax, retained §7.20.1 source-bound and tile-bound facts, resolved §7.20.4 classified-luma source-read and LrTxSkip lookup coordinates, resolved later §7.20.3 source-read state, has storage-backed FilterClass derivation for decoded CurrFrame/CdefFrame views plus a bounded LrTxSkip grid, and now derives/limit-checks the live active-bit-depth CurrFrame/CdefFrame storage footprint plus the frame-wide LrTxSkip grid shape, but tile reconstruction has not populated decoded frame samples or LrTxSkip values for filtering; loop-restoration filtering/output/reference refresh is not applied",
         AC0EJ3_LR_RUNTIME_STORAGE_RETENTION_MATRIX_ROW,
         AC0EJ3_LR_RUNTIME_STORAGE_RETENTION_FEATURE_ID,
+        "7.20.4",
+    )
+}
+
+pub(super) fn wienerns_lr_live_storage_allocation_error(offset: ByteOffset) -> DecodeError {
+    unsupported_feature_at(
+        "unsupported_wienerns_lr_live_storage_unpopulated",
+        offset,
+        "minimal runtime consumed active AV2 frame-level Wiener NS LR unit syntax, retained §7.20.1 source-bound and tile-bound facts, resolved §7.20.4 classified-luma source-read and LrTxSkip lookup coordinates, resolved later §7.20.3 source-read state, derived/limit-checked the live active-bit-depth CurrFrame/CdefFrame storage footprint plus the frame-wide LrTxSkip grid shape, and allocated private unpopulated CurrFrame, CdefFrame, and LrTxSkip storage shells, but tile reconstruction has not populated decoded frame samples or LrTxSkip values for storage-backed classification; FilterClass retention, loop-restoration filtering/output, and reference refresh are not applied",
+        AC0EJ3_LR_LIVE_STORAGE_ALLOCATION_MATRIX_ROW,
+        AC0EJ3_LR_LIVE_STORAGE_ALLOCATION_FEATURE_ID,
         "7.20.4",
     )
 }

@@ -1173,6 +1173,8 @@ use block::decode_inter_blocks;
 use cross_frame::{ResolvedCdfLoad, order_hint_history_unwrapped, resolve_cdf_load};
 
 #[cfg(test)]
+mod lr_live_storage_tests;
+#[cfg(test)]
 mod lr_source_read_tests;
 
 #[cfg(test)]
