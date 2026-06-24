@@ -208,9 +208,10 @@ row SHALL describe that the minimal runtime consumes the observed AV2 §5.20.5.3
 `use_intrabc`, §5.20.10.1 CDEF, and §5.20.5.11 delta-Q prelude syntax before
 §5.20.5.5 luma mode and §5.20.6 transform partition parsing in the local
 ac0ej3 stream. The row SHALL also record the pre-tile unsupported-tool gate and
-the chroma-offset leaf rejection. The row SHALL remain fail-closed before
-decoded frame samples, loop-restoration filtering/output, reference refresh, or
-successful ac0ej3 decode.
+the luma-only chroma-offset leaf admission while preserving chroma-bearing
+offset rejection. The row SHALL remain fail-closed before decoded frame samples,
+loop-restoration filtering/output, reference refresh, or successful ac0ej3
+decode.
 
 #### Scenario: Matrix evidence records the intra prelude transform boundary
 
@@ -223,6 +224,24 @@ successful ac0ej3 decode.
 - **AND** it does not claim decoded frame samples, loop-restoration filtering,
   output, reference refresh, AVM/dav2d byte equality, or successful ac0ej3
   decode
+
+### Requirement: ac0ej3 selectable narrow-record live frontier evidence
+
+Decoder support tracking SHALL record that the local ac0ej3 live probe advances
+past `unsupported_wienerns_lr_selectable_transform_records_empty_transform`
+after the selectable narrow-record handoff. The support rows SHALL record the
+new structured unsupported frontier, proof commands, and explicit non-goals for
+decoded samples, loop-restoration filtering/output, reference refresh,
+AVM/dav2d byte equality, and successful ac0ej3 decode.
+
+#### Scenario: Local ac0ej3 probe reaches active MRL frontier
+
+- **WHEN** the local `ac0ej3.ivf` probe runs after the selectable narrow-record
+  handoff
+- **THEN** decoder support status records the new active-MRL unsupported
+  frontier
+- **AND** the previous empty-transform diagnostic is no longer the live ac0ej3
+  frontier
 
 ### Requirement: Generated decoder support status
 The repository SHALL generate a committed decoder support status document from

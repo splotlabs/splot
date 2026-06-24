@@ -11,23 +11,57 @@ narrow records unsupported until separately proven.
 
 The decoder SHALL track `DECODE-AC0EJ3-SELECTABLE-NARROW-LUMA-RECORDS` as a
 partial runtime prerequisite for the ac0ej3 Wiener NS LR path. When the local
-stream's selectable transform-record handoff reaches a luma-only SDP leaf with
-valid nonzero luma dimensions, including the observed `BLOCK_4X32` case, the
-runtime SHALL consume AV2 §5.20.6.1/§5.20.6.3 transform-size syntax and
-§5.20.7.27 luma coefficient syntax needed to derive `LrTxSkip`, without
-requiring chroma syntax for that leaf. The runtime SHALL remain fail-closed
-before decoded sample population or output.
+stream's selectable transform-record handoff reaches a supported luma-only SDP
+or narrow selectable leaf with valid nonzero luma dimensions, including the
+observed `BLOCK_8X32` and luma-only chroma-offset `BLOCK_4X32` cases, the
+runtime SHALL record the leaf's actual 4x4-grid extent and consume §5.20.7.27
+luma coefficient syntax needed to derive `LrTxSkip`, without requiring chroma
+syntax for that leaf. For this bounded actual-extent subset, the runtime SHALL
+not fabricate max-rectangle transform cells outside the leaf. The runtime SHALL
+remain fail-closed before decoded sample population or output.
 
-#### Scenario: Luma-only BLOCK_4X32 advances the live frontier
+#### Scenario: Luma-only narrow leaves advance the live frontier
 
-- **WHEN** the local ac0ej3 mission stream reaches the luma-only `BLOCK_4X32`
-  selectable transform-record leaf at the current live gate
-- **THEN** the runtime consumes the luma mode, transform-size, and luma
-  coefficient syntax needed for its `LrTxSkip` transform records
+- **WHEN** the local ac0ej3 mission stream reaches a supported luma-only narrow
+  selectable transform-record leaf
+- **THEN** the runtime consumes the luma mode and luma coefficient syntax needed
+  for its `LrTxSkip` transform records
 - **AND** it no longer emits
-  `unsupported_wienerns_lr_selectable_transform_records_block_shape` for that
-  leaf
+  `unsupported_wienerns_lr_selectable_transform_records_block_shape` or
+  `unsupported_wienerns_lr_selectable_transform_records_empty_transform` for the
+  supported leaf
 - **AND** it stops at the next structured unsupported frontier before output
+
+### Requirement: ac0ej3 narrow luma leaves use actual extents
+
+The decoder SHALL keep
+`DECODE-AC0EJ3-SELECTABLE-NARROW-LUMA-RECORDS` as the prerequisite row for
+admitting luma-only narrow selectable leaves in the local ac0ej3 Wiener NS LR
+path. For the admitted narrow luma subset, transform-record derivation SHALL
+record the actual luma leaf width and height in 4x4 units and SHALL preserve the
+existing fail-closed guard for chroma-bearing narrow leaves.
+
+#### Scenario: Observed 8x32 luma-only leaf is retained
+
+- **WHEN** the selectable transform-record path reaches the observed luma-only
+  `BLOCK_8X32` leaf
+- **THEN** the retained transform record has the leaf's actual 2x8 4x4 extent
+- **AND** subsequent residual and `LrTxSkip` derivation use that extent
+
+#### Scenario: Observed luma-only chroma-offset 4x32 leaf is retained
+
+- **WHEN** the selectable transform-record path reaches the observed
+  chroma-offset `BLOCK_4X32` leaf with `has_chroma == false`
+- **THEN** the retained transform record has the leaf's actual 1x8 4x4 extent
+- **AND** chroma residual coordinate handoff remains out of scope
+
+#### Scenario: Chroma-bearing narrow leaf remains unsupported
+
+- **WHEN** a narrow selectable leaf or chroma-offset leaf also carries chroma
+  residual syntax
+- **THEN** the runtime rejects the path with a structured unsupported-feature
+  diagnostic
+- **AND** it does not reuse the luma-only bypass for chroma coordinates
 
 #### Scenario: Chroma claims remain excluded
 

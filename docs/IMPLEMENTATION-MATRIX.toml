@@ -10697,7 +10697,7 @@ openspec_change = "decode-ac0ej3-luma-txtype-residual-handoff"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Partial runtime prerequisite row for the ac0ej3 Wiener NS LR selectable transform-record residual path after active intra IST and chroma CCTX syntax handoff. The transform-tool residual helper resolves active luma §5.20.8.2/§5.20.8.3 transform-type syntax to a retained `PlaneTxType`, admits non-DCT luma transform types only for the Wiener NS LR tx-skip syntax-only handoff, and passes the retained type into the staged ordinary coefficient branch so §5.20.7.30 scan order and §8.3.2 coefficient contexts derive from the actual transform class. Reconstruction-safe callers still fail closed on the same non-DCT luma transform type before decoded samples. The live ac0ej3 probe advances past the former `unsupported_dctonly_residual_luma_tx_type` stop and now reaches `unsupported_wienerns_lr_selectable_transform_records_empty_transform` at byte offset 110. This row does not claim inverse transform support, residual addition, chroma-offset residual coordinate handoff, decoded CurrFrame/CdefFrame sample population, loop-restoration filtering/output, raw/Y4M/hash success, reference refresh, AVM/dav2d byte equality, or successful ac0ej3 decode."
+notes = "Partial runtime prerequisite row for the ac0ej3 Wiener NS LR selectable transform-record residual path after active intra IST and chroma CCTX syntax handoff. The transform-tool residual helper resolves active luma §5.20.8.2/§5.20.8.3 transform-type syntax to a retained `PlaneTxType`, admits non-DCT luma transform types only for the Wiener NS LR tx-skip syntax-only handoff, and passes the retained type into the staged ordinary coefficient branch so §5.20.7.30 scan order and §8.3.2 coefficient contexts derive from the actual transform class. Reconstruction-safe callers still fail closed on the same non-DCT luma transform type before decoded samples. The live ac0ej3 probe advances past the former `unsupported_dctonly_residual_luma_tx_type` stop and now reaches `unsupported_wienerns_lr_live_transform_record_mrl_mode` at byte offset 110 after selectable narrow-record handoff. This row does not claim inverse transform support, residual addition, chroma-offset residual coordinate handoff, decoded CurrFrame/CdefFrame sample population, loop-restoration filtering/output, raw/Y4M/hash success, reference refresh, AVM/dav2d byte equality, or successful ac0ej3 decode."
 
 [feature.status]
 mapped = "done"
@@ -10722,7 +10722,7 @@ tests = [
     "crates/splot-decode/src/tile_payload/general_intra_residual.rs::tests::luma_txtype_residual_staged_base_config_suppresses_parity_hiding_for_idtx",
     "crates/splot-decode/src/tile_payload/general_intra_residual.rs::tests::luma_txtype_residual_staged_base_config_suppresses_tcq_for_1d_luma_tx_type",
     "crates/splot-cli/tests/decode_cli.rs::local_ac0ej3_reaches_current_runtime_gate_without_output",
-    "local ac0ej3 probe: unsupported_wienerns_lr_selectable_transform_records_empty_transform at byte offset 110 after luma transform-type residual handoff",
+    "local ac0ej3 probe: unsupported_wienerns_lr_live_transform_record_mrl_mode at byte offset 110 after selectable narrow-record handoff",
 ]
 commands = [
     "cargo test -p splot-decode tile_payload::general_intra_residual --locked",
@@ -11700,11 +11700,11 @@ sources = [
 ]
 crate = "splot-decode"
 module = "crates/splot-decode/src/runtime_minimal/wienerns_lr/tx_records.rs"
-openspec_change = "decode-ac0ej3-transform-record-residual"
+openspec_change = "decode-ac0ej3-selectable-narrow-record-handoff"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Partial prerequisite row for parsing supported AV2 §5.20.6.1/§5.20.6.3 `TX_MODE_SELECT` luma transform-size records in the ac0ej3 Wiener NS LR runtime path. The local stream's active CfL mode-info prerequisite is tracked by `DECODE-AC0EJ3-CFL-CHROMA-MODE-FRONTIER`; follow-on rows admit the observed luma-only `BLOCK_4X32` transform leaf, retain SDP `CflAllowedInSdp`, add the pre-tile unsupported-tool gate, consume active intra IST metadata, and hand off chroma CCTX metadata plus non-DCT chroma coefficient syntax for LR tx-skip records. This row now also threads each selectable luma transform record's full-block fill fact into the §8.3.2 `all_zero` context while retaining §5.20.7.24/§5.20.7.25 transform size, §5.20.7.27 coefficient, and §5.20.7.30 scan derivation from record geometry. The live ac0ej3 probe now advances past the former `unsupported_wienerns_lr_live_transform_record_residual_parse` scan/EOB mismatch and stops at `unsupported_wienerns_lr_selectable_transform_records_empty_transform` at byte offset 110 after luma transform-type residual handoff. This row feeds supported selectable transform extents and §5.20.7.27 coefficient `eob` facts into live `LrTxSkip` storage for admitted subsets only. It does not claim enabled MRL/DIP/intra-edge/IBP support, non-DCT luma transform admission, CfL prediction, decoded CurrFrame/CdefFrame sample population, `FilterClass`, `SubclassLookup`, loop-restoration filtering/reconstruction, chroma Wiener NS filtering, 10-bit output, reference refresh, AVM/dav2d byte equality, or successful ac0ej3 decode."
+notes = "Partial prerequisite row for parsing supported AV2 §5.20.6.1/§5.20.6.3 `TX_MODE_SELECT` luma transform-size records in the ac0ej3 Wiener NS LR runtime path. The local stream's active CfL mode-info prerequisite is tracked by `DECODE-AC0EJ3-CFL-CHROMA-MODE-FRONTIER`; follow-on rows admit the observed luma-only `BLOCK_8X32` transform leaf, retain SDP `CflAllowedInSdp`, add the pre-tile unsupported-tool gate, consume active intra IST metadata, and hand off chroma CCTX metadata plus non-DCT chroma coefficient syntax for LR tx-skip records. This row now threads each selectable luma transform record's full-block fill fact into the §8.3.2 `all_zero` context, admits the observed luma-only narrow leaf by retaining its actual 2x8 4x4-grid extent before max-rectangle partition recursion, admits the follow-on luma-only chroma-offset `BLOCK_4X32` leaf by retaining its actual 1x8 extent without chroma residual coordinate handoff, preserves zero-geometry rejection outside those bounded bypasses, and carries skipped §5.20.7.27 residuals into retained `LrTxSkip` records with `skip_flag = true` and `eob = 0`. The live ac0ej3 probe now advances past the former `unsupported_wienerns_lr_live_transform_record_residual_parse` scan/EOB mismatch and stops at `unsupported_wienerns_lr_live_transform_record_mrl_mode` at byte offset 110 after selectable narrow-record handoff. This row feeds supported selectable transform extents and §5.20.7.27 coefficient skip/EOB facts into live `LrTxSkip` storage for admitted subsets only. It does not claim active MRL prediction, DIP, intra-edge, IBP prediction semantics, broad non-DCT luma reconstruction, CfL prediction, chroma residual coordinate handoff, decoded CurrFrame/CdefFrame sample population, `FilterClass`, `SubclassLookup`, loop-restoration filtering/reconstruction, chroma Wiener NS filtering, 10-bit output, reference refresh, AVM/dav2d byte equality, or successful ac0ej3 decode."
 
 [feature.status]
 mapped = "done"
@@ -11721,9 +11721,14 @@ perf = "not-applicable"
 [feature.proof]
 tests = [
     "crates/splot-decode/src/runtime_minimal/wienerns_lr/tx_records.rs::tests::selectable_luma_record_fill_context_tracks_full_block_extent",
+    "crates/splot-decode/src/runtime_minimal/wienerns_lr/tx_records.rs::tests::selectable_chroma_offset_leaf_support_is_luma_only",
+    "crates/splot-decode/src/runtime_minimal/wienerns_lr/tx_records.rs::tests::selectable_luma_leaf_actual_extent_is_only_luma_only_narrow",
+    "crates/splot-decode/src/runtime_minimal/wienerns_lr/tx_records.rs::tests::selectable_tx_grid_records_observed_luma_only_block_8x32_region",
+    "crates/splot-decode/src/runtime_minimal/wienerns_lr/tx_records.rs::tests::selectable_tx_grid_rejects_empty_transform_dimensions",
+    "crates/splot-decode/src/runtime_minimal/wienerns_lr/tx_records.rs::tests::tx_skip_grid_retention_preserves_skip_flag_for_nonzero_eob_record",
     "crates/splot-decode/src/tile_payload/coeff_loop/eob_symbol_tests.rs::coeff_scan_walk_rejects_eob_larger_than_scan_without_mutation",
     "crates/splot-cli/tests/decode_cli.rs::local_ac0ej3_reaches_current_runtime_gate_without_output",
-    "local ac0ej3 probe: unsupported_wienerns_lr_selectable_transform_records_empty_transform at byte offset 110 after luma transform-type residual handoff",
+    "local ac0ej3 probe: unsupported_wienerns_lr_live_transform_record_mrl_mode at byte offset 110 after selectable narrow-record handoff",
 ]
 commands = [
     "cargo test -p splot-decode runtime_minimal::wienerns_lr::tx_records --locked",
@@ -11755,11 +11760,11 @@ sources = [
 ]
 crate = "splot-decode"
 module = "crates/splot-decode/src/runtime_minimal/wienerns_lr/tx_records.rs"
-openspec_change = "decode-ac0ej3-selectable-narrow-luma-records"
+openspec_change = "decode-ac0ej3-selectable-narrow-record-handoff"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Partial prerequisite row for luma-only narrow selectable transform leaves in the local ac0ej3 Wiener NS LR runtime path. The transform-record parser admits the observed `BLOCK_4X32` luma-only leaf, retains its extents for `LrTxSkip`, and preserves fail-closed rejection for chroma-bearing narrow leaves so unsupported chroma records are not fabricated. The live ac0ej3 probe advances past `unsupported_wienerns_lr_selectable_transform_records_block_shape`; follow-on SDP, pre-tile, active-tool, IST, and chroma CCTX rows now move it to `unsupported_wienerns_lr_selectable_transform_records_empty_transform` at byte offset 110 after luma transform-type residual handoff. This row does not claim decoded CurrFrame/CdefFrame sample population, enabled MRL/DIP/intra-edge/IBP support, CfL prediction, chroma reconstruction, `FilterClass` grid retention, `SubclassLookup`, loop-restoration filtering/reconstruction, chroma Wiener NS filtering, 10-bit output, reference refresh, AVM/dav2d byte equality, or successful ac0ej3 decode."
+notes = "Partial prerequisite row for luma-only narrow selectable transform leaves in the local ac0ej3 Wiener NS LR runtime path. The transform-record parser admits the observed `BLOCK_8X32` luma-only leaf by retaining its actual 2x8 4x4-grid extent before max-rectangle partition recursion, admits the follow-on luma-only chroma-offset `BLOCK_4X32` leaf by retaining its actual 1x8 extent without chroma residual coordinate handoff, uses those extents for `LrTxSkip`, and preserves fail-closed rejection for chroma-bearing narrow leaves and zero geometry outside the bounded luma-only bypasses. The live ac0ej3 probe advances past `unsupported_wienerns_lr_selectable_transform_records_block_shape`; follow-on SDP, pre-tile, active-tool, IST, chroma CCTX, luma transform-type, and selectable narrow-record handoffs now move it to `unsupported_wienerns_lr_live_transform_record_mrl_mode` at byte offset 110 after selectable narrow-record handoff. This row does not claim decoded CurrFrame/CdefFrame sample population, active MRL prediction, DIP, intra-edge, IBP prediction semantics, CfL prediction, chroma reconstruction or residual coordinate handoff, `FilterClass` grid retention, `SubclassLookup`, loop-restoration filtering/reconstruction, chroma Wiener NS filtering, 10-bit output, reference refresh, AVM/dav2d byte equality, or successful ac0ej3 decode."
 
 [feature.status]
 mapped = "done"
@@ -11775,11 +11780,15 @@ perf = "not-applicable"
 
 [feature.proof]
 tests = [
-    "crates/splot-decode/src/runtime_minimal/wienerns_lr/tx_records.rs::tests::selectable_leaf_shape_admits_observed_luma_only_block_4x32",
+    "crates/splot-decode/src/runtime_minimal/wienerns_lr/tx_records.rs::tests::selectable_leaf_shape_admits_luma_only_block_4x32",
     "crates/splot-decode/src/runtime_minimal/wienerns_lr/tx_records.rs::tests::selectable_leaf_shape_preserves_chroma_bearing_narrow_guard",
-    "crates/splot-decode/src/runtime_minimal/wienerns_lr/tx_records.rs::tests::selectable_tx_grid_records_observed_luma_only_block_4x32_region",
+    "crates/splot-decode/src/runtime_minimal/wienerns_lr/tx_records.rs::tests::selectable_chroma_offset_leaf_support_is_luma_only",
+    "crates/splot-decode/src/runtime_minimal/wienerns_lr/tx_records.rs::tests::selectable_luma_leaf_actual_extent_is_only_luma_only_narrow",
+    "crates/splot-decode/src/runtime_minimal/wienerns_lr/tx_records.rs::tests::selectable_tx_grid_records_observed_luma_only_block_8x32_region",
+    "crates/splot-decode/src/runtime_minimal/wienerns_lr/tx_records.rs::tests::selectable_tx_grid_records_luma_only_block_4x32_region",
+    "crates/splot-decode/src/runtime_minimal/wienerns_lr/tx_records.rs::tests::selectable_tx_grid_rejects_empty_transform_dimensions",
     "crates/splot-cli/tests/decode_cli.rs::local_ac0ej3_reaches_current_runtime_gate_without_output",
-    "local ac0ej3 probe: unsupported_wienerns_lr_selectable_transform_records_empty_transform at byte offset 110 after luma transform-type residual handoff",
+    "local ac0ej3 probe: unsupported_wienerns_lr_live_transform_record_mrl_mode at byte offset 110 after selectable narrow-record handoff",
 ]
 commands = [
     "cargo test -p splot-decode runtime_minimal::wienerns_lr::tx_records --locked",
@@ -11817,7 +11826,7 @@ openspec_change = "decode-ac0ej3-cfl-chroma-mode-frontier"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Partial runtime prerequisite row for the local ac0ej3 Wiener NS LR selectable-transform path. The tile CDF subset exposes generated AV2 §9.3 CfL index, sign, alpha, MHCCP, and MH direction rows through checked selectors, copy/average lifecycle, and frame-end scaling. General intra chroma mode-info consumes active §5.20.5.6 `is_cfl`, represents the typed chroma mode as §6.19.7.4 `UV_CFL_PRED`, consumes §5.20.7.32 `read_cfl_alphas()` in spec order with §8.3.2 alpha/MH direction contexts, and passes the typed `UV_CFL_PRED` value into coefficient transform-mode handoff so the symbol stream stays synchronized. The local ac0ej3 probe advances past `unsupported_wienerns_lr_live_transform_record_cfl_mode`; follow-on SDP, pre-tile, active-tool, IST, and chroma CCTX rows now move it to `unsupported_wienerns_lr_selectable_transform_records_empty_transform` at byte offset 110 after luma transform-type residual handoff. This row does not claim CfL prediction, `CflRef` capture, alpha application, chroma reconstruction, enabled MRL/DIP/intra-edge/IBP support, decoded samples, loop-restoration filtering/output, 10-bit output, reference refresh, AVM/dav2d byte equality, or successful ac0ej3 decode."
+notes = "Partial runtime prerequisite row for the local ac0ej3 Wiener NS LR selectable-transform path. The tile CDF subset exposes generated AV2 §9.3 CfL index, sign, alpha, MHCCP, and MH direction rows through checked selectors, copy/average lifecycle, and frame-end scaling. General intra chroma mode-info consumes active §5.20.5.6 `is_cfl`, represents the typed chroma mode as §6.19.7.4 `UV_CFL_PRED`, consumes §5.20.7.32 `read_cfl_alphas()` in spec order with §8.3.2 alpha/MH direction contexts, and passes the typed `UV_CFL_PRED` value into coefficient transform-mode handoff so the symbol stream stays synchronized. The local ac0ej3 probe advances past `unsupported_wienerns_lr_live_transform_record_cfl_mode`; follow-on SDP, pre-tile, active-tool, IST, and chroma CCTX rows now move it to `unsupported_wienerns_lr_live_transform_record_mrl_mode` at byte offset 110 after selectable narrow-record handoff. This row does not claim CfL prediction, `CflRef` capture, alpha application, chroma reconstruction, enabled MRL/DIP/intra-edge/IBP support, decoded samples, loop-restoration filtering/output, 10-bit output, reference refresh, AVM/dav2d byte equality, or successful ac0ej3 decode."
 
 [feature.status]
 mapped = "done"
@@ -11839,7 +11848,7 @@ tests = [
     "crates/splot-decode/src/tile_payload/general_intra_block.rs::tests::cfl_alpha_contexts_match_spec_tables",
     "crates/splot-decode/src/tile_payload/general_intra_block.rs::tests::cfl_mh_dir_size_group_uses_generated_size_group",
     "crates/splot-decode/src/tile_payload/cdf/tests.rs::cfl_cdf_selectors_match_generated_defaults_and_check_bounds",
-    "local ac0ej3 probe: unsupported_wienerns_lr_selectable_transform_records_empty_transform at byte offset 110 after luma transform-type residual handoff",
+    "local ac0ej3 probe: unsupported_wienerns_lr_live_transform_record_mrl_mode at byte offset 110 after selectable narrow-record handoff",
 ]
 commands = [
     "cargo test -p splot-decode tile_payload::general_intra_block --locked",
@@ -11875,7 +11884,7 @@ openspec_change = "decode-ac0ej3-sdp-cfl-allowed-frontier"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Partial runtime prerequisite row for retaining AV2 §5.20.3.1 `CflAllowedInSdp` through SDP partition traversal and applying it to AV2 §5.20.5.6 chroma mode-info in the ac0ej3 Wiener NS LR selectable-transform path. SDP `CHROMA_PART` leaves whose retained state disables CfL/MHCCP no longer read the `is_cfl` symbol before `uv_mode`, preventing the earlier symbol desynchronization. The live ac0ej3 probe advances past `unsupported_wienerns_lr_live_transform_record_uv_mode`; follow-on pre-tile, active-tool, IST, and chroma CCTX rows now move it to `unsupported_wienerns_lr_selectable_transform_records_empty_transform` at byte offset 110 after luma transform-type residual handoff. This row does not claim CfL prediction, MHCCP prediction, decoded chroma samples, decoded CurrFrame/CdefFrame sample population, loop-restoration filtering/output, reference refresh, AVM/dav2d byte equality, or successful ac0ej3 decode."
+notes = "Partial runtime prerequisite row for retaining AV2 §5.20.3.1 `CflAllowedInSdp` through SDP partition traversal and applying it to AV2 §5.20.5.6 chroma mode-info in the ac0ej3 Wiener NS LR selectable-transform path. SDP `CHROMA_PART` leaves whose retained state disables CfL/MHCCP no longer read the `is_cfl` symbol before `uv_mode`, preventing the earlier symbol desynchronization. The live ac0ej3 probe advances past `unsupported_wienerns_lr_live_transform_record_uv_mode`; follow-on pre-tile, active-tool, IST, and chroma CCTX rows now move it to `unsupported_wienerns_lr_live_transform_record_mrl_mode` at byte offset 110 after selectable narrow-record handoff. This row does not claim CfL prediction, MHCCP prediction, decoded chroma samples, decoded CurrFrame/CdefFrame sample population, loop-restoration filtering/output, reference refresh, AVM/dav2d byte equality, or successful ac0ej3 decode."
 
 [feature.status]
 mapped = "done"
@@ -11895,7 +11904,7 @@ tests = [
     "crates/splot-decode/src/tile_payload/partition_traversal.rs::tests::sdp_cfl_allowed_state_propagates_to_chroma_children",
     "crates/splot-decode/src/tile_payload/general_intra_block.rs::tests::sdp_chroma_part_cfl_disallowed_reads_uv_mode_without_is_cfl",
     "crates/splot-cli/tests/decode_cli.rs::local_ac0ej3_reaches_current_runtime_gate_without_output",
-    "local ac0ej3 probe: unsupported_wienerns_lr_selectable_transform_records_empty_transform at byte offset 110 after luma transform-type residual handoff",
+    "local ac0ej3 probe: unsupported_wienerns_lr_live_transform_record_mrl_mode at byte offset 110 after selectable narrow-record handoff",
 ]
 commands = [
     "cargo test -p splot-decode sdp_cfl_allowed_state --locked",
@@ -11934,7 +11943,7 @@ openspec_change = "decode-ac0ej3-sdp-cfl-allowed-frontier"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Partial runtime prerequisite row for the ac0ej3 Wiener NS LR selectable transform-record path. Before tile symbol consumption, the path now rejects enabled mode, coefficient, and filtering tools whose syntax is not intentionally consumed, addressing the pre-tile admission gap. For admitted luma/shared leaves it wires zero-only `use_intrabc`, CDEF strength-index state, and delta-Q prelude reads in AV2 §5.20.5.3 order before luma mode and §5.20.6 transform partition parsing, and rejects chroma-offset leaves before deriving chroma residual coordinates from the wrong luma leaf. Follow-on active-tool, IST, and chroma CCTX rows now move the local ac0ej3 stream to `unsupported_wienerns_lr_selectable_transform_records_empty_transform` at byte offset 110 after luma transform-type residual handoff. This row does not claim enabled MRL/DIP/intra-edge/IBP support, active IntrABC, GDF/CCSO syntax, decoded samples, loop-restoration filtering/output, reference refresh, AVM/dav2d byte equality, or successful ac0ej3 decode."
+notes = "Partial runtime prerequisite row for the ac0ej3 Wiener NS LR selectable transform-record path. Before tile symbol consumption, the path now rejects enabled mode, coefficient, and filtering tools whose syntax is not intentionally consumed, addressing the pre-tile admission gap. For admitted luma/shared leaves it wires zero-only `use_intrabc`, CDEF strength-index state, and delta-Q prelude reads in AV2 §5.20.5.3 order before luma mode and §5.20.6 transform partition parsing, now admits luma-only chroma-offset leaves, and still rejects chroma-bearing offset leaves before deriving chroma residual coordinates from the wrong luma leaf. Follow-on active-tool, IST, and chroma CCTX rows now move the local ac0ej3 stream to `unsupported_wienerns_lr_live_transform_record_mrl_mode` at byte offset 110 after selectable narrow-record handoff. This row does not claim enabled MRL/DIP/intra-edge/IBP support, active IntrABC, GDF/CCSO syntax, decoded samples, chroma residual coordinate handoff, loop-restoration filtering/output, reference refresh, AVM/dav2d byte equality, or successful ac0ej3 decode."
 
 [feature.status]
 mapped = "done"
@@ -11955,7 +11964,7 @@ tests = [
     "crates/splot-decode/src/runtime_minimal/wienerns_lr/tx_records.rs::tests::cdef_index0_context_uses_zero_strength_neighbours_in_same_superblock",
     "crates/splot-decode/src/runtime_minimal/wienerns_lr/tx_records.rs::tests::cdef_fill_units_uses_cdef_aligned_origin_and_block_extent",
     "crates/splot-cli/tests/decode_cli.rs::local_ac0ej3_reaches_current_runtime_gate_without_output",
-    "local ac0ej3 probe: unsupported_wienerns_lr_selectable_transform_records_empty_transform at byte offset 110 after luma transform-type residual handoff",
+    "local ac0ej3 probe: unsupported_wienerns_lr_live_transform_record_mrl_mode at byte offset 110 after selectable narrow-record handoff",
 ]
 commands = [
     "cargo test -p splot-decode runtime_minimal::wienerns_lr::tx_records::tests::selectable_tool_gate --locked",
@@ -11993,7 +12002,7 @@ openspec_change = "decode-ac0ej3-active-intra-tool-frontier"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Partial runtime prerequisite row for the ac0ej3 Wiener NS LR selectable transform-record path after the pre-tile gate. The runtime now exposes generated AV2 §9.3 MRL index and secondary-index CDF rows through the tile CDF subset, includes them in copy/average/frame-end lifecycle state, consumes §5.20.5.5 `mrl_index == 0` for directional luma modes when `enable_mrls` is set, and consumes then rejects active nonzero MRL before claiming MRL prediction semantics. The selectable transform-record path also relaxes enabled-but-inactive MRL/IBP/intra-edge-filter and transform-tool sequence flags plus parsed CCSO filter state from broad pre-tile rejection into active-use or later filter/output frontiers. For enabled transform tools whose active syntax is not implemented, the residual helper consumes the §5.20.7.27 `all_zero` decision, admits skipped transform blocks, and rejects nonzero residuals before reading coefficient syntax that would skip required `transform_type()`, CCTX, or IST branches. The live ac0ej3 probe advances past the former `unsupported_wienerns_lr_selectable_transform_records_unsupported_intra_tool` and `unsupported_wienerns_lr_selectable_transform_records_ccso` byte-74 gates; follow-on IST and chroma CCTX rows now move it to `unsupported_wienerns_lr_selectable_transform_records_empty_transform` at byte offset 110 after luma transform-type residual handoff. This row does not claim active MRL prediction, DIP, IBP prediction semantics, intra-edge filtering, broad transform-type parsing, CCTX reconstruction, IST reconstruction, decoded CurrFrame/CdefFrame sample population, CCSO/GDF/CDEF/loop-restoration filtering, output, reference refresh, AVM/dav2d byte equality, or successful ac0ej3 decode."
+notes = "Partial runtime prerequisite row for the ac0ej3 Wiener NS LR selectable transform-record path after the pre-tile gate. The runtime now exposes generated AV2 §9.3 MRL index and secondary-index CDF rows through the tile CDF subset, includes them in copy/average/frame-end lifecycle state, consumes §5.20.5.5 `mrl_index == 0` for directional luma modes when `enable_mrls` is set, and consumes then rejects active nonzero MRL before claiming MRL prediction semantics. The selectable transform-record path also relaxes enabled-but-inactive MRL/IBP/intra-edge-filter and transform-tool sequence flags plus parsed CCSO filter state from broad pre-tile rejection into active-use or later filter/output frontiers. For enabled transform tools whose active syntax is not implemented, the residual helper consumes the §5.20.7.27 `all_zero` decision, admits skipped transform blocks, and rejects nonzero residuals before reading coefficient syntax that would skip required `transform_type()`, CCTX, or IST branches. The live ac0ej3 probe advances past the former `unsupported_wienerns_lr_selectable_transform_records_unsupported_intra_tool` and `unsupported_wienerns_lr_selectable_transform_records_ccso` byte-74 gates, and after IST, chroma CCTX, luma transform-type, and selectable narrow-record handoffs now reaches this row's structured `unsupported_wienerns_lr_live_transform_record_mrl_mode` active-MRL diagnostic at byte offset 110. This row does not claim active MRL prediction, DIP, IBP prediction semantics, intra-edge filtering, broad transform-type parsing, CCTX reconstruction, IST reconstruction, decoded CurrFrame/CdefFrame sample population, CCSO/GDF/CDEF/loop-restoration filtering, output, reference refresh, AVM/dav2d byte equality, or successful ac0ej3 decode."
 
 [feature.status]
 mapped = "done"
@@ -12017,7 +12026,7 @@ tests = [
     "crates/splot-decode/src/tile_payload/general_intra_block.rs::tests::active_mrl_mode_is_rejected_after_mrl_sec_index_is_consumed",
     "crates/splot-decode/src/runtime_minimal/wienerns_lr/tx_records.rs::tests::selectable_tool_gate_admits_enabled_inactive_transform_and_mrl_tools",
     "crates/splot-cli/tests/decode_cli.rs::local_ac0ej3_reaches_current_runtime_gate_without_output",
-    "local ac0ej3 probe: unsupported_wienerns_lr_selectable_transform_records_empty_transform at byte offset 110 after luma transform-type residual handoff",
+    "local ac0ej3 probe: unsupported_wienerns_lr_live_transform_record_mrl_mode at byte offset 110 after selectable narrow-record handoff",
 ]
 commands = [
     "cargo test -p splot-decode tile_payload::cdf --locked",
@@ -12057,7 +12066,7 @@ openspec_change = "decode-ac0ej3-dctonly-residual-frontier"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Partial runtime prerequisite row for the ac0ej3 Wiener NS LR selectable transform-record path. The residual helper carries typed sequence transform-tool facts into tile coefficient frame facts, consumes §5.20.7.27 `all_zero`, stages the nonzero EOB branch when transform tools are enabled, admits DCT_DCT residuals whose §5.20.8.2 path either reads no active transform_type syntax or reads supported active luma transform_type syntax that resolves back to DCT_DCT, and reports precise fail-closed diagnostics for non-DCT luma transform types and CCTX. The supported active luma subset covers TX_SET_INTRA_1/2 via generated MdIdx mapping plus wide/high long-transform sets via `is_long_side_dct` and `intra_tx_type_long` CDF rows. The live ac0ej3 probe previously reached this row's `unsupported_dctonly_residual_luma_tx_type` diagnostic at byte offset 110; follow-on intra IST, chroma CCTX, selectable transform-record fill-context, and luma transform-type handoff rows now advance it to `unsupported_wienerns_lr_selectable_transform_records_empty_transform` at byte offset 110. This row does not claim non-DCT luma transform admission, CCTX reconstruction, IST/secondary-transform semantics, decoded CurrFrame/CdefFrame sample population, loop-restoration filtering/output, reference refresh, AVM/dav2d byte equality, or successful ac0ej3 decode."
+notes = "Partial runtime prerequisite row for the ac0ej3 Wiener NS LR selectable transform-record path. The residual helper carries typed sequence transform-tool facts into tile coefficient frame facts, consumes §5.20.7.27 `all_zero`, stages the nonzero EOB branch when transform tools are enabled, admits DCT_DCT residuals whose §5.20.8.2 path either reads no active transform_type syntax or reads supported active luma transform_type syntax that resolves back to DCT_DCT, and reports precise fail-closed diagnostics for non-DCT luma transform types and CCTX. The supported active luma subset covers TX_SET_INTRA_1/2 via generated MdIdx mapping plus wide/high long-transform sets via `is_long_side_dct` and `intra_tx_type_long` CDF rows. The live ac0ej3 probe previously reached this row's `unsupported_dctonly_residual_luma_tx_type` diagnostic at byte offset 110; follow-on intra IST, chroma CCTX, selectable transform-record fill-context, and luma transform-type handoff rows now advance it to `unsupported_wienerns_lr_live_transform_record_mrl_mode` at byte offset 110 after selectable narrow-record handoff. This row does not claim non-DCT luma transform admission, CCTX reconstruction, IST/secondary-transform semantics, decoded CurrFrame/CdefFrame sample population, loop-restoration filtering/output, reference refresh, AVM/dav2d byte equality, or successful ac0ej3 decode."
 
 [feature.status]
 mapped = "done"
@@ -12081,7 +12090,7 @@ tests = [
     "crates/splot-decode/src/tile_payload/cdf/tests.rs::tx_partition_rows_load_defaults_and_report_selector_errors",
     "crates/splot-decode/src/tile_payload/cdf/block_read.rs::tests::reads_supported_block_symbol_rows",
     "crates/splot-cli/tests/decode_cli.rs::local_ac0ej3_reaches_current_runtime_gate_without_output",
-    "local ac0ej3 probe: unsupported_wienerns_lr_selectable_transform_records_empty_transform at byte offset 110 after luma transform-type residual handoff",
+    "local ac0ej3 probe: unsupported_wienerns_lr_live_transform_record_mrl_mode at byte offset 110 after selectable narrow-record handoff",
 ]
 commands = [
     "cargo test -p splot-decode tile_payload::cdf --locked",
@@ -12183,7 +12192,7 @@ openspec_change = "decode-ac0ej3-active-intra-ist-handoff"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Partial runtime prerequisite row for the ac0ej3 Wiener NS LR selectable transform-record residual path after the zero intra IST frontier. The DCT-only residual policy now carries an explicit active-intra-IST handling mode: reconstruction-safe callers still consume active §5.20.7.29 `sec_tx_type` plus intra `most_probable_stx_set` before failing closed, while the Wiener NS LR tx-skip record path opts into a syntax-only handoff that stores the parsed active IST metadata on the luma coefficient block and transform record. This is valid only for deriving §7.20.4 `LrTxSkip` inputs from parsed skip/EOB facts; it does not apply the §7.15.3 secondary inverse transform and does not make the parsed Quant values safe for reconstruction. The follow-on chroma CCTX handoff now advances the local ac0ej3 probe past the former `unsupported_dctonly_residual_tx_set` stop to `unsupported_wienerns_lr_selectable_transform_records_empty_transform` at byte offset 110 after luma transform-type residual handoff. This row does not claim secondary inverse-transform runtime wiring, non-DCT luma transform admission, CCTX reconstruction, decoded CurrFrame/CdefFrame sample population, loop-restoration filtering/output, reference refresh, raw/Y4M output, AVM/dav2d byte equality, or successful ac0ej3 decode."
+notes = "Partial runtime prerequisite row for the ac0ej3 Wiener NS LR selectable transform-record residual path after the zero intra IST frontier. The DCT-only residual policy now carries an explicit active-intra-IST handling mode: reconstruction-safe callers still consume active §5.20.7.29 `sec_tx_type` plus intra `most_probable_stx_set` before failing closed, while the Wiener NS LR tx-skip record path opts into a syntax-only handoff that stores the parsed active IST metadata on the luma coefficient block and transform record. This is valid only for deriving §7.20.4 `LrTxSkip` inputs from parsed skip/EOB facts; it does not apply the §7.15.3 secondary inverse transform and does not make the parsed Quant values safe for reconstruction. The follow-on chroma CCTX handoff now advances the local ac0ej3 probe past the former `unsupported_dctonly_residual_tx_set` stop to `unsupported_wienerns_lr_live_transform_record_mrl_mode` at byte offset 110 after selectable narrow-record handoff. This row does not claim secondary inverse-transform runtime wiring, non-DCT luma transform admission, CCTX reconstruction, decoded CurrFrame/CdefFrame sample population, loop-restoration filtering/output, reference refresh, raw/Y4M output, AVM/dav2d byte equality, or successful ac0ej3 decode."
 
 [feature.status]
 mapped = "done"
@@ -12203,7 +12212,7 @@ tests = [
     "crates/splot-decode/src/tile_payload/general_intra_residual.rs::tests::dctonly_residual_safe_policy_rejects_encoded_active_intra_ist",
     "crates/splot-decode/src/tile_payload/general_intra_residual.rs::tests::dctonly_residual_rejects_active_intra_ist_sec_tx_type",
     "crates/splot-cli/tests/decode_cli.rs::local_ac0ej3_reaches_current_runtime_gate_without_output",
-    "local ac0ej3 probe: unsupported_wienerns_lr_selectable_transform_records_empty_transform at byte offset 110 after luma transform-type residual handoff",
+    "local ac0ej3 probe: unsupported_wienerns_lr_live_transform_record_mrl_mode at byte offset 110 after selectable narrow-record handoff",
 ]
 commands = [
     "cargo test -p splot-decode tile_payload::general_intra_residual --locked",
@@ -12238,7 +12247,7 @@ openspec_change = "decode-ac0ej3-chroma-cctx-handoff"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Partial runtime prerequisite row for the ac0ej3 Wiener NS LR selectable transform-record residual path after active intra IST metadata handoff. The tile CDF subset exposes generated AV2 §9.3 `TileCctxTypeCdf` through the crate-private §8.3.2 selector boundary, including default copy, mutable symbol-read handoff, update-mode, saved-CDF averaging, and frame-end count scaling. For the Wiener NS LR tx-skip record path only, the residual policy reads active U-plane §5.20.7.27 `cctx_type` values as syntax metadata and admits intra chroma non-DCT transform-set coefficient syntax so the ordinary coefficient branch can derive the real chroma `PlaneTxType` while retaining skip/EOB facts for §7.20.4 `LrTxSkip`. Reconstruction-safe callers still reject the same active CCTX and chroma non-DCT transform surfaces before output. The local ac0ej3 probe advances past `unsupported_dctonly_residual_tx_set`, `unsupported_dctonly_residual_cctx`, and the former transform-record residual scan/EOB mismatch, then stops at `unsupported_wienerns_lr_selectable_transform_records_empty_transform` at byte offset 110 after luma transform-type residual handoff. This row does not claim CCTX reconstruction, broad non-DCT chroma reconstruction, decoded CurrFrame/CdefFrame sample population, loop-restoration filtering/output, raw/Y4M output, reference refresh, AVM/dav2d byte equality, or successful ac0ej3 decode."
+notes = "Partial runtime prerequisite row for the ac0ej3 Wiener NS LR selectable transform-record residual path after active intra IST metadata handoff. The tile CDF subset exposes generated AV2 §9.3 `TileCctxTypeCdf` through the crate-private §8.3.2 selector boundary, including default copy, mutable symbol-read handoff, update-mode, saved-CDF averaging, and frame-end count scaling. For the Wiener NS LR tx-skip record path only, the residual policy reads active U-plane §5.20.7.27 `cctx_type` values as syntax metadata and admits intra chroma non-DCT transform-set coefficient syntax so the ordinary coefficient branch can derive the real chroma `PlaneTxType` while retaining skip/EOB facts for §7.20.4 `LrTxSkip`. Reconstruction-safe callers still reject the same active CCTX and chroma non-DCT transform surfaces before output. The local ac0ej3 probe advances past `unsupported_dctonly_residual_tx_set`, `unsupported_dctonly_residual_cctx`, and the former transform-record residual scan/EOB mismatch, then stops at `unsupported_wienerns_lr_live_transform_record_mrl_mode` at byte offset 110 after selectable narrow-record handoff. This row does not claim CCTX reconstruction, broad non-DCT chroma reconstruction, decoded CurrFrame/CdefFrame sample population, loop-restoration filtering/output, raw/Y4M output, reference refresh, AVM/dav2d byte equality, or successful ac0ej3 decode."
 
 [feature.status]
 mapped = "done"
@@ -12262,7 +12271,7 @@ tests = [
     "crates/splot-decode/src/tile_payload/general_intra_residual.rs::tests::dctonly_residual_lr_handoff_reads_nonzero_cctx_metadata",
     "crates/splot-decode/src/tile_payload/general_intra_residual.rs::tests::dctonly_residual_safe_policy_rejects_chroma_non_dct_tx_set",
     "crates/splot-cli/tests/decode_cli.rs::local_ac0ej3_reaches_current_runtime_gate_without_output",
-    "local ac0ej3 probe: unsupported_wienerns_lr_selectable_transform_records_empty_transform at byte offset 110 after luma transform-type residual handoff",
+    "local ac0ej3 probe: unsupported_wienerns_lr_live_transform_record_mrl_mode at byte offset 110 after selectable narrow-record handoff",
 ]
 commands = [
     "cargo test -p splot-decode tile_payload::cdf --locked",

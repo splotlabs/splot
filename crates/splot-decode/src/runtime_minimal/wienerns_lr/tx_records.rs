@@ -753,7 +753,12 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                     "unsupported_wienerns_lr_selectable_transform_records_block_height",
                 )
             })?;
-            if frontier.chroma_offset {
+            if frontier.chroma_offset
+                && !selectable_chroma_offset_leaf_supported(
+                    frontier.is_luma_part(),
+                    frontier.has_chroma,
+                )
+            {
                 return Err(wienerns_lr_selectable_transform_record_error_reason(
                     tile_offset,
                     "unsupported_wienerns_lr_selectable_transform_records_chroma_offset_leaf",
@@ -1199,7 +1204,7 @@ fn decode_luma_records_for_chunk(
             col: record.col,
             rows: record.rows,
             cols: record.cols,
-            skip_flag: false,
+            skip_flag: luma.all_zero,
             eob: luma.eob,
             intra_ist: luma.intra_ist,
         });
@@ -1360,25 +1365,32 @@ fn read_tx_size_selectable(
     tile_offset: ByteOffset,
 ) -> Result<()> {
     let b_size = frontier.b_size.index();
-    let max_tx_size = table_usize("Max_Tx_Size_Rect", &MAX_TX_SIZE_RECT, b_size)
-        .map_err(|error| selectable_transform_record_error(error, tile_offset))?;
-    if b_size == BLOCK_4X4 {
-        let n4w = frontier.b_size.num_4x4_wide().map_err(|_| {
-            wienerns_lr_selectable_transform_record_error_reason(
-                tile_offset,
-                "unsupported_wienerns_lr_selectable_transform_records_4x4_width",
-            )
-        })?;
-        let n4h = frontier.b_size.num_4x4_high().map_err(|_| {
-            wienerns_lr_selectable_transform_record_error_reason(
-                tile_offset,
-                "unsupported_wienerns_lr_selectable_transform_records_4x4_height",
-            )
-        })?;
+    let n4w = frontier.b_size.num_4x4_wide().map_err(|_| {
+        wienerns_lr_selectable_transform_record_error_reason(
+            tile_offset,
+            "unsupported_wienerns_lr_selectable_transform_records_4x4_width",
+        )
+    })?;
+    let n4h = frontier.b_size.num_4x4_high().map_err(|_| {
+        wienerns_lr_selectable_transform_record_error_reason(
+            tile_offset,
+            "unsupported_wienerns_lr_selectable_transform_records_4x4_height",
+        )
+    })?;
+    if b_size == BLOCK_4X4
+        || selectable_luma_leaf_uses_actual_extent(
+            frontier.is_luma_part(),
+            frontier.has_chroma,
+            n4w,
+            n4h,
+        )
+    {
         grid.set_tx_size(frontier.r, frontier.c, n4h, n4w, false, false)
             .map_err(|error| selectable_transform_record_error(error, tile_offset))?;
         return Ok(());
     }
+    let max_tx_size = table_usize("Max_Tx_Size_Rect", &MAX_TX_SIZE_RECT, b_size)
+        .map_err(|error| selectable_transform_record_error(error, tile_offset))?;
 
     let width = frontier.b_size.width_samples().map_err(|_| {
         wienerns_lr_selectable_transform_record_error_reason(
@@ -2019,6 +2031,22 @@ fn selectable_transform_leaf_shape_supported(
     is_luma_part || has_chroma
 }
 
+fn selectable_luma_leaf_uses_actual_extent(
+    is_luma_part: bool,
+    has_chroma: bool,
+    n4w: usize,
+    n4h: usize,
+) -> bool {
+    is_luma_part
+        && !has_chroma
+        && matches!((n4w, n4h), (1, 8) | (2, 8) | (8, 1) | (8, 2))
+        && selectable_transform_leaf_shape_supported(true, false, n4w, n4h)
+}
+
+fn selectable_chroma_offset_leaf_supported(is_luma_part: bool, has_chroma: bool) -> bool {
+    is_luma_part && !has_chroma
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -2034,6 +2062,7 @@ mod tests {
 
     const TX_32X32: usize = 3;
     const TX_64X64: usize = 4;
+    const TX_8X32: usize = 15;
     const TX_4X32: usize = 19;
 
     fn cdef_state(rows: usize, cols: usize, sb_size4: usize) -> CdefState {
@@ -2222,7 +2251,7 @@ mod tests {
     }
 
     #[test]
-    fn selectable_leaf_shape_admits_observed_luma_only_block_4x32() {
+    fn selectable_leaf_shape_admits_luma_only_block_4x32() {
         assert!(selectable_transform_leaf_shape_supported(true, false, 1, 8));
         assert!(selectable_transform_leaf_shape_supported(true, false, 8, 1));
         assert!(selectable_transform_leaf_shape_supported(true, false, 1, 1));
@@ -2247,7 +2276,52 @@ mod tests {
     }
 
     #[test]
-    fn selectable_tx_grid_records_observed_luma_only_block_4x32_region() {
+    fn selectable_luma_leaf_actual_extent_is_only_luma_only_narrow() {
+        assert!(selectable_luma_leaf_uses_actual_extent(true, false, 1, 8));
+        assert!(selectable_luma_leaf_uses_actual_extent(true, false, 2, 8));
+        assert!(selectable_luma_leaf_uses_actual_extent(true, false, 8, 1));
+        assert!(selectable_luma_leaf_uses_actual_extent(true, false, 8, 2));
+        assert!(!selectable_luma_leaf_uses_actual_extent(true, false, 1, 1));
+        assert!(!selectable_luma_leaf_uses_actual_extent(true, false, 2, 2));
+        assert!(!selectable_luma_leaf_uses_actual_extent(true, false, 2, 4));
+        assert!(!selectable_luma_leaf_uses_actual_extent(true, true, 1, 8));
+        assert!(!selectable_luma_leaf_uses_actual_extent(true, true, 2, 8));
+        assert!(!selectable_luma_leaf_uses_actual_extent(false, false, 1, 8));
+        assert!(!selectable_luma_leaf_uses_actual_extent(false, false, 2, 8));
+        assert!(!selectable_luma_leaf_uses_actual_extent(false, true, 1, 8));
+        assert!(!selectable_luma_leaf_uses_actual_extent(true, false, 0, 8));
+    }
+
+    #[test]
+    fn selectable_chroma_offset_leaf_support_is_luma_only() {
+        assert!(selectable_chroma_offset_leaf_supported(true, false));
+        assert!(!selectable_chroma_offset_leaf_supported(true, true));
+        assert!(!selectable_chroma_offset_leaf_supported(false, false));
+        assert!(!selectable_chroma_offset_leaf_supported(false, true));
+    }
+
+    #[test]
+    fn selectable_tx_grid_records_observed_luma_only_block_8x32_region() {
+        let mut grid = SelectableLumaTxGrid::new(16, 32).unwrap();
+        grid.set_tx_size(8, 24, 8, 2, false, false).unwrap();
+
+        let records = grid.records_for_region(8, 24, 8, 2).unwrap();
+        assert_eq!(
+            records,
+            vec![SelectableLumaTxRecord {
+                row: 8,
+                col: 24,
+                rows: 8,
+                cols: 2,
+                tx_size: TX_8X32,
+                middle: false,
+                scan_order: false,
+            }]
+        );
+    }
+
+    #[test]
+    fn selectable_tx_grid_records_luma_only_block_4x32_region() {
         let mut grid = SelectableLumaTxGrid::new(16, 32).unwrap();
         grid.set_tx_size(8, 24, 8, 1, false, false).unwrap();
 
@@ -2274,6 +2348,20 @@ mod tests {
     }
 
     #[test]
+    fn selectable_tx_grid_rejects_empty_transform_dimensions() {
+        let mut grid = SelectableLumaTxGrid::new(4, 4).unwrap();
+
+        assert_eq!(
+            grid.set_tx_size(0, 0, 4, 0, false, false).unwrap_err(),
+            SelectableTransformRecordError::EmptyTransform { h4: 4, w4: 0 }
+        );
+        assert_eq!(
+            grid.set_tx_size(0, 0, 0, 4, false, false).unwrap_err(),
+            SelectableTransformRecordError::EmptyTransform { h4: 0, w4: 4 }
+        );
+    }
+
+    #[test]
     fn selectable_tx_grid_rejects_incomplete_region() {
         let mut grid = SelectableLumaTxGrid::new(4, 4).unwrap();
         grid.set_tx_size(0, 0, 2, 2, false, false).unwrap();
@@ -2284,6 +2372,55 @@ mod tests {
                 expected: 16,
                 actual: 4,
             }
+        );
+    }
+
+    #[test]
+    fn tx_skip_grid_retention_preserves_skip_flag_for_nonzero_eob_record() {
+        let records = [
+            WienerNsLrTxSkipTransformRecord {
+                row: 0,
+                col: 0,
+                rows: 1,
+                cols: 1,
+                skip_flag: true,
+                eob: 3,
+                intra_ist: None,
+            },
+            WienerNsLrTxSkipTransformRecord {
+                row: 0,
+                col: 1,
+                rows: 1,
+                cols: 1,
+                skip_flag: false,
+                eob: 3,
+                intra_ist: None,
+            },
+        ];
+
+        let tx_skip = derive_wienerns_lr_tx_skip_grid_retention(1, 2, &records).unwrap();
+
+        assert_eq!(
+            tx_skip
+                .lookup(super::super::WienerNsLrTxSkipLookup {
+                    x: 0,
+                    y: 0,
+                    row: 0,
+                    col: 0
+                })
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            tx_skip
+                .lookup(super::super::WienerNsLrTxSkipLookup {
+                    x: 0,
+                    y: 0,
+                    row: 0,
+                    col: 1
+                })
+                .unwrap(),
+            0
         );
     }
 
