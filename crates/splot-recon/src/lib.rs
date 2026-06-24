@@ -64,7 +64,11 @@
 //! ([`wiener_ns_filter_chroma_block`], the chroma `Wiener_Ns_Config_Uv` tap
 //! accumulation plus luma-tap contribution and 4:2:0 luma downsampling over
 //! caller-resolved source samples, coefficients, luma bounds, subsampling, and
-//! bit depth), and the
+//! bit depth), the § 7.20.4 pixel-classified Wiener skip-filter classification
+//! primitive ([`pc_wiener_classify`], the 6x6 feature window, `LrTxSkip`
+//! normalization, quantizer contribution, `lutInput` construction, and
+//! `Pc_Wiener_Lut_To_Class` lookup over caller-resolved source samples and
+//! `LrTxSkip` values), and the
 //! § 7.13.3.18 block inter prediction (sub-pel motion compensation) kernel
 //! ([`subpel_predict_block`], the separable interpolation-filter convolution: a
 //! horizontal filter pass into an intermediate array then a vertical pass, the
@@ -132,6 +136,7 @@
 //! `RECON-LOOP-RESTORATION-SOURCE-READ`,
 //! `RECON-WIENERNS-FILTER-PRIMITIVE`,
 //! `RECON-WIENERNS-CHROMA-FILTER-PRIMITIVE`,
+//! `RECON-PC-WIENER-CLASSIFICATION`,
 //! `RECON-SUBPEL-MC`.
 //!
 //! Licensed under PolyForm Noncommercial 1.0.0; commercial use requires a
@@ -158,6 +163,7 @@ mod inverse_transform;
 mod inverse_transform_2d;
 mod inverse_transform_2d_outer;
 mod loop_restoration;
+mod pc_wiener;
 mod plane;
 mod reconstruct;
 mod reconstruct_block;
@@ -232,6 +238,10 @@ pub use loop_restoration::{
     LoopRestorationSource, LoopRestorationSourceBounds, LoopRestorationSourceSample,
     LoopRestorationSourceSampleValue, loop_restoration_source_sample,
     loop_restoration_source_sample_value,
+};
+pub use pc_wiener::{
+    PC_WIENER_FEATURE_WINDOW_SIDE, PC_WIENER_LUT_INPUTS, PC_WIENER_NUM_FEATURES,
+    PcWienerClassification, PcWienerClassifyParams, PcWienerTxSkipLookup, pc_wiener_classify,
 };
 pub use plane::{Plane, VisibleRows};
 pub use reconstruct::reconstruct_add_residual;

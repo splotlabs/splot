@@ -4,9 +4,9 @@
 //! `cargo xtask gen-tables`: generate the AV2 § 9 additional tables
 //! (feature `AV2-9-ADDITIONAL-TABLES`) from the committed spec attachment
 //! `all_tables.h`. Most modules are written into `crates/splot-core/src/tables/`;
-//! the § 9.6/§ 9.7 transform-kernel modules instead live in the dependency-free
+//! shared reconstruction-facing modules also live in the dependency-free
 //! `crates/splot-tables/src/tables/` crate so `splot-recon` can use them without
-//! depending on `splot-core` (see [`output_dir_for`]).
+//! depending on `splot-core` (see [`output_dirs_for`]).
 //!
 //! The attachment (`docs/spec/av2/1.0.0/attachments/all_tables.h`) is a verbatim,
 //! sha256-pinned copy of the spec's § 9 "additional tables" C header (see
@@ -55,18 +55,21 @@ const MIRROR_SECTION_DIR: &str = "docs/spec/av2/1.0.0/09-additional-tables";
 /// table modules.
 const CORE_TABLES_DIR: &str = "crates/splot-core/src/tables";
 
-/// Output directory for the shared transform-kernel table modules, in the
+/// Output directory for the shared reconstruction-facing table modules, in the
 /// dependency-free `splot-tables` crate.
 const SHARED_TABLES_DIR: &str = "crates/splot-tables/src/tables";
 
-/// Returns the output directory for a § 9 module. The § 9.6 1D transform, § 9.7
-/// secondary transform kernel, and § 9.4 quantizer-matrix tables live in the
-/// shared `splot-tables` crate (so `splot-recon` can consume them without
-/// depending on `splot-core`); every other module stays in `splot-core`.
-fn output_dir_for(module: &str) -> &'static str {
+/// Returns the output directories for a § 9 module. The § 9.6 1D transform,
+/// § 9.7 secondary transform kernel, and § 9.4 quantizer-matrix tables live only
+/// in the shared `splot-tables` crate. The § 9.8 loop-restoration tables are
+/// generated into both crates: `splot-core` keeps existing parser/writer
+/// consumers, while `splot-recon` consumes the shared copy through
+/// `splot-tables`.
+fn output_dirs_for(module: &str) -> &'static [&'static str] {
     match module {
-        "transform_1d" | "secondary_transform" | "quantizer" => SHARED_TABLES_DIR,
-        _ => CORE_TABLES_DIR,
+        "transform_1d" | "secondary_transform" | "quantizer" => &[SHARED_TABLES_DIR],
+        "loop_restoration" => &[CORE_TABLES_DIR, SHARED_TABLES_DIR],
+        _ => &[CORE_TABLES_DIR],
     }
 }
 
@@ -347,9 +350,10 @@ fn generate(root: &Path) -> Result<Outputs> {
             continue;
         };
         let content = render_module(section, decls)?;
-        let dir = output_dir_for(section.module);
-        files.insert(format!("{dir}/{}.rs", section.module), content);
-        emitted_by_dir.entry(dir).or_default().push(section);
+        for dir in output_dirs_for(section.module) {
+            files.insert(format!("{dir}/{}.rs", section.module), content.clone());
+            emitted_by_dir.entry(dir).or_default().push(section);
+        }
     }
 
     // One `mod.rs` per output directory, listing only that directory's modules.

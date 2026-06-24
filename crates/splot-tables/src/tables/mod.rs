@@ -11,6 +11,8 @@
 //! One submodule per § 9 subsection; see each module's docs for the
 //! generating attachment and spec citation.
 
+/// AV2 § 9.8 — Loop restoration tables.
+pub mod loop_restoration;
 /// AV2 § 9.4 — Quantizer matrix tables.
 pub mod quantizer;
 /// AV2 § 9.7 — Secondary transform tables.

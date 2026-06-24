@@ -2,7 +2,8 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 //! Spot checks for the shared generated AV2 § 9 tables in `splot-tables` (the
-//! § 9.6/§ 9.7 transform kernels and the § 9.4 quantizer matrix; feature
+//! § 9.6/§ 9.7 transform kernels, the § 9.4 quantizer matrix, and shared § 9.8
+//! loop-restoration tables; feature
 //! `AV2-9-ADDITIONAL-TABLES`).
 //!
 //! These assert values from the `cargo xtask gen-tables` output against the
@@ -55,5 +56,26 @@ fn quantizer_matrix_luma_4x4_matches_mirror() {
         &[
             32, 43, 73, 97, 43, 67, 94, 110, 73, 94, 137, 150, 97, 110, 150, 200
         ]
+    );
+}
+
+#[test]
+fn loop_restoration_pc_wiener_tables_match_mirror() {
+    // docs/spec/av2/1.0.0/09-additional-tables/09-08-loop-restoration-tables.md
+    // lines 12149-12152 (Pc_Wiener_Lut_To_Class[4096]).
+    let lut = &tables::loop_restoration::PC_WIENER_LUT_TO_CLASS;
+    assert_eq!(lut.len(), 4096);
+    assert_eq!(
+        &lut[..16],
+        &[
+            83, 154, 254, 125, 125, 125, 253, 253, 77, 200, 207, 30, 30, 239, 239, 239,
+        ]
+    );
+
+    // docs/spec/av2/1.0.0/09-additional-tables/09-08-loop-restoration-tables.md
+    // lines 12518-12523 (Pc_Wiener_Filters[4][64][13], first filter).
+    assert_eq!(
+        tables::loop_restoration::PC_WIENER_FILTERS[0][0],
+        [73, 127, -20, -30, -38, -29, 10, 7, -1, -3, 1, 7, -208]
     );
 }
