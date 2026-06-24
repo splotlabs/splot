@@ -200,11 +200,6 @@ impl WienerNsLrLiveTxSkipGrid {
                 "wiener ns lr live tx-skip already populated",
             ));
         }
-        if self.values.len() != grid.values.len() {
-            return Err(live_tx_skip_invalid(
-                "wiener ns lr live tx-skip value count",
-            ));
-        }
         for (slot, value) in self.values.iter_mut().zip(grid.values.iter().copied()) {
             *slot = Some(value);
         }
