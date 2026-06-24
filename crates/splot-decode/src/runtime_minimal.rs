@@ -327,6 +327,7 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
         plan,
         key_candidate,
         key_envelope,
+        sequence_envelope.offset,
         &sequence,
         &key_core,
     )?;

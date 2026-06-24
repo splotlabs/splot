@@ -33,7 +33,7 @@ use super::{
     AC0EJ3_LR_RUNTIME_STORAGE_RETENTION_FEATURE_ID, AC0EJ3_LR_RUNTIME_STORAGE_RETENTION_MATRIX_ROW,
     AC0EJ3_LR_SOURCE_READ_FEATURE_ID, AC0EJ3_LR_SOURCE_READ_MATRIX_ROW,
     AC0EJ3_LR_UNIT_SELECTIONS_FEATURE_ID, AC0EJ3_LR_UNIT_SELECTIONS_MATRIX_ROW, derive_tile_plan,
-    unsupported_at, unsupported_feature_at,
+    ensure_sequence_chroma_tools_before_tile_decode, unsupported_at, unsupported_feature_at,
 };
 
 /// AV2 §3 `MI_SIZE`: smallest mode-info block size in luma samples.
@@ -488,6 +488,7 @@ pub(super) fn ensure_wienerns_lr_unit_runtime_frontier(
     plan: &DecodeStreamPlan,
     key_candidate: &DecodePlannedObu,
     key_envelope: ObuEnvelope<'_>,
+    sequence_offset: ByteOffset,
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
 ) -> Result<()> {
@@ -575,6 +576,7 @@ pub(super) fn ensure_wienerns_lr_unit_runtime_frontier(
                     key_envelope.offset,
                 ));
             }
+            ensure_sequence_chroma_tools_before_tile_decode(sequence, sequence_offset)?;
             let transform_handoff = derive_wienerns_lr_fixed_largest_transform_record_handoff(
                 bytes,
                 options,
