@@ -174,6 +174,7 @@ fn wienerns_lr_live_transform_record_handoff_populates_tx_skip_without_frame_sam
             cols: 16,
             skip_flag: false,
             eob: 0,
+            intra_ist: None,
         },
         super::super::WienerNsLrTxSkipTransformRecord {
             row: 8,
@@ -182,6 +183,7 @@ fn wienerns_lr_live_transform_record_handoff_populates_tx_skip_without_frame_sam
             cols: 8,
             skip_flag: false,
             eob: 7,
+            intra_ist: None,
         },
         super::super::WienerNsLrTxSkipTransformRecord {
             row: 8,
@@ -190,6 +192,7 @@ fn wienerns_lr_live_transform_record_handoff_populates_tx_skip_without_frame_sam
             cols: 8,
             skip_flag: true,
             eob: 11,
+            intra_ist: None,
         },
     ];
 

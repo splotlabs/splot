@@ -283,19 +283,22 @@ fn local_ac0ej3_reaches_current_runtime_gate_without_output() {
     assert!(out.stderr.is_empty(), "stderr was not empty");
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(json["rule_id"], "decode/unsupported-feature");
-    assert_eq!(json["spec_section"], "5.20.7.29");
-    assert_eq!(json["matrix_row"], "ac0ej3-intra-ist-zero-frontier");
-    assert_eq!(json["feature_id"], "DECODE-AC0EJ3-INTRA-IST-ZERO-FRONTIER");
+    assert_eq!(json["spec_section"], "5.20.7.27");
+    assert_eq!(json["matrix_row"], "ac0ej3-dctonly-residual-frontier");
+    assert_eq!(
+        json["feature_id"],
+        "DECODE-AC0EJ3-DCTONLY-RESIDUAL-FRONTIER"
+    );
     assert_eq!(json["detail_kind"], "unsupported_feature");
     assert_eq!(
         json["unsupported_reason"],
-        "unsupported_dctonly_residual_intra_sec_tx_type"
+        "unsupported_dctonly_residual_tx_set"
     );
     assert!(
         json["message"]
             .as_str()
             .unwrap()
-            .contains("read intra IST secondary-transform syntax"),
+            .contains("outside the DCT_DCT-only transform-tool subset"),
         "diagnostic must describe the active residual blocker"
     );
     assert_eq!(json["byte_offset"], 110);

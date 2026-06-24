@@ -852,6 +852,7 @@ fn derive_wienerns_lr_fixed_largest_transform_record_handoff(
                 cols: n4w,
                 skip_flag: false,
                 eob: luma.eob,
+                intra_ist: luma.intra_ist,
             });
 
             let chroma_tx = fixed_largest_420_chroma_tx_size_from_luma_4x4(n4w, n4h)
