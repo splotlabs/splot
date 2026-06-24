@@ -585,6 +585,130 @@ fn wienerns_lr_classified_wiener_storage_frontier_reads_frame_and_tx_skip_storag
 }
 
 #[test]
+fn wienerns_lr_tx_skip_grid_retention_derives_spec_values() {
+    let records = [
+        super::super::WienerNsLrTxSkipTransformRecord {
+            row: 0,
+            col: 0,
+            rows: 1,
+            cols: 1,
+            skip_flag: false,
+            eob: 7,
+        },
+        super::super::WienerNsLrTxSkipTransformRecord {
+            row: 0,
+            col: 1,
+            rows: 1,
+            cols: 2,
+            skip_flag: true,
+            eob: 7,
+        },
+        super::super::WienerNsLrTxSkipTransformRecord {
+            row: 1,
+            col: 0,
+            rows: 1,
+            cols: 3,
+            skip_flag: false,
+            eob: 0,
+        },
+    ];
+
+    let grid = super::super::derive_wienerns_lr_tx_skip_grid_retention(2, 3, &records)
+        .expect("complete LrTxSkip grid");
+
+    let value = |row, col| {
+        grid.lookup(super::super::WienerNsLrTxSkipLookup {
+            x: col * 4,
+            y: row * 4,
+            row,
+            col,
+        })
+        .unwrap()
+    };
+    assert_eq!(value(0, 0), 0, "non-skipped nonzero eob stores false");
+    assert_eq!(value(0, 1), 1, "skip_flag stores true");
+    assert_eq!(value(0, 2), 1, "skip_flag fills the whole transform extent");
+    assert_eq!(value(1, 0), 1, "eob == 0 stores true");
+    assert_eq!(value(1, 2), 1, "eob == 0 fills the whole transform extent");
+}
+
+#[test]
+fn wienerns_lr_tx_skip_grid_retention_rejects_missing_cells() {
+    let records = [super::super::WienerNsLrTxSkipTransformRecord {
+        row: 0,
+        col: 0,
+        rows: 1,
+        cols: 1,
+        skip_flag: false,
+        eob: 7,
+    }];
+
+    let error = super::super::derive_wienerns_lr_tx_skip_grid_retention(2, 2, &records)
+        .expect_err("incomplete grid must be rejected");
+
+    match error {
+        ReconError::BufferLengthMismatch { expected, actual } => {
+            assert_eq!((expected, actual), (4, 1));
+        }
+        _ => panic!("missing LrTxSkip cells must be a structured buffer mismatch"),
+    }
+}
+
+#[test]
+fn wienerns_lr_tx_skip_grid_retention_rejects_out_of_range_record() {
+    let records = [super::super::WienerNsLrTxSkipTransformRecord {
+        row: 1,
+        col: 0,
+        rows: 2,
+        cols: 1,
+        skip_flag: false,
+        eob: 7,
+    }];
+
+    let error = super::super::derive_wienerns_lr_tx_skip_grid_retention(2, 2, &records)
+        .expect_err("out-of-range transform extent must be rejected");
+
+    match error {
+        ReconError::PcWienerInvalidBounds { field } => {
+            assert_eq!(field, "LrTxSkip transform record bounds");
+        }
+        _ => panic!("out-of-range LrTxSkip record must be a structured bounds error"),
+    }
+}
+
+#[test]
+fn wienerns_lr_tx_skip_grid_retention_rejects_conflicting_records() {
+    let records = [
+        super::super::WienerNsLrTxSkipTransformRecord {
+            row: 0,
+            col: 0,
+            rows: 1,
+            cols: 1,
+            skip_flag: false,
+            eob: 7,
+        },
+        super::super::WienerNsLrTxSkipTransformRecord {
+            row: 0,
+            col: 0,
+            rows: 1,
+            cols: 1,
+            skip_flag: true,
+            eob: 7,
+        },
+    ];
+
+    let error = super::super::derive_wienerns_lr_tx_skip_grid_retention(1, 1, &records)
+        .expect_err("conflicting transform records must be rejected");
+
+    match error {
+        ReconError::PcWienerInvalidBounds { field } => {
+            assert_eq!(field, "LrTxSkip conflicting transform records");
+        }
+        _ => panic!("conflicting LrTxSkip records must be a structured bounds error"),
+    }
+}
+
+#[test]
 fn wienerns_lr_classified_wiener_storage_frontier_propagates_tx_skip_grid_bounds() {
     let blocks = [wienerns_lr_source_block()];
     let planes = [lr_plane(true, Some(2), None)];
