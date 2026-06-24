@@ -522,7 +522,7 @@ impl ValidatorContext {
     /// - IOP1 (line 132): extended 1-4, embedded 1-2, combination 0.
     /// - IOP2 (line 134): extended 1-4, embedded 1-3, combination 0 or 1.
     ///
-    /// **Zero-false-positive (AGENTS.md § 7).** `extended_layers`
+    /// **Zero-false-positive.** `extended_layers`
     /// ([`annex_a_extended_layers`]) and `embedded_layers` (`max_embedded_layers`) are
     /// conservative LOWER bounds — they under-count when activations are missing, never
     /// over-count — so a count that exceeds its IOP limit is a proven violation. The IOP is

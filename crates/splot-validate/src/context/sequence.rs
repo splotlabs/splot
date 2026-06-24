@@ -299,7 +299,7 @@ impl ValidatorContext {
         // `seq_lcr_id` could win that resolution ahead of the in-band record, so the
         // association the validator paired may not be the one a real decoder uses — the
         // in-band "violation" would then be a false positive against the wrong operand
-        // (zero-false-positive principle, AGENTS.md § 7). Each check therefore restores
+        // (zero-false-positive principle). Each check therefore restores
         // its own "suppress under any Provided mode" gate (see the per-check rationale and
         // `check_seq_lcr_reference`'s lcr/global-xlayer-map-missing-xlayer gate, which
         // suppresses on the identical local-first-shadowing reasoning). They use the

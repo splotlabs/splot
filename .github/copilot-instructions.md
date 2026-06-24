@@ -12,12 +12,16 @@ The canonical guide is [AGENTS.md](../AGENTS.md). Read it. The most critical rul
   `Error::Unimplemented { feature }`. `anyhow` is only for `splot-cli` and `xtask`.
 - **Diagnostics are structured data:** every validator finding needs a stable
   `rule_id`, `severity`, `spec_section`, byte/bit offset, and `message`.
-- **Preserve the dependency direction:** `splot-core` and `splot-recon` depend on
-  no `splot-*` crate; `splot-decode` may depend only on `splot-core` and
-  `splot-recon` once it has decode source needing them; `splot-cli` may depend
-  on `splot-core`, `splot-decode`, `splot-validate`, and `splot-encode`;
-  nothing depends on `splot-cli`; only `splot-cli` depends on `splot-encode`;
-  `xtask` is standalone. Enforced by `cargo xtask check-dependency-direction`.
+- **Preserve the dependency direction:** `splot-core`, `splot-parallel`, and
+  `splot-tables` depend on no other `splot-*` crate; `splot-tables` has no
+  external crate dependencies; `splot-recon` depends only on `splot-tables`;
+  `splot-decode` may depend only on `splot-core`, `splot-parallel`, and
+  `splot-recon`; `splot-encode` may depend only on `splot-core`,
+  `splot-parallel`, `splot-recon`, and `splot-tables`; `splot-cli` may depend
+  only on `splot-core`, `splot-parallel`, `splot-decode`, `splot-validate`, and
+  `splot-encode`; nothing depends on `splot-cli`; only `splot-cli` depends on
+  `splot-encode`; `xtask` is standalone. Enforced by
+  `cargo xtask check-dependency-direction`.
 - **SPDX header** on every `.rs` file; **public docs** on every public item.
 - **Feature tracking:** use Feature IDs from `docs/IMPLEMENTATION-MATRIX.toml` (the
   canonical status) for non-trivial work. Do not create TODOs without
