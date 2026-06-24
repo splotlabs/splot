@@ -28,7 +28,7 @@ use crate::tile_payload::{
     GeneralIntraResidualError, MinimalBlockSymbolTraceError,
     MinimalRuntimeBlockSymbolFrontierError, MinimalRuntimePartitionFrontierError,
     MinimalRuntimeReconstructionTrace, SupportedDirectionalLumaMode, SupportedNonDcLumaMode,
-    TileGroupPositionFacts, TilePartitionTraversalError,
+    TileGroupPositionFacts, TilePartitionTraversalError, TransformToolResidualPolicy,
 };
 use crate::{DecodeLimitName, DecodeOptions, DecodePlannedObu, DecodeStreamPlan};
 
@@ -112,6 +112,16 @@ const AC0EJ3_LR_LIVE_TRANSFORM_RECORD_HANDOFF_FEATURE_ID: &str =
     "DECODE-AC0EJ3-LR-LIVE-TRANSFORM-RECORD-HANDOFF";
 const AC0EJ3_LR_LIVE_TRANSFORM_RECORD_HANDOFF_MATRIX_ROW: &str =
     "ac0ej3-lr-live-transform-record-handoff";
+const AC0EJ3_SELECTABLE_TRANSFORM_RECORDS_FEATURE_ID: &str =
+    "DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS";
+const AC0EJ3_SELECTABLE_TRANSFORM_RECORDS_MATRIX_ROW: &str = "ac0ej3-selectable-transform-records";
+const AC0EJ3_ACTIVE_INTRA_TOOL_FRONTIER_FEATURE_ID: &str =
+    "DECODE-AC0EJ3-ACTIVE-INTRA-TOOL-FRONTIER";
+const AC0EJ3_ACTIVE_INTRA_TOOL_FRONTIER_MATRIX_ROW: &str = "ac0ej3-active-intra-tool-frontier";
+const AC0EJ3_DCTONLY_RESIDUAL_FRONTIER_FEATURE_ID: &str = "DECODE-AC0EJ3-DCTONLY-RESIDUAL-FRONTIER";
+const AC0EJ3_DCTONLY_RESIDUAL_FRONTIER_MATRIX_ROW: &str = "ac0ej3-dctonly-residual-frontier";
+const AC0EJ3_INTRA_IST_ZERO_FRONTIER_FEATURE_ID: &str = "DECODE-AC0EJ3-INTRA-IST-ZERO-FRONTIER";
+const AC0EJ3_INTRA_IST_ZERO_FRONTIER_MATRIX_ROW: &str = "ac0ej3-intra-ist-zero-frontier";
 const MINIMAL_WIDTH: u32 = 64;
 const MINIMAL_HEIGHT: u32 = 64;
 const MINIMAL_TRACE_SYMBOLS: u64 = 6;
@@ -1250,7 +1260,7 @@ fn derive_tile_plan<'a>(
             "minimal tier requires sequence transform/quant/entropy config",
         )
     })?;
-    let coeff = FrameCandidateCoeffFacts::new(tq.enable_fsc, tq.enable_chroma_dctonly);
+    let coeff = FrameCandidateCoeffFacts::from_tq(tq);
     let facts = FrameCandidateTileFacts::from_frame_core(core, coeff)
         .map_err(decode_tile_boundary_error)?;
     let cdf = FrameCandidateCdfFacts::new(tq.enable_avg_cdf, tq.avg_cdf_type != 0);
@@ -1290,7 +1300,7 @@ fn derive_inter_tile_plan<'a>(
             "minimal tier requires sequence transform/quant/entropy config",
         )
     })?;
-    let coeff = FrameCandidateCoeffFacts::new(tq.enable_fsc, tq.enable_chroma_dctonly);
+    let coeff = FrameCandidateCoeffFacts::from_tq(tq);
     let facts = FrameCandidateTileFacts::from_inter_frame_core(core, coeff)
         .map_err(decode_tile_boundary_error)?;
     let cdf = FrameCandidateCdfFacts::new(tq.enable_avg_cdf, tq.avg_cdf_type != 0);

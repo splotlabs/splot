@@ -53,10 +53,13 @@ pub(crate) use cdf::block_context::{
 pub(crate) use cdf::{FrameCdfSubset, TileCdfSelector, TileCdfSubset};
 pub(crate) use coeff_state::TileCoeffContextState;
 pub(crate) use general_intra_block::{
-    GeneralIntraBlockModeError, GeneralIntraBlockModes, decode_general_intra_block_modes,
+    GeneralIntraBlockModeError, GeneralIntraBlockModes, GeneralIntraChromaModeContext,
+    GeneralIntraChromaToolConfig, decode_general_intra_block_modes,
+    decode_general_intra_chroma_block_mode, decode_general_intra_luma_block_mode,
 };
 pub(crate) use general_intra_residual::{
-    GeneralIntraResidualError, LumaCoeffBlock, decode_general_intra_plane_coeffs,
+    GeneralIntraResidualError, LumaCoeffBlock, LumaTransformTypeContext,
+    TransformToolResidualPolicy, decode_general_intra_plane_coeffs,
     reconstruct_general_intra_block, reconstruct_general_intra_block_rect,
     reconstruct_general_intra_block_with_prediction,
 };
@@ -66,9 +69,13 @@ pub(crate) use input::{
     TileGroupPositionFacts, plan_derived_tile_payload_boundary,
 };
 pub(crate) use intra_joint_modes::TileIntraJointModeState;
-pub(crate) use partition_traversal::TilePartitionTraversalError;
 pub(crate) use partition_traversal::WienerNsLrSourceBlock;
-pub(crate) use partition_traversal::{DecodeBlockFrontier, GeneralIntraTreeWalkError};
+pub(crate) use partition_traversal::{
+    DecodeBlockFrontier, GeneralIntraLeafMode, GeneralIntraTreeWalkError,
+};
+pub(crate) use partition_traversal::{
+    TilePartitionTraversalError, TilePartitionTraversalUnsupported,
+};
 pub(crate) use runtime_frontier::{
     GeneralIntraMultiblockError, MinimalRuntimeBlockSymbolFrontierError,
     MinimalRuntimePartitionFrontierError, MinimalRuntimeReconstructionTrace,
@@ -262,7 +269,11 @@ impl TileFrameFacts {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TileCoeffFrameFacts {
     enable_fsc: bool,
+    enable_idtx_intra: bool,
+    enable_intra_ist: bool,
+    enable_inter_ist: bool,
     enable_chroma_dctonly: bool,
+    enable_cctx: bool,
     reduced_tx_set: usize,
     lossless_array: [bool; MAX_SEGMENTS],
     allow_tcq: bool,
@@ -270,33 +281,49 @@ pub(crate) struct TileCoeffFrameFacts {
     base_q_idx: u32,
 }
 
+/// Named input for parsed frame/sequence facts needed by coefficient decoding.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct TileCoeffFrameFactsInput {
+    pub(crate) enable_fsc: bool,
+    pub(crate) enable_idtx_intra: bool,
+    pub(crate) enable_intra_ist: bool,
+    pub(crate) enable_inter_ist: bool,
+    pub(crate) enable_chroma_dctonly: bool,
+    pub(crate) enable_cctx: bool,
+    pub(crate) reduced_tx_set: usize,
+    pub(crate) lossless_array: [bool; MAX_SEGMENTS],
+    pub(crate) allow_tcq: bool,
+    pub(crate) allow_parity_hiding: bool,
+    pub(crate) base_q_idx: u32,
+}
+
 impl TileCoeffFrameFacts {
     /// Creates parsed coefficient frame facts.
     #[must_use]
-    pub(crate) const fn new(
-        enable_fsc: bool,
-        enable_chroma_dctonly: bool,
-        reduced_tx_set: usize,
-        lossless_array: [bool; MAX_SEGMENTS],
-        allow_tcq: bool,
-        allow_parity_hiding: bool,
-        base_q_idx: u32,
-    ) -> Self {
+    pub(crate) const fn new(input: TileCoeffFrameFactsInput) -> Self {
         Self {
-            enable_fsc,
-            enable_chroma_dctonly,
-            reduced_tx_set,
-            lossless_array,
-            allow_tcq,
-            allow_parity_hiding,
-            base_q_idx,
+            enable_fsc: input.enable_fsc,
+            enable_idtx_intra: input.enable_idtx_intra,
+            enable_intra_ist: input.enable_intra_ist,
+            enable_inter_ist: input.enable_inter_ist,
+            enable_chroma_dctonly: input.enable_chroma_dctonly,
+            enable_cctx: input.enable_cctx,
+            reduced_tx_set: input.reduced_tx_set,
+            lossless_array: input.lossless_array,
+            allow_tcq: input.allow_tcq,
+            allow_parity_hiding: input.allow_parity_hiding,
+            base_q_idx: input.base_q_idx,
         }
     }
 
     const fn default_for_base_q(base_q_idx: u32) -> Self {
         Self {
             enable_fsc: false,
+            enable_idtx_intra: false,
+            enable_intra_ist: false,
+            enable_inter_ist: false,
             enable_chroma_dctonly: false,
+            enable_cctx: false,
             reduced_tx_set: 0,
             lossless_array: [false; MAX_SEGMENTS],
             allow_tcq: false,
@@ -311,10 +338,34 @@ impl TileCoeffFrameFacts {
         self.enable_fsc
     }
 
+    /// Parsed `enable_idtx_intra` from AV2 § 5.4.8.
+    #[must_use]
+    pub(crate) const fn enable_idtx_intra(self) -> bool {
+        self.enable_idtx_intra
+    }
+
+    /// Parsed `enable_intra_ist` from AV2 § 5.4.8.
+    #[must_use]
+    pub(crate) const fn enable_intra_ist(self) -> bool {
+        self.enable_intra_ist
+    }
+
+    /// Parsed `enable_inter_ist` from AV2 § 5.4.8.
+    #[must_use]
+    pub(crate) const fn enable_inter_ist(self) -> bool {
+        self.enable_inter_ist
+    }
+
     /// Parsed `enable_chroma_dctonly` from AV2 § 5.4.8.
     #[must_use]
     pub(crate) const fn enable_chroma_dctonly(self) -> bool {
         self.enable_chroma_dctonly
+    }
+
+    /// Parsed `enable_cctx` from AV2 § 5.4.8.
+    #[must_use]
+    pub(crate) const fn enable_cctx(self) -> bool {
+        self.enable_cctx
     }
 
     /// Parsed frame-header `reduced_tx_set`.

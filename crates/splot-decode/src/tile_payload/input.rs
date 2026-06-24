@@ -11,6 +11,7 @@ use splot_core::Error;
 use splot_core::annexb::ObuEnvelope;
 use splot_core::bitio::BitReader;
 use splot_core::headers::frame::{FrameHeaderCore, FrameHeaderParseStatus};
+use splot_core::headers::sequence::SequenceTqEntropyConfig;
 use splot_core::headers::tile_group::{
     TileGroupLayout, TileGroupStructure, TileGroupStructureOutcome, parse_tile_group_framing,
     parse_tile_group_structure,
@@ -21,9 +22,9 @@ use splot_core::types::ObuType;
 
 use super::cdf::TileCdfPolicyInput;
 use super::{
-    DecodeTilePayloadPlan, TileBruPath, TileCoeffFrameFacts, TileFrameFacts, TileGridFacts,
-    TilePayloadBoundaryError, TilePayloadBoundaryInput, TilePayloadSource,
-    plan_tile_payload_boundary,
+    DecodeTilePayloadPlan, TileBruPath, TileCoeffFrameFacts, TileCoeffFrameFactsInput,
+    TileFrameFacts, TileGridFacts, TilePayloadBoundaryError, TilePayloadBoundaryInput,
+    TilePayloadSource, plan_tile_payload_boundary,
 };
 use crate::{
     DecodeLimitError, DecodeLimitName, DecodeLimitOp, DecodeLimits, DecodeObuSourceKind,
@@ -52,17 +53,46 @@ impl FrameCandidateCdfFacts {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct FrameCandidateCoeffFacts {
     enable_fsc: bool,
+    enable_idtx_intra: bool,
+    enable_intra_ist: bool,
+    enable_inter_ist: bool,
     enable_chroma_dctonly: bool,
+    enable_cctx: bool,
 }
 
 impl FrameCandidateCoeffFacts {
     /// Creates coefficient frame facts from the active sequence header.
     #[must_use]
-    pub(crate) const fn new(enable_fsc: bool, enable_chroma_dctonly: bool) -> Self {
+    pub(crate) const fn new(
+        enable_fsc: bool,
+        enable_idtx_intra: bool,
+        enable_intra_ist: bool,
+        enable_inter_ist: bool,
+        enable_chroma_dctonly: bool,
+        enable_cctx: bool,
+    ) -> Self {
         Self {
             enable_fsc,
+            enable_idtx_intra,
+            enable_intra_ist,
+            enable_inter_ist,
             enable_chroma_dctonly,
+            enable_cctx,
         }
+    }
+
+    /// Creates coefficient frame facts from a parsed AV2 § 5.4.8 sequence
+    /// transform/quant/entropy configuration.
+    #[must_use]
+    pub(crate) const fn from_tq(tq: &SequenceTqEntropyConfig) -> Self {
+        Self::new(
+            tq.enable_fsc,
+            tq.enable_idtx_intra,
+            tq.enable_intra_ist,
+            tq.enable_inter_ist,
+            tq.enable_chroma_dctonly,
+            tq.enable_cctx,
+        )
     }
 }
 
@@ -133,15 +163,19 @@ impl<'a> FrameCandidateTileFacts<'a> {
         let tail = core
             .intra_tail
             .ok_or(FrameCandidateTileBoundaryError::MissingFact { fact: "intra_tail" })?;
-        let coeff_frame_facts = TileCoeffFrameFacts::new(
-            coeff.enable_fsc,
-            coeff.enable_chroma_dctonly,
-            usize::from(tail.reduced_tx_set),
-            lossless.lossless_array,
-            lossless.allow_tcq,
-            lossless.allow_parity_hiding,
-            quant.base_q_idx,
-        );
+        let coeff_frame_facts = TileCoeffFrameFacts::new(TileCoeffFrameFactsInput {
+            enable_fsc: coeff.enable_fsc,
+            enable_idtx_intra: coeff.enable_idtx_intra,
+            enable_intra_ist: coeff.enable_intra_ist,
+            enable_inter_ist: coeff.enable_inter_ist,
+            enable_chroma_dctonly: coeff.enable_chroma_dctonly,
+            enable_cctx: coeff.enable_cctx,
+            reduced_tx_set: usize::from(tail.reduced_tx_set),
+            lossless_array: lossless.lossless_array,
+            allow_tcq: lossless.allow_tcq,
+            allow_parity_hiding: lossless.allow_parity_hiding,
+            base_q_idx: quant.base_q_idx,
+        });
 
         Ok(Self {
             obu_type: core.obu_type,
@@ -223,15 +257,19 @@ impl<'a> FrameCandidateTileFacts<'a> {
             .inter_tail
             .as_ref()
             .ok_or(FrameCandidateTileBoundaryError::MissingFact { fact: "inter_tail" })?;
-        let coeff_frame_facts = TileCoeffFrameFacts::new(
-            coeff.enable_fsc,
-            coeff.enable_chroma_dctonly,
-            usize::from(tail.reduced_tx_set),
-            lossless.lossless_array,
-            lossless.allow_tcq,
-            lossless.allow_parity_hiding,
-            quant.base_q_idx,
-        );
+        let coeff_frame_facts = TileCoeffFrameFacts::new(TileCoeffFrameFactsInput {
+            enable_fsc: coeff.enable_fsc,
+            enable_idtx_intra: coeff.enable_idtx_intra,
+            enable_intra_ist: coeff.enable_intra_ist,
+            enable_inter_ist: coeff.enable_inter_ist,
+            enable_chroma_dctonly: coeff.enable_chroma_dctonly,
+            enable_cctx: coeff.enable_cctx,
+            reduced_tx_set: usize::from(tail.reduced_tx_set),
+            lossless_array: lossless.lossless_array,
+            allow_tcq: lossless.allow_tcq,
+            allow_parity_hiding: lossless.allow_parity_hiding,
+            base_q_idx: quant.base_q_idx,
+        });
 
         Ok(Self {
             obu_type: core.obu_type,

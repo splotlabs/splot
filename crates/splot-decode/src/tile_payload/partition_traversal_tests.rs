@@ -8,7 +8,10 @@ use core::ops::Range;
 use super::super::cdf::{
     FrameCdfSubset, TileCdfPolicyInput, TileCdfWorkUnitBoundary, tile_cdf_save_policy,
 };
-use super::super::{SymbolInitBoundary, TileBruPath, TileCoeffFrameFacts, TilePayloadSource};
+use super::super::{
+    SymbolInitBoundary, TileBruPath, TileCoeffFrameFacts, TileCoeffFrameFactsInput,
+    TilePayloadSource,
+};
 use super::*;
 use crate::{DecodeLayerSelection, DecodeLimitError, DecodeLimitThreshold, DecodeObuSourceKind};
 use splot_core::segment::MAX_SEGMENTS;
@@ -98,15 +101,19 @@ fn make_work_unit_at(
         tile_byte_span: ByteSpan::new(ByteOffset::new(128), payload.len() as u64),
         tile_size: payload.len() as u64,
         current_q_index_at_entry: 0,
-        coeff_frame_facts: TileCoeffFrameFacts::new(
-            false,
-            false,
-            0,
-            [false; MAX_SEGMENTS],
-            false,
-            false,
-            0,
-        ),
+        coeff_frame_facts: TileCoeffFrameFacts::new(TileCoeffFrameFactsInput {
+            enable_fsc: false,
+            enable_idtx_intra: false,
+            enable_intra_ist: false,
+            enable_inter_ist: false,
+            enable_chroma_dctonly: false,
+            enable_cctx: false,
+            reduced_tx_set: 0,
+            lossless_array: [false; MAX_SEGMENTS],
+            allow_tcq: false,
+            allow_parity_hiding: false,
+            base_q_idx: 0,
+        }),
         bru_path: TileBruPath::NotUsed,
         symbol: SymbolInitBoundary {
             consumed_bits: payload.len().saturating_mul(8).min(15) as u64,
@@ -151,6 +158,39 @@ fn child_positions_for(partition: PartitionType, b_size: usize) -> Vec<(usize, u
         .iter()
         .map(|child| (child.r, child.c))
         .collect()
+}
+
+#[test]
+fn sdp_cfl_allowed_state_tracks_top_luma_and_chroma_partitions() {
+    let frame = frame(BLOCK_64X64);
+    let mut state = SdpPartitionState::default();
+    let luma_root = root_call(BLOCK_64X64).with_tree_type(PartitionTreeType::LumaPart);
+    let chroma_root = root_call(BLOCK_64X64).with_tree_type(PartitionTreeType::ChromaPart);
+
+    assert!(state.record_partition(frame, luma_root, PartitionType::Horz4A));
+    assert!(state.record_partition(frame, chroma_root, PartitionType::Horz));
+
+    let mut state = SdpPartitionState::default();
+    assert!(state.record_partition(frame, luma_root, PartitionType::Horz4A));
+    assert!(!state.record_partition(frame, chroma_root, PartitionType::Vert));
+}
+
+#[test]
+fn sdp_cfl_allowed_state_propagates_to_chroma_children() {
+    let frame = frame(BLOCK_64X64);
+    let chroma_root = root_call(BLOCK_64X64)
+        .with_tree_type(PartitionTreeType::ChromaPart)
+        .with_cfl_allowed_in_sdp(false);
+    let sub_size = valid_subsize(PartitionType::Vert, chroma_root.b_size).unwrap();
+
+    let children = child_calls(chroma_root, PartitionType::Vert, sub_size, frame, false).unwrap();
+
+    assert!(
+        children
+            .as_slice()
+            .iter()
+            .all(|child| !child.cfl_allowed_in_sdp)
+    );
 }
 
 #[test]
@@ -363,7 +403,7 @@ fn chroma_offset_update_preserves_decode_block_has_chroma() {
 }
 
 #[test]
-fn split_child_sdp_gate_rejects_nested_64x64_calls() {
+fn split_child_sdp_recognizes_nested_64x64_shared_roots() {
     let root = root_call(BLOCK_128X128);
     let sub_size = valid_subsize(PartitionType::Split, root.b_size).unwrap();
     let children = child_calls(
@@ -377,13 +417,10 @@ fn split_child_sdp_gate_rejects_nested_64x64_calls() {
     let mut facts = frame(BLOCK_128X128);
     facts.enable_sdp = true;
 
-    let err = ensure_supported_call(facts, children.as_slice()[0]).unwrap_err();
+    let child = children.as_slice()[0];
 
-    assert_eq!(children.as_slice()[0].b_size.index(), BLOCK_64X64);
-    assert!(matches!(
-        err,
-        TilePartitionTraversalError::Unsupported(TilePartitionTraversalUnsupported::Sdp)
-    ));
+    assert_eq!(child.b_size.index(), BLOCK_64X64);
+    assert!(is_intra_sdp_shared_root(facts, child));
 }
 
 #[test]
@@ -669,26 +706,23 @@ fn root_lr_frontier_honors_zero_step_limit_before_lr_symbol() {
 }
 
 #[test]
-fn root_lr_frontier_rejects_sdp_chroma_lr_before_reading_symbols() {
+fn root_lr_frontier_consumes_sdp_chroma_lr_unit() {
     let mut work_unit = make_work_unit(&[0x00, 0x80], CdfUpdateMode::Enabled);
-    let before = work_unit.cdf().tile_cdfs().clone();
     let mut facts = frame(BLOCK_64X64);
     facts.enable_sdp = true;
     facts.loop_restoration = frame_level_chroma_wiener_ns(256);
 
-    let err = consume_tile_loop_restoration_root_frontier(TilePartitionTraversalInput::new(
+    let frontier = consume_tile_loop_restoration_root_frontier(TilePartitionTraversalInput::new(
         &mut work_unit,
         facts,
         context(),
         DecodeLimits::DEFAULT,
     ))
-    .unwrap_err();
+    .unwrap();
 
-    assert!(matches!(
-        err,
-        TilePartitionTraversalError::Unsupported(TilePartitionTraversalUnsupported::Sdp)
-    ));
-    assert_eq!(work_unit.cdf().tile_cdfs(), &before);
+    assert_eq!(frontier.lr_units_consumed(), 1);
+    assert_eq!(frontier.active_wiener_ns_units(), 0);
+    assert_eq!(frontier.selections()[0].plane, 1);
 }
 
 #[test]

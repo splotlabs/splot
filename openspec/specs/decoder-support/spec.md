@@ -177,6 +177,53 @@ per-unit coefficient masks are not retained.
 - **AND** the previous `unsupported_wienerns_lr_source_bounds` reason is no
   longer the live ac0ej3 frontier
 
+### Requirement: ac0ej3 SDP CflAllowedInSdp support row
+
+The decoder support model SHALL track
+`DECODE-AC0EJ3-SDP-CFL-ALLOWED-FRONTIER` as a distinct partial ac0ej3 row. The
+row SHALL describe that the minimal runtime retains AV2 §5.20.3.1
+`CflAllowedInSdp` state for intra SDP chroma leaves and applies it to AV2
+§5.20.5.6 chroma mode-info so disabled CfL and MHCCP syntax are not read from
+the local ac0ej3 stream. The row SHALL remain fail-closed before decoded frame
+samples, loop-restoration filtering/output, reference refresh, or successful
+ac0ej3 decode.
+
+#### Scenario: Matrix evidence records the SDP CfL-allowed boundary
+
+- **WHEN** decoder support status is validated
+- **THEN** `ac0ej3-sdp-cfl-allowed-frontier` appears with Feature ID
+  `DECODE-AC0EJ3-SDP-CFL-ALLOWED-FRONTIER`
+- **AND** the row cites AV2 §5.20.3.1 and §5.20.5.6
+- **AND** it lists focused traversal/mode-info tests plus the local ac0ej3
+  runtime probe
+- **AND** it does not claim decoded frame samples, loop-restoration filtering,
+  output, reference refresh, AVM/dav2d byte equality, or successful ac0ej3
+  decode
+
+### Requirement: ac0ej3 intra prelude transform support row
+
+The decoder support model SHALL track
+`DECODE-AC0EJ3-INTRA-PRELUDE-TX-FRONTIER` as a distinct partial ac0ej3 row. The
+row SHALL describe that the minimal runtime consumes the observed AV2 §5.20.5.3
+`use_intrabc`, §5.20.10.1 CDEF, and §5.20.5.11 delta-Q prelude syntax before
+§5.20.5.5 luma mode and §5.20.6 transform partition parsing in the local
+ac0ej3 stream. The row SHALL also record the pre-tile unsupported-tool gate and
+the chroma-offset leaf rejection. The row SHALL remain fail-closed before
+decoded frame samples, loop-restoration filtering/output, reference refresh, or
+successful ac0ej3 decode.
+
+#### Scenario: Matrix evidence records the intra prelude transform boundary
+
+- **WHEN** decoder support status is validated
+- **THEN** `ac0ej3-intra-prelude-tx-frontier` appears with Feature ID
+  `DECODE-AC0EJ3-INTRA-PRELUDE-TX-FRONTIER`
+- **AND** the row cites AV2 §5.20.5.3, §5.20.5.11, §5.20.6, and §5.20.10.1
+- **AND** it lists focused prelude/tool-gate/chroma-offset tests plus the local
+  ac0ej3 runtime probe
+- **AND** it does not claim decoded frame samples, loop-restoration filtering,
+  output, reference refresh, AVM/dav2d byte equality, or successful ac0ej3
+  decode
+
 ### Requirement: Generated decoder support status
 The repository SHALL generate a committed decoder support status document from
 `docs/DECODER-SUPPORT-MATRIX.toml`. The generated document SHALL summarize row
@@ -4241,6 +4288,49 @@ wiring, dequantization, reconstruction, output, reference refresh, and broad
 - **THEN** the new row is included in the generated status and coverage
   documents with status `partial`
 
+### Requirement: ac0ej3 DCT-only residual support row
+
+The decoder support model SHALL track
+`DECODE-AC0EJ3-DCTONLY-RESIDUAL-FRONTIER` as a distinct partial ac0ej3 row named
+`ac0ej3-dctonly-residual-frontier`. The row SHALL describe that selectable
+Wiener NS LR transform-record derivation can admit nonzero residuals only when
+the actual per-plane transform path resolves to DCT_DCT, either by reading no
+active transform-type syntax or by reading supported active luma transform-type
+syntax that maps back to DCT_DCT. The row SHALL remain fail-closed for non-DCT
+transform types, CCTX, IST, decoded frame samples, loop-restoration
+filtering/output, reference refresh, AVM/dav2d byte equality, or successful
+ac0ej3 decode.
+
+#### Scenario: Matrix evidence records DCT-only residual boundary
+
+- **WHEN** decoder support status is validated
+- **THEN** `ac0ej3-dctonly-residual-frontier` appears with Feature ID
+  `DECODE-AC0EJ3-DCTONLY-RESIDUAL-FRONTIER`
+- **AND** the row cites AV2 §5.20.7.27, §5.20.8.2, and §5.20.8.3
+- **AND** it lists focused DCT-only admission tests, active luma transform-type
+  mapping/CDF tests, and the local ac0ej3 runtime probe
+- **AND** it does not claim decoded frame samples, loop-restoration filtering,
+  output, reference refresh, AVM/dav2d byte equality, or successful ac0ej3
+  decode
+
+### Requirement: ac0ej3 intra IST zero support row
+
+The decoder support matrix SHALL include
+`DECODE-AC0EJ3-INTRA-IST-ZERO-FRONTIER` as a distinct partial ac0ej3 row named
+`ac0ej3-intra-ist-zero-frontier`. The row SHALL record that the decoder consumes
+the covered `sec_tx_type == 0` intra IST syntax and remains fail-closed for
+active secondary transforms and successful ac0ej3 decode output.
+
+#### Scenario: Support matrix records intra IST zero frontier
+
+- **WHEN** decoder support status is generated
+- **THEN** `ac0ej3-intra-ist-zero-frontier` appears with Feature ID
+  `DECODE-AC0EJ3-INTRA-IST-ZERO-FRONTIER`
+- **AND** it lists focused CDF/residual tests plus the local ac0ej3 runtime
+  probe
+- **AND** it does not claim successful ac0ej3 decode, raw/Y4M output, reference
+  refresh, or AVM/dav2d byte equality
+
 ### Requirement: ac0ej3 LR Classified Wiener Frontier Support Row
 
 The implementation matrix SHALL include
@@ -4344,15 +4434,96 @@ successful ac0ej3 decode unsupported until separately proven.
 - **AND** it cites focused live-storage tests
 - **AND** it remains `partial`
 
+### Requirement: ac0ej3 selectable transform-record support row
+
+The decoder support model SHALL track
+`DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS` as a distinct partial row named
+`ac0ej3-selectable-transform-records`. The row SHALL record that the decoder can
+parse supported `TX_MODE_SELECT` luma transform-size/partition records for the
+ac0ej3 LR path, feed the resulting transform facts into live `LrTxSkip` storage,
+and then stop before decoded sample population and LR filtering.
+
+#### Scenario: Support matrix lists selectable transform-record frontier
+
+- **WHEN** `cargo xtask check-decoder-support` validates decoder support rows
+- **THEN** `ac0ej3-selectable-transform-records` appears with Feature ID
+  `DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS`
+- **AND** it remains `partial`
+- **AND** it does not claim decoded frame samples, `FilterClass`,
+  `SubclassLookup`, loop-restoration filtering/output, reference refresh,
+  AVM/dav2d byte equality, or successful ac0ej3 decode
+
+### Requirement: ac0ej3 selectable narrow luma-record support row
+
+The decoder support model SHALL track
+`DECODE-AC0EJ3-SELECTABLE-NARROW-LUMA-RECORDS` as a distinct partial ac0ej3 row.
+The row SHALL describe that the minimal runtime consumes the observed luma-only
+`BLOCK_4X32` SDP selectable transform-record subcase in the local ac0ej3 stream
+while remaining fail-closed before decoded frame samples, `FilterClass`
+retention, loop-restoration filtering/output, reference refresh, or successful
+ac0ej3 decode.
+
+#### Scenario: Matrix evidence records the narrow luma boundary
+
+- **WHEN** decoder support status is validated
+- **THEN** `ac0ej3-selectable-narrow-luma-records` appears with Feature ID
+  `DECODE-AC0EJ3-SELECTABLE-NARROW-LUMA-RECORDS`
+- **AND** the row cites AV2 §5.20.6.1, §5.20.6.3, §5.20.7.24, and §5.20.7.27
+- **AND** it lists focused tests plus the local ac0ej3 runtime probe
+- **AND** it does not claim decoded frame samples, loop-restoration filtering,
+  output, reference refresh, AVM/dav2d byte equality, or successful ac0ej3
+  decode
+
+### Requirement: ac0ej3 active intra tool support row
+
+The decoder support model SHALL track
+`DECODE-AC0EJ3-ACTIVE-INTRA-TOOL-FRONTIER` as a distinct partial ac0ej3 row
+named `ac0ej3-active-intra-tool-frontier`. The row SHALL describe that
+selectable Wiener NS LR transform-record derivation consumes inactive MRL syntax
+and relaxes broad sequence-level intra/transform tool gates plus parsed CCSO
+filter state into active-use or later filter/output diagnostics, while remaining
+fail-closed before decoded frame samples, loop-restoration filtering/output,
+reference refresh, AVM/dav2d byte equality, or successful ac0ej3 decode.
+
+#### Scenario: Matrix evidence records active intra tool boundary
+
+- **WHEN** decoder support status is validated
+- **THEN** `ac0ej3-active-intra-tool-frontier` appears with Feature ID
+  `DECODE-AC0EJ3-ACTIVE-INTRA-TOOL-FRONTIER`
+- **AND** the row cites AV2 §5.20.5.5, §5.20.7.27, and §9.3
+- **AND** it lists focused MRL CDF/mode-info tests plus the local ac0ej3
+  runtime probe
+- **AND** it does not claim decoded frame samples, loop-restoration filtering,
+  output, reference refresh, AVM/dav2d byte equality, or successful ac0ej3
+  decode
+
+### Requirement: ac0ej3 CfL chroma-mode support row
+
+The decoder support model SHALL track
+`DECODE-AC0EJ3-CFL-CHROMA-MODE-FRONTIER` as a distinct partial ac0ej3 row. The
+row SHALL describe that the minimal runtime consumes supported AV2 §5.20.5.6
+active CfL chroma mode syntax and AV2 §5.20.7.32 CfL alpha syntax while
+remaining fail-closed before CfL prediction, chroma reconstruction, loop
+restoration, 10-bit output, reference refresh, or successful ac0ej3 decode.
+
+#### Scenario: Matrix evidence records the CfL mode boundary
+
+- **WHEN** decoder support status is validated
+- **THEN** `ac0ej3-cfl-chroma-mode-frontier` appears with Feature ID
+  `DECODE-AC0EJ3-CFL-CHROMA-MODE-FRONTIER`
+- **AND** the row cites AV2 §5.20.5.6, §5.20.7.32, §8.3.2, and §9.3
+- **AND** it lists focused tests plus the local ac0ej3 runtime probe
+- **AND** it does not claim CfL prediction, decoded chroma samples, loop
+  restoration filtering, output, reference refresh, or successful ac0ej3 decode
+
 ### Requirement: ac0ej3 LR live transform-record handoff support row
 
 The decoder support model SHALL track
 `DECODE-AC0EJ3-LR-LIVE-TRANSFORM-RECORD-HANDOFF` as a distinct partial row named
 `ac0ej3-lr-live-transform-record-handoff`. The row SHALL record that the decoder
 can hand fixed-largest parsed luma transform records into live LR `LrTxSkip`
-storage, and that the local ac0ej3 stream is now blocked on selectable
-transform-record parsing before live `LrTxSkip` values can be populated from the
-key tile.
+storage, and that the local ac0ej3 stream's selectable-transform record parsing
+is now tracked by `DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS`.
 
 #### Scenario: Support matrix lists transform-record handoff frontier
 
@@ -4360,9 +4531,9 @@ key tile.
 - **THEN** `ac0ej3-lr-live-transform-record-handoff` appears with Feature ID
   `DECODE-AC0EJ3-LR-LIVE-TRANSFORM-RECORD-HANDOFF`
 - **AND** it remains `partial`
-- **AND** it does not claim selectable transform partition parsing,
-  `FilterClass`, `SubclassLookup`, loop-restoration filtering/output, reference
-  refresh, AVM/dav2d byte equality, or successful ac0ej3 decode
+- **AND** it does not claim decoded frame samples, `FilterClass`,
+  `SubclassLookup`, loop-restoration filtering/output, reference refresh,
+  AVM/dav2d byte equality, or successful ac0ej3 decode
 
 ### Requirement: directional UV ordinary branch support row
 

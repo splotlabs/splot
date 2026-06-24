@@ -36,7 +36,7 @@ use super::{
 use crate::tile_payload::{
     DecodeBlockFrontier, DecodeTileWorkUnit, GeneralIntraMultiblockError,
     GeneralIntraTreeWalkError, TileCdfSelector, TileCdfSubset, TileCoeffContextState,
-    TilePartitionTraversalError, decode_general_intra_multiblock_tree,
+    TilePartitionTraversalError, TransformToolResidualPolicy, decode_general_intra_multiblock_tree,
     decode_general_intra_plane_coeffs, frame_mi_dimensions,
 };
 
@@ -229,9 +229,7 @@ pub(super) fn decode_inter_blocks(
                 tile_offset,
             )?;
             decoded_blocks.push(placed);
-            // AV2 § 5.20.5.3 IntraJointMode for an inter block is DC_PRED (= 0); the
-            // partition walk records this grid value but inter neighbours ignore it.
-            Ok(0u8)
+            Ok(crate::tile_payload::GeneralIntraLeafMode::no_luma_mode())
         },
     )
     .map_err(|error| map_inter_multiblock_error(error, tile_offset))?;
@@ -849,6 +847,7 @@ fn read_inter_residual(
         false,
         INTER_UV_MODE_DC,
         true,
+        TransformToolResidualPolicy::Allow,
     )
     .map_err(|_| residual_read_error(tile_offset))?;
     let u = decode_general_intra_plane_coeffs(
@@ -862,6 +861,7 @@ fn read_inter_residual(
         false,
         INTER_UV_MODE_DC,
         true,
+        TransformToolResidualPolicy::Allow,
     )
     .map_err(|_| residual_read_error(tile_offset))?;
     // §5.20.7.27 v_txb_skip uses EobU != 0 (the U plane's eob); pass !u.all_zero.
@@ -876,6 +876,7 @@ fn read_inter_residual(
         !u.all_zero,
         INTER_UV_MODE_DC,
         true,
+        TransformToolResidualPolicy::Allow,
     )
     .map_err(|_| residual_read_error(tile_offset))?;
     Ok(InterResidual { luma, u, v })

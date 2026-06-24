@@ -323,10 +323,10 @@ pub(super) fn decode_general_minimal_intra_frame(
 /// partially-built frame, so non-DC modes and non-square partitions are
 /// rejected. Chroma is 4:2:0 (half-resolution).
 ///
-/// Returns the block's AV2 § 5.20.5.3 `IntraJointMode` (`= modeDelta`) so the
-/// caller can record it into the `IntraJointModes` grid for later blocks'
-/// § 8.3.2 `y_mode_index` neighbour context; `joint_modes` supplies that grid
-/// (read-only here) for this block's own `y_mode_index` context.
+/// Returns the block's AV2 § 5.20.5.3 luma mode state so the caller can record
+/// it into the `IntraJointModes` / `YModes` grids for later blocks' contexts;
+/// `joint_modes` supplies that grid (read-only here) for this block's own
+/// `y_mode_index` context.
 #[allow(clippy::too_many_arguments)]
 fn decode_one_general_intra_block(
     work_unit: &mut crate::tile_payload::DecodeTileWorkUnit<'_>,
@@ -340,7 +340,7 @@ fn decode_one_general_intra_block(
     luma_use_tcq: bool,
     mi_cols: usize,
     tile_offset: ByteOffset,
-) -> Result<u8> {
+) -> Result<crate::tile_payload::GeneralIntraLeafMode> {
     // Resolve the block geometry and gate the handled subset BEFORE reading the
     // §5.20.5.3 mode info: `uv_mode` is only coded when the block has chroma, and
     // sub-8x8 luma leaves use a different (deferred 4x4) chroma sizing that this
@@ -392,7 +392,9 @@ fn decode_one_general_intra_block(
     let modes = crate::tile_payload::decode_general_intra_block_modes(
         work_unit,
         symbols,
+        crate::tile_payload::GeneralIntraChromaToolConfig::disabled(),
         joint_modes,
+        frontier.b_size.index(),
         frontier.r,
         frontier.c,
         n4w,
@@ -1033,13 +1035,23 @@ fn decode_one_general_intra_block(
         }
     }
 
-    let uv_mode = usize::from(modes.uv_mode);
+    let uv_mode = modes.coeff_uv_mode();
     let luma_log2 = n4w.trailing_zeros() + 2;
     let luma_tx = (luma_log2 - 2) as usize;
     let luma_x = frontier.c * 4;
     let luma_y = frontier.r * 4;
     let luma = crate::tile_payload::decode_general_intra_plane_coeffs(
-        work_unit, symbols, coeff_ctx, 0, luma_tx, luma_x, luma_y, false, uv_mode, false,
+        work_unit,
+        symbols,
+        coeff_ctx,
+        0,
+        luma_tx,
+        luma_x,
+        luma_y,
+        false,
+        uv_mode,
+        false,
+        TransformToolResidualPolicy::Allow,
     )
     .map_err(|error| general_intra_residual_error(error, tile_offset))?;
     match (supported_nondc_luma, supported_directional_luma) {
@@ -1219,7 +1231,17 @@ fn decode_one_general_intra_block(
         // raster order it is `0` for this first-superblock-row position.
         let num4_below_left = full_sb_num4_below_left(frontier.r, n4h, FRAME_420_SUBSAMPLING_Y);
         let u = crate::tile_payload::decode_general_intra_plane_coeffs(
-            work_unit, symbols, coeff_ctx, 1, chroma_tx, chroma_x, chroma_y, false, uv_mode, false,
+            work_unit,
+            symbols,
+            coeff_ctx,
+            1,
+            chroma_tx,
+            chroma_x,
+            chroma_y,
+            false,
+            uv_mode,
+            false,
+            TransformToolResidualPolicy::Allow,
         )
         .map_err(|error| general_intra_residual_error(error, tile_offset))?;
         crate::runtime_minimal_recon::reconstruct_general_intra_chroma_block_into(
@@ -1246,6 +1268,7 @@ fn decode_one_general_intra_block(
             !u.all_zero,
             uv_mode,
             false,
+            TransformToolResidualPolicy::Allow,
         )
         .map_err(|error| general_intra_residual_error(error, tile_offset))?;
         crate::runtime_minimal_recon::reconstruct_general_intra_chroma_block_into(
@@ -1265,7 +1288,10 @@ fn decode_one_general_intra_block(
     // AV2 § 5.20.5.3: this block's IntraJointMode (the reorder index modeDelta)
     // is recorded into the IntraJointModes grid by the partition walk so later
     // blocks' § 8.3.2 `y_mode_index` context can read it as a neighbour.
-    Ok(modes.intra_joint_mode)
+    Ok(crate::tile_payload::GeneralIntraLeafMode::luma(
+        modes.intra_joint_mode,
+        modes.y_mode,
+    ))
 }
 
 /// Decodes and reconstructs one **rectangular** general intra leaf block
@@ -1296,7 +1322,7 @@ fn decode_one_general_intra_rect_block(
     n4w: usize,
     n4h: usize,
     tile_offset: ByteOffset,
-) -> Result<u8> {
+) -> Result<crate::tile_payload::GeneralIntraLeafMode> {
     // VERIFIED-SUBSET DISCIPLINE: only the oracle-verified 64x32 (`n4w == 16`,
     // `n4h == 8`, PARTITION_HORZ) rectangular geometry is admitted — that is the
     // single geometry the committed fixture (`syn-hrect-intra-64x64-q120`) proves
@@ -1335,7 +1361,7 @@ fn decode_one_general_intra_rect_block(
         ));
     }
 
-    let uv_mode = usize::from(modes.uv_mode);
+    let uv_mode = modes.coeff_uv_mode();
     // §7.15.4 transform dimensions: the block's width / height log2 (4x4 MI units
     // -> log2 pels is `trailing_zeros + 2`). Under TX_MODE_LARGEST the single
     // transform spans the whole block (capped at 64), so its width/height log2
@@ -1353,7 +1379,17 @@ fn decode_one_general_intra_rect_block(
     let luma_x = frontier.c * 4;
     let luma_y = frontier.r * 4;
     let luma = crate::tile_payload::decode_general_intra_plane_coeffs(
-        work_unit, symbols, coeff_ctx, 0, luma_tx, luma_x, luma_y, false, uv_mode, false,
+        work_unit,
+        symbols,
+        coeff_ctx,
+        0,
+        luma_tx,
+        luma_x,
+        luma_y,
+        false,
+        uv_mode,
+        false,
+        TransformToolResidualPolicy::Allow,
     )
     .map_err(|error| general_intra_residual_error(error, tile_offset))?;
     // §7.14.4 TCQ dqDenom applies to the luma DCT_DCT (TX_CLASS_2D) non-lossless
@@ -1389,7 +1425,17 @@ fn decode_one_general_intra_rect_block(
         let chroma_x = frontier.c * 2;
         let chroma_y = frontier.r * 2;
         let u = crate::tile_payload::decode_general_intra_plane_coeffs(
-            work_unit, symbols, coeff_ctx, 1, chroma_tx, chroma_x, chroma_y, false, uv_mode, false,
+            work_unit,
+            symbols,
+            coeff_ctx,
+            1,
+            chroma_tx,
+            chroma_x,
+            chroma_y,
+            false,
+            uv_mode,
+            false,
+            TransformToolResidualPolicy::Allow,
         )
         .map_err(|error| general_intra_residual_error(error, tile_offset))?;
         crate::runtime_minimal_recon::reconstruct_general_intra_block_rect_into(
@@ -1415,6 +1461,7 @@ fn decode_one_general_intra_rect_block(
             !u.all_zero,
             uv_mode,
             false,
+            TransformToolResidualPolicy::Allow,
         )
         .map_err(|error| general_intra_residual_error(error, tile_offset))?;
         crate::runtime_minimal_recon::reconstruct_general_intra_block_rect_into(
@@ -1430,7 +1477,10 @@ fn decode_one_general_intra_rect_block(
         )
         .map_err(|error| general_intra_residual_error(error, tile_offset))?;
     }
-    Ok(modes.intra_joint_mode)
+    Ok(crate::tile_payload::GeneralIntraLeafMode::luma(
+        modes.intra_joint_mode,
+        modes.y_mode,
+    ))
 }
 
 /// Resolves the AV2 § 9.2 `TX_SIZES_ALL` index whose `Tx_Width_Log2` /
@@ -1570,7 +1620,10 @@ fn general_intra_residual_error(
 ) -> DecodeError {
     match error {
         GeneralIntraResidualError::AllZeroRead { .. }
-        | GeneralIntraResidualError::NonZeroPass { .. } => general_intra_unsupported(
+        | GeneralIntraResidualError::NonZeroPass { .. }
+        | GeneralIntraResidualError::NonZeroStart { .. }
+        | GeneralIntraResidualError::StagedNonZeroPass { .. }
+        | GeneralIntraResidualError::TransformTypeRead { .. } => general_intra_unsupported(
             "general_intra_luma_coeff_parse",
             Some(offset),
             "general intra luma transform-block coefficient syntax could not be parsed from the tile payload",
@@ -1582,6 +1635,14 @@ fn general_intra_residual_error(
             "general intra luma coefficient context state could not be derived from the tile work unit",
             GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
         ),
+        GeneralIntraResidualError::UnsupportedTransformToolResidual { .. } => {
+            general_intra_unsupported(
+                "general_intra_transform_tool_residual",
+                Some(offset),
+                "general intra residual decode consumed the all_zero decision, but a nonzero residual would require transform-tool syntax outside the supported subset",
+                GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
+            )
+        }
         GeneralIntraResidualError::UnexpectedBranch => general_intra_unsupported(
             "general_intra_luma_coeff_unexpected_branch",
             Some(offset),
@@ -1632,7 +1693,7 @@ fn general_intra_block_mode_error(
         GeneralIntraBlockModeError::UnsupportedYMode { .. } => general_intra_unsupported(
             "general_intra_unsupported_y_mode",
             Some(offset),
-            "general intra decode currently reconstructs only the non-directional luma intra mode subset",
+            "general intra decode reached a luma intra mode outside the currently supported reconstruction subset",
             GENERAL_INTRA_MODE_SPEC_SECTION,
         ),
         GeneralIntraBlockModeError::InvalidUvMode { .. } => general_intra_unsupported(
@@ -1641,11 +1702,43 @@ fn general_intra_block_mode_error(
             "general intra decode rejected an out-of-range chroma uv_mode index",
             GENERAL_INTRA_MODE_SPEC_SECTION,
         ),
+        GeneralIntraBlockModeError::UnsupportedFscMode => general_intra_unsupported(
+            "general_intra_unsupported_fsc_mode",
+            Some(offset),
+            "general intra decode can skip a false fsc_mode decision but does not support active FSC coefficient parsing",
+            "5.20.5.3",
+        ),
+        GeneralIntraBlockModeError::UnsupportedMrlMode { .. } => general_intra_unsupported(
+            "general_intra_unsupported_mrl_mode",
+            Some(offset),
+            "general intra decode can skip a false mrl_index decision but does not support active MRL prediction",
+            "5.20.5.5",
+        ),
+        GeneralIntraBlockModeError::InvalidFscBlockSizeIndex { .. } => general_intra_unsupported(
+            "general_intra_invalid_fsc_block_size_index",
+            Some(offset),
+            "general intra decode could not map MiSize through Fsc_Bsize_Groups",
+            "8.3.2",
+        ),
+        GeneralIntraBlockModeError::InvalidCflMhDirBlockSizeIndex { .. } => {
+            general_intra_unsupported(
+                "general_intra_invalid_cfl_mh_dir_size_group",
+                Some(offset),
+                "general intra decode could not map MiSize through Size_Group for cfl_mh_dir",
+                "8.3.2",
+            )
+        }
+        GeneralIntraBlockModeError::UnsupportedMhccpMode => general_intra_unsupported(
+            "general_intra_unsupported_mhccp_mode",
+            Some(offset),
+            "general intra decode can skip a false MHCCP-enabled is_cfl decision but does not support active MHCCP chroma prediction",
+            "5.20.5.6",
+        ),
         GeneralIntraBlockModeError::UnsupportedDirectionalNeighbourReorder { .. } => {
             general_intra_unsupported(
                 "general_intra_directional_neighbour_reorder",
                 Some(offset),
-                "general intra y_mode_offset escape over a directional joint-mode neighbour needs the §5.20.5.3 directional-neighbour mode reorder (resolving to a directional mode that needs the deferred §7.13.2.8 luma IDIF)",
+                "general intra luma mode syntax over a directional joint-mode neighbour needs the §5.20.5.5 directional-neighbour mode reorder",
                 GENERAL_INTRA_MODE_SPEC_SECTION,
             )
         }

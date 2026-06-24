@@ -6,15 +6,19 @@
 //! Feature tracking: `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER`.
 
 use splot_core::tables::cdf::{
-    DEFAULT_COL_MV_GREATER_CDF, DEFAULT_COL_MV_INDEX_CDF, DEFAULT_COMP_GROUP_IDX_CDF,
-    DEFAULT_COMP_MODE_CDF, DEFAULT_COMP_REF0_CDF, DEFAULT_COMP_REF1_CDF,
-    DEFAULT_COMPOUND_MODE_NON_JOINT_CDF, DEFAULT_CWP_IDX_CDF, DEFAULT_DC_SIGN_CDF,
-    DEFAULT_DRL_MODE_CDF, DEFAULT_EOB_EXTRA_CDF, DEFAULT_EOB_PT_16_CDF, DEFAULT_EOB_PT_32_CDF,
-    DEFAULT_EOB_PT_64_CDF, DEFAULT_EOB_PT_128_CDF, DEFAULT_EOB_PT_256_CDF, DEFAULT_EOB_PT_512_CDF,
-    DEFAULT_EOB_PT_1024_CDF, DEFAULT_INTERP_FILTER_CDF, DEFAULT_IS_INTER_CDF, DEFAULT_IS_JOINT_CDF,
+    DEFAULT_CFL_ALPHA_CDF, DEFAULT_CFL_INDEX_CDF, DEFAULT_CFL_MH_DIR_CDF, DEFAULT_CFL_MHCCP_CDF,
+    DEFAULT_CFL_SIGN_CDF, DEFAULT_COL_MV_GREATER_CDF, DEFAULT_COL_MV_INDEX_CDF,
+    DEFAULT_COMP_GROUP_IDX_CDF, DEFAULT_COMP_MODE_CDF, DEFAULT_COMP_REF0_CDF,
+    DEFAULT_COMP_REF1_CDF, DEFAULT_COMPOUND_MODE_NON_JOINT_CDF, DEFAULT_CWP_IDX_CDF,
+    DEFAULT_DC_SIGN_CDF, DEFAULT_DRL_MODE_CDF, DEFAULT_EOB_EXTRA_CDF, DEFAULT_EOB_PT_16_CDF,
+    DEFAULT_EOB_PT_32_CDF, DEFAULT_EOB_PT_64_CDF, DEFAULT_EOB_PT_128_CDF, DEFAULT_EOB_PT_256_CDF,
+    DEFAULT_EOB_PT_512_CDF, DEFAULT_EOB_PT_1024_CDF, DEFAULT_INTERP_FILTER_CDF,
+    DEFAULT_INTRA_TX_TYPE_LONG_CDF, DEFAULT_INTRA_TX_TYPE_SET1_CDF, DEFAULT_INTRA_TX_TYPE_SET2_CDF,
+    DEFAULT_IS_CFL_CDF, DEFAULT_IS_INTER_CDF, DEFAULT_IS_JOINT_CDF, DEFAULT_IS_LONG_SIDE_DCT_CDF,
     DEFAULT_JOINT_SHELL_LAST_TWO_CLASSES_CDF, DEFAULT_JOINT_SHELL_SET_CDF,
     DEFAULT_JOINT_SHELL6_CLASS0_CDF, DEFAULT_JOINT_SHELL6_CLASS1_CDF,
-    DEFAULT_SHELL_OFFSET_CLASS2_CDF, DEFAULT_SHELL_OFFSET_LOW_CLASS_CDF,
+    DEFAULT_MOST_PROBABLE_STX_SET_ADST_CDF, DEFAULT_MOST_PROBABLE_STX_SET_CDF,
+    DEFAULT_SEC_TX_TYPE_CDF, DEFAULT_SHELL_OFFSET_CLASS2_CDF, DEFAULT_SHELL_OFFSET_LOW_CLASS_CDF,
     DEFAULT_SHELL_OFFSET_OTHER_CLASS_CDF, DEFAULT_SINGLE_MODE_CDF, DEFAULT_SINGLE_REF_CDF,
     DEFAULT_SKIP_CDF, DEFAULT_TXB_SKIP_CDF, DEFAULT_USE_WIENER_NS_CDF,
     DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF, DEFAULT_V_TXB_SKIP_CDF, DEFAULT_WIENER_NS_BASE_CDF,
@@ -39,6 +43,12 @@ const PLANE_TYPES: usize = 2;
 const TX_SIZE_CONTEXTS: usize = 5;
 const TXB_SKIP_CONTEXTS: usize = 10;
 const UV_MODE_CONTEXTS: usize = 2;
+const CFL_CONTEXTS: usize = 3;
+const CFL_ALPHA_CONTEXTS: usize = 6;
+const CFL_ALPHA_CDF_ROW_LEN: usize = 9;
+const CFL_SIGN_CDF_ROW_LEN: usize = 9;
+const CFL_MH_DIR_GROUPS: usize = 4;
+const CFL_MH_DIR_CDF_ROW_LEN: usize = 4;
 const V_TXB_SKIP_CONTEXTS: usize = 12;
 const DC_SIGN_GROUPS: usize = 2;
 const DC_SIGN_CONTEXTS: usize = 3;
@@ -87,6 +97,18 @@ const INTERP_FILTER_CONTEXTS: usize = 16;
 // §8.3.2 Wiener NS filter syntax CDFs used by §5.20.10.6.
 const WIENER_NS_LENGTH_CONTEXTS: usize = 2;
 const WIENER_NS_BASE_CDF_ROW_LEN: usize = 5;
+// §8.3.2 Table 8.2 intra transform-type CDFs, indexed by `Tx_Size_Sqr[txSz]`.
+const INTRA_TX_TYPE_LONG_SIZE_CONTEXTS: usize = 4;
+const INTRA_TX_TYPE_SIZE_CONTEXTS: usize = 3;
+const INTRA_TX_TYPE_LONG_ROW_LEN: usize = 5;
+const INTRA_TX_TYPE_SET1_ROW_LEN: usize = 8;
+const INTRA_TX_TYPE_SET2_ROW_LEN: usize = 3;
+const IS_LONG_SIDE_DCT_CONTEXTS: usize = 2;
+const SEC_TX_TYPE_IS_INTER_CONTEXTS: usize = 2;
+const SEC_TX_TYPE_TX_SIZE_CONTEXTS: usize = 5;
+const SEC_TX_TYPE_ROW_LEN: usize = 5;
+const MOST_PROBABLE_STX_SET_ROW_LEN: usize = 8;
+const MOST_PROBABLE_STX_SET_ADST_ROW_LEN: usize = 5;
 
 pub(crate) type YModeSetCdfRow = [i32; Y_MODE_SET_CDF_ROW_LEN];
 pub(crate) type YModeIndexCdfRows = [[i32; INTRA_MODE_CDF_ROW_LEN]; Y_MODE_INDEX_CONTEXTS];
@@ -94,6 +116,12 @@ pub(crate) type YModeOffsetCdfRows = [[i32; Y_MODE_OFFSET_CDF_ROW_LEN]; Y_MODE_O
 pub(crate) type TxbSkipCdfRows = [[[[[i32; CDF_ROW_LEN]; TXB_SKIP_CONTEXTS]; TX_SIZE_CONTEXTS];
     PLANE_TYPES]; COEFF_CDF_Q_CONTEXTS];
 pub(crate) type UvModeCflNotAllowedCdfRows = [[i32; INTRA_MODE_CDF_ROW_LEN]; UV_MODE_CONTEXTS];
+pub(crate) type IsCflCdfRows = [[i32; CDF_ROW_LEN]; CFL_CONTEXTS];
+pub(crate) type CflIndexCdfRow = [i32; CDF_ROW_LEN];
+pub(crate) type CflSignCdfRow = [i32; CFL_SIGN_CDF_ROW_LEN];
+pub(crate) type CflAlphaCdfRows = [[i32; CFL_ALPHA_CDF_ROW_LEN]; CFL_ALPHA_CONTEXTS];
+pub(crate) type CflMhccpCdfRow = [i32; CDF_ROW_LEN];
+pub(crate) type CflMhDirCdfRows = [[i32; CFL_MH_DIR_CDF_ROW_LEN]; CFL_MH_DIR_GROUPS];
 pub(crate) type VTxbSkipCdfRows = [[[i32; CDF_ROW_LEN]; V_TXB_SKIP_CONTEXTS]; COEFF_CDF_Q_CONTEXTS];
 // `eob_extra` is a binary symbol, so its rows are width 3 — the same as the
 // generic `CDF_ROW_LEN`. `DEFAULT_EOB_EXTRA_CDF` is `[[i32; 3]; 4]`, so this alias
@@ -129,6 +157,17 @@ pub(crate) type UseWienerNsCdfRow = [i32; CDF_ROW_LEN];
 pub(crate) type WienerNsLengthCdfRows = [[i32; CDF_ROW_LEN]; WIENER_NS_LENGTH_CONTEXTS];
 pub(crate) type WienerNsUvSymCdfRow = [i32; CDF_ROW_LEN];
 pub(crate) type WienerNsBaseCdfRow = [i32; WIENER_NS_BASE_CDF_ROW_LEN];
+pub(crate) type IsLongSideDctCdfRows = [[i32; CDF_ROW_LEN]; IS_LONG_SIDE_DCT_CONTEXTS];
+pub(crate) type IntraTxTypeLongCdfRows =
+    [[i32; INTRA_TX_TYPE_LONG_ROW_LEN]; INTRA_TX_TYPE_LONG_SIZE_CONTEXTS];
+pub(crate) type IntraTxTypeSet1CdfRows =
+    [[i32; INTRA_TX_TYPE_SET1_ROW_LEN]; INTRA_TX_TYPE_SIZE_CONTEXTS];
+pub(crate) type IntraTxTypeSet2CdfRows =
+    [[i32; INTRA_TX_TYPE_SET2_ROW_LEN]; INTRA_TX_TYPE_SIZE_CONTEXTS];
+pub(crate) type SecTxTypeCdfRows =
+    [[[i32; SEC_TX_TYPE_ROW_LEN]; SEC_TX_TYPE_TX_SIZE_CONTEXTS]; SEC_TX_TYPE_IS_INTER_CONTEXTS];
+pub(crate) type MostProbableStxSetCdfRow = [i32; MOST_PROBABLE_STX_SET_ROW_LEN];
+pub(crate) type MostProbableStxSetAdstCdfRow = [i32; MOST_PROBABLE_STX_SET_ADST_ROW_LEN];
 // §9.3 SHELL-coded `read_mv` banks. `shell_set` / `joint_shell_last_two_classes` /
 // `shell_offset_class2` are binary (width 3 == `CDF_ROW_LEN`). The P == 6 EighthPel
 // `shell_class` banks are width 9 (8 shell-class symbols + count). The offset / col
@@ -205,6 +244,27 @@ pub(crate) enum BlockCdfSelector {
     UvModeCflNotAllowed {
         /// Chroma mode context index.
         ctx: usize,
+    },
+    /// `TileIsCflCdf[ctx]` from AV2 § 8.3.2.
+    IsCfl {
+        /// CfL neighbour context index.
+        ctx: usize,
+    },
+    /// `TileCflIndexCdf` from AV2 § 8.3.2.
+    CflIndex,
+    /// `TileCflSignCdf` from AV2 § 8.3.2.
+    CflSign,
+    /// `TileCflAlphaCdf[ctx]` from AV2 § 8.3.2.
+    CflAlpha {
+        /// CfL alpha context index.
+        ctx: usize,
+    },
+    /// `TileCflMhccpCdf` from AV2 § 8.3.2.
+    CflMhccp,
+    /// `TileCflMhDirCdf[Size_Group[MiSize]]` from AV2 § 8.3.2.
+    CflMhDir {
+        /// `Size_Group[MiSize]`.
+        size_group: usize,
     },
     /// `TileVTxbSkipCdf[coeff_cdf_q_ctx][ctx]`.
     VTxbSkip {
@@ -380,6 +440,37 @@ pub(crate) enum BlockCdfSelector {
     /// `TileWienerNsBaseCdf` (AV2 § 8.3.2): the §5.20.10.6
     /// `wiener_ns_base` symbol used by `decode_4part`.
     WienerNsBase,
+    /// `TileIsLongSideDctCdf[is_inter]` (AV2 § 8.3.2).
+    IsLongSideDct {
+        /// `is_inter`.
+        is_inter: usize,
+    },
+    /// `TileIntraTxTypeLongCdf[Tx_Size_Sqr[txSz]]` (AV2 § 8.3.2 Table 8.2).
+    IntraTxTypeLong {
+        /// `Tx_Size_Sqr[txSz]`.
+        tx_size_sqr: usize,
+    },
+    /// `TileIntraTxTypeSet1Cdf[Tx_Size_Sqr[txSz]]` (AV2 § 8.3.2 Table 8.2).
+    IntraTxTypeSet1 {
+        /// `Tx_Size_Sqr[txSz]`.
+        tx_size_sqr: usize,
+    },
+    /// `TileIntraTxTypeSet2Cdf[Tx_Size_Sqr[txSz]]` (AV2 § 8.3.2 Table 8.2).
+    IntraTxTypeSet2 {
+        /// `Tx_Size_Sqr[txSz]`.
+        tx_size_sqr: usize,
+    },
+    /// `TileSecTxTypeCdf[is_inter][Tx_Size_Sqr[txSz]]` (AV2 § 8.3.2).
+    SecTxType {
+        /// `is_inter`.
+        is_inter: usize,
+        /// `Tx_Size_Sqr[txSz]`.
+        tx_size_sqr: usize,
+    },
+    /// `TileMostProbableStxSetCdf` (AV2 § 8.3.2).
+    MostProbableStxSet,
+    /// `TileMostProbableStxSetAdstCdf` (AV2 § 8.3.2).
+    MostProbableStxSetAdst,
     /// Coefficient base/base-EOB/base-range and IDTX CDF rows.
     Coeff(CoeffCdfSelector),
 }
@@ -392,6 +483,12 @@ pub(crate) struct BlockCdfRows {
     pub(super) y_mode_offset: YModeOffsetCdfRows,
     pub(super) txb_skip: TxbSkipCdfRows,
     pub(super) uv_mode_cfl_not_allowed: UvModeCflNotAllowedCdfRows,
+    pub(super) is_cfl: IsCflCdfRows,
+    pub(super) cfl_index: CflIndexCdfRow,
+    pub(super) cfl_sign: CflSignCdfRow,
+    pub(super) cfl_alpha: CflAlphaCdfRows,
+    pub(super) cfl_mhccp: CflMhccpCdfRow,
+    pub(super) cfl_mh_dir: CflMhDirCdfRows,
     pub(super) v_txb_skip: VTxbSkipCdfRows,
     pub(super) eob_extra: EobExtraCdfRows,
     pub(super) eob_pt_16: EobPt16CdfRows,
@@ -428,6 +525,13 @@ pub(crate) struct BlockCdfRows {
     pub(super) wiener_ns_length: WienerNsLengthCdfRows,
     pub(super) wiener_ns_uv_sym: WienerNsUvSymCdfRow,
     pub(super) wiener_ns_base: WienerNsBaseCdfRow,
+    pub(super) is_long_side_dct: IsLongSideDctCdfRows,
+    pub(super) intra_tx_type_long: IntraTxTypeLongCdfRows,
+    pub(super) intra_tx_type_set1: IntraTxTypeSet1CdfRows,
+    pub(super) intra_tx_type_set2: IntraTxTypeSet2CdfRows,
+    pub(super) sec_tx_type: SecTxTypeCdfRows,
+    pub(super) most_probable_stx_set: MostProbableStxSetCdfRow,
+    pub(super) most_probable_stx_set_adst: MostProbableStxSetAdstCdfRow,
     pub(super) coeff: CoeffCdfRows,
 }
 
@@ -439,6 +543,12 @@ impl BlockCdfRows {
             y_mode_offset: DEFAULT_Y_MODE_OFFSET_CDF,
             txb_skip: DEFAULT_TXB_SKIP_CDF,
             uv_mode_cfl_not_allowed: DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF,
+            is_cfl: DEFAULT_IS_CFL_CDF,
+            cfl_index: DEFAULT_CFL_INDEX_CDF,
+            cfl_sign: DEFAULT_CFL_SIGN_CDF,
+            cfl_alpha: DEFAULT_CFL_ALPHA_CDF,
+            cfl_mhccp: DEFAULT_CFL_MHCCP_CDF,
+            cfl_mh_dir: DEFAULT_CFL_MH_DIR_CDF,
             v_txb_skip: DEFAULT_V_TXB_SKIP_CDF,
             eob_extra: DEFAULT_EOB_EXTRA_CDF,
             eob_pt_16: DEFAULT_EOB_PT_16_CDF,
@@ -475,6 +585,13 @@ impl BlockCdfRows {
             wiener_ns_length: DEFAULT_WIENER_NS_LENGTH_CDF,
             wiener_ns_uv_sym: DEFAULT_WIENER_NS_UV_SYM_CDF,
             wiener_ns_base: DEFAULT_WIENER_NS_BASE_CDF,
+            is_long_side_dct: DEFAULT_IS_LONG_SIDE_DCT_CDF,
+            intra_tx_type_long: DEFAULT_INTRA_TX_TYPE_LONG_CDF,
+            intra_tx_type_set1: DEFAULT_INTRA_TX_TYPE_SET1_CDF,
+            intra_tx_type_set2: DEFAULT_INTRA_TX_TYPE_SET2_CDF,
+            sec_tx_type: DEFAULT_SEC_TX_TYPE_CDF,
+            most_probable_stx_set: DEFAULT_MOST_PROBABLE_STX_SET_CDF,
+            most_probable_stx_set_adst: DEFAULT_MOST_PROBABLE_STX_SET_ADST_CDF,
             coeff: CoeffCdfRows::from_defaults(),
         }
     }
@@ -535,6 +652,45 @@ impl BlockCdfRows {
                         max_exclusive: UV_MODE_CONTEXTS,
                     },
                 )?;
+                Ok(row.as_slice())
+            }
+            BlockCdfSelector::IsCfl { ctx } => {
+                let row = self
+                    .is_cfl
+                    .get(ctx)
+                    .ok_or(TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::IsCfl,
+                        index_name: "ctx",
+                        actual: ctx,
+                        max_exclusive: CFL_CONTEXTS,
+                    })?;
+                Ok(row.as_slice())
+            }
+            BlockCdfSelector::CflIndex => Ok(self.cfl_index.as_slice()),
+            BlockCdfSelector::CflSign => Ok(self.cfl_sign.as_slice()),
+            BlockCdfSelector::CflAlpha { ctx } => {
+                let row = self
+                    .cfl_alpha
+                    .get(ctx)
+                    .ok_or(TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::CflAlpha,
+                        index_name: "ctx",
+                        actual: ctx,
+                        max_exclusive: CFL_ALPHA_CONTEXTS,
+                    })?;
+                Ok(row.as_slice())
+            }
+            BlockCdfSelector::CflMhccp => Ok(self.cfl_mhccp.as_slice()),
+            BlockCdfSelector::CflMhDir { size_group } => {
+                let row =
+                    self.cfl_mh_dir
+                        .get(size_group)
+                        .ok_or(TileCdfError::SelectorOutOfRange {
+                            array: TileCdfArray::CflMhDir,
+                            index_name: "size_group",
+                            actual: size_group,
+                            max_exclusive: CFL_MH_DIR_GROUPS,
+                        })?;
                 Ok(row.as_slice())
             }
             BlockCdfSelector::VTxbSkip {
@@ -855,6 +1011,69 @@ impl BlockCdfRows {
             }
             BlockCdfSelector::WienerNsUvSym => Ok(self.wiener_ns_uv_sym.as_slice()),
             BlockCdfSelector::WienerNsBase => Ok(self.wiener_ns_base.as_slice()),
+            BlockCdfSelector::IsLongSideDct { is_inter } => {
+                let row = self.is_long_side_dct.get(is_inter).ok_or(
+                    TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::IsLongSideDct,
+                        index_name: "is_inter",
+                        actual: is_inter,
+                        max_exclusive: IS_LONG_SIDE_DCT_CONTEXTS,
+                    },
+                )?;
+                Ok(row.as_slice())
+            }
+            BlockCdfSelector::IntraTxTypeLong { tx_size_sqr } => {
+                let row = self.intra_tx_type_long.get(tx_size_sqr).ok_or(
+                    TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::IntraTxTypeLong,
+                        index_name: "tx_size_sqr",
+                        actual: tx_size_sqr,
+                        max_exclusive: INTRA_TX_TYPE_LONG_SIZE_CONTEXTS,
+                    },
+                )?;
+                Ok(row.as_slice())
+            }
+            BlockCdfSelector::IntraTxTypeSet1 { tx_size_sqr } => {
+                let row = self.intra_tx_type_set1.get(tx_size_sqr).ok_or(
+                    TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::IntraTxTypeSet1,
+                        index_name: "tx_size_sqr",
+                        actual: tx_size_sqr,
+                        max_exclusive: INTRA_TX_TYPE_SIZE_CONTEXTS,
+                    },
+                )?;
+                Ok(row.as_slice())
+            }
+            BlockCdfSelector::IntraTxTypeSet2 { tx_size_sqr } => {
+                let row = self.intra_tx_type_set2.get(tx_size_sqr).ok_or(
+                    TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::IntraTxTypeSet2,
+                        index_name: "tx_size_sqr",
+                        actual: tx_size_sqr,
+                        max_exclusive: INTRA_TX_TYPE_SIZE_CONTEXTS,
+                    },
+                )?;
+                Ok(row.as_slice())
+            }
+            BlockCdfSelector::SecTxType {
+                is_inter,
+                tx_size_sqr,
+            } => {
+                let is_inter = checked_sec_tx_is_inter(is_inter)?;
+                let row = self.sec_tx_type[is_inter].get(tx_size_sqr).ok_or(
+                    TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::SecTxType,
+                        index_name: "tx_size_sqr",
+                        actual: tx_size_sqr,
+                        max_exclusive: SEC_TX_TYPE_TX_SIZE_CONTEXTS,
+                    },
+                )?;
+                Ok(row.as_slice())
+            }
+            BlockCdfSelector::MostProbableStxSet => Ok(self.most_probable_stx_set.as_slice()),
+            BlockCdfSelector::MostProbableStxSetAdst => {
+                Ok(self.most_probable_stx_set_adst.as_slice())
+            }
             BlockCdfSelector::Coeff(selector) => self.coeff.row(selector),
         }
     }
@@ -919,6 +1138,47 @@ impl BlockCdfRows {
                         array: TileCdfArray::UvModeCflNotAllowed,
                         index_name: "ctx",
                         actual: ctx,
+                        max_exclusive,
+                    },
+                )?;
+                Ok(row.as_mut_slice())
+            }
+            BlockCdfSelector::IsCfl { ctx } => {
+                let max_exclusive = self.is_cfl.len();
+                let row = self
+                    .is_cfl
+                    .get_mut(ctx)
+                    .ok_or(TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::IsCfl,
+                        index_name: "ctx",
+                        actual: ctx,
+                        max_exclusive,
+                    })?;
+                Ok(row.as_mut_slice())
+            }
+            BlockCdfSelector::CflIndex => Ok(self.cfl_index.as_mut_slice()),
+            BlockCdfSelector::CflSign => Ok(self.cfl_sign.as_mut_slice()),
+            BlockCdfSelector::CflAlpha { ctx } => {
+                let max_exclusive = self.cfl_alpha.len();
+                let row = self
+                    .cfl_alpha
+                    .get_mut(ctx)
+                    .ok_or(TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::CflAlpha,
+                        index_name: "ctx",
+                        actual: ctx,
+                        max_exclusive,
+                    })?;
+                Ok(row.as_mut_slice())
+            }
+            BlockCdfSelector::CflMhccp => Ok(self.cfl_mhccp.as_mut_slice()),
+            BlockCdfSelector::CflMhDir { size_group } => {
+                let max_exclusive = self.cfl_mh_dir.len();
+                let row = self.cfl_mh_dir.get_mut(size_group).ok_or(
+                    TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::CflMhDir,
+                        index_name: "size_group",
+                        actual: size_group,
                         max_exclusive,
                     },
                 )?;
@@ -1275,6 +1535,74 @@ impl BlockCdfRows {
             }
             BlockCdfSelector::WienerNsUvSym => Ok(self.wiener_ns_uv_sym.as_mut_slice()),
             BlockCdfSelector::WienerNsBase => Ok(self.wiener_ns_base.as_mut_slice()),
+            BlockCdfSelector::IsLongSideDct { is_inter } => {
+                let max_exclusive = self.is_long_side_dct.len();
+                let row = self.is_long_side_dct.get_mut(is_inter).ok_or(
+                    TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::IsLongSideDct,
+                        index_name: "is_inter",
+                        actual: is_inter,
+                        max_exclusive,
+                    },
+                )?;
+                Ok(row.as_mut_slice())
+            }
+            BlockCdfSelector::IntraTxTypeLong { tx_size_sqr } => {
+                let max_exclusive = self.intra_tx_type_long.len();
+                let row = self.intra_tx_type_long.get_mut(tx_size_sqr).ok_or(
+                    TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::IntraTxTypeLong,
+                        index_name: "tx_size_sqr",
+                        actual: tx_size_sqr,
+                        max_exclusive,
+                    },
+                )?;
+                Ok(row.as_mut_slice())
+            }
+            BlockCdfSelector::IntraTxTypeSet1 { tx_size_sqr } => {
+                let max_exclusive = self.intra_tx_type_set1.len();
+                let row = self.intra_tx_type_set1.get_mut(tx_size_sqr).ok_or(
+                    TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::IntraTxTypeSet1,
+                        index_name: "tx_size_sqr",
+                        actual: tx_size_sqr,
+                        max_exclusive,
+                    },
+                )?;
+                Ok(row.as_mut_slice())
+            }
+            BlockCdfSelector::IntraTxTypeSet2 { tx_size_sqr } => {
+                let max_exclusive = self.intra_tx_type_set2.len();
+                let row = self.intra_tx_type_set2.get_mut(tx_size_sqr).ok_or(
+                    TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::IntraTxTypeSet2,
+                        index_name: "tx_size_sqr",
+                        actual: tx_size_sqr,
+                        max_exclusive,
+                    },
+                )?;
+                Ok(row.as_mut_slice())
+            }
+            BlockCdfSelector::SecTxType {
+                is_inter,
+                tx_size_sqr,
+            } => {
+                let is_inter = checked_sec_tx_is_inter(is_inter)?;
+                let max_exclusive = self.sec_tx_type[is_inter].len();
+                let row = self.sec_tx_type[is_inter].get_mut(tx_size_sqr).ok_or(
+                    TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::SecTxType,
+                        index_name: "tx_size_sqr",
+                        actual: tx_size_sqr,
+                        max_exclusive,
+                    },
+                )?;
+                Ok(row.as_mut_slice())
+            }
+            BlockCdfSelector::MostProbableStxSet => Ok(self.most_probable_stx_set.as_mut_slice()),
+            BlockCdfSelector::MostProbableStxSetAdst => {
+                Ok(self.most_probable_stx_set_adst.as_mut_slice())
+            }
             BlockCdfSelector::Coeff(selector) => self.coeff.row_mut(selector),
         }
     }
@@ -1321,6 +1649,28 @@ impl BlockCdfRows {
             avg_cdf_row(
                 &mut self.uv_mode_cfl_not_allowed[ctx],
                 &tile.uv_mode_cfl_not_allowed[ctx],
+                tile_num,
+                num_log2,
+            );
+        }
+        for ctx in 0..CFL_CONTEXTS {
+            avg_cdf_row(&mut self.is_cfl[ctx], &tile.is_cfl[ctx], tile_num, num_log2);
+        }
+        avg_cdf_row(&mut self.cfl_index, &tile.cfl_index, tile_num, num_log2);
+        avg_cdf_row(&mut self.cfl_sign, &tile.cfl_sign, tile_num, num_log2);
+        for ctx in 0..CFL_ALPHA_CONTEXTS {
+            avg_cdf_row(
+                &mut self.cfl_alpha[ctx],
+                &tile.cfl_alpha[ctx],
+                tile_num,
+                num_log2,
+            );
+        }
+        avg_cdf_row(&mut self.cfl_mhccp, &tile.cfl_mhccp, tile_num, num_log2);
+        for size_group in 0..CFL_MH_DIR_GROUPS {
+            avg_cdf_row(
+                &mut self.cfl_mh_dir[size_group],
+                &tile.cfl_mh_dir[size_group],
                 tile_num,
                 num_log2,
             );
@@ -1539,6 +1889,58 @@ impl BlockCdfRows {
             tile_num,
             num_log2,
         );
+        for ctx in 0..IS_LONG_SIDE_DCT_CONTEXTS {
+            avg_cdf_row(
+                &mut self.is_long_side_dct[ctx],
+                &tile.is_long_side_dct[ctx],
+                tile_num,
+                num_log2,
+            );
+        }
+        for ctx in 0..INTRA_TX_TYPE_LONG_SIZE_CONTEXTS {
+            avg_cdf_row(
+                &mut self.intra_tx_type_long[ctx],
+                &tile.intra_tx_type_long[ctx],
+                tile_num,
+                num_log2,
+            );
+        }
+        for ctx in 0..INTRA_TX_TYPE_SIZE_CONTEXTS {
+            avg_cdf_row(
+                &mut self.intra_tx_type_set1[ctx],
+                &tile.intra_tx_type_set1[ctx],
+                tile_num,
+                num_log2,
+            );
+            avg_cdf_row(
+                &mut self.intra_tx_type_set2[ctx],
+                &tile.intra_tx_type_set2[ctx],
+                tile_num,
+                num_log2,
+            );
+        }
+        for is_inter in 0..SEC_TX_TYPE_IS_INTER_CONTEXTS {
+            for tx_size_sqr in 0..SEC_TX_TYPE_TX_SIZE_CONTEXTS {
+                avg_cdf_row(
+                    &mut self.sec_tx_type[is_inter][tx_size_sqr],
+                    &tile.sec_tx_type[is_inter][tx_size_sqr],
+                    tile_num,
+                    num_log2,
+                );
+            }
+        }
+        avg_cdf_row(
+            &mut self.most_probable_stx_set,
+            &tile.most_probable_stx_set,
+            tile_num,
+            num_log2,
+        );
+        avg_cdf_row(
+            &mut self.most_probable_stx_set_adst,
+            &tile.most_probable_stx_set_adst,
+            tile_num,
+            num_log2,
+        );
         self.coeff.avg_from_tile(tile_num, &tile.coeff, num_log2);
     }
 
@@ -1564,6 +1966,18 @@ impl BlockCdfRows {
         }
         for ctx in 0..UV_MODE_CONTEXTS {
             scale_cdf_count(&mut self.uv_mode_cfl_not_allowed[ctx]);
+        }
+        for ctx in 0..CFL_CONTEXTS {
+            scale_cdf_count(&mut self.is_cfl[ctx]);
+        }
+        scale_cdf_count(&mut self.cfl_index);
+        scale_cdf_count(&mut self.cfl_sign);
+        for ctx in 0..CFL_ALPHA_CONTEXTS {
+            scale_cdf_count(&mut self.cfl_alpha[ctx]);
+        }
+        scale_cdf_count(&mut self.cfl_mhccp);
+        for size_group in 0..CFL_MH_DIR_GROUPS {
+            scale_cdf_count(&mut self.cfl_mh_dir[size_group]);
         }
         scale_eob_pt_bank(&mut self.eob_pt_16);
         scale_eob_pt_bank(&mut self.eob_pt_32);
@@ -1641,6 +2055,21 @@ impl BlockCdfRows {
         }
         scale_cdf_count(&mut self.wiener_ns_uv_sym);
         scale_cdf_count(&mut self.wiener_ns_base);
+        for ctx in 0..IS_LONG_SIDE_DCT_CONTEXTS {
+            scale_cdf_count(&mut self.is_long_side_dct[ctx]);
+        }
+        for ctx in 0..INTRA_TX_TYPE_LONG_SIZE_CONTEXTS {
+            scale_cdf_count(&mut self.intra_tx_type_long[ctx]);
+        }
+        for ctx in 0..INTRA_TX_TYPE_SIZE_CONTEXTS {
+            scale_cdf_count(&mut self.intra_tx_type_set1[ctx]);
+            scale_cdf_count(&mut self.intra_tx_type_set2[ctx]);
+        }
+        for row in self.sec_tx_type.iter_mut().flatten() {
+            scale_cdf_count(row);
+        }
+        scale_cdf_count(&mut self.most_probable_stx_set);
+        scale_cdf_count(&mut self.most_probable_stx_set_adst);
         self.coeff.scale_counts_for_frame_end_update();
     }
 
@@ -1662,6 +2091,36 @@ impl BlockCdfRows {
     #[cfg(test)]
     pub(crate) const fn uv_mode_cfl_not_allowed(&self) -> &UvModeCflNotAllowedCdfRows {
         &self.uv_mode_cfl_not_allowed
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn is_cfl(&self) -> &IsCflCdfRows {
+        &self.is_cfl
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn cfl_index(&self) -> &CflIndexCdfRow {
+        &self.cfl_index
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn cfl_sign(&self) -> &CflSignCdfRow {
+        &self.cfl_sign
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn cfl_alpha(&self) -> &CflAlphaCdfRows {
+        &self.cfl_alpha
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn cfl_mhccp(&self) -> &CflMhccpCdfRow {
+        &self.cfl_mhccp
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn cfl_mh_dir(&self) -> &CflMhDirCdfRows {
+        &self.cfl_mh_dir
     }
 
     #[cfg(test)]
@@ -1728,6 +2187,41 @@ impl BlockCdfRows {
     pub(crate) const fn wiener_ns_base(&self) -> &WienerNsBaseCdfRow {
         &self.wiener_ns_base
     }
+
+    #[cfg(test)]
+    pub(crate) const fn is_long_side_dct(&self) -> &IsLongSideDctCdfRows {
+        &self.is_long_side_dct
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn intra_tx_type_long(&self) -> &IntraTxTypeLongCdfRows {
+        &self.intra_tx_type_long
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn intra_tx_type_set1(&self) -> &IntraTxTypeSet1CdfRows {
+        &self.intra_tx_type_set1
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn intra_tx_type_set2(&self) -> &IntraTxTypeSet2CdfRows {
+        &self.intra_tx_type_set2
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn sec_tx_type(&self) -> &SecTxTypeCdfRows {
+        &self.sec_tx_type
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn most_probable_stx_set(&self) -> &MostProbableStxSetCdfRow {
+        &self.most_probable_stx_set
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn most_probable_stx_set_adst(&self) -> &MostProbableStxSetAdstCdfRow {
+        &self.most_probable_stx_set_adst
+    }
 }
 
 /// Averages one `eob_pt` family bank (`[coeff_cdf_q_ctx][eobCtx][N]`) against the
@@ -1767,6 +2261,18 @@ fn checked_eob_plane_ctx(eob_ctx: usize) -> Result<usize, TileCdfError> {
         });
     }
     Ok(eob_ctx)
+}
+
+fn checked_sec_tx_is_inter(is_inter: usize) -> Result<usize, TileCdfError> {
+    if is_inter >= SEC_TX_TYPE_IS_INTER_CONTEXTS {
+        return Err(TileCdfError::SelectorOutOfRange {
+            array: TileCdfArray::SecTxType,
+            index_name: "is_inter",
+            actual: is_inter,
+            max_exclusive: SEC_TX_TYPE_IS_INTER_CONTEXTS,
+        });
+    }
+    Ok(is_inter)
 }
 
 fn checked_dc_sign_group(group: usize) -> Result<usize, TileCdfError> {

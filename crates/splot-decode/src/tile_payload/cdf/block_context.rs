@@ -127,10 +127,22 @@ impl IntraYMode {
     const SMOOTH_V_PRED: u8 = 10;
     /// AV2 § 9.2 `SMOOTH_H_PRED` canonical luma mode value.
     const SMOOTH_H_PRED: u8 = 11;
+    /// AV2 § 9.2 `PAETH_PRED` canonical luma mode value.
+    const PAETH_PRED: u8 = 12;
 
     /// AV2 § 5 `is_directional_mode(mode)`: true when `V_PRED <= mode <= D67_PRED`.
     pub(crate) const fn is_directional(self) -> bool {
         self.0 >= Self::V_PRED && self.0 <= Self::D67_PRED
+    }
+
+    /// Returns true when this mode is AV2 § 9.2 `PAETH_PRED`.
+    pub(crate) const fn is_paeth(self) -> bool {
+        self.0 == Self::PAETH_PRED
+    }
+
+    /// Canonical AV2 intra-mode value used by § 9.2 conversion tables.
+    pub(crate) const fn value(self) -> usize {
+        self.0 as usize
     }
 
     /// Maps this luma mode to the non-DC predictor the general intra decode
@@ -484,8 +496,8 @@ const REORDERED_Y_MODE_NON_DIRECTIONAL: [IntraYMode; NON_DIRECTIONAL_MODES_COUNT
 ];
 
 /// Reconstructs the typed luma `YMode` from the decoded `y_mode_set` and
-/// `y_mode_index` for the supported minimal subset (§ 5 `intra_y_mode_info`,
-/// `get_intra_y_mode_set`, and `Reordered_Y_Mode`).
+/// `y_mode_index` for the supported minimal subset (§ 5.20.5.5
+/// `read_intra_y_mode`, `get_intra_y_mode_set`, and `Reordered_Y_Mode`).
 ///
 /// Supported subset: `y_mode_set == 0` with a non-directional `y_mode_index`
 /// (`0..NON_DIRECTIONAL_MODES_COUNT`). Then `modeIdx == y_mode_index` (the
@@ -494,10 +506,9 @@ const REORDERED_Y_MODE_NON_DIRECTIONAL: [IntraYMode; NON_DIRECTIONAL_MODES_COUNT
 /// `NON_DIRECTIONAL_MODES_COUNT`), and `YMode == Reordered_Y_Mode[y_mode_index]`.
 /// Returns `None` for inputs outside this subset.
 //
-// TODO(spec: DECODE-TILE-CDF-SELECTION-BOUNDARY): the directional reordering
-// (`modeDelta >= NON_DIRECTIONAL_MODES_COUNT`), the `y_mode_offset` escape at
-// `MODE_INDEX_COUNT - 1`, and the `y_mode_set != 0` / `y_second_mode` path are
-// not yet modelled.
+// TODO(spec: DECODE-TILE-CDF-SELECTION-BOUNDARY): the directional-neighbour
+// reordering (`modeDelta >= NON_DIRECTIONAL_MODES_COUNT` with an in-frame
+// directional `IntraJointMode`) is not yet modelled.
 pub(crate) fn reconstruct_minimal_y_mode(y_mode_set: u8, y_mode_index: u8) -> Option<IntraYMode> {
     if y_mode_set != 0 {
         return None;
@@ -515,6 +526,14 @@ pub(crate) const MODE_INDEX_COUNT: u8 = 8;
 /// AV2 § 3 `MODE_OFFSET_COUNT`: the number of values for `y_mode_offset`
 /// (`03-symbols.md`); the decoded `y_mode_offset` is in `0..MODE_OFFSET_COUNT`.
 const MODE_OFFSET_COUNT: u8 = 6;
+
+/// AV2 § 3 `FIRST_MODE_COUNT` (`03-symbols.md`): number of values coded through
+/// the first intra luma mode set before `y_second_mode` numbering starts.
+const FIRST_MODE_COUNT: usize = 13;
+
+/// AV2 § 3 `SECOND_MODE_COUNT` (`03-symbols.md`): number of legal
+/// `y_second_mode` values. The syntax reads it as `L(4)`.
+const SECOND_MODE_COUNT: u8 = 16;
 
 /// AV2 § 3 `DIRECTIONAL_MODES_COUNT` (`03-symbols.md`): the length of
 /// `Default_Mode_List_Y` and the directional-mode index modulus.
@@ -649,17 +668,72 @@ pub(crate) fn reconstruct_y_mode_first_set_directional_top_left(
     resolve_y_mode_top_left(usize::from(y_mode_index))
 }
 
+/// Reconstructs the typed luma `YMode` and `AngleDeltaY` for the AV2
+/// § 5.20.5.5 `y_mode_set != 0` branch, restricted to blocks with no in-frame
+/// directional joint-mode neighbours (`ctx == 0`, § 8.3.2).
+///
+/// The syntax reads `y_second_mode L(4)` and computes
+/// `modeIdx = FIRST_MODE_COUNT + (y_mode_set - 1) * SECOND_MODE_COUNT +
+/// y_second_mode`. With no directional neighbours selected by
+/// `get_intra_y_mode_set`, the same top-left-equivalent `Default_Mode_List_Y`
+/// scan used by the direct first-set/offset paths resolves `modeDelta`, typed
+/// `YMode`, and `AngleDeltaY`.
+///
+/// Returns `None` for `y_mode_set == 0`, a `y_second_mode` outside
+/// `0..SECOND_MODE_COUNT`, or arithmetic/table overflow.
+//
+// TODO(spec: DECODE-GENERAL-INTRA-ANGLE): only the `ctx == 0` (no
+// directional-neighbour reorder) second-mode reconstruction is modelled; the
+// in-frame directional-neighbour reorder of `get_intra_y_mode_set` remains
+// deferred (the caller rejects `ctx != 0` for this path).
+pub(crate) fn reconstruct_y_mode_second_set_top_left(
+    y_mode_set: u8,
+    y_second_mode: u8,
+) -> Option<YModeEscapeResult> {
+    if y_mode_set == 0 || y_second_mode >= SECOND_MODE_COUNT {
+        return None;
+    }
+    let set_offset =
+        usize::from(y_mode_set.checked_sub(1)?).checked_mul(usize::from(SECOND_MODE_COUNT))?;
+    let mode_idx = FIRST_MODE_COUNT
+        .checked_add(set_offset)?
+        .checked_add(usize::from(y_second_mode))?;
+    resolve_y_mode_top_left(mode_idx)
+}
+
+/// Resolves a § 5.20.5.5 `modeIdx` through the full directional-neighbour
+/// `get_intra_y_mode_set` reorder for a block with already decoded left/above
+/// `IntraJointMode` neighbours.
+///
+/// `neighbour_joint_modes[0]` is `get_joint_mode(0)` (left) and
+/// `neighbour_joint_modes[1]` is `get_joint_mode(1)` (above). `block_n4w` /
+/// `block_n4h` are `Num_4x4_Blocks_Wide/High[MiSize]`; they select the
+/// `MiSize >= BLOCK_8X8` neighbour branch and the
+/// `Block_Width * Block_Height > 64` ±1..4 expansion branch.
+pub(crate) fn reconstruct_y_mode_with_neighbours(
+    mode_idx: usize,
+    neighbour_joint_modes: [u8; 2],
+    block_n4w: usize,
+    block_n4h: usize,
+) -> Option<YModeEscapeResult> {
+    let mode_delta = get_intra_y_mode_set(mode_idx, neighbour_joint_modes, block_n4w, block_n4h)?;
+    resolve_y_mode_delta(mode_delta)
+}
+
 /// Resolves a § 5.20.5.3 `modeIdx` to the typed `YMode`, `AngleDeltaY`, and
 /// stored `IntraJointMode` (`modeDelta`) for the top-left no-directional-neighbour
 /// (`ctx == 0`) case, shared by the `y_mode_offset` escape and the direct
 /// first-set directional path. Returns `None` for any arithmetic that escapes the
 /// `Default_Mode_List_Y` / `Reordered_Y_Mode` table bounds.
 fn resolve_y_mode_top_left(mode_idx: usize) -> Option<YModeEscapeResult> {
-    // get_intra_y_mode_set, top-left no-directional-neighbour case. This is the
-    // AV2 § 5.20.5.3 `IntraJointMode` (`modeDelta`) stored for the § 8.3.2
-    // neighbour context; it is also `>= NON_DIRECTIONAL_MODES_COUNT` for the
-    // directional reconstruction branch below.
     let mode_delta = get_intra_y_mode_set_top_left(mode_idx)?;
+    resolve_y_mode_delta(mode_delta)
+}
+
+fn resolve_y_mode_delta(mode_delta: usize) -> Option<YModeEscapeResult> {
+    // This is the AV2 § 5.20.5.5 `IntraJointMode` (`modeDelta`) stored for the
+    // § 8.3.2 neighbour context; it is also `>= NON_DIRECTIONAL_MODES_COUNT` for
+    // the directional reconstruction branch below.
     // Preserve the stored `IntraJointMode` before the directional rebase, which
     // mutates `mode_delta` only for the `YMode` / `AngleDeltaY` reorder math.
     let intra_joint_mode = u8::try_from(mode_delta).ok()?;
@@ -693,12 +767,85 @@ fn resolve_y_mode_top_left(mode_idx: usize) -> Option<YModeEscapeResult> {
 /// entry of `Default_Mode_List_Y`, biased by `NON_DIRECTIONAL_MODES_COUNT`.
 /// Returns `None` if `modeIdx - NON_DIRECTIONAL_MODES_COUNT` exceeds the table.
 fn get_intra_y_mode_set_top_left(mode_idx: usize) -> Option<usize> {
+    get_intra_y_mode_set(mode_idx, [DC_PRED as u8, DC_PRED as u8], 0, 0)
+}
+
+fn get_intra_y_mode_set(
+    mode_idx: usize,
+    neighbour_joint_modes: [u8; 2],
+    block_n4w: usize,
+    block_n4h: usize,
+) -> Option<usize> {
     if mode_idx < NON_DIRECTIONAL_MODES_COUNT {
         return Some(mode_idx);
     }
-    let directional_index = mode_idx - NON_DIRECTIONAL_MODES_COUNT;
-    let mode = *DEFAULT_MODE_LIST_Y.get(directional_index)?;
-    Some(mode + NON_DIRECTIONAL_MODES_COUNT)
+    let mut mode_idx = mode_idx - NON_DIRECTIONAL_MODES_COUNT;
+    let mut is_dir_selected = [false; DIRECTIONAL_MODES_COUNT];
+    let mut dir_modes = [0usize; 2];
+    let mut count = 0usize;
+
+    if block_n4w >= 2 && block_n4h >= 2 {
+        for joint_mode in neighbour_joint_modes {
+            if usize::from(joint_mode) >= NON_DIRECTIONAL_MODES_COUNT {
+                let mode = usize::from(joint_mode) - NON_DIRECTIONAL_MODES_COUNT;
+                if mode >= DIRECTIONAL_MODES_COUNT {
+                    return None;
+                }
+                if count == 0 || mode != dir_modes[0] {
+                    if mode_idx == 0 {
+                        return Some(mode + NON_DIRECTIONAL_MODES_COUNT);
+                    }
+                    mode_idx -= 1;
+                    is_dir_selected[mode] = true;
+                    dir_modes[count] = mode;
+                    count += 1;
+                }
+            }
+        }
+
+        if block_area_exceeds_64_samples(block_n4w, block_n4h) {
+            for i in 1..=4usize {
+                for &base_mode in dir_modes.iter().take(count) {
+                    for sign in [-1isize, 1] {
+                        let mode = wrap_directional_mode(base_mode, i, sign);
+                        if !is_dir_selected[mode] {
+                            if mode_idx == 0 {
+                                return Some(mode + NON_DIRECTIONAL_MODES_COUNT);
+                            }
+                            mode_idx -= 1;
+                            is_dir_selected[mode] = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    for &mode in DEFAULT_MODE_LIST_Y.iter() {
+        if !is_dir_selected[mode] {
+            if mode_idx == 0 {
+                return Some(mode + NON_DIRECTIONAL_MODES_COUNT);
+            }
+            mode_idx -= 1;
+        }
+    }
+    None
+}
+
+fn block_area_exceeds_64_samples(block_n4w: usize, block_n4h: usize) -> bool {
+    match block_n4w.checked_mul(block_n4h) {
+        Some(area_in_4x4_units) => area_in_4x4_units > 4,
+        None => true,
+    }
+}
+
+fn wrap_directional_mode(base_mode: usize, distance: usize, sign: isize) -> usize {
+    if sign < 0 {
+        (base_mode + DIRECTIONAL_MODES_COUNT - (distance % DIRECTIONAL_MODES_COUNT))
+            % DIRECTIONAL_MODES_COUNT
+    } else {
+        (base_mode + distance) % DIRECTIONAL_MODES_COUNT
+    }
 }
 
 /// AV2 § 8.3.2 `uv_mode` (`TileUVModeCflNotAllowedCdf[ctx]`) context: `ctx`
@@ -1131,6 +1278,74 @@ mod tests {
         }
         assert!(reconstruct_y_mode_first_set_directional_top_left(MODE_INDEX_COUNT - 1).is_none());
         assert!(reconstruct_y_mode_first_set_directional_top_left(u8::MAX).is_none());
+    }
+
+    #[test]
+    fn second_set_reconstructs_y_mode_from_y_second_mode() {
+        // §5.20.5.5 second-mode branch: y_mode_set == 1, y_second_mode == 0 gives
+        // modeIdx = FIRST_MODE_COUNT + 0 = 13. With no directional neighbours,
+        // get_intra_y_mode_set(13) = Default_Mode_List_Y[13 - 5] + 5 = 15 + 5 =
+        // 20. Directional reconstruction then maps modeDelta 20 to V_PRED with
+        // AngleDeltaY = (20 - 5) % 7 - 3 = -2.
+        let result = reconstruct_y_mode_second_set_top_left(1, 0)
+            .expect("legal second-mode branch reconstructs");
+        assert_eq!(result.y_mode, IntraYMode(IntraYMode::V_PRED));
+        assert_eq!(result.angle_delta_y, -2);
+        assert_eq!(result.intra_joint_mode, 20);
+    }
+
+    #[test]
+    fn second_set_reconstructs_later_mode_sets() {
+        // y_mode_set == 2, y_second_mode == 15 gives modeIdx = 13 + 16 + 15 = 44.
+        // The top-left-equivalent Default_Mode_List_Y scan resolves
+        // Default_Mode_List_Y[44 - 5] == 53, so modeDelta == 58 and the typed
+        // mode is D203_PRED with AngleDeltaY == 1.
+        let result = reconstruct_y_mode_second_set_top_left(2, 15)
+            .expect("later legal second-mode branch reconstructs");
+        assert_eq!(result.y_mode, IntraYMode(IntraYMode::D203_PRED));
+        assert_eq!(result.angle_delta_y, 1);
+        assert_eq!(result.intra_joint_mode, 58);
+    }
+
+    #[test]
+    fn second_set_rejects_first_set_and_out_of_range_literals() {
+        assert!(reconstruct_y_mode_second_set_top_left(0, 0).is_none());
+        assert!(reconstruct_y_mode_second_set_top_left(1, SECOND_MODE_COUNT).is_none());
+        assert!(reconstruct_y_mode_second_set_top_left(1, u8::MAX).is_none());
+    }
+
+    #[test]
+    fn neighbour_reorder_selects_directional_joint_mode_before_default_list() {
+        // modeIdx == 5 enters get_intra_y_mode_set's directional branch with local
+        // modeIdx 0. With a D135 left neighbour (stored IntraJointMode 36), the
+        // neighbour is returned before Default_Mode_List_Y[0] (which would be
+        // V_PRED in the top-left case).
+        let result = reconstruct_y_mode_with_neighbours(5, [36, 0], 16, 16)
+            .expect("directional neighbour reconstructs");
+        assert_eq!(result.intra_joint_mode, 36);
+        assert_eq!(result.y_mode, IntraYMode(IntraYMode::D135_PRED));
+        assert_eq!(result.angle_delta_y, 0);
+    }
+
+    #[test]
+    fn neighbour_reorder_skips_duplicate_directional_neighbours() {
+        // Duplicate left/above D135 neighbours count once. The second candidate
+        // for a large block is the first -1 expansion around D135:
+        // mode 31 - 1 = 30, stored IntraJointMode 35.
+        let result = reconstruct_y_mode_with_neighbours(6, [36, 36], 16, 16)
+            .expect("duplicate directional neighbours reconstruct");
+        assert_eq!(result.intra_joint_mode, 35);
+    }
+
+    #[test]
+    fn neighbour_reorder_uses_default_list_after_small_block_neighbour() {
+        // For an 8x8 block, Block_Width * Block_Height == 64, so the ±1..4
+        // expansion is not used. After consuming the D135 neighbour, the next
+        // candidate resumes the default scan at Default_Mode_List_Y[0] == 17.
+        let result = reconstruct_y_mode_with_neighbours(6, [36, 0], 2, 2)
+            .expect("small block directional neighbour reconstructs");
+        assert_eq!(result.intra_joint_mode, 22);
+        assert_eq!(result.y_mode, IntraYMode(IntraYMode::V_PRED));
     }
 
     #[test]

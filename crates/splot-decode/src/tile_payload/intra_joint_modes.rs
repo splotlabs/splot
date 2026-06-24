@@ -21,6 +21,8 @@
 
 use std::collections::TryReserveError;
 
+use super::cdf::block_context::IntraYMode;
+
 /// AV2 § 3 `NON_DIRECTIONAL_MODES_COUNT` (`03-symbols.md`): the number of
 /// non-directional intra modes; a `modeDelta` at or above this is directional.
 const NON_DIRECTIONAL_MODES_COUNT: u8 = 5;
@@ -116,10 +118,24 @@ impl TileIntraJointModeState {
     /// (`docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2`); the result is in
     /// `0..=2`.
     pub(crate) fn y_mode_index_ctx(&self, r: usize, c: usize, n4w: usize, n4h: usize) -> usize {
-        let left = self.get_joint_mode(0, r, c, n4w, n4h);
-        let above = self.get_joint_mode(1, r, c, n4w, n4h);
+        let [left, above] = self.neighbour_joint_modes(r, c, n4w, n4h);
         (left >= NON_DIRECTIONAL_MODES_COUNT) as usize
             + (above >= NON_DIRECTIONAL_MODES_COUNT) as usize
+    }
+
+    /// Returns the left and above `get_joint_mode` values for §5.20.5.5
+    /// `get_intra_y_mode_set`, in spec `dir` order: `[dir == 0, dir == 1]`.
+    pub(crate) fn neighbour_joint_modes(
+        &self,
+        r: usize,
+        c: usize,
+        n4w: usize,
+        n4h: usize,
+    ) -> [u8; 2] {
+        [
+            self.get_joint_mode(0, r, c, n4w, n4h),
+            self.get_joint_mode(1, r, c, n4w, n4h),
+        ]
     }
 
     /// Writes the block's `IntraJointMode` (`= modeDelta`) into every MI cell it
@@ -190,6 +206,114 @@ pub(crate) enum TileIntraJointModeStateError {
     },
     /// The grid allocation failed.
     #[error("intra joint-mode state allocation failed: {source}")]
+    Allocation {
+        /// The underlying reservation error.
+        source: TryReserveError,
+    },
+}
+
+/// Mutable tile-local AV2 § 5.20.5.3 `YModes[r][c]` grid.
+///
+/// SDP chroma partition leaves do not read `read_intra_y_mode()`. Instead, AV2
+/// §5.20.5.3 copies `YMode = YModes[MiRow][MiCol]` from the already-decoded luma
+/// side before reading chroma mode syntax. This grid stores that luma result for
+/// every MI cell covered by a luma/shared leaf.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct TileIntraYModeState {
+    mi_rows: usize,
+    mi_cols: usize,
+    y_modes: Vec<Option<IntraYMode>>,
+}
+
+impl TileIntraYModeState {
+    /// Creates an empty `YModes` grid for the given tile MI dimensions.
+    pub(crate) fn new(mi_rows: usize, mi_cols: usize) -> Result<Self, TileIntraYModeStateError> {
+        if mi_rows == 0 || mi_cols == 0 {
+            return Err(TileIntraYModeStateError::EmptyDimensions { mi_rows, mi_cols });
+        }
+        let cells =
+            mi_rows
+                .checked_mul(mi_cols)
+                .ok_or(TileIntraYModeStateError::ArithmeticOverflow {
+                    operation: "mi_rows * mi_cols",
+                    left: mi_rows,
+                    right: mi_cols,
+                })?;
+        let mut y_modes = Vec::new();
+        y_modes
+            .try_reserve_exact(cells)
+            .map_err(|source| TileIntraYModeStateError::Allocation { source })?;
+        y_modes.resize(cells, None);
+        Ok(Self {
+            mi_rows,
+            mi_cols,
+            y_modes,
+        })
+    }
+
+    /// Writes a luma/shared block's `YMode` into every MI cell it covers.
+    pub(crate) fn record_block(
+        &mut self,
+        r: usize,
+        c: usize,
+        n4w: usize,
+        n4h: usize,
+        y_mode: IntraYMode,
+    ) {
+        for y in 0..n4h {
+            let Some(row) = r.checked_add(y) else { break };
+            if row >= self.mi_rows {
+                break;
+            }
+            for x in 0..n4w {
+                let Some(col) = c.checked_add(x) else { break };
+                if col >= self.mi_cols {
+                    break;
+                }
+                if let Some(index) = self.cell_index(row, col) {
+                    self.y_modes[index] = Some(y_mode);
+                }
+            }
+        }
+    }
+
+    /// Reads the stored luma `YMode` for a chroma-only SDP block.
+    pub(crate) fn y_mode_at(&self, row: usize, col: usize) -> Option<IntraYMode> {
+        self.cell_index(row, col)
+            .and_then(|index| self.y_modes[index])
+    }
+
+    fn cell_index(&self, row: usize, col: usize) -> Option<usize> {
+        if row >= self.mi_rows || col >= self.mi_cols {
+            return None;
+        }
+        row.checked_mul(self.mi_cols)?.checked_add(col)
+    }
+}
+
+/// Error raised while building or sizing the `YModes` grid.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum TileIntraYModeStateError {
+    /// The tile MI dimensions were empty.
+    #[error("intra YMode state requires non-empty MI dimensions, got {mi_rows}x{mi_cols}")]
+    EmptyDimensions {
+        /// Tile MI rows.
+        mi_rows: usize,
+        /// Tile MI columns.
+        mi_cols: usize,
+    },
+    /// A dimension product overflowed `usize`.
+    #[error("intra YMode state arithmetic overflow in {operation}: {left} * {right}")]
+    ArithmeticOverflow {
+        /// The overflowing operation.
+        operation: &'static str,
+        /// Left operand.
+        left: usize,
+        /// Right operand.
+        right: usize,
+    },
+    /// The grid allocation failed.
+    #[error("intra YMode state allocation failed: {source}")]
     Allocation {
         /// The underlying reservation error.
         source: TryReserveError,
@@ -307,5 +431,16 @@ mod tests {
         state.record_block(2, 2, 16, 16, D135_JOINT_MODE);
         // In-frame neighbour read still resolves the written cell.
         assert_eq!(state.get_joint_mode(0, 2, 3, 1, 1), D135_JOINT_MODE);
+    }
+
+    #[test]
+    fn y_mode_state_records_and_clips_blocks() {
+        let mut state = TileIntraYModeState::new(4, 4).unwrap();
+        state.record_block(2, 2, 16, 16, IntraYMode::DC_PRED);
+
+        assert_eq!(state.y_mode_at(2, 2), Some(IntraYMode::DC_PRED));
+        assert_eq!(state.y_mode_at(3, 3), Some(IntraYMode::DC_PRED));
+        assert_eq!(state.y_mode_at(0, 0), None);
+        assert_eq!(state.y_mode_at(4, 4), None);
     }
 }

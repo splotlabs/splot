@@ -82,7 +82,7 @@ fn base_cdf_facts() -> FrameCandidateCdfFacts {
 }
 
 fn base_coeff_facts() -> FrameCandidateCoeffFacts {
-    FrameCandidateCoeffFacts::new(false, false)
+    FrameCandidateCoeffFacts::new(false, false, false, false, false, false)
 }
 
 fn derive_tile_payload_plan<'a>(
@@ -233,7 +233,7 @@ fn derived_boundary_honors_parser_derived_disable_cdf_update_fact() {
     };
     let core = parse_frame_header_core(&mut frame_reader, &input).unwrap();
     let tq = sequence.transform_quant_entropy.as_ref().unwrap();
-    let coeff = FrameCandidateCoeffFacts::new(tq.enable_fsc, tq.enable_chroma_dctonly);
+    let coeff = FrameCandidateCoeffFacts::from_tq(tq);
     let facts = FrameCandidateTileFacts::from_frame_core(&core, coeff).unwrap();
 
     assert_eq!(core.disable_cdf_update, Some(false));
@@ -279,7 +279,7 @@ fn derived_boundary_threads_parser_coeff_frame_facts() {
         mode: FrameHeaderParseMode::Core,
     };
     let core = parse_frame_header_core(&mut frame_reader, &input).unwrap();
-    let coeff = FrameCandidateCoeffFacts::new(tq.enable_fsc, tq.enable_chroma_dctonly);
+    let coeff = FrameCandidateCoeffFacts::from_tq(tq);
     let facts = FrameCandidateTileFacts::from_frame_core(&core, coeff).unwrap();
     let ctx = context(ThreadCount::from(1usize));
     let plan = derive_tile_payload_plan(
@@ -297,10 +297,14 @@ fn derived_boundary_threads_parser_coeff_frame_facts() {
     let quant = core.quantization_params.unwrap();
 
     assert_eq!(coeff_facts.enable_fsc(), tq.enable_fsc);
+    assert_eq!(coeff_facts.enable_idtx_intra(), tq.enable_idtx_intra);
+    assert_eq!(coeff_facts.enable_intra_ist(), tq.enable_intra_ist);
+    assert_eq!(coeff_facts.enable_inter_ist(), tq.enable_inter_ist);
     assert_eq!(
         coeff_facts.enable_chroma_dctonly(),
         tq.enable_chroma_dctonly
     );
+    assert_eq!(coeff_facts.enable_cctx(), tq.enable_cctx);
     assert_eq!(
         coeff_facts.reduced_tx_set(),
         usize::from(tail.reduced_tx_set)

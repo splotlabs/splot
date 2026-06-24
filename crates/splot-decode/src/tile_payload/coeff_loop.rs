@@ -28,8 +28,10 @@ const MAX_NONZERO_EOB_PT: usize = 11;
 pub(crate) mod base_level_pass;
 pub(crate) mod base_symbol;
 mod branch;
-#[cfg(test)]
-pub(crate) use branch::{CoeffBlockEobBranchInput, read_coeff_block_eob_branch};
+pub(crate) use branch::{
+    CoeffBlockEobBranch, CoeffBlockEobBranchInput, NonZeroCoeffBlockStartInput,
+    read_coeff_block_eob_branch,
+};
 pub(crate) mod fsc_level_pass;
 pub(crate) mod fsc_quant_pass;
 #[cfg(test)]

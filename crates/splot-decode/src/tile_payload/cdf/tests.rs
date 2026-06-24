@@ -7,16 +7,23 @@ use super::*;
 use splot_core::span::ByteOffset;
 use splot_core::symbol::{SymbolDecoder, SymbolDecoderConfig};
 use splot_core::tables::cdf::{
-    DEFAULT_COEFF_BASE_BOB_CDF, DEFAULT_COEFF_BASE_CDF, DEFAULT_COEFF_BASE_EOB_CDF,
-    DEFAULT_COEFF_BASE_EOB_UV_CDF, DEFAULT_COEFF_BASE_IDTX_CDF, DEFAULT_COEFF_BASE_LF_CDF,
-    DEFAULT_COEFF_BASE_LF_EOB_CDF, DEFAULT_COEFF_BASE_LF_EOB_UV_CDF, DEFAULT_COEFF_BASE_LF_UV_CDF,
-    DEFAULT_COEFF_BASE_PH_CDF, DEFAULT_COEFF_BASE_UV_CDF, DEFAULT_COEFF_BR_CDF,
-    DEFAULT_COEFF_BR_IDTX_CDF, DEFAULT_COEFF_BR_LF_CDF, DEFAULT_COEFF_BR_UV_CDF,
-    DEFAULT_COMP_GROUP_IDX_CDF, DEFAULT_COMP_MODE_CDF, DEFAULT_COMP_REF0_CDF,
-    DEFAULT_COMP_REF1_CDF, DEFAULT_COMPOUND_MODE_NON_JOINT_CDF, DEFAULT_CWP_IDX_CDF,
-    DEFAULT_DC_SIGN_CDF, DEFAULT_EOB_EXTRA_CDF, DEFAULT_EOB_PT_16_CDF, DEFAULT_EOB_PT_32_CDF,
-    DEFAULT_EOB_PT_64_CDF, DEFAULT_EOB_PT_128_CDF, DEFAULT_EOB_PT_256_CDF, DEFAULT_EOB_PT_512_CDF,
-    DEFAULT_EOB_PT_1024_CDF, DEFAULT_IDTX_SIGN_CDF, DEFAULT_IS_JOINT_CDF, DEFAULT_TXB_SKIP_CDF,
+    DEFAULT_CFL_ALPHA_CDF, DEFAULT_CFL_INDEX_CDF, DEFAULT_CFL_MH_DIR_CDF, DEFAULT_CFL_MHCCP_CDF,
+    DEFAULT_CFL_SIGN_CDF, DEFAULT_COEFF_BASE_BOB_CDF, DEFAULT_COEFF_BASE_CDF,
+    DEFAULT_COEFF_BASE_EOB_CDF, DEFAULT_COEFF_BASE_EOB_UV_CDF, DEFAULT_COEFF_BASE_IDTX_CDF,
+    DEFAULT_COEFF_BASE_LF_CDF, DEFAULT_COEFF_BASE_LF_EOB_CDF, DEFAULT_COEFF_BASE_LF_EOB_UV_CDF,
+    DEFAULT_COEFF_BASE_LF_UV_CDF, DEFAULT_COEFF_BASE_PH_CDF, DEFAULT_COEFF_BASE_UV_CDF,
+    DEFAULT_COEFF_BR_CDF, DEFAULT_COEFF_BR_IDTX_CDF, DEFAULT_COEFF_BR_LF_CDF,
+    DEFAULT_COEFF_BR_UV_CDF, DEFAULT_COMP_GROUP_IDX_CDF, DEFAULT_COMP_MODE_CDF,
+    DEFAULT_COMP_REF0_CDF, DEFAULT_COMP_REF1_CDF, DEFAULT_COMPOUND_MODE_NON_JOINT_CDF,
+    DEFAULT_CWP_IDX_CDF, DEFAULT_DC_SIGN_CDF, DEFAULT_DELTA_Q_CDF, DEFAULT_EOB_EXTRA_CDF,
+    DEFAULT_EOB_PT_16_CDF, DEFAULT_EOB_PT_32_CDF, DEFAULT_EOB_PT_64_CDF, DEFAULT_EOB_PT_128_CDF,
+    DEFAULT_EOB_PT_256_CDF, DEFAULT_EOB_PT_512_CDF, DEFAULT_EOB_PT_1024_CDF, DEFAULT_FSC_MODE_CDF,
+    DEFAULT_IDTX_SIGN_CDF, DEFAULT_INTRA_TX_TYPE_LONG_CDF, DEFAULT_INTRA_TX_TYPE_SET1_CDF,
+    DEFAULT_INTRA_TX_TYPE_SET2_CDF, DEFAULT_IS_CFL_CDF, DEFAULT_IS_JOINT_CDF,
+    DEFAULT_IS_LONG_SIDE_DCT_CDF, DEFAULT_MOST_PROBABLE_STX_SET_ADST_CDF,
+    DEFAULT_MOST_PROBABLE_STX_SET_CDF, DEFAULT_MRL_INDEX_CDF, DEFAULT_MRL_SEC_INDEX_CDF,
+    DEFAULT_SEC_TX_TYPE_CDF, DEFAULT_TX_2OR3_PARTITION_TYPE_CDF, DEFAULT_TX_DO_PARTITION_CDF,
+    DEFAULT_TX_PARTITION_TYPE_CDF, DEFAULT_TX_PARTITION_TYPE_REDUCED_CDF, DEFAULT_TXB_SKIP_CDF,
     DEFAULT_USE_WIENER_NS_CDF, DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF, DEFAULT_V_TXB_SKIP_CDF,
     DEFAULT_WIENER_NS_BASE_CDF, DEFAULT_WIENER_NS_LENGTH_CDF, DEFAULT_WIENER_NS_UV_SYM_CDF,
     DEFAULT_Y_MODE_INDEX_CDF, DEFAULT_Y_MODE_SET_CDF,
@@ -40,13 +47,61 @@ fn frame_cdf_subset_copies_generated_defaults_without_aliasing() {
         frame.rows().do_uneven_4way_partition(),
         &DEFAULT_DO_UNEVEN_4WAY_PARTITION_CDF
     );
+    assert_eq!(frame.rows().tx_do_partition(), &DEFAULT_TX_DO_PARTITION_CDF);
+    assert_eq!(
+        frame.rows().tx_2or3_partition_type(),
+        &DEFAULT_TX_2OR3_PARTITION_TYPE_CDF
+    );
+    assert_eq!(
+        frame.rows().tx_partition_type(),
+        &DEFAULT_TX_PARTITION_TYPE_CDF
+    );
+    assert_eq!(
+        frame.rows().tx_partition_type_reduced(),
+        &DEFAULT_TX_PARTITION_TYPE_REDUCED_CDF
+    );
+    assert_eq!(frame.rows().delta_q(), &DEFAULT_DELTA_Q_CDF);
+    assert_eq!(frame.rows().fsc_mode(), &DEFAULT_FSC_MODE_CDF);
+    assert_eq!(frame.rows().mrl_index(), &DEFAULT_MRL_INDEX_CDF);
+    assert_eq!(frame.rows().mrl_sec_index(), &DEFAULT_MRL_SEC_INDEX_CDF);
     assert_eq!(frame.rows().y_mode_set(), &DEFAULT_Y_MODE_SET_CDF);
     assert_eq!(frame.rows().y_mode_index(), &DEFAULT_Y_MODE_INDEX_CDF);
     assert_eq!(frame.rows().txb_skip(), &DEFAULT_TXB_SKIP_CDF);
     assert_eq!(
+        frame.rows().intra_tx_type_set1(),
+        &DEFAULT_INTRA_TX_TYPE_SET1_CDF
+    );
+    assert_eq!(
+        frame.rows().intra_tx_type_set2(),
+        &DEFAULT_INTRA_TX_TYPE_SET2_CDF
+    );
+    assert_eq!(
+        frame.rows().intra_tx_type_long(),
+        &DEFAULT_INTRA_TX_TYPE_LONG_CDF
+    );
+    assert_eq!(
+        frame.rows().is_long_side_dct(),
+        &DEFAULT_IS_LONG_SIDE_DCT_CDF
+    );
+    assert_eq!(frame.rows().sec_tx_type(), &DEFAULT_SEC_TX_TYPE_CDF);
+    assert_eq!(
+        frame.rows().most_probable_stx_set(),
+        &DEFAULT_MOST_PROBABLE_STX_SET_CDF
+    );
+    assert_eq!(
+        frame.rows().most_probable_stx_set_adst(),
+        &DEFAULT_MOST_PROBABLE_STX_SET_ADST_CDF
+    );
+    assert_eq!(
         frame.rows().uv_mode_cfl_not_allowed(),
         &DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF
     );
+    assert_eq!(frame.rows().is_cfl(), &DEFAULT_IS_CFL_CDF);
+    assert_eq!(frame.rows().cfl_index(), &DEFAULT_CFL_INDEX_CDF);
+    assert_eq!(frame.rows().cfl_sign(), &DEFAULT_CFL_SIGN_CDF);
+    assert_eq!(frame.rows().cfl_alpha(), &DEFAULT_CFL_ALPHA_CDF);
+    assert_eq!(frame.rows().cfl_mhccp(), &DEFAULT_CFL_MHCCP_CDF);
+    assert_eq!(frame.rows().cfl_mh_dir(), &DEFAULT_CFL_MH_DIR_CDF);
     assert_eq!(frame.rows().v_txb_skip(), &DEFAULT_V_TXB_SKIP_CDF);
     assert_eq!(frame.rows().eob_extra(), &DEFAULT_EOB_EXTRA_CDF);
     assert_eq!(frame.rows().comp_mode(), &DEFAULT_COMP_MODE_CDF);
@@ -120,6 +175,59 @@ fn frame_cdf_subset_copies_generated_defaults_without_aliasing() {
         })
         .unwrap(),
         DEFAULT_DO_UNEVEN_4WAY_PARTITION_CDF[0][8].as_slice()
+    );
+}
+
+#[test]
+fn cfl_cdf_selectors_match_generated_defaults_and_check_bounds() {
+    let frame = FrameCdfSubset::from_defaults();
+    let tile = frame.tile_copy();
+
+    assert_eq!(
+        tile.row(TileCdfSelector::CflIndex).unwrap(),
+        DEFAULT_CFL_INDEX_CDF.as_slice()
+    );
+    assert_eq!(
+        tile.row(TileCdfSelector::CflSign).unwrap(),
+        DEFAULT_CFL_SIGN_CDF.as_slice()
+    );
+    for (ctx, expected) in DEFAULT_CFL_ALPHA_CDF.iter().enumerate() {
+        assert_eq!(
+            tile.row(TileCdfSelector::CflAlpha { ctx }).unwrap(),
+            expected.as_slice(),
+            "cfl_alpha ctx {ctx}"
+        );
+    }
+    assert_eq!(
+        tile.row(TileCdfSelector::CflMhccp).unwrap(),
+        DEFAULT_CFL_MHCCP_CDF.as_slice()
+    );
+    for (size_group, expected) in DEFAULT_CFL_MH_DIR_CDF.iter().enumerate() {
+        assert_eq!(
+            tile.row(TileCdfSelector::CflMhDir { size_group }).unwrap(),
+            expected.as_slice(),
+            "cfl_mh_dir size_group {size_group}"
+        );
+    }
+
+    assert_eq!(
+        tile.row(TileCdfSelector::CflAlpha { ctx: 6 }).unwrap_err(),
+        TileCdfError::SelectorOutOfRange {
+            array: TileCdfArray::CflAlpha,
+            index_name: "ctx",
+            actual: 6,
+            max_exclusive: 6,
+        }
+    );
+    assert_eq!(
+        tile.row(TileCdfSelector::CflMhDir { size_group: 4 })
+            .unwrap_err(),
+        TileCdfError::SelectorOutOfRange {
+            array: TileCdfArray::CflMhDir,
+            index_name: "size_group",
+            actual: 4,
+            max_exclusive: 4,
+        }
     );
 }
 
@@ -518,10 +626,21 @@ fn saved_copy_and_average_are_exact_for_supported_subset() {
     tile.rows_mut().block.uv_mode_cfl_not_allowed[0] = [
         20_000, 21_000, 22_000, 23_000, 24_000, 25_000, 26_000, 11, 12,
     ];
+    tile.rows_mut().block.cfl_index = [25_500, 13, 20];
+    tile.rows_mut().block.cfl_sign = [
+        20_000, 21_000, 22_000, 23_000, 24_000, 25_000, 26_000, 11, 12,
+    ];
+    tile.rows_mut().block.cfl_alpha[4] = [
+        20_100, 21_100, 22_100, 23_100, 24_100, 25_100, 26_100, 11, 12,
+    ];
+    tile.rows_mut().block.cfl_mhccp = [26_000, 14, 24];
+    tile.rows_mut().block.cfl_mh_dir[2] = [20_000, 21_000, 22_000, 9];
     tile.rows_mut().block.v_txb_skip[1][3] = [26_000, 14, 24];
     tile.rows_mut().block.coeff.coeff_base[1][2][3][1] = [20_000, 21_000, 22_000, 9, 8];
     tile.rows_mut().block.coeff.coeff_base_idtx[1][2][3] = [20_000, 21_000, 22_000, 9, 8];
     tile.rows_mut().block.coeff.idtx_sign[1][2][3] = [20_000, 9, 8];
+    tile.rows_mut().mrl_index[1] = [20_000, 21_000, 22_000, 23_000, 20];
+    tile.rows_mut().mrl_sec_index[2] = [20_000, 21_000, 20];
 
     let mut saved = SavedCdfSubset::from_frame(&frame);
     saved.apply_completed_tile(
@@ -567,6 +686,21 @@ fn saved_copy_and_average_are_exact_for_supported_subset() {
             29_576, 29_826, 30_076, 30_326, 30_576, 30_826, 31_076, 11, 3
         ]
     );
+    assert_eq!(saved.rows().cfl_index(), &[30_951, 13, 5]);
+    assert_eq!(
+        saved.rows().cfl_sign(),
+        &[
+            29_576, 29_826, 30_076, 30_326, 30_576, 30_826, 31_076, 11, 3
+        ]
+    );
+    assert_eq!(
+        saved.rows().cfl_alpha()[4],
+        [
+            29_601, 29_851, 30_101, 30_351, 30_601, 30_851, 31_101, 11, 3
+        ]
+    );
+    assert_eq!(saved.rows().cfl_mhccp(), &[31_076, 14, 6]);
+    assert_eq!(saved.rows().cfl_mh_dir()[2], [29_576, 29_826, 22_000, 2]);
     assert_eq!(saved.rows().v_txb_skip()[1][3], [31_076, 14, 6]);
     assert_eq!(
         saved.rows().block.coeff.coeff_base[1][2][3][1],
@@ -577,6 +711,11 @@ fn saved_copy_and_average_are_exact_for_supported_subset() {
         [29_576, 29_826, 30_076, 9, 2]
     );
     assert_eq!(saved.rows().block.coeff.idtx_sign[1][2][3], [29_576, 9, 2]);
+    assert_eq!(
+        saved.rows().mrl_index()[1],
+        [29_576, 29_826, 30_076, 23_000, 5]
+    );
+    assert_eq!(saved.rows().mrl_sec_index()[2], [29_576, 21_000, 5]);
 }
 
 #[test]
@@ -631,11 +770,22 @@ fn frame_end_update_copies_saved_rows_and_scales_counts() {
     tile.rows_mut().block.uv_mode_cfl_not_allowed[0] = [
         20_000, 21_000, 22_000, 23_000, 24_000, 25_000, 26_000, 11, 16,
     ];
+    tile.rows_mut().block.cfl_index = [25_500, 13, 20];
+    tile.rows_mut().block.cfl_sign = [
+        20_000, 21_000, 22_000, 23_000, 24_000, 25_000, 26_000, 11, 16,
+    ];
+    tile.rows_mut().block.cfl_alpha[4] = [
+        20_100, 21_100, 22_100, 23_100, 24_100, 25_100, 26_100, 11, 16,
+    ];
+    tile.rows_mut().block.cfl_mhccp = [26_000, 14, 24];
+    tile.rows_mut().block.cfl_mh_dir[2] = [20_000, 21_000, 22_000, 20];
     tile.rows_mut().block.v_txb_skip[1][3] = [26_000, 14, 24];
     tile.rows_mut().block.coeff.coeff_base[1][2][3][1] = [20_000, 21_000, 22_000, 9, 20];
     tile.rows_mut().block.coeff.coeff_base_bob[1][2][1] = [20_000, 21_000, 9, 20];
     tile.rows_mut().block.coeff.coeff_br_idtx[1][2][3] = [20_000, 21_000, 22_000, 9, 20];
     tile.rows_mut().block.coeff.idtx_sign[1][2][3] = [20_000, 9, 20];
+    tile.rows_mut().mrl_index[1] = [20_000, 21_000, 22_000, 23_000, 20];
+    tile.rows_mut().mrl_sec_index[2] = [20_000, 21_000, 20];
 
     let mut saved = SavedCdfSubset::from_frame(&frame);
     saved.apply_completed_tile(
@@ -671,6 +821,21 @@ fn frame_end_update_copies_saved_rows_and_scales_counts() {
             20_000, 21_000, 22_000, 23_000, 24_000, 25_000, 26_000, 11, 12
         ]
     );
+    assert_eq!(frame.rows().cfl_index(), &[25_500, 13, 15]);
+    assert_eq!(
+        frame.rows().cfl_sign(),
+        &[
+            20_000, 21_000, 22_000, 23_000, 24_000, 25_000, 26_000, 11, 12
+        ]
+    );
+    assert_eq!(
+        frame.rows().cfl_alpha()[4],
+        [
+            20_100, 21_100, 22_100, 23_100, 24_100, 25_100, 26_100, 11, 12
+        ]
+    );
+    assert_eq!(frame.rows().cfl_mhccp(), &[26_000, 14, 18]);
+    assert_eq!(frame.rows().cfl_mh_dir()[2], [20_000, 21_000, 22_000, 15]);
     assert_eq!(frame.rows().v_txb_skip()[1][3], [26_000, 14, 18]);
     assert_eq!(
         frame.rows().block.coeff.coeff_base[1][2][3][1],
@@ -685,6 +850,11 @@ fn frame_end_update_copies_saved_rows_and_scales_counts() {
         [20_000, 21_000, 22_000, 9, 15]
     );
     assert_eq!(frame.rows().block.coeff.idtx_sign[1][2][3], [20_000, 9, 15]);
+    assert_eq!(
+        frame.rows().mrl_index()[1],
+        [20_000, 21_000, 22_000, 23_000, 15]
+    );
+    assert_eq!(frame.rows().mrl_sec_index()[2], [20_000, 21_000, 15]);
 }
 
 #[test]
@@ -957,6 +1127,232 @@ fn txb_skip_plane_type_error_still_names_txb_skip() {
             index_name: "plane_type",
             actual: 2,
             max_exclusive: 2,
+        })
+    ));
+}
+
+#[test]
+fn tx_partition_rows_load_defaults_and_report_selector_errors() {
+    let frame = FrameCdfSubset::from_defaults();
+    let tile = frame.tile_copy();
+    assert_eq!(
+        tile.row(TileCdfSelector::TxDoPartition {
+            fsc_mode: 0,
+            is_inter: 0,
+            txfm_split_group: 2,
+        })
+        .unwrap(),
+        DEFAULT_TX_DO_PARTITION_CDF[0][0][2].as_slice()
+    );
+    assert_eq!(
+        tile.row(TileCdfSelector::Tx2Or3PartitionType {
+            fsc_mode: 1,
+            is_inter: 0,
+            ctx: 1,
+        })
+        .unwrap(),
+        DEFAULT_TX_2OR3_PARTITION_TYPE_CDF[1][0][1].as_slice()
+    );
+    assert_eq!(
+        tile.row(TileCdfSelector::TxPartitionType {
+            fsc_mode: 0,
+            is_inter: 1,
+            ctx: 3,
+            reduced: false,
+        })
+        .unwrap(),
+        DEFAULT_TX_PARTITION_TYPE_CDF[0][1][3].as_slice()
+    );
+    assert_eq!(
+        tile.row(TileCdfSelector::TxPartitionType {
+            fsc_mode: 1,
+            is_inter: 0,
+            ctx: 4,
+            reduced: true,
+        })
+        .unwrap(),
+        DEFAULT_TX_PARTITION_TYPE_REDUCED_CDF[1][0][4].as_slice()
+    );
+    assert_eq!(
+        tile.row(TileCdfSelector::FscMode {
+            ctx: 2,
+            bsize_group: 4,
+        })
+        .unwrap(),
+        DEFAULT_FSC_MODE_CDF[2][4].as_slice()
+    );
+    assert_eq!(
+        tile.row(TileCdfSelector::MrlIndex { ctx: 2 }).unwrap(),
+        DEFAULT_MRL_INDEX_CDF[2].as_slice()
+    );
+    assert_eq!(
+        tile.row(TileCdfSelector::MrlSecIndex { ctx: 1 }).unwrap(),
+        DEFAULT_MRL_SEC_INDEX_CDF[1].as_slice()
+    );
+    assert_eq!(
+        tile.row(TileCdfSelector::IntraTxTypeSet1 { tx_size_sqr: 2 })
+            .unwrap(),
+        DEFAULT_INTRA_TX_TYPE_SET1_CDF[2].as_slice()
+    );
+    assert_eq!(
+        tile.row(TileCdfSelector::IntraTxTypeSet2 { tx_size_sqr: 1 })
+            .unwrap(),
+        DEFAULT_INTRA_TX_TYPE_SET2_CDF[1].as_slice()
+    );
+    assert_eq!(
+        tile.row(TileCdfSelector::IntraTxTypeLong { tx_size_sqr: 3 })
+            .unwrap(),
+        DEFAULT_INTRA_TX_TYPE_LONG_CDF[3].as_slice()
+    );
+    assert_eq!(
+        tile.row(TileCdfSelector::IsLongSideDct { is_inter: 0 })
+            .unwrap(),
+        DEFAULT_IS_LONG_SIDE_DCT_CDF[0].as_slice()
+    );
+    assert_eq!(
+        tile.row(TileCdfSelector::SecTxType {
+            is_inter: 0,
+            tx_size_sqr: 3,
+        })
+        .unwrap(),
+        DEFAULT_SEC_TX_TYPE_CDF[0][3].as_slice()
+    );
+    assert_eq!(
+        tile.row(TileCdfSelector::MostProbableStxSet).unwrap(),
+        DEFAULT_MOST_PROBABLE_STX_SET_CDF.as_slice()
+    );
+    assert_eq!(
+        tile.row(TileCdfSelector::MostProbableStxSetAdst).unwrap(),
+        DEFAULT_MOST_PROBABLE_STX_SET_ADST_CDF.as_slice()
+    );
+
+    assert!(matches!(
+        tile.row(TileCdfSelector::TxDoPartition {
+            fsc_mode: 2,
+            is_inter: 0,
+            txfm_split_group: 0,
+        }),
+        Err(TileCdfError::SelectorOutOfRange {
+            array: TileCdfArray::TxDoPartition,
+            index_name: "fsc_mode",
+            actual: 2,
+            max_exclusive: 2,
+        })
+    ));
+    assert!(matches!(
+        tile.row(TileCdfSelector::TxPartitionType {
+            fsc_mode: 0,
+            is_inter: 0,
+            ctx: 14,
+            reduced: true,
+        }),
+        Err(TileCdfError::SelectorOutOfRange {
+            array: TileCdfArray::TxPartitionTypeReduced,
+            index_name: "ctx",
+            actual: 14,
+            max_exclusive: 14,
+        })
+    ));
+    assert!(matches!(
+        tile.row(TileCdfSelector::FscMode {
+            ctx: 4,
+            bsize_group: 0,
+        }),
+        Err(TileCdfError::SelectorOutOfRange {
+            array: TileCdfArray::FscMode,
+            index_name: "ctx",
+            actual: 4,
+            max_exclusive: 4,
+        })
+    ));
+    assert!(matches!(
+        tile.row(TileCdfSelector::MrlIndex { ctx: 3 }),
+        Err(TileCdfError::SelectorOutOfRange {
+            array: TileCdfArray::MrlIndex,
+            index_name: "ctx",
+            actual: 3,
+            max_exclusive: 3,
+        })
+    ));
+    assert!(matches!(
+        tile.row(TileCdfSelector::MrlSecIndex { ctx: 3 }),
+        Err(TileCdfError::SelectorOutOfRange {
+            array: TileCdfArray::MrlSecIndex,
+            index_name: "ctx",
+            actual: 3,
+            max_exclusive: 3,
+        })
+    ));
+    assert!(matches!(
+        tile.row(TileCdfSelector::IntraTxTypeSet1 { tx_size_sqr: 3 }),
+        Err(TileCdfError::SelectorOutOfRange {
+            array: TileCdfArray::IntraTxTypeSet1,
+            index_name: "tx_size_sqr",
+            actual: 3,
+            max_exclusive: 3,
+        })
+    ));
+    assert!(matches!(
+        tile.row(TileCdfSelector::IntraTxTypeSet2 { tx_size_sqr: 3 }),
+        Err(TileCdfError::SelectorOutOfRange {
+            array: TileCdfArray::IntraTxTypeSet2,
+            index_name: "tx_size_sqr",
+            actual: 3,
+            max_exclusive: 3,
+        })
+    ));
+    assert!(matches!(
+        tile.row(TileCdfSelector::IntraTxTypeLong { tx_size_sqr: 4 }),
+        Err(TileCdfError::SelectorOutOfRange {
+            array: TileCdfArray::IntraTxTypeLong,
+            index_name: "tx_size_sqr",
+            actual: 4,
+            max_exclusive: 4,
+        })
+    ));
+    assert!(matches!(
+        tile.row(TileCdfSelector::IsLongSideDct { is_inter: 2 }),
+        Err(TileCdfError::SelectorOutOfRange {
+            array: TileCdfArray::IsLongSideDct,
+            index_name: "is_inter",
+            actual: 2,
+            max_exclusive: 2,
+        })
+    ));
+    assert!(matches!(
+        tile.row(TileCdfSelector::SecTxType {
+            is_inter: 2,
+            tx_size_sqr: 0,
+        }),
+        Err(TileCdfError::SelectorOutOfRange {
+            array: TileCdfArray::SecTxType,
+            index_name: "is_inter",
+            actual: 2,
+            max_exclusive: 2,
+        })
+    ));
+    assert!(matches!(
+        tile.row(TileCdfSelector::SecTxType {
+            is_inter: 0,
+            tx_size_sqr: 5,
+        }),
+        Err(TileCdfError::SelectorOutOfRange {
+            array: TileCdfArray::SecTxType,
+            index_name: "tx_size_sqr",
+            actual: 5,
+            max_exclusive: 5,
+        })
+    ));
+    assert!(matches!(
+        tile.row(TileCdfSelector::FscMode {
+            ctx: 0,
+            bsize_group: 6,
+        }),
+        Err(TileCdfError::SelectorOutOfRange {
+            array: TileCdfArray::FscMode,
+            index_name: "bsize_group",
+            actual: 6,
+            max_exclusive: 6,
         })
     ));
 }

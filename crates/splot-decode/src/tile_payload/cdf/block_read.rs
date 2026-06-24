@@ -71,10 +71,31 @@ mod tests {
                 ctx: 0,
             },
             TileCdfSelector::UvModeCflNotAllowed { ctx: 0 },
+            TileCdfSelector::IsCfl { ctx: 0 },
+            TileCdfSelector::CflIndex,
+            TileCdfSelector::CflSign,
+            TileCdfSelector::CflAlpha { ctx: 0 },
+            TileCdfSelector::CflMhccp,
+            TileCdfSelector::CflMhDir { size_group: 0 },
+            TileCdfSelector::FscMode {
+                ctx: 0,
+                bsize_group: 0,
+            },
+            TileCdfSelector::DeltaQ,
             TileCdfSelector::VTxbSkip {
                 coeff_cdf_q_ctx: 1,
                 ctx: 3,
             },
+            TileCdfSelector::IsLongSideDct { is_inter: 0 },
+            TileCdfSelector::IntraTxTypeLong { tx_size_sqr: 2 },
+            TileCdfSelector::IntraTxTypeSet1 { tx_size_sqr: 0 },
+            TileCdfSelector::IntraTxTypeSet2 { tx_size_sqr: 1 },
+            TileCdfSelector::SecTxType {
+                is_inter: 0,
+                tx_size_sqr: 2,
+            },
+            TileCdfSelector::MostProbableStxSet,
+            TileCdfSelector::MostProbableStxSetAdst,
             TileCdfSelector::UseWienerNs,
         ];
         let frame = FrameCdfSubset::from_defaults();
@@ -142,10 +163,31 @@ mod tests {
                 ctx: 0,
             },
             TileCdfSelector::UvModeCflNotAllowed { ctx: 0 },
+            TileCdfSelector::IsCfl { ctx: 0 },
+            TileCdfSelector::CflIndex,
+            TileCdfSelector::CflSign,
+            TileCdfSelector::CflAlpha { ctx: 0 },
+            TileCdfSelector::CflMhccp,
+            TileCdfSelector::CflMhDir { size_group: 0 },
+            TileCdfSelector::FscMode {
+                ctx: 0,
+                bsize_group: 0,
+            },
+            TileCdfSelector::DeltaQ,
             TileCdfSelector::VTxbSkip {
                 coeff_cdf_q_ctx: 1,
                 ctx: 3,
             },
+            TileCdfSelector::IsLongSideDct { is_inter: 0 },
+            TileCdfSelector::IntraTxTypeLong { tx_size_sqr: 2 },
+            TileCdfSelector::IntraTxTypeSet1 { tx_size_sqr: 0 },
+            TileCdfSelector::IntraTxTypeSet2 { tx_size_sqr: 1 },
+            TileCdfSelector::SecTxType {
+                is_inter: 0,
+                tx_size_sqr: 2,
+            },
+            TileCdfSelector::MostProbableStxSet,
+            TileCdfSelector::MostProbableStxSetAdst,
             TileCdfSelector::UseWienerNs,
         ];
         let untouched = TileCdfSelector::DoSplit {

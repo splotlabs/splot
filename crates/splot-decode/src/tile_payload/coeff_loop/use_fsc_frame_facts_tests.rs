@@ -7,9 +7,9 @@ use splot_core::segment::MAX_SEGMENTS;
 use splot_core::span::ByteOffset;
 use splot_core::symbol::{CdfUpdateMode, SymbolBitPosition, SymbolDecoder, SymbolDecoderConfig};
 
-use super::super::TileCoeffFrameFacts;
 use super::super::cdf::{FrameCdfSubset, TileCdfSubset};
 use super::super::coeff_state::{CoeffContextUpdate, TileCoeffContextState};
+use super::super::{TileCoeffFrameFacts, TileCoeffFrameFactsInput};
 use super::ordinary_pass::geometry::{
     CoeffOrdinaryBranchLosslessBaseConfig, CoeffOrdinaryTxSizeGeometryConfig,
 };
@@ -118,15 +118,19 @@ fn frame_facts(
     if let Some(segment_id) = lossless_segment {
         lossless_array[segment_id] = true;
     }
-    TileCoeffFrameFacts::new(
+    TileCoeffFrameFacts::new(TileCoeffFrameFactsInput {
         enable_fsc,
+        enable_idtx_intra: enable_fsc,
+        enable_intra_ist: false,
+        enable_inter_ist: false,
         enable_chroma_dctonly,
+        enable_cctx: false,
         reduced_tx_set,
         lossless_array,
         allow_tcq,
         allow_parity_hiding,
         base_q_idx,
-    )
+    })
 }
 
 fn block_facts() -> CoeffUseFscFrameBlockFacts {
@@ -269,7 +273,19 @@ fn assert_runs_eq(derived: SelectorRun, expected: SelectorRun) {
 fn coefficient_frame_facts_nonzero_input_derives_lower_packet() {
     let lossless_array = [false; MAX_SEGMENTS];
     let input = CoeffUseFscFrameFactsNonZeroInput {
-        frame: TileCoeffFrameFacts::new(true, true, 3, lossless_array, true, true, 141),
+        frame: TileCoeffFrameFacts::new(TileCoeffFrameFactsInput {
+            enable_fsc: true,
+            enable_idtx_intra: true,
+            enable_intra_ist: false,
+            enable_inter_ist: false,
+            enable_chroma_dctonly: true,
+            enable_cctx: false,
+            reduced_tx_set: 3,
+            lossless_array,
+            allow_tcq: true,
+            allow_parity_hiding: true,
+            base_q_idx: 141,
+        }),
         block: CoeffUseFscFrameBlockFacts {
             geometry: geometry(),
             plane_tx_type: DCT_DCT,
