@@ -284,22 +284,22 @@ fn local_ac0ej3_reaches_current_runtime_gate_without_output() {
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(json["rule_id"], "decode/unsupported-feature");
     assert_eq!(json["spec_section"], "5.20.7.27");
-    assert_eq!(json["matrix_row"], "ac0ej3-dctonly-residual-frontier");
+    assert_eq!(json["matrix_row"], "ac0ej3-selectable-transform-records");
     assert_eq!(
         json["feature_id"],
-        "DECODE-AC0EJ3-DCTONLY-RESIDUAL-FRONTIER"
+        "DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS"
     );
     assert_eq!(json["detail_kind"], "unsupported_feature");
     assert_eq!(
         json["unsupported_reason"],
-        "unsupported_dctonly_residual_tx_set"
+        "unsupported_wienerns_lr_live_transform_record_residual_parse"
     );
     assert!(
         json["message"]
             .as_str()
             .unwrap()
-            .contains("outside the DCT_DCT-only transform-tool subset"),
-        "diagnostic must describe the active residual blocker"
+            .contains("coefficient syntax is outside the transform-record handoff subset"),
+        "diagnostic must describe the active transform-record residual blocker"
     );
     assert_eq!(json["byte_offset"], 110);
     assert_ne!(

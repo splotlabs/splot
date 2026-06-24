@@ -53,11 +53,10 @@ read.
 - **AND** it does not fabricate `LrTxSkip`, decoded samples, loop-restoration
   output, reference state, AVM/dav2d byte equality, or successful ac0ej3 decode
 
-#### Scenario: ac0ej3 probe reports the new frontier
+#### Scenario: ac0ej3 probe records the follow-on frontier
 
 - **WHEN** `splot decode --output-format hash --json` runs on the local
   `ac0ej3.ivf` mission stream
-- **THEN** the diagnostic frontier reports
-  `unsupported_dctonly_residual_intra_ist` at byte offset 110 under
-  `DECODE-AC0EJ3-DCTONLY-RESIDUAL-FRONTIER`
+- **THEN** follow-on rows may advance the live diagnostic beyond the DCT-only
+  residual row after consuming additional syntax
 - **AND** the command does not emit decoded output

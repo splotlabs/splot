@@ -16,10 +16,10 @@ use splot_recon::{BitDepth, max_quantizer_index};
 
 use crate::error::Result;
 use crate::tile_payload::{
-    ActiveIntraIstResidualPolicy, DecodeBlockFrontier, DecodeTileWorkUnit,
-    GeneralIntraChromaModeContext, GeneralIntraChromaToolConfig, GeneralIntraLeafMode,
-    IntraIstSyntax, LumaTransformTypeContext, TileCdfSelector, TileCoeffContextState,
-    TransformToolResidualPolicy, decode_general_intra_block_modes,
+    ActiveChromaResidualPolicy, ActiveIntraIstResidualPolicy, DecodeBlockFrontier,
+    DecodeTileWorkUnit, GeneralIntraChromaModeContext, GeneralIntraChromaToolConfig,
+    GeneralIntraLeafMode, IntraIstSyntax, LumaTransformTypeContext, TileCdfSelector,
+    TileCoeffContextState, TransformToolResidualPolicy, decode_general_intra_block_modes,
     decode_general_intra_chroma_block_mode, decode_general_intra_luma_block_mode,
     decode_general_intra_multiblock_tree, decode_general_intra_plane_coeffs, frame_mi_dimensions,
 };
@@ -723,6 +723,7 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                 TransformToolResidualPolicy::AdmitDctOnly {
                     luma: None,
                     active_intra_ist: ActiveIntraIstResidualPolicy::LrTxSkipRecordHandoff,
+                    active_chroma: ActiveChromaResidualPolicy::LrTxSkipRecordHandoff,
                 }
             } else {
                 TransformToolResidualPolicy::Allow
@@ -1208,10 +1209,13 @@ fn luma_transform_tool_policy(
     match policy {
         TransformToolResidualPolicy::Allow => TransformToolResidualPolicy::Allow,
         TransformToolResidualPolicy::AdmitDctOnly {
-            active_intra_ist, ..
+            active_intra_ist,
+            active_chroma,
+            ..
         } => TransformToolResidualPolicy::AdmitDctOnly {
             luma: Some(luma),
             active_intra_ist,
+            active_chroma,
         },
     }
 }

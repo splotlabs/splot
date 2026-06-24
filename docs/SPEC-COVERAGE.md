@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 435 feature(s); 382 cite a spec section.
+Matrix version 1. Last reviewed 2026-06-15. 436 feature(s); 383 cite a spec section.
 
 One row per (spec section, feature) pair, in spec order; a feature citing both a syntax and a semantics section appears under both. The canonical status source is [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); the full per-feature ledger is [FEATURE-STATUS.md](./FEATURE-STATUS.md).
 
@@ -409,6 +409,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.20.7.26](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-26) | Get plane residual size function | `DECODE-TILE-PARTITION-ALLOWED-BOUNDARY` | ✅ | — | — | ✅ | — |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-AC0EJ3-ACTIVE-INTRA-IST-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-AC0EJ3-ACTIVE-INTRA-TOOL-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-AC0EJ3-CHROMA-CCTX-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-AC0EJ3-DCTONLY-RESIDUAL-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-AC0EJ3-LR-LIVE-TRANSFORM-RECORD-HANDOFF` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-AC0EJ3-LR-TX-SKIP-GRID-RETENTION` | ✅ | 🟡 | — | ✅ | 1 |
@@ -576,6 +577,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.20.8.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-2) | Transform type syntax | `ENC-INTRA-BLOCK-TRACE-TWO-COEFF-TX-TYPE` | ✅ | — | — | ✅ | — |
 | [§ 5.20.8.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-2) | Transform type syntax | `ENC-INTRA-TX-TYPE-TOKEN` | ✅ | — | — | ✅ | — |
 | [§ 5.20.8.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-2) | Transform type syntax | `ENC-SEC-TX-TYPE-TOKEN` | ✅ | — | — | ✅ | — |
+| [§ 5.20.8.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-3) | Get transform set function | `DECODE-AC0EJ3-CHROMA-CCTX-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.8.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-3) | Get transform set function | `DECODE-AC0EJ3-DCTONLY-RESIDUAL-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.8.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-3) | Get transform set function | `DECODE-COEFF-ORDINARY-BRANCH-LOSSLESS-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.8.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-3) | Get transform set function | `DECODE-COEFF-ORDINARY-BRANCH-TX-SET-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
@@ -1044,6 +1046,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.20.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-3) | Non-separable Wiener filter process | `RECON-WIENERNS-CHROMA-FILTER-PRIMITIVE` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.20.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-3) | Non-separable Wiener filter process | `RECON-WIENERNS-FILTER-PRIMITIVE` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.20.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-4) | Pixel classified Wiener filter process | `DECODE-AC0EJ3-ACTIVE-INTRA-IST-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 7.20.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-4) | Pixel classified Wiener filter process | `DECODE-AC0EJ3-CHROMA-CCTX-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.20.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-4) | Pixel classified Wiener filter process | `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 7.20.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-4) | Pixel classified Wiener filter process | `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-STORAGE` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.20.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-4) | Pixel classified Wiener filter process | `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-VALUES` | ✅ | 🟡 | — | ✅ | 1 |
@@ -1263,6 +1266,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-AC0EJ3-ACTIVE-INTRA-IST-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-AC0EJ3-ACTIVE-INTRA-TOOL-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-AC0EJ3-CFL-CHROMA-MODE-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-AC0EJ3-CHROMA-CCTX-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-AC0EJ3-DCTONLY-RESIDUAL-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-AC0EJ3-INACTIVE-LR-UNITS-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-AC0EJ3-INTRA-IST-ZERO-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
@@ -1421,6 +1425,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-AC0EJ3-ACTIVE-INTRA-IST-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-AC0EJ3-ACTIVE-INTRA-TOOL-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-AC0EJ3-CFL-CHROMA-MODE-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-AC0EJ3-CHROMA-CCTX-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-AC0EJ3-INACTIVE-LR-UNITS-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-AC0EJ3-INTRA-IST-ZERO-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |

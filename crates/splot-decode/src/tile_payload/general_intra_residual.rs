@@ -176,6 +176,8 @@ pub(crate) enum TransformToolResidualPolicy {
         luma: Option<LumaTransformTypeContext>,
         /// Whether active intra IST is admissible for a syntax-only handoff.
         active_intra_ist: ActiveIntraIstResidualPolicy,
+        /// Whether chroma transform/CCTX syntax is admissible for a syntax-only handoff.
+        active_chroma: ActiveChromaResidualPolicy,
     },
 }
 
@@ -185,6 +187,15 @@ pub(crate) enum ActiveIntraIstResidualPolicy {
     /// Reject active IST after consuming required syntax.
     Reject,
     /// Admit active IST metadata for LR tx-skip record derivation only.
+    LrTxSkipRecordHandoff,
+}
+
+/// Caller-selected handling for active chroma transform-tool syntax.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ActiveChromaResidualPolicy {
+    /// Reject active chroma CCTX/non-DCT transform syntax before reconstruction.
+    Reject,
+    /// Admit CCTX metadata and chroma transform syntax for LR tx-skip record derivation only.
     LrTxSkipRecordHandoff,
 }
 
@@ -458,6 +469,7 @@ pub(crate) fn decode_general_intra_plane_coeffs(
     if let TransformToolResidualPolicy::AdmitDctOnly {
         luma,
         active_intra_ist,
+        active_chroma,
     } = transform_tool_residual_policy
     {
         return decode_staged_dctonly_nonzero_coeffs(
@@ -471,6 +483,7 @@ pub(crate) fn decode_general_intra_plane_coeffs(
             is_inter,
             luma,
             active_intra_ist,
+            active_chroma,
         );
     }
 
@@ -516,6 +529,7 @@ fn decode_staged_dctonly_nonzero_coeffs(
     is_inter: bool,
     luma_transform_type_context: Option<LumaTransformTypeContext>,
     active_intra_ist_policy: ActiveIntraIstResidualPolicy,
+    active_chroma_policy: ActiveChromaResidualPolicy,
 ) -> Result<LumaCoeffBlock, GeneralIntraResidualError> {
     let tx_width_log2 = tx_size_table_usize(&TX_WIDTH_LOG2, "Tx_Width_Log2", geometry.tx_size)?;
     let tx_height_log2 = tx_size_table_usize(&TX_HEIGHT_LOG2, "Tx_Height_Log2", geometry.tx_size)?;
@@ -562,6 +576,7 @@ fn decode_staged_dctonly_nonzero_coeffs(
             eob,
             luma_transform_type_context,
             active_intra_ist_policy,
+            active_chroma_policy,
         },
     )?;
     let lossless = frame_facts.lossless_for_segment(SEGMENT_ID).ok_or(
@@ -605,6 +620,7 @@ fn decode_staged_dctonly_nonzero_coeffs(
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct DctOnlyTransformToolResidualMetadata {
     intra_ist: Option<IntraIstSyntax>,
+    cctx_type: Option<usize>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -616,6 +632,7 @@ struct DctOnlyTransformToolResidualInput {
     eob: usize,
     luma_transform_type_context: Option<LumaTransformTypeContext>,
     active_intra_ist_policy: ActiveIntraIstResidualPolicy,
+    active_chroma_policy: ActiveChromaResidualPolicy,
 }
 
 fn ensure_dctonly_transform_tool_residual(
@@ -633,7 +650,11 @@ fn ensure_dctonly_transform_tool_residual(
         return unsupported_transform_tool_residual("unsupported_dctonly_residual_lossless");
     }
     if !is_inter && plane == 1 && frame_facts.enable_cctx() && eob != 1 {
-        return unsupported_transform_tool_residual("unsupported_dctonly_residual_cctx");
+        metadata.cctx_type = Some(read_chroma_cctx_type(
+            cdfs,
+            symbols,
+            input.active_chroma_policy,
+        )?);
     }
     let tx_set = transform_set(frame_facts, plane, tx_size, is_inter)?;
     let dct_forced = (!is_inter && plane == 0 && eob == 1)
@@ -641,7 +662,14 @@ fn ensure_dctonly_transform_tool_residual(
         || tx_set == TX_SET_DCTONLY
         || (!is_inter && plane == 0 && frame_facts.reduced_tx_set() == 2);
     if !dct_forced {
-        if !is_inter && plane == 0 {
+        if !is_inter
+            && plane > 0
+            && input.active_chroma_policy == ActiveChromaResidualPolicy::LrTxSkipRecordHandoff
+        {
+            // Syntax-only handoff: the later coefficient branch derives the
+            // chroma PlaneTxType from UVMode and txSet, but no reconstruction
+            // or output consumes the Quant values in this LR-record path.
+        } else if !is_inter && plane == 0 {
             read_active_luma_dctonly_transform_type(
                 cdfs,
                 symbols,
@@ -675,6 +703,17 @@ fn ensure_dctonly_transform_tool_residual(
         )?;
     }
     Ok(metadata)
+}
+
+fn read_chroma_cctx_type(
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    policy: ActiveChromaResidualPolicy,
+) -> Result<usize, GeneralIntraResidualError> {
+    if policy != ActiveChromaResidualPolicy::LrTxSkipRecordHandoff {
+        return unsupported_transform_tool_residual("unsupported_dctonly_residual_cctx");
+    }
+    read_transform_symbol(cdfs, symbols, TileCdfSelector::CctxType)
 }
 
 fn read_intra_ist_sec_tx(
@@ -1354,6 +1393,7 @@ mod tests {
             eob,
             luma,
             ActiveIntraIstResidualPolicy::Reject,
+            ActiveChromaResidualPolicy::Reject,
             &PAYLOAD,
         )
     }
@@ -1367,6 +1407,7 @@ mod tests {
         eob: usize,
         luma: Option<LumaTransformTypeContext>,
         active_intra_ist_policy: ActiveIntraIstResidualPolicy,
+        active_chroma_policy: ActiveChromaResidualPolicy,
         payload: &'static [u8],
     ) -> Result<DctOnlyTransformToolResidualMetadata, GeneralIntraResidualError> {
         let mut cdfs = tile_cdfs();
@@ -1382,6 +1423,7 @@ mod tests {
                 eob,
                 luma_transform_type_context: luma,
                 active_intra_ist_policy,
+                active_chroma_policy,
             },
         )
     }
@@ -1469,6 +1511,7 @@ mod tests {
             2,
             Some(LumaTransformTypeContext::new(IntraYMode::DC_PRED, 0)),
             ActiveIntraIstResidualPolicy::LrTxSkipRecordHandoff,
+            ActiveChromaResidualPolicy::Reject,
             leaked_payload,
         )
         .unwrap();
@@ -1504,6 +1547,7 @@ mod tests {
             2,
             Some(LumaTransformTypeContext::new(IntraYMode::DC_PRED, 0)),
             ActiveIntraIstResidualPolicy::Reject,
+            ActiveChromaResidualPolicy::Reject,
             leaked_payload,
         );
 
@@ -1536,6 +1580,82 @@ mod tests {
             unsupported_reason(eob_two),
             Some("unsupported_dctonly_residual_cctx")
         );
+    }
+
+    #[test]
+    fn dctonly_residual_safe_policy_rejects_chroma_non_dct_tx_set() {
+        let result = ensure_with_test_state(
+            frame_facts(false, false, false, false),
+            1,
+            TX_8X8,
+            false,
+            1,
+            None,
+        );
+
+        assert_eq!(
+            unsupported_reason(result),
+            Some("unsupported_dctonly_residual_tx_set")
+        );
+    }
+
+    #[test]
+    fn dctonly_residual_lr_handoff_admits_chroma_non_dct_tx_set() {
+        let result = ensure_with_test_payload_and_policy(
+            frame_facts(false, false, false, false),
+            1,
+            TX_8X8,
+            false,
+            1,
+            None,
+            ActiveIntraIstResidualPolicy::Reject,
+            ActiveChromaResidualPolicy::LrTxSkipRecordHandoff,
+            &PAYLOAD,
+        );
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn dctonly_residual_lr_handoff_reads_cctx_zero() {
+        let payload = encode_transform_symbols(&[(TileCdfSelector::CctxType, 0)]);
+        let leaked_payload: &'static [u8] = Box::leak(payload.into_boxed_slice());
+
+        let metadata = ensure_with_test_payload_and_policy(
+            frame_facts(false, false, false, true),
+            1,
+            TX_8X8,
+            false,
+            2,
+            None,
+            ActiveIntraIstResidualPolicy::Reject,
+            ActiveChromaResidualPolicy::LrTxSkipRecordHandoff,
+            leaked_payload,
+        )
+        .unwrap();
+
+        assert_eq!(metadata.cctx_type, Some(0));
+    }
+
+    #[test]
+    fn dctonly_residual_lr_handoff_reads_nonzero_cctx_metadata() {
+        let payload = encode_transform_symbols(&[(TileCdfSelector::CctxType, 1)]);
+        let leaked_payload: &'static [u8] = Box::leak(payload.into_boxed_slice());
+
+        let metadata = ensure_with_test_payload_and_policy(
+            frame_facts(false, false, false, true),
+            1,
+            TX_8X8,
+            false,
+            2,
+            None,
+            ActiveIntraIstResidualPolicy::Reject,
+            ActiveChromaResidualPolicy::LrTxSkipRecordHandoff,
+            leaked_payload,
+        )
+        .unwrap();
+
+        assert_eq!(metadata.cctx_type, Some(1));
     }
 
     #[test]

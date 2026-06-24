@@ -471,6 +471,8 @@ pub(crate) enum TileCdfSelector {
     MostProbableStxSet,
     /// `TileMostProbableStxSetAdstCdf` from AV2 § 8.3.2.
     MostProbableStxSetAdst,
+    /// `TileCctxTypeCdf` from AV2 § 8.3.2.
+    CctxType,
     /// `TileUvModeCflNotAllowedCdf[ctx]` from AV2 § 8.3.2.
     UvModeCflNotAllowed {
         /// Chroma mode context index.
@@ -1389,6 +1391,7 @@ impl TileCdfRows {
             TileCdfSelector::MostProbableStxSetAdst => {
                 self.block.row(BlockCdfSelector::MostProbableStxSetAdst)
             }
+            TileCdfSelector::CctxType => self.block.row(BlockCdfSelector::CctxType),
             TileCdfSelector::UvModeCflNotAllowed { ctx } => self
                 .block
                 .row(BlockCdfSelector::UvModeCflNotAllowed { ctx }),
@@ -1742,6 +1745,7 @@ impl TileCdfRows {
             TileCdfSelector::MostProbableStxSetAdst => {
                 self.block.row_mut(BlockCdfSelector::MostProbableStxSetAdst)
             }
+            TileCdfSelector::CctxType => self.block.row_mut(BlockCdfSelector::CctxType),
             TileCdfSelector::UvModeCflNotAllowed { ctx } => self
                 .block
                 .row_mut(BlockCdfSelector::UvModeCflNotAllowed { ctx }),
@@ -2132,6 +2136,11 @@ impl TileCdfRows {
         &self,
     ) -> &block_rows::MostProbableStxSetAdstCdfRow {
         self.block.most_probable_stx_set_adst()
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn cctx_type(&self) -> &block_rows::CctxTypeCdfRow {
+        self.block.cctx_type()
     }
 
     #[cfg(test)]

@@ -58,10 +58,10 @@ pub(crate) use general_intra_block::{
     decode_general_intra_chroma_block_mode, decode_general_intra_luma_block_mode,
 };
 pub(crate) use general_intra_residual::{
-    ActiveIntraIstResidualPolicy, GeneralIntraResidualError, IntraIstSyntax, LumaCoeffBlock,
-    LumaTransformTypeContext, TransformToolResidualPolicy, decode_general_intra_plane_coeffs,
-    reconstruct_general_intra_block, reconstruct_general_intra_block_rect,
-    reconstruct_general_intra_block_with_prediction,
+    ActiveChromaResidualPolicy, ActiveIntraIstResidualPolicy, GeneralIntraResidualError,
+    IntraIstSyntax, LumaCoeffBlock, LumaTransformTypeContext, TransformToolResidualPolicy,
+    decode_general_intra_plane_coeffs, reconstruct_general_intra_block,
+    reconstruct_general_intra_block_rect, reconstruct_general_intra_block_with_prediction,
 };
 pub(crate) use input::{
     FrameCandidateCdfFacts, FrameCandidateCoeffFacts, FrameCandidateTileBoundaryError,

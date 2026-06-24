@@ -96,6 +96,7 @@ mod tests {
             },
             TileCdfSelector::MostProbableStxSet,
             TileCdfSelector::MostProbableStxSetAdst,
+            TileCdfSelector::CctxType,
             TileCdfSelector::UseWienerNs,
         ];
         let frame = FrameCdfSubset::from_defaults();
@@ -188,6 +189,7 @@ mod tests {
             },
             TileCdfSelector::MostProbableStxSet,
             TileCdfSelector::MostProbableStxSetAdst,
+            TileCdfSelector::CctxType,
             TileCdfSelector::UseWienerNs,
         ];
         let untouched = TileCdfSelector::DoSplit {
