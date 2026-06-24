@@ -11504,6 +11504,55 @@ fixtures = [
 diagnostics = ["decode/unsupported-feature", "decode/resource-limit"]
 
 [[feature]]
+id = "DECODE-AC0EJ3-LR-LIVE-TX-SKIP-GRID"
+name = "ac0ej3 Wiener NS LR live tx-skip grid frontier"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.20.7.24", "7.20.4"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-24",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-20-4",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/runtime_minimal/wienerns_lr/live_storage.rs"
+openspec_change = "decode-ac0ej3-lr-live-tx-skip-grid"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Partial prerequisite row for populating the live ac0ej3 Wiener NS LR `LrTxSkip` shell after live storage allocation. The decoder-private live storage allocation can now accept a complete `WienerNsLrTxSkipGrid`, verify matching row and column dimensions plus unpopulated state before mutation, copy each retained value exactly into the allocated `Option<u8>` live grid slots, and reject dimension mismatches or re-population attempts as structured reconstruction errors without fabricating or overwriting values. The live ac0ej3 runtime still stops at `unsupported_wienerns_lr_live_storage_unpopulated`: tile traversal does not yet feed real transform records into this shell, decoded `CurrFrame` and `CdefFrame` samples remain unpopulated, and this row does not claim live tile-populated `LrTxSkip`, `FilterClass` grid retention, `SubclassLookup`, loop-restoration filtering or reconstruction, chroma Wiener NS filtering, 10-bit output, reference refresh, AVM and dav2d byte equality, or successful ac0ej3 decode."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "partial"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/runtime_minimal/inter/lr_live_storage_tests.rs::wienerns_lr_live_tx_skip_grid_populates_retained_values_without_frame_samples",
+    "crates/splot-decode/src/runtime_minimal/inter/lr_live_storage_tests.rs::wienerns_lr_live_tx_skip_grid_rejects_dimension_mismatch_without_mutation",
+    "crates/splot-decode/src/runtime_minimal/inter/lr_live_storage_tests.rs::wienerns_lr_live_tx_skip_grid_rejects_repopulation_without_mutation",
+]
+commands = [
+    "cargo test -p splot-decode wienerns_lr_live_tx_skip_grid --locked",
+    "cargo test -p splot-decode wienerns_lr_live_storage_allocation --locked",
+    "cargo xtask check-feature-status",
+    "cargo xtask check-decoder-support",
+]
+fixtures = [
+    "crates/splot-decode/src/runtime_minimal/inter/lr_live_storage_tests.rs",
+    "crates/splot-decode/src/runtime_minimal/wienerns_lr.rs",
+    "crates/splot-decode/src/runtime_minimal/wienerns_lr/live_storage.rs",
+]
+diagnostics = ["decode/unsupported-feature", "decode/resource-limit"]
+
+[[feature]]
 id = "DECODE-Y4M-RUNTIME-OUTPUT"
 name = "Minimal-tier runtime Y4M output"
 category = "infrastructure"

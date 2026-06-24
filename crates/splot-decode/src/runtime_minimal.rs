@@ -88,6 +88,16 @@ const AC0EJ3_LR_RUNTIME_STORAGE_RETENTION_MATRIX_ROW: &str = "ac0ej3-lr-runtime-
 const AC0EJ3_LR_LIVE_STORAGE_ALLOCATION_FEATURE_ID: &str =
     "DECODE-AC0EJ3-LR-LIVE-STORAGE-ALLOCATION";
 const AC0EJ3_LR_LIVE_STORAGE_ALLOCATION_MATRIX_ROW: &str = "ac0ej3-lr-live-storage-allocation";
+#[allow(
+    dead_code,
+    reason = "live tx-skip grid population is a private prerequisite row until live tile records reach this frontier"
+)]
+const AC0EJ3_LR_LIVE_TX_SKIP_GRID_FEATURE_ID: &str = "DECODE-AC0EJ3-LR-LIVE-TX-SKIP-GRID";
+#[allow(
+    dead_code,
+    reason = "live tx-skip grid population is a private prerequisite row until live tile records reach this frontier"
+)]
+const AC0EJ3_LR_LIVE_TX_SKIP_GRID_MATRIX_ROW: &str = "ac0ej3-lr-live-tx-skip-grid";
 const MINIMAL_WIDTH: u32 = 64;
 const MINIMAL_HEIGHT: u32 = 64;
 const MINIMAL_TRACE_SYMBOLS: u64 = 6;
