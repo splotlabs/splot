@@ -176,7 +176,7 @@ once implemented it will fetch redistributable vectors into a gitignored
 License review is its own row (`CONF-PUBLIC-VECTOR-LICENSE-REVIEW`): vendor
 only **redistributable / public** vectors, and do **not** commit samples whose
 license is unclear. Project code, docs, tests, and fixtures are PolyForm
-Noncommercial 1.0.0; see [AGENTS.md](../AGENTS.md) § 9 for the narrow
+Noncommercial 1.0.0; see the Licensing section in [AGENTS.md](../AGENTS.md) for the narrow
 exceptions.
 
 AVM is **BSD-3-Clause-Clear**. AVM is used only as a local encoder to generate

@@ -199,7 +199,7 @@ impl QuantizerMatrixState {
 ///   provision through external means." A referenced custom slot with NO available record
 ///   (`qm_state.available[level] == None`) is unavailable.
 ///
-/// **External-means suppression (zero-false-positive discipline, AGENTS.md § 7).**
+/// **External-means suppression (zero-false-positive discipline).**
 /// [`ExternalHlsSet`](crate::options::ExternalHlsSet) cannot express quantizer-matrix OBUs
 /// (only sequence headers and operating point sets), so under any
 /// [`ExternalHlsMode::Provided`] the levels MAY be supplied externally without being listed

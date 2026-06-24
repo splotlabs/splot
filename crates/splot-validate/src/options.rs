@@ -113,8 +113,8 @@ pub enum ExternalHlsMode {
     /// records (LCRs) — MAY exist externally without being listed. The set is "what the
     /// caller knows", not "the complete external HLS".
     ///
-    /// This drives validator suppression policy (zero-false-positive principle,
-    /// AGENTS.md § 7): because an unenumerated external *local* LCR could win the
+    /// This drives validator suppression policy (zero-false-positive principle):
+    /// because an unenumerated external *local* LCR could win the
     /// local-first § 6.4.1 `seq_lcr_id` resolution ahead of an in-band record, *any*
     /// Provided mode suppresses the association-dependent § 6.4.1 / § 6.8.5 / § 6.8.8 /
     /// § 6.8.9 LCR checks — even an empty or OPS-only set, since the suppression is about

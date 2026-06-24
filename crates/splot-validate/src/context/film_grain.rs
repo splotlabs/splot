@@ -96,7 +96,7 @@ pub(super) fn emit_scaling_point_order_diagnostics(
 /// the sequence value is the frame's). This mirrors the § 7.3.8.7 multi-frame-header
 /// layer-dependency check (`frame-header/mfh-{m,t}layer-dependency-missing`).
 ///
-/// **Scope and under-reporting (zero-false-positive discipline, AGENTS.md § 7).**
+/// **Scope and under-reporting (zero-false-positive discipline).**
 ///
 /// - **External means.** § 7.3.8.8 allows the model to be available "by provision through
 ///   external means". [`ExternalHlsSet`](crate::options::ExternalHlsSet) cannot express

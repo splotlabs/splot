@@ -704,7 +704,7 @@ Naming rules live in [`FEATURE-TRACKING.md`](./FEATURE-TRACKING.md) § 12
   lines 1330–1398) found **no** `sub_xlayer_id` uniqueness requirement:
   `sub_xlayer_id[i]` only "specifies the value of obu_xlayer_id ... for the i-th
   independent sub-bitstream" (line 1359), with no constraint that the values
-  differ. Spec honesty (AGENTS.md §6) forbids inventing the constraint, so the
+  differ. Spec honesty (AGENTS.md AV2 Spec and Diagnostics) forbids inventing the constraint, so the
   planned diagnostic is removed rather than implemented.
 
 ## Done criteria for the umbrella validator goal
