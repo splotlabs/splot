@@ -36,6 +36,7 @@ const PC_WIENER_LAG: isize = 4;
 /// AV2 §7.20.4 `get_features`: m/up/down/upright/downleft/downright/upleft.
 const PC_WIENER_SOURCE_READS_PER_FEATURE: u64 = 7;
 const LR_RETAINED_FRAME_BUFFERS: u64 = 2;
+const LR_TX_SKIP_STORAGE_BYTES_PER_VALUE: u64 = 1;
 #[cfg_attr(
     not(test),
     allow(
@@ -422,6 +423,9 @@ pub(super) fn derive_wienerns_lr_runtime_storage_retention_frontier(
     offset: ByteOffset,
     limits: DecodeLimits,
 ) -> Result<WienerNsLrRuntimeStorageRetentionFrontier> {
+    // `FrameSize` carries the derived §6.17.4.1 `FrameWidth`/`FrameHeight`
+    // semantics that storage retention sizes, rather than only the §5.18.4.1
+    // frame-size syntax fields.
     let frame_size = core.frame_size.ok_or_else(|| {
         unsupported_feature_at(
             "unsupported_wienerns_lr_runtime_storage_missing_frame_size",
@@ -460,6 +464,8 @@ pub(super) fn derive_wienerns_lr_runtime_storage_retention_frontier(
         budget.decoded_bytes,
         LR_RETAINED_FRAME_BUFFERS,
     )?;
+    // `frame_mi_dimensions` only reports missing parsed facts or an unexpected
+    // empty MI grid here; it does not wrap resource-limit failures.
     let (tx_skip_rows, tx_skip_cols) = crate::tile_payload::frame_mi_dimensions(core)
         .map_err(|_| wienerns_lr_runtime_storage_retention_error(offset))?;
     let tx_skip_values = checked_mul(
@@ -468,10 +474,17 @@ pub(super) fn derive_wienerns_lr_runtime_storage_retention_frontier(
         usize_to_storage_u64(tx_skip_cols, "LrTxSkip grid columns")?,
     )?;
     limits.ensure_allocation_len(DecodeLimitName::MaxDecodedFrameBytes, tx_skip_values)?;
+    // Budget retained `LrTxSkip` storage as one byte per value until the live
+    // allocator chooses a packed or typed representation.
+    let tx_skip_storage_bytes = checked_mul(
+        DecodeLimitName::MaxDecodedFrameBytes,
+        tx_skip_values,
+        LR_TX_SKIP_STORAGE_BYTES_PER_VALUE,
+    )?;
     let total_storage_bytes = checked_add(
         DecodeLimitName::MaxDecodedFrameBytes,
         retained_frame_buffer_bytes,
-        tx_skip_values,
+        tx_skip_storage_bytes,
     )?;
     limits.ensure(DecodeLimitName::MaxDecodedFrameBytes, total_storage_bytes)?;
 
