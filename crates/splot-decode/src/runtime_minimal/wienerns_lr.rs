@@ -18,8 +18,10 @@ use crate::error::{DecodeError, Result};
 use crate::tile_payload::{MinimalRuntimePartitionFrontierError, TilePartitionTraversalError};
 use crate::{DecodeLimitName, DecodeLimits, DecodeOptions, DecodePlannedObu, DecodeStreamPlan};
 
+use super::limits::{checked_add, checked_mul, decoded_frame_storage_budget};
 use super::{
     AC0EJ3_LR_CLASSIFIED_WIENER_STORAGE_FEATURE_ID, AC0EJ3_LR_CLASSIFIED_WIENER_STORAGE_MATRIX_ROW,
+    AC0EJ3_LR_RUNTIME_STORAGE_RETENTION_FEATURE_ID, AC0EJ3_LR_RUNTIME_STORAGE_RETENTION_MATRIX_ROW,
     AC0EJ3_LR_SOURCE_READ_FEATURE_ID, AC0EJ3_LR_SOURCE_READ_MATRIX_ROW,
     AC0EJ3_LR_UNIT_SELECTIONS_FEATURE_ID, AC0EJ3_LR_UNIT_SELECTIONS_MATRIX_ROW, derive_tile_plan,
     unsupported_at, unsupported_feature_at,
@@ -33,6 +35,7 @@ const PC_WIENER_LEAD: isize = 1;
 const PC_WIENER_LAG: isize = 4;
 /// AV2 §7.20.4 `get_features`: m/up/down/upright/downleft/downright/upleft.
 const PC_WIENER_SOURCE_READS_PER_FEATURE: u64 = 7;
+const LR_RETAINED_FRAME_BUFFERS: u64 = 2;
 #[cfg_attr(
     not(test),
     allow(
@@ -181,6 +184,25 @@ pub(super) struct WienerNsLrClassifiedWienerStorageInputs<'a, T: ReconSample> {
     pub(super) curr_frame: &'a DecodedFrame<T>,
     pub(super) cdef_frame: &'a DecodedFrame<T>,
     pub(super) tx_skip_grid: &'a WienerNsLrTxSkipGrid,
+}
+
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "private runtime storage-retention frontier is consumed by tests until filtering consumes it"
+    )
+)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct WienerNsLrRuntimeStorageRetentionFrontier {
+    pub(super) bit_depth: BitDepth,
+    pub(super) frame_buffer_count: u64,
+    pub(super) frame_buffer_bytes: u64,
+    pub(super) retained_frame_buffer_bytes: u64,
+    pub(super) tx_skip_rows: usize,
+    pub(super) tx_skip_cols: usize,
+    pub(super) tx_skip_values: u64,
+    pub(super) total_storage_bytes: u64,
 }
 
 #[cfg_attr(
@@ -378,7 +400,13 @@ pub(super) fn ensure_wienerns_lr_unit_runtime_frontier(
                 options.limits(),
             )?;
         if classified_frontier.is_some() {
-            return Err(wienerns_lr_classified_wiener_storage_runtime_error(
+            let _storage_retention = derive_wienerns_lr_runtime_storage_retention_frontier(
+                sequence,
+                core,
+                key_envelope.offset,
+                options.limits(),
+            )?;
+            return Err(wienerns_lr_runtime_storage_retention_error(
                 key_envelope.offset,
             ));
         }
@@ -386,6 +414,88 @@ pub(super) fn ensure_wienerns_lr_unit_runtime_frontier(
     } else {
         Err(wienerns_lr_unit_runtime_error(key_envelope.offset))
     }
+}
+
+pub(super) fn derive_wienerns_lr_runtime_storage_retention_frontier(
+    sequence: &SequenceHeader,
+    core: &FrameHeaderCore,
+    offset: ByteOffset,
+    limits: DecodeLimits,
+) -> Result<WienerNsLrRuntimeStorageRetentionFrontier> {
+    let frame_size = core.frame_size.ok_or_else(|| {
+        unsupported_feature_at(
+            "unsupported_wienerns_lr_runtime_storage_missing_frame_size",
+            offset,
+            "minimal runtime cannot retain loop-restoration storage before the parsed frame size is available",
+            AC0EJ3_LR_RUNTIME_STORAGE_RETENTION_MATRIX_ROW,
+            AC0EJ3_LR_RUNTIME_STORAGE_RETENTION_FEATURE_ID,
+            "6.17.4.1",
+        )
+    })?;
+    limits.ensure(DecodeLimitName::MaxFrameWidth, u64::from(frame_size.width))?;
+    limits.ensure(
+        DecodeLimitName::MaxFrameHeight,
+        u64::from(frame_size.height),
+    )?;
+
+    let bit_depth = BitDepth::from_av2_bit_depth_idc(sequence.general.bit_depth_idc.get())
+        .map_err(|source| DecodeError::Reconstruction { source })?;
+    let budget = decoded_frame_storage_budget(
+        frame_size,
+        sequence.general.chroma_format_idc,
+        decoded_storage_bytes_per_sample(bit_depth),
+    )?;
+    limits.ensure(DecodeLimitName::MaxLumaSamplesPerFrame, budget.luma_samples)?;
+    limits.ensure(DecodeLimitName::MaxDecodedFrameBytes, budget.decoded_bytes)?;
+    limits.ensure_allocation_len(DecodeLimitName::MaxDecodedFrameBytes, budget.luma_samples)?;
+    if budget.chroma_samples_per_plane != 0 {
+        limits.ensure_allocation_len(
+            DecodeLimitName::MaxDecodedFrameBytes,
+            budget.chroma_samples_per_plane,
+        )?;
+    }
+
+    let retained_frame_buffer_bytes = checked_mul(
+        DecodeLimitName::MaxDecodedFrameBytes,
+        budget.decoded_bytes,
+        LR_RETAINED_FRAME_BUFFERS,
+    )?;
+    let (tx_skip_rows, tx_skip_cols) = crate::tile_payload::frame_mi_dimensions(core)
+        .map_err(|_| wienerns_lr_runtime_storage_retention_error(offset))?;
+    let tx_skip_values = checked_mul(
+        DecodeLimitName::MaxDecodedFrameBytes,
+        usize_to_storage_u64(tx_skip_rows, "LrTxSkip grid rows")?,
+        usize_to_storage_u64(tx_skip_cols, "LrTxSkip grid columns")?,
+    )?;
+    limits.ensure_allocation_len(DecodeLimitName::MaxDecodedFrameBytes, tx_skip_values)?;
+    let total_storage_bytes = checked_add(
+        DecodeLimitName::MaxDecodedFrameBytes,
+        retained_frame_buffer_bytes,
+        tx_skip_values,
+    )?;
+    limits.ensure(DecodeLimitName::MaxDecodedFrameBytes, total_storage_bytes)?;
+
+    Ok(WienerNsLrRuntimeStorageRetentionFrontier {
+        bit_depth,
+        frame_buffer_count: LR_RETAINED_FRAME_BUFFERS,
+        frame_buffer_bytes: budget.decoded_bytes,
+        retained_frame_buffer_bytes,
+        tx_skip_rows,
+        tx_skip_cols,
+        tx_skip_values,
+        total_storage_bytes,
+    })
+}
+
+const fn decoded_storage_bytes_per_sample(bit_depth: BitDepth) -> u64 {
+    match bit_depth {
+        BitDepth::Eight => 1,
+        BitDepth::Ten => 2,
+    }
+}
+
+fn usize_to_storage_u64(value: usize, context: &'static str) -> Result<u64> {
+    u64::try_from(value).map_err(|_| source_read_arithmetic_overflow(context))
 }
 
 pub(super) fn wienerns_lr_source_read_config(
@@ -1471,6 +1581,13 @@ pub(super) fn wienerns_lr_source_read_runtime_error(offset: ByteOffset) -> Decod
     )
 }
 
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "old storage-helper diagnostic is retained for the helper-row regression test after the live path advanced"
+    )
+)]
 pub(super) fn wienerns_lr_classified_wiener_storage_runtime_error(
     offset: ByteOffset,
 ) -> DecodeError {
@@ -1480,6 +1597,17 @@ pub(super) fn wienerns_lr_classified_wiener_storage_runtime_error(
         "minimal runtime consumed active AV2 frame-level Wiener NS LR unit syntax, retained §7.20.1 source-bound and tile-bound facts, resolved §7.20.4 skip-filter classified-luma source-read and LrTxSkip lookup coordinates, resolved the later §7.20.3 source-read state, and has storage-backed FilterClass derivation for decoded CurrFrame/CdefFrame views plus a bounded LrTxSkip grid, but the live ac0ej3 path reaches loop restoration before decoded 10-bit frame buffers and an LrTxSkip grid are retained for filtering; loop-restoration filtering/output/reference refresh is not applied",
         AC0EJ3_LR_CLASSIFIED_WIENER_STORAGE_MATRIX_ROW,
         AC0EJ3_LR_CLASSIFIED_WIENER_STORAGE_FEATURE_ID,
+        "7.20.4",
+    )
+}
+
+pub(super) fn wienerns_lr_runtime_storage_retention_error(offset: ByteOffset) -> DecodeError {
+    unsupported_feature_at(
+        "unsupported_wienerns_lr_runtime_storage_unpopulated",
+        offset,
+        "minimal runtime consumed active AV2 frame-level Wiener NS LR unit syntax, retained §7.20.1 source-bound and tile-bound facts, resolved §7.20.4 classified-luma source-read and LrTxSkip lookup coordinates, resolved later §7.20.3 source-read state, has storage-backed FilterClass derivation for decoded CurrFrame/CdefFrame views plus a bounded LrTxSkip grid, and now derives/limit-checks the live 10-bit CurrFrame/CdefFrame storage footprint plus the frame-wide LrTxSkip grid shape, but tile reconstruction has not populated decoded frame samples or LrTxSkip values for filtering; loop-restoration filtering/output/reference refresh is not applied",
+        AC0EJ3_LR_RUNTIME_STORAGE_RETENTION_MATRIX_ROW,
+        AC0EJ3_LR_RUNTIME_STORAGE_RETENTION_FEATURE_ID,
         "7.20.4",
     )
 }

@@ -8,10 +8,14 @@
 use std::cell::Cell;
 
 use splot_core::headers::frame::{
-    FrameRestorationType, LrPlaneParams, WienerNsFrameFilterBank, WienerNsFrameFilterClass,
+    FrameHeaderCore, FrameRestorationType, LrPlaneParams, WienerNsFrameFilterBank,
+    WienerNsFrameFilterClass,
 };
-use splot_core::headers::sequence::ChromaFormatIdc;
+use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SequenceHeader};
+use splot_core::obu::{ParsedObu, PayloadStatus};
 use splot_core::span::ByteOffset;
+use splot_core::stream::{ParsedBitstream, parse_bitstream_partial};
+use splot_core::types::ObuType;
 use splot_recon::{
     BitDepth, DecodedFrame, DecodedFrameInfo, FramePlanes, LoopRestorationSource,
     LoopRestorationSourceBounds, OutputIndex, PixelFormat, Plane, PlaneId, PlaneRect, PlaneSize,
@@ -21,6 +25,9 @@ use splot_recon::{
 use crate::error::DecodeError;
 use crate::tile_payload::WienerNsLrSourceBlock;
 use crate::{DecodeLimitName, DecodeLimitThreshold, DecodeLimits};
+
+const TWO_FRAME_INTER_FIXTURE: &[u8] =
+    include_bytes!("../../../../../tests/conformance/vectors/valid/syn-2frame-inter-64x64.ivf");
 
 fn wienerns_lr_source_block() -> WienerNsLrSourceBlock {
     WienerNsLrSourceBlock {
@@ -95,6 +102,36 @@ fn storage_inputs<'a>(
         cdef_frame,
         tx_skip_grid,
     }
+}
+
+fn fixture_sequence_and_key_core(bytes: &[u8]) -> (SequenceHeader, FrameHeaderCore) {
+    let ParsedBitstream::Ivf(parsed) = parse_bitstream_partial(bytes) else {
+        panic!("fixture is IVF");
+    };
+    assert!(parsed.error.is_none());
+    assert!(parsed.warnings.is_empty());
+    let sequence = parsed
+        .frames
+        .iter()
+        .flat_map(|frame| frame.obus.iter())
+        .find_map(
+            |envelope| match envelope.payload_status().expect("payload status") {
+                PayloadStatus::Parsed(ParsedObu::SequenceHeader(sequence)) => {
+                    Some((*sequence).clone())
+                }
+                _ => None,
+            },
+        )
+        .expect("fixture carries a sequence header");
+    let key = parsed
+        .frames
+        .iter()
+        .flat_map(|frame| frame.obus.iter())
+        .find(|envelope| envelope.header.obu_type == ObuType::ClosedLoopKey)
+        .copied()
+        .expect("fixture carries a closed-loop-key frame");
+    let key_core = super::super::parse_frame_core(key, &sequence).expect("parse key core");
+    (sequence, key_core)
 }
 
 #[test]
@@ -662,6 +699,101 @@ fn classified_wiener_storage_runtime_error_reports_retention_frontier() {
     assert!(
         unsupported.message().contains("loop-restoration filtering"),
         "message should keep filtering out of scope"
+    );
+}
+
+#[test]
+fn wienerns_lr_runtime_storage_retention_frontier_counts_ten_bit_buffers_and_tx_skip_grid() {
+    let (mut sequence, core) = fixture_sequence_and_key_core(TWO_FRAME_INTER_FIXTURE);
+    sequence.general.bit_depth_idc = BitDepthIdc::Ten;
+    let frontier = super::super::derive_wienerns_lr_runtime_storage_retention_frontier(
+        &sequence,
+        &core,
+        ByteOffset::new(74),
+        DecodeLimits::unlimited(),
+    )
+    .expect("retention frontier");
+
+    assert_eq!(frontier.bit_depth, BitDepth::Ten);
+    assert_eq!(frontier.frame_buffer_count, 2);
+    assert_eq!(frontier.frame_buffer_bytes, 64 * 64 * 3 / 2 * 2);
+    assert_eq!(
+        frontier.retained_frame_buffer_bytes,
+        64 * 64 * 3 / 2 * 2 * 2
+    );
+    assert_eq!((frontier.tx_skip_rows, frontier.tx_skip_cols), (16, 16));
+    assert_eq!(frontier.tx_skip_values, 16 * 16);
+    assert_eq!(
+        frontier.total_storage_bytes,
+        frontier.retained_frame_buffer_bytes + frontier.tx_skip_values
+    );
+}
+
+#[test]
+fn wienerns_lr_runtime_storage_retention_frontier_limits_total_storage_before_diagnostic() {
+    let (mut sequence, core) = fixture_sequence_and_key_core(TWO_FRAME_INTER_FIXTURE);
+    sequence.general.bit_depth_idc = BitDepthIdc::Ten;
+    let limits =
+        DecodeLimits::unlimited().with_max_decoded_frame_bytes(DecodeLimitThreshold::Max(12_288));
+
+    let error = super::super::derive_wienerns_lr_runtime_storage_retention_frontier(
+        &sequence,
+        &core,
+        ByteOffset::new(74),
+        limits,
+    )
+    .unwrap_err();
+
+    match error {
+        DecodeError::Limit { source } => {
+            assert_eq!(source.name(), DecodeLimitName::MaxDecodedFrameBytes);
+            let check = source.check().expect("limit failure carries check");
+            assert_eq!(check.threshold(), DecodeLimitThreshold::Max(12_288));
+            assert_eq!(check.actual(), 24_832);
+        }
+        _ => panic!("storage retention must fail as a resource limit"),
+    }
+}
+
+#[test]
+fn wienerns_lr_runtime_storage_retention_error_reports_unpopulated_boundary() {
+    let error = super::super::wienerns_lr_runtime_storage_retention_error(ByteOffset::new(74));
+    let unsupported = match error {
+        DecodeError::UnsupportedFeature { unsupported } => unsupported,
+        _ => panic!("runtime storage-retention frontier must be an unsupported-feature error"),
+    };
+
+    assert_eq!(
+        unsupported.reason(),
+        "unsupported_wienerns_lr_runtime_storage_unpopulated"
+    );
+    assert_eq!(
+        unsupported.matrix_row(),
+        "ac0ej3-lr-runtime-storage-retention"
+    );
+    assert_eq!(
+        unsupported.feature_id(),
+        "DECODE-AC0EJ3-LR-RUNTIME-STORAGE-RETENTION"
+    );
+    assert_eq!(unsupported.spec_section(), "7.20.4");
+    assert_eq!(unsupported.byte_offset(), Some(ByteOffset::new(74)));
+    assert!(
+        unsupported.message().contains("10-bit CurrFrame/CdefFrame"),
+        "message should name the retained frame-storage shape"
+    );
+    assert!(
+        unsupported.message().contains("LrTxSkip grid shape"),
+        "message should name the tx-skip storage shape"
+    );
+    assert!(
+        unsupported
+            .message()
+            .contains("has not populated decoded frame samples"),
+        "message should not claim populated source samples"
+    );
+    assert!(
+        unsupported.message().contains("not applied"),
+        "message should not claim loop-restoration output"
     );
 }
 
