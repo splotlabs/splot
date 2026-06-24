@@ -82,6 +82,29 @@ fn assert_live_storage_guard(
     assert_eq!(context, expected_context);
 }
 
+fn valid_live_storage_allocation() -> super::super::WienerNsLrLiveStorageAllocation {
+    super::super::derive_wienerns_lr_live_storage_allocation(valid_live_storage_frontier())
+        .expect("live storage allocation")
+}
+
+fn tx_skip_grid(rows: usize, cols: usize, start: u8) -> super::super::WienerNsLrTxSkipGrid {
+    let value_count = rows.checked_mul(cols).expect("test grid dimensions fit");
+    let values = (0..value_count)
+        .map(|index| start.wrapping_add((index % 2) as u8))
+        .collect();
+    super::super::WienerNsLrTxSkipGrid::new(rows, cols, values).expect("tx-skip grid")
+}
+
+fn assert_live_tx_skip_error(error: DecodeError, expected_field: &'static str) {
+    let DecodeError::Reconstruction {
+        source: ReconError::PcWienerInvalidBounds { field },
+    } = error
+    else {
+        panic!("live tx-skip guard should report PcWienerInvalidBounds");
+    };
+    assert_eq!(field, expected_field);
+}
+
 #[test]
 fn wienerns_lr_live_storage_allocation_shells_count_ten_bit_420_buffers_and_tx_skip_grid() {
     let (mut sequence, core) = fixture_sequence_and_key_core(TWO_FRAME_INTER_FIXTURE);
@@ -113,6 +136,60 @@ fn wienerns_lr_live_storage_allocation_shells_count_ten_bit_420_buffers_and_tx_s
         !allocation.is_fully_populated(),
         "storage shells must not fabricate decoded frame or LrTxSkip values"
     );
+}
+
+#[test]
+fn wienerns_lr_live_tx_skip_grid_populates_retained_values_without_frame_samples() {
+    let mut allocation = valid_live_storage_allocation();
+    let grid = tx_skip_grid(16, 16, 0);
+
+    allocation
+        .populate_tx_skip_grid(&grid)
+        .expect("populate tx-skip grid");
+
+    assert_eq!(allocation.unpopulated_tx_skip_values(), 0);
+    assert_eq!(allocation.tx_skip_value(0, 0), Some(0));
+    assert_eq!(allocation.tx_skip_value(0, 1), Some(1));
+    assert_eq!(allocation.tx_skip_value(15, 15), Some(1));
+    assert_eq!(allocation.tx_skip_value(16, 0), None);
+    assert_eq!(
+        allocation.unpopulated_frame_samples(),
+        64 * 64 * 3,
+        "tx-skip population must not fabricate CurrFrame/CdefFrame samples"
+    );
+    assert!(
+        !allocation.is_fully_populated(),
+        "decoded frame shells remain unpopulated"
+    );
+}
+
+#[test]
+fn wienerns_lr_live_tx_skip_grid_rejects_dimension_mismatch_without_mutation() {
+    let mut allocation = valid_live_storage_allocation();
+    let bad_grid = tx_skip_grid(8, 32, 1);
+
+    let error = allocation.populate_tx_skip_grid(&bad_grid).unwrap_err();
+
+    assert_live_tx_skip_error(error, "wiener ns lr live tx-skip dimensions");
+    assert_eq!(allocation.unpopulated_tx_skip_values(), 16 * 16);
+    assert_eq!(allocation.tx_skip_value(0, 0), None);
+}
+
+#[test]
+fn wienerns_lr_live_tx_skip_grid_rejects_repopulation_without_mutation() {
+    let mut allocation = valid_live_storage_allocation();
+    let first = tx_skip_grid(16, 16, 0);
+    let second = tx_skip_grid(16, 16, 9);
+
+    allocation
+        .populate_tx_skip_grid(&first)
+        .expect("initial tx-skip population");
+    let error = allocation.populate_tx_skip_grid(&second).unwrap_err();
+
+    assert_live_tx_skip_error(error, "wiener ns lr live tx-skip already populated");
+    assert_eq!(allocation.unpopulated_tx_skip_values(), 0);
+    assert_eq!(allocation.tx_skip_value(0, 0), Some(0));
+    assert_eq!(allocation.tx_skip_value(0, 1), Some(1));
 }
 
 #[test]

@@ -3,12 +3,12 @@
 
 //! Live Wiener NS loop-restoration storage allocation shells.
 
-use splot_recon::BitDepth;
+use splot_recon::{BitDepth, ReconError};
 
-use crate::error::Result;
+use crate::error::{DecodeError, Result};
 
 use super::{
-    LR_RETAINED_FRAME_BUFFERS, WienerNsLrRuntimeStorageRetentionFrontier,
+    LR_RETAINED_FRAME_BUFFERS, WienerNsLrRuntimeStorageRetentionFrontier, WienerNsLrTxSkipGrid,
     decoded_storage_bytes_per_sample, source_read_arithmetic_overflow,
 };
 
@@ -106,6 +106,17 @@ impl WienerNsLrLiveStorageAllocation {
         self.tx_skip_grid.unpopulated_values()
     }
 
+    pub(in crate::runtime_minimal) fn populate_tx_skip_grid(
+        &mut self,
+        grid: &WienerNsLrTxSkipGrid,
+    ) -> Result<()> {
+        self.tx_skip_grid.populate_from_retained_grid(grid)
+    }
+
+    pub(in crate::runtime_minimal) fn tx_skip_value(&self, row: usize, col: usize) -> Option<u8> {
+        self.tx_skip_grid.value(row, col)
+    }
+
     pub(in crate::runtime_minimal) fn is_fully_populated(&self) -> bool {
         self.curr_frame.is_fully_populated()
             && self.cdef_frame.is_fully_populated()
@@ -180,8 +191,38 @@ impl WienerNsLrLiveTxSkipGrid {
         self.values.len().saturating_sub(self.populated)
     }
 
+    fn populate_from_retained_grid(&mut self, grid: &WienerNsLrTxSkipGrid) -> Result<()> {
+        if self.rows != grid.rows || self.cols != grid.cols {
+            return Err(live_tx_skip_invalid("wiener ns lr live tx-skip dimensions"));
+        }
+        if self.populated != 0 {
+            return Err(live_tx_skip_invalid(
+                "wiener ns lr live tx-skip already populated",
+            ));
+        }
+        for (slot, value) in self.values.iter_mut().zip(grid.values.iter().copied()) {
+            *slot = Some(value);
+        }
+        self.populated = self.values.len();
+        Ok(())
+    }
+
+    fn value(&self, row: usize, col: usize) -> Option<u8> {
+        if row >= self.rows || col >= self.cols {
+            return None;
+        }
+        let index = row.checked_mul(self.cols)?.checked_add(col)?;
+        self.values.get(index).copied().flatten()
+    }
+
     fn is_fully_populated(&self) -> bool {
         self.populated == self.values.len()
+    }
+}
+
+fn live_tx_skip_invalid(field: &'static str) -> DecodeError {
+    DecodeError::Reconstruction {
+        source: ReconError::PcWienerInvalidBounds { field },
     }
 }
 
