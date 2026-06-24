@@ -10,7 +10,7 @@ loop-restoration classification.
 
 The decoder SHALL track `DECODE-AC0EJ3-LR-TX-SKIP-GRID-RETENTION` as a partial
 ac0ej3 Wiener NS LR prerequisite. The helper SHALL derive luma `LrTxSkip`
-storage values from caller-provided transform records using the AV2 §5.20.7.25
+storage values from caller-provided transform records using the AV2 §5.20.7.24
 rule `skip_flag || (eob == 0)`, SHALL retain them in the bounded
 `WienerNsLrTxSkipGrid` representation read by §7.20.4 classified-Wiener
 classification, and SHALL reject incomplete or out-of-bounds grids instead of

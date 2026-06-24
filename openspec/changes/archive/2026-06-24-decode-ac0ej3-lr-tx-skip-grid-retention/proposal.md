@@ -12,7 +12,7 @@ values.
 - Add Feature ID `DECODE-AC0EJ3-LR-TX-SKIP-GRID-RETENTION` for a decoder-local
   `LrTxSkip` grid-retention primitive.
 - Add a checked transform-record input that derives `LrTxSkip = skip_flag || eob == 0`
-  per AV2 §5.20.7.25/§5.20.7.27/§7.20.4 and fills every covered 4x4 luma cell.
+  per AV2 §5.20.7.24/§5.20.7.27/§7.20.4 and fills every covered 4x4 luma cell.
 - Require complete grid coverage before constructing the existing bounded
   `WienerNsLrTxSkipGrid`; missing cells and out-of-range records stay structured
   reconstruction errors.

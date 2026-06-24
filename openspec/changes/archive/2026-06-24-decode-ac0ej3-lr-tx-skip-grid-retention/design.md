@@ -7,7 +7,7 @@ is used. Existing storage-backed classified-Wiener helpers can read from a
 bounded `WienerNsLrTxSkipGrid`, but the decoder has no value-backed way to build
 that grid from parsed transform-block facts.
 
-The AV2 v1.0.0 spec defines the grid write in §5.20.7.25
+The AV2 v1.0.0 spec defines the grid write in §5.20.7.24
 `store_tx_info()`: for luma, each covered transform 4x4 cell stores
 `LrTxSkip[row + i][col + j] = skip_flag || (eob == 0)`. The classified-Wiener
 lookup in §7.20.4 later reads `LrTxSkip[y >> 2][x >> 2]`. This change creates the

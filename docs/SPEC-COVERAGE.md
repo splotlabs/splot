@@ -382,9 +382,9 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.20.7.17](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-17) | Read refine mv syntax | `DECODE-INTER-COMPOUND-AVERAGE` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 5.20.7.20](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-20) | MV syntax | `DECODE-INTER-SUBPEL-MV` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 5.20.7.23](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-23) | Residual syntax | `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER` | ✅ | 🟡 | — | ✅ | 4 |
+| [§ 5.20.7.24](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-24) | Transform block syntax | `DECODE-AC0EJ3-LR-TX-SKIP-GRID-RETENTION` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.24](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-24) | Transform block syntax | `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER` | ✅ | 🟡 | — | ✅ | 4 |
 | [§ 5.20.7.24](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-24) | Transform block syntax | `DECODE-MINIMAL-INTRA-RECONSTRUCTION-FRONTIER` | ✅ | 🟡 | ✅ | ✅ | 4 |
-| [§ 5.20.7.25](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-25) | Get TX size function | `DECODE-AC0EJ3-LR-TX-SKIP-GRID-RETENTION` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.25](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-25) | Get TX size function | `DECODE-GENERAL-INTRA-ANGLE-D203` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.25](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-25) | Get TX size function | `DECODE-GENERAL-INTRA-ANGLE-D45` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.25](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-25) | Get TX size function | `DECODE-GENERAL-INTRA-BLOCK-DECODED` | ✅ | 🟡 | — | ✅ | 1 |

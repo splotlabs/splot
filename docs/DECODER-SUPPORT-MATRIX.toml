@@ -453,7 +453,7 @@ notes = "Fail-closed support row for advancing the ac0ej3 two-class luma Wiener 
 id = "ac0ej3-lr-tx-skip-grid-retention"
 name = "ac0ej3 Wiener NS LR tx-skip grid-retention frontier"
 feature_id = "DECODE-AC0EJ3-LR-TX-SKIP-GRID-RETENTION"
-spec_sections = ["5.20.7.25", "5.20.7.27", "7.20.4"]
+spec_sections = ["5.20.7.24", "5.20.7.27", "7.20.4"]
 parser_source = "docs/spec/av2/1.0.0/05-syntax-structures.md; docs/spec/av2/1.0.0/07-decoding-process.md"
 decode_module = "crates/splot-decode/src/runtime_minimal/wienerns_lr.rs"
 tier = "tier1-intra"
@@ -461,7 +461,7 @@ status = "partial"
 self_contained_tests = ["crates/splot-decode/src/runtime_minimal/inter/lr_source_read_tests.rs::wienerns_lr_tx_skip_grid_retention_derives_spec_values", "crates/splot-decode/src/runtime_minimal/inter/lr_source_read_tests.rs::wienerns_lr_tx_skip_grid_retention_rejects_missing_cells", "crates/splot-decode/src/runtime_minimal/inter/lr_source_read_tests.rs::wienerns_lr_tx_skip_grid_retention_rejects_out_of_range_record", "crates/splot-decode/src/runtime_minimal/inter/lr_source_read_tests.rs::wienerns_lr_tx_skip_grid_retention_rejects_conflicting_records", "cargo test -p splot-decode wienerns_lr_tx_skip_grid_retention --locked", "cargo xtask check-decoder-support"]
 diagnostics = ["decode/unsupported-feature"]
 local_reference_evidence = []
-notes = "Fail-closed support row for the value-backed `LrTxSkip` grid-retention prerequisite to ac0ej3 two-class luma Wiener NS LR classification. The decoder now has a private helper that derives each retained luma 4x4 grid cell from caller-provided transform records with the AV2 §5.20.7.25 `skip_flag || (eob == 0)` rule, writes transform extents into the bounded `WienerNsLrTxSkipGrid`, and rejects incomplete, out-of-range, or conflicting records without fabricating defaults. The live ac0ej3 runtime still stops at `ac0ej3-lr-runtime-storage-retention`; tile traversal does not yet feed real transform records into this grid helper. This row does not claim live decoded samples, live tile-populated `LrTxSkip`, `FilterClass` grid retention, `SubclassLookup`, LR filtering, output, reference refresh, AVM/dav2d byte equality, or successful ac0ej3 decode."
+notes = "Fail-closed support row for the value-backed `LrTxSkip` grid-retention prerequisite to ac0ej3 two-class luma Wiener NS LR classification. The decoder now has a private helper that derives each retained luma 4x4 grid cell from caller-provided transform records with the AV2 §5.20.7.24 `skip_flag || (eob == 0)` rule, writes transform extents into the bounded `WienerNsLrTxSkipGrid`, and rejects incomplete, out-of-range, or conflicting records without fabricating defaults. The live ac0ej3 runtime still stops at `ac0ej3-lr-runtime-storage-retention`; tile traversal does not yet feed real transform records into this grid helper. This row does not claim live decoded samples, live tile-populated `LrTxSkip`, `FilterClass` grid retention, `SubclassLookup`, LR filtering, output, reference refresh, AVM/dav2d byte equality, or successful ac0ej3 decode."
 
 [[row]]
 id = "ac0ej3-lr-runtime-storage-retention"

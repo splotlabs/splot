@@ -11352,9 +11352,9 @@ id = "DECODE-AC0EJ3-LR-TX-SKIP-GRID-RETENTION"
 name = "ac0ej3 Wiener NS LR tx-skip grid-retention frontier"
 category = "infrastructure"
 kind = "infrastructure"
-spec_sections = ["5.20.7.25", "5.20.7.27", "7.20.4"]
+spec_sections = ["5.20.7.24", "5.20.7.27", "7.20.4"]
 sources = [
-    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-25",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-24",
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-20-4",
 ]
@@ -11364,7 +11364,7 @@ openspec_change = "decode-ac0ej3-lr-tx-skip-grid-retention"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Fail-closed prerequisite row for retaining value-backed `LrTxSkip[y >> 2][x >> 2]` storage for the ac0ej3 two-class luma Wiener NS LR path. The decoder now has a private helper that accepts caller-provided luma transform records, derives each retained grid value with the AV2 §5.20.7.25 `skip_flag || (eob == 0)` rule, fills transform extents into the existing bounded `WienerNsLrTxSkipGrid`, and rejects incomplete, out-of-range, or conflicting records without fabricating defaults. The live ac0ej3 runtime still stops at `ac0ej3-lr-runtime-storage-retention`; tile traversal does not yet feed real transform records into this grid helper, decoded sample population is still absent, and this row does not claim live `LrTxSkip` values, `FilterClass` grid retention, `SubclassLookup`, loop-restoration filtering/reconstruction, chroma Wiener NS filtering, 10-bit output, reference refresh, AVM/dav2d byte equality, or successful ac0ej3 decode."
+notes = "Fail-closed prerequisite row for retaining value-backed `LrTxSkip[y >> 2][x >> 2]` storage for the ac0ej3 two-class luma Wiener NS LR path. The decoder now has a private helper that accepts caller-provided luma transform records, derives each retained grid value with the AV2 §5.20.7.24 `skip_flag || (eob == 0)` rule, fills transform extents into the existing bounded `WienerNsLrTxSkipGrid`, and rejects incomplete, out-of-range, or conflicting records without fabricating defaults. The live ac0ej3 runtime still stops at `ac0ej3-lr-runtime-storage-retention`; tile traversal does not yet feed real transform records into this grid helper, decoded sample population is still absent, and this row does not claim live `LrTxSkip` values, `FilterClass` grid retention, `SubclassLookup`, loop-restoration filtering/reconstruction, chroma Wiener NS filtering, 10-bit output, reference refresh, AVM/dav2d byte equality, or successful ac0ej3 decode."
 
 [feature.status]
 mapped = "done"
