@@ -15,12 +15,15 @@ partial runtime prerequisite for the ac0ej3 Wiener NS LR path. For supported
 `read_tx_size` and §5.20.6.3 `read_tx_partition` transform-size syntax, SHALL
 use the resulting luma transform extents when reading §5.20.7.27 coefficients,
 and SHALL hand those luma transform records into live `LrTxSkip` storage without
-fabricating missing values. When the local stream reaches active CfL chroma
-mode syntax while deriving those records, the active CfL prerequisite SHALL be
-tracked by `DECODE-AC0EJ3-CFL-CHROMA-MODE-FRONTIER` and SHALL not be counted as
-completed selectable-transform support until its syntax has been consumed. When
-the local stream reaches luma-only narrow SDP transform records, that
-prerequisite SHALL be tracked by
+fabricating missing values. The runtime SHALL also keep the syntax-only LR
+handoff aligned with AV2 §5.20.7.24, §5.20.7.25, §5.20.7.27, and §5.20.7.30
+while consuming the transform-record residual subcase required by the local
+ac0ej3 stream. When the local stream reaches active CfL chroma mode syntax while
+deriving those records, the active CfL prerequisite SHALL be tracked by
+`DECODE-AC0EJ3-CFL-CHROMA-MODE-FRONTIER` and SHALL not be counted as completed
+selectable-transform support until its syntax has been consumed. When the local
+stream reaches luma-only narrow SDP transform records, that prerequisite SHALL
+be tracked by
 `DECODE-AC0EJ3-SELECTABLE-NARROW-LUMA-RECORDS` until the observed luma-only
 subcase has been consumed. When the local stream reaches SDP chroma-part
 mode-info that depends on §5.20.3.1 `CflAllowedInSdp`, that prerequisite SHALL
@@ -47,6 +50,15 @@ chroma-offset safety subcase has been consumed.
 - **AND** it populates the live LR `LrTxSkip` shell with tile-derived values
 - **AND** it advances past the
   `unsupported_wienerns_lr_tx_mode_select_transform_records` diagnostic
+
+#### Scenario: Transform-record residual syntax remains geometry-checked
+
+- **WHEN** the local ac0ej3 mission stream reaches active transform-record
+  residual syntax after live `LrTxSkip` values are available
+- **THEN** the runtime consumes the supported residual subcase with AV2-derived
+  transform sizes and scan lengths
+- **AND** invalid EOB/scan combinations still fail closed as residual parse
+  errors
 
 #### Scenario: Unsupported selectable transform syntax remains fail-closed
 
