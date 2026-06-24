@@ -1164,11 +1164,14 @@ fn decode_luma_records_for_chunk(
         decoded_any = true;
         let residual_policy =
             luma_transform_tool_policy(transform_tool_residual_policy, luma_transform_type_context);
-        // AV2 § 5.20.7.24/§ 5.20.7.25 resolve `tx_size` per transform
-        // record; § 5.20.7.27 and § 5.20.7.30 then derive coefficient context
-        // spans and scan length from that record geometry. The § 8.3.2
-        // `all_zero` context also needs whether this record fills the current
-        // residual chunk, not merely whether the chunk is present.
+        // AV2 § 5.20.7.23 invokes this path over `miSizeChunk`: large coding
+        // blocks use the current 64x64 luma residual chunk as the plane residual
+        // block, while smaller blocks use the whole `MiSize`. § 5.20.7.24 /
+        // § 5.20.7.25 then resolve `tx_size` per transform record, and
+        // § 5.20.7.27 / § 5.20.7.30 derive coefficient context spans and scan
+        // length from that record geometry. The § 8.3.2 `all_zero` context
+        // needs whether the record fills this caller's residual block (`bw ==
+        // w && bh == h`), not merely whether the chunk is present.
         let luma = decode_general_intra_plane_coeffs(
             work_unit,
             symbols,
