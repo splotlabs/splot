@@ -292,14 +292,14 @@ fn local_ac0ej3_reaches_current_runtime_gate_without_output() {
     assert_eq!(json["detail_kind"], "unsupported_feature");
     assert_eq!(
         json["unsupported_reason"],
-        "unsupported_wienerns_lr_selectable_transform_records_intrabc_currframe_samples"
+        "unsupported_wienerns_lr_selectable_transform_records_intrabc_fractional_prediction"
     );
     assert!(
         json["message"]
             .as_str()
             .unwrap()
-            .contains("decoded CurrFrame samples"),
-        "diagnostic must describe the missing CurrFrame sample frontier"
+            .contains("does not resolve to integer luma current-frame copy geometry"),
+        "diagnostic must describe the fractional IntrABC prediction frontier"
     );
     assert_eq!(json["byte_offset"], 110);
     assert_ne!(

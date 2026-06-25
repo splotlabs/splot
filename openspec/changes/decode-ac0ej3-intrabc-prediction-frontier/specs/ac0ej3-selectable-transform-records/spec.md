@@ -8,17 +8,20 @@ Wiener NS LR selectable-transform path. When AV2 §5.20.5.3 signals
 `use_intrabc = 1` for a supported luma/shared block, the runtime SHALL consume
 the observed §5.20.5.4 `read_intrabc_info()` symbols in spec order, SHALL retain
 only the IntrABC facts needed by transform-size and residual syntax contexts,
-SHALL derive bounded luma current-frame block-copy source/target rectangles from
-the retained §5.20.7.13/§5.20.7.20 block vector, and SHALL remain fail-closed
-before fabricated decoded samples, chroma IntrABC prediction, residual
-reconstruction, loop-restoration filtering/output, reference refresh, and
-successful ac0ej3 decode.
+SHALL derive bounded integer-vector luma current-frame block-copy
+source/target rectangles from the retained §5.20.7.13/§5.20.7.20 block vector,
+SHALL reject fractional vectors with a structured unsupported-feature
+diagnostic until the §7.13.3.18 filter footprint is modeled, and SHALL remain
+fail-closed before fabricated decoded samples, chroma IntrABC prediction,
+residual reconstruction, loop-restoration filtering/output, reference refresh,
+and successful ac0ej3 decode.
 For observed NEARMV/NEWMV blocks, the runtime SHALL retain bounded IntrABC
-block-vector facts parsed in spec order, SHALL hand off only checked luma
-current-frame prediction geometry whose source sample envelope stays inside
-current-frame storage, and SHALL report a structured
-missing-populated-`CurrFrame` frontier while the live ac0ej3 path lacks decoded
-current-frame samples.
+block-vector facts parsed in spec order, SHALL hand off only checked
+integer-vector luma current-frame prediction geometry whose source and target
+rectangles stay inside the padded MI-domain current-frame storage, and SHALL
+report a structured fractional-prediction or missing-populated-`CurrFrame`
+frontier while the live ac0ej3 path lacks decoded current-frame filtering and
+samples.
 
 #### Scenario: Active IntrABC mode-info is consumed before transform records
 
@@ -39,9 +42,9 @@ current-frame samples.
   bounded IntrABC reference block-vector candidates, consume §5.20.7.20
   `read_mv()` using `MV_INTRABC_CONTEXT` and the decoded `MvPrecision`, apply
   §5.20.7.13 `mv_clamp_to_integer`, and retain the resulting block vector.
-- **AND** it SHALL derive checked luma current-frame prediction target/source
-  geometry and subpel phase before reporting the next structured unsupported
-  frontier.
+- **AND** it SHALL derive checked integer-vector luma current-frame prediction
+  target/source geometry or report a structured fractional-prediction frontier
+  before any decoded sample claim.
 
 #### Scenario: active IntrABC NEARMV block-vector syntax is handed off
 
@@ -50,8 +53,8 @@ current-frame samples.
 - **AND** §5.20.5.4 decodes `intrabc_mode = 1`
 - **THEN** the runtime SHALL select the retained DRL candidate from the bounded
   IntrABC reference block-vector stack without reading `read_mv()`.
-- **AND** it SHALL derive checked luma current-frame prediction geometry when
-  the retained candidate is in the supported subset
+- **AND** it SHALL derive checked integer-vector luma current-frame prediction
+  geometry when the retained candidate is in the supported subset
 - **AND** it SHALL keep decoded sample population and output unclaimed while the
   live path lacks a populated `CurrFrame`.
 

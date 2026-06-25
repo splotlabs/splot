@@ -419,13 +419,10 @@ pub(super) fn read_intrabc_info(
 ) -> Result<IntrabcInfo> {
     let info = read_intrabc_info_record(cdfs, symbols, sequence, core, geometry, tile_offset)?;
     let _prediction = derive_intrabc_luma_prediction_geometry(core, geometry, info, tile_offset)?;
-    if info.intrabc_mode == 0 {
-        return Err(wienerns_lr_selectable_transform_record_error_reason(
-            tile_offset,
-            "unsupported_wienerns_lr_selectable_transform_records_intrabc_currframe_samples",
-        ));
-    }
-    Ok(info)
+    Err(wienerns_lr_selectable_transform_record_error_reason(
+        tile_offset,
+        "unsupported_wienerns_lr_selectable_transform_records_intrabc_currframe_samples",
+    ))
 }
 
 fn read_intrabc_info_record(
@@ -583,32 +580,7 @@ pub(super) fn derive_intrabc_luma_prediction_geometry(
     info: IntrabcInfo,
     tile_offset: ByteOffset,
 ) -> Result<IntrabcPredictionGeometry> {
-    let frame_size = core.frame_size.ok_or_else(|| {
-        wienerns_lr_selectable_transform_record_error_reason(
-            tile_offset,
-            "unsupported_wienerns_lr_selectable_transform_records_intrabc_frame_size",
-        )
-    })?;
-    let storage = PlaneSize::new(
-        usize::try_from(frame_size.width).map_err(|_| {
-            wienerns_lr_selectable_transform_record_error_reason(
-                tile_offset,
-                "unsupported_wienerns_lr_selectable_transform_records_intrabc_geometry",
-            )
-        })?,
-        usize::try_from(frame_size.height).map_err(|_| {
-            wienerns_lr_selectable_transform_record_error_reason(
-                tile_offset,
-                "unsupported_wienerns_lr_selectable_transform_records_intrabc_geometry",
-            )
-        })?,
-    )
-    .map_err(|_| {
-        wienerns_lr_selectable_transform_record_error_reason(
-            tile_offset,
-            "unsupported_wienerns_lr_selectable_transform_records_intrabc_geometry",
-        )
-    })?;
+    let (storage, ref_mi_cols, ref_mi_rows) = intrabc_luma_mi_storage(core, tile_offset)?;
     let width = geometry.n4w.checked_mul(MI_SIZE).ok_or_else(|| {
         wienerns_lr_selectable_transform_record_error_reason(
             tile_offset,
@@ -645,8 +617,12 @@ pub(super) fn derive_intrabc_luma_prediction_geometry(
             "unsupported_wienerns_lr_selectable_transform_records_intrabc_target_bounds",
         ));
     }
-    let ref_mi_cols = checked_intrabc_mi_units(storage.width(), tile_offset)?;
-    let ref_mi_rows = checked_intrabc_mi_units(storage.height(), tile_offset)?;
+    if info.block_mv.row & 7 != 0 || info.block_mv.col & 7 != 0 {
+        return Err(wienerns_lr_selectable_transform_record_error_reason(
+            tile_offset,
+            "unsupported_wienerns_lr_selectable_transform_records_intrabc_fractional_prediction",
+        ));
+    }
     let source = intrabc_luma_source_envelope(target, info.block_mv, tile_offset)?;
     if !source.is_within(storage) {
         return Err(wienerns_lr_selectable_transform_record_error_reason(
@@ -693,20 +669,65 @@ pub(super) fn derive_intrabc_luma_prediction_geometry(
     })
 }
 
-fn checked_intrabc_mi_units(samples: usize, tile_offset: ByteOffset) -> Result<i64> {
-    let rounded = samples.checked_add(MI_SIZE - 1).ok_or_else(|| {
+fn intrabc_luma_mi_storage(
+    core: &FrameHeaderCore,
+    tile_offset: ByteOffset,
+) -> Result<(PlaneSize, i64, i64)> {
+    let _frame_size = core.frame_size.ok_or_else(|| {
+        wienerns_lr_selectable_transform_record_error_reason(
+            tile_offset,
+            "unsupported_wienerns_lr_selectable_transform_records_intrabc_frame_size",
+        )
+    })?;
+    let tile_info = core.tile_info.as_ref().ok_or_else(|| {
         wienerns_lr_selectable_transform_record_error_reason(
             tile_offset,
             "unsupported_wienerns_lr_selectable_transform_records_intrabc_geometry",
         )
     })?;
-    let mi_units = rounded / MI_SIZE;
-    i64::try_from(mi_units).map_err(|_| {
+    let mi_cols = tile_info.mi_col_starts.last().copied().ok_or_else(|| {
         wienerns_lr_selectable_transform_record_error_reason(
             tile_offset,
             "unsupported_wienerns_lr_selectable_transform_records_intrabc_geometry",
         )
-    })
+    })?;
+    let mi_rows = tile_info.mi_row_starts.last().copied().ok_or_else(|| {
+        wienerns_lr_selectable_transform_record_error_reason(
+            tile_offset,
+            "unsupported_wienerns_lr_selectable_transform_records_intrabc_geometry",
+        )
+    })?;
+    if mi_cols == 0 || mi_rows == 0 {
+        return Err(wienerns_lr_selectable_transform_record_error_reason(
+            tile_offset,
+            "unsupported_wienerns_lr_selectable_transform_records_intrabc_geometry",
+        ));
+    }
+    let width = usize::try_from(mi_cols)
+        .ok()
+        .and_then(|cols| cols.checked_mul(MI_SIZE))
+        .ok_or_else(|| {
+            wienerns_lr_selectable_transform_record_error_reason(
+                tile_offset,
+                "unsupported_wienerns_lr_selectable_transform_records_intrabc_geometry",
+            )
+        })?;
+    let height = usize::try_from(mi_rows)
+        .ok()
+        .and_then(|rows| rows.checked_mul(MI_SIZE))
+        .ok_or_else(|| {
+            wienerns_lr_selectable_transform_record_error_reason(
+                tile_offset,
+                "unsupported_wienerns_lr_selectable_transform_records_intrabc_geometry",
+            )
+        })?;
+    let storage = PlaneSize::new(width, height).map_err(|_| {
+        wienerns_lr_selectable_transform_record_error_reason(
+            tile_offset,
+            "unsupported_wienerns_lr_selectable_transform_records_intrabc_geometry",
+        )
+    })?;
+    Ok((storage, i64::from(mi_cols), i64::from(mi_rows)))
 }
 
 fn intrabc_luma_source_envelope(
@@ -987,6 +1008,9 @@ mod tests {
     fn selectable_large_frame_fixture() -> (SequenceHeader, FrameHeaderCore) {
         let (sequence, mut core) = selectable_fixture();
         core.frame_size = Some(FrameSize::new(128, 128));
+        let tile_info = core.tile_info.as_mut().unwrap();
+        tile_info.mi_col_starts = vec![0, 32];
+        tile_info.mi_row_starts = vec![0, 32];
         (sequence, core)
     }
 
@@ -1052,7 +1076,7 @@ mod tests {
             ByteOffset::new(20),
         )
         .unwrap();
-        let info = read_intrabc_info(
+        let error = read_intrabc_info(
             &mut cdfs,
             &mut symbols,
             &sequence,
@@ -1060,21 +1084,18 @@ mod tests {
             geometry,
             ByteOffset::new(20),
         )
-        .unwrap();
+        .unwrap_err();
 
         assert_eq!(
-            IntrabcBlockPrelude::from_use_skip(use_skip, Some(info)),
-            IntrabcBlockPrelude {
+            use_skip,
+            IntrabcUseSkip {
                 use_intrabc: true,
-                is_inter: true,
                 skip_flag: true,
-                intrabc: Some(IntrabcInfo {
-                    intrabc_mode: 1,
-                    ref_mv_idx: 0,
-                    mv_precision: MV_PRECISION_QUARTER_PEL,
-                    block_mv: IntrabcBlockVector { row: -512, col: 0 },
-                }),
             }
+        );
+        assert_eq!(
+            unsupported_reason(error),
+            "unsupported_wienerns_lr_selectable_transform_records_intrabc_currframe_samples"
         );
         assert_eq!(symbols.symbol_count(), 4);
     }
@@ -1239,7 +1260,7 @@ mod tests {
     }
 
     #[test]
-    fn intrabc_geometry_derives_fractional_luma_prediction_region() {
+    fn intrabc_geometry_rejects_fractional_luma_prediction() {
         let (_, core) = selectable_large_frame_fixture();
         let block = IntrabcBlockContext::new(8, 8, 2, false);
         let geometry = IntrabcBlockGeometry::new(block, 4, 4);
@@ -1250,16 +1271,40 @@ mod tests {
             block_mv: IntrabcBlockVector { row: -4, col: 0 },
         };
 
+        let error =
+            derive_intrabc_luma_prediction_geometry(&core, geometry, info, ByteOffset::new(20))
+                .unwrap_err();
+
+        assert_eq!(
+            unsupported_reason(error),
+            "unsupported_wienerns_lr_selectable_transform_records_intrabc_fractional_prediction"
+        );
+    }
+
+    #[test]
+    fn intrabc_geometry_uses_mi_domain_for_partial_edge_frame() {
+        let (_, mut core) = selectable_fixture();
+        core.frame_size = Some(FrameSize::new(10, 10));
+        let tile_info = core.tile_info.as_mut().unwrap();
+        tile_info.mi_col_starts = vec![0, 4];
+        tile_info.mi_row_starts = vec![0, 4];
+        let block = IntrabcBlockContext::new(0, 0, 2, false);
+        let geometry = IntrabcBlockGeometry::new(block, 4, 4);
+        let info = IntrabcInfo {
+            intrabc_mode: 1,
+            ref_mv_idx: 0,
+            mv_precision: MV_PRECISION_QUARTER_PEL,
+            block_mv: IntrabcBlockVector { row: 0, col: 0 },
+        };
+
         let prediction =
             derive_intrabc_luma_prediction_geometry(&core, geometry, info, ByteOffset::new(20))
                 .unwrap();
 
-        assert_eq!(prediction.target, PlaneRect::new(32, 32, 16, 16).unwrap());
-        assert_eq!(prediction.source, PlaneRect::new(32, 31, 16, 17).unwrap());
-        assert_eq!(prediction.scaling.start_x >> 10, 32);
-        assert_eq!(prediction.scaling.start_y >> 10, 31);
-        assert_eq!((prediction.scaling.start_x >> 6) & 15, 0);
-        assert_ne!((prediction.scaling.start_y >> 6) & 15, 0);
+        assert_eq!(prediction.target, PlaneRect::new(0, 0, 16, 16).unwrap());
+        assert_eq!(prediction.source, PlaneRect::new(0, 0, 16, 16).unwrap());
+        assert_eq!(prediction.scaling.start_x >> 10, 0);
+        assert_eq!(prediction.scaling.start_y >> 10, 0);
     }
 
     #[test]

@@ -21,11 +21,11 @@ frontier.
 
 - Add `RECON-INTRABC-CURRENT-FRAME-COPY` as a source-backed, checked
   current-frame workspace copy primitive for one plane and one rectangle.
-- Derive luma IntrABC target rectangles, source sample envelopes, and
-  subpel prediction phase from the retained ac0ej3 block geometry and
-  §5.20.7.13 block vector.
+- Derive luma IntrABC integer-vector target/source rectangles from the retained
+  ac0ej3 block geometry and §5.20.7.13 block vector, using the padded MI-domain
+  current-frame bounds.
 - Advance the live ac0ej3 probe past the generic IntrABC prediction stop to a
-  more precise missing-populated-`CurrFrame` diagnostic.
+  more precise fractional-prediction diagnostic for the observed local vector.
 - Preserve all existing IntrABC syntax ordering, CDF updates, transform-record
   behavior, and fail-closed diagnostics for unsupported branches.
 
@@ -55,12 +55,12 @@ frontier.
 
 2. Keep the live ac0ej3 runtime honest about unpopulated samples.
 
-   The decoder should parse IntrABC mode-info as today, derive the luma copy
-   geometry, and only dispatch to the workspace copy primitive when a populated
-   current-frame workspace is available. The current live ac0ej3 path does not
-   have one, so it should fail with a structured diagnostic that names the
-   missing decoded `CurrFrame` sample frontier rather than pretending current
-   samples exist.
+   The decoder should parse IntrABC mode-info as today, derive luma copy
+   geometry for integer block vectors, and only dispatch to the workspace copy
+   primitive when a populated current-frame workspace is available. The observed
+   local ac0ej3 vector is fractional, so the live path fails earlier with a
+   structured diagnostic that names the unmodeled fractional current-frame
+   prediction frontier rather than pretending current samples or filters exist.
 
    Alternative considered: fill the workspace with neutral samples and apply
    the copy. That would fabricate prediction input and produce misleading
@@ -69,9 +69,9 @@ frontier.
 3. Admit checked luma prediction geometry, not sample output.
 
    IntrABC block vectors are retained in eighth-pel units. The observed local
-   path derives the target rectangle, the source sample envelope needed by
-   integer or fractional luma prediction, and the §7.13.3.17 scaling phase
-   when the source envelope stays inside current-frame storage. Chroma
+   path derives the integer-vector target/source rectangles and the §7.13.3.17
+   scaling phase when the copy geometry stays inside padded MI-domain
+   current-frame storage. Fractional current-frame filtering, chroma
    subsampling, morph prediction, decoded sample population, and broad
    reference-area clipping stay fail-closed until separately proved.
 
