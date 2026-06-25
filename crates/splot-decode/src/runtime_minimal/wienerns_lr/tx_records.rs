@@ -740,7 +740,7 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
         sequence,
         core,
         limits,
-        |work_unit, symbols, frontier, joint_modes, _block_decoded| {
+        |work_unit, symbols, frontier, joint_modes, uses_mrls, _block_decoded| {
             let n4w = frontier.b_size.num_4x4_wide().map_err(|_| {
                 wienerns_lr_selectable_transform_record_error_reason(
                     tile_offset,
@@ -831,6 +831,7 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                     symbols,
                     chroma_tools,
                     joint_modes,
+                    uses_mrls,
                     frontier.b_size.index(),
                     frontier.r,
                     frontier.c,
@@ -846,7 +847,7 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                 })?;
                 (
                     0,
-                    GeneralIntraLeafMode::luma(luma.intra_joint_mode, luma.y_mode),
+                    GeneralIntraLeafMode::luma(luma.intra_joint_mode, luma.y_mode, luma.uses_mrls),
                     LumaTransformTypeContext::new(luma.y_mode, luma.angle_delta_y),
                 )
             } else {
@@ -855,6 +856,7 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                     symbols,
                     chroma_tools,
                     joint_modes,
+                    uses_mrls,
                     frontier.b_size.index(),
                     frontier.r,
                     frontier.c,
@@ -870,7 +872,11 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                 })?;
                 (
                     modes.coeff_uv_mode(),
-                    GeneralIntraLeafMode::luma(modes.intra_joint_mode, modes.y_mode),
+                    GeneralIntraLeafMode::luma(
+                        modes.intra_joint_mode,
+                        modes.y_mode,
+                        modes.uses_mrls,
+                    ),
                     LumaTransformTypeContext::new(modes.y_mode, modes.angle_delta_y),
                 )
             };

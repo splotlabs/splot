@@ -118,9 +118,6 @@ const AC0EJ3_SELECTABLE_TRANSFORM_RECORDS_MATRIX_ROW: &str = "ac0ej3-selectable-
 const AC0EJ3_LUMA_TXTYPE_RESIDUAL_HANDOFF_FEATURE_ID: &str =
     "DECODE-AC0EJ3-LUMA-TXTYPE-RESIDUAL-HANDOFF";
 const AC0EJ3_LUMA_TXTYPE_RESIDUAL_HANDOFF_MATRIX_ROW: &str = "ac0ej3-luma-txtype-residual-handoff";
-const AC0EJ3_ACTIVE_INTRA_TOOL_FRONTIER_FEATURE_ID: &str =
-    "DECODE-AC0EJ3-ACTIVE-INTRA-TOOL-FRONTIER";
-const AC0EJ3_ACTIVE_INTRA_TOOL_FRONTIER_MATRIX_ROW: &str = "ac0ej3-active-intra-tool-frontier";
 const AC0EJ3_DCTONLY_RESIDUAL_FRONTIER_FEATURE_ID: &str = "DECODE-AC0EJ3-DCTONLY-RESIDUAL-FRONTIER";
 const AC0EJ3_DCTONLY_RESIDUAL_FRONTIER_MATRIX_ROW: &str = "ac0ej3-dctonly-residual-frontier";
 const AC0EJ3_INTRA_IST_ZERO_FRONTIER_FEATURE_ID: &str = "DECODE-AC0EJ3-INTRA-IST-ZERO-FRONTIER";
@@ -847,6 +844,7 @@ fn decode_minimal_partition_frontier_error(
         MinimalRuntimePartitionFrontierError::MissingFact { .. }
         | MinimalRuntimePartitionFrontierError::MiSizeState(_)
         | MinimalRuntimePartitionFrontierError::IntraJointModeState(_)
+        | MinimalRuntimePartitionFrontierError::UsesMrlsState(_)
         | MinimalRuntimePartitionFrontierError::Traversal(_)
         | MinimalRuntimePartitionFrontierError::UnexpectedFrontier { .. } => unsupported_at(
             "minimal_tile_partition_frontier",

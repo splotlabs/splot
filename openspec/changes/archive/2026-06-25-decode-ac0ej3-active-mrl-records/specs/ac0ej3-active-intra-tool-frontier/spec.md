@@ -1,11 +1,5 @@
-# ac0ej3-active-intra-tool-frontier Specification
+## MODIFIED Requirements
 
-## Purpose
-Track the active intra/tool-use frontier for the local ac0ej3 decoder mission
-without claiming decoded samples, loop-restoration output, reference refresh, or
-byte equality.
-
-## Requirements
 ### Requirement: ac0ej3 Active Intra Tool Frontier
 
 The decoder SHALL track `DECODE-AC0EJ3-ACTIVE-INTRA-TOOL-FRONTIER` as a partial

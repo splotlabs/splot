@@ -280,12 +280,13 @@ pub(super) fn decode_general_minimal_intra_frame(
         sequence,
         core,
         limits,
-        |work_unit, symbols, frontier, joint_modes, block_decoded| {
+        |work_unit, symbols, frontier, joint_modes, uses_mrls, block_decoded| {
             decode_one_general_intra_block(
                 work_unit,
                 symbols,
                 frontier,
                 joint_modes,
+                uses_mrls,
                 block_decoded,
                 &mut workspace,
                 &mut coeff_ctx,
@@ -333,6 +334,7 @@ fn decode_one_general_intra_block(
     symbols: &mut SymbolDecoder<'_>,
     frontier: &crate::tile_payload::DecodeBlockFrontier,
     joint_modes: &crate::tile_payload::TileIntraJointModeState,
+    uses_mrls: &crate::tile_payload::TileUsesMrlsState,
     block_decoded: &crate::tile_payload::TileBlockDecodedState,
     workspace: &mut splot_recon::CurrentFrameWorkspace<u8>,
     coeff_ctx: &mut crate::tile_payload::TileCoeffContextState,
@@ -394,6 +396,7 @@ fn decode_one_general_intra_block(
         symbols,
         crate::tile_payload::GeneralIntraChromaToolConfig::disabled(),
         joint_modes,
+        uses_mrls,
         frontier.b_size.index(),
         frontier.r,
         frontier.c,
@@ -401,6 +404,14 @@ fn decode_one_general_intra_block(
         n4h,
     )
     .map_err(|error| general_intra_block_mode_error(error, tile_offset))?;
+    if modes.uses_active_mrl() {
+        return Err(general_intra_unsupported(
+            "general_intra_unsupported_mrl_mode",
+            Some(tile_offset),
+            "general intra decode can retain active MRL mode-info but does not support §7.13.2 MRL prediction",
+            "7.13.2",
+        ));
+    }
 
     // RECTANGULAR PARTITION LEAF (`n4w != n4h`, e.g. a 64x32 PARTITION_HORZ child
     // or a 32x64 PARTITION_VERT child). The §7.13.2.4 DC predictor reads only the
@@ -1294,6 +1305,7 @@ fn decode_one_general_intra_block(
     Ok(crate::tile_payload::GeneralIntraLeafMode::luma(
         modes.intra_joint_mode,
         modes.y_mode,
+        modes.uses_mrls,
     ))
 }
 
@@ -1486,6 +1498,7 @@ fn decode_one_general_intra_rect_block(
     Ok(crate::tile_payload::GeneralIntraLeafMode::luma(
         modes.intra_joint_mode,
         modes.y_mode,
+        modes.uses_mrls,
     ))
 }
 
@@ -1714,12 +1727,6 @@ fn general_intra_block_mode_error(
             "general intra decode can skip a false fsc_mode decision but does not support active FSC coefficient parsing",
             "5.20.5.3",
         ),
-        GeneralIntraBlockModeError::UnsupportedMrlMode { .. } => general_intra_unsupported(
-            "general_intra_unsupported_mrl_mode",
-            Some(offset),
-            "general intra decode can skip a false mrl_index decision but does not support active MRL prediction",
-            "5.20.5.5",
-        ),
         GeneralIntraBlockModeError::InvalidFscBlockSizeIndex { .. } => general_intra_unsupported(
             "general_intra_invalid_fsc_block_size_index",
             Some(offset),
@@ -1763,6 +1770,7 @@ fn general_intra_partition_frontier_error(
         MinimalRuntimePartitionFrontierError::MissingFact { .. }
         | MinimalRuntimePartitionFrontierError::MiSizeState(_)
         | MinimalRuntimePartitionFrontierError::IntraJointModeState(_)
+        | MinimalRuntimePartitionFrontierError::UsesMrlsState(_)
         | MinimalRuntimePartitionFrontierError::Traversal(_)
         | MinimalRuntimePartitionFrontierError::UnexpectedFrontier { .. } => {
             general_intra_unsupported(

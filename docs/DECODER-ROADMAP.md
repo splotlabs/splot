@@ -1028,14 +1028,12 @@ Mission-scale IVF streams are no longer rejected solely because they contain
 more than three frame candidates; terminal `ivf/trailing-partial-frame-header`
 warnings are permitted, while fatal IVF errors and non-terminal warning kinds
 remain outside the tier. The current local `ac0ej3.ivf` first runtime stop is
-`unsupported_active_wienerns_lr_units` at byte offset 74: the runtime now accepts
-the conformant 10-bit sequence value, parses sequence chroma-tool flags, parses
-the key-frame header's fixed-coded AV2 §5.20.10.6 `read_wienerns_filter()` bank,
-consumes the supported frame-level §5.20.10.4/§5.20.10.5 LR unit symbols,
-retains each unit's plane/coordinate/active selection state, distinguishes
-inactive `RESTORE_NONE` units from active `RESTORE_WIENER_NONSEP` units, and
-then rejects active loop-restoration reconstruction under the selection-state
-frontier before any caller-visible output.
+`unsupported_wienerns_lr_live_transform_record_fsc_mode` at byte offset 110: the
+runtime now reaches the active Wiener NS LR selectable transform-record path,
+retains active MRL metadata as `UsesMrls` state for LR tx-skip record derivation,
+and then rejects active FSC coefficient mode before decoded samples,
+loop-restoration output, reference refresh, or successful ac0ej3 decode are
+claimed.
 
 The CLI renders diagnostics as text by default and as JSON with
 `splot decode --json`. Library-facing decode diagnostics must preserve stable

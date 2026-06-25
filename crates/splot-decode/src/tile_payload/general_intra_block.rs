@@ -13,7 +13,8 @@
 //! `y_mode_set`, `y_mode_index`, and `uv_mode` (with the
 //! `uv_mode == CHROMA_MODE_COUNT - 1` escape literal). When the sequence allows
 //! FSC or MRL syntax, this module also consumes inactive `fsc_mode == 0` and
-//! `mrl_index == 0`, rejecting active blocks before coefficient parsing.
+//! retains decoded MRL metadata for callers that can stay syntax-only before
+//! sample prediction.
 //!
 //! Scope: it decodes and consumes the mode symbols and reconstructs the typed
 //! luma `YMode`; the typed `UVMode` reconstruction (`get_intra_uv_mode_set`),
@@ -34,7 +35,7 @@ use super::cdf::block_context::{
 };
 use super::cdf::block_read::BlockSymbolTraceReadError;
 use super::cdf::{TileCdfSelector, TileCdfSubset};
-use super::intra_joint_modes::TileIntraJointModeState;
+use super::intra_joint_modes::{TileIntraJointModeState, TileUsesMrlsState};
 
 /// AV2 § 3 `CHROMA_MODE_COUNT`: the number of values for the `uv_mode` symbol
 /// (`03-symbols.md`); `uv_mode == CHROMA_MODE_COUNT - 1` triggers the
@@ -168,6 +169,13 @@ pub(crate) struct GeneralIntraBlockModes {
     /// `y_mode_index` neighbour context of later blocks. A directional mode has
     /// `intra_joint_mode >= NON_DIRECTIONAL_MODES_COUNT`.
     pub(crate) intra_joint_mode: u8,
+    /// Decoded AV2 §5.20.5.5 `mrl_index`; zero when MRL syntax is disabled or
+    /// not present for this luma mode.
+    pub(crate) mrl_index: u8,
+    /// Decoded AV2 §5.20.5.5 `mrl_sec_index` when `mrl_index > 0`.
+    pub(crate) mrl_sec_index: Option<u8>,
+    /// Derived AV2 §5.20.5.3 `UsesMrls` value stored for later neighbours.
+    pub(crate) uses_mrls: u8,
 }
 
 /// Decoded chroma-side mode-info facts for one intra block.
@@ -221,6 +229,12 @@ pub(crate) struct GeneralIntraLumaBlockMode {
     pub(crate) angle_delta_y: i8,
     /// The AV2 § 5.20.5.3 `IntraJointMode` stored for neighbour contexts.
     pub(crate) intra_joint_mode: u8,
+    /// Decoded AV2 §5.20.5.5 `mrl_index`; zero when no MRL syntax is active.
+    pub(crate) mrl_index: u8,
+    /// Decoded AV2 §5.20.5.5 `mrl_sec_index` when `mrl_index > 0`.
+    pub(crate) mrl_sec_index: Option<u8>,
+    /// Derived AV2 §5.20.5.3 `UsesMrls` value stored for later neighbours.
+    pub(crate) uses_mrls: u8,
 }
 
 impl GeneralIntraBlockModes {
@@ -262,6 +276,11 @@ impl GeneralIntraBlockModes {
     /// The `UVMode` value used by coefficient transform-type derivation.
     pub(crate) const fn coeff_uv_mode(&self) -> usize {
         self.coeff_uv_mode as usize
+    }
+
+    /// True when decoded sample prediction would need AV2 §7.13.2 MRL support.
+    pub(crate) const fn uses_active_mrl(&self) -> bool {
+        self.uses_mrls != 0
     }
 }
 
@@ -308,17 +327,6 @@ pub(crate) enum GeneralIntraBlockModeError {
     /// and transform context propagation in the caller.
     #[error("general intra mode-info selected unsupported FSC coefficient mode")]
     UnsupportedFscMode,
-    /// The block decoded a nonzero MRL reference-sample distance, which requires
-    /// MRL prediction state and `UsesMrls` propagation in the caller.
-    #[error(
-        "general intra mode-info selected unsupported MRL mode index {mrl_index}, secondary {mrl_sec_index:?}"
-    )]
-    UnsupportedMrlMode {
-        /// Decoded `mrl_index` value.
-        mrl_index: u8,
-        /// Decoded `mrl_sec_index` value when `mrl_index > 0`.
-        mrl_sec_index: Option<u8>,
-    },
     /// The block-size index used to select `Fsc_Bsize_Groups[MiSize]` is outside
     /// the mirrored table.
     #[error("general intra mode-info block-size index {block_size_index} has no FSC group")]
@@ -359,16 +367,17 @@ pub(crate) enum GeneralIntraBlockModeError {
 /// intra luma/shared block.
 ///
 /// `joint_modes` is the tile's per-MI `IntraJointModes` grid (§ 5.20.5.3); the
-/// block's `MiSize` index (`block_size_index`), MI position (`block_r`,
-/// `block_c`), and MI width/height (`block_n4w`, `block_n4h`,
-/// `Num_4x4_Blocks_Wide/High[MiSize]`) select the FSC group and left/above
-/// neighbours for the § 8.3.2 mode contexts.
+/// sibling `uses_mrls` grid supplies the MRL contexts. The block's `MiSize`
+/// index (`block_size_index`), MI position (`block_r`, `block_c`), and MI
+/// width/height (`block_n4w`, `block_n4h`, `Num_4x4_Blocks_Wide/High[MiSize]`)
+/// select the FSC group and left/above neighbours for the § 8.3.2 contexts.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn decode_general_intra_luma_block_mode(
     work_unit: &mut DecodeTileWorkUnit<'_>,
     symbols: &mut SymbolDecoder<'_>,
     chroma_tools: GeneralIntraChromaToolConfig,
     joint_modes: &TileIntraJointModeState,
+    uses_mrls: &TileUsesMrlsState,
     block_size_index: usize,
     block_r: usize,
     block_c: usize,
@@ -496,28 +505,30 @@ pub(crate) fn decode_general_intra_luma_block_mode(
         }
     }
 
+    let mut mrl_index = 0;
+    let mut mrl_sec_index = None;
+    let mut uses_mrls_value = 0;
     if chroma_tools.enable_mrls && y_mode.is_directional() {
         // AV2 § 8.3.2 derives the MRL contexts from neighbouring `UsesMrls`.
-        // This frontier admits only prior blocks with `mrl_index == 0`; active
-        // nonzero MRL returns immediately after consuming its symbols, so ctx 0
-        // remains correct for every admitted block.
-        let mrl_index = read_symbol(
+        mrl_index = read_symbol(
             cdfs,
             symbols,
-            TileCdfSelector::MrlIndex { ctx: 0 },
+            TileCdfSelector::MrlIndex {
+                ctx: uses_mrls.mrl_index_ctx(block_r, block_c, block_n4w, block_n4h),
+            },
             MRL_INDEX_REASON,
         )?;
-        if mrl_index != 0 {
-            let mrl_sec_index = read_symbol(
+        if mrl_index > 0 {
+            let secondary = read_symbol(
                 cdfs,
                 symbols,
-                TileCdfSelector::MrlSecIndex { ctx: 0 },
+                TileCdfSelector::MrlSecIndex {
+                    ctx: uses_mrls.mrl_sec_index_ctx(block_r, block_c, block_n4w, block_n4h),
+                },
                 MRL_SEC_INDEX_REASON,
             )?;
-            return Err(GeneralIntraBlockModeError::UnsupportedMrlMode {
-                mrl_index,
-                mrl_sec_index: Some(mrl_sec_index),
-            });
+            mrl_sec_index = Some(secondary);
+            uses_mrls_value = if secondary == 0 { 1 } else { 2 };
         }
     }
 
@@ -525,6 +536,9 @@ pub(crate) fn decode_general_intra_luma_block_mode(
         y_mode,
         angle_delta_y,
         intra_joint_mode,
+        mrl_index,
+        mrl_sec_index,
+        uses_mrls: uses_mrls_value,
     })
 }
 
@@ -536,6 +550,7 @@ pub(crate) fn decode_general_intra_block_modes(
     symbols: &mut SymbolDecoder<'_>,
     chroma_tools: GeneralIntraChromaToolConfig,
     joint_modes: &TileIntraJointModeState,
+    uses_mrls: &TileUsesMrlsState,
     block_size_index: usize,
     block_r: usize,
     block_c: usize,
@@ -547,6 +562,7 @@ pub(crate) fn decode_general_intra_block_modes(
         symbols,
         chroma_tools,
         joint_modes,
+        uses_mrls,
         block_size_index,
         block_r,
         block_c,
@@ -571,6 +587,9 @@ pub(crate) fn decode_general_intra_block_modes(
         coeff_uv_mode: uv_mode.coeff_uv_mode,
         is_cfl: uv_mode.is_cfl(),
         intra_joint_mode: luma.intra_joint_mode,
+        mrl_index: luma.mrl_index,
+        mrl_sec_index: luma.mrl_sec_index,
+        uses_mrls: luma.uses_mrls,
     })
 }
 
@@ -973,11 +992,16 @@ mod tests {
         TileIntraJointModeState::new(SB_N4, 2 * SB_N4).unwrap()
     }
 
+    fn empty_uses_mrls() -> TileUsesMrlsState {
+        TileUsesMrlsState::new(SB_N4, 2 * SB_N4).unwrap()
+    }
+
     #[test]
     fn decodes_dc_luma_mode_and_a_chroma_mode_in_spec_order() {
         let mut work_unit = make_work_unit(&PAYLOAD);
         let mut symbols = symbols_at_block_frontier(&mut work_unit);
         let joint_modes = empty_joint_modes();
+        let uses_mrls = empty_uses_mrls();
 
         // Top-left block (0, 0): out-of-frame neighbours -> ctx 0.
         let modes = decode_general_intra_block_modes(
@@ -985,6 +1009,7 @@ mod tests {
             &mut symbols,
             GeneralIntraChromaToolConfig::disabled(),
             &joint_modes,
+            &uses_mrls,
             BLOCK_64X64,
             0,
             0,
@@ -1017,6 +1042,7 @@ mod tests {
         let mut work_unit = make_work_unit(&PAYLOAD);
         let mut symbols = symbols_at_block_frontier(&mut work_unit);
         let mut joint_modes = empty_joint_modes();
+        let uses_mrls = empty_uses_mrls();
         joint_modes.record_block(0, 0, SB_N4, SB_N4, SMOOTH_V_JOINT_MODE);
 
         // The right superblock at (0, 16) reads the non-directional left neighbour.
@@ -1025,6 +1051,7 @@ mod tests {
             &mut symbols,
             GeneralIntraChromaToolConfig::disabled(),
             &joint_modes,
+            &uses_mrls,
             BLOCK_64X64,
             0,
             SB_N4,
@@ -1046,6 +1073,7 @@ mod tests {
         let mut symbols = symbols_at_block_frontier(&mut work_unit);
         let symbol_count_before = symbols.symbol_count();
         let mut joint_modes = empty_joint_modes();
+        let uses_mrls = empty_uses_mrls();
         joint_modes.record_block(0, 0, SB_N4, SB_N4, D135_JOINT_MODE);
 
         let modes = decode_general_intra_block_modes(
@@ -1053,6 +1081,7 @@ mod tests {
             &mut symbols,
             GeneralIntraChromaToolConfig::disabled(),
             &joint_modes,
+            &uses_mrls,
             BLOCK_64X64,
             0,
             SB_N4,
@@ -1078,12 +1107,14 @@ mod tests {
         let mut work_unit = make_work_unit(&payload);
         let mut symbols = symbol_decoder(&payload);
         let joint_modes = empty_joint_modes();
+        let uses_mrls = empty_uses_mrls();
 
         let luma = decode_general_intra_luma_block_mode(
             &mut work_unit,
             &mut symbols,
             GeneralIntraChromaToolConfig::disabled().with_enable_mrls(true),
             &joint_modes,
+            &uses_mrls,
             BLOCK_64X64,
             0,
             0,
@@ -1093,12 +1124,15 @@ mod tests {
         .unwrap();
 
         assert!(luma.y_mode.is_directional());
+        assert_eq!(luma.mrl_index, 0);
+        assert_eq!(luma.mrl_sec_index, None);
+        assert_eq!(luma.uses_mrls, 0);
         assert_eq!(symbols.symbol_count(), 3);
         assert_eq!(symbols.finish().unwrap().symbol_count, 3);
     }
 
     #[test]
-    fn active_mrl_mode_is_rejected_after_mrl_sec_index_is_consumed() {
+    fn active_mrl_metadata_is_retained_after_mrl_sec_index_is_consumed() {
         let payload = encode_symbol_sequence(&[
             (TileCdfSelector::YModeSet, 0),
             (TileCdfSelector::YModeIndex { ctx: 0 }, 5),
@@ -1108,27 +1142,60 @@ mod tests {
         let mut work_unit = make_work_unit(&payload);
         let mut symbols = symbol_decoder(&payload);
         let joint_modes = empty_joint_modes();
+        let uses_mrls = empty_uses_mrls();
 
-        let err = decode_general_intra_luma_block_mode(
+        let luma = decode_general_intra_luma_block_mode(
             &mut work_unit,
             &mut symbols,
             GeneralIntraChromaToolConfig::disabled().with_enable_mrls(true),
             &joint_modes,
+            &uses_mrls,
             BLOCK_64X64,
             0,
             0,
             SB_N4,
             SB_N4,
         )
-        .unwrap_err();
+        .unwrap();
 
-        assert!(matches!(
-            err,
-            GeneralIntraBlockModeError::UnsupportedMrlMode {
-                mrl_index: 1,
-                mrl_sec_index: Some(0),
-            }
-        ));
+        assert_eq!(luma.mrl_index, 1);
+        assert_eq!(luma.mrl_sec_index, Some(0));
+        assert_eq!(luma.uses_mrls, 1);
+        assert_eq!(symbols.symbol_count(), 4);
+    }
+
+    #[test]
+    fn mrl_symbols_use_retained_neighbour_contexts() {
+        let payload = encode_symbol_sequence(&[
+            (TileCdfSelector::YModeSet, 0),
+            (TileCdfSelector::YModeIndex { ctx: 0 }, 5),
+            (TileCdfSelector::MrlIndex { ctx: 2 }, 1),
+            (TileCdfSelector::MrlSecIndex { ctx: 1 }, 1),
+        ]);
+        let mut work_unit = make_work_unit(&payload);
+        let mut symbols = symbol_decoder(&payload);
+        let joint_modes = TileIntraJointModeState::new(2 * SB_N4, 2 * SB_N4).unwrap();
+        let mut uses_mrls = TileUsesMrlsState::new(2 * SB_N4, 2 * SB_N4).unwrap();
+        uses_mrls.record_block(0, SB_N4, SB_N4, SB_N4, 2);
+        uses_mrls.record_block(SB_N4, 0, SB_N4, SB_N4, 1);
+
+        let luma = decode_general_intra_luma_block_mode(
+            &mut work_unit,
+            &mut symbols,
+            GeneralIntraChromaToolConfig::disabled().with_enable_mrls(true),
+            &joint_modes,
+            &uses_mrls,
+            BLOCK_64X64,
+            SB_N4,
+            SB_N4,
+            SB_N4,
+            SB_N4,
+        )
+        .unwrap();
+
+        assert_eq!(luma.mrl_index, 1);
+        assert_eq!(luma.mrl_sec_index, Some(1));
+        assert_eq!(luma.uses_mrls, 2);
         assert_eq!(symbols.symbol_count(), 4);
     }
 

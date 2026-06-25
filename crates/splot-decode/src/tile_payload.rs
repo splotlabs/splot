@@ -68,7 +68,7 @@ pub(crate) use input::{
     FrameCandidateTileBoundaryInput, FrameCandidateTileFacts, FrameCandidateTileMalformed,
     TileGroupPositionFacts, plan_derived_tile_payload_boundary,
 };
-pub(crate) use intra_joint_modes::TileIntraJointModeState;
+pub(crate) use intra_joint_modes::{TileIntraJointModeState, TileUsesMrlsState};
 pub(crate) use partition_traversal::WienerNsLrSourceBlock;
 pub(crate) use partition_traversal::{
     DecodeBlockFrontier, GeneralIntraLeafMode, GeneralIntraTreeWalkError,
