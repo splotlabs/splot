@@ -617,12 +617,6 @@ pub(super) fn derive_intrabc_luma_prediction_geometry(
             "unsupported_wienerns_lr_selectable_transform_records_intrabc_target_bounds",
         ));
     }
-    if info.block_mv.row & 7 != 0 || info.block_mv.col & 7 != 0 {
-        return Err(wienerns_lr_selectable_transform_record_error_reason(
-            tile_offset,
-            "unsupported_wienerns_lr_selectable_transform_records_intrabc_fractional_prediction",
-        ));
-    }
     let source = intrabc_luma_source_envelope(target, info.block_mv, tile_offset)?;
     if !source.is_within(storage) {
         return Err(wienerns_lr_selectable_transform_record_error_reason(
@@ -735,6 +729,9 @@ fn intrabc_luma_source_envelope(
     block_mv: IntrabcBlockVector,
     tile_offset: ByteOffset,
 ) -> Result<PlaneRect> {
+    // IntrABC forces BILINEAR (§5.20.5.4). In §7.13.3.18 its non-zero taps are
+    // the integer sample and the next sample on the fractional side, so no
+    // top/left EIGHTTAP halo is part of this effective luma footprint.
     let bottom_border = usize::from(block_mv.row & 7 != 0);
     let right_border = usize::from(block_mv.col & 7 != 0);
     let delta_row = block_mv.row >> 3;
@@ -1260,7 +1257,7 @@ mod tests {
     }
 
     #[test]
-    fn intrabc_geometry_rejects_fractional_luma_prediction() {
+    fn intrabc_geometry_derives_bilinear_fractional_luma_prediction_region() {
         let (_, core) = selectable_large_frame_fixture();
         let block = IntrabcBlockContext::new(8, 8, 2, false);
         let geometry = IntrabcBlockGeometry::new(block, 4, 4);
@@ -1271,14 +1268,16 @@ mod tests {
             block_mv: IntrabcBlockVector { row: -4, col: 0 },
         };
 
-        let error =
+        let prediction =
             derive_intrabc_luma_prediction_geometry(&core, geometry, info, ByteOffset::new(20))
-                .unwrap_err();
+                .unwrap();
 
-        assert_eq!(
-            unsupported_reason(error),
-            "unsupported_wienerns_lr_selectable_transform_records_intrabc_fractional_prediction"
-        );
+        assert_eq!(prediction.target, PlaneRect::new(32, 32, 16, 16).unwrap());
+        assert_eq!(prediction.source, PlaneRect::new(32, 31, 16, 17).unwrap());
+        assert_eq!(prediction.scaling.start_x >> 10, 32);
+        assert_eq!(prediction.scaling.start_y >> 10, 31);
+        assert_eq!((prediction.scaling.start_x >> 6) & 15, 0);
+        assert_ne!((prediction.scaling.start_y >> 6) & 15, 0);
     }
 
     #[test]
