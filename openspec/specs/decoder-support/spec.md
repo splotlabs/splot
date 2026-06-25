@@ -4566,12 +4566,14 @@ prediction-geometry handoff under
 that the local ac0ej3 Wiener NS LR selectable-transform path consumes the
 observed AV2 §5.20.5.3 `use_intrabc = 1` and bounded §5.20.5.4
 `read_intrabc_info()` syntax into retained transform-record metadata, derives
-checked luma current-frame prediction geometry, including the BILINEAR source
-sample envelope and subpel phase, against the padded MI-domain current-frame
-bounds from the retained §5.20.7.13 and §5.20.7.20 block vector, and SHALL
-continue to mark decoded sample population, loop-restoration filtering/output,
-reference refresh, AVM/dav2d byte equality, and successful ac0ej3 decode as
-unsupported or unclaimed.
+checked tile-local luma current-frame prediction geometry, including the
+BILINEAR source sample envelope and subpel phase, against the padded MI-domain
+current-frame bounds from the retained §5.20.7.13 and §5.20.7.20 block vector,
+and gates fallback block-vector use to cases where the tile-local prelude state
+proves the §7.12.2 stack has no prior IntrABC spatial/ref-MV-bank candidates.
+It SHALL continue to mark decoded sample population, loop-restoration
+filtering/output, reference refresh, AVM/dav2d byte equality, and successful
+ac0ej3 decode as unsupported or unclaimed.
 When the local probe advances through the observed NEARMV/NEWMV block-vector
 subcase, the row SHALL document the IntrABC prediction-geometry frontier while
 keeping fabricated current-frame samples and output unsupported.
@@ -4583,8 +4585,8 @@ keeping fabricated current-frame samples and output unsupported.
 - **THEN** `ac0ej3-selectable-transform-records` remains a partial row with
   Feature ID `DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS`
 - **AND** the row cites AV2 §5.20.5.3, §5.20.5.4, §5.20.6.1, §5.20.6.3,
-  §5.20.7.13, §5.20.7.20, §5.20.7.27, §7.13.3.18, and §8.3.2 as applicable
-  evidence sections
+  §5.20.7.13, §5.20.7.20, §5.20.7.27, §6.19.7.12, §7.12.2,
+  §7.13.3.18, and §8.3.2 as applicable evidence sections
 - **AND** it lists focused tests for active `use_intrabc` syntax, retained
   IntrABC defaults, block-vector prediction geometry, non-IntrABC regression
   behavior, and the local ac0ej3 runtime probe

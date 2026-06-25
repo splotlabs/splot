@@ -23,7 +23,8 @@ frontier.
   current-frame workspace copy primitive for one plane and one rectangle.
 - Derive luma IntrABC target/source sample envelopes and subpel prediction
   phase from the retained ac0ej3 block geometry and §5.20.7.13 block vector,
-  using the BILINEAR footprint and padded MI-domain current-frame bounds.
+  using the BILINEAR footprint, current tile bounds, padded MI-domain
+  current-frame bounds, and conservative §6.19.7.12 source-overlap rejection.
 - Advance the live ac0ej3 probe past the generic IntrABC prediction stop to a
   more precise missing-populated-`CurrFrame` diagnostic.
 - Preserve all existing IntrABC syntax ordering, CDF updates, transform-record
@@ -35,7 +36,8 @@ frontier.
 - Decode chroma IntrABC prediction, residual addition, loop restoration,
   output/reference refresh, or the full ac0ej3 stream.
 - Implement broad IntrABC availability / `BlockDecoded` validation beyond the
-  geometry checks needed for the observed luma/shared local frontier.
+  tile-bound and overlap checks needed for the observed luma/shared local
+  frontier.
 - Add dependencies or change crate dependency direction.
 
 ## Decisions
@@ -71,9 +73,13 @@ frontier.
    IntrABC block vectors are retained in eighth-pel units. The observed local
    path derives the target rectangle, the BILINEAR source sample envelope
    needed by integer or fractional luma prediction, and the §7.13.3.17 scaling
-   phase when the source envelope stays inside padded MI-domain current-frame
-   storage. Chroma subsampling, morph prediction, decoded sample population,
-   and broad reference-area clipping stay fail-closed until separately proved.
+   phase when the source envelope stays inside the current tile and padded
+   MI-domain current-frame storage without overlapping the current target
+   block. Fallback block-vector candidates are used only when tile-local
+   prelude state proves the §7.12.2 IntrABC MV stack has no prior IntrABC
+   spatial/ref-MV-bank candidates. Chroma subsampling, morph prediction,
+   decoded sample population, and broad reference-area clipping stay
+   fail-closed until separately proved.
 
 ## Risks / Trade-offs
 

@@ -13,8 +13,9 @@ metadata-only parse step.
   in-workspace block copies over already reconstructed samples.
 - Wire the ac0ej3 Wiener NS LR selectable-transform path to derive admitted
   IntrABC prediction rectangles from §5.20.7.13/§5.20.7.20 block vectors and
-  hand them off to the current-frame copy boundary without fabricating decoded
-  samples when the live path still lacks a populated `CurrFrame`.
+  hand them off to the current-frame copy boundary only for the known-empty
+  IntrABC MV-stack subset, without fabricating decoded samples when the live
+  path still lacks a populated `CurrFrame`.
 - Update structured unsupported diagnostics so the local ac0ej3 probe advances
   past the IntrABC prediction stop to the next unimplemented decoded-sample,
   residual, or loop-restoration frontier.

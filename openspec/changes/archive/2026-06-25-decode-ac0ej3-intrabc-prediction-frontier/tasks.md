@@ -6,10 +6,10 @@
 
 ## 2. ac0ej3 IntrABC Prediction Geometry Handoff
 
-- [x] 2.1 Add an ac0ej3 IntrABC luma prediction-geometry helper that converts retained eighth-pel block vectors into checked target rectangles, BILINEAR source sample envelopes, and subpel scaling phase for the current block using padded MI-domain bounds, rejecting overflowing or out-of-frame geometry with structured diagnostics.
-- [x] 2.2 Wire the selectable-transform IntrABC path to derive prediction geometry after NEARMV/NEWMV block-vector syntax and advance the live local probe to a precise missing-populated-`CurrFrame` frontier instead of the generic IntrABC prediction stop.
+- [x] 2.1 Add an ac0ej3 IntrABC luma prediction-geometry helper that converts retained eighth-pel block vectors into checked target rectangles, BILINEAR source sample envelopes, and subpel scaling phase for the current block using current tile and padded MI-domain bounds, rejecting overflowing, out-of-frame, out-of-tile, or self-overlapping geometry with structured diagnostics.
+- [x] 2.2 Wire the selectable-transform IntrABC path to derive prediction geometry after NEARMV/NEWMV block-vector syntax only when the tile-local prelude state proves the §7.12.2 IntrABC MV stack has no prior IntrABC spatial/ref-MV-bank candidates, and advance the live local probe to a precise missing-populated-`CurrFrame` frontier instead of the generic IntrABC prediction stop.
 - [x] 2.3 Preserve existing syntax ordering, CDF updates, transform-record contexts, non-IntrABC behavior, skip/max-rect behavior, and no-output guarantees.
-- [x] 2.4 Add focused `splot-decode` tests for NEWMV geometry, NEARMV geometry, BILINEAR fractional luma source-envelope/phase derivation, MI-domain edge geometry, out-of-frame rejection, non-IntrABC regression behavior, and the live-path missing-`CurrFrame` diagnostic.
+- [x] 2.4 Add focused `splot-decode` tests for NEWMV geometry, NEARMV geometry, BILINEAR fractional luma source-envelope/phase derivation, MI-domain edge geometry, out-of-frame/out-of-tile/self-overlap rejection, known-empty MV-stack gating, non-IntrABC regression behavior, and the live-path missing-`CurrFrame` diagnostic.
 
 ## 3. Tracking and Proof
 

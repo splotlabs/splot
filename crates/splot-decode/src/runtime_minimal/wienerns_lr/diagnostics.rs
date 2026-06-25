@@ -178,6 +178,12 @@ pub(in crate::runtime_minimal) fn wienerns_lr_selectable_transform_record_error_
             AC0EJ3_SELECTABLE_TRANSFORM_RECORDS_FEATURE_ID,
             "5.20.7.13",
         ),
+        "unsupported_wienerns_lr_selectable_transform_records_intrabc_ref_stack" => (
+            "minimal runtime consumed active AV2 frame-level Wiener NS LR unit syntax, reached the TX_MODE_SELECT LrTxSkip transform-record handoff, consumed the bounded IntrABC mode-info prelude, and stopped before using a §7.12.2 IntrABC MV stack that may contain spatial or ref-MV-bank candidates; decoded samples, loop-restoration filtering/output, and reference refresh are not applied",
+            AC0EJ3_SELECTABLE_TRANSFORM_RECORDS_MATRIX_ROW,
+            AC0EJ3_SELECTABLE_TRANSFORM_RECORDS_FEATURE_ID,
+            "7.12.2",
+        ),
         "unsupported_wienerns_lr_selectable_transform_records_intrabc_currframe_samples" => (
             "minimal runtime consumed active AV2 frame-level Wiener NS LR unit syntax, reached the TX_MODE_SELECT LrTxSkip transform-record handoff, consumed the bounded IntrABC mode-info prelude, read §5.20.7.13/§5.20.7.20 block-vector syntax, derived checked §7.13.3.18 current-frame IntrABC luma prediction geometry, and stopped because decoded CurrFrame samples are not populated for prediction; decoded samples, loop-restoration filtering/output, and reference refresh are not applied",
             AC0EJ3_SELECTABLE_TRANSFORM_RECORDS_MATRIX_ROW,
@@ -186,12 +192,13 @@ pub(in crate::runtime_minimal) fn wienerns_lr_selectable_transform_record_error_
         ),
         "unsupported_wienerns_lr_selectable_transform_records_intrabc_source_bounds"
         | "unsupported_wienerns_lr_selectable_transform_records_intrabc_target_bounds"
+        | "unsupported_wienerns_lr_selectable_transform_records_intrabc_mv_validity"
         | "unsupported_wienerns_lr_selectable_transform_records_intrabc_frame_size"
         | "unsupported_wienerns_lr_selectable_transform_records_intrabc_geometry" => (
             "minimal runtime consumed active IntrABC block-vector syntax but the resulting luma current-frame prediction geometry is outside the bounded ac0ej3 prediction subset; decoded samples, loop-restoration filtering/output, and reference refresh are not applied",
             AC0EJ3_SELECTABLE_TRANSFORM_RECORDS_MATRIX_ROW,
             AC0EJ3_SELECTABLE_TRANSFORM_RECORDS_FEATURE_ID,
-            "7.13.3.18",
+            "6.19.7.12",
         ),
         _ => (
             "minimal runtime consumed active AV2 frame-level Wiener NS LR unit syntax, derived live storage footprints, and reached the TX_MODE_SELECT LrTxSkip transform-record handoff, but a bounded selectable transform-record subcase is still outside the non-FSC intra subset currently wired into live LR storage; decoded samples, FilterClass retention, loop-restoration filtering/output, and reference refresh are not applied",

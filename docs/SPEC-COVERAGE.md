@@ -820,6 +820,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 6.19.3](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-3) | Partition structures | `DECODE-TILE-PARTITION-TRAVERSAL-BOUNDARY` | ✅ | ✅ | — | ✅ | — |
 | [§ 6.19.6.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-6-1) | TX size semantics | `DECODE-TX-SIZE-SYMBOLIC-TABLES` | ✅ | — | — | ✅ | 1 |
 | [§ 6.19.7.4](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-7-4) | Intra block mode info semantics | `DECODE-AC0EJ3-CFL-CHROMA-MODE-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 6.19.7.12](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-7-12) | Assign MV semantics | `DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 6.19.7.25](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-7-25) | Read CFL alphas semantics | `DECODE-AC0EJ3-CFL-CHROMA-MODE-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
 
 ## Chapter 7 — Decoding process

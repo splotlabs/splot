@@ -9,16 +9,17 @@ Wiener NS LR selectable-transform path. When AV2 §5.20.5.3 signals
 the observed §5.20.5.4 `read_intrabc_info()` symbols in spec order, SHALL retain
 only the IntrABC facts needed by transform-size and residual syntax contexts,
 SHALL derive bounded luma current-frame prediction source/target geometry from
-the retained §5.20.7.13/§5.20.7.20 block vector using the BILINEAR footprint and
-padded MI-domain bounds, and SHALL remain fail-closed before fabricated decoded
+the retained §5.20.7.13/§5.20.7.20 block vector using the BILINEAR footprint,
+current tile bounds, padded MI-domain bounds, and conservative §6.19.7.12
+source-overlap rejection, and SHALL remain fail-closed before fabricated decoded
 samples, chroma IntrABC prediction, residual reconstruction, loop-restoration
 filtering/output, reference refresh, and successful ac0ej3 decode.
 For observed NEARMV/NEWMV blocks, the runtime SHALL retain bounded IntrABC
 block-vector facts parsed in spec order, SHALL hand off only checked luma
 current-frame prediction geometry whose source sample envelope stays inside the
-padded MI-domain current-frame storage, and SHALL report a structured
-missing-populated-`CurrFrame` frontier while the live ac0ej3 path lacks decoded
-current-frame samples.
+current tile and padded MI-domain current-frame storage without overlapping the
+current target block, and SHALL report a structured missing-populated-`CurrFrame`
+frontier while the live ac0ej3 path lacks decoded current-frame samples.
 
 #### Scenario: Active IntrABC mode-info is consumed before transform records
 
@@ -39,9 +40,11 @@ current-frame samples.
   bounded IntrABC reference block-vector candidates, consume §5.20.7.20
   `read_mv()` using `MV_INTRABC_CONTEXT` and the decoded `MvPrecision`, apply
   §5.20.7.13 `mv_clamp_to_integer`, and retain the resulting block vector.
-- **AND** it SHALL derive checked luma current-frame prediction target/source
-  geometry and subpel phase before reporting the next structured unsupported
-  frontier.
+- **AND** it SHALL derive checked tile-local luma current-frame prediction
+  target/source geometry and subpel phase before reporting the next structured
+  unsupported frontier.
+- **AND** it SHALL reject source envelopes that cross the current tile bounds
+  or overlap the current target block before decoded samples are available.
 
 #### Scenario: active IntrABC NEARMV block-vector syntax is handed off
 
@@ -49,7 +52,9 @@ current-frame samples.
   luma/shared block with `use_intrabc = 1`
 - **AND** §5.20.5.4 decodes `intrabc_mode = 1`
 - **THEN** the runtime SHALL select the retained DRL candidate from the bounded
-  IntrABC reference block-vector stack without reading `read_mv()`.
+  IntrABC fallback block-vector stack without reading `read_mv()` only when the
+  tile-local prelude state proves the §7.12.2 stack has no prior IntrABC
+  spatial/ref-MV-bank candidates.
 - **AND** it SHALL derive checked luma current-frame prediction geometry when
   the retained candidate is in the supported subset
 - **AND** it SHALL keep decoded sample population and output unclaimed while the
