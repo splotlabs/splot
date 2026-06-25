@@ -8,13 +8,14 @@ const TX_8X64: usize = 21;
 
 #[test]
 fn selectable_luma_leaf_actual_extent_is_only_observed_luma_narrow() {
-    for (n4w, n4h) in [(1, 8), (2, 8), (1, 16), (2, 16)] {
+    for (n4w, n4h) in [(1, 8), (2, 8), (2, 16)] {
         assert!(selectable_luma_leaf_uses_actual_extent(
             true, false, n4w, n4h
         ));
     }
 
     for (is_luma, has_chroma, n4w, n4h) in [
+        (true, false, 1, 16),
         (true, false, 8, 1),
         (true, false, 8, 2),
         (true, false, 1, 1),

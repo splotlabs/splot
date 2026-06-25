@@ -2157,7 +2157,7 @@ fn selectable_luma_leaf_uses_actual_extent(
     n4w: usize,
     n4h: usize,
 ) -> bool {
-    is_luma_part && !has_chroma && matches!((n4w, n4h), (1 | 2, 8 | 16))
+    is_luma_part && !has_chroma && matches!((n4w, n4h), (1, 8) | (2, 8) | (2, 16))
 }
 
 fn selectable_chroma_offset_leaf_supported(is_luma_part: bool, has_chroma: bool) -> bool {
