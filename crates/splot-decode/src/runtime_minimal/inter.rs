@@ -1161,7 +1161,7 @@ mod cross_frame;
 mod find_mv_stack;
 mod mc;
 mod mv_scaling;
-mod read_mv;
+pub(super) mod read_mv;
 // AV2 § 5.20.7.12 `read_single_ref` entropy element, WIRED by
 // `DECODE-INTER-MULTIREF-RUNTIME`: the block decode reads `single_ref` when § 7.7
 // yields `NumTotalRefs == 2` (the § 8.3.2 ctx comes from

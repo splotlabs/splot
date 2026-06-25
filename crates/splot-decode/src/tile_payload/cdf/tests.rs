@@ -641,6 +641,8 @@ fn saved_copy_and_average_are_exact_for_supported_subset() {
     tile.rows_mut().block.coeff.coeff_base[1][2][3][1] = [20_000, 21_000, 22_000, 9, 8];
     tile.rows_mut().block.coeff.coeff_base_idtx[1][2][3] = [20_000, 21_000, 22_000, 9, 8];
     tile.rows_mut().block.coeff.idtx_sign[1][2][3] = [20_000, 9, 8];
+    tile.rows_mut().intrabc_mode = [25_500, 13, 20];
+    tile.rows_mut().intrabc_precision = [26_000, 14, 24];
     tile.rows_mut().mrl_index[1] = [20_000, 21_000, 22_000, 23_000, 20];
     tile.rows_mut().mrl_sec_index[2] = [20_000, 21_000, 20];
     tile.rows_mut().block.cctx_type = [20_000, 21_000, 22_000, 23_000, 24_000, 25_000, 26_000, 20];
@@ -714,6 +716,8 @@ fn saved_copy_and_average_are_exact_for_supported_subset() {
         [29_576, 29_826, 30_076, 9, 2]
     );
     assert_eq!(saved.rows().block.coeff.idtx_sign[1][2][3], [29_576, 9, 2]);
+    assert_eq!(saved.rows().intrabc_mode(), &[30_951, 13, 5]);
+    assert_eq!(saved.rows().intrabc_precision(), &[31_076, 14, 6]);
     assert_eq!(
         saved.rows().mrl_index()[1],
         [29_576, 29_826, 30_076, 23_000, 5]

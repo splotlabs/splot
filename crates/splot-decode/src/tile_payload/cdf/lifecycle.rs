@@ -105,6 +105,8 @@ impl TileCdfRows {
         for ctx in 0..INTRABC_CONTEXTS {
             scale_cdf_count(&mut self.intrabc[ctx]);
         }
+        scale_cdf_count(&mut self.intrabc_mode);
+        scale_cdf_count(&mut self.intrabc_precision);
         for ctx in 0..FSC_MODE_CONTEXTS {
             for bsize_group in 0..FSC_BSIZE_CONTEXTS {
                 scale_cdf_count(&mut self.fsc_mode[ctx][bsize_group]);

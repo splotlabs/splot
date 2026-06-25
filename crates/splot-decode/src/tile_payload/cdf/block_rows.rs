@@ -7,25 +7,25 @@
 
 use splot_core::tables::cdf::{
     DEFAULT_CCTX_TYPE_CDF, DEFAULT_CFL_ALPHA_CDF, DEFAULT_CFL_INDEX_CDF, DEFAULT_CFL_MH_DIR_CDF,
-    DEFAULT_CFL_MHCCP_CDF, DEFAULT_CFL_SIGN_CDF, DEFAULT_COL_MV_GREATER_CDF,
-    DEFAULT_COL_MV_INDEX_CDF, DEFAULT_COMP_GROUP_IDX_CDF, DEFAULT_COMP_MODE_CDF,
+    DEFAULT_CFL_MHCCP_CDF, DEFAULT_CFL_SIGN_CDF, DEFAULT_COMP_GROUP_IDX_CDF, DEFAULT_COMP_MODE_CDF,
     DEFAULT_COMP_REF0_CDF, DEFAULT_COMP_REF1_CDF, DEFAULT_COMPOUND_MODE_NON_JOINT_CDF,
     DEFAULT_CWP_IDX_CDF, DEFAULT_DC_SIGN_CDF, DEFAULT_DRL_MODE_CDF, DEFAULT_EOB_EXTRA_CDF,
     DEFAULT_EOB_PT_16_CDF, DEFAULT_EOB_PT_32_CDF, DEFAULT_EOB_PT_64_CDF, DEFAULT_EOB_PT_128_CDF,
     DEFAULT_EOB_PT_256_CDF, DEFAULT_EOB_PT_512_CDF, DEFAULT_EOB_PT_1024_CDF,
     DEFAULT_INTERP_FILTER_CDF, DEFAULT_INTRA_TX_TYPE_LONG_CDF, DEFAULT_INTRA_TX_TYPE_SET1_CDF,
     DEFAULT_INTRA_TX_TYPE_SET2_CDF, DEFAULT_IS_CFL_CDF, DEFAULT_IS_INTER_CDF, DEFAULT_IS_JOINT_CDF,
-    DEFAULT_IS_LONG_SIDE_DCT_CDF, DEFAULT_JOINT_SHELL_LAST_TWO_CLASSES_CDF,
-    DEFAULT_JOINT_SHELL_SET_CDF, DEFAULT_JOINT_SHELL6_CLASS0_CDF, DEFAULT_JOINT_SHELL6_CLASS1_CDF,
-    DEFAULT_MOST_PROBABLE_STX_SET_ADST_CDF, DEFAULT_MOST_PROBABLE_STX_SET_CDF,
-    DEFAULT_SEC_TX_TYPE_CDF, DEFAULT_SHELL_OFFSET_CLASS2_CDF, DEFAULT_SHELL_OFFSET_LOW_CLASS_CDF,
-    DEFAULT_SHELL_OFFSET_OTHER_CLASS_CDF, DEFAULT_SINGLE_MODE_CDF, DEFAULT_SINGLE_REF_CDF,
-    DEFAULT_SKIP_CDF, DEFAULT_TXB_SKIP_CDF, DEFAULT_USE_WIENER_NS_CDF,
+    DEFAULT_IS_LONG_SIDE_DCT_CDF, DEFAULT_MOST_PROBABLE_STX_SET_ADST_CDF,
+    DEFAULT_MOST_PROBABLE_STX_SET_CDF, DEFAULT_SEC_TX_TYPE_CDF, DEFAULT_SINGLE_MODE_CDF,
+    DEFAULT_SINGLE_REF_CDF, DEFAULT_SKIP_CDF, DEFAULT_TXB_SKIP_CDF, DEFAULT_USE_WIENER_NS_CDF,
     DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF, DEFAULT_V_TXB_SKIP_CDF, DEFAULT_WIENER_NS_BASE_CDF,
     DEFAULT_WIENER_NS_LENGTH_CDF, DEFAULT_WIENER_NS_UV_SYM_CDF, DEFAULT_Y_MODE_INDEX_CDF,
     DEFAULT_Y_MODE_OFFSET_CDF, DEFAULT_Y_MODE_SET_CDF,
 };
 
+mod mv;
+
+use self::mv::MvCdfRows;
+pub(crate) use self::mv::MvCdfSelector;
 use super::coeff_rows::{CoeffCdfRows, CoeffCdfSelector};
 use super::{CDF_ROW_LEN, TileCdfArray, TileCdfError, avg_cdf_row, scale_cdf_count};
 
@@ -78,19 +78,6 @@ const COMPOUND_MODE_NON_JOINT_CDF_ROW_LEN: usize = 6;
 const COMP_GROUP_IDX_CONTEXTS: usize = 12;
 const CWP_IDX_CONTEXTS: usize = 4;
 const COMP_REF1_BIT_TYPES: usize = 2;
-// §9.3 / §8.3.2 SHELL-coded `read_mv` (§5.20.7.20) CDF banks for the verified
-// EighthPel (`MvPrecision == MV_PRECISION_EIGHTH_PEL`, P == 6) subset. Only the
-// P == 6 `shell_class` bank pair is wired; other precisions are rejected by the
-// inter decode before any shell read. The MvCtx axis is single-context (MvCtx ==
-// 0), matching the generated single-row §9.3 defaults.
-//
-// `shell_offset_low_class` is indexed by `shellClass` (0 or 1); `col_mv_greater`
-// by the §5.20.7.20 loop counter `i` (0..MAX_COL_TRUNCATED_UNARY_VAL); `col_mv_index`
-// by `Min(shellClass, NUM_CTX_COL_MV_INDEX - 1)`; `shell_offset_other_class` by `i`.
-const SHELL_OFFSET_LOW_CLASS_BANKS: usize = 2;
-const COL_MV_GREATER_BANKS: usize = 2;
-const COL_MV_INDEX_BANKS: usize = 4;
-const SHELL_OFFSET_OTHER_CLASS_BANKS: usize = 16;
 // §8.3.2 `interp_filter`: `TileInterpFilterCdf[ctx]`, `[[i32; 4]; 16]` (3 filter
 // symbols + count). The verified single-ref no-neighbour block uses ctx == 3.
 const INTERP_FILTER_CONTEXTS: usize = 16;
@@ -170,18 +157,6 @@ pub(crate) type SecTxTypeCdfRows =
 pub(crate) type MostProbableStxSetCdfRow = [i32; MOST_PROBABLE_STX_SET_ROW_LEN];
 pub(crate) type MostProbableStxSetAdstCdfRow = [i32; MOST_PROBABLE_STX_SET_ADST_ROW_LEN];
 pub(crate) type CctxTypeCdfRow = [i32; CCTX_TYPE_CDF_ROW_LEN];
-// §9.3 SHELL-coded `read_mv` banks. `shell_set` / `joint_shell_last_two_classes` /
-// `shell_offset_class2` are binary (width 3 == `CDF_ROW_LEN`). The P == 6 EighthPel
-// `shell_class` banks are width 9 (8 shell-class symbols + count). The offset / col
-// banks keep their generated `[i32; 3]` binary widths.
-pub(crate) type JointShellSetCdfRow = [i32; CDF_ROW_LEN];
-pub(crate) type JointShell6ClassCdfRow = [i32; 9];
-pub(crate) type JointShellLastTwoCdfRow = [i32; CDF_ROW_LEN];
-pub(crate) type ShellOffsetLowClassCdfRows = [[i32; CDF_ROW_LEN]; SHELL_OFFSET_LOW_CLASS_BANKS];
-pub(crate) type ShellOffsetClass2CdfRow = [i32; CDF_ROW_LEN];
-pub(crate) type ShellOffsetOtherClassCdfRows = [[i32; CDF_ROW_LEN]; SHELL_OFFSET_OTHER_CLASS_BANKS];
-pub(crate) type ColMvGreaterCdfRows = [[i32; CDF_ROW_LEN]; COL_MV_GREATER_BANKS];
-pub(crate) type ColMvIndexCdfRows = [[i32; CDF_ROW_LEN]; COL_MV_INDEX_BANKS];
 // §9.3 `interp_filter`: `[[i32; 4]; 16]` (3 symbols + count).
 pub(crate) type InterpFilterCdfRows = [[i32; 4]; INTERP_FILTER_CONTEXTS];
 
@@ -381,46 +356,8 @@ pub(crate) enum BlockCdfSelector {
         /// The §5.20.7.11 loop counter `ref` (`0..REFS_PER_FRAME_MINUS_1`).
         ref_idx: usize,
     },
-    /// `TileJointShellSetCdf[MvCtx]` (AV2 § 8.3.2): the §5.20.7.20 `shell_set`
-    /// binary symbol (MvCtx == 0 — single-context).
-    JointShellSet,
-    /// `TileJointShell6ClassCdf[MvCtx][shell_set]` (AV2 § 8.3.2): the §5.20.7.20
-    /// `shell_class` symbol for the verified EighthPel (P == 6) precision.
-    /// `shell_set` selects between the `Class0` / `Class1` banks.
-    JointShell6Class {
-        /// `Q == shell_set` (`0..2`).
-        shell_set: usize,
-    },
-    /// `TileJointShellLastTwoClassesCdf[MvCtx]` (AV2 § 8.3.2): the EighthPel
-    /// `joint_shell_last_two_classes` binary symbol.
-    JointShellLastTwo,
-    /// `TileShellOffsetLowClassCdf[MvCtx][shellClass]` (AV2 § 8.3.2): the
-    /// `shell_offset_low_class` symbol for `shellClass < 2`.
-    ShellOffsetLowClass {
-        /// `shellClass` (`0..SHELL_OFFSET_LOW_CLASS_BANKS`).
-        shell_class: usize,
-    },
-    /// `TileShellOffsetClass2Cdf[MvCtx]` (AV2 § 8.3.2): the `shell_offset_class2`
-    /// binary symbol for `shellClass == 2`.
-    ShellOffsetClass2,
-    /// `TileShellOffsetOtherClassCdf[MvCtx][i]` (AV2 § 8.3.2): the
-    /// `shell_offset_other_class` symbol for `shellClass > 2`, bank `i`.
-    ShellOffsetOtherClass {
-        /// The §5.20.7.20 loop counter `i` (`0..SHELL_OFFSET_OTHER_CLASS_BANKS`).
-        i: usize,
-    },
-    /// `TileColMvGreaterCdf[MvCtx][i]` (AV2 § 8.3.2): the `col_mv_greater` symbol,
-    /// bank `i` (the truncated-unary loop counter).
-    ColMvGreater {
-        /// The §5.20.7.20 loop counter `i` (`0..COL_MV_GREATER_BANKS`).
-        i: usize,
-    },
-    /// `TileColMvIndexCdf[MvCtx][Min(shellClass, NUM_CTX_COL_MV_INDEX - 1)]`
-    /// (AV2 § 8.3.2): the `col_mv_index` symbol.
-    ColMvIndex {
-        /// `Min(shellClass, NUM_CTX_COL_MV_INDEX - 1)` (`0..COL_MV_INDEX_BANKS`).
-        ctx: usize,
-    },
+    /// AV2 § 5.20.7.20 SHELL-coded motion-vector CDF rows.
+    ReadMv(MvCdfSelector),
     /// `TileInterpFilterCdf[ctx]` (AV2 § 8.3.2): the §5.20.7.6 `interp_filter`
     /// SWITCHABLE symbol.
     InterpFilter {
@@ -515,15 +452,7 @@ pub(crate) struct BlockCdfRows {
     pub(super) cwp_idx: CwpIdxCdfRows,
     pub(super) comp_ref0: CompRef0CdfRows,
     pub(super) comp_ref1: CompRef1CdfRows,
-    pub(super) joint_shell_set: JointShellSetCdfRow,
-    pub(super) joint_shell6_class0: JointShell6ClassCdfRow,
-    pub(super) joint_shell6_class1: JointShell6ClassCdfRow,
-    pub(super) joint_shell_last_two: JointShellLastTwoCdfRow,
-    pub(super) shell_offset_low_class: ShellOffsetLowClassCdfRows,
-    pub(super) shell_offset_class2: ShellOffsetClass2CdfRow,
-    pub(super) shell_offset_other_class: ShellOffsetOtherClassCdfRows,
-    pub(super) col_mv_greater: ColMvGreaterCdfRows,
-    pub(super) col_mv_index: ColMvIndexCdfRows,
+    read_mv: MvCdfRows,
     pub(super) interp_filter: InterpFilterCdfRows,
     pub(super) use_wiener_ns: UseWienerNsCdfRow,
     pub(super) wiener_ns_length: WienerNsLengthCdfRows,
@@ -576,15 +505,7 @@ impl BlockCdfRows {
             cwp_idx: DEFAULT_CWP_IDX_CDF,
             comp_ref0: DEFAULT_COMP_REF0_CDF,
             comp_ref1: DEFAULT_COMP_REF1_CDF,
-            joint_shell_set: DEFAULT_JOINT_SHELL_SET_CDF,
-            joint_shell6_class0: DEFAULT_JOINT_SHELL6_CLASS0_CDF,
-            joint_shell6_class1: DEFAULT_JOINT_SHELL6_CLASS1_CDF,
-            joint_shell_last_two: DEFAULT_JOINT_SHELL_LAST_TWO_CLASSES_CDF,
-            shell_offset_low_class: DEFAULT_SHELL_OFFSET_LOW_CLASS_CDF,
-            shell_offset_class2: DEFAULT_SHELL_OFFSET_CLASS2_CDF,
-            shell_offset_other_class: DEFAULT_SHELL_OFFSET_OTHER_CLASS_CDF,
-            col_mv_greater: DEFAULT_COL_MV_GREATER_CDF,
-            col_mv_index: DEFAULT_COL_MV_INDEX_CDF,
+            read_mv: MvCdfRows::from_defaults(),
             interp_filter: DEFAULT_INTERP_FILTER_CDF,
             use_wiener_ns: DEFAULT_USE_WIENER_NS_CDF,
             wiener_ns_length: DEFAULT_WIENER_NS_LENGTH_CDF,
@@ -932,65 +853,7 @@ impl BlockCdfRows {
                     })?;
                 Ok(row.as_slice())
             }
-            BlockCdfSelector::JointShellSet => Ok(self.joint_shell_set.as_slice()),
-            BlockCdfSelector::JointShell6Class { shell_set } => match shell_set {
-                0 => Ok(self.joint_shell6_class0.as_slice()),
-                1 => Ok(self.joint_shell6_class1.as_slice()),
-                _ => Err(TileCdfError::SelectorOutOfRange {
-                    array: TileCdfArray::JointShell6Class,
-                    index_name: "shell_set",
-                    actual: shell_set,
-                    max_exclusive: 2,
-                }),
-            },
-            BlockCdfSelector::JointShellLastTwo => Ok(self.joint_shell_last_two.as_slice()),
-            BlockCdfSelector::ShellOffsetLowClass { shell_class } => {
-                let row = self.shell_offset_low_class.get(shell_class).ok_or(
-                    TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::ShellOffsetLowClass,
-                        index_name: "shell_class",
-                        actual: shell_class,
-                        max_exclusive: SHELL_OFFSET_LOW_CLASS_BANKS,
-                    },
-                )?;
-                Ok(row.as_slice())
-            }
-            BlockCdfSelector::ShellOffsetClass2 => Ok(self.shell_offset_class2.as_slice()),
-            BlockCdfSelector::ShellOffsetOtherClass { i } => {
-                let row = self.shell_offset_other_class.get(i).ok_or(
-                    TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::ShellOffsetOtherClass,
-                        index_name: "i",
-                        actual: i,
-                        max_exclusive: SHELL_OFFSET_OTHER_CLASS_BANKS,
-                    },
-                )?;
-                Ok(row.as_slice())
-            }
-            BlockCdfSelector::ColMvGreater { i } => {
-                let row = self
-                    .col_mv_greater
-                    .get(i)
-                    .ok_or(TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::ColMvGreater,
-                        index_name: "i",
-                        actual: i,
-                        max_exclusive: COL_MV_GREATER_BANKS,
-                    })?;
-                Ok(row.as_slice())
-            }
-            BlockCdfSelector::ColMvIndex { ctx } => {
-                let row = self
-                    .col_mv_index
-                    .get(ctx)
-                    .ok_or(TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::ColMvIndex,
-                        index_name: "ctx",
-                        actual: ctx,
-                        max_exclusive: COL_MV_INDEX_BANKS,
-                    })?;
-                Ok(row.as_slice())
-            }
+            BlockCdfSelector::ReadMv(selector) => self.read_mv.row(selector),
             BlockCdfSelector::InterpFilter { ctx } => {
                 let row = self
                     .interp_filter
@@ -1451,69 +1314,7 @@ impl BlockCdfRows {
                     })?;
                 Ok(row.as_mut_slice())
             }
-            BlockCdfSelector::JointShellSet => Ok(self.joint_shell_set.as_mut_slice()),
-            BlockCdfSelector::JointShell6Class { shell_set } => match shell_set {
-                0 => Ok(self.joint_shell6_class0.as_mut_slice()),
-                1 => Ok(self.joint_shell6_class1.as_mut_slice()),
-                _ => Err(TileCdfError::SelectorOutOfRange {
-                    array: TileCdfArray::JointShell6Class,
-                    index_name: "shell_set",
-                    actual: shell_set,
-                    max_exclusive: 2,
-                }),
-            },
-            BlockCdfSelector::JointShellLastTwo => Ok(self.joint_shell_last_two.as_mut_slice()),
-            BlockCdfSelector::ShellOffsetLowClass { shell_class } => {
-                let max_exclusive = self.shell_offset_low_class.len();
-                let row = self.shell_offset_low_class.get_mut(shell_class).ok_or(
-                    TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::ShellOffsetLowClass,
-                        index_name: "shell_class",
-                        actual: shell_class,
-                        max_exclusive,
-                    },
-                )?;
-                Ok(row.as_mut_slice())
-            }
-            BlockCdfSelector::ShellOffsetClass2 => Ok(self.shell_offset_class2.as_mut_slice()),
-            BlockCdfSelector::ShellOffsetOtherClass { i } => {
-                let max_exclusive = self.shell_offset_other_class.len();
-                let row = self.shell_offset_other_class.get_mut(i).ok_or(
-                    TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::ShellOffsetOtherClass,
-                        index_name: "i",
-                        actual: i,
-                        max_exclusive,
-                    },
-                )?;
-                Ok(row.as_mut_slice())
-            }
-            BlockCdfSelector::ColMvGreater { i } => {
-                let max_exclusive = self.col_mv_greater.len();
-                let row =
-                    self.col_mv_greater
-                        .get_mut(i)
-                        .ok_or(TileCdfError::SelectorOutOfRange {
-                            array: TileCdfArray::ColMvGreater,
-                            index_name: "i",
-                            actual: i,
-                            max_exclusive,
-                        })?;
-                Ok(row.as_mut_slice())
-            }
-            BlockCdfSelector::ColMvIndex { ctx } => {
-                let max_exclusive = self.col_mv_index.len();
-                let row =
-                    self.col_mv_index
-                        .get_mut(ctx)
-                        .ok_or(TileCdfError::SelectorOutOfRange {
-                            array: TileCdfArray::ColMvIndex,
-                            index_name: "ctx",
-                            actual: ctx,
-                            max_exclusive,
-                        })?;
-                Ok(row.as_mut_slice())
-            }
+            BlockCdfSelector::ReadMv(selector) => self.read_mv.row_mut(selector),
             BlockCdfSelector::InterpFilter { ctx } => {
                 let max_exclusive = self.interp_filter.len();
                 let row =
@@ -1801,68 +1602,8 @@ impl BlockCdfRows {
                 }
             }
         }
-        avg_cdf_row(
-            &mut self.joint_shell_set,
-            &tile.joint_shell_set,
-            tile_num,
-            num_log2,
-        );
-        avg_cdf_row(
-            &mut self.joint_shell6_class0,
-            &tile.joint_shell6_class0,
-            tile_num,
-            num_log2,
-        );
-        avg_cdf_row(
-            &mut self.joint_shell6_class1,
-            &tile.joint_shell6_class1,
-            tile_num,
-            num_log2,
-        );
-        avg_cdf_row(
-            &mut self.joint_shell_last_two,
-            &tile.joint_shell_last_two,
-            tile_num,
-            num_log2,
-        );
-        for bank in 0..SHELL_OFFSET_LOW_CLASS_BANKS {
-            avg_cdf_row(
-                &mut self.shell_offset_low_class[bank],
-                &tile.shell_offset_low_class[bank],
-                tile_num,
-                num_log2,
-            );
-        }
-        avg_cdf_row(
-            &mut self.shell_offset_class2,
-            &tile.shell_offset_class2,
-            tile_num,
-            num_log2,
-        );
-        for bank in 0..SHELL_OFFSET_OTHER_CLASS_BANKS {
-            avg_cdf_row(
-                &mut self.shell_offset_other_class[bank],
-                &tile.shell_offset_other_class[bank],
-                tile_num,
-                num_log2,
-            );
-        }
-        for bank in 0..COL_MV_GREATER_BANKS {
-            avg_cdf_row(
-                &mut self.col_mv_greater[bank],
-                &tile.col_mv_greater[bank],
-                tile_num,
-                num_log2,
-            );
-        }
-        for bank in 0..COL_MV_INDEX_BANKS {
-            avg_cdf_row(
-                &mut self.col_mv_index[bank],
-                &tile.col_mv_index[bank],
-                tile_num,
-                num_log2,
-            );
-        }
+        self.read_mv
+            .average_from_tile(&tile.read_mv, tile_num, num_log2);
         for ctx in 0..INTERP_FILTER_CONTEXTS {
             avg_cdf_row(
                 &mut self.interp_filter[ctx],
@@ -2038,23 +1779,7 @@ impl BlockCdfRows {
         for row in self.comp_ref1.iter_mut().flatten().flatten() {
             scale_cdf_count(row);
         }
-        scale_cdf_count(&mut self.joint_shell_set);
-        scale_cdf_count(&mut self.joint_shell6_class0);
-        scale_cdf_count(&mut self.joint_shell6_class1);
-        scale_cdf_count(&mut self.joint_shell_last_two);
-        for bank in 0..SHELL_OFFSET_LOW_CLASS_BANKS {
-            scale_cdf_count(&mut self.shell_offset_low_class[bank]);
-        }
-        scale_cdf_count(&mut self.shell_offset_class2);
-        for bank in 0..SHELL_OFFSET_OTHER_CLASS_BANKS {
-            scale_cdf_count(&mut self.shell_offset_other_class[bank]);
-        }
-        for bank in 0..COL_MV_GREATER_BANKS {
-            scale_cdf_count(&mut self.col_mv_greater[bank]);
-        }
-        for bank in 0..COL_MV_INDEX_BANKS {
-            scale_cdf_count(&mut self.col_mv_index[bank]);
-        }
+        self.read_mv.scale_counts();
         for ctx in 0..INTERP_FILTER_CONTEXTS {
             scale_cdf_count(&mut self.interp_filter[ctx]);
         }

@@ -24,7 +24,8 @@ use splot_core::tables::cdf::{
     DEFAULT_CDEF_INDEX_MINUS1_WITH7_CDF, DEFAULT_CDEF_INDEX_MINUS1_WITH8_CDF,
     DEFAULT_CDEF_INDEX0_CDF, DEFAULT_DELTA_Q_CDF, DEFAULT_DO_EXT_PARTITION_CDF,
     DEFAULT_DO_SPLIT_CDF, DEFAULT_DO_SQUARE_SPLIT_CDF, DEFAULT_DO_UNEVEN_4WAY_PARTITION_CDF,
-    DEFAULT_FSC_MODE_CDF, DEFAULT_INTRABC_CDF, DEFAULT_MRL_INDEX_CDF, DEFAULT_MRL_SEC_INDEX_CDF,
+    DEFAULT_FSC_MODE_CDF, DEFAULT_INTRABC_CDF, DEFAULT_INTRABC_MODE_CDF,
+    DEFAULT_INTRABC_PRECISION_CDF, DEFAULT_MRL_INDEX_CDF, DEFAULT_MRL_SEC_INDEX_CDF,
     DEFAULT_RECT_TYPE_CDF, DEFAULT_TX_2OR3_PARTITION_TYPE_CDF, DEFAULT_TX_DO_PARTITION_CDF,
     DEFAULT_TX_PARTITION_TYPE_CDF, DEFAULT_TX_PARTITION_TYPE_REDUCED_CDF,
 };
@@ -34,7 +35,7 @@ pub(crate) use self::coeff_rows::CoeffCdfSelector;
 // Re-exported at crate visibility so sibling decode code (e.g. the future
 // `coeffs()` consumer in `block_symbol.rs`) can name the `eob_pt` size class to
 // construct the `pub(crate)` `TileCdfSelector::EobPt` variant.
-pub(crate) use self::block_rows::EobPtSize;
+pub(crate) use self::block_rows::{EobPtSize, MvCdfSelector};
 
 const CDF_PROB_SCALE: i32 = 1 << 15;
 const DO_SPLIT_PLANE_CONTEXTS: usize = 2;
@@ -90,6 +91,8 @@ type CdefIndexMinus1With6CdfRow = [i32; CDEF_INDEX_MINUS1_WITH6_ROW_LEN];
 type CdefIndexMinus1With7CdfRow = [i32; CDEF_INDEX_MINUS1_WITH7_ROW_LEN];
 type CdefIndexMinus1With8CdfRow = [i32; CDEF_INDEX_MINUS1_WITH8_ROW_LEN];
 type IntrabcCdfRows = [[i32; CDF_ROW_LEN]; INTRABC_CONTEXTS];
+type IntrabcModeCdfRow = [i32; CDF_ROW_LEN];
+type IntrabcPrecisionCdfRow = [i32; CDF_ROW_LEN];
 type MrlIndexCdfRows = [[i32; MRL_INDEX_ROW_LEN]; MRL_INDEX_CONTEXTS];
 type MrlSecIndexCdfRows = [[i32; MRL_SEC_INDEX_ROW_LEN]; MRL_INDEX_CONTEXTS];
 
@@ -395,6 +398,10 @@ pub(crate) enum TileCdfSelector {
         /// Intra block-copy neighbour context (`0..INTRABC_CONTEXTS`).
         ctx: usize,
     },
+    /// `TileIntrabcModeCdf` from AV2 § 8.3.2.
+    IntrabcMode,
+    /// `TileIntrabcPrecisionCdf` from AV2 § 8.3.2.
+    IntrabcPrecision,
     /// `TileFscModeCdf[ctx][Fsc_Bsize_Groups[MiSize]]` from AV2 § 8.3.2.
     FscMode {
         /// FSC neighbour context (`0..FSC_MODE_CONTEXTS`).
@@ -609,41 +616,8 @@ pub(crate) enum TileCdfSelector {
         /// The §5.20.7.11 loop counter `ref`.
         ref_idx: usize,
     },
-    /// `TileJointShellSetCdf[MvCtx]` (AV2 § 8.3.2): the §5.20.7.20 `shell_set`
-    /// symbol (single-context MvCtx == 0).
-    JointShellSet,
-    /// `TileJointShellPClassQCdf[MvCtx]` for the verified EighthPel precision
-    /// (P == 6, AV2 § 8.3.2): `shell_set` selects the `Q` bank.
-    JointShell6Class {
-        /// `Q == shell_set` (`0..2`).
-        shell_set: usize,
-    },
-    /// `TileJointShellLastTwoClassesCdf[MvCtx]` (AV2 § 8.3.2): the EighthPel
-    /// `joint_shell_last_two_classes` symbol.
-    JointShellLastTwo,
-    /// `TileShellOffsetLowClassCdf[MvCtx][shellClass]` (AV2 § 8.3.2).
-    ShellOffsetLowClass {
-        /// `shellClass` (`0` or `1`).
-        shell_class: usize,
-    },
-    /// `TileShellOffsetClass2Cdf[MvCtx]` (AV2 § 8.3.2).
-    ShellOffsetClass2,
-    /// `TileShellOffsetOtherClassCdf[MvCtx][i]` (AV2 § 8.3.2).
-    ShellOffsetOtherClass {
-        /// The §5.20.7.20 loop counter `i`.
-        i: usize,
-    },
-    /// `TileColMvGreaterCdf[MvCtx][i]` (AV2 § 8.3.2).
-    ColMvGreater {
-        /// The §5.20.7.20 truncated-unary loop counter `i`.
-        i: usize,
-    },
-    /// `TileColMvIndexCdf[MvCtx][Min(shellClass, NUM_CTX_COL_MV_INDEX - 1)]`
-    /// (AV2 § 8.3.2).
-    ColMvIndex {
-        /// `Min(shellClass, NUM_CTX_COL_MV_INDEX - 1)`.
-        ctx: usize,
-    },
+    /// AV2 § 5.20.7.20 SHELL-coded motion-vector CDF rows.
+    ReadMv(MvCdfSelector),
     /// `TileInterpFilterCdf[ctx]` (AV2 § 8.3.2): the §5.20.7.6 SWITCHABLE
     /// `interp_filter` symbol.
     InterpFilter {
@@ -1122,6 +1096,8 @@ pub(crate) struct TileCdfRows {
     cdef_index_minus1_with7: CdefIndexMinus1With7CdfRow,
     cdef_index_minus1_with8: CdefIndexMinus1With8CdfRow,
     intrabc: IntrabcCdfRows,
+    intrabc_mode: IntrabcModeCdfRow,
+    intrabc_precision: IntrabcPrecisionCdfRow,
     fsc_mode: FscModeCdfRows,
     mrl_index: MrlIndexCdfRows,
     mrl_sec_index: MrlSecIndexCdfRows,
@@ -1149,6 +1125,8 @@ impl TileCdfRows {
             cdef_index_minus1_with7: DEFAULT_CDEF_INDEX_MINUS1_WITH7_CDF,
             cdef_index_minus1_with8: DEFAULT_CDEF_INDEX_MINUS1_WITH8_CDF,
             intrabc: DEFAULT_INTRABC_CDF,
+            intrabc_mode: DEFAULT_INTRABC_MODE_CDF,
+            intrabc_precision: DEFAULT_INTRABC_PRECISION_CDF,
             fsc_mode: DEFAULT_FSC_MODE_CDF,
             mrl_index: DEFAULT_MRL_INDEX_CDF,
             mrl_sec_index: DEFAULT_MRL_SEC_INDEX_CDF,
@@ -1327,6 +1305,8 @@ impl TileCdfRows {
                     })?;
                 Ok(row.as_slice())
             }
+            TileCdfSelector::IntrabcMode => Ok(self.intrabc_mode.as_slice()),
+            TileCdfSelector::IntrabcPrecision => Ok(self.intrabc_precision.as_slice()),
             TileCdfSelector::FscMode { ctx, bsize_group } => {
                 let ctx = checked_context(TileCdfArray::FscMode, "ctx", ctx, FSC_MODE_CONTEXTS)?;
                 let row = self.fsc_mode[ctx].get(bsize_group).ok_or(
@@ -1465,28 +1445,7 @@ impl TileCdfRows {
                 bit_type,
                 ref_idx,
             }),
-            TileCdfSelector::JointShellSet => self.block.row(BlockCdfSelector::JointShellSet),
-            TileCdfSelector::JointShell6Class { shell_set } => self
-                .block
-                .row(BlockCdfSelector::JointShell6Class { shell_set }),
-            TileCdfSelector::JointShellLastTwo => {
-                self.block.row(BlockCdfSelector::JointShellLastTwo)
-            }
-            TileCdfSelector::ShellOffsetLowClass { shell_class } => self
-                .block
-                .row(BlockCdfSelector::ShellOffsetLowClass { shell_class }),
-            TileCdfSelector::ShellOffsetClass2 => {
-                self.block.row(BlockCdfSelector::ShellOffsetClass2)
-            }
-            TileCdfSelector::ShellOffsetOtherClass { i } => self
-                .block
-                .row(BlockCdfSelector::ShellOffsetOtherClass { i }),
-            TileCdfSelector::ColMvGreater { i } => {
-                self.block.row(BlockCdfSelector::ColMvGreater { i })
-            }
-            TileCdfSelector::ColMvIndex { ctx } => {
-                self.block.row(BlockCdfSelector::ColMvIndex { ctx })
-            }
+            TileCdfSelector::ReadMv(selector) => self.block.row(BlockCdfSelector::ReadMv(selector)),
             TileCdfSelector::InterpFilter { ctx } => {
                 self.block.row(BlockCdfSelector::InterpFilter { ctx })
             }
@@ -1680,6 +1639,8 @@ impl TileCdfRows {
                     })?;
                 Ok(row.as_mut_slice())
             }
+            TileCdfSelector::IntrabcMode => Ok(self.intrabc_mode.as_mut_slice()),
+            TileCdfSelector::IntrabcPrecision => Ok(self.intrabc_precision.as_mut_slice()),
             TileCdfSelector::FscMode { ctx, bsize_group } => {
                 let ctx = checked_context(TileCdfArray::FscMode, "ctx", ctx, FSC_MODE_CONTEXTS)?;
                 let max_exclusive = self.fsc_mode[ctx].len();
@@ -1827,27 +1788,8 @@ impl TileCdfRows {
                 bit_type,
                 ref_idx,
             }),
-            TileCdfSelector::JointShellSet => self.block.row_mut(BlockCdfSelector::JointShellSet),
-            TileCdfSelector::JointShell6Class { shell_set } => self
-                .block
-                .row_mut(BlockCdfSelector::JointShell6Class { shell_set }),
-            TileCdfSelector::JointShellLastTwo => {
-                self.block.row_mut(BlockCdfSelector::JointShellLastTwo)
-            }
-            TileCdfSelector::ShellOffsetLowClass { shell_class } => self
-                .block
-                .row_mut(BlockCdfSelector::ShellOffsetLowClass { shell_class }),
-            TileCdfSelector::ShellOffsetClass2 => {
-                self.block.row_mut(BlockCdfSelector::ShellOffsetClass2)
-            }
-            TileCdfSelector::ShellOffsetOtherClass { i } => self
-                .block
-                .row_mut(BlockCdfSelector::ShellOffsetOtherClass { i }),
-            TileCdfSelector::ColMvGreater { i } => {
-                self.block.row_mut(BlockCdfSelector::ColMvGreater { i })
-            }
-            TileCdfSelector::ColMvIndex { ctx } => {
-                self.block.row_mut(BlockCdfSelector::ColMvIndex { ctx })
+            TileCdfSelector::ReadMv(selector) => {
+                self.block.row_mut(BlockCdfSelector::ReadMv(selector))
             }
             TileCdfSelector::InterpFilter { ctx } => {
                 self.block.row_mut(BlockCdfSelector::InterpFilter { ctx })
@@ -1994,6 +1936,18 @@ impl TileCdfRows {
                 num_log2,
             );
         }
+        avg_cdf_row(
+            &mut self.intrabc_mode,
+            &tile.intrabc_mode,
+            tile_num,
+            num_log2,
+        );
+        avg_cdf_row(
+            &mut self.intrabc_precision,
+            &tile.intrabc_precision,
+            tile_num,
+            num_log2,
+        );
         for ctx in 0..FSC_MODE_CONTEXTS {
             for bsize_group in 0..FSC_BSIZE_CONTEXTS {
                 avg_cdf_row(
@@ -2069,6 +2023,16 @@ impl TileCdfRows {
     #[cfg(test)]
     pub(crate) const fn delta_q(&self) -> &DeltaQCdfRow {
         &self.delta_q
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn intrabc_mode(&self) -> &IntrabcModeCdfRow {
+        &self.intrabc_mode
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn intrabc_precision(&self) -> &IntrabcPrecisionCdfRow {
+        &self.intrabc_precision
     }
 
     #[cfg(test)]
