@@ -283,7 +283,7 @@ fn local_ac0ej3_reaches_current_runtime_gate_without_output() {
     assert!(out.stderr.is_empty(), "stderr was not empty");
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(json["rule_id"], "decode/unsupported-feature");
-    assert_eq!(json["spec_section"], "5.20.7.13");
+    assert_eq!(json["spec_section"], "7.13.3.18");
     assert_eq!(json["matrix_row"], "ac0ej3-selectable-transform-records");
     assert_eq!(
         json["feature_id"],
@@ -292,14 +292,14 @@ fn local_ac0ej3_reaches_current_runtime_gate_without_output() {
     assert_eq!(json["detail_kind"], "unsupported_feature");
     assert_eq!(
         json["unsupported_reason"],
-        "unsupported_wienerns_lr_selectable_transform_records_intrabc_prediction"
+        "unsupported_wienerns_lr_selectable_transform_records_intrabc_currframe_samples"
     );
     assert!(
         json["message"]
             .as_str()
             .unwrap()
-            .contains("current-frame IntrABC prediction"),
-        "diagnostic must describe the IntrABC prediction frontier"
+            .contains("decoded CurrFrame samples"),
+        "diagnostic must describe the missing CurrFrame sample frontier"
     );
     assert_eq!(json["byte_offset"], 110);
     assert_ne!(

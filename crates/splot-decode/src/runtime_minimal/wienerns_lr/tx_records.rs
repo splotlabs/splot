@@ -1714,6 +1714,7 @@ fn read_luma_shared_mode_info_prelude(
         Some(read_intrabc_info(
             work_unit.cdf_mut().tile_cdfs_mut(),
             symbols,
+            intrabc_state,
             sequence,
             core,
             IntrabcBlockGeometry::from_frontier(frontier, n4w, n4h),

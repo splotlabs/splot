@@ -267,6 +267,128 @@ fn workspace_rect_writes_reject_invalid_shape_and_bounds() {
 }
 
 #[test]
+fn workspace_copy_rect_within_plane_copies_luma_samples() {
+    let mut workspace = CurrentFrameWorkspace::<u8>::new(
+        info(
+            BitDepth::Eight,
+            PixelFormat::Monochrome,
+            size(5, 4),
+            rect(0, 0, 5, 4),
+        ),
+        0,
+    )
+    .unwrap();
+    let initial: Vec<u8> = (0..20).collect();
+    workspace
+        .write_rect(PlaneId::Y, rect(0, 0, 5, 4), &initial, 5)
+        .unwrap();
+
+    workspace
+        .copy_rect_within_plane(PlaneId::Y, rect(0, 0, 2, 2), rect(3, 2, 2, 2))
+        .unwrap();
+
+    assert_eq!(
+        workspace.samples(PlaneId::Y).unwrap(),
+        &[
+            0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 0, 1, 15, 16, 17, 5, 6
+        ]
+    );
+}
+
+#[test]
+fn workspace_copy_rect_within_plane_snapshots_overlapping_source() {
+    let mut workspace = CurrentFrameWorkspace::<u8>::new(
+        info(
+            BitDepth::Eight,
+            PixelFormat::Monochrome,
+            size(6, 1),
+            rect(0, 0, 6, 1),
+        ),
+        0,
+    )
+    .unwrap();
+    workspace
+        .write_rect(PlaneId::Y, rect(0, 0, 6, 1), &[0, 1, 2, 3, 4, 5], 6)
+        .unwrap();
+
+    workspace
+        .copy_rect_within_plane(PlaneId::Y, rect(0, 0, 4, 1), rect(1, 0, 4, 1))
+        .unwrap();
+
+    assert_eq!(workspace.samples(PlaneId::Y).unwrap(), &[0, 0, 1, 2, 3, 5]);
+}
+
+#[test]
+fn workspace_copy_rect_within_plane_rejects_invalid_inputs_without_mutation() {
+    let mut workspace = CurrentFrameWorkspace::<u8>::new(
+        info(
+            BitDepth::Eight,
+            PixelFormat::Yuv420,
+            size(4, 4),
+            rect(0, 0, 4, 4),
+        ),
+        7,
+    )
+    .unwrap();
+    workspace
+        .write_rect(
+            PlaneId::Y,
+            rect(0, 0, 4, 4),
+            &(0..16).collect::<Vec<u8>>(),
+            4,
+        )
+        .unwrap();
+    // splot-copy-ok: test snapshots workspace samples to prove invalid IntrABC copies are fail-atomic.
+    let before = workspace.samples(PlaneId::Y).unwrap().to_vec();
+
+    assert!(matches!(
+        workspace.copy_rect_within_plane(PlaneId::Y, rect(0, 0, 2, 2), rect(2, 0, 1, 4)),
+        Err(ReconError::WorkspaceCopyShapeMismatch {
+            plane: PlaneId::Y,
+            ..
+        })
+    ));
+    assert!(matches!(
+        workspace.copy_rect_within_plane(PlaneId::Y, rect(3, 0, 2, 1), rect(0, 0, 2, 1)),
+        Err(ReconError::WorkspaceRectOutOfBounds {
+            plane: PlaneId::Y,
+            ..
+        })
+    ));
+    assert!(matches!(
+        workspace.copy_rect_within_plane(PlaneId::Y, rect(0, 0, 2, 1), rect(3, 0, 2, 1)),
+        Err(ReconError::WorkspaceRectOutOfBounds {
+            plane: PlaneId::Y,
+            ..
+        })
+    ));
+
+    assert_eq!(workspace.samples(PlaneId::Y).unwrap(), before.as_slice());
+}
+
+#[test]
+fn workspace_copy_rect_within_plane_rejects_missing_plane() {
+    let mut workspace = CurrentFrameWorkspace::<u8>::new(
+        info(
+            BitDepth::Eight,
+            PixelFormat::Monochrome,
+            size(4, 4),
+            rect(0, 0, 4, 4),
+        ),
+        3,
+    )
+    .unwrap();
+    // splot-copy-ok: test snapshots workspace samples to prove missing-plane IntrABC copy is fail-atomic.
+    let before = workspace.samples(PlaneId::Y).unwrap().to_vec();
+
+    assert!(matches!(
+        workspace.copy_rect_within_plane(PlaneId::U, rect(0, 0, 1, 1), rect(1, 1, 1, 1)),
+        Err(ReconError::MissingWorkspacePlane { plane: PlaneId::U })
+    ));
+    assert_eq!(workspace.samples(PlaneId::Y).unwrap(), before.as_slice());
+}
+
+#[test]
 fn workspace_write_rejects_out_of_range_samples_without_partial_write() {
     let mut workspace = CurrentFrameWorkspace::<u16>::new(
         info(

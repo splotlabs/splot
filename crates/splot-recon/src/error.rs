@@ -155,6 +155,15 @@ pub enum ReconError {
         /// Actual supplied sample count.
         actual: usize,
     },
+    /// A current-frame workspace copy source and target had different shapes.
+    WorkspaceCopyShapeMismatch {
+        /// Plane being copied.
+        plane: PlaneId,
+        /// Source rectangle.
+        source: PlaneRect,
+        /// Target rectangle.
+        target: PlaneRect,
+    },
     /// A square intra prediction block size is outside the modeled range.
     InvalidIntraSquareBlockLog2 {
         /// Supplied base-2 logarithm of the square block size.
@@ -927,6 +936,19 @@ impl fmt::Display for ReconError {
                 f,
                 "current-frame workspace {} write buffer is too small: expected at least {expected} samples, got {actual}",
                 plane.name()
+            ),
+            Self::WorkspaceCopyShapeMismatch {
+                plane,
+                source,
+                target,
+            } => write!(
+                f,
+                "current-frame workspace {} copy source {}x{} does not match target {}x{}",
+                plane.name(),
+                source.width(),
+                source.height(),
+                target.width(),
+                target.height()
             ),
             Self::InvalidIntraSquareBlockLog2 {
                 log2_size,
