@@ -292,14 +292,14 @@ fn local_ac0ej3_reaches_current_runtime_gate_without_output() {
     assert_eq!(json["detail_kind"], "unsupported_feature");
     assert_eq!(
         json["unsupported_reason"],
-        "unsupported_wienerns_lr_live_transform_record_fsc_mode"
+        "unsupported_wienerns_lr_selectable_transform_records_intrabc"
     );
     assert!(
         json["message"]
             .as_str()
             .unwrap()
-            .contains("active FSC coefficient mode"),
-        "diagnostic must describe the active FSC frontier"
+            .contains("`use_intrabc` mode-info branch"),
+        "diagnostic must describe the IntrABC mode-info frontier"
     );
     assert_eq!(json["byte_offset"], 110);
     assert_ne!(

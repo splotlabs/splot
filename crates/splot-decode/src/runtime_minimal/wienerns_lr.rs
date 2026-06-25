@@ -45,6 +45,7 @@ const LR_RETAINED_FRAME_BUFFERS: u64 = 2;
 
 mod diagnostics;
 mod live_storage;
+mod source_read_math;
 mod tx_records;
 
 use self::tx_records::WienerNsLrLiveTransformRecordHandoff;
@@ -68,6 +69,11 @@ use self::diagnostics::{wienerns_lr_mode_literal_reason, wienerns_lr_mode_symbol
 pub(super) use self::live_storage::{
     LR_LIVE_FRAME_SAMPLE_STORAGE_BYTES, LR_LIVE_TX_SKIP_STORAGE_BYTES_PER_VALUE,
     WienerNsLrLiveStorageAllocation,
+};
+use self::source_read_math::{
+    chroma_subsampling, clip_source_read_coordinate, mi_to_luma_end, mi_to_luma_start,
+    scale_chroma_source_coordinate, source_read_arithmetic_overflow, source_read_coordinate_add,
+    usize_to_source_coordinate, wienerns_lr_source_plane,
 };
 
 #[cfg_attr(
@@ -768,7 +774,7 @@ fn derive_wienerns_lr_fixed_largest_transform_record_handoff(
         sequence,
         core,
         limits,
-        |work_unit, symbols, frontier, joint_modes, uses_mrls, _block_decoded| {
+        |work_unit, symbols, frontier, joint_modes, uses_mrls, fsc_modes, _block_decoded| {
             let n4w = frontier
                 .b_size
                 .num_4x4_wide()
@@ -795,6 +801,7 @@ fn derive_wienerns_lr_fixed_largest_transform_record_handoff(
                 GeneralIntraChromaToolConfig::disabled(),
                 joint_modes,
                 uses_mrls,
+                fsc_modes,
                 frontier.b_size.index(),
                 frontier.r,
                 frontier.c,
@@ -824,6 +831,7 @@ fn derive_wienerns_lr_fixed_largest_transform_record_handoff(
                 true,
                 false,
                 modes.coeff_uv_mode(),
+                false,
                 false,
                 TransformToolResidualPolicy::Allow,
             )
@@ -863,6 +871,7 @@ fn derive_wienerns_lr_fixed_largest_transform_record_handoff(
                 false,
                 modes.coeff_uv_mode(),
                 false,
+                false,
                 TransformToolResidualPolicy::Allow,
             )
             .map_err(|error| {
@@ -884,6 +893,7 @@ fn derive_wienerns_lr_fixed_largest_transform_record_handoff(
                 !u.all_zero,
                 modes.coeff_uv_mode(),
                 false,
+                false,
                 TransformToolResidualPolicy::Allow,
             )
             .map_err(|error| {
@@ -896,6 +906,7 @@ fn derive_wienerns_lr_fixed_largest_transform_record_handoff(
             Ok(crate::tile_payload::GeneralIntraLeafMode::luma(
                 modes.intra_joint_mode,
                 modes.y_mode,
+                modes.fsc_mode,
                 modes.uses_mrls,
             ))
         },
@@ -1128,6 +1139,15 @@ fn wienerns_lr_transform_record_setup_error(
                 "8.3.2",
             )
         }
+        MinimalRuntimePartitionFrontierError::FscModeState(_) => {
+            wienerns_lr_transform_record_unsupported(
+                scope,
+                "unsupported_wienerns_lr_live_transform_record_setup_fsc_mode_state",
+                offset,
+                "minimal runtime reached active Wiener NS LR transform-record derivation, but FscModes neighbour state allocation for the partition-tree walk is outside the supported subset",
+                "8.3.2",
+            )
+        }
         MinimalRuntimePartitionFrontierError::UnexpectedFrontier { .. } => {
             wienerns_lr_transform_record_unsupported(
                 scope,
@@ -1171,6 +1191,13 @@ fn wienerns_lr_transform_record_traversal_error(
             "unsupported_wienerns_lr_live_transform_record_uses_mrls_state",
             offset,
             "minimal runtime reached active Wiener NS LR transform-record derivation, but the partition-tree walk could not maintain UsesMrls state for MRL contexts",
+            "8.3.2",
+        ),
+        TilePartitionTraversalError::FscModeState(_) => wienerns_lr_transform_record_unsupported(
+            scope,
+            "unsupported_wienerns_lr_live_transform_record_fsc_mode_state",
+            offset,
+            "minimal runtime reached active Wiener NS LR transform-record derivation, but the partition-tree walk could not maintain FscModes state for FSC contexts",
             "8.3.2",
         ),
         TilePartitionTraversalError::Size(_) => wienerns_lr_transform_record_unsupported(
@@ -1266,6 +1293,15 @@ fn wienerns_lr_transform_record_traversal_error(
                 "unsupported_wienerns_lr_live_transform_record_missing_uses_mrls_state",
                 offset,
                 "minimal runtime reached active Wiener NS LR transform-record derivation, but an intra luma/shared leaf did not provide UsesMrls state for subsequent MRL contexts",
+                "5.20.5.3",
+            )
+        }
+        TilePartitionTraversalError::MissingIntraFscModeState { .. } => {
+            wienerns_lr_transform_record_unsupported(
+                scope,
+                "unsupported_wienerns_lr_live_transform_record_missing_fsc_mode_state",
+                offset,
+                "minimal runtime reached active Wiener NS LR transform-record derivation, but an intra luma/shared leaf did not provide FscModes state for subsequent FSC contexts",
                 "5.20.5.3",
             )
         }
@@ -1370,13 +1406,6 @@ fn wienerns_lr_live_transform_record_mode_error(
                 "5.20.5.6",
             )
         }
-        GeneralIntraBlockModeError::UnsupportedFscMode => wienerns_lr_transform_record_unsupported(
-            scope,
-            "unsupported_wienerns_lr_live_transform_record_fsc_mode",
-            offset,
-            "minimal runtime reached active Wiener NS LR and consumed mode-info syntax, but the block selected active FSC coefficient mode; deriving live LrTxSkip records for FSC blocks is outside this handoff subset",
-            "5.20.5.3",
-        ),
         GeneralIntraBlockModeError::InvalidFscBlockSizeIndex { .. } => {
             wienerns_lr_transform_record_unsupported(
                 scope,
@@ -2403,97 +2432,10 @@ pub(super) fn record_wienerns_lr_chroma_luma_source_reads(
     Ok(())
 }
 
-fn source_read_coordinate_add(value: isize, delta: isize, context: &'static str) -> Result<isize> {
-    value
-        .checked_add(delta)
-        .ok_or_else(|| source_read_arithmetic_overflow(context))
-}
-
-fn scale_chroma_source_coordinate(
-    value: isize,
-    subsampling: usize,
-    context: &'static str,
-) -> Result<isize> {
-    match subsampling {
-        0 => Ok(value),
-        1 => value
-            .checked_mul(2)
-            .ok_or_else(|| source_read_arithmetic_overflow(context)),
-        _ => Err(source_read_arithmetic_overflow(context)),
-    }
-}
-
-fn clip_source_read_coordinate(
-    value: isize,
-    minimum: usize,
-    maximum: usize,
-    context: &'static str,
-) -> Result<usize> {
-    let minimum = isize::try_from(minimum).map_err(|_| source_read_arithmetic_overflow(context))?;
-    let maximum = isize::try_from(maximum).map_err(|_| source_read_arithmetic_overflow(context))?;
-    if minimum > maximum {
-        return Err(source_read_arithmetic_overflow(context));
-    }
-    usize::try_from(value.clamp(minimum, maximum))
-        .map_err(|_| source_read_arithmetic_overflow(context))
-}
-
-fn mi_to_luma_start(mi: usize, context: &'static str) -> Result<usize> {
-    mi.checked_mul(LR_MI_SIZE)
-        .ok_or_else(|| source_read_arithmetic_overflow(context))
-}
-fn mi_to_luma_end(mi_end: usize, context: &'static str) -> Result<usize> {
-    mi_to_luma_start(mi_end, context)?
-        .checked_sub(1)
-        .ok_or_else(|| source_read_arithmetic_overflow(context))
-}
-fn usize_to_source_coordinate(value: usize, context: &'static str) -> Result<isize> {
-    isize::try_from(value).map_err(|_| source_read_arithmetic_overflow(context))
-}
-const fn chroma_subsampling(chroma_format: ChromaFormatIdc) -> (u8, u8) {
-    match chroma_format {
-        ChromaFormatIdc::Yuv420 | ChromaFormatIdc::Monochrome => (1, 1),
-        ChromaFormatIdc::Yuv444 => (0, 0),
-        ChromaFormatIdc::Yuv422 => (1, 0),
-    }
-}
-fn wienerns_lr_source_plane(
-    plane: usize,
-    chroma_format: ChromaFormatIdc,
-    offset: ByteOffset,
-) -> Result<PlaneId> {
-    match plane {
-        0 => Ok(PlaneId::Y),
-        1 if chroma_format != ChromaFormatIdc::Monochrome => Ok(PlaneId::U),
-        2 if chroma_format != ChromaFormatIdc::Monochrome => Ok(PlaneId::V),
-        1 | 2 => Err(unsupported_feature_at(
-            "unsupported_wienerns_lr_source_chroma_plane",
-            offset,
-            "minimal runtime reached a Wiener NS LR source-read request for a chroma plane in a monochrome sequence",
-            AC0EJ3_LR_SOURCE_READ_MATRIX_ROW,
-            AC0EJ3_LR_SOURCE_READ_FEATURE_ID,
-            "7.20.2",
-        )),
-        _ => Err(unsupported_feature_at(
-            "unsupported_wienerns_lr_source_plane",
-            offset,
-            "minimal runtime reached a Wiener NS LR source-read request for an unsupported plane index",
-            AC0EJ3_LR_SOURCE_READ_MATRIX_ROW,
-            AC0EJ3_LR_SOURCE_READ_FEATURE_ID,
-            "7.20.2",
-        )),
-    }
-}
 fn has_wienerns_frame_filter_bank(core: &FrameHeaderCore) -> bool {
     core.lr_params.as_ref().is_some_and(|lr| {
         lr.planes
             .iter()
             .any(|plane| plane.frame_filter_bank.is_some())
     })
-}
-
-fn source_read_arithmetic_overflow(context: &'static str) -> DecodeError {
-    DecodeError::Reconstruction {
-        source: splot_recon::ReconError::ArithmeticOverflow { context },
-    }
 }

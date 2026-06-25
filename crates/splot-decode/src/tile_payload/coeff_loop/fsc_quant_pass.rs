@@ -23,8 +23,8 @@ use super::super::coeff_state::{
     CoeffContextUpdate, TileCoeffContextState, TileCoeffStateError, TransformCoeffBlockState,
 };
 use super::branch::{
-    CoeffBlockEobBranch, CoeffBlockEobBranchInput, NonZeroCoeffBlockStartInput,
-    read_coeff_block_eob_branch,
+    CoeffBlockEobBranch, CoeffBlockEobBranchInput, NonZeroCoeffBlockStart,
+    NonZeroCoeffBlockStartInput, read_coeff_block_eob_branch,
 };
 use super::fsc_level_pass::{
     CoeffFscLevelPassConfig, CoeffFscLevelPassError, CoeffFscLevelRead, NonZeroCoeffFscLevelPass,
@@ -201,6 +201,20 @@ pub(crate) struct CoeffFscBranchTxSizeNonZeroInput {
     pub(crate) plane_tx_type: usize,
     /// Caller-resolved inter/intra flag for EOB context derivation.
     pub(crate) is_inter: bool,
+    /// Coefficient-CDF quantization context.
+    pub(crate) coeff_cdf_q_ctx: usize,
+}
+
+/// Caller-resolved FSC/IDTX facts after nonzero EOB has already been read.
+pub(crate) struct CoeffFscStagedTxSizeNonZeroInput {
+    /// Caller-resolved `coeffs()` block geometry.
+    pub(crate) block: AllZeroCoeffBlockInput,
+    /// Decoded EOB start and zeroed local coefficient state.
+    pub(crate) start: NonZeroCoeffBlockStart,
+    /// Caller-resolved `txSz` argument to AV2 § 5.20.7.27 `coeffs()`.
+    pub(crate) tx_size: usize,
+    /// Caller-resolved `PlaneTxType` from AV2 § 5.20.7.29 `compute_tx_type`.
+    pub(crate) plane_tx_type: usize,
     /// Coefficient-CDF quantization context.
     pub(crate) coeff_cdf_q_ctx: usize,
 }
@@ -523,6 +537,60 @@ pub(crate) fn apply_coeff_fsc_branch_from_tx_size(
         input,
         DEFAULT_TX_SIZE_TABLES,
     )
+}
+
+/// Runs the FSC/IDTX nonzero branch after the caller has already read EOB.
+///
+/// This staged counterpart to [`apply_coeff_fsc_branch_from_tx_size`] is for
+/// AV2 § 5.20.7.27 callers that must inspect EOB before deciding transform-tool
+/// metadata, while still running the same FSC scan, level, sign, quant, and
+/// context-commit logic exactly once.
+pub(crate) fn apply_staged_nonzero_coeff_fsc_branch_from_tx_size(
+    state: &mut TileCoeffContextState,
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    input: CoeffFscStagedTxSizeNonZeroInput,
+) -> Result<NonZeroCoeffFscQuantPass, CoeffFscBranchError> {
+    if input.block.plane != 0 {
+        return Err(CoeffFscBranchError::NonLumaPlane {
+            plane: input.block.plane,
+        });
+    }
+
+    let raw_dimensions = fsc_tx_size_dimensions(DEFAULT_TX_SIZE_TABLES, input.tx_size)?;
+    validate_fsc_block_geometry(input.block, input.tx_size, raw_dimensions)?;
+    let adjusted_dimensions =
+        fsc_adjusted_tx_size_dimensions(DEFAULT_TX_SIZE_TABLES, input.tx_size)?;
+    let scan = fsc_branch_scan_order(
+        DEFAULT_SCAN_ORDER_TABLES,
+        input.tx_size,
+        input.plane_tx_type,
+    )?;
+    let level_config = CoeffFscLevelPassConfig {
+        coeff_cdf_q_ctx: input.coeff_cdf_q_ctx,
+        tx_size_ctx: fsc_tx_size_context(DEFAULT_TX_SIZE_TABLES, input.tx_size)?,
+        tx_width: adjusted_dimensions.tx_width,
+        tx_height: adjusted_dimensions.tx_height,
+    };
+    let walk = walk_fsc_coeff_scan(&input.start, scan.len(), &scan)?;
+    let level_pass =
+        apply_nonzero_coeff_fsc_level_pass(cdfs, symbols, input.start, walk, level_config)?;
+    apply_nonzero_coeff_fsc_quant_pass_with_context_commit(
+        state,
+        cdfs,
+        symbols,
+        level_pass,
+        &scan,
+        level_config,
+        CoeffFscContextCommitConfig {
+            plane: input.block.plane,
+            x4: input.block.x4,
+            y4: input.block.y4,
+            w4: input.block.w4,
+            h4: input.block.h4,
+        },
+    )
+    .map_err(CoeffFscBranchError::from)
 }
 
 #[cfg(test)]

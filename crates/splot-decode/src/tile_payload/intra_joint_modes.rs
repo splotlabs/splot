@@ -16,9 +16,9 @@
 //! (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3`, `get_joint_mode`).
 //!
 //! This module tracks that per-MI `IntraJointModes` grid, plus the sibling
-//! `UsesMrls` grid used by the MRL symbol contexts, for the general intra
-//! partition walk so contexts can be derived from real decoded neighbours
-//! instead of hardcoded tile-origin `ctx == 0`.
+//! `UsesMrls` and `FscModes` grids used by MRL/FSC symbol contexts, for the
+//! general intra partition walk so contexts can be derived from real decoded
+//! neighbours instead of hardcoded tile-origin `ctx == 0`.
 
 use std::collections::TryReserveError;
 
@@ -36,6 +36,8 @@ const NON_DIRECTIONAL_MODES_COUNT: u8 = 5;
 const DC_PRED_JOINT_MODE: u8 = 0;
 /// AV2 § 5.20.5.3 `UsesMrls` value for no MRL reference sample offset.
 const NO_MRL: u8 = 0;
+/// AV2 § 5.20.5.3 `FscModes` value for ordinary transform coding.
+const NO_FSC: u8 = 0;
 
 /// Mutable tile-local AV2 § 5.20.5.3 `IntraJointModes[r][c]` grid.
 ///
@@ -348,6 +350,166 @@ impl TileUsesMrlsState {
         }
         row.checked_mul(self.mi_cols)?.checked_add(col)
     }
+}
+
+/// Mutable tile-local AV2 § 5.20.5.3 `FscModes[r][c]` grid.
+///
+/// AV2 § 8.3.2 derives the intra `fsc_mode` CDF context from the first two
+/// `NPos` cells populated by § 5.20.4.1 `add_neighbor`, summing their stored
+/// `FscModes` values for intra blocks.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct TileFscModeState {
+    mi_rows: usize,
+    mi_cols: usize,
+    sb_size4: usize,
+    fsc_modes: Vec<u8>,
+}
+
+impl TileFscModeState {
+    /// Creates a `FscModes` grid initialized to `0`.
+    pub(crate) fn new(
+        mi_rows: usize,
+        mi_cols: usize,
+        sb_size4: usize,
+    ) -> Result<Self, TileFscModeStateError> {
+        if mi_rows == 0 || mi_cols == 0 {
+            return Err(TileFscModeStateError::EmptyDimensions { mi_rows, mi_cols });
+        }
+        if sb_size4 == 0 {
+            return Err(TileFscModeStateError::EmptySuperblockSize);
+        }
+        let cells =
+            mi_rows
+                .checked_mul(mi_cols)
+                .ok_or(TileFscModeStateError::ArithmeticOverflow {
+                    operation: "mi_rows * mi_cols",
+                    left: mi_rows,
+                    right: mi_cols,
+                })?;
+        let mut fsc_modes = Vec::new();
+        fsc_modes
+            .try_reserve_exact(cells)
+            .map_err(|source| TileFscModeStateError::Allocation { source })?;
+        fsc_modes.resize(cells, NO_FSC);
+        Ok(Self {
+            mi_rows,
+            mi_cols,
+            sb_size4,
+            fsc_modes,
+        })
+    }
+
+    /// AV2 § 8.3.2 `fsc_mode` CDF context for an intra block.
+    pub(crate) fn fsc_mode_ctx(&self, r: usize, c: usize, n4w: usize, n4h: usize) -> usize {
+        let [first, second] = self.neighbour_fsc_modes(r, c, n4w, n4h);
+        usize::from(first) + usize::from(second)
+    }
+
+    /// Writes the block's decoded `fsc_mode` value into every MI cell it covers.
+    pub(crate) fn record_block(
+        &mut self,
+        r: usize,
+        c: usize,
+        n4w: usize,
+        n4h: usize,
+        fsc_mode: u8,
+    ) {
+        for y in 0..n4h {
+            let Some(row) = r.checked_add(y) else { break };
+            if row >= self.mi_rows {
+                break;
+            }
+            for x in 0..n4w {
+                let Some(col) = c.checked_add(x) else { break };
+                if col >= self.mi_cols {
+                    break;
+                }
+                if let Some(index) = self.cell_index(row, col) {
+                    self.fsc_modes[index] = fsc_mode;
+                }
+            }
+        }
+    }
+
+    fn neighbour_fsc_modes(&self, r: usize, c: usize, n4w: usize, n4h: usize) -> [u8; 2] {
+        let mut values = [NO_FSC; 2];
+        let mut len = 0;
+        let bottom = r.checked_add(n4h.saturating_sub(1));
+        let right = c.checked_add(n4w.saturating_sub(1));
+
+        self.add_fsc_neighbor(&mut values, &mut len, r, bottom, c.checked_sub(1));
+        self.add_fsc_neighbor(&mut values, &mut len, r, r.checked_sub(1), right);
+        self.add_fsc_neighbor(&mut values, &mut len, r, Some(r), c.checked_sub(1));
+        self.add_fsc_neighbor(&mut values, &mut len, r, r.checked_sub(1), Some(c));
+
+        values
+    }
+
+    fn add_fsc_neighbor(
+        &self,
+        values: &mut [u8; 2],
+        len: &mut usize,
+        current_row: usize,
+        row: Option<usize>,
+        col: Option<usize>,
+    ) {
+        if *len >= 2 {
+            return;
+        }
+        let (Some(row), Some(col)) = (row, col) else {
+            return;
+        };
+        if current_row / self.sb_size4 != row / self.sb_size4 {
+            return;
+        }
+        if let Some(value) = self.cell(row, col) {
+            values[*len] = value;
+            *len += 1;
+        }
+    }
+
+    fn cell(&self, row: usize, col: usize) -> Option<u8> {
+        self.cell_index(row, col).map(|index| self.fsc_modes[index])
+    }
+
+    fn cell_index(&self, row: usize, col: usize) -> Option<usize> {
+        if row >= self.mi_rows || col >= self.mi_cols {
+            return None;
+        }
+        row.checked_mul(self.mi_cols)?.checked_add(col)
+    }
+}
+
+/// Error raised while building or sizing the `FscModes` grid.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum TileFscModeStateError {
+    /// The tile MI dimensions were empty.
+    #[error("intra FscModes state requires non-empty MI dimensions, got {mi_rows}x{mi_cols}")]
+    EmptyDimensions {
+        /// Tile MI rows.
+        mi_rows: usize,
+        /// Tile MI columns.
+        mi_cols: usize,
+    },
+    /// The superblock width in MI units was empty.
+    #[error("intra FscModes state requires non-empty superblock size")]
+    EmptySuperblockSize,
+    /// A dimension product overflowed `usize`.
+    #[error("intra FscModes state arithmetic overflow in {operation}: {left} * {right}")]
+    ArithmeticOverflow {
+        /// The overflowing operation.
+        operation: &'static str,
+        /// Left operand.
+        left: usize,
+        /// Right operand.
+        right: usize,
+    },
+    /// The grid allocation failed.
+    #[error("intra FscModes state allocation failed: {source}")]
+    Allocation {
+        /// The underlying reservation error.
+        source: TryReserveError,
+    },
 }
 
 /// Error raised while building or sizing the `UsesMrls` grid.
@@ -700,6 +862,41 @@ mod tests {
         assert!(matches!(
             TileUsesMrlsState::new(4, 4, 0),
             Err(TileUsesMrlsStateError::EmptySuperblockSize)
+        ));
+    }
+
+    #[test]
+    fn fsc_modes_neighbours_select_context_sum() {
+        let mut state = TileFscModeState::new(32, 32, SB_N4).unwrap();
+        state.record_block(7, 11, 1, 1, 1);
+        state.record_block(11, 7, 1, 1, 1);
+
+        assert_eq!(state.fsc_mode_ctx(8, 8, 4, 4), 2);
+    }
+
+    #[test]
+    fn fsc_modes_npos_excludes_above_superblock_row_neighbours() {
+        let mut state = TileFscModeState::new(32, 32, SB_N4).unwrap();
+        state.record_block(31, 15, 1, 1, 1);
+        state.record_block(15, 31, 1, 1, 1);
+        state.record_block(15, 16, 1, 1, 1);
+
+        assert_eq!(state.fsc_mode_ctx(16, 16, 16, 16), 1);
+    }
+
+    #[test]
+    fn fsc_modes_empty_dimensions_are_rejected() {
+        assert!(matches!(
+            TileFscModeState::new(0, 4, SB_N4),
+            Err(TileFscModeStateError::EmptyDimensions { .. })
+        ));
+        assert!(matches!(
+            TileFscModeState::new(4, 0, SB_N4),
+            Err(TileFscModeStateError::EmptyDimensions { .. })
+        ));
+        assert!(matches!(
+            TileFscModeState::new(4, 4, 0),
+            Err(TileFscModeStateError::EmptySuperblockSize)
         ));
     }
 

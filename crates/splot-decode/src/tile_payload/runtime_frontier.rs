@@ -17,8 +17,8 @@ use super::DecodeTileWorkUnit;
 use super::block_decoded_state::TileBlockDecodedState;
 use super::block_symbol::{MinimalBlockSymbolTraceError, consume_minimal_block_symbol_trace};
 use super::intra_joint_modes::{
-    TileIntraJointModeState, TileIntraJointModeStateError, TileUsesMrlsState,
-    TileUsesMrlsStateError,
+    TileFscModeState, TileFscModeStateError, TileIntraJointModeState, TileIntraJointModeStateError,
+    TileUsesMrlsState, TileUsesMrlsStateError,
 };
 use super::mi_size_state::{TileMiSizeState, TileMiSizeStateError};
 use super::partition::PartitionType;
@@ -114,6 +114,9 @@ pub(crate) enum MinimalRuntimePartitionFrontierError {
     /// The `UsesMrls` neighbour-mode state boundary failed.
     #[error("minimal runtime intra UsesMrls state failed: {0}")]
     UsesMrlsState(#[from] TileUsesMrlsStateError),
+    /// The `FscModes` neighbour-mode state boundary failed.
+    #[error("minimal runtime intra FscModes state failed: {0}")]
+    FscModeState(#[from] TileFscModeStateError),
     /// Traversal reached a shape outside the minimal tier.
     #[error("minimal runtime partition frontier mismatch: {reason}")]
     UnexpectedFrontier {
@@ -191,8 +194,8 @@ pub(crate) enum GeneralIntraMultiblockError<E> {
 /// Decodes the complete general intra partition tree for the tile, invoking
 /// `on_leaf` at each leaf block in decode order, and returns the live symbol
 /// decoder for the caller's § 8.2.4 `exit_symbol()` check. The MI-size partition
-/// context and the AV2 § 5.20.5.3 `IntraJointModes` / `UsesMrls` neighbour-mode
-/// grids are maintained across blocks internally.
+/// context and the AV2 § 5.20.5.3 `IntraJointModes` / `UsesMrls` / `FscModes`
+/// neighbour-mode grids are maintained across blocks internally.
 ///
 /// `on_leaf` receives the shared per-MI `IntraJointModes` grid (read-only, for
 /// the § 8.3.2 `y_mode_index` neighbour context), the sibling `UsesMrls` grid
@@ -218,6 +221,7 @@ where
         &DecodeBlockFrontier,
         &TileIntraJointModeState,
         &TileUsesMrlsState,
+        &TileFscModeState,
         &TileBlockDecodedState,
     ) -> Result<GeneralIntraLeafMode, E>,
 {
@@ -235,12 +239,15 @@ where
         .max(1);
     let mut uses_mrls = TileUsesMrlsState::new(mi_rows, mi_cols, sb_size4)
         .map_err(MinimalRuntimePartitionFrontierError::from)?;
+    let mut fsc_modes = TileFscModeState::new(mi_rows, mi_cols, sb_size4)
+        .map_err(MinimalRuntimePartitionFrontierError::from)?;
     decode_general_intra_partition_tree(
         work_unit,
         frame,
         &mut mi_size_state,
         &mut joint_modes,
         &mut uses_mrls,
+        &mut fsc_modes,
         limits,
         on_leaf,
     )

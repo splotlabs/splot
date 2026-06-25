@@ -740,7 +740,7 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
         sequence,
         core,
         limits,
-        |work_unit, symbols, frontier, joint_modes, uses_mrls, _block_decoded| {
+        |work_unit, symbols, frontier, joint_modes, uses_mrls, fsc_modes, _block_decoded| {
             let n4w = frontier.b_size.num_4x4_wide().map_err(|_| {
                 wienerns_lr_selectable_transform_record_error_reason(
                     tile_offset,
@@ -825,13 +825,15 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                 &mut delta_q_state,
                 tile_offset,
             )?;
-            let (uv_mode, leaf_mode, luma_transform_type_context) = if frontier.is_luma_part() {
+            let (uv_mode, leaf_mode, luma_transform_type_context, fsc_mode) =
+                if frontier.is_luma_part() {
                 let luma = decode_general_intra_luma_block_mode(
                     work_unit,
                     symbols,
                     chroma_tools,
                     joint_modes,
                     uses_mrls,
+                    fsc_modes,
                     frontier.b_size.index(),
                     frontier.r,
                     frontier.c,
@@ -847,12 +849,18 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                 })?;
                 (
                     0,
-                    GeneralIntraLeafMode::luma(luma.intra_joint_mode, luma.y_mode, luma.uses_mrls),
+                    GeneralIntraLeafMode::luma(
+                        luma.intra_joint_mode,
+                        luma.y_mode,
+                        luma.fsc_mode,
+                        luma.uses_mrls,
+                    ),
                     LumaTransformTypeContext::with_mrl_index(
                         luma.y_mode,
                         luma.angle_delta_y,
                         luma.mrl_index,
                     ),
+                    luma.fsc_mode,
                 )
             } else {
                 let modes = decode_general_intra_block_modes(
@@ -861,6 +869,7 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                     chroma_tools,
                     joint_modes,
                     uses_mrls,
+                    fsc_modes,
                     frontier.b_size.index(),
                     frontier.r,
                     frontier.c,
@@ -879,6 +888,7 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                     GeneralIntraLeafMode::luma(
                         modes.intra_joint_mode,
                         modes.y_mode,
+                        modes.fsc_mode,
                         modes.uses_mrls,
                     ),
                     LumaTransformTypeContext::with_mrl_index(
@@ -886,6 +896,7 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                         modes.angle_delta_y,
                         modes.mrl_index,
                     ),
+                    modes.fsc_mode,
                 )
             };
 
@@ -895,6 +906,7 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                 frontier,
                 tx_skip_rows,
                 tx_skip_cols,
+                fsc_mode,
                 tile_offset,
             )?;
             records.try_reserve(luma_records.len()).map_err(|_| {
@@ -914,6 +926,7 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                 &luma_records,
                 &mut records,
                 luma_transform_type_context,
+                fsc_mode,
                 transform_tool_residual_policy,
                 tile_offset,
             )?;
@@ -948,11 +961,19 @@ fn derive_selectable_luma_tx_records_for_block(
     frontier: &DecodeBlockFrontier,
     mi_rows: usize,
     mi_cols: usize,
+    fsc_mode: u8,
     tile_offset: ByteOffset,
 ) -> Result<Vec<SelectableLumaTxRecord>> {
     let mut grid = SelectableLumaTxGrid::new(mi_rows, mi_cols)
         .map_err(|error| selectable_transform_record_error(error, tile_offset))?;
-    read_tx_size_selectable(work_unit, symbols, frontier, &mut grid, tile_offset)?;
+    read_tx_size_selectable(
+        work_unit,
+        symbols,
+        frontier,
+        &mut grid,
+        fsc_mode,
+        tile_offset,
+    )?;
     let n4w = frontier.b_size.num_4x4_wide().map_err(|_| {
         wienerns_lr_selectable_transform_record_error_reason(
             tile_offset,
@@ -981,6 +1002,7 @@ fn decode_selectable_residual_chunks(
     luma_records: &[SelectableLumaTxRecord],
     records: &mut Vec<WienerNsLrTxSkipTransformRecord>,
     luma_transform_type_context: LumaTransformTypeContext,
+    fsc_mode: u8,
     transform_tool_residual_policy: TransformToolResidualPolicy,
     tile_offset: ByteOffset,
 ) -> Result<()> {
@@ -1012,6 +1034,7 @@ fn decode_selectable_residual_chunks(
                         n4h,
                         n4w,
                         luma_transform_type_context,
+                        fsc_mode,
                         transform_tool_residual_policy,
                         tile_offset,
                     )?;
@@ -1059,6 +1082,7 @@ fn decode_selectable_residual_chunks(
                             chroma_luma_n4w,
                             chroma_luma_n4h,
                             uv_mode,
+                            fsc_mode,
                             transform_tool_residual_policy,
                             tile_offset,
                         )?;
@@ -1137,6 +1161,7 @@ fn decode_chroma_residual_chunks(
                         chroma_luma_n4w,
                         chroma_luma_n4h,
                         uv_mode,
+                        0,
                         transform_tool_residual_policy,
                         tile_offset,
                     )?;
@@ -1162,6 +1187,7 @@ fn decode_luma_records_for_chunk(
     block_rows: usize,
     block_cols: usize,
     luma_transform_type_context: LumaTransformTypeContext,
+    fsc_mode: u8,
     transform_tool_residual_policy: TransformToolResidualPolicy,
     tile_offset: ByteOffset,
 ) -> Result<()> {
@@ -1204,6 +1230,7 @@ fn decode_luma_records_for_chunk(
             false,
             uv_mode,
             false,
+            fsc_mode != 0,
             residual_policy,
         )
         .map_err(|error| {
@@ -1262,6 +1289,7 @@ fn decode_chroma_group(
     chroma_luma_n4w: usize,
     chroma_luma_n4h: usize,
     uv_mode: usize,
+    fsc_mode: u8,
     transform_tool_residual_policy: TransformToolResidualPolicy,
     tile_offset: ByteOffset,
 ) -> Result<()> {
@@ -1287,6 +1315,7 @@ fn decode_chroma_group(
         false,
         uv_mode,
         false,
+        fsc_mode != 0,
         transform_tool_residual_policy,
     )
     .map_err(|error| {
@@ -1307,6 +1336,7 @@ fn decode_chroma_group(
         true,
         !u.all_zero,
         uv_mode,
+        false,
         false,
         transform_tool_residual_policy,
     )
@@ -1376,6 +1406,7 @@ fn read_tx_size_selectable(
     symbols: &mut SymbolDecoder<'_>,
     frontier: &DecodeBlockFrontier,
     grid: &mut SelectableLumaTxGrid,
+    fsc_mode: u8,
     tile_offset: ByteOffset,
 ) -> Result<()> {
     let b_size = frontier.b_size.index();
@@ -1443,6 +1474,7 @@ fn read_tx_size_selectable(
         frontier.c,
         max_tx_size,
         b_size,
+        fsc_mode,
         tile_offset,
     )?
     else {
@@ -1470,6 +1502,7 @@ fn read_tx_partition_symbols(
     col: usize,
     tx_size: usize,
     mi_size: usize,
+    fsc_mode: u8,
     tile_offset: ByteOffset,
 ) -> Result<Option<usize>> {
     if row >= grid.rows || col >= grid.cols {
@@ -1485,6 +1518,7 @@ fn read_tx_partition_symbols(
 
     let block_width = block_dimension("Block_Width", mi_size, true, tile_offset)?;
     let block_height = block_dimension("Block_Height", mi_size, false, tile_offset)?;
+    let tx_fsc_mode = usize::from(fsc_mode != 0);
     if block_width <= 64 && block_height <= 64 {
         let txfm_split_group = table_usize(
             "Size_To_Tx_Part_Group_Lookup",
@@ -1496,7 +1530,7 @@ fn read_tx_partition_symbols(
             work_unit,
             symbols,
             TileCdfSelector::TxDoPartition {
-                fsc_mode: 0,
+                fsc_mode: tx_fsc_mode,
                 is_inter: 0,
                 txfm_split_group,
             },
@@ -1514,7 +1548,7 @@ fn read_tx_partition_symbols(
                     work_unit,
                     symbols,
                     TileCdfSelector::TxPartitionType {
-                        fsc_mode: 0,
+                        fsc_mode: tx_fsc_mode,
                         is_inter: 0,
                         ctx,
                         reduced: false,
@@ -1544,7 +1578,7 @@ fn read_tx_partition_symbols(
                             work_unit,
                             symbols,
                             TileCdfSelector::Tx2Or3PartitionType {
-                                fsc_mode: 0,
+                                fsc_mode: tx_fsc_mode,
                                 is_inter: 0,
                                 ctx: vert_or_horz_group.checked_sub(1).ok_or_else(|| {
                                     wienerns_lr_selectable_transform_record_error_reason(
@@ -2086,7 +2120,7 @@ fn selectable_luma_leaf_uses_actual_extent(
     n4w: usize,
     n4h: usize,
 ) -> bool {
-    is_luma_part && !has_chroma && matches!((n4w, n4h), (1, 8) | (2, 8))
+    is_luma_part && !has_chroma && matches!((n4w, n4h), (1, 8) | (2, 8) | (2, 16))
 }
 
 fn selectable_chroma_offset_leaf_supported(is_luma_part: bool, has_chroma: bool) -> bool {
@@ -2099,14 +2133,13 @@ fn selectable_chroma_offset_leaf_supported(is_luma_part: bool, has_chroma: bool)
 mod actual_extent_tests;
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
+#[path = "tx_records_tool_gate_tests.rs"]
+mod tool_gate_tests;
+
+#[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-
-    use splot_core::headers::frame::{
-        build_minimal_intra_clk_core, build_minimal_intra_sequence_header,
-    };
-
-    use crate::error::DecodeError;
 
     use super::super::derive_wienerns_lr_tx_skip_grid_retention;
     use super::*;
@@ -2123,74 +2156,6 @@ mod tests {
             values: vec![None; rows * cols],
             sb_size4,
         }
-    }
-
-    fn selectable_tool_gate_fixture() -> (SequenceHeader, FrameHeaderCore) {
-        let mut sequence = build_minimal_intra_sequence_header().unwrap();
-        let (mut core, _) = build_minimal_intra_clk_core().unwrap();
-        if let Some(intra) = sequence.intra.as_mut() {
-            intra.enable_dip = false;
-            intra.enable_ibp = false;
-            intra.enable_mrls = false;
-            intra.enable_intra_edge_filter = false;
-        }
-        if let Some(tq) = sequence.transform_quant_entropy.as_mut() {
-            tq.enable_fsc = false;
-            tq.enable_cctx = false;
-            tq.enable_idtx_intra = false;
-            tq.enable_intra_ist = false;
-            tq.enable_chroma_dctonly = false;
-        }
-        core.intra_tail.as_mut().unwrap().tx_mode = TxMode::Select;
-        (sequence, core)
-    }
-
-    fn unsupported_reason(error: DecodeError) -> &'static str {
-        match error {
-            DecodeError::UnsupportedFeature { unsupported } => unsupported.reason(),
-            other => panic!("unexpected decode error: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn selectable_tool_gate_admits_minimal_inert_selectable_intra_header() {
-        let (sequence, core) = selectable_tool_gate_fixture();
-
-        ensure_selectable_transform_record_tool_gates(&sequence, &core, ByteOffset::new(0))
-            .unwrap();
-    }
-
-    #[test]
-    fn selectable_tool_gate_rejects_unsupported_intra_tools_before_tile_decode() {
-        let (mut sequence, core) = selectable_tool_gate_fixture();
-        sequence.intra.as_mut().unwrap().enable_dip = true;
-
-        let error =
-            ensure_selectable_transform_record_tool_gates(&sequence, &core, ByteOffset::new(74))
-                .unwrap_err();
-
-        assert_eq!(
-            unsupported_reason(error),
-            "unsupported_wienerns_lr_selectable_transform_records_unsupported_intra_tool"
-        );
-    }
-
-    #[test]
-    fn selectable_tool_gate_admits_enabled_inactive_transform_and_mrl_tools() {
-        let (mut sequence, mut core) = selectable_tool_gate_fixture();
-        sequence.intra.as_mut().unwrap().enable_mrls = true;
-        sequence.intra.as_mut().unwrap().enable_intra_edge_filter = true;
-        sequence.intra.as_mut().unwrap().enable_ibp = true;
-        let tq = sequence.transform_quant_entropy.as_mut().unwrap();
-        tq.enable_fsc = true;
-        tq.enable_cctx = true;
-        tq.enable_idtx_intra = true;
-        tq.enable_intra_ist = true;
-        tq.enable_chroma_dctonly = true;
-        core.ccso_params.as_mut().unwrap().ccso_frame_flag = Some(true);
-
-        ensure_selectable_transform_record_tool_gates(&sequence, &core, ByteOffset::new(0))
-            .unwrap();
     }
 
     #[test]
