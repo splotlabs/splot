@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 437 feature(s); 384 cite a spec section.
+Matrix version 1. Last reviewed 2026-06-15. 438 feature(s); 385 cite a spec section.
 
 One row per (spec section, feature) pair, in spec order; a feature citing both a syntax and a semantics section appears under both. The canonical status source is [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); the full per-feature ledger is [FEATURE-STATUS.md](./FEATURE-STATUS.md).
 
@@ -973,6 +973,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.13.3.16](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-16) | Rounding variables derivation process | `DECODE-INTER-COMPOUND-AVERAGE` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 7.13.3.16](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-16) | Rounding variables derivation process | `RECON-SUBPEL-MC` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.13.3.17](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-17) | Motion vector scaling process | `DECODE-INTER-SUBPEL-MV` | ✅ | ✅ | — | ✅ | 1 |
+| [§ 7.13.3.18](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-18) | Block inter prediction process | `DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 7.13.3.18](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-18) | Block inter prediction process | `DECODE-FIRST-INTER-FRAME-FRONTIER` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 7.13.3.18](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-18) | Block inter prediction process | `DECODE-INTER-COMPOUND-AVERAGE` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 7.13.3.18](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-18) | Block inter prediction process | `DECODE-INTER-GRID-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
@@ -980,6 +981,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.13.3.18](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-18) | Block inter prediction process | `DECODE-INTER-MVORDER-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 7.13.3.18](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-18) | Block inter prediction process | `DECODE-INTER-MVSTACK-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 7.13.3.18](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-18) | Block inter prediction process | `DECODE-INTER-SUBPEL-MV` | ✅ | ✅ | — | ✅ | 1 |
+| [§ 7.13.3.18](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-18) | Block inter prediction process | `RECON-INTRABC-CURRENT-FRAME-COPY` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.13.3.18](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-18) | Block inter prediction process | `RECON-SUBPEL-MC` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.13.3.22](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-22) | Resolve divisor process | `CONF-RECON-INTRA-PREDICTION-FUZZ` | ✅ | — | — | ✅ | — |
 | [§ 7.13.3.22](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-22) | Resolve divisor process | `RECON-INTRA-DC-RECTANGULAR-PREDICTION` | ✅ | — | ✅ | ✅ | — |

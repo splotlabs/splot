@@ -50,23 +50,23 @@ const fn clip3(low: i64, high: i64, value: i64) -> i64 {
 /// The § 7.13.3.17 / § 7.13.3.18 scaling + clipping result for one plane: the
 /// inputs to [`splot_recon::SubpelPredictParams`] for the identity-scale block.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct PlaneScaling {
+pub(in crate::runtime_minimal) struct PlaneScaling {
     /// `startX` (1/1024-sample units).
-    pub(super) start_x: i64,
+    pub(in crate::runtime_minimal) start_x: i64,
     /// `startY` (1/1024-sample units).
-    pub(super) start_y: i64,
+    pub(in crate::runtime_minimal) start_y: i64,
     /// `stepX` (1/1024-sample units); `1024` for the identity scale.
-    pub(super) step_x: i64,
+    pub(in crate::runtime_minimal) step_x: i64,
     /// `stepY` (1/1024-sample units); `1024` for the identity scale.
-    pub(super) step_y: i64,
+    pub(in crate::runtime_minimal) step_y: i64,
     /// `firstX` clip bound.
-    pub(super) first_x: i64,
+    pub(in crate::runtime_minimal) first_x: i64,
     /// `firstY` clip bound.
-    pub(super) first_y: i64,
+    pub(in crate::runtime_minimal) first_y: i64,
     /// `lastX` clip bound.
-    pub(super) last_x: i64,
+    pub(in crate::runtime_minimal) last_x: i64,
     /// `lastY` clip bound.
-    pub(super) last_y: i64,
+    pub(in crate::runtime_minimal) last_y: i64,
 }
 
 /// Derives the § 7.13.3.17 scaling + § 7.13.3.18 clip bounds for a plane block at
@@ -78,7 +78,7 @@ pub(super) struct PlaneScaling {
 /// is the full top-left superblock at luma `(0, 0)`, so the plane position is
 /// `(0, 0)` and only the MV's fractional part shifts the reference sampling.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn derive_plane_scaling(
+pub(in crate::runtime_minimal) fn derive_plane_scaling(
     plane_x: i64,
     plane_y: i64,
     mv_row: i64,

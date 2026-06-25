@@ -4,6 +4,7 @@
 //! Mutable current-frame reconstruction workspace.
 //!
 //! Feature tracking: `RECON-CURRENT-FRAME-WORKSPACE`,
+//! `RECON-INTRABC-CURRENT-FRAME-COPY`,
 //! `RECON-INTRA-DC-RECTANGULAR-PREDICTION`,
 //! `RECON-INTRA-BASIC-PAETH-PREDICTION`,
 //! `RECON-INTRA-SMOOTH-PREDICTION`,
@@ -211,6 +212,57 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
         let max = self.info.bit_depth().max_sample();
         self.plane_mut(plane)?
             .write_rect(rect, samples, row_stride_samples, max)
+    }
+
+    /// Copies an already reconstructed source rectangle within one workspace plane.
+    ///
+    /// The source rectangle is snapped into bounded scratch storage before the
+    /// target is mutated, so overlapping source and target rectangles read the
+    /// original source samples. This is the checked current-frame copy primitive
+    /// used by bounded IntrABC prediction handoffs; AV2 availability checks remain
+    /// the caller's responsibility.
+    ///
+    /// # Errors
+    /// Returns [`ReconError`] when the plane is absent, either rectangle is out of
+    /// bounds, source and target shapes differ, geometry arithmetic overflows, or
+    /// scratch allocation fails.
+    pub fn copy_rect_within_plane(
+        &mut self,
+        plane: PlaneId,
+        source: PlaneRect,
+        target: PlaneRect,
+    ) -> Result<()> {
+        let source_plane = self.plane(plane)?;
+        source_plane.ensure_rect(source)?;
+        source_plane.ensure_rect(target)?;
+        if source.size() != target.size() {
+            return Err(ReconError::WorkspaceCopyShapeMismatch {
+                plane,
+                source,
+                target,
+            });
+        }
+
+        let sample_count =
+            source
+                .width()
+                .checked_mul(source.height())
+                .ok_or(ReconError::ArithmeticOverflow {
+                    context: "current-frame workspace copy sample count",
+                })?;
+        let mut scratch = Vec::new();
+        scratch.try_reserve_exact(sample_count).map_err(|_| {
+            ReconError::WorkspaceAllocationFailed {
+                plane,
+                context: "copy scratch",
+            }
+        })?;
+        for row in source_plane.rect_rows(source)? {
+            // splot-copy-ok: IntrABC copy snapshots the bounded source rectangle before overlapping target writes.
+            scratch.extend_from_slice(row);
+        }
+
+        self.write_rect(plane, target, &scratch, source.width())
     }
 
     /// Writes a contiguous square prediction block into `plane`.
