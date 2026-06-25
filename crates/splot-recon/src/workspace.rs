@@ -218,8 +218,9 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
     ///
     /// The source rectangle is snapped into bounded scratch storage before the
     /// target is mutated, so overlapping source and target rectangles read the
-    /// original source samples. This is the checked current-frame copy primitive
-    /// used by bounded IntrABC prediction handoffs; AV2 availability checks remain
+    /// original source samples. This composes with integer-vector IntrABC copy
+    /// handoffs; fractional BILINEAR IntrABC prediction needs a convolution path
+    /// rather than an equal-shape rectangle copy. AV2 availability checks remain
     /// the caller's responsibility.
     ///
     /// # Errors

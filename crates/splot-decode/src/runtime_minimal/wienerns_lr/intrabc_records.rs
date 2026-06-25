@@ -667,6 +667,8 @@ fn intrabc_luma_mi_storage(
     core: &FrameHeaderCore,
     tile_offset: ByteOffset,
 ) -> Result<(PlaneSize, i64, i64)> {
+    // Keep the missing-frame-size diagnostic distinct, but derive the luma
+    // prediction domain from the padded MI sentinels used by §7.13.3.18.
     let _frame_size = core.frame_size.ok_or_else(|| {
         wienerns_lr_selectable_transform_record_error_reason(
             tile_offset,
