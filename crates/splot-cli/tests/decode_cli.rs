@@ -298,8 +298,8 @@ fn local_ac0ej3_reaches_current_runtime_gate_without_output() {
         json["message"]
             .as_str()
             .unwrap()
-            .contains("TX_MODE_SELECT LrTxSkip transform-record handoff"),
-        "diagnostic must describe the selectable transform-record frontier"
+            .contains("current-frame IntrABC prediction"),
+        "diagnostic must describe the IntrABC prediction frontier"
     );
     assert_eq!(json["byte_offset"], 110);
     assert_ne!(

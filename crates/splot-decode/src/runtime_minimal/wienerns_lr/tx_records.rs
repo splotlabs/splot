@@ -37,6 +37,7 @@ use super::{
     wienerns_lr_selectable_transform_record_error_reason,
 };
 
+mod max_rect;
 mod skip_records;
 
 const BLOCK_4X4: usize = 0;
@@ -57,6 +58,14 @@ const DELTA_Q_REM_BITS_WIDTH: u32 = 3;
 const DELTA_Q_SIGN_BIT_WIDTH: u32 = 1;
 
 type SelectableTransformGridSize = (usize, usize);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SelectableTxSizeContext {
+    grid_size: SelectableTransformGridSize,
+    fsc_mode: u8,
+    is_inter: bool,
+    skip_flag: bool,
+}
 
 #[derive(Debug, Eq, PartialEq)]
 pub(super) struct WienerNsLrLiveTransformRecordHandoff {
@@ -922,9 +931,12 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                 work_unit,
                 symbols,
                 frontier,
-                (tx_skip_rows, tx_skip_cols),
-                fsc_mode,
-                prelude.is_inter,
+                SelectableTxSizeContext {
+                    grid_size: (tx_skip_rows, tx_skip_cols),
+                    fsc_mode,
+                    is_inter: prelude.is_inter,
+                    skip_flag: prelude.skip_flag,
+                },
                 tile_offset,
             )?;
             records.try_reserve(luma_records.len()).map_err(|_| {
@@ -987,20 +999,17 @@ fn derive_selectable_luma_tx_records_for_block(
     work_unit: &mut DecodeTileWorkUnit<'_>,
     symbols: &mut SymbolDecoder<'_>,
     frontier: &DecodeBlockFrontier,
-    grid_size: SelectableTransformGridSize,
-    fsc_mode: u8,
-    is_inter: bool,
+    context: SelectableTxSizeContext,
     tile_offset: ByteOffset,
 ) -> Result<Vec<SelectableLumaTxRecord>> {
-    let mut grid = SelectableLumaTxGrid::new(grid_size.0, grid_size.1)
+    let mut grid = SelectableLumaTxGrid::new(context.grid_size.0, context.grid_size.1)
         .map_err(|error| selectable_transform_record_error(error, tile_offset))?;
     read_tx_size_selectable(
         work_unit,
         symbols,
         frontier,
         &mut grid,
-        fsc_mode,
-        is_inter,
+        context,
         tile_offset,
     )?;
     let n4w = frontier.b_size.num_4x4_wide().map_err(|_| {
@@ -1126,6 +1135,7 @@ fn decode_selectable_residual_chunks(
                             chroma_luma_n4h,
                             uv_mode,
                             is_inter,
+                            fsc_mode,
                             transform_tool_residual_policy,
                             tile_offset,
                         )?;
@@ -1205,6 +1215,7 @@ fn decode_chroma_residual_chunks(
                         chroma_luma_n4h,
                         uv_mode,
                         false,
+                        0,
                         transform_tool_residual_policy,
                         tile_offset,
                     )?;
@@ -1334,6 +1345,7 @@ fn decode_chroma_group(
     chroma_luma_n4h: usize,
     uv_mode: usize,
     is_inter: bool,
+    fsc_mode: u8,
     transform_tool_residual_policy: TransformToolResidualPolicy,
     tile_offset: ByteOffset,
 ) -> Result<()> {
@@ -1359,7 +1371,7 @@ fn decode_chroma_group(
         false,
         uv_mode,
         is_inter,
-        false,
+        fsc_mode != 0,
         transform_tool_residual_policy,
     )
     .map_err(|error| {
@@ -1450,8 +1462,7 @@ fn read_tx_size_selectable(
     symbols: &mut SymbolDecoder<'_>,
     frontier: &DecodeBlockFrontier,
     grid: &mut SelectableLumaTxGrid,
-    fsc_mode: u8,
-    is_inter: bool,
+    context: SelectableTxSizeContext,
     tile_offset: ByteOffset,
 ) -> Result<()> {
     let b_size = frontier.b_size.index();
@@ -1481,6 +1492,7 @@ fn read_tx_size_selectable(
     .then_some((n4h, n4w));
     let max_tx_size = table_usize("Max_Tx_Size_Rect", &MAX_TX_SIZE_RECT, b_size)
         .map_err(|error| selectable_transform_record_error(error, tile_offset))?;
+    let allow_select = !context.skip_flag || !context.is_inter;
 
     let width = frontier.b_size.width_samples().map_err(|_| {
         wienerns_lr_selectable_transform_record_error_reason(
@@ -1496,6 +1508,17 @@ fn read_tx_size_selectable(
     })?;
     let width_chunks = width >> 6;
     let height_chunks = height >> 6;
+    if !allow_select {
+        return max_rect::set_max_rect_tx_records(
+            grid,
+            frontier.r,
+            frontier.c,
+            n4h,
+            n4w,
+            max_tx_size,
+            tile_offset,
+        );
+    }
     if width_chunks > 1 || height_chunks > 1 {
         for chunk_y in 0..height_chunks {
             for chunk_x in 0..width_chunks {
@@ -1519,8 +1542,8 @@ fn read_tx_size_selectable(
         frontier.c,
         max_tx_size,
         b_size,
-        fsc_mode,
-        is_inter,
+        context.fsc_mode,
+        context.is_inter,
         tile_offset,
     )?
     else {
@@ -2175,6 +2198,16 @@ mod actual_extent_tests;
 mod tool_gate_tests;
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
+#[path = "tx_records_cdef_tests.rs"]
+mod cdef_tests;
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+#[path = "tx_records_max_rect_tests.rs"]
+mod max_rect_tests;
+
+#[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -2185,56 +2218,6 @@ mod tests {
     const TX_64X64: usize = 4;
     const TX_8X32: usize = 15;
     const TX_4X32: usize = 19;
-
-    fn cdef_state(rows: usize, cols: usize, sb_size4: usize) -> CdefState {
-        CdefState {
-            rows,
-            cols,
-            values: vec![None; rows * cols],
-            sb_size4,
-        }
-    }
-
-    #[test]
-    fn cdef_index0_context_uses_zero_strength_neighbours_in_same_superblock() {
-        let offset = ByteOffset::new(0);
-        let mut state = cdef_state(4, 4, 32);
-
-        assert_eq!(state.cdef_index0_ctx_at(0, 0, offset).unwrap(), 0);
-
-        let left = state.index(0, 0, offset).unwrap();
-        state.values[left] = Some(0);
-        assert_eq!(state.cdef_index0_ctx_at(0, 16, offset).unwrap(), 2);
-
-        let above = state.index(0, 1, offset).unwrap();
-        state.values[above] = Some(0);
-        let left = state.index(1, 0, offset).unwrap();
-        state.values[left] = Some(0);
-        assert_eq!(state.cdef_index0_ctx_at(16, 16, offset).unwrap(), 3);
-
-        state.values[left] = Some(2);
-        assert_eq!(state.cdef_index0_ctx_at(16, 16, offset).unwrap(), 1);
-
-        let mut state = cdef_state(4, 4, 32);
-        let above = state.index(1, 1, offset).unwrap();
-        state.values[above] = Some(0);
-        assert_eq!(state.cdef_index0_ctx_at(32, 16, offset).unwrap(), 0);
-    }
-
-    #[test]
-    fn cdef_fill_units_uses_cdef_aligned_origin_and_block_extent() {
-        let offset = ByteOffset::new(0);
-        let mut state = cdef_state(4, 4, 32);
-
-        state.fill_units(8, 8, 32, 32, 5, offset).unwrap();
-
-        assert_eq!(state.value(0, 0, offset).unwrap(), Some(5));
-        assert_eq!(state.value(0, 1, offset).unwrap(), Some(5));
-        assert_eq!(state.value(1, 0, offset).unwrap(), Some(5));
-        assert_eq!(state.value(1, 1, offset).unwrap(), Some(5));
-        assert_eq!(state.value(2, 0, offset).unwrap(), None);
-        assert_eq!(state.value(0, 2, offset).unwrap(), None);
-    }
 
     #[test]
     fn selectable_tx_grid_records_middle_and_scan_order_flags() {

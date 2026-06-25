@@ -313,8 +313,9 @@ impl TileIntrabcPreludeState {
             if same_sb_row && r / self.sb_size4 != row / self.sb_size4 {
                 continue;
             }
-            if !positions.contains(&candidate) {
-                positions.push(candidate);
+            positions.push(candidate);
+            if positions.len() == 2 {
+                break;
             }
         }
         Ok(positions)
@@ -541,7 +542,13 @@ fn assign_intrabc_mv(
             symbols,
             tile_offset,
             MvReadConfig::intrabc(mv_precision),
-        )?;
+        )
+        .map_err(|_| {
+            wienerns_lr_selectable_transform_record_error_reason(
+                tile_offset,
+                "unsupported_wienerns_lr_selectable_transform_records_intrabc_newmv",
+            )
+        })?;
         Mv {
             row: mv_clamp_to_integer(pred_mv.row + diff.row),
             col: mv_clamp_to_integer(pred_mv.col + diff.col),
@@ -651,7 +658,7 @@ fn superblock_samples(sequence: &SequenceHeader, tile_offset: ByteOffset) -> Res
     Ok(match partition.seq_sb_size() {
         SuperblockSize::Block64x64 => 64,
         SuperblockSize::Block128x128 => 128,
-        SuperblockSize::Block256x256 => 256,
+        SuperblockSize::Block256x256 => 128,
     })
 }
 
@@ -732,6 +739,8 @@ mod tests {
     use crate::tile_payload::{FrameCdfSubset, MvCdfSelector};
 
     use super::*;
+
+    const BLOCK_16X16: usize = 6;
 
     fn selectable_fixture() -> (SequenceHeader, FrameHeaderCore) {
         let mut sequence = build_minimal_intra_sequence_header().unwrap();
@@ -983,6 +992,36 @@ mod tests {
     }
 
     #[test]
+    fn intrabc_newmv_read_errors_use_intrabc_frontier_diagnostic() {
+        let (sequence, _) = selectable_fixture();
+        let mut cdfs = FrameCdfSubset::from_defaults().tile_copy();
+        let payload = [];
+        let mut symbols = decoder(&payload);
+        let block = IntrabcBlockContext::new(0, 0, 2, false);
+        let geometry = IntrabcBlockGeometry::new(block, 4, 4);
+
+        // Force the shared read_mv helper to fail at the IntrABC caller boundary;
+        // public IntrABC mode-info only passes spec-valid precisions.
+        let error = assign_intrabc_mv(
+            &mut cdfs,
+            &mut symbols,
+            &sequence,
+            geometry,
+            0,
+            0,
+            0,
+            0,
+            ByteOffset::new(20),
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            unsupported_reason(error),
+            "unsupported_wienerns_lr_selectable_transform_records_intrabc_newmv"
+        );
+    }
+
+    #[test]
     fn non_intrabc_path_reads_only_use_intrabc_symbol() {
         let (_, core) = selectable_fixture();
         let mut cdfs = FrameCdfSubset::from_defaults().tile_copy();
@@ -1050,5 +1089,93 @@ mod tests {
             2
         );
         assert_eq!(state.skip_ctx(16, 8, 4, 4, ByteOffset::new(0)).unwrap(), 2);
+    }
+
+    #[test]
+    fn contexts_stop_after_first_two_valid_neighbour_candidates() {
+        let mut state = state();
+        let ordinary = IntrabcBlockPrelude {
+            use_intrabc: false,
+            is_inter: false,
+            skip_flag: false,
+            intrabc: None,
+        };
+        let intrabc_skip = IntrabcBlockPrelude {
+            use_intrabc: true,
+            is_inter: true,
+            skip_flag: true,
+            intrabc: Some(IntrabcInfo {
+                intrabc_mode: 1,
+                ref_mv_idx: 0,
+                mv_precision: MV_PRECISION_QUARTER_PEL,
+                block_mv: IntrabcBlockVector { row: -512, col: 0 },
+            }),
+        };
+        state
+            .record_block(23, 7, 1, 1, ordinary, ByteOffset::new(0))
+            .unwrap();
+        state
+            .record_block(19, 11, 1, 1, ordinary, ByteOffset::new(0))
+            .unwrap();
+        state
+            .record_block(20, 7, 1, 1, intrabc_skip, ByteOffset::new(0))
+            .unwrap();
+        state
+            .record_block(19, 8, 1, 1, intrabc_skip, ByteOffset::new(0))
+            .unwrap();
+
+        assert_eq!(
+            state.intrabc_ctx(20, 8, 4, 4, ByteOffset::new(0)).unwrap(),
+            0
+        );
+        assert_eq!(state.skip_ctx(20, 8, 4, 4, ByteOffset::new(0)).unwrap(), 0);
+    }
+
+    #[test]
+    fn contexts_preserve_duplicate_neighbour_slots_before_cap() {
+        let mut state = state();
+        let intrabc_skip = IntrabcBlockPrelude {
+            use_intrabc: true,
+            is_inter: true,
+            skip_flag: true,
+            intrabc: Some(IntrabcInfo {
+                intrabc_mode: 1,
+                ref_mv_idx: 0,
+                mv_precision: MV_PRECISION_QUARTER_PEL,
+                block_mv: IntrabcBlockVector { row: -512, col: 0 },
+            }),
+        };
+        state
+            .record_block(0, 7, 1, 1, intrabc_skip, ByteOffset::new(0))
+            .unwrap();
+
+        assert_eq!(
+            state.intrabc_ctx(0, 8, 4, 1, ByteOffset::new(0)).unwrap(),
+            2
+        );
+        assert_eq!(state.skip_ctx(0, 8, 4, 1, ByteOffset::new(0)).unwrap(), 2);
+    }
+
+    #[test]
+    fn intrabc_ref_stack_caps_256_sequence_superblocks_to_intra_sb_size() {
+        let (mut sequence, _) = selectable_fixture();
+        let partition = sequence.partition.as_mut().unwrap();
+        partition.use_256x256_superblock = true;
+        partition.use_128x128_superblock = false;
+        let geometry =
+            IntrabcBlockGeometry::new(IntrabcBlockContext::new(0, 0, BLOCK_16X16, false), 4, 4);
+
+        let candidates =
+            intrabc_ref_stack_with_limit(&sequence, geometry, 2, ByteOffset::new(0)).unwrap();
+
+        assert_eq!(
+            candidates,
+            vec![
+                Mv { row: -1024, col: 0 },
+                Mv { row: 0, col: -3072 },
+                Mv { row: -128, col: 0 },
+                Mv { row: 0, col: -128 },
+            ]
+        );
     }
 }

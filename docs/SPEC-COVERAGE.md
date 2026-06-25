@@ -583,6 +583,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.20.7.32](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-32) | Read CFL alphas syntax | `DECODE-AC0EJ3-CFL-CHROMA-MODE-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.8.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-2) | Transform type syntax | `DECODE-AC0EJ3-DCTONLY-RESIDUAL-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.8.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-2) | Transform type syntax | `DECODE-AC0EJ3-LUMA-TXTYPE-RESIDUAL-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 5.20.8.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-2) | Transform type syntax | `DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 5.20.8.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-2) | Transform type syntax | `DECODE-INTER-RESIDUAL-DCT` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 5.20.8.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-2) | Transform type syntax | `ENC-INTRA-BLOCK-TRACE-IST` | ✅ | — | — | ✅ | — |
 | [§ 5.20.8.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-2) | Transform type syntax | `ENC-INTRA-BLOCK-TRACE-TWO-COEFF-TX-TYPE` | ✅ | — | — | ✅ | — |

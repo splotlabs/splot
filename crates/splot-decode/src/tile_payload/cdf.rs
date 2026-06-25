@@ -1936,6 +1936,18 @@ impl TileCdfRows {
                 num_log2,
             );
         }
+        avg_cdf_row(
+            &mut self.intrabc_mode,
+            &tile.intrabc_mode,
+            tile_num,
+            num_log2,
+        );
+        avg_cdf_row(
+            &mut self.intrabc_precision,
+            &tile.intrabc_precision,
+            tile_num,
+            num_log2,
+        );
         for ctx in 0..FSC_MODE_CONTEXTS {
             for bsize_group in 0..FSC_BSIZE_CONTEXTS {
                 avg_cdf_row(
@@ -2011,6 +2023,16 @@ impl TileCdfRows {
     #[cfg(test)]
     pub(crate) const fn delta_q(&self) -> &DeltaQCdfRow {
         &self.delta_q
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn intrabc_mode(&self) -> &IntrabcModeCdfRow {
+        &self.intrabc_mode
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn intrabc_precision(&self) -> &IntrabcPrecisionCdfRow {
+        &self.intrabc_precision
     }
 
     #[cfg(test)]

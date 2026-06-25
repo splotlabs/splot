@@ -160,6 +160,12 @@ pub(in crate::runtime_minimal) fn wienerns_lr_selectable_transform_record_error_
             AC0EJ3_LUMA_TXTYPE_RESIDUAL_HANDOFF_FEATURE_ID,
             "5.20.3.1",
         ),
+        "unsupported_wienerns_lr_selectable_transform_records_intrabc" => (
+            "minimal runtime consumed active AV2 frame-level Wiener NS LR unit syntax, derived selectable transform records, and reached the AV2 §5.20.5.3 `use_intrabc` mode-info branch; IntrABC mode-info, block-vector prediction, decoded samples, FilterClass retention, loop-restoration filtering/output, and reference refresh are not applied",
+            AC0EJ3_SELECTABLE_TRANSFORM_RECORDS_MATRIX_ROW,
+            AC0EJ3_SELECTABLE_TRANSFORM_RECORDS_FEATURE_ID,
+            "5.20.5.3",
+        ),
         "unsupported_wienerns_lr_selectable_transform_records_intrabc_newmv" => (
             "minimal runtime consumed active AV2 frame-level Wiener NS LR unit syntax, reached the TX_MODE_SELECT LrTxSkip transform-record handoff, consumed the bounded IntrABC mode-info prelude, and stopped before unsupported §5.20.5.4 NEWMV block-vector syntax; decoded samples, IntrABC prediction, loop-restoration filtering/output, and reference refresh are not applied",
             AC0EJ3_SELECTABLE_TRANSFORM_RECORDS_MATRIX_ROW,
