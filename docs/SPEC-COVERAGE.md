@@ -328,6 +328,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.20.5.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-1) | Mode info syntax | `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER` | ✅ | 🟡 | — | ✅ | 4 |
 | [§ 5.20.5.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3) | Intra frame mode info syntax | `DECODE-AC0EJ3-ACTIVE-INTRA-TOOL-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.5.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3) | Intra frame mode info syntax | `DECODE-AC0EJ3-INTRA-PRELUDE-TX-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 5.20.5.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3) | Intra frame mode info syntax | `DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 5.20.5.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3) | Intra frame mode info syntax | `DECODE-GENERAL-INTRA-ANGLE` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.5.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3) | Intra frame mode info syntax | `DECODE-GENERAL-INTRA-ANGLE-D113` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.5.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3) | Intra frame mode info syntax | `DECODE-GENERAL-INTRA-ANGLE-D203` | ✅ | 🟡 | — | ✅ | 1 |
@@ -579,6 +580,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.20.7.32](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-32) | Read CFL alphas syntax | `DECODE-AC0EJ3-CFL-CHROMA-MODE-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.8.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-2) | Transform type syntax | `DECODE-AC0EJ3-DCTONLY-RESIDUAL-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.8.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-2) | Transform type syntax | `DECODE-AC0EJ3-LUMA-TXTYPE-RESIDUAL-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 5.20.8.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-2) | Transform type syntax | `DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 5.20.8.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-2) | Transform type syntax | `DECODE-INTER-RESIDUAL-DCT` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 5.20.8.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-2) | Transform type syntax | `ENC-INTRA-BLOCK-TRACE-IST` | ✅ | — | — | ✅ | — |
 | [§ 5.20.8.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-2) | Transform type syntax | `ENC-INTRA-BLOCK-TRACE-TWO-COEFF-TX-TYPE` | ✅ | — | — | ✅ | — |

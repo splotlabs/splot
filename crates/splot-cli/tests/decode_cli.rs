@@ -283,7 +283,7 @@ fn local_ac0ej3_reaches_current_runtime_gate_without_output() {
     assert!(out.stderr.is_empty(), "stderr was not empty");
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(json["rule_id"], "decode/unsupported-feature");
-    assert_eq!(json["spec_section"], "5.20.6.1");
+    assert_eq!(json["spec_section"], "5.20.5.3");
     assert_eq!(json["matrix_row"], "ac0ej3-selectable-transform-records");
     assert_eq!(
         json["feature_id"],
@@ -298,8 +298,8 @@ fn local_ac0ej3_reaches_current_runtime_gate_without_output() {
         json["message"]
             .as_str()
             .unwrap()
-            .contains("TX_MODE_SELECT LrTxSkip transform-record handoff"),
-        "diagnostic must describe the selectable transform-record frontier"
+            .contains("`use_intrabc` mode-info branch"),
+        "diagnostic must describe the IntrABC mode-info frontier"
     );
     assert_eq!(json["byte_offset"], 110);
     assert_ne!(

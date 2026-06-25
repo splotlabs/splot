@@ -1082,6 +1082,7 @@ fn decode_selectable_residual_chunks(
                             chroma_luma_n4w,
                             chroma_luma_n4h,
                             uv_mode,
+                            fsc_mode,
                             transform_tool_residual_policy,
                             tile_offset,
                         )?;
@@ -1160,6 +1161,7 @@ fn decode_chroma_residual_chunks(
                         chroma_luma_n4w,
                         chroma_luma_n4h,
                         uv_mode,
+                        0,
                         transform_tool_residual_policy,
                         tile_offset,
                     )?;
@@ -1287,6 +1289,7 @@ fn decode_chroma_group(
     chroma_luma_n4w: usize,
     chroma_luma_n4h: usize,
     uv_mode: usize,
+    fsc_mode: u8,
     transform_tool_residual_policy: TransformToolResidualPolicy,
     tile_offset: ByteOffset,
 ) -> Result<()> {
@@ -1312,7 +1315,7 @@ fn decode_chroma_group(
         false,
         uv_mode,
         false,
-        false,
+        fsc_mode != 0,
         transform_tool_residual_policy,
     )
     .map_err(|error| {
