@@ -4516,6 +4516,9 @@ the observed AV2 §5.20.5.3 `use_intrabc = 1` and bounded §5.20.5.4
 continue to mark decoded samples, IntrABC prediction, loop-restoration
 filtering/output, reference refresh, AVM/dav2d byte equality, and successful
 ac0ej3 decode as unsupported or unclaimed.
+When the local probe advances through the observed NEARMV/NEWMV block-vector
+subcase, the row SHALL document the §5.20.7.13 and §5.20.7.20 handoff while
+keeping current-frame block-copy prediction and output unsupported.
 
 #### Scenario: Matrix evidence records the IntrABC record handoff
 
@@ -4530,6 +4533,17 @@ ac0ej3 decode as unsupported or unclaimed.
   runtime probe
 - **AND** it records the next structured unsupported-feature reason reached by
   the local ac0ej3 probe
+
+#### Scenario: IntrABC NEWMV block-vector handoff is tracked
+
+- **WHEN** the local ac0ej3 probe advances past the previous
+  `unsupported_wienerns_lr_selectable_transform_records_intrabc_newmv` stop
+- **THEN** `docs/DECODER-SUPPORT-MATRIX.toml` SHALL list the IntrABC
+  `assign_mv(0)` / `read_mv()` handoff, the focused tests, and the new
+  post-block-vector unsupported reason.
+- **AND** it SHALL continue to state that IntrABC prediction/current-frame copy,
+  decoded sample population, loop restoration, output, reference refresh,
+  AVM/dav2d byte equality, and full ac0ej3 decode are not claimed.
 
 #### Scenario: Broad IntrABC and reconstruction claims remain absent
 

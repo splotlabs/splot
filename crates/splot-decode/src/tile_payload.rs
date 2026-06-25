@@ -50,7 +50,7 @@ pub(crate) use block_symbol::MinimalBlockSymbolTraceError;
 pub(crate) use cdf::block_context::{
     IntraYMode, SupportedChromaMode, SupportedDirectionalLumaMode, SupportedNonDcLumaMode,
 };
-pub(crate) use cdf::{FrameCdfSubset, TileCdfSelector, TileCdfSubset};
+pub(crate) use cdf::{FrameCdfSubset, MvCdfSelector, TileCdfSelector, TileCdfSubset};
 pub(crate) use coeff_state::{CoeffContextReset, TileCoeffContextState};
 pub(crate) use general_intra_block::{
     GeneralIntraBlockModeError, GeneralIntraBlockModes, GeneralIntraChromaModeContext,

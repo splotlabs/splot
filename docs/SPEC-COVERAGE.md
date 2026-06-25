@@ -393,10 +393,12 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.20.7.11](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-11) | Read compound ref syntax | `DECODE-INTER-COMPOUND-AVERAGE` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 5.20.7.12](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-12) | Read single ref syntax | `DECODE-INTER-MULTIREF-RUNTIME` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 5.20.7.12](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-12) | Read single ref syntax | `DECODE-INTER-SINGLE-REF-SYMBOL` | ✅ | ✅ | — | ✅ | 1 |
+| [§ 5.20.7.13](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-13) | Assign MV syntax | `DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 5.20.7.13](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-13) | Assign MV syntax | `DECODE-INTER-COMPOUND-AVERAGE` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 5.20.7.13](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-13) | Assign MV syntax | `DECODE-INTER-SUBPEL-MV` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 5.20.7.16](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-16) | Read compound type syntax | `DECODE-INTER-COMPOUND-AVERAGE` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 5.20.7.17](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-17) | Read refine mv syntax | `DECODE-INTER-COMPOUND-AVERAGE` | ✅ | ✅ | — | ✅ | 1 |
+| [§ 5.20.7.20](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-20) | MV syntax | `DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 5.20.7.20](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-20) | MV syntax | `DECODE-INTER-SUBPEL-MV` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 5.20.7.23](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-23) | Residual syntax | `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER` | ✅ | 🟡 | — | ✅ | 4 |
 | [§ 5.20.7.24](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-24) | Transform block syntax | `DECODE-AC0EJ3-LR-LIVE-TX-SKIP-GRID` | ✅ | 🟡 | — | ✅ | 2 |
@@ -868,6 +870,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.11.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-11-2) | Find mode context process | `DECODE-INTER-MVORDER-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 7.11.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-11-2) | Find mode context process | `DECODE-INTER-MVSTACK-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 7.11.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-11-3) | Scan point context process | `DECODE-INTER-MVSTACK-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
+| [§ 7.12.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-12-2) | Find MV stack process | `DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 7.12.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-12-2) | Find MV stack process | `DECODE-INTER-GRID-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 7.12.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-12-2) | Find MV stack process | `DECODE-INTER-MULTI-SB-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 7.12.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-12-2) | Find MV stack process | `DECODE-INTER-MVORDER-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |

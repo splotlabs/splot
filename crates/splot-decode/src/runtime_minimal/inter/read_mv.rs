@@ -2,7 +2,8 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 //! AV2 § 5.20.7.20 SHELL-coded `read_mv()` + § 5.20.7.13 `assign_mv()` sign pass
-//! for the verified single-reference EighthPel NEWMV inter block.
+//! for the verified single-reference NEWMV inter block and bounded IntrABC
+//! block-vector syntax handoff.
 //!
 //! The motion vector difference is coded as a *shell* (the L1 magnitude
 //! `shellIndex = |row| + |col|`) plus a split of that shell into its two
@@ -25,19 +26,19 @@
 //! delta after the § 5.20.7.13 `mv_clamp_to_integer` (a no-op for the small
 //! shell magnitudes this subset produces).
 //!
-//! Only the EighthPel (`MvPrecision == MV_PRECISION_EIGHTH_PEL`, P == 6) case is
-//! wired; the caller rejects any other precision before reaching this module, so
-//! the `shift` (`MV_PRECISION_EIGHTH_PEL - MvPrecision`) is always 0 and only the
-//! P == 6 `shell_class` CDF bank is consumed. Every read is a real § 8.2 symbol
-//! or bypass bit; a wrong read desynchronises the arithmetic decoder and fails
-//! the caller's § 8.2.4 `exit_symbol()`.
+//! The inter wrapper still uses the EighthPel (`MvPrecision ==
+//! MV_PRECISION_EIGHTH_PEL`, P == 6, MvCtx == 0) subset. IntrABC uses the same
+//! SHELL syntax with `MV_INTRABC_CONTEXT` and the §5.20.5.4 block precision
+//! (one-pel or quarter-pel). Every read is a real § 8.2 symbol or bypass bit; a
+//! wrong read desynchronises the arithmetic decoder and fails the caller's
+//! § 8.2.4 `exit_symbol()`.
 
 use splot_core::span::ByteOffset;
 use splot_core::symbol::SymbolDecoder;
 
 use super::{Mv, SPEC_MV, unsupported_at};
 use crate::Result;
-use crate::tile_payload::{TileCdfSelector, TileCdfSubset};
+use crate::tile_payload::{MvCdfSelector, TileCdfSelector, TileCdfSubset};
 
 /// AV2 § 3 `MAX_COL_TRUNCATED_UNARY_VAL`: the maximum number of `col_mv_greater`
 /// truncated-unary symbols.
@@ -49,11 +50,43 @@ const NUM_CTX_COL_MV_INDEX: usize = 4;
 /// AV2 § 3 `MV_IN_USE_BITS` derived bounds for § 5.20.7.13 `mv_clamp_to_integer`.
 const MV_LOW: i32 = -(1 << 16);
 const MV_UPP: i32 = 1 << 16;
+/// AV2 Table 6.19 `MV_PRECISION_ONE_PEL`.
+pub(in crate::runtime_minimal) const MV_PRECISION_ONE_PEL: u8 = 3;
+/// AV2 Table 6.19 `MV_PRECISION_QUARTER_PEL`.
+pub(in crate::runtime_minimal) const MV_PRECISION_QUARTER_PEL: u8 = 5;
+/// AV2 Table 6.19 `MV_PRECISION_EIGHTH_PEL`.
+const MV_PRECISION_EIGHTH_PEL: u8 = 6;
+/// AV2 §3 `MV_INTRABC_CONTEXT`.
+pub(in crate::runtime_minimal) const MV_INTRABC_CONTEXT: usize = 1;
+const INTER_MV_CONTEXT: usize = 0;
+const MV_CONTEXTS: usize = 2;
+
+/// Bounded configuration for AV2 §5.20.7.20 `read_mv()`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::runtime_minimal) struct MvReadConfig {
+    precision: u8,
+    mv_ctx: usize,
+}
+
+impl MvReadConfig {
+    const INTER_EIGHTH_PEL: Self = Self {
+        precision: MV_PRECISION_EIGHTH_PEL,
+        mv_ctx: INTER_MV_CONTEXT,
+    };
+
+    /// Configuration for IntrABC `read_mv()` from §5.20.5.4.
+    pub(in crate::runtime_minimal) const fn intrabc(precision: u8) -> Self {
+        Self {
+            precision,
+            mv_ctx: MV_INTRABC_CONTEXT,
+        }
+    }
+}
 
 /// AV2 § 5.20.7.13 `mv_clamp_to_integer(v)`. A no-op for the small magnitudes the
 /// verified subset produces, but applied faithfully. The caller forms
 /// `BlockMvs[0][comp] = mv_clamp_to_integer(PredMvs[0][comp] + diffMvs[0][comp])`.
-pub(super) const fn mv_clamp_to_integer(v: i32) -> i32 {
+pub(in crate::runtime_minimal) const fn mv_clamp_to_integer(v: i32) -> i32 {
     if v < MV_LOW + 1 {
         MV_LOW + 8
     } else if v > MV_UPP - 1 {
@@ -75,10 +108,24 @@ pub(super) fn read_newmv_block_mvd(
     symbols: &mut SymbolDecoder<'_>,
     tile_offset: ByteOffset,
 ) -> Result<Mv> {
+    read_newmv_block_mvd_with_config(cdfs, symbols, tile_offset, MvReadConfig::INTER_EIGHTH_PEL)
+}
+
+/// Reads the configured §5.20.7.20 SHELL-coded MV delta and explicit sign pass.
+///
+/// The caller is responsible for only using this when sign derivation is not
+/// active. That holds for the existing inter EighthPel subset and for IntrABC
+/// because `is_mvd_sign_derive_allowed()` returns 0 when `use_intrabc == 1`.
+pub(in crate::runtime_minimal) fn read_newmv_block_mvd_with_config(
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    tile_offset: ByteOffset,
+    config: MvReadConfig,
+) -> Result<Mv> {
+    validate_config(config, tile_offset)?;
     // §5.20.7.20: read the shell magnitude split into the two unsigned component
-    // magnitudes (diff_row, diff_col), each already left-shifted by `shift` (0 for
-    // EighthPel).
-    let (diff_row, diff_col) = read_shell_diff(cdfs, symbols, tile_offset)?;
+    // magnitudes (diff_row, diff_col), each already left-shifted by `shift`.
+    let (diff_row, diff_col) = read_shell_diff(cdfs, symbols, tile_offset, config)?;
 
     // §5.20.7.13 assign_mv sign pass. EighthPel disables MVD sign derivation
     // (`MvPrecision >= MV_PRECISION_QUARTER_PEL`), so each nonzero component reads
@@ -98,38 +145,42 @@ fn read_shell_diff(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
     tile_offset: ByteOffset,
+    config: MvReadConfig,
 ) -> Result<(i32, i32)> {
-    // shell_set  S()  -> TileJointShellSetCdf[MvCtx == 0].
-    let shell_set = read_symbol(cdfs, symbols, TileCdfSelector::JointShellSet, tile_offset)?;
+    // shell_set  S()  -> TileJointShellSetCdf[MvCtx].
+    let shell_set_selector = TileCdfSelector::ReadMv(MvCdfSelector::JointShellSet {
+        mv_ctx: config.mv_ctx,
+    });
+    let shell_set = read_symbol(cdfs, symbols, shell_set_selector, tile_offset)?;
 
-    // shell_class  S()  -> TileJointShell6ClassCdf[shell_set] (P == 6, EighthPel).
+    // shell_class  S()  -> TileJointShellPClassQCdf[MvCtx] where P is MvPrecision.
     let raw_shell_class = read_symbol(
         cdfs,
         symbols,
-        TileCdfSelector::JointShell6Class {
-            shell_set: shell_set as usize,
-        },
+        joint_shell_class_selector(
+            usize::from(config.precision),
+            shell_set as usize,
+            config.mv_ctx,
+        ),
         tile_offset,
     )?;
     let mut shell_class = raw_shell_class as i64;
     if shell_set != 0 {
-        // (11 + MvPrecision) >> 1 == (11 + 6) >> 1 == 8 for EighthPel.
-        shell_class += 8;
-        // EighthPel: when the raw shell_class symbol is 7, read the last-two-classes
-        // refinement.
-        if raw_shell_class == 7 {
-            let last_two = read_symbol(
-                cdfs,
-                symbols,
-                TileCdfSelector::JointShellLastTwo,
-                tile_offset,
-            )?;
+        shell_class += i64::from((11 + config.precision) >> 1);
+        // EighthPel only: when the raw shell_class symbol is 7, read the
+        // last-two-classes refinement.
+        if config.precision == MV_PRECISION_EIGHTH_PEL && raw_shell_class == 7 {
+            let selector = TileCdfSelector::ReadMv(MvCdfSelector::JointShellLastTwo {
+                mv_ctx: config.mv_ctx,
+            });
+            let last_two = read_symbol(cdfs, symbols, selector, tile_offset)?;
             shell_class += i64::from(last_two);
         }
     }
 
     // shellClassOffset derivation.
-    let shell_class_offset = read_shell_class_offset(cdfs, symbols, shell_class, tile_offset)?;
+    let shell_class_offset =
+        read_shell_class_offset(cdfs, symbols, shell_class, tile_offset, config)?;
 
     let shell_class_base_index: i64 = if shell_class == 0 {
         0
@@ -144,13 +195,32 @@ fn read_shell_diff(
     }
 
     // §5.20.7.20: split shellIndex into the column magnitude `col`, then derive the
-    // row magnitude as `shellIndex - col`. `shift == 0` for EighthPel so no scaling.
-    let diff_col = read_col_split(cdfs, symbols, shell_index, shell_class, tile_offset)?;
+    // row magnitude as `shellIndex - col`. Then scale by `shift`.
+    let diff_col = read_col_split(cdfs, symbols, shell_index, shell_class, tile_offset, config)?;
     let diff_row = shell_index - diff_col;
 
+    let shift = u32::from(MV_PRECISION_EIGHTH_PEL - config.precision);
+    let diff_row = diff_row
+        .checked_shl(shift)
+        .ok_or_else(|| mv_overflow(tile_offset))?;
+    let diff_col = diff_col
+        .checked_shl(shift)
+        .ok_or_else(|| mv_overflow(tile_offset))?;
     let diff_row = i32::try_from(diff_row).map_err(|_| mv_overflow(tile_offset))?;
     let diff_col = i32::try_from(diff_col).map_err(|_| mv_overflow(tile_offset))?;
     Ok((diff_row, diff_col))
+}
+
+fn joint_shell_class_selector(
+    precision: usize,
+    shell_set: usize,
+    mv_ctx: usize,
+) -> TileCdfSelector {
+    TileCdfSelector::ReadMv(MvCdfSelector::JointShellClass {
+        precision,
+        shell_set,
+        mv_ctx,
+    })
 }
 
 /// AV2 § 5.20.7.20 `shellClassOffset` derivation (the `shell_offset_*` reads).
@@ -159,17 +229,15 @@ fn read_shell_class_offset(
     symbols: &mut SymbolDecoder<'_>,
     shell_class: i64,
     tile_offset: ByteOffset,
+    config: MvReadConfig,
 ) -> Result<i64> {
     if shell_class < 2 {
         // shell_offset_low_class  S()  -> TileShellOffsetLowClassCdf[shellClass].
-        let offset = read_symbol(
-            cdfs,
-            symbols,
-            TileCdfSelector::ShellOffsetLowClass {
-                shell_class: shell_class as usize,
-            },
-            tile_offset,
-        )?;
+        let selector = TileCdfSelector::ReadMv(MvCdfSelector::ShellOffsetLowClass {
+            mv_ctx: config.mv_ctx,
+            shell_class: shell_class as usize,
+        });
+        let offset = read_symbol(cdfs, symbols, selector, tile_offset)?;
         return Ok(i64::from(offset));
     }
     if shell_class == 2 {
@@ -178,12 +246,10 @@ fn read_shell_class_offset(
         let mut shell_class_offset: i64 = 0;
         for i in 0..3 {
             if i == 0 {
-                let v = read_symbol(
-                    cdfs,
-                    symbols,
-                    TileCdfSelector::ShellOffsetClass2,
-                    tile_offset,
-                )?;
+                let selector = TileCdfSelector::ReadMv(MvCdfSelector::ShellOffsetClass2 {
+                    mv_ctx: config.mv_ctx,
+                });
+                let v = read_symbol(cdfs, symbols, selector, tile_offset)?;
                 shell_class_offset = i64::from(v);
             } else {
                 let high = read_bypass_bit(symbols, tile_offset)?;
@@ -199,12 +265,11 @@ fn read_shell_class_offset(
     // from bank `i`, building shellClassOffset |= bit << i.
     let mut shell_class_offset: i64 = 0;
     for i in 0..shell_class {
-        let bit = read_symbol(
-            cdfs,
-            symbols,
-            TileCdfSelector::ShellOffsetOtherClass { i: i as usize },
-            tile_offset,
-        )?;
+        let selector = TileCdfSelector::ReadMv(MvCdfSelector::ShellOffsetOtherClass {
+            mv_ctx: config.mv_ctx,
+            i: i as usize,
+        });
+        let bit = read_symbol(cdfs, symbols, selector, tile_offset)?;
         shell_class_offset |= i64::from(bit) << i;
     }
     Ok(shell_class_offset)
@@ -219,6 +284,7 @@ fn read_col_split(
     shell_index: i64,
     shell_class: i64,
     tile_offset: ByteOffset,
+    config: MvReadConfig,
 ) -> Result<i64> {
     let mut col: i64 = 0;
     let maximum_pair_index = shell_index >> 1;
@@ -226,12 +292,11 @@ fn read_col_split(
         let max_idx_bits = maximum_pair_index.min(MAX_COL_TRUNCATED_UNARY_VAL as i64);
         for i in 0..max_idx_bits {
             // col_mv_greater  S()  -> TileColMvGreaterCdf[MvCtx][i].
-            let greater = read_symbol(
-                cdfs,
-                symbols,
-                TileCdfSelector::ColMvGreater { i: i as usize },
-                tile_offset,
-            )?;
+            let selector = TileCdfSelector::ReadMv(MvCdfSelector::ColMvGreater {
+                mv_ctx: config.mv_ctx,
+                i: i as usize,
+            });
+            let greater = read_symbol(cdfs, symbols, selector, tile_offset)?;
             col = i + i64::from(greater);
             if greater == 0 {
                 break;
@@ -255,16 +320,25 @@ fn read_col_split(
 
     // col_mv_index  S()  -> TileColMvIndexCdf[MvCtx][Min(shellClass, NUM_CTX - 1)].
     let ctx = (shell_class as usize).min(NUM_CTX_COL_MV_INDEX - 1);
-    let col_mv_index = read_symbol(
-        cdfs,
-        symbols,
-        TileCdfSelector::ColMvIndex { ctx },
-        tile_offset,
-    )?;
+    let selector = TileCdfSelector::ReadMv(MvCdfSelector::ColMvIndex {
+        mv_ctx: config.mv_ctx,
+        ctx,
+    });
+    let col_mv_index = read_symbol(cdfs, symbols, selector, tile_offset)?;
     if col_mv_index == 0 {
         Ok(col)
     } else {
         Ok(shell_index - col)
+    }
+}
+
+fn validate_config(config: MvReadConfig, tile_offset: ByteOffset) -> Result<()> {
+    if config.mv_ctx >= MV_CONTEXTS {
+        return Err(mv_overflow(tile_offset));
+    }
+    match config.precision {
+        MV_PRECISION_ONE_PEL | MV_PRECISION_QUARTER_PEL | MV_PRECISION_EIGHTH_PEL => Ok(()),
+        _ => Err(mv_overflow(tile_offset)),
     }
 }
 

@@ -71,6 +71,9 @@ needed by transform-size and residual syntax contexts, and SHALL remain
 fail-closed before IntrABC prediction, decoded samples, reconstruction,
 loop-restoration filtering/output, reference refresh, and successful ac0ej3
 decode.
+For observed NEARMV/NEWMV blocks, the runtime SHALL retain bounded IntrABC
+block-vector facts parsed in spec order without claiming current-frame
+block-copy prediction or output.
 
 #### Scenario: Active IntrABC mode-info is consumed before transform records
 
@@ -81,6 +84,28 @@ decode.
 - **AND** it uses the IntrABC branch defaults for luma/chroma mode facts instead
   of reading ordinary intra luma/chroma mode syntax
 - **AND** it advances to the next structured unsupported-feature frontier
+
+#### Scenario: active IntrABC NEWMV block-vector syntax is handed off
+
+- **WHEN** the local ac0ej3 selectable-transform path reaches a supported
+  luma/shared block with `use_intrabc = 1`
+- **AND** §5.20.5.4 decodes `intrabc_mode = 0`
+- **THEN** the runtime SHALL read the optional `intrabc_precision`, derive the
+  bounded IntrABC reference block-vector candidates, consume §5.20.7.20
+  `read_mv()` using `MV_INTRABC_CONTEXT` and the decoded `MvPrecision`, apply
+  §5.20.7.13 `mv_clamp_to_integer`, and retain the resulting block vector.
+- **AND** it SHALL stop before current-frame block-copy prediction with a
+  structured unsupported diagnostic.
+
+#### Scenario: active IntrABC NEARMV block-vector syntax is handed off
+
+- **WHEN** the local ac0ej3 selectable-transform path reaches a supported
+  luma/shared block with `use_intrabc = 1`
+- **AND** §5.20.5.4 decodes `intrabc_mode = 1`
+- **THEN** the runtime SHALL select the retained DRL candidate from the bounded
+  IntrABC reference block-vector stack without reading `read_mv()`.
+- **AND** it SHALL keep the handoff syntax-only, without claiming current-frame
+  block-copy prediction or output.
 
 #### Scenario: IntrABC syntax drives downstream contexts without output claims
 

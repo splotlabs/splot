@@ -11,14 +11,20 @@ use splot_core::symbol::SymbolDecoder;
 use crate::error::Result;
 use crate::tile_payload::{DecodeBlockFrontier, TileCdfSelector, TileCdfSubset};
 
+use super::super::inter::{
+    Mv,
+    read_mv::{
+        MV_PRECISION_ONE_PEL, MV_PRECISION_QUARTER_PEL, MvReadConfig, mv_clamp_to_integer,
+        read_newmv_block_mvd_with_config,
+    },
+};
 use super::wienerns_lr_selectable_transform_record_error_reason;
 
 const BLOCK_64X64: usize = 12;
 const MI_SIZE: usize = 4;
 const INTRABC_CONTEXT_MAX: usize = 2;
 const SKIP_CONTEXT_MAX: usize = 2;
-const MV_PRECISION_ONE_PEL: u8 = 0;
-const MV_PRECISION_QUARTER_PEL: u8 = 1;
+const INTRABC_DELAY_PIXELS: i32 = 256;
 
 /// Result of the §5.20.5.3 `use_intrabc` / `read_skip` prefix.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -123,6 +129,30 @@ pub(super) struct IntrabcInfo {
     pub(super) intrabc_mode: u8,
     pub(super) ref_mv_idx: usize,
     pub(super) mv_precision: u8,
+    pub(super) block_mv: IntrabcBlockVector,
+}
+
+/// Retained IntrABC block vector in eighth-pel units.
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "retained IntrABC block-vector facts are consumed by tests until prediction uses them"
+    )
+)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct IntrabcBlockVector {
+    pub(super) row: i32,
+    pub(super) col: i32,
+}
+
+impl From<Mv> for IntrabcBlockVector {
+    fn from(value: Mv) -> Self {
+        Self {
+            row: value.row,
+            col: value.col,
+        }
+    }
 }
 
 /// Tile-local neighbour state for IntrABC and skip contexts used by §8.3.2.
@@ -366,6 +396,25 @@ pub(super) fn read_intrabc_info(
     symbols: &mut SymbolDecoder<'_>,
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
+    geometry: IntrabcBlockGeometry,
+    tile_offset: ByteOffset,
+) -> Result<IntrabcInfo> {
+    let info = read_intrabc_info_record(cdfs, symbols, sequence, core, geometry, tile_offset)?;
+    if info.intrabc_mode == 0 {
+        return Err(wienerns_lr_selectable_transform_record_error_reason(
+            tile_offset,
+            "unsupported_wienerns_lr_selectable_transform_records_intrabc_prediction",
+        ));
+    }
+    Ok(info)
+}
+
+fn read_intrabc_info_record(
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    sequence: &SequenceHeader,
+    core: &FrameHeaderCore,
+    geometry: IntrabcBlockGeometry,
     tile_offset: ByteOffset,
 ) -> Result<IntrabcInfo> {
     let force_integer_mv = core.force_integer_mv.ok_or_else(|| {
@@ -412,31 +461,41 @@ pub(super) fn read_intrabc_info(
         })?;
     }
 
-    let mv_precision = if force_integer_mv {
+    let mut mv_precision = if force_integer_mv {
         MV_PRECISION_ONE_PEL
     } else {
         MV_PRECISION_QUARTER_PEL
     };
-    if intrabc_mode == 0 {
-        if !force_integer_mv {
-            let precision = read_symbol(
-                cdfs,
-                symbols,
-                TileCdfSelector::IntrabcPrecision,
-                tile_offset,
-            )?;
-            if precision > 1 {
-                return Err(wienerns_lr_selectable_transform_record_error_reason(
-                    tile_offset,
-                    "unsupported_wienerns_lr_selectable_transform_records_intrabc_precision",
-                ));
-            }
-        }
-        return Err(wienerns_lr_selectable_transform_record_error_reason(
+    if intrabc_mode == 0 && !force_integer_mv {
+        let precision = read_symbol(
+            cdfs,
+            symbols,
+            TileCdfSelector::IntrabcPrecision,
             tile_offset,
-            "unsupported_wienerns_lr_selectable_transform_records_intrabc_newmv",
-        ));
+        )?;
+        if precision > 1 {
+            return Err(wienerns_lr_selectable_transform_record_error_reason(
+                tile_offset,
+                "unsupported_wienerns_lr_selectable_transform_records_intrabc_precision",
+            ));
+        }
+        mv_precision = if precision != 0 {
+            MV_PRECISION_QUARTER_PEL
+        } else {
+            MV_PRECISION_ONE_PEL
+        };
     }
+    let block_mv = assign_intrabc_mv(
+        cdfs,
+        symbols,
+        sequence,
+        geometry,
+        intrabc_mode,
+        ref_mv_idx,
+        mv_precision,
+        max_bvp_drl_bits_minus_1,
+        tile_offset,
+    )?;
     if core.frame_is_intra == Some(true)
         && core.allow_screen_content_tools == Some(true)
         && sequence
@@ -453,6 +512,143 @@ pub(super) fn read_intrabc_info(
         intrabc_mode: u8::try_from(intrabc_mode).unwrap_or(1),
         ref_mv_idx,
         mv_precision,
+        block_mv,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn assign_intrabc_mv(
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    sequence: &SequenceHeader,
+    geometry: IntrabcBlockGeometry,
+    intrabc_mode: usize,
+    ref_mv_idx: usize,
+    mv_precision: u8,
+    max_bvp_drl_bits_minus_1: u32,
+    tile_offset: ByteOffset,
+) -> Result<IntrabcBlockVector> {
+    let candidates = intrabc_ref_stack(sequence, geometry, max_bvp_drl_bits_minus_1, tile_offset)?;
+    let pred_mv = *candidates.get(ref_mv_idx).ok_or_else(|| {
+        wienerns_lr_selectable_transform_record_error_reason(
+            tile_offset,
+            "unsupported_wienerns_lr_selectable_transform_records_intrabc_ref_mv_idx_out_of_range",
+        )
+    })?;
+    let block_mv = if intrabc_mode == 0 {
+        let diff = read_newmv_block_mvd_with_config(
+            cdfs,
+            symbols,
+            tile_offset,
+            MvReadConfig::intrabc(mv_precision),
+        )?;
+        Mv {
+            row: mv_clamp_to_integer(pred_mv.row + diff.row),
+            col: mv_clamp_to_integer(pred_mv.col + diff.col),
+        }
+    } else {
+        pred_mv
+    };
+    Ok(block_mv.into())
+}
+
+fn intrabc_ref_stack(
+    sequence: &SequenceHeader,
+    geometry: IntrabcBlockGeometry,
+    max_bvp_drl_bits_minus_1: u32,
+    tile_offset: ByteOffset,
+) -> Result<Vec<Mv>> {
+    intrabc_ref_stack_with_limit(sequence, geometry, max_bvp_drl_bits_minus_1, tile_offset)
+}
+
+fn intrabc_ref_stack_with_limit(
+    sequence: &SequenceHeader,
+    geometry: IntrabcBlockGeometry,
+    max_bvp_drl_bits_minus_1: u32,
+    tile_offset: ByteOffset,
+) -> Result<Vec<Mv>> {
+    let max_count = usize::try_from(max_bvp_drl_bits_minus_1)
+        .ok()
+        .and_then(|value| value.checked_add(2))
+        .ok_or_else(|| {
+            wienerns_lr_selectable_transform_record_error_reason(
+                tile_offset,
+                "unsupported_wienerns_lr_selectable_transform_records_intrabc_candidate_count",
+            )
+        })?;
+    let block_width = geometry
+        .n4w
+        .checked_mul(MI_SIZE)
+        .and_then(|value| i32::try_from(value).ok())
+        .ok_or_else(|| {
+            wienerns_lr_selectable_transform_record_error_reason(
+                tile_offset,
+                "unsupported_wienerns_lr_selectable_transform_records_intrabc_block_width",
+            )
+        })?;
+    let block_height = geometry
+        .n4h
+        .checked_mul(MI_SIZE)
+        .and_then(|value| i32::try_from(value).ok())
+        .ok_or_else(|| {
+            wienerns_lr_selectable_transform_record_error_reason(
+                tile_offset,
+                "unsupported_wienerns_lr_selectable_transform_records_intrabc_block_height",
+            )
+        })?;
+    let sb_width = superblock_samples(sequence, tile_offset)?;
+    let sb_height = sb_width;
+    let mut candidates = Vec::new();
+    add_to_ref_bv(&mut candidates, max_count, 0, -sb_height, tile_offset)?;
+    add_to_ref_bv(
+        &mut candidates,
+        max_count,
+        -(sb_width + INTRABC_DELAY_PIXELS),
+        0,
+        tile_offset,
+    )?;
+    add_to_ref_bv(&mut candidates, max_count, 0, -block_height, tile_offset)?;
+    add_to_ref_bv(&mut candidates, max_count, -block_width, 0, tile_offset)?;
+    Ok(candidates)
+}
+
+fn add_to_ref_bv(
+    candidates: &mut Vec<Mv>,
+    max_count: usize,
+    dx: i32,
+    dy: i32,
+    tile_offset: ByteOffset,
+) -> Result<()> {
+    if candidates.len() >= max_count {
+        return Ok(());
+    }
+    let row = dy.checked_mul(8).ok_or_else(|| {
+        wienerns_lr_selectable_transform_record_error_reason(
+            tile_offset,
+            "unsupported_wienerns_lr_selectable_transform_records_intrabc_bv_row_overflow",
+        )
+    })?;
+    let col = dx.checked_mul(8).ok_or_else(|| {
+        wienerns_lr_selectable_transform_record_error_reason(
+            tile_offset,
+            "unsupported_wienerns_lr_selectable_transform_records_intrabc_bv_col_overflow",
+        )
+    })?;
+    candidates.push(Mv { row, col });
+    Ok(())
+}
+
+fn superblock_samples(sequence: &SequenceHeader, tile_offset: ByteOffset) -> Result<i32> {
+    let partition = sequence.partition.as_ref().ok_or_else(|| {
+        wienerns_lr_selectable_transform_record_error_reason(
+            tile_offset,
+            "unsupported_wienerns_lr_selectable_transform_records_missing_partition_config",
+        )
+    })?;
+    Ok(match partition.seq_sb_size() {
+        SuperblockSize::Block64x64 => 64,
+        SuperblockSize::Block128x128 => 128,
+        SuperblockSize::Block256x256 => 256,
     })
 }
 
@@ -530,7 +726,7 @@ mod tests {
     use splot_core::symbol_encoder::SymbolEncoder;
 
     use crate::error::DecodeError;
-    use crate::tile_payload::FrameCdfSubset;
+    use crate::tile_payload::{FrameCdfSubset, MvCdfSelector};
 
     use super::*;
 
@@ -623,6 +819,7 @@ mod tests {
             &mut symbols,
             &sequence,
             &core,
+            geometry,
             ByteOffset::new(20),
         )
         .unwrap();
@@ -637,6 +834,7 @@ mod tests {
                     intrabc_mode: 1,
                     ref_mv_idx: 0,
                     mv_precision: MV_PRECISION_QUARTER_PEL,
+                    block_mv: IntrabcBlockVector { row: -512, col: 0 },
                 }),
             }
         );
@@ -644,7 +842,7 @@ mod tests {
     }
 
     #[test]
-    fn active_intrabc_newmv_reads_precision_then_fails_closed() {
+    fn active_intrabc_newmv_reads_block_vector_then_fails_before_prediction() {
         let (sequence, core) = selectable_fixture();
         let mut cdfs = FrameCdfSubset::from_defaults().tile_copy();
         let payload = encode_steps(&[
@@ -653,6 +851,29 @@ mod tests {
             (Some(TileCdfSelector::IntrabcMode), 0),
             (None, 0),
             (Some(TileCdfSelector::IntrabcPrecision), 1),
+            (
+                Some(TileCdfSelector::ReadMv(MvCdfSelector::JointShellSet {
+                    mv_ctx: 1,
+                })),
+                0,
+            ),
+            (
+                Some(TileCdfSelector::ReadMv(MvCdfSelector::JointShellClass {
+                    precision: usize::from(MV_PRECISION_QUARTER_PEL),
+                    shell_set: 0,
+                    mv_ctx: 1,
+                })),
+                0,
+            ),
+            (
+                Some(TileCdfSelector::ReadMv(
+                    MvCdfSelector::ShellOffsetLowClass {
+                        mv_ctx: 1,
+                        shell_class: 0,
+                    },
+                )),
+                0,
+            ),
         ]);
         let mut symbols = decoder(&payload);
         let state = state();
@@ -680,15 +901,82 @@ mod tests {
             &mut symbols,
             &sequence,
             &core,
+            geometry,
             ByteOffset::new(20),
         )
         .unwrap_err();
 
         assert_eq!(
             unsupported_reason(error),
-            "unsupported_wienerns_lr_selectable_transform_records_intrabc_newmv"
+            "unsupported_wienerns_lr_selectable_transform_records_intrabc_prediction"
         );
-        assert_eq!(symbols.symbol_count(), 5);
+        assert_eq!(symbols.symbol_count(), 8);
+    }
+
+    #[test]
+    fn intrabc_newmv_one_pel_record_shifts_shell_delta() {
+        let (sequence, mut core) = selectable_fixture();
+        core.force_integer_mv = Some(true);
+        let mut cdfs = FrameCdfSubset::from_defaults().tile_copy();
+        let payload = encode_steps(&[
+            (Some(TileCdfSelector::IntrabcMode), 0),
+            (None, 0),
+            (
+                Some(TileCdfSelector::ReadMv(MvCdfSelector::JointShellSet {
+                    mv_ctx: 1,
+                })),
+                0,
+            ),
+            (
+                Some(TileCdfSelector::ReadMv(MvCdfSelector::JointShellClass {
+                    precision: usize::from(MV_PRECISION_ONE_PEL),
+                    shell_set: 0,
+                    mv_ctx: 1,
+                })),
+                0,
+            ),
+            (
+                Some(TileCdfSelector::ReadMv(
+                    MvCdfSelector::ShellOffsetLowClass {
+                        mv_ctx: 1,
+                        shell_class: 0,
+                    },
+                )),
+                1,
+            ),
+            (
+                Some(TileCdfSelector::ReadMv(MvCdfSelector::ColMvIndex {
+                    mv_ctx: 1,
+                    ctx: 0,
+                })),
+                0,
+            ),
+            (None, 0),
+        ]);
+        let mut symbols = decoder(&payload);
+        let block = IntrabcBlockContext::new(0, 0, 2, false);
+        let geometry = IntrabcBlockGeometry::new(block, 4, 4);
+
+        let info = read_intrabc_info_record(
+            &mut cdfs,
+            &mut symbols,
+            &sequence,
+            &core,
+            geometry,
+            ByteOffset::new(20),
+        )
+        .unwrap();
+
+        assert_eq!(
+            info,
+            IntrabcInfo {
+                intrabc_mode: 0,
+                ref_mv_idx: 0,
+                mv_precision: MV_PRECISION_ONE_PEL,
+                block_mv: IntrabcBlockVector { row: -504, col: 0 },
+            }
+        );
+        assert_eq!(symbols.symbol_count(), 6);
     }
 
     #[test]
@@ -738,6 +1026,7 @@ mod tests {
                 intrabc_mode: 1,
                 ref_mv_idx: 0,
                 mv_precision: MV_PRECISION_QUARTER_PEL,
+                block_mv: IntrabcBlockVector { row: -512, col: 0 },
             }),
         };
         state

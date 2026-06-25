@@ -1693,6 +1693,7 @@ fn read_luma_shared_mode_info_prelude(
             symbols,
             sequence,
             core,
+            IntrabcBlockGeometry::from_frontier(frontier, n4w, n4h),
             tile_offset,
         )?)
     } else {

@@ -35,7 +35,7 @@ pub(crate) use self::coeff_rows::CoeffCdfSelector;
 // Re-exported at crate visibility so sibling decode code (e.g. the future
 // `coeffs()` consumer in `block_symbol.rs`) can name the `eob_pt` size class to
 // construct the `pub(crate)` `TileCdfSelector::EobPt` variant.
-pub(crate) use self::block_rows::EobPtSize;
+pub(crate) use self::block_rows::{EobPtSize, MvCdfSelector};
 
 const CDF_PROB_SCALE: i32 = 1 << 15;
 const DO_SPLIT_PLANE_CONTEXTS: usize = 2;
@@ -616,41 +616,8 @@ pub(crate) enum TileCdfSelector {
         /// The §5.20.7.11 loop counter `ref`.
         ref_idx: usize,
     },
-    /// `TileJointShellSetCdf[MvCtx]` (AV2 § 8.3.2): the §5.20.7.20 `shell_set`
-    /// symbol (single-context MvCtx == 0).
-    JointShellSet,
-    /// `TileJointShellPClassQCdf[MvCtx]` for the verified EighthPel precision
-    /// (P == 6, AV2 § 8.3.2): `shell_set` selects the `Q` bank.
-    JointShell6Class {
-        /// `Q == shell_set` (`0..2`).
-        shell_set: usize,
-    },
-    /// `TileJointShellLastTwoClassesCdf[MvCtx]` (AV2 § 8.3.2): the EighthPel
-    /// `joint_shell_last_two_classes` symbol.
-    JointShellLastTwo,
-    /// `TileShellOffsetLowClassCdf[MvCtx][shellClass]` (AV2 § 8.3.2).
-    ShellOffsetLowClass {
-        /// `shellClass` (`0` or `1`).
-        shell_class: usize,
-    },
-    /// `TileShellOffsetClass2Cdf[MvCtx]` (AV2 § 8.3.2).
-    ShellOffsetClass2,
-    /// `TileShellOffsetOtherClassCdf[MvCtx][i]` (AV2 § 8.3.2).
-    ShellOffsetOtherClass {
-        /// The §5.20.7.20 loop counter `i`.
-        i: usize,
-    },
-    /// `TileColMvGreaterCdf[MvCtx][i]` (AV2 § 8.3.2).
-    ColMvGreater {
-        /// The §5.20.7.20 truncated-unary loop counter `i`.
-        i: usize,
-    },
-    /// `TileColMvIndexCdf[MvCtx][Min(shellClass, NUM_CTX_COL_MV_INDEX - 1)]`
-    /// (AV2 § 8.3.2).
-    ColMvIndex {
-        /// `Min(shellClass, NUM_CTX_COL_MV_INDEX - 1)`.
-        ctx: usize,
-    },
+    /// AV2 § 5.20.7.20 SHELL-coded motion-vector CDF rows.
+    ReadMv(MvCdfSelector),
     /// `TileInterpFilterCdf[ctx]` (AV2 § 8.3.2): the §5.20.7.6 SWITCHABLE
     /// `interp_filter` symbol.
     InterpFilter {
@@ -1478,28 +1445,7 @@ impl TileCdfRows {
                 bit_type,
                 ref_idx,
             }),
-            TileCdfSelector::JointShellSet => self.block.row(BlockCdfSelector::JointShellSet),
-            TileCdfSelector::JointShell6Class { shell_set } => self
-                .block
-                .row(BlockCdfSelector::JointShell6Class { shell_set }),
-            TileCdfSelector::JointShellLastTwo => {
-                self.block.row(BlockCdfSelector::JointShellLastTwo)
-            }
-            TileCdfSelector::ShellOffsetLowClass { shell_class } => self
-                .block
-                .row(BlockCdfSelector::ShellOffsetLowClass { shell_class }),
-            TileCdfSelector::ShellOffsetClass2 => {
-                self.block.row(BlockCdfSelector::ShellOffsetClass2)
-            }
-            TileCdfSelector::ShellOffsetOtherClass { i } => self
-                .block
-                .row(BlockCdfSelector::ShellOffsetOtherClass { i }),
-            TileCdfSelector::ColMvGreater { i } => {
-                self.block.row(BlockCdfSelector::ColMvGreater { i })
-            }
-            TileCdfSelector::ColMvIndex { ctx } => {
-                self.block.row(BlockCdfSelector::ColMvIndex { ctx })
-            }
+            TileCdfSelector::ReadMv(selector) => self.block.row(BlockCdfSelector::ReadMv(selector)),
             TileCdfSelector::InterpFilter { ctx } => {
                 self.block.row(BlockCdfSelector::InterpFilter { ctx })
             }
@@ -1842,27 +1788,8 @@ impl TileCdfRows {
                 bit_type,
                 ref_idx,
             }),
-            TileCdfSelector::JointShellSet => self.block.row_mut(BlockCdfSelector::JointShellSet),
-            TileCdfSelector::JointShell6Class { shell_set } => self
-                .block
-                .row_mut(BlockCdfSelector::JointShell6Class { shell_set }),
-            TileCdfSelector::JointShellLastTwo => {
-                self.block.row_mut(BlockCdfSelector::JointShellLastTwo)
-            }
-            TileCdfSelector::ShellOffsetLowClass { shell_class } => self
-                .block
-                .row_mut(BlockCdfSelector::ShellOffsetLowClass { shell_class }),
-            TileCdfSelector::ShellOffsetClass2 => {
-                self.block.row_mut(BlockCdfSelector::ShellOffsetClass2)
-            }
-            TileCdfSelector::ShellOffsetOtherClass { i } => self
-                .block
-                .row_mut(BlockCdfSelector::ShellOffsetOtherClass { i }),
-            TileCdfSelector::ColMvGreater { i } => {
-                self.block.row_mut(BlockCdfSelector::ColMvGreater { i })
-            }
-            TileCdfSelector::ColMvIndex { ctx } => {
-                self.block.row_mut(BlockCdfSelector::ColMvIndex { ctx })
+            TileCdfSelector::ReadMv(selector) => {
+                self.block.row_mut(BlockCdfSelector::ReadMv(selector))
             }
             TileCdfSelector::InterpFilter { ctx } => {
                 self.block.row_mut(BlockCdfSelector::InterpFilter { ctx })

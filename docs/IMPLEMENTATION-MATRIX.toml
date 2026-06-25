@@ -11683,10 +11683,13 @@ spec_sections = [
     "5.20.5.4",
     "5.20.6.1",
     "5.20.6.3",
+    "5.20.7.13",
+    "5.20.7.20",
     "5.20.7.24",
     "5.20.7.25",
     "5.20.7.27",
     "5.20.7.30",
+    "7.12.2",
     "7.20.4",
     "8.3.2",
 ]
@@ -11695,20 +11698,23 @@ sources = [
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-4",
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-6-1",
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-6-3",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-13",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-20",
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-24",
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-25",
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-30",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-12-2",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-20-4",
     "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2",
 ]
 crate = "splot-decode"
 module = "crates/splot-decode/src/runtime_minimal/wienerns_lr/tx_records.rs"
-openspec_change = "decode-ac0ej3-intrabc-record-handoff"
+openspec_change = "decode-ac0ej3-intrabc-newmv-records"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Partial prerequisite row for parsing supported AV2 §5.20.5.3/§5.20.5.4 IntrABC mode-info and §5.20.6.1/§5.20.6.3 `TX_MODE_SELECT` luma transform-size records in the ac0ej3 Wiener NS LR runtime path. The local stream's active CfL mode-info prerequisite is tracked by `DECODE-AC0EJ3-CFL-CHROMA-MODE-FRONTIER`; follow-on rows admit the observed luma-only transform leaves, retain SDP `CflAllowedInSdp`, add the pre-tile unsupported-tool gate, consume active intra IST metadata, and hand off chroma CCTX metadata plus non-DCT chroma coefficient syntax for LR tx-skip records. This row now threads each selectable luma transform record's full-block fill fact into the §8.3.2 `all_zero` context, consumes §5.20.6.3 partition syntax for observed luma-only narrow leaves and falls back to their actual 2x8 and 2x16 4x4-grid extents only when applying the consumed partition would produce empty geometry, consumes active luma `fsc_mode` metadata, derives the §5.20.7.27 `useFsc` FSC coefficient branch through the existing residual handoff, and consumes the observed active IntrABC prelude (`use_intrabc`, `read_skip`, `intrabc_mode`, DRL, and optional precision) into retained DC defaults, `is_inter = 1` syntax contexts, and skipped-block tx-skip records without reading ordinary intra mode syntax. The live ac0ej3 probe now advances past the former `unsupported_wienerns_lr_live_transform_record_fsc_mode`, `unsupported_wienerns_lr_selectable_transform_records_empty_transform`, and `unsupported_wienerns_lr_selectable_transform_records_intrabc` stops and reaches `unsupported_wienerns_lr_selectable_transform_records_intrabc_newmv` at byte offset 110. This row feeds supported selectable transform extents and §5.20.7.27 coefficient skip/EOB facts into live `LrTxSkip` storage for admitted subsets only. It does not claim IntrABC NEWMV/read_mv syntax, IntrABC prediction/current-frame block copy, active MRL prediction, DIP, intra-edge, IBP prediction semantics, broad FSC/IDTX reconstruction, CfL prediction, chroma residual coordinate handoff, decoded CurrFrame/CdefFrame sample population, `FilterClass`, `SubclassLookup`, loop-restoration filtering/reconstruction, chroma Wiener NS filtering, 10-bit output, reference refresh, AVM/dav2d byte equality, or successful ac0ej3 decode."
+notes = "Partial prerequisite row for parsing supported AV2 §5.20.5.3 and §5.20.5.4 IntrABC mode-info plus §5.20.6.1 and §5.20.6.3 `TX_MODE_SELECT` luma transform-size records in the ac0ej3 Wiener NS LR runtime path. The local stream's active CfL mode-info prerequisite is tracked by `DECODE-AC0EJ3-CFL-CHROMA-MODE-FRONTIER`; follow-on rows admit the observed luma-only transform leaves, retain SDP `CflAllowedInSdp`, add the pre-tile unsupported-tool gate, consume active intra IST metadata, and hand off chroma CCTX metadata plus non-DCT chroma coefficient syntax for LR tx-skip records. This row now threads each selectable luma transform record's full-block fill fact into the §8.3.2 `all_zero` context, consumes §5.20.6.3 partition syntax for observed luma-only narrow leaves and falls back to their actual 2x8 and 2x16 4x4-grid extents only when applying the consumed partition would produce empty geometry, consumes active luma `fsc_mode` metadata, derives the §5.20.7.27 `useFsc` FSC coefficient branch through the existing residual handoff, consumes the observed active IntrABC prelude (`use_intrabc`, `read_skip`, `intrabc_mode`, DRL, and optional precision), derives the bounded §7.12.2 IntrABC fallback block-vector stack, and consumes §5.20.7.13 and §5.20.7.20 NEWMV `assign_mv` and `read_mv` syntax into a retained block vector. The live ac0ej3 probe now advances past the former `unsupported_wienerns_lr_live_transform_record_fsc_mode`, `unsupported_wienerns_lr_selectable_transform_records_empty_transform`, `unsupported_wienerns_lr_selectable_transform_records_intrabc`, and `unsupported_wienerns_lr_selectable_transform_records_intrabc_newmv` stops and reaches `unsupported_wienerns_lr_selectable_transform_records_intrabc_prediction` at byte offset 110. This row feeds supported selectable transform extents and §5.20.7.27 coefficient skip/EOB facts into live `LrTxSkip` storage for admitted subsets only. It does not claim IntrABC prediction/current-frame block copy, active MRL prediction, DIP, intra-edge, IBP prediction semantics, broad FSC or IDTX reconstruction, CfL prediction, chroma residual coordinate handoff, decoded CurrFrame or CdefFrame sample population, `FilterClass`, `SubclassLookup`, loop-restoration filtering/reconstruction, chroma Wiener NS filtering, 10-bit output, reference refresh, AVM and dav2d byte equality, or successful ac0ej3 decode."
 
 [feature.status]
 mapped = "done"
@@ -11734,7 +11740,8 @@ tests = [
     "crates/splot-decode/src/runtime_minimal/wienerns_lr/tx_records.rs::tests::selectable_tx_grid_rejects_empty_transform_dimensions",
     "crates/splot-decode/src/runtime_minimal/wienerns_lr/tx_records.rs::tests::tx_skip_grid_retention_preserves_skip_flag_for_nonzero_eob_record",
     "crates/splot-decode/src/runtime_minimal/wienerns_lr/intrabc_records.rs::tests::active_intrabc_nearmv_reads_use_skip_mode_and_drl_in_order",
-    "crates/splot-decode/src/runtime_minimal/wienerns_lr/intrabc_records.rs::tests::active_intrabc_newmv_reads_precision_then_fails_closed",
+    "crates/splot-decode/src/runtime_minimal/wienerns_lr/intrabc_records.rs::tests::active_intrabc_newmv_reads_block_vector_then_fails_before_prediction",
+    "crates/splot-decode/src/runtime_minimal/wienerns_lr/intrabc_records.rs::tests::intrabc_newmv_one_pel_record_shifts_shell_delta",
     "crates/splot-decode/src/runtime_minimal/wienerns_lr/intrabc_records.rs::tests::non_intrabc_path_reads_only_use_intrabc_symbol",
     "crates/splot-decode/src/runtime_minimal/wienerns_lr/intrabc_records.rs::tests::contexts_use_intrabc_npos_and_skip_nposbuf_boundaries",
     "crates/splot-decode/src/tile_payload/intra_joint_modes.rs::tests::fsc_modes_neighbours_select_context_sum",
@@ -11743,7 +11750,7 @@ tests = [
     "crates/splot-decode/src/tile_payload/general_intra_residual.rs::tests::non_fsc_luma_transform_handoff_still_requires_luma_context",
     "crates/splot-decode/src/tile_payload/coeff_loop/eob_symbol_tests.rs::coeff_scan_walk_rejects_eob_larger_than_scan_without_mutation",
     "crates/splot-cli/tests/decode_cli.rs::local_ac0ej3_reaches_current_runtime_gate_without_output",
-    "local ac0ej3 probe: unsupported_wienerns_lr_selectable_transform_records_intrabc_newmv at byte offset 110 after active IntrABC mode-info handoff",
+    "local ac0ej3 probe: unsupported_wienerns_lr_selectable_transform_records_intrabc_prediction at byte offset 110 after IntrABC NEWMV block-vector handoff",
 ]
 commands = [
     "cargo test -p splot-decode runtime_minimal::wienerns_lr::tx_records --locked",
