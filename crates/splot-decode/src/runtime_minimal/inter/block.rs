@@ -207,7 +207,7 @@ pub(super) fn decode_inter_blocks(
         sequence,
         core,
         limits,
-        |work_unit, symbols, frontier, _joint_modes, _block_decoded| {
+        |work_unit, symbols, frontier, _joint_modes, _uses_mrls, _block_decoded| {
             let placed = decode_one_inter_block(
                 work_unit,
                 symbols,

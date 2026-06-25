@@ -283,23 +283,23 @@ fn local_ac0ej3_reaches_current_runtime_gate_without_output() {
     assert!(out.stderr.is_empty(), "stderr was not empty");
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(json["rule_id"], "decode/unsupported-feature");
-    assert_eq!(json["spec_section"], "5.20.5.5");
-    assert_eq!(json["matrix_row"], "ac0ej3-active-intra-tool-frontier");
+    assert_eq!(json["spec_section"], "5.20.5.3");
+    assert_eq!(json["matrix_row"], "ac0ej3-selectable-transform-records");
     assert_eq!(
         json["feature_id"],
-        "DECODE-AC0EJ3-ACTIVE-INTRA-TOOL-FRONTIER"
+        "DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS"
     );
     assert_eq!(json["detail_kind"], "unsupported_feature");
     assert_eq!(
         json["unsupported_reason"],
-        "unsupported_wienerns_lr_live_transform_record_mrl_mode"
+        "unsupported_wienerns_lr_live_transform_record_fsc_mode"
     );
     assert!(
         json["message"]
             .as_str()
             .unwrap()
-            .contains("active MRL prediction"),
-        "diagnostic must describe the active MRL frontier"
+            .contains("active FSC coefficient mode"),
+        "diagnostic must describe the active FSC frontier"
     );
     assert_eq!(json["byte_offset"], 110);
     assert_ne!(
@@ -327,6 +327,10 @@ fn local_ac0ej3_reaches_current_runtime_gate_without_output() {
     assert_ne!(
         json["unsupported_reason"], "unsupported_wienerns_lr_live_transform_record_cfl_mode",
         "ac0ej3 must advance past the active CfL mode-info gate"
+    );
+    assert_ne!(
+        json["unsupported_reason"], "unsupported_wienerns_lr_live_transform_record_mrl_mode",
+        "ac0ej3 must advance past the former active MRL mode-info gate"
     );
     assert_ne!(
         json["unsupported_reason"], "unsupported_wienerns_lr_live_storage_unpopulated",

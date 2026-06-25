@@ -27,7 +27,6 @@ use crate::{DecodeLimitName, DecodeLimits, DecodeOptions, DecodePlannedObu, Deco
 
 use super::limits::{checked_add, checked_mul, decoded_frame_storage_budget};
 use super::{
-    AC0EJ3_ACTIVE_INTRA_TOOL_FRONTIER_FEATURE_ID, AC0EJ3_ACTIVE_INTRA_TOOL_FRONTIER_MATRIX_ROW,
     AC0EJ3_LR_LIVE_TRANSFORM_RECORD_HANDOFF_FEATURE_ID,
     AC0EJ3_LR_LIVE_TRANSFORM_RECORD_HANDOFF_MATRIX_ROW,
     AC0EJ3_LR_RUNTIME_STORAGE_RETENTION_FEATURE_ID, AC0EJ3_LR_RUNTIME_STORAGE_RETENTION_MATRIX_ROW,
@@ -37,13 +36,10 @@ use super::{
     unsupported_feature_at,
 };
 
-/// AV2 §3 `MI_SIZE`: smallest mode-info block size in luma samples.
+// AV2 § 3 `MI_SIZE`, `PC_WIENER_LEAD`, and `PC_WIENER_LAG`; § 7.20.4 `get_features` reads 7 source samples per feature point.
 const LR_MI_SIZE: usize = 4;
-/// AV2 §3 `PC_WIENER_LEAD`.
 const PC_WIENER_LEAD: isize = 1;
-/// AV2 §3 `PC_WIENER_LAG`.
 const PC_WIENER_LAG: isize = 4;
-/// AV2 §7.20.4 `get_features`: m/up/down/upright/downleft/downright/upleft.
 const PC_WIENER_SOURCE_READS_PER_FEATURE: u64 = 7;
 const LR_RETAINED_FRAME_BUFFERS: u64 = 2;
 
@@ -433,7 +429,7 @@ impl WienerNsLrSourceReadConfig {
 pub(super) const WIENER_NS_CHROMA_SOURCE_TAP_COUNT: usize = 12;
 const WIENER_NS_CHROMA_LUMA_COEFF_OFFSET: usize = 6;
 
-// AV2 §7.20.3 `Wiener_Ns_Config_Y`, stored as (dy, dx) source offsets.
+// AV2 § 7.20.3 `Wiener_Ns_Config_Y` source tap offsets.
 const WIENER_NS_LUMA_SOURCE_TAPS: [(isize, isize); 32] = [
     (1, 0),
     (-1, 0),
@@ -469,7 +465,7 @@ const WIENER_NS_LUMA_SOURCE_TAPS: [(isize, isize); 32] = [
     (-3, 3),
 ];
 
-// AV2 §7.20.3 `Wiener_Ns_Config_Uv`, stored as (dy, dx) source offsets.
+// AV2 § 7.20.3 `Wiener_Ns_Config_Uv` source tap offsets.
 const WIENER_NS_CHROMA_SOURCE_TAPS: [(isize, isize); WIENER_NS_CHROMA_SOURCE_TAP_COUNT] = [
     (1, 0),
     (-1, 0),
@@ -625,9 +621,7 @@ pub(super) fn derive_wienerns_lr_runtime_storage_retention_frontier(
     offset: ByteOffset,
     limits: DecodeLimits,
 ) -> Result<WienerNsLrRuntimeStorageRetentionFrontier> {
-    // `FrameSize` carries the derived §6.17.4.1 `FrameWidth`/`FrameHeight`
-    // semantics that storage retention sizes, rather than only the §5.18.4.1
-    // frame-size syntax fields.
+    // `FrameSize` carries the derived §6.17.4.1 dimensions used for storage.
     let frame_size = core.frame_size.ok_or_else(|| {
         unsupported_feature_at(
             "unsupported_wienerns_lr_runtime_storage_missing_frame_size",
@@ -673,11 +667,7 @@ pub(super) fn derive_wienerns_lr_runtime_storage_retention_frontier(
         live_frame_buffer_bytes,
         LR_RETAINED_FRAME_BUFFERS,
     )?;
-    // Charge the private fail-closed live shell by its current `Option` slot
-    // sizes, not by compact AV2 payload bytes, so `MaxReferenceStoreBytes`
-    // bounds the allocation made before the unsupported-feature diagnostic.
-    // `frame_mi_dimensions` only reports missing parsed facts or an unexpected
-    // empty MI grid here; it does not wrap resource-limit failures.
+    // Charge private fail-closed storage by current slot sizes, not compact AV2 bytes.
     let (tx_skip_rows, tx_skip_cols) = crate::tile_payload::frame_mi_dimensions(core)
         .map_err(|_| wienerns_lr_runtime_storage_retention_error(offset))?;
     let tx_skip_values = checked_mul(
@@ -778,7 +768,7 @@ fn derive_wienerns_lr_fixed_largest_transform_record_handoff(
         sequence,
         core,
         limits,
-        |work_unit, symbols, frontier, joint_modes, _block_decoded| {
+        |work_unit, symbols, frontier, joint_modes, uses_mrls, _block_decoded| {
             let n4w = frontier
                 .b_size
                 .num_4x4_wide()
@@ -804,6 +794,7 @@ fn derive_wienerns_lr_fixed_largest_transform_record_handoff(
                 symbols,
                 GeneralIntraChromaToolConfig::disabled(),
                 joint_modes,
+                uses_mrls,
                 frontier.b_size.index(),
                 frontier.r,
                 frontier.c,
@@ -905,6 +896,7 @@ fn derive_wienerns_lr_fixed_largest_transform_record_handoff(
             Ok(crate::tile_payload::GeneralIntraLeafMode::luma(
                 modes.intra_joint_mode,
                 modes.y_mode,
+                modes.uses_mrls,
             ))
         },
     )
@@ -1127,6 +1119,15 @@ fn wienerns_lr_transform_record_setup_error(
                 "8.3.2",
             )
         }
+        MinimalRuntimePartitionFrontierError::UsesMrlsState(_) => {
+            wienerns_lr_transform_record_unsupported(
+                scope,
+                "unsupported_wienerns_lr_live_transform_record_setup_uses_mrls_state",
+                offset,
+                "minimal runtime reached active Wiener NS LR transform-record derivation, but UsesMrls neighbour state allocation for the partition-tree walk is outside the supported subset",
+                "8.3.2",
+            )
+        }
         MinimalRuntimePartitionFrontierError::UnexpectedFrontier { .. } => {
             wienerns_lr_transform_record_unsupported(
                 scope,
@@ -1165,6 +1166,13 @@ fn wienerns_lr_transform_record_traversal_error(
                 "5.20.5.3",
             )
         }
+        TilePartitionTraversalError::UsesMrlsState(_) => wienerns_lr_transform_record_unsupported(
+            scope,
+            "unsupported_wienerns_lr_live_transform_record_uses_mrls_state",
+            offset,
+            "minimal runtime reached active Wiener NS LR transform-record derivation, but the partition-tree walk could not maintain UsesMrls state for MRL contexts",
+            "8.3.2",
+        ),
         TilePartitionTraversalError::Size(_) => wienerns_lr_transform_record_unsupported(
             scope,
             "unsupported_wienerns_lr_live_transform_record_partition_size",
@@ -1249,6 +1257,15 @@ fn wienerns_lr_transform_record_traversal_error(
                 "unsupported_wienerns_lr_live_transform_record_missing_intra_luma_mode_state",
                 offset,
                 "minimal runtime reached active Wiener NS LR transform-record derivation, but an intra luma/shared leaf did not provide YMode state for subsequent SDP chroma syntax",
+                "5.20.5.3",
+            )
+        }
+        TilePartitionTraversalError::MissingIntraUsesMrlsState { .. } => {
+            wienerns_lr_transform_record_unsupported(
+                scope,
+                "unsupported_wienerns_lr_live_transform_record_missing_uses_mrls_state",
+                offset,
+                "minimal runtime reached active Wiener NS LR transform-record derivation, but an intra luma/shared leaf did not provide UsesMrls state for subsequent MRL contexts",
                 "5.20.5.3",
             )
         }
@@ -1359,14 +1376,6 @@ fn wienerns_lr_live_transform_record_mode_error(
             offset,
             "minimal runtime reached active Wiener NS LR and consumed mode-info syntax, but the block selected active FSC coefficient mode; deriving live LrTxSkip records for FSC blocks is outside this handoff subset",
             "5.20.5.3",
-        ),
-        GeneralIntraBlockModeError::UnsupportedMrlMode { .. } => unsupported_feature_at(
-            "unsupported_wienerns_lr_live_transform_record_mrl_mode",
-            offset,
-            "minimal runtime reached active Wiener NS LR and consumed mode-info syntax, but the block selected active MRL prediction; deriving live LrTxSkip records for MRL blocks is outside this handoff subset",
-            AC0EJ3_ACTIVE_INTRA_TOOL_FRONTIER_MATRIX_ROW,
-            AC0EJ3_ACTIVE_INTRA_TOOL_FRONTIER_FEATURE_ID,
-            "5.20.5.5",
         ),
         GeneralIntraBlockModeError::InvalidFscBlockSizeIndex { .. } => {
             wienerns_lr_transform_record_unsupported(
@@ -1909,6 +1918,7 @@ fn derive_pc_wiener_box_features_source_reads(
     x: isize,
     y: isize,
 ) -> Result<()> {
+    // AV2 § 7.20.4 `get_features` scans the PC Wiener lead/lag feature window.
     for dy in -PC_WIENER_LEAD..=PC_WIENER_LAG {
         for dx in -PC_WIENER_LEAD..=PC_WIENER_LAG {
             let feature_x = source_read_coordinate_add(x, dx, "pc wiener feature x")?;
@@ -2001,6 +2011,7 @@ fn record_wienerns_lr_classified_source_read(
         .source_reads_resolved
         .checked_add(1)
         .ok_or_else(|| source_read_arithmetic_overflow("pc wiener classified source-read count"))?;
+    // AV2 § 7.20.3 `get_luma_sample`.
     let sample = loop_restoration_source_sample(PlaneId::Y, x, y, bounds)?;
     if summary.first_sample.is_none() {
         summary.first_sample = Some(WienerNsLrSourceReadSample {
@@ -2362,8 +2373,6 @@ pub(super) fn record_wienerns_lr_chroma_luma_source_reads(
     let luma_y =
         clip_source_read_coordinate(luma_y, 0, last_y, "wiener ns lr clipped luma source y")?;
 
-    // AV2 §7.20.3 `get_luma_sample`: 4:2:0 filter indexes 0, 1, and 3 read
-    // the 2x2 luma footprint; filter index 2 reads only the scaled luma sample.
     if bounds.subsampling_x == 1 && bounds.subsampling_y == 1 && config.cfl_ds_filter_index != 2 {
         for dy in 0..2 {
             for dx in 0..2 {
@@ -2433,17 +2442,14 @@ fn mi_to_luma_start(mi: usize, context: &'static str) -> Result<usize> {
     mi.checked_mul(LR_MI_SIZE)
         .ok_or_else(|| source_read_arithmetic_overflow(context))
 }
-
 fn mi_to_luma_end(mi_end: usize, context: &'static str) -> Result<usize> {
     mi_to_luma_start(mi_end, context)?
         .checked_sub(1)
         .ok_or_else(|| source_read_arithmetic_overflow(context))
 }
-
 fn usize_to_source_coordinate(value: usize, context: &'static str) -> Result<isize> {
     isize::try_from(value).map_err(|_| source_read_arithmetic_overflow(context))
 }
-
 const fn chroma_subsampling(chroma_format: ChromaFormatIdc) -> (u8, u8) {
     match chroma_format {
         ChromaFormatIdc::Yuv420 | ChromaFormatIdc::Monochrome => (1, 1),
@@ -2451,7 +2457,6 @@ const fn chroma_subsampling(chroma_format: ChromaFormatIdc) -> (u8, u8) {
         ChromaFormatIdc::Yuv422 => (1, 0),
     }
 }
-
 fn wienerns_lr_source_plane(
     plane: usize,
     chroma_format: ChromaFormatIdc,
@@ -2479,7 +2484,6 @@ fn wienerns_lr_source_plane(
         )),
     }
 }
-
 fn has_wienerns_frame_filter_bank(core: &FrameHeaderCore) -> bool {
     core.lr_params.as_ref().is_some_and(|lr| {
         lr.planes

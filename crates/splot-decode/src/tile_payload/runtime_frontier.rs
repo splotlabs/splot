@@ -16,7 +16,10 @@ use splot_core::symbol::{SymbolDecoder, SymbolDecoderSummary};
 use super::DecodeTileWorkUnit;
 use super::block_decoded_state::TileBlockDecodedState;
 use super::block_symbol::{MinimalBlockSymbolTraceError, consume_minimal_block_symbol_trace};
-use super::intra_joint_modes::{TileIntraJointModeState, TileIntraJointModeStateError};
+use super::intra_joint_modes::{
+    TileIntraJointModeState, TileIntraJointModeStateError, TileUsesMrlsState,
+    TileUsesMrlsStateError,
+};
 use super::mi_size_state::{TileMiSizeState, TileMiSizeStateError};
 use super::partition::PartitionType;
 use super::partition_allowed::PartitionFeatureFlags;
@@ -108,6 +111,9 @@ pub(crate) enum MinimalRuntimePartitionFrontierError {
     /// The `IntraJointModes` neighbour-mode state boundary failed.
     #[error("minimal runtime intra joint-mode state failed: {0}")]
     IntraJointModeState(#[from] TileIntraJointModeStateError),
+    /// The `UsesMrls` neighbour-mode state boundary failed.
+    #[error("minimal runtime intra UsesMrls state failed: {0}")]
+    UsesMrlsState(#[from] TileUsesMrlsStateError),
     /// Traversal reached a shape outside the minimal tier.
     #[error("minimal runtime partition frontier mismatch: {reason}")]
     UnexpectedFrontier {
@@ -185,12 +191,13 @@ pub(crate) enum GeneralIntraMultiblockError<E> {
 /// Decodes the complete general intra partition tree for the tile, invoking
 /// `on_leaf` at each leaf block in decode order, and returns the live symbol
 /// decoder for the caller's § 8.2.4 `exit_symbol()` check. The MI-size partition
-/// context and the AV2 § 5.20.5.3 `IntraJointModes` neighbour-mode grid are
-/// maintained across blocks internally.
+/// context and the AV2 § 5.20.5.3 `IntraJointModes` / `UsesMrls` neighbour-mode
+/// grids are maintained across blocks internally.
 ///
 /// `on_leaf` receives the shared per-MI `IntraJointModes` grid (read-only, for
-/// the § 8.3.2 `y_mode_index` neighbour context) and the superblock-relative
-/// § 5.20.2.3 `BlockDecoded` state (read-only, for the § 7.13.2.1 above-right /
+/// the § 8.3.2 `y_mode_index` neighbour context), the sibling `UsesMrls` grid
+/// (read-only, for MRL contexts), and the superblock-relative § 5.20.2.3
+/// `BlockDecoded` state (read-only, for the § 7.13.2.1 above-right /
 /// below-left sentinel availability via § 5.20.7.25 `count_top_right_avail` /
 /// `count_bottom_left_avail`), and returns the block's luma mode state when the
 /// leaf has a luma side, which the walk records into the grids for later luma
@@ -210,6 +217,7 @@ where
         &mut SymbolDecoder<'payload>,
         &DecodeBlockFrontier,
         &TileIntraJointModeState,
+        &TileUsesMrlsState,
         &TileBlockDecodedState,
     ) -> Result<GeneralIntraLeafMode, E>,
 {
@@ -219,11 +227,20 @@ where
         .map_err(MinimalRuntimePartitionFrontierError::from)?;
     let mut joint_modes = TileIntraJointModeState::new(mi_rows, mi_cols)
         .map_err(MinimalRuntimePartitionFrontierError::from)?;
+    let sb_size4 = frame
+        .sb_size()
+        .num_4x4_wide()
+        .map_err(TilePartitionTraversalError::from)
+        .map_err(MinimalRuntimePartitionFrontierError::from)?
+        .max(1);
+    let mut uses_mrls = TileUsesMrlsState::new(mi_rows, mi_cols, sb_size4)
+        .map_err(MinimalRuntimePartitionFrontierError::from)?;
     decode_general_intra_partition_tree(
         work_unit,
         frame,
         &mut mi_size_state,
         &mut joint_modes,
+        &mut uses_mrls,
         limits,
         on_leaf,
     )

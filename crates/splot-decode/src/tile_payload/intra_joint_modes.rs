@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! AV2 § 5.20.5.3 per-MI `IntraJointModes` neighbour-mode state.
+//! AV2 § 5.20.5.3 per-MI intra neighbour-mode state.
 //!
 //! Feature tracking: `DECODE-GENERAL-INTRA-MB-NEIGHBOUR-SMOOTH`.
 //!
@@ -15,9 +15,10 @@
 //! (`0`) when that neighbour is out of frame
 //! (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3`, `get_joint_mode`).
 //!
-//! This module tracks that per-MI `IntraJointModes` grid for the general intra
-//! partition walk so the `y_mode_index` context can be derived from real
-//! reconstructed neighbours instead of the hardcoded tile-origin `ctx == 0`.
+//! This module tracks that per-MI `IntraJointModes` grid, plus the sibling
+//! `UsesMrls` grid used by the MRL symbol contexts, for the general intra
+//! partition walk so contexts can be derived from real decoded neighbours
+//! instead of hardcoded tile-origin `ctx == 0`.
 
 use std::collections::TryReserveError;
 
@@ -33,6 +34,8 @@ const NON_DIRECTIONAL_MODES_COUNT: u8 = 5;
 /// `DC_PRED < NON_DIRECTIONAL_MODES_COUNT`, so an out-of-frame neighbour is
 /// non-directional and contributes `0` to the § 8.3.2 context.
 const DC_PRED_JOINT_MODE: u8 = 0;
+/// AV2 § 5.20.5.3 `UsesMrls` value for no MRL reference sample offset.
+const NO_MRL: u8 = 0;
 
 /// Mutable tile-local AV2 § 5.20.5.3 `IntraJointModes[r][c]` grid.
 ///
@@ -181,6 +184,202 @@ impl TileIntraJointModeState {
         }
         row.checked_mul(self.mi_cols)?.checked_add(col)
     }
+}
+
+/// Mutable tile-local AV2 § 5.20.5.3 `UsesMrls[r][c]` grid.
+///
+/// Each cell stores the block's derived `UsesMrls` value for every MI unit it
+/// covers:
+///
+/// - `0` when `mrl_index == 0`
+/// - `1` when `mrl_index > 0 && mrl_sec_index == 0`
+/// - `2` when `mrl_index > 0 && mrl_sec_index != 0`
+///
+/// AV2 § 8.3.2 derives both MRL CDF contexts from the first two `NPos` cells
+/// populated by § 5.20.4.1 `add_neighbor`. Unlike `get_joint_mode`, `NPos`
+/// excludes neighbours from a different superblock row and may use fallback
+/// `(r, c - 1)` / `(r - 1, c)` positions.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct TileUsesMrlsState {
+    mi_rows: usize,
+    mi_cols: usize,
+    sb_size4: usize,
+    /// Row-major `UsesMrls` grid (`mi_rows * mi_cols` cells).
+    uses_mrls: Vec<u8>,
+}
+
+impl TileUsesMrlsState {
+    /// Creates a `UsesMrls` grid for the given tile MI dimensions, initialized to
+    /// `0` (matching out-of-frame or not-yet-decoded neighbours). `sb_size4` is
+    /// AV2 § 5.20.2.1 `sbSize4 = Num_4x4_Blocks_Wide[SbSize]`, used by
+    /// § 5.20.4.1 `add_neighbor`'s `aboveSbBoundary` filter.
+    pub(crate) fn new(
+        mi_rows: usize,
+        mi_cols: usize,
+        sb_size4: usize,
+    ) -> Result<Self, TileUsesMrlsStateError> {
+        if mi_rows == 0 || mi_cols == 0 {
+            return Err(TileUsesMrlsStateError::EmptyDimensions { mi_rows, mi_cols });
+        }
+        if sb_size4 == 0 {
+            return Err(TileUsesMrlsStateError::EmptySuperblockSize);
+        }
+        let cells =
+            mi_rows
+                .checked_mul(mi_cols)
+                .ok_or(TileUsesMrlsStateError::ArithmeticOverflow {
+                    operation: "mi_rows * mi_cols",
+                    left: mi_rows,
+                    right: mi_cols,
+                })?;
+        let mut uses_mrls = Vec::new();
+        uses_mrls
+            .try_reserve_exact(cells)
+            .map_err(|source| TileUsesMrlsStateError::Allocation { source })?;
+        uses_mrls.resize(cells, NO_MRL);
+        Ok(Self {
+            mi_rows,
+            mi_cols,
+            sb_size4,
+            uses_mrls,
+        })
+    }
+
+    /// AV2 § 8.3.2 `mrl_index` CDF context for the block at MI position
+    /// (`r`, `c`) with `n4w`/`n4h` MI width/height.
+    ///
+    /// `ctx += UsesMrls[NPos[n][0]][NPos[n][1]] > 0` for `n in 0..NNum`, so the
+    /// result is in `0..=2`.
+    pub(crate) fn mrl_index_ctx(&self, r: usize, c: usize, n4w: usize, n4h: usize) -> usize {
+        let [first, second] = self.neighbour_uses_mrls(r, c, n4w, n4h);
+        (first > 0) as usize + (second > 0) as usize
+    }
+
+    /// AV2 § 8.3.2 `mrl_sec_index` CDF context for the block at MI position
+    /// (`r`, `c`) with `n4w`/`n4h` MI width/height.
+    ///
+    /// `ctx += UsesMrls[NPos[n][0]][NPos[n][1]] == 2` for `n in 0..NNum`, so the
+    /// result is in `0..=2`.
+    pub(crate) fn mrl_sec_index_ctx(&self, r: usize, c: usize, n4w: usize, n4h: usize) -> usize {
+        let [first, second] = self.neighbour_uses_mrls(r, c, n4w, n4h);
+        (first == 2) as usize + (second == 2) as usize
+    }
+
+    /// Returns the first two `UsesMrls` values selected by AV2 § 5.20.4.1
+    /// `add_neighbor` / `NPos` order, with missing entries left at `0`.
+    pub(crate) fn neighbour_uses_mrls(
+        &self,
+        r: usize,
+        c: usize,
+        n4w: usize,
+        n4h: usize,
+    ) -> [u8; 2] {
+        let mut values = [NO_MRL; 2];
+        let mut len = 0;
+        let bottom = r.checked_add(n4h.saturating_sub(1));
+        let right = c.checked_add(n4w.saturating_sub(1));
+
+        self.add_uses_mrls_neighbor(&mut values, &mut len, r, bottom, c.checked_sub(1));
+        self.add_uses_mrls_neighbor(&mut values, &mut len, r, r.checked_sub(1), right);
+        self.add_uses_mrls_neighbor(&mut values, &mut len, r, Some(r), c.checked_sub(1));
+        self.add_uses_mrls_neighbor(&mut values, &mut len, r, r.checked_sub(1), Some(c));
+
+        values
+    }
+
+    /// Writes the block's derived `UsesMrls` value into every MI cell it covers.
+    pub(crate) fn record_block(
+        &mut self,
+        r: usize,
+        c: usize,
+        n4w: usize,
+        n4h: usize,
+        uses_mrls: u8,
+    ) {
+        for y in 0..n4h {
+            let Some(row) = r.checked_add(y) else { break };
+            if row >= self.mi_rows {
+                break;
+            }
+            for x in 0..n4w {
+                let Some(col) = c.checked_add(x) else { break };
+                if col >= self.mi_cols {
+                    break;
+                }
+                if let Some(index) = self.cell_index(row, col) {
+                    self.uses_mrls[index] = uses_mrls;
+                }
+            }
+        }
+    }
+
+    fn add_uses_mrls_neighbor(
+        &self,
+        values: &mut [u8; 2],
+        len: &mut usize,
+        current_row: usize,
+        row: Option<usize>,
+        col: Option<usize>,
+    ) {
+        if *len >= 2 {
+            return;
+        }
+        let (Some(row), Some(col)) = (row, col) else {
+            return;
+        };
+        // AV2 § 5.20.4.1 `add_neighbor`: NPos only keeps same-superblock-row
+        // locations, while NPosBuf may keep cross-row buffered neighbours.
+        if current_row / self.sb_size4 != row / self.sb_size4 {
+            return;
+        }
+        if let Some(value) = self.cell(row, col) {
+            values[*len] = value;
+            *len += 1;
+        }
+    }
+
+    fn cell(&self, row: usize, col: usize) -> Option<u8> {
+        self.cell_index(row, col).map(|index| self.uses_mrls[index])
+    }
+
+    fn cell_index(&self, row: usize, col: usize) -> Option<usize> {
+        if row >= self.mi_rows || col >= self.mi_cols {
+            return None;
+        }
+        row.checked_mul(self.mi_cols)?.checked_add(col)
+    }
+}
+
+/// Error raised while building or sizing the `UsesMrls` grid.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum TileUsesMrlsStateError {
+    /// The tile MI dimensions were empty.
+    #[error("intra UsesMrls state requires non-empty MI dimensions, got {mi_rows}x{mi_cols}")]
+    EmptyDimensions {
+        /// Tile MI rows.
+        mi_rows: usize,
+        /// Tile MI columns.
+        mi_cols: usize,
+    },
+    /// The superblock width in MI units was empty.
+    #[error("intra UsesMrls state requires non-empty superblock size")]
+    EmptySuperblockSize,
+    /// A dimension product overflowed `usize`.
+    #[error("intra UsesMrls state arithmetic overflow in {operation}: {left} * {right}")]
+    ArithmeticOverflow {
+        /// The overflowing operation.
+        operation: &'static str,
+        /// Left operand.
+        left: usize,
+        /// Right operand.
+        right: usize,
+    },
+    /// The grid allocation failed.
+    #[error("intra UsesMrls state allocation failed: {source}")]
+    Allocation {
+        /// The underlying reservation error.
+        source: TryReserveError,
+    },
 }
 
 /// Error raised while building or sizing the `IntraJointModes` grid.
@@ -333,6 +532,8 @@ mod tests {
     /// A representative non-directional `modeDelta` (< NON_DIRECTIONAL_MODES_COUNT):
     /// SMOOTH_V `IntraJointMode == 2`.
     const SMOOTH_V_JOINT_MODE: u8 = 2;
+    /// A 64x64 superblock is 16x16 MI units.
+    const SB_N4: usize = 16;
 
     #[test]
     fn out_of_frame_neighbours_give_context_zero() {
@@ -431,6 +632,75 @@ mod tests {
         state.record_block(2, 2, 16, 16, D135_JOINT_MODE);
         // In-frame neighbour read still resolves the written cell.
         assert_eq!(state.get_joint_mode(0, 2, 3, 1, 1), D135_JOINT_MODE);
+    }
+
+    #[test]
+    fn uses_mrls_out_of_frame_neighbours_give_context_zero() {
+        let state = TileUsesMrlsState::new(16, 16, SB_N4).unwrap();
+
+        assert_eq!(state.mrl_index_ctx(0, 0, 16, 16), 0);
+        assert_eq!(state.mrl_sec_index_ctx(0, 0, 16, 16), 0);
+    }
+
+    #[test]
+    fn uses_mrls_neighbours_select_index_and_secondary_contexts() {
+        let mut state = TileUsesMrlsState::new(32, 32, SB_N4).unwrap();
+        // Above neighbour of the block at (8, 8): NPos first probes [7][11].
+        state.record_block(7, 11, 1, 1, 2);
+        // Left neighbour: NPos first probes [11][7].
+        state.record_block(11, 7, 1, 1, 1);
+
+        assert_eq!(state.neighbour_uses_mrls(8, 8, 4, 4), [1, 2]);
+        assert_eq!(state.mrl_index_ctx(8, 8, 4, 4), 2);
+        assert_eq!(state.mrl_sec_index_ctx(8, 8, 4, 4), 1);
+    }
+
+    #[test]
+    fn uses_mrls_npos_excludes_above_superblock_row_neighbours() {
+        let mut state = TileUsesMrlsState::new(32, 32, SB_N4).unwrap();
+        state.record_block(31, 15, 1, 1, 1);
+        state.record_block(15, 31, 1, 1, 2);
+        state.record_block(15, 16, 1, 1, 2);
+
+        assert_eq!(state.neighbour_uses_mrls(16, 16, 16, 16), [1, 0]);
+        assert_eq!(state.mrl_index_ctx(16, 16, 16, 16), 1);
+        assert_eq!(state.mrl_sec_index_ctx(16, 16, 16, 16), 0);
+    }
+
+    #[test]
+    fn uses_mrls_npos_uses_fallback_positions() {
+        let mut state = TileUsesMrlsState::new(16, 16, SB_N4).unwrap();
+        state.record_block(7, 3, 1, 1, 1);
+        state.record_block(7, 0, 1, 1, 2);
+
+        assert_eq!(state.neighbour_uses_mrls(8, 0, 4, 4), [1, 2]);
+        assert_eq!(state.mrl_index_ctx(8, 0, 4, 4), 2);
+        assert_eq!(state.mrl_sec_index_ctx(8, 0, 4, 4), 1);
+    }
+
+    #[test]
+    fn uses_mrls_record_block_clips_to_the_grid() {
+        let mut state = TileUsesMrlsState::new(4, 4, SB_N4).unwrap();
+        state.record_block(2, 2, 16, 16, 2);
+
+        assert_eq!(state.neighbour_uses_mrls(2, 3, 1, 1), [2, 0]);
+        assert_eq!(state.mrl_index_ctx(0, 0, 1, 1), 0);
+    }
+
+    #[test]
+    fn uses_mrls_empty_dimensions_are_rejected() {
+        assert!(matches!(
+            TileUsesMrlsState::new(0, 4, SB_N4),
+            Err(TileUsesMrlsStateError::EmptyDimensions { .. })
+        ));
+        assert!(matches!(
+            TileUsesMrlsState::new(4, 0, SB_N4),
+            Err(TileUsesMrlsStateError::EmptyDimensions { .. })
+        ));
+        assert!(matches!(
+            TileUsesMrlsState::new(4, 4, 0),
+            Err(TileUsesMrlsStateError::EmptySuperblockSize)
+        ));
     }
 
     #[test]
