@@ -599,6 +599,9 @@ fn intrabc_ref_stack_with_limit(
     let sb_width = superblock_samples(sequence, tile_offset)?;
     let sb_height = sb_width;
     let mut candidates = Vec::new();
+    // Bounded local handoff assumes §5.20.5.4 `find_mv_stack(0)` found no
+    // spatial/bank candidates; current prediction support must replace this
+    // before `block_mv` or `ref_mv_idx` become output-affecting.
     add_to_ref_bv(&mut candidates, max_count, 0, -sb_height, tile_offset)?;
     add_to_ref_bv(
         &mut candidates,
