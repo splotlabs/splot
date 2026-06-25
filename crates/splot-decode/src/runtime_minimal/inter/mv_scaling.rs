@@ -74,9 +74,10 @@ pub(in crate::runtime_minimal) struct PlaneScaling {
 /// `mv = (row, col)`), over an unscaled reference of `ref_mi_cols` x `ref_mi_rows`
 /// mode-info units. `sub_x` / `sub_y` are the plane subsampling (0 for luma).
 ///
-/// The block's plane-space top-left is `(x >> sub_x, y >> sub_y)`; here the block
-/// is the full top-left superblock at luma `(0, 0)`, so the plane position is
-/// `(0, 0)` and only the MV's fractional part shifts the reference sampling.
+/// The block's plane-space top-left is `(x >> sub_x, y >> sub_y)`. The committed
+/// inter callers pass ordinary reference-frame motion at their current block
+/// position; the ac0ej3 IntrABC frontier also reuses this identity-scale math for
+/// `refIdx == -1` current-frame prediction at arbitrary luma positions.
 #[allow(clippy::too_many_arguments)]
 pub(in crate::runtime_minimal) fn derive_plane_scaling(
     plane_x: i64,
@@ -111,7 +112,7 @@ pub(in crate::runtime_minimal) fn derive_plane_scaling(
     let step_x = round2_signed(scale, REF_SCALE_SHIFT - SCALE_SUBPEL_BITS); // 1024
     let step_y = round2_signed(scale, REF_SCALE_SHIFT - SCALE_SUBPEL_BITS); // 1024
 
-    // §7.13.3.18 clip bounds (useRefArea == 0, use_intrabc == 0):
+    // §7.13.3.18 clip bounds (useRefArea == 0; also used by IntrABC refIdx == -1):
     // lastX = ((RefMiCols * MI_SIZE) >> subX) - 1; firstX = firstY = 0.
     let last_x = ((ref_mi_cols * MI_SIZE) >> sub_x) - 1;
     let last_y = ((ref_mi_rows * MI_SIZE) >> sub_y) - 1;

@@ -1285,6 +1285,51 @@ mod tests {
     }
 
     #[test]
+    fn intrabc_geometry_rejects_out_of_frame_target() {
+        let (_, core) = selectable_large_frame_fixture();
+        let block = IntrabcBlockContext::new(32, 0, 2, false);
+        let geometry = IntrabcBlockGeometry::new(block, 4, 4);
+        let info = IntrabcInfo {
+            intrabc_mode: 1,
+            ref_mv_idx: 0,
+            mv_precision: MV_PRECISION_QUARTER_PEL,
+            block_mv: IntrabcBlockVector { row: 0, col: 0 },
+        };
+
+        let error =
+            derive_intrabc_luma_prediction_geometry(&core, geometry, info, ByteOffset::new(20))
+                .unwrap_err();
+
+        assert_eq!(
+            unsupported_reason(error),
+            "unsupported_wienerns_lr_selectable_transform_records_intrabc_target_bounds"
+        );
+    }
+
+    #[test]
+    fn intrabc_geometry_rejects_missing_frame_size() {
+        let (_, mut core) = selectable_large_frame_fixture();
+        core.frame_size = None;
+        let block = IntrabcBlockContext::new(8, 8, 2, false);
+        let geometry = IntrabcBlockGeometry::new(block, 4, 4);
+        let info = IntrabcInfo {
+            intrabc_mode: 1,
+            ref_mv_idx: 0,
+            mv_precision: MV_PRECISION_QUARTER_PEL,
+            block_mv: IntrabcBlockVector { row: 0, col: 0 },
+        };
+
+        let error =
+            derive_intrabc_luma_prediction_geometry(&core, geometry, info, ByteOffset::new(20))
+                .unwrap_err();
+
+        assert_eq!(
+            unsupported_reason(error),
+            "unsupported_wienerns_lr_selectable_transform_records_intrabc_frame_size"
+        );
+    }
+
+    #[test]
     fn intrabc_newmv_one_pel_record_shifts_shell_delta() {
         let (sequence, mut core) = selectable_fixture();
         core.force_integer_mv = Some(true);

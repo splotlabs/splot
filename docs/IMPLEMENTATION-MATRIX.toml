@@ -11796,6 +11796,8 @@ tests = [
     "crates/splot-decode/src/runtime_minimal/wienerns_lr/intrabc_records.rs::tests::intrabc_nearmv_geometry_derives_integer_luma_copy_rectangles",
     "crates/splot-decode/src/runtime_minimal/wienerns_lr/intrabc_records.rs::tests::intrabc_geometry_derives_fractional_luma_prediction_region",
     "crates/splot-decode/src/runtime_minimal/wienerns_lr/intrabc_records.rs::tests::intrabc_geometry_rejects_out_of_frame_source",
+    "crates/splot-decode/src/runtime_minimal/wienerns_lr/intrabc_records.rs::tests::intrabc_geometry_rejects_out_of_frame_target",
+    "crates/splot-decode/src/runtime_minimal/wienerns_lr/intrabc_records.rs::tests::intrabc_geometry_rejects_missing_frame_size",
     "crates/splot-decode/src/runtime_minimal/wienerns_lr/intrabc_records.rs::tests::intrabc_newmv_one_pel_record_shifts_shell_delta",
     "crates/splot-decode/src/runtime_minimal/wienerns_lr/intrabc_records.rs::tests::non_intrabc_path_reads_only_use_intrabc_symbol",
     "crates/splot-decode/src/runtime_minimal/wienerns_lr/intrabc_records.rs::tests::contexts_use_intrabc_npos_and_skip_nposbuf_boundaries",
