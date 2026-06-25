@@ -34,6 +34,10 @@ use super::cdf::TileCdfSelector;
 use super::cdf::block_context::IntraYMode;
 use super::cdf::block_context::{txb_skip_ctx_luma, v_txb_skip_ctx};
 use super::cdf::block_read::BlockSymbolTraceReadError;
+use super::coeff_loop::fsc_quant_pass::{
+    CoeffFscBranchError, CoeffFscStagedTxSizeNonZeroInput,
+    apply_staged_nonzero_coeff_fsc_branch_from_tx_size,
+};
 use super::coeff_loop::max_level::CoeffTransformClass;
 use super::coeff_loop::ordinary_pass::geometry::{
     CoeffOrdinaryBranchLosslessBaseConfig, CoeffOrdinaryStagedLosslessNonZeroInput,
@@ -283,6 +287,12 @@ pub(crate) enum GeneralIntraResidualError {
         /// Source ordinary coefficient branch error.
         source: CoeffOrdinaryBranchError,
     },
+    /// The staged FSC/IDTX coefficient pass failed after transform-tool admission.
+    #[error("general intra luma staged FSC coefficient pass failed: {source}")]
+    StagedFscPass {
+        /// Source FSC coefficient branch error.
+        source: CoeffFscBranchError,
+    },
     /// An active § 5.20.8.2 luma `intra_tx_type` symbol read failed.
     #[error("general intra luma transform_type symbol read failed: {source}")]
     TransformTypeRead {
@@ -408,6 +418,7 @@ pub(crate) fn decode_general_intra_plane_coeffs(
     eob_u_nonzero: bool,
     uv_mode: usize,
     is_inter: bool,
+    fsc_mode: bool,
     transform_tool_residual_policy: TransformToolResidualPolicy,
 ) -> Result<LumaCoeffBlock, GeneralIntraResidualError> {
     let x4 = start_x >> 2;
@@ -427,11 +438,9 @@ pub(crate) fn decode_general_intra_plane_coeffs(
     let above_level_or = or_u32(context.above_level(plane).map_err(coeff_ctx_err)?, x4, w4);
     let left_level_or = or_u32(context.left_level(plane).map_err(coeff_ctx_err)?, y4, h4);
     // AV2 § 8.3.2 `all_zero` (txb_skip): for plane 0/1 the cdf is
-    // `TileTxbSkipCdf[is_inter || fsc_mode][txSzCtx][ctx]`. `fsc_mode` is false on
-    // this path (the general intra / inter frontier rejects FSC), so the second
-    // index is `is_inter`. (The V plane uses the separate `TileVTxbSkipCdf[ctx]`,
-    // which carries no inter/intra split.)
-    let txb_skip_intra_inter = usize::from(is_inter);
+    // `TileTxbSkipCdf[is_inter || fsc_mode][txSzCtx][ctx]`. The V plane uses the
+    // separate `TileVTxbSkipCdf[ctx]`, which carries no inter/intra split.
+    let txb_skip_intra_inter = usize::from(is_inter || fsc_mode);
     let selector = match plane {
         2 => {
             let above_nz = above_level_or != 0
@@ -459,7 +468,12 @@ pub(crate) fn decode_general_intra_plane_coeffs(
             coeff_cdf_q_ctx,
             plane_type: txb_skip_intra_inter,
             tx_size: tx_size_ctx,
-            ctx: txb_skip_ctx_luma(above_level_or, left_level_or, tx_fills_block, false),
+            ctx: txb_skip_ctx_luma(
+                above_level_or,
+                left_level_or,
+                tx_fills_block,
+                fsc_mode && frame_facts.enable_fsc(),
+            ),
         },
     };
 
@@ -512,6 +526,7 @@ pub(crate) fn decode_general_intra_plane_coeffs(
             coeff_cdf_q_ctx,
             uv_mode,
             is_inter,
+            fsc_mode,
             luma,
             active_intra_ist,
             active_chroma,
@@ -523,7 +538,7 @@ pub(crate) fn decode_general_intra_plane_coeffs(
         block: CoeffUseFscFrameBlockFacts {
             geometry,
             plane_tx_type: DCT_DCT,
-            fsc_mode: false,
+            fsc_mode,
             is_inter,
             segment_id: SEGMENT_ID,
         },
@@ -558,6 +573,7 @@ fn decode_staged_transform_tool_nonzero_coeffs(
     coeff_cdf_q_ctx: usize,
     uv_mode: usize,
     is_inter: bool,
+    fsc_mode: bool,
     luma_transform_type_context: Option<LumaTransformTypeContext>,
     active_intra_ist_policy: ActiveIntraIstResidualPolicy,
     active_chroma_policy: ActiveChromaResidualPolicy,
@@ -604,6 +620,7 @@ fn decode_staged_transform_tool_nonzero_coeffs(
             plane: geometry.plane,
             tx_size: geometry.tx_size,
             is_inter,
+            fsc_mode,
             eob,
             luma_transform_type_context,
             active_intra_ist_policy,
@@ -622,6 +639,31 @@ fn decode_staged_transform_tool_nonzero_coeffs(
         lossless,
         metadata,
     );
+    let use_fsc = frame_facts.enable_fsc()
+        && metadata.luma_tx_type == IDTX
+        && geometry.plane == 0
+        && (fsc_mode || is_inter);
+    if use_fsc {
+        let pass = apply_staged_nonzero_coeff_fsc_branch_from_tx_size(
+            context,
+            work_unit.cdf_mut().tile_cdfs_mut(),
+            symbols,
+            CoeffFscStagedTxSizeNonZeroInput {
+                block,
+                start,
+                tx_size: geometry.tx_size,
+                plane_tx_type: metadata.luma_tx_type,
+                coeff_cdf_q_ctx,
+            },
+        )
+        .map_err(|source| GeneralIntraResidualError::StagedFscPass { source })?;
+        return Ok(LumaCoeffBlock {
+            all_zero: false,
+            eob: pass.eob_read().eob().eob(),
+            quant: pass.block().quant().to_vec(),
+            intra_ist: metadata.intra_ist,
+        });
+    }
     let pass = apply_staged_nonzero_coeff_ordinary_branch_from_lossless(
         context,
         work_unit.cdf_mut().tile_cdfs_mut(),
@@ -690,6 +732,7 @@ struct TransformToolResidualInput {
     plane: usize,
     tx_size: usize,
     is_inter: bool,
+    fsc_mode: bool,
     eob: usize,
     luma_transform_type_context: Option<LumaTransformTypeContext>,
     active_intra_ist_policy: ActiveIntraIstResidualPolicy,
@@ -725,7 +768,9 @@ fn ensure_transform_tool_residual_handoff(
         || (plane > 0 && frame_facts.enable_chroma_dctonly())
         || tx_set == TX_SET_DCTONLY
         || (!is_inter && plane == 0 && frame_facts.reduced_tx_set() == 2);
-    if !dct_forced {
+    if !is_inter && plane == 0 && input.fsc_mode {
+        metadata.luma_tx_type = IDTX;
+    } else if !dct_forced {
         if !is_inter
             && plane > 0
             && input.active_chroma_policy == ActiveChromaResidualPolicy::LrTxSkipRecordHandoff
@@ -1470,6 +1515,22 @@ mod tests {
         })
     }
 
+    fn frame_facts_with_fsc() -> TileCoeffFrameFacts {
+        TileCoeffFrameFacts::new(TileCoeffFrameFactsInput {
+            enable_fsc: true,
+            enable_idtx_intra: true,
+            enable_intra_ist: false,
+            enable_inter_ist: false,
+            enable_chroma_dctonly: false,
+            enable_cctx: false,
+            reduced_tx_set: 0,
+            lossless_array: [false; MAX_SEGMENTS],
+            allow_tcq: false,
+            allow_parity_hiding: false,
+            base_q_idx: 128,
+        })
+    }
+
     fn unsupported_reason<T>(result: Result<T, GeneralIntraResidualError>) -> Option<&'static str> {
         match result {
             Err(GeneralIntraResidualError::UnsupportedTransformToolResidual { reason }) => {
@@ -1512,6 +1573,33 @@ mod tests {
         active_chroma_policy: ActiveChromaResidualPolicy,
         payload: &'static [u8],
     ) -> Result<TransformToolResidualMetadata, GeneralIntraResidualError> {
+        ensure_with_test_payload_fsc_and_policy(
+            facts,
+            plane,
+            tx_size,
+            is_inter,
+            false,
+            eob,
+            luma,
+            active_intra_ist_policy,
+            active_chroma_policy,
+            payload,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn ensure_with_test_payload_fsc_and_policy(
+        facts: TileCoeffFrameFacts,
+        plane: usize,
+        tx_size: usize,
+        is_inter: bool,
+        fsc_mode: bool,
+        eob: usize,
+        luma: Option<LumaTransformTypeContext>,
+        active_intra_ist_policy: ActiveIntraIstResidualPolicy,
+        active_chroma_policy: ActiveChromaResidualPolicy,
+        payload: &'static [u8],
+    ) -> Result<TransformToolResidualMetadata, GeneralIntraResidualError> {
         let mut cdfs = tile_cdfs();
         let mut symbols = symbol_decoder_for_payload(payload);
         ensure_transform_tool_residual_handoff(
@@ -1522,12 +1610,54 @@ mod tests {
                 plane,
                 tx_size,
                 is_inter,
+                fsc_mode,
                 eob,
                 luma_transform_type_context: luma,
                 active_intra_ist_policy,
                 active_chroma_policy,
             },
         )
+    }
+
+    #[test]
+    fn fsc_mode_luma_transform_handoff_derives_idtx_without_luma_context() {
+        let metadata = ensure_with_test_payload_fsc_and_policy(
+            frame_facts_with_fsc(),
+            0,
+            TX_8X8,
+            false,
+            true,
+            2,
+            None,
+            ActiveIntraIstResidualPolicy::LrTxSkipRecordHandoff,
+            ActiveChromaResidualPolicy::Reject,
+            &PAYLOAD,
+        )
+        .unwrap();
+
+        assert_eq!(metadata.luma_tx_type, IDTX);
+        assert_eq!(metadata.intra_ist, None);
+    }
+
+    #[test]
+    fn non_fsc_luma_transform_handoff_still_requires_luma_context() {
+        let result = ensure_with_test_payload_fsc_and_policy(
+            frame_facts_with_fsc(),
+            0,
+            TX_8X8,
+            false,
+            false,
+            2,
+            None,
+            ActiveIntraIstResidualPolicy::LrTxSkipRecordHandoff,
+            ActiveChromaResidualPolicy::Reject,
+            &PAYLOAD,
+        );
+
+        assert_eq!(
+            unsupported_reason(result),
+            Some("unsupported_dctonly_residual_luma_transform_context")
+        );
     }
 
     #[test]

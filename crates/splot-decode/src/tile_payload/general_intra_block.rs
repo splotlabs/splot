@@ -35,7 +35,7 @@ use super::cdf::block_context::{
 };
 use super::cdf::block_read::BlockSymbolTraceReadError;
 use super::cdf::{TileCdfSelector, TileCdfSubset};
-use super::intra_joint_modes::{TileIntraJointModeState, TileUsesMrlsState};
+use super::intra_joint_modes::{TileFscModeState, TileIntraJointModeState, TileUsesMrlsState};
 
 /// AV2 § 3 `CHROMA_MODE_COUNT`: the number of values for the `uv_mode` symbol
 /// (`03-symbols.md`); `uv_mode == CHROMA_MODE_COUNT - 1` triggers the
@@ -174,6 +174,8 @@ pub(crate) struct GeneralIntraBlockModes {
     pub(crate) mrl_index: u8,
     /// Decoded AV2 §5.20.5.5 `mrl_sec_index` when `mrl_index > 0`.
     pub(crate) mrl_sec_index: Option<u8>,
+    /// Decoded AV2 §5.20.5.3 `fsc_mode`.
+    pub(crate) fsc_mode: u8,
     /// Derived AV2 §5.20.5.3 `UsesMrls` value stored for later neighbours.
     pub(crate) uses_mrls: u8,
 }
@@ -233,6 +235,8 @@ pub(crate) struct GeneralIntraLumaBlockMode {
     pub(crate) mrl_index: u8,
     /// Decoded AV2 §5.20.5.5 `mrl_sec_index` when `mrl_index > 0`.
     pub(crate) mrl_sec_index: Option<u8>,
+    /// Decoded AV2 §5.20.5.3 `fsc_mode`.
+    pub(crate) fsc_mode: u8,
     /// Derived AV2 §5.20.5.3 `UsesMrls` value stored for later neighbours.
     pub(crate) uses_mrls: u8,
 }
@@ -282,6 +286,11 @@ impl GeneralIntraBlockModes {
     pub(crate) const fn uses_active_mrl(&self) -> bool {
         self.uses_mrls != 0
     }
+
+    /// True when decoded sample prediction would need FSC/IDTX coefficient support.
+    pub(crate) const fn uses_active_fsc(&self) -> bool {
+        self.fsc_mode != 0
+    }
 }
 
 /// Error returned while decoding general intra block mode info.
@@ -323,10 +332,6 @@ pub(crate) enum GeneralIntraBlockModeError {
         /// Decoded `uv_mode` value.
         uv_mode: u8,
     },
-    /// The block decoded `fsc_mode == 1`, which requires FSC coefficient parsing
-    /// and transform context propagation in the caller.
-    #[error("general intra mode-info selected unsupported FSC coefficient mode")]
-    UnsupportedFscMode,
     /// The block-size index used to select `Fsc_Bsize_Groups[MiSize]` is outside
     /// the mirrored table.
     #[error("general intra mode-info block-size index {block_size_index} has no FSC group")]
@@ -378,6 +383,7 @@ pub(crate) fn decode_general_intra_luma_block_mode(
     chroma_tools: GeneralIntraChromaToolConfig,
     joint_modes: &TileIntraJointModeState,
     uses_mrls: &TileUsesMrlsState,
+    fsc_modes: &TileFscModeState,
     block_size_index: usize,
     block_r: usize,
     block_c: usize,
@@ -485,25 +491,21 @@ pub(crate) fn decode_general_intra_luma_block_mode(
         (result.y_mode, result.angle_delta_y, result.intra_joint_mode)
     };
 
-    if allow_fsc_intra(chroma_tools, block_n4w, block_n4h) {
-        // The current callers only admit `fsc_mode == 0`. Because every prior
-        // admitted block has FSC disabled, the neighbour-derived §8.3.2 context
-        // remains zero at this boundary.
+    let fsc_mode = if allow_fsc_intra(chroma_tools, block_n4w, block_n4h) {
         let bsize_group = fsc_bsize_group(block_size_index)
             .ok_or(GeneralIntraBlockModeError::InvalidFscBlockSizeIndex { block_size_index })?;
-        let fsc_mode = read_symbol(
+        read_symbol(
             cdfs,
             symbols,
             TileCdfSelector::FscMode {
-                ctx: 0,
+                ctx: fsc_modes.fsc_mode_ctx(block_r, block_c, block_n4w, block_n4h),
                 bsize_group,
             },
             FSC_MODE_REASON,
-        )?;
-        if fsc_mode != 0 {
-            return Err(GeneralIntraBlockModeError::UnsupportedFscMode);
-        }
-    }
+        )?
+    } else {
+        0
+    };
 
     let mut mrl_index = 0;
     let mut mrl_sec_index = None;
@@ -538,6 +540,7 @@ pub(crate) fn decode_general_intra_luma_block_mode(
         intra_joint_mode,
         mrl_index,
         mrl_sec_index,
+        fsc_mode,
         uses_mrls: uses_mrls_value,
     })
 }
@@ -551,6 +554,7 @@ pub(crate) fn decode_general_intra_block_modes(
     chroma_tools: GeneralIntraChromaToolConfig,
     joint_modes: &TileIntraJointModeState,
     uses_mrls: &TileUsesMrlsState,
+    fsc_modes: &TileFscModeState,
     block_size_index: usize,
     block_r: usize,
     block_c: usize,
@@ -563,6 +567,7 @@ pub(crate) fn decode_general_intra_block_modes(
         chroma_tools,
         joint_modes,
         uses_mrls,
+        fsc_modes,
         block_size_index,
         block_r,
         block_c,
@@ -589,6 +594,7 @@ pub(crate) fn decode_general_intra_block_modes(
         intra_joint_mode: luma.intra_joint_mode,
         mrl_index: luma.mrl_index,
         mrl_sec_index: luma.mrl_sec_index,
+        fsc_mode: luma.fsc_mode,
         uses_mrls: luma.uses_mrls,
     })
 }
@@ -997,6 +1003,10 @@ mod tests {
         TileUsesMrlsState::new(SB_N4, 2 * SB_N4, SB_N4).unwrap()
     }
 
+    fn empty_fsc_modes() -> TileFscModeState {
+        TileFscModeState::new(SB_N4, 2 * SB_N4, SB_N4).unwrap()
+    }
+
     #[test]
     fn decodes_dc_luma_mode_and_a_chroma_mode_in_spec_order() {
         let mut work_unit = make_work_unit(&PAYLOAD);
@@ -1011,6 +1021,7 @@ mod tests {
             GeneralIntraChromaToolConfig::disabled(),
             &joint_modes,
             &uses_mrls,
+            &empty_fsc_modes(),
             BLOCK_64X64,
             0,
             0,
@@ -1053,6 +1064,7 @@ mod tests {
             GeneralIntraChromaToolConfig::disabled(),
             &joint_modes,
             &uses_mrls,
+            &empty_fsc_modes(),
             BLOCK_64X64,
             0,
             SB_N4,
@@ -1083,6 +1095,7 @@ mod tests {
             GeneralIntraChromaToolConfig::disabled(),
             &joint_modes,
             &uses_mrls,
+            &empty_fsc_modes(),
             BLOCK_64X64,
             0,
             SB_N4,
@@ -1116,6 +1129,7 @@ mod tests {
             GeneralIntraChromaToolConfig::disabled().with_enable_mrls(true),
             &joint_modes,
             &uses_mrls,
+            &empty_fsc_modes(),
             BLOCK_64X64,
             0,
             0,
@@ -1151,6 +1165,7 @@ mod tests {
             GeneralIntraChromaToolConfig::disabled().with_enable_mrls(true),
             &joint_modes,
             &uses_mrls,
+            &empty_fsc_modes(),
             BLOCK_64X64,
             0,
             0,
@@ -1163,6 +1178,44 @@ mod tests {
         assert_eq!(luma.mrl_sec_index, Some(0));
         assert_eq!(luma.uses_mrls, 1);
         assert_eq!(symbols.symbol_count(), 4);
+    }
+
+    #[test]
+    fn active_fsc_mode_metadata_is_retained() {
+        let payload = encode_symbol_sequence(&[
+            (TileCdfSelector::YModeSet, 0),
+            (TileCdfSelector::YModeIndex { ctx: 0 }, 0),
+            (
+                TileCdfSelector::FscMode {
+                    ctx: 0,
+                    bsize_group: fsc_bsize_group(BLOCK_16X16).unwrap(),
+                },
+                1,
+            ),
+        ]);
+        let mut work_unit = make_work_unit(&payload);
+        let mut symbols = symbol_decoder(&payload);
+        let joint_modes = empty_joint_modes();
+        let uses_mrls = empty_uses_mrls();
+
+        let luma = decode_general_intra_luma_block_mode(
+            &mut work_unit,
+            &mut symbols,
+            GeneralIntraChromaToolConfig::disabled().with_enable_idtx_intra(true),
+            &joint_modes,
+            &uses_mrls,
+            &empty_fsc_modes(),
+            BLOCK_16X16,
+            0,
+            0,
+            4,
+            4,
+        )
+        .unwrap();
+
+        assert_eq!(luma.y_mode, IntraYMode::DC_PRED);
+        assert_eq!(luma.fsc_mode, 1);
+        assert_eq!(symbols.symbol_count(), 3);
     }
 
     #[test]
@@ -1186,6 +1239,7 @@ mod tests {
             GeneralIntraChromaToolConfig::disabled().with_enable_mrls(true),
             &joint_modes,
             &uses_mrls,
+            &TileFscModeState::new(2 * SB_N4, 2 * SB_N4, SB_N4).unwrap(),
             BLOCK_16X16,
             8,
             8,

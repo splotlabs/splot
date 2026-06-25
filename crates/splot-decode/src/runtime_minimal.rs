@@ -845,6 +845,7 @@ fn decode_minimal_partition_frontier_error(
         | MinimalRuntimePartitionFrontierError::MiSizeState(_)
         | MinimalRuntimePartitionFrontierError::IntraJointModeState(_)
         | MinimalRuntimePartitionFrontierError::UsesMrlsState(_)
+        | MinimalRuntimePartitionFrontierError::FscModeState(_)
         | MinimalRuntimePartitionFrontierError::Traversal(_)
         | MinimalRuntimePartitionFrontierError::UnexpectedFrontier { .. } => unsupported_at(
             "minimal_tile_partition_frontier",

@@ -4,10 +4,11 @@
 use super::*;
 
 const TX_8X32: usize = 15;
+const TX_8X64: usize = 21;
 
 #[test]
 fn selectable_luma_leaf_actual_extent_is_only_observed_luma_narrow() {
-    for (n4w, n4h) in [(1, 8), (2, 8)] {
+    for (n4w, n4h) in [(1, 8), (2, 8), (1, 16), (2, 16)] {
         assert!(selectable_luma_leaf_uses_actual_extent(
             true, false, n4w, n4h
         ));
@@ -19,10 +20,13 @@ fn selectable_luma_leaf_actual_extent_is_only_observed_luma_narrow() {
         (true, false, 1, 1),
         (true, false, 2, 2),
         (true, false, 2, 4),
+        (true, false, 4, 16),
         (true, true, 1, 8),
         (true, true, 2, 8),
+        (true, true, 2, 16),
         (false, false, 1, 8),
         (false, false, 2, 8),
+        (false, false, 2, 16),
         (false, true, 1, 8),
         (true, false, 0, 8),
     ] {
@@ -55,6 +59,35 @@ fn actual_extent_fallback_records_consumed_empty_partition_as_observed_leaf() {
             rows: 8,
             cols: 2,
             tx_size: TX_8X32,
+            middle: false,
+            scan_order: false,
+        }]
+    );
+}
+
+#[test]
+fn actual_extent_fallback_records_8x64_luma_leaf() {
+    let mut grid = SelectableLumaTxGrid::new(64, 256).unwrap();
+
+    let tx_size = apply_tx_partition_or_actual_extent(
+        &mut grid,
+        32,
+        190,
+        TX_8X64,
+        TX_PARTITION_VERT5,
+        Some((16, 2)),
+    )
+    .unwrap();
+
+    assert_eq!(tx_size, TX_8X64);
+    assert_eq!(
+        grid.records_for_region(32, 190, 16, 2).unwrap(),
+        vec![SelectableLumaTxRecord {
+            row: 32,
+            col: 190,
+            rows: 16,
+            cols: 2,
+            tx_size: TX_8X64,
             middle: false,
             scan_order: false,
         }]

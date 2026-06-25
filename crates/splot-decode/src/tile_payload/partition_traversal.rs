@@ -13,8 +13,8 @@ use super::cdf::TileCdfError;
 use super::cdf::block_context::IntraYMode;
 use super::cdf::context::{PartitionContextInput, SquareSplitContextInput};
 use super::intra_joint_modes::{
-    TileIntraJointModeState, TileIntraYModeState, TileIntraYModeStateError, TileUsesMrlsState,
-    TileUsesMrlsStateError,
+    TileFscModeState, TileFscModeStateError, TileIntraJointModeState, TileIntraYModeState,
+    TileIntraYModeStateError, TileUsesMrlsState, TileUsesMrlsStateError,
 };
 use super::mi_size_state::{TileMiSizeState, TileMiSizeStateError};
 use super::partition::{PartitionDecisionError, PartitionType, ReadPartitionDecision};
@@ -377,16 +377,23 @@ impl DecodeBlockFrontier {
 pub(crate) struct GeneralIntraLeafMode {
     intra_joint_mode: Option<u8>,
     y_mode: Option<IntraYMode>,
+    fsc_mode: Option<u8>,
     uses_mrls: Option<u8>,
 }
 
 impl GeneralIntraLeafMode {
     /// Leaf with a decoded luma mode (`TreeType != CHROMA_PART`).
     #[must_use]
-    pub(crate) const fn luma(intra_joint_mode: u8, y_mode: IntraYMode, uses_mrls: u8) -> Self {
+    pub(crate) const fn luma(
+        intra_joint_mode: u8,
+        y_mode: IntraYMode,
+        fsc_mode: u8,
+        uses_mrls: u8,
+    ) -> Self {
         Self {
             intra_joint_mode: Some(intra_joint_mode),
             y_mode: Some(y_mode),
+            fsc_mode: Some(fsc_mode),
             uses_mrls: Some(uses_mrls),
         }
     }
@@ -397,6 +404,7 @@ impl GeneralIntraLeafMode {
         Self {
             intra_joint_mode: None,
             y_mode: None,
+            fsc_mode: None,
             uses_mrls: None,
         }
     }
@@ -647,6 +655,9 @@ pub(crate) enum TilePartitionTraversalError {
     /// The § 5.20.5.3 `UsesMrls` state allocation/sizing failed.
     #[error("partition traversal intra UsesMrls state failed: {0}")]
     UsesMrlsState(#[from] TileUsesMrlsStateError),
+    /// The § 5.20.5.3 `FscModes` state allocation/sizing failed.
+    #[error("partition traversal intra FscModes state failed: {0}")]
+    FscModeState(#[from] TileFscModeStateError),
     /// A partition-size lookup failed.
     #[error("partition traversal size lookup failed: {0}")]
     Size(#[from] PartitionSizeError),
@@ -728,6 +739,14 @@ pub(crate) enum TilePartitionTraversalError {
     /// A luma/shared intra leaf did not provide MRL state for later neighbours.
     #[error("partition traversal missing intra UsesMrls state at ({r}, {c})")]
     MissingIntraUsesMrlsState {
+        /// MI row.
+        r: usize,
+        /// MI column.
+        c: usize,
+    },
+    /// A luma/shared intra leaf did not provide FSC state for later neighbours.
+    #[error("partition traversal missing intra FscModes state at ({r}, {c})")]
+    MissingIntraFscModeState {
         /// MI row.
         r: usize,
         /// MI column.
@@ -997,12 +1016,14 @@ pub(crate) enum GeneralIntraTreeWalkError<E> {
 /// the sibling `UsesMrls` grid for § 8.3.2 MRL contexts, plus a stored `YModes`
 /// grid used by SDP chroma leaves. The live symbol decoder is returned for the
 /// caller's § 8.2.4 `exit_symbol()` check.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn decode_general_intra_partition_tree<'payload, E, F>(
     work_unit: &mut DecodeTileWorkUnit<'payload>,
     frame: TilePartitionFrameFacts,
     mi_size_state: &mut TileMiSizeState,
     joint_modes: &mut TileIntraJointModeState,
     uses_mrls: &mut TileUsesMrlsState,
+    fsc_modes: &mut TileFscModeState,
     limits: DecodeLimits,
     mut on_leaf: F,
 ) -> Result<SymbolDecoder<'payload>, GeneralIntraTreeWalkError<E>>
@@ -1013,6 +1034,7 @@ where
         &DecodeBlockFrontier,
         &TileIntraJointModeState,
         &TileUsesMrlsState,
+        &TileFscModeState,
         &TileBlockDecodedState,
     ) -> Result<GeneralIntraLeafMode, E>,
 {
@@ -1160,6 +1182,7 @@ where
                         &frontier,
                         joint_modes,
                         uses_mrls,
+                        fsc_modes,
                         &block_decoded,
                     )
                     .map_err(GeneralIntraTreeWalkError::Leaf)?;
@@ -1191,7 +1214,14 @@ where
                                 c: call.c,
                             },
                         )?;
+                        let fsc_mode = leaf_mode.fsc_mode.ok_or(
+                            TilePartitionTraversalError::MissingIntraFscModeState {
+                                r: call.r,
+                                c: call.c,
+                            },
+                        )?;
                         joint_modes.record_block(call.r, call.c, block_n4w, block_n4h, joint_mode);
+                        fsc_modes.record_block(call.r, call.c, block_n4w, block_n4h, fsc_mode);
                         uses_mrls.record_block(
                             call.r,
                             call.c,

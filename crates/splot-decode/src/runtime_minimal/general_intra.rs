@@ -280,13 +280,14 @@ pub(super) fn decode_general_minimal_intra_frame(
         sequence,
         core,
         limits,
-        |work_unit, symbols, frontier, joint_modes, uses_mrls, block_decoded| {
+        |work_unit, symbols, frontier, joint_modes, uses_mrls, fsc_modes, block_decoded| {
             decode_one_general_intra_block(
                 work_unit,
                 symbols,
                 frontier,
                 joint_modes,
                 uses_mrls,
+                fsc_modes,
                 block_decoded,
                 &mut workspace,
                 &mut coeff_ctx,
@@ -335,6 +336,7 @@ fn decode_one_general_intra_block(
     frontier: &crate::tile_payload::DecodeBlockFrontier,
     joint_modes: &crate::tile_payload::TileIntraJointModeState,
     uses_mrls: &crate::tile_payload::TileUsesMrlsState,
+    fsc_modes: &crate::tile_payload::TileFscModeState,
     block_decoded: &crate::tile_payload::TileBlockDecodedState,
     workspace: &mut splot_recon::CurrentFrameWorkspace<u8>,
     coeff_ctx: &mut crate::tile_payload::TileCoeffContextState,
@@ -397,6 +399,7 @@ fn decode_one_general_intra_block(
         crate::tile_payload::GeneralIntraChromaToolConfig::disabled(),
         joint_modes,
         uses_mrls,
+        fsc_modes,
         frontier.b_size.index(),
         frontier.r,
         frontier.c,
@@ -410,6 +413,14 @@ fn decode_one_general_intra_block(
             Some(tile_offset),
             "general intra decode can retain active MRL mode-info but does not support §7.13.2 MRL prediction",
             "7.13.2",
+        ));
+    }
+    if modes.uses_active_fsc() {
+        return Err(general_intra_unsupported(
+            "general_intra_unsupported_fsc_mode",
+            Some(tile_offset),
+            "general intra decode can retain active FSC mode-info but does not support FSC/IDTX reconstruction",
+            "5.20.7.27",
         ));
     }
 
@@ -1063,6 +1074,7 @@ fn decode_one_general_intra_block(
         false,
         uv_mode,
         false,
+        false,
         TransformToolResidualPolicy::Allow,
     )
     .map_err(|error| general_intra_residual_error(error, tile_offset))?;
@@ -1254,6 +1266,7 @@ fn decode_one_general_intra_block(
             false,
             uv_mode,
             false,
+            false,
             TransformToolResidualPolicy::Allow,
         )
         .map_err(|error| general_intra_residual_error(error, tile_offset))?;
@@ -1282,6 +1295,7 @@ fn decode_one_general_intra_block(
             !u.all_zero,
             uv_mode,
             false,
+            false,
             TransformToolResidualPolicy::Allow,
         )
         .map_err(|error| general_intra_residual_error(error, tile_offset))?;
@@ -1305,6 +1319,7 @@ fn decode_one_general_intra_block(
     Ok(crate::tile_payload::GeneralIntraLeafMode::luma(
         modes.intra_joint_mode,
         modes.y_mode,
+        modes.fsc_mode,
         modes.uses_mrls,
     ))
 }
@@ -1405,6 +1420,7 @@ fn decode_one_general_intra_rect_block(
         false,
         uv_mode,
         false,
+        false,
         TransformToolResidualPolicy::Allow,
     )
     .map_err(|error| general_intra_residual_error(error, tile_offset))?;
@@ -1452,6 +1468,7 @@ fn decode_one_general_intra_rect_block(
             false,
             uv_mode,
             false,
+            false,
             TransformToolResidualPolicy::Allow,
         )
         .map_err(|error| general_intra_residual_error(error, tile_offset))?;
@@ -1479,6 +1496,7 @@ fn decode_one_general_intra_rect_block(
             !u.all_zero,
             uv_mode,
             false,
+            false,
             TransformToolResidualPolicy::Allow,
         )
         .map_err(|error| general_intra_residual_error(error, tile_offset))?;
@@ -1498,6 +1516,7 @@ fn decode_one_general_intra_rect_block(
     Ok(crate::tile_payload::GeneralIntraLeafMode::luma(
         modes.intra_joint_mode,
         modes.y_mode,
+        modes.fsc_mode,
         modes.uses_mrls,
     ))
 }
@@ -1642,6 +1661,7 @@ fn general_intra_residual_error(
         | GeneralIntraResidualError::NonZeroPass { .. }
         | GeneralIntraResidualError::NonZeroStart { .. }
         | GeneralIntraResidualError::StagedNonZeroPass { .. }
+        | GeneralIntraResidualError::StagedFscPass { .. }
         | GeneralIntraResidualError::TransformTypeRead { .. } => general_intra_unsupported(
             "general_intra_luma_coeff_parse",
             Some(offset),
@@ -1721,12 +1741,6 @@ fn general_intra_block_mode_error(
             "general intra decode rejected an out-of-range chroma uv_mode index",
             GENERAL_INTRA_MODE_SPEC_SECTION,
         ),
-        GeneralIntraBlockModeError::UnsupportedFscMode => general_intra_unsupported(
-            "general_intra_unsupported_fsc_mode",
-            Some(offset),
-            "general intra decode can skip a false fsc_mode decision but does not support active FSC coefficient parsing",
-            "5.20.5.3",
-        ),
         GeneralIntraBlockModeError::InvalidFscBlockSizeIndex { .. } => general_intra_unsupported(
             "general_intra_invalid_fsc_block_size_index",
             Some(offset),
@@ -1771,6 +1785,7 @@ fn general_intra_partition_frontier_error(
         | MinimalRuntimePartitionFrontierError::MiSizeState(_)
         | MinimalRuntimePartitionFrontierError::IntraJointModeState(_)
         | MinimalRuntimePartitionFrontierError::UsesMrlsState(_)
+        | MinimalRuntimePartitionFrontierError::FscModeState(_)
         | MinimalRuntimePartitionFrontierError::Traversal(_)
         | MinimalRuntimePartitionFrontierError::UnexpectedFrontier { .. } => {
             general_intra_unsupported(

@@ -207,7 +207,7 @@ pub(super) fn decode_inter_blocks(
         sequence,
         core,
         limits,
-        |work_unit, symbols, frontier, _joint_modes, _uses_mrls, _block_decoded| {
+        |work_unit, symbols, frontier, _joint_modes, _uses_mrls, _fsc_modes, _block_decoded| {
             let placed = decode_one_inter_block(
                 work_unit,
                 symbols,
@@ -848,6 +848,7 @@ fn read_inter_residual(
         false,
         INTER_UV_MODE_DC,
         true,
+        false,
         TransformToolResidualPolicy::Allow,
     )
     .map_err(|_| residual_read_error(tile_offset))?;
@@ -863,6 +864,7 @@ fn read_inter_residual(
         false,
         INTER_UV_MODE_DC,
         true,
+        false,
         TransformToolResidualPolicy::Allow,
     )
     .map_err(|_| residual_read_error(tile_offset))?;
@@ -879,6 +881,7 @@ fn read_inter_residual(
         !u.all_zero,
         INTER_UV_MODE_DC,
         true,
+        false,
         TransformToolResidualPolicy::Allow,
     )
     .map_err(|_| residual_read_error(tile_offset))?;
