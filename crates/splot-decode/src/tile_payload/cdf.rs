@@ -24,7 +24,8 @@ use splot_core::tables::cdf::{
     DEFAULT_CDEF_INDEX_MINUS1_WITH7_CDF, DEFAULT_CDEF_INDEX_MINUS1_WITH8_CDF,
     DEFAULT_CDEF_INDEX0_CDF, DEFAULT_DELTA_Q_CDF, DEFAULT_DO_EXT_PARTITION_CDF,
     DEFAULT_DO_SPLIT_CDF, DEFAULT_DO_SQUARE_SPLIT_CDF, DEFAULT_DO_UNEVEN_4WAY_PARTITION_CDF,
-    DEFAULT_FSC_MODE_CDF, DEFAULT_INTRABC_CDF, DEFAULT_MRL_INDEX_CDF, DEFAULT_MRL_SEC_INDEX_CDF,
+    DEFAULT_FSC_MODE_CDF, DEFAULT_INTRABC_CDF, DEFAULT_INTRABC_MODE_CDF,
+    DEFAULT_INTRABC_PRECISION_CDF, DEFAULT_MRL_INDEX_CDF, DEFAULT_MRL_SEC_INDEX_CDF,
     DEFAULT_RECT_TYPE_CDF, DEFAULT_TX_2OR3_PARTITION_TYPE_CDF, DEFAULT_TX_DO_PARTITION_CDF,
     DEFAULT_TX_PARTITION_TYPE_CDF, DEFAULT_TX_PARTITION_TYPE_REDUCED_CDF,
 };
@@ -90,6 +91,8 @@ type CdefIndexMinus1With6CdfRow = [i32; CDEF_INDEX_MINUS1_WITH6_ROW_LEN];
 type CdefIndexMinus1With7CdfRow = [i32; CDEF_INDEX_MINUS1_WITH7_ROW_LEN];
 type CdefIndexMinus1With8CdfRow = [i32; CDEF_INDEX_MINUS1_WITH8_ROW_LEN];
 type IntrabcCdfRows = [[i32; CDF_ROW_LEN]; INTRABC_CONTEXTS];
+type IntrabcModeCdfRow = [i32; CDF_ROW_LEN];
+type IntrabcPrecisionCdfRow = [i32; CDF_ROW_LEN];
 type MrlIndexCdfRows = [[i32; MRL_INDEX_ROW_LEN]; MRL_INDEX_CONTEXTS];
 type MrlSecIndexCdfRows = [[i32; MRL_SEC_INDEX_ROW_LEN]; MRL_INDEX_CONTEXTS];
 
@@ -395,6 +398,10 @@ pub(crate) enum TileCdfSelector {
         /// Intra block-copy neighbour context (`0..INTRABC_CONTEXTS`).
         ctx: usize,
     },
+    /// `TileIntrabcModeCdf` from AV2 § 8.3.2.
+    IntrabcMode,
+    /// `TileIntrabcPrecisionCdf` from AV2 § 8.3.2.
+    IntrabcPrecision,
     /// `TileFscModeCdf[ctx][Fsc_Bsize_Groups[MiSize]]` from AV2 § 8.3.2.
     FscMode {
         /// FSC neighbour context (`0..FSC_MODE_CONTEXTS`).
@@ -1122,6 +1129,8 @@ pub(crate) struct TileCdfRows {
     cdef_index_minus1_with7: CdefIndexMinus1With7CdfRow,
     cdef_index_minus1_with8: CdefIndexMinus1With8CdfRow,
     intrabc: IntrabcCdfRows,
+    intrabc_mode: IntrabcModeCdfRow,
+    intrabc_precision: IntrabcPrecisionCdfRow,
     fsc_mode: FscModeCdfRows,
     mrl_index: MrlIndexCdfRows,
     mrl_sec_index: MrlSecIndexCdfRows,
@@ -1149,6 +1158,8 @@ impl TileCdfRows {
             cdef_index_minus1_with7: DEFAULT_CDEF_INDEX_MINUS1_WITH7_CDF,
             cdef_index_minus1_with8: DEFAULT_CDEF_INDEX_MINUS1_WITH8_CDF,
             intrabc: DEFAULT_INTRABC_CDF,
+            intrabc_mode: DEFAULT_INTRABC_MODE_CDF,
+            intrabc_precision: DEFAULT_INTRABC_PRECISION_CDF,
             fsc_mode: DEFAULT_FSC_MODE_CDF,
             mrl_index: DEFAULT_MRL_INDEX_CDF,
             mrl_sec_index: DEFAULT_MRL_SEC_INDEX_CDF,
@@ -1327,6 +1338,8 @@ impl TileCdfRows {
                     })?;
                 Ok(row.as_slice())
             }
+            TileCdfSelector::IntrabcMode => Ok(self.intrabc_mode.as_slice()),
+            TileCdfSelector::IntrabcPrecision => Ok(self.intrabc_precision.as_slice()),
             TileCdfSelector::FscMode { ctx, bsize_group } => {
                 let ctx = checked_context(TileCdfArray::FscMode, "ctx", ctx, FSC_MODE_CONTEXTS)?;
                 let row = self.fsc_mode[ctx].get(bsize_group).ok_or(
@@ -1680,6 +1693,8 @@ impl TileCdfRows {
                     })?;
                 Ok(row.as_mut_slice())
             }
+            TileCdfSelector::IntrabcMode => Ok(self.intrabc_mode.as_mut_slice()),
+            TileCdfSelector::IntrabcPrecision => Ok(self.intrabc_precision.as_mut_slice()),
             TileCdfSelector::FscMode { ctx, bsize_group } => {
                 let ctx = checked_context(TileCdfArray::FscMode, "ctx", ctx, FSC_MODE_CONTEXTS)?;
                 let max_exclusive = self.fsc_mode[ctx].len();

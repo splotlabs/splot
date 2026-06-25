@@ -44,6 +44,7 @@ const PC_WIENER_SOURCE_READS_PER_FEATURE: u64 = 7;
 const LR_RETAINED_FRAME_BUFFERS: u64 = 2;
 
 mod diagnostics;
+mod intrabc_records;
 mod live_storage;
 mod source_read_math;
 mod tx_records;

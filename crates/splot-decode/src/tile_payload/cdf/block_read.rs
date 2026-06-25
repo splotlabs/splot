@@ -77,6 +77,8 @@ mod tests {
             TileCdfSelector::CflAlpha { ctx: 0 },
             TileCdfSelector::CflMhccp,
             TileCdfSelector::CflMhDir { size_group: 0 },
+            TileCdfSelector::IntrabcMode,
+            TileCdfSelector::IntrabcPrecision,
             TileCdfSelector::FscMode {
                 ctx: 0,
                 bsize_group: 0,
@@ -170,6 +172,8 @@ mod tests {
             TileCdfSelector::CflAlpha { ctx: 0 },
             TileCdfSelector::CflMhccp,
             TileCdfSelector::CflMhDir { size_group: 0 },
+            TileCdfSelector::IntrabcMode,
+            TileCdfSelector::IntrabcPrecision,
             TileCdfSelector::FscMode {
                 ctx: 0,
                 bsize_group: 0,
