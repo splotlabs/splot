@@ -848,7 +848,11 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                 (
                     0,
                     GeneralIntraLeafMode::luma(luma.intra_joint_mode, luma.y_mode, luma.uses_mrls),
-                    LumaTransformTypeContext::new(luma.y_mode, luma.angle_delta_y),
+                    LumaTransformTypeContext::with_mrl_index(
+                        luma.y_mode,
+                        luma.angle_delta_y,
+                        luma.mrl_index,
+                    ),
                 )
             } else {
                 let modes = decode_general_intra_block_modes(
@@ -877,7 +881,11 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                         modes.y_mode,
                         modes.uses_mrls,
                     ),
-                    LumaTransformTypeContext::new(modes.y_mode, modes.angle_delta_y),
+                    LumaTransformTypeContext::with_mrl_index(
+                        modes.y_mode,
+                        modes.angle_delta_y,
+                        modes.mrl_index,
+                    ),
                 )
             };
 

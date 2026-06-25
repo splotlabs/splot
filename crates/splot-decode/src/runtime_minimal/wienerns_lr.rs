@@ -36,6 +36,7 @@ use super::{
     unsupported_feature_at,
 };
 
+// AV2 § 3 `MI_SIZE`, `PC_WIENER_LEAD`, and `PC_WIENER_LAG`; § 7.20.4 `get_features` reads 7 source samples per feature point.
 const LR_MI_SIZE: usize = 4;
 const PC_WIENER_LEAD: isize = 1;
 const PC_WIENER_LAG: isize = 4;
@@ -428,6 +429,7 @@ impl WienerNsLrSourceReadConfig {
 pub(super) const WIENER_NS_CHROMA_SOURCE_TAP_COUNT: usize = 12;
 const WIENER_NS_CHROMA_LUMA_COEFF_OFFSET: usize = 6;
 
+// AV2 § 7.20.3 `Wiener_Ns_Config_Y` source tap offsets.
 const WIENER_NS_LUMA_SOURCE_TAPS: [(isize, isize); 32] = [
     (1, 0),
     (-1, 0),
@@ -463,6 +465,7 @@ const WIENER_NS_LUMA_SOURCE_TAPS: [(isize, isize); 32] = [
     (-3, 3),
 ];
 
+// AV2 § 7.20.3 `Wiener_Ns_Config_Uv` source tap offsets.
 const WIENER_NS_CHROMA_SOURCE_TAPS: [(isize, isize); WIENER_NS_CHROMA_SOURCE_TAP_COUNT] = [
     (1, 0),
     (-1, 0),
@@ -1915,6 +1918,7 @@ fn derive_pc_wiener_box_features_source_reads(
     x: isize,
     y: isize,
 ) -> Result<()> {
+    // AV2 § 7.20.4 `get_features` scans the PC Wiener lead/lag feature window.
     for dy in -PC_WIENER_LEAD..=PC_WIENER_LAG {
         for dx in -PC_WIENER_LEAD..=PC_WIENER_LAG {
             let feature_x = source_read_coordinate_add(x, dx, "pc wiener feature x")?;
@@ -2007,6 +2011,7 @@ fn record_wienerns_lr_classified_source_read(
         .source_reads_resolved
         .checked_add(1)
         .ok_or_else(|| source_read_arithmetic_overflow("pc wiener classified source-read count"))?;
+    // AV2 § 7.20.3 `get_luma_sample`.
     let sample = loop_restoration_source_sample(PlaneId::Y, x, y, bounds)?;
     if summary.first_sample.is_none() {
         summary.first_sample = Some(WienerNsLrSourceReadSample {

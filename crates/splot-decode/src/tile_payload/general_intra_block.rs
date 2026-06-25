@@ -864,6 +864,7 @@ mod tests {
     use super::*;
     use crate::{DecodeLayerSelection, DecodeLimits, DecodeObuSourceKind};
 
+    const BLOCK_16X16: usize = 6;
     const BLOCK_64X64: usize = 12;
     const BLOCK_256X256: usize = 18;
     // The same hand-crafted minimal tile payload the frozen block-symbol trace
@@ -993,7 +994,7 @@ mod tests {
     }
 
     fn empty_uses_mrls() -> TileUsesMrlsState {
-        TileUsesMrlsState::new(SB_N4, 2 * SB_N4).unwrap()
+        TileUsesMrlsState::new(SB_N4, 2 * SB_N4, SB_N4).unwrap()
     }
 
     #[test]
@@ -1175,9 +1176,9 @@ mod tests {
         let mut work_unit = make_work_unit(&payload);
         let mut symbols = symbol_decoder(&payload);
         let joint_modes = TileIntraJointModeState::new(2 * SB_N4, 2 * SB_N4).unwrap();
-        let mut uses_mrls = TileUsesMrlsState::new(2 * SB_N4, 2 * SB_N4).unwrap();
-        uses_mrls.record_block(0, SB_N4, SB_N4, SB_N4, 2);
-        uses_mrls.record_block(SB_N4, 0, SB_N4, SB_N4, 1);
+        let mut uses_mrls = TileUsesMrlsState::new(2 * SB_N4, 2 * SB_N4, SB_N4).unwrap();
+        uses_mrls.record_block(7, 11, 1, 1, 2);
+        uses_mrls.record_block(11, 7, 1, 1, 1);
 
         let luma = decode_general_intra_luma_block_mode(
             &mut work_unit,
@@ -1185,11 +1186,11 @@ mod tests {
             GeneralIntraChromaToolConfig::disabled().with_enable_mrls(true),
             &joint_modes,
             &uses_mrls,
-            BLOCK_64X64,
-            SB_N4,
-            SB_N4,
-            SB_N4,
-            SB_N4,
+            BLOCK_16X16,
+            8,
+            8,
+            4,
+            4,
         )
         .unwrap();
 

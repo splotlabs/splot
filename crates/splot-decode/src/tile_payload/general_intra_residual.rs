@@ -64,6 +64,8 @@ const TX_16X16: usize = 2;
 /// AV2 § 9.2 square-transform ordinal for `TX_32X32`, used by
 /// § 5.20.8.3 `get_tx_set`.
 const TX_32X32: usize = 3;
+/// AV2 § 9.2 `TX_SIZES_ALL` index of `TX_8X16`.
+const TX_8X16: usize = 7;
 /// AV2 § 3 `IST_4X4_HEIGHT`.
 const IST_4X4_HEIGHT: usize = 8;
 /// AV2 § 3 `IST_8X8_HEIGHT_RED`.
@@ -72,6 +74,8 @@ const IST_8X8_HEIGHT_RED: usize = 20;
 const IST_8X8_HEIGHT: usize = 32;
 /// AV2 § 3 `ANGLE_STEP`.
 const ANGLE_STEP: i32 = 3;
+/// AV2 § 7.13.2.3 `Mrl_Index_To_Delta[MrlIndex]`.
+const MRL_INDEX_TO_DELTA: [i32; 4] = [0, 1, -1, 0];
 /// `DCT_DCT` `PlaneTxType` (AV2 § 5.20.7.29 implies `DCT_DCT` for this
 /// minimal-tool intra block; no `intra_tx_type` symbol is coded).
 const DCT_DCT: usize = 0;
@@ -152,15 +156,33 @@ const TX_TYPE_INV_LONG: [[[usize; 4]; 2]; 2] = [
 pub(crate) struct LumaTransformTypeContext {
     y_mode: IntraYMode,
     angle_delta_y: i8,
+    mrl_index: u8,
 }
 
 impl LumaTransformTypeContext {
-    /// Creates luma transform-type context from § 5.20.5.3 mode-info facts.
+    /// Creates luma transform-type context from § 5.20.5.3 mode-info facts for
+    /// the common `MrlIndex == 0` case.
     #[must_use]
     pub(crate) const fn new(y_mode: IntraYMode, angle_delta_y: i8) -> Self {
         Self {
             y_mode,
             angle_delta_y,
+            mrl_index: 0,
+        }
+    }
+
+    /// Creates luma transform-type context with the active § 5.20.5.3 `MrlIndex`
+    /// retained for § 5.20.8.2 `transform_type()` directional remapping.
+    #[must_use]
+    pub(crate) const fn with_mrl_index(
+        y_mode: IntraYMode,
+        angle_delta_y: i8,
+        mrl_index: u8,
+    ) -> Self {
+        Self {
+            y_mode,
+            angle_delta_y,
+            mrl_index,
         }
     }
 }
@@ -983,8 +1005,17 @@ fn luma_transform_intra_dir(
             reason: "unsupported_dctonly_residual_invalid_intra_mode",
         },
     )?;
+    let mrl_delta = MRL_INDEX_TO_DELTA
+        .get(usize::from(luma_context.mrl_index))
+        .copied()
+        .ok_or(
+            GeneralIntraResidualError::UnsupportedTransformToolResidual {
+                reason: "unsupported_dctonly_residual_invalid_mrl_index",
+            },
+        )?;
     let p_angle = mode_to_angle
         .checked_add(i32::from(luma_context.angle_delta_y) * ANGLE_STEP)
+        .and_then(|angle| angle.checked_add(mrl_delta))
         .ok_or(
             GeneralIntraResidualError::UnsupportedTransformToolResidual {
                 reason: "unsupported_dctonly_residual_luma_angle_overflow",
@@ -995,7 +1026,7 @@ fn luma_transform_intra_dir(
     Ok(wide_angle_mapping(intra_dir, tx_width, tx_height, p_angle))
 }
 
-/// AV2 § 5.20.7.29 `wide_angle_mapping` with `MrlIndex == 0`.
+/// AV2 § 5.20.7.29 `wide_angle_mapping`.
 fn wide_angle_mapping(mode: usize, width: usize, height: usize, p_angle: i32) -> usize {
     if is_scaled(height, width, 2) && p_angle < WAIP_WH_RATIO_2_THRES
         || is_scaled(height, width, 4) && p_angle < WAIP_WH_RATIO_4_THRES
@@ -1638,6 +1669,29 @@ mod tests {
         .unwrap();
 
         assert_ne!(tx_type, DCT_DCT);
+    }
+
+    #[test]
+    fn luma_transform_context_applies_mrl_delta_before_wide_angle_mapping() {
+        let luma =
+            crate::tile_payload::cdf::block_context::reconstruct_y_mode_second_set_top_left(1, 6)
+                .unwrap();
+        assert_eq!(luma.y_mode.value(), 8);
+        assert_eq!(luma.angle_delta_y, -2);
+
+        let no_mrl =
+            md_idx_luma_tx_type(TX_8X16, LumaTransformTypeContext::new(luma.y_mode, -2), 4)
+                .unwrap();
+        let active_mrl = md_idx_luma_tx_type(
+            TX_8X16,
+            LumaTransformTypeContext::with_mrl_index(luma.y_mode, -2, 2),
+            4,
+        )
+        .unwrap();
+
+        assert_ne!(no_mrl, active_mrl);
+        assert_eq!(no_mrl, DCT_FLIPADST);
+        assert_eq!(active_mrl, FLIPADST_DCT);
     }
 
     #[test]

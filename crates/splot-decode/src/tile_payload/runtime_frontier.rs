@@ -227,7 +227,13 @@ where
         .map_err(MinimalRuntimePartitionFrontierError::from)?;
     let mut joint_modes = TileIntraJointModeState::new(mi_rows, mi_cols)
         .map_err(MinimalRuntimePartitionFrontierError::from)?;
-    let mut uses_mrls = TileUsesMrlsState::new(mi_rows, mi_cols)
+    let sb_size4 = frame
+        .sb_size()
+        .num_4x4_wide()
+        .map_err(TilePartitionTraversalError::from)
+        .map_err(MinimalRuntimePartitionFrontierError::from)?
+        .max(1);
+    let mut uses_mrls = TileUsesMrlsState::new(mi_rows, mi_cols, sb_size4)
         .map_err(MinimalRuntimePartitionFrontierError::from)?;
     decode_general_intra_partition_tree(
         work_unit,
