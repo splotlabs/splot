@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 440 feature(s); 387 cite a spec section.
+Matrix version 1. Last reviewed 2026-06-15. 441 feature(s); 388 cite a spec section.
 
 One row per (spec section, feature) pair, in spec order; a feature citing both a syntax and a semantics section appears under both. The canonical status source is [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); the full per-feature ledger is [FEATURE-STATUS.md](./FEATURE-STATUS.md).
 
@@ -1042,8 +1042,12 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.15.4.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-15-4-1) | 2D matrix transform process | `ENC-FORWARD-TRANSFORM-DCT-4X4` | ✅ | — | — | ✅ | — |
 | [§ 7.15.4.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-15-4-1) | 2D matrix transform process | `RECON-INVERSE-TRANSFORM-1D` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.15.4.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-15-4-1) | 2D matrix transform process | `RECON-INVERSE-TRANSFORM-2D` | ✅ | — | ✅ | ✅ | — |
+| [§ 7.17.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-17-1) | General | `DECODE-GENERAL-INTRA-DEBLOCK` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 7.17.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-17-2) | Edge deblocking filter process | `DECODE-GENERAL-INTRA-DEBLOCK` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.17.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-17-3) | Filter maximum width process | `RECON-DEBLOCK-FILTER-MAX-WIDTH` | ✅ | — | ✅ | ✅ | — |
+| [§ 7.17.5](./spec/av2/1.0.0/07-decoding-process.md#s-7-17-5) | Adaptive filter strength process | `DECODE-GENERAL-INTRA-DEBLOCK` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.17.5](./spec/av2/1.0.0/07-decoding-process.md#s-7-17-5) | Adaptive filter strength process | `RECON-DEBLOCK-ADAPTIVE-STRENGTH` | ✅ | — | ✅ | ✅ | — |
+| [§ 7.17.6](./spec/av2/1.0.0/07-decoding-process.md#s-7-17-6) | Adaptive filter strength selection process | `DECODE-GENERAL-INTRA-DEBLOCK` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.17.7.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-17-7-1) | General | `RECON-DEBLOCK-SAMPLE-FILTER` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.17.7.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-17-7-2) | Filter choice process | `RECON-DEBLOCK-FILTER-CHOICE` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.20](./spec/av2/1.0.0/07-decoding-process.md#s-7-20) | Loop restoration process | `DECODE-INTER-MULTIREF-RUNTIME` | ✅ | ✅ | — | ✅ | 1 |
@@ -1428,6 +1432,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-GENERAL-INTRA-ANGLE-D203` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-GENERAL-INTRA-ANGLE-D45` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-GENERAL-INTRA-CARDINAL` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-GENERAL-INTRA-DEBLOCK` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-GENERAL-INTRA-DIRECTIONAL-FOLLOW-CHROMA` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-GENERAL-INTRA-IDIF-D157` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-GENERAL-INTRA-MB-NEIGHBOUR-SMOOTH` | ✅ | 🟡 | — | ✅ | 1 |

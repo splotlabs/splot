@@ -145,6 +145,26 @@ description = "Multi-superblock 8-bit 4:2:0 intra key frame (IVF, 128x64) from a
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-2sb-deblock-intra-128x64-q100.ivf"
+description = "Deblock-active 8-bit 4:2:0 intra key frame (IVF, 128x64) from a project-owned two-region cosine-AC luma input (left base 90, right base 170, flat chroma U=120 V=135) with broad decode tools disabled, --enable-deblocking=1, at base_q_idx 100; each 64x64 superblock is PARTITION_SPLIT into four 32x32 DC_PRED luma + DC chroma blocks, and apply_deblocking_filter is [false, true, true, true] with df_delta_q [0,0,0,0]. The first in-loop-filter (section 7.17 deblocking) decode target: the luma horizontal pass at the y=32 transform/block boundary changes 2 luma samples (plus/minus 1 at column 4) while the chroma passes leave the flat chroma unchanged; avmdec and dav2d raw outputs agree (md5 ca302adc8641007251c5947b3d5c73ba) and splot reproduces byte-for-byte; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-2sb-deblock-intra-128x64-q98.ivf"
+description = "Deblock-active 8-bit 4:2:0 intra key frame (IVF, 128x64) from a project-owned two-region cosine-AC luma input (left base 90, right base 170, amplitude 16, flat chroma) with broad decode tools disabled, --enable-deblocking=1, at base_q_idx 98; all-DC 32x32 multi-block, apply_deblocking_filter [false, true, true, true], df_delta_q [0,0,0,0]. A larger section 7.17 luma-horizontal deblock effect than the q100 fixture (24 luma samples change at the y=32 boundary across multiple columns, exercising the section 7.17.7.2 width-2 and width-3 filter choices); avmdec and dav2d raw outputs agree (md5 5cb616189cf501809d6986a9ef1058a7) and splot reproduces byte-for-byte; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-2sb-deblockwide-intra-128x64-q100.ivf"
+description = "Deblock-active 8-bit 4:2:0 intra key frame (IVF, 128x64) from a project-owned two-region cosine-AC luma input (left base 90, right base 170, amplitude 20, flat chroma) with broad decode tools disabled, --enable-deblocking=1, at base_q_idx 100; all-DC 32x32 multi-block, apply_deblocking_filter [false, true, true, true], df_delta_q [0,0,0,0]. The largest section 7.17 luma-horizontal deblock effect of the three deblock fixtures (38 luma samples change at the y=32 boundary across the full width); avmdec and dav2d raw outputs agree (md5 82d8be50486d46fdd771e73a214bf5c2) and splot reproduces byte-for-byte; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-grid-deblock-intra-128x128-q100.ivf"
+description = "Deblock-active 8-bit 4:2:0 intra key frame (IVF, 128x128, multi-superblock ROW) from a project-owned two-region cosine-AC luma input (left base 90, right base 170, amplitude 18, flat chroma) tiled across a 2x2 grid of 64x64 superblocks, with broad decode tools disabled, --enable-deblocking=1, at base_q_idx 100; all-DC 32x32 multi-block, apply_deblocking_filter [false, true, true, true], df_delta_q [0,0,0,0]. Unlike the 128x64 deblock fixtures, the 128-tall frame makes y=64 an INTERNAL horizontal edge, so the section 7.17.1 luma-horizontal pass visits the y=64 64-sample-grid sbEdge (horz64Edge) across the full width (64 sbEdge edges), exercising the section 7.17.3 negative-side max-width cap of the multi-superblock-row iteration; avmdec and dav2d raw outputs agree (md5 1e4675e63da02a22431390e293e4c0ba) and splot reproduces byte-for-byte; validates clean."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-2sbcol-intra-64x128-q80.ivf"
 description = "Single-column multi-superblock-row 8-bit 4:2:0 intra key frame (IVF, 64x128) from a project-owned vertically-stacked luma input (top 64x64 flat 80, bottom 64x64 flat 180, chroma U=120 V=130) with broad decode tools disabled at base_q_idx 80, so the frame is two vertically stacked 64x64 DC_PRED superblocks; exercises the section 5.20.2.1 superblock raster loop across multiple rows (clear_left_context per superblock row) with the second-row superblock DC-predicting its luma from the reconstructed above neighbour and full-superblock SMOOTH_PRED chroma at row > 0 (rightmost column, no decoded above-right); the first general-intra multi-superblock-row decode target whose avmdec and dav2d raw outputs agree and splot reproduces byte-for-byte; validates clean."
 expect = "clean"
