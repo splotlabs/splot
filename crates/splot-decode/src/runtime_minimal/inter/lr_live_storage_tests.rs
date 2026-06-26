@@ -5,49 +5,16 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use splot_core::headers::frame::FrameHeaderCore;
-use splot_core::headers::sequence::{BitDepthIdc, SequenceHeader};
-use splot_core::obu::{ParsedObu, PayloadStatus};
+use splot_core::headers::sequence::BitDepthIdc;
 use splot_core::span::ByteOffset;
-use splot_core::stream::{ParsedBitstream, parse_bitstream_partial};
-use splot_core::types::ObuType;
 use splot_recon::{BitDepth, ReconError};
 
+use super::test_support::fixture_sequence_and_key_core;
 use crate::error::DecodeError;
 use crate::{DecodeLimitThreshold, DecodeLimits};
 
 const TWO_FRAME_INTER_FIXTURE: &[u8] =
     include_bytes!("../../../../../tests/conformance/vectors/valid/syn-2frame-inter-64x64.ivf");
-
-fn fixture_sequence_and_key_core(bytes: &[u8]) -> (SequenceHeader, FrameHeaderCore) {
-    let ParsedBitstream::Ivf(parsed) = parse_bitstream_partial(bytes) else {
-        panic!("fixture is IVF");
-    };
-    assert!(parsed.error.is_none());
-    assert!(parsed.warnings.is_empty());
-    let sequence = parsed
-        .frames
-        .iter()
-        .flat_map(|frame| frame.obus.iter())
-        .find_map(
-            |envelope| match envelope.payload_status().expect("payload status") {
-                PayloadStatus::Parsed(ParsedObu::SequenceHeader(sequence)) => {
-                    Some((*sequence).clone())
-                }
-                _ => None,
-            },
-        )
-        .expect("fixture carries a sequence header");
-    let key = parsed
-        .frames
-        .iter()
-        .flat_map(|frame| frame.obus.iter())
-        .find(|envelope| envelope.header.obu_type == ObuType::ClosedLoopKey)
-        .copied()
-        .expect("fixture carries a closed-loop-key frame");
-    let key_core = super::super::parse_frame_core(key, &sequence).expect("parse key core");
-    (sequence, key_core)
-}
 
 fn valid_live_storage_frontier() -> super::super::WienerNsLrRuntimeStorageRetentionFrontier {
     let frame_sample_count = 64_u64 * 64 * 3 / 2;

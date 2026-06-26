@@ -14,4 +14,4 @@
 #
 # `--include-tests` counts test-file duplication too (excluded from the default
 # slop score), so the budget reflects ALL duplication and can ratchet to zero.
-max_deletable_lines = 13267
+max_deletable_lines = 13209
