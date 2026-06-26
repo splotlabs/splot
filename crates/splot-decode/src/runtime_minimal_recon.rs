@@ -10,7 +10,7 @@ use splot_recon::{
     IntraCardinalEdges, IntraDirectionalAngle, IntraDirectionalAngleEdges,
     IntraDirectionalAngleIdifEdges, IntraMiddleDirectionalAngle, IntraMiddleDirectionalAngleEdges,
     IntraMiddleDirectionalAngleIdifEdges, IntraRectBlockSize, IntraSmoothEdges, IntraSmoothMode,
-    IntraSquareBlockSize, OutputIndex, PixelFormat, PlaneId, PlaneRect, PlaneSize,
+    IntraSquareBlockSize, OutputIndex, PixelFormat, PlaneId, PlaneRect, PlaneSize, ReconSample,
     predict_intra_cardinal_directional_rect_into, predict_intra_dc_rect_value,
     predict_intra_directional_angle_rect_into,
     predict_intra_directional_angle_rect_one_sided_idif_into,
@@ -82,25 +82,28 @@ fn reconstruct_luma_dc_chroma_h_pred_8bit420_64x64() -> Result<DecodedFrame<u8>>
     Ok(workspace.freeze()?)
 }
 
-/// Creates an empty decoded 8-bit 4:2:0 frame workspace sized to the actual
+/// Creates an empty decoded 4:2:0 frame workspace sized to the actual
 /// `luma_width` x `luma_height` (a positive multiple of 64) for incremental
 /// per-block reconstruction on the general intra multi-block path. Chroma is
 /// 4:2:0 (half-resolution), so the chroma plane is `luma_width / 2` x
-/// `luma_height / 2`, derived internally by [`PixelFormat::Yuv420`].
-pub(crate) fn new_general_intra_workspace(
+/// `luma_height / 2`, derived internally by [`PixelFormat::Yuv420`]. The sample
+/// storage type `T` matches the active sequence `bit_depth` (§ 6.4.1): `u8` for
+/// 8-bit, `u16` for 10-bit.
+pub(crate) fn new_general_intra_workspace<T: ReconSample>(
     luma_width: usize,
     luma_height: usize,
-) -> Result<CurrentFrameWorkspace<u8>> {
+    bit_depth: BitDepth,
+) -> Result<CurrentFrameWorkspace<T>> {
     let luma_size = PlaneSize::new(luma_width, luma_height)?;
     let luma_rect = PlaneRect::new(0, 0, luma_width, luma_height)?;
     let info = DecodedFrameInfo::new(
         OutputIndex::new(0),
-        BitDepth::Eight,
+        bit_depth,
         PixelFormat::Yuv420,
         luma_size,
         luma_rect,
     )?;
-    Ok(CurrentFrameWorkspace::<u8>::new(info, 0)?)
+    Ok(CurrentFrameWorkspace::<T>::new(info, T::default())?)
 }
 
 /// Reconstructs one square plane block in decode order into the workspace: the
@@ -109,8 +112,8 @@ pub(crate) fn new_general_intra_workspace(
 /// otherwise the dequant / inverse-transform / residual-add reconstruction is
 /// added; the result is written back so later blocks read it as a neighbour.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_general_intra_block_into(
-    workspace: &mut CurrentFrameWorkspace<u8>,
+pub(crate) fn reconstruct_general_intra_block_into<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
     block: &LumaCoeffBlock,
     plane_id: PlaneId,
     x: usize,
@@ -118,6 +121,7 @@ pub(crate) fn reconstruct_general_intra_block_into(
     log2_side: u32,
     qindex: u32,
     use_tcq: bool,
+    bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     let side = 1usize << log2_side;
     let log2 = u8::try_from(log2_side).unwrap_or(u8::MAX);
@@ -125,12 +129,20 @@ pub(crate) fn reconstruct_general_intra_block_into(
     let edges = workspace
         .intra_dc_edges_for_rect(plane_id, x, y, block_size)
         .map_err(recon_err)?;
-    let dc = predict_intra_dc_rect_value(BitDepth::Eight, block_size, edges.as_dc_edges())
+    let dc = predict_intra_dc_rect_value(bit_depth, block_size, edges.as_dc_edges())
         .map_err(recon_err)?;
     let out = if block.all_zero {
         vec![dc; side * side]
     } else {
-        reconstruct_general_intra_block(&block.quant, dc, qindex, plane_id, log2_side, use_tcq)?
+        reconstruct_general_intra_block(
+            &block.quant,
+            dc,
+            qindex,
+            plane_id,
+            log2_side,
+            use_tcq,
+            bit_depth,
+        )?
     };
     workspace
         .write_rect_block(plane_id, x, y, block_size, &out)
@@ -153,8 +165,8 @@ pub(crate) fn reconstruct_general_intra_block_into(
 /// so later blocks read it as a neighbour. Chroma never uses the §7.14.4 TCQ
 /// `dqDenom` term (luma DCT_DCT only).
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_general_intra_block_rect_into(
-    workspace: &mut CurrentFrameWorkspace<u8>,
+pub(crate) fn reconstruct_general_intra_block_rect_into<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
     block: &LumaCoeffBlock,
     plane_id: PlaneId,
     x: usize,
@@ -163,6 +175,7 @@ pub(crate) fn reconstruct_general_intra_block_rect_into(
     log2_height: u32,
     qindex: u32,
     use_tcq: bool,
+    bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     let width = 1usize << log2_width;
     let height = 1usize << log2_height;
@@ -172,7 +185,7 @@ pub(crate) fn reconstruct_general_intra_block_rect_into(
     let edges = workspace
         .intra_dc_edges_for_rect(plane_id, x, y, block_size)
         .map_err(recon_err)?;
-    let dc = predict_intra_dc_rect_value(BitDepth::Eight, block_size, edges.as_dc_edges())
+    let dc = predict_intra_dc_rect_value(bit_depth, block_size, edges.as_dc_edges())
         .map_err(recon_err)?;
     let out = if block.all_zero {
         vec![dc; width * height]
@@ -185,6 +198,7 @@ pub(crate) fn reconstruct_general_intra_block_rect_into(
             log2_width,
             log2_height,
             use_tcq,
+            bit_depth,
         )?
     };
     workspace
@@ -208,8 +222,8 @@ pub(crate) fn reconstruct_general_intra_block_rect_into(
 /// for the skipped-transform case. `qindex == base_q_idx` for the minimal-tool
 /// frame; `use_tcq` adds the § 7.14.4 TCQ `dqDenom` term (luma DCT_DCT only).
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_inter_block_residual_into(
-    workspace: &mut CurrentFrameWorkspace<u8>,
+pub(crate) fn reconstruct_inter_block_residual_into<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
     block: &LumaCoeffBlock,
     plane_id: PlaneId,
     x: usize,
@@ -217,6 +231,7 @@ pub(crate) fn reconstruct_inter_block_residual_into(
     log2_side: u32,
     qindex: u32,
     use_tcq: bool,
+    bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     if block.all_zero {
         // §5.20.7.27 all_zero == 1: no residual, the MC prediction is the
@@ -239,6 +254,7 @@ pub(crate) fn reconstruct_inter_block_residual_into(
         plane_id,
         log2_side,
         use_tcq,
+        bit_depth,
     )?;
     workspace
         .write_rect_block(plane_id, x, y, block_size, &out)
@@ -265,8 +281,8 @@ pub(crate) fn reconstruct_inter_block_residual_into(
 /// § 7.13.2.1 `num4BelowLeft` (§ 5.20.7.25 `count_bottom_left_avail`) bounding the
 /// real below-left for the D203-follow zone-3 chroma (`0` in raster order).
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_general_intra_chroma_block_into(
-    workspace: &mut CurrentFrameWorkspace<u8>,
+pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
     block: &LumaCoeffBlock,
     plane_id: PlaneId,
     x: usize,
@@ -276,12 +292,13 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into(
     mode: SupportedChromaMode,
     num4_above_right: usize,
     num4_below_left: usize,
+    bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     match mode {
         // Chroma never uses the §7.14.4 TCQ dqDenom term (luma DCT_DCT only), so
         // `use_tcq` is false for both DC and SMOOTH chroma reconstruction.
         SupportedChromaMode::Dc => reconstruct_general_intra_block_into(
-            workspace, block, plane_id, x, y, log2_side, qindex, false,
+            workspace, block, plane_id, x, y, log2_side, qindex, false, bit_depth,
         ),
         SupportedChromaMode::Smooth => reconstruct_general_intra_chroma_smooth_into(
             workspace,
@@ -292,6 +309,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into(
             log2_side,
             qindex,
             num4_above_right,
+            bit_depth,
         ),
         // Directional-follow D135 chroma. At the no-neighbour top-left block the
         // §7.13.2.1 edges reduce to the flat fallback and the §7.13.2.8 middle-angle
@@ -305,7 +323,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into(
         // the D135 above/left projections.
         SupportedChromaMode::D135Follow if x == 0 && y == 0 => {
             reconstruct_general_intra_chroma_directional_first_into(
-                workspace, block, plane_id, x, y, log2_side, qindex,
+                workspace, block, plane_id, x, y, log2_side, qindex, bit_depth,
             )
         }
         SupportedChromaMode::D135Follow => {
@@ -320,6 +338,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into(
                 qindex,
                 // Chroma never uses the §7.14.4 TCQ dqDenom term (luma DCT_DCT only).
                 false,
+                bit_depth,
             )
         }
         // Directional-follow D113 chroma over the real reconstructed §7.13.2.1
@@ -342,6 +361,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into(
                 qindex,
                 // Chroma never uses the §7.14.4 TCQ dqDenom term (luma DCT_DCT only).
                 false,
+                bit_depth,
             )
         }
         // Directional-follow D157 chroma over a real reconstructed §7.13.2.1 left
@@ -363,6 +383,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into(
                 qindex,
                 // Chroma never uses the §7.14.4 TCQ dqDenom term (luma DCT_DCT only).
                 false,
+                bit_depth,
             )
         }
         // Cardinal directional-follow V_PRED / H_PRED chroma: a degenerate copy of
@@ -383,6 +404,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into(
                 log2_side,
                 qindex,
                 false,
+                bit_depth,
             )
         }
         SupportedChromaMode::HorizontalFollow => {
@@ -396,6 +418,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into(
                 log2_side,
                 qindex,
                 false,
+                bit_depth,
             )
         }
         // Non-follow H_PRED chroma at the no-neighbour top-left block: a horizontal
@@ -403,7 +426,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into(
         // no-neighbour block, so the flat-fallback prediction is exact.
         SupportedChromaMode::Horizontal => {
             reconstruct_general_intra_chroma_cardinal_horizontal_first_into(
-                workspace, block, plane_id, x, y, log2_side, qindex,
+                workspace, block, plane_id, x, y, log2_side, qindex, bit_depth,
             )
         }
         // Directional-follow D45 chroma (§7.13.2.8 ZONE-1 step 1, pAngle 45) over
@@ -425,6 +448,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into(
             qindex,
             num4_above_right,
             false,
+            bit_depth,
         ),
         // Directional-follow D203 chroma (§7.13.2.8 ZONE-3 step 3, pAngle 203) over
         // the real reconstructed §7.13.2.1 chroma left column + below-left. Chroma
@@ -445,6 +469,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into(
                 qindex,
                 num4_below_left,
                 false,
+                bit_depth,
             )
         }
     }
@@ -467,20 +492,26 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into(
 /// IDIF 4-tap is luma-only) is a sample copy of the flat fallback edge for this
 /// angle (verified bit-exact against avmdec/dav2d). Chroma never uses the
 /// § 7.14.4 TCQ dqDenom term (luma DCT_DCT only), so `use_tcq` is `false`.
-fn reconstruct_general_intra_chroma_directional_first_into(
-    workspace: &mut CurrentFrameWorkspace<u8>,
+#[allow(clippy::too_many_arguments)]
+fn reconstruct_general_intra_chroma_directional_first_into<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
     block: &LumaCoeffBlock,
     plane_id: PlaneId,
     x: usize,
     y: usize,
     log2_side: u32,
     qindex: u32,
+    bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     let side = 1usize << log2_side;
     let log2 = u8::try_from(log2_side).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2, log2).map_err(recon_err)?;
-    let prediction =
-        predict_directional_noneighbour(SupportedDirectionalLumaMode::D135, block_size, side)?;
+    let prediction = predict_directional_noneighbour(
+        SupportedDirectionalLumaMode::D135,
+        block_size,
+        side,
+        bit_depth,
+    )?;
     let out = if block.all_zero {
         prediction
     } else {
@@ -491,6 +522,7 @@ fn reconstruct_general_intra_chroma_directional_first_into(
             plane_id,
             log2_side,
             false,
+            bit_depth,
         )?
     };
     workspace
@@ -506,28 +538,31 @@ fn reconstruct_general_intra_chroma_directional_first_into(
 ///
 /// At the no-neighbour top-left block § 7.13.2.1 has neither a real left nor a
 /// real above neighbour, so `LeftCol[i]` is the flat no-left fallback
-/// (`NONEIGHBOUR_LEFT_8BIT == 129` for 8-bit). The § 7.13.2.8 horizontal copy
+/// (`noneighbour_left`, `(1 << (BitDepth - 1)) + 1` — `129` for 8-bit,
+/// `513` for 10-bit). The § 7.13.2.8 horizontal copy
 /// `pred[i][j] = LeftCol[i]` therefore writes a flat prediction. The cardinal copy
 /// has no IDIF, no corner, and no `useIBP` (§ 7.13.2.7 skips the edge filter for
 /// `pAngle == 180`), so the flat-fallback prediction is exact; the caller gates
 /// this path to the no-neighbour block (verified bit-exact against avmdec/dav2d).
-fn reconstruct_general_intra_chroma_cardinal_horizontal_first_into(
-    workspace: &mut CurrentFrameWorkspace<u8>,
+#[allow(clippy::too_many_arguments)]
+fn reconstruct_general_intra_chroma_cardinal_horizontal_first_into<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
     block: &LumaCoeffBlock,
     plane_id: PlaneId,
     x: usize,
     y: usize,
     log2_side: u32,
     qindex: u32,
+    bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     let side = 1usize << log2_side;
     let log2 = u8::try_from(log2_side).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2, log2).map_err(recon_err)?;
-    // §7.13.2.1 no-left fallback: `LeftCol[i] = NONEIGHBOUR_LEFT_8BIT` for all rows.
-    let left = vec![NONEIGHBOUR_LEFT_8BIT; side];
-    let mut prediction = vec![0u8; side * side];
+    // §7.13.2.1 no-left fallback: `LeftCol[i] = noneighbour_left` for all rows.
+    let left = vec![noneighbour_left::<T>(bit_depth); side];
+    let mut prediction = vec![T::default(); side * side];
     predict_intra_cardinal_directional_rect_into(
-        BitDepth::Eight,
+        bit_depth,
         block_size,
         IntraCardinalDirection::Horizontal,
         IntraCardinalEdges::left(&left),
@@ -546,6 +581,7 @@ fn reconstruct_general_intra_chroma_cardinal_horizontal_first_into(
             log2_side,
             // Chroma never uses the §7.14.4 TCQ dqDenom term (luma DCT_DCT only).
             false,
+            bit_depth,
         )?
     };
     workspace
@@ -557,8 +593,8 @@ fn reconstruct_general_intra_chroma_cardinal_horizontal_first_into(
 /// Reconstructs one § 7.13.2.13 `SMOOTH_PRED` chroma block over § 7.13.2.1 edges
 /// read from the partially-built frame.
 #[allow(clippy::too_many_arguments)]
-fn reconstruct_general_intra_chroma_smooth_into(
-    workspace: &mut CurrentFrameWorkspace<u8>,
+fn reconstruct_general_intra_chroma_smooth_into<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
     block: &LumaCoeffBlock,
     plane_id: PlaneId,
     x: usize,
@@ -566,6 +602,7 @@ fn reconstruct_general_intra_chroma_smooth_into(
     log2_side: u32,
     qindex: u32,
     num4_above_right: usize,
+    bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     // Chroma never uses the §7.14.4 TCQ dqDenom term (luma DCT_DCT only).
     reconstruct_general_intra_smooth_over_edges_into(
@@ -579,6 +616,7 @@ fn reconstruct_general_intra_chroma_smooth_into(
         IntraSmoothMode::Smooth,
         num4_above_right,
         false,
+        bit_depth,
     )
 }
 
@@ -613,8 +651,8 @@ fn reconstruct_general_intra_chroma_smooth_into(
 /// `AboveRow[w]` between the real reconstructed above-right sample and the clamped
 /// last in-block above sample (only material for `SMOOTH_H_PRED` / `SMOOTH_PRED`).
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_general_intra_luma_nondc_neighbour_block_into(
-    workspace: &mut CurrentFrameWorkspace<u8>,
+pub(crate) fn reconstruct_general_intra_luma_nondc_neighbour_block_into<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
     block: &LumaCoeffBlock,
     mode: SupportedNonDcLumaMode,
     x: usize,
@@ -623,6 +661,7 @@ pub(crate) fn reconstruct_general_intra_luma_nondc_neighbour_block_into(
     qindex: u32,
     use_tcq: bool,
     num4_above_right: usize,
+    bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     let smooth_mode = match mode {
         SupportedNonDcLumaMode::Smooth => IntraSmoothMode::Smooth,
@@ -640,6 +679,7 @@ pub(crate) fn reconstruct_general_intra_luma_nondc_neighbour_block_into(
         smooth_mode,
         num4_above_right,
         use_tcq,
+        bit_depth,
     )
 }
 
@@ -650,8 +690,8 @@ pub(crate) fn reconstruct_general_intra_luma_nondc_neighbour_block_into(
 /// no-above / no-left / no-neighbour fallbacks); the caller selects the smooth
 /// mode and whether luma TCQ dequant applies.
 #[allow(clippy::too_many_arguments)]
-fn reconstruct_general_intra_smooth_over_edges_into(
-    workspace: &mut CurrentFrameWorkspace<u8>,
+fn reconstruct_general_intra_smooth_over_edges_into<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
     block: &LumaCoeffBlock,
     plane_id: PlaneId,
     x: usize,
@@ -661,6 +701,7 @@ fn reconstruct_general_intra_smooth_over_edges_into(
     smooth_mode: IntraSmoothMode,
     num4_above_right: usize,
     use_tcq: bool,
+    bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     let side = 1usize << log2_side;
     let log2 = u8::try_from(log2_side).unwrap_or(u8::MAX);
@@ -693,11 +734,12 @@ fn reconstruct_general_intra_smooth_over_edges_into(
         have_above,
         side,
         above_right_sentinel,
+        bit_depth,
     )?;
     let smooth_edges = IntraSmoothEdges::new(&left, &above);
-    let mut prediction = vec![0u8; side * side];
+    let mut prediction = vec![T::default(); side * side];
     predict_intra_smooth_rect_into(
-        BitDepth::Eight,
+        bit_depth,
         block_size,
         smooth_mode,
         smooth_edges,
@@ -715,6 +757,7 @@ fn reconstruct_general_intra_smooth_over_edges_into(
             plane_id,
             log2_side,
             use_tcq,
+            bit_depth,
         )?
     };
     workspace
@@ -732,14 +775,15 @@ fn reconstruct_general_intra_smooth_over_edges_into(
 /// `above_right_sentinel` is the caller-resolved § 7.13.2.1 top-right sentinel
 /// `AboveRow[w]` (the real reconstructed above-right sample when decoded, or
 /// `None` to keep the clamped last in-block above sample / no-above fallback).
-fn build_smooth_edges(
-    left_neighbour: Option<&[u8]>,
-    above_neighbour: Option<&[u8]>,
+fn build_smooth_edges<T: ReconSample>(
+    left_neighbour: Option<&[T]>,
+    above_neighbour: Option<&[T]>,
     have_left: bool,
     have_above: bool,
     side: usize,
-    above_right_sentinel: Option<u8>,
-) -> core::result::Result<(Vec<u8>, Vec<u8>), GeneralIntraResidualError> {
+    above_right_sentinel: Option<T>,
+    bit_depth: BitDepth,
+) -> core::result::Result<(Vec<T>, Vec<T>), GeneralIntraResidualError> {
     let edge_len = side + 1;
     // §7.13.2.1 `LeftCol[i]`: reconstructed left column when haveLeft; else when
     // haveAbove, the above neighbour's first sample; else the no-left fallback.
@@ -748,26 +792,26 @@ fn build_smooth_edges(
     // decoded yet (`num4BelowLeft == 0`), so the spec value
     // `CurrFrame[plane][Min(maxY, y+h)][x-1]` equals the clamped last sample.
     let left = match (have_left, left_neighbour) {
-        (true, Some(samples)) => fill_edge_from_neighbour(samples, edge_len),
+        (true, Some(samples)) => fill_edge_from_neighbour(samples, edge_len, bit_depth),
         _ if have_above => {
             let seed = above_neighbour
                 .and_then(|samples| samples.first().copied())
-                .unwrap_or(NONEIGHBOUR_LEFT_8BIT);
+                .unwrap_or(noneighbour_left::<T>(bit_depth));
             vec![seed; edge_len]
         }
-        _ => vec![NONEIGHBOUR_LEFT_8BIT; edge_len],
+        _ => vec![noneighbour_left::<T>(bit_depth); edge_len],
     };
     // §7.13.2.1 `AboveRow[i]`: reconstructed above row when haveAbove; else when
     // haveLeft, the left neighbour's first sample; else the no-above fallback.
     let mut above = match (have_above, above_neighbour) {
-        (true, Some(samples)) => fill_edge_from_neighbour(samples, edge_len),
+        (true, Some(samples)) => fill_edge_from_neighbour(samples, edge_len, bit_depth),
         _ if have_left => {
             let seed = left_neighbour
                 .and_then(|samples| samples.first().copied())
-                .unwrap_or(NONEIGHBOUR_ABOVE_8BIT);
+                .unwrap_or(noneighbour_above::<T>(bit_depth));
             vec![seed; edge_len]
         }
-        _ => vec![NONEIGHBOUR_ABOVE_8BIT; edge_len],
+        _ => vec![noneighbour_above::<T>(bit_depth); edge_len],
     };
     // §7.13.2.1 top-right sentinel `AboveRow[w]` (index `side`): overwrite the
     // clamped last in-block sample with the real reconstructed above-right sample
@@ -796,15 +840,15 @@ fn build_smooth_edges(
 /// For a luma (`sub_x == 0`) `SMOOTH_H_PRED` full-superblock block at superblock
 /// row > 0 this reads the real reconstructed bottom row of the already-decoded
 /// diagonally-above-right superblock (the `syn-shgrid` fixture pins it bit-exact).
-fn resolve_smooth_above_right_sentinel(
-    workspace: &CurrentFrameWorkspace<u8>,
+fn resolve_smooth_above_right_sentinel<T: ReconSample>(
+    workspace: &CurrentFrameWorkspace<T>,
     plane_id: PlaneId,
     x: usize,
     y: usize,
     side: usize,
     have_above: bool,
     num4_above_right: usize,
-) -> core::result::Result<Option<u8>, GeneralIntraResidualError> {
+) -> core::result::Result<Option<T>, GeneralIntraResidualError> {
     if !have_above || num4_above_right == 0 {
         return Ok(None);
     }
@@ -841,24 +885,63 @@ fn resolve_smooth_above_right_sentinel(
 
 /// Copies `samples` into a length-`edge_len` edge, repeating the last sample to
 /// fill the trailing § 7.13.2.13 sentinel slot(s) (§ 7.13.2.1 edge extension).
-fn fill_edge_from_neighbour(samples: &[u8], edge_len: usize) -> Vec<u8> {
+fn fill_edge_from_neighbour<T: ReconSample>(
+    samples: &[T],
+    edge_len: usize,
+    bit_depth: BitDepth,
+) -> Vec<T> {
     let mut edge = Vec::with_capacity(edge_len);
     for i in 0..edge_len {
         let sample = samples
             .get(i)
             .or_else(|| samples.last())
             .copied()
-            .unwrap_or(NONEIGHBOUR_LEFT_8BIT);
+            .unwrap_or(noneighbour_left::<T>(bit_depth));
         edge.push(sample);
     }
     edge
 }
 
-/// AV2 § 7.13.2.1 no-neighbour fallback (8-bit, `haveAbove == 0 && haveLeft == 0`):
-/// every `AboveRow` sample is `(1 << (BitDepth - 1)) - 1` and every `LeftCol`
-/// sample is `(1 << (BitDepth - 1)) + 1`.
-const NONEIGHBOUR_ABOVE_8BIT: u8 = (1 << 7) - 1;
-const NONEIGHBOUR_LEFT_8BIT: u8 = (1 << 7) + 1;
+/// AV2 § 7.13.2.1 no-neighbour fallback (`haveAbove == 0 && haveLeft == 0`):
+/// every `AboveRow` sample is `(1 << (BitDepth - 1)) - 1`, every `LeftCol` sample
+/// is `(1 << (BitDepth - 1)) + 1`, and the shared corner `AboveRow[-1] ==
+/// LeftCol[-1]` is `1 << (BitDepth - 1)`. For 8-bit these are `127` / `129` /
+/// `128`; for 10-bit `511` / `513` / `512`. The values are derived from
+/// `bit_depth` and converted into the sample storage type `T` (`T::from(i32)` via
+/// the `ReconSample` conversion), so 8-bit storage stays byte-identical.
+fn noneighbour_above<T: ReconSample>(bit_depth: BitDepth) -> T {
+    let half = 1u16 << (bit_depth.bits() - 1);
+    noneighbour_sample::<T>(half - 1)
+}
+
+fn noneighbour_left<T: ReconSample>(bit_depth: BitDepth) -> T {
+    let half = 1u16 << (bit_depth.bits() - 1);
+    noneighbour_sample::<T>(half + 1)
+}
+
+fn noneighbour_corner<T: ReconSample>(bit_depth: BitDepth) -> T {
+    let half = 1u16 << (bit_depth.bits() - 1);
+    noneighbour_sample::<T>(half)
+}
+
+/// Converts an in-range § 7.13.2.1 fallback `value` into the sample storage type
+/// `T`. The conversion is infallible by the dispatch invariant: `T` is bound to
+/// the active `bit_depth` (`u8` <-> `BitDepth::Eight`, `u16` <-> `BitDepth::Ten`,
+/// see [`decode_general_minimal_intra_frame`]), so a fallback derived from
+/// `bit_depth` always fits `T`. CEILING: if a future change decouples `T` from
+/// `bit_depth` (e.g. admits `u8` storage for a 10-bit stream), a `> 255` value
+/// would not fit `u8` and `unwrap_or_default()` would silently yield `0`. UPGRADE
+/// PATH: thread `Result` through the § 7.13.2.1 edge builders (which already
+/// return [`GeneralIntraResidualError`]) and propagate the conversion error. The
+/// `debug_assert` fails loud under test / debug builds if the invariant is ever
+/// broken, instead of emitting a `0`-valued fallback edge.
+fn noneighbour_sample<T: ReconSample>(value: u16) -> T {
+    debug_assert!(
+        T::try_from_u16(value).is_ok(),
+        "§7.13.2.1 no-neighbour fallback {value} does not fit the sample storage type for the active bit depth",
+    );
+    T::try_from_u16(value).unwrap_or_default()
+}
 
 /// Reconstructs one no-neighbour (top-left) non-DC luma block: builds the
 /// § 7.13.2.13 smooth prediction over the § 7.13.2.1 no-neighbour fallback edges,
@@ -869,8 +952,8 @@ const NONEIGHBOUR_LEFT_8BIT: u8 = (1 << 7) + 1;
 /// edges are pure § 7.13.2.1 fallbacks; multi-block non-DC prediction (which
 /// reads reconstructed neighbours) is a future increment.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_general_intra_luma_nondc_first_block_into(
-    workspace: &mut CurrentFrameWorkspace<u8>,
+pub(crate) fn reconstruct_general_intra_luma_nondc_first_block_into<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
     block: &LumaCoeffBlock,
     mode: SupportedNonDcLumaMode,
     x: usize,
@@ -878,11 +961,12 @@ pub(crate) fn reconstruct_general_intra_luma_nondc_first_block_into(
     log2_side: u32,
     qindex: u32,
     use_tcq: bool,
+    bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     let side = 1usize << log2_side;
     let log2 = u8::try_from(log2_side).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2, log2).map_err(recon_err)?;
-    let prediction = predict_nondc_noneighbour_smooth(mode, block_size, side)?;
+    let prediction = predict_nondc_noneighbour_smooth(mode, block_size, side, bit_depth)?;
     let out = if block.all_zero {
         prediction
     } else {
@@ -893,6 +977,7 @@ pub(crate) fn reconstruct_general_intra_luma_nondc_first_block_into(
             PlaneId::Y,
             log2_side,
             use_tcq,
+            bit_depth,
         )?
     };
     workspace
@@ -904,35 +989,25 @@ pub(crate) fn reconstruct_general_intra_luma_nondc_first_block_into(
 /// Builds the § 7.13.2.13 smooth prediction for a no-neighbour square block over
 /// the § 7.13.2.1 fallback edges (above `127`, left `129`; the smooth sentinels
 /// `above[w]` / `left[h]` share those fallbacks).
-fn predict_nondc_noneighbour_smooth(
+fn predict_nondc_noneighbour_smooth<T: ReconSample>(
     mode: SupportedNonDcLumaMode,
     block_size: IntraRectBlockSize,
     side: usize,
-) -> core::result::Result<Vec<u8>, GeneralIntraResidualError> {
+    bit_depth: BitDepth,
+) -> core::result::Result<Vec<T>, GeneralIntraResidualError> {
     let smooth_mode = match mode {
         SupportedNonDcLumaMode::Smooth => IntraSmoothMode::Smooth,
         SupportedNonDcLumaMode::SmoothVertical => IntraSmoothMode::SmoothVertical,
         SupportedNonDcLumaMode::SmoothHorizontal => IntraSmoothMode::SmoothHorizontal,
     };
-    let above = vec![NONEIGHBOUR_ABOVE_8BIT; side + 1];
-    let left = vec![NONEIGHBOUR_LEFT_8BIT; side + 1];
+    let above = vec![noneighbour_above::<T>(bit_depth); side + 1];
+    let left = vec![noneighbour_left::<T>(bit_depth); side + 1];
     let edges = IntraSmoothEdges::new(&left, &above);
-    let mut out = vec![0u8; side * side];
-    predict_intra_smooth_rect_into(
-        BitDepth::Eight,
-        block_size,
-        smooth_mode,
-        edges,
-        &mut out,
-        side,
-    )
-    .map_err(recon_err)?;
+    let mut out = vec![T::default(); side * side];
+    predict_intra_smooth_rect_into(bit_depth, block_size, smooth_mode, edges, &mut out, side)
+        .map_err(recon_err)?;
     Ok(out)
 }
-
-/// AV2 § 7.13.2.1 no-neighbour top-left corner sample
-/// (`AboveRow[-1] == LeftCol[-1] == 1 << (BitDepth - 1)`), 8-bit.
-const NONEIGHBOUR_CORNER_8BIT: u8 = 1 << 7;
 
 /// Reconstructs one no-neighbour (top-left) directional-angle luma block:
 /// builds the § 7.13.2.8 prediction over the § 7.13.2.1 no-neighbour fallback
@@ -953,8 +1028,8 @@ const NONEIGHBOUR_CORNER_8BIT: u8 = 1 << 7;
 /// for this angle. (Verified bit-exact against avmdec/dav2d.) Other angles, where
 /// `shift != 0` and luma IDIF genuinely differs from bilinear, are deferred.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_general_intra_luma_directional_first_block_into(
-    workspace: &mut CurrentFrameWorkspace<u8>,
+pub(crate) fn reconstruct_general_intra_luma_directional_first_block_into<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
     block: &LumaCoeffBlock,
     mode: SupportedDirectionalLumaMode,
     x: usize,
@@ -962,11 +1037,12 @@ pub(crate) fn reconstruct_general_intra_luma_directional_first_block_into(
     log2_side: u32,
     qindex: u32,
     use_tcq: bool,
+    bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     let side = 1usize << log2_side;
     let log2 = u8::try_from(log2_side).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2, log2).map_err(recon_err)?;
-    let prediction = predict_directional_noneighbour(mode, block_size, side)?;
+    let prediction = predict_directional_noneighbour(mode, block_size, side, bit_depth)?;
     let out = if block.all_zero {
         prediction
     } else {
@@ -977,6 +1053,7 @@ pub(crate) fn reconstruct_general_intra_luma_directional_first_block_into(
             PlaneId::Y,
             log2_side,
             use_tcq,
+            bit_depth,
         )?
     };
     workspace
@@ -990,27 +1067,23 @@ pub(crate) fn reconstruct_general_intra_luma_directional_first_block_into(
 /// edges whose index 0 is the `-1` sample: `above_with_minus_one[0]` /
 /// `left_with_minus_one[0]` are the shared corner `128`, the remaining above
 /// samples are `127` and left samples are `129`.
-fn predict_directional_noneighbour(
+fn predict_directional_noneighbour<T: ReconSample>(
     mode: SupportedDirectionalLumaMode,
     block_size: IntraRectBlockSize,
     side: usize,
-) -> core::result::Result<Vec<u8>, GeneralIntraResidualError> {
+    bit_depth: BitDepth,
+) -> core::result::Result<Vec<T>, GeneralIntraResidualError> {
     let angle = middle_directional_angle(mode)?;
     // Logical `AboveRow[-1..w)` and `LeftCol[-1..h)` (length side + 1): index 0
     // is the corner; index `k + 1` is logical `k`.
-    let mut above = vec![NONEIGHBOUR_ABOVE_8BIT; side + 1];
-    let mut left = vec![NONEIGHBOUR_LEFT_8BIT; side + 1];
-    above[0] = NONEIGHBOUR_CORNER_8BIT;
-    left[0] = NONEIGHBOUR_CORNER_8BIT;
+    let mut above = vec![noneighbour_above::<T>(bit_depth); side + 1];
+    let mut left = vec![noneighbour_left::<T>(bit_depth); side + 1];
+    above[0] = noneighbour_corner::<T>(bit_depth);
+    left[0] = noneighbour_corner::<T>(bit_depth);
     let edges = IntraMiddleDirectionalAngleEdges::both(&left, &above);
-    let mut out = vec![0u8; side * side];
+    let mut out = vec![T::default(); side * side];
     predict_intra_middle_directional_angle_rect_into(
-        BitDepth::Eight,
-        block_size,
-        angle,
-        edges,
-        &mut out,
-        side,
+        bit_depth, block_size, angle, edges, &mut out, side,
     )
     .map_err(recon_err)?;
     Ok(out)
@@ -1050,8 +1123,8 @@ fn predict_directional_noneighbour(
 /// sentinel value (its above/left reads stay within `AboveRow[0..w)` /
 /// `LeftCol[0..h)`), so the above-right resolver is not needed.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into(
-    workspace: &mut CurrentFrameWorkspace<u8>,
+pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
     block: &LumaCoeffBlock,
     mode: SupportedDirectionalLumaMode,
     plane_id: PlaneId,
@@ -1060,6 +1133,7 @@ pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into(
     log2_side: u32,
     qindex: u32,
     use_tcq: bool,
+    bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     let side = 1usize << log2_side;
     let log2 = u8::try_from(log2_side).unwrap_or(u8::MAX);
@@ -1098,18 +1172,20 @@ pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into(
         have_left,
         have_above,
         side,
+        bit_depth,
     )?;
     let angle = middle_directional_angle(mode)?;
-    let mut prediction = vec![0u8; side * side];
+    let mut prediction = vec![T::default(); side * side];
     // §7.13.2.8 `enableIdif = plane == 0`: luma uses the IDIF 4-tap (which for
     // D135 `shift == 0` is the same sample copy as bilinear, but for D157 `shift
     // != 0` genuinely interpolates); chroma uses the `enableIdif == 0` bilinear
     // branch. The chroma callers only pass D135 (shift == 0), so both branches
     // agree there, but the plane dispatch keeps the spec contract exact.
     if matches!(plane_id, PlaneId::Y) {
-        let (left_idif, above_idif) = extend_directional_middle_idif_edges(&left, &above)?;
+        let (left_idif, above_idif) =
+            extend_directional_middle_idif_edges(&left, &above, bit_depth)?;
         predict_intra_middle_directional_angle_rect_idif_into(
-            BitDepth::Eight,
+            bit_depth,
             block_size,
             angle,
             IntraMiddleDirectionalAngleIdifEdges::both(&left_idif, &above_idif),
@@ -1119,7 +1195,7 @@ pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into(
         .map_err(recon_err)?;
     } else {
         predict_intra_middle_directional_angle_rect_into(
-            BitDepth::Eight,
+            bit_depth,
             block_size,
             angle,
             IntraMiddleDirectionalAngleEdges::both(&left, &above),
@@ -1138,6 +1214,7 @@ pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into(
             plane_id,
             log2_side,
             use_tcq,
+            bit_depth,
         )?
     };
     workspace
@@ -1176,8 +1253,8 @@ pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into(
 /// the sample copy `AboveRow[base]`, bit-identical to the chroma bilinear branch
 /// over the same real reconstructed above-right.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_general_intra_one_sided_neighbour_block_into(
-    workspace: &mut CurrentFrameWorkspace<u8>,
+pub(crate) fn reconstruct_general_intra_one_sided_neighbour_block_into<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
     block: &LumaCoeffBlock,
     mode: SupportedDirectionalLumaMode,
     plane_id: PlaneId,
@@ -1187,6 +1264,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_neighbour_block_into(
     qindex: u32,
     num4_above_right: usize,
     use_tcq: bool,
+    bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     let side = 1usize << log2_side;
     let log2 = u8::try_from(log2_side).unwrap_or(u8::MAX);
@@ -1197,14 +1275,14 @@ pub(crate) fn reconstruct_general_intra_one_sided_neighbour_block_into(
     // (`haveLeft && haveAbove`), so both the above row and the corner are real.
     let above_idif =
         build_one_sided_above_idif_edge(workspace, plane_id, x, y, side, num4_above_right)?;
-    let mut prediction = vec![0u8; side * side];
+    let mut prediction = vec![T::default(); side * side];
     // §7.13.2.8 `enableIdif = plane == 0`: luma uses the IDIF 4-tap; chroma uses
     // the `enableIdif == 0` bilinear one-sided branch. For D45 (`shift == 0`) both
     // reduce to the same sample copy `AboveRow[base]`, so the result is bit-exact
     // either way, but the plane dispatch keeps the spec contract exact.
     if matches!(plane_id, PlaneId::Y) {
         predict_intra_directional_angle_rect_one_sided_idif_into(
-            BitDepth::Eight,
+            bit_depth,
             block_size,
             IntraDirectionalAngle::try_from_p_angle(p_angle).map_err(recon_err)?,
             IntraDirectionalAngleIdifEdges::above(&above_idif),
@@ -1218,7 +1296,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_neighbour_block_into(
         // prefix (slice indices 0,1) to recover that view.
         let above_bilinear = &above_idif[2..2 + side + side];
         predict_intra_directional_angle_rect_into(
-            BitDepth::Eight,
+            bit_depth,
             block_size,
             IntraDirectionalAngle::try_from_p_angle(p_angle).map_err(recon_err)?,
             IntraDirectionalAngleEdges::above(above_bilinear),
@@ -1237,6 +1315,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_neighbour_block_into(
             plane_id,
             log2_side,
             use_tcq,
+            bit_depth,
         )?
     };
     workspace
@@ -1275,14 +1354,14 @@ fn one_sided_p_angle(
 /// and `AboveRow[maxBase + 1] = AboveRow[maxBase + 2] = AboveRow[maxBase]` (the
 /// two trailing samples repeat the clamped last in-row sample). `aboveLimit =
 /// Min(maxX, x + w + 4 * num4AboveRight - 1)`.
-fn build_one_sided_above_idif_edge(
-    workspace: &CurrentFrameWorkspace<u8>,
+fn build_one_sided_above_idif_edge<T: ReconSample>(
+    workspace: &CurrentFrameWorkspace<T>,
     plane_id: PlaneId,
     x: usize,
     y: usize,
     side: usize,
     num4_above_right: usize,
-) -> core::result::Result<Vec<u8>, GeneralIntraResidualError> {
+) -> core::result::Result<Vec<T>, GeneralIntraResidualError> {
     let above_row = y
         .checked_sub(1)
         .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
@@ -1315,7 +1394,7 @@ fn build_one_sided_above_idif_edge(
     let edge_len = max_base_x
         .checked_add(5)
         .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
-    let mut above = vec![0u8; edge_len];
+    let mut above = vec![T::default(); edge_len];
     // Logical -1 corner -> slice index 1; -2 -> slice index 0.
     let corner = workspace
         .reconstructed_sample(plane_id, corner_col, above_row)
@@ -1380,8 +1459,8 @@ fn build_one_sided_above_idif_edge(
 /// the real reconstructed left column. Chroma uses the spec-mandated bilinear
 /// one-sided branch (`enableIdif == 0` for U/V) over the same prepared left edge.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_general_intra_one_sided_left_neighbour_block_into(
-    workspace: &mut CurrentFrameWorkspace<u8>,
+pub(crate) fn reconstruct_general_intra_one_sided_left_neighbour_block_into<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
     block: &LumaCoeffBlock,
     plane_id: PlaneId,
     x: usize,
@@ -1390,6 +1469,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_left_neighbour_block_into(
     qindex: u32,
     num4_below_left: usize,
     use_tcq: bool,
+    bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     let side = 1usize << log2_side;
     let log2 = u8::try_from(log2_side).unwrap_or(u8::MAX);
@@ -1400,13 +1480,13 @@ pub(crate) fn reconstruct_general_intra_one_sided_left_neighbour_block_into(
     // right column of the already-decoded left superblock.
     let left_idif =
         build_one_sided_left_idif_edge(workspace, plane_id, x, y, side, num4_below_left)?;
-    let mut prediction = vec![0u8; side * side];
+    let mut prediction = vec![T::default(); side * side];
     // §7.13.2.8 `enableIdif = plane == 0`: luma uses the zone-3 IDIF 4-tap; chroma
     // uses the `enableIdif == 0` bilinear one-sided branch (the spec-mandated
     // chroma branch). Both read the same prepared left edge.
     if matches!(plane_id, PlaneId::Y) {
         predict_intra_directional_angle_rect_one_sided_idif_into(
-            BitDepth::Eight,
+            bit_depth,
             block_size,
             IntraDirectionalAngle::D203,
             IntraDirectionalAngleIdifEdges::left(&left_idif),
@@ -1420,7 +1500,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_left_neighbour_block_into(
         // prefix (slice indices 0,1) to recover that view.
         let left_bilinear = &left_idif[2..2 + side + side];
         predict_intra_directional_angle_rect_into(
-            BitDepth::Eight,
+            bit_depth,
             block_size,
             IntraDirectionalAngle::D203,
             IntraDirectionalAngleEdges::left(left_bilinear),
@@ -1439,6 +1519,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_left_neighbour_block_into(
             plane_id,
             log2_side,
             use_tcq,
+            bit_depth,
         )?
     };
     workspace
@@ -1461,14 +1542,14 @@ pub(crate) fn reconstruct_general_intra_one_sided_left_neighbour_block_into(
 /// `LeftCol[-2] = LeftCol[-1]`) and `LeftCol[maxBase + 1] = LeftCol[maxBase + 2]
 /// = LeftCol[maxBase]` (the two trailing samples repeat the clamped last in-column
 /// sample).
-fn build_one_sided_left_idif_edge(
-    workspace: &CurrentFrameWorkspace<u8>,
+fn build_one_sided_left_idif_edge<T: ReconSample>(
+    workspace: &CurrentFrameWorkspace<T>,
     plane_id: PlaneId,
     x: usize,
     y: usize,
     side: usize,
     num4_below_left: usize,
-) -> core::result::Result<Vec<u8>, GeneralIntraResidualError> {
+) -> core::result::Result<Vec<T>, GeneralIntraResidualError> {
     let left_col = x
         .checked_sub(1)
         .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
@@ -1498,7 +1579,7 @@ fn build_one_sided_left_idif_edge(
     let edge_len = max_base_y
         .checked_add(5)
         .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
-    let mut left = vec![0u8; edge_len];
+    let mut left = vec![T::default(); edge_len];
     // §7.13.2.1 (haveAbove == 0 && haveLeft == 1): corner LeftCol[-1] =
     // CurrFrame[plane][y][x-1]. Logical -1 -> slice index 1; -2 -> slice index 0.
     let corner = workspace
@@ -1556,8 +1637,8 @@ fn build_one_sided_left_idif_edge(
 /// § 7.13.2.7 edge-filter / corner-filter step a no-op (and § 7.13.2.7 skips it
 /// entirely for `pAngle == 90 || pAngle == 180`).
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_general_intra_cardinal_neighbour_block_into(
-    workspace: &mut CurrentFrameWorkspace<u8>,
+pub(crate) fn reconstruct_general_intra_cardinal_neighbour_block_into<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
     block: &LumaCoeffBlock,
     direction: IntraCardinalDirection,
     plane_id: PlaneId,
@@ -1566,6 +1647,7 @@ pub(crate) fn reconstruct_general_intra_cardinal_neighbour_block_into(
     log2_side: u32,
     qindex: u32,
     use_tcq: bool,
+    bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     let side = 1usize << log2_side;
     let log2 = u8::try_from(log2_side).unwrap_or(u8::MAX);
@@ -1590,9 +1672,9 @@ pub(crate) fn reconstruct_general_intra_cardinal_neighbour_block_into(
             IntraCardinalEdges::left(left)
         }
     };
-    let mut prediction = vec![0u8; side * side];
+    let mut prediction = vec![T::default(); side * side];
     predict_intra_cardinal_directional_rect_into(
-        BitDepth::Eight,
+        bit_depth,
         block_size,
         direction,
         cardinal_edges,
@@ -1610,6 +1692,7 @@ pub(crate) fn reconstruct_general_intra_cardinal_neighbour_block_into(
             plane_id,
             log2_side,
             use_tcq,
+            bit_depth,
         )?
     };
     workspace
@@ -1652,14 +1735,15 @@ pub(crate) fn reconstruct_general_intra_cardinal_neighbour_block_into(
 /// `above_neighbour`); the other arms ignore it. When it is absent for that arm the
 /// builder returns [`GeneralIntraResidualError::UnsupportedDirectionalAboveEdge`]
 /// rather than fabricate a corner.
-fn build_directional_middle_edges(
-    left_neighbour: Option<&[u8]>,
-    above_neighbour: Option<&[u8]>,
-    above_corner: Option<u8>,
+fn build_directional_middle_edges<T: ReconSample>(
+    left_neighbour: Option<&[T]>,
+    above_neighbour: Option<&[T]>,
+    above_corner: Option<T>,
     have_left: bool,
     have_above: bool,
     side: usize,
-) -> core::result::Result<(Vec<u8>, Vec<u8>), GeneralIntraResidualError> {
+    bit_depth: BitDepth,
+) -> core::result::Result<(Vec<T>, Vec<T>), GeneralIntraResidualError> {
     let edge_len = side + 1;
     // §7.13.2.1 LeftCol[i] (logical 0..side-1 -> slice index 1..=side) and the
     // corner LeftCol[-1] (slice index 0).
@@ -1682,8 +1766,16 @@ fn build_directional_middle_edges(
             left.push(corner);
             above.push(corner);
             for i in 0..side {
-                left.push(sample_or_last(left_samples, i, NONEIGHBOUR_LEFT_8BIT));
-                above.push(sample_or_last(above_samples, i, NONEIGHBOUR_ABOVE_8BIT));
+                left.push(sample_or_last(
+                    left_samples,
+                    i,
+                    noneighbour_left::<T>(bit_depth),
+                ));
+                above.push(sample_or_last(
+                    above_samples,
+                    i,
+                    noneighbour_above::<T>(bit_depth),
+                ));
             }
         }
         (false, true) => {
@@ -1697,12 +1789,16 @@ fn build_directional_middle_edges(
             let seed = above_samples
                 .first()
                 .copied()
-                .unwrap_or(NONEIGHBOUR_ABOVE_8BIT);
+                .unwrap_or(noneighbour_above::<T>(bit_depth));
             left.push(seed);
             above.push(seed);
             for i in 0..side {
                 left.push(seed);
-                above.push(sample_or_last(above_samples, i, NONEIGHBOUR_ABOVE_8BIT));
+                above.push(sample_or_last(
+                    above_samples,
+                    i,
+                    noneighbour_above::<T>(bit_depth),
+                ));
             }
         }
         (true, false) => {
@@ -1714,22 +1810,26 @@ fn build_directional_middle_edges(
             let seed = left_samples
                 .first()
                 .copied()
-                .unwrap_or(NONEIGHBOUR_LEFT_8BIT);
+                .unwrap_or(noneighbour_left::<T>(bit_depth));
             left.push(seed);
             above.push(seed);
             for i in 0..side {
-                left.push(sample_or_last(left_samples, i, NONEIGHBOUR_LEFT_8BIT));
+                left.push(sample_or_last(
+                    left_samples,
+                    i,
+                    noneighbour_left::<T>(bit_depth),
+                ));
                 above.push(seed);
             }
         }
         (false, false) => {
             // §7.13.2.1 no-neighbour fallbacks (handled by the first-block path, but
             // kept total here): AboveRow 127, LeftCol 129, shared corner 128.
-            left.push(NONEIGHBOUR_CORNER_8BIT);
-            above.push(NONEIGHBOUR_CORNER_8BIT);
+            left.push(noneighbour_corner::<T>(bit_depth));
+            above.push(noneighbour_corner::<T>(bit_depth));
             for _ in 0..side {
-                left.push(NONEIGHBOUR_LEFT_8BIT);
-                above.push(NONEIGHBOUR_ABOVE_8BIT);
+                left.push(noneighbour_left::<T>(bit_depth));
+                above.push(noneighbour_above::<T>(bit_depth));
             }
         }
     }
@@ -1738,7 +1838,7 @@ fn build_directional_middle_edges(
 
 /// Returns `samples[index]`, falling back to the last sample (§ 7.13.2.1 bottom-left
 /// / right-most edge clamp) and then to `fallback` for an empty slice.
-fn sample_or_last(samples: &[u8], index: usize, fallback: u8) -> u8 {
+fn sample_or_last<T: ReconSample>(samples: &[T], index: usize, fallback: T) -> T {
     samples
         .get(index)
         .or_else(|| samples.last())
@@ -1780,19 +1880,23 @@ fn middle_directional_angle(
 /// (`Edge[-2] = Edge[-1]`, the repeated corner) and, for the middle branch
 /// (`90 < pAngle < 180`), `Edge[side] = Edge[side + 1] = Edge[side - 1]` (the
 /// repeated last in-block edge sample).
-fn extend_directional_middle_idif_edges(
-    left: &[u8],
-    above: &[u8],
-) -> core::result::Result<(Vec<u8>, Vec<u8>), GeneralIntraResidualError> {
+fn extend_directional_middle_idif_edges<T: ReconSample>(
+    left: &[T],
+    above: &[T],
+    bit_depth: BitDepth,
+) -> core::result::Result<(Vec<T>, Vec<T>), GeneralIntraResidualError> {
     Ok((
-        extend_one_middle_idif_edge(left),
-        extend_one_middle_idif_edge(above),
+        extend_one_middle_idif_edge(left, bit_depth),
+        extend_one_middle_idif_edge(above, bit_depth),
     ))
 }
 
-fn extend_one_middle_idif_edge(edge: &[u8]) -> Vec<u8> {
+fn extend_one_middle_idif_edge<T: ReconSample>(edge: &[T], bit_depth: BitDepth) -> Vec<T> {
     // `edge` is `Edge[-1..side)`: index 0 = `-1` (corner), index `k + 1` = k.
-    let corner = edge.first().copied().unwrap_or(NONEIGHBOUR_CORNER_8BIT);
+    let corner = edge
+        .first()
+        .copied()
+        .unwrap_or(noneighbour_corner::<T>(bit_depth));
     let last = edge.last().copied().unwrap_or(corner);
     let mut out = Vec::with_capacity(edge.len() + 3);
     out.push(corner); // logical -2 == Edge[-1]

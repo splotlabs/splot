@@ -1178,25 +1178,20 @@ fn multiref_fixture_rejects_when_inter_tile_group_starts_ivf_record() {
 }
 
 #[test]
-fn ten_bit_minimal_stream_reaches_runtime_storage_gate() {
+fn ten_bit_sequence_passes_runtime_storage_gate() {
+    // §6.4.1: the runtime now stores 8-bit (`u8`) and 10-bit (`u16`) samples, so
+    // the storage bit-depth gate admits both. A 10-bit stream that is NOT the
+    // general-intra DC subset (e.g. this two-frame inter stream) is rejected
+    // later (the inter / reference path is 8-bit only via `frame_eight`), not at
+    // this gate. `DECODE-GENERAL-INTRA-10BIT`.
     let (mut sequence, _) = fixture_sequence_and_quantization(TWO_FRAME_INTER_FIXTURE);
     sequence.general.bit_depth_idc = BitDepthIdc::Ten;
+    super::super::ensure_runtime_storage_bit_depth(&sequence, ByteOffset::new(47))
+        .expect("10-bit sequence passes the runtime storage bit-depth gate");
 
-    let Err(error) = super::super::ensure_8bit_runtime_storage(&sequence, ByteOffset::new(47))
-    else {
-        panic!("10-bit sequence must fail closed before 8-bit runtime output");
-    };
-    let unsupported = match error {
-        DecodeError::UnsupportedFeature { unsupported } => unsupported,
-        _ => panic!("10-bit storage gate must be an unsupported-feature error"),
-    };
-    assert_eq!(unsupported.reason(), "unsupported_bit_depth");
-    assert_eq!(unsupported.matrix_row(), "ac0ej3-10bit-sequence-frontier");
-    assert_eq!(
-        unsupported.feature_id(),
-        "DECODE-AC0EJ3-10BIT-SEQUENCE-FRONTIER"
-    );
-    assert_eq!(unsupported.spec_section(), "6.4.1");
+    sequence.general.bit_depth_idc = BitDepthIdc::Eight;
+    super::super::ensure_runtime_storage_bit_depth(&sequence, ByteOffset::new(47))
+        .expect("8-bit sequence passes the runtime storage bit-depth gate");
 }
 
 #[test]

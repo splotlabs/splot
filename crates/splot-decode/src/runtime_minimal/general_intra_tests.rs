@@ -18,6 +18,38 @@ const Q80_LUMA: u8 = 100;
 const Q80_CHROMA_U: u8 = 120;
 const Q80_CHROMA_V: u8 = 130;
 
+// The first 10-bit (§6.4.1 bit_depth_idc == 0) general-intra target: a flat
+// 10-bit 4:2:0 single-64x64 DC_PRED-luma + DC-chroma intra key frame at
+// base_q_idx 80, broad tools off. avmdec and dav2d both decode it to flat planes
+// (raw md5 9983be8c8398de1db3127db7e6914bfa); the splot output is bit-exact.
+// `DECODE-GENERAL-INTRA-10BIT`.
+const Q80_10BIT_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-flat-intra-64x64-10bit-q80.ivf"
+);
+
+// A single 64x64 10-bit DC_PRED-luma block whose luma carries multiple (eob > 1)
+// AC coefficients from a low-frequency half-cosine input at base_q_idx 180. The
+// luma is genuinely non-flat, so the byte layout is pinned via the frame hash;
+// avmdec and dav2d both decode it byte-for-byte (raw md5
+// 2751443b26dc632b6091192587af5ebb). `DECODE-GENERAL-INTRA-10BIT`.
+const Q180_COS_10BIT_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-cos-intra-64x64-10bit-q180.ivf"
+);
+
+// A 128x64 multi-64x64-superblock 10-bit intra frame: two side-by-side DC_PRED
+// superblocks (left flat luma 400, right flat luma 460). The right superblock
+// DC-predicts from the already-reconstructed left neighbour. avmdec and dav2d
+// agree byte-for-byte (raw md5 5cbab50c4ff5ba0ba1ca28bfa8e97dde).
+// `DECODE-GENERAL-INTRA-10BIT`.
+const TWO_SB_10BIT_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-2sb-intra-128x64-10bit-q80.ivf"
+);
+
+// avmdec/dav2d 10-bit flat plane values (10-bit samples, 0..=1023).
+const Q80_10BIT_LUMA: u16 = 400;
+const Q80_10BIT_CHROMA_U: u16 = 480;
+const Q80_10BIT_CHROMA_V: u16 = 520;
+
 // A single-block DC_PRED intra frame whose luma carries multiple (eob > 1) AC
 // coefficients from a low-frequency half-cosine input; avmdec's raw output is
 // reproduced byte-for-byte (verified locally) and pinned via the frame hash.
@@ -42,7 +74,7 @@ fn decode_q80_frame() -> DecodedFrame<u8> {
     let plan = context.plan_bytes(Q80_FIXTURE, options).expect("plan");
     decode_minimal_frame_from_plan(Q80_FIXTURE, options, &plan)
         .expect("decode")
-        .frame
+        .into_frame_eight()
 }
 
 // Slices the leading IVF frame (the OBU_CLOSED_LOOP_KEY key frame) out of a
@@ -82,7 +114,7 @@ fn two_frame_key_frame_reconstructs_flat_h_pred_chroma() {
     let plan = context.plan_bytes(&key_stream, options).expect("plan");
     let frame = decode_minimal_frame_from_plan(&key_stream, options, &plan)
         .expect("decode")
-        .frame;
+        .into_frame_eight();
 
     assert_eq!(frame.bit_depth(), BitDepth::Eight);
     assert_eq!(frame.pixel_format(), PixelFormat::Yuv420);
@@ -154,6 +186,153 @@ fn q80_intra_frame_hash_is_stable() {
     );
 }
 
+// Drives the 10-bit q80 fixture through the full general intra runtime path,
+// returning the reconstructed `DecodedFrame<u16>` (the 10-bit storage arm).
+fn decode_q80_10bit_frame() -> DecodedFrame<u16> {
+    let options = DecodeOptions::default();
+    let context =
+        DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).expect("context");
+    let plan = context
+        .plan_bytes(Q80_10BIT_FIXTURE, options)
+        .expect("plan");
+    decode_minimal_frame_from_plan(Q80_10BIT_FIXTURE, options, &plan)
+        .expect("decode")
+        .into_frame_ten()
+}
+
+#[test]
+fn q80_10bit_intra_frame_reconstructs_flat_planes() {
+    use splot_recon::{BitDepth, PixelFormat, PlaneSize};
+
+    // §6.4.1: the 10-bit DC_PRED-luma + DC-chroma single-64x64 intra frame
+    // reconstructs into a `DecodedFrame<u16>` whose visible planes are the flat
+    // avmdec/dav2d oracle values (Y == 400, U == 480, V == 520).
+    let frame = decode_q80_10bit_frame();
+    assert_eq!(frame.bit_depth(), BitDepth::Ten);
+    assert_eq!(frame.pixel_format(), PixelFormat::Yuv420);
+    assert_eq!(frame.y().visible_size(), PlaneSize::new(64, 64).unwrap());
+    assert_eq!(
+        frame.u().unwrap().visible_size(),
+        PlaneSize::new(32, 32).unwrap()
+    );
+
+    let y = frame.y().samples();
+    assert!(
+        y.iter().all(|&s| s == Q80_10BIT_LUMA),
+        "10-bit luma must be flat {Q80_10BIT_LUMA}; first samples: {:?}",
+        &y[..8]
+    );
+    let u = frame.u().unwrap().samples();
+    assert!(
+        u.iter().all(|&s| s == Q80_10BIT_CHROMA_U),
+        "10-bit U must be flat {Q80_10BIT_CHROMA_U}; first samples: {:?}",
+        &u[..8]
+    );
+    let v = frame.v().unwrap().samples();
+    assert!(
+        v.iter().all(|&s| s == Q80_10BIT_CHROMA_V),
+        "10-bit V must be flat {Q80_10BIT_CHROMA_V}; first samples: {:?}",
+        &v[..8]
+    );
+}
+
+#[test]
+fn q80_10bit_intra_frame_hash_is_stable() {
+    // Regression pin for the 10-bit decoded-frame hash. The flat-plane test above
+    // is the avmdec/dav2d oracle anchor (raw md5
+    // 9983be8c8398de1db3127db7e6914bfa); this pins the splot-dfh-sha256-v1 digest
+    // over the 16-bit-LE-packed visible samples.
+    let frame = decode_q80_10bit_frame();
+    let hash = splot_recon::DecodedFrameHashInput::new(&frame)
+        .compute_hash()
+        .to_hex();
+    assert_eq!(
+        hash,
+        "973eb3fc4b112c865f939dc1339824ca0b2a1522ca2b5ec70311afb459436e2d"
+    );
+}
+
+#[test]
+fn q180_cos_10bit_intra_frame_decodes_ac_residual_luma() {
+    use splot_recon::{BitDepth, PixelFormat, PlaneSize};
+
+    // §6.4.1: a single 64x64 10-bit DC_PRED-luma block whose luma carries
+    // multiple (eob > 1) AC coefficients reconstructs into a `DecodedFrame<u16>`.
+    // The luma is non-flat AC, so the byte layout is pinned via the frame hash;
+    // splot reproduces avmdec's and dav2d's raw output byte-for-byte (raw md5
+    // 2751443b26dc632b6091192587af5ebb).
+    let options = DecodeOptions::default();
+    let context =
+        DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).expect("context");
+    let plan = context
+        .plan_bytes(Q180_COS_10BIT_FIXTURE, options)
+        .expect("plan");
+    let frame = decode_minimal_frame_from_plan(Q180_COS_10BIT_FIXTURE, options, &plan)
+        .expect("decode")
+        .into_frame_ten();
+
+    assert_eq!(frame.bit_depth(), BitDepth::Ten);
+    assert_eq!(frame.pixel_format(), PixelFormat::Yuv420);
+    assert_eq!(frame.y().visible_size(), PlaneSize::new(64, 64).unwrap());
+
+    // The luma is a reconstructed low-frequency cosine: genuinely non-flat
+    // (proving the eob > 1 AC coefficient path ran in the 10-bit storage arm).
+    let y = frame.y().samples();
+    let distinct = y.iter().collect::<std::collections::BTreeSet<_>>().len();
+    assert!(
+        distinct > 4,
+        "10-bit luma should be a non-flat AC reconstruction; distinct={distinct}"
+    );
+
+    let hash = splot_recon::DecodedFrameHashInput::new(&frame)
+        .compute_hash()
+        .to_hex();
+    assert_eq!(
+        hash,
+        "bfec72ffcddf982499eebfa21bdfb400fc66aa96b40281298387420ef2124649"
+    );
+}
+
+#[test]
+fn two_superblock_10bit_intra_frame_decodes_to_oracle() {
+    use splot_recon::{BitDepth, PixelFormat, PlaneSize};
+
+    // §6.4.1: a 128x64 two-64x64-superblock 10-bit intra frame reconstructs into
+    // a `DecodedFrame<u16>` whose left superblock is flat luma 400 and right
+    // superblock is flat luma 460 (the right DC-predicts from the reconstructed
+    // left neighbour). splot reproduces avmdec's and dav2d's raw output
+    // byte-for-byte (raw md5 5cbab50c4ff5ba0ba1ca28bfa8e97dde); the byte layout
+    // is pinned via the frame hash.
+    let options = DecodeOptions::default();
+    let context =
+        DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).expect("context");
+    let plan = context
+        .plan_bytes(TWO_SB_10BIT_FIXTURE, options)
+        .expect("plan");
+    let frame = decode_minimal_frame_from_plan(TWO_SB_10BIT_FIXTURE, options, &plan)
+        .expect("decode")
+        .into_frame_ten();
+
+    assert_eq!(frame.bit_depth(), BitDepth::Ten);
+    assert_eq!(frame.pixel_format(), PixelFormat::Yuv420);
+    assert_eq!(frame.y().visible_size(), PlaneSize::new(128, 64).unwrap());
+
+    // Anchor the multi-superblock geometry: the left superblock's top-left
+    // sample and a right-superblock sample (column 64 of row 0) carry the two
+    // distinct flat DC luma levels, matching the avmdec/dav2d oracle.
+    let y = frame.y().samples();
+    assert_eq!(y[0], 400, "left-superblock luma must be 400");
+    assert_eq!(y[64], 460, "right-superblock luma (column 64) must be 460");
+
+    let hash = splot_recon::DecodedFrameHashInput::new(&frame)
+        .compute_hash()
+        .to_hex();
+    assert_eq!(
+        hash,
+        "ceff974fde25c8d05c9010d2a7f414845dc3a626ab3c45a9dabb08634c29dd66"
+    );
+}
+
 #[test]
 fn q180_cos_intra_frame_decodes_multi_coefficient_luma() {
     use splot_recon::{BitDepth, PixelFormat, PlaneSize};
@@ -164,7 +343,7 @@ fn q180_cos_intra_frame_decodes_multi_coefficient_luma() {
     let plan = context.plan_bytes(Q180_COS_FIXTURE, options).expect("plan");
     let frame = decode_minimal_frame_from_plan(Q180_COS_FIXTURE, options, &plan)
         .expect("decode")
-        .frame;
+        .into_frame_eight();
 
     assert_eq!(frame.bit_depth(), BitDepth::Eight);
     assert_eq!(frame.pixel_format(), PixelFormat::Yuv420);
@@ -207,7 +386,7 @@ fn quad_multiblock_intra_frame_decodes_to_oracle() {
     let plan = context.plan_bytes(QUAD_FIXTURE, options).expect("plan");
     let frame = decode_minimal_frame_from_plan(QUAD_FIXTURE, options, &plan)
         .expect("decode")
-        .frame;
+        .into_frame_eight();
 
     assert_eq!(frame.bit_depth(), BitDepth::Eight);
     assert_eq!(frame.pixel_format(), PixelFormat::Yuv420);
@@ -256,7 +435,7 @@ fn deep_split_sub_32x32_intra_frame_decodes_to_oracle() {
         .expect("plan");
     let frame = decode_minimal_frame_from_plan(DEEP_SPLIT_FIXTURE, options, &plan)
         .expect("decode")
-        .frame;
+        .into_frame_eight();
 
     assert_eq!(frame.bit_depth(), BitDepth::Eight);
     assert_eq!(frame.pixel_format(), PixelFormat::Yuv420);
@@ -316,7 +495,7 @@ fn two_superblock_intra_frame_decodes_to_oracle() {
     let plan = context.plan_bytes(TWO_SB_FIXTURE, options).expect("plan");
     let frame = decode_minimal_frame_from_plan(TWO_SB_FIXTURE, options, &plan)
         .expect("decode")
-        .frame;
+        .into_frame_eight();
 
     assert_eq!(frame.bit_depth(), BitDepth::Eight);
     assert_eq!(frame.pixel_format(), PixelFormat::Yuv420);
@@ -373,7 +552,7 @@ fn multi_row_superblock_intra_frame_decodes_to_oracle() {
     let plan = context.plan_bytes(COL_FIXTURE, options).expect("plan");
     let frame = decode_minimal_frame_from_plan(COL_FIXTURE, options, &plan)
         .expect("decode")
-        .frame;
+        .into_frame_eight();
 
     assert_eq!(frame.bit_depth(), BitDepth::Eight);
     assert_eq!(frame.pixel_format(), PixelFormat::Yuv420);
@@ -430,7 +609,7 @@ fn grid_2d_intra_frame_decodes_to_oracle() {
     let plan = context.plan_bytes(GRID_FIXTURE, options).expect("plan");
     let frame = decode_minimal_frame_from_plan(GRID_FIXTURE, options, &plan)
         .expect("decode")
-        .frame;
+        .into_frame_eight();
 
     assert_eq!(frame.bit_depth(), BitDepth::Eight);
     assert_eq!(frame.pixel_format(), PixelFormat::Yuv420);
@@ -574,7 +753,7 @@ fn decode_general_intra_luma(fixture: &[u8]) -> DecodedFrame<u8> {
     let plan = context.plan_bytes(fixture, options).expect("plan");
     decode_minimal_frame_from_plan(fixture, options, &plan)
         .expect("decode")
-        .frame
+        .into_frame_eight()
 }
 
 #[test]
@@ -1886,7 +2065,7 @@ fn luma_skip_fixture_decodes_skip_branch_through_general_path() {
     let plan = context.plan_bytes(SKIP_FIXTURE, options).expect("plan");
     let frame = decode_minimal_frame_from_plan(SKIP_FIXTURE, options, &plan)
         .expect("decode")
-        .frame;
+        .into_frame_eight();
 
     assert_eq!(frame.bit_depth(), BitDepth::Eight);
     assert_eq!(frame.pixel_format(), PixelFormat::Yuv420);

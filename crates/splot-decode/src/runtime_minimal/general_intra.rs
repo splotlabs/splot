@@ -6,8 +6,9 @@
 //!
 //! Feature tracking: `DECODE-GENERAL-INTRA-FRAME-FRONTIER`.
 
+use splot_core::headers::sequence::BitDepthIdc;
 use splot_core::tables::conversion::{TX_HEIGHT_LOG2, TX_WIDTH_LOG2};
-use splot_recon::PlaneId;
+use splot_recon::{BitDepth, CurrentFrameWorkspace, PlaneId, ReconSample};
 
 use super::*;
 
@@ -259,9 +260,84 @@ pub(super) fn decode_general_minimal_intra_frame(
     let limits = options.limits();
     ensure_runtime_limits(limits, frame_width, frame_height, tile_size)?;
 
-    let mut workspace = crate::runtime_minimal_recon::new_general_intra_workspace(
-        frame_width as usize,
-        frame_height as usize,
+    // §6.4.1: the sequence bit depth selects the reconstruction sample storage
+    // type (Eight -> `u8`, Ten -> `u16`). The whole reconstruction graph is
+    // generic over `T: ReconSample`; dispatch to the matching specialization and
+    // wrap the frozen frame in the matching output-carrier arm. 10-bit is
+    // admitted only for the verified DC subset (gated per-block inside
+    // `decode_one_general_intra_block`); a 10-bit non-DC / multi-block shape
+    // rejects before any sample write.
+    let bit_depth = match sequence.general.bit_depth_idc {
+        BitDepthIdc::Eight => BitDepth::Eight,
+        BitDepthIdc::Ten => BitDepth::Ten,
+    };
+    let frame = match bit_depth {
+        BitDepth::Eight => {
+            MinimalRuntimeDecodedFrame::Eight(decode_general_intra_frame_into::<u8>(
+                tile,
+                sequence,
+                core,
+                limits,
+                frame_width as usize,
+                frame_height as usize,
+                mi_rows,
+                mi_cols,
+                qindex,
+                luma_use_tcq,
+                bit_depth,
+                tile_offset,
+            )?)
+        }
+        BitDepth::Ten => MinimalRuntimeDecodedFrame::Ten(decode_general_intra_frame_into::<u16>(
+            tile,
+            sequence,
+            core,
+            limits,
+            frame_width as usize,
+            frame_height as usize,
+            mi_rows,
+            mi_cols,
+            qindex,
+            luma_use_tcq,
+            bit_depth,
+            tile_offset,
+        )?),
+    };
+    Ok(MinimalRuntimeFrame {
+        frame,
+        frame_rate_numerator: header.timebase_denominator,
+        frame_rate_denominator: header.timebase_numerator,
+    })
+}
+
+/// Reconstructs the general intra key frame into a `DecodedFrame<T>` for the
+/// sample storage type `T` selected by the active sequence `bit_depth` (§ 6.4.1).
+///
+/// This is the storage-typed body of [`decode_general_minimal_intra_frame`]: it
+/// builds the typed `CurrentFrameWorkspace<T>`, walks the real AV2 § 5.20.3.1
+/// partition tree decoding each leaf's § 5.20.5.3 mode info and § 5.20.7.27
+/// Y/U/V coefficients, reconstructs each block into the workspace in decode order
+/// (so later blocks predict from the already-reconstructed neighbours),
+/// validates § 8.2.4 `exit_symbol()`, and freezes the workspace.
+#[allow(clippy::too_many_arguments)]
+fn decode_general_intra_frame_into<T: ReconSample>(
+    tile: &mut crate::tile_payload::DecodeTileWorkUnit<'_>,
+    sequence: &SequenceHeader,
+    core: &FrameHeaderCore,
+    limits: crate::DecodeLimits,
+    frame_width: usize,
+    frame_height: usize,
+    mi_rows: usize,
+    mi_cols: usize,
+    qindex: u32,
+    luma_use_tcq: bool,
+    bit_depth: BitDepth,
+    tile_offset: ByteOffset,
+) -> Result<DecodedFrame<T>> {
+    let mut workspace = crate::runtime_minimal_recon::new_general_intra_workspace::<T>(
+        frame_width,
+        frame_height,
+        bit_depth,
     )?;
     let mut coeff_ctx =
         crate::tile_payload::TileCoeffContextState::new(mi_rows, mi_cols).map_err(|source| {
@@ -281,7 +357,7 @@ pub(super) fn decode_general_minimal_intra_frame(
         core,
         limits,
         |work_unit, symbols, frontier, joint_modes, uses_mrls, fsc_modes, block_decoded| {
-            decode_one_general_intra_block(
+            decode_one_general_intra_block::<T>(
                 work_unit,
                 symbols,
                 frontier,
@@ -294,6 +370,7 @@ pub(super) fn decode_general_minimal_intra_frame(
                 qindex,
                 luma_use_tcq,
                 mi_cols,
+                bit_depth,
                 tile_offset,
             )
         },
@@ -311,12 +388,7 @@ pub(super) fn decode_general_minimal_intra_frame(
         )
     })?;
 
-    let frame = workspace.freeze()?;
-    Ok(MinimalRuntimeFrame {
-        frame,
-        frame_rate_numerator: header.timebase_denominator,
-        frame_rate_denominator: header.timebase_numerator,
-    })
+    Ok(workspace.freeze()?)
 }
 
 /// Decodes one general intra leaf block (mode info + Y/U/V coefficients) and
@@ -330,7 +402,7 @@ pub(super) fn decode_general_minimal_intra_frame(
 /// `joint_modes` supplies that grid (read-only here) for this block's own
 /// `y_mode_index` context.
 #[allow(clippy::too_many_arguments)]
-fn decode_one_general_intra_block(
+fn decode_one_general_intra_block<T: ReconSample>(
     work_unit: &mut crate::tile_payload::DecodeTileWorkUnit<'_>,
     symbols: &mut SymbolDecoder<'_>,
     frontier: &crate::tile_payload::DecodeBlockFrontier,
@@ -338,11 +410,12 @@ fn decode_one_general_intra_block(
     uses_mrls: &crate::tile_payload::TileUsesMrlsState,
     fsc_modes: &crate::tile_payload::TileFscModeState,
     block_decoded: &crate::tile_payload::TileBlockDecodedState,
-    workspace: &mut splot_recon::CurrentFrameWorkspace<u8>,
+    workspace: &mut CurrentFrameWorkspace<T>,
     coeff_ctx: &mut crate::tile_payload::TileCoeffContextState,
     qindex: u32,
     luma_use_tcq: bool,
     mi_cols: usize,
+    bit_depth: BitDepth,
     tile_offset: ByteOffset,
 ) -> Result<crate::tile_payload::GeneralIntraLeafMode> {
     // Resolve the block geometry and gate the handled subset BEFORE reading the
@@ -424,6 +497,47 @@ fn decode_one_general_intra_block(
         ));
     }
 
+    // VERIFIED-SUBSET DISCIPLINE (§6.4.1 10-bit): the 8-bit general intra path
+    // reconstructs DC, SMOOTH, directional, cardinal, and one-sided modes, all
+    // oracle-verified against committed 8-bit fixtures. At 10-bit, only the
+    // DC_PRED luma + DC chroma SQUARE-leaf subset is oracle-verified — single
+    // 64x64 (`syn-flat-intra-64x64-10bit-q80.ivf` flat DC and
+    // `syn-cos-intra-64x64-10bit-q180.ivf` with AC residual) and multi-64x64-
+    // superblock (`syn-2sb-intra-128x64-10bit-q80.ivf`), each byte-exact vs
+    // avmdec and dav2d. The recon math is bit-depth-generic so the non-DC 10-bit
+    // modes WOULD reconstruct, but they are not yet pinned by a 10-bit oracle
+    // fixture, so a 10-bit non-DC luma or non-DC chroma block is rejected before
+    // any coefficient read or sample write. (8-bit is unaffected: this guard
+    // never fires for `BitDepth::Eight`.) A confident-but-unverified 10-bit hash
+    // is the cardinal sin; over-rejecting is safe.
+    if bit_depth != BitDepth::Eight
+        && (!modes.luma_is_dc()
+            || modes.supported_chroma_mode() != Some(crate::tile_payload::SupportedChromaMode::Dc))
+    {
+        return Err(general_intra_unsupported(
+            "unsupported_10bit_non_dc_intra",
+            Some(tile_offset),
+            "general intra 10-bit reconstruction is only oracle-verified for the DC_PRED luma + DC chroma subset; a 10-bit non-DC luma or non-DC chroma block is deferred until a 10-bit oracle fixture pins it",
+            GENERAL_INTRA_MODE_SPEC_SECTION,
+        ));
+    }
+
+    // 10-bit RECTANGULAR (non-square) DC leaves (e.g. a 64x32 PARTITION_HORZ
+    // child) are NOT pinned by a committed 10-bit oracle fixture — every committed
+    // 10-bit fixture is square (single and multi 64x64 superblock). The §7.15.4
+    // rectangular reconstruction is bit-depth-generic so a 10-bit rect DC leaf
+    // WOULD reconstruct, but admitting it unpinned risks a confident-but-unverified
+    // 10-bit hash, so reject it before the rectangular dispatch below. (8-bit rect
+    // leaves are unaffected: this guard never fires for `BitDepth::Eight`.)
+    if bit_depth != BitDepth::Eight && n4w != n4h {
+        return Err(general_intra_unsupported(
+            "unsupported_10bit_rect_leaf",
+            Some(tile_offset),
+            "general intra 10-bit reconstruction is only oracle-verified for square DC leaves; a 10-bit rectangular partition leaf is deferred until a 10-bit oracle fixture pins it",
+            GENERAL_INTRA_MODE_SPEC_SECTION,
+        ));
+    }
+
     // RECTANGULAR PARTITION LEAF (`n4w != n4h`, e.g. a 64x32 PARTITION_HORZ child
     // or a 32x64 PARTITION_VERT child). The §7.13.2.4 DC predictor reads only the
     // immediate in-frame left column / above row from the partially-built frame
@@ -437,7 +551,7 @@ fn decode_one_general_intra_block(
     // §7.13.2.13 prediction edges, not yet modelled) is rejected, keeping every
     // square mode path below unchanged.
     if n4w != n4h {
-        return decode_one_general_intra_rect_block(
+        return decode_one_general_intra_rect_block::<T>(
             work_unit,
             symbols,
             frontier,
@@ -447,6 +561,7 @@ fn decode_one_general_intra_block(
             qindex,
             n4w,
             n4h,
+            bit_depth,
             tile_offset,
         );
     }
@@ -1105,6 +1220,7 @@ fn decode_one_general_intra_block(
                 qindex,
                 luma_use_tcq,
                 num4_above_right,
+                bit_depth,
             )
             .map_err(|error| general_intra_residual_error(error, tile_offset))?
         }
@@ -1118,6 +1234,7 @@ fn decode_one_general_intra_block(
                 luma_log2,
                 qindex,
                 luma_use_tcq,
+                bit_depth,
             )
             .map_err(|error| general_intra_residual_error(error, tile_offset))?
         }
@@ -1143,6 +1260,7 @@ fn decode_one_general_intra_block(
                 luma_log2,
                 qindex,
                 luma_use_tcq,
+                bit_depth,
             )
             .map_err(|error| general_intra_residual_error(error, tile_offset))?
         }
@@ -1166,6 +1284,7 @@ fn decode_one_general_intra_block(
                 qindex,
                 num4_above_right,
                 luma_use_tcq,
+                bit_depth,
             )
             .map_err(|error| general_intra_residual_error(error, tile_offset))?
         }
@@ -1188,6 +1307,7 @@ fn decode_one_general_intra_block(
                 qindex,
                 num4_below_left,
                 luma_use_tcq,
+                bit_depth,
             )
             .map_err(|error| general_intra_residual_error(error, tile_offset))?
         }
@@ -1205,6 +1325,7 @@ fn decode_one_general_intra_block(
                 luma_log2,
                 qindex,
                 luma_use_tcq,
+                bit_depth,
             )
             .map_err(|error| general_intra_residual_error(error, tile_offset))?
         }
@@ -1218,6 +1339,7 @@ fn decode_one_general_intra_block(
                 luma_log2,
                 qindex,
                 luma_use_tcq,
+                bit_depth,
             )
             .map_err(|error| general_intra_residual_error(error, tile_offset))?
         }
@@ -1230,6 +1352,7 @@ fn decode_one_general_intra_block(
             luma_log2,
             qindex,
             luma_use_tcq,
+            bit_depth,
         )
         .map_err(|error| general_intra_residual_error(error, tile_offset))?,
     }
@@ -1281,6 +1404,7 @@ fn decode_one_general_intra_block(
             supported_chroma,
             num4_above_right,
             num4_below_left,
+            bit_depth,
         )
         .map_err(|error| general_intra_residual_error(error, tile_offset))?;
         let v = crate::tile_payload::decode_general_intra_plane_coeffs(
@@ -1310,6 +1434,7 @@ fn decode_one_general_intra_block(
             supported_chroma,
             num4_above_right,
             num4_below_left,
+            bit_depth,
         )
         .map_err(|error| general_intra_residual_error(error, tile_offset))?;
     }
@@ -1341,16 +1466,17 @@ fn decode_one_general_intra_block(
 /// rectangular §7.13.2.8 / §7.13.2.13 predictor is not yet modelled), keeping the
 /// verified subset tight.
 #[allow(clippy::too_many_arguments)]
-fn decode_one_general_intra_rect_block(
+fn decode_one_general_intra_rect_block<T: ReconSample>(
     work_unit: &mut crate::tile_payload::DecodeTileWorkUnit<'_>,
     symbols: &mut SymbolDecoder<'_>,
     frontier: &crate::tile_payload::DecodeBlockFrontier,
     modes: &crate::tile_payload::GeneralIntraBlockModes,
-    workspace: &mut splot_recon::CurrentFrameWorkspace<u8>,
+    workspace: &mut CurrentFrameWorkspace<T>,
     coeff_ctx: &mut crate::tile_payload::TileCoeffContextState,
     qindex: u32,
     n4w: usize,
     n4h: usize,
+    bit_depth: BitDepth,
     tile_offset: ByteOffset,
 ) -> Result<crate::tile_payload::GeneralIntraLeafMode> {
     // VERIFIED-SUBSET DISCIPLINE: only the oracle-verified 64x32 (`n4w == 16`,
@@ -1437,6 +1563,7 @@ fn decode_one_general_intra_rect_block(
         luma_h_log2,
         qindex,
         luma_use_tcq,
+        bit_depth,
     )
     .map_err(|error| general_intra_residual_error(error, tile_offset))?;
 
@@ -1482,6 +1609,7 @@ fn decode_one_general_intra_rect_block(
             chroma_h_log2,
             qindex,
             false,
+            bit_depth,
         )
         .map_err(|error| general_intra_residual_error(error, tile_offset))?;
         let v = crate::tile_payload::decode_general_intra_plane_coeffs(
@@ -1510,6 +1638,7 @@ fn decode_one_general_intra_rect_block(
             chroma_h_log2,
             qindex,
             false,
+            bit_depth,
         )
         .map_err(|error| general_intra_residual_error(error, tile_offset))?;
     }

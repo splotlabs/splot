@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 438 feature(s).
+Matrix version 1. Last reviewed 2026-06-15. 439 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -363,6 +363,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `DECODE-GENERAL-INTRA-ANGLE-D45` | General intra D45 zone-1 one-sided luma + follow chroma reading the real above-right | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | partial | `crates/splot-decode/src/runtime_minimal/general_intra.rs` |
 | `DECODE-GENERAL-INTRA-ANGLE-D203` | General intra D203 zone-3 one-sided luma + follow chroma reading the real left column | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | partial | `crates/splot-decode/src/runtime_minimal/general_intra.rs` |
 | `DECODE-GENERAL-INTRA-RECT-PARTITION` | General intra rectangular (non-square) DC partition leaf decode | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | partial | `crates/splot-decode/src/runtime_minimal/general_intra.rs` |
+| `DECODE-GENERAL-INTRA-10BIT` | General intra 10-bit DC reconstruction | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | partial | `crates/splot-decode/src/runtime_minimal/general_intra.rs` |
 | `DECODE-FIRST-INTER-FRAME-FRONTIER` | First inter frame decode frontier (verified target) | infrastructure | infrastructure | done | done | done | n/a | n/a | n/a | done | done | todo | `crates/splot-decode/src/runtime_minimal.rs` |
 | `DECODE-INTER-SUBPEL-MV` | Sub-pel inter frame decode (NEWMV + interpolation-filter convolution) | infrastructure | infrastructure | done | done | done | n/a | n/a | n/a | done | done | todo | `crates/splot-decode/src/runtime_minimal/inter/read_mv.rs` |
 | `DECODE-INTER-RESIDUAL-DCT` | Inter block residual decode (skip == 0, DCT_DCT) | infrastructure | infrastructure | done | done | done | n/a | n/a | n/a | done | done | todo | `crates/splot-decode/src/runtime_minimal/inter/block.rs` |

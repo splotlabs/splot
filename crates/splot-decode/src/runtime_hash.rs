@@ -7,12 +7,13 @@
 
 use core::num::NonZeroUsize;
 
-use splot_recon::{DecodedFrame, DecodedFrameHashInput};
+use splot_recon::{DecodedFrame, DecodedFrameHashInput, ReconSample};
 
 use crate::error::Result;
 use crate::hash_report::{
     DecodeHashEntry, DecodeHashFrame, DecodeHashPixelFormat, DecodeHashReport,
 };
+use crate::runtime_minimal::MinimalRuntimeDecodedFrame;
 use crate::{DecodeOptions, DecodeStreamPlan};
 
 pub(crate) fn decode_hash_report_from_plan(
@@ -22,11 +23,23 @@ pub(crate) fn decode_hash_report_from_plan(
     resolved_threads: NonZeroUsize,
 ) -> Result<DecodeHashReport> {
     // One hash report frame per displayed frame, in output order (AV2 § 6.18).
+    // The §6.4.1 sample depth selects the storage arm; the splot-recon hash input
+    // is generic over the sample type, so the digest contract holds for both
+    // (10-bit packs each visible sample 16-bit-LE before the SHA-256).
     let outputs = crate::runtime_minimal::decode_minimal_frames_from_plan(bytes, options, plan)?;
     let mut report_frames = Vec::with_capacity(outputs.len());
     for output in &outputs {
-        let hash = DecodedFrameHashInput::new(output.frame()).compute_hash();
-        report_frames.push(hash_frame_from_decoded(output.frame(), hash.to_hex()));
+        let report_frame = match &output.frame {
+            MinimalRuntimeDecodedFrame::Eight(frame) => {
+                let hash = DecodedFrameHashInput::new(frame).compute_hash();
+                hash_frame_from_decoded(frame, hash.to_hex())
+            }
+            MinimalRuntimeDecodedFrame::Ten(frame) => {
+                let hash = DecodedFrameHashInput::new(frame).compute_hash();
+                hash_frame_from_decoded(frame, hash.to_hex())
+            }
+        };
+        report_frames.push(report_frame);
     }
 
     Ok(DecodeHashReport::raw_intermediate_output(
@@ -35,7 +48,10 @@ pub(crate) fn decode_hash_report_from_plan(
     ))
 }
 
-fn hash_frame_from_decoded(frame: &DecodedFrame<u8>, digest_hex: String) -> DecodeHashFrame {
+fn hash_frame_from_decoded<T: ReconSample>(
+    frame: &DecodedFrame<T>,
+    digest_hex: String,
+) -> DecodeHashFrame {
     let visible = frame.visible_luma_rect();
     let chroma = frame
         .pixel_format()
