@@ -57,7 +57,18 @@ cargo xtask check-decoder-conformance-coverage
 cargo xtask check-reference-evidence
 cargo xtask check-diagnostic-registry
 cargo xtask check-fixtures
+cargo xtask check-duplication   # needs the `dupehound` binary; run-if-present locally
 ```
+
+`check-duplication` enforces the absolute duplicate-code ceiling in
+`tools/dupehound/budget.toml` using
+[dupehound](https://github.com/Rafaelpta/dupehound) (`dupehound scan
+--include-tests --json`). It fails when the deletable-line count exceeds the
+budget; lower the budget in the same commit that removes a duplicate cluster —
+never raise it. The complementary per-PR ratchet (`dupehound check --diff
+<base>`, blocking newly introduced duplication) runs only in CI. Before
+reimplementing something, run `dupehound check` (or `dupehound scan . --explain
+<N>`) and reuse the original instead.
 
 ## Generated Status Docs
 

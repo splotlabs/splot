@@ -54,6 +54,11 @@ jobs:
         with:
           tool: typos,cargo-machete
 
+      # Duplicate-code detector (https://github.com/Rafaelpta/dupehound). Pinned so
+      # the budget count is reproducible; the same binary `cargo xtask ci` runs.
+      - name: Install dupehound
+        run: cargo install dupehound@0.1.2 --locked
+
       - name: Check Conventional Commits
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -96,6 +101,18 @@ jobs:
       # file would be fuzzed by neither job without this check.
       - run: cargo xtask check-fuzz-targets
       - run: cargo xtask check-fixtures
+      # Absolute duplicate-code budget (tools/dupehound/budget.toml ceiling).
+      - run: cargo xtask check-duplication
+
+      # PR ratchet: fail when this PR's diff duplicates existing code. The base
+      # SHA is bound through env (workflow-injection hygiene) and compared via
+      # merge-base; full history is available because checkout uses fetch-depth 0.
+      # Push events skip this (no PR base); the budget gate above still runs.
+      - name: dupehound ratchet (block newly introduced duplication)
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: dupehound check --diff "$BASE_SHA" .
 
       - name: OpenSpec validation if available
         run: |

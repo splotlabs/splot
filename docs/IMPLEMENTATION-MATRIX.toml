@@ -12737,6 +12737,50 @@ fixtures = [
 diagnostics = []
 
 [[feature]]
+id = "INFRA-DUPEHOUND-DUPLICATION-GATE"
+name = "Duplicate-code budget gate"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = []
+sources = []
+crate = "xtask"
+module = "xtask/src/dupehound.rs"
+openspec_change = "dupehound-duplication-gate"
+tracking_issue = ""
+owner = "automation"
+risk = "low"
+notes = "Integrates dupehound (https://github.com/Rafaelpta/dupehound), a structural duplicate-function detector, as a CI gate with the two modes the maintainer chose. The absolute-budget gate `cargo xtask check-duplication` runs `dupehound scan --include-tests --json`, parses `score.deletable_lines`, and fails when it exceeds the committed ceiling in `tools/dupehound/budget.toml`; the ceiling is a ratchet (lowered when a cluster is removed, never raised) and `--include-tests` makes it reflect all duplication so it can reach zero. The pure `enforce_budget` threshold helper is unit-tested for over/at/under-budget. The gate follows the run-if-present policy (mandatory in CI, skipped locally with an install hint) and runs inside `cargo xtask ci` next to the other repository gates. `.github/workflows/ci.yml` installs dupehound (pinned 0.1.2 for a reproducible count), runs the budget gate, and runs the PR-only `dupehound check --diff <base>` ratchet that blocks newly introduced duplication (base bound through env for workflow-injection hygiene). `AGENTS.md` + `docs/agents/commands.md` record the reuse-before-reimplement discipline. Non-normative repository tooling: no AV2 conformance behavior, no Cargo dependency (dupehound is an external CLI like typos/cargo-machete/cargo-deny; JSON parsed with the `serde_json` xtask already uses), and no decoder/encoder algorithmic stage. Subsequent dedup commits lower the budget toward zero under this same change."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "done"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "xtask/src/dupehound.rs::tests",
+]
+commands = [
+    "cargo test -p xtask --all-targets --locked",
+    "cargo xtask check-duplication",
+    "cargo xtask ci",
+]
+fixtures = [
+    "tools/dupehound/budget.toml",
+    "xtask/src/dupehound.rs",
+    ".github/workflows/ci.yml",
+    "docs/agents/commands.md",
+]
+diagnostics = []
+
+[[feature]]
 id = "RECON-REFERENCE-FRAME-STORE"
 name = "Reference frame store runtime model"
 category = "infrastructure"

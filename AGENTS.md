@@ -47,6 +47,10 @@ Lazy rules:
 - No boilerplate nobody asked for.
 - Prefer deletion over addition, boring over clever, and the fewest files
   possible.
+- Reuse before reimplementing. Duplicate code is gated: `cargo xtask
+  check-duplication` enforces a ratcheting budget (`tools/dupehound/budget.toml`)
+  and CI blocks PRs that duplicate existing code. Before writing a new function,
+  run `dupehound check` / `dupehound scan . --explain <N>` and reuse the original.
 - The shortest working diff wins only after the real problem is understood; the
   smallest change in the wrong place is a second bug.
 - Question complex requests: ask whether the smaller alternative covers the real
