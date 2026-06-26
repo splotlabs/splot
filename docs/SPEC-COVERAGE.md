@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 439 feature(s); 386 cite a spec section.
+Matrix version 1. Last reviewed 2026-06-15. 440 feature(s); 387 cite a spec section.
 
 One row per (spec section, feature) pair, in spec order; a feature citing both a syntax and a semantics section appears under both. The canonical status source is [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); the full per-feature ledger is [FEATURE-STATUS.md](./FEATURE-STATUS.md).
 
@@ -656,6 +656,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 6.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1) | General sequence header OBU semantics | `DECODE-AC0EJ3-LR-LIVE-STORAGE-ALLOCATION` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 6.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1) | General sequence header OBU semantics | `DECODE-AC0EJ3-LR-RUNTIME-STORAGE-RETENTION` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 6.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1) | General sequence header OBU semantics | `DECODE-GENERAL-INTRA-10BIT` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 6.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1) | General sequence header OBU semantics | `DECODE-GENERAL-INTRA-10BIT-SMOOTH-CHROMA` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 6.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1) | General sequence header OBU semantics | `DECODE-LIMITS-RUNTIME-API` | ✅ | — | — | ✅ | — |
 | [§ 6.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1) | General sequence header OBU semantics | `DECODE-MINIMAL-RAW-RUNTIME-OUTPUT` | ✅ | 🟡 | ✅ | ✅ | 4 |
 | [§ 6.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1) | General sequence header OBU semantics | `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS` | ✅ | 🟡 | ✅ | ✅ | 3 |
@@ -891,6 +892,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.13.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2) | Intra prediction process | `ENC-GENERAL-INTRA-CODED-LUMA-DC` | ✅ | — | — | ✅ | — |
 | [§ 7.13.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2) | Intra prediction process | `ENC-MINIMAL-INTRA-SKIP-IVF` | ✅ | — | — | ✅ | — |
 | [§ 7.13.2.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-1) | General | `CONF-RECON-INTRA-PREDICTION-FUZZ` | ✅ | — | — | ✅ | — |
+| [§ 7.13.2.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-1) | General | `DECODE-GENERAL-INTRA-10BIT-SMOOTH-CHROMA` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.13.2.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-1) | General | `DECODE-GENERAL-INTRA-ANGLE` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.13.2.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-1) | General | `DECODE-GENERAL-INTRA-ANGLE-D113` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.13.2.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-1) | General | `DECODE-GENERAL-INTRA-ANGLE-D203` | ✅ | 🟡 | — | ✅ | 1 |
@@ -962,6 +964,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.13.2.12](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-12) | IBP DC process | `RECON-CURRENT-FRAME-WORKSPACE` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.13.2.12](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-12) | IBP DC process | `RECON-INTRA-IBP-DC-PREDICTION` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.13.2.13](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-13) | Smooth intra prediction process | `CONF-RECON-INTRA-PREDICTION-FUZZ` | ✅ | — | — | ✅ | — |
+| [§ 7.13.2.13](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-13) | Smooth intra prediction process | `DECODE-GENERAL-INTRA-10BIT-SMOOTH-CHROMA` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.13.2.13](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-13) | Smooth intra prediction process | `DECODE-GENERAL-INTRA-BLOCK-DECODED` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.13.2.13](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-13) | Smooth intra prediction process | `DECODE-GENERAL-INTRA-DIRECTIONAL-NEIGHBOUR-CTX` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.13.2.13](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-13) | Smooth intra prediction process | `DECODE-GENERAL-INTRA-GRID` | ✅ | 🟡 | — | ✅ | 1 |

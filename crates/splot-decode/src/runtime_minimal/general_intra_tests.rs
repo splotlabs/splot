@@ -45,6 +45,25 @@ const TWO_SB_10BIT_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-2sb-intra-128x64-10bit-q80.ivf"
 );
 
+// A single 64x64 10-bit DC_PRED-luma (with AC residual) + §7.13.2.13 SMOOTH
+// chroma intra key frame at base_q_idx ~160. The SMOOTH chroma reconstructs over
+// the §7.13.2.1 no-neighbour fallback edges at the top-left block
+// (frontier.r == 0 && frontier.c == 0). avmdec and dav2d both decode it
+// byte-for-byte (raw md5 a09a6344f3ec7a1efbb695d4f527d7c8); this is the first
+// 10-bit general-intra SMOOTH-chroma decode target.
+// `DECODE-GENERAL-INTRA-10BIT-SMOOTH-CHROMA`.
+const Q160_SMCHROMA_10BIT_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-smchroma-intra-64x64-10bit-q160.ivf"
+);
+
+// Negative: a 10-bit 128x64 two-superblock frame whose FIRST superblock uses
+// SMOOTH chroma (a no-neighbour top-left block) while the second uses DC chroma.
+// 10-bit SMOOTH chroma is pinned only for a SINGLE 64x64 frame, so this mixed
+// multi-superblock shape must fail closed rather than emit an unpinned hash.
+const SMCHROMA_2SB_10BIT_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-2sb-smchroma-intra-128x64-10bit-q160.ivf"
+);
+
 // avmdec/dav2d 10-bit flat plane values (10-bit samples, 0..=1023).
 const Q80_10BIT_LUMA: u16 = 400;
 const Q80_10BIT_CHROMA_U: u16 = 480;
@@ -333,6 +352,40 @@ fn two_superblock_10bit_intra_frame_decodes_to_oracle() {
     );
 }
 
+#[test]
+fn ten_bit_dc_luma_smooth_chroma_decodes_to_oracle() {
+    use splot_recon::{BitDepth, PixelFormat, PlaneSize};
+
+    // §6.4.1 + §7.13.2.13: a single 64x64 10-bit DC_PRED-luma (with AC residual)
+    // + SMOOTH chroma intra key frame reconstructs into a `DecodedFrame<u16>`. The
+    // SMOOTH chroma predicts over the §7.13.2.1 no-neighbour fallback edges at the
+    // top-left block (frontier.r == 0 && frontier.c == 0). splot reproduces
+    // avmdec's and dav2d's raw output byte-for-byte (raw md5
+    // a09a6344f3ec7a1efbb695d4f527d7c8); the byte layout is pinned via the frame
+    // hash.
+    let options = DecodeOptions::default();
+    let context =
+        DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).expect("context");
+    let plan = context
+        .plan_bytes(Q160_SMCHROMA_10BIT_FIXTURE, options)
+        .expect("plan");
+    let frame = decode_minimal_frame_from_plan(Q160_SMCHROMA_10BIT_FIXTURE, options, &plan)
+        .expect("decode")
+        .into_frame_ten();
+
+    assert_eq!(frame.bit_depth(), BitDepth::Ten);
+    assert_eq!(frame.pixel_format(), PixelFormat::Yuv420);
+    assert_eq!(frame.y().visible_size(), PlaneSize::new(64, 64).unwrap());
+
+    let hash = splot_recon::DecodedFrameHashInput::new(&frame)
+        .compute_hash()
+        .to_hex();
+    assert_eq!(
+        hash,
+        "4fe932e5e5dea4a1830eae4853b198c738e8d1919049736d2f4a234c491d5397"
+    );
+}
+
 // The four committed negative-shape companions to the 10-bit positive fixtures.
 // Each is a valid AV2 stream (`splot validate` clean) that the general-intra
 // 10-bit reconstruction path fails closed on, pinning one of the four §6.4.1
@@ -415,6 +468,14 @@ fn ten_bit_inter_fails_closed_reference_retention() {
         TWO_FRAME_INTER_10BIT_FIXTURE,
         "unsupported_10bit_reference_retention",
     );
+}
+
+#[test]
+fn ten_bit_multi_sb_smooth_chroma_fails_closed_non_dc() {
+    // 10-bit SMOOTH chroma is oracle-pinned only for a single 64x64 frame; a
+    // multi-superblock frame whose first superblock uses SMOOTH chroma must fail
+    // closed rather than emit an unpinned mixed-shape hash.
+    assert_decode_rejects(SMCHROMA_2SB_10BIT_FIXTURE, "unsupported_10bit_non_dc_intra");
 }
 
 #[test]

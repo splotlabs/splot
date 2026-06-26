@@ -376,6 +376,7 @@ fn decode_general_intra_frame_into<T: ReconSample>(
                 qindex,
                 luma_use_tcq,
                 mi_cols,
+                mi_rows,
                 bit_depth,
                 tile_offset,
             )
@@ -421,6 +422,7 @@ fn decode_one_general_intra_block<T: ReconSample>(
     qindex: u32,
     luma_use_tcq: bool,
     mi_cols: usize,
+    mi_rows: usize,
     bit_depth: BitDepth,
     tile_offset: ByteOffset,
 ) -> Result<crate::tile_payload::GeneralIntraLeafMode> {
@@ -505,33 +507,51 @@ fn decode_one_general_intra_block<T: ReconSample>(
 
     // VERIFIED-SUBSET DISCIPLINE (§6.4.1 10-bit): the 8-bit general intra path
     // reconstructs DC, SMOOTH, directional, cardinal, and one-sided modes, all
-    // oracle-verified against committed 8-bit fixtures. At 10-bit, only the
-    // DC_PRED luma + DC chroma SQUARE-leaf subset is oracle-verified — single
-    // 64x64 (`syn-flat-intra-64x64-10bit-q80.ivf` flat DC and
-    // `syn-cos-intra-64x64-10bit-q180.ivf` with AC residual) and multi-64x64-
-    // superblock (`syn-2sb-intra-128x64-10bit-q80.ivf`), each byte-exact vs
-    // avmdec and dav2d. The recon math is bit-depth-generic so the non-DC 10-bit
-    // modes WOULD reconstruct, but they are not yet pinned by a 10-bit oracle
-    // fixture, so a 10-bit non-DC luma or non-DC chroma block is rejected before
-    // any coefficient read or sample write. (8-bit is unaffected: this guard
-    // never fires for `BitDepth::Eight`.) A confident-but-unverified 10-bit hash
-    // is the cardinal sin; over-rejecting is safe.
-    if bit_depth != BitDepth::Eight
-        && (!modes.luma_is_dc()
-            || modes.supported_chroma_mode() != Some(crate::tile_payload::SupportedChromaMode::Dc))
-    {
+    // oracle-verified against committed 8-bit fixtures. At 10-bit, the
+    // oracle-verified subset is the DC_PRED-luma SQUARE-leaf shape with either:
+    //   - DC chroma — single 64x64 (`syn-flat-intra-64x64-10bit-q80.ivf` flat DC,
+    //     `syn-cos-intra-64x64-10bit-q180.ivf` AC residual) and multi-64x64-
+    //     superblock (`syn-2sb-intra-128x64-10bit-q80.ivf`); or
+    //   - §7.13.2.13 SMOOTH chroma over the §7.13.2.1 NO-NEIGHBOUR fallback edges
+    //     at the top-left block (`frontier.r == 0 && frontier.c == 0`), pinned by
+    //     `syn-smchroma-intra-64x64-10bit-q160.ivf`.
+    // Each is byte-exact vs avmdec AND dav2d. The recon math is bit-depth-generic
+    // so other 10-bit shapes WOULD reconstruct, but they are not yet pinned by a
+    // 10-bit oracle fixture: a 10-bit non-DC LUMA block, a non-DC / non-(top-left
+    // SMOOTH) CHROMA block, or a neighbour-having SMOOTH chroma block (which reads
+    // real reconstructed 10-bit edges no fixture pins) is rejected before any
+    // coefficient read or sample write. (8-bit is unaffected: this guard never
+    // fires for `BitDepth::Eight`.) A confident-but-unverified 10-bit hash is the
+    // cardinal sin; over-rejecting is safe.
+    // The 10-bit SMOOTH-chroma fixture pins a SINGLE 64x64 frame
+    // (`syn-smchroma-intra-64x64-10bit-q160.ivf`). A multi-superblock frame whose
+    // FIRST superblock uses SMOOTH chroma (admitted as the no-neighbour top-left
+    // block) while later 64x64 blocks use DC chroma (admitted by the DC arm) would
+    // otherwise decode and emit a confident 10-bit hash with NO committed fixture
+    // pinning that mixed multi-SB shape, so the SMOOTH-chroma admission also
+    // requires the frame to be a single 64x64 superblock
+    // (`mi_cols == mi_rows == FULL_SB_N4_LUMA`).
+    let single_sb_frame = mi_cols == FULL_SB_N4_LUMA && mi_rows == FULL_SB_N4_LUMA;
+    let chroma_admitted_10bit = match modes.supported_chroma_mode() {
+        Some(crate::tile_payload::SupportedChromaMode::Dc) => true,
+        Some(crate::tile_payload::SupportedChromaMode::Smooth) => {
+            single_sb_frame && frontier.r == 0 && frontier.c == 0
+        }
+        _ => false,
+    };
+    if bit_depth != BitDepth::Eight && (!modes.luma_is_dc() || !chroma_admitted_10bit) {
         return Err(general_intra_unsupported(
             "unsupported_10bit_non_dc_intra",
             Some(tile_offset),
-            "general intra 10-bit reconstruction is only oracle-verified for the DC_PRED luma + DC chroma subset; a 10-bit non-DC luma or non-DC chroma block is deferred until a 10-bit oracle fixture pins it",
+            "general intra 10-bit reconstruction is only oracle-verified for DC_PRED luma with DC chroma, or no-neighbour top-left SMOOTH chroma; a 10-bit non-DC luma, other non-DC chroma, or neighbour-having SMOOTH chroma block is deferred until a 10-bit oracle fixture pins it",
             GENERAL_INTRA_MODE_SPEC_SECTION,
         ));
     }
 
-    // 10-bit reconstruction is oracle-verified ONLY for the FULL 64x64 square DC
-    // leaf (n4w == n4h == FULL_SB_N4_LUMA): the committed 10-bit fixtures are a
-    // single 64x64 and multi-64x64-superblock frames, every leaf a PARTITION_NONE
-    // 64x64 block. Any non-64x64 leaf — a rectangular 64x32 PARTITION_HORZ child
+    // 10-bit reconstruction is oracle-verified ONLY for the FULL 64x64 square leaf
+    // (n4w == n4h == FULL_SB_N4_LUMA): the committed 10-bit fixtures are single
+    // 64x64 and multi-64x64-superblock frames, every leaf a PARTITION_NONE 64x64
+    // block. Any non-64x64 leaf — a rectangular 64x32 PARTITION_HORZ child
     // (n4w != n4h) OR a split square 32x32 / 16x16 sub-block (n4w == n4h < 16) —
     // has NO committed 10-bit oracle fixture. The §7.14.4/§7.15.4 reconstruction is
     // bit-depth-generic so such a leaf WOULD reconstruct, but admitting it unpinned
