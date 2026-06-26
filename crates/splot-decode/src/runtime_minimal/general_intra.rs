@@ -376,6 +376,7 @@ fn decode_general_intra_frame_into<T: ReconSample>(
                 qindex,
                 luma_use_tcq,
                 mi_cols,
+                mi_rows,
                 bit_depth,
                 tile_offset,
             )
@@ -421,6 +422,7 @@ fn decode_one_general_intra_block<T: ReconSample>(
     qindex: u32,
     luma_use_tcq: bool,
     mi_cols: usize,
+    mi_rows: usize,
     bit_depth: BitDepth,
     tile_offset: ByteOffset,
 ) -> Result<crate::tile_payload::GeneralIntraLeafMode> {
@@ -521,10 +523,19 @@ fn decode_one_general_intra_block<T: ReconSample>(
     // coefficient read or sample write. (8-bit is unaffected: this guard never
     // fires for `BitDepth::Eight`.) A confident-but-unverified 10-bit hash is the
     // cardinal sin; over-rejecting is safe.
+    // The 10-bit SMOOTH-chroma fixture pins a SINGLE 64x64 frame
+    // (`syn-smchroma-intra-64x64-10bit-q160.ivf`). A multi-superblock frame whose
+    // FIRST superblock uses SMOOTH chroma (admitted as the no-neighbour top-left
+    // block) while later 64x64 blocks use DC chroma (admitted by the DC arm) would
+    // otherwise decode and emit a confident 10-bit hash with NO committed fixture
+    // pinning that mixed multi-SB shape, so the SMOOTH-chroma admission also
+    // requires the frame to be a single 64x64 superblock
+    // (`mi_cols == mi_rows == FULL_SB_N4_LUMA`).
+    let single_sb_frame = mi_cols == FULL_SB_N4_LUMA && mi_rows == FULL_SB_N4_LUMA;
     let chroma_admitted_10bit = match modes.supported_chroma_mode() {
         Some(crate::tile_payload::SupportedChromaMode::Dc) => true,
         Some(crate::tile_payload::SupportedChromaMode::Smooth) => {
-            frontier.r == 0 && frontier.c == 0
+            single_sb_frame && frontier.r == 0 && frontier.c == 0
         }
         _ => false,
     };

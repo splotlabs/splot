@@ -15260,7 +15260,7 @@ openspec_change = "decode-general-intra-10bit-smooth-chroma"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Extends DECODE-GENERAL-INTRA-10BIT (DC_PRED luma + DC chroma) to also admit DC_PRED luma + §7.13.2.13 SMOOTH chroma at the NO-NEIGHBOUR top-left block (frontier.r==0 && frontier.c==0, single 64x64), pinned by syn-smchroma-intra-64x64-10bit-q160.ivf (DC luma with AC residual + SMOOTH chroma over the §7.13.2.1 no-neighbour fallback edges), byte-exact vs avmdec AND dav2d (raw md5 a09a6344f3ec7a1efbb695d4f527d7c8; splot frame hash 4fe932e5e5dea4a1830eae4853b198c738e8d1919049736d2f4a234c491d5397). The reconstruction is bit-depth-generic, but to avoid a confident-but-unverified hash, a 10-bit non-DC LUMA block, a non-DC/non-(top-left SMOOTH) CHROMA block, or a NEIGHBOUR-HAVING SMOOTH chroma block (frame-MI c!=0, which reads real reconstructed 10-bit edges no fixture pins) is rejected with unsupported_10bit_non_dc_intra. Non-64x64 leaves and non-DC luma remain deferred. 8-bit reconstruction is byte-identical."
+notes = "Extends DECODE-GENERAL-INTRA-10BIT (DC_PRED luma + DC chroma) to also admit DC_PRED luma + §7.13.2.13 SMOOTH chroma at the NO-NEIGHBOUR top-left block (frontier.r==0 && frontier.c==0, single 64x64), pinned by syn-smchroma-intra-64x64-10bit-q160.ivf (DC luma with AC residual + SMOOTH chroma over the §7.13.2.1 no-neighbour fallback edges), byte-exact vs avmdec AND dav2d (raw md5 a09a6344f3ec7a1efbb695d4f527d7c8; splot frame hash 4fe932e5e5dea4a1830eae4853b198c738e8d1919049736d2f4a234c491d5397). The reconstruction is bit-depth-generic, but to avoid a confident-but-unverified hash, a 10-bit non-DC LUMA block, a non-DC/non-(top-left SMOOTH) CHROMA block, or a NEIGHBOUR-HAVING SMOOTH chroma block (frame-MI c!=0, which reads real reconstructed 10-bit edges no fixture pins) is rejected with unsupported_10bit_non_dc_intra. The SMOOTH-chroma admission additionally requires the frame to be a SINGLE 64x64 superblock (mi_cols==mi_rows==FULL_SB_N4_LUMA): a multi-superblock frame whose first superblock uses SMOOTH chroma (admitted as the no-neighbour top-left block) while later 64x64 blocks use DC chroma is a mixed shape no fixture pins, so it fails closed — guarded by the committed negative fixture syn-2sb-smchroma-intra-128x64-10bit-q160.ivf (validates clean, decoder rejects with unsupported_10bit_non_dc_intra). Non-64x64 leaves and non-DC luma remain deferred. 8-bit reconstruction is byte-identical."
 
 [feature.status]
 mapped = "done"
@@ -15277,6 +15277,7 @@ perf = "not-applicable"
 [feature.proof]
 tests = [
     "crates/splot-decode/src/runtime_minimal.rs::general_intra_tests::ten_bit_dc_luma_smooth_chroma_decodes_to_oracle",
+    "crates/splot-decode/src/runtime_minimal.rs::general_intra_tests::ten_bit_multi_sb_smooth_chroma_fails_closed_non_dc",
 ]
 commands = [
     "cargo test -p splot-decode general_intra --locked",

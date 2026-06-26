@@ -56,6 +56,14 @@ const Q160_SMCHROMA_10BIT_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-smchroma-intra-64x64-10bit-q160.ivf"
 );
 
+// Negative: a 10-bit 128x64 two-superblock frame whose FIRST superblock uses
+// SMOOTH chroma (a no-neighbour top-left block) while the second uses DC chroma.
+// 10-bit SMOOTH chroma is pinned only for a SINGLE 64x64 frame, so this mixed
+// multi-superblock shape must fail closed rather than emit an unpinned hash.
+const SMCHROMA_2SB_10BIT_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-2sb-smchroma-intra-128x64-10bit-q160.ivf"
+);
+
 // avmdec/dav2d 10-bit flat plane values (10-bit samples, 0..=1023).
 const Q80_10BIT_LUMA: u16 = 400;
 const Q80_10BIT_CHROMA_U: u16 = 480;
@@ -460,6 +468,14 @@ fn ten_bit_inter_fails_closed_reference_retention() {
         TWO_FRAME_INTER_10BIT_FIXTURE,
         "unsupported_10bit_reference_retention",
     );
+}
+
+#[test]
+fn ten_bit_multi_sb_smooth_chroma_fails_closed_non_dc() {
+    // 10-bit SMOOTH chroma is oracle-pinned only for a single 64x64 frame; a
+    // multi-superblock frame whose first superblock uses SMOOTH chroma must fail
+    // closed rather than emit an unpinned mixed-shape hash.
+    assert_decode_rejects(SMCHROMA_2SB_10BIT_FIXTURE, "unsupported_10bit_non_dc_intra");
 }
 
 #[test]

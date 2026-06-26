@@ -85,6 +85,11 @@ description = "Single 10-bit 4:2:0 intra key frame (IVF, 64x64) with DC_PRED lum
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-2sb-smchroma-intra-128x64-10bit-q160.ivf"
+description = "Valid 10-bit 4:2:0 two-superblock intra key frame (IVF, 128x64) whose first superblock uses SMOOTH chroma (no-neighbour top-left) and second uses DC chroma; validates clean, and the general-intra decoder fails closed with decode/unsupported-feature unsupported_10bit_non_dc_intra because 10-bit SMOOTH chroma is oracle-pinned only for a single 64x64 frame (the mixed multi-superblock shape has no committed oracle fixture)."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-cos-intra-64x64-q180.ivf"
 description = "Single 8-bit 4:2:0 intra key frame (IVF, 64x64) from a project-owned low-frequency half-cosine luma input with broad decode tools disabled at base_q_idx 180, so the single 64x64 DC_PRED block carries multiple (eob > 1) AC luma coefficients; the general-intra multi-coefficient decode target whose avmdec raw output splot reproduces byte-for-byte; validates clean."
 expect = "clean"

@@ -42,6 +42,16 @@ the existing 10-bit DC-chroma subset SHALL remain byte-identical.
   structured `decode/unsupported-feature` diagnostic
   `unsupported_10bit_non_dc_intra`
 
+#### Scenario: multi-superblock frame with a first-superblock SMOOTH chroma block rejects
+- **WHEN** a 10-bit intra frame is larger than a single 64x64 superblock and its
+  first superblock uses no-neighbour top-left SMOOTH chroma while later 64x64
+  blocks use DC chroma (the committed negative fixture
+  `syn-2sb-smchroma-intra-128x64-10bit-q160.ivf`)
+- **THEN** the decoder fails closed with `unsupported_10bit_non_dc_intra` before
+  any caller-visible output, because 10-bit SMOOTH chroma is oracle-pinned only
+  for a single 64x64 frame and the mixed multi-superblock shape has no committed
+  oracle fixture
+
 #### Scenario: 8-bit and existing 10-bit DC-chroma subset stay byte-identical
 - **WHEN** the existing 8-bit general intra fixtures and the three positive
   10-bit DC-chroma fixtures
