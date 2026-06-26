@@ -26,6 +26,7 @@ mod gen_tables;
 mod git_util;
 mod reference_evidence;
 mod source_lines;
+mod util;
 mod zero_copy;
 
 use audit_scope::{AuditScopeFormat, AuditScopeOptions};

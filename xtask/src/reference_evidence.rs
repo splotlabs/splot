@@ -16,6 +16,7 @@ use anyhow::{Context as _, Result, bail};
 use serde::Deserialize;
 
 use crate::git_util::sha256_hex;
+use crate::util::{is_windows_absolute_path, tokenized};
 
 pub(crate) const MANIFEST_PATH: &str = "docs/LOCAL-REFERENCE-EVIDENCE.toml";
 pub(crate) const MANIFEST_POINTER_PREFIX: &str = "docs/LOCAL-REFERENCE-EVIDENCE.toml::";
@@ -819,15 +820,6 @@ fn path_fragments(value: &str) -> Vec<String> {
         .collect()
 }
 
-fn tokenized(value: &str) -> Vec<String> {
-    value
-        .split(|c: char| c.is_whitespace() || matches!(c, '`' | '"' | '\'' | '(' | ')' | '<' | '>'))
-        .map(|token| token.trim_matches(|c: char| matches!(c, ',' | ';' | ':' | '.')))
-        .filter(|token| !token.is_empty())
-        .map(str::to_owned)
-        .collect()
-}
-
 fn looks_absolute_path(token: &str) -> bool {
     if token.contains("://") && !token.starts_with("file://") {
         return false;
@@ -836,14 +828,6 @@ fn looks_absolute_path(token: &str) -> bool {
         || token.starts_with("~/")
         || token.starts_with("\\\\")
         || is_windows_absolute_path(token)
-}
-
-fn is_windows_absolute_path(token: &str) -> bool {
-    let bytes = token.as_bytes();
-    bytes.len() >= 3
-        && bytes[0].is_ascii_alphabetic()
-        && bytes[1] == b':'
-        && matches!(bytes[2], b'\\' | b'/')
 }
 
 fn contains_local_env_token(value: &str) -> bool {
