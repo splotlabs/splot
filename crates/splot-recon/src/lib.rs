@@ -143,6 +143,7 @@
 //! Licensed under PolyForm Noncommercial 1.0.0; commercial use requires a
 //! separate written license from Bartosz Tomczyk.
 
+mod cdef_filter;
 mod coefficient_scan;
 mod deblock_filter;
 mod dequant;
@@ -178,6 +179,10 @@ mod wienerns_filter;
 mod workspace;
 mod y4m;
 
+pub use cdef_filter::{
+    CDEF_DIRECTIONS, CDEF_UV_DIR, CdefSampleTaps, CdefTap, cdef_constrain, cdef_direction,
+    cdef_filter_sample,
+};
 pub use coefficient_scan::{TransformClass, coefficient_scan_order, tx_class};
 pub use deblock_filter::{
     DeblockFilterChoice, DeblockSampleFilter, deblock_adaptive_filter_strength,

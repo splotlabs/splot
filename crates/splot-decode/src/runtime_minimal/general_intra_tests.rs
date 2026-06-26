@@ -2482,3 +2482,8 @@ fn deblock_off_frame_is_byte_identical() {
         "deblock-off fixture must stay byte-identical (the §7.17 pass is a no-op)"
     );
 }
+
+// AV2 §7.18 CDEF decode-hash tests live in the sibling `general_intra_cdef_tests`
+// child module to keep this file under the source-line hard cap; they reach the
+// shared `decode_general_intra_luma` / `TWO_SB_FIXTURE` helpers via `super::`.
+mod general_intra_cdef_tests;

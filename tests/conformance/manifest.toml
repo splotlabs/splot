@@ -165,6 +165,21 @@ description = "Deblock-active 8-bit 4:2:0 intra key frame (IVF, 128x128, multi-s
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-2sb-cdef-intra-128x64-q130.ivf"
+description = "CDEF-active 8-bit 4:2:0 intra key frame (IVF, 128x64) from a project-owned two-region cosine-AC luma input (left base 90, right base 170, amplitude 14, flat chroma U=120 V=135) with broad decode tools disabled, --enable-cdef=1 --enable-deblocking=0, at base_q_idx 130; each 64x64 superblock is PARTITION_SPLIT into all-DC 32x32 blocks, cdef_frame_enable=1 with CdefStrengths=1 (cdef_idx 0 everywhere), CdefDamping=5, cdef_on_skip_txfm_frame_enable=1, single luma strength set y_pri=1 y_sec=4 (uv strengths 0). The second in-loop-filter (section 7.18 CDEF) decode target: the section 7.18.2 per-8x8-block direction search drives a real dering over the cosine content (yDir varies 0/2/4/6, var positive), changing thousands of luma samples from the CDEF-off reconstruction; avmdec and dav2d raw outputs agree (md5 192e3935f9892345a14e02cb4baf4ba5) and splot reproduces byte-for-byte; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-2sb-cdef-intra-128x64-q120.ivf"
+description = "CDEF-active 8-bit 4:2:0 intra key frame (IVF, 128x64) from a project-owned two-region cosine-AC luma input (left base 90, right base 170, amplitude 18, flat chroma) with broad decode tools disabled, --enable-cdef=1 --enable-deblocking=0, at base_q_idx 120; all-DC 32x32 multi-block, cdef_frame_enable=1 with CdefStrengths=1, CdefDamping=4, cdef_on_skip_txfm_frame_enable=1, single luma strength set y_pri=2 y_sec=4 (uv strengths 0). A CDEF variant at a different CdefDamping (4) and primary strength (2) than the q130 fixture, pinning the section 7.18.1 priStr/damping scaling; avmdec and dav2d raw outputs agree (md5 2319a8f00af1ebb919a52ba18d90f4a1) and splot reproduces byte-for-byte; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-2sb-cdefdeblock-intra-128x64-q100.ivf"
+description = "Deblock-AND-CDEF-active 8-bit 4:2:0 intra key frame (IVF, 128x64) from a project-owned two-region cosine-AC luma input (left base 90, right base 160, amplitude 20, flat chroma) with broad decode tools disabled, --enable-cdef=1 --enable-deblocking=1, at base_q_idx 100; all-DC 32x32 multi-block, apply_deblocking_filter [false, true, true, true] with df_delta_q [0,0,0,0], AND cdef_frame_enable=1 with CdefStrengths=1, CdefDamping=4, cdef_on_skip_txfm_frame_enable=1, single luma strength set y_pri=1 y_sec=4 (uv strengths 0). Pins the in-loop-filter ORDER (section 7.17 deblocking THEN section 7.18 CDEF) end-to-end: both filters change samples and only their composition in spec order matches the oracle; avmdec and dav2d raw outputs agree (md5 472d95801ce2a112160bcdfee93957d5) and splot reproduces byte-for-byte; validates clean."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-2sbcol-intra-64x128-q80.ivf"
 description = "Single-column multi-superblock-row 8-bit 4:2:0 intra key frame (IVF, 64x128) from a project-owned vertically-stacked luma input (top 64x64 flat 80, bottom 64x64 flat 180, chroma U=120 V=130) with broad decode tools disabled at base_q_idx 80, so the frame is two vertically stacked 64x64 DC_PRED superblocks; exercises the section 5.20.2.1 superblock raster loop across multiple rows (clear_left_context per superblock row) with the second-row superblock DC-predicting its luma from the reconstructed above neighbour and full-superblock SMOOTH_PRED chroma at row > 0 (rightmost column, no decoded above-right); the first general-intra multi-superblock-row decode target whose avmdec and dav2d raw outputs agree and splot reproduces byte-for-byte; validates clean."
 expect = "clean"
