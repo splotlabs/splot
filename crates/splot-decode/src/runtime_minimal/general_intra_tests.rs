@@ -2406,16 +2406,6 @@ const DEBLOCK_GRID_Q100_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-grid-deblock-intra-128x128-q100.ivf"
 );
 
-fn decode_eight_bit_frame(stream: &[u8]) -> DecodedFrame<u8> {
-    let options = DecodeOptions::default();
-    let context =
-        DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).expect("context");
-    let plan = context.plan_bytes(stream, options).expect("plan");
-    decode_minimal_frame_from_plan(stream, options, &plan)
-        .expect("decode")
-        .into_frame_eight()
-}
-
 #[test]
 fn deblock_active_intra_frame_decodes_to_oracle() {
     use splot_recon::{BitDepth, PixelFormat, PlaneSize};
@@ -2427,7 +2417,7 @@ fn deblock_active_intra_frame_decodes_to_oracle() {
     // horizontal pass at the y=32 transform/block boundary: 2 luma samples change
     // (the avmdec deblocked output is 73 at both (4, 31) and (4, 32); the
     // deblock-off reconstruction is 74 / 72 there).
-    let frame = decode_eight_bit_frame(DEBLOCK_Q100_FIXTURE);
+    let frame = decode_general_intra_luma(DEBLOCK_Q100_FIXTURE);
     assert_eq!(frame.bit_depth(), BitDepth::Eight);
     assert_eq!(frame.pixel_format(), PixelFormat::Yuv420);
     assert_eq!(frame.y().visible_size(), PlaneSize::new(128, 64).unwrap());
@@ -2448,14 +2438,14 @@ fn deblock_active_intra_frame_decodes_to_oracle() {
 
     // Two additional larger-effect deblock fixtures (24 and 38 luma samples
     // change), each bit-exact vs avmdec AND dav2d.
-    let q98 = decode_eight_bit_frame(DEBLOCK_Q98_FIXTURE);
+    let q98 = decode_general_intra_luma(DEBLOCK_Q98_FIXTURE);
     assert_eq!(
         splot_recon::DecodedFrameHashInput::new(&q98)
             .compute_hash()
             .to_hex(),
         "3306f7ab5f192cc4f30f6c564e9b52a9d868de77ffd9fb913651cb58a8d8a3f1"
     );
-    let wide = decode_eight_bit_frame(DEBLOCK_WIDE_Q100_FIXTURE);
+    let wide = decode_general_intra_luma(DEBLOCK_WIDE_Q100_FIXTURE);
     assert_eq!(
         splot_recon::DecodedFrameHashInput::new(&wide)
             .compute_hash()
@@ -2465,7 +2455,7 @@ fn deblock_active_intra_frame_decodes_to_oracle() {
 
     // The 128x128 multi-superblock-row grid: exercises the luma-horizontal y=64
     // `sbEdge` iteration on a real stream, bit-exact vs avmdec/dav2d.
-    let grid = decode_eight_bit_frame(DEBLOCK_GRID_Q100_FIXTURE);
+    let grid = decode_general_intra_luma(DEBLOCK_GRID_Q100_FIXTURE);
     assert_eq!(grid.y().visible_size(), PlaneSize::new(128, 128).unwrap());
     assert_eq!(
         splot_recon::DecodedFrameHashInput::new(&grid)
@@ -2483,7 +2473,7 @@ fn deblock_off_frame_is_byte_identical() {
     // multi-superblock deblock-off fixture, and its frame hash is the same value
     // `two_superblock_intra_frame_decodes_to_oracle` already pins — re-asserted
     // here as the explicit deblock-pass-is-a-no-op regression.
-    let frame = decode_eight_bit_frame(TWO_SB_FIXTURE);
+    let frame = decode_general_intra_luma(TWO_SB_FIXTURE);
     let hash = splot_recon::DecodedFrameHashInput::new(&frame)
         .compute_hash()
         .to_hex();

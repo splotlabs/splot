@@ -661,11 +661,12 @@ mod tests {
 
     #[test]
     fn q_clamped_zero_delta_matches_spec() {
-        // §7.17.6 q_clamped(qindex, 0): 0 iff qindex == 0, else qindex.
-        assert_eq!(q_clamped_zero_delta(0), 0);
-        assert_eq!(q_clamped_zero_delta(1), 1);
-        assert_eq!(q_clamped_zero_delta(100), 100);
-        assert_eq!(q_clamped_zero_delta(255), 255);
+        // §7.17.6 q_clamped(qindex, 0) is the identity on 0..=MaxQ (0 maps to 0,
+        // every other qindex maps to itself), so a deblock-active frame's filter
+        // level equals base_q_idx.
+        for q in [0u32, 1, 100, 255] {
+            assert_eq!(q_clamped_zero_delta(q), q, "q_clamped_zero_delta({q})");
+        }
     }
 
     #[test]
