@@ -15337,6 +15337,65 @@ fixtures = [
 diagnostics = ["decode/unsupported-feature"]
 
 [[feature]]
+id = "DECODE-GENERAL-INTRA-DEBLOCK"
+name = "General intra §7.17 deblocking-filter orchestration"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["7.17.1", "7.17.2", "7.17.5", "7.17.6", "9.2"]
+sources = [
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-17-1",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-17-2",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-17-5",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-17-6",
+    "docs/spec/av2/1.0.0/09-tables.md#s-9-2",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/runtime_minimal/deblock.rs"
+openspec_change = "decode-general-intra-deblock"
+tracking_issue = ""
+owner = "decoder"
+risk = "low"
+notes = "First in-loop-filter brick: builds the §7.17.1/§7.17.2 deblocking-filter edge-traversal orchestration over the `splot-recon` per-edge primitives (DECODE-RECON-DEBLOCK-* leaf math), relaxing the general intra route gate to admit deblock-ACTIVE frames (previously the route rejected any `apply_deblocking_filter != [false; 4]`). The new `crates/splot-decode/src/runtime_minimal/deblock.rs` module: (1) derives the per-(plane, pass) §7.17.6 filter LEVEL — with segmentation disabled, `df_delta_q` all zero, and the chroma base offsets resolving to zero (all enforced by the route gate), `lvl = q_clamped(base_q_idx, 0)` for every plane; (2) derives the §7.17.5 (qThr, side) strengths via `deblock_side_threshold_index` + `deblock_adaptive_filter_strength` over the §9.2 `Side_Thresholds` table; (3) iterates the §7.17.1 plane (0,1,2) × pass (0=vertical, 1=horizontal) × MI (row, col with 4:2:0 chroma `rowStep`/`colStep`) loop, gating each pass on `apply_deblocking_filter[plane==0 ? pass : plane+1]`; (4) for each edge runs the §7.17.2 derivation (sbEdge / onScreen / isBlockEdge / isTxEdge / applyFilter cascade with `isSubPuEdge == 0` since `allow_df_sub_pu == 0` for an intra key frame, and `skip == 0` for the residual-coded intra blocks), the §7.17.4 filterSize (Min over the two transform dims in the pass direction, screen-edge clipped), the §7.17.3 per-side `maxWidthNeg`/`maxWidthPos` via `deblock_filter_max_width`, the §7.17.7.2 `deblock_filter_choice` over the gathered perpendicular s/t sample lines, then the §7.17.7.1 `deblock_sample_filter` for each of the MI_SIZE edge positions; the modified samples are written back in place via the new checked `CurrentFrameWorkspace::set_reconstructed_sample`. Applied after the block walk and BEFORE `workspace.freeze()`; a deblock-OFF (`apply == [false; 4]`) frame runs the pass as a NO-OP, so all existing general-intra fixtures (8-bit and 10-bit) stay byte-identical (verified). The decoded-block geometry (luma/chroma transform sizes, base MI position) is recorded per leaf during the partition walk into a luma-MI covering-block grid. The committed `syn-2sb-deblock-intra-128x64-q100.ivf` (128x64 = two 64x64 superblocks each PARTITION_SPLIT into four 32x32 DC_PRED luma + DC chroma blocks; `apply_deblocking_filter == [false, true, true, true]`, `df_delta_q == [0,0,0,0]`, base_q_idx 100) decodes bit-exactly to the avmdec AND dav2d oracle (raw I420 md5 ca302adc8641007251c5947b3d5c73ba). The deblock effect is the luma horizontal pass at the y=32 transform/block boundary: 32 edges are visited (xP 0..124 step 4, all yP=32), of which only the column at xP=4 changes samples (2 luma samples, ±1 at rows 31/32); the chroma passes visit 80 edges over the flat U=120/V=135 planes and the §7.17.7.2 filter choice + zero `deltaM2` leave them unchanged. Two additional fixtures with LARGER luma-horizontal effects (still all-DC multi-block, `apply == [false, true, true, true]`): `syn-2sb-deblock-intra-128x64-q98.ivf` (24 luma samples change, raw md5 5cb616189cf501809d6986a9ef1058a7) and `syn-2sb-deblockwide-intra-128x64-q100.ivf` (38 luma samples change, raw md5 82d8be50486d46fdd771e73a214bf5c2), both bit-exact vs avmdec AND dav2d. VERIFIED SUBSET: 8-bit 4:2:0 only (a deblock-ACTIVE 10-bit frame is rejected — the §7.17 math is bit-depth-generic but no 10-bit deblock oracle fixture pins it; a 10-bit deblock-OFF frame is unaffected), `df_delta_q` all zero (a nonzero per-pass §7.17.6 `DfDeltaQ[i]` shifts the filter level and is rejected), single tile, segmentation disabled. Coverage limit: only the luma-HORIZONTAL (apply index 1) deblock effect is exercisable in the admitted DC-multi-block subset — the encoder switches to non-DC / rectangular / larger partitions (outside the admitted subset) whenever the content has the structure needed to make the luma-vertical or a chroma deblock pass change samples, so those passes run faithfully over the decoded grid but are not yet pinned by a sample-changing oracle fixture. Out of scope / deferred: the other in-loop filters (GDF/CDEF/CCSO/loop-restoration, still rejected by the route gate), nonzero `df_delta_q`, `allow_df_sub_pu` sub-PU edges (inter only), 10-bit deblock, multiple tiles, segmentation/lossless segments, inter frames, and live AVM/dav2d in CI."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "partial"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "partial"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/runtime_minimal.rs::general_intra_tests::deblock_active_intra_frame_decodes_to_oracle",
+    "crates/splot-decode/src/runtime_minimal.rs::general_intra_tests::deblock_off_frame_is_byte_identical",
+    "crates/splot-decode/src/runtime_minimal/deblock.rs::tests::adaptive_strength_for_lvl_100_8bit",
+    "crates/splot-recon/src/workspace_tests.rs::workspace_set_reconstructed_sample_writes_and_validates",
+]
+commands = [
+    "cargo test -p splot-decode deblock --locked",
+    "cargo test -p splot-recon workspace_set_reconstructed --locked",
+    "cargo xtask conformance",
+    "cargo xtask check-fixtures",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-decoder-conformance-coverage",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "tests/conformance/vectors/valid/syn-2sb-deblock-intra-128x64-q100.ivf",
+    "tests/conformance/vectors/valid/syn-2sb-deblock-intra-128x64-q98.ivf",
+    "tests/conformance/vectors/valid/syn-2sb-deblockwide-intra-128x64-q100.ivf",
+    "crates/splot-decode/src/runtime_minimal/deblock.rs",
+    "crates/splot-decode/src/runtime_minimal/general_intra.rs",
+    "crates/splot-recon/src/workspace.rs",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
 id = "DECODE-FIRST-INTER-FRAME-FRONTIER"
 name = "First inter frame decode frontier (verified target)"
 category = "infrastructure"

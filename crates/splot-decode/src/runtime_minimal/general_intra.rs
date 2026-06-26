@@ -98,6 +98,17 @@ pub(super) fn route_general_minimal_intra(
         && core
             .intra_tail
             .is_some_and(|tail| tail.tx_mode == TxMode::Largest)
+        // §7.17: a deblock-active frame is oracle-verified only at 8-bit (4:2:0,
+        // `df_delta_q` all zero — enforced in `is_general_minimal_intra`). The
+        // §7.17 sample math is bit-depth-generic, but no 10-bit deblock-active
+        // fixture pins it, so a 10-bit deblock-active frame stays rejected (a
+        // 10-bit deblock-OFF frame is unaffected: the pass is a no-op). The
+        // confident-but-unverified hash is the cardinal sin; over-rejecting is
+        // safe.
+        && core.deblocking_filter_params.is_some_and(|filter| {
+            filter.apply_deblocking_filter == [false; 4]
+                || matches!(sequence.general.bit_depth_idc, BitDepthIdc::Eight)
+        })
         && is_general_minimal_intra(core)
 }
 
@@ -150,9 +161,16 @@ fn is_general_minimal_intra(core: &FrameHeaderCore) -> bool {
             .lossless_info
             .as_ref()
             .is_some_and(|lossless| !lossless.coded_lossless)
+        // §7.17 deblocking is admitted for the verified subset: any
+        // `apply_deblocking_filter` pattern, but only with `df_delta_q` all zero
+        // (a nonzero per-pass §7.17.6 `DfDeltaQ[i]` would shift the filter level
+        // off the frame quantizer, which no oracle fixture pins). A deblock-off
+        // (`apply == [false; 4]`) frame admits at any bit depth (the §7.17 pass is
+        // a no-op); a deblock-active frame is gated to 8-bit by
+        // `route_general_minimal_intra` (no 10-bit deblock oracle fixture yet).
         && core
             .deblocking_filter_params
-            .is_some_and(|filter| filter.apply_deblocking_filter == [false; 4])
+            .is_some_and(|filter| filter.df_delta_q == [0; 4])
         && core.gdf_params.is_some_and(|gdf| !gdf.gdf_frame_enable)
         && core
             .cdef_params
@@ -353,6 +371,11 @@ fn decode_general_intra_frame_into<T: ReconSample>(
             )
         })?;
 
+    // §7.17 deblocking geometry: each decoded leaf records its position and
+    // transform sizes here, consumed by the §7.17.1/§7.17.2 edge loop after the
+    // block walk (before `workspace.freeze()`).
+    let mut deblock_blocks: Vec<super::deblock::DeblockBlock> = Vec::new();
+
     // Walk the full §5.20.3.1 partition tree, decoding each leaf block's
     // §5.20.5.3 mode info and §5.20.7.27 Y/U/V coefficients and reconstructing it
     // into the workspace in decode order (so later blocks DC-predict from the
@@ -373,6 +396,7 @@ fn decode_general_intra_frame_into<T: ReconSample>(
                 block_decoded,
                 &mut workspace,
                 &mut coeff_ctx,
+                &mut deblock_blocks,
                 qindex,
                 luma_use_tcq,
                 mi_cols,
@@ -395,7 +419,42 @@ fn decode_general_intra_frame_into<T: ReconSample>(
         )
     })?;
 
+    // §7.17 deblocking filter: apply the parsed `apply_deblocking_filter` passes
+    // in place over the reconstructed frame BEFORE freezing. A no-op when the
+    // gate is all-false (deblock-off fixtures stay byte-identical).
+    let apply = core
+        .deblocking_filter_params
+        .map(|filter| filter.apply_deblocking_filter)
+        .unwrap_or([false; 4]);
+    super::deblock::deblock_general_intra_frame(
+        &mut workspace,
+        &deblock_blocks,
+        mi_rows,
+        mi_cols,
+        apply,
+        qindex,
+        bit_depth,
+    )
+    .map_err(|error| general_intra_deblock_error(error, tile_offset))?;
+
     Ok(workspace.freeze()?)
+}
+
+/// Maps a §7.17 deblocking-orchestration error to a decode diagnostic. The
+/// per-edge primitives are total for valid inputs, so any error here signals an
+/// internal inconsistency (an uncovered MI, a missing transform size, or a
+/// workspace access out of bounds) and surfaces as an `unsupported-feature`
+/// diagnostic rather than a silent wrong-pixel output.
+fn general_intra_deblock_error(
+    _error: super::deblock::DeblockError,
+    offset: ByteOffset,
+) -> DecodeError {
+    general_intra_unsupported(
+        "general_intra_deblock",
+        Some(offset),
+        "general intra §7.17 deblocking-filter orchestration reached an unsupported or inconsistent edge configuration",
+        "7.17",
+    )
 }
 
 /// Decodes one general intra leaf block (mode info + Y/U/V coefficients) and
@@ -419,6 +478,7 @@ fn decode_one_general_intra_block<T: ReconSample>(
     block_decoded: &crate::tile_payload::TileBlockDecodedState,
     workspace: &mut CurrentFrameWorkspace<T>,
     coeff_ctx: &mut crate::tile_payload::TileCoeffContextState,
+    deblock_blocks: &mut Vec<super::deblock::DeblockBlock>,
     qindex: u32,
     luma_use_tcq: bool,
     mi_cols: usize,
@@ -588,6 +648,7 @@ fn decode_one_general_intra_block<T: ReconSample>(
             &modes,
             workspace,
             coeff_ctx,
+            deblock_blocks,
             qindex,
             n4w,
             n4h,
@@ -1468,6 +1529,23 @@ fn decode_one_general_intra_block<T: ReconSample>(
         )
         .map_err(|error| general_intra_residual_error(error, tile_offset))?;
     }
+    // Record this leaf's § 7.17 deblocking geometry: one luma transform spans the
+    // square block under TX_MODE_LARGEST (`luma_tx`), and the 4:2:0 chroma block
+    // is one log2 smaller in each dimension (`chroma_tx`, `chroma_log2 - 2`).
+    let chroma_tx = if frontier.has_chroma {
+        Some((luma_log2 - 1 - 2) as usize)
+    } else {
+        None
+    };
+    deblock_blocks.push(super::deblock::DeblockBlock {
+        r: frontier.r,
+        c: frontier.c,
+        n4w,
+        n4h,
+        luma_tx,
+        chroma_tx,
+    });
+
     // AV2 § 5.20.5.3: this block's IntraJointMode (the reorder index modeDelta)
     // is recorded into the IntraJointModes grid by the partition walk so later
     // blocks' § 8.3.2 `y_mode_index` context can read it as a neighbour.
@@ -1503,6 +1581,7 @@ fn decode_one_general_intra_rect_block<T: ReconSample>(
     modes: &crate::tile_payload::GeneralIntraBlockModes,
     workspace: &mut CurrentFrameWorkspace<T>,
     coeff_ctx: &mut crate::tile_payload::TileCoeffContextState,
+    deblock_blocks: &mut Vec<super::deblock::DeblockBlock>,
     qindex: u32,
     n4w: usize,
     n4h: usize,
@@ -1672,6 +1751,22 @@ fn decode_one_general_intra_rect_block<T: ReconSample>(
         )
         .map_err(|error| general_intra_residual_error(error, tile_offset))?;
     }
+    // Record this rectangular leaf's § 7.17 deblocking geometry. One luma
+    // transform spans the block (`luma_tx`); the 4:2:0 chroma transform is one
+    // log2 smaller per axis (`rect_tx_size_from_log2(w-1, h-1)`).
+    let chroma_tx = if frontier.has_chroma {
+        rect_tx_size_from_log2(luma_w_log2 - 1, luma_h_log2 - 1)
+    } else {
+        None
+    };
+    deblock_blocks.push(super::deblock::DeblockBlock {
+        r: frontier.r,
+        c: frontier.c,
+        n4w,
+        n4h,
+        luma_tx,
+        chroma_tx,
+    });
     Ok(crate::tile_payload::GeneralIntraLeafMode::luma(
         modes.intra_joint_mode,
         modes.y_mode,

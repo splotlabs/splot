@@ -1162,3 +1162,48 @@ fn workspace_reconstructed_sample_rejects_out_of_bounds_and_missing_plane() {
         Err(ReconError::MissingWorkspacePlane { plane: PlaneId::U })
     ));
 }
+
+#[test]
+fn workspace_set_reconstructed_sample_writes_and_validates() {
+    // The §7.17 deblocking edge loop writes single modified samples back across
+    // block boundaries via `set_reconstructed_sample`.
+    let mut workspace = CurrentFrameWorkspace::<u8>::new(
+        info(
+            BitDepth::Eight,
+            PixelFormat::Monochrome,
+            size(4, 3),
+            rect(0, 0, 4, 3),
+        ),
+        1,
+    )
+    .unwrap();
+
+    workspace
+        .set_reconstructed_sample(PlaneId::Y, 2, 1, 200)
+        .unwrap();
+    assert_eq!(
+        workspace.reconstructed_sample(PlaneId::Y, 2, 1).unwrap(),
+        200
+    );
+    // An untouched neighbour keeps the fill value.
+    assert_eq!(workspace.reconstructed_sample(PlaneId::Y, 1, 1).unwrap(), 1);
+    // The 8-bit max is a valid value.
+    workspace
+        .set_reconstructed_sample(PlaneId::Y, 0, 0, 255)
+        .unwrap();
+
+    // Out-of-bounds writes are rejected, not silently clamped.
+    assert!(matches!(
+        workspace.set_reconstructed_sample(PlaneId::Y, 4, 0, 5),
+        Err(ReconError::WorkspaceRectOutOfBounds { .. })
+    ));
+    assert!(matches!(
+        workspace.set_reconstructed_sample(PlaneId::Y, 0, 3, 5),
+        Err(ReconError::WorkspaceRectOutOfBounds { .. })
+    ));
+    // Absent chroma plane on a monochrome workspace is rejected.
+    assert!(matches!(
+        workspace.set_reconstructed_sample(PlaneId::U, 0, 0, 5),
+        Err(ReconError::MissingWorkspacePlane { plane: PlaneId::U })
+    ));
+}

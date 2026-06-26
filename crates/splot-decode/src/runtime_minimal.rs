@@ -1339,6 +1339,7 @@ fn incomplete_intra_header_error(
     }
 }
 
+mod deblock;
 mod general_intra;
 mod inter;
 mod limits;

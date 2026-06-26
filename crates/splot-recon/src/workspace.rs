@@ -180,6 +180,28 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
         self.plane(plane)?.rect_rows(rect)
     }
 
+    /// Writes a single already-reconstructed sample at `(x, y)` in `plane`.
+    ///
+    /// This is the checked single-sample writer the AV2 § 7.17 deblocking edge
+    /// loop needs: it gathers a perpendicular sample line, filters it, and writes
+    /// the modified samples back into the workspace across block boundaries. It
+    /// does not decide AV2 edge availability — the caller is responsible for only
+    /// writing samples the deblocking edge selection permits.
+    ///
+    /// # Errors
+    /// Returns [`ReconError`] when the plane is absent, `(x, y)` falls outside the
+    /// plane storage, or `value` exceeds the active bit depth.
+    pub fn set_reconstructed_sample(
+        &mut self,
+        plane: PlaneId,
+        x: usize,
+        y: usize,
+        value: T,
+    ) -> Result<()> {
+        // A single sample is a 1x1 fill; reuse the checked rect path.
+        self.fill_rect(plane, PlaneRect::new(x, y, 1, 1)?, value)
+    }
+
     /// Fills a checked rectangular region in `plane` with `sample`.
     ///
     /// # Errors
