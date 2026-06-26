@@ -5,6 +5,7 @@
 //!
 //! Feature tracking: `RECON-INTRA-BASIC-PAETH-PREDICTION`.
 
+use crate::intra_dc_math::{validate_output_shape, validate_sample_type};
 use crate::{BitDepth, IntraRectBlockSize, ReconError, ReconSample, Result};
 
 /// Edge identifier for PAETH intra prediction inputs.
@@ -88,7 +89,12 @@ pub fn predict_intra_paeth_rect_into<T: ReconSample>(
     validate_edge(IntraPaethEdge::Left, edges.left, size.height(), bit_depth)?;
     validate_edge(IntraPaethEdge::Above, edges.above, size.width(), bit_depth)?;
     validate_sample(IntraPaethEdge::TopLeft, 0, edges.top_left, bit_depth)?;
-    validate_output_shape(size, output.len(), stride_samples)?;
+    validate_output_shape(
+        size,
+        output.len(),
+        stride_samples,
+        "PAETH intra prediction output buffer length",
+    )?;
 
     for row_index in 0..size.height() {
         let row_start =
@@ -123,17 +129,6 @@ pub(crate) fn predict_paeth_sample<T: ReconSample>(left: T, above: T, top_left: 
         above
     } else {
         top_left
-    }
-}
-
-fn validate_sample_type<T: ReconSample>(bit_depth: BitDepth) -> Result<()> {
-    if T::supports_bit_depth(bit_depth) {
-        Ok(())
-    } else {
-        Err(ReconError::SampleTypeUnsupportedBitDepth {
-            sample_type: T::TYPE_NAME,
-            bit_depth,
-        })
     }
 }
 
@@ -176,36 +171,6 @@ fn validate_sample<T: ReconSample>(
     } else {
         Ok(())
     }
-}
-
-fn validate_output_shape(
-    size: IntraRectBlockSize,
-    output_len: usize,
-    stride_samples: usize,
-) -> Result<()> {
-    let width = size.width();
-    if stride_samples < width {
-        return Err(ReconError::IntraPredictionStrideTooSmall {
-            stride_samples,
-            width,
-        });
-    }
-
-    let required = (size.height() - 1)
-        .checked_mul(stride_samples)
-        .and_then(|prefix| prefix.checked_add(width))
-        .ok_or(ReconError::ArithmeticOverflow {
-            context: "PAETH intra prediction output buffer length",
-        })?;
-
-    if output_len < required {
-        return Err(ReconError::IntraPredictionOutputTooSmall {
-            expected: required,
-            actual: output_len,
-        });
-    }
-
-    Ok(())
 }
 
 #[cfg(test)]

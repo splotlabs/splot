@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 
+use crate::intra_dc_math::validate_sample_type;
 use crate::{
     BitDepth, FrameRef, OutputIndex, PixelFormat, Plane, PlaneId, PlaneRect, PlaneSize, ReconError,
     ReconSample, Result,
@@ -304,17 +305,6 @@ fn is_aligned(value: usize, subsampling: u8) -> bool {
         true
     } else {
         value.is_multiple_of(1_usize << subsampling)
-    }
-}
-
-fn validate_sample_type<T: ReconSample>(bit_depth: BitDepth) -> Result<()> {
-    if T::supports_bit_depth(bit_depth) {
-        Ok(())
-    } else {
-        Err(ReconError::SampleTypeUnsupportedBitDepth {
-            sample_type: T::TYPE_NAME,
-            bit_depth,
-        })
     }
 }
 

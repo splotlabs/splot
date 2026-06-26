@@ -80,7 +80,12 @@ pub fn predict_intra_dc_subsampled_rect_into<T: ReconSample>(
     output: &mut [T],
     stride_samples: usize,
 ) -> Result<()> {
-    let required = validate_output_shape(size, output.len(), stride_samples)?;
+    let required = validate_output_shape(
+        size,
+        output.len(),
+        stride_samples,
+        "intra prediction output buffer length",
+    )?;
     let sample = predict_intra_dc_subsampled_rect_value(bit_depth, size, edges)?;
 
     fill_validated_output_shape(size, output, stride_samples, required, sample);

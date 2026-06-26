@@ -15,6 +15,7 @@ use core::mem;
 use core::ops::Range;
 
 use crate::intra_basic::predict_paeth_sample;
+use crate::intra_dc_math::validate_sample_type;
 use crate::intra_directional::{IntraCardinalEdges, predict_intra_cardinal_directional_rect_into};
 use crate::intra_smooth::{SmoothSampleEdges, SmoothSamplePosition, predict_smooth_sample_values};
 use crate::{
@@ -880,17 +881,6 @@ impl<T: ReconSample> CurrentFramePlane<T> {
                 rect: PlaneRect::new(x, row, width, 1)?,
             })
         }
-    }
-}
-
-fn validate_sample_type<T: ReconSample>(bit_depth: crate::BitDepth) -> Result<()> {
-    if T::supports_bit_depth(bit_depth) {
-        Ok(())
-    } else {
-        Err(ReconError::SampleTypeUnsupportedBitDepth {
-            sample_type: T::TYPE_NAME,
-            bit_depth,
-        })
     }
 }
 
