@@ -82,12 +82,29 @@ finding).
 - A new Cargo dependency / library: rejected — dupehound is an external CLI, used
   exactly like the existing `typos`/`cargo-machete`/`cargo-deny` tools.
 
+## Third-party tool sign-off (AGENTS.md §10)
+
+Adding `dupehound` to CI is a third-party supply-chain surface: CI runs
+`cargo install dupehound@0.1.2 --locked`, and `dupehound check --diff` / `scan`
+then execute against the checked-out repo on every PR. `dupehound` is pre-1.0
+(`0.1.2`). It is **not** a Cargo dependency of any shipped crate (it never enters
+the workspace dependency graph or any built artifact) — it is a CI/dev tool,
+exactly like the existing `typos`, `cargo-machete`, and `cargo-deny` external
+tools, and runs only at build/CI time. The version is pinned and installed
+`--locked`. As the solo author, the maintainer is the sign-off; this note records
+that decision and its provenance/trust rationale explicitly per AGENTS.md §10.
+
 ## Risks
 
 - Spec ambiguity: none (non-normative).
-- Performance: scan is ~0.25s over the workspace; negligible CI cost beyond the
-  one-time dupehound install.
-- Compatibility: the count is pinned to dupehound 0.1.2; a version bump may shift
-  the count and require a one-line budget update.
+- Performance: scan is ~0.25s over the workspace; the one-time `cargo install`
+  compiles from source (~1–2 min). If CI time becomes a concern, switch to a
+  prebuilt-binary install (`cargo-binstall` / `taiki-e/install-action`) or a tool
+  cache — no behavior change, the same pinned `0.1.2`.
+- Compatibility / version skew: `score.deletable_lines` is version-sensitive, so
+  the committed budget is calibrated against dupehound 0.1.2 (the pinned CI
+  version). A contributor running a different local version may see a different
+  number; CI is authoritative via the run-if-present policy. A version bump may
+  shift the count and require a one-line budget update.
 - Maintenance: the budget must be lowered as clusters are removed; the gate prints
   the headroom and the exact value to set, and `AGENTS.md` records the discipline.

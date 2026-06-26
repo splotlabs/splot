@@ -16,4 +16,8 @@
 # command:
 #
 #   dupehound scan . --json | jq .score.deletable_lines
+#
+# CALIBRATION: `score.deletable_lines` is version-sensitive. This ceiling is
+# calibrated against dupehound 0.1.2 (the version CI pins and installs); a
+# different local version may report a different number. CI is authoritative.
 max_deletable_lines = 7178
