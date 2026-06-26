@@ -180,6 +180,11 @@ description = "Deblock-AND-CDEF-active 8-bit 4:2:0 intra key frame (IVF, 128x64)
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-2sb-cdefuv-intra-128x64-q170.ivf"
+description = "NONZERO-chroma-CDEF 8-bit 4:2:0 intra key frame (IVF, 128x64) from a project-owned two-region cosine-AC input (luma left base 90 right base 170, U left 110 right 130, V left 135 right 120, all amplitude 14) with broad decode tools disabled, --enable-cdef=1 --enable-deblocking=0, at base_q_idx 170; two 64x64 PARTITION_NONE superblocks, both DC_PRED luma, the left (top-left) with non-follow H_PRED chroma and the right with DC chroma. cdef_frame_enable=1 with CdefStrengths=1 (cdef_idx 0 everywhere), CdefDamping=5, cdef_on_skip_txfm_frame_enable=1, single strength set y_pri=10 y_sec=4 AND nonzero chroma uv_pri=2 uv_sec=4. The first decode target to exercise the section 7.18.1 chroma steps 9-14 sample-changingly: the Cdef_Uv_Dir[1][1][yDir] direction selection (engaged because uv_pri != 0), the 4:2:0 subsampled 4x4 chroma tap addressing, and the CdefDamping-1 chroma damping. The chroma CDEF changes over a thousand U and V samples each (yDir varies 0/2/4/6); avmdec and dav2d raw outputs agree (md5 d783f353078cf156ba23dcfd3b2b50ad) and splot reproduces byte-for-byte; validates clean."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-2sbcol-intra-64x128-q80.ivf"
 description = "Single-column multi-superblock-row 8-bit 4:2:0 intra key frame (IVF, 64x128) from a project-owned vertically-stacked luma input (top 64x64 flat 80, bottom 64x64 flat 180, chroma U=120 V=130) with broad decode tools disabled at base_q_idx 80, so the frame is two vertically stacked 64x64 DC_PRED superblocks; exercises the section 5.20.2.1 superblock raster loop across multiple rows (clear_left_context per superblock row) with the second-row superblock DC-predicting its luma from the reconstructed above neighbour and full-superblock SMOOTH_PRED chroma at row > 0 (rightmost column, no decoded above-right); the first general-intra multi-superblock-row decode target whose avmdec and dav2d raw outputs agree and splot reproduces byte-for-byte; validates clean."
 expect = "clean"
