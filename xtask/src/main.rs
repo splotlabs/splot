@@ -18,6 +18,7 @@ mod conformance;
 mod decoder_conformance_coverage;
 mod decoder_support;
 mod diagnostic_registry;
+mod dupehound;
 mod explain_registry;
 mod feature_status;
 mod fixtures;
@@ -25,6 +26,7 @@ mod gen_tables;
 mod git_util;
 mod reference_evidence;
 mod source_lines;
+mod util;
 mod zero_copy;
 
 use audit_scope::{AuditScopeFormat, AuditScopeOptions};
@@ -119,6 +121,8 @@ enum Task {
     CheckFuzzTargets,
     /// Verify tests/fixtures hashes + metadata against tests/fixtures/MANIFEST.toml (no decoder).
     CheckFixtures,
+    /// Verify duplicate-code stays within tools/dupehound/budget.toml (needs `dupehound`).
+    CheckDuplication,
     /// Render the implementation matrix (docs/IMPLEMENTATION-MATRIX.toml).
     FeatureStatus {
         /// Output format.
@@ -251,6 +255,7 @@ fn main() -> Result<()> {
         }
         Task::CheckFuzzTargets => check_fuzz_targets(&workspace_root()?),
         Task::CheckFixtures => fixtures::check_fixtures(&workspace_root()?),
+        Task::CheckDuplication => dupehound::check_duplication(&workspace_root()?),
         Task::FeatureStatus {
             format,
             category,
@@ -358,6 +363,7 @@ fn run_ci() -> Result<()> {
     decoder_conformance_coverage::run_check_decoder_conformance_coverage(&root)?;
     diagnostic_registry::check_diagnostic_registry(&root)?;
     fixtures::check_fixtures(&root)?;
+    dupehound::check_duplication(&root)?;
 
     eprintln!("ci: all checks passed");
     Ok(())
@@ -415,7 +421,7 @@ fn run_cargo_with_env(envs: &[(&str, &str)], args: &[&str]) -> Result<()> {
 
 /// Returns `true` if `bin --version` runs successfully. Used to gate optional
 /// external checks so a fresh checkout without the tool can still run `xtask ci`.
-fn tool_available(bin: &str) -> bool {
+pub(crate) fn tool_available(bin: &str) -> bool {
     tool_available_with_args(bin, &["--version"])
 }
 

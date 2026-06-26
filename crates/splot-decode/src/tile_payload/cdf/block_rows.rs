@@ -469,6 +469,486 @@ pub(crate) struct BlockCdfRows {
     pub(super) coeff: CoeffCdfRows,
 }
 
+/// Expands the shared body of [`BlockCdfRows::row`] and
+/// [`BlockCdfRows::row_mut`].
+///
+/// `$get` / `$as_slice` are the shared/exclusive accessor pairs
+/// (`get` + `as_slice` for the borrow, `get_mut` + `as_mut_slice` for the
+/// exclusive variant) and `$delegate` is the `MvCdfRows` / `CoeffCdfRows`
+/// method to forward to (`row` or `row_mut`). The body is the borrow-safe
+/// `row_mut` form: each `max_exclusive` length is bound before the `$get`
+/// call so the macro compiles for `get_mut` (which would otherwise hold a
+/// mutable borrow across a `.len()` read). Because every length constant
+/// equals its backing array's declared size, the `&self` expansion produces
+/// the same `max_exclusive` values the const-based `row` body used.
+macro_rules! block_cdf_row {
+    ($self:ident, $selector:ident, $get:ident, $as_slice:ident, $delegate:ident) => {
+        match $selector {
+            BlockCdfSelector::YModeSet => Ok($self.y_mode_set.$as_slice()),
+            BlockCdfSelector::YModeIndex { ctx } => {
+                let max_exclusive = $self.y_mode_index.len();
+                let row = $self
+                    .y_mode_index
+                    .$get(ctx)
+                    .ok_or(TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::YModeIndex,
+                        index_name: "ctx",
+                        actual: ctx,
+                        max_exclusive,
+                    })?;
+                Ok(row.$as_slice())
+            }
+            BlockCdfSelector::YModeOffset { ctx } => {
+                let max_exclusive = $self.y_mode_offset.len();
+                let row =
+                    $self
+                        .y_mode_offset
+                        .$get(ctx)
+                        .ok_or(TileCdfError::SelectorOutOfRange {
+                            array: TileCdfArray::YModeOffset,
+                            index_name: "ctx",
+                            actual: ctx,
+                            max_exclusive,
+                        })?;
+                Ok(row.$as_slice())
+            }
+            BlockCdfSelector::TxbSkip {
+                coeff_cdf_q_ctx,
+                plane_type,
+                tx_size,
+                ctx,
+            } => {
+                let coeff_cdf_q_ctx =
+                    checked_coeff_cdf_q_context(TileCdfArray::TxbSkip, coeff_cdf_q_ctx)?;
+                let plane_type = checked_plane_type(TileCdfArray::TxbSkip, plane_type)?;
+                let tx_size = checked_tx_size(TileCdfArray::TxbSkip, tx_size)?;
+                let max_exclusive = $self.txb_skip[coeff_cdf_q_ctx][plane_type][tx_size].len();
+                let row = $self.txb_skip[coeff_cdf_q_ctx][plane_type][tx_size]
+                    .$get(ctx)
+                    .ok_or(TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::TxbSkip,
+                        index_name: "ctx",
+                        actual: ctx,
+                        max_exclusive,
+                    })?;
+                Ok(row.$as_slice())
+            }
+            BlockCdfSelector::UvModeCflNotAllowed { ctx } => {
+                let max_exclusive = $self.uv_mode_cfl_not_allowed.len();
+                let row = $self.uv_mode_cfl_not_allowed.$get(ctx).ok_or(
+                    TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::UvModeCflNotAllowed,
+                        index_name: "ctx",
+                        actual: ctx,
+                        max_exclusive,
+                    },
+                )?;
+                Ok(row.$as_slice())
+            }
+            BlockCdfSelector::IsCfl { ctx } => {
+                let max_exclusive = $self.is_cfl.len();
+                let row = $self
+                    .is_cfl
+                    .$get(ctx)
+                    .ok_or(TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::IsCfl,
+                        index_name: "ctx",
+                        actual: ctx,
+                        max_exclusive,
+                    })?;
+                Ok(row.$as_slice())
+            }
+            BlockCdfSelector::CflIndex => Ok($self.cfl_index.$as_slice()),
+            BlockCdfSelector::CflSign => Ok($self.cfl_sign.$as_slice()),
+            BlockCdfSelector::CflAlpha { ctx } => {
+                let max_exclusive = $self.cfl_alpha.len();
+                let row = $self
+                    .cfl_alpha
+                    .$get(ctx)
+                    .ok_or(TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::CflAlpha,
+                        index_name: "ctx",
+                        actual: ctx,
+                        max_exclusive,
+                    })?;
+                Ok(row.$as_slice())
+            }
+            BlockCdfSelector::CflMhccp => Ok($self.cfl_mhccp.$as_slice()),
+            BlockCdfSelector::CflMhDir { size_group } => {
+                let max_exclusive = $self.cfl_mh_dir.len();
+                let row =
+                    $self
+                        .cfl_mh_dir
+                        .$get(size_group)
+                        .ok_or(TileCdfError::SelectorOutOfRange {
+                            array: TileCdfArray::CflMhDir,
+                            index_name: "size_group",
+                            actual: size_group,
+                            max_exclusive,
+                        })?;
+                Ok(row.$as_slice())
+            }
+            BlockCdfSelector::VTxbSkip {
+                coeff_cdf_q_ctx,
+                ctx,
+            } => {
+                let coeff_cdf_q_ctx =
+                    checked_coeff_cdf_q_context(TileCdfArray::VTxbSkip, coeff_cdf_q_ctx)?;
+                let max_exclusive = $self.v_txb_skip[coeff_cdf_q_ctx].len();
+                let row = $self.v_txb_skip[coeff_cdf_q_ctx].$get(ctx).ok_or(
+                    TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::VTxbSkip,
+                        index_name: "ctx",
+                        actual: ctx,
+                        max_exclusive,
+                    },
+                )?;
+                Ok(row.$as_slice())
+            }
+            BlockCdfSelector::EobExtra { coeff_cdf_q_ctx } => {
+                let coeff_cdf_q_ctx =
+                    checked_coeff_cdf_q_context(TileCdfArray::EobExtra, coeff_cdf_q_ctx)?;
+                Ok($self.eob_extra[coeff_cdf_q_ctx].$as_slice())
+            }
+            BlockCdfSelector::EobPt {
+                size,
+                coeff_cdf_q_ctx,
+                eob_ctx,
+            } => {
+                let q = checked_coeff_cdf_q_context(TileCdfArray::EobPt, coeff_cdf_q_ctx)?;
+                let c = checked_eob_plane_ctx(eob_ctx)?;
+                Ok(match size {
+                    EobPtSize::Pt16 => $self.eob_pt_16[q][c].$as_slice(),
+                    EobPtSize::Pt32 => $self.eob_pt_32[q][c].$as_slice(),
+                    EobPtSize::Pt64 => $self.eob_pt_64[q][c].$as_slice(),
+                    EobPtSize::Pt128 => $self.eob_pt_128[q][c].$as_slice(),
+                    EobPtSize::Pt256 => $self.eob_pt_256[q][c].$as_slice(),
+                    EobPtSize::Pt512 => $self.eob_pt_512[q][c].$as_slice(),
+                    EobPtSize::Pt1024 => $self.eob_pt_1024[q][c].$as_slice(),
+                })
+            }
+            BlockCdfSelector::DcSign {
+                coeff_cdf_q_ctx,
+                plane_type,
+                group,
+                ctx,
+            } => {
+                let q = checked_coeff_cdf_q_context(TileCdfArray::DcSign, coeff_cdf_q_ctx)?;
+                let plane_type = checked_plane_type(TileCdfArray::DcSign, plane_type)?;
+                let group = checked_dc_sign_group(group)?;
+                let row = $self.dc_sign[q][plane_type][group].$get(ctx).ok_or(
+                    TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::DcSign,
+                        index_name: "ctx",
+                        actual: ctx,
+                        max_exclusive: DC_SIGN_CONTEXTS,
+                    },
+                )?;
+                Ok(row.$as_slice())
+            }
+            BlockCdfSelector::IsInter { ctx } => {
+                let max_exclusive = $self.is_inter.len();
+                let row = $self
+                    .is_inter
+                    .$get(ctx)
+                    .ok_or(TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::IsInter,
+                        index_name: "ctx",
+                        actual: ctx,
+                        max_exclusive,
+                    })?;
+                Ok(row.$as_slice())
+            }
+            BlockCdfSelector::Skip { ctx } => {
+                let max_exclusive = $self.skip.len();
+                let row = $self
+                    .skip
+                    .$get(ctx)
+                    .ok_or(TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::Skip,
+                        index_name: "ctx",
+                        actual: ctx,
+                        max_exclusive,
+                    })?;
+                Ok(row.$as_slice())
+            }
+            BlockCdfSelector::SingleMode { ctx } => {
+                let max_exclusive = $self.single_mode.len();
+                let row = $self
+                    .single_mode
+                    .$get(ctx)
+                    .ok_or(TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::SingleMode,
+                        index_name: "ctx",
+                        actual: ctx,
+                        max_exclusive,
+                    })?;
+                Ok(row.$as_slice())
+            }
+            BlockCdfSelector::DrlMode { idx, ctx } => {
+                let bank_len = $self.drl_mode.len();
+                let bank = $self
+                    .drl_mode
+                    .$get(idx)
+                    .ok_or(TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::DrlMode,
+                        index_name: "idx",
+                        actual: idx,
+                        max_exclusive: bank_len,
+                    })?;
+                let ctx_len = bank.len();
+                let row = bank.$get(ctx).ok_or(TileCdfError::SelectorOutOfRange {
+                    array: TileCdfArray::DrlMode,
+                    index_name: "ctx",
+                    actual: ctx,
+                    max_exclusive: ctx_len,
+                })?;
+                Ok(row.$as_slice())
+            }
+            BlockCdfSelector::SingleRef { ctx, ref_idx } => {
+                let bank_len = $self.single_ref.len();
+                let bank = $self
+                    .single_ref
+                    .$get(ctx)
+                    .ok_or(TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::SingleRef,
+                        index_name: "ctx",
+                        actual: ctx,
+                        max_exclusive: bank_len,
+                    })?;
+                let ref_len = bank.len();
+                let row = bank.$get(ref_idx).ok_or(TileCdfError::SelectorOutOfRange {
+                    array: TileCdfArray::SingleRef,
+                    index_name: "ref",
+                    actual: ref_idx,
+                    max_exclusive: ref_len,
+                })?;
+                Ok(row.$as_slice())
+            }
+            BlockCdfSelector::CompMode { ctx } => {
+                let max_exclusive = $self.comp_mode.len();
+                let row = $self
+                    .comp_mode
+                    .$get(ctx)
+                    .ok_or(TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::CompMode,
+                        index_name: "ctx",
+                        actual: ctx,
+                        max_exclusive,
+                    })?;
+                Ok(row.$as_slice())
+            }
+            BlockCdfSelector::IsJoint { ctx } => {
+                let max_exclusive = $self.is_joint.len();
+                let row = $self
+                    .is_joint
+                    .$get(ctx)
+                    .ok_or(TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::IsJoint,
+                        index_name: "ctx",
+                        actual: ctx,
+                        max_exclusive,
+                    })?;
+                Ok(row.$as_slice())
+            }
+            BlockCdfSelector::CompoundModeNonJoint { ctx } => {
+                let max_exclusive = $self.compound_mode_non_joint.len();
+                let row = $self.compound_mode_non_joint.$get(ctx).ok_or(
+                    TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::CompoundModeNonJoint,
+                        index_name: "ctx",
+                        actual: ctx,
+                        max_exclusive,
+                    },
+                )?;
+                Ok(row.$as_slice())
+            }
+            BlockCdfSelector::CompGroupIdx { ctx } => {
+                let max_exclusive = $self.comp_group_idx.len();
+                let row =
+                    $self
+                        .comp_group_idx
+                        .$get(ctx)
+                        .ok_or(TileCdfError::SelectorOutOfRange {
+                            array: TileCdfArray::CompGroupIdx,
+                            index_name: "ctx",
+                            actual: ctx,
+                            max_exclusive,
+                        })?;
+                Ok(row.$as_slice())
+            }
+            BlockCdfSelector::CwpIdx { idx } => {
+                let max_exclusive = $self.cwp_idx.len();
+                let row = $self
+                    .cwp_idx
+                    .$get(idx)
+                    .ok_or(TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::CwpIdx,
+                        index_name: "idx",
+                        actual: idx,
+                        max_exclusive,
+                    })?;
+                Ok(row.$as_slice())
+            }
+            BlockCdfSelector::CompRef0 { ctx, ref_idx } => {
+                let bank_len = $self.comp_ref0.len();
+                let bank = $self
+                    .comp_ref0
+                    .$get(ctx)
+                    .ok_or(TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::CompRef0,
+                        index_name: "ctx",
+                        actual: ctx,
+                        max_exclusive: bank_len,
+                    })?;
+                let ref_len = bank.len();
+                let row = bank.$get(ref_idx).ok_or(TileCdfError::SelectorOutOfRange {
+                    array: TileCdfArray::CompRef0,
+                    index_name: "ref",
+                    actual: ref_idx,
+                    max_exclusive: ref_len,
+                })?;
+                Ok(row.$as_slice())
+            }
+            BlockCdfSelector::CompRef1 {
+                ctx,
+                bit_type,
+                ref_idx,
+            } => {
+                let bank_len = $self.comp_ref1.len();
+                let bank = $self
+                    .comp_ref1
+                    .$get(ctx)
+                    .ok_or(TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::CompRef1,
+                        index_name: "ctx",
+                        actual: ctx,
+                        max_exclusive: bank_len,
+                    })?;
+                let bit_len = bank.len();
+                let bit_bank = bank
+                    .$get(bit_type)
+                    .ok_or(TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::CompRef1,
+                        index_name: "bit_type",
+                        actual: bit_type,
+                        max_exclusive: bit_len,
+                    })?;
+                let ref_len = bit_bank.len();
+                let row = bit_bank
+                    .$get(ref_idx)
+                    .ok_or(TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::CompRef1,
+                        index_name: "ref",
+                        actual: ref_idx,
+                        max_exclusive: ref_len,
+                    })?;
+                Ok(row.$as_slice())
+            }
+            BlockCdfSelector::ReadMv(selector) => $self.read_mv.$delegate(selector),
+            BlockCdfSelector::InterpFilter { ctx } => {
+                let max_exclusive = $self.interp_filter.len();
+                let row =
+                    $self
+                        .interp_filter
+                        .$get(ctx)
+                        .ok_or(TileCdfError::SelectorOutOfRange {
+                            array: TileCdfArray::InterpFilter,
+                            index_name: "ctx",
+                            actual: ctx,
+                            max_exclusive,
+                        })?;
+                Ok(row.$as_slice())
+            }
+            BlockCdfSelector::UseWienerNs => Ok($self.use_wiener_ns.$as_slice()),
+            BlockCdfSelector::WienerNsLength { plane_ctx } => {
+                let max_exclusive = $self.wiener_ns_length.len();
+                let row = $self.wiener_ns_length.$get(plane_ctx).ok_or(
+                    TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::WienerNsLength,
+                        index_name: "plane_ctx",
+                        actual: plane_ctx,
+                        max_exclusive,
+                    },
+                )?;
+                Ok(row.$as_slice())
+            }
+            BlockCdfSelector::WienerNsUvSym => Ok($self.wiener_ns_uv_sym.$as_slice()),
+            BlockCdfSelector::WienerNsBase => Ok($self.wiener_ns_base.$as_slice()),
+            BlockCdfSelector::IsLongSideDct { is_inter } => {
+                let max_exclusive = $self.is_long_side_dct.len();
+                let row = $self.is_long_side_dct.$get(is_inter).ok_or(
+                    TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::IsLongSideDct,
+                        index_name: "is_inter",
+                        actual: is_inter,
+                        max_exclusive,
+                    },
+                )?;
+                Ok(row.$as_slice())
+            }
+            BlockCdfSelector::IntraTxTypeLong { tx_size_sqr } => {
+                let max_exclusive = $self.intra_tx_type_long.len();
+                let row = $self.intra_tx_type_long.$get(tx_size_sqr).ok_or(
+                    TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::IntraTxTypeLong,
+                        index_name: "tx_size_sqr",
+                        actual: tx_size_sqr,
+                        max_exclusive,
+                    },
+                )?;
+                Ok(row.$as_slice())
+            }
+            BlockCdfSelector::IntraTxTypeSet1 { tx_size_sqr } => {
+                let max_exclusive = $self.intra_tx_type_set1.len();
+                let row = $self.intra_tx_type_set1.$get(tx_size_sqr).ok_or(
+                    TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::IntraTxTypeSet1,
+                        index_name: "tx_size_sqr",
+                        actual: tx_size_sqr,
+                        max_exclusive,
+                    },
+                )?;
+                Ok(row.$as_slice())
+            }
+            BlockCdfSelector::IntraTxTypeSet2 { tx_size_sqr } => {
+                let max_exclusive = $self.intra_tx_type_set2.len();
+                let row = $self.intra_tx_type_set2.$get(tx_size_sqr).ok_or(
+                    TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::IntraTxTypeSet2,
+                        index_name: "tx_size_sqr",
+                        actual: tx_size_sqr,
+                        max_exclusive,
+                    },
+                )?;
+                Ok(row.$as_slice())
+            }
+            BlockCdfSelector::SecTxType {
+                is_inter,
+                tx_size_sqr,
+            } => {
+                let is_inter = checked_sec_tx_is_inter(is_inter)?;
+                let max_exclusive = $self.sec_tx_type[is_inter].len();
+                let row = $self.sec_tx_type[is_inter].$get(tx_size_sqr).ok_or(
+                    TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::SecTxType,
+                        index_name: "tx_size_sqr",
+                        actual: tx_size_sqr,
+                        max_exclusive,
+                    },
+                )?;
+                Ok(row.$as_slice())
+            }
+            BlockCdfSelector::MostProbableStxSet => Ok($self.most_probable_stx_set.$as_slice()),
+            BlockCdfSelector::MostProbableStxSetAdst => {
+                Ok($self.most_probable_stx_set_adst.$as_slice())
+            }
+            BlockCdfSelector::CctxType => Ok($self.cctx_type.$as_slice()),
+            BlockCdfSelector::Coeff(selector) => $self.coeff.$delegate(selector),
+        }
+    };
+}
+
 impl BlockCdfRows {
     pub(crate) fn from_defaults() -> Self {
         Self {
@@ -524,896 +1004,14 @@ impl BlockCdfRows {
     }
 
     pub(crate) fn row(&self, selector: BlockCdfSelector) -> Result<&[i32], TileCdfError> {
-        match selector {
-            BlockCdfSelector::YModeSet => Ok(self.y_mode_set.as_slice()),
-            BlockCdfSelector::YModeIndex { ctx } => {
-                let row = self
-                    .y_mode_index
-                    .get(ctx)
-                    .ok_or(TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::YModeIndex,
-                        index_name: "ctx",
-                        actual: ctx,
-                        max_exclusive: Y_MODE_INDEX_CONTEXTS,
-                    })?;
-                Ok(row.as_slice())
-            }
-            BlockCdfSelector::YModeOffset { ctx } => {
-                let row = self
-                    .y_mode_offset
-                    .get(ctx)
-                    .ok_or(TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::YModeOffset,
-                        index_name: "ctx",
-                        actual: ctx,
-                        max_exclusive: Y_MODE_OFFSET_CONTEXTS,
-                    })?;
-                Ok(row.as_slice())
-            }
-            BlockCdfSelector::TxbSkip {
-                coeff_cdf_q_ctx,
-                plane_type,
-                tx_size,
-                ctx,
-            } => {
-                let coeff_cdf_q_ctx =
-                    checked_coeff_cdf_q_context(TileCdfArray::TxbSkip, coeff_cdf_q_ctx)?;
-                let plane_type = checked_plane_type(TileCdfArray::TxbSkip, plane_type)?;
-                let tx_size = checked_tx_size(TileCdfArray::TxbSkip, tx_size)?;
-                let row = self.txb_skip[coeff_cdf_q_ctx][plane_type][tx_size]
-                    .get(ctx)
-                    .ok_or(TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::TxbSkip,
-                        index_name: "ctx",
-                        actual: ctx,
-                        max_exclusive: TXB_SKIP_CONTEXTS,
-                    })?;
-                Ok(row.as_slice())
-            }
-            BlockCdfSelector::UvModeCflNotAllowed { ctx } => {
-                let row = self.uv_mode_cfl_not_allowed.get(ctx).ok_or(
-                    TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::UvModeCflNotAllowed,
-                        index_name: "ctx",
-                        actual: ctx,
-                        max_exclusive: UV_MODE_CONTEXTS,
-                    },
-                )?;
-                Ok(row.as_slice())
-            }
-            BlockCdfSelector::IsCfl { ctx } => {
-                let row = self
-                    .is_cfl
-                    .get(ctx)
-                    .ok_or(TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::IsCfl,
-                        index_name: "ctx",
-                        actual: ctx,
-                        max_exclusive: CFL_CONTEXTS,
-                    })?;
-                Ok(row.as_slice())
-            }
-            BlockCdfSelector::CflIndex => Ok(self.cfl_index.as_slice()),
-            BlockCdfSelector::CflSign => Ok(self.cfl_sign.as_slice()),
-            BlockCdfSelector::CflAlpha { ctx } => {
-                let row = self
-                    .cfl_alpha
-                    .get(ctx)
-                    .ok_or(TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::CflAlpha,
-                        index_name: "ctx",
-                        actual: ctx,
-                        max_exclusive: CFL_ALPHA_CONTEXTS,
-                    })?;
-                Ok(row.as_slice())
-            }
-            BlockCdfSelector::CflMhccp => Ok(self.cfl_mhccp.as_slice()),
-            BlockCdfSelector::CflMhDir { size_group } => {
-                let row =
-                    self.cfl_mh_dir
-                        .get(size_group)
-                        .ok_or(TileCdfError::SelectorOutOfRange {
-                            array: TileCdfArray::CflMhDir,
-                            index_name: "size_group",
-                            actual: size_group,
-                            max_exclusive: CFL_MH_DIR_GROUPS,
-                        })?;
-                Ok(row.as_slice())
-            }
-            BlockCdfSelector::VTxbSkip {
-                coeff_cdf_q_ctx,
-                ctx,
-            } => {
-                let coeff_cdf_q_ctx =
-                    checked_coeff_cdf_q_context(TileCdfArray::VTxbSkip, coeff_cdf_q_ctx)?;
-                let row = self.v_txb_skip[coeff_cdf_q_ctx].get(ctx).ok_or(
-                    TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::VTxbSkip,
-                        index_name: "ctx",
-                        actual: ctx,
-                        max_exclusive: V_TXB_SKIP_CONTEXTS,
-                    },
-                )?;
-                Ok(row.as_slice())
-            }
-            BlockCdfSelector::EobExtra { coeff_cdf_q_ctx } => {
-                let coeff_cdf_q_ctx =
-                    checked_coeff_cdf_q_context(TileCdfArray::EobExtra, coeff_cdf_q_ctx)?;
-                Ok(self.eob_extra[coeff_cdf_q_ctx].as_slice())
-            }
-            BlockCdfSelector::EobPt {
-                size,
-                coeff_cdf_q_ctx,
-                eob_ctx,
-            } => {
-                let q = checked_coeff_cdf_q_context(TileCdfArray::EobPt, coeff_cdf_q_ctx)?;
-                let c = checked_eob_plane_ctx(eob_ctx)?;
-                Ok(match size {
-                    EobPtSize::Pt16 => self.eob_pt_16[q][c].as_slice(),
-                    EobPtSize::Pt32 => self.eob_pt_32[q][c].as_slice(),
-                    EobPtSize::Pt64 => self.eob_pt_64[q][c].as_slice(),
-                    EobPtSize::Pt128 => self.eob_pt_128[q][c].as_slice(),
-                    EobPtSize::Pt256 => self.eob_pt_256[q][c].as_slice(),
-                    EobPtSize::Pt512 => self.eob_pt_512[q][c].as_slice(),
-                    EobPtSize::Pt1024 => self.eob_pt_1024[q][c].as_slice(),
-                })
-            }
-            BlockCdfSelector::DcSign {
-                coeff_cdf_q_ctx,
-                plane_type,
-                group,
-                ctx,
-            } => {
-                let q = checked_coeff_cdf_q_context(TileCdfArray::DcSign, coeff_cdf_q_ctx)?;
-                let plane_type = checked_plane_type(TileCdfArray::DcSign, plane_type)?;
-                let group = checked_dc_sign_group(group)?;
-                let row = self.dc_sign[q][plane_type][group].get(ctx).ok_or(
-                    TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::DcSign,
-                        index_name: "ctx",
-                        actual: ctx,
-                        max_exclusive: DC_SIGN_CONTEXTS,
-                    },
-                )?;
-                Ok(row.as_slice())
-            }
-            BlockCdfSelector::IsInter { ctx } => {
-                let row = self
-                    .is_inter
-                    .get(ctx)
-                    .ok_or(TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::IsInter,
-                        index_name: "ctx",
-                        actual: ctx,
-                        max_exclusive: IS_INTER_CONTEXTS,
-                    })?;
-                Ok(row.as_slice())
-            }
-            BlockCdfSelector::Skip { ctx } => {
-                let row = self.skip.get(ctx).ok_or(TileCdfError::SelectorOutOfRange {
-                    array: TileCdfArray::Skip,
-                    index_name: "ctx",
-                    actual: ctx,
-                    max_exclusive: SKIP_CONTEXTS,
-                })?;
-                Ok(row.as_slice())
-            }
-            BlockCdfSelector::SingleMode { ctx } => {
-                let row = self
-                    .single_mode
-                    .get(ctx)
-                    .ok_or(TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::SingleMode,
-                        index_name: "ctx",
-                        actual: ctx,
-                        max_exclusive: SINGLE_MODE_CONTEXTS,
-                    })?;
-                Ok(row.as_slice())
-            }
-            BlockCdfSelector::DrlMode { idx, ctx } => {
-                let bank = self
-                    .drl_mode
-                    .get(idx)
-                    .ok_or(TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::DrlMode,
-                        index_name: "idx",
-                        actual: idx,
-                        max_exclusive: DRL_MODE_IDX_BANKS,
-                    })?;
-                let row = bank.get(ctx).ok_or(TileCdfError::SelectorOutOfRange {
-                    array: TileCdfArray::DrlMode,
-                    index_name: "ctx",
-                    actual: ctx,
-                    max_exclusive: DRL_MODE_CONTEXTS,
-                })?;
-                Ok(row.as_slice())
-            }
-            BlockCdfSelector::SingleRef { ctx, ref_idx } => {
-                let bank = self
-                    .single_ref
-                    .get(ctx)
-                    .ok_or(TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::SingleRef,
-                        index_name: "ctx",
-                        actual: ctx,
-                        max_exclusive: REF_CONTEXTS,
-                    })?;
-                let row = bank.get(ref_idx).ok_or(TileCdfError::SelectorOutOfRange {
-                    array: TileCdfArray::SingleRef,
-                    index_name: "ref",
-                    actual: ref_idx,
-                    max_exclusive: REFS_PER_FRAME_MINUS_1,
-                })?;
-                Ok(row.as_slice())
-            }
-            BlockCdfSelector::CompMode { ctx } => {
-                let row = self
-                    .comp_mode
-                    .get(ctx)
-                    .ok_or(TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::CompMode,
-                        index_name: "ctx",
-                        actual: ctx,
-                        max_exclusive: COMP_MODE_CONTEXTS,
-                    })?;
-                Ok(row.as_slice())
-            }
-            BlockCdfSelector::IsJoint { ctx } => {
-                let row = self
-                    .is_joint
-                    .get(ctx)
-                    .ok_or(TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::IsJoint,
-                        index_name: "ctx",
-                        actual: ctx,
-                        max_exclusive: IS_JOINT_CONTEXTS,
-                    })?;
-                Ok(row.as_slice())
-            }
-            BlockCdfSelector::CompoundModeNonJoint { ctx } => {
-                let row = self.compound_mode_non_joint.get(ctx).ok_or(
-                    TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::CompoundModeNonJoint,
-                        index_name: "ctx",
-                        actual: ctx,
-                        max_exclusive: COMPOUND_MODE_CONTEXTS,
-                    },
-                )?;
-                Ok(row.as_slice())
-            }
-            BlockCdfSelector::CompGroupIdx { ctx } => {
-                let row = self
-                    .comp_group_idx
-                    .get(ctx)
-                    .ok_or(TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::CompGroupIdx,
-                        index_name: "ctx",
-                        actual: ctx,
-                        max_exclusive: COMP_GROUP_IDX_CONTEXTS,
-                    })?;
-                Ok(row.as_slice())
-            }
-            BlockCdfSelector::CwpIdx { idx } => {
-                let row = self
-                    .cwp_idx
-                    .get(idx)
-                    .ok_or(TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::CwpIdx,
-                        index_name: "idx",
-                        actual: idx,
-                        max_exclusive: CWP_IDX_CONTEXTS,
-                    })?;
-                Ok(row.as_slice())
-            }
-            BlockCdfSelector::CompRef0 { ctx, ref_idx } => {
-                let bank = self
-                    .comp_ref0
-                    .get(ctx)
-                    .ok_or(TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::CompRef0,
-                        index_name: "ctx",
-                        actual: ctx,
-                        max_exclusive: REF_CONTEXTS,
-                    })?;
-                let row = bank.get(ref_idx).ok_or(TileCdfError::SelectorOutOfRange {
-                    array: TileCdfArray::CompRef0,
-                    index_name: "ref",
-                    actual: ref_idx,
-                    max_exclusive: REFS_PER_FRAME_MINUS_1,
-                })?;
-                Ok(row.as_slice())
-            }
-            BlockCdfSelector::CompRef1 {
-                ctx,
-                bit_type,
-                ref_idx,
-            } => {
-                let bank = self
-                    .comp_ref1
-                    .get(ctx)
-                    .ok_or(TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::CompRef1,
-                        index_name: "ctx",
-                        actual: ctx,
-                        max_exclusive: REF_CONTEXTS,
-                    })?;
-                let bit_bank = bank.get(bit_type).ok_or(TileCdfError::SelectorOutOfRange {
-                    array: TileCdfArray::CompRef1,
-                    index_name: "bit_type",
-                    actual: bit_type,
-                    max_exclusive: COMP_REF1_BIT_TYPES,
-                })?;
-                let row = bit_bank
-                    .get(ref_idx)
-                    .ok_or(TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::CompRef1,
-                        index_name: "ref",
-                        actual: ref_idx,
-                        max_exclusive: REFS_PER_FRAME_MINUS_1,
-                    })?;
-                Ok(row.as_slice())
-            }
-            BlockCdfSelector::ReadMv(selector) => self.read_mv.row(selector),
-            BlockCdfSelector::InterpFilter { ctx } => {
-                let row = self
-                    .interp_filter
-                    .get(ctx)
-                    .ok_or(TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::InterpFilter,
-                        index_name: "ctx",
-                        actual: ctx,
-                        max_exclusive: INTERP_FILTER_CONTEXTS,
-                    })?;
-                Ok(row.as_slice())
-            }
-            BlockCdfSelector::UseWienerNs => Ok(self.use_wiener_ns.as_slice()),
-            BlockCdfSelector::WienerNsLength { plane_ctx } => {
-                let row = self.wiener_ns_length.get(plane_ctx).ok_or(
-                    TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::WienerNsLength,
-                        index_name: "plane_ctx",
-                        actual: plane_ctx,
-                        max_exclusive: WIENER_NS_LENGTH_CONTEXTS,
-                    },
-                )?;
-                Ok(row.as_slice())
-            }
-            BlockCdfSelector::WienerNsUvSym => Ok(self.wiener_ns_uv_sym.as_slice()),
-            BlockCdfSelector::WienerNsBase => Ok(self.wiener_ns_base.as_slice()),
-            BlockCdfSelector::IsLongSideDct { is_inter } => {
-                let row = self.is_long_side_dct.get(is_inter).ok_or(
-                    TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::IsLongSideDct,
-                        index_name: "is_inter",
-                        actual: is_inter,
-                        max_exclusive: IS_LONG_SIDE_DCT_CONTEXTS,
-                    },
-                )?;
-                Ok(row.as_slice())
-            }
-            BlockCdfSelector::IntraTxTypeLong { tx_size_sqr } => {
-                let row = self.intra_tx_type_long.get(tx_size_sqr).ok_or(
-                    TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::IntraTxTypeLong,
-                        index_name: "tx_size_sqr",
-                        actual: tx_size_sqr,
-                        max_exclusive: INTRA_TX_TYPE_LONG_SIZE_CONTEXTS,
-                    },
-                )?;
-                Ok(row.as_slice())
-            }
-            BlockCdfSelector::IntraTxTypeSet1 { tx_size_sqr } => {
-                let row = self.intra_tx_type_set1.get(tx_size_sqr).ok_or(
-                    TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::IntraTxTypeSet1,
-                        index_name: "tx_size_sqr",
-                        actual: tx_size_sqr,
-                        max_exclusive: INTRA_TX_TYPE_SIZE_CONTEXTS,
-                    },
-                )?;
-                Ok(row.as_slice())
-            }
-            BlockCdfSelector::IntraTxTypeSet2 { tx_size_sqr } => {
-                let row = self.intra_tx_type_set2.get(tx_size_sqr).ok_or(
-                    TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::IntraTxTypeSet2,
-                        index_name: "tx_size_sqr",
-                        actual: tx_size_sqr,
-                        max_exclusive: INTRA_TX_TYPE_SIZE_CONTEXTS,
-                    },
-                )?;
-                Ok(row.as_slice())
-            }
-            BlockCdfSelector::SecTxType {
-                is_inter,
-                tx_size_sqr,
-            } => {
-                let is_inter = checked_sec_tx_is_inter(is_inter)?;
-                let row = self.sec_tx_type[is_inter].get(tx_size_sqr).ok_or(
-                    TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::SecTxType,
-                        index_name: "tx_size_sqr",
-                        actual: tx_size_sqr,
-                        max_exclusive: SEC_TX_TYPE_TX_SIZE_CONTEXTS,
-                    },
-                )?;
-                Ok(row.as_slice())
-            }
-            BlockCdfSelector::MostProbableStxSet => Ok(self.most_probable_stx_set.as_slice()),
-            BlockCdfSelector::MostProbableStxSetAdst => {
-                Ok(self.most_probable_stx_set_adst.as_slice())
-            }
-            BlockCdfSelector::CctxType => Ok(self.cctx_type.as_slice()),
-            BlockCdfSelector::Coeff(selector) => self.coeff.row(selector),
-        }
+        block_cdf_row!(self, selector, get, as_slice, row)
     }
 
     pub(crate) fn row_mut(
         &mut self,
         selector: BlockCdfSelector,
     ) -> Result<&mut [i32], TileCdfError> {
-        match selector {
-            BlockCdfSelector::YModeSet => Ok(self.y_mode_set.as_mut_slice()),
-            BlockCdfSelector::YModeIndex { ctx } => {
-                let max_exclusive = self.y_mode_index.len();
-                let row =
-                    self.y_mode_index
-                        .get_mut(ctx)
-                        .ok_or(TileCdfError::SelectorOutOfRange {
-                            array: TileCdfArray::YModeIndex,
-                            index_name: "ctx",
-                            actual: ctx,
-                            max_exclusive,
-                        })?;
-                Ok(row.as_mut_slice())
-            }
-            BlockCdfSelector::YModeOffset { ctx } => {
-                let max_exclusive = self.y_mode_offset.len();
-                let row =
-                    self.y_mode_offset
-                        .get_mut(ctx)
-                        .ok_or(TileCdfError::SelectorOutOfRange {
-                            array: TileCdfArray::YModeOffset,
-                            index_name: "ctx",
-                            actual: ctx,
-                            max_exclusive,
-                        })?;
-                Ok(row.as_mut_slice())
-            }
-            BlockCdfSelector::TxbSkip {
-                coeff_cdf_q_ctx,
-                plane_type,
-                tx_size,
-                ctx,
-            } => {
-                let coeff_cdf_q_ctx =
-                    checked_coeff_cdf_q_context(TileCdfArray::TxbSkip, coeff_cdf_q_ctx)?;
-                let plane_type = checked_plane_type(TileCdfArray::TxbSkip, plane_type)?;
-                let tx_size = checked_tx_size(TileCdfArray::TxbSkip, tx_size)?;
-                let max_exclusive = self.txb_skip[coeff_cdf_q_ctx][plane_type][tx_size].len();
-                let row = self.txb_skip[coeff_cdf_q_ctx][plane_type][tx_size]
-                    .get_mut(ctx)
-                    .ok_or(TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::TxbSkip,
-                        index_name: "ctx",
-                        actual: ctx,
-                        max_exclusive,
-                    })?;
-                Ok(row.as_mut_slice())
-            }
-            BlockCdfSelector::UvModeCflNotAllowed { ctx } => {
-                let max_exclusive = self.uv_mode_cfl_not_allowed.len();
-                let row = self.uv_mode_cfl_not_allowed.get_mut(ctx).ok_or(
-                    TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::UvModeCflNotAllowed,
-                        index_name: "ctx",
-                        actual: ctx,
-                        max_exclusive,
-                    },
-                )?;
-                Ok(row.as_mut_slice())
-            }
-            BlockCdfSelector::IsCfl { ctx } => {
-                let max_exclusive = self.is_cfl.len();
-                let row = self
-                    .is_cfl
-                    .get_mut(ctx)
-                    .ok_or(TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::IsCfl,
-                        index_name: "ctx",
-                        actual: ctx,
-                        max_exclusive,
-                    })?;
-                Ok(row.as_mut_slice())
-            }
-            BlockCdfSelector::CflIndex => Ok(self.cfl_index.as_mut_slice()),
-            BlockCdfSelector::CflSign => Ok(self.cfl_sign.as_mut_slice()),
-            BlockCdfSelector::CflAlpha { ctx } => {
-                let max_exclusive = self.cfl_alpha.len();
-                let row = self
-                    .cfl_alpha
-                    .get_mut(ctx)
-                    .ok_or(TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::CflAlpha,
-                        index_name: "ctx",
-                        actual: ctx,
-                        max_exclusive,
-                    })?;
-                Ok(row.as_mut_slice())
-            }
-            BlockCdfSelector::CflMhccp => Ok(self.cfl_mhccp.as_mut_slice()),
-            BlockCdfSelector::CflMhDir { size_group } => {
-                let max_exclusive = self.cfl_mh_dir.len();
-                let row = self.cfl_mh_dir.get_mut(size_group).ok_or(
-                    TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::CflMhDir,
-                        index_name: "size_group",
-                        actual: size_group,
-                        max_exclusive,
-                    },
-                )?;
-                Ok(row.as_mut_slice())
-            }
-            BlockCdfSelector::VTxbSkip {
-                coeff_cdf_q_ctx,
-                ctx,
-            } => {
-                let coeff_cdf_q_ctx =
-                    checked_coeff_cdf_q_context(TileCdfArray::VTxbSkip, coeff_cdf_q_ctx)?;
-                let max_exclusive = self.v_txb_skip[coeff_cdf_q_ctx].len();
-                let row = self.v_txb_skip[coeff_cdf_q_ctx].get_mut(ctx).ok_or(
-                    TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::VTxbSkip,
-                        index_name: "ctx",
-                        actual: ctx,
-                        max_exclusive,
-                    },
-                )?;
-                Ok(row.as_mut_slice())
-            }
-            BlockCdfSelector::EobExtra { coeff_cdf_q_ctx } => {
-                let coeff_cdf_q_ctx =
-                    checked_coeff_cdf_q_context(TileCdfArray::EobExtra, coeff_cdf_q_ctx)?;
-                Ok(self.eob_extra[coeff_cdf_q_ctx].as_mut_slice())
-            }
-            BlockCdfSelector::EobPt {
-                size,
-                coeff_cdf_q_ctx,
-                eob_ctx,
-            } => {
-                let q = checked_coeff_cdf_q_context(TileCdfArray::EobPt, coeff_cdf_q_ctx)?;
-                let c = checked_eob_plane_ctx(eob_ctx)?;
-                Ok(match size {
-                    EobPtSize::Pt16 => self.eob_pt_16[q][c].as_mut_slice(),
-                    EobPtSize::Pt32 => self.eob_pt_32[q][c].as_mut_slice(),
-                    EobPtSize::Pt64 => self.eob_pt_64[q][c].as_mut_slice(),
-                    EobPtSize::Pt128 => self.eob_pt_128[q][c].as_mut_slice(),
-                    EobPtSize::Pt256 => self.eob_pt_256[q][c].as_mut_slice(),
-                    EobPtSize::Pt512 => self.eob_pt_512[q][c].as_mut_slice(),
-                    EobPtSize::Pt1024 => self.eob_pt_1024[q][c].as_mut_slice(),
-                })
-            }
-            BlockCdfSelector::DcSign {
-                coeff_cdf_q_ctx,
-                plane_type,
-                group,
-                ctx,
-            } => {
-                let q = checked_coeff_cdf_q_context(TileCdfArray::DcSign, coeff_cdf_q_ctx)?;
-                let plane_type = checked_plane_type(TileCdfArray::DcSign, plane_type)?;
-                let group = checked_dc_sign_group(group)?;
-                let row = self.dc_sign[q][plane_type][group].get_mut(ctx).ok_or(
-                    TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::DcSign,
-                        index_name: "ctx",
-                        actual: ctx,
-                        max_exclusive: DC_SIGN_CONTEXTS,
-                    },
-                )?;
-                Ok(row.as_mut_slice())
-            }
-            BlockCdfSelector::IsInter { ctx } => {
-                let max_exclusive = self.is_inter.len();
-                let row = self
-                    .is_inter
-                    .get_mut(ctx)
-                    .ok_or(TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::IsInter,
-                        index_name: "ctx",
-                        actual: ctx,
-                        max_exclusive,
-                    })?;
-                Ok(row.as_mut_slice())
-            }
-            BlockCdfSelector::Skip { ctx } => {
-                let max_exclusive = self.skip.len();
-                let row = self
-                    .skip
-                    .get_mut(ctx)
-                    .ok_or(TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::Skip,
-                        index_name: "ctx",
-                        actual: ctx,
-                        max_exclusive,
-                    })?;
-                Ok(row.as_mut_slice())
-            }
-            BlockCdfSelector::SingleMode { ctx } => {
-                let max_exclusive = self.single_mode.len();
-                let row =
-                    self.single_mode
-                        .get_mut(ctx)
-                        .ok_or(TileCdfError::SelectorOutOfRange {
-                            array: TileCdfArray::SingleMode,
-                            index_name: "ctx",
-                            actual: ctx,
-                            max_exclusive,
-                        })?;
-                Ok(row.as_mut_slice())
-            }
-            BlockCdfSelector::DrlMode { idx, ctx } => {
-                let bank_len = self.drl_mode.len();
-                let bank = self
-                    .drl_mode
-                    .get_mut(idx)
-                    .ok_or(TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::DrlMode,
-                        index_name: "idx",
-                        actual: idx,
-                        max_exclusive: bank_len,
-                    })?;
-                let ctx_len = bank.len();
-                let row = bank.get_mut(ctx).ok_or(TileCdfError::SelectorOutOfRange {
-                    array: TileCdfArray::DrlMode,
-                    index_name: "ctx",
-                    actual: ctx,
-                    max_exclusive: ctx_len,
-                })?;
-                Ok(row.as_mut_slice())
-            }
-            BlockCdfSelector::SingleRef { ctx, ref_idx } => {
-                let bank_len = self.single_ref.len();
-                let bank =
-                    self.single_ref
-                        .get_mut(ctx)
-                        .ok_or(TileCdfError::SelectorOutOfRange {
-                            array: TileCdfArray::SingleRef,
-                            index_name: "ctx",
-                            actual: ctx,
-                            max_exclusive: bank_len,
-                        })?;
-                let ref_len = bank.len();
-                let row = bank
-                    .get_mut(ref_idx)
-                    .ok_or(TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::SingleRef,
-                        index_name: "ref",
-                        actual: ref_idx,
-                        max_exclusive: ref_len,
-                    })?;
-                Ok(row.as_mut_slice())
-            }
-            BlockCdfSelector::CompMode { ctx } => {
-                let max_exclusive = self.comp_mode.len();
-                let row = self
-                    .comp_mode
-                    .get_mut(ctx)
-                    .ok_or(TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::CompMode,
-                        index_name: "ctx",
-                        actual: ctx,
-                        max_exclusive,
-                    })?;
-                Ok(row.as_mut_slice())
-            }
-            BlockCdfSelector::IsJoint { ctx } => {
-                let max_exclusive = self.is_joint.len();
-                let row = self
-                    .is_joint
-                    .get_mut(ctx)
-                    .ok_or(TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::IsJoint,
-                        index_name: "ctx",
-                        actual: ctx,
-                        max_exclusive,
-                    })?;
-                Ok(row.as_mut_slice())
-            }
-            BlockCdfSelector::CompoundModeNonJoint { ctx } => {
-                let max_exclusive = self.compound_mode_non_joint.len();
-                let row = self.compound_mode_non_joint.get_mut(ctx).ok_or(
-                    TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::CompoundModeNonJoint,
-                        index_name: "ctx",
-                        actual: ctx,
-                        max_exclusive,
-                    },
-                )?;
-                Ok(row.as_mut_slice())
-            }
-            BlockCdfSelector::CompGroupIdx { ctx } => {
-                let max_exclusive = self.comp_group_idx.len();
-                let row =
-                    self.comp_group_idx
-                        .get_mut(ctx)
-                        .ok_or(TileCdfError::SelectorOutOfRange {
-                            array: TileCdfArray::CompGroupIdx,
-                            index_name: "ctx",
-                            actual: ctx,
-                            max_exclusive,
-                        })?;
-                Ok(row.as_mut_slice())
-            }
-            BlockCdfSelector::CwpIdx { idx } => {
-                let max_exclusive = self.cwp_idx.len();
-                let row = self
-                    .cwp_idx
-                    .get_mut(idx)
-                    .ok_or(TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::CwpIdx,
-                        index_name: "idx",
-                        actual: idx,
-                        max_exclusive,
-                    })?;
-                Ok(row.as_mut_slice())
-            }
-            BlockCdfSelector::CompRef0 { ctx, ref_idx } => {
-                let bank_len = self.comp_ref0.len();
-                let bank = self
-                    .comp_ref0
-                    .get_mut(ctx)
-                    .ok_or(TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::CompRef0,
-                        index_name: "ctx",
-                        actual: ctx,
-                        max_exclusive: bank_len,
-                    })?;
-                let ref_len = bank.len();
-                let row = bank
-                    .get_mut(ref_idx)
-                    .ok_or(TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::CompRef0,
-                        index_name: "ref",
-                        actual: ref_idx,
-                        max_exclusive: ref_len,
-                    })?;
-                Ok(row.as_mut_slice())
-            }
-            BlockCdfSelector::CompRef1 {
-                ctx,
-                bit_type,
-                ref_idx,
-            } => {
-                let bank_len = self.comp_ref1.len();
-                let bank = self
-                    .comp_ref1
-                    .get_mut(ctx)
-                    .ok_or(TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::CompRef1,
-                        index_name: "ctx",
-                        actual: ctx,
-                        max_exclusive: bank_len,
-                    })?;
-                let bit_len = bank.len();
-                let bit_bank = bank
-                    .get_mut(bit_type)
-                    .ok_or(TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::CompRef1,
-                        index_name: "bit_type",
-                        actual: bit_type,
-                        max_exclusive: bit_len,
-                    })?;
-                let ref_len = bit_bank.len();
-                let row = bit_bank
-                    .get_mut(ref_idx)
-                    .ok_or(TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::CompRef1,
-                        index_name: "ref",
-                        actual: ref_idx,
-                        max_exclusive: ref_len,
-                    })?;
-                Ok(row.as_mut_slice())
-            }
-            BlockCdfSelector::ReadMv(selector) => self.read_mv.row_mut(selector),
-            BlockCdfSelector::InterpFilter { ctx } => {
-                let max_exclusive = self.interp_filter.len();
-                let row =
-                    self.interp_filter
-                        .get_mut(ctx)
-                        .ok_or(TileCdfError::SelectorOutOfRange {
-                            array: TileCdfArray::InterpFilter,
-                            index_name: "ctx",
-                            actual: ctx,
-                            max_exclusive,
-                        })?;
-                Ok(row.as_mut_slice())
-            }
-            BlockCdfSelector::UseWienerNs => Ok(self.use_wiener_ns.as_mut_slice()),
-            BlockCdfSelector::WienerNsLength { plane_ctx } => {
-                let max_exclusive = self.wiener_ns_length.len();
-                let row = self.wiener_ns_length.get_mut(plane_ctx).ok_or(
-                    TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::WienerNsLength,
-                        index_name: "plane_ctx",
-                        actual: plane_ctx,
-                        max_exclusive,
-                    },
-                )?;
-                Ok(row.as_mut_slice())
-            }
-            BlockCdfSelector::WienerNsUvSym => Ok(self.wiener_ns_uv_sym.as_mut_slice()),
-            BlockCdfSelector::WienerNsBase => Ok(self.wiener_ns_base.as_mut_slice()),
-            BlockCdfSelector::IsLongSideDct { is_inter } => {
-                let max_exclusive = self.is_long_side_dct.len();
-                let row = self.is_long_side_dct.get_mut(is_inter).ok_or(
-                    TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::IsLongSideDct,
-                        index_name: "is_inter",
-                        actual: is_inter,
-                        max_exclusive,
-                    },
-                )?;
-                Ok(row.as_mut_slice())
-            }
-            BlockCdfSelector::IntraTxTypeLong { tx_size_sqr } => {
-                let max_exclusive = self.intra_tx_type_long.len();
-                let row = self.intra_tx_type_long.get_mut(tx_size_sqr).ok_or(
-                    TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::IntraTxTypeLong,
-                        index_name: "tx_size_sqr",
-                        actual: tx_size_sqr,
-                        max_exclusive,
-                    },
-                )?;
-                Ok(row.as_mut_slice())
-            }
-            BlockCdfSelector::IntraTxTypeSet1 { tx_size_sqr } => {
-                let max_exclusive = self.intra_tx_type_set1.len();
-                let row = self.intra_tx_type_set1.get_mut(tx_size_sqr).ok_or(
-                    TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::IntraTxTypeSet1,
-                        index_name: "tx_size_sqr",
-                        actual: tx_size_sqr,
-                        max_exclusive,
-                    },
-                )?;
-                Ok(row.as_mut_slice())
-            }
-            BlockCdfSelector::IntraTxTypeSet2 { tx_size_sqr } => {
-                let max_exclusive = self.intra_tx_type_set2.len();
-                let row = self.intra_tx_type_set2.get_mut(tx_size_sqr).ok_or(
-                    TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::IntraTxTypeSet2,
-                        index_name: "tx_size_sqr",
-                        actual: tx_size_sqr,
-                        max_exclusive,
-                    },
-                )?;
-                Ok(row.as_mut_slice())
-            }
-            BlockCdfSelector::SecTxType {
-                is_inter,
-                tx_size_sqr,
-            } => {
-                let is_inter = checked_sec_tx_is_inter(is_inter)?;
-                let max_exclusive = self.sec_tx_type[is_inter].len();
-                let row = self.sec_tx_type[is_inter].get_mut(tx_size_sqr).ok_or(
-                    TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::SecTxType,
-                        index_name: "tx_size_sqr",
-                        actual: tx_size_sqr,
-                        max_exclusive,
-                    },
-                )?;
-                Ok(row.as_mut_slice())
-            }
-            BlockCdfSelector::MostProbableStxSet => Ok(self.most_probable_stx_set.as_mut_slice()),
-            BlockCdfSelector::MostProbableStxSetAdst => {
-                Ok(self.most_probable_stx_set_adst.as_mut_slice())
-            }
-            BlockCdfSelector::CctxType => Ok(self.cctx_type.as_mut_slice()),
-            BlockCdfSelector::Coeff(selector) => self.coeff.row_mut(selector),
-        }
+        block_cdf_row!(self, selector, get_mut, as_mut_slice, row_mut)
     }
 
     pub(crate) fn avg_from_tile(&mut self, tile_num: u32, tile: &Self, num_log2: u8) {

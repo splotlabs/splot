@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 441 feature(s).
+Matrix version 1. Last reviewed 2026-06-15. 442 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -319,6 +319,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `INFRA-PARALLEL-RUNTIME-POLICY` | Parallel runtime policy (Rayon worker pool + bounded crossbeam queues) | infrastructure | infrastructure | done | done | n/a | done | n/a | n/a | n/a | done | n/a | `crates/splot-parallel/src/lib.rs` |
 | `INFRA-RECON-FRAME-PLANE-TYPES` | Decoded frame and plane runtime types | infrastructure | infrastructure | done | done | n/a | n/a | n/a | n/a | n/a | done | n/a | `crates/splot-recon/src/lib.rs` |
 | `INFRA-ZERO-COPY-MEDIA-POLICY` | Zero-copy media-buffer ownership policy | infrastructure | infrastructure | done | done | n/a | done | n/a | n/a | n/a | done | n/a | `crates/splot-recon/src/lib.rs` |
+| `INFRA-DUPEHOUND-DUPLICATION-GATE` | Duplicate-code budget gate | infrastructure | infrastructure | done | done | n/a | done | n/a | n/a | n/a | done | n/a | `xtask/src/dupehound.rs` |
 | `RECON-REFERENCE-FRAME-STORE` | Reference frame store runtime model | infrastructure | infrastructure | done | done | n/a | n/a | n/a | n/a | n/a | done | n/a | `crates/splot-recon/src/reference.rs` |
 | `DECODE-LIMITS-RUNTIME-API` | Decode limits runtime API | infrastructure | infrastructure | done | done | n/a | n/a | n/a | n/a | n/a | done | n/a | `crates/splot-decode/src/limits.rs` |
 | `DECODE-STREAM-STATE-PLANNER` | Parsed decode stream planner | infrastructure | infrastructure | done | done | n/a | n/a | n/a | n/a | done | done | n/a | `crates/splot-decode/src/stream_plan.rs` |

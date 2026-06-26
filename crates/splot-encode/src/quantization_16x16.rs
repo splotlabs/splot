@@ -317,6 +317,7 @@ const fn zero_deltas() -> QuantizerDeltas {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use crate::quantization_test_support::expected_level;
     use splot_recon::{
         InverseTransform1dType, InverseTransform2dDim, InverseTransform2dOuter,
         inverse_transform_2d_outer,
@@ -367,19 +368,6 @@ mod tests {
         let mut residual = vec![0; DCT_DCT_16X16_COEFF_COUNT];
         inverse_transform_2d_outer(&params, coefficients, &mut residual).unwrap();
         residual
-    }
-
-    /// Independent round-to-nearest level for one coefficient at quantizer `q`
-    /// (`dq_denom == 1`), mirroring `quantize_coefficient` so the per-coefficient
-    /// quantizer selection is cross-checked rather than re-derived through the
-    /// production path.
-    fn expected_level(coeff: i32, q: u32) -> i32 {
-        if coeff == 0 {
-            return 0;
-        }
-        let numerator = u64::from(coeff.unsigned_abs()) * 8;
-        let level = ((numerator + u64::from(q) / 2) / u64::from(q)) as i32;
-        if coeff < 0 { -level } else { level }
     }
 
     // An asymmetric, non-uniform 16x16 residual whose forward DCT carries real

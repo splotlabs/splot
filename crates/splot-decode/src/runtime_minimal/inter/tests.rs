@@ -15,18 +15,17 @@
 
 use splot_parallel::ThreadCount;
 
-use splot_core::headers::frame::{FrameHeaderCore, FrameHeaderParseStatus, QuantizationParams};
+use splot_core::headers::frame::{FrameHeaderParseStatus, QuantizationParams};
 use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SequenceHeader};
 use splot_core::ivf::{write_ivf_frame, write_ivf_header};
-use splot_core::obu::{ParsedObu, PayloadStatus};
 use splot_core::span::ByteOffset;
 use splot_core::stream::{ParsedBitstream, ParsedIvfFrame, parse_bitstream_partial};
-use splot_core::types::ObuType;
 use splot_recon::{LoopRestorationSource, PlaneId, ReconError};
 
 use super::super::{MinimalRuntimeFrame, decode_minimal_frames_from_plan};
 use super::block::interp_filter_no_neighbour_ctx;
 use super::compound_is_joint_context_from_order_hints;
+use super::test_support::fixture_sequence_and_key_core;
 use crate::error::{DecodeError, Result};
 use crate::tile_payload::{
     MinimalRuntimePartitionFrontierError, TilePartitionTraversalError, WienerNsLrSourceBlock,
@@ -156,36 +155,6 @@ fn fixture_sequence_and_quantization(bytes: &[u8]) -> (SequenceHeader, Quantizat
             .quantization_params
             .expect("key core parsed quantization params"),
     )
-}
-
-fn fixture_sequence_and_key_core(bytes: &[u8]) -> (SequenceHeader, FrameHeaderCore) {
-    let ParsedBitstream::Ivf(parsed) = parse_bitstream_partial(bytes) else {
-        panic!("fixture is IVF");
-    };
-    assert!(parsed.error.is_none());
-    assert!(parsed.warnings.is_empty());
-    let sequence = parsed
-        .frames
-        .iter()
-        .flat_map(|frame| frame.obus.iter())
-        .find_map(
-            |envelope| match envelope.payload_status().expect("payload status") {
-                PayloadStatus::Parsed(ParsedObu::SequenceHeader(sequence)) => {
-                    Some((*sequence).clone())
-                }
-                _ => None,
-            },
-        )
-        .expect("fixture carries a sequence header");
-    let key = parsed
-        .frames
-        .iter()
-        .flat_map(|frame| frame.obus.iter())
-        .find(|envelope| envelope.header.obu_type == ObuType::ClosedLoopKey)
-        .copied()
-        .expect("fixture carries a closed-loop-key frame");
-    let key_core = super::super::parse_frame_core(key, &sequence).expect("parse key core");
-    (sequence, key_core)
 }
 
 fn decode_inter_blocks_after_quantization_mutation(

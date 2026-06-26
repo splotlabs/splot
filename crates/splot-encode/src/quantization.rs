@@ -353,6 +353,7 @@ const fn zero_deltas() -> QuantizerDeltas {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use crate::quantization_test_support::expected_level;
     use splot_recon::{
         InverseTransform1dType, InverseTransform2dDim, InverseTransform2dOuter,
         inverse_transform_2d_outer,
@@ -557,19 +558,6 @@ mod tests {
 
     fn full_transform(residual: &[i32; DCT_DCT_4X4_COEFF_COUNT]) -> ForwardTransformBlock {
         ForwardTransformBlock::dct_dct_4x4(PlaneId::Y, rect(4, 4), residual).unwrap()
-    }
-
-    /// Independent round-to-nearest level for one coefficient at quantizer `q`
-    /// (`dq_denom == 1`): `round(|c| * 8 / q)` with sign, mirroring
-    /// `quantize_coefficient` so the per-coefficient quantizer selection is
-    /// cross-checked rather than re-derived through the production path.
-    fn expected_level(coeff: i32, q: u32) -> i32 {
-        if coeff == 0 {
-            return 0;
-        }
-        let numerator = u64::from(coeff.unsigned_abs()) * 8;
-        let level = ((numerator + u64::from(q) / 2) / u64::from(q)) as i32;
-        if coeff < 0 { -level } else { level }
     }
 
     // An asymmetric, non-uniform residual whose forward DCT carries real non-zero

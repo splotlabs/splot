@@ -2367,62 +2367,7 @@ mod tests {
     use crate::segment::{MAX_SEGMENTS, SEG_LVL_MAX, SegmentFeature, SegmentInfo};
     use crate::span::ByteOffset;
 
-    #[derive(Default)]
-    struct Bits {
-        bits: Vec<u8>,
-    }
-
-    impl Bits {
-        fn bit(&mut self, bit: u8) {
-            self.bits.push(bit & 1);
-        }
-
-        fn f(&mut self, value: u32, width: u32) {
-            for shift in (0..width).rev() {
-                self.bit(((value >> shift) & 1) as u8);
-            }
-        }
-
-        fn uvlc(&mut self, value: u32) {
-            let code_num = value + 1;
-            let leading_zeros = u32::BITS - 1 - code_num.leading_zeros();
-            for _ in 0..leading_zeros {
-                self.bit(0);
-            }
-            self.bit(1);
-            if leading_zeros > 0 {
-                self.f(code_num - (1 << leading_zeros), leading_zeros);
-            }
-        }
-
-        /// `ns(n)` encoding of `value` (0..n-1), the inverse of [`BitReader::read_ns`].
-        fn ns(&mut self, value: u32, n: u32) {
-            let w = u32::BITS - n.leading_zeros();
-            let m = (1u32 << w) - n;
-            if value < m {
-                self.f(value, w - 1);
-            } else {
-                self.f(value + m, w);
-            }
-        }
-
-        /// Number of bits accumulated so far (for byte-exact test truncation).
-        fn bit_len(&self) -> usize {
-            self.bits.len()
-        }
-
-        fn into_bytes(self) -> Vec<u8> {
-            let mut bytes = Vec::new();
-            for chunk in self.bits.chunks(8) {
-                let mut byte = 0u8;
-                for (i, bit) in chunk.iter().enumerate() {
-                    byte |= *bit << (7 - i);
-                }
-                bytes.push(byte);
-            }
-            bytes
-        }
-    }
+    use crate::test_bits::Bits;
 
     fn base_seq() -> CoreSeqView {
         // The representative non-single-picture intra sequence view is exactly the
@@ -4949,34 +4894,7 @@ mod proptests {
     use crate::tile::TileParams;
     use proptest::prelude::*;
 
-    /// Arbitrary [`CoreSeqQuantView`] values across the type ranges (bit depth and
-    /// plane count restricted to the AV2-legal domain, offsets unrestricted).
-    fn arbitrary_quant_view() -> impl Strategy<Value = CoreSeqQuantView> {
-        (
-            prop_oneof![Just(8u8), Just(10u8)],
-            prop_oneof![Just(1u8), Just(3u8)],
-            any::<[bool; 5]>(),
-            any::<[i32; 3]>(),
-            any::<[bool; 3]>(),
-        )
-            .prop_map(
-                |(bit_depth, num_planes, flags, bases, tcq)| CoreSeqQuantView {
-                    bit_depth,
-                    num_planes,
-                    separate_uv_delta_q: flags[0],
-                    equal_ac_dc_q: flags[1],
-                    y_dc_delta_q_enabled: flags[2],
-                    uv_dc_delta_q_enabled: flags[3],
-                    uv_ac_delta_q_enabled: flags[4],
-                    base_y_dc_delta_q: bases[0],
-                    base_uv_dc_delta_q: bases[1],
-                    base_uv_ac_delta_q: bases[2],
-                    enable_tcq: tcq[0],
-                    choose_tcq_per_frame: tcq[1],
-                    enable_parity_hiding: tcq[2],
-                },
-            )
-    }
+    use crate::test_support::arbitrary_quant_view;
 
     /// Arbitrary [`CoreSeqSegView`] values, including internally inconsistent ones
     /// (hostile `max_segments`, stored info without the present flag).

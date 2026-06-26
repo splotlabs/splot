@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 441 feature(s); 388 cite a spec section.
+Matrix version 1. Last reviewed 2026-06-15. 442 feature(s); 388 cite a spec section.
 
 One row per (spec section, feature) pair, in spec order; a feature citing both a syntax and a semantics section appears under both. The canonical status source is [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); the full per-feature ledger is [FEATURE-STATUS.md](./FEATURE-STATUS.md).
 
@@ -1522,7 +1522,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 
 ## Features without a spec section
 
-53 feature(s) track conformance, encoder, CLI, automation, or documentation work with no single spec section; see [FEATURE-STATUS.md](./FEATURE-STATUS.md):
+54 feature(s) track conformance, encoder, CLI, automation, or documentation work with no single spec section; see [FEATURE-STATUS.md](./FEATURE-STATUS.md):
 
 - `AV2-IVF-CONTAINER` — IVF container support
 - `CLI-INSPECT` — splot inspect command
@@ -1561,6 +1561,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 - `ENC-SYNTAX-IR` — Encoder syntax planning IR
 - `ENC-Y4M-INPUT` — Y4M input reader integration
 - `INFRA-DECODER-CRATE-SCAFFOLDING` — Decoder and reconstruction crate scaffolding
+- `INFRA-DUPEHOUND-DUPLICATION-GATE` — Duplicate-code budget gate
 - `INFRA-PARALLEL-RUNTIME-POLICY` — Parallel runtime policy (Rayon worker pool + bounded crossbeam queues)
 - `INFRA-ZERO-COPY-MEDIA-POLICY` — Zero-copy media-buffer ownership policy
 - `VALIDATOR-CONTEXT-SPLIT` — Validator context module split

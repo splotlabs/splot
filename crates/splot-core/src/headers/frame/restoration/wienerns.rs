@@ -404,38 +404,7 @@ mod tests {
 
     use super::*;
 
-    #[derive(Default)]
-    struct Bits {
-        bits: Vec<u8>,
-    }
-
-    impl Bits {
-        fn bit(&mut self, bit: u8) {
-            self.bits.push(bit & 1);
-        }
-
-        fn raw(&mut self, s: &str) {
-            for c in s.chars() {
-                match c {
-                    '0' => self.bit(0),
-                    '1' => self.bit(1),
-                    _ => {}
-                }
-            }
-        }
-
-        fn into_bytes(self) -> Vec<u8> {
-            let mut bytes = Vec::new();
-            for chunk in self.bits.chunks(8) {
-                let mut byte = 0u8;
-                for (i, bit) in chunk.iter().enumerate() {
-                    byte |= *bit << (7 - i);
-                }
-                bytes.push(byte);
-            }
-            bytes
-        }
-    }
+    use crate::test_bits::Bits;
 
     fn reader(data: &[u8]) -> BitReader<'_> {
         BitReader::new(data, ByteOffset::new(0))

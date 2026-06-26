@@ -676,6 +676,8 @@ mod ordinary_pass_tests;
 #[cfg(test)]
 mod ordinary_state_context_tests;
 #[cfg(test)]
+mod test_support;
+#[cfg(test)]
 mod use_fsc_branch_tests;
 #[cfg(test)]
 mod tests {

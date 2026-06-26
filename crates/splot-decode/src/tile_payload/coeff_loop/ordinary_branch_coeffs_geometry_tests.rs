@@ -3,14 +3,13 @@
 
 #![allow(clippy::unwrap_used, clippy::panic)]
 
-use splot_core::span::ByteOffset;
-use splot_core::symbol::{CdfUpdateMode, SymbolBitPosition, SymbolDecoder, SymbolDecoderConfig};
+use splot_core::symbol::SymbolBitPosition;
 use splot_core::tables::conversion::{ADJUSTED_TX_SIZE, TX_SIZE_SQR, TX_SIZE_SQR_UP};
 
 use super::super::cdf::{FrameCdfSubset, TileCdfSubset};
-use super::super::coeff_state::{CoeffContextUpdate, TileCoeffContextState};
+use super::super::coeff_state::TileCoeffContextState;
 use super::base_level_pass::{CoeffBaseDerivedLevelPassConfig, CoeffBaseDerivedLevelPassError};
-use super::branch::{CoeffBlockEobBranch, NonZeroCoeffBlockStart, NonZeroCoeffBlockStartInput};
+use super::branch::NonZeroCoeffBlockStartInput;
 use super::max_level::CoeffTransformClass;
 use super::ordinary_pass::geometry::{
     CoeffOrdinaryBranchCoeffsGeometryInput, CoeffOrdinaryBranchCoeffsGeometryNonZeroInput,
@@ -30,10 +29,8 @@ use super::ordinary_pass::{
     NonZeroCoeffOrdinaryDerivedBasePass, apply_coeff_ordinary_branch,
     apply_nonzero_coeff_ordinary_pass_with_state_context,
 };
-use super::{
-    AllZeroCoeffBlockInput, CoeffBlockEobBranchInput, NonZeroCoeffEobContextInput,
-    read_coeff_block_eob_branch,
-};
+use super::test_support::{seeded_context_state, setup_start_with_input, symbol_decoder};
+use super::{AllZeroCoeffBlockInput, NonZeroCoeffEobContextInput};
 
 const DC_ONLY_SCAN: [u16; 1] = [0];
 const PAYLOAD_SUFFIXES: [[u8; 3]; 4] = [
@@ -42,31 +39,6 @@ const PAYLOAD_SUFFIXES: [[u8; 3]; 4] = [
     [0x55, 0xaa, 0x80],
     [0xff, 0xff, 0x80],
 ];
-
-fn symbol_decoder(payload: &[u8]) -> SymbolDecoder<'_> {
-    SymbolDecoder::with_base_and_config(
-        payload,
-        ByteOffset::new(0),
-        SymbolDecoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Enabled),
-    )
-    .unwrap()
-}
-
-fn seeded_context_state() -> TileCoeffContextState {
-    let mut state = TileCoeffContextState::new(32, 32).unwrap();
-    state
-        .update_after_coeffs(CoeffContextUpdate {
-            plane: 0,
-            x4: 0,
-            y4: 0,
-            w4: 6,
-            h4: 6,
-            cul_level: 1,
-            dc_category: 1,
-        })
-        .unwrap();
-    state
-}
 
 fn payload_from(first: u8, second: u8, suffix: [u8; 3]) -> [u8; 12] {
     [
@@ -228,31 +200,6 @@ fn nonzero_start_input_for_plane_geometry_and_log2(
             coeff_cdf_q_ctx: 0,
         },
     }
-}
-
-fn branch_nonzero(branch: CoeffBlockEobBranch) -> Option<NonZeroCoeffBlockStart> {
-    match branch {
-        CoeffBlockEobBranch::AllZero(_) => None,
-        CoeffBlockEobBranch::NonZero(start) => Some(start),
-    }
-}
-
-fn setup_start_with_input<'a>(
-    payload: &'a [u8],
-    start: NonZeroCoeffBlockStartInput,
-) -> Option<(TileCdfSubset, SymbolDecoder<'a>, NonZeroCoeffBlockStart)> {
-    let frame = FrameCdfSubset::from_defaults();
-    let mut tile = frame.tile_copy();
-    let mut symbols = symbol_decoder(payload);
-    let mut state = TileCoeffContextState::new(4, 4).ok()?;
-    let branch = read_coeff_block_eob_branch(
-        &mut state,
-        &mut tile,
-        &mut symbols,
-        CoeffBlockEobBranchInput::NonZero(start),
-    )
-    .ok()?;
-    Some((tile, symbols, branch_nonzero(branch)?))
 }
 
 fn state_context_pass_for_payload_with_start(

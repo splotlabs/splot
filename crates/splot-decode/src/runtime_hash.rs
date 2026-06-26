@@ -80,13 +80,12 @@ mod tests {
     use splot_parallel::ThreadCount;
 
     use super::*;
+    use crate::runtime_test_support::{MINIMAL_FIXTURE, minimal_fixture_with_timebase};
     use crate::{
         DecodeContext, DecodeError, DecodeLimitName, DecodeLimitThreshold, DecodeLimits,
         DecodeRuntimeConfig, DecodeUnsupportedFeature,
     };
 
-    const MINIMAL_FIXTURE: &[u8] =
-        include_bytes!("../../../tests/conformance/vectors/valid/syn-flat-intra-64x64-minimal.ivf");
     const BROAD_FIXTURE: &[u8] =
         include_bytes!("../../../tests/conformance/vectors/valid/syn-key-intra-64x64.ivf");
     // SHA-256 of the decoded raw planar output for the committed conformant
@@ -98,13 +97,6 @@ mod tests {
 
     fn context(threads: ThreadCount) -> DecodeContext {
         DecodeContext::new(DecodeRuntimeConfig::new(threads)).unwrap()
-    }
-
-    fn minimal_fixture_with_timebase(numerator: u32, denominator: u32) -> Vec<u8> {
-        let mut bytes = MINIMAL_FIXTURE.to_vec();
-        bytes[16..20].copy_from_slice(&denominator.to_le_bytes());
-        bytes[20..24].copy_from_slice(&numerator.to_le_bytes());
-        bytes
     }
 
     #[test]
