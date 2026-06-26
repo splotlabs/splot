@@ -238,6 +238,32 @@ pub(crate) struct CoeffCdfRows {
     pub(super) idtx_sign: IdtxSignCdfRows,
 }
 
+impl CoeffCdfRows {
+    pub(crate) fn from_defaults() -> Self {
+        Self {
+            coeff_base: DEFAULT_COEFF_BASE_CDF,
+            coeff_base_ph: DEFAULT_COEFF_BASE_PH_CDF,
+            coeff_base_uv: DEFAULT_COEFF_BASE_UV_CDF,
+            coeff_base_lf: DEFAULT_COEFF_BASE_LF_CDF,
+            coeff_base_lf_uv: DEFAULT_COEFF_BASE_LF_UV_CDF,
+            coeff_base_eob: DEFAULT_COEFF_BASE_EOB_CDF,
+            coeff_base_eob_uv: DEFAULT_COEFF_BASE_EOB_UV_CDF,
+            coeff_base_bob: DEFAULT_COEFF_BASE_BOB_CDF,
+            coeff_base_idtx: DEFAULT_COEFF_BASE_IDTX_CDF,
+            coeff_base_lf_eob: DEFAULT_COEFF_BASE_LF_EOB_CDF,
+            coeff_base_lf_eob_uv: DEFAULT_COEFF_BASE_LF_EOB_UV_CDF,
+            coeff_br: DEFAULT_COEFF_BR_CDF,
+            coeff_br_uv: DEFAULT_COEFF_BR_UV_CDF,
+            coeff_br_lf: DEFAULT_COEFF_BR_LF_CDF,
+            coeff_br_idtx: DEFAULT_COEFF_BR_IDTX_CDF,
+            idtx_sign: DEFAULT_IDTX_SIGN_CDF,
+        }
+    }
+}
+
+// `row`/`row_mut` live in a second impl block below so this macro can be
+// declared between `from_defaults` and the accessors (a `macro_rules!` must
+// precede its use and cannot sit inside an `impl`).
 /// Expands the shared body of [`CoeffCdfRows::row`] and
 /// [`CoeffCdfRows::row_mut`].
 ///
@@ -463,27 +489,6 @@ macro_rules! coeff_cdf_row {
 }
 
 impl CoeffCdfRows {
-    pub(crate) fn from_defaults() -> Self {
-        Self {
-            coeff_base: DEFAULT_COEFF_BASE_CDF,
-            coeff_base_ph: DEFAULT_COEFF_BASE_PH_CDF,
-            coeff_base_uv: DEFAULT_COEFF_BASE_UV_CDF,
-            coeff_base_lf: DEFAULT_COEFF_BASE_LF_CDF,
-            coeff_base_lf_uv: DEFAULT_COEFF_BASE_LF_UV_CDF,
-            coeff_base_eob: DEFAULT_COEFF_BASE_EOB_CDF,
-            coeff_base_eob_uv: DEFAULT_COEFF_BASE_EOB_UV_CDF,
-            coeff_base_bob: DEFAULT_COEFF_BASE_BOB_CDF,
-            coeff_base_idtx: DEFAULT_COEFF_BASE_IDTX_CDF,
-            coeff_base_lf_eob: DEFAULT_COEFF_BASE_LF_EOB_CDF,
-            coeff_base_lf_eob_uv: DEFAULT_COEFF_BASE_LF_EOB_UV_CDF,
-            coeff_br: DEFAULT_COEFF_BR_CDF,
-            coeff_br_uv: DEFAULT_COEFF_BR_UV_CDF,
-            coeff_br_lf: DEFAULT_COEFF_BR_LF_CDF,
-            coeff_br_idtx: DEFAULT_COEFF_BR_IDTX_CDF,
-            idtx_sign: DEFAULT_IDTX_SIGN_CDF,
-        }
-    }
-
     pub(crate) fn row(&self, selector: CoeffCdfSelector) -> Result<&[i32], TileCdfError> {
         coeff_cdf_row!(self, selector, as_slice)
     }
