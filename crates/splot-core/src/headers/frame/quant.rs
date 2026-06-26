@@ -1461,32 +1461,7 @@ mod proptests {
     use crate::span::ByteOffset;
     use proptest::prelude::*;
 
-    fn arbitrary_quant_view() -> impl Strategy<Value = CoreSeqQuantView> {
-        (
-            prop_oneof![Just(8u8), Just(10u8)],
-            prop_oneof![Just(1u8), Just(3u8)],
-            any::<[bool; 5]>(),
-            any::<[i32; 3]>(),
-            any::<[bool; 3]>(),
-        )
-            .prop_map(
-                |(bit_depth, num_planes, flags, bases, tcq)| CoreSeqQuantView {
-                    bit_depth,
-                    num_planes,
-                    separate_uv_delta_q: flags[0],
-                    equal_ac_dc_q: flags[1],
-                    y_dc_delta_q_enabled: flags[2],
-                    uv_dc_delta_q_enabled: flags[3],
-                    uv_ac_delta_q_enabled: flags[4],
-                    base_y_dc_delta_q: bases[0],
-                    base_uv_dc_delta_q: bases[1],
-                    base_uv_ac_delta_q: bases[2],
-                    enable_tcq: tcq[0],
-                    choose_tcq_per_frame: tcq[1],
-                    enable_parity_hiding: tcq[2],
-                },
-            )
-    }
+    use crate::test_support::arbitrary_quant_view;
 
     proptest! {
         /// `read_delta_q()` never panics and never reads past the payload.

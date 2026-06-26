@@ -10,9 +10,40 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use proptest::prelude::*;
+
 use crate::headers::frame::{CoreSeqQuantView, CoreSeqTileView, GdfGeometry, SegmentationParams};
 use crate::headers::sequence::{LevelIdx, SuperblockSize, Tier};
 use crate::segment::{MAX_SEGMENTS, SEG_LVL_MAX, SegmentFeature};
+
+/// A proptest strategy over quantizer views spanning bit depth, plane count, and
+/// every optional delta-Q / TCQ flag, used by the parser and writer proptests.
+pub(crate) fn arbitrary_quant_view() -> impl Strategy<Value = CoreSeqQuantView> {
+    (
+        prop_oneof![Just(8u8), Just(10u8)],
+        prop_oneof![Just(1u8), Just(3u8)],
+        any::<[bool; 5]>(),
+        any::<[i32; 3]>(),
+        any::<[bool; 3]>(),
+    )
+        .prop_map(
+            |(bit_depth, num_planes, flags, bases, tcq)| CoreSeqQuantView {
+                bit_depth,
+                num_planes,
+                separate_uv_delta_q: flags[0],
+                equal_ac_dc_q: flags[1],
+                y_dc_delta_q_enabled: flags[2],
+                uv_dc_delta_q_enabled: flags[3],
+                uv_ac_delta_q_enabled: flags[4],
+                base_y_dc_delta_q: bases[0],
+                base_uv_dc_delta_q: bases[1],
+                base_uv_ac_delta_q: bases[2],
+                enable_tcq: tcq[0],
+                choose_tcq_per_frame: tcq[1],
+                enable_parity_hiding: tcq[2],
+            },
+        )
+}
 
 /// An 8-bit, 3-plane view with every optional quantizer read disabled.
 pub(crate) fn base_quant() -> CoreSeqQuantView {
