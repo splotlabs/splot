@@ -2714,3 +2714,55 @@ output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
 kind = "digest-equality"
 left = "avm-cdefdeblock-q100-raw-md5"
 right = "dav2d-cdefdeblock-q100-raw-md5"
+
+[[evidence]]
+id = "lref-avm-dav2d-syn-2sb-cdefuv-intra-128x64-q170"
+feature_id = "DECODE-GENERAL-INTRA-CDEF"
+decoder_support_rows = ["general-intra-cdef"]
+kind = "reference-output-agreement"
+summary = "Local AVM and dav2d raw decoder output MD5 digests agreed for the 8-bit 128x64 NONZERO-chroma-CDEF intra IVF fixture at base_q_idx 170: two 64x64 PARTITION_NONE superblocks (both DC_PRED luma; left top-left non-follow H_PRED chroma, right DC chroma), cdef_frame_enable == 1 with CdefStrengths == 1 (cdef_idx 0 everywhere), CdefDamping 5, cdef_on_skip_txfm_frame_enable == 1, single strength set y_pri 10 and y_sec 4 AND nonzero chroma uv_pri 2 and uv_sec 4. The first fixture to exercise the §7.18.1 chroma steps 9-14 sample-changingly: the Cdef_Uv_Dir[1][1][yDir] direction selection (engaged because uv_pri != 0), the 4:2:0 subsampled 4x4 chroma tap addressing, and the CdefDamping-1 chroma damping. The chroma CDEF changes over a thousand U and V samples each (yDir varies 0/2/4/6 over the cosine-AC content)."
+recorded_at = "2026-06-26"
+
+[[evidence.fixture]]
+id = "input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-2sb-cdefuv-intra-128x64-q170.ivf"
+sha256 = "ead7a1c4225f56caafbfe9d533cdaa8938602e776e707f8dcbea88e704e7841d"
+size_bytes = 96
+format = "ivf"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Generated locally from a project-owned two-region cosine-AC YUV input (luma left base 90 right base 170, U left 110 right 130, V left 135 right 120, all amplitude 14) with broad decode tools disabled and --enable-cdef=1 --enable-deblocking=0; AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avm"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "457cd58681a747465661baccb1f32095bc5b7774"
+version_summary = "AVM checkout HEAD 457cd58681a747465661baccb1f32095bc5b7774, exact binary build commit not separately archived."
+command_summary = "Local avmdec --rawvideo --i420 --limit=1 output MD5 for {fixture:input}."
+output_digest_id = "avm-cdefuv-q170-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "d783f353078cf156ba23dcfd3b2b50ad"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.reference_run]]
+id = "dav2d"
+tool = "dav2d"
+executable_name = "dav2d"
+tool_role = "decode-reference"
+source_url = "https://code.videolan.org/videolan/dav2d"
+revision = "f4f96cb06bb3cd3f31e29e1f190f1c0e373ab352"
+version_summary = "dav2d 0.0.1-191-gf4f96cb0 (commit f4f96cb0), decoded with --demuxer ivf; exact version output not archived."
+command_summary = "Local dav2d --demuxer ivf --muxer yuv --limit 1 output MD5 for {fixture:input}."
+output_digest_id = "dav2d-cdefuv-q170-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "d783f353078cf156ba23dcfd3b2b50ad"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-cdefuv-q170-raw-md5"
+right = "dav2d-cdefuv-q170-raw-md5"

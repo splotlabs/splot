@@ -191,18 +191,17 @@ fn is_general_minimal_intra(core: &FrameHeaderCore) -> bool {
         // `cdef_index0` / `cdef_index_minus_1` symbol reads (not modelled on this
         // path), so it is rejected. The §7.18 math is bit-depth-generic, but only
         // the 8-bit subset is oracle-pinned, gated by `route_general_minimal_intra`.
-        // The strength set's chroma (uv) strengths must both be zero: the chroma
-        // §7.18.1 `Cdef_Uv_Dir` remap + subsampled tap addressing run, but no
-        // oracle fixture exercises a sample-changing chroma CDEF output yet, so a
-        // nonzero-uv frame is rejected rather than hashed unverified.
+        // Both luma and chroma (uv) strengths are admitted: the chroma §7.18.1
+        // `Cdef_Uv_Dir` direction selection, the subsampled chroma tap addressing,
+        // and the `-1` chroma damping are oracle-pinned by a nonzero-uv fixture
+        // (`syn-2sb-cdefuv-intra-128x64-q170.ivf`), so a sample-changing chroma CDEF
+        // output is hashed against avmdec/dav2d rather than over-rejected.
         && core.cdef_params.as_ref().is_some_and(|cdef| {
             !cdef.cdef_frame_enable
                 || (cdef.cdef_strengths == Some(1)
                     && cdef.cdef_on_skip_txfm_frame_enable == Some(true)
                     && cdef.cdef_damping.is_some()
-                    && cdef.strengths.first().is_some_and(|set| {
-                        set.uv_pri_strength == 0 && set.uv_sec_strength == 0
-                    }))
+                    && !cdef.strengths.is_empty())
         })
         && core.lr_params.as_ref().is_some_and(|lr| !lr.uses_lr)
         && core
