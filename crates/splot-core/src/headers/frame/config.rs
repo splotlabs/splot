@@ -167,28 +167,7 @@ mod tests {
     use crate::error::Error;
     use crate::span::ByteOffset;
 
-    #[derive(Default)]
-    struct Bits {
-        bits: Vec<u8>,
-    }
-
-    impl Bits {
-        fn bit(&mut self, bit: u8) {
-            self.bits.push(bit & 1);
-        }
-
-        fn into_bytes(self) -> Vec<u8> {
-            let mut bytes = Vec::new();
-            for chunk in self.bits.chunks(8) {
-                let mut byte = 0u8;
-                for (i, bit) in chunk.iter().enumerate() {
-                    byte |= *bit << (7 - i);
-                }
-                bytes.push(byte);
-            }
-            bytes
-        }
-    }
+    use crate::test_bits::Bits;
 
     #[test]
     fn screen_content_forced_reads_no_bits() {

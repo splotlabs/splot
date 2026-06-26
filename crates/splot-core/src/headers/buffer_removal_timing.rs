@@ -146,46 +146,7 @@ mod tests {
     use super::*;
     use crate::span::ByteOffset;
 
-    /// MSB-first bit writer for building BRT payloads in tests.
-    #[derive(Default)]
-    struct Bits {
-        bits: Vec<u8>,
-    }
-
-    impl Bits {
-        fn bit(&mut self, bit: u8) {
-            self.bits.push(bit & 1);
-        }
-
-        fn f(&mut self, value: u32, width: u32) {
-            for shift in (0..width).rev() {
-                self.bit(((value >> shift) & 1) as u8);
-            }
-        }
-
-        /// Appends an `rg(n)` code for `value` (matching `read_rg`).
-        fn rg(&mut self, value: u32, n: u32) {
-            let q = value >> n;
-            let remainder = value & ((1 << n) - 1);
-            for _ in 0..q {
-                self.bit(1);
-            }
-            self.bit(0);
-            self.f(remainder, n);
-        }
-
-        fn into_bytes(self) -> Vec<u8> {
-            let mut bytes = Vec::new();
-            for chunk in self.bits.chunks(8) {
-                let mut byte = 0u8;
-                for (i, bit) in chunk.iter().enumerate() {
-                    byte |= *bit << (7 - i);
-                }
-                bytes.push(byte);
-            }
-            bytes
-        }
-    }
+    use crate::test_bits::Bits;
 
     fn parse(bytes: &[u8]) -> Result<BufferRemovalTiming> {
         let mut reader = BitReader::new(bytes, ByteOffset::new(0));

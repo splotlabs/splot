@@ -363,57 +363,7 @@ mod tests {
     use crate::error::Error;
     use crate::span::ByteOffset;
 
-    #[derive(Default)]
-    struct Bits {
-        bits: Vec<u8>,
-    }
-
-    impl Bits {
-        fn bit(&mut self, bit: u8) {
-            self.bits.push(bit & 1);
-        }
-
-        fn f(&mut self, value: u32, width: u32) {
-            for shift in (0..width).rev() {
-                self.bit(((value >> shift) & 1) as u8);
-            }
-        }
-
-        fn uvlc(&mut self, value: u32) {
-            let code_num = value + 1;
-            let leading_zeros = u32::BITS - 1 - code_num.leading_zeros();
-            for _ in 0..leading_zeros {
-                self.bit(0);
-            }
-            self.bit(1);
-            if leading_zeros > 0 {
-                self.f(code_num - (1 << leading_zeros), leading_zeros);
-            }
-        }
-
-        /// Appends an `rg(n)` code for `value` (matching `read_rg`).
-        fn rg(&mut self, value: u32, n: u32) {
-            let q = value >> n;
-            let remainder = value & ((1 << n) - 1);
-            for _ in 0..q {
-                self.bit(1);
-            }
-            self.bit(0);
-            self.f(remainder, n);
-        }
-
-        fn into_bytes(self) -> Vec<u8> {
-            let mut bytes = Vec::new();
-            for chunk in self.bits.chunks(8) {
-                let mut byte = 0u8;
-                for (i, bit) in chunk.iter().enumerate() {
-                    byte |= *bit << (7 - i);
-                }
-                bytes.push(byte);
-            }
-            bytes
-        }
-    }
+    use crate::test_bits::Bits;
 
     /// The six leading fixed fields with every optional-flag cleared.
     fn fixed_header(scan_type: u32, reserved_2bit: u32) -> Bits {
