@@ -60,15 +60,18 @@ cargo xtask check-fixtures
 cargo xtask check-duplication   # needs the `dupehound` binary; run-if-present locally
 ```
 
-`check-duplication` enforces the absolute duplicate-code ceiling in
+`check-duplication` enforces the absolute *production*-duplication ceiling in
 `tools/dupehound/budget.toml` using
-[dupehound](https://github.com/Rafaelpta/dupehound) (`dupehound scan
---include-tests --json`). It fails when the deletable-line count exceeds the
-budget; lower the budget in the same commit that removes a duplicate cluster —
-never raise it. The complementary per-PR ratchet (`dupehound check --diff
-<base>`, blocking newly introduced duplication) runs only in CI. Before
-reimplementing something, run `dupehound check` (or `dupehound scan . --explain
-<N>`) and reuse the original instead.
+[dupehound](https://github.com/Rafaelpta/dupehound) (`dupehound scan --json`,
+default scope). It fails when the deletable-line count exceeds the budget; lower
+the budget in the same commit that removes a duplicate cluster — never raise it.
+The scope is dupehound's default, which **excludes `#[test]` bodies**:
+deliberately-explicit per-scenario tests are intentional here and are not gated.
+This is a ratchet, not a zero mandate — it prevents new duplication and reduces
+the production duplication that hurts maintainability. The complementary per-PR
+ratchet (`dupehound check --diff <base>`, blocking newly introduced duplication)
+runs only in CI. Before reimplementing something, run `dupehound check` (or
+`dupehound scan . --explain <N>`) and reuse the original instead.
 
 ## Generated Status Docs
 

@@ -25,14 +25,14 @@ implements no decoder/encoder algorithmic stage.
 - Spec sections: none (infrastructure; a new `tooling` capability, sibling to the
   zero-copy and concurrency runtime policies).
 - Crates/modules: `xtask` (new `check-duplication` gate that enforces
-  `tools/dupehound/budget.toml` via `dupehound scan --include-tests --json`, wired
+  `tools/dupehound/budget.toml` via `dupehound scan --json` (default scope), wired
   into `cargo xtask ci` under the run-if-present policy).
 - CLI/docs/tests: `tools/dupehound/budget.toml` (the committed ceiling),
   `.github/workflows/ci.yml` (install dupehound, run the budget gate, and the
   PR-only `check --diff` ratchet), `docs/agents/commands.md` + `AGENTS.md`
   (reuse-before-reimplement guidance), the implementation matrix, and the
   `tooling` capability spec. Gate accept/reject unit tests.
-- Subsequent dedup commits lower the budget toward zero (the campaign tracked by
+- Subsequent dedup commits lower the production budget (the campaign tracked by
   this change), each scoped and CI-green.
 
 ## Non-goals

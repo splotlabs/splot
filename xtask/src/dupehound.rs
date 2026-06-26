@@ -3,13 +3,21 @@
 
 //! Duplicate-code budget gate (`cargo xtask check-duplication`).
 //!
-//! Enforces the committed absolute-duplication ceiling in
+//! Enforces the committed *production*-duplication ceiling in
 //! `tools/dupehound/budget.toml` against the deletable-line count reported by
 //! [`dupehound`](https://github.com/Rafaelpta/dupehound). The gate fails only
-//! when the measured count *exceeds* the ceiling, so aggregate duplication can
-//! never silently regress; the ceiling is ratcheted down by hand whenever a
-//! duplicate cluster is removed. The complementary per-PR ratchet
+//! when the measured count *exceeds* the ceiling, so production duplication can
+//! never silently regress; the ceiling is ratcheted down whenever a duplicate
+//! cluster is removed. The complementary per-PR ratchet
 //! (`dupehound check --diff <base>`) lives in `.github/workflows/ci.yml`.
+//!
+//! This is a **ratchet, not a zero mandate**. Real codebases carry legitimate
+//! duplication — deliberately-explicit per-scenario tests, intentional
+//! parser/writer decoupling, `&self`/`&mut self` accessor pairs. The goal is to
+//! *prevent new* duplication (the PR ratchet) and *reduce* the production
+//! duplication that hurts maintainability (this budget), never to force a zero
+//! that would require deleting intentional code. The scope is dupehound's
+//! default, which excludes `#[test]` bodies — see `check_duplication`.
 //!
 //! Like the other external-tool checks (`typos`, `cargo-machete`, `cargo-deny`),
 //! this follows the run-if-present policy: it is mandatory in CI (the workflow
@@ -64,15 +72,18 @@ pub(crate) fn check_duplication(root: &Path) -> Result<()> {
     let budget: Budget = toml::from_str(&budget_text)
         .with_context(|| format!("failed to parse {}", budget_path.display()))?;
 
-    // `--include-tests` counts test-file duplication too (excluded from the
-    // default slop score) so the ceiling can ratchet to zero. `--json` keeps the
+    // Default scope (no `--include-tests`): dupehound deliberately excludes the
+    // bodies of `#[test]` functions from the slop score, because per-scenario test
+    // cases are usually intentionally explicit — exactly this repo's testing
+    // philosophy (each named test documents one spec scenario). The gate therefore
+    // measures *production* duplication (plus non-`#[test]` test helpers), the kind
+    // that actually costs maintainability and is worth removing. `--json` keeps the
     // count machine-readable and stable across dupehound's human report changes.
-    let display = "dupehound scan <root> --include-tests --json";
+    let display = "dupehound scan <root> --json";
     eprintln!("> {display}");
     let output = Command::new("dupehound")
         .arg("scan")
         .arg(root)
-        .arg("--include-tests")
         .arg("--json")
         .output()
         .with_context(|| format!("failed to spawn `{display}`"))?;
@@ -103,8 +114,8 @@ fn enforce_budget(actual: u64, ceiling: u64) -> Result<String> {
         bail!(
             "check-duplication: {actual} deletable duplicate lines exceed the budget of {ceiling} \
              (+{} over).\n     New code duplicates existing code. Reuse it instead of \
-             reimplementing, or run `dupehound scan . --include-tests` (and `--explain <N>`) to \
-             find the original. Raising the budget in {BUDGET_PATH} is not allowed.",
+             reimplementing, or run `dupehound scan .` (and `--explain <N>`) to find the \
+             original. Raising the budget in {BUDGET_PATH} is not allowed.",
             actual - ceiling
         );
     }

@@ -9,14 +9,14 @@
 ## Gate (Phase 0)
 
 - [x] Add `tools/dupehound/budget.toml` with the measured ceiling and ratchet note.
-- [x] Add `xtask check-duplication` (parse `dupehound scan --include-tests --json`,
+- [x] Add `xtask check-duplication` (parse `dupehound scan --json` (default scope),
       compare deletable lines to the budget, run-if-present).
 - [x] Wire `check-duplication` into `run_ci()`.
 - [x] Install dupehound + run the budget gate and the PR-only `check --diff`
       ratchet in `.github/workflows/ci.yml`.
 - [x] Document reuse-before-reimplement in `AGENTS.md` + `docs/agents/commands.md`.
 
-## Dedup campaign (Phases 1..N) — lower the budget toward zero
+## Dedup campaign — lower the production budget (ratchet, not zero)
 
 - [ ] Collapse the 47× `into_bytes` / 23× `uvlc` header boilerplate; lower budget.
 - [ ] Deduplicate the CDF `row` / `row_mut` accessors; lower budget.

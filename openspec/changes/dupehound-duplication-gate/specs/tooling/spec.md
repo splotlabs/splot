@@ -22,16 +22,18 @@ Tracked by `INFRA-DUPEHOUND-DUPLICATION-GATE`.
 ### Requirement: enforcement by check-duplication
 
 The duplicate-code budget SHALL be enforced by `cargo xtask check-duplication`,
-which runs `dupehound scan --include-tests --json`, compares
-`score.deletable_lines` against the committed ceiling, and runs in `cargo xtask
-ci` alongside the other repository gates. It SHALL follow the run-if-present
+which runs `dupehound scan --json` (dupehound's default scope, which excludes
+`#[test]` bodies so deliberately-explicit per-scenario tests are not gated),
+compares `score.deletable_lines` against the committed ceiling, and runs in
+`cargo xtask ci` alongside the other repository gates. The budget is a ratchet on
+production duplication, not a zero mandate. It SHALL follow the run-if-present
 policy: mandatory in CI (the workflow installs `dupehound`) and skipped with an
 install hint when the binary is absent. Tracked by
 `INFRA-DUPEHOUND-DUPLICATION-GATE`.
 
 #### Scenario: measured duplication exceeds the budget
 
-- **WHEN** `dupehound scan --include-tests` reports more deletable duplicate lines
+- **WHEN** `dupehound scan` reports more deletable duplicate lines
   than `max_deletable_lines`
 - **THEN** `cargo xtask check-duplication` fails with the offending count and the
   ceiling, and the build does not pass

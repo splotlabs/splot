@@ -1,17 +1,19 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 #
-# Absolute duplicate-code budget enforced by `cargo xtask check-duplication`
-# (run inside `cargo xtask ci`). The gate fails when the measured number of
-# deletable duplicate lines EXCEEDS this ceiling, so duplication can never
-# silently regress in aggregate. The companion PR ratchet
+# Absolute PRODUCTION-duplication budget enforced by `cargo xtask
+# check-duplication` (run inside `cargo xtask ci`). The gate fails when the
+# measured number of deletable duplicate lines EXCEEDS this ceiling, so
+# production duplication can never silently regress. The companion PR ratchet
 # (`dupehound check --diff <base>` in CI) blocks newly introduced duplication.
 #
-# This is a RATCHET: lower `max_deletable_lines` in the same commit that removes
-# a duplicate cluster, never raise it. Measure with the exact gate command:
+# SCOPE: dupehound's default, which EXCLUDES `#[test]` bodies. Deliberately-
+# explicit per-scenario tests are intentional (this repo's testing philosophy)
+# and are not gated. This is a RATCHET, not a zero mandate: real code carries
+# legitimate duplication (explicit tests, deliberate parser/writer decoupling,
+# &self/&mut self accessor pairs). Lower `max_deletable_lines` in the same commit
+# that removes a duplicate cluster; never raise it. Measure with the exact gate
+# command:
 #
-#   dupehound scan . --include-tests --json | jq .score.deletable_lines
-#
-# `--include-tests` counts test-file duplication too (excluded from the default
-# slop score), so the budget reflects ALL duplication and can ratchet to zero.
-max_deletable_lines = 12985
+#   dupehound scan . --json | jq .score.deletable_lines
+max_deletable_lines = 7816
