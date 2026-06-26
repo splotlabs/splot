@@ -117,10 +117,14 @@ pub(crate) fn validate_dc_edge_sampled_sum<T: ReconSample>(
     Ok(Some(DcEdgeSum { sum, count }))
 }
 
+/// Validates intra prediction output buffer geometry, returning the required
+/// buffer length. `context` labels the arithmetic-overflow error so each
+/// predictor reports its own buffer-length context.
 pub(crate) fn validate_output_shape(
     size: IntraRectBlockSize,
     output_len: usize,
     stride_samples: usize,
+    context: &'static str,
 ) -> Result<usize> {
     let width = size.width();
     if stride_samples < width {
@@ -133,9 +137,7 @@ pub(crate) fn validate_output_shape(
     let required = (size.height() - 1)
         .checked_mul(stride_samples)
         .and_then(|prefix| prefix.checked_add(width))
-        .ok_or(ReconError::ArithmeticOverflow {
-            context: "intra prediction output buffer length",
-        })?;
+        .ok_or(ReconError::ArithmeticOverflow { context })?;
     if output_len < required {
         return Err(ReconError::IntraPredictionOutputTooSmall {
             expected: required,

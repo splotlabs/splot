@@ -5,6 +5,7 @@
 //!
 //! Feature tracking: `RECON-INTRA-CARDINAL-DIRECTIONAL-PREDICTION`.
 
+use crate::intra_dc_math::{validate_output_shape, validate_sample_type};
 use crate::{BitDepth, IntraRectBlockSize, ReconError, ReconSample, Result};
 
 /// Cardinal AV2 directional intra prediction mode.
@@ -116,7 +117,12 @@ pub fn predict_intra_cardinal_directional_rect_into<T: ReconSample>(
     stride_samples: usize,
 ) -> Result<()> {
     validate_sample_type::<T>(bit_depth)?;
-    validate_output_shape(size, output.len(), stride_samples)?;
+    validate_output_shape(
+        size,
+        output.len(),
+        stride_samples,
+        "cardinal directional intra prediction output buffer length",
+    )?;
 
     match direction {
         IntraCardinalDirection::Vertical => {
@@ -159,17 +165,6 @@ fn required_edge<T: ReconSample>(
     })
 }
 
-fn validate_sample_type<T: ReconSample>(bit_depth: BitDepth) -> Result<()> {
-    if T::supports_bit_depth(bit_depth) {
-        Ok(())
-    } else {
-        Err(ReconError::SampleTypeUnsupportedBitDepth {
-            sample_type: T::TYPE_NAME,
-            bit_depth,
-        })
-    }
-}
-
 fn validate_edge<T: ReconSample>(
     edge: IntraCardinalEdge,
     samples: &[T],
@@ -209,36 +204,6 @@ fn validate_sample<T: ReconSample>(
     } else {
         Ok(())
     }
-}
-
-fn validate_output_shape(
-    size: IntraRectBlockSize,
-    output_len: usize,
-    stride_samples: usize,
-) -> Result<()> {
-    let width = size.width();
-    if stride_samples < width {
-        return Err(ReconError::IntraPredictionStrideTooSmall {
-            stride_samples,
-            width,
-        });
-    }
-
-    let required = (size.height() - 1)
-        .checked_mul(stride_samples)
-        .and_then(|prefix| prefix.checked_add(width))
-        .ok_or(ReconError::ArithmeticOverflow {
-            context: "cardinal directional intra prediction output buffer length",
-        })?;
-
-    if output_len < required {
-        return Err(ReconError::IntraPredictionOutputTooSmall {
-            expected: required,
-            actual: output_len,
-        });
-    }
-
-    Ok(())
 }
 
 #[cfg(test)]

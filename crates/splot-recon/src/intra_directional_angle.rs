@@ -710,7 +710,12 @@ fn validate_inputs<'a, T: ReconSample>(
     stride_samples: usize,
 ) -> Result<ValidatedInputs<'a, T>> {
     validate_sample_type::<T>(bit_depth)?;
-    validate_output_shape(size, output_len, stride_samples)?;
+    validate_output_shape(
+        size,
+        output_len,
+        stride_samples,
+        "intra prediction output buffer length",
+    )?;
     let expected_len = required_edge_len(size)?;
     validate_index_bounds(size, angle, expected_len)?;
 
@@ -747,7 +752,12 @@ fn validate_middle_inputs<'a, T: ReconSample>(
     stride_samples: usize,
 ) -> Result<ValidatedMiddleInputs<'a, T>> {
     validate_sample_type::<T>(bit_depth)?;
-    validate_output_shape(size, output_len, stride_samples)?;
+    validate_output_shape(
+        size,
+        output_len,
+        stride_samples,
+        "intra prediction output buffer length",
+    )?;
 
     let left = edges.left_with_minus_one.ok_or(
         ReconError::IntraMiddleDirectionalAngleEdgeUnavailable {
@@ -786,7 +796,12 @@ fn validate_middle_idif_inputs<'a, T: ReconSample>(
     stride_samples: usize,
 ) -> Result<ValidatedMiddleIdifInputs<'a, T>> {
     validate_sample_type::<T>(bit_depth)?;
-    validate_output_shape(size, output_len, stride_samples)?;
+    validate_output_shape(
+        size,
+        output_len,
+        stride_samples,
+        "intra prediction output buffer length",
+    )?;
 
     let left = edges
         .left_idif
@@ -1077,7 +1092,12 @@ fn validate_one_sided_idif_inputs<'a, T: ReconSample>(
     stride_samples: usize,
 ) -> Result<&'a [T]> {
     validate_sample_type::<T>(bit_depth)?;
-    validate_output_shape(size, output_len, stride_samples)?;
+    validate_output_shape(
+        size,
+        output_len,
+        stride_samples,
+        "intra prediction output buffer length",
+    )?;
     // The ABOVE-reading zone-1 angles (D45/D67) and the LEFT-reading zone-3 angle
     // (D203) are supported; the caller-supplied edge must match the angle's edge.
     let direction = match angle.branch() {

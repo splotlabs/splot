@@ -42,7 +42,12 @@ pub fn apply_intra_ibp_dc_rect<T: ReconSample>(
     stride_samples: usize,
 ) -> Result<()> {
     validate_sample_type::<T>(bit_depth)?;
-    let required = validate_output_shape(size, pred.len(), stride_samples)?;
+    let required = validate_output_shape(
+        size,
+        pred.len(),
+        stride_samples,
+        "intra prediction output buffer length",
+    )?;
     let have_left = validate_dc_edge(
         IntraDcEdge::Left,
         edges.left_samples(),
