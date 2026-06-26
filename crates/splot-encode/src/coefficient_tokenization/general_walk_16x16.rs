@@ -128,6 +128,10 @@ pub(crate) fn tokenize_general_16x16_luma_block_full(
 }
 
 #[cfg(test)]
+#[path = "general_walk_16x16_test_support.rs"]
+mod test_support;
+
+#[cfg(test)]
 #[path = "general_walk_16x16_tests.rs"]
 mod tests;
 
