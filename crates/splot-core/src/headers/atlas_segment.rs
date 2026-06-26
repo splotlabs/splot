@@ -570,47 +570,7 @@ mod tests {
     use super::*;
     use crate::span::ByteOffset;
 
-    /// MSB-first bit writer for building atlas payloads in tests.
-    #[derive(Default)]
-    struct Bits {
-        bits: Vec<u8>,
-    }
-
-    impl Bits {
-        fn bit(&mut self, bit: u8) {
-            self.bits.push(bit & 1);
-        }
-
-        fn f(&mut self, value: u32, width: u32) {
-            for shift in (0..width).rev() {
-                self.bit(((value >> shift) & 1) as u8);
-            }
-        }
-
-        fn uvlc(&mut self, value: u32) {
-            let code_num = value + 1;
-            let leading_zeros = u32::BITS - 1 - code_num.leading_zeros();
-            for _ in 0..leading_zeros {
-                self.bit(0);
-            }
-            self.bit(1);
-            if leading_zeros > 0 {
-                self.f(code_num - (1 << leading_zeros), leading_zeros);
-            }
-        }
-
-        fn into_bytes(self) -> Vec<u8> {
-            let mut bytes = Vec::new();
-            for chunk in self.bits.chunks(8) {
-                let mut byte = 0u8;
-                for (i, bit) in chunk.iter().enumerate() {
-                    byte |= *bit << (7 - i);
-                }
-                bytes.push(byte);
-            }
-            bytes
-        }
-    }
+    use crate::test_bits::Bits;
 
     fn parse(bytes: &[u8]) -> Result<AtlasSegment> {
         let mut reader = BitReader::new(bytes, ByteOffset::new(0));

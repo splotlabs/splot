@@ -16,6 +16,10 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as _, Result, bail};
 use serde::Deserialize;
 
+#[cfg(test)]
+use crate::util::temp_root;
+use crate::util::{is_valid_feature_id, is_windows_absolute_path, tokenized};
+
 /// Repo-relative path of the canonical decoder support matrix.
 const MATRIX_PATH: &str = "docs/DECODER-SUPPORT-MATRIX.toml";
 /// Repo-relative path of the generated decoder support status document.
@@ -473,33 +477,6 @@ fn is_valid_row_id(s: &str) -> bool {
         })
 }
 
-/// Returns `true` if `s` matches `^[A-Z0-9]+(-[A-Z0-9.]+)+$`.
-fn is_valid_feature_id(s: &str) -> bool {
-    let mut parts = s.split('-');
-    let Some(first) = parts.next() else {
-        return false;
-    };
-    if first.is_empty()
-        || !first
-            .bytes()
-            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
-    {
-        return false;
-    }
-    let mut count = 0usize;
-    for part in parts {
-        count += 1;
-        if part.is_empty()
-            || !part
-                .bytes()
-                .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'.')
-        {
-            return false;
-        }
-    }
-    count >= 1
-}
-
 fn validate_local_reference_evidence_links(root: &Path, checked: &CheckedMatrix) -> Result<()> {
     let evidence_index = crate::reference_evidence::load_checked_reference_evidence_index(root)?;
     validate_reference_evidence_links(&checked.rows, &evidence_index)?;
@@ -720,15 +697,6 @@ fn path_fragments(value: &str) -> Vec<String> {
         .collect()
 }
 
-fn tokenized(value: &str) -> Vec<String> {
-    value
-        .split(|c: char| c.is_whitespace() || matches!(c, '`' | '"' | '\'' | '(' | ')' | '<' | '>'))
-        .map(|token| token.trim_matches(|c: char| matches!(c, ',' | ';' | ':' | '.')))
-        .filter(|token| !token.is_empty())
-        .map(str::to_owned)
-        .collect()
-}
-
 fn looks_local_absolute_path(token: &str) -> bool {
     token.starts_with("file://") || looks_absolute_path(token)
 }
@@ -738,14 +706,6 @@ fn looks_absolute_path(token: &str) -> bool {
         return false;
     }
     token.starts_with('/') || token.starts_with("~/") || is_windows_absolute_path(token)
-}
-
-fn is_windows_absolute_path(token: &str) -> bool {
-    let bytes = token.as_bytes();
-    bytes.len() >= 3
-        && bytes[0].is_ascii_alphabetic()
-        && bytes[1] == b':'
-        && matches!(bytes[2], b'\\' | b'/')
 }
 
 #[cfg(test)]
@@ -924,16 +884,5 @@ notes = "done"
         run_check_decoder_support(&root)?;
         let _ = std::fs::remove_dir_all(&root);
         Ok(())
-    }
-
-    fn temp_root(name: &str) -> Result<PathBuf> {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("system time is after Unix epoch")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("{name}-{}-{nanos}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root)?;
-        Ok(root)
     }
 }

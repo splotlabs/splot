@@ -18,6 +18,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as _, Result, bail};
 use serde::{Deserialize, Serialize};
 
+use crate::util::is_valid_feature_id;
+
 /// Repo-relative path of the canonical matrix.
 const MATRIX_PATH: &str = "docs/IMPLEMENTATION-MATRIX.toml";
 /// Repo-relative path of the generated status document.
@@ -1391,33 +1393,6 @@ impl Checker {
 // ---------------------------------------------------------------------------
 // Free helpers
 // ---------------------------------------------------------------------------
-
-/// Returns `true` if `s` matches `^[A-Z0-9]+(-[A-Z0-9.]+)+$`.
-fn is_valid_feature_id(s: &str) -> bool {
-    let mut parts = s.split('-');
-    let Some(first) = parts.next() else {
-        return false;
-    };
-    if first.is_empty()
-        || !first
-            .bytes()
-            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
-    {
-        return false;
-    }
-    let mut count = 0usize;
-    for part in parts {
-        count += 1;
-        if part.is_empty()
-            || !part
-                .bytes()
-                .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'.')
-        {
-            return false;
-        }
-    }
-    count >= 1
-}
 
 /// Returns `true` if `token` equals `id` followed by `.` and a non-empty suffix.
 fn is_suffixed(token: &str, id: &str) -> bool {

@@ -600,74 +600,11 @@ pub fn parse_lossless_info(
 mod tests {
     use super::*;
     use crate::error::Error;
-    use crate::segment::SEG_LVL_MAX;
+
     use crate::span::ByteOffset;
+    use crate::test_support::{base_quant, seg_params};
 
-    #[derive(Default)]
-    struct Bits {
-        bits: Vec<u8>,
-    }
-
-    impl Bits {
-        fn bit(&mut self, bit: u8) {
-            self.bits.push(bit & 1);
-        }
-
-        fn f(&mut self, value: u32, width: u32) {
-            for shift in (0..width).rev() {
-                self.bit(((value >> shift) & 1) as u8);
-            }
-        }
-
-        /// Encodes `su(n)`: the bottom `n` bits of the signed value (AV2 § 4.11.7).
-        fn su(&mut self, value: i32, width: u32) {
-            self.f((value as u32) & ((1u32 << width) - 1), width);
-        }
-
-        fn into_bytes(self) -> Vec<u8> {
-            let mut bytes = Vec::new();
-            for chunk in self.bits.chunks(8) {
-                let mut byte = 0u8;
-                for (i, bit) in chunk.iter().enumerate() {
-                    byte |= *bit << (7 - i);
-                }
-                bytes.push(byte);
-            }
-            bytes
-        }
-    }
-
-    /// An 8-bit, 3-plane view with every optional quantizer read disabled.
-    fn base_quant() -> CoreSeqQuantView {
-        CoreSeqQuantView {
-            bit_depth: 8,
-            num_planes: 3,
-            separate_uv_delta_q: false,
-            equal_ac_dc_q: false,
-            y_dc_delta_q_enabled: false,
-            uv_dc_delta_q_enabled: false,
-            uv_ac_delta_q_enabled: false,
-            base_y_dc_delta_q: 0,
-            base_uv_dc_delta_q: 0,
-            base_uv_ac_delta_q: 0,
-            enable_tcq: false,
-            choose_tcq_per_frame: false,
-            enable_parity_hiding: false,
-        }
-    }
-
-    /// All-disabled segmentation (or enabled with no features).
-    fn seg_params(enabled: bool) -> SegmentationParams {
-        SegmentationParams {
-            segmentation_enabled: enabled,
-            reuse_seg_info: false,
-            features: [[SegmentFeature::DISABLED; SEG_LVL_MAX]; MAX_SEGMENTS],
-            segmentation_update_map: enabled,
-            segmentation_temporal_update: false,
-            seg_id_pre_skip: false,
-            last_active_seg_id: 0,
-        }
-    }
+    use crate::test_bits::Bits;
 
     /// `quantization_params()` output with the given `base_q_idx` and zero deltas.
     fn quant_params(base_q_idx: u32) -> QuantizationParams {
@@ -1524,32 +1461,7 @@ mod proptests {
     use crate::span::ByteOffset;
     use proptest::prelude::*;
 
-    fn arbitrary_quant_view() -> impl Strategy<Value = CoreSeqQuantView> {
-        (
-            prop_oneof![Just(8u8), Just(10u8)],
-            prop_oneof![Just(1u8), Just(3u8)],
-            any::<[bool; 5]>(),
-            any::<[i32; 3]>(),
-            any::<[bool; 3]>(),
-        )
-            .prop_map(
-                |(bit_depth, num_planes, flags, bases, tcq)| CoreSeqQuantView {
-                    bit_depth,
-                    num_planes,
-                    separate_uv_delta_q: flags[0],
-                    equal_ac_dc_q: flags[1],
-                    y_dc_delta_q_enabled: flags[2],
-                    uv_dc_delta_q_enabled: flags[3],
-                    uv_ac_delta_q_enabled: flags[4],
-                    base_y_dc_delta_q: bases[0],
-                    base_uv_dc_delta_q: bases[1],
-                    base_uv_ac_delta_q: bases[2],
-                    enable_tcq: tcq[0],
-                    choose_tcq_per_frame: tcq[1],
-                    enable_parity_hiding: tcq[2],
-                },
-            )
-    }
+    use crate::test_support::arbitrary_quant_view;
 
     proptest! {
         /// `read_delta_q()` never panics and never reads past the payload.

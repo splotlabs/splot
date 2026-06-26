@@ -17,37 +17,9 @@ mod tests {
     };
     use crate::headers::sequence::SuperblockSize;
     use crate::span::ByteOffset;
+    use crate::test_support::base_geometry;
 
-    /// MSB-first bit builder mirroring the parser's own `Bits` helper, so this module reuses
-    /// the same hand-built, spec-grounded fixtures for the parse-then-write round-trips.
-    #[derive(Default)]
-    struct Bits {
-        bits: Vec<u8>,
-    }
-
-    impl Bits {
-        fn bit(&mut self, bit: u8) {
-            self.bits.push(bit & 1);
-        }
-
-        fn f(&mut self, value: u32, width: u32) {
-            for shift in (0..width).rev() {
-                self.bit(((value >> shift) & 1) as u8);
-            }
-        }
-
-        fn into_bytes(self) -> Vec<u8> {
-            let mut bytes = Vec::new();
-            for chunk in self.bits.chunks(8) {
-                let mut byte = 0u8;
-                for (i, bit) in chunk.iter().enumerate() {
-                    byte |= *bit << (7 - i);
-                }
-                bytes.push(byte);
-            }
-            bytes
-        }
-    }
+    use crate::test_bits::Bits;
 
     fn reader(bytes: &[u8]) -> BitReader<'_> {
         BitReader::new(bytes, ByteOffset::new(0))
@@ -63,20 +35,6 @@ mod tests {
             df_par_bits_minus_2: 0,
             enable_df_sub_pu: false,
             single_picture_header_flag: false,
-        }
-    }
-
-    /// A small single-tile frame whose MiCols*4 = 1024 > gdfBlkSize (128), so gdf_per_block is
-    /// coded.
-    fn base_geometry() -> GdfGeometry<'static> {
-        GdfGeometry {
-            sb_size: SuperblockSize::Block128x128,
-            mi_cols: 256,
-            mi_rows: 256,
-            tile_cols: 1,
-            tile_rows: 1,
-            mi_col_starts: &[0],
-            mi_row_starts: &[0],
         }
     }
 

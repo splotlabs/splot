@@ -4,15 +4,15 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use splot_core::segment::MAX_SEGMENTS;
-use splot_core::span::ByteOffset;
-use splot_core::symbol::{CdfUpdateMode, SymbolBitPosition, SymbolDecoder, SymbolDecoderConfig};
+use splot_core::symbol::SymbolBitPosition;
 
 use super::super::cdf::{FrameCdfSubset, TileCdfSubset};
-use super::super::coeff_state::{CoeffContextUpdate, TileCoeffContextState};
+use super::super::coeff_state::TileCoeffContextState;
 use super::super::{TileCoeffFrameFacts, TileCoeffFrameFactsInput};
 use super::ordinary_pass::geometry::{
     CoeffOrdinaryBranchLosslessBaseConfig, CoeffOrdinaryTxSizeGeometryConfig,
 };
+use super::test_support::{seeded_context_state, symbol_decoder};
 use super::use_fsc_branch::{
     CoeffUseFscBaseQFacts, CoeffUseFscBaseQFactsInput, CoeffUseFscBaseQFactsNonZeroInput,
     CoeffUseFscBranch, CoeffUseFscBranchError, CoeffUseFscFrameBlockFacts,
@@ -47,31 +47,6 @@ type SelectorRun = (
     SymbolBitPosition,
     u64,
 );
-
-fn symbol_decoder(payload: &[u8]) -> SymbolDecoder<'_> {
-    SymbolDecoder::with_base_and_config(
-        payload,
-        ByteOffset::new(0),
-        SymbolDecoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Enabled),
-    )
-    .unwrap()
-}
-
-fn seeded_context_state() -> TileCoeffContextState {
-    let mut state = TileCoeffContextState::new(32, 32).unwrap();
-    state
-        .update_after_coeffs(CoeffContextUpdate {
-            plane: 0,
-            x4: 0,
-            y4: 0,
-            w4: 6,
-            h4: 6,
-            cul_level: 1,
-            dc_category: 1,
-        })
-        .unwrap();
-    state
-}
 
 fn geometry() -> CoeffOrdinaryTxSizeGeometryConfig {
     CoeffOrdinaryTxSizeGeometryConfig {

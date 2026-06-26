@@ -3,11 +3,10 @@
 
 #![allow(clippy::unwrap_used, clippy::panic)]
 
-use splot_core::span::ByteOffset;
-use splot_core::symbol::{CdfUpdateMode, SymbolBitPosition, SymbolDecoder, SymbolDecoderConfig};
+use splot_core::symbol::SymbolBitPosition;
 
 use super::super::cdf::{FrameCdfSubset, TileCdfSubset};
-use super::super::coeff_state::{CoeffContextUpdate, TileCoeffContextState};
+use super::super::coeff_state::TileCoeffContextState;
 use super::ordinary_pass::geometry::{
     CoeffOrdinaryBranchLosslessBaseConfig, CoeffOrdinaryBranchLosslessInput,
     CoeffOrdinaryBranchLosslessNonZeroInput, CoeffOrdinaryBranchTxSetBaseConfig,
@@ -18,6 +17,7 @@ use super::ordinary_pass::geometry::{
     apply_coeff_ordinary_branch_from_tx_size_dimensions,
 };
 use super::ordinary_pass::{CoeffOrdinaryBranch, CoeffOrdinaryBranchError};
+use super::test_support::{seeded_context_state, symbol_decoder};
 
 const TX_8X8: usize = 1;
 const UV_SMOOTH_PRED: usize = 9;
@@ -30,35 +30,10 @@ const PAYLOAD_SUFFIXES: [[u8; 3]; 4] = [
     [0xff, 0xff, 0x80],
 ];
 
-fn symbol_decoder(payload: &[u8]) -> SymbolDecoder<'_> {
-    SymbolDecoder::with_base_and_config(
-        payload,
-        ByteOffset::new(0),
-        SymbolDecoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Enabled),
-    )
-    .unwrap()
-}
-
 fn payload_from(first: u8, second: u8, suffix: [u8; 3]) -> [u8; 12] {
     [
         first, second, suffix[0], suffix[1], suffix[2], 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x80,
     ]
-}
-
-fn seeded_context_state() -> TileCoeffContextState {
-    let mut state = TileCoeffContextState::new(32, 32).unwrap();
-    state
-        .update_after_coeffs(CoeffContextUpdate {
-            plane: 0,
-            x4: 0,
-            y4: 0,
-            w4: 6,
-            h4: 6,
-            cul_level: 1,
-            dc_category: 1,
-        })
-        .unwrap();
-    state
 }
 
 fn tx_size_geometry(tx_size: usize) -> CoeffOrdinaryTxSizeGeometryConfig {

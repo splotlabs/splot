@@ -1024,6 +1024,35 @@ fn reconstruct_prefix(
     })
 }
 
+/// Parses a frame-header body (activation prefix + `parse_core_body`) against a directly
+/// built [`CoreSeqView`] / [`MfhFrameView`], the writer-test equivalent of the parser's
+/// in-module `parse_body_with_mfh` helper (which is not reachable from this module). Shared
+/// by both `include!`d test modules below.
+#[cfg(test)]
+fn parse_core_body_for_test(
+    data: &[u8],
+    obu_type: ObuType,
+    first_pic: bool,
+    seq: &CoreSeqView,
+    mfh: Option<&MfhFrameView>,
+) -> crate::error::Result<FrameHeaderCore> {
+    use crate::headers::frame::{
+        FrameReferenceStateView, init_core_from_prefix, parse_core_body, parse_frame_header_prefix,
+    };
+    let mut reader = crate::bitio::BitReader::new(data, crate::span::ByteOffset::new(0));
+    let prefix = parse_frame_header_prefix(&mut reader, obu_type, Some(first_pic))?;
+    let mut core = init_core_from_prefix(&prefix, obu_type, first_pic);
+    parse_core_body(
+        &mut reader,
+        &mut core,
+        seq,
+        mfh,
+        &FrameReferenceStateView::unknown(),
+    )?;
+    core.consumed_bits = reader.consumed_bits();
+    Ok(core)
+}
+
 // The unit / byte-exact / rejection tests and the property tests live in sibling files (the
 // advisory source-line limit); `include!` pastes them into this module so their `super::*`
 // resolves to the writers and private helpers above.

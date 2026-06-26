@@ -21,75 +21,10 @@
 mod tests {
     use super::*;
     use crate::headers::frame::{
-        FrameHeaderParseStatus, FrameReferenceStateView, FrameSize, init_core_from_prefix,
-        parse_core_body, parse_frame_header_prefix,
+        FrameHeaderParseStatus, FrameSize,
     };
 
-    /// Parses a frame-header body (activation prefix + `parse_core_body`) against a directly
-    /// built [`CoreSeqView`] / [`MfhFrameView`], the writer-test equivalent of the parser's
-    /// in-module `parse_body_with_mfh` helper (which is not reachable from this module).
-    fn parse_core_body_for_test(
-        data: &[u8],
-        obu_type: ObuType,
-        first_pic: bool,
-        seq: &CoreSeqView,
-        mfh: Option<&MfhFrameView>,
-    ) -> crate::error::Result<FrameHeaderCore> {
-        let mut reader = crate::bitio::BitReader::new(data, crate::span::ByteOffset::new(0));
-        let prefix = parse_frame_header_prefix(&mut reader, obu_type, Some(first_pic))?;
-        let mut core = init_core_from_prefix(&prefix, obu_type, first_pic);
-        parse_core_body(
-            &mut reader,
-            &mut core,
-            seq,
-            mfh,
-            &FrameReferenceStateView::unknown(),
-        )?;
-        core.consumed_bits = reader.consumed_bits();
-        Ok(core)
-    }
-
-    /// MSB-first bit builder mirroring the parser test helpers (`info.rs::tests::Bits`).
-    #[derive(Default, Clone)]
-    struct Bits {
-        bits: Vec<u8>,
-    }
-
-    impl Bits {
-        fn bit(&mut self, bit: u8) {
-            self.bits.push(bit & 1);
-        }
-
-        fn f(&mut self, value: u32, width: u32) {
-            for shift in (0..width).rev() {
-                self.bit(((value >> shift) & 1) as u8);
-            }
-        }
-
-        fn uvlc(&mut self, value: u32) {
-            let code_num = value + 1;
-            let leading_zeros = u32::BITS - 1 - code_num.leading_zeros();
-            for _ in 0..leading_zeros {
-                self.bit(0);
-            }
-            self.bit(1);
-            if leading_zeros > 0 {
-                self.f(code_num - (1 << leading_zeros), leading_zeros);
-            }
-        }
-
-        fn into_bytes(self) -> Vec<u8> {
-            let mut bytes = Vec::new();
-            for chunk in self.bits.chunks(8) {
-                let mut byte = 0u8;
-                for (i, bit) in chunk.iter().enumerate() {
-                    byte |= *bit << (7 - i);
-                }
-                bytes.push(byte);
-            }
-            bytes
-        }
-    }
+    use crate::test_bits::Bits;
 
     // ---- sub-view builders (mirror info.rs::tests::base_* / test_sub_views) -----------
 

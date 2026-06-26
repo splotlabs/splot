@@ -1193,6 +1193,8 @@ use cross_frame::{ResolvedCdfLoad, order_hint_history_unwrapped, resolve_cdf_loa
 mod lr_live_storage_tests;
 #[cfg(test)]
 mod lr_source_read_tests;
+#[cfg(test)]
+mod test_support;
 
 #[cfg(test)]
 mod tests;

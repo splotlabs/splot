@@ -11,6 +11,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use splot_decode::DecodeOptions;
 
+mod common;
+use common::read_dir_names;
+
 static TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 const PLANABLE_CLOSED_LOOP_KEY: &[u8] = &[0x01, 0x10];
@@ -106,21 +109,6 @@ fn read_dir_paths(path: &Path) -> Vec<PathBuf> {
         .expect("read temporary directory")
         .map(|entry| entry.expect("read temporary directory entry").path())
         .collect()
-}
-
-fn read_dir_names(path: &Path) -> Vec<String> {
-    let mut entries = std::fs::read_dir(path)
-        .expect("read temporary directory")
-        .map(|entry| {
-            entry
-                .expect("read temporary directory entry")
-                .file_name()
-                .to_string_lossy()
-                .into_owned()
-        })
-        .collect::<Vec<_>>();
-    entries.sort();
-    entries
 }
 
 fn decode_hash_json(path: &Path, threads: &str) -> serde_json::Value {

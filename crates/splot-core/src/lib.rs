@@ -40,8 +40,14 @@ pub mod stream;
 pub mod symbol;
 pub mod symbol_encoder;
 pub mod tables;
+#[cfg(test)]
+mod test_support;
 pub mod tile;
 pub mod types;
 pub mod write;
+
+/// Shared MSB-first bit-writer test helper (test-only; see `test_bits::Bits`).
+#[cfg(test)]
+mod test_bits;
 
 pub use error::{Error, Result};

@@ -37,6 +37,8 @@ mod runtime_hash;
 mod runtime_minimal;
 mod runtime_minimal_recon;
 mod runtime_raw;
+#[cfg(test)]
+mod runtime_test_support;
 mod runtime_y4m;
 pub mod stream_plan;
 pub(crate) mod tile_payload;

@@ -205,41 +205,7 @@ mod tests {
     use crate::headers::frame::parse_frame_header_prefix;
     use crate::span::ByteOffset;
 
-    /// MSB-first bit builder mirroring the parser test helpers.
-    #[derive(Default)]
-    struct Bits {
-        bits: Vec<u8>,
-    }
-
-    impl Bits {
-        fn bit(&mut self, bit: u8) {
-            self.bits.push(bit & 1);
-        }
-
-        fn uvlc(&mut self, value: u32) {
-            let code_num = value + 1;
-            let leading_zeros = u32::BITS - 1 - code_num.leading_zeros();
-            for _ in 0..leading_zeros {
-                self.bit(0);
-            }
-            self.bit(1);
-            for shift in (0..leading_zeros).rev() {
-                self.bit((((code_num - (1 << leading_zeros)) >> shift) & 1) as u8);
-            }
-        }
-
-        fn into_bytes(self) -> Vec<u8> {
-            let mut bytes = Vec::new();
-            for chunk in self.bits.chunks(8) {
-                let mut byte = 0u8;
-                for (i, bit) in chunk.iter().enumerate() {
-                    byte |= *bit << (7 - i);
-                }
-                bytes.push(byte);
-            }
-            bytes
-        }
-    }
+    use crate::test_bits::Bits;
 
     fn parse_prefix(bytes: &[u8], obu_type: ObuType, first_pic: Option<bool>) -> FrameHeaderPrefix {
         let mut reader = BitReader::new(bytes, ByteOffset::new(0));

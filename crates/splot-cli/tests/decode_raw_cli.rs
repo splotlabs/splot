@@ -9,6 +9,9 @@ use std::path::{Path, PathBuf};
 use std::process::Output;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+mod common;
+use common::read_dir_names;
+
 static TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 const PLANABLE_CLOSED_LOOP_KEY: &[u8] = &[0x01, 0x10];
@@ -52,21 +55,6 @@ fn conformance_vector(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/conformance/vectors/valid")
         .join(name)
-}
-
-fn read_dir_names(path: &Path) -> Vec<String> {
-    let mut entries = std::fs::read_dir(path)
-        .expect("read temporary directory")
-        .map(|entry| {
-            entry
-                .expect("read temporary directory entry")
-                .file_name()
-                .to_string_lossy()
-                .into_owned()
-        })
-        .collect::<Vec<_>>();
-    entries.sort();
-    entries
 }
 
 // The decoded raw planar output for the committed conformant luma-skip fixture

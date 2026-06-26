@@ -3,8 +3,7 @@
 
 #![allow(clippy::unwrap_used, clippy::panic)]
 
-use splot_core::span::ByteOffset;
-use splot_core::symbol::{CdfUpdateMode, SymbolBitPosition, SymbolDecoder, SymbolDecoderConfig};
+use splot_core::symbol::{SymbolBitPosition, SymbolDecoder};
 
 use super::super::cdf::{CoeffCdfSelector, FrameCdfSubset, TileCdfSubset};
 use super::super::coeff_state::{TileCoeffContextState, TileCoeffStateError};
@@ -36,6 +35,7 @@ use super::sign_symbol::{
     CoeffSignReadSource, CoeffSignSourceDeriveConfig, derive_nonzero_coeff_sign_inputs,
     read_nonzero_coeff_signs,
 };
+use super::test_support::symbol_decoder;
 use super::*;
 
 const BASE_LEVELS: u32 = 2;
@@ -50,15 +50,6 @@ const PAYLOAD_SUFFIXES: [[u8; 3]; 4] = [
     [0x55, 0xaa, 0x80],
     [0xff, 0xff, 0x80],
 ];
-
-fn symbol_decoder(payload: &[u8]) -> SymbolDecoder<'_> {
-    SymbolDecoder::with_base_and_config(
-        payload,
-        ByteOffset::new(0),
-        SymbolDecoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Enabled),
-    )
-    .unwrap()
-}
 
 fn branch_nonzero(branch: CoeffBlockEobBranch) -> Option<NonZeroCoeffBlockStart> {
     match branch {

@@ -228,14 +228,3 @@ right = "dav2d-raw-md5"
         fixture.len()
     )
 }
-
-fn temp_root(name: &str) -> Result<PathBuf> {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system time is after Unix epoch")
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!("{name}-{}-{nanos}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root)?;
-    Ok(root)
-}
