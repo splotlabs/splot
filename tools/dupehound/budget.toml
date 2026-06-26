@@ -16,4 +16,4 @@
 # command:
 #
 #   dupehound scan . --json | jq .score.deletable_lines
-max_deletable_lines = 7816
+max_deletable_lines = 7178
