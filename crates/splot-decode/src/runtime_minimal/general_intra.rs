@@ -109,6 +109,14 @@ pub(super) fn route_general_minimal_intra(
             filter.apply_deblocking_filter == [false; 4]
                 || matches!(sequence.general.bit_depth_idc, BitDepthIdc::Eight)
         })
+        // §7.18: a CDEF-active frame is oracle-verified only at 8-bit (the §7.18
+        // sample math is bit-depth-generic, but no 10-bit CDEF-active fixture pins
+        // it). A CDEF-OFF frame is unaffected (the pass is skipped). The
+        // confident-but-unverified hash is the cardinal sin; over-rejecting is safe.
+        && core.cdef_params.as_ref().is_some_and(|cdef| {
+            !cdef.cdef_frame_enable
+                || matches!(sequence.general.bit_depth_idc, BitDepthIdc::Eight)
+        })
         && is_general_minimal_intra(core)
 }
 
@@ -172,10 +180,30 @@ fn is_general_minimal_intra(core: &FrameHeaderCore) -> bool {
             .deblocking_filter_params
             .is_some_and(|filter| filter.df_delta_q == [0; 4])
         && core.gdf_params.is_some_and(|gdf| !gdf.gdf_frame_enable)
-        && core
-            .cdef_params
-            .as_ref()
-            .is_some_and(|cdef| !cdef.cdef_frame_enable)
+        // §7.18 CDEF is admitted for the verified subset only: a CDEF-OFF frame
+        // (the §7.18 pass is a no-op), OR a CDEF-active frame restricted to the
+        // single-strength-set case the §5.20.10.1 `read_cdef` reads NO per-block
+        // symbol for (`CdefStrengths == 1` → `cdef_idx[r][c] == 0` everywhere),
+        // with `cdef_on_skip_txfm_frame_enable == 1` (so the §7.18.1 `skip` is `0`
+        // with no `Skips`/`LosslessArray` lookup — segmentation is disabled above,
+        // so no segment is lossless either) and a present damping / strength set.
+        // A multi-strength (`CdefStrengths > 1`) frame would require the per-block
+        // `cdef_index0` / `cdef_index_minus_1` symbol reads (not modelled on this
+        // path), so it is rejected. The §7.18 math is bit-depth-generic, but only
+        // the 8-bit subset is oracle-pinned, gated by `route_general_minimal_intra`.
+        // The strength set's chroma (uv) strengths must both be zero: the chroma
+        // §7.18.1 `Cdef_Uv_Dir` remap + subsampled tap addressing run, but no
+        // oracle fixture exercises a sample-changing chroma CDEF output yet, so a
+        // nonzero-uv frame is rejected rather than hashed unverified.
+        && core.cdef_params.as_ref().is_some_and(|cdef| {
+            !cdef.cdef_frame_enable
+                || (cdef.cdef_strengths == Some(1)
+                    && cdef.cdef_on_skip_txfm_frame_enable == Some(true)
+                    && cdef.cdef_damping.is_some()
+                    && cdef.strengths.first().is_some_and(|set| {
+                        set.uv_pri_strength == 0 && set.uv_sec_strength == 0
+                    }))
+        })
         && core.lr_params.as_ref().is_some_and(|lr| !lr.uses_lr)
         && core
             .ccso_params
@@ -437,7 +465,51 @@ fn decode_general_intra_frame_into<T: ReconSample>(
     )
     .map_err(|error| general_intra_deblock_error(error, tile_offset))?;
 
+    // §7.18 CDEF: applied AFTER deblocking, reading the deblocked CurrFrame, in
+    // place before freezing. The route gate admits only the verified single-
+    // strength-set subset (CdefStrengths == 1, cdef_idx == 0 everywhere,
+    // cdef_on_skip_txfm_frame_enable == 1); a CDEF-off frame leaves
+    // `cdef_frame_params` `None`, so the pass is skipped and the frame stays
+    // byte-identical.
+    if let Some(params) = cdef_frame_params(core) {
+        super::cdef::cdef_general_intra_frame(&mut workspace, params, mi_rows, mi_cols, bit_depth)
+            .map_err(|error| general_intra_cdef_error(error, tile_offset))?;
+    }
+
     Ok(workspace.freeze()?)
+}
+
+/// Builds the §7.18.1 single-strength-set CDEF parameters from the parsed frame
+/// header, or `None` when CDEF is frame-disabled (the pass is then skipped). The
+/// route gate guarantees `CdefStrengths == 1` and a present damping / strength set
+/// whenever `cdef_frame_enable` is true, so this maps the verified subset only.
+fn cdef_frame_params(core: &FrameHeaderCore) -> Option<super::cdef::CdefFrameParams> {
+    let cdef = core.cdef_params.as_ref()?;
+    if !cdef.cdef_frame_enable {
+        return None;
+    }
+    let damping = i32::from(cdef.cdef_damping?);
+    let set = cdef.strengths.first()?;
+    Some(super::cdef::CdefFrameParams {
+        y_pri: i32::from(set.y_pri_strength),
+        y_sec: i32::from(set.y_sec_strength),
+        uv_pri: i32::from(set.uv_pri_strength),
+        uv_sec: i32::from(set.uv_sec_strength),
+        damping,
+    })
+}
+
+/// Maps a §7.18 CDEF-orchestration error to a decode diagnostic. The per-block
+/// primitives are total for valid inputs, so any error here signals an internal
+/// inconsistency (a geometry or workspace access out of bounds) and surfaces as an
+/// `unsupported-feature` diagnostic rather than a silent wrong-pixel output.
+fn general_intra_cdef_error(_error: super::cdef::CdefError, offset: ByteOffset) -> DecodeError {
+    general_intra_unsupported(
+        "general_intra_cdef",
+        Some(offset),
+        "general intra §7.18 CDEF orchestration reached an unsupported or inconsistent block configuration",
+        "7.18",
+    )
 }
 
 /// Maps a §7.17 deblocking-orchestration error to a decode diagnostic. The

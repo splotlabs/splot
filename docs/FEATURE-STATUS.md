@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 442 feature(s).
+Matrix version 1. Last reviewed 2026-06-15. 444 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -265,6 +265,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `RECON-DEBLOCK-FILTER-MAX-WIDTH` | Deblocking filter maximum width derivation | infrastructure | infrastructure | done | done | n/a | done | n/a | n/a | done | done | n/a | `crates/splot-recon/src/deblock_filter.rs` |
 | `RECON-DEBLOCK-ADAPTIVE-STRENGTH` | Deblocking adaptive filter strength derivation | infrastructure | infrastructure | done | done | n/a | done | n/a | n/a | done | done | n/a | `crates/splot-recon/src/deblock_filter.rs` |
 | `RECON-DEBLOCK-FILTER-CHOICE` | Deblocking filter-choice width derivation | infrastructure | infrastructure | done | done | n/a | done | n/a | n/a | done | done | n/a | `crates/splot-recon/src/deblock_filter.rs` |
+| `RECON-CDEF-FILTER` | CDEF direction search and per-sample filter process | infrastructure | infrastructure | done | done | n/a | done | n/a | n/a | done | done | n/a | `crates/splot-recon/src/cdef_filter.rs` |
 | `RECON-LOOP-RESTORATION-SOURCE-SAMPLE` | Loop restoration source-sample selector | infrastructure | infrastructure | done | done | n/a | done | n/a | n/a | done | done | n/a | `crates/splot-recon/src/loop_restoration.rs` |
 | `RECON-LOOP-RESTORATION-SOURCE-READ` | Loop restoration source-sample frame read | infrastructure | infrastructure | done | done | n/a | done | n/a | n/a | done | done | n/a | `crates/splot-recon/src/loop_restoration.rs` |
 | `RECON-WIENERNS-FILTER-PRIMITIVE` | Wiener NS luma filter primitive | infrastructure | infrastructure | done | done | n/a | done | n/a | n/a | done | done | n/a | `crates/splot-recon/src/wienerns_filter.rs` |
@@ -367,6 +368,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `DECODE-GENERAL-INTRA-10BIT` | General intra 10-bit DC reconstruction | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | partial | `crates/splot-decode/src/runtime_minimal/general_intra.rs` |
 | `DECODE-GENERAL-INTRA-10BIT-SMOOTH-CHROMA` | General intra 10-bit DC luma + SMOOTH chroma reconstruction | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | partial | `crates/splot-decode/src/runtime_minimal/general_intra.rs` |
 | `DECODE-GENERAL-INTRA-DEBLOCK` | General intra §7.17 deblocking-filter orchestration | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | partial | `crates/splot-decode/src/runtime_minimal/deblock.rs` |
+| `DECODE-GENERAL-INTRA-CDEF` | General intra §7.18 CDEF orchestration | infrastructure | infrastructure | done | done | partial | n/a | n/a | n/a | partial | done | partial | `crates/splot-decode/src/runtime_minimal/cdef.rs` |
 | `DECODE-FIRST-INTER-FRAME-FRONTIER` | First inter frame decode frontier (verified target) | infrastructure | infrastructure | done | done | done | n/a | n/a | n/a | done | done | todo | `crates/splot-decode/src/runtime_minimal.rs` |
 | `DECODE-INTER-SUBPEL-MV` | Sub-pel inter frame decode (NEWMV + interpolation-filter convolution) | infrastructure | infrastructure | done | done | done | n/a | n/a | n/a | done | done | todo | `crates/splot-decode/src/runtime_minimal/inter/read_mv.rs` |
 | `DECODE-INTER-RESIDUAL-DCT` | Inter block residual decode (skip == 0, DCT_DCT) | infrastructure | infrastructure | done | done | done | n/a | n/a | n/a | done | done | todo | `crates/splot-decode/src/runtime_minimal/inter/block.rs` |

@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 442 feature(s); 388 cite a spec section.
+Matrix version 1. Last reviewed 2026-06-15. 444 feature(s); 390 cite a spec section.
 
 One row per (spec section, feature) pair, in spec order; a feature citing both a syntax and a semantics section appears under both. The canonical status source is [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); the full per-feature ledger is [FEATURE-STATUS.md](./FEATURE-STATUS.md).
 
@@ -597,6 +597,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.20.8.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-3) | Get transform set function | `DECODE-INTER-RESIDUAL-DCT` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 5.20.9.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-9-1) | Is inside function | `DECODE-TILE-PARTITION-TRAVERSAL-BOUNDARY` | ✅ | ✅ | — | ✅ | — |
 | [§ 5.20.10.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-1) | Read CDEF syntax | `DECODE-AC0EJ3-INTRA-PRELUDE-TX-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 5.20.10.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-1) | Read CDEF syntax | `DECODE-GENERAL-INTRA-CDEF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.10.4](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-4) | Read loop restoration syntax | `DECODE-AC0EJ3-INACTIVE-LR-UNITS-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 5.20.10.4](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-4) | Read loop restoration syntax | `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 5.20.10.4](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-4) | Read loop restoration syntax | `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-STORAGE` | ✅ | 🟡 | — | ✅ | 1 |
@@ -1050,6 +1051,12 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.17.6](./spec/av2/1.0.0/07-decoding-process.md#s-7-17-6) | Adaptive filter strength selection process | `DECODE-GENERAL-INTRA-DEBLOCK` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 7.17.7.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-17-7-1) | General | `RECON-DEBLOCK-SAMPLE-FILTER` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.17.7.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-17-7-2) | Filter choice process | `RECON-DEBLOCK-FILTER-CHOICE` | ✅ | — | ✅ | ✅ | — |
+| [§ 7.18](./spec/av2/1.0.0/07-decoding-process.md#s-7-18) | CDEF process | `DECODE-GENERAL-INTRA-CDEF` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 7.18.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-18-1) | CDEF block process | `DECODE-GENERAL-INTRA-CDEF` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 7.18.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-18-2) | CDEF direction process | `DECODE-GENERAL-INTRA-CDEF` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 7.18.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-18-2) | CDEF direction process | `RECON-CDEF-FILTER` | ✅ | — | ✅ | ✅ | — |
+| [§ 7.18.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-18-3) | CDEF filter process | `DECODE-GENERAL-INTRA-CDEF` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 7.18.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-18-3) | CDEF filter process | `RECON-CDEF-FILTER` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.20](./spec/av2/1.0.0/07-decoding-process.md#s-7-20) | Loop restoration process | `DECODE-INTER-MULTIREF-RUNTIME` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 7.20.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-1) | Loop restore block process | `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 7.20.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-1) | Loop restore block process | `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-STORAGE` | ✅ | 🟡 | — | ✅ | 1 |
@@ -1432,6 +1439,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-GENERAL-INTRA-ANGLE-D203` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-GENERAL-INTRA-ANGLE-D45` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-GENERAL-INTRA-CARDINAL` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-GENERAL-INTRA-CDEF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-GENERAL-INTRA-DEBLOCK` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-GENERAL-INTRA-DIRECTIONAL-FOLLOW-CHROMA` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-GENERAL-INTRA-IDIF-D157` | ✅ | 🟡 | — | ✅ | 1 |
