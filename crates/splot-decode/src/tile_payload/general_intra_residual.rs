@@ -27,7 +27,7 @@ use splot_core::tables::conversion::{
 };
 use splot_recon::{
     BitDepth, DequantBlockParams, InverseTransform2dOuter, PlaneId, QuantizerDeltas, ReconError,
-    ac_quantizer, dc_quantizer, reconstruct_transform_block_residual,
+    ReconSample, ac_quantizer, dc_quantizer, reconstruct_transform_block_residual,
 };
 
 use super::cdf::TileCdfSelector;
@@ -1193,15 +1193,18 @@ fn unsupported_transform_tool_residual<T>(
 /// frame's neighbours, or `128` when none). `qindex == base_q_idx` for this
 /// minimal-tool frame (no segmentation or delta-Q), and the transform is
 /// `DCT_DCT` over the original `log2_side` (adjusted, capped at 32) dimensions.
-/// `use_tcq` adds the § 7.14.4 TCQ `dqDenom` term (luma only).
-pub(crate) fn reconstruct_general_intra_block(
+/// `use_tcq` adds the § 7.14.4 TCQ `dqDenom` term (luma only). `bit_depth` is the
+/// active sequence sample depth (§ 6.4.1); the sample storage type `T` matches it
+/// (`u8` for 8-bit, `u16` for 10-bit) and bounds the § 7.14.3 Clip1.
+pub(crate) fn reconstruct_general_intra_block<T: ReconSample>(
     quant: &[i32],
-    dc_sample: u8,
+    dc_sample: T,
     qindex: u32,
     plane_id: PlaneId,
     log2_side: u32,
     use_tcq: bool,
-) -> Result<Vec<u8>, GeneralIntraResidualError> {
+    bit_depth: BitDepth,
+) -> Result<Vec<T>, GeneralIntraResidualError> {
     let orig_side = 1usize << log2_side;
     let prediction = vec![dc_sample; orig_side * orig_side];
     reconstruct_general_intra_block_with_prediction(
@@ -1211,6 +1214,7 @@ pub(crate) fn reconstruct_general_intra_block(
         plane_id,
         log2_side,
         use_tcq,
+        bit_depth,
     )
 }
 
@@ -1221,15 +1225,18 @@ pub(crate) fn reconstruct_general_intra_block(
 /// the original (unadjusted) `log2_side` dimensions. The flat DC path is the
 /// special case where every prediction sample is the DC value (see
 /// [`reconstruct_general_intra_block`]); the non-DC § 7.13.2.13 smooth path
-/// supplies a per-sample predicted block.
-pub(crate) fn reconstruct_general_intra_block_with_prediction(
+/// supplies a per-sample predicted block. `bit_depth` is the active sequence
+/// sample depth (§ 6.4.1); the sample storage type `T` matches it and bounds the
+/// § 7.14.3 Clip1.
+pub(crate) fn reconstruct_general_intra_block_with_prediction<T: ReconSample>(
     quant: &[i32],
-    prediction: &[u8],
+    prediction: &[T],
     qindex: u32,
     plane_id: PlaneId,
     log2_side: u32,
     use_tcq: bool,
-) -> Result<Vec<u8>, GeneralIntraResidualError> {
+    bit_depth: BitDepth,
+) -> Result<Vec<T>, GeneralIntraResidualError> {
     let orig_side = 1usize << log2_side;
     let adj_log2 = log2_side.min(5);
     let adj_side = 1usize << adj_log2;
@@ -1261,27 +1268,21 @@ pub(crate) fn reconstruct_general_intra_block_with_prediction(
     let dq_shift = u32::from(pels > 256) + u32::from(pels > 1024) + u32::from(use_tcq);
     let dq_denom = 1u32 << dq_shift;
     let params = DequantBlockParams {
-        dc_quant: dc_quantizer(plane_id, qindex, deltas, BitDepth::Eight),
-        ac_quant: ac_quantizer(plane_id, qindex, deltas, BitDepth::Eight),
+        dc_quant: dc_quantizer(plane_id, qindex, deltas, bit_depth),
+        ac_quant: ac_quantizer(plane_id, qindex, deltas, bit_depth),
         tx_width: adj_side,
         tx_height: adj_side,
         dq_denom,
-        bit_depth: BitDepth::Eight,
+        bit_depth,
     };
     let transform = InverseTransform2dOuter::resolve(
-        DCT_DCT,
-        log2_side,
-        log2_side,
-        false,
-        false,
-        BitDepth::Eight,
-        None,
+        DCT_DCT, log2_side, log2_side, false, false, bit_depth, None,
     )
     .map_err(|source| GeneralIntraResidualError::Reconstruct { source })?;
 
     let mut dequant_scratch = vec![0i32; adjusted];
     let mut residual_scratch = vec![0i32; samples];
-    let mut out = vec![0u8; samples];
+    let mut out = vec![T::default(); samples];
     reconstruct_transform_block_residual(
         prediction,
         quant,
@@ -1307,16 +1308,20 @@ pub(crate) fn reconstruct_general_intra_block_with_prediction(
 /// `|log2_w - log2_h|` is odd), and the §7.14.3 residual addition over the flat
 /// §7.13.2 DC prediction. `qindex == base_q_idx` for this minimal-tool frame.
 /// Chroma never uses the §7.14.4 TCQ `dqDenom` term (luma DCT_DCT only), so
-/// `use_tcq` is `false` for chroma callers.
-pub(crate) fn reconstruct_general_intra_block_rect(
+/// `use_tcq` is `false` for chroma callers. `bit_depth` is the active sequence
+/// sample depth (§ 6.4.1); the sample storage type `T` matches it and bounds the
+/// § 7.14.3 Clip1.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn reconstruct_general_intra_block_rect<T: ReconSample>(
     quant: &[i32],
-    dc_sample: u8,
+    dc_sample: T,
     qindex: u32,
     plane_id: PlaneId,
     log2_width: u32,
     log2_height: u32,
     use_tcq: bool,
-) -> Result<Vec<u8>, GeneralIntraResidualError> {
+    bit_depth: BitDepth,
+) -> Result<Vec<T>, GeneralIntraResidualError> {
     let orig_w = 1usize << log2_width;
     let orig_h = 1usize << log2_height;
     let prediction = vec![dc_sample; orig_w * orig_h];
@@ -1345,12 +1350,12 @@ pub(crate) fn reconstruct_general_intra_block_rect(
     let dq_shift = u32::from(pels > 256) + u32::from(pels > 1024) + u32::from(use_tcq);
     let dq_denom = 1u32 << dq_shift;
     let params = DequantBlockParams {
-        dc_quant: dc_quantizer(plane_id, qindex, deltas, BitDepth::Eight),
-        ac_quant: ac_quantizer(plane_id, qindex, deltas, BitDepth::Eight),
+        dc_quant: dc_quantizer(plane_id, qindex, deltas, bit_depth),
+        ac_quant: ac_quantizer(plane_id, qindex, deltas, bit_depth),
         tx_width: adj_w,
         tx_height: adj_h,
         dq_denom,
-        bit_depth: BitDepth::Eight,
+        bit_depth,
     };
     let transform = InverseTransform2dOuter::resolve(
         DCT_DCT,
@@ -1358,14 +1363,14 @@ pub(crate) fn reconstruct_general_intra_block_rect(
         log2_height,
         false,
         false,
-        BitDepth::Eight,
+        bit_depth,
         None,
     )
     .map_err(|source| GeneralIntraResidualError::Reconstruct { source })?;
 
     let mut dequant_scratch = vec![0i32; adjusted];
     let mut residual_scratch = vec![0i32; samples];
-    let mut out = vec![0u8; samples];
+    let mut out = vec![T::default(); samples];
     reconstruct_transform_block_residual(
         &prediction,
         quant,
@@ -1443,6 +1448,7 @@ mod tests {
             PlaneId::Y,
             2,
             false,
+            BitDepth::Eight,
         );
         assert!(matches!(
             result,

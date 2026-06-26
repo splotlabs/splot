@@ -202,8 +202,11 @@ impl RuntimeReferenceBuffer {
             })?;
             let reference_slot =
                 ReferenceSlot::new(i).map_err(|source| DecodeError::Reconstruction { source })?;
+            // §7.23 reference retention is 8-bit only; `frame_eight` rejects a
+            // 10-bit frame with a structured diagnostic (the 10-bit subset is
+            // single-frame intra, so an inter frame never references one).
             store
-                .put(reference_slot, frame.frame())
+                .put(reference_slot, frame.frame_eight()?)
                 .map_err(|source| DecodeError::Reconstruction { source })?;
         }
         Ok((store, meta))

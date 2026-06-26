@@ -33,13 +33,13 @@ use splot_core::headers::sequence::{SequenceHeader, SuperblockSize};
 use splot_core::span::ByteOffset;
 use splot_core::types::ObuType;
 use splot_recon::{
-    DecodedFrame, InterpolationFilter as ReconInterpolationFilter, PlaneId as ReconPlaneId,
-    ReferenceFrameStore, ReferenceSlot,
+    BitDepth, DecodedFrame, InterpolationFilter as ReconInterpolationFilter,
+    PlaneId as ReconPlaneId, ReferenceFrameStore, ReferenceSlot,
 };
 
 use super::{
-    DecodeOptions, DecodePlannedObu, DecodeStreamPlan, IvfHeader, MinimalRuntimeFrame, Result,
-    ensure_runtime_limits,
+    DecodeOptions, DecodePlannedObu, DecodeStreamPlan, IvfHeader, MinimalRuntimeDecodedFrame,
+    MinimalRuntimeFrame, Result, ensure_runtime_limits,
 };
 use crate::error::{DecodeError, DecodeUnsupportedFeature};
 
@@ -390,7 +390,16 @@ pub(super) fn decode_minimal_inter_frame(
         };
         tile.tile_size()
     };
-    ensure_runtime_limits(limits, frame_width, frame_height, tile_size)?;
+    // The inter runtime reconstructs 8-bit only (a 10-bit frame is rejected for
+    // reference retention before reaching here), so the byte budget charges
+    // 1 byte per sample.
+    ensure_runtime_limits(
+        limits,
+        frame_width,
+        frame_height,
+        tile_size,
+        BitDepth::Eight,
+    )?;
 
     // §5.20.7.6: the block's interpolation filter. For the SWITCHABLE frame filter
     // the block reads an `interp_filter` symbol; for a fixed frame filter the block
@@ -434,9 +443,12 @@ pub(super) fn decode_minimal_inter_frame(
     // inside the kernel to a straight reference-sample copy. Each block writes its
     // own luma-space rectangle, so the multi-block partition reconstructs the whole
     // frame from its per-block MVs.
-    let mut workspace = crate::runtime_minimal_recon::new_general_intra_workspace(
+    // The inter / reference path is 8-bit only (§6.4.1); the workspace and the
+    // §7.14.3 residual reconstruction use `u8` / `BitDepth::Eight`.
+    let mut workspace = crate::runtime_minimal_recon::new_general_intra_workspace::<u8>(
         frame_width as usize,
         frame_height as usize,
+        splot_recon::BitDepth::Eight,
     )?;
     // §7.14.2 qindex == base_q_idx (no segmentation / delta-Q in this subset);
     // resolved once and reused for any skip == 0 block.
@@ -523,7 +535,9 @@ pub(super) fn decode_minimal_inter_frame(
     // / base_q_idx / dims) without re-parsing the header.
     Ok((
         MinimalRuntimeFrame {
-            frame,
+            // The inter / reference path is 8-bit only (§6.4.1); 10-bit is the
+            // single-frame general-intra DC subset, which never reaches here.
+            frame: MinimalRuntimeDecodedFrame::Eight(frame),
             frame_rate_numerator: header.timebase_denominator,
             frame_rate_denominator: header.timebase_numerator,
         },
@@ -751,6 +765,7 @@ fn add_inter_residual_to_workspace(
         INTER_LUMA_LOG2_SIDE,
         qindex,
         luma_use_tcq,
+        splot_recon::BitDepth::Eight,
     )
     .map_err(map_recon)?;
     crate::runtime_minimal_recon::reconstruct_inter_block_residual_into(
@@ -762,6 +777,7 @@ fn add_inter_residual_to_workspace(
         INTER_CHROMA_LOG2_SIDE,
         qindex,
         false,
+        splot_recon::BitDepth::Eight,
     )
     .map_err(map_recon)?;
     crate::runtime_minimal_recon::reconstruct_inter_block_residual_into(
@@ -773,6 +789,7 @@ fn add_inter_residual_to_workspace(
         INTER_CHROMA_LOG2_SIDE,
         qindex,
         false,
+        splot_recon::BitDepth::Eight,
     )
     .map_err(map_recon)?;
     Ok(())

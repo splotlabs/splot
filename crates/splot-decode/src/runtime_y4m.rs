@@ -7,13 +7,14 @@
 
 use splot_core::ivf::IvfHeader;
 use splot_recon::{
-    BitDepth, PixelFormat, PlaneSize, Y4mFrameFormat, Y4mFrameHeader, Y4mFrameRate,
-    Y4mStreamHeader, Y4mWriter,
+    BitDepth, DecodedFrame, PixelFormat, PlaneSize, ReconSample, Y4mFrameFormat, Y4mFrameHeader,
+    Y4mFrameRate, Y4mStreamHeader, Y4mWriter,
 };
 
 use crate::error::{
     DecodeError, DecodeOutputError, DecodeOutputOperation, DecodeUnsupportedFeature, Result,
 };
+use crate::runtime_minimal::MinimalRuntimeDecodedFrame;
 use crate::{
     DecodeLimitError, DecodeLimitName, DecodeLimitOp, DecodeLimits, DecodeOptions, DecodeStreamPlan,
 };
@@ -60,26 +61,81 @@ pub(crate) fn encode_y4m_stream_from_plan(
     let frame_rate = Y4mFrameRate::new(first.frame_rate_numerator, first.frame_rate_denominator)
         .map_err(|source| DecodeOutputError::y4m(DecodeOutputOperation::SerializeY4m, source))?;
 
+    // §6.4.1: the stream header (and writer sample type) is fixed by the first
+    // frame's storage depth; the splot-recon Y4M writer is generic over the
+    // sample type and pins the per-frame format, so a frame whose depth differs
+    // from the first is rejected by the writer's `StreamParameterMismatch` before
+    // any payload byte. The runtime never mixes depths within one stream.
     let mut y4m = Vec::new();
-    {
-        let mut writer =
-            Y4mWriter::from_frame(&mut y4m, &first.frame, frame_rate).map_err(|source| {
-                DecodeOutputError::y4m(DecodeOutputOperation::SerializeY4m, source)
-            })?;
-        for output in &outputs {
-            writer.write_frame(output.frame()).map_err(|source| {
-                DecodeOutputError::y4m(DecodeOutputOperation::SerializeY4m, source)
-            })?;
+    match &first.frame {
+        MinimalRuntimeDecodedFrame::Eight(first_frame) => {
+            write_y4m_stream(
+                &mut y4m,
+                first_frame,
+                frame_rate,
+                &outputs,
+                |output| match &output.frame {
+                    MinimalRuntimeDecodedFrame::Eight(frame) => Some(frame),
+                    MinimalRuntimeDecodedFrame::Ten(_) => None,
+                },
+            )?;
         }
-        writer.flush().map_err(|source| {
-            DecodeOutputError::y4m(DecodeOutputOperation::SerializeY4m, source)
-        })?;
+        MinimalRuntimeDecodedFrame::Ten(first_frame) => {
+            write_y4m_stream(
+                &mut y4m,
+                first_frame,
+                frame_rate,
+                &outputs,
+                |output| match &output.frame {
+                    MinimalRuntimeDecodedFrame::Ten(frame) => Some(frame),
+                    MinimalRuntimeDecodedFrame::Eight(_) => None,
+                },
+            )?;
+        }
     }
 
     options
         .limits()
         .ensure(DecodeLimitName::MaxOutputBytes, y4m.len() as u64)?;
     Ok(y4m)
+}
+
+/// Writes the Y4M stream header (derived from `first_frame`) and one `FRAME`
+/// payload per displayed frame (§ 6.18) of the sample type `T`. `select` maps a
+/// [`MinimalRuntimeFrame`] to its `DecodedFrame<T>` for this stream's depth; a
+/// frame of a different depth (`None`) is rejected with a structured diagnostic.
+fn write_y4m_stream<T: ReconSample>(
+    y4m: &mut Vec<u8>,
+    first_frame: &DecodedFrame<T>,
+    frame_rate: Y4mFrameRate,
+    outputs: &[crate::runtime_minimal::MinimalRuntimeFrame],
+    select: impl Fn(&crate::runtime_minimal::MinimalRuntimeFrame) -> Option<&DecodedFrame<T>>,
+) -> Result<()> {
+    let mut writer = Y4mWriter::from_frame(y4m, first_frame, frame_rate)
+        .map_err(|source| DecodeOutputError::y4m(DecodeOutputOperation::SerializeY4m, source))?;
+    for output in outputs {
+        let frame = select(output).ok_or_else(|| {
+            DecodeError::UnsupportedFeature {
+                unsupported: Box::new(DecodeUnsupportedFeature::new(
+                    "y4m_mixed_bit_depth_frames",
+                    crate::runtime_minimal::MINIMAL_INTRA_HASH_TIER_ID,
+                    MATRIX_ROW,
+                    FEATURE_ID,
+                    SPEC_SECTION,
+                    "runtime Y4M output requires every displayed frame to share the first frame's sample bit depth",
+                    REMEDIATION,
+                    None,
+                )),
+            }
+        })?;
+        writer.write_frame(frame).map_err(|source| {
+            DecodeOutputError::y4m(DecodeOutputOperation::SerializeY4m, source)
+        })?;
+    }
+    writer
+        .flush()
+        .map_err(|source| DecodeOutputError::y4m(DecodeOutputOperation::SerializeY4m, source))?;
+    Ok(())
 }
 
 fn preflight_y4m_minimal_header(header: IvfHeader, limits: DecodeLimits) -> Result<()> {
@@ -108,6 +164,13 @@ fn ensure_y4m_timebase(numerator: u32, denominator: u32) -> Result<()> {
     }
 }
 
+// Best-effort LOWER-BOUND early reject: this preflight sizes a single 64x64
+// 8-bit (1 byte/sample) 4:2:0 frame, which UNDER-estimates the real serialized
+// output for 10-bit (2 bytes/sample) or non-64x64 / multi-superblock frames. It
+// only fails fast when even this minimum already exceeds `MaxOutputBytes`; it is
+// NOT the soundness boundary. The authoritative cap is the post-decode
+// `limits.ensure(MaxOutputBytes, y4m.len())` check above, which measures the
+// actual serialized buffer for the decoded frame's true dimensions and bit depth.
 fn ensure_minimal_y4m_output_limit(limits: DecodeLimits, frame_rate: Y4mFrameRate) -> Result<()> {
     let luma_size = PlaneSize::new(MINIMAL_Y4M_LUMA_WIDTH, MINIMAL_Y4M_LUMA_HEIGHT)?;
     let frame_format = Y4mFrameFormat::new(luma_size, BitDepth::Eight, PixelFormat::Yuv420)

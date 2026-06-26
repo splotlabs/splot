@@ -5,9 +5,10 @@
 //!
 //! Feature tracking: `DECODE-MINIMAL-RAW-RUNTIME-OUTPUT`.
 
-use splot_recon::DecodedFrameHashInput;
+use splot_recon::{DecodedFrame, DecodedFrameHashInput, ReconSample};
 
 use crate::error::{DecodeOutputError, DecodeOutputOperation, Result};
+use crate::runtime_minimal::MinimalRuntimeDecodedFrame;
 use crate::{DecodeOptions, DecodeStreamPlan};
 
 pub(crate) fn encode_raw_stream_from_plan(
@@ -17,25 +18,39 @@ pub(crate) fn encode_raw_stream_from_plan(
 ) -> Result<Vec<u8>> {
     // Decode every displayed frame in output order and concatenate their raw visible
     // sample bytes (AV2 § 6.18). A single-frame intra stream emits one frame,
-    // byte-identical to the prior single-frame behavior.
+    // byte-identical to the prior single-frame behavior. The §6.4.1 sample depth
+    // selects the storage arm; the splot-recon raw serializer packs each visible
+    // sample 16-bit-LE for 10-bit and one byte for 8-bit.
     let outputs =
         crate::runtime_minimal::decode_minimal_frames_from_plan(bitstream, options, plan)?;
     let mut bytes = Vec::new();
     for output in &outputs {
-        let raw = DecodedFrameHashInput::new(output.frame());
-        bytes.try_reserve_exact(raw.byte_len()?).map_err(|source| {
-            DecodeOutputError::io(
-                DecodeOutputOperation::SerializeRaw,
-                std::io::Error::other(format!("raw output allocation failed: {source}")),
-            )
-        })?;
-        raw.write_to(&mut bytes)
-            .map_err(|source| DecodeOutputError::io(DecodeOutputOperation::SerializeRaw, source))?;
+        match &output.frame {
+            MinimalRuntimeDecodedFrame::Eight(frame) => write_raw_frame(frame, &mut bytes)?,
+            MinimalRuntimeDecodedFrame::Ten(frame) => write_raw_frame(frame, &mut bytes)?,
+        }
     }
     options
         .limits()
         .ensure(crate::DecodeLimitName::MaxOutputBytes, bytes.len() as u64)?;
     Ok(bytes)
+}
+
+/// Appends one frame's raw visible sample bytes (§ 6.18) to `bytes`, reserving
+/// the exact byte length first so the write cannot partially fill on OOM. The
+/// splot-recon serializer is generic over the sample type, so the same path
+/// serializes 8-bit (`u8`, one byte/sample) and 10-bit (`u16`, 16-bit-LE/sample).
+fn write_raw_frame<T: ReconSample>(frame: &DecodedFrame<T>, bytes: &mut Vec<u8>) -> Result<()> {
+    let raw = DecodedFrameHashInput::new(frame);
+    bytes.try_reserve_exact(raw.byte_len()?).map_err(|source| {
+        DecodeOutputError::io(
+            DecodeOutputOperation::SerializeRaw,
+            std::io::Error::other(format!("raw output allocation failed: {source}")),
+        )
+    })?;
+    raw.write_to(bytes)
+        .map_err(|source| DecodeOutputError::io(DecodeOutputOperation::SerializeRaw, source))?;
+    Ok(())
 }
 
 #[cfg(test)]

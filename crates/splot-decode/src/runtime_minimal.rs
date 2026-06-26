@@ -19,7 +19,7 @@ use splot_core::span::ByteOffset;
 use splot_core::stream::{ParsedBitstream, ParsedIvfBitstream, parse_bitstream_partial};
 use splot_core::symbol::{SymbolDecoder, SymbolDecoderSummary};
 use splot_core::types::ObuType;
-use splot_recon::{DecodedFrame, DecodedFrameHashInput, IntraCardinalDirection};
+use splot_recon::{BitDepth, DecodedFrame, DecodedFrameHashInput, IntraCardinalDirection};
 
 use crate::error::{DecodeError, DecodeUnsupportedFeature, Result};
 use crate::tile_payload::{
@@ -63,8 +63,6 @@ const FEATURE_ID: &str = "DECODE-MINIMAL-TIER-RUNTIME-SUCCESS";
 const MATRIX_ROW: &str = "minimal-decode-tier-contract";
 const SPEC_SECTION: &str = "7.1";
 const REMEDIATION: &str = "Use a stream inside minimal-intra-8bit420-hash-v1 or wait for the referenced decoder support row.";
-const AC0EJ3_10BIT_FEATURE_ID: &str = "DECODE-AC0EJ3-10BIT-SEQUENCE-FRONTIER";
-const AC0EJ3_10BIT_MATRIX_ROW: &str = "ac0ej3-10bit-sequence-frontier";
 const AC0EJ3_CHROMA_FEATURE_ID: &str = "DECODE-AC0EJ3-SEQUENCE-CHROMA-FRONTIER";
 const AC0EJ3_CHROMA_MATRIX_ROW: &str = "ac0ej3-sequence-chroma-frontier";
 const AC0EJ3_WIENERNS_FEATURE_ID: &str = "DECODE-AC0EJ3-WIENERNS-FRONTIER";
@@ -145,16 +143,87 @@ const GENERAL_INTRA_REMEDIATION: &str = "General intra coefficient and reconstru
 /// field of `-DELTA_DCQUANT_MIN` therefore resolves to a zero base offset.
 const GENERAL_INTRA_DELTA_DCQUANT_MIN: i32 = (1 << 3) - (1 << 5) + 1;
 
+/// Output carrier for one displayed frame, holding either an 8-bit
+/// (`DecodedFrame<u8>`) or 10-bit (`DecodedFrame<u16>`) reconstruction (§ 6.4.1).
+/// The reference / inter path is 8-bit only; 10-bit is admitted only for the
+/// single-frame general-intra DC subset (`DECODE-GENERAL-INTRA-10BIT`).
+pub(crate) enum MinimalRuntimeDecodedFrame {
+    Eight(DecodedFrame<u8>),
+    Ten(DecodedFrame<u16>),
+}
+
 pub(crate) struct MinimalRuntimeFrame {
-    pub(crate) frame: DecodedFrame<u8>,
+    pub(crate) frame: MinimalRuntimeDecodedFrame,
     pub(crate) frame_rate_numerator: u32,
     pub(crate) frame_rate_denominator: u32,
 }
 
 impl MinimalRuntimeFrame {
-    /// Borrows the decoded frame for output / hashing / §7.23 reference retention.
+    /// Borrows the 8-bit decoded frame for §7.23 reference retention / inter
+    /// decode, which is 8-bit only. A 10-bit frame is rejected with a structured
+    /// diagnostic: the inter / reference path does not yet retain 10-bit frames.
+    pub(crate) fn frame_eight(&self) -> Result<&DecodedFrame<u8>> {
+        match &self.frame {
+            MinimalRuntimeDecodedFrame::Eight(frame) => Ok(frame),
+            MinimalRuntimeDecodedFrame::Ten(_) => Err(unsupported(
+                "unsupported_10bit_reference_retention",
+                None,
+                "minimal runtime reconstructs a 10-bit intra key frame but does not yet retain 10-bit frames for the §7.23 reference / inter path",
+            )),
+        }
+    }
+
+    /// Returns the serialized visible-plane byte length of this frame
+    /// (16-bit-LE-packed for 10-bit), dispatching on the sample-storage arm.
+    pub(crate) fn byte_len(&self) -> Result<usize> {
+        match &self.frame {
+            MinimalRuntimeDecodedFrame::Eight(frame) => {
+                Ok(DecodedFrameHashInput::new(frame).byte_len()?)
+            }
+            MinimalRuntimeDecodedFrame::Ten(frame) => {
+                Ok(DecodedFrameHashInput::new(frame).byte_len()?)
+            }
+        }
+    }
+
+    /// Borrows the 8-bit decoded frame in `#[cfg(test)]` contexts (the test
+    /// fixtures are 8-bit unless a test explicitly decodes the 10-bit subset via
+    /// [`Self::into_frame_ten`]).
+    #[cfg(test)]
+    #[allow(clippy::panic)]
     pub(crate) fn frame(&self) -> &DecodedFrame<u8> {
-        &self.frame
+        match &self.frame {
+            MinimalRuntimeDecodedFrame::Eight(frame) => frame,
+            MinimalRuntimeDecodedFrame::Ten(_) => {
+                panic!("frame() called on a 10-bit MinimalRuntimeFrame; use into_frame_ten()")
+            }
+        }
+    }
+
+    /// Consumes the carrier and returns the owned 8-bit decoded frame in
+    /// `#[cfg(test)]` contexts (the 8-bit test fixtures).
+    #[cfg(test)]
+    #[allow(clippy::panic)]
+    pub(crate) fn into_frame_eight(self) -> DecodedFrame<u8> {
+        match self.frame {
+            MinimalRuntimeDecodedFrame::Eight(frame) => frame,
+            MinimalRuntimeDecodedFrame::Ten(_) => {
+                panic!("into_frame_eight() called on a 10-bit MinimalRuntimeFrame")
+            }
+        }
+    }
+
+    /// Consumes the carrier and returns the owned 10-bit decoded frame in
+    /// `#[cfg(test)]` contexts (the 10-bit DC subset fixture).
+    #[cfg(test)]
+    #[allow(clippy::panic)]
+    pub(crate) fn into_frame_ten(self) -> DecodedFrame<u16> {
+        match self.frame {
+            MinimalRuntimeDecodedFrame::Ten(frame) => frame,
+            MinimalRuntimeDecodedFrame::Eight(_) => {
+                panic!("into_frame_ten() called on an 8-bit MinimalRuntimeFrame")
+            }
+        }
     }
 }
 
@@ -222,6 +291,21 @@ fn decode_minimal_key_frame(
             header,
         );
     }
+    // The non-general (frozen minimal-tier) reconstruction path
+    // (`reconstruct_minimal_traced_frame`) hard-codes `BitDepth::Eight` and wraps
+    // its result as `MinimalRuntimeDecodedFrame::Eight`. A 10-bit frame that falls
+    // through here (e.g. a `base_q_idx == 255` flat frame, which
+    // `route_general_minimal_intra` rejects) would reconstruct as 8-bit and emit a
+    // confident-but-wrong 8-bit hash — the cardinal sin. Only the general-intra
+    // path handles 10-bit; reject 10-bit on the frozen path before any
+    // reconstruction. (8-bit is unaffected.)
+    if sequence.general.bit_depth_idc != BitDepthIdc::Eight {
+        return Err(unsupported(
+            "unsupported_10bit_frozen_minimal_tier",
+            Some(frame_envelope.offset),
+            "the frozen minimal-tier reconstruction path is 8-bit only; a 10-bit frame outside the general-intra DC subset is not yet supported",
+        ));
+    }
     validate_frame_core(&core, frame_envelope.offset)?;
 
     let mut tile_plan = derive_tile_plan(
@@ -255,12 +339,18 @@ fn decode_minimal_key_frame(
     let tile_size = tile.tile_size();
 
     let limits = options.limits();
-    ensure_runtime_limits(limits, MINIMAL_WIDTH, MINIMAL_HEIGHT, tile_size)?;
+    ensure_runtime_limits(
+        limits,
+        MINIMAL_WIDTH,
+        MINIMAL_HEIGHT,
+        tile_size,
+        BitDepth::Eight,
+    )?;
     let frame =
         crate::runtime_minimal_recon::reconstruct_minimal_traced_frame(reconstruction_trace)?;
 
     Ok(MinimalRuntimeFrame {
-        frame,
+        frame: MinimalRuntimeDecodedFrame::Eight(frame),
         frame_rate_numerator: header.timebase_denominator,
         frame_rate_denominator: header.timebase_numerator,
     })
@@ -342,7 +432,7 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
         &key_core,
     )?;
     ensure_sequence_chroma_tools_before_tile_decode(&sequence, sequence_envelope.offset)?;
-    ensure_8bit_runtime_storage(&sequence, sequence_envelope.offset)?;
+    ensure_runtime_storage_bit_depth(&sequence, sequence_envelope.offset)?;
     // This structural gate intentionally runs after the parse-only header/tool
     // checks above: later leading OBUs are outside `key_envelope`, so malformed
     // key headers report their true frontier while otherwise-supported streams
@@ -723,7 +813,11 @@ fn ensure_retained_frame_byte_limits_for_core(
             "minimal runtime requires parsed frame dimensions before charging retained decoded-frame bytes",
         )
     })?;
-    let frame_bytes = decoded_frame_byte_budget(frame_size).map(|budget| budget.decoded_bytes)?;
+    // Reference-frame retention is 8-bit only (a 10-bit frame is rejected with
+    // `unsupported_10bit_reference_retention` before it can be retained), so the
+    // retained-byte budget charges 1 byte per sample.
+    let frame_bytes = decoded_frame_byte_budget(frame_size, bytes_per_sample(BitDepth::Eight))
+        .map(|budget| budget.decoded_bytes)?;
     ensure_retained_frame_byte_limits_for_bytes(limits, retained_frame_bytes, frame_bytes)
 }
 
@@ -748,8 +842,7 @@ fn ensure_retained_frame_byte_limits_for_bytes(
 }
 
 fn retained_decoded_frame_bytes(frame: &MinimalRuntimeFrame) -> Result<u64> {
-    let byte_len = DecodedFrameHashInput::new(frame.frame()).byte_len()?;
-    Ok(byte_len as u64)
+    Ok(frame.byte_len()? as u64)
 }
 
 fn verify_flat_minimal_tile_trace(
@@ -1011,18 +1104,28 @@ fn ensure_sequence_chroma_tools_before_tile_decode(
     Ok(())
 }
 
-fn ensure_8bit_runtime_storage(sequence: &SequenceHeader, offset: ByteOffset) -> Result<()> {
-    if sequence.general.bit_depth_idc != BitDepthIdc::Eight {
-        return Err(unsupported_feature_at(
-            "unsupported_bit_depth",
-            offset,
-            "minimal runtime parses 10-bit sequences but still stores decoded samples as 8-bit",
-            AC0EJ3_10BIT_MATRIX_ROW,
-            AC0EJ3_10BIT_FEATURE_ID,
-            "6.4.1",
-        ));
+/// Gates the runtime sample-storage bit depth (§ 6.4.1). 8-bit always proceeds.
+/// 10-bit is admitted ONLY for the single-frame general-intra DC subset
+/// (`DECODE-GENERAL-INTRA-10BIT`): the per-frame `route_general_minimal_intra` /
+/// `is_general_minimal_intra` gates and the per-block DC admission inside
+/// `general_intra` reject every richer 10-bit shape before any output, so this
+/// relaxation cannot emit a confident-but-wrong 10-bit hash. Any bit depth other
+/// than 8 or 10 still fails closed here (the parser only produces Eight / Ten,
+/// but the check is explicit). Routing: a 10-bit stream that is NOT the general
+/// intra DC subset reaches the frozen `validate_frame_core` (which is the
+/// `base_q_idx == 255` 8-bit fixture path) and fails there; the general intra
+/// path handles 10-bit DC and rejects 10-bit non-DC inside `decode_one_general
+/// _intra_block`.
+fn ensure_runtime_storage_bit_depth(sequence: &SequenceHeader, _offset: ByteOffset) -> Result<()> {
+    // §6.4.1 bit_depth_idc resolves to exactly Eight or Ten in the parser. Both
+    // now have runtime sample storage: 8-bit (`u8`) for every supported tier, and
+    // 10-bit (`u16`) for the general-intra DC subset gated downstream
+    // (`DECODE-GENERAL-INTRA-10BIT`). Any richer 10-bit shape is rejected before
+    // output by `route_general_minimal_intra` / `decode_one_general_intra_block`,
+    // so admitting Ten here cannot emit a confident-but-wrong 10-bit hash.
+    match sequence.general.bit_depth_idc {
+        BitDepthIdc::Eight | BitDepthIdc::Ten => Ok(()),
     }
-    Ok(())
 }
 
 fn parse_frame_core(
@@ -1386,15 +1489,29 @@ fn malformed_tile_boundary_reason(
     }
 }
 
+/// AV2 §6.4.1: bytes of decoded storage per visible sample for `bit_depth`
+/// (8-bit packs 1 byte, 10-bit packs 2 bytes little-endian). The reconstruction
+/// workspace and the raw/Y4M/hash output all use this width, so the pre-allocation
+/// `MaxDecodedFrameBytes` / `MaxOutputBytes` budget must charge it (a 10-bit
+/// `DecodedFrame<u16>` allocates twice the 8-bit budget for the same dimensions).
+fn bytes_per_sample(bit_depth: BitDepth) -> u64 {
+    match bit_depth {
+        BitDepth::Eight => 1,
+        BitDepth::Ten => 2,
+    }
+}
+
 fn ensure_runtime_limits(
     limits: crate::DecodeLimits,
     width: u32,
     height: u32,
     tile_payload_bytes: u64,
+    bit_depth: BitDepth,
 ) -> Result<()> {
     limits.ensure(DecodeLimitName::MaxFrameWidth, u64::from(width))?;
     limits.ensure(DecodeLimitName::MaxFrameHeight, u64::from(height))?;
-    let budget = decoded_frame_byte_budget(FrameSize::new(width, height))?;
+    let budget =
+        decoded_frame_byte_budget(FrameSize::new(width, height), bytes_per_sample(bit_depth))?;
     limits.ensure(DecodeLimitName::MaxLumaSamplesPerFrame, budget.luma_samples)?;
     limits.ensure(DecodeLimitName::MaxDecodedFrameBytes, budget.decoded_bytes)?;
     limits.ensure(DecodeLimitName::MaxOutputBytes, budget.decoded_bytes)?;
