@@ -60,16 +60,17 @@ paths SHALL remain byte-identical.
   64-sample-grid `sbEdge` iteration (64 `sbEdge` edges) that the 64-tall 128x64
   fixtures cannot reach
 
-#### Scenario: luma-vertical and y=64 sbEdge paths are unit-pinned
+#### Scenario: luma-vertical, y=64 sbEdge, and chroma paths are unit-pinned
 - **WHEN** the orchestration runs with a forced `apply` pattern over a synthetic
-  workspace carrying a clean step at the x=64 (vertical) or y=64 (horizontal
-  `sbEdge`) boundary
-- **THEN** the luma-vertical pass smooths the x=64 edge and the luma-horizontal
-  pass smooths the y=64 `sbEdge` (with its § 7.17.3 negative-side max-width cap
-  bounding the upward extent), while flat interiors and non-edge positions stay
-  unchanged — deterministically pinning the two paths that are admitted and
-  reachable but never sample-changing in an avmenc-producible DC-multi-block
-  oracle fixture
+  workspace carrying a clean step at the x=64 (luma vertical), y=64 (luma
+  horizontal `sbEdge`), or chroma x=32 (= luma x=64) boundary
+- **THEN** the luma-vertical pass smooths the x=64 edge, the luma-horizontal pass
+  smooths the y=64 `sbEdge` (with its § 7.17.3 negative-side max-width cap
+  bounding the upward extent), and the chroma pass smooths the chroma boundary
+  while leaving the unenabled plane flat — flat interiors and non-edge positions
+  stay unchanged, deterministically pinning the luma-vertical / y=64-`sbEdge` /
+  chroma paths that are admitted and reachable but never sample-changing in an
+  avmenc-producible DC-multi-block oracle fixture
 
 #### Scenario: deblock-off frame stays byte-identical
 - **WHEN** the existing general intra fixtures whose

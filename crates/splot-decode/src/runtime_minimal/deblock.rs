@@ -33,6 +33,10 @@ use splot_recon::{
 /// AV2 § 3 `MI_SIZE`: the side of one mode-info unit in luma samples.
 const MI_SIZE: usize = 4;
 
+/// Superblock side in luma samples (the admitted general intra frontier is
+/// `sb_size == 64`). The § 7.17.2 `horz64Edge` term tests this 64-sample grid.
+const SB_SIZE: usize = 64;
+
 /// One decoded leaf block's deblocking-relevant geometry, recorded during the
 /// § 5.20.3.1 partition walk. `r` / `c` are the luma MI position of the block's
 /// top-left; `n4w` / `n4h` are its width / height in luma 4x4 units; `luma_tx` /
@@ -209,7 +213,7 @@ fn deblock_filter_edge<T: ReconSample>(
     // single full-frame tile has only one tile, so the tile-edge terms reduce to
     // the frame edge (x == 0 / y == 0), which `onScreen` already drops. So sbEdge
     // is the horizontal 64-grid edge only.
-    let sb_edge = pass == 1 && y.is_multiple_of(64);
+    let sb_edge = pass == 1 && y.is_multiple_of(SB_SIZE);
 
     // onScreen: drop the leading frame edge (no previous samples there).
     let on_screen = !((pass == 0 && x == 0) || (pass == 1 && y == 0));
@@ -288,7 +292,12 @@ fn deblock_filter_edge<T: ReconSample>(
     };
     let mut filter_size = usize::try_from(filter_size).unwrap_or(0);
 
-    // Clip the filter size at the screen edge.
+    // § 7.17.4: clip the filter size at the screen edge so a near-edge filter
+    // never reaches off-frame samples. Defensive in the admitted subset: leaf
+    // blocks tile the frame and `filter_size` is bounded by the covering
+    // transform dimension, so for every admitted geometry the filtered span is
+    // already in-frame and this clamp never actually reduces `filter_size`. Kept
+    // for spec fidelity and so a future wider-geometry admission stays correct.
     let plane_width = (mi_cols * MI_SIZE) >> plane_sub_x;
     let plane_height = (mi_rows * MI_SIZE) >> plane_sub_y;
     if plane == 0 {
@@ -900,6 +909,80 @@ mod tests {
             at(64, 59),
             100,
             "sbEdge caps the upward extent (row 59 unchanged)"
+        );
+    }
+
+    #[test]
+    fn chroma_pass_filters_the_chroma_block_edge() {
+        // §7.17.1/2 chroma: the U/V planes are gated by `apply[plane + 1]` (one
+        // flag drives BOTH passes). A clean small step at the chroma x=32 boundary
+        // (= luma x=64) is smoothed by the U vertical pass; the flat interior and
+        // the unenabled V plane stay untouched. This pins the chroma deblock path,
+        // which runs over flat chroma (zero delta) in every avmenc-producible
+        // DC-multi-block oracle fixture, mirroring the luma DEBLOCK-001 pins.
+        use splot_recon::{
+            CurrentFrameWorkspace, DecodedFrameInfo, OutputIndex, PixelFormat, PlaneRect, PlaneSize,
+        };
+        let info = DecodedFrameInfo::new(
+            OutputIndex::new(0),
+            BitDepth::Eight,
+            PixelFormat::Yuv420,
+            PlaneSize::new(128, 64).unwrap(),
+            PlaneRect::new(0, 0, 128, 64).unwrap(),
+        )
+        .unwrap();
+        let mut ws = CurrentFrameWorkspace::<u8>::new(info, 100).unwrap();
+        // Vertical step in the 4:2:0 U plane (64x32) at chroma x=32 (= luma x=64):
+        // left 100, right 108.
+        for y in 0..32 {
+            for x in 32..64 {
+                ws.set_reconstructed_sample(PlaneId::U, x, y, 108).unwrap();
+            }
+        }
+        let mut blocks = Vec::new();
+        for r in [0usize, 8] {
+            for c in [0usize, 8, 16, 24] {
+                blocks.push(DeblockBlock {
+                    r,
+                    c,
+                    n4w: 8,
+                    n4h: 8,
+                    luma_tx: 3,
+                    chroma_tx: Some(2),
+                });
+            }
+        }
+        // U plane only (apply index 2 gates both U passes; V index 3 stays off).
+        deblock_general_intra_frame(
+            &mut ws,
+            &blocks,
+            16,
+            32,
+            [false, false, true, false],
+            100,
+            BitDepth::Eight,
+        )
+        .unwrap();
+        let u = |x, y| ws.reconstructed_sample(PlaneId::U, x, y).unwrap();
+        // Deep chroma interior untouched.
+        assert_eq!(u(8, 16), 100, "left chroma interior untouched");
+        assert_eq!(u(60, 16), 108, "right chroma interior untouched");
+        // The chroma x=32 edge fired and smoothed the step toward the middle.
+        let p0 = u(31, 16);
+        let q0 = u(32, 16);
+        assert!(
+            (100..=108).contains(&p0) && (100..=108).contains(&q0),
+            "chroma smoothing stays within the step band: p0={p0} q0={q0}"
+        );
+        assert!(
+            p0 > 100 || q0 < 108,
+            "chroma pass must change the chroma x=32 edge: p0={p0} q0={q0}"
+        );
+        // The V plane was never enabled and stays flat.
+        assert_eq!(
+            ws.reconstructed_sample(PlaneId::V, 31, 16).unwrap(),
+            100,
+            "V plane untouched (apply[3] == false)"
         );
     }
 }
