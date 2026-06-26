@@ -17,35 +17,11 @@ mod proptests {
     use crate::headers::frame::{
         CoreSeqCcsoView, CoreSeqFilterView, CoreSeqInterView, CoreSeqQuantView,
         CoreSeqRestorationView, CoreSeqSegView, CoreSeqTileView, FrameHeaderParseStatus,
-        FrameReferenceStateView, init_core_from_prefix, parse_core_body, parse_frame_header_prefix,
     };
     use crate::headers::sequence::{
         CdefOnSkipTxfm, ChromaFormatIdc, LevelIdx, SuperblockSize, Tier,
     };
     use proptest::prelude::*;
-
-    /// Parses a frame-header body against a directly built [`CoreSeqView`] (the proptest
-    /// equivalent of the parser's `parse_body_with_mfh` helper).
-    fn parse_core_body_for_test(
-        data: &[u8],
-        obu_type: ObuType,
-        first_pic: bool,
-        seq: &CoreSeqView,
-        mfh: Option<&MfhFrameView>,
-    ) -> crate::error::Result<FrameHeaderCore> {
-        let mut reader = crate::bitio::BitReader::new(data, crate::span::ByteOffset::new(0));
-        let prefix = parse_frame_header_prefix(&mut reader, obu_type, Some(first_pic))?;
-        let mut core = init_core_from_prefix(&prefix, obu_type, first_pic);
-        parse_core_body(
-            &mut reader,
-            &mut core,
-            seq,
-            mfh,
-            &FrameReferenceStateView::unknown(),
-        )?;
-        core.consumed_bits = reader.consumed_bits();
-        Ok(core)
-    }
 
     proptest! {
         /// Every parser-reachable intra frame header round-trips byte-exactly and semantically.

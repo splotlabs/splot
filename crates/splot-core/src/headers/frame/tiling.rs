@@ -428,27 +428,9 @@ fn uniform_eligible(tile_log2: u8, sb_num: u32) -> bool {
 mod tests {
     use super::*;
     use crate::span::ByteOffset;
+    use crate::test_support::base_view;
 
     use crate::test_bits::Bits;
-
-    /// A 64x64-superblock sequence with no sequence tile info, level 0 Main tier,
-    /// and frame-level CDF context updates enabled.
-    fn base_view() -> CoreSeqTileView {
-        CoreSeqTileView {
-            seq_tile_info_present_flag: false,
-            allow_tile_info_change: false,
-            seq_tile_params: None,
-            seq_sb_col_starts: Vec::new(),
-            seq_sb_row_starts: Vec::new(),
-            seq_sb_size: SuperblockSize::Block64x64,
-            use_256x256_superblock: false,
-            use_128x128_superblock: false,
-            enable_avg_cdf: false,
-            avg_cdf_type: 0,
-            seq_tier: Tier::Main,
-            seq_level_idx: LevelIdx::from_bits(0),
-        }
-    }
 
     /// A stored uniform 2x2 sequence tile layout for a 4x4-superblock frame.
     fn uniform_2x2_seq_params() -> TileParams {

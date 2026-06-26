@@ -40,6 +40,8 @@ pub mod stream;
 pub mod symbol;
 pub mod symbol_encoder;
 pub mod tables;
+#[cfg(test)]
+mod test_support;
 pub mod tile;
 pub mod types;
 pub mod write;

@@ -600,42 +600,11 @@ pub fn parse_lossless_info(
 mod tests {
     use super::*;
     use crate::error::Error;
-    use crate::segment::SEG_LVL_MAX;
+
     use crate::span::ByteOffset;
+    use crate::test_support::{base_quant, seg_params};
 
     use crate::test_bits::Bits;
-
-    /// An 8-bit, 3-plane view with every optional quantizer read disabled.
-    fn base_quant() -> CoreSeqQuantView {
-        CoreSeqQuantView {
-            bit_depth: 8,
-            num_planes: 3,
-            separate_uv_delta_q: false,
-            equal_ac_dc_q: false,
-            y_dc_delta_q_enabled: false,
-            uv_dc_delta_q_enabled: false,
-            uv_ac_delta_q_enabled: false,
-            base_y_dc_delta_q: 0,
-            base_uv_dc_delta_q: 0,
-            base_uv_ac_delta_q: 0,
-            enable_tcq: false,
-            choose_tcq_per_frame: false,
-            enable_parity_hiding: false,
-        }
-    }
-
-    /// All-disabled segmentation (or enabled with no features).
-    fn seg_params(enabled: bool) -> SegmentationParams {
-        SegmentationParams {
-            segmentation_enabled: enabled,
-            reuse_seg_info: false,
-            features: [[SegmentFeature::DISABLED; SEG_LVL_MAX]; MAX_SEGMENTS],
-            segmentation_update_map: enabled,
-            segmentation_temporal_update: false,
-            seg_id_pre_skip: false,
-            last_active_seg_id: 0,
-        }
-    }
 
     /// `quantization_params()` output with the given `base_q_idx` and zero deltas.
     fn quant_params(base_q_idx: u32) -> QuantizationParams {

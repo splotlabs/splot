@@ -21,33 +21,8 @@
 mod tests {
     use super::*;
     use crate::headers::frame::{
-        FrameHeaderParseStatus, FrameReferenceStateView, FrameSize, init_core_from_prefix,
-        parse_core_body, parse_frame_header_prefix,
+        FrameHeaderParseStatus, FrameSize,
     };
-
-    /// Parses a frame-header body (activation prefix + `parse_core_body`) against a directly
-    /// built [`CoreSeqView`] / [`MfhFrameView`], the writer-test equivalent of the parser's
-    /// in-module `parse_body_with_mfh` helper (which is not reachable from this module).
-    fn parse_core_body_for_test(
-        data: &[u8],
-        obu_type: ObuType,
-        first_pic: bool,
-        seq: &CoreSeqView,
-        mfh: Option<&MfhFrameView>,
-    ) -> crate::error::Result<FrameHeaderCore> {
-        let mut reader = crate::bitio::BitReader::new(data, crate::span::ByteOffset::new(0));
-        let prefix = parse_frame_header_prefix(&mut reader, obu_type, Some(first_pic))?;
-        let mut core = init_core_from_prefix(&prefix, obu_type, first_pic);
-        parse_core_body(
-            &mut reader,
-            &mut core,
-            seq,
-            mfh,
-            &FrameReferenceStateView::unknown(),
-        )?;
-        core.consumed_bits = reader.consumed_bits();
-        Ok(core)
-    }
 
     use crate::test_bits::Bits;
 

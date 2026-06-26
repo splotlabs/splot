@@ -11,7 +11,8 @@
 mod tests {
     use super::*;
     use crate::headers::frame::parse_tile_info;
-    use crate::headers::sequence::{LevelIdx, Tier};
+    
+    use crate::test_support::base_view;
 
     /// MSB-first bit builder mirroring the `Bits` helper in the parser's own `tiling`
     /// tests, so this module reuses the same hand-built, spec-grounded fixtures.
@@ -43,25 +44,6 @@ mod tests {
                 bytes.push(byte);
             }
             bytes
-        }
-    }
-
-    /// A 64x64-superblock sequence with no sequence tile info, level 0 Main tier, and
-    /// frame-level CDF context updates enabled (mirrors the parser-test `base_view`).
-    fn base_view() -> CoreSeqTileView {
-        CoreSeqTileView {
-            seq_tile_info_present_flag: false,
-            allow_tile_info_change: false,
-            seq_tile_params: None,
-            seq_sb_col_starts: Vec::new(),
-            seq_sb_row_starts: Vec::new(),
-            seq_sb_size: SuperblockSize::Block64x64,
-            use_256x256_superblock: false,
-            use_128x128_superblock: false,
-            enable_avg_cdf: false,
-            avg_cdf_type: 0,
-            seq_tier: Tier::Main,
-            seq_level_idx: LevelIdx::from_bits(0),
         }
     }
 

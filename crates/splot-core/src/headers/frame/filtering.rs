@@ -616,6 +616,7 @@ pub fn parse_cdef_params(
 mod tests {
     use super::*;
     use crate::span::ByteOffset;
+    use crate::test_support::base_geometry;
 
     use crate::test_bits::Bits;
 
@@ -633,19 +634,6 @@ mod tests {
             df_par_bits_minus_2: 0,
             enable_df_sub_pu: false,
             single_picture_header_flag: false,
-        }
-    }
-
-    fn base_geometry() -> GdfGeometry<'static> {
-        // A small single-tile frame (MiCols = MiRows = 256, so MiCols*4 = 1024 > 128).
-        GdfGeometry {
-            sb_size: SuperblockSize::Block128x128,
-            mi_cols: 256,
-            mi_rows: 256,
-            tile_cols: 1,
-            tile_rows: 1,
-            mi_col_starts: &[0],
-            mi_row_starts: &[0],
         }
     }
 
