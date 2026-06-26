@@ -333,6 +333,90 @@ fn two_superblock_10bit_intra_frame_decodes_to_oracle() {
     );
 }
 
+// The four committed negative-shape companions to the 10-bit positive fixtures.
+// Each is a valid AV2 stream (`splot validate` clean) that the general-intra
+// 10-bit reconstruction path fails closed on, pinning one of the four §6.4.1
+// fail-closed guards so a future relaxation cannot silently emit wrong output.
+// `DECODE-GENERAL-INTRA-10BIT`.
+
+// A 10-bit single-64x64 intra frame whose luma uses SMOOTH (a non-DC mode);
+// 10-bit reconstruction is gated to the DC_PRED subset, so it must reject with
+// `unsupported_10bit_non_dc_intra`.
+const SMOOTH_10BIT_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-smooth-intra-64x64-10bit-q80.ivf"
+);
+
+// A 10-bit 64x64 frame split into DC 32x32 square sub-blocks; 10-bit
+// reconstruction is gated to full 64x64 square leaves, so a split (non-64x64)
+// leaf must reject with `unsupported_10bit_non_64x64_leaf`.
+const SPLIT_10BIT_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-split-intra-64x64-10bit-q110.ivf"
+);
+
+// A flat 10-bit frame at `base_q_idx == 255`; that lands on the frozen
+// minimal-tier reconstruction path, which is 8-bit only, so it must reject with
+// `unsupported_10bit_frozen_minimal_tier`.
+const FLAT_Q255_10BIT_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-flat-intra-64x64-10bit-q255.ivf"
+);
+
+// A two-frame 10-bit stream (key + inter frame referencing the 10-bit key);
+// 10-bit reference-frame retention is unsupported, so it must reject with
+// `unsupported_10bit_reference_retention`.
+const TWO_FRAME_INTER_10BIT_FIXTURE: &[u8] =
+    include_bytes!("../../../../tests/conformance/vectors/valid/syn-2frame-inter-64x64-10bit.ivf");
+
+// Plans and decodes `fixture`, asserting the general-intra runtime fails closed
+// with a structured `decode/unsupported-feature` diagnostic whose stable reason
+// equals `reason`, rather than reconstructing (possibly wrong) output.
+fn assert_decode_rejects(fixture: &[u8], reason: &str) {
+    use crate::error::DecodeError;
+
+    let options = DecodeOptions::default();
+    let context =
+        DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).expect("context");
+    let plan = context.plan_bytes(fixture, options).expect("plan");
+    match decode_minimal_frame_from_plan(fixture, options, &plan) {
+        Ok(_) => panic!("expected an unsupported-feature rejection for reason {reason}, decoded"),
+        Err(DecodeError::UnsupportedFeature { unsupported }) => {
+            assert_eq!(unsupported.reason(), reason);
+        }
+        Err(other) => panic!("expected an unsupported-feature rejection, got {other:?}"),
+    }
+}
+
+#[test]
+fn ten_bit_smooth_luma_fails_closed_non_dc() {
+    // 10-bit SMOOTH (non-DC) luma is outside the gated DC_PRED subset.
+    assert_decode_rejects(SMOOTH_10BIT_FIXTURE, "unsupported_10bit_non_dc_intra");
+}
+
+#[test]
+fn ten_bit_split_leaf_fails_closed_non_64x64() {
+    // A 10-bit split 32x32 square sub-leaf is not a full 64x64 square leaf.
+    assert_decode_rejects(SPLIT_10BIT_FIXTURE, "unsupported_10bit_non_64x64_leaf");
+}
+
+#[test]
+fn ten_bit_base_q255_fails_closed_frozen_tier() {
+    // A flat 10-bit `base_q_idx == 255` frame lands on the 8-bit-only frozen
+    // minimal-tier reconstruction path.
+    assert_decode_rejects(
+        FLAT_Q255_10BIT_FIXTURE,
+        "unsupported_10bit_frozen_minimal_tier",
+    );
+}
+
+#[test]
+fn ten_bit_inter_fails_closed_reference_retention() {
+    // A 10-bit inter frame references a 10-bit key whose retention is
+    // unsupported.
+    assert_decode_rejects(
+        TWO_FRAME_INTER_10BIT_FIXTURE,
+        "unsupported_10bit_reference_retention",
+    );
+}
+
 #[test]
 fn q180_cos_intra_frame_decodes_multi_coefficient_luma() {
     use splot_recon::{BitDepth, PixelFormat, PlaneSize};

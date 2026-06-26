@@ -45,8 +45,9 @@ same math reconstructs and serializes 8-bit and 10-bit samples.
   DC-chroma square-leaf subset (single or multi 64x64 superblock, flat or AC
   residual). Every richer 10-bit shape stays rejected before output:
   `unsupported_10bit_non_dc_intra` (10-bit SMOOTH / directional / PAETH non-DC),
-  `unsupported_cfl_intra` (10-bit CFL), `unsupported_10bit_rect_leaf` (10-bit
-  rectangular / non-square partition leaves), `unsupported_10bit_frozen_minimal_tier`
+  `unsupported_cfl_intra` (10-bit CFL), `unsupported_10bit_non_64x64_leaf` (10-bit
+  non-64x64 partition leaves — rectangular, or a split 32x32 / 16x16 square
+  sub-block), `unsupported_10bit_frozen_minimal_tier`
   (a 10-bit frame on the frozen `base_q_idx == 255` minimal-tier path, which
   hard-codes 8-bit reconstruction), and `unsupported_10bit_reference_retention`
   (10-bit inter / reference-frame retention).
@@ -59,6 +60,13 @@ same math reconstructs and serializes 8-bit and 10-bit samples.
 - Add the project-owned `syn-flat-intra-64x64-10bit-q80.ivf`,
   `syn-cos-intra-64x64-10bit-q180.ivf`, and `syn-2sb-intra-128x64-10bit-q80.ivf`
   fixtures and prove each decodes bit-exactly to the avmdec/dav2d oracle.
+- Pin each of the four 10-bit fail-closed reject guards with a committed,
+  validator-clean negative fixture and a negative decode test:
+  `syn-smooth-intra-64x64-10bit-q80.ivf` (`unsupported_10bit_non_dc_intra`),
+  `syn-split-intra-64x64-10bit-q110.ivf` (`unsupported_10bit_non_64x64_leaf`),
+  `syn-flat-intra-64x64-10bit-q255.ivf` (`unsupported_10bit_frozen_minimal_tier`),
+  and `syn-2frame-inter-64x64-10bit.ivf`
+  (`unsupported_10bit_reference_retention`).
 - Add decode tests pinning the 10-bit flat plane values (Y == 400, U == 480,
   V == 520), the AC-residual frame hash, and the multi-superblock frame hash plus
   its per-superblock luma anchors (left 400, right 460); confirm all existing
@@ -84,6 +92,12 @@ same math reconstructs and serializes 8-bit and 10-bit samples.
   `tests/conformance/vectors/valid/syn-cos-intra-64x64-10bit-q180.ivf`, and
   `tests/conformance/vectors/valid/syn-2sb-intra-128x64-10bit-q80.ivf` plus decode
   tests in `crates/splot-decode/src/runtime_minimal/general_intra_tests.rs`.
+- Adds the four validator-clean 10-bit negative fixtures
+  `tests/conformance/vectors/valid/syn-smooth-intra-64x64-10bit-q80.ivf`,
+  `syn-split-intra-64x64-10bit-q110.ivf`,
+  `syn-flat-intra-64x64-10bit-q255.ivf`, and
+  `syn-2frame-inter-64x64-10bit.ivf` plus negative decode tests pinning the four
+  10-bit fail-closed reject guards.
 - Modifies `crates/splot-decode/src/runtime_minimal.rs`,
   `crates/splot-decode/src/runtime_minimal/general_intra.rs`,
   `crates/splot-decode/src/runtime_minimal_recon.rs`,
@@ -96,14 +110,16 @@ same math reconstructs and serializes 8-bit and 10-bit samples.
   `docs/DECODER-SUPPORT-MATRIX.toml`, `docs/LOCAL-REFERENCE-EVIDENCE.toml`,
   `tests/conformance/manifest.toml`, and generated status/coverage docs.
 - No public API, dependency graph, encoder, or validator changes. 10-bit non-DC
-  intra (SMOOTH / directional / PAETH / CFL), 10-bit rectangular (non-square)
-  partition-leaf frames, 10-bit inter prediction / reference storage, in-loop
-  filters, and live in-CI AVM/dav2d remain out of scope.
+  intra (SMOOTH / directional / PAETH / CFL), 10-bit non-64x64 partition-leaf
+  frames (rectangular or split square sub-block), 10-bit inter prediction /
+  reference storage, in-loop filters, and live in-CI AVM/dav2d remain out of
+  scope.
 
 ## Non-goals
 
 - No 10-bit non-DC prediction (SMOOTH, directional, PAETH, CFL).
-- No 10-bit rectangular (non-square) partition-leaf reconstruction.
+- No 10-bit non-64x64 partition-leaf reconstruction (rectangular or split square
+  sub-block).
 - No 10-bit inter prediction or 10-bit reference-frame retention.
 - No change to the successful 8-bit fixture subset.
 

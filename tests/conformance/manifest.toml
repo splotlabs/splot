@@ -60,6 +60,26 @@ description = "Two-superblock 10-bit 4:2:0 intra key frame (IVF, 128x64) from pr
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-smooth-intra-64x64-10bit-q80.ivf"
+description = "Valid 10-bit 4:2:0 intra key frame (IVF, 64x64) with SMOOTH (non-DC) luma; validates clean, and the general-intra decoder fails closed with decode/unsupported-feature unsupported_10bit_non_dc_intra (10-bit reconstruction is gated to the DC_PRED subset)."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-split-intra-64x64-10bit-q110.ivf"
+description = "Valid 10-bit 4:2:0 intra key frame (IVF, 64x64) split into DC 32x32 sub-blocks; validates clean, and the general-intra decoder fails closed with decode/unsupported-feature unsupported_10bit_non_64x64_leaf (10-bit reconstruction is gated to full 64x64 square leaves)."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-flat-intra-64x64-10bit-q255.ivf"
+description = "Valid 10-bit 4:2:0 intra key frame (IVF, 64x64), flat base_q_idx == 255 frame; validates clean, and the general-intra decoder fails closed with decode/unsupported-feature unsupported_10bit_frozen_minimal_tier (the frozen minimal-tier reconstruction path is 8-bit only)."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-2frame-inter-64x64-10bit.ivf"
+description = "Valid two-frame 10-bit 4:2:0 stream (IVF, 64x64; key + inter); validates clean, and the general-intra decoder fails closed with decode/unsupported-feature unsupported_10bit_reference_retention (10-bit reference-frame retention is unsupported)."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-cos-intra-64x64-q180.ivf"
 description = "Single 8-bit 4:2:0 intra key frame (IVF, 64x64) from a project-owned low-frequency half-cosine luma input with broad decode tools disabled at base_q_idx 180, so the single 64x64 DC_PRED block carries multiple (eob > 1) AC luma coefficients; the general-intra multi-coefficient decode target whose avmdec raw output splot reproduces byte-for-byte; validates clean."
 expect = "clean"

@@ -7,9 +7,9 @@ partial `splot-decode` row named `general-intra-10bit`. The row SHALL cite AV2
 10-bit DC_PRED-luma + DC-chroma square-leaf oracle tests (flat single-64x64 DC,
 single-64x64 eob > 1 AC residual, and multi-64x64-superblock DC), SHALL carry the
 reciprocal LOCAL-REFERENCE-EVIDENCE pointers for those 10-bit fixtures, and SHALL
-keep 10-bit non-DC prediction, 10-bit rectangular (non-square) partition-leaf
-reconstruction, 10-bit inter prediction / reference retention, in-loop filters,
-and public APIs out of scope.
+keep 10-bit non-DC prediction, 10-bit non-64x64 partition-leaf reconstruction
+(rectangular or split square sub-block), 10-bit inter prediction / reference
+retention, in-loop filters, and public APIs out of scope.
 
 #### Scenario: Matrix records 10-bit DC square-leaf support
 - **WHEN** `cargo xtask check-decoder-support` validates the decoder support
@@ -17,9 +17,9 @@ and public APIs out of scope.
 - **THEN** row `general-intra-10bit` appears with Feature ID
   `DECODE-GENERAL-INTRA-10BIT`
 - **AND** it is marked partial rather than supported for full runtime decode
-- **AND** it does not claim 10-bit non-DC prediction, 10-bit rectangular
-  (non-square) partition-leaf reconstruction, or 10-bit inter / reference
-  retention
+- **AND** it does not claim 10-bit non-DC prediction, 10-bit non-64x64
+  partition-leaf reconstruction (rectangular or split square sub-block), or
+  10-bit inter / reference retention
 
 #### Scenario: Coverage tracks the new 10-bit DC decode
 - **WHEN** decoder conformance coverage is generated

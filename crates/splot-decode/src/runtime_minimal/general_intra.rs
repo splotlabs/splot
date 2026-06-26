@@ -258,19 +258,25 @@ pub(super) fn decode_general_minimal_intra_frame(
     // buffers, matching the frozen minimal path's ordering.
     let tile_size = tile.tile_size();
     let limits = options.limits();
-    ensure_runtime_limits(limits, frame_width, frame_height, tile_size)?;
 
     // §6.4.1: the sequence bit depth selects the reconstruction sample storage
     // type (Eight -> `u8`, Ten -> `u16`). The whole reconstruction graph is
     // generic over `T: ReconSample`; dispatch to the matching specialization and
     // wrap the frozen frame in the matching output-carrier arm. 10-bit is
     // admitted only for the verified DC subset (gated per-block inside
-    // `decode_one_general_intra_block`); a 10-bit non-DC / multi-block shape
+    // `decode_one_general_intra_block`); a 10-bit non-DC / non-64x64-leaf shape
     // rejects before any sample write.
     let bit_depth = match sequence.general.bit_depth_idc {
         BitDepthIdc::Eight => BitDepth::Eight,
         BitDepthIdc::Ten => BitDepth::Ten,
     };
+
+    // Enforce the configured decode limits before allocating reconstruction
+    // buffers; the byte budget charges the active bit depth (a 10-bit frame
+    // allocates two bytes per sample) so an over-limit 10-bit frame fails before
+    // the `DecodedFrame<u16>` workspace is allocated.
+    ensure_runtime_limits(limits, frame_width, frame_height, tile_size, bit_depth)?;
+
     let frame = match bit_depth {
         BitDepth::Eight => {
             MinimalRuntimeDecodedFrame::Eight(decode_general_intra_frame_into::<u8>(
@@ -522,18 +528,22 @@ fn decode_one_general_intra_block<T: ReconSample>(
         ));
     }
 
-    // 10-bit RECTANGULAR (non-square) DC leaves (e.g. a 64x32 PARTITION_HORZ
-    // child) are NOT pinned by a committed 10-bit oracle fixture — every committed
-    // 10-bit fixture is square (single and multi 64x64 superblock). The §7.15.4
-    // rectangular reconstruction is bit-depth-generic so a 10-bit rect DC leaf
-    // WOULD reconstruct, but admitting it unpinned risks a confident-but-unverified
-    // 10-bit hash, so reject it before the rectangular dispatch below. (8-bit rect
-    // leaves are unaffected: this guard never fires for `BitDepth::Eight`.)
-    if bit_depth != BitDepth::Eight && n4w != n4h {
+    // 10-bit reconstruction is oracle-verified ONLY for the FULL 64x64 square DC
+    // leaf (n4w == n4h == FULL_SB_N4_LUMA): the committed 10-bit fixtures are a
+    // single 64x64 and multi-64x64-superblock frames, every leaf a PARTITION_NONE
+    // 64x64 block. Any non-64x64 leaf — a rectangular 64x32 PARTITION_HORZ child
+    // (n4w != n4h) OR a split square 32x32 / 16x16 sub-block (n4w == n4h < 16) —
+    // has NO committed 10-bit oracle fixture. The §7.14.4/§7.15.4 reconstruction is
+    // bit-depth-generic so such a leaf WOULD reconstruct, but admitting it unpinned
+    // risks a confident-but-unverified 10-bit hash (the cardinal sin), so reject it
+    // before the rectangular dispatch and the coefficient loop. (8-bit is
+    // unaffected: this guard never fires for `BitDepth::Eight`.) `FULL_SB_N4_LUMA`
+    // (== 16, the 64x64 superblock width in 4x4 units) is defined below in this fn.
+    if bit_depth != BitDepth::Eight && (n4w != FULL_SB_N4_LUMA || n4h != FULL_SB_N4_LUMA) {
         return Err(general_intra_unsupported(
-            "unsupported_10bit_rect_leaf",
+            "unsupported_10bit_non_64x64_leaf",
             Some(tile_offset),
-            "general intra 10-bit reconstruction is only oracle-verified for square DC leaves; a 10-bit rectangular partition leaf is deferred until a 10-bit oracle fixture pins it",
+            "general intra 10-bit reconstruction is only oracle-verified for full 64x64 square DC leaves; a 10-bit non-64x64 partition leaf (rectangular, or a split 32x32 / 16x16 square sub-block) is deferred until a 10-bit oracle fixture pins it",
             GENERAL_INTRA_MODE_SPEC_SECTION,
         ));
     }

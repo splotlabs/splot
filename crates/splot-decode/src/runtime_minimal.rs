@@ -19,7 +19,7 @@ use splot_core::span::ByteOffset;
 use splot_core::stream::{ParsedBitstream, ParsedIvfBitstream, parse_bitstream_partial};
 use splot_core::symbol::{SymbolDecoder, SymbolDecoderSummary};
 use splot_core::types::ObuType;
-use splot_recon::{DecodedFrame, DecodedFrameHashInput, IntraCardinalDirection};
+use splot_recon::{BitDepth, DecodedFrame, DecodedFrameHashInput, IntraCardinalDirection};
 
 use crate::error::{DecodeError, DecodeUnsupportedFeature, Result};
 use crate::tile_payload::{
@@ -339,7 +339,13 @@ fn decode_minimal_key_frame(
     let tile_size = tile.tile_size();
 
     let limits = options.limits();
-    ensure_runtime_limits(limits, MINIMAL_WIDTH, MINIMAL_HEIGHT, tile_size)?;
+    ensure_runtime_limits(
+        limits,
+        MINIMAL_WIDTH,
+        MINIMAL_HEIGHT,
+        tile_size,
+        BitDepth::Eight,
+    )?;
     let frame =
         crate::runtime_minimal_recon::reconstruct_minimal_traced_frame(reconstruction_trace)?;
 
@@ -807,7 +813,11 @@ fn ensure_retained_frame_byte_limits_for_core(
             "minimal runtime requires parsed frame dimensions before charging retained decoded-frame bytes",
         )
     })?;
-    let frame_bytes = decoded_frame_byte_budget(frame_size).map(|budget| budget.decoded_bytes)?;
+    // Reference-frame retention is 8-bit only (a 10-bit frame is rejected with
+    // `unsupported_10bit_reference_retention` before it can be retained), so the
+    // retained-byte budget charges 1 byte per sample.
+    let frame_bytes = decoded_frame_byte_budget(frame_size, bytes_per_sample(BitDepth::Eight))
+        .map(|budget| budget.decoded_bytes)?;
     ensure_retained_frame_byte_limits_for_bytes(limits, retained_frame_bytes, frame_bytes)
 }
 
@@ -1479,15 +1489,29 @@ fn malformed_tile_boundary_reason(
     }
 }
 
+/// AV2 §6.4.1: bytes of decoded storage per visible sample for `bit_depth`
+/// (8-bit packs 1 byte, 10-bit packs 2 bytes little-endian). The reconstruction
+/// workspace and the raw/Y4M/hash output all use this width, so the pre-allocation
+/// `MaxDecodedFrameBytes` / `MaxOutputBytes` budget must charge it (a 10-bit
+/// `DecodedFrame<u16>` allocates twice the 8-bit budget for the same dimensions).
+fn bytes_per_sample(bit_depth: BitDepth) -> u64 {
+    match bit_depth {
+        BitDepth::Eight => 1,
+        BitDepth::Ten => 2,
+    }
+}
+
 fn ensure_runtime_limits(
     limits: crate::DecodeLimits,
     width: u32,
     height: u32,
     tile_payload_bytes: u64,
+    bit_depth: BitDepth,
 ) -> Result<()> {
     limits.ensure(DecodeLimitName::MaxFrameWidth, u64::from(width))?;
     limits.ensure(DecodeLimitName::MaxFrameHeight, u64::from(height))?;
-    let budget = decoded_frame_byte_budget(FrameSize::new(width, height))?;
+    let budget =
+        decoded_frame_byte_budget(FrameSize::new(width, height), bytes_per_sample(bit_depth))?;
     limits.ensure(DecodeLimitName::MaxLumaSamplesPerFrame, budget.luma_samples)?;
     limits.ensure(DecodeLimitName::MaxDecodedFrameBytes, budget.decoded_bytes)?;
     limits.ensure(DecodeLimitName::MaxOutputBytes, budget.decoded_bytes)?;

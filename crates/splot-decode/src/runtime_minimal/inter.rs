@@ -33,8 +33,8 @@ use splot_core::headers::sequence::{SequenceHeader, SuperblockSize};
 use splot_core::span::ByteOffset;
 use splot_core::types::ObuType;
 use splot_recon::{
-    DecodedFrame, InterpolationFilter as ReconInterpolationFilter, PlaneId as ReconPlaneId,
-    ReferenceFrameStore, ReferenceSlot,
+    BitDepth, DecodedFrame, InterpolationFilter as ReconInterpolationFilter,
+    PlaneId as ReconPlaneId, ReferenceFrameStore, ReferenceSlot,
 };
 
 use super::{
@@ -390,7 +390,16 @@ pub(super) fn decode_minimal_inter_frame(
         };
         tile.tile_size()
     };
-    ensure_runtime_limits(limits, frame_width, frame_height, tile_size)?;
+    // The inter runtime reconstructs 8-bit only (a 10-bit frame is rejected for
+    // reference retention before reaching here), so the byte budget charges
+    // 1 byte per sample.
+    ensure_runtime_limits(
+        limits,
+        frame_width,
+        frame_height,
+        tile_size,
+        BitDepth::Eight,
+    )?;
 
     // §5.20.7.6: the block's interpolation filter. For the SWITCHABLE frame filter
     // the block reads an `interp_filter` symbol; for a fixed frame filter the block

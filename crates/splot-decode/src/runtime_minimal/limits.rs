@@ -21,8 +21,12 @@ pub(super) struct DecodedFrameStorageBudget {
     pub(super) decoded_bytes: u64,
 }
 
-pub(super) fn decoded_frame_byte_budget(frame_size: FrameSize) -> Result<DecodedFrameByteBudget> {
-    let budget = decoded_frame_storage_budget(frame_size, ChromaFormatIdc::Yuv420, 1)?;
+pub(super) fn decoded_frame_byte_budget(
+    frame_size: FrameSize,
+    bytes_per_sample: u64,
+) -> Result<DecodedFrameByteBudget> {
+    let budget =
+        decoded_frame_storage_budget(frame_size, ChromaFormatIdc::Yuv420, bytes_per_sample)?;
     Ok(DecodedFrameByteBudget {
         luma_samples: budget.luma_samples,
         chroma_samples: budget.chroma_samples_per_plane,

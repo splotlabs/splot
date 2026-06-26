@@ -19,8 +19,9 @@
 - [x] 2.2 Gate the 10-bit admission to the DC_PRED-luma + DC-chroma square-leaf
       subset (single or multi 64x64 superblock, flat or AC residual); reject
       10-bit non-DC intra with `unsupported_10bit_non_dc_intra`, 10-bit CFL with
-      `unsupported_cfl_intra`, 10-bit rectangular (non-square) partition leaves
-      with `unsupported_10bit_rect_leaf`, the frozen `base_q_idx == 255`
+      `unsupported_cfl_intra`, 10-bit non-64x64 partition leaves (rectangular, or
+      a split 32x32 / 16x16 square sub-block) with
+      `unsupported_10bit_non_64x64_leaf`, the frozen `base_q_idx == 255`
       minimal-tier path with `unsupported_10bit_frozen_minimal_tier`, and 10-bit
       inter / reference retention with `unsupported_10bit_reference_retention`.
 - [x] 2.3 Carry the displayed frame as 8-bit or 10-bit
@@ -37,6 +38,14 @@
       anchors (left 400, right 460).
 - [x] 3.2 Confirm the 8-bit corpus stays byte-identical, the 10-bit CFL fixture
       still rejects, and `ac0ej3.ivf` still fails closed.
+- [x] 3.2a Pin each of the four 10-bit fail-closed reject guards with a
+      committed, validator-clean negative fixture and a negative decode test:
+      `syn-smooth-intra-64x64-10bit-q80.ivf` → `unsupported_10bit_non_dc_intra`,
+      `syn-split-intra-64x64-10bit-q110.ivf` → `unsupported_10bit_non_64x64_leaf`,
+      `syn-flat-intra-64x64-10bit-q255.ivf` →
+      `unsupported_10bit_frozen_minimal_tier`, and
+      `syn-2frame-inter-64x64-10bit.ivf` →
+      `unsupported_10bit_reference_retention`.
 - [x] 3.3 Add matrix, decoder-support, LOCAL-REFERENCE-EVIDENCE, and conformance
       manifest entries for `DECODE-GENERAL-INTRA-10BIT` (the `.ivf` vectors are
       tracked in `tests/conformance/manifest.toml`, not

@@ -21,8 +21,9 @@ reconstruction path SHALL remain byte-identical (the `T == u8` /
 
 This requirement claims 10-bit multi-block (multi-64x64-superblock) square DC and
 square AC reconstruction. It SHALL NOT claim 10-bit non-DC intra prediction
-(SMOOTH, directional, PAETH, CFL), 10-bit rectangular (non-square) partition-leaf
-reconstruction, 10-bit inter prediction or reference-frame retention, in-loop
+(SMOOTH, directional, PAETH, CFL), 10-bit non-64x64 partition-leaf
+reconstruction (rectangular or split square sub-block), 10-bit inter prediction
+or reference-frame retention, in-loop
 filtering, or any AVM / dav2d invocation. Every 10-bit shape outside the verified
 subset SHALL be rejected before any coefficient read or sample write with a
 structured `decode/unsupported-feature` diagnostic.
@@ -60,10 +61,26 @@ structured `decode/unsupported-feature` diagnostic.
 #### Scenario: 10-bit non-DC and richer shapes still reject
 - **WHEN** a 10-bit stream is outside the DC_PRED-luma + DC-chroma square-leaf
   subset (for example a 10-bit SMOOTH / directional / PAETH non-DC stream, the
-  10-bit CFL fixture `syn-intra-64x64-10bit.ivf`, a 10-bit rectangular
-  (non-square) partition-leaf stream, or a 10-bit `base_q_idx == 255`
-  frozen-minimal-tier stream)
+  10-bit CFL fixture `syn-intra-64x64-10bit.ivf`, a 10-bit non-64x64
+  partition-leaf stream (rectangular or split 32x32 / 16x16 square sub-block), or
+  a 10-bit `base_q_idx == 255` frozen-minimal-tier stream)
 - **THEN** the decoder rejects it before any caller-visible output with a
   structured `decode/unsupported-feature` diagnostic
 - **AND** the local `ac0ej3.ivf` 10-bit mission stream still fails closed at its
   current frontier with no new wrong output
+
+#### Scenario: the four 10-bit reject guards are pinned by committed negative fixtures
+- **WHEN** `splot decode` is given each of the four committed, validator-clean
+  10-bit negative fixtures
+- **THEN** `syn-smooth-intra-64x64-10bit-q80.ivf` (10-bit SMOOTH non-DC luma) is
+  rejected with `unsupported_10bit_non_dc_intra`
+- **AND** `syn-split-intra-64x64-10bit-q110.ivf` (10-bit frame split into DC
+  32x32 sub-blocks) is rejected with `unsupported_10bit_non_64x64_leaf`
+- **AND** `syn-flat-intra-64x64-10bit-q255.ivf` (10-bit `base_q_idx == 255`
+  frozen-minimal-tier frame) is rejected with
+  `unsupported_10bit_frozen_minimal_tier`
+- **AND** `syn-2frame-inter-64x64-10bit.ivf` (10-bit key + inter frame
+  referencing the 10-bit key) is rejected with
+  `unsupported_10bit_reference_retention`
+- **AND** each rejection is a structured `decode/unsupported-feature` diagnostic
+  emitted before any caller-visible output
