@@ -3,13 +3,13 @@
 
 #![allow(clippy::unwrap_used, clippy::panic)]
 
-use splot_core::symbol::{SymbolBitPosition, SymbolDecoder};
+use splot_core::symbol::SymbolBitPosition;
 use splot_core::tables::conversion::{ADJUSTED_TX_SIZE, TX_SIZE_SQR, TX_SIZE_SQR_UP};
 
 use super::super::cdf::{FrameCdfSubset, TileCdfSubset};
 use super::super::coeff_state::TileCoeffContextState;
 use super::base_level_pass::{CoeffBaseDerivedLevelPassConfig, CoeffBaseDerivedLevelPassError};
-use super::branch::{CoeffBlockEobBranch, NonZeroCoeffBlockStart, NonZeroCoeffBlockStartInput};
+use super::branch::NonZeroCoeffBlockStartInput;
 use super::max_level::CoeffTransformClass;
 use super::ordinary_pass::geometry::{
     CoeffOrdinaryBranchCoeffsGeometryInput, CoeffOrdinaryBranchCoeffsGeometryNonZeroInput,
@@ -29,11 +29,8 @@ use super::ordinary_pass::{
     NonZeroCoeffOrdinaryDerivedBasePass, apply_coeff_ordinary_branch,
     apply_nonzero_coeff_ordinary_pass_with_state_context,
 };
-use super::test_support::{seeded_context_state, symbol_decoder};
-use super::{
-    AllZeroCoeffBlockInput, CoeffBlockEobBranchInput, NonZeroCoeffEobContextInput,
-    read_coeff_block_eob_branch,
-};
+use super::test_support::{seeded_context_state, setup_start_with_input, symbol_decoder};
+use super::{AllZeroCoeffBlockInput, NonZeroCoeffEobContextInput};
 
 const DC_ONLY_SCAN: [u16; 1] = [0];
 const PAYLOAD_SUFFIXES: [[u8; 3]; 4] = [
@@ -203,31 +200,6 @@ fn nonzero_start_input_for_plane_geometry_and_log2(
             coeff_cdf_q_ctx: 0,
         },
     }
-}
-
-fn branch_nonzero(branch: CoeffBlockEobBranch) -> Option<NonZeroCoeffBlockStart> {
-    match branch {
-        CoeffBlockEobBranch::AllZero(_) => None,
-        CoeffBlockEobBranch::NonZero(start) => Some(start),
-    }
-}
-
-fn setup_start_with_input<'a>(
-    payload: &'a [u8],
-    start: NonZeroCoeffBlockStartInput,
-) -> Option<(TileCdfSubset, SymbolDecoder<'a>, NonZeroCoeffBlockStart)> {
-    let frame = FrameCdfSubset::from_defaults();
-    let mut tile = frame.tile_copy();
-    let mut symbols = symbol_decoder(payload);
-    let mut state = TileCoeffContextState::new(4, 4).ok()?;
-    let branch = read_coeff_block_eob_branch(
-        &mut state,
-        &mut tile,
-        &mut symbols,
-        CoeffBlockEobBranchInput::NonZero(start),
-    )
-    .ok()?;
-    Some((tile, symbols, branch_nonzero(branch)?))
 }
 
 fn state_context_pass_for_payload_with_start(
