@@ -15244,6 +15244,54 @@ fixtures = [
 diagnostics = ["decode/unsupported-feature"]
 
 [[feature]]
+id = "DECODE-GENERAL-INTRA-10BIT-SMOOTH-CHROMA"
+name = "General intra 10-bit DC luma + SMOOTH chroma reconstruction"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["6.4.1", "7.13.2.1", "7.13.2.13"]
+sources = [
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-1",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-13",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/runtime_minimal/general_intra.rs"
+openspec_change = "decode-general-intra-10bit-smooth-chroma"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Extends DECODE-GENERAL-INTRA-10BIT (DC_PRED luma + DC chroma) to also admit DC_PRED luma + §7.13.2.13 SMOOTH chroma at the NO-NEIGHBOUR top-left block (frontier.r==0 && frontier.c==0, single 64x64), pinned by syn-smchroma-intra-64x64-10bit-q160.ivf (DC luma with AC residual + SMOOTH chroma over the §7.13.2.1 no-neighbour fallback edges), byte-exact vs avmdec AND dav2d (raw md5 a09a6344f3ec7a1efbb695d4f527d7c8; splot frame hash 4fe932e5e5dea4a1830eae4853b198c738e8d1919049736d2f4a234c491d5397). The reconstruction is bit-depth-generic, but to avoid a confident-but-unverified hash, a 10-bit non-DC LUMA block, a non-DC/non-(top-left SMOOTH) CHROMA block, or a NEIGHBOUR-HAVING SMOOTH chroma block (frame-MI c!=0, which reads real reconstructed 10-bit edges no fixture pins) is rejected with unsupported_10bit_non_dc_intra. Non-64x64 leaves and non-DC luma remain deferred. 8-bit reconstruction is byte-identical."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "partial"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "partial"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/runtime_minimal.rs::general_intra_tests::ten_bit_dc_luma_smooth_chroma_decodes_to_oracle",
+]
+commands = [
+    "cargo test -p splot-decode general_intra --locked",
+    "cargo xtask conformance",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-decoder-conformance-coverage",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "tests/conformance/vectors/valid/syn-smchroma-intra-64x64-10bit-q160.ivf",
+    "crates/splot-decode/src/runtime_minimal/general_intra.rs",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
 id = "DECODE-FIRST-INTER-FRAME-FRONTIER"
 name = "First inter frame decode frontier (verified target)"
 category = "infrastructure"
