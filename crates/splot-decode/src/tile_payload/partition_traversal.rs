@@ -935,11 +935,13 @@ pub(crate) fn plan_tile_partition_traversal_cursor<'payload>(
         )?;
 
         let symbol_count_before = symbols.symbol_count();
+        let forced_chroma_partition = sdp_state.forced_chroma_partition(frame, call);
         let decision = read_frontier_partition_decision(
             call,
             frame,
             tile_bounds,
             context,
+            forced_chroma_partition,
             &mut cdfs,
             &mut symbols,
         )?;
@@ -1146,6 +1148,7 @@ where
                     limits,
                 )?;
 
+                let forced_chroma_partition = sdp_state.forced_chroma_partition(frame, call);
                 let decision = mi_size_state
                     .with_context_state(|context| {
                         read_frontier_partition_decision(
@@ -1153,6 +1156,7 @@ where
                             frame,
                             tile_bounds,
                             context,
+                            forced_chroma_partition,
                             work_unit.cdf_mut().tile_cdfs_mut(),
                             &mut symbols,
                         )
@@ -1779,6 +1783,7 @@ fn read_frontier_partition_decision(
     frame: TilePartitionFrameFacts,
     tile_bounds: TilePartitionBounds,
     context: TilePartitionContextState<'_>,
+    forced_chroma_partition: Option<PartitionType>,
     cdfs: &mut super::cdf::TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
 ) -> Result<ReadPartitionDecision, TilePartitionTraversalError> {
@@ -1798,7 +1803,7 @@ fn read_frontier_partition_decision(
         call.has_chroma,
         call.chroma_offset,
         frame.num_planes,
-        None,
+        forced_chroma_partition,
     )?;
     let facts = partition_decision_facts(allowed)?;
     // §5.20.3.1 / §8.3.2: the SDP chroma partition tree reads its partition-entry
@@ -1873,6 +1878,9 @@ struct SdpPartitionState {
     top_luma_uneven_horz: bool,
     top_luma_uneven_vert: bool,
     chroma_follows_luma: bool,
+    /// AV2 §5.20.3.1 `LumaPartitions[r][c]`: the LUMA_PART 64x64 partition
+    /// inherited by the collocated CHROMA_PART 64x64 when `ChromaFollowsLuma`.
+    luma_64x64_partition: Option<PartitionType>,
 }
 
 impl SdpPartitionState {
@@ -1895,6 +1903,10 @@ impl SdpPartitionState {
                 matches!(partition, PartitionType::Vert4A | PartitionType::Vert4B);
             self.chroma_follows_luma =
                 partition == PartitionType::None || self.top_luma_horz || self.top_luma_vert;
+            // AV2 §5.20.3.1: `LumaPartitions[r][c] = partition` at the LUMA_PART
+            // 64x64 root; the collocated CHROMA_PART 64x64 inherits it when
+            // `ChromaPartitionKnown` (`chroma_follows_luma`) holds.
+            self.luma_64x64_partition = Some(partition);
         }
 
         let this_horz = matches!(
@@ -1932,6 +1944,27 @@ impl SdpPartitionState {
         }
 
         cfl_allowed_in_sdp
+    }
+
+    /// AV2 §5.20.3.2 `partition_implied`: when the CHROMA_PART 64x64 collocated
+    /// `ChromaPartitionKnown[r][c]` holds, the chroma partition is forced to
+    /// `LumaPartitions[r][c]` and no `read_partition` symbol is consumed.
+    ///
+    /// Returns `None` when the chroma block reads its own partition tree (the
+    /// luma/chroma trees diverged) or when the call is not a CHROMA_PART 64x64.
+    fn forced_chroma_partition(
+        &self,
+        frame: TilePartitionFrameFacts,
+        call: TilePartitionCall,
+    ) -> Option<PartitionType> {
+        if !frame.frame_is_intra
+            || call.tree_type != PartitionTreeType::ChromaPart
+            || call.b_size.index() != BLOCK_64X64
+            || !self.chroma_follows_luma
+        {
+            return None;
+        }
+        self.luma_64x64_partition
     }
 }
 
