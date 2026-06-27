@@ -51,24 +51,28 @@ mod tests {
     fn lr_round_trip(
         data: &[u8],
         num_planes: u8,
-        view: &CoreSeqRestorationView,
+        view: CoreSeqRestorationView,
         geometry: LrGeometry,
     ) -> LrParams {
-        let parsed = match parse_lr_params(&mut reader(data), false, num_planes, view, geometry, 99)
+        let parsed = match parse_lr_params(&mut reader(data), false, num_planes, &view, geometry, 99)
             .unwrap()
         {
             LrParseOutcome::Parsed(p) => p,
-            other => panic!("expected Parsed, got {other:?}"),
+            other @ LrParseOutcome::StoppedBeforeWienerNsFilter { .. } => {
+                panic!("expected Parsed, got {other:?}")
+            }
         };
         let mut writer = BitWriter::new();
-        write_lr_params(&mut writer, &parsed, false, num_planes, view, geometry, 99).unwrap();
+        write_lr_params(&mut writer, &parsed, false, num_planes, &view, geometry, 99).unwrap();
         let written = writer.into_bytes();
         let reparsed =
-            match parse_lr_params(&mut reader(&written), false, num_planes, view, geometry, 99)
+            match parse_lr_params(&mut reader(&written), false, num_planes, &view, geometry, 99)
                 .unwrap()
             {
                 LrParseOutcome::Parsed(p) => p,
-                other => panic!("reparse expected Parsed, got {other:?}"),
+                other @ LrParseOutcome::StoppedBeforeWienerNsFilter { .. } => {
+                    panic!("reparse expected Parsed, got {other:?}")
+                }
             };
         assert_eq!(reparsed, parsed);
         parsed
@@ -129,7 +133,7 @@ mod tests {
         bits.ns(0, 2); // plane 2 RESTORE_NONE
         let data = bits.into_bytes();
         let geometry = geom(SuperblockSize::Block128x128, ChromaFormatIdc::Yuv420);
-        let p = lr_round_trip(&data, 3, &restoration_enabled(), geometry);
+        let p = lr_round_trip(&data, 3, restoration_enabled(), geometry);
         assert!(!p.uses_lr);
     }
 
@@ -174,7 +178,7 @@ mod tests {
             }
             let data = bits.into_bytes();
             let geometry = geom(case.sb, ChromaFormatIdc::Yuv420);
-            let p = lr_round_trip(&data, 3, &restoration_enabled(), geometry);
+            let p = lr_round_trip(&data, 3, restoration_enabled(), geometry);
             assert_eq!(
                 p.planes[0].restoration_type,
                 FrameRestorationType::PcWiener
@@ -196,7 +200,7 @@ mod tests {
         bits.bit(1);
         let data = bits.into_bytes();
         let geometry = geom(SuperblockSize::Block128x128, ChromaFormatIdc::Yuv420);
-        let p = lr_round_trip(&data, 3, &restoration_enabled(), geometry);
+        let p = lr_round_trip(&data, 3, restoration_enabled(), geometry);
         assert!(p.uses_lr);
         assert_eq!(p.planes[0].restoration_type, FrameRestorationType::None);
         assert_eq!(
@@ -217,7 +221,7 @@ mod tests {
         bits.bit(1); // chroma half size
         let data = bits.into_bytes();
         let geometry = geom(SuperblockSize::Block128x128, ChromaFormatIdc::Yuv420);
-        let p = lr_round_trip(&data, 3, &restoration_enabled(), geometry);
+        let p = lr_round_trip(&data, 3, restoration_enabled(), geometry);
         assert!(p.uses_lr);
     }
 
@@ -228,7 +232,7 @@ mod tests {
         bits.bit(1); // luma half size
         let data = bits.into_bytes();
         let geometry = geom(SuperblockSize::Block128x128, ChromaFormatIdc::Monochrome);
-        let p = lr_round_trip(&data, 1, &restoration_enabled(), geometry);
+        let p = lr_round_trip(&data, 1, restoration_enabled(), geometry);
         assert_eq!(p.planes.len(), 1);
     }
 
@@ -243,7 +247,7 @@ mod tests {
         bits.bit(1); // luma half size
         let data = bits.into_bytes();
         let geometry = geom(SuperblockSize::Block64x64, ChromaFormatIdc::Yuv420);
-        let p = lr_round_trip(&data, 3, &restoration_enabled(), geometry);
+        let p = lr_round_trip(&data, 3, restoration_enabled(), geometry);
         assert_eq!(
             p.planes[0].restoration_type,
             FrameRestorationType::Switchable
@@ -662,14 +666,14 @@ mod tests {
     fn ccso_round_trip(
         data: &[u8],
         num_planes: u8,
-        view: &CoreSeqCcsoView,
+        view: CoreSeqCcsoView,
     ) -> CcsoParams {
-        let parsed = parse_ccso_params(&mut reader(data), false, num_planes, view).unwrap();
+        let parsed = parse_ccso_params(&mut reader(data), false, num_planes, &view).unwrap();
         let mut writer = BitWriter::new();
-        write_ccso_params(&mut writer, &parsed, false, num_planes, view).unwrap();
+        write_ccso_params(&mut writer, &parsed, false, num_planes, &view).unwrap();
         let written = writer.into_bytes();
         let reparsed =
-            parse_ccso_params(&mut reader(&written), false, num_planes, view).unwrap();
+            parse_ccso_params(&mut reader(&written), false, num_planes, &view).unwrap();
         assert_eq!(reparsed, parsed);
         parsed
     }
@@ -694,7 +698,7 @@ mod tests {
         let mut bits = Bits::default();
         bits.bit(0); // ccso_frame_flag == 0
         let data = bits.into_bytes();
-        let p = ccso_round_trip(&data, 3, &ccso_enabled());
+        let p = ccso_round_trip(&data, 3, ccso_enabled());
         assert_eq!(p.ccso_frame_flag, Some(false));
     }
 
@@ -707,7 +711,7 @@ mod tests {
         bits.bit(0); // ccso_planes[1]
         bits.bit(0); // ccso_planes[2]
         let data = bits.into_bytes();
-        let p = ccso_round_trip(&data, 3, &view);
+        let p = ccso_round_trip(&data, 3, view);
         assert_eq!(p.ccso_frame_flag, Some(true));
         // No frame-flag bit was written (single-picture inference).
         let mut writer = BitWriter::new();
@@ -723,7 +727,7 @@ mod tests {
         bits.bit(0); // ccso_planes[1]
         bits.bit(0); // ccso_planes[2]
         let data = bits.into_bytes();
-        ccso_round_trip(&data, 3, &ccso_enabled());
+        ccso_round_trip(&data, 3, ccso_enabled());
     }
 
     #[test]
@@ -741,7 +745,7 @@ mod tests {
         bits.bit(0); // ccso_planes[1]
         bits.bit(0); // ccso_planes[2]
         let data = bits.into_bytes();
-        let p = ccso_round_trip(&data, 3, &ccso_enabled());
+        let p = ccso_round_trip(&data, 3, ccso_enabled());
         assert_eq!(p.planes[0].ccso_offset_idx, vec![0, 1, 2, 7]);
     }
 
@@ -763,7 +767,7 @@ mod tests {
         bits.bit(0); // ccso_planes[1]
         bits.bit(0); // ccso_planes[2]
         let data = bits.into_bytes();
-        let p = ccso_round_trip(&data, 3, &ccso_enabled());
+        let p = ccso_round_trip(&data, 3, ccso_enabled());
         assert_eq!(p.planes[0].ccso_edge_clf, Some(true));
         assert_eq!(p.planes[0].ccso_offset_idx.len(), 4);
     }
@@ -785,7 +789,7 @@ mod tests {
         bits.bit(0); // ccso_planes[1]
         bits.bit(0); // ccso_planes[2]
         let data = bits.into_bytes();
-        let p = ccso_round_trip(&data, 3, &ccso_enabled());
+        let p = ccso_round_trip(&data, 3, ccso_enabled());
         assert_eq!(p.planes[0].ccso_edge_clf, Some(false));
         assert_eq!(p.planes[0].ccso_offset_idx.len(), 9);
     }
@@ -800,7 +804,7 @@ mod tests {
         bits.f(0, 3); // ccso_max_band_log2 == 0 -> maxBand 1
         bits.tu(4, 7); // 1 offset
         let data = bits.into_bytes();
-        let p = ccso_round_trip(&data, 1, &ccso_enabled());
+        let p = ccso_round_trip(&data, 1, ccso_enabled());
         assert_eq!(p.planes.len(), 1);
     }
 

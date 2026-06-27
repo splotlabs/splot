@@ -234,6 +234,10 @@ fn unequal_digest_assertions_are_rejected() -> Result<()> {
     finish(root)
 }
 
+// Returns `Result<()>` so it composes as the tail expression of every
+// `Result`-returning test (`finish(root)` is the final `Ok(())`); unwrapping it
+// would force 13 call sites to append a separate `Ok(())`.
+#[allow(clippy::unnecessary_wraps)]
 fn finish(root: PathBuf) -> Result<()> {
     let _ = std::fs::remove_dir_all(root);
     Ok(())

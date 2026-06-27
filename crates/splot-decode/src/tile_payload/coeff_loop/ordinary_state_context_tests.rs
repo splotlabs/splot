@@ -684,8 +684,7 @@ fn coefficient_ordinary_branch_plane_type_nonzero_matches_explicit_plane_type() 
     for plane in [0, 1, 2] {
         let start = nonzero_start_input_for_plane(plane);
         let direct_base_config = base_config_for_plane(plane, false, false);
-        let direct_state_context =
-            state_context_config_for_plane_type(if plane > 0 { 1 } else { 0 });
+        let direct_state_context = state_context_config_for_plane_type(usize::from(plane > 0));
         let derived_base_config = plane_tx_type_base_config_for_plane(plane, 0, false, false);
         let derived_state_context = plane_type_state_context_config();
         let payload = find_state_context_payload_with_start(

@@ -47,10 +47,10 @@ fn branch_nonzero(branch: CoeffBlockEobBranch) -> Option<super::branch::NonZeroC
     }
 }
 
-fn setup_walk<'a>(
-    payload: &'a [u8],
+fn setup_walk(
+    payload: &[u8],
     mode: CdfUpdateMode,
-) -> Option<(TileCdfSubset, SymbolDecoder<'a>, NonZeroCoeffScanWalk)> {
+) -> Option<(TileCdfSubset, SymbolDecoder<'_>, NonZeroCoeffScanWalk)> {
     let frame = FrameCdfSubset::from_defaults();
     let mut tile = frame.tile_copy();
     let mut symbols = symbol_decoder(payload, mode);

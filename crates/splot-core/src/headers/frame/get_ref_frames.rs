@@ -433,11 +433,7 @@ fn bubble_sort_ref_scores(ranked: &mut [Ranked]) {
 /// the spec convention (the same convention [`super::size::ceil_log2`] uses for its degenerate
 /// inputs).
 fn floor_log2_u32_from_u64(value: u64) -> u32 {
-    if value < 2 {
-        0
-    } else {
-        63 - value.leading_zeros()
-    }
+    if value < 2 { 0 } else { value.ilog2() }
 }
 
 #[cfg(test)]

@@ -391,7 +391,7 @@ fn get_intra_uv_mode_set(y_mode: IntraYMode, uv_mode: u8) -> Option<u8> {
         }
         mode_idx -= 1;
     }
-    for &mode in DEFAULT_MODE_LIST_UV.iter() {
+    for &mode in &DEFAULT_MODE_LIST_UV {
         if mode != y_mode.0 || !y_directional {
             if mode_idx == 0 {
                 return Some(mode);
@@ -821,7 +821,7 @@ fn get_intra_y_mode_set(
         }
     }
 
-    for &mode in DEFAULT_MODE_LIST_Y.iter() {
+    for &mode in &DEFAULT_MODE_LIST_Y {
         if !is_dir_selected[mode] {
             if mode_idx == 0 {
                 return Some(mode + NON_DIRECTIONAL_MODES_COUNT);
@@ -897,6 +897,8 @@ pub(crate) const fn txb_skip_ctx_luma(
 /// columns / rows is non-zero. `chroma_block_larger_than_tx` is `bw * bh > w * h`
 /// and `eob_u_nonzero` is `EobU != 0`. (The `plane == 1` U-plane `+6` branch is
 /// not modelled — the minimal trace has no U `all_zero` symbol.)
+// Each bool is a distinct AV2 §8.3.2 V-plane txb_skip context input; bundling them would obscure the spec mapping.
+#[allow(clippy::fn_params_excessive_bools)]
 pub(crate) const fn v_txb_skip_ctx(
     above_nonzero: bool,
     left_nonzero: bool,

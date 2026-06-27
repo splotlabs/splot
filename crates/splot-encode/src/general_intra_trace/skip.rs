@@ -76,6 +76,12 @@ pub(crate) fn encode_general_intra_dc_skip_tile_data() -> Result<Vec<u8>> {
 /// `tile_data`; only the tile bytes encode the skip block. The cross-crate decode that proves
 /// the flat reconstruction lives in `splot-cli` (which depends on both `splot-encode` and
 /// `splot-decode`).
+///
+/// # Errors
+///
+/// Returns an error if encoding the general-intra DC skip tile data fails (trace
+/// composition or entropy coding), or if the AV2 IVF stream cannot be assembled by
+/// `splot-core`.
 pub fn emit_minimal_intra_skip_ivf() -> Result<Vec<u8>> {
     let tile_data = encode_general_intra_dc_skip_tile_data()?;
     splot_core::headers::frame::encode_minimal_intra_clk_ivf_with_base_q_idx(

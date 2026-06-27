@@ -306,12 +306,10 @@ impl BlockNeighbourContext {
         for i in (ref_idx + 1)..num_total_refs {
             next_count += u32::from(*self.ref_counts.get(i)?);
         }
-        Some(if this_count == next_count {
-            1
-        } else if this_count < next_count {
-            0
-        } else {
-            2
+        Some(match this_count.cmp(&next_count) {
+            core::cmp::Ordering::Equal => 1,
+            core::cmp::Ordering::Less => 0,
+            core::cmp::Ordering::Greater => 2,
         })
     }
 }
@@ -600,7 +598,7 @@ fn scan_point(
     // §7.12.2.6 weight:
     //   (-1, -1) -> 0; deltaCol < -1 -> 0; otherwise 1.
     let zero_weight = (delta_row == -1 && delta_col == -1) || delta_col < -1;
-    let weight: u32 = if zero_weight { 0 } else { 1 };
+    let weight: u32 = u32::from(!zero_weight);
 
     let Some(cell) = grid.get(mv_row, mv_col) else {
         return;

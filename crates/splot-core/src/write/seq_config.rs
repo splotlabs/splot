@@ -295,7 +295,7 @@ pub fn write_sequence_intra_config(
     config: &SequenceIntraConfig,
     monochrome: bool,
 ) -> WriteResult<()> {
-    check_intra_encodable(config, monochrome)?;
+    check_intra_encodable(*config, monochrome)?;
 
     writer.write_flag(config.enable_dip)?;
     writer.write_flag(config.enable_intra_edge_filter)?;
@@ -311,7 +311,7 @@ pub fn write_sequence_intra_config(
 
 /// Validates that `config` is a model the § 5.4.5 parser could have produced.
 pub(crate) fn check_intra_encodable(
-    config: &SequenceIntraConfig,
+    config: SequenceIntraConfig,
     monochrome: bool,
 ) -> WriteResult<()> {
     if monochrome {
@@ -649,7 +649,7 @@ pub fn write_sequence_scc_config(
     config: &SequenceSccConfig,
     single_picture: bool,
 ) -> WriteResult<()> {
-    check_scc_encodable(config, single_picture)?;
+    check_scc_encodable(*config, single_picture)?;
 
     if single_picture {
         // Both forces inferred to SELECT_* (no bits signaled).
@@ -677,7 +677,7 @@ pub fn write_sequence_scc_config(
 
 /// Validates that `config` is a model the § 5.4.7 parser could have produced.
 pub(crate) fn check_scc_encodable(
-    config: &SequenceSccConfig,
+    config: SequenceSccConfig,
     single_picture: bool,
 ) -> WriteResult<()> {
     if single_picture {

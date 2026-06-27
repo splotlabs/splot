@@ -241,6 +241,8 @@ mod tests {
     // multiply by the IST kernel, Round2Signed/Clip3, and scatter via the spec
     // scan-order (and scan-map for large), honoring transpose. Mirrors § 7.15.3
     // directly so the test is a re-trace, not a call of the function under test.
+    // `i`/`j`/`c`/`t`/`v`/`x`/`y` mirror the § 7.15.3 IST pseudocode notation.
+    #[allow(clippy::many_single_char_names)]
     fn reference(dequant: &mut [i32], p: &SecondaryInverseTransform) {
         let large = p.w >= 8 && p.h >= 8;
         let (kernel_width, scan_bwl, scan_w) = if large {

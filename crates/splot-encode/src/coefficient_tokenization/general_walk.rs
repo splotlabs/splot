@@ -271,6 +271,10 @@ pub(super) fn tokenize_general_luma_block(
     max_eob_pt: usize,
     coeff_cdf_q_ctx: usize,
 ) -> Result<Vec<BlockSymbolToken>> {
+    // The all-zero chroma tail appended after the sign pass: the U and V `txb_skip`
+    // tokens (this brick's blocks have no coded chroma coefficients).
+    const CHROMA_ALL_ZERO_TAIL_LEN: usize = 2;
+
     if quant.len() != geom.coeff_count {
         return Err(Error::CoefficientTokenizationAllocationFailed {
             context: "general walk quant length mismatch",
@@ -325,10 +329,6 @@ pub(super) fn tokenize_general_luma_block(
         } else {
             0
         };
-
-    // The all-zero chroma tail appended after the sign pass: the U and V `txb_skip`
-    // tokens (this brick's blocks have no coded chroma coefficients).
-    const CHROMA_ALL_ZERO_TAIL_LEN: usize = 2;
 
     let total = base_pass
         .len()
@@ -795,7 +795,7 @@ fn compose_sign_pass(
         if magnitude >= max_level {
             let x = magnitude - max_level;
             let params = golomb_params_from_hr_level_avg(hr_level_avg);
-            push_read_quant_golomb_tail(&mut tokens, x, params)?;
+            push_read_quant_golomb_tail(&mut tokens, x, params);
             hr_level_avg = next_hr_level_avg(x, hr_level_avg);
         }
     }

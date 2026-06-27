@@ -348,7 +348,7 @@ impl ValidatorContext {
                 };
                 self.observe_metadata_unit(
                     obu,
-                    MetadataUnitHeader {
+                    &MetadataUnitHeader {
                         layer_idc: short.muh_layer_idc,
                         persistence_idc: short.muh_persistence_idc,
                         collapsed_mlayer_map: None,
@@ -395,7 +395,7 @@ impl ValidatorContext {
                     };
                     self.observe_metadata_unit(
                         obu,
-                        MetadataUnitHeader {
+                        &MetadataUnitHeader {
                             layer_idc,
                             persistence_idc,
                             collapsed_mlayer_map,
@@ -416,19 +416,19 @@ impl ValidatorContext {
     pub(super) fn observe_metadata_unit(
         &mut self,
         obu: &ObuEnvelope<'_>,
-        header: MetadataUnitHeader<'_>,
+        header: &MetadataUnitHeader<'_>,
         unit: MetadataUnit,
         report: &mut ValidationReport,
     ) {
-        self.check_hdr_repeat_content(obu, &header, &unit, report);
+        self.check_hdr_repeat_content(obu, header, &unit, report);
         if let MetadataPayload::ScanType(scan) = &unit.payload {
-            self.check_scan_type_consistency(obu, scan, report);
+            self.check_scan_type_consistency(obu, *scan, report);
         }
         if let MetadataPayload::Timecode(timecode) = &unit.payload {
             // The § 6.16.3 layer targeting scopes the n_frames bound's pairing to the
             // content interpretation OBUs of the layers this timecode describes
             // (finding 4); `None` when targeting is not bitstream-derivable.
-            let targeting = derive_hdr_association(obu, &header);
+            let targeting = derive_hdr_association(obu, header);
             self.check_timecode_consistency(obu, timecode, targeting, report);
         }
 

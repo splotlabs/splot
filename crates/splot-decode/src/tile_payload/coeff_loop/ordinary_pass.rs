@@ -930,6 +930,7 @@ fn clone_dc_context_line(values: &[u8]) -> Result<Vec<u8>, CoeffOrdinaryPassErro
     Ok(copy)
 }
 
+#[derive(Clone, Copy)]
 struct InterleavedSignQuantInput<'a> {
     sign_inputs: &'a [CoeffSignReadInput],
     sign_levels: &'a [u32],

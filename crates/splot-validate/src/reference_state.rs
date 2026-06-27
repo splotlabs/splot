@@ -261,6 +261,9 @@ impl ReferenceStateTracker {
     /// a proven-valid non-long-term slot (the spec's `-1`). Returns `None` when the slot is
     /// `Unknown` or `ProvenInvalid` — the long-term id is then undecidable, so a dependent
     /// judgment must drop to silence (the Unknown invariant).
+    // Both `Option` levels are meaningful: the outer marks slot decidability and the inner
+    // distinguishes a long-term id (`Some`) from the spec's `-1` non-long-term slot (`None`).
+    #[allow(clippy::option_option)]
     pub(crate) fn slot_long_term_id(
         &self,
         xlayer: ExtendedLayerId,
@@ -414,7 +417,7 @@ mod tests {
         tracker.apply(
             XL,
             FrameRefUpdate::Refresh {
-                refresh_frame_flags: 0b101010,
+                refresh_frame_flags: 0b10_1010,
                 is_key_or_switch: true,
                 facts: facts(3),
             },

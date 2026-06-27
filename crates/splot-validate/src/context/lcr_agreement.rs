@@ -240,7 +240,7 @@ impl ValidatorContext {
         if let Some(agg) = global.aggregate_info {
             self.check_lcr_aggregate_agreement(
                 global_id,
-                &agg,
+                agg,
                 msdo,
                 msdo_offset,
                 global.offset,
@@ -285,7 +285,7 @@ impl ValidatorContext {
     pub(super) fn check_lcr_aggregate_agreement(
         &mut self,
         global_id: u8,
-        agg: &LcrAggregateInfo,
+        agg: LcrAggregateInfo,
         msdo: &MsdoAggregate,
         msdo_offset: ByteOffset,
         global_offset: ByteOffset,

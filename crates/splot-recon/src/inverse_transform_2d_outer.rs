@@ -739,9 +739,7 @@ mod tests {
         let mut dequant = [0i32; 16];
         // Identity at zero shift with a large coefficient; the identity clamp in
         // the 1D primitive bounds it, but exercise the DPCM totality path.
-        for d in dequant.iter_mut() {
-            *d = i32::MAX;
-        }
+        dequant.fill(i32::MAX);
         let vp = params(
             2,
             2,

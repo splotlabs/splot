@@ -348,10 +348,11 @@ exec "$SPLOT_BIN" decode --output-format y4m "$SPLOT_INPUT" -o "$out"
     assert_eq!(std::fs::read(&output).unwrap(), expected_minimal_y4m());
     let names = read_dir_names(&dir);
     assert!(names.contains(&"selected-output-name.txt".to_string()));
-    assert_eq!(
-        names.iter().filter(|name| name.ends_with(".tmp")).count(),
-        1
-    );
+    // Exact literal-suffix match on the decoder's known-lowercase temp-file naming, not a
+    // case-insensitive file-extension test; `ends_with` is the intended, correct comparison here.
+    #[allow(clippy::case_sensitive_file_extension_comparisons)]
+    let tmp_count = names.iter().filter(|name| name.ends_with(".tmp")).count();
+    assert_eq!(tmp_count, 1);
 }
 
 #[test]

@@ -67,8 +67,8 @@ pub(super) const CHROMA_SIGN_BIT_WIDTH: u32 = 1;
 /// 64x64 all-intra `OBU_CLOSED_LOOP_KEY` container at [`SKIP_FRAME_BASE_Q_IDX`]. Every
 /// `emit_minimal_intra_*_ivf` producer differs only in the `trace` it composes; this is their
 /// shared tail. The cross-crate decode oracle that proves each reconstruction lives in `splot-cli`.
-fn emit_minimal_intra_ivf(trace: Vec<BlockSymbolToken>) -> Result<Vec<u8>> {
-    let tile_data = encode_block_symbol_trace(&trace)?;
+fn emit_minimal_intra_ivf(trace: &[BlockSymbolToken]) -> Result<Vec<u8>> {
+    let tile_data = encode_block_symbol_trace(trace)?;
     splot_core::headers::frame::encode_minimal_intra_clk_ivf_with_base_q_idx(
         SKIP_FRAME_BASE_Q_IDX,
         &tile_data,

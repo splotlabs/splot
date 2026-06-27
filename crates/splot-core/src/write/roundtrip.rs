@@ -87,11 +87,7 @@ pub fn recover_roundtrip_passthrough(payload: &[u8], parsed: &ParsedObu) -> Writ
         ParsedObu::Padding(pad) => slice_recover(payload, pad.padding_len),
         // § 5.17.2: the short OBU's single unit (absent on cancel).
         ParsedObu::MetadataShort(obu) => {
-            let len = obu
-                .unit
-                .as_ref()
-                .map(metadata_unit_passthrough_len)
-                .unwrap_or(0);
+            let len = obu.unit.as_ref().map_or(0, metadata_unit_passthrough_len);
             zero_fill_recover(payload, len)
         }
         // § 5.17.3: the group's flat passthrough is each unit's modeled blob length concatenated.
@@ -150,13 +146,10 @@ fn zero_fill_recover(payload: &[u8], len: usize) -> WriteResult<Vec<u8>> {
 /// [`RoundtripOutcome::Failed`] is a defect.
 #[must_use]
 pub fn roundtrip_obu(header: &ObuHeader, payload: &[u8], parsed: &ParsedObu) -> RoundtripOutcome {
-    let passthrough = match recover_roundtrip_passthrough(payload, parsed) {
-        Ok(passthrough) => passthrough,
-        Err(_) => {
-            return RoundtripOutcome::Failed {
-                reason: "passthrough_unrecoverable",
-            };
-        }
+    let Ok(passthrough) = recover_roundtrip_passthrough(payload, parsed) else {
+        return RoundtripOutcome::Failed {
+            reason: "passthrough_unrecoverable",
+        };
     };
 
     // Write header + payload + tail; an unwritten type is honestly Unwritable, any other reject of a

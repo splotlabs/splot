@@ -925,6 +925,8 @@ fn decode_minimal_block_symbol_frontier_error(
     }
 }
 
+// Owned error-to-DecodeError conversion used through `map_err`; by-value ownership matches that consume-and-map design.
+#[allow(clippy::needless_pass_by_value)]
 fn decode_minimal_block_symbol_error(
     error: MinimalBlockSymbolTraceError,
     offset: ByteOffset,
@@ -969,6 +971,8 @@ fn decode_minimal_block_symbol_error(
     }
 }
 
+// Owned error-to-DecodeError conversion used through `map_err`; by-value ownership matches that consume-and-map design.
+#[allow(clippy::needless_pass_by_value)]
 fn decode_minimal_partition_frontier_error(
     error: MinimalRuntimePartitionFrontierError,
     offset: ByteOffset,
@@ -1160,6 +1164,10 @@ fn ensure_sequence_chroma_tools_before_tile_decode(
 /// `base_q_idx == 255` 8-bit fixture path) and fails there; the general intra
 /// path handles 10-bit DC and rejects 10-bit non-DC inside `decode_one_general
 /// _intra_block`.
+// Fail-closed §6.4.1 storage gate: the `Result` is the rejection point for unsupported
+// storage bit depths and the exhaustive match forces review when `BitDepthIdc` grows, so
+// the wrapper is intentional even though both current arms return `Ok`.
+#[allow(clippy::unnecessary_wraps)]
 fn ensure_runtime_storage_bit_depth(sequence: &SequenceHeader, _offset: ByteOffset) -> Result<()> {
     // §6.4.1 bit_depth_idc resolves to exactly Eight or Ten in the parser. Both
     // now have runtime sample storage: 8-bit (`u8`) for every supported tier, and
@@ -1398,7 +1406,23 @@ mod general_intra_tests;
 #[cfg(test)]
 mod wienerns_lr_recon_tests;
 
-fn derive_tile_plan<'a>(
+/// Which frame-type tile-facts derivation [`derive_tile_plan_with`] applies — the
+/// only thing that differs between the intra and inter tile-plan entry points.
+#[derive(Clone, Copy)]
+enum TileFactsKind {
+    Intra,
+    Inter,
+}
+
+/// Shared tile-payload-plan derivation for the intra and inter entry points: build
+/// the coeff/cdf facts and boundary input from the parsed §5.18.2 header, then plan
+/// the derived tile-payload boundary. The two entry points differ only in `kind`,
+/// which selects the intra vs inter tile-facts derivation.
+// Eight args: the seven shared frame-context inputs both entry points already pass
+// (each was at clippy's 7-arg limit) plus the intra/inter discriminator. Bundling
+// them would only move this argument list into a single-use struct.
+#[allow(clippy::too_many_arguments)]
+fn derive_tile_plan_with<'a>(
     plan: &'a DecodeStreamPlan,
     candidate: &'a DecodePlannedObu,
     bytes: &'a [u8],
@@ -1406,6 +1430,7 @@ fn derive_tile_plan<'a>(
     sequence: &'a SequenceHeader,
     core: &'a FrameHeaderCore,
     options: DecodeOptions,
+    kind: TileFactsKind,
 ) -> Result<crate::tile_payload::DecodeTilePayloadPlan<'a>> {
     let tq = sequence.transform_quant_entropy.as_ref().ok_or_else(|| {
         unsupported_at(
@@ -1415,8 +1440,11 @@ fn derive_tile_plan<'a>(
         )
     })?;
     let coeff = FrameCandidateCoeffFacts::from_tq(tq);
-    let facts = FrameCandidateTileFacts::from_frame_core(core, coeff)
-        .map_err(decode_tile_boundary_error)?;
+    let facts = match kind {
+        TileFactsKind::Intra => FrameCandidateTileFacts::from_frame_core(core, coeff),
+        TileFactsKind::Inter => FrameCandidateTileFacts::from_inter_frame_core(core, coeff),
+    }
+    .map_err(decode_tile_boundary_error)?;
     let cdf = FrameCandidateCdfFacts::new(tq.enable_avg_cdf, tq.avg_cdf_type != 0);
     let input = FrameCandidateTileBoundaryInput::new(
         plan,
@@ -1428,8 +1456,29 @@ fn derive_tile_plan<'a>(
         cdf,
         options.limits(),
     );
-    crate::tile_payload::plan_derived_tile_payload_boundary(input)
+    crate::tile_payload::plan_derived_tile_payload_boundary(&input)
         .map_err(decode_tile_boundary_error)
+}
+
+fn derive_tile_plan<'a>(
+    plan: &'a DecodeStreamPlan,
+    candidate: &'a DecodePlannedObu,
+    bytes: &'a [u8],
+    envelope: ObuEnvelope<'a>,
+    sequence: &'a SequenceHeader,
+    core: &'a FrameHeaderCore,
+    options: DecodeOptions,
+) -> Result<crate::tile_payload::DecodeTilePayloadPlan<'a>> {
+    derive_tile_plan_with(
+        plan,
+        candidate,
+        bytes,
+        envelope,
+        sequence,
+        core,
+        options,
+        TileFactsKind::Intra,
+    )
 }
 
 /// Derives the inter frame's tile-payload plan (DECODE-FIRST-INTER-FRAME-FRONTIER).
@@ -1447,31 +1496,20 @@ fn derive_inter_tile_plan<'a>(
     core: &'a FrameHeaderCore,
     options: DecodeOptions,
 ) -> Result<crate::tile_payload::DecodeTilePayloadPlan<'a>> {
-    let tq = sequence.transform_quant_entropy.as_ref().ok_or_else(|| {
-        unsupported_at(
-            "missing_tq_entropy_config",
-            envelope.offset,
-            "minimal tier requires sequence transform/quant/entropy config",
-        )
-    })?;
-    let coeff = FrameCandidateCoeffFacts::from_tq(tq);
-    let facts = FrameCandidateTileFacts::from_inter_frame_core(core, coeff)
-        .map_err(decode_tile_boundary_error)?;
-    let cdf = FrameCandidateCdfFacts::new(tq.enable_avg_cdf, tq.avg_cdf_type != 0);
-    let input = FrameCandidateTileBoundaryInput::new(
+    derive_tile_plan_with(
         plan,
         candidate,
         bytes,
         envelope,
-        TileGroupPositionFacts::new(true, true),
-        facts,
-        cdf,
-        options.limits(),
-    );
-    crate::tile_payload::plan_derived_tile_payload_boundary(input)
-        .map_err(decode_tile_boundary_error)
+        sequence,
+        core,
+        options,
+        TileFactsKind::Inter,
+    )
 }
 
+// Owned error-to-DecodeError conversion used through `map_err`; by-value ownership matches that consume-and-map design.
+#[allow(clippy::needless_pass_by_value)]
 fn decode_tile_boundary_error(error: FrameCandidateTileBoundaryError) -> DecodeError {
     match error {
         FrameCandidateTileBoundaryError::Limit(source) => DecodeError::Limit { source },

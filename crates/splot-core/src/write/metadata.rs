@@ -283,10 +283,7 @@ pub(crate) fn metadata_group_unit_passthrough_len(unit: &MetadataGroupUnit) -> u
     if unit.muh_cancel_flag {
         return 0;
     }
-    unit.unit
-        .as_ref()
-        .map(metadata_unit_passthrough_len)
-        .unwrap_or(0)
+    unit.unit.as_ref().map_or(0, metadata_unit_passthrough_len)
 }
 
 /// Writes a `metadata_group_obu()` (AV2 v1.0.0 § 5.17.3,
@@ -738,7 +735,7 @@ pub fn write_metadata_payload(
         }
         MetadataPayload::ScanType(p) => {
             require_empty_passthrough(passthrough)?;
-            write_scan_type(writer, p)
+            write_scan_type(writer, *p)
         }
         MetadataPayload::TemporalPointInfo(p) => {
             require_empty_passthrough(passthrough)?;
@@ -917,7 +914,7 @@ fn check_timecode_encodable(p: &MetadataTimecode) -> WriteResult<()> {
 
 /// Writes `metadata_scan_type()` (AV2 v1.0.0 § 5.17.10,
 /// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-17-10`).
-fn write_scan_type(writer: &mut BitWriter, p: &MetadataScanType) -> WriteResult<()> {
+fn write_scan_type(writer: &mut BitWriter, p: MetadataScanType) -> WriteResult<()> {
     // § 5.17.10 domains: mps_pic_struct_type f(5), mps_source_scan_type_idc f(2).
     if p.mps_pic_struct_type >= 32 || p.mps_source_scan_type_idc >= 4 {
         return Err(WriteError::NonCanonicalMetadata {
@@ -1087,7 +1084,7 @@ fn check_band_units_encodable(band_units: &BandUnits) -> WriteResult<()> {
 fn write_banding_detail(writer: &mut BitWriter, detail: &BandingHintsDetail) -> WriteResult<()> {
     writer.write_flag(detail.three_color_components_flag)?;
     for component in &detail.components {
-        write_banding_component(writer, component)?;
+        write_banding_component(writer, *component)?;
     }
     // § 5.17.8: band_units_information_present_flag f(1) = band_units.is_some().
     writer.write_flag(detail.band_units.is_some())?;
@@ -1099,10 +1096,7 @@ fn write_banding_detail(writer: &mut BitWriter, detail: &BandingHintsDetail) -> 
 
 /// Writes one [`BandingComponent`] (AV2 v1.0.0 § 5.17.8,
 /// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-17-8`).
-fn write_banding_component(
-    writer: &mut BitWriter,
-    component: &BandingComponent,
-) -> WriteResult<()> {
+fn write_banding_component(writer: &mut BitWriter, component: BandingComponent) -> WriteResult<()> {
     writer.write_flag(component.banding_in_component_present_flag)?;
     if let (Some(width), Some(step)) = (
         component.max_band_width_minus_4,

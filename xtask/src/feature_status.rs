@@ -228,7 +228,8 @@ const COVERAGE_COLUMNS: &[(&str, &str)] = &[
 /// The whole matrix file.
 #[derive(Debug, Deserialize, Serialize)]
 pub(crate) struct Matrix {
-    matrix_version: u32,
+    #[serde(rename = "matrix_version")]
+    version: u32,
     #[serde(default)]
     last_reviewed: Option<String>,
     #[serde(default)]
@@ -350,12 +351,12 @@ fn filtered<'a>(
 pub(crate) fn run_feature_status(
     root: &Path,
     format: StatusFormat,
-    category: Option<String>,
-    kind: Option<String>,
+    category: Option<&str>,
+    kind: Option<&str>,
     output: Option<PathBuf>,
 ) -> Result<()> {
     let matrix = load_matrix(root)?;
-    let features = filtered(&matrix, category.as_deref(), kind.as_deref());
+    let features = filtered(&matrix, category, kind);
     let rendered = match format {
         StatusFormat::Table => render_table(&features),
         StatusFormat::Json => render_json(&matrix, &features)?,
@@ -469,7 +470,7 @@ fn render_json(matrix: &Matrix, features: &[&Feature]) -> Result<String> {
         feature: &'a [&'a Feature],
     }
     let out = JsonOut {
-        matrix_version: matrix.matrix_version,
+        matrix_version: matrix.version,
         last_reviewed: &matrix.last_reviewed,
         count: features.len(),
         feature: features,
@@ -499,7 +500,7 @@ fn render_markdown(matrix: &Matrix, features: &[&Feature]) -> String {
     let _ = writeln!(
         out,
         "Matrix version {}. Last reviewed {}. {} feature(s).",
-        matrix.matrix_version,
+        matrix.version,
         reviewed,
         features.len()
     );
@@ -681,7 +682,7 @@ fn writer_coverage_markdown(matrix: &Matrix) -> String {
     let _ = writeln!(
         out,
         "Matrix version {}. Last reviewed {}. {} writable feature(s).",
-        matrix.matrix_version,
+        matrix.version,
         reviewed,
         rows.len()
     );
@@ -806,7 +807,7 @@ fn coverage_text(matrix: &Matrix) -> String {
     let _ = writeln!(
         out,
         "splot implementation coverage (matrix_version {}, last reviewed {})",
-        matrix.matrix_version, reviewed
+        matrix.version, reviewed
     );
     let _ = writeln!(out, "{} feature(s) total.", matrix.feature.len());
     let _ = writeln!(out);
@@ -1006,7 +1007,7 @@ fn coverage_markdown(matrix: &Matrix, index: &MirrorIndex) -> String {
     let _ = writeln!(
         out,
         "Matrix version {}. Last reviewed {}. {} feature(s); {} cite a spec section.",
-        matrix.matrix_version,
+        matrix.version,
         reviewed,
         matrix.feature.len(),
         matrix.feature.len() - without_section.len()
@@ -1167,10 +1168,10 @@ impl Checker {
 
     /// Filesystem-free structural checks (also used by unit tests).
     fn intrinsic(&mut self, matrix: &Matrix) {
-        if matrix.matrix_version != SUPPORTED_MATRIX_VERSION {
+        if matrix.version != SUPPORTED_MATRIX_VERSION {
             self.problems.push(format!(
                 "unsupported matrix_version {} (this tool supports {SUPPORTED_MATRIX_VERSION})",
-                matrix.matrix_version
+                matrix.version
             ));
         }
 

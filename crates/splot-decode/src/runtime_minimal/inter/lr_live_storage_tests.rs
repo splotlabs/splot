@@ -62,14 +62,14 @@ fn tx_skip_grid(rows: usize, cols: usize, start: u8) -> super::super::WienerNsLr
     super::super::WienerNsLrTxSkipGrid::new(rows, cols, values).expect("tx-skip grid")
 }
 
-fn assert_live_tx_skip_error(error: DecodeError, expected_field: &'static str) {
+fn assert_live_tx_skip_error(error: &DecodeError, expected_field: &'static str) {
     let DecodeError::Reconstruction {
         source: ReconError::PcWienerInvalidBounds { field },
     } = error
     else {
         panic!("live tx-skip guard should report PcWienerInvalidBounds");
     };
-    assert_eq!(field, expected_field);
+    assert_eq!(*field, expected_field);
 }
 
 #[test]
@@ -196,7 +196,7 @@ fn wienerns_lr_live_tx_skip_grid_rejects_dimension_mismatch_without_mutation() {
 
     let error = allocation.populate_tx_skip_grid(&bad_grid).unwrap_err();
 
-    assert_live_tx_skip_error(error, "wiener ns lr live tx-skip dimensions");
+    assert_live_tx_skip_error(&error, "wiener ns lr live tx-skip dimensions");
     assert_eq!(allocation.unpopulated_tx_skip_values(), 16 * 16);
     assert_eq!(allocation.tx_skip_value(0, 0), None);
 }
@@ -212,7 +212,7 @@ fn wienerns_lr_live_tx_skip_grid_rejects_repopulation_without_mutation() {
         .expect("initial tx-skip population");
     let error = allocation.populate_tx_skip_grid(&second).unwrap_err();
 
-    assert_live_tx_skip_error(error, "wiener ns lr live tx-skip already populated");
+    assert_live_tx_skip_error(&error, "wiener ns lr live tx-skip already populated");
     assert_eq!(allocation.unpopulated_tx_skip_values(), 0);
     assert_eq!(allocation.tx_skip_value(0, 0), Some(0));
     assert_eq!(allocation.tx_skip_value(0, 1), Some(1));
@@ -265,9 +265,8 @@ fn wienerns_lr_live_storage_allocation_keeps_retention_limits_before_diagnostic(
 #[test]
 fn wienerns_lr_live_storage_allocation_error_reports_unpopulated_boundary() {
     let error = super::super::wienerns_lr_live_storage_allocation_error(ByteOffset::new(74));
-    let unsupported = match error {
-        DecodeError::UnsupportedFeature { unsupported } => unsupported,
-        _ => panic!("live storage-allocation frontier must be an unsupported-feature error"),
+    let DecodeError::UnsupportedFeature { unsupported } = error else {
+        panic!("live storage-allocation frontier must be an unsupported-feature error");
     };
 
     assert_eq!(
@@ -310,9 +309,8 @@ fn wienerns_lr_live_storage_allocation_error_reports_unpopulated_boundary() {
 fn wienerns_lr_tx_mode_select_transform_record_error_reports_handoff_frontier() {
     let error =
         super::super::wienerns_lr_tx_mode_select_transform_record_error(ByteOffset::new(74));
-    let unsupported = match error {
-        DecodeError::UnsupportedFeature { unsupported } => unsupported,
-        _ => panic!("tx-mode-select transform frontier must be an unsupported-feature error"),
+    let DecodeError::UnsupportedFeature { unsupported } = error else {
+        panic!("tx-mode-select transform frontier must be an unsupported-feature error");
     };
 
     assert_eq!(
@@ -344,9 +342,8 @@ fn wienerns_lr_tx_mode_select_transform_record_error_reports_handoff_frontier() 
 #[test]
 fn wienerns_lr_live_frame_samples_unpopulated_error_reports_handoff_frontier() {
     let error = super::super::wienerns_lr_live_frame_samples_unpopulated_error(ByteOffset::new(74));
-    let unsupported = match error {
-        DecodeError::UnsupportedFeature { unsupported } => unsupported,
-        _ => panic!("live frame-sample frontier must be an unsupported-feature error"),
+    let DecodeError::UnsupportedFeature { unsupported } = error else {
+        panic!("live frame-sample frontier must be an unsupported-feature error");
     };
 
     assert_eq!(

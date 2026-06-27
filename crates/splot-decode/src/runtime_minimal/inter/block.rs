@@ -84,16 +84,13 @@ pub(super) fn decode_inter_blocks(
         core,
         options,
     )?;
-    let tile = match tile_plan.work_units_mut() {
-        [tile] => tile,
-        _ => {
-            return Err(unsupported_at(
-                "inter_unexpected_tile_work_units",
-                offset,
-                "minimal inter decode requires exactly one tile work unit",
-                SPEC_MODE_INFO,
-            ));
-        }
+    let [tile] = tile_plan.work_units_mut() else {
+        return Err(unsupported_at(
+            "inter_unexpected_tile_work_units",
+            offset,
+            "minimal inter decode requires exactly one tile work unit",
+            SPEC_MODE_INFO,
+        ));
     };
     let tile_offset = tile.tile_byte_span().start;
 
@@ -307,7 +304,8 @@ fn superblock_h4(sequence: &SequenceHeader, core: &FrameHeaderCore) -> Option<us
 /// (`enable_flex_mvres == 0` -> `MvPrecision == FrameMvPrecision`). Any deviation
 /// from this exact subset desynchronises the § 8.2 arithmetic decoder and fails the
 /// caller's `exit_symbol()` check.
-#[allow(clippy::too_many_arguments)]
+// Each bool is a distinct AV2 inter-block syntax flag; bundling them would obscure the spec mapping.
+#[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
 fn decode_one_inter_block(
     work_unit: &mut DecodeTileWorkUnit<'_>,
     symbols: &mut SymbolDecoder<'_>,
@@ -405,6 +403,8 @@ fn decode_one_inter_block(
     // Each of these would desync the §8.2 stream past the bit-count-only §8.2.4
     // exit_symbol() backstop. Rejecting the whole sub-32 set keeps them out.
     // 32x32 == 8 4x4-MI units.
+    // Local const kept beside its guard so the magic-value documentation stays in context.
+    #[allow(clippy::items_after_statements)]
     const MIN_INTER_LEAF_N4: usize = 8;
     if n4w < MIN_INTER_LEAF_N4 || n4h < MIN_INTER_LEAF_N4 {
         return Err(unsupported_at(
@@ -730,6 +730,8 @@ fn decode_one_inter_block(
                 SPEC_MODE_INFO,
             ));
         }
+        // Local const kept beside its guard so the magic-value documentation stays in context.
+        #[allow(clippy::items_after_statements)]
         const FULL_SB_N4: usize = 16;
         if n4w != FULL_SB_N4
             || n4h != FULL_SB_N4

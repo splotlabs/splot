@@ -846,7 +846,7 @@ fn read_symbol(
     reason: &'static str,
 ) -> Result<u8, GeneralIntraBlockModeError> {
     cdfs.read_block_symbol_trace(selector, symbols)
-        .map(|symbol| symbol.get())
+        .map(splot_core::symbol::Symbol::get)
         .map_err(|source| GeneralIntraBlockModeError::SymbolRead { reason, source })
 }
 
@@ -886,7 +886,7 @@ mod tests {
     // general path.
     const PAYLOAD: [u8; 2] = [0x12, 0xFB];
 
-    fn make_work_unit<'payload>(payload: &'payload [u8]) -> DecodeTileWorkUnit<'payload> {
+    fn make_work_unit(payload: &[u8]) -> DecodeTileWorkUnit<'_> {
         DecodeTileWorkUnit {
             source: TilePayloadSource::new(
                 DecodeObuSourceKind::AnnexB,
@@ -969,7 +969,7 @@ mod tests {
         symbols
     }
 
-    fn symbol_decoder<'payload>(payload: &'payload [u8]) -> SymbolDecoder<'payload> {
+    fn symbol_decoder(payload: &[u8]) -> SymbolDecoder<'_> {
         SymbolDecoder::with_base_and_config(
             payload,
             ByteOffset::new(0),

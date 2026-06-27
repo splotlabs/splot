@@ -429,7 +429,7 @@ fn metadata_timecode_n_frames_ci_after_metadata_anchors_at_metadata() {
     assert!(
         report.errors().any(|d| {
             d.rule_id == "metadata/timecode-n-frames-exceeds-rate"
-                && d.byte_offset.map(|o| o.get()) == Some(timecode_offset)
+                && d.byte_offset.map(splot_core::span::ByteOffset::get) == Some(timecode_offset)
         }),
         "the diagnostic must anchor at the timecode metadata OBU (byte \
          {timecode_offset}), not the CI OBU (byte {ci_offset}); report was: {report}"

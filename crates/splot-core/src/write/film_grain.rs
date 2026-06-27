@@ -396,6 +396,9 @@ fn write_mult_offset(
 /// Returns `(subX, subY)` for an `fgm_chroma_idc` (AV2 v1.0.0 § 5.14), matching the
 /// parser's `chroma_subsampling` table (out-of-range falls back to `(false, false)`).
 const fn chroma_subsampling(chroma_idc: u32) -> (bool, bool) {
+    // The CHROMA_FORMAT_444 arm is kept distinct from the out-of-range `_` fallback to
+    // mirror the parser's documented § 5.14 table, even though both yield (false, false).
+    #[allow(clippy::match_same_arms)]
     match chroma_idc {
         CHROMA_FORMAT_420 | CHROMA_FORMAT_400 => (true, true),
         CHROMA_FORMAT_422 => (true, false),

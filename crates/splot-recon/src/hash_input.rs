@@ -129,9 +129,13 @@ impl<'a, T: ReconSample> DecodedFrameHashInput<'a, T> {
     /// Writes canonical decoded output sample bytes to `writer`.
     ///
     /// This method writes one visible row at a time and may leave `writer`
-    /// partially written if the writer returns an error. Writer failures and
-    /// internal row-buffer capacity/allocation failures are propagated as
-    /// [`io::Error`] values and are not wrapped in [`ReconError`].
+    /// partially written if the writer returns an error.
+    ///
+    /// # Errors
+    ///
+    /// Returns the underlying [`io::Error`] if `writer` fails, or if an internal
+    /// row-buffer capacity/allocation fails. These are not wrapped in
+    /// [`ReconError`].
     pub fn write_to<W: Write + ?Sized>(&self, writer: &mut W) -> io::Result<()> {
         let bit_depth = self.frame.bit_depth();
         for plane in self.planes() {

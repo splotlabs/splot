@@ -582,7 +582,7 @@ fn is_numeric_body(body: &str) -> bool {
         }
         if b == b'-' {
             let mut j = k + 1;
-            while bytes.get(j).is_some_and(|c| c.is_ascii_whitespace()) {
+            while bytes.get(j).is_some_and(u8::is_ascii_whitespace) {
                 j += 1;
             }
             if !bytes.get(j).is_some_and(u8::is_ascii_digit) {

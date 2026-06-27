@@ -406,7 +406,8 @@ fn coeff_ctx_err(source: TileCoeffStateError) -> GeneralIntraResidualError {
 /// always consumes the `all_zero` decision first, admits skipped transform
 /// blocks, and applies any transform-tool guard only before the nonzero
 /// coefficient branch.
-#[allow(clippy::too_many_arguments)]
+// Each bool is a distinct AV2 coefficient-branch syntax flag; bundling them would obscure the spec mapping.
+#[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
 pub(crate) fn decode_general_intra_plane_coeffs(
     work_unit: &mut DecodeTileWorkUnit<'_>,
     symbols: &mut SymbolDecoder<'_>,
@@ -1482,6 +1483,8 @@ mod tests {
         assert_eq!(txb_skip_tx_size_ctx(TX_SIZE_SQR.len()), 0);
     }
 
+    // Each bool is a distinct AV2 frame-level syntax flag the fixture toggles; bundling them would obscure the spec mapping.
+    #[allow(clippy::fn_params_excessive_bools)]
     fn frame_facts(
         enable_idtx_intra: bool,
         enable_intra_ist: bool,
@@ -1538,6 +1541,8 @@ mod tests {
         })
     }
 
+    // Consumes a throwaway decode `Result` to extract its reason; by-value matches the call sites that hand off ownership.
+    #[allow(clippy::needless_pass_by_value)]
     fn unsupported_reason<T>(result: Result<T, GeneralIntraResidualError>) -> Option<&'static str> {
         match result {
             Err(GeneralIntraResidualError::UnsupportedTransformToolResidual { reason }) => {

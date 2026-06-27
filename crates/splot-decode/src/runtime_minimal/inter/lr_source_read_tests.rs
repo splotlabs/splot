@@ -288,9 +288,8 @@ fn wienerns_lr_source_read_frontier_rejects_unit_coded_chroma_before_source_read
     )
     .unwrap_err();
 
-    let unsupported = match error {
-        DecodeError::UnsupportedFeature { unsupported } => unsupported,
-        _ => panic!("unit-coded chroma filters must fail closed before source-read accounting"),
+    let DecodeError::UnsupportedFeature { unsupported } = error else {
+        panic!("unit-coded chroma filters must fail closed before source-read accounting");
     };
     assert_eq!(
         unsupported.reason(),
@@ -751,9 +750,8 @@ fn wienerns_lr_classified_wiener_storage_frontier_propagates_non_boolean_tx_skip
 fn classified_wiener_storage_runtime_error_reports_retention_frontier() {
     let error =
         super::super::wienerns_lr_classified_wiener_storage_runtime_error(ByteOffset::new(74));
-    let unsupported = match error {
-        DecodeError::UnsupportedFeature { unsupported } => unsupported,
-        _ => panic!("classified Wiener storage frontier must be an unsupported-feature error"),
+    let DecodeError::UnsupportedFeature { unsupported } = error else {
+        panic!("classified Wiener storage frontier must be an unsupported-feature error");
     };
 
     assert_eq!(
@@ -864,9 +862,8 @@ fn wienerns_lr_runtime_storage_retention_frontier_limits_total_storage_before_di
 #[test]
 fn wienerns_lr_runtime_storage_retention_error_reports_unpopulated_boundary() {
     let error = super::super::wienerns_lr_runtime_storage_retention_error(ByteOffset::new(74));
-    let unsupported = match error {
-        DecodeError::UnsupportedFeature { unsupported } => unsupported,
-        _ => panic!("runtime storage-retention frontier must be an unsupported-feature error"),
+    let DecodeError::UnsupportedFeature { unsupported } = error else {
+        panic!("runtime storage-retention frontier must be an unsupported-feature error");
     };
 
     assert_eq!(

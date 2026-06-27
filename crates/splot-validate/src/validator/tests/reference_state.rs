@@ -1038,7 +1038,7 @@ fn ref_state_inter_frame_size_with_refs_sees_prior_frame_refresh() {
     assert!(
         report.errors().any(|d| {
             d.rule_id == "frame-header/frame-size-exceeds-sequence-max"
-                && d.byte_offset.map(|offset| offset.get()) == Some(inter_obu_offset)
+                && d.byte_offset.map(splot_core::span::ByteOffset::get) == Some(inter_obu_offset)
         }),
         "the inter frame's frame_size_with_refs() must see the prior frame's committed \
          slot-0 refresh (dims 256x8 > max 16x16) and fire §6.17.4.1 at the inter frame's \

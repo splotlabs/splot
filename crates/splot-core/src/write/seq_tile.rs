@@ -301,14 +301,14 @@ pub(crate) fn compute_tile_grid(input: &TileParamsInput) -> Option<TileGrid> {
     let sb_rows = mi_rows.saturating_add(sb4x4 - 1) >> sb_shift;
 
     let level_idx = input.seq_level_idx.get();
-    let (max_tile_width_sb, max_tile_area_sb) = if level_idx != NO_LEVEL_IDX {
+    let (max_tile_width_sb, max_tile_area_sb) = if level_idx == NO_LEVEL_IDX {
+        (sb_cols, sb_cols.saturating_mul(sb_rows))
+    } else {
         let width_sf = tile_width_scaling_factor(input.seq_tier, level_idx)?;
         let area_sf = tile_area_scaling_factor(input.seq_tier, level_idx)?;
         let max_tile_width_sb = (width_sf * MAX_TILE_WIDTH) >> (sb_shift + 4);
         let max_tile_area_sb = (area_sf * MAX_TILE_AREA) >> (2 * (sb_shift + 2) + 2);
         (max_tile_width_sb, max_tile_area_sb)
-    } else {
-        (sb_cols, sb_cols.saturating_mul(sb_rows))
     };
 
     let min_log2_tile_cols = tile_log2(max_tile_width_sb, sb_cols);
@@ -914,9 +914,9 @@ fn check_sequence_header_encodable(header: &SequenceHeader) -> WriteResult<()> {
     check_partition_encodable(partition, monochrome, single_picture)?;
     let seq_sb_size = partition.seq_sb_size();
     check_segment_encodable(segment)?;
-    check_intra_encodable(intra, monochrome)?;
+    check_intra_encodable(*intra, monochrome)?;
     check_inter_encodable(inter, single_picture)?;
-    check_scc_encodable(screen_content, single_picture)?;
+    check_scc_encodable(*screen_content, single_picture)?;
     check_tq_entropy_encodable(tq_entropy, monochrome, single_picture)?;
     check_filter_encodable(filter, single_picture, seq_sb_size)?;
 

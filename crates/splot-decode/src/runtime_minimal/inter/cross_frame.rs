@@ -167,7 +167,8 @@ pub(super) fn resolve_cdf_load(
 /// (mirror :5497-5508) UNCONDITIONALLY overrides the derived primary to the signalled
 /// `primary_ref_frame` (demoting the ranking primary to secondary), so a signalled frame's
 /// derived primary is its signalled value even with no inter ranking candidate.
-#[allow(clippy::too_many_arguments)]
+// Single-char bindings (q, d, w, h, i) mirror the AV2 §7.x ref-ranking spec variables named in the inline comments.
+#[allow(clippy::too_many_arguments, clippy::many_single_char_names)]
 pub(super) fn choose_primary_secondary_ref_frame(
     signal_primary_ref_frame: Option<bool>,
     primary_ref_frame: Option<u8>,
@@ -269,11 +270,7 @@ fn get_relative_dist(a: i32, b: i32) -> i32 {
 
 /// `FloorLog2(x)` (AV2 § 4): the index of the most-significant set bit, 0 for `x == 0`.
 pub(super) fn floor_log2(x: u64) -> i32 {
-    if x == 0 {
-        0
-    } else {
-        (63 - x.leading_zeros()) as i32
-    }
+    if x == 0 { 0 } else { x.ilog2() as i32 }
 }
 
 /// Whether the order-hint history (the currently-valid slots' stored `RefOrderHint` plus

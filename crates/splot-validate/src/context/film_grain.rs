@@ -122,7 +122,7 @@ pub(super) fn emit_scaling_point_order_diagnostics(
 /// replay reference applies (no apply_grain, external-HLS provided, unresolved/unavailable
 /// slot).
 pub(super) fn frame_film_grain_reference_checks(
-    film_grain: &splot_core::headers::frame::FilmGrainConfig,
+    film_grain: splot_core::headers::frame::FilmGrainConfig,
     film_grain_state: &FilmGrainState,
     active_sequence: &SequenceHeader,
     options: &ValidationOptions,
@@ -273,6 +273,10 @@ impl ValidatorContext {
     /// strictly-increasing-and-`< 256` scaling-point values, and the 4:2:0 chroma
     /// pairing rule (when `subX == 1 && subY == 1`, `num_cb_points` and `num_cr_points`
     /// must be both zero or both non-zero).
+    // Leaf member of the `&self` film-grain emit-method family (called beside
+    // `self.emit_film_grain_diagnostics` / `self.record_film_grain`); the uniform receiver
+    // keeps the family consistent and lets a future check read context state.
+    #[allow(clippy::unused_self)]
     pub(super) fn emit_film_grain_model_diagnostics(
         &self,
         obu: &ObuEnvelope<'_>,

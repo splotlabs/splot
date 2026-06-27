@@ -37,9 +37,10 @@ use splot_core::headers::film_grain::{FilmGrainObu, parse_film_grain};
 use splot_core::headers::frame::{
     CcsoParams, CcsoPlaneParams, CdefParams, CdefStrengthSet, DeblockingFilterParams, DeltaQParams,
     FilmGrainConfig, FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode,
-    FrameHeaderParseStatus, FrameHeaderPrefix, FrameHeaderTail, FrameReferenceStateView, GdfParams,
-    InterControl, LosslessInfo, LrParams, LrPartialParams, LrPlaneParams, QuantizationParams,
-    SefTrailingBits, SegmentationParams, SetupQmParams, TileInfo, WienerNsFrameFilterBank,
+    FrameHeaderParseStatus, FrameHeaderPrefix, FrameHeaderTail, FrameReferenceStateView, FrameType,
+    GdfParams, InterControl, InterStop, InterpolationFilter, LosslessInfo, LrParams,
+    LrPartialParams, LrPlaneParams, MvPrecision, QuantizationParams, SefTrailingBits,
+    SegmentationParams, SetupQmParams, TileInfo, TipFrameMode, WienerNsFrameFilterBank,
     WienerNsFrameFilterClass, parse_frame_header_core, parse_frame_header_prefix,
 };
 use splot_core::headers::metadata::{MetadataUnit, parse_metadata_group, parse_metadata_short};
@@ -48,7 +49,8 @@ use splot_core::headers::padding::parse_padding_obu;
 use splot_core::headers::quantizer_matrix::{QuantizerMatrixObu, parse_quantizer_matrix};
 use splot_core::headers::sequence::{SequenceHeader, SequenceHeaderId, parse_sequence_header};
 use splot_core::headers::tile_group::{
-    TileGroupLayout, parse_tile_group_framing, parse_tile_group_prefix, parse_tile_group_structure,
+    TileFramingDefect, TileGroupLayout, parse_tile_group_framing, parse_tile_group_prefix,
+    parse_tile_group_structure,
 };
 use splot_core::hls::{MfhId, MultiFrameHeaderRecord, parse_multi_frame_header};
 use splot_core::ivf::{IvfFrame, IvfHeader, IvfWarning};
@@ -666,7 +668,9 @@ impl FrameHeaderPrefixView {
             prefix_status: prefix.status.label(),
             cur_mfh_id: prefix.cur_mfh_id.get(),
             seq_header_id_in_frame_header: prefix.seq_header_id_in_frame_header,
-            referenced_sequence_header_id: prefix.referenced_sequence_header_id.map(|id| id.get()),
+            referenced_sequence_header_id: prefix
+                .referenced_sequence_header_id
+                .map(SequenceHeaderId::get),
             is_key_frame: prefix.is_key_frame,
             is_bridge: prefix.is_bridge,
             is_regular: prefix.is_regular,
@@ -839,7 +843,7 @@ fn tile_group_structure_view(
                         tile_size: t.tile_size,
                     })
                     .collect();
-                tile_framing_defect = framing.defect.map(|d| d.label());
+                tile_framing_defect = framing.defect.map(TileFramingDefect::label);
             }
         }
     }
@@ -1004,7 +1008,7 @@ struct InterControlView {
 impl InterControlView {
     fn new(inter: &InterControl) -> Self {
         Self {
-            stop: inter.stop.map(|stop| stop.label()),
+            stop: inter.stop.map(InterStop::label),
             signal_primary_ref_frame: inter.signal_primary_ref_frame,
             disable_cross_frame_cdf_init: inter.disable_cross_frame_cdf_init,
             primary_ref_frame: inter.primary_ref_frame,
@@ -1021,10 +1025,10 @@ impl InterControlView {
             bru_inactive: inter.bru_inactive,
             use_ref_frame_mvs: inter.use_ref_frame_mvs,
             tmvp_sample_step_minus_1: inter.tmvp_sample_step_minus_1,
-            tip_frame_mode: inter.tip_frame_mode.map(|mode| mode.label()),
+            tip_frame_mode: inter.tip_frame_mode.map(TipFrameMode::label),
             max_drl_bits_minus_1: inter.max_drl_bits_minus_1,
-            mv_precision: inter.mv_precision.map(|precision| precision.label()),
-            interpolation_filter: inter.interpolation_filter.map(|filter| filter.label()),
+            mv_precision: inter.mv_precision.map(MvPrecision::label),
+            interpolation_filter: inter.interpolation_filter.map(InterpolationFilter::label),
             frame_enabled_motion_modes: inter
                 .frame_enabled_motion_modes
                 .map(|modes| modes.to_vec()),
@@ -1145,6 +1149,8 @@ impl SegmentationParamsView {
 
 /// One `(qm_y[i], qm_u[i], qm_v[i])` level set for `--json` (AV2 § 5.18.6.2).
 #[derive(Serialize)]
+// Field names are the AV2 § 5.18.6.2 syntax-element names and the stable `--json` key contract.
+#[allow(clippy::struct_field_names)]
 struct QmSetLevelsView {
     qm_y: u8,
     qm_u: u8,
@@ -1192,7 +1198,7 @@ struct DeltaQParamsView {
 }
 
 impl DeltaQParamsView {
-    fn new(params: &DeltaQParams) -> Self {
+    fn new(params: DeltaQParams) -> Self {
         Self {
             delta_q_present: params.delta_q_present,
             delta_q_res: params.delta_q_res,
@@ -1242,6 +1248,8 @@ impl DeblockingFilterParamsView {
 /// Parsed `gdf_params()` for `--json` (AV2 § 5.18.7.9). The per-frame fields are
 /// omitted when GDF is not frame-enabled.
 #[derive(Serialize)]
+// Field names are the AV2 § 5.18.7.9 syntax-element names and the stable `--json` key contract.
+#[allow(clippy::struct_field_names)]
 struct GdfParamsView {
     gdf_frame_enable: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1253,7 +1261,7 @@ struct GdfParamsView {
 }
 
 impl GdfParamsView {
-    fn new(params: &GdfParams) -> Self {
+    fn new(params: GdfParams) -> Self {
         Self {
             gdf_frame_enable: params.gdf_frame_enable,
             gdf_per_block: params.gdf_per_block,
@@ -1265,6 +1273,8 @@ impl GdfParamsView {
 
 /// One CDEF strength set for `--json` (AV2 § 5.18.7.10).
 #[derive(Serialize)]
+// Field names are the AV2 § 5.18.7.10 syntax-element names and the stable `--json` key contract.
+#[allow(clippy::struct_field_names)]
 struct CdefStrengthSetView {
     y_pri_strength: u8,
     y_sec_strength: u8,
@@ -1273,7 +1283,7 @@ struct CdefStrengthSetView {
 }
 
 impl CdefStrengthSetView {
-    fn new(set: &CdefStrengthSet) -> Self {
+    fn new(set: CdefStrengthSet) -> Self {
         Self {
             y_pri_strength: set.y_pri_strength,
             y_sec_strength: set.y_sec_strength,
@@ -1308,6 +1318,7 @@ impl CdefParamsView {
             strengths: params
                 .strengths
                 .iter()
+                .copied()
                 .map(CdefStrengthSetView::new)
                 .collect(),
         }
@@ -1429,6 +1440,8 @@ impl LrPartialParamsView {
 
 /// One plane's parsed `ccso_params()` state for `--json` (AV2 § 5.18.7.12).
 #[derive(Serialize)]
+// Field names are the AV2 § 5.18.7.12 syntax-element names and the stable `--json` key contract.
+#[allow(clippy::struct_field_names)]
 struct CcsoPlaneParamsView {
     ccso_planes: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1495,7 +1508,7 @@ struct FilmGrainConfigView {
 }
 
 impl FilmGrainConfigView {
-    fn new(config: &FilmGrainConfig) -> Self {
+    fn new(config: FilmGrainConfig) -> Self {
         Self {
             apply_grain: config.apply_grain,
             fgm_id: config.fgm_id,
@@ -1530,7 +1543,7 @@ impl FrameHeaderTailView {
             allow_warpmv_mode: tail.allow_warpmv_mode,
             reduced_tx_set: tail.reduced_tx_set,
             use_global_motion: tail.use_global_motion,
-            film_grain: FilmGrainConfigView::new(&tail.film_grain),
+            film_grain: FilmGrainConfigView::new(tail.film_grain),
         }
     }
 }
@@ -1543,7 +1556,7 @@ impl FrameHeaderCoreView {
             cur_mfh_id: core.cur_mfh_id.get(),
             seq_header_id: core.seq_header_id_in_frame_header,
             show_existing_frame: core.show_existing_frame,
-            frame_type: core.frame_type.map(|frame_type| frame_type.label()),
+            frame_type: core.frame_type.map(FrameType::label),
             frame_is_intra: core.frame_is_intra,
             immediate_output_frame: core.immediate_output_frame,
             implicit_output_frame: core.implicit_output_frame,
@@ -1565,13 +1578,13 @@ impl FrameHeaderCoreView {
                 .as_ref()
                 .map(SegmentationParamsView::new),
             qm_params: core.setup_qm_params.as_ref().map(SetupQmParamsView::new),
-            delta_q: core.delta_q_params.as_ref().map(DeltaQParamsView::new),
+            delta_q: core.delta_q_params.map(DeltaQParamsView::new),
             lossless: core.lossless_info.as_ref().map(LosslessInfoView::new),
             deblocking: core
                 .deblocking_filter_params
                 .as_ref()
                 .map(DeblockingFilterParamsView::new),
-            gdf: core.gdf_params.as_ref().map(GdfParamsView::new),
+            gdf: core.gdf_params.map(GdfParamsView::new),
             cdef: core.cdef_params.as_ref().map(CdefParamsView::new),
             lr: core.lr_params.as_ref().map(LrParamsView::new),
             lr_partial: core
@@ -1580,7 +1593,7 @@ impl FrameHeaderCoreView {
                 .map(LrPartialParamsView::new),
             ccso: core.ccso_params.as_ref().map(CcsoParamsView::new),
             intra_tail: core.intra_tail.as_ref().map(FrameHeaderTailView::new),
-            sef_film_grain: core.sef_film_grain.as_ref().map(FilmGrainConfigView::new),
+            sef_film_grain: core.sef_film_grain.map(FilmGrainConfigView::new),
             sef_trailing_bits: core.sef_trailing_bits.map(SefTrailingBits::label),
             inter: core.inter.as_ref().map(InterControlView::new),
             consumed_bits: core.consumed_bits,

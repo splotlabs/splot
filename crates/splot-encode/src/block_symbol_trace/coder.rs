@@ -144,39 +144,36 @@ pub(crate) fn roundtrip_block_symbol_trace(
             context: "roundtrip decoded symbols",
         })?;
     for (index, token) in trace.iter().enumerate() {
-        let decoded = match token {
-            BlockSymbolToken::Bypass { width, value } => {
-                // A bypass literal carries no CDF. Verify the FULL-WIDTH value
-                // roundtrips (the `decoded_symbols` view below truncates to u8, so
-                // this u32 check is what proves a wide literal — e.g. the golomb
-                // tail — was reproduced exactly, not just its low byte).
-                let actual = decoder
-                    .read_literal(*width)
-                    .map_err(|source| Error::BlockSymbolTraceSymbolRead { index, source })?;
-                if actual != *value {
-                    return Err(Error::BlockSymbolTraceLiteralMismatch {
-                        index,
-                        width: *width,
-                        expected: *value,
-                        actual,
-                    });
-                }
-                actual as u8
+        let decoded = if let BlockSymbolToken::Bypass { width, value } = token {
+            // A bypass literal carries no CDF. Verify the FULL-WIDTH value
+            // roundtrips (the `decoded_symbols` view below truncates to u8, so
+            // this u32 check is what proves a wide literal — e.g. the golomb
+            // tail — was reproduced exactly, not just its low byte).
+            let actual = decoder
+                .read_literal(*width)
+                .map_err(|source| Error::BlockSymbolTraceSymbolRead { index, source })?;
+            if actual != *value {
+                return Err(Error::BlockSymbolTraceLiteralMismatch {
+                    index,
+                    width: *width,
+                    expected: *value,
+                    actual,
+                });
             }
-            _ => {
-                let decoded = decoder
-                    .read_symbol(decode_cdfs.row_mut(*token, index)?)
-                    .map_err(|source| Error::BlockSymbolTraceSymbolRead { index, source })?
-                    .get();
-                if decoded != token.symbol() {
-                    return Err(Error::BlockSymbolTraceSymbolMismatch {
-                        index,
-                        expected: token.symbol(),
-                        actual: decoded,
-                    });
-                }
-                decoded
+            actual as u8
+        } else {
+            let decoded = decoder
+                .read_symbol(decode_cdfs.row_mut(*token, index)?)
+                .map_err(|source| Error::BlockSymbolTraceSymbolRead { index, source })?
+                .get();
+            if decoded != token.symbol() {
+                return Err(Error::BlockSymbolTraceSymbolMismatch {
+                    index,
+                    expected: token.symbol(),
+                    actual: decoded,
+                });
             }
+            decoded
         };
         decoded_symbols.push(decoded);
     }

@@ -307,6 +307,8 @@ impl CoeffOrdinaryBranchTxSetBaseConfig {
 }
 
 impl CoeffOrdinaryBranchLosslessBaseConfig {
+    // `self` receiver mirrors the sibling `tx_set_base_config` builder for a uniform API.
+    #[allow(clippy::unused_self)]
     const fn lossless_tx_size_base_config(self) -> CoeffOrdinaryBranchTxSizeDimensionsBaseConfig {
         CoeffOrdinaryBranchTxSizeDimensionsBaseConfig {
             plane_tx_type: DCT_DCT,
@@ -342,6 +344,8 @@ pub(crate) struct CoeffOrdinaryTxSizeGeometryConfig {
     pub(crate) tx_size: usize,
 }
 
+// `tx_*` fields mirror the AV2 txWidth/txHeight/txWidthLog2/txHeightLog2 transform dimensions; the prefix preserves that mapping.
+#[allow(clippy::struct_field_names)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct CoeffOrdinaryTxSizeDimensions {
     tx_width: usize,
@@ -361,7 +365,10 @@ struct CoeffOrdinaryTxSizeTables<'a> {
     tx_height_log2: &'a [i32],
 }
 
+// `tx_*` fields mirror the AV2 txWidth/txHeight/txWidthLog2/txHeightLog2 transform dimensions; the prefix preserves that mapping.
 #[cfg(test)]
+#[derive(Clone, Copy)]
+#[allow(clippy::struct_field_names)]
 pub(crate) struct CoeffOrdinaryTestDimensionTables<'a> {
     pub(crate) tx_width: &'a [i32],
     pub(crate) tx_height: &'a [i32],

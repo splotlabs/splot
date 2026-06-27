@@ -72,7 +72,7 @@ pub const CDEF_UV_DIR: [[[usize; 8]; 2]; 2] = [
 /// (`FloorLog2(0)` is unreachable in CDEF — `constrain` short-circuits on a zero
 /// threshold and `var >> 6` is gated nonzero before its `FloorLog2`).
 const fn floor_log2(x: u32) -> u32 {
-    if x == 0 { 0 } else { 31 - x.leading_zeros() }
+    if x == 0 { 0 } else { x.ilog2() }
 }
 
 /// AV2 § 7.18.2 CDEF direction process.

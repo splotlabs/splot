@@ -98,6 +98,10 @@ pub(super) struct MsdoSubStream {
 
 /// One sub-stream's § 6.6 PTL ceiling (`sub_stream_max_profile` / `sub_stream_max_level`
 /// / `sub_stream_max_tier`).
+// Field names mirror the AV2 § 6.6 syntax elements `sub_stream_max_profile`,
+// `sub_stream_max_level`, and `sub_stream_max_tier`; renaming to drop the shared
+// `max` prefix would break that spec traceability.
+#[allow(clippy::struct_field_names)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct SubStreamCeiling {
     pub(super) max_profile: u8,

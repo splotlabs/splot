@@ -212,6 +212,8 @@ impl RuntimeReferenceBuffer {
 /// The parallel § 7.23 / § 7.7 reference metadata slices the [`super::inter`] decode
 /// borrows into its [`super::inter::InterReferenceState`] (the owner of the backing
 /// storage outlives the borrow).
+// `ref_*` fields mirror the AV2 `RefValid`/`RefOrderHint`/… arrays; the prefix preserves that spec correspondence.
+#[allow(clippy::struct_field_names)]
 pub(super) struct ReferenceMetadata {
     /// `RefValid[i]` per slot.
     pub(super) ref_valid: Vec<bool>,

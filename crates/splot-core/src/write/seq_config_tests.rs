@@ -396,12 +396,12 @@ mod tests {
         parse_sequence_intra_config(&mut reader(bytes), mono).unwrap()
     }
 
-    fn assert_intra_roundtrip(config: &SequenceIntraConfig, mono: bool) {
+    fn assert_intra_roundtrip(config: SequenceIntraConfig, mono: bool) {
         let mut w = BitWriter::new();
-        write_sequence_intra_config(&mut w, config, mono).unwrap();
+        write_sequence_intra_config(&mut w, &config, mono).unwrap();
         let bytes = w.into_bytes();
         let reparsed = parse_intra(&bytes, mono);
-        assert_eq!(&reparsed, config, "parse(write(intra)) != intra");
+        assert_eq!(reparsed, config, "parse(write(intra)) != intra");
         let mut w2 = BitWriter::new();
         write_sequence_intra_config(&mut w2, &reparsed, mono).unwrap();
         assert_eq!(w2.into_bytes(), bytes, "intra write not idempotent");
@@ -424,7 +424,7 @@ mod tests {
         let mut w = BitWriter::new();
         write_sequence_intra_config(&mut w, &config, false).unwrap();
         assert_eq!(w.into_bytes(), data, "intra not byte-exact");
-        assert_intra_roundtrip(&config, false);
+        assert_intra_roundtrip(config, false);
     }
 
     #[test]
@@ -438,7 +438,7 @@ mod tests {
         bits.bit(0);
         let config = parse_intra(&bits.into_bytes(), true);
         assert_eq!(config.cfl_ds_filter_index, 0);
-        assert_intra_roundtrip(&config, true);
+        assert_intra_roundtrip(config, true);
     }
 
     #[test]
@@ -762,12 +762,12 @@ mod tests {
         parse_sequence_scc_config(&mut reader(bytes), single).unwrap()
     }
 
-    fn assert_scc_roundtrip(config: &SequenceSccConfig, single: bool) {
+    fn assert_scc_roundtrip(config: SequenceSccConfig, single: bool) {
         let mut w = BitWriter::new();
-        write_sequence_scc_config(&mut w, config, single).unwrap();
+        write_sequence_scc_config(&mut w, &config, single).unwrap();
         let bytes = w.into_bytes();
         let reparsed = parse_scc(&bytes, single);
-        assert_eq!(&reparsed, config, "parse(write(scc)) != scc");
+        assert_eq!(reparsed, config, "parse(write(scc)) != scc");
         let mut w2 = BitWriter::new();
         write_sequence_scc_config(&mut w2, &reparsed, single).unwrap();
         assert_eq!(w2.into_bytes(), bytes, "scc write not idempotent");
@@ -783,7 +783,7 @@ mod tests {
         let mut w = BitWriter::new();
         write_sequence_scc_config(&mut w, &config, true).unwrap();
         assert_eq!(w.bit_len(), 0, "single-picture scc writes no bits");
-        assert_scc_roundtrip(&config, true);
+        assert_scc_roundtrip(config, true);
     }
 
     #[test]
@@ -795,7 +795,7 @@ mod tests {
         let config = parse_scc(&bits.into_bytes(), false);
         assert_eq!(config.seq_force_screen_content_tools, 2);
         assert_eq!(config.seq_force_integer_mv, 2);
-        assert_scc_roundtrip(&config, false);
+        assert_scc_roundtrip(config, false);
     }
 
     #[test]
@@ -806,7 +806,7 @@ mod tests {
         let config = parse_scc(&bits.into_bytes(), false);
         assert_eq!(config.seq_force_screen_content_tools, 0);
         assert_eq!(config.seq_force_integer_mv, SELECT_INTEGER_MV);
-        assert_scc_roundtrip(&config, false);
+        assert_scc_roundtrip(config, false);
     }
 
     #[test]
@@ -819,7 +819,7 @@ mod tests {
         let config = parse_scc(&bits.into_bytes(), false);
         assert_eq!(config.seq_force_screen_content_tools, 1);
         assert_eq!(config.seq_force_integer_mv, 1);
-        assert_scc_roundtrip(&config, false);
+        assert_scc_roundtrip(config, false);
     }
 
     #[test]

@@ -260,7 +260,7 @@ impl ValidatorContext {
     pub(super) fn check_scan_type_consistency(
         &mut self,
         obu: &ObuEnvelope<'_>,
-        scan: &MetadataScanType,
+        scan: MetadataScanType,
         report: &mut ValidationReport,
     ) {
         let value = scan.mps_pic_struct_type;

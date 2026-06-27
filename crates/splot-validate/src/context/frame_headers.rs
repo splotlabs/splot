@@ -314,6 +314,10 @@ impl ValidatorContext {
     ///    declaring only operating point sets) cannot supply an active header, so it does
     ///    not suppress (precedent: [`ValidatorContext::validate_active_sequence_limits`]).
     #[allow(clippy::too_many_arguments)]
+    // The two `Option` levels are both meaningful: the outer `Some` marks that a prior
+    // frame-confirmed activation exists, and the inner `Option<u64>` is its CVS epoch
+    // (`None` = the implicit pre-first-CLK CVS) compared against `cvs_epoch(xlayer)`.
+    #[allow(clippy::option_option)]
     pub(super) fn check_single_active_sequence_header(
         &self,
         obu: &ObuEnvelope<'_>,

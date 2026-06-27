@@ -315,29 +315,29 @@ mod tests {
 
     // ===== gdf (§ 5.18.7.9) =====
 
-    fn roundtrip_gdf(bits: Bits, coded_lossless: bool, filter: &CoreSeqFilterView, geometry: GdfGeometry<'_>) {
+    fn roundtrip_gdf(bits: Bits, coded_lossless: bool, filter: CoreSeqFilterView, geometry: GdfGeometry<'_>) {
         let data = bits.into_bytes();
         let mut rd = reader(&data);
-        let params = parse_gdf_params(&mut rd, coded_lossless, filter, geometry).unwrap();
+        let params = parse_gdf_params(&mut rd, coded_lossless, &filter, geometry).unwrap();
         let consumed = rd.consumed_bits();
         let mut writer = BitWriter::new();
-        write_gdf_params(&mut writer, &params, coded_lossless, filter, geometry).unwrap();
+        write_gdf_params(&mut writer, &params, coded_lossless, &filter, geometry).unwrap();
         assert_eq!(writer.bit_len(), consumed, "bit length matches parser");
         let bytes = writer.into_bytes();
-        let reparsed = parse_gdf_params(&mut reader(&bytes), coded_lossless, filter, geometry).unwrap();
+        let reparsed = parse_gdf_params(&mut reader(&bytes), coded_lossless, &filter, geometry).unwrap();
         assert_eq!(reparsed, params);
     }
 
     #[test]
     fn gdf_coded_lossless_round_trips() {
-        roundtrip_gdf(Bits::default(), true, &base_filter(), base_geometry());
+        roundtrip_gdf(Bits::default(), true, base_filter(), base_geometry());
     }
 
     #[test]
     fn gdf_disabled_seq_round_trips() {
         let mut filter = base_filter();
         filter.enable_gdf = false;
-        roundtrip_gdf(Bits::default(), false, &filter, base_geometry());
+        roundtrip_gdf(Bits::default(), false, filter, base_geometry());
     }
 
     #[test]
@@ -348,14 +348,14 @@ mod tests {
         bits.bit(1); // gdf_per_block (coded: frame exceeds block)
         bits.f(2, 2); // gdf_pic_qc_idx
         bits.f(1, 2); // gdf_pic_scale_idx
-        roundtrip_gdf(bits, false, &filter, base_geometry());
+        roundtrip_gdf(bits, false, filter, base_geometry());
     }
 
     #[test]
     fn gdf_frame_disabled_round_trips() {
         let mut bits = Bits::default();
         bits.bit(0); // gdf_frame_enable = 0
-        roundtrip_gdf(bits, false, &base_filter(), base_geometry());
+        roundtrip_gdf(bits, false, base_filter(), base_geometry());
     }
 
     #[test]
@@ -374,7 +374,7 @@ mod tests {
         bits.bit(1); // gdf_frame_enable (read)
         bits.f(0, 2); // gdf_pic_qc_idx
         bits.f(0, 2); // gdf_pic_scale_idx
-        roundtrip_gdf(bits, false, &base_filter(), geom);
+        roundtrip_gdf(bits, false, base_filter(), geom);
     }
 
     #[test]
@@ -530,36 +530,36 @@ mod tests {
 
     // ===== cdef (§ 5.18.7.10) =====
 
-    fn roundtrip_cdef(bits: Bits, coded_lossless: bool, num_planes: u8, filter: &CoreSeqFilterView) {
+    fn roundtrip_cdef(bits: Bits, coded_lossless: bool, num_planes: u8, filter: CoreSeqFilterView) {
         let data = bits.into_bytes();
         let mut rd = reader(&data);
-        let params = parse_cdef_params(&mut rd, coded_lossless, num_planes, filter).unwrap();
+        let params = parse_cdef_params(&mut rd, coded_lossless, num_planes, &filter).unwrap();
         let consumed = rd.consumed_bits();
         let mut writer = BitWriter::new();
-        write_cdef_params(&mut writer, &params, coded_lossless, num_planes, filter).unwrap();
+        write_cdef_params(&mut writer, &params, coded_lossless, num_planes, &filter).unwrap();
         assert_eq!(writer.bit_len(), consumed, "bit length matches parser");
         let bytes = writer.into_bytes();
-        let reparsed = parse_cdef_params(&mut reader(&bytes), coded_lossless, num_planes, filter).unwrap();
+        let reparsed = parse_cdef_params(&mut reader(&bytes), coded_lossless, num_planes, &filter).unwrap();
         assert_eq!(reparsed, params);
     }
 
     #[test]
     fn cdef_coded_lossless_round_trips() {
-        roundtrip_cdef(Bits::default(), true, 3, &base_filter());
+        roundtrip_cdef(Bits::default(), true, 3, base_filter());
     }
 
     #[test]
     fn cdef_disabled_seq_round_trips() {
         let mut filter = base_filter();
         filter.enable_cdef = false;
-        roundtrip_cdef(Bits::default(), false, 3, &filter);
+        roundtrip_cdef(Bits::default(), false, 3, filter);
     }
 
     #[test]
     fn cdef_frame_disabled_round_trips() {
         let mut bits = Bits::default();
         bits.bit(0); // cdef_frame_enable = 0
-        roundtrip_cdef(bits, false, 3, &base_filter());
+        roundtrip_cdef(bits, false, 3, base_filter());
     }
 
     #[test]
@@ -581,7 +581,7 @@ mod tests {
         bits.bit(0); // uv_pri_zero == 0
         bits.f(5, 4); // uv_pri_strength
         bits.f(3, 2); // uv_sec_strength 3 -> 4
-        roundtrip_cdef(bits, false, 3, &base_filter());
+        roundtrip_cdef(bits, false, 3, base_filter());
     }
 
     #[test]
@@ -594,7 +594,7 @@ mod tests {
         bits.bit(0); // y_pri_zero
         bits.f(7, 4); // y_pri_strength
         bits.f(1, 2); // y_sec_strength
-        roundtrip_cdef(bits, false, 1, &base_filter());
+        roundtrip_cdef(bits, false, 1, base_filter());
     }
 
     #[test]
@@ -610,7 +610,7 @@ mod tests {
         bits.f(0, 2); // y_sec_strength
         bits.bit(1); // uv_pri_zero
         bits.f(0, 2); // uv_sec_strength
-        roundtrip_cdef(bits, false, 3, &filter);
+        roundtrip_cdef(bits, false, 3, filter);
     }
 
     #[test]
@@ -625,7 +625,7 @@ mod tests {
         bits.f(0, 2); // y_sec_strength
         bits.bit(1); // uv_pri_zero
         bits.f(0, 2); // uv_sec_strength
-        roundtrip_cdef(bits, false, 3, &filter);
+        roundtrip_cdef(bits, false, 3, filter);
     }
 
     #[test]
@@ -644,7 +644,7 @@ mod tests {
             bits.bit(1); // uv_pri_zero
             bits.f(0, 2); // uv_sec
         }
-        roundtrip_cdef(bits, false, 3, &filter);
+        roundtrip_cdef(bits, false, 3, filter);
     }
 
     #[test]

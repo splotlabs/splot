@@ -451,8 +451,7 @@ fn decode_general_intra_frame_into<T: ReconSample>(
     // gate is all-false (deblock-off fixtures stay byte-identical).
     let apply = core
         .deblocking_filter_params
-        .map(|filter| filter.apply_deblocking_filter)
-        .unwrap_or([false; 4]);
+        .map_or([false; 4], |filter| filter.apply_deblocking_filter);
     super::deblock::deblock_general_intra_frame(
         &mut workspace,
         &deblock_blocks,
@@ -763,6 +762,8 @@ fn decode_one_general_intra_block<T: ReconSample>(
     // 4:2:0, so the chroma block is the half-resolution image of the 64x64 luma
     // superblock and is itself a `haveLeft && haveAbove` block at this position.)
     let chroma_is_top_left = frontier.r == 0 && frontier.c == 0;
+    // Local const kept beside its guard so the magic-value documentation stays in context.
+    #[allow(clippy::items_after_statements)]
     const FULL_SB_N4_CHROMA_GATE: usize = 16;
     let chroma_first_row_neighbour_ok = frontier.r == 0 && n4w == FULL_SB_N4_CHROMA_GATE;
     // Row>0 non-first-column full-superblock (`haveLeft && haveAbove`): the fixtured
@@ -895,6 +896,8 @@ fn decode_one_general_intra_block<T: ReconSample>(
     // update (so an intra-superblock above-right / below-left split child is read
     // correctly), which is not yet modelled. A 64x64 superblock is 16 4x4 MI
     // units wide.
+    // Local const kept beside its guard so the magic-value documentation stays in context.
+    #[allow(clippy::items_after_statements)]
     const FULL_SB_N4: usize = 16;
     if supported_chroma == crate::tile_payload::SupportedChromaMode::Smooth && n4w != FULL_SB_N4 {
         return Err(general_intra_unsupported(
@@ -930,7 +933,10 @@ fn decode_one_general_intra_block<T: ReconSample>(
     // (`n4w == 16`, TX_64X64 -> TX_SET_DCTONLY); the 32x32 / smaller directional
     // blocks (which may signal a mode-dependent non-DCT TxType) and other angles /
     // non-zero angle deltas are deferred.
+    // Local consts kept beside their guards so the magic-value documentation stays in context.
+    #[allow(clippy::items_after_statements)]
     const NON_DC_MIN_N4: usize = 8;
+    #[allow(clippy::items_after_statements)]
     const FULL_SB_N4_LUMA: usize = 16;
     let supported_nondc_luma = modes.supported_nondc_luma();
     let supported_directional_luma = modes.supported_directional_luma();
@@ -955,6 +961,10 @@ fn decode_one_general_intra_block<T: ReconSample>(
     // non-flat edge, bit-identical for the luma IDIF and the chroma bilinear branch.
     let directional_luma_has_neighbour = supported_directional_luma.is_some() && !is_top_left;
     if !modes.luma_is_dc() {
+        // Each AV2 luma-mode arm is listed separately with mode-specific bit-exactness
+        // documentation; some accept-arms share an empty body but must stay distinct to
+        // preserve that per-mode spec correspondence.
+        #[allow(clippy::match_same_arms)]
         match (supported_nondc_luma, supported_directional_luma) {
             // Plain SMOOTH at the no-neighbour top-left block. Its § 7.13.2.13
             // predictor reads BOTH the above-right sentinel `AboveRow[w]` (the
@@ -1384,7 +1394,7 @@ fn decode_one_general_intra_block<T: ReconSample>(
                 num4_above_right,
                 bit_depth,
             )
-            .map_err(|error| general_intra_residual_error(error, tile_offset))?
+            .map_err(|error| general_intra_residual_error(error, tile_offset))?;
         }
         (Some(mode), _) => {
             crate::runtime_minimal_recon::reconstruct_general_intra_luma_nondc_first_block_into(
@@ -1398,7 +1408,7 @@ fn decode_one_general_intra_block<T: ReconSample>(
                 luma_use_tcq,
                 bit_depth,
             )
-            .map_err(|error| general_intra_residual_error(error, tile_offset))?
+            .map_err(|error| general_intra_residual_error(error, tile_offset))?;
         }
         // Neighbour-having CARDINAL V_PRED / H_PRED luma: a degenerate §7.13.2.8
         // copy of the real reconstructed §7.13.2.1 above row (V, pAngle 90) or left
@@ -1424,7 +1434,7 @@ fn decode_one_general_intra_block<T: ReconSample>(
                 luma_use_tcq,
                 bit_depth,
             )
-            .map_err(|error| general_intra_residual_error(error, tile_offset))?
+            .map_err(|error| general_intra_residual_error(error, tile_offset))?;
         }
         // Neighbour-having ZONE-1 one-sided D45 luma over the real §7.13.2.1
         // reconstructed above row + above-right (the §7.13.2.8 step-1 IDIF, which
@@ -1433,8 +1443,7 @@ fn decode_one_general_intra_block<T: ReconSample>(
         // `count_top_right_avail` over the §5.20.2.3 `BlockDecoded` state) bounds
         // the real above-right extent; the luma gate guarantees it is nonzero.
         (None, Some(SupportedDirectionalLumaMode::D45)) if directional_luma_has_neighbour => {
-            let num4_above_right =
-                full_sb_num4_above_right(frontier.c, n4w, mi_cols, 0);
+            let num4_above_right = full_sb_num4_above_right(frontier.c, n4w, mi_cols, 0);
             crate::runtime_minimal_recon::reconstruct_general_intra_one_sided_neighbour_block_into(
                 workspace,
                 &luma,
@@ -1448,7 +1457,7 @@ fn decode_one_general_intra_block<T: ReconSample>(
                 luma_use_tcq,
                 bit_depth,
             )
-            .map_err(|error| general_intra_residual_error(error, tile_offset))?
+            .map_err(|error| general_intra_residual_error(error, tile_offset))?;
         }
         // Neighbour-having ZONE-3 one-sided D203 luma over the real §7.13.2.1
         // reconstructed left column + below-left (the §7.13.2.8 step-3 IDIF). D203's
@@ -1471,7 +1480,7 @@ fn decode_one_general_intra_block<T: ReconSample>(
                 luma_use_tcq,
                 bit_depth,
             )
-            .map_err(|error| general_intra_residual_error(error, tile_offset))?
+            .map_err(|error| general_intra_residual_error(error, tile_offset))?;
         }
         (None, Some(mode)) if directional_luma_has_neighbour => {
             // Neighbour-having D135 luma over the real §7.13.2.1 reconstructed left
@@ -1489,7 +1498,7 @@ fn decode_one_general_intra_block<T: ReconSample>(
                 luma_use_tcq,
                 bit_depth,
             )
-            .map_err(|error| general_intra_residual_error(error, tile_offset))?
+            .map_err(|error| general_intra_residual_error(error, tile_offset))?;
         }
         (None, Some(mode)) => {
             crate::runtime_minimal_recon::reconstruct_general_intra_luma_directional_first_block_into(
@@ -1503,7 +1512,7 @@ fn decode_one_general_intra_block<T: ReconSample>(
                 luma_use_tcq,
                 bit_depth,
             )
-            .map_err(|error| general_intra_residual_error(error, tile_offset))?
+            .map_err(|error| general_intra_residual_error(error, tile_offset))?;
         }
         (None, None) => crate::runtime_minimal_recon::reconstruct_general_intra_block_into(
             workspace,
@@ -1977,6 +1986,8 @@ fn map_general_intra_multiblock_error(
     }
 }
 
+// Owned error-to-DecodeError conversion used through `map_err`; by-value ownership matches that consume-and-map design.
+#[allow(clippy::needless_pass_by_value)]
 fn general_intra_residual_error(
     error: GeneralIntraResidualError,
     offset: ByteOffset,
@@ -2042,6 +2053,8 @@ fn general_intra_residual_error(
     }
 }
 
+// Owned error-to-DecodeError conversion used through `map_err`; by-value ownership matches that consume-and-map design.
+#[allow(clippy::needless_pass_by_value)]
 fn general_intra_block_mode_error(
     error: GeneralIntraBlockModeError,
     offset: ByteOffset,
@@ -2097,6 +2110,8 @@ fn general_intra_block_mode_error(
     }
 }
 
+// Owned error-to-DecodeError conversion used through `map_err`; by-value ownership matches that consume-and-map design.
+#[allow(clippy::needless_pass_by_value)]
 fn general_intra_partition_frontier_error(
     error: MinimalRuntimePartitionFrontierError,
     offset: ByteOffset,

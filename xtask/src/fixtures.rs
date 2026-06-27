@@ -187,7 +187,8 @@ pub(crate) fn check_fixtures(root: &Path) -> Result<()> {
     let tracked: BTreeSet<String> = run_git(root, &["ls-files", "tests/fixtures"])?
         .lines()
         .filter_map(|line| line.trim().strip_prefix("tests/fixtures/"))
-        .filter(|rel| rel.ends_with(".av2"))
+        // Case-sensitive `.av2` match: fixtures use the lowercase extension by convention.
+        .filter(|rel| std::path::Path::new(rel).extension() == Some(std::ffi::OsStr::new("av2")))
         .map(str::to_owned)
         .collect();
 

@@ -630,6 +630,7 @@ fn lcr_max_expected_dims_without_frame_confirmation_is_silent() {
 
 #[test]
 fn lcr_max_expected_dims_suppressed_under_external_provided() {
+    use crate::options::{ExternalHlsMode, ExternalHlsSet};
     // Under a Provided external-HLS mode an unmodeled external local LCR could shadow the
     // in-band association, so the §6.8.9 bound suppresses (zero false positives).
     let mut data = temporal_delimiter_obu();
@@ -645,7 +646,6 @@ fn lcr_max_expected_dims_suppressed_under_external_provided() {
         &sequence_header_payload_with_lcr(0, 5, 1, 1),
     ));
     data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
-    use crate::options::{ExternalHlsMode, ExternalHlsSet};
     let options = ValidationOptions {
         external_hls: ExternalHlsMode::Provided(ExternalHlsSet::new()),
     };

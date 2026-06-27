@@ -2507,10 +2507,10 @@ mod tests {
     /// control which § 5.18.4.1 / § 5.18.7.1 arm is exercised.
     fn mfh_record(
         mfh_frame_size: Option<crate::hls::MfhFrameSize>,
-        seg: Option<(bool, bool, SegmentInfo)>,
+        seg: Option<&(bool, bool, SegmentInfo)>,
     ) -> MultiFrameHeaderRecord {
         let (present, ext, allow, info) = match seg {
-            Some((ext, allow, info)) => (true, Some(ext), Some(allow), Some(info)),
+            Some(&(ext, allow, info)) => (true, Some(ext), Some(allow), Some(info)),
             None => (false, None, None, None),
         };
         MultiFrameHeaderRecord {
@@ -3496,7 +3496,7 @@ mod tests {
         };
         let record = mfh_record(
             None,
-            Some((
+            Some(&(
                 false, // mfh_ext_seg_flag == enable_ext_seg (base_seq enable_ext_seg = false)
                 false, // mfh_allow_seg_info_change
                 SegmentInfo {

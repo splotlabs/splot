@@ -93,6 +93,9 @@ impl IntraDirectionalAngle {
 
     /// Returns the required prepared edge for this pAngle.
     pub const fn required_edge(self) -> IntraDirectionalAngleEdge {
+        // The explicit D45/D67 arm and the `u16` exhaustiveness wildcard share a body but are
+        // kept distinct to document the AV2 pAngle→edge mapping for each supported angle.
+        #[allow(clippy::match_same_arms)]
         match self.p_angle {
             ANGLE_D45 | ANGLE_D67 => IntraDirectionalAngleEdge::Above,
             ANGLE_D203 => IntraDirectionalAngleEdge::Left,
@@ -701,14 +704,14 @@ struct ValidatedMiddleIdifInputs<'a, T: ReconSample> {
     above: &'a [T],
 }
 
-fn validate_inputs<'a, T: ReconSample>(
+fn validate_inputs<T: ReconSample>(
     bit_depth: BitDepth,
     size: IntraRectBlockSize,
     angle: IntraDirectionalAngle,
-    edges: IntraDirectionalAngleEdges<'a, T>,
+    edges: IntraDirectionalAngleEdges<'_, T>,
     output_len: usize,
     stride_samples: usize,
-) -> Result<ValidatedInputs<'a, T>> {
+) -> Result<ValidatedInputs<'_, T>> {
     validate_sample_type::<T>(bit_depth)?;
     validate_output_shape(
         size,
@@ -743,14 +746,14 @@ fn validate_inputs<'a, T: ReconSample>(
     Ok(ValidatedInputs { edge })
 }
 
-fn validate_middle_inputs<'a, T: ReconSample>(
+fn validate_middle_inputs<T: ReconSample>(
     bit_depth: BitDepth,
     size: IntraRectBlockSize,
     angle: IntraMiddleDirectionalAngle,
-    edges: IntraMiddleDirectionalAngleEdges<'a, T>,
+    edges: IntraMiddleDirectionalAngleEdges<'_, T>,
     output_len: usize,
     stride_samples: usize,
-) -> Result<ValidatedMiddleInputs<'a, T>> {
+) -> Result<ValidatedMiddleInputs<'_, T>> {
     validate_sample_type::<T>(bit_depth)?;
     validate_output_shape(
         size,
@@ -787,14 +790,14 @@ fn validate_middle_inputs<'a, T: ReconSample>(
     Ok(ValidatedMiddleInputs { left, above })
 }
 
-fn validate_middle_idif_inputs<'a, T: ReconSample>(
+fn validate_middle_idif_inputs<T: ReconSample>(
     bit_depth: BitDepth,
     size: IntraRectBlockSize,
     angle: IntraMiddleDirectionalAngle,
-    edges: IntraMiddleDirectionalAngleIdifEdges<'a, T>,
+    edges: IntraMiddleDirectionalAngleIdifEdges<'_, T>,
     output_len: usize,
     stride_samples: usize,
-) -> Result<ValidatedMiddleIdifInputs<'a, T>> {
+) -> Result<ValidatedMiddleIdifInputs<'_, T>> {
     validate_sample_type::<T>(bit_depth)?;
     validate_output_shape(
         size,
@@ -1083,14 +1086,14 @@ fn write_prediction<T: ReconSample>(
 
 /// Validates the zone-1 one-sided IDIF inputs and returns the prepared above
 /// edge. The supported zone-1 above angle (D45) reads only the above edge.
-fn validate_one_sided_idif_inputs<'a, T: ReconSample>(
+fn validate_one_sided_idif_inputs<T: ReconSample>(
     bit_depth: BitDepth,
     size: IntraRectBlockSize,
     angle: IntraDirectionalAngle,
-    edges: IntraDirectionalAngleIdifEdges<'a, T>,
+    edges: IntraDirectionalAngleIdifEdges<'_, T>,
     output_len: usize,
     stride_samples: usize,
-) -> Result<&'a [T]> {
+) -> Result<&[T]> {
     validate_sample_type::<T>(bit_depth)?;
     validate_output_shape(
         size,

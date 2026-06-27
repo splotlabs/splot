@@ -31,11 +31,11 @@ fn eob_symbol_input(size: EobPtSize) -> NonZeroCoeffEobSymbolInput {
     }
 }
 
-fn read_eob_with_payload<'a>(
-    payload: &'a [u8],
+fn read_eob_with_payload(
+    payload: &[u8],
     size: EobPtSize,
     mode: CdfUpdateMode,
-) -> Result<(TileCdfSubset, SymbolDecoder<'a>, NonZeroCoeffEobSymbolRead), CoeffLoopContextError> {
+) -> Result<(TileCdfSubset, SymbolDecoder<'_>, NonZeroCoeffEobSymbolRead), CoeffLoopContextError> {
     let frame = FrameCdfSubset::from_defaults();
     let mut tile = frame.tile_copy();
     let mut symbols = symbol_decoder(payload, mode);

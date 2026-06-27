@@ -117,7 +117,11 @@ fn physical_line_count(text: &str) -> usize {
     if text.is_empty() {
         0
     } else {
-        text.as_bytes().iter().filter(|&&b| b == b'\n').count() + usize::from(!text.ends_with('\n'))
+        // Plain newline count: the `bytecount` crate would be a new dependency
+        // (gated) for a once-per-file count where speed is irrelevant.
+        #[allow(clippy::naive_bytecount)]
+        let newlines = text.as_bytes().iter().filter(|&&b| b == b'\n').count();
+        newlines + usize::from(!text.ends_with('\n'))
     }
 }
 

@@ -167,7 +167,7 @@ pub(super) fn push_read_quant_golomb_tail(
     out: &mut Vec<BlockSymbolToken>,
     x: u32,
     params: GolombParams,
-) -> Result<()> {
+) {
     if x < params.prefix_x_min {
         // Finite-q (`q < cMax`): q zeros, a terminating 1, then `coeff_rem = x mod 2^m`
         // as one `L(m)` literal.
@@ -194,7 +194,6 @@ pub(super) fn push_read_quant_golomb_tail(
         out.push(BlockSymbolToken::bypass(1, 1));
         out.push(BlockSymbolToken::bypass(length, coeff_rem));
     }
-    Ok(())
 }
 
 /// Returns the number of § 8.2.5 bypass literals [`push_read_quant_golomb_tail`]

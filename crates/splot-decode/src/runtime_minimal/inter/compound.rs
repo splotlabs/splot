@@ -225,6 +225,8 @@ fn gate_compound_subset(input: CompoundParseInput, tile_offset: ByteOffset) -> R
         ));
     }
 
+    // Local const kept beside its guard so the magic-value documentation stays in context.
+    #[allow(clippy::items_after_statements)]
     const FULL_SB_N4: usize = 16;
     if input.n4w != FULL_SB_N4
         || input.n4h != FULL_SB_N4

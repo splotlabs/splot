@@ -62,6 +62,8 @@ pub(crate) struct FrameCandidateCoeffFacts {
 
 impl FrameCandidateCoeffFacts {
     /// Creates coefficient frame facts from the active sequence header.
+    // Each bool is a distinct AV2 sequence-level syntax flag; bundling them would obscure the spec mapping.
+    #[allow(clippy::fn_params_excessive_bools)]
     #[must_use]
     pub(crate) const fn new(
         enable_fsc: bool,
@@ -536,7 +538,7 @@ impl fmt::Display for FrameCandidateTileUnsupportedReason {
 
 /// Derives and plans the minimal tile-payload boundary for one frame candidate.
 pub(crate) fn plan_derived_tile_payload_boundary<'payload>(
-    input: FrameCandidateTileBoundaryInput<'payload, '_>,
+    input: &FrameCandidateTileBoundaryInput<'payload, '_>,
 ) -> Result<DecodeTilePayloadPlan<'payload>, FrameCandidateTileBoundaryError> {
     validate_candidate(
         input.plan,
@@ -610,7 +612,7 @@ pub(crate) fn plan_derived_tile_payload_boundary<'payload>(
         input.limits,
     );
 
-    Ok(plan_tile_payload_boundary(boundary_input)?)
+    Ok(plan_tile_payload_boundary(&boundary_input)?)
 }
 
 fn validate_candidate(
@@ -771,12 +773,7 @@ fn validate_supported_position(
     // tile-group OBU type; any other (frame_is_intra, obu_type) pairing is rejected.
     match (facts.frame_is_intra, candidate.obu_type()) {
         (true, ObuType::ClosedLoopKey) | (false, ObuType::RegularTileGroup) => {}
-        (false, _) => {
-            return Err(FrameCandidateTileBoundaryError::Unsupported {
-                reason: FrameCandidateTileUnsupportedReason::CandidateNotFrame,
-            });
-        }
-        (true, _) => {
+        _ => {
             return Err(FrameCandidateTileBoundaryError::Unsupported {
                 reason: FrameCandidateTileUnsupportedReason::CandidateNotFrame,
             });
@@ -790,10 +787,10 @@ fn validate_supported_position(
     Ok(())
 }
 
-fn tile_group_payload_region<'payload>(
-    envelope: ObuEnvelope<'payload>,
+fn tile_group_payload_region(
+    envelope: ObuEnvelope<'_>,
     structure: TileGroupStructure,
-) -> Result<(&'payload [u8], ByteOffset), FrameCandidateTileBoundaryError> {
+) -> Result<(&[u8], ByteOffset), FrameCandidateTileBoundaryError> {
     if structure.outcome != TileGroupStructureOutcome::Complete {
         return Err(FrameCandidateTileBoundaryError::Malformed(
             FrameCandidateTileMalformed::TileGroupStructureIncomplete,

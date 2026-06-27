@@ -110,7 +110,7 @@ fn validator_flags_frame_context_update_tile_id_out_of_range() {
         report.errors().any(|d| {
             d.rule_id == "frame-header/context-update-tile-id-out-of-range"
                 && d.spec_section.as_deref() == Some("6.17.7.2")
-                && d.byte_offset.map(|offset| offset.get()) == Some(frame_obu_offset)
+                && d.byte_offset.map(splot_core::span::ByteOffset::get) == Some(frame_obu_offset)
         }),
         "expected the § 6.17.7.2 diagnostic at the frame OBU offset \
          {frame_obu_offset}; report was: {report}"
@@ -330,12 +330,12 @@ fn validator_qm_level_unavailable_boundary_default_level_silent() {
 
 #[test]
 fn validator_qm_level_unavailable_suppressed_under_external_provided() {
+    use crate::options::{ExternalHlsMode, ExternalHlsSet};
     // ExternalHlsSet cannot express QM OBUs, so any Provided mode means the level MAY be
     // supplied externally — the §7.3.8.9 availability check suppresses (inexpressible
     // kind), like the film-grain availability check.
     let mut data = td_and_frame_core_seq(FrameCoreSeq::base());
     data.extend(clk_frame_with_qm_reference(0));
-    use crate::options::{ExternalHlsMode, ExternalHlsSet};
     let options = ValidationOptions {
         external_hls: ExternalHlsMode::Provided(ExternalHlsSet::new()),
     };
@@ -664,6 +664,7 @@ fn validator_qm_layer_dependency_satisfied_is_silent() {
 
 #[test]
 fn validator_qm_layer_dependency_suppressed_under_external_provided() {
+    use crate::options::{ExternalHlsMode, ExternalHlsSet};
     // The §6.17.6.2 layer-dependency check suppresses under any Provided external-HLS mode
     // (like the QM availability and film-grain dependency checks): ExternalHlsSet cannot
     // express QM OBUs, so the level's recorded layer identity — and the activated sequence
@@ -676,7 +677,6 @@ fn validator_qm_layer_dependency_suppressed_under_external_provided() {
     let mut data = td_and_frame_core_seq(seq);
     data.extend(qm_default_level_obu_chroma_at_layer(0, 0, 1)); // level 0 at undepended mlayer 1
     data.extend(intra_only_frame_with_qm_reference(0)); // frame at layer 0
-    use crate::options::{ExternalHlsMode, ExternalHlsSet};
     let options = ValidationOptions {
         external_hls: ExternalHlsMode::Provided(ExternalHlsSet::new()),
     };
@@ -727,9 +727,9 @@ fn validator_qm_unconfirmed_switch_reset_does_not_falsely_fire_unavailable() {
     // "available" verdict. A later INTRA_ONLY frame (no reset_qm of its own) referencing
     // a level made available before the SWITCH must therefore stay SILENT; this guards
     // the SWITCH arm against the same clear-to-fire regression the RAS arm had.
-    let mut data = td_and_seq_header(0, 0, 0); // activate sequence id 0
     // 0x28 = 0b0_01010_00 -> ext=0, type=10 (OBU_SWITCH), tlayer=0.
     const SWITCH_HEADER: u8 = 0x28;
+    let mut data = td_and_seq_header(0, 0, 0); // activate sequence id 0
     data.extend(qm_reset_obu_chroma()); // TU1: level 0 available (mlayer_id -1) + protected
     data.extend(temporal_delimiter_obu()); // TU2 starts: QmProtected cleared
     data.extend(frame_obu_direct_seq_ref(SWITCH_HEADER, 5)); // references seq 5 (not active) -> None core -> poison

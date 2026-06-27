@@ -29,6 +29,8 @@ use splot_core::span::ByteOffset;
 /// A motion-compensated block's luma-space rectangle (the § 7.13.3.18 region the
 /// block covers). For the full-frame single block this is the whole frame; for a
 /// multi-block partition each leaf block carries its own rect.
+// `luma_*` prefix distinguishes luma-space coordinates from chroma-space; dropping it would lose that AV2 distinction.
+#[allow(clippy::struct_field_names)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct McBlockRect {
     /// Luma-space top-left x (samples).

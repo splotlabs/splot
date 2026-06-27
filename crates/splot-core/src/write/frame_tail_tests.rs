@@ -73,12 +73,12 @@ mod tests {
 
     // ===== film_grain_config (§ 5.18.10.1) =====
 
-    fn fg_round_trip(fg: &FilmGrainConfig, input: &FrameTailInput) {
+    fn fg_round_trip(fg: FilmGrainConfig, input: FrameTailInput) {
         let mut writer = BitWriter::new();
-        write_film_grain_config(&mut writer, fg, input).unwrap();
+        write_film_grain_config(&mut writer, &fg, &input).unwrap();
         let bytes = writer.into_bytes();
-        let reparsed = parse_film_grain_config(&mut reader(&bytes), input).unwrap();
-        assert_eq!(&reparsed, fg);
+        let reparsed = parse_film_grain_config(&mut reader(&bytes), &input).unwrap();
+        assert_eq!(reparsed, fg);
     }
 
     #[test]
@@ -93,7 +93,7 @@ mod tests {
             fgm_id: None,
             grain_seed: None,
         };
-        fg_round_trip(&fg, &input);
+        fg_round_trip(fg, input);
         let mut writer = BitWriter::new();
         write_film_grain_config(&mut writer, &fg, &input).unwrap();
         assert_eq!(writer.bit_len(), 0);
@@ -112,7 +112,7 @@ mod tests {
             fgm_id: None,
             grain_seed: None,
         };
-        fg_round_trip(&fg, &input);
+        fg_round_trip(fg, input);
     }
 
     #[test]
@@ -126,7 +126,7 @@ mod tests {
             fgm_id: Some(5),
             grain_seed: Some(40000),
         };
-        fg_round_trip(&fg, &input);
+        fg_round_trip(fg, input);
     }
 
     #[test]
@@ -136,7 +136,7 @@ mod tests {
             fgm_id: Some(7),
             grain_seed: Some(65535),
         };
-        fg_round_trip(&fg, &base_input());
+        fg_round_trip(fg, base_input());
     }
 
     #[test]
@@ -146,7 +146,7 @@ mod tests {
             fgm_id: None,
             grain_seed: None,
         };
-        fg_round_trip(&fg, &base_input());
+        fg_round_trip(fg, base_input());
     }
 
     #[test]
@@ -244,11 +244,11 @@ mod tests {
 
     // ===== intra tail (§ 5.18.2) =====
 
-    fn tail_round_trip(tail: &FrameHeaderTail, input: &FrameTailInput) {
+    fn tail_round_trip(tail: &FrameHeaderTail, input: FrameTailInput) {
         let mut writer = BitWriter::new();
-        write_intra_tail(&mut writer, tail, input).unwrap();
+        write_intra_tail(&mut writer, tail, &input).unwrap();
         let bytes = writer.into_bytes();
-        let reparsed = parse_intra_tail(&mut reader(&bytes), input).unwrap();
+        let reparsed = parse_intra_tail(&mut reader(&bytes), &input).unwrap();
         assert_eq!(&reparsed, tail);
     }
 
@@ -271,7 +271,7 @@ mod tests {
 
     #[test]
     fn intra_tail_non_lossless_round_trips() {
-        tail_round_trip(&base_tail(), &base_input());
+        tail_round_trip(&base_tail(), base_input());
     }
 
     #[test]
@@ -284,7 +284,7 @@ mod tests {
             tx_mode: TxMode::Only4x4,
             ..base_tail()
         };
-        tail_round_trip(&tail, &input);
+        tail_round_trip(&tail, input);
     }
 
     #[test]
@@ -301,7 +301,7 @@ mod tests {
             },
             ..base_tail()
         };
-        tail_round_trip(&tail, &input);
+        tail_round_trip(&tail, input);
     }
 
     #[test]

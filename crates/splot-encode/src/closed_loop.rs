@@ -75,10 +75,7 @@ impl MinimalClosedLoopReconstruction {
         source: PlaneRef<'_, u8>,
         params: FixedQuantizationParams,
     ) -> Result<Self> {
-        let (block, prediction, residual_i32) = Self::prepare(source, params)?;
-        let transformed =
-            ForwardTransformBlock::dct_dct_4x4_dc_only(PlaneId::Y, block, &residual_i32)?;
-        Self::finish(prediction, transformed, params)
+        Self::reconstruct_luma_4x4_with(source, params, ForwardTransformBlock::dct_dct_4x4_dc_only)
     }
 
     /// Reconstructs an 8-bit luma 4x4 DCT_DCT block from any source (uniform or
@@ -91,9 +88,22 @@ impl MinimalClosedLoopReconstruction {
         source: PlaneRef<'_, u8>,
         params: FixedQuantizationParams,
     ) -> Result<Self> {
+        Self::reconstruct_luma_4x4_with(source, params, ForwardTransformBlock::dct_dct_4x4)
+    }
+
+    /// Shared reconstruction core for the two public 4x4 luma entry points: prepare
+    /// the block / DC prediction / encoder-policy residual, apply the supplied 4x4
+    /// forward transform, then quantize and reconstruct through `splot-recon`. The
+    /// entry points differ only in the `transform` they pass (`dct_dct_4x4` vs
+    /// `dct_dct_4x4_dc_only`).
+    fn reconstruct_luma_4x4_with(
+        source: PlaneRef<'_, u8>,
+        params: FixedQuantizationParams,
+        transform: fn(PlaneId, PlaneRect, &[i32]) -> Result<ForwardTransformBlock>,
+    ) -> Result<Self> {
         let (block, prediction, residual_i32) = Self::prepare(source, params)?;
-        let transformed = ForwardTransformBlock::dct_dct_4x4(PlaneId::Y, block, &residual_i32)?;
-        Self::finish(prediction, transformed, params)
+        let transformed = transform(PlaneId::Y, block, &residual_i32)?;
+        Self::finish(prediction, &transformed, params)
     }
 
     /// Shared front half: validate the bit depth and source size, predict the
@@ -145,10 +155,10 @@ impl MinimalClosedLoopReconstruction {
     /// decoder-visible samples through `splot-recon`, and hash the result.
     fn finish(
         prediction: [u8; DCT_DCT_4X4_COEFF_COUNT],
-        transformed: ForwardTransformBlock,
+        transformed: &ForwardTransformBlock,
         params: FixedQuantizationParams,
     ) -> Result<Self> {
-        let quantized_block = QuantizedTransformBlock::dct_dct_4x4(&transformed, params)?;
+        let quantized_block = QuantizedTransformBlock::dct_dct_4x4(transformed, params)?;
 
         // Decoder-visible dequant -> inverse transform -> residual addition (recon).
         let reconstructed = reconstruct_from_quantized(

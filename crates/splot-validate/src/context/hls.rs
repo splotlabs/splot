@@ -107,6 +107,9 @@ impl HlsAvailabilityStore {
     /// Records a multi-frame header as available in-band, keyed by `mfhId`
     /// (AV2 § 7.3.8.7). A later redefinition of the same id overwrites the record but
     /// keeps the id available, preserving monotonic availability.
+    // `record` is moved straight into `multi_frame_headers`; taking it by reference would
+    // force a clone of the 432-byte record, so by-value is the zero-copy choice here.
+    #[allow(clippy::large_types_passed_by_value)]
     pub(super) fn record_multi_frame_header(&mut self, record: MultiFrameHeaderRecord) {
         self.multi_frame_headers.insert(record.mfh_id.get(), record);
     }

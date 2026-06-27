@@ -70,15 +70,44 @@ unsafe_code = "forbid"
 missing_docs = "warn"
 
 [workspace.lints.clippy]
-# `all` is a lint group, so it must have a lower priority than the individual
-# lints below; otherwise Cargo's `lint_groups_priority` check fails.
+# `all` and `pedantic` are lint groups, so they must have a lower priority than
+# the individual lints below; otherwise Cargo's `lint_groups_priority` check
+# fails and the per-lint `allow`/`deny` overrides would not apply.
 all = { level = "warn", priority = -1 }
+# `pedantic` is enforced workspace-wide (CI runs clippy with `-D warnings`),
+# minus the families below that are noise for a cast-heavy codec or pure
+# formatting nits. Re-evaluate the allow-list as the code matures.
+pedantic = { level = "warn", priority = -1 }
 unwrap_used = "deny"
 expect_used = "deny"
 panic = "deny"
 todo = "deny"
 unimplemented = "deny"
 dbg_macro = "deny"
+# Allowed pedantic families. Integer casts are pervasive and deliberate in codec
+# arithmetic; `#[allow]` per-site would bury real signal. Doc-markdown and the
+# size/naming heuristics below are stylistic nits, not correctness.
+cast_possible_truncation = "allow"
+cast_possible_wrap = "allow"
+cast_sign_loss = "allow"
+cast_lossless = "allow"
+cast_precision_loss = "allow"
+doc_markdown = "allow"
+must_use_candidate = "allow"
+too_many_lines = "allow"
+similar_names = "allow"
+struct_excessive_bools = "allow"
+fn_params_excessive_bools = "allow"
+# The crates deliberately split former monoliths into submodules that share a
+# crate-private helper namespace via `use super::*` (see e.g. the splot-validate
+# `context` split). Enforcing explicit imports would expand ~250 files into
+# fragile lists that break on every transitive re-export, so this glob-hub
+# pattern is allowed rather than fought.
+wildcard_imports = "allow"
+# Pure stylistic preference (positive condition first). Enforcing it would force
+# swapping large `if !cond { .. } else { .. }` branch bodies in writer/tile code,
+# which is churn with real transcription-bug risk and no behavioral benefit.
+if_not_else = "allow"
 
 # Build profiles. `overflow-checks` is declared explicitly on every profile so codec
 # arithmetic traps integer overflow even in optimized builds: the `release` profile

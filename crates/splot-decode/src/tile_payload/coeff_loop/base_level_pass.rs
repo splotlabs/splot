@@ -255,7 +255,7 @@ pub(crate) fn apply_nonzero_coeff_base_derived_level_pass(
 
     let mut first_pass = CoeffBaseFirstPassSummary::default();
     for (index, entry) in entries.iter().copied().enumerate() {
-        let input = derive_base_symbol_input(index, entry, &block, first_pass, config)?;
+        let input = derive_base_symbol_input(index, entry, &block, first_pass, config);
         let read = read_coeff_base_symbol(cdfs, symbols, input)?;
         first_pass.update_after_level(entry, read.level(), config)?;
         block.set_level(entry.row(), entry.col(), read.level())?;
@@ -334,7 +334,7 @@ fn derive_base_symbol_input(
     block: &TransformCoeffBlockState,
     first_pass: CoeffBaseFirstPassSummary,
     config: CoeffBaseDerivedLevelPassConfig,
-) -> Result<CoeffBaseSymbolReadInput, CoeffBaseDerivedLevelPassError> {
+) -> CoeffBaseSymbolReadInput {
     let is_lf = coeff_is_low_frequency(entry, config.plane, config.tx_class);
     let base_levels = if is_lf {
         LF_NUM_BASE_LEVELS
@@ -347,7 +347,7 @@ fn derive_base_symbol_input(
         }
     } else {
         CoeffBaseSymbolSource::Base {
-            selector: base_selector(entry, is_lf, block, first_pass, config)?,
+            selector: base_selector(entry, is_lf, block, first_pass, config),
         }
     };
     let base_range = if is_lf && config.plane > 0 {
@@ -358,12 +358,12 @@ fn derive_base_symbol_input(
         }
     };
 
-    Ok(CoeffBaseSymbolReadInput {
+    CoeffBaseSymbolReadInput {
         entry,
         base,
         base_levels,
         base_range,
-    })
+    }
 }
 
 fn base_eob_selector(
@@ -405,7 +405,7 @@ fn base_selector(
     block: &TransformCoeffBlockState,
     first_pass: CoeffBaseFirstPassSummary,
     config: CoeffBaseDerivedLevelPassConfig,
-) -> Result<CoeffCdfSelector, CoeffBaseDerivedLevelPassError> {
+) -> CoeffCdfSelector {
     let selection = CoeffBaseContext {
         pos: entry.pos(),
         bwl: config.tx_width_log2,
@@ -425,33 +425,33 @@ fn map_base_selection(
     selection: CoeffBaseSelection,
     first_pass: CoeffBaseFirstPassSummary,
     config: CoeffBaseDerivedLevelPassConfig,
-) -> Result<CoeffCdfSelector, CoeffBaseDerivedLevelPassError> {
+) -> CoeffCdfSelector {
     let tcq_ctx = (first_pass.tcq_state >> 1) & 1;
     match selection {
-        CoeffBaseSelection::Ph { ctx } => Ok(CoeffCdfSelector::BasePh {
+        CoeffBaseSelection::Ph { ctx } => CoeffCdfSelector::BasePh {
             coeff_cdf_q_ctx: config.coeff_cdf_q_ctx,
             ctx,
-        }),
-        CoeffBaseSelection::LfUv { ctx } => Ok(CoeffCdfSelector::BaseLfUv {
+        },
+        CoeffBaseSelection::LfUv { ctx } => CoeffCdfSelector::BaseLfUv {
             coeff_cdf_q_ctx: config.coeff_cdf_q_ctx,
             ctx,
-        }),
-        CoeffBaseSelection::Uv { ctx } => Ok(CoeffCdfSelector::BaseUv {
+        },
+        CoeffBaseSelection::Uv { ctx } => CoeffCdfSelector::BaseUv {
             coeff_cdf_q_ctx: config.coeff_cdf_q_ctx,
             ctx,
-        }),
-        CoeffBaseSelection::Lf { ctx } => Ok(CoeffCdfSelector::BaseLf {
-            coeff_cdf_q_ctx: config.coeff_cdf_q_ctx,
-            tx_size: config.tx_size_ctx,
-            ctx,
-            tcq_ctx,
-        }),
-        CoeffBaseSelection::Hf { ctx } => Ok(CoeffCdfSelector::Base {
+        },
+        CoeffBaseSelection::Lf { ctx } => CoeffCdfSelector::BaseLf {
             coeff_cdf_q_ctx: config.coeff_cdf_q_ctx,
             tx_size: config.tx_size_ctx,
             ctx,
             tcq_ctx,
-        }),
+        },
+        CoeffBaseSelection::Hf { ctx } => CoeffCdfSelector::Base {
+            coeff_cdf_q_ctx: config.coeff_cdf_q_ctx,
+            tx_size: config.tx_size_ctx,
+            ctx,
+            tcq_ctx,
+        },
     }
 }
 

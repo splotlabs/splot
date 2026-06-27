@@ -224,7 +224,7 @@ impl BitWriter {
             });
         }
         let m = m as u32;
-        let leading_zeros = 31 - m.leading_zeros();
+        let leading_zeros = m.ilog2();
         self.write_bits(0, leading_zeros)?;
         self.write_bit(1)?;
         let suffix = m - (1u32 << leading_zeros);
@@ -342,6 +342,8 @@ impl BitWriter {
     /// Returns [`WriteError::ZeroWidth`] if `n == 0`, or
     /// [`WriteError::ValueOutOfRange`] if `value >= n` (the descriptor encodes
     /// `0 ..= n - 1`).
+    // n/w/m/v mirror the AV2 § 4.11.8 ns(n) descriptor derivation notation.
+    #[allow(clippy::many_single_char_names)]
     pub fn write_ns(&mut self, value: u32, n: u32) -> WriteResult<()> {
         if n == 0 {
             return Err(WriteError::ZeroWidth { descriptor: "ns" });

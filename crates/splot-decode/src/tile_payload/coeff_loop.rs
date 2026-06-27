@@ -101,6 +101,8 @@ pub(crate) struct AllZeroCoeffBlockInput {
 }
 
 /// Caller-resolved facts for computing the nonzero § 5.20.7.27 EOB value.
+// `eob_*` fields mirror the AV2 §5.20.7.27 eobPt/eob_extra/eob_extra_bit syntax names; the prefix preserves that mapping.
+#[allow(clippy::struct_field_names)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct NonZeroCoeffEobInput {
     /// Decoded `eobPt` after the active `eob_pt_*` and any size-specific

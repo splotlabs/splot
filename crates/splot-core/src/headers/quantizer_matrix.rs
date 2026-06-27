@@ -331,11 +331,13 @@ fn user_defined_qm(
 /// Returns the raster positions `row * width + col` in scan order. The fundamental
 /// quantizer-matrix transforms are at most 8x8, so the spec's `Min(.., 32)` width/
 /// height clamps never apply.
+// w/h/x/y/s mirror the AV2 § 5.20.7.30 up-right diagonal scan derivation notation.
+#[allow(clippy::many_single_char_names)]
 fn diagonal_scan_2d(width: usize, height: usize) -> Vec<usize> {
     let mut out = vec![0usize; width * height];
     let (w, h) = (width as i64, height as i64);
     let (mut x, mut y) = (0i64, 0i64);
-    for slot in out.iter_mut() {
+    for slot in &mut out {
         // Loop invariant (AV2 § 5.20.7.30): 0 <= x < w and 0 <= y < h at each step.
         *slot = (y as usize) * width + (x as usize);
         x += 1;

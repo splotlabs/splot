@@ -207,6 +207,8 @@ fn registry_region(text: &str) -> Result<&str> {
 /// fully-qualified type paths (no `use` items) make the output rustfmt-stable, so
 /// `--check` can diff it byte-for-byte.
 fn render_generated(entries: &[Entry]) -> String {
+    use std::fmt::Write as _;
+
     let mut out = String::new();
     out.push_str("// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0\n");
     out.push_str("// SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>\n\n");
@@ -222,10 +224,12 @@ fn render_generated(entries: &[Entry]) -> String {
             Some(section) => format!("Some({section:?})"),
             None => "None".to_owned(),
         };
-        out.push_str(&format!(
-            "    super::DiagnosticInfo {{ rule_id: {:?}, severity: {:?}, section: {}, summary: {:?} }},\n",
+        // Writing to a `String` is infallible, so the `fmt::Result` is discarded.
+        let _ = writeln!(
+            out,
+            "    super::DiagnosticInfo {{ rule_id: {:?}, severity: {:?}, section: {}, summary: {:?} }},",
             entry.rule_id, entry.severity, section, entry.summary,
-        ));
+        );
     }
     out.push_str("];\n");
     out

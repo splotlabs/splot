@@ -62,7 +62,7 @@ pub(super) struct BufferDelayBaseline {
 /// (`check_ops_buffer_delay_sums`), where it is the `on_drop` diagnostic emitted when a
 /// late CLK reveals the deferred intra-CVS error to be a genuine cross-CVS change.
 pub(super) fn ops_buffer_delay_cross_cvs_warning(
-    key: &OpsBufferDelayKey,
+    key: OpsBufferDelayKey,
     previous_sum: u64,
     sum: u64,
     offset: ByteOffset,
@@ -98,7 +98,7 @@ pub(super) fn ops_buffer_delay_cross_cvs_warning(
 /// only in how the comparison is routed across the § 7.3.6 temporal-unit-granular CVS
 /// boundary, not in the diagnostic text.
 pub(super) fn ops_buffer_delay_intra_cvs_error(
-    key: &OpsBufferDelayKey,
+    key: OpsBufferDelayKey,
     previous_sum: u64,
     sum: u64,
     offset: ByteOffset,
@@ -251,7 +251,7 @@ impl ValidatorContext {
                 && previous.sum != sum
             {
                 let diagnostic =
-                    ops_buffer_delay_intra_cvs_error(&key, previous.sum, sum, obu.offset);
+                    ops_buffer_delay_intra_cvs_error(key, previous.sum, sum, obu.offset);
                 if cvs_started {
                     // When the error is deferred (the baseline came from an earlier
                     // temporal unit) and then dropped because a late CLK starts a new
@@ -260,7 +260,7 @@ impl ValidatorContext {
                     // error's place so the change is not silently lost (§ 7.3.6
                     // temporal-unit-granular CVS boundary).
                     let on_drop =
-                        ops_buffer_delay_cross_cvs_warning(&key, previous.sum, sum, obu.offset);
+                        ops_buffer_delay_cross_cvs_warning(key, previous.sum, sum, obu.offset);
                     self.cvs.defer_or_emit_with_replacement(
                         ops.xlayer_id,
                         previous.tu_index,
@@ -282,7 +282,7 @@ impl ValidatorContext {
             // stored baseline regardless of CVS/reset epoch; run it before overwriting.
             // It reads the baseline from the map directly (the error path's `&mut cvs`
             // borrow above has already ended).
-            self.check_ops_buffer_delay_cross_cvs(obu, &key, sum, scope, report);
+            self.check_ops_buffer_delay_cross_cvs(obu, key, sum, scope, report);
 
             self.ops_buffer_delay_sums.insert(
                 key,
@@ -308,12 +308,12 @@ impl ValidatorContext {
     pub(super) fn check_ops_buffer_delay_cross_cvs(
         &self,
         obu: &ObuEnvelope<'_>,
-        key: &OpsBufferDelayKey,
+        key: OpsBufferDelayKey,
         sum: u64,
         scope: BufferDelayScope,
         report: &mut ValidationReport,
     ) {
-        let Some(previous) = self.ops_buffer_delay_sums.get(key) else {
+        let Some(previous) = self.ops_buffer_delay_sums.get(&key) else {
             return;
         };
         // The advisory covers a CVS, OPS-reset, or targeted-reset boundary-spanning
@@ -430,71 +430,68 @@ impl ValidatorContext {
         };
         let xlayer = obu.header.extended_layer_id;
 
-        match self.ops.get(xlayer, br_ops_id) {
-            Some(record) => {
-                // Capture the fields the diagnostic needs before the mutable replay-buffer
-                // call below borrows `self` (the record itself borrows `self.ops`).
-                let record_ops_cnt = record.ops_cnt;
-                let record_offset = record.offset;
-                // AV2 § 7.3.8.1: the OPS resolved in-band (linear availability held, so the
-                // `brt/unavailable-operating-point-set` check did not fire), so buffer this
-                // § 7.3.8.5 reference for the random-access-point availability replay.
-                self.note_rap_reference(
-                    RapHlsKey::OperatingPointSet {
-                        xlayer: xlayer.get(),
-                        ops_id: br_ops_id,
-                    },
-                    xlayer,
-                    obu.offset,
+        if let Some(record) = self.ops.get(xlayer, br_ops_id) {
+            // Capture the fields the diagnostic needs before the mutable replay-buffer
+            // call below borrows `self` (the record itself borrows `self.ops`).
+            let record_ops_cnt = record.ops_cnt;
+            let record_offset = record.offset;
+            // AV2 § 7.3.8.1: the OPS resolved in-band (linear availability held, so the
+            // `brt/unavailable-operating-point-set` check did not fire), so buffer this
+            // § 7.3.8.5 reference for the random-access-point availability replay.
+            self.note_rap_reference(
+                RapHlsKey::OperatingPointSet {
+                    xlayer: xlayer.get(),
+                    ops_id: br_ops_id,
+                },
+                xlayer,
+                obu.offset,
+            );
+            if br_ops_cnt != record_ops_cnt {
+                report.push(
+                    Diagnostic::error(
+                        "brt/ops-count-mismatch",
+                        format!(
+                            "OBU_BUFFER_REMOVAL_TIMING references ops_id {} for obu_xlayer_id \
+                             {} with br_ops_cnt {}, but the active operating point set (defined \
+                             at byte {}) has ops_cnt {}",
+                            br_ops_id,
+                            xlayer.get(),
+                            br_ops_cnt,
+                            record_offset,
+                            record_ops_cnt
+                        ),
+                    )
+                    .with_spec_section("6.11")
+                    .with_byte_offset(obu.offset),
                 );
-                if br_ops_cnt != record_ops_cnt {
-                    report.push(
-                        Diagnostic::error(
-                            "brt/ops-count-mismatch",
-                            format!(
-                                "OBU_BUFFER_REMOVAL_TIMING references ops_id {} for obu_xlayer_id \
-                                 {} with br_ops_cnt {}, but the active operating point set (defined \
-                                 at byte {}) has ops_cnt {}",
-                                br_ops_id,
-                                xlayer.get(),
-                                br_ops_cnt,
-                                record_offset,
-                                record_ops_cnt
-                            ),
-                        )
-                        .with_spec_section("6.11")
-                        .with_byte_offset(obu.offset),
-                    );
-                }
             }
-            None => {
-                // AV2 § 7.3.8.5: the referenced OPS must be available in-band or by
-                // external means. Suppress the hard error only when the caller has
-                // explicitly declared this `(obu_xlayer_id, ops_id)` as external HLS;
-                // a generic external-HLS mode that declares other objects (e.g. only
-                // sequence headers) does not make this OPS available.
-                let external_ops_declared = match &options.external_hls {
-                    ExternalHlsMode::Provided(set) => {
-                        set.has_operating_point_set(xlayer.get(), br_ops_id)
-                    }
-                    ExternalHlsMode::Disabled => false,
-                };
-                if !external_ops_declared {
-                    report.push(
-                        Diagnostic::error(
-                            "brt/unavailable-operating-point-set",
-                            format!(
-                                "OBU_BUFFER_REMOVAL_TIMING references ops_id {} for obu_xlayer_id \
-                                 {}, but no operating point set with that id is available in-band \
-                                 or declared as external HLS",
-                                br_ops_id,
-                                xlayer.get()
-                            ),
-                        )
-                        .with_spec_section("7.3.8.5")
-                        .with_byte_offset(obu.offset),
-                    );
+        } else {
+            // AV2 § 7.3.8.5: the referenced OPS must be available in-band or by
+            // external means. Suppress the hard error only when the caller has
+            // explicitly declared this `(obu_xlayer_id, ops_id)` as external HLS;
+            // a generic external-HLS mode that declares other objects (e.g. only
+            // sequence headers) does not make this OPS available.
+            let external_ops_declared = match &options.external_hls {
+                ExternalHlsMode::Provided(set) => {
+                    set.has_operating_point_set(xlayer.get(), br_ops_id)
                 }
+                ExternalHlsMode::Disabled => false,
+            };
+            if !external_ops_declared {
+                report.push(
+                    Diagnostic::error(
+                        "brt/unavailable-operating-point-set",
+                        format!(
+                            "OBU_BUFFER_REMOVAL_TIMING references ops_id {} for obu_xlayer_id \
+                             {}, but no operating point set with that id is available in-band \
+                             or declared as external HLS",
+                            br_ops_id,
+                            xlayer.get()
+                        ),
+                    )
+                    .with_spec_section("7.3.8.5")
+                    .with_byte_offset(obu.offset),
+                );
             }
         }
     }

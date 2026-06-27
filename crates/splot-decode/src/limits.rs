@@ -65,6 +65,8 @@ impl Default for DecodeOptions {
 }
 
 /// Caller-provided resource limits for future decode planning.
+// Each `max_*` field is a distinct maximum threshold; the prefix names the bound and dropping it would lose that meaning.
+#[allow(clippy::struct_field_names)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DecodeLimits {
     max_input_bytes: DecodeLimitThreshold,
@@ -209,6 +211,11 @@ impl DecodeLimits {
     }
 
     /// Checks an actual value and returns a local error when the limit fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DecodeLimitError::LimitExceeded`] when `actual` exceeds the
+    /// configured threshold for `name`.
     pub fn ensure(self, name: DecodeLimitName, actual: u64) -> DecodeLimitResult<DecodeLimitCheck> {
         let check = self.check(name, actual);
         if check.is_allowed() {
@@ -219,6 +226,12 @@ impl DecodeLimits {
     }
 
     /// Computes checked addition, then compares the sum against a typed limit.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DecodeLimitError::ArithmeticOverflow`] when `left + right`
+    /// overflows `u64`, or [`DecodeLimitError::LimitExceeded`] when the sum
+    /// exceeds the configured threshold for `name`.
     pub fn ensure_add(
         self,
         name: DecodeLimitName,
@@ -237,6 +250,12 @@ impl DecodeLimits {
     }
 
     /// Computes checked multiplication, then compares the product against a typed limit.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DecodeLimitError::ArithmeticOverflow`] when `left * right`
+    /// overflows `u64`, or [`DecodeLimitError::LimitExceeded`] when the product
+    /// exceeds the configured threshold for `name`.
     pub fn ensure_mul(
         self,
         name: DecodeLimitName,
@@ -255,6 +274,13 @@ impl DecodeLimits {
     }
 
     /// Checks a limit and converts the accepted value to a host allocation length.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DecodeLimitError::LimitExceeded`] when `actual` exceeds the
+    /// configured threshold for `name`, or
+    /// [`DecodeLimitError::HostAllocationTooLarge`] when the accepted value
+    /// exceeds `MAX_HOST_ALLOCATION_LEN` or does not fit in `usize`.
     pub fn ensure_allocation_len(
         self,
         name: DecodeLimitName,

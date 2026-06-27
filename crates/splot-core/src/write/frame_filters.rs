@@ -295,7 +295,7 @@ pub fn write_gdf_params(
     filter: &CoreSeqFilterView,
     geometry: GdfGeometry<'_>,
 ) -> WriteResult<()> {
-    let per_block_coded = check_gdf_encodable(params, coded_lossless, filter, geometry)?;
+    let per_block_coded = check_gdf_encodable(*params, coded_lossless, *filter, geometry)?;
 
     if coded_lossless || !filter.enable_gdf {
         // § 5.18.7.9: if ( CodedLossless || !enable_gdf ) gdf_frame_enable = 0; no bits.
@@ -330,9 +330,9 @@ pub fn write_gdf_params(
 /// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-7-9`) parser could have produced,
 /// before any bit is written. Returns whether the `gdf_per_block` bit is coded.
 fn check_gdf_encodable(
-    params: &GdfParams,
+    params: GdfParams,
     coded_lossless: bool,
-    filter: &CoreSeqFilterView,
+    filter: CoreSeqFilterView,
     geometry: GdfGeometry<'_>,
 ) -> WriteResult<bool> {
     // § 5.18.7.9: when GDF is disabled the parser leaves gdf_frame_enable = 0 and every option
@@ -438,7 +438,7 @@ pub fn write_cdef_params(
     num_planes: u8,
     filter: &CoreSeqFilterView,
 ) -> WriteResult<()> {
-    check_cdef_encodable(params, coded_lossless, num_planes, filter)?;
+    check_cdef_encodable(params, coded_lossless, num_planes, *filter)?;
 
     if coded_lossless || !filter.enable_cdef {
         // § 5.18.7.10: if ( CodedLossless || !enable_cdef ) cdef_frame_enable = 0; no bits.
@@ -515,7 +515,7 @@ fn check_cdef_encodable(
     params: &CdefParams,
     coded_lossless: bool,
     num_planes: u8,
-    filter: &CoreSeqFilterView,
+    filter: CoreSeqFilterView,
 ) -> WriteResult<()> {
     // § 5.18.7.10: when CDEF is disabled the parser leaves cdef_frame_enable = 0, every option
     // None, and no strength sets; a non-default model could not have been produced.

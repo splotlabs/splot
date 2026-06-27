@@ -348,6 +348,15 @@ impl<F> ReferenceRefreshOutcome<F> {
     }
 }
 
+impl<'a, F> IntoIterator for &'a ReferenceRefreshOutcome<F> {
+    type Item = &'a ReferenceFrameReplacement<F>;
+    type IntoIter = core::slice::Iter<'a, ReferenceFrameReplacement<F>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.replacements.iter()
+    }
+}
+
 /// Immutable occupied reference-frame store entry.
 #[derive(Clone, Copy, Debug)]
 pub struct ReferenceFrameEntry<'a, F> {

@@ -133,6 +133,10 @@ pub(super) fn check_frame_header_copy(
     // sits precisely at the structure start), so the structure checks run; Truncated means the
     // payload ended inside the copy, leaving no structure bits, so they do not.
     let copy_outcome = parse_frame_header_copy(&mut reader, &recorded.header_bits);
+    // The empty `Matches` arm (a conforming copy emits no diagnostic) and the empty
+    // `#[non_exhaustive]` catch-all (a future outcome variant stays silent rather than
+    // guessed) are kept distinct on purpose despite sharing a body.
+    #[allow(clippy::match_same_arms)]
     match copy_outcome {
         FrameHeaderCopyOutcome::Matches => {}
         FrameHeaderCopyOutcome::Mismatch { mismatch_bit } => {

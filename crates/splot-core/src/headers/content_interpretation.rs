@@ -108,16 +108,13 @@ impl ColorDescription {
         // AV2 § 6.14 Table 6.13: ci_color_description_idc has the same interpretation
         // as ops_color_description_idc.
         let primaries = match self.color_description_idc {
-            0 => self
-                .primaries
-                .map(|p| {
-                    (
-                        p.color_primaries,
-                        p.transfer_characteristics,
-                        p.matrix_coefficients,
-                    )
-                })
-                .unwrap_or(UNSPECIFIED_COLOR_PRIMARIES),
+            0 => self.primaries.map_or(UNSPECIFIED_COLOR_PRIMARIES, |p| {
+                (
+                    p.color_primaries,
+                    p.transfer_characteristics,
+                    p.matrix_coefficients,
+                )
+            }),
             1 => (1, 1, 1),                   // BT.709 SDR
             2 => (9, 16, 9),                  // BT.2100 PQ
             3 => (9, 18, 9),                  // BT.2100 HLG

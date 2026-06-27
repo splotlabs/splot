@@ -75,7 +75,7 @@ enum DecodeOutputTarget<'a> {
     Hash { path: Option<&'a Path> },
 }
 
-impl<'a> DecodeOutputTarget<'a> {
+impl DecodeOutputTarget<'_> {
     fn format(&self) -> DecodeOutputFormat {
         match self {
             Self::Y4m { .. } => DecodeOutputFormat::Y4m,
@@ -92,9 +92,8 @@ impl DecodeArgs {
             self.output.as_deref(),
         ) {
             (DecodeOutputFormat::Y4m, Some(path)) => Some(DecodeOutputTarget::Y4m { path }),
-            (DecodeOutputFormat::Y4m, None) => None,
             (DecodeOutputFormat::Raw, Some(path)) => Some(DecodeOutputTarget::Raw { path }),
-            (DecodeOutputFormat::Raw, None) => None,
+            (DecodeOutputFormat::Y4m | DecodeOutputFormat::Raw, None) => None,
             (DecodeOutputFormat::Hash, path) => Some(DecodeOutputTarget::Hash { path }),
         }
     }
@@ -498,7 +497,9 @@ pub fn run(args: &DecodeArgs) -> Result<ExitCode> {
             let context = DecodeContext::new(DecodeRuntimeConfig::new(args.threads))?;
             match target {
                 DecodeOutputTarget::Hash { path } => {
-                    let _ignored_hash_output_path = path;
+                    // Hash mode derives its filename from the input; any `--output` path is
+                    // intentionally ignored (carried on the target only for variant symmetry).
+                    let _ = path;
                     match context.decode_hash_report_bytes(&bytes, options) {
                         Ok(report) => {
                             render_hash_report(&report, args.json)?;

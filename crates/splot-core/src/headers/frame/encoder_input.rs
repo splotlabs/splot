@@ -321,6 +321,11 @@ const FROZEN_TIER_DIM: u32 = 64;
 ///
 /// [`SequenceHeader`]: crate::headers::sequence::SequenceHeader
 /// [`FrameHeaderParseStatus::IntraHeaderComplete`]: super::FrameHeaderParseStatus::IntraHeaderComplete
+///
+/// # Errors
+/// Returns [`MinimalIntraCoreError::Seq`] if the internal minimal-intra sequence view cannot
+/// be built, or a parse error if the canonical body does not parse against it. (The frozen
+/// tier's `base_q_idx` is nonzero, so [`MinimalIntraCoreError::LosslessBaseQIdx`] never fires.)
 pub fn build_minimal_intra_clk_core()
 -> Result<(FrameHeaderCore, CoreSeqView), MinimalIntraCoreError> {
     build_minimal_intra_clk_core_impl(FROZEN_TIER_BASE_Q_IDX)
@@ -400,6 +405,11 @@ pub enum MinimalIntraTileGroupError {
 /// from coded tile bytes without a parsed [`SequenceHeader`].
 ///
 /// [`SequenceHeader`]: crate::headers::sequence::SequenceHeader
+///
+/// # Errors
+/// Returns [`MinimalIntraTileGroupError::Core`] if the matched frame-header core cannot be
+/// assembled, or [`MinimalIntraTileGroupError::Write`] if the § 5.19 tile-group payload cannot
+/// be serialized (e.g. an empty `tile_data`, a § 8.2.2 zero-size-tile defect).
 pub fn encode_minimal_intra_clk_tile_group_obu(
     tile_data: &[u8],
 ) -> Result<Vec<u8>, MinimalIntraTileGroupError> {
@@ -445,6 +455,11 @@ fn encode_minimal_intra_clk_tile_group_obu_impl(
 /// self-delimiting OBU. A temporal-delimiter + sequence-header OBU and a full Annex B / IVF
 /// stream around it are later bricks; this is a single frame OBU, not yet a decodable
 /// temporal unit.
+///
+/// # Errors
+/// Returns [`MinimalIntraTileGroupError::Core`] if the matched frame-header core cannot be
+/// assembled, or [`MinimalIntraTileGroupError::Write`] if the tile-group payload or the
+/// Annex B OBU wrapper cannot be serialized (e.g. an empty `tile_data`).
 pub fn encode_minimal_intra_clk_annexb_obu(
     tile_data: &[u8],
 ) -> Result<Vec<u8>, MinimalIntraTileGroupError> {
@@ -483,6 +498,10 @@ fn encode_minimal_intra_clk_annexb_obu_impl(
 ///
 /// This is a public encoder writer-input primitive: a later brick concatenates it with the
 /// sequence-header and frame OBUs into a temporal unit and an IVF stream.
+///
+/// # Errors
+/// Returns [`WriteError`] if the Annex B OBU framing cannot be serialized. (Unreachable for
+/// the fixed two-byte temporal-delimiter encoding; the `Result` honors the no-panic policy.)
 pub fn encode_temporal_delimiter_obu() -> Result<Vec<u8>, WriteError> {
     // § 5.2.2: the no-extension OBU_TEMPORAL_DELIMITER header (global xlayer 31, mlayer 0).
     let header = ObuHeader {
@@ -527,6 +546,11 @@ pub enum MinimalIntraSequenceHeaderError {
 /// single-picture tier by **parsing** the committed conformance-vector payload (the
 /// `MINIMAL_INTRA_SEQUENCE_HEADER_PAYLOAD` const) — the parse-backed model is conformant by
 /// construction (it is the exact sequence header the decoder's minimal tier accepts).
+///
+/// # Errors
+/// Returns [`MinimalIntraSequenceHeaderError::Parse`] if the committed canonical payload does
+/// not parse into a [`SequenceHeader`]. (Unreachable for the fixed canonical body; the
+/// `Result` honors the no-panic policy.)
 pub fn build_minimal_intra_sequence_header()
 -> Result<SequenceHeader, MinimalIntraSequenceHeaderError> {
     let mut reader = BitReader::new(&MINIMAL_INTRA_SEQUENCE_HEADER_PAYLOAD, ByteOffset::new(0));
@@ -561,6 +585,11 @@ fn minimal_intra_sequence_header_payload() -> Result<Vec<u8>, MinimalIntraSequen
 /// the temporal delimiter, before the frame OBU). Assembling the three into a temporal unit
 /// and an IVF stream — with the frame OBU made consistent with this sequence header — is a
 /// later brick.
+///
+/// # Errors
+/// Returns [`MinimalIntraSequenceHeaderError::Parse`] if the canonical payload does not parse,
+/// or [`MinimalIntraSequenceHeaderError::Write`] if the payload or Annex B OBU wrapper cannot
+/// be serialized. (Both are unreachable for the fixed canonical body.)
 pub fn encode_minimal_intra_sequence_header_obu() -> Result<Vec<u8>, MinimalIntraSequenceHeaderError>
 {
     let payload = minimal_intra_sequence_header_payload()?;
@@ -613,6 +642,11 @@ pub enum MinimalIntraIvfError {
 /// valid IVF whose OBUs and headers are consistent. It is **not** yet a hash-exact match to
 /// the committed conformance vector — `tile_data` is a caller input, so a complete
 /// spec-conformant coded tile (and thus a decode-hash match) is a later brick.
+///
+/// # Errors
+/// Returns a [`MinimalIntraIvfError`] if any of the three OBUs cannot be assembled (e.g. an
+/// empty `tile_data` rejected by the inner frame assembler) or the IVF container cannot be
+/// written.
 pub fn encode_minimal_intra_clk_ivf(tile_data: &[u8]) -> Result<Vec<u8>, MinimalIntraIvfError> {
     encode_minimal_intra_clk_ivf_impl(FROZEN_TIER_BASE_Q_IDX, tile_data)
 }
@@ -626,6 +660,11 @@ pub fn encode_minimal_intra_clk_ivf(tile_data: &[u8]) -> Result<Vec<u8>, Minimal
 ///
 /// This pairs with a coded `tile_data` whose symbols match `base_q_idx`'s q-context to emit a
 /// decodable stream; the cross-crate decode oracle that proves it is a later brick.
+///
+/// # Errors
+/// Returns a [`MinimalIntraIvfError`] if any of the three OBUs cannot be assembled — including
+/// a `base_q_idx == 0` rejected as [`MinimalIntraCoreError::LosslessBaseQIdx`] or an empty
+/// `tile_data` — or the IVF container cannot be written.
 pub fn encode_minimal_intra_clk_ivf_with_base_q_idx(
     base_q_idx: u8,
     tile_data: &[u8],
@@ -643,6 +682,11 @@ pub fn encode_minimal_intra_clk_ivf_with_base_q_idx(
 ///
 /// `base_q_idx <= 90` selects coefficient CDF q-context 0, matching a `tile_data` coded at that
 /// q-context. `base_q_idx` must be nonzero. `tile_data` is the § 8.2 coded tile bytes (`>= 1`).
+///
+/// # Errors
+/// Returns a [`MinimalIntraIvfError`] if the temporal-delimiter, sequence-header, or frame OBU
+/// cannot be assembled — including a `base_q_idx == 0` rejected as
+/// [`MinimalIntraCoreError::LosslessBaseQIdx`] or an empty `tile_data`.
 pub fn encode_minimal_intra_clk_temporal_unit_with_base_q_idx(
     base_q_idx: u8,
     tile_data: &[u8],

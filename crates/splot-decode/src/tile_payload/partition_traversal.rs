@@ -84,6 +84,8 @@ pub(crate) const TILE_PARTITION_TRAVERSAL_FEATURE_ID: &str =
     "DECODE-TILE-PARTITION-TRAVERSAL-BOUNDARY";
 
 /// AV2 partition-context state read by the traversal frontier.
+// `*mi_sizes` names mirror the AV2 MiSizes/LeftMiSizes/AboveMiSizes context arrays; the suffix preserves that mapping.
+#[allow(clippy::struct_field_names)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TilePartitionContextState<'a> {
     mi_sizes: [&'a [&'a [usize]]; 2],
@@ -173,7 +175,8 @@ pub(crate) struct TilePartitionFrameFacts {
 
 impl TilePartitionFrameFacts {
     /// Creates checked frame facts for the traversal frontier.
-    #[allow(clippy::too_many_arguments)]
+    // Each bool is a distinct AV2 frame-level syntax flag; bundling them would obscure the spec mapping.
+    #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
     pub(crate) fn new(
         mi_rows: usize,
         mi_cols: usize,
@@ -284,6 +287,8 @@ impl TilePartitionCall {
 }
 
 /// AV2 tile-local MI bounds used by § 5.20.9.1 `is_inside`.
+// `mi_*` fields mirror the AV2 MiRowStart/MiRowEnd/MiColStart/MiColEnd tile bounds; the prefix preserves that mapping.
+#[allow(clippy::struct_field_names)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct TilePartitionBounds {
     mi_row_start: usize,
@@ -413,7 +418,7 @@ impl GeneralIntraLeafMode {
     /// carried a luma mode (`None` for an SDP chroma-only or inter leaf). The
     /// ac0ej3 reconstruction bridge reads it to gate the verified DC_PRED subset.
     #[must_use]
-    pub(crate) const fn luma_y_mode(&self) -> Option<IntraYMode> {
+    pub(crate) const fn luma_y_mode(self) -> Option<IntraYMode> {
         self.y_mode
     }
 }
@@ -1296,6 +1301,10 @@ where
     Ok(symbols)
 }
 
+// Fail-closed partition-call gate invoked with `?` at every traversal step: the `Result`
+// is the designated rejection point for unsupported calls (the `frame`/`call` args feed the
+// future check), so the wrapper is intentional even though the body cannot error yet.
+#[allow(clippy::unnecessary_wraps)]
 fn ensure_supported_call(
     _frame: TilePartitionFrameFacts,
     _call: TilePartitionCall,
@@ -2300,7 +2309,7 @@ fn child_calls(
                 call.tree_type,
             ))?;
         }
-    };
+    }
     for child in &mut children.calls[..children.len] {
         child.cfl_allowed_in_sdp = call.cfl_allowed_in_sdp;
     }

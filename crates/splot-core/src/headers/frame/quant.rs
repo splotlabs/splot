@@ -1241,7 +1241,7 @@ mod tests {
         // qindex = Clip3(0, 255, 100 - 100) = 0, but delta_q_present == 1 fails
         // the § 5.18.2 formula.
         let mut segmentation = seg_params(true);
-        for segment in segmentation.features.iter_mut() {
+        for segment in &mut segmentation.features {
             segment[SEG_LVL_ALT_Q] = SegmentFeature {
                 enabled: true,
                 data: -100,

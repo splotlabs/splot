@@ -111,9 +111,11 @@ fn require_fixture() -> PathBuf {
     let Some(path) = local_ac0ej3_path() else {
         panic!("set SPLOT_AC0EJ3_IVF or HOME for the ignored local ac0ej3 reconstruction test");
     };
-    if !path.is_file() {
-        panic!("local ac0ej3 fixture not found at {}", path.display());
-    }
+    assert!(
+        path.is_file(),
+        "local ac0ej3 fixture not found at {}",
+        path.display()
+    );
     path
 }
 

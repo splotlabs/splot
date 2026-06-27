@@ -6,6 +6,7 @@
 //! `xtask` is standalone automation: it depends on no `splot-*` crate.
 
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -261,7 +262,13 @@ fn main() -> Result<()> {
             category,
             kind,
             output,
-        } => feature_status::run_feature_status(&workspace_root()?, format, category, kind, output),
+        } => feature_status::run_feature_status(
+            &workspace_root()?,
+            format,
+            category.as_deref(),
+            kind.as_deref(),
+            output,
+        ),
         Task::CheckFeatureStatus => feature_status::run_check_feature_status(&workspace_root()?),
         Task::SpecCoverage { format, output } => {
             feature_status::run_spec_coverage(&workspace_root()?, format, output)
@@ -305,7 +312,7 @@ fn main() -> Result<()> {
             outcome,
         } => audit_scope::run_audit_scope(
             &workspace_root()?,
-            AuditScopeOptions {
+            &AuditScopeOptions {
                 base,
                 ledger,
                 write_ledger,
@@ -402,10 +409,11 @@ fn run_cargo_with_env(envs: &[(&str, &str)], args: &[&str]) -> Result<()> {
     // copy-pasting the displayed line. Values are single-quoted: an unquoted
     // space (e.g. `RUSTDOCFLAGS=-D warnings`) would bind the assignment to a
     // command named `warnings` in a POSIX shell.
-    let env_prefix: String = envs
-        .iter()
-        .map(|(key, value)| format!("{key}='{value}' "))
-        .collect();
+    let env_prefix: String = envs.iter().fold(String::new(), |mut out, (key, value)| {
+        // Writing to a `String` is infallible, so the `fmt::Result` is discarded.
+        let _ = write!(out, "{key}='{value}' ");
+        out
+    });
     let display = format!("{env_prefix}{cargo} {}", args.join(" "));
     eprintln!("> {display}");
     let status = Command::new(&cargo)
@@ -436,8 +444,7 @@ fn tool_available_with_args(bin: &str, args: &[&str]) -> bool {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
+        .is_ok_and(|status| status.success())
 }
 
 /// Runs an optional external check. If `probe` is not installed, prints an
@@ -497,8 +504,7 @@ fn nightly_available() -> bool {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
+        .is_ok_and(|status| status.success())
 }
 
 /// Generates a local HTML coverage report and enforces the `splot-validate`

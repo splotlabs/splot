@@ -167,7 +167,7 @@ pub fn run_tile_payload_decode_fuzz_case(data: &[u8]) -> TilePayloadFuzzOutcome 
         limits,
     );
 
-    let mut plan = match plan_tile_payload_boundary(input) {
+    let mut plan = match plan_tile_payload_boundary(&input) {
         Ok(plan) => plan,
         Err(error) => {
             let _ = error.to_string();

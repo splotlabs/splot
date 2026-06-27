@@ -257,6 +257,7 @@ impl<T: ReconSample> SharedFrame<T> {
     ///
     /// This is the explicit, review-visible sharing operation (an `Arc::clone`);
     /// `SharedFrame` deliberately does not implement `Clone`.
+    #[must_use]
     pub fn share(&self) -> Self {
         Self {
             inner: Arc::clone(&self.inner),

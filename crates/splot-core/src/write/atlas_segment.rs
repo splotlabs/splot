@@ -153,7 +153,7 @@ pub fn write_atlas_segment(writer: &mut BitWriter, atlas: &AtlasSegment) -> Writ
     match &atlas.mode_info {
         AtlasModeInfo::Enhanced(info) => write_enhanced_atlas_info(&mut scratch, info)?,
         AtlasModeInfo::Basic(info) => write_basic_info(&mut scratch, info)?,
-        AtlasModeInfo::Single(info) => write_single_info(&mut scratch, info)?,
+        AtlasModeInfo::Single(info) => write_single_info(&mut scratch, *info)?,
         AtlasModeInfo::Multistream(info) => write_multistream_info(&mut scratch, info, false)?,
         AtlasModeInfo::MultistreamAlpha(info) => write_multistream_info(&mut scratch, info, true)?,
     }
@@ -202,7 +202,7 @@ fn derive_num_segments(info: &AtlasModeInfo) -> WriteResult<u32> {
 }
 
 /// Writes the `SINGLE_ATLAS` nominal dimensions (AV2 v1.0.0 § 5.9).
-fn write_single_info(scratch: &mut BitWriter, info: &AtlasSingleInfo) -> WriteResult<()> {
+fn write_single_info(scratch: &mut BitWriter, info: AtlasSingleInfo) -> WriteResult<()> {
     scratch.write_uvlc(info.nominal_width_minus_1)?;
     scratch.write_uvlc(info.nominal_height_minus_1)
 }

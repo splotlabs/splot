@@ -215,6 +215,9 @@ fn coeffs_for_sample<'a>(
     &params.coeffs_by_class[subclass]
 }
 
+// `c`/`r`/`x`/`y`/`m`/`s` mirror the AV2 § 7.17.4 WienerNS notation (column, row,
+// sample coordinates, center sample, filter accumulator).
+#[allow(clippy::many_single_char_names)]
 fn filter_sample<T, F>(
     coeffs: &[i16; WIENER_NS_LUMA_COEFFS],
     c: usize,

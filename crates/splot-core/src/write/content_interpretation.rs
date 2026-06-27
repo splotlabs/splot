@@ -121,7 +121,7 @@ pub fn write_content_interpretation(
         write_chroma_sample_position(
             &mut scratch,
             ci.scan_type_idc.is_progressive_frame(),
-            chroma,
+            *chroma,
         )?;
     }
     if let Some(aspect) = &ci.aspect_ratio {
@@ -167,7 +167,7 @@ fn write_color_description(scratch: &mut BitWriter, color: &ColorDescription) ->
 fn write_chroma_sample_position(
     scratch: &mut BitWriter,
     is_progressive_frame: bool,
-    chroma: &ChromaSamplePosition,
+    chroma: ChromaSamplePosition,
 ) -> WriteResult<()> {
     scratch.write_uvlc(chroma.top)?;
     if is_progressive_frame {

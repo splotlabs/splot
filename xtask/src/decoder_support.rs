@@ -115,7 +115,8 @@ pub(crate) fn run_check_decoder_support(root: &Path) -> Result<()> {
 
 #[derive(Debug, Deserialize)]
 struct Matrix {
-    matrix_version: Option<u32>,
+    #[serde(rename = "matrix_version")]
+    version: Option<u32>,
     #[serde(default)]
     last_reviewed: Option<String>,
     #[serde(default)]
@@ -179,7 +180,7 @@ fn parse_matrix(text: &str) -> Result<Matrix> {
 fn validate_matrix(matrix: Matrix) -> Result<CheckedMatrix> {
     let mut problems = Vec::new();
 
-    let version = match matrix.matrix_version {
+    let version = match matrix.version {
         Some(SUPPORTED_MATRIX_VERSION) => SUPPORTED_MATRIX_VERSION,
         Some(other) => {
             problems.push(format!(
@@ -426,12 +427,11 @@ fn required_string_allow_empty(
     field: &str,
     value: Option<String>,
 ) -> Option<String> {
-    match value {
-        Some(value) => Some(value),
-        None => {
-            problems.push(format!("{label}: missing required field `{field}`"));
-            None
-        }
+    if let Some(value) = value {
+        Some(value)
+    } else {
+        problems.push(format!("{label}: missing required field `{field}`"));
+        None
     }
 }
 
@@ -441,12 +441,11 @@ fn required_string_list(
     field: &str,
     value: Option<Vec<String>>,
 ) -> Option<Vec<String>> {
-    match value {
-        Some(values) => Some(validate_string_list(problems, label, field, values)),
-        None => {
-            problems.push(format!("{label}: missing required field `{field}`"));
-            None
-        }
+    if let Some(values) = value {
+        Some(validate_string_list(problems, label, field, values))
+    } else {
+        problems.push(format!("{label}: missing required field `{field}`"));
+        None
     }
 }
 

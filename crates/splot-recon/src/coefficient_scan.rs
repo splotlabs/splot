@@ -48,6 +48,9 @@ pub enum TransformClass {
 /// # Errors
 /// Returns [`ReconError::InvalidScanShape`] if `w` / `h` are not each 4/8/16/32,
 /// and [`ReconError::ScanLengthMismatch`] if `out` is not exactly `w * h` long.
+// `w`/`h`/`x`/`y`/`c` mirror the AV2 § 8.3.1.2 scan-order pseudocode notation
+// (block width/height, sample coordinates, scan-position counter).
+#[allow(clippy::many_single_char_names)]
 pub fn coefficient_scan_order(
     w: usize,
     h: usize,

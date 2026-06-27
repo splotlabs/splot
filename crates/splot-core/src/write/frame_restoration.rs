@@ -85,7 +85,7 @@ pub fn write_lr_params(
 ) -> WriteResult<()> {
     // base_q_idx feeds get_filter_set_index (a SubclassLookup derivation only); no bits.
     let _ = base_q_idx;
-    let plan = check_lr_encodable(params, coded_lossless, num_planes, view, geometry)?;
+    let plan = check_lr_encodable(params, coded_lossless, num_planes, *view, geometry)?;
 
     if plan.disabled {
         // § 5.18.7.11: if ( CodedLossless || !enable_restoration ) no bits.
@@ -95,7 +95,7 @@ pub fn write_lr_params(
     // § 5.18.7.11: for ( plane = 0; plane < NumPlanes; plane++ ).
     for (plane, plane_params) in params.planes.iter().enumerate() {
         let is_chroma = plane > 0;
-        let (index_to_tool, _tools_count, n) = lr_plane_tool_table(view, is_chroma);
+        let (index_to_tool, _tools_count, n) = lr_plane_tool_table(*view, is_chroma);
         // tool_index ns(n): the position in indexToTool whose value is this plane's tool id
         // (validated present up front).
         let tool = plane_params.restoration_type.to_tool();
@@ -151,7 +151,7 @@ fn check_lr_encodable(
     params: &LrParams,
     coded_lossless: bool,
     num_planes: u8,
-    view: &CoreSeqRestorationView,
+    view: CoreSeqRestorationView,
     geometry: LrGeometry,
 ) -> WriteResult<LrPlan> {
     // Hard residual (§ 5.18.7.11 / § 5.20.10.6): the parser can carry a completed
@@ -398,7 +398,7 @@ pub fn write_ccso_params(
     num_planes: u8,
     view: &CoreSeqCcsoView,
 ) -> WriteResult<()> {
-    check_ccso_encodable(params, coded_lossless, num_planes, view)?;
+    check_ccso_encodable(params, coded_lossless, num_planes, *view)?;
 
     if coded_lossless || !view.enable_ccso {
         // § 5.18.7.12: if ( CodedLossless || !enable_ccso ) no bits.
@@ -481,7 +481,7 @@ fn check_ccso_encodable(
     params: &CcsoParams,
     coded_lossless: bool,
     num_planes: u8,
-    view: &CoreSeqCcsoView,
+    view: CoreSeqCcsoView,
 ) -> WriteResult<()> {
     if coded_lossless || !view.enable_ccso {
         // § 5.18.7.12: the disabled arm leaves ccso_frame_flag None and no planes.

@@ -95,7 +95,7 @@ fn derive_tile_payload_plan<'a>(
 ) -> Result<DecodeTilePayloadPlan<'a>, FrameCandidateTileBoundaryError> {
     let stream_plan = ctx.plan_bytes(bytes, DecodeOptions::default()).unwrap();
     let candidate = stream_plan.frame_candidates().next().unwrap();
-    ctx.plan_derived_tile_payload_boundary(FrameCandidateTileBoundaryInput::new(
+    ctx.plan_derived_tile_payload_boundary(&FrameCandidateTileBoundaryInput::new(
         &stream_plan,
         candidate,
         bytes,
@@ -331,7 +331,7 @@ fn derived_boundary_rejects_candidate_envelope_mismatch_before_slicing() {
     envelope.size = envelope.size.saturating_add(1);
 
     let error = ctx
-        .plan_derived_tile_payload_boundary(FrameCandidateTileBoundaryInput::new(
+        .plan_derived_tile_payload_boundary(&FrameCandidateTileBoundaryInput::new(
             &stream_plan,
             candidate,
             &bytes,
@@ -362,7 +362,7 @@ fn derived_boundary_rejects_envelope_payload_from_different_input_buffer() {
     let envelope = annex_b_envelope(&forged_bytes);
 
     let error = ctx
-        .plan_derived_tile_payload_boundary(FrameCandidateTileBoundaryInput::new(
+        .plan_derived_tile_payload_boundary(&FrameCandidateTileBoundaryInput::new(
             &stream_plan,
             candidate,
             &bytes,

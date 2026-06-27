@@ -186,7 +186,7 @@ fn metadata_timecode_n_frames_rap_resent_identical_ci_repairs() {
     assert!(
         report.errors().any(|d| {
             d.rule_id == "metadata/timecode-n-frames-exceeds-rate"
-                && d.byte_offset.map(|o| o.get()) == Some(timecode_offset)
+                && d.byte_offset.map(splot_core::span::ByteOffset::get) == Some(timecode_offset)
         }),
         "the post-RAP re-sent CI must re-pair the RAP-temporal-unit timecode even \
          though its timing equals the pre-RAP copy's; report was: {report}"
@@ -408,7 +408,7 @@ fn metadata_timecode_n_frames_olk_rap_resent_identical_ci_repairs() {
     assert!(
         report.errors().any(|d| {
             d.rule_id == "metadata/timecode-n-frames-exceeds-rate"
-                && d.byte_offset.map(|o| o.get()) == Some(timecode_offset)
+                && d.byte_offset.map(splot_core::span::ByteOffset::get) == Some(timecode_offset)
         }),
         "the post-OLK re-sent CI must re-pair the RAP-temporal-unit timecode even \
          though its timing equals the pre-RAP copy's; report was: {report}"
@@ -687,6 +687,9 @@ fn metadata_timecode_inference_chain_global_layer_values_survives_other_layer_cl
 
 #[test]
 fn metadata_timecode_inference_keyed_per_targeted_embedded_layer() {
+    // LAYER_CURRENT (muh_layer_idc 2) short-form first byte: is_suffix 0,
+    // muh_layer_idc 2 (f(3)), cancel 0, persistence 0 -> 0b0_010_0_000 = 0x20.
+    const LAYER_CURRENT_FIRST: u8 = 0x20;
     // Cycle-3 finding 3 (inference keyed per targeted (xlayer, mlayer), not just
     // obu_xlayer_id). A full-timestamp LAYER_CURRENT timecode on (xlayer 0,
     // mlayer 0) carries every field. A following LAYER_CURRENT timecode on (xlayer
@@ -698,9 +701,6 @@ fn metadata_timecode_inference_keyed_per_targeted_embedded_layer() {
     // and the diagnostic was suppressed.
     let mut data = temporal_delimiter_obu();
     data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1)));
-    // LAYER_CURRENT (muh_layer_idc 2) short-form first byte: is_suffix 0,
-    // muh_layer_idc 2 (f(3)), cancel 0, persistence 0 -> 0b0_010_0_000 = 0x20.
-    const LAYER_CURRENT_FIRST: u8 = 0x20;
     // (xlayer 0, mlayer 0): full-timestamp, all fields present.
     data.extend(annex_b_obu_with_header(
         &layer_obu_header(8, 0, 0, 0),

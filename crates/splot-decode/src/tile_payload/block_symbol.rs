@@ -513,10 +513,7 @@ mod tests {
     const BLOCK_256X256: usize = 18;
     const PAYLOAD: [u8; 2] = [0x12, 0xFB];
 
-    fn make_work_unit<'payload>(
-        payload: &'payload [u8],
-        update_mode: CdfUpdateMode,
-    ) -> DecodeTileWorkUnit<'payload> {
+    fn make_work_unit(payload: &[u8], update_mode: CdfUpdateMode) -> DecodeTileWorkUnit<'_> {
         DecodeTileWorkUnit {
             source: TilePayloadSource::new(
                 DecodeObuSourceKind::AnnexB,
