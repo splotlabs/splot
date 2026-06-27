@@ -333,6 +333,7 @@ pub(crate) enum GeneralIntraResidualError {
     #[error("general intra luma reconstruction failed: {source}")]
     Reconstruct {
         /// Source reconstruction error.
+        #[from]
         source: ReconError,
     },
     /// A § 7.13.2.8 middle-angle directional block hit the `haveLeft && haveAbove`
