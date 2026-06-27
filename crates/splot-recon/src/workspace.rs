@@ -262,8 +262,8 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
         if source.size() != target.size() {
             return Err(ReconError::WorkspaceCopyShapeMismatch {
                 plane,
-                source,
-                target,
+                source_rect: source,
+                target_rect: target,
             });
         }
 
