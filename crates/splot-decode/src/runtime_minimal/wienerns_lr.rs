@@ -783,7 +783,7 @@ fn derive_wienerns_lr_fixed_largest_transform_record_handoff(
         sequence,
         core,
         limits,
-        |work_unit, symbols, frontier, joint_modes, uses_mrls, fsc_modes, _block_decoded| {
+        |work_unit, symbols, frontier, joint_modes, uses_mrls, fsc_modes, is_cfl_ctx, _block_decoded| {
             let n4w = frontier
                 .b_size
                 .num_4x4_wide()
@@ -811,6 +811,7 @@ fn derive_wienerns_lr_fixed_largest_transform_record_handoff(
                 joint_modes,
                 uses_mrls,
                 fsc_modes,
+                is_cfl_ctx.get(),
                 frontier.b_size.index(),
                 frontier.r,
                 frontier.c,
@@ -917,7 +918,8 @@ fn derive_wienerns_lr_fixed_largest_transform_record_handoff(
                 modes.y_mode,
                 modes.fsc_mode,
                 modes.uses_mrls,
-            ))
+            )
+            .with_uv_cfl(modes.is_cfl()))
         },
     )
     .map_err(|error| {
@@ -1153,6 +1155,15 @@ fn wienerns_lr_transform_record_setup_error(
                 "unsupported_wienerns_lr_live_transform_record_setup_fsc_mode_state",
                 offset,
                 "minimal runtime reached active Wiener NS LR transform-record derivation, but FscModes neighbour state allocation for the partition-tree walk is outside the supported subset",
+                "8.3.2",
+            )
+        }
+        MinimalRuntimePartitionFrontierError::UvCflState(_) => {
+            wienerns_lr_transform_record_unsupported(
+                scope,
+                "unsupported_wienerns_lr_live_transform_record_setup_uv_cfl_state",
+                offset,
+                "minimal runtime reached active Wiener NS LR transform-record derivation, but UVCfls neighbour state allocation for the partition-tree walk is outside the supported subset",
                 "8.3.2",
             )
         }

@@ -156,21 +156,13 @@ impl TileIntraJointModeState {
         n4h: usize,
         joint_mode: u8,
     ) {
-        for y in 0..n4h {
-            let Some(row) = r.checked_add(y) else { break };
-            if row >= self.mi_rows {
-                break;
-            }
-            for x in 0..n4w {
-                let Some(col) = c.checked_add(x) else { break };
-                if col >= self.mi_cols {
-                    break;
-                }
-                if let Some(index) = self.cell_index(row, col) {
-                    self.joint_modes[index] = joint_mode;
-                }
-            }
-        }
+        write_mi_grid_block(
+            &mut self.joint_modes,
+            (self.mi_rows, self.mi_cols),
+            (r, c),
+            (n4w, n4h),
+            joint_mode,
+        );
     }
 
     /// Reads `IntraJointModes[row][col]` when inside the grid.
@@ -181,10 +173,7 @@ impl TileIntraJointModeState {
 
     /// Row-major grid index for (`row`, `col`), or `None` when out of bounds.
     fn cell_index(&self, row: usize, col: usize) -> Option<usize> {
-        if row >= self.mi_rows || col >= self.mi_cols {
-            return None;
-        }
-        row.checked_mul(self.mi_cols)?.checked_add(col)
+        mi_grid_cell_index((self.mi_rows, self.mi_cols), row, col)
     }
 }
 
@@ -298,21 +287,13 @@ impl TileUsesMrlsState {
         n4h: usize,
         uses_mrls: u8,
     ) {
-        for y in 0..n4h {
-            let Some(row) = r.checked_add(y) else { break };
-            if row >= self.mi_rows {
-                break;
-            }
-            for x in 0..n4w {
-                let Some(col) = c.checked_add(x) else { break };
-                if col >= self.mi_cols {
-                    break;
-                }
-                if let Some(index) = self.cell_index(row, col) {
-                    self.uses_mrls[index] = uses_mrls;
-                }
-            }
-        }
+        write_mi_grid_block(
+            &mut self.uses_mrls,
+            (self.mi_rows, self.mi_cols),
+            (r, c),
+            (n4w, n4h),
+            uses_mrls,
+        );
     }
 
     fn add_uses_mrls_neighbor(
@@ -345,10 +326,7 @@ impl TileUsesMrlsState {
     }
 
     fn cell_index(&self, row: usize, col: usize) -> Option<usize> {
-        if row >= self.mi_rows || col >= self.mi_cols {
-            return None;
-        }
-        row.checked_mul(self.mi_cols)?.checked_add(col)
+        mi_grid_cell_index((self.mi_rows, self.mi_cols), row, col)
     }
 }
 
@@ -414,21 +392,13 @@ impl TileFscModeState {
         n4h: usize,
         fsc_mode: u8,
     ) {
-        for y in 0..n4h {
-            let Some(row) = r.checked_add(y) else { break };
-            if row >= self.mi_rows {
-                break;
-            }
-            for x in 0..n4w {
-                let Some(col) = c.checked_add(x) else { break };
-                if col >= self.mi_cols {
-                    break;
-                }
-                if let Some(index) = self.cell_index(row, col) {
-                    self.fsc_modes[index] = fsc_mode;
-                }
-            }
-        }
+        write_mi_grid_block(
+            &mut self.fsc_modes,
+            (self.mi_rows, self.mi_cols),
+            (r, c),
+            (n4w, n4h),
+            fsc_mode,
+        );
     }
 
     fn neighbour_fsc_modes(&self, r: usize, c: usize, n4w: usize, n4h: usize) -> [u8; 2] {
@@ -473,11 +443,194 @@ impl TileFscModeState {
     }
 
     fn cell_index(&self, row: usize, col: usize) -> Option<usize> {
-        if row >= self.mi_rows || col >= self.mi_cols {
-            return None;
-        }
-        row.checked_mul(self.mi_cols)?.checked_add(col)
+        mi_grid_cell_index((self.mi_rows, self.mi_cols), row, col)
     }
+}
+
+/// Row-major flat index of MI cell (`row`, `col`) in a `dims = (mi_rows, mi_cols)`
+/// grid, or `None` when out of bounds. Shared by the tile-local per-MI neighbour
+/// grids.
+fn mi_grid_cell_index(dims: (usize, usize), row: usize, col: usize) -> Option<usize> {
+    let (mi_rows, mi_cols) = dims;
+    if row >= mi_rows || col >= mi_cols {
+        return None;
+    }
+    row.checked_mul(mi_cols)?.checked_add(col)
+}
+
+/// Writes `value` into every in-grid MI cell covered by the `extent = (n4w, n4h)`
+/// block at `pos = (r, c)` in a `dims = (mi_rows, mi_cols)` grid, clipping at the
+/// frame edge. Shared by the tile-local per-MI neighbour grids' `record_block`
+/// writers.
+fn write_mi_grid_block(
+    grid: &mut [u8],
+    dims: (usize, usize),
+    pos: (usize, usize),
+    extent: (usize, usize),
+    value: u8,
+) {
+    let (mi_rows, mi_cols) = dims;
+    let (r, c) = pos;
+    let (n4w, n4h) = extent;
+    for y in 0..n4h {
+        let Some(row) = r.checked_add(y) else { break };
+        if row >= mi_rows {
+            break;
+        }
+        for x in 0..n4w {
+            let Some(col) = c.checked_add(x) else { break };
+            if col >= mi_cols {
+                break;
+            }
+            if let Some(index) = mi_grid_cell_index(dims, row, col) {
+                grid[index] = value;
+            }
+        }
+    }
+}
+
+/// AV2 § 8.3.2 `is_cfl` CDF context (`0..=2`) for a leaf block, derived from the
+/// chroma above/left `UVCfls` neighbours. Passed to the leaf decode so the chroma
+/// `is_cfl` symbol reads `TileIsCflCdf[ctx]` instead of a hardcoded `ctx == 0`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct IsCflContext(usize);
+
+impl IsCflContext {
+    /// Wraps the derived `is_cfl` context value.
+    #[must_use]
+    pub(crate) const fn new(ctx: usize) -> Self {
+        Self(ctx)
+    }
+
+    /// The `TileIsCflCdf[ctx]` index.
+    #[must_use]
+    pub(crate) const fn get(self) -> usize {
+        self.0
+    }
+}
+
+/// Mutable tile-local AV2 § 5.20.5.3 `UVCfls[r][c]` grid.
+///
+/// Each cell stores `!is_inter && (UVMode == UV_CFL_PRED)` for every chroma MI
+/// unit a decoded block covers
+/// (`docs/spec/av2/1.0.0/05-syntax-structures.md` line 10102). AV2 § 8.3.2
+/// derives the `is_cfl` CDF context from the directly-above and directly-left
+/// chroma neighbours:
+///
+/// ```text
+/// ctx = 0
+/// if ( AvailUChroma && UVCfls[ ChromaMiRow - 1 ][ ChromaMiCol ] )   ctx += 1
+/// if ( AvailLChroma && UVCfls[ ChromaMiRow ][ ChromaMiCol - 1 ] )   ctx += 1
+/// ```
+///
+/// (`docs/spec/av2/1.0.0/08-parsing-process.md` line 658). The grid is tile-local
+/// and initialized to `0`, so out-of-tile neighbours contribute `0`, matching the
+/// `AvailUChroma` / `AvailLChroma` `is_inside` gate the caller applies.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct TileUvCflState {
+    mi_rows: usize,
+    mi_cols: usize,
+    /// Row-major `UVCfls` grid (`mi_rows * mi_cols` cells).
+    uv_cfls: Vec<u8>,
+}
+
+impl TileUvCflState {
+    /// Creates a `UVCfls` grid for the given tile MI dimensions, initialized to
+    /// `0` (matching out-of-frame or not-yet-decoded chroma neighbours).
+    pub(crate) fn new(mi_rows: usize, mi_cols: usize) -> Result<Self, TileUvCflStateError> {
+        if mi_rows == 0 || mi_cols == 0 {
+            return Err(TileUvCflStateError::EmptyDimensions { mi_rows, mi_cols });
+        }
+        let cells =
+            mi_rows
+                .checked_mul(mi_cols)
+                .ok_or(TileUvCflStateError::ArithmeticOverflow {
+                    operation: "mi_rows * mi_cols",
+                    left: mi_rows,
+                    right: mi_cols,
+                })?;
+        let mut uv_cfls = Vec::new();
+        uv_cfls
+            .try_reserve_exact(cells)
+            .map_err(|source| TileUvCflStateError::Allocation { source })?;
+        uv_cfls.resize(cells, 0);
+        Ok(Self {
+            mi_rows,
+            mi_cols,
+            uv_cfls,
+        })
+    }
+
+    /// AV2 § 8.3.2 `is_cfl` CDF context for the chroma block at MI position
+    /// (`r`, `c`). `avail_u` / `avail_l` are the caller-computed
+    /// `AvailUChroma` / `AvailLChroma` `is_inside` results; the result is in
+    /// `0..=2`.
+    pub(crate) fn is_cfl_ctx(&self, r: usize, c: usize, avail_u: bool, avail_l: bool) -> usize {
+        let above = avail_u
+            && r.checked_sub(1)
+                .and_then(|row| self.cell(row, c))
+                .is_some_and(|value| value != 0);
+        let left = avail_l
+            && c.checked_sub(1)
+                .and_then(|col| self.cell(r, col))
+                .is_some_and(|value| value != 0);
+        usize::from(above) + usize::from(left)
+    }
+
+    /// Writes the block's `UVCfls` value into every chroma MI cell it covers.
+    pub(crate) fn record_block(
+        &mut self,
+        r: usize,
+        c: usize,
+        n4w: usize,
+        n4h: usize,
+        is_cfl: bool,
+    ) {
+        write_mi_grid_block(
+            &mut self.uv_cfls,
+            (self.mi_rows, self.mi_cols),
+            (r, c),
+            (n4w, n4h),
+            u8::from(is_cfl),
+        );
+    }
+
+    fn cell(&self, row: usize, col: usize) -> Option<u8> {
+        self.cell_index(row, col).map(|index| self.uv_cfls[index])
+    }
+
+    fn cell_index(&self, row: usize, col: usize) -> Option<usize> {
+        mi_grid_cell_index((self.mi_rows, self.mi_cols), row, col)
+    }
+}
+
+/// Error raised while building or sizing the `UVCfls` grid.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum TileUvCflStateError {
+    /// The tile MI dimensions were empty.
+    #[error("intra UVCfls state requires non-empty MI dimensions, got {mi_rows}x{mi_cols}")]
+    EmptyDimensions {
+        /// Tile MI rows.
+        mi_rows: usize,
+        /// Tile MI columns.
+        mi_cols: usize,
+    },
+    /// A dimension product overflowed `usize`.
+    #[error("intra UVCfls state arithmetic overflow in {operation}: {left} * {right}")]
+    ArithmeticOverflow {
+        /// The overflowing operation.
+        operation: &'static str,
+        /// Left operand.
+        left: usize,
+        /// Right operand.
+        right: usize,
+    },
+    /// The grid allocation failed.
+    #[error("intra UVCfls state allocation failed: {source}")]
+    Allocation {
+        /// The underlying reservation error.
+        source: TryReserveError,
+    },
 }
 
 /// Error raised while building or sizing the `FscModes` grid.
@@ -909,5 +1062,72 @@ mod tests {
         assert_eq!(state.y_mode_at(3, 3), Some(IntraYMode::DC_PRED));
         assert_eq!(state.y_mode_at(0, 0), None);
         assert_eq!(state.y_mode_at(4, 4), None);
+    }
+
+    #[test]
+    fn uv_cfl_out_of_frame_neighbours_give_context_zero() {
+        // The tile-origin chroma block: above (MiRow - 1) and left (MiCol - 1)
+        // are out of frame (`AvailUChroma`/`AvailLChroma` false), so § 8.3.2 ctx
+        // is 0 even though the (unavailable) cells are 0 anyway.
+        let state = TileUvCflState::new(16, 16).unwrap();
+        assert_eq!(state.is_cfl_ctx(0, 0, false, false), 0);
+    }
+
+    #[test]
+    fn uv_cfl_non_cfl_neighbour_keeps_context_zero() {
+        // A left chroma neighbour that did NOT use CfL (`UVCfls == 0`) contributes
+        // 0 to the context even when AvailLChroma is true.
+        let mut state = TileUvCflState::new(16, 32).unwrap();
+        state.record_block(0, 0, 16, 16, false);
+        assert_eq!(state.is_cfl_ctx(0, 16, false, true), 0);
+    }
+
+    #[test]
+    fn uv_cfl_left_neighbour_raises_context_to_one() {
+        // The ac0ej3 regression: a CfL left chroma neighbour (`UVCfls == 1`,
+        // AvailLChroma true) raises the § 8.3.2 `is_cfl` ctx to 1, selecting
+        // `TileIsCflCdf[1]` instead of the hardcoded `[0]`.
+        let mut state = TileUvCflState::new(16, 32).unwrap();
+        state.record_block(0, 0, 16, 16, true);
+        assert_eq!(state.is_cfl_ctx(0, 16, false, true), 1);
+    }
+
+    #[test]
+    fn uv_cfl_above_neighbour_raises_context_to_one() {
+        let mut state = TileUvCflState::new(32, 16).unwrap();
+        state.record_block(0, 0, 16, 16, true);
+        assert_eq!(state.is_cfl_ctx(16, 0, true, false), 1);
+    }
+
+    #[test]
+    fn uv_cfl_both_neighbours_raise_context_to_two() {
+        // CfL above AND left chroma neighbours sum to ctx 2.
+        let mut state = TileUvCflState::new(32, 32).unwrap();
+        state.record_block(0, 0, 16, 16, true); // above-left fills above (16, *)
+        state.record_block(16, 0, 16, 16, true); // left of (16, 16)
+        state.record_block(0, 16, 16, 16, true); // above of (16, 16)
+        assert_eq!(state.is_cfl_ctx(16, 16, true, true), 2);
+    }
+
+    #[test]
+    fn uv_cfl_availability_gate_overrides_a_cfl_neighbour() {
+        // Even with a CfL-marked neighbour cell, a false `AvailUChroma` /
+        // `AvailLChroma` (§ 5.20.9.1 `is_inside`) contributes 0.
+        let mut state = TileUvCflState::new(16, 32).unwrap();
+        state.record_block(0, 0, 16, 16, true);
+        assert_eq!(state.is_cfl_ctx(0, 16, false, false), 0);
+    }
+
+    #[test]
+    fn uv_cfl_record_block_clips_to_the_grid_and_rejects_empty_dimensions() {
+        // A block straddling the frame edge writes only its in-frame chroma MIs
+        // without panicking; the in-frame cell still reads back as CfL.
+        let mut state = TileUvCflState::new(4, 4).unwrap();
+        state.record_block(2, 2, 16, 16, true);
+        assert_eq!(state.is_cfl_ctx(3, 3, true, true), 2);
+        assert_eq!(state.is_cfl_ctx(2, 3, false, true), 1);
+        // Empty MI dimensions are rejected on either axis.
+        assert!(TileUvCflState::new(0, 4).is_err());
+        assert!(TileUvCflState::new(4, 0).is_err());
     }
 }
