@@ -201,6 +201,14 @@ pub(in crate::runtime_minimal) fn wienerns_lr_selectable_transform_record_error_
             AC0EJ3_SELECTABLE_TRANSFORM_RECORDS_FEATURE_ID,
             "6.19.7.12",
         ),
+        "unsupported_wienerns_lr_selectable_transform_records_ccso_grid_overflow"
+        | "unsupported_wienerns_lr_selectable_transform_records_ccso_bounds"
+        | "unsupported_wienerns_lr_selectable_transform_records_ccso_symbol_range" => (
+            "minimal runtime reading the per-block § 5.20.10.2 CCSO `ccso_blk` symbol hit an internal CCSO-grid inconsistency (an out-of-bounds CCSO unit origin or an out-of-range decoded symbol); decoded samples, loop-restoration filtering/output, and reference refresh are not applied",
+            AC0EJ3_SELECTABLE_TRANSFORM_RECORDS_MATRIX_ROW,
+            AC0EJ3_SELECTABLE_TRANSFORM_RECORDS_FEATURE_ID,
+            "5.20.10.2",
+        ),
         _ => (
             "minimal runtime consumed active AV2 frame-level Wiener NS LR unit syntax, derived live storage footprints, and reached the TX_MODE_SELECT LrTxSkip transform-record handoff, but a bounded selectable transform-record subcase is still outside the non-FSC intra subset currently wired into live LR storage; decoded samples, FilterClass retention, loop-restoration filtering/output, and reference refresh are not applied",
             AC0EJ3_SELECTABLE_TRANSFORM_RECORDS_MATRIX_ROW,

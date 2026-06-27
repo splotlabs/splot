@@ -1718,7 +1718,7 @@ fn read_luma_shared_mode_info_prelude(
         IntrabcBlockGeometry::from_frontier(frontier, n4w, n4h),
         tile_offset,
     )?;
-    // AV2 § 5.20.7.2 intra_frame_mode_info order: read_gdf, read_cdef, read_ccso,
+    // AV2 § 5.20.5.3 intra_frame_mode_info order: read_gdf, read_cdef, read_ccso,
     // read_delta_qindex (gdf_per_block is off for the admitted subset, so no read_gdf
     // symbol). read_ccso (§ 5.20.10.2) sits between read_cdef and read_delta_qindex.
     cdef_state.read_for_block(work_unit, symbols, core, frontier, n4w, n4h, tile_offset)?;

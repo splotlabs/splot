@@ -170,6 +170,9 @@ impl CcsoState {
 
     /// `CcsoBlks[plane][unit_row][unit_col]` (`0` for out-of-range indices).
     pub(super) fn block_value(&self, plane: usize, unit_row: usize, unit_col: usize) -> u8 {
+        if unit_col >= self.grid_cols {
+            return 0;
+        }
         self.blocks
             .get(plane)
             .and_then(|grid| grid.get(unit_row * self.grid_cols + unit_col))
@@ -187,16 +190,22 @@ impl CcsoState {
         tile_offset: ByteOffset,
     ) -> Result<()> {
         let cols = self.grid_cols;
-        let cell = self
-            .blocks
-            .get_mut(plane)
-            .and_then(|grid| grid.get_mut(unit_row * cols + unit_col))
-            .ok_or_else(|| {
-                wienerns_lr_selectable_transform_record_error_reason(
-                    tile_offset,
-                    "unsupported_wienerns_lr_selectable_transform_records_ccso_bounds",
-                )
-            })?;
+        // Guard the column separately: the flattened `row * cols + col` index would
+        // otherwise alias a later row for an out-of-range column (e.g. `col == cols`
+        // maps to row+1 col 0), silently corrupting a valid cell.
+        let cell = if unit_col >= cols {
+            None
+        } else {
+            self.blocks
+                .get_mut(plane)
+                .and_then(|grid| grid.get_mut(unit_row * cols + unit_col))
+        }
+        .ok_or_else(|| {
+            wienerns_lr_selectable_transform_record_error_reason(
+                tile_offset,
+                "unsupported_wienerns_lr_selectable_transform_records_ccso_bounds",
+            )
+        })?;
         *cell = value;
         Ok(())
     }
@@ -284,6 +293,19 @@ mod tests {
                 .set_block_value(0, state.grid_rows, 0, 1, ByteOffset::new(0))
                 .is_err(),
             "a write past the grid storage must error, not panic"
+        );
+        // An out-of-range column must error too (not silently alias the next row via
+        // the flattened `row * cols + col` index).
+        assert!(
+            state
+                .set_block_value(0, 0, state.grid_cols, 1, ByteOffset::new(0))
+                .is_err(),
+            "a write at unit_col == grid_cols must error, not alias a later row"
+        );
+        assert_eq!(
+            state.block_value(0, 0, state.grid_cols),
+            0,
+            "an out-of-column read saturates to 0"
         );
         assert_eq!(
             state.block_value(0, 99, 99),

@@ -1948,6 +1948,16 @@ impl TileCdfRows {
                 num_log2,
             );
         }
+        for plane in 0..CCSO_PLANES {
+            for ctx in 0..CCSO_CONTEXTS {
+                avg_cdf_row(
+                    &mut self.ccso_blk[plane][ctx],
+                    &tile.ccso_blk[plane][ctx],
+                    tile_num,
+                    num_log2,
+                );
+            }
+        }
         avg_cdf_row(
             &mut self.cdef_index_minus1_with3,
             &tile.cdef_index_minus1_with3,
