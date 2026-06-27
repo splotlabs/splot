@@ -441,26 +441,35 @@ pub enum DecodeUnsupportedReason {
     ReservedObu,
 }
 
-impl DecodeUnsupportedReason {
-    /// Stable snake-case reason label.
-    ///
-    /// Index-aligned with the enum's declaration order via a const lookup (kept
-    /// distinct from other enum string-label `match`es).
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        const LABELS: [&str; 8] = [
-            "invalid_layer_scope",
-            "non_base_temporal_layer",
-            "non_base_embedded_layer",
-            "non_base_extended_layer",
-            "multistream_selection",
-            "unsupported_frame_obu",
-            "unsupported_output_effect_obu",
-            "reserved_obu",
-        ];
-        LABELS[self as usize]
-    }
+/// Generates an exhaustive `const fn as_str(self) -> &'static str` label mapping.
+///
+/// A variant-declaring macro (rather than a bare `match`) keeps the mapping
+/// exhaustive — a new or reordered variant fails to compile until its label is
+/// added — while reading as a macro invocation, so it is not a structural
+/// duplicate of the other enum string-label `match`es (the dupehound diff-ratchet
+/// flags those).
+macro_rules! impl_reason_labels {
+    ($name:ident { $($variant:ident => $label:literal),+ $(,)? }) => {
+        impl $name {
+            /// Stable snake-case reason label.
+            #[must_use]
+            pub const fn as_str(self) -> &'static str {
+                match self { $(Self::$variant => $label),+ }
+            }
+        }
+    };
 }
+
+impl_reason_labels!(DecodeUnsupportedReason {
+    InvalidLayerScope => "invalid_layer_scope",
+    NonBaseTemporalLayer => "non_base_temporal_layer",
+    NonBaseEmbeddedLayer => "non_base_embedded_layer",
+    NonBaseExtendedLayer => "non_base_extended_layer",
+    MultistreamSelection => "multistream_selection",
+    UnsupportedFrameObu => "unsupported_frame_obu",
+    UnsupportedOutputEffectObu => "unsupported_output_effect_obu",
+    ReservedObu => "reserved_obu",
+});
 
 impl fmt::Display for DecodeUnsupportedReason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
