@@ -67,7 +67,7 @@ pub fn write_frame_size(
     default_dims: Option<(u32, u32)>,
 ) -> WriteResult<()> {
     check_frame_size_encodable(
-        size,
+        *size,
         frame_size_override_flag,
         frame_width_bits,
         frame_height_bits,
@@ -85,7 +85,7 @@ pub fn write_frame_size(
 /// Validates a [`FrameSize`] is a model the § 5.18.4.1
 /// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-4-1`) parser could have produced.
 fn check_frame_size_encodable(
-    size: &FrameSize,
+    size: FrameSize,
     frame_size_override_flag: bool,
     frame_width_bits: u32,
     frame_height_bits: u32,

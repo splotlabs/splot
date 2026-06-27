@@ -165,11 +165,7 @@ mod tests {
         PlaneRect::new(x, y, width, height).unwrap()
     }
 
-    fn plane_ref<'a>(
-        samples: &'a [u8],
-        stride_samples: usize,
-        visible: PlaneRect,
-    ) -> PlaneRef<'a, u8> {
+    fn plane_ref(samples: &[u8], stride_samples: usize, visible: PlaneRect) -> PlaneRef<'_, u8> {
         PlaneRef::new(samples, stride_samples, visible).unwrap()
     }
 

@@ -248,7 +248,7 @@ impl TimecodeFieldPresence {
 
     /// Whether the named clock-timestamp field (`"seconds_value"`,
     /// `"minutes_value"`, or `"hours_value"`) carried a present value.
-    pub(super) fn field(&self, name: &str) -> bool {
+    pub(super) fn field(self, name: &str) -> bool {
         match name {
             "seconds_value" => self.seconds,
             "minutes_value" => self.minutes,
@@ -259,7 +259,7 @@ impl TimecodeFieldPresence {
 }
 
 pub(super) fn timecode_ci_in_scope(
-    targeting: &Option<HdrAssociation>,
+    targeting: Option<&HdrAssociation>,
     ci_xlayer: ExtendedLayerId,
     ci_mlayer: EmbeddedLayerId,
 ) -> bool {
@@ -566,7 +566,7 @@ impl ValidatorContext {
         // diagnostic is dropped at the RAP, so the re-pair must still cover it.
         let mut eagerly_emitted = BTreeSet::new();
         for ((ci_xlayer, ci_mlayer), record) in &self.content_interpretations {
-            if !timecode_ci_in_scope(&targeting, *ci_xlayer, *ci_mlayer) {
+            if !timecode_ci_in_scope(targeting.as_ref(), *ci_xlayer, *ci_mlayer) {
                 continue;
             }
             if record.tu_index < self.ci_rap_epoch(*ci_xlayer) {
@@ -670,7 +670,7 @@ impl ValidatorContext {
                             .eagerly_emitted
                             .contains(&(ci_xlayer, ci_mlayer)))
                     && u64::from(observation.n_frames) >= max_pic
-                    && timecode_ci_in_scope(&observation.targeting, ci_xlayer, ci_mlayer)
+                    && timecode_ci_in_scope(observation.targeting.as_ref(), ci_xlayer, ci_mlayer)
             })
             .map(|observation| {
                 (

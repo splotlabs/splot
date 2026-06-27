@@ -277,6 +277,8 @@ impl<'a> ReferencePlaneView<'a> {
     /// Builds a reference-plane view over a row-major `width * height` sample
     /// buffer.
     ///
+    /// # Errors
+    ///
     /// Returns [`ReconError::SubpelReferencePlaneMismatch`] when `samples.len()`
     /// is not exactly `width * height`, or [`ReconError::ZeroDimension`] when a
     /// dimension is zero.
@@ -373,6 +375,8 @@ const MAX_BLOCK_DIM: usize = 128;
 /// `(p >> 6) & SUBPEL_MASK`. Reference reads are clipped to
 /// `[firstX, lastX] x [firstY, lastY]` (the reference-border extension).
 ///
+/// # Errors
+///
 /// Returns [`ReconError::ZeroDimension`] for a zero dimension,
 /// [`ReconError::SubpelBlockDimensionUnsupported`] for `w`/`h` above the
 /// 128-sample super-block side, [`ReconError::SubpelNegativeStep`] for a negative
@@ -399,6 +403,12 @@ pub fn subpel_predict_block(
 /// COMPOUND_AVERAGE / CWP_EQUAL blocks. Keeping it unclipped is intentional:
 /// § 7.13.3.18 only clips the single-reference write path; compound predictors
 /// are clipped after the § 7.13.3.16 blend.
+///
+/// # Errors
+///
+/// Returns the same errors as [`subpel_predict_block`]:
+/// [`ReconError::ZeroDimension`], [`ReconError::SubpelBlockDimensionUnsupported`],
+/// [`ReconError::SubpelNegativeStep`], and [`ReconError::ArithmeticOverflow`].
 pub fn subpel_predict_block_compound_intermediate(
     reference: &ReferencePlaneView<'_>,
     params: &SubpelPredictParams,
@@ -414,6 +424,11 @@ pub fn subpel_predict_block_compound_intermediate(
 /// `InterPostRound == 4`; the equal-weight formula
 /// `Round2(8 * p0 + 8 * p1, 4 + InterPostRound)` simplifies exactly to
 /// `Round2(p0 + p1, 1 + InterPostRound)`.
+///
+/// # Errors
+///
+/// Returns [`ReconError::CompoundBlendLengthMismatch`] when `pred0` and `pred1`
+/// have different lengths.
 pub fn blend_compound_average_equal(
     pred0: &[i32],
     pred1: &[i32],

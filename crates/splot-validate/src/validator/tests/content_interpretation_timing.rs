@@ -391,6 +391,7 @@ fn ci_first_celu_presence_judgment_resets_at_new_cvs() {
 
 #[test]
 fn ci_in_later_celu_under_external_hls_is_silent() {
+    use crate::options::{ExternalHlsMode, ExternalHlsSet};
     // Round-6 F3 drop: under an external-HLS Provided mode an external CI in the first CELU
     // cannot be enumerated by ExternalHlsSet (it expresses only sequence headers and
     // operating point sets), so the presence judgment drops. The same stream as
@@ -403,7 +404,6 @@ fn ci_in_later_celu_under_external_hls_is_silent() {
     data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1)));
     data.extend(content_interpretation_obu(0, 0, Some(BASE_TIMING)));
     data.extend(frame_obu_direct_seq_ref(0x1C, 0));
-    use crate::options::{ExternalHlsMode, ExternalHlsSet};
     let options = ValidationOptions {
         external_hls: ExternalHlsMode::Provided(ExternalHlsSet::new()),
     };

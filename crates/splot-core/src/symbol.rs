@@ -557,10 +557,8 @@ pub(crate) fn floor_log2(value: u32) -> u32 {
 pub(crate) fn update_cdf(cdf: &mut [i32], shape: CdfShape, symbol: usize) {
     let time_interval = if shape.count > 31 {
         2usize
-    } else if shape.count > 15 {
-        1usize
     } else {
-        0usize
+        usize::from(shape.count > 15)
     };
     let rate = 3
         + time_interval as i32

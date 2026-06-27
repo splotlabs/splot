@@ -376,16 +376,13 @@ pub(super) fn decode_minimal_inter_frame(
             &core,
             options,
         )?;
-        let tile = match tile_plan.work_units_mut() {
-            [tile] => tile,
-            _ => {
-                return Err(unsupported_at(
-                    "inter_unexpected_tile_work_units",
-                    offset,
-                    "minimal inter decode requires exactly one tile work unit",
-                    SPEC_HEADER,
-                ));
-            }
+        let [tile] = tile_plan.work_units_mut() else {
+            return Err(unsupported_at(
+                "inter_unexpected_tile_work_units",
+                offset,
+                "minimal inter decode requires exactly one tile work unit",
+                SPEC_HEADER,
+            ));
         };
         tile.tile_size()
     };
@@ -887,7 +884,7 @@ pub(super) struct InterReferenceState<'a> {
     pub(super) ref_adapted: Vec<bool>,
 }
 
-impl<'a> InterReferenceState<'a> {
+impl InterReferenceState<'_> {
     /// Returns the decoded reference frame stored in `slot`, if any.
     fn frame_for_slot(&self, slot: u32) -> Option<&DecodedFrame<u8>> {
         let slot = ReferenceSlot::new(slot as usize).ok()?;

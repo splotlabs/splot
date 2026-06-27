@@ -530,6 +530,10 @@ impl ValidatorContext {
     /// disagreeing profile). The Table A.3 "Number of Layers" (sum of embedded counts across
     /// singlestreams) bound is not tracked and stays a named residual.
     #[allow(clippy::too_many_arguments)]
+    // Leaf member of the `&self` Annex A IOP emit-method family (siblings dispatch via
+    // `self.emit_*`); the uniform receiver keeps the family consistent and lets a future
+    // emitter read context state without a signature churn.
+    #[allow(clippy::unused_self)]
     pub(super) fn emit_iop_layer_budget(
         &self,
         iop: InteroperabilityPoint,
@@ -685,6 +689,10 @@ impl ValidatorContext {
     /// materialize as distinct extended layers — is the declared-vs-observed reconciliation
     /// owned by the § 6.6 sub-stream change, not this presence window. The id stays emitted
     /// (and registered) so a future declared-vs-observed model can reach it.
+    // Leaf member of the `&self` Annex A IOP emit-method family (siblings dispatch via
+    // `self.emit_*`); the uniform receiver keeps the family consistent and lets a future
+    // emitter read context state without a signature churn.
+    #[allow(clippy::unused_self)]
     pub(super) fn emit_msdo_prohibited(
         &self,
         window: &AnnexAIopWindow,
@@ -705,6 +713,10 @@ impl ValidatorContext {
 
     /// Emits `annex-a/lcr-required-for-iop` for the IOP1 `!E && M` "Required (Local)" row
     /// (mirror line 191) when no local LCR is present in the window.
+    // Leaf member of the `&self` Annex A IOP emit-method family (siblings dispatch via
+    // `self.emit_*`); the uniform receiver keeps the family consistent and lets a future
+    // emitter read context state without a signature churn.
+    #[allow(clippy::unused_self)]
     pub(super) fn emit_iop1_local_lcr_required(
         &self,
         window: &AnnexAIopWindow,

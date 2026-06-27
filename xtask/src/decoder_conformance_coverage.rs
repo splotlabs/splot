@@ -1367,13 +1367,13 @@ mod tests {
                 ids.entry(*id).or_insert(*feature_id);
             }
         }
-        ids.into_iter()
-            .map(|(id, feature_id)| {
-                format!(
-                    "[[row]]\nid = \"{id}\"\nfeature_id = \"{feature_id}\"\nstatus = \"supported\"\nself_contained_tests = [\"cargo test\"]\nfixtures = []\n\n"
-                )
-            })
-            .collect()
+        ids.into_iter().fold(String::new(), |mut out, (id, feature_id)| {
+            let _ = write!(
+                out,
+                "[[row]]\nid = \"{id}\"\nfeature_id = \"{feature_id}\"\nstatus = \"supported\"\nself_contained_tests = [\"cargo test\"]\nfixtures = []\n\n"
+            );
+            out
+        })
     }
 
     fn implementation_matrix() -> String {
@@ -1381,9 +1381,10 @@ mod tests {
         for row in COVERAGE_ROWS {
             ids.extend(row.feature_ids.iter().copied());
         }
-        ids.into_iter()
-            .map(|id| format!("[[feature]]\nid = \"{id}\"\n\n"))
-            .collect()
+        ids.into_iter().fold(String::new(), |mut out, id| {
+            let _ = write!(out, "[[feature]]\nid = \"{id}\"\n\n");
+            out
+        })
     }
 
     fn diagnostics_doc() -> String {

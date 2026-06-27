@@ -44,13 +44,13 @@ fn quantized_base_tier(sample: i32) -> QuantizedTransformBlock {
         .expect("base-tier qindex must exist for coefficient tokenization test sample")
 }
 
-fn raw_input<'a>(
+fn raw_input(
     plane: PlaneId,
     block: PlaneRect,
     width: usize,
     height: usize,
-    coefficients: &'a [i32],
-) -> CoefficientTokenizationInput<'a> {
+    coefficients: &[i32],
+) -> CoefficientTokenizationInput<'_> {
     CoefficientTokenizationInput {
         plane,
         block,

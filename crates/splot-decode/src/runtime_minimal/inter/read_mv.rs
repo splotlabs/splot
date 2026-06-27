@@ -350,7 +350,7 @@ fn read_ns(symbols: &mut SymbolDecoder<'_>, n: i64, tile_offset: ByteOffset) -> 
     }
     // §4.11.13: w = FloorLog2(n) + 1; m = (1 << w) - n; v = L(w - 1).
     let n_u = u64::try_from(n).map_err(|_| mv_overflow(tile_offset))?;
-    let floor_log2 = 63 - n_u.leading_zeros(); // FloorLog2(n) for n_u >= 1.
+    let floor_log2 = n_u.ilog2(); // FloorLog2(n) for n_u >= 1.
     let w = floor_log2 + 1;
     let v = read_literal(symbols, w - 1, tile_offset)?; // L(w - 1)
     let m = (1u64 << w) - n_u;
@@ -386,7 +386,7 @@ fn read_symbol(
     tile_offset: ByteOffset,
 ) -> Result<u8> {
     cdfs.read_block_symbol_trace(selector, symbols)
-        .map(|symbol| symbol.get())
+        .map(splot_core::symbol::Symbol::get)
         .map_err(|_| mv_symbol_error(tile_offset))
 }
 

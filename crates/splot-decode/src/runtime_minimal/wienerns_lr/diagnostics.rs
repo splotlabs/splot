@@ -44,6 +44,8 @@ pub(in crate::runtime_minimal) fn transform_tool_residual_frontier(
     }
 }
 
+// Owned error-to-DecodeError conversion used through `map_err`; by-value ownership matches that consume-and-map design.
+#[allow(clippy::needless_pass_by_value)]
 pub(in crate::runtime_minimal) fn map_wienerns_lr_unit_frontier_error(
     err: MinimalRuntimePartitionFrontierError,
     offset: ByteOffset,

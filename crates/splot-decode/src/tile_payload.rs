@@ -222,7 +222,8 @@ pub(crate) struct TileFrameFacts {
 
 impl TileFrameFacts {
     /// Creates frame facts for tile payload boundary planning.
-    #[allow(clippy::too_many_arguments)]
+    // Each bool is a distinct AV2 frame-level syntax flag; bundling them would obscure the spec mapping.
+    #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
     #[must_use]
     pub(crate) const fn new(
         obu_type: ObuType,
@@ -728,6 +729,8 @@ impl TilePayloadUnsupported {
     }
 
     /// Stable rule id.
+    // `self` receiver mirrors the sibling `matrix_row`/`feature_id` accessors for a uniform API.
+    #[allow(clippy::unused_self)]
     #[must_use]
     pub(crate) const fn rule_id(self) -> &'static str {
         UNSUPPORTED_FEATURE_RULE_ID
@@ -856,7 +859,7 @@ impl fmt::Display for TilePayloadUnsupported {
 
 /// Plans the minimal tile-payload boundary and stops at `decode_tile()`.
 pub(crate) fn plan_tile_payload_boundary<'a>(
-    input: TilePayloadBoundaryInput<'a, '_>,
+    input: &TilePayloadBoundaryInput<'a, '_>,
 ) -> Result<DecodeTilePayloadPlan<'a>, TilePayloadBoundaryError> {
     input.limits.ensure_mul(
         DecodeLimitName::MaxTileCount,

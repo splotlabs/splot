@@ -35,11 +35,11 @@ fn branch_nonzero(branch: CoeffBlockEobBranch) -> Option<NonZeroCoeffBlockStart>
     }
 }
 
-fn setup_start<'a>(
-    payload: &'a [u8],
+fn setup_start(
+    payload: &[u8],
     w4: usize,
     h4: usize,
-) -> Option<(TileCdfSubset, SymbolDecoder<'a>, NonZeroCoeffBlockStart)> {
+) -> Option<(TileCdfSubset, SymbolDecoder<'_>, NonZeroCoeffBlockStart)> {
     let frame = FrameCdfSubset::from_defaults();
     let mut tile = frame.tile_copy();
     let mut symbols = symbol_decoder(payload);

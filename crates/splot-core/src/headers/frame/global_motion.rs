@@ -773,7 +773,7 @@ mod tests {
 
     // ---- § 5.18.9.1 parse_global_motion_params (the inter arm) ----
 
-    fn base_input<'a>(ref_frame_idx: &'a [u32]) -> GlobalMotionInput<'a> {
+    fn base_input(ref_frame_idx: &[u32]) -> GlobalMotionInput<'_> {
         GlobalMotionInput {
             frame_is_intra: false,
             frame_type: FrameType::Inter,

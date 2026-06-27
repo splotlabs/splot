@@ -33,10 +33,7 @@ pub(crate) fn plan_byte_stream(bytes: &[u8], options: DecodeOptions) -> Result<D
     plan_stream(DecodeStreamInput::new(&parsed, input_len_bytes), options)
 }
 
-fn parse_bounded_bitstream<'a>(
-    bytes: &'a [u8],
-    limits: DecodeLimits,
-) -> Result<ParsedBitstream<'a>> {
+fn parse_bounded_bitstream(bytes: &[u8], limits: DecodeLimits) -> Result<ParsedBitstream<'_>> {
     if is_ivf(bytes) {
         return Ok(ParsedBitstream::Ivf(parse_bounded_ivf(bytes, limits)?));
     }
@@ -71,7 +68,7 @@ fn parse_bounded_annex_b_at<'a>(
             limits,
             DecodeLimitName::MaxObus,
             next_obu_count,
-            first_unsupported,
+            first_unsupported.as_ref(),
         )?;
 
         match cursor.next_obu() {
@@ -82,7 +79,7 @@ fn parse_bounded_annex_b_at<'a>(
                         limits,
                         DecodeLimitName::MaxFramesToDecode,
                         next_frame_candidate_count,
-                        first_unsupported,
+                        first_unsupported.as_ref(),
                     )?;
                     *frame_candidate_count = next_frame_candidate_count;
                 }
@@ -112,7 +109,7 @@ fn ensure_or_first_unsupported(
     limits: DecodeLimits,
     name: DecodeLimitName,
     value: u64,
-    first_unsupported: &Option<DecodeUnsupportedStructure>,
+    first_unsupported: Option<&DecodeUnsupportedStructure>,
 ) -> Result<()> {
     match limits.ensure(name, value) {
         Ok(_) => Ok(()),
@@ -141,7 +138,7 @@ fn record_first_unsupported(
     }
 }
 
-fn parse_bounded_ivf<'a>(input: &'a [u8], limits: DecodeLimits) -> Result<ParsedIvfBitstream<'a>> {
+fn parse_bounded_ivf(input: &[u8], limits: DecodeLimits) -> Result<ParsedIvfBitstream<'_>> {
     let header = match parse_ivf_header(input) {
         Ok(header) => header,
         Err(error) => {

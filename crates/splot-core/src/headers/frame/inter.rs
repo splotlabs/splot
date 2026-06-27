@@ -589,15 +589,12 @@ fn parse_inter_reference_region(
         // reference state can resolve it EXACTLY (the at-most-one-valid-reference gate);
         // otherwise stop honestly (the unmodeled scoring inputs are needed). The call reads
         // no bits either way, so the bit position is unchanged.
-        match derive_implicit_ref_map(seq, ctx, reference_state, false, None) {
-            Some(map) => {
-                control.ref_frame_idx = map.ref_frame_idx;
-                map.num_total_refs
-            }
-            None => {
-                control.stop = Some(InterStop::UnmodeledDerivation);
-                return Ok(());
-            }
+        if let Some(map) = derive_implicit_ref_map(seq, ctx, reference_state, false, None) {
+            control.ref_frame_idx = map.ref_frame_idx;
+            map.num_total_refs
+        } else {
+            control.stop = Some(InterStop::UnmodeledDerivation);
+            return Ok(());
         }
     };
     control.num_total_refs = Some(num_total_refs);
@@ -661,19 +658,16 @@ fn parse_inter_reference_region(
         let n_h = seq.frame_height_bits;
         let bridge_w = reader.read_bits(n_w)?.saturating_add(1);
         let bridge_h = reader.read_bits(n_h)?.saturating_add(1);
-        match ctx
+        if let Some((ref_w, ref_h)) = ctx
             .bridge_frame_ref_idx
             .and_then(|idx| ref_dims(reference_state, idx))
         {
-            Some((ref_w, ref_h)) => {
-                control.frame_size = Some(FrameSize::new(bridge_w.min(ref_w), bridge_h.min(ref_h)));
-            }
-            None => {
-                // The Min needs the reference dims; the bits were read, so stopping here
-                // keeps the bit position correct but the size unknown.
-                control.stop = Some(InterStop::PoisonedReferenceState);
-                return Ok(());
-            }
+            control.frame_size = Some(FrameSize::new(bridge_w.min(ref_w), bridge_h.min(ref_h)));
+        } else {
+            // The Min needs the reference dims; the bits were read, so stopping here
+            // keeps the bit position correct but the size unknown.
+            control.stop = Some(InterStop::PoisonedReferenceState);
+            return Ok(());
         }
     } else if frame_size_override_flag && ctx.frame_type != FrameType::Switch {
         // mirror :4637 / § 5.18.4.3: frame_size_with_refs() reads found_ref f(1) per ref
@@ -720,19 +714,18 @@ fn parse_inter_reference_region(
     // re-derivation keeps the model faithful to the spec's two-call sequence rather than
     // assuming it. If the gate stopped above (UnmodeledDerivation) this point is unreachable.
     if !explicit_ref_frame_map && !ctx.is_bridge {
-        match derive_implicit_ref_map(seq, ctx, reference_state, true, control.frame_size) {
-            Some(map) => {
-                num_total_refs = map.num_total_refs;
-                control.num_total_refs = Some(num_total_refs);
-                control.ref_frame_idx = map.ref_frame_idx;
-            }
-            None => {
-                // The second call cannot be modeled though the first was: only possible if the
-                // proven-valid slot count grew, which it cannot between the two no-bit calls.
-                // Stop honestly rather than continue on a stale map.
-                control.stop = Some(InterStop::UnmodeledDerivation);
-                return Ok(());
-            }
+        if let Some(map) =
+            derive_implicit_ref_map(seq, ctx, reference_state, true, control.frame_size)
+        {
+            num_total_refs = map.num_total_refs;
+            control.num_total_refs = Some(num_total_refs);
+            control.ref_frame_idx = map.ref_frame_idx;
+        } else {
+            // The second call cannot be modeled though the first was: only possible if the
+            // proven-valid slot count grew, which it cannot between the two no-bit calls.
+            // Stop honestly rather than continue on a stale map.
+            control.stop = Some(InterStop::UnmodeledDerivation);
+            return Ok(());
         }
     }
 
@@ -1052,8 +1045,7 @@ fn derive_implicit_ref_map(
         let valid = ref_valid.get(i).copied().unwrap_or(false);
         let order_hint = ref_order_hint
             .and_then(|s| s.get(i).copied())
-            .map(|oh| i32::try_from(oh).unwrap_or(i32::MAX))
-            .unwrap_or(0);
+            .map_or(0, |oh| i32::try_from(oh).unwrap_or(i32::MAX));
         // RefOrderHint of 0 from a non-modeled view is fine: the gate's <= 1 valid slot makes
         // the order hint irrelevant to the result. A real RESTRICTED_OH (-1) slot would never
         // be RefValid here (it is appended only in the restricted loop), so map it through.
@@ -1067,7 +1059,7 @@ fn derive_implicit_ref_map(
         slot.base_q_idx = ref_base_q_idx.and_then(|s| s.get(i).copied()).unwrap_or(0);
     }
 
-    let (frame_width, frame_height) = frame_size.map(|fs| (fs.width, fs.height)).unwrap_or((0, 0));
+    let (frame_width, frame_height) = frame_size.map_or((0, 0), |fs| (fs.width, fs.height));
 
     let input = GetRefFramesInput {
         num_ref_frames: seq.num_ref_frames,
@@ -1202,6 +1194,9 @@ mod tests {
     /// consumed count was one short and `disable_cdf_update` stayed `None`, so the shared tail
     /// would have started one bit early.)
     fn reached_shared_tail_consumes_disable_cdf_update(disable_cdf_update_bit: u8) {
+        // Bits consumed up to (not including) disable_cdf_update (derivation documented at the
+        // disable_cdf_update write below).
+        const BITS_BEFORE_DISABLE_CDF_UPDATE: u64 = 30;
         let mut bits = Bits::default();
         bits.bit(1); // signal_primary_ref_frame
         bits.bit(0); // disable_cross_frame_cdf_init (not TIP)
@@ -1225,7 +1220,6 @@ mod tests {
         //   + 3 (num_total_refs) + 3 + 3 (two ref_frame_idx, CeilLog2(8) == 3 each)
         //   + 1 (use_ref_frame_mvs) + 1 (allow_intrabc) + 1 + 1 (mv precision)
         //   + 1 (is_filter_switchable) + 2 (interpolation_filter) = 30.
-        const BITS_BEFORE_DISABLE_CDF_UPDATE: u64 = 30;
         bits.bit(disable_cdf_update_bit); // disable_cdf_update f(1) (mirror :5041)
         let data = bits.into_bytes();
         let mut reader = BitReader::new(&data, ByteOffset::new(0));

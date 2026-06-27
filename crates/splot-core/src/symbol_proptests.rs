@@ -87,9 +87,11 @@ proptest! {
         let mut cdf = row;
         match decoder.read_symbol(&mut cdf) {
             Ok(symbol) => prop_assert!(usize::from(symbol.get()) < cdf.len().saturating_sub(1)),
-            Err(Error::InvalidSymbolCdf { .. })
-            | Err(Error::InvalidSymbolDecoderState { .. })
-            | Err(Error::UnexpectedEof { .. }) => {}
+            Err(
+                Error::InvalidSymbolCdf { .. }
+                | Error::InvalidSymbolDecoderState { .. }
+                | Error::UnexpectedEof { .. },
+            ) => {}
             Err(other) => prop_assert!(false, "unexpected error kind: {other:?}"),
         }
     }

@@ -415,12 +415,12 @@ mod tests {
         .unwrap()
     }
 
-    fn monochrome_frame<'a>(
+    fn monochrome_frame(
         frame_info: DecodedFrameInfo,
-        y: &'a [u8],
+        y: &[u8],
         stride_samples: usize,
         visible_rect: PlaneRect,
-    ) -> FrameRef<'a, u8> {
+    ) -> FrameRef<'_, u8> {
         FrameRef::new(
             frame_info,
             crate::PlaneRef::new(y, stride_samples, visible_rect).unwrap(),
@@ -430,12 +430,12 @@ mod tests {
         .unwrap()
     }
 
-    fn monochrome_frame_u16<'a>(
+    fn monochrome_frame_u16(
         frame_info: DecodedFrameInfo,
-        y: &'a [u16],
+        y: &[u16],
         stride_samples: usize,
         visible_rect: PlaneRect,
-    ) -> FrameRef<'a, u16> {
+    ) -> FrameRef<'_, u16> {
         FrameRef::new(
             frame_info,
             crate::PlaneRef::new(y, stride_samples, visible_rect).unwrap(),

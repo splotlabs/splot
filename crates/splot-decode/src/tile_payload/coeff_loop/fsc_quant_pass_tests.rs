@@ -144,10 +144,10 @@ fn fsc_branch_input(
     })
 }
 
-fn fsc_branch_scan_extent_input<'a>(
-    scan: &'a [u16],
+fn fsc_branch_scan_extent_input(
+    scan: &[u16],
     context: CoeffFscContextCommitConfig,
-) -> CoeffFscBranchSegEobInput<'a> {
+) -> CoeffFscBranchSegEobInput<'_> {
     CoeffFscBranchSegEobInput::NonZero(CoeffFscBranchSegEobNonZeroInput {
         start: nonzero_start_input(),
         scan,
@@ -225,12 +225,12 @@ fn seeded_context_state() -> TileCoeffContextState {
     state
 }
 
-fn setup_level_pass<'a>(
-    payload: &'a [u8],
+fn setup_level_pass(
+    payload: &[u8],
     seg_eob: usize,
 ) -> Option<(
     TileCdfSubset,
-    SymbolDecoder<'a>,
+    SymbolDecoder<'_>,
     FscCoeffScanWalk,
     NonZeroCoeffFscLevelPass,
 )> {
@@ -256,10 +256,10 @@ fn setup_level_pass<'a>(
     Some((tile, symbols, walk, pass))
 }
 
-fn setup_sign_pass<'a>(
-    payload: &'a [u8],
+fn setup_sign_pass(
+    payload: &[u8],
     seg_eob: usize,
-) -> Option<(TileCdfSubset, SymbolDecoder<'a>, NonZeroCoeffFscSignPass)> {
+) -> Option<(TileCdfSubset, SymbolDecoder<'_>, NonZeroCoeffFscSignPass)> {
     let (mut tile, mut symbols, _walk, level_pass) = setup_level_pass(payload, seg_eob)?;
     let sign_pass =
         apply_nonzero_coeff_fsc_sign_pass(&mut tile, &mut symbols, level_pass, &SCAN, config())

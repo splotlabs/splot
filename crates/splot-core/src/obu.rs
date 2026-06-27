@@ -227,11 +227,11 @@ pub struct ObuHeader {
 /// implemented payload has malformed trailing bits, or [`Error::UnexpectedEof`] /
 /// [`Error::InvalidUvlc`] if a frame-carrying OBU's payload ends or is malformed inside
 /// the state-free activation prefix.
-pub fn dispatch_obu_payload<'a>(
+pub fn dispatch_obu_payload(
     header: ObuHeader,
-    payload: &'a [u8],
+    payload: &[u8],
     payload_offset: ByteOffset,
-) -> Result<PayloadStatus<'a, ParsedObu>> {
+) -> Result<PayloadStatus<'_, ParsedObu>> {
     match header.obu_type {
         ObuType::Reserved0 | ObuType::Reserved(_) => Ok(PayloadStatus::Opaque(payload)),
         ObuType::TemporalDelimiter => {

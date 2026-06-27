@@ -698,7 +698,7 @@ mod tests {
         quant: &CoreSeqQuantView,
         quantization: &QuantizationParams,
         qm: &SetupQmParams,
-        delta_q: &DeltaQParams,
+        delta_q: DeltaQParams,
         segmentation: &SegmentationParams,
         max_segments: u8,
     ) {
@@ -709,7 +709,7 @@ mod tests {
             quant,
             quantization,
             qm,
-            delta_q,
+            &delta_q,
             segmentation,
             max_segments,
         )
@@ -722,7 +722,7 @@ mod tests {
             quant,
             quantization,
             qm,
-            delta_q,
+            &delta_q,
             segmentation,
             max_segments,
         )
@@ -734,7 +734,7 @@ mod tests {
             quant,
             quantization,
             qm,
-            delta_q,
+            &delta_q,
             segmentation,
             max_segments,
         )
@@ -754,7 +754,7 @@ mod tests {
             &quant,
             &quant_params(0),
             &qm_disabled(),
-            &no_delta_q(),
+            no_delta_q(),
             &seg_params(false),
             8,
         );
@@ -803,7 +803,7 @@ mod tests {
             &quant,
             &quant_params(40),
             &qm,
-            &no_delta_q(),
+            no_delta_q(),
             &segmentation,
             8,
         );
@@ -836,7 +836,7 @@ mod tests {
             &quant,
             &quant_params(40),
             &qm,
-            &no_delta_q(),
+            no_delta_q(),
             &seg_params(false),
             16,
         );
@@ -854,7 +854,7 @@ mod tests {
             &quant,
             &quant_params(40),
             &qm_disabled(),
-            &no_delta_q(),
+            no_delta_q(),
             &seg_params(false),
             8,
         );
@@ -875,7 +875,7 @@ mod tests {
             &quant,
             &quant_params(40),
             &qm_disabled(),
-            &no_delta_q(),
+            no_delta_q(),
             &seg_params(false),
             8,
         );

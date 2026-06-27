@@ -593,7 +593,7 @@ impl ValidatorContext {
         // intentionally under-reported cross-CMVS advisory to an error). The migration
         // never compares; it only re-scopes, so it cannot itself emit a diagnostic.
         let migrated_epoch = self.cvs.cvs_generation_epoch(xlayer);
-        for (key, baseline) in self.ops_buffer_delay_sums.iter_mut() {
+        for (key, baseline) in &mut self.ops_buffer_delay_sums {
             if key.xlayer == xlayer && baseline.tu_index == tu_index {
                 baseline.scope.cvs_epoch = migrated_epoch;
             }

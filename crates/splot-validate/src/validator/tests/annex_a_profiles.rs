@@ -251,19 +251,19 @@ pub(in crate::validator::tests) fn annex_a_single_tile_increments(
     width: u32,
     height: u32,
 ) -> (u32, u32) {
-    // BLOCK_64X64: sb4x4 = 16, sbShift = 4 (§ 9.3).
-    let sb_cols = (2 * ((width + 7) >> 3) + 15) >> 4;
-    let sb_rows = (2 * ((height + 7) >> 3) + 15) >> 4;
-    // Level 2.0 Main tier: width_sf = 4, area_sf = 4 (tile.rs scaling tables).
-    let max_tile_width_sb = (4 * 4096) >> (4 + 4); // == 64
-    let max_tile_area_sb = (4u32 * 4096 * 2304) >> (2 * (4 + 2) + 2); // == 2304
-    pub(in crate::validator::tests) fn tile_log2(blk: u32, target: u32) -> u32 {
+    fn tile_log2(blk: u32, target: u32) -> u32 {
         let mut k = 0;
         while (blk << k) < target {
             k += 1;
         }
         k
     }
+    // BLOCK_64X64: sb4x4 = 16, sbShift = 4 (§ 9.3).
+    let sb_cols = (2 * ((width + 7) >> 3) + 15) >> 4;
+    let sb_rows = (2 * ((height + 7) >> 3) + 15) >> 4;
+    // Level 2.0 Main tier: width_sf = 4, area_sf = 4 (tile.rs scaling tables).
+    let max_tile_width_sb = (4 * 4096) >> (4 + 4); // == 64
+    let max_tile_area_sb = (4u32 * 4096 * 2304) >> (2 * (4 + 2) + 2); // == 2304
     let min_log2_tile_cols = tile_log2(max_tile_width_sb, sb_cols);
     let max_log2_tile_cols = tile_log2(1, sb_cols.min(64));
     let max_log2_tile_rows = tile_log2(1, sb_rows.min(64));

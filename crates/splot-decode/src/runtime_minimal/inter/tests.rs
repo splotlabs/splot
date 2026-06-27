@@ -1171,9 +1171,8 @@ fn wienerns_header_status_reports_precise_runtime_frontier() {
         },
         ByteOffset::new(74),
     );
-    let unsupported = match error {
-        DecodeError::UnsupportedFeature { unsupported } => unsupported,
-        _ => panic!("Wiener NS frontier must be an unsupported-feature error"),
+    let DecodeError::UnsupportedFeature { unsupported } = error else {
+        panic!("Wiener NS frontier must be an unsupported-feature error");
     };
 
     assert_eq!(unsupported.reason(), "unsupported_wienerns_filter");
@@ -1190,9 +1189,8 @@ fn wienerns_header_status_reports_precise_runtime_frontier() {
 #[test]
 fn parsed_wienerns_bank_reports_next_runtime_frontier() {
     let error = super::super::wienerns_lr_source_read_runtime_error(ByteOffset::new(74));
-    let unsupported = match error {
-        DecodeError::UnsupportedFeature { unsupported } => unsupported,
-        _ => panic!("parsed Wiener NS bank frontier must be an unsupported-feature error"),
+    let DecodeError::UnsupportedFeature { unsupported } = error else {
+        panic!("parsed Wiener NS bank frontier must be an unsupported-feature error");
     };
 
     assert_eq!(unsupported.reason(), "unsupported_wienerns_lr_source_read");
@@ -1377,9 +1375,8 @@ fn wienerns_lr_source_read_frontier_rejects_monochrome_chroma_plane() {
     )
     .unwrap_err();
 
-    let unsupported = match error {
-        DecodeError::UnsupportedFeature { unsupported } => unsupported,
-        _ => panic!("monochrome chroma-plane request must be unsupported-feature"),
+    let DecodeError::UnsupportedFeature { unsupported } = error else {
+        panic!("monochrome chroma-plane request must be unsupported-feature");
     };
     assert_eq!(
         unsupported.reason(),
@@ -1410,9 +1407,8 @@ fn wienerns_lr_source_read_frontier_rejects_unsupported_plane_index() {
     )
     .unwrap_err();
 
-    let unsupported = match error {
-        DecodeError::UnsupportedFeature { unsupported } => unsupported,
-        _ => panic!("unsupported plane index must be unsupported-feature"),
+    let DecodeError::UnsupportedFeature { unsupported } = error else {
+        panic!("unsupported plane index must be unsupported-feature");
     };
     assert_eq!(unsupported.reason(), "unsupported_wienerns_lr_source_plane");
     assert_eq!(unsupported.matrix_row(), "ac0ej3-lr-source-read-frontier");
@@ -1505,9 +1501,8 @@ fn non_wienerns_header_status_keeps_generic_incomplete_frontier() {
         FrameHeaderParseStatus::ActivationFieldsOnly,
         ByteOffset::new(74),
     );
-    let unsupported = match error {
-        DecodeError::UnsupportedFeature { unsupported } => unsupported,
-        _ => panic!("incomplete header fallback must be an unsupported-feature error"),
+    let DecodeError::UnsupportedFeature { unsupported } = error else {
+        panic!("incomplete header fallback must be an unsupported-feature error");
     };
 
     assert_eq!(unsupported.reason(), "incomplete_frame_header");
@@ -1535,9 +1530,8 @@ fn cfl_sequence_tool_rejects_before_tile_decode() {
     ) else {
         panic!("CFL-enabled sequence must fail closed before tile mode-info decode");
     };
-    let unsupported = match error {
-        DecodeError::UnsupportedFeature { unsupported } => unsupported,
-        _ => panic!("CFL tool gate must be an unsupported-feature error"),
+    let DecodeError::UnsupportedFeature { unsupported } = error else {
+        panic!("CFL tool gate must be an unsupported-feature error");
     };
     assert_eq!(unsupported.reason(), "unsupported_cfl_intra");
     assert_eq!(unsupported.matrix_row(), "ac0ej3-sequence-chroma-frontier");
@@ -1563,9 +1557,8 @@ fn mhccp_sequence_tool_rejects_before_tile_decode() {
     ) else {
         panic!("MHCCP-enabled sequence must fail closed before tile mode-info decode");
     };
-    let unsupported = match error {
-        DecodeError::UnsupportedFeature { unsupported } => unsupported,
-        _ => panic!("MHCCP tool gate must be an unsupported-feature error"),
+    let DecodeError::UnsupportedFeature { unsupported } = error else {
+        panic!("MHCCP tool gate must be an unsupported-feature error");
     };
     assert_eq!(unsupported.reason(), "unsupported_mhccp");
     assert_eq!(unsupported.matrix_row(), "ac0ej3-sequence-chroma-frontier");
@@ -1590,9 +1583,8 @@ fn leading_key_payload_extra_obu_reaches_chroma_tool_gate_after_key_header() {
     let Err(error) = decode_minimal_frames_from_plan(&repacked, options, &plan) else {
         panic!("10-bit leading payload with an extra OBU must fail closed");
     };
-    let unsupported = match error {
-        DecodeError::UnsupportedFeature { unsupported } => unsupported,
-        _ => panic!("leading payload must be an unsupported-feature error"),
+    let DecodeError::UnsupportedFeature { unsupported } = error else {
+        panic!("leading payload must be an unsupported-feature error");
     };
     assert_eq!(unsupported.reason(), "unsupported_cfl_intra");
     assert_eq!(unsupported.matrix_row(), "ac0ej3-sequence-chroma-frontier");

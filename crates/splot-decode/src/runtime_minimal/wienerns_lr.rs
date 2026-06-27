@@ -1168,6 +1168,8 @@ fn wienerns_lr_transform_record_setup_error(
     }
 }
 
+// Owned error-to-DecodeError conversion used through `map_err`; by-value ownership matches that consume-and-map design.
+#[allow(clippy::needless_pass_by_value)]
 fn wienerns_lr_transform_record_traversal_error(
     error: TilePartitionTraversalError,
     offset: ByteOffset,
@@ -1372,6 +1374,8 @@ fn wienerns_lr_transform_record_unsupported(
     )
 }
 
+// Owned error-to-DecodeError conversion used through `map_err`; by-value ownership matches that consume-and-map design.
+#[allow(clippy::needless_pass_by_value)]
 fn wienerns_lr_live_transform_record_mode_error(
     error: GeneralIntraBlockModeError,
     offset: ByteOffset,
@@ -1453,6 +1457,8 @@ fn wienerns_lr_live_transform_record_mode_error(
     }
 }
 
+// Owned error-to-DecodeError conversion used through `map_err`; by-value ownership matches that consume-and-map design.
+#[allow(clippy::needless_pass_by_value)]
 fn wienerns_lr_live_transform_record_residual_error(
     error: GeneralIntraResidualError,
     offset: ByteOffset,

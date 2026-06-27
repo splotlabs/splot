@@ -234,6 +234,8 @@ fn selectable_unsupported_reason(reason: &'static str) -> &'static str {
     }
 }
 
+// Owned error-to-DecodeError conversion used through `map_err`; by-value ownership matches that consume-and-map design.
+#[allow(clippy::needless_pass_by_value)]
 fn selectable_transform_record_error(
     error: SelectableTransformRecordError,
     tile_offset: ByteOffset,
@@ -1862,11 +1864,10 @@ fn apply_tx_partition(
             h4 >>= 2;
             for part in 0..4 {
                 let tx = grid.set_tx_size(row, col, h4, w4, false, false)?;
-                if part != 3 {
-                    row += h4;
-                } else {
+                if part == 3 {
                     return Ok(tx);
                 }
+                row += h4;
             }
             Err(SelectableTransformRecordError::Unsupported {
                 reason: "horz4-loop",
@@ -1876,11 +1877,10 @@ fn apply_tx_partition(
             w4 >>= 2;
             for part in 0..4 {
                 let tx = grid.set_tx_size(row, col, h4, w4, false, false)?;
-                if part != 3 {
-                    col += w4;
-                } else {
+                if part == 3 {
                     return Ok(tx);
                 }
+                col += w4;
             }
             Err(SelectableTransformRecordError::Unsupported {
                 reason: "vert4-loop",
@@ -2282,7 +2282,7 @@ fn selectable_luma_leaf_uses_actual_extent(
     n4w: usize,
     n4h: usize,
 ) -> bool {
-    is_luma_part && !has_chroma && matches!((n4w, n4h), (1, 8) | (2, 8) | (2, 16))
+    is_luma_part && !has_chroma && matches!((n4w, n4h), (1 | 2, 8) | (2, 16))
 }
 
 fn selectable_chroma_offset_leaf_supported(is_luma_part: bool, has_chroma: bool) -> bool {

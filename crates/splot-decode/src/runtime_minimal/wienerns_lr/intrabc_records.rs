@@ -1103,8 +1103,7 @@ fn superblock_samples(sequence: &SequenceHeader, tile_offset: ByteOffset) -> Res
     })?;
     Ok(match partition.seq_sb_size() {
         SuperblockSize::Block64x64 => 64,
-        SuperblockSize::Block128x128 => 128,
-        SuperblockSize::Block256x256 => 128,
+        SuperblockSize::Block128x128 | SuperblockSize::Block256x256 => 128,
     })
 }
 

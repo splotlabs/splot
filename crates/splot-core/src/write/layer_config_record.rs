@@ -209,7 +209,7 @@ fn write_lcr_global_info(scratch: &mut BitWriter, info: &LcrGlobalInfo) -> Write
             if ptl.xlayer_id != xid {
                 return Err(non_canonical("seq_ptl_xlayer_id"));
             }
-            write_lcr_seq_profile_tier_level_info(scratch, ptl)?;
+            write_lcr_seq_profile_tier_level_info(scratch, *ptl)?;
         }
     } else if !info.seq_ptl_infos.is_empty() {
         return Err(non_canonical("seq_ptl_info_count"));
@@ -266,7 +266,7 @@ fn write_lcr_local_info(
             if ptl.xlayer_id != info.xlayer_id {
                 return Err(non_canonical("local_ptl_xlayer_id"));
             }
-            write_lcr_seq_profile_tier_level_info(scratch, ptl)?;
+            write_lcr_seq_profile_tier_level_info(scratch, *ptl)?;
         }
         (false, None) => {}
         _ => return Err(non_canonical("local_ptl_gate")),
@@ -316,6 +316,13 @@ fn write_atlas_or_reserved_3bits(
 }
 
 /// Writes `lcr_aggregate_info()` (AV2 v1.0.0 § 5.8.3).
+///
+/// Kept `&LcrAggregateInfo` rather than by-value so this stays structurally identical
+/// to the independent `write_ops_aggregate_info` (§ 5.11.1): the two mirror separate
+/// AV2 spec structures whose wire layout coincides today, each with per-section named
+/// bit-width constants for spec traceability. Deduplicating them would be a false
+/// abstraction across unrelated spec sections (and would erase those named widths).
+#[allow(clippy::trivially_copy_pass_by_ref)]
 fn write_lcr_aggregate_info(scratch: &mut BitWriter, agg: &LcrAggregateInfo) -> WriteResult<()> {
     scratch.write_bits_u8(agg.config_idc, F6)?;
     scratch.write_bits_u8(agg.aggregate_level_idx, AGG_F5)?;
@@ -328,7 +335,7 @@ fn write_lcr_aggregate_info(scratch: &mut BitWriter, agg: &LcrAggregateInfo) -> 
 /// `lsptli_reserved_2bits` is reproduced verbatim within `f(2)`.
 fn write_lcr_seq_profile_tier_level_info(
     scratch: &mut BitWriter,
-    ptl: &LcrSeqProfileTierLevelInfo,
+    ptl: LcrSeqProfileTierLevelInfo,
 ) -> WriteResult<()> {
     scratch.write_bits_u8(ptl.seq_profile_idc.get(), AGG_F5)?;
     scratch.write_bits_u8(ptl.max_level_idx, AGG_F5)?;

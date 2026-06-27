@@ -861,6 +861,8 @@ mod tests {
         assert_eq!(cases, c_max * 4);
     }
 
+    // Single-char bindings (a, b, m, q, x) mirror the AV2 §5.20.7 Golomb math variables named in the inline comments.
+    #[allow(clippy::many_single_char_names)]
     #[test]
     fn read_quant_multi_coeff_roundtrips_with_state_carry() {
         // Two coefficients in one stream: an Extended coefficient (writes bits)

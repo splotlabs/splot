@@ -267,7 +267,7 @@ mod tests {
         // 10-bit widens the bound to 1<<17 = 131072, so the same large product
         // clamps to 131071 instead of 32767.
         let wide = dequant_coefficient(0xFF_FFFF, 1, 1, BitDepth::Ten);
-        assert_eq!(wide, 131071);
+        assert_eq!(wide, 131_071);
     }
 
     #[test]

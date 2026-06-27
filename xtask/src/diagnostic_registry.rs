@@ -522,8 +522,8 @@ mod tests {
 
     #[test]
     fn classify_reports_each_direction() {
-        let emitted: BTreeSet<String> = ["a/x", "a/y"].iter().map(|s| s.to_string()).collect();
-        let documented: BTreeSet<String> = ["a/y", "a/z"].iter().map(|s| s.to_string()).collect();
+        let emitted: BTreeSet<String> = ["a/x", "a/y"].iter().map(ToString::to_string).collect();
+        let documented: BTreeSet<String> = ["a/y", "a/z"].iter().map(ToString::to_string).collect();
         let (undocumented, unemitted) = classify(&emitted, &documented);
         assert_eq!(undocumented, ["a/x"]); // emitted, not documented
         assert_eq!(unemitted, ["a/z"]); // documented, not emitted
@@ -531,7 +531,7 @@ mod tests {
 
     #[test]
     fn classify_clean_when_equal() {
-        let set: BTreeSet<String> = ["a/x", "a/y"].iter().map(|s| s.to_string()).collect();
+        let set: BTreeSet<String> = ["a/x", "a/y"].iter().map(ToString::to_string).collect();
         let (undocumented, unemitted) = classify(&set, &set);
         assert!(undocumented.is_empty() && unemitted.is_empty());
     }

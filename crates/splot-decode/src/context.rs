@@ -178,9 +178,9 @@ impl DecodeContext {
     /// # Errors
     /// Returns [`crate::DecodeError`] for malformed parsed sources,
     /// unsupported structures, or local decode resource-limit failures.
-    pub fn plan_stream<'a>(
+    pub fn plan_stream(
         &self,
-        input: DecodeStreamInput<'a>,
+        input: DecodeStreamInput<'_>,
         options: DecodeOptions,
     ) -> Result<DecodeStreamPlan> {
         self.pool.install(|| plan_stream(input, options))
@@ -203,7 +203,7 @@ impl DecodeContext {
     )]
     pub(crate) fn plan_tile_payload_boundary<'a>(
         &self,
-        input: TilePayloadBoundaryInput<'a, '_>,
+        input: &TilePayloadBoundaryInput<'a, '_>,
     ) -> core::result::Result<DecodeTilePayloadPlan<'a>, TilePayloadBoundaryError> {
         self.pool.install(|| plan_tile_payload_boundary(input))
     }
@@ -225,7 +225,7 @@ impl DecodeContext {
     )]
     pub(crate) fn plan_derived_tile_payload_boundary<'a>(
         &self,
-        input: FrameCandidateTileBoundaryInput<'a, '_>,
+        input: &FrameCandidateTileBoundaryInput<'a, '_>,
     ) -> core::result::Result<DecodeTilePayloadPlan<'a>, FrameCandidateTileBoundaryError> {
         self.pool
             .install(|| plan_derived_tile_payload_boundary(input))

@@ -402,10 +402,7 @@ pub struct GdfGeometry<'a> {
 /// ([`parse_gdf_params`]) and the writer
 /// (`crate::write::frame_filters::write_gdf_params`) share one source of truth and never
 /// drift. `gdf_frame_enable` must already be `1` for this gate to be consulted.
-pub(crate) fn gdf_per_block_is_coded(
-    filter: &CoreSeqFilterView,
-    geometry: GdfGeometry<'_>,
-) -> bool {
+pub(crate) fn gdf_per_block_is_coded(filter: CoreSeqFilterView, geometry: GdfGeometry<'_>) -> bool {
     // § 5.18.7.9: gdfBlkSize derivation.
     let sb_block_width = block_width(geometry.sb_size);
     // gdfBlkSize = Max(Block_Width[SbSize], GDF_MIN_SIZE).
@@ -490,7 +487,7 @@ pub fn parse_gdf_params(
 
     // AV2 § 5.18.7.9: gdf_per_block f(1) when coded (the gdfBlkSize / tile gate, shared
     // with the writer via gdf_per_block_is_coded); else inferred 0.
-    let gdf_per_block = if gdf_per_block_is_coded(filter, geometry) {
+    let gdf_per_block = if gdf_per_block_is_coded(*filter, geometry) {
         reader.read_flag()?
     } else {
         false

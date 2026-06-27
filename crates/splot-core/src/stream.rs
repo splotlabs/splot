@@ -31,7 +31,7 @@ pub enum ParsedBitstream<'a> {
     Ivf(ParsedIvfBitstream<'a>),
 }
 
-impl<'a> ParsedBitstream<'a> {
+impl ParsedBitstream<'_> {
     /// Returns the detected input format.
     #[must_use]
     pub const fn format(&self) -> BitstreamFormat {

@@ -79,7 +79,8 @@ fn ordinary_facts() -> CoeffUseFscFrameOrdinaryFacts {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+// Each bool is a distinct AV2 frame-level syntax flag the fixture toggles; bundling them would obscure the spec mapping.
+#[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
 fn frame_facts(
     enable_fsc: bool,
     enable_chroma_dctonly: bool,
@@ -236,7 +237,7 @@ fn find_fsc_payload() -> [u8; 8] {
     panic!("no FSC coefficient frame-facts payload found");
 }
 
-fn assert_runs_eq(derived: SelectorRun, expected: SelectorRun) {
+fn assert_runs_eq(derived: &SelectorRun, expected: &SelectorRun) {
     assert_eq!(derived.0, expected.0);
     assert_eq!(derived.1, expected.1);
     assert_eq!(derived.2, expected.2);
@@ -388,7 +389,7 @@ fn coefficient_frame_facts_all_zero_matches_base_q_path() {
     let derived =
         run_frame_facts(&[0x80], CoeffUseFscFrameFactsInput::AllZero(geometry())).unwrap();
 
-    assert_runs_eq(derived, expected);
+    assert_runs_eq(&derived, &expected);
 }
 
 #[test]
@@ -405,7 +406,7 @@ fn coefficient_frame_facts_false_matches_base_q_ordinary_path() {
     )
     .unwrap();
 
-    assert_runs_eq(derived, expected);
+    assert_runs_eq(&derived, &expected);
 }
 
 #[test]
@@ -438,7 +439,7 @@ fn coefficient_frame_facts_parity_hiding_matches_explicit_base_q_path() {
     )
     .unwrap();
 
-    assert_runs_eq(derived, expected);
+    assert_runs_eq(&derived, &expected);
 }
 
 #[test]
@@ -471,7 +472,7 @@ fn coefficient_frame_facts_tcq_matches_explicit_base_q_path() {
     )
     .unwrap();
 
-    assert_runs_eq(derived, expected);
+    assert_runs_eq(&derived, &expected);
 }
 
 #[test]
@@ -488,7 +489,7 @@ fn coefficient_frame_facts_true_matches_base_q_fsc_path() {
     )
     .unwrap();
 
-    assert_runs_eq(derived, expected);
+    assert_runs_eq(&derived, &expected);
 }
 
 #[test]

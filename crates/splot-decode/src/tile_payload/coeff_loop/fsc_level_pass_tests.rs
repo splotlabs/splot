@@ -40,12 +40,12 @@ fn config() -> CoeffFscLevelPassConfig {
     }
 }
 
-fn setup_start<'a>(
-    payload: &'a [u8],
+fn setup_start(
+    payload: &[u8],
     seg_eob: usize,
 ) -> Option<(
     TileCdfSubset,
-    SymbolDecoder<'a>,
+    SymbolDecoder<'_>,
     NonZeroCoeffBlockStart,
     FscCoeffScanWalk,
 )> {

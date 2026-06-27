@@ -46,7 +46,12 @@ fn full_pel_params(
 /// An independent in-test re-trace of the AV2 § 7.13.3.18 single-reference
 /// (non-compound) two-pass convolution, used as the property-test oracle. The
 /// explicit `for t in 0..8` tap loops mirror the spec pseudocode index variable.
-#[allow(clippy::too_many_arguments, clippy::needless_range_loop)]
+// `w`/`h`/`x`/`y`/`v`/`n` mirror the AV2 § 7.13.3.18 interpolation pseudocode.
+#[allow(
+    clippy::too_many_arguments,
+    clippy::needless_range_loop,
+    clippy::many_single_char_names
+)]
 fn reference_subpel(
     samples: &[u16],
     ref_w: usize,
@@ -338,8 +343,8 @@ fn matches_independent_reference_over_many_cases() {
     let mut state: u64 = 0x1234_5678_9abc_def0;
     let mut next = || {
         state = state
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
         (state >> 33) as u32
     };
 
@@ -351,7 +356,7 @@ fn matches_independent_reference_over_many_cases() {
     ];
     let dims = [2usize, 4, 8, 16];
 
-    for _case in 0..2000 {
+    for case in 0..2000 {
         let samples: Vec<u16> = (0..(ref_w * ref_h))
             .map(|_| (next() % 256) as u16)
             .collect();
@@ -389,7 +394,7 @@ fn matches_independent_reference_over_many_cases() {
         let want = reference_subpel(&samples, ref_w, ref_h, &params);
         assert_eq!(
             out, want,
-            "case {_case} w={w} h={h} px={phase_x} py={phase_y}"
+            "case {case} w={w} h={h} px={phase_x} py={phase_y}"
         );
     }
 }

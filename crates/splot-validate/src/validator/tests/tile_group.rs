@@ -546,8 +546,8 @@ fn validator_copy_bits_mismatch_anchors_at_offending_bit() {
     let payload_first_byte = non_first_header_offset + 1;
     let precise = report.errors().find(|d| {
         d.rule_id == "frame-header/copy-bits-mismatch"
-            && d.byte_offset.map(|b| b.get()) == Some(payload_first_byte)
-            && d.bit_offset.map(|b| b.get()) == Some(4)
+            && d.byte_offset.map(splot_core::span::ByteOffset::get) == Some(payload_first_byte)
+            && d.bit_offset.map(splot_core::span::BitOffset::get) == Some(4)
             && d.message.contains("header_bit[2]")
     });
     assert!(
@@ -560,7 +560,8 @@ fn validator_copy_bits_mismatch_anchors_at_offending_bit() {
     assert!(
         !report.errors().any(|d| {
             d.rule_id == "frame-header/copy-bits-mismatch"
-                && d.byte_offset.map(|b| b.get()) == Some(non_first_header_offset)
+                && d.byte_offset.map(splot_core::span::ByteOffset::get)
+                    == Some(non_first_header_offset)
         }),
         "the mismatch must not anchor at the OBU header offset; report was: {report}"
     );

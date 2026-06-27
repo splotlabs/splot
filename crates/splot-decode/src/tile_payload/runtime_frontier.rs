@@ -137,8 +137,8 @@ pub(crate) enum MinimalRuntimeBlockSymbolFrontierError {
 }
 
 /// Plans the minimal runtime partition and traced block-symbol frontier.
-pub(crate) fn plan_minimal_runtime_block_symbol_frontier<'payload>(
-    work_unit: &mut DecodeTileWorkUnit<'payload>,
+pub(crate) fn plan_minimal_runtime_block_symbol_frontier(
+    work_unit: &mut DecodeTileWorkUnit<'_>,
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
     limits: DecodeLimits,
@@ -426,9 +426,8 @@ fn ensure_minimal_root_frontier(
     symbols: &SymbolDecoder<'_>,
 ) -> Result<(), MinimalRuntimePartitionFrontierError> {
     let steps = plan.steps();
-    let step = match steps {
-        [step] => step,
-        _ => return unexpected("unexpected_partition_step_count"),
+    let [step] = steps else {
+        return unexpected("unexpected_partition_step_count");
     };
     if step.call.r != 0 || step.call.c != 0 {
         return unexpected("non_root_partition_call");
@@ -546,14 +545,13 @@ mod tests {
         // txb_skip mismatch; that is still the intended fail-closed behavior for
         // this non-conformant fixture.
         with_minimal_work_unit(LEGACY_INVERTED_SKIP_TRACE, |work_unit, sequence, core| {
-            let err = match plan_minimal_runtime_partition_frontier(
+            let Err(err) = plan_minimal_runtime_partition_frontier(
                 work_unit,
                 sequence,
                 core,
                 DecodeLimits::DEFAULT,
-            ) {
-                Ok(_) => panic!("retired payload unexpectedly reached the runtime frontier"),
-                Err(err) => err,
+            ) else {
+                panic!("retired payload unexpectedly reached the runtime frontier")
             };
 
             assert!(
@@ -712,7 +710,7 @@ mod tests {
             cdf,
             DecodeLimits::DEFAULT,
         );
-        let mut tile_plan = plan_derived_tile_payload_boundary(input).unwrap();
+        let mut tile_plan = plan_derived_tile_payload_boundary(&input).unwrap();
         let [work_unit] = tile_plan.work_units_mut() else {
             panic!("minimal fixture must derive one tile work unit");
         };

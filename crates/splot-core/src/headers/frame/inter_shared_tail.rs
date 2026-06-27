@@ -317,7 +317,7 @@ pub(crate) fn parse_inter_shared_tail(
             core.lr_params_partial = Some(partial);
             core.status = FrameHeaderParseStatus::StoppedBeforeWienerNsFilter { feature_id };
             // Store the structure facts parsed so far before the honest stop.
-            store_shared_facts(core, segmentation, qm, delta_q, lossless, quantization);
+            store_shared_facts(core, &segmentation, qm, delta_q, lossless, quantization);
             return Ok(());
         }
     }
@@ -333,7 +333,7 @@ pub(crate) fn parse_inter_shared_tail(
     )?);
 
     // The shared structure cluster parsed; store its facts before the inter tail.
-    store_shared_facts(core, segmentation, qm, delta_q, lossless, quantization);
+    store_shared_facts(core, &segmentation, qm, delta_q, lossless, quantization);
 
     // mirror :5307-5341: the inter tail.
     parse_inter_tail_arms(reader, core, seq, control, frame_type, coded_lossless)
@@ -451,14 +451,14 @@ fn parse_inter_tail_arms(
 /// of `quantization` / `qm` / `delta_q` taken by `parse_lossless_info` are released.
 fn store_shared_facts(
     core: &mut FrameHeaderCore,
-    segmentation: crate::headers::frame::segmentation::SegmentationParams,
+    segmentation: &crate::headers::frame::segmentation::SegmentationParams,
     qm: crate::headers::frame::quant::SetupQmParams,
     delta_q: crate::headers::frame::quant::DeltaQParams,
     lossless: crate::headers::frame::quant::LosslessInfo,
     quantization: crate::headers::frame::quant::QuantizationParams,
 ) {
     core.quantization_params = Some(quantization);
-    core.segmentation_params = Some(segmentation);
+    core.segmentation_params = Some(*segmentation);
     core.setup_qm_params = Some(qm);
     core.delta_q_params = Some(delta_q);
     core.lossless_info = Some(lossless);

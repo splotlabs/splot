@@ -339,7 +339,7 @@ pub fn parse_lr_params(
         let is_chroma = plane > 0;
         // indexToTool / toolsCount / n derivation, shared with the writer (see
         // `lr_plane_tool_table`). tool_index ns(n).
-        let (index_to_tool, _tools_count, n) = lr_plane_tool_table(view, is_chroma);
+        let (index_to_tool, _tools_count, n) = lr_plane_tool_table(*view, is_chroma);
         let tool_index = reader.read_ns(n)?;
         // FrameRestorationType[plane] = indexToTool[tool_index].
         let tool = index_to_tool.get(tool_index as usize).copied().unwrap_or(0);
@@ -431,7 +431,7 @@ pub fn parse_lr_params(
                 1
             };
             plane_params.frame_filter_bank =
-                Some(parse_frame_wiener_ns_filter(reader, plane, classes, view)?);
+                Some(parse_frame_wiener_ns_filter(reader, plane, classes, *view)?);
         }
     }
 
@@ -479,7 +479,7 @@ fn read_lr_size_shift(reader: &mut BitReader<'_>, sb_size: SuperblockSize) -> Re
 /// Shared by [`parse_lr_params`] (the reader) and the § 5.18.7.11 writer
 /// ([`crate::write::frame_restoration`]) so the table never drifts between the two.
 pub(crate) fn lr_plane_tool_table(
-    view: &CoreSeqRestorationView,
+    view: CoreSeqRestorationView,
     is_chroma: bool,
 ) -> ([u8; RESTORE_SWITCHABLE_TYPES + 1], usize, u32) {
     // indexToTool[0] = RESTORE_NONE; for i in 1..RESTORE_SWITCHABLE_TYPES add enabled tools;
@@ -748,7 +748,9 @@ mod tests {
                 assert!(!params.uses_lr);
                 assert!(params.planes.is_empty());
             }
-            other => panic!("expected Parsed, got {other:?}"),
+            other @ LrParseOutcome::StoppedBeforeWienerNsFilter { .. } => {
+                panic!("expected Parsed, got {other:?}")
+            }
         }
         assert_eq!(r.consumed_bits(), 0);
     }
@@ -795,7 +797,9 @@ mod tests {
                 // Default sizes: luma 512>>3 == 64, chroma 512>>(3+1) == 32.
                 assert_eq!(params.loop_restoration_size, [64, 32, 32]);
             }
-            other => panic!("expected Parsed, got {other:?}"),
+            other @ LrParseOutcome::StoppedBeforeWienerNsFilter { .. } => {
+                panic!("expected Parsed, got {other:?}")
+            }
         }
     }
 
@@ -833,7 +837,9 @@ mod tests {
                 // luma half size: 512 >> 1 == 256.
                 assert_eq!(params.loop_restoration_size[0], 256);
             }
-            other => panic!("expected Parsed, got {other:?}"),
+            other @ LrParseOutcome::StoppedBeforeWienerNsFilter { .. } => {
+                panic!("expected Parsed, got {other:?}")
+            }
         }
     }
 
@@ -886,7 +892,9 @@ mod tests {
                 assert!(bank.classes.iter().all(|class| class.merged));
                 assert!(bank.classes.iter().all(|class| class.coeffs == vec![0; 16]));
             }
-            other => panic!("expected Parsed, got {other:?}"),
+            other @ LrParseOutcome::StoppedBeforeWienerNsFilter { .. } => {
+                panic!("expected Parsed, got {other:?}")
+            }
         }
     }
 
@@ -924,7 +932,9 @@ mod tests {
                 // shift 0 -> 512 >> 0 == 512.
                 assert_eq!(params.loop_restoration_size[0], 512);
             }
-            other => panic!("expected Parsed, got {other:?}"),
+            other @ LrParseOutcome::StoppedBeforeWienerNsFilter { .. } => {
+                panic!("expected Parsed, got {other:?}")
+            }
         }
     }
 

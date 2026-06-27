@@ -776,6 +776,7 @@ fn validator_film_grain_model_unavailable_fires_when_fgm_obu_follows_frame() {
 
 #[test]
 fn validator_film_grain_model_unavailable_suppressed_under_external_hls() {
+    use crate::options::{ExternalHlsMode, ExternalHlsSet};
     // §7.3.8.8 allows external provision; ExternalHlsSet cannot express film grain, so
     // ANY Provided mode means the model MAY be external -> the check is suppressed
     // (zero false positives), even with an empty external set.
@@ -785,7 +786,6 @@ fn validator_film_grain_model_unavailable_suppressed_under_external_hls() {
     };
     let mut data = td_and_frame_core_seq(seq);
     data.extend(sef_with_applied_grain(5));
-    use crate::options::{ExternalHlsMode, ExternalHlsSet};
     let options = ValidationOptions {
         external_hls: ExternalHlsMode::Provided(ExternalHlsSet::new()),
     };

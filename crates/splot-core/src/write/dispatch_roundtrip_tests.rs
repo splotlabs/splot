@@ -18,7 +18,7 @@
         let bytes = writer.into_bytes();
         // §5.5: a temporal delimiter has an empty payload and no tail.
         assert!(bytes.is_empty(), "temporal delimiter writes no payload bytes");
-        let reparsed = reparse_payload(&header, &bytes);
+        let reparsed = reparse_payload(header, &bytes);
         assert_eq!(reparsed, payload);
     }
 
@@ -30,7 +30,7 @@
         let mut writer = BitWriter::new();
         write_obu_payload(&mut writer, &payload, true, &[]).unwrap();
         let bytes = writer.into_bytes();
-        let reparsed = reparse_payload(&header, &bytes);
+        let reparsed = reparse_payload(header, &bytes);
         assert_eq!(reparsed, payload);
     }
 
@@ -51,7 +51,7 @@
         write_obu_payload(&mut writer, &payload, false, &passthrough).unwrap();
         let bytes = writer.into_bytes();
         assert_eq!(bytes, vec![0xDE, 0xAD, 0x80], "padding bytes + trailing_bits byte");
-        let reparsed = reparse_payload(&header, &bytes);
+        let reparsed = reparse_payload(header, &bytes);
         assert_eq!(reparsed, payload);
     }
 
@@ -67,7 +67,7 @@
         write_obu_payload(&mut w0, &empty, false, &[]).unwrap();
         let b0 = w0.into_bytes();
         assert!(b0.is_empty(), "obuPayloadSize 0 writes nothing");
-        assert_eq!(reparse_payload(&header, &b0), empty);
+        assert_eq!(reparse_payload(header, &b0), empty);
 
         // obuPayloadSize == 1: no padding bytes, one trailing_bits() byte.
         let one = ParsedObu::Padding(PaddingObu {
@@ -78,7 +78,7 @@
         write_obu_payload(&mut w1, &one, false, &[]).unwrap();
         let b1 = w1.into_bytes();
         assert_eq!(b1, vec![0x80], "obuPayloadSize 1 writes one trailing byte");
-        assert_eq!(reparse_payload(&header, &b1), one);
+        assert_eq!(reparse_payload(header, &b1), one);
     }
 
     #[test]
@@ -102,7 +102,7 @@
         let mut writer = BitWriter::new();
         write_obu_payload(&mut writer, &payload, false, &[]).unwrap();
         let bytes = writer.into_bytes();
-        let reparsed = reparse_payload(&header, &bytes);
+        let reparsed = reparse_payload(header, &bytes);
         assert_eq!(reparsed, payload);
     }
 
@@ -113,14 +113,14 @@
         let header = header_for(ObuType::MetadataGroup);
         // Group with one cancelled unit then a trailing byte: [0x00, 0x00, 0x04, 0x01, 0x80].
         let fixture = [0x00u8, 0x00, 0x04, 0x01, 0x80];
-        let parsed = reparse_payload(&header, &fixture);
+        let parsed = reparse_payload(header, &fixture);
         let payload = parsed.clone();
 
         let mut writer = BitWriter::new();
         // Single-unit, non-global xlayer (header xlayer is 0 here) — the write_obu_payload path.
         write_obu_payload(&mut writer, &payload, false, &[]).unwrap();
         let bytes = writer.into_bytes();
-        let reparsed = reparse_payload(&header, &bytes);
+        let reparsed = reparse_payload(header, &bytes);
         assert_eq!(reparsed, payload);
     }
 
@@ -132,7 +132,7 @@
         let header = header_for(ObuType::MetadataGroup);
         // group header 0x00, cnt_minus_1 0x01 (2 units), unit [type 0x04, cancel 0x01] x2, tail 0x80.
         let fixture = [0x00u8, 0x01, 0x04, 0x01, 0x04, 0x01, 0x80];
-        let payload = reparse_payload(&header, &fixture);
+        let payload = reparse_payload(header, &fixture);
         // Sanity: the fixture really is a two-unit group (else the test would not exercise the fix).
         match &payload {
             ParsedObu::MetadataGroup(obu) => assert_eq!(obu.units.len(), 2),
@@ -142,7 +142,7 @@
         let mut writer = BitWriter::new();
         write_obu_payload(&mut writer, &payload, false, &[]).unwrap();
         let bytes = writer.into_bytes();
-        let reparsed = reparse_payload(&header, &bytes);
+        let reparsed = reparse_payload(header, &bytes);
         assert_eq!(reparsed, payload);
     }
 
@@ -170,7 +170,7 @@
         let mut writer = BitWriter::new();
         write_obu_payload(&mut writer, &payload, false, &[]).unwrap();
         let bytes = writer.into_bytes();
-        assert_eq!(reparse_payload(&header, &bytes), payload);
+        assert_eq!(reparse_payload(header, &bytes), payload);
     }
 
     #[test]
@@ -210,7 +210,7 @@
         let mut writer = BitWriter::new();
         write_obu_payload(&mut writer, &payload, false, &[]).unwrap();
         let bytes = writer.into_bytes();
-        assert_eq!(reparse_payload(&header, &bytes), payload);
+        assert_eq!(reparse_payload(header, &bytes), payload);
     }
 
     #[test]
@@ -226,7 +226,7 @@
         assert_eq!(header.obu_type, ObuType::OperatingPointSet);
         assert_eq!(header.extended_layer_id, GLOBAL_XLAYER_ID);
         assert!(header.obu_type.is_extensible_obu());
-        let payload = reparse_payload(&header, &[0x00, 0x40]);
+        let payload = reparse_payload(header, &[0x00, 0x40]);
         match &payload {
             ParsedObu::OperatingPointSet(ops) => {
                 assert_eq!(ops.ops_cnt, 0, "fixture is a reset OPS");
@@ -239,7 +239,7 @@
         write_complete_obu(&mut complete, &header, &payload, &[]).unwrap();
         let bytes = complete.into_bytes();
         // bytes = header (2) ++ payload; reparse the payload region.
-        let reparsed = reparse_payload(&header, &bytes[2..]);
+        let reparsed = reparse_payload(header, &bytes[2..]);
         assert_eq!(reparsed, payload);
     }
 
@@ -281,7 +281,7 @@
             bits.bit(0);
         }
         let payload_bytes = bits.into_bytes();
-        let payload = reparse_payload(&header, &payload_bytes);
+        let payload = reparse_payload(header, &payload_bytes);
         match &payload {
             ParsedObu::OperatingPointSet(ops) => {
                 assert_eq!(ops.ops_cnt, 1);
@@ -293,7 +293,7 @@
         let mut writer = BitWriter::new();
         write_obu_payload(&mut writer, &payload, true, &[]).unwrap();
         let bytes = writer.into_bytes();
-        assert_eq!(reparse_payload(&header, &bytes), payload);
+        assert_eq!(reparse_payload(header, &bytes), payload);
     }
 
     #[test]
@@ -322,13 +322,13 @@
         let mut writer = BitWriter::new();
         write_obu_payload(&mut writer, &payload, true, &[]).unwrap();
         let bytes = writer.into_bytes();
-        assert_eq!(reparse_payload(&header, &bytes), payload);
+        assert_eq!(reparse_payload(header, &bytes), payload);
 
         // And it round-trips through write_complete_obu (header + payload + tail).
         let mut complete = BitWriter::new();
         write_complete_obu(&mut complete, &header, &payload, &[]).unwrap();
         let complete_bytes = complete.into_bytes();
-        assert_eq!(reparse_payload(&header, &complete_bytes[1..]), payload);
+        assert_eq!(reparse_payload(header, &complete_bytes[1..]), payload);
     }
 
     #[test]
@@ -372,7 +372,7 @@
             bits.bit(0);
         }
         let payload_bytes = bits.into_bytes();
-        let payload = reparse_payload(&header, &payload_bytes);
+        let payload = reparse_payload(header, &payload_bytes);
         match &payload {
             ParsedObu::FilmGrain(fg) => {
                 assert_eq!(fg.models.len(), 1);
@@ -384,13 +384,13 @@
         let mut writer = BitWriter::new();
         write_obu_payload(&mut writer, &payload, false, &[]).unwrap();
         let bytes = writer.into_bytes();
-        assert_eq!(reparse_payload(&header, &bytes), payload);
+        assert_eq!(reparse_payload(header, &bytes), payload);
 
         // And it round-trips through write_complete_obu (header + payload + tail).
         let mut complete = BitWriter::new();
         write_complete_obu(&mut complete, &header, &payload, &[]).unwrap();
         let complete_bytes = complete.into_bytes();
-        assert_eq!(reparse_payload(&header, &complete_bytes[1..]), payload);
+        assert_eq!(reparse_payload(header, &complete_bytes[1..]), payload);
     }
 
     #[test]
@@ -426,7 +426,7 @@
             bits.bit(0);
         }
         let payload_bytes = bits.into_bytes();
-        let payload = reparse_payload(&header, &payload_bytes);
+        let payload = reparse_payload(header, &payload_bytes);
         match &payload {
             ParsedObu::AtlasSegment(atlas) => {
                 assert_eq!(atlas.num_segments, 2);
@@ -438,14 +438,14 @@
         let mut writer = BitWriter::new();
         write_obu_payload(&mut writer, &payload, true, &[]).unwrap();
         let bytes = writer.into_bytes();
-        assert_eq!(reparse_payload(&header, &bytes), payload);
+        assert_eq!(reparse_payload(header, &bytes), payload);
 
         // And it round-trips through write_complete_obu (header + payload + tail).
         let mut complete = BitWriter::new();
         write_complete_obu(&mut complete, &header, &payload, &[]).unwrap();
         let complete_bytes = complete.into_bytes();
         // header is two bytes (extension byte present for xlayer 3).
-        assert_eq!(reparse_payload(&header, &complete_bytes[2..]), payload);
+        assert_eq!(reparse_payload(header, &complete_bytes[2..]), payload);
     }
 
     #[test]
@@ -482,7 +482,7 @@
             bits.bit(0);
         }
         let payload_bytes = bits.into_bytes();
-        let payload = reparse_payload(&header, &payload_bytes);
+        let payload = reparse_payload(header, &payload_bytes);
         match &payload {
             ParsedObu::MultiFrameHeader(mfh) => {
                 let mfh: &MultiFrameHeader = mfh;
@@ -496,13 +496,13 @@
         let mut writer = BitWriter::new();
         write_obu_payload(&mut writer, &payload, true, &[]).unwrap();
         let bytes = writer.into_bytes();
-        assert_eq!(reparse_payload(&header, &bytes), payload);
+        assert_eq!(reparse_payload(header, &bytes), payload);
 
         // And it round-trips through write_complete_obu (header + payload + tail).
         let mut complete = BitWriter::new();
         write_complete_obu(&mut complete, &header, &payload, &[]).unwrap();
         let complete_bytes = complete.into_bytes();
-        assert_eq!(reparse_payload(&header, &complete_bytes[1..]), payload);
+        assert_eq!(reparse_payload(header, &complete_bytes[1..]), payload);
     }
 
     #[test]
@@ -532,7 +532,7 @@
             bits.bit(0);
         }
         let payload_bytes = bits.into_bytes();
-        let payload = reparse_payload(&header, &payload_bytes);
+        let payload = reparse_payload(header, &payload_bytes);
         match &payload {
             ParsedObu::LayerConfigurationRecord(record) => {
                 assert!(matches!(
@@ -548,7 +548,7 @@
         let mut complete = BitWriter::new();
         write_complete_obu(&mut complete, &header, &payload, &[]).unwrap();
         let complete_bytes = complete.into_bytes();
-        assert_eq!(reparse_payload(&header, &complete_bytes[2..]), payload);
+        assert_eq!(reparse_payload(header, &complete_bytes[2..]), payload);
     }
 
     #[test]
@@ -579,7 +579,7 @@
             bits.bit(0);
         }
         let payload_bytes = bits.into_bytes();
-        let payload = reparse_payload(&header, &payload_bytes);
+        let payload = reparse_payload(header, &payload_bytes);
         match &payload {
             ParsedObu::LayerConfigurationRecord(record) => {
                 assert!(matches!(
@@ -593,18 +593,18 @@
         let mut writer = BitWriter::new();
         write_obu_payload(&mut writer, &payload, true, &[]).unwrap();
         let bytes = writer.into_bytes();
-        assert_eq!(reparse_payload(&header, &bytes), payload);
+        assert_eq!(reparse_payload(header, &bytes), payload);
 
         let mut complete = BitWriter::new();
         write_complete_obu(&mut complete, &header, &payload, &[]).unwrap();
         let complete_bytes = complete.into_bytes();
-        assert_eq!(reparse_payload(&header, &complete_bytes[1..]), payload);
+        assert_eq!(reparse_payload(header, &complete_bytes[1..]), payload);
     }
 
     #[test]
     fn layer_config_record_rejects_non_empty_passthrough() {
         let header = read_obu_header_from_slice(&[0xC0, 0x1F], ByteOffset::new(0)).unwrap();
-        let payload = reparse_payload(&header, &[0x20, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x40]);
+        let payload = reparse_payload(header, &[0x20, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x40]);
         let mut writer = BitWriter::new();
         let err = write_obu_payload(&mut writer, &payload, true, &[0x00]).unwrap_err();
         assert!(
@@ -632,7 +632,7 @@
             bits.bit(0);
         }
         let payload_bytes = bits.into_bytes();
-        let payload = reparse_payload(&header, &payload_bytes);
+        let payload = reparse_payload(header, &payload_bytes);
         match &payload {
             ParsedObu::QuantizationMatrix(qm) => {
                 assert!(!qm.is_reset());
@@ -644,20 +644,20 @@
         let mut writer = BitWriter::new();
         write_obu_payload(&mut writer, &payload, false, &[]).unwrap();
         let bytes = writer.into_bytes();
-        assert_eq!(reparse_payload(&header, &bytes), payload);
+        assert_eq!(reparse_payload(header, &bytes), payload);
 
         // And it round-trips through write_complete_obu (one-byte header + payload + tail).
         let mut complete = BitWriter::new();
         write_complete_obu(&mut complete, &header, &payload, &[]).unwrap();
         let complete_bytes = complete.into_bytes();
-        assert_eq!(reparse_payload(&header, &complete_bytes[1..]), payload);
+        assert_eq!(reparse_payload(header, &complete_bytes[1..]), payload);
     }
 
     #[test]
     fn quantization_matrix_rejects_non_empty_passthrough() {
         let header = read_obu_header_from_slice(&[0x58], ByteOffset::new(0)).unwrap();
         // Reset QM (qm_bit_map = 0, chroma = 0) then the trailing-bits byte.
-        let payload = reparse_payload(&header, &[0x00, 0x00, 0x80]);
+        let payload = reparse_payload(header, &[0x00, 0x00, 0x80]);
         let mut writer = BitWriter::new();
         let err = write_obu_payload(&mut writer, &payload, false, &[0x00]).unwrap_err();
         assert!(
@@ -682,7 +682,7 @@
         while bits.bits.len() % 8 != 0 {
             bits.bit(0);
         }
-        let payload = reparse_payload(&header, &bits.into_bytes());
+        let payload = reparse_payload(header, &bits.into_bytes());
         let mut writer = BitWriter::new();
         let err = write_obu_payload(&mut writer, &payload, true, &[0x00]).unwrap_err();
         assert!(
@@ -696,7 +696,7 @@
     fn atlas_segment_rejects_non_empty_passthrough() {
         let header = read_obu_header_from_slice(&[0xC4, 0x03], ByteOffset::new(0)).unwrap();
         // SINGLE_ATLAS, nominal dims, no signaled ids, then the OBU tail.
-        let payload = reparse_payload(&header, &[0x0F, 0x20]);
+        let payload = reparse_payload(header, &[0x0F, 0x20]);
         let mut writer = BitWriter::new();
         let err = write_obu_payload(&mut writer, &payload, true, &[0x00]).unwrap_err();
         assert!(
@@ -709,7 +709,7 @@
     #[test]
     fn film_grain_rejects_non_empty_passthrough() {
         let header = header_for(ObuType::FilmGrain);
-        let payload = reparse_payload(&header, &[0x00, 0xC0]);
+        let payload = reparse_payload(header, &[0x00, 0xC0]);
         let mut writer = BitWriter::new();
         let err = write_obu_payload(&mut writer, &payload, false, &[0x00]).unwrap_err();
         assert!(
@@ -742,7 +742,7 @@
     #[test]
     fn operating_point_set_rejects_non_empty_passthrough() {
         let header = read_obu_header_from_slice(&[0xC8, 0x1F], ByteOffset::new(0)).unwrap();
-        let payload = reparse_payload(&header, &[0x00, 0x40]);
+        let payload = reparse_payload(header, &[0x00, 0x40]);
         let mut writer = BitWriter::new();
         let err = write_complete_obu(&mut writer, &header, &payload, &[0x00]).unwrap_err();
         assert!(

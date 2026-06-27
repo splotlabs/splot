@@ -301,9 +301,7 @@ impl PlaneGrid {
     /// Reads the flag at superblock-relative (`x`, `y`); out-of-span reads are
     /// `false` (undecoded), matching the spec's `BlockDecoded` default.
     fn get(&self, x: isize, y: isize) -> bool {
-        self.index(x, y)
-            .map(|index| self.cells[index])
-            .unwrap_or(false)
+        self.index(x, y).is_some_and(|index| self.cells[index])
     }
 }
 

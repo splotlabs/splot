@@ -716,7 +716,7 @@ fn reconstruct_general_intra_smooth_over_edges_into<T: ReconSample>(
         side,
         above_right_sentinel,
         bit_depth,
-    )?;
+    );
     let smooth_edges = IntraSmoothEdges::new(&left, &above);
     let mut prediction = vec![T::default(); side * side];
     predict_intra_smooth_rect_into(
@@ -761,7 +761,7 @@ fn build_smooth_edges<T: ReconSample>(
     side: usize,
     above_right_sentinel: Option<T>,
     bit_depth: BitDepth,
-) -> core::result::Result<(Vec<T>, Vec<T>), GeneralIntraResidualError> {
+) -> (Vec<T>, Vec<T>) {
     let edge_len = side + 1;
     // §7.13.2.1 `LeftCol[i]`: reconstructed left column when haveLeft; else when
     // haveAbove, the above neighbour's first sample; else the no-left fallback.
@@ -799,7 +799,7 @@ fn build_smooth_edges<T: ReconSample>(
     {
         *slot = sentinel;
     }
-    Ok((left, above))
+    (left, above)
 }
 
 /// Resolves the AV2 § 7.13.2.1 top-right sentinel `AboveRow[w]` for a SMOOTH
@@ -836,13 +836,11 @@ fn resolve_smooth_above_right_sentinel<T: ReconSample>(
     // `maxX`.
     let plane = workspace.plane(plane_id)?;
     let storage_width = plane.storage_size().width();
-    let max_x = match storage_width.checked_sub(1) {
-        Some(value) => value,
-        None => return Ok(None),
+    let Some(max_x) = storage_width.checked_sub(1) else {
+        return Ok(None);
     };
-    let above_row = match y.checked_sub(1) {
-        Some(value) => value,
-        None => return Ok(None),
+    let Some(above_row) = y.checked_sub(1) else {
+        return Ok(None);
     };
     let x_plus_w = x.saturating_add(side);
     // aboveLimit = Min(maxX, x + w + 4 * num4AboveRight - 1). Since
@@ -1147,7 +1145,7 @@ pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into<T: Reco
     // agree there, but the plane dispatch keeps the spec contract exact.
     if matches!(plane_id, PlaneId::Y) {
         let (left_idif, above_idif) =
-            extend_directional_middle_idif_edges(&left, &above, bit_depth)?;
+            extend_directional_middle_idif_edges(&left, &above, bit_depth);
         predict_intra_middle_directional_angle_rect_idif_into(
             bit_depth,
             block_size,
@@ -1823,11 +1821,11 @@ fn extend_directional_middle_idif_edges<T: ReconSample>(
     left: &[T],
     above: &[T],
     bit_depth: BitDepth,
-) -> core::result::Result<(Vec<T>, Vec<T>), GeneralIntraResidualError> {
-    Ok((
+) -> (Vec<T>, Vec<T>) {
+    (
         extend_one_middle_idif_edge(left, bit_depth),
         extend_one_middle_idif_edge(above, bit_depth),
-    ))
+    )
 }
 
 fn extend_one_middle_idif_edge<T: ReconSample>(edge: &[T], bit_depth: BitDepth) -> Vec<T> {

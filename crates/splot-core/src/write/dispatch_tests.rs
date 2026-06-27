@@ -112,8 +112,8 @@ mod tests {
 
     /// Reparses a written OBU payload through the stateless dispatcher and returns the `ParsedObu`,
     /// asserting the parse fully succeeded (no `Opaque` / `PrefixParsed` / `Unimplemented`).
-    fn reparse_payload(header: &ObuHeader, payload: &[u8]) -> ParsedObu {
-        let status = dispatch_obu_payload(*header, payload, ByteOffset::new(0)).unwrap();
+    fn reparse_payload(header: ObuHeader, payload: &[u8]) -> ParsedObu {
+        let status = dispatch_obu_payload(header, payload, ByteOffset::new(0)).unwrap();
         match status {
             PayloadStatus::Parsed(parsed) => parsed,
             other => panic!("expected Parsed, got {other:?}"),
@@ -154,7 +154,7 @@ mod tests {
         assert!(parsed.error.is_none());
         assert_eq!(parsed.obus.len(), 1);
         assert_eq!(parsed.obus[0].header, header);
-        let reparsed = reparse_payload(&parsed.obus[0].header, parsed.obus[0].payload);
+        let reparsed = reparse_payload(parsed.obus[0].header, parsed.obus[0].payload);
         assert_eq!(reparsed, payload);
 
         // And write_complete_obu produces exactly header-bytes ++ payload-bytes.
@@ -180,7 +180,7 @@ mod tests {
         assert_eq!(bytes, vec![0x01, 0x08], "leb128(1) + TD header, empty payload");
         let parsed = crate::annexb::parse_annex_b_obus_partial(&bytes);
         assert!(parsed.error.is_none());
-        let reparsed = reparse_payload(&parsed.obus[0].header, parsed.obus[0].payload);
+        let reparsed = reparse_payload(parsed.obus[0].header, parsed.obus[0].payload);
         assert_eq!(reparsed, payload);
     }
 
@@ -196,13 +196,13 @@ mod tests {
 
         // One cancelled unit (no layer maps regardless of branch) then a trailing byte.
         let fixture = [0x00u8, 0x00, 0x04, 0x01, 0x80];
-        let payload = reparse_payload(&header, &fixture);
+        let payload = reparse_payload(header, &fixture);
 
         let mut complete = BitWriter::new();
         write_complete_obu(&mut complete, &header, &payload, &[]).unwrap();
         let bytes = complete.into_bytes();
         // bytes = header (2) ++ payload; reparse the payload region.
-        let reparsed = reparse_payload(&header, &bytes[2..]);
+        let reparsed = reparse_payload(header, &bytes[2..]);
         assert_eq!(reparsed, payload);
     }
 

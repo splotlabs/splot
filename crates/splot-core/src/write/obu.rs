@@ -51,7 +51,7 @@ pub fn write_obu_header(writer: &mut BitWriter, header: &ObuHeader) -> WriteResu
     if !writer.is_byte_aligned() {
         return Err(WriteError::WriterNotByteAligned);
     }
-    check_header_encodable(header)?;
+    check_header_encodable(*header)?;
 
     // Byte 0: obu_header_extension_flag f(1), obu_type f(5), obu_tlayer_id f(2).
     writer.write_flag(header.has_header_extension)?;
@@ -73,7 +73,7 @@ pub fn write_obu_header(writer: &mut BitWriter, header: &ObuHeader) -> WriteResu
 ///
 /// # Errors
 /// [`WriteError::InconsistentHeader`] or [`WriteError::NonInferableLayerIds`].
-fn check_header_encodable(header: &ObuHeader) -> WriteResult<()> {
+fn check_header_encodable(header: ObuHeader) -> WriteResult<()> {
     let expected_size = if header.has_header_extension { 2 } else { 1 };
     if header.header_size_bytes != expected_size {
         return Err(WriteError::InconsistentHeader {
@@ -193,7 +193,7 @@ pub fn write_annexb_obu(
     }
     // Validate the header before writing the size prefix so a rejected header leaves
     // no partial bytes (a stray LEB128 size) in the writer.
-    check_header_encodable(header)?;
+    check_header_encodable(*header)?;
     let total = obu_total_len(header.header_size_bytes, payload.len())?;
     writer.write_leb128(total)?;
     write_obu_header(writer, header)?;
@@ -209,9 +209,9 @@ mod tests {
     use crate::span::ByteOffset;
     use crate::types::{ObuType, TemporalLayerId};
 
-    fn write_header(header: &ObuHeader) -> Vec<u8> {
+    fn write_header(header: ObuHeader) -> Vec<u8> {
         let mut writer = BitWriter::new();
-        write_obu_header(&mut writer, header).unwrap();
+        write_obu_header(&mut writer, &header).unwrap();
         writer.into_bytes()
     }
 
@@ -220,7 +220,7 @@ mod tests {
     fn canonical_headers_round_trip_semantic_and_byte_exact() {
         for bytes in [&[0x04u8][..], &[0x99, 0x65][..], &[0x08][..], &[0x50][..]] {
             let header = read_obu_header_from_slice(bytes, ByteOffset::new(0)).unwrap();
-            let written = write_header(&header);
+            let written = write_header(header);
             // Byte-exact for these canonical encodings.
             assert_eq!(written, bytes, "byte-exact for {bytes:02x?}");
             // Semantic: reparse equals the original.
@@ -238,7 +238,7 @@ mod tests {
                 let byte0 = (type_raw << 2) | tlayer; // ext bit 0
                 let header = read_obu_header_from_slice(&[byte0], ByteOffset::new(0)).unwrap();
                 let reparsed =
-                    read_obu_header_from_slice(&write_header(&header), ByteOffset::new(0)).unwrap();
+                    read_obu_header_from_slice(&write_header(header), ByteOffset::new(0)).unwrap();
                 assert_eq!(reparsed, header, "no-ext type={type_raw} tlayer={tlayer}");
             }
         }
@@ -250,7 +250,7 @@ mod tests {
                 let header =
                     read_obu_header_from_slice(&[byte0, byte1], ByteOffset::new(0)).unwrap();
                 let reparsed =
-                    read_obu_header_from_slice(&write_header(&header), ByteOffset::new(0)).unwrap();
+                    read_obu_header_from_slice(&write_header(header), ByteOffset::new(0)).unwrap();
                 assert_eq!(reparsed, header, "ext mlayer={mlayer} xlayer={xlayer}");
             }
         }

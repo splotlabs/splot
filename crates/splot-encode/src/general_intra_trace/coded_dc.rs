@@ -67,9 +67,15 @@ fn compose_general_intra_dc_coded_block_trace(
 /// negative DC of magnitude `CODED_LUMA_DC_MAGNITUDE`) and flat `128` chroma. It is the
 /// encoder's first decodable output carrying a coded coefficient. The cross-crate decode
 /// oracle that proves the reconstruction lives in `splot-cli`.
+///
+/// # Errors
+///
+/// Returns an error if composing the block-symbol trace fails (token construction
+/// or trace allocation), if entropy-coding the trace into tile data fails, or if
+/// the AV2 IVF stream cannot be assembled by `splot-core`.
 pub fn emit_minimal_intra_coded_dc_ivf() -> Result<Vec<u8>> {
     let trace = compose_general_intra_dc_coded_block_trace(CODED_LUMA_DC_MAGNITUDE, true)?;
-    super::emit_minimal_intra_ivf(trace)
+    super::emit_minimal_intra_ivf(&trace)
 }
 
 #[cfg(test)]

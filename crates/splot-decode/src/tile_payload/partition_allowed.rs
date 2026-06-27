@@ -93,7 +93,8 @@ pub(crate) struct PartitionAllowedInput {
 
 impl PartitionAllowedInput {
     /// Creates checked caller facts for § 5.20.3.2 partition allowance.
-    #[allow(clippy::too_many_arguments)]
+    // Each bool is a distinct AV2 §5.20.3.2 syntax flag; bundling them would obscure the spec mapping.
+    #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
     pub(crate) fn new(
         r: usize,
         c: usize,
@@ -337,9 +338,8 @@ pub(crate) fn is_partition_allowed(
     input: PartitionAllowedInput,
     partition: PartitionType,
 ) -> Result<bool, PartitionAllowedError> {
-    let sub_size = match partition_subsize(partition, input.b_size)?.valid() {
-        Some(sub_size) => sub_size,
-        None => return Ok(false),
+    let Some(sub_size) = partition_subsize(partition, input.b_size)?.valid() else {
+        return Ok(false);
     };
     if !input.frame_is_intra && input.mixed_region && sub_size.index() == BLOCK_4X4 {
         return Ok(false);
@@ -886,14 +886,15 @@ mod tests {
 
     #[test]
     fn partition_decision_facts_collect_implied_allowed_and_rect_type() {
-        let facts = partition_decision_facts(input(BLOCK_4X8)).unwrap();
-        assert_eq!(facts.implied_partition(), None);
-        assert!(facts.initialized().allowed().count() > 0);
-
         static LEFT: [usize; 4] = [BLOCK_4X4; 4];
         static ABOVE: [usize; 4] = [BLOCK_4X4; 4];
         static ROW: [usize; 4] = [BLOCK_4X4; 4];
         static GRID: [&[usize]; 4] = [&ROW, &ROW, &ROW, &ROW];
+
+        let facts = partition_decision_facts(input(BLOCK_4X8)).unwrap();
+        assert_eq!(facts.implied_partition(), None);
+        assert!(facts.initialized().allowed().count() > 0);
+
         let decision_input = facts.read_partition_decision_input(
             true,
             PartitionContextInput::new(BLOCK_4X8, 0, 0, 0, [&LEFT, &LEFT], [&ABOVE, &ABOVE])

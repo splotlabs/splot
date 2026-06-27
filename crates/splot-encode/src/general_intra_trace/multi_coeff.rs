@@ -62,9 +62,15 @@ fn compose_general_intra_two_coeff_block_trace() -> Result<Vec<BlockSymbolToken>
 /// `coeff_base` context differs and is computed per AC level; that is a follow-up. The
 /// cross-crate decode oracle (it validates the eob=2 stream and reconstructs the frame) lives in
 /// `splot-cli`.
+///
+/// # Errors
+///
+/// Returns an error if composing the block-symbol trace fails (token construction
+/// or trace allocation), if entropy-coding the trace into tile data fails, or if
+/// the AV2 IVF stream cannot be assembled by `splot-core`.
 pub fn emit_minimal_intra_two_coeff_ivf() -> Result<Vec<u8>> {
     let trace = compose_general_intra_two_coeff_block_trace()?;
-    super::emit_minimal_intra_ivf(trace)
+    super::emit_minimal_intra_ivf(&trace)
 }
 
 /// Composes the general intra eob=2 **visible** multi-coefficient luma block trace: `do_split`,
@@ -111,9 +117,15 @@ fn compose_general_intra_visible_ac_block_trace() -> Result<Vec<BlockSymbolToken
 /// AC, sub-visible) by raising the AC to level 4 — the largest `coeff_base_eob` base level with
 /// no `coeff_br` tail — so the dequantized residual survives rounding. The cross-crate decode
 /// oracle lives in `splot-cli`.
+///
+/// # Errors
+///
+/// Returns an error if composing the block-symbol trace fails (token construction
+/// or trace allocation), if entropy-coding the trace into tile data fails, or if
+/// the AV2 IVF stream cannot be assembled by `splot-core`.
 pub fn emit_minimal_intra_visible_ac_ivf() -> Result<Vec<u8>> {
     let trace = compose_general_intra_visible_ac_block_trace()?;
-    super::emit_minimal_intra_ivf(trace)
+    super::emit_minimal_intra_ivf(&trace)
 }
 
 /// The DC sign for the two-nonzero-coefficient block: **negative** (`dc_sign == 1`). A negative
@@ -172,9 +184,15 @@ fn compose_general_intra_two_nonzero_block_trace() -> Result<Vec<BlockSymbolToke
 /// reverse-scan sign pass (AC `sign_bit` before DC `dc_sign`). The reconstruction is the
 /// visible-AC vertical cosine superimposed on the negative DC offset. The cross-crate decode
 /// oracle lives in `splot-cli`.
+///
+/// # Errors
+///
+/// Returns an error if composing the block-symbol trace fails (token construction
+/// or trace allocation), if entropy-coding the trace into tile data fails, or if
+/// the AV2 IVF stream cannot be assembled by `splot-core`.
 pub fn emit_minimal_intra_two_nonzero_ivf() -> Result<Vec<u8>> {
     let trace = compose_general_intra_two_nonzero_block_trace()?;
-    super::emit_minimal_intra_ivf(trace)
+    super::emit_minimal_intra_ivf(&trace)
 }
 
 /// Composes the general intra **eob=3** luma block trace: `do_split`, the mode prefix, the
@@ -223,9 +241,15 @@ fn compose_general_intra_eob3_block_trace() -> Result<Vec<BlockSymbolToken>> {
 /// This is the encoder's first frame with `eob > 2`: it exercises the `eob_extra` CDF symbol
 /// (the gateway to arbitrary-length blocks). The level-4 AC reconstructs a horizontal
 /// low-frequency cosine. The cross-crate decode oracle lives in `splot-cli`.
+///
+/// # Errors
+///
+/// Returns an error if composing the block-symbol trace fails (token construction
+/// or trace allocation), if entropy-coding the trace into tile data fails, or if
+/// the AV2 IVF stream cannot be assembled by `splot-core`.
 pub fn emit_minimal_intra_eob3_ivf() -> Result<Vec<u8>> {
     let trace = compose_general_intra_eob3_block_trace()?;
-    super::emit_minimal_intra_ivf(trace)
+    super::emit_minimal_intra_ivf(&trace)
 }
 
 /// The scan-1 (vertical) AC sign for the 2-D block: NEGATIVE. With the scan-2 (horizontal) AC
@@ -281,9 +305,15 @@ fn compose_general_intra_2d_block_trace() -> Result<Vec<BlockSymbolToken>> {
 /// This is the encoder's first frame whose reconstruction varies in **both** dimensions: the
 /// horizontal and vertical low-frequency cosines superimposed (with opposite signs). The
 /// cross-crate decode oracle lives in `splot-cli`.
+///
+/// # Errors
+///
+/// Returns an error if composing the block-symbol trace fails (token construction
+/// or trace allocation), if entropy-coding the trace into tile data fails, or if
+/// the AV2 IVF stream cannot be assembled by `splot-core`.
 pub fn emit_minimal_intra_2d_ivf() -> Result<Vec<u8>> {
     let trace = compose_general_intra_2d_block_trace()?;
-    super::emit_minimal_intra_ivf(trace)
+    super::emit_minimal_intra_ivf(&trace)
 }
 
 #[cfg(test)]

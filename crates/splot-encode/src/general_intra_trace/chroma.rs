@@ -72,10 +72,16 @@ fn compose_general_intra_coded_chroma_u_block_trace(
 /// This proves chroma residual reconstruction: decoding reconstructs a flat luma plane of
 /// `128` (skipped), a flat U plane below `128` (the dequantized negative chroma DC), and a
 /// flat V plane of `128` (skipped). The cross-crate decode oracle lives in `splot-cli`.
+///
+/// # Errors
+///
+/// Returns an error if composing the block-symbol trace fails (token construction
+/// or trace allocation), if entropy-coding the trace into tile data fails, or if
+/// the AV2 IVF stream cannot be assembled by `splot-core`.
 pub fn emit_minimal_intra_coded_chroma_ivf() -> Result<Vec<u8>> {
     let trace =
         compose_general_intra_coded_chroma_u_block_trace(CODED_CHROMA_U_DC_MAGNITUDE, true)?;
-    super::emit_minimal_intra_ivf(trace)
+    super::emit_minimal_intra_ivf(&trace)
 }
 
 /// Composes the general intra coded-*chroma-V* block trace: `do_split`, the mode prefix, a
@@ -132,10 +138,16 @@ fn compose_general_intra_coded_chroma_v_block_trace(
 /// below `128` (the dequantized negative chroma DC). With the U and V coded frames this
 /// completes the per-plane coded-residual set. The cross-crate decode oracle lives in
 /// `splot-cli`.
+///
+/// # Errors
+///
+/// Returns an error if composing the block-symbol trace fails (token construction
+/// or trace allocation), if entropy-coding the trace into tile data fails, or if
+/// the AV2 IVF stream cannot be assembled by `splot-core`.
 pub fn emit_minimal_intra_coded_chroma_v_ivf() -> Result<Vec<u8>> {
     let trace =
         compose_general_intra_coded_chroma_v_block_trace(CODED_CHROMA_U_DC_MAGNITUDE, true)?;
-    super::emit_minimal_intra_ivf(trace)
+    super::emit_minimal_intra_ivf(&trace)
 }
 
 /// Composes the general intra all-planes-coded block trace: `do_split`, the mode prefix, then
@@ -198,13 +210,19 @@ fn compose_general_intra_all_planes_coded_block_trace(
 /// This is the encoder's first frame with all three planes coded at once, mirroring the q80
 /// fixture's structure: decoding reconstructs flat planes below `128` on every plane. The
 /// cross-crate decode oracle lives in `splot-cli`.
+///
+/// # Errors
+///
+/// Returns an error if composing the block-symbol trace fails (token construction
+/// or trace allocation), if entropy-coding the trace into tile data fails, or if
+/// the AV2 IVF stream cannot be assembled by `splot-core`.
 pub fn emit_minimal_intra_all_planes_coded_ivf() -> Result<Vec<u8>> {
     let trace = compose_general_intra_all_planes_coded_block_trace(
         CODED_LUMA_DC_MAGNITUDE,
         CODED_CHROMA_U_DC_MAGNITUDE,
         true,
     )?;
-    super::emit_minimal_intra_ivf(trace)
+    super::emit_minimal_intra_ivf(&trace)
 }
 
 #[cfg(test)]

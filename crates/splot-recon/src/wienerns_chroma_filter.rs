@@ -404,13 +404,13 @@ mod tests {
 
     const ZERO_CHROMA: [i16; WIENER_NS_CHROMA_COEFFS] = [0; WIENER_NS_CHROMA_COEFFS];
 
-    fn chroma_params<'a>(
+    fn chroma_params(
         width: usize,
         height: usize,
         output_stride: usize,
         bit_depth: BitDepth,
-        coeffs: &'a [i16; WIENER_NS_CHROMA_COEFFS],
-    ) -> WienerNsChromaFilter<'a> {
+        coeffs: &[i16; WIENER_NS_CHROMA_COEFFS],
+    ) -> WienerNsChromaFilter<'_> {
         WienerNsChromaFilter {
             x: 0,
             y: 0,

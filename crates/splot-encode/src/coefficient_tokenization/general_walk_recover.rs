@@ -95,7 +95,7 @@ pub(crate) fn recover_quant_from_tokens_geom(
         let pos = scan_pos(&scan, c)?;
         let token = coeff_token_at(tokens, &mut index)?;
         let mut level = recover_base_level(token, offset);
-        level += recover_interleaved_coeff_br(tokens, &mut index)?;
+        level += recover_interleaved_coeff_br(tokens, &mut index);
         if let Some(slot) = levels.get_mut(pos) {
             *slot = level;
         }
@@ -281,15 +281,15 @@ fn recover_base_level(token: CoefficientEntropyToken, offset: usize) -> u32 {
 /// coefficient's `coeff_base_eob` / `coeff_base`: when the next token is a `coeff_br`,
 /// it is consumed and its symbol is returned (the level increment); otherwise the
 /// cursor is left untouched and `0` is returned.
-fn recover_interleaved_coeff_br(tokens: &[BlockSymbolToken], index: &mut usize) -> Result<u32> {
+fn recover_interleaved_coeff_br(tokens: &[BlockSymbolToken], index: &mut usize) -> u32 {
     match tokens.get(*index) {
         Some(BlockSymbolToken::Coeff(coeff))
             if matches!(coeff.syntax(), CoefficientTokenSyntax::CoeffBr) =>
         {
             *index += 1;
-            Ok(u32::from(coeff.symbol()))
+            u32::from(coeff.symbol())
         }
-        _ => Ok(0),
+        _ => 0,
     }
 }
 

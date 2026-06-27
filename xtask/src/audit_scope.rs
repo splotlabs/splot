@@ -42,12 +42,12 @@ pub(crate) struct AuditScopeOptions {
 }
 
 /// Implements `cargo xtask audit-scope`.
-pub(crate) fn run_audit_scope(root: &Path, options: AuditScopeOptions) -> Result<()> {
+pub(crate) fn run_audit_scope(root: &Path, options: &AuditScopeOptions) -> Result<()> {
     if options.write_ledger && options.base.is_some() {
         bail!("audit-scope --write-ledger cannot be used with --base");
     }
 
-    let report = build_report(root, &options)?;
+    let report = build_report(root, options)?;
     if options.write_ledger {
         write_ledger(root, &report.ledger_path, &report.ledger_update)?;
     }
@@ -245,31 +245,32 @@ fn build_report(root: &Path, options: &AuditScopeOptions) -> Result<AuditScopeRe
 }
 
 fn render_text(report: &AuditScopeReport) -> String {
+    use std::fmt::Write as _;
+
     let mut out = String::new();
     out.push_str("audit-scope\n");
-    out.push_str(&format!(
-        "  protocol_version: {}\n",
-        report.protocol_version
-    ));
-    out.push_str(&format!("  mode: {:?}\n", report.mode));
-    out.push_str(&format!("  audited_commit: {}\n", report.audited_commit));
-    out.push_str(&format!("  candidate_count: {}\n", report.candidate_count));
+    // Writing to a `String` is infallible, so the `fmt::Result` is discarded.
+    let _ = writeln!(out, "  protocol_version: {}", report.protocol_version);
+    let _ = writeln!(out, "  mode: {:?}", report.mode);
+    let _ = writeln!(out, "  audited_commit: {}", report.audited_commit);
+    let _ = writeln!(out, "  candidate_count: {}", report.candidate_count);
     if !report.force_wide_review_triggers.is_empty() {
         out.push_str("  force_wide_review_triggers:\n");
         for trigger in &report.force_wide_review_triggers {
-            out.push_str(&format!("    - {} ({})\n", trigger.path, trigger.reason));
+            let _ = writeln!(out, "    - {} ({})", trigger.path, trigger.reason);
         }
     }
     out.push_str("  candidates:\n");
     for candidate in &report.candidates {
-        out.push_str(&format!(
-            "    - {} [{}] reasons={} features={} lanes={}\n",
+        let _ = writeln!(
+            out,
+            "    - {} [{}] reasons={} features={} lanes={}",
             candidate.path,
             candidate.scope_kind,
             candidate.reasons.join(","),
             candidate.feature_ids.join(","),
             candidate.reviewer_lanes.join(","),
-        ));
+        );
     }
     out
 }
@@ -402,7 +403,7 @@ fn append_deleted_diff_candidates(
         };
         candidates.push(deleted_candidate(
             path,
-            scope_kind,
+            &scope_kind,
             BTreeSet::from(["deleted-in-diff".to_owned()]),
             base_feature_ids_by_path
                 .get(path)
@@ -437,7 +438,7 @@ fn append_deleted_ledger_candidates(
         };
         candidates.push(deleted_candidate(
             &entry.path,
-            scope_kind,
+            &scope_kind,
             BTreeSet::from(["deleted-since-ledger".to_owned()]),
             entry.feature_ids.iter().cloned().collect(),
             feature_index,
@@ -449,7 +450,7 @@ fn append_deleted_ledger_candidates(
 
 fn deleted_candidate(
     path: &str,
-    scope_kind: String,
+    scope_kind: &str,
     mut reasons: BTreeSet<String>,
     mut feature_ids: BTreeSet<String>,
     feature_index: &FeatureIndex,
@@ -462,10 +463,10 @@ fn deleted_candidate(
     AuditCandidate {
         path: path.to_owned(),
         sha256: DELETED_FILE_SHA256.to_owned(),
-        scope_kind: scope_kind.clone(),
+        scope_kind: scope_kind.to_owned(),
         reasons: reasons.into_iter().collect(),
         feature_ids: feature_ids.into_iter().collect(),
-        reviewer_lanes: reviewer_lanes(path, &scope_kind).into_iter().collect(),
+        reviewer_lanes: reviewer_lanes(path, scope_kind).into_iter().collect(),
     }
 }
 
@@ -536,9 +537,9 @@ fn force_wide_review_triggers(
 
 fn force_wide_review_reason(path: &str) -> Option<String> {
     match path {
-        "AGENTS.md" => Some("repository-agent-instructions".to_owned()),
-        "CLAUDE.md" => Some("repository-agent-instructions".to_owned()),
-        ".github/copilot-instructions.md" => Some("repository-agent-instructions".to_owned()),
+        "AGENTS.md" | "CLAUDE.md" | ".github/copilot-instructions.md" => {
+            Some("repository-agent-instructions".to_owned())
+        }
         "Cargo.toml" => Some("workspace-membership".to_owned()),
         "docs/IMPLEMENTATION-MATRIX.toml" => Some("implementation-matrix".to_owned()),
         "docs/SPEC-MAPPING.md" => Some("spec-mapping".to_owned()),
@@ -811,7 +812,7 @@ fn workspace_members_from_manifest_text(root: &Path, text: &str) -> Result<Vec<W
         .cloned()
         .unwrap_or_default();
     let exclude_patterns = workspace_exclude_patterns(root, &value)?;
-    let workspace_dependency_paths = workspace_dependency_paths(root, &value)?;
+    let workspace_dependency_paths = workspace_dependency_paths(root, &value);
     let mut out = Vec::new();
     let mut seen_paths = BTreeSet::new();
     for member in members {
@@ -873,7 +874,7 @@ fn workspace_members_from_manifest_text_at_revision(
         .cloned()
         .unwrap_or_default();
     let exclude_patterns = workspace_exclude_patterns(root, &value)?;
-    let workspace_dependency_paths = workspace_dependency_paths(root, &value)?;
+    let workspace_dependency_paths = workspace_dependency_paths(root, &value);
     let mut out = Vec::new();
     let mut seen_paths = BTreeSet::new();
     for member in members {
@@ -1038,7 +1039,7 @@ fn workspace_exclude_patterns(
 fn workspace_dependency_paths(
     root: &Path,
     workspace_manifest: &toml::Value,
-) -> Result<BTreeMap<String, String>> {
+) -> BTreeMap<String, String> {
     let mut out = BTreeMap::new();
     if let Some(dependencies) = workspace_manifest
         .get("workspace")
@@ -1056,7 +1057,7 @@ fn workspace_dependency_paths(
             }
         }
     }
-    Ok(out)
+    out
 }
 
 fn package_path_dependencies(
@@ -1080,7 +1081,7 @@ fn package_path_dependencies(
         &value,
         workspace_dependency_paths,
         &mut out,
-    )?;
+    );
     Ok(out.into_iter().collect())
 }
 
@@ -1104,7 +1105,7 @@ fn package_path_dependencies_at_revision(
         &value,
         workspace_dependency_paths,
         &mut out,
-    )?;
+    );
     Ok(out.into_iter().collect())
 }
 
@@ -1114,7 +1115,7 @@ fn collect_package_path_dependencies(
     manifest: &toml::Value,
     workspace_dependency_paths: &BTreeMap<String, String>,
     paths: &mut BTreeSet<String>,
-) -> Result<()> {
+) {
     for key in ["dependencies", "dev-dependencies", "build-dependencies"] {
         if let Some(dependencies) = manifest.get(key).and_then(toml::Value::as_table) {
             collect_dependency_table_paths(
@@ -1123,7 +1124,7 @@ fn collect_package_path_dependencies(
                 dependencies,
                 workspace_dependency_paths,
                 paths,
-            )?;
+            );
         }
     }
     if let Some(targets) = manifest.get("target").and_then(toml::Value::as_table) {
@@ -1134,10 +1135,9 @@ fn collect_package_path_dependencies(
                 target,
                 workspace_dependency_paths,
                 paths,
-            )?;
+            );
         }
     }
-    Ok(())
 }
 
 fn collect_dependency_table_paths(
@@ -1146,7 +1146,7 @@ fn collect_dependency_table_paths(
     dependencies: &toml::Table,
     workspace_dependency_paths: &BTreeMap<String, String>,
     paths: &mut BTreeSet<String>,
-) -> Result<()> {
+) {
     for (name, value) in dependencies {
         let Some(table) = value.as_table() else {
             continue;
@@ -1161,7 +1161,6 @@ fn collect_dependency_table_paths(
             paths.insert(path.clone());
         }
     }
-    Ok(())
 }
 
 fn expand_workspace_member_pattern(
@@ -2243,7 +2242,7 @@ edition = "2024"
     fn run_audit_scope_rejects_diff_mode_ledger_writes() -> Result<()> {
         let Err(err) = run_audit_scope(
             Path::new("."),
-            AuditScopeOptions {
+            &AuditScopeOptions {
                 base: Some("HEAD~1".to_owned()),
                 ledger: None,
                 write_ledger: true,

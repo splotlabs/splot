@@ -93,7 +93,8 @@ fn load_manifest(root: &Path) -> Result<Manifest> {
 
 #[derive(Debug, Deserialize)]
 struct Manifest {
-    manifest_version: Option<u32>,
+    #[serde(rename = "manifest_version")]
+    version: Option<u32>,
     last_reviewed: Option<String>,
     #[serde(default)]
     evidence: Vec<Evidence>,
@@ -160,7 +161,7 @@ struct DigestRecord {
 fn validate_manifest(root: &Path, manifest: &Manifest) -> Result<()> {
     let mut problems = Vec::new();
 
-    match manifest.manifest_version {
+    match manifest.version {
         Some(SUPPORTED_MANIFEST_VERSION) => {}
         Some(other) => problems.push(format!(
             "unsupported manifest_version {other} (this tool supports {SUPPORTED_MANIFEST_VERSION})"

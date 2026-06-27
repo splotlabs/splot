@@ -85,6 +85,7 @@ impl FrameInfo {
     }
 
     /// Returns metadata with timestamp ticks attached.
+    #[must_use]
     pub const fn with_timestamp(mut self, timestamp: FrameTimestamp) -> Self {
         self.timestamp = Some(timestamp);
         self
@@ -117,7 +118,7 @@ impl FrameInfo {
 }
 
 /// Borrowed candidate plane input before frame-level validation.
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct FramePlaneInput<'a> {
     samples: &'a [u8],
     stride_samples: usize,
@@ -166,7 +167,7 @@ impl<'a> FramePlaneInput<'a> {
 }
 
 /// Borrowed candidate plane set before frame-level validation.
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct FramePlanesInput<'a> {
     y: FramePlaneInput<'a>,
     u: Option<FramePlaneInput<'a>>,
@@ -377,6 +378,7 @@ impl RetainedFrame {
 
     /// Returns a second retained handle to the same frame storage without
     /// copying pixels.
+    #[must_use]
     pub fn share(&self) -> Self {
         Self {
             info: self.info,
@@ -488,12 +490,12 @@ mod tests {
         PlaneRect::new(x, y, width, height).unwrap()
     }
 
-    fn plane_input<'a>(
-        samples: &'a [u8],
+    fn plane_input(
+        samples: &[u8],
         stride_samples: usize,
         width: usize,
         height: usize,
-    ) -> FramePlaneInput<'a> {
+    ) -> FramePlaneInput<'_> {
         FramePlaneInput::new(samples, stride_samples, rect(0, 0, width, height))
     }
 

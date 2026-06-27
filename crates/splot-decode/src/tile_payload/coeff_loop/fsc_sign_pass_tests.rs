@@ -44,12 +44,12 @@ fn config() -> CoeffFscLevelPassConfig {
     }
 }
 
-fn setup_level_pass<'a>(
-    payload: &'a [u8],
+fn setup_level_pass(
+    payload: &[u8],
     seg_eob: usize,
 ) -> Option<(
     TileCdfSubset,
-    SymbolDecoder<'a>,
+    SymbolDecoder<'_>,
     FscCoeffScanWalk,
     NonZeroCoeffFscLevelPass,
 )> {

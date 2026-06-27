@@ -142,6 +142,9 @@ pub struct FilmGrainModel {
 /// validator) fall back to `(false, false)`; `subX` / `subY` are not used by
 /// `film_grain_model()` itself, so the fallback only affects the preserved summary.
 const fn chroma_subsampling(chroma_idc: u32) -> (bool, bool) {
+    // The CHROMA_FORMAT_444 arm is kept distinct from the out-of-range `_` fallback to
+    // document the § 5.14 don't-care semantics, even though both yield (false, false).
+    #[allow(clippy::match_same_arms)]
     match chroma_idc {
         // AV2 § 5.14 explicitly assigns subX = subY = 1 to both CHROMA_FORMAT_420 and
         // CHROMA_FORMAT_400 (monochrome). The fields are a don't-care for the model

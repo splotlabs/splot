@@ -85,7 +85,7 @@ pub fn write_film_grain_config(
     fg: &FilmGrainConfig,
     input: &FrameTailInput,
 ) -> WriteResult<()> {
-    check_film_grain_encodable(fg, input)?;
+    check_film_grain_encodable(*fg, *input)?;
 
     // § 5.18.10.1: apply_grain is coded f(1) only when grain is present, the frame is output,
     // and the header is not single-picture; otherwise it is inferred (no bit).
@@ -111,7 +111,7 @@ pub fn write_film_grain_config(
 /// Validates a [`FilmGrainConfig`] is a model the § 5.18.10.1
 /// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-10-1`) parser could have produced for
 /// `input`, before any bit is written.
-fn check_film_grain_encodable(fg: &FilmGrainConfig, input: &FrameTailInput) -> WriteResult<()> {
+fn check_film_grain_encodable(fg: FilmGrainConfig, input: FrameTailInput) -> WriteResult<()> {
     let grain_gated_off = !input.film_grain_params_present
         || (!input.immediate_output_frame && !input.implicit_output_frame);
     if grain_gated_off {
@@ -171,7 +171,7 @@ pub fn write_intra_tail(
     tail: &FrameHeaderTail,
     input: &FrameTailInput,
 ) -> WriteResult<()> {
-    check_intra_tail_encodable(tail, input)?;
+    check_intra_tail_encodable(tail, *input)?;
 
     // § 5.18.8.1: read_tx_mode().
     write_tx_mode(writer, tail.tx_mode, input.coded_lossless)?;
@@ -187,7 +187,7 @@ pub fn write_intra_tail(
 /// Validates a [`FrameHeaderTail`] is a model the § 5.18.2
 /// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2`) intra-tail parser could have
 /// produced for `input`, before any bit is written.
-fn check_intra_tail_encodable(tail: &FrameHeaderTail, input: &FrameTailInput) -> WriteResult<()> {
+fn check_intra_tail_encodable(tail: &FrameHeaderTail, input: FrameTailInput) -> WriteResult<()> {
     // § 5.18.2 intra path: every no-bit inference is false; a true value is not reproducible.
     if tail.reference_select
         || tail.skip_mode_present
@@ -213,7 +213,7 @@ fn check_intra_tail_encodable(tail: &FrameHeaderTail, input: &FrameTailInput) ->
     if !input.coded_lossless && tail.tx_mode == TxMode::Only4x4 {
         return Err(WriteError::NonCanonicalFrameHeader { what: "tx_mode" });
     }
-    check_film_grain_encodable(&tail.film_grain, input)?;
+    check_film_grain_encodable(tail.film_grain, input)?;
     Ok(())
 }
 

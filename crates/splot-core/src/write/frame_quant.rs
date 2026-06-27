@@ -61,7 +61,7 @@
 //!    original discarded DC bits are not recovered byte-exactly.
 
 use crate::headers::frame::{
-    CoreSeqQuantView, DeltaQParams, LosslessInfo, MAX_PIC_QM_NUM, QuantizationParams,
+    CoreSeqQuantView, DeltaQParams, LosslessInfo, MAX_PIC_QM_NUM, QmSetLevels, QuantizationParams,
     SegmentationParams, SetupQmParams, ceil_log2, get_qindex_ignore_delta_q,
 };
 use crate::segment::MAX_SEGMENTS;
@@ -404,7 +404,7 @@ fn check_setup_qm_encodable(
     if !qm.using_qmatrix {
         // The parser leaves pic_qm_num_minus_1 = 0 and every level zeroed when QM is off;
         // a non-default model could not have been produced.
-        if qm.pic_qm_num_minus_1 != 0 || qm.levels.iter().any(|l| *l != Default::default()) {
+        if qm.pic_qm_num_minus_1 != 0 || qm.levels.iter().any(|l| *l != QmSetLevels::default()) {
             return Err(WriteError::NonCanonicalFrameHeader {
                 what: "setup_qm_disabled",
             });
@@ -446,7 +446,7 @@ fn check_setup_qm_encodable(
                     });
                 }
             }
-        } else if *level != Default::default() {
+        } else if *level != QmSetLevels::default() {
             // Levels beyond qmNum are never read; the parser leaves them zeroed.
             return Err(WriteError::NonCanonicalFrameHeader {
                 what: "qm_level_beyond_num",
@@ -485,7 +485,7 @@ pub fn write_delta_q_params(
     dq: &DeltaQParams,
     base_q_idx: u32,
 ) -> WriteResult<()> {
-    check_delta_q_params_encodable(dq, base_q_idx)?;
+    check_delta_q_params_encodable(*dq, base_q_idx)?;
 
     // § 5.18.7.8: if ( base_q_idx > 0 ) delta_q_present f(1) else inferred 0.
     if base_q_idx > 0 {
@@ -500,7 +500,7 @@ pub fn write_delta_q_params(
 
 /// Validates a [`DeltaQParams`] is a model the § 5.18.7.8
 /// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-7-8`) parser could have produced.
-fn check_delta_q_params_encodable(dq: &DeltaQParams, base_q_idx: u32) -> WriteResult<()> {
+fn check_delta_q_params_encodable(dq: DeltaQParams, base_q_idx: u32) -> WriteResult<()> {
     // delta_q_present is inferred 0 when base_q_idx == 0 (no bit).
     if base_q_idx == 0 && dq.delta_q_present {
         return Err(WriteError::NonCanonicalFrameHeader {
@@ -571,7 +571,7 @@ pub fn write_lossless_info(
         quant,
         quantization,
         qm,
-        delta_q,
+        *delta_q,
         segmentation,
         max_segments,
     )?;
@@ -632,7 +632,7 @@ fn check_lossless_encodable(
     quant: &CoreSeqQuantView,
     quantization: &QuantizationParams,
     qm: &SetupQmParams,
-    delta_q: &DeltaQParams,
+    delta_q: DeltaQParams,
     segmentation: &SegmentationParams,
     max_segments: u8,
 ) -> WriteResult<DerivedLossless> {

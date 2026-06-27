@@ -167,6 +167,7 @@ pub(crate) fn deblock_general_intra_frame<T: ReconSample>(
 }
 
 /// Inputs to the § 7.17.2 edge deblocking filter process for one MI edge.
+#[derive(Clone, Copy)]
 struct EdgeContext {
     plane: usize,
     plane_id: PlaneId,
@@ -347,18 +348,7 @@ fn deblock_filter_edge<T: ReconSample>(
     #[cfg(debug_assertions)]
     if std::env::var_os("SPLOT_DEBLOCK_TRACE").is_some() {
         eprintln!(
-            "DEBLOCK plane={} pass={} edge(xP={},yP={}) lvl_strengths(qThr={},side={}) filterSize={} maxW(neg={},pos={}) width={} sbEdge={}",
-            plane,
-            pass,
-            x_p,
-            y_p,
-            q_thr,
-            side,
-            filter_size,
-            max_width_neg,
-            max_width_pos,
-            width,
-            sb_edge
+            "DEBLOCK plane={plane} pass={pass} edge(xP={x_p},yP={y_p}) lvl_strengths(qThr={q_thr},side={side}) filterSize={filter_size} maxW(neg={max_width_neg},pos={max_width_pos}) width={width} sbEdge={sb_edge}"
         );
     }
     let q_thresh_mult = Q_THRESH_MULTS[eff_neg.max(eff_pos) - 1];

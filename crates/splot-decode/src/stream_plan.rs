@@ -59,6 +59,8 @@ impl<'a> DecodeStreamInput<'a> {
 }
 
 /// The fixed base-layer selection supported by the first stream planner.
+// `*_layer_id` fields mirror the AV2 temporal/embedded/extended layer-id syntax elements; the suffix preserves that mapping.
+#[allow(clippy::struct_field_names)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DecodeLayerSelection {
     temporal_layer_id: TemporalLayerId,
@@ -925,9 +927,6 @@ fn ivf_error_frame_index(error: &IvfError) -> Option<usize> {
     match error {
         IvfError::TruncatedFrameHeader { frame_index, .. }
         | IvfError::TruncatedFramePayload { frame_index, .. } => Some(*frame_index),
-        IvfError::TruncatedHeader { .. }
-        | IvfError::InvalidSignature { .. }
-        | IvfError::InvalidHeaderLength { .. } => None,
         _ => None,
     }
 }
@@ -941,9 +940,6 @@ fn ivf_warning_frame_index(warning: &IvfWarning) -> Option<usize> {
 
 fn core_error_offset(error: &splot_core::Error) -> Option<ByteOffset> {
     match error {
-        splot_core::Error::Unimplemented { .. }
-        | splot_core::Error::BitWidthTooLarge { .. }
-        | splot_core::Error::ByteWidthTooLarge { .. } => None,
         splot_core::Error::UnexpectedEof { offset, .. }
         | splot_core::Error::InvalidLeb128 { offset, .. }
         | splot_core::Error::InvalidUvlc { offset, .. }

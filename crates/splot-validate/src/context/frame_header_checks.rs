@@ -55,6 +55,7 @@ pub(super) fn frame_header_core_checks(
     options: &ValidationOptions,
     report: &mut ValidationReport,
 ) -> FrameRapReferences {
+    const PRIMARY_REF_NONE: u8 = 7;
     let FrameReferenceAvailability {
         qm: qm_state,
         film_grain: film_grain_state,
@@ -303,7 +304,6 @@ pub(super) fn frame_header_core_checks(
     // implicit `get_ref_frames()` map (unmodeled) records `num_total_refs == None`, so this
     // check under-reports there (stays silent rather than guessing NumTotalRefs). Decidable
     // from the two recorded scalars alone — no reference-frame buffer state is required.
-    const PRIMARY_REF_NONE: u8 = 7;
     if let Some(inter) = core.inter.as_ref()
         && inter.signal_primary_ref_frame == Some(true)
         && let Some(primary_ref_frame) = inter.primary_ref_frame
@@ -500,7 +500,7 @@ pub(super) fn frame_header_core_checks(
         .or_else(|| core.intra_tail.as_ref().map(|tail| &tail.film_grain))
     {
         frame_film_grain_reference_checks(
-            film_grain,
+            *film_grain,
             film_grain_state,
             active_sequence,
             options,

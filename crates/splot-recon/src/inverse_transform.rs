@@ -109,6 +109,9 @@ pub fn inverse_transform_1d(
 /// width, so an out-of-contract `shift` saturates to the arithmetic-shift limit
 /// instead of panicking (spec-conformant callers use shift 0 or 3). The result
 /// is returned as `i32` (lossless residuals are bounded well within `i32`).
+// `a`/`b`/`c`/`d`/`e` are the AV2 § 7.15.2.2 Walsh-Hadamard butterfly registers,
+// named after the spec pseudocode's intermediate variables.
+#[allow(clippy::many_single_char_names)]
 #[must_use]
 pub fn inverse_walsh_hadamard(src: [i32; 4], shift: u8) -> [i32; 4] {
     let shift = u32::from(shift).min(i64::BITS - 1);

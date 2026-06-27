@@ -54,10 +54,10 @@ fn branch_nonzero(branch: CoeffBlockEobBranch) -> Option<NonZeroCoeffBlockStart>
 /// Reads the non-zero EOB branch for `start` over a default tile and returns the
 /// tile, the live decoder, and the non-zero block start (or `None` if any step
 /// fails or the branch is all-zero).
-pub(crate) fn setup_start_with_input<'a>(
-    payload: &'a [u8],
+pub(crate) fn setup_start_with_input(
+    payload: &[u8],
     start: NonZeroCoeffBlockStartInput,
-) -> Option<(TileCdfSubset, SymbolDecoder<'a>, NonZeroCoeffBlockStart)> {
+) -> Option<(TileCdfSubset, SymbolDecoder<'_>, NonZeroCoeffBlockStart)> {
     let frame = FrameCdfSubset::from_defaults();
     let mut tile = frame.tile_copy();
     let mut symbols = symbol_decoder(payload);

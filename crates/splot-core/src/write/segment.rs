@@ -126,7 +126,7 @@ pub(crate) fn check_seg_info_encodable(info: &SegmentInfo, num_segments: u8) -> 
                 }
                 continue;
             }
-            check_feature_encodable(feature, j)?;
+            check_feature_encodable(*feature, j)?;
         }
     }
     Ok(())
@@ -134,7 +134,7 @@ pub(crate) fn check_seg_info_encodable(info: &SegmentInfo, num_segments: u8) -> 
 
 /// Validates one `(enabled, data)` feature pair against the § 5.4.9 clip/zero rules for
 /// feature index `j`.
-fn check_feature_encodable(feature: &SegmentFeature, j: usize) -> WriteResult<()> {
+fn check_feature_encodable(feature: SegmentFeature, j: usize) -> WriteResult<()> {
     if !feature.enabled {
         // A disabled feature is `data = 0` (the parser never reads its value).
         if feature.data != 0 {

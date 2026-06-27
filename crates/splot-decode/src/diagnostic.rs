@@ -49,7 +49,7 @@ impl DecodeDiagnosticReport {
     #[must_use]
     pub fn from_decode_error(error: &DecodeError) -> Option<Self> {
         match error {
-            DecodeError::Pool { .. } => None,
+            DecodeError::Pool { .. } | DecodeError::Reconstruction { .. } => None,
             DecodeError::Limit { source } => Some(Self::resource_limit(*source)),
             DecodeError::MalformedSource { issue } => Some(Self::malformed_source(issue)),
             DecodeError::UnsupportedStructure { unsupported } => {
@@ -58,7 +58,6 @@ impl DecodeDiagnosticReport {
             DecodeError::UnsupportedFeature { unsupported } => {
                 Some(Self::unsupported_feature(unsupported.as_ref()))
             }
-            DecodeError::Reconstruction { .. } => None,
             DecodeError::Output { source } => Some(Self::output_error(source)),
         }
     }
@@ -87,7 +86,7 @@ impl DecodeDiagnosticReport {
             details: DecodeDiagnosticDetails::MalformedSource(DecodeMalformedSourceDetails {
                 source_issue_kind: issue.kind().as_str(),
                 parser_rule_id: issue.rule_id(),
-                byte_offset: issue.offset().map(|offset| offset.get()),
+                byte_offset: issue.offset().map(splot_core::span::ByteOffset::get),
                 frame_index: issue.frame_index(),
                 parser_message: issue.message().to_owned(),
             }),
@@ -112,8 +111,7 @@ impl DecodeDiagnosticReport {
                 limit: check.and_then(|check| check.threshold().max_value()),
                 actual: source.actual(),
                 unit: check
-                    .map(|check| check.unit().as_str())
-                    .unwrap_or_else(|| limit_name.unit().as_str()),
+                    .map_or_else(|| limit_name.unit().as_str(), |check| check.unit().as_str()),
                 byte_offset: None,
                 bit_offset: None,
             }),
@@ -155,7 +153,9 @@ impl DecodeDiagnosticReport {
             details: DecodeDiagnosticDetails::UnsupportedFeature(DecodeUnsupportedFeatureDetails {
                 unsupported_reason: unsupported.reason(),
                 tier_id: unsupported.tier_id(),
-                byte_offset: unsupported.byte_offset().map(|offset| offset.get()),
+                byte_offset: unsupported
+                    .byte_offset()
+                    .map(splot_core::span::ByteOffset::get),
             }),
         }
     }
@@ -322,9 +322,8 @@ const fn malformed_source_spec_section(kind: DecodeSourceIssueKind) -> Option<&'
 
 const fn resource_limit_spec_section(name: DecodeLimitName) -> Option<&'static str> {
     match name {
-        DecodeLimitName::MaxInputBytes => None,
+        DecodeLimitName::MaxInputBytes | DecodeLimitName::MaxIvfFrameRecords => None,
         DecodeLimitName::MaxObus => Some("5.2.1"),
-        DecodeLimitName::MaxIvfFrameRecords => None,
         DecodeLimitName::MaxFramesToDecode
         | DecodeLimitName::MaxOutputFrames
         | DecodeLimitName::MaxFrameWidth

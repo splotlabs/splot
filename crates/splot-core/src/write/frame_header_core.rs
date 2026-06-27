@@ -501,11 +501,7 @@ fn check_frame_header_core_encodable(
         let Some(plus_1) = long_term_id.checked_add(1) else {
             return reject("long_term_id");
         };
-        if plus_1 < 0
-            || u64::try_from(plus_1)
-                .map(|v| v > u64::from(u32::MAX))
-                .unwrap_or(true)
-        {
+        if plus_1 < 0 || u64::try_from(plus_1).map_or(true, |v| v > u64::from(u32::MAX)) {
             return reject("long_term_id");
         }
         // `plus_1` is in `0..=u32::MAX`; the cast is exact.
