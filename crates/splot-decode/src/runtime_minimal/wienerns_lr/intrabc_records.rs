@@ -20,6 +20,9 @@ use super::super::inter::{
         read_newmv_block_mvd_with_config,
     },
 };
+use super::intrabc_ref_mv_stack::{
+    IntrabcRefMvBank, IntrabcStackAdmission, IntrabcStackGeometry, intrabc_ref_stack_admission,
+};
 use super::recon::WienerNsLrReconSink;
 use super::{intra_capped_seq_sb_size, wienerns_lr_selectable_transform_record_error_reason};
 
@@ -189,6 +192,15 @@ impl From<Mv> for IntrabcBlockVector {
     }
 }
 
+impl From<IntrabcBlockVector> for Mv {
+    fn from(value: IntrabcBlockVector) -> Self {
+        Self {
+            row: value.row,
+            col: value.col,
+        }
+    }
+}
+
 /// Tile-local neighbour state for IntrABC and skip contexts used by §8.3.2.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct TileIntrabcPreludeState {
@@ -196,12 +208,18 @@ pub(super) struct TileIntrabcPreludeState {
     mi_cols: usize,
     sb_size4: usize,
     values: Vec<Option<IntrabcBlockFacts>>,
+    /// AV2 § 7.12.2 IntrABC reference-MV bank (the intra list), maintained in
+    /// decode order so a later IntrABC block sees the bank state AVM holds.
+    bank: IntrabcRefMvBank,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct IntrabcBlockFacts {
     use_intrabc: bool,
     skip_flag: bool,
+    /// The recorded block vector (eighth-pel) for an IntrABC leaf, used by the
+    /// § 7.12.2 spatial scan; `None` for a non-IntrABC block.
+    block_mv: Option<IntrabcBlockVector>,
 }
 
 impl TileIntrabcPreludeState {
@@ -217,11 +235,13 @@ impl TileIntrabcPreludeState {
                 "unsupported_wienerns_lr_selectable_transform_records_intrabc_grid_overflow",
             )
         })?;
+        let sb_size4 = intra_sb_size4(sequence, tile_offset)?;
         Ok(Self {
             mi_rows,
             mi_cols,
-            sb_size4: intra_sb_size4(sequence, tile_offset)?,
+            sb_size4,
             values: vec![None; values_len],
+            bank: IntrabcRefMvBank::new(sb_size4),
         })
     }
 
@@ -234,9 +254,11 @@ impl TileIntrabcPreludeState {
         prelude: IntrabcBlockPrelude,
         tile_offset: ByteOffset,
     ) -> Result<()> {
+        let block_mv = prelude.intrabc.map(|info| info.block_mv);
         let facts = IntrabcBlockFacts {
             use_intrabc: prelude.use_intrabc,
             skip_flag: prelude.skip_flag,
+            block_mv,
         };
         let row_end = row.checked_add(n4h).ok_or_else(|| {
             wienerns_lr_selectable_transform_record_error_reason(
@@ -262,6 +284,16 @@ impl TileIntrabcPreludeState {
                 self.values[index] = Some(facts);
             }
         }
+        // AV2 § 7.12.2 `av2_read_mode_info` post-block bank maintenance: feed the
+        // block (IBC or not) into the ref-MV bank in decode order.
+        self.bank.record_block(
+            row,
+            col,
+            n4w,
+            n4h,
+            prelude.use_intrabc,
+            block_mv.map(Mv::from),
+        );
         Ok(())
     }
 
@@ -382,10 +414,68 @@ impl TileIntrabcPreludeState {
             })
     }
 
-    fn has_recorded_intrabc(&self) -> bool {
+    /// Returns whether the AV2 § 7.12.2 spatial SMVP scan could contribute an
+    /// IntrABC candidate to the current block's ref-MV stack.
+    ///
+    /// For `is_intrabc == 1`, § 7.12.2.6 Scan point / § 7.12.2.5 Scan col only add
+    /// a candidate when the scanned neighbour is itself an IntrABC block
+    /// (`add_ref_mv_candidate` requires `is_intrabc == is_intrabc_block(candidate)`,
+    /// `mvref_common.c:834`). This decoder does not yet model the spatial-scan
+    /// ordering/availability faithfully, so it scans a SUPERSET of the positions
+    /// AV2 reads — every left-column, above-row, top-right, top-left and
+    /// `scan_col(-3)` MI position adjacent to the block — and reports `true` if ANY
+    /// holds an IntrABC neighbour. Over-reporting only forces a (safe) defer; it
+    /// never produces a wrong stack.
+    fn spatial_scan_has_intrabc_neighbour(&self, geometry: IntrabcBlockGeometry) -> bool {
+        let row = geometry.block.row;
+        let col = geometry.block.col;
+        let n4w = geometry.n4w;
+        let n4h = geometry.n4h;
+        // Left column (and the deeper scan_col deltaCol = -3): every MI row the
+        // block spans, plus the bottom-left and top-left corners.
+        let left_cols: [Option<usize>; 2] = [col.checked_sub(1), col.checked_sub(3)];
+        let above_row = row.checked_sub(1);
+        // Left/scan-col span: rows [row - 1 .. row + n4h] (top-left corner down to
+        // bottom-left), bounded to the grid.
+        for left_col in left_cols.into_iter().flatten() {
+            let top = row.saturating_sub(1);
+            let bottom = row.saturating_add(n4h); // inclusive of the bottom-left row
+            for r in top..=bottom {
+                if self.position_is_intrabc(r, left_col) {
+                    return true;
+                }
+            }
+        }
+        // Above row: columns [col - 1 .. col + n4w] (top-left corner across to the
+        // top-right corner), bounded to the grid.
+        if let Some(above) = above_row {
+            let leftmost = col.saturating_sub(1);
+            let rightmost = col.saturating_add(n4w); // inclusive of the top-right col
+            for c in leftmost..=rightmost {
+                if self.position_is_intrabc(above, c) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Whether MI `(row, col)` holds a recorded IntrABC block (and is in range).
+    fn position_is_intrabc(&self, row: usize, col: usize) -> bool {
+        if row >= self.mi_rows || col >= self.mi_cols {
+            return false;
+        }
         self.values
-            .iter()
-            .any(|value| value.is_some_and(|facts| facts.use_intrabc))
+            .get(row * self.mi_cols + col)
+            .copied()
+            .flatten()
+            .is_some_and(|facts| facts.use_intrabc)
+    }
+
+    /// The tile ref-MV bank (the § 7.12.2 IntrABC bank state as of the last
+    /// recorded block).
+    fn bank(&self) -> &IntrabcRefMvBank {
+        &self.bank
     }
 }
 
@@ -445,7 +535,7 @@ pub(super) fn read_intrabc_info(
     tile_offset: ByteOffset,
 ) -> Result<IntrabcInfo> {
     let syntax = read_intrabc_info_syntax(cdfs, symbols, sequence, core, tile_offset)?;
-    ensure_intrabc_ref_stack_supported(state, tile_offset)?;
+    ensure_intrabc_ref_stack_supported(state, sequence, geometry, syntax, tile_offset)?;
     let info =
         finish_intrabc_info_record(cdfs, symbols, sequence, core, geometry, syntax, tile_offset)?;
     let prediction = derive_intrabc_luma_prediction_geometry(core, geometry, info, tile_offset)?;
@@ -585,17 +675,50 @@ fn read_intrabc_info_syntax(
     })
 }
 
+/// AV2 § 7.12.2 IntrABC ref-MV stack admission gate.
+///
+/// Builds the real § 7.12.2 stack (spatial-scan detector + ref-MV-bank fill +
+/// default block vectors) and admits the block only when the entry the decoded DRL
+/// index selects equals the bounded fallback stack [`finish_intrabc_info_record`]
+/// uses, so the block vector splot computes is AVM-faithful. Otherwise the block is
+/// DEFERRED (the stack the fallback would produce diverges from AVM, e.g. when the
+/// ref-MV bank reorders the stack).
 fn ensure_intrabc_ref_stack_supported(
     state: &TileIntrabcPreludeState,
+    sequence: &SequenceHeader,
+    geometry: IntrabcBlockGeometry,
+    syntax: IntrabcInfoSyntax,
     tile_offset: ByteOffset,
 ) -> Result<()> {
-    if state.has_recorded_intrabc() {
-        return Err(wienerns_lr_selectable_transform_record_error_reason(
+    let stack_geometry = IntrabcStackGeometry {
+        mi_row: geometry.block.row,
+        mi_col: geometry.block.col,
+        n4w: geometry.n4w,
+        n4h: geometry.n4h,
+        sb_samples: superblock_samples(sequence, tile_offset)?,
+        frame_w: i32::try_from(state.mi_cols.saturating_mul(MI_SIZE)).unwrap_or(i32::MAX),
+        frame_h: i32::try_from(state.mi_rows.saturating_mul(MI_SIZE)).unwrap_or(i32::MAX),
+        max_bvp_drl_bits_minus_1: syntax.max_bvp_drl_bits_minus_1,
+    };
+    let fallback = intrabc_ref_stack(
+        sequence,
+        geometry,
+        syntax.max_bvp_drl_bits_minus_1,
+        tile_offset,
+    )?;
+    match intrabc_ref_stack_admission(
+        state.bank(),
+        stack_geometry,
+        state.spatial_scan_has_intrabc_neighbour(geometry),
+        syntax.ref_mv_idx,
+        fallback.get(syntax.ref_mv_idx).copied(),
+    ) {
+        IntrabcStackAdmission::Admit => Ok(()),
+        IntrabcStackAdmission::Defer => Err(wienerns_lr_selectable_transform_record_error_reason(
             tile_offset,
             "unsupported_wienerns_lr_selectable_transform_records_intrabc_ref_stack",
-        ));
+        )),
     }
-    Ok(())
 }
 
 fn finish_intrabc_info_record(
@@ -1624,6 +1747,59 @@ mod tests {
             "unsupported_wienerns_lr_selectable_transform_records_intrabc_ref_stack"
         );
         assert_eq!(symbols.symbol_count(), 5);
+    }
+
+    // ac0ej3 frame-0 MI(0,112) admission through the full guard: after MI(16,56)
+    // (BV (-512,0)) enters the ref-MV bank, the § 7.12.2.21 frame-boundary test
+    // REJECTS the bank candidate (ref_y = -64 <= -block_height), so the stack is
+    // default-only and the DRL index selects the same BV as the bounded fallback
+    // -> ADMIT (the guard returns Ok). The pure bank/stack/admission logic is
+    // verified in the sibling intrabc_ref_mv_stack module against AVM
+    // av2_find_mv_refs; this test proves the guard wiring on the default-only path.
+    #[test]
+    fn intrabc_ref_stack_admits_ac0ej3_mi_0_112_default_only_stack() {
+        let (mut sequence, _core) = selectable_large_frame_fixture();
+        sequence
+            .inter
+            .as_mut()
+            .unwrap()
+            .seq_max_bvp_drl_bits_minus_1 = 2;
+        // A 1024-wide luma MI grid (256 MI cols) keeps MI(0,112)'s candidates in
+        // bounds; 128 MI rows span the frame height.
+        let mut state =
+            TileIntrabcPreludeState::new(128, 256, &sequence, ByteOffset::new(0)).unwrap();
+        let prior = IntrabcBlockPrelude {
+            use_intrabc: true,
+            is_inter: true,
+            skip_flag: true,
+            intrabc: Some(IntrabcInfo {
+                intrabc_mode: 1,
+                ref_mv_idx: 0,
+                mv_precision: MV_PRECISION_QUARTER_PEL,
+                block_mv: IntrabcBlockVector { row: -512, col: 0 },
+            }),
+        };
+        state
+            .record_block(16, 56, 8, 16, prior, ByteOffset::new(0))
+            .unwrap();
+        // MI(0,112): 32x64 (n4w 8, n4h 16), no spatial IntrABC neighbour, DRL idx 3.
+        let geometry =
+            IntrabcBlockGeometry::new(IntrabcBlockContext::new(0, 112, BLOCK_16X16, false), 8, 16);
+        let syntax = IntrabcInfoSyntax {
+            intrabc_mode: 1,
+            ref_mv_idx: 3,
+            mv_precision: MV_PRECISION_QUARTER_PEL,
+            max_bvp_drl_bits_minus_1: 2,
+        };
+
+        ensure_intrabc_ref_stack_supported(
+            &state,
+            &sequence,
+            geometry,
+            syntax,
+            ByteOffset::new(110),
+        )
+        .unwrap();
     }
 
     #[test]

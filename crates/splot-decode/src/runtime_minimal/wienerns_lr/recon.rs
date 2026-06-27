@@ -729,22 +729,24 @@ pub(in crate::runtime_minimal) fn reconstruct_ac0ej3_selectable_intra_region(
     }
 }
 
-/// The single §7.12.2 fail-closed reason the ac0ej3 selectable walk is expected to
-/// stop on after reconstructing the verified region; the test driver swallows only
-/// this one and propagates every other error. The first §7.13.3.18 IntrABC block —
-/// MI(16,56), a `skip` leaf with an integer block vector — is now reconstructed
+/// The single §5.20.7.23 fail-closed reason the ac0ej3 selectable walk is expected
+/// to stop on after reconstructing the verified region; the test driver swallows
+/// only this one and propagates every other error. The first §7.13.3.18 IntrABC
+/// block — MI(16,56), a `skip` leaf with an integer block vector — is reconstructed
 /// bit-exact and the walk CONTINUES past it (a `skip` IntrABC leaf reads no residual
 /// and §5.20.6.1 assigns Max_Tx_Size_Rect with no partition symbols, so the entropy
-/// state stays AVM-faithful). The walk advances through the rest of the second
-/// superblock and into SB col 3, where the SECOND IntrABC block — MI(0,112), a
-/// NON-`skip` leaf — needs the §7.12.2 IntrABC MV stack `find_mv_stack(0)` that may
-/// now hold a ref-MV-bank candidate from the recorded first IntrABC block; splot's
-/// bounded fallback list is only valid for an empty stack, so the walk fails closed
-/// there. The prior `intrabc_currframe_samples` wall (the first IntrABC block) no
-/// longer fires.
+/// state stays AVM-faithful). With the §7.12.2 IntrABC ref-MV stack now built
+/// faithfully (ref-MV bank fill + `check_rmb_cand` frame-boundary reject + default
+/// block vectors), the SECOND IntrABC block — MI(0,112) — derives a DEFAULT-ONLY
+/// stack (the bank's MI(16,56) candidate is rejected on the frame-boundary test, so
+/// the stack equals splot's bounded fallback) and its §7.12.2 stack is ADMITTED.
+/// MI(0,112) is itself a NON-`skip` leaf, so the walk now fails closed on its
+/// §5.20.7.23 residual on the inter/IntrABC transform path — the separate follow-on
+/// brick. The prior `intrabc_ref_stack` wall (the blanket over-rejection) no longer
+/// fires.
 #[cfg(test)]
 const EXPECTED_RECON_FRONTIER_REASON: &str =
-    "unsupported_wienerns_lr_selectable_transform_records_intrabc_ref_stack";
+    "unsupported_wienerns_lr_selectable_transform_records_intrabc_nonskip_residual";
 
 /// Whether the frame's §5.18.6 quantization matches the reconstruction primitive's
 /// zero-`QuantizerDeltas` assumption: no per-plane DC/AC quantizer delta and no
