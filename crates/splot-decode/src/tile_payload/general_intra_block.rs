@@ -787,7 +787,14 @@ fn cfl_allowed_for_non_lossless_420(
     block_n4w: usize,
     block_n4h: usize,
 ) -> bool {
-    chroma_tools.enable_cfl_intra && block_n4w <= 16 && block_n4h <= 16
+    // AV2 §5.20.5.6 (`docs/spec/av2/1.0.0/05-syntax-structures.md`, line 11254):
+    // non-lossless `cflAllowed = Block_Width[planeSz] <= 64 && Block_Height[planeSz]
+    // <= 64`, where `planeSz` is the chroma plane block size. For 4:2:0 the chroma
+    // plane is half the luma block, so `Block_Width[planeSz] = block_n4w * 2` and the
+    // 64-sample limit becomes `block_n4w <= 32` (a 128x128 luma block has a 64x64
+    // chroma plane). The earlier `<= 16` bound wrongly rejected CfL for legal
+    // 128-wide/tall luma blocks (e.g. a 128x64 SHARED-NONE block reads `is_cfl`).
+    chroma_tools.enable_cfl_intra && block_n4w <= 32 && block_n4h <= 32
 }
 
 fn mhccp_allowed_for_non_lossless_420(
@@ -1005,6 +1012,34 @@ mod tests {
 
     fn empty_fsc_modes() -> TileFscModeState {
         TileFscModeState::new(SB_N4, 2 * SB_N4, SB_N4).unwrap()
+    }
+
+    #[test]
+    fn cfl_allowed_420_uses_chroma_plane_64_sample_limit() {
+        // AV2 §5.20.5.6: non-lossless `cflAllowed = Block_Width[planeSz] <= 64 &&
+        // Block_Height[planeSz] <= 64`. For 4:2:0 the chroma plane is half the luma
+        // block, so the limit is a 128-sample luma extent (`block_n4* <= 32`).
+        let tools = GeneralIntraChromaToolConfig::new(true, false);
+
+        // 64x64 luma (n4 = 16): chroma plane 32x32 -> allowed.
+        assert!(cfl_allowed_for_non_lossless_420(tools, 16, 16));
+        // 128x64 luma (n4 = 32 x 16): chroma plane 64x32 -> allowed (the case that
+        // previously regressed, suppressing a legal `is_cfl` read).
+        assert!(cfl_allowed_for_non_lossless_420(tools, 32, 16));
+        // 128x128 luma (n4 = 32): chroma plane 64x64 -> allowed (boundary).
+        assert!(cfl_allowed_for_non_lossless_420(tools, 32, 32));
+        // Just past the boundary (n4 = 33) -> chroma plane 66 -> disallowed.
+        assert!(!cfl_allowed_for_non_lossless_420(tools, 33, 32));
+        assert!(!cfl_allowed_for_non_lossless_420(tools, 32, 33));
+        // 256-wide luma (n4 = 64): chroma plane 128 wide -> disallowed.
+        assert!(!cfl_allowed_for_non_lossless_420(tools, 64, 32));
+        assert!(!cfl_allowed_for_non_lossless_420(tools, 32, 64));
+        // Sequence CfL disabled always disallows.
+        assert!(!cfl_allowed_for_non_lossless_420(
+            GeneralIntraChromaToolConfig::new(false, false),
+            16,
+            16,
+        ));
     }
 
     #[test]
@@ -1252,18 +1287,6 @@ mod tests {
         assert_eq!(luma.mrl_sec_index, Some(1));
         assert_eq!(luma.uses_mrls, 2);
         assert_eq!(symbols.symbol_count(), 4);
-    }
-
-    #[test]
-    fn cfl_allowed_follows_current_non_lossless_420_bounds() {
-        let cfl = GeneralIntraChromaToolConfig::new(true, false);
-        assert!(cfl_allowed_for_non_lossless_420(cfl, 16, 16));
-        assert!(!cfl_allowed_for_non_lossless_420(cfl, 17, 16));
-        assert!(!cfl_allowed_for_non_lossless_420(
-            GeneralIntraChromaToolConfig::disabled(),
-            16,
-            16
-        ));
     }
 
     #[test]

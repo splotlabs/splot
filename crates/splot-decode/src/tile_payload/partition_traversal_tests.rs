@@ -176,6 +176,78 @@ fn sdp_cfl_allowed_state_tracks_top_luma_and_chroma_partitions() {
 }
 
 #[test]
+fn sdp_chroma_partition_forced_from_luma_when_chroma_follows_luma() {
+    // AV2 §5.20.3.2 `partition_implied`: at a CHROMA_PART 64x64 whose collocated
+    // `ChromaPartitionKnown` holds, the chroma partition is forced to
+    // `LumaPartitions[r][c]` and no `read_partition` symbol is consumed.
+    let frame = frame(BLOCK_64X64);
+    let luma_root = root_call(BLOCK_64X64).with_tree_type(PartitionTreeType::LumaPart);
+    let chroma_root = root_call(BLOCK_64X64).with_tree_type(PartitionTreeType::ChromaPart);
+
+    // Luma NONE -> chroma follows luma -> chroma forced to NONE.
+    let mut state = SdpPartitionState::default();
+    state.record_partition(frame, luma_root, PartitionType::None);
+    assert_eq!(
+        state.forced_chroma_partition(frame, chroma_root),
+        Some(PartitionType::None)
+    );
+
+    // Luma HORZ -> chroma follows luma -> chroma forced to HORZ.
+    let mut state = SdpPartitionState::default();
+    state.record_partition(frame, luma_root, PartitionType::Horz);
+    assert_eq!(
+        state.forced_chroma_partition(frame, chroma_root),
+        Some(PartitionType::Horz)
+    );
+}
+
+#[test]
+fn sdp_chroma_partition_not_forced_when_trees_diverge_or_out_of_scope() {
+    // Negative: when the luma subtree's first splits diverge from a shared
+    // direction (`chroma_follows_luma == false`), the chroma 64x64 reads its own
+    // partition tree, so no forced partition is returned.
+    let frame = frame(BLOCK_64X64);
+    let luma_root = root_call(BLOCK_64X64).with_tree_type(PartitionTreeType::LumaPart);
+    let chroma_root = root_call(BLOCK_64X64).with_tree_type(PartitionTreeType::ChromaPart);
+
+    let mut state = SdpPartitionState::default();
+    state.record_partition(frame, luma_root, PartitionType::Split);
+    assert_eq!(state.forced_chroma_partition(frame, chroma_root), None);
+
+    // Out-of-scope calls never force: a LUMA_PART tree, a non-64x64 block, and an
+    // inter (non-intra) frame all read their own partition.
+    let mut state = SdpPartitionState::default();
+    state.record_partition(frame, luma_root, PartitionType::None);
+    assert_eq!(state.forced_chroma_partition(frame, luma_root), None);
+
+    let chroma_128 = root_call(BLOCK_128X128).with_tree_type(PartitionTreeType::ChromaPart);
+    assert_eq!(state.forced_chroma_partition(frame, chroma_128), None);
+
+    let inter_frame = TilePartitionFrameFacts::new(
+        64,
+        64,
+        BLOCK_64X64,
+        3,
+        true,
+        true,
+        false, // frame_is_intra = false (inter frame)
+        false,
+        false,
+        false,
+        TilePartitionLoopRestorationState::NoSyntax,
+        PartitionFeatureFlags::new(true, true),
+        4,
+        true,
+        TilePartitionBruState::Active,
+    )
+    .unwrap();
+    assert_eq!(
+        state.forced_chroma_partition(inter_frame, chroma_root),
+        None
+    );
+}
+
+#[test]
 fn sdp_cfl_allowed_state_propagates_to_chroma_children() {
     let frame = frame(BLOCK_64X64);
     let chroma_root = root_call(BLOCK_64X64)
@@ -380,6 +452,7 @@ fn non_origin_tile_square_split_does_not_read_neighbors_outside_tile() {
         facts,
         TilePartitionBounds::from_work_unit(&work_unit),
         sparse_context,
+        None,
         &mut cdfs,
         &mut symbols,
     )
