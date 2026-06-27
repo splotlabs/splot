@@ -40,6 +40,9 @@ pub use multi_coeff::{
 };
 pub use skip::emit_minimal_intra_skip_ivf;
 
+use crate::block_symbol_trace::{BlockSymbolToken, encode_block_symbol_trace};
+use crate::error::{Error, Result};
+
 /// The coefficient CDF q-context for a skip frame whose `base_q_idx <= 90`:
 /// `coeff_cdf_q_ctx_from_base_q_idx` bank `0` (the same bank the AVM-validated
 /// `syn-flat-intra-64x64-q80` fixture's `base_q_idx == 80` selects).
@@ -57,3 +60,18 @@ pub(super) const SKIP_FRAME_BASE_Q_IDX: u8 = 80;
 
 /// A chroma DC `sign_bit` is a § 8.2.5 `L(1)` bypass literal.
 pub(super) const CHROMA_SIGN_BIT_WIDTH: u32 = 1;
+
+/// Assembles a complete, decodable single-frame AV2 IVF stream from an already-composed
+/// general-intra block-symbol `trace`: finalizes the trace into `tile_data`
+/// ([`crate::block_symbol_trace::encode_block_symbol_trace`]) and muxes it into the canonical
+/// 64x64 all-intra `OBU_CLOSED_LOOP_KEY` container at [`SKIP_FRAME_BASE_Q_IDX`]. Every
+/// `emit_minimal_intra_*_ivf` producer differs only in the `trace` it composes; this is their
+/// shared tail. The cross-crate decode oracle that proves each reconstruction lives in `splot-cli`.
+fn emit_minimal_intra_ivf(trace: Vec<BlockSymbolToken>) -> Result<Vec<u8>> {
+    let tile_data = encode_block_symbol_trace(&trace)?;
+    splot_core::headers::frame::encode_minimal_intra_clk_ivf_with_base_q_idx(
+        SKIP_FRAME_BASE_Q_IDX,
+        &tile_data,
+    )
+    .map_err(|source| Error::MinimalIntraSkipIvf { source })
+}

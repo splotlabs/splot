@@ -4,13 +4,8 @@
 //! The general intra coded-chroma (U, V) and all-planes-coded block composers and IVF emitters.
 
 use super::coded_dc::CODED_LUMA_DC_MAGNITUDE;
-use super::{
-    CHROMA_SIGN_BIT_WIDTH, SKIP_FRAME_BASE_Q_IDX, SKIP_FRAME_COEFF_CDF_Q_CTX,
-    V_TXB_SKIP_CTX_NEUTRAL,
-};
-use crate::block_symbol_trace::{
-    BlockSymbolToken, compose_minimal_intra_dc_block_mode_trace, encode_block_symbol_trace,
-};
+use super::{CHROMA_SIGN_BIT_WIDTH, SKIP_FRAME_COEFF_CDF_Q_CTX, V_TXB_SKIP_CTX_NEUTRAL};
+use crate::block_symbol_trace::{BlockSymbolToken, compose_minimal_intra_dc_block_mode_trace};
 use crate::coefficient_tokenization::{
     chroma_v_all_zero_token, general_intra_32x32_chroma_u_all_zero_token,
     general_intra_32x32_chroma_u_dc_coded_tokens, general_intra_32x32_chroma_v_dc_coded_tokens,
@@ -80,12 +75,7 @@ fn compose_general_intra_coded_chroma_u_block_trace(
 pub fn emit_minimal_intra_coded_chroma_ivf() -> Result<Vec<u8>> {
     let trace =
         compose_general_intra_coded_chroma_u_block_trace(CODED_CHROMA_U_DC_MAGNITUDE, true)?;
-    let tile_data = encode_block_symbol_trace(&trace)?;
-    splot_core::headers::frame::encode_minimal_intra_clk_ivf_with_base_q_idx(
-        SKIP_FRAME_BASE_Q_IDX,
-        &tile_data,
-    )
-    .map_err(|source| Error::MinimalIntraSkipIvf { source })
+    super::emit_minimal_intra_ivf(trace)
 }
 
 /// Composes the general intra coded-*chroma-V* block trace: `do_split`, the mode prefix, a
@@ -145,12 +135,7 @@ fn compose_general_intra_coded_chroma_v_block_trace(
 pub fn emit_minimal_intra_coded_chroma_v_ivf() -> Result<Vec<u8>> {
     let trace =
         compose_general_intra_coded_chroma_v_block_trace(CODED_CHROMA_U_DC_MAGNITUDE, true)?;
-    let tile_data = encode_block_symbol_trace(&trace)?;
-    splot_core::headers::frame::encode_minimal_intra_clk_ivf_with_base_q_idx(
-        SKIP_FRAME_BASE_Q_IDX,
-        &tile_data,
-    )
-    .map_err(|source| Error::MinimalIntraSkipIvf { source })
+    super::emit_minimal_intra_ivf(trace)
 }
 
 /// Composes the general intra all-planes-coded block trace: `do_split`, the mode prefix, then
@@ -219,12 +204,7 @@ pub fn emit_minimal_intra_all_planes_coded_ivf() -> Result<Vec<u8>> {
         CODED_CHROMA_U_DC_MAGNITUDE,
         true,
     )?;
-    let tile_data = encode_block_symbol_trace(&trace)?;
-    splot_core::headers::frame::encode_minimal_intra_clk_ivf_with_base_q_idx(
-        SKIP_FRAME_BASE_Q_IDX,
-        &tile_data,
-    )
-    .map_err(|source| Error::MinimalIntraSkipIvf { source })
+    super::emit_minimal_intra_ivf(trace)
 }
 
 #[cfg(test)]

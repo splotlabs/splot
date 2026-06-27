@@ -4,13 +4,8 @@
 //! The general intra multi-coefficient block composers (eob=2 two-coeff, visible-AC,
 //! two-nonzero; eob=3) and IVF emitters.
 
-use super::{
-    CHROMA_SIGN_BIT_WIDTH, SKIP_FRAME_BASE_Q_IDX, SKIP_FRAME_COEFF_CDF_Q_CTX,
-    V_TXB_SKIP_CTX_NEUTRAL,
-};
-use crate::block_symbol_trace::{
-    BlockSymbolToken, compose_minimal_intra_dc_block_mode_trace, encode_block_symbol_trace,
-};
+use super::{CHROMA_SIGN_BIT_WIDTH, SKIP_FRAME_COEFF_CDF_Q_CTX, V_TXB_SKIP_CTX_NEUTRAL};
+use crate::block_symbol_trace::{BlockSymbolToken, compose_minimal_intra_dc_block_mode_trace};
 use crate::coefficient_tokenization::{
     chroma_v_all_zero_token, general_intra_32x32_chroma_u_all_zero_token,
     general_intra_64x64_luma_2d_base_tokens, general_intra_64x64_luma_eob3_base_tokens,
@@ -69,12 +64,7 @@ fn compose_general_intra_two_coeff_block_trace() -> Result<Vec<BlockSymbolToken>
 /// `splot-cli`.
 pub fn emit_minimal_intra_two_coeff_ivf() -> Result<Vec<u8>> {
     let trace = compose_general_intra_two_coeff_block_trace()?;
-    let tile_data = encode_block_symbol_trace(&trace)?;
-    splot_core::headers::frame::encode_minimal_intra_clk_ivf_with_base_q_idx(
-        SKIP_FRAME_BASE_Q_IDX,
-        &tile_data,
-    )
-    .map_err(|source| Error::MinimalIntraSkipIvf { source })
+    super::emit_minimal_intra_ivf(trace)
 }
 
 /// Composes the general intra eob=2 **visible** multi-coefficient luma block trace: `do_split`,
@@ -123,12 +113,7 @@ fn compose_general_intra_visible_ac_block_trace() -> Result<Vec<BlockSymbolToken
 /// oracle lives in `splot-cli`.
 pub fn emit_minimal_intra_visible_ac_ivf() -> Result<Vec<u8>> {
     let trace = compose_general_intra_visible_ac_block_trace()?;
-    let tile_data = encode_block_symbol_trace(&trace)?;
-    splot_core::headers::frame::encode_minimal_intra_clk_ivf_with_base_q_idx(
-        SKIP_FRAME_BASE_Q_IDX,
-        &tile_data,
-    )
-    .map_err(|source| Error::MinimalIntraSkipIvf { source })
+    super::emit_minimal_intra_ivf(trace)
 }
 
 /// The DC sign for the two-nonzero-coefficient block: **negative** (`dc_sign == 1`). A negative
@@ -189,12 +174,7 @@ fn compose_general_intra_two_nonzero_block_trace() -> Result<Vec<BlockSymbolToke
 /// oracle lives in `splot-cli`.
 pub fn emit_minimal_intra_two_nonzero_ivf() -> Result<Vec<u8>> {
     let trace = compose_general_intra_two_nonzero_block_trace()?;
-    let tile_data = encode_block_symbol_trace(&trace)?;
-    splot_core::headers::frame::encode_minimal_intra_clk_ivf_with_base_q_idx(
-        SKIP_FRAME_BASE_Q_IDX,
-        &tile_data,
-    )
-    .map_err(|source| Error::MinimalIntraSkipIvf { source })
+    super::emit_minimal_intra_ivf(trace)
 }
 
 /// Composes the general intra **eob=3** luma block trace: `do_split`, the mode prefix, the
@@ -245,12 +225,7 @@ fn compose_general_intra_eob3_block_trace() -> Result<Vec<BlockSymbolToken>> {
 /// low-frequency cosine. The cross-crate decode oracle lives in `splot-cli`.
 pub fn emit_minimal_intra_eob3_ivf() -> Result<Vec<u8>> {
     let trace = compose_general_intra_eob3_block_trace()?;
-    let tile_data = encode_block_symbol_trace(&trace)?;
-    splot_core::headers::frame::encode_minimal_intra_clk_ivf_with_base_q_idx(
-        SKIP_FRAME_BASE_Q_IDX,
-        &tile_data,
-    )
-    .map_err(|source| Error::MinimalIntraSkipIvf { source })
+    super::emit_minimal_intra_ivf(trace)
 }
 
 /// The scan-1 (vertical) AC sign for the 2-D block: NEGATIVE. With the scan-2 (horizontal) AC
@@ -308,12 +283,7 @@ fn compose_general_intra_2d_block_trace() -> Result<Vec<BlockSymbolToken>> {
 /// cross-crate decode oracle lives in `splot-cli`.
 pub fn emit_minimal_intra_2d_ivf() -> Result<Vec<u8>> {
     let trace = compose_general_intra_2d_block_trace()?;
-    let tile_data = encode_block_symbol_trace(&trace)?;
-    splot_core::headers::frame::encode_minimal_intra_clk_ivf_with_base_q_idx(
-        SKIP_FRAME_BASE_Q_IDX,
-        &tile_data,
-    )
-    .map_err(|source| Error::MinimalIntraSkipIvf { source })
+    super::emit_minimal_intra_ivf(trace)
 }
 
 #[cfg(test)]
