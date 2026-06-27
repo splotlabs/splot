@@ -452,11 +452,18 @@ pub(super) fn read_intrabc_info(
     // §7.13.3.18 IntrABC luma prediction: with the block-vector geometry bounds-checked
     // above, an attached reconstruction sink copies the displaced predictor rectangle
     // from the partially-built `CurrFrame` (gated to the proven integer-vector skip
-    // subset inside the sink). The walk then STILL fails closed at the `currframe`
-    // frontier so the PUBLIC decode path (which threads no sink) stays byte-identical:
-    // it emits no frame, and the test driver swallows only this one reason — the sink
-    // retains the reconstructed IntrABC target for the region-verification test.
-    if let Some(sink) = sink {
+    // subset inside the sink). The §6.19.7.12 `is_mv_valid` conformance predicate must
+    // ALSO hold before the copy: the geometry derivation proves the tile-edge clause,
+    // and `intrabc_dv_proven_valid` proves the global-intrabc wavefront clause (the
+    // local-IBC-buffer clause needs runtime buffer state splot does not track, so it is
+    // conservatively deferred). An invalid (or not-provably-valid) DV defers the copy —
+    // never marks an out-of-buffer reference bit-exact. The walk then STILL fails closed
+    // at the `currframe` frontier so the PUBLIC decode path (which threads no sink) stays
+    // byte-identical: it emits no frame, and the test driver swallows only this one
+    // reason — the sink retains the reconstructed IntrABC target for the region test.
+    if let Some(sink) = sink
+        && intrabc_dv_proven_valid(sequence, core, geometry, info, tile_offset)?
+    {
         sink.reconstruct_intrabc_block(
             prediction.source,
             prediction.target,
@@ -876,6 +883,157 @@ fn intrabc_luma_prediction_domain(
         ref_mi_cols: i64::from(mi_cols),
         ref_mi_rows: i64::from(mi_rows),
     })
+}
+
+/// AV2 §6.19.7.12 `is_mv_valid` for the bounded ac0ej3 IntrABC subset, proven via the
+/// DETERMINISTIC part of the `allow_local_intrabc` local-IBC-buffer branch.
+///
+/// §6.19.7.12 first rejects a block vector whose displaced source leaves the current
+/// tile (already enforced before this is called by the source/target tile-bounds
+/// checks in [`derive_intrabc_luma_prediction_geometry`]). It then takes the
+/// `allow_local_intrabc` branch (`av2_is_dv_in_local_range`), whose constraints split
+/// into a DETERMINISTIC geometry part (the uncoded-bottom-right exclusion, the
+/// same-superblock-row constraint, and the `valid_SB` "current SB or left N SBs"
+/// window) and a RUNTIME `IBCCoded` / `IBCBufferValid` collocation part that depends on
+/// per-sample IBC-buffer state splot does not track.
+///
+/// This predicate proves ONLY the deterministic local-range geometry. The runtime
+/// collocation/buffer part is satisfied by a STRONGER guarantee enforced by the caller
+/// ([`super::recon::WienerNsLrReconSink::reconstruct_intrabc_block`]): the entire
+/// source rectangle is already RECONSTRUCTED by this sink in decode order — a sample
+/// reconstructed earlier in this tile's walk is, by construction, coded and valid in
+/// the IBC-buffer sense. It returns `false` (DEFER — over-rejecting is safe) for
+/// everything it cannot prove deterministically: a non-integer block vector,
+/// `allow_local_intrabc != 1`, or the §6.19.7.12 64x64-tier BRU `numLeftActiveSB`
+/// reduction (the only local-range term that needs runtime SB-active state; deferred
+/// when BRU could apply). ac0ej3's first IntrABC block (128x128 SB, integer DV, source
+/// in the SAME superblock as the active block) is proven valid by exactly this branch
+/// — verified against AVM `av2_is_dv_valid` / `av2_is_dv_in_local_range`
+/// (`av2/common/mvref_common.h`). The `INTRABC_BUFFER_NUM` / `INTRABC_BUFFER_SIZE_LOG2`
+/// constants mirror AVM.
+fn intrabc_dv_proven_valid(
+    sequence: &SequenceHeader,
+    core: &FrameHeaderCore,
+    geometry: IntrabcBlockGeometry,
+    info: IntrabcInfo,
+    tile_offset: ByteOffset,
+) -> Result<bool> {
+    // A non-integer block vector is deferred upstream (the source/target shapes differ
+    // in the sink); the conformance predicate only proves the integer-copy subset.
+    if info.block_mv.row & 7 != 0 || info.block_mv.col & 7 != 0 {
+        return Ok(false);
+    }
+    // The local-range branch requires `allow_local_intrabc == 1` (inferred 1 only when
+    // `allow_global_intrabc == 1`; otherwise it is explicitly read). DEFER otherwise.
+    let allow_local = core
+        .intrabc
+        .as_ref()
+        .and_then(|params| params.allow_local_intrabc)
+        .unwrap_or(false);
+    if !allow_local {
+        return Ok(false);
+    }
+    // §6.19.7.12 superblock size (samples). The BRU `numLeftActiveSB` reduction (which
+    // needs runtime SB-active state) only applies in the 64x64 tier; DEFER a 64x64-SB
+    // frame whose sequence could enable BRU rather than assume the full window.
+    let sb_samples = superblock_samples(sequence, tile_offset)?;
+    let sb_size = usize::try_from(sb_samples).map_err(|_| {
+        wienerns_lr_selectable_transform_record_error_reason(
+            tile_offset,
+            "unsupported_wienerns_lr_selectable_transform_records_intrabc_geometry",
+        )
+    })?;
+    if sb_size == 64 && sequence_enables_bru(sequence) {
+        return Ok(false);
+    }
+    Ok(local_intrabc_range_valid(IntrabcLocalRangeInputs {
+        mi_row: geometry.block.row,
+        mi_col: geometry.block.col,
+        block_w: geometry.n4w * MI_SIZE,
+        block_h: geometry.n4h * MI_SIZE,
+        dv_row: info.block_mv.row,
+        dv_col: info.block_mv.col,
+        sb_size,
+    }))
+}
+
+/// Inputs to the deterministic §6.19.7.12 local-intrabc range check (sample / MI-unit
+/// terms; the block vector is in eighth-pel units).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct IntrabcLocalRangeInputs {
+    mi_row: usize,
+    mi_col: usize,
+    block_w: usize,
+    block_h: usize,
+    dv_row: i32,
+    dv_col: i32,
+    sb_size: usize,
+}
+
+/// The DETERMINISTIC geometry constraints of AV2 §6.19.7.12 `av2_is_dv_in_local_range`
+/// (`av2/common/mvref_common.h`), for an integer block vector: the uncoded-bottom-right
+/// exclusion, the same-superblock-row constraint, and the `valid_SB` window (current SB
+/// or the left `numLeftSB` SBs). Returns `true` when the source rectangle is within the
+/// allowed local-IBC range geometry. The caller separately proves the source is fully
+/// reconstructed, which subsumes the runtime `IBCCoded`/`IBCBufferValid` collocation part.
+fn local_intrabc_range_valid(inputs: IntrabcLocalRangeInputs) -> bool {
+    // INTRABC_BUFFER_NUM == 4, INTRABC_BUFFER_SIZE_LOG2 == 6 (a 4 x 64x64 IBC buffer).
+    const INTRABC_BUFFER_NUM: i64 = 4;
+    const INTRABC_BUFFER_SIZE_LOG2: u32 = 6;
+
+    let bw = inputs.block_w as i64;
+    let bh = inputs.block_h as i64;
+    let dv_row = i64::from(inputs.dv_row);
+    let dv_col = i64::from(inputs.dv_col);
+    // sb_size_log2 from the superblock sample size (64 -> 6, 128 -> 7, 256 -> 8).
+    let sb_size_log2 = match inputs.sb_size {
+        64 => 6,
+        128 => 7,
+        256 => 8,
+        _ => return false,
+    };
+
+    let src_top_edge = (inputs.mi_row as i64 * MI_SIZE as i64) * 8 + dv_row;
+    let src_left_edge = (inputs.mi_col as i64 * MI_SIZE as i64) * 8 + dv_col;
+    let src_bottom_edge = (inputs.mi_row as i64 * MI_SIZE as i64 + bh) * 8 + dv_row;
+    let src_right_edge = (inputs.mi_col as i64 * MI_SIZE as i64 + bw) * 8 + dv_col;
+    // Integer DV: no interp border, and the `-1` rounding on the bottom/right edges.
+    let src_top_y = src_top_edge >> 3;
+    let src_left_x = src_left_edge >> 3;
+    let src_bottom_y = (src_bottom_edge >> 3) - 1;
+    let src_right_x = (src_right_edge >> 3) - 1;
+    let act_left_x = inputs.mi_col as i64 * MI_SIZE as i64;
+    let act_top_y = inputs.mi_row as i64 * MI_SIZE as i64;
+
+    // Reference block cannot be in the uncoded bottom-right region of the current
+    // block's top-left corner (integer DV: no interp borders).
+    if ((dv_col >> 3) + bw) > 0 && ((dv_row >> 3) + bh) > 0 {
+        return false;
+    }
+    // Reference block must be in the same superblock row as the active block.
+    if (src_top_y >> sb_size_log2) < (act_top_y >> sb_size_log2) {
+        return false;
+    }
+    if (src_bottom_y >> sb_size_log2) > (act_top_y >> sb_size_log2) {
+        return false;
+    }
+    // numLeftSB = round_up(IBC buffer samples / superblock samples).
+    let sb_area_log2 = 2 * sb_size_log2;
+    let buffer_samples = INTRABC_BUFFER_NUM << (2 * INTRABC_BUFFER_SIZE_LOG2);
+    let num_left_sb = (buffer_samples + (1 << sb_area_log2) - 1) >> sb_area_log2;
+    // Reference block must be in the current SB or the left `numLeftSB` SBs.
+    (src_right_x >> sb_size_log2) <= (act_left_x >> sb_size_log2)
+        && (src_left_x >> sb_size_log2) >= (act_left_x >> sb_size_log2) - num_left_sb
+}
+
+/// Whether the sequence could enable the §5.x BRU tool (block-reference-update). The
+/// §6.19.7.12 64x64-tier `numLeftActiveSB` reduction depends on runtime BRU SB-active
+/// state, so the bounded gate DEFERS a 64x64-SB frame when BRU is enabled.
+fn sequence_enables_bru(sequence: &SequenceHeader) -> bool {
+    sequence
+        .inter
+        .as_ref()
+        .is_some_and(|inter| inter.enable_bru)
 }
 
 fn tile_interval_for_block(
@@ -1963,6 +2121,84 @@ mod tests {
                 Mv { row: -128, col: 0 },
                 Mv { row: 0, col: -128 },
             ]
+        );
+    }
+
+    // Codex finding 2: the §6.19.7.12 local-range geometry. ac0ej3's first IntrABC
+    // block (128x128 SB, MI(16,56), block 32x64, DV (-512, 0)) is PROVEN valid — its
+    // source x[224,256) y[0,64) sits in the SAME superblock as the active block and the
+    // same superblock column. Verified against AVM `av2_is_dv_in_local_range`.
+    #[test]
+    fn local_intrabc_range_admits_ac0ej3_first_block() {
+        assert!(local_intrabc_range_valid(IntrabcLocalRangeInputs {
+            mi_row: 16,
+            mi_col: 56,
+            block_w: 32,
+            block_h: 64,
+            dv_row: -512,
+            dv_col: 0,
+            sb_size: 128,
+        }));
+    }
+
+    // A DV whose source lies in the UNCODED bottom-right region of the active block's
+    // top-left corner is rejected (the §6.19.7.12 first local-range guard).
+    #[test]
+    fn local_intrabc_range_rejects_uncoded_bottom_right_source() {
+        // dv (+8, +8) eighth-pel == +1 sample down/right: source overlaps the uncoded
+        // region (`(dvCol>>3)+bw > 0 && (dvRow>>3)+bh > 0`).
+        assert!(!local_intrabc_range_valid(IntrabcLocalRangeInputs {
+            mi_row: 16,
+            mi_col: 56,
+            block_w: 32,
+            block_h: 64,
+            dv_row: 8,
+            dv_col: 8,
+            sb_size: 128,
+        }));
+    }
+
+    // A DV whose source is too far LEFT (outside the current SB or the left numLeftSB
+    // window) is rejected (the §6.19.7.12 `valid_SB` guard). For a 128x128 SB the IBC
+    // buffer is one SB wide (numLeftSB == 1), so a source two SBs left is out of range.
+    #[test]
+    fn local_intrabc_range_rejects_source_beyond_left_buffer_window() {
+        // Block at SB column 2 (mi_col 64 == 256px), source displaced 3 SBs left
+        // (dv_col == -3 * 128 * 8 == -3072): src SB col is 3 SBs left of the active SB.
+        assert!(!local_intrabc_range_valid(IntrabcLocalRangeInputs {
+            mi_row: 64,
+            mi_col: 64,
+            block_w: 32,
+            block_h: 32,
+            dv_row: 0,
+            dv_col: -3072,
+            sb_size: 128,
+        }));
+    }
+
+    // The full `intrabc_dv_proven_valid` gate DEFERS when `allow_local_intrabc` is not
+    // set, even for an otherwise-valid integer DV (the local-range branch is the only
+    // one this bounded gate proves).
+    #[test]
+    fn proven_valid_defers_when_local_intrabc_disabled() {
+        let (sequence, mut core) = selectable_large_frame_fixture();
+        core.intrabc = Some(IntrabcParams {
+            allow_intrabc: true,
+            allow_global_intrabc: Some(true),
+            allow_local_intrabc: Some(false),
+            change_bvp_drl: Some(false),
+            max_bvp_drl_bits_minus_1: None,
+        });
+        let geometry = IntrabcBlockGeometry::new(IntrabcBlockContext::new(20, 0, 2, false), 4, 4);
+        let info = IntrabcInfo {
+            intrabc_mode: 1,
+            ref_mv_idx: 0,
+            mv_precision: MV_PRECISION_QUARTER_PEL,
+            block_mv: IntrabcBlockVector { row: -512, col: 0 },
+        };
+        assert!(
+            !intrabc_dv_proven_valid(&sequence, &core, geometry, info, ByteOffset::new(20))
+                .unwrap()
         );
     }
 }

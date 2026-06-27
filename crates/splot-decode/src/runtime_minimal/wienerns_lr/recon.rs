@@ -590,9 +590,19 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         if source.size() != target.size() {
             return Ok(());
         }
+        // The source rectangle's covered-MI span must be computed from the actual
+        // sample EXTENT, not a floored width: a NON-4x4-aligned integer source offset
+        // (the parser can produce e.g. a -504 eighth-pel == -63px vector) makes a
+        // source straddle a trailing partial MI unit that `width / MI_SIZE` would drop.
+        // Ceil the right/bottom edge and floor the left/top so EVERY MI unit the source
+        // touches is checked (codex finding 1) — otherwise an unreconstructed trailing
+        // MI could be copied as fill and marked bit-exact. ac0ej3's 4x4-aligned source
+        // (x=224, width=32) is unchanged: floor(224/4)=56, ceil(256/4)=64, mi_w=8.
         let coverage = &self.coverage[Self::coverage_index(PlaneId::Y)];
-        let (src_mi_col, src_mi_row) = (source.x() / MI_SIZE, source.y() / MI_SIZE);
-        let (src_mi_w, src_mi_h) = (source.width() / MI_SIZE, source.height() / MI_SIZE);
+        let src_mi_col = source.x() / MI_SIZE;
+        let src_mi_row = source.y() / MI_SIZE;
+        let src_mi_w = (source.x() + source.width()).div_ceil(MI_SIZE) - src_mi_col;
+        let src_mi_h = (source.y() + source.height()).div_ceil(MI_SIZE) - src_mi_row;
         if !coverage.region_fully_covered(src_mi_col, src_mi_row, src_mi_w, src_mi_h) {
             // A source MI unit is off-grid or still the workspace fill value; copying
             // it would claim an unreconstructed sample as correct. Defer this block.
@@ -1521,6 +1531,36 @@ mod tests {
         // The target stays at the unreconstructed fill value, and nothing is counted.
         assert_eq!(sink.reconstructed_sample(PlaneId::Y, 0, 32).unwrap(), 0);
         assert_eq!(sink.reconstructed_counts().0, 0);
+    }
+
+    /// Codex finding 1: a NON-4x4-aligned integer source whose CEIL'd MI span includes
+    /// an unreconstructed trailing MI is DEFERRED. The covered-MI span must be computed
+    /// from the source's actual sample extent (`ceil((x+width)/4) - floor(x/4)`), not a
+    /// floored `width / 4` that would drop the trailing partial MI and copy its fill.
+    #[test]
+    fn intrabc_unaligned_source_with_uncovered_trailing_mi_is_deferred() {
+        let mut sink = sink();
+        // Reconstruct a 16x16 DC block at the origin: covers luma x[0,16) == MI cols
+        // 0..4. MI col 4 (x[16,20)) stays unreconstructed.
+        recon_luma(
+            &mut sink,
+            0,
+            0,
+            TX_16X16,
+            &zero_block(),
+            Some(IntraYMode::DC_PRED),
+            false,
+        );
+        let before = sink.reconstructed_counts().0;
+        // A 16px source at x=2 spans x[2,18) == MI cols 0..=4 (ceil(18/4)==5): MI col 4
+        // is uncovered, so the copy must DEFER. (A floored `16/4==4` span would wrongly
+        // see only cols 0..4 and copy the trailing fill.)
+        let source = PlaneRect::new(2, 0, 16, 16).unwrap();
+        let target = PlaneRect::new(2, 32, 16, 16).unwrap();
+        sink.reconstruct_intrabc_block(source, target, true, ByteOffset::new(0))
+            .unwrap();
+        assert_eq!(sink.reconstructed_sample(PlaneId::Y, 2, 32).unwrap(), 0);
+        assert_eq!(sink.reconstructed_counts().0, before);
     }
 
     /// A non-skip IntrABC block (non-zero residual) is DEFERRED even with a fully
