@@ -17,45 +17,40 @@
 //! `ac0_prefiltered.yuv`.
 //!
 //! Reconstructed-and-verified region for frame-0 (gated to the proven DC subset):
-//!   * Luma: the frame-origin `BLOCK_16X64` left column — the `DC_PRED` 16x16 leaf
-//!     at the frame origin (all `68`) plus the down-predicted `DC_PRED` 16-wide
-//!     transforms below it (rows 16..64, all `64`) — is bit-exact: the full 16x64
-//!     (1024-sample) column matches the oracle (whole reconstructed region strictly
-//!     bit-exact, no confident-wrong workspace samples).
+//!   * Luma: the full first-3-superblock DC region — the rectangle x[0,192) x
+//!     y[0,128), 24576 samples — is bit-exact. Fixing the MI(4,0) `TX_16X64`
+//!     keystone (the §7.13.2.12 IBP DC modifier plus the non-square `TX_16X64`
+//!     residual) unblocked the whole DC chain that bordered it through the §7.13.2
+//!     edge-coverage guard, widening the region 24x from the original 1024-sample
+//!     `BLOCK_16X64` column. Every sample is the down-predicted flat `DC_PRED`
+//!     value `64` except the origin 16x16 leaf (`68`, 256 samples) and the MI(4,0)
+//!     IBP DC step (`65`, the top-left 3 columns x 16 rows == 48 samples). Whole
+//!     region strictly bit-exact, no confident-wrong workspace samples.
 //!   * Chroma: the frame-origin `DC_PRED` 32x32 U and V transforms (the §5.20.3.1
 //!     SDP chroma tree at chroma `(0,0)`) — both flat `512`, the 10-bit no-neighbour
 //!     DC fallback — are bit-exact (2048 chroma samples). The U/V origin reads only
-//!     its own off-frame edges (chroma `DC_PRED`, not CfL), so it reconstructs
-//!     independently of the deferred luma DC chain to its right.
+//!     its own off-frame edges (chroma `DC_PRED`, not CfL).
 //!   * Everything the primitive cannot prove bit-exact is DEFERRED: NON-DC luma
-//!     (SMOOTH / directional, e.g. the H_PRED band at luma mi-col 48); NON-DC chroma
-//!     (the SMOOTH chroma leaf at chroma `(32,0)`); a non-`all_zero` NON-SQUARE
-//!     `DC_PRED` leaf (the frame-origin `TX_16X64` keystone — its rectangular-residual
-//!     inverse transform reconstructs a flat block but the oracle has a `[64,65]`
-//!     spatial AC residual, so it is the verified wall for the whole first-3-SB luma
-//!     DC region); any IST / FSC leaf; a frame with a non-zero quantizer delta or
+//!     (SMOOTH / directional); NON-DC chroma (the SMOOTH chroma leaf at chroma
+//!     `(32,0)`); any IST / FSC leaf; a frame with a non-zero quantizer delta or
 //!     matrix; and any block whose §7.13.2 prediction edges border a deferred
-//!     (un-reconstructed) neighbour. The sink never claims a sample it has not proven
-//!     bit-exact.
+//!     (un-reconstructed) neighbour. The non-square (`TX_16X64`) `DC_PRED` residual
+//!     and the §7.13.2.12 IBP DC modifier are now MODELLED and proven bit-exact at
+//!     the MI(4,0) keystone, so they no longer wall the DC chain. The sink never
+//!     claims a sample it has not proven bit-exact.
 //!
 //! Parse fidelity (verified against the AVM mode/uv_mode oracle, 2026-06-27 after
-//! PR #510): every luma leaf splot resolves in the reachable region now agrees with
-//! AVM's `inspect --mode` (the frame-origin DC blocks AND the mi-col-48 H_PRED band
-//! all match), and the chroma origin resolves to `DC_PRED` matching `inspect
-//! --uv_mode`. The earlier SMOOTH-vs-AVM disagreement was a parser desync fixed by
-//! PR #508/#510; the reconstruction wall is now the non-square `TX_16X64` AC residual
-//! (a reconstruction-primitive limitation), not a parse divergence. The luma H_PRED
-//! band and the rest of the DC chain stay DEFERRED only because every block past the
-//! origin column descends, through the §7.13.2 edge-coverage guard, from the
-//! still-deferred non-square keystone — not because their modes are wrong.
+//! PR #510): every luma leaf splot resolves in the reachable region agrees with
+//! AVM's `inspect --mode`, and the chroma origin resolves to `DC_PRED` matching
+//! `inspect --uv_mode`. The reachable region is now bounded by the §7.13.3.18
+//! IntrABC fail-closed stop, not by a reconstruction-primitive wall.
 //!
 //! The oracle YUV is 6 MB and is NOT committed; the committed assertions are the
-//! frame-origin luma column flat values (`68` / `64`), the chroma origin flat value
-//! (`512`), their sample sums, and FNV-1a-64 checksums. The PUBLIC decode stays
-//! fail-closed; these tests exercise
-//! the bridge through a test-only sink driver, gated to the local mission fixture
-//! (`SPLOT_AC0EJ3_IVF` or `$HOME/Documents/SplotLabs/ac0ej3.ivf`) and `#[ignore]`d
-//! to match the existing `local_ac0ej3_*` probe convention.
+//! region flat values (`68` / `65` / `64` luma, `512` chroma), their sample sums,
+//! and FNV-1a-64 checksums. The PUBLIC decode stays fail-closed; these tests
+//! exercise the bridge through a test-only sink driver, gated to the local mission
+//! fixture (`SPLOT_AC0EJ3_IVF` or `$HOME/Documents/SplotLabs/ac0ej3.ivf`) and
+//! `#[ignore]`d to match the existing `local_ac0ej3_*` probe convention.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -95,6 +90,25 @@ const LUMA_COLUMN_SAMPLE_SUM: u64 = 66_560;
 /// FNV-1a-64 over the full 16x64 column (row-major, sample-major u16 LE), matching
 /// the offline oracle checksum derivation.
 const LUMA_COLUMN_FNV1A64: u64 = 0x893d_3114_b40a_7325;
+
+/// The full first-3-superblock luma DC region the sink now reconstructs: the
+/// rectangle x[0,192) (three 64-wide superblock columns) x y[0,128) (two
+/// superblock rows), 24576 samples. Fixing the MI(4,0) `TX_16X64` keystone (the
+/// §7.13.2.12 IBP DC modifier + the non-square `TX_16X64` residual) unblocks the
+/// whole DC chain that bordered it through the §7.13.2 edge-coverage guard, so the
+/// verified region widens 24x from the original 1024-sample column. Every sample is
+/// the down-predicted flat `DC_PRED` value `64` except the origin 16x16 leaf
+/// (`68`, 256 samples) and the MI(4,0) IBP DC step (`65`, the top-left 3 columns x
+/// 16 rows == 48 samples). Derived offline from `ac0_prefiltered.yuv`.
+const LUMA_REGION_WIDTH: usize = 192;
+const LUMA_REGION_HEIGHT: usize = 128;
+const LUMA_REGION_SAMPLE_COUNT: usize = LUMA_REGION_WIDTH * LUMA_REGION_HEIGHT;
+/// Sum of the 192x128 region (`256 * 68 + 48 * 65 + 24272 * 64`).
+const LUMA_REGION_SAMPLE_SUM: u64 = 1_573_936;
+/// FNV-1a-64 over the 192x128 region (row-major, sample-major u16 LE).
+const LUMA_REGION_FNV1A64: u64 = 0x31c1_4055_9bd3_8725;
+/// The §7.13.2.12 IBP DC value at the MI(4,0) `TX_16X64` leaf's top-left 3 columns.
+const MI40_IBP_STEP: u16 = 65;
 
 /// The frame-origin chroma `DC_PRED` transform side (a 32x32 §5.20.6 `TxSize` in
 /// the 4:2:0 chroma plane, the chroma leaf covering the §5.20.3.1 SDP chroma tree
@@ -369,17 +383,93 @@ fn ac0ej3_frame_origin_chroma_dc_blocks_reconstruct_bit_exact_against_prefilter_
         "the deferred SMOOTH chroma leaf at chroma (32,0) must stay unreconstructed"
     );
 
-    // Coverage report: the verified region is the 1024-sample luma column plus the
-    // two 32x32 chroma origin blocks (2048 chroma 4x4 units total across U and V).
+    // Coverage report: the verified luma region is now the full first-3-superblock
+    // 192x128 (24576-sample) DC region — the §7.13.2.12 IBP DC + non-square
+    // `TX_16X64` keystone fix unblocked the whole DC chain that bordered the
+    // MI(4,0) leaf, widening it 24x from the 1024-sample column — plus the two
+    // 32x32 chroma origin blocks (2048 chroma 4x4 units total across U and V).
     let (luma4x4, chroma4x4) = sink.reconstructed_counts();
     assert_eq!(
         luma4x4 * 16,
-        LUMA_COLUMN_SAMPLE_COUNT,
-        "verified luma region is the 1024-sample BLOCK_16X64 column"
+        LUMA_REGION_SAMPLE_COUNT,
+        "verified luma region is the 24576-sample first-3-superblock 192x128 block"
     );
     assert_eq!(
         chroma4x4 * 16,
         2 * CHROMA_ORIGIN_SAMPLE_COUNT,
         "verified chroma region is the U+V 32x32 origin blocks (2048 samples)"
+    );
+}
+
+/// Bit-exact verification of the FULL first-3-superblock luma DC region (x[0,192) x
+/// y[0,128), 24576 samples) against the AVM pre-filter oracle — a 24x widening of
+/// the original 1024-sample `BLOCK_16X64` column.
+///
+/// This is unlocked by fixing the MI(4,0) `TX_16X64` keystone with two
+/// reconstruction fixes: (1) the §7.15.4 outer inverse transform now drives the
+/// NON-SQUARE residual path, and (2) the §7.13.2.12 IBP DC modifier (ac0ej3 has
+/// `enable_ibp == 1`) blends the MI(4,0) left edge columns toward the reconstructed
+/// `BLOCK_16X64` left neighbour, producing the oracle's `65` step in the top-left 3
+/// columns. Every DC block downstream bordered that keystone through the §7.13.2
+/// edge-coverage guard, so the whole first-3-SB luma DC chain now reconstructs in
+/// one shot. The region is `68` (origin leaf, 256 samples), `65` (the MI(4,0) IBP
+/// step, 48 samples), and `64` (the rest); per-sample, sum, and FNV-1a-64 all
+/// match the oracle.
+#[test]
+#[ignore = "requires local mission fixture; set SPLOT_AC0EJ3_IVF or place it at $HOME/Documents/SplotLabs/ac0ej3.ivf"]
+fn ac0ej3_first_three_superblock_luma_reconstructs_bit_exact_against_prefilter_oracle() {
+    let path = require_fixture();
+    let bytes = std::fs::read(&path).expect("read ac0ej3 fixture");
+    let options = DecodeOptions::default();
+    let plan = context().plan_bytes(&bytes, options).expect("plan ac0ej3");
+
+    let sink = reconstruct_ac0ej3_intra_region_from_plan(&bytes, options, &plan)
+        .expect("reconstruct ac0ej3 first three superblock luma");
+
+    let mut fnv = Fnv1a64::new();
+    let mut sum: u64 = 0;
+    let mut count = 0usize;
+    let mut mi40_step_samples = 0usize;
+    for y in 0..LUMA_REGION_HEIGHT {
+        for x in 0..LUMA_REGION_WIDTH {
+            let sample = sink.reconstructed_sample(PlaneId::Y, x, y).unwrap();
+            // Per-region oracle: the origin 16x16 leaf is `68`; the MI(4,0)
+            // `TX_16X64` IBP-DC step (x[16,19), y[0,16)) is `65`; everything else is
+            // the down-predicted flat `DC_PRED` value `64`.
+            let in_mi40_step = (16..19).contains(&x) && y < BLOCK0_SIDE;
+            let expected = if y < BLOCK0_SIDE && x < BLOCK0_SIDE {
+                BLOCK0_FLAT_LUMA
+            } else if in_mi40_step {
+                MI40_IBP_STEP
+            } else {
+                LUMA_COLUMN_BELOW_ORIGIN
+            };
+            assert_eq!(
+                sample, expected,
+                "first-3-SB luma ({x},{y}) must be {expected}, got {sample}"
+            );
+            if in_mi40_step {
+                mi40_step_samples += 1;
+            }
+            fnv.update_u16(sample);
+            sum += u64::from(sample);
+            count += 1;
+        }
+    }
+
+    // The MI(4,0) §7.13.2.12 IBP DC step is exactly the top-left 3 columns x 16 rows.
+    assert_eq!(mi40_step_samples, 48, "MI(4,0) IBP DC step sample count");
+    assert_eq!(
+        count, LUMA_REGION_SAMPLE_COUNT,
+        "first-3-SB luma sample count"
+    );
+    assert_eq!(
+        sum, LUMA_REGION_SAMPLE_SUM,
+        "first-3-SB luma sample sum must match the pre-filter oracle"
+    );
+    assert_eq!(
+        fnv.finish(),
+        LUMA_REGION_FNV1A64,
+        "first-3-SB luma FNV-1a-64 must match the pre-filter reconstruction oracle (bit-exact)"
     );
 }

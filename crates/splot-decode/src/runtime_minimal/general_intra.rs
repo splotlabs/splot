@@ -1762,6 +1762,10 @@ fn decode_one_general_intra_rect_block<T: ReconSample>(
         luma_h_log2,
         qindex,
         luma_use_tcq,
+        // This synthetic rectangular-leaf fixture path runs the §7.13.2.10 flat DC
+        // prediction (no §7.13.2.12 IBP DC modifier); the ac0ej3 sink threads the
+        // IBP gate separately.
+        false,
         bit_depth,
     )
     .map_err(|error| general_intra_residual_error(error, tile_offset))?;
@@ -1808,6 +1812,7 @@ fn decode_one_general_intra_rect_block<T: ReconSample>(
             chroma_h_log2,
             qindex,
             false,
+            false,
             bit_depth,
         )
         .map_err(|error| general_intra_residual_error(error, tile_offset))?;
@@ -1836,6 +1841,7 @@ fn decode_one_general_intra_rect_block<T: ReconSample>(
             chroma_w_log2,
             chroma_h_log2,
             qindex,
+            false,
             false,
             bit_depth,
         )

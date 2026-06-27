@@ -11,8 +11,8 @@ use splot_recon::{
     IntraDirectionalAngleIdifEdges, IntraMiddleDirectionalAngle, IntraMiddleDirectionalAngleEdges,
     IntraMiddleDirectionalAngleIdifEdges, IntraRectBlockSize, IntraSmoothEdges, IntraSmoothMode,
     IntraSquareBlockSize, OutputIndex, PixelFormat, PlaneId, PlaneRect, PlaneSize, ReconSample,
-    predict_intra_cardinal_directional_rect_into, predict_intra_dc_rect_value,
-    predict_intra_directional_angle_rect_into,
+    apply_intra_ibp_dc_rect, predict_intra_cardinal_directional_rect_into,
+    predict_intra_dc_rect_value, predict_intra_directional_angle_rect_into,
     predict_intra_directional_angle_rect_one_sided_idif_into,
     predict_intra_middle_directional_angle_rect_idif_into,
     predict_intra_middle_directional_angle_rect_into, predict_intra_smooth_rect_into,
@@ -22,7 +22,7 @@ use crate::Result;
 use crate::tile_payload::{
     GeneralIntraResidualError, LumaCoeffBlock, MinimalRuntimeReconstructionTrace,
     SupportedChromaMode, SupportedDirectionalLumaMode, SupportedNonDcLumaMode,
-    reconstruct_general_intra_block, reconstruct_general_intra_block_rect,
+    reconstruct_general_intra_block, reconstruct_general_intra_block_rect_with_prediction,
     reconstruct_general_intra_block_with_prediction,
 };
 
@@ -170,6 +170,7 @@ pub(crate) fn reconstruct_general_intra_block_rect_into<T: ReconSample>(
     log2_height: u32,
     qindex: u32,
     use_tcq: bool,
+    ibp_dc: bool,
     bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     let width = 1usize << log2_width;
@@ -179,12 +180,25 @@ pub(crate) fn reconstruct_general_intra_block_rect_into<T: ReconSample>(
     let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
     let edges = workspace.intra_dc_edges_for_rect(plane_id, x, y, block_size)?;
     let dc = predict_intra_dc_rect_value(bit_depth, block_size, edges.as_dc_edges())?;
-    let out = if block.all_zero {
-        vec![dc; width * height]
+    // §7.13.2.10 produces a flat DC prediction; when the §7.13.2.12 IBP DC gate
+    // (`enable_ibp && useDip == 0 && DC_PRED && !(w == 4 && h == 4) && (plane 0 ||
+    // UVMode != CfL)`) holds, blend the edge rows/columns toward the reconstructed
+    // neighbours BEFORE adding the residual. The blend is a validated no-op over
+    // uniform neighbours (the value blends toward itself), so a block whose left /
+    // above column is flat reconstructs identically with or without it.
+    let prediction = if ibp_dc {
+        let mut pred = vec![dc; width * height];
+        apply_intra_ibp_dc_rect(bit_depth, block_size, edges.as_dc_edges(), &mut pred, width)?;
+        pred
     } else {
-        reconstruct_general_intra_block_rect(
+        vec![dc; width * height]
+    };
+    let out = if block.all_zero {
+        prediction
+    } else {
+        reconstruct_general_intra_block_rect_with_prediction(
             &block.quant,
-            dc,
+            &prediction,
             qindex,
             plane_id,
             log2_width,

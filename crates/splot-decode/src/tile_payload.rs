@@ -62,7 +62,8 @@ pub(crate) use general_intra_residual::{
     ActiveChromaResidualPolicy, ActiveIntraIstResidualPolicy, GeneralIntraResidualError,
     IntraIstSyntax, LumaCoeffBlock, LumaTransformTypeContext, TransformToolResidualPolicy,
     decode_general_intra_plane_coeffs, reconstruct_general_intra_block,
-    reconstruct_general_intra_block_rect, reconstruct_general_intra_block_with_prediction,
+    reconstruct_general_intra_block_rect_with_prediction,
+    reconstruct_general_intra_block_with_prediction,
 };
 pub(crate) use input::{
     FrameCandidateCdfFacts, FrameCandidateCoeffFacts, FrameCandidateTileBoundaryError,
