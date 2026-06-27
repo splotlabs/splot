@@ -842,11 +842,13 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                     )
                 })?;
                 // SDP chroma-only leaf: reconstruct the chroma DC (gated in the sink).
+                // This leaf decodes no luma, so `fsc_mode` (a luma-only gate) is false.
                 let sdp_recon = SelectableReconContext {
                     leaf_y_mode: Some(y_mode),
                     chroma_mode: supported_chroma_mode(y_mode, uv_mode.uv_mode()),
                     qindex: delta_q_state.qindex_u32(),
                     luma_use_tcq,
+                    fsc_mode: false,
                 };
                 decode_chroma_residual_chunks(
                     work_unit,
@@ -985,11 +987,13 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                 )
             })?;
             // Reconstruction-bridge context: the modes gate the verified DC subset.
+            // `fsc_mode != 0` defers FSC leaves (the primitive is non-FSC DCT_DCT).
             let recon_context = SelectableReconContext {
                 leaf_y_mode: leaf_mode.luma_y_mode(),
                 chroma_mode,
                 qindex: delta_q_state.qindex_u32(),
                 luma_use_tcq,
+                fsc_mode: fsc_mode != 0,
             };
             decode_selectable_residual_chunks(
                 work_unit,
@@ -1372,6 +1376,7 @@ fn decode_luma_records_for_chunk(
                 recon.leaf_y_mode,
                 recon.qindex,
                 recon.luma_use_tcq,
+                recon.fsc_mode,
                 tile_offset,
             )?;
         }

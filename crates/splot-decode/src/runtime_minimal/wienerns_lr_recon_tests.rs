@@ -17,13 +17,16 @@
 //! `ac0_prefiltered.yuv`.
 //!
 //! Reconstructed-and-verified region for frame-0 (gated to the proven DC subset):
-//!   * Luma: the frame-origin `DC_PRED` 16x16 leaf is bit-exact, and the bridge
-//!     reconstructs every general-intra `DC_PRED` luma transform it reaches before
-//!     the §7.13.3.18 IntrABC fail-closed rejection.
-//!   * The first superblock's NON-DC luma (SMOOTH / directional) and its chroma
-//!     (the first-SB chroma leaf is `SMOOTH`, not `DC`) are OUTSIDE the verified DC
-//!     subset and are deliberately left UNRECONSTRUCTED — the sink never claims a
-//!     sample it has not proven bit-exact.
+//!   * Luma: the frame-origin `DC_PRED` 16x16 leaf and its provable `DC_PRED`
+//!     neighbours are bit-exact (the whole reconstructed region is now strictly
+//!     bit-exact vs the oracle — no confident-wrong workspace samples).
+//!   * Everything the primitive cannot prove bit-exact is DEFERRED: NON-DC luma
+//!     (SMOOTH / directional); the first-SB chroma leaf (`SMOOTH`, not `DC`); a
+//!     non-`all_zero` NON-SQUARE `DC_PRED` leaf (the `TX_16X64` rectangular-residual
+//!     inverse transform is not yet proven); any IST / FSC leaf; a frame with a
+//!     non-zero quantizer delta or matrix; and any `DC_PRED` block whose §7.13.2
+//!     prediction edges border a deferred (un-reconstructed) neighbour. The sink
+//!     never claims a sample it has not proven bit-exact.
 //!
 //! The oracle YUV is 6 MB and is NOT committed; the committed assertion is the
 //! frame-origin 16x16 block's flat value (`68`), its sample sum, and an FNV-1a-64

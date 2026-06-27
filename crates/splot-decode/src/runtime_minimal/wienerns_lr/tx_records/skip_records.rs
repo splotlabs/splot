@@ -60,6 +60,7 @@ pub(super) fn record_skipped_selectable_residuals(
                 recon.leaf_y_mode,
                 recon.qindex,
                 recon.luma_use_tcq,
+                recon.fsc_mode,
                 tile_offset,
             )?;
         }
