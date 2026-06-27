@@ -85,9 +85,11 @@ pub(in crate::runtime_minimal) struct WienerNsLrReconSink<T: ReconSample> {
     /// sink reconstructs nothing.
     quant_reconstructable: bool,
     /// Per-plane MI-unit coverage (`coverage[plane]`, row-major over the plane's MI
-    /// grid). Luma uses plane 0; both chroma planes share plane 1 (4:2:0, same MI
-    /// grid). `true` where the sink has written spec-correct samples.
-    coverage: [PlaneCoverage; 2],
+    /// grid): luma plane 0, chroma U plane 1, chroma V plane 2. U and V are tracked
+    /// SEPARATELY — a reconstructed U must not let a deferred V block pass the
+    /// DC-edge guard (4:2:0 U and V share MI dimensions but not reconstruction
+    /// state). `true` where the sink has written spec-correct samples.
+    coverage: [PlaneCoverage; 3],
     reconstructed_luma_4x4: usize,
     reconstructed_chroma_4x4: usize,
 }
@@ -160,18 +162,21 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             coverage: [
                 PlaneCoverage::new(luma_width, luma_height),
                 PlaneCoverage::new(chroma_width, chroma_height),
+                PlaneCoverage::new(chroma_width, chroma_height),
             ],
             reconstructed_luma_4x4: 0,
             reconstructed_chroma_4x4: 0,
         })
     }
 
-    /// The coverage-grid index for a plane: luma is grid 0, both chroma planes
-    /// share grid 1 (4:2:0 U and V occupy the same MI grid).
+    /// The coverage-grid index for a plane: luma 0, chroma U 1, chroma V 2. U and
+    /// V are SEPARATE so a reconstructed U cannot satisfy a deferred V's DC-edge
+    /// guard (4:2:0 U and V share MI dimensions but not reconstruction state).
     const fn coverage_index(plane_id: PlaneId) -> usize {
         match plane_id {
             PlaneId::Y => 0,
-            PlaneId::U | PlaneId::V => 1,
+            PlaneId::U => 1,
+            PlaneId::V => 2,
         }
     }
 
@@ -774,6 +779,48 @@ mod tests {
         );
         assert_eq!(sink.reconstructed_sample(PlaneId::Y, 16, 0).unwrap(), 0);
         assert_eq!(sink.reconstructed_counts().0, 0);
+    }
+
+    // Finding #2 (re-review): U and V chroma coverage are tracked SEPARATELY. A
+    // reconstructed U block must not let a deferred-neighbour V block pass the
+    // DC-edge guard (4:2:0 U and V share MI dimensions but not reconstruction
+    // state); otherwise V would predict from its own workspace fill value.
+    #[test]
+    fn chroma_u_coverage_does_not_satisfy_v_edge_guard() {
+        let mut sink = sink();
+        // A U DC block at the chroma origin reconstructs (off-grid edges) and marks
+        // U coverage across MI columns 0..4.
+        sink.reconstruct_chroma_transform(
+            PlaneId::U,
+            TX_16X16,
+            0,
+            0,
+            &zero_block(),
+            Some(SupportedChromaMode::Dc),
+            149,
+            ByteOffset::new(0),
+        )
+        .unwrap();
+        let chroma_after_u = sink.reconstructed_counts().1;
+        assert!(chroma_after_u > 0, "U origin block should reconstruct");
+        // A V DC block whose left neighbour (MI column 3) is covered ONLY on the U
+        // plane must DEFER — it cannot borrow U's coverage to satisfy its own guard.
+        sink.reconstruct_chroma_transform(
+            PlaneId::V,
+            TX_16X16,
+            16,
+            0,
+            &zero_block(),
+            Some(SupportedChromaMode::Dc),
+            149,
+            ByteOffset::new(0),
+        )
+        .unwrap();
+        assert_eq!(
+            sink.reconstructed_counts().1,
+            chroma_after_u,
+            "deferred-neighbour V block must not reconstruct via U's coverage",
+        );
     }
 
     // Finding #3: when the frame signals a non-zero quantizer delta / qmatrix
