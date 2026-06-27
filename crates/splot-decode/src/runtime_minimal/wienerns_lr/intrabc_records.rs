@@ -1442,16 +1442,18 @@ mod tests {
         TileIntrabcPreludeState::new(64, 64, &sequence, ByteOffset::new(0)).unwrap()
     }
 
-    #[test]
-    fn active_intrabc_nearmv_skip_reads_use_skip_mode_and_drl_then_advances() {
+    /// Runs the live `read_intrabc_use_and_skip` → `read_intrabc_info` sequence over
+    /// `steps` on the large-frame fixture, returning the decoded `use_skip`, the
+    /// `read_intrabc_info` result (`Ok(info)` for a `skip` leaf that advances, `Err`
+    /// for a fail-closed leaf), and the symbol count consumed. `skip_flag` is the
+    /// leaf's §5.20.5.3 `skip` carried into `read_intrabc_info`.
+    fn run_intrabc_prelude(
+        steps: &[(Option<TileCdfSelector>, u32)],
+        skip_flag: bool,
+    ) -> (IntrabcUseSkip, Result<IntrabcInfo>, u64) {
         let (sequence, core) = selectable_large_frame_fixture();
         let mut cdfs = FrameCdfSubset::from_defaults().tile_copy();
-        let payload = encode_steps(&[
-            (Some(TileCdfSelector::Intrabc { ctx: 0 }), 1),
-            (Some(TileCdfSelector::Skip { ctx: 0 }), 1),
-            (Some(TileCdfSelector::IntrabcMode), 1),
-            (None, 0),
-        ]);
+        let payload = encode_steps(steps);
         let mut symbols = decoder(&payload);
         let state = state();
         let block = IntrabcBlockContext::new(20, 0, 2, false);
@@ -1466,9 +1468,6 @@ mod tests {
             ByteOffset::new(20),
         )
         .unwrap();
-        // A `skip` IntrABC leaf reads its mode-info in order, then the walk advances:
-        // `read_intrabc_info` returns `Ok` (no residual symbols follow a skip leaf), so
-        // the partition/superblock walk continues to the next block.
         let info = read_intrabc_info(
             &mut cdfs,
             &mut symbols,
@@ -1476,11 +1475,27 @@ mod tests {
             &sequence,
             &core,
             geometry,
-            true,
+            skip_flag,
             None,
             ByteOffset::new(20),
-        )
-        .unwrap();
+        );
+        (use_skip, info, symbols.symbol_count())
+    }
+
+    #[test]
+    fn active_intrabc_nearmv_skip_reads_use_skip_mode_and_drl_then_advances() {
+        // A `skip` IntrABC leaf reads its mode-info in order, then the walk advances:
+        // `read_intrabc_info` returns `Ok` (no residual symbols follow a skip leaf), so
+        // the partition/superblock walk continues to the next block.
+        let (use_skip, info, symbol_count) = run_intrabc_prelude(
+            &[
+                (Some(TileCdfSelector::Intrabc { ctx: 0 }), 1),
+                (Some(TileCdfSelector::Skip { ctx: 0 }), 1),
+                (Some(TileCdfSelector::IntrabcMode), 1),
+                (None, 0),
+            ],
+            true,
+        );
 
         assert_eq!(
             use_skip,
@@ -1489,58 +1504,46 @@ mod tests {
                 skip_flag: true,
             }
         );
-        assert_eq!(info.intrabc_mode, 1);
-        assert_eq!(symbols.symbol_count(), 4);
+        assert_eq!(info.unwrap().intrabc_mode, 1);
+        assert_eq!(symbol_count, 4);
     }
 
     #[test]
     fn active_intrabc_newmv_nonskip_reads_block_vector_then_fails_closed_on_residual() {
-        let (sequence, core) = selectable_large_frame_fixture();
-        let mut cdfs = FrameCdfSubset::from_defaults().tile_copy();
-        let payload = encode_steps(&[
-            (Some(TileCdfSelector::Intrabc { ctx: 0 }), 1),
-            (Some(TileCdfSelector::Skip { ctx: 0 }), 0),
-            (Some(TileCdfSelector::IntrabcMode), 0),
-            (None, 0),
-            (Some(TileCdfSelector::IntrabcPrecision), 1),
-            (
-                Some(TileCdfSelector::ReadMv(MvCdfSelector::JointShellSet {
-                    mv_ctx: 1,
-                })),
-                0,
-            ),
-            (
-                Some(TileCdfSelector::ReadMv(MvCdfSelector::JointShellClass {
-                    precision: usize::from(MV_PRECISION_QUARTER_PEL),
-                    shell_set: 0,
-                    mv_ctx: 1,
-                })),
-                0,
-            ),
-            (
-                Some(TileCdfSelector::ReadMv(
-                    MvCdfSelector::ShellOffsetLowClass {
+        let (use_skip, info, symbol_count) = run_intrabc_prelude(
+            &[
+                (Some(TileCdfSelector::Intrabc { ctx: 0 }), 1),
+                (Some(TileCdfSelector::Skip { ctx: 0 }), 0),
+                (Some(TileCdfSelector::IntrabcMode), 0),
+                (None, 0),
+                (Some(TileCdfSelector::IntrabcPrecision), 1),
+                (
+                    Some(TileCdfSelector::ReadMv(MvCdfSelector::JointShellSet {
                         mv_ctx: 1,
-                        shell_class: 0,
-                    },
-                )),
-                0,
-            ),
-        ]);
-        let mut symbols = decoder(&payload);
-        let state = state();
-        let block = IntrabcBlockContext::new(20, 0, 2, false);
-        let geometry = IntrabcBlockGeometry::new(block, 4, 4);
+                    })),
+                    0,
+                ),
+                (
+                    Some(TileCdfSelector::ReadMv(MvCdfSelector::JointShellClass {
+                        precision: usize::from(MV_PRECISION_QUARTER_PEL),
+                        shell_set: 0,
+                        mv_ctx: 1,
+                    })),
+                    0,
+                ),
+                (
+                    Some(TileCdfSelector::ReadMv(
+                        MvCdfSelector::ShellOffsetLowClass {
+                            mv_ctx: 1,
+                            shell_class: 0,
+                        },
+                    )),
+                    0,
+                ),
+            ],
+            false,
+        );
 
-        let use_skip = read_intrabc_use_and_skip(
-            &mut cdfs,
-            &mut symbols,
-            &state,
-            &core,
-            geometry,
-            ByteOffset::new(20),
-        )
-        .unwrap();
         assert_eq!(
             use_skip,
             IntrabcUseSkip {
@@ -1548,27 +1551,14 @@ mod tests {
                 skip_flag: false,
             }
         );
-        let error = read_intrabc_info(
-            &mut cdfs,
-            &mut symbols,
-            &state,
-            &sequence,
-            &core,
-            geometry,
-            false,
-            None,
-            ByteOffset::new(20),
-        )
-        .unwrap_err();
-
         // A NON-`skip` IntrABC leaf reads its full §5.20.5.4 block-vector syntax, then
         // fails closed: its §5.20.7.23 residual on the inter/IntrABC transform path is
         // not yet proven, so the walk must not parse past it.
         assert_eq!(
-            unsupported_reason(error),
+            unsupported_reason(info.unwrap_err()),
             "unsupported_wienerns_lr_selectable_transform_records_intrabc_nonskip_residual"
         );
-        assert_eq!(symbols.symbol_count(), 8);
+        assert_eq!(symbol_count, 8);
     }
 
     #[test]
