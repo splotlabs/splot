@@ -31,14 +31,17 @@ use super::intrabc_records::{
 };
 use super::{
     WienerNsLrTransformRecordDiagnosticScope, derive_tile_plan,
-    fixed_largest_420_chroma_tx_size_from_luma_4x4,
+    fixed_largest_420_chroma_tx_size_from_luma_4x4, intra_capped_seq_sb_size,
     map_wienerns_lr_transform_record_multiblock_error,
     wienerns_lr_live_transform_record_mode_error, wienerns_lr_live_transform_record_residual_error,
     wienerns_lr_selectable_transform_record_error_reason,
 };
 
+mod ccso;
 mod max_rect;
 mod skip_records;
+
+use ccso::CcsoState;
 
 const BLOCK_4X4: usize = 0;
 const MI_SIZE: usize = 4;
@@ -138,6 +141,10 @@ struct CdefState {
     values: Vec<Option<usize>>,
     sb_size4: usize,
 }
+
+pub(super) const CCSO_PLANES: usize = 3;
+pub(super) const CCSO_SYMBOL_VALUES: usize = 2;
+pub(super) const MI_SIZE_LOG2: u32 = 2;
 
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub(super) enum SelectableTransformRecordError {
@@ -750,6 +757,7 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
     );
     let mut delta_q_state = DeltaQState::new(sequence, core, tile_offset)?;
     let mut cdef_state = CdefState::new(tx_skip_rows, tx_skip_cols, sequence, tile_offset)?;
+    let mut ccso_state = CcsoState::new(tx_skip_rows, tx_skip_cols, sequence, core, tile_offset)?;
     let mut intrabc_state =
         TileIntrabcPreludeState::new(tx_skip_rows, tx_skip_cols, sequence, tile_offset)?;
 
@@ -841,6 +849,7 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                 n4w,
                 n4h,
                 &mut cdef_state,
+                &mut ccso_state,
                 &mut delta_q_state,
                 &mut intrabc_state,
                 tile_offset,
@@ -1696,6 +1705,7 @@ fn read_luma_shared_mode_info_prelude(
     n4w: usize,
     n4h: usize,
     cdef_state: &mut CdefState,
+    ccso_state: &mut CcsoState,
     delta_q_state: &mut DeltaQState,
     intrabc_state: &mut TileIntrabcPreludeState,
     tile_offset: ByteOffset,
@@ -1708,7 +1718,11 @@ fn read_luma_shared_mode_info_prelude(
         IntrabcBlockGeometry::from_frontier(frontier, n4w, n4h),
         tile_offset,
     )?;
+    // AV2 § 5.20.7.2 intra_frame_mode_info order: read_gdf, read_cdef, read_ccso,
+    // read_delta_qindex (gdf_per_block is off for the admitted subset, so no read_gdf
+    // symbol). read_ccso (§ 5.20.10.2) sits between read_cdef and read_delta_qindex.
     cdef_state.read_for_block(work_unit, symbols, core, frontier, n4w, n4h, tile_offset)?;
+    ccso_state.read_for_block(work_unit, symbols, frontier, tile_offset)?;
     delta_q_state.read_for_block(work_unit, symbols, frontier, tile_offset)?;
     let intrabc = if use_skip.use_intrabc {
         Some(read_intrabc_info(
@@ -2069,15 +2083,9 @@ fn updated_current_q_index(
 }
 
 fn intra_delta_q_sb_size4(sequence: &SequenceHeader, tile_offset: ByteOffset) -> Result<usize> {
-    let partition = sequence.partition.as_ref().ok_or_else(|| {
-        wienerns_lr_selectable_transform_record_error_reason(
-            tile_offset,
-            "unsupported_wienerns_lr_selectable_transform_records_missing_partition_config",
-        )
-    })?;
     // AV2 § 5.18.2 caps intra frames with 256x256 sequence superblocks to
     // 128x128 before tile partition traversal and `ReadDeltas` reset.
-    Ok(match partition.seq_sb_size() {
+    Ok(match intra_capped_seq_sb_size(sequence, tile_offset)? {
         SuperblockSize::Block64x64 => 16,
         SuperblockSize::Block128x128 | SuperblockSize::Block256x256 => 32,
     })

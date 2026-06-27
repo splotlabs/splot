@@ -54,7 +54,8 @@ pub(super) use self::tx_records::WienerNsLrTxSkipTransformRecord;
 
 use self::diagnostics::transform_tool_residual_frontier;
 pub(super) use self::diagnostics::{
-    map_wienerns_lr_unit_frontier_error, wienerns_lr_live_frame_samples_unpopulated_error,
+    intra_capped_seq_sb_size, map_wienerns_lr_unit_frontier_error,
+    wienerns_lr_live_frame_samples_unpopulated_error,
     wienerns_lr_live_transform_record_handoff_error,
     wienerns_lr_live_transform_record_tool_gate_error, wienerns_lr_runtime_storage_retention_error,
     wienerns_lr_selectable_live_frame_samples_unpopulated_error,

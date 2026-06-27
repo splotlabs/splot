@@ -3,9 +3,10 @@
 
 //! Diagnostic constructors for the Wiener NS loop-restoration runtime frontier.
 
+use splot_core::headers::sequence::{SequenceHeader, SuperblockSize};
 use splot_core::span::ByteOffset;
 
-use crate::error::DecodeError;
+use crate::error::{DecodeError, Result};
 use crate::tile_payload::{MinimalRuntimePartitionFrontierError, TilePartitionTraversalError};
 
 use super::super::{
@@ -215,6 +216,22 @@ pub(in crate::runtime_minimal) fn wienerns_lr_selectable_transform_record_error_
         feature_id,
         spec_section,
     )
+}
+
+/// `get_seq_sb_size()` (AV2 § 5.18.2) for the selectable transform-record frontier:
+/// the § 5.18.2 intra-capped superblock used by the per-block delta-Q, IntrABC, and
+/// CCSO grid derivations (a single source for the shared `partition` lookup).
+pub(in crate::runtime_minimal) fn intra_capped_seq_sb_size(
+    sequence: &SequenceHeader,
+    tile_offset: ByteOffset,
+) -> Result<SuperblockSize> {
+    let partition = sequence.partition.as_ref().ok_or_else(|| {
+        wienerns_lr_selectable_transform_record_error_reason(
+            tile_offset,
+            "unsupported_wienerns_lr_selectable_transform_records_missing_partition_config",
+        )
+    })?;
+    Ok(partition.seq_sb_size())
 }
 
 pub(in crate::runtime_minimal) fn wienerns_lr_live_transform_record_handoff_error(

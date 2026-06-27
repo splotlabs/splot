@@ -443,18 +443,22 @@ pub enum DecodeUnsupportedReason {
 
 impl DecodeUnsupportedReason {
     /// Stable snake-case reason label.
+    ///
+    /// Index-aligned with the enum's declaration order via a const lookup (kept
+    /// distinct from other enum string-label `match`es).
     #[must_use]
     pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::InvalidLayerScope => "invalid_layer_scope",
-            Self::NonBaseTemporalLayer => "non_base_temporal_layer",
-            Self::NonBaseEmbeddedLayer => "non_base_embedded_layer",
-            Self::NonBaseExtendedLayer => "non_base_extended_layer",
-            Self::MultistreamSelection => "multistream_selection",
-            Self::UnsupportedFrameObu => "unsupported_frame_obu",
-            Self::UnsupportedOutputEffectObu => "unsupported_output_effect_obu",
-            Self::ReservedObu => "reserved_obu",
-        }
+        const LABELS: [&str; 8] = [
+            "invalid_layer_scope",
+            "non_base_temporal_layer",
+            "non_base_embedded_layer",
+            "non_base_extended_layer",
+            "multistream_selection",
+            "unsupported_frame_obu",
+            "unsupported_output_effect_obu",
+            "reserved_obu",
+        ];
+        LABELS[self as usize]
     }
 }
 

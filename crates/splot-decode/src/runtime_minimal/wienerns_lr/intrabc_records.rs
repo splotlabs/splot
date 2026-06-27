@@ -20,7 +20,7 @@ use super::super::inter::{
         read_newmv_block_mvd_with_config,
     },
 };
-use super::wienerns_lr_selectable_transform_record_error_reason;
+use super::{intra_capped_seq_sb_size, wienerns_lr_selectable_transform_record_error_reason};
 
 const BLOCK_64X64: usize = 12;
 const MI_SIZE: usize = 4;
@@ -1159,13 +1159,7 @@ fn max_bvp_drl_bits_minus_1(
 }
 
 fn intra_sb_size4(sequence: &SequenceHeader, tile_offset: ByteOffset) -> Result<usize> {
-    let partition = sequence.partition.as_ref().ok_or_else(|| {
-        wienerns_lr_selectable_transform_record_error_reason(
-            tile_offset,
-            "unsupported_wienerns_lr_selectable_transform_records_missing_partition_config",
-        )
-    })?;
-    Ok(match partition.seq_sb_size() {
+    Ok(match intra_capped_seq_sb_size(sequence, tile_offset)? {
         SuperblockSize::Block64x64 => 16,
         SuperblockSize::Block128x128 | SuperblockSize::Block256x256 => 32,
     })
