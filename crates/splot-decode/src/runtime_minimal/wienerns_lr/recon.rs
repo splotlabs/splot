@@ -411,8 +411,7 @@ pub(in crate::runtime_minimal) fn reconstruct_ac0ej3_selectable_intra_region(
             "ac0ej3 reconstruction bridge requires the parsed frame size",
         )
     })?;
-    let bit_depth = BitDepth::from_av2_bit_depth_idc(sequence.general.bit_depth_idc.get())
-        .map_err(|source| crate::error::DecodeError::Reconstruction { source })?;
+    let bit_depth = BitDepth::from_av2_bit_depth_idc(sequence.general.bit_depth_idc.get())?;
     let mut sink = WienerNsLrReconSink::<u16>::new(
         frame_size.width as usize,
         frame_size.height as usize,

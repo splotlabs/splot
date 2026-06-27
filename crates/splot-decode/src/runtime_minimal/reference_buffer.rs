@@ -16,7 +16,7 @@
 
 use splot_recon::{DecodedFrame, ReferenceFrameStore, ReferenceSlot};
 
-use crate::error::{DecodeError, Result};
+use crate::error::Result;
 
 use super::MinimalRuntimeFrame;
 
@@ -172,8 +172,7 @@ impl RuntimeReferenceBuffer {
     ) -> Result<(ReferenceFrameStore<&'a DecodedFrame<u8>>, ReferenceMetadata)> {
         let num = self.slots.len();
         let mut store: ReferenceFrameStore<&'a DecodedFrame<u8>> =
-            ReferenceFrameStore::with_capacity(num)
-                .map_err(|source| DecodeError::Reconstruction { source })?;
+            ReferenceFrameStore::with_capacity(num)?;
         let mut meta = ReferenceMetadata::with_len(num);
         for (i, slot) in self.slots.iter().enumerate() {
             meta.ref_valid[i] = slot.valid;
@@ -200,14 +199,11 @@ impl RuntimeReferenceBuffer {
                     "a §7.23 reference slot points past the decoded-frame buffer",
                 )
             })?;
-            let reference_slot =
-                ReferenceSlot::new(i).map_err(|source| DecodeError::Reconstruction { source })?;
+            let reference_slot = ReferenceSlot::new(i)?;
             // §7.23 reference retention is 8-bit only; `frame_eight` rejects a
             // 10-bit frame with a structured diagnostic (the 10-bit subset is
             // single-frame intra, so an inter frame never references one).
-            store
-                .put(reference_slot, frame.frame_eight()?)
-                .map_err(|source| DecodeError::Reconstruction { source })?;
+            store.put(reference_slot, frame.frame_eight()?)?;
         }
         Ok((store, meta))
     }

@@ -24,7 +24,6 @@ use splot_recon::{
 use super::mv_scaling::derive_plane_scaling;
 use super::{Mv, SPEC_MC, unsupported_at};
 use crate::Result;
-use crate::error::DecodeError;
 use splot_core::span::ByteOffset;
 
 /// A motion-compensated block's luma-space rectangle (the § 7.13.3.18 region the
@@ -178,8 +177,7 @@ fn predict_plane(
 ) -> Result<()> {
     let (samples, ref_width, ref_height, ref_mi_cols, ref_mi_rows) =
         reference_plane_samples(reference, plane, offset)?;
-    let view = ReferencePlaneView::new(&samples, ref_width, ref_height)
-        .map_err(|source| DecodeError::Reconstruction { source })?;
+    let view = ReferencePlaneView::new(&samples, ref_width, ref_height)?;
 
     // The block's plane-space position + size (luma rect subsampled per plane).
     let plane_x = rect.luma_x >> sub_x;
@@ -214,8 +212,7 @@ fn predict_plane(
         last_y: scaling.last_y,
         bit_depth: BitDepth::Eight,
     };
-    let predicted = subpel_predict_block(&view, &params)
-        .map_err(|source| DecodeError::Reconstruction { source })?;
+    let predicted = subpel_predict_block(&view, &params)?;
 
     // §7.13.3 single-reference write: CurrFrame[plane][y][x] = Clip1(Preds[0]). The
     // kernel already applied Clip1 to 8-bit, so narrow back to u8 (every value is in
@@ -225,11 +222,8 @@ fn predict_plane(
         .map(|&v| u8::try_from(v).unwrap_or(u8::MAX))
         .collect();
 
-    let rect = PlaneRect::new(plane_x, plane_y, block_w, block_h)
-        .map_err(|source| DecodeError::Reconstruction { source })?;
-    workspace
-        .write_rect(plane, rect, &packed, block_w)
-        .map_err(|source| DecodeError::Reconstruction { source })?;
+    let rect = PlaneRect::new(plane_x, plane_y, block_w, block_h)?;
+    workspace.write_rect(plane, rect, &packed, block_w)?;
     Ok(())
 }
 
@@ -251,10 +245,8 @@ fn predict_compound_plane(
         reference_plane_samples(reference0, plane, offset)?;
     let (samples1, ref_width1, ref_height1, ref_mi_cols1, ref_mi_rows1) =
         reference_plane_samples(reference1, plane, offset)?;
-    let view0 = ReferencePlaneView::new(&samples0, ref_width0, ref_height0)
-        .map_err(|source| DecodeError::Reconstruction { source })?;
-    let view1 = ReferencePlaneView::new(&samples1, ref_width1, ref_height1)
-        .map_err(|source| DecodeError::Reconstruction { source })?;
+    let view0 = ReferencePlaneView::new(&samples0, ref_width0, ref_height0)?;
+    let view1 = ReferencePlaneView::new(&samples1, ref_width1, ref_height1)?;
 
     let plane_x = rect.luma_x >> sub_x;
     let plane_y = rect.luma_y >> sub_y;
@@ -314,22 +306,16 @@ fn predict_compound_plane(
         last_y: scaling1.last_y,
         bit_depth: BitDepth::Eight,
     };
-    let pred0 = subpel_predict_block_compound_intermediate(&view0, &params0)
-        .map_err(|source| DecodeError::Reconstruction { source })?;
-    let pred1 = subpel_predict_block_compound_intermediate(&view1, &params1)
-        .map_err(|source| DecodeError::Reconstruction { source })?;
-    let blended = blend_compound_average_equal(&pred0, &pred1, BitDepth::Eight)
-        .map_err(|source| DecodeError::Reconstruction { source })?;
+    let pred0 = subpel_predict_block_compound_intermediate(&view0, &params0)?;
+    let pred1 = subpel_predict_block_compound_intermediate(&view1, &params1)?;
+    let blended = blend_compound_average_equal(&pred0, &pred1, BitDepth::Eight)?;
 
     let packed: Vec<u8> = blended
         .iter()
         .map(|&v| u8::try_from(v).unwrap_or(u8::MAX))
         .collect();
-    let rect = PlaneRect::new(plane_x, plane_y, block_w, block_h)
-        .map_err(|source| DecodeError::Reconstruction { source })?;
-    workspace
-        .write_rect(plane, rect, &packed, block_w)
-        .map_err(|source| DecodeError::Reconstruction { source })?;
+    let rect = PlaneRect::new(plane_x, plane_y, block_w, block_h)?;
+    workspace.write_rect(plane, rect, &packed, block_w)?;
     Ok(())
 }
 

@@ -654,8 +654,7 @@ pub(super) fn derive_wienerns_lr_runtime_storage_retention_frontier(
         u64::from(frame_size.height),
     )?;
 
-    let bit_depth = BitDepth::from_av2_bit_depth_idc(sequence.general.bit_depth_idc.get())
-        .map_err(|source| DecodeError::Reconstruction { source })?;
+    let bit_depth = BitDepth::from_av2_bit_depth_idc(sequence.general.bit_depth_idc.get())?;
     let budget = decoded_frame_storage_budget(
         frame_size,
         sequence.general.chroma_format_idc,
@@ -946,8 +945,7 @@ pub(super) fn populate_wienerns_lr_live_tx_skip_from_transform_records(
     cols: usize,
     records: &[WienerNsLrTxSkipTransformRecord],
 ) -> Result<()> {
-    let grid = derive_wienerns_lr_tx_skip_grid_retention(rows, cols, records)
-        .map_err(|source| DecodeError::Reconstruction { source })?;
+    let grid = derive_wienerns_lr_tx_skip_grid_retention(rows, cols, records)?;
     live_storage.populate_tx_skip_grid(&grid)
 }
 
