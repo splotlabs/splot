@@ -3,9 +3,10 @@
 
 //! Diagnostic constructors for the Wiener NS loop-restoration runtime frontier.
 
+use splot_core::headers::sequence::{SequenceHeader, SuperblockSize};
 use splot_core::span::ByteOffset;
 
-use crate::error::DecodeError;
+use crate::error::{DecodeError, Result};
 use crate::tile_payload::{MinimalRuntimePartitionFrontierError, TilePartitionTraversalError};
 
 use super::super::{
@@ -200,6 +201,14 @@ pub(in crate::runtime_minimal) fn wienerns_lr_selectable_transform_record_error_
             AC0EJ3_SELECTABLE_TRANSFORM_RECORDS_FEATURE_ID,
             "6.19.7.12",
         ),
+        "unsupported_wienerns_lr_selectable_transform_records_ccso_grid_overflow"
+        | "unsupported_wienerns_lr_selectable_transform_records_ccso_bounds"
+        | "unsupported_wienerns_lr_selectable_transform_records_ccso_symbol_range" => (
+            "minimal runtime reading the per-block § 5.20.10.2 CCSO `ccso_blk` symbol hit an internal CCSO-grid inconsistency (an out-of-bounds CCSO unit origin or an out-of-range decoded symbol); decoded samples, loop-restoration filtering/output, and reference refresh are not applied",
+            AC0EJ3_SELECTABLE_TRANSFORM_RECORDS_MATRIX_ROW,
+            AC0EJ3_SELECTABLE_TRANSFORM_RECORDS_FEATURE_ID,
+            "5.20.10.2",
+        ),
         _ => (
             "minimal runtime consumed active AV2 frame-level Wiener NS LR unit syntax, derived live storage footprints, and reached the TX_MODE_SELECT LrTxSkip transform-record handoff, but a bounded selectable transform-record subcase is still outside the non-FSC intra subset currently wired into live LR storage; decoded samples, FilterClass retention, loop-restoration filtering/output, and reference refresh are not applied",
             AC0EJ3_SELECTABLE_TRANSFORM_RECORDS_MATRIX_ROW,
@@ -215,6 +224,22 @@ pub(in crate::runtime_minimal) fn wienerns_lr_selectable_transform_record_error_
         feature_id,
         spec_section,
     )
+}
+
+/// `get_seq_sb_size()` (AV2 § 5.18.2) for the selectable transform-record frontier:
+/// the § 5.18.2 intra-capped superblock used by the per-block delta-Q, IntrABC, and
+/// CCSO grid derivations (a single source for the shared `partition` lookup).
+pub(in crate::runtime_minimal) fn intra_capped_seq_sb_size(
+    sequence: &SequenceHeader,
+    tile_offset: ByteOffset,
+) -> Result<SuperblockSize> {
+    let partition = sequence.partition.as_ref().ok_or_else(|| {
+        wienerns_lr_selectable_transform_record_error_reason(
+            tile_offset,
+            "unsupported_wienerns_lr_selectable_transform_records_missing_partition_config",
+        )
+    })?;
+    Ok(partition.seq_sb_size())
 }
 
 pub(in crate::runtime_minimal) fn wienerns_lr_live_transform_record_handoff_error(

@@ -6,12 +6,13 @@
 //! Feature tracking: `DECODE-TILE-CDF-SAVE-LIFECYCLE-BOUNDARY`.
 
 use super::{
-    CDEF_STRENGTH_INDEX0_CONTEXTS, DO_EXT_PARTITION_CONTEXTS, DO_SPLIT_CONTEXTS,
-    DO_SPLIT_PLANE_CONTEXTS, DO_SQUARE_SPLIT_CONTEXTS, DO_UNEVEN_4WAY_PARTITION_CONTEXTS,
-    FSC_BSIZE_CONTEXTS, FSC_MODE_CONTEXTS, FrameCdfSubset, INTRABC_CONTEXTS, MRL_INDEX_CONTEXTS,
-    RECT_TYPE_CONTEXTS, SavedCdfSubset, TX_2OR3_PARTITION_TYPE_CONTEXTS, TX_FSC_CONTEXTS,
-    TX_IS_INTER_CONTEXTS, TX_PARTITION_TYPE_CONTEXTS, TXFM_SPLIT_GROUPS, TileCdfRows,
-    TileCdfSavePolicy, TileCdfSubset, TileCdfWorkUnitBoundary, scale_cdf_count,
+    CCSO_CONTEXTS, CCSO_PLANES, CDEF_STRENGTH_INDEX0_CONTEXTS, DO_EXT_PARTITION_CONTEXTS,
+    DO_SPLIT_CONTEXTS, DO_SPLIT_PLANE_CONTEXTS, DO_SQUARE_SPLIT_CONTEXTS,
+    DO_UNEVEN_4WAY_PARTITION_CONTEXTS, FSC_BSIZE_CONTEXTS, FSC_MODE_CONTEXTS, FrameCdfSubset,
+    INTRABC_CONTEXTS, MRL_INDEX_CONTEXTS, RECT_TYPE_CONTEXTS, SavedCdfSubset,
+    TX_2OR3_PARTITION_TYPE_CONTEXTS, TX_FSC_CONTEXTS, TX_IS_INTER_CONTEXTS,
+    TX_PARTITION_TYPE_CONTEXTS, TXFM_SPLIT_GROUPS, TileCdfRows, TileCdfSavePolicy, TileCdfSubset,
+    TileCdfWorkUnitBoundary, scale_cdf_count,
 };
 
 impl FrameCdfSubset {
@@ -95,6 +96,11 @@ impl TileCdfRows {
         scale_cdf_count(&mut self.delta_q);
         for ctx in 0..CDEF_STRENGTH_INDEX0_CONTEXTS {
             scale_cdf_count(&mut self.cdef_index0[ctx]);
+        }
+        for plane in 0..CCSO_PLANES {
+            for ctx in 0..CCSO_CONTEXTS {
+                scale_cdf_count(&mut self.ccso_blk[plane][ctx]);
+            }
         }
         scale_cdf_count(&mut self.cdef_index_minus1_with3);
         scale_cdf_count(&mut self.cdef_index_minus1_with4);

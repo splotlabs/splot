@@ -19,7 +19,7 @@ use core::fmt;
 
 use splot_core::symbol::CdfUpdateMode;
 use splot_core::tables::cdf::{
-    DEFAULT_CDEF_INDEX_MINUS1_WITH3_CDF, DEFAULT_CDEF_INDEX_MINUS1_WITH4_CDF,
+    DEFAULT_CCSO_BLK_CDF, DEFAULT_CDEF_INDEX_MINUS1_WITH3_CDF, DEFAULT_CDEF_INDEX_MINUS1_WITH4_CDF,
     DEFAULT_CDEF_INDEX_MINUS1_WITH5_CDF, DEFAULT_CDEF_INDEX_MINUS1_WITH6_CDF,
     DEFAULT_CDEF_INDEX_MINUS1_WITH7_CDF, DEFAULT_CDEF_INDEX_MINUS1_WITH8_CDF,
     DEFAULT_CDEF_INDEX0_CDF, DEFAULT_DELTA_Q_CDF, DEFAULT_DO_EXT_PARTITION_CDF,
@@ -56,6 +56,8 @@ const DELTA_Q_CDF_ROW_LEN: usize = 9;
 const FSC_MODE_CONTEXTS: usize = 4;
 const FSC_BSIZE_CONTEXTS: usize = 6;
 const CDEF_STRENGTH_INDEX0_CONTEXTS: usize = 4;
+const CCSO_PLANES: usize = 3;
+const CCSO_CONTEXTS: usize = 4;
 const CDEF_INDEX_MINUS1_WITH3_ROW_LEN: usize = 3;
 const CDEF_INDEX_MINUS1_WITH4_ROW_LEN: usize = 4;
 const CDEF_INDEX_MINUS1_WITH5_ROW_LEN: usize = 5;
@@ -84,6 +86,7 @@ type TxPartitionTypeCdfRows = [[[[i32; TX_PARTITION_TYPE_ROW_LEN]; TX_PARTITION_
 type DeltaQCdfRow = [i32; DELTA_Q_CDF_ROW_LEN];
 type FscModeCdfRows = [[[i32; CDF_ROW_LEN]; FSC_BSIZE_CONTEXTS]; FSC_MODE_CONTEXTS];
 type CdefIndex0CdfRows = [[i32; CDF_ROW_LEN]; CDEF_STRENGTH_INDEX0_CONTEXTS];
+type CcsoBlkCdfRows = [[[i32; CDF_ROW_LEN]; CCSO_CONTEXTS]; CCSO_PLANES];
 type CdefIndexMinus1With3CdfRow = [i32; CDEF_INDEX_MINUS1_WITH3_ROW_LEN];
 type CdefIndexMinus1With4CdfRow = [i32; CDEF_INDEX_MINUS1_WITH4_ROW_LEN];
 type CdefIndexMinus1With5CdfRow = [i32; CDEF_INDEX_MINUS1_WITH5_ROW_LEN];
@@ -388,6 +391,13 @@ pub(crate) enum TileCdfSelector {
         /// CDEF neighbour context (`0..CDEF_STRENGTH_INDEX0_CTX`).
         ctx: usize,
     },
+    /// `TileCcsoBlkCdf[plane][ctx]` from AV2 § 8.3.2 (per-block `ccso_blk`, § 5.20.10.2).
+    CcsoBlk {
+        /// Plane index (`0..CCSO_PLANES`).
+        plane: usize,
+        /// CCSO neighbour context (`0..CCSO_CONTEXTS`).
+        ctx: usize,
+    },
     /// `TileCdefIndexMinus1With<CdefStrengths>Cdf` from AV2 § 8.3.2.
     CdefIndexMinus1 {
         /// Parsed frame `CdefStrengths` value (`3..=8`).
@@ -666,6 +676,8 @@ pub(crate) enum TileCdfArray {
     TxPartitionTypeReduced,
     /// `TileCdefIndex0Cdf`.
     CdefIndex0,
+    /// `TileCcsoBlkCdf`.
+    CcsoBlk,
     /// `TileCdefIndexMinus1With<CdefStrengths>Cdf`.
     CdefIndexMinus1,
     /// `TileIntrabcCdf`.
@@ -793,6 +805,7 @@ impl TileCdfArray {
             Self::TxPartitionType => "TileTxPartitionTypeCdf",
             Self::TxPartitionTypeReduced => "TileTxPartitionTypeReducedCdf",
             Self::CdefIndex0 => "TileCdefIndex0Cdf",
+            Self::CcsoBlk => "TileCcsoBlkCdf",
             Self::CdefIndexMinus1 => "TileCdefIndexMinus1Cdf",
             Self::Intrabc => "TileIntrabcCdf",
             Self::FscMode => "TileFscModeCdf",
@@ -1089,6 +1102,7 @@ pub(crate) struct TileCdfRows {
     tx_partition_type_reduced: TxPartitionTypeCdfRows,
     delta_q: DeltaQCdfRow,
     cdef_index0: CdefIndex0CdfRows,
+    ccso_blk: CcsoBlkCdfRows,
     cdef_index_minus1_with3: CdefIndexMinus1With3CdfRow,
     cdef_index_minus1_with4: CdefIndexMinus1With4CdfRow,
     cdef_index_minus1_with5: CdefIndexMinus1With5CdfRow,
@@ -1118,6 +1132,7 @@ impl TileCdfRows {
             tx_partition_type_reduced: DEFAULT_TX_PARTITION_TYPE_REDUCED_CDF,
             delta_q: DEFAULT_DELTA_Q_CDF,
             cdef_index0: DEFAULT_CDEF_INDEX0_CDF,
+            ccso_blk: DEFAULT_CCSO_BLK_CDF,
             cdef_index_minus1_with3: DEFAULT_CDEF_INDEX_MINUS1_WITH3_CDF,
             cdef_index_minus1_with4: DEFAULT_CDEF_INDEX_MINUS1_WITH4_CDF,
             cdef_index_minus1_with5: DEFAULT_CDEF_INDEX_MINUS1_WITH5_CDF,
@@ -1287,6 +1302,26 @@ impl TileCdfRows {
                         index_name: "ctx",
                         actual: ctx,
                         max_exclusive: CDEF_STRENGTH_INDEX0_CONTEXTS,
+                    })?;
+                Ok(row.as_slice())
+            }
+            TileCdfSelector::CcsoBlk { plane, ctx } => {
+                let plane_rows =
+                    self.ccso_blk
+                        .get(plane)
+                        .ok_or(TileCdfError::SelectorOutOfRange {
+                            array: TileCdfArray::CcsoBlk,
+                            index_name: "plane",
+                            actual: plane,
+                            max_exclusive: CCSO_PLANES,
+                        })?;
+                let row = plane_rows
+                    .get(ctx)
+                    .ok_or(TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::CcsoBlk,
+                        index_name: "ctx",
+                        actual: ctx,
+                        max_exclusive: CCSO_CONTEXTS,
                     })?;
                 Ok(row.as_slice())
             }
@@ -1623,6 +1658,27 @@ impl TileCdfRows {
                         })?;
                 Ok(row.as_mut_slice())
             }
+            TileCdfSelector::CcsoBlk { plane, ctx } => {
+                let plane_rows =
+                    self.ccso_blk
+                        .get_mut(plane)
+                        .ok_or(TileCdfError::SelectorOutOfRange {
+                            array: TileCdfArray::CcsoBlk,
+                            index_name: "plane",
+                            actual: plane,
+                            max_exclusive: CCSO_PLANES,
+                        })?;
+                let max_exclusive = plane_rows.len();
+                let row = plane_rows
+                    .get_mut(ctx)
+                    .ok_or(TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::CcsoBlk,
+                        index_name: "ctx",
+                        actual: ctx,
+                        max_exclusive,
+                    })?;
+                Ok(row.as_mut_slice())
+            }
             TileCdfSelector::CdefIndexMinus1 { strengths } => {
                 cdef_index_minus1_row_mut(self, strengths)
             }
@@ -1891,6 +1947,16 @@ impl TileCdfRows {
                 tile_num,
                 num_log2,
             );
+        }
+        for plane in 0..CCSO_PLANES {
+            for ctx in 0..CCSO_CONTEXTS {
+                avg_cdf_row(
+                    &mut self.ccso_blk[plane][ctx],
+                    &tile.ccso_blk[plane][ctx],
+                    tile_num,
+                    num_log2,
+                );
+            }
         }
         avg_cdf_row(
             &mut self.cdef_index_minus1_with3,
