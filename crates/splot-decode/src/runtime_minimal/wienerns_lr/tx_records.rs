@@ -782,7 +782,7 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
         sequence,
         core,
         limits,
-        |work_unit, symbols, frontier, joint_modes, uses_mrls, fsc_modes, _block_decoded| {
+        |work_unit, symbols, frontier, joint_modes, uses_mrls, fsc_modes, is_cfl_ctx, _block_decoded| {
             let n4w = frontier.b_size.num_4x4_wide().map_err(|_| {
                 wienerns_lr_selectable_transform_record_error_reason(
                     tile_offset,
@@ -830,6 +830,7 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                     chroma_tools,
                     GeneralIntraChromaModeContext::sdp_chroma_part(
                         frontier.cfl_allowed_in_sdp(),
+                        is_cfl_ctx.get(),
                     ),
                     y_mode,
                     frontier.b_size.index(),
@@ -865,7 +866,10 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                     sdp_recon,
                     tile_offset,
                 )?;
-                return Ok(GeneralIntraLeafMode::no_luma_mode());
+                // AV2 § 5.20.5.3: record this chroma leaf's `is_cfl` (`UVCfls`)
+                // so later chroma blocks read it as the § 8.3.2 `is_cfl` above /
+                // left neighbour context.
+                return Ok(GeneralIntraLeafMode::chroma(uv_mode.is_cfl()));
             }
             let prelude = read_luma_shared_mode_info_prelude(
                 work_unit,
@@ -938,6 +942,7 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                     joint_modes,
                     uses_mrls,
                     fsc_modes,
+                    is_cfl_ctx.get(),
                     frontier.b_size.index(),
                     frontier.r,
                     frontier.c,
@@ -959,7 +964,8 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                         modes.y_mode,
                         modes.fsc_mode,
                         modes.uses_mrls,
-                    ),
+                    )
+                    .with_uv_cfl(modes.is_cfl()),
                     LumaTransformTypeContext::with_mrl_index(
                         modes.y_mode,
                         modes.angle_delta_y,

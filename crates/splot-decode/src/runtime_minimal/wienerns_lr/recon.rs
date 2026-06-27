@@ -419,15 +419,17 @@ pub(in crate::runtime_minimal) fn reconstruct_ac0ej3_selectable_intra_region(
         frame_quant_reconstructable(core),
     )?;
     // The walk reconstructs into the sink in decode order. With the AVM-faithful
-    // §5.20.3.1 SDP chroma partition plane (plane 1 for the chroma tree), the parse
-    // advances past the first superblock's luma columns into the chroma SDP tree and
-    // stops at the first chroma block whose §5.20.5.6 `uv_mode` falls outside the
-    // supported transform-record handoff subset; the owned sink retains the region
-    // reconstructed before that expected rejection. Swallow ONLY that known
-    // recon-subset frontier — any other error (an earlier parse or reconstruction
-    // failure, e.g. a regression that fails before the frontier after the verified
-    // region is written) is propagated so the test fails loudly instead of silently
-    // passing on a partial walk.
+    // §5.20.3.1 SDP chroma partition plane (plane 1 for the chroma tree) and the
+    // §8.3.2 `is_cfl` neighbour-context fix (the chroma `is_cfl` CDF is keyed by the
+    // above/left `UVCfls` neighbours, not a hardcoded `ctx == 0`), the parse stays
+    // entropy-synced past the second superblock and stops at the first active IntrABC
+    // block (§7.13.3.18), which needs populated `CurrFrame` samples for prediction;
+    // the owned sink retains the region reconstructed before that expected rejection.
+    // Swallow ONLY that known recon-subset frontier — any other error (an earlier
+    // parse or reconstruction failure, e.g. a regression that fails before the
+    // frontier after the verified region is written, OR a re-introduced earlier
+    // desync) is propagated so the test fails loudly instead of silently passing on a
+    // partial walk.
     match super::tx_records::derive_wienerns_lr_selectable_transform_record_handoff(
         bytes,
         options,
@@ -448,15 +450,18 @@ pub(in crate::runtime_minimal) fn reconstruct_ac0ej3_selectable_intra_region(
     }
 }
 
-/// The single §5.20.5.6 chroma-`uv_mode` recon-subset fail-closed reason the ac0ej3
+/// The single §7.13.3.18 IntrABC recon-subset fail-closed reason the ac0ej3
 /// selectable walk is expected to stop on after reconstructing the verified region;
 /// the test driver swallows only this one and propagates every other error. With the
-/// §5.20.3.1 SDP chroma partition plane fix, the parse reaches the first chroma SDP
-/// block with an unsupported `uv_mode` before any later wall (the prior IntrABC
-/// frontier is no longer the first stop).
+/// §5.20.3.1 SDP chroma partition plane fix AND the §8.3.2 `is_cfl` neighbour-context
+/// fix (the chroma `is_cfl` CDF keyed by the above/left `UVCfls` neighbours), the
+/// entropy stream stays synced past the second superblock and the first active IntrABC
+/// block — which needs populated `CurrFrame` samples — is now the first wall (the prior
+/// `uv_mode` desync, caused by a `do_split` partition desync from the wrong `is_cfl`
+/// context, no longer fires).
 #[cfg(test)]
 const EXPECTED_RECON_FRONTIER_REASON: &str =
-    "unsupported_wienerns_lr_live_transform_record_uv_mode";
+    "unsupported_wienerns_lr_selectable_transform_records_intrabc_currframe_samples";
 
 /// Whether the frame's §5.18.6 quantization matches the reconstruction primitive's
 /// zero-`QuantizerDeltas` assumption: no per-plane DC/AC quantizer delta and no

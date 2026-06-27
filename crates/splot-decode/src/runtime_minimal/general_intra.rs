@@ -412,7 +412,14 @@ fn decode_general_intra_frame_into<T: ReconSample>(
         sequence,
         core,
         limits,
-        |work_unit, symbols, frontier, joint_modes, uses_mrls, fsc_modes, block_decoded| {
+        |work_unit,
+         symbols,
+         frontier,
+         joint_modes,
+         uses_mrls,
+         fsc_modes,
+         _is_cfl_ctx,
+         block_decoded| {
             decode_one_general_intra_block::<T>(
                 work_unit,
                 symbols,
@@ -611,6 +618,9 @@ fn decode_one_general_intra_block<T: ReconSample>(
         joint_modes,
         uses_mrls,
         fsc_modes,
+        // CfL tools are disabled on this path, so §5.20.5.6 never reads `is_cfl`
+        // and the §8.3.2 context is unused; `0` matches the no-CfL default row.
+        0,
         frontier.b_size.index(),
         frontier.r,
         frontier.c,
@@ -2126,6 +2136,7 @@ fn general_intra_partition_frontier_error(
         | MinimalRuntimePartitionFrontierError::IntraJointModeState(_)
         | MinimalRuntimePartitionFrontierError::UsesMrlsState(_)
         | MinimalRuntimePartitionFrontierError::FscModeState(_)
+        | MinimalRuntimePartitionFrontierError::UvCflState(_)
         | MinimalRuntimePartitionFrontierError::Traversal(_)
         | MinimalRuntimePartitionFrontierError::UnexpectedFrontier { .. } => {
             general_intra_unsupported(

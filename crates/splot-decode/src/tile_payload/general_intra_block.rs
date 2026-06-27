@@ -128,21 +128,34 @@ impl GeneralIntraChromaToolConfig {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct GeneralIntraChromaModeContext {
     cfl_allowed_in_sdp: bool,
+    /// AV2 § 8.3.2 `is_cfl` CDF context (`0..=2`) from the chroma above/left
+    /// `UVCfls` neighbours.
+    is_cfl_ctx: usize,
 }
 
 impl GeneralIntraChromaModeContext {
     /// Context for non-SDP or non-chroma-part callers.
+    ///
+    /// `is_cfl_ctx` is the AV2 § 8.3.2 `is_cfl` CDF context derived from the
+    /// chroma above/left `UVCfls` neighbours.
     #[must_use]
-    pub(crate) const fn shared_or_non_sdp() -> Self {
+    pub(crate) const fn shared_or_non_sdp(is_cfl_ctx: usize) -> Self {
         Self {
             cfl_allowed_in_sdp: true,
+            is_cfl_ctx,
         }
     }
 
     /// Context for an SDP `CHROMA_PART` leaf with retained §5.20.3.1 state.
+    ///
+    /// `is_cfl_ctx` is the AV2 § 8.3.2 `is_cfl` CDF context derived from the
+    /// chroma above/left `UVCfls` neighbours.
     #[must_use]
-    pub(crate) const fn sdp_chroma_part(cfl_allowed_in_sdp: bool) -> Self {
-        Self { cfl_allowed_in_sdp }
+    pub(crate) const fn sdp_chroma_part(cfl_allowed_in_sdp: bool, is_cfl_ctx: usize) -> Self {
+        Self {
+            cfl_allowed_in_sdp,
+            is_cfl_ctx,
+        }
     }
 }
 
@@ -245,6 +258,12 @@ impl GeneralIntraBlockModes {
     /// True when the luma plane uses `DC_PRED`.
     pub(crate) fn luma_is_dc(&self) -> bool {
         self.y_mode == IntraYMode::DC_PRED
+    }
+
+    /// True when §5.20.5.6 selected `UV_CFL_PRED` (`UVCfls`), feeding the
+    /// § 8.3.2 `is_cfl` neighbour context of later chroma blocks.
+    pub(crate) const fn is_cfl(&self) -> bool {
+        self.is_cfl
     }
 
     /// The supported non-DC luma predictor for this block, or `None` for DC and
@@ -555,6 +574,7 @@ pub(crate) fn decode_general_intra_block_modes(
     joint_modes: &TileIntraJointModeState,
     uses_mrls: &TileUsesMrlsState,
     fsc_modes: &TileFscModeState,
+    is_cfl_ctx: usize,
     block_size_index: usize,
     block_r: usize,
     block_c: usize,
@@ -578,7 +598,7 @@ pub(crate) fn decode_general_intra_block_modes(
         work_unit,
         symbols,
         chroma_tools,
-        GeneralIntraChromaModeContext::shared_or_non_sdp(),
+        GeneralIntraChromaModeContext::shared_or_non_sdp(is_cfl_ctx),
         luma.y_mode,
         block_size_index,
         block_n4w,
@@ -617,9 +637,9 @@ pub(crate) fn decode_general_intra_chroma_block_mode(
     // read_intra_uv_mode(): when CfL is sequence-enabled and the supported
     // non-lossless intra block is no larger than the current LR subset, or when
     // MHCCP is allowed for the block, §5.20.5.6 reads `is_cfl` before `uv_mode`.
-    // The current runtime stops if that symbol is true; because every previously
-    // admitted block has `is_cfl == 0`, the `UVCfls` neighbour context for this
-    // boundary stays 0.
+    // The §8.3.2 `is_cfl` CDF context is `(AvailUChroma && UVCfls[above]) +
+    // (AvailLChroma && UVCfls[left])`, derived by the partition walk from the
+    // chroma above/left neighbours and threaded in as `is_cfl_ctx`.
     let cfl_allowed = mode_context.cfl_allowed_in_sdp
         && cfl_allowed_for_non_lossless_420(chroma_tools, block_n4w, block_n4h);
     let mhccp_allowed = mode_context.cfl_allowed_in_sdp
@@ -628,7 +648,9 @@ pub(crate) fn decode_general_intra_chroma_block_mode(
         let is_cfl = read_symbol(
             cdfs,
             symbols,
-            TileCdfSelector::IsCfl { ctx: 0 },
+            TileCdfSelector::IsCfl {
+                ctx: mode_context.is_cfl_ctx,
+            },
             IS_CFL_REASON,
         )?;
         if is_cfl != 0 {
@@ -1057,6 +1079,7 @@ mod tests {
             &joint_modes,
             &uses_mrls,
             &empty_fsc_modes(),
+            0,
             BLOCK_64X64,
             0,
             0,
@@ -1100,6 +1123,7 @@ mod tests {
             &joint_modes,
             &uses_mrls,
             &empty_fsc_modes(),
+            0,
             BLOCK_64X64,
             0,
             SB_N4,
@@ -1131,6 +1155,7 @@ mod tests {
             &joint_modes,
             &uses_mrls,
             &empty_fsc_modes(),
+            0,
             BLOCK_64X64,
             0,
             SB_N4,
@@ -1319,7 +1344,7 @@ mod tests {
             &mut work_unit,
             &mut symbols,
             GeneralIntraChromaToolConfig::new(true, false),
-            GeneralIntraChromaModeContext::shared_or_non_sdp(),
+            GeneralIntraChromaModeContext::shared_or_non_sdp(0),
             IntraYMode::DC_PRED,
             BLOCK_64X64,
             SB_N4,
@@ -1345,7 +1370,7 @@ mod tests {
             &mut work_unit,
             &mut symbols,
             GeneralIntraChromaToolConfig::new(true, true),
-            GeneralIntraChromaModeContext::sdp_chroma_part(false),
+            GeneralIntraChromaModeContext::sdp_chroma_part(false, 0),
             IntraYMode::DC_PRED,
             BLOCK_64X64,
             SB_N4,

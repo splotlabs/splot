@@ -17,8 +17,9 @@ use super::DecodeTileWorkUnit;
 use super::block_decoded_state::TileBlockDecodedState;
 use super::block_symbol::{MinimalBlockSymbolTraceError, consume_minimal_block_symbol_trace};
 use super::intra_joint_modes::{
-    TileFscModeState, TileFscModeStateError, TileIntraJointModeState, TileIntraJointModeStateError,
-    TileUsesMrlsState, TileUsesMrlsStateError,
+    IsCflContext, TileFscModeState, TileFscModeStateError, TileIntraJointModeState,
+    TileIntraJointModeStateError, TileUsesMrlsState, TileUsesMrlsStateError, TileUvCflState,
+    TileUvCflStateError,
 };
 use super::mi_size_state::{TileMiSizeState, TileMiSizeStateError};
 use super::partition::PartitionType;
@@ -117,6 +118,9 @@ pub(crate) enum MinimalRuntimePartitionFrontierError {
     /// The `FscModes` neighbour-mode state boundary failed.
     #[error("minimal runtime intra FscModes state failed: {0}")]
     FscModeState(#[from] TileFscModeStateError),
+    /// The `UVCfls` neighbour-mode state boundary failed.
+    #[error("minimal runtime intra UVCfls state failed: {0}")]
+    UvCflState(#[from] TileUvCflStateError),
     /// Traversal reached a shape outside the minimal tier.
     #[error("minimal runtime partition frontier mismatch: {reason}")]
     UnexpectedFrontier {
@@ -222,6 +226,7 @@ where
         &TileIntraJointModeState,
         &TileUsesMrlsState,
         &TileFscModeState,
+        IsCflContext,
         &TileBlockDecodedState,
     ) -> Result<GeneralIntraLeafMode, E>,
 {
@@ -241,6 +246,8 @@ where
         .map_err(MinimalRuntimePartitionFrontierError::from)?;
     let mut fsc_modes = TileFscModeState::new(mi_rows, mi_cols, sb_size4)
         .map_err(MinimalRuntimePartitionFrontierError::from)?;
+    let mut uv_cfls = TileUvCflState::new(mi_rows, mi_cols)
+        .map_err(MinimalRuntimePartitionFrontierError::from)?;
     decode_general_intra_partition_tree(
         work_unit,
         frame,
@@ -248,6 +255,7 @@ where
         &mut joint_modes,
         &mut uses_mrls,
         &mut fsc_modes,
+        &mut uv_cfls,
         limits,
         on_leaf,
     )

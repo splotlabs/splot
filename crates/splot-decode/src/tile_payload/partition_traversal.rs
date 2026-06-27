@@ -13,8 +13,9 @@ use super::cdf::TileCdfError;
 use super::cdf::block_context::IntraYMode;
 use super::cdf::context::{PartitionContextInput, SquareSplitContextInput};
 use super::intra_joint_modes::{
-    TileFscModeState, TileFscModeStateError, TileIntraJointModeState, TileIntraYModeState,
-    TileIntraYModeStateError, TileUsesMrlsState, TileUsesMrlsStateError,
+    IsCflContext, TileFscModeState, TileFscModeStateError, TileIntraJointModeState,
+    TileIntraYModeState, TileIntraYModeStateError, TileUsesMrlsState, TileUsesMrlsStateError,
+    TileUvCflState,
 };
 use super::mi_size_state::{TileMiSizeState, TileMiSizeStateError};
 use super::partition::{PartitionDecisionError, PartitionType, ReadPartitionDecision};
@@ -384,6 +385,10 @@ pub(crate) struct GeneralIntraLeafMode {
     y_mode: Option<IntraYMode>,
     fsc_mode: Option<u8>,
     uses_mrls: Option<u8>,
+    /// AV2 § 5.20.5.3 `UVCfls` value (`UVMode == UV_CFL_PRED`) for chroma leaves
+    /// that read `is_cfl`; `None` for luma-only / inter leaves, which never set
+    /// a chroma `UVCfls` cell.
+    uv_cfl: Option<bool>,
 }
 
 impl GeneralIntraLeafMode {
@@ -400,6 +405,7 @@ impl GeneralIntraLeafMode {
             y_mode: Some(y_mode),
             fsc_mode: Some(fsc_mode),
             uses_mrls: Some(uses_mrls),
+            uv_cfl: None,
         }
     }
 
@@ -411,7 +417,30 @@ impl GeneralIntraLeafMode {
             y_mode: None,
             fsc_mode: None,
             uses_mrls: None,
+            uv_cfl: None,
         }
+    }
+
+    /// SDP chroma-only leaf carrying its decoded `is_cfl` (`UVCfls`) value so the
+    /// partition walk can update the § 8.3.2 `is_cfl` neighbour context grid.
+    #[must_use]
+    pub(crate) const fn chroma(uv_cfl: bool) -> Self {
+        Self {
+            intra_joint_mode: None,
+            y_mode: None,
+            fsc_mode: None,
+            uses_mrls: None,
+            uv_cfl: Some(uv_cfl),
+        }
+    }
+
+    /// Attaches a decoded `is_cfl` (`UVCfls`) value to a luma leaf that also
+    /// decoded its chroma side (a non-SDP shared luma+chroma block), so the walk
+    /// updates the § 8.3.2 `is_cfl` neighbour context grid.
+    #[must_use]
+    pub(crate) const fn with_uv_cfl(mut self, uv_cfl: bool) -> Self {
+        self.uv_cfl = Some(uv_cfl);
+        self
     }
 
     /// The decoded §5.20.5.3 luma intra `y_mode` for this leaf, when the leaf
@@ -1039,6 +1068,7 @@ pub(crate) fn decode_general_intra_partition_tree<'payload, E, F>(
     joint_modes: &mut TileIntraJointModeState,
     uses_mrls: &mut TileUsesMrlsState,
     fsc_modes: &mut TileFscModeState,
+    uv_cfls: &mut TileUvCflState,
     limits: DecodeLimits,
     mut on_leaf: F,
 ) -> Result<SymbolDecoder<'payload>, GeneralIntraTreeWalkError<E>>
@@ -1050,6 +1080,7 @@ where
         &TileIntraJointModeState,
         &TileUsesMrlsState,
         &TileFscModeState,
+        IsCflContext,
         &TileBlockDecodedState,
     ) -> Result<GeneralIntraLeafMode, E>,
 {
@@ -1193,6 +1224,24 @@ where
                         symbol_count_before_block: symbols.symbol_count(),
                         symbol_checkpoint_before_block: symbols.checkpoint(),
                     };
+                    // AV2 § 8.3.2 `is_cfl` CDF context from the chroma above/left
+                    // neighbours' `UVCfls`, gated by § 5.20.9.1 `AvailUChroma` /
+                    // `AvailLChroma` (`is_inside`). Only chroma leaves read
+                    // `is_cfl`; the ctx is computed here once and passed down.
+                    let avail_u_chroma = call
+                        .r
+                        .checked_sub(1)
+                        .is_some_and(|above_r| tile_bounds.is_inside(above_r, call.c));
+                    let avail_l_chroma = call
+                        .c
+                        .checked_sub(1)
+                        .is_some_and(|left_c| tile_bounds.is_inside(call.r, left_c));
+                    let is_cfl_ctx = IsCflContext::new(uv_cfls.is_cfl_ctx(
+                        call.r,
+                        call.c,
+                        avail_u_chroma,
+                        avail_l_chroma,
+                    ));
                     let leaf_mode = on_leaf(
                         work_unit,
                         &mut symbols,
@@ -1200,6 +1249,7 @@ where
                         joint_modes,
                         uses_mrls,
                         fsc_modes,
+                        is_cfl_ctx,
                         &block_decoded,
                     )
                     .map_err(GeneralIntraTreeWalkError::Leaf)?;
@@ -1212,6 +1262,12 @@ where
                     let block_n4h = sub_size
                         .num_4x4_high()
                         .map_err(TilePartitionTraversalError::from)?;
+                    // AV2 § 5.20.5.3: chroma leaves write their decoded `is_cfl`
+                    // (`UVCfls`) into every chroma MI cell they cover, so later
+                    // chroma blocks read it as the above/left `is_cfl` neighbour.
+                    if let Some(uv_cfl) = leaf_mode.uv_cfl {
+                        uv_cfls.record_block(call.r, call.c, block_n4w, block_n4h, uv_cfl);
+                    }
                     if frame.frame_is_intra && tree_type != PartitionTreeType::ChromaPart {
                         let joint_mode = leaf_mode.intra_joint_mode.ok_or(
                             TilePartitionTraversalError::MissingIntraLumaModeState {
