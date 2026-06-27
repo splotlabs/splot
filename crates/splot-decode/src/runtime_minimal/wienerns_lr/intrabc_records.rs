@@ -885,32 +885,47 @@ fn intrabc_luma_prediction_domain(
     })
 }
 
+/// Resolves AV2 §5.18.3.4 `allow_local_intrabc` for an IntrABC-enabled frame, honoring
+/// the inference rules.
+///
+/// Per §5.18.3.4 `intrabc_params()`, when `allow_intrabc == 1`: for an intra frame,
+/// `allow_local_intrabc` is read only when `allow_global_intrabc == 1` and is otherwise
+/// INFERRED `1` (the `else { allow_local_intrabc = 1 }` branch); for an inter frame,
+/// `allow_global_intrabc = 0` and `allow_local_intrabc = 1` (both inferred). The parser
+/// stores an inferred value as `None`, so `Some(false)` is the only value that disables
+/// the local branch — `Some(true)` and `None` (inferred `1`) both enable it. A frame
+/// without `allow_intrabc` has no IntrABC blocks, so this is only reached for one.
+fn resolve_allow_local_intrabc(core: &FrameHeaderCore) -> bool {
+    core.intrabc
+        .as_ref()
+        .is_some_and(|params| params.allow_intrabc && params.allow_local_intrabc != Some(false))
+}
+
 /// AV2 §6.19.7.12 `is_mv_valid` for the bounded ac0ej3 IntrABC subset, proven via the
-/// DETERMINISTIC part of the `allow_local_intrabc` local-IBC-buffer branch.
+/// `allow_local_intrabc` local-IBC-buffer branch NARROWED to same-superblock sources.
 ///
 /// §6.19.7.12 first rejects a block vector whose displaced source leaves the current
 /// tile (already enforced before this is called by the source/target tile-bounds
 /// checks in [`derive_intrabc_luma_prediction_geometry`]). It then takes the
 /// `allow_local_intrabc` branch (`av2_is_dv_in_local_range`), whose constraints split
-/// into a DETERMINISTIC geometry part (the uncoded-bottom-right exclusion, the
-/// same-superblock-row constraint, and the `valid_SB` "current SB or left N SBs"
-/// window) and a RUNTIME `IBCCoded` / `IBCBufferValid` collocation part that depends on
-/// per-sample IBC-buffer state splot does not track.
+/// into a DETERMINISTIC geometry part and a RUNTIME `IBCCoded` / `IBCBufferValid`
+/// collocation part (`check_valid_local_ibc`) that depends on per-sample IBC-buffer
+/// state splot does not track.
 ///
-/// This predicate proves ONLY the deterministic local-range geometry. The runtime
-/// collocation/buffer part is satisfied by a STRONGER guarantee enforced by the caller
-/// ([`super::recon::WienerNsLrReconSink::reconstruct_intrabc_block`]): the entire
-/// source rectangle is already RECONSTRUCTED by this sink in decode order — a sample
-/// reconstructed earlier in this tile's walk is, by construction, coded and valid in
-/// the IBC-buffer sense. It returns `false` (DEFER — over-rejecting is safe) for
-/// everything it cannot prove deterministically: a non-integer block vector,
-/// `allow_local_intrabc != 1`, or the §6.19.7.12 64x64-tier BRU `numLeftActiveSB`
-/// reduction (the only local-range term that needs runtime SB-active state; deferred
-/// when BRU could apply). ac0ej3's first IntrABC block (128x128 SB, integer DV, source
-/// in the SAME superblock as the active block) is proven valid by exactly this branch
-/// — verified against AVM `av2_is_dv_valid` / `av2_is_dv_in_local_range`
-/// (`av2/common/mvref_common.h`). The `INTRABC_BUFFER_NUM` / `INTRABC_BUFFER_SIZE_LOG2`
-/// constants mirror AVM.
+/// This predicate admits ONLY a same-superblock source ([`local_intrabc_range_valid`]):
+/// a source in a PREVIOUS superblock can survive `av2_is_dv_in_local_range`'s left-buffer
+/// window yet be rejected by §6.19.7.12 `check_valid_local_ibc` on a 64x64 IBC-buffer
+/// collocation collision, so narrowing to the current superblock keeps the gate
+/// fail-closed against that runtime case. The remaining runtime requirement (the source
+/// is coded/valid) is subsumed by the caller's STRONGER guarantee
+/// ([`super::recon::WienerNsLrReconSink::reconstruct_intrabc_block`]): the entire source
+/// rectangle is already RECONSTRUCTED by this sink in decode order. It returns `false`
+/// (DEFER — over-rejecting is safe) for everything else: a non-integer block vector,
+/// `allow_local_intrabc != 1` (resolving the §5.18.3.4 inference), or a source outside
+/// the active superblock. ac0ej3's first IntrABC block (128x128 SB, integer DV, source
+/// in the SAME superblock as the active block) is proven valid by exactly this branch —
+/// verified against AVM `av2_is_dv_valid` / `av2_is_dv_in_local_range`
+/// (`av2/common/mvref_common.h`).
 fn intrabc_dv_proven_valid(
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
@@ -923,19 +938,13 @@ fn intrabc_dv_proven_valid(
     if info.block_mv.row & 7 != 0 || info.block_mv.col & 7 != 0 {
         return Ok(false);
     }
-    // The local-range branch requires `allow_local_intrabc == 1` (inferred 1 only when
-    // `allow_global_intrabc == 1`; otherwise it is explicitly read). DEFER otherwise.
-    let allow_local = core
-        .intrabc
-        .as_ref()
-        .and_then(|params| params.allow_local_intrabc)
-        .unwrap_or(false);
-    if !allow_local {
+    if !resolve_allow_local_intrabc(core) {
         return Ok(false);
     }
-    // §6.19.7.12 superblock size (samples). The BRU `numLeftActiveSB` reduction (which
-    // needs runtime SB-active state) only applies in the 64x64 tier; DEFER a 64x64-SB
-    // frame whose sequence could enable BRU rather than assume the full window.
+    // §6.19.7.12 superblock size (samples). The same-superblock admission below never
+    // uses the `numLeftActiveSB` left-buffer window, so the §6.19.7.12 64x64-tier BRU
+    // reduction (the only local-range term needing runtime SB-active state) cannot
+    // affect it — no BRU gate is needed for the same-SB subset.
     let sb_samples = superblock_samples(sequence, tile_offset)?;
     let sb_size = usize::try_from(sb_samples).map_err(|_| {
         wienerns_lr_selectable_transform_record_error_reason(
@@ -943,9 +952,6 @@ fn intrabc_dv_proven_valid(
             "unsupported_wienerns_lr_selectable_transform_records_intrabc_geometry",
         )
     })?;
-    if sb_size == 64 && sequence_enables_bru(sequence) {
-        return Ok(false);
-    }
     Ok(local_intrabc_range_valid(IntrabcLocalRangeInputs {
         mi_row: geometry.block.row,
         mi_col: geometry.block.col,
@@ -971,16 +977,25 @@ struct IntrabcLocalRangeInputs {
 }
 
 /// The DETERMINISTIC geometry constraints of AV2 §6.19.7.12 `av2_is_dv_in_local_range`
-/// (`av2/common/mvref_common.h`), for an integer block vector: the uncoded-bottom-right
-/// exclusion, the same-superblock-row constraint, and the `valid_SB` window (current SB
-/// or the left `numLeftSB` SBs). Returns `true` when the source rectangle is within the
-/// allowed local-IBC range geometry. The caller separately proves the source is fully
-/// reconstructed, which subsumes the runtime `IBCCoded`/`IBCBufferValid` collocation part.
+/// (`av2/common/mvref_common.h`), for an integer block vector, NARROWED to the
+/// same-superblock subset so the runtime `check_valid_local_ibc` 64x64 IBC-buffer
+/// collocation cannot reject a source this gate admits.
+///
+/// `av2_is_dv_in_local_range` admits a source in the current SB OR the left `numLeftSB`
+/// SBs, but a source in a PREVIOUS 128x128 SB whose 64x64 `ibc_buffer_index` collides
+/// with the current buffer position is then rejected by §6.19.7.12 `check_valid_local_ibc`
+/// (`if (bufIdx == ibc_buffer_index(IBCBufferCurRow, IBCBufferCurCol)) { ... if
+/// (IBCCoded[colo]) return 0 }`) — runtime buffer state this gate does not track. To stay
+/// fail-closed, this predicate admits ONLY a source whose superblock equals the active
+/// block's superblock: the uncoded-bottom-right exclusion, the same-superblock-row
+/// constraint, AND the source rectangle fully within the active block's superblock (a
+/// stricter superset of the `valid_SB` window that excludes every previous-SB
+/// buffer-collision case). A reconstructed same-SB source cannot collide with the
+/// current 64x64 buffer slot in a way `check_valid_local_ibc` rejects, so the caller's
+/// "source fully reconstructed" proof safely subsumes the remaining runtime part.
+/// ac0ej3's first IntrABC block (MI(16,56), DV(-64,0), source x[224,256) y[0,64)) is a
+/// same-SB source (act SB col 1, source SB col 1) and stays admitted.
 fn local_intrabc_range_valid(inputs: IntrabcLocalRangeInputs) -> bool {
-    // INTRABC_BUFFER_NUM == 4, INTRABC_BUFFER_SIZE_LOG2 == 6 (a 4 x 64x64 IBC buffer).
-    const INTRABC_BUFFER_NUM: i64 = 4;
-    const INTRABC_BUFFER_SIZE_LOG2: u32 = 6;
-
     let bw = inputs.block_w as i64;
     let bh = inputs.block_h as i64;
     let dv_row = i64::from(inputs.dv_row);
@@ -1010,30 +1025,17 @@ fn local_intrabc_range_valid(inputs: IntrabcLocalRangeInputs) -> bool {
     if ((dv_col >> 3) + bw) > 0 && ((dv_row >> 3) + bh) > 0 {
         return false;
     }
-    // Reference block must be in the same superblock row as the active block.
-    if (src_top_y >> sb_size_log2) < (act_top_y >> sb_size_log2) {
-        return false;
-    }
-    if (src_bottom_y >> sb_size_log2) > (act_top_y >> sb_size_log2) {
-        return false;
-    }
-    // numLeftSB = round_up(IBC buffer samples / superblock samples).
-    let sb_area_log2 = 2 * sb_size_log2;
-    let buffer_samples = INTRABC_BUFFER_NUM << (2 * INTRABC_BUFFER_SIZE_LOG2);
-    let num_left_sb = (buffer_samples + (1 << sb_area_log2) - 1) >> sb_area_log2;
-    // Reference block must be in the current SB or the left `numLeftSB` SBs.
-    (src_right_x >> sb_size_log2) <= (act_left_x >> sb_size_log2)
-        && (src_left_x >> sb_size_log2) >= (act_left_x >> sb_size_log2) - num_left_sb
-}
-
-/// Whether the sequence could enable the §5.x BRU tool (block-reference-update). The
-/// §6.19.7.12 64x64-tier `numLeftActiveSB` reduction depends on runtime BRU SB-active
-/// state, so the bounded gate DEFERS a 64x64-SB frame when BRU is enabled.
-fn sequence_enables_bru(sequence: &SequenceHeader) -> bool {
-    sequence
-        .inter
-        .as_ref()
-        .is_some_and(|inter| inter.enable_bru)
+    // The whole source rectangle must lie in the SAME superblock as the active block
+    // (row AND column). This is stricter than `av2_is_dv_in_local_range`'s
+    // current-or-left-`numLeftSB`-SBs window: it excludes every previous-SB source,
+    // which is exactly the set §6.19.7.12 `check_valid_local_ibc` may then reject on a
+    // 64x64 IBC-buffer collocation collision (runtime state this gate cannot prove).
+    let act_sb_col = act_left_x >> sb_size_log2;
+    let act_sb_row = act_top_y >> sb_size_log2;
+    (src_left_x >> sb_size_log2) == act_sb_col
+        && (src_right_x >> sb_size_log2) == act_sb_col
+        && (src_top_y >> sb_size_log2) == act_sb_row
+        && (src_bottom_y >> sb_size_log2) == act_sb_row
 }
 
 fn tile_interval_for_block(
@@ -2158,13 +2160,13 @@ mod tests {
         }));
     }
 
-    // A DV whose source is too far LEFT (outside the current SB or the left numLeftSB
-    // window) is rejected (the §6.19.7.12 `valid_SB` guard). For a 128x128 SB the IBC
-    // buffer is one SB wide (numLeftSB == 1), so a source two SBs left is out of range.
+    // A DV whose source is in a DIFFERENT (previous) superblock is rejected by the
+    // same-superblock narrowing.
     #[test]
     fn local_intrabc_range_rejects_source_beyond_left_buffer_window() {
         // Block at SB column 2 (mi_col 64 == 256px), source displaced 3 SBs left
-        // (dv_col == -3 * 128 * 8 == -3072): src SB col is 3 SBs left of the active SB.
+        // (dv_col == -3 * 128 * 8 == -3072): the source SB column is 3 SBs left of the
+        // active SB, so it is not in the same superblock.
         assert!(!local_intrabc_range_valid(IntrabcLocalRangeInputs {
             mi_row: 64,
             mi_col: 64,
@@ -2176,9 +2178,27 @@ mod tests {
         }));
     }
 
-    // The full `intrabc_dv_proven_valid` gate DEFERS when `allow_local_intrabc` is not
-    // set, even for an otherwise-valid integer DV (the local-range branch is the only
-    // one this bounded gate proves).
+    // Codex re-review finding 1: a source in the PREVIOUS 128x128 superblock — which
+    // `av2_is_dv_in_local_range`'s left-buffer window would admit but §6.19.7.12
+    // `check_valid_local_ibc` can reject on a 64x64 IBC-buffer collocation collision — is
+    // DEFERRED by the same-superblock narrowing. Codex's example: MI(0,68) (active px
+    // 272 == SB col 2), DV (0, -128px): source px[144,175] sits in SB col 1, a previous
+    // superblock, so it must defer (never copy a not-actually-valid MV).
+    #[test]
+    fn local_intrabc_range_rejects_previous_superblock_buffer_collision_source() {
+        assert!(!local_intrabc_range_valid(IntrabcLocalRangeInputs {
+            mi_row: 0,
+            mi_col: 68,
+            block_w: 32,
+            block_h: 32,
+            dv_row: 0,
+            dv_col: -128 * 8,
+            sb_size: 128,
+        }));
+    }
+
+    // The full `intrabc_dv_proven_valid` gate DEFERS when `allow_local_intrabc` is
+    // explicitly `Some(false)`, even for an otherwise-valid same-SB integer DV.
     #[test]
     fn proven_valid_defers_when_local_intrabc_disabled() {
         let (sequence, mut core) = selectable_large_frame_fixture();
@@ -2189,6 +2209,7 @@ mod tests {
             change_bvp_drl: Some(false),
             max_bvp_drl_bits_minus_1: None,
         });
+        // A same-SB source within SB col 0 (active px 0, source displaced fully inside).
         let geometry = IntrabcBlockGeometry::new(IntrabcBlockContext::new(20, 0, 2, false), 4, 4);
         let info = IntrabcInfo {
             intrabc_mode: 1,
@@ -2199,6 +2220,36 @@ mod tests {
         assert!(
             !intrabc_dv_proven_valid(&sequence, &core, geometry, info, ByteOffset::new(20))
                 .unwrap()
+        );
+    }
+
+    // Codex re-review finding 2: §5.18.3.4 inference. A frame with `allow_global_intrabc
+    // == 0` infers `allow_local_intrabc = 1` (the parser stores the inferred value as
+    // `None`), so an inferred-local frame with a valid same-SB integer DV is ADMITTED.
+    #[test]
+    fn proven_valid_admits_inferred_local_intrabc_frame() {
+        let (sequence, mut core) = selectable_large_frame_fixture();
+        // allow_global_intrabc == 0 -> allow_local_intrabc inferred 1 (stored `None`).
+        core.intrabc = Some(IntrabcParams {
+            allow_intrabc: true,
+            allow_global_intrabc: Some(false),
+            allow_local_intrabc: None,
+            change_bvp_drl: Some(false),
+            max_bvp_drl_bits_minus_1: None,
+        });
+        // A same-SB source for any SB size >= 64: block 16x16 at MI(4,4) (active px
+        // (16,16), SB (0,0)), DV (-128 eighth == -16px row, 0) -> source px[16,31] y[0,15],
+        // directly above the block in the same superblock (col 0, row 0). The DV clears
+        // the uncoded-bottom-right guard ((dvRow>>3)+bh == 0, not > 0).
+        let geometry = IntrabcBlockGeometry::new(IntrabcBlockContext::new(4, 4, 2, false), 4, 4);
+        let info = IntrabcInfo {
+            intrabc_mode: 1,
+            ref_mv_idx: 0,
+            mv_precision: MV_PRECISION_QUARTER_PEL,
+            block_mv: IntrabcBlockVector { row: -128, col: 0 },
+        };
+        assert!(
+            intrabc_dv_proven_valid(&sequence, &core, geometry, info, ByteOffset::new(20)).unwrap()
         );
     }
 }
