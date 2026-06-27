@@ -250,6 +250,50 @@ pub(crate) fn decode_minimal_frame_from_plan(
     Ok(frames.swap_remove(0))
 }
 
+/// Reconstructs the ac0ej3 frame-0 NON-IntrABC general-intra DC region into a
+/// reconstruction sink, for the region-verification test. Mirrors the leading-OBU
+/// extraction in [`decode_minimal_frames_from_plan_with_ivf_preflight`] up to the
+/// `TX_MODE_SELECT` selectable transform-record handoff, then runs that walk with
+/// a sink attached. The returned sink holds the first superblock reconstructed
+/// before the walk's expected IntrABC fail-closed rejection.
+#[cfg(test)]
+fn reconstruct_ac0ej3_intra_region_from_plan(
+    bytes: &[u8],
+    options: DecodeOptions,
+    plan: &DecodeStreamPlan,
+) -> Result<wienerns_lr::WienerNsLrReconSink<u16>> {
+    let parsed = parse_bitstream_partial(bytes);
+    let (ivf, _header) = require_multiframe_ivf(&parsed)?;
+    let first_ivf_frame = ivf.frames.first().ok_or_else(|| {
+        unsupported(
+            "missing_first_ivf_frame",
+            None,
+            "ac0ej3 reconstruction requires at least one IVF frame",
+        )
+    })?;
+    let leading_obus = first_ivf_frame.obus.as_slice();
+    let [_td, sequence_envelope, key_envelope] = require_minimal_obu_order(leading_obus)?;
+    let sequence = parse_sequence(sequence_envelope)?;
+    let key_core = parse_frame_core(key_envelope, &sequence)?;
+    let mut candidates = plan.frame_candidates_all();
+    let key_candidate = candidates.next().ok_or_else(|| {
+        unsupported(
+            "missing_frame_candidate",
+            None,
+            "ac0ej3 reconstruction requires one key frame candidate",
+        )
+    })?;
+    wienerns_lr::reconstruct_ac0ej3_selectable_intra_region(
+        bytes,
+        options,
+        plan,
+        key_candidate,
+        key_envelope,
+        &sequence,
+        &key_core,
+    )
+}
+
 /// Decodes every frame candidate the planner accepted (one key frame, optionally
 /// followed by inter frames), emitting one [`MinimalRuntimeFrame`] per displayed
 /// frame in output order (AV2 § 5.2.1, § 6.18).
@@ -1350,6 +1394,9 @@ mod wienerns_lr;
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod general_intra_tests;
+
+#[cfg(test)]
+mod wienerns_lr_recon_tests;
 
 fn derive_tile_plan<'a>(
     plan: &'a DecodeStreamPlan,

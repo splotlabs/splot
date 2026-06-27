@@ -37,6 +37,11 @@ const HARD_LINE_ALLOWANCES: &[SourceLineAllowance] = &[
         max_lines: 3_693,
         reason: "large CELU state machine; split separately from this validator refactor",
     },
+    SourceLineAllowance {
+        path: "crates/splot-decode/src/runtime_minimal/wienerns_lr/tx_records.rs",
+        max_lines: 2_600,
+        reason: "cohesive ac0ej3 selectable transform-record walk. +~70 (2026-06-27, decode-ac0ej3-intra-recon-bridge): the reconstruction bridge threads an optional WienerNsLrReconSink<u16> + SelectableReconContext through the in-place selectable residual-chunk decode (decode_selectable_residual_chunks / decode_luma_records_for_chunk / decode_chroma_group / decode_chroma_residual_chunks and the SDP chroma-part branch) so each decoded LumaCoeffBlock and chroma group is reconstructed where it is parsed, plus the DeltaQState.qindex_u32 per-block dequant accessor. The reconstruction sink, SelectableReconContext, and the test driver live in the sibling wienerns_lr/recon.rs module; only the per-decode-site threading is here. Split the chroma residual decoders into a submodule separately if this grows further.",
+    },
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
