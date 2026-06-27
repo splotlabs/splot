@@ -3,6 +3,7 @@
 
 //! Shared git and hashing helpers for xtask automation.
 
+use std::fmt::Write as _;
 use std::path::Path;
 use std::process::Command;
 
@@ -31,8 +32,12 @@ pub(crate) fn run_git(root: &Path, args: &[&str]) -> Result<String> {
 /// Lowercase hex SHA-256 of `bytes` (via the `sha2` crate), as used in the
 /// spec-mirror `CHECKSUMS` manifest.
 pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
-    Sha256::digest(bytes)
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    let digest = Sha256::digest(bytes);
+    let mut hex = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        // Writing to a `String` is infallible; discard the `Result` (the
+        // workspace denies `unwrap`).
+        let _ = write!(hex, "{byte:02x}");
+    }
+    hex
 }
