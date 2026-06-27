@@ -1239,84 +1239,33 @@ pub(crate) fn reconstruct_general_intra_block_with_prediction<T: ReconSample>(
     use_tcq: bool,
     bit_depth: BitDepth,
 ) -> Result<Vec<T>, GeneralIntraResidualError> {
-    let orig_side = 1usize << log2_side;
-    let adj_log2 = log2_side.min(5);
-    let adj_side = 1usize << adj_log2;
-    let adjusted = adj_side * adj_side;
-    if quant.len() != adjusted {
-        return Err(GeneralIntraResidualError::QuantLength {
-            expected: adjusted,
-            actual: quant.len(),
-        });
-    }
-    let samples = orig_side * orig_side;
-    if prediction.len() != samples {
-        return Err(GeneralIntraResidualError::PredictionLength {
-            expected: samples,
-            actual: prediction.len(),
-        });
-    }
-    let deltas = QuantizerDeltas {
-        y_dc: 0,
-        u_dc: 0,
-        v_dc: 0,
-        u_ac: 0,
-        v_ac: 0,
-    };
-    // AV2 §7.14.4: dqDenom = 1 << shift, shift = (pels > 256) + (pels > 1024)
-    // over the ORIGINAL (unadjusted) dimensions, plus 1 when TCQ applies (luma
-    // DCT_DCT non-lossless non-FSC with allow_tcq; chroma never).
-    let pels = (orig_side * orig_side) as u32;
-    let dq_shift = u32::from(pels > 256) + u32::from(pels > 1024) + u32::from(use_tcq);
-    let dq_denom = 1u32 << dq_shift;
-    let params = DequantBlockParams {
-        dc_quant: dc_quantizer(plane_id, qindex, deltas, bit_depth),
-        ac_quant: ac_quantizer(plane_id, qindex, deltas, bit_depth),
-        tx_width: adj_side,
-        tx_height: adj_side,
-        dq_denom,
-        bit_depth,
-    };
-    let transform = InverseTransform2dOuter::resolve(
-        DCT_DCT, log2_side, log2_side, false, false, bit_depth, None,
+    // A square block is the rectangular case with equal log2 dimensions; the
+    // §7.15.4 outer process collapses to the no-adjustment, no-√2-rescale,
+    // no-duplication path for `log2_width == log2_height <= 5`.
+    reconstruct_general_intra_block_rect_with_prediction(
+        quant, prediction, qindex, plane_id, log2_side, log2_side, use_tcq, bit_depth,
     )
-    .map_err(|source| GeneralIntraResidualError::Reconstruct { source })?;
-
-    let mut dequant_scratch = vec![0i32; adjusted];
-    let mut residual_scratch = vec![0i32; samples];
-    let mut out = vec![T::default(); samples];
-    reconstruct_transform_block_residual(
-        prediction,
-        quant,
-        &params,
-        &transform,
-        &mut dequant_scratch,
-        &mut residual_scratch,
-        &mut out,
-    )
-    .map_err(|source| GeneralIntraResidualError::Reconstruct { source })?;
-    Ok(out)
 }
 
 /// Reconstructs one **rectangular** intra plane block from the decoded `Quant[]`
-/// of its single DC_PRED transform block over a flat DC prediction `dc_sample`.
+/// over an arbitrary per-sample `prediction` (§7.13.2), the rectangular
+/// generalisation of [`reconstruct_general_intra_block_with_prediction`].
 ///
-/// This is the rectangular generalisation of [`reconstruct_general_intra_block`]:
-/// `log2_width` and `log2_height` are the block's original (unadjusted) §7.15.4
-/// transform dimensions and may differ (e.g. a 64x32 `TX_64X32` block has
-/// `log2_width == 6`, `log2_height == 5`). It composes the §7.14.4 dequantization
-/// over the adjusted `Min(1<<log2_w, 32) x Min(1<<log2_h, 32)` coefficient grid,
-/// the §7.15.4 inverse transform (which applies the §7.15.4.1 √2 rescale when
-/// `|log2_w - log2_h|` is odd), and the §7.14.3 residual addition over the flat
-/// §7.13.2 DC prediction. `qindex == base_q_idx` for this minimal-tool frame.
-/// Chroma never uses the §7.14.4 TCQ `dqDenom` term (luma DCT_DCT only), so
-/// `use_tcq` is `false` for chroma callers. `bit_depth` is the active sequence
-/// sample depth (§ 6.4.1); the sample storage type `T` matches it and bounds the
-/// § 7.14.3 Clip1.
+/// `prediction` is the predicted block in raster order over the *original*
+/// (unadjusted) `1<<log2_width` x `1<<log2_height` dimensions. The flat DC path is
+/// the special case where every prediction sample is the §7.13.2.10 DC value; the
+/// §7.13.2.12 IBP DC path supplies a per-sample predicted block whose edge
+/// rows/columns the IBP modifier has already blended toward the reconstructed
+/// neighbours. This composes the §7.14.4
+/// dequantization over the adjusted `Min(1<<log2_w, 32) x Min(1<<log2_h, 32)`
+/// coefficient grid, the §7.15.4 / §7.15.4.1 inverse transform (the `Abs(log2_w -
+/// log2_h)` odd-ratio √2 rescale and the over-32 sample duplication included), and
+/// the §7.14.3 residual addition. Chroma never uses the §7.14.4 TCQ `dqDenom` term
+/// (luma DCT_DCT only), so `use_tcq` is `false` for chroma callers.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_general_intra_block_rect<T: ReconSample>(
+pub(crate) fn reconstruct_general_intra_block_rect_with_prediction<T: ReconSample>(
     quant: &[i32],
-    dc_sample: T,
+    prediction: &[T],
     qindex: u32,
     plane_id: PlaneId,
     log2_width: u32,
@@ -1326,7 +1275,6 @@ pub(crate) fn reconstruct_general_intra_block_rect<T: ReconSample>(
 ) -> Result<Vec<T>, GeneralIntraResidualError> {
     let orig_w = 1usize << log2_width;
     let orig_h = 1usize << log2_height;
-    let prediction = vec![dc_sample; orig_w * orig_h];
 
     let adj_w = 1usize << log2_width.min(5);
     let adj_h = 1usize << log2_height.min(5);
@@ -1338,6 +1286,12 @@ pub(crate) fn reconstruct_general_intra_block_rect<T: ReconSample>(
         });
     }
     let samples = orig_w * orig_h;
+    if prediction.len() != samples {
+        return Err(GeneralIntraResidualError::PredictionLength {
+            expected: samples,
+            actual: prediction.len(),
+        });
+    }
     let deltas = QuantizerDeltas {
         y_dc: 0,
         u_dc: 0,
@@ -1374,7 +1328,7 @@ pub(crate) fn reconstruct_general_intra_block_rect<T: ReconSample>(
     let mut residual_scratch = vec![0i32; samples];
     let mut out = vec![T::default(); samples];
     reconstruct_transform_block_residual(
-        &prediction,
+        prediction,
         quant,
         &params,
         &transform,

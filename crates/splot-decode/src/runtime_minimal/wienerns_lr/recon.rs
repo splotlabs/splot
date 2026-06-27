@@ -84,6 +84,11 @@ pub(in crate::runtime_minimal) struct WienerNsLrReconSink<T: ReconSample> {
     /// (no per-plane DC/AC quantizer delta, no quantizer matrix). When `false` the
     /// sink reconstructs nothing.
     quant_reconstructable: bool,
+    /// The §5.3 `enable_ibp` sequence flag. A DC_PRED leaf that is not 4x4 (and,
+    /// for chroma, not `UV_CFL_PRED`) blends its §7.13.2.10 flat DC edge rows /
+    /// columns toward the reconstructed neighbours via the §7.13.2.12 IBP DC
+    /// modifier when this is set. (ac0ej3's sequence enables IBP.)
+    enable_ibp: bool,
     /// Per-plane MI-unit coverage (`coverage[plane]`, row-major over the plane's MI
     /// grid): luma plane 0, chroma U plane 1, chroma V plane 2. U and V are tracked
     /// SEPARATELY — a reconstructed U must not let a deferred V block pass the
@@ -151,6 +156,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         luma_height: usize,
         bit_depth: BitDepth,
         quant_reconstructable: bool,
+        enable_ibp: bool,
     ) -> Result<Self> {
         // 4:2:0 chroma planes are half the luma dimensions in each axis.
         let chroma_width = luma_width.div_ceil(2);
@@ -159,6 +165,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             workspace: new_general_intra_workspace::<T>(luma_width, luma_height, bit_depth)?,
             bit_depth,
             quant_reconstructable,
+            enable_ibp,
             coverage: [
                 PlaneCoverage::new(luma_width, luma_height),
                 PlaneCoverage::new(chroma_width, chroma_height),
@@ -178,6 +185,19 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             PlaneId::U => 1,
             PlaneId::V => 2,
         }
+    }
+
+    /// Whether the §7.13.2.12 IBP DC modifier is invoked for a DC_PRED block of the
+    /// given §7.15.4 transform dimensions on this plane.
+    ///
+    /// Per §7.13.2 (the prediction-dispatch IBP gate) the modifier runs when
+    /// `enable_ibp == 1`, `useDip == 0`, `mode == DC_PRED`, `!(w == 4 && h == 4)`,
+    /// and `plane == 0 || UVMode != UV_CFL_PRED`. The caller has already established
+    /// `mode == DC_PRED` (the sink admits only DC luma / chroma) and `useDip == 0`
+    /// (DIP is deferred), and the sink never admits a `UV_CFL_PRED` chroma leaf, so
+    /// here it reduces to `enable_ibp && !(w == 4 && h == 4)`.
+    const fn ibp_dc_applies(&self, log2_width: u32, log2_height: u32) -> bool {
+        self.enable_ibp && !(log2_width == 2 && log2_height == 2)
     }
 
     /// Whether every §7.13.2 DC-prediction edge MI unit a block at `(mi_col,
@@ -278,6 +298,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 "unsupported_wienerns_lr_selectable_transform_records_recon_luma_y_overflow",
             )
         })?;
+        let ibp_dc = self.ibp_dc_applies(log2_width, log2_height);
         reconstruct_general_intra_block_rect_into(
             &mut self.workspace,
             block,
@@ -288,6 +309,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             log2_height,
             qindex,
             use_tcq,
+            ibp_dc,
             self.bit_depth,
         )
         .map_err(|_| {
@@ -339,6 +361,9 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         if !self.dc_edges_reconstructed(plane_id, mi_col, mi_row, mi_w, mi_h) {
             return Ok(());
         }
+        // The sink admits only DC chroma (never `UV_CFL_PRED`), so the §7.13.2.12
+        // IBP DC gate reduces to `enable_ibp && !(w == 4 && h == 4)` for chroma too.
+        let ibp_dc = self.ibp_dc_applies(log2_width, log2_height);
         reconstruct_general_intra_block_rect_into(
             &mut self.workspace,
             block,
@@ -350,6 +375,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             qindex,
             // Chroma never uses the §7.14.4 TCQ dqDenom term (luma DCT_DCT only).
             false,
+            ibp_dc,
             self.bit_depth,
         )
         .map_err(|_| {
@@ -412,11 +438,19 @@ pub(in crate::runtime_minimal) fn reconstruct_ac0ej3_selectable_intra_region(
         )
     })?;
     let bit_depth = BitDepth::from_av2_bit_depth_idc(sequence.general.bit_depth_idc.get())?;
+    // §5.4.5 `enable_ibp`: the selectable tool gate (unlike `fixed_largest`) admits
+    // `enable_ibp`, so a DC_PRED leaf must run the §7.13.2.12 IBP DC modifier when
+    // the sequence enables it. ac0ej3's intra config has `enable_ibp == 1`.
+    let enable_ibp = sequence
+        .intra
+        .as_ref()
+        .is_some_and(|intra| intra.enable_ibp);
     let mut sink = WienerNsLrReconSink::<u16>::new(
         frame_size.width as usize,
         frame_size.height as usize,
         bit_depth,
         frame_quant_reconstructable(core),
+        enable_ibp,
     )?;
     // The walk reconstructs into the sink in decode order. With the AVM-faithful
     // §5.20.3.1 SDP chroma partition plane (plane 1 for the chroma tree) and the
@@ -505,19 +539,36 @@ fn mi_extent(log2_width: u32, log2_height: u32) -> (usize, usize) {
 /// Whether a block's residual is the kind [`reconstruct_general_intra_block_rect_into`]
 /// reconstructs bit-exact.
 ///
-/// The primitive assumes the §5.20.7.29 `DCT_DCT` no-secondary-transform path and
-/// dequantizes with zero `QuantizerDeltas`. An `all_zero` (`txb_skip`) block is
-/// always safe: there is no residual, so the output is the bare §7.13.2 flat DC
-/// prediction. A non-`all_zero` block is admitted only when it has no IST secondary
-/// transform (`intra_ist`), is not an FSC leaf, and is SQUARE — the
-/// rectangular-residual inverse transform for non-square transforms is not yet
-/// proven bit-exact against AVM (the ac0ej3 `TX_16X64` `DC_PRED` leaf reconstructs
-/// with a wrong AC residual), so it is deferred. Anything else is deferred.
+/// The primitive composes the §7.14.4 dequantization, the §7.15.4 / §7.15.4.1
+/// inverse transform, and the §7.14.3 residual addition over the `DCT_DCT`
+/// no-secondary-transform path with zero `QuantizerDeltas`. An `all_zero`
+/// (`txb_skip`) block is always safe: there is no residual, so the output is the
+/// bare §7.13.2 flat DC prediction. A non-`all_zero` block is admitted when it has
+/// no §5.20.7.29 IST secondary transform (`intra_ist`) and is not an FSC leaf.
+///
+/// A SQUARE non-`all_zero` residual is the proven case. A NON-square (rectangular)
+/// residual is admitted only when it is DC-only (`eob == 1`): the §7.15.4 outer
+/// process ([`inverse_transform_2d_outer`]) already drives the rectangular path
+/// (the §7.15.4.1 `Adjusted_Tx_Size` per-side `Min(log2, 5)` cap, the
+/// `Abs(log2W - log2H)` odd-ratio `Round2(x * 2896, 12)` √2 rescale, and the
+/// nearest-neighbour duplication for any original side over 32), and a single DC
+/// coefficient is shared by every DCT-family transform, so the (unretained) luma tx
+/// type is irrelevant — proven bit-exact for the ac0ej3 `TX_16X64` `DC_PRED` leaf at
+/// MI(4,0) (x[16,32), y[0,64)) against the AVM pre-filter oracle. A non-square
+/// `eob > 1` block may carry a non-`DCT_DCT` luma tx type that `LumaCoeffBlock` does
+/// not retain (the primitive always reconstructs `DCT_DCT`), so it stays deferred.
+/// The §5.20.7.29 IST / FSC / quant-delta / incomplete-neighbour gates stay intact;
+/// everything else is deferred.
 fn residual_is_reconstructable(block: &LumaCoeffBlock, fsc_mode: bool, square: bool) -> bool {
     if block.all_zero {
         return true;
     }
-    block.intra_ist.is_none() && !fsc_mode && square
+    if block.intra_ist.is_some() || fsc_mode {
+        return false;
+    }
+    // Square non-`all_zero` is the proven path; a non-square residual is only
+    // DC-only-safe (`eob == 1`), where the unretained luma tx type cannot matter.
+    square || block.eob == 1
 }
 
 #[cfg(test)]
@@ -560,7 +611,9 @@ mod tests {
     fn sink() -> WienerNsLrReconSink<u16> {
         // 64x64 luma frame (a positive multiple of 64), 10-bit 4:2:0 — matching
         // the ac0ej3 sample type. `quant_reconstructable = true` (no delta-q / qm).
-        WienerNsLrReconSink::<u16>::new(64, 64, BitDepth::Ten, true).unwrap()
+        // `enable_ibp = false` keeps these flat-DC gate tests on the §7.13.2.10
+        // prediction; the §7.13.2.12 IBP DC path has its own focused test.
+        WienerNsLrReconSink::<u16>::new(64, 64, BitDepth::Ten, true, false).unwrap()
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -705,35 +758,42 @@ mod tests {
         assert_eq!(sink.reconstructed_counts().0, 0);
     }
 
-    // Finding #1: a non-`all_zero`, non-square DC leaf (e.g. TX_16X64) is DEFERRED
-    // — the rectangular-residual inverse transform is not yet proven bit-exact.
+    /// A non-`all_zero` DC block sized for a 16x64 adjusted transform (the
+    /// `Min(16,32) x Min(64,32) == 16x32 == 512`-entry coefficient grid), with a
+    /// single DC coefficient, used to exercise the non-square residual path.
+    fn coeff_block_16x64() -> LumaCoeffBlock {
+        let mut quant = vec![0i32; 512];
+        quant[0] = -2;
+        LumaCoeffBlock {
+            all_zero: false,
+            eob: 1,
+            quant,
+            intra_ist: None,
+        }
+    }
+
+    // A non-`all_zero`, non-square DC leaf (e.g. TX_16X64) is now ADMITTED: the
+    // §7.15.4 outer process drives the rectangular-residual inverse transform
+    // (proven bit-exact for the ac0ej3 mi(4,0) leaf). The frame-origin no-neighbour
+    // DC fallback (512) plus a flat DC-only residual reconstructs a flat block.
     #[test]
-    fn non_square_nonzero_dc_leaf_is_deferred() {
+    fn non_square_nonzero_dc_leaf_is_reconstructed() {
         let mut sink = sink();
         recon_luma(
             &mut sink,
             0,
             0,
             TX_16X64,
-            &coeff_block_16x16(),
+            &coeff_block_16x64(),
             Some(IntraYMode::DC_PRED),
             false,
         );
-        assert_eq!(sink.reconstructed_sample(PlaneId::Y, 0, 0).unwrap(), 0);
-        assert_eq!(sink.reconstructed_counts().0, 0);
-        // The SAME non-square geometry IS reconstructed when `all_zero` (flat DC,
-        // no residual): the gate defers only the unproven non-square residual.
-        recon_luma(
-            &mut sink,
-            0,
-            0,
-            TX_16X64,
-            &zero_block(),
-            Some(IntraYMode::DC_PRED),
-            false,
-        );
-        assert_eq!(sink.reconstructed_sample(PlaneId::Y, 0, 0).unwrap(), 512);
+        // The origin block has no reconstructed neighbour (off-frame edges), so the
+        // §7.13.2.1 DC fallback is 512 (10-bit); the DC-only residual is applied
+        // over the whole 16x64 block, so the sink wrote a real (non-fill) region.
         assert!(sink.reconstructed_counts().0 > 0);
+        // 16x64 == 4 MI cols x 16 MI rows == 64 4x4 units.
+        assert_eq!(sink.reconstructed_counts().0, 64);
     }
 
     // Finding #1: a non-`all_zero` DC leaf carrying §5.20.7.29 IST secondary
@@ -751,6 +811,29 @@ mod tests {
             0,
             0,
             TX_16X16,
+            &block,
+            Some(IntraYMode::DC_PRED),
+            false,
+        );
+        assert_eq!(sink.reconstructed_sample(PlaneId::Y, 0, 0).unwrap(), 0);
+        assert_eq!(sink.reconstructed_counts().0, 0);
+    }
+
+    // Codex review: a non-`all_zero`, NON-square DC leaf with `eob > 1` may carry a
+    // non-`DCT_DCT` luma tx type (not retained in `LumaCoeffBlock`); the primitive
+    // always reconstructs `DCT_DCT`, so it is DEFERRED. Only a DC-only (`eob == 1`)
+    // non-square residual is tx-type-agnostic and admitted (the ac0ej3 mi(4,0) case).
+    #[test]
+    fn non_square_multi_coeff_dc_leaf_is_deferred() {
+        let mut sink = sink();
+        let mut block = coeff_block_16x64();
+        block.eob = 2;
+        block.quant[1] = 7;
+        recon_luma(
+            &mut sink,
+            0,
+            0,
+            TX_16X64,
             &block,
             Some(IntraYMode::DC_PRED),
             false,
@@ -845,7 +928,8 @@ mod tests {
     // (`quant_reconstructable == false`), the sink reconstructs NOTHING.
     #[test]
     fn non_reconstructable_quant_defers_everything() {
-        let mut sink = WienerNsLrReconSink::<u16>::new(64, 64, BitDepth::Ten, false).unwrap();
+        let mut sink =
+            WienerNsLrReconSink::<u16>::new(64, 64, BitDepth::Ten, false, false).unwrap();
         recon_luma(
             &mut sink,
             0,
