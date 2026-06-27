@@ -110,6 +110,35 @@ const LUMA_REGION_FNV1A64: u64 = 0x31c1_4055_9bd3_8725;
 /// The §7.13.2.12 IBP DC value at the MI(4,0) `TX_16X64` leaf's top-left 3 columns.
 const MI40_IBP_STEP: u16 = 65;
 
+/// The total reconstructed luma sample count after the cardinal `H_PRED` widening:
+/// the 24576-sample first-3-superblock DC region (x[0,192) x y[0,128)), PLUS the
+/// SB-column-3 `BLOCK_64X64 H_PRED` block (x[192,256) x y[0,64), the §7.13.3.18
+/// IntrABC source — `4096` samples), PLUS the one 32x64 `DC_PRED` block below the
+/// left half of the H_PRED block (x[192,224) x y[64,128), `2048` samples) that the
+/// §7.13.2 above-edge coverage guard unblocked once the H_PRED block above it
+/// reconstructed. Every sample is bit-exact against the AVM pre-filter oracle.
+const LUMA_RECON_SAMPLE_TOTAL: usize = LUMA_REGION_SAMPLE_COUNT + 4096 + 2048;
+
+/// The SB-column-3 `BLOCK_64X64 H_PRED` block (x[192,256) x y[0,64)) — the
+/// §7.13.3.18 IntrABC source. Mode `H_PRED` (pAngle 180, `AngleDeltaY == 0`), split
+/// into four `TX_32X32` `DCT_DCT` transforms. Each row is the §7.13.2.8 step-5
+/// horizontal copy of the real reconstructed left column (the x=191 DC region edge,
+/// flat `64`), so the block is flat `64` except the top-right `TX_32X32` which
+/// carries a `+4` DC residual to flat `68` (verified against the oracle). Derived
+/// offline from `ac0_prefiltered.yuv`.
+const HPRED_BLOCK_X: usize = 192;
+const HPRED_BLOCK_Y: usize = 0;
+const HPRED_BLOCK_SIDE: usize = 64;
+const HPRED_BLOCK_SAMPLE_COUNT: usize = HPRED_BLOCK_SIDE * HPRED_BLOCK_SIDE;
+/// Sum of the H_PRED block (`3072 * 64 + 1024 * 68`).
+const HPRED_BLOCK_SAMPLE_SUM: u64 = 266_240;
+/// FNV-1a-64 over the H_PRED block (row-major, sample-major u16 LE).
+const HPRED_BLOCK_FNV1A64: u64 = 0x615c_4637_5763_6325;
+/// The flat `H_PRED` copy value (the x=191 left-column DC edge), and the value of
+/// the top-right `TX_32X32` after its `+4` DC residual.
+const HPRED_FLAT: u16 = 64;
+const HPRED_TOP_RIGHT_STEP: u16 = 68;
+
 /// The frame-origin chroma `DC_PRED` transform side (a 32x32 §5.20.6 `TxSize` in
 /// the 4:2:0 chroma plane, the chroma leaf covering the §5.20.3.1 SDP chroma tree
 /// at the frame origin). Both U and V resolve to chroma `DC_PRED` with no neighbour
@@ -383,16 +412,17 @@ fn ac0ej3_frame_origin_chroma_dc_blocks_reconstruct_bit_exact_against_prefilter_
         "the deferred SMOOTH chroma leaf at chroma (32,0) must stay unreconstructed"
     );
 
-    // Coverage report: the verified luma region is now the full first-3-superblock
-    // 192x128 (24576-sample) DC region — the §7.13.2.12 IBP DC + non-square
-    // `TX_16X64` keystone fix unblocked the whole DC chain that bordered the
-    // MI(4,0) leaf, widening it 24x from the 1024-sample column — plus the two
-    // 32x32 chroma origin blocks (2048 chroma 4x4 units total across U and V).
+    // Coverage report: the verified luma region is the full first-3-superblock
+    // 192x128 (24576-sample) DC region PLUS the SB-column-3 `BLOCK_64X64 H_PRED`
+    // block (4096 samples, the §7.13.3.18 IntrABC source) PLUS the 32x64 `DC_PRED`
+    // block the H_PRED block unblocked below it (2048 samples) — `30720` luma
+    // samples total — plus the two 32x32 chroma origin blocks (2048 chroma samples
+    // total across U and V).
     let (luma4x4, chroma4x4) = sink.reconstructed_counts();
     assert_eq!(
         luma4x4 * 16,
-        LUMA_REGION_SAMPLE_COUNT,
-        "verified luma region is the 24576-sample first-3-superblock 192x128 block"
+        LUMA_RECON_SAMPLE_TOTAL,
+        "verified luma region is the 30720-sample DC + cardinal-H_PRED region"
     );
     assert_eq!(
         chroma4x4 * 16,
@@ -471,5 +501,84 @@ fn ac0ej3_first_three_superblock_luma_reconstructs_bit_exact_against_prefilter_o
         fnv.finish(),
         LUMA_REGION_FNV1A64,
         "first-3-SB luma FNV-1a-64 must match the pre-filter reconstruction oracle (bit-exact)"
+    );
+}
+
+/// Bit-exact verification of the SB-column-3 `BLOCK_64X64 H_PRED` block (x[192,256)
+/// x y[0,64)) against the AVM pre-filter oracle — the §7.13.3.18 IntrABC SOURCE
+/// block that the DC-only sink could not reconstruct.
+///
+/// The block is cardinal `H_PRED` (pAngle 180, `AngleDeltaY == 0`): each row is the
+/// §7.13.2.8 step-5 horizontal copy `pred[i][j] = LeftCol[i]` of the real
+/// reconstructed left column (no above, no corner, no IDIF, no `useIBP` — pAngle 180
+/// is excluded by the §7.13.2.7 `pAngle < 90 || pAngle > 180` gate). Its left column
+/// (x=191) is the right edge of the already-reconstructed first-3-superblock DC
+/// region (flat `64`), so the four `TX_32X32` `DCT_DCT` transforms reconstruct flat
+/// `64` except the top-right transform (x[224,256) x y[0,32)), which carries a `+4`
+/// DC residual over its (flat-`64`) left neighbour and so is flat `68`. Per-sample,
+/// sum, and FNV-1a-64 all match the oracle. This is the first bit-exact DIRECTIONAL
+/// (non-DC) ac0ej3 block, and it unblocks the IntrABC brick (which copies from it).
+#[test]
+#[ignore = "requires local mission fixture; set SPLOT_AC0EJ3_IVF or place it at $HOME/Documents/SplotLabs/ac0ej3.ivf"]
+fn ac0ej3_sb_column3_hpred_block_reconstructs_bit_exact_against_prefilter_oracle() {
+    let path = require_fixture();
+    let bytes = std::fs::read(&path).expect("read ac0ej3 fixture");
+    let options = DecodeOptions::default();
+    let plan = context().plan_bytes(&bytes, options).expect("plan ac0ej3");
+
+    let sink = reconstruct_ac0ej3_intra_region_from_plan(&bytes, options, &plan)
+        .expect("reconstruct ac0ej3 SB-column-3 H_PRED block");
+
+    let mut fnv = Fnv1a64::new();
+    let mut sum: u64 = 0;
+    let mut count = 0usize;
+    for y in HPRED_BLOCK_Y..HPRED_BLOCK_Y + HPRED_BLOCK_SIDE {
+        for x in HPRED_BLOCK_X..HPRED_BLOCK_X + HPRED_BLOCK_SIDE {
+            let sample = sink.reconstructed_sample(PlaneId::Y, x, y).unwrap();
+            // The H_PRED copy of the flat-`64` left column is flat `64` everywhere
+            // except the top-right `TX_32X32` (x[224,256) x y[0,32)) which is `68`.
+            let in_top_right = (224..256).contains(&x) && y < 32;
+            let expected = if in_top_right {
+                HPRED_TOP_RIGHT_STEP
+            } else {
+                HPRED_FLAT
+            };
+            assert_eq!(
+                sample, expected,
+                "H_PRED block luma ({x},{y}) must be {expected}, got {sample}"
+            );
+            fnv.update_u16(sample);
+            sum += u64::from(sample);
+            count += 1;
+        }
+    }
+
+    assert_eq!(count, HPRED_BLOCK_SAMPLE_COUNT, "H_PRED block sample count");
+    assert_eq!(
+        sum, HPRED_BLOCK_SAMPLE_SUM,
+        "H_PRED block sample sum must match the pre-filter oracle"
+    );
+    assert_eq!(
+        fnv.finish(),
+        HPRED_BLOCK_FNV1A64,
+        "H_PRED block FNV-1a-64 must match the pre-filter reconstruction oracle (bit-exact)"
+    );
+
+    // The V_PRED block at SB column 4 (x[256,320) x y[0,64)) is at the frame TOP
+    // (y == 0, no above neighbour): V_PRED reads ONLY the above row, which is
+    // off-frame here, so the cardinal copy has no real neighbour and the sink
+    // DEFERS it (stays at the unreconstructed fill value `0`).
+    assert_eq!(
+        sink.reconstructed_sample(PlaneId::Y, 256, 0).unwrap(),
+        0,
+        "the no-above V_PRED block at x[256,320) y=0 must stay deferred",
+    );
+
+    // The whole reconstructed luma region is now 30720 bit-exact samples.
+    let (luma4x4, _chroma4x4) = sink.reconstructed_counts();
+    assert_eq!(
+        luma4x4 * 16,
+        LUMA_RECON_SAMPLE_TOTAL,
+        "the cardinal-H_PRED widening reconstructs 30720 bit-exact luma samples"
     );
 }

@@ -848,6 +848,7 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                 // This leaf decodes no luma, so `fsc_mode` (a luma-only gate) is false.
                 let sdp_recon = SelectableReconContext {
                     leaf_y_mode: Some(y_mode),
+                    directional_luma: None, // chroma-only leaf decodes no luma transform
                     chroma_mode: supported_chroma_mode(y_mode, uv_mode.uv_mode()),
                     qindex: delta_q_state.qindex_u32(),
                     luma_use_tcq,
@@ -885,14 +886,22 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                 &mut intrabc_state,
                 tile_offset,
             )?;
-            let (uv_mode, leaf_mode, luma_transform_type_context, fsc_mode, chroma_mode) =
-                if prelude.use_intrabc {
+            let (
+                uv_mode,
+                leaf_mode,
+                luma_transform_type_context,
+                fsc_mode,
+                chroma_mode,
+                directional_luma,
+            ) = if prelude.use_intrabc {
                 (
                     0,
                     GeneralIntraLeafMode::luma(0, IntraYMode::DC_PRED, 0, 0),
                     LumaTransformTypeContext::with_mrl_index(IntraYMode::DC_PRED, 0, 0),
                     0,
-                    // IntrABC is reconstructed by a later brick; never DC-reconstruct it.
+                    // IntrABC is reconstructed by a later brick; never recon it here
+                    // (no DC chroma, no directional luma).
+                    None,
                     None,
                 )
             } else if frontier.is_luma_part() {
@@ -933,6 +942,7 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                     // SDP luma-part leaf decodes no chroma here; chroma is a
                     // separate `is_chroma_part` leaf reconstructed via its own mode.
                     None,
+                    luma.supported_directional_luma(),
                 )
             } else {
                 let modes = decode_general_intra_block_modes(
@@ -973,6 +983,7 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                     ),
                     modes.fsc_mode,
                     chroma_mode,
+                    modes.supported_directional_luma(),
                 )
             };
 
@@ -994,10 +1005,10 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                     "unsupported_wienerns_lr_selectable_transform_records_output_allocation",
                 )
             })?;
-            // Reconstruction-bridge context: the modes gate the verified DC subset.
-            // `fsc_mode != 0` defers FSC leaves (the primitive is non-FSC DCT_DCT).
+            // Reconstruction-bridge context gating the DC + cardinal H/V subset.
             let recon_context = SelectableReconContext {
                 leaf_y_mode: leaf_mode.luma_y_mode(),
+                directional_luma,
                 chroma_mode,
                 qindex: delta_q_state.qindex_u32(),
                 luma_use_tcq,
@@ -1374,7 +1385,7 @@ fn decode_luma_records_for_chunk(
             )
         })?;
         // Reconstruction bridge: reconstruct this luma transform in walk order
-        // before `luma.quant` is dropped (gated to DC_PRED inside the sink).
+        // before `luma.quant` is dropped (gated to the DC / cardinal subset in the sink).
         if let Some(sink) = sink.as_deref_mut() {
             sink.reconstruct_luma_transform(
                 record.col,
@@ -1382,6 +1393,7 @@ fn decode_luma_records_for_chunk(
                 record.tx_size,
                 &luma,
                 recon.leaf_y_mode,
+                recon.directional_luma,
                 recon.qindex,
                 recon.luma_use_tcq,
                 recon.fsc_mode,

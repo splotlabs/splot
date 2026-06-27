@@ -145,6 +145,20 @@ impl IntraYMode {
         self.0 as usize
     }
 
+    /// AV2 § 9.2 `H_PRED` luma mode (cardinal horizontal, pAngle 180). Test-only:
+    /// the reconstruction-sink tests need a concrete non-DC directional mode value.
+    #[cfg(test)]
+    pub(crate) const H_PRED_FOR_TEST: Self = Self(Self::H_PRED);
+
+    /// AV2 § 9.2 `V_PRED` luma mode (cardinal vertical, pAngle 90). Test-only.
+    #[cfg(test)]
+    pub(crate) const V_PRED_FOR_TEST: Self = Self(Self::V_PRED);
+
+    /// AV2 § 9.2 `D135_PRED` luma mode (a § 7.13.2.8 middle angle). Test-only: the
+    /// sink tests assert an angular directional mode is DEFERRED.
+    #[cfg(test)]
+    pub(crate) const D135_PRED_FOR_TEST: Self = Self(Self::D135_PRED);
+
     /// Maps this luma mode to the non-DC predictor the general intra decode
     /// currently reconstructs (§ 7.13.2.13 smooth prediction), or `None` for
     /// `DC_PRED` and the not-yet-supported non-DC modes (`PAETH_PRED` and the

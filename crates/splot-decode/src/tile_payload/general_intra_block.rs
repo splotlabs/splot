@@ -254,6 +254,21 @@ pub(crate) struct GeneralIntraLumaBlockMode {
     pub(crate) uses_mrls: u8,
 }
 
+impl GeneralIntraLumaBlockMode {
+    /// The supported directional-angle luma predictor for this §5.20.3.1 SDP
+    /// luma-part leaf, or `None` for non-directional modes, the not-yet-supported
+    /// directional modes, and any non-zero `AngleDeltaY`. Mirrors
+    /// [`GeneralIntraBlockModes::supported_directional_luma`]: only `AngleDeltaY ==
+    /// 0` (the cardinal pAngles 90/180 and the middle pAngles 135/157) is verified,
+    /// so a non-zero angle delta is reported unsupported.
+    pub(crate) fn supported_directional_luma(self) -> Option<SupportedDirectionalLumaMode> {
+        if self.angle_delta_y != 0 {
+            return None;
+        }
+        self.y_mode.supported_directional()
+    }
+}
+
 impl GeneralIntraBlockModes {
     /// True when the luma plane uses `DC_PRED`.
     pub(crate) fn luma_is_dc(&self) -> bool {
