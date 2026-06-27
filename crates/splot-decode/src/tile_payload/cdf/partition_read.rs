@@ -161,17 +161,14 @@ mod tests {
         assert_eq!(tile.row(selector).unwrap(), before.as_slice());
     }
 
-    #[test]
-    fn selector_error_does_not_advance_symbol_or_mutate_rows() {
+    /// Asserts that reading `invalid` errors (matched by `expected`) without
+    /// consuming any symbol bit or mutating the CDF row for `valid`.
+    fn assert_selector_error_is_inert(
+        valid: TileCdfSelector,
+        invalid: TileCdfSelector,
+        expected: impl FnOnce(&PartitionEntrySymbolReadError) -> bool,
+    ) {
         let frame = FrameCdfSubset::from_defaults();
-        let valid = TileCdfSelector::DoSplit {
-            plane_start: 0,
-            ctx: 0,
-        };
-        let invalid = TileCdfSelector::DoSplit {
-            plane_start: 0,
-            ctx: 64,
-        };
         let mut tile = frame.tile_copy();
         let before = tile.row(valid).unwrap().to_vec();
         let mut symbol = decoder(CdfUpdateMode::Enabled);
@@ -181,50 +178,62 @@ mod tests {
             .read_partition_entry_symbol(invalid, &mut symbol)
             .unwrap_err();
 
-        assert!(matches!(
-            err,
-            PartitionEntrySymbolReadError::Cdf(TileCdfError::SelectorOutOfRange {
-                array: TileCdfArray::DoSplit,
-                index_name: "ctx",
-                actual: 64,
-                max_exclusive: 64,
-            })
-        ));
+        assert!(expected(&err), "unexpected error: {err:?}");
         assert_eq!(symbol.consumed_bits(), consumed_before);
         assert_eq!(tile.row(valid).unwrap(), before.as_slice());
     }
 
     #[test]
+    fn selector_error_does_not_advance_symbol_or_mutate_rows() {
+        assert_selector_error_is_inert(
+            TileCdfSelector::DoSplit {
+                plane_start: 0,
+                ctx: 0,
+            },
+            TileCdfSelector::DoSplit {
+                plane_start: 0,
+                ctx: 64,
+            },
+            |err| {
+                matches!(
+                    err,
+                    PartitionEntrySymbolReadError::Cdf(TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::DoSplit,
+                        index_name: "ctx",
+                        actual: 64,
+                        max_exclusive: 64,
+                    })
+                )
+            },
+        );
+    }
+
+    // §8.3.2: `do_square_split` `PlaneStart` is fixed at 0 (the chroma partition is
+    // forced for large block sizes), so plane 1 — accepted by the shared 2-plane
+    // partition bound — is rejected for this selector before any symbol is consumed.
+    #[test]
     fn square_split_invalid_plane_fails_before_symbol_read() {
-        let frame = FrameCdfSubset::from_defaults();
-        let valid = TileCdfSelector::DoSquareSplit {
-            plane_start: 0,
-            ctx: 0,
-        };
-        let invalid = TileCdfSelector::DoSquareSplit {
-            plane_start: 1,
-            ctx: 0,
-        };
-        let mut tile = frame.tile_copy();
-        let before = tile.row(valid).unwrap().to_vec();
-        let mut symbol = decoder(CdfUpdateMode::Enabled);
-        let consumed_before = symbol.consumed_bits();
-
-        let err = tile
-            .read_partition_entry_symbol(invalid, &mut symbol)
-            .unwrap_err();
-
-        assert!(matches!(
-            err,
-            PartitionEntrySymbolReadError::Cdf(TileCdfError::SelectorOutOfRange {
-                array: TileCdfArray::DoSquareSplit,
-                index_name: "plane_start",
-                actual: 1,
-                max_exclusive: 1,
-            })
-        ));
-        assert_eq!(symbol.consumed_bits(), consumed_before);
-        assert_eq!(tile.row(valid).unwrap(), before.as_slice());
+        assert_selector_error_is_inert(
+            TileCdfSelector::DoSquareSplit {
+                plane_start: 0,
+                ctx: 0,
+            },
+            TileCdfSelector::DoSquareSplit {
+                plane_start: 1,
+                ctx: 0,
+            },
+            |err| {
+                matches!(
+                    err,
+                    PartitionEntrySymbolReadError::Cdf(TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::DoSquareSplit,
+                        index_name: "plane_start",
+                        actual: 1,
+                        max_exclusive: 1,
+                    })
+                )
+            },
+        );
     }
 
     #[test]

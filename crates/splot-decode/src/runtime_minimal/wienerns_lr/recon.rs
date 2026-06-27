@@ -418,13 +418,16 @@ pub(in crate::runtime_minimal) fn reconstruct_ac0ej3_selectable_intra_region(
         bit_depth,
         frame_quant_reconstructable(core),
     )?;
-    // The walk reconstructs into the sink in decode order. The ac0ej3 stream
-    // rejects at the first active IntrABC block; the owned sink retains the region
+    // The walk reconstructs into the sink in decode order. With the AVM-faithful
+    // §5.20.3.1 SDP chroma partition plane (plane 1 for the chroma tree), the parse
+    // advances past the first superblock's luma columns into the chroma SDP tree and
+    // stops at the first chroma block whose §5.20.5.6 `uv_mode` falls outside the
+    // supported transform-record handoff subset; the owned sink retains the region
     // reconstructed before that expected rejection. Swallow ONLY that known
-    // IntrABC-currframe-samples rejection — any other error (an earlier parse or
-    // reconstruction failure, e.g. a regression that fails before the IntrABC
-    // frontier after the verified region is written) is propagated so the test
-    // fails loudly instead of silently passing on a partial walk.
+    // recon-subset frontier — any other error (an earlier parse or reconstruction
+    // failure, e.g. a regression that fails before the frontier after the verified
+    // region is written) is propagated so the test fails loudly instead of silently
+    // passing on a partial walk.
     match super::tx_records::derive_wienerns_lr_selectable_transform_record_handoff(
         bytes,
         options,
@@ -437,7 +440,7 @@ pub(in crate::runtime_minimal) fn reconstruct_ac0ej3_selectable_intra_region(
     ) {
         Ok(_) => Ok(sink),
         Err(crate::error::DecodeError::UnsupportedFeature { unsupported })
-            if unsupported.reason() == EXPECTED_INTRABC_STOP_REASON =>
+            if unsupported.reason() == EXPECTED_RECON_FRONTIER_REASON =>
         {
             Ok(sink)
         }
@@ -445,12 +448,15 @@ pub(in crate::runtime_minimal) fn reconstruct_ac0ej3_selectable_intra_region(
     }
 }
 
-/// The single §7.13.3.18 IntrABC fail-closed reason the ac0ej3 selectable walk is
-/// expected to stop on after reconstructing the verified region; the test driver
-/// swallows only this one and propagates every other error.
+/// The single §5.20.5.6 chroma-`uv_mode` recon-subset fail-closed reason the ac0ej3
+/// selectable walk is expected to stop on after reconstructing the verified region;
+/// the test driver swallows only this one and propagates every other error. With the
+/// §5.20.3.1 SDP chroma partition plane fix, the parse reaches the first chroma SDP
+/// block with an unsupported `uv_mode` before any later wall (the prior IntrABC
+/// frontier is no longer the first stop).
 #[cfg(test)]
-const EXPECTED_INTRABC_STOP_REASON: &str =
-    "unsupported_wienerns_lr_selectable_transform_records_intrabc_currframe_samples";
+const EXPECTED_RECON_FRONTIER_REASON: &str =
+    "unsupported_wienerns_lr_live_transform_record_uv_mode";
 
 /// Whether the frame's §5.18.6 quantization matches the reconstruction primitive's
 /// zero-`QuantizerDeltas` assumption: no per-plane DC/AC quantizer delta and no

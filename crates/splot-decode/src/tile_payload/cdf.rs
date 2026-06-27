@@ -39,11 +39,13 @@ pub(crate) use self::block_rows::{EobPtSize, MvCdfSelector};
 
 const CDF_PROB_SCALE: i32 = 1 << 15;
 const DO_SPLIT_PLANE_CONTEXTS: usize = 2;
+/// § 8.3.2: `do_square_split` `PlaneStart` is fixed at 0, so only one plane is
+/// valid for it (tighter than the shared 2-plane partition CDF array bound).
+const DO_SQUARE_SPLIT_VALID_PLANE_CONTEXTS: usize = 1;
 const DO_SPLIT_CONTEXTS: usize = 64;
 const DO_EXT_PARTITION_CONTEXTS: usize = 64;
 const DO_UNEVEN_4WAY_PARTITION_CONTEXTS: usize = 64;
 const RECT_TYPE_CONTEXTS: usize = 64;
-const DO_SQUARE_SPLIT_VALID_PLANE_CONTEXTS: usize = 1;
 const DO_SQUARE_SPLIT_CONTEXTS: usize = 8;
 const CDF_ROW_LEN: usize = 3;
 const TX_FSC_CONTEXTS: usize = 2;
@@ -2275,24 +2277,31 @@ impl TileCdfRows {
 }
 
 fn checked_plane(array: TileCdfArray, plane_start: usize) -> Result<usize, TileCdfError> {
-    if plane_start >= DO_SPLIT_PLANE_CONTEXTS {
+    checked_plane_within(array, plane_start, DO_SPLIT_PLANE_CONTEXTS)
+}
+
+/// § 8.3.2 fixes `do_square_split` `PlaneStart` at 0 (the chroma partition is
+/// forced for the large block sizes where it is read), so only plane 0 is valid
+/// for that selector — tighter than the shared 2-plane partition CDF array bound.
+fn checked_square_split_plane(plane_start: usize) -> Result<usize, TileCdfError> {
+    checked_plane_within(
+        TileCdfArray::DoSquareSplit,
+        plane_start,
+        DO_SQUARE_SPLIT_VALID_PLANE_CONTEXTS,
+    )
+}
+
+fn checked_plane_within(
+    array: TileCdfArray,
+    plane_start: usize,
+    max_exclusive: usize,
+) -> Result<usize, TileCdfError> {
+    if plane_start >= max_exclusive {
         return Err(TileCdfError::SelectorOutOfRange {
             array,
             index_name: "plane_start",
             actual: plane_start,
-            max_exclusive: DO_SPLIT_PLANE_CONTEXTS,
-        });
-    }
-    Ok(plane_start)
-}
-
-fn checked_square_split_plane(plane_start: usize) -> Result<usize, TileCdfError> {
-    if plane_start >= DO_SQUARE_SPLIT_VALID_PLANE_CONTEXTS {
-        return Err(TileCdfError::SelectorOutOfRange {
-            array: TileCdfArray::DoSquareSplit,
-            index_name: "plane_start",
-            actual: plane_start,
-            max_exclusive: DO_SQUARE_SPLIT_VALID_PLANE_CONTEXTS,
+            max_exclusive,
         });
     }
     Ok(plane_start)

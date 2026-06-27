@@ -916,3 +916,17 @@ fn max_tile_count_limit_does_not_bound_frontier_steps() {
 
     assert!(plan.steps().len() > 1);
 }
+
+#[test]
+fn partition_cdf_plane_matches_avm_chroma_part_plane_one() {
+    // §5.20.3.1 / §8.3.2: AVM `decodeframe.c` uses `plane = tree_type ==
+    // CHROMA_PART`. The shared and luma partition trees read the §8.3.2
+    // partition-entry CDFs (`do_split`, `do_square_split`, `rect_type`, ...) and
+    // their neighbor block-size context from plane 0; only the SDP chroma tree
+    // reads plane 1. Before this mapping the chroma tree wrongly reused the luma
+    // (plane 0) CDFs, desyncing the entropy stream right after the first
+    // superblock's luma columns.
+    assert_eq!(partition_cdf_plane(PartitionTreeType::Shared), 0);
+    assert_eq!(partition_cdf_plane(PartitionTreeType::LumaPart), 0);
+    assert_eq!(partition_cdf_plane(PartitionTreeType::ChromaPart), 1);
+}

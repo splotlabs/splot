@@ -419,6 +419,16 @@ fn selector_returns_rows_and_bounds_errors() {
         .unwrap();
     assert_eq!(row, DEFAULT_RECT_TYPE_CDF[1][63].as_slice());
 
+    // §8.3.2: `do_square_split` `PlaneStart` is fixed at 0, so plane 0 resolves to
+    // the plane-0 row; the chroma SDP plane (1) is rejected for this selector.
+    let row = tile
+        .row(TileCdfSelector::DoSquareSplit {
+            plane_start: 0,
+            ctx: 0,
+        })
+        .unwrap();
+    assert_eq!(row, DEFAULT_DO_SQUARE_SPLIT_CDF[0][0].as_slice());
+
     let err = tile
         .with_row_mut(
             TileCdfSelector::DoSquareSplit {
