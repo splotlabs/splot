@@ -854,8 +854,7 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                     qindex: delta_q_state.qindex_u32(),
                     luma_use_tcq,
                     fsc_mode: false,
-                    // §5.20.5.3 use_intrabc is read only on the (TreeType != CHROMA_PART)
-                    // path; an SDP chroma-part leaf is never IntrABC.
+                    // §5.20.5.3 use_intrabc is on the (TreeType != CHROMA_PART) path only.
                     is_intrabc: false,
                 };
                 decode_chroma_residual_chunks(
@@ -1018,9 +1017,7 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                 qindex: delta_q_state.qindex_u32(),
                 luma_use_tcq,
                 fsc_mode: fsc_mode != 0,
-                // An IntrABC leaf's luma samples are already reconstructed by the
-                // §7.13.3.18 displaced-copy sink inside read_intrabc_info; the skip
-                // residual path must not overwrite them with a placeholder DC block.
+                // An IntrABC leaf is reconstructed by the §7.13.3.18 sink (see field doc).
                 is_intrabc: prelude.use_intrabc,
             };
             decode_selectable_residual_chunks(
