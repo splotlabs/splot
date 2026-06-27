@@ -24,7 +24,9 @@
 //! bit-exact against the AVM pre-filter reconstruction oracle.
 
 use splot_core::tables::conversion::{TX_HEIGHT_LOG2, TX_WIDTH_LOG2};
-use splot_recon::{BitDepth, CurrentFrameWorkspace, IntraCardinalDirection, PlaneId, ReconSample};
+use splot_recon::{
+    BitDepth, CurrentFrameWorkspace, IntraCardinalDirection, PlaneId, PlaneRect, ReconSample,
+};
 
 use crate::Result;
 #[cfg(test)]
@@ -160,6 +162,22 @@ impl PlaneCoverage {
                 }
             }
         }
+    }
+
+    /// Whether EVERY MI unit of the `mi_w` x `mi_h` block at `(mi_col, mi_row)` is
+    /// already reconstructed by the sink. Used to gate an IntrABC copy: a source
+    /// rectangle may be copied only when all of its samples come from spec-correct
+    /// reconstruction, never a workspace fill value standing in for a deferred block.
+    /// A block extending off this plane's grid is not fully covered.
+    fn region_fully_covered(&self, mi_col: usize, mi_row: usize, mi_w: usize, mi_h: usize) -> bool {
+        for r in mi_row..mi_row.saturating_add(mi_h) {
+            for c in mi_col..mi_col.saturating_add(mi_w) {
+                if !self.is_covered(c, r) {
+                    return false;
+                }
+            }
+        }
+        true
     }
 }
 
@@ -527,6 +545,74 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         self.reconstructed_chroma_4x4 = self
             .reconstructed_chroma_4x4
             .saturating_add((1usize << log2_width >> 2) * (1usize << log2_height >> 2));
+        Ok(())
+    }
+
+    /// Reconstructs one §7.13.3.18 IntrABC luma block into the workspace by copying
+    /// the displaced predictor rectangle from the partially-built `CurrFrame` and
+    /// adding the (zero, for a skip block) residual.
+    ///
+    /// The IntrABC block-vector parse already derived and bounds-checked the integer
+    /// luma `source` / `target` rectangles ([`super::intrabc_records::IntrabcPredictionGeometry`]);
+    /// the §7.13.3.18 block-inter-prediction path with `refIdx == -1` and an integer
+    /// block vector reduces to a plain `w` x `h` sample copy of `CurrFrame` at
+    /// `(x + dvX, y + dvY)` (the BILINEAR filter has zero fractional taps), which the
+    /// [`CurrentFrameWorkspace::copy_rect_within_plane`] integer-vector primitive
+    /// performs (snapshotting the source before the target write).
+    ///
+    /// The block is DEFERRED (returns `Ok(())` without writing — never wrong samples
+    /// claimed correct) unless ALL of the proven subset holds:
+    /// * the frame dequant matches the zero-`QuantizerDeltas` assumption
+    ///   (`quant_reconstructable`);
+    /// * the block is a `skip` block (zero residual) — a non-skip IntrABC residual
+    ///   needs the dequant / inverse-transform / residual-add path this brick has not
+    ///   proven for the IntrABC tx type, so it is deferred;
+    /// * the block vector is INTEGER (`source` and `target` have the same shape) — a
+    ///   fractional BILINEAR IntrABC predictor needs a convolution path, not a copy;
+    /// * EVERY source MI unit is already reconstructed by this sink — copying an
+    ///   unreconstructed (fill) source sample is the cardinal sin.
+    ///
+    /// `source` / `target` are the §7.13.3.18 luma copy rectangles (sample units).
+    pub(in crate::runtime_minimal) fn reconstruct_intrabc_block(
+        &mut self,
+        source: PlaneRect,
+        target: PlaneRect,
+        skip_flag: bool,
+        tile_offset: ByteOffset,
+    ) -> Result<()> {
+        if !self.quant_reconstructable || !skip_flag {
+            // Defer a frame whose dequant the primitive cannot honor, or a non-skip
+            // IntrABC block whose residual this brick has not proven bit-exact.
+            return Ok(());
+        }
+        // An integer block vector keeps the predictor a same-shape copy; a fractional
+        // vector widens the source by a BILINEAR border (deferred — needs convolution).
+        if source.size() != target.size() {
+            return Ok(());
+        }
+        let coverage = &self.coverage[Self::coverage_index(PlaneId::Y)];
+        let (src_mi_col, src_mi_row) = (source.x() / MI_SIZE, source.y() / MI_SIZE);
+        let (src_mi_w, src_mi_h) = (source.width() / MI_SIZE, source.height() / MI_SIZE);
+        if !coverage.region_fully_covered(src_mi_col, src_mi_row, src_mi_w, src_mi_h) {
+            // A source MI unit is off-grid or still the workspace fill value; copying
+            // it would claim an unreconstructed sample as correct. Defer this block.
+            return Ok(());
+        }
+        self.workspace
+            .copy_rect_within_plane(PlaneId::Y, source, target)
+            .map_err(|_| {
+                wienerns_lr_selectable_transform_record_error_reason(
+                    tile_offset,
+                    "unsupported_wienerns_lr_selectable_transform_records_recon_intrabc_copy",
+                )
+            })?;
+        let (tgt_mi_col, tgt_mi_row) = (target.x() / MI_SIZE, target.y() / MI_SIZE);
+        let (tgt_mi_w, tgt_mi_h) = (target.width() / MI_SIZE, target.height() / MI_SIZE);
+        self.coverage[Self::coverage_index(PlaneId::Y)]
+            .mark(tgt_mi_col, tgt_mi_row, tgt_mi_w, tgt_mi_h);
+        self.reconstructed_luma_4x4 = self
+            .reconstructed_luma_4x4
+            .saturating_add(tgt_mi_w * tgt_mi_h);
         Ok(())
     }
 
@@ -1392,5 +1478,96 @@ mod tests {
         );
         assert_eq!(sink.reconstructed_counts().0, before);
         assert_eq!(sink.reconstructed_sample(PlaneId::Y, 16, 0).unwrap(), 0);
+    }
+
+    /// A §7.13.3.18 IntrABC integer-vector skip copy whose source rectangle is fully
+    /// reconstructed copies the source samples into the target (target == source).
+    #[test]
+    fn intrabc_integer_skip_copy_reconstructs_target_from_reconstructed_source() {
+        let mut sink = sink();
+        // Reconstruct a DC source block at the origin (16x16, flat 512), then copy a
+        // 16x16 region of it down to a non-overlapping target.
+        recon_luma(
+            &mut sink,
+            0,
+            0,
+            TX_16X16,
+            &zero_block(),
+            Some(IntraYMode::DC_PRED),
+            false,
+        );
+        let before = sink.reconstructed_counts().0;
+        let source = PlaneRect::new(0, 0, 16, 16).unwrap();
+        let target = PlaneRect::new(0, 32, 16, 16).unwrap();
+        sink.reconstruct_intrabc_block(source, target, true, ByteOffset::new(0))
+            .unwrap();
+        // The whole 16x16 target now carries the copied source samples (flat 512).
+        assert_eq!(sink.reconstructed_sample(PlaneId::Y, 0, 32).unwrap(), 512);
+        assert_eq!(sink.reconstructed_sample(PlaneId::Y, 15, 47).unwrap(), 512);
+        // 16x16 == 16 4x4 luma units added.
+        assert_eq!(sink.reconstructed_counts().0, before + 16);
+    }
+
+    /// A §7.13.3.18 IntrABC block whose source rectangle is NOT fully reconstructed
+    /// is DEFERRED — never copies a workspace fill value as if it were a real sample.
+    #[test]
+    fn intrabc_copy_with_unreconstructed_source_is_deferred() {
+        let mut sink = sink();
+        // No block reconstructed yet: the source region (0,0,16,16) is all fill.
+        let source = PlaneRect::new(0, 0, 16, 16).unwrap();
+        let target = PlaneRect::new(0, 32, 16, 16).unwrap();
+        sink.reconstruct_intrabc_block(source, target, true, ByteOffset::new(0))
+            .unwrap();
+        // The target stays at the unreconstructed fill value, and nothing is counted.
+        assert_eq!(sink.reconstructed_sample(PlaneId::Y, 0, 32).unwrap(), 0);
+        assert_eq!(sink.reconstructed_counts().0, 0);
+    }
+
+    /// A non-skip IntrABC block (non-zero residual) is DEFERRED even with a fully
+    /// reconstructed integer-vector source — its residual is not yet proven bit-exact.
+    #[test]
+    fn intrabc_non_skip_block_is_deferred() {
+        let mut sink = sink();
+        recon_luma(
+            &mut sink,
+            0,
+            0,
+            TX_16X16,
+            &zero_block(),
+            Some(IntraYMode::DC_PRED),
+            false,
+        );
+        let before = sink.reconstructed_counts().0;
+        let source = PlaneRect::new(0, 0, 16, 16).unwrap();
+        let target = PlaneRect::new(0, 32, 16, 16).unwrap();
+        sink.reconstruct_intrabc_block(source, target, false, ByteOffset::new(0))
+            .unwrap();
+        assert_eq!(sink.reconstructed_sample(PlaneId::Y, 0, 32).unwrap(), 0);
+        assert_eq!(sink.reconstructed_counts().0, before);
+    }
+
+    /// A fractional-vector IntrABC block (source and target differ in shape — the
+    /// BILINEAR border) is DEFERRED: the copy primitive only models the integer copy.
+    #[test]
+    fn intrabc_fractional_vector_block_is_deferred() {
+        let mut sink = sink();
+        recon_luma(
+            &mut sink,
+            0,
+            0,
+            TX_16X16,
+            &zero_block(),
+            Some(IntraYMode::DC_PRED),
+            false,
+        );
+        let before = sink.reconstructed_counts().0;
+        // A fractional vector widens the source by a one-sample BILINEAR border, so
+        // source.size() != target.size().
+        let source = PlaneRect::new(0, 0, 17, 17).unwrap();
+        let target = PlaneRect::new(0, 32, 16, 16).unwrap();
+        sink.reconstruct_intrabc_block(source, target, true, ByteOffset::new(0))
+            .unwrap();
+        assert_eq!(sink.reconstructed_sample(PlaneId::Y, 0, 32).unwrap(), 0);
+        assert_eq!(sink.reconstructed_counts().0, before);
     }
 }

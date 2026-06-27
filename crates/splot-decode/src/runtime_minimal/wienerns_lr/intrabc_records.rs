@@ -20,6 +20,7 @@ use super::super::inter::{
         read_newmv_block_mvd_with_config,
     },
 };
+use super::recon::WienerNsLrReconSink;
 use super::{intra_capped_seq_sb_size, wienerns_lr_selectable_transform_record_error_reason};
 
 const BLOCK_64X64: usize = 12;
@@ -431,6 +432,7 @@ pub(super) fn read_intrabc_use_and_skip(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn read_intrabc_info(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
@@ -438,13 +440,30 @@ pub(super) fn read_intrabc_info(
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
     geometry: IntrabcBlockGeometry,
+    skip_flag: bool,
+    sink: Option<&mut WienerNsLrReconSink<u16>>,
     tile_offset: ByteOffset,
 ) -> Result<IntrabcInfo> {
     let syntax = read_intrabc_info_syntax(cdfs, symbols, sequence, core, tile_offset)?;
     ensure_intrabc_ref_stack_supported(state, tile_offset)?;
     let info =
         finish_intrabc_info_record(cdfs, symbols, sequence, core, geometry, syntax, tile_offset)?;
-    let _prediction = derive_intrabc_luma_prediction_geometry(core, geometry, info, tile_offset)?;
+    let prediction = derive_intrabc_luma_prediction_geometry(core, geometry, info, tile_offset)?;
+    // §7.13.3.18 IntrABC luma prediction: with the block-vector geometry bounds-checked
+    // above, an attached reconstruction sink copies the displaced predictor rectangle
+    // from the partially-built `CurrFrame` (gated to the proven integer-vector skip
+    // subset inside the sink). The walk then STILL fails closed at the `currframe`
+    // frontier so the PUBLIC decode path (which threads no sink) stays byte-identical:
+    // it emits no frame, and the test driver swallows only this one reason — the sink
+    // retains the reconstructed IntrABC target for the region-verification test.
+    if let Some(sink) = sink {
+        sink.reconstruct_intrabc_block(
+            prediction.source,
+            prediction.target,
+            skip_flag,
+            tile_offset,
+        )?;
+    }
     Err(wienerns_lr_selectable_transform_record_error_reason(
         tile_offset,
         "unsupported_wienerns_lr_selectable_transform_records_intrabc_currframe_samples",
@@ -1282,6 +1301,8 @@ mod tests {
             &sequence,
             &core,
             geometry,
+            false,
+            None,
             ByteOffset::new(20),
         )
         .unwrap_err();
@@ -1362,6 +1383,8 @@ mod tests {
             &sequence,
             &core,
             geometry,
+            false,
+            None,
             ByteOffset::new(20),
         )
         .unwrap_err();
@@ -1418,6 +1441,8 @@ mod tests {
             &sequence,
             &core,
             geometry,
+            false,
+            None,
             ByteOffset::new(20),
         )
         .unwrap_err();
