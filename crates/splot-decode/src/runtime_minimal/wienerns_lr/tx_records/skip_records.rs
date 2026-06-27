@@ -49,8 +49,13 @@ pub(super) fn record_skipped_selectable_residuals(
     // Reconstruct each skipped luma transform as a flat §7.13.2 prediction (zero
     // residual) so later blocks' neighbour reads are spec-correct (gated to the
     // proven DC / cardinal subset inside the sink). A skipped block carries no
-    // coefficients.
-    if let Some(sink) = sink {
+    // coefficients. An IntrABC leaf is EXEMPT: its luma/chroma samples are already
+    // reconstructed by the §7.13.3.18 displaced-copy sink (its `leaf_y_mode` is a
+    // §5.20.5.3 placeholder `DC_PRED`, so a flat-DC re-reconstruction here would
+    // overwrite the correct IntrABC copy with the wrong samples).
+    if let Some(sink) = sink
+        && !recon.is_intrabc
+    {
         let zero = skipped_coeff_block();
         for record in luma_records.iter().copied() {
             sink.reconstruct_luma_transform(

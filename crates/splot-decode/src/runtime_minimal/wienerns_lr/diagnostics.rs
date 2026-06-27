@@ -193,6 +193,12 @@ pub(in crate::runtime_minimal) fn wienerns_lr_selectable_transform_record_error_
             AC0EJ3_SELECTABLE_TRANSFORM_RECORDS_FEATURE_ID,
             "7.13.3.18",
         ),
+        "unsupported_wienerns_lr_selectable_transform_records_intrabc_nonskip_residual" => (
+            "minimal runtime consumed active AV2 frame-level Wiener NS LR unit syntax, decoded the first §7.13.3.18 IntrABC skip block and continued the partition walk, then reached a NON-skip IntrABC block whose §5.20.7.23 residual on the inter/IntrABC transform path is not yet supported; decoded samples, loop-restoration filtering/output, and reference refresh are not applied",
+            AC0EJ3_SELECTABLE_TRANSFORM_RECORDS_MATRIX_ROW,
+            AC0EJ3_SELECTABLE_TRANSFORM_RECORDS_FEATURE_ID,
+            "5.20.7.23",
+        ),
         "unsupported_wienerns_lr_selectable_transform_records_intrabc_source_bounds"
         | "unsupported_wienerns_lr_selectable_transform_records_intrabc_target_bounds"
         | "unsupported_wienerns_lr_selectable_transform_records_intrabc_mv_validity"

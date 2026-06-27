@@ -72,6 +72,16 @@ pub(in crate::runtime_minimal) struct SelectableReconContext {
     pub(in crate::runtime_minimal) qindex: u32,
     pub(in crate::runtime_minimal) luma_use_tcq: bool,
     pub(in crate::runtime_minimal) fsc_mode: bool,
+    /// Whether this leaf is a §5.20.5.3 `use_intrabc` block. An IntrABC leaf's
+    /// luma samples are reconstructed by
+    /// [`WienerNsLrReconSink::reconstruct_intrabc_block`] (a §7.13.3.18 displaced
+    /// `CurrFrame` copy) inside `read_intrabc_info`, BEFORE the skip-residual path
+    /// runs. The residual path's flat §7.13.2 DC/cardinal prediction must NOT then
+    /// overwrite that copy with a spurious `DC_PRED` block (an IntrABC leaf's
+    /// `leaf_y_mode` is a placeholder `DC_PRED`, §5.20.5.3 reads no intra Y mode), so
+    /// the skip-residual reconstruction is skipped for an IntrABC leaf — the IntrABC
+    /// sink already owns its samples.
+    pub(in crate::runtime_minimal) is_intrabc: bool,
 }
 
 /// Reconstructs the verified NON-IntrABC general-intra DC subset of the ac0ej3
@@ -719,18 +729,22 @@ pub(in crate::runtime_minimal) fn reconstruct_ac0ej3_selectable_intra_region(
     }
 }
 
-/// The single §7.13.3.18 IntrABC recon-subset fail-closed reason the ac0ej3
-/// selectable walk is expected to stop on after reconstructing the verified region;
-/// the test driver swallows only this one and propagates every other error. With the
-/// §5.20.3.1 SDP chroma partition plane fix AND the §8.3.2 `is_cfl` neighbour-context
-/// fix (the chroma `is_cfl` CDF keyed by the above/left `UVCfls` neighbours), the
-/// entropy stream stays synced past the second superblock and the first active IntrABC
-/// block — which needs populated `CurrFrame` samples — is now the first wall (the prior
-/// `uv_mode` desync, caused by a `do_split` partition desync from the wrong `is_cfl`
-/// context, no longer fires).
+/// The single §7.12.2 fail-closed reason the ac0ej3 selectable walk is expected to
+/// stop on after reconstructing the verified region; the test driver swallows only
+/// this one and propagates every other error. The first §7.13.3.18 IntrABC block —
+/// MI(16,56), a `skip` leaf with an integer block vector — is now reconstructed
+/// bit-exact and the walk CONTINUES past it (a `skip` IntrABC leaf reads no residual
+/// and §5.20.6.1 assigns Max_Tx_Size_Rect with no partition symbols, so the entropy
+/// state stays AVM-faithful). The walk advances through the rest of the second
+/// superblock and into SB col 3, where the SECOND IntrABC block — MI(0,112), a
+/// NON-`skip` leaf — needs the §7.12.2 IntrABC MV stack `find_mv_stack(0)` that may
+/// now hold a ref-MV-bank candidate from the recorded first IntrABC block; splot's
+/// bounded fallback list is only valid for an empty stack, so the walk fails closed
+/// there. The prior `intrabc_currframe_samples` wall (the first IntrABC block) no
+/// longer fires.
 #[cfg(test)]
 const EXPECTED_RECON_FRONTIER_REASON: &str =
-    "unsupported_wienerns_lr_selectable_transform_records_intrabc_currframe_samples";
+    "unsupported_wienerns_lr_selectable_transform_records_intrabc_ref_stack";
 
 /// Whether the frame's §5.18.6 quantization matches the reconstruction primitive's
 /// zero-`QuantizerDeltas` assumption: no per-plane DC/AC quantizer delta and no
