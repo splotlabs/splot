@@ -98,12 +98,13 @@ impl IntrabcRefMvBank {
         &self.queue
     }
 
-    /// AV2 § 7.12.2 `av2_reset_refmv_bank` superblock-row reset: for an intra-only
-    /// frame the bank is zeroed at the start of each superblock row and the budget
-    /// counters reset at each superblock. Mirrors the `av2_zero(xd->ref_mv_bank)`
-    /// at `decodeframe.c:4639` plus the intra-only early return in
-    /// `av2_reset_refmv_bank` (`av2_common_int.h:4283`).
-    fn enter_block_superblock(&mut self, mi_row: usize, mi_col: usize) {
+    /// AV2 § 7.12.2 `av2_reset_refmv_bank` superblock-row reset, invoked at block
+    /// ENTRY before the § 7.12.2.21 fill reads the bank: for an intra-only frame the
+    /// bank is zeroed at the start of each superblock row and the per-SB budget
+    /// counters reset at each superblock. Mirrors the `av2_zero(xd->ref_mv_bank)` at
+    /// `decodeframe.c:4639` (run before the SB-row's blocks decode) plus the
+    /// intra-only early return in `av2_reset_refmv_bank` (`av2_common_int.h:4283`).
+    pub(super) fn enter_block_superblock(&mut self, mi_row: usize, mi_col: usize) {
         if self.mib_size == 0 {
             return;
         }
@@ -155,12 +156,13 @@ impl IntrabcRefMvBank {
         }
     }
 
-    /// Records a decoded block, mirroring AV2 § 7.12.2 `av2_read_mode_info`'s
-    /// post-block bank maintenance for an intra-only frame
-    /// (`decodemv.c:3197`-`3205`): an IntrABC block runs the within-SB bank update
-    /// (`av2_update_ref_mv_bank(.., 1, ..)`); any other block only runs
-    /// `decide_rmb_unit_update_count`.
-    pub(super) fn record_block(
+    /// AV2 § 7.12.2 `av2_read_mode_info`'s POST-block bank maintenance for an
+    /// intra-only frame (`decodemv.c:3197`-`3205`): an IntrABC block runs the
+    /// within-SB bank update (`av2_update_ref_mv_bank(.., 1, ..)`); any other block
+    /// only runs `decide_rmb_unit_update_count`. The SB-row reset is performed at
+    /// block ENTRY by [`Self::enter_block_superblock`] (so the § 7.12.2.21 fill
+    /// reads a freshly-zeroed bank for the first block of a new SB row), NOT here.
+    pub(super) fn update_after_block(
         &mut self,
         mi_row: usize,
         mi_col: usize,
@@ -169,7 +171,6 @@ impl IntrabcRefMvBank {
         use_intrabc: bool,
         block_mv: Option<Mv>,
     ) {
-        self.enter_block_superblock(mi_row, mi_col);
         // Every block (IBC or not) runs `decide_rmb_unit_update_count`: a non-IBC
         // block calls it directly (`decodemv.c:3204`); an IBC block calls it from
         // inside `av2_update_ref_mv_bank` (`mvref_common.c:4621`).
@@ -179,10 +180,26 @@ impl IntrabcRefMvBank {
         }
     }
 
+    /// Test-only convenience: the full per-block sequence (SB-row reset at entry
+    /// then the post-block bank update), matching the decode walk's call order.
+    #[cfg(test)]
+    fn record_block(
+        &mut self,
+        mi_row: usize,
+        mi_col: usize,
+        n4w: usize,
+        n4h: usize,
+        use_intrabc: bool,
+        block_mv: Option<Mv>,
+    ) {
+        self.enter_block_superblock(mi_row, mi_col);
+        self.update_after_block(mi_row, mi_col, n4w, n4h, use_intrabc, block_mv);
+    }
+
     /// AV2 § 7.12.2 `update_ref_mv_bank` with `from_within_sb == 1`
     /// (`mvref_common.c:4623`): consume the per-unit budget gate, then dedup
     /// (move-to-end) or append the block vector. `decide_rmb_unit_update_count`
-    /// has already run for this block in [`Self::record_block`].
+    /// has already run for this block in [`Self::update_after_block`].
     fn update_within_sb(&mut self, mv: Mv) {
         if self.remain_hits == 0
             || self.unit_hits >= BANK_UNIT_MAX_ALLOWED_LEFTOVER_UPDATES
@@ -278,6 +295,10 @@ pub(super) struct IntrabcStackGeometry {
 /// decoded). Returns the candidate stack (capped at `max_bvp_drl_bits_minus_1 +
 /// 2`).
 ///
+/// `enable_refmvbank` is the AV2 sequence-header flag: when `false` the § 7.12.2.21
+/// ref-MV-bank fill is skipped entirely (AV2 only runs it when `enable_refmvbank ==
+/// 1`), so the stack is default-fill only.
+///
 /// The spatial scan is NOT executed here: this is called only after the caller has
 /// proven the spatial scan contributes no IBC candidate (every reachable ac0ej3
 /// frame-0 IntrABC block has only the bank + default candidates). If the spatial
@@ -285,6 +306,7 @@ pub(super) struct IntrabcStackGeometry {
 pub(super) fn build_intrabc_ref_mv_stack(
     bank: &IntrabcRefMvBank,
     geometry: IntrabcStackGeometry,
+    enable_refmvbank: bool,
 ) -> Vec<Mv> {
     let max_count = usize::try_from(geometry.max_bvp_drl_bits_minus_1)
         .ok()
@@ -305,13 +327,17 @@ pub(super) fn build_intrabc_ref_mv_stack(
     };
     let mut stack: Vec<Mv> = Vec::new();
 
-    // § 7.12.2.21 fill from ref mv bank: iterate the bank in reverse (LIFO).
-    for &cand in bank.entries().iter().rev() {
-        if stack.len() >= max_count {
-            break;
-        }
-        if check_rmb_cand(cand, &stack, bounds) {
-            stack.push(cand);
+    // § 7.12.2.21 fill from ref mv bank: iterate the bank in reverse (LIFO). Only
+    // when `enable_refmvbank == 1` (AV2 gates both the fill and the bank update on
+    // this flag); otherwise the bank contributes nothing.
+    if enable_refmvbank {
+        for &cand in bank.entries().iter().rev() {
+            if stack.len() >= max_count {
+                break;
+            }
+            if check_rmb_cand(cand, &stack, bounds) {
+                stack.push(cand);
+            }
         }
     }
 
@@ -350,18 +376,20 @@ pub(super) enum IntrabcStackAdmission {
 /// decoded DRL index `ref_mv_idx` selects equals `fallback_selected` (the block
 /// vector the bounded fallback assign path would use), so the copied BV is correct.
 /// `spatial_has_intrabc` defers unconditionally: the § 7.12.2 spatial scan could
-/// contribute a candidate this decoder does not yet model.
+/// contribute a candidate this decoder does not yet model. `enable_refmvbank` is the
+/// AV2 sequence flag gating the § 7.12.2.21 bank fill.
 pub(super) fn intrabc_ref_stack_admission(
     bank: &IntrabcRefMvBank,
     geometry: IntrabcStackGeometry,
     spatial_has_intrabc: bool,
+    enable_refmvbank: bool,
     ref_mv_idx: usize,
     fallback_selected: Option<Mv>,
 ) -> IntrabcStackAdmission {
     if spatial_has_intrabc {
         return IntrabcStackAdmission::Defer;
     }
-    let real_stack = build_intrabc_ref_mv_stack(bank, geometry);
+    let real_stack = build_intrabc_ref_mv_stack(bank, geometry, enable_refmvbank);
     if real_stack.get(ref_mv_idx).copied() == fallback_selected {
         IntrabcStackAdmission::Admit
     } else {
@@ -412,7 +440,7 @@ mod tests {
         bank.record_block(16, 56, 8, 16, true, Some(Mv { row: -512, col: 0 }));
         assert_eq!(bank.entries(), [Mv { row: -512, col: 0 }]);
 
-        let stack = build_intrabc_ref_mv_stack(&bank, ac0ej3_geometry(0, 112));
+        let stack = build_intrabc_ref_mv_stack(&bank, ac0ej3_geometry(0, 112), true);
         assert_eq!(
             stack,
             vec![
@@ -438,7 +466,7 @@ mod tests {
             [Mv { row: -512, col: 0 }, Mv { row: 0, col: -256 }]
         );
 
-        let stack = build_intrabc_ref_mv_stack(&bank, ac0ej3_geometry(0, 232));
+        let stack = build_intrabc_ref_mv_stack(&bank, ac0ej3_geometry(0, 232), true);
         assert_eq!(
             stack,
             vec![
@@ -497,6 +525,32 @@ mod tests {
         assert_eq!(bank.entries(), [Mv { row: -1024, col: 0 }]);
     }
 
+    // Finding 2: the FIRST block of a new SB row reads an EMPTY bank. After SB row 0
+    // populates the bank, entering a block in SB row 1 (the entry-time reset) clears
+    // the bank BEFORE the § 7.12.2.21 fill runs, so the built stack is default-only
+    // (no stale previous-row candidate would defer a valid block).
+    #[test]
+    fn first_block_of_new_sb_row_reads_empty_bank() {
+        let mut bank = IntrabcRefMvBank::new(32);
+        // SB row 0 records a BV whose displaced ref would be in-bounds at SB row 1.
+        bank.record_block(0, 0, 8, 16, true, Some(Mv { row: 0, col: -256 }));
+        assert_eq!(bank.entries(), [Mv { row: 0, col: -256 }]);
+        // Entering the first block of SB row 1 (mi_row 32) zeroes the bank...
+        bank.enter_block_superblock(32, 8);
+        assert!(bank.entries().is_empty());
+        // ...so the stack built for that block is default-only (no stale candidate).
+        let stack = build_intrabc_ref_mv_stack(&bank, ac0ej3_geometry(32, 8), true);
+        assert_eq!(
+            stack,
+            vec![
+                Mv { row: -1024, col: 0 },
+                Mv { row: 0, col: -3072 },
+                Mv { row: -512, col: 0 },
+                Mv { row: 0, col: -256 },
+            ]
+        );
+    }
+
     // ac0ej3 frame-0 MI(0,112): the bank's MI(16,56) candidate is rejected on the
     // frame boundary, so the real stack is default-only and the DRL index (3)
     // selects the same BV as the bounded fallback's tail (0,-256) -> ADMIT.
@@ -509,6 +563,7 @@ mod tests {
                 &bank,
                 ac0ej3_geometry(0, 112),
                 false,
+                true,
                 3,
                 Some(Mv { row: 0, col: -256 }),
             ),
@@ -516,24 +571,29 @@ mod tests {
         );
     }
 
-    // ac0ej3 frame-0 MI(0,232): the bank [(-512,0),(0,-256)] reorders the stack to
-    // [(0,-256),...], so the DRL index (0) selects (0,-256) while the bounded
-    // fallback's head is (-1024,0) -> DEFER (the cardinal-sin guard).
+    // ac0ej3 frame-0 MI(0,232): with the SAME bank [(-512,0),(0,-256)] the
+    // `enable_refmvbank` flag flips the decision. With it ON, the § 7.12.2.21 fill
+    // reorders the stack to [(0,-256),...], so DRL index 0 selects (0,-256) while
+    // the bounded fallback head is (-1024,0) -> DEFER (the cardinal-sin guard). With
+    // it OFF, AV2 runs no bank fill, the bank state is IGNORED, the stack is
+    // default-only, and DRL index 0 selects the fallback head -> ADMIT.
     #[test]
-    fn admission_defers_ac0ej3_mi_0_232_reordered_stack() {
+    fn admission_decision_follows_enable_refmvbank_on_reordered_bank() {
         let mut bank = IntrabcRefMvBank::new(32);
         bank.record_block(16, 56, 8, 16, true, Some(Mv { row: -512, col: 0 }));
         bank.record_block(0, 112, 8, 16, true, Some(Mv { row: 0, col: -256 }));
-        assert_eq!(
+        let decide = |enable_refmvbank| {
             intrabc_ref_stack_admission(
                 &bank,
                 ac0ej3_geometry(0, 232),
                 false,
+                enable_refmvbank,
                 0,
                 Some(Mv { row: -1024, col: 0 }),
-            ),
-            IntrabcStackAdmission::Defer
-        );
+            )
+        };
+        assert_eq!(decide(true), IntrabcStackAdmission::Defer);
+        assert_eq!(decide(false), IntrabcStackAdmission::Admit);
     }
 
     // A spatial IntrABC neighbour the § 7.12.2 scan would read defers
@@ -545,6 +605,7 @@ mod tests {
             intrabc_ref_stack_admission(
                 &bank,
                 ac0ej3_geometry(0, 112),
+                true,
                 true,
                 0,
                 Some(Mv { row: -1024, col: 0 }),

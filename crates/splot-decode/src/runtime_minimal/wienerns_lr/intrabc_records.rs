@@ -211,6 +211,10 @@ pub(super) struct TileIntrabcPreludeState {
     /// AV2 § 7.12.2 IntrABC reference-MV bank (the intra list), maintained in
     /// decode order so a later IntrABC block sees the bank state AVM holds.
     bank: IntrabcRefMvBank,
+    /// AV2 sequence-header `enable_refmvbank` (§ 5.5.2 / `SequenceInterConfig`).
+    /// When `0`, AV2 runs neither the § 7.12.2.21 ref-MV-bank fill nor the
+    /// block-end bank update, so the stack is spatial-scan + default-fill only.
+    enable_refmvbank: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -236,12 +240,17 @@ impl TileIntrabcPreludeState {
             )
         })?;
         let sb_size4 = intra_sb_size4(sequence, tile_offset)?;
+        let enable_refmvbank = sequence
+            .inter
+            .as_ref()
+            .is_some_and(|inter| inter.enable_refmvbank);
         Ok(Self {
             mi_rows,
             mi_cols,
             sb_size4,
             values: vec![None; values_len],
             bank: IntrabcRefMvBank::new(sb_size4),
+            enable_refmvbank,
         })
     }
 
@@ -284,17 +293,31 @@ impl TileIntrabcPreludeState {
                 self.values[index] = Some(facts);
             }
         }
-        // AV2 § 7.12.2 `av2_read_mode_info` post-block bank maintenance: feed the
-        // block (IBC or not) into the ref-MV bank in decode order.
-        self.bank.record_block(
-            row,
-            col,
-            n4w,
-            n4h,
-            prelude.use_intrabc,
-            block_mv.map(Mv::from),
-        );
+        // AV2 § 7.12.2 `av2_read_mode_info` POST-block bank maintenance: feed the
+        // block (IBC or not) into the ref-MV bank in decode order. The SB-row reset
+        // already ran at block entry in [`Self::prepare_for_block`].
+        if self.enable_refmvbank {
+            self.bank.update_after_block(
+                row,
+                col,
+                n4w,
+                n4h,
+                prelude.use_intrabc,
+                block_mv.map(Mv::from),
+            );
+        }
         Ok(())
+    }
+
+    /// AV2 § 7.12.2 `av2_reset_refmv_bank` per-superblock-row reset, run at block
+    /// ENTRY (before the § 7.12.2.21 fill reads the bank for admission) so the first
+    /// block of a new superblock row reads a freshly-zeroed bank, mirroring the
+    /// `av2_zero(xd->ref_mv_bank)` at `decodeframe.c:4639` which runs before the
+    /// row's blocks decode. A no-op when `enable_refmvbank == 0`.
+    pub(super) fn prepare_for_block(&mut self, row: usize, col: usize) {
+        if self.enable_refmvbank {
+            self.bank.enter_block_superblock(row, col);
+        }
     }
 
     pub(super) fn intrabc_ctx(
@@ -425,7 +448,10 @@ impl TileIntrabcPreludeState {
     /// AV2 reads — every left-column, above-row, top-right, top-left and
     /// `scan_col(-3)` MI position adjacent to the block — and reports `true` if ANY
     /// holds an IntrABC neighbour. Over-reporting only forces a (safe) defer; it
-    /// never produces a wrong stack.
+    /// never produces a wrong stack. At an SB-row boundary (§ 7.12.2 `isSbBorder`)
+    /// the § 7.12.2 step-14 above-left probe is `deltaCol = -1 - isSbBorder == -2`,
+    /// then § 7.12.2.6 Scan point aligns it `deltaCol -= MiCol & 1`, so the leftmost
+    /// above-row column extends to `MiCol - 2 - (MiCol & 1)`.
     fn spatial_scan_has_intrabc_neighbour(&self, geometry: IntrabcBlockGeometry) -> bool {
         let row = geometry.block.row;
         let col = geometry.block.col;
@@ -446,10 +472,12 @@ impl TileIntrabcPreludeState {
                 }
             }
         }
-        // Above row: columns [col - 1 .. col + n4w] (top-left corner across to the
-        // top-right corner), bounded to the grid.
+        // Above row: columns [leftmost .. col + n4w] (the step-14 / top-left corner
+        // across to the top-right), where leftmost covers the SB-border probe.
         if let Some(above) = above_row {
-            let leftmost = col.saturating_sub(1);
+            let is_sb_border = self.sb_size4 != 0 && row.is_multiple_of(self.sb_size4);
+            let extra_left = if is_sb_border { 2 + (col & 1) } else { 1 };
+            let leftmost = col.saturating_sub(extra_left);
             let rightmost = col.saturating_add(n4w); // inclusive of the top-right col
             for c in leftmost..=rightmost {
                 if self.position_is_intrabc(above, c) {
@@ -710,6 +738,7 @@ fn ensure_intrabc_ref_stack_supported(
         state.bank(),
         stack_geometry,
         state.spatial_scan_has_intrabc_neighbour(geometry),
+        state.enable_refmvbank,
         syntax.ref_mv_idx,
         fallback.get(syntax.ref_mv_idx).copied(),
     ) {
@@ -1496,6 +1525,26 @@ mod tests {
 
     const BLOCK_16X16: usize = 6;
 
+    fn no_off() -> ByteOffset {
+        ByteOffset::new(0)
+    }
+
+    /// A `skip` IntrABC neighbour prelude with an integer block vector, for
+    /// populating the neighbour grid / ref-MV bank in tests.
+    fn ac0ej3_skip_neighbour() -> IntrabcBlockPrelude {
+        IntrabcBlockPrelude {
+            use_intrabc: true,
+            is_inter: true,
+            skip_flag: true,
+            intrabc: Some(IntrabcInfo {
+                intrabc_mode: 1,
+                ref_mv_idx: 0,
+                mv_precision: MV_PRECISION_QUARTER_PEL,
+                block_mv: IntrabcBlockVector { row: -512, col: 0 },
+            }),
+        }
+    }
+
     fn selectable_fixture() -> (SequenceHeader, FrameHeaderCore) {
         let mut sequence = build_minimal_intra_sequence_header().unwrap();
         let (mut core, _) = build_minimal_intra_clk_core().unwrap();
@@ -1766,21 +1815,10 @@ mod tests {
             .seq_max_bvp_drl_bits_minus_1 = 2;
         // A 1024-wide luma MI grid (256 MI cols) keeps MI(0,112)'s candidates in
         // bounds; 128 MI rows span the frame height.
-        let mut state =
-            TileIntrabcPreludeState::new(128, 256, &sequence, ByteOffset::new(0)).unwrap();
-        let prior = IntrabcBlockPrelude {
-            use_intrabc: true,
-            is_inter: true,
-            skip_flag: true,
-            intrabc: Some(IntrabcInfo {
-                intrabc_mode: 1,
-                ref_mv_idx: 0,
-                mv_precision: MV_PRECISION_QUARTER_PEL,
-                block_mv: IntrabcBlockVector { row: -512, col: 0 },
-            }),
-        };
+        let mut state = TileIntrabcPreludeState::new(128, 256, &sequence, no_off()).unwrap();
+        // MI(16,56): the first (skip) IntrABC block, BV (-512, 0).
         state
-            .record_block(16, 56, 8, 16, prior, ByteOffset::new(0))
+            .record_block(16, 56, 8, 16, ac0ej3_skip_neighbour(), no_off())
             .unwrap();
         // MI(0,112): 32x64 (n4w 8, n4h 16), no spatial IntrABC neighbour, DRL idx 3.
         let geometry =
@@ -1800,6 +1838,36 @@ mod tests {
             ByteOffset::new(110),
         )
         .unwrap();
+    }
+
+    // Finding 1: the § 7.12.2 step-14 SB-border above-left probe is at
+    // `deltaCol = -1 - isSbBorder == -2`, aligned by § 7.12.2.6 to
+    // `MiCol - 2 - (MiCol & 1)`. For an SB-border block with EVEN MiCol that probe
+    // reads (row-1, MiCol-2); an IntrABC neighbour existing ONLY there must DEFER.
+    // The control (an interior block whose above scan starts at MiCol-1) must NOT
+    // see it, so the fix is targeted, not over-broad. The fixture's seq SB is
+    // 64x64, so sb_size4 == 16 and MiRow 16 is an SB-row boundary, MiRow 20 is not.
+    #[test]
+    fn spatial_scan_detects_sb_border_col_minus_two_neighbour() {
+        let (sequence, _core) = selectable_large_frame_fixture();
+        let neighbour = ac0ej3_skip_neighbour();
+        // SB-border block MI(16,56) (even MiCol): the (15,54)==(row-1,MiCol-2) probe.
+        let mut sb_border = TileIntrabcPreludeState::new(64, 64, &sequence, no_off()).unwrap();
+        sb_border
+            .record_block(15, 54, 1, 1, neighbour, no_off())
+            .unwrap();
+        let at_border =
+            IntrabcBlockGeometry::new(IntrabcBlockContext::new(16, 56, BLOCK_16X16, false), 8, 16);
+        assert!(sb_border.spatial_scan_has_intrabc_neighbour(at_border));
+
+        // Control: interior block MI(20,56) (row 20 % 16 != 0) does NOT probe MiCol-2.
+        let mut interior = TileIntrabcPreludeState::new(64, 64, &sequence, no_off()).unwrap();
+        interior
+            .record_block(19, 54, 1, 1, neighbour, no_off())
+            .unwrap();
+        let at_interior =
+            IntrabcBlockGeometry::new(IntrabcBlockContext::new(20, 56, BLOCK_16X16, false), 8, 16);
+        assert!(!interior.spatial_scan_has_intrabc_neighbour(at_interior));
     }
 
     #[test]
@@ -2188,17 +2256,7 @@ mod tests {
             skip_flag: false,
             intrabc: None,
         };
-        let intrabc_skip = IntrabcBlockPrelude {
-            use_intrabc: true,
-            is_inter: true,
-            skip_flag: true,
-            intrabc: Some(IntrabcInfo {
-                intrabc_mode: 1,
-                ref_mv_idx: 0,
-                mv_precision: MV_PRECISION_QUARTER_PEL,
-                block_mv: IntrabcBlockVector { row: -512, col: 0 },
-            }),
-        };
+        let intrabc_skip = ac0ej3_skip_neighbour();
         state
             .record_block(15, 4, 4, 1, intrabc_skip, ByteOffset::new(0))
             .unwrap();
@@ -2228,17 +2286,7 @@ mod tests {
             skip_flag: false,
             intrabc: None,
         };
-        let intrabc_skip = IntrabcBlockPrelude {
-            use_intrabc: true,
-            is_inter: true,
-            skip_flag: true,
-            intrabc: Some(IntrabcInfo {
-                intrabc_mode: 1,
-                ref_mv_idx: 0,
-                mv_precision: MV_PRECISION_QUARTER_PEL,
-                block_mv: IntrabcBlockVector { row: -512, col: 0 },
-            }),
-        };
+        let intrabc_skip = ac0ej3_skip_neighbour();
         state
             .record_block(23, 7, 1, 1, ordinary, ByteOffset::new(0))
             .unwrap();
@@ -2262,17 +2310,7 @@ mod tests {
     #[test]
     fn contexts_preserve_duplicate_neighbour_slots_before_cap() {
         let mut state = state();
-        let intrabc_skip = IntrabcBlockPrelude {
-            use_intrabc: true,
-            is_inter: true,
-            skip_flag: true,
-            intrabc: Some(IntrabcInfo {
-                intrabc_mode: 1,
-                ref_mv_idx: 0,
-                mv_precision: MV_PRECISION_QUARTER_PEL,
-                block_mv: IntrabcBlockVector { row: -512, col: 0 },
-            }),
-        };
+        let intrabc_skip = ac0ej3_skip_neighbour();
         state
             .record_block(0, 7, 1, 1, intrabc_skip, ByteOffset::new(0))
             .unwrap();

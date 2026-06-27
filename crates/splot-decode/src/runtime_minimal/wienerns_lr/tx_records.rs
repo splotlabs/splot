@@ -1831,6 +1831,10 @@ fn read_luma_shared_mode_info_prelude(
     sink: Option<&mut WienerNsLrReconSink<u16>>,
     tile_offset: ByteOffset,
 ) -> Result<IntrabcBlockPrelude> {
+    // AV2 § 7.12.2 `av2_reset_refmv_bank`: zero the IntrABC ref-MV bank at a new
+    // superblock row BEFORE this block's § 7.12.2.21 fill reads it (the post-block
+    // `record_block` updates the bank).
+    intrabc_state.prepare_for_block(frontier.r, frontier.c);
     let use_skip = read_intrabc_use_and_skip(
         work_unit.cdf_mut().tile_cdfs_mut(),
         symbols,
