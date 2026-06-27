@@ -5,6 +5,7 @@
 
 use crate::bitio::BitReader;
 use crate::error::{Error, Result, SequenceHeaderErrorKind};
+use crate::headers::frame::ceil_log2;
 use crate::segment::{SegmentInfo, parse_seg_info};
 use crate::span::{BitOffset, ByteOffset};
 use crate::tile::{TileParams, TileParamsInput, parse_tile_layout};
@@ -727,7 +728,7 @@ pub fn parse_sequence_header_general(reader: &mut BitReader<'_>) -> Result<Seque
         let max_tlayer_id = TemporalLayerId::from_bits(reader.read_bits_u8(2)?);
         let max_mlayer_id = EmbeddedLayerId::from_bits(reader.read_bits_u8(3)?);
         let seq_max_mlayer_count = if max_mlayer_id.get() > 0 {
-            let n = ceil_log2_u32(u32::from(max_mlayer_id.get()) + 1);
+            let n = ceil_log2(u32::from(max_mlayer_id.get()) + 1);
             let count_offset = reader.byte_offset();
             let count_bit_offset = reader.bit_offset();
             let seq_max_mlayer_cnt_minus_1 = reader.read_bits(n)?;
@@ -2098,14 +2099,6 @@ fn invalid_sequence_header(
         offset,
         bit_offset,
         kind,
-    }
-}
-
-fn ceil_log2_u32(value: u32) -> u32 {
-    if value <= 1 {
-        0
-    } else {
-        u32::BITS - (value - 1).leading_zeros()
     }
 }
 

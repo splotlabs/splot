@@ -25,6 +25,7 @@
 //! writer emits bits only from values the parser would have signaled and the round-trip
 //! property is provable. See [`WriteError::NonCanonicalSequenceValue`].
 
+use crate::headers::frame::ceil_log2;
 use crate::headers::sequence::{
     CroppingWindow, MLayerDependencyMap, SequenceDecoderModelInfo, SequenceHeaderGeneral,
     TLayerDependencyMap, Tier,
@@ -37,18 +38,6 @@ use crate::write::error::{WriteError, WriteResult};
 const MAX_NUM_TLAYERS: u8 = 4;
 /// `MAX_NUM_MLAYERS` (AV2 § 3): number of embedded layers a dependency map spans.
 const MAX_NUM_MLAYERS: u8 = 8;
-
-/// `CeilLog2(value)` (AV2 v1.0.0 § 4.7, `docs/spec/av2/1.0.0/04-conventions.md#s-4-7`),
-/// duplicated locally to compute the `seq_max_mlayer_cnt_minus_1` field width exactly as
-/// `parse_sequence_header_general` does (it uses the private `ceil_log2_u32`). Kept private:
-/// it is a writer-internal width derivation, not part of the model surface.
-const fn ceil_log2_u32(value: u32) -> u32 {
-    if value <= 1 {
-        0
-    } else {
-        u32::BITS - (value - 1).leading_zeros()
-    }
-}
 
 /// Returns the `seq_tier` bit (`0` for [`Tier::Main`], `1` for [`Tier::High`]).
 ///
@@ -140,7 +129,7 @@ pub fn write_sequence_header_general(
         writer.write_bits_u8(general.max_mlayer_id.get(), 3)?; // max_mlayer_id: f(3)
         // seq_max_mlayer_cnt_minus_1: f(CeilLog2(max_mlayer_id + 1)), only when max_mlayer_id > 0.
         if general.max_mlayer_id.get() > 0 {
-            let n = ceil_log2_u32(u32::from(general.max_mlayer_id.get()) + 1);
+            let n = ceil_log2(u32::from(general.max_mlayer_id.get()) + 1);
             let minus_1 = u32::from(general.seq_max_mlayer_count.get()) - 1;
             writer.write_bits(minus_1, n)?;
         }
@@ -265,7 +254,7 @@ pub(crate) fn check_general_encodable(general: &SequenceHeaderGeneral) -> WriteR
                     what: "seq_max_mlayer_count",
                 });
             }
-            let n = ceil_log2_u32(u32::from(general.max_mlayer_id.get()) + 1);
+            let n = ceil_log2(u32::from(general.max_mlayer_id.get()) + 1);
             check_field_width(u64::from(minus_1), n)?;
         } else if general.seq_max_mlayer_count.get() != 1 {
             // max_mlayer_id == 0 infers SeqMaxMlayerCnt == 1 (no bits read).
