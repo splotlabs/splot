@@ -18,6 +18,7 @@ use splot_tables::tables::loop_restoration::PC_WIENER_LUT_TO_CLASS;
 
 use crate::dequant::quantizer_value;
 use crate::intra_dc_math::validate_sample_type;
+use crate::math::{round2, round2_signed};
 use crate::{BitDepth, ReconError, ReconSample, Result};
 
 /// AV2 § 3 `PC_WIENER_NUM_FEATURES`.
@@ -432,25 +433,6 @@ fn coordinate_add(value: isize, delta: isize, context: &'static str) -> Result<i
     value
         .checked_add(delta)
         .ok_or(ReconError::ArithmeticOverflow { context })
-}
-
-/// AV2 § 4.8 `Round2Signed(value, n)`.
-const fn round2_signed(value: i64, n: u32) -> i64 {
-    if value >= 0 {
-        round2(value, n)
-    } else {
-        -round2(-value, n)
-    }
-}
-
-/// AV2 § 4.8 `Round2(value, n) = (value + (1 << (n - 1))) >> n` for `n > 0`,
-/// and `value` for `n == 0`.
-const fn round2(value: i64, n: u32) -> i64 {
-    if n == 0 {
-        value
-    } else {
-        (value + (1i64 << (n - 1))) >> n
-    }
 }
 
 #[cfg(test)]

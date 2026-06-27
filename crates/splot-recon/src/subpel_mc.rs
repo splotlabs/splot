@@ -26,6 +26,7 @@
 
 use crate::error::{ReconError, Result};
 use crate::format::BitDepth;
+use crate::math::{clip3, round2};
 
 /// AV2 § 3 `SCALE_SUBPEL_BITS`: number of fractional bits in the 1/1024-sample
 /// reference coordinates (`startX` / `startY` / `stepX` / `stepY` units).
@@ -358,24 +359,6 @@ pub struct SubpelPredictParams {
 
 /// The maximum supported block dimension (AV2 super-block transform block side).
 const MAX_BLOCK_DIM: usize = 128;
-
-/// AV2 § 4.8 `Round2(x, n)`, computed in `i64`. `Round2(x, 0) == x`; otherwise
-/// `(x + (1 << (n - 1))) >> n` with an arithmetic right shift (the filter sum can
-/// be negative).
-const fn round2(x: i64, n: u32) -> i64 {
-    if n == 0 { x } else { (x + (1 << (n - 1))) >> n }
-}
-
-/// AV2 § 4.8 `Clip3(low, high, value)`.
-const fn clip3(low: i64, high: i64, value: i64) -> i64 {
-    if value < low {
-        low
-    } else if value > high {
-        high
-    } else {
-        value
-    }
-}
 
 /// Runs the AV2 § 7.13.3.18 separable interpolation-filter convolution for a
 /// single-reference (non-compound) inter block and returns the row-major

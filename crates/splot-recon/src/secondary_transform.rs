@@ -26,6 +26,7 @@
 use splot_tables::tables::secondary_transform::{IST_4X4_KERNEL, IST_8X8_KERNEL, STX_SCAN_MAP};
 
 use crate::coefficient_scan::{TransformClass, coefficient_scan_order};
+use crate::math::round2_signed;
 use crate::{BitDepth, ReconError, Result};
 
 /// AV2 § 3 `IST_4X4_HEIGHT`: rows in the 4x4 secondary-transform matrix.
@@ -212,26 +213,6 @@ const fn is_valid_side(side: usize) -> bool {
     matches!(side, 4 | 8 | 16 | 32)
 }
 
-/// AV2 § 4.8 `Round2Signed(value, n) = value >= 0 ? Round2(value, n)
-/// : -Round2(-value, n)`. Total over `i64` for the `n = 7` shift used here.
-const fn round2_signed(value: i64, n: u32) -> i64 {
-    if value >= 0 {
-        round2(value, n)
-    } else {
-        -round2(-value, n)
-    }
-}
-
-/// AV2 § 4.8 `Round2(value, n) = (value + (1 << (n - 1))) >> n` for `n > 0`, and
-/// `value` for `n == 0`. `value` here is a non-negative `i64`.
-const fn round2(value: i64, n: u32) -> i64 {
-    if n == 0 {
-        value
-    } else {
-        (value + (1i64 << (n - 1))) >> n
-    }
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -303,19 +284,6 @@ mod tests {
                 y * p.w + x
             }] = v;
         }
-    }
-
-    #[test]
-    fn round2_signed_matches_spec_for_both_signs() {
-        // Round2(x, 7) = (x + 64) >> 7. Positive rounds toward +inf at the half;
-        // negative mirrors via -Round2(-x, 7).
-        assert_eq!(round2_signed(0, 7), 0);
-        assert_eq!(round2_signed(64, 7), 1); // (64 + 64) >> 7 = 1
-        assert_eq!(round2_signed(63, 7), 0);
-        assert_eq!(round2_signed(-64, 7), -1);
-        assert_eq!(round2_signed(-63, 7), 0);
-        assert_eq!(round2_signed(192, 7), 2); // (192 + 64) >> 7 = 2
-        assert_eq!(round2_signed(-192, 7), -2);
     }
 
     // Runs the production transform and the in-place reference over identical

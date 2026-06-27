@@ -17,6 +17,8 @@
 //! per reference sample). The MV's fractional eighth-pel part survives into the
 //! sub-pel phase of `startX` / `startY`.
 
+use splot_recon::math::{clip3, round2_signed};
+
 /// AV2 § 3 `REF_SCALE_SHIFT`.
 const REF_SCALE_SHIFT: u32 = 14;
 /// AV2 § 3 `SUBPEL_BITS`.
@@ -25,27 +27,6 @@ const SUBPEL_BITS: u32 = 4;
 const SCALE_SUBPEL_BITS: u32 = 10;
 /// AV2 § 3 `MI_SIZE`.
 const MI_SIZE: i64 = 4;
-
-/// AV2 § 4.8 `Round2(x, n)` for non-negative `n`, computed in `i64`.
-const fn round2(x: i64, n: u32) -> i64 {
-    if n == 0 { x } else { (x + (1 << (n - 1))) >> n }
-}
-
-/// AV2 § 4.8 `Round2Signed(x, n)`.
-const fn round2_signed(x: i64, n: u32) -> i64 {
-    if x >= 0 { round2(x, n) } else { -round2(-x, n) }
-}
-
-/// AV2 § 4.8 `Clip3(low, high, value)`.
-const fn clip3(low: i64, high: i64, value: i64) -> i64 {
-    if value < low {
-        low
-    } else if value > high {
-        high
-    } else {
-        value
-    }
-}
 
 /// The § 7.13.3.17 / § 7.13.3.18 scaling + clipping result for one plane: the
 /// inputs to [`splot_recon::SubpelPredictParams`] for the identity-scale block.
