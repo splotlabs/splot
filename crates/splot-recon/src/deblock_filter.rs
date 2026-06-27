@@ -36,6 +36,7 @@
 
 use crate::dequant::quantizer_value;
 use crate::intra_dc_math::validate_sample_type;
+use crate::math::round2;
 use crate::{BitDepth, ReconError, ReconSample, Result};
 
 /// AV2 § 3 `DF_SHIFT`: the deblocking-filter ramp shift
@@ -187,13 +188,6 @@ pub fn deblock_sample_filter<T: ReconSample>(
         }
     }
     Ok(())
-}
-
-/// AV2 § 4.8 `Round2(value, n) = (value + (1 << (n - 1))) >> n` for `n > 0`, over
-/// `i64` (arithmetic shift, so a negative `value` rounds toward negative
-/// infinity, matching the spec). `n` here is `3 + DF_SHIFT = 11`.
-const fn round2(value: i64, n: u32) -> i64 {
-    (value + (1i64 << (n - 1))) >> n
 }
 
 /// Derives the AV2 § 7.17.3 deblocking filter maximum per-side widths
@@ -548,15 +542,6 @@ mod tests {
                 line[idx] = (i64::from(line[idx]) + diff_neg).clamp(0, max) as u8;
             }
         }
-    }
-
-    #[test]
-    fn round2_rounds_toward_negative_infinity() {
-        assert_eq!(round2(0, 11), 0); // (0 + 1024) >> 11 = 0
-        assert_eq!(round2(1024, 11), 1); // (1024 + 1024) >> 11 = 1
-        assert_eq!(round2(1023, 11), 0); // (1023 + 1024) >> 11 = 0
-        assert_eq!(round2(-1024, 11), 0); // (-1024 + 1024) >> 11 = 0
-        assert_eq!(round2(-2048, 11), -1); // arithmetic: (-2048 + 1024) >> 11 = -1
     }
 
     #[test]

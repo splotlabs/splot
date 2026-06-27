@@ -165,6 +165,7 @@ mod inverse_transform;
 mod inverse_transform_2d;
 mod inverse_transform_2d_outer;
 mod loop_restoration;
+pub mod math;
 mod pc_wiener;
 mod plane;
 mod reconstruct;
