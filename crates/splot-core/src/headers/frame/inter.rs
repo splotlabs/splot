@@ -364,11 +364,6 @@ pub(crate) struct InterFrameContext {
     pub order_hint: u32,
 }
 
-/// Reads `f(n)`, treating `n == 0` as reading no bits (value `0`).
-fn read_f(reader: &mut BitReader<'_>, n: u32) -> Result<u32> {
-    if n == 0 { Ok(0) } else { reader.read_bits(n) }
-}
-
 /// `RefValid[idx]` from the modeled reference state: `true` only when the slot is in
 /// range and the model proved it valid; `Unknown` / out-of-range / no-buffer all yield
 /// `false` (the parser must not treat an unproven slot as available).
@@ -527,7 +522,7 @@ fn read_inter_refresh_frame_flags(
             return Ok(Some(1u32.wrapping_shl(idx)));
         }
         // mirror :4533 (else): a bridge frame with overwrite reads f(NumRefFrames).
-        return Ok(Some(read_f(reader, seq.num_ref_frames)?));
+        return Ok(Some(reader.read_f(seq.num_ref_frames)?));
     }
 
     // mirror :4493: else if ( obu_type == OBU_RAS_FRAME && max_mlayer_id == 0 ) — the
@@ -539,7 +534,7 @@ fn read_inter_refresh_frame_flags(
 
     // mirror :4507: else if ( FrameType == SWITCH_FRAME ) refresh_frame_flags f(NumRefFrames).
     if ctx.frame_type == FrameType::Switch {
-        return Ok(Some(read_f(reader, seq.num_ref_frames)?));
+        return Ok(Some(reader.read_f(seq.num_ref_frames)?));
     }
 
     // mirror :4511: else if ( enable_short_refresh_frame_flags && !SWITCH && !KEY )
@@ -547,14 +542,14 @@ fn read_inter_refresh_frame_flags(
     if seq.enable_short_refresh_frame_flags {
         let has = reader.read_flag()?;
         if has {
-            let frame_to_refresh = read_f(reader, ceil_log2(seq.num_ref_frames))?;
+            let frame_to_refresh = reader.read_f(ceil_log2(seq.num_ref_frames))?;
             return Ok(Some(1u32.wrapping_shl(frame_to_refresh)));
         }
         return Ok(Some(0));
     }
 
     // mirror :4533 (else): refresh_frame_flags f(NumRefFrames).
-    Ok(Some(read_f(reader, seq.num_ref_frames)?))
+    Ok(Some(reader.read_f(seq.num_ref_frames)?))
 }
 
 /// Parses the `!FrameIsIntra` reference-control region (AV2 § 5.18.2 mirror :4577-5181),
@@ -616,7 +611,7 @@ fn parse_inter_reference_region(
         let idx = if ctx.is_bridge {
             ctx.bridge_frame_ref_idx.unwrap_or(0)
         } else if explicit_ref_frame_map {
-            read_f(reader, ref_idx_bits)?
+            reader.read_f(ref_idx_bits)?
         } else {
             // Implicit map: indices already on control.ref_frame_idx (no bits). Skip the
             // bitstream read; the validation loop below runs over the derived values.
@@ -749,7 +744,7 @@ fn parse_inter_reference_region(
         control.use_bru = Some(use_bru);
         if use_bru {
             let n = ceil_log2(num_total_refs);
-            control.bru_ref = Some(read_f(reader, n)?); // bru_ref f(n)
+            control.bru_ref = Some(reader.read_f(n)?); // bru_ref f(n)
             control.bru_inactive = Some(reader.read_flag()?); // bru_inactive f(1)
         } else {
             control.bru_inactive = Some(false);
