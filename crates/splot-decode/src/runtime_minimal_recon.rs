@@ -125,12 +125,9 @@ pub(crate) fn reconstruct_general_intra_block_into<T: ReconSample>(
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     let side = 1usize << log2_side;
     let log2 = u8::try_from(log2_side).unwrap_or(u8::MAX);
-    let block_size = IntraRectBlockSize::new(log2, log2).map_err(recon_err)?;
-    let edges = workspace
-        .intra_dc_edges_for_rect(plane_id, x, y, block_size)
-        .map_err(recon_err)?;
-    let dc = predict_intra_dc_rect_value(bit_depth, block_size, edges.as_dc_edges())
-        .map_err(recon_err)?;
+    let block_size = IntraRectBlockSize::new(log2, log2)?;
+    let edges = workspace.intra_dc_edges_for_rect(plane_id, x, y, block_size)?;
+    let dc = predict_intra_dc_rect_value(bit_depth, block_size, edges.as_dc_edges())?;
     let out = if block.all_zero {
         vec![dc; side * side]
     } else {
@@ -144,9 +141,7 @@ pub(crate) fn reconstruct_general_intra_block_into<T: ReconSample>(
             bit_depth,
         )?
     };
-    workspace
-        .write_rect_block(plane_id, x, y, block_size, &out)
-        .map_err(recon_err)?;
+    workspace.write_rect_block(plane_id, x, y, block_size, &out)?;
     Ok(())
 }
 
@@ -181,12 +176,9 @@ pub(crate) fn reconstruct_general_intra_block_rect_into<T: ReconSample>(
     let height = 1usize << log2_height;
     let log2_w = u8::try_from(log2_width).unwrap_or(u8::MAX);
     let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
-    let block_size = IntraRectBlockSize::new(log2_w, log2_h).map_err(recon_err)?;
-    let edges = workspace
-        .intra_dc_edges_for_rect(plane_id, x, y, block_size)
-        .map_err(recon_err)?;
-    let dc = predict_intra_dc_rect_value(bit_depth, block_size, edges.as_dc_edges())
-        .map_err(recon_err)?;
+    let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
+    let edges = workspace.intra_dc_edges_for_rect(plane_id, x, y, block_size)?;
+    let dc = predict_intra_dc_rect_value(bit_depth, block_size, edges.as_dc_edges())?;
     let out = if block.all_zero {
         vec![dc; width * height]
     } else {
@@ -201,9 +193,7 @@ pub(crate) fn reconstruct_general_intra_block_rect_into<T: ReconSample>(
             bit_depth,
         )?
     };
-    workspace
-        .write_rect_block(plane_id, x, y, block_size, &out)
-        .map_err(recon_err)?;
+    workspace.write_rect_block(plane_id, x, y, block_size, &out)?;
     Ok(())
 }
 
@@ -240,11 +230,11 @@ pub(crate) fn reconstruct_inter_block_residual_into<T: ReconSample>(
     }
     let side = 1usize << log2_side;
     let log2 = u8::try_from(log2_side).unwrap_or(u8::MAX);
-    let block_size = IntraRectBlockSize::new(log2, log2).map_err(recon_err)?;
-    let rect = PlaneRect::new(x, y, side, side).map_err(recon_err)?;
+    let block_size = IntraRectBlockSize::new(log2, log2)?;
+    let rect = PlaneRect::new(x, y, side, side)?;
     // Gather the §7.13.3.18 motion-compensated prediction for this block.
     let mut prediction = Vec::with_capacity(side * side);
-    for row in workspace.rect_rows(plane_id, rect).map_err(recon_err)? {
+    for row in workspace.rect_rows(plane_id, rect)? {
         prediction.extend_from_slice(row);
     }
     let out = reconstruct_general_intra_block_with_prediction(
@@ -256,9 +246,7 @@ pub(crate) fn reconstruct_inter_block_residual_into<T: ReconSample>(
         use_tcq,
         bit_depth,
     )?;
-    workspace
-        .write_rect_block(plane_id, x, y, block_size, &out)
-        .map_err(recon_err)?;
+    workspace.write_rect_block(plane_id, x, y, block_size, &out)?;
     Ok(())
 }
 
@@ -505,7 +493,7 @@ fn reconstruct_general_intra_chroma_directional_first_into<T: ReconSample>(
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     let side = 1usize << log2_side;
     let log2 = u8::try_from(log2_side).unwrap_or(u8::MAX);
-    let block_size = IntraRectBlockSize::new(log2, log2).map_err(recon_err)?;
+    let block_size = IntraRectBlockSize::new(log2, log2)?;
     let prediction = predict_directional_noneighbour(
         SupportedDirectionalLumaMode::D135,
         block_size,
@@ -525,9 +513,7 @@ fn reconstruct_general_intra_chroma_directional_first_into<T: ReconSample>(
             bit_depth,
         )?
     };
-    workspace
-        .write_rect_block(plane_id, x, y, block_size, &out)
-        .map_err(recon_err)?;
+    workspace.write_rect_block(plane_id, x, y, block_size, &out)?;
     Ok(())
 }
 
@@ -557,7 +543,7 @@ fn reconstruct_general_intra_chroma_cardinal_horizontal_first_into<T: ReconSampl
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     let side = 1usize << log2_side;
     let log2 = u8::try_from(log2_side).unwrap_or(u8::MAX);
-    let block_size = IntraRectBlockSize::new(log2, log2).map_err(recon_err)?;
+    let block_size = IntraRectBlockSize::new(log2, log2)?;
     // §7.13.2.1 no-left fallback: `LeftCol[i] = noneighbour_left` for all rows.
     let left = vec![noneighbour_left::<T>(bit_depth); side];
     let mut prediction = vec![T::default(); side * side];
@@ -568,8 +554,7 @@ fn reconstruct_general_intra_chroma_cardinal_horizontal_first_into<T: ReconSampl
         IntraCardinalEdges::left(&left),
         &mut prediction,
         side,
-    )
-    .map_err(recon_err)?;
+    )?;
     let out = if block.all_zero {
         prediction
     } else {
@@ -584,9 +569,7 @@ fn reconstruct_general_intra_chroma_cardinal_horizontal_first_into<T: ReconSampl
             bit_depth,
         )?
     };
-    workspace
-        .write_rect_block(plane_id, x, y, block_size, &out)
-        .map_err(recon_err)?;
+    workspace.write_rect_block(plane_id, x, y, block_size, &out)?;
     Ok(())
 }
 
@@ -705,10 +688,8 @@ fn reconstruct_general_intra_smooth_over_edges_into<T: ReconSample>(
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     let side = 1usize << log2_side;
     let log2 = u8::try_from(log2_side).unwrap_or(u8::MAX);
-    let block_size = IntraRectBlockSize::new(log2, log2).map_err(recon_err)?;
-    let edges = workspace
-        .intra_dc_edges_for_rect(plane_id, x, y, block_size)
-        .map_err(recon_err)?;
+    let block_size = IntraRectBlockSize::new(log2, log2)?;
+    let edges = workspace.intra_dc_edges_for_rect(plane_id, x, y, block_size)?;
     // §7.13.2.1 `haveLeft` / `haveAbove`: in this single-tile minimal path a
     // reconstructed neighbour exists exactly when the block is not at the frame
     // edge, which `intra_dc_edges_for_rect` reports as a present left/above edge.
@@ -745,8 +726,7 @@ fn reconstruct_general_intra_smooth_over_edges_into<T: ReconSample>(
         smooth_edges,
         &mut prediction,
         side,
-    )
-    .map_err(recon_err)?;
+    )?;
     let out = if block.all_zero {
         prediction
     } else {
@@ -760,9 +740,7 @@ fn reconstruct_general_intra_smooth_over_edges_into<T: ReconSample>(
             bit_depth,
         )?
     };
-    workspace
-        .write_rect_block(plane_id, x, y, block_size, &out)
-        .map_err(recon_err)?;
+    workspace.write_rect_block(plane_id, x, y, block_size, &out)?;
     Ok(())
 }
 
@@ -856,7 +834,7 @@ fn resolve_smooth_above_right_sentinel<T: ReconSample>(
     // frame right column. The chroma workspace plane storage width equals the
     // chroma frame width for these multiple-of-64 frames, so its last column is
     // `maxX`.
-    let plane = workspace.plane(plane_id).map_err(recon_err)?;
+    let plane = workspace.plane(plane_id)?;
     let storage_width = plane.storage_size().width();
     let max_x = match storage_width.checked_sub(1) {
         Some(value) => value,
@@ -877,9 +855,7 @@ fn resolve_smooth_above_right_sentinel<T: ReconSample>(
     if x_plus_w > max_x {
         return Ok(None);
     }
-    let sentinel = workspace
-        .reconstructed_sample(plane_id, sentinel_col, above_row)
-        .map_err(recon_err)?;
+    let sentinel = workspace.reconstructed_sample(plane_id, sentinel_col, above_row)?;
     Ok(Some(sentinel))
 }
 
@@ -965,7 +941,7 @@ pub(crate) fn reconstruct_general_intra_luma_nondc_first_block_into<T: ReconSamp
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     let side = 1usize << log2_side;
     let log2 = u8::try_from(log2_side).unwrap_or(u8::MAX);
-    let block_size = IntraRectBlockSize::new(log2, log2).map_err(recon_err)?;
+    let block_size = IntraRectBlockSize::new(log2, log2)?;
     let prediction = predict_nondc_noneighbour_smooth(mode, block_size, side, bit_depth)?;
     let out = if block.all_zero {
         prediction
@@ -980,9 +956,7 @@ pub(crate) fn reconstruct_general_intra_luma_nondc_first_block_into<T: ReconSamp
             bit_depth,
         )?
     };
-    workspace
-        .write_rect_block(PlaneId::Y, x, y, block_size, &out)
-        .map_err(recon_err)?;
+    workspace.write_rect_block(PlaneId::Y, x, y, block_size, &out)?;
     Ok(())
 }
 
@@ -1004,8 +978,7 @@ fn predict_nondc_noneighbour_smooth<T: ReconSample>(
     let left = vec![noneighbour_left::<T>(bit_depth); side + 1];
     let edges = IntraSmoothEdges::new(&left, &above);
     let mut out = vec![T::default(); side * side];
-    predict_intra_smooth_rect_into(bit_depth, block_size, smooth_mode, edges, &mut out, side)
-        .map_err(recon_err)?;
+    predict_intra_smooth_rect_into(bit_depth, block_size, smooth_mode, edges, &mut out, side)?;
     Ok(out)
 }
 
@@ -1041,7 +1014,7 @@ pub(crate) fn reconstruct_general_intra_luma_directional_first_block_into<T: Rec
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     let side = 1usize << log2_side;
     let log2 = u8::try_from(log2_side).unwrap_or(u8::MAX);
-    let block_size = IntraRectBlockSize::new(log2, log2).map_err(recon_err)?;
+    let block_size = IntraRectBlockSize::new(log2, log2)?;
     let prediction = predict_directional_noneighbour(mode, block_size, side, bit_depth)?;
     let out = if block.all_zero {
         prediction
@@ -1056,9 +1029,7 @@ pub(crate) fn reconstruct_general_intra_luma_directional_first_block_into<T: Rec
             bit_depth,
         )?
     };
-    workspace
-        .write_rect_block(PlaneId::Y, x, y, block_size, &out)
-        .map_err(recon_err)?;
+    workspace.write_rect_block(PlaneId::Y, x, y, block_size, &out)?;
     Ok(())
 }
 
@@ -1084,8 +1055,7 @@ fn predict_directional_noneighbour<T: ReconSample>(
     let mut out = vec![T::default(); side * side];
     predict_intra_middle_directional_angle_rect_into(
         bit_depth, block_size, angle, edges, &mut out, side,
-    )
-    .map_err(recon_err)?;
+    )?;
     Ok(out)
 }
 
@@ -1137,10 +1107,8 @@ pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into<T: Reco
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     let side = 1usize << log2_side;
     let log2 = u8::try_from(log2_side).unwrap_or(u8::MAX);
-    let block_size = IntraRectBlockSize::new(log2, log2).map_err(recon_err)?;
-    let edges = workspace
-        .intra_dc_edges_for_rect(plane_id, x, y, block_size)
-        .map_err(recon_err)?;
+    let block_size = IntraRectBlockSize::new(log2, log2)?;
+    let edges = workspace.intra_dc_edges_for_rect(plane_id, x, y, block_size)?;
     // §7.13.2.1 `haveLeft` / `haveAbove`: a reconstructed neighbour exists exactly
     // when the block is not at the frame edge, which `intra_dc_edges_for_rect`
     // reports as a present left/above edge.
@@ -1155,11 +1123,7 @@ pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into<T: Reco
     // / left column), so only read it when both neighbours are present.
     let above_corner = if have_left && have_above {
         match (x.checked_sub(1), y.checked_sub(1)) {
-            (Some(cx), Some(cy)) => Some(
-                workspace
-                    .reconstructed_sample(plane_id, cx, cy)
-                    .map_err(recon_err)?,
-            ),
+            (Some(cx), Some(cy)) => Some(workspace.reconstructed_sample(plane_id, cx, cy)?),
             _ => None,
         }
     } else {
@@ -1191,8 +1155,7 @@ pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into<T: Reco
             IntraMiddleDirectionalAngleIdifEdges::both(&left_idif, &above_idif),
             &mut prediction,
             side,
-        )
-        .map_err(recon_err)?;
+        )?;
     } else {
         predict_intra_middle_directional_angle_rect_into(
             bit_depth,
@@ -1201,8 +1164,7 @@ pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into<T: Reco
             IntraMiddleDirectionalAngleEdges::both(&left, &above),
             &mut prediction,
             side,
-        )
-        .map_err(recon_err)?;
+        )?;
     }
     let out = if block.all_zero {
         prediction
@@ -1217,9 +1179,7 @@ pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into<T: Reco
             bit_depth,
         )?
     };
-    workspace
-        .write_rect_block(plane_id, x, y, block_size, &out)
-        .map_err(recon_err)?;
+    workspace.write_rect_block(plane_id, x, y, block_size, &out)?;
     Ok(())
 }
 
@@ -1268,7 +1228,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_neighbour_block_into<T: ReconS
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     let side = 1usize << log2_side;
     let log2 = u8::try_from(log2_side).unwrap_or(u8::MAX);
-    let block_size = IntraRectBlockSize::new(log2, log2).map_err(recon_err)?;
+    let block_size = IntraRectBlockSize::new(log2, log2)?;
     let p_angle = one_sided_p_angle(mode)?;
     // §7.13.2.1 above row + above-right; the corner is the real diagonally-above-
     // left sample. The zone-1 block is gated to a row>0, non-first-column position
@@ -1284,12 +1244,11 @@ pub(crate) fn reconstruct_general_intra_one_sided_neighbour_block_into<T: ReconS
         predict_intra_directional_angle_rect_one_sided_idif_into(
             bit_depth,
             block_size,
-            IntraDirectionalAngle::try_from_p_angle(p_angle).map_err(recon_err)?,
+            IntraDirectionalAngle::try_from_p_angle(p_angle)?,
             IntraDirectionalAngleIdifEdges::above(&above_idif),
             &mut prediction,
             side,
-        )
-        .map_err(recon_err)?;
+        )?;
     } else {
         // The chroma bilinear one-sided predictor reads the logical above edge
         // `AboveRow[0..w+h)` (length `w + h`); drop the IDIF `-2`/`-1` corner
@@ -1298,12 +1257,11 @@ pub(crate) fn reconstruct_general_intra_one_sided_neighbour_block_into<T: ReconS
         predict_intra_directional_angle_rect_into(
             bit_depth,
             block_size,
-            IntraDirectionalAngle::try_from_p_angle(p_angle).map_err(recon_err)?,
+            IntraDirectionalAngle::try_from_p_angle(p_angle)?,
             IntraDirectionalAngleEdges::above(above_bilinear),
             &mut prediction,
             side,
-        )
-        .map_err(recon_err)?;
+        )?;
     }
     let out = if block.all_zero {
         prediction
@@ -1318,9 +1276,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_neighbour_block_into<T: ReconS
             bit_depth,
         )?
     };
-    workspace
-        .write_rect_block(plane_id, x, y, block_size, &out)
-        .map_err(recon_err)?;
+    workspace.write_rect_block(plane_id, x, y, block_size, &out)?;
     Ok(())
 }
 
@@ -1371,7 +1327,7 @@ fn build_one_sided_above_idif_edge<T: ReconSample>(
     // §7.13.2.1 maxX = ((MiCols * MI_SIZE) >> SubsamplingX) - 1, i.e. the plane's
     // last reconstructed column. The plane storage width equals the plane frame
     // width for these multiple-of-64 frames.
-    let plane = workspace.plane(plane_id).map_err(recon_err)?;
+    let plane = workspace.plane(plane_id)?;
     let storage_width = plane.storage_size().width();
     let max_x = storage_width
         .checked_sub(1)
@@ -1396,17 +1352,13 @@ fn build_one_sided_above_idif_edge<T: ReconSample>(
         .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
     let mut above = vec![T::default(); edge_len];
     // Logical -1 corner -> slice index 1; -2 -> slice index 0.
-    let corner = workspace
-        .reconstructed_sample(plane_id, corner_col, above_row)
-        .map_err(recon_err)?;
+    let corner = workspace.reconstructed_sample(plane_id, corner_col, above_row)?;
     above[0] = corner; // logical -2 = AboveRow[-1] (spec extension)
     above[1] = corner; // logical -1
     // In-row samples logical 0..=maxBaseX -> slice indices 2..=maxBaseX+2.
     for i in 0..=max_base_x {
         let column = x.saturating_add(i).min(above_limit);
-        let sample = workspace
-            .reconstructed_sample(plane_id, column, above_row)
-            .map_err(recon_err)?;
+        let sample = workspace.reconstructed_sample(plane_id, column, above_row)?;
         let slot = i
             .checked_add(2)
             .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
@@ -1473,7 +1425,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_left_neighbour_block_into<T: R
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     let side = 1usize << log2_side;
     let log2 = u8::try_from(log2_side).unwrap_or(u8::MAX);
-    let block_size = IntraRectBlockSize::new(log2, log2).map_err(recon_err)?;
+    let block_size = IntraRectBlockSize::new(log2, log2)?;
     // §7.13.2.1 left column + below-left; at the gated first-superblock-row,
     // non-first-column position (`haveAbove == 0 && haveLeft == 1`) the corner is
     // `CurrFrame[plane][y][x-1]` and the left column is the real reconstructed
@@ -1492,8 +1444,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_left_neighbour_block_into<T: R
             IntraDirectionalAngleIdifEdges::left(&left_idif),
             &mut prediction,
             side,
-        )
-        .map_err(recon_err)?;
+        )?;
     } else {
         // The chroma bilinear one-sided predictor reads the logical left edge
         // `LeftCol[0..w+h)` (length `w + h`); drop the IDIF `-2`/`-1` corner
@@ -1506,8 +1457,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_left_neighbour_block_into<T: R
             IntraDirectionalAngleEdges::left(left_bilinear),
             &mut prediction,
             side,
-        )
-        .map_err(recon_err)?;
+        )?;
     }
     let out = if block.all_zero {
         prediction
@@ -1522,9 +1472,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_left_neighbour_block_into<T: R
             bit_depth,
         )?
     };
-    workspace
-        .write_rect_block(plane_id, x, y, block_size, &out)
-        .map_err(recon_err)?;
+    workspace.write_rect_block(plane_id, x, y, block_size, &out)?;
     Ok(())
 }
 
@@ -1556,7 +1504,7 @@ fn build_one_sided_left_idif_edge<T: ReconSample>(
     // §7.13.2.1 maxY = ((MiRows * MI_SIZE) >> SubsamplingY) - 1, i.e. the plane's
     // last reconstructed row. The plane storage height equals the plane frame
     // height for these multiple-of-64 frames.
-    let plane = workspace.plane(plane_id).map_err(recon_err)?;
+    let plane = workspace.plane(plane_id)?;
     let storage_height = plane.storage_size().height();
     let max_y = storage_height
         .checked_sub(1)
@@ -1582,17 +1530,13 @@ fn build_one_sided_left_idif_edge<T: ReconSample>(
     let mut left = vec![T::default(); edge_len];
     // §7.13.2.1 (haveAbove == 0 && haveLeft == 1): corner LeftCol[-1] =
     // CurrFrame[plane][y][x-1]. Logical -1 -> slice index 1; -2 -> slice index 0.
-    let corner = workspace
-        .reconstructed_sample(plane_id, left_col, y)
-        .map_err(recon_err)?;
+    let corner = workspace.reconstructed_sample(plane_id, left_col, y)?;
     left[0] = corner; // logical -2 = LeftCol[-1] (spec extension)
     left[1] = corner; // logical -1
     // In-column samples logical 0..=maxBaseY -> slice indices 2..=maxBaseY+2.
     for i in 0..=max_base_y {
         let row = y.saturating_add(i).min(left_limit);
-        let sample = workspace
-            .reconstructed_sample(plane_id, left_col, row)
-            .map_err(recon_err)?;
+        let sample = workspace.reconstructed_sample(plane_id, left_col, row)?;
         let slot = i
             .checked_add(2)
             .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
@@ -1651,10 +1595,8 @@ pub(crate) fn reconstruct_general_intra_cardinal_neighbour_block_into<T: ReconSa
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     let side = 1usize << log2_side;
     let log2 = u8::try_from(log2_side).unwrap_or(u8::MAX);
-    let block_size = IntraRectBlockSize::new(log2, log2).map_err(recon_err)?;
-    let edges = workspace
-        .intra_dc_edges_for_rect(plane_id, x, y, block_size)
-        .map_err(recon_err)?;
+    let block_size = IntraRectBlockSize::new(log2, log2)?;
+    let edges = workspace.intra_dc_edges_for_rect(plane_id, x, y, block_size)?;
     // §7.13.2.8 step 4/5 read ONLY the above row (V) or the left column (H). Build
     // exactly that edge from the real reconstructed neighbour; reject if it is
     // absent (the admission gate guarantees it is present, see general_intra.rs).
@@ -1680,8 +1622,7 @@ pub(crate) fn reconstruct_general_intra_cardinal_neighbour_block_into<T: ReconSa
         cardinal_edges,
         &mut prediction,
         side,
-    )
-    .map_err(recon_err)?;
+    )?;
     let out = if block.all_zero {
         prediction
     } else {
@@ -1695,9 +1636,7 @@ pub(crate) fn reconstruct_general_intra_cardinal_neighbour_block_into<T: ReconSa
             bit_depth,
         )?
     };
-    workspace
-        .write_rect_block(plane_id, x, y, block_size, &out)
-        .map_err(recon_err)?;
+    workspace.write_rect_block(plane_id, x, y, block_size, &out)?;
     Ok(())
 }
 
@@ -1904,10 +1843,6 @@ fn extend_one_middle_idif_edge<T: ReconSample>(edge: &[T], bit_depth: BitDepth) 
     out.push(last); // logical side == Edge[side - 1]
     out.push(last); // logical side + 1 == Edge[side - 1]
     out
-}
-
-fn recon_err(source: splot_recon::ReconError) -> GeneralIntraResidualError {
-    GeneralIntraResidualError::Reconstruct { source }
 }
 
 #[cfg(test)]

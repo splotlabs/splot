@@ -14,6 +14,7 @@
 //! Feature tracking: `RECON-WIENERNS-FILTER-PRIMITIVE`.
 
 use crate::intra_dc_math::validate_sample_type;
+use crate::math::round2;
 use crate::{BitDepth, ReconError, ReconSample, Result};
 
 /// AV2 § 3 `WIENER_NS_PREC_BITS`, used by § 7.20.3 for the accumulator scale.
@@ -259,11 +260,6 @@ where
         });
     }
     Ok(value)
-}
-
-/// AV2 § 4.8 `Round2(value, n) = (value + (1 << (n - 1))) >> n` for `n > 0`.
-const fn round2(value: i64, n: u32) -> i64 {
-    (value + (1i64 << (n - 1))) >> n
 }
 
 #[cfg(test)]

@@ -28,6 +28,7 @@
 
 use splot_tables::tables::quantizer::QUANTIZER_MATRIX;
 
+use crate::math::round2;
 use crate::{BitDepth, ReconError, Result};
 
 /// Maximum dequantized transform-block side (§ 7.14.4 `Min(32, Tx_Width/Height)`).
@@ -39,15 +40,6 @@ const QUANT_TABLE_BITS: u32 = 3;
 
 /// AV2 § 7.14.4 quantization-matrix weight shift: `q2 = Round2(q * m, 5)`.
 const QM_WEIGHT_SHIFT: u32 = 5;
-
-/// AV2 § 4.8 `Round2(x, n)` for a non-negative `value`, computed in `i64`.
-fn round2(value: i64, n: u32) -> i64 {
-    if n == 0 {
-        value
-    } else {
-        (value + (1 << (n - 1))) >> n
-    }
-}
 
 /// AV2 § 7.14.4 per-coefficient dequantization (steps 3-8).
 ///
