@@ -113,21 +113,21 @@ pub fn write_sequence_partition_config(
 ) -> WriteResult<()> {
     check_partition_encodable(config, monochrome, single_picture)?;
 
-    writer.write_bit(u8::from(config.use_256x256_superblock))?;
+    writer.write_flag(config.use_256x256_superblock)?;
     if !config.use_256x256_superblock {
-        writer.write_bit(u8::from(config.use_128x128_superblock))?;
+        writer.write_flag(config.use_128x128_superblock)?;
     }
     if !monochrome {
-        writer.write_bit(u8::from(config.enable_sdp))?;
+        writer.write_flag(config.enable_sdp)?;
     }
     if config.enable_sdp && !single_picture {
-        writer.write_bit(u8::from(config.enable_extended_sdp))?;
+        writer.write_flag(config.enable_extended_sdp)?;
     }
-    writer.write_bit(u8::from(config.enable_ext_partitions))?;
+    writer.write_flag(config.enable_ext_partitions)?;
     if config.enable_ext_partitions {
-        writer.write_bit(u8::from(config.enable_uneven_4way_partitions))?;
+        writer.write_flag(config.enable_uneven_4way_partitions)?;
     }
-    writer.write_bit(u8::from(config.reduce_pb_aspect_ratio))?;
+    writer.write_flag(config.reduce_pb_aspect_ratio)?;
     if config.reduce_pb_aspect_ratio {
         // MaxPbAspectRatio = 1 << (log2_minus_1 + 1); log2_minus_1 is f(1) in {0, 1},
         // so MaxPbAspectRatio is 2 or 4. Recover log2_minus_1 (validated up front).
@@ -218,8 +218,8 @@ pub fn write_sequence_segment_config(
 ) -> WriteResult<()> {
     check_segment_encodable(config)?;
 
-    writer.write_bit(u8::from(config.enable_ext_seg))?;
-    writer.write_bit(u8::from(config.seq_seg_info_present_flag))?;
+    writer.write_flag(config.enable_ext_seg)?;
+    writer.write_flag(config.seq_seg_info_present_flag)?;
     if config.seq_seg_info_present_flag {
         // Both Options are present iff the flag is set (checked up front).
         let allow =
@@ -234,7 +234,7 @@ pub fn write_sequence_segment_config(
             .ok_or(WriteError::NonCanonicalSequenceValue {
                 what: "segment_info",
             })?;
-        writer.write_bit(u8::from(allow))?;
+        writer.write_flag(allow)?;
         write_seg_info(writer, info, config.max_segments)?;
     }
     Ok(())
@@ -297,15 +297,15 @@ pub fn write_sequence_intra_config(
 ) -> WriteResult<()> {
     check_intra_encodable(config, monochrome)?;
 
-    writer.write_bit(u8::from(config.enable_dip))?;
-    writer.write_bit(u8::from(config.enable_intra_edge_filter))?;
-    writer.write_bit(u8::from(config.enable_mrls))?;
-    writer.write_bit(u8::from(config.enable_cfl_intra))?;
+    writer.write_flag(config.enable_dip)?;
+    writer.write_flag(config.enable_intra_edge_filter)?;
+    writer.write_flag(config.enable_mrls)?;
+    writer.write_flag(config.enable_cfl_intra)?;
     if !monochrome {
         writer.write_bits_u8(config.cfl_ds_filter_index, 2)?;
     }
-    writer.write_bit(u8::from(config.enable_mhccp))?;
-    writer.write_bit(u8::from(config.enable_ibp))?;
+    writer.write_flag(config.enable_mhccp)?;
+    writer.write_flag(config.enable_ibp)?;
     Ok(())
 }
 
@@ -381,82 +381,82 @@ pub fn write_sequence_inter_config(
     check_inter_encodable(config, single_picture)?;
 
     if single_picture {
-        writer.write_bit(u8::from(config.enable_refmvbank))?;
+        writer.write_flag(config.enable_refmvbank)?;
         write_drl_reorder(writer, config.drl_reorder)?;
         writer.write_ns(
             config.seq_max_bvp_drl_bits_minus_1,
             MAX_REF_BV_STACK_SIZE - 1,
         )?;
-        writer.write_bit(u8::from(config.allow_frame_max_bvp_drl_bits))?;
-        writer.write_bit(u8::from(config.enable_bawp))?;
+        writer.write_flag(config.allow_frame_max_bvp_drl_bits)?;
+        writer.write_flag(config.enable_bawp)?;
         return Ok(());
     }
 
     // Full branch. seq_enabled_motion_modes[INTERINTRA..MOTION_MODES]: f(1) each.
     for mode in INTERINTRA..MOTION_MODES {
-        writer.write_bit(u8::from(config.seq_enabled_motion_modes[mode]))?;
+        writer.write_flag(config.seq_enabled_motion_modes[mode])?;
     }
     // seq_frame_motion_modes_present_flag: f(1), only when any motion mode is enabled.
     if any_motion_mode_enabled(config) {
-        writer.write_bit(u8::from(config.seq_frame_motion_modes_present_flag))?;
+        writer.write_flag(config.seq_frame_motion_modes_present_flag)?;
     }
     // enable_six_param_warp_delta: f(1), only when DELTAWARP is enabled.
     if config.seq_enabled_motion_modes[DELTAWARP] {
-        writer.write_bit(u8::from(config.enable_six_param_warp_delta))?;
+        writer.write_flag(config.enable_six_param_warp_delta)?;
     }
-    writer.write_bit(u8::from(config.enable_masked_compound))?;
-    writer.write_bit(u8::from(config.enable_ref_frame_mvs))?;
+    writer.write_flag(config.enable_masked_compound)?;
+    writer.write_flag(config.enable_ref_frame_mvs)?;
     // reduced_ref_frame_mvs_mode: f(1), only when enable_ref_frame_mvs.
     if config.enable_ref_frame_mvs {
-        writer.write_bit(u8::from(config.reduced_ref_frame_mvs_mode))?;
+        writer.write_flag(config.reduced_ref_frame_mvs_mode)?;
     }
     // order_hint_bits_minus_1: f(4) of (order_hint_bits - 1).
     writer.write_bits_u8(config.order_hint_bits - 1, 4)?;
-    writer.write_bit(u8::from(config.enable_refmvbank))?;
+    writer.write_flag(config.enable_refmvbank)?;
     write_drl_reorder(writer, config.drl_reorder)?;
-    writer.write_bit(u8::from(config.explicit_ref_frame_map))?;
+    writer.write_flag(config.explicit_ref_frame_map)?;
     // explicit_num_ref_frames: f(1); when set, num_ref_frames_minus_1: f(4).
-    writer.write_bit(u8::from(config.explicit_num_ref_frames()))?;
+    writer.write_flag(config.explicit_num_ref_frames())?;
     if config.explicit_num_ref_frames() {
         writer.write_bits_u8(config.num_ref_frames - 1, 4)?;
     }
     writer.write_bits_u8(config.long_term_frame_id_bits, 3)?;
     writer.write_ns(config.seq_max_drl_bits_minus_1, MAX_REF_MV_STACK_SIZE - 1)?;
-    writer.write_bit(u8::from(config.allow_frame_max_drl_bits))?;
+    writer.write_flag(config.allow_frame_max_drl_bits)?;
     writer.write_ns(
         config.seq_max_bvp_drl_bits_minus_1,
         MAX_REF_BV_STACK_SIZE - 1,
     )?;
-    writer.write_bit(u8::from(config.allow_frame_max_bvp_drl_bits))?;
+    writer.write_flag(config.allow_frame_max_bvp_drl_bits)?;
     writer.write_bits_u8(config.num_same_ref_compound, 2)?;
-    writer.write_bit(u8::from(config.enable_tip))?;
+    writer.write_flag(config.enable_tip)?;
     if config.enable_tip {
         // disable_tip_output = !EnableTipOutput.
-        writer.write_bit(u8::from(!config.enable_tip_output))?;
-        writer.write_bit(u8::from(config.enable_tip_hole_fill))?;
+        writer.write_flag(!config.enable_tip_output)?;
+        writer.write_flag(config.enable_tip_hole_fill)?;
     }
-    writer.write_bit(u8::from(config.enable_mv_traj))?;
-    writer.write_bit(u8::from(config.enable_bawp))?;
-    writer.write_bit(u8::from(config.enable_cwp))?;
-    writer.write_bit(u8::from(config.enable_imp_msk_bld))?;
-    writer.write_bit(u8::from(config.enable_df_sub_pu))?;
+    writer.write_flag(config.enable_mv_traj)?;
+    writer.write_flag(config.enable_bawp)?;
+    writer.write_flag(config.enable_cwp)?;
+    writer.write_flag(config.enable_imp_msk_bld)?;
+    writer.write_flag(config.enable_df_sub_pu)?;
     // enable_tip_explicit_qp: f(1), only when EnableTipOutput && enable_df_sub_pu.
     if config.enable_tip_output && config.enable_df_sub_pu {
-        writer.write_bit(u8::from(config.enable_tip_explicit_qp))?;
+        writer.write_flag(config.enable_tip_explicit_qp)?;
     }
     writer.write_bits_u8(config.enable_opfl_refine, 2)?;
-    writer.write_bit(u8::from(config.enable_refinemv))?;
+    writer.write_flag(config.enable_refinemv)?;
     // enable_tip_refinemv: f(1), only when enable_tip && (opfl_refine != 0 || refinemv).
     if config.enable_tip && (config.enable_opfl_refine != 0 || config.enable_refinemv) {
-        writer.write_bit(u8::from(config.enable_tip_refinemv))?;
+        writer.write_flag(config.enable_tip_refinemv)?;
     }
-    writer.write_bit(u8::from(config.enable_bru))?;
-    writer.write_bit(u8::from(config.enable_adaptive_mvd))?;
-    writer.write_bit(u8::from(config.enable_mvd_sign_derive))?;
-    writer.write_bit(u8::from(config.enable_flex_mvres))?;
+    writer.write_flag(config.enable_bru)?;
+    writer.write_flag(config.enable_adaptive_mvd)?;
+    writer.write_flag(config.enable_mvd_sign_derive)?;
+    writer.write_flag(config.enable_flex_mvres)?;
     // enable_global_motion: f(1) (single_picture is false on this branch).
-    writer.write_bit(u8::from(config.enable_global_motion))?;
-    writer.write_bit(u8::from(config.enable_short_refresh_frame_flags))?;
+    writer.write_flag(config.enable_global_motion)?;
+    writer.write_flag(config.enable_short_refresh_frame_flags)?;
     Ok(())
 }
 
@@ -659,7 +659,7 @@ pub fn write_sequence_scc_config(
     let sct = config.seq_force_screen_content_tools;
     // seq_choose_screen_content_tools: f(1), set iff sct is the SELECT sentinel.
     let choose_sct = sct == SELECT_SCREEN_CONTENT_TOOLS;
-    writer.write_bit(u8::from(choose_sct))?;
+    writer.write_flag(choose_sct)?;
     if !choose_sct {
         // seq_force_screen_content_tools: f(1) in {0, 1}.
         writer.write_bits_u8(sct, 1)?;
@@ -667,7 +667,7 @@ pub fn write_sequence_scc_config(
     if sct > 0 {
         let imv = config.seq_force_integer_mv;
         let choose_imv = imv == SELECT_INTEGER_MV;
-        writer.write_bit(u8::from(choose_imv))?;
+        writer.write_flag(choose_imv)?;
         if !choose_imv {
             writer.write_bits_u8(imv, 1)?;
         }
@@ -759,54 +759,54 @@ pub fn write_sequence_transform_quant_entropy_config(
 ) -> WriteResult<()> {
     check_tq_entropy_encodable(config, monochrome, single_picture)?;
 
-    writer.write_bit(u8::from(config.enable_fsc))?;
+    writer.write_flag(config.enable_fsc)?;
     // enable_idtx_intra: f(1), only when !enable_fsc (inferred 1 when enable_fsc).
     if !config.enable_fsc {
-        writer.write_bit(u8::from(config.enable_idtx_intra))?;
+        writer.write_flag(config.enable_idtx_intra)?;
     }
-    writer.write_bit(u8::from(config.enable_intra_ist))?;
-    writer.write_bit(u8::from(config.enable_inter_ist))?;
+    writer.write_flag(config.enable_intra_ist)?;
+    writer.write_flag(config.enable_inter_ist)?;
     if !monochrome {
-        writer.write_bit(u8::from(config.enable_chroma_dctonly))?;
+        writer.write_flag(config.enable_chroma_dctonly)?;
     }
     if !single_picture {
-        writer.write_bit(u8::from(config.enable_inter_ddt))?;
+        writer.write_flag(config.enable_inter_ddt)?;
     }
-    writer.write_bit(u8::from(config.reduced_tx_part_set))?;
+    writer.write_flag(config.reduced_tx_part_set)?;
     if !monochrome {
-        writer.write_bit(u8::from(config.enable_cctx))?;
+        writer.write_flag(config.enable_cctx)?;
     }
-    writer.write_bit(u8::from(config.enable_tcq))?;
+    writer.write_flag(config.enable_tcq)?;
     if config.enable_tcq && !single_picture {
-        writer.write_bit(u8::from(config.choose_tcq_per_frame))?;
+        writer.write_flag(config.choose_tcq_per_frame)?;
     }
     // enable_parity_hiding is inferred 0 only when (enable_tcq && !choose_tcq_per_frame);
     // it is signaled (f(1)) in every other case.
     let parity_hiding_inferred = config.enable_tcq && !config.choose_tcq_per_frame;
     if !parity_hiding_inferred {
-        writer.write_bit(u8::from(config.enable_parity_hiding))?;
+        writer.write_flag(config.enable_parity_hiding)?;
     }
     if !single_picture {
-        writer.write_bit(u8::from(config.enable_avg_cdf))?;
+        writer.write_flag(config.enable_avg_cdf)?;
         if config.enable_avg_cdf {
             writer.write_bits_u8(config.avg_cdf_type, 1)?;
         }
     }
     if !monochrome {
-        writer.write_bit(u8::from(config.separate_uv_delta_q))?;
+        writer.write_flag(config.separate_uv_delta_q)?;
     }
-    writer.write_bit(u8::from(config.equal_ac_dc_q))?;
+    writer.write_flag(config.equal_ac_dc_q)?;
     if !config.equal_ac_dc_q {
         writer.write_bits_u8(config.base_y_dc_delta_q, 5)?;
-        writer.write_bit(u8::from(config.y_dc_delta_q_enabled))?;
+        writer.write_flag(config.y_dc_delta_q_enabled)?;
     }
     if !monochrome {
         if !config.equal_ac_dc_q {
             writer.write_bits_u8(config.base_uv_dc_delta_q, 5)?;
-            writer.write_bit(u8::from(config.uv_dc_delta_q_enabled))?;
+            writer.write_flag(config.uv_dc_delta_q_enabled)?;
         }
         writer.write_bits_u8(config.base_uv_ac_delta_q, 5)?;
-        writer.write_bit(u8::from(config.uv_ac_delta_q_enabled))?;
+        writer.write_flag(config.uv_ac_delta_q_enabled)?;
         // base_uv_dc_delta_q mirrors base_uv_ac_delta_q when equal_ac_dc_q (no bits).
     }
     Ok(())

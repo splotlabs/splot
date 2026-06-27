@@ -192,7 +192,7 @@ pub fn parse_msdo(reader: &mut BitReader<'_>) -> Result<MultistreamDecoderOperat
     let multistream_profile_idc = ProfileIdc::from_bits(reader.read_bits_u8(5)?);
     let multistream_level_idx = reader.read_bits_u8(5)?;
     let multistream_tier = reader.read_bits_u8(1)?;
-    let multistream_even_allocation_flag = reader.read_bit()? != 0;
+    let multistream_even_allocation_flag = reader.read_flag()?;
     let multistream_large_picture_idc = if multistream_even_allocation_flag {
         None
     } else {
@@ -210,7 +210,7 @@ pub fn parse_msdo(reader: &mut BitReader<'_>) -> Result<MultistreamDecoderOperat
         };
     }
 
-    let multistream_doh_constraint_flag = reader.read_bit()? != 0;
+    let multistream_doh_constraint_flag = reader.read_flag()?;
 
     Ok(MultistreamDecoderOperation {
         num_streams_minus_2,
@@ -299,7 +299,7 @@ pub fn parse_multi_frame_header(reader: &mut BitReader<'_>) -> Result<MultiFrame
     let mfh_seq_header_id = reader.read_uvlc()?;
     let mfh_id_minus_1 = reader.read_uvlc()?;
 
-    let mfh_frame_size_present_flag = reader.read_bit()? != 0;
+    let mfh_frame_size_present_flag = reader.read_flag()?;
     let mfh_frame_size = if mfh_frame_size_present_flag {
         let width_bits = reader.read_bits_u8(4)? + 1;
         let height_bits = reader.read_bits_u8(4)? + 1;
@@ -315,18 +315,18 @@ pub fn parse_multi_frame_header(reader: &mut BitReader<'_>) -> Result<MultiFrame
         None
     };
 
-    let mfh_deblocking_filter_update = reader.read_bit()? != 0;
+    let mfh_deblocking_filter_update = reader.read_flag()?;
     let mut mfh_apply_deblocking_filter = [false; 4];
     if mfh_deblocking_filter_update {
         for flag in &mut mfh_apply_deblocking_filter {
-            *flag = reader.read_bit()? != 0;
+            *flag = reader.read_flag()?;
         }
     }
 
-    let mfh_seg_info_present_flag = reader.read_bit()? != 0;
+    let mfh_seg_info_present_flag = reader.read_flag()?;
     let (mfh_ext_seg_flag, mfh_allow_seg_info_change, segment_info) = if mfh_seg_info_present_flag {
-        let ext_seg = reader.read_bit()? != 0;
-        let allow_change = reader.read_bit()? != 0;
+        let ext_seg = reader.read_flag()?;
+        let allow_change = reader.read_flag()?;
         // AV2 § 5.7: ( MfhFeatureEnabled, MfhFeatureData ) = seg_info(mfh_ext_seg_flag ? 16 : 8).
         let info = parse_seg_info(reader, if ext_seg { 16 } else { 8 })?;
         (Some(ext_seg), Some(allow_change), Some(info))

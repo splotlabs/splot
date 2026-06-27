@@ -161,7 +161,7 @@ pub fn read_tx_mode(reader: &mut BitReader<'_>, coded_lossless: bool) -> Result<
         // AV2 § 5.18.8.1: CodedLossless == 1 -> TxMode = ONLY_4X4 (no bits).
         Ok(TxMode::Only4x4)
     } else {
-        let tx_mode_select = reader.read_bit()? != 0; // tx_mode_select f(1)
+        let tx_mode_select = reader.read_flag()?; // tx_mode_select f(1)
         Ok(if tx_mode_select {
             TxMode::Select
         } else {
@@ -194,7 +194,7 @@ pub fn parse_film_grain_config(
         // with no bit read.
         true
     } else {
-        reader.read_bit()? != 0 // apply_grain f(1)
+        reader.read_flag()? // apply_grain f(1)
     };
 
     let (fgm_id, grain_seed) = if apply_grain {

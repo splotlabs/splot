@@ -305,7 +305,7 @@ pub fn parse_global_motion_params(
     }
 
     // mirror :7798: use_global_motion f(1).
-    let use_global_motion = reader.read_bit()? != 0;
+    let use_global_motion = reader.read_flag()?;
     if !use_global_motion {
         // mirror :7800-7804: return — no warp parameters present.
         return Ok(GlobalMotionParams {
@@ -515,7 +515,7 @@ pub fn decode_subexp(reader: &mut BitReader<'_>, num_syms: i64, k: u32) -> Resul
             return i64::try_from(final_bits + mk).map_err(|_| invalid_subexp_value(reader));
         }
         // mirror :8098: subexp_more_bits f(1).
-        let more_bits = reader.read_bit()? != 0;
+        let more_bits = reader.read_flag()?;
         if more_bits {
             // mirror :8102-8104: i++; mk += a.
             i = i.saturating_add(1);

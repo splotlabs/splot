@@ -285,7 +285,7 @@ pub fn parse_operating_point_set(
     reader: &mut BitReader<'_>,
     xlayer_id: ExtendedLayerId,
 ) -> Result<OperatingPointSet> {
-    let reset_flag = reader.read_bit()? != 0;
+    let reset_flag = reader.read_flag()?;
     let ops_id = reader.read_bits_u8(OPS_ID_BITS)?;
     let ops_cnt = reader.read_bits_u8(OPS_COUNT_BITS)?;
 
@@ -302,9 +302,9 @@ pub fn parse_operating_point_set(
     if ops_cnt > 0 {
         priority = Some(reader.read_bits_u8(OPS_PRIORITY_BITS)?);
         intent = Some(reader.read_bits_u8(OPS_INTENT_BITS)?);
-        intent_present = reader.read_bit()? != 0;
-        ptl_present = reader.read_bit()? != 0;
-        color_info_present = reader.read_bit()? != 0;
+        intent_present = reader.read_flag()?;
+        ptl_present = reader.read_flag()?;
+        color_info_present = reader.read_flag()?;
         if is_global {
             mlayer_info_idc = Some(reader.read_bits_u8(OPS_RESERVED_2BITS)?);
         } else {
@@ -385,14 +385,14 @@ fn parse_operating_point_payload(
         None
     };
 
-    let decoder_model_present = reader.read_bit()? != 0;
+    let decoder_model_present = reader.read_flag()?;
     let decoder_model_info = if decoder_model_present {
         Some(parse_ops_decoder_model_info(reader)?)
     } else {
         None
     };
 
-    let initial_display_delay_present = reader.read_bit()? != 0;
+    let initial_display_delay_present = reader.read_flag()?;
     let initial_display_delay_minus_1 = if initial_display_delay_present {
         Some(reader.read_bits_u8(OPS_INITIAL_DISPLAY_DELAY_BITS)?)
     } else {
@@ -464,7 +464,7 @@ fn parse_global_mlayer_source(
     match mlayer_info_idc {
         Some(1) => Ok(OpsMlayerSource::Explicit(parse_ops_mlayer_info(reader)?)),
         Some(2) => {
-            let explicit = reader.read_bit()? != 0;
+            let explicit = reader.read_flag()?;
             if explicit {
                 Ok(OpsMlayerSource::Explicit(parse_ops_mlayer_info(reader)?))
             } else {
@@ -484,7 +484,7 @@ fn parse_global_mlayer_source(
 fn parse_ops_aggregate_info(reader: &mut BitReader<'_>) -> Result<OpsAggregateInfo> {
     let config_idc = reader.read_bits_u8(6)?;
     let aggregate_level_idx = reader.read_bits_u8(5)?;
-    let max_tier_flag = reader.read_bit()? != 0;
+    let max_tier_flag = reader.read_flag()?;
     let max_interop = reader.read_bits_u8(4)?;
     Ok(OpsAggregateInfo {
         config_idc,
@@ -502,7 +502,7 @@ fn parse_ops_seq_profile_tier_level_info(
 ) -> Result<OpsSeqProfileTierLevelInfo> {
     let seq_profile_idc = ProfileIdc::from_bits(reader.read_bits_u8(5)?);
     let level_idx = reader.read_bits_u8(5)?;
-    let tier_flag = reader.read_bit()? != 0;
+    let tier_flag = reader.read_flag()?;
     let mlayer_count = reader.read_bits_u8(3)?;
     let reserved_2bits = reader.read_bits_u8(OPS_RESERVED_2BITS)?;
     Ok(OpsSeqProfileTierLevelInfo {
@@ -519,7 +519,7 @@ fn parse_ops_seq_profile_tier_level_info(
 fn parse_ops_decoder_model_info(reader: &mut BitReader<'_>) -> Result<OpsDecoderModelInfo> {
     let decoder_buffer_delay = reader.read_uvlc()?;
     let encoder_buffer_delay = reader.read_uvlc()?;
-    let low_delay_mode_flag = reader.read_bit()? != 0;
+    let low_delay_mode_flag = reader.read_flag()?;
     Ok(OpsDecoderModelInfo {
         decoder_buffer_delay,
         encoder_buffer_delay,
@@ -540,7 +540,7 @@ fn parse_ops_color_info(reader: &mut BitReader<'_>) -> Result<OpsColorInfo> {
         } else {
             (None, None, None)
         };
-    let full_range_flag = reader.read_bit()? != 0;
+    let full_range_flag = reader.read_flag()?;
     Ok(OpsColorInfo {
         color_description_idc,
         color_primaries,

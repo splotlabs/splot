@@ -741,9 +741,9 @@ fn parse_itut_t35(reader: &mut BitReader<'_>, payload_size: usize) -> Result<Met
 
 fn parse_timecode(reader: &mut BitReader<'_>) -> Result<MetadataTimecode> {
     let counting_type = reader.read_bits_u8(5)?;
-    let full_timestamp_flag = reader.read_bit()? != 0;
-    let discontinuity_flag = reader.read_bit()? != 0;
-    let cnt_dropped_flag = reader.read_bit()? != 0;
+    let full_timestamp_flag = reader.read_flag()?;
+    let discontinuity_flag = reader.read_flag()?;
+    let cnt_dropped_flag = reader.read_flag()?;
     let n_frames = reader.read_bits(9)? as u16;
 
     let mut seconds_value = None;
@@ -754,13 +754,13 @@ fn parse_timecode(reader: &mut BitReader<'_>) -> Result<MetadataTimecode> {
         minutes_value = Some(reader.read_bits_u8(6)?);
         hours_value = Some(reader.read_bits_u8(5)?);
     } else {
-        let seconds_flag = reader.read_bit()? != 0;
+        let seconds_flag = reader.read_flag()?;
         if seconds_flag {
             seconds_value = Some(reader.read_bits_u8(6)?);
-            let minutes_flag = reader.read_bit()? != 0;
+            let minutes_flag = reader.read_flag()?;
             if minutes_flag {
                 minutes_value = Some(reader.read_bits_u8(6)?);
-                let hours_flag = reader.read_bit()? != 0;
+                let hours_flag = reader.read_flag()?;
                 if hours_flag {
                     hours_value = Some(reader.read_bits_u8(5)?);
                 }
@@ -793,15 +793,15 @@ fn parse_scan_type(reader: &mut BitReader<'_>) -> Result<MetadataScanType> {
     Ok(MetadataScanType {
         mps_pic_struct_type: reader.read_bits_u8(5)?,
         mps_source_scan_type_idc: reader.read_bits_u8(2)?,
-        mps_duplicate_flag: reader.read_bit()? != 0,
+        mps_duplicate_flag: reader.read_flag()?,
     })
 }
 
 fn parse_decoded_frame_hash(reader: &mut BitReader<'_>) -> Result<MetadataDecodedFrameHash> {
     let hash_type = reader.read_bits_u8(4)?;
-    let per_plane = reader.read_bit()? != 0;
-    let has_grain = reader.read_bit()? != 0;
-    let is_monochrome = reader.read_bit()? != 0;
+    let per_plane = reader.read_flag()?;
+    let has_grain = reader.read_flag()?;
+    let is_monochrome = reader.read_flag()?;
     let reserved = reader.read_bits_u8(1)?;
 
     let mut plane_hashes = Vec::new();
@@ -853,10 +853,10 @@ fn parse_user_data_unregistered(
 }
 
 fn parse_banding_hints(reader: &mut BitReader<'_>) -> Result<MetadataBandingHints> {
-    let coding_banding_present_flag = reader.read_bit()? != 0;
-    let source_banding_present_flag = reader.read_bit()? != 0;
+    let coding_banding_present_flag = reader.read_flag()?;
+    let source_banding_present_flag = reader.read_flag()?;
     let hints = if coding_banding_present_flag {
-        let banding_hints_flag = reader.read_bit()? != 0;
+        let banding_hints_flag = reader.read_flag()?;
         if banding_hints_flag {
             Some(parse_banding_hints_detail(reader)?)
         } else {
@@ -873,11 +873,11 @@ fn parse_banding_hints(reader: &mut BitReader<'_>) -> Result<MetadataBandingHint
 }
 
 fn parse_banding_hints_detail(reader: &mut BitReader<'_>) -> Result<BandingHintsDetail> {
-    let three_color_components_flag = reader.read_bit()? != 0;
+    let three_color_components_flag = reader.read_flag()?;
     let num_components = if three_color_components_flag { 3 } else { 1 };
     let mut components = Vec::with_capacity(num_components);
     for _ in 0..num_components {
-        let banding_in_component_present_flag = reader.read_bit()? != 0;
+        let banding_in_component_present_flag = reader.read_flag()?;
         let (max_band_width_minus_4, max_band_step_minus_1) = if banding_in_component_present_flag {
             (Some(reader.read_bits_u8(6)?), Some(reader.read_bits_u8(4)?))
         } else {
@@ -890,7 +890,7 @@ fn parse_banding_hints_detail(reader: &mut BitReader<'_>) -> Result<BandingHints
         });
     }
 
-    let band_units_information_present_flag = reader.read_bit()? != 0;
+    let band_units_information_present_flag = reader.read_flag()?;
     let band_units = if band_units_information_present_flag {
         Some(parse_band_units(reader)?)
     } else {
@@ -907,7 +907,7 @@ fn parse_banding_hints_detail(reader: &mut BitReader<'_>) -> Result<BandingHints
 fn parse_band_units(reader: &mut BitReader<'_>) -> Result<BandUnits> {
     let num_band_units_rows_minus_1 = reader.read_bits_u8(5)?;
     let num_band_units_cols_minus_1 = reader.read_bits_u8(5)?;
-    let varying_size_band_units_flag = reader.read_bit()? != 0;
+    let varying_size_band_units_flag = reader.read_flag()?;
 
     let varying_size = if varying_size_band_units_flag {
         let band_block_in_luma_samples = reader.read_bits_u8(3)?;
@@ -931,7 +931,7 @@ fn parse_band_units(reader: &mut BitReader<'_>) -> Result<BandUnits> {
     let mut banding_in_band_unit_present = Vec::new();
     for _ in 0..=num_band_units_rows_minus_1 {
         for _ in 0..=num_band_units_cols_minus_1 {
-            banding_in_band_unit_present.push(reader.read_bit()? != 0);
+            banding_in_band_unit_present.push(reader.read_flag()?);
         }
     }
 

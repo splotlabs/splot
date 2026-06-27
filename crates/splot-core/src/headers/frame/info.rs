@@ -1276,14 +1276,14 @@ pub(crate) fn parse_core_body(
         // not compute here, so its value does not change any modeled bit position; it IS
         // recorded for the validator's § 7.3.8.9 OBU_SWITCH quantizer-matrix reset gate
         // (the reset applies only when restricted_prediction_switch == 1).
-        core.restricted_prediction_switch = Some(reader.read_bit()? != 0);
+        core.restricted_prediction_switch = Some(reader.read_flag()?);
         FrameType::Switch
     } else if obu_type.is_tip_frame() {
         FrameType::Inter
     } else if obu_type == ObuType::ClosedLoopKey || obu_type == ObuType::OpenLoopKey {
         FrameType::Key
     } else {
-        let frame_is_inter = reader.read_bit()? != 0; // frame_is_inter f(1)
+        let frame_is_inter = reader.read_flag()?; // frame_is_inter f(1)
         if frame_is_inter {
             FrameType::Inter
         } else {
@@ -1349,13 +1349,13 @@ pub(crate) fn parse_core_body(
     let immediate_output_frame = if obu_type == ObuType::OpenLoopKey {
         false
     } else {
-        reader.read_bit()? != 0
+        reader.read_flag()?
     };
     core.immediate_output_frame = Some(immediate_output_frame);
     let implicit_output_frame = if immediate_output_frame || seq.monotonic_output_order_flag {
         false
     } else {
-        reader.read_bit()? != 0
+        reader.read_flag()?
     };
     core.implicit_output_frame = Some(implicit_output_frame);
 
@@ -1415,7 +1415,7 @@ fn parse_inter_path(
         let frame_size_override_flag = if frame_type == FrameType::Switch {
             true
         } else {
-            reader.read_bit()? != 0
+            reader.read_flag()?
         };
         core.frame_size_override_flag = Some(frame_size_override_flag);
 
@@ -1732,7 +1732,7 @@ fn parse_single_picture_bridge_tail(
     let mut control = InterControl::default();
     let result = (|| -> Result<()> {
         // mirror :4423-4427: bridge_frame_overwrite_flag f(1) — read on any IsBridge frame.
-        let bridge_frame_overwrite_flag = reader.read_bit()? != 0;
+        let bridge_frame_overwrite_flag = reader.read_flag()?;
         control.bridge_frame_overwrite_flag = Some(bridge_frame_overwrite_flag);
 
         // refresh_frame_flags: SPEC CONTRADICTION at this corner. § 5.18.2 syntax (:4429-4445)
@@ -1752,7 +1752,7 @@ fn parse_single_picture_bridge_tail(
         let refresh_frame_flags = if !bridge_frame_overwrite_flag {
             1u32.wrapping_shl(bridge_frame_ref_idx)
         } else if seq.enable_short_refresh_frame_flags {
-            if reader.read_bit()? != 0 {
+            if reader.read_flag()? {
                 1u32.wrapping_shl(read_f(reader, ceil_log2(seq.num_ref_frames))?)
             } else {
                 0
@@ -1845,7 +1845,7 @@ fn parse_show_existing_frame(
     seq: &CoreSeqView,
 ) -> Result<()> {
     core.frame_to_show_map_idx = Some(read_f(reader, ceil_log2(seq.num_ref_frames))?);
-    let derive_sef_order_hint = reader.read_bit()? != 0;
+    let derive_sef_order_hint = reader.read_flag()?;
     if !derive_sef_order_hint {
         core.order_hint_lsb = Some(read_f(reader, seq.order_hint_bits)?);
     }
@@ -1930,7 +1930,7 @@ fn parse_intra_tail(
     let frame_size_override_flag = if single_picture {
         false
     } else {
-        reader.read_bit()? != 0
+        reader.read_flag()?
     };
     // Record the dims provenance for the §6.17.4.1 / §6.17.2 validator split: the
     // non-override path (`false`) derives FrameWidth/FrameHeight from the MFH default
@@ -1984,7 +1984,7 @@ fn parse_intra_tail(
 
     // Not a TIP-as-output / bru-inactive / bridge frame -> disable_cdf_update f(1)
     // (AV2 § 5.18.2 else-branch of `if ( bru_inactive || IsBridge )`).
-    core.disable_cdf_update = Some(reader.read_bit()? != 0);
+    core.disable_cdf_update = Some(reader.read_flag()?);
 
     // On the intra path, no BRU / motion-field / TIP block reads before `tile_info()`.
     parse_intra_structures(reader, core, seq, mfh)
@@ -2343,7 +2343,7 @@ fn read_refresh_frame_flags(
         }
     } else if seq.enable_short_refresh_frame_flags {
         // INTRA_ONLY_FRAME with the compact signaling mode.
-        let has_refresh_frame_flags = reader.read_bit()? != 0;
+        let has_refresh_frame_flags = reader.read_flag()?;
         if has_refresh_frame_flags {
             let frame_to_refresh = read_f(reader, ceil_log2(seq.num_ref_frames))?;
             Ok(1u32.wrapping_shl(frame_to_refresh))

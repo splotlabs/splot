@@ -174,14 +174,14 @@ fn write_lcr_global_info(scratch: &mut BitWriter, info: &LcrGlobalInfo) -> Write
 
     scratch.write_bits_u8(info.global_config_record_id, F3)?;
     scratch.write_bits(info.xlayer_map, XLAYER_MAP_BITS)?;
-    scratch.write_bit(u8::from(info.aggregate_info_present))?;
-    scratch.write_bit(u8::from(info.seq_ptl_info_present))?;
-    scratch.write_bit(u8::from(info.global_payload_present))?;
-    scratch.write_bit(u8::from(info.dependent_xlayers_flag))?;
-    scratch.write_bit(u8::from(info.global_atlas_id_present))?;
+    scratch.write_flag(info.aggregate_info_present)?;
+    scratch.write_flag(info.seq_ptl_info_present)?;
+    scratch.write_flag(info.global_payload_present)?;
+    scratch.write_flag(info.dependent_xlayers_flag)?;
+    scratch.write_flag(info.global_atlas_id_present)?;
     scratch.write_bits_u8(info.global_purpose_id, F7)?;
-    scratch.write_bit(u8::from(info.doh_constraint_flag))?;
-    scratch.write_bit(u8::from(info.enforce_tile_alignment_flag))?;
+    scratch.write_flag(info.doh_constraint_flag)?;
+    scratch.write_flag(info.enforce_tile_alignment_flag)?;
 
     // § 5.8.1: lcr_global_atlas_id f(3) when present, else lcr_global_reserved_zero_3bits
     // f(3) — the parser forces the reserved field to 0 in the atlas-present branch.
@@ -255,8 +255,8 @@ fn write_lcr_local_info(
 
     scratch.write_bits_u8(info.global_id, F3)?;
     scratch.write_bits_u8(info.local_id, F3)?;
-    scratch.write_bit(u8::from(info.profile_tier_level_info_present))?;
-    scratch.write_bit(u8::from(info.local_atlas_id_present))?;
+    scratch.write_flag(info.profile_tier_level_info_present)?;
+    scratch.write_flag(info.local_atlas_id_present)?;
 
     // § 5.8.2: lcr_seq_profile_tier_level_info(xId) iff lcr_profile_tier_level_info_present_flag.
     // The parser passes this record's xId in, so a PTL targeting a different xlayer is
@@ -319,7 +319,7 @@ fn write_atlas_or_reserved_3bits(
 fn write_lcr_aggregate_info(scratch: &mut BitWriter, agg: &LcrAggregateInfo) -> WriteResult<()> {
     scratch.write_bits_u8(agg.config_idc, F6)?;
     scratch.write_bits_u8(agg.aggregate_level_idx, AGG_F5)?;
-    scratch.write_bit(u8::from(agg.max_tier_flag))?;
+    scratch.write_flag(agg.max_tier_flag)?;
     scratch.write_bits_u8(agg.max_interop, F4)
 }
 
@@ -332,7 +332,7 @@ fn write_lcr_seq_profile_tier_level_info(
 ) -> WriteResult<()> {
     scratch.write_bits_u8(ptl.seq_profile_idc.get(), AGG_F5)?;
     scratch.write_bits_u8(ptl.max_level_idx, AGG_F5)?;
-    scratch.write_bit(u8::from(ptl.tier_flag))?;
+    scratch.write_flag(ptl.tier_flag)?;
     scratch.write_bits_u8(ptl.max_mlayer_count, MLAYER_COUNT_BITS)?;
     scratch.write_bits_u8(ptl.reserved_2bits, F2)
 }
@@ -391,10 +391,10 @@ fn write_lcr_xlayer_info(
     info: &LcrXlayerInfo,
     ctx: &XlayerCtx,
 ) -> WriteResult<()> {
-    scratch.write_bit(u8::from(info.rep_info.is_some()))?;
-    scratch.write_bit(u8::from(info.purpose_id.is_some()))?;
-    scratch.write_bit(u8::from(info.color_info.is_some()))?;
-    scratch.write_bit(u8::from(info.embedded_layer_info.is_some()))?;
+    scratch.write_flag(info.rep_info.is_some())?;
+    scratch.write_flag(info.purpose_id.is_some())?;
+    scratch.write_flag(info.color_info.is_some())?;
+    scratch.write_flag(info.embedded_layer_info.is_some())?;
 
     if let Some(rep) = &info.rep_info {
         write_lcr_rep_info(scratch, rep)?;
@@ -437,8 +437,8 @@ fn write_lcr_xlayer_info(
 fn write_lcr_rep_info(scratch: &mut BitWriter, rep: &LcrRepInfo) -> WriteResult<()> {
     scratch.write_uvlc(rep.max_pic_width)?;
     scratch.write_uvlc(rep.max_pic_height)?;
-    scratch.write_bit(u8::from(rep.format_info.is_some()))?;
-    scratch.write_bit(u8::from(rep.cropping_window.is_some()))?;
+    scratch.write_flag(rep.format_info.is_some())?;
+    scratch.write_flag(rep.cropping_window.is_some())?;
 
     if let Some(format) = rep.format_info {
         scratch.write_uvlc(format.bit_depth_idc)?;
@@ -469,7 +469,7 @@ fn write_lcr_xlayer_color_info(
         (false, None) => {}
         _ => return Err(non_canonical("color_primaries_gate")),
     }
-    scratch.write_bit(u8::from(color.full_range_flag))
+    scratch.write_flag(color.full_range_flag)
 }
 
 /// Writes `lcr_embedded_layer_info(isGlobal, xId)` (AV2 v1.0.0 § 5.8.8): the `f(8)`
@@ -537,7 +537,7 @@ fn write_lcr_embedded_layer_info(
             _ => return Err(non_canonical("dependent_layer_map_gate")),
         }
 
-        scratch.write_bit(u8::from(layer.same_sh_max_resolution_flag))?;
+        scratch.write_flag(layer.same_sh_max_resolution_flag)?;
         // § 5.8.8: lcr_max_expected_width / _height uvlc() iff !lcr_same_sh_max_resolution_flag.
         match (
             layer.same_sh_max_resolution_flag,

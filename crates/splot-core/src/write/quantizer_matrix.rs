@@ -91,7 +91,7 @@ pub fn write_quantizer_matrix(writer: &mut BitWriter, qm: &QuantizerMatrixObu) -
 
     let mut scratch = BitWriter::new();
     scratch.write_bits(u32::from(qm.qm_bit_map), QM_BIT_MAP_BITS)?;
-    scratch.write_bit(u8::from(qm.chroma_info_present))?;
+    scratch.write_flag(qm.chroma_info_present)?;
 
     for (level, &bit) in qm.levels.iter().zip(&set_bits) {
         if level.level != bit {

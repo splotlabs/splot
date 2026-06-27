@@ -362,7 +362,7 @@ fn write_lr_size_shift(
         return Ok(());
     }
     // *_use_quarter_size f(1): shift == 2 -> 1, shift == 3 -> 0.
-    writer.write_bit(u8::from(shift == 2))
+    writer.write_flag(shift == 2)
 }
 
 /// Writes `ccso_params()` (AV2 v1.0.0 § 5.18.7.12,
@@ -411,7 +411,7 @@ pub fn write_ccso_params(
         return Ok(());
     };
     if !view.single_picture_header_flag {
-        writer.write_bit(u8::from(frame_flag))?;
+        writer.write_flag(frame_flag)?;
     }
     if !frame_flag {
         // § 5.18.7.12: if ( !ccso_frame_flag ) return.
@@ -421,7 +421,7 @@ pub fn write_ccso_params(
     // § 5.18.7.12: for ( plane = 0; plane < NumPlanes; plane++ ).
     for plane in &params.planes {
         // ccso_planes[plane] f(1).
-        writer.write_bit(u8::from(plane.ccso_planes))?;
+        writer.write_flag(plane.ccso_planes)?;
         if !plane.ccso_planes {
             continue;
         }
@@ -449,7 +449,7 @@ pub fn write_ccso_params(
         };
 
         // ccso_bo_only[plane] f(1); ccso_scale_idx[plane] f(2).
-        writer.write_bit(u8::from(bo_only))?;
+        writer.write_flag(bo_only)?;
         writer.write_bits_u8(scale_idx, 2)?;
         if !bo_only {
             // ccso_quant_idx[plane] f(2); ccso_ext_filter[plane] f(3).
@@ -457,7 +457,7 @@ pub fn write_ccso_params(
             writer.write_bits_u8(ext_filter, 3)?;
             // quantStep != 0 -> ccso_edge_clf[plane] f(1); else inferred 0 (no bit).
             if ccso_quant_step(scale_idx, quant_idx) != 0 {
-                writer.write_bit(u8::from(edge_clf))?;
+                writer.write_flag(edge_clf)?;
             }
         }
         // n = 2 + ccso_bo_only; ccso_max_band_log2[plane] f(n).

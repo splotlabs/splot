@@ -102,7 +102,7 @@ pub fn parse_seg_info(reader: &mut BitReader<'_>, num_segments: u8) -> Result<Se
 
     for segment in features.iter_mut().take(count) {
         for (j, feature) in segment.iter_mut().enumerate() {
-            let enabled = reader.read_bit()? != 0;
+            let enabled = reader.read_flag()?;
             let data = if enabled {
                 let bits_to_read = SEGMENTATION_FEATURE_BITS[j];
                 let limit = SEGMENTATION_FEATURE_MAX[j];

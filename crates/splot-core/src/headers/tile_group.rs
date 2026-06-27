@@ -65,11 +65,11 @@ pub fn parse_tile_group_prefix(
 ) -> Result<TileGroupHeaderPrefix> {
     let start_bits = reader.consumed_bits();
 
-    let is_first_tile_group = reader.read_bit()? != 0;
+    let is_first_tile_group = reader.read_flag()?;
     let frame_header_present_flag = if is_first_tile_group {
         true
     } else {
-        reader.read_bit()? != 0
+        reader.read_flag()?
     };
 
     // Only the first tile group carries a parseable frame_header(1). A non-first tile

@@ -219,7 +219,7 @@ pub(crate) fn parse_inter_shared_tail(
     // f(1) here: when it is 0 the structure is bit-identical to the disabled result (no
     // further bits), and when it is 1 the enabled inter block is unmodeled — stop honestly
     // BEFORE reading any of its bits rather than reuse the intra parser unsoundly.
-    let segmentation_enabled = reader.read_bit()? != 0;
+    let segmentation_enabled = reader.read_flag()?;
     if segmentation_enabled {
         core.status = FrameHeaderParseStatus::UnsupportedUntilFeature {
             feature_id: FRAME_HEADER_INFO_FEATURE,
@@ -355,7 +355,7 @@ fn parse_inter_tail_arms(
 
     // mirror :5309 / § 5.18.8.3: frame_reference_mode() reads reference_select f(1) on the
     // inter path (FrameIsIntra == false, mirror :7747).
-    let reference_select = reader.read_bit()? != 0;
+    let reference_select = reader.read_flag()?;
 
     // mirror :5311 / § 5.18.8.2: skip_mode_params(). skipModeAllowed = 0 only for
     // FrameIsIntra || SWITCH_FRAME; on an ordinary inter frame skipModeAllowed = 1, so
@@ -364,14 +364,14 @@ fn parse_inter_tail_arms(
     // is unaffected by the unmodeled get_relative_dist / OrderHints state.
     let skip_mode_allowed = frame_type != FrameType::Switch;
     let skip_mode_present = if skip_mode_allowed {
-        reader.read_bit()? != 0
+        reader.read_flag()?
     } else {
         false
     };
 
     // mirror :5313: if ( !FrameIsIntra && enable_bawp ) allow_bawp f(1).
     let allow_bawp = if seq.inter.enable_bawp {
-        reader.read_bit()? != 0
+        reader.read_flag()?
     } else {
         false
     };
@@ -383,7 +383,7 @@ fn parse_inter_tail_arms(
         .frame_enabled_motion_modes
         .is_some_and(|modes| modes.get(DELTAWARP).copied().unwrap_or(false));
     let allow_warpmv_mode = if delta_warp_enabled {
-        reader.read_bit()? != 0
+        reader.read_flag()?
     } else {
         false
     };

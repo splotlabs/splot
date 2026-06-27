@@ -111,13 +111,13 @@ pub struct BufferRemovalOpTiming {
 /// [`Error::InvalidRg`](crate::error::Error::InvalidRg) from [`BitReader`] when the
 /// input is truncated or a `rg(4)` code is malformed.
 pub fn parse_buffer_removal_timing(reader: &mut BitReader<'_>) -> Result<BufferRemovalTiming> {
-    let ops_dependent = reader.read_bit()? != 0;
+    let ops_dependent = reader.read_flag()?;
     if ops_dependent {
         let br_ops_id = reader.read_bits_u8(BR_OPS_ID_BITS)?;
         let br_ops_cnt = reader.read_bits_u8(BR_OPS_COUNT_BITS)?;
         let mut op_times = Vec::new();
         for index in 0..br_ops_cnt {
-            let decoder_model_present = reader.read_bit()? != 0;
+            let decoder_model_present = reader.read_flag()?;
             let br_time_op = if decoder_model_present {
                 Some(reader.read_rg(BR_TIME_RG_ORDER)?)
             } else {

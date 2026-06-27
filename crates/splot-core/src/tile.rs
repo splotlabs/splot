@@ -293,7 +293,7 @@ pub fn parse_tile_layout(reader: &mut BitReader<'_>, input: TileParamsInput) -> 
     let uniform = if input.is_bridge {
         true
     } else {
-        reader.read_bit()? != 0
+        reader.read_flag()?
     };
 
     let (

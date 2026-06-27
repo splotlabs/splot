@@ -326,7 +326,7 @@ fn parse_ats_label_segment_info(
     reader: &mut BitReader<'_>,
     num_segments: u32,
 ) -> Result<AtlasLabelSegmentInfo> {
-    let signaled_atlas_segment_ids = reader.read_bit()? != 0;
+    let signaled_atlas_segment_ids = reader.read_flag()?;
     let mut segment_ids = Vec::new();
     if signaled_atlas_segment_ids {
         for _ in 0..num_segments {
@@ -368,7 +368,7 @@ fn parse_ats_region_info(reader: &mut BitReader<'_>) -> Result<AtlasRegionInfo> 
         });
     }
 
-    let uniform_spacing = reader.read_bit()? != 0;
+    let uniform_spacing = reader.read_flag()?;
     let mut column_widths_minus_1 = Vec::new();
     let mut row_heights_minus_1 = Vec::new();
     let mut region_width_minus_1 = None;
@@ -406,7 +406,7 @@ fn parse_ats_region_to_segment_mapping(
     reader: &mut BitReader<'_>,
     num_regions_in_atlas: u32,
 ) -> Result<AtlasRegionToSegmentMapping> {
-    let single_region_per_atlas_segment = reader.read_bit()? != 0;
+    let single_region_per_atlas_segment = reader.read_flag()?;
     let mut segments = Vec::new();
     let num_atlas_segments_minus_1 = if single_region_per_atlas_segment {
         if num_regions_in_atlas > MAX_NUM_ATLAS_SEGMENTS {
@@ -447,7 +447,7 @@ fn parse_ats_region_to_segment_mapping(
 /// Parses `ats_basic_info(xAId)` (AV2 v1.0.0 § 5.9.5), returning the info and
 /// `numSegments`.
 fn parse_ats_basic_info(reader: &mut BitReader<'_>) -> Result<(AtlasBasicInfo, u32)> {
-    let stream_id_present = reader.read_bit()? != 0;
+    let stream_id_present = reader.read_flag()?;
     let width = reader.read_uvlc()?;
     let height = reader.read_uvlc()?;
     let count_offset = reader.byte_offset();
@@ -510,11 +510,11 @@ fn parse_ats_multistream_info(
     }
 
     let alpha_segments_present = if with_alpha {
-        Some(reader.read_bit()? != 0)
+        Some(reader.read_flag()?)
     } else {
         None
     };
-    let background_info_present = reader.read_bit()? != 0;
+    let background_info_present = reader.read_flag()?;
     let background = if background_info_present {
         Some((
             reader.read_bits_u8(8)?,
@@ -536,7 +536,7 @@ fn parse_ats_multistream_info(
         // and not for the last segment, which is inferred 0 (AV2 § 6.9.5).
         let alpha_segment_flag =
             if alpha_segments_present == Some(true) && i != num_atlas_segments_minus_1 {
-                reader.read_bit()? != 0
+                reader.read_flag()?
             } else {
                 false
             };

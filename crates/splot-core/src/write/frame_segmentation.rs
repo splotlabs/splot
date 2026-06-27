@@ -134,7 +134,7 @@ pub fn write_segmentation_params(
     check_segmentation_encodable(params, seg, mfh)?;
 
     // AV2 § 5.18.7.1: segmentation_enabled f(1) — always.
-    writer.write_bit(u8::from(params.segmentation_enabled))?;
+    writer.write_flag(params.segmentation_enabled)?;
 
     if params.segmentation_enabled {
         let (_have_seg_params, allow_change, _reuse_source) = derive_seg_params(seg, mfh);
@@ -143,7 +143,7 @@ pub fn write_segmentation_params(
         // is inferred (= haveSegParams) and no bit is written. The up-front check has
         // already verified the inferred value matches `params.reuse_seg_info`.
         if allow_change {
-            writer.write_bit(u8::from(params.reuse_seg_info))?;
+            writer.write_flag(params.reuse_seg_info)?;
         }
 
         if params.reuse_seg_info {

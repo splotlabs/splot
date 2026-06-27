@@ -675,7 +675,7 @@ pub fn parse_sequence_header_general(reader: &mut BitReader<'_>) -> Result<Seque
     })?;
 
     let seq_profile_idc = ProfileIdc::from_bits(reader.read_bits_u8(5)?);
-    let single_picture_header_flag = reader.read_bit()? != 0;
+    let single_picture_header_flag = reader.read_flag()?;
     let seq_level_idx = LevelIdx::from_bits(reader.read_bits_u8(5)?);
     let seq_tier = if seq_level_idx.get() > 3 && !single_picture_header_flag {
         Tier::from_bit(reader.read_bit()?)
@@ -723,7 +723,7 @@ pub fn parse_sequence_header_general(reader: &mut BitReader<'_>) -> Result<Seque
         )
     } else {
         let seq_lcr_id = LcrId::from_bits(reader.read_bits_u8(3)?);
-        let still_picture = reader.read_bit()? != 0;
+        let still_picture = reader.read_flag()?;
         let max_tlayer_id = TemporalLayerId::from_bits(reader.read_bits_u8(2)?);
         let max_mlayer_id = EmbeddedLayerId::from_bits(reader.read_bits_u8(3)?);
         let seq_max_mlayer_count = if max_mlayer_id.get() > 0 {
@@ -742,7 +742,7 @@ pub fn parse_sequence_header_general(reader: &mut BitReader<'_>) -> Result<Seque
         } else {
             EmbeddedLayerCount::one()
         };
-        let monotonic_output_order_flag = reader.read_bit()? != 0;
+        let monotonic_output_order_flag = reader.read_flag()?;
         (
             seq_lcr_id,
             still_picture,
@@ -772,13 +772,13 @@ pub fn parse_sequence_header_general(reader: &mut BitReader<'_>) -> Result<Seque
     ) = if single_picture_header_flag {
         (None, false, None, false, None)
     } else {
-        let seq_initial_display_delay_present_flag = reader.read_bit()? != 0;
+        let seq_initial_display_delay_present_flag = reader.read_flag()?;
         let seq_initial_display_delay_minus_1 = if seq_initial_display_delay_present_flag {
             Some(reader.read_bits_u8(4)?)
         } else {
             None
         };
-        let decoder_model_info_present_flag = reader.read_bit()? != 0;
+        let decoder_model_info_present_flag = reader.read_flag()?;
         if decoder_model_info_present_flag {
             let num_units_offset = reader.byte_offset();
             let num_units_bit_offset = reader.bit_offset();
@@ -790,7 +790,7 @@ pub fn parse_sequence_header_general(reader: &mut BitReader<'_>) -> Result<Seque
                     SequenceHeaderErrorKind::TimingNumUnitsZero,
                 ));
             }
-            let seq_decoder_model_info_present_flag = reader.read_bit()? != 0;
+            let seq_decoder_model_info_present_flag = reader.read_flag()?;
             // AV2 § 5.4.1: when present, seq_decoder_model_info() (§ 5.4.13) is
             // parsed here, before the dependency-map bits.
             let decoder_model_info = if seq_decoder_model_info_present_flag {
@@ -962,7 +962,7 @@ pub fn parse_sequence_header(reader: &mut BitReader<'_>) -> Result<SequenceHeade
         });
     }
 
-    let film_grain_params_present = reader.read_bit()? != 0;
+    let film_grain_params_present = reader.read_flag()?;
 
     Ok(SequenceHeader {
         general,
@@ -1037,29 +1037,29 @@ pub fn parse_sequence_partition_config(
     monochrome: bool,
     single_picture: bool,
 ) -> Result<SequencePartitionConfig> {
-    let use_256x256_superblock = reader.read_bit()? != 0;
+    let use_256x256_superblock = reader.read_flag()?;
     let use_128x128_superblock = if use_256x256_superblock {
         false
     } else {
-        reader.read_bit()? != 0
+        reader.read_flag()?
     };
     let enable_sdp = if monochrome {
         false
     } else {
-        reader.read_bit()? != 0
+        reader.read_flag()?
     };
     let enable_extended_sdp = if enable_sdp && !single_picture {
-        reader.read_bit()? != 0
+        reader.read_flag()?
     } else {
         false
     };
-    let enable_ext_partitions = reader.read_bit()? != 0;
+    let enable_ext_partitions = reader.read_flag()?;
     let enable_uneven_4way_partitions = if enable_ext_partitions {
-        reader.read_bit()? != 0
+        reader.read_flag()?
     } else {
         false
     };
-    let reduce_pb_aspect_ratio = reader.read_bit()? != 0;
+    let reduce_pb_aspect_ratio = reader.read_flag()?;
     let max_pb_aspect_ratio = if reduce_pb_aspect_ratio {
         let max_pb_aspect_ratio_log2_minus_1 = reader.read_bits_u8(1)?;
         1u32 << (u32::from(max_pb_aspect_ratio_log2_minus_1) + 1)
@@ -1100,11 +1100,11 @@ pub struct SequenceSegmentConfig {
 /// # Errors
 /// Returns descriptor errors or [`Error::UnexpectedEof`] if the payload ends mid-field.
 pub fn parse_sequence_segment_config(reader: &mut BitReader<'_>) -> Result<SequenceSegmentConfig> {
-    let enable_ext_seg = reader.read_bit()? != 0;
+    let enable_ext_seg = reader.read_flag()?;
     let max_segments = if enable_ext_seg { 16 } else { 8 };
-    let seq_seg_info_present_flag = reader.read_bit()? != 0;
+    let seq_seg_info_present_flag = reader.read_flag()?;
     let (seq_allow_seg_info_change, segment_info) = if seq_seg_info_present_flag {
-        let allow = reader.read_bit()? != 0;
+        let allow = reader.read_flag()?;
         // AV2 § 5.4.4: ( SeqFeatureEnabled, SeqFeatureData ) = seg_info( MaxSegments ).
         let info = parse_seg_info(reader, max_segments)?;
         (Some(allow), Some(info))
@@ -1148,17 +1148,17 @@ pub fn parse_sequence_intra_config(
     reader: &mut BitReader<'_>,
     monochrome: bool,
 ) -> Result<SequenceIntraConfig> {
-    let enable_dip = reader.read_bit()? != 0;
-    let enable_intra_edge_filter = reader.read_bit()? != 0;
-    let enable_mrls = reader.read_bit()? != 0;
-    let enable_cfl_intra = reader.read_bit()? != 0;
+    let enable_dip = reader.read_flag()?;
+    let enable_intra_edge_filter = reader.read_flag()?;
+    let enable_mrls = reader.read_flag()?;
+    let enable_cfl_intra = reader.read_flag()?;
     let cfl_ds_filter_index = if monochrome {
         0
     } else {
         reader.read_bits_u8(2)?
     };
-    let enable_mhccp = reader.read_bit()? != 0;
-    let enable_ibp = reader.read_bit()? != 0;
+    let enable_mhccp = reader.read_flag()?;
+    let enable_ibp = reader.read_flag()?;
 
     Ok(SequenceIntraConfig {
         enable_dip,
@@ -1262,11 +1262,11 @@ pub struct SequenceInterConfig {
 }
 
 fn read_drl_reorder(reader: &mut BitReader<'_>) -> Result<DrlReorder> {
-    let disable_drl_reorder = reader.read_bit()? != 0;
+    let disable_drl_reorder = reader.read_flag()?;
     if disable_drl_reorder {
         Ok(DrlReorder::Disabled)
     } else {
-        let constrain_drl_reorder = reader.read_bit()? != 0;
+        let constrain_drl_reorder = reader.read_flag()?;
         Ok(if constrain_drl_reorder {
             DrlReorder::Constraint
         } else {
@@ -1326,44 +1326,44 @@ pub fn parse_sequence_inter_config(
 
     if single_picture {
         // single_picture_header_flag branch: only a small set of flags is signalled.
-        config.enable_refmvbank = reader.read_bit()? != 0;
+        config.enable_refmvbank = reader.read_flag()?;
         config.drl_reorder = read_drl_reorder(reader)?;
         config.seq_max_bvp_drl_bits_minus_1 = reader.read_ns(MAX_REF_BV_STACK_SIZE - 1)?;
-        config.allow_frame_max_bvp_drl_bits = reader.read_bit()? != 0;
-        config.enable_bawp = reader.read_bit()? != 0;
+        config.allow_frame_max_bvp_drl_bits = reader.read_flag()?;
+        config.enable_bawp = reader.read_flag()?;
         // NumRefFrames = 2, long_term_frame_id_bits = 0 (inferred above).
         return Ok(config);
     }
 
     let mut motion_mode_enabled = false;
     for mode in INTERINTRA..MOTION_MODES {
-        let enabled = reader.read_bit()? != 0;
+        let enabled = reader.read_flag()?;
         config.seq_enabled_motion_modes[mode] = enabled;
         motion_mode_enabled |= enabled;
     }
     config.seq_frame_motion_modes_present_flag = if motion_mode_enabled {
-        reader.read_bit()? != 0
+        reader.read_flag()?
     } else {
         false
     };
     config.enable_six_param_warp_delta = if config.seq_enabled_motion_modes[DELTAWARP] {
-        reader.read_bit()? != 0
+        reader.read_flag()?
     } else {
         false
     };
-    config.enable_masked_compound = reader.read_bit()? != 0;
-    config.enable_ref_frame_mvs = reader.read_bit()? != 0;
+    config.enable_masked_compound = reader.read_flag()?;
+    config.enable_ref_frame_mvs = reader.read_flag()?;
     config.reduced_ref_frame_mvs_mode = if config.enable_ref_frame_mvs {
-        reader.read_bit()? != 0
+        reader.read_flag()?
     } else {
         false
     };
     let order_hint_bits_minus_1 = reader.read_bits_u8(4)?;
     config.order_hint_bits = order_hint_bits_minus_1 + 1;
-    config.enable_refmvbank = reader.read_bit()? != 0;
+    config.enable_refmvbank = reader.read_flag()?;
     config.drl_reorder = read_drl_reorder(reader)?;
-    config.explicit_ref_frame_map = reader.read_bit()? != 0;
-    let explicit_num_ref_frames = reader.read_bit()? != 0;
+    config.explicit_ref_frame_map = reader.read_flag()?;
+    let explicit_num_ref_frames = reader.read_flag()?;
     config.num_ref_frames = if explicit_num_ref_frames {
         reader.read_bits_u8(4)? + 1
     } else {
@@ -1371,41 +1371,41 @@ pub fn parse_sequence_inter_config(
     };
     config.long_term_frame_id_bits = reader.read_bits_u8(3)?;
     config.seq_max_drl_bits_minus_1 = reader.read_ns(MAX_REF_MV_STACK_SIZE - 1)?;
-    config.allow_frame_max_drl_bits = reader.read_bit()? != 0;
+    config.allow_frame_max_drl_bits = reader.read_flag()?;
     config.seq_max_bvp_drl_bits_minus_1 = reader.read_ns(MAX_REF_BV_STACK_SIZE - 1)?;
-    config.allow_frame_max_bvp_drl_bits = reader.read_bit()? != 0;
+    config.allow_frame_max_bvp_drl_bits = reader.read_flag()?;
     config.num_same_ref_compound = reader.read_bits_u8(2)?;
-    config.enable_tip = reader.read_bit()? != 0;
+    config.enable_tip = reader.read_flag()?;
     if config.enable_tip {
-        let disable_tip_output = reader.read_bit()? != 0;
+        let disable_tip_output = reader.read_flag()?;
         config.enable_tip_output = !disable_tip_output;
-        config.enable_tip_hole_fill = reader.read_bit()? != 0;
+        config.enable_tip_hole_fill = reader.read_flag()?;
     }
-    config.enable_mv_traj = reader.read_bit()? != 0;
-    config.enable_bawp = reader.read_bit()? != 0;
-    config.enable_cwp = reader.read_bit()? != 0;
-    config.enable_imp_msk_bld = reader.read_bit()? != 0;
-    config.enable_df_sub_pu = reader.read_bit()? != 0;
+    config.enable_mv_traj = reader.read_flag()?;
+    config.enable_bawp = reader.read_flag()?;
+    config.enable_cwp = reader.read_flag()?;
+    config.enable_imp_msk_bld = reader.read_flag()?;
+    config.enable_df_sub_pu = reader.read_flag()?;
     config.enable_tip_explicit_qp = if config.enable_tip_output && config.enable_df_sub_pu {
-        reader.read_bit()? != 0
+        reader.read_flag()?
     } else {
         false
     };
     config.enable_opfl_refine = reader.read_bits_u8(2)?;
-    config.enable_refinemv = reader.read_bit()? != 0;
+    config.enable_refinemv = reader.read_flag()?;
     config.enable_tip_refinemv =
         if config.enable_tip && (config.enable_opfl_refine != 0 || config.enable_refinemv) {
-            reader.read_bit()? != 0
+            reader.read_flag()?
         } else {
             false
         };
-    config.enable_bru = reader.read_bit()? != 0;
-    config.enable_adaptive_mvd = reader.read_bit()? != 0;
-    config.enable_mvd_sign_derive = reader.read_bit()? != 0;
-    config.enable_flex_mvres = reader.read_bit()? != 0;
+    config.enable_bru = reader.read_flag()?;
+    config.enable_adaptive_mvd = reader.read_flag()?;
+    config.enable_mvd_sign_derive = reader.read_flag()?;
+    config.enable_flex_mvres = reader.read_flag()?;
     // single_picture_header_flag is false on this branch, so enable_global_motion is signalled.
-    config.enable_global_motion = reader.read_bit()? != 0;
-    config.enable_short_refresh_frame_flags = reader.read_bit()? != 0;
+    config.enable_global_motion = reader.read_flag()?;
+    config.enable_short_refresh_frame_flags = reader.read_flag()?;
 
     Ok(config)
 }
@@ -1434,7 +1434,7 @@ pub fn parse_sequence_scc_config(
         });
     }
 
-    let seq_choose_screen_content_tools = reader.read_bit()? != 0;
+    let seq_choose_screen_content_tools = reader.read_flag()?;
     let seq_force_screen_content_tools = if seq_choose_screen_content_tools {
         SELECT_SCREEN_CONTENT_TOOLS
     } else {
@@ -1442,7 +1442,7 @@ pub fn parse_sequence_scc_config(
     };
 
     let seq_force_integer_mv = if seq_force_screen_content_tools > 0 {
-        let seq_choose_integer_mv = reader.read_bit()? != 0;
+        let seq_choose_integer_mv = reader.read_flag()?;
         if seq_choose_integer_mv {
             SELECT_INTEGER_MV
         } else {
@@ -1519,33 +1519,33 @@ pub fn parse_sequence_transform_quant_entropy_config(
     monochrome: bool,
     single_picture: bool,
 ) -> Result<SequenceTqEntropyConfig> {
-    let enable_fsc = reader.read_bit()? != 0;
+    let enable_fsc = reader.read_flag()?;
     let enable_idtx_intra = if enable_fsc {
         true
     } else {
-        reader.read_bit()? != 0
+        reader.read_flag()?
     };
-    let enable_intra_ist = reader.read_bit()? != 0;
-    let enable_inter_ist = reader.read_bit()? != 0;
+    let enable_intra_ist = reader.read_flag()?;
+    let enable_inter_ist = reader.read_flag()?;
     let enable_chroma_dctonly = if monochrome {
         false
     } else {
-        reader.read_bit()? != 0
+        reader.read_flag()?
     };
     let enable_inter_ddt = if single_picture {
         false
     } else {
-        reader.read_bit()? != 0
+        reader.read_flag()?
     };
-    let reduced_tx_part_set = reader.read_bit()? != 0;
+    let reduced_tx_part_set = reader.read_flag()?;
     let enable_cctx = if monochrome {
         false
     } else {
-        reader.read_bit()? != 0
+        reader.read_flag()?
     };
-    let enable_tcq = reader.read_bit()? != 0;
+    let enable_tcq = reader.read_flag()?;
     let choose_tcq_per_frame = if enable_tcq && !single_picture {
-        reader.read_bit()? != 0
+        reader.read_flag()?
     } else {
         false
     };
@@ -1555,12 +1555,12 @@ pub fn parse_sequence_transform_quant_entropy_config(
     let enable_parity_hiding = if enable_tcq && !choose_tcq_per_frame {
         false
     } else {
-        reader.read_bit()? != 0
+        reader.read_flag()?
     };
     let (enable_avg_cdf, avg_cdf_type) = if single_picture {
         (true, 1)
     } else {
-        let enable_avg_cdf = reader.read_bit()? != 0;
+        let enable_avg_cdf = reader.read_flag()?;
         let avg_cdf_type = if enable_avg_cdf {
             reader.read_bits_u8(1)?
         } else {
@@ -1571,15 +1571,15 @@ pub fn parse_sequence_transform_quant_entropy_config(
     let separate_uv_delta_q = if monochrome {
         false
     } else {
-        reader.read_bit()? != 0
+        reader.read_flag()?
     };
 
-    let equal_ac_dc_q = reader.read_bit()? != 0;
+    let equal_ac_dc_q = reader.read_flag()?;
     let mut base_y_dc_delta_q = 0;
     let mut y_dc_delta_q_enabled = false;
     if !equal_ac_dc_q {
         base_y_dc_delta_q = reader.read_bits_u8(5)?;
-        y_dc_delta_q_enabled = reader.read_bit()? != 0;
+        y_dc_delta_q_enabled = reader.read_flag()?;
     }
     let mut base_uv_dc_delta_q = 0;
     let mut uv_dc_delta_q_enabled = false;
@@ -1588,10 +1588,10 @@ pub fn parse_sequence_transform_quant_entropy_config(
     if !monochrome {
         if !equal_ac_dc_q {
             base_uv_dc_delta_q = reader.read_bits_u8(5)?;
-            uv_dc_delta_q_enabled = reader.read_bit()? != 0;
+            uv_dc_delta_q_enabled = reader.read_flag()?;
         }
         base_uv_ac_delta_q = reader.read_bits_u8(5)?;
-        uv_ac_delta_q_enabled = reader.read_bit()? != 0;
+        uv_ac_delta_q_enabled = reader.read_flag()?;
         if equal_ac_dc_q {
             // AV2 § 5.4.8: when equal_ac_dc_q, BaseUVDcDeltaQ = BaseUVAcDeltaQ.
             // base_uv_dc_delta_q is not signalled here, so mirror the AC field.
@@ -1681,15 +1681,15 @@ pub fn parse_sequence_filter_config(
     single_picture: bool,
     seq_sb_size: SuperblockSize,
 ) -> Result<SequenceFilterConfig> {
-    let disable_loopfilters_across_tiles = reader.read_bit()? != 0;
-    let enable_cdef = reader.read_bit()? != 0;
-    let enable_gdf = reader.read_bit()? != 0;
+    let disable_loopfilters_across_tiles = reader.read_flag()?;
+    let enable_cdef = reader.read_flag()?;
+    let enable_gdf = reader.read_flag()?;
     let gdf_unit_matches_sb_size = if enable_gdf && seq_sb_size == SuperblockSize::Block64x64 {
-        reader.read_bit()? != 0
+        reader.read_flag()?
     } else {
         false
     };
-    let enable_restoration = reader.read_bit()? != 0;
+    let enable_restoration = reader.read_flag()?;
     let mut lr_pc_wiener_disabled = false;
     let mut lr_wiener_nonsep_disabled = false;
     let mut lr_tools_uv_present = false;
@@ -1698,30 +1698,30 @@ pub fn parse_sequence_filter_config(
     // restoration is enabled (it is never signalled).
     let lr_uv_pc_wiener_disabled = enable_restoration;
     if enable_restoration {
-        lr_pc_wiener_disabled = reader.read_bit()? != 0;
-        lr_wiener_nonsep_disabled = reader.read_bit()? != 0;
-        lr_tools_uv_present = reader.read_bit()? != 0;
+        lr_pc_wiener_disabled = reader.read_flag()?;
+        lr_wiener_nonsep_disabled = reader.read_flag()?;
+        lr_tools_uv_present = reader.read_flag()?;
         lr_uv_wiener_nonsep_disabled = if lr_tools_uv_present {
-            reader.read_bit()? != 0
+            reader.read_flag()?
         } else {
             // lr_tools_disable[1][RESTORE_WIENER_NONSEP] = lr_tools_disable[0][RESTORE_WIENER_NONSEP].
             lr_wiener_nonsep_disabled
         };
     }
-    let enable_ccso = reader.read_bit()? != 0;
+    let enable_ccso = reader.read_flag()?;
     let ccso_unit_matches_sb_size = if enable_ccso {
-        reader.read_bit()? != 0
+        reader.read_flag()?
     } else {
         false
     };
     let cdef_on_skip_txfm = if single_picture {
         CdefOnSkipTxfm::Adaptive
     } else {
-        let cdef_on_skip_txfm_always_on = reader.read_bit()? != 0;
+        let cdef_on_skip_txfm_always_on = reader.read_flag()?;
         if cdef_on_skip_txfm_always_on {
             CdefOnSkipTxfm::AlwaysOn
         } else {
-            let cdef_on_skip_txfm_disabled = reader.read_bit()? != 0;
+            let cdef_on_skip_txfm_disabled = reader.read_flag()?;
             if cdef_on_skip_txfm_disabled {
                 CdefOnSkipTxfm::Disabled
             } else {
@@ -1805,7 +1805,7 @@ pub fn parse_sequence_tile_config(
     reader: &mut BitReader<'_>,
     tile_params_input: TileParamsInput,
 ) -> Result<SequenceTileConfig> {
-    let seq_tile_info_present_flag = reader.read_bit()? != 0;
+    let seq_tile_info_present_flag = reader.read_flag()?;
     if !seq_tile_info_present_flag {
         return Ok(SequenceTileConfig {
             seq_tile_info_present_flag: false,
@@ -1816,7 +1816,7 @@ pub fn parse_sequence_tile_config(
         });
     }
 
-    let allow_tile_info_change = reader.read_bit()? != 0;
+    let allow_tile_info_change = reader.read_flag()?;
     // AV2 § 5.4.2: tile_params(max_frame_width_minus_1 + 1, max_frame_height_minus_1 + 1,
     // seqSbSize, seqSbSize, 0). A reserved seq_level_idx has no defined layout, so it is
     // surfaced as a bounded residual rather than a hard parse error. The full layout
@@ -1887,7 +1887,7 @@ pub fn parse_timing_info(reader: &mut BitReader<'_>) -> Result<TimingInfo> {
         ));
     }
 
-    let equal_picture_interval = reader.read_bit()? != 0;
+    let equal_picture_interval = reader.read_flag()?;
     let num_ticks_per_picture_minus_1 = if equal_picture_interval {
         let ticks_offset = reader.byte_offset();
         let ticks_bit_offset = reader.bit_offset();
@@ -1937,7 +1937,7 @@ pub fn parse_sequence_decoder_model_info(
 ) -> Result<SequenceDecoderModelInfo> {
     let decoder_buffer_delay = reader.read_uvlc()?;
     let encoder_buffer_delay = reader.read_uvlc()?;
-    let low_delay_mode_flag = reader.read_bit()? != 0;
+    let low_delay_mode_flag = reader.read_flag()?;
 
     Ok(SequenceDecoderModelInfo {
         decoder_buffer_delay,
@@ -1957,7 +1957,7 @@ fn parse_cropping_window(
     max_frame_width: FrameWidth,
     max_frame_height: FrameHeight,
 ) -> Result<(bool, CroppingWindow)> {
-    let seq_cropping_window_present_flag = reader.read_bit()? != 0;
+    let seq_cropping_window_present_flag = reader.read_flag()?;
     if !seq_cropping_window_present_flag {
         return Ok((false, CroppingWindow::default()));
     }
@@ -2034,13 +2034,13 @@ fn parse_dependency_maps(
 
     let mut mlayer_dependency_present_flag = false;
     if max_mlayer_id.get() > 0 {
-        mlayer_dependency_present_flag = reader.read_bit()? != 0;
+        mlayer_dependency_present_flag = reader.read_flag()?;
         if mlayer_dependency_present_flag {
             for curr_layer in 1..=max_mlayer_id.get() {
                 // AV2 § 5.4.1: refLayer iterates from currLayer down to 0, so the
                 // diagonal bit is signaled first (and may be 0).
                 for ref_layer in (0..=curr_layer).rev() {
-                    let bit = reader.read_bit()? != 0;
+                    let bit = reader.read_flag()?;
                     mlayer_dependency_map.set(curr_layer, ref_layer, bit);
                 }
             }
@@ -2050,10 +2050,10 @@ fn parse_dependency_maps(
     let mut tlayer_dependency_present_flag = false;
     let mut multi_tlayer_dependency_map_present_flag = false;
     if max_tlayer_id.get() > 0 {
-        tlayer_dependency_present_flag = reader.read_bit()? != 0;
+        tlayer_dependency_present_flag = reader.read_flag()?;
         if tlayer_dependency_present_flag {
             multi_tlayer_dependency_map_present_flag = if max_mlayer_id.get() > 0 {
-                reader.read_bit()? != 0
+                reader.read_flag()?
             } else {
                 false
             };
@@ -2061,7 +2061,7 @@ fn parse_dependency_maps(
                 for curr_tlayer in 1..=max_tlayer_id.get() {
                     for ref_tlayer in (0..=curr_tlayer).rev() {
                         if multi_tlayer_dependency_map_present_flag || m_layer == 0 {
-                            let bit = reader.read_bit()? != 0;
+                            let bit = reader.read_flag()?;
                             tlayer_dependency_map.set(m_layer, curr_tlayer, ref_tlayer, bit);
                         } else {
                             // AV2 § 5.4.1: with the multi flag clear, embedded

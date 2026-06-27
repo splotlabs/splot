@@ -235,7 +235,7 @@ pub fn parse_tile_info(
     // inferred 1 when eligible without allow_tile_info_change, else inferred 0.
     let reuse_tile_info = if eligible {
         if tile.allow_tile_info_change {
-            reader.read_bit()? != 0
+            reader.read_flag()?
         } else {
             true
         }

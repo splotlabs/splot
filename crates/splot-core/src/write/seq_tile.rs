@@ -166,28 +166,28 @@ pub fn write_sequence_filter_config(
 ) -> WriteResult<()> {
     check_filter_encodable(config, single_picture, seq_sb_size)?;
 
-    writer.write_bit(u8::from(config.disable_loopfilters_across_tiles))?;
-    writer.write_bit(u8::from(config.enable_cdef))?;
-    writer.write_bit(u8::from(config.enable_gdf))?;
+    writer.write_flag(config.disable_loopfilters_across_tiles)?;
+    writer.write_flag(config.enable_cdef)?;
+    writer.write_flag(config.enable_gdf)?;
     // gdf_unit_matches_sb_size: f(1), only when enable_gdf && seq_sb_size == Block64x64.
     if config.enable_gdf && seq_sb_size == SuperblockSize::Block64x64 {
-        writer.write_bit(u8::from(config.gdf_unit_matches_sb_size))?;
+        writer.write_flag(config.gdf_unit_matches_sb_size)?;
     }
-    writer.write_bit(u8::from(config.enable_restoration))?;
+    writer.write_flag(config.enable_restoration)?;
     if config.enable_restoration {
-        writer.write_bit(u8::from(config.lr_pc_wiener_disabled))?;
-        writer.write_bit(u8::from(config.lr_wiener_nonsep_disabled))?;
-        writer.write_bit(u8::from(config.lr_tools_uv_present))?;
+        writer.write_flag(config.lr_pc_wiener_disabled)?;
+        writer.write_flag(config.lr_wiener_nonsep_disabled)?;
+        writer.write_flag(config.lr_tools_uv_present)?;
         // lr_uv_wiener_nonsep_disabled: f(1), only when lr_tools_uv_present; otherwise the
         // parser infers it = lr_wiener_nonsep_disabled (no bit).
         if config.lr_tools_uv_present {
-            writer.write_bit(u8::from(config.lr_uv_wiener_nonsep_disabled))?;
+            writer.write_flag(config.lr_uv_wiener_nonsep_disabled)?;
         }
     }
-    writer.write_bit(u8::from(config.enable_ccso))?;
+    writer.write_flag(config.enable_ccso)?;
     // ccso_unit_matches_sb_size: f(1), only when enable_ccso.
     if config.enable_ccso {
-        writer.write_bit(u8::from(config.ccso_unit_matches_sb_size))?;
+        writer.write_flag(config.ccso_unit_matches_sb_size)?;
     }
     // CdefOnSkipTxfm: inferred Adaptive (no bits) for a single-picture header; otherwise
     // AlwaysOn -> 1; Disabled -> 0,1; Adaptive -> 0,0.
@@ -363,7 +363,7 @@ pub fn write_sequence_tile_config(
 ) -> WriteResult<()> {
     check_tile_encodable(config, &input)?;
 
-    writer.write_bit(u8::from(config.seq_tile_info_present_flag))?;
+    writer.write_flag(config.seq_tile_info_present_flag)?;
     if !config.seq_tile_info_present_flag {
         return Ok(());
     }
@@ -380,7 +380,7 @@ pub fn write_sequence_tile_config(
         .ok_or(WriteError::NonCanonicalSequenceValue {
             what: "tile_params",
         })?;
-    writer.write_bit(u8::from(allow))?;
+    writer.write_flag(allow)?;
     write_tile_params(
         writer,
         params,
@@ -482,7 +482,7 @@ pub(crate) fn write_tile_params(
 
     // uniform_tile_spacing_flag: f(1). The sequence call site is never a bridge, and an
     // is_bridge=true input is already rejected by check_tile_encodable before any bit.
-    writer.write_bit(u8::from(params.uniform_spacing))?;
+    writer.write_flag(params.uniform_spacing)?;
 
     if params.uniform_spacing {
         // Column increment run.
@@ -853,7 +853,7 @@ pub fn write_sequence_header(writer: &mut BitWriter, header: &SequenceHeader) ->
             .ok_or(WriteError::NonCanonicalSequenceValue {
                 what: "film_grain_params_present",
             })?;
-    writer.write_bit(u8::from(film_grain))?;
+    writer.write_flag(film_grain)?;
     Ok(())
 }
 

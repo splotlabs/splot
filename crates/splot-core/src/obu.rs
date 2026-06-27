@@ -422,7 +422,7 @@ pub fn finish_obu_payload(
     if is_extensible {
         let flag_offset = reader.byte_offset();
         let flag_bit_offset = reader.bit_offset();
-        let obu_extension_flag = reader.read_bit()? != 0;
+        let obu_extension_flag = reader.read_flag()?;
         if obu_extension_flag {
             // AV2 § 6.2.1: it is a requirement of bitstream conformance that
             // obu_extension_flag is equal to 0 in bitstreams conforming to this
@@ -523,7 +523,7 @@ pub fn parse_trailing_bits(reader: &mut BitReader<'_>, nb_bits: u64) -> Result<(
     for _ in 1..nb_bits {
         let offset = reader.byte_offset();
         let bit_offset = reader.bit_offset();
-        if reader.read_bit()? != 0 {
+        if reader.read_flag()? {
             return Err(Error::InvalidTrailingBits {
                 offset,
                 bit_offset,

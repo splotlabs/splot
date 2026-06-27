@@ -178,7 +178,7 @@ fn write_film_grain_model(
             return Err(non_canonical("monochrome_chroma_scaling"));
         }
     } else {
-        scratch.write_bit(u8::from(model.chroma_scaling_from_luma))?;
+        scratch.write_flag(model.chroma_scaling_from_luma)?;
     }
 
     // § 5.18.10.2: luma scaling points (always present).
@@ -279,15 +279,15 @@ fn write_film_grain_model(
         ("cr_mult_gate", "cr_offset_gate"),
     )?;
 
-    scratch.write_bit(u8::from(model.overlap_flag))?;
-    scratch.write_bit(u8::from(model.clip_to_restricted_range))?;
+    scratch.write_flag(model.overlap_flag)?;
+    scratch.write_flag(model.clip_to_restricted_range)?;
     // § 5.18.10.2: fg_mc_identity is read iff clip_to_restricted_range (forced 0 else).
     if model.clip_to_restricted_range {
-        scratch.write_bit(u8::from(model.mc_identity))?;
+        scratch.write_flag(model.mc_identity)?;
     } else if model.mc_identity {
         return Err(non_canonical("mc_identity_clip"));
     }
-    scratch.write_bit(u8::from(model.film_grain_block_size))?;
+    scratch.write_flag(model.film_grain_block_size)?;
     Ok(())
 }
 

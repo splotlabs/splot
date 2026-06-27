@@ -88,7 +88,7 @@ pub fn write_msdo(writer: &mut BitWriter, msdo: &MultistreamDecoderOperation) ->
     scratch.write_bits_u8(msdo.multistream_profile_idc.get(), F5)?;
     scratch.write_bits_u8(msdo.multistream_level_idx, F5)?;
     scratch.write_bits_u8(msdo.multistream_tier, TIER_BITS)?;
-    scratch.write_bit(u8::from(msdo.multistream_even_allocation_flag))?;
+    scratch.write_flag(msdo.multistream_even_allocation_flag)?;
     if let Some(large_picture_idc) = msdo.multistream_large_picture_idc {
         scratch.write_bits_u8(large_picture_idc, LARGE_PICTURE_IDC_BITS)?;
     }
@@ -98,7 +98,7 @@ pub fn write_msdo(writer: &mut BitWriter, msdo: &MultistreamDecoderOperation) ->
         scratch.write_bits_u8(sub.sub_stream_max_level, F5)?;
         scratch.write_bits_u8(sub.sub_stream_max_tier, TIER_BITS)?;
     }
-    scratch.write_bit(u8::from(msdo.multistream_doh_constraint_flag))?;
+    scratch.write_flag(msdo.multistream_doh_constraint_flag)?;
     writer.append(&scratch)
 }
 

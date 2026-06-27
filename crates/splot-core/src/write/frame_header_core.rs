@@ -179,7 +179,7 @@ fn write_refresh_frame_flags(
             has_flags,
             frame_to_refresh,
         } => {
-            writer.write_bit(u8::from(has_flags))?;
+            writer.write_flag(has_flags)?;
             if has_flags {
                 write_f(writer, frame_to_refresh, bits)?;
             }
@@ -742,17 +742,17 @@ fn write_intra_header_into(
 
         // Output-control flags.
         if obu_type != ObuType::OpenLoopKey {
-            scratch.write_bit(u8::from(glue.immediate_output_frame))?;
+            scratch.write_flag(glue.immediate_output_frame)?;
         }
         if !(glue.immediate_output_frame || seq.monotonic_output_order_flag) {
-            scratch.write_bit(u8::from(glue.implicit_output_frame))?;
+            scratch.write_flag(glue.implicit_output_frame)?;
         }
     }
 
     // 3. parse_intra_tail order: frame_size_override_flag, order_hint, refresh_frame_flags,
     //    frame_size(), screen_content_params(), intrabc_params(), disable_cdf_update.
     if !glue.single_picture {
-        scratch.write_bit(u8::from(glue.frame_size_override_flag))?;
+        scratch.write_flag(glue.frame_size_override_flag)?;
     }
     write_f(scratch, glue.order_hint_lsb, seq.order_hint_bits)?;
     write_refresh_frame_flags(scratch, seq, glue.refresh_arm, glue.refresh_frame_flags)?;
@@ -801,7 +801,7 @@ fn write_intra_header_into(
     write_intrabc_params(scratch, intrabc, true, seq.allow_frame_max_bvp_drl_bits)?;
 
     // disable_cdf_update f(1) — the intra-path bit read right after intrabc_params().
-    scratch.write_bit(u8::from(glue.disable_cdf_update))?;
+    scratch.write_flag(glue.disable_cdf_update)?;
 
     // 4. Structure cluster: tile_info(), quantization_params(), segmentation_params(),
     //    setup_qm_params(), delta_q_params(), lossless tail.

@@ -463,11 +463,11 @@ pub(crate) fn parse_inter_control_into(
         control.disable_cross_frame_cdf_init = Some(false);
     } else {
         // mirror :4383: signal_primary_ref_frame f(1).
-        let signal = reader.read_bit()? != 0;
+        let signal = reader.read_flag()?;
         control.signal_primary_ref_frame = Some(signal);
         // mirror :4385-4389: if ( !is_tip_frame() ) disable_cross_frame_cdf_init f(1).
         if !ctx.obu_type.is_tip_frame() {
-            control.disable_cross_frame_cdf_init = Some(reader.read_bit()? != 0);
+            control.disable_cross_frame_cdf_init = Some(reader.read_flag()?);
         } else {
             control.disable_cross_frame_cdf_init = Some(false);
         }
@@ -481,7 +481,7 @@ pub(crate) fn parse_inter_control_into(
 
     // AV2 § 5.18.2 (mirror :4423-4427): if ( IsBridge ) bridge_frame_overwrite_flag f(1).
     if ctx.is_bridge {
-        control.bridge_frame_overwrite_flag = Some(reader.read_bit()? != 0);
+        control.bridge_frame_overwrite_flag = Some(reader.read_flag()?);
     }
 
     // AV2 § 5.18.2 (mirror :4429-4537): refresh_frame_flags. The KEY-frame arms were
@@ -545,7 +545,7 @@ fn read_inter_refresh_frame_flags(
     // mirror :4511: else if ( enable_short_refresh_frame_flags && !SWITCH && !KEY )
     //               has_refresh_frame_flags f(1); conditional frame_to_refresh f(n).
     if seq.enable_short_refresh_frame_flags {
-        let has = reader.read_bit()? != 0;
+        let has = reader.read_flag()?;
         if has {
             let frame_to_refresh = read_f(reader, ceil_log2(seq.num_ref_frames))?;
             return Ok(Some(1u32.wrapping_shl(frame_to_refresh)));
@@ -575,7 +575,7 @@ fn parse_inter_reference_region(
     let explicit_ref_frame_map = if ctx.frame_type == FrameType::Switch || ctx.is_bridge {
         true
     } else if seq.explicit_ref_frame_map {
-        reader.read_bit()? != 0 // frame_explicit_ref_frame_map f(1)
+        reader.read_flag()? // frame_explicit_ref_frame_map f(1)
     } else {
         false
     };
@@ -745,12 +745,12 @@ fn parse_inter_reference_region(
 
     // mirror :4653-4669: the BRU triple.
     if seq.enable_bru && ctx.frame_type == FrameType::Inter && !is_tip && !ctx.is_bridge {
-        let use_bru = reader.read_bit()? != 0; // use_bru f(1)
+        let use_bru = reader.read_flag()?; // use_bru f(1)
         control.use_bru = Some(use_bru);
         if use_bru {
             let n = ceil_log2(num_total_refs);
             control.bru_ref = Some(read_f(reader, n)?); // bru_ref f(n)
-            control.bru_inactive = Some(reader.read_bit()? != 0); // bru_inactive f(1)
+            control.bru_inactive = Some(reader.read_flag()?); // bru_inactive f(1)
         } else {
             control.bru_inactive = Some(false);
         }
@@ -774,14 +774,14 @@ fn parse_inter_reference_region(
     {
         false
     } else {
-        reader.read_bit()? != 0 // use_ref_frame_mvs f(1)
+        reader.read_flag()? // use_ref_frame_mvs f(1)
     };
     control.use_ref_frame_mvs = Some(use_ref_frame_mvs);
 
     // mirror :4697-4707: tmvp_sample_step_minus_1 f(1) when
     // use_ref_frame_mvs && NumTotalRefs > 1 && SbSize != BLOCK_64X64.
     if use_ref_frame_mvs && num_total_refs > 1 && seq.sb_size != SuperblockSize::Block64x64 {
-        control.tmvp_sample_step_minus_1 = Some(reader.read_bit()? != 0);
+        control.tmvp_sample_step_minus_1 = Some(reader.read_flag()?);
     }
 
     // mirror :4709-4735: FrameDistance / OrderHints derivations (no bits).
@@ -842,7 +842,7 @@ fn parse_inter_reference_region(
     // override.
     let mut max_drl_bits_minus_1 = seq.seq_max_drl_bits_minus_1;
     if seq.allow_frame_max_drl_bits {
-        let change_drl = reader.read_bit()? != 0; // change_drl f(1)
+        let change_drl = reader.read_flag()?; // change_drl f(1)
         if change_drl {
             // mirror :4871: n = MAX_REF_MV_STACK_SIZE - 2; max_drl_bits_minus_1 ns(n).
             let n = MAX_REF_MV_STACK_SIZE - 2;
@@ -862,12 +862,12 @@ fn parse_inter_reference_region(
         MvPrecision::OnePel
     } else {
         // mirror :4897: use_qtr_precision_mv f(1).
-        let use_qtr_precision_mv = reader.read_bit()? != 0;
+        let use_qtr_precision_mv = reader.read_flag()?;
         if use_qtr_precision_mv {
             MvPrecision::QuarterPel
         } else {
             // mirror :4905: allow_high_precision_mv f(1).
-            let allow_high_precision_mv = reader.read_bit()? != 0;
+            let allow_high_precision_mv = reader.read_flag()?;
             if allow_high_precision_mv {
                 MvPrecision::EighthPel
             } else {
@@ -890,7 +890,7 @@ fn parse_inter_reference_region(
             *enabled = seq.seq_enabled_motion_modes[mode];
         } else if seq.seq_enabled_motion_modes[mode] {
             // mirror :4931: frame_enabled_motion_modes[mode] f(1).
-            *enabled = reader.read_bit()? != 0;
+            *enabled = reader.read_flag()?;
         } else {
             // mirror :4935: frame_enabled_motion_modes[mode] = 0 (no bit).
             *enabled = false;
@@ -906,7 +906,7 @@ fn parse_inter_reference_region(
     // else-branch of `if ( bru_inactive || IsBridge )`); the inter ordinary path reaches it
     // here, after the motion-mode block. Recording it keeps the consumed-bit count exact, so
     // the shared tail starts at the right position.
-    control.disable_cdf_update = Some(reader.read_bit()? != 0);
+    control.disable_cdf_update = Some(reader.read_flag()?);
 
     // mirror :5045-5095: the bru_inactive / IsBridge return arm — not taken here. mirror
     // :5097-5181: use_ref_frame_mvs motion-field / TIP-output derivations read no bits here
@@ -957,7 +957,7 @@ fn parse_frame_size_with_refs(
     ref_frame_idx: &[u32],
 ) -> Result<Option<FrameSize>> {
     for &idx in ref_frame_idx {
-        let found_ref = reader.read_bit()? != 0; // found_ref f(1)
+        let found_ref = reader.read_flag()?; // found_ref f(1)
         if found_ref {
             // mirror :4827: FrameWidth/Height = RefFrameWidth/Height[ ref_frame_idx[i] ].
             return Ok(ref_dims(reference_state, idx).map(|(w, h)| FrameSize::new(w, h)));

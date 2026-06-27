@@ -120,7 +120,7 @@ pub fn write_sequence_header_general(
     // seq_profile_idc: f(5).
     writer.write_bits_u8(general.seq_profile_idc.get(), 5)?;
     // single_picture_header_flag: f(1).
-    writer.write_bit(u8::from(general.single_picture_header_flag))?;
+    writer.write_flag(general.single_picture_header_flag)?;
     // seq_level_idx: f(5).
     writer.write_bits_u8(general.seq_level_idx.get(), 5)?;
     // seq_tier: f(1), read only when seq_level_idx > 3 && !single_picture_header_flag.
@@ -135,7 +135,7 @@ pub fn write_sequence_header_general(
     // single-picture header infers all six (checked in `check_general_encodable`).
     if !general.single_picture_header_flag {
         writer.write_bits_u8(general.seq_lcr_id.get(), 3)?; // seq_lcr_id: f(3)
-        writer.write_bit(u8::from(general.still_picture))?; // still_picture: f(1)
+        writer.write_flag(general.still_picture)?; // still_picture: f(1)
         writer.write_bits_u8(general.max_tlayer_id.get(), 2)?; // max_tlayer_id: f(2)
         writer.write_bits_u8(general.max_mlayer_id.get(), 3)?; // max_mlayer_id: f(3)
         // seq_max_mlayer_cnt_minus_1: f(CeilLog2(max_mlayer_id + 1)), only when max_mlayer_id > 0.
@@ -144,7 +144,7 @@ pub fn write_sequence_header_general(
             let minus_1 = u32::from(general.seq_max_mlayer_count.get()) - 1;
             writer.write_bits(minus_1, n)?;
         }
-        writer.write_bit(u8::from(general.monotonic_output_order_flag))?; // monotonic_output_order_flag: f(1)
+        writer.write_flag(general.monotonic_output_order_flag)?; // monotonic_output_order_flag: f(1)
     }
 
     // frame_width_bits_minus_1 / frame_height_bits_minus_1: f(4) of (bits - 1).
@@ -166,12 +166,12 @@ pub fn write_sequence_header_general(
     if !general.single_picture_header_flag {
         // seq_initial_display_delay_present_flag: f(1) = the Option's presence.
         let initial_delay_present = general.seq_initial_display_delay_minus_1.is_some();
-        writer.write_bit(u8::from(initial_delay_present))?;
+        writer.write_flag(initial_delay_present)?;
         if let Some(minus_1) = general.seq_initial_display_delay_minus_1 {
             writer.write_bits_u8(minus_1, 4)?; // seq_initial_display_delay_minus_1: f(4)
         }
         // decoder_model_info_present_flag: f(1).
-        writer.write_bit(u8::from(general.decoder_model_info_present_flag))?;
+        writer.write_flag(general.decoder_model_info_present_flag)?;
         if general.decoder_model_info_present_flag {
             // num_units_in_decoding_tick: f(32) (validated > 0 in the check pass).
             let num_units = general.num_units_in_decoding_tick.ok_or(
@@ -181,7 +181,7 @@ pub fn write_sequence_header_general(
             )?;
             writer.write_bits(num_units, 32)?;
             // seq_decoder_model_info_present_flag: f(1).
-            writer.write_bit(u8::from(general.seq_decoder_model_info_present_flag))?;
+            writer.write_flag(general.seq_decoder_model_info_present_flag)?;
             if general.seq_decoder_model_info_present_flag {
                 let model =
                     general
@@ -350,7 +350,7 @@ pub fn write_cropping_window(
     general: &SequenceHeaderGeneral,
 ) -> WriteResult<()> {
     check_cropping_window_encodable(general)?;
-    writer.write_bit(u8::from(general.seq_cropping_window_present_flag))?;
+    writer.write_flag(general.seq_cropping_window_present_flag)?;
     if general.seq_cropping_window_present_flag {
         let w = &general.cropping_window;
         writer.write_uvlc(w.left)?;
@@ -404,7 +404,7 @@ pub fn write_sequence_decoder_model_info(
     check_decoder_model_info_encodable(info)?;
     writer.write_uvlc(info.decoder_buffer_delay)?;
     writer.write_uvlc(info.encoder_buffer_delay)?;
-    writer.write_bit(u8::from(info.low_delay_mode_flag))
+    writer.write_flag(info.low_delay_mode_flag)
 }
 
 /// Validates that `seq_decoder_model_info()`'s `uvlc` delays are encodable — neither
@@ -459,7 +459,7 @@ pub fn write_dependency_maps(
 
     // mlayer_dependency_present_flag: f(1), only when max_mlayer_id > 0.
     if max_mlayer > 0 {
-        writer.write_bit(u8::from(general.mlayer_dependency_present_flag))?;
+        writer.write_flag(general.mlayer_dependency_present_flag)?;
         if general.mlayer_dependency_present_flag {
             for curr in 1..=max_mlayer {
                 // §5.4.1: refLayer runs from currLayer down to 0 (diagonal first).
@@ -468,7 +468,7 @@ pub fn write_dependency_maps(
                         EmbeddedLayerId::from_bits(curr),
                         EmbeddedLayerId::from_bits(reference),
                     );
-                    writer.write_bit(u8::from(bit))?;
+                    writer.write_flag(bit)?;
                 }
             }
         }
@@ -476,11 +476,11 @@ pub fn write_dependency_maps(
 
     // tlayer_dependency_present_flag: f(1), only when max_tlayer_id > 0.
     if max_tlayer > 0 {
-        writer.write_bit(u8::from(general.tlayer_dependency_present_flag))?;
+        writer.write_flag(general.tlayer_dependency_present_flag)?;
         if general.tlayer_dependency_present_flag {
             // multi_tlayer_dependency_map_present_flag: f(1), only when max_mlayer_id > 0.
             if max_mlayer > 0 {
-                writer.write_bit(u8::from(general.multi_tlayer_dependency_map_present_flag))?;
+                writer.write_flag(general.multi_tlayer_dependency_map_present_flag)?;
             }
             let multi = general.multi_tlayer_dependency_map_present_flag;
             for m in 0..=max_mlayer {
@@ -494,7 +494,7 @@ pub fn write_dependency_maps(
                                 TemporalLayerId::from_bits(curr),
                                 TemporalLayerId::from_bits(reference),
                             );
-                            writer.write_bit(u8::from(bit))?;
+                            writer.write_flag(bit)?;
                         }
                     }
                 }

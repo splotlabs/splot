@@ -110,6 +110,19 @@ impl BitWriter {
         Ok(())
     }
 
+    /// Writes a boolean flag as a single bit, the inverse of
+    /// [`crate::bitio::BitReader::read_flag`] and the boolean spelling of
+    /// [`BitWriter::write_bit`] for the AV2 `f(1)` flag idiom.
+    ///
+    /// `true` emits a `1` bit and `false` emits a `0` bit.
+    ///
+    /// # Errors
+    /// Never fails (the encoded bit is always `0` or `1`); returns [`WriteResult`]
+    /// for symmetry with the other primitives.
+    pub fn write_flag(&mut self, flag: bool) -> WriteResult<()> {
+        self.write_bit(u8::from(flag))
+    }
+
     /// Writes the low `n` bits of `value` (MSB-first), the inverse of
     /// [`crate::bitio::BitReader::read_bits`].
     ///
@@ -511,6 +524,27 @@ mod tests {
         assert!(writer.is_byte_aligned());
         let bytes = writer.into_bytes();
         assert_eq!(bytes, vec![0b1011_0010]);
+    }
+
+    #[test]
+    fn write_flag_emits_single_bit_and_round_trips() {
+        let mut writer = BitWriter::new();
+        writer.write_flag(true).unwrap();
+        writer.write_flag(false).unwrap();
+        assert_eq!(writer.bit_len(), 2);
+        // 1 then 0, zero-padded -> 0b1000_0000.
+        let bytes = writer.into_bytes();
+        assert_eq!(bytes, vec![0b1000_0000]);
+        // Round-trip through read_flag: [true, false, true] reads back identically.
+        let mut w2 = BitWriter::new();
+        for f in [true, false, true] {
+            w2.write_flag(f).unwrap();
+        }
+        let w2_bytes = w2.into_bytes();
+        let mut r = reader(&w2_bytes);
+        assert!(r.read_flag().unwrap());
+        assert!(!r.read_flag().unwrap());
+        assert!(r.read_flag().unwrap());
     }
 
     #[test]
