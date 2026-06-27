@@ -1801,9 +1801,13 @@ fn read_frontier_partition_decision(
         None,
     )?;
     let facts = partition_decision_facts(allowed)?;
+    // §5.20.3.1 / §8.3.2: the SDP chroma partition tree reads its partition-entry
+    // CDFs and neighbor block-size context from plane 1; the luma / shared tree
+    // uses plane 0 (AVM `plane = tree_type == CHROMA_PART`).
+    let partition_plane = partition_cdf_plane(call.tree_type);
     let partition_context = PartitionContextInput::new(
         call.b_size.index(),
-        0,
+        partition_plane,
         call.r,
         call.c,
         context.left_mi_sizes,
@@ -1811,6 +1815,9 @@ fn read_frontier_partition_decision(
     )?;
     let avail_u = tile_bounds.avail_u(call);
     let avail_l = tile_bounds.avail_l(call);
+    // §8.3.2 NOTE: `PlaneStart` is fixed at 0 for `do_square_split` (the chroma
+    // partition is forced for large block sizes), so the square-split context and
+    // its `MiSizes[PlaneStart]` always use plane 0 — never the chroma SDP plane.
     let square_context = SquareSplitContextInput::new(
         call.b_size.index(),
         0,
@@ -1839,6 +1846,17 @@ fn plane_range_for_tree_type(tree_type: PartitionTreeType, num_planes: usize) ->
         PartitionTreeType::LumaPart => (0, num_planes.min(1)),
         PartitionTreeType::ChromaPart => (1, num_planes.min(3)),
     }
+}
+
+/// AV2 § 5.20.3.1 partition-CDF plane index (`plane = TreeType == CHROMA_PART`).
+///
+/// The § 8.3.2 partition-entry CDFs (`do_split`, `do_square_split`, `rect_type`,
+/// `do_ext_partition`, `do_uneven_4way_partition`) and their neighbor block-size
+/// context arrays are keyed by this plane: the luma / shared partition tree reads
+/// plane `0`, and the SDP chroma partition tree reads plane `1`. This mirrors
+/// AVM `decodeframe.c` `const int plane = xd->tree_type == CHROMA_PART;`.
+const fn partition_cdf_plane(tree_type: PartitionTreeType) -> usize {
+    matches!(tree_type, PartitionTreeType::ChromaPart) as usize
 }
 
 fn is_intra_sdp_shared_root(frame: TilePartitionFrameFacts, call: TilePartitionCall) -> bool {
