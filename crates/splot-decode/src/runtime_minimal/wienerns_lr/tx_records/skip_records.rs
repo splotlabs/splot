@@ -60,6 +60,7 @@ pub(super) fn record_skipped_selectable_residuals(
                 &zero,
                 recon.leaf_y_mode,
                 recon.directional_luma,
+                recon.mrl_index,
                 recon.qindex,
                 recon.luma_use_tcq,
                 recon.fsc_mode,

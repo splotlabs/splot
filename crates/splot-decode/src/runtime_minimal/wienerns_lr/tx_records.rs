@@ -844,11 +844,12 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                         WienerNsLrTransformRecordDiagnosticScope::Selectable,
                     )
                 })?;
-                // SDP chroma-only leaf: reconstruct the chroma DC (gated in the sink).
-                // This leaf decodes no luma, so `fsc_mode` (a luma-only gate) is false.
+                // SDP chroma-only leaf: reconstruct the chroma DC (gated in the sink);
+                // it decodes no luma, so the luma-only gates are inert.
                 let sdp_recon = SelectableReconContext {
                     leaf_y_mode: Some(y_mode),
-                    directional_luma: None, // chroma-only leaf decodes no luma transform
+                    directional_luma: None,
+                    mrl_index: 0,
                     chroma_mode: supported_chroma_mode(y_mode, uv_mode.uv_mode()),
                     qindex: delta_q_state.qindex_u32(),
                     luma_use_tcq,
@@ -899,8 +900,7 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                     GeneralIntraLeafMode::luma(0, IntraYMode::DC_PRED, 0, 0),
                     LumaTransformTypeContext::with_mrl_index(IntraYMode::DC_PRED, 0, 0),
                     0,
-                    // IntrABC is reconstructed by a later brick; never recon it here
-                    // (no DC chroma, no directional luma).
+                    // IntrABC is recon'd by a later brick; never recon it here.
                     None,
                     None,
                 )
@@ -1009,6 +1009,7 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
             let recon_context = SelectableReconContext {
                 leaf_y_mode: leaf_mode.luma_y_mode(),
                 directional_luma,
+                mrl_index: luma_transform_type_context.mrl_index(),
                 chroma_mode,
                 qindex: delta_q_state.qindex_u32(),
                 luma_use_tcq,
@@ -1384,8 +1385,8 @@ fn decode_luma_records_for_chunk(
                 WienerNsLrTransformRecordDiagnosticScope::Selectable,
             )
         })?;
-        // Reconstruction bridge: reconstruct this luma transform in walk order
-        // before `luma.quant` is dropped (gated to the DC / cardinal subset in the sink).
+        // Reconstruction bridge: reconstruct this luma transform in walk order before
+        // `luma.quant` is dropped (gated to the DC / cardinal subset in the sink).
         if let Some(sink) = sink.as_deref_mut() {
             sink.reconstruct_luma_transform(
                 record.col,
@@ -1394,6 +1395,7 @@ fn decode_luma_records_for_chunk(
                 &luma,
                 recon.leaf_y_mode,
                 recon.directional_luma,
+                recon.mrl_index,
                 recon.qindex,
                 recon.luma_use_tcq,
                 recon.fsc_mode,
