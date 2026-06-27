@@ -22,8 +22,8 @@
 #![allow(dead_code)]
 
 use splot_recon::{
-    BitDepth as ReconBitDepth, DequantBlockParams, PlaneId, PlaneRect, QuantizerDeltas,
-    ac_quantizer, dc_quantizer, dequantize_block, max_quantizer_index,
+    BitDepth as ReconBitDepth, DequantBlockParams, PlaneId, PlaneRect, ac_quantizer, dc_quantizer,
+    dequantize_block, max_quantizer_index,
 };
 
 use crate::error::{Error, Result};
@@ -31,6 +31,7 @@ use crate::forward_transform_16x16::{
     DCT_DCT_16X16_COEFF_COUNT, DCT_DCT_16X16_HEIGHT, DCT_DCT_16X16_WIDTH,
     ForwardTransformBlock16x16,
 };
+use crate::quantization_shared::{dequant_visible_range, zero_deltas};
 
 const DEQUANT_ROUNDING_SCALE: u128 = 8;
 const DEQUANT_PRODUCT_MAX: u64 = 0xFF_FFFF;
@@ -295,21 +296,6 @@ fn quantize_coefficient(
         Ok(-quantized_abs)
     } else {
         Ok(quantized_abs)
-    }
-}
-
-fn dequant_visible_range(bit_depth: ReconBitDepth) -> (i32, i32) {
-    let bound = 1i32 << (7 + u32::from(bit_depth.bits()));
-    (-bound, bound - 1)
-}
-
-const fn zero_deltas() -> QuantizerDeltas {
-    QuantizerDeltas {
-        y_dc: 0,
-        u_dc: 0,
-        v_dc: 0,
-        u_ac: 0,
-        v_ac: 0,
     }
 }
 

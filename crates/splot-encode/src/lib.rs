@@ -39,6 +39,7 @@ mod intra_mode_emission;
 mod partition_emission;
 mod quantization;
 mod quantization_16x16;
+mod quantization_shared;
 #[cfg(test)]
 mod quantization_test_support;
 mod recon_boundary;
