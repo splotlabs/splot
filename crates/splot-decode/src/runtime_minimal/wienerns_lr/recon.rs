@@ -276,7 +276,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         let Some((log2_width, log2_height)) = tx_size_log2(tx_size) else {
             return Ok(());
         };
-        if !residual_is_reconstructable(block, fsc_mode) {
+        if !residual_is_reconstructable(block, fsc_mode, log2_width == log2_height) {
             return Ok(());
         }
         let (mi_w, mi_h) = mi_extent(log2_width, log2_height);
@@ -353,7 +353,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             return Ok(());
         };
         // Chroma is never an FSC leaf.
-        if !residual_is_reconstructable(block, false) {
+        if !residual_is_reconstructable(block, false, log2_width == log2_height) {
             return Ok(());
         }
         let (mi_col, mi_row) = (x / MI_SIZE, y / MI_SIZE);
@@ -546,21 +546,29 @@ fn mi_extent(log2_width: u32, log2_height: u32) -> (usize, usize) {
 /// bare §7.13.2 flat DC prediction. A non-`all_zero` block is admitted when it has
 /// no §5.20.7.29 IST secondary transform (`intra_ist`) and is not an FSC leaf.
 ///
-/// Both SQUARE and NON-SQUARE (rectangular) DC_PRED residuals are admitted: the
-/// §7.15.4 outer process ([`inverse_transform_2d_outer`]) already drives the
-/// rectangular path — the §7.15.4.1 `Adjusted_Tx_Size` per-side `Min(log2, 5)`
-/// cap, the `Abs(log2W - log2H)` odd-ratio `Round2(x * 2896, 12)` √2 rescale, and
-/// the nearest-neighbour sample duplication for any original side over 32 — and is
-/// proven bit-exact for the ac0ej3 `TX_16X64` `DC_PRED` leaf at MI(4,0)
-/// (x[16,32), y[0,64)) against the AVM pre-filter oracle (residual `+1` over the
-/// top-left 3 columns × 16 rows, zero below; see [`crate::runtime_minimal`] region
-/// test). The §5.20.7.29 IST / FSC / quant-delta / incomplete-neighbour gates stay
-/// intact; everything else is deferred.
-fn residual_is_reconstructable(block: &LumaCoeffBlock, fsc_mode: bool) -> bool {
+/// A SQUARE non-`all_zero` residual is the proven case. A NON-square (rectangular)
+/// residual is admitted only when it is DC-only (`eob == 1`): the §7.15.4 outer
+/// process ([`inverse_transform_2d_outer`]) already drives the rectangular path
+/// (the §7.15.4.1 `Adjusted_Tx_Size` per-side `Min(log2, 5)` cap, the
+/// `Abs(log2W - log2H)` odd-ratio `Round2(x * 2896, 12)` √2 rescale, and the
+/// nearest-neighbour duplication for any original side over 32), and a single DC
+/// coefficient is shared by every DCT-family transform, so the (unretained) luma tx
+/// type is irrelevant — proven bit-exact for the ac0ej3 `TX_16X64` `DC_PRED` leaf at
+/// MI(4,0) (x[16,32), y[0,64)) against the AVM pre-filter oracle. A non-square
+/// `eob > 1` block may carry a non-`DCT_DCT` luma tx type that `LumaCoeffBlock` does
+/// not retain (the primitive always reconstructs `DCT_DCT`), so it stays deferred.
+/// The §5.20.7.29 IST / FSC / quant-delta / incomplete-neighbour gates stay intact;
+/// everything else is deferred.
+fn residual_is_reconstructable(block: &LumaCoeffBlock, fsc_mode: bool, square: bool) -> bool {
     if block.all_zero {
         return true;
     }
-    block.intra_ist.is_none() && !fsc_mode
+    if block.intra_ist.is_some() || fsc_mode {
+        return false;
+    }
+    // Square non-`all_zero` is the proven path; a non-square residual is only
+    // DC-only-safe (`eob == 1`), where the unretained luma tx type cannot matter.
+    square || block.eob == 1
 }
 
 #[cfg(test)]
@@ -803,6 +811,29 @@ mod tests {
             0,
             0,
             TX_16X16,
+            &block,
+            Some(IntraYMode::DC_PRED),
+            false,
+        );
+        assert_eq!(sink.reconstructed_sample(PlaneId::Y, 0, 0).unwrap(), 0);
+        assert_eq!(sink.reconstructed_counts().0, 0);
+    }
+
+    // Codex review: a non-`all_zero`, NON-square DC leaf with `eob > 1` may carry a
+    // non-`DCT_DCT` luma tx type (not retained in `LumaCoeffBlock`); the primitive
+    // always reconstructs `DCT_DCT`, so it is DEFERRED. Only a DC-only (`eob == 1`)
+    // non-square residual is tx-type-agnostic and admitted (the ac0ej3 mi(4,0) case).
+    #[test]
+    fn non_square_multi_coeff_dc_leaf_is_deferred() {
+        let mut sink = sink();
+        let mut block = coeff_block_16x64();
+        block.eob = 2;
+        block.quant[1] = 7;
+        recon_luma(
+            &mut sink,
+            0,
+            0,
+            TX_16X64,
             &block,
             Some(IntraYMode::DC_PRED),
             false,
