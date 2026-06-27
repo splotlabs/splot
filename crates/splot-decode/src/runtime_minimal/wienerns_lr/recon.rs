@@ -609,6 +609,14 @@ mod tests {
         assert_eq!(sink.reconstructed_counts().0, 0);
     }
 
+    // SMOOTH chroma is DEFERRED, never reconstructed. This is load-bearing for the
+    // ac0ej3 mission: splot resolves the SB0 chroma leaf (and every reachable chroma
+    // leaf past the first BLOCK_16X64 luma column) as `SMOOTH`, but AVM's mode oracle
+    // resolves them as `DC` / `H` / `CfL` and its prediction-only buffer is flat 512
+    // (no-neighbour DC). The §7.13.2.13 SMOOTH primitive over the §7.13.2.1
+    // no-neighbour fallback edges (above 511, left 513) instead produces a 511..513
+    // gradient, so admitting SMOOTH here would write confidently-wrong samples. The
+    // sink DEFERS until the upstream mode resolution is reconciled with AVM.
     #[test]
     fn dc_chroma_non_dc_mode_leaves_the_region_unreconstructed() {
         let mut sink = sink();
