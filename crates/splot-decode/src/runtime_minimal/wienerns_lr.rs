@@ -46,9 +46,12 @@ const LR_RETAINED_FRAME_BUFFERS: u64 = 2;
 mod diagnostics;
 mod intrabc_records;
 mod live_storage;
+mod recon;
 mod source_read_math;
 mod tx_records;
 
+#[cfg(test)]
+pub(super) use self::recon::{WienerNsLrReconSink, reconstruct_ac0ej3_selectable_intra_region};
 use self::tx_records::WienerNsLrLiveTransformRecordHandoff;
 pub(super) use self::tx_records::WienerNsLrTxSkipTransformRecord;
 
@@ -575,6 +578,10 @@ pub(super) fn ensure_wienerns_lr_unit_runtime_frontier(
                     wienerns_lr_live_transform_record_handoff_error(key_envelope.offset)
                 })?;
             let transform_handoff = if tx_mode == TxMode::Select {
+                // Public decode runs WITHOUT a reconstruction sink: the walk still
+                // fails closed at the first active IntrABC block, so no partial
+                // frame is emitted. The reconstruction bridge is exercised only by
+                // the region-verification test, which attaches a sink.
                 tx_records::derive_wienerns_lr_selectable_transform_record_handoff(
                     bytes,
                     options,
@@ -583,6 +590,7 @@ pub(super) fn ensure_wienerns_lr_unit_runtime_frontier(
                     key_envelope,
                     sequence,
                     core,
+                    None,
                 )?
             } else if tx_mode == TxMode::Largest {
                 ensure_sequence_chroma_tools_before_tile_decode(sequence, sequence_offset)?;

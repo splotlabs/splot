@@ -12,7 +12,7 @@ use splot_core::tables::conversion::{
     MAX_TX_SIZE_RECT, NUM_4X4_BLOCKS_HIGH, NUM_4X4_BLOCKS_WIDE, SIZE_TO_TX_PART_GROUP_LOOKUP,
     SIZE_TO_TX_TYPE_GROUP_VERT_AND_HORZ, SIZE_TO_TX_TYPE_GROUP_VERT_OR_HORZ, TX_HEIGHT, TX_WIDTH,
 };
-use splot_recon::{BitDepth, max_quantizer_index};
+use splot_recon::{BitDepth, PlaneId, max_quantizer_index};
 
 use crate::error::Result;
 use crate::tile_payload::{
@@ -22,8 +22,11 @@ use crate::tile_payload::{
     TileCoeffContextState, TransformToolResidualPolicy, decode_general_intra_block_modes,
     decode_general_intra_chroma_block_mode, decode_general_intra_luma_block_mode,
     decode_general_intra_multiblock_tree, decode_general_intra_plane_coeffs, frame_mi_dimensions,
+    supported_chroma_mode,
 };
 use crate::{DecodeOptions, DecodePlannedObu, DecodeStreamPlan};
+
+use super::recon::{SelectableReconContext, WienerNsLrReconSink};
 
 use super::intrabc_records::{
     IntrabcBlockGeometry, IntrabcBlockPrelude, TileIntrabcPreludeState, read_intrabc_info,
@@ -322,6 +325,12 @@ impl DeltaQState {
 
     const fn superblock(&self, frontier: &DecodeBlockFrontier) -> (usize, usize) {
         (frontier.r / self.sb_size4, frontier.c / self.sb_size4)
+    }
+
+    /// The §5.20.6.5 per-block dequant index (`current_q_index`, already clamped to
+    /// `[1, max_q]`) for the reconstruction sink; a defensive clamp keeps it total.
+    fn qindex_u32(&self) -> u32 {
+        u32::try_from(self.current_q_index.clamp(0, i64::from(u32::MAX))).unwrap_or(u32::MAX)
     }
 }
 
@@ -672,6 +681,7 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
     key_envelope: ObuEnvelope<'_>,
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
+    mut sink: Option<&mut WienerNsLrReconSink<u16>>,
 ) -> Result<WienerNsLrLiveTransformRecordHandoff> {
     ensure_selectable_transform_record_tool_gates(sequence, core, key_envelope.offset)?;
     let mut tile_plan = derive_tile_plan(
@@ -708,6 +718,10 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
             "unsupported_wienerns_lr_selectable_transform_records_lossless",
         ));
     }
+    // §7.14.4 luma TCQ `dqDenom` term applies to the luma DCT_DCT block; captured
+    // before the tile work unit is moved into the partition walk so the
+    // reconstruction sink can dequantize each luma transform.
+    let luma_use_tcq = frame_facts.allow_tcq();
 
     let (tx_skip_rows, tx_skip_cols) = frame_mi_dimensions(core).map_err(|_| {
         wienerns_lr_selectable_transform_record_error_reason(
@@ -827,6 +841,15 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                         WienerNsLrTransformRecordDiagnosticScope::Selectable,
                     )
                 })?;
+                // SDP chroma-only leaf: reconstruct the chroma DC (gated in the sink).
+                // This leaf decodes no luma, so `fsc_mode` (a luma-only gate) is false.
+                let sdp_recon = SelectableReconContext {
+                    leaf_y_mode: Some(y_mode),
+                    chroma_mode: supported_chroma_mode(y_mode, uv_mode.uv_mode()),
+                    qindex: delta_q_state.qindex_u32(),
+                    luma_use_tcq,
+                    fsc_mode: false,
+                };
                 decode_chroma_residual_chunks(
                     work_unit,
                     symbols,
@@ -836,6 +859,8 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                     n4h,
                     uv_mode.coeff_uv_mode(),
                     transform_tool_residual_policy,
+                    sink.as_deref_mut(),
+                    sdp_recon,
                     tile_offset,
                 )?;
                 return Ok(GeneralIntraLeafMode::no_luma_mode());
@@ -854,13 +879,15 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                 &mut intrabc_state,
                 tile_offset,
             )?;
-            let (uv_mode, leaf_mode, luma_transform_type_context, fsc_mode) =
+            let (uv_mode, leaf_mode, luma_transform_type_context, fsc_mode, chroma_mode) =
                 if prelude.use_intrabc {
                 (
                     0,
                     GeneralIntraLeafMode::luma(0, IntraYMode::DC_PRED, 0, 0),
                     LumaTransformTypeContext::with_mrl_index(IntraYMode::DC_PRED, 0, 0),
                     0,
+                    // IntrABC is reconstructed by a later brick; never DC-reconstruct it.
+                    None,
                 )
             } else if frontier.is_luma_part() {
                 let luma = decode_general_intra_luma_block_mode(
@@ -897,6 +924,9 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                         luma.mrl_index,
                     ),
                     luma.fsc_mode,
+                    // SDP luma-part leaf decodes no chroma here; chroma is a
+                    // separate `is_chroma_part` leaf reconstructed via its own mode.
+                    None,
                 )
             } else {
                 let modes = decode_general_intra_block_modes(
@@ -919,6 +949,7 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                         WienerNsLrTransformRecordDiagnosticScope::Selectable,
                     )
                 })?;
+                let chroma_mode = modes.supported_chroma_mode();
                 (
                     modes.coeff_uv_mode(),
                     GeneralIntraLeafMode::luma(
@@ -933,6 +964,7 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                         modes.mrl_index,
                     ),
                     modes.fsc_mode,
+                    chroma_mode,
                 )
             };
 
@@ -954,6 +986,15 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                     "unsupported_wienerns_lr_selectable_transform_records_output_allocation",
                 )
             })?;
+            // Reconstruction-bridge context: the modes gate the verified DC subset.
+            // `fsc_mode != 0` defers FSC leaves (the primitive is non-FSC DCT_DCT).
+            let recon_context = SelectableReconContext {
+                leaf_y_mode: leaf_mode.luma_y_mode(),
+                chroma_mode,
+                qindex: delta_q_state.qindex_u32(),
+                luma_use_tcq,
+                fsc_mode: fsc_mode != 0,
+            };
             decode_selectable_residual_chunks(
                 work_unit,
                 symbols,
@@ -969,6 +1010,8 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                 prelude.is_inter,
                 prelude.skip_flag,
                 transform_tool_residual_policy,
+                sink.as_deref_mut(),
+                recon_context,
                 tile_offset,
             )?;
             intrabc_state.record_block(
@@ -1053,9 +1096,15 @@ fn decode_selectable_residual_chunks(
     is_inter: bool,
     skip_flag: bool,
     transform_tool_residual_policy: TransformToolResidualPolicy,
+    mut sink: Option<&mut WienerNsLrReconSink<u16>>,
+    recon: SelectableReconContext,
     tile_offset: ByteOffset,
 ) -> Result<()> {
     if skip_flag {
+        // A skipped block has no coefficients; its samples are the bare DC
+        // prediction (zero residual). The sink reconstructs that flat prediction
+        // (gated to DC) so LATER blocks reading these as §7.13.2.1 neighbours see
+        // the spec-correct reconstructed samples, not the workspace fill value.
         return skip_records::record_skipped_selectable_residuals(
             coeff_ctx,
             frontier,
@@ -1063,6 +1112,8 @@ fn decode_selectable_residual_chunks(
             n4h,
             luma_records,
             records,
+            sink,
+            recon,
             tile_offset,
         );
     }
@@ -1097,6 +1148,8 @@ fn decode_selectable_residual_chunks(
                         fsc_mode,
                         is_inter,
                         transform_tool_residual_policy,
+                        sink.as_deref_mut(),
+                        recon,
                         tile_offset,
                     )?;
 
@@ -1146,6 +1199,8 @@ fn decode_selectable_residual_chunks(
                             is_inter,
                             fsc_mode,
                             transform_tool_residual_policy,
+                            sink.as_deref_mut(),
+                            recon,
                             tile_offset,
                         )?;
                     }
@@ -1166,6 +1221,8 @@ fn decode_chroma_residual_chunks(
     n4h: usize,
     uv_mode: usize,
     transform_tool_residual_policy: TransformToolResidualPolicy,
+    mut sink: Option<&mut WienerNsLrReconSink<u16>>,
+    recon: SelectableReconContext,
     tile_offset: ByteOffset,
 ) -> Result<()> {
     let width_chunks = (n4w / 16).max(1);
@@ -1226,6 +1283,8 @@ fn decode_chroma_residual_chunks(
                         false,
                         0,
                         transform_tool_residual_policy,
+                        sink.as_deref_mut(),
+                        recon,
                         tile_offset,
                     )?;
                 }
@@ -1253,6 +1312,8 @@ fn decode_luma_records_for_chunk(
     fsc_mode: u8,
     is_inter: bool,
     transform_tool_residual_policy: TransformToolResidualPolicy,
+    mut sink: Option<&mut WienerNsLrReconSink<u16>>,
+    recon: SelectableReconContext,
     tile_offset: ByteOffset,
 ) -> Result<()> {
     let mut decoded_any = false;
@@ -1304,6 +1365,21 @@ fn decode_luma_records_for_chunk(
                 WienerNsLrTransformRecordDiagnosticScope::Selectable,
             )
         })?;
+        // Reconstruction bridge: reconstruct this luma transform in walk order
+        // before `luma.quant` is dropped (gated to DC_PRED inside the sink).
+        if let Some(sink) = sink.as_deref_mut() {
+            sink.reconstruct_luma_transform(
+                record.col,
+                record.row,
+                record.tx_size,
+                &luma,
+                recon.leaf_y_mode,
+                recon.qindex,
+                recon.luma_use_tcq,
+                recon.fsc_mode,
+                tile_offset,
+            )?;
+        }
         records.push(WienerNsLrTxSkipTransformRecord {
             row: record.row,
             col: record.col,
@@ -1356,6 +1432,8 @@ fn decode_chroma_group(
     is_inter: bool,
     fsc_mode: u8,
     transform_tool_residual_policy: TransformToolResidualPolicy,
+    sink: Option<&mut WienerNsLrReconSink<u16>>,
+    recon: SelectableReconContext,
     tile_offset: ByteOffset,
 ) -> Result<()> {
     let chroma_tx =
@@ -1390,7 +1468,7 @@ fn decode_chroma_group(
             WienerNsLrTransformRecordDiagnosticScope::Selectable,
         )
     })?;
-    let _v = decode_general_intra_plane_coeffs(
+    let v = decode_general_intra_plane_coeffs(
         work_unit,
         symbols,
         coeff_ctx,
@@ -1412,6 +1490,21 @@ fn decode_chroma_group(
             WienerNsLrTransformRecordDiagnosticScope::Selectable,
         )
     })?;
+    // Reconstruction bridge: reconstruct the U/V DC blocks (gated in the sink).
+    if let Some(sink) = sink {
+        for (plane, block) in [(PlaneId::U, &u), (PlaneId::V, &v)] {
+            sink.reconstruct_chroma_transform(
+                plane,
+                chroma_tx,
+                chroma_x,
+                chroma_y,
+                block,
+                recon.chroma_mode,
+                recon.qindex,
+                tile_offset,
+            )?;
+        }
+    }
     Ok(())
 }
 

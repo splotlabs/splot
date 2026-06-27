@@ -408,6 +408,14 @@ impl GeneralIntraLeafMode {
             uses_mrls: None,
         }
     }
+
+    /// The decoded §5.20.5.3 luma intra `y_mode` for this leaf, when the leaf
+    /// carried a luma mode (`None` for an SDP chroma-only or inter leaf). The
+    /// ac0ej3 reconstruction bridge reads it to gate the verified DC_PRED subset.
+    #[must_use]
+    pub(crate) const fn luma_y_mode(&self) -> Option<IntraYMode> {
+        self.y_mode
+    }
 }
 
 /// Successful partition frontier plan.
