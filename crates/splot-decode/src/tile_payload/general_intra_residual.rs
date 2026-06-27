@@ -189,6 +189,15 @@ impl LumaTransformTypeContext {
             mrl_index,
         }
     }
+
+    /// The leaf's § 5.20.5.5 `MrlIndex` (the multi-reference-line distance, `0` for
+    /// the immediate edge). The ac0ej3 recon sink reads this to DEFER a cardinal
+    /// `H_PRED` / `V_PRED` leaf whose `mrl_index > 0` (its primitive copies the
+    /// immediate edge, not the selected multi-reference line).
+    #[must_use]
+    pub(crate) const fn mrl_index(self) -> u8 {
+        self.mrl_index
+    }
 }
 
 /// Caller-selected policy for nonzero residuals when transform tools are active.

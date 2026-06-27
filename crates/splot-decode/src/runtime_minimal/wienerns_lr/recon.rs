@@ -24,13 +24,18 @@
 //! bit-exact against the AVM pre-filter reconstruction oracle.
 
 use splot_core::tables::conversion::{TX_HEIGHT_LOG2, TX_WIDTH_LOG2};
-use splot_recon::{BitDepth, CurrentFrameWorkspace, PlaneId, ReconSample};
+use splot_recon::{BitDepth, CurrentFrameWorkspace, IntraCardinalDirection, PlaneId, ReconSample};
 
 use crate::Result;
 #[cfg(test)]
 use crate::runtime_minimal_recon::new_general_intra_workspace;
-use crate::runtime_minimal_recon::reconstruct_general_intra_block_rect_into;
-use crate::tile_payload::{IntraYMode, LumaCoeffBlock, SupportedChromaMode};
+use crate::runtime_minimal_recon::{
+    reconstruct_general_intra_block_rect_into,
+    reconstruct_general_intra_cardinal_neighbour_block_into,
+};
+use crate::tile_payload::{
+    IntraYMode, LumaCoeffBlock, SupportedChromaMode, SupportedDirectionalLumaMode,
+};
 
 use super::diagnostics::wienerns_lr_selectable_transform_record_error_reason;
 use splot_core::span::ByteOffset;
@@ -47,6 +52,20 @@ const MI_SIZE: usize = 4;
 #[derive(Clone, Copy, Debug)]
 pub(in crate::runtime_minimal) struct SelectableReconContext {
     pub(in crate::runtime_minimal) leaf_y_mode: Option<IntraYMode>,
+    /// The leaf's resolved §7.13.2.8 directional-angle luma mode, or `None` for a
+    /// non-directional (DC / SMOOTH / PAETH) leaf or any directional leaf with a
+    /// non-zero §5.20.5.3 `AngleDeltaY` (the upstream `supported_directional_luma`
+    /// already folds the `AngleDeltaY == 0` gate in). The sink admits only the
+    /// CARDINAL subset (`V_PRED` pAngle 90 / `H_PRED` pAngle 180) — a pure §7.13.2.8
+    /// step-4/step-5 sample copy with no IDIF, no corner, and no `useIBP` (which
+    /// §7.13.2.7 gates on `pAngle < 90 || pAngle > 180`, excluding both cardinals).
+    pub(in crate::runtime_minimal) directional_luma: Option<SupportedDirectionalLumaMode>,
+    /// The leaf's §5.20.5.5 `MrlIndex` (the multi-reference-line distance). `0` for
+    /// the immediate edge; `> 0` selects a farther reference line. The cardinal
+    /// recon primitive is the `MrlIndex == 0` immediate-edge copy, so the sink
+    /// DEFERS a cardinal leaf whose `mrl_index > 0` (it would otherwise copy the
+    /// adjacent samples instead of the selected MRL reference line).
+    pub(in crate::runtime_minimal) mrl_index: u8,
     pub(in crate::runtime_minimal) chroma_mode: Option<SupportedChromaMode>,
     pub(in crate::runtime_minimal) qindex: u32,
     pub(in crate::runtime_minimal) luma_use_tcq: bool,
@@ -235,25 +254,86 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         true
     }
 
+    /// Whether the §7.13.2.8 cardinal edge a block at `(mi_col, mi_row)` of `mi_w` x
+    /// `mi_h` MI units reads is a REAL reconstructed neighbour. A cardinal mode reads
+    /// exactly ONE edge — `H_PRED` (pAngle 180) the left column (`pred[i][j] =
+    /// LeftCol[i]`), `V_PRED` (pAngle 90) the above row (`pred[i][j] = AboveRow[j]`)
+    /// — with no corner, no IDIF, and no `useIBP`. Every MI unit of that edge (the
+    /// left column `mi_col - 1` for H, the above row `mi_row - 1` for V) must exist
+    /// on-grid AND be reconstructed by this sink. A frame-edge block with no on-grid
+    /// edge DEFERS: the cardinal primitive has no real neighbour to copy (the
+    /// §7.13.2.1 no-neighbour fallback is a separate, here-unmodelled path).
+    fn cardinal_edge_reconstructed(
+        &self,
+        direction: IntraCardinalDirection,
+        plane_id: PlaneId,
+        mi_col: usize,
+        mi_row: usize,
+        mi_w: usize,
+        mi_h: usize,
+    ) -> bool {
+        let coverage = &self.coverage[Self::coverage_index(plane_id)];
+        match direction {
+            // H_PRED: the left column `mi_col - 1` over rows `mi_row..mi_row + mi_h`.
+            IntraCardinalDirection::Horizontal => {
+                let Some(left) = mi_col.checked_sub(1) else {
+                    return false;
+                };
+                (mi_row..mi_row.saturating_add(mi_h))
+                    .all(|r| !coverage.off_grid(left, r) && coverage.is_covered(left, r))
+            }
+            // V_PRED: the above row `mi_row - 1` over cols `mi_col..mi_col + mi_w`.
+            IntraCardinalDirection::Vertical => {
+                let Some(above) = mi_row.checked_sub(1) else {
+                    return false;
+                };
+                (mi_col..mi_col.saturating_add(mi_w))
+                    .all(|c| !coverage.off_grid(c, above) && coverage.is_covered(c, above))
+            }
+        }
+    }
+
     /// Reconstructs one luma transform block at the given MI position into the
-    /// workspace, reading the §7.13.2 DC prediction from the partially-built
-    /// frame's reconstructed neighbours and adding the decoded residual (a flat DC
+    /// workspace, reading the §7.13.2 prediction from the partially-built frame's
+    /// reconstructed neighbours and adding the decoded residual (a flat prediction
     /// for an `all_zero` block). The block is DEFERRED (returns `Ok(())` without
     /// writing — never wrong samples claimed correct) unless ALL of the proven
     /// subset holds:
-    /// * `leaf_y_mode` is `DC_PRED`;
     /// * the frame dequant matches the primitive's zero-`QuantizerDeltas`
     ///   assumption (`quant_reconstructable`);
     /// * the residual is the proven primitive kind ([`residual_is_reconstructable`]:
-    ///   an `all_zero` flat-DC block, or a square non-`all_zero` block with no IST
+    ///   an `all_zero` flat block, or a square non-`all_zero` block with no IST
     ///   and no FSC);
-    /// * the §7.13.2 DC-prediction edges are off-frame or already reconstructed by
-    ///   this sink ([`Self::dc_edges_reconstructed`]).
+    /// * the leaf mode is one the sink can predict bit-exact AND its required
+    ///   §7.13.2 prediction neighbours are off-frame or already reconstructed:
+    ///   - `DC_PRED` (the §7.13.2.10 flat DC, with the §7.13.2.12 IBP DC modifier
+    ///     when [`Self::ibp_dc_applies`]): both the above row and left column must
+    ///     be off-frame or covered ([`Self::dc_edges_reconstructed`]);
+    ///   - cardinal `H_PRED` (pAngle 180, `directional ==
+    ///     Some(Horizontal)`): the §7.13.2.8 step-5 left-column copy. The left
+    ///     column must be present and covered ([`Self::cardinal_left_reconstructed`]);
+    ///     it reads ONLY the left column (no above, no corner, no IDIF, no `useIBP`),
+    ///     the transform must be SQUARE (the cardinal primitive is square-only), the
+    ///     leaf must use the immediate edge (`mrl_index == 0` — the primitive reads
+    ///     the adjacent left/above samples, not a §5.20.5.5 multi-reference line),
+    ///     and a non-`all_zero` residual must be DC-only (`eob == 1`): a non-DC-only
+    ///     residual may carry a non-`DCT_DCT` luma tx type that `LumaCoeffBlock` does
+    ///     not retain, and the primitive always inverse-transforms `DCT_DCT`;
+    ///   - cardinal `V_PRED` (pAngle 90, `directional == Some(Vertical)`): the
+    ///     §7.13.2.8 step-4 above-row copy. The above row must be present and covered
+    ///     ([`Self::cardinal_above_reconstructed`]); same square / `mrl_index == 0` /
+    ///     DC-only-residual gates.
+    ///
+    /// Every OTHER mode (the §7.13.2.8 angular modes D45/D67/D113/D135/D157/D203,
+    /// PAETH, SMOOTH, and any directional mode with a non-zero `AngleDeltaY` — which
+    /// the upstream `supported_directional_luma` already maps to `None`) is DEFERRED.
     ///
     /// `use_tcq` carries the §7.14.4 luma TCQ `dqDenom` term; `qindex` is the
     /// per-block dequant index (the §5.20.6.5 `DeltaQState.current_q_index`);
-    /// `fsc_mode` is the leaf's FSC flag. `mi_col` / `mi_row` are the transform's §3
-    /// MI coordinates and `tx_size` its §5.20.6 `TxSize` index.
+    /// `fsc_mode` is the leaf's FSC flag; `mrl_index` is the leaf's §5.20.5.5
+    /// `MrlIndex` (the multi-reference-line distance, `0` for the immediate edge).
+    /// `mi_col` / `mi_row` are the transform's §3 MI coordinates and `tx_size` its
+    /// §5.20.6 `TxSize` index.
     #[allow(clippy::too_many_arguments)]
     pub(in crate::runtime_minimal) fn reconstruct_luma_transform(
         &mut self,
@@ -262,15 +342,15 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         tx_size: usize,
         block: &LumaCoeffBlock,
         leaf_y_mode: Option<IntraYMode>,
+        directional: Option<SupportedDirectionalLumaMode>,
+        mrl_index: u8,
         qindex: u32,
         use_tcq: bool,
         fsc_mode: bool,
         tile_offset: ByteOffset,
     ) -> Result<()> {
-        if leaf_y_mode != Some(IntraYMode::DC_PRED) || !self.quant_reconstructable {
-            // Defer non-DC luma or a frame whose dequant the primitive cannot honor:
-            // leave the region unreconstructed rather than emitting a prediction this
-            // brick has not proven bit-exact.
+        if !self.quant_reconstructable {
+            // Defer a frame whose dequant the primitive cannot honor.
             return Ok(());
         }
         let Some((log2_width, log2_height)) = tx_size_log2(tx_size) else {
@@ -280,44 +360,103 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             return Ok(());
         }
         let (mi_w, mi_h) = mi_extent(log2_width, log2_height);
-        if !self.dc_edges_reconstructed(PlaneId::Y, mi_col, mi_row, mi_w, mi_h) {
-            // A DC-prediction edge neighbour exists on-grid but was deferred; its
-            // workspace samples are the fill value, not reconstruction, so the DC
-            // prediction would be wrong. Defer this block too.
-            return Ok(());
+        // The cardinal direction the sink can predict bit-exact, or `None` for DC /
+        // every deferred mode. Only a CARDINAL `H_PRED` / `V_PRED` directional leaf
+        // is admitted here; the angular modes (D45/D135/...) stay deferred.
+        let cardinal = match directional {
+            Some(SupportedDirectionalLumaMode::Horizontal) => {
+                Some(IntraCardinalDirection::Horizontal)
+            }
+            Some(SupportedDirectionalLumaMode::Vertical) => Some(IntraCardinalDirection::Vertical),
+            _ => None,
+        };
+        match (leaf_y_mode, cardinal) {
+            (Some(IntraYMode::DC_PRED), _) => {
+                if !self.dc_edges_reconstructed(PlaneId::Y, mi_col, mi_row, mi_w, mi_h) {
+                    // A DC-prediction edge neighbour exists on-grid but was deferred;
+                    // its workspace samples are the fill value, not reconstruction, so
+                    // the DC prediction would be wrong. Defer this block too.
+                    return Ok(());
+                }
+                let (x, y) = luma_sample_origin(mi_col, mi_row, tile_offset)?;
+                let ibp_dc = self.ibp_dc_applies(log2_width, log2_height);
+                reconstruct_general_intra_block_rect_into(
+                    &mut self.workspace,
+                    block,
+                    PlaneId::Y,
+                    x,
+                    y,
+                    log2_width,
+                    log2_height,
+                    qindex,
+                    use_tcq,
+                    ibp_dc,
+                    self.bit_depth,
+                )
+                .map_err(|_| {
+                    wienerns_lr_selectable_transform_record_error_reason(
+                        tile_offset,
+                        "unsupported_wienerns_lr_selectable_transform_records_recon_luma_write",
+                    )
+                })?;
+            }
+            (_, Some(direction)) => {
+                // Cardinal `H_PRED` / `V_PRED`: a §7.13.2.8 pure sample copy of the
+                // real reconstructed left column (H) / above row (V). The cardinal
+                // recon primitive is SQUARE-only and reads the IMMEDIATE edge
+                // (`MrlIndex == 0`), so defer otherwise:
+                // * a non-square cardinal transform (the primitive is square-only);
+                // * a §5.20.5.5 multi-reference line (`mrl_index > 0`): the primitive
+                //   copies the ADJACENT left/above samples, not the selected MRL
+                //   reference line, so it would write the wrong prediction;
+                // * a non-`all_zero` residual that is not DC-only (`eob != 1`): it may
+                //   carry a non-`DCT_DCT` luma tx type `LumaCoeffBlock` does not retain
+                //   (the primitive always inverse-transforms `DCT_DCT`). A DC-only
+                //   (`eob == 1`) residual is tx-type-agnostic (one shared DC coeff),
+                //   exactly ac0ej3's +4-DC top-right `TX_32X32`.
+                if log2_width != log2_height {
+                    return Ok(());
+                }
+                if mrl_index != 0 {
+                    return Ok(());
+                }
+                if !block.all_zero && block.eob != 1 {
+                    return Ok(());
+                }
+                if !self.cardinal_edge_reconstructed(
+                    direction,
+                    PlaneId::Y,
+                    mi_col,
+                    mi_row,
+                    mi_w,
+                    mi_h,
+                ) {
+                    return Ok(());
+                }
+                let (x, y) = luma_sample_origin(mi_col, mi_row, tile_offset)?;
+                reconstruct_general_intra_cardinal_neighbour_block_into(
+                    &mut self.workspace,
+                    block,
+                    direction,
+                    PlaneId::Y,
+                    x,
+                    y,
+                    log2_width,
+                    qindex,
+                    use_tcq,
+                    self.bit_depth,
+                )
+                .map_err(|_| {
+                    wienerns_lr_selectable_transform_record_error_reason(
+                        tile_offset,
+                        "unsupported_wienerns_lr_selectable_transform_records_recon_luma_cardinal_write",
+                    )
+                })?;
+            }
+            // Non-DC, non-cardinal luma (SMOOTH / PAETH / angular / non-zero
+            // AngleDeltaY): defer rather than emit an unproven prediction.
+            _ => return Ok(()),
         }
-        let x = mi_col.checked_mul(MI_SIZE).ok_or_else(|| {
-            wienerns_lr_selectable_transform_record_error_reason(
-                tile_offset,
-                "unsupported_wienerns_lr_selectable_transform_records_recon_luma_x_overflow",
-            )
-        })?;
-        let y = mi_row.checked_mul(MI_SIZE).ok_or_else(|| {
-            wienerns_lr_selectable_transform_record_error_reason(
-                tile_offset,
-                "unsupported_wienerns_lr_selectable_transform_records_recon_luma_y_overflow",
-            )
-        })?;
-        let ibp_dc = self.ibp_dc_applies(log2_width, log2_height);
-        reconstruct_general_intra_block_rect_into(
-            &mut self.workspace,
-            block,
-            PlaneId::Y,
-            x,
-            y,
-            log2_width,
-            log2_height,
-            qindex,
-            use_tcq,
-            ibp_dc,
-            self.bit_depth,
-        )
-        .map_err(|_| {
-            wienerns_lr_selectable_transform_record_error_reason(
-                tile_offset,
-                "unsupported_wienerns_lr_selectable_transform_records_recon_luma_write",
-            )
-        })?;
         self.coverage[Self::coverage_index(PlaneId::Y)].mark(mi_col, mi_row, mi_w, mi_h);
         self.reconstructed_luma_4x4 = self
             .reconstructed_luma_4x4
@@ -527,6 +666,27 @@ fn tx_size_log2(tx_size: usize) -> Option<(u32, u32)> {
     Some((w, h))
 }
 
+/// The §3 sample-space `(x, y)` origin of a luma MI position, overflow-checked.
+fn luma_sample_origin(
+    mi_col: usize,
+    mi_row: usize,
+    tile_offset: ByteOffset,
+) -> Result<(usize, usize)> {
+    let x = mi_col.checked_mul(MI_SIZE).ok_or_else(|| {
+        wienerns_lr_selectable_transform_record_error_reason(
+            tile_offset,
+            "unsupported_wienerns_lr_selectable_transform_records_recon_luma_x_overflow",
+        )
+    })?;
+    let y = mi_row.checked_mul(MI_SIZE).ok_or_else(|| {
+        wienerns_lr_selectable_transform_record_error_reason(
+            tile_offset,
+            "unsupported_wienerns_lr_selectable_transform_records_recon_luma_y_overflow",
+        )
+    })?;
+    Ok((x, y))
+}
+
 /// The MI-unit `(width, height)` of a transform with the given log2 sample
 /// dimensions (one MI unit spans `MI_SIZE` samples; a transform is at least one MI
 /// unit per axis).
@@ -632,9 +792,42 @@ mod tests {
             tx_size,
             block,
             mode,
+            None,
+            0,
             149,
             true,
             fsc_mode,
+            ByteOffset::new(0),
+        )
+        .unwrap();
+    }
+
+    /// Drives a CARDINAL (`H_PRED` / `V_PRED`) directional luma transform through
+    /// the sink: `leaf_y_mode` is the directional mode, `directional` the resolved
+    /// cardinal predictor, and `mrl_index` the §5.20.5.5 multi-reference-line index
+    /// (`0` for the immediate edge the cardinal primitive reads).
+    #[allow(clippy::too_many_arguments)]
+    fn recon_luma_cardinal(
+        sink: &mut WienerNsLrReconSink<u16>,
+        mi_col: usize,
+        mi_row: usize,
+        tx_size: usize,
+        block: &LumaCoeffBlock,
+        mode: IntraYMode,
+        directional: SupportedDirectionalLumaMode,
+        mrl_index: u8,
+    ) {
+        sink.reconstruct_luma_transform(
+            mi_col,
+            mi_row,
+            tx_size,
+            block,
+            Some(mode),
+            Some(directional),
+            mrl_index,
+            149,
+            true,
+            false,
             ByteOffset::new(0),
         )
         .unwrap();
@@ -953,5 +1146,251 @@ mod tests {
         assert_eq!(sink.reconstructed_sample(PlaneId::Y, 0, 0).unwrap(), 0);
         assert_eq!(sink.reconstructed_sample(PlaneId::U, 0, 0).unwrap(), 0);
         assert_eq!(sink.reconstructed_counts(), (0, 0));
+    }
+
+    // Cardinal H_PRED (§7.13.2.8 step 5, pAngle 180) over a REAL reconstructed left
+    // column: a pure horizontal copy `pred[i][j] = LeftCol[i]`. The first DC block
+    // at (0,0) reconstructs the flat `512` no-neighbour fallback; an `all_zero`
+    // H_PRED block to its right copies that left column, so it is again flat `512` —
+    // proving the cardinal copy reads the partially-built frame's real neighbour.
+    #[test]
+    fn cardinal_hpred_copies_reconstructed_left_column() {
+        let mut sink = sink();
+        // Left DC neighbour at (0,0): flat 512.
+        recon_luma(
+            &mut sink,
+            0,
+            0,
+            TX_16X16,
+            &zero_block(),
+            Some(IntraYMode::DC_PRED),
+            false,
+        );
+        // H_PRED block to the right at mi_col=4 (x=16): its left column (x=15) is the
+        // reconstructed 512, so the horizontal copy is flat 512.
+        recon_luma_cardinal(
+            &mut sink,
+            4,
+            0,
+            TX_16X16,
+            &zero_block(),
+            IntraYMode::H_PRED_FOR_TEST,
+            SupportedDirectionalLumaMode::Horizontal,
+            0,
+        );
+        assert_eq!(sink.reconstructed_sample(PlaneId::Y, 16, 0).unwrap(), 512);
+        assert_eq!(sink.reconstructed_sample(PlaneId::Y, 31, 15).unwrap(), 512);
+        // 16 (left DC) + 16 (H_PRED) == 32 4x4 units.
+        assert_eq!(sink.reconstructed_counts().0, 32);
+    }
+
+    // Cardinal V_PRED (§7.13.2.8 step 4, pAngle 90) over a REAL reconstructed above
+    // row: a pure vertical copy `pred[i][j] = AboveRow[j]`. The first DC block at
+    // (0,0) reconstructs flat `512`; a V_PRED block below it copies that above row,
+    // flat `512` — proving the cardinal copy reads the real above neighbour.
+    #[test]
+    fn cardinal_vpred_copies_reconstructed_above_row() {
+        let mut sink = sink();
+        recon_luma(
+            &mut sink,
+            0,
+            0,
+            TX_16X16,
+            &zero_block(),
+            Some(IntraYMode::DC_PRED),
+            false,
+        );
+        // V_PRED block below at mi_row=4 (y=16): its above row (y=15) is the
+        // reconstructed 512, so the vertical copy is flat 512.
+        recon_luma_cardinal(
+            &mut sink,
+            0,
+            4,
+            TX_16X16,
+            &zero_block(),
+            IntraYMode::V_PRED_FOR_TEST,
+            SupportedDirectionalLumaMode::Vertical,
+            0,
+        );
+        assert_eq!(sink.reconstructed_sample(PlaneId::Y, 0, 16).unwrap(), 512);
+        assert_eq!(sink.reconstructed_sample(PlaneId::Y, 15, 31).unwrap(), 512);
+        assert_eq!(sink.reconstructed_counts().0, 32);
+    }
+
+    // A cardinal block at the frame ORIGIN has no required edge to copy — H_PRED
+    // has no left column (mi_col == 0), V_PRED has no above row (mi_row == 0) — so
+    // the sink DEFERS both (the §7.13.2.1 no-neighbour fallback is a separate,
+    // here-unmodelled path; never predict from the fill value). The V_PRED case
+    // pins the exact ac0ej3 SB-column-4 V_PRED-at-y=0 deferral.
+    #[test]
+    fn cardinal_at_frame_edge_with_no_required_neighbour_is_deferred() {
+        for (mode, direction) in [
+            (
+                IntraYMode::H_PRED_FOR_TEST,
+                SupportedDirectionalLumaMode::Horizontal,
+            ),
+            (
+                IntraYMode::V_PRED_FOR_TEST,
+                SupportedDirectionalLumaMode::Vertical,
+            ),
+        ] {
+            let mut sink = sink();
+            recon_luma_cardinal(&mut sink, 0, 0, TX_16X16, &zero_block(), mode, direction, 0);
+            assert_eq!(sink.reconstructed_sample(PlaneId::Y, 0, 0).unwrap(), 0);
+            assert_eq!(sink.reconstructed_counts().0, 0);
+        }
+    }
+
+    // A cardinal H_PRED block whose LEFT neighbour exists on-grid but was DEFERRED
+    // (still the fill value) must defer too — never copy a fill-value left column.
+    #[test]
+    fn cardinal_hpred_with_deferred_left_neighbour_is_deferred() {
+        let mut sink = sink();
+        // (0,0) is deferred (non-DC `None` leaf), so it is NOT reconstructed.
+        recon_luma(&mut sink, 0, 0, TX_16X16, &zero_block(), None, false);
+        assert_eq!(sink.reconstructed_counts().0, 0);
+        // H_PRED at mi_col=4: its left neighbour (0,0) is on-grid but uncovered.
+        recon_luma_cardinal(
+            &mut sink,
+            4,
+            0,
+            TX_16X16,
+            &zero_block(),
+            IntraYMode::H_PRED_FOR_TEST,
+            SupportedDirectionalLumaMode::Horizontal,
+            0,
+        );
+        assert_eq!(sink.reconstructed_sample(PlaneId::Y, 16, 0).unwrap(), 0);
+        assert_eq!(sink.reconstructed_counts().0, 0);
+    }
+
+    // A NON-SQUARE cardinal transform is DEFERRED: the cardinal recon primitive is
+    // square-only. (TX_16X64 H_PRED with a covered left column still defers.)
+    #[test]
+    fn cardinal_nonsquare_transform_is_deferred() {
+        let mut sink = sink();
+        // Reconstruct a left DC neighbour column first so coverage is not the gate.
+        recon_luma(
+            &mut sink,
+            0,
+            0,
+            TX_16X16,
+            &zero_block(),
+            Some(IntraYMode::DC_PRED),
+            false,
+        );
+        let before = sink.reconstructed_counts().0;
+        recon_luma_cardinal(
+            &mut sink,
+            4,
+            0,
+            TX_16X64,
+            &zero_block(),
+            IntraYMode::H_PRED_FOR_TEST,
+            SupportedDirectionalLumaMode::Horizontal,
+            0,
+        );
+        // Non-square cardinal deferred: count unchanged, region stays fill.
+        assert_eq!(sink.reconstructed_counts().0, before);
+        assert_eq!(sink.reconstructed_sample(PlaneId::Y, 16, 0).unwrap(), 0);
+    }
+
+    // An ANGULAR directional mode (e.g. D135) is DEFERRED by the sink even when its
+    // neighbours are covered: only the cardinal V/H copy subset is admitted here.
+    #[test]
+    fn angular_directional_mode_is_deferred() {
+        let mut sink = sink();
+        recon_luma(
+            &mut sink,
+            0,
+            0,
+            TX_16X16,
+            &zero_block(),
+            Some(IntraYMode::DC_PRED),
+            false,
+        );
+        let before = sink.reconstructed_counts().0;
+        recon_luma_cardinal(
+            &mut sink,
+            4,
+            0,
+            TX_16X16,
+            &zero_block(),
+            IntraYMode::D135_PRED_FOR_TEST,
+            SupportedDirectionalLumaMode::D135,
+            0,
+        );
+        assert_eq!(sink.reconstructed_counts().0, before);
+        assert_eq!(sink.reconstructed_sample(PlaneId::Y, 16, 0).unwrap(), 0);
+    }
+
+    // Finding 1: a cardinal H_PRED leaf using a §5.20.5.5 multi-reference line
+    // (`mrl_index > 0`) is DEFERRED. The cardinal recon primitive copies the
+    // IMMEDIATE left/above edge (`MrlIndex == 0`); for `mrl_index > 0` it would
+    // copy the adjacent samples instead of the selected reference line — wrong.
+    // The left neighbour is covered, so only the MRL gate causes the deferral.
+    #[test]
+    fn cardinal_with_active_mrl_index_is_deferred() {
+        let mut sink = sink();
+        recon_luma(
+            &mut sink,
+            0,
+            0,
+            TX_16X16,
+            &zero_block(),
+            Some(IntraYMode::DC_PRED),
+            false,
+        );
+        let before = sink.reconstructed_counts().0;
+        // H_PRED at mi_col=4 with a covered left column but `mrl_index == 1`: defer.
+        recon_luma_cardinal(
+            &mut sink,
+            4,
+            0,
+            TX_16X16,
+            &zero_block(),
+            IntraYMode::H_PRED_FOR_TEST,
+            SupportedDirectionalLumaMode::Horizontal,
+            1,
+        );
+        assert_eq!(sink.reconstructed_counts().0, before);
+        assert_eq!(sink.reconstructed_sample(PlaneId::Y, 16, 0).unwrap(), 0);
+    }
+
+    // Finding 2: a cardinal H_PRED leaf with a NON-`all_zero`, non-DC-only residual
+    // (`eob > 1`) is DEFERRED. Such a block may carry a non-`DCT_DCT` luma tx type
+    // that `LumaCoeffBlock` does not retain; the cardinal primitive always
+    // inverse-transforms `DCT_DCT`, so it would write wrong residual samples. Only a
+    // DC-only (`eob == 1`) residual is tx-type-agnostic and admitted. The left
+    // neighbour is covered, so only the residual gate causes the deferral.
+    #[test]
+    fn cardinal_with_multi_coeff_residual_is_deferred() {
+        let mut sink = sink();
+        recon_luma(
+            &mut sink,
+            0,
+            0,
+            TX_16X16,
+            &zero_block(),
+            Some(IntraYMode::DC_PRED),
+            false,
+        );
+        let before = sink.reconstructed_counts().0;
+        // A non-`all_zero` block with two decoded coefficients (`eob == 2`).
+        let mut block = coeff_block_16x16();
+        block.eob = 2;
+        block.quant[1] = 7;
+        recon_luma_cardinal(
+            &mut sink,
+            4,
+            0,
+            TX_16X16,
+            &block,
+            IntraYMode::H_PRED_FOR_TEST,
+            SupportedDirectionalLumaMode::Horizontal,
+            0,
+        );
+        assert_eq!(sink.reconstructed_counts().0, before);
+        assert_eq!(sink.reconstructed_sample(PlaneId::Y, 16, 0).unwrap(), 0);
     }
 }

@@ -46,9 +46,10 @@ pub(super) fn record_skipped_selectable_residuals(
         ));
     }
     reset_skipped_block_coeff_contexts(coeff_ctx, frontier, n4w, n4h, tile_offset)?;
-    // Reconstruct each skipped luma transform as a flat §7.13.2 DC prediction
-    // (zero residual) so later blocks' neighbour reads are spec-correct (gated to
-    // DC inside the sink). A skipped block carries no coefficients.
+    // Reconstruct each skipped luma transform as a flat §7.13.2 prediction (zero
+    // residual) so later blocks' neighbour reads are spec-correct (gated to the
+    // proven DC / cardinal subset inside the sink). A skipped block carries no
+    // coefficients.
     if let Some(sink) = sink {
         let zero = skipped_coeff_block();
         for record in luma_records.iter().copied() {
@@ -58,6 +59,8 @@ pub(super) fn record_skipped_selectable_residuals(
                 record.tx_size,
                 &zero,
                 recon.leaf_y_mode,
+                recon.directional_luma,
+                recon.mrl_index,
                 recon.qindex,
                 recon.luma_use_tcq,
                 recon.fsc_mode,
