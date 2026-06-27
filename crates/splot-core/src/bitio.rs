@@ -135,6 +135,17 @@ impl<'a> BitReader<'a> {
         Ok(bit)
     }
 
+    /// Reads a single bit as a boolean flag, matching the AV2 `f(1)` flag idiom.
+    ///
+    /// Returns `true` when the bit is `1` and `false` when it is `0`; this is the
+    /// boolean spelling of [`Self::read_bit`] used for every `*_flag` syntax element.
+    ///
+    /// # Errors
+    /// Returns [`Error::UnexpectedEof`] at end of input.
+    pub fn read_flag(&mut self) -> Result<bool> {
+        Ok(self.read_bit()? != 0)
+    }
+
     /// Reads `n` bits (MSB-first) into a `u32`.
     ///
     /// # Errors
@@ -152,6 +163,18 @@ impl<'a> BitReader<'a> {
             value = (value << 1) | u32::from(self.read_bit()?);
         }
         Ok(value)
+    }
+
+    /// Reads an AV2 `f(n)` field, treating `n == 0` as reading no bits (value `0`).
+    ///
+    /// This mirrors the AV2 convention that an `f(0)` syntax element is absent and
+    /// consumes no bits; for `n >= 1` it delegates to [`read_bits`](Self::read_bits).
+    ///
+    /// # Errors
+    /// Returns [`Error::BitWidthTooLarge`] if `n > 32`, or [`Error::UnexpectedEof`]
+    /// if fewer than `n` bits remain. `n == 0` never errors.
+    pub(crate) fn read_f(&mut self, n: u32) -> Result<u32> {
+        if n == 0 { Ok(0) } else { self.read_bits(n) }
     }
 
     /// Reads `n` bits (MSB-first) into a `u8`.
@@ -449,7 +472,7 @@ impl<'a> BitReader<'a> {
         while !self.is_byte_aligned() {
             let offset = self.byte_offset();
             let bit_offset = self.bit_offset();
-            if self.read_bit()? != 0 {
+            if self.read_flag()? {
                 return Err(Error::InvalidByteAlignment {
                     offset,
                     bit_offset,
@@ -527,6 +550,22 @@ mod tests {
         assert_eq!(reader.read_bits(4).unwrap(), 0b0010);
         assert!(matches!(
             reader.read_bit(),
+            Err(Error::UnexpectedEof { .. })
+        ));
+    }
+
+    #[test]
+    fn read_flag_maps_bit_to_bool() {
+        let mut reader = BitReader::new(&[0b1000_0000], ByteOffset::new(0));
+        assert!(reader.read_flag().unwrap());
+        assert!(!reader.read_flag().unwrap());
+        // Remaining six zero bits all read false.
+        for _ in 0..6 {
+            assert!(!reader.read_flag().unwrap());
+        }
+        // Past end of input is EOF, not a panic.
+        assert!(matches!(
+            reader.read_flag(),
             Err(Error::UnexpectedEof { .. })
         ));
     }

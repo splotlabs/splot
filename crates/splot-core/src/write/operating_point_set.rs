@@ -159,7 +159,7 @@ pub fn write_operating_point_set(
     let is_global = obu_xlayer_id.is_global();
 
     let mut scratch = BitWriter::new();
-    scratch.write_bit(u8::from(ops.reset_flag))?;
+    scratch.write_flag(ops.reset_flag)?;
     scratch.write_bits_u8(ops.ops_id, OPS_ID_BITS)?;
     scratch.write_bits_u8(ops.ops_cnt, OPS_COUNT_BITS)?;
 
@@ -178,9 +178,9 @@ pub fn write_operating_point_set(
             .ok_or_else(|| non_canonical("reset_branch_field"))?;
         scratch.write_bits_u8(priority, OPS_PRIORITY_BITS)?;
         scratch.write_bits_u8(intent, OPS_INTENT_BITS)?;
-        scratch.write_bit(u8::from(ops.intent_present))?;
-        scratch.write_bit(u8::from(ops.ptl_present))?;
-        scratch.write_bit(u8::from(ops.color_info_present))?;
+        scratch.write_flag(ops.intent_present)?;
+        scratch.write_flag(ops.ptl_present)?;
+        scratch.write_flag(ops.color_info_present)?;
         // § 5.10: global reads ops_mlayer_info_idc, local reads ops_reserved_2bits.
         if is_global {
             let idc = ops
@@ -288,14 +288,14 @@ fn write_operating_point_payload(
 
     // § 5.11: ops_decoder_model_info_for_this_op_present_flag then the optional
     // ops_decoder_model_info().
-    body.write_bit(u8::from(payload.decoder_model_info.is_some()))?;
+    body.write_flag(payload.decoder_model_info.is_some())?;
     if let Some(dm) = &payload.decoder_model_info {
         write_ops_decoder_model_info(&mut body, dm)?;
     }
 
     // § 5.11: ops_initial_display_delay_present_flag then the optional
     // ops_initial_display_delay_minus_1 f(4).
-    body.write_bit(u8::from(payload.initial_display_delay_minus_1.is_some()))?;
+    body.write_flag(payload.initial_display_delay_minus_1.is_some())?;
     if let Some(delay) = payload.initial_display_delay_minus_1 {
         body.write_bits_u8(delay, OPS_INITIAL_DISPLAY_DELAY_BITS)?;
     }
@@ -501,7 +501,7 @@ fn write_global_mlayer_source(
 fn write_ops_aggregate_info(body: &mut BitWriter, info: &OpsAggregateInfo) -> WriteResult<()> {
     body.write_bits_u8(info.config_idc, OPS_CONFIG_IDC_BITS)?;
     body.write_bits_u8(info.aggregate_level_idx, OPS_AGGREGATE_LEVEL_BITS)?;
-    body.write_bit(u8::from(info.max_tier_flag))?;
+    body.write_flag(info.max_tier_flag)?;
     body.write_bits_u8(info.max_interop, OPS_MAX_INTEROP_BITS)
 }
 
@@ -513,7 +513,7 @@ fn write_ops_seq_profile_tier_level_info(
 ) -> WriteResult<()> {
     body.write_bits_u8(ptl.seq_profile_idc.get(), OPS_PTL_F5)?;
     body.write_bits_u8(ptl.level_idx, OPS_PTL_F5)?;
-    body.write_bit(u8::from(ptl.tier_flag))?;
+    body.write_flag(ptl.tier_flag)?;
     body.write_bits_u8(ptl.mlayer_count, OPS_MLAYER_COUNT_BITS)?;
     body.write_bits_u8(ptl.reserved_2bits, OPS_RESERVED_2BITS)
 }
@@ -522,7 +522,7 @@ fn write_ops_seq_profile_tier_level_info(
 fn write_ops_decoder_model_info(body: &mut BitWriter, dm: &OpsDecoderModelInfo) -> WriteResult<()> {
     body.write_uvlc(dm.decoder_buffer_delay)?;
     body.write_uvlc(dm.encoder_buffer_delay)?;
-    body.write_bit(u8::from(dm.low_delay_mode_flag))
+    body.write_flag(dm.low_delay_mode_flag)
 }
 
 /// Writes `ops_color_info()` (AV2 v1.0.0 § 5.11.4): `ops_color_description_idc`
@@ -550,7 +550,7 @@ fn write_ops_color_info(body: &mut BitWriter, color: &OpsColorInfo) -> WriteResu
     {
         return Err(non_canonical("color_triple_gate"));
     }
-    body.write_bit(u8::from(color.full_range_flag))
+    body.write_flag(color.full_range_flag)
 }
 
 /// Writes `ops_mlayer_info()` (AV2 v1.0.0 § 5.11.5): `ops_mlayer_map` `f(8)` then

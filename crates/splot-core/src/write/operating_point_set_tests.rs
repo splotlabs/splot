@@ -86,12 +86,12 @@ mod tests {
         if let Some(color) = &payload.color_info {
             write_ops_color_info(&mut body, color).unwrap();
         }
-        body.write_bit(u8::from(payload.decoder_model_info.is_some()))
+        body.write_flag(payload.decoder_model_info.is_some())
             .unwrap();
         if let Some(dm) = &payload.decoder_model_info {
             write_ops_decoder_model_info(&mut body, dm).unwrap();
         }
-        body.write_bit(u8::from(payload.initial_display_delay_minus_1.is_some()))
+        body.write_flag(payload.initial_display_delay_minus_1.is_some())
             .unwrap();
         if let Some(d) = payload.initial_display_delay_minus_1 {
             body.write_bits_u8(d, 4).unwrap();

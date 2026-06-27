@@ -135,7 +135,7 @@ pub(super) fn decode_minimal_inter_frame(
     // PRIMARY_REF_NONE (their valid slots hold the KEY frame, which the inter-only
     // resolution skips) or to a NON-adapted inter slot, so they stay byte-identical; a
     // stream loading an adapted slot's CDFs is rejected, not mis-decoded.
-    let current_base_q_idx = core.quantization_params.map(|q| q.base_q_idx).unwrap_or(0);
+    let current_base_q_idx = core.quantization_params.map_or(0, |q| q.base_q_idx);
     let current_order_hint = i32::try_from(core.order_hint_lsb.unwrap_or(0)).unwrap_or(i32::MAX);
     if let Some(inter_ctrl) = core.inter.as_ref() {
         let (enable_avg_cdf, avg_cdf_type) = sequence
@@ -205,8 +205,7 @@ pub(super) fn decode_minimal_inter_frame(
     let order_hint_bits = sequence
         .inter
         .as_ref()
-        .map(|seq_inter| u32::from(seq_inter.order_hint_bits))
-        .unwrap_or(0);
+        .map_or(0, |seq_inter| u32::from(seq_inter.order_hint_bits));
     let this_order_hint = core.order_hint_lsb.unwrap_or(0);
     if !order_hint_history_unwrapped(
         &reference.ref_valid,

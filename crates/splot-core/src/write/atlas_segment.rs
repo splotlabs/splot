@@ -257,7 +257,7 @@ fn write_region_info(scratch: &mut BitWriter, region: &AtlasRegionInfo) -> Write
 
     scratch.write_uvlc(region.num_region_columns_minus_1)?;
     scratch.write_uvlc(region.num_region_rows_minus_1)?;
-    scratch.write_bit(u8::from(region.uniform_spacing))?;
+    scratch.write_flag(region.uniform_spacing)?;
     if region.uniform_spacing {
         // Presence was validated above, so these `Option`s are `Some`.
         let width = region
@@ -287,7 +287,7 @@ fn write_region_to_segment_mapping(
     region: &AtlasRegionInfo,
     mapping: &AtlasRegionToSegmentMapping,
 ) -> WriteResult<()> {
-    scratch.write_bit(u8::from(mapping.single_region_per_atlas_segment))?;
+    scratch.write_flag(mapping.single_region_per_atlas_segment)?;
     if mapping.single_region_per_atlas_segment {
         // §5.9.2.2: in the single-region path the parser codes no count and no segment
         // list — it derives num_atlas_segments_minus_1 = num_regions_in_atlas - 1 and
@@ -340,7 +340,7 @@ fn write_basic_info(scratch: &mut BitWriter, info: &AtlasBasicInfo) -> WriteResu
         return Err(non_canonical("segment_count"));
     }
 
-    scratch.write_bit(u8::from(info.stream_id_present))?;
+    scratch.write_flag(info.stream_id_present)?;
     scratch.write_uvlc(info.width)?;
     scratch.write_uvlc(info.height)?;
     scratch.write_uvlc(info.num_atlas_segments_minus_1)?;
@@ -403,11 +403,11 @@ fn write_multistream_info(
     scratch.write_uvlc(info.num_atlas_segments_minus_1)?;
     // §5.9.4: ats_msi_alpha_segments_present_flag is coded only for the alpha variant.
     if let Some(alpha_present) = info.alpha_segments_present {
-        scratch.write_bit(u8::from(alpha_present))?;
+        scratch.write_flag(alpha_present)?;
     }
     // §5.9.3 / §5.9.4: ats_msi_background_info_present_flag then the optional 3x f(8)
     // background triple. The flag IS the model's `background` Option presence.
-    scratch.write_bit(u8::from(info.background.is_some()))?;
+    scratch.write_flag(info.background.is_some())?;
     if let Some((red, green, blue)) = info.background {
         scratch.write_bits_u8(red, BACKGROUND_F8)?;
         scratch.write_bits_u8(green, BACKGROUND_F8)?;
@@ -446,7 +446,7 @@ fn write_multistream_segment(
     scratch.write_uvlc(segment.width)?;
     scratch.write_uvlc(segment.height)?;
     if codes_alpha {
-        scratch.write_bit(u8::from(segment.alpha_segment_flag))?;
+        scratch.write_flag(segment.alpha_segment_flag)?;
     }
     Ok(())
 }
@@ -466,7 +466,7 @@ fn write_label_segment_info(
         return Err(non_canonical("label_segment_count"));
     }
 
-    scratch.write_bit(u8::from(label.signaled_atlas_segment_ids))?;
+    scratch.write_flag(label.signaled_atlas_segment_ids)?;
     if label.signaled_atlas_segment_ids {
         // §5.9.1: numSegments explicit ats_atlas_segment_id f(8) values. §6.9.2: these are
         // descriptive id assignments with no conformance requirement, so reproduce them

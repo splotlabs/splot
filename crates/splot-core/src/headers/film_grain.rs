@@ -239,7 +239,7 @@ fn parse_film_grain_model(reader: &mut BitReader<'_>, monochrome: bool) -> Resul
     let chroma_scaling_from_luma = if monochrome {
         false
     } else {
-        reader.read_bit()? != 0
+        reader.read_flag()?
     };
 
     let (num_y_points, point_y) = read_scaling_points(reader)?;
@@ -297,14 +297,14 @@ fn parse_film_grain_model(reader: &mut BitReader<'_>, monochrome: bool) -> Resul
         (None, None, None)
     };
 
-    let overlap_flag = reader.read_bit()? != 0;
-    let clip_to_restricted_range = reader.read_bit()? != 0;
+    let overlap_flag = reader.read_flag()?;
+    let clip_to_restricted_range = reader.read_flag()?;
     let mc_identity = if clip_to_restricted_range {
-        reader.read_bit()? != 0
+        reader.read_flag()?
     } else {
         false
     };
-    let film_grain_block_size = reader.read_bit()? != 0;
+    let film_grain_block_size = reader.read_flag()?;
 
     Ok(FilmGrainModel {
         chroma_scaling_from_luma,

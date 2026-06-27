@@ -158,7 +158,7 @@ pub fn parse_segmentation_params(
     mfh: Option<&MfhSegView>,
 ) -> Result<SegmentationParams> {
     // AV2 § 5.18.7.1: segmentation_enabled f(1).
-    let segmentation_enabled = reader.read_bit()? != 0;
+    let segmentation_enabled = reader.read_flag()?;
 
     let mut features = [[SegmentFeature::DISABLED; SEG_LVL_MAX]; MAX_SEGMENTS];
     let mut reuse_seg_info = false;
@@ -194,7 +194,7 @@ pub fn parse_segmentation_params(
         // AV2 § 5.18.7.1: reuse_seg_info f(1) when allowChange, else inferred
         // reuse_seg_info = haveSegParams.
         reuse_seg_info = if allow_change {
-            reader.read_bit()? != 0
+            reader.read_flag()?
         } else {
             have_seg_params
         };

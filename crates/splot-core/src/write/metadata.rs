@@ -172,9 +172,9 @@ pub fn write_metadata_short_obu(
 
     let mut scratch = BitWriter::new();
     // § 5.17.2: the 1-byte header, MSB-first.
-    scratch.write_bit(u8::from(obu.metadata_is_suffix))?;
+    scratch.write_flag(obu.metadata_is_suffix)?;
     scratch.write_bits_u8(obu.muh_layer_idc, 3)?;
-    scratch.write_bit(u8::from(obu.muh_cancel_flag))?;
+    scratch.write_flag(obu.muh_cancel_flag)?;
     scratch.write_bits_u8(obu.muh_persistence_idc, 3)?;
     // § 5.17.2: metadata_type leb128(), reproduced byte-exactly from metadata_type_leb128_bytes.
     write_leb128_with_len(
@@ -247,7 +247,7 @@ pub fn write_metadata_group_obu(
 
     let mut scratch = BitWriter::new();
     // § 5.17.3: the 1-byte group header, MSB-first.
-    scratch.write_bit(u8::from(obu.metadata_is_suffix))?;
+    scratch.write_flag(obu.metadata_is_suffix)?;
     scratch.write_bits_u8(obu.metadata_necessity_idc, 2)?;
     scratch.write_bits_u8(obu.metadata_application_id, 5)?;
     // § 5.17.3: metadata_unit_cnt_minus_1 leb128() (minimal — its byte count is not modeled).
@@ -356,7 +356,7 @@ fn write_metadata_group_unit(
     scratch.write_leb128(unit.metadata_type.value())?;
     // § 5.17.3: header byte = (muh_header_size << 1) | muh_cancel_flag, MSB-first f(7) + f(1).
     scratch.write_bits_u8(unit.muh_header_size, 7)?;
-    scratch.write_bit(u8::from(unit.muh_cancel_flag))?;
+    scratch.write_flag(unit.muh_cancel_flag)?;
 
     if unit.muh_cancel_flag {
         // § 5.17.3: a cancelled unit carries no metadata_unit, so there is nothing to summarize;
@@ -828,9 +828,9 @@ fn write_timecode(writer: &mut BitWriter, p: &MetadataTimecode) -> WriteResult<(
 
     // § 5.17.7: counting_type f(5), three flags f(1), n_frames f(9).
     writer.write_bits_u8(p.counting_type, 5)?;
-    writer.write_bit(u8::from(p.full_timestamp_flag))?;
-    writer.write_bit(u8::from(p.discontinuity_flag))?;
-    writer.write_bit(u8::from(p.cnt_dropped_flag))?;
+    writer.write_flag(p.full_timestamp_flag)?;
+    writer.write_flag(p.discontinuity_flag)?;
+    writer.write_flag(p.cnt_dropped_flag)?;
     writer.write_bits(u32::from(p.n_frames), 9)?;
 
     if p.full_timestamp_flag {
@@ -840,13 +840,13 @@ fn write_timecode(writer: &mut BitWriter, p: &MetadataTimecode) -> WriteResult<(
         writer.write_bits_u8(p.hours_value.unwrap_or(0), 5)?;
     } else {
         // § 5.17.7: a prefix chain of flag-then-value.
-        writer.write_bit(u8::from(p.seconds_value.is_some()))?;
+        writer.write_flag(p.seconds_value.is_some())?;
         if let Some(seconds) = p.seconds_value {
             writer.write_bits_u8(seconds, 6)?;
-            writer.write_bit(u8::from(p.minutes_value.is_some()))?;
+            writer.write_flag(p.minutes_value.is_some())?;
             if let Some(minutes) = p.minutes_value {
                 writer.write_bits_u8(minutes, 6)?;
-                writer.write_bit(u8::from(p.hours_value.is_some()))?;
+                writer.write_flag(p.hours_value.is_some())?;
                 if let Some(hours) = p.hours_value {
                     writer.write_bits_u8(hours, 5)?;
                 }
@@ -926,7 +926,7 @@ fn write_scan_type(writer: &mut BitWriter, p: &MetadataScanType) -> WriteResult<
     }
     writer.write_bits_u8(p.mps_pic_struct_type, 5)?;
     writer.write_bits_u8(p.mps_source_scan_type_idc, 2)?;
-    writer.write_bit(u8::from(p.mps_duplicate_flag))
+    writer.write_flag(p.mps_duplicate_flag)
 }
 
 /// Writes `metadata_decoded_frame_hash()` (AV2 v1.0.0 § 5.17.12,
@@ -959,9 +959,9 @@ fn write_decoded_frame_hash(
     }
 
     writer.write_bits_u8(p.hash_type, 4)?;
-    writer.write_bit(u8::from(p.per_plane))?;
-    writer.write_bit(u8::from(p.has_grain))?;
-    writer.write_bit(u8::from(p.is_monochrome))?;
+    writer.write_flag(p.per_plane)?;
+    writer.write_flag(p.has_grain)?;
+    writer.write_flag(p.is_monochrome)?;
     writer.write_bits_u8(p.reserved, 1)?;
     if p.per_plane {
         for hash in &p.plane_hashes {
@@ -986,11 +986,11 @@ fn write_banding_hints(writer: &mut BitWriter, p: &MetadataBandingHints) -> Writ
         check_banding_detail_encodable(detail)?;
     }
 
-    writer.write_bit(u8::from(p.coding_banding_present_flag))?;
-    writer.write_bit(u8::from(p.source_banding_present_flag))?;
+    writer.write_flag(p.coding_banding_present_flag)?;
+    writer.write_flag(p.source_banding_present_flag)?;
     if p.coding_banding_present_flag {
         // § 5.17.8: banding_hints_flag f(1) = hints.is_some().
-        writer.write_bit(u8::from(p.hints.is_some()))?;
+        writer.write_flag(p.hints.is_some())?;
         if let Some(detail) = p.hints.as_ref() {
             write_banding_detail(writer, detail)?;
         }
@@ -1085,12 +1085,12 @@ fn check_band_units_encodable(band_units: &BandUnits) -> WriteResult<()> {
 /// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-17-8`), validated by
 /// [`check_banding_detail_encodable`].
 fn write_banding_detail(writer: &mut BitWriter, detail: &BandingHintsDetail) -> WriteResult<()> {
-    writer.write_bit(u8::from(detail.three_color_components_flag))?;
+    writer.write_flag(detail.three_color_components_flag)?;
     for component in &detail.components {
         write_banding_component(writer, component)?;
     }
     // § 5.17.8: band_units_information_present_flag f(1) = band_units.is_some().
-    writer.write_bit(u8::from(detail.band_units.is_some()))?;
+    writer.write_flag(detail.band_units.is_some())?;
     if let Some(band_units) = detail.band_units.as_ref() {
         write_band_units(writer, band_units)?;
     }
@@ -1103,7 +1103,7 @@ fn write_banding_component(
     writer: &mut BitWriter,
     component: &BandingComponent,
 ) -> WriteResult<()> {
-    writer.write_bit(u8::from(component.banding_in_component_present_flag))?;
+    writer.write_flag(component.banding_in_component_present_flag)?;
     if let (Some(width), Some(step)) = (
         component.max_band_width_minus_4,
         component.max_band_step_minus_1,
@@ -1121,12 +1121,12 @@ fn write_band_units(writer: &mut BitWriter, band_units: &BandUnits) -> WriteResu
     writer.write_bits_u8(band_units.num_band_units_rows_minus_1, 5)?;
     writer.write_bits_u8(band_units.num_band_units_cols_minus_1, 5)?;
     // § 5.17.8: varying_size_band_units_flag f(1) = varying_size.is_some().
-    writer.write_bit(u8::from(band_units.varying_size.is_some()))?;
+    writer.write_flag(band_units.varying_size.is_some())?;
     if let Some(varying) = band_units.varying_size.as_ref() {
         write_varying_band_units(writer, varying)?;
     }
     for &present in &band_units.banding_in_band_unit_present {
-        writer.write_bit(u8::from(present))?;
+        writer.write_flag(present)?;
     }
     Ok(())
 }

@@ -92,7 +92,7 @@ pub fn write_film_grain_config(
     let grain_gated_off = !input.film_grain_params_present
         || (!input.immediate_output_frame && !input.implicit_output_frame);
     if !grain_gated_off && !input.single_picture_header_flag {
-        writer.write_bit(u8::from(fg.apply_grain))?;
+        writer.write_flag(fg.apply_grain)?;
     }
 
     if fg.apply_grain {

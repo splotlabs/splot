@@ -84,7 +84,7 @@ pub fn write_buffer_removal_timing(
                         what: "op_decoder_model_flag",
                     });
                 }
-                scratch.write_bit(u8::from(op.decoder_model_present))?;
+                scratch.write_flag(op.decoder_model_present)?;
                 if let Some(br_time_op) = op.br_time_op {
                     scratch.write_rg(br_time_op, BR_TIME_RG_ORDER)?;
                 }

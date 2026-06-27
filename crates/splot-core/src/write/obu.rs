@@ -54,7 +54,7 @@ pub fn write_obu_header(writer: &mut BitWriter, header: &ObuHeader) -> WriteResu
     check_header_encodable(header)?;
 
     // Byte 0: obu_header_extension_flag f(1), obu_type f(5), obu_tlayer_id f(2).
-    writer.write_bit(u8::from(header.has_header_extension))?;
+    writer.write_flag(header.has_header_extension)?;
     writer.write_bits_u8(header.obu_type.raw(), 5)?;
     writer.write_bits_u8(header.temporal_layer_id.get(), 2)?;
 

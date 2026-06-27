@@ -89,7 +89,7 @@ pub fn write_multi_frame_header(writer: &mut BitWriter, mfh: &MultiFrameHeader) 
 
     // § 5.7: mfh_frame_size_present_flag f(1). The present flag is not stored separately;
     // it IS the Option's presence, so derive it here.
-    scratch.write_bit(u8::from(mfh.mfh_frame_size.is_some()))?;
+    scratch.write_flag(mfh.mfh_frame_size.is_some())?;
     if let Some(frame_size) = &mfh.mfh_frame_size {
         write_frame_size(&mut scratch, frame_size)?;
     }
@@ -97,10 +97,10 @@ pub fn write_multi_frame_header(writer: &mut BitWriter, mfh: &MultiFrameHeader) 
     // § 5.7: mfh_deblocking_filter_update f(1), then four mfh_apply_deblocking_filter[i]
     // f(1) iff the update is set. When NOT set the parser leaves the array all-false, so a
     // model whose array is not all-false (without an update) is parser-unproducible.
-    scratch.write_bit(u8::from(mfh.mfh_deblocking_filter_update))?;
+    scratch.write_flag(mfh.mfh_deblocking_filter_update)?;
     if mfh.mfh_deblocking_filter_update {
         for &apply in &mfh.mfh_apply_deblocking_filter {
-            scratch.write_bit(u8::from(apply))?;
+            scratch.write_flag(apply)?;
         }
     } else if mfh.mfh_apply_deblocking_filter.iter().any(|&apply| apply) {
         return Err(non_canonical("deblocking_apply_forced_false"));
@@ -109,7 +109,7 @@ pub fn write_multi_frame_header(writer: &mut BitWriter, mfh: &MultiFrameHeader) 
     // § 5.7: mfh_seg_info_present_flag f(1). Unlike the frame-size flag, this IS a stored
     // bool field, so write it verbatim; the three segment-info Options are read iff it is
     // set, so reject any disagreement.
-    scratch.write_bit(u8::from(mfh.mfh_seg_info_present_flag))?;
+    scratch.write_flag(mfh.mfh_seg_info_present_flag)?;
     write_seg_info_section(&mut scratch, mfh)?;
 
     writer.append(&scratch)
@@ -166,8 +166,8 @@ fn write_seg_info_section(scratch: &mut BitWriter, mfh: &MultiFrameHeader) -> Wr
             .segment_info
             .as_ref()
             .ok_or_else(|| non_canonical("seg_info_present_flag"))?;
-        scratch.write_bit(u8::from(ext_seg))?;
-        scratch.write_bit(u8::from(allow_change))?;
+        scratch.write_flag(ext_seg)?;
+        scratch.write_flag(allow_change)?;
         // § 5.7: seg_info(mfh_ext_seg_flag ? 16 : 8).
         let num_segments = if ext_seg {
             EXT_SEG_NUM_SEGMENTS

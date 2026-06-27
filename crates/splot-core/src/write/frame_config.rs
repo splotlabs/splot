@@ -159,10 +159,10 @@ pub fn write_screen_content_params(
     )?;
 
     if seq_force_screen_content_tools == SELECT_SCREEN_CONTENT_TOOLS {
-        writer.write_bit(u8::from(allow_screen_content_tools))?;
+        writer.write_flag(allow_screen_content_tools)?;
     }
     if allow_screen_content_tools && seq_force_integer_mv == SELECT_INTEGER_MV {
-        writer.write_bit(u8::from(force_integer_mv))?;
+        writer.write_flag(force_integer_mv)?;
     }
     Ok(())
 }
@@ -219,7 +219,7 @@ pub fn write_intrabc_params(
 ) -> WriteResult<()> {
     check_intrabc_encodable(params, frame_is_intra, allow_frame_max_bvp_drl_bits)?;
 
-    writer.write_bit(u8::from(params.allow_intrabc))?;
+    writer.write_flag(params.allow_intrabc)?;
     if params.allow_intrabc {
         if frame_is_intra {
             // Presence guaranteed by check_intrabc_encodable.
@@ -229,7 +229,7 @@ pub fn write_intrabc_params(
                     .ok_or(WriteError::NonCanonicalFrameHeader {
                         what: "allow_global_intrabc",
                     })?;
-            writer.write_bit(u8::from(global))?;
+            writer.write_flag(global)?;
             if global {
                 let local =
                     params
@@ -237,7 +237,7 @@ pub fn write_intrabc_params(
                         .ok_or(WriteError::NonCanonicalFrameHeader {
                             what: "allow_local_intrabc",
                         })?;
-                writer.write_bit(u8::from(local))?;
+                writer.write_flag(local)?;
             }
         }
         if allow_frame_max_bvp_drl_bits {
@@ -246,7 +246,7 @@ pub fn write_intrabc_params(
                 .ok_or(WriteError::NonCanonicalFrameHeader {
                     what: "change_bvp_drl",
                 })?;
-            writer.write_bit(u8::from(change))?;
+            writer.write_flag(change)?;
             if change {
                 let raw =
                     params

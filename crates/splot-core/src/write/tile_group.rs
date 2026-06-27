@@ -92,7 +92,7 @@ pub fn write_tile_group_structure(
     // § 5.19 (mirror :8469-8473): tile_start_and_end_present_flag is read as f(1) only when
     // NumTiles > 1; for a single tile it stays the inferred 0 and no bit is written.
     if layout.num_tiles > 1 {
-        writer.write_bit(u8::from(structure.tile_start_and_end_present_flag))?;
+        writer.write_flag(structure.tile_start_and_end_present_flag)?;
     }
 
     // § 5.19 (mirror :8475-8493): tg_start / tg_end f(tileBits) are written only when the range is
@@ -616,7 +616,7 @@ pub fn write_tile_group_continuation_obu(
     // 1. is_first_tile_group f(1) = 0 (the continuation form).
     scratch.write_bit(0)?;
     // 2. frame_header_present_flag f(1) (explicit for a non-first group).
-    scratch.write_bit(u8::from(frame_header_present_flag))?;
+    scratch.write_flag(frame_header_present_flag)?;
 
     // 3. frame_header_copy(): the recorded first header's NumFrameHeaderBits bits verbatim (§ 5.18.1).
     //    The bit count is bounded by the recorded header (already bounded by its source payload), and
@@ -626,7 +626,7 @@ pub fn write_tile_group_continuation_obu(
             let bit = recorded.bit(i).ok_or(WriteError::NonCanonicalTileGroup {
                 what: "frame_header_copy_gate",
             })?;
-            scratch.write_bit(u8::from(bit))?;
+            scratch.write_flag(bit)?;
         }
     }
 

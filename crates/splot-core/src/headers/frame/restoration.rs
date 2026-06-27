@@ -363,7 +363,7 @@ pub fn parse_lr_params(
             FrameRestorationType::WienerNonsep | FrameRestorationType::Switchable
         ) {
             // frame_filters_on[plane] f(1).
-            frame_filters_on = reader.read_bit()? != 0;
+            frame_filters_on = reader.read_flag()?;
             if frame_filters_on {
                 // AV2 § 5.18.7.11: numRefFrames = (FrameIsIntra || FrameType == SWITCH_FRAME)
                 // ? 0 : NumTotalRefs. On the intra path FrameIsIntra, so numRefFrames == 0:
@@ -448,7 +448,7 @@ pub fn parse_lr_params(
 /// they share one helper.
 fn read_lr_size_shift(reader: &mut BitReader<'_>, sb_size: SuperblockSize) -> Result<u32> {
     // *_use_half_size f(1).
-    if reader.read_bit()? != 0 {
+    if reader.read_flag()? {
         // shift = 1.
         return Ok(1);
     }
@@ -457,7 +457,7 @@ fn read_lr_size_shift(reader: &mut BitReader<'_>, sb_size: SuperblockSize) -> Re
         return Ok(0);
     }
     // *_use_max_size f(1).
-    if reader.read_bit()? != 0 {
+    if reader.read_flag()? {
         // shift = 0.
         return Ok(0);
     }
@@ -466,11 +466,7 @@ fn read_lr_size_shift(reader: &mut BitReader<'_>, sb_size: SuperblockSize) -> Re
         return Ok(2);
     }
     // *_use_quarter_size f(1); shift = quarter ? 2 : 3.
-    if reader.read_bit()? != 0 {
-        Ok(2)
-    } else {
-        Ok(3)
-    }
+    if reader.read_flag()? { Ok(2) } else { Ok(3) }
 }
 
 /// Reconstructs the per-plane `indexToTool` selection table (AV2 § 5.18.7.11, mirror
@@ -593,7 +589,7 @@ pub fn parse_ccso_params(
     let ccso_frame_flag = if view.single_picture_header_flag {
         true
     } else {
-        reader.read_bit()? != 0
+        reader.read_flag()?
     };
     // if ( !ccso_frame_flag ) return.
     if !ccso_frame_flag {
@@ -607,7 +603,7 @@ pub fn parse_ccso_params(
     // AV2 § 5.18.7.12: for ( plane = 0; plane < NumPlanes; plane++ ).
     for _plane in 0..usize::from(num_planes) {
         // ccso_planes[plane] f(1).
-        let ccso_planes = reader.read_bit()? != 0;
+        let ccso_planes = reader.read_flag()?;
         let mut plane_params = CcsoPlaneParams {
             ccso_planes,
             ccso_bo_only: None,
@@ -626,7 +622,7 @@ pub fn parse_ccso_params(
         // if ( ccso_planes[plane] && !reuse_ccso[plane] ) -> on intra reuse_ccso == 0.
         if ccso_planes {
             // ccso_bo_only[plane] f(1); ccso_scale_idx[plane] f(2).
-            let ccso_bo_only = reader.read_bit()? != 0;
+            let ccso_bo_only = reader.read_flag()?;
             let ccso_scale_idx = reader.read_bits_u8(2)?;
             let (ccso_quant_idx, ccso_ext_filter, ccso_edge_clf) = if ccso_bo_only {
                 // ccso_quant_idx = 0; ccso_ext_filter = 0; ccso_edge_clf = 0 (no bits).
@@ -642,7 +638,7 @@ pub fn parse_ccso_params(
                     false
                 } else {
                     // ccso_edge_clf[plane] f(1).
-                    reader.read_bit()? != 0
+                    reader.read_flag()?
                 };
                 (ccso_quant_idx, ccso_ext_filter, ccso_edge_clf)
             };

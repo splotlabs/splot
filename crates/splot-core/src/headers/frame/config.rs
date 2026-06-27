@@ -48,7 +48,7 @@ pub(crate) fn parse_screen_content_params_full(
     // AV2 § 5.18.3.3.
     let allow_screen_content_tools =
         if seq_force_screen_content_tools == SELECT_SCREEN_CONTENT_TOOLS {
-            reader.read_bit()? != 0
+            reader.read_flag()?
         } else {
             seq_force_screen_content_tools != 0
         };
@@ -57,7 +57,7 @@ pub(crate) fn parse_screen_content_params_full(
     // the sequence selects it; otherwise it is forced (0, or the sequence value).
     let force_integer_mv = if allow_screen_content_tools {
         if seq_force_integer_mv == SELECT_INTEGER_MV {
-            reader.read_bit()? != 0
+            reader.read_flag()?
         } else {
             seq_force_integer_mv != 0
         }
@@ -108,7 +108,7 @@ pub(crate) fn parse_intrabc_params_full(
     allow_frame_max_bvp_drl_bits: bool,
 ) -> Result<IntrabcParams> {
     // AV2 § 5.18.3.4.
-    let allow_intrabc = reader.read_bit()? != 0;
+    let allow_intrabc = reader.read_flag()?;
     let mut params = IntrabcParams {
         allow_intrabc,
         allow_global_intrabc: None,
@@ -118,16 +118,16 @@ pub(crate) fn parse_intrabc_params_full(
     };
     if allow_intrabc {
         if frame_is_intra {
-            let allow_global_intrabc = reader.read_bit()? != 0;
+            let allow_global_intrabc = reader.read_flag()?;
             params.allow_global_intrabc = Some(allow_global_intrabc);
             if allow_global_intrabc {
-                params.allow_local_intrabc = Some(reader.read_bit()? != 0);
+                params.allow_local_intrabc = Some(reader.read_flag()?);
             }
             // else: allow_local_intrabc = 1 (inferred, no bit).
         }
 
         if allow_frame_max_bvp_drl_bits {
-            let change_bvp_drl = reader.read_bit()? != 0;
+            let change_bvp_drl = reader.read_flag()?;
             params.change_bvp_drl = Some(change_bvp_drl);
             if change_bvp_drl {
                 params.max_bvp_drl_bits_minus_1 = Some(reader.read_ns(2)?);

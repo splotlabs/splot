@@ -1068,12 +1068,6 @@ impl MfhFrameView {
     }
 }
 
-/// Reads `f(n)`, treating `n == 0` as reading no bits (value `0`), matching the
-/// AV2 convention that an `f(0)` field is absent.
-fn read_f(reader: &mut BitReader<'_>, n: u32) -> Result<u32> {
-    if n == 0 { Ok(0) } else { reader.read_bits(n) }
-}
-
 /// `allFrames = (1 << NumRefFrames) - 1` (AV2 § 5.18.2), saturating defensively.
 fn all_frames_mask(num_ref_frames: u32) -> u32 {
     if num_ref_frames >= u32::BITS {
@@ -1218,7 +1212,7 @@ pub(crate) fn parse_core_body(
     // reads bridge_frame_ref_idx, but whether it then takes the bridge inter path or the
     // single-picture path depends on single_picture_header_flag (codex F5).
     let bridge_frame_ref_idx = if core.is_bridge {
-        let idx = read_f(reader, ceil_log2(seq.num_ref_frames))?;
+        let idx = reader.read_f(ceil_log2(seq.num_ref_frames))?;
         core.bridge_frame_ref_idx = Some(idx);
         Some(idx)
     } else {
@@ -1276,14 +1270,14 @@ pub(crate) fn parse_core_body(
         // not compute here, so its value does not change any modeled bit position; it IS
         // recorded for the validator's § 7.3.8.9 OBU_SWITCH quantizer-matrix reset gate
         // (the reset applies only when restricted_prediction_switch == 1).
-        core.restricted_prediction_switch = Some(reader.read_bit()? != 0);
+        core.restricted_prediction_switch = Some(reader.read_flag()?);
         FrameType::Switch
     } else if obu_type.is_tip_frame() {
         FrameType::Inter
     } else if obu_type == ObuType::ClosedLoopKey || obu_type == ObuType::OpenLoopKey {
         FrameType::Key
     } else {
-        let frame_is_inter = reader.read_bit()? != 0; // frame_is_inter f(1)
+        let frame_is_inter = reader.read_flag()?; // frame_is_inter f(1)
         if frame_is_inter {
             FrameType::Inter
         } else {
@@ -1306,7 +1300,7 @@ pub(crate) fn parse_core_body(
     // `RefLongTermId[i]` for the refreshed slots (mirror :14113).
     core.long_term_id = Some(-1);
     if frame_type == FrameType::Key {
-        let long_term_id_plus_1 = read_f(reader, seq.long_term_frame_id_bits)?;
+        let long_term_id_plus_1 = reader.read_f(seq.long_term_frame_id_bits)?;
         core.long_term_id = Some(i64::from(long_term_id_plus_1) - 1);
     }
     if (obu_type == ObuType::RasFrame || obu_type == ObuType::OpenLoopKey)
@@ -1318,7 +1312,7 @@ pub(crate) fn parse_core_body(
         let num_key_ref_frames = reader.read_bits(3)?;
         let mut ref_long_term_ids = Vec::with_capacity(num_key_ref_frames as usize);
         for _ in 0..num_key_ref_frames {
-            let ref_long_term_id = read_f(reader, seq.long_term_frame_id_bits)?;
+            let ref_long_term_id = reader.read_f(seq.long_term_frame_id_bits)?;
             if ref_long_term_id == reserved_long_term_id {
                 core.forbidden_ref_long_term_id = true;
             }
@@ -1349,13 +1343,13 @@ pub(crate) fn parse_core_body(
     let immediate_output_frame = if obu_type == ObuType::OpenLoopKey {
         false
     } else {
-        reader.read_bit()? != 0
+        reader.read_flag()?
     };
     core.immediate_output_frame = Some(immediate_output_frame);
     let implicit_output_frame = if immediate_output_frame || seq.monotonic_output_order_flag {
         false
     } else {
-        reader.read_bit()? != 0
+        reader.read_flag()?
     };
     core.implicit_output_frame = Some(implicit_output_frame);
 
@@ -1415,12 +1409,12 @@ fn parse_inter_path(
         let frame_size_override_flag = if frame_type == FrameType::Switch {
             true
         } else {
-            reader.read_bit()? != 0
+            reader.read_flag()?
         };
         core.frame_size_override_flag = Some(frame_size_override_flag);
 
         // mirror :4367: order_hint f(OrderHintBits); OrderHintLsbs = order_hint.
-        let order_hint = read_f(reader, seq.order_hint_bits)?;
+        let order_hint = reader.read_f(seq.order_hint_bits)?;
         core.order_hint_lsb = Some(order_hint);
 
         let inter_seq = build_inter_seq_view(seq);
@@ -1732,7 +1726,7 @@ fn parse_single_picture_bridge_tail(
     let mut control = InterControl::default();
     let result = (|| -> Result<()> {
         // mirror :4423-4427: bridge_frame_overwrite_flag f(1) — read on any IsBridge frame.
-        let bridge_frame_overwrite_flag = reader.read_bit()? != 0;
+        let bridge_frame_overwrite_flag = reader.read_flag()?;
         control.bridge_frame_overwrite_flag = Some(bridge_frame_overwrite_flag);
 
         // refresh_frame_flags: SPEC CONTRADICTION at this corner. § 5.18.2 syntax (:4429-4445)
@@ -1752,13 +1746,13 @@ fn parse_single_picture_bridge_tail(
         let refresh_frame_flags = if !bridge_frame_overwrite_flag {
             1u32.wrapping_shl(bridge_frame_ref_idx)
         } else if seq.enable_short_refresh_frame_flags {
-            if reader.read_bit()? != 0 {
-                1u32.wrapping_shl(read_f(reader, ceil_log2(seq.num_ref_frames))?)
+            if reader.read_flag()? {
+                1u32.wrapping_shl(reader.read_f(ceil_log2(seq.num_ref_frames))?)
             } else {
                 0
             }
         } else {
-            read_f(reader, seq.num_ref_frames)?
+            reader.read_f(seq.num_ref_frames)?
         };
         control.refresh_frame_flags = Some(refresh_frame_flags);
 
@@ -1844,10 +1838,10 @@ fn parse_show_existing_frame(
     core: &mut FrameHeaderCore,
     seq: &CoreSeqView,
 ) -> Result<()> {
-    core.frame_to_show_map_idx = Some(read_f(reader, ceil_log2(seq.num_ref_frames))?);
-    let derive_sef_order_hint = reader.read_bit()? != 0;
+    core.frame_to_show_map_idx = Some(reader.read_f(ceil_log2(seq.num_ref_frames))?);
+    let derive_sef_order_hint = reader.read_flag()?;
     if !derive_sef_order_hint {
-        core.order_hint_lsb = Some(read_f(reader, seq.order_hint_bits)?);
+        core.order_hint_lsb = Some(reader.read_f(seq.order_hint_bits)?);
     }
     // AV2 § 5.18.2 (mirror :4180-4184): refresh_frame_flags = 0; immediate_output_frame = 1.
     // FrameType comes from the referenced slot (reference state), so it is left unknown.
@@ -1930,7 +1924,7 @@ fn parse_intra_tail(
     let frame_size_override_flag = if single_picture {
         false
     } else {
-        reader.read_bit()? != 0
+        reader.read_flag()?
     };
     // Record the dims provenance for the §6.17.4.1 / §6.17.2 validator split: the
     // non-override path (`false`) derives FrameWidth/FrameHeight from the MFH default
@@ -1939,7 +1933,7 @@ fn parse_intra_tail(
     core.frame_size_override_flag = Some(frame_size_override_flag);
 
     // order_hint f(OrderHintBits); OrderHintLsbs = order_hint.
-    core.order_hint_lsb = Some(read_f(reader, seq.order_hint_bits)?);
+    core.order_hint_lsb = Some(reader.read_f(seq.order_hint_bits)?);
     // FrameIsIntra -> primary_ref_frame = PRIMARY_REF_NONE (no bits read).
 
     // refresh_frame_flags (AV2 § 5.18.2). For an intra frame this is the KEY_FRAME or
@@ -1984,7 +1978,7 @@ fn parse_intra_tail(
 
     // Not a TIP-as-output / bru-inactive / bridge frame -> disable_cdf_update f(1)
     // (AV2 § 5.18.2 else-branch of `if ( bru_inactive || IsBridge )`).
-    core.disable_cdf_update = Some(reader.read_bit()? != 0);
+    core.disable_cdf_update = Some(reader.read_flag()?);
 
     // On the intra path, no BRU / motion-field / TIP block reads before `tile_info()`.
     parse_intra_structures(reader, core, seq, mfh)
@@ -2336,22 +2330,22 @@ fn read_refresh_frame_flags(
         if obu_type == ObuType::ClosedLoopKey && seq.max_mlayer_id == 0 {
             Ok(all_frames_mask(seq.num_ref_frames))
         } else if seq.enable_short_refresh_frame_flags {
-            let frame_to_refresh = read_f(reader, ceil_log2(seq.num_ref_frames))?;
+            let frame_to_refresh = reader.read_f(ceil_log2(seq.num_ref_frames))?;
             Ok(1u32.wrapping_shl(frame_to_refresh))
         } else {
-            read_f(reader, seq.num_ref_frames)
+            reader.read_f(seq.num_ref_frames)
         }
     } else if seq.enable_short_refresh_frame_flags {
         // INTRA_ONLY_FRAME with the compact signaling mode.
-        let has_refresh_frame_flags = reader.read_bit()? != 0;
+        let has_refresh_frame_flags = reader.read_flag()?;
         if has_refresh_frame_flags {
-            let frame_to_refresh = read_f(reader, ceil_log2(seq.num_ref_frames))?;
+            let frame_to_refresh = reader.read_f(ceil_log2(seq.num_ref_frames))?;
             Ok(1u32.wrapping_shl(frame_to_refresh))
         } else {
             Ok(0)
         }
     } else {
-        read_f(reader, seq.num_ref_frames)
+        reader.read_f(seq.num_ref_frames)
     }
 }
 

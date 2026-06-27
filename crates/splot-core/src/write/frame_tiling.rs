@@ -187,7 +187,7 @@ pub fn write_tile_info(
     // § 5.18.7.2: reuse_tile_info f(1) only when eligible && allow_tile_info_change;
     // otherwise the value is inferred (1 when eligible, 0 when not) and no bit is written.
     if grid.eligible && tile.allow_tile_info_change {
-        writer.write_bit(u8::from(info.reuse_tile_info))?;
+        writer.write_flag(info.reuse_tile_info)?;
     }
 
     if info.reuse_tile_info {

@@ -110,11 +110,11 @@ pub fn write_deblocking_filter_params(
     // NumPlanes > 1 and either luma flag is set); on the MFH-update arm copy them with no
     // bits (validated up front against the derived array).
     if !plan.use_mfh_update {
-        writer.write_bit(u8::from(params.apply_deblocking_filter[0]))?;
-        writer.write_bit(u8::from(params.apply_deblocking_filter[1]))?;
+        writer.write_flag(params.apply_deblocking_filter[0])?;
+        writer.write_flag(params.apply_deblocking_filter[1])?;
         if plan.chroma_pair_coded {
-            writer.write_bit(u8::from(params.apply_deblocking_filter[2]))?;
-            writer.write_bit(u8::from(params.apply_deblocking_filter[3]))?;
+            writer.write_flag(params.apply_deblocking_filter[2])?;
+            writer.write_flag(params.apply_deblocking_filter[3])?;
         }
     }
 
@@ -122,7 +122,7 @@ pub fn write_deblocking_filter_params(
     // when present, df_delta_q[i] f(dfParBits) coded as raw = DfDeltaQ[i] + (1 << dfParBits-1).
     for (i, &apply) in params.apply_deblocking_filter.iter().enumerate() {
         if apply {
-            writer.write_bit(u8::from(params.df_delta_q_present[i]))?;
+            writer.write_flag(params.df_delta_q_present[i])?;
             if params.df_delta_q_present[i] {
                 // Recovered up front; `raw` is in the f(dfParBits) domain.
                 let raw = (i64::from(params.df_delta_q[i]) + plan.half) as u32;
@@ -304,7 +304,7 @@ pub fn write_gdf_params(
 
     // § 5.18.7.9: single picture infers gdf_frame_enable = 1 (no bit); else f(1).
     if !filter.single_picture_header_flag {
-        writer.write_bit(u8::from(params.gdf_frame_enable))?;
+        writer.write_flag(params.gdf_frame_enable)?;
     }
     if !params.gdf_frame_enable {
         // § 5.18.7.9: if ( !gdf_frame_enable ) return.
@@ -314,7 +314,7 @@ pub fn write_gdf_params(
     // § 5.18.7.9: gdf_per_block f(1) only when coded (else inferred 0, validated up front).
     // Pattern-match the Option so a None never reaches an unwrap (validated already).
     if let (true, Some(per_block)) = (per_block_coded, params.gdf_per_block) {
-        writer.write_bit(u8::from(per_block))?;
+        writer.write_flag(per_block)?;
     }
     // § 5.18.7.9: gdf_pic_qc_idx f(2); gdf_pic_scale_idx f(2).
     if let Some(qc_idx) = params.gdf_pic_qc_idx {
@@ -447,7 +447,7 @@ pub fn write_cdef_params(
 
     // § 5.18.7.10: single picture infers cdef_frame_enable = 1 (no bit); else f(1).
     if !filter.single_picture_header_flag {
-        writer.write_bit(u8::from(params.cdef_frame_enable))?;
+        writer.write_flag(params.cdef_frame_enable)?;
     }
     if !params.cdef_frame_enable {
         // § 5.18.7.10: if ( !cdef_frame_enable ) return.
@@ -469,7 +469,7 @@ pub fn write_cdef_params(
         filter.cdef_on_skip_txfm,
         params.cdef_on_skip_txfm_frame_enable,
     ) {
-        writer.write_bit(u8::from(on_skip))?;
+        writer.write_flag(on_skip)?;
     }
 
     // § 5.18.7.10: for ( i = 0; i < CdefStrengths; i++ ).

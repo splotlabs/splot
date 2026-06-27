@@ -158,7 +158,7 @@ pub(super) fn parse_frame_wiener_ns_filter(
             }
             let read_subset = read_wiener_ns_subset(reader, plane_is_chroma)?;
             if plane_is_chroma && read_subset > 0 {
-                wiener_ns_uv_sym = reader.read_bit()? != 0;
+                wiener_ns_uv_sym = reader.read_flag()?;
             }
             subset = Some(read_subset);
         }
@@ -248,7 +248,7 @@ fn read_match_indices(
         let use_alt_group = if num_zeros == 2 {
             false
         } else {
-            reader.read_bit()? != 0
+            reader.read_flag()?
         };
         let group = if use_alt_group {
             if num_zeros == 1 {
@@ -289,7 +289,7 @@ fn read_match_indices(
 fn read_merged_flags(reader: &mut BitReader<'_>, num_classes: usize) -> Result<Vec<bool>> {
     let mut merged = Vec::with_capacity(num_classes);
     for _ in 0..num_classes {
-        merged.push(reader.read_bit()? != 0);
+        merged.push(reader.read_flag()?);
     }
     Ok(merged)
 }

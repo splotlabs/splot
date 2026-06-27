@@ -274,10 +274,10 @@ impl ContentInterpretation {
 /// mid-field.
 pub fn parse_content_interpretation(reader: &mut BitReader<'_>) -> Result<ContentInterpretation> {
     let scan_type_idc = ScanTypeIdc::from_bits(reader.read_bits_u8(2)?);
-    let color_description_present_flag = reader.read_bit()? != 0;
-    let chroma_sample_position_present_flag = reader.read_bit()? != 0;
-    let aspect_ratio_info_present_flag = reader.read_bit()? != 0;
-    let timing_info_present_flag = reader.read_bit()? != 0;
+    let color_description_present_flag = reader.read_flag()?;
+    let chroma_sample_position_present_flag = reader.read_flag()?;
+    let aspect_ratio_info_present_flag = reader.read_flag()?;
+    let timing_info_present_flag = reader.read_flag()?;
     let reserved_2bit = reader.read_bits_u8(2)?;
 
     let color_description = if color_description_present_flag {
@@ -298,7 +298,7 @@ pub fn parse_content_interpretation(reader: &mut BitReader<'_>) -> Result<Conten
         } else {
             None
         };
-        let full_range_flag = reader.read_bit()? != 0;
+        let full_range_flag = reader.read_flag()?;
         Some(ColorDescription {
             color_description_idc,
             primaries,

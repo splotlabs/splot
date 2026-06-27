@@ -307,7 +307,7 @@ pub(crate) fn get_qindex_ignore_delta_q(
 /// payload ends mid-field.
 pub fn read_delta_q(reader: &mut BitReader<'_>) -> Result<i32> {
     // AV2 § 5.18.6.3: delta_coded f(1).
-    let delta_coded = reader.read_bit()? != 0;
+    let delta_coded = reader.read_flag()?;
     if delta_coded {
         // AV2 § 5.18.6.3: delta_q su(7).
         reader.read_su(7)
@@ -358,7 +358,7 @@ pub fn parse_quantization_params(
         // AV2 § 5.18.6.1: if ( separate_uv_delta_q ) diff_uv_delta f(1)
         // else diff_uv_delta = 0.
         if quant.separate_uv_delta_q {
-            params.diff_uv_delta = reader.read_bit()? != 0;
+            params.diff_uv_delta = reader.read_flag()?;
         }
         // AV2 § 5.18.6.1: if ( TipFrameMode != TIP_FRAME_AS_OUTPUT &&
         // uv_dc_delta_q_enabled ) DeltaQUDc = read_delta_q( ).
@@ -412,7 +412,7 @@ pub fn parse_setup_qm_params(
     segmentation_enabled: bool,
 ) -> Result<SetupQmParams> {
     // AV2 § 5.18.6.2: using_qmatrix f(1).
-    let using_qmatrix = reader.read_bit()? != 0;
+    let using_qmatrix = reader.read_flag()?;
     let mut pic_qm_num_minus_1 = 0u8;
     let mut levels = [QmSetLevels::default(); MAX_PIC_QM_NUM];
     if using_qmatrix {
@@ -431,7 +431,7 @@ pub fn parse_setup_qm_params(
             // AV2 § 5.18.6.2: if ( NumPlanes > 1 ).
             if quant.num_planes > 1 {
                 // AV2 § 5.18.6.2: qm_uv_same_as_y f(1).
-                let qm_uv_same_as_y = reader.read_bit()? != 0;
+                let qm_uv_same_as_y = reader.read_flag()?;
                 if qm_uv_same_as_y {
                     // AV2 § 5.18.6.2: qm_u[ i ] = qm_y[ i ], qm_v[ i ] = qm_y[ i ].
                     level.qm_u = level.qm_y;
@@ -473,7 +473,7 @@ pub fn parse_delta_q_params(reader: &mut BitReader<'_>, base_q_idx: u32) -> Resu
     let mut delta_q_res = 0u8;
     // AV2 § 5.18.7.8: if ( base_q_idx > 0 ) delta_q_present f(1).
     if base_q_idx > 0 {
-        delta_q_present = reader.read_bit()? != 0;
+        delta_q_present = reader.read_flag()?;
     }
     // AV2 § 5.18.7.8: if ( delta_q_present ) delta_q_res f(2).
     if delta_q_present {
@@ -574,7 +574,7 @@ pub fn parse_lossless_info(
     let allow_tcq = if coded_lossless {
         false
     } else if quant.choose_tcq_per_frame {
-        reader.read_bit()? != 0
+        reader.read_flag()?
     } else {
         quant.enable_tcq
     };
@@ -583,7 +583,7 @@ pub fn parse_lossless_info(
     let allow_parity_hiding = if coded_lossless || !quant.enable_parity_hiding || allow_tcq {
         false
     } else {
-        reader.read_bit()? != 0
+        reader.read_flag()?
     };
     Ok(LosslessInfo {
         lossless_array,

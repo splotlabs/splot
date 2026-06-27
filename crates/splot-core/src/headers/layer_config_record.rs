@@ -384,14 +384,14 @@ fn parse_lcr_global_info(reader: &mut BitReader<'_>) -> Result<LcrGlobalInfo> {
     // lcr_xlayer_map; these drive the PTL and payload loops below.
     let xlayer_ids = derive_xlayer_ids(xlayer_map);
 
-    let aggregate_info_present = reader.read_bit()? != 0;
-    let seq_ptl_info_present = reader.read_bit()? != 0;
-    let global_payload_present = reader.read_bit()? != 0;
-    let dependent_xlayers_flag = reader.read_bit()? != 0;
-    let global_atlas_id_present = reader.read_bit()? != 0;
+    let aggregate_info_present = reader.read_flag()?;
+    let seq_ptl_info_present = reader.read_flag()?;
+    let global_payload_present = reader.read_flag()?;
+    let dependent_xlayers_flag = reader.read_flag()?;
+    let global_atlas_id_present = reader.read_flag()?;
     let global_purpose_id = reader.read_bits_u8(7)?;
-    let doh_constraint_flag = reader.read_bit()? != 0;
-    let enforce_tile_alignment_flag = reader.read_bit()? != 0;
+    let doh_constraint_flag = reader.read_flag()?;
+    let enforce_tile_alignment_flag = reader.read_flag()?;
 
     let (global_atlas_id, reserved_zero_3bits) = if global_atlas_id_present {
         (Some(reader.read_bits_u8(3)?), 0)
@@ -466,8 +466,8 @@ fn parse_lcr_local_info(
 ) -> Result<LcrLocalInfo> {
     let global_id = reader.read_bits_u8(3)?;
     let local_id = reader.read_bits_u8(3)?;
-    let profile_tier_level_info_present = reader.read_bit()? != 0;
-    let local_atlas_id_present = reader.read_bit()? != 0;
+    let profile_tier_level_info_present = reader.read_flag()?;
+    let local_atlas_id_present = reader.read_flag()?;
 
     let seq_ptl_info = if profile_tier_level_info_present {
         Some(parse_lcr_seq_profile_tier_level_info(
@@ -511,7 +511,7 @@ fn parse_lcr_aggregate_info(reader: &mut BitReader<'_>) -> Result<LcrAggregateIn
     Ok(LcrAggregateInfo {
         config_idc: reader.read_bits_u8(6)?,
         aggregate_level_idx: reader.read_bits_u8(5)?,
-        max_tier_flag: reader.read_bit()? != 0,
+        max_tier_flag: reader.read_flag()?,
         max_interop: reader.read_bits_u8(4)?,
     })
 }
@@ -525,7 +525,7 @@ fn parse_lcr_seq_profile_tier_level_info(
         xlayer_id,
         seq_profile_idc: ProfileIdc::from_bits(reader.read_bits_u8(5)?),
         max_level_idx: reader.read_bits_u8(5)?,
-        tier_flag: reader.read_bit()? != 0,
+        tier_flag: reader.read_flag()?,
         max_mlayer_count: reader.read_bits_u8(3)?,
         reserved_2bits: reader.read_bits_u8(2)?,
     })
@@ -603,10 +603,10 @@ fn parse_lcr_xlayer_info(
     reader: &mut BitReader<'_>,
     context: &XlayerAtlasContext,
 ) -> Result<LcrXlayerInfo> {
-    let rep_info_present = reader.read_bit()? != 0;
-    let xlayer_purpose_present = reader.read_bit()? != 0;
-    let xlayer_color_info_present = reader.read_bit()? != 0;
-    let embedded_layer_info_present = reader.read_bit()? != 0;
+    let rep_info_present = reader.read_flag()?;
+    let xlayer_purpose_present = reader.read_flag()?;
+    let xlayer_color_info_present = reader.read_flag()?;
+    let embedded_layer_info_present = reader.read_flag()?;
 
     let rep_info = if rep_info_present {
         Some(parse_lcr_rep_info(reader)?)
@@ -653,8 +653,8 @@ fn parse_lcr_xlayer_info(
 fn parse_lcr_rep_info(reader: &mut BitReader<'_>) -> Result<LcrRepInfo> {
     let max_pic_width = reader.read_uvlc()?;
     let max_pic_height = reader.read_uvlc()?;
-    let format_info_present = reader.read_bit()? != 0;
-    let cropping_window_present = reader.read_bit()? != 0;
+    let format_info_present = reader.read_flag()?;
+    let cropping_window_present = reader.read_flag()?;
 
     let format_info = if format_info_present {
         Some(LcrFormatInfo {
@@ -695,7 +695,7 @@ fn parse_lcr_xlayer_color_info(reader: &mut BitReader<'_>) -> Result<LcrXlayerCo
     } else {
         None
     };
-    let full_range_flag = reader.read_bit()? != 0;
+    let full_range_flag = reader.read_flag()?;
     Ok(LcrXlayerColorInfo {
         color_description_idc,
         primaries,
@@ -749,7 +749,7 @@ fn parse_lcr_embedded_layer_info(
             None
         };
 
-        let same_sh_max_resolution_flag = reader.read_bit()? != 0;
+        let same_sh_max_resolution_flag = reader.read_flag()?;
         let (max_expected_width, max_expected_height) = if same_sh_max_resolution_flag {
             (None, None)
         } else {

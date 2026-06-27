@@ -106,10 +106,10 @@ pub fn write_content_interpretation(
     scratch.write_bits_u8(ci.scan_type_idc.get(), F2)?;
     // § 5.15: the four optional-structure present flags. Each flag IS the model's
     // matching Option presence, so it is derived here rather than stored separately.
-    scratch.write_bit(u8::from(ci.color_description.is_some()))?;
-    scratch.write_bit(u8::from(ci.chroma_sample_position.is_some()))?;
-    scratch.write_bit(u8::from(ci.aspect_ratio.is_some()))?;
-    scratch.write_bit(u8::from(ci.timing_info.is_some()))?;
+    scratch.write_flag(ci.color_description.is_some())?;
+    scratch.write_flag(ci.chroma_sample_position.is_some())?;
+    scratch.write_flag(ci.aspect_ratio.is_some())?;
+    scratch.write_flag(ci.timing_info.is_some())?;
     // § 5.15: ci_reserved_2bit f(2). § 6.14 requires 0, but the parser preserves any
     // 0..=3 value, so the writer reproduces it verbatim.
     scratch.write_bits_u8(ci.reserved_2bit, F2)?;
@@ -156,7 +156,7 @@ fn write_color_description(scratch: &mut BitWriter, color: &ColorDescription) ->
         // stores primaries is parser-unproducible.
         return Err(non_canonical("color_primaries_idc"));
     }
-    scratch.write_bit(u8::from(color.full_range_flag))
+    scratch.write_flag(color.full_range_flag)
 }
 
 /// Writes `ci_chroma_sample_position()` (AV2 v1.0.0 § 5.15):
@@ -230,7 +230,7 @@ fn write_timing_info(scratch: &mut BitWriter, timing: &TimingInfo) -> WriteResul
     }
     scratch.write_bits(timing.num_units_in_display_tick, TIMING_F32)?;
     scratch.write_bits(timing.time_scale, TIMING_F32)?;
-    scratch.write_bit(u8::from(timing.equal_picture_interval))?;
+    scratch.write_flag(timing.equal_picture_interval)?;
     // § 5.4.12: num_ticks_per_picture_minus_1 is read iff equal_picture_interval, so
     // the parser ties Some(..) to the flag. Reject a model that stores one without the
     // other.

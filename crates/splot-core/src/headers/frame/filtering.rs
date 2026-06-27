@@ -217,7 +217,7 @@ pub fn parse_deblocking_filter_params(
     // `read_allow_df_sub_pu`. The parsed value feeds the deblocking reconstruction this
     // phase does not model, so it is consumed for alignment only.
     if read_allow_df_sub_pu {
-        let _allow_df_sub_pu = reader.read_bit()? != 0;
+        let _allow_df_sub_pu = reader.read_flag()?;
     }
 
     let mut apply_deblocking_filter = [false; 4];
@@ -234,11 +234,11 @@ pub fn parse_deblocking_filter_params(
         }
     }
     if !use_mfh_update {
-        apply_deblocking_filter[0] = reader.read_bit()? != 0;
-        apply_deblocking_filter[1] = reader.read_bit()? != 0;
+        apply_deblocking_filter[0] = reader.read_flag()?;
+        apply_deblocking_filter[1] = reader.read_flag()?;
         if num_planes > 1 && (apply_deblocking_filter[0] || apply_deblocking_filter[1]) {
-            apply_deblocking_filter[2] = reader.read_bit()? != 0;
-            apply_deblocking_filter[3] = reader.read_bit()? != 0;
+            apply_deblocking_filter[2] = reader.read_flag()?;
+            apply_deblocking_filter[3] = reader.read_flag()?;
         }
     }
 
@@ -268,7 +268,7 @@ pub fn parse_deblocking_filter_params(
     for i in 0..4 {
         // AV2 § 5.18.5.2: for ( i = 0; i < 4; i++ ).
         if apply_deblocking_filter[i] {
-            df_delta_q_present[i] = reader.read_bit()? != 0;
+            df_delta_q_present[i] = reader.read_flag()?;
             if df_delta_q_present[i] {
                 // AV2 § 5.18.5.2: df_delta_q[i] f(dfParBits);
                 // DfDeltaQ[i] = df_delta_q[i] - (1 << (dfParBits - 1)).
@@ -361,7 +361,7 @@ impl InterpolationFilter {
 /// ends before the `is_filter_switchable` bit or the `interpolation_filter` `f(2)` value.
 pub fn read_interpolation_filter(reader: &mut BitReader<'_>) -> Result<InterpolationFilter> {
     // AV2 § 5.18.5.1: is_filter_switchable f(1).
-    let is_filter_switchable = reader.read_bit()? != 0;
+    let is_filter_switchable = reader.read_flag()?;
     if is_filter_switchable {
         Ok(InterpolationFilter::Switchable)
     } else {
@@ -476,7 +476,7 @@ pub fn parse_gdf_params(
     let gdf_frame_enable = if filter.single_picture_header_flag {
         true
     } else {
-        reader.read_bit()? != 0
+        reader.read_flag()?
     };
     if !gdf_frame_enable {
         // AV2 § 5.18.7.9: if ( !gdf_frame_enable ) return.
@@ -491,7 +491,7 @@ pub fn parse_gdf_params(
     // AV2 § 5.18.7.9: gdf_per_block f(1) when coded (the gdfBlkSize / tile gate, shared
     // with the writer via gdf_per_block_is_coded); else inferred 0.
     let gdf_per_block = if gdf_per_block_is_coded(filter, geometry) {
-        reader.read_bit()? != 0
+        reader.read_flag()?
     } else {
         false
     };
@@ -539,7 +539,7 @@ pub fn parse_cdef_params(
     let cdef_frame_enable = if filter.single_picture_header_flag {
         true
     } else {
-        reader.read_bit()? != 0
+        reader.read_flag()?
     };
     if !cdef_frame_enable {
         // AV2 § 5.18.7.10: if ( !cdef_frame_enable ) return.
@@ -559,7 +559,7 @@ pub fn parse_cdef_params(
 
     // AV2 § 5.18.7.10: cdef_on_skip_txfm_frame_enable per CdefOnSkipTxfm.
     let cdef_on_skip_txfm_frame_enable = match filter.cdef_on_skip_txfm {
-        CdefOnSkipTxfm::Adaptive => reader.read_bit()? != 0,
+        CdefOnSkipTxfm::Adaptive => reader.read_flag()?,
         CdefOnSkipTxfm::AlwaysOn => true,
         CdefOnSkipTxfm::Disabled => false,
     };
@@ -568,7 +568,7 @@ pub fn parse_cdef_params(
     let mut strengths = Vec::with_capacity(usize::from(cdef_strengths).min(MAX_CDEF_STRENGTHS));
     for _ in 0..cdef_strengths {
         // cdef_y_pri_zero f(1); cdef_y_pri_strength[i] = 0 or f(4).
-        let y_pri_strength = if reader.read_bit()? != 0 {
+        let y_pri_strength = if reader.read_flag()? {
             0
         } else {
             reader.read_bits_u8(4)?
@@ -580,7 +580,7 @@ pub fn parse_cdef_params(
         }
         let (uv_pri_strength, uv_sec_strength) = if num_planes > 1 {
             // cdef_uv_pri_zero f(1); cdef_uv_pri_strength[i] = 0 or f(4).
-            let uv_pri = if reader.read_bit()? != 0 {
+            let uv_pri = if reader.read_flag()? {
                 0
             } else {
                 reader.read_bits_u8(4)?

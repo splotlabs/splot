@@ -20,12 +20,13 @@
 #![allow(dead_code)]
 
 use splot_recon::{
-    BitDepth as ReconBitDepth, DequantBlockParams, PlaneId, PlaneRect, QuantizerDeltas,
-    ac_quantizer, dc_quantizer, dequantize_block, max_quantizer_index,
+    BitDepth as ReconBitDepth, DequantBlockParams, PlaneId, PlaneRect, ac_quantizer, dc_quantizer,
+    dequantize_block, max_quantizer_index,
 };
 
 use crate::error::{Error, Result};
 use crate::forward_transform::ForwardTransformBlock;
+use crate::quantization_shared::{dequant_visible_range, zero_deltas};
 
 // Re-export the sibling 16x16 quantizer (`ENC-FORWARD-TRANSFORM-DCT-16X16`), split
 // into `quantization_16x16` only to keep each source file under the project's
@@ -331,21 +332,6 @@ fn quantize_coefficient(
         Ok(-quantized_abs)
     } else {
         Ok(quantized_abs)
-    }
-}
-
-fn dequant_visible_range(bit_depth: ReconBitDepth) -> (i32, i32) {
-    let bound = 1i32 << (7 + u32::from(bit_depth.bits()));
-    (-bound, bound - 1)
-}
-
-const fn zero_deltas() -> QuantizerDeltas {
-    QuantizerDeltas {
-        y_dc: 0,
-        u_dc: 0,
-        v_dc: 0,
-        u_ac: 0,
-        v_ac: 0,
     }
 }
 

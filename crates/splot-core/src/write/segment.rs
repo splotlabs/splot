@@ -76,7 +76,7 @@ pub fn write_seg_info(
     for segment in info.features.iter().take(count) {
         for (j, feature) in segment.iter().enumerate() {
             // feature_enabled: f(1).
-            writer.write_bit(u8::from(feature.enabled))?;
+            writer.write_flag(feature.enabled)?;
             if feature.enabled {
                 let bits_to_read = SEGMENTATION_FEATURE_BITS[j];
                 if SEGMENTATION_FEATURE_SIGNED[j] {

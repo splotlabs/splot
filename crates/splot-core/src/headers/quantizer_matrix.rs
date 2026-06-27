@@ -160,7 +160,7 @@ pub struct UserDefinedQmPlane {
 pub fn parse_quantizer_matrix(reader: &mut BitReader<'_>) -> Result<QuantizerMatrixObu> {
     // qm_bit_map fits in 15 bits, so the u32 read never exceeds u16::MAX.
     let qm_bit_map = reader.read_bits(QM_BIT_MAP_BITS)? as u16;
-    let chroma_info_present = reader.read_bit()? != 0;
+    let chroma_info_present = reader.read_flag()?;
     let num_planes: u8 = if chroma_info_present { 3 } else { 1 };
 
     let mut levels = Vec::new();
@@ -169,7 +169,7 @@ pub fn parse_quantizer_matrix(reader: &mut BitReader<'_>) -> Result<QuantizerMat
             if qm_bit_map & (1 << level) == 0 {
                 continue;
             }
-            let is_default = reader.read_bit()? != 0;
+            let is_default = reader.read_flag()?;
             let matrices = if is_default {
                 None
             } else {
@@ -236,7 +236,7 @@ fn user_defined_qm(
     // AV2 § 5.4.11: plane > 0 may copy the previously parsed plane of the same
     // transform (qm_copy_from_previous_plane).
     if plane > 0 {
-        let copy_from_previous_plane = reader.read_bit()? != 0;
+        let copy_from_previous_plane = reader.read_flag()?;
         if copy_from_previous_plane {
             let values = transforms[t].planes[plane - 1].values.clone();
             transforms[t].planes.push(UserDefinedQmPlane {
@@ -251,11 +251,11 @@ fn user_defined_qm(
     let mut symmetric = false;
     if t == 0 {
         // AV2 § 5.4.11: TX_8X8 may signal a symmetric matrix.
-        symmetric = reader.read_bit()? != 0;
+        symmetric = reader.read_flag()?;
     } else if t == 2 {
         // AV2 § 5.4.11: TX_4X8 may be the transpose of the same plane's TX_8X4
         // matrix: UserQm[level][2][plane][i][j] = UserQm[level][1][plane][j][i].
-        let is_transpose_of_8x4 = reader.read_bit()? != 0;
+        let is_transpose_of_8x4 = reader.read_flag()?;
         if is_transpose_of_8x4 {
             let source = &transforms[1].planes[plane];
             let source_width = source.width as usize;

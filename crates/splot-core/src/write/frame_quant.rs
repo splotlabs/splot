@@ -163,7 +163,7 @@ pub fn write_quantization_params(
     {
         // § 5.18.6.1: if ( separate_uv_delta_q ) diff_uv_delta f(1).
         if quant.separate_uv_delta_q {
-            writer.write_bit(u8::from(params.diff_uv_delta))?;
+            writer.write_flag(params.diff_uv_delta)?;
         }
         // § 5.18.6.1: if ( TipFrameMode != TIP_FRAME_AS_OUTPUT && uv_dc_delta_q_enabled )
         // DeltaQUDc = read_delta_q( ). The read is UNCONDITIONAL on this gate; when
@@ -361,7 +361,7 @@ pub fn write_setup_qm_params(
     check_setup_qm_encodable(qm, quant, segmentation_enabled)?;
 
     // § 5.18.6.2: using_qmatrix f(1).
-    writer.write_bit(u8::from(qm.using_qmatrix))?;
+    writer.write_flag(qm.using_qmatrix)?;
     if !qm.using_qmatrix {
         return Ok(());
     }
@@ -378,7 +378,7 @@ pub fn write_setup_qm_params(
         if quant.num_planes > 1 {
             // Canonicalization 2: same_as_y when both chroma equal qm_y.
             let same_as_y = level.qm_u == level.qm_y && level.qm_v == level.qm_y;
-            writer.write_bit(u8::from(same_as_y))?;
+            writer.write_flag(same_as_y)?;
             if !same_as_y {
                 // § 5.18.6.2: qm_u[ i ] f(4).
                 writer.write_bits_u8(level.qm_u, 4)?;
@@ -489,7 +489,7 @@ pub fn write_delta_q_params(
 
     // § 5.18.7.8: if ( base_q_idx > 0 ) delta_q_present f(1) else inferred 0.
     if base_q_idx > 0 {
-        writer.write_bit(u8::from(dq.delta_q_present))?;
+        writer.write_flag(dq.delta_q_present)?;
     }
     // § 5.18.7.8: if ( delta_q_present ) delta_q_res f(2) else inferred 0.
     if dq.delta_q_present {
@@ -597,12 +597,12 @@ pub fn write_lossless_info(
     // § 5.18.2: if ( CodedLossless ) allow_tcq = 0 else if ( choose_tcq_per_frame )
     // allow_tcq f(1) else allow_tcq = enable_tcq.
     if !derived.coded_lossless && quant.choose_tcq_per_frame {
-        writer.write_bit(u8::from(info.allow_tcq))?;
+        writer.write_flag(info.allow_tcq)?;
     }
     // § 5.18.2: if ( CodedLossless || !enable_parity_hiding || allow_tcq )
     // allow_parity_hiding = 0 else allow_parity_hiding f(1).
     if !derived.coded_lossless && quant.enable_parity_hiding && !info.allow_tcq {
-        writer.write_bit(u8::from(info.allow_parity_hiding))?;
+        writer.write_flag(info.allow_parity_hiding)?;
     }
     Ok(())
 }
