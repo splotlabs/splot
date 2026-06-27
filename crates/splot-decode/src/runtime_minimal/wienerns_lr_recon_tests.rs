@@ -110,14 +110,18 @@ const LUMA_REGION_FNV1A64: u64 = 0x31c1_4055_9bd3_8725;
 /// The §7.13.2.12 IBP DC value at the MI(4,0) `TX_16X64` leaf's top-left 3 columns.
 const MI40_IBP_STEP: u16 = 65;
 
-/// The total reconstructed luma sample count after the cardinal `H_PRED` widening:
+/// The total reconstructed luma sample count after the §7.13.3.18 IntrABC widening:
 /// the 24576-sample first-3-superblock DC region (x[0,192) x y[0,128)), PLUS the
 /// SB-column-3 `BLOCK_64X64 H_PRED` block (x[192,256) x y[0,64), the §7.13.3.18
 /// IntrABC source — `4096` samples), PLUS the one 32x64 `DC_PRED` block below the
 /// left half of the H_PRED block (x[192,224) x y[64,128), `2048` samples) that the
 /// §7.13.2 above-edge coverage guard unblocked once the H_PRED block above it
-/// reconstructed. Every sample is bit-exact against the AVM pre-filter oracle.
-const LUMA_RECON_SAMPLE_TOTAL: usize = LUMA_REGION_SAMPLE_COUNT + 4096 + 2048;
+/// reconstructed, PLUS the first §7.13.3.18 IntrABC block's `BLOCK_32X64` target
+/// (x[224,256) x y[64,128), `2048` samples) — a zero-residual integer-vector copy of
+/// its reconstructed H_PRED source. Every sample is bit-exact against the AVM
+/// pre-filter oracle.
+const LUMA_RECON_SAMPLE_TOTAL: usize =
+    LUMA_REGION_SAMPLE_COUNT + 4096 + 2048 + INTRABC_SAMPLE_COUNT;
 
 /// The SB-column-3 `BLOCK_64X64 H_PRED` block (x[192,256) x y[0,64)) — the
 /// §7.13.3.18 IntrABC source. Mode `H_PRED` (pAngle 180, `AngleDeltaY == 0`), split
@@ -138,6 +142,32 @@ const HPRED_BLOCK_FNV1A64: u64 = 0x615c_4637_5763_6325;
 /// the top-right `TX_32X32` after its `+4` DC residual.
 const HPRED_FLAT: u16 = 64;
 const HPRED_TOP_RIGHT_STEP: u16 = 68;
+
+/// The first §7.13.3.18 IntrABC block's `BLOCK_32X64` luma TARGET (MI(16,56) →
+/// x[224,256) x y[64,128)). The §5.20.5.4 block vector is integer (row `-512`
+/// eighth-pel == `-64` samples, col `0`), and the block is a `skip` leaf (zero
+/// residual), so §7.13.3.18 reduces to a plain copy of the displaced `CurrFrame`
+/// SOURCE rectangle x[224,256) x y[0,64) — the right half of the already-reconstructed
+/// H_PRED block. Source (hence target) is the top-right `TX_32X32` `68` over its top
+/// 32 rows (y[64,96), copied from the H_PRED `68` at y[0,32)) and flat `64` below
+/// (y[96,128)). The oracle confirms `target == source` over the full 32x64 block.
+/// Derived offline from `ac0_prefiltered.yuv`.
+const INTRABC_TARGET_X: usize = 224;
+const INTRABC_TARGET_Y: usize = 64;
+const INTRABC_TARGET_WIDTH: usize = 32;
+const INTRABC_TARGET_HEIGHT: usize = 64;
+const INTRABC_SAMPLE_COUNT: usize = INTRABC_TARGET_WIDTH * INTRABC_TARGET_HEIGHT;
+/// The IntrABC source rectangle (x[224,256) x y[0,64)) the target copies from — the
+/// right half of the reconstructed SB-column-3 H_PRED block.
+const INTRABC_SOURCE_X: usize = 224;
+const INTRABC_SOURCE_Y: usize = 0;
+/// The `68` band height of the IntrABC target: its top 32 rows (the copied top-right
+/// `TX_32X32` `68`), the rest flat `64`.
+const INTRABC_TOP_BAND_HEIGHT: usize = 32;
+/// Sum of the IntrABC target (`1024 * 68 + 1024 * 64`).
+const INTRABC_TARGET_SAMPLE_SUM: u64 = 135_168;
+/// FNV-1a-64 over the IntrABC target (row-major, sample-major u16 LE).
+const INTRABC_TARGET_FNV1A64: u64 = 0xb70e_5832_e8aa_2325;
 
 /// The frame-origin chroma `DC_PRED` transform side (a 32x32 §5.20.6 `TxSize` in
 /// the 4:2:0 chroma plane, the chroma leaf covering the §5.20.3.1 SDP chroma tree
@@ -415,14 +445,15 @@ fn ac0ej3_frame_origin_chroma_dc_blocks_reconstruct_bit_exact_against_prefilter_
     // Coverage report: the verified luma region is the full first-3-superblock
     // 192x128 (24576-sample) DC region PLUS the SB-column-3 `BLOCK_64X64 H_PRED`
     // block (4096 samples, the §7.13.3.18 IntrABC source) PLUS the 32x64 `DC_PRED`
-    // block the H_PRED block unblocked below it (2048 samples) — `30720` luma
-    // samples total — plus the two 32x32 chroma origin blocks (2048 chroma samples
-    // total across U and V).
+    // block the H_PRED block unblocked below it (2048 samples) PLUS the first
+    // §7.13.3.18 IntrABC `BLOCK_32X64` target (2048 samples) — `32768` luma samples
+    // total — plus the two 32x32 chroma origin blocks (2048 chroma samples total
+    // across U and V).
     let (luma4x4, chroma4x4) = sink.reconstructed_counts();
     assert_eq!(
         luma4x4 * 16,
         LUMA_RECON_SAMPLE_TOTAL,
-        "verified luma region is the 30720-sample DC + cardinal-H_PRED region"
+        "verified luma region is the 32768-sample DC + H_PRED + IntrABC region"
     );
     assert_eq!(
         chroma4x4 * 16,
@@ -574,11 +605,83 @@ fn ac0ej3_sb_column3_hpred_block_reconstructs_bit_exact_against_prefilter_oracle
         "the no-above V_PRED block at x[256,320) y=0 must stay deferred",
     );
 
-    // The whole reconstructed luma region is now 30720 bit-exact samples.
+    // The whole reconstructed luma region is now 32768 bit-exact samples.
     let (luma4x4, _chroma4x4) = sink.reconstructed_counts();
     assert_eq!(
         luma4x4 * 16,
         LUMA_RECON_SAMPLE_TOTAL,
-        "the cardinal-H_PRED widening reconstructs 30720 bit-exact luma samples"
+        "the cardinal-H_PRED + IntrABC widening reconstructs 32768 bit-exact luma samples"
+    );
+}
+
+/// Bit-exact verification of the FIRST §7.13.3.18 IntrABC block's `BLOCK_32X64`
+/// luma TARGET (MI(16,56) → x[224,256) x y[64,128)) against the AVM pre-filter
+/// oracle — the first break through the original mission IntrABC wall.
+///
+/// The §5.20.5.4 block vector is integer (row `-512` eighth-pel == `-64` samples,
+/// col `0`) and the leaf is a `skip` block (zero residual), so §7.13.3.18 reduces to
+/// a plain copy of the displaced `CurrFrame` SOURCE rectangle x[224,256) x y[0,64)
+/// (the right half of the already-reconstructed SB-column-3 H_PRED block) into the
+/// target. Two independent checks: (1) every target sample equals the SOURCE sample
+/// directly above it by the integer DV (the copy is faithful), and (2) every target
+/// sample matches the committed oracle constant (`68` over the top 32 rows copied
+/// from the H_PRED top-right `TX_32X32`, `64` below), with the target's sum and
+/// FNV-1a-64 matching the oracle.
+#[test]
+#[ignore = "requires local mission fixture; set SPLOT_AC0EJ3_IVF or place it at $HOME/Documents/SplotLabs/ac0ej3.ivf"]
+fn ac0ej3_first_intrabc_block_reconstructs_bit_exact_against_prefilter_oracle() {
+    let path = require_fixture();
+    let bytes = std::fs::read(&path).expect("read ac0ej3 fixture");
+    let options = DecodeOptions::default();
+    let plan = context().plan_bytes(&bytes, options).expect("plan ac0ej3");
+
+    let sink = reconstruct_ac0ej3_intra_region_from_plan(&bytes, options, &plan)
+        .expect("reconstruct ac0ej3 first IntrABC block");
+
+    let mut fnv = Fnv1a64::new();
+    let mut sum: u64 = 0;
+    let mut count = 0usize;
+    for row in 0..INTRABC_TARGET_HEIGHT {
+        for col in 0..INTRABC_TARGET_WIDTH {
+            let tx = INTRABC_TARGET_X + col;
+            let ty = INTRABC_TARGET_Y + row;
+            let target_sample = sink.reconstructed_sample(PlaneId::Y, tx, ty).unwrap();
+
+            // (1) Faithful integer copy: target == source (the §7.13.3.18 displaced
+            // sample at the DV (-64 rows, 0 cols)).
+            let sx = INTRABC_SOURCE_X + col;
+            let sy = INTRABC_SOURCE_Y + row;
+            let source_sample = sink.reconstructed_sample(PlaneId::Y, sx, sy).unwrap();
+            assert_eq!(
+                target_sample, source_sample,
+                "IntrABC target ({tx},{ty}) must equal its DV source ({sx},{sy})"
+            );
+
+            // (2) Oracle constant: `68` over the top 32 rows (the copied H_PRED
+            // top-right `TX_32X32`), `64` below.
+            let expected = if row < INTRABC_TOP_BAND_HEIGHT {
+                HPRED_TOP_RIGHT_STEP
+            } else {
+                HPRED_FLAT
+            };
+            assert_eq!(
+                target_sample, expected,
+                "IntrABC target ({tx},{ty}) must be {expected}, got {target_sample}"
+            );
+            fnv.update_u16(target_sample);
+            sum += u64::from(target_sample);
+            count += 1;
+        }
+    }
+
+    assert_eq!(count, INTRABC_SAMPLE_COUNT, "IntrABC target sample count");
+    assert_eq!(
+        sum, INTRABC_TARGET_SAMPLE_SUM,
+        "IntrABC target sample sum must match the pre-filter oracle"
+    );
+    assert_eq!(
+        fnv.finish(),
+        INTRABC_TARGET_FNV1A64,
+        "IntrABC target FNV-1a-64 must match the pre-filter reconstruction oracle (bit-exact)"
     );
 }

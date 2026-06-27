@@ -885,6 +885,7 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                 &mut ccso_state,
                 &mut delta_q_state,
                 &mut intrabc_state,
+                sink.as_deref_mut(),
                 tile_offset,
             )?;
             let (
@@ -1823,6 +1824,7 @@ fn read_luma_shared_mode_info_prelude(
     ccso_state: &mut CcsoState,
     delta_q_state: &mut DeltaQState,
     intrabc_state: &mut TileIntrabcPreludeState,
+    sink: Option<&mut WienerNsLrReconSink<u16>>,
     tile_offset: ByteOffset,
 ) -> Result<IntrabcBlockPrelude> {
     let use_skip = read_intrabc_use_and_skip(
@@ -1847,6 +1849,8 @@ fn read_luma_shared_mode_info_prelude(
             sequence,
             core,
             IntrabcBlockGeometry::from_frontier(frontier, n4w, n4h),
+            use_skip.skip_flag,
+            sink,
             tile_offset,
         )?)
     } else {
