@@ -586,14 +586,23 @@ impl AboveRowScan {
         }
         // Step 8: aligned deltaCol = bw4 - 2 (the existing #531 step-8 column).
         self.step8 = step8_above_row_column(geometry);
-        // Step 10: aligned deltaCol = 0.
-        // NOTE: AVM `row_smvp_all_states[1][BLOCK_WIDTH_4]` index 1 is `{0, -1, 0}`
-        // (disabled for a 4px-wide SB-border block, `mvref_common.c:2042`); the FULL
-        // block_width_type table (the SB-border bw4 gates + the step-12 Max(2,bw4)
-        // offset) is a dedicated follow-up brick — NOT modelled here. This decoder
-        // does not yet reach SB-border bw4 == 1, and over-modelling it would couple to
-        // that follow-up, so the gate is intentionally deferred for the SB-border path.
-        self.step10 = sb_border_above_col(geometry, 0);
+        // Step 10: aligned deltaCol = 0, but DISABLED for BLOCK_WIDTH_4 (bw4 == 1):
+        // AVM `row_smvp_all_states[1][BLOCK_WIDTH_4]` index 1 is `{0, -1, 0}` (the
+        // `is_available` flag is hardcoded 0 for a 4px-wide SB-border block,
+        // `mvref_common.c:2042`), mirroring the within-SB BLOCK_WIDTH_4 disable in
+        // [`Self::resolve_within_sb`]. For bw4 == 1 the SB-border step-8 column
+        // (aligned deltaCol = bw4 - 2 = 0) ALIASES the step-10 column (deltaCol = 0),
+        // so leaving step 10 `None` keeps the step-8 read but drops the spurious
+        // step-10 weight, matching AVM (the same over-reject-on-unmodelled posture).
+        //
+        // The remaining SB-border bw4 gates stay a dedicated follow-up brick — NOT
+        // modelled here: AVM ALSO disables step 10 for BLOCK_WIDTH_8 (bw4 == 2,
+        // `mvref_common.c:2053`), and the BLOCK_WIDTH_4/8 variants use step-8 offset 0
+        // and step-12 offset 2 (vs the BLOCK_WIDTH_OTHERS `bw4 - 2` / `bw4` modelled
+        // here). This decoder does not yet reach those SB-border bw4 <= 2 blocks.
+        if bw4 != BLOCK_WIDTH_4_MI {
+            self.step10 = sb_border_above_col(geometry, 0);
+        }
         // Step 12: aligned deltaCol = bw4, gated has_top_right (= 1 on the SB border)
         // and the AVM `bw4 <= Num_4x4_Blocks_Wide[BLOCK_64X64]` cap.
         if bw4 <= MAX_SMVP_AXIS_MI {
@@ -1920,6 +1929,59 @@ mod tests {
             wide_scan.candidates,
             vec![wbv(bv, 2)],
             "bw4 >= 2 enables step 10: step 8 + step 10 accumulate weight 2"
+        );
+        assert!(!wide_scan.defer);
+    }
+
+    // The SB-border step-10 above-row probe (8x8-aligned deltaCol = 0) is DISABLED for
+    // BLOCK_WIDTH_4 (bw4 == 1), just like the within-SB path: AVM
+    // `row_smvp_all_states[1][BLOCK_WIDTH_4]` index 1 = `{0, -1, 0}` (the `is_available`
+    // flag is hardcoded 0, `mvref_common.c:2042`). For bw4 == 1 the SB-border step-8
+    // column (aligned deltaCol = bw4 - 2 = 0) ALIASES the step-10 column (deltaCol = 0),
+    // so the disable is observable through the ACCUMULATED WEIGHT: with step 10 disabled
+    // the above-row candidate carries weight 1 (step 8 only), not 2.
+    #[test]
+    fn spatial_scan_disables_step10_for_block_width_4_sb_border() {
+        // SB border (MiRow 32, sb_size4 32, 32 % 32 == 0), even MiCol, bw4 == 1: the
+        // step-8 (aligned deltaCol 0) and the disabled step-10 (deltaCol 0) both target
+        // (MiRow - 1, MiCol) = (31, 8).
+        let narrow = SpatialScanGeometry {
+            mi_row: 32,
+            mi_col: 8,
+            n4w: 1,
+            n4h: 4,
+            mi_rows: 270,
+            mi_cols: 480,
+            sb_size4: 32,
+        };
+        let bv = Mv { row: -8, col: 0 };
+        let scan = spatial_intrabc_scan(
+            narrow,
+            |row, col| (row == 31 && col == 8).then_some(bv),
+            |_, _| false,
+        );
+        // Step 8 places weight 1; the DISABLED step 10 adds nothing -> total weight 1.
+        assert_eq!(
+            scan.candidates,
+            vec![wbv(bv, 1)],
+            "step 10 disabled for bw4 == 1 on the SB border: the above candidate keeps step-8 weight 1"
+        );
+        assert!(!scan.defer);
+        // Contrast: a BLOCK_WIDTH_OTHERS (bw4 >= 4) SB-border block ENABLES step 10
+        // (AVM `row_smvp_all_states[1][BLOCK_WIDTH_OTHERS]` index 1,
+        // `mvref_common.c:2063`), so step 8 (aligned deltaCol bw4 - 2 = 6 -> col 14) and
+        // step 10 (deltaCol 0 -> col 8) read DIFFERENT columns; an owner read at both
+        // accumulates weight 2.
+        let wide = SpatialScanGeometry { n4w: 8, ..narrow };
+        let wide_scan = spatial_intrabc_scan(
+            wide,
+            |row, col| (row == 31 && (col == 8 || col == 14)).then_some(bv),
+            |_, _| false,
+        );
+        assert_eq!(
+            wide_scan.candidates,
+            vec![wbv(bv, 2)],
+            "bw4 >= 4 enables step 10 on the SB border: step 8 + step 10 accumulate weight 2"
         );
         assert!(!wide_scan.defer);
     }
