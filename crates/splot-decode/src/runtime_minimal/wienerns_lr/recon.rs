@@ -782,11 +782,12 @@ pub(in crate::runtime_minimal) fn reconstruct_ac0ej3_selectable_intra_region(
 /// (a no-op swap; slot 0 keeps (-1024,0), drl=1 selects (-512,0), bit-exact vs
 /// avmdec) instead of deferring, as do its downstream IntrABC siblings. The IntrABC
 /// ref-stack wall is now fully cleared. The §5.20.6.1 selectable transform-record
-/// region tiling now models the spec `LumaTxSizes` frame-array fill faithfully
-/// (07-decoding-process.md:12061-12071): a frame-edge block such as the
-/// `BLOCK_128X64` at MI(256,0) drops its out-of-frame tx cells (rows 270,271 past
-/// MiRows=270) instead of erroring `out_of_bounds`, mirroring AVM's downstream
-/// `block_coded` drop. With the tx records derived, the walk advances to a GENUINELY
+/// region tiling now models the spec §5.20.6.1 `LumaTxSizes` frame-array fill
+/// faithfully (set_tx_size, 05-syntax-structures.md:12061-12071): a frame-edge block
+/// such as the `BLOCK_128X64` at MI(256,0) drops its out-of-frame tx cells (rows
+/// 270,271 past MiRows=270) instead of erroring `out_of_bounds`, mirroring the
+/// §5.20.3.2 `block_coded` downstream drop. With the tx records derived, the walk
+/// advances to a GENUINELY
 /// DISTINCT next mechanism — the §5.20.7.27 LrTxSkip live residual/coefficient parse
 /// (`live_transform_record_residual_parse`), unrelated to the transform-record
 /// region tiling.

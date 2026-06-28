@@ -560,11 +560,11 @@ impl SelectableLumaTxGrid {
         let tx_size = tx_size_from_dimensions(width, height)
             .ok_or(SelectableTransformRecordError::InvalidTxSize { width, height })?;
 
-        // §5.20.6.3 read_tx_size only runs at in-frame origins (decode_partition
-        // returns when `r >= MiRows || c >= MiCols`), so an out-of-frame ORIGIN is
-        // never a real placement: return the computed geometry without recording it,
-        // mirroring AVM's origin guard (decodeframe.c get_tx_partition_sizes). The
-        // tx kind is still valid for any caller that reads it; only the write drops.
+        // §5.20.6.1 read_tx_size only runs at in-frame origins: decode_partition
+        // returns when `r >= MiRows || c >= MiCols` (05-syntax-structures.md:8855), so
+        // an out-of-frame ORIGIN is never a real placement. Return the computed
+        // geometry without recording it; the tx kind is still valid for any caller
+        // that reads it (only the write drops).
         if row >= self.rows || col >= self.cols {
             return Ok(tx_size);
         }
@@ -574,12 +574,13 @@ impl SelectableLumaTxGrid {
             .map_err(|_| SelectableTransformRecordError::Unsupported {
                 reason: "record-allocation",
             })?;
-        // §7.12061-12071 set_tx_size fills `LumaTxSizes[row+i][col+j]` with no
-        // MiRows/MiCols clamp; AVM stores no frame array and drops out-of-frame tx
-        // samples DOWNSTREAM via `block_coded(r,c) = r<MiRows && c<MiCols`
-        // (decodeframe.c). Model that frame-edge drop here: skip cells past the frame
-        // extent in BOTH the overlap check and the fill so a partial-SB MI row at the
-        // frame edge stays spec-faithful instead of erroring OutOfBounds.
+        // §5.20.6.1 set_tx_size fills `LumaTxSizes[row+i][col+j]` for `i in 0..h4`,
+        // `j in 0..w4` with NO MiRows/MiCols clamp (05-syntax-structures.md:12061-12071);
+        // out-of-frame tx samples are dropped DOWNSTREAM via the §5.20.3.2
+        // `block_coded(r,c) { return r < MiRows && c < MiCols }`
+        // (05-syntax-structures.md:9621). Model that frame-edge drop here: skip cells
+        // past the frame extent in BOTH the overlap check and the fill so a partial-SB
+        // MI row at the frame edge stays spec-faithful instead of erroring OutOfBounds.
         for r in row..row.saturating_add(h4) {
             if r >= self.rows {
                 break;
@@ -632,7 +633,7 @@ impl SelectableLumaTxGrid {
     ) -> std::result::Result<Vec<SelectableLumaTxRecord>, SelectableTransformRecordError> {
         // Clamp the region to the frame extent so the completeness check uses the
         // SAME frame-edge drop as `set_tx_size`: out-of-frame cells are never filled
-        // (block_coded, decodeframe.c), so the region's expected populated count is the
+        // (§5.20.3.2 block_coded), so the region's expected populated count is the
         // in-frame sub-rectangle, not the full geometric `rows*cols`. Using a mismatched
         // clamp would flip the (now spec-correct) edge drop into a false Incomplete.
         let region_rows = self.rows.saturating_sub(row).min(rows);

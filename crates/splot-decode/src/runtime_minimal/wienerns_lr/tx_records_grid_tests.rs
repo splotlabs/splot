@@ -269,12 +269,13 @@ fn selectable_tx_records_populate_live_tx_skip_grid() {
     );
 }
 
-// §5.20.6.1 frame-edge cell drop: the spec `LumaTxSizes` fill
-// (07-decoding-process.md:12061-12071) has no MiRows/MiCols clamp; AVM drops
-// out-of-frame tx samples downstream via `block_coded` (decodeframe.c). The
-// ac0ej3 trigger is a `BLOCK_128X64` at MI(256,0) in a 480x270 MI grid whose
-// chunked path writes two 16x16 MI tiles at rows 256..272, overshooting
-// MiRows=270 by 2 rows (rows 270,271) across the full 32-MI width.
+// §5.20.6.1 frame-edge cell drop: the spec `LumaTxSizes` fill (set_tx_size,
+// 05-syntax-structures.md:12061-12071) has no MiRows/MiCols clamp; out-of-frame
+// tx samples are dropped downstream via §5.20.3.2 `block_coded`
+// (05-syntax-structures.md:9621). The ac0ej3 trigger is a `BLOCK_128X64` at
+// MI(256,0) in a 480x270 MI grid whose chunked path writes two 16x16 MI tiles at
+// rows 256..272, overshooting MiRows=270 by 2 rows (rows 270,271) across the
+// full 32-MI width.
 
 /// The bottom-edge block's in-frame tx records match the geometric placement:
 /// each 16x16 chunk tile is `TX_64X64`, only the in-frame rows are filled, and
