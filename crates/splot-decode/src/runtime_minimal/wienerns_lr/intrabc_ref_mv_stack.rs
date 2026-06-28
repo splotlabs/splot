@@ -1059,14 +1059,12 @@ mod tests {
         assert!(scan.defer);
     }
 
-    // An odd-mi_col SB-border block does NOT model step 8 (the `(mvCol >> 1) << 1`
-    // alignment would shift the spec column), so an above-row IntrABC neighbour at
-    // any column forces a conservative defer.
-    #[test]
-    fn spatial_scan_defers_on_odd_mi_col_sb_border() {
+    // Asserts that a block whose step-8 above-row probe is unmodelled both reports no
+    // modelled step-8 column AND defers when its above row holds an IntrABC neighbour.
+    fn assert_unmodelled_step8_defers(mi_row: usize, mi_col: usize, above_neighbour_col: usize) {
         let geom = SpatialScanGeometry {
-            mi_row: 32,
-            mi_col: 57, // odd -> alignment shifts the column -> unmodelled.
+            mi_row,
+            mi_col,
             n4w: 8,
             n4h: 16,
             mi_rows: 270,
@@ -1074,30 +1072,26 @@ mod tests {
             sb_size4: 32,
         };
         assert!(step8_above_row_column(&geom).is_none());
+        let above = mi_row - 1;
         let scan = spatial_intrabc_scan(geom, |row, col| {
-            (row == 31 && col == 63).then_some(Mv { row: -512, col: 0 })
+            (row == above && col == above_neighbour_col).then_some(Mv { row: -512, col: 0 })
         });
         assert!(scan.defer);
+    }
+
+    // An odd-mi_col SB-border block does NOT model step 8 (the `(mvCol >> 1) << 1`
+    // alignment would shift the spec column), so an above-row IntrABC neighbour at
+    // any column forces a conservative defer.
+    #[test]
+    fn spatial_scan_defers_on_odd_mi_col_sb_border() {
+        assert_unmodelled_step8_defers(32, 57, 63);
     }
 
     // A non-SB-border block (MiRow not a multiple of mib_size) does NOT model step 8
     // (full 4x4-resolution above-row, unmodelled): the new frontier MI(48,56) class.
     #[test]
     fn spatial_scan_defers_on_non_sb_border_above_row() {
-        let geom = SpatialScanGeometry {
-            mi_row: 48, // 48 % 32 == 16 != 0 -> not an SB border.
-            mi_col: 56,
-            n4w: 8,
-            n4h: 16,
-            mi_rows: 270,
-            mi_cols: 480,
-            sb_size4: 32,
-        };
-        assert!(step8_above_row_column(&geom).is_none());
-        let scan = spatial_intrabc_scan(geom, |row, col| {
-            (row == 47 && col == 63).then_some(Mv { row: -512, col: 0 })
-        });
-        assert!(scan.defer);
+        assert_unmodelled_step8_defers(48, 56, 63);
     }
 
     // The § 7.12.2 spatial scan dedups by value: the same neighbour read at both the
