@@ -1,7 +1,13 @@
 # module-size-discipline Specification
 
 ## Purpose
-TBD - created by archiving change split-oversized-allowlisted-modules. Update Purpose after archive.
+
+Keep the repository's oversized, source-line-allowlisted Rust modules
+maintainable by retiring each allowance through responsibility-aligned splits
+that preserve public APIs and byte-identical behavior, sequenced by development
+activity so actively-developed files are deferred until their frontier
+stabilizes. Tracked by `INFRA-MODULE-SIZE-REFACTOR`.
+
 ## Requirements
 ### Requirement: Oversized allowlisted modules are retired by real-seam splits
 
