@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
+use splot_recon::ReconError;
+
 use super::super::derive_wienerns_lr_tx_skip_grid_retention;
 use super::*;
 
@@ -232,6 +234,110 @@ fn tx_skip_grid_retention_preserves_skip_flag_for_nonzero_eob_record() {
             .unwrap(),
         0
     );
+}
+
+/// §5.20.6.1 PC-Wiener `LrTxSkip` FilterClass grid retention drops the off-frame MI
+/// cells of a bottom-edge skipped block instead of erroring on the overhang. Models
+/// the ac0ej3 frontier: a skipped 16x16-MI block at MI(256,0) overhangs the 270-row
+/// grid by 2; its in-frame rows 256..270 fill, the off-frame rows 270,271 are dropped
+/// (they carry no FilterClass), mirroring AVM `av2_set_entropy_contexts` and the
+/// §5.20.3.2 `block_coded` clamp. The full grid stays populated by the in-frame cells.
+#[test]
+fn tx_skip_grid_retention_clamps_bottom_edge_overhang() {
+    // A small analogue: a 4-row grid with two records. The bottom record at row=2 has
+    // a NOMINAL height of 4 (overhangs the 4-row grid by 2); it fills only rows 2..4.
+    let records = [
+        WienerNsLrTxSkipTransformRecord {
+            row: 0,
+            col: 0,
+            rows: 2,
+            cols: 1,
+            skip_flag: true,
+            eob: 0,
+            intra_ist: None,
+        },
+        WienerNsLrTxSkipTransformRecord {
+            row: 2,
+            col: 0,
+            rows: 4, // nominal extent overhangs the 4-row grid by 2 rows
+            cols: 1,
+            skip_flag: false,
+            eob: 5,
+            intra_ist: None,
+        },
+    ];
+
+    // Without the clamp this would error `LrTxSkip transform record bounds`.
+    let tx_skip = derive_wienerns_lr_tx_skip_grid_retention(4, 1, &records).unwrap();
+
+    // Every in-frame cell is populated: rows 0,1 are skip (1), rows 2,3 are non-skip
+    // with eob>0 (0). The off-frame rows 4,5 of the second record are dropped.
+    let column: Vec<i32> = (0..4)
+        .map(|row| {
+            tx_skip
+                .lookup(super::super::WienerNsLrTxSkipLookup {
+                    x: 0,
+                    y: 0,
+                    row,
+                    col: 0,
+                })
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(column, vec![1, 1, 0, 0]);
+}
+
+/// A right-edge analogue: a record whose nominal width overhangs MiCols fills only its
+/// in-frame columns; the past-edge columns are dropped, not errored.
+#[test]
+fn tx_skip_grid_retention_clamps_right_edge_overhang() {
+    let records = [WienerNsLrTxSkipTransformRecord {
+        row: 0,
+        col: 0,
+        rows: 1,
+        cols: 4, // nominal width overhangs the 2-col grid by 2 cols
+        skip_flag: true,
+        eob: 0,
+        intra_ist: None,
+    }];
+
+    let tx_skip = derive_wienerns_lr_tx_skip_grid_retention(1, 2, &records).unwrap();
+
+    for col in 0..2 {
+        assert_eq!(
+            tx_skip
+                .lookup(super::super::WienerNsLrTxSkipLookup {
+                    x: 0,
+                    y: 0,
+                    row: 0,
+                    col,
+                })
+                .unwrap(),
+            1
+        );
+    }
+}
+
+/// A genuine out-of-frame ORIGIN (`row >= rows` or `col >= cols`) is STILL a hard
+/// error, matching the §5.20.3.2 `block_coded` model: AVM never emits such a record.
+#[test]
+fn tx_skip_grid_retention_rejects_out_of_frame_origin() {
+    let records = [WienerNsLrTxSkipTransformRecord {
+        row: 4, // origin at/beyond the 4-row grid
+        col: 0,
+        rows: 1,
+        cols: 1,
+        skip_flag: true,
+        eob: 0,
+        intra_ist: None,
+    }];
+
+    assert!(matches!(
+        derive_wienerns_lr_tx_skip_grid_retention(4, 1, &records).unwrap_err(),
+        ReconError::PcWienerInvalidBounds {
+            field: "LrTxSkip transform record bounds"
+        }
+    ));
 }
 
 #[test]

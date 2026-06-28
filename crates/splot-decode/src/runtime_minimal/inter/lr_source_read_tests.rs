@@ -624,10 +624,15 @@ fn wienerns_lr_tx_skip_grid_retention_rejects_missing_cells() {
     }
 }
 
+/// A record whose ORIGIN is genuinely out of the visible MI grid (`row >= rows` or
+/// `col >= cols`) is a structured bounds error — AVM never emits one. A record whose
+/// in-frame origin merely has an overhanging NOMINAL extent is instead clamped to the
+/// frame edge (the §5.20.3.2 `block_coded` model), covered by the grid `clamps_*_edge`
+/// tests in `tx_records_grid_tests.rs`.
 #[test]
-fn wienerns_lr_tx_skip_grid_retention_rejects_out_of_range_record() {
+fn wienerns_lr_tx_skip_grid_retention_rejects_out_of_frame_origin_record() {
     let records = [super::super::WienerNsLrTxSkipTransformRecord {
-        row: 1,
+        row: 2, // origin at/beyond the 2-row grid: a genuine out-of-frame write
         col: 0,
         rows: 2,
         cols: 1,
@@ -637,13 +642,13 @@ fn wienerns_lr_tx_skip_grid_retention_rejects_out_of_range_record() {
     }];
 
     let error = super::super::derive_wienerns_lr_tx_skip_grid_retention(2, 2, &records)
-        .expect_err("out-of-range transform extent must be rejected");
+        .expect_err("out-of-frame origin must be rejected");
 
     match error {
         ReconError::PcWienerInvalidBounds { field } => {
             assert_eq!(field, "LrTxSkip transform record bounds");
         }
-        _ => panic!("out-of-range LrTxSkip record must be a structured bounds error"),
+        _ => panic!("out-of-frame LrTxSkip origin must be a structured bounds error"),
     }
 }
 

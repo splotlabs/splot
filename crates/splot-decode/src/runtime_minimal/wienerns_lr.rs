@@ -278,23 +278,36 @@ fn write_wienerns_lr_tx_skip_record(
             field: "LrTxSkip transform record dimensions",
         });
     }
-    let end_row = record
-        .row
-        .checked_add(record.rows)
-        .ok_or(ReconError::ArithmeticOverflow {
-            context: "LrTxSkip transform record row extent",
-        })?;
-    let end_col = record
-        .col
-        .checked_add(record.cols)
-        .ok_or(ReconError::ArithmeticOverflow {
-            context: "LrTxSkip transform record column extent",
-        })?;
-    if end_row > rows || end_col > cols {
+    let nominal_end_row =
+        record
+            .row
+            .checked_add(record.rows)
+            .ok_or(ReconError::ArithmeticOverflow {
+                context: "LrTxSkip transform record row extent",
+            })?;
+    let nominal_end_col =
+        record
+            .col
+            .checked_add(record.cols)
+            .ok_or(ReconError::ArithmeticOverflow {
+                context: "LrTxSkip transform record column extent",
+            })?;
+    // A genuine out-of-frame ORIGIN (`row >= rows` or `col >= cols`) is never a
+    // valid §5.20.3.2 `block_coded` cell and stays a hard error, as AVM never
+    // emits one. A block straddling the bottom/right frame edge has a NOMINAL
+    // footprint that overhangs the visible MI grid by up to one transform extent;
+    // its off-frame MI rows/cols (`row..rows` already covers them) are clamped out
+    // — they carry no FilterClass and are never part of the grid's `expected`
+    // population — mirroring AVM `av2_set_entropy_contexts` / the §5.20.3.2
+    // `block_coded(r,c) { r < MiRows && c < MiCols }` clamp the §5.20.6.1
+    // `record_block` and §5.20.7.27 context writes already apply.
+    if record.row >= rows || record.col >= cols {
         return Err(ReconError::PcWienerInvalidBounds {
             field: "LrTxSkip transform record bounds",
         });
     }
+    let end_row = nominal_end_row.min(rows);
+    let end_col = nominal_end_col.min(cols);
 
     for row in record.row..end_row {
         let row_start = row
@@ -579,10 +592,13 @@ pub(super) fn ensure_wienerns_lr_unit_runtime_frontier(
                     wienerns_lr_live_transform_record_handoff_error(key_envelope.offset)
                 })?;
             let transform_handoff = if tx_mode == TxMode::Select {
-                // Public decode runs WITHOUT a reconstruction sink: the walk still
-                // fails closed at the first active IntrABC block, so no partial
-                // frame is emitted. The reconstruction bridge is exercised only by
-                // the region-verification test, which attaches a sink.
+                // Public decode runs WITHOUT a reconstruction sink: the handoff
+                // parses the supported §5.20.6.1/§5.20.6.3 transform records (the
+                // bottom/right frame-edge skipped blocks now clamp rather than error)
+                // and then fails closed at the §7.20.4 `live_frame_samples_unpopulated`
+                // gate below, so no partial frame is emitted. The reconstruction bridge
+                // is exercised only by the region-verification test, which attaches a
+                // sink.
                 tx_records::derive_wienerns_lr_selectable_transform_record_handoff(
                     bytes,
                     options,

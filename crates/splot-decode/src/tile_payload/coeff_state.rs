@@ -309,6 +309,24 @@ impl TileCoeffContextState {
     }
 
     /// Applies one plane of the AV2 § 5.20 block-context reset.
+    ///
+    /// The § 5.20 `reset_block_context` (`05-syntax-structures.md` line 10279)
+    /// zeros `AboveLevelContext` / `AboveDcContext` over the above columns
+    /// `(c >> subX) .. ((c + w4) >> subX)` and the matching left rows. A block on
+    /// the bottom or right frame edge has a nominal `w4` / `h4` footprint that
+    /// overhangs the tile by up to one block extent, so the literal span exceeds
+    /// this tile-global context line. This is the unclamped sibling of
+    /// [`Self::update_after_coeffs`]: both
+    /// model AVM `av2_set_entropy_contexts` (`av2/common/blockd.c:138-166`), which
+    /// clamps the on-frame portion with `AVMMIN(txs_*, blocks_* - off)` and leaves
+    /// the overhang untouched (`av2_reset_entropy_context`, `blockd.c:167-194`,
+    /// zeros only the SB-local `mi_size_*[plane_bsize]` extent). The off-frame
+    /// indices have no backing storage and the OR-reduce reads already clamp with
+    /// `skip(start).take(len)`, so they are never observed — mirroring the
+    /// § 5.20.3.2 `block_coded(r,c) { r < MiRows && c < MiCols }` model that the
+    /// frame-edge `record_block` and `update_after_coeffs` clamps use. A genuine
+    /// out-of-tile origin (`c >> subX >= mi_cols` or `r >> subY >= mi_rows`) is
+    /// still a hard error, as AVM never produces one.
     pub(crate) fn reset_block_context_plane(
         &mut self,
         input: CoeffContextReset,
@@ -334,14 +352,15 @@ impl TileCoeffContextState {
         })?;
         let above_end = shifted(above_unshifted_end, input.sub_x)?;
         let left_end = shifted(left_unshifted_end, input.sub_y)?;
-        validate_existing_range("above reset", above_start, above_end, self.mi_cols)?;
-        validate_existing_range("left reset", left_start, left_end, self.mi_rows)?;
+        let above =
+            edge_clamped_existing_range("above reset", above_start, above_end, self.mi_cols)?;
+        let left = edge_clamped_existing_range("left reset", left_start, left_end, self.mi_rows)?;
 
-        for idx in above_start..above_end {
+        for idx in above {
             self.above_level[plane][idx] = 0;
             self.above_dc[plane][idx] = 0;
         }
-        for idx in left_start..left_end {
+        for idx in left {
             self.left_level[plane][idx] = 0;
             self.left_dc[plane][idx] = 0;
         }
@@ -611,22 +630,33 @@ fn edge_clamped_range(
     Ok(start..end.min(line_len))
 }
 
-fn validate_existing_range(
+/// Clamps a precomputed `start .. end` § 5.20 `reset_block_context` write to the
+/// bottom/right frame edge, the subsampled-coordinate analogue of
+/// [`edge_clamped_range`].
+///
+/// A block straddling the tile's right (above axis) or bottom (left axis) edge
+/// has an `end` (`(c + w4) >> subX` / `(r + h4) >> subY`) that exceeds `line_len`;
+/// the on-frame portion is `start .. line_len` and the overhang is dropped (it has
+/// no backing storage and the OR-reduce reads already clamp, so it is never
+/// observed), matching AVM `av2_set_entropy_contexts` / `av2_reset_entropy_context`
+/// (`av2/common/blockd.c`) and the § 5.20.3.2 `block_coded` model. A `start > end`
+/// inversion or a genuine out-of-tile origin (`start >= line_len`) is still
+/// rejected, as AVM never emits such a write.
+fn edge_clamped_existing_range(
     context: &'static str,
     start: usize,
     end: usize,
-    len: usize,
-) -> Result<(), TileCoeffStateError> {
-    if start > end || end > len {
-        Err(TileCoeffStateError::ContextRangeOutOfBounds {
+    line_len: usize,
+) -> Result<core::ops::Range<usize>, TileCoeffStateError> {
+    if start > end || start >= line_len {
+        return Err(TileCoeffStateError::ContextRangeOutOfBounds {
             context,
             start,
             end,
-            len,
-        })
-    } else {
-        Ok(())
+            len: line_len,
+        });
     }
+    Ok(start..end.min(line_len))
 }
 
 fn shifted(value: usize, shift: u32) -> Result<usize, TileCoeffStateError> {
@@ -978,6 +1008,95 @@ mod tests {
             TileCoeffStateError::InvalidSubsampling {
                 axis: "x",
                 value: 2
+            }
+        ));
+    }
+
+    #[test]
+    fn reset_block_context_plane_clamps_bottom_and_right_edge_overhang() {
+        // Models the ac0ej3 §5.20.6.1 frontier: a skipped luma block at MI(256,0)
+        // whose nominal 16-wide / 16-tall footprint overhangs the 270-row MI grid on
+        // BOTH axes. AVM `av2_set_entropy_contexts` / `av2_reset_entropy_context`
+        // (av2/common/blockd.c) clamp the on-frame portion via the §5.20.3.2
+        // `block_coded` model; `reset_block_context_plane` zeros only the on-tile cells
+        // (`c >> subX .. mi_cols` / `r >> subY .. mi_rows`) and drops the overhang.
+        let mi_rows = 270;
+        let mi_cols = 16;
+        let mut state = TileCoeffContextState::new(mi_rows, mi_cols).unwrap();
+        // Pre-fill plane 0's above + left lines so the clamp's footprint is visible.
+        state.above_level[0].fill(7);
+        state.above_dc[0].fill(3);
+        state.left_level[0].fill(7);
+        state.left_dc[0].fill(3);
+
+        // c=0,w4=16 -> above 0..16 (fully on-tile here). r=256,h4=16 -> left 256..272
+        // overhangs mi_rows=270 by 2; the clamp zeros only 256..270.
+        state
+            .reset_block_context_plane(reset(0, 0, 256, 16, 16, 0, 0))
+            .unwrap();
+
+        // Above axis (no overhang) is fully zeroed.
+        assert!(state.above_level(0).unwrap().iter().all(|&v| v == 0));
+        assert!(state.above_dc(0).unwrap().iter().all(|&v| v == 0));
+        // Left axis: rows 256..270 zeroed, 0..256 untouched, no panic on the overhang.
+        let left_level = state.left_level(0).unwrap();
+        for (row, &value) in left_level.iter().enumerate() {
+            let expected = if (256..mi_rows).contains(&row) { 0 } else { 7 };
+            assert_eq!(value, expected, "left_level[{row}]");
+        }
+        let left_dc = state.left_dc(0).unwrap();
+        for (row, &value) in left_dc.iter().enumerate() {
+            let expected = if (256..mi_rows).contains(&row) { 0 } else { 3 };
+            assert_eq!(value, expected, "left_dc[{row}]");
+        }
+    }
+
+    #[test]
+    fn reset_block_context_plane_clamps_right_edge_only() {
+        // Right-edge analogue: a block whose column origin is on-tile but whose
+        // nominal width overhangs the right edge; only the in-frame columns are zeroed.
+        let mi_rows = 8;
+        let mi_cols = 8;
+        let mut state = TileCoeffContextState::new(mi_rows, mi_cols).unwrap();
+        state.above_level[0].fill(5);
+        state.above_dc[0].fill(1);
+
+        // c=6,w4=4 -> above 6..10 overhangs mi_cols=8 by 2; the clamp zeros only 6..8.
+        state
+            .reset_block_context_plane(reset(0, 6, 0, 4, 1, 0, 0))
+            .unwrap();
+
+        assert_eq!(state.above_level(0).unwrap(), &[5, 5, 5, 5, 5, 5, 0, 0]);
+        assert_eq!(state.above_dc(0).unwrap(), &[1, 1, 1, 1, 1, 1, 0, 0]);
+    }
+
+    #[test]
+    fn reset_block_context_plane_rejects_out_of_frame_origin() {
+        // A genuine out-of-frame ORIGIN (`c >> subX >= mi_cols`) is rejected, matching
+        // the §5.20.3.2 `block_coded` model: AVM never emits such a write. This is the
+        // only remaining hard error after the edge clamp (mirroring `edge_clamped_range`
+        // in `update_after_coeffs`).
+        let mut state = TileCoeffContextState::new(4, 4).unwrap();
+        assert!(matches!(
+            state
+                .reset_block_context_plane(reset(0, 4, 0, 1, 1, 0, 0))
+                .unwrap_err(),
+            TileCoeffStateError::ContextRangeOutOfBounds {
+                context: "above reset",
+                start: 4,
+                len: 4,
+                ..
+            }
+        ));
+        assert!(matches!(
+            state
+                .reset_block_context_plane(reset(0, 0, 4, 1, 1, 0, 0))
+                .unwrap_err(),
+            TileCoeffStateError::ContextRangeOutOfBounds {
+                context: "left reset",
+                start: 4,
+                len: 4,
+                ..
             }
         ));
     }
