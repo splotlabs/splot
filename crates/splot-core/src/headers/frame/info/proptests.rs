@@ -4,7 +4,14 @@
 //! Property (no-panic) tests for the [`super`] frame-header parser.
 
 use super::*;
-use crate::headers::sequence::{LevelIdx, SuperblockSize, Tier};
+// The §5.18.2 sub-view types these proptests build a `CoreSeqView` literal from are
+// imported explicitly (rather than leaning on `info`'s incidental private imports) now
+// that `CoreSeqView` and its gatherer live in the `info::seq_view` submodule.
+use crate::headers::frame::filtering::CoreSeqFilterView;
+use crate::headers::frame::restoration::{CoreSeqCcsoView, CoreSeqRestorationView};
+use crate::headers::frame::segmentation::CoreSeqSegView;
+use crate::headers::frame::tiling::CoreSeqTileView;
+use crate::headers::sequence::{ChromaFormatIdc, LevelIdx, SuperblockSize, Tier};
 use crate::segment::{MAX_SEGMENTS, SEG_LVL_MAX, SegmentFeature, SegmentInfo};
 use crate::span::ByteOffset;
 use crate::tile::TileParams;
