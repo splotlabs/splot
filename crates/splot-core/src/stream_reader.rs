@@ -37,6 +37,11 @@ use crate::stream::BitstreamFormat;
 /// declared unit larger than this is rejected rather than allocated.
 pub const DEFAULT_MAX_UNIT_BYTES: usize = 256 * 1024 * 1024;
 
+/// Maximum bytes appended to the reused buffer per read attempt. The buffer grows
+/// only as bytes actually arrive, so a truncated unit that *declares* a large
+/// (but not present) size never forces an allocation near the per-unit cap.
+const READ_CHUNK_BYTES: usize = 64 * 1024;
+
 const IVF_HEADER_SIZE_BYTES: usize = IVF_HEADER_SIZE as usize;
 
 /// One framed unit borrowed from the reader's reused buffer.
@@ -228,6 +233,10 @@ impl<R: Read> TemporalUnitReader<R> {
 
     /// Appends up to `want` bytes to `self.buf`, draining `pending` first. Returns
     /// the count read (`< want` only at EOF) and advances `pos` by that count.
+    ///
+    /// The buffer grows in bounded [`READ_CHUNK_BYTES`] increments as bytes
+    /// arrive, so a truncated unit declaring a large size never eagerly allocates
+    /// it; the per-unit cap remains the hard ceiling for units truly that large.
     fn read_into_buf(&mut self, want: usize) -> Result<usize, ReaderError> {
         let mut got = 0;
         let avail = self.pending.len() - self.pending_pos;
@@ -240,7 +249,7 @@ impl<R: Read> TemporalUnitReader<R> {
             got += take;
         }
         while got < want {
-            let need = want - got;
+            let need = (want - got).min(READ_CHUNK_BYTES);
             let start = self.buf.len();
             self.buf.resize(start + need, 0);
             match self.inner.read(&mut self.buf[start..]) {
@@ -469,6 +478,22 @@ mod tests {
             "reused buffer grew with the stream: capacity {} vs stream {}",
             reader.buf_capacity(),
             data.len()
+        );
+    }
+
+    #[test]
+    fn declared_large_but_truncated_unit_does_not_eagerly_allocate() {
+        // An Annex-B OBU declaring ~200 MiB (under the 256 MiB cap) with only a few
+        // bytes present must not balloon the reused buffer toward the declared size
+        // before EOF: growth is bounded by READ_CHUNK_BYTES, not the declared size.
+        let mut data = vec![0x80, 0x80, 0x80, 0x64]; // leb128(200 MiB)
+        data.extend_from_slice(&[0x08; 4]);
+        let mut reader = TemporalUnitReader::new(&data[..]);
+        let _ = reader.next_unit().unwrap(); // yields the partial tail
+        assert!(
+            reader.buf_capacity() < (1 << 20),
+            "reused buffer eagerly grew toward the declared size: capacity {}",
+            reader.buf_capacity()
         );
     }
 
