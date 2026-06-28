@@ -191,7 +191,7 @@ fn emit_report(report: &SourceLineReport) {
             "source-line hard violation: {} has {} line(s), above {}",
             violation.path,
             violation.lines,
-            hard_violation_limit_label(&violation.path)
+            hard_violation_limit_label(&violation.path, HARD_LINE_ALLOWANCES)
         );
     }
     for problem in &report.allowance_problems {
@@ -199,9 +199,9 @@ fn emit_report(report: &SourceLineReport) {
     }
 }
 
-fn hard_violation_limit_label(path: &str) -> String {
+fn hard_violation_limit_label(path: &str, allowances: &[SourceLineAllowance]) -> String {
     let path = normalize_source_path(path);
-    if let Some(allowance) = HARD_LINE_ALLOWANCES
+    if let Some(allowance) = allowances
         .iter()
         .find(|allowance| allowance.path == path.as_str())
     {
@@ -262,8 +262,15 @@ mod tests {
 
     #[test]
     fn allowance_lookup_normalizes_backslash_paths() {
-        let allowance = &HARD_LINE_ALLOWANCES[0];
-        let allowances = [*allowance];
+        // `HARD_LINE_ALLOWANCES` is empty in production; use a local fixture so the
+        // backslash-normalization machinery stays covered regardless of whether any
+        // file currently carries an allowance.
+        let allowance = SourceLineAllowance {
+            path: "crates/foo/src/large.rs",
+            max_lines: 2_700,
+            reason: "fixture",
+        };
+        let allowances = [allowance];
         let windows_path = allowance.path.replace('/', "\\");
         let report =
             evaluate_source_lines(&[file(&windows_path, allowance.max_lines)], &allowances);
@@ -275,7 +282,7 @@ mod tests {
             vec![file(allowance.path, allowance.max_lines)]
         );
         assert_eq!(
-            hard_violation_limit_label(&windows_path),
+            hard_violation_limit_label(&windows_path, &allowances),
             format!("allowance cap {}", allowance.max_lines)
         );
     }
@@ -314,13 +321,18 @@ mod tests {
 
     #[test]
     fn hard_violation_limit_label_names_allowance_caps() {
-        let allowance = &HARD_LINE_ALLOWANCES[0];
+        let allowance = SourceLineAllowance {
+            path: "crates/foo/src/large.rs",
+            max_lines: 2_700,
+            reason: "fixture",
+        };
+        let allowances = [allowance];
         assert_eq!(
-            hard_violation_limit_label(allowance.path),
+            hard_violation_limit_label(allowance.path, &allowances),
             format!("allowance cap {}", allowance.max_lines)
         );
         assert_eq!(
-            hard_violation_limit_label("src/lib.rs"),
+            hard_violation_limit_label("src/lib.rs", &allowances),
             "hard cap 2500".to_owned()
         );
     }
