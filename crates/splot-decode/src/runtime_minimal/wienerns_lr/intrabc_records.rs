@@ -451,7 +451,11 @@ impl TileIntrabcPreludeState {
             mi_cols: self.mi_cols,
             sb_size4: self.sb_size4,
         };
-        spatial_intrabc_scan(scan_geometry, |row, col| self.block_vector_at(row, col))
+        spatial_intrabc_scan(
+            scan_geometry,
+            |row, col| self.block_vector_at(row, col),
+            |row, col| self.is_mi_coded(row, col),
+        )
     }
 
     /// The recorded block vector of the IntrABC block at MI `(row, col)`, or `None`
@@ -469,6 +473,24 @@ impl TileIntrabcPreludeState {
             return None;
         }
         facts.block_mv.map(Mv::from)
+    }
+
+    /// AV2 § 7.12.2.6 `is_mi_coded` (`blockd.c:34` `av2_mark_block_as_coded`): whether
+    /// MI `(row, col)` has been CODED earlier in decode order. The `values` grid is
+    /// filled per-MI for EVERY recorded block (IBC or not) at record time, AFTER its
+    /// ref-MV stack is built, so a `Some` entry here means the MI is coded and the
+    /// current block (not yet recorded) is excluded — matching AVM, which marks the
+    /// block coded only after building its stack. Used by the § 7.12.2.6
+    /// `has_top_right` per-4x4 availability gate.
+    fn is_mi_coded(&self, row: usize, col: usize) -> bool {
+        if row >= self.mi_rows || col >= self.mi_cols {
+            return false;
+        }
+        self.values
+            .get(row * self.mi_cols + col)
+            .copied()
+            .flatten()
+            .is_some()
     }
 
     /// The tile ref-MV bank (the § 7.12.2 IntrABC bank state as of the last
