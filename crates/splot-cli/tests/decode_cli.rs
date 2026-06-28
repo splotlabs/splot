@@ -271,16 +271,18 @@ fn local_ac0ej3_reaches_current_runtime_gate_without_output() {
     assert!(out.stderr.is_empty(), "stderr was not empty");
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(json["rule_id"], "decode/unsupported-feature");
-    // The §5.20.6.1 `LumaTxSizes` frame-array fill cleared the MI(256,0)
-    // `out_of_bounds` wall, so the live selectable transform-record walk advances past
-    // the whole verified intra/IntrABC region and now stops on the §8.2.4 exit-budget
-    // guard: an upstream entropy-coder desync (first divergence is the
-    // `all_zero`/txb_skip read of the first uneven-4way + second-set-mode block,
-    // ~bit 3712) over-reads the §5.20.7.27 residual parse, so the walk fails CLOSED at
-    // its true exhaustion point — MI(248,368), px(1472,992), `SymbolMaxBits == -105` —
-    // instead of decoding ~3159 phantom blocks from zero padding. The decode still
-    // emits NO frame (exit 1); the desync itself is a known follow-up.
-    assert_eq!(json["spec_section"], "8.2.4");
+    // The §5.20.4.1 SDP chroma-reference MI-size write (chroma leaves and the chroma
+    // plane of shared luma+chroma leaves write `MiSizes[1]` over the `ChromaMiSize`
+    // footprint, not the per-leaf luma geometry) removed the MI(240,240) §8.3.2
+    // `do_split` left-context divergence (splot ctx 14 -> 12, matching AVM): the
+    // missing BLOCK_64X128 chroma-reference write at MI(224,224) had left row 240's
+    // chroma left-context at BLOCK_64X32, forcing ctx1=1. With that fixed the live
+    // selectable transform-record walk stays entropy-synced past the whole verified
+    // region (no more §8.2.4 over-read `bitstream_desync`) and now stops at the
+    // GENUINE next mechanism — the §5.20.7.27 LrTxSkip live residual/coefficient
+    // parse, a transform-tool residual outside the current handoff subset. The decode
+    // still emits NO frame (exit 1).
+    assert_eq!(json["spec_section"], "5.20.7.27");
     assert_eq!(json["matrix_row"], "ac0ej3-selectable-transform-records");
     assert_eq!(
         json["feature_id"],
@@ -289,14 +291,14 @@ fn local_ac0ej3_reaches_current_runtime_gate_without_output() {
     assert_eq!(json["detail_kind"], "unsupported_feature");
     assert_eq!(
         json["unsupported_reason"],
-        "unsupported_wienerns_lr_selectable_transform_records_bitstream_desync"
+        "unsupported_wienerns_lr_live_transform_record_residual_parse"
     );
     assert!(
         json["message"]
             .as_str()
             .unwrap()
-            .contains("entropy-coder desync"),
-        "diagnostic must describe the §8.2.4 exit-budget / entropy-coder desync frontier"
+            .contains("coefficient syntax is outside the transform-record handoff subset"),
+        "diagnostic must describe the §5.20.7.27 live transform-record residual frontier"
     );
     assert_eq!(json["byte_offset"], 110);
     assert_ne!(
@@ -344,8 +346,9 @@ fn local_ac0ej3_reaches_current_runtime_gate_without_output() {
         "ac0ej3 must advance past the former live-storage allocation gate"
     );
     assert_ne!(
-        json["unsupported_reason"], "unsupported_wienerns_lr_live_transform_record_residual_parse",
-        "ac0ej3 must advance past the former transform-record residual parse gate"
+        json["unsupported_reason"],
+        "unsupported_wienerns_lr_selectable_transform_records_bitstream_desync",
+        "the §5.20.4.1 SDP chroma-reference MI-size fix removed the former §8.2.4 exit-budget over-read desync"
     );
     assert_ne!(
         json["unsupported_reason"],
