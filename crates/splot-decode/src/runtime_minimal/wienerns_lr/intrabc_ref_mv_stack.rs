@@ -329,11 +329,13 @@ pub(super) struct SpatialIntrabcScan {
 
 /// AV2 § 7.12.2 spatial SMVP scan for an IntrABC block (`is_intrabc == 1`).
 ///
-/// The adjacent SMVP search (§ 7.12.2 steps 7-14, `mvref_common.c:2362`-`2456`)
-/// invokes § 7.12.2.6 Scan point at the left-column positions
+/// The adjacent SMVP search (§ 7.12.2.1 steps 7-14, `mvref_common.c:2362`-`2456`)
+/// invokes § 7.12.2.6 Scan point at the left-column and above-row positions
 /// `(deltaRow, deltaCol)`:
 ///
 /// * step 7: `(bh4 - 1, -1)` — bottom of the left column;
+/// * step 8: `(-1, Max(0, bw4 - 1 - isSbBorder))` — the first above-row probe
+///   (`row_smvp_state[0]`, `mvref_common.c:2371`);
 /// * step 9 (`bh4 >= 2`): `(0, -1)` — top of the left column.
 ///
 /// For `is_intrabc == 1`, § 7.12.2.4 Add reference motion vector only admits a
@@ -341,16 +343,16 @@ pub(super) struct SpatialIntrabcScan {
 /// `is_intrabc == is_intrabc_block(candidate)`, `mvref_common.c:834`), adding its
 /// recorded block vector deduped by value (`mvref_common.c:874`).
 ///
-/// This models the two unconditionally-decoded left-column positions exactly (the
-/// only spatial positions that contribute for the ac0ej3 frame-0 row-0 IntrABC
-/// walk, verified against the AVM `setup_ref_mv_list` dump). Every other
-/// § 7.12.2 spatial position needs neighbour availability state this decoder does
-/// not model:
+/// This models the two unconditionally-decoded left-column positions exactly plus
+/// the § 7.12.2.1 step-8 above-row probe in the PROVABLE superblock-border case
+/// (see [`step8_above_row_column`]), inserted between steps 7 and 9 to match the
+/// AVM `setup_ref_mv_list` scan order exactly. Every other § 7.12.2 spatial
+/// position needs neighbour availability state this decoder does not model:
 ///
 /// * the step-11 below-bottom-left probe `(bh4, -1)`, gated in AVM by
 ///   `has_bottom_left` / `is_mi_coded` decode-order state (`mvref_common.c:1601`);
-/// * the above-row probes (steps 8/10/12 and the step-14 above-left, all
-///   `deltaRow = -1`);
+/// * the remaining above-row probes (steps 10/12 and the step-14 above-left, all
+///   `deltaRow = -1`), and step 8 outside the modelled superblock-border column;
 /// * the § 7.12.2.5 deltaCol = -3 non-adjacent scan.
 ///
 /// The scan reports `defer` when one of those unmodelled positions holds an
@@ -370,22 +372,90 @@ pub(super) fn spatial_intrabc_scan(
     let bh4 = geometry.n4h;
 
     let mut candidates: Vec<Mv> = Vec::new();
-    // Modelled left-column positions (deltaCol = -1) in AV2 § 7.12.2 step order.
+    // The § 7.12.2.1 step-8 above-row column this decoder models faithfully (only
+    // the SB-border, even-mi_col, alignment-preserving case): excluded from the
+    // over-scan defer below because it is now placed exactly. `None` => unmodelled,
+    // so the over-scan keeps deferring on any above-row new BV.
+    let modelled_above_col = step8_above_row_column(&geometry);
+
+    // Modelled positions in AV2 § 7.12.2.1 step order: step 7, step 8, step 9.
     if let Some(left_col) = col.checked_sub(1) {
         // Step 7: (bh4 - 1, -1).
         if let Some(r) = row.checked_add(bh4.saturating_sub(1)) {
             push_deduped(&geometry, &lookup, &mut candidates, r, left_col);
         }
-        // Step 9: (0, -1) when bh4 >= 2.
-        if bh4 >= 2 {
-            push_deduped(&geometry, &lookup, &mut candidates, row, left_col);
-        }
+    }
+    // Step 8: (-1, Max(0, bw4 - 1 - isSbBorder)) at the SB-aligned column, before
+    // step 9 to match the AVM scan order (`mvref_common.c:2362`-`2383`).
+    if let (Some(above), Some(c)) = (row.checked_sub(1), modelled_above_col) {
+        push_deduped(&geometry, &lookup, &mut candidates, above, c);
+    }
+    // Step 9: (0, -1) when bh4 >= 2.
+    if bh4 >= 2
+        && let Some(left_col) = col.checked_sub(1)
+    {
+        push_deduped(&geometry, &lookup, &mut candidates, row, left_col);
     }
 
-    // Unmodelled positions: defer only if one holds a NEW IntrABC block vector.
-    let defer = spatial_scan_unmodelled_has_new_bv(&geometry, &lookup, &candidates);
+    // Unmodelled positions: defer only if one holds a NEW IntrABC block vector
+    // (excluding the modelled step-8 column, now placed exactly above).
+    let defer =
+        spatial_scan_unmodelled_has_new_bv(&geometry, &lookup, &candidates, modelled_above_col);
 
     SpatialIntrabcScan { candidates, defer }
+}
+
+/// The MI column of the § 7.12.2.1 step-8 above-row SMVP probe when this decoder
+/// can place it faithfully, or `None` to leave it for the conservative over-scan
+/// defer.
+///
+/// § 7.12.2.1 step 8 (`docs/spec/av2/1.0.0/07-decoding-process.md`, ~line 3431)
+/// invokes § 7.12.2.6 Scan point with `deltaRow = -1` and
+/// `deltaCol = Max(0, bw4 - 1 - isSbBorder)`, then § 7.12.2.6 (~line 3766)
+/// SB-aligns the column on a superblock border:
+///
+/// ```text
+/// isSbBorder = (MiRow & (Num_4x4_Blocks_High[SbSize] - 1)) == 0
+/// if (deltaRow < 0 && isSbBorder) { mvCol = (mvCol >> 1) << 1; deltaCol = mvCol - MiCol }
+/// ```
+///
+/// This matches AVM `get_row_smvp_states` `row_smvp_state[0]` for an SB-border
+/// block (`compute_aligned_offset(mi_col, bw4 - 2)`, `mvref_common.c:1979`/`2062`).
+///
+/// Modelled ONLY when ALL of the following hold (else `None` -> defer-as-before):
+///
+/// * `isSbBorder == 1` (the block sits on a horizontal superblock border, so the
+///   8x8-grid alignment is well defined and the neighbour 8x8 unit is fully
+///   decoded);
+/// * `up_available` (`MiRow > 0`; ac0ej3 is single-tile so this is the only
+///   above-availability clause);
+/// * the SB-aligned column equals the un-aligned spec column (true for even
+///   `mi_col`; an odd `mi_col` shifts the column under `(mvCol >> 1) << 1`, which
+///   this decoder does not place faithfully -> defer).
+fn step8_above_row_column(geometry: &SpatialScanGeometry) -> Option<usize> {
+    let row = geometry.mi_row;
+    let col = geometry.mi_col;
+    // up_available: there is an above row at all (frame/tile top has none).
+    if row == 0 {
+        return None;
+    }
+    // isSbBorder == 1: MiRow is a multiple of the SB side (Num_4x4_Blocks_High).
+    if geometry.sb_size4 == 0 || !row.is_multiple_of(geometry.sb_size4) {
+        return None;
+    }
+    // The (mvCol >> 1) << 1 alignment must not shift the spec column, i.e. mi_col
+    // must be even; an odd mi_col is not modelled.
+    if col & 1 != 0 {
+        return None;
+    }
+    // deltaCol = Max(0, bw4 - 1 - isSbBorder) with isSbBorder == 1.
+    let delta_col = geometry.n4w.saturating_sub(2);
+    let aligned_col = col.checked_add(delta_col)?;
+    // is_inside: the neighbour column must lie inside the tile.
+    if aligned_col >= geometry.mi_cols {
+        return None;
+    }
+    Some(aligned_col)
 }
 
 /// Adds an IntrABC neighbour block vector at MI `(row_offset, left_col)` to the
@@ -406,15 +476,22 @@ fn push_deduped(
 }
 
 /// Whether any AV2 § 7.12.2 spatial position this decoder does NOT model exactly
-/// (the step-11 below-bottom-left probe, the above-row probes, and the
-/// § 7.12.2.5 deltaCol = -3 non-adjacent scan) holds an IntrABC neighbour whose
-/// block vector is NOT already a modelled candidate. A duplicate block vector
-/// contributes nothing in AVM, so it does not force a defer; a new one would
-/// extend the stack unfaithfully, so it does.
+/// (the step-11 below-bottom-left probe, the still-unmodelled above-row probes,
+/// and the § 7.12.2.5 deltaCol = -3 non-adjacent scan) holds an IntrABC neighbour
+/// whose block vector is NOT already a modelled candidate. A duplicate block
+/// vector contributes nothing in AVM, so it does not force a defer; a new one
+/// would extend the stack unfaithfully, so it does.
+///
+/// `modelled_above_col` is the § 7.12.2.1 step-8 above-row column now placed
+/// exactly by [`spatial_intrabc_scan`] (or `None` when unmodelled): it is excluded
+/// from the above-row over-scan so a step-8-only hit no longer forces a defer,
+/// while every OTHER above-row column (the still-unmodelled steps 10/12/14)
+/// continues to defer.
 fn spatial_scan_unmodelled_has_new_bv(
     geometry: &SpatialScanGeometry,
     lookup: &impl Fn(usize, usize) -> Option<Mv>,
     modelled: &[Mv],
+    modelled_above_col: Option<usize>,
 ) -> bool {
     let row = geometry.mi_row;
     let col = geometry.mi_col;
@@ -430,13 +507,17 @@ fn spatial_scan_unmodelled_has_new_bv(
     }
     // Above-row probes (deltaRow = -1). At the frame top edge there is no above
     // row, so nothing is read; otherwise over-scan the above row from the
-    // step-14 above-left column out to the top-right column.
+    // step-14 above-left column out to the top-right column, EXCLUDING the exact
+    // § 7.12.2.1 step-8 column now placed faithfully above.
     if let Some(above) = row.checked_sub(1) {
         let is_sb_border = geometry.sb_size4 != 0 && row.is_multiple_of(geometry.sb_size4);
         let extra_left = if is_sb_border { 2 + (col & 1) } else { 1 };
         let leftmost = col.saturating_sub(extra_left);
         let rightmost = col.saturating_add(bw4); // inclusive of the top-right col
         for c in leftmost..=rightmost {
+            if Some(c) == modelled_above_col {
+                continue;
+            }
             if is_new(lookup_in_grid(geometry, lookup, above, c)) {
                 return true;
             }
