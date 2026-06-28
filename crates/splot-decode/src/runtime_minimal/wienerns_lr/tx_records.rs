@@ -1404,6 +1404,7 @@ fn decode_luma_records_for_chunk(
                 recon.qindex,
                 recon.luma_use_tcq,
                 recon.fsc_mode,
+                recon.is_intrabc,
                 tile_offset,
             )?;
         }

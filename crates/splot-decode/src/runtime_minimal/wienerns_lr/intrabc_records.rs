@@ -588,23 +588,20 @@ pub(super) fn read_intrabc_info(
             tile_offset,
         )?;
     }
-    // §5.20.4 decode_block continuation: a `skip` IntrABC leaf carries NO residual, and
-    // §5.20.6.1 read_block_tx_size for a skipped inter block (is_inter == 1 for IntrABC,
-    // §5.20.5.3) assigns Max_Tx_Size_Rect with NO partition symbols (the walk's
-    // `allow_select == !skip || !is_inter == false` max-rect branch). The whole block's
-    // remaining syntax therefore reads ZERO further symbols, so returning the parsed
-    // mode-info lets the existing tx-record + skip-residual machinery advance the
-    // partition/superblock walk AVM-faithfully to the next leaf — the entropy state after
-    // the block is exactly where AVM leaves it. A NON-skip IntrABC leaf still fails closed:
-    // its §5.20.7.23 residual reading on the inter/IntrABC transform path is not yet
-    // proven, so the walk must not parse past it.
-    if skip_flag {
-        return Ok(info);
-    }
-    Err(wienerns_lr_selectable_transform_record_error_reason(
-        tile_offset,
-        "unsupported_wienerns_lr_selectable_transform_records_intrabc_nonskip_residual",
-    ))
+    // §5.20.4 decode_block continuation. A `skip` IntrABC leaf carries NO residual,
+    // and §5.20.6.1 read_block_tx_size for a skipped inter block (is_inter == 1 for
+    // IntrABC, §5.20.5.3) assigns Max_Tx_Size_Rect with NO partition symbols (the
+    // walk's `allow_select == !skip || !is_inter == false` max-rect branch). A NON-skip
+    // IntrABC leaf instead reads its §5.20.6.1 inter tx-partition + §5.20.7.29 inter
+    // transform-type + §5.20.7.27 coefficient residual via the SAME is_inter-aware
+    // tx-record + coefficient machinery the partition walk drives after this prelude
+    // returns. Returning the parsed mode-info for BOTH cases lets that machinery
+    // advance the partition/superblock walk AVM-faithfully to the next leaf — the
+    // entropy state after the block is exactly where AVM leaves it. For a non-skip
+    // leaf the sink's `reconstruct_intrabc_block` copied only the prediction; the
+    // residual add is gated/deferred inside the sink's transform-record path until the
+    // displaced-copy + inverse-transform residual reconstruction is proven bit-exact.
+    Ok(info)
 }
 
 #[cfg(test)]
@@ -1681,7 +1678,7 @@ mod tests {
     }
 
     #[test]
-    fn active_intrabc_newmv_nonskip_reads_block_vector_then_fails_closed_on_residual() {
+    fn active_intrabc_newmv_nonskip_reads_block_vector_and_returns_info_for_residual() {
         let (use_skip, info, symbol_count) = run_intrabc_prelude(
             &[
                 (Some(TileCdfSelector::Intrabc { ctx: 0 }), 1),
@@ -1723,13 +1720,14 @@ mod tests {
                 skip_flag: false,
             }
         );
-        // A NON-`skip` IntrABC leaf reads its full §5.20.5.4 block-vector syntax, then
-        // fails closed: its §5.20.7.23 residual on the inter/IntrABC transform path is
-        // not yet proven, so the walk must not parse past it.
-        assert_eq!(
-            unsupported_reason(info.unwrap_err()),
-            "unsupported_wienerns_lr_selectable_transform_records_intrabc_nonskip_residual"
-        );
+        // A NON-`skip` IntrABC leaf reads its full §5.20.5.4 block-vector syntax and
+        // returns the parsed mode-info: its §5.20.6.1 inter tx-partition + §5.20.7.29
+        // inter transform-type + §5.20.7.27 coefficient residual are decoded by the
+        // is_inter-aware tx-record + coefficient machinery the partition walk drives
+        // AFTER this prelude returns, so the prelude itself must not stop the walk.
+        let info = info.expect("non-skip IntrABC prelude returns parsed mode-info");
+        assert_eq!(info.intrabc_mode, 0);
+        assert_eq!(info.block_mv, IntrabcBlockVector { row: -512, col: 0 });
         assert_eq!(symbol_count, 8);
     }
 

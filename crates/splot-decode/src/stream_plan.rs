@@ -450,19 +450,26 @@ pub enum DecodeUnsupportedReason {
 /// added — while reading as a macro invocation, so it is not a structural
 /// duplicate of the other enum string-label `match`es (the dupehound diff-ratchet
 /// flags those).
+///
+/// The leading `$vis` token sets the generated `as_str` visibility so the macro
+/// serves both a `pub` enum (`DecodeUnsupportedReason`) and a `pub(crate)` enum
+/// (`TilePayloadUnsupportedReason`) without tripping pedantic clippy's
+/// `unreachable_pub`. `#[macro_export]` makes it reachable as
+/// `crate::impl_reason_labels!` from sibling modules.
+#[macro_export]
 macro_rules! impl_reason_labels {
-    ($name:ident { $($variant:ident => $label:literal),+ $(,)? }) => {
+    ($vis:vis $name:ident { $($variant:ident => $label:literal),+ $(,)? }) => {
         impl $name {
             /// Stable snake-case reason label.
             #[must_use]
-            pub const fn as_str(self) -> &'static str {
+            $vis const fn as_str(self) -> &'static str {
                 match self { $(Self::$variant => $label),+ }
             }
         }
     };
 }
 
-impl_reason_labels!(DecodeUnsupportedReason {
+impl_reason_labels!(pub DecodeUnsupportedReason {
     InvalidLayerScope => "invalid_layer_scope",
     NonBaseTemporalLayer => "non_base_temporal_layer",
     NonBaseEmbeddedLayer => "non_base_embedded_layer",

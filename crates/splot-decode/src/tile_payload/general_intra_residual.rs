@@ -806,16 +806,50 @@ fn ensure_transform_tool_residual_handoff(
                 );
             }
             metadata.luma_tx_type = luma_tx_type;
+        } else if is_inter && plane == 0 {
+            // AV2 § 5.20.7.29 inter luma `transform_type`: the §7.13.3.18 IntrABC
+            // leaf is `is_inter == 1`, so its primary transform type is read on the
+            // inter path. Only the long-side sets (`TX_SET_WIDE_32/64`,
+            // `TX_SET_HIGH_32/64`) are proven here — the `inter_tx_type` symbol uses
+            // `TileInterTxTypeLongCdf[ctx][Tx_Size_Sqr[txSz]]` (§8.3.2 Table 8.3).
+            // The other inter sets (`TX_SET_INTER_1/2`, `TX_SET_DCT_IDTX*`) need the
+            // `inter_tx_type_offset` reads this brick has not proven, so they defer.
+            let luma_tx_type =
+                read_active_inter_transform_type(cdfs, symbols, tx_size, tx_set, eob)?;
+            if luma_tx_type != DCT_DCT {
+                return unsupported_transform_tool_residual(
+                    "unsupported_dctonly_residual_inter_tx_type",
+                );
+            }
+            metadata.luma_tx_type = luma_tx_type;
         } else {
             return unsupported_transform_tool_residual("unsupported_dctonly_residual_tx_set");
         }
     }
     if is_inter
+        && plane == 0
         && frame_facts.enable_inter_ist()
         && eob > 3
+        && metadata.luma_tx_type == DCT_DCT
         && inter_ist_can_read_sec_tx(tx_size, eob)?
     {
-        return unsupported_transform_tool_residual("unsupported_dctonly_residual_inter_ist");
+        // AV2 § 5.20.7.29 inter IST: read `sec_tx_type` (CDF
+        // `TileSecTxTypeCdf[is_inter == 1][Tx_Size_Sqr[txSz]]`). For inter,
+        // `most_probable_stx_set` is NOT read (the spec gates that on `!is_inter`),
+        // so the parse stays synced regardless of the value.
+        let tx_size_sqr = tx_size_table_usize(&TX_SIZE_SQR, "Tx_Size_Sqr", tx_size)?;
+        let sec_tx_type = read_transform_symbol(
+            cdfs,
+            symbols,
+            TileCdfSelector::SecTxType {
+                is_inter: 1,
+                tx_size_sqr,
+            },
+        )?;
+        metadata.intra_ist = Some(IntraIstSyntax {
+            sec_tx_type,
+            most_probable_stx_set: None,
+        });
     }
     if !is_inter
         && plane == 0
@@ -1007,6 +1041,81 @@ fn read_active_luma_long_tx_type(
                 reason: "unsupported_dctonly_residual_invalid_luma_tx_type",
             },
         )
+}
+
+/// Reads the AV2 § 5.20.7.29 inter luma primary `transform_type` for a long-side
+/// transform set (`TX_SET_WIDE_32/64`, `TX_SET_HIGH_32/64`). Mirrors the intra
+/// long-side path but uses the inter `is_long_side_dct` context and the
+/// `inter_tx_type` symbol's `TileInterTxTypeLongCdf[ctx][Tx_Size_Sqr[txSz]]`
+/// (§8.3.2 Table 8.3); other inter sets are not yet proven and defer upstream.
+fn read_active_inter_transform_type(
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    tx_size: usize,
+    tx_set: usize,
+    eob: usize,
+) -> Result<usize, GeneralIntraResidualError> {
+    let wide_or_high = match tx_set {
+        TX_SET_WIDE_64 | TX_SET_WIDE_32 => 0,
+        TX_SET_HIGH_64 | TX_SET_HIGH_32 => 1,
+        _ => {
+            return unsupported_transform_tool_residual(
+                "unsupported_dctonly_residual_inter_tx_set",
+            );
+        }
+    };
+    // §5.20.7.29 `is_long_side_dct` is read (CDF `TileIsLongSideDctCdf[is_inter]`)
+    // only for the 32 sets; the 64 sets force `is_long_side_dct = 1`.
+    let is_long_side_dct = match tx_set {
+        TX_SET_WIDE_32 | TX_SET_HIGH_32 => read_transform_symbol(
+            cdfs,
+            symbols,
+            TileCdfSelector::IsLongSideDct { is_inter: 1 },
+        )?,
+        _ => 1,
+    };
+    let tx_size_sqr = tx_size_table_usize(&TX_SIZE_SQR, "Tx_Size_Sqr", tx_size)?;
+    let ctx = inter_tx_type_long_ctx(tx_size, eob)?;
+    let inter_tx_type = read_transform_symbol(
+        cdfs,
+        symbols,
+        TileCdfSelector::InterTxTypeLong { ctx, tx_size_sqr },
+    )?;
+    TX_TYPE_INV_LONG
+        .get(is_long_side_dct)
+        .and_then(|long_side| long_side.get(wide_or_high))
+        .and_then(|row| row.get(inter_tx_type))
+        .copied()
+        .ok_or(
+            GeneralIntraResidualError::UnsupportedTransformToolResidual {
+                reason: "unsupported_dctonly_residual_invalid_inter_tx_type",
+            },
+        )
+}
+
+/// AV2 § 8.3.2 `inter_tx_type` context: from the `eob` diagonal position relative
+/// to the (32-capped) transform extent.
+fn inter_tx_type_long_ctx(tx_size: usize, eob: usize) -> Result<usize, GeneralIntraResidualError> {
+    let eob = eob.checked_sub(1).ok_or(
+        GeneralIntraResidualError::UnsupportedTransformToolResidual {
+            reason: "unsupported_dctonly_residual_inter_tx_type_eob",
+        },
+    )?;
+    let tx_width_log2 = tx_size_table_usize(&TX_WIDTH_LOG2, "Tx_Width_Log2", tx_size)?;
+    let tx_width = tx_size_table_usize(&TX_WIDTH, "Tx_Width", tx_size)?;
+    let tx_height = tx_size_table_usize(&TX_HEIGHT, "Tx_Height", tx_size)?;
+    let bwl = tx_width_log2.min(5);
+    let eoby = eob >> bwl;
+    let eobx = eob - (eoby << bwl);
+    let diag = eobx + eoby;
+    let max_diag = tx_width.min(32) + tx_height.min(32) - 4;
+    Ok(if diag < 2 {
+        1
+    } else if diag > max_diag {
+        2
+    } else {
+        0
+    })
 }
 
 fn read_transform_symbol(

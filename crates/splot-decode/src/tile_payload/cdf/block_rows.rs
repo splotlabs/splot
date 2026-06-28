@@ -12,14 +12,15 @@ use splot_core::tables::cdf::{
     DEFAULT_CWP_IDX_CDF, DEFAULT_DC_SIGN_CDF, DEFAULT_DRL_MODE_CDF, DEFAULT_EOB_EXTRA_CDF,
     DEFAULT_EOB_PT_16_CDF, DEFAULT_EOB_PT_32_CDF, DEFAULT_EOB_PT_64_CDF, DEFAULT_EOB_PT_128_CDF,
     DEFAULT_EOB_PT_256_CDF, DEFAULT_EOB_PT_512_CDF, DEFAULT_EOB_PT_1024_CDF,
-    DEFAULT_INTERP_FILTER_CDF, DEFAULT_INTRA_TX_TYPE_LONG_CDF, DEFAULT_INTRA_TX_TYPE_SET1_CDF,
-    DEFAULT_INTRA_TX_TYPE_SET2_CDF, DEFAULT_IS_CFL_CDF, DEFAULT_IS_INTER_CDF, DEFAULT_IS_JOINT_CDF,
-    DEFAULT_IS_LONG_SIDE_DCT_CDF, DEFAULT_MOST_PROBABLE_STX_SET_ADST_CDF,
-    DEFAULT_MOST_PROBABLE_STX_SET_CDF, DEFAULT_SEC_TX_TYPE_CDF, DEFAULT_SINGLE_MODE_CDF,
-    DEFAULT_SINGLE_REF_CDF, DEFAULT_SKIP_CDF, DEFAULT_TXB_SKIP_CDF, DEFAULT_USE_WIENER_NS_CDF,
-    DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF, DEFAULT_V_TXB_SKIP_CDF, DEFAULT_WIENER_NS_BASE_CDF,
-    DEFAULT_WIENER_NS_LENGTH_CDF, DEFAULT_WIENER_NS_UV_SYM_CDF, DEFAULT_Y_MODE_INDEX_CDF,
-    DEFAULT_Y_MODE_OFFSET_CDF, DEFAULT_Y_MODE_SET_CDF,
+    DEFAULT_INTER_TX_TYPE_LONG_CDF, DEFAULT_INTERP_FILTER_CDF, DEFAULT_INTRA_TX_TYPE_LONG_CDF,
+    DEFAULT_INTRA_TX_TYPE_SET1_CDF, DEFAULT_INTRA_TX_TYPE_SET2_CDF, DEFAULT_IS_CFL_CDF,
+    DEFAULT_IS_INTER_CDF, DEFAULT_IS_JOINT_CDF, DEFAULT_IS_LONG_SIDE_DCT_CDF,
+    DEFAULT_MOST_PROBABLE_STX_SET_ADST_CDF, DEFAULT_MOST_PROBABLE_STX_SET_CDF,
+    DEFAULT_SEC_TX_TYPE_CDF, DEFAULT_SINGLE_MODE_CDF, DEFAULT_SINGLE_REF_CDF, DEFAULT_SKIP_CDF,
+    DEFAULT_TXB_SKIP_CDF, DEFAULT_USE_WIENER_NS_CDF, DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF,
+    DEFAULT_V_TXB_SKIP_CDF, DEFAULT_WIENER_NS_BASE_CDF, DEFAULT_WIENER_NS_LENGTH_CDF,
+    DEFAULT_WIENER_NS_UV_SYM_CDF, DEFAULT_Y_MODE_INDEX_CDF, DEFAULT_Y_MODE_OFFSET_CDF,
+    DEFAULT_Y_MODE_SET_CDF,
 };
 
 mod mv;
@@ -88,6 +89,12 @@ const WIENER_NS_BASE_CDF_ROW_LEN: usize = 5;
 const INTRA_TX_TYPE_LONG_SIZE_CONTEXTS: usize = 4;
 const INTRA_TX_TYPE_SIZE_CONTEXTS: usize = 3;
 const INTRA_TX_TYPE_LONG_ROW_LEN: usize = 5;
+// §8.3.2 Table 8.3 inter long-side transform-type CDF
+// `TileInterTxTypeLongCdf[ctx][Tx_Size_Sqr[txSz]]`: `EOB_TX_CTXS` eob contexts by
+// `EXT_TX_SIZES` square-size contexts.
+const INTER_TX_TYPE_LONG_EOB_CONTEXTS: usize = 3;
+const INTER_TX_TYPE_LONG_SIZE_CONTEXTS: usize = 4;
+const INTER_TX_TYPE_LONG_ROW_LEN: usize = 5;
 const INTRA_TX_TYPE_SET1_ROW_LEN: usize = 8;
 const INTRA_TX_TYPE_SET2_ROW_LEN: usize = 3;
 const IS_LONG_SIDE_DCT_CONTEXTS: usize = 2;
@@ -148,6 +155,9 @@ pub(crate) type WienerNsBaseCdfRow = [i32; WIENER_NS_BASE_CDF_ROW_LEN];
 pub(crate) type IsLongSideDctCdfRows = [[i32; CDF_ROW_LEN]; IS_LONG_SIDE_DCT_CONTEXTS];
 pub(crate) type IntraTxTypeLongCdfRows =
     [[i32; INTRA_TX_TYPE_LONG_ROW_LEN]; INTRA_TX_TYPE_LONG_SIZE_CONTEXTS];
+pub(crate) type InterTxTypeLongCdfRows = [[[i32; INTER_TX_TYPE_LONG_ROW_LEN];
+    INTER_TX_TYPE_LONG_SIZE_CONTEXTS];
+    INTER_TX_TYPE_LONG_EOB_CONTEXTS];
 pub(crate) type IntraTxTypeSet1CdfRows =
     [[i32; INTRA_TX_TYPE_SET1_ROW_LEN]; INTRA_TX_TYPE_SIZE_CONTEXTS];
 pub(crate) type IntraTxTypeSet2CdfRows =
@@ -389,6 +399,15 @@ pub(crate) enum BlockCdfSelector {
         /// `Tx_Size_Sqr[txSz]`.
         tx_size_sqr: usize,
     },
+    /// `TileInterTxTypeLongCdf[ctx][Tx_Size_Sqr[txSz]]` (AV2 § 8.3.2 Table 8.3),
+    /// the inter long-side `inter_tx_type` symbol for the
+    /// `TX_SET_WIDE_32/64` and `TX_SET_HIGH_32/64` transform sets.
+    InterTxTypeLong {
+        /// The §8.3.2 `inter_tx_type` eob context (0..3).
+        ctx: usize,
+        /// `Tx_Size_Sqr[txSz]`.
+        tx_size_sqr: usize,
+    },
     /// `TileIntraTxTypeSet1Cdf[Tx_Size_Sqr[txSz]]` (AV2 § 8.3.2 Table 8.2).
     IntraTxTypeSet1 {
         /// `Tx_Size_Sqr[txSz]`.
@@ -460,6 +479,7 @@ pub(crate) struct BlockCdfRows {
     pub(super) wiener_ns_base: WienerNsBaseCdfRow,
     pub(super) is_long_side_dct: IsLongSideDctCdfRows,
     pub(super) intra_tx_type_long: IntraTxTypeLongCdfRows,
+    pub(super) inter_tx_type_long: InterTxTypeLongCdfRows,
     pub(super) intra_tx_type_set1: IntraTxTypeSet1CdfRows,
     pub(super) intra_tx_type_set2: IntraTxTypeSet2CdfRows,
     pub(super) sec_tx_type: SecTxTypeCdfRows,
@@ -899,6 +919,29 @@ macro_rules! block_cdf_row {
                 )?;
                 Ok(row.$as_slice())
             }
+            BlockCdfSelector::InterTxTypeLong { ctx, tx_size_sqr } => {
+                let eob_max = $self.inter_tx_type_long.len();
+                let eob_row =
+                    $self
+                        .inter_tx_type_long
+                        .$get(ctx)
+                        .ok_or(TileCdfError::SelectorOutOfRange {
+                            array: TileCdfArray::InterTxTypeLong,
+                            index_name: "ctx",
+                            actual: ctx,
+                            max_exclusive: eob_max,
+                        })?;
+                let max_exclusive = eob_row.len();
+                let row = eob_row
+                    .$get(tx_size_sqr)
+                    .ok_or(TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::InterTxTypeLong,
+                        index_name: "tx_size_sqr",
+                        actual: tx_size_sqr,
+                        max_exclusive,
+                    })?;
+                Ok(row.$as_slice())
+            }
             BlockCdfSelector::IntraTxTypeSet1 { tx_size_sqr } => {
                 let max_exclusive = $self.intra_tx_type_set1.len();
                 let row = $self.intra_tx_type_set1.$get(tx_size_sqr).ok_or(
@@ -993,6 +1036,7 @@ impl BlockCdfRows {
             wiener_ns_base: DEFAULT_WIENER_NS_BASE_CDF,
             is_long_side_dct: DEFAULT_IS_LONG_SIDE_DCT_CDF,
             intra_tx_type_long: DEFAULT_INTRA_TX_TYPE_LONG_CDF,
+            inter_tx_type_long: DEFAULT_INTER_TX_TYPE_LONG_CDF,
             intra_tx_type_set1: DEFAULT_INTRA_TX_TYPE_SET1_CDF,
             intra_tx_type_set2: DEFAULT_INTRA_TX_TYPE_SET2_CDF,
             sec_tx_type: DEFAULT_SEC_TX_TYPE_CDF,
@@ -1252,6 +1296,16 @@ impl BlockCdfRows {
                 num_log2,
             );
         }
+        for eob_ctx in 0..INTER_TX_TYPE_LONG_EOB_CONTEXTS {
+            for tx_size_sqr in 0..INTER_TX_TYPE_LONG_SIZE_CONTEXTS {
+                avg_cdf_row(
+                    &mut self.inter_tx_type_long[eob_ctx][tx_size_sqr],
+                    &tile.inter_tx_type_long[eob_ctx][tx_size_sqr],
+                    tile_num,
+                    num_log2,
+                );
+            }
+        }
         for ctx in 0..INTRA_TX_TYPE_SIZE_CONTEXTS {
             avg_cdf_row(
                 &mut self.intra_tx_type_set1[ctx],
@@ -1392,6 +1446,9 @@ impl BlockCdfRows {
         }
         for ctx in 0..INTRA_TX_TYPE_LONG_SIZE_CONTEXTS {
             scale_cdf_count(&mut self.intra_tx_type_long[ctx]);
+        }
+        for row in self.inter_tx_type_long.iter_mut().flatten() {
+            scale_cdf_count(row);
         }
         for ctx in 0..INTRA_TX_TYPE_SIZE_CONTEXTS {
             scale_cdf_count(&mut self.intra_tx_type_set1[ctx]);
