@@ -187,10 +187,18 @@ const MI40_IBP_STEP: u16 = 65;
 /// its real DV `(row=-1024, col=0)` is a -128px VERTICAL displacement whose source sits
 /// in the PREVIOUS superblock row, which AVM validates only via the
 /// `allow_global_intrabc` path (an unmodeled DV class), so `intrabc_dv_proven_valid`
-/// conservatively defers the copy — never a confident-wrong sample. The walk now stops
-/// at the §5.20.6.1 selectable transform-record `skipped_context_reset` frontier (the
-/// next selectable transform-record geometry outside the bounded subset), on BOTH the
-/// recon-sink and parse-only paths.
+/// conservatively defers the copy — never a confident-wrong sample. The §5.20
+/// `reset_block_context` write and the §5.20.6.1 PC-Wiener `LrTxSkip` FilterClass grid
+/// retention are now ALSO clamped to the frame edge (the same §5.20.3.2 `block_coded`
+/// model): the bottom-edge skipped transforms at MI(256,0) — whose nominal 16-tall MI
+/// footprint overhangs the 270-row MI grid by 2 — zero / fill only their on-frame
+/// cells instead of erroring `skipped_context_reset` / `LrTxSkip transform record
+/// bounds`. With those clamps the recon-sink handoff now runs to COMPLETION (the
+/// verified subset reconstructs; out-of-subset blocks defer to their fill value), and
+/// the parse-only public path advances to the §7.20.4
+/// `live_frame_samples_unpopulated` gate. The verified region is UNCHANGED at `273152`
+/// — the skipped edge blocks were already covered/deferred — so every pin below stays
+/// bit-identical.
 ///
 /// Verified ZERO-mismatch, per sample, over EVERY covered luma sample against the AVM
 /// pre-filter reconstruction oracle (`/tmp/pref.yuv`, md5

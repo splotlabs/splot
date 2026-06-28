@@ -850,17 +850,18 @@ pub(in crate::runtime_minimal) fn reconstruct_ac0ej3_selectable_intra_region(
     // §5.20.3.1 SDP chroma partition plane (plane 1 for the chroma tree) and the
     // §8.3.2 `is_cfl` neighbour-context fix (the chroma `is_cfl` CDF is keyed by the
     // above/left `UVCfls` neighbours, not a hardcoded `ctx == 0`), the parse stays
-    // entropy-synced past the IntrABC ref-stack wall and (with the §5.20.7.27 context
-    // write now clamped to the frame edge) past the bottom-edge skipped transforms,
-    // stopping when the reconstruction sink reaches the next general-intra luma block
-    // it cannot yet reconstruct — the §5.20.6.1 selectable transform-record
-    // `recon_luma_write` frontier (see `EXPECTED_RECON_FRONTIER_REASON`); the owned
-    // sink retains the region reconstructed before that expected rejection.
-    // Swallow ONLY that known recon-subset frontier — any other error (an earlier
-    // parse or reconstruction failure, e.g. a regression that fails before the
-    // frontier after the verified region is written, OR a re-introduced earlier
-    // desync) is propagated so the test fails loudly instead of silently passing on a
-    // partial walk.
+    // entropy-synced past the IntrABC ref-stack wall and — with the §5.20.7.27 context
+    // write AND the §5.20 `reset_block_context` write both now clamped to the frame
+    // edge — past the bottom-edge skipped transforms. The selectable transform-record
+    // handoff now runs to COMPLETION (`Ok`): the verified subset is reconstructed in
+    // decode order and the out-of-subset IntrABC/general-intra blocks are
+    // conservatively deferred to their fill value (never a confident-wrong sample), so
+    // no per-block frontier is raised (see `EXPECTED_RECON_FRONTIER_REASON`); the owned
+    // sink retains the verified reconstructed region.
+    // `EXPECTED_RECON_FRONTIER_REASON` is the DEFENSIVE net: if a regression
+    // re-introduces an earlier handoff frontier or desync, swallow ONLY that one known
+    // reason — every other error is propagated so the test fails loudly instead of
+    // silently passing on a partial walk.
     match super::tx_records::derive_wienerns_lr_selectable_transform_record_handoff(
         bytes,
         options,
@@ -933,14 +934,29 @@ pub(in crate::runtime_minimal) fn reconstruct_ac0ej3_selectable_intra_region(
 /// ([`super::intrabc_records`]'s `intrabc_dv_proven_valid` proves only the local same-SB
 /// subset). The global-intrabc DV class is unmodeled, so `intrabc_dv_proven_valid`
 /// returns `false` and the copy is conservatively deferred — never a confident-wrong
-/// sample. The reconstruction sink path (which actively writes decoded samples) now
-/// reaches the SAME frontier as the parse-only public-decode path: the §5.20.6.1
-/// selectable transform-record `skipped_context_reset` subcase (the next selectable
-/// transform-record geometry outside the bounded subset). The verified region is
-/// committed before this frontier, so it stays bit-exact vs the oracle.
+/// sample. The §5.20 `reset_block_context` write is now ALSO clamped to the frame edge
+/// (modelling AVM `av2_set_entropy_contexts` / `av2_reset_entropy_context`,
+/// `av2/common/blockd.c`, and the §5.20.3.2 `block_coded` model): the bottom-edge
+/// SKIPPED transforms at MI(256,0) — whose nominal 16-tall MI footprint overhangs the
+/// 270-row MI grid by 2 — zero only their on-frame context cells instead of erroring
+/// `skipped_context_reset`, and the §5.20.6.1 PC-Wiener `LrTxSkip` FilterClass grid
+/// retention drops those same off-frame MI cells. With both clamps the reconstruction
+/// sink walk now runs the selectable transform-record handoff to COMPLETION (`Ok`) —
+/// every block in the verified subset is reconstructed in decode order and the
+/// remaining IntrABC/general-intra blocks outside the subset are conservatively
+/// deferred (their fill value, never a confident-wrong sample), so the handoff no
+/// longer raises a per-block frontier. The parse-only public-decode path advances
+/// PAST this same point and stops at the §7.20.4 `live_frame_samples_unpopulated`
+/// gate (decoded CurrFrame / CdefFrame samples are still unpopulated for
+/// storage-backed FilterClass retention). `EXPECTED_RECON_FRONTIER_REASON` stays as a
+/// DEFENSIVE net: if a regression re-introduces an earlier frontier or desync inside
+/// the handoff, the swallow matches ONLY this one reason and every other error (and
+/// the now-expected `Ok`) is handled distinctly, so the test fails loudly rather than
+/// silently passing on a partial walk. The verified region is committed regardless, so
+/// it stays bit-exact vs the oracle.
 #[cfg(test)]
 const EXPECTED_RECON_FRONTIER_REASON: &str =
-    "unsupported_wienerns_lr_selectable_transform_records_skipped_context_reset";
+    "unsupported_wienerns_lr_selectable_live_frame_samples_unpopulated";
 
 /// Whether the frame's §5.18.6 quantization matches the reconstruction primitive's
 /// zero-`QuantizerDeltas` assumption: no per-plane DC/AC quantizer delta and no
