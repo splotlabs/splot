@@ -67,18 +67,19 @@ behavior SHALL change.
 
 The campaign SHALL split cold, stable files before files under active
 development. A file that is part of an in-flight bit-exact decoder workstream
-(for example `frame/info.rs` and `wienerns_lr/tx_records.rs` during the ac0ej3
-mission) SHALL be deferred until that frontier stabilizes, and the deferral
-SHALL remain recorded in the file's `xtask/src/source_lines.rs` allowance reason
-until the split lands. Each in-scope file SHALL be split in its own pull request.
+(for example `wienerns_lr/tx_records.rs` during the ac0ej3 mission) SHALL be
+deferred until that frontier stabilizes, and the deferral SHALL remain recorded
+in the file's `xtask/src/source_lines.rs` allowance reason until the split lands
+(as `frame/info.rs` was, until its header-parsing frontier quieted and it was
+split). Each in-scope file SHALL be split in its own pull request.
 
 #### Scenario: An actively-developed file is deferred, not split now
 
 - **WHEN** the campaign selects the next file to split
-- **THEN** `celu.rs` (cold) and `sequence.rs` (sweep-only) are split before
-  `frame/info.rs` and `tx_records.rs`
-- **AND** the `frame/info.rs` and `tx_records.rs` allowances retain a reason
-  documenting the deferral until their decoder frontier stabilizes
+- **THEN** `celu.rs` (cold), `sequence.rs` (sweep-only), and `frame/info.rs`
+  (split once its header frontier quieted) are retired before `tx_records.rs`
+- **AND** the `tx_records.rs` allowance retains a reason documenting the deferral
+  until its decoder frontier stabilizes
 
 #### Scenario: One file per pull request
 
