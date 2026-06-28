@@ -918,14 +918,29 @@ pub(in crate::runtime_minimal) fn reconstruct_ac0ej3_selectable_intra_region(
 /// in-frame samples reconstruct (region grows `267776` → `273152`). The ref-MV bank
 /// `update_after_block` still uses the NOMINAL block size, NOT the frame-clamped
 /// extent, so the §7.12.2 `remain_hits` budget stays synced (no re-introduced EC
-/// desync). The reconstruction sink path (which actively writes decoded samples) now
+/// desync).
+///
+/// The §6.19.7.12 IntrABC PREDICTION-GEOMETRY target is now ALSO clamped to the
+/// visible region (modelling the same AVM §5.20.3.2 `block_coded`): the bottom-edge
+/// `BLOCK_16X64` IntrABC block at MI(256,56) — whose nominal 64-tall target overhangs
+/// the 1080-row luma frame by 8 rows — derives an EFFECTIVE 16x56 in-frame target
+/// (and a congruent 16x56 source) instead of erroring `intrabc_target_bounds`, so the
+/// parse advances past that former frontier. The block's own RECONSTRUCTION still
+/// DEFERS: its real DV is `(row=-1024, col=0)` (an integer -128px VERTICAL displacement
+/// whose source sits in the PREVIOUS superblock row), which AVM `av2_is_dv_valid`
+/// validates via the `allow_global_intrabc` path (ac0ej3 sets `allow_global_intrabc==1`),
+/// NOT the same-superblock `av2_is_dv_in_local_range` branch
+/// ([`super::intrabc_records`]'s `intrabc_dv_proven_valid` proves only the local same-SB
+/// subset). The global-intrabc DV class is unmodeled, so `intrabc_dv_proven_valid`
+/// returns `false` and the copy is conservatively deferred — never a confident-wrong
+/// sample. The reconstruction sink path (which actively writes decoded samples) now
 /// reaches the SAME frontier as the parse-only public-decode path: the §5.20.6.1
-/// IntrABC `intrabc_target_bounds` subcase (the next IntrABC prediction geometry
-/// outside the bounded subset). The verified region is committed before this frontier,
-/// so it stays bit-exact vs the oracle.
+/// selectable transform-record `skipped_context_reset` subcase (the next selectable
+/// transform-record geometry outside the bounded subset). The verified region is
+/// committed before this frontier, so it stays bit-exact vs the oracle.
 #[cfg(test)]
 const EXPECTED_RECON_FRONTIER_REASON: &str =
-    "unsupported_wienerns_lr_selectable_transform_records_intrabc_target_bounds";
+    "unsupported_wienerns_lr_selectable_transform_records_skipped_context_reset";
 
 /// Whether the frame's §5.18.6 quantization matches the reconstruction primitive's
 /// zero-`QuantizerDeltas` assumption: no per-plane DC/AC quantizer delta and no

@@ -175,9 +175,22 @@ const MI40_IBP_STEP: u16 = 65;
 /// rows) records only its 14 in-frame MI rows instead of erroring
 /// `..._intrabc_block_bounds`. The walk advances past that former parse/recon frontier
 /// and the bottom partial-SB row's in-frame samples (MI rows 256..269, y[1024,1080))
-/// now reconstruct, growing the region `267776` → `273152` (+5376). The walk now stops
-/// at the §5.20.6.1 IntrABC `intrabc_target_bounds` frontier (the next prediction
-/// geometry outside the bounded subset), on BOTH the recon-sink and parse-only paths.
+/// now reconstruct, growing the region `267776` → `273152` (+5376).
+///
+/// The §6.19.7.12 IntrABC PREDICTION-GEOMETRY target is now ALSO clamped to the visible
+/// region (the same §5.20.3.2 `block_coded` model, one pipeline stage later): the
+/// bottom-edge `BLOCK_16X64` IntrABC block at MI(256,56) — whose nominal 64-tall target
+/// overhangs the 1080-row luma frame by 8 rows — derives an EFFECTIVE 16x56 in-frame
+/// target (congruent 16x56 source) instead of erroring `intrabc_target_bounds`, so the
+/// parse advances past that former frontier. That block's own reconstruction still
+/// DEFERS (it stays at the fill value, so the region count is UNCHANGED at `273152`):
+/// its real DV `(row=-1024, col=0)` is a -128px VERTICAL displacement whose source sits
+/// in the PREVIOUS superblock row, which AVM validates only via the
+/// `allow_global_intrabc` path (an unmodeled DV class), so `intrabc_dv_proven_valid`
+/// conservatively defers the copy — never a confident-wrong sample. The walk now stops
+/// at the §5.20.6.1 selectable transform-record `skipped_context_reset` frontier (the
+/// next selectable transform-record geometry outside the bounded subset), on BOTH the
+/// recon-sink and parse-only paths.
 ///
 /// Verified ZERO-mismatch, per sample, over EVERY covered luma sample against the AVM
 /// pre-filter reconstruction oracle (`/tmp/pref.yuv`, md5
