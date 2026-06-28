@@ -34,6 +34,7 @@ use crate::runtime_minimal_recon::new_general_intra_workspace;
 use crate::runtime_minimal_recon::{
     reconstruct_general_intra_block_rect_into,
     reconstruct_general_intra_cardinal_neighbour_block_into,
+    reconstruct_general_intra_luma_paeth_neighbour_block_into,
 };
 use crate::tile_payload::{
     IntraYMode, LumaCoeffBlock, SupportedChromaMode, SupportedDirectionalLumaMode,
@@ -344,6 +345,44 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         }
     }
 
+    /// Whether the §7.13.2.2 PAETH prediction a block at `(mi_col, mi_row)` of
+    /// `mi_w` x `mi_h` MI units reads is reconstructable bit-exact. PAETH reads the
+    /// §7.13.2.1 above row `AboveRow[0..w)`, the left column `LeftCol[0..h)`, AND the
+    /// shared corner `AboveRow[-1]`. The sink admits PAETH only in the fully-proven
+    /// `haveAbove == 1 && haveLeft == 1` config, where the corner is the real
+    /// reconstructed diagonal sample `CurrFrame[plane][y-1][x-1]` (no §7.13.2.1
+    /// single-sided edge synthesis — the AVM oracle shows PAETH does not match the
+    /// naive single-neighbour fallback, so those configs DEFER). This requires EVERY
+    /// MI unit of the above row (`mi_row - 1`), the left column (`mi_col - 1`), AND
+    /// the diagonal corner unit `(mi_col - 1, mi_row - 1)` to exist on-grid and be
+    /// reconstructed by this sink.
+    fn paeth_neighbours_reconstructed(
+        &self,
+        plane_id: PlaneId,
+        mi_col: usize,
+        mi_row: usize,
+        mi_w: usize,
+        mi_h: usize,
+    ) -> bool {
+        let coverage = &self.coverage[Self::coverage_index(plane_id)];
+        let (Some(above), Some(left)) = (mi_row.checked_sub(1), mi_col.checked_sub(1)) else {
+            // A frame-top or frame-left block has no real above/left neighbour, so
+            // the corner-bearing two-sided config does not hold; defer.
+            return false;
+        };
+        let covered = |c: usize, r: usize| !coverage.off_grid(c, r) && coverage.is_covered(c, r);
+        // Above row: every MI unit directly above the block's top edge.
+        if !(mi_col..mi_col.saturating_add(mi_w)).all(|c| covered(c, above)) {
+            return false;
+        }
+        // Left column: every MI unit directly left of the block's left edge.
+        if !(mi_row..mi_row.saturating_add(mi_h)).all(|r| covered(left, r)) {
+            return false;
+        }
+        // The §7.13.2.1 corner unit `AboveRow[-1] = CurrFrame[plane][y-1][x-1]`.
+        covered(left, above)
+    }
+
     /// Reconstructs one luma transform block at the given MI position into the
     /// workspace, reading the §7.13.2 prediction from the partially-built frame's
     /// reconstructed neighbours and adding the decoded residual (a flat prediction
@@ -522,8 +561,37 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     )
                 })?;
             }
-            // Non-DC, non-cardinal luma (SMOOTH / PAETH / angular / non-zero
-            // AngleDeltaY): defer rather than emit an unproven prediction.
+            // §7.13.2.2 PAETH (`PAETH_PRED`, IntraYMode 12, non-directional): admitted
+            // ONLY for an `all_zero` leaf whose §7.13.2.1 above row AND left column are
+            // BOTH real reconstructed neighbours (`haveAbove == 1 && haveLeft == 1`),
+            // so the corner `AboveRow[-1] = CurrFrame[plane][y-1][x-1]` and both edges
+            // are the genuine reconstructed samples — no §7.13.2.1 single-sided
+            // synthesis (which the oracle shows PAETH does not match here) and no
+            // residual (a non-`all_zero` PAETH would re-introduce the §5.20.7.29
+            // tx-type / IST question). Every other PAETH config DEFERS.
+            (Some(mode), None) if mode.is_paeth() && block.all_zero && mrl_index == 0 => {
+                if !self.paeth_neighbours_reconstructed(PlaneId::Y, mi_col, mi_row, mi_w, mi_h) {
+                    return Ok(());
+                }
+                let (x, y) = luma_sample_origin(mi_col, mi_row, tile_offset)?;
+                reconstruct_general_intra_luma_paeth_neighbour_block_into(
+                    &mut self.workspace,
+                    PlaneId::Y,
+                    x,
+                    y,
+                    log2_width,
+                    log2_height,
+                    self.bit_depth,
+                )
+                .map_err(|_| {
+                    wienerns_lr_selectable_transform_record_error_reason(
+                        tile_offset,
+                        "unsupported_wienerns_lr_selectable_transform_records_recon_luma_paeth_write",
+                    )
+                })?;
+            }
+            // Non-DC, non-cardinal luma (SMOOTH / non-admitted PAETH / angular /
+            // non-zero AngleDeltaY): defer rather than emit an unproven prediction.
             _ => return Ok(()),
         }
         self.coverage[Self::coverage_index(PlaneId::Y)].mark(mi_col, mi_row, mi_w, mi_h);

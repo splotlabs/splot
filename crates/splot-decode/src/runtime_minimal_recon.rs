@@ -9,13 +9,14 @@ use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DecodedFrame, DecodedFrameInfo, IntraCardinalDirection,
     IntraCardinalEdges, IntraDirectionalAngle, IntraDirectionalAngleEdges,
     IntraDirectionalAngleIdifEdges, IntraMiddleDirectionalAngle, IntraMiddleDirectionalAngleEdges,
-    IntraMiddleDirectionalAngleIdifEdges, IntraRectBlockSize, IntraSmoothEdges, IntraSmoothMode,
-    IntraSquareBlockSize, OutputIndex, PixelFormat, PlaneId, PlaneRect, PlaneSize, ReconSample,
-    apply_intra_ibp_dc_rect, predict_intra_cardinal_directional_rect_into,
+    IntraMiddleDirectionalAngleIdifEdges, IntraPaethEdges, IntraRectBlockSize, IntraSmoothEdges,
+    IntraSmoothMode, IntraSquareBlockSize, OutputIndex, PixelFormat, PlaneId, PlaneRect, PlaneSize,
+    ReconSample, apply_intra_ibp_dc_rect, predict_intra_cardinal_directional_rect_into,
     predict_intra_dc_rect_value, predict_intra_directional_angle_rect_into,
     predict_intra_directional_angle_rect_one_sided_idif_into,
     predict_intra_middle_directional_angle_rect_idif_into,
-    predict_intra_middle_directional_angle_rect_into, predict_intra_smooth_rect_into,
+    predict_intra_middle_directional_angle_rect_into, predict_intra_paeth_rect_into,
+    predict_intra_smooth_rect_into,
 };
 
 use crate::Result;
@@ -1197,6 +1198,84 @@ pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into<T: Reco
     Ok(())
 }
 
+/// Reconstructs one neighbour-having § 7.13.2.2 PAETH (`PAETH_PRED`,
+/// non-directional) luma block over the § 7.13.2.1 above row / left column / corner
+/// read from the partially-built frame's **real reconstructed neighbours**, writing
+/// the bare prediction (this helper is gated by the caller to an `all_zero` leaf —
+/// a residual-bearing PAETH stays deferred).
+///
+/// § 7.13.2.2 generates `pred[i][j]` from `LeftCol[i]`, `AboveRow[j]`, and the
+/// shared corner `AboveRow[-1]` (the Paeth predictor: pick whichever of left /
+/// above / corner is closest to `AboveRow[j] + LeftCol[i] - AboveRow[-1]`). It is
+/// rectangular (independent `w` x `h`) and needs no IDIF / edge-filter / above-right
+/// / bottom-left synthesis.
+///
+/// The caller admits ONLY the § 7.13.2.1 `haveAbove == 1 && haveLeft == 1` config,
+/// so:
+/// * `AboveRow[0..w)` is the real reconstructed above row
+///   (`intra_dc_edges_for_rect` above edge);
+/// * `LeftCol[0..h)` is the real reconstructed left column (its left edge);
+/// * the corner `AboveRow[-1] = CurrFrame[plane][y-1][x-1]` (the diagonal
+///   above-left sample, `MrlIndex == 0`, `aboveMrlIndex == 0`), read explicitly
+///   here exactly as the § 7.13.2.8 directional-middle neighbour path reads it
+///   (`intra_dc_edges_for_rect` does not return the corner). No single-sided
+///   § 7.13.2.1 fallback is taken — those PAETH configs DEFER upstream.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn reconstruct_general_intra_luma_paeth_neighbour_block_into<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
+    plane_id: PlaneId,
+    x: usize,
+    y: usize,
+    log2_width: u32,
+    log2_height: u32,
+    bit_depth: BitDepth,
+) -> core::result::Result<(), GeneralIntraResidualError> {
+    let width = 1usize << log2_width;
+    let height = 1usize << log2_height;
+    let log2_w = u8::try_from(log2_width).unwrap_or(u8::MAX);
+    let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
+    let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
+    let edges = workspace.intra_dc_edges_for_rect(plane_id, x, y, block_size)?;
+    // The caller's `paeth_neighbours_reconstructed` gate guarantees BOTH the above
+    // row and the left column are real reconstructed neighbours; treat a missing
+    // edge as a gate violation rather than synthesizing a fallback (PAETH only ever
+    // reaches here in the two-sided config). Reuse the directional "missing real
+    // above-neighbour edge / §7.13.2.1 corner" guard — the same defensive class.
+    let (Some(above_neighbour), Some(left_neighbour)) =
+        (edges.above_samples(), edges.left_samples())
+    else {
+        return Err(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge);
+    };
+    // §7.13.2.1 corner `AboveRow[-1] = CurrFrame[plane][y-1][x-1]` for the
+    // `haveAbove && haveLeft` arm — the real reconstructed diagonal above-left
+    // sample, read exactly as the §7.13.2.8 middle-directional neighbour path does.
+    let (Some(corner_x), Some(corner_y)) = (x.checked_sub(1), y.checked_sub(1)) else {
+        return Err(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge);
+    };
+    let top_left = workspace.reconstructed_sample(plane_id, corner_x, corner_y)?;
+    // §7.13.2.2 reads exactly `AboveRow[0..w)` and `LeftCol[0..h)`; copy the
+    // reconstructed neighbour samples into width / height-sized edges.
+    let above: Vec<T> = above_neighbour.iter().take(width).copied().collect();
+    let left: Vec<T> = left_neighbour.iter().take(height).copied().collect();
+    if above.len() != width || left.len() != height {
+        return Err(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge);
+    }
+    // The caller gates this helper to an `all_zero` leaf (zero residual), so the
+    // bare §7.13.2.2 prediction IS the reconstruction. A non-`all_zero` PAETH
+    // residual (which would need the §5.20.7.29 tx-type / IST coupling) stays
+    // deferred upstream, so no dequant / inverse-transform runs here.
+    let mut prediction = vec![T::default(); width * height];
+    predict_intra_paeth_rect_into(
+        bit_depth,
+        block_size,
+        IntraPaethEdges::new(&left, &above, top_left),
+        &mut prediction,
+        width,
+    )?;
+    workspace.write_rect_block(plane_id, x, y, block_size, &prediction)?;
+    Ok(())
+}
+
 /// Reconstructs one neighbour-having ZONE-1 ONE-SIDED directional block — D45
 /// (§ 7.13.2.8 step 1, pAngle 45) — over the § 7.13.2.1 above row PLUS the real
 /// reconstructed above-right read from the partially-built frame, adds the
@@ -2172,6 +2251,110 @@ mod tests {
                     80,
                     "no-left H_PRED 32x64 sample ({col},{}) must be the flat above corner above[0]=80",
                     64 + row,
+                );
+            }
+        }
+    }
+
+    /// Reference §7.13.2.2 Paeth sample (independent of the splot-recon primitive):
+    /// pick whichever of `left` / `above` / `top_left` is closest to
+    /// `above + left - top_left`, ties favouring left then above.
+    fn ref_paeth(left: i32, above: i32, top_left: i32) -> u8 {
+        let base = above + left - top_left;
+        let p_left = (base - left).abs();
+        let p_top = (base - above).abs();
+        let p_top_left = (base - top_left).abs();
+        let v = if p_left <= p_top && p_left <= p_top_left {
+            left
+        } else if p_top <= p_top_left {
+            above
+        } else {
+            top_left
+        };
+        u8::try_from(v).unwrap()
+    }
+
+    /// STRIDE / CORNER GUARD — §7.13.2.2 PAETH over a NON-SQUARE 8x16 (`W == 8`,
+    /// `H == 16`) block with a REAL, NON-FLAT above row, a REAL, NON-FLAT left
+    /// column, AND a DISTINCT corner `AboveRow[-1] = CurrFrame[plane][y-1][x-1]`.
+    /// Paeth genuinely depends on all three (`base = AboveRow[j] + LeftCol[i] -
+    /// AboveRow[-1]`), so a width/height swap, a wrong stride, or reading the corner
+    /// from the above row / left column instead of `CurrFrame[y-1][x-1]` would
+    /// corrupt the output and fail. The asymmetric edges are the key: the flat
+    /// ac0ej3 oracle (all `68`) would MASK every one of those mix-ups.
+    #[test]
+    fn rect_paeth_8x16_uses_above_left_and_distinct_corner() {
+        // Block at (16, 16): real above row at y=15 over x[16,24), real left column
+        // at x=15 over y[16,32), and corner at (15, 15). Lay the above-NEIGHBOUR
+        // block at (16, 12) so its bottom row y=15 carries `above[j]`, and the
+        // left-NEIGHBOUR block at (12, 15) so its right column x=15 carries the
+        // corner (row 15) and `left[i]` (rows 16..32). Build a 64x64 workspace.
+        let mut ws = new_general_intra_workspace::<u8>(64, 64, BitDepth::Eight).unwrap();
+
+        // Above row: 8 distinct values over x[16,24).
+        let above: Vec<u8> = (0..8).map(|j| 30 + 7 * j as u8).collect();
+        let above_block: Vec<u8> = (0..4).flat_map(|_| above.iter().copied()).collect();
+        ws.write_rect_block(
+            PlaneId::Y,
+            16,
+            12,
+            IntraRectBlockSize::new(3, 2).unwrap(),
+            &above_block,
+        )
+        .unwrap();
+
+        // Left column at x=15: a DISTINCT corner at y=15 plus 16 distinct left
+        // samples over y[16,32). Write a 4-wide x 32-tall block at (12, 0) whose
+        // rightmost column x=15 carries: rows 0..15 arbitrary, row 15 = corner 200,
+        // rows 16..32 = left[i]. (Lower rows are overwritten by the above block only
+        // over x[16,24); x=15 stays as written here.)
+        let corner: u8 = 200;
+        let left: Vec<u8> = (0..16).map(|i| 40 + 5 * i as u8).collect();
+        let mut left_block = vec![0u8; 4 * 32];
+        for col in 0..4 {
+            left_block[15 * 4 + col] = corner;
+            for (i, &v) in left.iter().enumerate() {
+                left_block[(16 + i) * 4 + col] = v;
+            }
+        }
+        ws.write_rect_block(
+            PlaneId::Y,
+            12,
+            0,
+            IntraRectBlockSize::new(2, 5).unwrap(),
+            &left_block,
+        )
+        .unwrap();
+
+        // Sanity: the laid neighbours read back as intended.
+        assert_eq!(ws.reconstructed_sample(PlaneId::Y, 15, 15).unwrap(), corner);
+        assert_eq!(
+            ws.reconstructed_sample(PlaneId::Y, 16, 15).unwrap(),
+            above[0]
+        );
+        assert_eq!(
+            ws.reconstructed_sample(PlaneId::Y, 15, 16).unwrap(),
+            left[0]
+        );
+
+        reconstruct_general_intra_luma_paeth_neighbour_block_into(
+            &mut ws,
+            PlaneId::Y,
+            16,
+            16,
+            3, // log2_width = 3 -> 8
+            4, // log2_height = 4 -> 16
+            BitDepth::Eight,
+        )
+        .unwrap();
+
+        for (i, &left_i) in left.iter().enumerate() {
+            for (j, &above_j) in above.iter().enumerate() {
+                let want = ref_paeth(i32::from(left_i), i32::from(above_j), i32::from(corner));
+                assert_eq!(
+                    ws.reconstructed_sample(PlaneId::Y, 16 + j, 16 + i).unwrap(),
+                    want,
+                    "PAETH 8x16 sample (col {j}, row {i}) must be Paeth(left[{i}], above[{j}], corner)"
                 );
             }
         }
