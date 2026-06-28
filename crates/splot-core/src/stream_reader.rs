@@ -498,6 +498,28 @@ mod tests {
     }
 
     #[test]
+    fn ivf_declared_large_but_truncated_frame_does_not_eagerly_allocate() {
+        // The IVF call site shares `read_into_buf`: a frame header declaring
+        // ~200 MiB (under the cap) with no payload present must not eagerly
+        // allocate the declared size before hitting EOF.
+        let mut data = Vec::new();
+        write_ivf_header(&mut data, &IvfHeader::new(*b"AV02", 16, 16, 24, 1, 1)).unwrap();
+        data.extend_from_slice(&(200u32 * 1024 * 1024).to_le_bytes()); // frame size ~200 MiB
+        data.extend_from_slice(&0u64.to_le_bytes()); // pts; no payload follows
+        let mut reader = TemporalUnitReader::new(&data[..]);
+        let err = reader.next_unit().unwrap_err();
+        assert!(matches!(
+            err,
+            ReaderError::Ivf(IvfError::TruncatedFramePayload { .. })
+        ));
+        assert!(
+            reader.buf_capacity() < (1 << 20),
+            "reused buffer eagerly grew toward the declared frame size: capacity {}",
+            reader.buf_capacity()
+        );
+    }
+
+    #[test]
     fn annexb_one_byte_at_a_time_matches_whole_buffer() {
         let data = [0x01, 0x08, 0x02, 0x04, 0xAB];
         let whole = collect_annexb_units(&data);
