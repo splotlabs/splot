@@ -2065,6 +2065,181 @@ mod tests {
         assert_ne!(tx_type, DCT_DCT);
     }
 
+    // The ac0ej3 inter tx-set block: TX_8X16 (Tx_Size_Sqr == 1), eob 10 →
+    // `inter_tx_type_long_ctx` == 0 for every small-set read.
+    const INTER_SET_TX_SIZE: usize = TX_8X16;
+    const INTER_SET_EOB: usize = 10;
+
+    fn read_inter_tx_type_from_symbols(tx_set: usize, sequence: &[(TileCdfSelector, u8)]) -> usize {
+        let payload = encode_transform_symbols(sequence);
+        let leaked: &'static [u8] = Box::leak(payload.into_boxed_slice());
+        let mut cdfs = tile_cdfs();
+        let mut symbols = symbol_decoder_for_payload(leaked);
+        read_active_inter_transform_type(
+            &mut cdfs,
+            &mut symbols,
+            INTER_SET_TX_SIZE,
+            tx_set,
+            INTER_SET_EOB,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn inter_tx_set_ctx_for_ac0ej3_block_is_zero() {
+        // TX_8X16, eob 10: bwl 3, eoby 1, eobx 1, diag 2, max_diag 20 → ctx 0.
+        assert_eq!(
+            inter_tx_type_long_ctx(INTER_SET_TX_SIZE, INTER_SET_EOB).unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn inter_set1_index_branch_inverts_via_tx_type_inter_inv_set1() {
+        // §5.20.8.2 TX_SET_INTER_1, inter_tx_type == 0: tx_type_idx == offset.
+        // offset 7 → Tx_Type_Inter_Inv_Set1[7] == DCT_DCT.
+        let tx_size_sqr = TX_SIZE_SQR[INTER_SET_TX_SIZE] as usize;
+        let tx_type = read_inter_tx_type_from_symbols(
+            TX_SET_INTER_1,
+            &[
+                (
+                    TileCdfSelector::InterTxTypeSet1 {
+                        ctx: 0,
+                        tx_size_sqr,
+                    },
+                    0,
+                ),
+                (TileCdfSelector::InterTxTypeIndexSet1 { ctx: 0 }, 7),
+            ],
+        );
+        assert_eq!(tx_type, TX_TYPE_INTER_INV_SET1[7]);
+        assert_eq!(tx_type, DCT_DCT);
+    }
+
+    #[test]
+    fn inter_set1_offset_branch_inverts_via_tx_type_inter_inv_set1() {
+        // §5.20.8.2 TX_SET_INTER_1, inter_tx_type == 1: tx_type_idx == 8 + offset.
+        // offset 0 → Tx_Type_Inter_Inv_Set1[8] == ADST_DCT.
+        let tx_size_sqr = TX_SIZE_SQR[INTER_SET_TX_SIZE] as usize;
+        let tx_type = read_inter_tx_type_from_symbols(
+            TX_SET_INTER_1,
+            &[
+                (
+                    TileCdfSelector::InterTxTypeSet1 {
+                        ctx: 0,
+                        tx_size_sqr,
+                    },
+                    1,
+                ),
+                (TileCdfSelector::InterTxTypeOffsetSet1 { ctx: 0 }, 0),
+            ],
+        );
+        assert_eq!(tx_type, TX_TYPE_INTER_INV_SET1[8]);
+        assert_eq!(tx_type, ADST_DCT);
+    }
+
+    #[test]
+    fn inter_set2_index_branch_inverts_via_tx_type_inter_inv_set2() {
+        // §5.20.8.2 TX_SET_INTER_2 (Set2 has no sqrSz index): inter_tx_type == 0,
+        // offset 3 → Tx_Type_Inter_Inv_Set2[3] == DCT_DCT.
+        let tx_type = read_inter_tx_type_from_symbols(
+            TX_SET_INTER_2,
+            &[
+                (TileCdfSelector::InterTxTypeSet2 { ctx: 0 }, 0),
+                (TileCdfSelector::InterTxTypeIndexSet2 { ctx: 0 }, 3),
+            ],
+        );
+        assert_eq!(tx_type, TX_TYPE_INTER_INV_SET2[3]);
+        assert_eq!(tx_type, DCT_DCT);
+    }
+
+    #[test]
+    fn inter_set2_offset_branch_inverts_via_tx_type_inter_inv_set2() {
+        // §5.20.8.2 TX_SET_INTER_2, inter_tx_type == 1: tx_type_idx == 8 + offset.
+        // offset 0 → Tx_Type_Inter_Inv_Set2[8] == ADST_ADST.
+        let tx_type = read_inter_tx_type_from_symbols(
+            TX_SET_INTER_2,
+            &[
+                (TileCdfSelector::InterTxTypeSet2 { ctx: 0 }, 1),
+                (TileCdfSelector::InterTxTypeOffsetSet2 { ctx: 0 }, 0),
+            ],
+        );
+        assert_eq!(tx_type, TX_TYPE_INTER_INV_SET2[8]);
+        assert_eq!(tx_type, ADST_ADST);
+    }
+
+    #[test]
+    fn inter_dct_idtx_set3_inverts_idtx_and_dct_dct() {
+        // §5.20.8.2 TX_SET_DCT_IDTX: Tx_Type_Inter_Inv_Set3 == {IDTX, DCT_DCT}.
+        let tx_size_sqr = TX_SIZE_SQR[INTER_SET_TX_SIZE] as usize;
+        let idtx = read_inter_tx_type_from_symbols(
+            TX_SET_DCT_IDTX,
+            &[(
+                TileCdfSelector::InterTxTypeSet3 {
+                    ctx: 0,
+                    tx_size_sqr,
+                },
+                0,
+            )],
+        );
+        let dct = read_inter_tx_type_from_symbols(
+            TX_SET_DCT_IDTX,
+            &[(
+                TileCdfSelector::InterTxTypeSet3 {
+                    ctx: 0,
+                    tx_size_sqr,
+                },
+                1,
+            )],
+        );
+        assert_eq!(idtx, IDTX);
+        assert_eq!(dct, DCT_DCT);
+    }
+
+    #[test]
+    fn inter_dct_idtx_iddct_set4_inverts_per_spec_table() {
+        // §5.20.8.2 TX_SET_DCT_IDTX_IDDCT: Set4 == {DCT_DCT, V_DCT, H_DCT, IDTX}.
+        let tx_size_sqr = TX_SIZE_SQR[INTER_SET_TX_SIZE] as usize;
+        for (symbol, expected) in [(0u8, DCT_DCT), (1, V_DCT), (2, H_DCT), (3, IDTX)] {
+            let tx_type = read_inter_tx_type_from_symbols(
+                TX_SET_DCT_IDTX_IDDCT,
+                &[(
+                    TileCdfSelector::InterTxTypeSet4 {
+                        ctx: 0,
+                        tx_size_sqr,
+                    },
+                    symbol,
+                )],
+            );
+            assert_eq!(tx_type, expected);
+        }
+    }
+
+    #[test]
+    fn read_active_inter_transform_type_rejects_unmodeled_set() {
+        // A transform set outside the eight §5.20.8.3 inter sets the dispatch
+        // models defers fail-closed rather than decoding garbage. (`transform_set`
+        // never produces such a value on the inter path; this pins the guard.)
+        const UNMODELED_TX_SET: usize = 99;
+        let mut cdfs = tile_cdfs();
+        let mut symbols = symbol_decoder_for_payload(&PAYLOAD);
+        let result = read_active_inter_transform_type(
+            &mut cdfs,
+            &mut symbols,
+            INTER_SET_TX_SIZE,
+            UNMODELED_TX_SET,
+            INTER_SET_EOB,
+        );
+        assert!(matches!(
+            result,
+            Err(
+                GeneralIntraResidualError::UnsupportedTransformToolResidual {
+                    reason: "unsupported_dctonly_residual_inter_tx_set"
+                }
+            )
+        ));
+    }
+
     #[test]
     fn luma_transform_context_applies_mrl_delta_before_wide_angle_mapping() {
         let luma =
