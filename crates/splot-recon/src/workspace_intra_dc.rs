@@ -157,15 +157,22 @@ impl<T: ReconSample> CurrentFramePlane<T> {
     fn intra_dc_edges_for_rect(&self, rect: PlaneRect) -> Result<CurrentFrameIntraEdges<T>> {
         // A transform overhanging a partial frame-edge superblock reads only its
         // in-frame neighbours (the out-of-frame rows/cols do not exist in AVM's frame
-        // buffer either): clamp the block rect to storage before extracting the left
-        // column / above row, mirroring the in-frame-only reconstruction write.
+        // buffer either): clamp the block rect to storage before reading the in-frame
+        // left column / above row, mirroring the in-frame-only reconstruction write.
+        // AVM then EDGE-EXTENDS that in-frame edge back to the block's full nominal
+        // height/width by replicating the LAST in-frame sample (the bottom-most for
+        // the left column, the right-most for the above row), so every prediction
+        // primitive (DC, cardinal, PAETH, directional) receives the full-length edge
+        // it expects (`av2/common/reconintra.c:1180-1195`: copy `n_left_px` in-frame
+        // samples, then `avm_memset16(&left_col[i], left_col[i-1], remainder)`).
+        let nominal = rect;
         let rect = self.clamp_rect_to_storage(rect)?;
 
-        let left = if rect.x() == 0 {
+        let left = if nominal.x() == 0 {
             None
         } else {
             let mut left = Vec::new();
-            left.try_reserve_exact(rect.height()).map_err(|_| {
+            left.try_reserve_exact(nominal.height()).map_err(|_| {
                 ReconError::WorkspaceAllocationFailed {
                     plane: self.plane,
                     context: "left intra edge",
@@ -175,16 +182,17 @@ impl<T: ReconSample> CurrentFramePlane<T> {
                 let index = self.sample_index(rect.x() - 1, row)?;
                 left.push(self.samples[index]);
             }
+            extend_edge_to_nominal(&mut left, nominal.height());
             Some(left)
         };
 
-        let above = if rect.y() == 0 {
+        let above = if nominal.y() == 0 {
             None
         } else {
             let row = rect.y() - 1;
             let range = self.row_range(row, rect.x(), rect.width())?;
             let mut above = Vec::new();
-            above.try_reserve_exact(rect.width()).map_err(|_| {
+            above.try_reserve_exact(nominal.width()).map_err(|_| {
                 ReconError::WorkspaceAllocationFailed {
                     plane: self.plane,
                     context: "above intra edge",
@@ -192,6 +200,7 @@ impl<T: ReconSample> CurrentFramePlane<T> {
             })?;
             // splot-copy-ok: materialize bounded above-edge scratch (block-width) for intra prediction
             above.extend_from_slice(&self.samples[range]);
+            extend_edge_to_nominal(&mut above, nominal.width());
             Some(above)
         };
 
@@ -300,5 +309,24 @@ impl<T: ReconSample> CurrentFramePlane<T> {
             &mut self.samples[output_start..],
             self.stride_samples,
         )
+    }
+}
+
+/// Edge-extends an in-frame edge to the block's full nominal length by replicating
+/// the LAST in-frame sample.
+///
+/// A transform overhanging the frame bottom (left column) or frame right (above
+/// row) reads fewer in-frame samples than the block's nominal height/width. AVM
+/// fills the out-of-frame tail with the last in-frame sample
+/// (`av2/common/reconintra.c:1191-1195`, `avm_memset16(&edge[i], edge[i-1], …)`),
+/// so the prediction primitives receive a full-length edge. The clamped origin is
+/// always in-frame, so `edge` holds at least one sample whenever `nominal_len > 0`;
+/// an empty `edge` (nothing to replicate) is left unchanged.
+fn extend_edge_to_nominal<T: ReconSample>(edge: &mut Vec<T>, nominal_len: usize) {
+    let Some(&last) = edge.last() else {
+        return;
+    };
+    while edge.len() < nominal_len {
+        edge.push(last);
     }
 }

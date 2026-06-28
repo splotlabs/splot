@@ -902,18 +902,20 @@ pub(in crate::runtime_minimal) fn reconstruct_ac0ej3_selectable_intra_region(
 /// span overhangs the tile by up to one transform extent — write `culLevel` /
 /// `dcCategory` over only their on-tile rows instead of erroring on the overhang,
 /// matching AVM's SB-local entropy lines (the OR-reduce reads already clamp). The
-/// walk now advances bit-exact through those bottom-edge transforms. The
-/// reconstruction sink path (which actively writes decoded samples) reaches the next
-/// general-intra luma block it cannot yet reconstruct and stops at
-/// `unsupported_wienerns_lr_selectable_transform_records_recon_luma_write` (the
-/// parse-only public-decode path, which never writes samples, stops slightly later on
-/// the §5.20.6.1 IntrABC block-bounds subcase — both are spec §5.20.6.1). The
-/// verified region is committed before this frontier, so it is unaffected (the recon
-/// tests re-confirm it bit-exact vs the oracle after the edge clamp, which
-/// reconstructs no new samples).
+/// walk now advances bit-exact through those bottom-edge transforms. The §7.13.2.1
+/// edge extension (a transform overhanging the frame bottom/right edge-extends its
+/// clamped in-frame left column / above row to the block's full nominal height/width
+/// by replicating the last in-frame sample, per AVM `av2/common/reconintra.c:1191-1195`)
+/// lets the bottom-edge `TX_64X64` `DC_PRED` blocks — whose 56-row in-frame left
+/// column previously errored `IntraPredictionEdgeLengthMismatch{expected:64,actual:56}`
+/// — reconstruct their in-frame samples bit-exact. The reconstruction sink path
+/// (which actively writes decoded samples) now reaches the SAME frontier as the
+/// parse-only public-decode path: the §5.20.6.1 IntrABC block-bounds subcase. The
+/// verified region is committed before this frontier, so it stays bit-exact vs the
+/// oracle.
 #[cfg(test)]
 const EXPECTED_RECON_FRONTIER_REASON: &str =
-    "unsupported_wienerns_lr_selectable_transform_records_recon_luma_write";
+    "unsupported_wienerns_lr_selectable_transform_records_intrabc_block_bounds";
 
 /// Whether the frame's §5.18.6 quantization matches the reconstruction primitive's
 /// zero-`QuantizerDeltas` assumption: no per-plane DC/AC quantizer delta and no

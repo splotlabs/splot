@@ -338,6 +338,97 @@ fn workspace_write_rect_block_clamps_frame_edge_overhang_to_in_frame_samples() {
 }
 
 #[test]
+fn workspace_intra_edge_extends_partial_bottom_left_with_last_in_frame_sample() {
+    // Model the ac0ej3 bottom-edge TX_64X64 case at a small scale: an 8-wide, 4-tall
+    // plane and a 4x4 block at origin (4,1). The block is 4 rows tall (y[1,5)) but the
+    // plane is only 4 rows, so the LEFT column (x=3) has just 3 IN-FRAME rows (y=1,2,3);
+    // the 4th block row overhangs the frame bottom. The block's above row (x[4,8)) is
+    // FULLY in-frame (width 8), so only the LEFT edge overhangs. AVM edge-extends the
+    // in-frame left column to the block's full 4-tall nominal height by replicating the
+    // LAST in-frame sample (`reconintra.c:1191-1195`). The left column is NON-FLAT so a
+    // wrong replication source (the FIRST in-frame sample instead of the LAST) fails.
+    let mut workspace = CurrentFrameWorkspace::<u8>::new(
+        info(
+            BitDepth::Eight,
+            PixelFormat::Monochrome,
+            size(8, 4),
+            rect(0, 0, 8, 4),
+        ),
+        0,
+    )
+    .unwrap();
+
+    // Write a distinct, strictly-increasing left column at x=3: y=1->50, y=2->60,
+    // y=3->70. The bottom-most in-frame left sample is 70 (y=3).
+    workspace
+        .write_rect(PlaneId::Y, rect(3, 1, 1, 3), &[50, 60, 70], 1)
+        .unwrap();
+
+    // Write the FULLY in-frame above row at y=0 over x[4,8) (-> 80,90,100,110); it does
+    // NOT overhang, so it is a control that only the overhanging left edge is extended.
+    workspace
+        .write_rect(PlaneId::Y, rect(4, 0, 4, 1), &[80, 90, 100, 110], 4)
+        .unwrap();
+
+    let edges = workspace
+        .intra_dc_edges_for_rect(PlaneId::Y, 4, 1, rect_block(2, 2))
+        .unwrap();
+
+    // The left edge is the FULL 4-tall nominal block height with the out-of-frame 4th
+    // row replicated from the LAST in-frame sample (70), NOT the first (50).
+    assert_eq!(
+        edges.left_samples().unwrap(),
+        &[50, 60, 70, 70],
+        "partial bottom-edge left column must extend with the LAST in-frame sample"
+    );
+    // The above row is NOT extended (the block does not overhang the right edge): it is
+    // the in-frame 4-wide above row, proving only the overhanging edge is extended.
+    assert_eq!(edges.above_samples().unwrap(), &[80, 90, 100, 110]);
+}
+
+#[test]
+fn workspace_intra_edge_extends_partial_right_above_with_last_in_frame_sample() {
+    // Symmetric to the bottom-left case: a 4-wide, 8-tall plane and a 4x4 block at
+    // origin (1,4). The block is 4 columns wide (x[1,5)) but the plane is only 4 wide,
+    // so the ABOVE row (y=3) has just 3 IN-FRAME columns (x=1,2,3); the 4th block column
+    // overhangs the frame right. The block's left column (x=0, y[4,8)) is FULLY in-frame
+    // (height 8), so only the ABOVE edge overhangs. AVM edge-extends the above row to the
+    // block's full 4-wide nominal width by replicating the LAST (right-most) in-frame
+    // sample.
+    let mut workspace = CurrentFrameWorkspace::<u8>::new(
+        info(
+            BitDepth::Eight,
+            PixelFormat::Monochrome,
+            size(4, 8),
+            rect(0, 0, 4, 8),
+        ),
+        0,
+    )
+    .unwrap();
+
+    // Above row at y=3, x[1,4): 50,60,70. Right-most in-frame above sample is 70 (x=3).
+    workspace
+        .write_rect(PlaneId::Y, rect(1, 3, 3, 1), &[50, 60, 70], 3)
+        .unwrap();
+    // FULLY in-frame left column at x=0, y[4,8) -> 80,90,100,110 (control: the block does
+    // not overhang the bottom, so the left column stays its in-frame height).
+    workspace
+        .write_rect(PlaneId::Y, rect(0, 4, 1, 4), &[80, 90, 100, 110], 1)
+        .unwrap();
+
+    let edges = workspace
+        .intra_dc_edges_for_rect(PlaneId::Y, 1, 4, rect_block(2, 2))
+        .unwrap();
+
+    assert_eq!(
+        edges.above_samples().unwrap(),
+        &[50, 60, 70, 70],
+        "partial right-edge above row must extend with the LAST in-frame sample"
+    );
+    assert_eq!(edges.left_samples().unwrap(), &[80, 90, 100, 110]);
+}
+
+#[test]
 fn workspace_copy_rect_within_plane_copies_luma_samples() {
     let mut workspace = CurrentFrameWorkspace::<u8>::new(
         info(
@@ -544,12 +635,15 @@ fn workspace_rectangular_dc_clamps_overhang_and_rejects_out_of_frame_origin() {
     // Origin (5,1) is in-frame but the 4x8 block overhangs both edges. The edge read
     // clamps to the in-frame sub-rect (3 wide x 7 tall): the left column reads the 7
     // in-frame rows of x=4 and the above row reads the 3 in-frame columns of row 0
-    // (mirroring AVM's in-frame-only neighbour reads) instead of erroring.
+    // (mirroring AVM's in-frame-only neighbour reads) instead of erroring. The §7.13.2.1
+    // edge extension then replicates the last in-frame sample back to the block's FULL
+    // nominal extent (left -> 8-tall, above -> 4-wide), per AVM `reconintra.c:1191-1195`,
+    // so the prediction primitives receive the full-length edge they expect.
     let edges = workspace
         .intra_dc_edges_for_rect(PlaneId::Y, 5, 1, rect_block(2, 3))
         .unwrap();
-    assert_eq!(edges.left_samples().map(<[u8]>::len), Some(7));
-    assert_eq!(edges.above_samples().map(<[u8]>::len), Some(3));
+    assert_eq!(edges.left_samples().map(<[u8]>::len), Some(8));
+    assert_eq!(edges.above_samples().map(<[u8]>::len), Some(4));
 
     // A genuinely OUT-OF-FRAME origin (y == storage height) has no in-frame extent and
     // still errors.
