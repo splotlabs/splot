@@ -28,7 +28,7 @@ pub(super) fn validate_bytes_with_options(
         ParsedBitstream::AnnexB(parsed) => {
             for obu in &parsed.obus {
                 context.observe_obu(obu, options, &mut report);
-                run_checks(&checks, obu, &mut report);
+                run_checks(checks, obu, &mut report);
             }
             // The end of the bitstream completes the final temporal unit, flushing
             // the deferred coded-video-sequence-scoped diagnostics (AV2 § 7.3.6;
@@ -42,7 +42,7 @@ pub(super) fn validate_bytes_with_options(
             for frame in &parsed.frames {
                 for obu in &frame.obus {
                     context.observe_obu(obu, options, &mut report);
-                    run_checks(&checks, obu, &mut report);
+                    run_checks(checks, obu, &mut report);
                 }
                 if let Some(error) = &frame.error {
                     report.push(parse_error_diagnostic(error));
@@ -63,7 +63,7 @@ pub(super) fn validate_bytes_with_options(
     report
 }
 
-fn run_checks(checks: &[Box<dyn Check>], obu: &ObuEnvelope<'_>, report: &mut ValidationReport) {
+fn run_checks(checks: &[&dyn Check], obu: &ObuEnvelope<'_>, report: &mut ValidationReport) {
     for check in checks {
         check.run(obu, report);
     }
