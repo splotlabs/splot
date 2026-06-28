@@ -20134,3 +20134,40 @@ commands = [
 ]
 fixtures = []
 diagnostics = []
+
+[[feature]]
+id = "INFRA-MODULE-SIZE-REFACTOR"
+name = "Oversized-module source-line refactor"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = []
+sources = []
+crate = "splot-validate"
+module = "crates/splot-validate/src/celu"
+openspec_change = "split-oversized-allowlisted-modules"
+tracking_issue = ""
+owner = "automation"
+risk = "low"
+notes = "Retires oversized-module source-line allowances by splitting allowlisted files along their real responsibility seams, sequenced by development activity (cold files first; the active-decoder-frontier files deferred with the deferral recorded in the allowance reason). This change moves the `celu.rs` in-file test module to `celu/tests.rs`, dropping the file 3693->1427 lines and removing its `xtask/src/source_lines.rs` allowance with no change to validation behavior, diagnostics, dependencies, or AV2 coverage (all 71 celu tests preserved). The `sequence.rs` split and the deferred `frame/info.rs` / `wienerns_lr/tx_records.rs` splits are tracked as follow-up changes under the `module-size-discipline` capability."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = []
+commands = [
+    "cargo test -p splot-validate --all-targets --locked",
+    "cargo xtask check-source-lines",
+    "cargo test -p xtask --all-targets --locked",
+]
+fixtures = []
+diagnostics = []
