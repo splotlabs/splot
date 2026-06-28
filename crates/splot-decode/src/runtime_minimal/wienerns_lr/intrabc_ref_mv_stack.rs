@@ -53,11 +53,33 @@ const BANK_UNIT_MAX_ALLOWED_LEFTOVER_UPDATES: u32 = 16;
 const SB_TO_RMB_UNITS_LOG2: u32 = 3;
 /// AV2 § 5.9.15 `MI_SIZE` in luma samples.
 const MI_SIZE: i32 = 4;
-/// The block-width MI count (`bw4`) of AVM `BLOCK_WIDTH_4` (a 4px-wide block): the
-/// above-row `row_smvp_state[1]` (step 10, deltaCol = 0) probe is DISABLED for this
-/// width (`row_smvp_all_states[*][BLOCK_WIDTH_4]` index 1 = `{0, -1, 0}`,
-/// `av2/common/mvref_common.c:2012`/`2042`).
-const BLOCK_WIDTH_4_MI: usize = 1;
+/// AVM `block_width_type` (`av2/common/mvref_common.c:2003`-`2005`): the index into
+/// the `row_smvp_all_states[2][BLOCK_WIDTH_TYPES][4]` table selected by the block's
+/// width in MI units (`xd->width`). Selects the per-width above-row SMVP probe
+/// availability gates and column offsets.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BlockWidthType {
+    /// AVM `BLOCK_WIDTH_4` (`xd->width == 1`, a 4px-wide block).
+    Width4,
+    /// AVM `BLOCK_WIDTH_8` (`xd->width == 2`, an 8px-wide block).
+    Width8,
+    /// AVM `BLOCK_WIDTH_OTHERS` (`xd->width >= 3`, i.e. >= 16px in practice — AV2
+    /// block widths are powers of two, so the next reachable width after 8px is
+    /// 16px / `bw4 == 4`).
+    Others,
+}
+
+impl BlockWidthType {
+    /// AVM `block_width_type` derivation (`mvref_common.c:2003`-`2005`):
+    /// `bw4 == 1 ? BLOCK_WIDTH_4 : (bw4 == 2 ? BLOCK_WIDTH_8 : BLOCK_WIDTH_OTHERS)`.
+    const fn from_bw4(bw4: usize) -> Self {
+        match bw4 {
+            1 => Self::Width4,
+            2 => Self::Width8,
+            _ => Self::Others,
+        }
+    }
+}
 
 /// A tile-local AV2 § 7.12.2 IntrABC reference-MV bank (the single intra list).
 ///
@@ -562,53 +584,64 @@ impl AboveRowScan {
         scan
     }
 
-    /// Resolves the SB-border above-row probe columns
-    /// (`row_smvp_all_states[1][BLOCK_WIDTH_OTHERS]`, `mvref_common.c:2059`-`2069`):
-    /// each column is `compute_aligned_offset(MiCol, raw)` where `raw` is `bw4 - 2`
-    /// (step 8), `0` (step 10), `bw4` (step 12), `-2` (step 14), gated by
-    /// `is_above_smvp_available` (steps 8/10/14, `mvref_common.c:1986`) /
-    /// `has_top_right` (step 12). The line buffer keeps only the bottom 4x4 of each
-    /// above 8x8 unit, so AVM aligns `MiCol` to the 8x8 grid
-    /// (`(MiCol >> 1) << 1`). This decoder models the alignment-NO-OP case (even
-    /// `MiCol`, so `compute_aligned_offset` reduces to the raw offset); an odd
+    /// Resolves the SB-border above-row probe columns from the FULL AVM
+    /// `row_smvp_all_states[1][block_width_type]` table (`mvref_common.c:2039`-`2069`),
+    /// generic over the block's [`BlockWidthType`]. Each modelled column is
+    /// `compute_aligned_offset(MiCol, raw)` (the line buffer keeps only the bottom
+    /// 4x4 of each above 8x8 unit, so AVM aligns `MiCol` to the 8x8 grid
+    /// `(MiCol >> 1) << 1`), gated by `is_above_smvp_available` (`mvref_common.c:1986`)
+    /// / `has_top_right` (step 12). This decoder models the alignment-NO-OP case
+    /// (even `MiCol`, so `compute_aligned_offset` reduces to the raw offset); an odd
     /// `MiCol` shifts the column and is left unmodelled.
+    ///
+    /// The raw `col_offset` per `[block_width_type][state]` (faithful to the table):
+    ///
+    /// | state | `BLOCK_WIDTH_4` (bw4 1) | `BLOCK_WIDTH_8` (bw4 2) | `OTHERS` (bw4>=4) |
+    /// |-------|-------------------------|-------------------------|-------------------|
+    /// | 8     | `avail(0)`, `co=0`      | `avail(0)`, `co=0`      | `avail(bw4-2)`, `co=bw4-2` |
+    /// | 10    | **disabled** `{0,-1,0}` | **disabled** `{0,-1,0}` | `avail(0)`, `co=0` |
+    /// | 12    | `htr&&avail(2)`, `co=2` | `htr&&avail(2)`, `co=2` | `htr&&avail(bw4)`, `co=bw4` |
+    /// | 14    | `avail(-2)`, `co=-2`    | `avail(-2)`, `co=-2`    | `avail(-2)`, `co=-2` |
+    ///
+    /// The step-12 raw offset is `Max(2, bw4)` (`BLOCK_WIDTH_4` uses `2`, every wider
+    /// width uses `bw4`), matching the § 7.12.2.1 step-12 `isSbBorder ? Max(2,bw4) :
+    /// bw4` gate. The step-8 raw offset `Max(0, bw4 - 2)` collapses to `0` for
+    /// `BLOCK_WIDTH_4`/`BLOCK_WIDTH_8` (both `bw4 - 2 <= 0`), matching the table's
+    /// hardcoded `col_offset = 0` for those widths.
     ///
     /// SB-border `has_top_right` (step 12) short-circuits to `1`: the top-right 4x4 is
     /// at SB-relative `tr_mask_row = mask_row - 1 = -1 < 0`, the SB above, which is
-    /// coded (`mvref_common.c:1560`-`1565`).
+    /// coded (`mvref_common.c:1560`-`1565`); the only remaining step-12 gate is the
+    /// `is_above_smvp_available` tile-bound test inside [`sb_border_above_col`].
     fn resolve_sb_border(&mut self, geometry: &SpatialScanGeometry) {
         let col = geometry.mi_col;
         let bw4 = geometry.n4w;
+        let width_type = BlockWidthType::from_bw4(bw4);
         // The 8x8 alignment `(MiCol >> 1) << 1` is a no-op iff MiCol is even; an odd
         // MiCol shifts every aligned column, so leave all SB-border probes unmodelled.
         if col & 1 != 0 {
             return;
         }
-        // Step 8: aligned deltaCol = bw4 - 2 (the existing #531 step-8 column).
+        // Step 8: aligned deltaCol = Max(0, bw4 - 2) (the existing #531 step-8 column;
+        // `step8_above_row_column` computes the same `col + (bw4 - 2)` floor and is 0
+        // for BLOCK_WIDTH_4/8, matching the table's hardcoded `col_offset = 0`).
         self.step8 = step8_above_row_column(geometry);
-        // Step 10: aligned deltaCol = 0, but DISABLED for BLOCK_WIDTH_4 (bw4 == 1):
-        // AVM `row_smvp_all_states[1][BLOCK_WIDTH_4]` index 1 is `{0, -1, 0}` (the
-        // `is_available` flag is hardcoded 0 for a 4px-wide SB-border block,
-        // `mvref_common.c:2042`), mirroring the within-SB BLOCK_WIDTH_4 disable in
-        // [`Self::resolve_within_sb`]. For bw4 == 1 the SB-border step-8 column
-        // (aligned deltaCol = bw4 - 2 = 0) ALIASES the step-10 column (deltaCol = 0),
-        // so leaving step 10 `None` keeps the step-8 read but drops the spurious
-        // step-10 weight, matching AVM (the same over-reject-on-unmodelled posture).
-        //
-        // The remaining SB-border bw4 gates stay a dedicated follow-up brick — NOT
-        // modelled here: AVM ALSO disables step 10 for BLOCK_WIDTH_8 (bw4 == 2,
-        // `mvref_common.c:2053`), and the BLOCK_WIDTH_4/8 variants use step-8 offset 0
-        // and step-12 offset 2 (vs the BLOCK_WIDTH_OTHERS `bw4 - 2` / `bw4` modelled
-        // here). This decoder does not yet reach those SB-border bw4 <= 2 blocks.
-        if bw4 != BLOCK_WIDTH_4_MI {
+        // Step 10: aligned deltaCol = 0, but DISABLED for BLOCK_WIDTH_4 and
+        // BLOCK_WIDTH_8 — AVM `row_smvp_all_states[1][BLOCK_WIDTH_4/8]` index 1 is the
+        // hardcoded `{0, -1, 0}` (`is_available == 0`, `mvref_common.c:2042`/`2053`),
+        // matching the § 7.12.2.1 step-10 SB-border gate `bw4 >= 4`. Only
+        // BLOCK_WIDTH_OTHERS (bw4 >= 4) reads the step-10 column.
+        if width_type == BlockWidthType::Others {
             self.step10 = sb_border_above_col(geometry, 0);
         }
-        // Step 12: aligned deltaCol = bw4, gated has_top_right (= 1 on the SB border)
-        // and the AVM `bw4 <= Num_4x4_Blocks_Wide[BLOCK_64X64]` cap.
+        // Step 12: aligned deltaCol = Max(2, bw4) (BLOCK_WIDTH_4 uses 2; every wider
+        // width uses bw4), gated has_top_right (= 1 on the SB border) and the AVM
+        // `bw4 <= Num_4x4_Blocks_Wide[BLOCK_64X64]` cap (§ 7.12.2.1 step-12 `bw4<=16`).
         if bw4 <= MAX_SMVP_AXIS_MI {
-            self.step12 = sb_border_above_col(geometry, i64::try_from(bw4).unwrap_or(i64::MAX));
+            let raw = i64::try_from(bw4.max(2)).unwrap_or(i64::MAX);
+            self.step12 = sb_border_above_col(geometry, raw);
         }
-        // Step 14: aligned deltaCol = -2.
+        // Step 14: aligned deltaCol = -2 (all widths).
         self.step14 = sb_border_above_col(geometry, -2);
     }
 
@@ -630,11 +663,12 @@ impl AboveRowScan {
         self.step8 = tile_above_col(geometry, col.checked_add(bw4.saturating_sub(1)));
         // Step 10: deltaCol = 0, gated up_available, but DISABLED for BLOCK_WIDTH_4
         // (bw4 == 1): AVM `row_smvp_all_states[0][BLOCK_WIDTH_4]` index 1 is
-        // `{0, -1, 0}` (the `is_available` flag is 0, `mvref_common.c:2012`), so a
-        // 4px-wide block reads no step-10 above-row candidate. Leaving it `None` makes
-        // the over-scan defer on any above-row new BV at that column (the safe
-        // over-reject).
-        if bw4 != BLOCK_WIDTH_4_MI {
+        // `{0, -1, 0}` (the `is_available` flag is 0, `mvref_common.c:2015`), so a
+        // 4px-wide block reads no step-10 above-row candidate. BLOCK_WIDTH_8 and
+        // BLOCK_WIDTH_OTHERS both keep `{up_available, -1, 0}` (`mvref_common.c:2022`/
+        // `2029`) — matching the § 7.12.2.1 step-10 within-SB gate `bw4 >= 2`. Leaving
+        // it `None` makes the over-scan defer on any above-row new BV at that column.
+        if BlockWidthType::from_bw4(bw4) != BlockWidthType::Width4 {
             self.step10 = tile_above_col(geometry, Some(col));
         }
         // Step 12: deltaCol = bw4, the top-right probe, gated has_top_right (and the
@@ -867,7 +901,13 @@ fn spatial_scan_unmodelled_has_new_bv(
         // defers; otherwise the within-SB span from the step-14 column.
         let extra_left = if above.is_sb_border { 2 + (col & 1) } else { 1 };
         let leftmost = col.saturating_sub(extra_left);
-        let rightmost = col.saturating_add(bw4); // inclusive of the top-right col
+        // The step-12 top-right probe reaches `MiCol + bw4` within-SB, but `MiCol +
+        // Max(2, bw4)` on the SB border (`isSbBorder ? Max(2,bw4) : bw4`,
+        // § 7.12.2.1 step 12). For a narrow SB-border block (bw4 == 1) that pushes the
+        // reach to `MiCol + 2`, one column past `MiCol + bw4`; over-scan out to the
+        // wider reach so an unmodelled-but-reachable step-12 column still defers.
+        let right_reach = if above.is_sb_border { bw4.max(2) } else { bw4 };
+        let rightmost = col.saturating_add(right_reach); // inclusive of the top-right col
         for c in leftmost..=rightmost {
             if modelled_cols.contains(&Some(c)) {
                 continue;
@@ -2156,5 +2196,205 @@ mod tests {
         );
         assert!(scan.candidates.is_empty());
         assert!(scan.defer);
+    }
+
+    // --- Genericity (§7.12.2.6 `row_smvp_all_states[2][BLOCK_WIDTH_TYPES][4]`) ---
+    //
+    // The following tests prove the above-row SMVP scan is FULLY GENERIC over the
+    // block width by asserting `AboveRowScan::resolve`'s per-state column choice and
+    // availability MATCH AVM `mvref_common.c:2008`-`2076` for every
+    // `[is_sb_boundary][block_width_type][state]`. They are SYNTHETIC: ac0ej3 IBC
+    // blocks are all bw4 >= 4 (BLOCK_WIDTH_OTHERS), so these narrow-width cases are
+    // INERT on ac0ej3 and exercise only the genericity, NOT ac0ej3 behavior.
+    //
+    // AV2 block widths are powers of two, so the reachable block_width_type set is
+    // {BLOCK_WIDTH_4 (bw4 == 1), BLOCK_WIDTH_8 (bw4 == 2), BLOCK_WIDTH_OTHERS
+    // (bw4 >= 4)}. There is no reachable bw4 == 3 — `BlockWidthType::from_bw4(3)`
+    // maps to `Others` (the `_` arm), identical to bw4 == 4, so the "width-3" case
+    // the audit names is covered by the bw4 == 4 OTHERS test below.
+
+    /// A synthetic geometry at an even MiCol (so the SB-border 8x8 alignment is a
+    /// no-op), large enough that every probe column stays inside the tile.
+    fn generic_scan_geom(mi_row: usize, mi_col: usize, bw4: usize) -> SpatialScanGeometry {
+        SpatialScanGeometry {
+            mi_row,
+            mi_col,
+            n4w: bw4,
+            n4h: 4,
+            mi_rows: 64,
+            mi_cols: 64,
+            sb_size4: 32,
+        }
+    }
+
+    /// Asserts `AboveRowScan::resolve`'s four above-row probe columns match the AVM
+    /// `row_smvp_all_states[is_sb_boundary][block_width_type]` table entry. `tr_col`
+    /// is the above-row top-right 4x4 the step-12 `has_top_right` gate consults (`None`
+    /// when step 12 is disabled/unavailable), so a single helper drives every
+    /// `[is_sb_boundary][block_width_type]` case (`label` cites the AVM row). The
+    /// `expected` columns are `[step8, step10, step12, step14]` (`None` = disabled).
+    fn assert_row_smvp_table(
+        label: &str,
+        mi_row: usize,
+        bw4: usize,
+        tr_col: Option<usize>,
+        expected: [Option<usize>; 4],
+    ) {
+        let geom = generic_scan_geom(mi_row, 8, bw4);
+        let scan = AboveRowScan::resolve(&geom, &|r, c| {
+            Some((r, c)) == tr_col.map(|t| (mi_row - 1, t))
+        });
+        assert_eq!(scan.step8, expected[0], "{label} step8 column");
+        assert_eq!(
+            scan.step10, expected[1],
+            "{label} step10 column (is_available)"
+        );
+        assert_eq!(
+            scan.step12, expected[2],
+            "{label} step12 column (Max(2,bw4) on border)"
+        );
+        assert_eq!(scan.step14, expected[3], "{label} step14 column");
+        assert_eq!(scan.is_sb_border, mi_row.is_multiple_of(geom.sb_size4));
+    }
+
+    // WITHIN-SB (is_sb_boundary == 0): MiRow 20 (`20 % 32 != 0`), even MiCol 8. AVM
+    // `row_smvp_all_states[0][block_width_type]` (`mvref_common.c:2008`-`2032`), 4x4
+    // resolution (no alignment): step8 co = bw4-1, step10 co = 0 (DISABLED for
+    // BLOCK_WIDTH_4 only), step12 co = bw4 (gated has_top_right), step14 co = -1.
+    #[test]
+    fn within_sb_above_row_columns_match_avm_table_all_widths() {
+        // BLOCK_WIDTH_4 (bw4 1): row_smvp_all_states[0][0] = idx0 {up,-1,0} idx1
+        // {0,-1,0 DISABLED} idx2 {has_tr,-1,1} idx3 {up&&left,-1,-1}. MiCol 8, tr (19,9).
+        assert_row_smvp_table(
+            "within-SB BLOCK_WIDTH_4 row_smvp_all_states[0][0]",
+            20,
+            1,
+            Some(9),
+            [Some(8), None, Some(9), Some(7)],
+        );
+        // BLOCK_WIDTH_8 (bw4 2): row_smvp_all_states[0][1] = idx0 {up,-1,1} idx1
+        // {up,-1,0 ENABLED} idx2 {has_tr,-1,2} idx3 {up&&left,-1,-1}. tr (19,10).
+        assert_row_smvp_table(
+            "within-SB BLOCK_WIDTH_8 row_smvp_all_states[0][1]",
+            20,
+            2,
+            Some(10),
+            [Some(9), Some(8), Some(10), Some(7)],
+        );
+        // BLOCK_WIDTH_OTHERS (bw4 4, the smallest reachable OTHERS; bw4 == 3 maps here
+        // too): row_smvp_all_states[0][2] = idx0 {up,-1,3} idx1 {up,-1,0} idx2
+        // {has_tr,-1,4} idx3 {up&&left,-1,-1}. tr (19,12).
+        assert_row_smvp_table(
+            "within-SB BLOCK_WIDTH_OTHERS row_smvp_all_states[0][2]",
+            20,
+            4,
+            Some(12),
+            [Some(11), Some(8), Some(12), Some(7)],
+        );
+    }
+
+    // SB-BORDER (is_sb_boundary == 1): MiRow 32 (`32 % 32 == 0`), even MiCol 8 (so
+    // `compute_aligned_offset` is a no-op). AVM
+    // `row_smvp_all_states[1][block_width_type]` (`mvref_common.c:2039`-`2069`),
+    // 8x8-aligned: step8 co = Max(0,bw4-2), step10 co = 0 (DISABLED for BLOCK_WIDTH_4
+    // AND BLOCK_WIDTH_8), step12 co = Max(2,bw4), step14 co = -2. `has_top_right`
+    // short-circuits to 1 on the border (tr in the SB above), so `tr_col` is unused.
+    #[test]
+    fn sb_border_above_row_columns_match_avm_table_all_widths() {
+        // BLOCK_WIDTH_4 (bw4 1): row_smvp_all_states[1][0] = idx0 {avail(0),-1,0} idx1
+        // {0,-1,0 DISABLED} idx2 {has_tr&&avail(2),-1,2} idx3 {avail(-2),-1,-2}. The
+        // step-12 co = Max(2,1) = 2 (the audit P3 fix; NOT bw4 = 1) -> col 10.
+        assert_row_smvp_table(
+            "SB-border BLOCK_WIDTH_4 row_smvp_all_states[1][0]",
+            32,
+            1,
+            None,
+            [Some(8), None, Some(10), Some(6)],
+        );
+        // BLOCK_WIDTH_8 (bw4 2): row_smvp_all_states[1][1] = idx0 {avail(0),-1,0} idx1
+        // {0,-1,0 DISABLED} idx2 {has_tr&&avail(2),-1,2} idx3 {avail(-2),-1,-2}.
+        // step8 co = Max(0,0) = 0 -> col 8; step12 co = Max(2,2) = 2 -> col 10.
+        assert_row_smvp_table(
+            "SB-border BLOCK_WIDTH_8 row_smvp_all_states[1][1]",
+            32,
+            2,
+            None,
+            [Some(8), None, Some(10), Some(6)],
+        );
+        // BLOCK_WIDTH_OTHERS (bw4 4): row_smvp_all_states[1][2] = idx0 {avail(2),-1,2}
+        // idx1 {avail(0),-1,0 ENABLED} idx2 {has_tr&&avail(4),-1,4} idx3 {avail(-2),
+        // -1,-2}. step8 co = bw4-2 = 2 -> 10; step10 ENABLED -> 8; step12 co = 4 -> 12.
+        assert_row_smvp_table(
+            "SB-border BLOCK_WIDTH_OTHERS row_smvp_all_states[1][2]",
+            32,
+            4,
+            None,
+            [Some(10), Some(8), Some(12), Some(6)],
+        );
+    }
+
+    // The disabled SB-border step-10 column (BLOCK_WIDTH_4/8) is NOT excluded from the
+    // over-scan: a NEW IntrABC BV there still forces a (safe) defer, exactly as AVM
+    // reads nothing (no phantom candidate, no missed column). Item 3 of the mandate.
+    #[test]
+    fn sb_border_narrow_disabled_step10_column_still_defers() {
+        // BLOCK_WIDTH_8 SB-border (bw4 == 2): the step-10 column is MiCol = 8
+        // (disabled). A NEW BV at (MiRow-1, 8) is not placed by any state, so the
+        // over-scan must defer. Step 8 (co=0) ALSO targets col 8, so to isolate the
+        // step-10 disable we put the BV at a column step 8 cannot read: use bw4 == 2
+        // where step8 co = Max(0,0) = 0 (col 8) too — instead probe a width where the
+        // step-10 column is distinct. For OTHERS the step-10 col is enabled, so the
+        // cleanest isolation is BLOCK_WIDTH_8 at the step-14 col -2 reach: assert a NEW
+        // BV at MiCol-1 (col 7), which NO SB-border state reaches (step14 is co=-2 ->
+        // col 6), defers.
+        let geom = generic_scan_geom(32, 8, 2);
+        let scan = spatial_intrabc_scan(
+            geom,
+            |row, col| (row == 31 && col == 7).then_some(Mv { row: 9, col: -9 }),
+            |_, _| false,
+        );
+        assert!(
+            scan.candidates.is_empty(),
+            "no SB-border state reaches col 7"
+        );
+        assert!(
+            scan.defer,
+            "an unmodelled above-row column with a new BV defers"
+        );
+    }
+
+    // The SB-border step-12 `Max(2,bw4)` column for a narrow block (bw4 == 1, col +2)
+    // is READ by the scan (placed, deduped) — proving the audit P3 column choice is
+    // 2, not 1. A BV at MiCol+2 is admitted (not deferred); a BV at MiCol+1 (the WRONG
+    // `bw4` column the old code would have used) is NOT read by step 12 and defers.
+    #[test]
+    fn sb_border_block_width_4_step12_reads_max2_column() {
+        let geom = generic_scan_geom(32, 8, 1);
+        // BV at the CORRECT step-12 column MiCol + Max(2,1) = 10: read + admitted.
+        let at_10 = spatial_intrabc_scan(
+            geom,
+            |row, col| (row == 31 && col == 10).then_some(Mv { row: -8, col: -8 }),
+            |_, _| false,
+        );
+        assert_eq!(at_10.candidates, vec![adj(Mv { row: -8, col: -8 })]);
+        assert!(
+            !at_10.defer,
+            "step-12 Max(2,1)=2 column is modelled -> admitted"
+        );
+        // BV at MiCol + 1 = 9 (the WRONG `bw4`-offset column): no state reaches it,
+        // so the over-scan defers — confirming step 12 does NOT use col_offset = 1.
+        let at_9 = spatial_intrabc_scan(
+            geom,
+            |row, col| (row == 31 && col == 9).then_some(Mv { row: -8, col: -8 }),
+            |_, _| false,
+        );
+        assert!(
+            at_9.candidates.is_empty(),
+            "no state reaches MiCol+1 for bw4==1"
+        );
+        assert!(
+            at_9.defer,
+            "a new BV at the wrong (bw4=1) step-12 column defers"
+        );
     }
 }
