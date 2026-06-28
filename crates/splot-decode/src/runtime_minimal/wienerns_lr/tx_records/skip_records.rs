@@ -69,6 +69,9 @@ pub(super) fn record_skipped_selectable_residuals(
                 recon.qindex,
                 recon.luma_use_tcq,
                 recon.fsc_mode,
+                // This arm is only reached for non-IntrABC leaves (the `!recon.is_intrabc`
+                // guard above), so the IntrABC residual-deferral path never applies here.
+                false,
                 tile_offset,
             )?;
         }

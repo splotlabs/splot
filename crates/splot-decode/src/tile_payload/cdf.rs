@@ -479,6 +479,13 @@ pub(crate) enum TileCdfSelector {
         /// `Tx_Size_Sqr[txSz]`.
         tx_size_sqr: usize,
     },
+    /// `TileInterTxTypeLongCdf[ctx][Tx_Size_Sqr[txSz]]` from AV2 § 8.3.2 Table 8.3.
+    InterTxTypeLong {
+        /// The §8.3.2 `inter_tx_type` eob context (0..3).
+        ctx: usize,
+        /// `Tx_Size_Sqr[txSz]`.
+        tx_size_sqr: usize,
+    },
     /// `TileSecTxTypeCdf[is_inter][Tx_Size_Sqr[txSz]]` from AV2 § 8.3.2.
     SecTxType {
         /// `is_inter`.
@@ -704,6 +711,8 @@ pub(crate) enum TileCdfArray {
     IsLongSideDct,
     /// `TileIntraTxTypeLongCdf`.
     IntraTxTypeLong,
+    /// `TileInterTxTypeLongCdf`.
+    InterTxTypeLong,
     /// `TileSecTxTypeCdf`.
     SecTxType,
     /// `TileUvModeCflNotAllowedCdf`.
@@ -820,6 +829,7 @@ impl TileCdfArray {
             Self::IntraTxTypeSet2 => "TileIntraTxTypeSet2Cdf",
             Self::IsLongSideDct => "TileIsLongSideDctCdf",
             Self::IntraTxTypeLong => "TileIntraTxTypeLongCdf",
+            Self::InterTxTypeLong => "TileInterTxTypeLongCdf",
             Self::SecTxType => "TileSecTxTypeCdf",
             Self::UvModeCflNotAllowed => "TileUvModeCflNotAllowedCdf",
             Self::IsCfl => "TileIsCflCdf",
@@ -1395,6 +1405,9 @@ impl TileCdfRows {
             TileCdfSelector::IntraTxTypeLong { tx_size_sqr } => self
                 .block
                 .row(BlockCdfSelector::IntraTxTypeLong { tx_size_sqr }),
+            TileCdfSelector::InterTxTypeLong { ctx, tx_size_sqr } => self
+                .block
+                .row(BlockCdfSelector::InterTxTypeLong { ctx, tx_size_sqr }),
             TileCdfSelector::SecTxType {
                 is_inter,
                 tx_size_sqr,
@@ -1751,6 +1764,9 @@ impl TileCdfRows {
             TileCdfSelector::IntraTxTypeLong { tx_size_sqr } => self
                 .block
                 .row_mut(BlockCdfSelector::IntraTxTypeLong { tx_size_sqr }),
+            TileCdfSelector::InterTxTypeLong { ctx, tx_size_sqr } => self
+                .block
+                .row_mut(BlockCdfSelector::InterTxTypeLong { ctx, tx_size_sqr }),
             TileCdfSelector::SecTxType {
                 is_inter,
                 tx_size_sqr,

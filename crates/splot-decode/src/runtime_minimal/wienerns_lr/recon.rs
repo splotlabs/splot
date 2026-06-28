@@ -363,6 +363,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
     /// `mi_col` / `mi_row` are the transform's §3 MI coordinates and `tx_size` its
     /// §5.20.6 `TxSize` index.
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::runtime_minimal) fn reconstruct_luma_transform(
         &mut self,
         mi_col: usize,
@@ -375,10 +376,23 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         qindex: u32,
         use_tcq: bool,
         fsc_mode: bool,
+        is_intrabc: bool,
         tile_offset: ByteOffset,
     ) -> Result<()> {
         if !self.quant_reconstructable {
             // Defer a frame whose dequant the primitive cannot honor.
+            return Ok(());
+        }
+        if is_intrabc {
+            // A §7.13.3.18 IntrABC leaf's luma prediction is the displaced `CurrFrame`
+            // copy `reconstruct_intrabc_block` performs from the block vector, NOT a
+            // §7.13.2 intra prediction — the `leaf_y_mode` is a §5.20.5.3 placeholder
+            // `DC_PRED` (no intra Y mode is read for IntrABC). Reconstructing here via
+            // that placeholder would overwrite the correct IntrABC copy with a spurious
+            // DC block. The non-skip IntrABC residual add (copy + inverse-transform of
+            // this transform's coefficients) is a separate proven brick, so the sink
+            // defers the residual write — the entropy coefficients were already
+            // consumed AVM-faithfully by the caller; only the sample write is deferred.
             return Ok(());
         }
         let Some((log2_width, log2_height)) = tx_size_log2(tx_size) else {
@@ -729,24 +743,24 @@ pub(in crate::runtime_minimal) fn reconstruct_ac0ej3_selectable_intra_region(
     }
 }
 
-/// The single §5.20.7.23 fail-closed reason the ac0ej3 selectable walk is expected
-/// to stop on after reconstructing the verified region; the test driver swallows
-/// only this one and propagates every other error. The first §7.13.3.18 IntrABC
-/// block — MI(16,56), a `skip` leaf with an integer block vector — is reconstructed
-/// bit-exact and the walk CONTINUES past it (a `skip` IntrABC leaf reads no residual
-/// and §5.20.6.1 assigns Max_Tx_Size_Rect with no partition symbols, so the entropy
-/// state stays AVM-faithful). With the §7.12.2 IntrABC ref-MV stack now built
-/// faithfully (ref-MV bank fill + `check_rmb_cand` frame-boundary reject + default
-/// block vectors), the SECOND IntrABC block — MI(0,112) — derives a DEFAULT-ONLY
-/// stack (the bank's MI(16,56) candidate is rejected on the frame-boundary test, so
-/// the stack equals splot's bounded fallback) and its §7.12.2 stack is ADMITTED.
-/// MI(0,112) is itself a NON-`skip` leaf, so the walk now fails closed on its
-/// §5.20.7.23 residual on the inter/IntrABC transform path — the separate follow-on
-/// brick. The prior `intrabc_ref_stack` wall (the blanket over-rejection) no longer
-/// fires.
+/// The single §7.12.2 fail-closed reason the ac0ej3 selectable walk is expected to
+/// stop on after reconstructing the verified region; the test driver swallows only
+/// this one and propagates every other error. The first §7.13.3.18 IntrABC block —
+/// MI(16,56), a `skip` leaf with an integer block vector — is reconstructed bit-exact
+/// and the walk CONTINUES past it (a `skip` IntrABC leaf reads no residual and
+/// §5.20.6.1 assigns Max_Tx_Size_Rect with no partition symbols, so the entropy state
+/// stays AVM-faithful). The SECOND IntrABC block — MI(0,112) — derives a DEFAULT-ONLY
+/// §7.12.2 stack (ADMITTED) and is itself a NON-`skip` leaf: its §5.20.6.1 inter
+/// tx-partition + §5.20.7.29 inter transform-type + §5.20.7.27 coefficient residual
+/// now decode AVM-faithfully via the is_inter-aware tx-record + coefficient machinery
+/// (the §8.3.2 `TileInterTxTypeLongCdf` `inter_tx_type` read and the inter IST
+/// `TileSecTxTypeCdf[1]` `sec_tx_type` read), so the walk CONTINUES past it. The new
+/// wall is the THIRD IntrABC block, whose §7.12.2 IntrABC MV stack may hold a spatial
+/// or ref-MV-bank candidate the bounded fallback list cannot admit — a correct
+/// conservative deferral.
 #[cfg(test)]
 const EXPECTED_RECON_FRONTIER_REASON: &str =
-    "unsupported_wienerns_lr_selectable_transform_records_intrabc_nonskip_residual";
+    "unsupported_wienerns_lr_selectable_transform_records_intrabc_ref_stack";
 
 /// Whether the frame's §5.18.6 quantization matches the reconstruction primitive's
 /// zero-`QuantizerDeltas` assumption: no per-plane DC/AC quantizer delta and no
@@ -909,6 +923,7 @@ mod tests {
             149,
             true,
             fsc_mode,
+            false,
             ByteOffset::new(0),
         )
         .unwrap();
@@ -939,6 +954,7 @@ mod tests {
             mrl_index,
             149,
             true,
+            false,
             false,
             ByteOffset::new(0),
         )

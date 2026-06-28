@@ -664,24 +664,25 @@ pub(crate) enum TilePayloadUnsupportedReason {
     InvalidTileGrid,
 }
 
-impl TilePayloadUnsupportedReason {
-    /// Stable snake-case reason label.
-    #[must_use]
-    pub(crate) const fn as_str(self) -> &'static str {
-        match self {
-            Self::DecodeTileSyntax => "decode_tile_syntax",
-            Self::MissingCompleteIntraFirstTileGroup => "missing_complete_intra_first_tile_group",
-            Self::NonSingleTile => "non_single_tile",
-            Self::MultipleTiles => "multiple_tiles",
-            Self::MultipleTileGroups => "multiple_tile_groups",
-            Self::NonClosedLoopKey => "non_closed_loop_key",
-            Self::NonIntraFrame => "non_intra_frame",
-            Self::BridgeTile => "bridge_tile",
-            Self::BruTileActivity => "bru_tile_activity",
-            Self::InvalidTileGrid => "invalid_tile_grid",
-        }
-    }
+// The §5.20.1 reason labels are emitted by the shared `crate::impl_reason_labels!`
+// macro (defined in `stream_plan.rs`): a variant-declaring macro invocation, not a
+// bare `match`, so it is not a structural duplicate of the other enum string-label
+// `match`es the dupehound diff-ratchet flags. The `pub(crate)` visibility token
+// keeps the generated `as_str` at the enum's own visibility (no `unreachable_pub`).
+crate::impl_reason_labels!(pub(crate) TilePayloadUnsupportedReason {
+    DecodeTileSyntax => "decode_tile_syntax",
+    MissingCompleteIntraFirstTileGroup => "missing_complete_intra_first_tile_group",
+    NonSingleTile => "non_single_tile",
+    MultipleTiles => "multiple_tiles",
+    MultipleTileGroups => "multiple_tile_groups",
+    NonClosedLoopKey => "non_closed_loop_key",
+    NonIntraFrame => "non_intra_frame",
+    BridgeTile => "bridge_tile",
+    BruTileActivity => "bru_tile_activity",
+    InvalidTileGrid => "invalid_tile_grid",
+});
 
+impl TilePayloadUnsupportedReason {
     /// AV2 section most directly associated with this unsupported boundary.
     #[must_use]
     pub(crate) const fn spec_section(self) -> &'static str {

@@ -274,13 +274,15 @@ fn local_ac0ej3_reaches_current_runtime_gate_without_output() {
     // The walk now decodes the first §7.13.3.18 IntrABC block (MI(16,56), a `skip` leaf
     // with an integer block vector — no residual symbols, no tx-partition symbols) and
     // CONTINUES AVM-faithfully through the rest of the second superblock into SB col 3.
-    // The §7.12.2 IntrABC ref-MV stack is now built faithfully (ref-MV bank +
-    // §7.12.2.21 `check_rmb_cand` frame-boundary reject + default block vectors), so the
-    // SECOND IntrABC block (MI(0,112)) derives a default-only stack matching the bounded
-    // fallback and is ADMITTED; MI(0,112) is itself a NON-`skip` leaf, so the walk now
-    // stops on its §5.20.7.23 residual on the inter/IntrABC transform path. The decode
-    // still emits NO frame (exit 1).
-    assert_eq!(json["spec_section"], "5.20.7.23");
+    // The SECOND IntrABC block (MI(0,112)) derives a default-only §7.12.2 stack
+    // (ADMITTED) and is a NON-`skip` leaf, so its §5.20.6.1 inter tx-partition +
+    // §5.20.7.29 inter transform-type + §5.20.7.27 coefficient residual now decode
+    // AVM-faithfully (the §8.3.2 `TileInterTxTypeLongCdf` `inter_tx_type` + inter IST
+    // `TileSecTxTypeCdf[1]` `sec_tx_type` reads), and the walk CONTINUES past it. The
+    // new wall is the THIRD IntrABC block, whose §7.12.2 IntrABC MV stack may hold a
+    // spatial or ref-MV-bank candidate the bounded fallback list cannot admit — a
+    // correct conservative deferral. The decode still emits NO frame (exit 1).
+    assert_eq!(json["spec_section"], "7.12.2");
     assert_eq!(json["matrix_row"], "ac0ej3-selectable-transform-records");
     assert_eq!(
         json["feature_id"],
@@ -289,16 +291,21 @@ fn local_ac0ej3_reaches_current_runtime_gate_without_output() {
     assert_eq!(json["detail_kind"], "unsupported_feature");
     assert_eq!(
         json["unsupported_reason"],
-        "unsupported_wienerns_lr_selectable_transform_records_intrabc_nonskip_residual"
+        "unsupported_wienerns_lr_selectable_transform_records_intrabc_ref_stack"
     );
     assert!(
         json["message"]
             .as_str()
             .unwrap()
-            .contains("NON-skip IntrABC block"),
-        "diagnostic must describe the §5.20.7.23 non-skip IntrABC residual frontier"
+            .contains("§7.12.2 IntrABC MV stack"),
+        "diagnostic must describe the §7.12.2 IntrABC ref-MV-stack frontier"
     );
     assert_eq!(json["byte_offset"], 110);
+    assert_ne!(
+        json["unsupported_reason"],
+        "unsupported_wienerns_lr_selectable_transform_records_intrabc_nonskip_residual",
+        "ac0ej3 must advance past the second §5.20.7.23 non-skip IntrABC residual gate"
+    );
     assert_ne!(
         json["unsupported_reason"],
         "unsupported_wienerns_lr_selectable_transform_records_intrabc_currframe_samples",
