@@ -4,7 +4,7 @@
 //! Bounded IntrABC syntax handoff for the ac0ej3 selectable transform-record frontier.
 
 use splot_core::headers::frame::FrameHeaderCore;
-use splot_core::headers::sequence::{SequenceHeader, SuperblockSize};
+use splot_core::headers::sequence::{DrlReorder, SequenceHeader, SuperblockSize};
 use splot_core::span::ByteOffset;
 use splot_core::symbol::SymbolDecoder;
 use splot_recon::{PlaneRect, PlaneSize};
@@ -21,8 +21,8 @@ use super::super::inter::{
     },
 };
 use super::intrabc_ref_mv_stack::{
-    IntrabcRefMvBank, IntrabcStackAdmission, IntrabcStackGeometry, SpatialIntrabcScan,
-    SpatialScanGeometry, intrabc_ref_stack_admission, spatial_intrabc_scan,
+    DrlReorderMode, IntrabcRefMvBank, IntrabcStackAdmission, IntrabcStackGeometry,
+    SpatialIntrabcScan, SpatialScanGeometry, intrabc_ref_stack_admission, spatial_intrabc_scan,
 };
 use super::recon::WienerNsLrReconSink;
 use super::{intra_capped_seq_sb_size, wienerns_lr_selectable_transform_record_error_reason};
@@ -215,6 +215,9 @@ pub(super) struct TileIntrabcPreludeState {
     /// When `0`, AV2 runs neither the § 7.12.2.21 ref-MV-bank fill nor the
     /// block-end bank update, so the stack is spatial-scan + default-fill only.
     enable_refmvbank: bool,
+    /// AV2 § 5.4.6 `DrlReorder` mode (`SequenceInterConfig::drl_reorder`), gating the
+    /// § 7.12.2.19 nearest-prefix max-weight sort. ac0ej3 is `DRL_REORDER_ALWAYS`.
+    drl_reorder: DrlReorderMode,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -244,6 +247,13 @@ impl TileIntrabcPreludeState {
             .inter
             .as_ref()
             .is_some_and(|inter| inter.enable_refmvbank);
+        // Map the § 5.4.6 `DrlReorder` mode (inferred `DRL_REORDER_DISABLED` when the
+        // sequence has no inter config) into the decode-internal `DrlReorderMode`.
+        let drl_reorder = match sequence.inter.as_ref().map(|inter| inter.drl_reorder) {
+            Some(DrlReorder::Always) => DrlReorderMode::Always,
+            Some(DrlReorder::Constraint) => DrlReorderMode::Constraint,
+            Some(DrlReorder::Disabled) | None => DrlReorderMode::Disabled,
+        };
         Ok(Self {
             mi_rows,
             mi_cols,
@@ -251,6 +261,7 @@ impl TileIntrabcPreludeState {
             values: vec![None; values_len],
             bank: IntrabcRefMvBank::new(sb_size4),
             enable_refmvbank,
+            drl_reorder,
         })
     }
 
@@ -746,6 +757,7 @@ fn ensure_intrabc_ref_stack_supported(
         stack_geometry,
         &spatial,
         state.enable_refmvbank,
+        state.drl_reorder,
         syntax.ref_mv_idx,
     ) {
         IntrabcStackAdmission::Admit { selected } => Ok(selected),
@@ -1638,15 +1650,19 @@ mod tests {
         assert_eq!(symbol_count, 8);
     }
 
-    // The admission gate DEFERS (returns the `intrabc_ref_stack` diagnostic) when the
-    // § 7.12.2 spatial scan admits MORE THAN ONE distinct candidate — the § 7.12.2.19
-    // weight-sort is unmodelled. This proves the gate WIRING: an admission `Defer`
-    // propagates the right error through `read_intrabc_info`. MI(20,8) (within-SB,
-    // bw4 = 4) reads its step-7 left-bottom (23,7) and step-10 above (19,8) at TWO
-    // distinct IntrABC BVs, so the admission defers.
+    // The admission gate ADMITS a TWO-distinct-candidate block end-to-end, applying
+    // the § 7.12.2.19 weight sort through `read_intrabc_info`. This proves the gate
+    // WIRING threads the sort + the real `drl_reorder` flag: MI(20,8) (within-SB,
+    // bw4 = 4) reads its step-7 left-bottom (23,7) = (-512,0) (weight 1) and step-10
+    // above (19,8) = (0,-3072) (weight 1) as TWO distinct candidates. Equal weights ->
+    // strict-`>` no-op swap, so slot 0 keeps the scan-order-first (-512,0); the NEARMV
+    // (intrabc_mode 1) DRL index 0 predictor is therefore (-512,0) and the block-mv
+    // syntax is read (admit), not deferred.
     #[test]
-    fn active_intrabc_ref_stack_defers_on_two_distinct_spatial_candidates() {
-        let (sequence, core) = selectable_large_frame_fixture();
+    fn active_intrabc_ref_stack_admits_two_distinct_spatial_candidates() {
+        let (mut sequence, core) = selectable_large_frame_fixture();
+        // DRL_REORDER_ALWAYS so the § 7.12.2.19 sort actually runs for nearest > 1.
+        sequence.inter.as_mut().unwrap().drl_reorder = DrlReorder::Always;
         let mut cdfs = FrameCdfSubset::from_defaults().tile_copy();
         let payload = encode_steps(&[
             (Some(TileCdfSelector::Intrabc { ctx: 1 }), 1),
@@ -1655,8 +1671,8 @@ mod tests {
             (None, 0),
         ]);
         let mut symbols = decoder(&payload);
-        let mut state = state();
-        let mut neighbour = |row, col, mv| {
+        let mut state = TileIntrabcPreludeState::new(64, 64, &sequence, no_off()).unwrap();
+        let neighbour = |state: &mut TileIntrabcPreludeState, row, col, mv| {
             state
                 .record_block(
                     row,
@@ -1680,8 +1696,8 @@ mod tests {
         };
         // Step-7 left-bottom (MiRow+bh4-1, MiCol-1) = (23,7) and step-10 above
         // (MiRow-1, MiCol) = (19,8) hold DISTINCT IntrABC BVs.
-        neighbour(23, 7, IntrabcBlockVector { row: -512, col: 0 });
-        neighbour(19, 8, IntrabcBlockVector { row: 0, col: -3072 });
+        neighbour(&mut state, 23, 7, IntrabcBlockVector { row: -512, col: 0 });
+        neighbour(&mut state, 19, 8, IntrabcBlockVector { row: 0, col: -3072 });
         let block = IntrabcBlockContext::new(20, 8, 2, false);
         let geometry = IntrabcBlockGeometry::new(block, 4, 4);
 
@@ -1694,7 +1710,7 @@ mod tests {
             ByteOffset::new(20),
         )
         .unwrap();
-        let error = read_intrabc_info(
+        let info = read_intrabc_info(
             &mut cdfs,
             &mut symbols,
             &state,
@@ -1705,7 +1721,7 @@ mod tests {
             None,
             ByteOffset::new(20),
         )
-        .unwrap_err();
+        .unwrap();
 
         assert_eq!(
             use_skip,
@@ -1714,13 +1730,8 @@ mod tests {
                 skip_flag: false,
             }
         );
-        assert_eq!(
-            unsupported_reason(error),
-            "unsupported_wienerns_lr_selectable_transform_records_intrabc_ref_stack"
-        );
-        // use_intrabc + skip + intrabc_mode + one DRL literal = 4 symbols, then the
-        // admission defers BEFORE the precision / block-vector syntax.
-        assert_eq!(symbols.symbol_count(), 4);
+        // NEARMV predictor = sorted stack slot 0 = (-512,0) (no-op swap, equal weights).
+        assert_eq!(info.block_mv, IntrabcBlockVector { row: -512, col: 0 });
     }
 
     // ac0ej3 frame-0 MI(0,112) admission through the full guard: after MI(16,56)
@@ -1783,7 +1794,14 @@ mod tests {
         let at_border =
             IntrabcBlockGeometry::new(IntrabcBlockContext::new(16, 56, BLOCK_16X16, false), 8, 16);
         let scan = sb_border.spatial_intrabc_scan(at_border);
-        assert_eq!(scan.candidates, vec![Mv { row: -512, col: 0 }]);
+        // The step-14 above-left corner carries OTHER_SMVP_WEIGHT (0).
+        assert_eq!(
+            scan.candidates,
+            vec![super::super::intrabc_ref_mv_stack::WeightedBv {
+                mv: Mv { row: -512, col: 0 },
+                weight: 0,
+            }]
+        );
         assert!(!scan.defer);
 
         // Control: interior block MI(20,56) (row 20 % 16 != 0) does NOT probe MiCol-2;
