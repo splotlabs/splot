@@ -62,6 +62,7 @@ use splot_recon::PlaneId;
 use crate::{DecodeContext, DecodeOptions, DecodeRuntimeConfig};
 
 use super::reconstruct_ac0ej3_intra_region_from_plan;
+use super::wienerns_lr::WienerNsLrReconSink;
 
 /// Frame-origin `DC_PRED` luma leaf side (a 16x16 §5.20.6 `TxSize` transform).
 const BLOCK0_SIDE: usize = 16;
@@ -260,6 +261,48 @@ impl Fnv1a64 {
     fn finish(self) -> u64 {
         self.0
     }
+}
+
+/// Verifies a reconstructed luma rectangle `[x, x+width) x [y, y+height)` against
+/// the pre-filter oracle: asserts every sample equals `expected(x, y)`, then pins
+/// the aggregate sample count, sum, and FNV-1a-64. `region` is a human label for
+/// assertion messages. Shared by the per-region oracle-pin tests so each one is a
+/// declaration of its bbox + expected closure + committed (count, sum, fnv).
+fn assert_luma_region_oracle(
+    sink: &WienerNsLrReconSink<u16>,
+    region: &str,
+    (x0, width): (usize, usize),
+    (y0, height): (usize, usize),
+    expected: impl Fn(usize, usize) -> u16,
+    pins: (usize, u64, u64),
+) {
+    let (want_count, want_sum, want_fnv) = pins;
+    let mut fnv = Fnv1a64::new();
+    let mut sum: u64 = 0;
+    let mut count = 0usize;
+    for y in y0..y0 + height {
+        for x in x0..x0 + width {
+            let sample = sink.reconstructed_sample(PlaneId::Y, x, y).unwrap();
+            let want = expected(x, y);
+            assert_eq!(
+                sample, want,
+                "{region} luma ({x},{y}) must be {want}, got {sample}"
+            );
+            fnv.update_u16(sample);
+            sum += u64::from(sample);
+            count += 1;
+        }
+    }
+    assert_eq!(count, want_count, "{region} sample count");
+    assert_eq!(
+        sum, want_sum,
+        "{region} sample sum must match the pre-filter oracle"
+    );
+    assert_eq!(
+        fnv.finish(),
+        want_fnv,
+        "{region} FNV-1a-64 must match the pre-filter reconstruction oracle (bit-exact)"
+    );
 }
 
 /// Infrastructure check: the reconstruction bridge threads a sink through the
@@ -733,35 +776,16 @@ fn ac0ej3_step8_admitted_region_reconstructs_bit_exact_against_prefilter_oracle(
     let sink = reconstruct_ac0ej3_intra_region_from_plan(&bytes, options, &plan)
         .expect("reconstruct ac0ej3 step-8 admitted region");
 
-    let mut fnv = Fnv1a64::new();
-    let mut sum: u64 = 0;
-    let mut count = 0usize;
-    for row in 0..STEP8_ADMITTED_REGION_HEIGHT {
-        for col in 0..STEP8_ADMITTED_REGION_WIDTH {
-            let x = STEP8_ADMITTED_REGION_X + col;
-            let y = STEP8_ADMITTED_REGION_Y + row;
-            let sample = sink.reconstructed_sample(PlaneId::Y, x, y).unwrap();
-            assert_eq!(
-                sample, STEP8_ADMITTED_FLAT,
-                "step-8 admitted region luma ({x},{y}) must be {STEP8_ADMITTED_FLAT}, got {sample}"
-            );
-            fnv.update_u16(sample);
-            sum += u64::from(sample);
-            count += 1;
-        }
-    }
-
-    assert_eq!(
-        count, STEP8_ADMITTED_SAMPLE_COUNT,
-        "step-8 admitted region sample count"
-    );
-    assert_eq!(
-        sum, STEP8_ADMITTED_SAMPLE_SUM,
-        "step-8 admitted region sample sum must match the pre-filter oracle"
-    );
-    assert_eq!(
-        fnv.finish(),
-        STEP8_ADMITTED_FNV1A64,
-        "step-8 admitted region FNV-1a-64 must match the pre-filter reconstruction oracle (bit-exact)"
+    assert_luma_region_oracle(
+        &sink,
+        "step-8 admitted region",
+        (STEP8_ADMITTED_REGION_X, STEP8_ADMITTED_REGION_WIDTH),
+        (STEP8_ADMITTED_REGION_Y, STEP8_ADMITTED_REGION_HEIGHT),
+        |_x, _y| STEP8_ADMITTED_FLAT,
+        (
+            STEP8_ADMITTED_SAMPLE_COUNT,
+            STEP8_ADMITTED_SAMPLE_SUM,
+            STEP8_ADMITTED_FNV1A64,
+        ),
     );
 }
