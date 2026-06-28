@@ -1638,33 +1638,51 @@ mod tests {
         assert_eq!(symbol_count, 8);
     }
 
+    // The admission gate DEFERS (returns the `intrabc_ref_stack` diagnostic) when the
+    // § 7.12.2 spatial scan admits MORE THAN ONE distinct candidate — the § 7.12.2.19
+    // weight-sort is unmodelled. This proves the gate WIRING: an admission `Defer`
+    // propagates the right error through `read_intrabc_info`. MI(20,8) (within-SB,
+    // bw4 = 4) reads its step-7 left-bottom (23,7) and step-10 above (19,8) at TWO
+    // distinct IntrABC BVs, so the admission defers.
     #[test]
-    fn active_intrabc_ref_stack_requires_proven_empty_candidate_stack() {
+    fn active_intrabc_ref_stack_defers_on_two_distinct_spatial_candidates() {
         let (sequence, core) = selectable_large_frame_fixture();
         let mut cdfs = FrameCdfSubset::from_defaults().tile_copy();
         let payload = encode_steps(&[
-            (Some(TileCdfSelector::Intrabc { ctx: 2 }), 1),
-            (Some(TileCdfSelector::Skip { ctx: 2 }), 0),
+            (Some(TileCdfSelector::Intrabc { ctx: 1 }), 1),
+            (Some(TileCdfSelector::Skip { ctx: 0 }), 0),
             (Some(TileCdfSelector::IntrabcMode), 1),
             (None, 0),
         ]);
         let mut symbols = decoder(&payload);
         let mut state = state();
-        let prior_intrabc = IntrabcBlockPrelude {
-            use_intrabc: true,
-            is_inter: true,
-            skip_flag: false,
-            intrabc: Some(IntrabcInfo {
-                intrabc_mode: 1,
-                ref_mv_idx: 0,
-                mv_precision: MV_PRECISION_QUARTER_PEL,
-                block_mv: IntrabcBlockVector { row: -512, col: 0 },
-            }),
+        let mut neighbour = |row, col, mv| {
+            state
+                .record_block(
+                    row,
+                    col,
+                    1,
+                    1,
+                    IntrabcBlockPrelude {
+                        use_intrabc: true,
+                        is_inter: true,
+                        skip_flag: false,
+                        intrabc: Some(IntrabcInfo {
+                            intrabc_mode: 1,
+                            ref_mv_idx: 0,
+                            mv_precision: MV_PRECISION_QUARTER_PEL,
+                            block_mv: mv,
+                        }),
+                    },
+                    ByteOffset::new(0),
+                )
+                .unwrap();
         };
-        state
-            .record_block(19, 0, 4, 1, prior_intrabc, ByteOffset::new(0))
-            .unwrap();
-        let block = IntrabcBlockContext::new(20, 0, 2, false);
+        // Step-7 left-bottom (MiRow+bh4-1, MiCol-1) = (23,7) and step-10 above
+        // (MiRow-1, MiCol) = (19,8) hold DISTINCT IntrABC BVs.
+        neighbour(23, 7, IntrabcBlockVector { row: -512, col: 0 });
+        neighbour(19, 8, IntrabcBlockVector { row: 0, col: -3072 });
+        let block = IntrabcBlockContext::new(20, 8, 2, false);
         let geometry = IntrabcBlockGeometry::new(block, 4, 4);
 
         let use_skip = read_intrabc_use_and_skip(
@@ -1700,7 +1718,9 @@ mod tests {
             unsupported_reason(error),
             "unsupported_wienerns_lr_selectable_transform_records_intrabc_ref_stack"
         );
-        assert_eq!(symbols.symbol_count(), 5);
+        // use_intrabc + skip + intrabc_mode + one DRL literal = 4 symbols, then the
+        // admission defers BEFORE the precision / block-vector syntax.
+        assert_eq!(symbols.symbol_count(), 4);
     }
 
     // ac0ej3 frame-0 MI(0,112) admission through the full guard: after MI(16,56)
@@ -1742,17 +1762,19 @@ mod tests {
         assert_eq!(pred_mv, Mv { row: 0, col: -256 });
     }
 
-    // Finding 1: the § 7.12.2 step-14 SB-border above-left probe is at
-    // `deltaCol = -1 - isSbBorder == -2`, aligned by § 7.12.2.6 to
-    // `MiCol - 2 - (MiCol & 1)`. For an SB-border block with EVEN MiCol that probe
-    // reads (row-1, MiCol-2); an IntrABC neighbour existing ONLY there must DEFER.
-    // The control (an interior block whose above scan starts at MiCol-1) must NOT
-    // see it, so the fix is targeted, not over-broad. The fixture's seq SB is
-    // 64x64, so sb_size4 == 16 and MiRow 16 is an SB-row boundary, MiRow 20 is not.
+    // The § 7.12.2.6 step-14 SB-border above-left probe is at the 8x8-aligned column
+    // `compute_aligned_offset(MiCol, -2)`, which for an EVEN MiCol reads
+    // (MiRow - 1, MiCol - 2). It is now MODELLED, so an SB-border block whose ONLY
+    // IntrABC above neighbour sits at that step-14 column ADMITS the candidate (a
+    // single distinct BV, no defer) — matching AVM's `row_smvp_state[3]`. The control
+    // (an interior block whose within-SB above scan starts at MiCol - 1) does NOT
+    // reach MiCol - 2, so a neighbour there reads nothing (no defer). The fixture's
+    // seq SB is 64x64, so sb_size4 == 16 and MiRow 16 is an SB-row boundary, MiRow 20
+    // is not.
     #[test]
-    fn spatial_scan_detects_sb_border_col_minus_two_neighbour() {
+    fn spatial_scan_admits_sb_border_col_minus_two_neighbour() {
         let (sequence, _core) = selectable_large_frame_fixture();
-        let neighbour = ac0ej3_skip_neighbour();
+        let neighbour = ac0ej3_skip_neighbour(); // BV (-512, 0).
         // SB-border block MI(16,56) (even MiCol): the (15,54)==(row-1,MiCol-2) probe.
         let mut sb_border = TileIntrabcPreludeState::new(64, 64, &sequence, no_off()).unwrap();
         sb_border
@@ -1760,16 +1782,22 @@ mod tests {
             .unwrap();
         let at_border =
             IntrabcBlockGeometry::new(IntrabcBlockContext::new(16, 56, BLOCK_16X16, false), 8, 16);
-        assert!(sb_border.spatial_intrabc_scan(at_border).defer);
+        let scan = sb_border.spatial_intrabc_scan(at_border);
+        assert_eq!(scan.candidates, vec![Mv { row: -512, col: 0 }]);
+        assert!(!scan.defer);
 
-        // Control: interior block MI(20,56) (row 20 % 16 != 0) does NOT probe MiCol-2.
+        // Control: interior block MI(20,56) (row 20 % 16 != 0) does NOT probe MiCol-2;
+        // a neighbour at (19,54) is outside its within-SB above scan, so no defer and
+        // no candidate.
         let mut interior = TileIntrabcPreludeState::new(64, 64, &sequence, no_off()).unwrap();
         interior
             .record_block(19, 54, 1, 1, neighbour, no_off())
             .unwrap();
         let at_interior =
             IntrabcBlockGeometry::new(IntrabcBlockContext::new(20, 56, BLOCK_16X16, false), 8, 16);
-        assert!(!interior.spatial_intrabc_scan(at_interior).defer);
+        let control = interior.spatial_intrabc_scan(at_interior);
+        assert!(control.candidates.is_empty());
+        assert!(!control.defer);
     }
 
     #[test]

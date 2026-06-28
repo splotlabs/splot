@@ -1344,11 +1344,12 @@ mod tests {
     // must keep deferring — proving the exclusion is precise, not a blanket open.
     #[test]
     fn spatial_scan_defers_on_other_above_row_column() {
-        // A new BV at above-row col 64 (an unmodelled SB-border step-12-class column)
-        // defers — on the SB-border path only step 8 is modelled.
+        // For SB-border even-MiCol MI(32,56) (bw4 8) the modelled above-row columns
+        // are step 8 = 62, step 10 = 56, step 12 = 64, step 14 = 54. A new BV at an
+        // above-row column NONE of those steps reach (e.g. col 60) still defers.
         let scan = spatial_intrabc_scan(
             ac0ej3_mi_32_56_scan_geometry(),
-            |row, col| (row == 31 && col == 64).then_some(Mv { row: 7, col: -99 }),
+            |row, col| (row == 31 && col == 60).then_some(Mv { row: 7, col: -99 }),
             |_, _| false,
         );
         assert!(scan.candidates.is_empty());
@@ -1447,17 +1448,18 @@ mod tests {
     }
 
     // The within-SB step-12 top-right probe (deltaCol = bw4) is gated by
-    // has_top_right (is_mi_coded at the within-SB top-right 4x4). When the top-right
-    // is NOT coded yet, AVM does not read it: the probe is unavailable, so a NEW BV
-    // there is neither admitted nor a defer trigger (the not-yet-coded position holds
-    // no candidate AVM sees). When it IS coded AND within the same SB, the probe is
-    // modelled and its BV is admitted.
+    // has_top_right (is_mi_coded at the within-SB top-right 4x4). In the real decode
+    // a not-yet-coded MI returns BOTH `is_coded == false` AND `lookup == None` (the
+    // `values` grid is filled at record time, so an uncoded MI has no recorded BV):
+    // the two signals are CONSISTENT. When the top-right is not coded, the step-12
+    // probe is unavailable AND `lookup` reads nothing there, so the position
+    // contributes no candidate and triggers no defer. When it IS coded (and within
+    // the same SB), the probe is modelled and its BV is admitted.
     #[test]
     fn spatial_scan_step12_top_right_respects_has_top_right() {
         // A within-SB top-right at (MiRow-1, MiCol+bw4) that stays inside the SB.
         // MI(20,8), bw4 = 4, sb_size4 = 32: mask_col = 8, tr_mask_col = 12 < 32 -> the
-        // top-right 4x4 is (19, 12), within the SB. With is_coded false there, AVM's
-        // has_top_right is 0 -> the probe is unavailable (no admit, no defer).
+        // top-right 4x4 is (19, 12), within the SB.
         let geom = SpatialScanGeometry {
             mi_row: 20,
             mi_col: 8,
@@ -1468,15 +1470,13 @@ mod tests {
             sb_size4: 32,
         };
         let bv = Mv { row: -8, col: -8 };
-        let not_coded = spatial_intrabc_scan(
-            geom,
-            |row, col| (row == 19 && col == 12).then_some(bv),
-            |_, _| false, // top-right 4x4 not coded -> has_top_right = 0
-        );
+        // Not coded: both `lookup` and `is_coded` are false at (19,12) (the real
+        // decode-order invariant) -> the probe is unavailable and reads nothing.
+        let not_coded = spatial_intrabc_scan(geom, |_, _| None, |_, _| false);
         assert!(not_coded.candidates.is_empty());
         assert!(!not_coded.defer);
-        // With the top-right 4x4 coded, has_top_right = 1 -> the step-12 probe is
-        // modelled and its distinct BV is admitted.
+        // Coded: `is_coded` = 1 -> has_top_right = 1, the step-12 probe is modelled and
+        // its distinct BV is admitted.
         let coded = spatial_intrabc_scan(
             geom,
             |row, col| (row == 19 && col == 12).then_some(bv),
@@ -1509,5 +1509,115 @@ mod tests {
         );
         assert_eq!(scan.candidates, vec![Mv { row: 0, col: -3072 }]);
         assert!(!scan.defer);
+    }
+
+    /// ac0ej3 frame-0 MI(192,112) geometry: MiRow 192, `192 % 32 == 0` -> SB border;
+    /// MiCol 112 even; BLOCK_64X32 (bw4 = 16, bh4 = 8) — the §7.12.2.19 weight-sort
+    /// frontier.
+    fn ac0ej3_mi_192_112_scan_geometry() -> SpatialScanGeometry {
+        SpatialScanGeometry {
+            mi_row: 192,
+            mi_col: 112,
+            n4w: 16,
+            n4h: 8,
+            mi_rows: 270,
+            mi_cols: 480,
+            sb_size4: 32,
+        }
+    }
+
+    // MI(192,112) has TWO distinct spatial candidates: the step-7 left-bottom
+    // (MiRow + bh4 - 1, MiCol - 1) = (199, 111) BV (-1024,0), and the SB-border
+    // step-8 8x8-aligned (MiRow - 1, MiCol + bw4 - 2) = (191, 126) BV (-512,0). The
+    // scan returns both (in step order, no defer at the scan level), matching avmdec
+    // `PREDEF [0](-1024,0 ro=7 co=-1) [1](-512,0 ro=-1 co=14)`. The admission then
+    // DEFERS (the §7.12.2.19 max-weight DRL reorder is unmodelled) — the new frontier.
+    #[test]
+    fn admission_defers_on_ac0ej3_mi_192_112_two_distinct_spatial() {
+        let scan = spatial_intrabc_scan(
+            ac0ej3_mi_192_112_scan_geometry(),
+            |row, col| {
+                if row == 199 && col == 111 {
+                    Some(Mv { row: -1024, col: 0 })
+                } else if row == 191 && col == 126 {
+                    Some(Mv { row: -512, col: 0 })
+                } else {
+                    None
+                }
+            },
+            |_, _| false,
+        );
+        assert_eq!(
+            scan.candidates,
+            vec![Mv { row: -1024, col: 0 }, Mv { row: -512, col: 0 }]
+        );
+        assert!(
+            !scan.defer,
+            "the scan itself does not defer (the candidates are placed)"
+        );
+        // The admission DEFERS: > 1 distinct spatial candidate, §7.12.2.19 unmodelled.
+        let geometry = IntrabcStackGeometry {
+            mi_row: 192,
+            mi_col: 112,
+            n4w: 16,
+            n4h: 8,
+            sb_samples: 128,
+            frame_w: 1920,
+            frame_h: 1080,
+            max_bvp_drl_bits_minus_1: 2,
+        };
+        assert_eq!(
+            intrabc_ref_stack_admission(&IntrabcRefMvBank::new(32), geometry, &scan, true, 1),
+            IntrabcStackAdmission::Defer,
+        );
+    }
+
+    // The SB-border step-14 above-left probe (deltaCol = -2, 8x8-aligned) is now
+    // modelled for an even MiCol. ac0ej3 MI(32,320) (SB border, MiCol 320 even, bw4 8)
+    // reads its step-14 above-left at (MiRow - 1, MiCol - 2) = (31, 318) BV (0,-256),
+    // matching avmdec `PREDEF [0](0,-256 ro=-1 co=-2)`. The scan admits the single
+    // distinct candidate (steps 8/10/12 read other columns that hold nothing here).
+    #[test]
+    fn spatial_scan_admits_sb_border_even_mi_col_step14() {
+        let geom = SpatialScanGeometry {
+            mi_row: 32,
+            mi_col: 320,
+            n4w: 8,
+            n4h: 16,
+            mi_rows: 270,
+            mi_cols: 480,
+            sb_size4: 32,
+        };
+        let scan = spatial_intrabc_scan(
+            geom,
+            |row, col| (row == 31 && col == 318).then_some(Mv { row: 0, col: -256 }),
+            |_, _| false,
+        );
+        assert_eq!(scan.candidates, vec![Mv { row: 0, col: -256 }]);
+        assert!(!scan.defer);
+    }
+
+    // A still-unmodelled SB-border ODD-MiCol above-row neighbour STILL defers: the
+    // 8x8 alignment `(MiCol >> 1) << 1` shifts every aligned column for an odd MiCol,
+    // so the SB-border path models nothing and the over-scan defers on any above-row
+    // new BV. MI(32,321) (SB border, MiCol odd) with a neighbour at the above row.
+    #[test]
+    fn spatial_scan_defers_on_sb_border_odd_mi_col_above_neighbour() {
+        let geom = SpatialScanGeometry {
+            mi_row: 32,
+            mi_col: 321,
+            n4w: 8,
+            n4h: 16,
+            mi_rows: 270,
+            mi_cols: 480,
+            sb_size4: 32,
+        };
+        let scan = spatial_intrabc_scan(
+            geom,
+            |row, col| (row == 31 && col == 320).then_some(Mv { row: 0, col: -256 }),
+            |_, _| false,
+        );
+        assert!(scan.candidates.is_empty());
+        assert!(scan.defer);
     }
 }
