@@ -115,21 +115,19 @@ const MI40_IBP_STEP: u16 = 65;
 /// reconstructed `55296` samples; modelling the §7.12.2.1 step-8 above-row spatial
 /// candidate (the SB-border, even-mi_col, alignment-preserving column) admits the
 /// frame-0 SB-row-1 IntrABC block MI(32,56)'s ref-MV stack faithfully (predictor
-/// (-512,0), the AVM-faithful BV), so the walk no longer defers there. That
-/// unblocks two further proven-subset leaves in decode order:
+/// (-512,0), the AVM-faithful BV), so the walk no longer defers there. Keeping the
+/// entropy parse synced past MI(32,56) unblocks one further proven-subset intra
+/// leaf region in decode order: the flat-`64` rectangle x[128,224) x y[192,256)
+/// (96 * 64 = `6144` samples — verified against the diff of pre/post-fix coverage,
+/// NOT the MI(32,56) IntrABC target itself, which still defers its §7.13.3.18 copy).
+/// Its per-value oracle pin lives in [`STEP8_ADMITTED_FNV1A64`].
 ///
-/// * the MI(32,56) §7.13.3.18 IntrABC `BLOCK_32X64` target (x[224,256) x y[128,192),
-///   `32 * 64 = 2048` samples — an integer-DV skip copy of the displaced
-///   `CurrFrame` source); plus
-/// * the next now-unblocked SB-row-1 `BLOCK_64X64` proven-subset intra leaf
-///   (`64 * 64 = 4096` samples).
-///
-/// Total growth `2048 + 4096 = 6144`, so the verified region is now `61440`
-/// bit-exact luma samples (`55296 + 6144`), still bounded by x[0,256) x y[0,256).
-/// The walk then stops at the new frontier MI(48,56), a within-SB (non-SB-border)
-/// step-8 above-row probe at full 4x4 resolution this decoder does not yet model.
-/// Verified ZERO-mismatch, per sample, over every covered luma 4x4 unit against
-/// the AVM pre-filter reconstruction oracle (`ac0_prefiltered.yuv`).
+/// Total growth `6144`, so the verified region is now `61440` bit-exact luma
+/// samples (`55296 + 6144`), still bounded by x[0,256) x y[0,256). The walk then
+/// stops at the new frontier MI(48,56), a within-SB (non-SB-border) step-8
+/// above-row probe at full 4x4 resolution this decoder does not yet model. Verified
+/// ZERO-mismatch, per sample, over every covered luma 4x4 unit against the AVM
+/// pre-filter reconstruction oracle (`ac0_prefiltered.yuv`).
 const LUMA_RECON_SAMPLE_TOTAL: usize = 61440;
 
 /// The SB-column-3 `BLOCK_64X64 H_PRED` block (x[192,256) x y[0,64)) — the
@@ -177,6 +175,29 @@ const INTRABC_TOP_BAND_HEIGHT: usize = 32;
 const INTRABC_TARGET_SAMPLE_SUM: u64 = 135_168;
 /// FNV-1a-64 over the IntrABC target (row-major, sample-major u16 LE).
 const INTRABC_TARGET_FNV1A64: u64 = 0xb70e_5832_e8aa_2325;
+
+/// The luma region newly ADMITTED by modelling the §7.12.2.1 step-8 SB-border
+/// IntrABC SMVP candidate: x[128,224) x y[192,256) (96x64 = 6144 samples), the
+/// region the MI(32,56) ref-MV-stack admission unblocks in the SB-row-1 walk. The
+/// admission keeps the entropy parse synced past MI(32,56), so this downstream
+/// proven-subset intra leaf reconstructs in decode order — a flat `64` rectangle
+/// (the same DC-region edge value propagated through SB row 1). Derived offline
+/// from the AVM pre-filter luma oracle (`ac0_prefiltered.yuv` / frame-0 prefilter
+/// luma dump). These constants PIN the admitted samples per value (NOT merely the
+/// aggregate count), mirroring [`INTRABC_TARGET_FNV1A64`]: a wrong reconstruction
+/// of this region would change the sum / FNV even at the same sample count.
+const STEP8_ADMITTED_REGION_X: usize = 128;
+const STEP8_ADMITTED_REGION_Y: usize = 192;
+const STEP8_ADMITTED_REGION_WIDTH: usize = 96;
+const STEP8_ADMITTED_REGION_HEIGHT: usize = 64;
+const STEP8_ADMITTED_SAMPLE_COUNT: usize =
+    STEP8_ADMITTED_REGION_WIDTH * STEP8_ADMITTED_REGION_HEIGHT;
+/// The flat oracle value across the newly-admitted region.
+const STEP8_ADMITTED_FLAT: u16 = 64;
+/// Sum of the newly-admitted region (`6144 * 64`).
+const STEP8_ADMITTED_SAMPLE_SUM: u64 = 393_216;
+/// FNV-1a-64 over the newly-admitted region (row-major, sample-major u16 LE).
+const STEP8_ADMITTED_FNV1A64: u64 = 0xa61d_8c75_326d_e325;
 
 /// The frame-origin chroma `DC_PRED` transform side (a 32x32 §5.20.6 `TxSize` in
 /// the 4:2:0 chroma plane, the chroma leaf covering the §5.20.3.1 SDP chroma tree
@@ -614,7 +635,8 @@ fn ac0ej3_sb_column3_hpred_block_reconstructs_bit_exact_against_prefilter_oracle
 
     // The whole reconstructed luma region is now 61440 bit-exact samples (the
     // §7.12.2.1 step-8 SB-border IntrABC SMVP candidate admits MI(32,56)'s ref-MV
-    // stack, unblocking its IntrABC target and the next SB-row-1 proven-subset leaf).
+    // stack, keeping the parse synced so the downstream flat-64 leaf x[128,224) x
+    // y[192,256) reconstructs — pinned per value by STEP8_ADMITTED_FNV1A64).
     let (luma4x4, _chroma4x4) = sink.reconstructed_counts();
     assert_eq!(
         luma4x4 * 16,
@@ -692,5 +714,54 @@ fn ac0ej3_first_intrabc_block_reconstructs_bit_exact_against_prefilter_oracle() 
         fnv.finish(),
         INTRABC_TARGET_FNV1A64,
         "IntrABC target FNV-1a-64 must match the pre-filter reconstruction oracle (bit-exact)"
+    );
+}
+
+/// Bit-exact verification of the luma region the §7.12.2.1 step-8 SB-border IntrABC
+/// SMVP candidate newly ADMITTS — x[128,224) x y[192,256) (6144 samples) — against
+/// the AVM pre-filter oracle. This PINS the newly-admitted samples per value (sum +
+/// FNV-1a-64 + the flat oracle value at every position), so the region cannot
+/// reconstruct to wrong values while still passing the aggregate count assertion.
+#[test]
+#[ignore = "requires local mission fixture; set SPLOT_AC0EJ3_IVF or place it at $HOME/Documents/SplotLabs/ac0ej3.ivf"]
+fn ac0ej3_step8_admitted_region_reconstructs_bit_exact_against_prefilter_oracle() {
+    let path = require_fixture();
+    let bytes = std::fs::read(&path).expect("read ac0ej3 fixture");
+    let options = DecodeOptions::default();
+    let plan = context().plan_bytes(&bytes, options).expect("plan ac0ej3");
+
+    let sink = reconstruct_ac0ej3_intra_region_from_plan(&bytes, options, &plan)
+        .expect("reconstruct ac0ej3 step-8 admitted region");
+
+    let mut fnv = Fnv1a64::new();
+    let mut sum: u64 = 0;
+    let mut count = 0usize;
+    for row in 0..STEP8_ADMITTED_REGION_HEIGHT {
+        for col in 0..STEP8_ADMITTED_REGION_WIDTH {
+            let x = STEP8_ADMITTED_REGION_X + col;
+            let y = STEP8_ADMITTED_REGION_Y + row;
+            let sample = sink.reconstructed_sample(PlaneId::Y, x, y).unwrap();
+            assert_eq!(
+                sample, STEP8_ADMITTED_FLAT,
+                "step-8 admitted region luma ({x},{y}) must be {STEP8_ADMITTED_FLAT}, got {sample}"
+            );
+            fnv.update_u16(sample);
+            sum += u64::from(sample);
+            count += 1;
+        }
+    }
+
+    assert_eq!(
+        count, STEP8_ADMITTED_SAMPLE_COUNT,
+        "step-8 admitted region sample count"
+    );
+    assert_eq!(
+        sum, STEP8_ADMITTED_SAMPLE_SUM,
+        "step-8 admitted region sample sum must match the pre-filter oracle"
+    );
+    assert_eq!(
+        fnv.finish(),
+        STEP8_ADMITTED_FNV1A64,
+        "step-8 admitted region FNV-1a-64 must match the pre-filter reconstruction oracle (bit-exact)"
     );
 }

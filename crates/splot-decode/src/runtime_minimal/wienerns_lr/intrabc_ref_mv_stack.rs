@@ -363,6 +363,14 @@ pub(super) struct SpatialIntrabcScan {
 /// same-block skip, `mvref_common.c:2095`), so it does not force a defer. `lookup(
 /// row, col)` returns the recorded block vector of an IntrABC block at MI `(row,
 /// col)`, or `None`.
+///
+/// NOTE: this reproduces the scan ORDER (steps 7 → 8 → 9), but NOT the subsequent
+/// § 7.12.2.19 weight sort. AVM weights each candidate per § 7.12.2.6 and swaps the
+/// max-weight NEAREST candidate into slot 0 when `nearest_refmv_count > 1`
+/// (`mvref_common.c:2472`-`2493`). The candidates returned here are in scan order,
+/// UNSORTED; the > 1-candidate case is therefore not faithful and is guarded by a
+/// fail-closed defer in [`intrabc_ref_stack_admission`]. With a single nearest
+/// candidate the sort is a no-op, so the scan order is exact for the admitted set.
 pub(super) fn spatial_intrabc_scan(
     geometry: SpatialScanGeometry,
     lookup: impl Fn(usize, usize) -> Option<Mv>,
@@ -443,13 +451,28 @@ fn step8_above_row_column(geometry: &SpatialScanGeometry) -> Option<usize> {
     if geometry.sb_size4 == 0 || !row.is_multiple_of(geometry.sb_size4) {
         return None;
     }
+    // § 7.12.2.6 floors the probe column: `mvCol = (MiCol + deltaCol) >> 1 << 1`.
+    // We model the case where that floor is a no-op (`aligned_col == MiCol +
+    // deltaCol`) by checking `MiCol` parity below, which is sufficient for the
+    // reachable set BECAUSE `deltaCol = Max(0, bw4 - 2)` is always EVEN here: every
+    // reachable IBC block has an even `bw4` (the smallest IBC `bw4` is 2 = 8px; a
+    // `bw4 == 1` (4px) block would give `deltaCol = 0`, still even). With an even
+    // `deltaCol`, `MiCol + deltaCol` is even iff `MiCol` is even, so the `col & 1`
+    // parity guard alone makes the floor a no-op. If a future odd `deltaCol` ever
+    // became reachable (an odd `bw4`), the parity guard would NOT suffice and the
+    // full floor `(MiCol + deltaCol) >> 1 << 1` would be required — assert it stays
+    // even so that case fails loudly in debug instead of silently mis-aligning.
+    let delta_col = geometry.n4w.saturating_sub(2);
+    debug_assert!(
+        delta_col.is_multiple_of(2),
+        "step-8 deltaCol must be even for the MiCol-parity floor shortcut; \
+         an odd deltaCol (odd bw4) needs the full (MiCol+deltaCol)>>1<<1 floor",
+    );
     // The (mvCol >> 1) << 1 alignment must not shift the spec column, i.e. mi_col
-    // must be even; an odd mi_col is not modelled.
+    // must be even (given the even deltaCol above); an odd mi_col is not modelled.
     if col & 1 != 0 {
         return None;
     }
-    // deltaCol = Max(0, bw4 - 1 - isSbBorder) with isSbBorder == 1.
-    let delta_col = geometry.n4w.saturating_sub(2);
     let aligned_col = col.checked_add(delta_col)?;
     // is_inside: the neighbour column must lie inside the tile.
     if aligned_col >= geometry.mi_cols {
@@ -653,10 +676,21 @@ pub(super) enum IntrabcStackAdmission {
 /// default block vectors) and returns the block vector the decoded DRL index
 /// `ref_mv_idx` selects, so the caller can use the AVM-faithful candidate directly.
 ///
-/// Defers (returns `Defer`) when the § 7.12.2 spatial scan reaches a position this
-/// decoder does not model faithfully (`spatial.defer`), or when the decoded DRL
-/// index lands outside the built stack. `enable_refmvbank` is the AV2 sequence flag
-/// gating the § 7.12.2.21 bank fill.
+/// Defers (returns `Defer`) when:
+///
+/// * the § 7.12.2 spatial scan reaches a position this decoder does not model
+///   faithfully (`spatial.defer`); or
+/// * the spatial scan admits MORE THAN ONE distinct nearest candidate
+///   (`spatial.candidates.len() > 1`): AVM § 7.12.2.19 sorts the NEAREST spatial
+///   candidates by § 7.12.2.6 weight and swaps the max-weight one into slot 0 when
+///   `nearest_refmv_count > 1` (`mvref_common.c:2472`-`2493`, gated by
+///   `enable_drl_reorder`). This decoder does NOT model the per-candidate weights
+///   or that reorder, so a >1-candidate stack could place the wrong block vector in
+///   the DRL-selected slot. Fail closed until weights/sort are modelled. (For a
+///   single nearest candidate the swap loop is a no-op, so it stays admissible.) or
+/// * the decoded DRL index lands outside the built stack.
+///
+/// `enable_refmvbank` is the AV2 sequence flag gating the § 7.12.2.21 bank fill.
 pub(super) fn intrabc_ref_stack_admission(
     bank: &IntrabcRefMvBank,
     geometry: IntrabcStackGeometry,
@@ -664,7 +698,7 @@ pub(super) fn intrabc_ref_stack_admission(
     enable_refmvbank: bool,
     ref_mv_idx: usize,
 ) -> IntrabcStackAdmission {
-    if spatial.defer {
+    if spatial.defer || spatial.candidates.len() > 1 {
         return IntrabcStackAdmission::Defer;
     }
     let real_stack =
@@ -932,6 +966,33 @@ mod tests {
             intrabc_ref_stack_admission(&bank, ac0ej3_geometry(0, 112), &spatial, true, 0),
             IntrabcStackAdmission::Defer
         );
+    }
+
+    // A block whose spatial scan admits MORE THAN ONE distinct nearest candidate
+    // DEFERS (fail-closed): AVM § 7.12.2.19 may swap the max-weight candidate into
+    // slot 0 (`nearest_refmv_count > 1`), and this decoder does not model the
+    // weights/sort. A single nearest candidate still admits (the swap is a no-op).
+    #[test]
+    fn admission_defers_on_multiple_spatial_candidates() {
+        let bank = IntrabcRefMvBank::new(32);
+        let two = SpatialIntrabcScan {
+            candidates: vec![Mv { row: 0, col: -64 }, Mv { row: -512, col: 0 }],
+            defer: false,
+        };
+        assert_eq!(
+            intrabc_ref_stack_admission(&bank, ac0ej3_geometry(0, 240), &two, true, 0),
+            IntrabcStackAdmission::Defer,
+            "two distinct spatial candidates must defer until the §7.12.2.19 sort is modelled"
+        );
+        // The single-candidate case is unaffected (admits).
+        let one = SpatialIntrabcScan {
+            candidates: vec![Mv { row: 0, col: -64 }],
+            defer: false,
+        };
+        assert!(matches!(
+            intrabc_ref_stack_admission(&bank, ac0ej3_geometry(0, 240), &one, true, 0),
+            IntrabcStackAdmission::Admit { .. }
+        ));
     }
 
     // The § 7.12.2 spatial scan: a left-column IntrABC neighbour at the bottom-left
