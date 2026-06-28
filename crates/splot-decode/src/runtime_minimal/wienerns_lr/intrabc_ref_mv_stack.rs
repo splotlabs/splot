@@ -38,6 +38,10 @@ use super::super::inter::Mv;
 /// AVM `REF_MV_BANK_SIZE` (`av2/common/blockd.h:1787`): the IBC ref-MV bank holds
 /// at most four entries.
 const REF_MV_BANK_SIZE: usize = 4;
+/// The AV2 § 7.12.2 `MAX_REF_BV_STACK_SIZE` cap on Num_4x4_Blocks the adjacent
+/// SMVP scan reads on each axis (steps 11/12 gate `bh4 <= 16` / `bw4 <= 16`,
+/// `mvref_common.c:2403`/`2456`).
+const MAX_SMVP_AXIS_MI: usize = 16;
 /// AVM `MAX_RMB_SB_HITS` (`av2/common/av2_common_int.h:4271`).
 const MAX_RMB_SB_HITS: u32 = 64;
 /// AVM `BANK_1ST_UNIT_UPDATE_COUNT` (`av2/common/mvref_common.c:4581`).
@@ -290,23 +294,203 @@ pub(super) struct IntrabcStackGeometry {
     pub(super) max_bvp_drl_bits_minus_1: u32,
 }
 
+/// Block / tile geometry the AV2 § 7.12.2 spatial SMVP scan reads (MI units).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct SpatialScanGeometry {
+    /// Block MI row.
+    pub(super) mi_row: usize,
+    /// Block MI column.
+    pub(super) mi_col: usize,
+    /// Block width in 4x4 MI units (`bw4`).
+    pub(super) n4w: usize,
+    /// Block height in 4x4 MI units (`bh4`).
+    pub(super) n4h: usize,
+    /// Tile MI row count (the ac0ej3 single tile spans the frame).
+    pub(super) mi_rows: usize,
+    /// Tile MI column count.
+    pub(super) mi_cols: usize,
+    /// Superblock side length in MI units (`mib_size`).
+    pub(super) sb_size4: usize,
+}
+
+/// Outcome of the AV2 § 7.12.2 spatial SMVP scan for an IntrABC block.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct SpatialIntrabcScan {
+    /// Spatial IntrABC neighbour block vectors in AV2 § 7.12.2 step order
+    /// (deduped by value), contributed to the ref-MV stack BEFORE the
+    /// § 7.12.2.21 ref-MV-bank fill and § 7.12.2.20 default fill.
+    pub(super) candidates: Vec<Mv>,
+    /// `true` when an unmodelled § 7.12.2 spatial position (an above-row probe
+    /// or the § 7.12.2.5 deltaCol = -3 non-adjacent scan) holds an IntrABC
+    /// neighbour: the scan cannot be reproduced faithfully there, so the caller
+    /// must over-reject (defer) rather than emit a desynced stack.
+    pub(super) defer: bool,
+}
+
+/// AV2 § 7.12.2 spatial SMVP scan for an IntrABC block (`is_intrabc == 1`).
+///
+/// The adjacent SMVP search (§ 7.12.2 steps 7-14, `mvref_common.c:2362`-`2456`)
+/// invokes § 7.12.2.6 Scan point at the left-column positions
+/// `(deltaRow, deltaCol)`:
+///
+/// * step 7: `(bh4 - 1, -1)` — bottom of the left column;
+/// * step 9 (`bh4 >= 2`): `(0, -1)` — top of the left column.
+///
+/// For `is_intrabc == 1`, § 7.12.2.4 Add reference motion vector only admits a
+/// neighbour that is itself an IntrABC block (`add_ref_mv_candidate` requires
+/// `is_intrabc == is_intrabc_block(candidate)`, `mvref_common.c:834`), adding its
+/// recorded block vector deduped by value (`mvref_common.c:874`).
+///
+/// This models the two unconditionally-decoded left-column positions exactly (the
+/// only spatial positions that contribute for the ac0ej3 frame-0 row-0 IntrABC
+/// walk, verified against the AVM `setup_ref_mv_list` dump). Every other
+/// § 7.12.2 spatial position needs neighbour availability state this decoder does
+/// not model:
+///
+/// * the step-11 below-bottom-left probe `(bh4, -1)`, gated in AVM by
+///   `has_bottom_left` / `is_mi_coded` decode-order state (`mvref_common.c:1601`);
+/// * the above-row probes (steps 8/10/12 and the step-14 above-left, all
+///   `deltaRow = -1`);
+/// * the § 7.12.2.5 deltaCol = -3 non-adjacent scan.
+///
+/// The scan reports `defer` when one of those unmodelled positions holds an
+/// IntrABC neighbour whose block vector is NOT already a modelled candidate — a
+/// value that would extend the stack with a candidate this decoder cannot place
+/// faithfully. A position whose block vector duplicates a modelled candidate adds
+/// nothing in AVM either (§ 7.12.2.4 dedup, or the § 7.12.2.5 `is_valid_candidate`
+/// same-block skip, `mvref_common.c:2095`), so it does not force a defer. `lookup(
+/// row, col)` returns the recorded block vector of an IntrABC block at MI `(row,
+/// col)`, or `None`.
+pub(super) fn spatial_intrabc_scan(
+    geometry: SpatialScanGeometry,
+    lookup: impl Fn(usize, usize) -> Option<Mv>,
+) -> SpatialIntrabcScan {
+    let row = geometry.mi_row;
+    let col = geometry.mi_col;
+    let bh4 = geometry.n4h;
+
+    let mut candidates: Vec<Mv> = Vec::new();
+    // Modelled left-column positions (deltaCol = -1) in AV2 § 7.12.2 step order.
+    if let Some(left_col) = col.checked_sub(1) {
+        // Step 7: (bh4 - 1, -1).
+        if let Some(r) = row.checked_add(bh4.saturating_sub(1)) {
+            push_deduped(&geometry, &lookup, &mut candidates, r, left_col);
+        }
+        // Step 9: (0, -1) when bh4 >= 2.
+        if bh4 >= 2 {
+            push_deduped(&geometry, &lookup, &mut candidates, row, left_col);
+        }
+    }
+
+    // Unmodelled positions: defer only if one holds a NEW IntrABC block vector.
+    let defer = spatial_scan_unmodelled_has_new_bv(&geometry, &lookup, &candidates);
+
+    SpatialIntrabcScan { candidates, defer }
+}
+
+/// Adds an IntrABC neighbour block vector at MI `(row_offset, left_col)` to the
+/// running spatial candidate list, deduped by value (AV2 § 7.12.2.4
+/// `mvref_common.c:874`).
+fn push_deduped(
+    geometry: &SpatialScanGeometry,
+    lookup: &impl Fn(usize, usize) -> Option<Mv>,
+    candidates: &mut Vec<Mv>,
+    row_offset: usize,
+    left_col: usize,
+) {
+    if let Some(mv) = lookup_in_grid(geometry, lookup, row_offset, left_col)
+        && !candidates.contains(&mv)
+    {
+        candidates.push(mv);
+    }
+}
+
+/// Whether any AV2 § 7.12.2 spatial position this decoder does NOT model exactly
+/// (the step-11 below-bottom-left probe, the above-row probes, and the
+/// § 7.12.2.5 deltaCol = -3 non-adjacent scan) holds an IntrABC neighbour whose
+/// block vector is NOT already a modelled candidate. A duplicate block vector
+/// contributes nothing in AVM, so it does not force a defer; a new one would
+/// extend the stack unfaithfully, so it does.
+fn spatial_scan_unmodelled_has_new_bv(
+    geometry: &SpatialScanGeometry,
+    lookup: &impl Fn(usize, usize) -> Option<Mv>,
+    modelled: &[Mv],
+) -> bool {
+    let row = geometry.mi_row;
+    let col = geometry.mi_col;
+    let bw4 = geometry.n4w;
+    let is_new = |mv: Option<Mv>| mv.is_some_and(|mv| !modelled.contains(&mv));
+    // Step-11 below-bottom-left probe (bh4, -1), gated by has_bottom_left state.
+    if geometry.n4h <= MAX_SMVP_AXIS_MI
+        && let Some(left_col) = col.checked_sub(1)
+        && let Some(r) = row.checked_add(geometry.n4h)
+        && is_new(lookup_in_grid(geometry, lookup, r, left_col))
+    {
+        return true;
+    }
+    // Above-row probes (deltaRow = -1). At the frame top edge there is no above
+    // row, so nothing is read; otherwise over-scan the above row from the
+    // step-14 above-left column out to the top-right column.
+    if let Some(above) = row.checked_sub(1) {
+        let is_sb_border = geometry.sb_size4 != 0 && row.is_multiple_of(geometry.sb_size4);
+        let extra_left = if is_sb_border { 2 + (col & 1) } else { 1 };
+        let leftmost = col.saturating_sub(extra_left);
+        let rightmost = col.saturating_add(bw4); // inclusive of the top-right col
+        for c in leftmost..=rightmost {
+            if is_new(lookup_in_grid(geometry, lookup, above, c)) {
+                return true;
+            }
+        }
+    }
+    // § 7.12.2.5 deltaCol = -3 non-adjacent left scan: positions (bh4 - 1, -3) and
+    // (0, -3). AVM's `is_valid_candidate` skips a position that is the same block
+    // as the adjacent deltaCol = -1 column; a same-block read has the same recorded
+    // block vector, so the modelled-dedup test below subsumes that skip.
+    if let Some(deep_col) = col.checked_sub(3) {
+        let bottom = row.checked_add(geometry.n4h.saturating_sub(1));
+        let probes = [bottom, Some(row)];
+        for r in probes.into_iter().flatten() {
+            if is_new(lookup_in_grid(geometry, lookup, r, deep_col)) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Looks up an IntrABC neighbour block vector at MI `(row, col)`, bounded to the
+/// tile (AV2 § 7.12.2 `is_inside`, which for the ac0ej3 single tile reduces to a
+/// grid-bounds test).
+fn lookup_in_grid(
+    geometry: &SpatialScanGeometry,
+    lookup: &impl Fn(usize, usize) -> Option<Mv>,
+    row: usize,
+    col: usize,
+) -> Option<Mv> {
+    if row >= geometry.mi_rows || col >= geometry.mi_cols {
+        return None;
+    }
+    lookup(row, col)
+}
+
 /// Builds the AV2 § 7.12.2 IBC ref-MV stack for an IntrABC block, given the
 /// already-populated tile ref-MV bank (the state AVM holds when the block is
-/// decoded). Returns the candidate stack (capped at `max_bvp_drl_bits_minus_1 +
-/// 2`).
+/// decoded) and the § 7.12.2 spatial SMVP candidates. Returns the candidate stack
+/// (capped at `max_bvp_drl_bits_minus_1 + 2`).
 ///
 /// `enable_refmvbank` is the AV2 sequence-header flag: when `false` the § 7.12.2.21
 /// ref-MV-bank fill is skipped entirely (AV2 only runs it when `enable_refmvbank ==
-/// 1`), so the stack is default-fill only.
+/// 1`), so the stack is spatial + default-fill only.
 ///
-/// The spatial scan is NOT executed here: this is called only after the caller has
-/// proven the spatial scan contributes no IBC candidate (every reachable ac0ej3
-/// frame-0 IntrABC block has only the bank + default candidates). If the spatial
-/// scan could contribute, the caller defers.
+/// `spatial` is the § 7.12.2 spatial SMVP scan result: its candidates are added to
+/// the stack first (AVM adds them to `ref_mv_stack` before the § 7.12.2.21 bank
+/// fill and the § 7.12.2.20 default fill, `mvref_common.c:2362`-`2711`), and the
+/// later bank candidates are deduped against them (`check_rmb_cand`).
 pub(super) fn build_intrabc_ref_mv_stack(
     bank: &IntrabcRefMvBank,
     geometry: IntrabcStackGeometry,
     enable_refmvbank: bool,
+    spatial: &[Mv],
 ) -> Vec<Mv> {
     let max_count = usize::try_from(geometry.max_bvp_drl_bits_minus_1)
         .ok()
@@ -326,6 +510,14 @@ pub(super) fn build_intrabc_ref_mv_stack(
         frame_h: geometry.frame_h,
     };
     let mut stack: Vec<Mv> = Vec::new();
+
+    // § 7.12.2 spatial SMVP scan candidates (already deduped, in step order).
+    for &cand in spatial {
+        if stack.len() >= max_count {
+            break;
+        }
+        stack.push(cand);
+    }
 
     // § 7.12.2.21 fill from ref mv bank: iterate the bank in reverse (LIFO). Only
     // when `enable_refmvbank == 1` (AV2 gates both the fill and the bank update on
@@ -358,6 +550,48 @@ pub(super) fn build_intrabc_ref_mv_stack(
         stack.push(mv);
     }
     stack
+}
+
+/// The AV2 § 7.12.2 IntrABC ref-MV stack admission decision for one block.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum IntrabcStackAdmission {
+    /// The real § 7.12.2 stack was built faithfully; `selected` is the predictor
+    /// block vector the decoded DRL index picks (`RefStackMv[ref_mv_idx]`).
+    Admit {
+        /// `RefStackMv[ref_mv_idx]`: the predictor the IntrABC mode adds the MV
+        /// delta to (NEWMV) or uses directly (NEARMV).
+        selected: Mv,
+    },
+    /// The § 7.12.2 spatial scan reaches an unmodelled position, or the decoded
+    /// DRL index lands outside the built stack: over-reject.
+    Defer,
+}
+
+/// Decides AV2 § 7.12.2 IntrABC ref-MV stack admission: builds the real stack
+/// (§ 7.12.2 spatial scan candidates + § 7.12.2.21 ref-MV bank fill + § 7.12.2.20
+/// default block vectors) and returns the block vector the decoded DRL index
+/// `ref_mv_idx` selects, so the caller can use the AVM-faithful candidate directly.
+///
+/// Defers (returns `Defer`) when the § 7.12.2 spatial scan reaches a position this
+/// decoder does not model faithfully (`spatial.defer`), or when the decoded DRL
+/// index lands outside the built stack. `enable_refmvbank` is the AV2 sequence flag
+/// gating the § 7.12.2.21 bank fill.
+pub(super) fn intrabc_ref_stack_admission(
+    bank: &IntrabcRefMvBank,
+    geometry: IntrabcStackGeometry,
+    spatial: &SpatialIntrabcScan,
+    enable_refmvbank: bool,
+    ref_mv_idx: usize,
+) -> IntrabcStackAdmission {
+    if spatial.defer {
+        return IntrabcStackAdmission::Defer;
+    }
+    let real_stack =
+        build_intrabc_ref_mv_stack(bank, geometry, enable_refmvbank, &spatial.candidates);
+    match real_stack.get(ref_mv_idx).copied() {
+        Some(selected) => IntrabcStackAdmission::Admit { selected },
+        None => IntrabcStackAdmission::Defer,
+    }
 }
 
 /// AVM `INTRABC_DELAY_PIXELS` (`av2/common/mvref_common.h:610`).
@@ -403,7 +637,7 @@ mod tests {
         bank.record_block(16, 56, 8, 16, true, Some(Mv { row: -512, col: 0 }));
         assert_eq!(bank.entries(), [Mv { row: -512, col: 0 }]);
 
-        let stack = build_intrabc_ref_mv_stack(&bank, ac0ej3_geometry(0, 112), true);
+        let stack = build_intrabc_ref_mv_stack(&bank, ac0ej3_geometry(0, 112), true, &[]);
         assert_eq!(
             stack,
             vec![
@@ -429,7 +663,7 @@ mod tests {
             [Mv { row: -512, col: 0 }, Mv { row: 0, col: -256 }]
         );
 
-        let stack = build_intrabc_ref_mv_stack(&bank, ac0ej3_geometry(0, 232), true);
+        let stack = build_intrabc_ref_mv_stack(&bank, ac0ej3_geometry(0, 232), true, &[]);
         assert_eq!(
             stack,
             vec![
@@ -502,7 +736,7 @@ mod tests {
         bank.enter_block_superblock(32, 8);
         assert!(bank.entries().is_empty());
         // ...so the stack built for that block is default-only (no stale candidate).
-        let stack = build_intrabc_ref_mv_stack(&bank, ac0ej3_geometry(32, 8), true);
+        let stack = build_intrabc_ref_mv_stack(&bank, ac0ej3_geometry(32, 8), true, &[]);
         assert_eq!(
             stack,
             vec![
@@ -514,24 +748,158 @@ mod tests {
         );
     }
 
-    // `enable_refmvbank == 0` makes AV2 run NO § 7.12.2.21 ref-MV-bank fill, so the
-    // bank state is ignored and the stack is the four default block vectors only --
-    // even when the bank holds a candidate that would otherwise reorder it. The
-    // live path passes this flag through from the sequence header.
+    /// No spatial candidate, no defer.
+    fn no_spatial() -> SpatialIntrabcScan {
+        SpatialIntrabcScan {
+            candidates: Vec::new(),
+            defer: false,
+        }
+    }
+
+    // ac0ej3 frame-0 MI(0,112): the bank's MI(16,56) candidate is rejected on the
+    // frame boundary, so the real stack is default-only and the DRL index (3)
+    // selects the default tail (0,-256) -> ADMIT with that BV.
     #[test]
-    fn stack_is_default_only_when_refmvbank_disabled() {
+    fn admission_admits_ac0ej3_mi_0_112_default_only() {
+        let mut bank = IntrabcRefMvBank::new(32);
+        bank.record_block(16, 56, 8, 16, true, Some(Mv { row: -512, col: 0 }));
+        assert_eq!(
+            intrabc_ref_stack_admission(&bank, ac0ej3_geometry(0, 112), &no_spatial(), true, 3),
+            IntrabcStackAdmission::Admit {
+                selected: Mv { row: 0, col: -256 },
+            }
+        );
+    }
+
+    // ac0ej3 frame-0 MI(0,232): the bank [(-512,0),(0,-256)] LIFO-reorders the stack
+    // to [(0,-256),(-1024,0),(0,-3072),(-512,0)]; DRL index 2 selects (0,-3072), the
+    // BV AVM records for this block. With `enable_refmvbank` OFF, AVM runs no bank
+    // fill, so the stack is the default-only [(-1024,0),(0,-3072),(-512,0),(0,-256)]
+    // and DRL index 2 selects the default (-512,0).
+    #[test]
+    fn admission_selects_ac0ej3_mi_0_232_bank_reordered_bv() {
         let mut bank = IntrabcRefMvBank::new(32);
         bank.record_block(16, 56, 8, 16, true, Some(Mv { row: -512, col: 0 }));
         bank.record_block(0, 112, 8, 16, true, Some(Mv { row: 0, col: -256 }));
-        let stack = build_intrabc_ref_mv_stack(&bank, ac0ej3_geometry(0, 232), false);
+        let decide = |enable_refmvbank| {
+            intrabc_ref_stack_admission(
+                &bank,
+                ac0ej3_geometry(0, 232),
+                &no_spatial(),
+                enable_refmvbank,
+                2,
+            )
+        };
+        assert_eq!(
+            decide(true),
+            IntrabcStackAdmission::Admit {
+                selected: Mv { row: 0, col: -3072 },
+            }
+        );
+        assert_eq!(
+            decide(false),
+            IntrabcStackAdmission::Admit {
+                selected: Mv { row: -512, col: 0 },
+            }
+        );
+    }
+
+    // ac0ej3 frame-0 MI(0,240): the § 7.12.2 spatial scan adds the left neighbour
+    // MI(0,232)'s BV (0,-3072) first; the bank [(-512,0),(0,-256),(0,-3072)] LIFO
+    // fill dedups (0,-3072), admits (0,-256), rejects (-512,0); defaults fill the
+    // rest. The DRL index 0 selects the spatial BV (0,-3072), matching the AVM
+    // `setup_ref_mv_list` dump `stack=[(r0,c-3072)(r0,c-256)(r-1024,c0)(r0,c-3072)]
+    // drl=0`.
+    #[test]
+    fn admission_selects_ac0ej3_mi_0_240_spatial_bv() {
+        let mut bank = IntrabcRefMvBank::new(32);
+        bank.record_block(16, 56, 8, 16, true, Some(Mv { row: -512, col: 0 }));
+        bank.record_block(0, 112, 8, 16, true, Some(Mv { row: 0, col: -256 }));
+        bank.record_block(0, 232, 8, 16, true, Some(Mv { row: 0, col: -3072 }));
+        let spatial = SpatialIntrabcScan {
+            candidates: vec![Mv { row: 0, col: -3072 }],
+            defer: false,
+        };
+        let stack =
+            build_intrabc_ref_mv_stack(&bank, ac0ej3_geometry(0, 240), true, &spatial.candidates);
         assert_eq!(
             stack,
             vec![
+                Mv { row: 0, col: -3072 },
+                Mv { row: 0, col: -256 },
                 Mv { row: -1024, col: 0 },
                 Mv { row: 0, col: -3072 },
-                Mv { row: -512, col: 0 },
-                Mv { row: 0, col: -256 },
             ]
         );
+        assert_eq!(
+            intrabc_ref_stack_admission(&bank, ac0ej3_geometry(0, 240), &spatial, true, 0),
+            IntrabcStackAdmission::Admit {
+                selected: Mv { row: 0, col: -3072 },
+            }
+        );
+    }
+
+    // An unmodelled § 7.12.2 spatial position holding an IntrABC neighbour defers.
+    #[test]
+    fn admission_defers_on_unmodelled_spatial_intrabc() {
+        let bank = IntrabcRefMvBank::new(32);
+        let spatial = SpatialIntrabcScan {
+            candidates: Vec::new(),
+            defer: true,
+        };
+        assert_eq!(
+            intrabc_ref_stack_admission(&bank, ac0ej3_geometry(0, 112), &spatial, true, 0),
+            IntrabcStackAdmission::Defer
+        );
+    }
+
+    // The § 7.12.2 spatial scan: a left-column IntrABC neighbour at the bottom-left
+    // position (step 7) contributes its BV; an above-row IntrABC neighbour forces a
+    // (safe) defer.
+    #[test]
+    fn spatial_scan_adds_left_neighbour_and_defers_on_above_neighbour() {
+        let geom = SpatialScanGeometry {
+            mi_row: 4,
+            mi_col: 8,
+            n4w: 4,
+            n4h: 4,
+            mi_rows: 64,
+            mi_cols: 64,
+            sb_size4: 32,
+        };
+        // Left neighbour at the bottom-left (step 7) position (mi_row+bh4-1, mi_col-1)
+        // = (7, 7) is IntrABC with BV (0, -64).
+        let left_only = spatial_intrabc_scan(geom, |row, col| {
+            (row == 7 && col == 7).then_some(Mv { row: 0, col: -64 })
+        });
+        assert_eq!(left_only.candidates, vec![Mv { row: 0, col: -64 }]);
+        assert!(!left_only.defer);
+        // An above-row IntrABC neighbour at (3, 8) is unmodelled -> defer.
+        let above = spatial_intrabc_scan(geom, |row, col| {
+            (row == 3 && col == 8).then_some(Mv { row: -8, col: 0 })
+        });
+        assert!(above.defer);
+    }
+
+    // The § 7.12.2 spatial scan dedups by value: the same neighbour read at both the
+    // step-7 (bh4-1,-1) and step-9 (0,-1) left-column positions contributes once.
+    #[test]
+    fn spatial_scan_dedups_same_left_neighbour() {
+        let geom = SpatialScanGeometry {
+            mi_row: 0,
+            mi_col: 8,
+            n4w: 8,
+            n4h: 16,
+            mi_rows: 64,
+            mi_cols: 64,
+            sb_size4: 32,
+        };
+        // The left column the block spans (rows 0..=15) holds the SAME IntrABC
+        // neighbour BV; the step-11 below-bottom-left position (16,7) is NOT IBC.
+        let scan = spatial_intrabc_scan(geom, |row, col| {
+            (col == 7 && row < 16).then_some(Mv { row: 0, col: -3072 })
+        });
+        assert_eq!(scan.candidates, vec![Mv { row: 0, col: -3072 }]);
+        assert!(!scan.defer);
     }
 }

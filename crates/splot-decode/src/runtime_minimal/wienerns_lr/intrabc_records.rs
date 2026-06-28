@@ -21,7 +21,8 @@ use super::super::inter::{
     },
 };
 use super::intrabc_ref_mv_stack::{
-    IntrabcRefMvBank, IntrabcStackGeometry, build_intrabc_ref_mv_stack,
+    IntrabcRefMvBank, IntrabcStackAdmission, IntrabcStackGeometry, SpatialIntrabcScan,
+    SpatialScanGeometry, intrabc_ref_stack_admission, spatial_intrabc_scan,
 };
 use super::recon::WienerNsLrReconSink;
 use super::{intra_capped_seq_sb_size, wienerns_lr_selectable_transform_record_error_reason};
@@ -30,9 +31,6 @@ const BLOCK_64X64: usize = 12;
 const MI_SIZE: usize = 4;
 const INTRABC_CONTEXT_MAX: usize = 2;
 const SKIP_CONTEXT_MAX: usize = 2;
-/// AVM `INTRABC_DELAY_PIXELS`; only the default-only test fallback reads it.
-#[cfg(test)]
-const INTRABC_DELAY_PIXELS: i32 = 256;
 
 /// Result of the §5.20.5.3 `use_intrabc` / `read_skip` prefix.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -439,110 +437,44 @@ impl TileIntrabcPreludeState {
             })
     }
 
-    /// Returns whether the AV2 § 7.12.2 spatial SMVP scan could contribute an
-    /// IntrABC candidate to the current block's ref-MV stack.
-    ///
-    /// For `is_intrabc == 1`, § 7.12.2.6 Scan point / § 7.12.2.5 Scan col only add
-    /// a candidate when the scanned neighbour is itself an IntrABC block
-    /// (`add_ref_mv_candidate` requires `is_intrabc == is_intrabc_block(candidate)`,
-    /// `mvref_common.c:834`). This decoder does not yet model the spatial-scan
-    /// ordering/availability faithfully, so it scans a SUPERSET of the positions
-    /// AV2 reads — every left-column, above-row, top-right, top-left and
-    /// `scan_col(-3)` MI position adjacent to the block — and reports `true` if ANY
-    /// holds an IntrABC neighbour. Over-reporting only forces a (safe) defer; it
-    /// never produces a wrong stack. At an SB-row boundary (§ 7.12.2 `isSbBorder`)
-    /// the § 7.12.2 step-14 above-left probe is `deltaCol = -1 - isSbBorder == -2`,
-    /// then § 7.12.2.6 Scan point aligns it `deltaCol -= MiCol & 1`, so the leftmost
-    /// above-row column extends to `MiCol - 2 - (MiCol & 1)`.
-    fn spatial_scan_has_intrabc_neighbour(&self, geometry: IntrabcBlockGeometry) -> bool {
-        let row = geometry.block.row;
-        let col = geometry.block.col;
-        let n4w = geometry.n4w;
-        let n4h = geometry.n4h;
-        // Left column (and the deeper scan_col deltaCol = -3): every MI row the
-        // block spans, plus the bottom-left and top-left corners.
-        let left_cols: [Option<usize>; 2] = [col.checked_sub(1), col.checked_sub(3)];
-        let above_row = row.checked_sub(1);
-        // Left/scan-col span: rows [row - 1 .. row + n4h] (top-left corner down to
-        // bottom-left), bounded to the grid.
-        for left_col in left_cols.into_iter().flatten() {
-            let top = row.saturating_sub(1);
-            let bottom = row.saturating_add(n4h); // inclusive of the bottom-left row
-            for r in top..=bottom {
-                if self.position_is_intrabc(r, left_col) {
-                    return true;
-                }
-            }
-        }
-        // Above row: columns [leftmost .. col + n4w] (the step-14 / top-left corner
-        // across to the top-right), where leftmost covers the SB-border probe.
-        if let Some(above) = above_row {
-            let is_sb_border = self.sb_size4 != 0 && row.is_multiple_of(self.sb_size4);
-            let extra_left = if is_sb_border { 2 + (col & 1) } else { 1 };
-            let leftmost = col.saturating_sub(extra_left);
-            let rightmost = col.saturating_add(n4w); // inclusive of the top-right col
-            for c in leftmost..=rightmost {
-                if self.position_is_intrabc(above, c) {
-                    return true;
-                }
-            }
-        }
-        false
+    /// Runs the AV2 § 7.12.2 spatial SMVP scan for the IntrABC block `geometry`,
+    /// returning the ordered, deduped spatial neighbour block vectors plus a defer
+    /// flag (see [`spatial_intrabc_scan`]). The scan reads each MI position's
+    /// recorded IntrABC block vector from this tile's mode-info grid.
+    fn spatial_intrabc_scan(&self, geometry: IntrabcBlockGeometry) -> SpatialIntrabcScan {
+        let scan_geometry = SpatialScanGeometry {
+            mi_row: geometry.block.row,
+            mi_col: geometry.block.col,
+            n4w: geometry.n4w,
+            n4h: geometry.n4h,
+            mi_rows: self.mi_rows,
+            mi_cols: self.mi_cols,
+            sb_size4: self.sb_size4,
+        };
+        spatial_intrabc_scan(scan_geometry, |row, col| self.block_vector_at(row, col))
     }
 
-    /// Whether MI `(row, col)` holds a recorded IntrABC block (and is in range).
-    fn position_is_intrabc(&self, row: usize, col: usize) -> bool {
+    /// The recorded block vector of the IntrABC block at MI `(row, col)`, or `None`
+    /// when the position is out of range, not coded, or not an IntrABC block.
+    fn block_vector_at(&self, row: usize, col: usize) -> Option<Mv> {
         if row >= self.mi_rows || col >= self.mi_cols {
-            return false;
+            return None;
         }
-        self.values
+        let facts = self
+            .values
             .get(row * self.mi_cols + col)
             .copied()
-            .flatten()
-            .is_some_and(|facts| facts.use_intrabc)
+            .flatten()?;
+        if !facts.use_intrabc {
+            return None;
+        }
+        facts.block_mv.map(Mv::from)
     }
 
     /// The tile ref-MV bank (the § 7.12.2 IntrABC bank state as of the last
     /// recorded block).
     fn bank(&self) -> &IntrabcRefMvBank {
         &self.bank
-    }
-
-    /// Builds the real AV2 § 7.12.2 IntrABC ref-MV stack (§ 7.12.2.21 ref-MV-bank
-    /// fill + § 7.12.2.20 default search) the decoded DRL index selects into. The
-    /// assign path and sink copy read `stack[ref_mv_idx]` from this list (NOT the
-    /// bounded default-only fallback), so a bank-reordered block reconstructs with
-    /// its correct BV. DEFERS when the § 7.12.2 spatial SMVP scan could contribute an
-    /// unmodelled IntrABC candidate; over-reject is safe (skip-IBC entropy is
-    /// BV-value-independent, so the walk still advances).
-    fn intrabc_real_ref_mv_stack(
-        &self,
-        sequence: &SequenceHeader,
-        geometry: IntrabcBlockGeometry,
-        max_bvp_drl_bits_minus_1: u32,
-        tile_offset: ByteOffset,
-    ) -> Result<Vec<Mv>> {
-        if self.spatial_scan_has_intrabc_neighbour(geometry) {
-            return Err(wienerns_lr_selectable_transform_record_error_reason(
-                tile_offset,
-                "unsupported_wienerns_lr_selectable_transform_records_intrabc_ref_stack",
-            ));
-        }
-        let stack_geometry = IntrabcStackGeometry {
-            mi_row: geometry.block.row,
-            mi_col: geometry.block.col,
-            n4w: geometry.n4w,
-            n4h: geometry.n4h,
-            sb_samples: superblock_samples(sequence, tile_offset)?,
-            frame_w: i32::try_from(self.mi_cols.saturating_mul(MI_SIZE)).unwrap_or(i32::MAX),
-            frame_h: i32::try_from(self.mi_rows.saturating_mul(MI_SIZE)).unwrap_or(i32::MAX),
-            max_bvp_drl_bits_minus_1,
-        };
-        Ok(build_intrabc_ref_mv_stack(
-            self.bank(),
-            stack_geometry,
-            self.enable_refmvbank,
-        ))
     }
 }
 
@@ -602,22 +534,8 @@ pub(super) fn read_intrabc_info(
     tile_offset: ByteOffset,
 ) -> Result<IntrabcInfo> {
     let syntax = read_intrabc_info_syntax(cdfs, symbols, sequence, core, tile_offset)?;
-    // §7.12.2 Find MV stack: the §7.12.2.21 ref-MV-bank fill can REORDER the stack
-    // relative to the bounded default-only fallback (e.g. ac0ej3 MI(0,232) selects
-    // the bank candidate (0,-256) at DRL 0), so the assign path and sink copy below
-    // read the selected BV from this REAL stack to reconstruct it bit-exact.
-    let real_stack = state.intrabc_real_ref_mv_stack(
-        sequence,
-        geometry,
-        syntax.max_bvp_drl_bits_minus_1,
-        tile_offset,
-    )?;
-    let pred_mv = real_stack.get(syntax.ref_mv_idx).copied().ok_or_else(|| {
-        wienerns_lr_selectable_transform_record_error_reason(
-            tile_offset,
-            "unsupported_wienerns_lr_selectable_transform_records_intrabc_ref_mv_idx_out_of_range",
-        )
-    })?;
+    let pred_mv =
+        ensure_intrabc_ref_stack_supported(state, sequence, geometry, syntax, tile_offset)?;
     let info =
         finish_intrabc_info_record(cdfs, symbols, sequence, core, syntax, pred_mv, tile_offset)?;
     let prediction = derive_intrabc_luma_prediction_geometry(core, geometry, info, tile_offset)?;
@@ -658,9 +576,6 @@ pub(super) fn read_intrabc_info(
     Ok(info)
 }
 
-/// Test-only path for default-only-stack IntrABC fixtures: select the §7.12.2
-/// predicted BV from the bounded default fill (the live [`read_intrabc_info`]
-/// instead selects from the REAL ref-MV stack) and finish the record.
 #[cfg(test)]
 fn read_intrabc_info_record(
     cdfs: &mut TileCdfSubset,
@@ -670,14 +585,23 @@ fn read_intrabc_info_record(
     geometry: IntrabcBlockGeometry,
     tile_offset: ByteOffset,
 ) -> Result<IntrabcInfo> {
+    use super::intrabc_ref_mv_stack::build_intrabc_ref_mv_stack;
     let syntax = read_intrabc_info_syntax(cdfs, symbols, sequence, core, tile_offset)?;
-    let stack = intrabc_ref_stack_with_limit(
-        sequence,
-        geometry,
-        syntax.max_bvp_drl_bits_minus_1,
-        tile_offset,
-    )?;
-    let pred_mv = stack.get(syntax.ref_mv_idx).copied().ok_or_else(|| {
+    // These geometry tests have no neighbours: the §7.12.2 stack is bank-empty +
+    // spatial-empty, i.e. the §7.12.2.20 default fill, and `pred_mv` is its
+    // `RefStackMv[ref_mv_idx]` (the same entry the live admission path selects).
+    let stack_geometry = IntrabcStackGeometry {
+        mi_row: geometry.block.row,
+        mi_col: geometry.block.col,
+        n4w: geometry.n4w,
+        n4h: geometry.n4h,
+        sb_samples: superblock_samples(sequence, tile_offset)?,
+        frame_w: i32::MAX,
+        frame_h: i32::MAX,
+        max_bvp_drl_bits_minus_1: syntax.max_bvp_drl_bits_minus_1,
+    };
+    let stack = build_intrabc_ref_mv_stack(&IntrabcRefMvBank::new(0), stack_geometry, false, &[]);
+    let pred_mv = *stack.get(syntax.ref_mv_idx).ok_or_else(|| {
         wienerns_lr_selectable_transform_record_error_reason(
             tile_offset,
             "unsupported_wienerns_lr_selectable_transform_records_intrabc_ref_mv_idx_out_of_range",
@@ -769,6 +693,48 @@ fn read_intrabc_info_syntax(
     })
 }
 
+/// AV2 § 7.12.2 IntrABC ref-MV stack admission gate.
+///
+/// Builds the real § 7.12.2 stack (the § 7.12.2 spatial SMVP scan + the
+/// § 7.12.2.21 ref-MV-bank fill + the § 7.12.2.20 default block vectors) and, on
+/// admit, returns the predictor block vector `RefStackMv[ref_mv_idx]` the decoded
+/// DRL index selects, so [`assign_intrabc_mv`] uses the AVM-faithful candidate.
+/// DEFERS when the § 7.12.2 spatial scan reaches a position this decoder does not
+/// model faithfully, or when the DRL index lands outside the built stack.
+fn ensure_intrabc_ref_stack_supported(
+    state: &TileIntrabcPreludeState,
+    sequence: &SequenceHeader,
+    geometry: IntrabcBlockGeometry,
+    syntax: IntrabcInfoSyntax,
+    tile_offset: ByteOffset,
+) -> Result<Mv> {
+    let stack_geometry = IntrabcStackGeometry {
+        mi_row: geometry.block.row,
+        mi_col: geometry.block.col,
+        n4w: geometry.n4w,
+        n4h: geometry.n4h,
+        sb_samples: superblock_samples(sequence, tile_offset)?,
+        frame_w: i32::try_from(state.mi_cols.saturating_mul(MI_SIZE)).unwrap_or(i32::MAX),
+        frame_h: i32::try_from(state.mi_rows.saturating_mul(MI_SIZE)).unwrap_or(i32::MAX),
+        max_bvp_drl_bits_minus_1: syntax.max_bvp_drl_bits_minus_1,
+    };
+    let spatial = state.spatial_intrabc_scan(geometry);
+    match intrabc_ref_stack_admission(
+        state.bank(),
+        stack_geometry,
+        &spatial,
+        state.enable_refmvbank,
+        syntax.ref_mv_idx,
+    ) {
+        IntrabcStackAdmission::Admit { selected } => Ok(selected),
+        IntrabcStackAdmission::Defer => Err(wienerns_lr_selectable_transform_record_error_reason(
+            tile_offset,
+            "unsupported_wienerns_lr_selectable_transform_records_intrabc_ref_stack",
+        )),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn finish_intrabc_info_record(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
@@ -778,8 +744,9 @@ fn finish_intrabc_info_record(
     pred_mv: Mv,
     tile_offset: ByteOffset,
 ) -> Result<IntrabcInfo> {
-    // `pred_mv` is `real_stack[ref_mv_idx]` from the caller's §7.12.2 Find MV stack:
-    // NEARMV (mode 1) copies it verbatim, NEWMV (mode 0) adds the §5.20.7.27 MVD.
+    // `pred_mv` is `RefStackMv[ref_mv_idx]` from the real §7.12.2 stack the live
+    // path built (spatial scan + ref-MV bank + default fill); the assign path adds
+    // the §5.20.5.4 MV delta to it (NEWMV) or uses it directly (NEARMV).
     let block_mv = assign_intrabc_mv(
         cdfs,
         symbols,
@@ -1352,91 +1319,6 @@ fn intrabc_luma_source_envelope(
     })
 }
 
-/// The bounded default-only §7.12.2.20 IntrABC fallback stack (four default block
-/// vectors, no ref-MV-bank fill). Test-only: the live path builds the REAL §7.12.2
-/// stack via [`TileIntrabcPreludeState::intrabc_real_ref_mv_stack`].
-#[cfg(test)]
-fn intrabc_ref_stack_with_limit(
-    sequence: &SequenceHeader,
-    geometry: IntrabcBlockGeometry,
-    max_bvp_drl_bits_minus_1: u32,
-    tile_offset: ByteOffset,
-) -> Result<Vec<Mv>> {
-    let max_count = usize::try_from(max_bvp_drl_bits_minus_1)
-        .ok()
-        .and_then(|value| value.checked_add(2))
-        .ok_or_else(|| {
-            wienerns_lr_selectable_transform_record_error_reason(
-                tile_offset,
-                "unsupported_wienerns_lr_selectable_transform_records_intrabc_candidate_count",
-            )
-        })?;
-    let block_width = geometry
-        .n4w
-        .checked_mul(MI_SIZE)
-        .and_then(|value| i32::try_from(value).ok())
-        .ok_or_else(|| {
-            wienerns_lr_selectable_transform_record_error_reason(
-                tile_offset,
-                "unsupported_wienerns_lr_selectable_transform_records_intrabc_block_width",
-            )
-        })?;
-    let block_height = geometry
-        .n4h
-        .checked_mul(MI_SIZE)
-        .and_then(|value| i32::try_from(value).ok())
-        .ok_or_else(|| {
-            wienerns_lr_selectable_transform_record_error_reason(
-                tile_offset,
-                "unsupported_wienerns_lr_selectable_transform_records_intrabc_block_height",
-            )
-        })?;
-    let sb_width = superblock_samples(sequence, tile_offset)?;
-    let sb_height = sb_width;
-    let mut candidates = Vec::new();
-    // Bounded local handoff assumes §5.20.5.4 `find_mv_stack(0)` found no
-    // spatial/bank candidates; current prediction support must replace this
-    // before `block_mv` or `ref_mv_idx` become output-affecting.
-    add_to_ref_bv(&mut candidates, max_count, 0, -sb_height, tile_offset)?;
-    add_to_ref_bv(
-        &mut candidates,
-        max_count,
-        -(sb_width + INTRABC_DELAY_PIXELS),
-        0,
-        tile_offset,
-    )?;
-    add_to_ref_bv(&mut candidates, max_count, 0, -block_height, tile_offset)?;
-    add_to_ref_bv(&mut candidates, max_count, -block_width, 0, tile_offset)?;
-    Ok(candidates)
-}
-
-#[cfg(test)]
-fn add_to_ref_bv(
-    candidates: &mut Vec<Mv>,
-    max_count: usize,
-    dx: i32,
-    dy: i32,
-    tile_offset: ByteOffset,
-) -> Result<()> {
-    if candidates.len() >= max_count {
-        return Ok(());
-    }
-    let row = dy.checked_mul(8).ok_or_else(|| {
-        wienerns_lr_selectable_transform_record_error_reason(
-            tile_offset,
-            "unsupported_wienerns_lr_selectable_transform_records_intrabc_bv_row_overflow",
-        )
-    })?;
-    let col = dx.checked_mul(8).ok_or_else(|| {
-        wienerns_lr_selectable_transform_record_error_reason(
-            tile_offset,
-            "unsupported_wienerns_lr_selectable_transform_records_intrabc_bv_col_overflow",
-        )
-    })?;
-    candidates.push(Mv { row, col });
-    Ok(())
-}
-
 fn superblock_samples(sequence: &SequenceHeader, tile_offset: ByteOffset) -> Result<i32> {
     let partition = sequence.partition.as_ref().ok_or_else(|| {
         wienerns_lr_selectable_transform_record_error_reason(
@@ -1532,10 +1414,6 @@ mod tests {
     /// A `skip` IntrABC neighbour prelude with an integer block vector, for
     /// populating the neighbour grid / ref-MV bank in tests.
     fn ac0ej3_skip_neighbour() -> IntrabcBlockPrelude {
-        ac0ej3_intrabc_neighbour(Mv { row: -512, col: 0 })
-    }
-
-    fn ac0ej3_intrabc_neighbour(bv: Mv) -> IntrabcBlockPrelude {
         IntrabcBlockPrelude {
             use_intrabc: true,
             is_inter: true,
@@ -1544,7 +1422,7 @@ mod tests {
                 intrabc_mode: 1,
                 ref_mv_idx: 0,
                 mv_precision: MV_PRECISION_QUARTER_PEL,
-                block_mv: bv.into(),
+                block_mv: IntrabcBlockVector { row: -512, col: 0 },
             }),
         }
     }
@@ -1803,71 +1681,43 @@ mod tests {
         assert_eq!(symbols.symbol_count(), 5);
     }
 
-    // ac0ej3 frame-0 MI(0,112): MI(16,56)'s bank BV (-512,0) is REJECTED by the
-    // §7.12.2.21 frame-boundary test (ref_y = -64 <= -block_height), so the REAL
-    // stack is default-only and the live path's DRL-idx-3 entry equals the fallback
-    // tail (0,-256). Sibling module checks exact AVM values; this proves the
-    // prelude-state wiring (no spatial neighbour -> admit).
+    // ac0ej3 frame-0 MI(0,112) admission through the full guard: after MI(16,56)
+    // (BV (-512,0)) enters the ref-MV bank, the § 7.12.2.21 frame-boundary test
+    // REJECTS the bank candidate (ref_y = -64 <= -block_height), so the stack is
+    // default-only and the DRL index selects the same BV as the bounded fallback
+    // -> ADMIT (the guard returns Ok). The pure bank/stack/admission logic is
+    // verified in the sibling intrabc_ref_mv_stack module against AVM
+    // av2_find_mv_refs; this test proves the guard wiring on the default-only path.
     #[test]
-    fn intrabc_real_stack_selects_ac0ej3_mi_0_112_default_only_bv() {
+    fn intrabc_ref_stack_admits_ac0ej3_mi_0_112_default_only_stack() {
         let (mut sequence, _core) = selectable_large_frame_fixture();
         sequence
             .inter
             .as_mut()
             .unwrap()
             .seq_max_bvp_drl_bits_minus_1 = 2;
-        // 256 MI cols keep MI(0,112)'s candidates in bounds; 128 MI rows span height.
+        // A 1024-wide luma MI grid (256 MI cols) keeps MI(0,112)'s candidates in
+        // bounds; 128 MI rows span the frame height.
         let mut state = TileIntrabcPreludeState::new(128, 256, &sequence, no_off()).unwrap();
+        // MI(16,56): the first (skip) IntrABC block, BV (-512, 0).
         state
             .record_block(16, 56, 8, 16, ac0ej3_skip_neighbour(), no_off())
             .unwrap();
         // MI(0,112): 32x64 (n4w 8, n4h 16), no spatial IntrABC neighbour, DRL idx 3.
         let geometry =
             IntrabcBlockGeometry::new(IntrabcBlockContext::new(0, 112, BLOCK_16X16, false), 8, 16);
+        let syntax = IntrabcInfoSyntax {
+            intrabc_mode: 1,
+            ref_mv_idx: 3,
+            mv_precision: MV_PRECISION_QUARTER_PEL,
+            max_bvp_drl_bits_minus_1: 2,
+        };
 
-        let stack = state
-            .intrabc_real_ref_mv_stack(&sequence, geometry, 2, ByteOffset::new(110))
-            .unwrap();
-        assert_eq!(stack.get(3).copied(), Some(Mv { row: 0, col: -256 }));
-    }
-
-    // ac0ej3 frame-0 MI(0,232) (the reordered-stack block #517 left at the frontier):
-    // the §7.12.2.21 LIFO fill admits MI(0,112)'s bank BV (0,-256) and REJECTS
-    // MI(16,56)'s (-512,0), so the REAL stack puts (0,-256) at the HEAD (DRL index 0)
-    // ahead of the defaults -- the live path selects this bank candidate, NOT the
-    // default-fill head. This proves the bank reorder reaches the assign path.
-    #[test]
-    fn intrabc_real_stack_selects_ac0ej3_mi_0_232_reordered_bank_bv() {
-        let (mut sequence, _core) = selectable_large_frame_fixture();
-        sequence
-            .inter
-            .as_mut()
-            .unwrap()
-            .seq_max_bvp_drl_bits_minus_1 = 2;
-        let mut state = TileIntrabcPreludeState::new(128, 256, &sequence, no_off()).unwrap();
-        // MI(16,56) then MI(0,112) both record into the bank.
-        state
-            .record_block(16, 56, 8, 16, ac0ej3_skip_neighbour(), no_off())
-            .unwrap();
-        let mi_0_112 = ac0ej3_intrabc_neighbour(Mv { row: 0, col: -256 });
-        state
-            .record_block(0, 112, 8, 16, mi_0_112, no_off())
-            .unwrap();
-        // MI(0,232): 32x64, no spatial IntrABC neighbour (far from prior blocks).
-        let geometry =
-            IntrabcBlockGeometry::new(IntrabcBlockContext::new(0, 232, BLOCK_16X16, false), 8, 16);
-
-        let stack = state
-            .intrabc_real_ref_mv_stack(&sequence, geometry, 2, ByteOffset::new(110))
-            .unwrap();
-        // DRL index 0 selects the bank-reordered candidate, not the default-fill head;
-        // the bank BV (0,-256) is NOT one of this geometry's four §7.12.2.20 defaults.
-        assert_eq!(stack.first().copied(), Some(Mv { row: 0, col: -256 }));
-        let default_only = intrabc_ref_stack_with_limit(&sequence, geometry, 2, no_off()).unwrap();
-        assert_ne!(
-            default_only.first().copied(),
-            Some(Mv { row: 0, col: -256 })
-        );
+        let pred_mv =
+            ensure_intrabc_ref_stack_supported(&state, &sequence, geometry, syntax, no_off())
+                .unwrap();
+        // DRL index 3 selects the §7.12.2.20 default tail (0,-256).
+        assert_eq!(pred_mv, Mv { row: 0, col: -256 });
     }
 
     // Finding 1: the § 7.12.2 step-14 SB-border above-left probe is at
@@ -1888,7 +1738,7 @@ mod tests {
             .unwrap();
         let at_border =
             IntrabcBlockGeometry::new(IntrabcBlockContext::new(16, 56, BLOCK_16X16, false), 8, 16);
-        assert!(sb_border.spatial_scan_has_intrabc_neighbour(at_border));
+        assert!(sb_border.spatial_intrabc_scan(at_border).defer);
 
         // Control: interior block MI(20,56) (row 20 % 16 != 0) does NOT probe MiCol-2.
         let mut interior = TileIntrabcPreludeState::new(64, 64, &sequence, no_off()).unwrap();
@@ -1897,7 +1747,7 @@ mod tests {
             .unwrap();
         let at_interior =
             IntrabcBlockGeometry::new(IntrabcBlockContext::new(20, 56, BLOCK_16X16, false), 8, 16);
-        assert!(!interior.spatial_scan_has_intrabc_neighbour(at_interior));
+        assert!(!interior.spatial_intrabc_scan(at_interior).defer);
     }
 
     #[test]
@@ -2219,14 +2069,14 @@ mod tests {
 
     #[test]
     fn intrabc_newmv_read_errors_use_intrabc_frontier_diagnostic() {
+        let (_sequence, _) = selectable_fixture();
         let mut cdfs = FrameCdfSubset::from_defaults().tile_copy();
         let payload = [];
         let mut symbols = decoder(&payload);
 
-        // Force the shared read_mv helper to fail at the IntrABC caller boundary:
-        // intrabc_mode 0 == NEWMV reads an MVD, and an out-of-spec precision (0) makes
-        // the §6.10.27 MvReadConfig validation reject it. Public IntrABC mode-info
-        // only passes spec-valid precisions, so this only exercises the error mapping.
+        // Force the shared read_mv helper to fail at the IntrABC caller boundary
+        // (NEWMV, empty payload); public IntrABC mode-info only passes spec-valid
+        // precisions.
         let error = assign_intrabc_mv(
             &mut cdfs,
             &mut symbols,
@@ -2350,15 +2200,25 @@ mod tests {
 
     #[test]
     fn intrabc_ref_stack_caps_256_sequence_superblocks_to_intra_sb_size() {
+        use super::super::intrabc_ref_mv_stack::build_intrabc_ref_mv_stack;
         let (mut sequence, _) = selectable_fixture();
         let partition = sequence.partition.as_mut().unwrap();
         partition.use_256x256_superblock = true;
         partition.use_128x128_superblock = false;
-        let geometry =
-            IntrabcBlockGeometry::new(IntrabcBlockContext::new(0, 0, BLOCK_16X16, false), 4, 4);
-
+        // A 256x256 sequence superblock is capped to the 128x128 intra SB, so the
+        // §7.12.2.20 default `(0, -sb)` / `(-sb-DELAY, 0)` terms use sb = 128.
+        let stack_geometry = IntrabcStackGeometry {
+            mi_row: 0,
+            mi_col: 0,
+            n4w: 4,
+            n4h: 4,
+            sb_samples: superblock_samples(&sequence, no_off()).unwrap(),
+            frame_w: i32::MAX,
+            frame_h: i32::MAX,
+            max_bvp_drl_bits_minus_1: 2,
+        };
         let candidates =
-            intrabc_ref_stack_with_limit(&sequence, geometry, 2, ByteOffset::new(0)).unwrap();
+            build_intrabc_ref_mv_stack(&IntrabcRefMvBank::new(0), stack_geometry, false, &[]);
 
         assert_eq!(
             candidates,
