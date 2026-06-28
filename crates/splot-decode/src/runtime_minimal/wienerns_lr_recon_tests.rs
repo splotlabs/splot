@@ -139,20 +139,31 @@ const MI40_IBP_STEP: u16 = 65;
 /// copy reconstruct the flat `68` block, which CASCADES: its now-covered samples
 /// become valid left/above neighbours for the rest of the top-row SB columns 4-6,
 /// adding the solid rectangle x[256,448) y[0,64) (`12288` samples: `11264` of `68`
-/// plus a `32x32` patch of `64` at x[352,384) y[0,32)). The walk then stops at the
-/// GENUINELY DISTINCT next mechanism. Verified ZERO-mismatch, per sample, over EVERY
-/// covered luma sample against the AVM pre-filter reconstruction oracle
-/// (`/tmp/pref.yuv`, md5 `f7959cb85a41dcf0e6ebf9179835da03`), aggregated by count +
-/// sum + FNV-1a-64 in [`LUMA_RECON_REGION_SAMPLE_SUM`] / [`LUMA_RECON_REGION_FNV1A64`].
-const LUMA_RECON_SAMPLE_TOTAL: usize = 245_760;
+/// plus a `32x32` patch of `64` at x[352,384) y[0,32)).
+///
+/// Modelling the §7.13.2.2 PAETH (`PAETH_PRED`) predictor for the two-sided
+/// `haveAbove == 1 && haveLeft == 1` config — the §7.13.2.1 above row, left column,
+/// AND the real reconstructed corner `AboveRow[-1] = CurrFrame[plane][y-1][x-1]` —
+/// then admits the two `all_zero` `TX_64X64` PAETH leaves MI(64,16) (x[256,320)
+/// y[64,128)) and MI(80,16) (x[320,384) y[64,128)) and the DC / cardinal leaves they
+/// CASCADE into (their now-covered samples become valid neighbours), adding `14848`
+/// bit-exact samples (`245760` → `260608`). The single-sided PAETH configs
+/// (`haveAbove ^ haveLeft`, e.g. MI(56,248)) DEFER: the oracle shows PAETH does not
+/// match the naive §7.13.2.1 single-neighbour fallback there, so they await their own
+/// verified model. The walk then stops at the GENUINELY DISTINCT next mechanism.
+/// Verified ZERO-mismatch, per sample, over EVERY covered luma sample against the AVM
+/// pre-filter reconstruction oracle (`/tmp/pref.yuv`, md5
+/// `f7959cb85a41dcf0e6ebf9179835da03`), aggregated by count + sum + FNV-1a-64 in
+/// [`LUMA_RECON_REGION_SAMPLE_SUM`] / [`LUMA_RECON_REGION_FNV1A64`].
+const LUMA_RECON_SAMPLE_TOTAL: usize = 260_608;
 /// Sum of every reconstructed luma sample in the verified region (derived offline
 /// from the AVM pre-filter oracle over the sink's covered MI units, zero mismatch).
-const LUMA_RECON_REGION_SAMPLE_SUM: u64 = 15_782_960;
+const LUMA_RECON_REGION_SAMPLE_SUM: u64 = 16_792_624;
 /// FNV-1a-64 over every reconstructed luma sample (row-major over the covered MI
 /// units, sample-major u16 LE), the whole-region per-value oracle pin: a wrong
 /// reconstruction anywhere in the covered region changes this checksum even at the
 /// same sample count.
-const LUMA_RECON_REGION_FNV1A64: u64 = 0x69dd_e98d_77e4_aa25;
+const LUMA_RECON_REGION_FNV1A64: u64 = 0x0ad3_0d42_fd51_9a25;
 
 /// The SB-column-3 `BLOCK_64X64 H_PRED` block (x[192,256) x y[0,64)) — the
 /// §7.13.3.18 IntrABC source. Mode `H_PRED` (pAngle 180, `AngleDeltaY == 0`), split
@@ -728,6 +739,55 @@ fn ac0ej3_frame_top_vpred_no_above_fallback_reconstructs_bit_exact_against_prefi
             VPRED_TOP_SAMPLE_SUM,
             VPRED_TOP_FNV1A64,
         ),
+    );
+}
+
+/// The two §7.13.2.2 PAETH (`PAETH_PRED`) `TX_64X64` `all_zero` leaves MI(64,16)
+/// (x[256,320) y[64,128)) and MI(80,16) (x[320,384) y[64,128)), the first PAETH
+/// blocks the sink reconstructs. Both are admitted in the two-sided
+/// `haveAbove == 1 && haveLeft == 1` config, where §7.13.2.1 supplies the real
+/// reconstructed above row, left column, AND corner
+/// `AboveRow[-1] = CurrFrame[plane][y-1][x-1]`. MI(64,16) genuinely exercises the
+/// Paeth predictor over a NON-flat left column (a mix of `64` / `68`: the
+/// reconstructed x=255 edge) and corner `64`, yet every output sample resolves to
+/// the flat `68` of the above row — bit-exact vs the oracle. MI(80,16) is admitted
+/// once MI(64,16) cascades to give it a reconstructed left edge. Pinned per value
+/// (combined contiguous x[256,384) y[64,128)) so a left/above/corner mix-up changes
+/// the sum / FNV. Derived offline from `ac0_prefiltered.yuv`.
+const PAETH_BLOCK_X: usize = 256;
+const PAETH_BLOCK_W: usize = 128;
+const PAETH_BLOCK_Y: usize = 64;
+const PAETH_BLOCK_H: usize = 64;
+const PAETH_FLAT: u16 = 68;
+const PAETH_SAMPLE_COUNT: usize = PAETH_BLOCK_W * PAETH_BLOCK_H;
+const PAETH_SAMPLE_SUM: u64 = 557_056;
+const PAETH_FNV1A64: u64 = 0x0808_60ea_bffd_2325;
+#[test]
+#[ignore = "requires local mission fixture; set SPLOT_AC0EJ3_IVF or place it at $HOME/Documents/SplotLabs/ac0ej3.ivf"]
+fn ac0ej3_paeth_two_sided_blocks_reconstruct_bit_exact_against_prefilter_oracle() {
+    let sink = reconstruct_ac0ej3_sink();
+
+    // The PAETH predictor at MI(64,16) reads a genuinely NON-flat left column: the
+    // reconstructed x=255 edge mixes `64` and `68`, so this is not a degenerate
+    // flat copy — the §7.13.2.2 candidate selection actually runs.
+    let left_edge: std::collections::BTreeSet<u16> = (PAETH_BLOCK_Y..PAETH_BLOCK_Y + PAETH_BLOCK_H)
+        .map(|y| {
+            sink.reconstructed_sample(PlaneId::Y, PAETH_BLOCK_X - 1, y)
+                .unwrap()
+        })
+        .collect();
+    assert!(
+        left_edge.len() > 1,
+        "PAETH left column must be non-flat to exercise the predictor, got {left_edge:?}"
+    );
+
+    assert_luma_region_oracle(
+        &sink,
+        "two-sided PAETH TX_64X64 blocks",
+        (PAETH_BLOCK_X, PAETH_BLOCK_W),
+        (PAETH_BLOCK_Y, PAETH_BLOCK_H),
+        |_x, _y| PAETH_FLAT,
+        (PAETH_SAMPLE_COUNT, PAETH_SAMPLE_SUM, PAETH_FNV1A64),
     );
 }
 
