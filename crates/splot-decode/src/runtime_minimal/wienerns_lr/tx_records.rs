@@ -560,13 +560,34 @@ impl SelectableLumaTxGrid {
         let tx_size = tx_size_from_dimensions(width, height)
             .ok_or(SelectableTransformRecordError::InvalidTxSize { width, height })?;
 
+        // §5.20.6.3 read_tx_size only runs at in-frame origins (decode_partition
+        // returns when `r >= MiRows || c >= MiCols`), so an out-of-frame ORIGIN is
+        // never a real placement: return the computed geometry without recording it,
+        // mirroring AVM's origin guard (decodeframe.c get_tx_partition_sizes). The
+        // tx kind is still valid for any caller that reads it; only the write drops.
+        if row >= self.rows || col >= self.cols {
+            return Ok(tx_size);
+        }
+
         self.records
             .try_reserve(1)
             .map_err(|_| SelectableTransformRecordError::Unsupported {
                 reason: "record-allocation",
             })?;
+        // §7.12061-12071 set_tx_size fills `LumaTxSizes[row+i][col+j]` with no
+        // MiRows/MiCols clamp; AVM stores no frame array and drops out-of-frame tx
+        // samples DOWNSTREAM via `block_coded(r,c) = r<MiRows && c<MiCols`
+        // (decodeframe.c). Model that frame-edge drop here: skip cells past the frame
+        // extent in BOTH the overlap check and the fill so a partial-SB MI row at the
+        // frame edge stays spec-faithful instead of erroring OutOfBounds.
         for r in row..row.saturating_add(h4) {
+            if r >= self.rows {
+                break;
+            }
             for c in col..col.saturating_add(w4) {
+                if c >= self.cols {
+                    break;
+                }
                 let index = self.index(r, c)?;
                 if self.cells[index].is_some() {
                     return Err(SelectableTransformRecordError::Overlap { row: r, col: c });
@@ -578,8 +599,14 @@ impl SelectableLumaTxGrid {
             middle,
             scan_order,
         };
-        for r in row..row + h4 {
-            for c in col..col + w4 {
+        for r in row..row.saturating_add(h4) {
+            if r >= self.rows {
+                break;
+            }
+            for c in col..col.saturating_add(w4) {
+                if c >= self.cols {
+                    break;
+                }
                 let index = self.index(r, c)?;
                 self.cells[index] = Some(cell);
             }
@@ -603,14 +630,21 @@ impl SelectableLumaTxGrid {
         rows: usize,
         cols: usize,
     ) -> std::result::Result<Vec<SelectableLumaTxRecord>, SelectableTransformRecordError> {
-        let expected =
-            rows.checked_mul(cols)
-                .ok_or(SelectableTransformRecordError::Unsupported {
-                    reason: "region-size-overflow",
-                })?;
+        // Clamp the region to the frame extent so the completeness check uses the
+        // SAME frame-edge drop as `set_tx_size`: out-of-frame cells are never filled
+        // (block_coded, decodeframe.c), so the region's expected populated count is the
+        // in-frame sub-rectangle, not the full geometric `rows*cols`. Using a mismatched
+        // clamp would flip the (now spec-correct) edge drop into a false Incomplete.
+        let region_rows = self.rows.saturating_sub(row).min(rows);
+        let region_cols = self.cols.saturating_sub(col).min(cols);
+        let expected = region_rows.checked_mul(region_cols).ok_or(
+            SelectableTransformRecordError::Unsupported {
+                reason: "region-size-overflow",
+            },
+        )?;
         let mut actual = 0usize;
-        for r in row..row.saturating_add(rows) {
-            for c in col..col.saturating_add(cols) {
+        for r in row..row.saturating_add(region_rows) {
+            for c in col..col.saturating_add(region_cols) {
                 let index = self.index(r, c)?;
                 if self.cells[index].is_some() {
                     actual += 1;
