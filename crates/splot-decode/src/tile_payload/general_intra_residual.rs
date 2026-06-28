@@ -93,6 +93,12 @@ const ADST_ADST: usize = 3;
 const FLIPADST_DCT: usize = 4;
 /// AV2 § 3 `DCT_FLIPADST`.
 const DCT_FLIPADST: usize = 5;
+/// AV2 § 3 `FLIPADST_FLIPADST`.
+const FLIPADST_FLIPADST: usize = 6;
+/// AV2 § 3 `ADST_FLIPADST`.
+const ADST_FLIPADST: usize = 7;
+/// AV2 § 3 `FLIPADST_ADST`.
+const FLIPADST_ADST: usize = 8;
 /// AV2 § 3 `IDTX`.
 const IDTX: usize = 9;
 /// AV2 § 3 `V_DCT`.
@@ -154,6 +160,56 @@ const TX_TYPE_INV_LONG: [[[usize; 4]; 2]; 2] = [
         [DCT_DCT, DCT_ADST, DCT_FLIPADST, V_DCT],
     ],
 ];
+
+/// AV2 § 5.20.8.2 `Tx_Type_Inter_Inv_Set1[16]` (the `TX_SET_INTER_1` inversion,
+/// indexed by `inter_tx_type * 8 + inter_tx_type_offset`).
+const TX_TYPE_INTER_INV_SET1: [usize; 16] = [
+    IDTX,
+    V_DCT,
+    H_DCT,
+    V_ADST,
+    H_ADST,
+    V_FLIPADST,
+    H_FLIPADST,
+    DCT_DCT,
+    ADST_DCT,
+    DCT_ADST,
+    FLIPADST_DCT,
+    DCT_FLIPADST,
+    ADST_ADST,
+    FLIPADST_FLIPADST,
+    ADST_FLIPADST,
+    FLIPADST_ADST,
+];
+
+/// AV2 § 5.20.8.2 `Tx_Type_Inter_Inv_Set2[12]` (the `TX_SET_INTER_2` inversion,
+/// indexed by `inter_tx_type * 8 + inter_tx_type_offset`).
+const TX_TYPE_INTER_INV_SET2: [usize; 12] = [
+    IDTX,
+    V_DCT,
+    H_DCT,
+    DCT_DCT,
+    ADST_DCT,
+    DCT_ADST,
+    FLIPADST_DCT,
+    DCT_FLIPADST,
+    ADST_ADST,
+    FLIPADST_FLIPADST,
+    ADST_FLIPADST,
+    FLIPADST_ADST,
+];
+
+/// AV2 § 5.20.8.2 `Tx_Type_Inter_Inv_Set3[2]` (the `TX_SET_DCT_IDTX` inversion,
+/// indexed by `inter_tx_type`).
+const TX_TYPE_INTER_INV_SET3: [usize; 2] = [IDTX, DCT_DCT];
+
+/// AV2 § 5.20.8.2 `Tx_Type_Inter_Inv_Set4[4]` (the `TX_SET_DCT_IDTX_IDDCT`
+/// inversion, indexed by `inter_tx_type`).
+const TX_TYPE_INTER_INV_SET4: [usize; 4] = [DCT_DCT, V_DCT, H_DCT, IDTX];
+
+/// AV2 § 5.20.8.2 split point between `inter_tx_type == 0` (the index symbol) and
+/// `inter_tx_type == 1` (the offset symbol) for `TX_SET_INTER_1/2`.
+const INTER_TX_TYPE_INDEX_COUNT: usize = 8;
 
 /// Already-decoded luma mode facts needed by AV2 § 5.20.8.2 `transform_type()`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1056,11 +1112,16 @@ fn read_active_luma_long_tx_type(
         )
 }
 
-/// Reads the AV2 § 5.20.7.29 inter luma primary `transform_type` for a long-side
-/// transform set (`TX_SET_WIDE_32/64`, `TX_SET_HIGH_32/64`). Mirrors the intra
-/// long-side path but uses the inter `is_long_side_dct` context and the
-/// `inter_tx_type` symbol's `TileInterTxTypeLongCdf[ctx][Tx_Size_Sqr[txSz]]`
-/// (§8.3.2 Table 8.3); other inter sets are not yet proven and defer upstream.
+/// Reads the AV2 § 5.20.7.29 / § 5.20.8.2 inter luma primary `transform_type`.
+///
+/// Dispatches by §5.20.8.3 transform set: the long-side sets (`TX_SET_WIDE_32/64`,
+/// `TX_SET_HIGH_32/64`) read `is_long_side_dct` plus the long `inter_tx_type`
+/// (`TileInterTxTypeLongCdf`); the small sets (`TX_SET_INTER_1/2`,
+/// `TX_SET_DCT_IDTX`, `TX_SET_DCT_IDTX_IDDCT`) read the `inter_tx_type` selector
+/// (and, for `INTER_1/2`, the follow-up `inter_tx_type_offset`) per §8.3.2 Table
+/// 8.3. The coefficient entropy is transform-type-agnostic, so any returned type
+/// only changes the §7.13.3 inverse transform (deferred at the reconstruction
+/// sink), not the residual parse.
 fn read_active_inter_transform_type(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
@@ -1068,14 +1129,65 @@ fn read_active_inter_transform_type(
     tx_set: usize,
     eob: usize,
 ) -> Result<usize, GeneralIntraResidualError> {
+    let tx_size_sqr = tx_size_table_usize(&TX_SIZE_SQR, "Tx_Size_Sqr", tx_size)?;
+    let ctx = inter_tx_type_long_ctx(tx_size, eob)?;
+    match tx_set {
+        TX_SET_WIDE_64 | TX_SET_WIDE_32 | TX_SET_HIGH_64 | TX_SET_HIGH_32 => {
+            read_active_inter_long_tx_type(cdfs, symbols, tx_set, tx_size_sqr, ctx)
+        }
+        TX_SET_INTER_1 => read_inter_tx_type_signaling_set(
+            cdfs,
+            symbols,
+            InterTxTypeSignalingSet::Inter1,
+            tx_size_sqr,
+            ctx,
+        ),
+        TX_SET_INTER_2 => read_inter_tx_type_signaling_set(
+            cdfs,
+            symbols,
+            InterTxTypeSignalingSet::Inter2,
+            tx_size_sqr,
+            ctx,
+        ),
+        TX_SET_DCT_IDTX => {
+            let inter_tx_type = read_transform_symbol(
+                cdfs,
+                symbols,
+                TileCdfSelector::InterTxTypeSet3 { ctx, tx_size_sqr },
+            )?;
+            TX_TYPE_INTER_INV_SET3
+                .get(inter_tx_type)
+                .copied()
+                .ok_or(invalid_inter_tx_type())
+        }
+        TX_SET_DCT_IDTX_IDDCT => {
+            let inter_tx_type = read_transform_symbol(
+                cdfs,
+                symbols,
+                TileCdfSelector::InterTxTypeSet4 { ctx, tx_size_sqr },
+            )?;
+            TX_TYPE_INTER_INV_SET4
+                .get(inter_tx_type)
+                .copied()
+                .ok_or(invalid_inter_tx_type())
+        }
+        _ => unsupported_transform_tool_residual("unsupported_dctonly_residual_inter_tx_set"),
+    }
+}
+
+/// Reads the inter long-side `transform_type` (`TX_SET_WIDE_32/64`,
+/// `TX_SET_HIGH_32/64`) per §5.20.8.2: `is_long_side_dct` (32 sets only) plus the
+/// long `inter_tx_type` symbol, inverted through `Tx_Type_Inv_Long`.
+fn read_active_inter_long_tx_type(
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    tx_set: usize,
+    tx_size_sqr: usize,
+    ctx: usize,
+) -> Result<usize, GeneralIntraResidualError> {
     let wide_or_high = match tx_set {
         TX_SET_WIDE_64 | TX_SET_WIDE_32 => 0,
-        TX_SET_HIGH_64 | TX_SET_HIGH_32 => 1,
-        _ => {
-            return unsupported_transform_tool_residual(
-                "unsupported_dctonly_residual_inter_tx_set",
-            );
-        }
+        _ => 1,
     };
     // §5.20.7.29 `is_long_side_dct` is read (CDF `TileIsLongSideDctCdf[is_inter]`)
     // only for the 32 sets; the 64 sets force `is_long_side_dct = 1`.
@@ -1087,8 +1199,6 @@ fn read_active_inter_transform_type(
         )?,
         _ => 1,
     };
-    let tx_size_sqr = tx_size_table_usize(&TX_SIZE_SQR, "Tx_Size_Sqr", tx_size)?;
-    let ctx = inter_tx_type_long_ctx(tx_size, eob)?;
     let inter_tx_type = read_transform_symbol(
         cdfs,
         symbols,
@@ -1099,11 +1209,68 @@ fn read_active_inter_transform_type(
         .and_then(|long_side| long_side.get(wide_or_high))
         .and_then(|row| row.get(inter_tx_type))
         .copied()
-        .ok_or(
-            GeneralIntraResidualError::UnsupportedTransformToolResidual {
-                reason: "unsupported_dctonly_residual_invalid_inter_tx_type",
-            },
-        )
+        .ok_or(invalid_inter_tx_type())
+}
+
+/// Distinguishes the §5.20.8.2 `TX_SET_INTER_1` / `TX_SET_INTER_2` signaling sets,
+/// which share the two-stage `inter_tx_type` + `inter_tx_type_offset` read.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum InterTxTypeSignalingSet {
+    /// `TX_SET_INTER_1` (`Tx_Type_Inter_Inv_Set1`).
+    Inter1,
+    /// `TX_SET_INTER_2` (`Tx_Type_Inter_Inv_Set2`).
+    Inter2,
+}
+
+/// Reads §5.20.8.2 `inter_tx_type` then `inter_tx_type_offset` for the
+/// `TX_SET_INTER_1` / `TX_SET_INTER_2` signaling sets, returning the inverted
+/// `TxType`. `inter_tx_type` is a 2-symbol selector; the follow-up index/offset
+/// symbol picks `inter_tx_type * 8 + inter_tx_type_offset` into the §5.20.8.2
+/// inversion table (AVM `av2_read_tx_type`, decodemv.c §`inter_block`).
+fn read_inter_tx_type_signaling_set(
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    set: InterTxTypeSignalingSet,
+    tx_size_sqr: usize,
+    ctx: usize,
+) -> Result<usize, GeneralIntraResidualError> {
+    let (set_selector, index_selector, offset_selector, inversion): (
+        TileCdfSelector,
+        TileCdfSelector,
+        TileCdfSelector,
+        &[usize],
+    ) = match set {
+        InterTxTypeSignalingSet::Inter1 => (
+            TileCdfSelector::InterTxTypeSet1 { ctx, tx_size_sqr },
+            TileCdfSelector::InterTxTypeIndexSet1 { ctx },
+            TileCdfSelector::InterTxTypeOffsetSet1 { ctx },
+            &TX_TYPE_INTER_INV_SET1,
+        ),
+        InterTxTypeSignalingSet::Inter2 => (
+            TileCdfSelector::InterTxTypeSet2 { ctx },
+            TileCdfSelector::InterTxTypeIndexSet2 { ctx },
+            TileCdfSelector::InterTxTypeOffsetSet2 { ctx },
+            &TX_TYPE_INTER_INV_SET2,
+        ),
+    };
+    let inter_tx_type = read_transform_symbol(cdfs, symbols, set_selector)?;
+    let inter_tx_type_offset = if inter_tx_type == 0 {
+        read_transform_symbol(cdfs, symbols, index_selector)?
+    } else {
+        read_transform_symbol(cdfs, symbols, offset_selector)?
+    };
+    let tx_type_idx = inter_tx_type * INTER_TX_TYPE_INDEX_COUNT + inter_tx_type_offset;
+    inversion
+        .get(tx_type_idx)
+        .copied()
+        .ok_or(invalid_inter_tx_type())
+}
+
+/// The fail-closed error for an out-of-range inverted inter `TxType`.
+const fn invalid_inter_tx_type() -> GeneralIntraResidualError {
+    GeneralIntraResidualError::UnsupportedTransformToolResidual {
+        reason: "unsupported_dctonly_residual_invalid_inter_tx_type",
+    }
 }
 
 /// AV2 § 8.3.2 `inter_tx_type` context: from the `eob` diagonal position relative

@@ -486,6 +486,52 @@ pub(crate) enum TileCdfSelector {
         /// `Tx_Size_Sqr[txSz]`.
         tx_size_sqr: usize,
     },
+    /// `TileInterTxTypeSet1Cdf[ctx][Tx_Size_Sqr[txSz]]` from AV2 § 8.3.2 Table 8.3.
+    InterTxTypeSet1 {
+        /// The §8.3.2 `inter_tx_type` eob context (0..2).
+        ctx: usize,
+        /// `Tx_Size_Sqr[txSz]`.
+        tx_size_sqr: usize,
+    },
+    /// `TileInterTxTypeSet2Cdf[ctx]` from AV2 § 8.3.2 Table 8.3.
+    InterTxTypeSet2 {
+        /// The §8.3.2 `inter_tx_type` eob context (0..2).
+        ctx: usize,
+    },
+    /// `TileInterTxTypeIndexSet1Cdf[ctx]` from AV2 § 8.3.2.
+    InterTxTypeIndexSet1 {
+        /// The §8.3.2 `inter_tx_type_offset` eob context (0..2).
+        ctx: usize,
+    },
+    /// `TileInterTxTypeIndexSet2Cdf[ctx]` from AV2 § 8.3.2.
+    InterTxTypeIndexSet2 {
+        /// The §8.3.2 `inter_tx_type_offset` eob context (0..2).
+        ctx: usize,
+    },
+    /// `TileInterTxTypeOffsetSet1Cdf[ctx]` from AV2 § 8.3.2.
+    InterTxTypeOffsetSet1 {
+        /// The §8.3.2 `inter_tx_type_offset` eob context (0..2).
+        ctx: usize,
+    },
+    /// `TileInterTxTypeOffsetSet2Cdf[ctx]` from AV2 § 8.3.2.
+    InterTxTypeOffsetSet2 {
+        /// The §8.3.2 `inter_tx_type_offset` eob context (0..2).
+        ctx: usize,
+    },
+    /// `TileInterTxTypeSet3Cdf[ctx][Tx_Size_Sqr[txSz]]` from AV2 § 8.3.2 Table 8.3.
+    InterTxTypeSet3 {
+        /// The §8.3.2 `inter_tx_type` eob context (0..2).
+        ctx: usize,
+        /// `Tx_Size_Sqr[txSz]`.
+        tx_size_sqr: usize,
+    },
+    /// `TileInterTxTypeSet4Cdf[ctx][Tx_Size_Sqr[txSz]]` from AV2 § 8.3.2 Table 8.3.
+    InterTxTypeSet4 {
+        /// The §8.3.2 `inter_tx_type` eob context (0..2).
+        ctx: usize,
+        /// `Tx_Size_Sqr[txSz]`.
+        tx_size_sqr: usize,
+    },
     /// `TileSecTxTypeCdf[is_inter][Tx_Size_Sqr[txSz]]` from AV2 § 8.3.2.
     SecTxType {
         /// `is_inter`.
@@ -713,6 +759,22 @@ pub(crate) enum TileCdfArray {
     IntraTxTypeLong,
     /// `TileInterTxTypeLongCdf`.
     InterTxTypeLong,
+    /// `TileInterTxTypeSet1Cdf`.
+    InterTxTypeSet1,
+    /// `TileInterTxTypeSet2Cdf`.
+    InterTxTypeSet2,
+    /// `TileInterTxTypeIndexSet1Cdf`.
+    InterTxTypeIndexSet1,
+    /// `TileInterTxTypeIndexSet2Cdf`.
+    InterTxTypeIndexSet2,
+    /// `TileInterTxTypeOffsetSet1Cdf`.
+    InterTxTypeOffsetSet1,
+    /// `TileInterTxTypeOffsetSet2Cdf`.
+    InterTxTypeOffsetSet2,
+    /// `TileInterTxTypeSet3Cdf`.
+    InterTxTypeSet3,
+    /// `TileInterTxTypeSet4Cdf`.
+    InterTxTypeSet4,
     /// `TileSecTxTypeCdf`.
     SecTxType,
     /// `TileUvModeCflNotAllowedCdf`.
@@ -830,6 +892,14 @@ impl TileCdfArray {
             Self::IsLongSideDct => "TileIsLongSideDctCdf",
             Self::IntraTxTypeLong => "TileIntraTxTypeLongCdf",
             Self::InterTxTypeLong => "TileInterTxTypeLongCdf",
+            Self::InterTxTypeSet1 => "TileInterTxTypeSet1Cdf",
+            Self::InterTxTypeSet2 => "TileInterTxTypeSet2Cdf",
+            Self::InterTxTypeIndexSet1 => "TileInterTxTypeIndexSet1Cdf",
+            Self::InterTxTypeIndexSet2 => "TileInterTxTypeIndexSet2Cdf",
+            Self::InterTxTypeOffsetSet1 => "TileInterTxTypeOffsetSet1Cdf",
+            Self::InterTxTypeOffsetSet2 => "TileInterTxTypeOffsetSet2Cdf",
+            Self::InterTxTypeSet3 => "TileInterTxTypeSet3Cdf",
+            Self::InterTxTypeSet4 => "TileInterTxTypeSet4Cdf",
             Self::SecTxType => "TileSecTxTypeCdf",
             Self::UvModeCflNotAllowed => "TileUvModeCflNotAllowedCdf",
             Self::IsCfl => "TileIsCflCdf",
@@ -1408,6 +1478,30 @@ impl TileCdfRows {
             TileCdfSelector::InterTxTypeLong { ctx, tx_size_sqr } => self
                 .block
                 .row(BlockCdfSelector::InterTxTypeLong { ctx, tx_size_sqr }),
+            TileCdfSelector::InterTxTypeSet1 { ctx, tx_size_sqr } => self
+                .block
+                .row(BlockCdfSelector::InterTxTypeSet1 { ctx, tx_size_sqr }),
+            TileCdfSelector::InterTxTypeSet2 { ctx } => {
+                self.block.row(BlockCdfSelector::InterTxTypeSet2 { ctx })
+            }
+            TileCdfSelector::InterTxTypeIndexSet1 { ctx } => self
+                .block
+                .row(BlockCdfSelector::InterTxTypeIndexSet1 { ctx }),
+            TileCdfSelector::InterTxTypeIndexSet2 { ctx } => self
+                .block
+                .row(BlockCdfSelector::InterTxTypeIndexSet2 { ctx }),
+            TileCdfSelector::InterTxTypeOffsetSet1 { ctx } => self
+                .block
+                .row(BlockCdfSelector::InterTxTypeOffsetSet1 { ctx }),
+            TileCdfSelector::InterTxTypeOffsetSet2 { ctx } => self
+                .block
+                .row(BlockCdfSelector::InterTxTypeOffsetSet2 { ctx }),
+            TileCdfSelector::InterTxTypeSet3 { ctx, tx_size_sqr } => self
+                .block
+                .row(BlockCdfSelector::InterTxTypeSet3 { ctx, tx_size_sqr }),
+            TileCdfSelector::InterTxTypeSet4 { ctx, tx_size_sqr } => self
+                .block
+                .row(BlockCdfSelector::InterTxTypeSet4 { ctx, tx_size_sqr }),
             TileCdfSelector::SecTxType {
                 is_inter,
                 tx_size_sqr,
@@ -1767,6 +1861,30 @@ impl TileCdfRows {
             TileCdfSelector::InterTxTypeLong { ctx, tx_size_sqr } => self
                 .block
                 .row_mut(BlockCdfSelector::InterTxTypeLong { ctx, tx_size_sqr }),
+            TileCdfSelector::InterTxTypeSet1 { ctx, tx_size_sqr } => self
+                .block
+                .row_mut(BlockCdfSelector::InterTxTypeSet1 { ctx, tx_size_sqr }),
+            TileCdfSelector::InterTxTypeSet2 { ctx } => self
+                .block
+                .row_mut(BlockCdfSelector::InterTxTypeSet2 { ctx }),
+            TileCdfSelector::InterTxTypeIndexSet1 { ctx } => self
+                .block
+                .row_mut(BlockCdfSelector::InterTxTypeIndexSet1 { ctx }),
+            TileCdfSelector::InterTxTypeIndexSet2 { ctx } => self
+                .block
+                .row_mut(BlockCdfSelector::InterTxTypeIndexSet2 { ctx }),
+            TileCdfSelector::InterTxTypeOffsetSet1 { ctx } => self
+                .block
+                .row_mut(BlockCdfSelector::InterTxTypeOffsetSet1 { ctx }),
+            TileCdfSelector::InterTxTypeOffsetSet2 { ctx } => self
+                .block
+                .row_mut(BlockCdfSelector::InterTxTypeOffsetSet2 { ctx }),
+            TileCdfSelector::InterTxTypeSet3 { ctx, tx_size_sqr } => self
+                .block
+                .row_mut(BlockCdfSelector::InterTxTypeSet3 { ctx, tx_size_sqr }),
+            TileCdfSelector::InterTxTypeSet4 { ctx, tx_size_sqr } => self
+                .block
+                .row_mut(BlockCdfSelector::InterTxTypeSet4 { ctx, tx_size_sqr }),
             TileCdfSelector::SecTxType {
                 is_inter,
                 tx_size_sqr,
