@@ -27,7 +27,7 @@ use splot_core::hls::{parse_msdo, parse_multi_frame_header};
 use splot_core::types::ObuType;
 
 use super::{
-    Check, finish_payload_or_emit, payload_parse_error_diagnostic, syntax_error_diagnostic,
+    Check, finish_payload_or_emit, payload_parse_error_diagnostic, run_payload_syntax_check,
 };
 use crate::diagnostic::{Diagnostic, ValidationReport};
 
@@ -218,13 +218,15 @@ impl Check for LayerConfigRecordSyntax {
     }
 
     fn run(&self, obu: &ObuEnvelope<'_>, report: &mut ValidationReport) {
-        if obu.header.obu_type != ObuType::LayerConfigurationRecord {
-            return;
-        }
-
-        let mut reader = BitReader::new(obu.payload, obu.payload_offset());
-        match parse_layer_config_record(&mut reader, obu.header.extended_layer_id) {
-            Ok(record) => {
+        // AV2 § 5.2.1: the layer configuration record is extensible.
+        run_payload_syntax_check(
+            obu,
+            report,
+            ObuType::LayerConfigurationRecord,
+            "5.8",
+            true,
+            |reader| parse_layer_config_record(reader, obu.header.extended_layer_id),
+            |record, obu, report| {
                 if record.has_nonzero_reserved_bits() {
                     // AV2 § 6.8: the lcr_*_reserved_zero_* fields must be 0, but a
                     // decoder ignores the value, so a non-zero value is a producer
@@ -239,17 +241,9 @@ impl Check for LayerConfigRecordSyntax {
                         .with_byte_offset(obu.offset),
                     );
                 }
-                check_layer_config_record_semantics(&record, obu, report);
-                // AV2 § 5.2.1: the layer configuration record is extensible, so its
-                // payload tail must be a valid obu_extension_flag / trailing_bits.
-                finish_payload_or_emit(&mut reader, obu.payload, true, report);
-            }
-            Err(error) => {
-                let diagnostic = syntax_error_diagnostic(&error)
-                    .unwrap_or_else(|| payload_parse_error_diagnostic(&error, "5.8"));
-                report.push(diagnostic);
-            }
-        }
+                check_layer_config_record_semantics(record, obu, report);
+            },
+        );
     }
 }
 
@@ -390,24 +384,16 @@ impl Check for AtlasSegmentSyntax {
     }
 
     fn run(&self, obu: &ObuEnvelope<'_>, report: &mut ValidationReport) {
-        if obu.header.obu_type != ObuType::AtlasSegment {
-            return;
-        }
-
-        let mut reader = BitReader::new(obu.payload, obu.payload_offset());
-        match parse_atlas_segment(&mut reader) {
-            Ok(atlas) => {
-                check_atlas_segment_semantics(&atlas, obu, report);
-                // AV2 § 5.2.1: the atlas segment info OBU is extensible, so its payload
-                // tail must be a valid obu_extension_flag / trailing_bits.
-                finish_payload_or_emit(&mut reader, obu.payload, true, report);
-            }
-            Err(error) => {
-                let diagnostic = syntax_error_diagnostic(&error)
-                    .unwrap_or_else(|| payload_parse_error_diagnostic(&error, "5.9"));
-                report.push(diagnostic);
-            }
-        }
+        // AV2 § 5.2.1: the atlas segment info OBU is extensible.
+        run_payload_syntax_check(
+            obu,
+            report,
+            ObuType::AtlasSegment,
+            "5.9",
+            true,
+            parse_atlas_segment,
+            check_atlas_segment_semantics,
+        );
     }
 }
 
@@ -486,23 +472,17 @@ impl Check for OperatingPointSetSyntax {
     }
 
     fn run(&self, obu: &ObuEnvelope<'_>, report: &mut ValidationReport) {
-        if obu.header.obu_type != ObuType::OperatingPointSet {
-            return;
-        }
-
-        let mut reader = BitReader::new(obu.payload, obu.payload_offset());
-        match parse_operating_point_set(&mut reader, obu.header.extended_layer_id) {
-            Ok(_) => {
-                // AV2 § 5.2.1: the operating point set OBU is extensible, so its
-                // payload tail must be a valid obu_extension_flag / trailing_bits.
-                finish_payload_or_emit(&mut reader, obu.payload, true, report);
-            }
-            Err(error) => {
-                let diagnostic = syntax_error_diagnostic(&error)
-                    .unwrap_or_else(|| payload_parse_error_diagnostic(&error, "5.10"));
-                report.push(diagnostic);
-            }
-        }
+        // AV2 § 5.2.1: the operating point set OBU is extensible. The locally
+        // decidable § 6.10 semantics are stateful, so there is no per-OBU `check`.
+        run_payload_syntax_check(
+            obu,
+            report,
+            ObuType::OperatingPointSet,
+            "5.10",
+            true,
+            |reader| parse_operating_point_set(reader, obu.header.extended_layer_id),
+            |_, _, _| {},
+        );
     }
 }
 
@@ -522,23 +502,18 @@ impl Check for BufferRemovalTimingSyntax {
     }
 
     fn run(&self, obu: &ObuEnvelope<'_>, report: &mut ValidationReport) {
-        if obu.header.obu_type != ObuType::BufferRemovalTiming {
-            return;
-        }
-
-        let mut reader = BitReader::new(obu.payload, obu.payload_offset());
-        match parse_buffer_removal_timing(&mut reader) {
-            Ok(_) => {
-                // AV2 § 5.2.1: OBU_BUFFER_REMOVAL_TIMING is not extensible, so the
-                // remaining payload bits must form valid trailing_bits().
-                finish_payload_or_emit(&mut reader, obu.payload, false, report);
-            }
-            Err(error) => {
-                let diagnostic = syntax_error_diagnostic(&error)
-                    .unwrap_or_else(|| payload_parse_error_diagnostic(&error, "5.12"));
-                report.push(diagnostic);
-            }
-        }
+        // AV2 § 5.2.1: OBU_BUFFER_REMOVAL_TIMING is not extensible (trailing_bits()
+        // only). The cross-OBU OPS reference checks are stateful, so there is no
+        // per-OBU `check`.
+        run_payload_syntax_check(
+            obu,
+            report,
+            ObuType::BufferRemovalTiming,
+            "5.12",
+            false,
+            parse_buffer_removal_timing,
+            |_, _, _| {},
+        );
     }
 }
 
@@ -558,23 +533,18 @@ impl Check for QuantizerMatrixSyntax {
     }
 
     fn run(&self, obu: &ObuEnvelope<'_>, report: &mut ValidationReport) {
-        if obu.header.obu_type != ObuType::QuantizationMatrix {
-            return;
-        }
-
-        let mut reader = BitReader::new(obu.payload, obu.payload_offset());
-        match parse_quantizer_matrix(&mut reader) {
-            Ok(_) => {
-                // AV2 § 5.2.1: OBU_QUANTIZATION_MATRIX is not extensible, so the
-                // remaining payload bits must form valid trailing_bits().
-                finish_payload_or_emit(&mut reader, obu.payload, false, report);
-            }
-            Err(error) => {
-                let diagnostic = syntax_error_diagnostic(&error)
-                    .unwrap_or_else(|| payload_parse_error_diagnostic(&error, "5.13"));
-                report.push(diagnostic);
-            }
-        }
+        // AV2 § 5.2.1: OBU_QUANTIZATION_MATRIX is not extensible (trailing_bits()
+        // only). The cross-OBU § 6.12 duplicate checks are stateful, so there is no
+        // per-OBU `check`.
+        run_payload_syntax_check(
+            obu,
+            report,
+            ObuType::QuantizationMatrix,
+            "5.13",
+            false,
+            parse_quantizer_matrix,
+            |_, _, _| {},
+        );
     }
 }
 
@@ -595,23 +565,17 @@ impl Check for FilmGrainSyntax {
     }
 
     fn run(&self, obu: &ObuEnvelope<'_>, report: &mut ValidationReport) {
-        if obu.header.obu_type != ObuType::FilmGrain {
-            return;
-        }
-
-        let mut reader = BitReader::new(obu.payload, obu.payload_offset());
-        match parse_film_grain(&mut reader) {
-            Ok(_) => {
-                // AV2 § 5.2.1: OBU_FILM_GRAIN is not extensible, so the remaining
-                // payload bits must form valid trailing_bits().
-                finish_payload_or_emit(&mut reader, obu.payload, false, report);
-            }
-            Err(error) => {
-                let diagnostic = syntax_error_diagnostic(&error)
-                    .unwrap_or_else(|| payload_parse_error_diagnostic(&error, "5.14"));
-                report.push(diagnostic);
-            }
-        }
+        // AV2 § 5.2.1: OBU_FILM_GRAIN is not extensible (trailing_bits() only). The
+        // cross-OBU § 6.13 checks are stateful, so there is no per-OBU `check`.
+        run_payload_syntax_check(
+            obu,
+            report,
+            ObuType::FilmGrain,
+            "5.14",
+            false,
+            parse_film_grain,
+            |_, _, _| {},
+        );
     }
 }
 
@@ -631,13 +595,15 @@ impl Check for ContentInterpretationSyntax {
     }
 
     fn run(&self, obu: &ObuEnvelope<'_>, report: &mut ValidationReport) {
-        if obu.header.obu_type != ObuType::ContentInterpretation {
-            return;
-        }
-
-        let mut reader = BitReader::new(obu.payload, obu.payload_offset());
-        match parse_content_interpretation(&mut reader) {
-            Ok(content_interpretation) => {
+        // AV2 § 5.2.1: OBU_CONTENT_INTERPRETATION is extensible.
+        run_payload_syntax_check(
+            obu,
+            report,
+            ObuType::ContentInterpretation,
+            "5.15",
+            true,
+            parse_content_interpretation,
+            |content_interpretation, obu, report| {
                 if content_interpretation.reserved_2bit != 0 {
                     // AV2 § 6.14: ci_reserved_2bit must be 0, but a decoder ignores
                     // the value, so a non-zero value is a producer anomaly (warning)
@@ -691,15 +657,7 @@ impl Check for ContentInterpretationSyntax {
                         .with_byte_offset(obu.offset),
                     );
                 }
-                // AV2 § 5.2.1: OBU_CONTENT_INTERPRETATION is extensible, so a fully
-                // parsed CI OBU must have a valid obu_extension_flag / trailing_bits
-                // tail.
-                finish_payload_or_emit(&mut reader, obu.payload, true, report);
-            }
-            Err(error) => report.push(
-                syntax_error_diagnostic(&error)
-                    .unwrap_or_else(|| payload_parse_error_diagnostic(&error, "5.15")),
-            ),
-        }
+            },
+        );
     }
 }
