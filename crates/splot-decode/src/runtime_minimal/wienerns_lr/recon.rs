@@ -282,15 +282,26 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         true
     }
 
-    /// Whether the §7.13.2.8 cardinal edge a block at `(mi_col, mi_row)` of `mi_w` x
-    /// `mi_h` MI units reads is a REAL reconstructed neighbour. A cardinal mode reads
-    /// exactly ONE edge — `H_PRED` (pAngle 180) the left column (`pred[i][j] =
+    /// Whether the §7.13.2.8 cardinal prediction a block at `(mi_col, mi_row)` of
+    /// `mi_w` x `mi_h` MI units reads is reconstructable bit-exact. A cardinal mode
+    /// reads exactly ONE edge — `H_PRED` (pAngle 180) the left column (`pred[i][j] =
     /// LeftCol[i]`), `V_PRED` (pAngle 90) the above row (`pred[i][j] = AboveRow[j]`)
-    /// — with no corner, no IDIF, and no `useIBP`. Every MI unit of that edge (the
-    /// left column `mi_col - 1` for H, the above row `mi_row - 1` for V) must exist
-    /// on-grid AND be reconstructed by this sink. A frame-edge block with no on-grid
-    /// edge DEFERS: the cardinal primitive has no real neighbour to copy (the
-    /// §7.13.2.1 no-neighbour fallback is a separate, here-unmodelled path).
+    /// — with no corner, no IDIF, and no `useIBP`.
+    ///
+    /// This admits two cases:
+    /// * the REAL edge: every MI unit of the read edge (the left column `mi_col - 1`
+    ///   for H, the above row `mi_row - 1` for V) exists on-grid AND is reconstructed
+    ///   by this sink;
+    /// * the §7.13.2.1 single-neighbour FALLBACK: the read edge is off-grid
+    ///   (`haveAbove == 0` for V at `mi_row == 0`, `haveLeft == 0` for H at
+    ///   `mi_col == 0`) but the ORTHOGONAL neighbour is reconstructed, so §7.13.2.1
+    ///   synthesizes the missing edge as a flat repeat of one orthogonal sample
+    ///   (`AboveRow[i] = CurrFrame[y][x-1]` for V; `LeftCol[i] = CurrFrame[y-1][x]`
+    ///   for H — bit-exact, as the wrapper performs).
+    ///
+    /// It still DEFERS the §7.13.2.1 NO-neighbour midpoint fallback (both edges
+    /// off-grid, e.g. the frame-origin block): that emits a synthetic midpoint, not a
+    /// neighbour copy, and is a separate unmodelled path.
     fn cardinal_edge_reconstructed(
         &self,
         direction: IntraCardinalDirection,
@@ -301,23 +312,35 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         mi_h: usize,
     ) -> bool {
         let coverage = &self.coverage[Self::coverage_index(plane_id)];
+        let above_row_covered = |row_above: usize| {
+            (mi_col..mi_col.saturating_add(mi_w))
+                .all(|c| !coverage.off_grid(c, row_above) && coverage.is_covered(c, row_above))
+        };
+        let left_col_covered = |col_left: usize| {
+            (mi_row..mi_row.saturating_add(mi_h))
+                .all(|r| !coverage.off_grid(col_left, r) && coverage.is_covered(col_left, r))
+        };
         match direction {
-            // H_PRED: the left column `mi_col - 1` over rows `mi_row..mi_row + mi_h`.
-            IntraCardinalDirection::Horizontal => {
-                let Some(left) = mi_col.checked_sub(1) else {
-                    return false;
-                };
-                (mi_row..mi_row.saturating_add(mi_h))
-                    .all(|r| !coverage.off_grid(left, r) && coverage.is_covered(left, r))
-            }
-            // V_PRED: the above row `mi_row - 1` over cols `mi_col..mi_col + mi_w`.
-            IntraCardinalDirection::Vertical => {
-                let Some(above) = mi_row.checked_sub(1) else {
-                    return false;
-                };
-                (mi_col..mi_col.saturating_add(mi_w))
-                    .all(|c| !coverage.off_grid(c, above) && coverage.is_covered(c, above))
-            }
+            // H_PRED reads the left column `mi_col - 1`. Off-grid left
+            // (`mi_col == 0`): §7.13.2.1 synthesizes `LeftCol` from the above row
+            // (`mi_row - 1`) when that is reconstructed.
+            IntraCardinalDirection::Horizontal => match mi_col.checked_sub(1) {
+                Some(left) => left_col_covered(left),
+                None => match mi_row.checked_sub(1) {
+                    Some(above) => above_row_covered(above),
+                    None => false,
+                },
+            },
+            // V_PRED reads the above row `mi_row - 1`. Off-grid above
+            // (`mi_row == 0`): §7.13.2.1 synthesizes `AboveRow` from the left column
+            // (`mi_col - 1`) when that is reconstructed.
+            IntraCardinalDirection::Vertical => match mi_row.checked_sub(1) {
+                Some(above) => above_row_covered(above),
+                None => match mi_col.checked_sub(1) {
+                    Some(left) => left_col_covered(left),
+                    None => false,
+                },
+            },
         }
     }
 
@@ -341,16 +364,17 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
     ///     Some(Horizontal)`): the §7.13.2.8 step-5 left-column copy. The left
     ///     column must be present and covered ([`Self::cardinal_left_reconstructed`]);
     ///     it reads ONLY the left column (no above, no corner, no IDIF, no `useIBP`),
-    ///     the transform must be SQUARE (the cardinal primitive is square-only), the
-    ///     leaf must use the immediate edge (`mrl_index == 0` — the primitive reads
-    ///     the adjacent left/above samples, not a §5.20.5.5 multi-reference line),
-    ///     and a non-`all_zero` residual must be DC-only (`eob == 1`): a non-DC-only
-    ///     residual may carry a non-`DCT_DCT` luma tx type that `LumaCoeffBlock` does
-    ///     not retain, and the primitive always inverse-transforms `DCT_DCT`;
+    ///     the leaf must use the immediate edge (`mrl_index == 0` — the primitive reads
+    ///     the adjacent left/above samples, not a §5.20.5.5 multi-reference line), and
+    ///     a non-`all_zero` residual must be DC-only when the transform is non-square
+    ///     (`eob == 1`): the cardinal recon primitive is fully RECTANGULAR (the copy
+    ///     is per-row), but a non-square non-DC-only residual may carry a non-`DCT_DCT`
+    ///     luma tx type that `LumaCoeffBlock` does not retain, and the primitive always
+    ///     inverse-transforms `DCT_DCT` (see [`residual_is_reconstructable`]);
     ///   - cardinal `V_PRED` (pAngle 90, `directional == Some(Vertical)`): the
     ///     §7.13.2.8 step-4 above-row copy. The above row must be present and covered
-    ///     ([`Self::cardinal_above_reconstructed`]); same square / `mrl_index == 0` /
-    ///     DC-only-residual gates.
+    ///     ([`Self::cardinal_above_reconstructed`]); same rectangular-aware
+    ///     `mrl_index == 0` / non-square-DC-only-residual gates.
     ///
     /// Every OTHER mode (the §7.13.2.8 angular modes D45/D67/D113/D135/D157/D203,
     /// PAETH, SMOOTH, and any directional mode with a non-zero `AngleDeltaY` — which
@@ -445,20 +469,22 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             (_, Some(direction)) => {
                 // Cardinal `H_PRED` / `V_PRED`: a §7.13.2.8 pure sample copy of the
                 // real reconstructed left column (H) / above row (V). The cardinal
-                // recon primitive is SQUARE-only and reads the IMMEDIATE edge
-                // (`MrlIndex == 0`), so defer otherwise:
-                // * a non-square cardinal transform (the primitive is square-only);
+                // recon primitive is now fully RECTANGULAR (independent width/height:
+                // V copies the W-wide above row into every one of the H rows; H fills
+                // each of the H rows with one left sample), but it still reads the
+                // IMMEDIATE edge (`MrlIndex == 0`), so defer otherwise:
                 // * a §5.20.5.5 multi-reference line (`mrl_index > 0`): the primitive
                 //   copies the ADJACENT left/above samples, not the selected MRL
                 //   reference line, so it would write the wrong prediction;
                 // * a non-`all_zero` residual that is not DC-only (`eob != 1`): it may
                 //   carry a non-`DCT_DCT` luma tx type `LumaCoeffBlock` does not retain
                 //   (the primitive always inverse-transforms `DCT_DCT`). A DC-only
-                //   (`eob == 1`) residual is tx-type-agnostic (one shared DC coeff),
-                //   exactly ac0ej3's +4-DC top-right `TX_32X32`.
-                if log2_width != log2_height {
-                    return Ok(());
-                }
+                //   (`eob == 1`) residual is tx-type-agnostic (one shared DC coeff).
+                //   `residual_is_reconstructable` admits a non-square cardinal block
+                //   only when it is `all_zero` (ac0ej3's `TX_64X32` V_PRED frontier)
+                //   or DC-only (`eob == 1`); a non-square `eob > 1` cardinal residual
+                //   STILL defers (the unretained non-`DCT_DCT` luma tx type would be
+                //   guessed wrong).
                 if mrl_index != 0 {
                     return Ok(());
                 }
@@ -484,6 +510,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     x,
                     y,
                     log2_width,
+                    log2_height,
                     qindex,
                     use_tcq,
                     self.bit_depth,

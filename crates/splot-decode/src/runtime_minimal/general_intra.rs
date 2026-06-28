@@ -1440,6 +1440,7 @@ fn decode_one_general_intra_block<T: ReconSample>(
                 luma_x,
                 luma_y,
                 luma_log2,
+                luma_log2,
                 qindex,
                 luma_use_tcq,
                 bit_depth,

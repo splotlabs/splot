@@ -404,6 +404,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
                 x,
                 y,
                 log2_side,
+                log2_side,
                 qindex,
                 false,
                 bit_depth,
@@ -417,6 +418,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
                 plane_id,
                 x,
                 y,
+                log2_side,
                 log2_side,
                 qindex,
                 false,
@@ -1574,17 +1576,27 @@ fn build_one_sided_left_idif_edge<T: ReconSample>(
 /// `all_zero` block), and stores the result so later blocks read it as a
 /// neighbour.
 ///
+/// `log2_width` and `log2_height` are the block's §7.15.4 transform dimensions
+/// and may differ (e.g. a 64x32 `TX_64X32` luma block has `log2_width == 6`,
+/// `log2_height == 5`). The §7.13.2.8 cardinal copy is fully rectangular:
+/// `predict_intra_cardinal_directional_rect_into` takes independent width/height,
+/// `intra_dc_edges_for_rect` returns the W-wide above row / H-tall left column,
+/// and `reconstruct_general_intra_block_rect_with_prediction` adds the §7.14.4 /
+/// §7.15.4 / §7.14.3 rectangular residual (with the §7.15.4.1 √2 rescale when the
+/// log2 ratio is odd). A square block is the `log2_width == log2_height` case.
+///
 /// The cardinal cases are a degenerate sample copy with NO IDIF, NO corner, NO
 /// edge synthesis and NO `useIBP` (which § 7.13.2.7 gates on
 /// `pAngle < 90 || pAngle > 180`):
-/// - `V_PRED` (pAngle 90): `pred[i][j] = AboveRow[j]` — every row is a copy of
-///   the real reconstructed above row (`CurrFrame[plane][y-1][x..x+w)`). It reads
-///   ONLY the above row, so it needs `haveAbove == 1` (a real above neighbour;
-///   target a superblock row > 0).
-/// - `H_PRED` (pAngle 180): `pred[i][j] = LeftCol[i]` — every column is a copy of
-///   the real reconstructed left column (`CurrFrame[plane][y..y+h)][x-1]`). It
-///   reads ONLY the left column, so it needs `haveLeft == 1` (a real left
-///   neighbour; target a non-first superblock column).
+/// - `V_PRED` (pAngle 90): `pred[i][j] = AboveRow[j]` — every one of the H rows is
+///   a copy of the real reconstructed W-wide above row
+///   (`CurrFrame[plane][y-1][x..x+w)`). It reads ONLY the above row, so it needs
+///   `haveAbove == 1` (a real above neighbour; target a superblock row > 0).
+/// - `H_PRED` (pAngle 180): `pred[i][j] = LeftCol[i]` — every one of the W columns
+///   is a copy of the real reconstructed H-tall left column
+///   (`CurrFrame[plane][y..y+h)][x-1]`). It reads ONLY the left column, so it
+///   needs `haveLeft == 1` (a real left neighbour; target a non-first superblock
+///   column).
 ///
 /// Unlike the § 7.13.2.8 "middle" angles (D135), the cardinal copy is bit-exact
 /// over a NON-flat reconstructed edge without any interpolation, so it does not
@@ -1600,50 +1612,88 @@ pub(crate) fn reconstruct_general_intra_cardinal_neighbour_block_into<T: ReconSa
     plane_id: PlaneId,
     x: usize,
     y: usize,
-    log2_side: u32,
+    log2_width: u32,
+    log2_height: u32,
     qindex: u32,
     use_tcq: bool,
     bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
-    let side = 1usize << log2_side;
-    let log2 = u8::try_from(log2_side).unwrap_or(u8::MAX);
-    let block_size = IntraRectBlockSize::new(log2, log2)?;
+    let width = 1usize << log2_width;
+    let height = 1usize << log2_height;
+    let log2_w = u8::try_from(log2_width).unwrap_or(u8::MAX);
+    let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
+    let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
     let edges = workspace.intra_dc_edges_for_rect(plane_id, x, y, block_size)?;
     // §7.13.2.8 step 4/5 read ONLY the above row (V) or the left column (H). Build
-    // exactly that edge from the real reconstructed neighbour; reject if it is
-    // absent (the admission gate guarantees it is present, see general_intra.rs).
+    // exactly that rectangular edge from the real reconstructed neighbour
+    // (`intra_dc_edges_for_rect` returns the W-wide above row and the H-tall left
+    // column). `predict_intra_cardinal_directional_rect_into` is fully rectangular:
+    // V copies the W-wide above row into every one of the H rows; H fills each of
+    // the H rows with one of the H left samples.
+    //
+    // When the required real edge is absent at a frame/tile boundary but the
+    // ORTHOGONAL neighbour exists, §7.13.2.1 synthesizes the missing edge as a flat
+    // repeat of one orthogonal sample (`MrlIndex == 0`):
+    // * V_PRED, `haveAbove == 0 && haveLeft == 1` (lines 5286-5287):
+    //   `AboveRow[i] = CurrFrame[plane][y][x-1]` — the block's top-left left
+    //   neighbour, which is `left[0]` of the H-tall reconstructed left column.
+    // * H_PRED, `haveLeft == 0 && haveAbove == 1` (lines 5272-5273):
+    //   `LeftCol[i] = CurrFrame[plane][y-1][x]` — the block's top-left above
+    //   neighbour, which is `above[0]` of the W-wide reconstructed above row.
+    // The cardinal copy of a flat synthesized edge is a flat block (the §7.13.2.1
+    // `!haveAbove`/`!haveLeft` no-neighbour midpoint fallback is a SEPARATE path: it
+    // applies only when the orthogonal neighbour is ALSO absent, which the admission
+    // gate excludes). The synthesized edge is owned here so it outlives the borrow.
+    let synthesized_edge;
     let cardinal_edges = match direction {
         IntraCardinalDirection::Vertical => {
-            let above = edges
-                .above_samples()
-                .ok_or(GeneralIntraResidualError::MissingCardinalEdge)?;
-            IntraCardinalEdges::above(above)
+            if let Some(above) = edges.above_samples() {
+                IntraCardinalEdges::above(above)
+            } else {
+                let left = edges
+                    .left_samples()
+                    .ok_or(GeneralIntraResidualError::MissingCardinalEdge)?;
+                let fill = *left
+                    .first()
+                    .ok_or(GeneralIntraResidualError::MissingCardinalEdge)?;
+                synthesized_edge = vec![fill; width];
+                IntraCardinalEdges::above(&synthesized_edge)
+            }
         }
         IntraCardinalDirection::Horizontal => {
-            let left = edges
-                .left_samples()
-                .ok_or(GeneralIntraResidualError::MissingCardinalEdge)?;
-            IntraCardinalEdges::left(left)
+            if let Some(left) = edges.left_samples() {
+                IntraCardinalEdges::left(left)
+            } else {
+                let above = edges
+                    .above_samples()
+                    .ok_or(GeneralIntraResidualError::MissingCardinalEdge)?;
+                let fill = *above
+                    .first()
+                    .ok_or(GeneralIntraResidualError::MissingCardinalEdge)?;
+                synthesized_edge = vec![fill; height];
+                IntraCardinalEdges::left(&synthesized_edge)
+            }
         }
     };
-    let mut prediction = vec![T::default(); side * side];
+    let mut prediction = vec![T::default(); width * height];
     predict_intra_cardinal_directional_rect_into(
         bit_depth,
         block_size,
         direction,
         cardinal_edges,
         &mut prediction,
-        side,
+        width,
     )?;
     let out = if block.all_zero {
         prediction
     } else {
-        reconstruct_general_intra_block_with_prediction(
+        reconstruct_general_intra_block_rect_with_prediction(
             &block.quant,
             &prediction,
             qindex,
             plane_id,
-            log2_side,
+            log2_width,
+            log2_height,
             use_tcq,
             bit_depth,
         )?
@@ -1918,5 +1968,212 @@ mod tests {
         let hash = DecodedFrameHashInput::new(&frame).compute_hash();
 
         assert_eq!(hash.to_hex(), EXPECTED_DIGEST);
+    }
+
+    /// An `all_zero` (`txb_skip`) luma block: reconstruction writes the bare
+    /// §7.13.2 prediction (zero residual), the only kind these cardinal
+    /// rect/transpose guards exercise.
+    fn all_zero_luma_block() -> LumaCoeffBlock {
+        LumaCoeffBlock {
+            all_zero: true,
+            eob: 0,
+            quant: Vec::new(),
+            intra_ist: None,
+        }
+    }
+
+    /// Lays an `above_row` pattern (length `width`) so that workspace row `edge_y` is
+    /// that pattern over `x[0, width)`. Writes a `width x 4` block at `(0, edge_y-3)`
+    /// whose every row carries the pattern (so its bottom row `edge_y` does too).
+    fn lay_above_row(
+        ws: &mut CurrentFrameWorkspace<u8>,
+        edge_y: usize,
+        log2_w: u8,
+        pattern: &[u8],
+    ) {
+        let width = 1usize << log2_w;
+        let samples: Vec<u8> = (0..4).flat_map(|_| pattern.iter().copied()).collect();
+        let size = IntraRectBlockSize::new(log2_w, 2).unwrap();
+        ws.write_rect_block(PlaneId::Y, 0, edge_y - 3, size, &samples)
+            .unwrap();
+        debug_assert_eq!(width, pattern.len());
+    }
+
+    /// Lays a `left_col` pattern (length `height`) so that workspace column `edge_x`
+    /// is that pattern over `y[0, height)`. Writes a `4 x height` block at
+    /// `(edge_x-3, 0)` whose every column carries the pattern (so its rightmost
+    /// column `edge_x` does too).
+    fn lay_left_col(ws: &mut CurrentFrameWorkspace<u8>, edge_x: usize, log2_h: u8, pattern: &[u8]) {
+        let height = 1usize << log2_h;
+        let mut samples = vec![0u8; 4 * height];
+        for (row, &v) in pattern.iter().enumerate() {
+            for col in 0..4 {
+                samples[row * 4 + col] = v;
+            }
+        }
+        let size = IntraRectBlockSize::new(2, log2_h).unwrap();
+        ws.write_rect_block(PlaneId::Y, edge_x - 3, 0, size, &samples)
+            .unwrap();
+    }
+
+    /// STRIDE/TRANSPOSE GUARD — V_PRED over a NON-SQUARE 64x32 (`W == 64`,
+    /// `H == 32`) block with a REAL, NON-FLAT above row. §7.13.2.8 V_PRED copies the
+    /// 64-wide above row into every one of the 32 rows; a width/height swap or a
+    /// `stride == height`-instead-of-`width` bug would corrupt the layout and fail.
+    /// The asymmetric edge is the key: a flat block (the ac0ej3 all-68 oracle) would
+    /// MASK a transpose.
+    #[test]
+    fn rect_cardinal_vertical_64x32_copies_wide_above_row_per_row() {
+        // Workspace tall/wide enough: the block sits at y=64 so it has a real above
+        // row at y=63, x[0,64). Build a non-flat above row (x + 100, distinct per x).
+        let mut ws = new_general_intra_workspace::<u8>(64, 128, BitDepth::Eight).unwrap();
+        let above_row: Vec<u8> = (0..64).map(|x| 100 + x as u8).collect();
+        lay_above_row(&mut ws, 63, 6, &above_row);
+
+        reconstruct_general_intra_cardinal_neighbour_block_into(
+            &mut ws,
+            &all_zero_luma_block(),
+            IntraCardinalDirection::Vertical,
+            PlaneId::Y,
+            0,
+            64,
+            6, // log2_width = 6 -> 64
+            5, // log2_height = 5 -> 32
+            0,
+            false,
+            BitDepth::Eight,
+        )
+        .unwrap();
+
+        for row in 0..32 {
+            for col in 0..64 {
+                assert_eq!(
+                    ws.reconstructed_sample(PlaneId::Y, col, 64 + row).unwrap(),
+                    100 + col as u8,
+                    "V_PRED 64x32 sample ({col},{}) must copy above_row[{col}]",
+                    64 + row,
+                );
+            }
+        }
+    }
+
+    /// STRIDE/TRANSPOSE GUARD — H_PRED over a NON-SQUARE 32x64 (`W == 32`,
+    /// `H == 64`) block with a REAL, NON-FLAT left column. §7.13.2.8 H_PRED fills
+    /// each of the 64 rows with one of the 64 left samples; a width/height swap would
+    /// read past the 64-tall left column or mis-stride and fail.
+    #[test]
+    fn rect_cardinal_horizontal_32x64_fills_each_row_from_tall_left_column() {
+        let mut ws = new_general_intra_workspace::<u8>(128, 64, BitDepth::Eight).unwrap();
+        // Block at x=64, y=0: real left column at x=63, y[0,64) (non-flat per row).
+        let left_col: Vec<u8> = (0..64).map(|y| 50 + y as u8).collect();
+        lay_left_col(&mut ws, 63, 6, &left_col);
+
+        reconstruct_general_intra_cardinal_neighbour_block_into(
+            &mut ws,
+            &all_zero_luma_block(),
+            IntraCardinalDirection::Horizontal,
+            PlaneId::Y,
+            64,
+            0,
+            5, // log2_width = 5 -> 32
+            6, // log2_height = 6 -> 64
+            0,
+            false,
+            BitDepth::Eight,
+        )
+        .unwrap();
+
+        for row in 0..64 {
+            for col in 0..32 {
+                assert_eq!(
+                    ws.reconstructed_sample(PlaneId::Y, 64 + col, row).unwrap(),
+                    50 + row as u8,
+                    "H_PRED 32x64 sample ({},{row}) must fill row from left_col[{row}]",
+                    64 + col,
+                );
+            }
+        }
+    }
+
+    /// §7.13.2.1 NO-ABOVE FALLBACK GUARD — the ac0ej3 MI(64,0) case: a NON-SQUARE
+    /// 64x32 V_PRED block at the frame TOP (`y == 0`, `haveAbove == 0`) with a
+    /// NON-FLAT reconstructed left column. §7.13.2.1 synthesizes
+    /// `AboveRow[i] = CurrFrame[plane][y][x-1]` — the block's top-left left neighbour
+    /// (`left[0]`), repeated across the whole synthesized above row — so the V_PRED
+    /// copy is a FLAT block equal to `left[0]`, NOT `left[i]`. A non-flat left column
+    /// proves the fallback reads ONLY `left[0]` (a bug reading `left[i]` row-wise
+    /// would produce a vertical gradient and fail).
+    #[test]
+    fn rect_cardinal_vertical_64x32_no_above_fallback_is_flat_left_corner() {
+        let mut ws = new_general_intra_workspace::<u8>(128, 64, BitDepth::Eight).unwrap();
+        // Block at x=64, y=0 (frame top): non-flat left column at x=63, y[0,32).
+        let left_col: Vec<u8> = (0..32).map(|y| 70 + y as u8).collect();
+        lay_left_col(&mut ws, 63, 5, &left_col);
+
+        reconstruct_general_intra_cardinal_neighbour_block_into(
+            &mut ws,
+            &all_zero_luma_block(),
+            IntraCardinalDirection::Vertical,
+            PlaneId::Y,
+            64,
+            0,
+            6, // log2_width = 6 -> 64
+            5, // log2_height = 5 -> 32
+            0,
+            false,
+            BitDepth::Eight,
+        )
+        .unwrap();
+
+        // Every sample equals left[0] (= CurrFrame[0][63] = 70), flat over 64x32.
+        for row in 0..32 {
+            for col in 0..64 {
+                assert_eq!(
+                    ws.reconstructed_sample(PlaneId::Y, 64 + col, row).unwrap(),
+                    70,
+                    "no-above V_PRED 64x32 sample ({},{row}) must be the flat left corner left[0]=70",
+                    64 + col,
+                );
+            }
+        }
+    }
+
+    /// §7.13.2.1 NO-LEFT FALLBACK GUARD — the symmetric H_PRED case at the frame
+    /// LEFT edge (`x == 0`, `haveLeft == 0`) with a NON-FLAT reconstructed above row.
+    /// §7.13.2.1 synthesizes `LeftCol[i] = CurrFrame[plane][y-1][x]` (`above[0]`),
+    /// so the H_PRED copy is FLAT equal to `above[0]`, NOT `above[j]`.
+    #[test]
+    fn rect_cardinal_horizontal_32x64_no_left_fallback_is_flat_above_corner() {
+        let mut ws = new_general_intra_workspace::<u8>(64, 128, BitDepth::Eight).unwrap();
+        // Block at x=0, y=64 (frame left edge): non-flat above row at y=63, x[0,32).
+        let above_row: Vec<u8> = (0..32).map(|x| 80 + x as u8).collect();
+        lay_above_row(&mut ws, 63, 5, &above_row);
+
+        reconstruct_general_intra_cardinal_neighbour_block_into(
+            &mut ws,
+            &all_zero_luma_block(),
+            IntraCardinalDirection::Horizontal,
+            PlaneId::Y,
+            0,
+            64,
+            5, // log2_width = 5 -> 32
+            6, // log2_height = 6 -> 64
+            0,
+            false,
+            BitDepth::Eight,
+        )
+        .unwrap();
+
+        // Every sample equals above[0] (= CurrFrame[63][0] = 80), flat over 32x64.
+        for row in 0..64 {
+            for col in 0..32 {
+                assert_eq!(
+                    ws.reconstructed_sample(PlaneId::Y, col, 64 + row).unwrap(),
+                    80,
+                    "no-left H_PRED 32x64 sample ({col},{}) must be the flat above corner above[0]=80",
+                    64 + row,
+                );
+            }
+        }
     }
 }
