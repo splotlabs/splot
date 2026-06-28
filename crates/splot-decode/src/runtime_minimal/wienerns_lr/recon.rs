@@ -745,17 +745,16 @@ pub(in crate::runtime_minimal) fn reconstruct_ac0ej3_selectable_intra_region(
 
 /// The single fail-closed reason the ac0ej3 selectable walk is expected to stop on
 /// after reconstructing the verified region; the test driver swallows only this one
-/// and propagates every other error. The §5.20.7.27 residual now parses every
-/// reachable non-DCT inter luma transform: the long-side sets
-/// (`TX_SET_WIDE_32/64`, `TX_SET_HIGH_32/64`) AND the small sets
-/// (`TX_SET_INTER_1/2`, `TX_SET_DCT_IDTX`, `TX_SET_DCT_IDTX_IDDCT`) read their
-/// §5.20.8.2 `inter_tx_type` (+ `inter_tx_type_offset`) syntax via §8.3.2 Table
-/// 8.3 CDFs. The coefficient loop is transform-type-agnostic, so each decodes its
-/// coefficients and DEFERS only the unsupported §7.13.3 inverse transform at the
-/// sink. With the non-DCT residual gate cleared, the walk now advances to a deeper
-/// IntrABC block whose §7.12.2 ref-MV stack reaches a spatial-scan position (or a
-/// DRL index) this decoder does not yet model faithfully, so the stack admission
-/// DEFERS — a correct conservative deferral, the genuinely distinct next wall.
+/// and propagates every other error. The §7.12.2.1 step-8 SB-border IntrABC SMVP
+/// candidate is now modelled (the SB-border, even-mi_col, alignment-preserving
+/// above-row column), so the frame-0 SB-row-1 IntrABC block MI(32,56) admits its
+/// ref-MV stack faithfully (predictor (-512,0), bit-exact vs avmdec) instead of
+/// deferring. The walk now advances to the new frontier MI(48,56): a within-SB
+/// (non-SB-border, `mi_row % mib_size != 0`) step-8 above-row probe at full 4x4
+/// resolution (deltaCol = bw4 - 1, no 8x8 SB-grid alignment) that this decoder does
+/// not yet place faithfully, so the §7.12.2 ref-MV stack admission DEFERS — a
+/// correct conservative deferral on the same `intrabc_ref_stack` reason, the
+/// genuinely distinct next wall (a within-SB above-row SMVP position).
 #[cfg(test)]
 const EXPECTED_RECON_FRONTIER_REASON: &str =
     "unsupported_wienerns_lr_selectable_transform_records_intrabc_ref_stack";

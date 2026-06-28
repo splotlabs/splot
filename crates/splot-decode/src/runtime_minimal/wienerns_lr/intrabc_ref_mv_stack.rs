@@ -329,11 +329,13 @@ pub(super) struct SpatialIntrabcScan {
 
 /// AV2 § 7.12.2 spatial SMVP scan for an IntrABC block (`is_intrabc == 1`).
 ///
-/// The adjacent SMVP search (§ 7.12.2 steps 7-14, `mvref_common.c:2362`-`2456`)
-/// invokes § 7.12.2.6 Scan point at the left-column positions
+/// The adjacent SMVP search (§ 7.12.2.1 steps 7-14, `mvref_common.c:2362`-`2456`)
+/// invokes § 7.12.2.6 Scan point at the left-column and above-row positions
 /// `(deltaRow, deltaCol)`:
 ///
 /// * step 7: `(bh4 - 1, -1)` — bottom of the left column;
+/// * step 8: `(-1, Max(0, bw4 - 1 - isSbBorder))` — the first above-row probe
+///   (`row_smvp_state[0]`, `mvref_common.c:2371`);
 /// * step 9 (`bh4 >= 2`): `(0, -1)` — top of the left column.
 ///
 /// For `is_intrabc == 1`, § 7.12.2.4 Add reference motion vector only admits a
@@ -341,16 +343,16 @@ pub(super) struct SpatialIntrabcScan {
 /// `is_intrabc == is_intrabc_block(candidate)`, `mvref_common.c:834`), adding its
 /// recorded block vector deduped by value (`mvref_common.c:874`).
 ///
-/// This models the two unconditionally-decoded left-column positions exactly (the
-/// only spatial positions that contribute for the ac0ej3 frame-0 row-0 IntrABC
-/// walk, verified against the AVM `setup_ref_mv_list` dump). Every other
-/// § 7.12.2 spatial position needs neighbour availability state this decoder does
-/// not model:
+/// This models the two unconditionally-decoded left-column positions exactly plus
+/// the § 7.12.2.1 step-8 above-row probe in the PROVABLE superblock-border case
+/// (see [`step8_above_row_column`]), inserted between steps 7 and 9 to match the
+/// AVM `setup_ref_mv_list` scan order exactly. Every other § 7.12.2 spatial
+/// position needs neighbour availability state this decoder does not model:
 ///
 /// * the step-11 below-bottom-left probe `(bh4, -1)`, gated in AVM by
 ///   `has_bottom_left` / `is_mi_coded` decode-order state (`mvref_common.c:1601`);
-/// * the above-row probes (steps 8/10/12 and the step-14 above-left, all
-///   `deltaRow = -1`);
+/// * the remaining above-row probes (steps 10/12 and the step-14 above-left, all
+///   `deltaRow = -1`), and step 8 outside the modelled superblock-border column;
 /// * the § 7.12.2.5 deltaCol = -3 non-adjacent scan.
 ///
 /// The scan reports `defer` when one of those unmodelled positions holds an
@@ -361,6 +363,14 @@ pub(super) struct SpatialIntrabcScan {
 /// same-block skip, `mvref_common.c:2095`), so it does not force a defer. `lookup(
 /// row, col)` returns the recorded block vector of an IntrABC block at MI `(row,
 /// col)`, or `None`.
+///
+/// NOTE: this reproduces the scan ORDER (steps 7 → 8 → 9), but NOT the subsequent
+/// § 7.12.2.19 weight sort. AVM weights each candidate per § 7.12.2.6 and swaps the
+/// max-weight NEAREST candidate into slot 0 when `nearest_refmv_count > 1`
+/// (`mvref_common.c:2472`-`2493`). The candidates returned here are in scan order,
+/// UNSORTED; the > 1-candidate case is therefore not faithful and is guarded by a
+/// fail-closed defer in [`intrabc_ref_stack_admission`]. With a single nearest
+/// candidate the sort is a no-op, so the scan order is exact for the admitted set.
 pub(super) fn spatial_intrabc_scan(
     geometry: SpatialScanGeometry,
     lookup: impl Fn(usize, usize) -> Option<Mv>,
@@ -370,22 +380,105 @@ pub(super) fn spatial_intrabc_scan(
     let bh4 = geometry.n4h;
 
     let mut candidates: Vec<Mv> = Vec::new();
-    // Modelled left-column positions (deltaCol = -1) in AV2 § 7.12.2 step order.
+    // The § 7.12.2.1 step-8 above-row column this decoder models faithfully (only
+    // the SB-border, even-mi_col, alignment-preserving case): excluded from the
+    // over-scan defer below because it is now placed exactly. `None` => unmodelled,
+    // so the over-scan keeps deferring on any above-row new BV.
+    let modelled_above_col = step8_above_row_column(&geometry);
+
+    // Modelled positions in AV2 § 7.12.2.1 step order: step 7, step 8, step 9.
     if let Some(left_col) = col.checked_sub(1) {
         // Step 7: (bh4 - 1, -1).
         if let Some(r) = row.checked_add(bh4.saturating_sub(1)) {
             push_deduped(&geometry, &lookup, &mut candidates, r, left_col);
         }
-        // Step 9: (0, -1) when bh4 >= 2.
-        if bh4 >= 2 {
-            push_deduped(&geometry, &lookup, &mut candidates, row, left_col);
-        }
+    }
+    // Step 8: (-1, Max(0, bw4 - 1 - isSbBorder)) at the SB-aligned column, before
+    // step 9 to match the AVM scan order (`mvref_common.c:2362`-`2383`).
+    if let (Some(above), Some(c)) = (row.checked_sub(1), modelled_above_col) {
+        push_deduped(&geometry, &lookup, &mut candidates, above, c);
+    }
+    // Step 9: (0, -1) when bh4 >= 2.
+    if bh4 >= 2
+        && let Some(left_col) = col.checked_sub(1)
+    {
+        push_deduped(&geometry, &lookup, &mut candidates, row, left_col);
     }
 
-    // Unmodelled positions: defer only if one holds a NEW IntrABC block vector.
-    let defer = spatial_scan_unmodelled_has_new_bv(&geometry, &lookup, &candidates);
+    // Unmodelled positions: defer only if one holds a NEW IntrABC block vector
+    // (excluding the modelled step-8 column, now placed exactly above).
+    let defer =
+        spatial_scan_unmodelled_has_new_bv(&geometry, &lookup, &candidates, modelled_above_col);
 
     SpatialIntrabcScan { candidates, defer }
+}
+
+/// The MI column of the § 7.12.2.1 step-8 above-row SMVP probe when this decoder
+/// can place it faithfully, or `None` to leave it for the conservative over-scan
+/// defer.
+///
+/// § 7.12.2.1 step 8 (`docs/spec/av2/1.0.0/07-decoding-process.md`, ~line 3431)
+/// invokes § 7.12.2.6 Scan point with `deltaRow = -1` and
+/// `deltaCol = Max(0, bw4 - 1 - isSbBorder)`, then § 7.12.2.6 (~line 3766)
+/// SB-aligns the column on a superblock border:
+///
+/// ```text
+/// isSbBorder = (MiRow & (Num_4x4_Blocks_High[SbSize] - 1)) == 0
+/// if (deltaRow < 0 && isSbBorder) { mvCol = (mvCol >> 1) << 1; deltaCol = mvCol - MiCol }
+/// ```
+///
+/// This matches AVM `get_row_smvp_states` `row_smvp_state[0]` for an SB-border
+/// block (`compute_aligned_offset(mi_col, bw4 - 2)`, `mvref_common.c:1979`/`2062`).
+///
+/// Modelled ONLY when ALL of the following hold (else `None` -> defer-as-before):
+///
+/// * `isSbBorder == 1` (the block sits on a horizontal superblock border, so the
+///   8x8-grid alignment is well defined and the neighbour 8x8 unit is fully
+///   decoded);
+/// * `up_available` (`MiRow > 0`; ac0ej3 is single-tile so this is the only
+///   above-availability clause);
+/// * the SB-aligned column equals the un-aligned spec column (true for even
+///   `mi_col`; an odd `mi_col` shifts the column under `(mvCol >> 1) << 1`, which
+///   this decoder does not place faithfully -> defer).
+fn step8_above_row_column(geometry: &SpatialScanGeometry) -> Option<usize> {
+    let row = geometry.mi_row;
+    let col = geometry.mi_col;
+    // up_available: there is an above row at all (frame/tile top has none).
+    if row == 0 {
+        return None;
+    }
+    // isSbBorder == 1: MiRow is a multiple of the SB side (Num_4x4_Blocks_High).
+    if geometry.sb_size4 == 0 || !row.is_multiple_of(geometry.sb_size4) {
+        return None;
+    }
+    // § 7.12.2.6 floors the probe column: `mvCol = (MiCol + deltaCol) >> 1 << 1`.
+    // We model the case where that floor is a no-op (`aligned_col == MiCol +
+    // deltaCol`) by checking `MiCol` parity below, which is sufficient for the
+    // reachable set BECAUSE `deltaCol = Max(0, bw4 - 2)` is always EVEN here: every
+    // reachable IBC block has an even `bw4` (the smallest IBC `bw4` is 2 = 8px; a
+    // `bw4 == 1` (4px) block would give `deltaCol = 0`, still even). With an even
+    // `deltaCol`, `MiCol + deltaCol` is even iff `MiCol` is even, so the `col & 1`
+    // parity guard alone makes the floor a no-op. If a future odd `deltaCol` ever
+    // became reachable (an odd `bw4`), the parity guard would NOT suffice and the
+    // full floor `(MiCol + deltaCol) >> 1 << 1` would be required — assert it stays
+    // even so that case fails loudly in debug instead of silently mis-aligning.
+    let delta_col = geometry.n4w.saturating_sub(2);
+    debug_assert!(
+        delta_col.is_multiple_of(2),
+        "step-8 deltaCol must be even for the MiCol-parity floor shortcut; \
+         an odd deltaCol (odd bw4) needs the full (MiCol+deltaCol)>>1<<1 floor",
+    );
+    // The (mvCol >> 1) << 1 alignment must not shift the spec column, i.e. mi_col
+    // must be even (given the even deltaCol above); an odd mi_col is not modelled.
+    if col & 1 != 0 {
+        return None;
+    }
+    let aligned_col = col.checked_add(delta_col)?;
+    // is_inside: the neighbour column must lie inside the tile.
+    if aligned_col >= geometry.mi_cols {
+        return None;
+    }
+    Some(aligned_col)
 }
 
 /// Adds an IntrABC neighbour block vector at MI `(row_offset, left_col)` to the
@@ -406,15 +499,22 @@ fn push_deduped(
 }
 
 /// Whether any AV2 § 7.12.2 spatial position this decoder does NOT model exactly
-/// (the step-11 below-bottom-left probe, the above-row probes, and the
-/// § 7.12.2.5 deltaCol = -3 non-adjacent scan) holds an IntrABC neighbour whose
-/// block vector is NOT already a modelled candidate. A duplicate block vector
-/// contributes nothing in AVM, so it does not force a defer; a new one would
-/// extend the stack unfaithfully, so it does.
+/// (the step-11 below-bottom-left probe, the still-unmodelled above-row probes,
+/// and the § 7.12.2.5 deltaCol = -3 non-adjacent scan) holds an IntrABC neighbour
+/// whose block vector is NOT already a modelled candidate. A duplicate block
+/// vector contributes nothing in AVM, so it does not force a defer; a new one
+/// would extend the stack unfaithfully, so it does.
+///
+/// `modelled_above_col` is the § 7.12.2.1 step-8 above-row column now placed
+/// exactly by [`spatial_intrabc_scan`] (or `None` when unmodelled): it is excluded
+/// from the above-row over-scan so a step-8-only hit no longer forces a defer,
+/// while every OTHER above-row column (the still-unmodelled steps 10/12/14)
+/// continues to defer.
 fn spatial_scan_unmodelled_has_new_bv(
     geometry: &SpatialScanGeometry,
     lookup: &impl Fn(usize, usize) -> Option<Mv>,
     modelled: &[Mv],
+    modelled_above_col: Option<usize>,
 ) -> bool {
     let row = geometry.mi_row;
     let col = geometry.mi_col;
@@ -430,13 +530,17 @@ fn spatial_scan_unmodelled_has_new_bv(
     }
     // Above-row probes (deltaRow = -1). At the frame top edge there is no above
     // row, so nothing is read; otherwise over-scan the above row from the
-    // step-14 above-left column out to the top-right column.
+    // step-14 above-left column out to the top-right column, EXCLUDING the exact
+    // § 7.12.2.1 step-8 column now placed faithfully above.
     if let Some(above) = row.checked_sub(1) {
         let is_sb_border = geometry.sb_size4 != 0 && row.is_multiple_of(geometry.sb_size4);
         let extra_left = if is_sb_border { 2 + (col & 1) } else { 1 };
         let leftmost = col.saturating_sub(extra_left);
         let rightmost = col.saturating_add(bw4); // inclusive of the top-right col
         for c in leftmost..=rightmost {
+            if Some(c) == modelled_above_col {
+                continue;
+            }
             if is_new(lookup_in_grid(geometry, lookup, above, c)) {
                 return true;
             }
@@ -572,10 +676,21 @@ pub(super) enum IntrabcStackAdmission {
 /// default block vectors) and returns the block vector the decoded DRL index
 /// `ref_mv_idx` selects, so the caller can use the AVM-faithful candidate directly.
 ///
-/// Defers (returns `Defer`) when the § 7.12.2 spatial scan reaches a position this
-/// decoder does not model faithfully (`spatial.defer`), or when the decoded DRL
-/// index lands outside the built stack. `enable_refmvbank` is the AV2 sequence flag
-/// gating the § 7.12.2.21 bank fill.
+/// Defers (returns `Defer`) when:
+///
+/// * the § 7.12.2 spatial scan reaches a position this decoder does not model
+///   faithfully (`spatial.defer`); or
+/// * the spatial scan admits MORE THAN ONE distinct nearest candidate
+///   (`spatial.candidates.len() > 1`): AVM § 7.12.2.19 sorts the NEAREST spatial
+///   candidates by § 7.12.2.6 weight and swaps the max-weight one into slot 0 when
+///   `nearest_refmv_count > 1` (`mvref_common.c:2472`-`2493`, gated by
+///   `enable_drl_reorder`). This decoder does NOT model the per-candidate weights
+///   or that reorder, so a >1-candidate stack could place the wrong block vector in
+///   the DRL-selected slot. Fail closed until weights/sort are modelled. (For a
+///   single nearest candidate the swap loop is a no-op, so it stays admissible.) or
+/// * the decoded DRL index lands outside the built stack.
+///
+/// `enable_refmvbank` is the AV2 sequence flag gating the § 7.12.2.21 bank fill.
 pub(super) fn intrabc_ref_stack_admission(
     bank: &IntrabcRefMvBank,
     geometry: IntrabcStackGeometry,
@@ -583,7 +698,7 @@ pub(super) fn intrabc_ref_stack_admission(
     enable_refmvbank: bool,
     ref_mv_idx: usize,
 ) -> IntrabcStackAdmission {
-    if spatial.defer {
+    if spatial.defer || spatial.candidates.len() > 1 {
         return IntrabcStackAdmission::Defer;
     }
     let real_stack =
@@ -853,6 +968,33 @@ mod tests {
         );
     }
 
+    // A block whose spatial scan admits MORE THAN ONE distinct nearest candidate
+    // DEFERS (fail-closed): AVM § 7.12.2.19 may swap the max-weight candidate into
+    // slot 0 (`nearest_refmv_count > 1`), and this decoder does not model the
+    // weights/sort. A single nearest candidate still admits (the swap is a no-op).
+    #[test]
+    fn admission_defers_on_multiple_spatial_candidates() {
+        let bank = IntrabcRefMvBank::new(32);
+        let two = SpatialIntrabcScan {
+            candidates: vec![Mv { row: 0, col: -64 }, Mv { row: -512, col: 0 }],
+            defer: false,
+        };
+        assert_eq!(
+            intrabc_ref_stack_admission(&bank, ac0ej3_geometry(0, 240), &two, true, 0),
+            IntrabcStackAdmission::Defer,
+            "two distinct spatial candidates must defer until the §7.12.2.19 sort is modelled"
+        );
+        // The single-candidate case is unaffected (admits).
+        let one = SpatialIntrabcScan {
+            candidates: vec![Mv { row: 0, col: -64 }],
+            defer: false,
+        };
+        assert!(matches!(
+            intrabc_ref_stack_admission(&bank, ac0ej3_geometry(0, 240), &one, true, 0),
+            IntrabcStackAdmission::Admit { .. }
+        ));
+    }
+
     // The § 7.12.2 spatial scan: a left-column IntrABC neighbour at the bottom-left
     // position (step 7) contributes its BV; an above-row IntrABC neighbour forces a
     // (safe) defer.
@@ -879,6 +1021,138 @@ mod tests {
             (row == 3 && col == 8).then_some(Mv { row: -8, col: 0 })
         });
         assert!(above.defer);
+    }
+
+    /// ac0ej3 frame-0 MI(32,56) geometry for the § 7.12.2.1 step-8 SB-border probe.
+    /// mib_size 32, so MiRow 32 sits on a horizontal SB border (`32 % 32 == 0`).
+    fn ac0ej3_mi_32_56_scan_geometry() -> SpatialScanGeometry {
+        SpatialScanGeometry {
+            mi_row: 32,
+            mi_col: 56,
+            n4w: 8,
+            n4h: 16,
+            mi_rows: 270,
+            mi_cols: 480,
+            sb_size4: 32,
+        }
+    }
+
+    // The § 7.12.2.1 step-8 above-row SMVP candidate, SB-border + even-mi_col case:
+    // MI(32,56) on an SB border reads the SB-aligned above neighbour at
+    // (row-1, mi_col + Max(0,bw4-1-isSbBorder)) = (31, 56+6) = (31,62), which lies
+    // inside the SB-row-0 owner block MI(16,56) carrying its IntrABC BV (-512,0).
+    // The scan admits it (no defer), matching the avmdec SPLOT_IBC_DUMP
+    // `PREDEF count=1 : [0](-512,0 ro=-1 co=6)`.
+    #[test]
+    fn spatial_scan_admits_ac0ej3_mi_32_56_step8_above_neighbour() {
+        let scan = spatial_intrabc_scan(ac0ej3_mi_32_56_scan_geometry(), |row, col| {
+            (row == 31 && col == 62).then_some(Mv { row: -512, col: 0 })
+        });
+        assert_eq!(scan.candidates, vec![Mv { row: -512, col: 0 }]);
+        assert!(!scan.defer);
+    }
+
+    // The full MI(32,56) admission: with the modelled step-8 candidate (-512,0)
+    // first, the SB-row-1 bank is empty (zeroed at SB-row entry), so the stack is
+    // [(-512,0)] + the four § 7.12.2.20 defaults, capped at max_bvp_drl_bits_minus_1
+    // + 2 = 4 -> [(-512,0),(-1024,0),(0,-3072),(-512,0)]. DRL index 0 selects
+    // (-512,0), bit-exact vs the avmdec dump
+    // `FINAL [0](-512,0)[1](-1024,0)[2](0,-3072)[3](-512,0)` drl=0 decoded=(-512,0).
+    #[test]
+    fn admission_selects_ac0ej3_mi_32_56_step8_bv() {
+        let bank = IntrabcRefMvBank::new(32); // freshly zeroed at the SB-row-1 entry.
+        let spatial = spatial_intrabc_scan(ac0ej3_mi_32_56_scan_geometry(), |row, col| {
+            (row == 31 && col == 62).then_some(Mv { row: -512, col: 0 })
+        });
+        let geometry = IntrabcStackGeometry {
+            mi_row: 32,
+            mi_col: 56,
+            n4w: 8,
+            n4h: 16,
+            sb_samples: 128,
+            frame_w: 1920,
+            frame_h: 1080,
+            max_bvp_drl_bits_minus_1: 2,
+        };
+        let stack = build_intrabc_ref_mv_stack(&bank, geometry, true, &spatial.candidates);
+        assert_eq!(
+            stack,
+            vec![
+                Mv { row: -512, col: 0 },
+                Mv { row: -1024, col: 0 },
+                Mv { row: 0, col: -3072 },
+                Mv { row: -512, col: 0 },
+            ]
+        );
+        assert_eq!(
+            intrabc_ref_stack_admission(&bank, geometry, &spatial, true, 0),
+            IntrabcStackAdmission::Admit {
+                selected: Mv { row: -512, col: 0 },
+            }
+        );
+    }
+
+    // Narrowing precision: a still-unmodelled above-row column (NOT the modelled
+    // step-8 aligned column) holding a NEW IntrABC BV STILL defers. For MI(32,56)
+    // the modelled step-8 column is 62; a NEW BV at a DIFFERENT above-row column
+    // (e.g. the step-12 `Max(2,bw4)` probe at col 64, or the step-14 above-left)
+    // must keep deferring — proving the exclusion is precise, not a blanket open.
+    #[test]
+    fn spatial_scan_defers_on_other_above_row_column() {
+        // A new BV at above-row col 64 (an unmodelled step-12-class column) defers.
+        let scan = spatial_intrabc_scan(ac0ej3_mi_32_56_scan_geometry(), |row, col| {
+            (row == 31 && col == 64).then_some(Mv { row: 7, col: -99 })
+        });
+        assert!(scan.candidates.is_empty());
+        assert!(scan.defer);
+        // The modelled step-8 column AND an unmodelled column together: the modelled
+        // BV is admitted, but the distinct unmodelled-column BV still forces a defer.
+        let scan = spatial_intrabc_scan(ac0ej3_mi_32_56_scan_geometry(), |row, col| {
+            if row == 31 && col == 62 {
+                Some(Mv { row: -512, col: 0 })
+            } else if row == 31 && col == 60 {
+                Some(Mv { row: 7, col: -99 })
+            } else {
+                None
+            }
+        });
+        assert_eq!(scan.candidates, vec![Mv { row: -512, col: 0 }]);
+        assert!(scan.defer);
+    }
+
+    // Asserts that a block whose step-8 above-row probe is unmodelled both reports no
+    // modelled step-8 column AND defers when its above row holds an IntrABC neighbour.
+    fn assert_unmodelled_step8_defers(mi_row: usize, mi_col: usize, above_neighbour_col: usize) {
+        let geom = SpatialScanGeometry {
+            mi_row,
+            mi_col,
+            n4w: 8,
+            n4h: 16,
+            mi_rows: 270,
+            mi_cols: 480,
+            sb_size4: 32,
+        };
+        assert!(step8_above_row_column(&geom).is_none());
+        let above = mi_row - 1;
+        let scan = spatial_intrabc_scan(geom, |row, col| {
+            (row == above && col == above_neighbour_col).then_some(Mv { row: -512, col: 0 })
+        });
+        assert!(scan.defer);
+    }
+
+    // An odd-mi_col SB-border block does NOT model step 8 (the `(mvCol >> 1) << 1`
+    // alignment would shift the spec column), so an above-row IntrABC neighbour at
+    // any column forces a conservative defer.
+    #[test]
+    fn spatial_scan_defers_on_odd_mi_col_sb_border() {
+        assert_unmodelled_step8_defers(32, 57, 63);
+    }
+
+    // A non-SB-border block (MiRow not a multiple of mib_size) does NOT model step 8
+    // (full 4x4-resolution above-row, unmodelled): the new frontier MI(48,56) class.
+    #[test]
+    fn spatial_scan_defers_on_non_sb_border_above_row() {
+        assert_unmodelled_step8_defers(48, 56, 63);
     }
 
     // The § 7.12.2 spatial scan dedups by value: the same neighbour read at both the
