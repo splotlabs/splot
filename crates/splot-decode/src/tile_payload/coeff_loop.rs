@@ -849,13 +849,16 @@ mod tests {
         state.update_after_coeffs(update(0, 0, 0, 1, 1)).unwrap();
         let before = state.clone();
 
+        // An origin AT or beyond the line length is a genuine out-of-tile write
+        // (not a frame-edge overhang); the §5.20.7.27 context-write edge clamp
+        // still rejects it, matching AVM `av2_set_entropy_contexts`.
         let err = apply_all_zero_coeff_block(
             &mut state,
             AllZeroCoeffBlockInput {
                 plane: 0,
-                x4: 1,
+                x4: 2,
                 y4: 0,
-                w4: 2,
+                w4: 1,
                 h4: 1,
             },
         )
@@ -865,7 +868,7 @@ mod tests {
             err,
             CoeffLoopContextError::State(TileCoeffStateError::ContextRangeOutOfBounds {
                 context: "above",
-                start: 1,
+                start: 2,
                 end: 3,
                 len: 2
             })

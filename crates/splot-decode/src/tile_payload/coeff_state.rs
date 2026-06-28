@@ -267,6 +267,21 @@ impl TileCoeffContextState {
     }
 
     /// Applies the AV2 § 5.20.7.27 end-of-`coeffs()` context writes.
+    ///
+    /// The spec writes `culLevel` / `dcCategory` over `x4 .. x4 + w4` above
+    /// columns and `y4 .. y4 + h4` left rows
+    /// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27`). A transform
+    /// block on the bottom or right frame edge overhangs the tile by up to one
+    /// transform extent, so the literal span exceeds this tile-global context
+    /// line. AVM's `av2_set_entropy_contexts` (`av2/common/blockd.c:138-166`)
+    /// clamps the on-frame portion with `AVMMIN(txs_*, blocks_* - off)` and
+    /// zero-fills the remainder; because AVM's entropy lines are SB-local the
+    /// off-frame indices are never observed, and the OR-reduce reads on the
+    /// splot side already clamp with `skip(start).take(len)`. This helper models
+    /// that clamp: the write covers only the on-tile indices and the overhang
+    /// (which has no backing storage and is never read) is skipped. A genuine
+    /// out-of-tile origin (`x4 >= mi_cols` or `y4 >= mi_rows`) is still a hard
+    /// error, as AVM never produces one.
     pub(crate) fn update_after_coeffs(
         &mut self,
         input: CoeffContextUpdate,
@@ -279,8 +294,8 @@ impl TileCoeffContextState {
         if input.h4 == 0 {
             return Err(TileCoeffStateError::EmptyContextRange { axis: "rows" });
         }
-        let above = checked_range("above", input.x4, input.w4, self.mi_cols)?;
-        let left = checked_range("left", input.y4, input.h4, self.mi_rows)?;
+        let above = edge_clamped_range("above", input.x4, input.w4, self.mi_cols)?;
+        let left = edge_clamped_range("left", input.y4, input.h4, self.mi_rows)?;
 
         for idx in above {
             self.above_level[plane][idx] = input.cul_level;
@@ -562,7 +577,17 @@ fn checked_mul_usize(
         })
 }
 
-fn checked_range(
+/// Builds a § 5.20.7.27 context-write range clamped to the bottom/right frame
+/// edge, modelling AVM `av2_set_entropy_contexts` (`av2/common/blockd.c`).
+///
+/// The unclamped span is `start .. start + len`. A transform block straddling
+/// the tile's right (above axis) or bottom (left axis) edge has an `end` that
+/// exceeds `line_len`; the on-frame portion is `start .. line_len` and the
+/// overhang is dropped (it has no backing storage and the OR-reduce reads
+/// already clamp, so it is never observed). The `start + len` addition keeps the
+/// existing overflow guard. A genuine out-of-tile origin (`start >= line_len`)
+/// is still rejected, matching AVM which never emits such a write.
+fn edge_clamped_range(
     context: &'static str,
     start: usize,
     len: usize,
@@ -575,8 +600,15 @@ fn checked_range(
             base: start,
             offset: len,
         })?;
-    validate_existing_range(context, start, end, line_len)?;
-    Ok(start..end)
+    if start >= line_len {
+        return Err(TileCoeffStateError::ContextRangeOutOfBounds {
+            context,
+            start,
+            end,
+            len: line_len,
+        });
+    }
+    Ok(start..end.min(line_len))
 }
 
 fn validate_existing_range(
@@ -747,6 +779,8 @@ mod tests {
 
     #[test]
     fn update_after_coeffs_writes_above_and_left_ranges_only() {
+        // A fully-on-frame block writes its full span on both axes (the §5.20.7.27
+        // frame-edge clamp in `update_after_coeffs` is a no-op here).
         let mut state = TileCoeffContextState::new(5, 6).unwrap();
 
         state.update_after_coeffs(update(0, 2, 1, 3, 2)).unwrap();
@@ -783,18 +817,107 @@ mod tests {
         ));
         assert_eq!(state, before);
 
+        // An origin AT or beyond the line length is a genuine out-of-tile write
+        // AVM never produces; it stays a hard error (not an edge clamp).
         assert!(matches!(
             state
-                .update_after_coeffs(update(0, 1, 0, 2, 1))
+                .update_after_coeffs(update(0, 2, 0, 1, 1))
                 .unwrap_err(),
             TileCoeffStateError::ContextRangeOutOfBounds {
                 context: "above",
-                start: 1,
+                start: 2,
                 end: 3,
                 len: 2
             }
         ));
         assert_eq!(state, before);
+
+        assert!(matches!(
+            state
+                .update_after_coeffs(update(0, 0, 2, 1, 1))
+                .unwrap_err(),
+            TileCoeffStateError::ContextRangeOutOfBounds {
+                context: "left",
+                start: 2,
+                end: 3,
+                len: 2
+            }
+        ));
+        assert_eq!(state, before);
+    }
+
+    #[test]
+    fn update_after_coeffs_clamps_bottom_edge_overhang_to_on_tile_rows() {
+        // Models the ac0ej3 frontier: a TX_64X64 luma block (h4 = 16) whose
+        // MI-row origin overhangs the tile bottom by 2 rows. AVM
+        // `av2_set_entropy_contexts` (av2/common/blockd.c:138-166) clamps the
+        // left write to `AVMMIN(txs_high, blocks_high - loff)`; splot writes
+        // cul_level over only the on-tile rows `y4 .. mi_rows` and never touches
+        // the overhang (which has no backing storage and the reads also clamp).
+        let mi_rows = 270;
+        let mi_cols = 480;
+        let mut state = TileCoeffContextState::new(mi_rows, mi_cols).unwrap();
+        let y4 = mi_rows - 14; // 256: a 16-tall transform overhangs by 2 rows.
+
+        state
+            .update_after_coeffs(CoeffContextUpdate {
+                plane: 0,
+                x4: 0,
+                y4,
+                w4: 16,
+                h4: 16,
+                cul_level: 3,
+                dc_category: 2,
+            })
+            .unwrap();
+
+        let left_level = state.left_level(0).unwrap();
+        assert_eq!(left_level.len(), mi_rows);
+        for (row, &value) in left_level.iter().enumerate() {
+            let expected = if (y4..mi_rows).contains(&row) { 3 } else { 0 };
+            assert_eq!(value, expected, "left_level[{row}]");
+        }
+        let left_dc = state.left_dc(0).unwrap();
+        for (row, &value) in left_dc.iter().enumerate() {
+            let expected = if (y4..mi_rows).contains(&row) { 2 } else { 0 };
+            assert_eq!(value, expected, "left_dc[{row}]");
+        }
+        // The above axis is fully on-tile, so it is written unclamped.
+        assert!(state.above_level(0).unwrap()[..16].iter().all(|&v| v == 3));
+        assert_eq!(state.above_level(0).unwrap()[16], 0);
+    }
+
+    #[test]
+    fn update_after_coeffs_clamps_right_edge_overhang_to_on_tile_cols() {
+        // Right-edge analogue: a wide transform whose column origin overhangs the
+        // tile right edge. AVM clamps the above write with
+        // `AVMMIN(txs_wide, blocks_wide - aoff)`.
+        let mi_rows = 270;
+        let mi_cols = 480;
+        let mut state = TileCoeffContextState::new(mi_rows, mi_cols).unwrap();
+        let x4 = mi_cols - 14; // 466: a 16-wide transform overhangs by 2 cols.
+
+        state
+            .update_after_coeffs(CoeffContextUpdate {
+                plane: 0,
+                x4,
+                y4: 0,
+                w4: 16,
+                h4: 16,
+                cul_level: 4,
+                dc_category: 1,
+            })
+            .unwrap();
+
+        let above_level = state.above_level(0).unwrap();
+        assert_eq!(above_level.len(), mi_cols);
+        for (col, &value) in above_level.iter().enumerate() {
+            let expected = if (x4..mi_cols).contains(&col) { 4 } else { 0 };
+            assert_eq!(value, expected, "above_level[{col}]");
+        }
+        // The left axis is fully on-tile, so it is written unclamped.
+        assert!(state.left_level(0).unwrap()[..16].iter().all(|&v| v == 4));
+        assert_eq!(state.left_level(0).unwrap()[16], 0);
     }
 
     #[test]
