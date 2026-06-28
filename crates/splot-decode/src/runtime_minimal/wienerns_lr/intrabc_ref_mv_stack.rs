@@ -962,6 +962,144 @@ mod tests {
         assert!(above.defer);
     }
 
+    /// ac0ej3 frame-0 MI(32,56) geometry for the § 7.12.2.1 step-8 SB-border probe.
+    /// mib_size 32, so MiRow 32 sits on a horizontal SB border (`32 % 32 == 0`).
+    fn ac0ej3_mi_32_56_scan_geometry() -> SpatialScanGeometry {
+        SpatialScanGeometry {
+            mi_row: 32,
+            mi_col: 56,
+            n4w: 8,
+            n4h: 16,
+            mi_rows: 270,
+            mi_cols: 480,
+            sb_size4: 32,
+        }
+    }
+
+    // The § 7.12.2.1 step-8 above-row SMVP candidate, SB-border + even-mi_col case:
+    // MI(32,56) on an SB border reads the SB-aligned above neighbour at
+    // (row-1, mi_col + Max(0,bw4-1-isSbBorder)) = (31, 56+6) = (31,62), which lies
+    // inside the SB-row-0 owner block MI(16,56) carrying its IntrABC BV (-512,0).
+    // The scan admits it (no defer), matching the avmdec SPLOT_IBC_DUMP
+    // `PREDEF count=1 : [0](-512,0 ro=-1 co=6)`.
+    #[test]
+    fn spatial_scan_admits_ac0ej3_mi_32_56_step8_above_neighbour() {
+        let scan = spatial_intrabc_scan(ac0ej3_mi_32_56_scan_geometry(), |row, col| {
+            (row == 31 && col == 62).then_some(Mv { row: -512, col: 0 })
+        });
+        assert_eq!(scan.candidates, vec![Mv { row: -512, col: 0 }]);
+        assert!(!scan.defer);
+    }
+
+    // The full MI(32,56) admission: with the modelled step-8 candidate (-512,0)
+    // first, the SB-row-1 bank is empty (zeroed at SB-row entry), so the stack is
+    // [(-512,0)] + the four § 7.12.2.20 defaults, capped at max_bvp_drl_bits_minus_1
+    // + 2 = 4 -> [(-512,0),(-1024,0),(0,-3072),(-512,0)]. DRL index 0 selects
+    // (-512,0), bit-exact vs the avmdec dump
+    // `FINAL [0](-512,0)[1](-1024,0)[2](0,-3072)[3](-512,0)` drl=0 decoded=(-512,0).
+    #[test]
+    fn admission_selects_ac0ej3_mi_32_56_step8_bv() {
+        let bank = IntrabcRefMvBank::new(32); // freshly zeroed at the SB-row-1 entry.
+        let spatial = spatial_intrabc_scan(ac0ej3_mi_32_56_scan_geometry(), |row, col| {
+            (row == 31 && col == 62).then_some(Mv { row: -512, col: 0 })
+        });
+        let geometry = IntrabcStackGeometry {
+            mi_row: 32,
+            mi_col: 56,
+            n4w: 8,
+            n4h: 16,
+            sb_samples: 128,
+            frame_w: 1920,
+            frame_h: 1080,
+            max_bvp_drl_bits_minus_1: 2,
+        };
+        let stack = build_intrabc_ref_mv_stack(&bank, geometry, true, &spatial.candidates);
+        assert_eq!(
+            stack,
+            vec![
+                Mv { row: -512, col: 0 },
+                Mv { row: -1024, col: 0 },
+                Mv { row: 0, col: -3072 },
+                Mv { row: -512, col: 0 },
+            ]
+        );
+        assert_eq!(
+            intrabc_ref_stack_admission(&bank, geometry, &spatial, true, 0),
+            IntrabcStackAdmission::Admit {
+                selected: Mv { row: -512, col: 0 },
+            }
+        );
+    }
+
+    // Narrowing precision: a still-unmodelled above-row column (NOT the modelled
+    // step-8 aligned column) holding a NEW IntrABC BV STILL defers. For MI(32,56)
+    // the modelled step-8 column is 62; a NEW BV at a DIFFERENT above-row column
+    // (e.g. the step-12 `Max(2,bw4)` probe at col 64, or the step-14 above-left)
+    // must keep deferring — proving the exclusion is precise, not a blanket open.
+    #[test]
+    fn spatial_scan_defers_on_other_above_row_column() {
+        // A new BV at above-row col 64 (an unmodelled step-12-class column) defers.
+        let scan = spatial_intrabc_scan(ac0ej3_mi_32_56_scan_geometry(), |row, col| {
+            (row == 31 && col == 64).then_some(Mv { row: 7, col: -99 })
+        });
+        assert!(scan.candidates.is_empty());
+        assert!(scan.defer);
+        // The modelled step-8 column AND an unmodelled column together: the modelled
+        // BV is admitted, but the distinct unmodelled-column BV still forces a defer.
+        let scan = spatial_intrabc_scan(ac0ej3_mi_32_56_scan_geometry(), |row, col| {
+            if row == 31 && col == 62 {
+                Some(Mv { row: -512, col: 0 })
+            } else if row == 31 && col == 60 {
+                Some(Mv { row: 7, col: -99 })
+            } else {
+                None
+            }
+        });
+        assert_eq!(scan.candidates, vec![Mv { row: -512, col: 0 }]);
+        assert!(scan.defer);
+    }
+
+    // An odd-mi_col SB-border block does NOT model step 8 (the `(mvCol >> 1) << 1`
+    // alignment would shift the spec column), so an above-row IntrABC neighbour at
+    // any column forces a conservative defer.
+    #[test]
+    fn spatial_scan_defers_on_odd_mi_col_sb_border() {
+        let geom = SpatialScanGeometry {
+            mi_row: 32,
+            mi_col: 57, // odd -> alignment shifts the column -> unmodelled.
+            n4w: 8,
+            n4h: 16,
+            mi_rows: 270,
+            mi_cols: 480,
+            sb_size4: 32,
+        };
+        assert!(step8_above_row_column(&geom).is_none());
+        let scan = spatial_intrabc_scan(geom, |row, col| {
+            (row == 31 && col == 63).then_some(Mv { row: -512, col: 0 })
+        });
+        assert!(scan.defer);
+    }
+
+    // A non-SB-border block (MiRow not a multiple of mib_size) does NOT model step 8
+    // (full 4x4-resolution above-row, unmodelled): the new frontier MI(48,56) class.
+    #[test]
+    fn spatial_scan_defers_on_non_sb_border_above_row() {
+        let geom = SpatialScanGeometry {
+            mi_row: 48, // 48 % 32 == 16 != 0 -> not an SB border.
+            mi_col: 56,
+            n4w: 8,
+            n4h: 16,
+            mi_rows: 270,
+            mi_cols: 480,
+            sb_size4: 32,
+        };
+        assert!(step8_above_row_column(&geom).is_none());
+        let scan = spatial_intrabc_scan(geom, |row, col| {
+            (row == 47 && col == 63).then_some(Mv { row: -512, col: 0 })
+        });
+        assert!(scan.defer);
+    }
+
     // The § 7.12.2 spatial scan dedups by value: the same neighbour read at both the
     // step-7 (bh4-1,-1) and step-9 (0,-1) left-column positions contributes once.
     #[test]

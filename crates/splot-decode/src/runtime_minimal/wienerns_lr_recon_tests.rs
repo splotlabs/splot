@@ -110,23 +110,27 @@ const LUMA_REGION_FNV1A64: u64 = 0x31c1_4055_9bd3_8725;
 /// The §7.13.2.12 IBP DC value at the MI(4,0) `TX_16X64` leaf's top-left 3 columns.
 const MI40_IBP_STEP: u16 = 65;
 
-/// The total reconstructed luma sample count after the §5.20.7.27 non-DCT inter
-/// residual parse-advancement. The earlier widening reconstructed `32768` samples
-/// (the 24576-sample first-3-superblock DC region x[0,192) x y[0,128), PLUS the
-/// SB-column-3 `BLOCK_64X64 H_PRED` block `4096`, PLUS the 32x64 `DC_PRED` block
-/// `2048`, PLUS the first §7.13.3.18 IntrABC `BLOCK_32X64` target `2048`). With the
-/// non-DCT inter luma `transform_type` SETS (`TX_SET_INTER_1/2`, `TX_SET_DCT_IDTX*`,
-/// alongside the long-side sets) now PARSED — the coefficient loop is
-/// transform-type-agnostic and the unsupported inverse transform defers at the
-/// sink — the entropy stream stays synced through the rest of frame-0's first four
-/// superblock columns, so every downstream proven-subset leaf (DC / cardinal
-/// H_PRED / V_PRED / zero-residual IntrABC copy) that those formerly-desynced
-/// blocks bordered now reconstructs in decode order. The verified region grows to
-/// `55296` bit-exact luma samples, bounded by x[0,256) x y[0,256) (the first four
-/// SB columns over SB rows 0..3 plus the first two SB columns of SB row 3, minus
-/// the deferred non-proven-subset blocks inside that box). Verified ZERO-mismatch,
-/// per sample, against the AVM pre-filter reconstruction oracle (`ac0_prefiltered.yuv`).
-const LUMA_RECON_SAMPLE_TOTAL: usize = 55296;
+/// The total reconstructed luma sample count after the §7.12.2.1 step-8 SB-border
+/// IntrABC SMVP advancement. The prior §5.20.7.27 non-DCT inter residual stage
+/// reconstructed `55296` samples; modelling the §7.12.2.1 step-8 above-row spatial
+/// candidate (the SB-border, even-mi_col, alignment-preserving column) admits the
+/// frame-0 SB-row-1 IntrABC block MI(32,56)'s ref-MV stack faithfully (predictor
+/// (-512,0), the AVM-faithful BV), so the walk no longer defers there. That
+/// unblocks two further proven-subset leaves in decode order:
+///
+/// * the MI(32,56) §7.13.3.18 IntrABC `BLOCK_32X64` target (x[224,256) x y[128,192),
+///   `32 * 64 = 2048` samples — an integer-DV skip copy of the displaced
+///   `CurrFrame` source); plus
+/// * the next now-unblocked SB-row-1 `BLOCK_64X64` proven-subset intra leaf
+///   (`64 * 64 = 4096` samples).
+///
+/// Total growth `2048 + 4096 = 6144`, so the verified region is now `61440`
+/// bit-exact luma samples (`55296 + 6144`), still bounded by x[0,256) x y[0,256).
+/// The walk then stops at the new frontier MI(48,56), a within-SB (non-SB-border)
+/// step-8 above-row probe at full 4x4 resolution this decoder does not yet model.
+/// Verified ZERO-mismatch, per sample, over every covered luma 4x4 unit against
+/// the AVM pre-filter reconstruction oracle (`ac0_prefiltered.yuv`).
+const LUMA_RECON_SAMPLE_TOTAL: usize = 61440;
 
 /// The SB-column-3 `BLOCK_64X64 H_PRED` block (x[192,256) x y[0,64)) — the
 /// §7.13.3.18 IntrABC source. Mode `H_PRED` (pAngle 180, `AngleDeltaY == 0`), split
@@ -447,16 +451,16 @@ fn ac0ej3_frame_origin_chroma_dc_blocks_reconstruct_bit_exact_against_prefilter_
         "the deferred SMOOTH chroma leaf at chroma (32,0) must stay unreconstructed"
     );
 
-    // Coverage report: with the non-DCT inter residual parse-advancement keeping the
-    // entropy stream synced, the verified luma region is now the `55296`-sample
-    // bit-exact region bounded by x[0,256) x y[0,256) (the proven-subset leaves the
-    // synced parse unblocked across the first four SB columns) — plus the two 32x32
-    // chroma origin blocks (2048 chroma samples total across U and V).
+    // Coverage report: with the §7.12.2.1 step-8 SB-border IntrABC SMVP candidate
+    // modelled, MI(32,56)'s ref-MV stack admits faithfully and the verified luma
+    // region is now the `61440`-sample bit-exact region bounded by x[0,256) x
+    // y[0,256) — plus the two 32x32 chroma origin blocks (2048 chroma samples total
+    // across U and V).
     let (luma4x4, chroma4x4) = sink.reconstructed_counts();
     assert_eq!(
         luma4x4 * 16,
         LUMA_RECON_SAMPLE_TOTAL,
-        "verified luma region is the 55296-sample bit-exact DC + cardinal + IntrABC region"
+        "verified luma region is the 61440-sample bit-exact DC + cardinal + IntrABC region"
     );
     assert_eq!(
         chroma4x4 * 16,
@@ -608,14 +612,14 @@ fn ac0ej3_sb_column3_hpred_block_reconstructs_bit_exact_against_prefilter_oracle
         "the no-above V_PRED block at x[256,320) y=0 must stay deferred",
     );
 
-    // The whole reconstructed luma region is now 55296 bit-exact samples (the
-    // non-DCT inter residual parse-advancement kept the stream synced, unblocking
-    // the rest of the first four SB columns' proven-subset leaves).
+    // The whole reconstructed luma region is now 61440 bit-exact samples (the
+    // §7.12.2.1 step-8 SB-border IntrABC SMVP candidate admits MI(32,56)'s ref-MV
+    // stack, unblocking its IntrABC target and the next SB-row-1 proven-subset leaf).
     let (luma4x4, _chroma4x4) = sink.reconstructed_counts();
     assert_eq!(
         luma4x4 * 16,
         LUMA_RECON_SAMPLE_TOTAL,
-        "the parse-advanced walk reconstructs 55296 bit-exact luma samples"
+        "the parse-advanced walk reconstructs 61440 bit-exact luma samples"
     );
 }
 
