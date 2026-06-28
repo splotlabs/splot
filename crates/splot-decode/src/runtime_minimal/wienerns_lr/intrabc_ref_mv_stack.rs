@@ -373,11 +373,12 @@ pub(super) struct SpatialIntrabcScan {
 ///
 /// NOTE: this reproduces the scan ORDER (steps 7 → 8 → 9 → 10 → 12 → 14), but NOT
 /// the subsequent § 7.12.2.19 weight sort. AVM weights each candidate per § 7.12.2.6
-/// and swaps the max-weight NEAREST candidate into slot 0 when `nearest_refmv_count
-/// > 1` (`mvref_common.c:2472`-`2493`). The candidates returned here are in scan
-/// order, UNSORTED; the > 1-candidate case is therefore not faithful and is guarded
-/// by a fail-closed defer in [`intrabc_ref_stack_admission`]. With a single nearest
-/// candidate the sort is a no-op, so the scan order is exact for the admitted set.
+/// and swaps the max-weight NEAREST candidate into slot 0 when there is more than one
+/// nearest candidate (`nearest_refmv_count > 1`, `mvref_common.c:2472`-`2493`). The
+/// candidates returned here are in scan order, UNSORTED; the multi-candidate case is
+/// therefore not faithful and is guarded by a fail-closed defer in
+/// [`intrabc_ref_stack_admission`]. With a single nearest candidate the sort is a
+/// no-op, so the scan order is exact for the admitted set.
 pub(super) fn spatial_intrabc_scan(
     geometry: SpatialScanGeometry,
     lookup: impl Fn(usize, usize) -> Option<Mv>,

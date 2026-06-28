@@ -131,7 +131,7 @@ const MI40_IBP_STEP: u16 = 65;
 /// sample against the AVM pre-filter reconstruction oracle (`/tmp/pref.yuv`, md5
 /// `f7959cb85a41dcf0e6ebf9179835da03`), aggregated by count + sum + FNV-1a-64 in
 /// [`LUMA_RECON_REGION_SAMPLE_SUM`] / [`LUMA_RECON_REGION_FNV1A64`].
-const LUMA_RECON_SAMPLE_TOTAL: usize = 204800;
+const LUMA_RECON_SAMPLE_TOTAL: usize = 204_800;
 /// Sum of every reconstructed luma sample in the verified region (derived offline
 /// from the AVM pre-filter oracle over the sink's covered MI units, zero mismatch).
 const LUMA_RECON_REGION_SAMPLE_SUM: u64 = 13_116_464;
