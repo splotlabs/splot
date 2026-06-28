@@ -774,20 +774,19 @@ pub(in crate::runtime_minimal) fn reconstruct_ac0ej3_selectable_intra_region(
 
 /// The single fail-closed reason the ac0ej3 selectable walk is expected to stop on
 /// after reconstructing the verified region; the test driver swallows only this one
-/// and propagates every other error. The full §7.12.2.6 above-row IntrABC SMVP scan
-/// is now modelled — the within-SB (non-SB-border) steps 8/10/12/14 at 4x4
-/// resolution AND the SB-border steps 8/10/12/14 8x8-aligned in the even-MiCol
-/// no-op case — so the frame-0 IntrABC blocks MI(48,56) through MI(208,56) (and
-/// siblings) admit their ref-MV stacks faithfully (bit-exact vs avmdec) instead of
-/// deferring. The walk now advances to the new frontier MI(192,112): a `BLOCK_64X32`
-/// IntrABC block with TWO distinct spatial candidates ((-1024,0) step 7 + (-512,0)
-/// step 8), so the §7.12.2.19 max-weight DRL-reorder applies — a DISTINCT mechanism
-/// (per-candidate §7.12.2.6 weighting, not an above-row position) this decoder does
-/// not model. The admission DEFERS via the existing >1-distinct-spatial-candidate
-/// guard, on the same `intrabc_ref_stack` reason — the genuinely distinct next wall.
+/// and propagates every other error. The §7.12.2.19 IntrABC ref-MV weight sort is
+/// now modelled (per-candidate §7.12.2.6 weights + the max-weight-to-slot-0 reorder,
+/// threading the real `enable_drl_reorder` flag), so the `BLOCK_64X32` MI(192,112)
+/// block — which has TWO distinct spatial candidates ((-1024,0) step 7 + (-512,0)
+/// step 8) and so triggers the §7.12.2.19 sort — admits its ref-MV stack faithfully
+/// (a no-op swap; slot 0 keeps (-1024,0), drl=1 selects (-512,0), bit-exact vs
+/// avmdec) instead of deferring, as do its downstream IntrABC siblings. The IntrABC
+/// ref-stack wall is now fully cleared; the walk advances to a GENUINELY DISTINCT
+/// next mechanism — the §5.20.6.1 selectable transform-record region tiling
+/// (`out_of_bounds`), unrelated to the §7.12.2 ref-MV stack.
 #[cfg(test)]
 const EXPECTED_RECON_FRONTIER_REASON: &str =
-    "unsupported_wienerns_lr_selectable_transform_records_intrabc_ref_stack";
+    "unsupported_wienerns_lr_selectable_transform_records_out_of_bounds";
 
 /// Whether the frame's §5.18.6 quantization matches the reconstruction primitive's
 /// zero-`QuantizerDeltas` assumption: no per-plane DC/AC quantizer delta and no

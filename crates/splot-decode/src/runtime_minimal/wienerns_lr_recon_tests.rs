@@ -111,35 +111,36 @@ const LUMA_REGION_FNV1A64: u64 = 0x31c1_4055_9bd3_8725;
 /// The §7.13.2.12 IBP DC value at the MI(4,0) `TX_16X64` leaf's top-left 3 columns.
 const MI40_IBP_STEP: u16 = 65;
 
-/// The total reconstructed luma sample count after the §7.12.2.6 within-SB +
-/// SB-border above-row IntrABC SMVP advancement. The prior §7.12.2.1 step-8
-/// SB-border stage reconstructed `61440` samples (it stopped at the within-SB
-/// frontier MI(48,56)); modelling the FULL §7.12.2.6 above-row scan — the within-SB
-/// (non-SB-border) steps 8/10/12/14 at 4x4 resolution AND the SB-border steps
-/// 8/10/12/14 8x8-aligned (even-MiCol no-op case) — admits the ac0ej3 frame-0
-/// IntrABC blocks MI(48,56) through MI(208,56) (and siblings) faithfully. Each
-/// admitted block keeps the entropy parse synced in decode order, so the walk
-/// reconstructs many more proven-subset general-intra DC / cardinal leaves before
-/// the next defer.
+/// The total reconstructed luma sample count after the §7.12.2.19 IntrABC ref-MV
+/// weight-sort advancement. The prior §7.12.2.6 above-row stage reconstructed
+/// `204800` samples (it stopped at the MI(192,112) §7.12.2.19 multi-candidate
+/// weight-sort defer); modelling the §7.12.2.19 max-weight-to-slot-0 reorder (with
+/// the §7.12.2.6 per-candidate weights) admits the `BLOCK_64X32` MI(192,112) block
+/// — which has TWO distinct spatial candidates ((-1024,0) step 7 weight 2 +
+/// (-512,0) step 8 weight 1) so the sort runs (a no-op swap; slot 0 keeps the
+/// max-weight (-1024,0), drl=1 selects (-512,0), bit-exact vs avmdec) — and its
+/// downstream IntrABC siblings faithfully. Each admitted block keeps the entropy
+/// parse synced in decode order, so the walk reconstructs many more proven-subset
+/// general-intra DC / cardinal leaves before the next defer.
 ///
-/// The new verified region is `204800` bit-exact luma samples (bounding box
-/// x[0,255] y[0,895], a non-rectangular union of the covered MI units), and the
-/// walk now stops at MI(192,112) — the §7.12.2.19 multi-candidate weight-sort
-/// defer (a DISTINCT mechanism: that block has TWO distinct spatial candidates,
-/// `(-1024,0)` step 7 + `(-512,0)` step 8, and the per-candidate §7.12.2.6 weight
-/// sort is unmodelled). Verified ZERO-mismatch, per sample, over EVERY covered luma
-/// sample against the AVM pre-filter reconstruction oracle (`/tmp/pref.yuv`, md5
+/// The new verified region is `233472` bit-exact luma samples (growth `28672`,
+/// `204800 + 28672`; bounding box x[0,255] y[0,1023], a non-rectangular union of
+/// the covered MI units), and the walk now stops at the GENUINELY DISTINCT next
+/// mechanism — the §5.20.6.1 selectable transform-record region tiling
+/// (`out_of_bounds`), unrelated to the §7.12.2 ref-MV stack. Verified ZERO-mismatch,
+/// per sample, over EVERY covered luma sample against the AVM pre-filter
+/// reconstruction oracle (`/tmp/pref.yuv`, md5
 /// `f7959cb85a41dcf0e6ebf9179835da03`), aggregated by count + sum + FNV-1a-64 in
 /// [`LUMA_RECON_REGION_SAMPLE_SUM`] / [`LUMA_RECON_REGION_FNV1A64`].
-const LUMA_RECON_SAMPLE_TOTAL: usize = 204_800;
+const LUMA_RECON_SAMPLE_TOTAL: usize = 233_472;
 /// Sum of every reconstructed luma sample in the verified region (derived offline
 /// from the AVM pre-filter oracle over the sink's covered MI units, zero mismatch).
-const LUMA_RECON_REGION_SAMPLE_SUM: u64 = 13_116_464;
+const LUMA_RECON_REGION_SAMPLE_SUM: u64 = 14_951_472;
 /// FNV-1a-64 over every reconstructed luma sample (row-major over the covered MI
 /// units, sample-major u16 LE), the whole-region per-value oracle pin: a wrong
 /// reconstruction anywhere in the covered region changes this checksum even at the
 /// same sample count.
-const LUMA_RECON_REGION_FNV1A64: u64 = 0xe966_6b28_48bd_6a25;
+const LUMA_RECON_REGION_FNV1A64: u64 = 0xc1ac_b329_1e9e_ea25;
 
 /// The SB-column-3 `BLOCK_64X64 H_PRED` block (x[192,256) x y[0,64)) — the
 /// §7.13.3.18 IntrABC source. Mode `H_PRED` (pAngle 180, `AngleDeltaY == 0`), split
@@ -525,16 +526,15 @@ fn ac0ej3_frame_origin_chroma_dc_blocks_reconstruct_bit_exact_against_prefilter_
         "the deferred SMOOTH chroma leaf at chroma (32,0) must stay unreconstructed"
     );
 
-    // Coverage report: with the full §7.12.2.6 above-row IntrABC SMVP scan modelled
-    // (within-SB 4x4-resolution + SB-border 8x8-aligned even-MiCol steps 8/10/12/14),
-    // the frame-0 IntrABC blocks MI(48,56)..MI(208,56) admit faithfully and the
-    // verified luma region is now the `204800`-sample bit-exact region — plus the two
-    // 32x32 chroma origin blocks (2048 chroma samples total across U and V).
+    // Coverage report: with the §7.12.2.19 IntrABC ref-MV weight sort modelled, the
+    // frame-0 IntrABC blocks through MI(192,112) admit faithfully and the verified
+    // luma region is now the `233472`-sample bit-exact region — plus the two 32x32
+    // chroma origin blocks (2048 chroma samples total across U and V).
     let (luma4x4, chroma4x4) = sink.reconstructed_counts();
     assert_eq!(
         luma4x4 * 16,
         LUMA_RECON_SAMPLE_TOTAL,
-        "verified luma region is the 204800-sample bit-exact DC + cardinal + IntrABC region"
+        "verified luma region is the 233472-sample bit-exact DC + cardinal + IntrABC region"
     );
     assert_eq!(
         chroma4x4 * 16,
@@ -686,15 +686,15 @@ fn ac0ej3_sb_column3_hpred_block_reconstructs_bit_exact_against_prefilter_oracle
         "the no-above V_PRED block at x[256,320) y=0 must stay deferred",
     );
 
-    // The whole reconstructed luma region is now 204800 bit-exact samples (the full
-    // §7.12.2.6 above-row IntrABC SMVP scan admits MI(48,56)..MI(208,56), keeping the
-    // parse synced so the downstream proven-subset DC / cardinal leaves reconstruct —
-    // pinned per value by LUMA_RECON_REGION_FNV1A64).
+    // The whole reconstructed luma region is now 233472 bit-exact samples (the
+    // §7.12.2.19 IntrABC ref-MV weight sort admits MI(192,112) and its siblings,
+    // keeping the parse synced so the downstream proven-subset DC / cardinal leaves
+    // reconstruct — pinned per value by LUMA_RECON_REGION_FNV1A64).
     let (luma4x4, _chroma4x4) = sink.reconstructed_counts();
     assert_eq!(
         luma4x4 * 16,
         LUMA_RECON_SAMPLE_TOTAL,
-        "the parse-advanced walk reconstructs 204800 bit-exact luma samples"
+        "the parse-advanced walk reconstructs 233472 bit-exact luma samples"
     );
 }
 
@@ -800,15 +800,15 @@ fn ac0ej3_step8_admitted_region_reconstructs_bit_exact_against_prefilter_oracle(
     );
 }
 
-/// Whole-region per-value oracle pin: with the full §7.12.2.6 above-row IntrABC
-/// SMVP scan modelled (within-SB 4x4-resolution + SB-border 8x8-aligned even-MiCol
-/// steps 8/10/12/14), the parse-advanced walk reconstructs `204800` bit-exact luma
-/// samples. This walks EVERY MI unit the sink covered (not a fixed rectangle, since
-/// the region is a non-rectangular union) and pins the aggregate count + sum +
-/// FNV-1a-64 against the AVM pre-filter oracle: a wrong reconstruction anywhere in
-/// the covered region changes the sum / FNV even at the same sample count. The
-/// aggregate was derived offline with ZERO per-sample mismatch vs the oracle luma
-/// plane (`/tmp/pref.yuv`, md5 `f7959cb85a41dcf0e6ebf9179835da03`).
+/// Whole-region per-value oracle pin: with the §7.12.2.19 IntrABC ref-MV weight
+/// sort modelled (per-candidate §7.12.2.6 weights + the max-weight-to-slot-0
+/// reorder), the parse-advanced walk reconstructs `233472` bit-exact luma samples.
+/// This walks EVERY MI unit the sink covered (not a fixed rectangle, since the
+/// region is a non-rectangular union) and pins the aggregate count + sum + FNV-1a-64
+/// against the AVM pre-filter oracle: a wrong reconstruction anywhere in the covered
+/// region changes the sum / FNV even at the same sample count. The aggregate was
+/// derived offline with ZERO per-sample mismatch vs the oracle luma plane
+/// (`/tmp/pref.yuv`, md5 `f7959cb85a41dcf0e6ebf9179835da03`).
 #[test]
 #[ignore = "requires local mission fixture; set SPLOT_AC0EJ3_IVF or place it at $HOME/Documents/SplotLabs/ac0ej3.ivf"]
 fn ac0ej3_full_reconstructed_luma_region_matches_prefilter_oracle_aggregate() {
