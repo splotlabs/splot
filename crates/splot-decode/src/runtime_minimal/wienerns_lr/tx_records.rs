@@ -1082,6 +1082,16 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                 prelude,
                 tile_offset,
             )?;
+            // §8.2.4 exit-budget guard: once a block reads past the tile payload end
+            // (`SymbolMaxBits < -14`) every later read is zero-padded phantom data
+            // from an upstream entropy-coder desync, so fail fast at the true
+            // exhaustion point instead of decoding ~3159 phantom blocks from padding.
+            if symbols.is_past_payload_end() {
+                return Err(wienerns_lr_selectable_transform_record_error_reason(
+                    tile_offset,
+                    "unsupported_wienerns_lr_selectable_transform_records_bitstream_desync",
+                ));
+            }
             Ok(leaf_mode)
         },
     )

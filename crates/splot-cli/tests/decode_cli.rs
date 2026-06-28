@@ -271,24 +271,16 @@ fn local_ac0ej3_reaches_current_runtime_gate_without_output() {
     assert!(out.stderr.is_empty(), "stderr was not empty");
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(json["rule_id"], "decode/unsupported-feature");
-    // The walk now decodes the first §7.13.3.18 IntrABC block (MI(16,56), a `skip` leaf
-    // with an integer block vector — no residual symbols, no tx-partition symbols) and
-    // CONTINUES AVM-faithfully through the rest of the second superblock into SB col 3.
-    // The SECOND IntrABC block (MI(0,112)) derives a default-only §7.12.2 stack
-    // (ADMITTED) and is a NON-`skip` leaf, so its §5.20.6.1 inter tx-partition +
-    // §5.20.7.29 inter transform-type + §5.20.7.27 coefficient residual now decode
-    // AVM-faithfully (the §8.3.2 `TileInterTxTypeLongCdf` `inter_tx_type` + inter IST
-    // `TileSecTxTypeCdf[1]` `sec_tx_type` reads), and the walk CONTINUES past it. The
-    // THIRD IntrABC block (MI(0,232)) has a §7.12.2.21 ref-MV-bank-REORDERED stack
-    // [(0,-256),(-1024,0),(0,-3072),(-512,0)] — DRL index 0 selects the bank candidate
-    // (0,-256), NOT the bounded fallback head — and the live path now selects the BV
-    // from the REAL §7.12.2 stack, so it too is ADMITTED and the walk CONTINUES. The
-    // new wall is the FOURTH IntrABC block (MI(0,240)): its immediate left neighbour
-    // MI(0,232) is itself an IntrABC block, so the §7.12.2 spatial SMVP scan COULD
-    // contribute an unmodelled candidate — a correct conservative deferral (the same
-    // `intrabc_ref_stack` reason, one block deeper). The decode still emits NO frame
-    // (exit 1).
-    assert_eq!(json["spec_section"], "7.12.2");
+    // The §5.20.6.1 `LumaTxSizes` frame-array fill cleared the MI(256,0)
+    // `out_of_bounds` wall, so the live selectable transform-record walk advances past
+    // the whole verified intra/IntrABC region and now stops on the §8.2.4 exit-budget
+    // guard: an upstream entropy-coder desync (first divergence is the
+    // `all_zero`/txb_skip read of the first uneven-4way + second-set-mode block,
+    // ~bit 3712) over-reads the §5.20.7.27 residual parse, so the walk fails CLOSED at
+    // its true exhaustion point — MI(248,368), px(1472,992), `SymbolMaxBits == -105` —
+    // instead of decoding ~3159 phantom blocks from zero padding. The decode still
+    // emits NO frame (exit 1); the desync itself is a known follow-up.
+    assert_eq!(json["spec_section"], "8.2.4");
     assert_eq!(json["matrix_row"], "ac0ej3-selectable-transform-records");
     assert_eq!(
         json["feature_id"],
@@ -297,14 +289,14 @@ fn local_ac0ej3_reaches_current_runtime_gate_without_output() {
     assert_eq!(json["detail_kind"], "unsupported_feature");
     assert_eq!(
         json["unsupported_reason"],
-        "unsupported_wienerns_lr_selectable_transform_records_intrabc_ref_stack"
+        "unsupported_wienerns_lr_selectable_transform_records_bitstream_desync"
     );
     assert!(
         json["message"]
             .as_str()
             .unwrap()
-            .contains("§7.12.2 IntrABC MV stack"),
-        "diagnostic must describe the §7.12.2 IntrABC ref-MV-stack frontier"
+            .contains("entropy-coder desync"),
+        "diagnostic must describe the §8.2.4 exit-budget / entropy-coder desync frontier"
     );
     assert_eq!(json["byte_offset"], 110);
     assert_ne!(
