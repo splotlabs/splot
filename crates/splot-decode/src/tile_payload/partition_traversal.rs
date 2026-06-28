@@ -28,8 +28,12 @@ use super::partition_size::{
 };
 use crate::{DecodeLimitError, DecodeLimitName, DecodeLimits};
 
-const BLOCK_8X32: usize = 21;
-const BLOCK_32X8: usize = 22;
+mod partition_children;
+
+use partition_children::child_calls;
+
+pub(super) const BLOCK_8X32: usize = 21;
+pub(super) const BLOCK_32X8: usize = 22;
 const BLOCK_64X64: usize = 12;
 const MI_SIZE: usize = 4;
 const LR_BANK_SIZE: usize = 4;
@@ -161,8 +165,8 @@ pub(crate) struct TilePartitionFrameFacts {
     mi_cols: usize,
     sb_size: BlockSize,
     num_planes: usize,
-    subsampling_x: bool,
-    subsampling_y: bool,
+    pub(super) subsampling_x: bool,
+    pub(super) subsampling_y: bool,
     frame_is_intra: bool,
     enable_sdp: bool,
     enable_extended_sdp: bool,
@@ -248,6 +252,26 @@ impl<'work, 'payload, 'ctx> TilePartitionTraversalInput<'work, 'payload, 'ctx> {
     }
 }
 
+/// AV2 § 5.20.4.1 chroma-reference geometry (`ChromaMiRow`, `ChromaMiCol`,
+/// `ChromaMiSize`) captured at the partition node where the chroma plane stops
+/// following the per-leaf luma geometry (`!chromaOffset && hasChroma`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ChromaRefGeometry {
+    /// `ChromaMiRow`: tile-MI row of the chroma-reference block.
+    row: usize,
+    /// `ChromaMiCol`: tile-MI column of the chroma-reference block.
+    col: usize,
+    /// `ChromaMiSize`: block size whose footprint the chroma MI-size writes cover.
+    size: BlockSize,
+}
+
+impl ChromaRefGeometry {
+    /// Builds a chroma-reference geometry from explicit `(row, col, size)` facts.
+    pub(super) const fn new(row: usize, col: usize, size: BlockSize) -> Self {
+        Self { row, col, size }
+    }
+}
+
 /// One `decode_partition()` call on the frontier path.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TilePartitionCall {
@@ -259,6 +283,10 @@ pub(crate) struct TilePartitionCall {
     pub(crate) has_chroma: bool,
     tree_type: PartitionTreeType,
     cfl_allowed_in_sdp: bool,
+    /// AV2 § 5.20.4.1 chroma-reference geometry inherited from the ancestor that
+    /// last captured it (`Some` only once chroma has been offset off the luma
+    /// geometry). `None` means this node itself is the chroma reference.
+    chroma_ref: Option<ChromaRefGeometry>,
 }
 
 impl TilePartitionCall {
@@ -272,7 +300,70 @@ impl TilePartitionCall {
             has_chroma,
             tree_type: PartitionTreeType::Shared,
             cfl_allowed_in_sdp: true,
+            chroma_ref: None,
         }
+    }
+
+    /// Builds a child `decode_partition` call from explicit caller facts.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) const fn child(
+        r: usize,
+        c: usize,
+        b_size: BlockSize,
+        parent_size: Option<BlockSize>,
+        chroma_offset: bool,
+        has_chroma: bool,
+        tree_type: PartitionTreeType,
+        chroma_ref: Option<ChromaRefGeometry>,
+    ) -> Self {
+        Self {
+            r,
+            c,
+            b_size,
+            parent_size,
+            chroma_offset,
+            has_chroma,
+            tree_type,
+            cfl_allowed_in_sdp: true,
+            chroma_ref,
+        }
+    }
+
+    /// AV2 § 5.20.3.1 partition tree type (`SHARED`, `LUMA_PART`, `CHROMA_PART`).
+    pub(super) const fn tree_type(self) -> PartitionTreeType {
+        self.tree_type
+    }
+
+    /// AV2 § 5.20.3.1 `CflAllowedInSdp` inherited by this node.
+    pub(super) const fn cfl_allowed_in_sdp(self) -> bool {
+        self.cfl_allowed_in_sdp
+    }
+
+    /// Sets AV2 § 5.20.3.1 `CflAllowedInSdp` on this child call.
+    pub(super) const fn set_cfl_allowed_in_sdp(&mut self, value: bool) {
+        self.cfl_allowed_in_sdp = value;
+    }
+
+    /// AV2 § 5.20.4.1 effective chroma-reference geometry for this node.
+    ///
+    /// When chroma has not yet been offset (`!chromaOffset && hasChroma`), the
+    /// chroma reference is this node's own `(r, c, bSize)` (spec lines
+    /// 9093-9103). Otherwise it is the geometry captured by the ancestor where
+    /// chroma stopped following luma. Falls back to this node's `(r, c, bSize)`
+    /// when no ancestor captured it (e.g. monochrome / `!hasChroma`).
+    pub(super) fn chroma_ref_geometry(self) -> ChromaRefGeometry {
+        if !self.chroma_offset && self.has_chroma {
+            return ChromaRefGeometry {
+                row: self.r,
+                col: self.c,
+                size: self.b_size,
+            };
+        }
+        self.chroma_ref.unwrap_or(ChromaRefGeometry {
+            row: self.r,
+            col: self.c,
+            size: self.b_size,
+        })
     }
 
     const fn with_tree_type(self, tree_type: PartitionTreeType) -> Self {
@@ -1333,13 +1424,27 @@ where
                             block_n4h >> sub_y,
                         );
                     }
-                    if tree_type == PartitionTreeType::ChromaPart {
-                        mi_size_state
-                            .update_chroma_block(call.r, call.c, sub_size)
-                            .map_err(GeneralIntraTreeWalkError::MiSize)?;
-                    } else {
+                    // AV2 § 5.20.4.1 `decode_block` MI-size writes. A luma/shared
+                    // leaf writes `MiSizes[0]` over its own `(r, c, subSize)`
+                    // footprint; a chroma-bearing leaf ALSO writes `MiSizes[1]`
+                    // over the `ChromaMiSize` footprint anchored at
+                    // `(ChromaMiRow, ChromaMiCol)` — the chroma-reference
+                    // geometry, not the per-leaf luma geometry. They coincide
+                    // when chroma follows luma to this leaf, and diverge under
+                    // chroma offset (SDP CHROMA_PART or a sub-4 chroma split);
+                    // using luma geometry for the chroma plane desyncs the next
+                    // block's § 8.3.2 `do_split` left/above context. The SDP
+                    // CHROMA_PART tree carries only the chroma plane, so it skips
+                    // the luma write.
+                    if tree_type != PartitionTreeType::ChromaPart {
                         mi_size_state
                             .update_luma_block(call.r, call.c, sub_size)
+                            .map_err(GeneralIntraTreeWalkError::MiSize)?;
+                    }
+                    if frontier.has_chroma || tree_type == PartitionTreeType::ChromaPart {
+                        let chroma_ref = call.chroma_ref_geometry();
+                        mi_size_state
+                            .update_chroma_block(chroma_ref.row, chroma_ref.col, chroma_ref.size)
                             .map_err(GeneralIntraTreeWalkError::MiSize)?;
                     }
                 } else {
@@ -2033,366 +2138,6 @@ impl SdpPartitionState {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct TilePartitionChildCalls {
-    calls: [TilePartitionCall; 4],
-    len: usize,
-}
-
-impl TilePartitionChildCalls {
-    fn new(fill: TilePartitionCall) -> Self {
-        Self {
-            calls: [fill; 4],
-            len: 0,
-        }
-    }
-
-    fn push(&mut self, call: TilePartitionCall) -> Result<(), TilePartitionTraversalError> {
-        let slot = self
-            .calls
-            .get_mut(self.len)
-            .ok_or(TilePartitionTraversalError::TooManyChildCalls)?;
-        *slot = call;
-        self.len += 1;
-        Ok(())
-    }
-
-    fn as_slice(&self) -> &[TilePartitionCall] {
-        &self.calls[..self.len]
-    }
-}
-
-fn child_calls(
-    call: TilePartitionCall,
-    partition: PartitionType,
-    sub_size: BlockSize,
-    frame: TilePartitionFrameFacts,
-    chroma_offset: bool,
-) -> Result<TilePartitionChildCalls, TilePartitionTraversalError> {
-    let num4x4wide = call.b_size.num_4x4_wide()?;
-    let num4x4high = call.b_size.num_4x4_high()?;
-    let half_w = num4x4wide >> 1;
-    let half_h = num4x4high >> 1;
-    let parent = Some(call.b_size);
-    let mut children = TilePartitionChildCalls::new(call);
-    match partition {
-        PartitionType::None => {}
-        PartitionType::Horz => {
-            children.push(child(
-                call.r,
-                call.c,
-                sub_size,
-                parent,
-                chroma_offset,
-                call.has_chroma && !chroma_offset,
-                call.tree_type,
-            ))?;
-            children.push(child(
-                checked_add("r", call.r, half_h)?,
-                call.c,
-                sub_size,
-                parent,
-                chroma_offset,
-                call.has_chroma,
-                call.tree_type,
-            ))?;
-        }
-        PartitionType::Vert => {
-            children.push(child(
-                call.r,
-                call.c,
-                sub_size,
-                parent,
-                chroma_offset,
-                call.has_chroma && !chroma_offset,
-                call.tree_type,
-            ))?;
-            children.push(child(
-                call.r,
-                checked_add("c", call.c, half_w)?,
-                sub_size,
-                parent,
-                chroma_offset,
-                call.has_chroma,
-                call.tree_type,
-            ))?;
-        }
-        PartitionType::Split => {
-            children.push(child(
-                call.r,
-                call.c,
-                sub_size,
-                parent,
-                false,
-                call.has_chroma,
-                call.tree_type,
-            ))?;
-            children.push(child(
-                call.r,
-                checked_add("c", call.c, half_w)?,
-                sub_size,
-                parent,
-                false,
-                call.has_chroma,
-                call.tree_type,
-            ))?;
-            children.push(child(
-                checked_add("r", call.r, half_h)?,
-                call.c,
-                sub_size,
-                parent,
-                false,
-                call.has_chroma,
-                call.tree_type,
-            ))?;
-            children.push(child(
-                checked_add("r", call.r, half_h)?,
-                checked_add("c", call.c, half_w)?,
-                sub_size,
-                parent,
-                false,
-                call.has_chroma,
-                call.tree_type,
-            ))?;
-        }
-        PartitionType::Horz3 => {
-            let middle = h_partition_midsize(call.b_size)?.valid().ok_or(
-                TilePartitionTraversalError::InvalidPartitionSubsize {
-                    partition,
-                    b_size: call.b_size.index(),
-                },
-            )?;
-            let middle_chroma =
-                call.b_size.index() == BLOCK_8X32 && call.has_chroma && frame.subsampling_x;
-            children.push(child(
-                call.r,
-                call.c,
-                sub_size,
-                parent,
-                chroma_offset,
-                call.has_chroma && !chroma_offset,
-                call.tree_type,
-            ))?;
-            children.push(child(
-                checked_add("r", call.r, half_h >> 1)?,
-                call.c,
-                middle,
-                parent,
-                chroma_offset || middle_chroma,
-                call.has_chroma && !chroma_offset && !middle_chroma,
-                call.tree_type,
-            ))?;
-            children.push(child(
-                checked_add("r", call.r, half_h >> 1)?,
-                checked_add("c", call.c, half_w)?,
-                middle,
-                parent,
-                chroma_offset || middle_chroma,
-                call.has_chroma && !chroma_offset,
-                call.tree_type,
-            ))?;
-            children.push(child(
-                checked_scaled_add("r", call.r, 3, half_h >> 1)?,
-                call.c,
-                sub_size,
-                parent,
-                chroma_offset,
-                call.has_chroma,
-                call.tree_type,
-            ))?;
-        }
-        PartitionType::Vert3 => {
-            let middle = h_partition_midsize(call.b_size)?.valid().ok_or(
-                TilePartitionTraversalError::InvalidPartitionSubsize {
-                    partition,
-                    b_size: call.b_size.index(),
-                },
-            )?;
-            let middle_chroma =
-                call.b_size.index() == BLOCK_32X8 && call.has_chroma && frame.subsampling_y;
-            children.push(child(
-                call.r,
-                call.c,
-                sub_size,
-                parent,
-                chroma_offset,
-                call.has_chroma && !chroma_offset,
-                call.tree_type,
-            ))?;
-            children.push(child(
-                call.r,
-                checked_add("c", call.c, half_w >> 1)?,
-                middle,
-                parent,
-                chroma_offset || middle_chroma,
-                call.has_chroma && !chroma_offset && !middle_chroma,
-                call.tree_type,
-            ))?;
-            children.push(child(
-                checked_add("r", call.r, half_h)?,
-                checked_add("c", call.c, half_w >> 1)?,
-                middle,
-                parent,
-                chroma_offset || middle_chroma,
-                call.has_chroma && !chroma_offset,
-                call.tree_type,
-            ))?;
-            children.push(child(
-                call.r,
-                checked_scaled_add("c", call.c, 3, half_w >> 1)?,
-                sub_size,
-                parent,
-                chroma_offset,
-                call.has_chroma,
-                call.tree_type,
-            ))?;
-        }
-        PartitionType::Horz4A | PartitionType::Horz4B => {
-            let b_size_big = valid_subsize(PartitionType::Horz, call.b_size)?;
-            let b_size_med = valid_subsize(PartitionType::Horz, b_size_big)?;
-            let third = if partition == PartitionType::Horz4A {
-                b_size_big
-            } else {
-                b_size_med
-            };
-            let second = if partition == PartitionType::Horz4A {
-                b_size_med
-            } else {
-                b_size_big
-            };
-            children.push(child(
-                call.r,
-                call.c,
-                sub_size,
-                parent,
-                chroma_offset,
-                call.has_chroma && !chroma_offset,
-                call.tree_type,
-            ))?;
-            children.push(child(
-                checked_add("r", call.r, num4x4high >> 3)?,
-                call.c,
-                second,
-                parent,
-                chroma_offset,
-                call.has_chroma && !chroma_offset,
-                call.tree_type,
-            ))?;
-            children.push(child(
-                checked_scaled_add(
-                    "r",
-                    call.r,
-                    if partition == PartitionType::Horz4A {
-                        3
-                    } else {
-                        5
-                    },
-                    num4x4high >> 3,
-                )?,
-                call.c,
-                third,
-                parent,
-                chroma_offset,
-                call.has_chroma && !chroma_offset,
-                call.tree_type,
-            ))?;
-            children.push(child(
-                checked_scaled_add("r", call.r, 7, num4x4high >> 3)?,
-                call.c,
-                sub_size,
-                parent,
-                chroma_offset,
-                call.has_chroma,
-                call.tree_type,
-            ))?;
-        }
-        PartitionType::Vert4A | PartitionType::Vert4B => {
-            let b_size_big = valid_subsize(PartitionType::Vert, call.b_size)?;
-            let b_size_med = valid_subsize(PartitionType::Vert, b_size_big)?;
-            let third = if partition == PartitionType::Vert4A {
-                b_size_big
-            } else {
-                b_size_med
-            };
-            let second = if partition == PartitionType::Vert4A {
-                b_size_med
-            } else {
-                b_size_big
-            };
-            children.push(child(
-                call.r,
-                call.c,
-                sub_size,
-                parent,
-                chroma_offset,
-                call.has_chroma && !chroma_offset,
-                call.tree_type,
-            ))?;
-            children.push(child(
-                call.r,
-                checked_add("c", call.c, num4x4wide >> 3)?,
-                second,
-                parent,
-                chroma_offset,
-                call.has_chroma && !chroma_offset,
-                call.tree_type,
-            ))?;
-            children.push(child(
-                call.r,
-                checked_scaled_add(
-                    "c",
-                    call.c,
-                    if partition == PartitionType::Vert4A {
-                        3
-                    } else {
-                        5
-                    },
-                    num4x4wide >> 3,
-                )?,
-                third,
-                parent,
-                chroma_offset,
-                call.has_chroma && !chroma_offset,
-                call.tree_type,
-            ))?;
-            children.push(child(
-                call.r,
-                checked_scaled_add("c", call.c, 7, num4x4wide >> 3)?,
-                sub_size,
-                parent,
-                chroma_offset,
-                call.has_chroma,
-                call.tree_type,
-            ))?;
-        }
-    }
-    for child in &mut children.calls[..children.len] {
-        child.cfl_allowed_in_sdp = call.cfl_allowed_in_sdp;
-    }
-    Ok(children)
-}
-
-fn child(
-    r: usize,
-    c: usize,
-    b_size: BlockSize,
-    parent_size: Option<BlockSize>,
-    chroma_offset: bool,
-    has_chroma: bool,
-    tree_type: PartitionTreeType,
-) -> TilePartitionCall {
-    TilePartitionCall {
-        r,
-        c,
-        b_size,
-        parent_size,
-        chroma_offset,
-        has_chroma,
-        tree_type,
-        cfl_allowed_in_sdp: true,
-    }
-}
-
 fn updated_chroma_offset(
     call: TilePartitionCall,
     partition: PartitionType,
@@ -2425,7 +2170,7 @@ fn is_chroma_offset_for_subsize(
         || (frame.subsampling_x && sub_size.mi_width_log2()? == 0))
 }
 
-fn valid_subsize(
+pub(super) fn valid_subsize(
     partition: PartitionType,
     b_size: BlockSize,
 ) -> Result<BlockSize, TilePartitionTraversalError> {
@@ -2438,7 +2183,7 @@ fn valid_subsize(
     }
 }
 
-fn checked_add(
+pub(super) fn checked_add(
     coordinate: &'static str,
     base: usize,
     offset: usize,
@@ -2477,7 +2222,7 @@ fn checked_mul(
         })
 }
 
-fn checked_scaled_add(
+pub(super) fn checked_scaled_add(
     coordinate: &'static str,
     base: usize,
     scale: usize,

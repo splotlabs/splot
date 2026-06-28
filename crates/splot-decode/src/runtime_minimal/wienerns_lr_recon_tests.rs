@@ -123,13 +123,15 @@ const MI40_IBP_STEP: u16 = 65;
 /// parse synced in decode order, so the walk reconstructs many more proven-subset
 /// general-intra DC / cardinal leaves before the next defer.
 ///
-/// The new verified region is `233472` bit-exact luma samples (growth `28672`,
-/// `204800 + 28672`; bounding box x[0,255] y[0,1023], a non-rectangular union of
-/// the covered MI units), and the walk now stops at the GENUINELY DISTINCT next
-/// mechanism — the §5.20.6.1 selectable transform-record region tiling
-/// (`out_of_bounds`), unrelated to the §7.12.2 ref-MV stack. Verified ZERO-mismatch,
-/// per sample, over EVERY covered luma sample against the AVM pre-filter
-/// reconstruction oracle (`/tmp/pref.yuv`, md5
+/// The verified region is `233472` bit-exact luma samples (bounding box x[0,255]
+/// y[0,1023], a non-rectangular union of the covered MI units). After the §5.20.4.1
+/// SDP chroma-reference MI-size fix (which removed the MI(240,240) §8.3.2 `do_split`
+/// left-context desync and the downstream `bitstream_desync` over-read), the walk
+/// reconstructs this SAME region bit-exact and now stops at the GENUINELY DISTINCT
+/// next mechanism — the §5.20.7.27 LrTxSkip live residual/coefficient parse
+/// (`unsupported_wienerns_lr_live_transform_record_residual_parse`). Verified
+/// ZERO-mismatch, per sample, over EVERY covered luma sample against the AVM
+/// pre-filter reconstruction oracle (`/tmp/pref.yuv`, md5
 /// `f7959cb85a41dcf0e6ebf9179835da03`), aggregated by count + sum + FNV-1a-64 in
 /// [`LUMA_RECON_REGION_SAMPLE_SUM`] / [`LUMA_RECON_REGION_FNV1A64`].
 const LUMA_RECON_SAMPLE_TOTAL: usize = 233_472;

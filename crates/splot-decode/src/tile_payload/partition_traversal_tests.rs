@@ -161,6 +161,47 @@ fn child_positions_for(partition: PartitionType, b_size: usize) -> Vec<(usize, u
 }
 
 #[test]
+fn chroma_ref_geometry_captures_own_block_until_chroma_offset() {
+    // AV2 § 5.20.4.1 (spec lines 9093-9103): a node with `!chromaOffset &&
+    // hasChroma` is its own chroma reference; `(ChromaMiRow, ChromaMiCol,
+    // ChromaMiSize) == (r, c, bSize)`.
+    let call = root_call(BLOCK_64X64);
+    let geometry = call.chroma_ref_geometry();
+    assert_eq!(
+        (geometry.row, geometry.col, geometry.size.index()),
+        (0, 0, BLOCK_64X64)
+    );
+}
+
+#[test]
+fn child_calls_thread_chroma_reference_to_chroma_offset_descendants() {
+    // A PARTITION_HORZ on a `BLOCK_64X64` block with chroma offset forces the
+    // children's chroma reference to the parent's `(0, 0, BLOCK_64X64)` geometry,
+    // not the per-leaf luma sub-size — the §5.20.4.1 chroma MI-size footprint a
+    // chroma-offset leaf writes.
+    let call = root_call(BLOCK_64X64);
+    let sub_size = valid_subsize(PartitionType::Horz, call.b_size).unwrap();
+    // The second HORZ child inherits `chromaOffset` (its `hasChroma` is the parent
+    // `hasChroma`), so it must reference the parent block, not its own `BLOCK_64X32`.
+    let children = child_calls(
+        call,
+        PartitionType::Horz,
+        sub_size,
+        frame(BLOCK_64X64),
+        true,
+    )
+    .unwrap();
+    for child in children.as_slice() {
+        let geometry = child.chroma_ref_geometry();
+        assert_eq!(
+            (geometry.row, geometry.col, geometry.size.index()),
+            (0, 0, BLOCK_64X64),
+            "chroma-offset child must reference the parent §5.20.4.1 chroma geometry"
+        );
+    }
+}
+
+#[test]
 fn sdp_cfl_allowed_state_tracks_top_luma_and_chroma_partitions() {
     let frame = frame(BLOCK_64X64);
     let mut state = SdpPartitionState::default();

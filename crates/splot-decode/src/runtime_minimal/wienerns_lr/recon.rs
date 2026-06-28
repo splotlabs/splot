@@ -782,18 +782,19 @@ pub(in crate::runtime_minimal) fn reconstruct_ac0ej3_selectable_intra_region(
 /// (a no-op swap; slot 0 keeps (-1024,0), drl=1 selects (-512,0), bit-exact vs
 /// avmdec) instead of deferring, as do its downstream IntrABC siblings. The IntrABC
 /// ref-stack wall is now fully cleared and the §5.20.6.1 `LumaTxSizes` frame-array
-/// fill drops out-of-frame tx cells (no more MI(256,0) `out_of_bounds`). The walk
-/// now advances past the whole verified region and stops on the §8.2.4 exit-budget
-/// guard (`bitstream_desync`): an upstream entropy-coder desync (first divergence is
-/// the `all_zero`/txb_skip read of the first uneven-4way + second-set-mode block,
-/// ~bit 3712) over-reads the §5.20.7.27 LrTxSkip live residual/coefficient parse, so
-/// the walk fails closed at its true exhaustion point — MI(248,368), px(1472,992),
-/// `SymbolMaxBits == -105` — instead of decoding ~3159 phantom blocks from zero
-/// padding. The verified region is committed before that exhaustion point, so it is
-/// unaffected.
+/// fill drops out-of-frame tx cells (no more MI(256,0) `out_of_bounds`). The
+/// §5.20.4.1 SDP chroma-reference MI-size write (chroma leaves and the chroma plane
+/// of shared luma+chroma leaves now write `MiSizes[1]` over the `ChromaMiSize`
+/// footprint, not the per-leaf luma geometry) removed the former MI(240,240) §8.3.2
+/// `do_split` left-context desync, so the over-read `bitstream_desync` is gone. The
+/// walk now advances bit-exact through the whole verified region and stops at the
+/// GENUINE next mechanism — the §5.20.7.27 LrTxSkip live residual/coefficient parse
+/// (a transform-tool residual outside the current handoff subset). The verified
+/// region is committed before that frontier, so it is unaffected (the recon tests
+/// re-confirm it bit-exact vs the oracle after the partition fix).
 #[cfg(test)]
 const EXPECTED_RECON_FRONTIER_REASON: &str =
-    "unsupported_wienerns_lr_selectable_transform_records_bitstream_desync";
+    "unsupported_wienerns_lr_live_transform_record_residual_parse";
 
 /// Whether the frame's §5.18.6 quantization matches the reconstruction primitive's
 /// zero-`QuantizerDeltas` assumption: no per-plane DC/AC quantizer delta and no
