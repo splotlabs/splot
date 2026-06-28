@@ -88,6 +88,37 @@ fn validate_ivf_conformant_exits_zero() {
 }
 
 #[test]
+fn validate_reads_from_stdin_dash_and_matches_file() {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    // A stream with a real diagnostic so the comparison covers a non-trivial report.
+    let data = ivf_stream(&[&[0x02, 0x88, 0x05]]);
+    let path = temp_input("ivf", &data);
+
+    let file_out = splot(&["validate", path.to_str().unwrap()]);
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_splot"))
+        .args(["validate", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn splot");
+    child
+        .stdin
+        .take()
+        .expect("child stdin")
+        .write_all(&data)
+        .expect("write to child stdin");
+    let stdin_out = child.wait_with_output().expect("wait for splot");
+
+    // `-` (stdin) and the file path must agree on exit code and rendered report.
+    assert_eq!(file_out.status.code(), stdin_out.status.code());
+    assert_eq!(file_out.stdout, stdin_out.stdout);
+}
+
+#[test]
 fn validate_ivf_trailing_partial_frame_header_exits_zero() {
     let mut data = ivf_stream(&[&[0x01, 0x08]]);
     data.extend_from_slice(&1148u32.to_le_bytes());

@@ -3,6 +3,8 @@
 
 //! `splot validate` — validate raw AV2 Annex B or IVF-wrapped Annex B bitstreams.
 
+use std::fs::File;
+use std::io::{self, BufReader};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -10,12 +12,11 @@ use anyhow::{Context as _, Result};
 use clap::Args;
 use splot_validate::{RenderOptions, Validator};
 
-use crate::commands::read_input;
-
 /// Arguments for `splot validate`.
 #[derive(Args, Debug)]
 pub struct ValidateArgs {
-    /// Path to a raw AV2 Annex B bitstream or IVF-wrapped Annex B stream.
+    /// Path to a raw AV2 Annex B bitstream or IVF-wrapped Annex B stream, or `-`
+    /// for standard input.
     pub input: PathBuf,
     /// Emit the validation report as JSON.
     #[arg(long)]
@@ -35,18 +36,31 @@ pub struct ValidateArgs {
 
 /// Runs `splot validate`.
 ///
+/// The input is streamed one temporal unit at a time (forward-only), so peak
+/// memory is bounded by the largest unit rather than the whole file; `-` reads
+/// from standard input.
+///
 /// Exit codes: `0` if conformant, `1` if validation errors exist (or, with
 /// `--strict`, any warnings), and `2` (via an `Err`) for I/O failures. The
 /// `--max-diagnostics` / `--summary-only` flags affect only presentation; the exit
 /// code always derives from the full report.
 ///
 /// # Errors
-/// Returns an error if the input file cannot be read or the report cannot be
-/// serialized.
+/// Returns an error if the input cannot be opened or read (including a temporal
+/// unit exceeding the reader's per-unit cap) or the report cannot be serialized.
 pub fn run(args: &ValidateArgs) -> Result<ExitCode> {
-    let data = read_input(&args.input)?;
     let validator = Validator::new(args.strict);
-    let report = validator.validate_bytes(&data);
+    let report = if args.input.as_os_str() == "-" {
+        validator
+            .validate_reader(BufReader::new(io::stdin().lock()))
+            .context("failed to validate standard input")?
+    } else {
+        let file = File::open(&args.input)
+            .with_context(|| format!("failed to open input file: {}", args.input.display()))?;
+        validator
+            .validate_reader(BufReader::new(file))
+            .with_context(|| format!("failed to validate input file: {}", args.input.display()))?
+    };
 
     // The single pass/fail decision (honors --strict) drives both the exit code and
     // the reported conformance, so the summary never contradicts the exit code.

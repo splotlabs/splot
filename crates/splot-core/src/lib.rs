@@ -37,6 +37,7 @@ pub mod obu;
 pub mod segment;
 pub mod span;
 pub mod stream;
+pub mod stream_reader;
 pub mod symbol;
 pub mod symbol_encoder;
 pub mod tables;

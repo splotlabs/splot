@@ -102,16 +102,9 @@ fn parse_ivf_bitstream_partial(input: &[u8]) -> ParsedIvfBitstream<'_> {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use crate::ivf::{IvfHeader, write_ivf_frame, write_ivf_header};
     use crate::span::ByteOffset;
+    use crate::test_support::ivf_with_frame;
     use crate::types::ObuType;
-
-    fn ivf_with_frame(payload: &[u8]) -> Vec<u8> {
-        let mut bytes = Vec::new();
-        write_ivf_header(&mut bytes, &IvfHeader::new(*b"AV02", 16, 16, 24, 1, 1)).unwrap();
-        write_ivf_frame(&mut bytes, 0, payload).unwrap();
-        bytes
-    }
 
     #[test]
     fn detects_raw_annex_b() {

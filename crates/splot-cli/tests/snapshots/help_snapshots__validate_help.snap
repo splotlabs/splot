@@ -7,7 +7,7 @@ Validate an AV2 length-delimited bitstream
 Usage: splot validate [OPTIONS] <INPUT>
 
 Arguments:
-  <INPUT>  Path to a raw AV2 Annex B bitstream or IVF-wrapped Annex B stream
+  <INPUT>  Path to a raw AV2 Annex B bitstream or IVF-wrapped Annex B stream, or `-` for standard input
 
 Options:
       --json                 Emit the validation report as JSON

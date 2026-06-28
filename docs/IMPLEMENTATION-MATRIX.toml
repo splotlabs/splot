@@ -20213,3 +20213,80 @@ commands = [
 ]
 fixtures = []
 diagnostics = []
+
+[[feature]]
+id = "INFRA-STREAMING-TU-READER"
+name = "Read-based temporal-unit demuxer"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = []
+sources = []
+crate = "splot-core"
+module = "crates/splot-core/src/stream_reader.rs"
+openspec_change = "streaming-validator-input"
+tracking_issue = ""
+owner = "core"
+risk = "low"
+notes = "Adds `TemporalUnitReader<R: Read>`: a forward-only (no `Seek`) container demuxer that frames an AV2 bitstream into one temporal unit at a time over a `std::io::Read` source, so consumers bound peak input memory to a single unit instead of the whole file. Annex B yields one OBU's bytes (`[leb128 length ++ OBU]`) per call at its absolute offset; IVF yields one frame payload per call at its payload offset; both reuse the existing slice parsers (`parse_ivf_header`, the leb128 reader, and `parse_annex_b_obus_partial_at` at the consumer) rather than reimplementing framing. Cross-read-boundary reassembly is correct down to one byte per `read`. A configurable per-unit byte cap (`DEFAULT_MAX_UNIT_BYTES` = 256 MiB) returns `ReaderError::UnitTooLarge` instead of allocating an over-cap unit; `splot-core` does NOT depend on `splot-decode`, so this mirrors decode's `max_input_bytes` guard without sharing a type across that forbidden edge. Stays in safe Rust (`unsafe_code = forbid`) via push-then-drop. Mechanism behind INFRA-VALIDATE-STREAMING-READER; reusable by future decode/inspect streaming."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "done"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-core/src/stream_reader.rs::tests",
+    "crates/splot-core/src/stream_reader.rs::proptests",
+]
+commands = ["cargo test -p splot-core --lib stream_reader"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "INFRA-VALIDATE-STREAMING-READER"
+name = "Streaming Read-based validator input"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = []
+sources = []
+crate = "splot-validate"
+module = "crates/splot-validate/src/validator/streaming.rs"
+openspec_change = "streaming-validator-input"
+tracking_issue = ""
+owner = "cli"
+risk = "low"
+notes = "Adds `Validator::validate_reader<R: Read>` (+ `_with_options`) and the streaming driver over `TemporalUnitReader` (INFRA-STREAMING-TU-READER). It drives the same per-OBU engine as the in-memory path (the shared `process_obu`: `observe_obu` + the check registry) and emits deferred diagnostics in the exact `validate_bytes` order (Annex B terminal error / IVF per-frame errors interleaved, then `finish()`, then IVF warnings, then the IVF container error), so the report is byte-identical to `validate_bytes` for the same bitstream. Equivalence is property-tested against `validate_bytes` over arbitrary raw and DKIF-prefixed input, plus a one-byte-at-a-time reader for reassembly. Truncated/malformed input stays a diagnostic report (never `Err`); `StreamValidateError` is reserved for genuine reader I/O failures and over-cap units (CLI exit 2). `splot validate <file>` now streams from a `BufReader<File>` and `-` reads stdin, bounding peak memory and adding stdin support (extends CLI-VALIDATE). `inspect` migration is deferred."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "done"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-validate/src/validator/streaming.rs::tests",
+    "crates/splot-validate/src/validator/streaming.rs::proptests",
+    "crates/splot-cli/tests/cli.rs",
+]
+commands = [
+    "cargo test -p splot-validate --lib streaming",
+    "cargo test -p splot-cli --test cli",
+    "cargo test -p splot-cli --test help_snapshots",
+]
+fixtures = []
+diagnostics = []
