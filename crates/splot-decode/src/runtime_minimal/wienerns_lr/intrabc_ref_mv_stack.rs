@@ -609,6 +609,23 @@ impl AboveRowScan {
     /// `BLOCK_WIDTH_4`/`BLOCK_WIDTH_8` (both `bw4 - 2 <= 0`), matching the table's
     /// hardcoded `col_offset = 0` for those widths.
     ///
+    /// SPEC-vs-AVM DIVERGENCE (step 8, narrow SB-border): for `BLOCK_WIDTH_4`/`_8`
+    /// step 8's `deltaCol` is `Max(0, bw4 - 1 - isSbBorder) = 0`, so the § 7.12.2.6
+    /// Scan-point clause "if `isSbBorder` and `deltaCol == 0` and
+    /// `Num_4x4_Blocks_Wide[MiSize] <= 2`, terminate immediately"
+    /// (`docs/spec/av2/1.0.0/07-decoding-process.md:3648`) reads as if step 8 should
+    /// add nothing. AVM does NOT terminate it: `row_smvp_all_states[1][BLOCK_WIDTH_4/8]`
+    /// index 0 is `{ is_above_smvp_available(.., 0), -1, compute_aligned_offset(.., 0) }`
+    /// — a real availability check, NOT the hardcoded `{0,-1,0}` of index 1 — and
+    /// neither `setup_ref_mv_list` nor `scan_blk_mbmi` applies any `deltaCol == 0`
+    /// termination (`mvref_common.c:2050`-`2059`, `:2371`-`2375`, `:1491`-`1546`). AVM
+    /// disables only the DUPLICATE col-0 read (step 10) via the § 7.12.2.1 step-10
+    /// `bw4 >= (isSbBorder ? 4 : 2)` gate, and reads col 0 once via step 8. This
+    /// decoder follows AVM (the avmdec bit-exact oracle), so `step8` stays modelled for
+    /// all SB-border widths; the over-scan excludes col 0 because it is a REAL AVM
+    /// candidate column, not a phantom. (The decode oracle wins over the spec text per
+    /// the ac0ej3 mission's avmdec-bit-exact mandate.)
+    ///
     /// SB-border `has_top_right` (step 12) short-circuits to `1`: the top-right 4x4 is
     /// at SB-relative `tr_mask_row = mask_row - 1 = -1 < 0`, the SB above, which is
     /// coded (`mvref_common.c:1560`-`1565`); the only remaining step-12 gate is the
@@ -809,14 +826,15 @@ fn step8_above_row_column(geometry: &SpatialScanGeometry) -> Option<usize> {
     // § 7.12.2.6 floors the probe column: `mvCol = (MiCol + deltaCol) >> 1 << 1`.
     // We model the case where that floor is a no-op (`aligned_col == MiCol +
     // deltaCol`) by checking `MiCol` parity below, which is sufficient for the
-    // reachable set BECAUSE `deltaCol = Max(0, bw4 - 2)` is always EVEN here: every
-    // reachable IBC block has an even `bw4` (the smallest IBC `bw4` is 2 = 8px; a
-    // `bw4 == 1` (4px) block would give `deltaCol = 0`, still even). With an even
-    // `deltaCol`, `MiCol + deltaCol` is even iff `MiCol` is even, so the `col & 1`
-    // parity guard alone makes the floor a no-op. If a future odd `deltaCol` ever
-    // became reachable (an odd `bw4`), the parity guard would NOT suffice and the
-    // full floor `(MiCol + deltaCol) >> 1 << 1` would be required — assert it stays
-    // even so that case fails loudly in debug instead of silently mis-aligning.
+    // reachable set BECAUSE `deltaCol = Max(0, bw4 - 2)` is always EVEN here: IBC
+    // block widths are powers of two (`bw4 ∈ {1, 2, 4, 8, 16}`), and `Max(0, bw4 - 2)`
+    // is `0` for the narrow `bw4 ∈ {1, 2}` (`BLOCK_WIDTH_4`/`_8`) and `bw4 - 2` for the
+    // even `bw4 ∈ {4, 8, 16}` — even in every case. With an even `deltaCol`,
+    // `MiCol + deltaCol` is even iff `MiCol` is even, so the `col & 1` parity guard
+    // alone makes the floor a no-op. If a future odd `deltaCol` ever became reachable
+    // (an odd `bw4`), the parity guard would NOT suffice and the full floor
+    // `(MiCol + deltaCol) >> 1 << 1` would be required — assert it stays even so that
+    // case fails loudly in debug instead of silently mis-aligning.
     let delta_col = geometry.n4w.saturating_sub(2);
     debug_assert!(
         delta_col.is_multiple_of(2),
