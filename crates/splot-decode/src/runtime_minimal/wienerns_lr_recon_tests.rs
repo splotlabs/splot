@@ -126,10 +126,17 @@ const MI40_IBP_STEP: u16 = 65;
 /// The verified region is `233472` bit-exact luma samples (bounding box x[0,255]
 /// y[0,1023], a non-rectangular union of the covered MI units). After the §5.20.4.1
 /// SDP chroma-reference MI-size fix (which removed the MI(240,240) §8.3.2 `do_split`
-/// left-context desync and the downstream `bitstream_desync` over-read), the walk
-/// reconstructs this SAME region bit-exact and now stops at the GENUINELY DISTINCT
-/// next mechanism — the §5.20.7.27 LrTxSkip live residual/coefficient parse
-/// (`unsupported_wienerns_lr_live_transform_record_residual_parse`). Verified
+/// left-context desync and the downstream `bitstream_desync` over-read) and the
+/// §5.20.7.27 coefficient context-write edge clamp (modelling AVM
+/// `av2_set_entropy_contexts`, which advanced the walk past the bottom-edge skipped
+/// TX_64X64 transforms whose 16-tall left span overhangs the tile by 2 MI rows), the
+/// walk reconstructs this SAME region bit-exact (the clamp reconstructs no new
+/// samples — it is a pure entropy-context-write correctness fix) and now stops at the
+/// GENUINELY DISTINCT next mechanism — the §5.20.6.1 selectable transform-record
+/// `recon_luma_write` frontier, where the reconstruction sink reaches the next
+/// general-intra luma block it cannot yet reconstruct
+/// (`unsupported_wienerns_lr_selectable_transform_records_recon_luma_write`).
+/// Verified
 /// ZERO-mismatch, per sample, over EVERY covered luma sample against the AVM
 /// pre-filter reconstruction oracle (`/tmp/pref.yuv`, md5
 /// `f7959cb85a41dcf0e6ebf9179835da03`), aggregated by count + sum + FNV-1a-64 in

@@ -278,11 +278,15 @@ fn local_ac0ej3_reaches_current_runtime_gate_without_output() {
     // missing BLOCK_64X128 chroma-reference write at MI(224,224) had left row 240's
     // chroma left-context at BLOCK_64X32, forcing ctx1=1. With that fixed the live
     // selectable transform-record walk stays entropy-synced past the whole verified
-    // region (no more §8.2.4 over-read `bitstream_desync`) and now stops at the
-    // GENUINE next mechanism — the §5.20.7.27 LrTxSkip live residual/coefficient
-    // parse, a transform-tool residual outside the current handoff subset. The decode
-    // still emits NO frame (exit 1).
-    assert_eq!(json["spec_section"], "5.20.7.27");
+    // region (no more §8.2.4 over-read `bitstream_desync`). The §5.20.7.27 coefficient
+    // context-line WRITE is now clamped to the frame edge (modelling AVM
+    // `av2_set_entropy_contexts`, av2/common/blockd.c:138-166): the skipped TX_64X64
+    // luma transforms on the tile bottom edge write `culLevel` / `dcCategory` over
+    // only their on-tile rows instead of erroring on the 2-MI-row overhang, so the
+    // walk advances past those transforms and now stops at the GENUINE next mechanism
+    // — the §5.20.6.1 selectable transform-record IntrABC block-bounds subcase outside
+    // the current handoff subset. The decode still emits NO frame (exit 1).
+    assert_eq!(json["spec_section"], "5.20.6.1");
     assert_eq!(json["matrix_row"], "ac0ej3-selectable-transform-records");
     assert_eq!(
         json["feature_id"],
@@ -291,16 +295,21 @@ fn local_ac0ej3_reaches_current_runtime_gate_without_output() {
     assert_eq!(json["detail_kind"], "unsupported_feature");
     assert_eq!(
         json["unsupported_reason"],
-        "unsupported_wienerns_lr_live_transform_record_residual_parse"
+        "unsupported_wienerns_lr_selectable_transform_records_intrabc_block_bounds"
     );
     assert!(
         json["message"]
             .as_str()
             .unwrap()
-            .contains("coefficient syntax is outside the transform-record handoff subset"),
-        "diagnostic must describe the §5.20.7.27 live transform-record residual frontier"
+            .contains("bounded selectable transform-record subcase is still outside"),
+        "diagnostic must describe the §5.20.6.1 selectable transform-record block-bounds frontier"
     );
     assert_eq!(json["byte_offset"], 110);
+    assert_ne!(
+        json["unsupported_reason"], "unsupported_wienerns_lr_live_transform_record_residual_parse",
+        "the §5.20.7.27 coefficient context-write edge clamp (AVM av2_set_entropy_contexts) \
+         advanced ac0ej3 past the bottom-edge skipped-transform context-write wall"
+    );
     assert_ne!(
         json["unsupported_reason"],
         "unsupported_wienerns_lr_selectable_transform_records_intrabc_nonskip_residual",

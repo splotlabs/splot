@@ -744,9 +744,12 @@ pub(in crate::runtime_minimal) fn reconstruct_ac0ej3_selectable_intra_region(
     // §5.20.3.1 SDP chroma partition plane (plane 1 for the chroma tree) and the
     // §8.3.2 `is_cfl` neighbour-context fix (the chroma `is_cfl` CDF is keyed by the
     // above/left `UVCfls` neighbours, not a hardcoded `ctx == 0`), the parse stays
-    // entropy-synced past the IntrABC ref-stack wall and stops at the §5.20.7.27
-    // LrTxSkip live residual/coefficient parse (see `EXPECTED_RECON_FRONTIER_REASON`);
-    // the owned sink retains the region reconstructed before that expected rejection.
+    // entropy-synced past the IntrABC ref-stack wall and (with the §5.20.7.27 context
+    // write now clamped to the frame edge) past the bottom-edge skipped transforms,
+    // stopping when the reconstruction sink reaches the next general-intra luma block
+    // it cannot yet reconstruct — the §5.20.6.1 selectable transform-record
+    // `recon_luma_write` frontier (see `EXPECTED_RECON_FRONTIER_REASON`); the owned
+    // sink retains the region reconstructed before that expected rejection.
     // Swallow ONLY that known recon-subset frontier — any other error (an earlier
     // parse or reconstruction failure, e.g. a regression that fails before the
     // frontier after the verified region is written, OR a re-introduced earlier
@@ -787,14 +790,24 @@ pub(in crate::runtime_minimal) fn reconstruct_ac0ej3_selectable_intra_region(
 /// of shared luma+chroma leaves now write `MiSizes[1]` over the `ChromaMiSize`
 /// footprint, not the per-leaf luma geometry) removed the former MI(240,240) §8.3.2
 /// `do_split` left-context desync, so the over-read `bitstream_desync` is gone. The
-/// walk now advances bit-exact through the whole verified region and stops at the
-/// GENUINE next mechanism — the §5.20.7.27 LrTxSkip live residual/coefficient parse
-/// (a transform-tool residual outside the current handoff subset). The verified
-/// region is committed before that frontier, so it is unaffected (the recon tests
-/// re-confirm it bit-exact vs the oracle after the partition fix).
+/// §5.20.7.27 coefficient context-line WRITE is now clamped to the frame edge
+/// (modelling AVM `av2_set_entropy_contexts`, `av2/common/blockd.c:138-166`): the
+/// skipped TX_64X64 luma transforms on the tile bottom edge — whose 16-tall left
+/// span overhangs the tile by up to one transform extent — write `culLevel` /
+/// `dcCategory` over only their on-tile rows instead of erroring on the overhang,
+/// matching AVM's SB-local entropy lines (the OR-reduce reads already clamp). The
+/// walk now advances bit-exact through those bottom-edge transforms. The
+/// reconstruction sink path (which actively writes decoded samples) reaches the next
+/// general-intra luma block it cannot yet reconstruct and stops at
+/// `unsupported_wienerns_lr_selectable_transform_records_recon_luma_write` (the
+/// parse-only public-decode path, which never writes samples, stops slightly later on
+/// the §5.20.6.1 IntrABC block-bounds subcase — both are spec §5.20.6.1). The
+/// verified region is committed before this frontier, so it is unaffected (the recon
+/// tests re-confirm it bit-exact vs the oracle after the edge clamp, which
+/// reconstructs no new samples).
 #[cfg(test)]
 const EXPECTED_RECON_FRONTIER_REASON: &str =
-    "unsupported_wienerns_lr_live_transform_record_residual_parse";
+    "unsupported_wienerns_lr_selectable_transform_records_recon_luma_write";
 
 /// Whether the frame's §5.18.6 quantization matches the reconstruction primitive's
 /// zero-`QuantizerDeltas` assumption: no per-plane DC/AC quantizer delta and no

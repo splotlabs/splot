@@ -155,9 +155,12 @@ fn geometry_state_context_config() -> CoeffOrdinaryGeometryStateContextConfig {
     CoeffOrdinaryGeometryStateContextConfig { coeff_cdf_q_ctx: 0 }
 }
 
+// An `x4` AT the tile column count is a genuine out-of-tile origin (not a
+// frame-edge overhang), so the §5.20.7.27 context-write edge clamp still rejects
+// it; the seeded context state is 6x6.
 fn invalid_update_state_context_config() -> CoeffOrdinaryStateContextConfig {
     CoeffOrdinaryStateContextConfig {
-        x4: 5,
+        x4: 6,
         ..state_context_config()
     }
 }
@@ -890,8 +893,8 @@ fn coefficient_ordinary_pass_with_state_context_preserves_context_on_update_fail
         err,
         CoeffOrdinaryPassError::ContextUpdate(TileCoeffStateError::ContextRangeOutOfBounds {
             context: "above",
-            start: 5,
-            end: 7,
+            start: 6,
+            end: 8,
             len: 6,
         })
     ));

@@ -202,9 +202,12 @@ fn chroma_context_commit_config() -> CoeffFscContextCommitConfig {
     }
 }
 
+// An `x4` AT the tile column count is a genuine out-of-tile origin (not a
+// frame-edge overhang) that the §5.20.7.27 context-write edge clamp still
+// rejects; the seeded context state is 6x6.
 fn out_of_bounds_context_commit_config() -> CoeffFscContextCommitConfig {
     CoeffFscContextCommitConfig {
-        x4: 5,
+        x4: 6,
         ..context_commit_config()
     }
 }
@@ -1331,8 +1334,8 @@ fn coefficient_fsc_quant_pass_with_context_commit_preserves_context_on_update_fa
         err,
         CoeffFscQuantPassError::ContextUpdate(TileCoeffStateError::ContextRangeOutOfBounds {
             context: "above",
-            start: 5,
-            end: 7,
+            start: 6,
+            end: 8,
             len: 6
         })
     ));
