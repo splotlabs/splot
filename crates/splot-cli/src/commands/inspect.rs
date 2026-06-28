@@ -250,16 +250,33 @@ impl MetadataUnitView {
     }
 }
 
-/// Re-parses a `metadata_short_obu()` so `--json` can expose its header fields and the
-/// metadata unit summary.
-fn metadata_short_view(obu: &ObuEnvelope<'_>) -> Option<MetadataShortView> {
-    if obu.header.obu_type != ObuType::MetadataShort {
+/// Re-parses an `obu` payload of the `expected` type into a compact `--json`
+/// view. Folds the skeleton every reader-based `*_view` helper repeated: guard
+/// on `obu_type`, build a [`BitReader`] over the payload, parse, then project the
+/// parsed value. Returns `None` for a type mismatch or a parse error; the views
+/// are best-effort and never surface parse failures.
+fn reparse_view<P, E, V>(
+    obu: &ObuEnvelope<'_>,
+    expected: ObuType,
+    parse: impl FnOnce(&mut BitReader<'_>) -> Result<P, E>,
+    view: impl FnOnce(&P) -> V,
+) -> Option<V> {
+    if obu.header.obu_type != expected {
         return None;
     }
     let mut reader = BitReader::new(obu.payload, obu.payload_offset());
-    parse_metadata_short(&mut reader, obu.payload.len())
-        .ok()
-        .map(|metadata| MetadataShortView {
+    parse(&mut reader).ok().map(|parsed| view(&parsed))
+}
+
+/// Re-parses a `metadata_short_obu()` so `--json` can expose its header fields and the
+/// metadata unit summary.
+fn metadata_short_view(obu: &ObuEnvelope<'_>) -> Option<MetadataShortView> {
+    let payload_len = obu.payload.len();
+    reparse_view(
+        obu,
+        ObuType::MetadataShort,
+        |reader| parse_metadata_short(reader, payload_len),
+        |metadata| MetadataShortView {
             is_suffix: metadata.metadata_is_suffix,
             layer_idc: metadata.muh_layer_idc,
             cancel: metadata.muh_cancel_flag,
@@ -267,7 +284,8 @@ fn metadata_short_view(obu: &ObuEnvelope<'_>) -> Option<MetadataShortView> {
             metadata_type: metadata.metadata_type.value(),
             metadata_type_name: metadata.metadata_type.spec_name(),
             unit: metadata.unit.as_ref().map(MetadataUnitView::new),
-        })
+        },
+    )
 }
 
 /// A compact, machine-readable view of a parsed `metadata_short_obu()`.
@@ -286,13 +304,12 @@ struct MetadataShortView {
 /// Re-parses a `metadata_group_obu()` so `--json` can expose its header fields and a
 /// per-unit summary.
 fn metadata_group_view(obu: &ObuEnvelope<'_>) -> Option<MetadataGroupView> {
-    if obu.header.obu_type != ObuType::MetadataGroup {
-        return None;
-    }
-    let mut reader = BitReader::new(obu.payload, obu.payload_offset());
-    parse_metadata_group(&mut reader, obu.header.extended_layer_id)
-        .ok()
-        .map(|group| MetadataGroupView {
+    let xlayer_id = obu.header.extended_layer_id;
+    reparse_view(
+        obu,
+        ObuType::MetadataGroup,
+        |reader| parse_metadata_group(reader, xlayer_id),
+        |group| MetadataGroupView {
             is_suffix: group.metadata_is_suffix,
             necessity_idc: group.metadata_necessity_idc,
             application_id: group.metadata_application_id,
@@ -308,7 +325,8 @@ fn metadata_group_view(obu: &ObuEnvelope<'_>) -> Option<MetadataGroupView> {
                     layer_idc: unit.muh_layer_idc,
                 })
                 .collect(),
-        })
+        },
+    )
 }
 
 /// A compact, machine-readable view of a parsed `metadata_group_obu()`.
@@ -335,13 +353,13 @@ struct MetadataGroupUnitView {
 
 /// Re-parses an `operating_point_set_obu()` so `--json` can expose its key fields.
 fn operating_point_set_view(obu: &ObuEnvelope<'_>) -> Option<OperatingPointSetView> {
-    if obu.header.obu_type != ObuType::OperatingPointSet {
-        return None;
-    }
-    let mut reader = BitReader::new(obu.payload, obu.payload_offset());
-    parse_operating_point_set(&mut reader, obu.header.extended_layer_id)
-        .ok()
-        .map(|ops| OperatingPointSetView::new(&ops))
+    let xlayer_id = obu.header.extended_layer_id;
+    reparse_view(
+        obu,
+        ObuType::OperatingPointSet,
+        |reader| parse_operating_point_set(reader, xlayer_id),
+        OperatingPointSetView::new,
+    )
 }
 
 /// A compact, machine-readable view of a parsed `operating_point_set_obu()`.
@@ -376,13 +394,12 @@ impl OperatingPointSetView {
 
 /// Re-parses a `buffer_removal_timing_obu()` so `--json` can expose its key fields.
 fn buffer_removal_timing_view(obu: &ObuEnvelope<'_>) -> Option<BufferRemovalTimingView> {
-    if obu.header.obu_type != ObuType::BufferRemovalTiming {
-        return None;
-    }
-    let mut reader = BitReader::new(obu.payload, obu.payload_offset());
-    parse_buffer_removal_timing(&mut reader)
-        .ok()
-        .map(|brt| BufferRemovalTimingView::new(&brt))
+    reparse_view(
+        obu,
+        ObuType::BufferRemovalTiming,
+        parse_buffer_removal_timing,
+        BufferRemovalTimingView::new,
+    )
 }
 
 /// A compact, machine-readable view of a parsed `buffer_removal_timing_obu()`.
@@ -415,13 +432,12 @@ impl BufferRemovalTimingView {
 /// Re-parses a `quantizer_matrix_obu()` so `--json` can expose its key fields. Large
 /// matrices are summarized as shape labels only, never dumped by default.
 fn quantizer_matrix_view(obu: &ObuEnvelope<'_>) -> Option<QuantizerMatrixView> {
-    if obu.header.obu_type != ObuType::QuantizationMatrix {
-        return None;
-    }
-    let mut reader = BitReader::new(obu.payload, obu.payload_offset());
-    parse_quantizer_matrix(&mut reader)
-        .ok()
-        .map(|qm| QuantizerMatrixView::new(&qm))
+    reparse_view(
+        obu,
+        ObuType::QuantizationMatrix,
+        parse_quantizer_matrix,
+        QuantizerMatrixView::new,
+    )
 }
 
 /// A compact, machine-readable view of a parsed `quantizer_matrix_obu()`. Coefficient
@@ -476,13 +492,12 @@ struct QuantizerMatrixLevelView {
 /// Re-parses a `film_grain_obu()` so `--json` can expose its key fields. Scaling
 /// points and AR-coefficient arrays are summarized by count, not dumped.
 fn film_grain_view(obu: &ObuEnvelope<'_>) -> Option<FilmGrainView> {
-    if obu.header.obu_type != ObuType::FilmGrain {
-        return None;
-    }
-    let mut reader = BitReader::new(obu.payload, obu.payload_offset());
-    parse_film_grain(&mut reader)
-        .ok()
-        .map(|fg| FilmGrainView::new(&fg))
+    reparse_view(
+        obu,
+        ObuType::FilmGrain,
+        parse_film_grain,
+        FilmGrainView::new,
+    )
 }
 
 /// A compact, machine-readable view of a parsed `film_grain_obu()`.
@@ -1661,13 +1676,12 @@ impl FrameHeaderCoreView {
 /// Re-parses a content-interpretation OBU so `--json` can expose its parsed flags
 /// and timing status.
 fn content_interpretation_view(obu: &ObuEnvelope<'_>) -> Option<ContentInterpretationView> {
-    if obu.header.obu_type != ObuType::ContentInterpretation {
-        return None;
-    }
-    let mut reader = BitReader::new(obu.payload, obu.payload_offset());
-    parse_content_interpretation(&mut reader)
-        .ok()
-        .map(|ci| ContentInterpretationView::new(&ci))
+    reparse_view(
+        obu,
+        ObuType::ContentInterpretation,
+        parse_content_interpretation,
+        ContentInterpretationView::new,
+    )
 }
 
 /// A compact, machine-readable view of a parsed `content_interpretation_obu()`.
@@ -1697,13 +1711,12 @@ impl ContentInterpretationView {
 /// Re-parses a sequence-header OBU so `--json` can expose which `§5.4` child
 /// sections were parsed and which (if any) are bounded as unimplemented.
 fn sequence_header_view(obu: &ObuEnvelope<'_>) -> Option<SequenceHeaderView> {
-    if obu.header.obu_type != ObuType::SequenceHeader {
-        return None;
-    }
-    let mut reader = BitReader::new(obu.payload, obu.payload_offset());
-    parse_sequence_header(&mut reader)
-        .ok()
-        .map(|header| SequenceHeaderView::new(&header))
+    reparse_view(
+        obu,
+        ObuType::SequenceHeader,
+        parse_sequence_header,
+        SequenceHeaderView::new,
+    )
 }
 
 /// A compact, machine-readable view of a parsed `sequence_header_obu()`.
