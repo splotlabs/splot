@@ -668,6 +668,35 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
     pub(in crate::runtime_minimal) const fn reconstructed_counts(&self) -> (usize, usize) {
         (self.reconstructed_luma_4x4, self.reconstructed_chroma_4x4)
     }
+
+    /// Visits every luma sample the sink has RECONSTRUCTED (per the MI-unit coverage
+    /// map), in row-major sample order, invoking `visit(x, y, sample)`. Used by the
+    /// region-verification test to pin the whole reconstructed luma region against
+    /// the AVM pre-filter oracle PER VALUE (not by count alone): an uncovered MI unit
+    /// (a deferred / fill region) is skipped, so only spec-reconstructed samples are
+    /// visited.
+    #[cfg(test)]
+    pub(in crate::runtime_minimal) fn for_each_reconstructed_luma_sample(
+        &self,
+        mut visit: impl FnMut(usize, usize, T),
+    ) -> Result<()> {
+        let coverage = &self.coverage[Self::coverage_index(PlaneId::Y)];
+        for mi_row in 0..coverage.rows {
+            for mi_col in 0..coverage.cols {
+                if !coverage.is_covered(mi_col, mi_row) {
+                    continue;
+                }
+                for dy in 0..MI_SIZE {
+                    for dx in 0..MI_SIZE {
+                        let x = mi_col * MI_SIZE + dx;
+                        let y = mi_row * MI_SIZE + dy;
+                        visit(x, y, self.reconstructed_sample(PlaneId::Y, x, y)?);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Drives the ac0ej3 `TX_MODE_SELECT` selectable transform-record walk with a
@@ -745,16 +774,17 @@ pub(in crate::runtime_minimal) fn reconstruct_ac0ej3_selectable_intra_region(
 
 /// The single fail-closed reason the ac0ej3 selectable walk is expected to stop on
 /// after reconstructing the verified region; the test driver swallows only this one
-/// and propagates every other error. The §7.12.2.1 step-8 SB-border IntrABC SMVP
-/// candidate is now modelled (the SB-border, even-mi_col, alignment-preserving
-/// above-row column), so the frame-0 SB-row-1 IntrABC block MI(32,56) admits its
-/// ref-MV stack faithfully (predictor (-512,0), bit-exact vs avmdec) instead of
-/// deferring. The walk now advances to the new frontier MI(48,56): a within-SB
-/// (non-SB-border, `mi_row % mib_size != 0`) step-8 above-row probe at full 4x4
-/// resolution (deltaCol = bw4 - 1, no 8x8 SB-grid alignment) that this decoder does
-/// not yet place faithfully, so the §7.12.2 ref-MV stack admission DEFERS — a
-/// correct conservative deferral on the same `intrabc_ref_stack` reason, the
-/// genuinely distinct next wall (a within-SB above-row SMVP position).
+/// and propagates every other error. The full §7.12.2.6 above-row IntrABC SMVP scan
+/// is now modelled — the within-SB (non-SB-border) steps 8/10/12/14 at 4x4
+/// resolution AND the SB-border steps 8/10/12/14 8x8-aligned in the even-MiCol
+/// no-op case — so the frame-0 IntrABC blocks MI(48,56) through MI(208,56) (and
+/// siblings) admit their ref-MV stacks faithfully (bit-exact vs avmdec) instead of
+/// deferring. The walk now advances to the new frontier MI(192,112): a `BLOCK_64X32`
+/// IntrABC block with TWO distinct spatial candidates ((-1024,0) step 7 + (-512,0)
+/// step 8), so the §7.12.2.19 max-weight DRL-reorder applies — a DISTINCT mechanism
+/// (per-candidate §7.12.2.6 weighting, not an above-row position) this decoder does
+/// not model. The admission DEFERS via the existing >1-distinct-spatial-candidate
+/// guard, on the same `intrabc_ref_stack` reason — the genuinely distinct next wall.
 #[cfg(test)]
 const EXPECTED_RECON_FRONTIER_REASON: &str =
     "unsupported_wienerns_lr_selectable_transform_records_intrabc_ref_stack";

@@ -448,14 +448,14 @@ struct AboveRowScan {
     step14: Option<usize>,
     /// Whether the block sits on a horizontal superblock border
     /// (`MiRow % mib_size == 0`), so the SB-border 8x8-aligned line-buffer rules
-    /// apply (only step 8 is modellable here, and only when alignment is a no-op).
+    /// apply (the above-row probe columns are aligned to the 8x8 grid).
     is_sb_border: bool,
 }
 
 impl AboveRowScan {
     /// Resolves the modelled above-row probe columns (§ 7.12.2.6 `get_row_smvp_states`,
     /// `mvref_common.c:1996`-`2077`) for the block, using `is_coded` (AVM
-    /// `is_mi_coded`) for the `has_top_right` per-4x4 availability gate.
+    /// `is_mi_coded`) for the within-SB `has_top_right` per-4x4 availability gate.
     fn resolve(geometry: &SpatialScanGeometry, is_coded: &impl Fn(usize, usize) -> bool) -> Self {
         let row = geometry.mi_row;
         let above_row = row.checked_sub(1);
@@ -474,14 +474,50 @@ impl AboveRowScan {
             return scan;
         }
         if is_sb_border {
-            // SB border: only the step-8 8x8-aligned column is modelled (#531); the
-            // remaining SB-border above-row probes stay unmodelled (defer-as-before).
-            scan.step8 = step8_above_row_column(geometry);
+            // SB border: model the 8x8-aligned above-row scan when the alignment is a
+            // no-op (even MiCol); an odd MiCol shifts the aligned column and stays
+            // unmodelled (defer-as-before).
+            scan.resolve_sb_border(geometry);
         } else {
             // Within the superblock: model the full 4x4-resolution above-row scan.
             scan.resolve_within_sb(geometry, is_coded);
         }
         scan
+    }
+
+    /// Resolves the SB-border above-row probe columns
+    /// (`row_smvp_all_states[1][BLOCK_WIDTH_OTHERS]`, `mvref_common.c:2059`-`2069`):
+    /// each column is `compute_aligned_offset(MiCol, raw)` where `raw` is `bw4 - 2`
+    /// (step 8), `0` (step 10), `bw4` (step 12), `-2` (step 14), gated by
+    /// `is_above_smvp_available` (steps 8/10/14, `mvref_common.c:1986`) /
+    /// `has_top_right` (step 12). The line buffer keeps only the bottom 4x4 of each
+    /// above 8x8 unit, so AVM aligns `MiCol` to the 8x8 grid
+    /// (`(MiCol >> 1) << 1`). This decoder models the alignment-NO-OP case (even
+    /// `MiCol`, so `compute_aligned_offset` reduces to the raw offset); an odd
+    /// `MiCol` shifts the column and is left unmodelled.
+    ///
+    /// SB-border `has_top_right` (step 12) short-circuits to `1`: the top-right 4x4 is
+    /// at SB-relative `tr_mask_row = mask_row - 1 = -1 < 0`, the SB above, which is
+    /// coded (`mvref_common.c:1560`-`1565`).
+    fn resolve_sb_border(&mut self, geometry: &SpatialScanGeometry) {
+        let col = geometry.mi_col;
+        let bw4 = geometry.n4w;
+        // The 8x8 alignment `(MiCol >> 1) << 1` is a no-op iff MiCol is even; an odd
+        // MiCol shifts every aligned column, so leave all SB-border probes unmodelled.
+        if col & 1 != 0 {
+            return;
+        }
+        // Step 8: aligned deltaCol = bw4 - 2 (the existing #531 step-8 column).
+        self.step8 = step8_above_row_column(geometry);
+        // Step 10: aligned deltaCol = 0.
+        self.step10 = sb_border_above_col(geometry, 0);
+        // Step 12: aligned deltaCol = bw4, gated has_top_right (= 1 on the SB border)
+        // and the AVM `bw4 <= Num_4x4_Blocks_Wide[BLOCK_64X64]` cap.
+        if bw4 <= MAX_SMVP_AXIS_MI {
+            self.step12 = sb_border_above_col(geometry, i64::try_from(bw4).unwrap_or(i64::MAX));
+        }
+        // Step 14: aligned deltaCol = -2.
+        self.step14 = sb_border_above_col(geometry, -2);
     }
 
     /// Resolves the within-SB (non-SB-border) above-row probe columns at FULL 4x4
@@ -560,6 +596,24 @@ impl AboveRowScan {
 fn tile_above_col(geometry: &SpatialScanGeometry, col: Option<usize>) -> Option<usize> {
     let col = col?;
     if geometry.mi_row == 0 || col >= geometry.mi_cols {
+        return None;
+    }
+    Some(col)
+}
+
+/// The SB-border above-row probe column for an even `MiCol`: the 8x8-aligned column
+/// `((MiCol >> 1) << 1) + raw` reduces to `MiCol + raw` (alignment no-op), gated by
+/// AV2 § 7.12.2.6 `is_above_smvp_available` (`mvref_common.c:1986`): the aligned
+/// column must lie inside the tile column range `[0, mi_cols)` (single tile). `raw`
+/// is the un-aligned `col_offset` (`bw4 - 2`, `0`, `bw4`, or `-2`). Returns `None`
+/// when the column leaves the tile (the probe is unavailable).
+fn sb_border_above_col(geometry: &SpatialScanGeometry, raw: i64) -> Option<usize> {
+    if geometry.mi_row == 0 {
+        return None;
+    }
+    let aligned = i64::try_from(geometry.mi_col).ok()?.checked_add(raw)?;
+    let col = usize::try_from(aligned).ok()?;
+    if col >= geometry.mi_cols {
         return None;
     }
     Some(col)
