@@ -816,7 +816,20 @@ fn ensure_transform_tool_residual_handoff(
             // `inter_tx_type_offset` reads this brick has not proven, so they defer.
             let luma_tx_type =
                 read_active_inter_transform_type(cdfs, symbols, tx_size, tx_set, eob)?;
-            if luma_tx_type != DCT_DCT {
+            // A non-`DCT_DCT` inter luma transform type carries the same §5.20.7.27
+            // coefficient entropy as the DCT_DCT path — the coefficient loop is
+            // transform-type-agnostic (it parameterizes scan/class/parity/TCQ from
+            // `metadata.luma_tx_type`); only the §7.13.3 inverse transform differs.
+            // The §7.13.3.18 IntrABC leaf (`is_inter == 1`) already DEFERS its sample
+            // write at the reconstruction sink, so a syntax-only handoff caller can
+            // admit the non-DCT type, decode the residual to advance the entropy
+            // state, and defer the unsupported inverse transform. A reconstruction-safe
+            // caller still requires `DCT_DCT`: its sink would inverse-transform with the
+            // wrong (DCT_DCT) kernel, so it stays fail-closed.
+            if luma_tx_type != DCT_DCT
+                && input.active_intra_ist_policy
+                    != ActiveIntraIstResidualPolicy::LrTxSkipRecordHandoff
+            {
                 return unsupported_transform_tool_residual(
                     "unsupported_dctonly_residual_inter_tx_type",
                 );

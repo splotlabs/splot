@@ -749,12 +749,16 @@ pub(in crate::runtime_minimal) fn reconstruct_ac0ej3_selectable_intra_region(
 /// modelled in full — the spatial SMVP scan (an IntrABC spatial neighbour's recorded
 /// BV) plus the ref-MV-bank (`check_rmb_cand`) plus the default-BVP fill, all in AVM
 /// order — every IntrABC block in frame-0's reachable run ADMITS its AVM-faithful BV
-/// and the walk advances through the whole IntrABC sequence. The new wall is the first
-/// §5.20.7.27 residual outside the DCT_DCT-only transform-tool subset (a non-DCT
-/// luma transform): its coefficients parse, but the non-DCT inverse transform / CCTX /
-/// IST reconstruction is not yet supported — a correct conservative deferral.
+/// and the walk advances through the whole IntrABC sequence. The first §5.20.7.27
+/// residual outside the DCT_DCT-only subset (a non-DCT inter luma transform on one of
+/// the proven long-side sets) now decodes its coefficients — the loop is
+/// transform-type-agnostic — and DEFERS the unsupported inverse transform at the sink.
+/// The new wall is the first inter `transform_type` whose §5.20.7.29 transform SET is
+/// outside the proven long-side subset (`TX_SET_WIDE_32/64`, `TX_SET_HIGH_32/64`): the
+/// `TX_SET_INTER_1/2` / `TX_SET_DCT_IDTX*` sets need `inter_tx_type_offset` syntax this
+/// walk has not yet proven, so they defer — a correct conservative deferral.
 #[cfg(test)]
-const EXPECTED_RECON_FRONTIER_REASON: &str = "unsupported_dctonly_residual_inter_tx_type";
+const EXPECTED_RECON_FRONTIER_REASON: &str = "unsupported_dctonly_residual_inter_tx_set";
 
 /// Whether the frame's §5.18.6 quantization matches the reconstruction primitive's
 /// zero-`QuantizerDeltas` assumption: no per-plane DC/AC quantizer delta and no
