@@ -123,33 +123,36 @@ const MI40_IBP_STEP: u16 = 65;
 /// parse synced in decode order, so the walk reconstructs many more proven-subset
 /// general-intra DC / cardinal leaves before the next defer.
 ///
-/// The verified region is `233472` bit-exact luma samples (bounding box x[0,255]
+/// The verified region is `245760` bit-exact luma samples (bounding box x[0,447]
 /// y[0,1023], a non-rectangular union of the covered MI units). After the §5.20.4.1
 /// SDP chroma-reference MI-size fix (which removed the MI(240,240) §8.3.2 `do_split`
 /// left-context desync and the downstream `bitstream_desync` over-read) and the
 /// §5.20.7.27 coefficient context-write edge clamp (modelling AVM
 /// `av2_set_entropy_contexts`, which advanced the walk past the bottom-edge skipped
 /// TX_64X64 transforms whose 16-tall left span overhangs the tile by 2 MI rows), the
-/// walk reconstructs this SAME region bit-exact (the clamp reconstructs no new
-/// samples — it is a pure entropy-context-write correctness fix) and now stops at the
-/// GENUINELY DISTINCT next mechanism — the §5.20.6.1 selectable transform-record
-/// `recon_luma_write` frontier, where the reconstruction sink reaches the next
-/// general-intra luma block it cannot yet reconstruct
-/// (`unsupported_wienerns_lr_selectable_transform_records_recon_luma_write`).
-/// Verified
-/// ZERO-mismatch, per sample, over EVERY covered luma sample against the AVM
-/// pre-filter reconstruction oracle (`/tmp/pref.yuv`, md5
-/// `f7959cb85a41dcf0e6ebf9179835da03`), aggregated by count + sum + FNV-1a-64 in
-/// [`LUMA_RECON_REGION_SAMPLE_SUM`] / [`LUMA_RECON_REGION_FNV1A64`].
-const LUMA_RECON_SAMPLE_TOTAL: usize = 233_472;
+/// walk reconstructed `233472` samples and stopped at the §5.20.6.1 selectable
+/// transform-record `recon_luma_write` frontier MI(64,0) — a `TX_64X32` (non-square)
+/// `V_PRED` `all_zero` leaf at the FRAME TOP (`mi_row == 0`, so `haveAbove == 0`).
+/// Modelling the §7.13.2.1 single-neighbour edge fallback (`haveAbove == 0 &&
+/// haveLeft == 1`: `AboveRow[i] = CurrFrame[plane][y][x-1]`, the block's left
+/// neighbour repeated across the synthesized above row) lets the §7.13.2.8 V_PRED
+/// copy reconstruct the flat `68` block, which CASCADES: its now-covered samples
+/// become valid left/above neighbours for the rest of the top-row SB columns 4-6,
+/// adding the solid rectangle x[256,448) y[0,64) (`12288` samples: `11264` of `68`
+/// plus a `32x32` patch of `64` at x[352,384) y[0,32)). The walk then stops at the
+/// GENUINELY DISTINCT next mechanism. Verified ZERO-mismatch, per sample, over EVERY
+/// covered luma sample against the AVM pre-filter reconstruction oracle
+/// (`/tmp/pref.yuv`, md5 `f7959cb85a41dcf0e6ebf9179835da03`), aggregated by count +
+/// sum + FNV-1a-64 in [`LUMA_RECON_REGION_SAMPLE_SUM`] / [`LUMA_RECON_REGION_FNV1A64`].
+const LUMA_RECON_SAMPLE_TOTAL: usize = 245_760;
 /// Sum of every reconstructed luma sample in the verified region (derived offline
 /// from the AVM pre-filter oracle over the sink's covered MI units, zero mismatch).
-const LUMA_RECON_REGION_SAMPLE_SUM: u64 = 14_951_472;
+const LUMA_RECON_REGION_SAMPLE_SUM: u64 = 15_782_960;
 /// FNV-1a-64 over every reconstructed luma sample (row-major over the covered MI
 /// units, sample-major u16 LE), the whole-region per-value oracle pin: a wrong
 /// reconstruction anywhere in the covered region changes this checksum even at the
 /// same sample count.
-const LUMA_RECON_REGION_FNV1A64: u64 = 0xc1ac_b329_1e9e_ea25;
+const LUMA_RECON_REGION_FNV1A64: u64 = 0x69dd_e98d_77e4_aa25;
 
 /// The SB-column-3 `BLOCK_64X64 H_PRED` block (x[192,256) x y[0,64)) — the
 /// §7.13.3.18 IntrABC source. Mode `H_PRED` (pAngle 180, `AngleDeltaY == 0`), split
@@ -262,6 +265,18 @@ fn require_fixture() -> PathBuf {
     path
 }
 
+/// Reads the local ac0ej3 fixture, plans it, and runs the selectable
+/// transform-record walk, returning the reconstruction sink. The shared preamble
+/// for every ignored ac0ej3 oracle-pin test (fixture → plan → reconstruct).
+fn reconstruct_ac0ej3_sink() -> WienerNsLrReconSink<u16> {
+    let path = require_fixture();
+    let bytes = std::fs::read(&path).expect("read ac0ej3 fixture");
+    let options = DecodeOptions::default();
+    let plan = context().plan_bytes(&bytes, options).expect("plan ac0ej3");
+    reconstruct_ac0ej3_intra_region_from_plan(&bytes, options, &plan)
+        .expect("reconstruct ac0ej3 region")
+}
+
 /// FNV-1a-64 over a u16 sample stream (little-endian bytes), matching the offline
 /// oracle checksum derivation.
 struct Fnv1a64(u64);
@@ -333,13 +348,7 @@ fn assert_luma_region_oracle(
 #[test]
 #[ignore = "requires local mission fixture; set SPLOT_AC0EJ3_IVF or place it at $HOME/Documents/SplotLabs/ac0ej3.ivf"]
 fn ac0ej3_reconstruction_bridge_populates_a_workspace_region() {
-    let path = require_fixture();
-    let bytes = std::fs::read(&path).expect("read ac0ej3 fixture");
-    let options = DecodeOptions::default();
-    let plan = context().plan_bytes(&bytes, options).expect("plan ac0ej3");
-
-    let sink = reconstruct_ac0ej3_intra_region_from_plan(&bytes, options, &plan)
-        .expect("reconstruct ac0ej3 selectable intra region");
+    let sink = reconstruct_ac0ej3_sink();
 
     let (luma4x4, _chroma4x4) = sink.reconstructed_counts();
     // The bridge reconstructs every general-intra `DC_PRED` luma transform it
@@ -368,13 +377,7 @@ fn ac0ej3_reconstruction_bridge_populates_a_workspace_region() {
 #[test]
 #[ignore = "requires local mission fixture; set SPLOT_AC0EJ3_IVF or place it at $HOME/Documents/SplotLabs/ac0ej3.ivf"]
 fn ac0ej3_frame_origin_dc_block_reconstructs_bit_exact_against_prefilter_oracle() {
-    let path = require_fixture();
-    let bytes = std::fs::read(&path).expect("read ac0ej3 fixture");
-    let options = DecodeOptions::default();
-    let plan = context().plan_bytes(&bytes, options).expect("plan ac0ej3");
-
-    let sink = reconstruct_ac0ej3_intra_region_from_plan(&bytes, options, &plan)
-        .expect("reconstruct ac0ej3 frame-origin DC luma block");
+    let sink = reconstruct_ac0ej3_sink();
 
     // Every frame-origin block sample is the committed flat oracle value.
     let mut fnv = Fnv1a64::new();
@@ -420,13 +423,7 @@ fn ac0ej3_frame_origin_dc_block_reconstructs_bit_exact_against_prefilter_oracle(
 #[test]
 #[ignore = "requires local mission fixture; set SPLOT_AC0EJ3_IVF or place it at $HOME/Documents/SplotLabs/ac0ej3.ivf"]
 fn ac0ej3_block_16x64_luma_column_reconstructs_bit_exact_against_prefilter_oracle() {
-    let path = require_fixture();
-    let bytes = std::fs::read(&path).expect("read ac0ej3 fixture");
-    let options = DecodeOptions::default();
-    let plan = context().plan_bytes(&bytes, options).expect("plan ac0ej3");
-
-    let sink = reconstruct_ac0ej3_intra_region_from_plan(&bytes, options, &plan)
-        .expect("reconstruct ac0ej3 BLOCK_16X64 luma column");
+    let sink = reconstruct_ac0ej3_sink();
 
     let mut fnv = Fnv1a64::new();
     let mut sum: u64 = 0;
@@ -484,13 +481,7 @@ fn ac0ej3_block_16x64_luma_column_reconstructs_bit_exact_against_prefilter_oracl
 #[test]
 #[ignore = "requires local mission fixture; set SPLOT_AC0EJ3_IVF or place it at $HOME/Documents/SplotLabs/ac0ej3.ivf"]
 fn ac0ej3_frame_origin_chroma_dc_blocks_reconstruct_bit_exact_against_prefilter_oracle() {
-    let path = require_fixture();
-    let bytes = std::fs::read(&path).expect("read ac0ej3 fixture");
-    let options = DecodeOptions::default();
-    let plan = context().plan_bytes(&bytes, options).expect("plan ac0ej3");
-
-    let sink = reconstruct_ac0ej3_intra_region_from_plan(&bytes, options, &plan)
-        .expect("reconstruct ac0ej3 frame-origin chroma DC blocks");
+    let sink = reconstruct_ac0ej3_sink();
 
     // Each of the U and V origin planes is a flat 32x32 `512` block matching the
     // oracle, with an identical sum and FNV-1a-64 checksum.
@@ -535,15 +526,16 @@ fn ac0ej3_frame_origin_chroma_dc_blocks_reconstruct_bit_exact_against_prefilter_
         "the deferred SMOOTH chroma leaf at chroma (32,0) must stay unreconstructed"
     );
 
-    // Coverage report: with the §7.12.2.19 IntrABC ref-MV weight sort modelled, the
+    // Coverage report: with the §7.12.2.19 IntrABC ref-MV weight sort modelled and
+    // the §7.13.2.1 single-neighbour V_PRED edge fallback at the frame top, the
     // frame-0 IntrABC blocks through MI(192,112) admit faithfully and the verified
-    // luma region is now the `233472`-sample bit-exact region — plus the two 32x32
+    // luma region is now the `245760`-sample bit-exact region — plus the two 32x32
     // chroma origin blocks (2048 chroma samples total across U and V).
     let (luma4x4, chroma4x4) = sink.reconstructed_counts();
     assert_eq!(
         luma4x4 * 16,
         LUMA_RECON_SAMPLE_TOTAL,
-        "verified luma region is the 233472-sample bit-exact DC + cardinal + IntrABC region"
+        "verified luma region is the 245760-sample bit-exact DC + cardinal + IntrABC region"
     );
     assert_eq!(
         chroma4x4 * 16,
@@ -569,13 +561,7 @@ fn ac0ej3_frame_origin_chroma_dc_blocks_reconstruct_bit_exact_against_prefilter_
 #[test]
 #[ignore = "requires local mission fixture; set SPLOT_AC0EJ3_IVF or place it at $HOME/Documents/SplotLabs/ac0ej3.ivf"]
 fn ac0ej3_first_three_superblock_luma_reconstructs_bit_exact_against_prefilter_oracle() {
-    let path = require_fixture();
-    let bytes = std::fs::read(&path).expect("read ac0ej3 fixture");
-    let options = DecodeOptions::default();
-    let plan = context().plan_bytes(&bytes, options).expect("plan ac0ej3");
-
-    let sink = reconstruct_ac0ej3_intra_region_from_plan(&bytes, options, &plan)
-        .expect("reconstruct ac0ej3 first three superblock luma");
+    let sink = reconstruct_ac0ej3_sink();
 
     let mut fnv = Fnv1a64::new();
     let mut sum: u64 = 0;
@@ -642,13 +628,7 @@ fn ac0ej3_first_three_superblock_luma_reconstructs_bit_exact_against_prefilter_o
 #[test]
 #[ignore = "requires local mission fixture; set SPLOT_AC0EJ3_IVF or place it at $HOME/Documents/SplotLabs/ac0ej3.ivf"]
 fn ac0ej3_sb_column3_hpred_block_reconstructs_bit_exact_against_prefilter_oracle() {
-    let path = require_fixture();
-    let bytes = std::fs::read(&path).expect("read ac0ej3 fixture");
-    let options = DecodeOptions::default();
-    let plan = context().plan_bytes(&bytes, options).expect("plan ac0ej3");
-
-    let sink = reconstruct_ac0ej3_intra_region_from_plan(&bytes, options, &plan)
-        .expect("reconstruct ac0ej3 SB-column-3 H_PRED block");
+    let sink = reconstruct_ac0ej3_sink();
 
     let mut fnv = Fnv1a64::new();
     let mut sum: u64 = 0;
@@ -685,25 +665,69 @@ fn ac0ej3_sb_column3_hpred_block_reconstructs_bit_exact_against_prefilter_oracle
         "H_PRED block FNV-1a-64 must match the pre-filter reconstruction oracle (bit-exact)"
     );
 
-    // The V_PRED block at SB column 4 (x[256,320) x y[0,64)) is at the frame TOP
-    // (y == 0, no above neighbour): V_PRED reads ONLY the above row, which is
-    // off-frame here, so the cardinal copy has no real neighbour and the sink
-    // DEFERS it (stays at the unreconstructed fill value `0`).
+    // The V_PRED block at SB column 4 (MI(64,0) → x[256,320) x y[0,32), a
+    // `TX_64X32` non-square leaf) is at the frame TOP (`mi_row == 0`, `haveAbove ==
+    // 0`): V_PRED reads ONLY the above row, which is off-frame here. The §7.13.2.1
+    // single-neighbour fallback (`haveAbove == 0 && haveLeft == 1`) synthesizes
+    // `AboveRow[i] = CurrFrame[plane][y][x-1]` (the block's reconstructed left
+    // neighbour, the flat `68` x=255 column edge), and the §7.13.2.8 V_PRED copy of
+    // that flat synthesized row reconstructs the block to flat `68` (bit-exact vs
+    // the oracle). This CASCADES across the rest of the top-row SB columns 4-6.
     assert_eq!(
         sink.reconstructed_sample(PlaneId::Y, 256, 0).unwrap(),
-        0,
-        "the no-above V_PRED block at x[256,320) y=0 must stay deferred",
+        68,
+        "the frame-top V_PRED block at x[256,320) y=0 reconstructs to flat 68 via the §7.13.2.1 no-above fallback",
     );
 
-    // The whole reconstructed luma region is now 233472 bit-exact samples (the
-    // §7.12.2.19 IntrABC ref-MV weight sort admits MI(192,112) and its siblings,
-    // keeping the parse synced so the downstream proven-subset DC / cardinal leaves
-    // reconstruct — pinned per value by LUMA_RECON_REGION_FNV1A64).
+    // The whole reconstructed luma region is now 245760 bit-exact samples (the
+    // §7.12.2.19 IntrABC ref-MV weight sort admits MI(192,112) and its siblings, and
+    // the §7.13.2.1 frame-top V_PRED fallback adds the x[256,448) y[0,64) top-row
+    // rectangle — pinned per value by LUMA_RECON_REGION_FNV1A64).
     let (luma4x4, _chroma4x4) = sink.reconstructed_counts();
     assert_eq!(
         luma4x4 * 16,
         LUMA_RECON_SAMPLE_TOTAL,
-        "the parse-advanced walk reconstructs 233472 bit-exact luma samples"
+        "the parse-advanced walk reconstructs 245760 bit-exact luma samples"
+    );
+}
+
+/// Bit-exact verification of the frame-top `TX_64X32` `V_PRED` leaf MI(64,0) →
+/// x[256,320) x y[0,32) against the AVM pre-filter oracle — the §7.13.2.1
+/// no-above single-neighbour edge fallback.
+///
+/// The block is NON-SQUARE (`log2_width == 6`, `log2_height == 5`) `V_PRED`
+/// (pAngle 90, `AngleDeltaY == 0`), `all_zero` (zero residual), at the FRAME TOP
+/// (`mi_row == 0`, so `haveAbove == 0`) with a reconstructed left neighbour (the
+/// SB-column-3 H_PRED region, x=255 flat `68`). §7.13.2.1 (`haveAbove == 0 &&
+/// haveLeft == 1`) synthesizes `AboveRow[i] = CurrFrame[plane][y][x-1]` — the flat
+/// `68` left corner repeated across the W-wide synthesized above row — and the
+/// §7.13.2.8 V_PRED copy reconstructs the whole block to flat `68`. This is the
+/// frontier block whose admission CASCADES into the top-row x[256,448) y[0,64)
+/// region (pinned by [`LUMA_RECON_REGION_FNV1A64`]). Pinned per value (every sample
+/// `68`) so a transpose / wrong-fallback would change the sum / FNV.
+const VPRED_TOP_BLOCK_X: usize = 256;
+const VPRED_TOP_BLOCK_W: usize = 64;
+const VPRED_TOP_BLOCK_H: usize = 32;
+const VPRED_TOP_FLAT: u16 = 68;
+const VPRED_TOP_SAMPLE_COUNT: usize = VPRED_TOP_BLOCK_W * VPRED_TOP_BLOCK_H;
+const VPRED_TOP_SAMPLE_SUM: u64 = 139_264;
+const VPRED_TOP_FNV1A64: u64 = 0x5ef5_adc7_8b18_e325;
+#[test]
+#[ignore = "requires local mission fixture; set SPLOT_AC0EJ3_IVF or place it at $HOME/Documents/SplotLabs/ac0ej3.ivf"]
+fn ac0ej3_frame_top_vpred_no_above_fallback_reconstructs_bit_exact_against_prefilter_oracle() {
+    let sink = reconstruct_ac0ej3_sink();
+
+    assert_luma_region_oracle(
+        &sink,
+        "frame-top V_PRED no-above fallback block",
+        (VPRED_TOP_BLOCK_X, VPRED_TOP_BLOCK_W),
+        (0, VPRED_TOP_BLOCK_H),
+        |_x, _y| VPRED_TOP_FLAT,
+        (
+            VPRED_TOP_SAMPLE_COUNT,
+            VPRED_TOP_SAMPLE_SUM,
+            VPRED_TOP_FNV1A64,
+        ),
     );
 }
 
@@ -723,13 +747,7 @@ fn ac0ej3_sb_column3_hpred_block_reconstructs_bit_exact_against_prefilter_oracle
 #[test]
 #[ignore = "requires local mission fixture; set SPLOT_AC0EJ3_IVF or place it at $HOME/Documents/SplotLabs/ac0ej3.ivf"]
 fn ac0ej3_first_intrabc_block_reconstructs_bit_exact_against_prefilter_oracle() {
-    let path = require_fixture();
-    let bytes = std::fs::read(&path).expect("read ac0ej3 fixture");
-    let options = DecodeOptions::default();
-    let plan = context().plan_bytes(&bytes, options).expect("plan ac0ej3");
-
-    let sink = reconstruct_ac0ej3_intra_region_from_plan(&bytes, options, &plan)
-        .expect("reconstruct ac0ej3 first IntrABC block");
+    let sink = reconstruct_ac0ej3_sink();
 
     let mut fnv = Fnv1a64::new();
     let mut sum: u64 = 0;
@@ -787,13 +805,7 @@ fn ac0ej3_first_intrabc_block_reconstructs_bit_exact_against_prefilter_oracle() 
 #[test]
 #[ignore = "requires local mission fixture; set SPLOT_AC0EJ3_IVF or place it at $HOME/Documents/SplotLabs/ac0ej3.ivf"]
 fn ac0ej3_step8_admitted_region_reconstructs_bit_exact_against_prefilter_oracle() {
-    let path = require_fixture();
-    let bytes = std::fs::read(&path).expect("read ac0ej3 fixture");
-    let options = DecodeOptions::default();
-    let plan = context().plan_bytes(&bytes, options).expect("plan ac0ej3");
-
-    let sink = reconstruct_ac0ej3_intra_region_from_plan(&bytes, options, &plan)
-        .expect("reconstruct ac0ej3 step-8 admitted region");
+    let sink = reconstruct_ac0ej3_sink();
 
     assert_luma_region_oracle(
         &sink,
@@ -821,13 +833,7 @@ fn ac0ej3_step8_admitted_region_reconstructs_bit_exact_against_prefilter_oracle(
 #[test]
 #[ignore = "requires local mission fixture; set SPLOT_AC0EJ3_IVF or place it at $HOME/Documents/SplotLabs/ac0ej3.ivf"]
 fn ac0ej3_full_reconstructed_luma_region_matches_prefilter_oracle_aggregate() {
-    let path = require_fixture();
-    let bytes = std::fs::read(&path).expect("read ac0ej3 fixture");
-    let options = DecodeOptions::default();
-    let plan = context().plan_bytes(&bytes, options).expect("plan ac0ej3");
-
-    let sink = reconstruct_ac0ej3_intra_region_from_plan(&bytes, options, &plan)
-        .expect("reconstruct ac0ej3 full luma region");
+    let sink = reconstruct_ac0ej3_sink();
 
     let mut fnv = Fnv1a64::new();
     let mut sum: u64 = 0;
