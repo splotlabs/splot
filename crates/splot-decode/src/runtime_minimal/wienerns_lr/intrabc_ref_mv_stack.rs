@@ -360,43 +360,6 @@ pub(super) fn build_intrabc_ref_mv_stack(
     stack
 }
 
-/// The AV2 § 7.12.2 IntrABC ref-MV stack admission decision for one block.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum IntrabcStackAdmission {
-    /// The real § 7.12.2 stack the decoded DRL index selects equals the bounded
-    /// fallback the assign path uses, so the copied block vector is AVM-faithful.
-    Admit,
-    /// The real stack diverges from the fallback at the selected index, or the
-    /// spatial scan could contribute an unmodelled candidate: over-reject.
-    Defer,
-}
-
-/// Decides AV2 § 7.12.2 IntrABC ref-MV stack admission: builds the real stack
-/// (ref-MV bank fill + default block vectors) and admits only when the entry the
-/// decoded DRL index `ref_mv_idx` selects equals `fallback_selected` (the block
-/// vector the bounded fallback assign path would use), so the copied BV is correct.
-/// `spatial_has_intrabc` defers unconditionally: the § 7.12.2 spatial scan could
-/// contribute a candidate this decoder does not yet model. `enable_refmvbank` is the
-/// AV2 sequence flag gating the § 7.12.2.21 bank fill.
-pub(super) fn intrabc_ref_stack_admission(
-    bank: &IntrabcRefMvBank,
-    geometry: IntrabcStackGeometry,
-    spatial_has_intrabc: bool,
-    enable_refmvbank: bool,
-    ref_mv_idx: usize,
-    fallback_selected: Option<Mv>,
-) -> IntrabcStackAdmission {
-    if spatial_has_intrabc {
-        return IntrabcStackAdmission::Defer;
-    }
-    let real_stack = build_intrabc_ref_mv_stack(bank, geometry, enable_refmvbank);
-    if real_stack.get(ref_mv_idx).copied() == fallback_selected {
-        IntrabcStackAdmission::Admit
-    } else {
-        IntrabcStackAdmission::Defer
-    }
-}
-
 /// AVM `INTRABC_DELAY_PIXELS` (`av2/common/mvref_common.h:610`).
 const INTRABC_DELAY_PIXELS: i32 = 256;
 
@@ -551,66 +514,24 @@ mod tests {
         );
     }
 
-    // ac0ej3 frame-0 MI(0,112): the bank's MI(16,56) candidate is rejected on the
-    // frame boundary, so the real stack is default-only and the DRL index (3)
-    // selects the same BV as the bounded fallback's tail (0,-256) -> ADMIT.
+    // `enable_refmvbank == 0` makes AV2 run NO § 7.12.2.21 ref-MV-bank fill, so the
+    // bank state is ignored and the stack is the four default block vectors only --
+    // even when the bank holds a candidate that would otherwise reorder it. The
+    // live path passes this flag through from the sequence header.
     #[test]
-    fn admission_admits_ac0ej3_mi_0_112_default_only() {
-        let mut bank = IntrabcRefMvBank::new(32);
-        bank.record_block(16, 56, 8, 16, true, Some(Mv { row: -512, col: 0 }));
-        assert_eq!(
-            intrabc_ref_stack_admission(
-                &bank,
-                ac0ej3_geometry(0, 112),
-                false,
-                true,
-                3,
-                Some(Mv { row: 0, col: -256 }),
-            ),
-            IntrabcStackAdmission::Admit
-        );
-    }
-
-    // ac0ej3 frame-0 MI(0,232): with the SAME bank [(-512,0),(0,-256)] the
-    // `enable_refmvbank` flag flips the decision. With it ON, the § 7.12.2.21 fill
-    // reorders the stack to [(0,-256),...], so DRL index 0 selects (0,-256) while
-    // the bounded fallback head is (-1024,0) -> DEFER (the cardinal-sin guard). With
-    // it OFF, AV2 runs no bank fill, the bank state is IGNORED, the stack is
-    // default-only, and DRL index 0 selects the fallback head -> ADMIT.
-    #[test]
-    fn admission_decision_follows_enable_refmvbank_on_reordered_bank() {
+    fn stack_is_default_only_when_refmvbank_disabled() {
         let mut bank = IntrabcRefMvBank::new(32);
         bank.record_block(16, 56, 8, 16, true, Some(Mv { row: -512, col: 0 }));
         bank.record_block(0, 112, 8, 16, true, Some(Mv { row: 0, col: -256 }));
-        let decide = |enable_refmvbank| {
-            intrabc_ref_stack_admission(
-                &bank,
-                ac0ej3_geometry(0, 232),
-                false,
-                enable_refmvbank,
-                0,
-                Some(Mv { row: -1024, col: 0 }),
-            )
-        };
-        assert_eq!(decide(true), IntrabcStackAdmission::Defer);
-        assert_eq!(decide(false), IntrabcStackAdmission::Admit);
-    }
-
-    // A spatial IntrABC neighbour the § 7.12.2 scan would read defers
-    // unconditionally (the scan could contribute an unmodelled candidate).
-    #[test]
-    fn admission_defers_on_spatial_intrabc_neighbour() {
-        let bank = IntrabcRefMvBank::new(32);
+        let stack = build_intrabc_ref_mv_stack(&bank, ac0ej3_geometry(0, 232), false);
         assert_eq!(
-            intrabc_ref_stack_admission(
-                &bank,
-                ac0ej3_geometry(0, 112),
-                true,
-                true,
-                0,
-                Some(Mv { row: -1024, col: 0 }),
-            ),
-            IntrabcStackAdmission::Defer
+            stack,
+            vec![
+                Mv { row: -1024, col: 0 },
+                Mv { row: 0, col: -3072 },
+                Mv { row: -512, col: 0 },
+                Mv { row: 0, col: -256 },
+            ]
         );
     }
 }

@@ -279,9 +279,15 @@ fn local_ac0ej3_reaches_current_runtime_gate_without_output() {
     // §5.20.7.29 inter transform-type + §5.20.7.27 coefficient residual now decode
     // AVM-faithfully (the §8.3.2 `TileInterTxTypeLongCdf` `inter_tx_type` + inter IST
     // `TileSecTxTypeCdf[1]` `sec_tx_type` reads), and the walk CONTINUES past it. The
-    // new wall is the THIRD IntrABC block, whose §7.12.2 IntrABC MV stack may hold a
-    // spatial or ref-MV-bank candidate the bounded fallback list cannot admit — a
-    // correct conservative deferral. The decode still emits NO frame (exit 1).
+    // THIRD IntrABC block (MI(0,232)) has a §7.12.2.21 ref-MV-bank-REORDERED stack
+    // [(0,-256),(-1024,0),(0,-3072),(-512,0)] — DRL index 0 selects the bank candidate
+    // (0,-256), NOT the bounded fallback head — and the live path now selects the BV
+    // from the REAL §7.12.2 stack, so it too is ADMITTED and the walk CONTINUES. The
+    // new wall is the FOURTH IntrABC block (MI(0,240)): its immediate left neighbour
+    // MI(0,232) is itself an IntrABC block, so the §7.12.2 spatial SMVP scan COULD
+    // contribute an unmodelled candidate — a correct conservative deferral (the same
+    // `intrabc_ref_stack` reason, one block deeper). The decode still emits NO frame
+    // (exit 1).
     assert_eq!(json["spec_section"], "7.12.2");
     assert_eq!(json["matrix_row"], "ac0ej3-selectable-transform-records");
     assert_eq!(
