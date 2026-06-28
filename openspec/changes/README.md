@@ -71,6 +71,7 @@ same id in the matrix, the OpenSpec folder, and the GitHub issue/PR.
 | `encoder-general-intra-two-nonzero` | `ENC-GENERAL-INTRA-TWO-NONZERO` | blocked (artifact incomplete: design=ready) |
 | `encoder-general-intra-visible-ac` | `ENC-GENERAL-INTRA-VISIBLE-AC` | blocked (artifact incomplete: design=ready) |
 | `encoder-partition-do-square-split` | `ENC-PARTITION-DO-SQUARE-SPLIT` | blocked (artifact incomplete: design=ready) |
+| `extract-fuzz-corpus-seeding` | `INFRA-FUZZ-CORPUS-SEEDING` | in-progress (implemented; pending review) |
 | `forward-dct-16x16` | `ENC-FORWARD-TRANSFORM-DCT-16X16` | blocked (artifact incomplete: design=ready) |
 | `forward-dct-4x4-full` | `ENC-FORWARD-TRANSFORM-DCT-4X4` | blocked (artifact incomplete: design=ready) |
 | `forward-quant-per-coeff-ac` | `ENC-FORWARD-TRANSFORM-DCT-4X4`, `ENC-FWD-QUANT-PER-COEFF-AC` | blocked (artifact incomplete: design=ready) |

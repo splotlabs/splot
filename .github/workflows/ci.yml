@@ -209,6 +209,11 @@ jobs:
         with:
           persist-credentials: false
 
+      # `cargo xtask seed-fuzz-corpus` (below) builds with the repo's pinned
+      # stable toolchain; install it alongside the nightly that cargo-fuzz needs.
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
       - name: Install nightly toolchain
         run: rustup toolchain install nightly --profile minimal
 
@@ -225,107 +230,12 @@ jobs:
           key: ${{ runner.os }}-fuzz-${{ hashFiles('fuzz/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-fuzz-
 
-      # Capture the target list first and require it non-empty: inside
-      # `for x in $(cmd)`, bash -e treats a failing `cmd` as an empty list and the
-      # step would pass having fuzzed nothing.
+      # The curated corpus seeds are produced by `cargo xtask seed-fuzz-corpus`
+      # (Rust, unit-tested in the `ci` job) instead of inline shell/Python: it
+      # reads the committed fixtures and conformance vectors and writes
+      # byte-identical seeds. See xtask/src/seed_fuzz_corpus.rs.
       - name: Seed every target's corpus from curated fixtures
-        run: |
-          targets=$(cargo +nightly fuzz list)
-          test -n "$targets"
-          for target in $targets; do
-            mkdir -p "fuzz/corpus/$target"
-            cp tests/fixtures/*.av2 "fuzz/corpus/$target/" 2>/dev/null || true
-          done
-          # symbol_decoder_bytes consumes a leading config byte, payload length,
-          # payload bytes, operation count, then operations. Seed a minimal
-          # valid finish path over a two-byte symbol payload.
-          printf '\002\002\200\000\001\005' > "fuzz/corpus/symbol_decoder_bytes/finish-valid-two-byte-payload"
-          # tile_payload_decode_bytes consumes flags, payload length, limit seed,
-          # detail seed, then payload bytes or mutation pairs. Seed the known-good
-          # minimal payload with frontier mode enabled and zero mutations.
-          printf '\006\002\177\000' > "fuzz/corpus/tile_payload_decode_bytes/frontier-good-payload"
-          # validate_bytes consumes a leading config prefix before the bitstream,
-          # so raw fixtures land shifted; also seed flag-prefixed copies (strict,
-          # and strict+external-HLS with a key byte).
-          for f in tests/fixtures/*.av2; do
-            name=$(basename "$f")
-            printf '\001' | cat - "$f" > "fuzz/corpus/validate_bytes/strict-$name"
-            printf '\003\377' | cat - "$f" > "fuzz/corpus/validate_bytes/hls-$name"
-            # decode_plan_bytes also consumes a leading limit-policy byte. Keep
-            # the fixture bytes intact as the bitstream payload after that flag.
-            printf '\377' | cat - "$f" > "fuzz/corpus/decode_plan_bytes/fixture-$name"
-            # decode_runtime_hash_bytes, decode_runtime_raw_bytes, and
-            # decode_runtime_y4m_bytes consume a leading mode/limit byte.
-            # Prefix raw mode so fixture bytes stay intact after the flag.
-            printf '\000' | cat - "$f" > "fuzz/corpus/decode_runtime_hash_bytes/raw-$name"
-            printf '\000' | cat - "$f" > "fuzz/corpus/decode_runtime_raw_bytes/raw-$name"
-            printf '\000' | cat - "$f" > "fuzz/corpus/decode_runtime_y4m_bytes/raw-$name"
-          done
-          # Prefix fixture mode with zero mutations so the embedded minimal
-          # runtime fixture reaches the success-path runtime APIs.
-          printf '\200\000' > "fuzz/corpus/decode_runtime_hash_bytes/minimal-fixture-unmutated"
-          printf '\200\000' > "fuzz/corpus/decode_runtime_raw_bytes/minimal-fixture-unmutated"
-          printf '\200\000' > "fuzz/corpus/decode_runtime_y4m_bytes/minimal-fixture-unmutated"
-          # recon_frame_hash_bytes consumes structured decoded-frame shape bytes
-          # before sample data. Seed a tiny 8-bit monochrome visible-frame case.
-          printf '\000\002\002\000\000\000\000\000\001\002\003\004' > "fuzz/corpus/recon_frame_hash_bytes/mono-8bit-visible"
-          # recon_frame_plane_types_bytes consumes idc probes, a type selector,
-          # structured frame shape bytes, then sample data. Seed a tiny 8-bit
-          # monochrome frame/plane type case.
-          printf '\001\000\000\003\003\000\000\000\000\000\001\002\003\004' > "fuzz/corpus/recon_frame_plane_types_bytes/mono-8bit-runtime-types"
-          # recon_reference_frame_store_bytes consumes a capacity probe, initial
-          # capacity, operation count, then operation bytes. Seed
-          # put/get/take/entries coverage over a small valid store.
-          printf '\003\003\005\004\000\001\000\002\003\004\005\006\003\000\007\005\000\003\000\007' > "fuzz/corpus/recon_reference_frame_store_bytes/basic-state-machine"
-          # parse_ivf rejects non-DKIF input at the signature, so raw Annex-B
-          # fixtures only exercise the error path; wrap each one in a minimal
-          # 32-byte IVF header plus one 12-byte frame header for valid-path seeds.
-          python3 -c '
-          import glob, os, struct
-          for path in glob.glob("tests/fixtures/*.av2"):
-              data = open(path, "rb").read()
-              header = struct.pack("<4sHH4sHHIIII", b"DKIF", 0, 32, b"AV02", 64, 64, 30, 1, 1, 0)
-              frame = struct.pack("<IQ", len(data), 0)
-              out = os.path.join("fuzz/corpus/parse_ivf", "ivf-" + os.path.basename(path))
-              open(out, "wb").write(header + frame + data)
-          '
-          # Also seed from the committed conformance corpus
-          # (tests/conformance/vectors/**.ivf): diverse AVM-generated AV2 streams
-          # (multiple resolutions, 8/10-bit, intra/inter, OPS/LCR/QM) are strong
-          # coverage-guided seeds. parse_ivf takes the IVF bytes directly;
-          # validate_bytes takes the config-prefixed copies (auto-detects IVF);
-          # parse_obu / parse_bitstream take the de-wrapped raw OBU stream (strip
-          # the 32-byte IVF header and each frame's 12-byte header). The de-wrapped
-          # bytes are §5 low-overhead OBUs, not Annex B, so parse_obu's
-          # parse_annex_b_obus() returns Err (not a panic) on them — the seed still
-          # exercises read_leb128 / read_obu_header on real OBU data, and
-          # parse_bitstream auto-detects and parses the stream.
-          # -print0 + read -d '' is robust to any filename (no word-splitting).
-          find tests/conformance/vectors -name '*.ivf' -print0 | while IFS= read -r -d '' f; do
-            name=$(echo "$f" | tr '/' '-')
-            cp "$f" "fuzz/corpus/parse_ivf/conf-$name"
-            printf '\001' | cat - "$f" > "fuzz/corpus/validate_bytes/conf-strict-$name"
-            printf '\003\377' | cat - "$f" > "fuzz/corpus/validate_bytes/conf-hls-$name"
-            printf '\377' | cat - "$f" > "fuzz/corpus/decode_plan_bytes/conf-$name"
-            printf '\000' | cat - "$f" > "fuzz/corpus/decode_runtime_hash_bytes/conf-raw-$name"
-            printf '\000' | cat - "$f" > "fuzz/corpus/decode_runtime_raw_bytes/conf-raw-$name"
-            printf '\000' | cat - "$f" > "fuzz/corpus/decode_runtime_y4m_bytes/conf-raw-$name"
-          done
-          python3 -c '
-          import glob, os, struct
-          for path in glob.glob("tests/conformance/vectors/**/*.ivf", recursive=True):
-              d = open(path, "rb").read()
-              if len(d) < 32:  # shorter than the IVF header: skip rather than crash the step
-                  continue
-              hl = struct.unpack("<H", d[6:8])[0]
-              off, obu = hl, b""
-              while off + 12 <= len(d):
-                  sz = struct.unpack("<I", d[off:off+4])[0]; off += 12
-                  obu += d[off:off+sz]; off += sz
-              tag = "conf-" + path.replace("/", "-") + ".obu"
-              for tgt in ("parse_obu", "parse_bitstream"):
-                  open(os.path.join("fuzz/corpus", tgt, tag), "wb").write(obu)
-          '
+        run: cargo xtask seed-fuzz-corpus
 
       # Force the gnu target. install-action has no cargo-fuzz, so it falls back to
       # a musl-built binary whose default target is musl — and AddressSanitizer

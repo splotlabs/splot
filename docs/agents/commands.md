@@ -104,9 +104,14 @@ Fuzzing requires nightly plus `cargo-fuzz`:
 
 ```bash
 cargo install cargo-fuzz --locked
+cargo xtask seed-fuzz-corpus      # populate fuzz/corpus/<target>/ from the committed fixtures + vectors
 cargo +nightly fuzz list
 cargo +nightly fuzz run parse_obu
 ```
+
+`seed-fuzz-corpus` is the Rust home of the corpus seeding the CI fuzz-smoke job
+runs (it replaced ~100 lines of inline workflow shell/Python); the byte layouts
+are unit-tested in `xtask/src/seed_fuzz_corpus.rs`.
 
 Current fuzz targets include parser, validator, symbol coder/decoder,
 tile-payload decode, decode planning/runtime byte surfaces, reconstruction

@@ -12845,6 +12845,48 @@ fixtures = [
 diagnostics = []
 
 [[feature]]
+id = "INFRA-FUZZ-CORPUS-SEEDING"
+name = "Fuzz corpus seeding xtask"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = []
+sources = []
+crate = "xtask"
+module = "xtask/src/seed_fuzz_corpus.rs"
+openspec_change = "extract-fuzz-corpus-seeding"
+tracking_issue = ""
+owner = "automation"
+risk = "low"
+notes = "Moves the CI fuzz-smoke corpus seeding out of ~100 lines of embedded shell and Python in `.github/workflows/ci.yml` into `cargo xtask seed-fuzz-corpus` (xtask/src/seed_fuzz_corpus.rs). The subcommand reads the committed `tests/fixtures/*.av2` corpus and `tests/conformance/vectors/**/*.ivf` AVM streams and writes the `fuzz/corpus/<target>/` seeds the per-target fuzz matrix relies on: a raw copy of each fixture into every target dir, config-prefixed copies for the validator/planner/decode-runtime targets, hand-tuned minimal symbol-decoder/tile-payload/recon seeds, synthesized IVF wrappers for parse_ivf, and de-wrapped raw OBU streams for parse_obu/parse_bitstream. Target enumeration reuses the existing `fuzz_targets()` helper (filesystem-derived, no nightly cargo-fuzz needed). Pure repository tooling: the seed bytes are byte-identical to the former inline script (verified by a full `diff -r` over all 974 seeds), so it changes no AV2 conformance behavior and implements no decoder/encoder algorithmic stage. The byte layouts (IVF header/frame synthesis, IVF de-wrap, config prefixes) are unit-tested in-process so the logic is testable and locally reproducible instead of buried in YAML. CI replaces the inline block with the single `cargo xtask seed-fuzz-corpus` command."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "done"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "xtask/src/seed_fuzz_corpus.rs::tests",
+]
+commands = [
+    "cargo test -p xtask --all-targets --locked",
+    "cargo xtask seed-fuzz-corpus",
+    "cargo xtask ci",
+]
+fixtures = [
+    "xtask/src/seed_fuzz_corpus.rs",
+    ".github/workflows/ci.yml",
+]
+diagnostics = []
+
+[[feature]]
 id = "RECON-REFERENCE-FRAME-STORE"
 name = "Reference frame store runtime model"
 category = "infrastructure"
