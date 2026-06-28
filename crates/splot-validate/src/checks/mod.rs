@@ -47,31 +47,41 @@ pub trait Check {
     fn run(&self, obu: &ObuEnvelope<'_>, report: &mut ValidationReport);
 }
 
+/// The default check registry, in execution order.
+///
+/// Every check is a zero-sized stateless unit struct, so the registry is a
+/// `'static` slice of trait-object references with no per-validation heap
+/// allocation; the (zero-sized) check values and their vtables live in
+/// read-only static memory. A `const` (rather than `static`) avoids a `Sync`
+/// bound on the `Check` trait — the slice is a compile-time value, not shared
+/// mutable state.
+const DEFAULT_CHECKS: &[&dyn Check] = &[
+    &obu::ReservedObuType,
+    &obu::ReservedObuAllZeroPayload,
+    &obu::TrailingBitsForEmptySyntaxObus,
+    &sequence::SequenceHeaderSyntax,
+    &hls::MsdoSyntax,
+    &hls::MultiFrameHeaderSyntax,
+    &hls::LayerConfigRecordSyntax,
+    &hls::AtlasSegmentSyntax,
+    &hls::OperatingPointSetSyntax,
+    &hls::BufferRemovalTimingSyntax,
+    &hls::QuantizerMatrixSyntax,
+    &hls::FilmGrainSyntax,
+    &hls::ContentInterpretationSyntax,
+    &padding::PaddingSyntax,
+    &metadata::MetadataSyntax,
+    &layers::GlobalXLayerRequired,
+    &layers::GlobalXLayerRequiresBaseLayers,
+    &layers::GlobalXLayerAllowedTypes,
+    &layers::BaseLayerOnlyTypes,
+    &layers::TemporalLayerZeroOnlyTypes,
+];
+
 /// Returns the default check registry, in execution order.
 #[must_use]
-pub fn default_checks() -> Vec<Box<dyn Check>> {
-    vec![
-        Box::new(obu::ReservedObuType),
-        Box::new(obu::ReservedObuAllZeroPayload),
-        Box::new(obu::TrailingBitsForEmptySyntaxObus),
-        Box::new(sequence::SequenceHeaderSyntax),
-        Box::new(hls::MsdoSyntax),
-        Box::new(hls::MultiFrameHeaderSyntax),
-        Box::new(hls::LayerConfigRecordSyntax),
-        Box::new(hls::AtlasSegmentSyntax),
-        Box::new(hls::OperatingPointSetSyntax),
-        Box::new(hls::BufferRemovalTimingSyntax),
-        Box::new(hls::QuantizerMatrixSyntax),
-        Box::new(hls::FilmGrainSyntax),
-        Box::new(hls::ContentInterpretationSyntax),
-        Box::new(padding::PaddingSyntax),
-        Box::new(metadata::MetadataSyntax),
-        Box::new(layers::GlobalXLayerRequired),
-        Box::new(layers::GlobalXLayerRequiresBaseLayers),
-        Box::new(layers::GlobalXLayerAllowedTypes),
-        Box::new(layers::BaseLayerOnlyTypes),
-        Box::new(layers::TemporalLayerZeroOnlyTypes),
-    ]
+pub fn default_checks() -> &'static [&'static dyn Check] {
+    DEFAULT_CHECKS
 }
 
 /// Builds and pushes a diagnostic located at `obu`, tagged with `check`'s id and section.
