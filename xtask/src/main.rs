@@ -26,6 +26,7 @@ mod fixtures;
 mod gen_tables;
 mod git_util;
 mod reference_evidence;
+mod seed_fuzz_corpus;
 mod source_lines;
 mod util;
 mod zero_copy;
@@ -120,6 +121,8 @@ enum Task {
     CheckDiagnosticRegistry,
     /// Verify every fuzz_targets/*.rs file has a matching `[[bin]]` entry in fuzz/Cargo.toml.
     CheckFuzzTargets,
+    /// Seed `fuzz/corpus/<target>/` from the committed fixtures and conformance vectors.
+    SeedFuzzCorpus,
     /// Verify tests/fixtures hashes + metadata against tests/fixtures/MANIFEST.toml (no decoder).
     CheckFixtures,
     /// Verify duplicate-code stays within tools/dupehound/budget.toml (needs `dupehound`).
@@ -255,6 +258,7 @@ fn main() -> Result<()> {
             diagnostic_registry::check_diagnostic_registry(&workspace_root()?)
         }
         Task::CheckFuzzTargets => check_fuzz_targets(&workspace_root()?),
+        Task::SeedFuzzCorpus => seed_fuzz_corpus::run_seed_fuzz_corpus(&workspace_root()?),
         Task::CheckFixtures => fixtures::check_fixtures(&workspace_root()?),
         Task::CheckDuplication => dupehound::check_duplication(&workspace_root()?),
         Task::FeatureStatus {
@@ -587,7 +591,7 @@ fn run_fuzz(time: Option<u64>) -> Result<()> {
 /// `fuzz/Cargo.toml` disagree: `cargo fuzz list` (used by the CI smoke job) only sees
 /// registered `[[bin]]` targets, so an unregistered `.rs` file would be fuzzed by
 /// neither — drift must be loud, not silently skipped.
-fn fuzz_targets(root: &Path) -> Result<Vec<String>> {
+pub(crate) fn fuzz_targets(root: &Path) -> Result<Vec<String>> {
     let dir = root.join("fuzz").join("fuzz_targets");
     let mut targets = Vec::new();
     let entries =
