@@ -404,8 +404,9 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
     /// * the frame dequant matches the primitive's zero-`QuantizerDeltas`
     ///   assumption (`quant_reconstructable`);
     /// * the residual is the proven primitive kind ([`residual_is_reconstructable`]:
-    ///   an `all_zero` flat block, or a square non-`all_zero` block with no IST
-    ///   and no FSC);
+    ///   an `all_zero` flat block, or a square non-`all_zero` block that applies no
+    ///   §7.15.3 secondary transform — no IST syntax or a `sec_tx_type == 0` no-op
+    ///   IST leaf — and no FSC);
     /// * the leaf mode is one the sink can predict bit-exact AND its required
     ///   §7.13.2 prediction neighbours are off-frame or already reconstructed:
     ///   - `DC_PRED` (the §7.13.2.10 flat DC, with the §7.13.2.12 IBP DC modifier
@@ -1025,8 +1026,13 @@ fn mi_extent(log2_width: u32, log2_height: u32) -> (usize, usize) {
 /// inverse transform, and the §7.14.3 residual addition over the `DCT_DCT`
 /// no-secondary-transform path with zero `QuantizerDeltas`. An `all_zero`
 /// (`txb_skip`) block is always safe: there is no residual, so the output is the
-/// bare §7.13.2 flat DC prediction. A non-`all_zero` block is admitted when it has
-/// no §5.20.7.29 IST secondary transform (`intra_ist`) and is not an FSC leaf.
+/// bare §7.13.2 flat DC prediction. A non-`all_zero` block is admitted when it
+/// applies no §7.15.3 secondary inverse transform — either no §5.20.7.29 IST
+/// syntax at all, or IST syntax with `sec_tx_type == 0` (the §7.15.3 secondary
+/// transform is a NO-OP, so the leaf reconstructs through the identical DCT_DCT
+/// residual path; the reconstruction primitive never consults `intra_ist`) — and
+/// is not an FSC leaf. A REAL IST leaf (`sec_tx_type != 0`) still defers (the
+/// §7.15.3 secondary transform is unimplemented).
 ///
 /// A SQUARE non-`all_zero` residual is the proven case. A NON-square (rectangular)
 /// residual is admitted only when it is DC-only (`eob == 1`): the §7.15.4 outer
@@ -1039,13 +1045,21 @@ fn mi_extent(log2_width: u32, log2_height: u32) -> (usize, usize) {
 /// MI(4,0) (x[16,32), y[0,64)) against the AVM pre-filter oracle. A non-square
 /// `eob > 1` block may carry a non-`DCT_DCT` luma tx type that `LumaCoeffBlock` does
 /// not retain (the primitive always reconstructs `DCT_DCT`), so it stays deferred.
-/// The §5.20.7.29 IST / FSC / quant-delta / incomplete-neighbour gates stay intact;
-/// everything else is deferred.
+/// The REAL-IST (`sec_tx_type != 0`) / FSC / quant-delta / incomplete-neighbour
+/// gates stay intact; everything else is deferred.
 fn residual_is_reconstructable(block: &LumaCoeffBlock, fsc_mode: bool, square: bool) -> bool {
     if block.all_zero {
         return true;
     }
-    if block.intra_ist.is_some() || fsc_mode {
+    // §7.15.3: a `sec_tx_type == 0` IST leaf applies NO secondary inverse
+    // transform — it reconstructs via the identical §7.14.4 / §7.15.4 DCT_DCT
+    // residual path as a non-IST leaf (the primitive never consults `intra_ist`).
+    // Only a REAL IST leaf (`sec_tx_type != 0`) needs the unimplemented §7.15.3
+    // secondary transform, so defer ONLY that. A no-op-IST leaf must still satisfy
+    // every other residual condition below (the FSC / square / eob / proven-tx-type
+    // gates), exactly like a non-IST leaf.
+    let real_ist = block.intra_ist.is_some_and(|ist| ist.sec_tx_type != 0);
+    if real_ist || fsc_mode {
         return false;
     }
     // Square non-`all_zero` is the proven path; a non-square residual is only
@@ -1314,7 +1328,8 @@ mod tests {
     }
 
     // Finding #1: a non-`all_zero` DC leaf carrying §5.20.7.29 IST secondary
-    // transform syntax is DEFERRED (the primitive is DCT_DCT-only).
+    // transform syntax is DEFERRED (the primitive is DCT_DCT-only). A REAL IST
+    // (`sec_tx_type != 0`) stays deferred even after no-op IST is admitted.
     #[test]
     fn ist_nonzero_dc_leaf_is_deferred() {
         let mut sink = sink();
@@ -1331,6 +1346,84 @@ mod tests {
             &block,
             Some(IntraYMode::DC_PRED),
             false,
+        );
+        assert_eq!(sink.reconstructed_sample(PlaneId::Y, 0, 0).unwrap(), 0);
+        assert_eq!(sink.reconstructed_counts().0, 0);
+    }
+
+    // A non-`all_zero` DC leaf carrying §5.20.7.29 IST syntax with `sec_tx_type == 0`
+    // applies NO §7.15.3 secondary transform — it reconstructs through the identical
+    // DCT_DCT residual path as a non-IST leaf, so it is ADMITTED when it also
+    // satisfies the normal residual + proven-neighbour conditions. It must produce
+    // the byte-identical result to the same block WITHOUT IST syntax.
+    #[test]
+    fn ist_noop_sec_tx_dc_leaf_reconstructs_identically_to_non_ist() {
+        // Reference: the same DC-only square leaf with NO IST syntax.
+        let mut reference_sink = sink();
+        recon_luma(
+            &mut reference_sink,
+            0,
+            0,
+            TX_16X16,
+            &coeff_block_16x16(),
+            Some(IntraYMode::DC_PRED),
+            false,
+        );
+        let reference = reference_sink
+            .reconstructed_sample(PlaneId::Y, 0, 0)
+            .unwrap();
+        assert!(
+            reference_sink.reconstructed_counts().0 > 0,
+            "the non-IST reference leaf must reconstruct"
+        );
+
+        // The same leaf carrying a `sec_tx_type == 0` no-op IST: admitted, identical.
+        let mut sink = sink();
+        let mut block = coeff_block_16x16();
+        block.intra_ist = Some(crate::tile_payload::IntraIstSyntax {
+            sec_tx_type: 0,
+            most_probable_stx_set: None,
+        });
+        recon_luma(
+            &mut sink,
+            0,
+            0,
+            TX_16X16,
+            &block,
+            Some(IntraYMode::DC_PRED),
+            false,
+        );
+        assert_eq!(
+            sink.reconstructed_counts().0,
+            reference_sink.reconstructed_counts().0,
+            "a no-op-IST leaf must reconstruct the same sample count as its non-IST twin"
+        );
+        assert_eq!(
+            sink.reconstructed_sample(PlaneId::Y, 0, 0).unwrap(),
+            reference,
+            "a no-op-IST leaf must reconstruct byte-identically to its non-IST twin"
+        );
+    }
+
+    // A `sec_tx_type == 0` no-op IST leaf is still subject to EVERY other residual
+    // gate. An FSC no-op-IST leaf still DEFERS (the non-FSC primitive), proving the
+    // IST relaxation did not widen the FSC gate.
+    #[test]
+    fn ist_noop_sec_tx_fsc_leaf_still_defers() {
+        let mut sink = sink();
+        let mut block = coeff_block_16x16();
+        block.intra_ist = Some(crate::tile_payload::IntraIstSyntax {
+            sec_tx_type: 0,
+            most_probable_stx_set: None,
+        });
+        recon_luma(
+            &mut sink,
+            0,
+            0,
+            TX_16X16,
+            &block,
+            Some(IntraYMode::DC_PRED),
+            true,
         );
         assert_eq!(sink.reconstructed_sample(PlaneId::Y, 0, 0).unwrap(), 0);
         assert_eq!(sink.reconstructed_counts().0, 0);
