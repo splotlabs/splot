@@ -53,6 +53,11 @@ const BANK_UNIT_MAX_ALLOWED_LEFTOVER_UPDATES: u32 = 16;
 const SB_TO_RMB_UNITS_LOG2: u32 = 3;
 /// AV2 § 5.9.15 `MI_SIZE` in luma samples.
 const MI_SIZE: i32 = 4;
+/// The block-width MI count (`bw4`) of AVM `BLOCK_WIDTH_4` (a 4px-wide block): the
+/// above-row `row_smvp_state[1]` (step 10, deltaCol = 0) probe is DISABLED for this
+/// width (`row_smvp_all_states[*][BLOCK_WIDTH_4]` index 1 = `{0, -1, 0}`,
+/// `av2/common/mvref_common.c:2012`/`2042`).
+const BLOCK_WIDTH_4_MI: usize = 1;
 
 /// A tile-local AV2 § 7.12.2 IntrABC reference-MV bank (the single intra list).
 ///
@@ -313,13 +318,41 @@ pub(super) struct SpatialScanGeometry {
     pub(super) sb_size4: usize,
 }
 
+/// AVM `ADJACENT_SMVP_WEIGHT` (`av2/common/mvref_common.c:107`): the § 7.12.2.6
+/// weight of a modelled adjacent SMVP position (`deltaRow >= -1 && deltaCol >= -1`,
+/// excluding the above-left corner).
+const ADJACENT_SMVP_WEIGHT: u16 = 1;
+/// AVM `OTHER_SMVP_WEIGHT` (`av2/common/mvref_common.c:108`): the § 7.12.2.6 weight
+/// of the step-14 above-left corner (`deltaRow == -1 && deltaCol == -1`) and the
+/// deltaCol < -1 outer-area positions.
+const OTHER_SMVP_WEIGHT: u16 = 0;
+
+/// A spatial IntrABC candidate block vector and its accumulated AV2 § 7.12.2.6
+/// weight (`WeightStack` entry): the § 7.12.2.19 sort moves the max-weight nearest
+/// candidate to slot 0.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct WeightedBv {
+    /// The neighbour block vector (`RefStackMv` entry).
+    pub(super) mv: Mv,
+    /// The accumulated § 7.12.2.6 weight (`WeightStack` entry): `1`
+    /// (`ADJACENT_SMVP_WEIGHT`) per modelled adjacent placement, `0`
+    /// (`OTHER_SMVP_WEIGHT`) for the step-14 above-left corner (`deltaRow == -1 &&
+    /// deltaCol == -1`, or aligned `deltaCol < -1`). A dedup-by-value match ADDS the
+    /// new weight to the existing entry (AVM `ref_mv_weight[index] += weight`,
+    /// `av2/common/mvref_common.c:873`).
+    pub(super) weight: u16,
+}
+
 /// Outcome of the AV2 § 7.12.2 spatial SMVP scan for an IntrABC block.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct SpatialIntrabcScan {
     /// Spatial IntrABC neighbour block vectors in AV2 § 7.12.2 step order
-    /// (deduped by value), contributed to the ref-MV stack BEFORE the
-    /// § 7.12.2.21 ref-MV-bank fill and § 7.12.2.20 default fill.
-    pub(super) candidates: Vec<Mv>,
+    /// (deduped by value, each carrying its accumulated § 7.12.2.6 weight),
+    /// contributed to the ref-MV stack BEFORE the § 7.12.2.21 ref-MV-bank fill and
+    /// § 7.12.2.20 default fill. The § 7.12.2.19 max-weight-to-slot-0 reorder is
+    /// applied by [`intrabc_ref_stack_admission`] (threading the real
+    /// `enable_drl_reorder` flag) before the stack is built.
+    pub(super) candidates: Vec<WeightedBv>,
     /// `true` when an unmodelled § 7.12.2 spatial position (an above-row probe
     /// or the § 7.12.2.5 deltaCol = -3 non-adjacent scan) holds an IntrABC
     /// neighbour: the scan cannot be reproduced faithfully there, so the caller
@@ -371,14 +404,16 @@ pub(super) struct SpatialIntrabcScan {
 /// excludes it (matching AVM, which marks the block coded only after the stack is
 /// built, `decodeframe.c:740` vs `:1355`).
 ///
-/// NOTE: this reproduces the scan ORDER (steps 7 → 8 → 9 → 10 → 12 → 14), but NOT
-/// the subsequent § 7.12.2.19 weight sort. AVM weights each candidate per § 7.12.2.6
-/// and swaps the max-weight NEAREST candidate into slot 0 when there is more than one
-/// nearest candidate (`nearest_refmv_count > 1`, `mvref_common.c:2472`-`2493`). The
-/// candidates returned here are in scan order, UNSORTED; the multi-candidate case is
-/// therefore not faithful and is guarded by a fail-closed defer in
-/// [`intrabc_ref_stack_admission`]. With a single nearest candidate the sort is a
-/// no-op, so the scan order is exact for the admitted set.
+/// Each placed candidate carries its accumulated § 7.12.2.6 weight (`WeightStack`
+/// entry): `ADJACENT_SMVP_WEIGHT` (1) for every modelled adjacent position EXCEPT
+/// the step-14 above-left corner, whose `(deltaRow == -1 && deltaCol == -1)`
+/// (within-SB) or aligned `deltaCol < -1` (SB border) gives `OTHER_SMVP_WEIGHT` (0)
+/// (`mvref_common.c:1515`-`1523`). A dedup-by-value match ADDS the new weight to the
+/// existing entry (`ref_mv_weight[index] += weight`, `mvref_common.c:873`), so a
+/// value placed by several adjacent scans accumulates. The candidates are returned
+/// in scan ORDER (steps 7 → 8 → 9 → 10 → 12 → 14); the subsequent § 7.12.2.19
+/// max-weight-to-slot-0 reorder is applied by [`intrabc_ref_stack_admission`] (which
+/// threads the real `enable_drl_reorder` flag) before the stack is built.
 pub(super) fn spatial_intrabc_scan(
     geometry: SpatialScanGeometry,
     lookup: impl Fn(usize, usize) -> Option<Mv>,
@@ -388,7 +423,7 @@ pub(super) fn spatial_intrabc_scan(
     let col = geometry.mi_col;
     let bh4 = geometry.n4h;
 
-    let mut candidates: Vec<Mv> = Vec::new();
+    let mut candidates: Vec<WeightedBv> = Vec::new();
     // The above-row columns this decoder models faithfully (with each probe's
     // availability): for a NON-SB-border block, the full within-SB scan (steps 8/10/
     // 12/14 at 4x4 resolution); for an SB-border block, only the step-8 aligned
@@ -398,29 +433,70 @@ pub(super) fn spatial_intrabc_scan(
 
     // Modelled positions in AV2 § 7.12.2.1 step order: step 7, step 8, step 9,
     // then the remaining within-SB above-row probes (steps 10, 12, 14) interleaved
-    // with step 11 in AVM order. Step 11 (below-bottom-left) stays unmodelled.
+    // with step 11 in AVM order. Step 11 (below-bottom-left) stays unmodelled. Each
+    // adjacent placement carries § 7.12.2.6 weight `ADJACENT_SMVP_WEIGHT`, except the
+    // step-14 above-left corner (`OTHER_SMVP_WEIGHT`).
     if let Some(left_col) = col.checked_sub(1) {
         // Step 7: (bh4 - 1, -1), gated left_available (col > 0 for the single tile).
         if let Some(r) = row.checked_add(bh4.saturating_sub(1)) {
-            push_deduped(&geometry, &lookup, &mut candidates, r, left_col);
+            push_deduped(
+                &geometry,
+                &lookup,
+                &mut candidates,
+                r,
+                left_col,
+                ADJACENT_SMVP_WEIGHT,
+            );
         }
     }
     // Step 8: row_smvp_state[0], before step 9 to match the AVM scan order
     // (`mvref_common.c:2371` before `:2382`).
-    push_above_probe(&geometry, &lookup, &mut candidates, above.step8);
+    push_above_probe(
+        &geometry,
+        &lookup,
+        &mut candidates,
+        above.step8,
+        ADJACENT_SMVP_WEIGHT,
+    );
     // Step 9: (0, -1) when bh4 >= 2.
     if bh4 >= 2
         && let Some(left_col) = col.checked_sub(1)
     {
-        push_deduped(&geometry, &lookup, &mut candidates, row, left_col);
+        push_deduped(
+            &geometry,
+            &lookup,
+            &mut candidates,
+            row,
+            left_col,
+            ADJACENT_SMVP_WEIGHT,
+        );
     }
     // Step 10: row_smvp_state[1] (above-row deltaCol = 0).
-    push_above_probe(&geometry, &lookup, &mut candidates, above.step10);
+    push_above_probe(
+        &geometry,
+        &lookup,
+        &mut candidates,
+        above.step10,
+        ADJACENT_SMVP_WEIGHT,
+    );
     // Step 11 (below-bottom-left) stays unmodelled — handled by the over-scan defer.
     // Step 12: row_smvp_state[2] (above-row top-right, deltaCol = bw4).
-    push_above_probe(&geometry, &lookup, &mut candidates, above.step12);
-    // Step 14: row_smvp_state[3] (above-left corner, deltaCol = -1).
-    push_above_probe(&geometry, &lookup, &mut candidates, above.step14);
+    push_above_probe(
+        &geometry,
+        &lookup,
+        &mut candidates,
+        above.step12,
+        ADJACENT_SMVP_WEIGHT,
+    );
+    // Step 14: row_smvp_state[3] (above-left corner, deltaCol = -1 within-SB or
+    // aligned deltaCol = -2 SB-border): § 7.12.2.6 weight `OTHER_SMVP_WEIGHT` (0).
+    push_above_probe(
+        &geometry,
+        &lookup,
+        &mut candidates,
+        above.step14,
+        OTHER_SMVP_WEIGHT,
+    );
 
     // Unmodelled positions: defer only if one holds a NEW IntrABC block vector
     // (excluding the above-row columns now placed exactly by the scan above).
@@ -511,6 +587,12 @@ impl AboveRowScan {
         // Step 8: aligned deltaCol = bw4 - 2 (the existing #531 step-8 column).
         self.step8 = step8_above_row_column(geometry);
         // Step 10: aligned deltaCol = 0.
+        // NOTE: AVM `row_smvp_all_states[1][BLOCK_WIDTH_4]` index 1 is `{0, -1, 0}`
+        // (disabled for a 4px-wide SB-border block, `mvref_common.c:2042`); the FULL
+        // block_width_type table (the SB-border bw4 gates + the step-12 Max(2,bw4)
+        // offset) is a dedicated follow-up brick — NOT modelled here. This decoder
+        // does not yet reach SB-border bw4 == 1, and over-modelling it would couple to
+        // that follow-up, so the gate is intentionally deferred for the SB-border path.
         self.step10 = sb_border_above_col(geometry, 0);
         // Step 12: aligned deltaCol = bw4, gated has_top_right (= 1 on the SB border)
         // and the AVM `bw4 <= Num_4x4_Blocks_Wide[BLOCK_64X64]` cap.
@@ -537,8 +619,15 @@ impl AboveRowScan {
         let bw4 = geometry.n4w;
         // Step 8: deltaCol = bw4 - 1, gated up_available (the above row exists here).
         self.step8 = tile_above_col(geometry, col.checked_add(bw4.saturating_sub(1)));
-        // Step 10: deltaCol = 0, gated up_available.
-        self.step10 = tile_above_col(geometry, Some(col));
+        // Step 10: deltaCol = 0, gated up_available, but DISABLED for BLOCK_WIDTH_4
+        // (bw4 == 1): AVM `row_smvp_all_states[0][BLOCK_WIDTH_4]` index 1 is
+        // `{0, -1, 0}` (the `is_available` flag is 0, `mvref_common.c:2012`), so a
+        // 4px-wide block reads no step-10 above-row candidate. Leaving it `None` makes
+        // the over-scan defer on any above-row new BV at that column (the safe
+        // over-reject).
+        if bw4 != BLOCK_WIDTH_4_MI {
+            self.step10 = tile_above_col(geometry, Some(col));
+        }
         // Step 12: deltaCol = bw4, the top-right probe, gated has_top_right (and the
         // AVM `bw4 <= Num_4x4_Blocks_Wide[BLOCK_64X64]` cap, `mvref_common.c:1554`).
         if bw4 <= MAX_SMVP_AXIS_MI
@@ -621,16 +710,18 @@ fn sb_border_above_col(geometry: &SpatialScanGeometry, raw: i64) -> Option<usize
 }
 
 /// Reads a modelled above-row probe (an `AboveRowScan` step column) at `(MiRow - 1,
-/// col)` and adds its IntrABC block vector to the candidate list, deduped by value.
-/// A `None` column is an unmodelled / unavailable probe and reads nothing.
+/// col)` and adds its IntrABC block vector to the candidate list, deduped by value
+/// with the § 7.12.2.6 `weight` (accumulated on a value match). A `None` column is
+/// an unmodelled / unavailable probe and reads nothing.
 fn push_above_probe(
     geometry: &SpatialScanGeometry,
     lookup: &impl Fn(usize, usize) -> Option<Mv>,
-    candidates: &mut Vec<Mv>,
+    candidates: &mut Vec<WeightedBv>,
     col: Option<usize>,
+    weight: u16,
 ) {
     if let (Some(above), Some(c)) = (geometry.mi_row.checked_sub(1), col) {
-        push_deduped(geometry, lookup, candidates, above, c);
+        push_deduped(geometry, lookup, candidates, above, c, weight);
     }
 }
 
@@ -704,18 +795,23 @@ fn step8_above_row_column(geometry: &SpatialScanGeometry) -> Option<usize> {
 
 /// Adds an IntrABC neighbour block vector at MI `(row_offset, left_col)` to the
 /// running spatial candidate list, deduped by value (AV2 § 7.12.2.4
-/// `mvref_common.c:874`).
+/// `mvref_common.c:874`). A value already on the list ACCUMULATES the new
+/// § 7.12.2.6 `weight` into its existing entry (AVM `ref_mv_weight[index] += weight`,
+/// `mvref_common.c:873`); a new value appends with `weight`.
 fn push_deduped(
     geometry: &SpatialScanGeometry,
     lookup: &impl Fn(usize, usize) -> Option<Mv>,
-    candidates: &mut Vec<Mv>,
+    candidates: &mut Vec<WeightedBv>,
     row_offset: usize,
     left_col: usize,
+    weight: u16,
 ) {
-    if let Some(mv) = lookup_in_grid(geometry, lookup, row_offset, left_col)
-        && !candidates.contains(&mv)
-    {
-        candidates.push(mv);
+    if let Some(mv) = lookup_in_grid(geometry, lookup, row_offset, left_col) {
+        if let Some(existing) = candidates.iter_mut().find(|entry| entry.mv == mv) {
+            existing.weight = existing.weight.saturating_add(weight);
+        } else {
+            candidates.push(WeightedBv { mv, weight });
+        }
     }
 }
 
@@ -734,13 +830,13 @@ fn push_deduped(
 fn spatial_scan_unmodelled_has_new_bv(
     geometry: &SpatialScanGeometry,
     lookup: &impl Fn(usize, usize) -> Option<Mv>,
-    modelled: &[Mv],
+    modelled: &[WeightedBv],
     above: &AboveRowScan,
 ) -> bool {
     let row = geometry.mi_row;
     let col = geometry.mi_col;
     let bw4 = geometry.n4w;
-    let is_new = |mv: Option<Mv>| mv.is_some_and(|mv| !modelled.contains(&mv));
+    let is_new = |mv: Option<Mv>| mv.is_some_and(|mv| !modelled.iter().any(|entry| entry.mv == mv));
     // Step-11 below-bottom-left probe (bh4, -1), gated by has_bottom_left state.
     if geometry.n4h <= MAX_SMVP_AXIS_MI
         && let Some(left_col) = col.checked_sub(1)
@@ -882,6 +978,66 @@ pub(super) fn build_intrabc_ref_mv_stack(
     stack
 }
 
+/// AV2 § 5.4.6 `DrlReorder` mode (the sequence-header `disable_drl_reorder` /
+/// `constrain_drl_reorder` derivation), threaded into the § 7.12.2.19 `useSort`
+/// gate. Mirrors `splot_core::headers::sequence::DrlReorder` without coupling this
+/// decode-internal module to the core header type (the caller maps it).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum DrlReorderMode {
+    /// `DRL_REORDER_DISABLED`: the § 7.12.2.19 sort never runs for the IBC nearest
+    /// prefix (`useSort` is always 0 here — the `>= 4` constraint path is the only
+    /// `DRL_REORDER_DISABLED` trigger and IBC nearest counts cannot reach it).
+    Disabled,
+    /// `DRL_REORDER_CONSTRAINT`: `useSort = (!useTemporalFirst && numNearest >= 4)`.
+    /// For IBC `useTemporalFirst` (TMVP high priority) is always 0
+    /// (`allow_ref_frame_mvs == 0` for an intra-only frame,
+    /// `assign_tmvp_high_priority`, `mvref_common.c:1904`), so `useSort = numNearest
+    /// >= 4`.
+    Constraint,
+    /// `DRL_REORDER_ALWAYS`: `useSort = 1` whenever `numNearest > 1`.
+    Always,
+}
+
+impl DrlReorderMode {
+    /// AV2 § 7.12.2.18 step-17 `useSort` for the IBC nearest prefix of length
+    /// `nearest`: `DRL_REORDER_ALWAYS || (DRL_REORDER_CONSTRAINT && !useTemporalFirst
+    /// && nearest >= 4)` (`docs/spec/av2/1.0.0/07-decoding-process.md` ~line 3449;
+    /// `mvref_common.c:2473`-`2475`). `useTemporalFirst` is 0 for IBC.
+    const fn use_sort(self, nearest: usize) -> bool {
+        match self {
+            Self::Disabled => false,
+            Self::Constraint => nearest >= 4,
+            Self::Always => true,
+        }
+    }
+}
+
+/// AV2 § 7.12.2.19 Sorting process over the nearest/spatial prefix `[0, end)`: moves
+/// the highest-weight entry to slot 0 with a SINGLE swap (`docs/spec/av2/1.0.0/
+/// 07-decoding-process.md` ~line 4515; `mvref_common.c:2476`-`2491`). The max is
+/// found with a STRICT `>` (`maxWeight < WeightStack[idx]`), so the FIRST/lowest
+/// index wins ties; the swap runs only when `max_idx != 0`. Operates ONLY on the
+/// nearest prefix (BEFORE the § 7.12.2.21 bank fill and § 7.12.2.20 default fill,
+/// which are weight-independent).
+fn sort_nearest_max_weight_to_slot0(candidates: &mut [WeightedBv]) {
+    let Some((first, rest)) = candidates.split_first() else {
+        return;
+    };
+    let mut max_weight = first.weight;
+    let mut max_idx = 0usize;
+    for (offset, entry) in rest.iter().enumerate() {
+        // Strict `>`: a later equal weight does NOT displace an earlier max, so the
+        // lowest index wins ties (matches `maxWeight < WeightStack[idx]`).
+        if entry.weight > max_weight {
+            max_weight = entry.weight;
+            max_idx = offset + 1;
+        }
+    }
+    if max_idx != 0 {
+        candidates.swap(0, max_idx);
+    }
+}
+
 /// The AV2 § 7.12.2 IntrABC ref-MV stack admission decision for one block.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum IntrabcStackAdmission {
@@ -897,38 +1053,47 @@ pub(super) enum IntrabcStackAdmission {
     Defer,
 }
 
-/// Decides AV2 § 7.12.2 IntrABC ref-MV stack admission: builds the real stack
-/// (§ 7.12.2 spatial scan candidates + § 7.12.2.21 ref-MV bank fill + § 7.12.2.20
-/// default block vectors) and returns the block vector the decoded DRL index
-/// `ref_mv_idx` selects, so the caller can use the AVM-faithful candidate directly.
+/// Decides AV2 § 7.12.2 IntrABC ref-MV stack admission: applies the § 7.12.2.19
+/// max-weight-to-slot-0 reorder to the nearest/spatial prefix, builds the real stack
+/// (sorted § 7.12.2 spatial scan candidates + § 7.12.2.21 ref-MV bank fill +
+/// § 7.12.2.20 default block vectors), and returns the block vector the decoded DRL
+/// index `ref_mv_idx` selects, so the caller can use the AVM-faithful candidate.
+///
+/// The § 7.12.2.19 sort runs ONLY on the nearest prefix, BEFORE the bank/default
+/// fill, and only when `useSort` holds (§ 7.12.2.18 step 17: `DRL_REORDER_ALWAYS ||
+/// (DRL_REORDER_CONSTRAINT && nearest >= 4)`, with `useTemporalFirst == 0` for IBC)
+/// AND `nearest > 1` (`mvref_common.c:2473`-`2475`). Each candidate's accumulated
+/// § 7.12.2.6 weight (placed by [`spatial_intrabc_scan`]) drives the single swap.
 ///
 /// Defers (returns `Defer`) when:
 ///
 /// * the § 7.12.2 spatial scan reaches a position this decoder does not model
 ///   faithfully (`spatial.defer`); or
-/// * the spatial scan admits MORE THAN ONE distinct nearest candidate
-///   (`spatial.candidates.len() > 1`): AVM § 7.12.2.19 sorts the NEAREST spatial
-///   candidates by § 7.12.2.6 weight and swaps the max-weight one into slot 0 when
-///   `nearest_refmv_count > 1` (`mvref_common.c:2472`-`2493`, gated by
-///   `enable_drl_reorder`). This decoder does NOT model the per-candidate weights
-///   or that reorder, so a >1-candidate stack could place the wrong block vector in
-///   the DRL-selected slot. Fail closed until weights/sort are modelled. (For a
-///   single nearest candidate the swap loop is a no-op, so it stays admissible.) or
 /// * the decoded DRL index lands outside the built stack.
 ///
-/// `enable_refmvbank` is the AV2 sequence flag gating the § 7.12.2.21 bank fill.
+/// `enable_refmvbank` is the AV2 sequence flag gating the § 7.12.2.21 bank fill;
+/// `drl_reorder` is the AV2 § 5.4.6 `DrlReorder` mode gating the § 7.12.2.19 sort.
 pub(super) fn intrabc_ref_stack_admission(
     bank: &IntrabcRefMvBank,
     geometry: IntrabcStackGeometry,
     spatial: &SpatialIntrabcScan,
     enable_refmvbank: bool,
+    drl_reorder: DrlReorderMode,
     ref_mv_idx: usize,
 ) -> IntrabcStackAdmission {
-    if spatial.defer || spatial.candidates.len() > 1 {
+    if spatial.defer {
         return IntrabcStackAdmission::Defer;
     }
-    let real_stack =
-        build_intrabc_ref_mv_stack(bank, geometry, enable_refmvbank, &spatial.candidates);
+    // § 7.12.2.18 step 18 / § 7.12.2.19: when useSort holds AND there is more than one
+    // nearest candidate, move the max-weight candidate to slot 0 (single swap). This
+    // is the FULL model of the former `> 1`-candidate defer: every modelled-placed
+    // candidate carries a provable § 7.12.2.6 weight, so the sort is faithful.
+    let mut nearest: Vec<WeightedBv> = spatial.candidates.clone();
+    if drl_reorder.use_sort(nearest.len()) && nearest.len() > 1 {
+        sort_nearest_max_weight_to_slot0(&mut nearest);
+    }
+    let sorted: Vec<Mv> = nearest.iter().map(|entry| entry.mv).collect();
+    let real_stack = build_intrabc_ref_mv_stack(bank, geometry, enable_refmvbank, &sorted);
     match real_stack.get(ref_mv_idx).copied() {
         Some(selected) => IntrabcStackAdmission::Admit { selected },
         None => IntrabcStackAdmission::Defer,
@@ -951,6 +1116,20 @@ const fn add_to_ref_bv(dx: i32, dy: i32) -> Mv {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    /// A weighted spatial candidate with the default `ADJACENT_SMVP_WEIGHT` (1): the
+    /// weight most modelled positions place.
+    fn adj(mv: Mv) -> WeightedBv {
+        WeightedBv {
+            mv,
+            weight: ADJACENT_SMVP_WEIGHT,
+        }
+    }
+
+    /// A weighted spatial candidate with an explicit weight.
+    const fn wbv(mv: Mv, weight: u16) -> WeightedBv {
+        WeightedBv { mv, weight }
+    }
 
     /// ac0ej3 frame-0 SB row 0, mib_size 32 (128x128 SB). Walks the first three
     /// reachable IntrABC blocks and checks the bank + stack against the AVM
@@ -1105,7 +1284,14 @@ mod tests {
         let mut bank = IntrabcRefMvBank::new(32);
         bank.record_block(16, 56, 8, 16, true, Some(Mv { row: -512, col: 0 }));
         assert_eq!(
-            intrabc_ref_stack_admission(&bank, ac0ej3_geometry(0, 112), &no_spatial(), true, 3),
+            intrabc_ref_stack_admission(
+                &bank,
+                ac0ej3_geometry(0, 112),
+                &no_spatial(),
+                true,
+                DrlReorderMode::Always,
+                3,
+            ),
             IntrabcStackAdmission::Admit {
                 selected: Mv { row: 0, col: -256 },
             }
@@ -1128,6 +1314,7 @@ mod tests {
                 ac0ej3_geometry(0, 232),
                 &no_spatial(),
                 enable_refmvbank,
+                DrlReorderMode::Always,
                 2,
             )
         };
@@ -1158,11 +1345,15 @@ mod tests {
         bank.record_block(0, 112, 8, 16, true, Some(Mv { row: 0, col: -256 }));
         bank.record_block(0, 232, 8, 16, true, Some(Mv { row: 0, col: -3072 }));
         let spatial = SpatialIntrabcScan {
-            candidates: vec![Mv { row: 0, col: -3072 }],
+            candidates: vec![adj(Mv { row: 0, col: -3072 })],
             defer: false,
         };
-        let stack =
-            build_intrabc_ref_mv_stack(&bank, ac0ej3_geometry(0, 240), true, &spatial.candidates);
+        let stack = build_intrabc_ref_mv_stack(
+            &bank,
+            ac0ej3_geometry(0, 240),
+            true,
+            &[Mv { row: 0, col: -3072 }],
+        );
         assert_eq!(
             stack,
             vec![
@@ -1173,7 +1364,14 @@ mod tests {
             ]
         );
         assert_eq!(
-            intrabc_ref_stack_admission(&bank, ac0ej3_geometry(0, 240), &spatial, true, 0),
+            intrabc_ref_stack_admission(
+                &bank,
+                ac0ej3_geometry(0, 240),
+                &spatial,
+                true,
+                DrlReorderMode::Always,
+                0,
+            ),
             IntrabcStackAdmission::Admit {
                 selected: Mv { row: 0, col: -3072 },
             }
@@ -1189,36 +1387,223 @@ mod tests {
             defer: true,
         };
         assert_eq!(
-            intrabc_ref_stack_admission(&bank, ac0ej3_geometry(0, 112), &spatial, true, 0),
+            intrabc_ref_stack_admission(
+                &bank,
+                ac0ej3_geometry(0, 112),
+                &spatial,
+                true,
+                DrlReorderMode::Always,
+                0,
+            ),
             IntrabcStackAdmission::Defer
         );
     }
 
-    // A block whose spatial scan admits MORE THAN ONE distinct nearest candidate
-    // DEFERS (fail-closed): AVM § 7.12.2.19 may swap the max-weight candidate into
-    // slot 0 (`nearest_refmv_count > 1`), and this decoder does not model the
-    // weights/sort. A single nearest candidate still admits (the swap is a no-op).
+    // The § 7.12.2.19 max-weight sort is a REAL reorder, not a scan-order passthrough:
+    // a weight-0 step-14-first candidate followed by a weight-1 candidate must place
+    // the WEIGHT-1 one in slot 0 (the DRL index 0 selects it). This proves the sort
+    // moves the max-weight entry to slot 0 even when it arrived later in scan order.
     #[test]
-    fn admission_defers_on_multiple_spatial_candidates() {
+    fn admission_forced_swap_places_max_weight_at_slot0() {
         let bank = IntrabcRefMvBank::new(32);
-        let two = SpatialIntrabcScan {
-            candidates: vec![Mv { row: 0, col: -64 }, Mv { row: -512, col: 0 }],
+        // Scan order: [0] step-14 above-left BV (weight 0), [1] a left-column BV
+        // (weight 1). DRL_REORDER_ALWAYS + nearest > 1 -> the sort swaps the weight-1
+        // entry into slot 0. With DRL index 0, the selected predictor is the weight-1
+        // BV (the spatial candidate that was at scan index 1).
+        let unsorted = SpatialIntrabcScan {
+            candidates: vec![
+                wbv(Mv { row: 0, col: -64 }, 0),
+                wbv(Mv { row: -512, col: 0 }, 1),
+            ],
             defer: false,
         };
         assert_eq!(
-            intrabc_ref_stack_admission(&bank, ac0ej3_geometry(0, 240), &two, true, 0),
-            IntrabcStackAdmission::Defer,
-            "two distinct spatial candidates must defer until the §7.12.2.19 sort is modelled"
+            intrabc_ref_stack_admission(
+                &bank,
+                ac0ej3_geometry(0, 240),
+                &unsorted,
+                false, // bank fill OFF: the stack is spatial-prefix + defaults only.
+                DrlReorderMode::Always,
+                0,
+            ),
+            IntrabcStackAdmission::Admit {
+                selected: Mv { row: -512, col: 0 },
+            },
+            "the §7.12.2.19 sort must move the weight-1 candidate to slot 0 (not a passthrough)"
         );
-        // The single-candidate case is unaffected (admits).
+        // DRL index 1 then selects the displaced weight-0 candidate (now at slot 1).
+        assert_eq!(
+            intrabc_ref_stack_admission(
+                &bank,
+                ac0ej3_geometry(0, 240),
+                &unsorted,
+                false,
+                DrlReorderMode::Always,
+                1,
+            ),
+            IntrabcStackAdmission::Admit {
+                selected: Mv { row: 0, col: -64 },
+            }
+        );
+    }
+
+    // STRICT `>` tie-break: with EQUAL weights the lowest index wins, so the sort is a
+    // no-op (slot 0 keeps the first scan-order candidate). The MI(192,112) frontier
+    // case: [0](-1024,0 w=3)[1](-512,0 w=1) — slot 0 already holds the max, so the
+    // swap is a no-op and DRL index 1 selects (-512,0), matching avmdec.
+    #[test]
+    fn admission_no_op_swap_when_slot0_already_max() {
+        let bank = IntrabcRefMvBank::new(32);
+        // Equal-weight tie: the lowest index stays in slot 0 (strict `>`).
+        let tie = SpatialIntrabcScan {
+            candidates: vec![
+                wbv(Mv { row: -1024, col: 0 }, 1),
+                wbv(Mv { row: -512, col: 0 }, 1),
+            ],
+            defer: false,
+        };
+        assert_eq!(
+            intrabc_ref_stack_admission(
+                &bank,
+                ac0ej3_geometry(0, 240),
+                &tie,
+                false,
+                DrlReorderMode::Always,
+                0,
+            ),
+            IntrabcStackAdmission::Admit {
+                selected: Mv { row: -1024, col: 0 },
+            },
+            "equal weights must keep the lowest index in slot 0 (strict `>` tie-break)"
+        );
+        // The MI(192,112) no-op: slot 0 weight (3) already exceeds slot 1 (1).
+        let frontier = SpatialIntrabcScan {
+            candidates: vec![
+                wbv(Mv { row: -1024, col: 0 }, 3),
+                wbv(Mv { row: -512, col: 0 }, 1),
+            ],
+            defer: false,
+        };
+        assert_eq!(
+            intrabc_ref_stack_admission(
+                &bank,
+                ac0ej3_geometry(0, 240),
+                &frontier,
+                false,
+                DrlReorderMode::Always,
+                0,
+            ),
+            IntrabcStackAdmission::Admit {
+                selected: Mv { row: -1024, col: 0 },
+            },
+            "the max-weight slot-0 entry stays put (no swap)"
+        );
+    }
+
+    // The § 7.12.2.18 useSort gate is threaded, not hardcoded: with DRL_REORDER_
+    // DISABLED the sort never runs, so a higher-weight LATER candidate does NOT move
+    // to slot 0 (the stack keeps scan order). With DRL_REORDER_ALWAYS it does.
+    #[test]
+    fn admission_sort_respects_drl_reorder_mode() {
+        let bank = IntrabcRefMvBank::new(32);
+        let candidates = vec![
+            wbv(Mv { row: 0, col: -64 }, 0),
+            wbv(Mv { row: -512, col: 0 }, 1),
+        ];
+        let scan = SpatialIntrabcScan {
+            candidates: candidates.clone(),
+            defer: false,
+        };
+        // DRL_REORDER_DISABLED: useSort = (nearest >= 4) only; nearest = 2 -> no sort,
+        // so slot 0 keeps the scan-order-first (weight-0) candidate.
+        assert_eq!(
+            intrabc_ref_stack_admission(
+                &bank,
+                ac0ej3_geometry(0, 240),
+                &scan,
+                false,
+                DrlReorderMode::Disabled,
+                0,
+            ),
+            IntrabcStackAdmission::Admit {
+                selected: Mv { row: 0, col: -64 },
+            },
+            "DRL_REORDER_DISABLED must NOT sort (slot 0 stays scan-order-first)"
+        );
+        // DRL_REORDER_CONSTRAINT with nearest = 2 (< 4): useSort = 0 -> no sort either.
+        assert_eq!(
+            intrabc_ref_stack_admission(
+                &bank,
+                ac0ej3_geometry(0, 240),
+                &scan,
+                false,
+                DrlReorderMode::Constraint,
+                0,
+            ),
+            IntrabcStackAdmission::Admit {
+                selected: Mv { row: 0, col: -64 },
+            },
+            "DRL_REORDER_CONSTRAINT with nearest < 4 must NOT sort"
+        );
+        // DRL_REORDER_ALWAYS: the sort runs and the weight-1 candidate reaches slot 0.
+        assert_eq!(
+            intrabc_ref_stack_admission(
+                &bank,
+                ac0ej3_geometry(0, 240),
+                &scan,
+                false,
+                DrlReorderMode::Always,
+                0,
+            ),
+            IntrabcStackAdmission::Admit {
+                selected: Mv { row: -512, col: 0 },
+            },
+            "DRL_REORDER_ALWAYS must sort the weight-1 candidate into slot 0"
+        );
+    }
+
+    // A single nearest candidate is unaffected (the sort loop is a no-op for len 1).
+    #[test]
+    fn admission_admits_single_spatial_candidate() {
+        let bank = IntrabcRefMvBank::new(32);
         let one = SpatialIntrabcScan {
-            candidates: vec![Mv { row: 0, col: -64 }],
+            candidates: vec![adj(Mv { row: 0, col: -64 })],
             defer: false,
         };
         assert!(matches!(
-            intrabc_ref_stack_admission(&bank, ac0ej3_geometry(0, 240), &one, true, 0),
+            intrabc_ref_stack_admission(
+                &bank,
+                ac0ej3_geometry(0, 240),
+                &one,
+                true,
+                DrlReorderMode::Always,
+                0,
+            ),
             IntrabcStackAdmission::Admit { .. }
         ));
+    }
+
+    // The pure-unit § 7.12.2.19 sort over the nearest prefix: a strict-`>` max-to-slot0
+    // single swap. A weight-0 entry at slot 0 with a weight-1 entry later swaps; an
+    // equal-weight pair does not (lowest index wins).
+    #[test]
+    fn sort_nearest_moves_max_weight_to_slot0_strict() {
+        let mut swap = vec![wbv(Mv { row: 1, col: 1 }, 0), wbv(Mv { row: 2, col: 2 }, 1)];
+        sort_nearest_max_weight_to_slot0(&mut swap);
+        assert_eq!(swap[0], wbv(Mv { row: 2, col: 2 }, 1));
+        assert_eq!(swap[1], wbv(Mv { row: 1, col: 1 }, 0));
+        // Equal weights: no swap (strict `>` keeps the lowest index).
+        let mut tie = vec![wbv(Mv { row: 1, col: 1 }, 2), wbv(Mv { row: 2, col: 2 }, 2)];
+        sort_nearest_max_weight_to_slot0(&mut tie);
+        assert_eq!(tie[0], wbv(Mv { row: 1, col: 1 }, 2));
+        // Slot 0 already max: no swap.
+        let mut already = vec![wbv(Mv { row: 1, col: 1 }, 3), wbv(Mv { row: 2, col: 2 }, 1)];
+        sort_nearest_max_weight_to_slot0(&mut already);
+        assert_eq!(already[0], wbv(Mv { row: 1, col: 1 }, 3));
+        // Empty / single: no-op.
+        let mut empty: Vec<WeightedBv> = Vec::new();
+        sort_nearest_max_weight_to_slot0(&mut empty);
+        assert!(empty.is_empty());
     }
 
     // The § 7.12.2 spatial scan: a left-column IntrABC neighbour at the bottom-left
@@ -1244,7 +1629,7 @@ mod tests {
             |row, col| (row == 7 && col == 7).then_some(Mv { row: 0, col: -64 }),
             |_, _| false,
         );
-        assert_eq!(left_only.candidates, vec![Mv { row: 0, col: -64 }]);
+        assert_eq!(left_only.candidates, vec![adj(Mv { row: 0, col: -64 })]);
         assert!(!left_only.defer);
         // A within-SB above-row IntrABC neighbour at the step-10 column (3, 8)
         // (deltaCol = 0) is now MODELLED -> admitted, no defer.
@@ -1253,7 +1638,7 @@ mod tests {
             |row, col| (row == 3 && col == 8).then_some(Mv { row: -8, col: 0 }),
             |_, _| false,
         );
-        assert_eq!(above.candidates, vec![Mv { row: -8, col: 0 }]);
+        assert_eq!(above.candidates, vec![adj(Mv { row: -8, col: 0 })]);
         assert!(!above.defer);
         // An IntrABC neighbour at the § 7.12.2.5 deltaCol = -3 deep-left scan position
         // (mi_row, mi_col - 3) = (4, 5), which no modelled step reaches, still defers.
@@ -1292,7 +1677,7 @@ mod tests {
             |row, col| (row == 31 && col == 62).then_some(Mv { row: -512, col: 0 }),
             |_, _| false,
         );
-        assert_eq!(scan.candidates, vec![Mv { row: -512, col: 0 }]);
+        assert_eq!(scan.candidates, vec![adj(Mv { row: -512, col: 0 })]);
         assert!(!scan.defer);
     }
 
@@ -1320,7 +1705,7 @@ mod tests {
             frame_h: 1080,
             max_bvp_drl_bits_minus_1: 2,
         };
-        let stack = build_intrabc_ref_mv_stack(&bank, geometry, true, &spatial.candidates);
+        let stack = build_intrabc_ref_mv_stack(&bank, geometry, true, &[Mv { row: -512, col: 0 }]);
         assert_eq!(
             stack,
             vec![
@@ -1331,7 +1716,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            intrabc_ref_stack_admission(&bank, geometry, &spatial, true, 0),
+            intrabc_ref_stack_admission(&bank, geometry, &spatial, true, DrlReorderMode::Always, 0),
             IntrabcStackAdmission::Admit {
                 selected: Mv { row: -512, col: 0 },
             }
@@ -1370,7 +1755,7 @@ mod tests {
             },
             |_, _| false,
         );
-        assert_eq!(scan.candidates, vec![Mv { row: -512, col: 0 }]);
+        assert_eq!(scan.candidates, vec![adj(Mv { row: -512, col: 0 })]);
         assert!(scan.defer);
     }
 
@@ -1444,7 +1829,9 @@ mod tests {
             // tr_mask_col >= sb_size4 short-circuit returns 0 regardless of is_coded.
             |_, _| true,
         );
-        assert_eq!(scan.candidates, vec![Mv { row: -512, col: 0 }]);
+        // Step 8 (47,63) places (-512,0) with weight 1; step 10 (47,56) reads the same
+        // value and ACCUMULATES weight (-> 2). Steps 12/14 read other (non-IBC) cols.
+        assert_eq!(scan.candidates, vec![wbv(Mv { row: -512, col: 0 }, 2)]);
         assert!(!scan.defer);
     }
 
@@ -1483,8 +1870,58 @@ mod tests {
             |row, col| (row == 19 && col == 12).then_some(bv),
             |row, col| row == 19 && col == 12,
         );
-        assert_eq!(coded.candidates, vec![bv]);
+        assert_eq!(coded.candidates, vec![adj(bv)]);
         assert!(!coded.defer);
+    }
+
+    // The step-10 above-row probe (deltaCol = 0) is DISABLED for BLOCK_WIDTH_4
+    // (bw4 == 1): AVM `row_smvp_all_states[*][BLOCK_WIDTH_4]` index 1 = `{0, -1, 0}`
+    // (the `is_available` flag is 0). For bw4 == 1 the step-8 column (deltaCol =
+    // bw4 - 1 = 0) ALIASES the step-10 column (deltaCol = 0), so the disable is
+    // observable through the ACCUMULATED WEIGHT: with step 10 disabled the above-row
+    // candidate carries weight 1 (step 8 only), not 2 (step 8 + a disabled step 10).
+    #[test]
+    fn spatial_scan_disables_step10_for_block_width_4_within_sb() {
+        // Within-SB (MiRow 20, sb_size4 32, 20 % 32 != 0), bw4 == 1: step 8 and the
+        // disabled step 10 both target (MiRow-1, MiCol) = (19, 8).
+        let narrow = SpatialScanGeometry {
+            mi_row: 20,
+            mi_col: 8,
+            n4w: 1,
+            n4h: 4,
+            mi_rows: 64,
+            mi_cols: 64,
+            sb_size4: 32,
+        };
+        let bv = Mv { row: -8, col: 0 };
+        let scan = spatial_intrabc_scan(
+            narrow,
+            |row, col| (row == 19 && col == 8).then_some(bv),
+            |_, _| false,
+        );
+        // Step 8 places weight 1; the DISABLED step 10 adds nothing -> total weight 1.
+        assert_eq!(
+            scan.candidates,
+            vec![wbv(bv, 1)],
+            "step 10 disabled for bw4 == 1: the above candidate keeps step-8 weight 1"
+        );
+        assert!(!scan.defer);
+        // Contrast: a bw4 >= 2 block's step 8 (col MiCol+1) and step 10 (col MiCol)
+        // read DIFFERENT columns; an owner spanning both accumulates weight 2.
+        let wide = SpatialScanGeometry { n4w: 2, ..narrow };
+        let wide_scan = spatial_intrabc_scan(
+            wide,
+            // Owner block spans cols 8..=9 on the above row (step 8 -> (19,9), step 10
+            // -> (19,8)), so the same BV is read by both -> weight 2.
+            |row, col| (row == 19 && (8..=9).contains(&col)).then_some(bv),
+            |_, _| false,
+        );
+        assert_eq!(
+            wide_scan.candidates,
+            vec![wbv(bv, 2)],
+            "bw4 >= 2 enables step 10: step 8 + step 10 accumulate weight 2"
+        );
+        assert!(!wide_scan.defer);
     }
 
     // The § 7.12.2 spatial scan dedups by value: the same neighbour read at both the
@@ -1508,7 +1945,9 @@ mod tests {
             |row, col| (col == 7 && row < 16).then_some(Mv { row: 0, col: -3072 }),
             |_, _| false,
         );
-        assert_eq!(scan.candidates, vec![Mv { row: 0, col: -3072 }]);
+        // Step 7 (15,7) places (0,-3072) with weight 1; step 9 (0,7) reads the same
+        // value and ACCUMULATES weight (-> 2). MiRow 0 -> no above-row contribution.
+        assert_eq!(scan.candidates, vec![wbv(Mv { row: 0, col: -3072 }, 2)]);
         assert!(!scan.defer);
     }
 
@@ -1527,18 +1966,24 @@ mod tests {
         }
     }
 
-    // MI(192,112) has TWO distinct spatial candidates: the step-7 left-bottom
-    // (MiRow + bh4 - 1, MiCol - 1) = (199, 111) BV (-1024,0), and the SB-border
-    // step-8 8x8-aligned (MiRow - 1, MiCol + bw4 - 2) = (191, 126) BV (-512,0). The
-    // scan returns both (in step order, no defer at the scan level), matching avmdec
-    // `PREDEF [0](-1024,0 ro=7 co=-1) [1](-512,0 ro=-1 co=14)`. The admission then
-    // DEFERS (the §7.12.2.19 max-weight DRL reorder is unmodelled) — the new frontier.
+    // MI(192,112) (the §7.12.2.19 weight-sort frontier) has TWO distinct spatial
+    // candidates: the left-column (-1024,0) owner (read by step 7 (199,111) AND step 9
+    // (192,111), accumulating weight 2), and the SB-border step-8 8x8-aligned
+    // (MiRow - 1, MiCol + bw4 - 2) = (191, 126) BV (-512,0) (weight 1). The scan
+    // returns both in step order, matching avmdec `PREDEF [0](-1024,0)[1](-512,0)`
+    // with slot-0 weight strictly greater than slot-1. The §7.12.2.19 sort is then a
+    // NO-OP (slot 0 already holds the max weight), so the FINAL stack keeps (-1024,0)
+    // at slot 0; DRL index 1 selects (-512,0) — bit-exact vs the avmdec decoded BV.
+    // This is the new admitted frontier (the IBC ref-stack no longer defers here).
     #[test]
-    fn admission_defers_on_ac0ej3_mi_192_112_two_distinct_spatial() {
+    fn admission_admits_ac0ej3_mi_192_112_no_op_weight_sort() {
         let scan = spatial_intrabc_scan(
             ac0ej3_mi_192_112_scan_geometry(),
             |row, col| {
-                if row == 199 && col == 111 {
+                // The left-column owner block carries (-1024,0) across the rows the
+                // block spans (192..=199) at col 111; step 7 (199,111) + step 9
+                // (192,111) both read it (weight accumulates to 2).
+                if (192..=199).contains(&row) && col == 111 {
                     Some(Mv { row: -1024, col: 0 })
                 } else if row == 191 && col == 126 {
                     Some(Mv { row: -512, col: 0 })
@@ -1550,13 +1995,16 @@ mod tests {
         );
         assert_eq!(
             scan.candidates,
-            vec![Mv { row: -1024, col: 0 }, Mv { row: -512, col: 0 }]
+            vec![
+                wbv(Mv { row: -1024, col: 0 }, 2),
+                wbv(Mv { row: -512, col: 0 }, 1),
+            ],
+            "(-1024,0) accumulates step 7 + step 9 weight (2); (-512,0) step 8 weight (1)"
         );
         assert!(
             !scan.defer,
             "the scan itself does not defer (the candidates are placed)"
         );
-        // The admission DEFERS: > 1 distinct spatial candidate, §7.12.2.19 unmodelled.
         let geometry = IntrabcStackGeometry {
             mi_row: 192,
             mi_col: 112,
@@ -1567,9 +2015,34 @@ mod tests {
             frame_h: 1080,
             max_bvp_drl_bits_minus_1: 2,
         };
+        // The §7.12.2.19 sort is a no-op (slot 0 weight 2 > slot 1 weight 1), so the
+        // built stack keeps (-1024,0) at slot 0 and DRL index 1 selects (-512,0).
         assert_eq!(
-            intrabc_ref_stack_admission(&IntrabcRefMvBank::new(32), geometry, &scan, true, 1),
-            IntrabcStackAdmission::Defer,
+            intrabc_ref_stack_admission(
+                &IntrabcRefMvBank::new(32),
+                geometry,
+                &scan,
+                true,
+                DrlReorderMode::Always,
+                1,
+            ),
+            IntrabcStackAdmission::Admit {
+                selected: Mv { row: -512, col: 0 },
+            },
+        );
+        // DRL index 0 selects the (un-swapped) slot-0 (-1024,0).
+        assert_eq!(
+            intrabc_ref_stack_admission(
+                &IntrabcRefMvBank::new(32),
+                geometry,
+                &scan,
+                true,
+                DrlReorderMode::Always,
+                0,
+            ),
+            IntrabcStackAdmission::Admit {
+                selected: Mv { row: -1024, col: 0 },
+            },
         );
     }
 
@@ -1594,7 +2067,8 @@ mod tests {
             |row, col| (row == 31 && col == 318).then_some(Mv { row: 0, col: -256 }),
             |_, _| false,
         );
-        assert_eq!(scan.candidates, vec![Mv { row: 0, col: -256 }]);
+        // Step 14 (above-left corner) carries OTHER_SMVP_WEIGHT (0).
+        assert_eq!(scan.candidates, vec![wbv(Mv { row: 0, col: -256 }, 0)]);
         assert!(!scan.defer);
     }
 
