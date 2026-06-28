@@ -49,8 +49,8 @@ use splot_core::headers::padding::parse_padding_obu;
 use splot_core::headers::quantizer_matrix::{QuantizerMatrixObu, parse_quantizer_matrix};
 use splot_core::headers::sequence::{SequenceHeader, SequenceHeaderId, parse_sequence_header};
 use splot_core::headers::tile_group::{
-    TileFramingDefect, TileGroupLayout, parse_tile_group_framing, parse_tile_group_prefix,
-    parse_tile_group_structure,
+    TileFramingDefect, TileGroupLayout, TileGroupStructure, parse_tile_group_framing,
+    parse_tile_group_prefix, parse_tile_group_structure,
 };
 use splot_core::hls::{MfhId, MultiFrameHeaderRecord, parse_multi_frame_header};
 use splot_core::ivf::{IvfFrame, IvfHeader, IvfWarning};
@@ -123,6 +123,9 @@ impl InspectRecord {
         ivf_header: Option<IvfHeader>,
         ivf_frame: Option<IvfFrame<'_>>,
     ) -> Self {
+        // Parse the frame-header state once; the prefix / core / tile-group-structure
+        // views all read this single cache instead of re-running the parsers themselves.
+        let frame_cache = FrameInspectCache::new(obu, sequences, multi_frame_headers);
         Self {
             index,
             byte_offset: obu.offset.get(),
@@ -140,10 +143,10 @@ impl InspectRecord {
             padding: padding_view(obu),
             metadata_short: metadata_short_view(obu),
             metadata_group: metadata_group_view(obu),
-            frame_header_prefix: frame_header_prefix_view(obu),
-            frame_header_core: frame_header_core_view(obu, sequences, multi_frame_headers),
+            frame_header_prefix: frame_header_prefix_view(&frame_cache),
+            frame_header_core: frame_header_core_view(&frame_cache),
             frame_header_copy: frame_header_copy_view(obu),
-            tile_group_structure: tile_group_structure_view(obu, sequences, multi_frame_headers),
+            tile_group_structure: tile_group_structure_view(obu, &frame_cache),
             header: obu.header,
         }
     }
@@ -533,23 +536,155 @@ struct FilmGrainModelView {
     film_grain_block_size: bool,
 }
 
-/// Re-parses a frame-bearing OBU's prefix so `--json` can expose the
-/// activation/reference fields. This is **prefix-only** data, never a complete frame
-/// header. The inspector does not model temporal-unit state, so `FirstPictureInTU` is
-/// withheld (`None`) and `startCVS` is not surfaced.
-fn frame_header_prefix_view(obu: &ObuEnvelope<'_>) -> Option<FrameHeaderPrefixView> {
+/// A single shared parse of an OBU's frame-header state, so the `--json` views derive
+/// from ONE parse path instead of each re-running the activation-prefix / core parsers.
+///
+/// [`InspectRecord::new`] builds this once per OBU; the prefix, core, and tile-group
+/// structure views read its cached results. Resolving the active sequence and
+/// multi-frame header from the single cached prefix replaces the per-view `BitReader`
+/// re-parses that previously let the JSON views drift independently — the activation
+/// prefix was re-parsed up to five times and the frame-header core twice per OBU (once
+/// in [`frame_header_core_view`], again in [`tile_group_structure_view`]).
+///
+/// Every field is `None` for an OBU that carries no parseable first-header prefix; the
+/// prefix only resolves for the first tile group of the tile-group family and for the
+/// SEF / TIP / bridge frame types (the same gating the per-view parsers used).
+struct FrameInspectCache {
+    /// The parsed `frame_header_info()` activation prefix (AV2 § 5.18.2).
+    prefix: Option<FrameHeaderPrefix>,
+    /// The frame-header core parse against the resolved active sequence (AV2 § 5.18.2).
+    core: Option<FrameHeaderCore>,
+    /// The § 5.19 `tile_group_obu()` structure parsed from the SAME reader continuation
+    /// as [`Self::core`], for the first tile group of an intra-complete coded frame.
+    structure: Option<TileGroupStructure>,
+}
+
+impl FrameInspectCache {
+    /// Parses the OBU's frame-header state once: the activation prefix, the frame-header
+    /// core (against the sequence / multi-frame header the prefix resolves to), and — for
+    /// the first tile group of an intra-complete coded frame — the § 5.19 tile-group
+    /// structure that continues from the core's reader position.
+    fn new(
+        obu: &ObuEnvelope<'_>,
+        sequences: &BTreeMap<u8, SequenceHeader>,
+        multi_frame_headers: &BTreeMap<u32, MultiFrameHeaderRecord>,
+    ) -> Self {
+        let prefix = parse_inspect_prefix(obu);
+        // The active sequence and multi-frame header are resolved from the one cached
+        // prefix (no re-parse). When the prefix did not parse both stay `None`, exactly
+        // as the per-view resolvers returned on a failed re-parse — the core parser is
+        // still run (and may reach its activation-only stop) by reading the payload
+        // directly, so this does not couple the core view to prefix success.
+        let mfh_record = prefix
+            .as_ref()
+            .and_then(|prefix| resolve_inspect_mfh(prefix, multi_frame_headers));
+        let active_sequence = prefix
+            .as_ref()
+            .and_then(|prefix| resolve_inspect_sequence(prefix, sequences, mfh_record));
+        let (core, structure) = parse_inspect_core_and_structure(obu, active_sequence, mfh_record);
+        Self {
+            prefix,
+            core,
+            structure,
+        }
+    }
+}
+
+/// Parses the `frame_header_info()` activation prefix (AV2 § 5.18.2) carried by a
+/// first-header OBU: the first tile group of the tile-group family (via
+/// `parse_tile_group_prefix`), or a SEF / TIP / bridge frame (via
+/// `parse_frame_header_prefix`). `None` for any other OBU, a truncated prefix, or a
+/// non-first tile group (whose `frame_header_copy()` is surfaced by
+/// [`frame_header_copy_view`]).
+fn parse_inspect_prefix(obu: &ObuEnvelope<'_>) -> Option<FrameHeaderPrefix> {
     let obu_type = obu.header.obu_type;
     let mut reader = BitReader::new(obu.payload, obu.payload_offset());
-    let prefix = if obu_type.is_tile_group() {
+    if obu_type.is_tile_group() {
         parse_tile_group_prefix(&mut reader, obu_type, None)
             .ok()
-            .and_then(|tile_group| tile_group.frame_header)?
+            .and_then(|tile_group| tile_group.frame_header)
     } else if obu_type.is_sef() || obu_type.is_tip_frame() || obu_type == ObuType::BridgeFrame {
-        parse_frame_header_prefix(&mut reader, obu_type, None).ok()?
+        parse_frame_header_prefix(&mut reader, obu_type, None).ok()
     } else {
-        return None;
+        None
+    }
+}
+
+/// Runs the frame-header **core** parser and, on the intra-complete first-tile-group
+/// path, the § 5.19 tile-group structure from the SAME reader continuation. The shared
+/// reader is why these parse together: the structure read starts exactly where
+/// [`parse_frame_header_core`] stops. The active sequence / multi-frame header are passed
+/// in already resolved (see [`FrameInspectCache::new`]); `None` inputs leave the core at
+/// its activation-only stop, matching the former per-view behavior.
+fn parse_inspect_core_and_structure(
+    obu: &ObuEnvelope<'_>,
+    active_sequence: Option<&SequenceHeader>,
+    mfh_record: Option<&MultiFrameHeaderRecord>,
+) -> (Option<FrameHeaderCore>, Option<TileGroupStructure>) {
+    let obu_type = obu.header.obu_type;
+    let mut reader = BitReader::new(obu.payload, obu.payload_offset());
+    let is_tile_group = obu_type.is_tile_group();
+    if is_tile_group {
+        // Only the first tile group carries a parseable frame_header(1) (AV2 § 5.19); a
+        // cleared is_first_tile_group bit (or an unreadable one) leaves no core to parse.
+        if !matches!(reader.read_bit(), Ok(bit) if bit != 0) {
+            return (None, None);
+        }
+    } else if !(obu_type.is_sef() || obu_type.is_tip_frame() || obu_type == ObuType::BridgeFrame) {
+        return (None, None);
+    }
+    let input = FrameHeaderParseInput {
+        obu_type,
+        first_picture_in_tu: false,
+        active_sequence,
+        mfh_record,
+        reference_state: FrameReferenceStateView::unknown(),
+        mode: FrameHeaderParseMode::Core,
     };
-    Some(FrameHeaderPrefixView::new(&prefix))
+    let Ok(core) = parse_frame_header_core(&mut reader, &input) else {
+        return (None, None);
+    };
+    let structure =
+        parse_inspect_tile_structure(&mut reader, &core, is_tile_group, obu.payload.len());
+    (Some(core), structure)
+}
+
+/// Parses the § 5.19 `tile_group_obu()` structure from the reader continuation left by
+/// [`parse_frame_header_core`]. Decidable only for a tile-group OBU whose frame header
+/// reached [`FrameHeaderParseStatus::IntraHeaderComplete`] on the intra path with a
+/// parsed `tile_info()`; `None` otherwise (the BRU-undecidable honest stop documented on
+/// [`tile_group_structure_view`]).
+fn parse_inspect_tile_structure(
+    reader: &mut BitReader<'_>,
+    core: &FrameHeaderCore,
+    is_tile_group: bool,
+    payload_len: usize,
+) -> Option<TileGroupStructure> {
+    if !is_tile_group
+        || core.status != FrameHeaderParseStatus::IntraHeaderComplete
+        || core.frame_is_intra != Some(true)
+    {
+        return None;
+    }
+    let tile_info = core.tile_info.as_ref()?;
+    parse_tile_group_structure(reader, inspect_tile_layout(tile_info), payload_len as u64).ok()
+}
+
+/// The frame's tile layout derived from a parsed `tile_info()` (AV2 § 5.18.7.2), shared
+/// by the structure parse and [`tile_group_structure_view`]'s `num_tiles`.
+fn inspect_tile_layout(tile_info: &TileInfo) -> TileGroupLayout {
+    TileGroupLayout::new(
+        tile_info.tile_cols,
+        tile_info.tile_rows,
+        tile_info.tile_cols_log2,
+        tile_info.tile_rows_log2,
+    )
+}
+
+/// Builds the prefix-only frame-header view from the cached activation prefix (AV2
+/// § 5.18.2). `None` when the OBU carried no parseable first-header prefix.
+fn frame_header_prefix_view(cache: &FrameInspectCache) -> Option<FrameHeaderPrefixView> {
+    cache.prefix.as_ref().map(FrameHeaderPrefixView::new)
 }
 
 /// Surfaces the `frame_header_copy()` region of a non-first tile group (AV2 § 5.18.1).
@@ -679,23 +814,15 @@ impl FrameHeaderPrefixView {
 }
 
 /// Resolves the sequence header a frame references from the inspector's running map of
-/// seen sequence headers: a `cur_mfh_id == 0` frame references one directly
-/// (`referenced_sequence_header_id`); a `cur_mfh_id > 0` frame references it through the
-/// resolved multi-frame header's `mfh_seq_header_id` (AV2 § 5.18.2 `load_sequence_header`).
+/// seen sequence headers, using the already-parsed activation prefix: a `cur_mfh_id == 0`
+/// frame references one directly (`referenced_sequence_header_id`); a `cur_mfh_id > 0`
+/// frame references it through the resolved multi-frame header's `mfh_seq_header_id`
+/// (AV2 § 5.18.2 `load_sequence_header`).
 fn resolve_inspect_sequence<'a>(
-    obu: &ObuEnvelope<'_>,
+    prefix: &FrameHeaderPrefix,
     sequences: &'a BTreeMap<u8, SequenceHeader>,
     mfh_record: Option<&MultiFrameHeaderRecord>,
 ) -> Option<&'a SequenceHeader> {
-    let obu_type = obu.header.obu_type;
-    let mut reader = BitReader::new(obu.payload, obu.payload_offset());
-    let prefix = if obu_type.is_tile_group() {
-        parse_tile_group_prefix(&mut reader, obu_type, None)
-            .ok()?
-            .frame_header?
-    } else {
-        parse_frame_header_prefix(&mut reader, obu_type, None).ok()?
-    };
     let seq_id = if prefix.cur_mfh_id.is_zero() {
         prefix.referenced_sequence_header_id?
     } else {
@@ -706,46 +833,14 @@ fn resolve_inspect_sequence<'a>(
     sequences.get(&seq_id.get())
 }
 
-/// Runs the frame-header **core** parser against the active sequence header (when one
-/// is resolvable) and exposes its parse status and known core fields. Falls back to
-/// the activation-only result when the sequence is unavailable. For a `cur_mfh_id > 0`
-/// frame, the in-band multi-frame header resolving that reference (when seen) is passed
-/// in so the § 5.18.4.1 default dimensions and § 5.18.7.1 segmentation arm are
-/// surfaced; an unresolved reference leaves the parse at its unsupported stop.
-fn frame_header_core_view(
-    obu: &ObuEnvelope<'_>,
-    sequences: &BTreeMap<u8, SequenceHeader>,
-    multi_frame_headers: &BTreeMap<u32, MultiFrameHeaderRecord>,
-) -> Option<FrameHeaderCoreView> {
-    let obu_type = obu.header.obu_type;
-    let mut reader = BitReader::new(obu.payload, obu.payload_offset());
-    if obu_type.is_tile_group() {
-        // Only the first tile group carries a parseable frame_header(1) (AV2 § 5.19).
-        if reader.read_bit().ok()? == 0 {
-            return None;
-        }
-    } else if !(obu_type.is_sef() || obu_type.is_tip_frame() || obu_type == ObuType::BridgeFrame) {
-        return None;
-    }
-    // For tile-group OBUs, `reader` is now past the frame_header_present_flag bit and
-    // is what parse_frame_header_core consumes; resolve_inspect_sequence deliberately
-    // uses its own fresh reader to re-parse the small activation prefix (not a
-    // reader-position bug).
-    // Resolve the frame's `cur_mfh_id` (> 0) against the in-band multi-frame-header
-    // store via a fresh activation-prefix parse (cur_mfh_id precedes any
-    // sequence-dependent field, so it is reliable without sequence state).
-    let mfh_record = resolve_inspect_mfh(obu, multi_frame_headers);
-    let active_sequence = resolve_inspect_sequence(obu, sequences, mfh_record);
-    let input = FrameHeaderParseInput {
-        obu_type,
-        first_picture_in_tu: false,
-        active_sequence,
-        mfh_record,
-        reference_state: FrameReferenceStateView::unknown(),
-        mode: FrameHeaderParseMode::Core,
-    };
-    let core = parse_frame_header_core(&mut reader, &input).ok()?;
-    Some(FrameHeaderCoreView::new(&core))
+/// Exposes the frame-header **core** parse status and known core fields from the cache.
+/// The core was parsed against the active sequence header (when one was resolvable) and,
+/// for a `cur_mfh_id > 0` frame, the in-band multi-frame header resolving that reference,
+/// so the § 5.18.4.1 default dimensions and § 5.18.7.1 segmentation arm are surfaced; an
+/// unresolved reference leaves the parse at its unsupported stop. `None` when the OBU
+/// carries no parseable frame-header core.
+fn frame_header_core_view(cache: &FrameInspectCache) -> Option<FrameHeaderCoreView> {
+    cache.core.as_ref().map(FrameHeaderCoreView::new)
 }
 
 /// Surfaces the § 5.19 `tile_group_obu()` structure after `frame_header()` for the FIRST
@@ -767,44 +862,15 @@ fn frame_header_core_view(
 /// residual of `AV2-5.20-TILE-GROUP-PAYLOAD`.
 fn tile_group_structure_view(
     obu: &ObuEnvelope<'_>,
-    sequences: &BTreeMap<u8, SequenceHeader>,
-    multi_frame_headers: &BTreeMap<u32, MultiFrameHeaderRecord>,
+    cache: &FrameInspectCache,
 ) -> Option<TileGroupStructureView> {
-    let obu_type = obu.header.obu_type;
-    if !obu_type.is_tile_group() {
-        return None;
-    }
-    let mut reader = BitReader::new(obu.payload, obu.payload_offset());
-    // Only the first tile group carries a parseable frame_header(1) (AV2 § 5.19).
-    if reader.read_bit().ok()? == 0 {
-        return None;
-    }
-    let mfh_record = resolve_inspect_mfh(obu, multi_frame_headers);
-    let active_sequence = resolve_inspect_sequence(obu, sequences, mfh_record);
-    let input = FrameHeaderParseInput {
-        obu_type,
-        first_picture_in_tu: false,
-        active_sequence,
-        mfh_record,
-        reference_state: FrameReferenceStateView::unknown(),
-        mode: FrameHeaderParseMode::Core,
-    };
-    let core = parse_frame_header_core(&mut reader, &input).ok()?;
-    if core.status != FrameHeaderParseStatus::IntraHeaderComplete
-        || core.frame_is_intra != Some(true)
-    {
-        return None;
-    }
+    // The cache parsed the § 5.19 structure from the core's reader continuation and
+    // already gated it to the intra-complete first-tile-group path (see
+    // [`parse_inspect_tile_structure`]); this view only shapes the result for JSON.
+    let structure = cache.structure?;
+    let core = cache.core.as_ref()?;
     let tile_info = core.tile_info.as_ref()?;
-    let layout = TileGroupLayout::new(
-        tile_info.tile_cols,
-        tile_info.tile_rows,
-        tile_info.tile_cols_log2,
-        tile_info.tile_rows_log2,
-    );
-    // `reader` is positioned past frame_header(); parse the structure from the same reader.
-    let structure =
-        parse_tile_group_structure(&mut reader, layout, obu.payload.len() as u64).ok()?;
+    let layout = inspect_tile_layout(tile_info);
 
     // §5.20.1: surface the per-tile framing over the tile_group_payload() region when the
     // structure completed and the range is self-consistent. IsBridge == 0 on this
@@ -862,22 +928,13 @@ fn tile_group_structure_view(
     })
 }
 
-/// Resolves a frame's `cur_mfh_id` (> 0, in range) to the in-band multi-frame-header
-/// record that defines it, if one has been seen. `None` for a `cur_mfh_id == 0` direct
-/// reference or an unresolved id.
+/// Resolves a frame's `cur_mfh_id` (> 0, in range) from the already-parsed activation
+/// prefix to the in-band multi-frame-header record that defines it, if one has been seen.
+/// `None` for a `cur_mfh_id == 0` direct reference or an unresolved id.
 fn resolve_inspect_mfh<'a>(
-    obu: &ObuEnvelope<'_>,
+    prefix: &FrameHeaderPrefix,
     multi_frame_headers: &'a BTreeMap<u32, MultiFrameHeaderRecord>,
 ) -> Option<&'a MultiFrameHeaderRecord> {
-    let obu_type = obu.header.obu_type;
-    let mut reader = BitReader::new(obu.payload, obu.payload_offset());
-    let prefix = if obu_type.is_tile_group() {
-        parse_tile_group_prefix(&mut reader, obu_type, None)
-            .ok()?
-            .frame_header?
-    } else {
-        parse_frame_header_prefix(&mut reader, obu_type, None).ok()?
-    };
     let cur_mfh_id = prefix.cur_mfh_id;
     if cur_mfh_id.is_zero() || !cur_mfh_id.in_range() {
         return None;
