@@ -155,7 +155,11 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
 
 impl<T: ReconSample> CurrentFramePlane<T> {
     fn intra_dc_edges_for_rect(&self, rect: PlaneRect) -> Result<CurrentFrameIntraEdges<T>> {
-        self.ensure_rect(rect)?;
+        // A transform overhanging a partial frame-edge superblock reads only its
+        // in-frame neighbours (the out-of-frame rows/cols do not exist in AVM's frame
+        // buffer either): clamp the block rect to storage before extracting the left
+        // column / above row, mirroring the in-frame-only reconstruction write.
+        let rect = self.clamp_rect_to_storage(rect)?;
 
         let left = if rect.x() == 0 {
             None

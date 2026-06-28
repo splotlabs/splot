@@ -151,19 +151,34 @@ const MI40_IBP_STEP: u16 = 65;
 /// (`haveAbove ^ haveLeft`, e.g. MI(56,248)) DEFER: the oracle shows PAETH does not
 /// match the naive §7.13.2.1 single-neighbour fallback there, so they await their own
 /// verified model. The walk then stops at the GENUINELY DISTINCT next mechanism.
+///
+/// With the §7.11.3 reconstructed-sample WORKSPACE WRITE now clamped to the frame
+/// edge (modelling AVM's in-frame-only reconstruction: a transform overhanging a
+/// partial-superblock frame edge writes only the in-frame rows/cols and drops the
+/// overhang — see [`CurrentFramePlane::clamp_rect_to_storage`] in `splot-recon`), the
+/// `TX_64X64 DC_PRED all_zero` leaf at MI(0,256) (sample x[0,64) y[1024,1088)) — whose
+/// 64-tall write overhangs the 1080-tall luma storage by 8 rows — now writes its 56
+/// IN-FRAME rows (y[1024,1080), `3584` samples of the flat `64`) instead of erroring
+/// `WorkspaceRectOutOfBounds`, advancing the region `260608` → `264192`. The walk now
+/// stops at the GENUINELY DISTINCT next frontier MI(16,256) (sample x[64,64+64)
+/// y[1024,…)): a bottom-edge `TX_64X64 DC_PRED` leaf with a LEFT column whose 56
+/// in-frame rows the §7.13.2 DC primitive (which expects a full 64-tall left edge)
+/// cannot yet consume — the bottom-edge left-column edge-extension model is the next
+/// brick.
+///
 /// Verified ZERO-mismatch, per sample, over EVERY covered luma sample against the AVM
 /// pre-filter reconstruction oracle (`/tmp/pref.yuv`, md5
 /// `f7959cb85a41dcf0e6ebf9179835da03`), aggregated by count + sum + FNV-1a-64 in
 /// [`LUMA_RECON_REGION_SAMPLE_SUM`] / [`LUMA_RECON_REGION_FNV1A64`].
-const LUMA_RECON_SAMPLE_TOTAL: usize = 260_608;
+const LUMA_RECON_SAMPLE_TOTAL: usize = 264_192;
 /// Sum of every reconstructed luma sample in the verified region (derived offline
 /// from the AVM pre-filter oracle over the sink's covered MI units, zero mismatch).
-const LUMA_RECON_REGION_SAMPLE_SUM: u64 = 16_792_624;
+const LUMA_RECON_REGION_SAMPLE_SUM: u64 = 17_022_000;
 /// FNV-1a-64 over every reconstructed luma sample (row-major over the covered MI
 /// units, sample-major u16 LE), the whole-region per-value oracle pin: a wrong
 /// reconstruction anywhere in the covered region changes this checksum even at the
 /// same sample count.
-const LUMA_RECON_REGION_FNV1A64: u64 = 0x0ad3_0d42_fd51_9a25;
+const LUMA_RECON_REGION_FNV1A64: u64 = 0x693c_c098_a38d_ca25;
 
 /// The SB-column-3 `BLOCK_64X64 H_PRED` block (x[192,256) x y[0,64)) — the
 /// §7.13.3.18 IntrABC source. Mode `H_PRED` (pAngle 180, `AngleDeltaY == 0`), split

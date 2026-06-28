@@ -257,8 +257,79 @@ fn workspace_rect_writes_reject_invalid_shape_and_bounds() {
             actual: 31
         })
     ));
+    // A fill whose origin is IN-FRAME but whose extent overhangs the right edge
+    // writes only the in-frame columns (the overhang is dropped, modelling AVM's
+    // in-frame-only reconstruction) and does NOT error: column x=3 is filled, the
+    // out-of-frame column x=4 is dropped.
+    workspace
+        .fill_rect(PlaneId::Y, rect(3, 0, 2, 1), 4)
+        .unwrap();
+    assert_eq!(
+        workspace.samples(PlaneId::Y).unwrap(),
+        &[0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    );
+    // A genuinely OUT-OF-FRAME origin (x == storage width) has no in-frame extent and
+    // still errors — AVM never produces such an origin, so it is a real geometry bug.
     assert!(matches!(
-        workspace.fill_rect(PlaneId::Y, rect(3, 0, 2, 1), 4),
+        workspace.fill_rect(PlaneId::Y, rect(4, 0, 1, 1), 4),
+        Err(ReconError::WorkspaceRectOutOfBounds {
+            plane: PlaneId::Y,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn workspace_write_rect_block_clamps_frame_edge_overhang_to_in_frame_samples() {
+    // A 1920x1080 luma plane is NOT superblock-padded: a bottom-edge transform whose
+    // MI footprint overhangs the frame writes only its in-frame rows/cols. Model the
+    // ac0ej3 MI(0,256) TX_64X64 case at a small scale: a 6x4 plane, a 4x4 block whose
+    // origin (4,2) is in-frame but whose 4-wide-by-4-tall extent overhangs the right
+    // edge by 2 columns and the bottom edge by 2 rows.
+    let mut workspace = CurrentFrameWorkspace::<u8>::new(
+        info(
+            BitDepth::Eight,
+            PixelFormat::Monochrome,
+            size(6, 4),
+            rect(0, 0, 6, 4),
+        ),
+        0,
+    )
+    .unwrap();
+
+    // The caller still passes the FULL 4x4 = 16-sample block (row-major). Only the
+    // in-frame 2x2 sub-rect ([4,6) x [2,4)) is written; the overhang is dropped.
+    let block: [u8; 16] = [
+        10, 11, 12, 13, // row 0 (in-frame columns 10,11)
+        14, 15, 16, 17, // row 1 (in-frame columns 14,15)
+        18, 19, 20, 21, // out-of-frame rows below are dropped
+        22, 23, 24, 25,
+    ];
+    workspace
+        .write_rect_block(PlaneId::Y, 4, 2, rect_block(2, 2), &block)
+        .unwrap();
+
+    // Only x[4,6) y[2,4) carries the in-frame samples; everything else stays 0.
+    assert_eq!(
+        workspace.samples(PlaneId::Y).unwrap(),
+        &[
+            0, 0, 0, 0, 0, 0, // row 0
+            0, 0, 0, 0, 0, 0, // row 1
+            0, 0, 0, 0, 10, 11, // row 2: in-frame block row 0
+            0, 0, 0, 0, 14, 15, // row 3: in-frame block row 1
+        ]
+    );
+
+    // A genuinely OUT-OF-FRAME origin still errors (AVM never produces one).
+    assert!(matches!(
+        workspace.write_rect_block(PlaneId::Y, 6, 0, rect_block(2, 2), &block),
+        Err(ReconError::WorkspaceRectOutOfBounds {
+            plane: PlaneId::Y,
+            ..
+        })
+    ));
+    assert!(matches!(
+        workspace.write_rect_block(PlaneId::Y, 0, 4, rect_block(2, 2), &block),
         Err(ReconError::WorkspaceRectOutOfBounds {
             plane: PlaneId::Y,
             ..
@@ -458,7 +529,7 @@ fn workspace_extracts_edges_and_predicts_rectangular_dc() {
 }
 
 #[test]
-fn workspace_rectangular_dc_rejects_out_of_bounds_target() {
+fn workspace_rectangular_dc_clamps_overhang_and_rejects_out_of_frame_origin() {
     let workspace = CurrentFrameWorkspace::<u8>::new(
         info(
             BitDepth::Eight,
@@ -470,8 +541,20 @@ fn workspace_rectangular_dc_rejects_out_of_bounds_target() {
     )
     .unwrap();
 
+    // Origin (5,1) is in-frame but the 4x8 block overhangs both edges. The edge read
+    // clamps to the in-frame sub-rect (3 wide x 7 tall): the left column reads the 7
+    // in-frame rows of x=4 and the above row reads the 3 in-frame columns of row 0
+    // (mirroring AVM's in-frame-only neighbour reads) instead of erroring.
+    let edges = workspace
+        .intra_dc_edges_for_rect(PlaneId::Y, 5, 1, rect_block(2, 3))
+        .unwrap();
+    assert_eq!(edges.left_samples().map(<[u8]>::len), Some(7));
+    assert_eq!(edges.above_samples().map(<[u8]>::len), Some(3));
+
+    // A genuinely OUT-OF-FRAME origin (y == storage height) has no in-frame extent and
+    // still errors.
     assert!(matches!(
-        workspace.intra_dc_edges_for_rect(PlaneId::Y, 5, 1, rect_block(2, 3)),
+        workspace.intra_dc_edges_for_rect(PlaneId::Y, 0, 8, rect_block(2, 2)),
         Err(ReconError::WorkspaceRectOutOfBounds {
             plane: PlaneId::Y,
             ..

@@ -165,14 +165,26 @@ impl PlaneCoverage {
             .unwrap_or(false)
     }
 
-    fn mark(&mut self, mi_col: usize, mi_row: usize, mi_w: usize, mi_h: usize) {
+    /// Marks the block's MI footprint as reconstructed and returns the number of
+    /// IN-FRAME MI cells (== 4x4 luma units) it covered. A transform overhanging a
+    /// partial frame-edge superblock marks only its in-frame cells (the off-grid
+    /// overhang is dropped, mirroring the in-frame-only sample write), so the count
+    /// the caller adds to its 4x4 tally stays equal to the canonical covered region.
+    fn mark(&mut self, mi_col: usize, mi_row: usize, mi_w: usize, mi_h: usize) -> usize {
+        let mut marked = 0usize;
         for r in mi_row..mi_row.saturating_add(mi_h) {
             for c in mi_col..mi_col.saturating_add(mi_w) {
-                if let Some(slot) = self.covered.get_mut(r * self.cols + c) {
+                // `off_grid` rejects a column at/past the row stride so a wide block's
+                // overhang cannot alias into the next row's cells.
+                if !self.off_grid(c, r)
+                    && let Some(slot) = self.covered.get_mut(r * self.cols + c)
+                {
                     *slot = true;
+                    marked += 1;
                 }
             }
         }
+        marked
     }
 
     /// Whether EVERY MI unit of the `mi_w` x `mi_h` block at `(mi_col, mi_row)` is
@@ -594,10 +606,13 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             // non-zero AngleDeltaY): defer rather than emit an unproven prediction.
             _ => return Ok(()),
         }
-        self.coverage[Self::coverage_index(PlaneId::Y)].mark(mi_col, mi_row, mi_w, mi_h);
-        self.reconstructed_luma_4x4 = self
-            .reconstructed_luma_4x4
-            .saturating_add((1usize << log2_width >> 2) * (1usize << log2_height >> 2));
+        // Count only the IN-FRAME 4x4 units `mark` actually covered: a frame-edge
+        // transform writes (and so reconstructs) only its in-frame samples, so the
+        // 4x4 tally must drop the off-frame overhang to stay equal to the canonical
+        // covered region the oracle aggregate walks.
+        let marked =
+            self.coverage[Self::coverage_index(PlaneId::Y)].mark(mi_col, mi_row, mi_w, mi_h);
+        self.reconstructed_luma_4x4 = self.reconstructed_luma_4x4.saturating_add(marked);
         Ok(())
     }
 
@@ -660,10 +675,8 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 "unsupported_wienerns_lr_selectable_transform_records_recon_chroma_write",
             )
         })?;
-        self.coverage[Self::coverage_index(plane_id)].mark(mi_col, mi_row, mi_w, mi_h);
-        self.reconstructed_chroma_4x4 = self
-            .reconstructed_chroma_4x4
-            .saturating_add((1usize << log2_width >> 2) * (1usize << log2_height >> 2));
+        let marked = self.coverage[Self::coverage_index(plane_id)].mark(mi_col, mi_row, mi_w, mi_h);
+        self.reconstructed_chroma_4x4 = self.reconstructed_chroma_4x4.saturating_add(marked);
         Ok(())
     }
 
@@ -737,11 +750,9 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             })?;
         let (tgt_mi_col, tgt_mi_row) = (target.x() / MI_SIZE, target.y() / MI_SIZE);
         let (tgt_mi_w, tgt_mi_h) = (target.width() / MI_SIZE, target.height() / MI_SIZE);
-        self.coverage[Self::coverage_index(PlaneId::Y)]
+        let marked = self.coverage[Self::coverage_index(PlaneId::Y)]
             .mark(tgt_mi_col, tgt_mi_row, tgt_mi_w, tgt_mi_h);
-        self.reconstructed_luma_4x4 = self
-            .reconstructed_luma_4x4
-            .saturating_add(tgt_mi_w * tgt_mi_h);
+        self.reconstructed_luma_4x4 = self.reconstructed_luma_4x4.saturating_add(marked);
         Ok(())
     }
 

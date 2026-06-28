@@ -566,7 +566,9 @@ impl<T: ReconSample> CurrentFramePlane<T> {
     }
 
     fn fill_rect(&mut self, rect: PlaneRect, sample: T) -> Result<()> {
-        self.ensure_rect(rect)?;
+        // Frame-edge fills (the §7.13.2 flat-DC / single-sample write path) drop the
+        // out-of-frame overhang of a partial-superblock block, mirroring `write_rect`.
+        let rect = self.clamp_rect_to_storage(rect)?;
         for row in rect.y()..rect.y() + rect.height() {
             let range = self.row_range(row, rect.x(), rect.width())?;
             self.samples[range].fill(sample);
@@ -581,7 +583,14 @@ impl<T: ReconSample> CurrentFramePlane<T> {
         row_stride_samples: usize,
         max_sample: u16,
     ) -> Result<()> {
-        self.ensure_rect(rect)?;
+        // §7.11.3 reconstruction writes only IN-FRAME samples: a transform whose MI
+        // footprint overhangs a partial frame-edge superblock contributes no samples
+        // below/right of the frame (nothing downstream reads them — AVM's frame
+        // buffer / decoded output is the in-frame region). Clamp the write extent to
+        // storage and drop the overhang rows/cols; the caller still passes the full
+        // row-strided block, so the dropped columns are simply not read. A genuinely
+        // out-of-frame ORIGIN still errors (`clamp_rect_to_storage`).
+        let rect = self.clamp_rect_to_storage(rect)?;
         if row_stride_samples < rect.width() {
             return Err(ReconError::WorkspaceWriteStrideTooSmall {
                 plane: self.plane,
@@ -829,6 +838,40 @@ impl<T: ReconSample> CurrentFramePlane<T> {
             self.visible_rect,
             self.samples,
         )
+    }
+
+    /// Clamps a write/fill `rect` to the in-frame storage extent.
+    ///
+    /// Models AVM's in-frame-only reconstruction: a transform whose MI footprint
+    /// overhangs a partial-superblock frame edge writes only the rows/columns inside
+    /// the frame; the out-of-frame overhang is dropped (no downstream block reads
+    /// below/right of the frame). The returned rectangle shares the origin and is
+    /// narrowed/shortened to `[x, min(x + w, storage_w)) x [y, min(y + h, storage_h))`.
+    ///
+    /// # Errors
+    /// A genuinely out-of-frame ORIGIN (`x >= storage_w` or `y >= storage_h`, which
+    /// AVM never produces) is a hard [`ReconError::WorkspaceRectOutOfBounds`]: there
+    /// is no in-frame extent to write, so it is a real geometry bug, not an edge
+    /// overhang.
+    fn clamp_rect_to_storage(&self, rect: PlaneRect) -> Result<PlaneRect> {
+        let storage_width = self.storage_size.width();
+        let storage_height = self.storage_size.height();
+        if rect.x() >= storage_width || rect.y() >= storage_height {
+            return Err(ReconError::WorkspaceRectOutOfBounds {
+                plane: self.plane,
+                storage: self.storage_size,
+                rect,
+            });
+        }
+        // Both subtractions are positive: the origin is strictly inside storage.
+        let max_width = storage_width - rect.x();
+        let max_height = storage_height - rect.y();
+        let width = rect.width().min(max_width);
+        let height = rect.height().min(max_height);
+        if width == rect.width() && height == rect.height() {
+            return Ok(rect);
+        }
+        PlaneRect::new(rect.x(), rect.y(), width, height)
     }
 
     fn ensure_rect(&self, rect: PlaneRect) -> Result<()> {
