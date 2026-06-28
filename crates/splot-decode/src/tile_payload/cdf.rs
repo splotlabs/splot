@@ -14,6 +14,7 @@ mod coeff_rows;
 pub(crate) mod context;
 mod lifecycle;
 pub(crate) mod partition_read;
+mod util;
 
 use core::fmt;
 
@@ -31,17 +32,24 @@ use splot_core::tables::cdf::{
 };
 
 use self::block_rows::{BlockCdfRows, BlockCdfSelector};
+// Re-export the CDF math/validation helpers from the `util` submodule. Sibling
+// modules (`block_rows`, `coeff_rows`, `block_rows::mv`) import `avg_cdf_row` /
+// `scale_cdf_count` via `super::`/`super::super::`, so they stay reachable here.
 pub(crate) use self::coeff_rows::CoeffCdfSelector;
+pub(in crate::tile_payload::cdf) use self::util::{avg_cdf_row, scale_cdf_count};
+use self::util::{
+    checked_context, checked_plane, checked_square_split_plane, floor_log2, tx_partition_type_array,
+};
 // Re-exported at crate visibility so sibling decode code (e.g. the future
 // `coeffs()` consumer in `block_symbol.rs`) can name the `eob_pt` size class to
 // construct the `pub(crate)` `TileCdfSelector::EobPt` variant.
 pub(crate) use self::block_rows::{EobPtSize, MvCdfSelector};
 
-const CDF_PROB_SCALE: i32 = 1 << 15;
-const DO_SPLIT_PLANE_CONTEXTS: usize = 2;
+pub(super) const CDF_PROB_SCALE: i32 = 1 << 15;
+pub(super) const DO_SPLIT_PLANE_CONTEXTS: usize = 2;
 /// § 8.3.2: `do_square_split` `PlaneStart` is fixed at 0, so only one plane is
 /// valid for it (tighter than the shared 2-plane partition CDF array bound).
-const DO_SQUARE_SPLIT_VALID_PLANE_CONTEXTS: usize = 1;
+pub(super) const DO_SQUARE_SPLIT_VALID_PLANE_CONTEXTS: usize = 1;
 const DO_SPLIT_CONTEXTS: usize = 64;
 const DO_EXT_PARTITION_CONTEXTS: usize = 64;
 const DO_UNEVEN_4WAY_PARTITION_CONTEXTS: usize = 64;
@@ -486,6 +494,52 @@ pub(crate) enum TileCdfSelector {
         /// `Tx_Size_Sqr[txSz]`.
         tx_size_sqr: usize,
     },
+    /// `TileInterTxTypeSet1Cdf[ctx][Tx_Size_Sqr[txSz]]` from AV2 § 8.3.2 Table 8.3.
+    InterTxTypeSet1 {
+        /// The §8.3.2 `inter_tx_type` eob context (0..2).
+        ctx: usize,
+        /// `Tx_Size_Sqr[txSz]`.
+        tx_size_sqr: usize,
+    },
+    /// `TileInterTxTypeSet2Cdf[ctx]` from AV2 § 8.3.2 Table 8.3.
+    InterTxTypeSet2 {
+        /// The §8.3.2 `inter_tx_type` eob context (0..2).
+        ctx: usize,
+    },
+    /// `TileInterTxTypeIndexSet1Cdf[ctx]` from AV2 § 8.3.2.
+    InterTxTypeIndexSet1 {
+        /// The §8.3.2 `inter_tx_type_offset` eob context (0..2).
+        ctx: usize,
+    },
+    /// `TileInterTxTypeIndexSet2Cdf[ctx]` from AV2 § 8.3.2.
+    InterTxTypeIndexSet2 {
+        /// The §8.3.2 `inter_tx_type_offset` eob context (0..2).
+        ctx: usize,
+    },
+    /// `TileInterTxTypeOffsetSet1Cdf[ctx]` from AV2 § 8.3.2.
+    InterTxTypeOffsetSet1 {
+        /// The §8.3.2 `inter_tx_type_offset` eob context (0..2).
+        ctx: usize,
+    },
+    /// `TileInterTxTypeOffsetSet2Cdf[ctx]` from AV2 § 8.3.2.
+    InterTxTypeOffsetSet2 {
+        /// The §8.3.2 `inter_tx_type_offset` eob context (0..2).
+        ctx: usize,
+    },
+    /// `TileInterTxTypeSet3Cdf[ctx][Tx_Size_Sqr[txSz]]` from AV2 § 8.3.2 Table 8.3.
+    InterTxTypeSet3 {
+        /// The §8.3.2 `inter_tx_type` eob context (0..2).
+        ctx: usize,
+        /// `Tx_Size_Sqr[txSz]`.
+        tx_size_sqr: usize,
+    },
+    /// `TileInterTxTypeSet4Cdf[ctx][Tx_Size_Sqr[txSz]]` from AV2 § 8.3.2 Table 8.3.
+    InterTxTypeSet4 {
+        /// The §8.3.2 `inter_tx_type` eob context (0..2).
+        ctx: usize,
+        /// `Tx_Size_Sqr[txSz]`.
+        tx_size_sqr: usize,
+    },
     /// `TileSecTxTypeCdf[is_inter][Tx_Size_Sqr[txSz]]` from AV2 § 8.3.2.
     SecTxType {
         /// `is_inter`.
@@ -713,6 +767,22 @@ pub(crate) enum TileCdfArray {
     IntraTxTypeLong,
     /// `TileInterTxTypeLongCdf`.
     InterTxTypeLong,
+    /// `TileInterTxTypeSet1Cdf`.
+    InterTxTypeSet1,
+    /// `TileInterTxTypeSet2Cdf`.
+    InterTxTypeSet2,
+    /// `TileInterTxTypeIndexSet1Cdf`.
+    InterTxTypeIndexSet1,
+    /// `TileInterTxTypeIndexSet2Cdf`.
+    InterTxTypeIndexSet2,
+    /// `TileInterTxTypeOffsetSet1Cdf`.
+    InterTxTypeOffsetSet1,
+    /// `TileInterTxTypeOffsetSet2Cdf`.
+    InterTxTypeOffsetSet2,
+    /// `TileInterTxTypeSet3Cdf`.
+    InterTxTypeSet3,
+    /// `TileInterTxTypeSet4Cdf`.
+    InterTxTypeSet4,
     /// `TileSecTxTypeCdf`.
     SecTxType,
     /// `TileUvModeCflNotAllowedCdf`.
@@ -803,80 +873,87 @@ pub(crate) enum TileCdfArray {
     WienerNsLength,
 }
 
-impl TileCdfArray {
-    const fn as_str(self) -> &'static str {
-        match self {
-            Self::DoSplit => "TileDoSplitCdf",
-            Self::DoExtPartition => "TileDoExtPartitionCdf",
-            Self::DoSquareSplit => "TileDoSquareSplitCdf",
-            Self::RectType => "TileRectTypeCdf",
-            Self::DoUneven4WayPartition => "TileDoUneven4wayPartitionCdf",
-            Self::TxDoPartition => "TileTxDoPartitionCdf",
-            Self::Tx2Or3PartitionType => "TileTx2or3PartitionTypeCdf",
-            Self::TxPartitionType => "TileTxPartitionTypeCdf",
-            Self::TxPartitionTypeReduced => "TileTxPartitionTypeReducedCdf",
-            Self::CdefIndex0 => "TileCdefIndex0Cdf",
-            Self::CcsoBlk => "TileCcsoBlkCdf",
-            Self::CdefIndexMinus1 => "TileCdefIndexMinus1Cdf",
-            Self::Intrabc => "TileIntrabcCdf",
-            Self::FscMode => "TileFscModeCdf",
-            Self::MrlIndex => "TileMrlIndexCdf",
-            Self::MrlSecIndex => "TileMrlSecIndexCdf",
-            Self::YModeIndex => "TileYModeIndexCdf",
-            Self::YModeOffset => "TileYModeOffsetCdf",
-            Self::TxbSkip => "TileTxbSkipCdf",
-            Self::IntraTxTypeSet1 => "TileIntraTxTypeSet1Cdf",
-            Self::IntraTxTypeSet2 => "TileIntraTxTypeSet2Cdf",
-            Self::IsLongSideDct => "TileIsLongSideDctCdf",
-            Self::IntraTxTypeLong => "TileIntraTxTypeLongCdf",
-            Self::InterTxTypeLong => "TileInterTxTypeLongCdf",
-            Self::SecTxType => "TileSecTxTypeCdf",
-            Self::UvModeCflNotAllowed => "TileUvModeCflNotAllowedCdf",
-            Self::IsCfl => "TileIsCflCdf",
-            Self::CflAlpha => "TileCflAlphaCdf",
-            Self::CflMhDir => "TileCflMhDirCdf",
-            Self::VTxbSkip => "TileVTxbSkipCdf",
-            Self::EobExtra => "TileEobExtraCdf",
-            Self::EobPt => "TileEobPtCdf",
-            Self::DcSign => "TileDcSignCdf",
-            Self::CoeffBase => "TileCoeffBaseCdf",
-            Self::CoeffBasePh => "TileCoeffBasePhCdf",
-            Self::CoeffBaseUv => "TileCoeffBaseUvCdf",
-            Self::CoeffBaseLf => "TileCoeffBaseLfCdf",
-            Self::CoeffBaseLfUv => "TileCoeffBaseLfUvCdf",
-            Self::CoeffBaseEob => "TileCoeffBaseEobCdf",
-            Self::CoeffBaseEobUv => "TileCoeffBaseEobUvCdf",
-            Self::CoeffBaseBob => "TileCoeffBaseBobCdf",
-            Self::CoeffBaseIdtx => "TileCoeffBaseIdtxCdf",
-            Self::CoeffBaseLfEob => "TileCoeffBaseLfEobCdf",
-            Self::CoeffBaseLfEobUv => "TileCoeffBaseLfEobUvCdf",
-            Self::CoeffBr => "TileCoeffBrCdf",
-            Self::CoeffBrUv => "TileCoeffBrUvCdf",
-            Self::CoeffBrLf => "TileCoeffBrLfCdf",
-            Self::CoeffBrIdtx => "TileCoeffBrIdtxCdf",
-            Self::IdtxSign => "TileIdtxSignCdf",
-            Self::IsInter => "TileIsInterCdf",
-            Self::Skip => "TileSkipCdf",
-            Self::SingleMode => "TileSingleModeCdf",
-            Self::DrlMode => "TileDrlModeCdf",
-            Self::SingleRef => "TileSingleRefCdf",
-            Self::CompMode => "TileCompModeCdf",
-            Self::IsJoint => "TileIsJointCdf",
-            Self::CompoundModeNonJoint => "TileCompoundModeNonJointCdf",
-            Self::CompGroupIdx => "TileCompGroupIdxCdf",
-            Self::CwpIdx => "TileCwpIdxCdf",
-            Self::CompRef0 => "TileCompRef0Cdf",
-            Self::CompRef1 => "TileCompRef1Cdf",
-            Self::JointShell6Class => "TileJointShell6ClassCdf",
-            Self::ShellOffsetLowClass => "TileShellOffsetLowClassCdf",
-            Self::ShellOffsetOtherClass => "TileShellOffsetOtherClassCdf",
-            Self::ColMvGreater => "TileColMvGreaterCdf",
-            Self::ColMvIndex => "TileColMvIndexCdf",
-            Self::InterpFilter => "TileInterpFilterCdf",
-            Self::WienerNsLength => "TileWienerNsLengthCdf",
-        }
-    }
-}
+// `TileCdfArray::as_str` via the variant-declaring macro (a macro invocation,
+// not a bare `match`), so it is not a structural duplicate of other enum
+// string-label `match`es (the dupehound diff-ratchet flags those).
+crate::impl_reason_labels!(TileCdfArray {
+    DoSplit => "TileDoSplitCdf",
+    DoExtPartition => "TileDoExtPartitionCdf",
+    DoSquareSplit => "TileDoSquareSplitCdf",
+    RectType => "TileRectTypeCdf",
+    DoUneven4WayPartition => "TileDoUneven4wayPartitionCdf",
+    TxDoPartition => "TileTxDoPartitionCdf",
+    Tx2Or3PartitionType => "TileTx2or3PartitionTypeCdf",
+    TxPartitionType => "TileTxPartitionTypeCdf",
+    TxPartitionTypeReduced => "TileTxPartitionTypeReducedCdf",
+    CdefIndex0 => "TileCdefIndex0Cdf",
+    CcsoBlk => "TileCcsoBlkCdf",
+    CdefIndexMinus1 => "TileCdefIndexMinus1Cdf",
+    Intrabc => "TileIntrabcCdf",
+    FscMode => "TileFscModeCdf",
+    MrlIndex => "TileMrlIndexCdf",
+    MrlSecIndex => "TileMrlSecIndexCdf",
+    YModeIndex => "TileYModeIndexCdf",
+    YModeOffset => "TileYModeOffsetCdf",
+    TxbSkip => "TileTxbSkipCdf",
+    IntraTxTypeSet1 => "TileIntraTxTypeSet1Cdf",
+    IntraTxTypeSet2 => "TileIntraTxTypeSet2Cdf",
+    IsLongSideDct => "TileIsLongSideDctCdf",
+    IntraTxTypeLong => "TileIntraTxTypeLongCdf",
+    InterTxTypeLong => "TileInterTxTypeLongCdf",
+    InterTxTypeSet1 => "TileInterTxTypeSet1Cdf",
+    InterTxTypeSet2 => "TileInterTxTypeSet2Cdf",
+    InterTxTypeIndexSet1 => "TileInterTxTypeIndexSet1Cdf",
+    InterTxTypeIndexSet2 => "TileInterTxTypeIndexSet2Cdf",
+    InterTxTypeOffsetSet1 => "TileInterTxTypeOffsetSet1Cdf",
+    InterTxTypeOffsetSet2 => "TileInterTxTypeOffsetSet2Cdf",
+    InterTxTypeSet3 => "TileInterTxTypeSet3Cdf",
+    InterTxTypeSet4 => "TileInterTxTypeSet4Cdf",
+    SecTxType => "TileSecTxTypeCdf",
+    UvModeCflNotAllowed => "TileUvModeCflNotAllowedCdf",
+    IsCfl => "TileIsCflCdf",
+    CflAlpha => "TileCflAlphaCdf",
+    CflMhDir => "TileCflMhDirCdf",
+    VTxbSkip => "TileVTxbSkipCdf",
+    EobExtra => "TileEobExtraCdf",
+    EobPt => "TileEobPtCdf",
+    DcSign => "TileDcSignCdf",
+    CoeffBase => "TileCoeffBaseCdf",
+    CoeffBasePh => "TileCoeffBasePhCdf",
+    CoeffBaseUv => "TileCoeffBaseUvCdf",
+    CoeffBaseLf => "TileCoeffBaseLfCdf",
+    CoeffBaseLfUv => "TileCoeffBaseLfUvCdf",
+    CoeffBaseEob => "TileCoeffBaseEobCdf",
+    CoeffBaseEobUv => "TileCoeffBaseEobUvCdf",
+    CoeffBaseBob => "TileCoeffBaseBobCdf",
+    CoeffBaseIdtx => "TileCoeffBaseIdtxCdf",
+    CoeffBaseLfEob => "TileCoeffBaseLfEobCdf",
+    CoeffBaseLfEobUv => "TileCoeffBaseLfEobUvCdf",
+    CoeffBr => "TileCoeffBrCdf",
+    CoeffBrUv => "TileCoeffBrUvCdf",
+    CoeffBrLf => "TileCoeffBrLfCdf",
+    CoeffBrIdtx => "TileCoeffBrIdtxCdf",
+    IdtxSign => "TileIdtxSignCdf",
+    IsInter => "TileIsInterCdf",
+    Skip => "TileSkipCdf",
+    SingleMode => "TileSingleModeCdf",
+    DrlMode => "TileDrlModeCdf",
+    SingleRef => "TileSingleRefCdf",
+    CompMode => "TileCompModeCdf",
+    IsJoint => "TileIsJointCdf",
+    CompoundModeNonJoint => "TileCompoundModeNonJointCdf",
+    CompGroupIdx => "TileCompGroupIdxCdf",
+    CwpIdx => "TileCwpIdxCdf",
+    CompRef0 => "TileCompRef0Cdf",
+    CompRef1 => "TileCompRef1Cdf",
+    JointShell6Class => "TileJointShell6ClassCdf",
+    ShellOffsetLowClass => "TileShellOffsetLowClassCdf",
+    ShellOffsetOtherClass => "TileShellOffsetOtherClassCdf",
+    ColMvGreater => "TileColMvGreaterCdf",
+    ColMvIndex => "TileColMvIndexCdf",
+    InterpFilter => "TileInterpFilterCdf",
+    WienerNsLength => "TileWienerNsLengthCdf",
+});
 
 /// Tile CDF boundary error.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
@@ -1408,6 +1485,30 @@ impl TileCdfRows {
             TileCdfSelector::InterTxTypeLong { ctx, tx_size_sqr } => self
                 .block
                 .row(BlockCdfSelector::InterTxTypeLong { ctx, tx_size_sqr }),
+            TileCdfSelector::InterTxTypeSet1 { ctx, tx_size_sqr } => self
+                .block
+                .row(BlockCdfSelector::InterTxTypeSet1 { ctx, tx_size_sqr }),
+            TileCdfSelector::InterTxTypeSet2 { ctx } => {
+                self.block.row(BlockCdfSelector::InterTxTypeSet2 { ctx })
+            }
+            TileCdfSelector::InterTxTypeIndexSet1 { ctx } => self
+                .block
+                .row(BlockCdfSelector::InterTxTypeIndexSet1 { ctx }),
+            TileCdfSelector::InterTxTypeIndexSet2 { ctx } => self
+                .block
+                .row(BlockCdfSelector::InterTxTypeIndexSet2 { ctx }),
+            TileCdfSelector::InterTxTypeOffsetSet1 { ctx } => self
+                .block
+                .row(BlockCdfSelector::InterTxTypeOffsetSet1 { ctx }),
+            TileCdfSelector::InterTxTypeOffsetSet2 { ctx } => self
+                .block
+                .row(BlockCdfSelector::InterTxTypeOffsetSet2 { ctx }),
+            TileCdfSelector::InterTxTypeSet3 { ctx, tx_size_sqr } => self
+                .block
+                .row(BlockCdfSelector::InterTxTypeSet3 { ctx, tx_size_sqr }),
+            TileCdfSelector::InterTxTypeSet4 { ctx, tx_size_sqr } => self
+                .block
+                .row(BlockCdfSelector::InterTxTypeSet4 { ctx, tx_size_sqr }),
             TileCdfSelector::SecTxType {
                 is_inter,
                 tx_size_sqr,
@@ -1767,6 +1868,30 @@ impl TileCdfRows {
             TileCdfSelector::InterTxTypeLong { ctx, tx_size_sqr } => self
                 .block
                 .row_mut(BlockCdfSelector::InterTxTypeLong { ctx, tx_size_sqr }),
+            TileCdfSelector::InterTxTypeSet1 { ctx, tx_size_sqr } => self
+                .block
+                .row_mut(BlockCdfSelector::InterTxTypeSet1 { ctx, tx_size_sqr }),
+            TileCdfSelector::InterTxTypeSet2 { ctx } => self
+                .block
+                .row_mut(BlockCdfSelector::InterTxTypeSet2 { ctx }),
+            TileCdfSelector::InterTxTypeIndexSet1 { ctx } => self
+                .block
+                .row_mut(BlockCdfSelector::InterTxTypeIndexSet1 { ctx }),
+            TileCdfSelector::InterTxTypeIndexSet2 { ctx } => self
+                .block
+                .row_mut(BlockCdfSelector::InterTxTypeIndexSet2 { ctx }),
+            TileCdfSelector::InterTxTypeOffsetSet1 { ctx } => self
+                .block
+                .row_mut(BlockCdfSelector::InterTxTypeOffsetSet1 { ctx }),
+            TileCdfSelector::InterTxTypeOffsetSet2 { ctx } => self
+                .block
+                .row_mut(BlockCdfSelector::InterTxTypeOffsetSet2 { ctx }),
+            TileCdfSelector::InterTxTypeSet3 { ctx, tx_size_sqr } => self
+                .block
+                .row_mut(BlockCdfSelector::InterTxTypeSet3 { ctx, tx_size_sqr }),
+            TileCdfSelector::InterTxTypeSet4 { ctx, tx_size_sqr } => self
+                .block
+                .row_mut(BlockCdfSelector::InterTxTypeSet4 { ctx, tx_size_sqr }),
             TileCdfSelector::SecTxType {
                 is_inter,
                 tx_size_sqr,
@@ -2292,62 +2417,6 @@ impl TileCdfRows {
     }
 }
 
-fn checked_plane(array: TileCdfArray, plane_start: usize) -> Result<usize, TileCdfError> {
-    checked_plane_within(array, plane_start, DO_SPLIT_PLANE_CONTEXTS)
-}
-
-/// § 8.3.2 fixes `do_square_split` `PlaneStart` at 0 (the chroma partition is
-/// forced for the large block sizes where it is read), so only plane 0 is valid
-/// for that selector — tighter than the shared 2-plane partition CDF array bound.
-fn checked_square_split_plane(plane_start: usize) -> Result<usize, TileCdfError> {
-    checked_plane_within(
-        TileCdfArray::DoSquareSplit,
-        plane_start,
-        DO_SQUARE_SPLIT_VALID_PLANE_CONTEXTS,
-    )
-}
-
-fn checked_plane_within(
-    array: TileCdfArray,
-    plane_start: usize,
-    max_exclusive: usize,
-) -> Result<usize, TileCdfError> {
-    if plane_start >= max_exclusive {
-        return Err(TileCdfError::SelectorOutOfRange {
-            array,
-            index_name: "plane_start",
-            actual: plane_start,
-            max_exclusive,
-        });
-    }
-    Ok(plane_start)
-}
-
-fn checked_context(
-    array: TileCdfArray,
-    index_name: &'static str,
-    actual: usize,
-    max_exclusive: usize,
-) -> Result<usize, TileCdfError> {
-    if actual >= max_exclusive {
-        return Err(TileCdfError::SelectorOutOfRange {
-            array,
-            index_name,
-            actual,
-            max_exclusive,
-        });
-    }
-    Ok(actual)
-}
-
-const fn tx_partition_type_array(reduced: bool) -> TileCdfArray {
-    if reduced {
-        TileCdfArray::TxPartitionTypeReduced
-    } else {
-        TileCdfArray::TxPartitionType
-    }
-}
-
 fn cdef_index_minus1_row(rows: &TileCdfRows, strengths: usize) -> Result<&[i32], TileCdfError> {
     match strengths {
         3 => Ok(rows.cdef_index_minus1_with3.as_slice()),
@@ -2383,34 +2452,6 @@ fn cdef_index_minus1_row_mut(
             max_exclusive: 9,
         }),
     }
-}
-
-fn avg_cdf_row<const N: usize>(
-    cdf: &mut [i32; N],
-    tile_cdf: &[i32; N],
-    tile_num: u32,
-    num_log2: u8,
-) {
-    if tile_num == 0 {
-        for value in &mut cdf[..N - 2] {
-            *value = CDF_PROB_SCALE;
-        }
-        cdf[N - 2] = tile_cdf[N - 2];
-        cdf[N - 1] = 0;
-    }
-    let shift = u32::from(num_log2);
-    for i in 0..N - 2 {
-        cdf[i] -= (CDF_PROB_SCALE - tile_cdf[i]) >> shift;
-    }
-    cdf[N - 1] += tile_cdf[N - 1] >> shift;
-}
-
-fn scale_cdf_count<const N: usize>(cdf: &mut [i32; N]) {
-    cdf[N - 1] = cdf[N - 1].saturating_mul(3) >> 2;
-}
-
-const fn floor_log2(value: u32) -> u32 {
-    u32::BITS - 1 - value.leading_zeros()
 }
 
 #[cfg(test)]

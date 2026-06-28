@@ -93,6 +93,12 @@ const ADST_ADST: usize = 3;
 const FLIPADST_DCT: usize = 4;
 /// AV2 § 3 `DCT_FLIPADST`.
 const DCT_FLIPADST: usize = 5;
+/// AV2 § 3 `FLIPADST_FLIPADST`.
+const FLIPADST_FLIPADST: usize = 6;
+/// AV2 § 3 `ADST_FLIPADST`.
+const ADST_FLIPADST: usize = 7;
+/// AV2 § 3 `FLIPADST_ADST`.
+const FLIPADST_ADST: usize = 8;
 /// AV2 § 3 `IDTX`.
 const IDTX: usize = 9;
 /// AV2 § 3 `V_DCT`.
@@ -154,6 +160,56 @@ const TX_TYPE_INV_LONG: [[[usize; 4]; 2]; 2] = [
         [DCT_DCT, DCT_ADST, DCT_FLIPADST, V_DCT],
     ],
 ];
+
+/// AV2 § 5.20.8.2 `Tx_Type_Inter_Inv_Set1[16]` (the `TX_SET_INTER_1` inversion,
+/// indexed by `inter_tx_type * 8 + inter_tx_type_offset`).
+const TX_TYPE_INTER_INV_SET1: [usize; 16] = [
+    IDTX,
+    V_DCT,
+    H_DCT,
+    V_ADST,
+    H_ADST,
+    V_FLIPADST,
+    H_FLIPADST,
+    DCT_DCT,
+    ADST_DCT,
+    DCT_ADST,
+    FLIPADST_DCT,
+    DCT_FLIPADST,
+    ADST_ADST,
+    FLIPADST_FLIPADST,
+    ADST_FLIPADST,
+    FLIPADST_ADST,
+];
+
+/// AV2 § 5.20.8.2 `Tx_Type_Inter_Inv_Set2[12]` (the `TX_SET_INTER_2` inversion,
+/// indexed by `inter_tx_type * 8 + inter_tx_type_offset`).
+const TX_TYPE_INTER_INV_SET2: [usize; 12] = [
+    IDTX,
+    V_DCT,
+    H_DCT,
+    DCT_DCT,
+    ADST_DCT,
+    DCT_ADST,
+    FLIPADST_DCT,
+    DCT_FLIPADST,
+    ADST_ADST,
+    FLIPADST_FLIPADST,
+    ADST_FLIPADST,
+    FLIPADST_ADST,
+];
+
+/// AV2 § 5.20.8.2 `Tx_Type_Inter_Inv_Set3[2]` (the `TX_SET_DCT_IDTX` inversion,
+/// indexed by `inter_tx_type`).
+const TX_TYPE_INTER_INV_SET3: [usize; 2] = [IDTX, DCT_DCT];
+
+/// AV2 § 5.20.8.2 `Tx_Type_Inter_Inv_Set4[4]` (the `TX_SET_DCT_IDTX_IDDCT`
+/// inversion, indexed by `inter_tx_type`).
+const TX_TYPE_INTER_INV_SET4: [usize; 4] = [DCT_DCT, V_DCT, H_DCT, IDTX];
+
+/// AV2 § 5.20.8.2 split point between `inter_tx_type == 0` (the index symbol) and
+/// `inter_tx_type == 1` (the offset symbol) for `TX_SET_INTER_1/2`.
+const INTER_TX_TYPE_INDEX_COUNT: usize = 8;
 
 /// Already-decoded luma mode facts needed by AV2 § 5.20.8.2 `transform_type()`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1056,11 +1112,16 @@ fn read_active_luma_long_tx_type(
         )
 }
 
-/// Reads the AV2 § 5.20.7.29 inter luma primary `transform_type` for a long-side
-/// transform set (`TX_SET_WIDE_32/64`, `TX_SET_HIGH_32/64`). Mirrors the intra
-/// long-side path but uses the inter `is_long_side_dct` context and the
-/// `inter_tx_type` symbol's `TileInterTxTypeLongCdf[ctx][Tx_Size_Sqr[txSz]]`
-/// (§8.3.2 Table 8.3); other inter sets are not yet proven and defer upstream.
+/// Reads the AV2 § 5.20.7.29 / § 5.20.8.2 inter luma primary `transform_type`.
+///
+/// Dispatches by §5.20.8.3 transform set: the long-side sets (`TX_SET_WIDE_32/64`,
+/// `TX_SET_HIGH_32/64`) read `is_long_side_dct` plus the long `inter_tx_type`
+/// (`TileInterTxTypeLongCdf`); the small sets (`TX_SET_INTER_1/2`,
+/// `TX_SET_DCT_IDTX`, `TX_SET_DCT_IDTX_IDDCT`) read the `inter_tx_type` selector
+/// (and, for `INTER_1/2`, the follow-up `inter_tx_type_offset`) per §8.3.2 Table
+/// 8.3. The coefficient entropy is transform-type-agnostic, so any returned type
+/// only changes the §7.13.3 inverse transform (deferred at the reconstruction
+/// sink), not the residual parse.
 fn read_active_inter_transform_type(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
@@ -1068,14 +1129,65 @@ fn read_active_inter_transform_type(
     tx_set: usize,
     eob: usize,
 ) -> Result<usize, GeneralIntraResidualError> {
+    let tx_size_sqr = tx_size_table_usize(&TX_SIZE_SQR, "Tx_Size_Sqr", tx_size)?;
+    let ctx = inter_tx_type_long_ctx(tx_size, eob)?;
+    match tx_set {
+        TX_SET_WIDE_64 | TX_SET_WIDE_32 | TX_SET_HIGH_64 | TX_SET_HIGH_32 => {
+            read_active_inter_long_tx_type(cdfs, symbols, tx_set, tx_size_sqr, ctx)
+        }
+        TX_SET_INTER_1 => read_inter_tx_type_signaling_set(
+            cdfs,
+            symbols,
+            InterTxTypeSignalingSet::Inter1,
+            tx_size_sqr,
+            ctx,
+        ),
+        TX_SET_INTER_2 => read_inter_tx_type_signaling_set(
+            cdfs,
+            symbols,
+            InterTxTypeSignalingSet::Inter2,
+            tx_size_sqr,
+            ctx,
+        ),
+        TX_SET_DCT_IDTX => {
+            let inter_tx_type = read_transform_symbol(
+                cdfs,
+                symbols,
+                TileCdfSelector::InterTxTypeSet3 { ctx, tx_size_sqr },
+            )?;
+            TX_TYPE_INTER_INV_SET3
+                .get(inter_tx_type)
+                .copied()
+                .ok_or(invalid_inter_tx_type())
+        }
+        TX_SET_DCT_IDTX_IDDCT => {
+            let inter_tx_type = read_transform_symbol(
+                cdfs,
+                symbols,
+                TileCdfSelector::InterTxTypeSet4 { ctx, tx_size_sqr },
+            )?;
+            TX_TYPE_INTER_INV_SET4
+                .get(inter_tx_type)
+                .copied()
+                .ok_or(invalid_inter_tx_type())
+        }
+        _ => unsupported_transform_tool_residual("unsupported_dctonly_residual_inter_tx_set"),
+    }
+}
+
+/// Reads the inter long-side `transform_type` (`TX_SET_WIDE_32/64`,
+/// `TX_SET_HIGH_32/64`) per §5.20.8.2: `is_long_side_dct` (32 sets only) plus the
+/// long `inter_tx_type` symbol, inverted through `Tx_Type_Inv_Long`.
+fn read_active_inter_long_tx_type(
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    tx_set: usize,
+    tx_size_sqr: usize,
+    ctx: usize,
+) -> Result<usize, GeneralIntraResidualError> {
     let wide_or_high = match tx_set {
         TX_SET_WIDE_64 | TX_SET_WIDE_32 => 0,
-        TX_SET_HIGH_64 | TX_SET_HIGH_32 => 1,
-        _ => {
-            return unsupported_transform_tool_residual(
-                "unsupported_dctonly_residual_inter_tx_set",
-            );
-        }
+        _ => 1,
     };
     // §5.20.7.29 `is_long_side_dct` is read (CDF `TileIsLongSideDctCdf[is_inter]`)
     // only for the 32 sets; the 64 sets force `is_long_side_dct = 1`.
@@ -1087,8 +1199,6 @@ fn read_active_inter_transform_type(
         )?,
         _ => 1,
     };
-    let tx_size_sqr = tx_size_table_usize(&TX_SIZE_SQR, "Tx_Size_Sqr", tx_size)?;
-    let ctx = inter_tx_type_long_ctx(tx_size, eob)?;
     let inter_tx_type = read_transform_symbol(
         cdfs,
         symbols,
@@ -1099,11 +1209,68 @@ fn read_active_inter_transform_type(
         .and_then(|long_side| long_side.get(wide_or_high))
         .and_then(|row| row.get(inter_tx_type))
         .copied()
-        .ok_or(
-            GeneralIntraResidualError::UnsupportedTransformToolResidual {
-                reason: "unsupported_dctonly_residual_invalid_inter_tx_type",
-            },
-        )
+        .ok_or(invalid_inter_tx_type())
+}
+
+/// Distinguishes the §5.20.8.2 `TX_SET_INTER_1` / `TX_SET_INTER_2` signaling sets,
+/// which share the two-stage `inter_tx_type` + `inter_tx_type_offset` read.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum InterTxTypeSignalingSet {
+    /// `TX_SET_INTER_1` (`Tx_Type_Inter_Inv_Set1`).
+    Inter1,
+    /// `TX_SET_INTER_2` (`Tx_Type_Inter_Inv_Set2`).
+    Inter2,
+}
+
+/// Reads §5.20.8.2 `inter_tx_type` then `inter_tx_type_offset` for the
+/// `TX_SET_INTER_1` / `TX_SET_INTER_2` signaling sets, returning the inverted
+/// `TxType`. `inter_tx_type` is a 2-symbol selector; the follow-up index/offset
+/// symbol picks `inter_tx_type * 8 + inter_tx_type_offset` into the §5.20.8.2
+/// inversion table (AVM `av2_read_tx_type`, decodemv.c §`inter_block`).
+fn read_inter_tx_type_signaling_set(
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    set: InterTxTypeSignalingSet,
+    tx_size_sqr: usize,
+    ctx: usize,
+) -> Result<usize, GeneralIntraResidualError> {
+    let (set_selector, index_selector, offset_selector, inversion): (
+        TileCdfSelector,
+        TileCdfSelector,
+        TileCdfSelector,
+        &[usize],
+    ) = match set {
+        InterTxTypeSignalingSet::Inter1 => (
+            TileCdfSelector::InterTxTypeSet1 { ctx, tx_size_sqr },
+            TileCdfSelector::InterTxTypeIndexSet1 { ctx },
+            TileCdfSelector::InterTxTypeOffsetSet1 { ctx },
+            &TX_TYPE_INTER_INV_SET1,
+        ),
+        InterTxTypeSignalingSet::Inter2 => (
+            TileCdfSelector::InterTxTypeSet2 { ctx },
+            TileCdfSelector::InterTxTypeIndexSet2 { ctx },
+            TileCdfSelector::InterTxTypeOffsetSet2 { ctx },
+            &TX_TYPE_INTER_INV_SET2,
+        ),
+    };
+    let inter_tx_type = read_transform_symbol(cdfs, symbols, set_selector)?;
+    let inter_tx_type_offset = if inter_tx_type == 0 {
+        read_transform_symbol(cdfs, symbols, index_selector)?
+    } else {
+        read_transform_symbol(cdfs, symbols, offset_selector)?
+    };
+    let tx_type_idx = inter_tx_type * INTER_TX_TYPE_INDEX_COUNT + inter_tx_type_offset;
+    inversion
+        .get(tx_type_idx)
+        .copied()
+        .ok_or(invalid_inter_tx_type())
+}
+
+/// The fail-closed error for an out-of-range inverted inter `TxType`.
+const fn invalid_inter_tx_type() -> GeneralIntraResidualError {
+    GeneralIntraResidualError::UnsupportedTransformToolResidual {
+        reason: "unsupported_dctonly_residual_invalid_inter_tx_type",
+    }
 }
 
 /// AV2 § 8.3.2 `inter_tx_type` context: from the `eob` diagonal position relative
@@ -1481,741 +1648,4 @@ fn txb_skip_tx_size_ctx(tx_size: usize) -> usize {
 }
 
 #[cfg(test)]
-mod tests {
-    #![allow(clippy::unwrap_used)]
-
-    use splot_core::segment::MAX_SEGMENTS;
-    use splot_core::span::ByteOffset;
-    use splot_core::symbol::{CdfUpdateMode, Symbol, SymbolDecoderConfig};
-    use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig};
-
-    use super::*;
-    use crate::tile_payload::TileCoeffFrameFactsInput;
-
-    const PAYLOAD: [u8; 2] = [0x00, 0x80];
-
-    fn symbol_decoder_for_payload(payload: &'static [u8]) -> SymbolDecoder<'static> {
-        SymbolDecoder::with_base_and_config(
-            payload,
-            ByteOffset::new(0),
-            SymbolDecoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Disabled),
-        )
-        .unwrap()
-    }
-
-    fn tile_cdfs() -> TileCdfSubset {
-        crate::tile_payload::FrameCdfSubset::from_defaults().tile_copy()
-    }
-
-    fn encode_transform_symbols(sequence: &[(TileCdfSelector, u8)]) -> Vec<u8> {
-        let mut cdfs = tile_cdfs();
-        let mut encoder = SymbolEncoder::with_config(
-            SymbolEncoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Disabled),
-        );
-        for &(selector, value) in sequence {
-            cdfs.with_row_mut(selector, |row| {
-                encoder.write_symbol(row, Symbol::new(value))
-            })
-            .unwrap()
-            .unwrap();
-        }
-        encoder.finish().unwrap().into_bytes()
-    }
-
-    #[test]
-    fn reconstruct_with_prediction_rejects_wrong_prediction_length() {
-        // A 4x4 block needs 16 prediction samples; a short buffer is rejected
-        // with a structured error (no panic) before reconstruction.
-        let quant = vec![0i32; 16];
-        let prediction = vec![128u8; 8];
-        let result = reconstruct_general_intra_block_with_prediction(
-            &quant,
-            &prediction,
-            64,
-            PlaneId::Y,
-            2,
-            false,
-            BitDepth::Eight,
-        );
-        assert!(matches!(
-            result,
-            Err(GeneralIntraResidualError::PredictionLength {
-                expected: 16,
-                actual: 8
-            })
-        ));
-    }
-
-    #[test]
-    fn txb_skip_tx_size_ctx_matches_spec_formula_for_square_sizes() {
-        // txSzCtx = (Tx_Size_Sqr[txSz] + Tx_Size_Sqr_Up[txSz] + 1) >> 1.
-        // TX_4X4 (0): (0 + 0 + 1) >> 1 == 0.
-        assert_eq!(txb_skip_tx_size_ctx(0), 0);
-        // TX_8X8 (1): (1 + 1 + 1) >> 1 == 1.
-        assert_eq!(txb_skip_tx_size_ctx(1), 1);
-        // TX_16X16 (2): (2 + 2 + 1) >> 1 == 2.
-        assert_eq!(txb_skip_tx_size_ctx(2), 2);
-        // TX_32X32 (3): (3 + 3 + 1) >> 1 == 3.
-        assert_eq!(txb_skip_tx_size_ctx(3), 3);
-        // TX_64X64 (4): (4 + 4 + 1) >> 1 == 4 (the q80 single-block luma size).
-        assert_eq!(txb_skip_tx_size_ctx(TX_64X64), 4);
-    }
-
-    #[test]
-    fn txb_skip_tx_size_ctx_is_total_for_out_of_range_tx_size() {
-        // Out-of-range indices saturate to 0 rather than panicking.
-        assert_eq!(txb_skip_tx_size_ctx(usize::MAX), 0);
-        assert_eq!(txb_skip_tx_size_ctx(TX_SIZE_SQR.len()), 0);
-    }
-
-    // Each bool is a distinct AV2 frame-level syntax flag the fixture toggles; bundling them would obscure the spec mapping.
-    #[allow(clippy::fn_params_excessive_bools)]
-    fn frame_facts(
-        enable_idtx_intra: bool,
-        enable_intra_ist: bool,
-        enable_chroma_dctonly: bool,
-        enable_cctx: bool,
-    ) -> TileCoeffFrameFacts {
-        TileCoeffFrameFacts::new(TileCoeffFrameFactsInput {
-            enable_fsc: false,
-            enable_idtx_intra,
-            enable_intra_ist,
-            enable_inter_ist: false,
-            enable_chroma_dctonly,
-            enable_cctx,
-            reduced_tx_set: 0,
-            lossless_array: [false; MAX_SEGMENTS],
-            allow_tcq: false,
-            allow_parity_hiding: false,
-            base_q_idx: 128,
-        })
-    }
-
-    fn frame_facts_with_coeff_tools(
-        allow_tcq: bool,
-        allow_parity_hiding: bool,
-    ) -> TileCoeffFrameFacts {
-        TileCoeffFrameFacts::new(TileCoeffFrameFactsInput {
-            enable_fsc: false,
-            enable_idtx_intra: true,
-            enable_intra_ist: false,
-            enable_inter_ist: false,
-            enable_chroma_dctonly: false,
-            enable_cctx: false,
-            reduced_tx_set: 0,
-            lossless_array: [false; MAX_SEGMENTS],
-            allow_tcq,
-            allow_parity_hiding,
-            base_q_idx: 128,
-        })
-    }
-
-    fn frame_facts_with_fsc() -> TileCoeffFrameFacts {
-        TileCoeffFrameFacts::new(TileCoeffFrameFactsInput {
-            enable_fsc: true,
-            enable_idtx_intra: true,
-            enable_intra_ist: false,
-            enable_inter_ist: false,
-            enable_chroma_dctonly: false,
-            enable_cctx: false,
-            reduced_tx_set: 0,
-            lossless_array: [false; MAX_SEGMENTS],
-            allow_tcq: false,
-            allow_parity_hiding: false,
-            base_q_idx: 128,
-        })
-    }
-
-    // Consumes a throwaway decode `Result` to extract its reason; by-value matches the call sites that hand off ownership.
-    #[allow(clippy::needless_pass_by_value)]
-    fn unsupported_reason<T>(result: Result<T, GeneralIntraResidualError>) -> Option<&'static str> {
-        match result {
-            Err(GeneralIntraResidualError::UnsupportedTransformToolResidual { reason }) => {
-                Some(reason)
-            }
-            _ => None,
-        }
-    }
-
-    fn ensure_with_test_state(
-        facts: TileCoeffFrameFacts,
-        plane: usize,
-        tx_size: usize,
-        is_inter: bool,
-        eob: usize,
-        luma: Option<LumaTransformTypeContext>,
-    ) -> Result<TransformToolResidualMetadata, GeneralIntraResidualError> {
-        ensure_with_test_payload_and_policy(
-            facts,
-            plane,
-            tx_size,
-            is_inter,
-            eob,
-            luma,
-            ActiveIntraIstResidualPolicy::Reject,
-            ActiveChromaResidualPolicy::Reject,
-            &PAYLOAD,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn ensure_with_test_payload_and_policy(
-        facts: TileCoeffFrameFacts,
-        plane: usize,
-        tx_size: usize,
-        is_inter: bool,
-        eob: usize,
-        luma: Option<LumaTransformTypeContext>,
-        active_intra_ist_policy: ActiveIntraIstResidualPolicy,
-        active_chroma_policy: ActiveChromaResidualPolicy,
-        payload: &'static [u8],
-    ) -> Result<TransformToolResidualMetadata, GeneralIntraResidualError> {
-        ensure_with_test_payload_fsc_and_policy(
-            facts,
-            plane,
-            tx_size,
-            is_inter,
-            false,
-            eob,
-            luma,
-            active_intra_ist_policy,
-            active_chroma_policy,
-            payload,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn ensure_with_test_payload_fsc_and_policy(
-        facts: TileCoeffFrameFacts,
-        plane: usize,
-        tx_size: usize,
-        is_inter: bool,
-        fsc_mode: bool,
-        eob: usize,
-        luma: Option<LumaTransformTypeContext>,
-        active_intra_ist_policy: ActiveIntraIstResidualPolicy,
-        active_chroma_policy: ActiveChromaResidualPolicy,
-        payload: &'static [u8],
-    ) -> Result<TransformToolResidualMetadata, GeneralIntraResidualError> {
-        let mut cdfs = tile_cdfs();
-        let mut symbols = symbol_decoder_for_payload(payload);
-        ensure_transform_tool_residual_handoff(
-            &mut cdfs,
-            &mut symbols,
-            TransformToolResidualInput {
-                frame_facts: facts,
-                plane,
-                tx_size,
-                is_inter,
-                fsc_mode,
-                eob,
-                luma_transform_type_context: luma,
-                active_intra_ist_policy,
-                active_chroma_policy,
-            },
-        )
-    }
-
-    #[test]
-    fn fsc_mode_luma_transform_handoff_derives_idtx_without_luma_context() {
-        let metadata = ensure_with_test_payload_fsc_and_policy(
-            frame_facts_with_fsc(),
-            0,
-            TX_8X8,
-            false,
-            true,
-            2,
-            None,
-            ActiveIntraIstResidualPolicy::LrTxSkipRecordHandoff,
-            ActiveChromaResidualPolicy::Reject,
-            &PAYLOAD,
-        )
-        .unwrap();
-
-        assert_eq!(metadata.luma_tx_type, IDTX);
-        assert_eq!(metadata.intra_ist, None);
-    }
-
-    #[test]
-    fn non_fsc_luma_transform_handoff_still_requires_luma_context() {
-        let result = ensure_with_test_payload_fsc_and_policy(
-            frame_facts_with_fsc(),
-            0,
-            TX_8X8,
-            false,
-            false,
-            2,
-            None,
-            ActiveIntraIstResidualPolicy::LrTxSkipRecordHandoff,
-            ActiveChromaResidualPolicy::Reject,
-            &PAYLOAD,
-        );
-
-        assert_eq!(
-            unsupported_reason(result),
-            Some("unsupported_dctonly_residual_luma_transform_context")
-        );
-    }
-
-    #[test]
-    fn dctonly_residual_admits_luma_when_ist_cannot_read_after_eob_limit() {
-        let result = ensure_with_test_state(
-            frame_facts(true, true, false, false),
-            0,
-            TX_32X32,
-            false,
-            IST_8X8_HEIGHT + 1,
-            Some(LumaTransformTypeContext::new(IntraYMode::DC_PRED, 0)),
-        );
-
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn dctonly_residual_admits_luma_when_intra_ist_reads_zero_sec_tx_type() {
-        let result = ensure_with_test_state(
-            frame_facts(true, true, false, false),
-            0,
-            TX_32X32,
-            false,
-            2,
-            Some(LumaTransformTypeContext::new(IntraYMode::DC_PRED, 0)),
-        );
-
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn dctonly_residual_rejects_intra_ist_without_luma_context() {
-        let result = ensure_with_test_state(
-            frame_facts(true, true, false, false),
-            0,
-            TX_32X32,
-            false,
-            2,
-            None,
-        );
-
-        assert_eq!(
-            unsupported_reason(result),
-            Some("unsupported_dctonly_residual_intra_ist_context")
-        );
-    }
-
-    #[test]
-    fn dctonly_residual_rejects_active_intra_ist_sec_tx_type() {
-        let result = ensure_supported_intra_ist_sec_tx_type(
-            IntraIstSyntax {
-                sec_tx_type: 1,
-                most_probable_stx_set: Some(2),
-            },
-            ActiveIntraIstResidualPolicy::Reject,
-        );
-
-        assert_eq!(
-            unsupported_reason(result),
-            Some("unsupported_dctonly_residual_intra_sec_tx_type")
-        );
-    }
-
-    #[test]
-    fn dctonly_residual_lr_handoff_admits_active_intra_ist_metadata() {
-        let payload = encode_transform_symbols(&[
-            (
-                TileCdfSelector::SecTxType {
-                    is_inter: 0,
-                    tx_size_sqr: TX_SIZE_SQR[TX_32X32] as usize,
-                },
-                1,
-            ),
-            (TileCdfSelector::MostProbableStxSet, 2),
-        ]);
-        let leaked_payload: &'static [u8] = Box::leak(payload.into_boxed_slice());
-
-        let metadata = ensure_with_test_payload_and_policy(
-            frame_facts(true, true, false, false),
-            0,
-            TX_32X32,
-            false,
-            2,
-            Some(LumaTransformTypeContext::new(IntraYMode::DC_PRED, 0)),
-            ActiveIntraIstResidualPolicy::LrTxSkipRecordHandoff,
-            ActiveChromaResidualPolicy::Reject,
-            leaked_payload,
-        )
-        .unwrap();
-
-        assert_eq!(
-            metadata.intra_ist,
-            Some(IntraIstSyntax {
-                sec_tx_type: 1,
-                most_probable_stx_set: Some(2),
-            })
-        );
-    }
-
-    #[test]
-    fn dctonly_residual_safe_policy_rejects_encoded_active_intra_ist() {
-        let payload = encode_transform_symbols(&[
-            (
-                TileCdfSelector::SecTxType {
-                    is_inter: 0,
-                    tx_size_sqr: TX_SIZE_SQR[TX_32X32] as usize,
-                },
-                1,
-            ),
-            (TileCdfSelector::MostProbableStxSet, 2),
-        ]);
-        let leaked_payload: &'static [u8] = Box::leak(payload.into_boxed_slice());
-
-        let result = ensure_with_test_payload_and_policy(
-            frame_facts(true, true, false, false),
-            0,
-            TX_32X32,
-            false,
-            2,
-            Some(LumaTransformTypeContext::new(IntraYMode::DC_PRED, 0)),
-            ActiveIntraIstResidualPolicy::Reject,
-            ActiveChromaResidualPolicy::Reject,
-            leaked_payload,
-        );
-
-        assert_eq!(
-            unsupported_reason(result),
-            Some("unsupported_dctonly_residual_intra_sec_tx_type")
-        );
-    }
-
-    #[test]
-    fn dctonly_residual_maps_nonzero_intra_tx_type_to_non_dct() {
-        let tx_type = md_idx_luma_tx_type(
-            TX_8X8,
-            LumaTransformTypeContext::new(IntraYMode::DC_PRED, 0),
-            1,
-        )
-        .unwrap();
-
-        assert_ne!(tx_type, DCT_DCT);
-    }
-
-    #[test]
-    fn luma_transform_context_applies_mrl_delta_before_wide_angle_mapping() {
-        let luma =
-            crate::tile_payload::cdf::block_context::reconstruct_y_mode_second_set_top_left(1, 6)
-                .unwrap();
-        assert_eq!(luma.y_mode.value(), 8);
-        assert_eq!(luma.angle_delta_y, -2);
-
-        let no_mrl =
-            md_idx_luma_tx_type(TX_8X16, LumaTransformTypeContext::new(luma.y_mode, -2), 4)
-                .unwrap();
-        let active_mrl = md_idx_luma_tx_type(
-            TX_8X16,
-            LumaTransformTypeContext::with_mrl_index(luma.y_mode, -2, 2),
-            4,
-        )
-        .unwrap();
-
-        assert_ne!(no_mrl, active_mrl);
-        assert_eq!(no_mrl, DCT_FLIPADST);
-        assert_eq!(active_mrl, FLIPADST_DCT);
-    }
-
-    #[test]
-    fn luma_txtype_residual_lr_handoff_retains_non_dct_luma_tx_type() {
-        let payload = encode_transform_symbols(&[(
-            TileCdfSelector::IntraTxTypeSet1 {
-                tx_size_sqr: TX_SIZE_SQR[TX_8X8] as usize,
-            },
-            1,
-        )]);
-        let leaked_payload: &'static [u8] = Box::leak(payload.into_boxed_slice());
-        let luma = LumaTransformTypeContext::new(IntraYMode::DC_PRED, 0);
-        let expected = md_idx_luma_tx_type(TX_8X8, luma, 1).unwrap();
-
-        let metadata = ensure_with_test_payload_and_policy(
-            frame_facts(false, false, false, false),
-            0,
-            TX_8X8,
-            false,
-            2,
-            Some(luma),
-            ActiveIntraIstResidualPolicy::LrTxSkipRecordHandoff,
-            ActiveChromaResidualPolicy::Reject,
-            leaked_payload,
-        )
-        .unwrap();
-
-        assert_ne!(expected, DCT_DCT);
-        assert_eq!(metadata.luma_tx_type, expected);
-    }
-
-    #[test]
-    fn luma_txtype_residual_lr_handoff_skips_intra_ist_for_non_sec_tx_type() {
-        let payload = encode_transform_symbols(&[(
-            TileCdfSelector::IntraTxTypeSet1 {
-                tx_size_sqr: TX_SIZE_SQR[TX_8X8] as usize,
-            },
-            2,
-        )]);
-        let leaked_payload: &'static [u8] = Box::leak(payload.into_boxed_slice());
-        let luma = LumaTransformTypeContext::new(IntraYMode::DC_PRED, 0);
-        let expected = md_idx_luma_tx_type(TX_8X8, luma, 2).unwrap();
-
-        let metadata = ensure_with_test_payload_and_policy(
-            frame_facts(false, true, false, false),
-            0,
-            TX_8X8,
-            false,
-            2,
-            Some(luma),
-            ActiveIntraIstResidualPolicy::LrTxSkipRecordHandoff,
-            ActiveChromaResidualPolicy::Reject,
-            leaked_payload,
-        )
-        .unwrap();
-
-        assert_ne!(expected, DCT_DCT);
-        assert_ne!(expected, ADST_ADST);
-        assert_eq!(metadata.luma_tx_type, expected);
-        assert_eq!(metadata.intra_ist, None);
-    }
-
-    #[test]
-    fn luma_txtype_residual_adst_adst_uses_reduced_ist_eob_limit() {
-        let payload = encode_transform_symbols(&[(
-            TileCdfSelector::IntraTxTypeSet1 {
-                tx_size_sqr: TX_SIZE_SQR[TX_16X16] as usize,
-            },
-            1,
-        )]);
-        let leaked_payload: &'static [u8] = Box::leak(payload.into_boxed_slice());
-        let luma = LumaTransformTypeContext::new(IntraYMode::DC_PRED, 0);
-        let expected = md_idx_luma_tx_type(TX_16X16, luma, 1).unwrap();
-
-        let metadata = ensure_with_test_payload_and_policy(
-            frame_facts(false, true, false, false),
-            0,
-            TX_16X16,
-            false,
-            IST_8X8_HEIGHT_RED + 1,
-            Some(luma),
-            ActiveIntraIstResidualPolicy::LrTxSkipRecordHandoff,
-            ActiveChromaResidualPolicy::Reject,
-            leaked_payload,
-        )
-        .unwrap();
-
-        assert_eq!(expected, ADST_ADST);
-        assert_eq!(metadata.luma_tx_type, ADST_ADST);
-        assert_eq!(metadata.intra_ist, None);
-    }
-
-    #[test]
-    fn luma_txtype_residual_staged_base_config_uses_retained_luma_tx_type() {
-        let luma = LumaTransformTypeContext::new(IntraYMode::DC_PRED, 0);
-        let expected = md_idx_luma_tx_type(TX_8X8, luma, 1).unwrap();
-
-        let config = staged_transform_tool_lossless_base_config(
-            frame_facts(false, false, false, false),
-            0,
-            0,
-            false,
-            TransformToolResidualMetadata {
-                luma_tx_type: expected,
-                ..TransformToolResidualMetadata::default()
-            },
-        );
-
-        assert_ne!(expected, DCT_DCT);
-        assert_eq!(config.luma_tx_type, expected);
-    }
-
-    #[test]
-    fn luma_txtype_residual_staged_base_config_derives_flags_for_2d_luma_tx_type() {
-        let config = staged_transform_tool_lossless_base_config(
-            frame_facts_with_coeff_tools(true, true),
-            0,
-            0,
-            false,
-            TransformToolResidualMetadata {
-                luma_tx_type: ADST_DCT,
-                ..TransformToolResidualMetadata::default()
-            },
-        );
-
-        assert!(config.parity_hiding);
-        assert!(config.use_tcq);
-    }
-
-    #[test]
-    fn luma_txtype_residual_staged_base_config_suppresses_parity_hiding_for_idtx() {
-        let config = staged_transform_tool_lossless_base_config(
-            frame_facts_with_coeff_tools(true, true),
-            0,
-            0,
-            false,
-            TransformToolResidualMetadata {
-                luma_tx_type: IDTX,
-                ..TransformToolResidualMetadata::default()
-            },
-        );
-
-        assert!(!config.parity_hiding);
-        assert!(config.use_tcq);
-    }
-
-    #[test]
-    fn luma_txtype_residual_staged_base_config_suppresses_tcq_for_1d_luma_tx_type() {
-        let config = staged_transform_tool_lossless_base_config(
-            frame_facts_with_coeff_tools(true, true),
-            0,
-            0,
-            false,
-            TransformToolResidualMetadata {
-                luma_tx_type: V_DCT,
-                ..TransformToolResidualMetadata::default()
-            },
-        );
-
-        assert!(config.parity_hiding);
-        assert!(!config.use_tcq);
-    }
-
-    #[test]
-    fn luma_txtype_residual_safe_policy_rejects_non_dct_luma_tx_type() {
-        let payload = encode_transform_symbols(&[(
-            TileCdfSelector::IntraTxTypeSet1 {
-                tx_size_sqr: TX_SIZE_SQR[TX_8X8] as usize,
-            },
-            1,
-        )]);
-        let leaked_payload: &'static [u8] = Box::leak(payload.into_boxed_slice());
-
-        let result = ensure_with_test_payload_and_policy(
-            frame_facts(false, false, false, false),
-            0,
-            TX_8X8,
-            false,
-            2,
-            Some(LumaTransformTypeContext::new(IntraYMode::DC_PRED, 0)),
-            ActiveIntraIstResidualPolicy::Reject,
-            ActiveChromaResidualPolicy::Reject,
-            leaked_payload,
-        );
-
-        assert_eq!(
-            unsupported_reason(result),
-            Some("unsupported_dctonly_residual_luma_tx_type")
-        );
-    }
-
-    #[test]
-    fn dctonly_residual_rejects_u_plane_cctx_only_when_eob_requires_cctx_type() {
-        let facts = frame_facts(false, false, false, true);
-        let eob_one = ensure_with_test_state(facts, 1, TX_32X32, false, 1, None);
-        let eob_two = ensure_with_test_state(facts, 1, TX_32X32, false, 2, None);
-
-        assert!(eob_one.is_ok());
-        assert_eq!(
-            unsupported_reason(eob_two),
-            Some("unsupported_dctonly_residual_cctx")
-        );
-    }
-
-    #[test]
-    fn dctonly_residual_safe_policy_rejects_chroma_non_dct_tx_set() {
-        let result = ensure_with_test_state(
-            frame_facts(false, false, false, false),
-            1,
-            TX_8X8,
-            false,
-            1,
-            None,
-        );
-
-        assert_eq!(
-            unsupported_reason(result),
-            Some("unsupported_dctonly_residual_tx_set")
-        );
-    }
-
-    #[test]
-    fn dctonly_residual_lr_handoff_admits_chroma_non_dct_tx_set() {
-        let result = ensure_with_test_payload_and_policy(
-            frame_facts(false, false, false, false),
-            1,
-            TX_8X8,
-            false,
-            1,
-            None,
-            ActiveIntraIstResidualPolicy::Reject,
-            ActiveChromaResidualPolicy::LrTxSkipRecordHandoff,
-            &PAYLOAD,
-        );
-
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn dctonly_residual_lr_handoff_reads_cctx_zero() {
-        let payload = encode_transform_symbols(&[(TileCdfSelector::CctxType, 0)]);
-        let leaked_payload: &'static [u8] = Box::leak(payload.into_boxed_slice());
-
-        let metadata = ensure_with_test_payload_and_policy(
-            frame_facts(false, false, false, true),
-            1,
-            TX_8X8,
-            false,
-            2,
-            None,
-            ActiveIntraIstResidualPolicy::Reject,
-            ActiveChromaResidualPolicy::LrTxSkipRecordHandoff,
-            leaked_payload,
-        )
-        .unwrap();
-
-        assert_eq!(metadata.cctx_type, Some(0));
-    }
-
-    #[test]
-    fn dctonly_residual_lr_handoff_reads_nonzero_cctx_metadata() {
-        let payload = encode_transform_symbols(&[(TileCdfSelector::CctxType, 1)]);
-        let leaked_payload: &'static [u8] = Box::leak(payload.into_boxed_slice());
-
-        let metadata = ensure_with_test_payload_and_policy(
-            frame_facts(false, false, false, true),
-            1,
-            TX_8X8,
-            false,
-            2,
-            None,
-            ActiveIntraIstResidualPolicy::Reject,
-            ActiveChromaResidualPolicy::LrTxSkipRecordHandoff,
-            leaked_payload,
-        )
-        .unwrap();
-
-        assert_eq!(metadata.cctx_type, Some(1));
-    }
-
-    #[test]
-    fn dctonly_residual_maps_intra_tx_type_zero_to_dct_dct() {
-        let tx_type = md_idx_luma_tx_type(
-            TX_8X8,
-            LumaTransformTypeContext::new(IntraYMode::DC_PRED, 0),
-            0,
-        )
-        .unwrap();
-
-        assert_eq!(tx_type, DCT_DCT);
-    }
-
-    #[test]
-    fn dctonly_residual_long_set_maps_dct_symbol_only_for_long_side_dct() {
-        assert_eq!(TX_TYPE_INV_LONG[1][0][0], DCT_DCT);
-        assert_eq!(TX_TYPE_INV_LONG[1][1][0], DCT_DCT);
-        assert_ne!(TX_TYPE_INV_LONG[0][0][0], DCT_DCT);
-        assert_ne!(TX_TYPE_INV_LONG[0][1][0], DCT_DCT);
-    }
-}
+mod tests;

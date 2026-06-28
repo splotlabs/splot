@@ -12,15 +12,18 @@ use splot_core::tables::cdf::{
     DEFAULT_CWP_IDX_CDF, DEFAULT_DC_SIGN_CDF, DEFAULT_DRL_MODE_CDF, DEFAULT_EOB_EXTRA_CDF,
     DEFAULT_EOB_PT_16_CDF, DEFAULT_EOB_PT_32_CDF, DEFAULT_EOB_PT_64_CDF, DEFAULT_EOB_PT_128_CDF,
     DEFAULT_EOB_PT_256_CDF, DEFAULT_EOB_PT_512_CDF, DEFAULT_EOB_PT_1024_CDF,
-    DEFAULT_INTER_TX_TYPE_LONG_CDF, DEFAULT_INTERP_FILTER_CDF, DEFAULT_INTRA_TX_TYPE_LONG_CDF,
-    DEFAULT_INTRA_TX_TYPE_SET1_CDF, DEFAULT_INTRA_TX_TYPE_SET2_CDF, DEFAULT_IS_CFL_CDF,
-    DEFAULT_IS_INTER_CDF, DEFAULT_IS_JOINT_CDF, DEFAULT_IS_LONG_SIDE_DCT_CDF,
-    DEFAULT_MOST_PROBABLE_STX_SET_ADST_CDF, DEFAULT_MOST_PROBABLE_STX_SET_CDF,
-    DEFAULT_SEC_TX_TYPE_CDF, DEFAULT_SINGLE_MODE_CDF, DEFAULT_SINGLE_REF_CDF, DEFAULT_SKIP_CDF,
-    DEFAULT_TXB_SKIP_CDF, DEFAULT_USE_WIENER_NS_CDF, DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF,
-    DEFAULT_V_TXB_SKIP_CDF, DEFAULT_WIENER_NS_BASE_CDF, DEFAULT_WIENER_NS_LENGTH_CDF,
-    DEFAULT_WIENER_NS_UV_SYM_CDF, DEFAULT_Y_MODE_INDEX_CDF, DEFAULT_Y_MODE_OFFSET_CDF,
-    DEFAULT_Y_MODE_SET_CDF,
+    DEFAULT_INTER_TX_TYPE_INDEX_SET1_CDF, DEFAULT_INTER_TX_TYPE_INDEX_SET2_CDF,
+    DEFAULT_INTER_TX_TYPE_LONG_CDF, DEFAULT_INTER_TX_TYPE_OFFSET_SET1_CDF,
+    DEFAULT_INTER_TX_TYPE_OFFSET_SET2_CDF, DEFAULT_INTER_TX_TYPE_SET1_CDF,
+    DEFAULT_INTER_TX_TYPE_SET2_CDF, DEFAULT_INTER_TX_TYPE_SET3_CDF, DEFAULT_INTER_TX_TYPE_SET4_CDF,
+    DEFAULT_INTERP_FILTER_CDF, DEFAULT_INTRA_TX_TYPE_LONG_CDF, DEFAULT_INTRA_TX_TYPE_SET1_CDF,
+    DEFAULT_INTRA_TX_TYPE_SET2_CDF, DEFAULT_IS_CFL_CDF, DEFAULT_IS_INTER_CDF, DEFAULT_IS_JOINT_CDF,
+    DEFAULT_IS_LONG_SIDE_DCT_CDF, DEFAULT_MOST_PROBABLE_STX_SET_ADST_CDF,
+    DEFAULT_MOST_PROBABLE_STX_SET_CDF, DEFAULT_SEC_TX_TYPE_CDF, DEFAULT_SINGLE_MODE_CDF,
+    DEFAULT_SINGLE_REF_CDF, DEFAULT_SKIP_CDF, DEFAULT_TXB_SKIP_CDF, DEFAULT_USE_WIENER_NS_CDF,
+    DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF, DEFAULT_V_TXB_SKIP_CDF, DEFAULT_WIENER_NS_BASE_CDF,
+    DEFAULT_WIENER_NS_LENGTH_CDF, DEFAULT_WIENER_NS_UV_SYM_CDF, DEFAULT_Y_MODE_INDEX_CDF,
+    DEFAULT_Y_MODE_OFFSET_CDF, DEFAULT_Y_MODE_SET_CDF,
 };
 
 mod mv;
@@ -95,6 +98,33 @@ const INTRA_TX_TYPE_LONG_ROW_LEN: usize = 5;
 const INTER_TX_TYPE_LONG_EOB_CONTEXTS: usize = 3;
 const INTER_TX_TYPE_LONG_SIZE_CONTEXTS: usize = 4;
 const INTER_TX_TYPE_LONG_ROW_LEN: usize = 5;
+// §8.3.2 Table 8.3 inter `inter_tx_type`/`inter_tx_type_offset` CDFs for the
+// `TX_SET_INTER_1/2` and `TX_SET_DCT_IDTX*` transform sets. `Default_*` shapes
+// come verbatim from `all_tables.h` (§9.3): the `eob` context is the leading
+// dimension for every bank.
+const INTER_TX_TYPE_EOB_CONTEXTS: usize = 3;
+// `Default_Inter_Tx_Type_Set1_Cdf[3][2][3]`: `inter_tx_type` (2 symbols) by
+// `[eobCtx][Tx_Size_Sqr]`.
+const INTER_TX_TYPE_SET1_SIZE_CONTEXTS: usize = 2;
+const INTER_TX_TYPE_SET1_ROW_LEN: usize = 3;
+// `Default_Inter_Tx_Type_Set2_Cdf[3][3]`: `inter_tx_type` (2 symbols) by
+// `[eobCtx]` only (the §8.3.2 Set2 row has no `sqrSz` index).
+const INTER_TX_TYPE_SET2_ROW_LEN: usize = 3;
+// `Default_Inter_Tx_Type_Index_Set1/2_Cdf[3][8+1]` and
+// `Default_Inter_Tx_Type_Offset_Set1_Cdf[3][8+1]`: 8-symbol selections by
+// `[eobCtx]`.
+const INTER_TX_TYPE_INDEX_ROW_LEN: usize = 9;
+const INTER_TX_TYPE_OFFSET_SET1_ROW_LEN: usize = 9;
+// `Default_Inter_Tx_Type_Offset_Set2_Cdf[3][4+1]`: 4-symbol selection by
+// `[eobCtx]`.
+const INTER_TX_TYPE_OFFSET_SET2_ROW_LEN: usize = 5;
+// `Default_Inter_Tx_Type_Set3_Cdf[3][4][3]`: 2-symbol selection by
+// `[eobCtx][Tx_Size_Sqr]` (DCT_IDTX).
+const INTER_TX_TYPE_SET34_SIZE_CONTEXTS: usize = 4;
+const INTER_TX_TYPE_SET3_ROW_LEN: usize = 3;
+// `Default_Inter_Tx_Type_Set4_Cdf[3][4][5]`: 4-symbol selection by
+// `[eobCtx][Tx_Size_Sqr]` (DCT_IDTX_IDDCT).
+const INTER_TX_TYPE_SET4_ROW_LEN: usize = 5;
 const INTRA_TX_TYPE_SET1_ROW_LEN: usize = 8;
 const INTRA_TX_TYPE_SET2_ROW_LEN: usize = 3;
 const IS_LONG_SIDE_DCT_CONTEXTS: usize = 2;
@@ -158,6 +188,25 @@ pub(crate) type IntraTxTypeLongCdfRows =
 pub(crate) type InterTxTypeLongCdfRows = [[[i32; INTER_TX_TYPE_LONG_ROW_LEN];
     INTER_TX_TYPE_LONG_SIZE_CONTEXTS];
     INTER_TX_TYPE_LONG_EOB_CONTEXTS];
+pub(crate) type InterTxTypeSet1CdfRows = [[[i32; INTER_TX_TYPE_SET1_ROW_LEN];
+    INTER_TX_TYPE_SET1_SIZE_CONTEXTS];
+    INTER_TX_TYPE_EOB_CONTEXTS];
+pub(crate) type InterTxTypeSet2CdfRows =
+    [[i32; INTER_TX_TYPE_SET2_ROW_LEN]; INTER_TX_TYPE_EOB_CONTEXTS];
+pub(crate) type InterTxTypeIndexSet1CdfRows =
+    [[i32; INTER_TX_TYPE_INDEX_ROW_LEN]; INTER_TX_TYPE_EOB_CONTEXTS];
+pub(crate) type InterTxTypeIndexSet2CdfRows =
+    [[i32; INTER_TX_TYPE_INDEX_ROW_LEN]; INTER_TX_TYPE_EOB_CONTEXTS];
+pub(crate) type InterTxTypeOffsetSet1CdfRows =
+    [[i32; INTER_TX_TYPE_OFFSET_SET1_ROW_LEN]; INTER_TX_TYPE_EOB_CONTEXTS];
+pub(crate) type InterTxTypeOffsetSet2CdfRows =
+    [[i32; INTER_TX_TYPE_OFFSET_SET2_ROW_LEN]; INTER_TX_TYPE_EOB_CONTEXTS];
+pub(crate) type InterTxTypeSet3CdfRows = [[[i32; INTER_TX_TYPE_SET3_ROW_LEN];
+    INTER_TX_TYPE_SET34_SIZE_CONTEXTS];
+    INTER_TX_TYPE_EOB_CONTEXTS];
+pub(crate) type InterTxTypeSet4CdfRows = [[[i32; INTER_TX_TYPE_SET4_ROW_LEN];
+    INTER_TX_TYPE_SET34_SIZE_CONTEXTS];
+    INTER_TX_TYPE_EOB_CONTEXTS];
 pub(crate) type IntraTxTypeSet1CdfRows =
     [[i32; INTRA_TX_TYPE_SET1_ROW_LEN]; INTRA_TX_TYPE_SIZE_CONTEXTS];
 pub(crate) type IntraTxTypeSet2CdfRows =
@@ -408,6 +457,64 @@ pub(crate) enum BlockCdfSelector {
         /// `Tx_Size_Sqr[txSz]`.
         tx_size_sqr: usize,
     },
+    /// `TileInterTxTypeSet1Cdf[ctx][Tx_Size_Sqr[txSz]]` (AV2 § 8.3.2 Table 8.3),
+    /// the `inter_tx_type` 2-symbol read for `TX_SET_INTER_1`.
+    InterTxTypeSet1 {
+        /// The §8.3.2 `inter_tx_type` eob context (0..2).
+        ctx: usize,
+        /// `Tx_Size_Sqr[txSz]`.
+        tx_size_sqr: usize,
+    },
+    /// `TileInterTxTypeSet2Cdf[ctx]` (AV2 § 8.3.2 Table 8.3), the
+    /// `inter_tx_type` 2-symbol read for `TX_SET_INTER_2`.
+    InterTxTypeSet2 {
+        /// The §8.3.2 `inter_tx_type` eob context (0..2).
+        ctx: usize,
+    },
+    /// `TileInterTxTypeIndexSet1Cdf[ctx]` (AV2 § 8.3.2), the
+    /// `inter_tx_type_offset` 8-symbol read for `TX_SET_INTER_1` when
+    /// `inter_tx_type == 0`.
+    InterTxTypeIndexSet1 {
+        /// The §8.3.2 `inter_tx_type_offset` eob context (0..2).
+        ctx: usize,
+    },
+    /// `TileInterTxTypeIndexSet2Cdf[ctx]` (AV2 § 8.3.2), the
+    /// `inter_tx_type_offset` 8-symbol read for `TX_SET_INTER_2` when
+    /// `inter_tx_type == 0`.
+    InterTxTypeIndexSet2 {
+        /// The §8.3.2 `inter_tx_type_offset` eob context (0..2).
+        ctx: usize,
+    },
+    /// `TileInterTxTypeOffsetSet1Cdf[ctx]` (AV2 § 8.3.2), the
+    /// `inter_tx_type_offset` 8-symbol read for `TX_SET_INTER_1` when
+    /// `inter_tx_type == 1`.
+    InterTxTypeOffsetSet1 {
+        /// The §8.3.2 `inter_tx_type_offset` eob context (0..2).
+        ctx: usize,
+    },
+    /// `TileInterTxTypeOffsetSet2Cdf[ctx]` (AV2 § 8.3.2), the
+    /// `inter_tx_type_offset` 4-symbol read for `TX_SET_INTER_2` when
+    /// `inter_tx_type == 1`.
+    InterTxTypeOffsetSet2 {
+        /// The §8.3.2 `inter_tx_type_offset` eob context (0..2).
+        ctx: usize,
+    },
+    /// `TileInterTxTypeSet3Cdf[ctx][Tx_Size_Sqr[txSz]]` (AV2 § 8.3.2 Table 8.3),
+    /// the `inter_tx_type` 2-symbol read for `TX_SET_DCT_IDTX`.
+    InterTxTypeSet3 {
+        /// The §8.3.2 `inter_tx_type` eob context (0..2).
+        ctx: usize,
+        /// `Tx_Size_Sqr[txSz]`.
+        tx_size_sqr: usize,
+    },
+    /// `TileInterTxTypeSet4Cdf[ctx][Tx_Size_Sqr[txSz]]` (AV2 § 8.3.2 Table 8.3),
+    /// the `inter_tx_type` 4-symbol read for `TX_SET_DCT_IDTX_IDDCT`.
+    InterTxTypeSet4 {
+        /// The §8.3.2 `inter_tx_type` eob context (0..2).
+        ctx: usize,
+        /// `Tx_Size_Sqr[txSz]`.
+        tx_size_sqr: usize,
+    },
     /// `TileIntraTxTypeSet1Cdf[Tx_Size_Sqr[txSz]]` (AV2 § 8.3.2 Table 8.2).
     IntraTxTypeSet1 {
         /// `Tx_Size_Sqr[txSz]`.
@@ -480,6 +587,14 @@ pub(crate) struct BlockCdfRows {
     pub(super) is_long_side_dct: IsLongSideDctCdfRows,
     pub(super) intra_tx_type_long: IntraTxTypeLongCdfRows,
     pub(super) inter_tx_type_long: InterTxTypeLongCdfRows,
+    pub(super) inter_tx_type_set1: InterTxTypeSet1CdfRows,
+    pub(super) inter_tx_type_set2: InterTxTypeSet2CdfRows,
+    pub(super) inter_tx_type_index_set1: InterTxTypeIndexSet1CdfRows,
+    pub(super) inter_tx_type_index_set2: InterTxTypeIndexSet2CdfRows,
+    pub(super) inter_tx_type_offset_set1: InterTxTypeOffsetSet1CdfRows,
+    pub(super) inter_tx_type_offset_set2: InterTxTypeOffsetSet2CdfRows,
+    pub(super) inter_tx_type_set3: InterTxTypeSet3CdfRows,
+    pub(super) inter_tx_type_set4: InterTxTypeSet4CdfRows,
     pub(super) intra_tx_type_set1: IntraTxTypeSet1CdfRows,
     pub(super) intra_tx_type_set2: IntraTxTypeSet2CdfRows,
     pub(super) sec_tx_type: SecTxTypeCdfRows,
@@ -942,6 +1057,137 @@ macro_rules! block_cdf_row {
                     })?;
                 Ok(row.$as_slice())
             }
+            BlockCdfSelector::InterTxTypeSet1 { ctx, tx_size_sqr } => {
+                let ctx_max = $self.inter_tx_type_set1.len();
+                let ctx_row =
+                    $self
+                        .inter_tx_type_set1
+                        .$get(ctx)
+                        .ok_or(TileCdfError::SelectorOutOfRange {
+                            array: TileCdfArray::InterTxTypeSet1,
+                            index_name: "ctx",
+                            actual: ctx,
+                            max_exclusive: ctx_max,
+                        })?;
+                let max_exclusive = ctx_row.len();
+                let row = ctx_row
+                    .$get(tx_size_sqr)
+                    .ok_or(TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::InterTxTypeSet1,
+                        index_name: "tx_size_sqr",
+                        actual: tx_size_sqr,
+                        max_exclusive,
+                    })?;
+                Ok(row.$as_slice())
+            }
+            BlockCdfSelector::InterTxTypeSet2 { ctx } => {
+                let max_exclusive = $self.inter_tx_type_set2.len();
+                let row =
+                    $self
+                        .inter_tx_type_set2
+                        .$get(ctx)
+                        .ok_or(TileCdfError::SelectorOutOfRange {
+                            array: TileCdfArray::InterTxTypeSet2,
+                            index_name: "ctx",
+                            actual: ctx,
+                            max_exclusive,
+                        })?;
+                Ok(row.$as_slice())
+            }
+            BlockCdfSelector::InterTxTypeIndexSet1 { ctx } => {
+                let max_exclusive = $self.inter_tx_type_index_set1.len();
+                let row = $self.inter_tx_type_index_set1.$get(ctx).ok_or(
+                    TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::InterTxTypeIndexSet1,
+                        index_name: "ctx",
+                        actual: ctx,
+                        max_exclusive,
+                    },
+                )?;
+                Ok(row.$as_slice())
+            }
+            BlockCdfSelector::InterTxTypeIndexSet2 { ctx } => {
+                let max_exclusive = $self.inter_tx_type_index_set2.len();
+                let row = $self.inter_tx_type_index_set2.$get(ctx).ok_or(
+                    TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::InterTxTypeIndexSet2,
+                        index_name: "ctx",
+                        actual: ctx,
+                        max_exclusive,
+                    },
+                )?;
+                Ok(row.$as_slice())
+            }
+            BlockCdfSelector::InterTxTypeOffsetSet1 { ctx } => {
+                let max_exclusive = $self.inter_tx_type_offset_set1.len();
+                let row = $self.inter_tx_type_offset_set1.$get(ctx).ok_or(
+                    TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::InterTxTypeOffsetSet1,
+                        index_name: "ctx",
+                        actual: ctx,
+                        max_exclusive,
+                    },
+                )?;
+                Ok(row.$as_slice())
+            }
+            BlockCdfSelector::InterTxTypeOffsetSet2 { ctx } => {
+                let max_exclusive = $self.inter_tx_type_offset_set2.len();
+                let row = $self.inter_tx_type_offset_set2.$get(ctx).ok_or(
+                    TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::InterTxTypeOffsetSet2,
+                        index_name: "ctx",
+                        actual: ctx,
+                        max_exclusive,
+                    },
+                )?;
+                Ok(row.$as_slice())
+            }
+            BlockCdfSelector::InterTxTypeSet3 { ctx, tx_size_sqr } => {
+                let ctx_max = $self.inter_tx_type_set3.len();
+                let ctx_row =
+                    $self
+                        .inter_tx_type_set3
+                        .$get(ctx)
+                        .ok_or(TileCdfError::SelectorOutOfRange {
+                            array: TileCdfArray::InterTxTypeSet3,
+                            index_name: "ctx",
+                            actual: ctx,
+                            max_exclusive: ctx_max,
+                        })?;
+                let max_exclusive = ctx_row.len();
+                let row = ctx_row
+                    .$get(tx_size_sqr)
+                    .ok_or(TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::InterTxTypeSet3,
+                        index_name: "tx_size_sqr",
+                        actual: tx_size_sqr,
+                        max_exclusive,
+                    })?;
+                Ok(row.$as_slice())
+            }
+            BlockCdfSelector::InterTxTypeSet4 { ctx, tx_size_sqr } => {
+                let ctx_max = $self.inter_tx_type_set4.len();
+                let ctx_row =
+                    $self
+                        .inter_tx_type_set4
+                        .$get(ctx)
+                        .ok_or(TileCdfError::SelectorOutOfRange {
+                            array: TileCdfArray::InterTxTypeSet4,
+                            index_name: "ctx",
+                            actual: ctx,
+                            max_exclusive: ctx_max,
+                        })?;
+                let max_exclusive = ctx_row.len();
+                let row = ctx_row
+                    .$get(tx_size_sqr)
+                    .ok_or(TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::InterTxTypeSet4,
+                        index_name: "tx_size_sqr",
+                        actual: tx_size_sqr,
+                        max_exclusive,
+                    })?;
+                Ok(row.$as_slice())
+            }
             BlockCdfSelector::IntraTxTypeSet1 { tx_size_sqr } => {
                 let max_exclusive = $self.intra_tx_type_set1.len();
                 let row = $self.intra_tx_type_set1.$get(tx_size_sqr).ok_or(
@@ -1037,6 +1283,14 @@ impl BlockCdfRows {
             is_long_side_dct: DEFAULT_IS_LONG_SIDE_DCT_CDF,
             intra_tx_type_long: DEFAULT_INTRA_TX_TYPE_LONG_CDF,
             inter_tx_type_long: DEFAULT_INTER_TX_TYPE_LONG_CDF,
+            inter_tx_type_set1: DEFAULT_INTER_TX_TYPE_SET1_CDF,
+            inter_tx_type_set2: DEFAULT_INTER_TX_TYPE_SET2_CDF,
+            inter_tx_type_index_set1: DEFAULT_INTER_TX_TYPE_INDEX_SET1_CDF,
+            inter_tx_type_index_set2: DEFAULT_INTER_TX_TYPE_INDEX_SET2_CDF,
+            inter_tx_type_offset_set1: DEFAULT_INTER_TX_TYPE_OFFSET_SET1_CDF,
+            inter_tx_type_offset_set2: DEFAULT_INTER_TX_TYPE_OFFSET_SET2_CDF,
+            inter_tx_type_set3: DEFAULT_INTER_TX_TYPE_SET3_CDF,
+            inter_tx_type_set4: DEFAULT_INTER_TX_TYPE_SET4_CDF,
             intra_tx_type_set1: DEFAULT_INTRA_TX_TYPE_SET1_CDF,
             intra_tx_type_set2: DEFAULT_INTRA_TX_TYPE_SET2_CDF,
             sec_tx_type: DEFAULT_SEC_TX_TYPE_CDF,
@@ -1306,6 +1560,60 @@ impl BlockCdfRows {
                 );
             }
         }
+        for eob_ctx in 0..INTER_TX_TYPE_EOB_CONTEXTS {
+            for tx_size_sqr in 0..INTER_TX_TYPE_SET1_SIZE_CONTEXTS {
+                avg_cdf_row(
+                    &mut self.inter_tx_type_set1[eob_ctx][tx_size_sqr],
+                    &tile.inter_tx_type_set1[eob_ctx][tx_size_sqr],
+                    tile_num,
+                    num_log2,
+                );
+            }
+            for tx_size_sqr in 0..INTER_TX_TYPE_SET34_SIZE_CONTEXTS {
+                avg_cdf_row(
+                    &mut self.inter_tx_type_set3[eob_ctx][tx_size_sqr],
+                    &tile.inter_tx_type_set3[eob_ctx][tx_size_sqr],
+                    tile_num,
+                    num_log2,
+                );
+                avg_cdf_row(
+                    &mut self.inter_tx_type_set4[eob_ctx][tx_size_sqr],
+                    &tile.inter_tx_type_set4[eob_ctx][tx_size_sqr],
+                    tile_num,
+                    num_log2,
+                );
+            }
+            avg_cdf_row(
+                &mut self.inter_tx_type_set2[eob_ctx],
+                &tile.inter_tx_type_set2[eob_ctx],
+                tile_num,
+                num_log2,
+            );
+            avg_cdf_row(
+                &mut self.inter_tx_type_index_set1[eob_ctx],
+                &tile.inter_tx_type_index_set1[eob_ctx],
+                tile_num,
+                num_log2,
+            );
+            avg_cdf_row(
+                &mut self.inter_tx_type_index_set2[eob_ctx],
+                &tile.inter_tx_type_index_set2[eob_ctx],
+                tile_num,
+                num_log2,
+            );
+            avg_cdf_row(
+                &mut self.inter_tx_type_offset_set1[eob_ctx],
+                &tile.inter_tx_type_offset_set1[eob_ctx],
+                tile_num,
+                num_log2,
+            );
+            avg_cdf_row(
+                &mut self.inter_tx_type_offset_set2[eob_ctx],
+                &tile.inter_tx_type_offset_set2[eob_ctx],
+                tile_num,
+                num_log2,
+            );
+        }
         for ctx in 0..INTRA_TX_TYPE_SIZE_CONTEXTS {
             avg_cdf_row(
                 &mut self.intra_tx_type_set1[ctx],
@@ -1449,6 +1757,22 @@ impl BlockCdfRows {
         }
         for row in self.inter_tx_type_long.iter_mut().flatten() {
             scale_cdf_count(row);
+        }
+        for row in self.inter_tx_type_set1.iter_mut().flatten() {
+            scale_cdf_count(row);
+        }
+        for row in self.inter_tx_type_set3.iter_mut().flatten() {
+            scale_cdf_count(row);
+        }
+        for row in self.inter_tx_type_set4.iter_mut().flatten() {
+            scale_cdf_count(row);
+        }
+        for eob_ctx in 0..INTER_TX_TYPE_EOB_CONTEXTS {
+            scale_cdf_count(&mut self.inter_tx_type_set2[eob_ctx]);
+            scale_cdf_count(&mut self.inter_tx_type_index_set1[eob_ctx]);
+            scale_cdf_count(&mut self.inter_tx_type_index_set2[eob_ctx]);
+            scale_cdf_count(&mut self.inter_tx_type_offset_set1[eob_ctx]);
+            scale_cdf_count(&mut self.inter_tx_type_offset_set2[eob_ctx]);
         }
         for ctx in 0..INTRA_TX_TYPE_SIZE_CONTEXTS {
             scale_cdf_count(&mut self.intra_tx_type_set1[ctx]);

@@ -745,20 +745,20 @@ pub(in crate::runtime_minimal) fn reconstruct_ac0ej3_selectable_intra_region(
 
 /// The single fail-closed reason the ac0ej3 selectable walk is expected to stop on
 /// after reconstructing the verified region; the test driver swallows only this one
-/// and propagates every other error. With the §7.12.2 IntrABC ref-MV stack now
-/// modelled in full — the spatial SMVP scan (an IntrABC spatial neighbour's recorded
-/// BV) plus the ref-MV-bank (`check_rmb_cand`) plus the default-BVP fill, all in AVM
-/// order — every IntrABC block in frame-0's reachable run ADMITS its AVM-faithful BV
-/// and the walk advances through the whole IntrABC sequence. The first §5.20.7.27
-/// residual outside the DCT_DCT-only subset (a non-DCT inter luma transform on one of
-/// the proven long-side sets) now decodes its coefficients — the loop is
-/// transform-type-agnostic — and DEFERS the unsupported inverse transform at the sink.
-/// The new wall is the first inter `transform_type` whose §5.20.7.29 transform SET is
-/// outside the proven long-side subset (`TX_SET_WIDE_32/64`, `TX_SET_HIGH_32/64`): the
-/// `TX_SET_INTER_1/2` / `TX_SET_DCT_IDTX*` sets need `inter_tx_type_offset` syntax this
-/// walk has not yet proven, so they defer — a correct conservative deferral.
+/// and propagates every other error. The §5.20.7.27 residual now parses every
+/// reachable non-DCT inter luma transform: the long-side sets
+/// (`TX_SET_WIDE_32/64`, `TX_SET_HIGH_32/64`) AND the small sets
+/// (`TX_SET_INTER_1/2`, `TX_SET_DCT_IDTX`, `TX_SET_DCT_IDTX_IDDCT`) read their
+/// §5.20.8.2 `inter_tx_type` (+ `inter_tx_type_offset`) syntax via §8.3.2 Table
+/// 8.3 CDFs. The coefficient loop is transform-type-agnostic, so each decodes its
+/// coefficients and DEFERS only the unsupported §7.13.3 inverse transform at the
+/// sink. With the non-DCT residual gate cleared, the walk now advances to a deeper
+/// IntrABC block whose §7.12.2 ref-MV stack reaches a spatial-scan position (or a
+/// DRL index) this decoder does not yet model faithfully, so the stack admission
+/// DEFERS — a correct conservative deferral, the genuinely distinct next wall.
 #[cfg(test)]
-const EXPECTED_RECON_FRONTIER_REASON: &str = "unsupported_dctonly_residual_inter_tx_set";
+const EXPECTED_RECON_FRONTIER_REASON: &str =
+    "unsupported_wienerns_lr_selectable_transform_records_intrabc_ref_stack";
 
 /// Whether the frame's §5.18.6 quantization matches the reconstruction primitive's
 /// zero-`QuantizerDeltas` assumption: no per-plane DC/AC quantizer delta and no
