@@ -560,13 +560,35 @@ impl SelectableLumaTxGrid {
         let tx_size = tx_size_from_dimensions(width, height)
             .ok_or(SelectableTransformRecordError::InvalidTxSize { width, height })?;
 
+        // §5.20.6.1 read_tx_size only runs at in-frame origins: decode_partition
+        // returns when `r >= MiRows || c >= MiCols` (05-syntax-structures.md:8855), so
+        // an out-of-frame ORIGIN is never a real placement. Return the computed
+        // geometry without recording it; the tx kind is still valid for any caller
+        // that reads it (only the write drops).
+        if row >= self.rows || col >= self.cols {
+            return Ok(tx_size);
+        }
+
         self.records
             .try_reserve(1)
             .map_err(|_| SelectableTransformRecordError::Unsupported {
                 reason: "record-allocation",
             })?;
+        // §5.20.6.1 set_tx_size fills `LumaTxSizes[row+i][col+j]` for `i in 0..h4`,
+        // `j in 0..w4` with NO MiRows/MiCols clamp (05-syntax-structures.md:12061-12071);
+        // out-of-frame tx samples are dropped DOWNSTREAM via the §5.20.3.2
+        // `block_coded(r,c) { return r < MiRows && c < MiCols }`
+        // (05-syntax-structures.md:9621). Model that frame-edge drop here: skip cells
+        // past the frame extent in BOTH the overlap check and the fill so a partial-SB
+        // MI row at the frame edge stays spec-faithful instead of erroring OutOfBounds.
         for r in row..row.saturating_add(h4) {
+            if r >= self.rows {
+                break;
+            }
             for c in col..col.saturating_add(w4) {
+                if c >= self.cols {
+                    break;
+                }
                 let index = self.index(r, c)?;
                 if self.cells[index].is_some() {
                     return Err(SelectableTransformRecordError::Overlap { row: r, col: c });
@@ -578,8 +600,14 @@ impl SelectableLumaTxGrid {
             middle,
             scan_order,
         };
-        for r in row..row + h4 {
-            for c in col..col + w4 {
+        for r in row..row.saturating_add(h4) {
+            if r >= self.rows {
+                break;
+            }
+            for c in col..col.saturating_add(w4) {
+                if c >= self.cols {
+                    break;
+                }
                 let index = self.index(r, c)?;
                 self.cells[index] = Some(cell);
             }
@@ -603,14 +631,21 @@ impl SelectableLumaTxGrid {
         rows: usize,
         cols: usize,
     ) -> std::result::Result<Vec<SelectableLumaTxRecord>, SelectableTransformRecordError> {
-        let expected =
-            rows.checked_mul(cols)
-                .ok_or(SelectableTransformRecordError::Unsupported {
-                    reason: "region-size-overflow",
-                })?;
+        // Clamp the region to the frame extent so the completeness check uses the
+        // SAME frame-edge drop as `set_tx_size`: out-of-frame cells are never filled
+        // (§5.20.3.2 block_coded), so the region's expected populated count is the
+        // in-frame sub-rectangle, not the full geometric `rows*cols`. Using a mismatched
+        // clamp would flip the (now spec-correct) edge drop into a false Incomplete.
+        let region_rows = self.rows.saturating_sub(row).min(rows);
+        let region_cols = self.cols.saturating_sub(col).min(cols);
+        let expected = region_rows.checked_mul(region_cols).ok_or(
+            SelectableTransformRecordError::Unsupported {
+                reason: "region-size-overflow",
+            },
+        )?;
         let mut actual = 0usize;
-        for r in row..row.saturating_add(rows) {
-            for c in col..col.saturating_add(cols) {
+        for r in row..row.saturating_add(region_rows) {
+            for c in col..col.saturating_add(region_cols) {
                 let index = self.index(r, c)?;
                 if self.cells[index].is_some() {
                     actual += 1;
@@ -2343,273 +2378,6 @@ mod cdef_tests;
 mod max_rect_tests;
 
 #[cfg(test)]
-mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-
-    use super::super::derive_wienerns_lr_tx_skip_grid_retention;
-    use super::*;
-
-    const TX_32X32: usize = 3;
-    const TX_64X64: usize = 4;
-    const TX_8X32: usize = 15;
-    const TX_4X32: usize = 19;
-
-    #[test]
-    fn selectable_tx_grid_records_middle_and_scan_order_flags() {
-        let mut grid = SelectableLumaTxGrid::new(8, 8).unwrap();
-        apply_tx_partition(&mut grid, 0, 0, TX_32X32, TX_PARTITION_VERT5).unwrap();
-
-        let records = grid.records_for_region(0, 0, 8, 8).unwrap();
-        assert_eq!(records.len(), 5);
-        assert_eq!(
-            records
-                .iter()
-                .map(|record| (record.row, record.col, record.rows, record.cols))
-                .collect::<Vec<_>>(),
-            vec![
-                (0, 0, 4, 2),
-                (4, 0, 4, 2),
-                (0, 2, 8, 4),
-                (0, 6, 4, 2),
-                (4, 6, 4, 2)
-            ]
-        );
-        assert!(!records[0].middle);
-        assert!(records[1..].iter().all(|record| record.middle));
-        assert!(records.iter().all(|record| record.scan_order));
-    }
-
-    #[test]
-    fn selectable_luma_record_fill_context_tracks_full_block_extent() {
-        let full_record = SelectableLumaTxRecord {
-            row: 0,
-            col: 0,
-            rows: 16,
-            cols: 16,
-            tx_size: TX_64X64,
-            middle: false,
-            scan_order: false,
-        };
-        assert!(selectable_luma_tx_record_fills_block(full_record, 16, 16));
-        assert!(
-            !selectable_luma_tx_record_fills_block(full_record, 32, 32),
-            "a 64x64 transform record inside a 128x128 luma block must not take the §8.3.2 ctx=0 full-block branch"
-        );
-
-        let mut grid = SelectableLumaTxGrid::new(16, 16).unwrap();
-        apply_tx_partition(&mut grid, 0, 0, TX_64X64, TX_PARTITION_HORZ5).unwrap();
-
-        let records = grid.records_for_region(0, 0, 16, 16).unwrap();
-        assert_eq!(
-            records
-                .iter()
-                .map(|record| (record.row, record.col, record.rows, record.cols))
-                .collect::<Vec<_>>(),
-            vec![
-                (0, 0, 4, 8),
-                (0, 8, 4, 8),
-                (4, 0, 8, 16),
-                (12, 0, 4, 8),
-                (12, 8, 4, 8),
-            ]
-        );
-        assert!(
-            records
-                .iter()
-                .copied()
-                .all(|record| !selectable_luma_tx_record_fills_block(record, 16, 16))
-        );
-    }
-
-    #[test]
-    fn selectable_leaf_shape_admits_luma_only_block_4x32() {
-        assert!(selectable_transform_leaf_shape_supported(true, false, 1, 8));
-        assert!(selectable_transform_leaf_shape_supported(true, false, 8, 1));
-        assert!(selectable_transform_leaf_shape_supported(true, false, 1, 1));
-    }
-
-    #[test]
-    fn selectable_leaf_shape_preserves_chroma_bearing_narrow_guard() {
-        assert!(!selectable_transform_leaf_shape_supported(
-            false, true, 1, 8
-        ));
-        assert!(!selectable_transform_leaf_shape_supported(true, true, 1, 8));
-        assert!(!selectable_transform_leaf_shape_supported(
-            false, false, 1, 8
-        ));
-        assert!(!selectable_transform_leaf_shape_supported(
-            true, false, 0, 8
-        ));
-        assert!(!selectable_transform_leaf_shape_supported(
-            true, false, 1, 0
-        ));
-        assert!(selectable_transform_leaf_shape_supported(false, true, 2, 2));
-    }
-
-    #[test]
-    fn selectable_chroma_offset_leaf_support_is_luma_only() {
-        assert!(selectable_chroma_offset_leaf_supported(true, false));
-        assert!(!selectable_chroma_offset_leaf_supported(true, true));
-        assert!(!selectable_chroma_offset_leaf_supported(false, false));
-        assert!(!selectable_chroma_offset_leaf_supported(false, true));
-    }
-
-    #[test]
-    fn selectable_tx_grid_records_observed_luma_only_block_8x32_region() {
-        let mut grid = SelectableLumaTxGrid::new(16, 32).unwrap();
-        grid.set_tx_size(8, 24, 8, 2, false, false).unwrap();
-
-        let records = grid.records_for_region(8, 24, 8, 2).unwrap();
-        assert_eq!(
-            records,
-            vec![SelectableLumaTxRecord {
-                row: 8,
-                col: 24,
-                rows: 8,
-                cols: 2,
-                tx_size: TX_8X32,
-                middle: false,
-                scan_order: false,
-            }]
-        );
-    }
-
-    #[test]
-    fn selectable_tx_grid_records_luma_only_block_4x32_region() {
-        let mut grid = SelectableLumaTxGrid::new(16, 32).unwrap();
-        grid.set_tx_size(8, 24, 8, 1, false, false).unwrap();
-
-        let records = grid.records_for_region(8, 24, 8, 1).unwrap();
-        assert_eq!(
-            records,
-            vec![SelectableLumaTxRecord {
-                row: 8,
-                col: 24,
-                rows: 8,
-                cols: 1,
-                tx_size: TX_4X32,
-                middle: false,
-                scan_order: false,
-            }]
-        );
-        assert_eq!(
-            grid.records_for_region(8, 24, 8, 2).unwrap_err(),
-            SelectableTransformRecordError::Incomplete {
-                expected: 16,
-                actual: 8,
-            }
-        );
-    }
-
-    #[test]
-    fn selectable_tx_grid_rejects_empty_transform_dimensions() {
-        let mut grid = SelectableLumaTxGrid::new(4, 4).unwrap();
-
-        assert_eq!(
-            grid.set_tx_size(0, 0, 4, 0, false, false).unwrap_err(),
-            SelectableTransformRecordError::EmptyTransform { h4: 4, w4: 0 }
-        );
-        assert_eq!(
-            grid.set_tx_size(0, 0, 0, 4, false, false).unwrap_err(),
-            SelectableTransformRecordError::EmptyTransform { h4: 0, w4: 4 }
-        );
-    }
-
-    #[test]
-    fn selectable_tx_grid_rejects_incomplete_region() {
-        let mut grid = SelectableLumaTxGrid::new(4, 4).unwrap();
-        grid.set_tx_size(0, 0, 2, 2, false, false).unwrap();
-
-        assert_eq!(
-            grid.records_for_region(0, 0, 4, 4).unwrap_err(),
-            SelectableTransformRecordError::Incomplete {
-                expected: 16,
-                actual: 4,
-            }
-        );
-    }
-
-    #[test]
-    fn tx_skip_grid_retention_preserves_skip_flag_for_nonzero_eob_record() {
-        let records = [
-            WienerNsLrTxSkipTransformRecord {
-                row: 0,
-                col: 0,
-                rows: 1,
-                cols: 1,
-                skip_flag: true,
-                eob: 3,
-                intra_ist: None,
-            },
-            WienerNsLrTxSkipTransformRecord {
-                row: 0,
-                col: 1,
-                rows: 1,
-                cols: 1,
-                skip_flag: false,
-                eob: 3,
-                intra_ist: None,
-            },
-        ];
-
-        let tx_skip = derive_wienerns_lr_tx_skip_grid_retention(1, 2, &records).unwrap();
-
-        assert_eq!(
-            tx_skip
-                .lookup(super::super::WienerNsLrTxSkipLookup {
-                    x: 0,
-                    y: 0,
-                    row: 0,
-                    col: 0
-                })
-                .unwrap(),
-            1
-        );
-        assert_eq!(
-            tx_skip
-                .lookup(super::super::WienerNsLrTxSkipLookup {
-                    x: 0,
-                    y: 0,
-                    row: 0,
-                    col: 1
-                })
-                .unwrap(),
-            0
-        );
-    }
-
-    #[test]
-    fn selectable_tx_records_populate_live_tx_skip_grid() {
-        let mut grid = SelectableLumaTxGrid::new(8, 8).unwrap();
-        apply_tx_partition(&mut grid, 0, 0, TX_32X32, TX_PARTITION_SPLIT).unwrap();
-        let records = grid.records_for_region(0, 0, 8, 8).unwrap();
-        let tx_skip_records = records
-            .iter()
-            .enumerate()
-            .map(|(index, record)| WienerNsLrTxSkipTransformRecord {
-                row: record.row,
-                col: record.col,
-                rows: record.rows,
-                cols: record.cols,
-                skip_flag: false,
-                eob: usize::from(index == 0),
-                intra_ist: None,
-            })
-            .collect::<Vec<_>>();
-
-        let tx_skip = derive_wienerns_lr_tx_skip_grid_retention(8, 8, &tx_skip_records).unwrap();
-        assert_eq!(
-            (0..8)
-                .map(|row| tx_skip
-                    .lookup(super::super::WienerNsLrTxSkipLookup {
-                        x: 0,
-                        y: 0,
-                        row,
-                        col: 0
-                    })
-                    .unwrap())
-                .collect::<Vec<_>>(),
-            vec![0, 0, 0, 0, 1, 1, 1, 1]
-        );
-    }
-}
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#[path = "tx_records_grid_tests.rs"]
+mod grid_tests;

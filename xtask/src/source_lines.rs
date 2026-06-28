@@ -21,11 +21,7 @@ struct SourceLineAllowance {
     reason: &'static str,
 }
 
-const HARD_LINE_ALLOWANCES: &[SourceLineAllowance] = &[SourceLineAllowance {
-    path: "crates/splot-decode/src/runtime_minimal/wienerns_lr/tx_records.rs",
-    max_lines: 2_615,
-    reason: "cohesive ac0ej3 selectable transform-record walk. +1 (2026-06-28, decode-ac0ej3-intrabc-nonskip-residual): the live reconstruct_luma_transform call site passes recon.is_intrabc so the sink defers the non-skip IntrABC residual sample write while the now-continuing inter residual decode (inter tx-partition + §5.20.7.29 inter transform-type + coefficients) advances the walk — one irreducible call-site argument. +~70 (2026-06-27, decode-ac0ej3-intra-recon-bridge): the reconstruction bridge threads an optional WienerNsLrReconSink<u16> + SelectableReconContext through the in-place selectable residual-chunk decode (decode_selectable_residual_chunks / decode_luma_records_for_chunk / decode_chroma_group / decode_chroma_residual_chunks and the SDP chroma-part branch) so each decoded LumaCoeffBlock and chroma group is reconstructed where it is parsed, plus the DeltaQState.qindex_u32 per-block dequant accessor. +~12 (2026-06-27, decode-ac0ej3-cardinal-hpred-recon): SelectableReconContext now also carries the leaf's resolved directional_luma (the supported_directional_luma() cardinal H/V mode), threaded into reconstruct_luma_transform at both the live and skipped-record sites so the SB-column-3 H_PRED IntrABC source reconstructs bit-exact. +2 (2026-06-27, codex review of decode-ac0ej3-cardinal-hpred-recon): SelectableReconContext.mrl_index (the §5.20.5.5 MrlIndex, read from the existing luma_transform_type_context via the new LumaTransformTypeContext::mrl_index accessor, NOT a new tuple element) lets the cardinal branch DEFER a multi-reference-line leaf — two irreducible field-assignment lines (recon_context + sdp_recon). +4 (2026-06-27, decode-ac0ej3-intrabc-recon): the §7.13.3.18 IntrABC reconstruction threads the optional sink through read_luma_shared_mode_info_prelude into read_intrabc_info (one new parameter + one new call-site arg at the prelude callsite) so an active IntrABC block copies its integer-vector CurrFrame predictor via the sink before the walk still fails closed at the currframe frontier. The reconstruction sink, SelectableReconContext, and the test driver live in the sibling wienerns_lr/recon.rs module; only the per-decode-site threading is here. +4 (2026-06-28, decode-ac0ej3-intrabc-walk-advance): SelectableReconContext.is_intrabc (two field-assignment lines at the recon_context + sdp_recon sites) exempts the now-continuing IntrABC skip leaf from the placeholder-DC skip-residual reconstruction. +4 (2026-06-28, codex review of decode-ac0ej3-intrabc-ref-mv-stack): the §7.12.2 `av2_reset_refmv_bank` per-SB-row reset is invoked at block entry via `intrabc_state.prepare_for_block(frontier.r, frontier.c)` before the prelude reads the bank, so the first block of a new superblock row sees an empty bank for its §7.12.2.21 fill (one call + a 3-line cite). Split the chroma residual decoders into a submodule separately if this grows further. Deferred from INFRA-MODULE-SIZE-REFACTOR (module-size-discipline) until the ac0ej3 decoder frontier stabilizes; the split then extracts per_block_syntax (DeltaQ/CDEF) + tx_partition + error.",
-}];
+const HARD_LINE_ALLOWANCES: &[SourceLineAllowance] = &[];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SourceFileLineCount {
@@ -195,7 +191,7 @@ fn emit_report(report: &SourceLineReport) {
             "source-line hard violation: {} has {} line(s), above {}",
             violation.path,
             violation.lines,
-            hard_violation_limit_label(&violation.path)
+            hard_violation_limit_label(&violation.path, HARD_LINE_ALLOWANCES)
         );
     }
     for problem in &report.allowance_problems {
@@ -203,9 +199,9 @@ fn emit_report(report: &SourceLineReport) {
     }
 }
 
-fn hard_violation_limit_label(path: &str) -> String {
+fn hard_violation_limit_label(path: &str, allowances: &[SourceLineAllowance]) -> String {
     let path = normalize_source_path(path);
-    if let Some(allowance) = HARD_LINE_ALLOWANCES
+    if let Some(allowance) = allowances
         .iter()
         .find(|allowance| allowance.path == path.as_str())
     {
@@ -266,8 +262,15 @@ mod tests {
 
     #[test]
     fn allowance_lookup_normalizes_backslash_paths() {
-        let allowance = &HARD_LINE_ALLOWANCES[0];
-        let allowances = [*allowance];
+        // `HARD_LINE_ALLOWANCES` is empty in production; use a local fixture so the
+        // backslash-normalization machinery stays covered regardless of whether any
+        // file currently carries an allowance.
+        let allowance = SourceLineAllowance {
+            path: "crates/foo/src/large.rs",
+            max_lines: 2_700,
+            reason: "fixture",
+        };
+        let allowances = [allowance];
         let windows_path = allowance.path.replace('/', "\\");
         let report =
             evaluate_source_lines(&[file(&windows_path, allowance.max_lines)], &allowances);
@@ -279,7 +282,7 @@ mod tests {
             vec![file(allowance.path, allowance.max_lines)]
         );
         assert_eq!(
-            hard_violation_limit_label(&windows_path),
+            hard_violation_limit_label(&windows_path, &allowances),
             format!("allowance cap {}", allowance.max_lines)
         );
     }
@@ -318,13 +321,18 @@ mod tests {
 
     #[test]
     fn hard_violation_limit_label_names_allowance_caps() {
-        let allowance = &HARD_LINE_ALLOWANCES[0];
+        let allowance = SourceLineAllowance {
+            path: "crates/foo/src/large.rs",
+            max_lines: 2_700,
+            reason: "fixture",
+        };
+        let allowances = [allowance];
         assert_eq!(
-            hard_violation_limit_label(allowance.path),
+            hard_violation_limit_label(allowance.path, &allowances),
             format!("allowance cap {}", allowance.max_lines)
         );
         assert_eq!(
-            hard_violation_limit_label("src/lib.rs"),
+            hard_violation_limit_label("src/lib.rs", &allowances),
             "hard cap 2500".to_owned()
         );
     }

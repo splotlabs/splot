@@ -744,8 +744,8 @@ pub(in crate::runtime_minimal) fn reconstruct_ac0ej3_selectable_intra_region(
     // §5.20.3.1 SDP chroma partition plane (plane 1 for the chroma tree) and the
     // §8.3.2 `is_cfl` neighbour-context fix (the chroma `is_cfl` CDF is keyed by the
     // above/left `UVCfls` neighbours, not a hardcoded `ctx == 0`), the parse stays
-    // entropy-synced past the second superblock and stops at the first active IntrABC
-    // block (§7.13.3.18), which needs populated `CurrFrame` samples for prediction;
+    // entropy-synced past the IntrABC ref-stack wall and stops at the §5.20.7.27
+    // LrTxSkip live residual/coefficient parse (see `EXPECTED_RECON_FRONTIER_REASON`);
     // the owned sink retains the region reconstructed before that expected rejection.
     // Swallow ONLY that known recon-subset frontier — any other error (an earlier
     // parse or reconstruction failure, e.g. a regression that fails before the
@@ -781,12 +781,19 @@ pub(in crate::runtime_minimal) fn reconstruct_ac0ej3_selectable_intra_region(
 /// step 8) and so triggers the §7.12.2.19 sort — admits its ref-MV stack faithfully
 /// (a no-op swap; slot 0 keeps (-1024,0), drl=1 selects (-512,0), bit-exact vs
 /// avmdec) instead of deferring, as do its downstream IntrABC siblings. The IntrABC
-/// ref-stack wall is now fully cleared; the walk advances to a GENUINELY DISTINCT
-/// next mechanism — the §5.20.6.1 selectable transform-record region tiling
-/// (`out_of_bounds`), unrelated to the §7.12.2 ref-MV stack.
+/// ref-stack wall is now fully cleared. The §5.20.6.1 selectable transform-record
+/// region tiling now models the spec §5.20.6.1 `LumaTxSizes` frame-array fill
+/// faithfully (set_tx_size, 05-syntax-structures.md:12061-12071): a frame-edge block
+/// such as the `BLOCK_128X64` at MI(256,0) drops its out-of-frame tx cells (rows
+/// 270,271 past MiRows=270) instead of erroring `out_of_bounds`, mirroring the
+/// §5.20.3.2 `block_coded` downstream drop. With the tx records derived, the walk
+/// advances to a GENUINELY
+/// DISTINCT next mechanism — the §5.20.7.27 LrTxSkip live residual/coefficient parse
+/// (`live_transform_record_residual_parse`), unrelated to the transform-record
+/// region tiling.
 #[cfg(test)]
 const EXPECTED_RECON_FRONTIER_REASON: &str =
-    "unsupported_wienerns_lr_selectable_transform_records_out_of_bounds";
+    "unsupported_wienerns_lr_live_transform_record_residual_parse";
 
 /// Whether the frame's §5.18.6 quantization matches the reconstruction primitive's
 /// zero-`QuantizerDeltas` assumption: no per-plane DC/AC quantizer delta and no
