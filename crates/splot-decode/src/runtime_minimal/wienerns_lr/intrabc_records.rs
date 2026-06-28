@@ -292,21 +292,36 @@ impl TileIntrabcPreludeState {
                 "unsupported_wienerns_lr_selectable_transform_records_intrabc_col_overflow",
             )
         })?;
-        if row_end > self.mi_rows || col_end > self.mi_cols {
-            return Err(wienerns_lr_selectable_transform_record_error_reason(
-                tile_offset,
-                "unsupported_wienerns_lr_selectable_transform_records_intrabc_block_bounds",
-            ));
-        }
+        // §5.20.6.1 fills the mode-info grid over the block's NOMINAL MI footprint
+        // (`row..row_end`, `col..col_end`) with NO MiRows/MiCols clamp; a leaf
+        // straddling the frame edge (a partial bottom/right SB row) keeps its nominal
+        // size. The out-of-frame MI cells are dropped DOWNSTREAM by the §5.20.3.2
+        // `block_coded(r,c) { return r < MiRows && c < MiCols }`
+        // (05-syntax-structures.md:9621). Model that frame-edge drop here: skip cells
+        // past the frame extent in the fill so a partial-SB MI row at the frame edge
+        // records only its in-frame cells (leaving out-of-frame cells `None`) instead
+        // of erroring `..._intrabc_block_bounds`. The `checked_add` guards above stay:
+        // they catch genuine usize overflow, not frame edges.
         for r in row..row_end {
+            if r >= self.mi_rows {
+                break;
+            }
             for c in col..col_end {
+                if c >= self.mi_cols {
+                    break;
+                }
                 let index = self.index(r, c, tile_offset)?;
                 self.values[index] = Some(facts);
             }
         }
         // AV2 § 7.12.2 `av2_read_mode_info` POST-block bank maintenance: feed the
         // block (IBC or not) into the ref-MV bank in decode order. The SB-row reset
-        // already ran at block entry in [`Self::prepare_for_block`].
+        // already ran at block entry in [`Self::prepare_for_block`]. The bank footprint
+        // uses the block's NOMINAL `n4w`/`n4h`, NOT the frame-clamped extent:
+        // `decide_rmb_unit_update_count` (`mvref_common.c:4589`) derives the rmb-unit
+        // count from `bsize = mbmi->sb_type` (the nominal block size), so clamping it
+        // would desync the §7.12.2 remain_hits budget. The per-MI grid IS clipped by
+        // §5.20.3.2 `block_coded`; the bank is NOT — this contrast is load-bearing.
         if self.enable_refmvbank {
             self.bank.update_after_block(
                 row,
@@ -2424,5 +2439,59 @@ mod tests {
         assert!(
             intrabc_dv_proven_valid(&sequence, &core, geometry, info, ByteOffset::new(20)).unwrap()
         );
+    }
+
+    // §5.20.6.1 `record_block` clamps its per-MI mode-info fill to the frame edge
+    // (modelling AVM §5.20.3.2 `block_coded(r,c) { r < MiRows && c < MiCols }`,
+    // 05-syntax-structures.md:9621): a leaf whose NOMINAL MI footprint overhangs the
+    // bottom (or right) frame edge records exactly its IN-FRAME MI cells and leaves
+    // the out-of-frame cells `None`, instead of hard-erroring `..._intrabc_block_bounds`.
+    #[test]
+    fn record_block_clamps_bottom_edge_overhang_to_in_frame_cells() {
+        let (sequence, _core) = selectable_fixture();
+        // A 4x4 MI grid. A leaf at MI(2,0) with a NOMINAL 4-tall, 2-wide footprint
+        // overhangs the bottom edge by 2 MI rows (rows 4,5 are off-frame).
+        let mut state = TileIntrabcPreludeState::new(4, 4, &sequence, no_off()).unwrap();
+        state
+            .record_block(2, 0, 2, 4, ac0ej3_skip_neighbour(), no_off())
+            .unwrap();
+
+        // The 2 in-frame rows (2,3) x 2 cols (0,1) record the block's facts.
+        for r in 2..4 {
+            for c in 0..2 {
+                assert!(
+                    state.value(r, c, no_off()).unwrap().is_some(),
+                    "in-frame MI cell ({r},{c}) must record the block"
+                );
+            }
+        }
+        // Cell (0,0) is above the block; it stays `None`.
+        assert!(state.value(0, 0, no_off()).unwrap().is_none());
+        // The off-frame rows (4,5) are never written — `value`/`index` would even
+        // reject them as out of grid, so the clamp prevented any OOB write/panic.
+        assert!(state.value(3, 3, no_off()).unwrap().is_none());
+    }
+
+    #[test]
+    fn record_block_clamps_right_edge_overhang_to_in_frame_cells() {
+        let (sequence, _core) = selectable_fixture();
+        // Symmetric right-edge case: a leaf at MI(0,2) with a NOMINAL 4-wide footprint
+        // overhangs the right edge by 2 MI cols (cols 4,5 are off-frame).
+        let mut state = TileIntrabcPreludeState::new(4, 4, &sequence, no_off()).unwrap();
+        state
+            .record_block(0, 2, 4, 1, ac0ej3_skip_neighbour(), no_off())
+            .unwrap();
+
+        // The single in-frame row 0 x in-frame cols (2,3) record the block's facts.
+        for c in 2..4 {
+            assert!(
+                state.value(0, c, no_off()).unwrap().is_some(),
+                "in-frame MI cell (0,{c}) must record the block"
+            );
+        }
+        // Col (0,1) is left of the block; it stays `None`.
+        assert!(state.value(0, 1, no_off()).unwrap().is_none());
+        // Row 1 is below the 1-tall block; it stays `None`.
+        assert!(state.value(1, 2, no_off()).unwrap().is_none());
     }
 }
