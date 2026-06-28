@@ -159,26 +159,39 @@ const MI40_IBP_STEP: u16 = 65;
 /// `TX_64X64 DC_PRED all_zero` leaf at MI(0,256) (sample x[0,64) y[1024,1088)) — whose
 /// 64-tall write overhangs the 1080-tall luma storage by 8 rows — now writes its 56
 /// IN-FRAME rows (y[1024,1080), `3584` samples of the flat `64`) instead of erroring
-/// `WorkspaceRectOutOfBounds`, advancing the region `260608` → `264192`. The walk now
-/// stops at the GENUINELY DISTINCT next frontier MI(16,256) (sample x[64,64+64)
-/// y[1024,…)): a bottom-edge `TX_64X64 DC_PRED` leaf with a LEFT column whose 56
-/// in-frame rows the §7.13.2 DC primitive (which expects a full 64-tall left edge)
-/// cannot yet consume — the bottom-edge left-column edge-extension model is the next
-/// brick.
+/// `WorkspaceRectOutOfBounds`. The §7.13.2.1 frame-edge EDGE-EXTENSION (a transform
+/// overhanging the frame bottom/right edge-extends its clamped in-frame left column /
+/// above row back to the block's full nominal height/width by replicating the LAST
+/// in-frame sample, per AVM `av2/common/reconintra.c:1191-1195`) lets the bottom-edge
+/// `TX_64X64 DC_PRED` block at MI(16,256) (sample x[64,128) y[1024,1080)) — whose
+/// 56-row in-frame left column previously errored `IntraPredictionEdgeLengthMismatch`
+/// (`expected:64, actual:56`) in the §7.13.2 DC primitive — reconstruct its 56 in-frame
+/// rows (`3584` flat-`64` samples) bit-exact, advancing the region `264192` → `267776`.
+/// The walk now stops at the SAME §5.20.6.1 IntrABC block-bounds frontier as the
+/// parse-only public-decode path.
 ///
 /// Verified ZERO-mismatch, per sample, over EVERY covered luma sample against the AVM
 /// pre-filter reconstruction oracle (`/tmp/pref.yuv`, md5
 /// `f7959cb85a41dcf0e6ebf9179835da03`), aggregated by count + sum + FNV-1a-64 in
 /// [`LUMA_RECON_REGION_SAMPLE_SUM`] / [`LUMA_RECON_REGION_FNV1A64`].
-const LUMA_RECON_SAMPLE_TOTAL: usize = 264_192;
+const LUMA_RECON_SAMPLE_TOTAL: usize = 267_776;
 /// Sum of every reconstructed luma sample in the verified region (derived offline
 /// from the AVM pre-filter oracle over the sink's covered MI units, zero mismatch).
-const LUMA_RECON_REGION_SAMPLE_SUM: u64 = 17_022_000;
+const LUMA_RECON_REGION_SAMPLE_SUM: u64 = 17_251_376;
 /// FNV-1a-64 over every reconstructed luma sample (row-major over the covered MI
 /// units, sample-major u16 LE), the whole-region per-value oracle pin: a wrong
 /// reconstruction anywhere in the covered region changes this checksum even at the
 /// same sample count.
-const LUMA_RECON_REGION_FNV1A64: u64 = 0x693c_c098_a38d_ca25;
+const LUMA_RECON_REGION_FNV1A64: u64 = 0x9fb1_afb1_dec9_fa25;
+
+/// The bottom-edge `TX_64X64 DC_PRED` block at MI(16,256), x[64,128) y[1024,1080):
+/// its 56 in-frame rows (the 64-tall block overhangs the 1080-tall frame by 8). The
+/// block reconstructs to the flat down-predicted `DC_PRED` oracle value `64`.
+const BOTTOM_EDGE_FLAT: u16 = 64;
+/// In-frame sample count of the bottom-edge block (`64 * 56`).
+const BOTTOM_EDGE_SAMPLE_COUNT: usize = 64 * 56;
+/// Sum of the bottom-edge block's 56 in-frame rows (`3584 * 64`).
+const BOTTOM_EDGE_SAMPLE_SUM: u64 = 229_376;
 
 /// The SB-column-3 `BLOCK_64X64 H_PRED` block (x[192,256) x y[0,64)) — the
 /// §7.13.3.18 IntrABC source. Mode `H_PRED` (pAngle 180, `AngleDeltaY == 0`), split
@@ -932,5 +945,43 @@ fn ac0ej3_full_reconstructed_luma_region_matches_prefilter_oracle_aggregate() {
         fnv.finish(),
         LUMA_RECON_REGION_FNV1A64,
         "reconstructed luma region FNV-1a-64 must match the pre-filter oracle (bit-exact)"
+    );
+}
+
+/// Bit-exact verification of the bottom-edge `TX_64X64 DC_PRED` block at MI(16,256)
+/// (sample x[64,128) y[1024,1080)) whose LEFT reference column has only 56 in-frame
+/// rows (the 64-tall block overhangs the 1080-tall luma frame by 8 rows). The
+/// §7.13.2.1 frame-edge edge-extension (replicate the LAST in-frame left sample to the
+/// block's full 64-tall nominal height, per AVM `reconintra.c:1191-1195`) lets the DC
+/// primitive consume a full-length edge instead of erroring
+/// `IntraPredictionEdgeLengthMismatch{expected:64,actual:56}`. The block reconstructs
+/// its 56 in-frame rows to the flat oracle value `64` (the partial-edge block is NOT
+/// errored), verified per-sample against the AVM pre-filter oracle.
+#[test]
+#[ignore = "requires local mission fixture; set SPLOT_AC0EJ3_IVF or place it at $HOME/Documents/SplotLabs/ac0ej3.ivf"]
+fn ac0ej3_bottom_edge_partial_left_edge_block_reconstructs_bit_exact_against_prefilter_oracle() {
+    let sink = reconstruct_ac0ej3_sink();
+
+    // The MI(16,256) bottom-edge block: x[64,128) over its 56 in-frame rows y[1024,1080).
+    let mut count = 0usize;
+    let mut sum: u64 = 0;
+    for y in 1024..1080 {
+        for x in 64..128 {
+            let sample = sink.reconstructed_sample(PlaneId::Y, x, y).unwrap();
+            assert_eq!(
+                sample, BOTTOM_EDGE_FLAT,
+                "bottom-edge partial-left block luma ({x},{y}) must be {BOTTOM_EDGE_FLAT}, got {sample}"
+            );
+            sum += u64::from(sample);
+            count += 1;
+        }
+    }
+    assert_eq!(
+        count, BOTTOM_EDGE_SAMPLE_COUNT,
+        "bottom-edge block sample count"
+    );
+    assert_eq!(
+        sum, BOTTOM_EDGE_SAMPLE_SUM,
+        "bottom-edge partial-left block sum must match the pre-filter oracle"
     );
 }
