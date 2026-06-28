@@ -27,8 +27,7 @@ pub(super) fn validate_bytes_with_options(
     match parsed {
         ParsedBitstream::AnnexB(parsed) => {
             for obu in &parsed.obus {
-                context.observe_obu(obu, options, &mut report);
-                run_checks(checks, obu, &mut report);
+                process_obu(&mut context, checks, obu, options, &mut report);
             }
             // The end of the bitstream completes the final temporal unit, flushing
             // the deferred coded-video-sequence-scoped diagnostics (AV2 § 7.3.6;
@@ -41,8 +40,7 @@ pub(super) fn validate_bytes_with_options(
         ParsedBitstream::Ivf(parsed) => {
             for frame in &parsed.frames {
                 for obu in &frame.obus {
-                    context.observe_obu(obu, options, &mut report);
-                    run_checks(checks, obu, &mut report);
+                    process_obu(&mut context, checks, obu, options, &mut report);
                 }
                 if let Some(error) = &frame.error {
                     report.push(parse_error_diagnostic(error));
@@ -61,6 +59,20 @@ pub(super) fn validate_bytes_with_options(
     }
 
     report
+}
+
+/// Observes one OBU into the validator context and runs the check registry over
+/// it. Shared by the in-memory ([`validate_bytes_with_options`]) and streaming
+/// ([`super::streaming`]) paths so both apply identical per-OBU semantics.
+pub(super) fn process_obu(
+    context: &mut ValidatorContext,
+    checks: &[&dyn Check],
+    obu: &ObuEnvelope<'_>,
+    options: &ValidationOptions,
+    report: &mut ValidationReport,
+) {
+    context.observe_obu(obu, options, report);
+    run_checks(checks, obu, report);
 }
 
 fn run_checks(checks: &[&dyn Check], obu: &ObuEnvelope<'_>, report: &mut ValidationReport) {

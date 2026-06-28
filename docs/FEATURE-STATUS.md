@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 446 feature(s).
+Matrix version 1. Last reviewed 2026-06-15. 448 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -454,3 +454,5 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `XTASK-DECODER-CONFORMANCE-COVERAGE` | Decoder conformance coverage gate | automation | automation | done | done | n/a | n/a | n/a | n/a | n/a | done | n/a | `xtask/src/decoder_conformance_coverage.rs` |
 | `VALIDATOR-CONTEXT-SPLIT` | Validator context module split | infrastructure | infrastructure | done | n/a | n/a | n/a | n/a | n/a | n/a | done | n/a | `crates/splot-validate/src/context` |
 | `INFRA-MODULE-SIZE-REFACTOR` | Oversized-module source-line refactor | infrastructure | infrastructure | done | n/a | n/a | n/a | n/a | n/a | n/a | done | n/a | `crates/splot-validate/src/celu` |
+| `INFRA-STREAMING-TU-READER` | Read-based temporal-unit demuxer | infrastructure | infrastructure | done | done | done | n/a | n/a | n/a | n/a | done | n/a | `crates/splot-core/src/stream_reader.rs` |
+| `INFRA-VALIDATE-STREAMING-READER` | Streaming Read-based validator input | infrastructure | infrastructure | done | done | n/a | done | n/a | n/a | n/a | done | n/a | `crates/splot-validate/src/validator/streaming.rs` |

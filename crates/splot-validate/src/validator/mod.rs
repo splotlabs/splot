@@ -3,11 +3,16 @@
 
 //! The AV2 bitstream validator: parse, then run the check registry.
 
+use std::io::Read;
+
 use crate::diagnostic::ValidationReport;
 use crate::options::ValidationOptions;
 
 mod diagnostics;
 mod runner;
+mod streaming;
+
+pub use streaming::StreamValidateError;
 
 #[cfg(test)]
 mod tests;
@@ -64,5 +69,38 @@ impl Validator {
         options: &ValidationOptions,
     ) -> ValidationReport {
         runner::validate_bytes_with_options(data, options)
+    }
+
+    /// Validates a forward-only `Read` stream (raw Annex B or IVF-wrapped Annex
+    /// B), bounding peak input memory to a single temporal unit instead of the
+    /// whole file.
+    ///
+    /// The report is byte-identical to [`Validator::validate_bytes`] on the same
+    /// bitstream. Truncated or malformed input is reported as diagnostics, never
+    /// an `Err`; the `Err` path is reserved for genuine reader I/O failures and
+    /// over-cap units (see [`StreamValidateError`]).
+    ///
+    /// # Errors
+    /// Returns [`StreamValidateError`] for a reader I/O failure or a temporal unit
+    /// exceeding the per-unit byte cap.
+    pub fn validate_reader<R: Read>(
+        &self,
+        reader: R,
+    ) -> Result<ValidationReport, StreamValidateError> {
+        self.validate_reader_with_options(reader, &ValidationOptions::default())
+    }
+
+    /// Validates a forward-only `Read` stream using `options` (external HLS
+    /// availability, AV2 § 7.3.8).
+    ///
+    /// # Errors
+    /// Returns [`StreamValidateError`] for a reader I/O failure or an over-cap
+    /// temporal unit.
+    pub fn validate_reader_with_options<R: Read>(
+        &self,
+        reader: R,
+        options: &ValidationOptions,
+    ) -> Result<ValidationReport, StreamValidateError> {
+        streaming::validate_reader_with_options(reader, options)
     }
 }

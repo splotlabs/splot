@@ -14,6 +14,7 @@ use proptest::prelude::*;
 
 use crate::headers::frame::{CoreSeqQuantView, CoreSeqTileView, GdfGeometry, SegmentationParams};
 use crate::headers::sequence::{LevelIdx, SuperblockSize, Tier};
+use crate::ivf::{IvfHeader, write_ivf_frame, write_ivf_header};
 use crate::segment::{MAX_SEGMENTS, SEG_LVL_MAX, SegmentFeature};
 
 /// A proptest strategy over quantizer views spanning bit depth, plane count, and
@@ -108,4 +109,13 @@ pub(crate) fn base_geometry() -> GdfGeometry<'static> {
         mi_col_starts: &[0],
         mi_row_starts: &[0],
     }
+}
+
+/// A single-frame IVF stream (`AV02`, 16×16) wrapping `payload` as the frame
+/// body. Shared by the `stream` container tests and the `stream_reader` tests.
+pub(crate) fn ivf_with_frame(payload: &[u8]) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    write_ivf_header(&mut bytes, &IvfHeader::new(*b"AV02", 16, 16, 24, 1, 1)).unwrap();
+    write_ivf_frame(&mut bytes, 0, payload).unwrap();
+    bytes
 }
