@@ -743,24 +743,18 @@ pub(in crate::runtime_minimal) fn reconstruct_ac0ej3_selectable_intra_region(
     }
 }
 
-/// The single §7.12.2 fail-closed reason the ac0ej3 selectable walk is expected to
-/// stop on after reconstructing the verified region; the test driver swallows only
-/// this one and propagates every other error. The first §7.13.3.18 IntrABC block —
-/// MI(16,56), a `skip` leaf with an integer block vector — is reconstructed bit-exact
-/// and the walk CONTINUES past it (a `skip` IntrABC leaf reads no residual and
-/// §5.20.6.1 assigns Max_Tx_Size_Rect with no partition symbols, so the entropy state
-/// stays AVM-faithful). The SECOND IntrABC block — MI(0,112) — derives a DEFAULT-ONLY
-/// §7.12.2 stack (ADMITTED) and is itself a NON-`skip` leaf: its §5.20.6.1 inter
-/// tx-partition + §5.20.7.29 inter transform-type + §5.20.7.27 coefficient residual
-/// now decode AVM-faithfully via the is_inter-aware tx-record + coefficient machinery
-/// (the §8.3.2 `TileInterTxTypeLongCdf` `inter_tx_type` read and the inter IST
-/// `TileSecTxTypeCdf[1]` `sec_tx_type` read), so the walk CONTINUES past it. The new
-/// wall is the THIRD IntrABC block, whose §7.12.2 IntrABC MV stack may hold a spatial
-/// or ref-MV-bank candidate the bounded fallback list cannot admit — a correct
-/// conservative deferral.
+/// The single fail-closed reason the ac0ej3 selectable walk is expected to stop on
+/// after reconstructing the verified region; the test driver swallows only this one
+/// and propagates every other error. With the §7.12.2 IntrABC ref-MV stack now
+/// modelled in full — the spatial SMVP scan (an IntrABC spatial neighbour's recorded
+/// BV) plus the ref-MV-bank (`check_rmb_cand`) plus the default-BVP fill, all in AVM
+/// order — every IntrABC block in frame-0's reachable run ADMITS its AVM-faithful BV
+/// and the walk advances through the whole IntrABC sequence. The new wall is the first
+/// §5.20.7.27 residual outside the DCT_DCT-only transform-tool subset (a non-DCT
+/// luma transform): its coefficients parse, but the non-DCT inverse transform / CCTX /
+/// IST reconstruction is not yet supported — a correct conservative deferral.
 #[cfg(test)]
-const EXPECTED_RECON_FRONTIER_REASON: &str =
-    "unsupported_wienerns_lr_selectable_transform_records_intrabc_ref_stack";
+const EXPECTED_RECON_FRONTIER_REASON: &str = "unsupported_dctonly_residual_inter_tx_type";
 
 /// Whether the frame's §5.18.6 quantization matches the reconstruction primitive's
 /// zero-`QuantizerDeltas` assumption: no per-plane DC/AC quantizer delta and no
