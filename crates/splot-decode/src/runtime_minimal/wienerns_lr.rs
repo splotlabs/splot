@@ -45,6 +45,7 @@ const LR_RETAINED_FRAME_BUFFERS: u64 = 2;
 
 mod diagnostics;
 mod intrabc_records;
+mod intrabc_ref_mv_stack;
 mod live_storage;
 mod recon;
 mod source_read_math;
