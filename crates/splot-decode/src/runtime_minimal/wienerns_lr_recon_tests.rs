@@ -167,22 +167,31 @@ const MI40_IBP_STEP: u16 = 65;
 /// 56-row in-frame left column previously errored `IntraPredictionEdgeLengthMismatch`
 /// (`expected:64, actual:56`) in the §7.13.2 DC primitive — reconstruct its 56 in-frame
 /// rows (`3584` flat-`64` samples) bit-exact, advancing the region `264192` → `267776`.
-/// The walk now stops at the SAME §5.20.6.1 IntrABC block-bounds frontier as the
-/// parse-only public-decode path.
+///
+/// The §5.20.6.1 IntrABC `record_block` mode-info fill is now ALSO clamped to the
+/// frame edge (modelling AVM §5.20.3.2 `block_coded(r,c) { r < MiRows && c < MiCols }`,
+/// 05-syntax-structures.md:9621): a non-IntrABC `BLOCK_128X64` leaf at MI(256,0) whose
+/// nominal 16-tall MI footprint overhangs the 270-row MI grid by 2 MI rows (8 luma
+/// rows) records only its 14 in-frame MI rows instead of erroring
+/// `..._intrabc_block_bounds`. The walk advances past that former parse/recon frontier
+/// and the bottom partial-SB row's in-frame samples (MI rows 256..269, y[1024,1080))
+/// now reconstruct, growing the region `267776` → `273152` (+5376). The walk now stops
+/// at the §5.20.6.1 IntrABC `intrabc_target_bounds` frontier (the next prediction
+/// geometry outside the bounded subset), on BOTH the recon-sink and parse-only paths.
 ///
 /// Verified ZERO-mismatch, per sample, over EVERY covered luma sample against the AVM
 /// pre-filter reconstruction oracle (`/tmp/pref.yuv`, md5
 /// `f7959cb85a41dcf0e6ebf9179835da03`), aggregated by count + sum + FNV-1a-64 in
 /// [`LUMA_RECON_REGION_SAMPLE_SUM`] / [`LUMA_RECON_REGION_FNV1A64`].
-const LUMA_RECON_SAMPLE_TOTAL: usize = 267_776;
+const LUMA_RECON_SAMPLE_TOTAL: usize = 273_152;
 /// Sum of every reconstructed luma sample in the verified region (derived offline
 /// from the AVM pre-filter oracle over the sink's covered MI units, zero mismatch).
-const LUMA_RECON_REGION_SAMPLE_SUM: u64 = 17_251_376;
+const LUMA_RECON_REGION_SAMPLE_SUM: u64 = 17_595_440;
 /// FNV-1a-64 over every reconstructed luma sample (row-major over the covered MI
 /// units, sample-major u16 LE), the whole-region per-value oracle pin: a wrong
 /// reconstruction anywhere in the covered region changes this checksum even at the
 /// same sample count.
-const LUMA_RECON_REGION_FNV1A64: u64 = 0x9fb1_afb1_dec9_fa25;
+const LUMA_RECON_REGION_FNV1A64: u64 = 0x7c45_1c3f_6f04_4225;
 
 /// The bottom-edge `TX_64X64 DC_PRED` block at MI(16,256), x[64,128) y[1024,1080):
 /// its 56 in-frame rows (the 64-tall block overhangs the 1080-tall frame by 8). The
@@ -565,16 +574,18 @@ fn ac0ej3_frame_origin_chroma_dc_blocks_reconstruct_bit_exact_against_prefilter_
         "the deferred SMOOTH chroma leaf at chroma (32,0) must stay unreconstructed"
     );
 
-    // Coverage report: with the §7.12.2.19 IntrABC ref-MV weight sort modelled and
-    // the §7.13.2.1 single-neighbour V_PRED edge fallback at the frame top, the
-    // frame-0 IntrABC blocks through MI(192,112) admit faithfully and the verified
-    // luma region is now the `245760`-sample bit-exact region — plus the two 32x32
-    // chroma origin blocks (2048 chroma samples total across U and V).
+    // Coverage report: with the §7.12.2.19 IntrABC ref-MV weight sort modelled, the
+    // §7.13.2.1 single-neighbour V_PRED edge fallback at the frame top, and the
+    // §5.20.6.1 IntrABC `record_block` mode-info fill clamped to the frame edge
+    // (§5.20.3.2 `block_coded`), the frame-0 IntrABC blocks through MI(192,112) admit
+    // faithfully, the bottom partial-SB row's in-frame samples reconstruct, and the
+    // verified luma region is now the `273152`-sample bit-exact region — plus the two
+    // 32x32 chroma origin blocks (2048 chroma samples total across U and V).
     let (luma4x4, chroma4x4) = sink.reconstructed_counts();
     assert_eq!(
         luma4x4 * 16,
         LUMA_RECON_SAMPLE_TOTAL,
-        "verified luma region is the 245760-sample bit-exact DC + cardinal + IntrABC region"
+        "verified luma region is the 273152-sample bit-exact DC + cardinal + IntrABC region"
     );
     assert_eq!(
         chroma4x4 * 16,
@@ -718,15 +729,16 @@ fn ac0ej3_sb_column3_hpred_block_reconstructs_bit_exact_against_prefilter_oracle
         "the frame-top V_PRED block at x[256,320) y=0 reconstructs to flat 68 via the §7.13.2.1 no-above fallback",
     );
 
-    // The whole reconstructed luma region is now 245760 bit-exact samples (the
-    // §7.12.2.19 IntrABC ref-MV weight sort admits MI(192,112) and its siblings, and
-    // the §7.13.2.1 frame-top V_PRED fallback adds the x[256,448) y[0,64) top-row
-    // rectangle — pinned per value by LUMA_RECON_REGION_FNV1A64).
+    // The whole reconstructed luma region is now 273152 bit-exact samples (the
+    // §7.12.2.19 IntrABC ref-MV weight sort admits MI(192,112) and its siblings, the
+    // §7.13.2.1 frame-top V_PRED fallback adds the x[256,448) y[0,64) top-row
+    // rectangle, and the §5.20.6.1 frame-edge `record_block` clamp lets the bottom
+    // partial-SB row reconstruct — pinned per value by LUMA_RECON_REGION_FNV1A64).
     let (luma4x4, _chroma4x4) = sink.reconstructed_counts();
     assert_eq!(
         luma4x4 * 16,
         LUMA_RECON_SAMPLE_TOTAL,
-        "the parse-advanced walk reconstructs 245760 bit-exact luma samples"
+        "the parse-advanced walk reconstructs 273152 bit-exact luma samples"
     );
 }
 

@@ -271,22 +271,18 @@ fn local_ac0ej3_reaches_current_runtime_gate_without_output() {
     assert!(out.stderr.is_empty(), "stderr was not empty");
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(json["rule_id"], "decode/unsupported-feature");
-    // The §5.20.4.1 SDP chroma-reference MI-size write (chroma leaves and the chroma
-    // plane of shared luma+chroma leaves write `MiSizes[1]` over the `ChromaMiSize`
-    // footprint, not the per-leaf luma geometry) removed the MI(240,240) §8.3.2
-    // `do_split` left-context divergence (splot ctx 14 -> 12, matching AVM): the
-    // missing BLOCK_64X128 chroma-reference write at MI(224,224) had left row 240's
-    // chroma left-context at BLOCK_64X32, forcing ctx1=1. With that fixed the live
-    // selectable transform-record walk stays entropy-synced past the whole verified
-    // region (no more §8.2.4 over-read `bitstream_desync`). The §5.20.7.27 coefficient
-    // context-line WRITE is now clamped to the frame edge (modelling AVM
-    // `av2_set_entropy_contexts`, av2/common/blockd.c:138-166): the skipped TX_64X64
-    // luma transforms on the tile bottom edge write `culLevel` / `dcCategory` over
-    // only their on-tile rows instead of erroring on the 2-MI-row overhang, so the
-    // walk advances past those transforms and now stops at the GENUINE next mechanism
-    // — the §5.20.6.1 selectable transform-record IntrABC block-bounds subcase outside
-    // the current handoff subset. The decode still emits NO frame (exit 1).
-    assert_eq!(json["spec_section"], "5.20.6.1");
+    // The §5.20.6.1 IntrABC `record_block` mode-info fill is now clamped to the frame
+    // edge (modelling AVM §5.20.3.2 `block_coded(r,c) { r < MiRows && c < MiCols }`,
+    // 05-syntax-structures.md:9621): the non-IntrABC BLOCK_128X64 leaf at MI(256,0)
+    // whose nominal 16-tall MI footprint overhangs the 270-row MI grid by 2 MI rows
+    // records only its 14 in-frame MI rows instead of erroring on the overhang, so the
+    // walk advances past that former §5.20.6.1 block-bounds frontier (the ref-MV bank
+    // `update_after_block` still uses the NOMINAL block size, so the §7.12.2
+    // `remain_hits` budget stays synced — no re-introduced desync). The walk now stops
+    // at the GENUINE next mechanism — the §6.19.7.12 IntrABC `intrabc_target_bounds`
+    // prediction-geometry subcase outside the bounded ac0ej3 prediction subset. The
+    // decode still emits NO frame (exit 1).
+    assert_eq!(json["spec_section"], "6.19.7.12");
     assert_eq!(json["matrix_row"], "ac0ej3-selectable-transform-records");
     assert_eq!(
         json["feature_id"],
@@ -295,16 +291,22 @@ fn local_ac0ej3_reaches_current_runtime_gate_without_output() {
     assert_eq!(json["detail_kind"], "unsupported_feature");
     assert_eq!(
         json["unsupported_reason"],
-        "unsupported_wienerns_lr_selectable_transform_records_intrabc_block_bounds"
+        "unsupported_wienerns_lr_selectable_transform_records_intrabc_target_bounds"
     );
     assert!(
         json["message"]
             .as_str()
             .unwrap()
-            .contains("bounded selectable transform-record subcase is still outside"),
-        "diagnostic must describe the §5.20.6.1 selectable transform-record block-bounds frontier"
+            .contains("outside the bounded ac0ej3 prediction subset"),
+        "diagnostic must describe the §6.19.7.12 IntrABC prediction-geometry frontier"
     );
     assert_eq!(json["byte_offset"], 110);
+    assert_ne!(
+        json["unsupported_reason"],
+        "unsupported_wienerns_lr_selectable_transform_records_intrabc_block_bounds",
+        "the §5.20.6.1 `record_block` frame-edge clamp (AVM §5.20.3.2 block_coded) \
+         advanced ac0ej3 past the MI(256,0) bottom-edge block-bounds wall"
+    );
     assert_ne!(
         json["unsupported_reason"], "unsupported_wienerns_lr_live_transform_record_residual_parse",
         "the §5.20.7.27 coefficient context-write edge clamp (AVM av2_set_entropy_contexts) \
