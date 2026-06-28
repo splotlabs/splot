@@ -33,7 +33,9 @@ pub(crate) use syntax_error::{payload_parse_error_diagnostic, syntax_error_diagn
 
 use splot_core::annexb::ObuEnvelope;
 use splot_core::bitio::BitReader;
+use splot_core::error::Error;
 use splot_core::obu::finish_obu_payload;
+use splot_core::types::ObuType;
 
 use crate::diagnostic::{Diagnostic, Severity, ValidationReport};
 
@@ -116,5 +118,45 @@ fn finish_payload_or_emit(
         && let Some(diagnostic) = syntax_error_diagnostic(&error)
     {
         report.push(diagnostic);
+    }
+}
+
+/// Runs a single-OBU payload syntax check with the shared parse-then-validate scaffold.
+///
+/// When `obu` is of `obu_type`, this reads its payload, parses it with `parse`, runs the
+/// locally decidable `check` semantics on a successful parse, and validates the § 5.2.1
+/// payload tail (`extensible` selects whether an `obu_extension_flag` precedes
+/// `trailing_bits()`). A parse error is mapped through [`syntax_error_diagnostic`],
+/// falling back to the generic [`payload_parse_error_diagnostic`] tagged with
+/// `spec_section`.
+///
+/// This is the shared scaffold for the payload checks whose only per-OBU variation is the
+/// parser, the extensibility flag, and the post-parse semantics. Checks that diverge from
+/// this shape — a pre-parse header check (`OBU_MSDO`), a conditional tail (sequence
+/// header), multiple OBU types (metadata), or no payload reader (`OBU_PADDING`) — stay
+/// hand-written.
+fn run_payload_syntax_check<P>(
+    obu: &ObuEnvelope<'_>,
+    report: &mut ValidationReport,
+    obu_type: ObuType,
+    spec_section: &'static str,
+    extensible: bool,
+    parse: impl FnOnce(&mut BitReader<'_>) -> Result<P, Error>,
+    check: impl FnOnce(&P, &ObuEnvelope<'_>, &mut ValidationReport),
+) {
+    if obu.header.obu_type != obu_type {
+        return;
+    }
+
+    let mut reader = BitReader::new(obu.payload, obu.payload_offset());
+    match parse(&mut reader) {
+        Ok(parsed) => {
+            check(&parsed, obu, report);
+            finish_payload_or_emit(&mut reader, obu.payload, extensible, report);
+        }
+        Err(error) => report.push(
+            syntax_error_diagnostic(&error)
+                .unwrap_or_else(|| payload_parse_error_diagnostic(&error, spec_section)),
+        ),
     }
 }
