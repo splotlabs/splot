@@ -50,17 +50,13 @@ fn encoder_skip_ivf_decodes_to_a_flat_128_frame() {
         .status()
         .expect("run the splot binary");
 
-    // Capture results, then clean the temp files up front so a failing assertion below
-    // never leaks them.
     let raw = std::fs::read(&output);
     let _ = std::fs::remove_file(&input);
     let _ = std::fs::remove_file(&output);
 
     assert!(status.success(), "splot decode of the emitted IVF failed");
     let raw = raw.expect("read the decoded raw output");
-    // 8-bit 4:2:0 64x64: Y (64*64) + U (32*32) + V (32*32) = 6144 bytes.
     assert_eq!(raw.len(), 6144, "unexpected decoded frame size");
-    // The skip block reconstructs to the flat no-neighbour DC predictor.
     assert!(
         raw.iter().all(|&sample| sample == 128),
         "expected a flat 128 frame from the skip block",
@@ -100,7 +96,6 @@ fn encoder_coded_dc_ivf_decodes_to_a_flat_127_luma_frame() {
     assert!(status.success(), "splot decode of the coded IVF failed");
     let raw = raw.expect("read the decoded raw output");
     assert_eq!(raw.len(), 6144, "unexpected decoded frame size");
-    // Luma (first 4096 bytes) carries the coded residual; chroma (next 2048) is skipped.
     let (luma, chroma) = raw.split_at(4096);
     assert!(
         luma.iter().all(|&sample| sample == 127),
@@ -148,7 +143,6 @@ fn encoder_coded_chroma_ivf_decodes_to_a_flat_127_u_frame() {
     );
     let raw = raw.expect("read the decoded raw output");
     assert_eq!(raw.len(), 6144, "unexpected decoded frame size");
-    // 8-bit 4:2:0 64x64: Y = [0..4096), U = [4096..5120), V = [5120..6144).
     assert!(
         raw[..4096].iter().all(|&s| s == 128),
         "expected a flat 128 luma plane (skipped)",
@@ -197,7 +191,6 @@ fn encoder_coded_chroma_v_ivf_decodes_to_a_flat_127_v_frame() {
     );
     let raw = raw.expect("read the decoded raw output");
     assert_eq!(raw.len(), 6144, "unexpected decoded frame size");
-    // 8-bit 4:2:0 64x64: Y = [0..4096), U = [4096..5120), V = [5120..6144).
     assert!(
         raw[..4096].iter().all(|&s| s == 128),
         "expected a flat 128 luma plane (skipped)",
@@ -247,7 +240,6 @@ fn encoder_all_planes_coded_ivf_decodes_to_a_flat_127_frame() {
     );
     let raw = raw.expect("read the decoded raw output");
     assert_eq!(raw.len(), 6144, "unexpected decoded frame size");
-    // Every plane carries coded residual -> flat 127 (128 minus the dequantized negative DC).
     assert!(
         raw.iter().all(|&s| s == 127),
         "expected every plane flat at 127 from the all-planes coded block",
@@ -284,11 +276,9 @@ fn encoder_two_coeff_ivf_decodes_successfully() {
     let _ = std::fs::remove_file(&input);
     let _ = std::fs::remove_file(&output);
 
-    // exit_symbol() validates the eob=2 entropy stream; a malformed multi-coeff trace fails it.
     assert!(status.success(), "splot decode of the eob=2 IVF failed");
     let raw = raw.expect("read the decoded raw output");
     assert_eq!(raw.len(), 6144, "unexpected decoded frame size");
-    // The level-1 AC residual is sub-visible -> the frame reconstructs flat at 128.
     assert!(
         raw.iter().all(|&s| s == 128),
         "expected the sub-visible level-1 AC to reconstruct flat at 128",
@@ -333,9 +323,7 @@ fn encoder_visible_ac_ivf_decodes_to_a_vertical_cosine_luma() {
     let raw = raw.expect("read the decoded raw output");
     assert_eq!(raw.len(), 6144, "unexpected decoded frame size");
 
-    // 8-bit 4:2:0 64x64: luma [0..4096), then U [4096..5120), V [5120..6144).
     let luma = &raw[..4096];
-    // The level-4 AC is the lowest vertical frequency, so each row is constant across columns.
     for row in 0..64 {
         let r = &luma[row * 64..(row + 1) * 64];
         assert!(
@@ -343,7 +331,6 @@ fn encoder_visible_ac_ivf_decodes_to_a_vertical_cosine_luma() {
             "luma row {row} is not constant across columns"
         );
     }
-    // The vertical cosine: top 8 rows 129, middle 48 rows 128, bottom 8 rows 127.
     let row_value = |row: usize| luma[row * 64];
     for row in 0..8 {
         assert_eq!(row_value(row), 129, "top band row {row}");
@@ -354,12 +341,10 @@ fn encoder_visible_ac_ivf_decodes_to_a_vertical_cosine_luma() {
     for row in 56..64 {
         assert_eq!(row_value(row), 127, "bottom band row {row}");
     }
-    // It is genuinely non-flat (unlike every prior decodable frame).
     assert!(
         luma.iter().any(|&s| s != 128),
         "expected a visibly non-flat luma plane"
     );
-    // Chroma is untouched (U and V skipped) -> flat 128.
     assert!(
         raw[4096..].iter().all(|&s| s == 128),
         "expected flat 128 chroma"
@@ -406,7 +391,6 @@ fn encoder_two_nonzero_ivf_decodes_to_a_cosine_plus_dc_offset() {
     assert_eq!(raw.len(), 6144, "unexpected decoded frame size");
 
     let luma = &raw[..4096];
-    // The AC is the lowest vertical frequency, so each row is constant across columns.
     for row in 0..64 {
         let r = &luma[row * 64..(row + 1) * 64];
         assert!(
@@ -414,9 +398,6 @@ fn encoder_two_nonzero_ivf_decodes_to_a_cosine_plus_dc_offset() {
             "luma row {row} is not constant across columns"
         );
     }
-    // Cosine + negative DC offset: top 50 rows 128, the bottom 14 rows 127 (deterministic).
-    // Under the wrong (DC-first) sign order the bottom band would be 129 instead, so this
-    // assertion fails fast on a sign-order regression.
     let row_value = |row: usize| luma[row * 64];
     for row in 0..50 {
         assert_eq!(row_value(row), 128, "top band row {row}");
@@ -428,7 +409,6 @@ fn encoder_two_nonzero_ivf_decodes_to_a_cosine_plus_dc_offset() {
         luma.iter().any(|&s| s != 128),
         "expected a non-flat luma plane"
     );
-    // Chroma is untouched (U and V skipped) -> flat 128.
     assert!(
         raw[4096..].iter().all(|&s| s == 128),
         "expected flat 128 chroma"
@@ -470,7 +450,6 @@ fn encoder_eob3_ivf_decodes_to_a_horizontal_cosine_luma() {
     assert_eq!(raw.len(), 6144, "unexpected decoded frame size");
 
     let luma = &raw[..4096];
-    // The AC is the lowest horizontal frequency, so each column is constant down its 64 rows.
     for col in 0..64 {
         let first = luma[col];
         assert!(
@@ -478,7 +457,6 @@ fn encoder_eob3_ivf_decodes_to_a_horizontal_cosine_luma() {
             "luma column {col} is not constant down its rows"
         );
     }
-    // The horizontal cosine: left 8 columns 129, middle 48 columns 128, right 8 columns 127.
     let col_value = |col: usize| luma[col];
     for col in 0..8 {
         assert_eq!(col_value(col), 129, "left band column {col}");
@@ -493,7 +471,6 @@ fn encoder_eob3_ivf_decodes_to_a_horizontal_cosine_luma() {
         luma.iter().any(|&s| s != 128),
         "expected a non-flat luma plane"
     );
-    // Chroma is untouched (U and V skipped) -> flat 128.
     assert!(
         raw[4096..].iter().all(|&s| s == 128),
         "expected flat 128 chroma"
@@ -537,14 +514,12 @@ fn encoder_2d_ivf_decodes_to_a_diagonal_gradient_luma() {
 
     let luma = &raw[..4096];
     let px = |row: usize, col: usize| luma[row * 64 + col];
-    // Genuinely 2-D: neither all rows nor all columns are constant.
     let any_row_varies = (0..64).any(|r| (0..64).any(|c| px(r, c) != px(r, 0)));
     let any_col_varies = (0..64).any(|c| (0..64).any(|r| px(r, c) != px(0, c)));
     assert!(
         any_row_varies && any_col_varies,
         "expected a genuinely 2-D (non-separable) luma"
     );
-    // The 3x3 band grid (deterministic): a diagonal gradient. A wrong sign order would mirror it.
     let expected = [[128u8, 127, 127], [129, 128, 127], [129, 129, 128]];
     let rows = [4usize, 32, 60];
     let cols = [4usize, 32, 60];
@@ -553,7 +528,6 @@ fn encoder_2d_ivf_decodes_to_a_diagonal_gradient_luma() {
             assert_eq!(px(r, c), expected[ri][ci], "2-D band ({r},{c})");
         }
     }
-    // Chroma is untouched (U and V skipped) -> flat 128.
     assert!(
         raw[4096..].iter().all(|&s| s == 128),
         "expected flat 128 chroma"
@@ -591,7 +565,6 @@ fn assert_all_128_roundtrips_at_qp(qp: u8) {
         SendFrameStatus,
     };
 
-    // The all-128 input: 64x64 4:2:0 8-bit (Y 4096, U 1024, V 1024).
     let y = vec![128_u8; 64 * 64];
     let u = vec![128_u8; 32 * 32];
     let v = vec![128_u8; 32 * 32];
@@ -629,9 +602,6 @@ fn assert_all_128_roundtrips_at_qp(qp: u8) {
     };
     assert!(!packet_data.is_empty(), "the packet must carry coded bytes");
 
-    // The packet is one coded access unit (an Annex B temporal unit), not a container file. Mux
-    // it into an IVF — the consumer's job — for the decoder (whose minimal runtime accepts the
-    // IVF fixture shape; the access unit is exactly the IVF frame payload).
     let mut ivf = Vec::new();
     splot_core::ivf::write_ivf_header(
         &mut ivf,
@@ -640,7 +610,6 @@ fn assert_all_128_roundtrips_at_qp(qp: u8) {
     .expect("write the IVF header");
     splot_core::ivf::write_ivf_frame(&mut ivf, 0, &packet_data).expect("mux the packet into IVF");
 
-    // Decode and assert the reconstruction equals the encoder input (all 128).
     let input = temp_path("ctx-encode-input", "ivf");
     let output = temp_path("ctx-encode-output", "raw");
     std::fs::write(&input, &ivf).expect("write the muxed IVF");
@@ -667,7 +636,6 @@ fn assert_all_128_roundtrips_at_qp(qp: u8) {
     );
     let raw = raw.expect("read the decoded raw output");
     assert_eq!(raw.len(), 6144, "unexpected decoded frame size");
-    // The honesty invariant: decode(encode(all-128)) == all-128.
     assert!(
         raw.iter().all(|&s| s == 128),
         "the decoded frame must equal the all-128 encoder input",

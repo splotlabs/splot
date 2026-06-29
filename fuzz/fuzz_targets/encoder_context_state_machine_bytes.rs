@@ -1,13 +1,5 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
-//
-// Fuzz target for ENC-CONTEXT-STATE-MACHINE: arbitrary bounded lifecycle command
-// sequences over valid borrowed input frames must return typed statuses/errors
-// without panics or fake coded packets. This target does not parse Y4M, emit AV2
-// syntax, invoke AVM, or write output. Run with:
-//
-//     cargo install cargo-fuzz --locked
-//     cargo +nightly fuzz run encoder_context_state_machine_bytes
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;

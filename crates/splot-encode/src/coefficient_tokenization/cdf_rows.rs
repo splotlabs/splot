@@ -10,65 +10,19 @@ use super::*;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CoefficientTokenCdfRows {
     txb_skip: [[i32; 3]; COEFF_CDF_Q_CONTEXTS],
-    // The luma `txb_skip` row at the `TX_16X16` `txSzCtx` (2), for the general 16x16
-    // intra DC tokenizer. `DEFAULT_TXB_SKIP_CDF` is `[q][bank][txSz][ctx]`; sized to
-    // the q dimension at the fixed (luma bank, TX_16X16, neutral ctx) cell.
     txb_skip_16x16: [[i32; 3]; COEFF_CDF_Q_CONTEXTS],
     eob_pt_16: [[i32; 6]; COEFF_CDF_Q_CONTEXTS],
-    // The luma intra `eob_pt_256` row (the `TX_16X16` EOB-point size class), indexed by
-    // `[q]` at the fixed luma-intra eob context. `DEFAULT_EOB_PT_256_CDF` rows hold 8
-    // symbols (`[i32; 9]`).
     eob_pt_256: [[i32; 9]; COEFF_CDF_Q_CONTEXTS],
-    // The §5.20.7.27 `eob_extra` binary CDF, indexed only by the coefficient
-    // CDF q-context (no per-eobPt context). Routes the `eob_extra_token` through
-    // this generic entropy proof, mirroring its block-symbol-trace routing.
     eob_extra: [[i32; 3]; COEFF_CDF_Q_CONTEXTS],
-    // The 4x4 low-frequency `coeff_base_eob` bank, indexed by `[q][ctx]` over the
-    // full §8.3.2 `coeff_base_eob` context dimension (`COEFF_BASE_LF_EOB_CTX_COUNT`).
-    // Sizing the full dimension makes the entropy-proof 4x4-LF EOB tier hole-free
-    // (eob 3/4 reaches ctx 2; eob<=2 only reached ctx 0/1).
     coeff_base_lf_eob:
         [[[i32; COEFF_BASE_LF_EOB_CDF_ROW_LEN]; COEFF_BASE_LF_EOB_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS],
-    // The 4x4 low-frequency non-EOB `coeff_base` bank at the neutral TCQ context,
-    // indexed by `[q][ctx]` over the full §8.3.2 `coeff_base` low-frequency context
-    // dimension (`COEFF_BASE_LF_CTX_COUNT`). The general LF walk derives this context
-    // from the running `Level[]`; sizing the full dimension makes the tier hole-free
-    // (eob 3/4 reaches e.g. ctx 9).
     coeff_base_lf:
         [[[i32; COEFF_BASE_LF_CDF_ROW_LEN]; COEFF_BASE_LF_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS],
-    // The `coeff_br` low-frequency bank, indexed by `[q][ctx]` over the full §8.3.2
-    // `coeff_br` context dimension (`COEFF_BR_LF_CTX_COUNT`; no transform-size
-    // dimension). `DEFAULT_COEFF_BR_LF_CDF` is already `[q][ctx][row]`.
     coeff_br_lf: [[[i32; COEFF_BR_LF_CDF_ROW_LEN]; COEFF_BR_LF_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS],
-    // The 4x4 HIGH-frequency `coeff_base_eob` bank, indexed by `[q][ctx]` over the
-    // full §8.3.2 HF `coeff_base_eob` context dimension (`COEFF_BASE_EOB_CTX_COUNT`,
-    // 4-symbol rows). Sourced from `DEFAULT_COEFF_BASE_EOB_CDF[q][TX_SIZE_4X4_CTX][ctx]`
-    // (distinct from the 6-symbol LF `coeff_base_lf_eob` bank). The eob-11 HF EOB
-    // coefficient reaches `coeff_base_eob_ctx(10) = 3`; sizing the full ctx-4 dimension
-    // makes the HF EOB tier hole-free.
     coeff_base_eob_hf:
         [[[i32; COEFF_BASE_EOB_CDF_ROW_LEN]; COEFF_BASE_EOB_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS],
-    // The HIGH-frequency `coeff_br` bank, indexed by `[q][ctx]` over the full §8.3.2 HF
-    // `coeff_br` context dimension (`COEFF_BR_CTX_COUNT`, 7; no transform-size
-    // dimension). `DEFAULT_COEFF_BR_CDF` is already `[q][ctx][row]` (distinct from the
-    // LF `coeff_br_lf` bank, which has 14 contexts). The eob-11 HF EOB `coeff_br`
-    // reaches the constant ctx 0; sizing the full ctx-7 dimension makes the tier
-    // hole-free for the later non-EOB HF sub-brick.
     coeff_br_hf: [[[i32; COEFF_BR_CDF_ROW_LEN]; COEFF_BR_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS],
-    // The 4x4 HIGH-frequency non-EOB `coeff_base` bank at the neutral TCQ context,
-    // indexed by `[q][ctx]` over the full §8.3.2 HF `coeff_base` context dimension
-    // (`COEFF_BASE_CTX_COUNT`, 20; 4-symbol rows). Sourced from
-    // `DEFAULT_COEFF_BASE_CDF[q][TX_SIZE_4X4_CTX][ctx][COEFF_BASE_LF_TCQ_CTX_NEUTRAL]`
-    // (distinct from the 6-symbol LF `coeff_base_lf` bank). The general HF walk derives
-    // this context from the running `Level[]` (`coeff_base_hf_luma_context`); for 4x4
-    // 2D the reachable contexts are roughly 0..9, but sizing the full ctx-20 dimension
-    // makes the HF non-EOB base tier hole-free.
     coeff_base_hf: [[[i32; COEFF_BASE_CDF_ROW_LEN]; COEFF_BASE_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS],
-    // The TX_16X16 low-frequency `coeff_base_eob` / non-EOB `coeff_base`, HF
-    // `coeff_base_eob` / non-EOB `coeff_base` banks (`ENC-COEFF-TOKENIZE-16X16-BASE`),
-    // indexed by `[q][ctx]` over the SAME full §8.3.2 context dimensions as the 4x4
-    // banks but sourced from the `TX_SIZE_16X16_CTX` slice of the generated tables. The
-    // 16x16 base pass routes through these so every reached context is hole-free.
     coeff_base_lf_eob_16x16_full:
         [[[i32; COEFF_BASE_LF_EOB_CDF_ROW_LEN]; COEFF_BASE_LF_EOB_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS],
     coeff_base_lf_16x16:
@@ -81,11 +35,8 @@ pub(crate) struct CoefficientTokenCdfRows {
     chroma_u_txb_skip: [[i32; 3]; COEFF_CDF_Q_CONTEXTS],
     chroma_eob_pt_16: [[i32; 6]; COEFF_CDF_Q_CONTEXTS],
     coeff_base_lf_eob_uv: [[i32; 6]; COEFF_CDF_Q_CONTEXTS],
-    // The `intra_tx_type` CDF is not coefficient-CDF-q-context indexed; it has one
-    // `TX_SET_INTRA_1` row per `Tx_Size_Sqr` value.
     intra_tx_type_set1:
         [[i32; INTRA_TX_TYPE_SET1_CDF_ROW_LEN]; INTRA_TX_TYPE_SET1_TX_SIZE_SQR_COUNT],
-    // The intra `sec_tx_type` CDF (`is_inter = 0` bank); one row per `Tx_Size_Sqr`.
     sec_tx_type_intra: [[i32; SEC_TX_TYPE_CDF_ROW_LEN]; SEC_TX_TYPE_TX_SIZE_SQR_COUNT],
 }
 

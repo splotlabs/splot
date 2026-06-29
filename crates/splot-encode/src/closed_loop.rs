@@ -133,10 +133,8 @@ impl MinimalClosedLoopReconstruction {
         }
         let block = transform_block_rect()?;
 
-        // AV2 §7.13.2.10 no-neighbor DC intra prediction (decoder-visible, recon).
         let prediction = predict_dc_no_neighbor(plane, bit_depth)?;
 
-        // Encoder-policy residual = source - prediction.
         let residual = ResidualBlock::from_plane_prediction(
             plane,
             source,
@@ -160,7 +158,6 @@ impl MinimalClosedLoopReconstruction {
     ) -> Result<Self> {
         let quantized_block = QuantizedTransformBlock::dct_dct_4x4(transformed, params)?;
 
-        // Decoder-visible dequant -> inverse transform -> residual addition (recon).
         let reconstructed = reconstruct_from_quantized(
             &prediction,
             params,
@@ -168,7 +165,6 @@ impl MinimalClosedLoopReconstruction {
             quantized_block.quantized(),
         )?;
 
-        // Freeze the reconstructed block into a recon current-frame workspace and hash it.
         let hash = reconstructed_frame_hash(params.bit_depth(), &reconstructed)?;
 
         Ok(Self {
@@ -239,12 +235,8 @@ pub(crate) fn reconstruct_from_quantized(
     let bit_depth = params.bit_depth();
     let block = transform_block_rect()?;
 
-    // AV2 §7.14.2 / §7.14.4 dequantization (decoder-visible, recon).
     let dequantized = dequantize_block_4x4(params, plane, block, quantized)?;
 
-    // AV2 §7.15.4 inverse transform (decoder-visible, recon). The §7.15.4
-    // `Transform_Shift` values are sourced from `splot-recon`, not hand-copied,
-    // so a recon table correction cannot silently desync the closed loop.
     let (row_shift, col_shift) =
         transform_shift(u32::from(DCT_DCT_4X4_LOG2), u32::from(DCT_DCT_4X4_LOG2)).map_err(
             |source| Error::ClosedLoopTransformShift {
@@ -265,7 +257,6 @@ pub(crate) fn reconstruct_from_quantized(
         source,
     })?;
 
-    // AV2 §7.14.3 reconstruct / residual addition with clip (decoder-visible, recon).
     let mut reconstructed = [0u8; DCT_DCT_4X4_COEFF_COUNT];
     reconstruct_add_residual(
         prediction,
@@ -456,10 +447,6 @@ mod tests {
                 CoefficientTokenSyntax::CoeffBaseEob => magnitude = i32::from(symbol) + 1,
                 CoefficientTokenSyntax::CoeffBr => magnitude += i32::from(symbol),
                 CoefficientTokenSyntax::DcSign => negative = symbol == 1,
-                // This helper recovers the single-DC closed-loop magnitude, which
-                // never carries a non-EOB `coeff_base` or an `intra_tx_type`
-                // transform-type symbol (those are multi-coefficient / general
-                // eob>1 trace symbols), so they are a no-op here.
                 CoefficientTokenSyntax::AllZero
                 | CoefficientTokenSyntax::EobPt16
                 | CoefficientTokenSyntax::EobPt1024
@@ -513,8 +500,6 @@ mod tests {
         let block = reconstruct(&[value; DCT_DCT_4X4_COEFF_COUNT], 0);
         assert_eq!(block.reconstructed(), &[value; DCT_DCT_4X4_COEFF_COUNT]);
 
-        // Build an independent monochrome 4x4 frame filled with the reconstructed
-        // value (fill path, not the write_rect path) and compare its hash.
         let info = DecodedFrameInfo::new(
             OutputIndex::new(0),
             ReconBitDepth::Eight,
@@ -534,24 +519,17 @@ mod tests {
 
     #[test]
     fn emitted_coefficient_decisions_reconstruct_identically() {
-        // Flat source 129 -> residual 1 -> DC coeff 32 -> qindex0 quantized DC 4
-        // (within the base-symbol tier), reconstructing losslessly to the source.
         let value = 129u8;
         let block = reconstruct(&[value; DCT_DCT_4X4_COEFF_COUNT], 0);
         assert_eq!(block.quantized()[0], 4);
         assert_eq!(block.reconstructed(), &[value; DCT_DCT_4X4_COEFF_COUNT]);
 
-        // Tokenize the same quantized block and roundtrip the emitted decisions
-        // through the in-tree AV2 §8.2 symbol coder.
         let plan = tokenize_quantized_4x4_dct_dct_dc_only(block.quantized_block()).unwrap();
         let proof = roundtrip_entropy_tokens(plan.tokens()).unwrap();
 
-        // The decoded token stream recovers the exact quantized DC coefficient...
         let recovered_dc = recover_quantized_dc(&plan, proof.decoded_symbols());
         assert_eq!(recovered_dc, block.quantized()[0]);
 
-        // ...and reconstructing from that recovered coefficient yields the same
-        // decoder-visible samples as the local closed loop.
         let mut recovered_quantized = [0i32; DCT_DCT_4X4_COEFF_COUNT];
         recovered_quantized[0] = recovered_dc;
         let reconstructed_from_emitted = reconstruct_from_quantized(
@@ -567,7 +545,6 @@ mod tests {
 
     #[test]
     fn negative_dc_emitted_decisions_reconstruct_identically() {
-        // Flat source 127 -> residual -1 -> negative DC coefficient.
         let value = 127u8;
         let block = reconstruct(&[value; DCT_DCT_4X4_COEFF_COUNT], 0);
         assert_eq!(block.quantized()[0], -4);
@@ -593,7 +570,6 @@ mod tests {
 
     #[test]
     fn all_zero_block_reconstructs_to_prediction() {
-        // Flat source equal to the no-neighbor DC midpoint -> zero residual.
         let block = reconstruct(&[DC_NO_NEIGHBOR_8BIT; DCT_DCT_4X4_COEFF_COUNT], 0);
 
         assert_eq!(block.quantized(), &[0; DCT_DCT_4X4_COEFF_COUNT]);
@@ -661,8 +637,6 @@ mod tests {
         ));
     }
 
-    // --- Non-uniform closed-loop reconstruction (`ENC-CLOSED-LOOP-NONUNIFORM-4X4`) ---
-
     const NON_UNIFORM_SOURCE: [u8; DCT_DCT_4X4_COEFF_COUNT] = [
         140, 120, 100, 110, 135, 125, 145, 115, 130, 150, 105, 95, 138, 122, 148, 118,
     ];
@@ -681,8 +655,6 @@ mod tests {
 
         assert_eq!(block.plane(), PlaneId::Y);
         assert_eq!(block.block(), rect_4x4());
-        // The real forward DCT produced non-zero AC coefficients — not the DC-only
-        // degenerate case the flat path handles.
         assert!(
             block.quantized()[1..].iter().any(|&level| level != 0),
             "a non-uniform source must produce non-zero AC levels"
@@ -691,9 +663,6 @@ mod tests {
 
     #[test]
     fn reconstruct_luma_4x4_is_near_lossless_at_qindex_zero() {
-        // At qindex 0 the decoder reconstruction of the encoder's quantized
-        // decisions is close to the source — bounded by quant rounding plus the DCT
-        // non-orthogonality residue, not bit-exact.
         let block = reconstruct_general(&NON_UNIFORM_SOURCE, 0);
         for (k, (&got, &want)) in block
             .reconstructed()
@@ -720,8 +689,6 @@ mod tests {
 
     #[test]
     fn reconstruct_luma_4x4_matches_dc_only_on_uniform_source() {
-        // A uniform source routes through both entry points identically: the full
-        // DCT reproduces the flat path's DC-only result.
         let uniform = [131u8; DCT_DCT_4X4_COEFF_COUNT];
         let general =
             MinimalClosedLoopReconstruction::reconstruct_luma_4x4(source_view(&uniform), params(0))

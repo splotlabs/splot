@@ -49,7 +49,6 @@ macro_rules! inspect_text_snapshot {
     };
 }
 
-// Header-only dump (`--headers`): omits the per-OBU payload-length line.
 inspect_text_snapshot!(
     headers_conformant,
     "headers_conformant",
@@ -75,7 +74,6 @@ inspect_text_snapshot!(
     &["--headers"]
 );
 
-// Default dump: includes the per-OBU `payload: N byte(s)` line.
 inspect_text_snapshot!(
     default_conformant,
     "default_conformant",

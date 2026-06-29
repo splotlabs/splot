@@ -49,6 +49,8 @@ mod tail;
 mod tiling;
 
 pub use config::IntrabcParams;
+#[cfg(test)]
+pub(crate) use config::{parse_intrabc_params_full, parse_screen_content_params_full};
 pub use encoder_input::{
     MinimalIntraCoreError, MinimalIntraIvfError, MinimalIntraSequenceHeaderError,
     MinimalIntraTileGroupError, build_minimal_intra_clk_core, build_minimal_intra_sequence_header,
@@ -58,15 +60,12 @@ pub use encoder_input::{
     encode_minimal_intra_clk_tile_group_obu, encode_minimal_intra_sequence_header_obu,
     encode_temporal_delimiter_obu,
 };
+pub(crate) use filtering::gdf_per_block_is_coded;
 pub use filtering::{
     CdefParams, CdefStrengthSet, CoreSeqFilterView, DeblockingFilterParams, GdfGeometry, GdfParams,
     InterpolationFilter, MfhDeblockingView, parse_cdef_params, parse_deblocking_filter_params,
     parse_gdf_params, read_interpolation_filter,
 };
-// Internal re-export the `crate::write` frame-filters writer needs to share the §5.18.7.9
-// `gdf_per_block` coded gate (the full `gdfBlkSize` derivation) with the parser; `filtering`
-// is private, so the writer cannot reach it directly.
-pub(crate) use filtering::gdf_per_block_is_coded;
 pub use global_motion::{
     GlobalMotionInput, GlobalMotionParams, GlobalMotionRef, GlobalMotionStop, GmType,
     decode_signed_subexp_with_ref, decode_subexp, decode_unsigned_subexp_with_ref,
@@ -77,22 +76,14 @@ pub use info::{
     FrameHeaderParseStatus, FrameReferenceStateView, FrameType, MfhFrameView, SefTrailingBits,
     parse_frame_header_core,
 };
-// Lower-level §5.18.2 core-parser entry points (the full `parse_frame_header_core` needs a
-// `SequenceHeader`; these run the activation prefix + body against a directly built
-// `CoreSeqView` / `MfhFrameView`). Used by the sibling `crate::write` writer round-trip tests
-// and by the encoder writer-input bridge ([`encoder_input::build_minimal_intra_clk_core`]),
-// which parse-backs a conformant minimal-intra core.
 pub(crate) use info::{init_core_from_prefix, parse_core_body};
 pub use inter::{InterControl, InterStop, MvPrecision, TipFrameMode};
+pub(crate) use quant::get_qindex_ignore_delta_q;
 pub use quant::{
     CoreSeqQuantView, DeltaQParams, LosslessInfo, MAX_PIC_QM_NUM, QmSetLevels, QuantizationParams,
     SetupQmParams, parse_delta_q_params, parse_lossless_info, parse_quantization_params,
     parse_setup_qm_params, read_delta_q,
 };
-// Internal re-exports the `crate::write` frame-quant writer needs to re-derive the §5.18.2
-// lossless state (`get_qindex_ignore_delta_q`) and the `qm_index` field width
-// (`ceil_log2`); both modules are private, so the writer cannot reach them directly.
-pub(crate) use quant::get_qindex_ignore_delta_q;
 pub use restoration::{
     CCSO_BAND_NUM, CcsoParams, CcsoPlaneParams, CoreSeqCcsoView, CoreSeqRestorationView,
     FrameRestorationType, LrGeometry, LrParams, LrParseOutcome, LrPartialParams, LrPlaneParams,
@@ -108,12 +99,6 @@ pub(crate) use restoration::{
 pub use segmentation::{CoreSeqSegView, MfhSegView, SegmentationParams, parse_segmentation_params};
 pub use size::FrameSize;
 pub(crate) use size::ceil_log2;
-// Internal re-exports so the `crate::write` frame-header writer tests (a sibling of the
-// private `config` / `size` modules) can round-trip against the §5.18.3 / §5.18.4 parsers.
-// Test-only: the writers themselves do not parse, and the in-crate parser callers reach
-// `config` / `size` directly.
-#[cfg(test)]
-pub(crate) use config::{parse_intrabc_params_full, parse_screen_content_params_full};
 #[cfg(test)]
 pub(crate) use size::parse_frame_size;
 pub use tail::{
@@ -237,25 +222,18 @@ pub fn parse_frame_header_prefix(
     let is_key_frame = derive_key_frame(obu_type);
     let is_bridge = obu_type == ObuType::BridgeFrame;
     let is_regular = derive_is_regular(obu_type);
-    // AV2 § 5.18.2: startCVS = obu_type == OBU_CLOSED_LOOP_KEY && FirstPictureInTU. The
-    // derivation only consults FirstPictureInTU for a CLK, so a non-CLK type is decided
-    // Some(false) from the type alone; a CLK with a withheld input stays None (unknown).
     let starts_cvs = if obu_type == ObuType::ClosedLoopKey {
         first_picture_in_tu
     } else {
         Some(false)
     };
 
-    // AV2 § 5.18.2: a bridge frame infers cur_mfh_id = 0; otherwise it is read.
     let cur_mfh_id = if is_bridge {
         MfhId::zero()
     } else {
         MfhId::from_raw(reader.read_uvlc()?)
     };
 
-    // AV2 § 5.18.2: cur_mfh_id == 0 references a sequence header directly; a non-zero
-    // cur_mfh_id resolves the sequence header through MfhSeqHeaderId[cur_mfh_id],
-    // which the validator supplies from its multi-frame-header availability records.
     let (seq_header_id_in_frame_header, referenced_sequence_header_id) = if cur_mfh_id.is_zero() {
         let raw = reader.read_uvlc()?;
         (Some(raw), SequenceHeaderId::try_new(raw))
@@ -323,9 +301,6 @@ mod tests {
 
     #[test]
     fn frame_header_prefix_clk_unknown_first_picture_leaves_start_cvs_none() {
-        // AV2 § 5.18.2: a CLK's startCVS needs FirstPictureInTU. A stateless caller
-        // withholds it (None), so startCVS is genuinely unknown — never a fabricated
-        // Some(false).
         let mut bits = Bits::default();
         bits.uvlc(0);
         bits.uvlc(0);
@@ -337,8 +312,6 @@ mod tests {
 
     #[test]
     fn frame_header_prefix_non_clk_unknown_first_picture_is_some_false() {
-        // A non-CLK type does not consult FirstPictureInTU, so startCVS is decided
-        // Some(false) from the type alone even when the input is withheld (None).
         let mut bits = Bits::default();
         bits.uvlc(0);
         bits.uvlc(0);
@@ -367,7 +340,6 @@ mod tests {
 
     #[test]
     fn frame_header_prefix_bridge_infers_cur_mfh_id_zero() {
-        // A bridge frame does NOT read cur_mfh_id; it reads seq_header_id directly.
         let mut bits = Bits::default();
         bits.uvlc(3); // seq_header_id_in_frame_header (cur_mfh_id inferred 0)
         let data = bits.into_bytes();
@@ -392,7 +364,6 @@ mod tests {
         let prefix =
             parse_frame_header_prefix(&mut reader, ObuType::OpenLoopKey, Some(true)).unwrap();
         assert_eq!(prefix.seq_header_id_in_frame_header, Some(16));
-        // Out of range -> no resolved typed id (validator reports the range error).
         assert_eq!(prefix.referenced_sequence_header_id, None);
     }
 
@@ -404,7 +375,6 @@ mod tests {
             Err(Error::UnexpectedEof { .. })
         ));
 
-        // cur_mfh_id reads, but the payload ends before seq_header_id_in_frame_header.
         let mut bits = Bits::default();
         bits.uvlc(0); // cur_mfh_id == 0
         let data = bits.into_bytes();

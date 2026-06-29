@@ -78,7 +78,6 @@ pub fn write_frame_size(
         writer.write_bits(size.width - 1, frame_width_bits)?;
         writer.write_bits(size.height - 1, frame_height_bits)?;
     }
-    // Non-override: dimensions are inferred from default_dims; no bits.
     Ok(())
 }
 
@@ -91,14 +90,10 @@ fn check_frame_size_encodable(
     frame_height_bits: u32,
     default_dims: Option<(u32, u32)>,
 ) -> WriteResult<()> {
-    // The parser derives FrameWidth/Height as frame_*_minus_1 + 1, so both are >= 1.
     if size.width == 0 || size.height == 0 {
         return Err(WriteError::NonCanonicalFrameHeader { what: "frame_size" });
     }
     if frame_size_override_flag {
-        // The f(n) descriptor accepts n <= 32; reject an over-wide field BEFORE either
-        // dimension is emitted (a valid width followed by an over-wide height would
-        // otherwise leave a partial buffer when write_bits rejects the height).
         if frame_width_bits > u32::BITS {
             return Err(WriteError::BitWidthTooLarge {
                 requested: frame_width_bits,
@@ -124,7 +119,6 @@ fn check_frame_size_encodable(
             });
         }
     } else if default_dims != Some((size.width, size.height)) {
-        // The non-override path emits no bits, so the size must equal the inferred default.
         return Err(WriteError::NonCanonicalFrameHeader { what: "frame_size" });
     }
     Ok(())
@@ -174,7 +168,6 @@ fn check_screen_content_encodable(
     seq_force_screen_content_tools: u8,
     seq_force_integer_mv: u8,
 ) -> WriteResult<()> {
-    // Not coded -> allow_screen_content_tools is inferred as (seq force value != 0).
     if seq_force_screen_content_tools != SELECT_SCREEN_CONTENT_TOOLS
         && allow_screen_content_tools != (seq_force_screen_content_tools != 0)
     {
@@ -182,8 +175,6 @@ fn check_screen_content_encodable(
             what: "allow_screen_content_tools",
         });
     }
-    // force_integer_mv is inferred unless screen-content tools are on and the sequence
-    // selects it: 0 when tools off, else the sequence force value.
     let imv_coded = allow_screen_content_tools && seq_force_integer_mv == SELECT_INTEGER_MV;
     if !imv_coded {
         let inferred = allow_screen_content_tools && seq_force_integer_mv != 0;
@@ -222,7 +213,6 @@ pub fn write_intrabc_params(
     writer.write_flag(params.allow_intrabc)?;
     if params.allow_intrabc {
         if frame_is_intra {
-            // Presence guaranteed by check_intrabc_encodable.
             let global =
                 params
                     .allow_global_intrabc
@@ -279,7 +269,6 @@ fn check_intrabc_encodable(
             });
         }
     }
-    // allow_local_intrabc is coded only when allow_global_intrabc == Some(true).
     let local_coded = params.allow_global_intrabc == Some(true);
     match (local_coded, params.allow_local_intrabc) {
         (true, Some(_)) | (false, None) => {}
@@ -299,7 +288,6 @@ fn check_intrabc_encodable(
             });
         }
     }
-    // max_bvp_drl_bits_minus_1 is coded only when change_bvp_drl == Some(true).
     let max_coded = params.change_bvp_drl == Some(true);
     match (max_coded, params.max_bvp_drl_bits_minus_1) {
         (true, Some(raw)) => {
@@ -332,8 +320,6 @@ mod tests {
 
     const SELECT_SCC: u8 = SELECT_SCREEN_CONTENT_TOOLS;
     const SELECT_IMV: u8 = SELECT_INTEGER_MV;
-
-    // ---- frame_size ----
 
     fn roundtrip_frame_size(
         size: FrameSize,
@@ -400,7 +386,6 @@ mod tests {
 
     #[test]
     fn frame_size_overwide_height_bits_rejected_before_any_bit() {
-        // width field is fine (12 bits) but height_bits > 32: reject before emitting width.
         let mut writer = BitWriter::new();
         let err =
             write_frame_size(&mut writer, &FrameSize::new(2, 2), true, 12, 33, None).unwrap_err();
@@ -445,8 +430,6 @@ mod tests {
         assert_eq!(writer.bit_len(), 0);
     }
 
-    // ---- screen_content_params ----
-
     fn roundtrip_scc(allow: bool, imv: bool, seq_scc: u8, seq_imv: u8) {
         let mut writer = BitWriter::new();
         write_screen_content_params(&mut writer, allow, imv, seq_scc, seq_imv).unwrap();
@@ -466,15 +449,12 @@ mod tests {
 
     #[test]
     fn scc_forced_round_trips() {
-        // Forced off: allow inferred false, imv inferred false.
         roundtrip_scc(false, false, 0, 0);
-        // Forced on (seq_force_scc == 1), imv forced on (seq_force_imv == 1).
         roundtrip_scc(true, true, 1, 1);
     }
 
     #[test]
     fn scc_inferred_allow_mismatch_rejected() {
-        // seq_force_scc = 0 -> allow inferred false; storing true is non-canonical.
         let mut writer = BitWriter::new();
         let err = write_screen_content_params(&mut writer, true, false, 0, 0).unwrap_err();
         assert_eq!(
@@ -488,7 +468,6 @@ mod tests {
 
     #[test]
     fn scc_inferred_imv_mismatch_rejected() {
-        // allow on but seq_force_imv = 0 (not SELECT) -> imv inferred false; true is bad.
         let mut writer = BitWriter::new();
         let err = write_screen_content_params(&mut writer, true, true, SELECT_SCC, 0).unwrap_err();
         assert_eq!(
@@ -499,8 +478,6 @@ mod tests {
         );
         assert_eq!(writer.bit_len(), 0);
     }
-
-    // ---- intrabc_params ----
 
     fn roundtrip_intrabc(p: IntrabcParams, intra: bool, drl: bool) {
         let mut writer = BitWriter::new();
@@ -528,7 +505,6 @@ mod tests {
 
     #[test]
     fn intrabc_all_branches_round_trip() {
-        // global=1 -> local read; change=1 -> max ns(2).
         roundtrip_intrabc(
             IntrabcParams {
                 allow_intrabc: true,
@@ -540,7 +516,6 @@ mod tests {
             true,
             true,
         );
-        // global=0 -> local inferred (None); change=0.
         roundtrip_intrabc(
             IntrabcParams {
                 allow_intrabc: true,
@@ -552,7 +527,6 @@ mod tests {
             true,
             true,
         );
-        // not intra -> no global/local; drl off -> no change.
         roundtrip_intrabc(
             IntrabcParams {
                 allow_intrabc: true,
@@ -585,7 +559,6 @@ mod tests {
 
     #[test]
     fn intrabc_global_present_without_gate_rejected() {
-        // not intra, but allow_global_intrabc is Some -> non-canonical.
         let mut p = base_intrabc();
         p.change_bvp_drl = None;
         assert_intrabc_rejected(p, false, false, "allow_global_intrabc");
@@ -600,7 +573,6 @@ mod tests {
 
     #[test]
     fn intrabc_change_present_without_gate_rejected() {
-        // drl off but change_bvp_drl Some -> non-canonical.
         let p = base_intrabc();
         assert_intrabc_rejected(p, true, false, "change_bvp_drl");
     }

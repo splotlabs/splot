@@ -36,7 +36,6 @@ use super::{
     unsupported_feature_at,
 };
 
-// AV2 § 3 `MI_SIZE`, `PC_WIENER_LEAD`, and `PC_WIENER_LAG`; § 7.20.4 `get_features` reads 7 source samples per feature point.
 const LR_MI_SIZE: usize = 4;
 const PC_WIENER_LEAD: isize = 1;
 const PC_WIENER_LAG: isize = 4;
@@ -292,15 +291,6 @@ fn write_wienerns_lr_tx_skip_record(
             .ok_or(ReconError::ArithmeticOverflow {
                 context: "LrTxSkip transform record column extent",
             })?;
-    // A genuine out-of-frame ORIGIN (`row >= rows` or `col >= cols`) is never a
-    // valid §5.20.3.2 `block_coded` cell and stays a hard error, as AVM never
-    // emits one. A block straddling the bottom/right frame edge has a NOMINAL
-    // footprint that overhangs the visible MI grid by up to one transform extent;
-    // its off-frame MI rows/cols (`row..rows` already covers them) are clamped out
-    // — they carry no FilterClass and are never part of the grid's `expected`
-    // population — mirroring AVM `av2_set_entropy_contexts` / the §5.20.3.2
-    // `block_coded(r,c) { r < MiRows && c < MiCols }` clamp the §5.20.6.1
-    // `record_block` and §5.20.7.27 context writes already apply.
     if record.row >= rows || record.col >= cols {
         return Err(ReconError::PcWienerInvalidBounds {
             field: "LrTxSkip transform record bounds",
@@ -454,7 +444,6 @@ impl WienerNsLrSourceReadConfig {
 pub(super) const WIENER_NS_CHROMA_SOURCE_TAP_COUNT: usize = 12;
 const WIENER_NS_CHROMA_LUMA_COEFF_OFFSET: usize = 6;
 
-// AV2 § 7.20.3 `Wiener_Ns_Config_Y` source tap offsets.
 const WIENER_NS_LUMA_SOURCE_TAPS: [(isize, isize); 32] = [
     (1, 0),
     (-1, 0),
@@ -490,7 +479,6 @@ const WIENER_NS_LUMA_SOURCE_TAPS: [(isize, isize); 32] = [
     (-3, 3),
 ];
 
-// AV2 § 7.20.3 `Wiener_Ns_Config_Uv` source tap offsets.
 const WIENER_NS_CHROMA_SOURCE_TAPS: [(isize, isize); WIENER_NS_CHROMA_SOURCE_TAP_COUNT] = [
     (1, 0),
     (-1, 0),
@@ -592,13 +580,6 @@ pub(super) fn ensure_wienerns_lr_unit_runtime_frontier(
                     wienerns_lr_live_transform_record_handoff_error(key_envelope.offset)
                 })?;
             let transform_handoff = if tx_mode == TxMode::Select {
-                // Public decode runs WITHOUT a reconstruction sink: the handoff
-                // parses the supported §5.20.6.1/§5.20.6.3 transform records (the
-                // bottom/right frame-edge skipped blocks now clamp rather than error)
-                // and then fails closed at the §7.20.4 `live_frame_samples_unpopulated`
-                // gate below, so no partial frame is emitted. The reconstruction bridge
-                // is exercised only by the region-verification test, which attaches a
-                // sink.
                 tx_records::derive_wienerns_lr_selectable_transform_record_handoff(
                     bytes,
                     options,
@@ -654,7 +635,6 @@ pub(super) fn derive_wienerns_lr_runtime_storage_retention_frontier(
     offset: ByteOffset,
     limits: DecodeLimits,
 ) -> Result<WienerNsLrRuntimeStorageRetentionFrontier> {
-    // `FrameSize` carries the derived §6.17.4.1 dimensions used for storage.
     let frame_size = core.frame_size.ok_or_else(|| {
         unsupported_feature_at(
             "unsupported_wienerns_lr_runtime_storage_missing_frame_size",
@@ -699,7 +679,6 @@ pub(super) fn derive_wienerns_lr_runtime_storage_retention_frontier(
         live_frame_buffer_bytes,
         LR_RETAINED_FRAME_BUFFERS,
     )?;
-    // Charge private fail-closed storage by current slot sizes, not compact AV2 bytes.
     let (tx_skip_rows, tx_skip_cols) = crate::tile_payload::frame_mi_dimensions(core)
         .map_err(|_| wienerns_lr_runtime_storage_retention_error(offset))?;
     let tx_skip_values = checked_mul(
@@ -1196,7 +1175,6 @@ fn wienerns_lr_transform_record_setup_error(
     }
 }
 
-// Owned error-to-DecodeError conversion used through `map_err`; by-value ownership matches that consume-and-map design.
 #[allow(clippy::needless_pass_by_value)]
 fn wienerns_lr_transform_record_traversal_error(
     error: TilePartitionTraversalError,
@@ -1402,7 +1380,6 @@ fn wienerns_lr_transform_record_unsupported(
     )
 }
 
-// Owned error-to-DecodeError conversion used through `map_err`; by-value ownership matches that consume-and-map design.
 #[allow(clippy::needless_pass_by_value)]
 fn wienerns_lr_live_transform_record_mode_error(
     error: GeneralIntraBlockModeError,
@@ -1485,7 +1462,6 @@ fn wienerns_lr_live_transform_record_mode_error(
     }
 }
 
-// Owned error-to-DecodeError conversion used through `map_err`; by-value ownership matches that consume-and-map design.
 #[allow(clippy::needless_pass_by_value)]
 fn wienerns_lr_live_transform_record_residual_error(
     error: GeneralIntraResidualError,
@@ -1989,7 +1965,6 @@ fn derive_pc_wiener_box_features_source_reads(
     x: isize,
     y: isize,
 ) -> Result<()> {
-    // AV2 § 7.20.4 `get_features` scans the PC Wiener lead/lag feature window.
     for dy in -PC_WIENER_LEAD..=PC_WIENER_LAG {
         for dx in -PC_WIENER_LEAD..=PC_WIENER_LAG {
             let feature_x = source_read_coordinate_add(x, dx, "pc wiener feature x")?;
@@ -2082,7 +2057,6 @@ fn record_wienerns_lr_classified_source_read(
         .source_reads_resolved
         .checked_add(1)
         .ok_or_else(|| source_read_arithmetic_overflow("pc wiener classified source-read count"))?;
-    // AV2 § 7.20.3 `get_luma_sample`.
     let sample = loop_restoration_source_sample(PlaneId::Y, x, y, bounds)?;
     if summary.first_sample.is_none() {
         summary.first_sample = Some(WienerNsLrSourceReadSample {

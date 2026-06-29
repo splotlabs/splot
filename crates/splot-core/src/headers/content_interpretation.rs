@@ -105,8 +105,6 @@ impl ColorDescription {
     /// unspecified description).
     #[must_use]
     pub fn derived(&self) -> DerivedColorInfo {
-        // AV2 § 6.14 Table 6.13: ci_color_description_idc has the same interpretation
-        // as ops_color_description_idc.
         let primaries = match self.color_description_idc {
             0 => self.primaries.map_or(UNSPECIFIED_COLOR_PRIMARIES, |p| {
                 (
@@ -278,13 +276,6 @@ pub fn parse_content_interpretation(reader: &mut BitReader<'_>) -> Result<Conten
     let reserved_2bit = reader.read_bits_u8(2)?;
 
     let color_description = if color_description_present_flag {
-        // AV2 § 6.14: ci_color_description_idc has the same interpretation as
-        // ops_color_description_idc, which "shall be in the range of 0 to 127,
-        // inclusive" (§ 6.14, Table 6.13). That bound is structurally enforced by
-        // rg(2): its maximum encodable value is (31 << 2) + 3 = 127, and a larger
-        // value cannot terminate the unary prefix, yielding Error::InvalidRg. Values
-        // 6..=127 are reserved and ignored by decoders, so they are not a validator
-        // error. No extra range check is therefore needed here.
         let color_description_idc = reader.read_rg(2)?;
         let primaries = if color_description_idc == 0 {
             Some(ColorPrimariesTriple {
@@ -307,8 +298,6 @@ pub fn parse_content_interpretation(reader: &mut BitReader<'_>) -> Result<Conten
 
     let chroma_sample_position = if chroma_sample_position_present_flag {
         let top = reader.read_uvlc()?;
-        // AV2 § 5.15: the bottom position is coded only when ci_scan_type_idc != 1;
-        // otherwise it is inferred equal to the top position.
         let bottom = if scan_type_idc.is_progressive_frame() {
             top
         } else {
@@ -584,7 +573,6 @@ mod tests {
 
     #[test]
     fn derived_color_normalizes_presets_and_explicit() {
-        // Preset BT.709 (idc 1) derives to the same triple as the explicit encoding.
         let preset = ColorDescription {
             color_description_idc: 1,
             primaries: None,
@@ -602,8 +590,6 @@ mod tests {
         assert_eq!(preset.derived(), explicit.derived());
         assert_eq!(preset.derived().primaries, (1, 1, 1));
 
-        // Each Table 6.13 preset derives to its exact (primaries, transfer, matrix)
-        // triple, so a wrong constant for any preset is caught.
         let preset_triple = |idc: u32| {
             ColorDescription {
                 color_description_idc: idc,
@@ -618,7 +604,6 @@ mod tests {
         assert_eq!(preset_triple(4), (1, 13, 0)); // sRGB
         assert_eq!(preset_triple(5), (1, 13, 5)); // sYCC
 
-        // A different preset derives to a different triple.
         let bt2100_pq = ColorDescription {
             color_description_idc: 2,
             primaries: None,
@@ -626,9 +611,6 @@ mod tests {
         };
         assert_ne!(preset.derived(), bt2100_pq.derived());
 
-        // Reserved idc (6..=127) derives to the unspecified (2, 2, 2) triple — the
-        // same as an explicitly-unspecified color description — but full_range still
-        // counts.
         let reserved = ColorDescription {
             color_description_idc: 50,
             primaries: None,
@@ -637,8 +619,6 @@ mod tests {
         assert_eq!(reserved.derived().primaries, (2, 2, 2));
         assert!(reserved.derived().full_range);
 
-        // A reserved id and an explicit (2, 2, 2) with the same full_range carry the
-        // same derived color information.
         let explicit_unspecified = ColorDescription {
             color_description_idc: 0,
             primaries: Some(ColorPrimariesTriple {
@@ -653,7 +633,6 @@ mod tests {
 
     #[test]
     fn derived_sar_normalizes_table_and_explicit() {
-        // Preset idc 1 -> (1, 1); the explicit-255 encoding of (1, 1) matches.
         let preset = AspectRatioInfo {
             aspect_ratio_idc: 1,
             extended_sar: None,
@@ -668,7 +647,6 @@ mod tests {
         assert_eq!(preset.derived_sar(), Some((1, 1)));
         assert_eq!(preset.derived_sar(), explicit.derived_sar());
 
-        // A different preset derives to a different SAR.
         let other = AspectRatioInfo {
             aspect_ratio_idc: 2,
             extended_sar: None,
@@ -676,14 +654,12 @@ mod tests {
         assert_eq!(other.derived_sar(), Some((12, 11)));
         assert_ne!(preset.derived_sar(), other.derived_sar());
 
-        // Reserved idc (17..=254) has no table entry.
         let reserved = AspectRatioInfo {
             aspect_ratio_idc: 17,
             extended_sar: None,
         };
         assert_eq!(reserved.derived_sar(), None);
 
-        // An explicit ratio is reduced to lowest terms: 2:2 derives to 1:1.
         let unreduced = AspectRatioInfo {
             aspect_ratio_idc: 255,
             extended_sar: Some(ExtendedSampleAspectRatio {
@@ -694,8 +670,6 @@ mod tests {
         assert_eq!(unreduced.derived_sar(), Some((1, 1)));
         assert_eq!(unreduced.derived_sar(), preset.derived_sar());
 
-        // A zero dimension is unspecified, mapped to the canonical (0, 0): an
-        // explicit 0:1, the explicit 0:0, and the preset idc 0 (table 0:0) all agree.
         let explicit_zero = AspectRatioInfo {
             aspect_ratio_idc: 255,
             extended_sar: Some(ExtendedSampleAspectRatio {

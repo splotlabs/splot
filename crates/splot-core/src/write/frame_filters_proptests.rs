@@ -1,13 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-// Property tests for the §5.18.5.2 / §5.18.7.9 / §5.18.7.10 frame loop-filter writers: each
-// parser is driven on random bits + gating, then the parsed model is re-emitted and reparsed
-// to assert the universal semantic round-trip; plus a "never panics" property over arbitrary
-// (possibly invalid) constructed models.
-
-// `include!`d into `crate::write::frame_filters` so `super::*` resolves to its writers and
-// private helpers (the unit/reject tests live in the sibling `frame_filters_tests.rs`).
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
@@ -55,7 +48,6 @@ mod proptests {
     }
 
     proptest! {
-        // ===== deblocking (§ 5.18.5.2) =====
 
         /// Every parser-reachable deblocking_filter_params round-trips: parse random bits +
         /// gating, then re-emit and reparse to the same model.
@@ -63,10 +55,6 @@ mod proptests {
         fn deblocking_round_trips(
             coded_lossless in any::<bool>(),
             num_planes in prop_oneof![Just(1u8), Just(3u8)],
-            // Mostly the conformant 0..=3 range (dfParBits 2..=5); occasionally an out-of-range
-            // value so the coded_lossless path (which never codes dfParBits) still round-trips,
-            // while the non-lossless over-wide path is parser-rejected and skipped by the
-            // `if let Ok` guard below.
             df_par_bits_minus_2 in prop_oneof![0u8..=3, Just(30u8), Just(31u8), Just(255u8)],
             mfh in proptest::option::of((any::<bool>(), any::<[bool; 4]>())),
             bits in proptest::collection::vec(any::<bool>(), 0..40),
@@ -143,7 +131,6 @@ mod proptests {
             }
         }
 
-        // ===== gdf (§ 5.18.7.9) =====
 
         /// Every parser-reachable gdf_params round-trips.
         #[test]
@@ -243,7 +230,6 @@ mod proptests {
             }
         }
 
-        // ===== cdef (§ 5.18.7.10) =====
 
         /// Every parser-reachable cdef_params round-trips.
         #[test]

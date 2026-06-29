@@ -775,8 +775,6 @@ mod tests {
 
     #[test]
     fn wire_header_matches_baseline_layout() {
-        // The zerocopy wire view must stay exactly the 32-byte baseline header so
-        // `ref_from_prefix` borrows the right field offsets.
         assert_eq!(
             core::mem::size_of::<IvfFileHeaderWire>(),
             IVF_HEADER_SIZE_BYTES

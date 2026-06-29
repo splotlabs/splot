@@ -43,11 +43,6 @@ fn frame_header_cur_mfh_id_out_of_range_is_not_double_reported() {
 
 #[test]
 fn sequence_activation_uses_clk_referenced_sequence_header() {
-    // Two available sequence headers with different layer limits: id 0 allows
-    // tlayer up to 2, id 1 allows only tlayer 0. A CLK that references id 1
-    // activates it for xlayer 0, so a following tlayer-1 OBU exceeds the limit.
-    // Without frame-header activation, id 0 (the OBU-order fallback) would be
-    // active and the tlayer-1 OBU would be accepted.
     let mut data = temporal_delimiter_obu();
     data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(0, 2, 2)));
     data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(1, 0, 0)));
@@ -65,11 +60,6 @@ fn sequence_activation_uses_clk_referenced_sequence_header() {
 
 #[test]
 fn sequence_fingerprint_preserved_for_in_cvs_repeat() {
-    // A sequence header opens a CVS, a CLK references (activates) it, then a
-    // non-identical repeat of the same id appears later in the SAME temporal
-    // unit. Per AV2 § 7.3.6 the new coded video sequence starts at the temporal
-    // unit, so the pre-CLK header joins it: its fingerprint survives the
-    // activating CLK and the same-temporal-unit repeat is flagged eagerly.
     let mut data = temporal_delimiter_obu();
     data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(0, 1, 1)));
     data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0)); // activates id 0
@@ -86,15 +76,6 @@ fn sequence_fingerprint_preserved_for_in_cvs_repeat() {
 
 #[test]
 fn sequence_reconfiguration_in_clk_temporal_unit_is_not_flagged() {
-    // Temporal unit 2 reconfigures id 0 with different layer limits and contains
-    // a CLK *after* the header: AV2 § 7.3.6 defines the new coded video sequence
-    // to start at the temporal unit ("A new coded video sequence ... is defined
-    // to start at each temporal unit that contains an OBU with obu_type equal to
-    // OBU_CLOSED_LOOP_KEY ..."), so the pre-CLK params-B header joins the NEW
-    // coded video sequence and is never in the same sequence as params A. The
-    // deferred cross-temporal-unit comparison enqueued when params B was
-    // observed is dropped when the CLK arrives later in the same temporal unit
-    // (no false positive).
     let mut data = temporal_delimiter_obu();
     data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(0, 1, 1)));
     data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 0));
@@ -113,18 +94,9 @@ fn sequence_reconfiguration_in_clk_temporal_unit_is_not_flagged() {
 
 #[test]
 fn first_picture_in_tu_is_tracked_per_extended_layer() {
-    // AV2 § 6.17.2: "FirstPictureInTU is a variable that specifies if this is
-    // the first frame unit in a coded extended layer unit in a temporal unit" —
-    // i.e. per extended layer. A frame-bearing OBU in xlayer 0 must not clear
-    // xlayer 1's FirstPictureInTU (so a CLK for xlayer 1 later in the same
-    // temporal unit still derives startCVS, AV2 § 5.18.2), and the next global
-    // temporal delimiter resets the per-temporal-unit state. The derivation is
-    // not observable through diagnostics yet (startCVS gates no implemented
-    // check), so this drives the context directly.
     use splot_core::annexb::parse_annex_b_obus;
     use splot_core::types::ExtendedLayerId;
 
-    // TD; leading tile group (type 6) in xlayer 0; CLK (type 4) in xlayer 1; TD.
     let mut data = temporal_delimiter_obu();
     data.extend(annex_b_obu_with_header(&layer_obu_header(6, 0, 0, 0), &[]));
     data.extend(annex_b_obu_with_header(&layer_obu_header(4, 0, 0, 1), &[]));
@@ -195,11 +167,6 @@ pub(in crate::validator::tests) fn malformed_tail_mfh_obu(
 
 #[test]
 fn frame_header_activation_precedes_layer_limit_check() {
-    // A CLK requires obu_tlayer_id == 0 but may carry a non-zero obu_mlayer_id
-    // (AV2 §6.2.2). seq 0 allows only mlayer 0; seq 1 allows mlayer 1. A CLK at
-    // obu_mlayer_id 1 that references seq 1 activates the permissive header BEFORE
-    // its own layer-limit check, so it is not flagged. (Without activating first,
-    // the stale seq-0 fallback would falsely flag mlayer-exceeds-max.)
     let mut data = temporal_delimiter_obu();
     data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(0, 0, 0)));
     data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(1, 0, 1)));
@@ -217,9 +184,6 @@ fn frame_header_activation_precedes_layer_limit_check() {
 
 #[test]
 fn frame_header_referencing_malformed_tail_mfh_is_unavailable() {
-    // An MFH with in-range ids but a malformed §5.2.1 payload tail is not recorded
-    // as available, so a frame referencing it via cur_mfh_id is unavailable rather
-    // than resolved through the malformed HLS object.
     let mut data = td_and_seq_header(0, 1, 1);
     data.extend(malformed_tail_mfh_obu(1, 0)); // mfhId 2, malformed tail
     data.extend(frame_obu_mfh_ref(CLK_HEADER, 2)); // CLK cur_mfh_id 2
@@ -235,10 +199,6 @@ fn frame_header_referencing_malformed_tail_mfh_is_unavailable() {
 #[test]
 fn frame_header_missing_mfh_under_external_hls_is_not_flagged() {
     use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
-    // With external HLS provided, an out-of-band multi-frame header may satisfy the
-    // cur_mfh_id reference. External MFHs are not modeled, so the validator neither
-    // resolves the MFH nor emits a hard error — it must not reject the conformant
-    // external-HLS stream.
     let mut data = temporal_delimiter_obu();
     data.extend(frame_obu_mfh_ref(CLK_HEADER, 2)); // CLK cur_mfh_id 2, no in-band MFH
     let options = ValidationOptions {
@@ -255,15 +215,9 @@ fn frame_header_missing_mfh_under_external_hls_is_not_flagged() {
 
 #[test]
 fn frame_header_activation_applies_to_non_key_frames() {
-    // AV2 §5.18.2 calls load_sequence_header() for every frame, before the
-    // `if (keyFrame)` block — not just CLK/OLK key frames. seq 0 allows only
-    // tlayer 0; seq 1 allows tlayer 1. A non-key OBU_REGULAR_TILE_GROUP at tlayer 1
-    // that references seq 1 activates it, so it is checked against seq 1 (allows
-    // tlayer 1) rather than the stale seq-0 fallback — no false positive.
     let mut data = temporal_delimiter_obu();
     data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(0, 0, 0)));
     data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(1, 1, 0)));
-    // OBU_REGULAR_TILE_GROUP (type 7), tlayer 1, mlayer 0, xlayer 0, references seq 1.
     data.extend(frame_obu_direct_seq_ref_layer(7, 1, 0, 0, 1));
 
     let report = Validator::new(false).validate_bytes(&data);

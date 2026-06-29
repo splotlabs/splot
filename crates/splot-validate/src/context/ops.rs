@@ -81,9 +81,7 @@ pub(super) struct OpsAvailabilityStore {
     /// (`global_reset_generation + local_reset_generation[xlayer]`): a redefinition is
     /// compared against the baseline only when no reset *of that layer* (local or global)
     /// intervened (the constraint says "with no intervening OPS reset"). A reset of an
-    /// unrelated extended layer no longer re-baselines this layer (the round-2 fix —
-    /// previously a single bitstream-wide counter over-reset every layer and suppressed
-    /// a required error). Scoping by the effective generation only ever suppresses
+    /// unrelated extended layer does not re-baseline this layer. Scoping by the effective generation only ever suppresses
     /// comparisons, never invents one.
     pub(super) local_reset_generation: BTreeMap<ExtendedLayerId, u64>,
     /// Per-`(obu_xlayer_id, opsID)` count of § 6.10.1 *targeted* resets
@@ -113,11 +111,6 @@ impl OpsAvailabilityStore {
         let defines = record.ops_cnt > 0;
 
         if reset_flag {
-            // § 6.10.1 case 1/2: a global reset (GLOBAL_XLAYER_ID) resets "all layers",
-            // so it bumps the global generation that every layer's effective generation
-            // incorporates; a local reset resets only its own layer's OPS, so it bumps
-            // only that layer's generation. Per-layer scoping keeps a reset of one
-            // extended layer from re-baselining the § 6.10.5 comparison of another.
             if xlayer.is_global() {
                 self.global_reset_generation += 1;
                 self.by_xlayer.clear();
@@ -137,16 +130,10 @@ impl OpsAvailabilityStore {
                 .or_default()
                 .insert(ops_id, record);
         } else {
-            // Case 3 (§ 6.10.1): a targeted reset of only this (xlayer, ops_id). Bump the
-            // per-key targeted-reset generation so the § 6.10.5 error tier re-baselines
-            // this OPS (and only this OPS) like a reset boundary, without touching the
-            // per-layer effective reset generation.
             *self
                 .targeted_reset_generation
                 .entry((xlayer, ops_id))
                 .or_default() += 1;
-            // Remove only this (xlayer, ops_id), then prune the layer's map if it is
-            // now empty so the store does not accumulate empty inner maps.
             let now_empty = match self.by_xlayer.get_mut(&xlayer) {
                 Some(map) => {
                     map.remove(&ops_id);
@@ -233,22 +220,10 @@ impl ValidatorContext {
 
         self.check_operating_point_set_semantics(obu, &ops, report);
 
-        // Annex A.4: OPS-signaled value-space checks (Annex A applies its constraints
-        // per sub-bitstream using OPS-derived values, mirror lines 443-451) — a reserved
-        // ops_level_idx in 22-30 (Table A.7), and a High ops_tier_flag below level 4.0
-        // (Table A.9 NOTE). The OPS PTL carries ops_tier_flag unconditionally, so the
-        // high-tier-below-4.0 case is reachable here (unlike the seq-header arm).
         check_ops_level_tier_value_space(obu, &ops, report);
 
-        // AV2 § 6.10.5: the per-(obu_xlayer_id, opsID, op) buffer-delay sum-constancy
-        // checks, run before the § 6.10.1 reset/update is applied so the defining OPS's
-        // own reset_flag re-baselines its values (the constraint excludes intervening
-        // resets) — see check_ops_buffer_delay_sums.
         self.check_ops_buffer_delay_sums(obu, &ops, options, report);
 
-        // AV2 § 6.10.7: explicitly signalled maps are checked against the currently
-        // activated sequence headers now, and retained on the record so a later
-        // activation can complete the pairing (see on_sequence_activation).
         let explicit_entries = ops_explicit_entries(&ops);
         self.check_ops_entries_against_active(
             obu.offset,
@@ -258,7 +233,6 @@ impl ValidatorContext {
             report,
         );
 
-        // AV2 § 6.10.1: apply reset/update to the active OPS state after the checks.
         let defines = ops.ops_cnt > 0;
         self.ops.apply(
             OperatingPointSetRecord {
@@ -270,10 +244,6 @@ impl ValidatorContext {
             },
             ops.reset_flag,
         );
-        // AV2 § 7.3.8.1: note this OPS (re)send for the random-access-point availability
-        // replay, but only when the OBU actually *defines* `(obu_xlayer_id, ops_id)`
-        // (`ops_cnt > 0`); a pure reset (`ops_cnt == 0`) makes no OPS available, so it is
-        // not a qualifying resend.
         if defines {
             self.rap_replay.note_resend(
                 RapHlsKey::OperatingPointSet {

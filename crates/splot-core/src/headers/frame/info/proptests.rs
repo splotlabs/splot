@@ -4,9 +4,6 @@
 //! Property (no-panic) tests for the [`super`] frame-header parser.
 
 use super::*;
-// The §5.18.2 sub-view types these proptests build a `CoreSeqView` literal from are
-// imported explicitly (rather than leaning on `info`'s incidental private imports) now
-// that `CoreSeqView` and its gatherer live in the `info::seq_view` submodule.
 use crate::headers::frame::filtering::CoreSeqFilterView;
 use crate::headers::frame::restoration::{CoreSeqCcsoView, CoreSeqRestorationView};
 use crate::headers::frame::segmentation::CoreSeqSegView;
@@ -319,9 +316,6 @@ proptest! {
             parse_frame_header_prefix(&mut reader, obu_type, Some(first_picture))
         {
             let mut core = init_core_from_prefix(&prefix, obu_type, first_picture);
-            // On a cur_mfh_id > 0 prefix, resolve against a fixed in-band MFH record
-            // so the resolved-MFH paths are exercised; `SequenceHeaderId::try_new(0)`
-            // is always Some (0 < MAX_SEQ_NUM).
             let mfh_view = match (core.cur_mfh_id.is_zero(), SequenceHeaderId::try_new(0)) {
                 (false, Some(seq_id)) => {
                     Some(MfhFrameView::from_record(&arbitrary_mfh_record(&seq, seq_id), &seq))

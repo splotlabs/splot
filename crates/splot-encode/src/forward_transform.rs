@@ -30,20 +30,10 @@
 #![allow(dead_code)]
 
 use splot_recon::{PlaneId, PlaneRect};
-// The AV2 § 9 4-point DCT kernel (`Dct4` basis), from the generated single-source
-// `splot-tables` § 9 tables (the same kernel the decoder inverse uses), so a
-// generator/spec correction updates both directions at once and the forward kernel
-// cannot drift from the decoder's. `splot-tables` is the dependency-free § 9 tables
-// crate the AGENTS.md Repository Boundaries allow any crate to depend on.
 use splot_tables::tables::transform_1d::DCT_KERNEL4;
 
 use crate::error::{Error, Result};
 
-// Re-export the sibling 16x16 forward transform (`ENC-FORWARD-TRANSFORM-DCT-16X16`),
-// split into `forward_transform_16x16` only to keep each source file under the
-// project's 1000-line budget, so callers reach both block sizes through this module.
-// The re-export is not yet consumed inside the crate (the 16x16 path has no production
-// caller wired in this brick), so it is allowed-unused like the modules' `dead_code`.
 #[allow(unused_imports)]
 pub(crate) use crate::forward_transform_16x16::ForwardTransformBlock16x16;
 
@@ -69,7 +59,6 @@ const FORWARD_ROW_SHIFT: u32 = 0;
 const FORWARD_COL_SHIFT: u32 = 11;
 
 const _: () = assert!(FORWARD_ROW_SHIFT + FORWARD_COL_SHIFT == 11);
-// The column (second) pass must carry the single rounding; see FORWARD_ROW_SHIFT.
 const _: () = assert!(FORWARD_COL_SHIFT >= 1);
 
 /// Row-major transform coefficients for one private encoder block.
@@ -161,10 +150,6 @@ impl ForwardTransformBlock {
             });
         }
 
-        // Row pass (FORWARD_ROW_SHIFT): transform each row of 4 horizontally
-        // adjacent residual samples into 4 frequencies. The intermediate is kept
-        // in `i64` so the column pass sees full precision (no narrowing between
-        // passes), keeping the transform total over the full `i32` residual domain.
         let mut intermediate = [0i64; DCT_DCT_4X4_COEFF_COUNT];
         for r in 0..DCT_DCT_4X4_HEIGHT {
             let mut row = [0i64; DCT_DCT_4X4_WIDTH];
@@ -177,10 +162,6 @@ impl ForwardTransformBlock {
             }
         }
 
-        // Column pass (FORWARD_COL_SHIFT): transform each column of the
-        // intermediate, then narrow to the `i32` coefficient. The narrowing is
-        // checked: an out-of-`i32` coefficient is unreachable for valid 8-bit
-        // residuals but yields a typed error rather than a wrap for any input.
         let mut coefficients = [0; DCT_DCT_4X4_COEFF_COUNT];
         for c in 0..DCT_DCT_4X4_WIDTH {
             let mut column = [0i64; DCT_DCT_4X4_HEIGHT];
@@ -422,20 +403,15 @@ mod tests {
         ));
     }
 
-    // --- Full 4x4 DCT_DCT (`ENC-FORWARD-TRANSFORM-DCT-4X4`) ---
-
     #[test]
     fn full_dct_flat_residual_matches_dc_only_stub_and_reconstructs_exactly() {
         for v in [-50, -8, -1, 0, 1, 7, 40, 127] {
             let full =
                 ForwardTransformBlock::dct_dct_4x4(PlaneId::Y, rect(4, 4), &uniform(v)).unwrap();
-            // The full DCT reproduces the DC-only stub on uniform input (DC = v*32,
-            // every AC coefficient 0) — proving zero regression for the flat subset.
             assert_eq!(full.coefficients(), transform(v).coefficients(), "v {v}");
             let mut expected = [0; DCT_DCT_4X4_COEFF_COUNT];
             expected[0] = v * DCT_DCT_4X4_DC_SCALE;
             assert_eq!(full.coefficients(), &expected, "v {v}");
-            // ...and that DC-only block reconstructs the uniform residual bit-exactly.
             assert_eq!(
                 inverse_4x4_dct_dct(full.coefficients()),
                 uniform(v),
@@ -446,11 +422,6 @@ mod tests {
 
     #[test]
     fn full_dct_horizontal_ramp_pins_kernel_orientation() {
-        // A horizontally-varying, vertically-constant residual ([0,1,2,3] in every
-        // row) puts all its energy in the horizontal frequencies — coefficient row 0
-        // — and zero in every vertical frequency. A transposed kernel would put the
-        // energy in column 0 instead, so this pins the [r][i] orientation and the
-        // exact Round2 / shift arithmetic with hand-computed values.
         let residual = [0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3];
         let block = ForwardTransformBlock::dct_dct_4x4(PlaneId::Y, rect(4, 4), &residual).unwrap();
         assert_eq!(
@@ -461,9 +432,6 @@ mod tests {
 
     #[test]
     fn full_dct_nonuniform_roundtrips_within_residue_bound() {
-        // Genuinely non-uniform residuals reconstruct through the decoder inverse
-        // only within the non-orthogonality bound (NOT bit-exactly): the AV2 integer
-        // DCT4 odd basis rows {83, 35} are not orthonormal.
         let cases: [[i32; DCT_DCT_4X4_COEFF_COUNT]; 3] = [
             [-7, -6, -5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5, 6, 7, 8],
             [
@@ -486,8 +454,6 @@ mod tests {
 
     #[test]
     fn forward_round2_matches_recon_round2() {
-        // Byte-identical to splot-recon inverse_transform.rs round2: arithmetic
-        // shift, the half rounds toward +inf, and n == 0 is the identity.
         assert_eq!(forward_round2(6, 2), 2); // (6 + 2) >> 2
         assert_eq!(forward_round2(-6, 2), -1); // (-6 + 2) >> 2 = -4 >> 2
         assert_eq!(forward_round2(1023, 11), 0); // rounds down
@@ -495,14 +461,8 @@ mod tests {
         assert_eq!(forward_round2(-12345, 0), -12345); // identity
     }
 
-    // The shift budget (sum == 11) and the non-zero column shift are pinned at
-    // compile time by the module-level `const _: () = assert!(...)` blocks, which
-    // are stronger than a runtime test (a wrong split fails the build).
-
     #[test]
     fn full_dct_random_residuals_roundtrip_within_bound_and_never_panic() {
-        // A deterministic LCG sweeps the valid 8-bit residual domain [-255, 255];
-        // every block round-trips within the bound and the transform never panics.
         let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
         let mut next = || {
             state = state
@@ -526,8 +486,6 @@ mod tests {
 
     #[test]
     fn full_dct_out_of_range_residual_errors_without_panicking() {
-        // A residual far outside the 8-bit domain yields a coefficient beyond i32;
-        // the checked narrowing returns a typed error rather than panicking/wrapping.
         let err = ForwardTransformBlock::dct_dct_4x4(PlaneId::Y, rect(4, 4), &uniform(i32::MAX))
             .unwrap_err();
         assert!(matches!(

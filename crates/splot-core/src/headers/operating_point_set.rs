@@ -356,7 +356,6 @@ fn parse_operating_point_payload(
     flags: &OpsPayloadFlags,
 ) -> Result<OperatingPointPayload> {
     let declared_size_bytes = reader.read_leb128()?;
-    // `startPos = get_position()` immediately after `ops_data_size` (§ 5.11).
     let start_bits = reader.consumed_bits();
     let is_global = xlayer_id.is_global();
 
@@ -366,9 +365,6 @@ fn parse_operating_point_payload(
         None
     };
 
-    // For a local OPS the top-level PTL targets the OBU's own layer; it is stored on
-    // the single xlayer entry below. For a global OPS the top-level structure is
-    // `ops_aggregate_info()` and the per-layer PTL is read inside the xlayer loop.
     let mut aggregate_info = None;
     let mut local_ptl_info = None;
     if flags.ptl_present {
@@ -422,8 +418,6 @@ fn parse_operating_point_payload(
             });
         }
     } else {
-        // Local OPS: `XCount == 1`, `OpsxLayerId[0] == xId`, and `ops_mlayer_info()`
-        // is always coded.
         let mlayer = OpsMlayerSource::Explicit(parse_ops_mlayer_info(reader)?);
         xlayer_entries.push(OpsXlayerEntry {
             xlayer_id,
@@ -432,12 +426,8 @@ fn parse_operating_point_payload(
         });
     }
 
-    // `byte_alignment()` then `opsBytes = (get_position() - startPos) >> 3`.
     reader.byte_align_zero()?;
     let consumed = reader.consumed_bits().saturating_sub(start_bits);
-    // `0` (rather than `u32::MAX`) is the safe fallback for the practically-impossible
-    // overflow: an under-count trips `ops/payload-size-mismatch` instead of silently
-    // matching a declared `ops_data_size` of `u32::MAX`.
     let computed_size_bytes = u32::try_from(consumed / 8).unwrap_or(0);
 
     Ok(OperatingPointPayload {
@@ -587,11 +577,9 @@ mod tests {
     /// `opsBytes`.
     fn local_payload_body(mlayer_map: u8) -> (Bits, u32) {
         let mut body = Bits::default();
-        // No intent / ptl / color (the OPS header below clears those flags).
         body.bit(0); // ops_decoder_model_info_for_this_op_present_flag
         body.bit(0); // ops_initial_display_delay_present_flag
         body.f(u32::from(mlayer_map), 8); // ops_mlayer_info(): ops_mlayer_map
-        // No set bits in mlayer_map -> no tlayer maps when mlayer_map == 0.
         body.align();
         let byte_len = (body.bit_len() / 8) as u32;
         (body, byte_len)
@@ -599,7 +587,6 @@ mod tests {
 
     #[test]
     fn ops_reset_only_local() {
-        // ops_reset_flag=0, ops_id=3, ops_cnt=0 -> one byte, no payloads.
         let mut bits = Bits::default();
         bits.bit(0); // ops_reset_flag
         bits.f(3, 4); // ops_id
@@ -617,13 +604,10 @@ mod tests {
 
     #[test]
     fn ops_global_one_payload_no_optional_fields() {
-        // Global OPS, ops_cnt=1, all present flags 0, idc=0, one xlayer (layer 0),
-        // no PTL/mlayer because idc==0.
         let mut payload = Bits::default();
         payload.bit(0); // ops_decoder_model_info_for_this_op_present_flag
         payload.bit(0); // ops_initial_display_delay_present_flag
         payload.f(0b1, 31); // ops_xlayer_map -> only layer 0
-        // idc == 0 => no PTL (ptl flag clear) and no mlayer info for layer 0.
         payload.align();
         let payload_bytes = (payload.bit_len() / 8) as u32;
 
@@ -685,8 +669,6 @@ mod tests {
 
     #[test]
     fn ops_mlayer_info_idc_reserved_is_preserved_for_validator() {
-        // Global OPS with ops_mlayer_info_idc == 3 (reserved). idc 3 codes no mlayer
-        // info, so a single-layer payload parses cleanly.
         let mut payload = Bits::default();
         payload.bit(0); // decoder model present
         payload.bit(0); // initial display delay present
@@ -744,9 +726,7 @@ mod tests {
 
     #[test]
     fn ops_ptl_reserved_bits_nonzero_is_detected() {
-        // Local OPS, ptl present, with ops_ptl_reserved_2bits != 0.
         let mut body = Bits::default();
-        // ops_seq_profile_tier_level_info(): profile, level, tier, mlayer_count, rsvd
         body.f(0, 5); // seq_profile_idc
         body.f(0, 5); // level_idx
         body.bit(0); // tier_flag
@@ -781,16 +761,12 @@ mod tests {
 
     #[test]
     fn ops_inherited_op_index_out_of_range_is_detected() {
-        // Global OPS, idc=2, two included layers. Layer 0 carries explicit mlayer
-        // info; layer 1 inherits from (ops_id, op_index) with an out-of-range index.
         let mut payload = Bits::default();
         payload.bit(0); // decoder model present
         payload.bit(0); // initial display delay present
         payload.f(0b11, 31); // ops_xlayer_map -> layers 0 and 1
-        // layer 0: ops_mlayer_explicit_info_flag = 1 -> explicit mlayer info
         payload.bit(1);
         payload.f(0, 8); // ops_mlayer_map = 0
-        // layer 1: ops_mlayer_explicit_info_flag = 0 -> inherited
         payload.bit(0);
         payload.f(0, 4); // ops_embedded_ops_id = 0 (self)
         payload.f(5, 3); // ops_embedded_op_index = 5 (>= ops_cnt and >= j=1)
@@ -822,8 +798,6 @@ mod tests {
             } => {
                 assert_eq!(embedded_ops_id, 0);
                 assert_eq!(embedded_op_index, 5);
-                // Reference is to the current OPS (ops_id 0) with op index 5 >=
-                // ops_cnt 1, which the validator flags.
                 assert!(u32::from(embedded_op_index) >= u32::from(ops.ops_cnt));
             }
             _ => panic!("expected inherited mlayer source"),
@@ -832,8 +806,6 @@ mod tests {
 
     #[test]
     fn ops_local_color_and_decoder_model_info_parse() {
-        // Local OPS exercising ops_color_info() (rg + explicit triple),
-        // ops_decoder_model_info() (uvlc), initial display delay, and mlayer info.
         let mut body = Bits::default();
         body.rg(0, 2); // ops_color_description_idc = 0 -> explicit triple
         body.f(1, 8); // ops_color_primaries
@@ -891,7 +863,6 @@ mod tests {
 
     #[test]
     fn truncated_input_is_error_not_panic() {
-        // ops_cnt > 0 but no header/payload bytes follow.
         let mut bits = Bits::default();
         bits.bit(0);
         bits.f(0, 4);

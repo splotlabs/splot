@@ -117,7 +117,6 @@ pub fn run_conformance(root: &Path) -> Result<()> {
         let vector_path = conformance_root.join(&entry.path);
         let got = validate_vector(&splot_bin, &vector_path)
             .with_context(|| format!("failed to validate committed vector {}", entry.path))?;
-        // The first line of the description is a concise per-vector label.
         let label = entry.description.lines().next().unwrap_or("").trim();
         match check_entry(entry, &got) {
             Ok(()) => eprintln!(
@@ -295,9 +294,7 @@ mod tests {
     fn diagnostics_set_equality() {
         let entry = diag_entry(&["ivf/truncated-frame-payload"]);
         assert!(check_entry(&entry, &ids(&["ivf/truncated-frame-payload"])).is_ok());
-        // Missing the expected id.
         assert!(check_entry(&entry, &ids(&[])).is_err());
-        // An unexpected extra id.
         assert!(
             check_entry(
                 &entry,

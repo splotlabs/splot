@@ -23,8 +23,6 @@ const BLOCK_32X4: usize = 26;
 const BLOCK_8X64: usize = 27;
 const BLOCK_64X8: usize = 28;
 
-// Literal AV2 § 5.20.7.26 `Subsampled_Size[subsize][subx][suby]`,
-// represented as valid block-size indexes or `None` for `BLOCK_INVALID`.
 const SUBSAMPLED_SIZE: ResidualTable = [
     [
         [Some(BLOCK_4X4), Some(BLOCK_4X4)],

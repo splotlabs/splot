@@ -1,14 +1,5 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
-//
-// Fuzz target: source-backed Y4M serialization for caller-supplied decoded
-// frames must return typed results, never panic, for bounded structured frame
-// inputs derived from arbitrary bytes. This target intentionally does not parse
-// AV2 bitstreams, write filesystem paths, fuzz CLI publication, or invoke
-// AVM/dav2d. Run with:
-//
-//     cargo install cargo-fuzz --locked
-//     cargo +nightly fuzz run recon_y4m_output_bytes
 #![no_main]
 
 use std::io::{self, Write};

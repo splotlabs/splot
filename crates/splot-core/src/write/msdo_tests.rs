@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-// Round-trip and reject tests for the §5.6 multistream_decoder_operation_obu() writer. `include!`d
-// into `crate::write::msdo` so `super::*` resolves to `write_msdo` and the model imports.
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -56,20 +54,17 @@ mod tests {
 
     #[test]
     fn even_allocation_round_trips() {
-        // even allocation -> no multistream_large_picture_idc; two sub-streams (the minimum).
         round_trip(&msdo(true, None, &[sub(1, 4, 3, 0), sub(2, 3, 4, 1)]));
     }
 
     #[test]
     fn uneven_allocation_round_trips() {
-        // uneven allocation -> multistream_large_picture_idc present; the maximum nine sub-streams.
         let subs: Vec<SubStreamConfig> = (0..9).map(|i| sub(i, 31, 30, i & 1)).collect();
         round_trip(&msdo(false, Some(5), &subs));
     }
 
     #[test]
     fn large_picture_idc_flag_mismatch_rejects() {
-        // even allocation but multistream_large_picture_idc present — the parser ties them.
         let model = msdo(true, Some(3), &[sub(1, 4, 3, 0), sub(2, 3, 4, 1)]);
         let mut writer = BitWriter::new();
         let err = write_msdo(&mut writer, &model).unwrap_err();
@@ -95,10 +90,6 @@ mod tests {
 
     #[test]
     fn count_overflowing_the_array_rejects_without_panicking() {
-        // A constructed num_streams_minus_2 = 200 makes count = 202, which overflows the 9-slot
-        // sub_streams array; the `count > len` guard must reject it BEFORE the `sub_streams[count..]`
-        // slice (which would otherwise panic). sub_stream_count matches count so the guard reaches
-        // that arm rather than the count-mismatch arm.
         let mut model = msdo(true, None, &[sub(1, 4, 3, 0), sub(2, 3, 4, 1)]);
         model.num_streams_minus_2 = 200;
         model.sub_stream_count = 202;
@@ -126,8 +117,6 @@ mod tests {
 
     #[test]
     fn out_of_field_sub_stream_value_rejects() {
-        // sub_stream_max_profile is f(5); 32 does not fit and is rejected by the primitive (the
-        // scratch protects the caller). The count/unused/gated checks pass first.
         let model = msdo(true, None, &[sub(1, 32, 3, 0), sub(2, 3, 4, 1)]);
         let mut writer = BitWriter::new();
         let err = write_msdo(&mut writer, &model).unwrap_err();

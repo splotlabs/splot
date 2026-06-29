@@ -69,7 +69,6 @@ fn annex_b_parse_error_inside_ivf_frame_is_a_bitstream_diagnostic() {
 
 #[test]
 fn temporal_delimiter_without_global_xlayer_is_flagged() {
-    // size=2, header 0x88 0x05: TemporalDelimiter with extension, xlayer=5 (not global).
     let report = Validator::new(false).validate_bytes(&[0x02, 0x88, 0x05]);
     assert!(!report.is_conformant());
     assert!(
@@ -95,8 +94,6 @@ fn report_display_reports_status() {
 
 #[test]
 fn diagnostics_from_prefix_survive_a_later_parse_error() {
-    // OBU #0: TemporalDelimiter with extension, xlayer=5 (a §6.2.2 violation).
-    // OBU #1: truncated (declares 5 bytes, only 1 present).
     let report = Validator::new(false).validate_bytes(&[0x02, 0x88, 0x05, 0x05, 0x08]);
     assert!(!report.is_conformant());
     assert!(

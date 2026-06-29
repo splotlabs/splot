@@ -202,9 +202,6 @@ fn chroma_context_commit_config() -> CoeffFscContextCommitConfig {
     }
 }
 
-// An `x4` AT the tile column count is a genuine out-of-tile origin (not a
-// frame-edge overhang) that the §5.20.7.27 context-write edge clamp still
-// rejects; the seeded context state is 6x6.
 fn out_of_bounds_context_commit_config() -> CoeffFscContextCommitConfig {
     CoeffFscContextCommitConfig {
         x4: 6,

@@ -109,7 +109,6 @@ pub fn tile_log2(blk_size: u32, target: u32) -> u8 {
     while k < 32 && (u64::from(blk_size) << k) < u64::from(target) {
         k += 1;
     }
-    // k <= 32 fits in u8.
     k as u8
 }
 
@@ -257,8 +256,6 @@ pub fn parse_tile_params(reader: &mut BitReader<'_>, input: TileParamsInput) -> 
 pub fn parse_tile_layout(reader: &mut BitReader<'_>, input: TileParamsInput) -> Result<TileLayout> {
     let sb4x4 = num_4x4_blocks_wide(input.sb_size);
     let sb_shift = mi_width_log2(input.sb_size);
-    // AV2 frame dimensions are bounded to ≤65 536 luma samples, but `saturating_add`
-    // keeps the grid arithmetic panic-free for an arbitrary `u32` via the public API.
     let mi_cols = 2 * (input.frame_width.saturating_add(7) >> 3);
     let mi_rows = 2 * (input.frame_height.saturating_add(7) >> 3);
     let sb_cols = mi_cols.saturating_add(sb4x4 - 1) >> sb_shift;
@@ -266,9 +263,6 @@ pub fn parse_tile_layout(reader: &mut BitReader<'_>, input: TileParamsInput) -> 
 
     let level_idx = input.seq_level_idx.get();
     let (max_tile_width_sb, mut max_tile_area_sb) = if level_idx != NO_LEVEL_IDX {
-        // A reserved level has no defined scaling factor, so the bit layout cannot be
-        // determined. Report it as unmodeled (the sequence tile config maps this to a
-        // bounded status for the non-conformant level).
         let width_sf =
             tile_width_scaling_factor(input.seq_tier, level_idx).ok_or(Error::Unimplemented {
                 feature: "AV2-5.18.7.3-TILE-PARAMS",
@@ -305,7 +299,6 @@ pub fn parse_tile_layout(reader: &mut BitReader<'_>, input: TileParamsInput) -> 
         covers_cols,
         covers_rows,
     ) = if uniform {
-        // Column tiles.
         let mut tile_cols_log2 = min_log2_tile_cols;
         if !input.is_bridge {
             while tile_cols_log2 < max_log2_tile_cols {
@@ -320,7 +313,6 @@ pub fn parse_tile_layout(reader: &mut BitReader<'_>, input: TileParamsInput) -> 
         let tile_cols = cols.count;
         let tile_cols_log2 = tile_log2(1, tile_cols);
 
-        // Row tiles.
         let min_log2_tile_rows = min_log2_tiles.saturating_sub(tile_cols_log2);
         let mut tile_rows_log2 = min_log2_tile_rows;
         if !input.is_bridge {
@@ -333,7 +325,6 @@ pub fn parse_tile_layout(reader: &mut BitReader<'_>, input: TileParamsInput) -> 
             }
         }
         let rows = uniform_spacing(tile_rows_log2, mi_rows, input.uniform_sb_size);
-        // Uniform spacing always covers the frame.
         (
             tile_cols,
             tile_cols_log2,
@@ -344,7 +335,6 @@ pub fn parse_tile_layout(reader: &mut BitReader<'_>, input: TileParamsInput) -> 
             true,
         )
     } else {
-        // Non-uniform columns.
         let mut widest_tile_sb = 1u32;
         let mut start_sb = 0u32;
         let mut tile_cols = 0u32;
@@ -368,7 +358,6 @@ pub fn parse_tile_layout(reader: &mut BitReader<'_>, input: TileParamsInput) -> 
         }
         let max_tile_height_sb = (max_tile_area_sb / widest_tile_sb).max(1);
 
-        // Non-uniform rows.
         let mut start_sb = 0u32;
         let mut tile_rows = 0u32;
         let mut sb_row_starts = Vec::new();
@@ -394,9 +383,6 @@ pub fn parse_tile_layout(reader: &mut BitReader<'_>, input: TileParamsInput) -> 
 
     let tile_rows_log2 = tile_log2(1, tile_rows);
 
-    // § 5.18.7.3: the returned sbShift is Mi_Width_Log2[uniformSbSize] for a uniform
-    // layout (sbShift is reassigned inside the uniform branch) and the initial
-    // Mi_Width_Log2[sbSize] otherwise.
     let sb_shift2 = if uniform {
         mi_width_log2(input.uniform_sb_size)
     } else {
@@ -483,8 +469,6 @@ pub struct ReuseTileParams {
 #[must_use]
 pub fn reuse_tile_params(input: ReuseTileParamsInput<'_>) -> ReuseTileParams {
     if input.uniform_spacing {
-        // § 5.18.7.4 uniform branch: sbShift = Mi_Width_Log2[seqSbSize], then
-        // uniform_spacing at the frame dimensions and re-derived log2 counts.
         let sb_shift2 = mi_width_log2(input.seq_sb_size);
         let cols = uniform_spacing(input.seq_tile_cols_log2, input.mi_cols, input.seq_sb_size);
         let rows = uniform_spacing(input.seq_tile_rows_log2, input.mi_rows, input.seq_sb_size);
@@ -498,8 +482,6 @@ pub fn reuse_tile_params(input: ReuseTileParamsInput<'_>) -> ReuseTileParams {
             sb_shift2,
         }
     } else {
-        // § 5.18.7.4 non-uniform branch: sbShift = Mi_Width_Log2[sbSize]; starts and
-        // tile counts pass through, log2 counts are re-derived.
         ReuseTileParams {
             sb_row_starts: input.seq_sb_row_starts.to_vec(),
             tile_rows: input.seq_tile_rows,
@@ -540,13 +522,11 @@ mod tests {
         assert_eq!(tile_log2(1, 3), 2);
         assert_eq!(tile_log2(1, 64), 6);
         assert_eq!(tile_log2(2, 8), 2);
-        // Degenerate blkSize == 0 is bounded rather than looping forever.
         assert_eq!(tile_log2(0, 5), 32);
     }
 
     #[test]
     fn uniform_spacing_single_tile() {
-        // miCols = 4 (16-wide frame), BLOCK_64X64 -> sbCols = 1, one tile at sb 0.
         let spacing = uniform_spacing(0, 4, SuperblockSize::Block64x64);
         assert_eq!(spacing.count, 1);
         assert_eq!(spacing.starts, vec![0]);
@@ -554,8 +534,6 @@ mod tests {
 
     #[test]
     fn uniform_spacing_two_tiles() {
-        // miCols = 32 (128-wide frame), BLOCK_64X64 -> sbCols = 2; tileLog2 = 1 splits
-        // into two 1-superblock tiles at sb 0 and 1.
         let spacing = uniform_spacing(1, 32, SuperblockSize::Block64x64);
         assert_eq!(spacing.count, 2);
         assert_eq!(spacing.starts, vec![0, 1]);
@@ -563,8 +541,6 @@ mod tests {
 
     #[test]
     fn parse_uniform_single_tile_reads_only_uniform_flag() {
-        // 16x8 frame, BLOCK_64X64, level 0: minLog2TileCols == maxLog2TileCols == 0, so
-        // no increment bits are read; just uniform_tile_spacing_flag = 1.
         let mut bits = Bits::default();
         bits.bit(1); // uniform_tile_spacing_flag
         let data = bits.into_bytes();
@@ -582,8 +558,6 @@ mod tests {
 
     #[test]
     fn parse_non_uniform_single_tile() {
-        // Same 16x8 frame, uniform_tile_spacing_flag = 0. sbCols = sbRows = 1, so each
-        // ns() reads 0 bits (n == 1) and the single tile covers the frame.
         let mut bits = Bits::default();
         bits.bit(0); // uniform_tile_spacing_flag = 0
         let data = bits.into_bytes();
@@ -598,10 +572,6 @@ mod tests {
 
     #[test]
     fn parse_non_uniform_two_columns() {
-        // 128x8 frame, BLOCK_64X64 -> sbCols = 2, sbRows = 1. Non-uniform: two
-        // 1-superblock columns. uniform flag = 0, then ns(2) = 0 for the first column
-        // (1 bit), the second column is implied (ns(1) reads 0 bits), and the single
-        // row reads ns(1) (0 bits).
         let mut bits = Bits::default();
         bits.bit(0); // uniform_tile_spacing_flag = 0
         bits.bit(0); // ns(2) width_in_sbs_minus_1 = 0 -> first column 1 sb wide
@@ -619,9 +589,6 @@ mod tests {
 
     #[test]
     fn tile_layout_exposes_starts_and_sb_shift() {
-        // 256x8 frame, BLOCK_64X64 -> miCols = 64, sbCols = 4, sbRows = 1. Uniform,
-        // tileColsLog2 incremented once (bits 1,0) -> 2 columns at sb 0 and 2, then
-        // the row increment bit 0 -> 1 row at sb 0.
         let mut bits = Bits::default();
         bits.bit(1); // uniform_tile_spacing_flag
         bits.bit(1); // increment_tile_cols_log2 = 1
@@ -634,14 +601,11 @@ mod tests {
         assert_eq!(layout.params.tile_rows, 1);
         assert_eq!(layout.sb_col_starts, vec![0, 2]);
         assert_eq!(layout.sb_row_starts, vec![0]);
-        // Uniform layout: sbShift2 = Mi_Width_Log2[uniformSbSize] = 4 (BLOCK_64X64).
         assert_eq!(layout.sb_shift2, 4);
     }
 
     #[test]
     fn tile_layout_non_uniform_exposes_starts() {
-        // 128x8 frame, BLOCK_64X64 -> sbCols = 2, sbRows = 1; two 1-superblock
-        // columns (same bits as `parse_non_uniform_two_columns`).
         let mut bits = Bits::default();
         bits.bit(0); // uniform_tile_spacing_flag = 0
         bits.bit(0); // ns(2) width_in_sbs_minus_1 = 0
@@ -651,15 +615,11 @@ mod tests {
         assert_eq!(layout.params.tile_cols, 2);
         assert_eq!(layout.sb_col_starts, vec![0, 1]);
         assert_eq!(layout.sb_row_starts, vec![0]);
-        // Non-uniform layout: sbShift2 = Mi_Width_Log2[sbSize] = 4 (BLOCK_64X64).
         assert_eq!(layout.sb_shift2, 4);
     }
 
     #[test]
     fn reuse_tile_params_uniform_recomputes_at_frame_size() {
-        // Sequence layout: uniform, SeqTileColsLog2 = 1, SeqTileRowsLog2 = 1, on a
-        // frame with MiCols = MiRows = 64 (256x256, BLOCK_64X64 -> 4x4 superblocks):
-        // two columns at sb 0/2 and two rows at sb 0/2.
         let result = reuse_tile_params(ReuseTileParamsInput {
             uniform_spacing: true,
             seq_sb_row_starts: &[],
@@ -699,18 +659,15 @@ mod tests {
         });
         assert_eq!(result.tile_cols, 3);
         assert_eq!(result.tile_rows, 2);
-        // tile_log2 re-derived from the tile counts.
         assert_eq!(result.tile_cols_log2, 2);
         assert_eq!(result.tile_rows_log2, 1);
         assert_eq!(result.sb_col_starts, vec![0, 1, 2]);
         assert_eq!(result.sb_row_starts, vec![0, 3]);
-        // Non-uniform: sbShift2 = Mi_Width_Log2[sbSize] = 5 (BLOCK_128X128).
         assert_eq!(result.sb_shift2, 5);
     }
 
     #[test]
     fn reserved_level_is_unimplemented_without_reading_bits() {
-        // seq_level_idx 22 is reserved (no defined scaling factor).
         let mut reader = BitReader::new(&[0xFF], ByteOffset::new(0));
         let mut tp = input(16, 8);
         tp.seq_level_idx = LevelIdx::from_bits(22);
@@ -720,13 +677,11 @@ mod tests {
                 feature: "AV2-5.18.7.3-TILE-PARAMS"
             })
         ));
-        // No bits were consumed (the reserved check precedes the uniform-flag read).
         assert_eq!(reader.consumed_bits(), 0);
     }
 
     #[test]
     fn no_level_idx_uses_unconstrained_fallback() {
-        // seq_level_idx 31 uses maxTileWidthSb = sbCols, maxTileAreaSb = sbCols*sbRows.
         let mut bits = Bits::default();
         bits.bit(1); // uniform_tile_spacing_flag
         let data = bits.into_bytes();
@@ -749,9 +704,6 @@ mod tests {
 
     #[test]
     fn extreme_frame_dimensions_do_not_panic() {
-        // u32::MAX frame dimensions are far outside the AV2-legal domain, but the
-        // saturating grid arithmetic must stay panic-free. With an empty reader the
-        // parser computes the grid, then hits EOF on the uniform-flag read.
         let mut tp = input(16, 8);
         tp.frame_width = u32::MAX;
         tp.frame_height = u32::MAX;
@@ -761,7 +713,6 @@ mod tests {
             Err(Error::UnexpectedEof { .. })
         ));
 
-        // Level 31 (unconstrained) exercises the `sb_cols * sb_rows` saturating path.
         tp.seq_level_idx = LevelIdx::from_bits(31);
         let mut reader = BitReader::new(&[], ByteOffset::new(0));
         assert!(matches!(

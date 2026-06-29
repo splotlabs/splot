@@ -73,15 +73,11 @@ pub fn write_quantizer_matrix(writer: &mut BitWriter, qm: &QuantizerMatrixObu) -
         return Err(WriteError::WriterNotByteAligned);
     }
 
-    // § 5.13: numPlanes = qm_chroma_info_present_flag ? 3 : 1. The parser derives it, so a stored
-    // value that disagrees is parser-unproducible.
     let derived_num_planes: u8 = if qm.chroma_info_present { 3 } else { 1 };
     if qm.num_planes != derived_num_planes {
         return Err(non_canonical("num_planes"));
     }
 
-    // § 5.13: a per-level record is read for each set bit of qm_bit_map, in ascending order; the
-    // reset path (qm_bit_map == 0) reads none. The stored levels must match those set bits exactly.
     let set_bits: Vec<u8> = (0..NUM_CUSTOM_QMS)
         .filter(|&level| qm.qm_bit_map & (1u16 << level) != 0)
         .collect();
@@ -97,7 +93,6 @@ pub fn write_quantizer_matrix(writer: &mut BitWriter, qm: &QuantizerMatrixObu) -
         if level.level != bit {
             return Err(non_canonical("level_index"));
         }
-        // § 5.13: qm_is_default_flag f(1); the user-defined matrices are read iff it is clear.
         match (level.is_default, &level.matrices) {
             (true, None) => scratch.write_bit(1)?,
             (false, Some(matrices)) => {
@@ -155,26 +150,18 @@ fn write_user_defined_qm_plane(
         return Err(non_canonical("plane_value_count"));
     }
 
-    // § 5.4.11: qm_copy_from_previous_plane f(1) for plane > 0 — emit 0 (re-encode in full).
     if plane_idx > 0 {
         scratch.write_bit(0)?;
     }
-    // § 5.4.11: TX_8X8 (t == 0) has qm_8x8_is_symmetric; TX_4X8 (t == 2) has
-    // qm_4x8_is_transpose_of_8x4 — emit 0 (re-encode every cell, never reference a sibling).
     if t == 0 || t == 2 {
         scratch.write_bit(0)?;
     }
 
-    // § 5.4.11: fill scan-order coefficients with svlc() deltas; quant starts at 32. Each target
-    // coefficient (1..=255) is reached by the unique in-range delta congruent to (v - quant) mod
-    // 256, whose quant2 == v is non-zero (so the parser never trips coefficient-repeat).
     let scan = diagonal_scan_2d(w, h);
     let mut quant = INITIAL_QM_QUANT;
     for pos in scan {
         let value = plane.values[pos];
         if value == 0 {
-            // A 0 coefficient is unrepresentable: quant2 == 0 is the repeat sentinel (the cell keeps
-            // the previous quant), never a stored 0, so the parser never decodes one.
             return Err(non_canonical("coefficient_zero"));
         }
         let target = i32::from(value);
@@ -204,14 +191,12 @@ fn quant_delta_for(quant: i32, target: i32) -> i32 {
 /// matching cells. Re-declared here (the parser's copy is private; the writer stays additive); the
 /// `diagonal_scan_matches_av2_oracle_order` test pins it to the same golden order, and the
 /// non-flat round-trip test makes the order load-bearing.
-// w/h/x/y/s mirror the AV2 § 5.20.7.30 up-right diagonal scan derivation notation.
 #[allow(clippy::many_single_char_names)]
 fn diagonal_scan_2d(width: usize, height: usize) -> Vec<usize> {
     let mut out = vec![0usize; width * height];
     let (w, h) = (width as i64, height as i64);
     let (mut x, mut y) = (0i64, 0i64);
     for slot in &mut out {
-        // Loop invariant (AV2 § 5.20.7.30): 0 <= x < w and 0 <= y < h at each step.
         *slot = (y as usize) * width + (x as usize);
         x += 1;
         y -= 1;
@@ -230,7 +215,5 @@ fn non_canonical(what: &'static str) -> WriteError {
     WriteError::NonCanonicalQuantizationMatrix { what }
 }
 
-// The round-trip / reject tests live in a sibling file (kept under the advisory source-line limit);
-// `include!` pastes them into this module so their `super::*` resolves to the writer above.
 #[cfg(test)]
 include!("quantizer_matrix_tests.rs");

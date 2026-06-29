@@ -7,8 +7,6 @@ use super::*;
 
 #[test]
 fn profile_idc_round_trips_every_5_bit_value() {
-    // Every 5-bit seq_profile_idc / multistream_profile_idc value maps and round-trips
-    // through ProfileIdc (Annex A.2 Table A.1 value space).
     for value in 0u8..=31 {
         assert_eq!(ProfileIdc::from_bits(value).get(), value);
     }
@@ -22,7 +20,6 @@ fn profile_idc_classifies_table_a1_values() {
     assert_eq!(ProfileIdc::from_bits(3), ProfileIdc::Main422Ip1);
     assert_eq!(ProfileIdc::from_bits(4), ProfileIdc::Main444Ip1);
     assert_eq!(ProfileIdc::from_bits(31), ProfileIdc::Configurable);
-    // Reserved 5..=30.
     for value in 5u8..=30 {
         assert_eq!(ProfileIdc::from_bits(value), ProfileIdc::Reserved(value));
         assert!(ProfileIdc::from_bits(value).is_reserved());
@@ -34,8 +31,6 @@ fn profile_idc_classifies_table_a1_values() {
 
 #[test]
 fn profile_idc_ord_matches_raw_value_order() {
-    // Ord follows seq_profile_idc (the raw value), matching the prior newtype's u8
-    // ordering.
     let mut ids: Vec<ProfileIdc> = (0u8..=31).rev().map(ProfileIdc::from_bits).collect();
     ids.sort();
     let sorted: Vec<u8> = ids.iter().map(|p| p.get()).collect();
@@ -44,17 +39,12 @@ fn profile_idc_ord_matches_raw_value_order() {
 
 #[test]
 fn profile_idc_identity_is_canonical_under_misconstruction() {
-    // The raw value is the canonical identity: equality / ordering / classification are
-    // robust to a hand-constructed non-canonical `Reserved` payload (the public variant).
-    // `from_bits` masks to 5 bits, so it never produces these itself.
     let configurable_via_reserved = ProfileIdc::Reserved(31);
     assert_eq!(configurable_via_reserved, ProfileIdc::Configurable);
     assert!(configurable_via_reserved.is_configurable());
     assert!(!configurable_via_reserved.is_reserved());
-    // A defined-profile value held in `Reserved` still compares by its raw value.
     assert_eq!(ProfileIdc::Reserved(0), ProfileIdc::Main420Ip0);
     assert!(ProfileIdc::Reserved(2) < ProfileIdc::Main422Ip1);
-    // from_bits masks: a >5-bit argument cannot escape the value space.
     assert_eq!(ProfileIdc::from_bits(0xE0), ProfileIdc::Main420Ip0);
 }
 
@@ -170,7 +160,6 @@ fn push_general_header_until_dependency_maps(
     bits.f(max_tlayer_id, 2); // max_tlayer_id
     bits.f(max_mlayer_id, 3); // max_mlayer_id
     if max_mlayer_id > 0 {
-        // n = CeilLog2(max_mlayer_id + 1)
         let n = u32::BITS - max_mlayer_id.leading_zeros();
         bits.f(max_mlayer_id, n); // seq_max_mlayer_cnt_minus_1
     }
@@ -205,7 +194,6 @@ fn dependency_maps_default_fill_when_flags_absent() {
     assert!(!header.tlayer_dependency_present_flag);
     assert!(!header.multi_tlayer_dependency_map_present_flag);
 
-    // § 5.4.1 default: refLayer <= currLayer && currLayer <= max_mlayer_id.
     let m_map = header.mlayer_dependency_map;
     assert!(m_map.depends_on(mlayer(0), mlayer(0)));
     assert!(m_map.depends_on(mlayer(1), mlayer(0)));
@@ -214,15 +202,12 @@ fn dependency_maps_default_fill_when_flags_absent() {
     assert!(!m_map.depends_on(mlayer(2), mlayer(0))); // currLayer 2 > max_mlayer_id 1
     assert!(!m_map.depends_on(mlayer(2), mlayer(2)));
 
-    // § 5.4.1 default: refTLayer <= currTLayer && currTLayer <= max_tlayer_id
-    // && mLayer <= max_mlayer_id.
     let t_map = header.tlayer_dependency_map;
     assert!(t_map.depends_on(mlayer(0), tlayer(2), tlayer(0)));
     assert!(t_map.depends_on(mlayer(1), tlayer(2), tlayer(0)));
     assert!(t_map.depends_on(mlayer(1), tlayer(2), tlayer(2)));
     assert!(!t_map.depends_on(mlayer(0), tlayer(1), tlayer(2))); // refTLayer > currTLayer
     for reference in 0..MAX_NUM_TLAYERS as u8 {
-        // currTLayer 3 > max_tlayer_id 2: the whole row is false.
         assert!(!t_map.depends_on(mlayer(0), tlayer(3), tlayer(reference)));
     }
     assert!(!t_map.depends_on(mlayer(2), tlayer(1), tlayer(0))); // mLayer 2 > max_mlayer_id 1
@@ -230,12 +215,9 @@ fn dependency_maps_default_fill_when_flags_absent() {
 
 #[test]
 fn mlayer_dependency_override_bit_order() {
-    // max_tlayer_id = 0 so no tlayer_dependency_present_flag bit is read.
     let mut bits = Bits::default();
     push_general_header_until_dependency_maps(&mut bits, 0, 2);
     bits.bit(1); // mlayer_dependency_present_flag
-    // § 5.4.1: refLayer runs from currLayer down to 0. The bit patterns are
-    // asymmetric so an ascending-order parse would produce different maps.
     bits.bit(0); // currLayer 1: [1][1] (diagonal, signaled, zero here)
     bits.bit(1); // currLayer 1: [1][0]
     bits.bit(1); // currLayer 2: [2][2]
@@ -254,7 +236,6 @@ fn mlayer_dependency_override_bit_order() {
     assert!(m_map.depends_on(mlayer(2), mlayer(1)));
     assert!(!m_map.depends_on(mlayer(2), mlayer(0))); // proves descending order
     assert!(m_map.depends_on(mlayer(0), mlayer(0))); // row 0 keeps the default
-    // max_tlayer_id = 0: the tlayer map keeps its default fill.
     assert!(
         header
             .tlayer_dependency_map
@@ -264,8 +245,6 @@ fn mlayer_dependency_override_bit_order() {
 
 #[test]
 fn mlayer_presence_map_closes_transitive_dependency() {
-    // A sparse chain 2 -> 1 -> 0 where layer 2 does NOT depend on layer 0 directly
-    // (the same shape as `mlayer_dependency_override_bit_order`'s parsed map).
     let mut dep = MLayerDependencyMap::default_for(mlayer(2));
     dep.set(1, 1, false); // signaled diagonal zero (irrelevant to presence — reflexive)
     dep.set(2, 0, false); // clear the DIRECT 2 -> 0 edge
@@ -274,18 +253,12 @@ fn mlayer_presence_map_closes_transitive_dependency() {
     assert!(dep.depends_on(mlayer(1), mlayer(0)));
 
     let presence = dep.presence_map();
-    // Reflexive (the spec `mlayerId == refMlayer` arm): each layer present to itself.
     assert!(presence.is_present(mlayer(0), mlayer(0)));
     assert!(presence.is_present(mlayer(1), mlayer(1)));
     assert!(presence.is_present(mlayer(2), mlayer(2)));
-    // Direct edges.
     assert!(presence.is_present(mlayer(1), mlayer(0)));
     assert!(presence.is_present(mlayer(2), mlayer(1)));
-    // TRANSITIVE (mirror :595-599): layer 0 is present whenever layer 2 is decoded, via
-    // 2 -> 1 -> 0, even though the direct 2 -> 0 dependency was cleared. This is exactly
-    // what makes MLayerPresenceMap stronger than MLayerDependencyMap.
     assert!(presence.is_present(mlayer(2), mlayer(0)));
-    // A lower layer never requires a higher one.
     assert!(!presence.is_present(mlayer(0), mlayer(1)));
     assert!(!presence.is_present(mlayer(0), mlayer(2)));
     assert!(!presence.is_present(mlayer(1), mlayer(2)));
@@ -298,7 +271,6 @@ fn tlayer_dependency_row0_replication() {
     bits.bit(0); // mlayer_dependency_present_flag
     bits.bit(1); // tlayer_dependency_present_flag
     bits.bit(0); // multi_tlayer_dependency_map_present_flag
-    // Bits are signaled only for mLayer 0; refTLayer descends from currTLayer.
     bits.bit(1); // mLayer 0, currTLayer 1: [0][1][1]
     bits.bit(0); // mLayer 0, currTLayer 1: [0][1][0] (default would be 1)
     let data = bits.into_bytes();
@@ -310,11 +282,8 @@ fn tlayer_dependency_row0_replication() {
     let t_map = header.tlayer_dependency_map;
     assert!(t_map.depends_on(mlayer(0), tlayer(1), tlayer(1)));
     assert!(!t_map.depends_on(mlayer(0), tlayer(1), tlayer(0)));
-    // § 5.4.1: mLayer 1 copies mLayer 0's signaled values, not the defaults
-    // (the default for [1][1][0] would be true).
     assert!(t_map.depends_on(mlayer(1), tlayer(1), tlayer(1)));
     assert!(!t_map.depends_on(mlayer(1), tlayer(1), tlayer(0)));
-    // mLayer 2 > max_mlayer_id stays at the (all-false) default.
     assert!(!t_map.depends_on(mlayer(2), tlayer(1), tlayer(1)));
 }
 
@@ -325,7 +294,6 @@ fn tlayer_dependency_multi_rows_signaled() {
     bits.bit(0); // mlayer_dependency_present_flag
     bits.bit(1); // tlayer_dependency_present_flag
     bits.bit(1); // multi_tlayer_dependency_map_present_flag
-    // Distinct per-mLayer rows prove each embedded layer is signaled.
     bits.bit(1); // mLayer 0, currTLayer 1: [0][1][1]
     bits.bit(0); // mLayer 0, currTLayer 1: [0][1][0]
     bits.bit(0); // mLayer 1, currTLayer 1: [1][1][1]
@@ -351,8 +319,6 @@ fn single_picture_header_collapses_maps() {
     assert!(!header.mlayer_dependency_present_flag);
     assert!(!header.tlayer_dependency_present_flag);
     assert!(!header.multi_tlayer_dependency_map_present_flag);
-    // max_tlayer_id = max_mlayer_id = 0: only the [0][0] / [0][0][0] entries
-    // of the § 5.4.1 default fill survive the clipping.
     let m_map = header.mlayer_dependency_map;
     assert!(m_map.depends_on(mlayer(0), mlayer(0)));
     assert!(!m_map.depends_on(mlayer(1), mlayer(0)));
@@ -365,9 +331,6 @@ fn single_picture_header_collapses_maps() {
 
 #[test]
 fn dependency_map_truncation_reports_eof() {
-    // End the stream right after multi_tlayer_dependency_map_present_flag:
-    // with max ids 3/7 the 72 signaled tlayer bits overrun the zero-bit byte
-    // padding, so the parser must report EOF (never panic).
     let mut bits = Bits::default();
     push_general_header_until_dependency_maps(&mut bits, 3, 7);
     bits.bit(0); // mlayer_dependency_present_flag
@@ -379,8 +342,6 @@ fn dependency_map_truncation_reports_eof() {
         parse_sequence_header_general(&mut reader),
         Err(Error::UnexpectedEof { .. })
     ));
-    // Every shorter prefix truncates earlier in the header and must also
-    // fail without panicking.
     for len in 0..data.len() {
         let mut reader = BitReader::new(&data[..len], ByteOffset::new(0));
         assert!(parse_sequence_header_general(&mut reader).is_err());
@@ -539,9 +500,7 @@ fn reports_eof() {
 /// monochrome). All tool flags are `0` except where a fixed value is required.
 fn push_still_picture_header(bits: &mut Bits) {
     push_still_picture_header_until_tile(bits, 0, false);
-    // sequence_tile_config
     bits.bit(0); // seq_tile_info_present_flag (fully parsed)
-    // film_grain_params_present
     bits.bit(0);
 }
 
@@ -607,7 +566,6 @@ fn sequence_partition_config_infers_128x128_superblock() {
 #[test]
 fn sequence_intra_config_infers_cfl_filter_for_monochrome() {
     let mut bits = Bits::default();
-    // Seven flags, no cfl_ds_filter_index because monochrome.
     for _ in 0..4 {
         bits.bit(0);
     }
@@ -617,7 +575,6 @@ fn sequence_intra_config_infers_cfl_filter_for_monochrome() {
     let mut reader = BitReader::new(&data, ByteOffset::new(0));
     let intra = parse_sequence_intra_config(&mut reader, true).unwrap();
     assert_eq!(intra.cfl_ds_filter_index, 0);
-    // Exactly six bits consumed (no 2-bit cfl_ds_filter_index).
     assert_eq!(reader.bit_offset().get(), 6);
 }
 
@@ -686,7 +643,6 @@ fn sequence_filter_config_reads_tool_flags_without_filtering() {
     assert!(filter.lr_pc_wiener_disabled);
     assert!(filter.lr_tools_uv_present);
     assert!(filter.lr_uv_wiener_nonsep_disabled);
-    // Inferred lr_tools_disable[1][RESTORE_PC_WIENER] = 1 when restoration is on.
     assert!(filter.lr_uv_pc_wiener_disabled);
     assert_eq!(filter.cdef_on_skip_txfm, CdefOnSkipTxfm::Adaptive);
     assert_eq!(filter.df_par_bits_minus_2, 2);
@@ -730,7 +686,6 @@ fn sequence_tq_config_mirrors_uv_dc_delta_when_equal() {
     let tq = parse_sequence_transform_quant_entropy_config(&mut reader, false, true).unwrap();
     assert!(tq.equal_ac_dc_q);
     assert_eq!(tq.base_uv_ac_delta_q, 19);
-    // AV2 § 5.4.8: BaseUVDcDeltaQ = BaseUVAcDeltaQ when equal_ac_dc_q.
     assert_eq!(tq.base_uv_dc_delta_q, 19);
     assert!(!tq.uv_dc_delta_q_enabled);
 }
@@ -853,7 +808,6 @@ fn sequence_segment_config_absent_has_no_segment_info() {
 
 #[test]
 fn sequence_header_composite_parses_segment_info() {
-    // A header with seq_seg_info_present_flag = 1 now parses fully (no bound).
     let mut bits = Bits::default();
     push_still_picture_header_until_tile(&mut bits, 0, true);
     bits.bit(0); // seq_tile_info_present_flag (tile absent)
@@ -872,7 +826,6 @@ fn sequence_header_composite_parses_segment_info() {
 
 #[test]
 fn sequence_header_composite_parses_tile_params() {
-    // A header with seq_tile_info_present_flag = 1 now parses tile_params fully.
     let mut bits = Bits::default();
     push_still_picture_header_until_tile(&mut bits, 0, false);
     bits.bit(1); // seq_tile_info_present_flag
@@ -891,8 +844,6 @@ fn sequence_header_composite_parses_tile_params() {
     assert!(params.uniform_spacing);
     assert_eq!(params.tile_cols, 1);
     assert_eq!(params.tile_rows, 1);
-    // § 5.4.2 records SeqSbColStarts / SeqSbRowStarts; a single-tile layout starts
-    // at superblock 0 on both axes.
     assert_eq!(tile.seq_sb_col_starts, vec![0]);
     assert_eq!(tile.seq_sb_row_starts, vec![0]);
     assert_eq!(header.film_grain_params_present, Some(false));
@@ -900,10 +851,6 @@ fn sequence_header_composite_parses_tile_params() {
 
 #[test]
 fn sequence_tile_config_records_non_uniform_start_arrays() {
-    // § 5.4.2 tile_params(maxFrameWidth, maxFrameHeight, seqSbSize, seqSbSize, 0)
-    // on a 128x8 grid (BLOCK_64X64 -> sbCols = 2, sbRows = 1), non-uniform: two
-    // 1-superblock columns. The recorded SeqSbColStarts / SeqSbRowStarts are the
-    // ones the § 5.18.7.4 non-uniform reuse branch consumes.
     let input = TileParamsInput {
         frame_width: 128,
         frame_height: 8,
@@ -929,15 +876,12 @@ fn sequence_tile_config_records_non_uniform_start_arrays() {
     assert_eq!(params.tile_rows, 1);
     assert_eq!(params.sb_cols, 2);
     assert_eq!(params.sb_rows, 1);
-    // Two 1-superblock columns -> starts [0, 1]; the single row starts at 0.
     assert_eq!(tile.seq_sb_col_starts, vec![0, 1]);
     assert_eq!(tile.seq_sb_row_starts, vec![0]);
 }
 
 #[test]
 fn sequence_tile_config_reserved_level_records_empty_start_arrays() {
-    // A reserved seq_level_idx has no defined tile bit layout; params is None and the
-    // start arrays stay empty (the bounded residual).
     let input = TileParamsInput {
         frame_width: 128,
         frame_height: 8,
@@ -964,8 +908,6 @@ fn sequence_tile_config_reserved_level_records_empty_start_arrays() {
 
 #[test]
 fn sequence_header_composite_bounds_at_reserved_level_tile_params() {
-    // seq_level_idx 22 is a reserved level with no defined tile bit layout, so a
-    // seq_tile_info_present header bounds at tile_params (the only residual bound).
     let mut bits = Bits::default();
     push_still_picture_header_until_tile(&mut bits, 22, false);
     bits.bit(1); // seq_tile_info_present_flag
@@ -992,7 +934,6 @@ fn push_still_picture_header_until_tile(
     seq_level_idx: u32,
     segment_info_present: bool,
 ) {
-    // general (single_picture_header_flag = 1, chroma 4:2:0)
     bits.uvlc(0); // seq_header_id
     bits.f(0, 5); // seq_profile_idc
     bits.bit(1); // single_picture_header_flag
@@ -1004,13 +945,11 @@ fn push_still_picture_header_until_tile(
     bits.f(15, 4); // max_frame_width_minus_1
     bits.f(7, 4); // max_frame_height_minus_1
     bits.bit(0); // seq_cropping_window_present_flag
-    // sequence_partition_config (not monochrome, single picture)
     bits.bit(0); // use_256x256_superblock
     bits.bit(0); // use_128x128_superblock -> seqSbSize = BLOCK_64X64
     bits.bit(0); // enable_sdp
     bits.bit(0); // enable_ext_partitions
     bits.bit(0); // reduce_pb_aspect_ratio
-    // sequence_segment_config
     bits.bit(0); // enable_ext_seg -> MaxSegments = 8
     bits.bit(u8::from(segment_info_present)); // seq_seg_info_present_flag
     if segment_info_present {
@@ -1019,7 +958,6 @@ fn push_still_picture_header_until_tile(
             bits.bit(0); // seg_info(8): 8 segments x SEG_LVL_MAX features, all disabled
         }
     }
-    // sequence_intra_config (not monochrome)
     bits.bit(0); // enable_dip
     bits.bit(0); // enable_intra_edge_filter
     bits.bit(0); // enable_mrls
@@ -1027,14 +965,11 @@ fn push_still_picture_header_until_tile(
     bits.f(0, 2); // cfl_ds_filter_index
     bits.bit(0); // enable_mhccp
     bits.bit(0); // enable_ibp
-    // sequence_inter_config (single_picture_header_flag branch)
     bits.bit(0); // enable_refmvbank
     bits.bit(1); // disable_drl_reorder -> DRL_REORDER_DISABLED
     bits.bit(0); // seq_max_bvp_drl_bits_minus_1 = ns(3) -> 0
     bits.bit(0); // allow_frame_max_bvp_drl_bits
     bits.bit(0); // enable_bawp
-    // sequence_scc_config (single picture -> no signalled bits)
-    // sequence_transform_quant_entropy_config (not monochrome, single picture)
     bits.bit(0); // enable_fsc
     bits.bit(0); // enable_idtx_intra
     bits.bit(0); // enable_intra_ist
@@ -1048,7 +983,6 @@ fn push_still_picture_header_until_tile(
     bits.bit(1); // equal_ac_dc_q -> skip y/uv dc delta reads
     bits.f(0, 5); // base_uv_ac_delta_q
     bits.bit(0); // uv_ac_delta_q_enabled
-    // sequence_filter_config (single picture, seqSbSize = BLOCK_64X64)
     bits.bit(0); // disable_loopfilters_across_tiles
     bits.bit(0); // enable_cdef
     bits.bit(0); // enable_gdf
@@ -1059,8 +993,6 @@ fn push_still_picture_header_until_tile(
 
 #[test]
 fn sequence_header_child_payload_eof_never_panics() {
-    // Truncate the full still-picture header at every byte boundary; parsing
-    // must return an error, never panic.
     let mut bits = Bits::default();
     push_still_picture_header(&mut bits);
     let full = bits.into_bytes();
@@ -1123,8 +1055,6 @@ fn dispatch_rejects_sequence_header_bad_trailing_bits() {
 #[test]
 fn dispatch_reports_bounded_sequence_header_as_unimplemented() {
     use crate::obu::{PayloadStatus, dispatch_obu_payload, read_obu_header_from_slice};
-    // A reserved seq_level_idx (22) with tile info present is the only residual
-    // bounded sequence-header case: tile_params has no defined layout for it.
     let mut bits = Bits::default();
     push_still_picture_header_until_tile(&mut bits, 22, false);
     bits.bit(1); // seq_tile_info_present_flag -> bounded at tile_params (reserved level)

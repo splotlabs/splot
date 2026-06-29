@@ -86,12 +86,9 @@ mod tests {
 
     #[test]
     fn composes_general_coded_block_trace_in_order() {
-        // Magnitude 6: coeff_base_eob saturates at 4 (level 5) plus coeff_br == 1.
         let trace =
             compose_general_intra_dc_coded_block_trace(CODED_LUMA_DC_MAGNITUDE, true).unwrap();
 
-        // do_split, 3 mode symbols, 5 coded-luma symbols (txb_skip, eob_pt, coeff_base_eob,
-        // coeff_br, dc_sign), then U and V txb_skip = 11 tokens.
         assert_eq!(trace.len(), 11);
         assert!(matches!(trace[0], BlockSymbolToken::Partition(_)));
         for token in &trace[1..4] {
@@ -100,8 +97,6 @@ mod tests {
         for token in &trace[4..11] {
             assert!(matches!(token, BlockSymbolToken::Coeff(_)));
         }
-        // do_split=0, modes 0/0/0, luma txb_skip=0, eob_pt=0, coeff_base_eob=4, coeff_br=1,
-        // dc_sign=1 (negative), then U/V all_zero=1.
         assert_eq!(
             trace.iter().map(|token| token.symbol()).collect::<Vec<_>>(),
             vec![0, 0, 0, 0, 0, 0, 4, 1, 1, 1, 1]
@@ -124,8 +119,6 @@ mod tests {
         let ivf = emit_minimal_intra_coded_dc_ivf().unwrap();
         assert!(!ivf.is_empty());
 
-        // Structurally a single-frame AV02 64x64 IVF; the decode-to-flat-127 luma proof is
-        // the cross-crate oracle in splot-cli.
         let parsed = splot_core::ivf::parse_ivf_partial(&ivf);
         assert!(parsed.error.is_none());
         let header = parsed.header.unwrap();

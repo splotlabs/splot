@@ -143,9 +143,6 @@ impl<T: ReconSample> CurrentFramePlane<T> {
         let above = self.middle_directional_angle_above_edge(rect, angle.p_angle())?;
 
         let output_start = self.sample_index(rect.x(), rect.y())?;
-        // §7.13.2.8 `enableIdif = plane == 0`: luma uses the IDIF 4-tap; chroma
-        // uses the bilinear branch. For D135 (`shift == 0` everywhere) both reduce
-        // to a sample copy, but the other middle angles (`shift != 0`) differ.
         if matches!(plane, PlaneId::Y) {
             let (left_idif, above_idif) = extend_middle_idif_edges(&left, &above)?;
             predict_intra_middle_directional_angle_rect_idif_into(
@@ -355,8 +352,6 @@ fn extend_middle_idif_edges<T: ReconSample>(left: &[T], above: &[T]) -> Result<(
 }
 
 fn extend_one_idif_edge<T: ReconSample>(edge: &[T]) -> Result<Vec<T>> {
-    // `edge` is `Edge[-1..side)` of length `side + 1`: index 0 = `-1`, index
-    // `k + 1` = logical `k`. The minimum is `-1` (one sample), so `side >= 0`.
     let corner = *edge.first().ok_or(ReconError::ArithmeticOverflow {
         context: "workspace middle directional angle IDIF edge corner",
     })?;
@@ -374,11 +369,9 @@ fn extend_one_idif_edge<T: ReconSample>(edge: &[T]) -> Result<Vec<T>> {
         .map_err(|_| ReconError::ArithmeticOverflow {
             context: "workspace middle directional angle IDIF edge allocation",
         })?;
-    // Logical `-2` = `Edge[-1]` (the corner).
     out.push(corner);
     // splot-copy-ok: prepend the §7.13.2.8 corner extension before the in-range edge
     out.extend_from_slice(edge);
-    // Logical `side` and `side + 1` both repeat `Edge[side - 1]` (the last sample).
     out.push(last);
     out.push(last);
     Ok(out)

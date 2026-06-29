@@ -129,27 +129,16 @@ pub(super) fn frame_film_grain_reference_checks(
     obu: &ObuEnvelope<'_>,
     report: &mut ValidationReport,
 ) -> Option<u8> {
-    // The fgm_id reference (and its § 6.17.10.1 requirements) exists only when apply_grain.
     if !film_grain.apply_grain {
         return None;
     }
-    // Film grain OBUs cannot be expressed by ExternalHlsSet, so under any Provided mode the
-    // referenced model — and its stored layer identity / chroma idc — MAY be supplied
-    // externally and is unknown to the validator. Suppress to avoid a false positive; only
-    // the external-disabled case is decidable from the bitstream alone.
     if !matches!(options.external_hls, ExternalHlsMode::Disabled) {
         return None;
     }
     let fgm_id = film_grain.fgm_id?;
     let slot = usize::from(fgm_id);
-    // A slot outside the modeled range cannot be matched against availability state; the
-    // fgm_id field is f(3) (0..=7), so this never trips for a parsed config, but guard it.
     let slot_record = film_grain_state.available.get(slot)?;
     let Some(record) = slot_record else {
-        // AV2 § 6.17.10.1: FilmGrainPresent[ fgm_id ] == 1. No in-band model was recorded
-        // (and none can be external under Disabled); the layer-dependency constraints below
-        // reference the (absent) model's identity, so they are not evaluated. The linear
-        // check owns this case, so no random-access-point replay reference is buffered.
         report.push(frame_header_error(
             "frame-header/film-grain-model-unavailable",
             "6.17.10.1",
@@ -163,13 +152,10 @@ pub(super) fn frame_film_grain_reference_checks(
         return None;
     };
 
-    // The model is recorded in-band; check the three § 6.17.10.1 layer-dependency / chroma
-    // constraints against the active sequence header's § 5.4.1 maps and chroma_format_idc.
     let general = &active_sequence.general;
     let frame_mlayer = obu.header.embedded_layer_id;
     let frame_tlayer = obu.header.temporal_layer_id;
 
-    // AV2 § 6.17.10.1: MLayerDependencyMap[obu_mlayer_id][FgmMLayerId[fgm_id]] == 1.
     if !general
         .mlayer_dependency_map
         .depends_on(frame_mlayer, record.mlayer_id)
@@ -190,8 +176,6 @@ pub(super) fn frame_film_grain_reference_checks(
         ));
     }
 
-    // AV2 § 6.17.10.1: TLayerDependencyMap[obu_mlayer_id][obu_tlayer_id][FgmTLayerId[fgm_id]]
-    // == 1.
     if !general
         .tlayer_dependency_map
         .depends_on(frame_mlayer, frame_tlayer, record.tlayer_id)
@@ -213,13 +197,6 @@ pub(super) fn frame_film_grain_reference_checks(
         ));
     }
 
-    // AV2 § 6.17.10.1: FgmChromaIdc[fgm_id] == chroma_format_idc. Both are the Table 6.2
-    // chroma_format_idc value space; § 6.8 makes any activated LCR's lcr_chroma_format_idc
-    // equal to this single sequence-level value, so the comparison is layer-independent. An
-    // out-of-range stored fgm_chroma_idc (> 3) is a malformed model already diagnosed at its
-    // § 6.13 observation (`film-grain/chroma-idc-out-of-range`); it owns that root cause, so
-    // the § 6.17.10.1 equality is checked only for a conformant stored value to avoid a
-    // double-fire on the same bad byte.
     let chroma_format_idc = u32::from(general.chroma_format_idc.get());
     if record.chroma_idc <= 3 && record.chroma_idc != chroma_format_idc {
         report.push(frame_header_error(
@@ -235,8 +212,6 @@ pub(super) fn frame_film_grain_reference_checks(
         ));
     }
 
-    // The model was linearly available in-band: buffer it for the § 7.3.8.1
-    // random-access-point replay (the caller, in &mut self context, notes the reference).
     Some(fgm_id)
 }
 
@@ -273,9 +248,6 @@ impl ValidatorContext {
     /// strictly-increasing-and-`< 256` scaling-point values, and the 4:2:0 chroma
     /// pairing rule (when `subX == 1 && subY == 1`, `num_cb_points` and `num_cr_points`
     /// must be both zero or both non-zero).
-    // Leaf member of the `&self` film-grain emit-method family (called beside
-    // `self.emit_film_grain_diagnostics` / `self.record_film_grain`); the uniform receiver
-    // keeps the family consistent and lets a future check read context state.
     #[allow(clippy::unused_self)]
     pub(super) fn emit_film_grain_model_diagnostics(
         &self,
@@ -341,7 +313,6 @@ impl ValidatorContext {
         fg: &FilmGrainObu,
         report: &mut ValidationReport,
     ) {
-        // AV2 § 6.13: fgm_update_flags is not equal to 0.
         if fg.update_flags == 0 {
             report.push(
                 Diagnostic::error(
@@ -353,7 +324,6 @@ impl ValidatorContext {
             );
         }
 
-        // AV2 § 6.13: fgm_chroma_idc is less than or equal to 3.
         if fg.chroma_idc > 3 {
             report.push(
                 Diagnostic::error(
@@ -368,8 +338,6 @@ impl ValidatorContext {
             );
         }
 
-        // AV2 § 6.13: bit i of fgm_update_flags is set in at most one film grain OBU
-        // per coded frame unit.
         let overlap = self.film_grain.updated_slots_since_coded_frame & fg.update_flags;
         for slot in 0..MAX_FILM_GRAIN {
             if overlap & (1 << slot) == 0 {

@@ -249,7 +249,6 @@ fn render_text(report: &AuditScopeReport) -> String {
 
     let mut out = String::new();
     out.push_str("audit-scope\n");
-    // Writing to a `String` is infallible, so the `fmt::Result` is discarded.
     let _ = writeln!(out, "  protocol_version: {}", report.protocol_version);
     let _ = writeln!(out, "  mode: {:?}", report.mode);
     let _ = writeln!(out, "  audited_commit: {}", report.audited_commit);

@@ -1,16 +1,5 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
-//
-// Fuzz target for CONF-RECON-REFERENCE-FRAME-STORE-FUZZ: the source-backed
-// reference-frame store must preserve slot, refresh-mask, occupancy,
-// replacement, removal, and iteration invariants for bounded public-API
-// operation sequences derived from arbitrary bytes. This target intentionally
-// does not parse AV2 bitstreams, invoke splot-decode, model full AV2 reference
-// refresh semantics, write filesystem paths, or invoke AVM/dav2d/ffmpeg. Run
-// with:
-//
-//     cargo install cargo-fuzz --locked
-//     cargo +nightly fuzz run recon_reference_frame_store_bytes
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;

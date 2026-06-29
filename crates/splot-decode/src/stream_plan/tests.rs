@@ -11,9 +11,7 @@ const OBU_SEQUENCE_HEADER: u8 = 0x04;
 const OBU_TEMPORAL_DELIMITER: u8 = 0x08;
 const OBU_CLOSED_LOOP_KEY: u8 = 0x10;
 const OBU_OPEN_LOOP_KEY: u8 = 0x14;
-// `obu_type` 7 (`OBU_REGULAR_TILE_GROUP`) packed into bits 6..2 (`7 << 2`).
 const OBU_REGULAR_TILE_GROUP: u8 = 0x1C;
-// `obu_type` 14 (`OBU_REGULAR_TIP`) packed into bits 6..2 (`14 << 2`).
 const OBU_REGULAR_TIP: u8 = 0x38;
 const OBU_METADATA_SHORT: u8 = 0x20;
 const OBU_MSDO: u8 = 0x50;
@@ -95,10 +93,6 @@ fn raw_annex_b_plan_preserves_order_and_roles() {
 
 #[test]
 fn regular_tile_group_is_admitted_as_inter_frame_candidate() {
-    // AV2 § 5.2.1 / § 5.19: an OBU_REGULAR_TILE_GROUP carries a non-key (inter)
-    // frame. The multi-frame planner admits it as an inter frame candidate so the
-    // runtime loop can reach it; both a key and an inter frame count toward the
-    // frame-candidate total (DECODE-FIRST-INTER-FRAME-FRONTIER).
     let bytes = [
         obu(OBU_TEMPORAL_DELIMITER).as_slice(),
         obu(OBU_SEQUENCE_HEADER).as_slice(),
@@ -123,9 +117,6 @@ fn regular_tile_group_is_admitted_as_inter_frame_candidate() {
 
 #[test]
 fn regular_tip_is_admitted_as_inter_frame_candidate() {
-    // AV2 § 5.2.1 names OBU_REGULAR_TIP as a coded-frame OBU type. The planner
-    // admits it so large real streams reach the runtime's honest unsupported gate;
-    // no TIP decode support is claimed here.
     let bytes = [
         obu(OBU_TEMPORAL_DELIMITER).as_slice(),
         obu(OBU_SEQUENCE_HEADER).as_slice(),

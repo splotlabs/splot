@@ -93,7 +93,6 @@ pub(crate) struct PartitionAllowedInput {
 
 impl PartitionAllowedInput {
     /// Creates checked caller facts for § 5.20.3.2 partition allowance.
-    // Each bool is a distinct AV2 §5.20.3.2 syntax flag; bundling them would obscure the spec mapping.
     #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
     pub(crate) fn new(
         r: usize,

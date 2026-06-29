@@ -9,7 +9,9 @@ use splot_core::headers::sequence::BitDepthIdc;
 use splot_core::span::ByteOffset;
 use splot_recon::{BitDepth, ReconError};
 
-use super::test_support::fixture_sequence_and_key_core;
+use super::test_support::{
+    UnsupportedFeatureExpectation, assert_unsupported_feature, fixture_sequence_and_key_core,
+};
 use crate::error::DecodeError;
 use crate::{DecodeLimitThreshold, DecodeLimits};
 
@@ -265,43 +267,22 @@ fn wienerns_lr_live_storage_allocation_keeps_retention_limits_before_diagnostic(
 #[test]
 fn wienerns_lr_live_storage_allocation_error_reports_unpopulated_boundary() {
     let error = super::super::wienerns_lr_live_storage_allocation_error(ByteOffset::new(74));
-    let DecodeError::UnsupportedFeature { unsupported } = error else {
-        panic!("live storage-allocation frontier must be an unsupported-feature error");
-    };
-
-    assert_eq!(
-        unsupported.reason(),
-        "unsupported_wienerns_lr_live_storage_unpopulated"
-    );
-    assert_eq!(
-        unsupported.matrix_row(),
-        "ac0ej3-lr-live-storage-allocation"
-    );
-    assert_eq!(
-        unsupported.feature_id(),
-        "DECODE-AC0EJ3-LR-LIVE-STORAGE-ALLOCATION"
-    );
-    assert_eq!(unsupported.spec_section(), "7.20.4");
-    assert_eq!(unsupported.byte_offset(), Some(ByteOffset::new(74)));
-    assert!(
-        unsupported
-            .message()
-            .contains("allocated private unpopulated CurrFrame"),
-        "message should name unpopulated live frame shells"
-    );
-    assert!(
-        unsupported.message().contains("LrTxSkip storage shells"),
-        "message should name unpopulated tx-skip storage"
-    );
-    assert!(
-        unsupported
-            .message()
-            .contains("has not populated decoded frame samples"),
-        "message should not claim populated source samples"
-    );
-    assert!(
-        unsupported.message().contains("FilterClass retention"),
-        "message should keep classification output out of scope"
+    assert_unsupported_feature(
+        error,
+        "live storage-allocation frontier",
+        UnsupportedFeatureExpectation::at_byte_offset(
+            "unsupported_wienerns_lr_live_storage_unpopulated",
+            "ac0ej3-lr-live-storage-allocation",
+            "DECODE-AC0EJ3-LR-LIVE-STORAGE-ALLOCATION",
+            "7.20.4",
+            ByteOffset::new(74),
+            &[
+                "allocated private unpopulated CurrFrame",
+                "LrTxSkip storage shells",
+                "has not populated decoded frame samples",
+                "FilterClass retention",
+            ],
+        ),
     );
 }
 
@@ -309,33 +290,17 @@ fn wienerns_lr_live_storage_allocation_error_reports_unpopulated_boundary() {
 fn wienerns_lr_tx_mode_select_transform_record_error_reports_handoff_frontier() {
     let error =
         super::super::wienerns_lr_tx_mode_select_transform_record_error(ByteOffset::new(74));
-    let DecodeError::UnsupportedFeature { unsupported } = error else {
-        panic!("tx-mode-select transform frontier must be an unsupported-feature error");
-    };
-
-    assert_eq!(
-        unsupported.reason(),
-        "unsupported_wienerns_lr_tx_mode_select_transform_records"
-    );
-    assert_eq!(
-        unsupported.matrix_row(),
-        "ac0ej3-lr-live-transform-record-handoff"
-    );
-    assert_eq!(
-        unsupported.feature_id(),
-        "DECODE-AC0EJ3-LR-LIVE-TRANSFORM-RECORD-HANDOFF"
-    );
-    assert_eq!(unsupported.spec_section(), "5.20.6.1");
-    assert_eq!(unsupported.byte_offset(), Some(ByteOffset::new(74)));
-    assert!(
-        unsupported.message().contains("TX_MODE_SELECT"),
-        "message should name the selectable-transform blocker"
-    );
-    assert!(
-        unsupported
-            .message()
-            .contains("read_tx_size/read_tx_partition"),
-        "message should name the missing transform-record syntax"
+    assert_unsupported_feature(
+        error,
+        "tx-mode-select transform frontier",
+        UnsupportedFeatureExpectation::at_byte_offset(
+            "unsupported_wienerns_lr_tx_mode_select_transform_records",
+            "ac0ej3-lr-live-transform-record-handoff",
+            "DECODE-AC0EJ3-LR-LIVE-TRANSFORM-RECORD-HANDOFF",
+            "5.20.6.1",
+            ByteOffset::new(74),
+            &["TX_MODE_SELECT", "read_tx_size/read_tx_partition"],
+        ),
     );
 }
 

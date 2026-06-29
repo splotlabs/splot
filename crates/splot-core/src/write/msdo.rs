@@ -51,19 +51,12 @@ pub fn write_msdo(writer: &mut BitWriter, msdo: &MultistreamDecoderOperation) ->
         return Err(WriteError::WriterNotByteAligned);
     }
 
-    // § 5.6: the per-substream loop runs num_streams_minus_2 + 2 times, and the parser stores that
-    // derived count in sub_stream_count and fills only the first `count` array slots. A model whose
-    // stored count disagrees, or whose count overflows the fixed array (e.g. a constructed
-    // num_streams_minus_2 >= 8), is one the parser could never have produced. Checked before the
-    // slice below so the indexing cannot panic.
     let count = usize::from(msdo.num_streams_minus_2) + 2;
     if usize::from(msdo.sub_stream_count) != count || count > msdo.sub_streams.len() {
         return Err(WriteError::NonCanonicalMsdo {
             what: "sub_stream_count",
         });
     }
-    // The parser leaves the unused slots zero, so a non-zero slot there is parser-unproducible and
-    // would not round-trip (the writer emits only `count` entries).
     let zero = SubStreamConfig {
         sub_xlayer_id: 0,
         sub_stream_max_profile: 0,
@@ -75,8 +68,6 @@ pub fn write_msdo(writer: &mut BitWriter, msdo: &MultistreamDecoderOperation) ->
             what: "unused_sub_stream",
         });
     }
-    // § 5.6: multistream_large_picture_idc is read iff !multistream_even_allocation_flag, so the
-    // parser ties Some(..) to the flag being clear. Reject a model that stores one without the other.
     if msdo.multistream_large_picture_idc.is_some() == msdo.multistream_even_allocation_flag {
         return Err(WriteError::NonCanonicalMsdo {
             what: "large_picture_idc_flag",
@@ -102,7 +93,5 @@ pub fn write_msdo(writer: &mut BitWriter, msdo: &MultistreamDecoderOperation) ->
     writer.append(&scratch)
 }
 
-// The round-trip / reject tests live in a sibling file (kept under the advisory source-line limit);
-// `include!` pastes them into this module so their `super::*` resolves to the writer above.
 #[cfg(test)]
 include!("msdo_tests.rs");

@@ -3,7 +3,7 @@
 
 #![allow(clippy::unwrap_used, clippy::panic)]
 
-use splot_core::symbol::{SymbolBitPosition, SymbolDecoder};
+use splot_core::symbol::SymbolDecoder;
 
 use super::super::cdf::{FrameCdfSubset, TileCdfSubset};
 use super::super::coeff_state::{CoeffContextUpdate, TileCoeffContextState, TileCoeffStateError};
@@ -27,7 +27,9 @@ use super::ordinary_pass::{
 };
 use super::scan_walk::{NonZeroCoeffScanWalk, walk_nonzero_coeff_scan};
 use super::sign_symbol::{CoeffSignCdfSyntax, CoeffSignReadSource};
-use super::test_support::{setup_start_with_input, symbol_decoder};
+use super::test_support::{
+    OrdinaryBranchRun, run_ordinary_branch, setup_start_with_input, symbol_decoder,
+};
 use super::*;
 
 const DC_ONLY_SCAN: [u16; 1] = [0];
@@ -155,9 +157,6 @@ fn geometry_state_context_config() -> CoeffOrdinaryGeometryStateContextConfig {
     CoeffOrdinaryGeometryStateContextConfig { coeff_cdf_q_ctx: 0 }
 }
 
-// An `x4` AT the tile column count is a genuine out-of-tile origin (not a
-// frame-edge overhang), so the §5.20.7.27 context-write edge clamp still rejects
-// it; the seeded context state is 6x6.
 fn invalid_update_state_context_config() -> CoeffOrdinaryStateContextConfig {
     CoeffOrdinaryStateContextConfig {
         x4: 6,
@@ -314,119 +313,37 @@ fn nonzero_start_input_for_plane_and_geometry(
     }
 }
 
-fn run_direct_branch(
-    payload: &[u8],
-    input: CoeffOrdinaryBranchInput<'_>,
-) -> (
-    CoeffOrdinaryBranch,
-    TileCoeffContextState,
-    TileCdfSubset,
-    SymbolBitPosition,
-    u64,
-) {
-    let frame = FrameCdfSubset::from_defaults();
-    let mut tile = frame.tile_copy();
-    let mut symbols = symbol_decoder(payload);
-    let mut context_state = seeded_context_state();
-    let branch =
-        apply_coeff_ordinary_branch(&mut context_state, &mut tile, &mut symbols, input).unwrap();
-    (
-        branch,
-        context_state,
-        tile,
-        symbols.consumed_bits(),
-        symbols.symbol_count(),
-    )
+fn run_direct_branch(payload: &[u8], input: CoeffOrdinaryBranchInput<'_>) -> OrdinaryBranchRun {
+    run_ordinary_branch(payload, |context_state, tile, symbols| {
+        apply_coeff_ordinary_branch(context_state, tile, symbols, input).unwrap()
+    })
 }
 
 fn run_plane_tx_type_branch(
     payload: &[u8],
     input: CoeffOrdinaryBranchPlaneTxTypeInput<'_>,
-) -> (
-    CoeffOrdinaryBranch,
-    TileCoeffContextState,
-    TileCdfSubset,
-    SymbolBitPosition,
-    u64,
-) {
-    let frame = FrameCdfSubset::from_defaults();
-    let mut tile = frame.tile_copy();
-    let mut symbols = symbol_decoder(payload);
-    let mut context_state = seeded_context_state();
-    let branch = apply_coeff_ordinary_branch_from_plane_tx_type(
-        &mut context_state,
-        &mut tile,
-        &mut symbols,
-        input,
-    )
-    .unwrap();
-    (
-        branch,
-        context_state,
-        tile,
-        symbols.consumed_bits(),
-        symbols.symbol_count(),
-    )
+) -> OrdinaryBranchRun {
+    run_ordinary_branch(payload, |context_state, tile, symbols| {
+        apply_coeff_ordinary_branch_from_plane_tx_type(context_state, tile, symbols, input).unwrap()
+    })
 }
 
 fn run_plane_type_branch(
     payload: &[u8],
     input: CoeffOrdinaryBranchPlaneTypeInput<'_>,
-) -> (
-    CoeffOrdinaryBranch,
-    TileCoeffContextState,
-    TileCdfSubset,
-    SymbolBitPosition,
-    u64,
-) {
-    let frame = FrameCdfSubset::from_defaults();
-    let mut tile = frame.tile_copy();
-    let mut symbols = symbol_decoder(payload);
-    let mut context_state = seeded_context_state();
-    let branch = apply_coeff_ordinary_branch_from_plane_type(
-        &mut context_state,
-        &mut tile,
-        &mut symbols,
-        input,
-    )
-    .unwrap();
-    (
-        branch,
-        context_state,
-        tile,
-        symbols.consumed_bits(),
-        symbols.symbol_count(),
-    )
+) -> OrdinaryBranchRun {
+    run_ordinary_branch(payload, |context_state, tile, symbols| {
+        apply_coeff_ordinary_branch_from_plane_type(context_state, tile, symbols, input).unwrap()
+    })
 }
 
 fn run_geometry_branch(
     payload: &[u8],
     input: CoeffOrdinaryBranchGeometryInput<'_>,
-) -> (
-    CoeffOrdinaryBranch,
-    TileCoeffContextState,
-    TileCdfSubset,
-    SymbolBitPosition,
-    u64,
-) {
-    let frame = FrameCdfSubset::from_defaults();
-    let mut tile = frame.tile_copy();
-    let mut symbols = symbol_decoder(payload);
-    let mut context_state = seeded_context_state();
-    let branch = apply_coeff_ordinary_branch_from_geometry(
-        &mut context_state,
-        &mut tile,
-        &mut symbols,
-        input,
-    )
-    .unwrap();
-    (
-        branch,
-        context_state,
-        tile,
-        symbols.consumed_bits(),
-        symbols.symbol_count(),
-    )
+) -> OrdinaryBranchRun {
+    run_ordinary_branch(payload, |context_state, tile, symbols| {
+        apply_coeff_ordinary_branch_from_geometry(context_state, tile, symbols, input).unwrap()
+    })
 }
 
 fn find_state_context_payload(

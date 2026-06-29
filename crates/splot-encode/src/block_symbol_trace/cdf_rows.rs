@@ -30,59 +30,20 @@ pub(super) struct BlockSymbolTraceCdfRows {
     eob_pt_1024_chroma: [i32; EOB_PT_1024_CDF_ROW_LEN],
     eob_extra: [i32; EOB_EXTRA_CDF_ROW_LEN],
     coeff_base_lf_eob_tx64: [i32; COEFF_BASE_LF_EOB_CDF_ROW_LEN],
-    // The `TX_16X16` low-frequency `coeff_base_eob` DC row (general 16x16 intra DC
-    // tokenizer), the `(TX_16X16, DC ctx 0)` cell of
-    // `DEFAULT_COEFF_BASE_LF_EOB_CDF[q][txSz][ctx]`.
     coeff_base_lf_eob_tx16: [i32; COEFF_BASE_LF_EOB_CDF_ROW_LEN],
     intra_tx_type_set1_4x4: [i32; INTRA_TX_TYPE_SET1_CDF_ROW_LEN],
     sec_tx_type_intra_4x4: [i32; SEC_TX_TYPE_INTRA_CDF_ROW_LEN],
-    // The 4x4 low-frequency `coeff_base_eob` bank, indexed by the § 8.3.2
-    // `coeff_base_eob` context (`COEFF_BASE_LF_EOB_CTX_COUNT` contexts). Sizing the
-    // full generated context dimension makes the 4x4 LF EOB tier hole-free.
     coeff_base_lf_eob_4x4: [[i32; COEFF_BASE_LF_EOB_CDF_ROW_LEN]; COEFF_BASE_LF_EOB_CTX_COUNT],
     coeff_base_lf_eob_ac_tx64: [i32; COEFF_BASE_LF_EOB_CDF_ROW_LEN],
-    // The 4x4 low-frequency non-EOB `coeff_base` bank at the neutral TCQ context,
-    // indexed by the § 8.3.2 `coeff_base` low-frequency context
-    // (`COEFF_BASE_LF_CTX_COUNT` contexts). The general LF walk derives this context
-    // from the running `Level[]` (`coeff_base_lf_luma_context`); sizing the full
-    // generated context dimension makes the 4x4 LF base tier hole-free.
     coeff_base_lf_4x4: [[i32; COEFF_BASE_LF_CDF_ROW_LEN]; COEFF_BASE_LF_CTX_COUNT],
     coeff_base_lf_dc_tx64: [i32; COEFF_BASE_LF_CDF_ROW_LEN],
     coeff_base_lf_dc_tx64_visible_ac: [i32; COEFF_BASE_LF_CDF_ROW_LEN],
     coeff_base_lf_ac_tx64_ctx9: [i32; COEFF_BASE_LF_CDF_ROW_LEN],
     coeff_base_lf_dc_tx64_2d: [i32; COEFF_BASE_LF_CDF_ROW_LEN],
-    // The `coeff_br` low-frequency bank, indexed by the § 8.3.2 `coeff_br` context
-    // (`COEFF_BR_LF_CTX_COUNT` contexts; `coeff_br` has no transform-size dimension).
-    // The general LF walk derives this context from the running `Level[]`
-    // (`coeff_br_lf_luma_context`); sizing the full generated context dimension makes
-    // the LF `coeff_br` tier hole-free.
     coeff_br_lf: [[i32; COEFF_BR_LF_CDF_ROW_LEN]; COEFF_BR_LF_CTX_COUNT],
-    // The 4x4 HIGH-frequency `coeff_base_eob` bank, indexed by the § 8.3.2
-    // `coeff_base_eob` context (`COEFF_BASE_EOB_CTX_COUNT` contexts, 4-symbol rows),
-    // from the generated `DEFAULT_COEFF_BASE_EOB_CDF[q][4x4][ctx]` (distinct from the
-    // 6-symbol LF `coeff_base_lf_eob_4x4` bank). The eob-11 HF EOB coefficient reaches
-    // `coeff_base_eob_ctx(10) = 3`; sizing the full ctx dimension keeps the HF EOB
-    // tier hole-free.
     coeff_base_eob_hf_4x4: [[i32; COEFF_BASE_EOB_CDF_ROW_LEN]; COEFF_BASE_EOB_CTX_COUNT],
-    // The HIGH-frequency `coeff_br` bank, indexed by the § 8.3.2 HF `coeff_br` context
-    // (`COEFF_BR_CTX_COUNT`, 7; no transform-size dimension), from the generated
-    // `DEFAULT_COEFF_BR_CDF[q][ctx]` (distinct from the 14-context LF `coeff_br_lf`
-    // bank). The eob-11 HF EOB `coeff_br` reaches the constant ctx 0; sizing the full
-    // ctx-7 dimension keeps the tier hole-free for the later non-EOB HF sub-brick.
     coeff_br_hf: [[i32; COEFF_BR_CDF_ROW_LEN]; COEFF_BR_CTX_COUNT],
-    // The 4x4 HIGH-frequency non-EOB `coeff_base` bank at the neutral TCQ context,
-    // indexed by the § 8.3.2 HF `coeff_base` context (`COEFF_BASE_CTX_COUNT`, 20;
-    // 4-symbol rows), from the generated `DEFAULT_COEFF_BASE_CDF[q][4x4][ctx][tcq]`
-    // (distinct from the 6-symbol LF `coeff_base_lf_4x4` bank). The general HF walk
-    // derives this context from the running `Level[]` (`coeff_base_hf_luma_context`);
-    // for 4x4 2D the reachable contexts are roughly 0..9, but sizing the full ctx-20
-    // dimension keeps the HF non-EOB base tier hole-free.
     coeff_base_hf_4x4: [[i32; COEFF_BASE_CDF_ROW_LEN]; COEFF_BASE_CTX_COUNT],
-    // The TX_16X16 LF `coeff_base_eob` / non-EOB `coeff_base` and HF `coeff_base_eob` /
-    // non-EOB `coeff_base` banks (`ENC-COEFF-TOKENIZE-16X16-BASE`), each indexed by the
-    // same full § 8.3.2 context dimension as the 4x4 banks but sourced from the
-    // `TX_SIZE_16X16_CTX` slice of the generated tables. The general 16x16 base pass
-    // routes through these so every reached context is hole-free.
     coeff_base_lf_eob_16x16: [[i32; COEFF_BASE_LF_EOB_CDF_ROW_LEN]; COEFF_BASE_LF_EOB_CTX_COUNT],
     coeff_base_lf_16x16: [[i32; COEFF_BASE_LF_CDF_ROW_LEN]; COEFF_BASE_LF_CTX_COUNT],
     coeff_base_eob_hf_16x16: [[i32; COEFF_BASE_EOB_CDF_ROW_LEN]; COEFF_BASE_EOB_CTX_COUNT],
@@ -200,9 +161,6 @@ impl BlockSymbolTraceCdfRows {
 
     pub(super) fn row_mut(&mut self, token: BlockSymbolToken, index: usize) -> Result<&mut [i32]> {
         match token {
-            // Bypass literals carry no CDF row; `roundtrip_block_symbol_trace`
-            // dispatches them before ever calling `row_mut`, so this arm is
-            // unreachable in practice.
             BlockSymbolToken::Bypass { .. } => {
                 Err(Error::BlockSymbolTraceUnsupportedSelector { index })
             }

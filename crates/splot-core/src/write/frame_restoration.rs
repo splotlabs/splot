@@ -83,21 +83,16 @@ pub fn write_lr_params(
     geometry: LrGeometry,
     base_q_idx: u32,
 ) -> WriteResult<()> {
-    // base_q_idx feeds get_filter_set_index (a SubclassLookup derivation only); no bits.
     let _ = base_q_idx;
     let plan = check_lr_encodable(params, coded_lossless, num_planes, *view, geometry)?;
 
     if plan.disabled {
-        // § 5.18.7.11: if ( CodedLossless || !enable_restoration ) no bits.
         return Ok(());
     }
 
-    // § 5.18.7.11: for ( plane = 0; plane < NumPlanes; plane++ ).
     for (plane, plane_params) in params.planes.iter().enumerate() {
         let is_chroma = plane > 0;
         let (index_to_tool, _tools_count, n) = lr_plane_tool_table(*view, is_chroma);
-        // tool_index ns(n): the position in indexToTool whose value is this plane's tool id
-        // (validated present up front).
         let tool = plane_params.restoration_type.to_tool();
         let tool_index = index_to_tool
             .iter()
@@ -105,8 +100,6 @@ pub fn write_lr_params(
             .map_or(0u32, |idx| idx as u32);
         writer.write_ns(tool_index, n)?;
 
-        // § 5.18.7.11: r == RESTORE_WIENER_NONSEP || r == RESTORE_SWITCHABLE reads
-        // frame_filters_on f(1). The hard residual guarantees it is false, so write a 0 bit.
         if matches!(
             plane_params.restoration_type,
             FrameRestorationType::WienerNonsep | FrameRestorationType::Switchable
@@ -115,13 +108,10 @@ pub fn write_lr_params(
         }
     }
 
-    // § 5.18.7.11: the luma/chroma size-shift signaling (after the plane loop).
     if plan.uses_luma_lr {
-        // LoopRestorationSize[0] base is RESTORATION_TILESIZE_MAX.
         write_lr_size_shift(writer, plan.luma_shift, geometry.sb_size)?;
     }
     if plan.uses_chroma_lr {
-        // LoopRestorationSize[1] base is RESTORATION_TILESIZE_MAX >> Max(SubsamplingX, Y).
         write_lr_size_shift(writer, plan.chroma_shift, geometry.sb_size)?;
     }
     Ok(())
@@ -154,8 +144,6 @@ fn check_lr_encodable(
     view: CoreSeqRestorationView,
     geometry: LrGeometry,
 ) -> WriteResult<LrPlan> {
-    // Hard residual (§ 5.18.7.11 / § 5.20.10.6): the parser can carry a completed
-    // frame-level Wiener NS bank, but this writer does not yet emit that syntax.
     if params.planes.iter().any(|p| p.frame_filters_on) {
         return Err(WriteError::NonCanonicalFrameHeader {
             what: "lr_frame_filters_on",
@@ -167,19 +155,11 @@ fn check_lr_encodable(
         });
     }
 
-    // § 6.4.1: the chroma subsampling domain is {0, 1}. `LrGeometry`'s fields are public, so a
-    // caller can construct a value outside that domain; the LoopRestorationSize shifts
-    // (`RESTORATION_TILESIZE_MAX >> (3 + maxSubsampling)`, incl. inside `default_restoration_size`
-    // below) would then shift past the u32 width and panic in debug. Reject it up front so the
-    // writer never panics on a hostile geometry (a real stream's geometry comes from
-    // `LrGeometry::new`, which clamps to {0, 1}).
     if geometry.subsampling_x > 1 || geometry.subsampling_y > 1 {
         return Err(WriteError::NonCanonicalFrameHeader { what: "lr_size" });
     }
 
     if coded_lossless || !view.enable_restoration {
-        // § 5.18.7.11: the disabled arm leaves UsesLr = 0, no per-plane state, and the default
-        // LoopRestorationSize; a non-default model could not have been produced.
         if params.uses_lr
             || !params.planes.is_empty()
             || params.loop_restoration_size != default_restoration_size(geometry)
@@ -197,7 +177,6 @@ fn check_lr_encodable(
         });
     }
 
-    // § 5.18.7.11: the enabled arm parses exactly NumPlanes per-plane entries.
     if params.planes.len() != usize::from(num_planes) {
         return Err(WriteError::NonCanonicalFrameHeader {
             what: "lr_num_planes",
@@ -209,12 +188,6 @@ fn check_lr_encodable(
     for (plane, plane_params) in params.planes.iter().enumerate() {
         let is_chroma = plane > 0;
         let (index_to_tool, _tools_count, n) = lr_plane_tool_table(view, is_chroma);
-        // The plane's restoration type must be SELECTABLE by the parser's tool_index ns(n): its
-        // position in indexToTool must exist AND be < n. RESTORE_SWITCHABLE sits at index
-        // toolsCount but is only reachable when allowSwitchable (n == toolsCount + 1); a plain
-        // `.contains()` would wrongly accept Switchable when only one switchable tool is enabled
-        // (n == toolsCount), and write_ns(toolsCount, toolsCount) would then reject mid-write
-        // (partial buffer). Reject up front instead.
         let tool = plane_params.restoration_type.to_tool();
         match index_to_tool.iter().position(|&t| t == tool) {
             Some(idx) if (idx as u32) < n => {}
@@ -225,8 +198,6 @@ fn check_lr_encodable(
             }
         }
 
-        // § 5.18.7.11: num_filter_classes is Some only when frame_filters_on[0] (excluded by
-        // the hard residual), so it must be None on this surface.
         if plane_params.num_filter_classes.is_some() {
             return Err(WriteError::NonCanonicalFrameHeader {
                 what: "lr_num_filter_classes",
@@ -242,7 +213,6 @@ fn check_lr_encodable(
         }
     }
 
-    // § 5.18.7.11: UsesLr = usesLumaLr || usesChromaLr.
     if params.uses_lr != (uses_luma_lr || uses_chroma_lr) {
         return Err(WriteError::NonCanonicalFrameHeader { what: "lr_uses_lr" });
     }
@@ -264,7 +234,6 @@ fn check_lr_encodable(
         0
     };
 
-    // § 5.18.7.11: LoopRestorationSize[1]. Base is RESTORATION_TILESIZE_MAX >> max_subsampling.
     let chroma_base = RESTORATION_TILESIZE_MAX >> max_subsampling;
     let chroma_shift = if uses_chroma_lr {
         lr_size_to_shift(
@@ -279,7 +248,6 @@ fn check_lr_encodable(
         0
     };
 
-    // § 5.18.7.11: LoopRestorationSize[2] = LoopRestorationSize[1].
     if params.loop_restoration_size[2] != params.loop_restoration_size[1] {
         return Err(WriteError::NonCanonicalFrameHeader { what: "lr_size" });
     }
@@ -299,18 +267,14 @@ fn check_lr_encodable(
 /// power-of-two division `base == size << shift`; rejects anything else with
 /// [`WriteError::NonCanonicalFrameHeader`] (`lr_size`).
 fn lr_size_to_shift(size: u32, base: u32, sb_size: SuperblockSize) -> WriteResult<u32> {
-    // size != 0 (avoid the divide-by-zero / trailing_zeros(0) traps) and size must divide base
-    // exactly as a power of two: base == size << shift for shift = log2(base / size).
     if size == 0 || base < size {
         return Err(WriteError::NonCanonicalFrameHeader { what: "lr_size" });
     }
     let ratio = base / size;
     let shift = ratio.trailing_zeros();
-    // Reject a non-power-of-two ratio (base/size not exactly 2^shift) or a non-exact division.
     if size << shift != base {
         return Err(WriteError::NonCanonicalFrameHeader { what: "lr_size" });
     }
-    // The shift must be reachable for this SbSize (mirror read_lr_size_shift's inferences).
     lr_shift_is_reachable(shift, sb_size)?;
     Ok(shift)
 }
@@ -320,11 +284,8 @@ fn lr_size_to_shift(size: u32, base: u32, sb_size: SuperblockSize) -> WriteResul
 /// `0` / `1`; `BLOCK_128X128` reaches `0` / `1` / `2`; every other `SbSize` reaches `0..=3`.
 fn lr_shift_is_reachable(shift: u32, sb_size: SuperblockSize) -> WriteResult<()> {
     let reachable = match sb_size {
-        // half (shift 1) for all; else shift 0 (no max/quarter flags follow).
         SuperblockSize::Block256x256 => shift <= 1,
-        // half (1); max (0); else shift 2 (no quarter flag follows).
         SuperblockSize::Block128x128 => shift <= 2,
-        // half (1); max (0); quarter (2) : otherwise 3.
         SuperblockSize::Block64x64 => shift <= 3,
     };
     if reachable {
@@ -343,25 +304,20 @@ fn write_lr_size_shift(
     shift: u32,
     sb_size: SuperblockSize,
 ) -> WriteResult<()> {
-    // *_use_half_size f(1): shift == 1 (reachable for every SbSize).
     if shift == 1 {
         return writer.write_bit(1);
     }
     writer.write_bit(0)?;
     if sb_size == SuperblockSize::Block256x256 {
-        // shift 0 is inferred here; any other shift is unreachable (validated up front).
         return Ok(());
     }
-    // *_use_max_size f(1): shift == 0.
     if shift == 0 {
         return writer.write_bit(1);
     }
     writer.write_bit(0)?;
     if sb_size == SuperblockSize::Block128x128 {
-        // shift 2 is inferred here; any other shift is unreachable (validated up front).
         return Ok(());
     }
-    // *_use_quarter_size f(1): shift == 2 -> 1, shift == 3 -> 0.
     writer.write_flag(shift == 2)
 }
 
@@ -401,12 +357,9 @@ pub fn write_ccso_params(
     check_ccso_encodable(params, coded_lossless, num_planes, *view)?;
 
     if coded_lossless || !view.enable_ccso {
-        // § 5.18.7.12: if ( CodedLossless || !enable_ccso ) no bits.
         return Ok(());
     }
 
-    // § 5.18.7.12: single picture infers ccso_frame_flag = 1 (no bit); else f(1). Validated
-    // Some above; pattern-match to avoid an unwrap.
     let Some(frame_flag) = params.ccso_frame_flag else {
         return Ok(());
     };
@@ -414,18 +367,14 @@ pub fn write_ccso_params(
         writer.write_flag(frame_flag)?;
     }
     if !frame_flag {
-        // § 5.18.7.12: if ( !ccso_frame_flag ) return.
         return Ok(());
     }
 
-    // § 5.18.7.12: for ( plane = 0; plane < NumPlanes; plane++ ).
     for plane in &params.planes {
-        // ccso_planes[plane] f(1).
         writer.write_flag(plane.ccso_planes)?;
         if !plane.ccso_planes {
             continue;
         }
-        // Every field is Some here (validated up front); pattern-match to avoid unwraps.
         let (
             Some(bo_only),
             Some(scale_idx),
@@ -442,32 +391,24 @@ pub fn write_ccso_params(
             plane.ccso_max_band_log2,
         )
         else {
-            // Unreachable after validation; never write a partial plane.
             return Err(WriteError::NonCanonicalFrameHeader {
                 what: "ccso_plane_fields",
             });
         };
 
-        // ccso_bo_only[plane] f(1); ccso_scale_idx[plane] f(2).
         writer.write_flag(bo_only)?;
         writer.write_bits_u8(scale_idx, 2)?;
         if !bo_only {
-            // ccso_quant_idx[plane] f(2); ccso_ext_filter[plane] f(3).
             writer.write_bits_u8(quant_idx, 2)?;
             writer.write_bits_u8(ext_filter, 3)?;
-            // quantStep != 0 -> ccso_edge_clf[plane] f(1); else inferred 0 (no bit).
             if ccso_quant_step(scale_idx, quant_idx) != 0 {
                 writer.write_flag(edge_clf)?;
             }
         }
-        // n = 2 + ccso_bo_only; ccso_max_band_log2[plane] f(n).
         let band_bits = 2 + u32::from(bo_only);
         writer.write_bits_u8(max_band_log2, band_bits)?;
 
-        // maxEdgeInterval = bo_only ? 1 : CCSO_INPUT_INTERVAL - ccso_edge_clf;
-        // maxBand = 1 << ccso_max_band_log2. The offset table is (d0, d1, band)-ordered.
         for &offset in &plane.ccso_offset_idx {
-            // ccso_offset_idx tu(7) (validated <= 7 up front).
             writer.write_tu(u32::from(offset), u32::from(CCSO_OFFSET_IDX_MAX))?;
         }
     }
@@ -484,7 +425,6 @@ fn check_ccso_encodable(
     view: CoreSeqCcsoView,
 ) -> WriteResult<()> {
     if coded_lossless || !view.enable_ccso {
-        // § 5.18.7.12: the disabled arm leaves ccso_frame_flag None and no planes.
         if params.ccso_frame_flag.is_some() || !params.planes.is_empty() {
             return Err(WriteError::NonCanonicalFrameHeader {
                 what: "ccso_disabled",
@@ -493,7 +433,6 @@ fn check_ccso_encodable(
         return Ok(());
     }
 
-    // § 5.18.7.12: single picture infers ccso_frame_flag = 1; else it is read f(1) (Some).
     if view.single_picture_header_flag {
         if params.ccso_frame_flag != Some(true) {
             return Err(WriteError::NonCanonicalFrameHeader {
@@ -508,7 +447,6 @@ fn check_ccso_encodable(
 
     match params.ccso_frame_flag {
         Some(false) => {
-            // § 5.18.7.12: if ( !ccso_frame_flag ) return; no per-plane state.
             if !params.planes.is_empty() {
                 return Err(WriteError::NonCanonicalFrameHeader {
                     what: "ccso_frame_disabled",
@@ -516,7 +454,6 @@ fn check_ccso_encodable(
             }
         }
         Some(true) => {
-            // § 5.18.7.12: the coded arm parses exactly NumPlanes entries.
             if params.planes.len() != usize::from(num_planes) {
                 return Err(WriteError::NonCanonicalFrameHeader {
                     what: "ccso_num_planes",
@@ -527,7 +464,6 @@ fn check_ccso_encodable(
             }
         }
         None => {
-            // Only reachable on the non-single-picture arm, already rejected above.
             return Err(WriteError::NonCanonicalFrameHeader {
                 what: "ccso_frame_flag",
             });
@@ -540,7 +476,6 @@ fn check_ccso_encodable(
 /// § 5.18.7.12 parser could have produced, before any bit is written.
 fn check_ccso_plane_encodable(plane: &crate::headers::frame::CcsoPlaneParams) -> WriteResult<()> {
     if !plane.ccso_planes {
-        // § 5.18.7.12: a disabled plane reads no fields and codes no offsets.
         if plane.ccso_bo_only.is_some()
             || plane.ccso_scale_idx.is_some()
             || plane.ccso_quant_idx.is_some()
@@ -556,7 +491,6 @@ fn check_ccso_plane_encodable(plane: &crate::headers::frame::CcsoPlaneParams) ->
         return Ok(());
     }
 
-    // § 5.18.7.12: an enabled plane has every field present.
     let (
         Some(bo_only),
         Some(scale_idx),
@@ -578,7 +512,6 @@ fn check_ccso_plane_encodable(plane: &crate::headers::frame::CcsoPlaneParams) ->
         });
     };
 
-    // ccso_scale_idx f(2): 0..=3.
     if scale_idx >= CCSO_SCALE_IDX_MAX_PLUS_1 {
         return Err(WriteError::NonCanonicalFrameHeader {
             what: "ccso_scale_idx",
@@ -586,20 +519,17 @@ fn check_ccso_plane_encodable(plane: &crate::headers::frame::CcsoPlaneParams) ->
     }
 
     if bo_only {
-        // § 5.18.7.12: bo_only infers quant_idx = 0, ext_filter = 0, edge_clf = 0 (no bits).
         if quant_idx != 0 || ext_filter != 0 || edge_clf {
             return Err(WriteError::NonCanonicalFrameHeader {
                 what: "ccso_bo_only_fields",
             });
         }
     } else {
-        // ccso_quant_idx f(2): 0..=3.
         if quant_idx >= CCSO_QUANT_IDX_MAX_PLUS_1 {
             return Err(WriteError::NonCanonicalFrameHeader {
                 what: "ccso_quant_idx",
             });
         }
-        // ccso_ext_filter f(3): 0..=7.
         if ext_filter >= CCSO_EXT_FILTER_MAX_PLUS_1 {
             return Err(WriteError::NonCanonicalFrameHeader {
                 what: "ccso_ext_filter",
@@ -613,7 +543,6 @@ fn check_ccso_plane_encodable(plane: &crate::headers::frame::CcsoPlaneParams) ->
         }
     }
 
-    // ccso_max_band_log2 f(2 + bo_only): the field width caps the value.
     let band_bits = 2 + u32::from(bo_only);
     if u32::from(max_band_log2) >= (1u32 << band_bits) {
         return Err(WriteError::NonCanonicalFrameHeader {
@@ -621,14 +550,11 @@ fn check_ccso_plane_encodable(plane: &crate::headers::frame::CcsoPlaneParams) ->
         });
     }
 
-    // The offset table length must equal maxEdgeInterval^2 * maxBand.
     let max_edge_interval = if bo_only {
         1u32
     } else {
-        // edge_clf is 0/1 and CCSO_INPUT_INTERVAL == 3, so this subtraction is >= 2 (no underflow).
         CCSO_INPUT_INTERVAL - u32::from(edge_clf)
     };
-    // max_band_log2 <= 7 (validated by the field width above), so 1 << it never overflows u32.
     let max_band = 1u32 << u32::from(max_band_log2);
     let expected = (max_edge_interval * max_edge_interval * max_band) as usize;
     if plane.ccso_offset_idx.len() != expected {
@@ -636,7 +562,6 @@ fn check_ccso_plane_encodable(plane: &crate::headers::frame::CcsoPlaneParams) ->
             what: "ccso_offset_idx_len",
         });
     }
-    // Each offset is tu(7): 0..=7.
     if plane
         .ccso_offset_idx
         .iter()
@@ -649,9 +574,6 @@ fn check_ccso_plane_encodable(plane: &crate::headers::frame::CcsoPlaneParams) ->
     Ok(())
 }
 
-// The unit/reject tests and the property tests live in sibling files (each kept under the
-// advisory source-line limit); `include!` pastes them into this module so their `super::*`
-// resolves to the writers and private helpers above.
 #[cfg(test)]
 include!("frame_restoration_tests.rs");
 #[cfg(test)]

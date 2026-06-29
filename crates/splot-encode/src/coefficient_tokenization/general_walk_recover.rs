@@ -75,20 +75,14 @@ pub(crate) fn recover_quant_from_tokens_geom(
     let scan = build_scan(geom)?;
     let mut quant = vec_of_zero_i32(geom.coeff_count)?;
 
-    // An all-zero block trace is the single luma `all_zero == 1` token.
     if tokens.len() == 1 {
         return Ok(quant);
     }
 
-    // Locate the `eob_pt_*` token to recover eob, then walk the base pass
-    // (`eob` coefficient tokens) and the interleaved sign pass that follows it.
     let mut index = 0usize;
     skip_expected_all_zero(tokens, &mut index, coeff_cdf_q_ctx)?;
     let eob = read_eob_from_tokens(tokens, &mut index)?;
 
-    // Base pass: `eob` reverse-scan coefficients, levels only. Recovery is keyed on
-    // token SYNTAX (`CoeffBaseEob` / `CoeffBase` / `CoeffBr`), so the HF tokens — which
-    // share those syntaxes but route different CDF tables — recover identically.
     let mut levels = vec_of_zero_u32(geom.coeff_count)?;
     for offset in 0..eob {
         let c = eob - 1 - offset;
@@ -101,11 +95,6 @@ pub(crate) fn recover_quant_from_tokens_geom(
         }
     }
 
-    // Sign pass: reverse-scan, interleaved per nonzero coefficient. A coefficient whose
-    // recovered level reached its position `maxLevel` carries a § 5.20.7.28 `read_quant`
-    // golomb tail right after its sign token; the tail recovers `x = magnitude -
-    // maxLevel`. MULTIPLE golomb coefficients are supported via the running
-    // `hrLevelAvg` predictor.
     let mut hr_level_avg = 0u32;
     for offset in 0..eob {
         let c = eob - 1 - offset;
@@ -174,9 +163,6 @@ fn skip_expected_all_zero(
     coeff_cdf_q_ctx: usize,
 ) -> Result<()> {
     let token = coeff_token_at(tokens, index)?;
-    // The 4x4 coded all_zero token is the exact expected form; a non-4x4 coded block
-    // shares the syntax/symbol but carries a different `txSzCtx`, so accept either the
-    // exact 4x4 token or any coded (`AllZero`, symbol 0) token.
     let expected_4x4 = coded_luma_all_zero_token(coeff_cdf_q_ctx);
     let is_coded_all_zero =
         matches!(token.syntax(), CoefficientTokenSyntax::AllZero) && token.symbol() == 0;
@@ -204,13 +190,11 @@ fn read_eob_from_tokens(tokens: &[BlockSymbolToken], index: &mut usize) -> Resul
     if eob_pt < MIN_EOB_WITH_EXTRA {
         return Ok(eob_pt);
     }
-    // Reject an out-of-range eobPt from a malformed trace BEFORE the `1 << width` shift.
     if eob_pt > MAX_GENERAL_EOB_PT {
         return Err(Error::CoefficientTokenizationMalformedTokenTrace {
             context: "general walk recovery eob_pt symbol out of range",
         });
     }
-    // eobPt >= 3: the next token is the `eob_extra` CDF flag (the HIGH refinement bit).
     let extra_token = coeff_token_at(tokens, index)?;
     if !matches!(extra_token.syntax(), CoefficientTokenSyntax::EobExtra) {
         return Err(Error::CoefficientTokenizationMalformedTokenTrace {
@@ -218,8 +202,6 @@ fn read_eob_from_tokens(tokens: &[BlockSymbolToken], index: &mut usize) -> Resul
         });
     }
     let eob_extra = extra_token.symbol() != 0;
-    // Then `eobPt - 3` `eob_extra_bit` bypass literals (the LOW refinement bits),
-    // MSB-first. Reassemble `eob_extra_bits` the way the decoder `read_literal` does.
     let width = eob_pt - MIN_EOB_WITH_EXTRA;
     let mut eob_extra_bits = 0usize;
     for _ in 0..width {
@@ -248,8 +230,6 @@ fn read_eob_pt(tokens: &[BlockSymbolToken], index: &mut usize) -> Result<usize> 
             context: "general walk recovery eob_pt symbol out of range",
         });
     }
-    // Symbol 7: the next token is the `eob_pt_extra` width-1 bypass literal; eobPt is
-    // `8 + eob_pt_extra` (mirroring `resolved_eob_pt`).
     let eob_pt_extra = read_eob_extra_bit(tokens, index)?;
     Ok(EOB_PT_WITH_EXTRA + eob_pt_extra)
 }

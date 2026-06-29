@@ -291,10 +291,8 @@ pub fn parse_global_motion_params(
     reader: &mut BitReader<'_>,
     input: &GlobalMotionInput<'_>,
 ) -> Result<GlobalMotionParams> {
-    // mirror :7778-7790: every reference starts at the identity warp (no bits).
     let references = [GlobalMotionRef::identity(); REFS_PER_FRAME];
 
-    // mirror :7792-7796: intra / global-motion-disabled return — no bits.
     if input.frame_is_intra || !input.enable_global_motion {
         return Ok(GlobalMotionParams {
             use_global_motion: false,
@@ -304,10 +302,8 @@ pub fn parse_global_motion_params(
         });
     }
 
-    // mirror :7798: use_global_motion f(1).
     let use_global_motion = reader.read_flag()?;
     if !use_global_motion {
-        // mirror :7800-7804: return — no warp parameters present.
         return Ok(GlobalMotionParams {
             use_global_motion: false,
             our_ref: None,
@@ -316,27 +312,13 @@ pub fn parse_global_motion_params(
         });
     }
 
-    // mirror :7806-7812: baseParams = Default_Warp_Params; baseDistance = 1 (no bits).
-    // These feed scale_warp_model() in the per-reference loop, which is gated behind the
-    // OrderHints honest stop, so the values are not threaded further here.
-
-    // mirror :7814-7824: our_ref selection.
     let our_ref = if input.frame_type == FrameType::Switch {
-        // mirror :7816: SWITCH_FRAME -> our_ref = NumTotalRefs (no bits).
         input.num_total_refs
     } else {
-        // mirror :7820-7822: n = NumTotalRefs + 1; our_ref ns(n).
-        // NumTotalRefs <= 7 (REFS_PER_FRAME), so n <= 8 and n+1 never overflows the read.
         let n = input.num_total_refs.saturating_add(1);
         reader.read_ns(n)?
     };
 
-    // mirror :7826-7846: the our_ref != NumTotalRefs base-warp load. The very next read
-    // (their_ref ns(RefNumTotalRefs[refIdx])) has a width set by RefNumTotalRefs — a
-    // per-slot fact of the REFERENCED frame, not modeled — and the SavedGmParams /
-    // SavedOrderHints loads it gates are likewise cross-frame. Stop honestly at the boundary
-    // with use_global_motion / our_ref preserved. When our_ref == NumTotalRefs the whole arm
-    // is skipped (baseParams stay the identity default), so the parse continues.
     if our_ref != input.num_total_refs {
         return Ok(GlobalMotionParams {
             use_global_motion: true,
@@ -346,9 +328,6 @@ pub fn parse_global_motion_params(
         });
     }
 
-    // mirror :7853-7857: the per-reference loop reads warp bits for a reference only when
-    // dist != 0 && OrderHints[ ref ] != RESTRICTED_OH. With zero references the loop has no
-    // iterations, consults no cross-frame state, and the structure completes (stop: None).
     if input.num_total_refs == 0 {
         return Ok(GlobalMotionParams {
             use_global_motion: true,
@@ -357,9 +336,6 @@ pub fn parse_global_motion_params(
             references,
         });
     }
-    // Otherwise both OrderHint and OrderHints[ ref ] are cross-frame order-hint state, so
-    // the presence of the first per-reference bit is undeterminable here — stop honestly at
-    // the loop boundary.
     Ok(GlobalMotionParams {
         use_global_motion: true,
         our_ref: Some(our_ref),
@@ -386,16 +362,12 @@ pub fn read_global_param(
     idx: usize,
     prev_gm_param: i64,
 ) -> Result<i64> {
-    // mirror :7990-8000: precBits / mx select on idx < 2 (translational) vs >= 2 (alpha).
     let (prec_bits, mx) = if idx < 2 {
         (GM_TRANS_PREC_BITS, GM_TRANS_MAX)
     } else {
         (GM_ALPHA_PREC_BITS, GM_ALPHA_MAX)
     };
-    // mirror :8002: precDiff = WARPEDMODEL_PREC_BITS - precBits (>= 0 for both branches:
-    // 16 - 3 = 13, 16 - 10 = 6).
     let prec_diff = WARPEDMODEL_PREC_BITS - prec_bits;
-    // mirror :8004-8006: round / sub when (idx % 3) == 2 (the diagonal scale terms).
     let is_scale_term = (idx % 3) == 2;
     let round: i64 = if is_scale_term {
         1i64 << WARPEDMODEL_PREC_BITS
@@ -403,11 +375,7 @@ pub fn read_global_param(
         0
     };
     let sub: i64 = if is_scale_term { 1i64 << prec_bits } else { 0 };
-    // mirror :8008: r = (PrevGmParams[ ref ][ idx ] >> precDiff) - sub. An arithmetic
-    // (sign-preserving) shift in i64 matches the spec's signed integer arithmetic; the warp
-    // coefficient magnitude is bounded well within i64.
     let r = (prev_gm_param >> prec_diff) - sub;
-    // mirror :8010-8012: decode_signed_subexp_with_ref( -mx, mx + 1, r, 3 ) << precDiff + round.
     let decoded = decode_signed_subexp_with_ref(reader, -mx, mx + 1, r, GLOBAL_PARAM_K)?;
     Ok((decoded << prec_diff) + round)
 }
@@ -424,17 +392,12 @@ pub fn decode_signed_subexp_with_ref(
     r: i64,
     k: u32,
 ) -> Result<i64> {
-    // mirror :8034: x = decode_unsigned_subexp_with_ref( high - low, r - low, k ).
-    // Saturating spans: in-spec warp bounds never saturate, but this helper is public and
-    // a constructed (low, high, r) such as (i64::MIN, i64::MAX, _) must not overflow-panic;
-    // a saturated span keeps the ordering semantics and stays panic-free.
     let x = decode_unsigned_subexp_with_ref(
         reader,
         high.saturating_sub(low),
         r.saturating_sub(low),
         k,
     )?;
-    // mirror :8036: return x + low.
     Ok(x.saturating_add(low))
 }
 
@@ -449,13 +412,7 @@ pub fn decode_unsigned_subexp_with_ref(
     r: i64,
     k: u32,
 ) -> Result<i64> {
-    // mirror :8052: v = decode_subexp( mx, k ). decode_subexp's bit reads depend only on mx
-    // and k; r recenters the decoded value below (so r never affects the bit position).
     let v = decode_subexp(reader, mx, k)?;
-    // mirror :8054-8062: recenter v around r. The doubling comparison runs in i128 so an
-    // arbitrary public-API r never overflow-panics (in-spec warp values are far inside
-    // range); the else arm uses the same wrapping arithmetic contract as inverse_recenter
-    // (panic-free; out-of-contract inputs yield wrapped values, never UB or a panic).
     if i128::from(r) * 2 <= i128::from(mx) {
         Ok(inverse_recenter(r, v))
     } else {
@@ -480,48 +437,29 @@ pub fn decode_unsigned_subexp_with_ref(
 /// truncated, or [`Error::InvalidNs`](crate::error::Error::InvalidNs) for a degenerate
 /// `ns(0)` range.
 pub fn decode_subexp(reader: &mut BitReader<'_>, num_syms: i64, k: u32) -> Result<i64> {
-    // numSyms is non-negative for every spec call (2*mx + 1); a non-positive input drives the
-    // first ns(n) toward n <= 0, handled by read_ns's InvalidNs (no panic). Clamp the working
-    // value to u64 for the unsigned growth arithmetic; a negative numSyms maps to 0 so the
-    // first-iteration guard takes the ns branch with n == 0 -> InvalidNs.
     let num_syms_u: u64 = u64::try_from(num_syms).unwrap_or(0);
     let mut i: u32 = 0;
     let mut mk: u64 = 0;
     loop {
-        // mirror :8084: b2 = i ? k + i - 1 : k.
         let b2: u32 = if i == 0 {
             k
         } else {
             k.saturating_add(i).saturating_sub(1)
         };
-        // mirror :8086: a = 1 << b2. Capped at 1 << 63 so the shift never overflows u64; the
-        // cap is only reached far past the loop's numSyms-bounded termination for real inputs.
         let a: u64 = 1u64 << b2.min(63);
-        // mirror :8088: if ( numSyms <= mk + 3 * a ) — saturating so the comparison is exact
-        // even when 3 * a would overflow u64 (then mk + 3*a saturates to a value >= numSyms).
         let three_a = a.saturating_mul(3);
         let bound = mk.saturating_add(three_a);
         if num_syms_u <= bound {
-            // mirror :8090-8094: n = numSyms - mk; subexp_final_bits ns(n); return + mk.
-            // num_syms_u >= mk here (mk only advances while num_syms_u > mk + 3*a > mk, so the
-            // previous mk was < num_syms_u and mk += a kept it < num_syms_u — see the module
-            // overflow note). For num_syms_u >= 1 the first iteration has mk == 0 <
-            // num_syms_u, so n >= 1; the degenerate num_syms_u == 0 input yields n == 0 and
-            // read_ns(0) correctly rejects it with InvalidNs. The i64 cast below is exact
-            // for the bounded n.
             let n = num_syms_u - mk;
             let n_u32 = u32::try_from(n).unwrap_or(u32::MAX);
             let final_bits = u64::from(reader.read_ns(n_u32)?);
             return i64::try_from(final_bits + mk).map_err(|_| invalid_subexp_value(reader));
         }
-        // mirror :8098: subexp_more_bits f(1).
         let more_bits = reader.read_flag()?;
         if more_bits {
-            // mirror :8102-8104: i++; mk += a.
             i = i.saturating_add(1);
             mk = mk.saturating_add(a);
         } else {
-            // mirror :8108-8110: subexp_bits f(b2); return subexp_bits + mk.
             let bits = u64::from(reader.read_f(b2)?);
             return i64::try_from(bits + mk).map_err(|_| invalid_subexp_value(reader));
         }
@@ -536,16 +474,11 @@ pub fn decode_subexp(reader: &mut BitReader<'_>, num_syms: i64, k: u32) -> Resul
 /// would otherwise be modeled — here the warp ranges keep every value well inside i64).
 #[must_use]
 pub fn inverse_recenter(r: i64, v: i64) -> i64 {
-    // mirror :8135-8136: if ( v > 2 * r ) return v. Every branch uses wrapping i64 ops so
-    // an adversarial (out-of-warp-range) r / v cannot overflow-panic; for the bounded warp
-    // inputs the wrapping never triggers, so the result is the exact spec value.
     if v > r.wrapping_mul(2) {
         v
     } else if v & 1 != 0 {
-        // mirror :8137-8138: else if ( v & 1 ) return r - ((v + 1) >> 1).
         r.wrapping_sub((v.wrapping_add(1)) >> 1)
     } else {
-        // mirror :8139-8140: else return r + (v >> 1).
         r.wrapping_add(v >> 1)
     }
 }
@@ -573,33 +506,18 @@ mod tests {
         BitReader::new(bytes, ByteOffset::new(0))
     }
 
-    // ---- § 5.18.9.6 inverse_recenter (pure arithmetic, no reads) ----
-
     #[test]
     fn inverse_recenter_hand_vectors() {
-        // mirror :8134-8142.
-        // r=0, v=0: v > 2*r (0>0)? no. v&1? no. else r + (v>>1) = 0 + 0 = 0.
         assert_eq!(inverse_recenter(0, 0), 0);
-        // r=5, v=12: v > 2*r (12>10)? yes -> v = 12.
         assert_eq!(inverse_recenter(5, 12), 12);
-        // r=5, v=3: 3>10? no. 3&1=1 -> r - ((v+1)>>1) = 5 - (4>>1) = 5 - 2 = 3.
         assert_eq!(inverse_recenter(5, 3), 3);
-        // r=5, v=4: 4>10? no. 4&1=0 -> r + (v>>1) = 5 + 2 = 7.
         assert_eq!(inverse_recenter(5, 4), 7);
-        // r=10, v=7: 7>20? no. 7&1=1 -> 10 - ((7+1)>>1) = 10 - 4 = 6.
         assert_eq!(inverse_recenter(10, 7), 6);
-        // r=16383, v=1 (the read_global_param idx=0/prev=0 chain step): 1>32766? no.
-        // 1&1=1 -> 16383 - ((1+1)>>1) = 16383 - 1 = 16382.
         assert_eq!(inverse_recenter(16383, 1), 16382);
     }
 
-    // ---- § 5.18.9.5 decode_subexp ----
-
     #[test]
     fn decode_subexp_first_iteration_ns_branch() {
-        // numSyms=10, k=3: i=0, mk=0, b2=3, a=8. 10 <= 0 + 24 -> take ns(n=10) branch.
-        // ns(10): w = 4 (10 < 16), m = 16 - 10 = 6. read w-1 = 3 bits = 101b = 5; 5 < 6 so
-        // value = 5. decode_subexp returns 5 + mk(0) = 5. Bits = "101".
         let mut bits = Bits::default();
         bits.raw("101");
         let data = bits.into_bytes();
@@ -610,8 +528,6 @@ mod tests {
 
     #[test]
     fn decode_subexp_immediate_subexp_bits_branch() {
-        // numSyms=100, k=3: i=0, mk=0, b2=3, a=8. 100 <= 24? no. subexp_more_bits f(1) = 0
-        // -> subexp_bits f(3) = 110b = 6. return 6 + mk(0) = 6. Bits = "0110".
         let mut bits = Bits::default();
         bits.raw("0110");
         let data = bits.into_bytes();
@@ -622,10 +538,6 @@ mod tests {
 
     #[test]
     fn decode_subexp_more_bits_then_subexp_bits_branch() {
-        // numSyms=100, k=3:
-        //   i=0, mk=0, b2=3, a=8. 100<=24? no. more_bits = 1 -> i=1, mk=8.
-        //   i=1, mk=8, b2=k+i-1=3, a=8. 100<=8+24=32? no. more_bits = 0 -> subexp_bits f(3)
-        //     = 010b = 2. return 2 + mk(8) = 10. Bits = "1 0 010" = "10010".
         let mut bits = Bits::default();
         bits.raw("10010");
         let data = bits.into_bytes();
@@ -636,7 +548,6 @@ mod tests {
 
     #[test]
     fn decode_subexp_zero_numsyms_is_invalid_ns_not_panic() {
-        // numSyms=0, k=3: 0 <= mk(0) + 3*a -> ns(n=0) -> InvalidNs (degenerate range).
         let mut r = reader(&[0xFF]);
         assert!(matches!(
             decode_subexp(&mut r, 0, 3),
@@ -646,7 +557,6 @@ mod tests {
 
     #[test]
     fn decode_subexp_eof_is_error() {
-        // numSyms=100, k=3 needs at least the more_bits f(1); empty payload overruns.
         let mut r = reader(&[]);
         assert!(matches!(
             decode_subexp(&mut r, 100, 3),
@@ -654,14 +564,8 @@ mod tests {
         ));
     }
 
-    // ---- § 5.18.9.4 decode_unsigned_subexp_with_ref ----
-
     #[test]
     fn decode_unsigned_subexp_with_ref_recenter_branch() {
-        // mx=9, r=4, k=1: (r<<1)=8 <= mx=9 -> inverse_recenter(4, v).
-        //   v = decode_subexp(9, 1): i=0, mk=0, b2=1, a=2. 9<=0+6? no. more_bits=0 ->
-        //     subexp_bits f(1) = 1. v = 1. Bits = "01".
-        //   inverse_recenter(4, 1): 1>8? no. 1&1=1 -> 4 - ((1+1)>>1) = 4 - 1 = 3.
         let mut bits = Bits::default();
         bits.raw("01");
         let data = bits.into_bytes();
@@ -671,12 +575,6 @@ mod tests {
 
     #[test]
     fn decode_unsigned_subexp_with_ref_mirror_branch() {
-        // mx=9, r=8, k=1: (r<<1)=16 <= mx=9? no -> mx-1 - inverse_recenter(mx-1-r, v)
-        //   = 8 - inverse_recenter(8-8=0, v).
-        //   v = decode_subexp(9, 1): i=0, mk=0, b2=1, a=2. 9<=6? no. more_bits=1 -> i=1, mk=2.
-        //     i=1, mk=2, b2=k+i-1=1, a=2. 9<=2+6=8? no. more_bits=0 -> subexp_bits f(1)=0.
-        //     v = 0 + mk(2) = 2. Bits = "1 0 0" = "100".
-        //   inverse_recenter(0, 2): 2>0? yes -> 2. result = 8 - 2 = 6.
         let mut bits = Bits::default();
         bits.raw("100");
         let data = bits.into_bytes();
@@ -684,12 +582,8 @@ mod tests {
         assert_eq!(decode_unsigned_subexp_with_ref(&mut r, 9, 8, 1).unwrap(), 6);
     }
 
-    // ---- § 5.18.9.3 decode_signed_subexp_with_ref ----
-
     #[test]
     fn decode_signed_subexp_with_ref_hand_vector() {
-        // low=-4, high=5, r=0, k=1: x = decode_unsigned_subexp_with_ref(high-low=9, r-low=4, 1)
-        //   (the recenter-branch vector above) = 3. return x + low = 3 + (-4) = -1.
         let mut bits = Bits::default();
         bits.raw("01");
         let data = bits.into_bytes();
@@ -702,12 +596,6 @@ mod tests {
 
     #[test]
     fn decode_signed_subexp_with_ref_returns_in_low_high_range() {
-        // § 6.17.9.3: the result is in low..=high-1. low=10, high=15, r=10, k=1:
-        //   x = decode_unsigned_subexp_with_ref(high-low=5, r-low=0, 1):
-        //     v = decode_subexp(5, 1): i=0, mk=0, b2=1, a=2. 5 <= 0+6 -> ns(n=5).
-        //       ns(5): w=3, m=8-5=3. read w-1=2 bits "01"=1; 1<3 -> value=1. v=1. Bits="01".
-        //     (r<<1)=0 <= mx=5 -> inverse_recenter(0, 1): 1>0 -> 1. x=1.
-        //   return x + low = 1 + 10 = 11 (in 10..=14).
         let mut bits = Bits::default();
         bits.raw("01");
         let data = bits.into_bytes();
@@ -717,19 +605,8 @@ mod tests {
         assert!((10..15).contains(&value));
     }
 
-    // ---- § 5.18.9.2 read_global_param ----
-
     #[test]
     fn read_global_param_translational_idx0_prev_zero() {
-        // idx=0 (translational): precBits=3, mx=16383, precDiff=13, round=0, sub=0.
-        // prev=0 -> r = (0 >> 13) - 0 = 0.
-        // decode_signed_subexp_with_ref(-16383, 16384, 0, 3):
-        //   decode_unsigned_subexp_with_ref(32767, 16383, 3):
-        //     v = decode_subexp(32767, 3): i=0, mk=0, b2=3, a=8. 32767<=24? no. more_bits=0
-        //       -> subexp_bits f(3) = 001b = 1. v = 1. Bits = "0 001" = "0001".
-        //     (16383<<1)=32766 <= 32767 -> inverse_recenter(16383, 1) = 16382.
-        //   x = 16382 + (-16383) = -1.
-        // result = (-1 << 13) + 0 = -8192.
         let mut bits = Bits::default();
         bits.raw("0001");
         let data = bits.into_bytes();
@@ -740,17 +617,6 @@ mod tests {
 
     #[test]
     fn read_global_param_scale_term_idx2_identity_prev_recovers_identity_round() {
-        // idx=2 (scale term, idx%3==2): precBits=10, mx=511, precDiff=6, round=1<<16=65536,
-        // sub=1<<10=1024. prev = Default_Warp_Params[2] = 1<<16 = 65536 ->
-        //   r = (65536 >> 6) - 1024 = 1024 - 1024 = 0.
-        // decode_signed_subexp_with_ref(-511, 512, 0, 3):
-        //   decode_unsigned_subexp_with_ref(1023, 511, 3):
-        //     v = decode_subexp(1023, 3): i=0, mk=0, b2=3, a=8. 1023<=24? no. more_bits=0 ->
-        //       subexp_bits f(3) = 000b = 0. v = 0. Bits = "0 000" = "0000".
-        //     (511<<1)=1022 <= 1023 -> inverse_recenter(511, 0): 0>1022? no. 0&1=0 ->
-        //       511 + (0>>1) = 511.
-        //   x = 511 + (-511) = 0.
-        // result = (0 << 6) + 65536 = 65536 -> the identity scale term round-trips.
         let mut bits = Bits::default();
         bits.raw("0000");
         let data = bits.into_bytes();
@@ -771,8 +637,6 @@ mod tests {
         ));
     }
 
-    // ---- § 5.18.9.1 parse_global_motion_params (the inter arm) ----
-
     fn base_input(ref_frame_idx: &[u32]) -> GlobalMotionInput<'_> {
         GlobalMotionInput {
             frame_is_intra: false,
@@ -785,11 +649,6 @@ mod tests {
 
     #[test]
     fn zero_total_refs_completes_without_stop() {
-        // mirror :7853-7857: with NumTotalRefs == 0 the per-reference loop has zero
-        // iterations and consults no cross-frame state, so the structure COMPLETES
-        // (stop: None) instead of reporting an honest stop (codex PR #64 review).
-        // Bits: use_global_motion == 1, then our_ref ns(1) reads no bits (n == 1 ->
-        // single symbol 0 == NumTotalRefs -> the base-load arm is skipped).
         let input = base_input(&[]);
         let mut r = reader(&[0b1000_0000]);
         let gm = parse_global_motion_params(&mut r, &input).unwrap();
@@ -803,18 +662,12 @@ mod tests {
 
     #[test]
     fn signed_subexp_extreme_bounds_do_not_panic() {
-        // Public-API hardening (codex PR #64 review): (low, high, r) spans like
-        // (i64::MIN, i64::MAX, 0) must not overflow-panic; the saturated span keeps the
-        // call panic-free and returns a structured result.
         let mut r = reader(&[0x00, 0x00, 0x00, 0x00]);
         let _ = decode_signed_subexp_with_ref(&mut r, i64::MIN, i64::MAX, 0, 1);
     }
 
     #[test]
     fn unsigned_subexp_extreme_recenter_does_not_panic() {
-        // Public-API hardening (codex PR #64 review): an arbitrary r outside
-        // i64::MIN/2..=i64::MAX/2 must not overflow the doubling comparison (run in
-        // i128) or the mirrored recenter arm (wrapping, like inverse_recenter).
         let mut r = reader(&[0x00, 0x00, 0x00, 0x00]);
         let _ = decode_unsigned_subexp_with_ref(&mut r, i64::MAX, i64::MAX - 1, 1);
         let mut r2 = reader(&[0x00, 0x00, 0x00, 0x00]);
@@ -823,7 +676,6 @@ mod tests {
 
     #[test]
     fn intra_returns_identity_no_bits() {
-        // mirror :7792: FrameIsIntra -> return before use_global_motion (no bits).
         let mut input = base_input(&[0, 1]);
         input.frame_is_intra = true;
         let mut r = reader(&[0xFF]);
@@ -837,7 +689,6 @@ mod tests {
 
     #[test]
     fn disabled_returns_identity_no_bits() {
-        // mirror :7792: !enable_global_motion -> return (no bits).
         let mut input = base_input(&[0, 1]);
         input.enable_global_motion = false;
         let mut r = reader(&[0xFF]);
@@ -849,7 +700,6 @@ mod tests {
 
     #[test]
     fn use_global_motion_zero_returns_after_one_bit() {
-        // mirror :7798-7804: use_global_motion f(1) == 0 -> return.
         let mut bits = Bits::default();
         bits.bit(0); // use_global_motion = 0
         let data = bits.into_bytes();
@@ -863,11 +713,6 @@ mod tests {
 
     #[test]
     fn our_ref_equal_num_total_refs_stops_at_order_hints_boundary() {
-        // use_global_motion=1, our_ref ns(NumTotalRefs+1) selecting our_ref == NumTotalRefs:
-        // the base-warp arm is skipped (baseParams stay default) and the parse stops at the
-        // per-reference loop's OrderHints gate. NumTotalRefs=2 -> our_ref ns(3): w=2, m=4-3=1.
-        // read w-1=1 bit; to get value 2 (== NumTotalRefs): v(1 bit) >= m(1) -> read extra bit;
-        // value = (v<<1) - m + extra. v=1,extra=1 -> (2) - 1 + 1 = 2. Bits "1" then "1" = "11".
         let mut bits = Bits::default();
         bits.bit(1); // use_global_motion = 1
         bits.raw("11"); // our_ref ns(3) = 2 == NumTotalRefs
@@ -877,15 +722,11 @@ mod tests {
         assert!(gm.use_global_motion);
         assert_eq!(gm.our_ref, Some(2));
         assert_eq!(gm.stop, Some(GlobalMotionStop::OrderHintsUnmodeled));
-        // 1 (use_global_motion) + 2 (our_ref ns(3) = 2) = 3.
         assert_eq!(r.consumed_bits(), 3);
     }
 
     #[test]
     fn our_ref_not_num_total_refs_stops_at_ref_num_total_refs() {
-        // our_ref ns(3) selecting our_ref=0 (!= NumTotalRefs=2): the RefNumTotalRefs arm is
-        // entered but RefNumTotalRefs[refIdx] is cross-frame -> honest stop. ns(3): w=2,
-        // m=1. read 1 bit = 0; 0 < m(1) -> value = 0. Bits "0".
         let mut bits = Bits::default();
         bits.bit(1); // use_global_motion = 1
         bits.raw("0"); // our_ref ns(3) = 0 != NumTotalRefs
@@ -900,8 +741,6 @@ mod tests {
 
     #[test]
     fn switch_frame_infers_our_ref_num_total_refs_no_ns_bits() {
-        // mirror :7814-7816: SWITCH_FRAME -> our_ref = NumTotalRefs (no ns bits). Then the
-        // OrderHints loop boundary stop. Only the use_global_motion f(1) is read.
         let mut input = base_input(&[0, 1, 2]);
         input.frame_type = FrameType::Switch;
         let mut bits = Bits::default();
@@ -917,10 +756,6 @@ mod tests {
 
     #[test]
     fn ns_boundary_max_our_ref_value() {
-        // ns(NumTotalRefs+1) boundary: NumTotalRefs=1 -> ns(2): w=1, m=2-2=0. read w-1=0
-        // bits, then since 0 >= m(0) read the extra bit; value = (0<<1) - 0 + extra = extra.
-        // extra=1 -> our_ref=1 == NumTotalRefs -> OrderHints stop. extra=0 -> our_ref=0 !=
-        // NumTotalRefs -> RefNumTotalRefs stop.
         let mut bits = Bits::default();
         bits.bit(1); // use_global_motion
         bits.bit(1); // our_ref ns(2) = 1 == NumTotalRefs
@@ -942,7 +777,6 @@ mod tests {
 
     #[test]
     fn eof_before_use_global_motion_is_error() {
-        // The payload ends before use_global_motion f(1) — a truncation the caller routes.
         let mut r = reader(&[]);
         assert!(matches!(
             parse_global_motion_params(&mut r, &base_input(&[0, 1])),
@@ -952,10 +786,6 @@ mod tests {
 
     #[test]
     fn eof_inside_our_ref_ns_is_error() {
-        // Position the reader so use_global_motion f(1) reads the LAST bit of a 1-byte
-        // payload; the our_ref ns(8) (NumTotalRefs=7, w=3) read then starts at EOF and
-        // overruns. The 7 leading pad bits are consumed by the test before the parse so the
-        // reader sits exactly before use_global_motion.
         let mut bits = Bits::default();
         bits.f(0, 7); // 7 leading pad bits (the test consumes these)
         bits.bit(1); // use_global_motion at bit index 7 (last bit of the byte)
@@ -971,8 +801,6 @@ mod tests {
 
     #[test]
     fn references_table_is_refs_per_frame_identity_at_stop() {
-        // At any honest stop the per-reference table is the identity initialiser (mirror
-        // :7780-7788) — the warp loop is never entered without OrderHints.
         let mut bits = Bits::default();
         bits.bit(1); // use_global_motion
         bits.raw("11"); // our_ref = NumTotalRefs (OrderHints stop)

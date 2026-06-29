@@ -64,11 +64,6 @@ fn ivf_stream(payloads: &[&[u8]]) -> Vec<u8> {
 
 #[test]
 fn validate_header_only_sequence_header_reports_missing_output_frame_unit() {
-    // `conformant.av2` is a temporal delimiter plus a sequence header at obu_xlayer_id 0 with
-    // no frame-bearing OBU — a header-only coded extended layer unit. AV2 § 7.3.6 line 536
-    // ("at least one coded output frame unit shall be present") applies to every CELU, so the
-    // validator reports exactly `celu/missing-output-frame-unit` (exit 1). The fixture exercises
-    // the sequence-header parse / inspect paths; this test pins the CELU-completeness finding.
     let out = validate("conformant.av2", &[]);
     assert_eq!(out.status.code(), Some(1));
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -92,7 +87,6 @@ fn validate_reads_from_stdin_dash_and_matches_file() {
     use std::io::Write;
     use std::process::{Command, Stdio};
 
-    // A stream with a real diagnostic so the comparison covers a non-trivial report.
     let data = ivf_stream(&[&[0x02, 0x88, 0x05]]);
     let path = temp_input("ivf", &data);
 
@@ -113,7 +107,6 @@ fn validate_reads_from_stdin_dash_and_matches_file() {
         .expect("write to child stdin");
     let stdin_out = child.wait_with_output().expect("wait for splot");
 
-    // `-` (stdin) and the file path must agree on exit code and rendered report.
     assert_eq!(file_out.status.code(), stdin_out.status.code());
     assert_eq!(file_out.stdout, stdin_out.stdout);
 }
@@ -291,8 +284,6 @@ fn inspect_json_includes_payload_status_without_dropping_header_fields() {
 
 #[test]
 fn inspect_json_reports_parsed_sequence_tile_config() {
-    // A sequence header that sets seq_tile_info_present_flag now parses tile_params()
-    // in full, so the payload is reported parsed (not bounded).
     let path = fixture("seq-header-tile-params.av2");
     let out = splot(&["inspect", "--json", path.to_str().unwrap()]);
     assert_eq!(out.status.code(), Some(0));
@@ -313,8 +304,6 @@ fn inspect_json_reports_parsed_sequence_tile_config() {
 
 #[test]
 fn inspect_prints_valid_prefix_before_a_tail_error() {
-    // A valid TemporalDelimiter followed by a truncated OBU: the prefix is shown,
-    // and the tail parse error sets a non-zero exit.
     let path = fixture("prefix-then-truncated.av2");
     let out = splot(&["inspect", "--headers", path.to_str().unwrap()]);
     assert_eq!(out.status.code(), Some(1));
@@ -327,9 +316,6 @@ fn inspect_prints_valid_prefix_before_a_tail_error() {
 
 #[test]
 fn inspect_json_exposes_frame_header_prefix() {
-    // The fixture is TemporalDelimiter, SequenceHeader (id 0), then an
-    // OBU_CLOSED_LOOP_KEY whose first tile group carries a frame header referencing
-    // seq_header_id 0. The inspector surfaces the prefix-only activation fields.
     let path = fixture("frame-header-prefix.av2");
     let out = splot(&["inspect", "--json", path.to_str().unwrap()]);
     assert_eq!(out.status.code(), Some(0));
@@ -349,9 +335,6 @@ fn inspect_json_exposes_frame_header_prefix() {
     assert_eq!(prefix["seq_header_id_in_frame_header"], 0);
     assert_eq!(prefix["referenced_sequence_header_id"], 0);
     assert_eq!(prefix["is_key_frame"], true);
-    // The stateless dispatcher parses only the §5.19 tile-group activation prefix and
-    // reports the honest state-dependent status; the richer surface is the stateful
-    // frame_header_prefix / frame_header_core views above.
     let status = &frame["payload_status"];
     assert_eq!(status["status"], "prefix_parsed_awaiting_state");
     assert_eq!(status["syntax"], "tile_group_prefix");
@@ -361,11 +344,6 @@ fn inspect_json_exposes_frame_header_prefix() {
 
 #[test]
 fn inspect_json_exposes_frame_header_core() {
-    // The fixture is TemporalDelimiter, a non-single-picture SequenceHeader (id 0),
-    // then an OBU_CLOSED_LOOP_KEY whose first tile group carries a frame header parsed
-    // through the full § 5.18.2 intra structure cluster (tile_info, quantization,
-    // segmentation, QM setup, delta-q, lossless tail, and the loop-filter cluster
-    // deblocking/GDF/CDEF): a 16x16 key frame. The inspector surfaces the core summary.
     let path = fixture("frame-header-core.av2");
     let out = splot(&["inspect", "--json", path.to_str().unwrap()]);
     assert_eq!(out.status.code(), Some(0));
@@ -386,9 +364,6 @@ fn inspect_json_exposes_frame_header_core() {
     assert_eq!(core["frame_size"]["width"], 16);
     assert_eq!(core["frame_size"]["height"], 16);
 
-    // The § 5.18.7.2 / § 5.18.6 / § 5.18.7.1 structure summaries: a single-tile
-    // layout, base_q_idx == 100 with no deltas, segmentation and the quantizer
-    // matrix disabled, no delta-q, and a non-lossless frame.
     let tile = &core["tile_layout"];
     assert_eq!(tile["reuse_tile_info"], false);
     assert_eq!(tile["tile_cols"], 1);
@@ -415,8 +390,6 @@ fn inspect_json_exposes_frame_header_core() {
     assert_eq!(lossless["has_lossless_segment"], false);
     assert_eq!(lossless["allow_tcq"], false);
     assert_eq!(lossless["allow_parity_hiding"], false);
-    // The § 5.18.5.2 / § 5.18.7.9 / § 5.18.7.10 loop-filter cluster: deblocking with all
-    // apply flags off, and GDF / CDEF disabled at the sequence level.
     let deblocking = &core["deblocking"];
     assert_eq!(
         deblocking["apply_deblocking_filter"],
@@ -424,19 +397,12 @@ fn inspect_json_exposes_frame_header_core() {
     );
     assert_eq!(core["gdf"]["gdf_frame_enable"], false);
     assert_eq!(core["cdef"]["cdef_frame_enable"], false);
-    // The § 5.18.7.11 / § 5.18.7.12 lr / ccso cluster: restoration and CCSO are disabled at
-    // the sequence level, so lr_params() reports the default unit sizes with uses_lr false
-    // and ccso_params() returns with no ccso_frame_flag.
     assert_eq!(core["lr"]["uses_lr"], false);
     assert_eq!(
         core["lr"]["loop_restoration_size"],
         serde_json::json!([64, 32, 32])
     );
     assert!(core["ccso"].get("ccso_frame_flag").is_none());
-    // The § 5.18.2 intra tail: read_tx_mode() (not lossless -> tx_mode_select == 0 ->
-    // TX_MODE_LARGEST), the inferred intra no-bit fields, reduced_tx_set, the no-bit
-    // global_motion intra arm, and film_grain_config() (grain absent in this sequence ->
-    // apply_grain == 0). The header is complete.
     let tail = &core["intra_tail"];
     assert_eq!(tail["tx_mode"], "tx_mode_largest");
     assert_eq!(tail["reference_select"], false);
@@ -445,10 +411,6 @@ fn inspect_json_exposes_frame_header_core() {
     assert_eq!(tail["use_global_motion"], false);
     assert_eq!(tail["film_grain"]["apply_grain"], false);
 
-    // The § 5.19 tile_group_obu() structure after frame_header(): a single-tile frame
-    // (NumTiles == 1) reads no tile_start_and_end_present_flag and infers tg_start == 0,
-    // tg_end == 0, then byte_alignment() and the headerBytes/payload boundary. The
-    // payload (§5.20) stays unparsed; payload_size records its byte length.
     let structure = &records[2]["tile_group_structure"];
     assert_eq!(structure["payload_kind"], "tile_group_structure");
     assert_eq!(structure["num_tiles"], 1);
@@ -459,8 +421,6 @@ fn inspect_json_exposes_frame_header_core() {
     assert!(structure["header_bytes"].is_u64());
     assert!(structure["payload_size"].is_u64());
 
-    // The § 5.20.1 per-tile framing is surfaced for the completed tile group. A single-tile
-    // frame has one (last) tile that reads NO size field and takes the whole payload region.
     let framing = structure["tile_framing"]
         .as_array()
         .expect("tile_framing is an array");
@@ -471,9 +431,7 @@ fn inspect_json_exposes_frame_header_core() {
         "the lone last tile reads no le(TileSizeBytes) size field"
     );
     assert_eq!(framing[0]["tile_data_offset"], 0);
-    // tile_size == payload_size for the lone last tile.
     assert_eq!(framing[0]["tile_size"], structure["payload_size"]);
-    // A conformant framing reports no defect.
     assert!(structure.get("tile_framing_defect").is_none());
 }
 
@@ -497,14 +455,7 @@ fn annex_b_obu(header: u8, payload: &[u8]) -> Vec<u8> {
 
 #[test]
 fn inspect_json_surfaces_frame_header_copy_on_non_first_tile_group() {
-    // A non-first tile group (is_first_tile_group == 0, frame_header_present_flag == 1)
-    // carries frame_header_copy() (AV2 § 5.18.1). The stateless inspector surfaces the
-    // copy region's presence and start, with `compared: false` (the § 6.17.1 bit-identity
-    // check is a stateful validator concern). A global temporal delimiter (0x12) precedes
-    // it so the stream parses; no sequence header is needed for the structural copy view.
     let mut data = annex_b_obu(0x12, &[]); // OBU_TEMPORAL_DELIMITER (global)
-    // OBU_CLOSED_LOOP_KEY (0x10): is_first_tile_group == 0 (bit), frame_header_present_flag
-    // == 1 (bit), then 6 arbitrary copy bits -> one payload byte 0b01_xxxxxx.
     data.extend(annex_b_obu(0x10, &[0b0110_1010]));
     let path = temp_input("av2", &data);
     let out = splot(&["inspect", "--json", path.to_str().unwrap()]);
@@ -517,31 +468,16 @@ fn inspect_json_surfaces_frame_header_copy_on_non_first_tile_group() {
     );
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     let records = json.as_array().expect("inspect output is an array");
-    // records[0] is the temporal delimiter; records[1] is the non-first tile group.
     let copy = &records[1]["frame_header_copy"];
     assert_eq!(copy["payload_kind"], "frame_header_copy");
     assert_eq!(copy["compared"], false);
-    // The copy region starts after the OBU header byte and the two prefix bits
-    // (is_first_tile_group + frame_header_present_flag). Those two bits live in the FIRST
-    // payload byte, so the region begins inside that same byte at MSB-first bit 2 — the
-    // start is byte+bit precise. The OBU is at byte 4 (TD: leb128 byte + header byte =
-    // 2 bytes, then this OBU's leb128 byte + header byte = bytes 2,3), so its payload's
-    // first byte is byte 4.
     assert_eq!(copy["copy_region_start_byte"], 4);
     assert_eq!(copy["copy_region_start_bit"], 2);
-    // A first tile group (records would be different) and other OBUs carry no copy view.
     assert!(records[0].get("frame_header_copy").is_none());
 }
 
 #[test]
 fn inspect_json_exposes_mfh_backed_frame_header_core() {
-    // The fixture is TemporalDelimiter, a non-single-picture SequenceHeader (id 0),
-    // an in-band MultiFrameHeader (mfhId 1 -> mfh_seq_header_id 0, no frame-size payload
-    // so the § 5.18.2 omitted-size inference applies, no segment info), then an
-    // OBU_CLOSED_LOOP_KEY whose first tile group references `cur_mfh_id = 1`. The
-    // inspector resolves the MFH to its sequence header and surfaces the core summary:
-    // the § 5.18.4.1 default dimensions come from the MFH (inferred to the 16x16
-    // sequence maxima), and segmentation parses its sequence/zero arm.
     let path = fixture("frame-header-core-mfh.av2");
     let out = splot(&["inspect", "--json", path.to_str().unwrap()]);
     assert_eq!(out.status.code(), Some(0));
@@ -553,7 +489,6 @@ fn inspect_json_exposes_mfh_backed_frame_header_core() {
         String::from_utf8_lossy(&out.stdout)
     );
 
-    // Index 2 is the multi-frame header; index 3 is the cur_mfh_id == 1 frame.
     assert_eq!(records[2]["header"]["obu_type"], "MultiFrameHeader");
     let core = &records[3]["frame_header_core"];
     assert_eq!(core["payload_kind"], "frame_header_core");
@@ -561,7 +496,6 @@ fn inspect_json_exposes_mfh_backed_frame_header_core() {
     assert_eq!(core["cur_mfh_id"], 1);
     assert_eq!(core["frame_type"], "key");
     assert_eq!(core["frame_is_intra"], true);
-    // Omitted MFH frame size -> § 5.18.2 (:4101) infers the 16x16 sequence maxima.
     assert_eq!(core["frame_size"]["width"], 16);
     assert_eq!(core["frame_size"]["height"], 16);
     let tile = &core["tile_layout"];
@@ -569,17 +503,12 @@ fn inspect_json_exposes_mfh_backed_frame_header_core() {
     assert_eq!(tile["tile_rows"], 1);
     assert_eq!(core["quantization"]["base_q_idx"], 100);
     assert_eq!(core["segmentation"]["segmentation_enabled"], false);
-    // The resolved MFH did not signal a deblocking update (mfh_deblocking_filter_update
-    // == 0), so apply_deblocking_filter[0]/[1] are read from the frame (both 0); GDF and
-    // CDEF are disabled at the sequence level.
     assert_eq!(
         core["deblocking"]["apply_deblocking_filter"],
         serde_json::json!([false, false, false, false])
     );
     assert_eq!(core["gdf"]["gdf_frame_enable"], false);
     assert_eq!(core["cdef"]["cdef_frame_enable"], false);
-    // Restoration / CCSO disabled at the sequence level -> lr_params() reports the default
-    // sizes; the § 5.18.2 tail then completes the intra frame header.
     assert_eq!(core["lr"]["uses_lr"], false);
     assert!(core["ccso"].get("ccso_frame_flag").is_none());
     let tail = &core["intra_tail"];
@@ -590,8 +519,6 @@ fn inspect_json_exposes_mfh_backed_frame_header_core() {
 
 #[test]
 fn validate_frame_header_core_mfh_fixture_exits_zero() {
-    // The cur_mfh_id == 1 frame is an output key frame (immediate_output_frame == 1),
-    // so the lone coded extended layer unit satisfies the § 7.3.6 output rule.
     let out = validate("frame-header-core-mfh.av2", &[]);
     assert_eq!(out.status.code(), Some(0));
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -600,16 +527,6 @@ fn validate_frame_header_core_mfh_fixture_exits_zero() {
 
 #[test]
 fn inspect_json_surfaces_inter_disable_cdf_update() {
-    // TemporalDelimiter + a non-single-picture SequenceHeader (id 0, OrderHintBits == 1,
-    // NumRefFrames == 8, explicit_ref_frame_map == 1) + an OBU_REGULAR_TILE_GROUP whose
-    // first tile group carries an INTER frame header parsed through the full § 5.18.2
-    // non-intra control region into the shared tail (InterStop::ReachedSharedTail). The
-    // non-override / cur_mfh_id == 0 path takes the default 16x16 dims (no reference-state
-    // dependency), reads the explicit reference map (num_total_refs == 1, ref_frame_idx[0]
-    // == 0), MV precision (HALF_PEL), a SWITCHABLE interpolation filter, and finally
-    // `disable_cdf_update` f(1) (mirror :5041) immediately before the shared tail. The
-    // inspector must surface that parsed bit in the inter view's `disable_cdf_update` field
-    // (regression: InterControlView::new previously dropped it).
     let data: [u8; 28] = [
         0x01, 0x08, 0x13, 0x04, 0x80, 0x0c, 0x01, 0x77, 0x0f, 0x0f, 0x00, 0x00, 0x00, 0x07, 0x70,
         0x00, 0x00, 0x06, 0x00, 0x10, 0x00, 0x02, 0x05, 0x1c, 0xf8, 0x00, 0x48, 0x08,
@@ -624,7 +541,6 @@ fn inspect_json_surfaces_inter_disable_cdf_update() {
     assert_eq!(core["frame_is_intra"], false);
     let inter = &core["inter"];
     assert_eq!(inter["stop"], "reached_shared_tail");
-    // The §5.18.2 disable_cdf_update bit (0 in this stream) must be surfaced, not dropped.
     assert_eq!(
         inter["disable_cdf_update"],
         false,
@@ -644,7 +560,6 @@ fn validate_frame_header_prefix_fixture_exits_zero() {
 
 #[test]
 fn inspect_json_surfaces_operating_point_set() {
-    // TemporalDelimiter then a global operating_point_set_obu (ops_id 0, ops_cnt 1).
     let path = fixture("operating-point-set.av2");
     let out = splot(&["inspect", "--json", path.to_str().unwrap()]);
     assert_eq!(out.status.code(), Some(0));
@@ -666,8 +581,6 @@ fn inspect_json_surfaces_operating_point_set() {
 
 #[test]
 fn inspect_json_surfaces_buffer_removal_timing() {
-    // TemporalDelimiter, a global OPS (ops_id 0, ops_cnt 1), then an OPS-dependent
-    // buffer_removal_timing_obu referencing it.
     let path = fixture("buffer-removal-timing.av2");
     let out = splot(&["inspect", "--json", path.to_str().unwrap()]);
     assert_eq!(out.status.code(), Some(0));
@@ -688,8 +601,6 @@ fn inspect_json_surfaces_buffer_removal_timing() {
 
 #[test]
 fn inspect_json_surfaces_quantizer_matrix() {
-    // TemporalDelimiter, a sequence header, then a quantizer_matrix_obu selecting
-    // level 0 with its default matrix.
     let path = fixture("quantizer-matrix.av2");
     let out = splot(&["inspect", "--json", path.to_str().unwrap()]);
     assert_eq!(out.status.code(), Some(0));
@@ -711,7 +622,6 @@ fn inspect_json_surfaces_quantizer_matrix() {
 
 #[test]
 fn inspect_json_surfaces_padding() {
-    // TemporalDelimiter then a global padding_obu (one padding byte + trailing_bits).
     let path = fixture("padding.av2");
     let out = splot(&["inspect", "--json", path.to_str().unwrap()]);
     assert_eq!(out.status.code(), Some(0));
@@ -730,7 +640,6 @@ fn inspect_json_surfaces_padding() {
 
 #[test]
 fn inspect_json_surfaces_metadata_short() {
-    // TemporalDelimiter then a global metadata_short_obu carrying METADATA_TYPE_HDR_CLL.
     let path = fixture("metadata-short.av2");
     let out = splot(&["inspect", "--json", path.to_str().unwrap()]);
     assert_eq!(out.status.code(), Some(0));
@@ -752,7 +661,6 @@ fn inspect_json_surfaces_metadata_short() {
 
 #[test]
 fn inspect_json_surfaces_metadata_group() {
-    // TemporalDelimiter then a global metadata_group_obu with one HDR_CLL unit.
     let path = fixture("metadata-group.av2");
     let out = splot(&["inspect", "--json", path.to_str().unwrap()]);
     assert_eq!(out.status.code(), Some(0));
@@ -774,7 +682,6 @@ fn inspect_json_surfaces_metadata_group() {
 
 #[test]
 fn inspect_json_surfaces_film_grain() {
-    // TemporalDelimiter, a sequence header, then a film_grain_obu updating slot 0.
     let path = fixture("film-grain.av2");
     let out = splot(&["inspect", "--json", path.to_str().unwrap()]);
     assert_eq!(out.status.code(), Some(0));
@@ -808,10 +715,6 @@ fn validate_buffer_removal_timing_fixture_exits_zero() {
 
 #[test]
 fn validate_quantizer_matrix_fixture_reports_missing_output_frame_unit() {
-    // The quantizer-matrix fixture is a header-only coded extended layer unit at
-    // obu_xlayer_id 0 (sequence header + quantizer_matrix_obu, no frame-bearing OBU), so
-    // § 7.3.6 line 536 fires `celu/missing-output-frame-unit` (exit 1). It exercises the QM
-    // parse / inspect paths.
     let out = validate("quantizer-matrix.av2", &[]);
     assert_eq!(out.status.code(), Some(1));
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -823,9 +726,6 @@ fn validate_quantizer_matrix_fixture_reports_missing_output_frame_unit() {
 
 #[test]
 fn validate_film_grain_fixture_reports_missing_output_frame_unit() {
-    // The film-grain fixture is a header-only coded extended layer unit at obu_xlayer_id 0
-    // (sequence header + film_grain_obu, no frame-bearing OBU), so § 7.3.6 line 536 fires
-    // `celu/missing-output-frame-unit` (exit 1). It exercises the FGM parse / inspect paths.
     let out = validate("film-grain.av2", &[]);
     assert_eq!(out.status.code(), Some(1));
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -843,9 +743,6 @@ fn missing_input_file_exits_two() {
 
 #[test]
 fn validate_max_diagnostics_preserves_exit_and_counts() {
-    // bad-global-xlayer.av2 has two errors. Capping to one is presentation-only:
-    // the exit code is identical to the uncapped run, and the summary counts stay
-    // computed from the full report.
     let uncapped = validate("bad-global-xlayer.av2", &[]);
     let capped = validate("bad-global-xlayer.av2", &["--max-diagnostics", "1"]);
     assert_eq!(capped.status.code(), uncapped.status.code());
@@ -863,7 +760,6 @@ fn validate_max_diagnostics_preserves_exit_and_counts() {
 
 #[test]
 fn validate_summary_only_preserves_exit_codes() {
-    // A non-conformant fixture still exits 1; a conformant one still exits 0.
     let bad = validate("bad-global-xlayer.av2", &["--summary-only"]);
     assert_eq!(bad.status.code(), Some(1));
     let bad_stdout = String::from_utf8_lossy(&bad.stdout);
@@ -887,7 +783,6 @@ fn validate_summary_only_preserves_exit_codes() {
 
 #[test]
 fn validate_rejects_non_numeric_max_diagnostics() {
-    // clap rejects a non-integer value at parse time (operational error, exit 2).
     let out = validate(
         "bad-global-xlayer.av2",
         &["--max-diagnostics", "notanumber"],

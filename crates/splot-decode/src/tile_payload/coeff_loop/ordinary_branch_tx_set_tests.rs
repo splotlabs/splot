@@ -3,10 +3,8 @@
 
 #![allow(clippy::unwrap_used, clippy::panic)]
 
-use splot_core::symbol::SymbolBitPosition;
-
-use super::super::cdf::{FrameCdfSubset, TileCdfSubset};
-use super::super::coeff_state::TileCoeffContextState;
+use super::super::cdf::FrameCdfSubset;
+use super::ordinary_pass::CoeffOrdinaryBranchError;
 use super::ordinary_pass::geometry::{
     CoeffOrdinaryBranchModeToTxfmBaseConfig, CoeffOrdinaryBranchModeToTxfmInput,
     CoeffOrdinaryBranchModeToTxfmNonZeroInput, CoeffOrdinaryBranchTxSetBaseConfig,
@@ -16,8 +14,9 @@ use super::ordinary_pass::geometry::{
     apply_coeff_ordinary_branch_from_mode_to_txfm, apply_coeff_ordinary_branch_from_tx_set,
     apply_coeff_ordinary_branch_from_tx_size_dimensions,
 };
-use super::ordinary_pass::{CoeffOrdinaryBranch, CoeffOrdinaryBranchError};
-use super::test_support::{seeded_context_state, symbol_decoder};
+use super::test_support::{
+    OrdinaryBranchRun, run_ordinary_branch, seeded_context_state, symbol_decoder,
+};
 
 const TX_8X8: usize = 1;
 const TX_32X32: usize = 3;
@@ -139,87 +138,26 @@ fn tx_set_input(
 fn run_explicit(
     payload: &[u8],
     input: CoeffOrdinaryBranchTxSizeDimensionsInput,
-) -> (
-    CoeffOrdinaryBranch,
-    TileCoeffContextState,
-    TileCdfSubset,
-    SymbolBitPosition,
-    u64,
-) {
-    let frame = FrameCdfSubset::from_defaults();
-    let mut tile = frame.tile_copy();
-    let mut symbols = symbol_decoder(payload);
-    let mut context_state = seeded_context_state();
-    let branch = apply_coeff_ordinary_branch_from_tx_size_dimensions(
-        &mut context_state,
-        &mut tile,
-        &mut symbols,
-        input,
-    )
-    .unwrap();
-    (
-        branch,
-        context_state,
-        tile,
-        symbols.consumed_bits(),
-        symbols.symbol_count(),
-    )
+) -> OrdinaryBranchRun {
+    run_ordinary_branch(payload, |context_state, tile, symbols| {
+        apply_coeff_ordinary_branch_from_tx_size_dimensions(context_state, tile, symbols, input)
+            .unwrap()
+    })
 }
 
 fn run_mode_to_txfm(
     payload: &[u8],
     input: CoeffOrdinaryBranchModeToTxfmInput,
-) -> (
-    CoeffOrdinaryBranch,
-    TileCoeffContextState,
-    TileCdfSubset,
-    SymbolBitPosition,
-    u64,
-) {
-    let frame = FrameCdfSubset::from_defaults();
-    let mut tile = frame.tile_copy();
-    let mut symbols = symbol_decoder(payload);
-    let mut context_state = seeded_context_state();
-    let branch = apply_coeff_ordinary_branch_from_mode_to_txfm(
-        &mut context_state,
-        &mut tile,
-        &mut symbols,
-        input,
-    )
-    .unwrap();
-    (
-        branch,
-        context_state,
-        tile,
-        symbols.consumed_bits(),
-        symbols.symbol_count(),
-    )
+) -> OrdinaryBranchRun {
+    run_ordinary_branch(payload, |context_state, tile, symbols| {
+        apply_coeff_ordinary_branch_from_mode_to_txfm(context_state, tile, symbols, input).unwrap()
+    })
 }
 
-fn run_tx_set(
-    payload: &[u8],
-    input: CoeffOrdinaryBranchTxSetInput,
-) -> (
-    CoeffOrdinaryBranch,
-    TileCoeffContextState,
-    TileCdfSubset,
-    SymbolBitPosition,
-    u64,
-) {
-    let frame = FrameCdfSubset::from_defaults();
-    let mut tile = frame.tile_copy();
-    let mut symbols = symbol_decoder(payload);
-    let mut context_state = seeded_context_state();
-    let branch =
-        apply_coeff_ordinary_branch_from_tx_set(&mut context_state, &mut tile, &mut symbols, input)
-            .unwrap();
-    (
-        branch,
-        context_state,
-        tile,
-        symbols.consumed_bits(),
-        symbols.symbol_count(),
-    )
+fn run_tx_set(payload: &[u8], input: CoeffOrdinaryBranchTxSetInput) -> OrdinaryBranchRun {
+    run_ordinary_branch(payload, |context_state, tile, symbols| {
+        apply_coeff_ordinary_branch_from_tx_set(context_state, tile, symbols, input).unwrap()
+    })
 }
 
 fn find_payload_for_explicit(tx_size: usize, plane_tx_type: usize) -> [u8; 12] {

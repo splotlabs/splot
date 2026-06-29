@@ -92,7 +92,6 @@ fn local_prefix_hls_before_sequence_header_does_not_require_active_sequence() {
 
 #[test]
 fn non_activating_sequence_header_does_not_suppress_missing_active_sequence_error() {
-    // 0x05 = OBU_SEQUENCE_HEADER at tlayer=1, so it parses but cannot activate.
     let mut data = annex_b_obu(0x05, &sequence_header_payload(1, 0));
     data.extend(annex_b_obu_with_header(&layer_obu_header(6, 0, 0, 0), &[]));
 
@@ -229,20 +228,6 @@ fn active_sequence_header_bounds_embedded_layer_id() {
 
 #[test]
 fn redefinition_tightening_before_reconfirming_frame_is_not_flagged() {
-    // § 6.2.2 NOTE (mirror `06-syntax-structures-semantics.md` lines 197-198): the
-    // obu_tlayer_id/obu_mlayer_id <= max constraints apply *after* a sequence header is
-    // activated. § 7.3.6 permits a same-seq_header_id redefinition at a coded-video-sequence
-    // boundary (a CLK). An OBU sitting between a redefined (tightened) header and the CLK
-    // frame that re-activates it is still in the PREVIOUS activation's window: under every
-    // decode start its in-force activated max is the prior (looser) one, not the
-    // freshly-stored (not-yet-reactivated) tighter one. The limit must be evaluated against
-    // the frame-confirmed activated header, not the latest-stored payload.
-    //
-    // TU0: header id 0 (max_tlayer_id 3) is frame-confirmed by a regular tile group.
-    // TU1 (CLK boundary): header id 0 is redefined to max_tlayer_id 1, then a layer OBU at
-    // obu_tlayer_id 2 appears BEFORE the CLK frame that re-confirms the redefinition. 2 <= 3
-    // (the in-force activated max) so nothing must fire; comparing 2 against the stored-but-
-    // not-yet-reactivated max 1 would be a false positive.
     let mut data = temporal_delimiter_obu();
     data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(0, 3, 0)));
     data.extend(frame_obu_direct_seq_ref_layer(7, 0, 0, 0, 0)); // frame-confirm id 0 (max 3)
@@ -263,10 +248,6 @@ fn redefinition_tightening_before_reconfirming_frame_is_not_flagged() {
 
 #[test]
 fn redefinition_before_reconfirming_frame_still_flags_old_limit_violation() {
-    // Companion true-positive: the § 6.2.2 NOTE refinement must not over-suppress. An OBU in
-    // the same pre-re-confirmation window whose obu_tlayer_id exceeds even the PRIOR activated
-    // max is a real violation under the start-from-beginning decode and must still fire,
-    // anchored at § 6.2.2. Same shape as above but obu_tlayer_id 3 > prior max 2.
     let mut data = temporal_delimiter_obu();
     data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(0, 2, 0)));
     data.extend(frame_obu_direct_seq_ref_layer(7, 0, 0, 0, 0)); // frame-confirm id 0 (max 2)
@@ -288,11 +269,6 @@ fn redefinition_before_reconfirming_frame_still_flags_old_limit_violation() {
 
 #[test]
 fn tightened_limit_applies_after_reconfirming_frame() {
-    // The refinement compares against the in-force activated header, which the re-confirming
-    // CLK frame advances to the redefinition: an OBU in the NEXT temporal unit (after the CLK
-    // frame re-activated id 0 with max_tlayer_id 1) at obu_tlayer_id 2 now exceeds the
-    // tightened max and must fire. Proves the snapshot tracks re-activation, not a frozen
-    // prior limit.
     let mut data = temporal_delimiter_obu();
     data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(0, 3, 0)));
     data.extend(frame_obu_direct_seq_ref_layer(7, 0, 0, 0, 0)); // frame-confirm id 0 (max 3)
@@ -315,35 +291,6 @@ fn tightened_limit_applies_after_reconfirming_frame() {
 
 #[test]
 fn redefinition_window_padding_carrier_full_stream_is_conformant() {
-    // The fully-conformant well-formed regression vector for the § 6.2.2 NOTE refinement
-    // (mirror `06-syntax-structures-semantics.md` lines 197-198). The sibling
-    // `redefinition_*` tests above assert only the absence/presence of the §6.2.2 diagnostic
-    // on minimal streams; this one asserts the WHOLE 7-OBU stream is conformant
-    // (`is_conformant()`), proving the fix does not false-positive on a genuinely conformant
-    // bitstream — not merely that one diagnostic is suppressed.
-    //
-    // OBU_PADDING is the carrier: a non-global padding OBU is subject to the §6.2.2
-    // obu_tlayer_id limit yet, unlike every frame-unit-bound §6.2.2-subject OBU (tile groups,
-    // QM/film-grain/metadata frame prefixes), §7.3.6 lets it sit anywhere inside a coded
-    // extended layer unit — including the pre-CLK window between a §7.3.6 same-id redefinition
-    // and the CLK frame that re-activates it. A frame carrier there is rejected by §7.3.6
-    // (the first coded frame unit of the lowest embedded layer must be the CLK), which is why
-    // a clean single-extended-layer vector requires padding.
-    //
-    // X = padding, obu_tlayer_id 2, in that pre-reactivation window. § 5.18.2 activation is a
-    // frame event: the redefined L_new (max_tlayer_id 1) is stored but not activated until the
-    // CLK frame that follows X, so X is bounded by the prior activated L_old (max_tlayer_id 3)
-    // — conformant. Under a random-access start at this temporal unit X still precedes the
-    // activating CLK, so it falls in the §6.2.2 NOTE pre-activation carve-out — also
-    // conformant. This mirrors the AVM reference, whose §6.2.2 check runs only at frame
-    // activation against the active (not the stored/redefined) sequence header. The pre-fix
-    // live-store read evaluated X against L_new and produced a spurious tlayer-exceeds-max.
-    //
-    // Both coded video sequences begin with a CLK: § 7.3.6 (mirror
-    // `07-decoding-process.md` lines 604-606, 990-996) starts a CVS at a temporal unit
-    // containing an OBU_CLOSED_LOOP_KEY / closed random access point, so the *first* coded
-    // frame is a CLK too — otherwise the stream would begin outside any CVS and a future
-    // initial-CVS/RAP check could fail this regression for an unrelated reason.
     let mut data = temporal_delimiter_obu();
     data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(0, 3, 0))); // L_old, max_tlayer 3
     data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0)); // CLK starts CVS_k, activates L_old (max 3)

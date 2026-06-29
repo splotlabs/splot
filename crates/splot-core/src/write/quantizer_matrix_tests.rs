@@ -1,17 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-// Round-trip and reject tests for the §5.13 / §5.4.11 quantizer_matrix_obu() writer. `include!`d
-// into `crate::write::quantizer_matrix` so `super::*` resolves to `write_quantizer_matrix`, the
-// private `diagonal_scan_2d`, and the model imports.
-//
-// The writer canonicalizes the lossy model to the long form, so byte-exactness holds only for input
-// that is ALREADY long form (the reset OBU, a default level, and explicit-delta user-defined planes
-// with no symmetric / transpose / copy / coefficient-repeat compression); the compressed decode
-// paths round-trip SEMANTICALLY (the re-emission decodes to the same coefficients). Every round-trip
-// model is produced by parsing a hand-built byte payload, so it is guaranteed parser-producible.
-// Reject tests mutate a parsed model into a parser-unproducible state and assert the typed reject
-// without any bit written.
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -169,12 +158,9 @@ mod tests {
         bits.deltas(0, w * h - 1); // remaining cells stay at value
     }
 
-    // ---- scan order ----
 
     #[test]
     fn diagonal_scan_matches_av2_oracle_order() {
-        // Golden up-right (TX_CLASS_2D) scan order — must match the parser's, or deltas would land in
-        // the wrong cells. Same goldens as the parser test (cross-checked vs AVM get_scan).
         assert_eq!(
             diagonal_scan_2d(8, 8)[..10],
             [0, 8, 1, 16, 9, 2, 24, 17, 10, 3]
@@ -186,7 +172,6 @@ mod tests {
         );
     }
 
-    // ---- round-trip coverage ----
 
     #[test]
     fn reset_obu_round_trips_byte_exact() {
@@ -211,13 +196,9 @@ mod tests {
 
     #[test]
     fn long_form_user_defined_round_trips_byte_exact() {
-        // Already long form (no symmetric/transpose/copy/repeat), so the writer reproduces it exactly.
-        // delta = 1 per cell makes each plane's coefficients distinct in scan order (33, 34, ...), so
-        // the scan order is load-bearing: a wrong scan would break the semantic round-trip.
         let qm = round_trip_byte_exact(&long_form_level0_body(1));
         let matrices = qm.levels[0].matrices.as_ref().unwrap();
         assert_eq!(matrices.len(), 3);
-        // TX_8X8 plane: scan-order running quant 33..=96 (delta 1 from initial 32).
         let v = &matrices[0].planes[0].values;
         assert_eq!(v[diagonal_scan_2d(8, 8)[0]], 33);
         assert_eq!(v[diagonal_scan_2d(8, 8)[63]], 96);
@@ -225,8 +206,6 @@ mod tests {
 
     #[test]
     fn long_form_sub32_constant_round_trips_byte_exact() {
-        // Constant sub-32 (value 31) planes exercise a negative quant_delta (-1 at cell 0) without
-        // tripping the quant2 == 0 coefficient-repeat sentinel.
         let mut bits = user_defined_level0_prefix(false);
         long_form_constant_plane(&mut bits, 0, 0, 31, 8, 8);
         long_form_constant_plane(&mut bits, 1, 0, 31, 8, 4);
@@ -256,7 +235,6 @@ mod tests {
 
     #[test]
     fn multi_level_round_trips() {
-        // Levels 0 and 2 set; level 0 default, level 2 long-form user-defined.
         let mut bits = Bits::default();
         bits.f(0b101, 15); // qm_bit_map: levels 0 and 2
         bits.bit(0); // 1 plane
@@ -275,7 +253,6 @@ mod tests {
 
     #[test]
     fn symmetric_8x8_canonicalizes_and_round_trips() {
-        // A symmetric 8x8 (flat all-32) decodes to a full matrix; the writer re-emits the long form.
         let mut bits = user_defined_level0_prefix(false);
         bits.bit(1); // qm_8x8_is_symmetric -> only lower-triangle (col<=row) deltas
         let lower_tri = (0..8).map(|r| r + 1).sum::<usize>(); // 36 cells
@@ -290,14 +267,12 @@ mod tests {
 
     #[test]
     fn transpose_4x8_canonicalizes_and_round_trips() {
-        // A non-flat 8x4 (delta 1) then its 4x8 transpose; the writer re-encodes the 4x8 explicitly.
         let mut bits = user_defined_level0_prefix(false);
         long_form_plane(&mut bits, 0, 0, 1, 8, 8);
         long_form_plane(&mut bits, 1, 0, 1, 8, 4);
         bits.bit(1); // t==2: qm_4x8_is_transpose_of_8x4
         let qm = round_trip(&bits.into_bytes());
         let m = qm.levels[0].matrices.as_ref().unwrap();
-        // The 4x8 is the transpose of the 8x4: values[i*4+j] == eight_x_four[j*8+i].
         let tx8x4 = &m[1].planes[0].values;
         let tx4x8 = &m[2].planes[0].values;
         for i in 0..8 {
@@ -310,11 +285,9 @@ mod tests {
     #[test]
     fn copy_previous_plane_canonicalizes_and_round_trips() {
         let mut bits = user_defined_level0_prefix(true); // 3 planes
-        // t==0: plane 0 explicit, planes 1 and 2 copy plane 0.
         long_form_plane(&mut bits, 0, 0, 1, 8, 8);
         bits.bit(1); // plane 1: qm_copy_from_previous_plane
         bits.bit(1); // plane 2: qm_copy_from_previous_plane
-        // t==1, t==2: plane 0 explicit, copies after.
         long_form_plane(&mut bits, 1, 0, 1, 8, 4);
         bits.bit(1);
         bits.bit(1);
@@ -329,8 +302,6 @@ mod tests {
 
     #[test]
     fn coefficient_repeat_canonicalizes_and_round_trips() {
-        // First delta sets quant to 40, the next drives quant2 to 0 -> coefficient repeat (the rest of
-        // the 8x8 stays 40). The writer re-encodes all 64 cells explicitly (delta 8 then 0s).
         let mut bits = user_defined_level0_prefix(false);
         bits.bit(0); // qm_8x8_is_symmetric = 0
         bits.svlc(8); // 32 + 8 = 40
@@ -343,7 +314,6 @@ mod tests {
         assert!(v.iter().all(|&c| c == 40), "coefficient repeat fills 40");
     }
 
-    // ---- reject coverage (one per decidable invariant) ----
 
     #[test]
     fn rejects_num_planes_mismatch() {

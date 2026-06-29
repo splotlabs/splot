@@ -130,20 +130,14 @@ pub fn write_film_grain(writer: &mut BitWriter, fg: &FilmGrainObu) -> WriteResul
         return Err(WriteError::WriterNotByteAligned);
     }
 
-    // § 5.14: subX/subY/monochrome are derived from fgm_chroma_idc, not wire fields, so
-    // a stored value that disagrees could never have been parsed. Locally decidable.
     let (sub_x, sub_y) = chroma_subsampling(fg.chroma_idc);
     let monochrome = fg.chroma_idc == CHROMA_FORMAT_400;
     if fg.sub_x != sub_x || fg.sub_y != sub_y || fg.monochrome != monochrome {
         return Err(non_canonical("chroma_subsampling"));
     }
 
-    // § 5.14: the parser emits one model per set bit of fgm_update_flags, in ascending
-    // slot order (slot == bit index). A models Vec that does not match that exact set /
-    // order / length could never have been parsed.
     let expected_slots: Vec<u8> = (0..MAX_FILM_GRAIN)
         .filter(|i| fg.update_flags & (1u8 << i) != 0)
-        // i < MAX_FILM_GRAIN (8), so it fits in u8.
         .map(|i| i as u8)
         .collect();
     if fg.models.len() != expected_slots.len() {
@@ -171,8 +165,6 @@ fn write_film_grain_model(
     model: &FilmGrainModel,
     monochrome: bool,
 ) -> WriteResult<()> {
-    // § 5.18.10.2: chroma_scaling_from_luma is read iff !monochrome (forced 0 when
-    // monochrome). A monochrome model storing `true` could never have been parsed.
     if monochrome {
         if model.chroma_scaling_from_luma {
             return Err(non_canonical("monochrome_chroma_scaling"));
@@ -181,15 +173,12 @@ fn write_film_grain_model(
         scratch.write_flag(model.chroma_scaling_from_luma)?;
     }
 
-    // § 5.18.10.2: luma scaling points (always present).
     if usize::from(model.num_y_points) != model.point_y.len() {
         return Err(non_canonical("num_y_points_len"));
     }
     scratch.write_bits_u8(model.num_y_points, NUM_POINTS_BITS)?;
     write_scaling_points(scratch, &model.point_y)?;
 
-    // § 5.18.10.2: cb/cr scaling points are read iff !monochrome && !chroma_scaling_from_luma;
-    // otherwise num_cb_points == num_cr_points == 0 and the point Vecs are empty.
     let chroma_points_coded = !monochrome && !model.chroma_scaling_from_luma;
     if chroma_points_coded {
         if usize::from(model.num_cb_points) != model.point_cb.len() {
@@ -203,25 +192,18 @@ fn write_film_grain_model(
         }
         scratch.write_bits_u8(model.num_cr_points, NUM_POINTS_BITS)?;
         write_scaling_points(scratch, &model.point_cr)?;
-    } else {
-        // The parser sets both counts to 0 and leaves both point Vecs empty here.
-        if model.num_cb_points != 0
-            || model.num_cr_points != 0
-            || !model.point_cb.is_empty()
-            || !model.point_cr.is_empty()
-        {
-            return Err(non_canonical("chroma_points_gate"));
-        }
+    } else if model.num_cb_points != 0
+        || model.num_cr_points != 0
+        || !model.point_cb.is_empty()
+        || !model.point_cr.is_empty()
+    {
+        return Err(non_canonical("chroma_points_gate"));
     }
 
     scratch.write_bits_u8(model.grain_scaling_minus_8, F2)?;
     scratch.write_bits_u8(model.ar_coeff_lag, F2)?;
-    // numPosLuma = 2 * ar_coeff_lag * (ar_coeff_lag + 1). ar_coeff_lag <= 3 (f(2)), so
-    // numPosLuma <= 24; no overflow.
     let num_pos_luma = 2 * usize::from(model.ar_coeff_lag) * (usize::from(model.ar_coeff_lag) + 1);
 
-    // § 5.18.10.2: ar_coeffs_y is read (length numPosLuma) iff num_y_points > 0; when it
-    // is, numPosChroma = numPosLuma + 1, else numPosChroma = numPosLuma.
     let (num_pos_chroma, code_y) = if model.num_y_points > 0 {
         (num_pos_luma + 1, true)
     } else {
@@ -235,8 +217,6 @@ fn write_film_grain_model(
         write_ar_coeffs(scratch, &model.ar_coeffs_y)?;
     }
 
-    // § 5.18.10.2: ar_coeffs_cb is read (length numPosChroma) iff
-    // chroma_scaling_from_luma || num_cb_points > 0.
     let code_cb = model.chroma_scaling_from_luma || model.num_cb_points > 0;
     let expected_cb_len = if code_cb { num_pos_chroma } else { 0 };
     if model.ar_coeffs_cb.len() != expected_cb_len {
@@ -246,8 +226,6 @@ fn write_film_grain_model(
         write_ar_coeffs(scratch, &model.ar_coeffs_cb)?;
     }
 
-    // § 5.18.10.2: ar_coeffs_cr is read (length numPosChroma) iff
-    // chroma_scaling_from_luma || num_cr_points > 0.
     let code_cr = model.chroma_scaling_from_luma || model.num_cr_points > 0;
     let expected_cr_len = if code_cr { num_pos_chroma } else { 0 };
     if model.ar_coeffs_cr.len() != expected_cr_len {
@@ -260,7 +238,6 @@ fn write_film_grain_model(
     scratch.write_bits_u8(model.ar_coeff_shift_minus_6, F2)?;
     scratch.write_bits_u8(model.grain_scale_shift, F2)?;
 
-    // § 5.18.10.2: cb_mult/cb_luma_mult/cb_offset are read iff num_cb_points > 0.
     write_mult_offset(
         scratch,
         model.num_cb_points > 0,
@@ -269,7 +246,6 @@ fn write_film_grain_model(
         model.cb_offset,
         ("cb_mult_gate", "cb_offset_gate"),
     )?;
-    // § 5.18.10.2: cr_mult/cr_luma_mult/cr_offset are read iff num_cr_points > 0.
     write_mult_offset(
         scratch,
         model.num_cr_points > 0,
@@ -281,7 +257,6 @@ fn write_film_grain_model(
 
     scratch.write_flag(model.overlap_flag)?;
     scratch.write_flag(model.clip_to_restricted_range)?;
-    // § 5.18.10.2: fg_mc_identity is read iff clip_to_restricted_range (forced 0 else).
     if model.clip_to_restricted_range {
         scratch.write_flag(model.mc_identity)?;
     } else if model.mc_identity {
@@ -304,16 +279,12 @@ fn write_scaling_points(
         return Ok(());
     }
 
-    // Re-derive the per-point increments from the cumulative values, rejecting a
-    // non-monotonic sequence the parser could not have produced (its cumulative values
-    // are non-decreasing). increments[0] = value[0]; increments[i] = value[i] - value[i-1].
     let mut increments: Vec<u32> = Vec::with_capacity(points.len());
     let mut prev = 0u32;
     for (i, point) in points.iter().enumerate() {
         let increment = if i == 0 {
             point.value
         } else {
-            // Reject below-predecessor (non-monotonic) before the subtraction underflows.
             point
                 .value
                 .checked_sub(prev)
@@ -323,8 +294,6 @@ fn write_scaling_points(
         prev = point.value;
     }
 
-    // bitsIncr is the smallest width in 1..=8 with every increment < (1 << bitsIncr);
-    // bitsScal is the smallest in 5..=8 with every scaling < (1 << bitsScal).
     let max_increment = increments.iter().copied().max().unwrap_or(0);
     let bits_incr = minimal_width(max_increment, INCR_WIDTH_MIN, INCR_WIDTH_MAX)
         .ok_or_else(|| non_canonical("point_increment_width"))?;
@@ -347,16 +316,10 @@ fn write_scaling_points(
 /// `[-(1 << (bitsCoef - 1)), (1 << (bitsCoef - 1)))`). The caller only calls this when
 /// the array is present, so an empty array (`numPos == 0`) still writes the width.
 fn write_ar_coeffs(scratch: &mut BitWriter, coeffs: &[i32]) -> WriteResult<()> {
-    // The smallest width whose signed range holds every coeff. An empty array needs no
-    // range, so the minimal width COEF_WIDTH_MIN is used (the parser would read the same
-    // f(2) = 0 and a zero-length loop, recovering an empty Vec).
     let bits_coef = minimal_coeff_width(coeffs).ok_or_else(|| non_canonical("ar_coeff_width"))?;
     scratch.write_bits(bits_coef - 5, F2)?;
-    // midpoint = 1 << (bitsCoef - 1); raw = coeff + midpoint is in [0, 1 << bitsCoef).
     let midpoint = 1i64 << (bits_coef - 1);
     for &coeff in coeffs {
-        // coeff is in [-midpoint, midpoint) by construction of bits_coef, so raw fits
-        // f(bitsCoef); write_bits re-checks the field width defensively.
         let raw = (i64::from(coeff) + midpoint) as u32;
         scratch.write_bits(raw, bits_coef)?;
     }
@@ -396,8 +359,6 @@ fn write_mult_offset(
 /// Returns `(subX, subY)` for an `fgm_chroma_idc` (AV2 v1.0.0 § 5.14), matching the
 /// parser's `chroma_subsampling` table (out-of-range falls back to `(false, false)`).
 const fn chroma_subsampling(chroma_idc: u32) -> (bool, bool) {
-    // The CHROMA_FORMAT_444 arm is kept distinct from the out-of-range `_` fallback to
-    // mirror the parser's documented § 5.14 table, even though both yield (false, false).
     #[allow(clippy::match_same_arms)]
     match chroma_idc {
         CHROMA_FORMAT_420 | CHROMA_FORMAT_400 => (true, true),
@@ -419,7 +380,6 @@ fn minimal_width(value: u32, min_width: u32, max_width: u32) -> Option<u32> {
 /// width `8` is too narrow. An empty slice fits the minimum width.
 fn minimal_coeff_width(coeffs: &[i32]) -> Option<u32> {
     (COEF_WIDTH_MIN..=COEF_WIDTH_MAX).find(|&w| {
-        // half = 1 << (w - 1); the range is [-half, half). w <= 8, so half <= 128.
         let half = 1i64 << (w - 1);
         coeffs
             .iter()
@@ -432,8 +392,5 @@ fn non_canonical(what: &'static str) -> WriteError {
     WriteError::NonCanonicalFilmGrain { what }
 }
 
-// The round-trip / reject tests live in a sibling file (kept under the advisory
-// source-line limit); `include!` pastes them into this module so their `super::*`
-// resolves to the writer above.
 #[cfg(test)]
 include!("film_grain_tests.rs");

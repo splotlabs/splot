@@ -1,15 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-// End-to-end parse -> write -> parse round-trip and rejection tests for the composing intra
-// frame-header writer (§ 5.18.2 `frame_header_info()`).
-//
-// `include!`d into `crate::write::frame_header_core` so `super::*` resolves to
-// `write_frame_header_core` and its private helpers. Each round-trip test builds a canonical
-// intra frame-header byte stream, parses it to an `IntraHeaderComplete` `FrameHeaderCore`,
-// writes that core back with `write_frame_header_core`, and asserts the bytes are byte-exact
-// and reparse to an equal core. The rejection tests confirm reject-before-write
-// (`bit_len() == 0`) for every non-canonical model.
 
 #[cfg(test)]
 #[allow(
@@ -26,14 +17,11 @@ mod tests {
 
     use crate::test_bits::Bits;
 
-    // ---- sub-view builders (mirror info.rs::tests::base_* / test_sub_views) -----------
 
     /// A representative non-single-picture sequence view (mirrors `info.rs::tests::base_seq`):
     /// OrderHintBits 4, NumRefFrames 8, no long-term ids, full refresh signaling, screen
     /// content forced off, 12-bit frame dimensions, 4096x2304 maximum, grain absent.
     fn base_seq() -> CoreSeqView {
-        // Delegates to the public encoder writer-input constructor so this writer
-        // round-trip suite regresses CoreSeqView::new_minimal_intra.
         CoreSeqView::new_minimal_intra(4096, 2304).expect("4096x2304 is a valid maximum")
     }
 
@@ -64,8 +52,6 @@ mod tests {
         );
         let rem = (bits % 8) as u32;
         if rem != 0 {
-            // Compare the high `rem` bits of the next byte; mask off the low bits (the
-            // writer's zero pad vs the original's trailing payload).
             let mask = 0xffu8 << (8 - rem);
             assert_eq!(
                 written[full_bytes] & mask,
@@ -91,12 +77,7 @@ mod tests {
             "fixture must parse to IntraHeaderComplete"
         );
         let written = write_core(&core, seq, first_pic);
-        // Bit-exact over the consumed frame header (every descriptor is canonical here). The
-        // written buffer zero-pads its final partial byte, while `data` may carry arbitrary
-        // bits after the header in that same byte, so compare bit-for-bit up to consumed_bits.
         assert_bits_equal(&written, data, core.consumed_bits, obu_type);
-        // Semantic round-trip: reparse equals the original core (consumed_bits may differ if
-        // the original had trailing payload, so compare the structural fields via reparse).
         let reparsed = parse(&written, obu_type, first_pic, seq);
         assert_cores_equal(&reparsed, &core);
         core
@@ -112,7 +93,6 @@ mod tests {
         assert_eq!(a, b, "parse(write(core)) != core");
     }
 
-    // ---- the canonical intra body fixtures --------------------------------------------
 
     /// CLK, cur_mfh_id == 0, full non-lossless intra path with grain absent (the exact bytes
     /// from `info.rs::tests::frame_header_core_reads_direct_sequence_reference`).
@@ -124,7 +104,6 @@ mod tests {
         bits.bit(0); // implicit_output_frame
         bits.bit(1); // frame_size_override_flag
         bits.f(5, 4); // order_hint
-        // refresh_frame_flags: CLK + max_mlayer_id == 0 -> allFrames (no bits)
         bits.f(1920 - 1, 12); // frame_width_minus_1
         bits.f(1080 - 1, 12); // frame_height_minus_1
         bits.bit(0); // allow_intrabc
@@ -154,13 +133,9 @@ mod tests {
 
     #[test]
     fn olk_round_trips() {
-        // OLK: immediate_output_frame inferred false (no bit), KEY long_term (lt_bits == 0 ->
-        // no bit), refresh_frame_flags direct f(NumRefFrames) (not CLK closed-loop).
         let mut bits = Bits::default();
         bits.uvlc(0); // cur_mfh_id == 0
         bits.uvlc(2); // seq_header_id
-        // OLK -> immediate_output_frame inferred false (no bit). monotonic == 0 so
-        // implicit_output_frame is coded.
         bits.bit(0); // implicit_output_frame
         bits.bit(1); // frame_size_override_flag
         bits.f(3, 4); // order_hint
@@ -188,7 +163,6 @@ mod tests {
 
     #[test]
     fn intra_only_round_trips() {
-        // A RegularTileGroup that derives to INTRA_ONLY: frame_is_inter f(1) == 0.
         let mut bits = Bits::default();
         bits.uvlc(0); // cur_mfh_id == 0
         bits.uvlc(0); // seq_header_id
@@ -221,8 +195,6 @@ mod tests {
 
     #[test]
     fn single_picture_key_round_trips() {
-        // single_picture_header_flag forces KEY, no frame_type/output/override bits. With
-        // single_picture set on every sub-view that consults it, gdf/cdef infer frame_enable.
         let mut seq = base_seq();
         seq.single_picture_header_flag = true;
         seq.filter.single_picture_header_flag = true;
@@ -230,13 +202,9 @@ mod tests {
         let mut bits = Bits::default();
         bits.uvlc(0); // cur_mfh_id == 0
         bits.uvlc(0); // seq_header_id
-        // single_picture: no frame_type arm, no output flags, no frame_size_override_flag.
         bits.f(9, 4); // order_hint
-        // refresh_frame_flags: CLK + max_mlayer_id == 0 -> allFrames (no bits)
-        // frame_size: override inferred false -> dims come from seq maxima (4096x2304).
         bits.bit(0); // allow_intrabc
         bits.bit(0); // disable_cdf_update
-        // tile_info() for 4096x2304 with 128x128 superblocks.
         bits.bit(1); // uniform_tile_spacing_flag
         bits.bit(0); // increment_tile_cols_log2
         bits.bit(0); // increment_tile_rows_log2
@@ -246,8 +214,6 @@ mod tests {
         bits.bit(0); // delta_q_present
         bits.bit(0); // apply_deblocking_filter[0]
         bits.bit(0); // apply_deblocking_filter[1]
-        // gdf/cdef: single_picture -> frame_enable inferred true, but enable_gdf/cdef == 0
-        // short-circuits before the inference is reached (no bits either way).
         bits.bit(0); // tx_mode_select
         bits.f(0, 2); // reduced_tx_set
         let data = bits.into_bytes();
@@ -260,8 +226,6 @@ mod tests {
 
     #[test]
     fn lossless_round_trips() {
-        // base_q_idx == 0 with no delta-Q -> CodedLossless == 1: read_tx_mode() infers
-        // ONLY_4X4 (no tx_mode_select bit), and deblocking is skipped (coded_lossless).
         let mut bits = Bits::default();
         bits.uvlc(0); // cur_mfh_id == 0
         bits.uvlc(0); // seq_header_id
@@ -279,10 +243,6 @@ mod tests {
         bits.f(0, 8); // base_q_idx == 0 -> lossless candidate
         bits.bit(0); // segmentation_enabled
         bits.bit(0); // using_qmatrix
-        // delta_q_present is not read when base_q_idx == 0.
-        // lossless tail: coded_lossless -> allow_tcq/parity inference (no bits), deblocking
-        // skipped, gdf/cdef disabled, lr/ccso disabled.
-        // read_tx_mode(): coded_lossless -> ONLY_4X4 (no bit). reduced_tx_set f(2) still read.
         bits.f(0, 2); // reduced_tx_set
         let data = bits.into_bytes();
         let core = assert_roundtrip(&data, ObuType::ClosedLoopKey, true, &base_seq());
@@ -291,14 +251,9 @@ mod tests {
 
     #[test]
     fn grain_present_round_trips() {
-        // film_grain_params_present == 1 with an output gate that codes apply_grain.
-        // immediate_output_frame == 0 and implicit_output_frame == 0 (not single-picture) ->
-        // the (!immediate && !implicit) gate is true, so apply_grain f(1) is read.
         let mut seq = base_seq();
         seq.film_grain_params_present = Some(true);
         let mut bits = clk_direct_reference_bits();
-        // The base fixture ends after reduced_tx_set; append the grain config. With
-        // apply_grain == 0 the film_grain_config() reads only the apply_grain bit.
         bits.bit(0); // apply_grain == 0
         let data = bits.into_bytes();
         let core = assert_roundtrip(&data, ObuType::ClosedLoopKey, true, &seq);
@@ -307,8 +262,6 @@ mod tests {
 
     #[test]
     fn multi_tile_round_trips() {
-        // A 1920x1080 frame with explicit non-default tile log2 increments -> a multi-tile
-        // layout, exercising the tile_info() / gdf geometry paths through the writer.
         let mut bits = Bits::default();
         bits.uvlc(0); // cur_mfh_id == 0
         bits.uvlc(1); // seq_header_id
@@ -320,13 +273,10 @@ mod tests {
         bits.f(1080 - 1, 12); // frame_height_minus_1
         bits.bit(0); // allow_intrabc
         bits.bit(0); // disable_cdf_update
-        // tile_info(): 1920x1080 @ 128x128 -> sbCols 15, sbRows 9. Request 2 tile cols.
         bits.bit(1); // uniform_tile_spacing_flag
         bits.bit(1); // increment_tile_cols_log2 = 1 (TileColsLog2 -> 1)
         bits.bit(0); // stop incrementing cols
         bits.bit(0); // increment_tile_rows_log2 = 0
-        // multi-tile -> context_update_tile_id f(TileColsLog2 + TileRowsLog2 == 1) + tile
-        // size bytes minus 1 f(2).
         bits.f(0, 1); // context_update_tile_id
         bits.f(0, 2); // tile_size_bytes_minus_1
         bits.f(90, 8); // base_q_idx
@@ -345,8 +295,6 @@ mod tests {
 
     #[test]
     fn mfh_nonzero_round_trips() {
-        // cur_mfh_id == 1 resolved against an MFH record: frame_size override flag == 0 uses
-        // the MFH default dims, and the writer threads the same MfhFrameView.
         let mfh_size = crate::hls::MfhFrameSize {
             width_bits: 12,
             height_bits: 12,
@@ -376,7 +324,6 @@ mod tests {
         bits.bit(0); // implicit_output_frame
         bits.bit(0); // frame_size_override_flag == 0 (MFH default dims, no size bits)
         bits.f(7, 4); // order_hint
-        // refresh_frame_flags: CLK + max_mlayer_id == 0 -> allFrames (no bits)
         bits.bit(0); // allow_intrabc
         bits.bit(0); // disable_cdf_update
         bits.bit(1); // uniform_tile_spacing_flag
@@ -408,7 +355,6 @@ mod tests {
         assert_cores_equal(&reparsed, &core);
     }
 
-    // ---- rejection tests (reject-before-write, bit_len() == 0) -------------------------
 
     /// Builds a valid CLK intra core for mutation in the rejection tests.
     fn valid_core() -> (FrameHeaderCore, CoreSeqView) {
@@ -440,7 +386,6 @@ mod tests {
 
     #[test]
     fn reject_non_intra_status() {
-        // Every non-IntraHeaderComplete status is rejected at `status` before any bit.
         for status in [
             FrameHeaderParseStatus::ActivationFieldsOnly,
             FrameHeaderParseStatus::ShowExistingFrameComplete,
@@ -462,7 +407,6 @@ mod tests {
 
     #[test]
     fn reject_missing_required_option() {
-        // A None on any required intra-path Option rejects with that field's label.
         let (mut core, seq) = valid_core();
         core.tile_info = None;
         assert_rejected_what(&core, &seq, true, "tile_info");
@@ -482,8 +426,6 @@ mod tests {
 
     #[test]
     fn reject_lr_params_partial_set() {
-        // The writer rejects any preserved partial LR facts on an otherwise complete core;
-        // in-crate tests can construct the non-exhaustive model directly.
         use crate::headers::frame::{FrameRestorationType, LrPartialParams, LrPlaneParams};
         let partial = LrPartialParams {
             uses_lr: true,
@@ -517,7 +459,6 @@ mod tests {
 
     #[test]
     fn reject_show_existing_model() {
-        // show_existing_frame == Some(true) is a SEF model the intra writer never emits.
         let (mut core, seq) = valid_core();
         core.show_existing_frame = Some(true);
         assert_rejected_what(&core, &seq, true, "show_existing_frame");
@@ -525,8 +466,6 @@ mod tests {
 
     #[test]
     fn reject_inferred_immediate_output_disagrees() {
-        // OLK infers immediate_output_frame == false; storing true is non-canonical. Build an
-        // OLK core via its obu_type so frame_type stays an intra type (KEY).
         let mut bits = Bits::default();
         bits.uvlc(0);
         bits.uvlc(0);
@@ -557,9 +496,6 @@ mod tests {
 
     #[test]
     fn reject_refresh_flags_arm_cannot_represent() {
-        // CLK short-refresh arm encodes a single-bit refresh_frame_flags; a multi-bit value
-        // cannot be represented, so it is rejected. Use a seq with short-refresh and a
-        // non-closed-loop key so the short arm is selected.
         let mut seq = base_seq();
         seq.enable_short_refresh_frame_flags = true;
         seq.max_mlayer_id = 1; // CLK no longer takes the inferred all-frames arm
@@ -588,17 +524,12 @@ mod tests {
         let mut core = parse(&data, ObuType::ClosedLoopKey, true, &seq);
         assert_eq!(core.status, FrameHeaderParseStatus::IntraHeaderComplete);
         assert_eq!(core.refresh_frame_flags, Some(1 << 2));
-        // Mutate to a multi-bit value the short arm cannot represent.
         core.refresh_frame_flags = Some(0b0000_0011);
         assert_rejected_what(&core, &seq, true, "refresh_frame_flags");
     }
 
     #[test]
     fn long_term_id_overflow_is_rejected_not_panicked() {
-        // Regression (#4i adversarial review, PH-1): a KEY core with long_term_id == i64::MAX
-        // must reject cleanly, not panic on the `long_term_id + 1` increment (workspace
-        // overflow-checks = true traps a bare add). valid_core() is a CLK key frame, so the
-        // long_term_id encodability check is reached.
         let (mut core, seq) = valid_core();
         core.long_term_id = Some(i64::MAX);
         assert_rejected_what(&core, &seq, true, "long_term_id");
@@ -606,11 +537,6 @@ mod tests {
 
     #[test]
     fn single_picture_open_loop_key_round_trips() {
-        // Regression (#4i adversarial review, RT-1): a single-picture OBU_OPEN_LOOP_KEY frame
-        // forces KEY and immediate_output_frame = 1 (inferred, no bit), so the OLK
-        // immediate_output_frame disagreement check must be gated on !single_picture; otherwise
-        // this genuine IntraHeaderComplete model is falsely rejected. OLK is not closed-loop, so
-        // refresh_frame_flags takes the direct f(NumRefFrames) arm (not the all-frames inference).
         let mut seq = base_seq();
         seq.single_picture_header_flag = true;
         seq.filter.single_picture_header_flag = true;
@@ -639,7 +565,6 @@ mod tests {
         assert_eq!(core.immediate_output_frame, Some(true));
     }
 
-    // ---- reject-completeness tests (#4i review findings 1-8) ---------------------------
 
     /// A representative single-picture sequence (mirrors `single_picture_key_round_trips`),
     /// with `single_picture_header_flag` set on every sub-view that consults it.
@@ -686,9 +611,6 @@ mod tests {
 
     #[test]
     fn reject_mismatched_inferred_frame_type() {
-        // Finding 1 (info.rs:1146/1183/1190): a single-picture / CLK / OLK core derives KEY with
-        // no frame_type bit; storing IntraOnly is parser-unreachable. valid_core() is a CLK key
-        // frame, so the expected derived type is KEY.
         let (mut core, seq) = valid_core();
         core.frame_type = Some(FrameType::IntraOnly);
         assert_rejected_what(&core, &seq, true, "frame_type");
@@ -696,8 +618,6 @@ mod tests {
 
     #[test]
     fn reject_mfh_view_on_direct_reference() {
-        // Finding 2 (info.rs:1593-1596): a cur_mfh_id == 0 (direct) core takes the mfh = None
-        // arms; supplying an MFH view is parser-unreachable. valid_core() is cur_mfh_id == 0.
         let (core, seq) = valid_core();
         assert!(core.cur_mfh_id.is_zero());
         let record = crate::hls::MultiFrameHeaderRecord {
@@ -723,8 +643,6 @@ mod tests {
 
     #[test]
     fn reject_show_existing_frame_none() {
-        // Finding 3 (info.rs:1145/1167): every IntraHeaderComplete core sets
-        // show_existing_frame = Some(false); a None reparses to Some(false), so it must reject.
         let (mut core, seq) = valid_core();
         core.show_existing_frame = None;
         assert_rejected_what(&core, &seq, true, "show_existing_frame");
@@ -732,8 +650,6 @@ mod tests {
 
     #[test]
     fn reject_mirrored_allow_intrabc_disagrees() {
-        // Finding 4 (info.rs:1613): the flat core.allow_intrabc mirrors intrabc.allow_intrabc;
-        // the writer emits from core.intrabc, so a disagreeing flat field is parser-unreachable.
         let (mut core, seq) = valid_core();
         let mirrored = core.intrabc.as_ref().unwrap().allow_intrabc;
         core.allow_intrabc = Some(!mirrored);
@@ -742,9 +658,6 @@ mod tests {
 
     #[test]
     fn reject_forbidden_ref_long_term_id_mismatch() {
-        // Finding 5 (info.rs:1217/1222-1223): forbidden_ref_long_term_id is derived from the
-        // ref_long_term_ids vs the reserved all-ones value. valid_core() codes no ref ids, so the
-        // derived flag is false; storing true is parser-unreachable.
         let (mut core, seq) = valid_core();
         assert!(!core.forbidden_ref_long_term_id);
         core.forbidden_ref_long_term_id = true;
@@ -753,8 +666,6 @@ mod tests {
 
     #[test]
     fn reject_single_picture_output_inference_disagrees() {
-        // Finding 6 (info.rs:1148-1149): single_picture infers immediate=true / implicit=false
-        // with no bits; any other pair is parser-unreachable.
         let (mut core, seq) = valid_single_picture_core();
         core.immediate_output_frame = Some(false);
         assert_rejected_what(&core, &seq, true, "immediate_output_frame");
@@ -766,14 +677,11 @@ mod tests {
 
     #[test]
     fn reject_stale_long_term_id_on_no_bit_arms() {
-        // Finding 7 (info.rs:1150/1207): single_picture leaves long_term_id None; a non-single
-        // INTRA_ONLY frame leaves it the Some(-1) sentinel. Any other value is parser-unreachable.
         let (mut core, seq) = valid_single_picture_core();
         assert_eq!(core.long_term_id, None);
         core.long_term_id = Some(0);
         assert_rejected_what(&core, &seq, true, "long_term_id");
 
-        // Non-single INTRA_ONLY: build via a RegularTileGroup deriving to IntraOnly.
         let mut bits = Bits::default();
         bits.uvlc(0); // cur_mfh_id == 0
         bits.uvlc(0); // seq_header_id
@@ -809,41 +717,26 @@ mod tests {
 
     #[test]
     fn reject_reached_qm_reset_true() {
-        // Finding 8 (info.rs:1242): every IntraHeaderComplete path leaves reached_qm_reset false
-        // (RAS/SWITCH are non-intra; single-picture returns before the derivation). A true value
-        // is parser-unreachable.
         let (mut core, seq) = valid_core();
         assert!(!core.reached_qm_reset);
         core.reached_qm_reset = true;
         assert_rejected_what(&core, &seq, true, "reached_qm_reset");
     }
 
-    // ---- reject-completeness tests (#4i second-round review findings) ------------------
 
     #[test]
     fn reject_non_single_bridge_intra_model() {
-        // Round-2 finding 1 (info.rs:1157-1163): a NON-single bridge frame reads
-        // bridge_frame_ref_idx, then takes the inter arm (frame_type = Inter) — it never reaches
-        // IntraHeaderComplete. The generic frame_type derivation would map a non-single
-        // BridgeFrame to the IntraOnly expectation, so a hand-built non-single bridge intra core
-        // must be rejected. Start from a valid (non-single) CLK core, retype it to a bridge.
         let (mut core, seq) = valid_core();
         assert!(!seq.single_picture_header_flag);
         core.obu_type = ObuType::BridgeFrame;
         core.is_bridge = true;
         core.bridge_frame_ref_idx = Some(0);
-        // A BridgeFrame is not OBU_CLOSED_LOOP_KEY, so its parser-derived starts_cvs is false;
-        // match it so the test reaches its intended bridge reject (not `starts_cvs`).
         core.starts_cvs = false;
-        // The composer supports no bridge path (a non-single bridge is inter).
         assert_rejected_what(&core, &seq, true, "bridge_unsupported");
     }
 
     #[test]
     fn reject_stale_bridge_frame_ref_idx_on_non_bridge() {
-        // Round-2 finding 3 (info.rs:1131-1133): the parser leaves bridge_frame_ref_idx = None
-        // for every non-bridge header; the writer emits it only on the is_bridge arm, so a stale
-        // value on a non-bridge core would be silently dropped. valid_core() is a non-bridge CLK.
         let (mut core, seq) = valid_core();
         assert!(!core.is_bridge);
         core.bridge_frame_ref_idx = Some(3);
@@ -852,8 +745,6 @@ mod tests {
 
     #[test]
     fn reject_stale_frame_to_show_map_idx() {
-        // Round-2 finding 4 (info.rs:1478): frame_to_show_map_idx is read only on the
-        // show-existing-frame path; the intra path leaves it None.
         let (mut core, seq) = valid_core();
         assert_eq!(core.frame_to_show_map_idx, None);
         core.frame_to_show_map_idx = Some(2);
@@ -862,8 +753,6 @@ mod tests {
 
     #[test]
     fn reject_stale_inter_control() {
-        // Round-2 finding 5 (info.rs:1368): `inter` is the non-intra control region, None on
-        // every intra-complete path. `InterControl` derives Default, so build a default one.
         let (mut core, seq) = valid_core();
         assert!(core.inter.is_none());
         core.inter = Some(crate::headers::frame::InterControl::default());
@@ -872,8 +761,8 @@ mod tests {
 
     #[test]
     fn reject_stale_sef_film_grain() {
-        // Round-2 finding 7 (info.rs:1518): sef_film_grain is the show-existing-frame
-        // film_grain_config, None on the intra path. `FilmGrainConfig` is #[non_exhaustive], so
+        // sef_film_grain is the show-existing-frame film_grain_config, None on the intra path.
+        // `FilmGrainConfig` is #[non_exhaustive], so
         // clone a real one from the intra tail's parsed film_grain rather than constructing it.
         let (mut core, seq) = valid_core();
         assert!(core.sef_film_grain.is_none());
@@ -884,8 +773,6 @@ mod tests {
 
     #[test]
     fn reject_stale_sef_trailing_bits() {
-        // Round-2 finding 8 (info.rs:1526): sef_trailing_bits is the SEF-only trailing-bits
-        // boundary, None on the intra path.
         let (mut core, seq) = valid_core();
         assert!(core.sef_trailing_bits.is_none());
         core.sef_trailing_bits = Some(crate::headers::frame::SefTrailingBits::Valid);
@@ -894,20 +781,12 @@ mod tests {
 
     #[test]
     fn reject_stale_starts_cvs() {
-        // Round-3 finding (info.rs:1065): starts_cvs is derived, not coded
-        // (`obu_type == OBU_CLOSED_LOOP_KEY && FirstPictureInTU`); the prefix writes no bits for
-        // it, so a mutated value would reparse to the FirstPictureInTU-derived one and silently
-        // round-trip wrong. valid_core() is a CLK parsed with first_picture_in_tu = true, so its
-        // starts_cvs is true; flipping it to false is parser-unreachable for that input.
         let (mut core, seq) = valid_core();
         assert_eq!(core.obu_type, ObuType::ClosedLoopKey);
         assert!(core.starts_cvs);
         core.starts_cvs = false;
         assert_rejected_what(&core, &seq, true, "starts_cvs");
 
-        // Conversely, the same CLK parsed with first_picture_in_tu = false yields
-        // starts_cvs == false and round-trips when written with first_picture_in_tu = false (the
-        // derivation matches, so the write is accepted).
         let data = clk_direct_reference_bits().into_bytes();
         let core = parse(&data, ObuType::ClosedLoopKey, false, &seq);
         assert!(!core.starts_cvs);
@@ -919,15 +798,7 @@ mod tests {
 
     #[test]
     fn single_picture_sef_round_trips() {
-        // Round-2 finding 2 (info.rs:1135-1150): the single-picture branch forces a KEY intra
-        // frame and returns BEFORE the is_sef() check (:1166) for ANY obu_type, so a
-        // single-picture SEF OBU parses to IntraHeaderComplete (a key frame). The writer must NOT
-        // reject it (the is_sef/is_tip rejection is gated on !single_picture). End-to-end
-        // byte-exact round-trip on the SEF obu_type with a single-picture sequence.
         let seq = single_picture_seq();
-        // A single-picture SEF reads no bridge_frame_ref_idx (not a bridge) and skips the
-        // frame-type / output block, so its body is the single-picture CLK body. RegularSef takes
-        // the direct refresh_frame_flags arm (not CLK closed-loop), so include those 8 bits.
         let mut bits = Bits::default();
         bits.uvlc(0); // cur_mfh_id == 0
         bits.uvlc(0); // seq_header_id
@@ -957,16 +828,6 @@ mod tests {
 
     #[test]
     fn reject_single_picture_bridge() {
-        // The single-picture OBU_BRIDGE_FRAME parser bug is now FIXED
-        // (frame-header-single-picture-bridge-fix): per spec §5.18.2 mirror :4971-5065 a
-        // single-picture bridge is forced to a KEY intra frame but takes the `IsBridge`
-        // early-return arm, so parse_single_picture_bridge_tail reads only the modeled prefix
-        // (bridge_frame_overwrite_flag / KEY refresh / non-override frame_size / screen_content /
-        // intrabc) and stops with InterStop::BruInactiveOrBridgeReturn — its core reaches
-        // UnsupportedUntilFeature, NOT IntraHeaderComplete. The composer only writes
-        // IntraHeaderComplete cores, so the status gate rejects it up front. (A hand-constructed
-        // IntraHeaderComplete bridge core is still caught by the explicit bridge gate — see
-        // reject_non_single_bridge_intra_model.)
         let mut seq = base_seq();
         seq.single_picture_header_flag = true;
         seq.filter.single_picture_header_flag = true;
@@ -974,8 +835,6 @@ mod tests {
         bits.uvlc(0); // seq_header_id_in_frame_header
         bits.f(5, 3); // bridge_frame_ref_idx = 5 f(CeilLog2(8) == 3) — read before single-pic
         bits.bit(0); // bridge_frame_overwrite_flag = 0 (mirror :4423)
-        // refresh_frame_flags: overwrite == 0 -> inferred 1 << bridge_frame_ref_idx, no bits
-        // (§ 6.17.2 + AVM). frame_size(): non-override default dims, no bits. screen_content: no bits.
         bits.bit(0); // allow_intrabc = 0 (intrabc_params(), mirror :4571) -> STOP at bridge return
         let data = bits.into_bytes();
         let core =

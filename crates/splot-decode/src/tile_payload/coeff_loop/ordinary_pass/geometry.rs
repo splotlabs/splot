@@ -38,7 +38,6 @@ const WAIP_WH_RATIO_2_THRES: i32 = 61;
 const WAIP_WH_RATIO_4_THRES: i32 = 73;
 const WAIP_WH_RATIO_8_THRES: i32 = 82;
 const WAIP_WH_RATIO_16_THRES: i32 = 86;
-// AV2 §5.20.8.3 transform-set ordinals used by `get_tx_set`.
 const TX_SET_DCTONLY: usize = 0;
 const TX_SET_WIDE_64: usize = 1;
 const TX_SET_HIGH_64: usize = 2;
@@ -52,8 +51,6 @@ const TX_SET_DCT_IDTX: usize = 7;
 const TX_SET_DCT_IDTX_IDDCT: usize = 8;
 const MAX_REDUCED_TX_SET: usize = 3;
 
-// AV2 §5.20.7.29 inline `Tx_Type_In_Set_Intra[TX_SET_TYPES_INTRA][TX_TYPES]`
-// table (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-29`).
 const TX_TYPE_IN_SET_INTRA: [[u8; 16]; 7] = [
     [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     [1, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0],
@@ -64,8 +61,6 @@ const TX_TYPE_IN_SET_INTRA: [[u8; 16]; 7] = [
     [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
 ];
 
-// AV2 §5.20.7.29 inline `Tx_Type_In_Set_Inter[TX_SET_TYPES_INTER][TX_TYPES]`
-// table (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-29`).
 const TX_TYPE_IN_SET_INTER: [[u8; 16]; 9] = [
     [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     [1, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0],
@@ -307,7 +302,6 @@ impl CoeffOrdinaryBranchTxSetBaseConfig {
 }
 
 impl CoeffOrdinaryBranchLosslessBaseConfig {
-    // `self` receiver mirrors the sibling `tx_set_base_config` builder for a uniform API.
     #[allow(clippy::unused_self)]
     const fn lossless_tx_size_base_config(self) -> CoeffOrdinaryBranchTxSizeDimensionsBaseConfig {
         CoeffOrdinaryBranchTxSizeDimensionsBaseConfig {
@@ -344,7 +338,6 @@ pub(crate) struct CoeffOrdinaryTxSizeGeometryConfig {
     pub(crate) tx_size: usize,
 }
 
-// `tx_*` fields mirror the AV2 txWidth/txHeight/txWidthLog2/txHeightLog2 transform dimensions; the prefix preserves that mapping.
 #[allow(clippy::struct_field_names)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct CoeffOrdinaryTxSizeDimensions {
@@ -365,7 +358,6 @@ struct CoeffOrdinaryTxSizeTables<'a> {
     tx_height_log2: &'a [i32],
 }
 
-// `tx_*` fields mirror the AV2 txWidth/txHeight/txWidthLog2/txHeightLog2 transform dimensions; the prefix preserves that mapping.
 #[cfg(test)]
 #[derive(Clone, Copy)]
 #[allow(clippy::struct_field_names)]

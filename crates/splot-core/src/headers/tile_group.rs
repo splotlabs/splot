@@ -72,9 +72,6 @@ pub fn parse_tile_group_prefix(
         reader.read_flag()?
     };
 
-    // Only the first tile group carries a parseable frame_header(1). A non-first tile
-    // group with frame_header_present_flag == 1 carries frame_header_copy(), which is
-    // a bit copy of the first header and is not modeled by this prefix parser.
     let frame_header = if frame_header_present_flag && is_first_tile_group {
         Some(parse_frame_header_prefix(
             reader,
@@ -291,13 +288,9 @@ pub fn parse_tile_group_structure(
 ) -> Result<TileGroupStructure> {
     let num_tiles = layout.num_tiles;
 
-    // § 5.19 (:8467-8473): tile_start_and_end_present_flag defaults to 0 and is read as
-    // f(1) only when NumTiles > 1. An EOF here is a truncation of the modeled region.
     let mut structure = TileGroupStructure {
         tile_start_and_end_present_flag: false,
         tg_start: 0,
-        // NumTiles >= 1 for any decodable frame; saturating_sub keeps a degenerate
-        // NumTiles == 0 layout from underflowing (tg_end stays 0).
         tg_end: num_tiles.saturating_sub(1),
         outcome: TileGroupStructureOutcome::Complete,
         header_bytes: None,
@@ -312,8 +305,6 @@ pub fn parse_tile_group_structure(
         structure.tile_start_and_end_present_flag = flag != 0;
     }
 
-    // § 5.19 (:8475-8493): when NumTiles == 1 or the flag is 0, tg_start/tg_end are
-    // inferred (0 .. NumTiles - 1, already set above). Otherwise read both f(tileBits).
     if num_tiles > 1 && structure.tile_start_and_end_present_flag {
         let tile_bits = layout.tile_bits();
         let Ok(tg_start) = reader.read_bits(tile_bits) else {
@@ -322,16 +313,12 @@ pub fn parse_tile_group_structure(
         };
         structure.tg_start = tg_start;
         let Ok(tg_end) = reader.read_bits(tile_bits) else {
-            // tg_start was read; preserve it and surface the truncation.
             structure.outcome = TileGroupStructureOutcome::Truncated;
             return Ok(structure);
         };
         structure.tg_end = tg_end;
     }
 
-    // § 5.19 (:8519): byte_alignment(). The use_bru BruTileActives loop (:8495-8517) is
-    // dead on the intra path (use_bru == 0), so byte_alignment() runs next. A non-zero
-    // pad bit is the decidable §6.2.4 defect; an EOF before the boundary is a truncation.
     match reader.byte_align_zero() {
         Ok(()) => {}
         Err(Error::UnexpectedEof { .. }) => {
@@ -341,11 +328,6 @@ pub fn parse_tile_group_structure(
         Err(other) => return Err(other),
     }
 
-    // § 5.19 (:8521-8527): headerBytes = (endBitPos - startBitPos) / 8 over the whole
-    // tile_group_obu() header. The reader was constructed at startBitPos (the OBU payload
-    // start), so endBitPos - startBitPos == reader.consumed_bits(); now byte-aligned, the
-    // division is exact. Then sz -= headerBytes and tile_group_payload(sz) runs over the
-    // remainder.
     let header_bytes = reader.consumed_bits() / 8;
     structure.header_bytes = Some(header_bytes);
     structure.payload_size = Some(sz.saturating_sub(header_bytes));
@@ -452,7 +434,6 @@ impl TileFramingDefect {
             | Self::TileSizeOverflowsPayload {
                 size_field_offset, ..
             } => size_field_offset,
-            // A zero-size tile has no size field; its anchor is the (empty) data region.
             Self::ZeroSizeTile {
                 tile_data_offset, ..
             } => tile_data_offset,
@@ -568,29 +549,15 @@ pub fn parse_tile_group_framing(
     is_bridge: bool,
 ) -> TileGroupFraming {
     let region_len = payload.len() as u64;
-    // §5.18.7.2: TileSizeBytes = tile_size_bytes_minus_1 + 1 with a f(2) read, so the
-    // spec value space is 1..=4. This is a public function: a constructed out-of-spec
-    // value must not overflow the le() shift below (claude review, PR #68) — clamp to
-    // the spec ceiling; real parses can never exceed it.
     let tsb = u64::from(tile_size_bytes.clamp(1, 4));
     let mut tiles = Vec::new();
 
-    // §5.18.7.2 / §3: NumTiles = TileCols * TileRows <= MAX_TILE_COLS * MAX_TILE_ROWS,
-    // so no spec-conformant range exceeds 4096 tiles. This is a public function: an
-    // untrusted huge range (especially with is_bridge, which consumes no payload per
-    // tile) must not hang or exhaust memory (codex review, PR #68) — clamp the upper
-    // bound to the spec ceiling; real callers never exceed it.
     let max_tiles = crate::tile::MAX_TILE_COLS * crate::tile::MAX_TILE_ROWS;
     let tg_end = tg_end.min(tg_start.saturating_add(max_tiles - 1));
 
-    // `pos` is the running byte cursor into the region; `sz` is the §5.20.1 bookkeeping of
-    // bytes still unconsumed by framed tiles (mirror :8571). They stay in lockstep:
-    // sz == region_len - pos for the non-bridge path.
     let mut pos = 0u64;
     let mut sz = region_len;
 
-    // tg_end < tg_start cannot reach here (the §5.19 range checks gate it), but guard the
-    // empty range so the loop bound never underflows.
     if tg_end < tg_start {
         return TileGroupFraming {
             tiles,
@@ -602,17 +569,12 @@ pub fn parse_tile_group_framing(
         let last_tile = tile_num == tg_end;
 
         if last_tile {
-            // §5.20.1 (:8555-8557): the last tile takes the remaining sz; no size field.
             tiles.push(TileFraming {
                 tile_num,
                 size_field_offset: None,
                 tile_data_offset: pos,
                 tile_size: sz,
             });
-            // A zero-size non-bridge tile can never satisfy §8.2.4's SymbolMaxBits >= -14
-            // exit floor (init at 8*0-15 = -15, monotone decreasing) — decidable from
-            // framing alone. Non-last non-bridge tiles always have tileSize >= 1 (the
-            // +1 in §5.20.1 :8569), so only the last tile can hit this.
             if sz == 0 && !is_bridge {
                 return TileGroupFraming {
                     tiles,
@@ -622,15 +584,10 @@ pub fn parse_tile_group_framing(
                     }),
                 };
             }
-            // After this the loop ends; pos/sz are not used again.
             break;
         }
 
         if is_bridge {
-            // §5.20.1 (:8559): a non-last bridge tile skips the `else if ( !IsBridge )` arm
-            // entirely — no size field is read and no bookkeeping subtraction happens. The
-            // tile data simply continues at the cursor; its size is not framed by a length
-            // field, so it is not knowable from framing alone (recorded as 0).
             tiles.push(TileFraming {
                 tile_num,
                 size_field_offset: None,
@@ -640,8 +597,6 @@ pub fn parse_tile_group_framing(
             continue;
         }
 
-        // §5.20.1 (:8565): tile_size_minus_1 le(TileSizeBytes). §4.11.5: le(n) reads exactly
-        // n bytes. If fewer than TileSizeBytes remain, the size field itself is truncated.
         let size_field_offset = pos;
         if pos.saturating_add(tsb) > region_len {
             return TileGroupFraming {
@@ -654,9 +609,6 @@ pub fn parse_tile_group_framing(
             };
         }
 
-        // Read le(TileSizeBytes) little-endian (§4.11.5). The bytes are present (checked
-        // above); tsb is clamped to the §5.18.7.2 value space 1..=4 at entry, so the
-        // value fits in u64 and the shift never overflows.
         let mut tile_size_minus_1 = 0u64;
         for i in 0..tsb {
             let byte = payload[(pos + i) as usize];
@@ -664,8 +616,6 @@ pub fn parse_tile_group_framing(
         }
         let tile_size = tile_size_minus_1 + 1; // §5.20.1 (:8569): tileSize = +1.
 
-        // §5.20.1 (:8571): sz -= tileSize + TileSizeBytes. The subtraction must not go
-        // negative — the size field plus the coded tile must fit in the remaining sz.
         let claimed = tile_size.saturating_add(tsb);
         if claimed > sz {
             return TileGroupFraming {
@@ -737,13 +687,7 @@ impl RecordedFrameHeaderBits {
     /// payload returns the structured error rather than attempting a `ceil(n/8)`-byte
     /// allocation (which would abort the process for a huge count — a no-panic violation).
     pub fn record(reader: &mut BitReader<'_>, num_frame_header_bits: u64) -> Result<Self> {
-        // Reject an out-of-range count up front, before allocating: `num_frame_header_bits`
-        // is public API, so a hostile/garbage value (e.g. `u64::MAX`) must not drive a
-        // `ceil(n/8)`-byte allocation that OOM-aborts. The bit-by-bit loop below would EOF
-        // anyway, but only after the buffer is reserved, so the guard must precede it.
         if reader.remaining_bits() < num_frame_header_bits {
-            // The deficit, reported in whole bytes, matches the per-bit `read_bit()` EOF the
-            // loop would have raised at the first missing bit.
             let needed_bits = num_frame_header_bits.saturating_sub(reader.remaining_bits());
             return Err(crate::error::Error::UnexpectedEof {
                 offset: reader.byte_offset(),
@@ -751,8 +695,6 @@ impl RecordedFrameHeaderBits {
             });
         }
         let byte_len = num_frame_header_bits.div_ceil(8);
-        // The bit count is bounded by the remaining payload (checked above), so the cast is
-        // sound; a payload large enough to overflow `usize` cannot be held in memory anyway.
         let byte_len = usize::try_from(byte_len).unwrap_or(usize::MAX);
         let mut bits = vec![0u8; byte_len];
         for i in 0..num_frame_header_bits {
@@ -855,14 +797,11 @@ pub fn parse_frame_header_copy(
     let mut index = 0u64;
     while index < total {
         let Ok(actual) = reader.read_bit() else {
-            // Payload ended inside the copy region: every bit read so far matched (a
-            // mismatch would have returned above), so this is a clean truncation.
             return FrameHeaderCopyOutcome::Truncated {
                 available_bits: index,
             };
         };
         let actual = actual != 0;
-        // `index < total` guarantees `bit(index)` is `Some`.
         let expected = recorded.bit(index).unwrap_or(actual);
         if actual != expected {
             return FrameHeaderCopyOutcome::Mismatch {
@@ -1052,8 +991,8 @@ mod tests {
 
     #[test]
     fn record_frame_header_bits_huge_count_short_reader_is_eof_not_oom() {
-        // Regression (codex round-8 F2): a huge num_frame_header_bits must NOT allocate
-        // ceil(n/8) bytes before any EOF check — that can OOM-abort instead of returning the
+        // A huge num_frame_header_bits must NOT allocate ceil(n/8) bytes before any EOF check;
+        // that can OOM-abort instead of returning the
         // documented UnexpectedEof (no-panic rule). The remaining-bits check must precede the
         // allocation, so an empty / short reader yields a structured error and no blowup.
         let mut empty = BitReader::new(&[], ByteOffset::new(0));
@@ -1308,8 +1247,6 @@ mod tests {
 
     #[test]
     fn single_tile_first_group_structure_has_canonical_fields() {
-        // NumTiles == 1: no present flag, tg_start = tg_end = 0, Complete; the parse-context
-        // byte-accounting (header_bytes / payload_size) is left None for the writer to ignore.
         let s = TileGroupStructure::single_tile_first_group();
         assert!(!s.tile_start_and_end_present_flag);
         assert_eq!(s.tg_start, 0);
@@ -1325,9 +1262,6 @@ mod tests {
         use crate::write::bit_writer::BitWriter;
         use crate::write::tile_group::write_tile_group_structure;
 
-        // The constructed structure is writer-encodable for a NumTiles == 1 layout, and the
-        // emitted bits reparse to the same syntax fields (a single tile writes no flag/range,
-        // so the structure bits are empty and the reparse infers the canonical range).
         let layout = TileGroupLayout::new(1, 1, 0, 0);
         let s = TileGroupStructure::single_tile_first_group();
         let mut writer = BitWriter::new();
@@ -1344,9 +1278,6 @@ mod tests {
 
     #[test]
     fn framing_multi_tile_records_sizes_and_offsets() {
-        // 3 tiles, TileSizeBytes = 2. Tiles 0,1 read le(2) size fields; tile 2 (last) takes
-        // the remainder. Tile0 size 3, tile1 size 2; region = [sf0(2)][d0(3)][sf1(2)][d1(2)]
-        // [last(remaining)]. Choose a 14-byte region so the last tile has 5 bytes.
         let mut region = Vec::new();
         region.extend(le_size_field(3 - 1, 2)); // tile0 tile_size_minus_1 = 2 -> tileSize 3
         region.extend([0x10, 0x11, 0x12]); // tile0 data (3 bytes)
@@ -1363,12 +1294,10 @@ mod tests {
         assert_eq!(framing.tiles[0].tile_data_offset, 2);
         assert_eq!(framing.tiles[0].tile_size, 3);
 
-        // tile1 size field sits after tile0's 2+3 = 5 bytes.
         assert_eq!(framing.tiles[1].size_field_offset, Some(5));
         assert_eq!(framing.tiles[1].tile_data_offset, 7);
         assert_eq!(framing.tiles[1].tile_size, 2);
 
-        // tile2 (last) sits after tile1's 2+2 = 4 bytes -> offset 9, size = remaining 5.
         assert_eq!(framing.tiles[2].size_field_offset, None);
         assert_eq!(framing.tiles[2].tile_data_offset, 9);
         assert_eq!(framing.tiles[2].tile_size, 5);
@@ -1376,25 +1305,19 @@ mod tests {
 
     #[test]
     fn framing_bridge_tiles_read_no_size_field() {
-        // A bridge frame: every tile (even non-last) reads no size field and consumes no
-        // bookkeeping. The framing records each tile at the cursor with size 0 (not framed).
         let region = vec![0xCC; 8];
         let framing = parse_tile_group_framing(&region, 0, 2, 2, true);
         assert_eq!(framing.defect, None);
         assert_eq!(framing.tiles.len(), 3);
-        // Non-last bridge tiles: no size field, cursor does not advance (size unknown == 0).
         assert_eq!(framing.tiles[0].size_field_offset, None);
         assert_eq!(framing.tiles[0].tile_size, 0);
         assert_eq!(framing.tiles[1].size_field_offset, None);
-        // Last tile takes the whole remaining region (sz == region length, cursor at 0).
         assert_eq!(framing.tiles[2].size_field_offset, None);
         assert_eq!(framing.tiles[2].tile_size, 8);
     }
 
     #[test]
     fn framing_flags_size_field_truncated() {
-        // 2 tiles, TileSizeBytes = 3, but the region is only 2 bytes — the first tile's
-        // le(3) size field cannot be read (truncated).
         let region = vec![0x01, 0x02];
         let framing = parse_tile_group_framing(&region, 0, 1, 3, false);
         assert!(framing.tiles.is_empty());
@@ -1410,8 +1333,6 @@ mod tests {
 
     #[test]
     fn framing_flags_tile_size_overflows_payload() {
-        // 2 tiles, TileSizeBytes = 1. Tile0 codes tile_size_minus_1 = 250 -> tileSize 251,
-        // but the region is only 6 bytes: tileSize(251) + TileSizeBytes(1) = 252 > sz 6.
         let mut region = Vec::new();
         region.extend(le_size_field(250, 1)); // tile0 size field: tileSize = 251
         region.extend([0u8; 5]); // 5 more bytes (far short of 251)
@@ -1431,9 +1352,6 @@ mod tests {
 
     #[test]
     fn framing_exact_fit_two_tiles_is_conformant() {
-        // Boundary: tile0 size field + tile0 data + tile1 (last) data == region exactly.
-        // TileSizeBytes = 1, tile0 tileSize = 2 -> consumes 1 + 2 = 3; region = 4 bytes, so
-        // tile1 (last) takes the remaining 1 byte. The bookkeeping ends exactly at 0.
         let mut region = Vec::new();
         region.extend(le_size_field(2 - 1, 1)); // tile0 tileSize = 2
         region.extend([0xA0, 0xA1]); // tile0 data
@@ -1447,10 +1365,6 @@ mod tests {
 
     #[test]
     fn framing_zero_size_last_tile_is_a_defect() {
-        // §8.2.2 (mirror 08:87): init_symbol(0) starts SymbolMaxBits at -15; the counter
-        // only decreases (08:327); §8.2.4 (08:342) requires >= -14 at exit_symbol() —
-        // unsatisfiable regardless of content, so a zero-size non-bridge tile is a
-        // framing-decidable defect (codex review, PR #68).
         let mut region = Vec::new();
         region.extend(le_size_field(2 - 1, 1)); // tile0 tileSize = 2 -> consumes 1 + 2 = 3
         region.extend([0xA0, 0xA1]); // tile0 data; region length == 3, last tile gets 0
@@ -1465,9 +1379,6 @@ mod tests {
 
     #[test]
     fn framing_zero_size_last_bridge_tile_is_exempt() {
-        // Bridge tiles run no init_symbol (§5.20.1 gates it on !IsBridge), so the
-        // SymbolMaxBits argument does not apply: a zero-size bridge last tile frames
-        // cleanly.
         let framing = parse_tile_group_framing(&[], 0, 0, 1, true);
         assert_eq!(framing.defect, None);
         assert_eq!(framing.tiles[0].tile_size, 0);
@@ -1475,16 +1386,12 @@ mod tests {
 
     #[test]
     fn framing_huge_range_is_bounded_by_the_spec_tile_ceiling() {
-        // A constructed 0..=u32::MAX range (especially with is_bridge, which consumes no
-        // payload per tile) must not hang or exhaust memory: the loop is clamped to the
-        // §3 MAX_TILE_COLS * MAX_TILE_ROWS ceiling (codex review, PR #68).
         let framing = parse_tile_group_framing(&[], 0, u32::MAX, 1, true);
         assert!(framing.tiles.len() <= 4096);
     }
 
     #[test]
     fn framing_empty_range_records_nothing() {
-        // A degenerate tg_end < tg_start range (the §5.19 checks gate this) frames nothing.
         let framing = parse_tile_group_framing(&[0u8; 4], 2, 1, 1, false);
         assert!(framing.tiles.is_empty());
         assert_eq!(framing.defect, None);
@@ -1519,13 +1426,10 @@ mod proptests {
             num_bits in 0u64..=200,
         ) {
             let mut rec_reader = BitReader::new(&recorded_data, ByteOffset::new(0));
-            // Recording may EOF (num_bits may exceed the payload); only a successful record
-            // produces a comparison input. Either branch must be panic-free.
             if let Ok(recorded) = RecordedFrameHeaderBits::record(&mut rec_reader, num_bits) {
                 prop_assert_eq!(recorded.num_frame_header_bits(), num_bits);
                 let mut copy_reader = BitReader::new(&copy_data, ByteOffset::new(0));
                 let outcome = parse_frame_header_copy(&mut copy_reader, &recorded);
-                // The copy reader consumed at most NumFrameHeaderBits and at most the payload.
                 prop_assert!(copy_reader.consumed_bits() <= num_bits);
                 prop_assert!(copy_reader.consumed_bits() <= (copy_data.len() as u64) * 8);
                 if let FrameHeaderCopyOutcome::Truncated { available_bits } = outcome {
@@ -1536,15 +1440,13 @@ mod proptests {
 
         /// Recording a huge bit count from a small payload must EOF cleanly (the documented
         /// UnexpectedEof) instead of pre-allocating ceil(n/8) bytes and OOM-aborting — the
-        /// remaining-bits guard must run before the allocation (round-8 F2).
+        /// remaining-bits guard must run before the allocation.
         #[test]
         fn record_huge_count_short_reader_never_oom(
             data in proptest::collection::vec(any::<u8>(), 0..16),
             num_bits in (1u64 << 32)..=u64::MAX,
         ) {
             let mut reader = BitReader::new(&data, ByteOffset::new(0));
-            // The payload holds at most 16*8 == 128 bits, far fewer than num_bits, so the
-            // result must be the structured EOF error — and crucially without allocating.
             let result = RecordedFrameHeaderBits::record(&mut reader, num_bits);
             let is_eof = matches!(result, Err(crate::error::Error::UnexpectedEof { .. }));
             prop_assert!(is_eof);
@@ -1569,9 +1471,6 @@ mod proptests {
             match parse_tile_group_structure(&mut reader, layout, sz) {
                 Ok(structure) => {
                     prop_assert!(reader.consumed_bits() <= (data.len() as u64) * 8);
-                    // tg_end >= tg_start is a structural property of the parse output on
-                    // the inferred-range path (NumTiles == 1 or flag == 0); the explicit
-                    // path may carry an out-of-range pair that the validator flags.
                     if structure.outcome == TileGroupStructureOutcome::Complete {
                         prop_assert!(structure.header_bytes.is_some());
                         prop_assert!(structure.payload_size.is_some());
@@ -1597,11 +1496,6 @@ mod proptests {
             let framing =
                 parse_tile_group_framing(&payload, tg_start, tg_end, tile_size_bytes, is_bridge);
             let region_len = payload.len() as u64;
-            // Every recorded non-bridge tile's framing stays inside the region: the size
-            // field (when present) and the coded-tile region both fit. Bridge tiles record a
-            // size of 0 (not framed), and the last tile's size is the remaining sz which is
-            // bounded by the region. The defect arms guarantee the loop stopped before any
-            // overrun, so the recorded tiles are always in-bounds.
             for t in &framing.tiles {
                 if let Some(sf) = t.size_field_offset {
                     prop_assert!(sf <= region_len);
@@ -1610,7 +1504,6 @@ mod proptests {
                 prop_assert!(t.tile_size <= region_len);
                 prop_assert!(t.tile_data_offset.saturating_add(t.tile_size) <= region_len);
             }
-            // A defect's offset is within the region.
             if let Some(defect) = framing.defect {
                 prop_assert!(defect.size_field_offset() <= region_len);
             }

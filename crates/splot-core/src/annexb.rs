@@ -201,9 +201,6 @@ fn parse_one_obu(
         });
     }
 
-    // The OBU header and payload must lie entirely within this OBU's declared
-    // bytes (Annex B: `open_bitstream_unit` receives exactly `num_bytes_in_obu`
-    // bytes), so parse the header from that bounded slice and never the next OBU.
     let obu_end = header_start.saturating_add(size_usize);
     let Some(obu_bytes) = input.get(header_start..obu_end) else {
         return Err(Error::ObuPayloadOutOfRange {
@@ -250,7 +247,6 @@ mod tests {
 
     #[test]
     fn parses_temporal_delimiter() {
-        // size=1, header=0x08 (type=2 TemporalDelimiter, no extension, no payload).
         let stream = [0x01, 0x08];
         let obus = parse_annex_b_obus(&stream).unwrap();
         assert_eq!(obus.len(), 1);
@@ -263,7 +259,6 @@ mod tests {
 
     #[test]
     fn parses_two_obus_with_payload() {
-        // TD (size 1), then SequenceHeader (size 2: header 0x04 + 1 payload byte 0xAB).
         let stream = [0x01, 0x08, 0x02, 0x04, 0xAB];
         let obus = parse_annex_b_obus(&stream).unwrap();
         assert_eq!(obus.len(), 2);
@@ -274,10 +269,6 @@ mod tests {
 
     #[test]
     fn envelope_payload_status_is_opt_in_and_preserves_raw_payload() {
-        // The envelope preserves the bounded raw payload bytes, and the stateless
-        // dispatcher now parses the §5.19 tile-group activation prefix, reporting the
-        // honest state-dependent status (no longer a blanket Unimplemented).
-        // 0x1C = 0b0_00111_00 -> ext=0, type=7 (RegularTileGroup).
         let stream = [0x02, 0x1C, 0xAB];
         let obus = parse_annex_b_obus(&stream).unwrap();
         assert_eq!(obus[0].payload, &[0xAB]);
@@ -323,8 +314,6 @@ mod tests {
 
     #[test]
     fn partial_parse_keeps_prefix_and_reports_error() {
-        // OBU #0 parses (TemporalDelimiter with extension); OBU #1 is truncated
-        // (declares 5 bytes but only 1 is present).
         let stream = [0x02, 0x88, 0x05, 0x05, 0x08];
         let partial = parse_annex_b_obus_partial(&stream);
         assert_eq!(partial.obus.len(), 1);
@@ -333,7 +322,6 @@ mod tests {
             partial.error,
             Some(Error::ObuPayloadOutOfRange { .. })
         ));
-        // The strict wrapper still surfaces the error.
         assert!(parse_annex_b_obus(&stream).is_err());
     }
 
@@ -355,18 +343,14 @@ mod tests {
 
     #[test]
     fn header_parsing_is_bounded_to_declared_obu_size() {
-        // size=1 but the header byte signals an extension; its extension byte would
-        // fall in the NEXT OBU. The parser must error within this OBU, not peek ahead.
         assert!(matches!(
             parse_annex_b_obus(&[0x01, 0x88, 0x01, 0x08]),
             Err(Error::UnexpectedEof { .. })
         ));
-        // Same class of error when the truncated extension is at end of stream.
         assert!(matches!(
             parse_annex_b_obus(&[0x01, 0x88]),
             Err(Error::UnexpectedEof { .. })
         ));
-        // A valid 2-byte extension header still parses.
         let valid = parse_annex_b_obus(&[0x02, 0x88, 0x05]).unwrap();
         assert_eq!(valid.len(), 1);
         assert!(valid[0].header.has_header_extension);
@@ -387,9 +371,6 @@ mod proptests {
         fn parsers_never_panic(data in proptest::collection::vec(any::<u8>(), 0..1024)) {
             let _ = read_leb128(&data, ByteOffset::new(0));
             let _ = read_obu_header(&data, ByteOffset::new(0));
-            // Also exercise the stateless payload dispatch on every parsed OBU so the
-            // frame-carrying prefix arms (tile-group / SEF / TIP / bridge) are covered by
-            // the never-panic guarantee, not just the structural Annex B parse.
             if let Ok(obus) = parse_annex_b_obus(&data) {
                 for obu in &obus {
                     let _ = obu.payload_status();

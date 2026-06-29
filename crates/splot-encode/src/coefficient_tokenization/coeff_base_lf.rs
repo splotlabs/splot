@@ -14,20 +14,9 @@ use super::{
     CoefficientCdfRowSelector, CoefficientEntropyToken, CoefficientTokenSyntax, TX_SIZE_4X4_CTX,
 };
 
-// AV2 § 8.3.2 `coeff_base` low-frequency `magLimit` clamps (mirroring the decoder
-// `CoeffBaseContext`): 5 for the near-DC low-frequency samples, 3 otherwise. The
-// luma significant-neighbour count (`SIG_REF_DIFF_OFFSET_NUM`) and the 2D
-// context-band base (`LF_SIG_COEF_CONTEXTS_2D`) are shared from `splot-core`.
 const COEFF_BASE_LF_NEAR_DC_MAG_LIMIT: u32 = 5;
 const COEFF_BASE_MAG_LIMIT: u32 = 3;
 
-// AV2 § 8.3.2 `coeff_base` HIGH-frequency luma 2D band boundaries and offsets
-// (mirroring the decoder `CoeffBaseContext` HF branch, `is_lf == false`,
-// `class_idx == 0`): `ctx2 = min(ctx, 4)`; `row + col < 6 -> ctx2`,
-// `row + col < 8 -> ctx2 + 5`, else `ctx2 + 10`. The 1-D classes map to
-// `ctx2 + 15`. There is NO near-DC `magLimit = 5` carve-out and NO `c == 0` / DC
-// special case (both are low-frequency only): every HF neighbour clamps to
-// `COEFF_BASE_MAG_LIMIT = 3`.
 const COEFF_BASE_HF_CTX2_CLAMP: usize = 4;
 const COEFF_BASE_HF_2D_BAND0_DIAGONAL: usize = 6;
 const COEFF_BASE_HF_2D_BAND1_DIAGONAL: usize = 8;
@@ -83,7 +72,6 @@ pub(crate) fn coeff_base_lf_luma_context(
         let off = SIG_REF_DIFF_OFFSET[class_idx][idx];
         let ref_row = row.saturating_add(off[0] as usize);
         let ref_col = col.saturating_add(off[1] as usize);
-        // `magLimit` is 5 for the low-frequency near-DC samples, else 3.
         let mag_limit = if class_idx == 0 || idx < 2 {
             COEFF_BASE_LF_NEAR_DC_MAG_LIMIT
         } else {
@@ -108,7 +96,6 @@ pub(crate) fn coeff_base_lf_luma_context(
             ctx.min(4) + 16
         }
     } else {
-        // TX_CLASS_HORIZ (1) keys on col; TX_CLASS_VERT (2) keys on row.
         let lidx = if class_idx == 1 { col } else { row };
         if lidx == 0 {
             LF_SIG_COEF_CONTEXTS_2D + ctx.min(6)
@@ -162,7 +149,6 @@ pub(crate) fn coeff_base_hf_luma_context(
         let off = SIG_REF_DIFF_OFFSET[class_idx][idx];
         let ref_row = row.saturating_add(off[0] as usize);
         let ref_col = col.saturating_add(off[1] as usize);
-        // HF: every neighbour clamps to `magLimit = 3` (no near-DC carve-out).
         if ref_row < txh && ref_col < txw {
             let flat = ref_row.saturating_mul(txw).saturating_add(ref_col);
             if flat < level.len() {
@@ -247,23 +233,14 @@ pub(crate) fn coeff_br_lf_luma_context(
     let halved = (mag + 1) >> 1;
     let mag = (if halved < 6 { halved } else { 6 }) as usize;
     if pos == 0 {
-        // The DC takes the `self.pos == 0` branch of `CoeffBrContext::ctx`: under a
-        // 2D class (`class_idx == 0`) the context is `mag`, under a 1-D class it is
-        // `mag + 7`. This branch is INDEPENDENT of `is_lf`. Only the 2D DCT_DCT path
-        // is exercised by the general walk today; the 1-D branch mirrors the decoder
-        // faithfully for later reuse.
         if class_idx != 0 {
             mag + COEFF_BR_LF_NON_DC_OFFSET
         } else {
             mag
         }
     } else if is_lf {
-        // A non-DC LOW-frequency luma coefficient takes the decoder `self.is_lf`
-        // branch: `mag + 7`.
         mag + COEFF_BR_LF_NON_DC_OFFSET
     } else {
-        // A non-DC HIGH-frequency luma coefficient takes the decoder final
-        // `else { mag }` branch: plain `mag`, with NO `+7` offset.
         mag
     }
 }

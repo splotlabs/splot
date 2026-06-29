@@ -3,22 +3,19 @@
 
 #![allow(clippy::panic, clippy::unwrap_used)]
 
-use splot_core::segment::MAX_SEGMENTS;
-use splot_core::symbol::SymbolBitPosition;
-
-use super::super::cdf::{FrameCdfSubset, TileCdfSubset};
-use super::super::coeff_state::TileCoeffContextState;
+use super::super::cdf::FrameCdfSubset;
 use super::super::{TileCoeffFrameFacts, TileCoeffFrameFactsInput};
 use super::ordinary_pass::geometry::{
     CoeffOrdinaryBranchLosslessBaseConfig, CoeffOrdinaryTxSizeGeometryConfig,
 };
-use super::test_support::{seeded_context_state, symbol_decoder};
+use super::test_support::{BranchRun, run_optional_branch, seeded_context_state, symbol_decoder};
 use super::use_fsc_branch::{
     CoeffUseFscBaseQFacts, CoeffUseFscBaseQFactsInput, CoeffUseFscBaseQFactsNonZeroInput,
     CoeffUseFscBranch, CoeffUseFscBranchError, CoeffUseFscFrameBlockFacts,
     CoeffUseFscFrameFactsInput, CoeffUseFscFrameFactsNonZeroInput, CoeffUseFscFrameOrdinaryFacts,
     apply_coeff_use_fsc_branch_from_base_q_facts, apply_coeff_use_fsc_branch_from_frame_facts,
 };
+use splot_core::segment::MAX_SEGMENTS;
 
 const DCT_DCT: usize = 0;
 const IDTX: usize = 9;
@@ -40,13 +37,7 @@ const FSC_PAYLOAD_SUFFIXES: [[u8; 6]; 6] = [
     [0xff, 0xff, 0b0011_0100, 0xff, 0x00, 0x80],
 ];
 
-type SelectorRun = (
-    CoeffUseFscBranch,
-    TileCoeffContextState,
-    TileCdfSubset,
-    SymbolBitPosition,
-    u64,
-);
+type SelectorRun = BranchRun<CoeffUseFscBranch>;
 
 fn geometry() -> CoeffOrdinaryTxSizeGeometryConfig {
     CoeffOrdinaryTxSizeGeometryConfig {
@@ -79,7 +70,6 @@ fn ordinary_facts() -> CoeffUseFscFrameOrdinaryFacts {
     }
 }
 
-// Each bool is a distinct AV2 frame-level syntax flag the fixture toggles; bundling them would obscure the spec mapping.
 #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
 fn frame_facts(
     enable_fsc: bool,
@@ -159,37 +149,15 @@ fn expected_base_q_input(enable_fsc: bool, base_q_idx: u32) -> CoeffUseFscBaseQF
 }
 
 fn run_base_q(payload: &[u8], input: CoeffUseFscBaseQFactsInput) -> Option<SelectorRun> {
-    let frame = FrameCdfSubset::from_defaults();
-    let mut tile = frame.tile_copy();
-    let mut symbols = symbol_decoder(payload);
-    let mut context = seeded_context_state();
-    let branch =
-        apply_coeff_use_fsc_branch_from_base_q_facts(&mut context, &mut tile, &mut symbols, input)
-            .ok()?;
-    Some((
-        branch,
-        context,
-        tile,
-        symbols.consumed_bits(),
-        symbols.symbol_count(),
-    ))
+    run_optional_branch(payload, |context, tile, symbols| {
+        apply_coeff_use_fsc_branch_from_base_q_facts(context, tile, symbols, input).ok()
+    })
 }
 
 fn run_frame_facts(payload: &[u8], input: CoeffUseFscFrameFactsInput) -> Option<SelectorRun> {
-    let frame = FrameCdfSubset::from_defaults();
-    let mut tile = frame.tile_copy();
-    let mut symbols = symbol_decoder(payload);
-    let mut context = seeded_context_state();
-    let branch =
-        apply_coeff_use_fsc_branch_from_frame_facts(&mut context, &mut tile, &mut symbols, input)
-            .ok()?;
-    Some((
-        branch,
-        context,
-        tile,
-        symbols.consumed_bits(),
-        symbols.symbol_count(),
-    ))
+    run_optional_branch(payload, |context, tile, symbols| {
+        apply_coeff_use_fsc_branch_from_frame_facts(context, tile, symbols, input).ok()
+    })
 }
 
 fn ordinary_payload_from(first: u8, second: u8, suffix: [u8; 3]) -> [u8; 12] {

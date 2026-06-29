@@ -107,8 +107,6 @@ impl HlsAvailabilityStore {
     /// Records a multi-frame header as available in-band, keyed by `mfhId`
     /// (AV2 § 7.3.8.7). A later redefinition of the same id overwrites the record but
     /// keeps the id available, preserving monotonic availability.
-    // `record` is moved straight into `multi_frame_headers`; taking it by reference would
-    // force a clone of the 432-byte record, so by-value is the zero-copy choice here.
     #[allow(clippy::large_types_passed_by_value)]
     pub(super) fn record_multi_frame_header(&mut self, record: MultiFrameHeaderRecord) {
         self.multi_frame_headers.insert(record.mfh_id.get(), record);
@@ -340,9 +338,6 @@ pub(super) fn external_hls_disabled_advisory(
     seq_header_id: u32,
     obu: &ObuEnvelope<'_>,
 ) -> Diagnostic {
-    // The finding assumes no external HLS. If the referenced sequence header is
-    // supplied out-of-band, the caller can declare it via ValidationOptions to refine
-    // the check (AV2 § 7.3.8.1).
     Diagnostic::warning(
         "hls/external-hls-disabled",
         format!(
@@ -365,13 +360,9 @@ impl ValidatorContext {
         report: &mut ValidationReport,
     ) {
         let mut reader = BitReader::new(obu.payload, obu.payload_offset());
-        // Parse failures and the mfh_seq_header_id range check are handled by the
-        // stateless MultiFrameHeaderSyntax check; here we only resolve the reference.
         let Ok(mfh) = parse_multi_frame_header(&mut reader) else {
             return;
         };
-        // An out-of-range id (>= MAX_SEQ_NUM) cannot name a valid sequence header and
-        // is already flagged as mfh/seq-header-id-out-of-range; do not double-report.
         if !mfh.seq_header_id_in_range() {
             return;
         }
@@ -402,12 +393,6 @@ impl ValidatorContext {
             }
         }
 
-        // Gate availability on the same validation the SequenceHeaderSyntax /
-        // observe_sequence_header path uses: a fully parsed MFH (now including
-        // seg_info()) must have a valid §5.2.1 payload tail (obu_extension_flag +
-        // trailing_bits). A malformed tail makes the MFH not a valid available HLS
-        // object, so a later cur_mfh_id reference must treat it as unavailable rather
-        // than resolve through it.
         if finish_obu_payload(
             &mut reader,
             obu.payload,
@@ -418,11 +403,6 @@ impl ValidatorContext {
             return;
         }
 
-        // Record this multi-frame header's in-band availability (AV2 § 7.3.8.7) so a
-        // later frame header's cur_mfh_id reference can resolve it. Both ids are in
-        // range here (mfh_seq_header_id checked above; mfhId checked now). The MFH is
-        // recorded even when its own sequence-header reference is unavailable — that
-        // is a separate finding above, not a reason to treat the MFH as absent.
         if mfh.mfh_id_in_range()
             && let Some(seq_id) = SequenceHeaderId::try_new(mfh.mfh_seq_header_id)
             && let Ok(mfh_id_value) = u32::try_from(mfh.mfh_id())
@@ -432,9 +412,6 @@ impl ValidatorContext {
                 mfh_seq_header_id: seq_id,
                 mfh_tlayer_id: obu.header.temporal_layer_id,
                 mfh_mlayer_id: obu.header.embedded_layer_id,
-                // Carry the parsed §5.7 state a `cur_mfh_id > 0` frame header consumes at
-                // §5.18.2 (default frame dimensions and the §5.18.7.1 segmentation arm)
-                // and the deblocking-update groundwork bit.
                 mfh_frame_size: mfh.mfh_frame_size,
                 mfh_seg_info_present_flag: mfh.mfh_seg_info_present_flag,
                 mfh_ext_seg_flag: mfh.mfh_ext_seg_flag,
@@ -444,11 +421,6 @@ impl ValidatorContext {
                 mfh_apply_deblocking_filter: mfh.mfh_apply_deblocking_filter,
                 offset: obu.offset,
             });
-            // AV2 § 7.3.8.1: note this MFH's in-band (re)send for the replay, and — when
-            // its mfh_seq_header_id resolved in-band (so the linear check did not fire and
-            // external HLS did not suppress) — buffer the § 7.3.8.6 sequence-header
-            // reference this MFH makes (a MFH at a random access point references a
-            // sequence header that must itself be available at that point).
             self.rap_replay.note_resend(
                 RapHlsKey::MultiFrameHeader(mfh_id_value),
                 obu.header.extended_layer_id,
@@ -472,8 +444,6 @@ impl ValidatorContext {
     /// parse and a valid § 5.2.1 payload tail.
     pub(super) fn observe_atlas_segment(&mut self, obu: &ObuEnvelope<'_>) {
         let mut reader = BitReader::new(obu.payload, obu.payload_offset());
-        // Parse failures and syntax diagnostics are handled by the stateless
-        // AtlasSegmentSyntax check; here we only record availability.
         let Ok(atlas) = parse_atlas_segment(&mut reader) else {
             return;
         };
@@ -490,10 +460,6 @@ impl ValidatorContext {
         let xlayer = obu.header.extended_layer_id;
         if !xlayer.is_global() {
             self.hls.record_local_atlas(xlayer, atlas.atlas_segment_id);
-            // AV2 § 7.3.8.1: note this *local* atlas segment's in-band (re)send (its own
-            // extended layer) for the random-access-point availability replay, so a local
-            // LCR's lcr_local_atlas_id referencing it at a random access point must find it
-            // resent there. A global atlas is excluded (§ 7.3.8.4 "can be available").
             self.rap_replay.note_resend(
                 RapHlsKey::Atlas {
                     xlayer: xlayer.get(),

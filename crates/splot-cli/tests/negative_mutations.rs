@@ -101,17 +101,6 @@ struct MutationCase {
 ///   - byte  59      LEB128 obu_size = 80  for OBU #2
 ///   - byte  60      OBU header 0x10       OBU_CLOSED_LOOP_KEY (type 4)
 const MUTATIONS: &[MutationCase] = &[
-    // --- Container layer (IVF) ---
-    // IVF is the non-normative byte envelope; bytes 6..8 are the little-endian
-    // `header_len` field, which must be at least the 32-byte baseline header
-    // (splot-core requires `header_len >= IVF_HEADER_SIZE`). The seed declares
-    // 0x0020 = 32; setting byte 6 to 0x1F makes header_len = 31, below the
-    // baseline, so the IVF header parser rejects it. Rule: `ivf/invalid-header-length`.
-    // (NOTE: the signature itself cannot be exercised here — the validator's
-    // container auto-detect only routes to the IVF parser when the input begins
-    // with `DKIF`, so a corrupt magic is parsed as raw Annex B instead of raising
-    // `ivf/invalid-signature`. The mutation therefore keeps the magic intact and
-    // corrupts the declared header length, which IS reachable via auto-detect.)
     MutationCase {
         seed: "vectors/valid/syn-key-intra-64x64.ivf",
         what: "byte 6: shrink IVF header_len below the 32-byte baseline (0x20=32 -> 0x1F=31)",
@@ -122,13 +111,6 @@ const MUTATIONS: &[MutationCase] = &[
         },
         expect_rule_id: "ivf/invalid-header-length",
     },
-    // --- LEB128 / OBU-framing layer (AV2 v1.0.0 Annex B § B.2,
-    //     docs/spec/av2/1.0.0/annex-b-length-delimited-bitstream-format.md#s-annex-b-2) ---
-    // num_bytes_in_obu is a leb128() length prefix; open_bitstream_unit receives
-    // exactly that many bytes. Bumping OBU #2's one-byte obu_size (byte 59) from
-    // 80 to 127 makes the declared payload run past the end of the IVF frame /
-    // input, so the Annex B parser raises ObuPayloadOutOfRange, surfaced as the
-    // generic framing diagnostic `bitstream/parse-error`.
     MutationCase {
         seed: "vectors/valid/syn-key-intra-64x64.ivf",
         what: "byte 59: inflate OBU #2 obu_size LEB128 (0x50=80 -> 0x7F=127) past end of input",
@@ -155,13 +137,6 @@ const MUTATIONS: &[MutationCase] = &[
         },
         expect_rule_id: "obu-header/temporal-layer-zero-only-types",
     },
-    // --- OBU-header layer (AV2 v1.0.0 § 6.2.2,
-    //     docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-2-2), second distinct id ---
-    // OBU_SEQUENCE_HEADER is a base-layer-only type (obu_tlayer_id and
-    // obu_mlayer_id must be 0). Byte 47 is its 1-byte obu_header() 0x04 =
-    // 0b0_00001_00 (ext=0, type=1, tlayer=0); setting the low two bits to 1
-    // (0x05 = 0b0_00001_01) makes obu_tlayer_id = 1, which the validator rejects.
-    // Rule: `obu-header/base-layer-only-types`.
     MutationCase {
         seed: "vectors/valid/syn-key-intra-64x64.ivf",
         what: "byte 47: set OBU_SEQUENCE_HEADER obu_tlayer_id to 1 (0x04 -> 0x05)",
@@ -197,17 +172,11 @@ fn negative_mutations_emit_expected_diagnostics() {
         "the mutation table must not be empty"
     );
 
-    // The non-strict validator is the CLI default (errors fail, warnings do not),
-    // and is stateless across inputs (matches conformance.rs).
     let validator = Validator::new(false);
 
-    // Track the (layer-prefixed) ids actually exercised, to enforce a
-    // non-vacuous spread across at least two layers / three distinct ids.
     let mut exercised: BTreeSet<&'static str> = BTreeSet::new();
 
     for case in MUTATIONS {
-        // Anti-vacuity / causation: the UNMUTATED seed must validate clean, so the
-        // diagnostic is provably caused by the mutation, not a pre-broken seed.
         let seed = read_seed(case.seed);
         let clean = validator.validate_bytes(&seed);
         let clean_errors: Vec<&str> = clean.errors().map(|d| d.rule_id.as_str()).collect();
@@ -217,8 +186,6 @@ fn negative_mutations_emit_expected_diagnostics() {
             case.seed
         );
 
-        // Apply the documented, deterministic mutation in memory (the committed
-        // file is never written).
         let mutated = case.mutation.apply(&seed, case.what);
         assert_ne!(
             mutated, seed,
@@ -226,8 +193,6 @@ fn negative_mutations_emit_expected_diagnostics() {
             case.seed, case.what
         );
 
-        // Validate the mutated bytes. `validate_bytes` returning at all is itself
-        // proof of no-panic (a panic would unwind and fail the test harness).
         let report = validator.validate_bytes(&mutated);
         let got: BTreeSet<&str> = report.errors().map(|d| d.rule_id.as_str()).collect();
         assert!(
@@ -241,8 +206,6 @@ fn negative_mutations_emit_expected_diagnostics() {
         exercised.insert(case.expect_rule_id);
     }
 
-    // Non-vacuity: at least three distinct diagnostics across at least two layers
-    // (the layer prefix is the segment before the first '/').
     assert!(
         exercised.len() >= 3,
         "the negative mutator must exercise >= 3 distinct diagnostics, got {exercised:?}"

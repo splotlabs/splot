@@ -18,7 +18,9 @@ use splot_recon::{
     ReconError,
 };
 
-use super::test_support::fixture_sequence_and_key_core;
+use super::test_support::{
+    UnsupportedFeatureExpectation, assert_unsupported_feature, fixture_sequence_and_key_core,
+};
 use crate::error::DecodeError;
 use crate::tile_payload::WienerNsLrSourceBlock;
 use crate::{DecodeLimitName, DecodeLimitThreshold, DecodeLimits};
@@ -755,51 +757,24 @@ fn wienerns_lr_classified_wiener_storage_frontier_propagates_non_boolean_tx_skip
 fn classified_wiener_storage_runtime_error_reports_retention_frontier() {
     let error =
         super::super::wienerns_lr_classified_wiener_storage_runtime_error(ByteOffset::new(74));
-    let DecodeError::UnsupportedFeature { unsupported } = error else {
-        panic!("classified Wiener storage frontier must be an unsupported-feature error");
-    };
-
-    assert_eq!(
-        unsupported.reason(),
-        "unsupported_wienerns_lr_classified_wiener_runtime_storage"
-    );
-    assert_eq!(
-        unsupported.matrix_row(),
-        "ac0ej3-lr-classified-wiener-storage"
-    );
-    assert_eq!(
-        unsupported.feature_id(),
-        "DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-STORAGE"
-    );
-    assert_eq!(unsupported.spec_section(), "7.20.4");
-    assert_eq!(unsupported.byte_offset(), Some(ByteOffset::new(74)));
-    assert!(
-        unsupported.message().contains("source-read"),
-        "message should say classified source-read dependencies are resolved"
-    );
-    assert!(
-        unsupported
-            .message()
-            .contains("LrTxSkip lookup coordinates"),
-        "message should say tx-skip coordinates are resolved"
-    );
-    assert!(
-        unsupported.message().contains("storage-backed FilterClass"),
-        "message should say storage-backed classification is wired"
-    );
-    assert!(
-        unsupported
-            .message()
-            .contains("decoded 10-bit frame buffers"),
-        "message should name the remaining frame retention boundary"
-    );
-    assert!(
-        unsupported.message().contains("retained for filtering"),
-        "message should not claim live filter-time storage retention"
-    );
-    assert!(
-        unsupported.message().contains("loop-restoration filtering"),
-        "message should keep filtering out of scope"
+    assert_unsupported_feature(
+        error,
+        "classified Wiener storage frontier",
+        UnsupportedFeatureExpectation::at_byte_offset(
+            "unsupported_wienerns_lr_classified_wiener_runtime_storage",
+            "ac0ej3-lr-classified-wiener-storage",
+            "DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-STORAGE",
+            "7.20.4",
+            ByteOffset::new(74),
+            &[
+                "source-read",
+                "LrTxSkip lookup coordinates",
+                "storage-backed FilterClass",
+                "decoded 10-bit frame buffers",
+                "retained for filtering",
+                "loop-restoration filtering",
+            ],
+        ),
     );
 }
 
@@ -867,43 +842,22 @@ fn wienerns_lr_runtime_storage_retention_frontier_limits_total_storage_before_di
 #[test]
 fn wienerns_lr_runtime_storage_retention_error_reports_unpopulated_boundary() {
     let error = super::super::wienerns_lr_runtime_storage_retention_error(ByteOffset::new(74));
-    let DecodeError::UnsupportedFeature { unsupported } = error else {
-        panic!("runtime storage-retention frontier must be an unsupported-feature error");
-    };
-
-    assert_eq!(
-        unsupported.reason(),
-        "unsupported_wienerns_lr_runtime_storage_unpopulated"
-    );
-    assert_eq!(
-        unsupported.matrix_row(),
-        "ac0ej3-lr-runtime-storage-retention"
-    );
-    assert_eq!(
-        unsupported.feature_id(),
-        "DECODE-AC0EJ3-LR-RUNTIME-STORAGE-RETENTION"
-    );
-    assert_eq!(unsupported.spec_section(), "7.20.4");
-    assert_eq!(unsupported.byte_offset(), Some(ByteOffset::new(74)));
-    assert!(
-        unsupported
-            .message()
-            .contains("active-bit-depth CurrFrame/CdefFrame"),
-        "message should name the retained frame-storage shape"
-    );
-    assert!(
-        unsupported.message().contains("LrTxSkip grid shape"),
-        "message should name the tx-skip storage shape"
-    );
-    assert!(
-        unsupported
-            .message()
-            .contains("has not populated decoded frame samples"),
-        "message should not claim populated source samples"
-    );
-    assert!(
-        unsupported.message().contains("not applied"),
-        "message should not claim loop-restoration output"
+    assert_unsupported_feature(
+        error,
+        "runtime storage-retention frontier",
+        UnsupportedFeatureExpectation::at_byte_offset(
+            "unsupported_wienerns_lr_runtime_storage_unpopulated",
+            "ac0ej3-lr-runtime-storage-retention",
+            "DECODE-AC0EJ3-LR-RUNTIME-STORAGE-RETENTION",
+            "7.20.4",
+            ByteOffset::new(74),
+            &[
+                "active-bit-depth CurrFrame/CdefFrame",
+                "LrTxSkip grid shape",
+                "has not populated decoded frame samples",
+                "not applied",
+            ],
+        ),
     );
 }
 

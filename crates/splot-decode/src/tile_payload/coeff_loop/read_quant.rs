@@ -727,19 +727,8 @@ mod tests {
         ));
     }
 
-    // --- §5.20.7.28 read_quant SymbolEncoder roundtrip proofs ---
-    //
-    // These drive the real `read_nonzero_coeff_quants` decode helper with bytes
-    // produced by `SymbolEncoder` (the in-repo coder oracle), asserting the
-    // decoded `quant` and `path` recover the coefficient the encoder wrote. The
-    // expected `quant` is computed independently from the §5.20.7.28 formula in
-    // the test, so a golomb-assembly decode bug surfaces as a mismatch. The
-    // bypass write/read roundtrip itself is proven in splot-core; here the proof
-    // is the read_quant magnitude-extension assembly.
-
     #[test]
     fn read_quant_finite_q_roundtrips_through_symbol_encoder() {
-        // hr_level_avg = 16 -> pred_level = 16, m = 4, k = 5, c_max = 6.
         let entry = CoeffScanEntry::for_test(3, 9, 1, 1);
         let (m, k, c_max) = (4u32, 5u32, 6u32);
         let (q, coeff_rem) = (2u32, 10u32); // q < c_max -> finite-q path
@@ -776,7 +765,6 @@ mod tests {
 
     #[test]
     fn read_quant_golomb_extension_roundtrips_through_symbol_encoder() {
-        // hr_level_avg = 1 -> pred_level = 1, m = 1, k = 2, c_max = 5.
         let entry = CoeffScanEntry::for_test(3, 9, 1, 1);
         let (m, k, c_max) = (1u32, 2u32, 5u32);
         let (golomb_prefix, coeff_rem) = (1u32, 5u32);
@@ -814,8 +802,6 @@ mod tests {
 
     #[test]
     fn read_quant_finite_q_roundtrips_across_parameter_grid() {
-        // hr_level_avg = 16 -> m = 4, k = 5, c_max = 6. Sweep the finite-q range
-        // and several coeff_rem widths; every (q, coeff_rem) must roundtrip.
         let entry = CoeffScanEntry::for_test(3, 9, 1, 1);
         let (m, k, c_max) = (4u32, 5u32, 6u32);
         let level = 4u32;
@@ -861,23 +847,17 @@ mod tests {
         assert_eq!(cases, c_max * 4);
     }
 
-    // Single-char bindings (a, b, m, q, x) mirror the AV2 §5.20.7 Golomb math variables named in the inline comments.
     #[allow(clippy::many_single_char_names)]
     #[test]
     fn read_quant_multi_coeff_roundtrips_with_state_carry() {
-        // Two coefficients in one stream: an Extended coefficient (writes bits)
-        // followed by a BelowThreshold coefficient (writes none). Proves the
-        // stateful scan-walk loop decodes both correctly from one encoder stream.
         let a = CoeffScanEntry::for_test(1, 8, 1, 0);
         let b = CoeffScanEntry::for_test(0, 0, 0, 0);
-        // A: hr = 16 -> m = 4, c_max = 6; q = 1 (finite-q), coeff_rem = 3.
         let (m, c_max) = (4u32, 6u32);
         let (q, coeff_rem) = (1u32, 3u32);
         let length = m;
         let x = (q << m) + coeff_rem;
         let level_a = 4u32;
         let quant_a = level_a + x;
-        // B: level 1 < threshold 5 -> BelowThreshold, quant = level, no bits.
         let level_b = 1u32;
         let max_b = 5u32;
 

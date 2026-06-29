@@ -216,9 +216,6 @@ fn read_match_indices(
     num_classes: usize,
     nopcw: bool,
 ) -> Result<Vec<usize>> {
-    // AV2 §5.20.10.6 includes RefFrameLrWienerNs filters in this bank. This
-    // intra-only frontier has no reference filters, so numRefFilters is 0 and
-    // the PC-Wiener count is 64 - numClasses.
     let mut group_counts = [
         num_classes,
         0usize,

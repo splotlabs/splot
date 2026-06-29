@@ -1,11 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-// Unit, round-trip, and rejection tests for the § 5.18.7.1 `segmentation_params()` writer.
-
-// `include!`d into `crate::write::frame_segmentation` so `super::*` resolves to its writer
-// and private helpers (the property tests live in the sibling
-// `frame_segmentation_proptests.rs`).
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::too_many_lines)]
@@ -98,11 +93,9 @@ mod tests {
         params
     }
 
-    // ----- Round-trip tests (one per syntax branch) -----
 
     #[test]
     fn disabled_round_trips_byte_exact() {
-        // § 5.18.7.1 else-branch: segmentation_enabled == 0, one bit, all-zero features.
         let mut bits = Bits::default();
         bits.bit(0); // segmentation_enabled
         let data = bits.into_bytes();
@@ -114,8 +107,6 @@ mod tests {
 
     #[test]
     fn fresh_seg_info_quantizer_feature_round_trips() {
-        // No sequence info -> haveSegParams 0, allowChange 0, reuse inferred 0, seg_info(8)
-        // parsed fresh. Segment 2 feature 0 (j < SEG_LVL_SKIP) enabled.
         let mut bits = Bits::default();
         bits.bit(1); // segmentation_enabled
         for _ in 0..2 {
@@ -142,7 +133,6 @@ mod tests {
 
     #[test]
     fn fresh_seg_info_skip_feature_round_trips_with_pre_skip() {
-        // Segment 5 feature 1 (j >= SEG_LVL_SKIP) enabled: SegIdPreSkip = 1, no value bits.
         let mut bits = Bits::default();
         bits.bit(1); // segmentation_enabled
         for _ in 0..5 {
@@ -165,8 +155,6 @@ mod tests {
 
     #[test]
     fn fresh_seg_info_ext_seg_reaches_segment_fifteen_round_trips() {
-        // enable_ext_seg -> MaxSegments 16; segment 15 feature 0 enabled exercises the full
-        // derivation loop bound.
         let mut bits = Bits::default();
         bits.bit(1); // segmentation_enabled
         for _ in 0..15 {
@@ -186,7 +174,6 @@ mod tests {
 
     #[test]
     fn sequence_reuse_inferred_round_trips_without_a_bit() {
-        // seq_seg_info_present_flag 1, allow_change 0: reuse inferred 1, only 1 bit.
         let seg = seq_info_view(false);
         let mut bits = Bits::default();
         bits.bit(1); // segmentation_enabled
@@ -201,7 +188,6 @@ mod tests {
 
     #[test]
     fn sequence_reuse_signaled_round_trips_with_a_bit() {
-        // seq_allow_seg_info_change 1: reuse_seg_info f(1) coded as 1.
         let seg = seq_info_view(true);
         let mut bits = Bits::default();
         bits.bit(1); // segmentation_enabled
@@ -215,7 +201,6 @@ mod tests {
 
     #[test]
     fn sequence_declined_reuse_signaled_round_trips_fresh() {
-        // allow_change 1, reuse coded as 0: fresh seg_info(8) is parsed.
         let seg = seq_info_view(true);
         let mut bits = Bits::default();
         bits.bit(1); // segmentation_enabled
@@ -232,7 +217,6 @@ mod tests {
 
     #[test]
     fn mfh_arm_reuse_inferred_round_trips() {
-        // MFH branch: ext_seg matches -> haveSegParams 1; allow_change 0 -> reuse inferred 1.
         let seg = no_seq_info_view(8);
         let mfh = mfh_seg_view(false, false);
         let mut bits = Bits::default();
@@ -248,7 +232,6 @@ mod tests {
 
     #[test]
     fn mfh_arm_reuse_signaled_round_trips() {
-        // mfh_allow_seg_info_change 1 -> allowChange 1 -> reuse_seg_info f(1) coded as 1.
         let seg = no_seq_info_view(8);
         let mfh = mfh_seg_view(false, true);
         let mut bits = Bits::default();
@@ -263,8 +246,6 @@ mod tests {
 
     #[test]
     fn mfh_arm_ext_seg_mismatch_round_trips_fresh() {
-        // ext_seg mismatch -> haveSegParams 0, allowChange 0, reuse inferred 0; fresh
-        // seg_info(8) parsed, ignoring the MFH data.
         let seg = no_seq_info_view(8); // enable_ext_seg == false
         let mfh = mfh_seg_view(true, true); // mfh_ext_seg_flag == true != false
         let mut bits = Bits::default();
@@ -281,7 +262,6 @@ mod tests {
 
     #[test]
     fn mfh_arm_takes_priority_over_sequence_branch_round_trips() {
-        // Both arms could supply data; § 5.18.7.1 selects the MFH branch first.
         let seg = seq_info_view(false); // seq segment 7, feature 2
         let mfh = mfh_seg_view(false, false); // MFH segment 3, feature 0
         let mut bits = Bits::default();
@@ -293,7 +273,6 @@ mod tests {
         assert_eq!(write(&params, &seg, Some(&mfh)), data, "not byte-exact");
     }
 
-    // ----- Rejection tests (one per WriteError reject path; bit_len()==0) -----
 
     /// Builds a canonical enabled+fresh model with all-disabled features (the writer's most
     /// permissive starting point for mutation tests).
@@ -324,8 +303,6 @@ mod tests {
 
     #[test]
     fn rejects_inferred_reuse_disagreeing_with_have_seg_params() {
-        // No seq info -> haveSegParams 0, allowChange 0; reuse_seg_info is inferred 0. A
-        // model claiming reuse_seg_info == true would reparse as false.
         let seg = no_seq_info_view(8);
         let mut params = canonical_fresh(&seg);
         params.reuse_seg_info = true;
@@ -334,22 +311,16 @@ mod tests {
 
     #[test]
     fn rejects_reuse_features_not_matching_source() {
-        // Sequence reuse arm (allow_change 0): features must equal the stored source.
         let seg = seq_info_view(false);
         let mut bits = Bits::default();
         bits.bit(1); // segmentation_enabled
         let mut params = parse(&bits.into_bytes(), &seg, None);
         assert!(params.reuse_seg_info);
-        // Corrupt one stored feature so it no longer matches the reuse source. Keep the
-        // derived seg-id state consistent so this hits the reuse-features check, not the
-        // derivation check.
         params.features[7][2] = SegmentFeature::DISABLED;
         params.features[6][2] = SegmentFeature {
             enabled: true,
             data: 0,
         };
-        // Recompute the correct derived values for the mutated table so the derivation check
-        // passes and the reuse-features check fires instead.
         let (pre_skip, last) = derive_seg_id_state(&params.features, seg.max_segments);
         params.seg_id_pre_skip = pre_skip;
         params.last_active_seg_id = last;
@@ -389,8 +360,6 @@ mod tests {
             enabled: true,
             data: 0,
         };
-        // Keep the derived seg-id state consistent with the mutated table so the disabled
-        // features check fires (not the derivation check).
         let (pre_skip, last) = derive_seg_id_state(&params.features, seg.max_segments);
         params.seg_id_pre_skip = pre_skip;
         params.last_active_seg_id = last;
@@ -420,8 +389,6 @@ mod tests {
 
     #[test]
     fn rejects_wrong_derived_seg_id_pre_skip() {
-        // Constructed model: a correct enabled table but a flipped SegIdPreSkip would reparse
-        // with the re-derived value.
         let seg = no_seq_info_view(8);
         let mut params = canonical_fresh(&seg);
         params.seg_id_pre_skip = true; // table is all-disabled -> derives false
@@ -438,15 +405,12 @@ mod tests {
 
     #[test]
     fn rejects_fresh_seg_info_with_unencodable_feature() {
-        // The fresh branch validates the seg_info(MaxSegments) body up front; an out-of-clip
-        // signed value is rejected by check_seg_info_encodable (propagated, bit_len 0).
         let seg = no_seq_info_view(8);
         let mut params = canonical_fresh(&seg);
         params.features[0][0] = SegmentFeature {
             enabled: true,
             data: i32::MAX, // far outside the +/-351 clip window
         };
-        // Keep the derived seg-id state consistent so the seg_info body check fires first.
         let (pre_skip, last) = derive_seg_id_state(&params.features, seg.max_segments);
         params.seg_id_pre_skip = pre_skip;
         params.last_active_seg_id = last;
@@ -463,9 +427,6 @@ mod tests {
 
     #[test]
     fn hostile_max_segments_does_not_panic_and_round_trips_bounded() {
-        // A constructed CoreSeqSegView with an out-of-range max_segments must not panic; the
-        // writer clamps the seg-id loop and seg_info count at MAX_SEGMENTS. seg_info() itself
-        // also clamps, so a parser-produced model round-trips with the clamped count.
         let seg = CoreSeqSegView {
             seq_seg_info_present_flag: false,
             seq_allow_seg_info_change: false,
@@ -473,7 +434,6 @@ mod tests {
             max_segments: 255, // hostile
             seq_segment_info: None,
         };
-        // 16 segments worth of all-disabled seg_info bits (the parser clamps to 16).
         let mut bits = Bits::default();
         bits.bit(1); // segmentation_enabled
         for _ in 0..16 {
@@ -481,7 +441,6 @@ mod tests {
         }
         let data = bits.into_bytes();
         let params = parse(&data, &seg, None);
-        // Re-emission must succeed and reparse identically.
         let written = write(&params, &seg, None);
         let reparsed = parse(&written, &seg, None);
         assert_eq!(reparsed, params);

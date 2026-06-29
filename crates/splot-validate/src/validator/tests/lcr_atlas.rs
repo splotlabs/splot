@@ -3,8 +3,6 @@
 
 use super::*;
 
-// --- HLS LCR / atlas availability (AV2 § 7.3.8.3 / § 7.3.8.4 / § 6.4.1) -------
-
 /// Appends the §5.2.1 extensible-OBU payload tail (`obu_extension_flag = 0` +
 /// `trailing_one_bit`); `into_bytes` zero-pads the remainder.
 pub(in crate::validator::tests) fn extensible_obu_tail(bits: &mut Bits) {
@@ -68,7 +66,6 @@ pub(in crate::validator::tests) fn local_lcr_obu(
     bits.bit(u8::from(local_atlas_id.is_some())); // lcr_local_atlas_id_present_flag
     bits.f(local_atlas_id.unwrap_or(0), 3); // lcr_local_atlas_id or reserved_zero_3bits
     bits.f(0, 5); // lcr_local_reserved_zero_5bits
-    // lcr_xlayer_info(0, xId): all present flags clear, then byte_alignment().
     bits.bit(0); // lcr_rep_info_present_flag
     bits.bit(0); // lcr_xlayer_purpose_present_flag
     bits.bit(0); // lcr_xlayer_color_info_present_flag
@@ -191,7 +188,6 @@ pub(in crate::validator::tests) fn sequence_header_obu_with_lcr(
 
 #[test]
 fn hls_seq_lcr_missing_record_is_flagged() {
-    // seq_lcr_id = 5 but no LCR precedes the sequence header.
     let mut data = temporal_delimiter_obu();
     data.extend(sequence_header_obu_with_lcr(3, 5));
     let report = Validator::new(false).validate_bytes(&data);
@@ -205,7 +201,6 @@ fn hls_seq_lcr_missing_record_is_flagged() {
 
 #[test]
 fn lcr_seq_header_resolves_to_local_is_accepted() {
-    // A local LCR in xlayer 3 with lcr_local_id = 5 satisfies seq_lcr_id = 5.
     let mut data = temporal_delimiter_obu();
     data.extend(local_lcr_obu(3, 0, 5, None));
     data.extend(sequence_header_obu_with_lcr(3, 5));
@@ -220,7 +215,6 @@ fn lcr_seq_header_resolves_to_local_is_accepted() {
 
 #[test]
 fn lcr_seq_header_resolves_to_global_is_accepted() {
-    // A global LCR id 5 whose xlayer_map includes xlayer 3 (bit 3 -> 0b1000 = 8).
     let mut data = temporal_delimiter_obu();
     data.extend(global_lcr_obu(5, 0b1000, None));
     data.extend(sequence_header_obu_with_lcr(3, 5));
@@ -236,7 +230,6 @@ fn lcr_seq_header_resolves_to_global_is_accepted() {
 
 #[test]
 fn lcr_global_xlayer_map_missing_xlayer_is_flagged() {
-    // Global LCR id 5 whose xlayer_map (bit 0 only) does NOT include xlayer 3.
     let mut data = temporal_delimiter_obu();
     data.extend(global_lcr_obu(5, 0b1, None));
     data.extend(sequence_header_obu_with_lcr(3, 5));
@@ -251,7 +244,6 @@ fn lcr_global_xlayer_map_missing_xlayer_is_flagged() {
 
 #[test]
 fn lcr_local_missing_global_is_flagged() {
-    // Local LCR references lcr_global_id = 2, but no global LCR is available.
     let mut data = temporal_delimiter_obu();
     data.extend(local_lcr_obu(3, 2, 1, None));
     let report = Validator::new(false).validate_bytes(&data);
@@ -266,8 +258,6 @@ fn lcr_local_missing_global_is_flagged() {
 #[test]
 fn lcr_local_missing_global_is_suppressed_under_external_hls() {
     use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
-    // Under external HLS the global LCR could be supplied out-of-band (not
-    // modeled), so the in-band-unavailable error must be suppressed.
     let mut data = temporal_delimiter_obu();
     data.extend(local_lcr_obu(3, 2, 1, None));
     let options = ValidationOptions {
@@ -284,7 +274,6 @@ fn lcr_local_missing_global_is_suppressed_under_external_hls() {
 
 #[test]
 fn atlas_local_atlas_unavailable_is_flagged() {
-    // Local LCR references lcr_local_atlas_id = 4, but no local atlas precedes it.
     let mut data = temporal_delimiter_obu();
     data.extend(local_lcr_obu(3, 0, 1, Some(4)));
     let report = Validator::new(false).validate_bytes(&data);
@@ -299,8 +288,6 @@ fn atlas_local_atlas_unavailable_is_flagged() {
 #[test]
 fn atlas_local_atlas_unavailable_is_suppressed_under_external_hls() {
     use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
-    // Under external HLS the local atlas could be supplied out-of-band (not
-    // modeled), so the in-band-unavailable error must be suppressed.
     let mut data = temporal_delimiter_obu();
     data.extend(local_lcr_obu(3, 0, 1, Some(4)));
     let options = ValidationOptions {
@@ -317,7 +304,6 @@ fn atlas_local_atlas_unavailable_is_suppressed_under_external_hls() {
 
 #[test]
 fn atlas_local_atlas_available_is_accepted() {
-    // A local atlas segment OBU (xlayer 3, id 4) precedes the referencing LCR.
     let mut data = temporal_delimiter_obu();
     data.extend(atlas_obu(3, 4));
     data.extend(local_lcr_obu(3, 0, 1, Some(4)));
@@ -333,9 +319,6 @@ fn atlas_local_atlas_available_is_accepted() {
 #[test]
 fn lcr_global_xlayer_map_missing_xlayer_is_suppressed_under_external_hls() {
     use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
-    // Same shape as lcr_global_xlayer_map_missing_xlayer_is_flagged, but under
-    // external HLS an unmodeled external local LCR could resolve seq_lcr_id ahead
-    // of the in-band global, so the xlayer-map check must be suppressed.
     let mut data = temporal_delimiter_obu();
     data.extend(global_lcr_obu(5, 0b1, None));
     data.extend(sequence_header_obu_with_lcr(3, 5));
@@ -379,7 +362,6 @@ fn atlas_segment_mode_out_of_range_is_flagged() {
 
 #[test]
 fn lcr_global_id_zero_is_flagged() {
-    // AV2 §6.8.2: lcr_global_config_record_id must be in 1..7.
     let mut data = temporal_delimiter_obu();
     data.extend(global_lcr_obu(0, 0b1, None));
     let report = Validator::new(false).validate_bytes(&data);
@@ -393,7 +375,6 @@ fn lcr_global_id_zero_is_flagged() {
 
 #[test]
 fn lcr_empty_xlayer_map_is_flagged() {
-    // AV2 §6.8.2: lcr_xlayer_map must be in 1..(1 << 31) - 1.
     let mut data = temporal_delimiter_obu();
     data.extend(global_lcr_obu(1, 0, None));
     let report = Validator::new(false).validate_bytes(&data);
@@ -405,7 +386,6 @@ fn lcr_empty_xlayer_map_is_flagged() {
 
 #[test]
 fn lcr_local_id_zero_is_flagged() {
-    // AV2 §6.8.3: lcr_local_id must not be 0.
     let mut data = temporal_delimiter_obu();
     data.extend(local_lcr_obu(3, 0, 0, None));
     let report = Validator::new(false).validate_bytes(&data);
@@ -417,7 +397,6 @@ fn lcr_local_id_zero_is_flagged() {
 
 #[test]
 fn lcr_dependent_xlayers_flag_nonzero_is_warned() {
-    // AV2 §6.8.2: lcr_dependent_xlayers_flag must be 0 (decoder-ignored -> warning).
     let mut data = temporal_delimiter_obu();
     data.extend(global_lcr_obu_with_dependent_flag());
     let report = Validator::new(false).validate_bytes(&data);
@@ -431,9 +410,6 @@ fn lcr_dependent_xlayers_flag_nonzero_is_warned() {
 
 #[test]
 fn lcr_config_idc_reserved_value_is_flagged() {
-    // AV2 § 6.8.4: a global LCR's lcr_config_idc shall not take a value outside Annex A.
-    // Annex A.3 Table A.5 defines multi-sequence configurations 0..=2, so 3..=63 are reserved.
-    // config_idc 3 (the first reserved value) must fire from the parsed global LCR alone.
     let agg = super::lcr_msdo_cmvs::AggInfo {
         config_idc: 3,
         aggregate_level_idx: 0,
@@ -459,8 +435,6 @@ fn lcr_config_idc_reserved_value_is_flagged() {
 
 #[test]
 fn lcr_aggregate_level_idx_reserved_value_is_flagged() {
-    // AV2 § 6.8.4: lcr_aggregate_level_idx shall not be outside Annex A. Annex A.4 Table A.7
-    // reserves level indices 22..=30; 22 (the first reserved value) must fire.
     let agg = super::lcr_msdo_cmvs::AggInfo {
         config_idc: 0,
         aggregate_level_idx: 22,
@@ -486,8 +460,6 @@ fn lcr_aggregate_level_idx_reserved_value_is_flagged() {
 
 #[test]
 fn lcr_max_interop_reserved_value_is_flagged() {
-    // AV2 § 6.8.4: lcr_max_interop shall not be outside Annex A. Annex A.3 Table A.3 defines
-    // interoperability points 0, 1, 2, and 15 ("max"); 3 (the first reserved value) must fire.
     let agg = super::lcr_msdo_cmvs::AggInfo {
         config_idc: 0,
         aggregate_level_idx: 0,
@@ -513,9 +485,6 @@ fn lcr_max_interop_reserved_value_is_flagged() {
 
 #[test]
 fn lcr_aggregate_info_defined_values_are_accepted() {
-    // AV2 § 6.8.4 boundaries: config_idc 2 (highest Table A.5 config), aggregate_level_idx 31
-    // ("Maximum parameters", Table A.7), and max_interop 15 ("max", Table A.3) are all defined,
-    // so none of the three § 6.8.4 value-space diagnostics may fire.
     let agg = super::lcr_msdo_cmvs::AggInfo {
         config_idc: 2,
         aggregate_level_idx: 31,
@@ -545,7 +514,6 @@ fn lcr_aggregate_info_defined_values_are_accepted() {
 
 #[test]
 fn atlas_multistream_outside_global_xlayer_is_flagged() {
-    // AV2 §6.9: MULTISTREAM_ATLAS requires obu_xlayer_id == GLOBAL_XLAYER_ID.
     let mut data = temporal_delimiter_obu();
     data.extend(atlas_multistream_obu(3));
     let report = Validator::new(false).validate_bytes(&data);
@@ -559,7 +527,6 @@ fn atlas_multistream_outside_global_xlayer_is_flagged() {
 
 #[test]
 fn atlas_multistream_in_global_xlayer_is_accepted() {
-    // A multistream atlas at GLOBAL_XLAYER_ID is conformant.
     let mut data = temporal_delimiter_obu();
     data.extend(atlas_multistream_obu(31));
     let report = Validator::new(false).validate_bytes(&data);
@@ -573,7 +540,6 @@ fn atlas_multistream_in_global_xlayer_is_accepted() {
 
 #[test]
 fn atlas_duplicate_input_stream_id_is_flagged() {
-    // AV2 §6.9.6: ats_input_stream_id values of a basic atlas must be unique.
     let mut data = temporal_delimiter_obu();
     data.extend(atlas_basic_duplicate_stream_obu(3));
     let report = Validator::new(false).validate_bytes(&data);
@@ -587,7 +553,6 @@ fn atlas_duplicate_input_stream_id_is_flagged() {
 
 #[test]
 fn atlas_multistream_duplicate_input_stream_id_is_flagged() {
-    // AV2 §6.9.4 gives ats_msi_input_stream_id the same (§6.9.6 unique) semantics.
     let mut data = temporal_delimiter_obu();
     data.extend(atlas_multistream_duplicate_stream_obu());
     let report = Validator::new(false).validate_bytes(&data);
@@ -598,8 +563,6 @@ fn atlas_multistream_duplicate_input_stream_id_is_flagged() {
         "report was: {report}"
     );
 }
-
-// ----- Operating point set + buffer removal timing (ops-brt-hls-foundation) -----
 
 /// Wraps OPS payload bits with the extensible OBU tail (`obu_extension_flag = 0`
 /// then `trailing_bits`).
@@ -735,7 +698,6 @@ pub(in crate::validator::tests) fn local_ops_obu(
         for index in 0..ops_cnt {
             let mut body = Bits::default();
             if ptl_present {
-                // ops_seq_profile_tier_level_info() with nonzero reserved bits.
                 body.f(0, 5); // seq_profile_idc
                 body.f(0, 5); // level_idx
                 body.bit(0); // tier_flag

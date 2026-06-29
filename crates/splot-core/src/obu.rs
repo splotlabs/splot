@@ -292,8 +292,6 @@ pub fn dispatch_obu_payload(
         ObuType::BufferRemovalTiming => {
             let mut reader = BitReader::new(payload, payload_offset);
             let buffer_removal_timing = parse_buffer_removal_timing(&mut reader)?;
-            // OBU_BUFFER_REMOVAL_TIMING is not extensible (§ 5.2.1, ObuType::
-            // is_extensible_obu), so finish_obu_payload uses trailing_bits() only.
             finish_obu_payload(&mut reader, payload, header.obu_type.is_extensible_obu())?;
             Ok(PayloadStatus::Parsed(ParsedObu::BufferRemovalTiming(
                 buffer_removal_timing,
@@ -302,8 +300,6 @@ pub fn dispatch_obu_payload(
         ObuType::QuantizationMatrix => {
             let mut reader = BitReader::new(payload, payload_offset);
             let quantizer_matrix = parse_quantizer_matrix(&mut reader)?;
-            // OBU_QUANTIZATION_MATRIX is not extensible (§ 5.2.1, ObuType::
-            // is_extensible_obu), so finish_obu_payload uses trailing_bits() only.
             finish_obu_payload(&mut reader, payload, header.obu_type.is_extensible_obu())?;
             Ok(PayloadStatus::Parsed(ParsedObu::QuantizationMatrix(
                 Box::new(quantizer_matrix),
@@ -312,8 +308,6 @@ pub fn dispatch_obu_payload(
         ObuType::FilmGrain => {
             let mut reader = BitReader::new(payload, payload_offset);
             let film_grain = parse_film_grain(&mut reader)?;
-            // OBU_FILM_GRAIN is not extensible (§ 5.2.1), so finish_obu_payload uses
-            // trailing_bits() only.
             finish_obu_payload(&mut reader, payload, header.obu_type.is_extensible_obu())?;
             Ok(PayloadStatus::Parsed(ParsedObu::FilmGrain(Box::new(
                 film_grain,
@@ -328,16 +322,12 @@ pub fn dispatch_obu_payload(
             )))
         }
         ObuType::Padding => {
-            // padding_obu() consumes the whole payload (padding bytes plus its own
-            // trailing_bits), so it is NOT followed by finish_obu_payload (AV2 § 5.16).
             let padding = parse_padding_obu(payload, payload_offset)?;
             Ok(PayloadStatus::Parsed(ParsedObu::Padding(padding)))
         }
         ObuType::MetadataShort => {
             let mut reader = BitReader::new(payload, payload_offset);
             let metadata = parse_metadata_short(&mut reader, payload.len())?;
-            // OBU_METADATA_SHORT is not extensible (§ 5.2.1), so finish_obu_payload uses
-            // trailing_bits() only.
             finish_obu_payload(&mut reader, payload, header.obu_type.is_extensible_obu())?;
             Ok(PayloadStatus::Parsed(ParsedObu::MetadataShort(Box::new(
                 metadata,
@@ -346,23 +336,11 @@ pub fn dispatch_obu_payload(
         ObuType::MetadataGroup => {
             let mut reader = BitReader::new(payload, payload_offset);
             let metadata = parse_metadata_group(&mut reader, header.extended_layer_id)?;
-            // OBU_METADATA_GROUP is not extensible (§ 5.2.1), so finish_obu_payload uses
-            // trailing_bits() only.
             finish_obu_payload(&mut reader, payload, header.obu_type.is_extensible_obu())?;
             Ok(PayloadStatus::Parsed(ParsedObu::MetadataGroup(Box::new(
                 metadata,
             ))))
         }
-        // The 11 frame-carrying types (the tile-group family and the SEF / TIP / bridge
-        // family). Dispatch stays stateless: it parses only the state-free § 5.18.2 /
-        // § 5.19 activation prefix and returns PrefixParsed with the reason the rest needs
-        // state. `first_picture_in_tu` is per-extended-layer decoder state the stateless
-        // front door does not hold, so it is passed `None` (it only affects the CLK-only
-        // `startCVS` derivation, not which bytes are read): a CLK then exposes
-        // `starts_cvs == None` rather than a fabricated `Some(false)`, while every other
-        // type is decided `Some(false)` from the type alone. The validator and inspector
-        // supply the real value on their stateful paths. An EOF inside the prefix returns
-        // the existing structured error path.
         obu_type if obu_type.is_tile_group() => {
             let mut reader = BitReader::new(payload, payload_offset);
             let prefix = parse_tile_group_prefix(&mut reader, obu_type, None)?;
@@ -383,8 +361,6 @@ pub fn dispatch_obu_payload(
                 feature: "AV2-5.18-FRAME-HEADER",
             })
         }
-        // Any remaining type is parsed by an explicit arm above or kept opaque (reserved);
-        // none reach here. Kept as an honest fallback rather than an unreachable!.
         obu_type => Ok(PayloadStatus::Unimplemented {
             feature: unimplemented_payload_feature(obu_type),
             payload,
@@ -424,10 +400,6 @@ pub fn finish_obu_payload(
         let flag_bit_offset = reader.bit_offset();
         let obu_extension_flag = reader.read_flag()?;
         if obu_extension_flag {
-            // AV2 § 6.2.1: it is a requirement of bitstream conformance that
-            // obu_extension_flag is equal to 0 in bitstreams conforming to this
-            // specification version, so a set flag is a conformance violation
-            // rather than opaque extension data.
             return Err(Error::InvalidObuExtension {
                 offset: flag_offset,
                 bit_offset: flag_bit_offset,
@@ -471,8 +443,6 @@ fn unimplemented_payload_feature(obu_type: ObuType) -> &'static str {
         | ObuType::LeadingTip
         | ObuType::RegularTip
         | ObuType::BridgeFrame => "AV2-5.18-FRAME-HEADER",
-        // Parsed by an explicit dispatch arm (or kept opaque for reserved types), so
-        // these never reach this function; present only for match exhaustiveness.
         ObuType::Reserved0
         | ObuType::TemporalDelimiter
         | ObuType::Reserved(_)
@@ -607,7 +577,6 @@ mod tests {
 
     #[test]
     fn header_without_extension() {
-        // 0x04 = 0b0_00001_00 -> ext=0, type=1 (SequenceHeader), tlayer=0.
         let header = read_obu_header(&[0x04], ByteOffset::new(0)).unwrap();
         assert!(!header.has_header_extension);
         assert_eq!(header.obu_type, ObuType::SequenceHeader);
@@ -619,8 +588,6 @@ mod tests {
 
     #[test]
     fn header_with_extension() {
-        // 0x99 = 0b1_00110_01 -> ext=1, type=6, tlayer=1.
-        // 0x65 = 0b011_00101 -> mlayer=3, xlayer=5.
         let header = read_obu_header(&[0x99, 0x65], ByteOffset::new(0)).unwrap();
         assert!(header.has_header_extension);
         assert_eq!(header.obu_type, ObuType::LeadingTileGroup);
@@ -632,7 +599,6 @@ mod tests {
 
     #[test]
     fn temporal_delimiter_infers_global_xlayer() {
-        // 0x08 = 0b0_00010_00 -> ext=0, type=2 (TemporalDelimiter).
         let header = read_obu_header(&[0x08], ByteOffset::new(0)).unwrap();
         assert_eq!(header.obu_type, ObuType::TemporalDelimiter);
         assert_eq!(header.extended_layer_id, GLOBAL_XLAYER_ID);
@@ -640,7 +606,6 @@ mod tests {
 
     #[test]
     fn msdo_infers_global_xlayer() {
-        // 0x50 = 0b0_10100_00 -> ext=0, type=20 (Msdo).
         let header = read_obu_header(&[0x50], ByteOffset::new(0)).unwrap();
         assert_eq!(header.obu_type, ObuType::Msdo);
         assert_eq!(header.extended_layer_id, GLOBAL_XLAYER_ID);
@@ -648,7 +613,6 @@ mod tests {
 
     #[test]
     fn missing_extension_byte_is_eof() {
-        // 0x99 signals an extension, but the second byte is missing.
         assert!(matches!(
             read_obu_header(&[0x99], ByteOffset::new(0)),
             Err(Error::UnexpectedEof { .. })
@@ -755,8 +719,6 @@ mod tests {
 
     #[test]
     fn dispatch_attempts_sequence_header_payload() {
-        // A 1-byte payload is too short for a full sequence header, so dispatch now
-        // surfaces a typed parse error rather than reporting the payload unimplemented.
         let header = read_obu_header(&[0x04], ByteOffset::new(0)).unwrap();
         let payload = [0xAB];
         assert!(matches!(
@@ -767,10 +729,7 @@ mod tests {
 
     #[test]
     fn dispatch_parses_metadata_short_payload() {
-        // 0x20 = 0b0_01000_00 -> ext=0, type=8 (MetadataShort).
         let header = read_obu_header(&[0x20], ByteOffset::new(0)).unwrap();
-        // Cancelled short metadata: first byte 0x08 (cancel=1, type field follows),
-        // metadata_type=4, then the OBU trailing byte 0x80.
         let payload = [0x08, 0x04, 0x80];
         let status = dispatch_obu_payload(header, &payload, ByteOffset::new(1)).unwrap();
         assert!(matches!(
@@ -785,9 +744,7 @@ mod tests {
 
     #[test]
     fn dispatch_parses_metadata_group_payload() {
-        // 0x24 = 0b0_01001_00 -> ext=0, type=9 (MetadataGroup).
         let header = read_obu_header(&[0x24], ByteOffset::new(0)).unwrap();
-        // Group with one cancelled unit (type=4, header byte 0x01), then trailing 0x80.
         let payload = [0x00, 0x00, 0x04, 0x01, 0x80];
         let status = dispatch_obu_payload(header, &payload, ByteOffset::new(1)).unwrap();
         assert!(matches!(
@@ -802,10 +759,8 @@ mod tests {
 
     #[test]
     fn dispatch_parses_padding_payload() {
-        // 0x64 = 0b0_11001_00 -> ext=0, type=25 (Padding).
         let header = read_obu_header(&[0x64], ByteOffset::new(0)).unwrap();
         assert_eq!(header.obu_type, ObuType::Padding);
-        // Two arbitrary padding bytes, then a trailing-bits byte (0x80).
         let payload = [0xDE, 0xAD, 0x80];
         let status = dispatch_obu_payload(header, &payload, ByteOffset::new(1)).unwrap();
         assert!(matches!(
@@ -820,11 +775,8 @@ mod tests {
 
     #[test]
     fn dispatch_parses_layer_config_record_payload() {
-        // 0xC0 0x1F -> ext=1, type=16 (LayerConfigurationRecord), xlayer=31 (global).
         let header = read_obu_header(&[0xC0, 0x1F], ByteOffset::new(0)).unwrap();
         assert_eq!(header.obu_type, ObuType::LayerConfigurationRecord);
-        // Minimal global LCR (lcr_global_config_record_id=1, lcr_xlayer_map=1, all flags
-        // 0) followed by obu_extension_flag(0) + trailing_one_bit.
         let payload = [0x20, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x40];
         let status = dispatch_obu_payload(header, &payload, ByteOffset::new(2)).unwrap();
         assert!(matches!(
@@ -839,10 +791,8 @@ mod tests {
 
     #[test]
     fn dispatch_parses_atlas_segment_payload() {
-        // 0xC4 0x03 -> ext=1, type=17 (AtlasSegment), xlayer=3.
         let header = read_obu_header(&[0xC4, 0x03], ByteOffset::new(0)).unwrap();
         assert_eq!(header.obu_type, ObuType::AtlasSegment);
-        // SINGLE_ATLAS (mode 2), nominal dims, no signaled ids, then the OBU tail.
         let payload = [0x0F, 0x20];
         let status = dispatch_obu_payload(header, &payload, ByteOffset::new(2)).unwrap();
         assert!(matches!(
@@ -857,11 +807,8 @@ mod tests {
 
     #[test]
     fn dispatch_parses_operating_point_set_payload() {
-        // 0xC8 0x1F -> ext=1, type=18 (OperatingPointSet), xlayer=31 (global).
         let header = read_obu_header(&[0xC8, 0x1F], ByteOffset::new(0)).unwrap();
         assert_eq!(header.obu_type, ObuType::OperatingPointSet);
-        // Reset-only OPS (ops_reset_flag=0, ops_id=0, ops_cnt=0) then the extensible
-        // tail: obu_extension_flag(0) + trailing_one_bit.
         let payload = [0x00, 0x40];
         let status = dispatch_obu_payload(header, &payload, ByteOffset::new(2)).unwrap();
         assert!(matches!(
@@ -876,11 +823,8 @@ mod tests {
 
     #[test]
     fn dispatch_parses_buffer_removal_timing_payload() {
-        // 0x3C -> ext=0, type=15 (BufferRemovalTiming), xlayer inferred 0.
         let header = read_obu_header(&[0x3C], ByteOffset::new(0)).unwrap();
         assert_eq!(header.obu_type, ObuType::BufferRemovalTiming);
-        // br_ops_dependent_flag(0) + br_time = rg(4) of 0, then trailing_one_bit
-        // (BRT is non-extensible, so there is no obu_extension_flag).
         let payload = [0x02];
         let status = dispatch_obu_payload(header, &payload, ByteOffset::new(1)).unwrap();
         assert!(matches!(
@@ -895,11 +839,8 @@ mod tests {
 
     #[test]
     fn dispatch_parses_quantizer_matrix_payload() {
-        // 0x58 -> ext=0, type=22 (QuantizationMatrix), tlayer=0.
         let header = read_obu_header(&[0x58], ByteOffset::new(0)).unwrap();
         assert_eq!(header.obu_type, ObuType::QuantizationMatrix);
-        // qm_bit_map=0 (f(15)) + qm_chroma_info_present_flag=0 (f(1)) = 16 zero bits,
-        // then trailing_one_bit (QM is non-extensible).
         let payload = [0x00, 0x00, 0x80];
         let status = dispatch_obu_payload(header, &payload, ByteOffset::new(1)).unwrap();
         assert!(matches!(
@@ -914,11 +855,8 @@ mod tests {
 
     #[test]
     fn dispatch_parses_film_grain_payload() {
-        // 0x5C -> ext=0, type=23 (FilmGrain), tlayer=0.
         let header = read_obu_header(&[0x5C], ByteOffset::new(0)).unwrap();
         assert_eq!(header.obu_type, ObuType::FilmGrain);
-        // fgm_update_flags=0 (f(8)) + fgm_chroma_idc=uvlc(0) (a `1` bit) then
-        // trailing_one_bit: byte 0x00, then 0xC0 = `1`(uvlc) `1`(trailing) padding.
         let payload = [0x00, 0xC0];
         let status = dispatch_obu_payload(header, &payload, ByteOffset::new(1)).unwrap();
         assert!(matches!(
@@ -931,15 +869,10 @@ mod tests {
         }
     }
 
-    // --- frame-carrying payload dispatch (the 11 types) ---
-
     #[test]
     fn dispatch_parses_tile_group_prefix_and_blocks_on_state() {
-        // 0x10 = 0b0_00100_00 -> ext=0, type=4 (ClosedLoopKey, a tile-group type).
         let header = read_obu_header(&[0x10], ByteOffset::new(0)).unwrap();
         assert_eq!(header.obu_type, ObuType::ClosedLoopKey);
-        // is_first_tile_group=1 (frame_header_present_flag inferred 1), cur_mfh_id=uvlc(0)
-        // (a `1` bit), seq_header_id_in_frame_header=uvlc(2) (`011`): 1 1 0 1 1 -> 0xD8.
         let payload = [0xD8];
         let status = dispatch_obu_payload(header, &payload, ByteOffset::new(1)).unwrap();
         assert!(matches!(
@@ -992,10 +925,8 @@ mod tests {
 
     #[test]
     fn dispatch_parses_sef_prefix_and_blocks_on_state() {
-        // 0x30 = 0b0_01100_00 -> ext=0, type=12 (RegularSef, a frame-header type).
         let header = read_obu_header(&[0x30], ByteOffset::new(0)).unwrap();
         assert_eq!(header.obu_type, ObuType::RegularSef);
-        // Not bridge: cur_mfh_id=uvlc(0) (`1`), seq_header_id=uvlc(0) (`1`) -> 0xC0.
         let payload = [0xC0];
         let status = dispatch_obu_payload(header, &payload, ByteOffset::new(1)).unwrap();
         assert!(matches!(
@@ -1019,8 +950,6 @@ mod tests {
 
     #[test]
     fn dispatch_tile_group_eof_in_prefix_is_structured_error() {
-        // A ClosedLoopKey with an empty payload: parse_tile_group_prefix cannot read
-        // is_first_tile_group, so dispatch surfaces the EOF error (not PrefixParsed).
         let header = read_obu_header(&[0x10], ByteOffset::new(0)).unwrap();
         assert!(matches!(
             dispatch_obu_payload(header, &[], ByteOffset::new(1)),
@@ -1030,8 +959,6 @@ mod tests {
 
     #[test]
     fn dispatch_frame_header_eof_in_prefix_is_structured_error() {
-        // A RegularSef with an empty payload: parse_frame_header_prefix cannot read the
-        // cur_mfh_id uvlc, so dispatch surfaces the EOF error (not PrefixParsed).
         let header = read_obu_header(&[0x30], ByteOffset::new(0)).unwrap();
         assert!(matches!(
             dispatch_obu_payload(header, &[], ByteOffset::new(1)),
@@ -1041,11 +968,6 @@ mod tests {
 
     #[test]
     fn dispatch_clk_tile_group_prefix_leaves_starts_cvs_unknown() {
-        // A ClosedLoopKey dispatched statelessly cannot know FirstPictureInTU, so its
-        // startCVS (AV2 § 5.18.2: obu_type == OBU_CLOSED_LOOP_KEY && FirstPictureInTU)
-        // is genuinely unknown — it must surface as None, NOT a fabricated Some(false).
-        // 0x10 = ext=0, type=4 (ClosedLoopKey). Payload 0xD8: is_first_tile_group=1,
-        // cur_mfh_id=uvlc(0), seq_header_id=uvlc(2).
         let header = read_obu_header(&[0x10], ByteOffset::new(0)).unwrap();
         assert_eq!(header.obu_type, ObuType::ClosedLoopKey);
         let status = dispatch_obu_payload(header, &[0xD8], ByteOffset::new(1)).unwrap();
@@ -1073,11 +995,6 @@ mod tests {
 
     #[test]
     fn dispatch_non_clk_frame_header_prefix_has_some_false_starts_cvs() {
-        // A non-CLK type on the frame-header dispatch arm (e.g. RegularSef) has
-        // startCVS = false by type alone — no FirstPictureInTU input is needed, so it is
-        // decided Some(false) (the control case to the CLK-tile-group None above; CLK is a
-        // tile-group type and routes to the tile-group arm, not here). RegularSef is non-CLK,
-        // so it is decided Some(false) (type-only). 0x30 = ext=0, type=12 (RegularSef).
         let header = read_obu_header(&[0x30], ByteOffset::new(0)).unwrap();
         assert_eq!(header.obu_type, ObuType::RegularSef);
         let status = dispatch_obu_payload(header, &[0xC0], ByteOffset::new(1)).unwrap();
@@ -1096,18 +1013,12 @@ mod tests {
             ..
         } = &status
         {
-            // Non-CLK: startCVS is decided from the type alone (always false), independent
-            // of the unknown FirstPictureInTU — so it is Some(false), not None.
             assert_eq!(fh.starts_cvs, Some(false));
         }
     }
 
     #[test]
     fn dispatch_covers_every_frame_carrying_type_without_unimplemented() {
-        // Every one of the 11 frame-carrying types must dispatch its prefix, never a
-        // blanket Unimplemented. A non-first tile group (is_first_tile_group=0,
-        // frame_header_present_flag=0) is the minimal tile-group payload; the
-        // frame-header types take the minimal cur_mfh_id=0 + seq_header_id=0 prefix.
         for obu_type in [
             ObuType::ClosedLoopKey,
             ObuType::OpenLoopKey,
@@ -1121,14 +1032,9 @@ mod tests {
             ObuType::RegularTip,
             ObuType::BridgeFrame,
         ] {
-            // obu_header() = ext(0) | type(5) | tlayer(0): the type occupies bits 6..2.
             let header_byte = obu_type.raw() << 2;
             let header = read_obu_header(&[header_byte], ByteOffset::new(0)).unwrap();
             assert_eq!(header.obu_type, obu_type);
-            // A two-zero-bit then a `1` payload satisfies both shapes: a non-first
-            // tile group (00 = is_first=0, frame_header_present=0) reads 2 bits, and a
-            // frame-header type reads cur_mfh_id=uvlc... the first `0` bit makes uvlc
-            // read more, so give the frame-header types a clean uvlc(0)+uvlc(0) instead.
             let payload: &[u8] = if obu_type.is_tile_group() {
                 &[0x00] // is_first_tile_group=0, frame_header_present_flag=0
             } else {

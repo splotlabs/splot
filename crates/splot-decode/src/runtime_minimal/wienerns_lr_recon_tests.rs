@@ -9,7 +9,7 @@
 //! reconstruction oracle (`ac0_prefiltered.yuv`,
 //! md5 `f7959cb85a41dcf0e6ebf9179835da03`).
 //!
-//! With PR #497's per-block CCSO read the selectable walk now parses ac0ej3's
+//! With the per-block CCSO read the selectable walk parses ac0ej3's
 //! first superblock bit-exact vs AVM, so the bridge reconstructs the verified DC
 //! subset to the spec-correct samples. The first 16x16 luma block (the §5.20.5.3
 //! `DC_PRED` leaf at the frame origin) reconstructs BIT-EXACT (all `68`); the
@@ -39,8 +39,7 @@
 //!     the MI(4,0) keystone, so they no longer wall the DC chain. The sink never
 //!     claims a sample it has not proven bit-exact.
 //!
-//! Parse fidelity (verified against the AVM mode/uv_mode oracle, 2026-06-27 after
-//! PR #510): every luma leaf splot resolves in the reachable region agrees with
+//! Parse fidelity (verified against the AVM mode/uv_mode oracle): every luma leaf splot resolves in the reachable region agrees with
 //! AVM's `inspect --mode`, and the chroma origin resolves to `DC_PRED` matching
 //! `inspect --uv_mode`. The reachable region is now bounded by the §7.13.3.18
 //! IntrABC fail-closed stop, not by a reconstruction-primitive wall.
@@ -211,7 +210,7 @@ const MI40_IBP_STEP: u16 = 65;
 /// `av2_is_dv_valid` local-IBC same-SB subset is tried first, then — on an intra-only
 /// frame with an explicitly-read `allow_global_intrabc` — the modelled global
 /// wavefront branch admits a source in the already-coded top-left wavefront region.
-/// With the upstream §5.20.5.5 y-mode neighbour-reorder gate fixed (PR #553), every
+/// With the §5.20.5.5 y-mode neighbour-reorder gate fixed, every
 /// global-IntrABC displaced copy and the regular-intra cascade it re-ignites is
 /// per-sample bit-exact, growing the region `299264` → `670976`. The blocks the
 /// global branch does NOT prove (e.g. the still-deferred MI(36,224) V_PRED leaf, no
@@ -507,15 +506,10 @@ fn ac0ej3_reconstruction_bridge_populates_a_workspace_region() {
     let sink = reconstruct_ac0ej3_sink();
 
     let (luma4x4, _chroma4x4) = sink.reconstructed_counts();
-    // The bridge reconstructs every general-intra `DC_PRED` luma transform it
-    // reaches before the walk's IntrABC fail-closed rejection. This pins that the
-    // sink threading and primitive reuse are wired over the live parse.
     assert!(
         luma4x4 > 0,
         "the reconstruction bridge must populate luma samples"
     );
-    // Every reconstructed sample is in the 10-bit range (no overflow / garbage
-    // type errors from the primitive reuse): scan the frame-origin DC block.
     for y in 0..BLOCK0_SIDE {
         for x in 0..BLOCK0_SIDE {
             let sample = sink.reconstructed_sample(PlaneId::Y, x, y).unwrap();
@@ -526,7 +520,7 @@ fn ac0ej3_reconstruction_bridge_populates_a_workspace_region() {
 
 /// Bit-exact verification against the AVM pre-filter reconstruction oracle for the
 /// frame-origin `DC_PRED` luma block. With the now-AVM-faithful first-superblock
-/// parse (PR #497 CCSO read), the bridge reconstructs this block bit-exact: every
+/// parse, including the CCSO read, the bridge reconstructs this block bit-exact: every
 /// sample is the committed flat value `68`, and the block's sum and FNV-1a-64
 /// checksum match the oracle. This is the first BIT-EXACT ac0ej3 reconstruction
 /// milestone, verified against the AVM pre-filter oracle.
@@ -535,7 +529,6 @@ fn ac0ej3_reconstruction_bridge_populates_a_workspace_region() {
 fn ac0ej3_frame_origin_dc_block_reconstructs_bit_exact_against_prefilter_oracle() {
     let sink = reconstruct_ac0ej3_sink();
 
-    // Every frame-origin block sample is the committed flat oracle value.
     let mut fnv = Fnv1a64::new();
     let mut sum: u64 = 0;
     let mut count = 0usize;
@@ -587,8 +580,6 @@ fn ac0ej3_block_16x64_luma_column_reconstructs_bit_exact_against_prefilter_oracl
     for y in 0..LUMA_COLUMN_HEIGHT {
         for x in 0..LUMA_COLUMN_WIDTH {
             let sample = sink.reconstructed_sample(PlaneId::Y, x, y).unwrap();
-            // The origin 16x16 leaf is `68`; everything below it is the
-            // down-predicted `DC_PRED` flat oracle value `64`.
             let expected = if y < BLOCK0_SIDE {
                 BLOCK0_FLAT_LUMA
             } else {
@@ -621,7 +612,7 @@ fn ac0ej3_block_16x64_luma_column_reconstructs_bit_exact_against_prefilter_oracl
 
 /// Bit-exact verification of the frame-origin chroma `DC_PRED` blocks (U and V)
 /// against the AVM pre-filter oracle. With the AVM-faithful first-superblock parse
-/// (PR #510's §8.3.2 `is_cfl` neighbour-context fix), the §5.20.3.1 SDP chroma tree
+/// (the §8.3.2 `is_cfl` neighbour-context fix), the §5.20.3.1 SDP chroma tree
 /// at the frame origin resolves to chroma `DC_PRED` with an `all_zero` residual
 /// (verified against `inspect --uv_mode`), so the sink reconstructs the 32x32 U and
 /// V origin transforms to the flat 10-bit no-neighbour DC fallback `512`. Both
@@ -639,8 +630,6 @@ fn ac0ej3_block_16x64_luma_column_reconstructs_bit_exact_against_prefilter_oracl
 fn ac0ej3_frame_origin_chroma_dc_blocks_reconstruct_bit_exact_against_prefilter_oracle() {
     let sink = reconstruct_ac0ej3_sink();
 
-    // Each of the U and V origin planes is a flat 32x32 `512` block matching the
-    // oracle, with an identical sum and FNV-1a-64 checksum.
     for plane in [PlaneId::U, PlaneId::V] {
         let mut fnv = Fnv1a64::new();
         let mut sum: u64 = 0;
@@ -672,9 +661,6 @@ fn ac0ej3_frame_origin_chroma_dc_blocks_reconstruct_bit_exact_against_prefilter_
         );
     }
 
-    // The second chroma leaf (chroma `(32,0)`, resolved `SMOOTH_PRED`) is DEFERRED:
-    // its samples stay at the unreconstructed fill value `0`, never a SMOOTH
-    // prediction the sink has not proven bit-exact against AVM.
     assert_eq!(
         sink.reconstructed_sample(PlaneId::U, CHROMA_ORIGIN_SIDE, 0)
             .unwrap(),
@@ -682,15 +668,6 @@ fn ac0ej3_frame_origin_chroma_dc_blocks_reconstruct_bit_exact_against_prefilter_
         "the deferred SMOOTH chroma leaf at chroma (32,0) must stay unreconstructed"
     );
 
-    // Coverage report: with the §7.12.2.19 IntrABC ref-MV weight sort modelled, the
-    // §7.13.2.1 single-neighbour V_PRED edge fallback at the frame top, the §5.20.6.1
-    // IntrABC `record_block` mode-info fill clamped to the frame edge (§5.20.3.2
-    // `block_coded`), the §7.15.4 primary inverse threading the REAL retained
-    // `PlaneTxType` (admitting the MI(112,16) H_PRED `eob > 1` leaf + cascade), and the
-    // §7.13.3.18 GLOBAL IntrABC wavefront branch now wired live (admitting the
-    // prev-SB-row displaced copies + the regular-intra cascade they re-ignite), the
-    // verified luma region is now the `670976`-sample bit-exact region — plus the two
-    // 32x32 chroma origin blocks (2048 chroma samples total across U and V).
     let (luma4x4, chroma4x4) = sink.reconstructed_counts();
     assert_eq!(
         luma4x4 * 16,
@@ -730,9 +707,6 @@ fn ac0ej3_first_three_superblock_luma_reconstructs_bit_exact_against_prefilter_o
     for y in 0..LUMA_REGION_HEIGHT {
         for x in 0..LUMA_REGION_WIDTH {
             let sample = sink.reconstructed_sample(PlaneId::Y, x, y).unwrap();
-            // Per-region oracle: the origin 16x16 leaf is `68`; the MI(4,0)
-            // `TX_16X64` IBP-DC step (x[16,19), y[0,16)) is `65`; everything else is
-            // the down-predicted flat `DC_PRED` value `64`.
             let in_mi40_step = (16..19).contains(&x) && y < BLOCK0_SIDE;
             let expected = if y < BLOCK0_SIDE && x < BLOCK0_SIDE {
                 BLOCK0_FLAT_LUMA
@@ -754,7 +728,6 @@ fn ac0ej3_first_three_superblock_luma_reconstructs_bit_exact_against_prefilter_o
         }
     }
 
-    // The MI(4,0) §7.13.2.12 IBP DC step is exactly the top-left 3 columns x 16 rows.
     assert_eq!(mi40_step_samples, 48, "MI(4,0) IBP DC step sample count");
     assert_eq!(
         count, LUMA_REGION_SAMPLE_COUNT,
@@ -796,8 +769,6 @@ fn ac0ej3_sb_column3_hpred_block_reconstructs_bit_exact_against_prefilter_oracle
     for y in HPRED_BLOCK_Y..HPRED_BLOCK_Y + HPRED_BLOCK_SIDE {
         for x in HPRED_BLOCK_X..HPRED_BLOCK_X + HPRED_BLOCK_SIDE {
             let sample = sink.reconstructed_sample(PlaneId::Y, x, y).unwrap();
-            // The H_PRED copy of the flat-`64` left column is flat `64` everywhere
-            // except the top-right `TX_32X32` (x[224,256) x y[0,32)) which is `68`.
             let in_top_right = (224..256).contains(&x) && y < 32;
             let expected = if in_top_right {
                 HPRED_TOP_RIGHT_STEP
@@ -825,29 +796,12 @@ fn ac0ej3_sb_column3_hpred_block_reconstructs_bit_exact_against_prefilter_oracle
         "H_PRED block FNV-1a-64 must match the pre-filter reconstruction oracle (bit-exact)"
     );
 
-    // The V_PRED block at SB column 4 (MI(64,0) → x[256,320) x y[0,32), a
-    // `TX_64X32` non-square leaf) is at the frame TOP (`mi_row == 0`, `haveAbove ==
-    // 0`): V_PRED reads ONLY the above row, which is off-frame here. The §7.13.2.1
-    // single-neighbour fallback (`haveAbove == 0 && haveLeft == 1`) synthesizes
-    // `AboveRow[i] = CurrFrame[plane][y][x-1]` (the block's reconstructed left
-    // neighbour, the flat `68` x=255 column edge), and the §7.13.2.8 V_PRED copy of
-    // that flat synthesized row reconstructs the block to flat `68` (bit-exact vs
-    // the oracle). This CASCADES across the rest of the top-row SB columns 4-6.
     assert_eq!(
         sink.reconstructed_sample(PlaneId::Y, 256, 0).unwrap(),
         68,
         "the frame-top V_PRED block at x[256,320) y=0 reconstructs to flat 68 via the §7.13.2.1 no-above fallback",
     );
 
-    // The whole reconstructed luma region is now 670976 bit-exact samples (the
-    // §7.12.2.19 IntrABC ref-MV weight sort admits MI(192,112) and its siblings, the
-    // §7.13.2.1 frame-top V_PRED fallback adds the x[256,448) y[0,64) top-row
-    // rectangle, the §5.20.6.1 frame-edge `record_block` clamp lets the bottom
-    // partial-SB row reconstruct, the §7.15.4 real-`PlaneTxType` threading admits
-    // the MI(112,16) H_PRED `eob > 1` leaf + cascade, and the §7.13.3.18 GLOBAL
-    // IntrABC wavefront branch admits the prev-SB-row displaced copies + the
-    // regular-intra cascade they re-ignite — pinned per value by
-    // LUMA_RECON_REGION_FNV1A64).
     let (luma4x4, _chroma4x4) = sink.reconstructed_counts();
     assert_eq!(
         luma4x4 * 16,
@@ -921,9 +875,6 @@ const PAETH_FNV1A64: u64 = 0x0808_60ea_bffd_2325;
 fn ac0ej3_paeth_two_sided_blocks_reconstruct_bit_exact_against_prefilter_oracle() {
     let sink = reconstruct_ac0ej3_sink();
 
-    // The PAETH predictor at MI(64,16) reads a genuinely NON-flat left column: the
-    // reconstructed x=255 edge mixes `64` and `68`, so this is not a degenerate
-    // flat copy — the §7.13.2.2 candidate selection actually runs.
     let left_edge: std::collections::BTreeSet<u16> = (PAETH_BLOCK_Y..PAETH_BLOCK_Y + PAETH_BLOCK_H)
         .map(|y| {
             sink.reconstructed_sample(PlaneId::Y, PAETH_BLOCK_X - 1, y)
@@ -972,8 +923,6 @@ fn ac0ej3_first_intrabc_block_reconstructs_bit_exact_against_prefilter_oracle() 
             let ty = INTRABC_TARGET_Y + row;
             let target_sample = sink.reconstructed_sample(PlaneId::Y, tx, ty).unwrap();
 
-            // (1) Faithful integer copy: target == source (the §7.13.3.18 displaced
-            // sample at the DV (-64 rows, 0 cols)).
             let sx = INTRABC_SOURCE_X + col;
             let sy = INTRABC_SOURCE_Y + row;
             let source_sample = sink.reconstructed_sample(PlaneId::Y, sx, sy).unwrap();
@@ -982,8 +931,6 @@ fn ac0ej3_first_intrabc_block_reconstructs_bit_exact_against_prefilter_oracle() 
                 "IntrABC target ({tx},{ty}) must equal its DV source ({sx},{sy})"
             );
 
-            // (2) Oracle constant: `68` over the top 32 rows (the copied H_PRED
-            // top-right `TX_32X32`), `64` below.
             let expected = if row < INTRABC_TOP_BAND_HEIGHT {
                 HPRED_TOP_RIGHT_STEP
             } else {
@@ -1044,8 +991,6 @@ fn ac0ej3_first_intrabc_residual_block_reconstructs_bit_exact_against_prefilter_
         }
     }
 
-    // The residual genuinely ran: the reconstruction is NOT a flat copy of the
-    // flat-68 displaced source — it varies per sample (the eob=11 residual).
     assert!(
         distinct.len() > 1,
         "IntrABC residual target must be NON-flat (the residual must have been added), \
@@ -1143,7 +1088,6 @@ fn ac0ej3_full_reconstructed_luma_region_matches_prefilter_oracle_aggregate() {
 fn ac0ej3_bottom_edge_partial_left_edge_block_reconstructs_bit_exact_against_prefilter_oracle() {
     let sink = reconstruct_ac0ej3_sink();
 
-    // The MI(16,256) bottom-edge block: x[64,128) over its 56 in-frame rows y[1024,1080).
     let mut count = 0usize;
     let mut sum: u64 = 0;
     for y in 1024..1080 {
@@ -1207,11 +1151,6 @@ const ONE_SIDED_ZONE1_FNV1A64: u64 = 0x3358_e0b7_861f_baea;
 #[ignore = "requires local mission fixture; set SPLOT_AC0EJ3_IVF or place it at $HOME/Documents/SplotLabs/ac0ej3.ivf"]
 fn ac0ej3_one_sided_zone1_idif_block_reconstructs_bit_exact_against_prefilter_oracle() {
     let sink = reconstruct_ac0ej3_sink();
-    // The MI(248,28) zone-1 one-sided block: x[992,1000) y[112,120). The oracle
-    // values are a near-flat `68` with a `66`/`67` right column (the IDIF reading
-    // the ramping above-right). A wrong `num4AboveRight` (the §7.13.2.1 above-right
-    // clamp) would mis-predict that right column, so the bit-exact match proves the
-    // exact-count neighbour-coverage guard.
     assert_luma_region_oracle(
         &sink,
         "MI(248,28) zone-1 one-sided IDIF",
@@ -1297,7 +1236,6 @@ fn ac0ej3_one_sided_edge_filter_corner_block_reconstructs_bit_exact_against_pref
             ONE_SIDED_EDGEFILT_FNV1A64,
         ),
     );
-    // NON-SQUARE `8x16` zone-1 one-sided leaf (edge-filter + corner active).
     assert_luma_region_oracle(
         &sink,
         "MI(220,44) non-square 8x16 zone-1 one-sided IDIF",

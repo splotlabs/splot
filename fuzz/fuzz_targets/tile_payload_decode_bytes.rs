@@ -1,15 +1,5 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
-//
-// Fuzz target: the current minimal splot-decode tile-payload byte boundary must
-// return typed results, never panic, on bounded arbitrary tile payload bytes and
-// bounded mutations of the known-good minimal frontier payload. This target
-// intentionally does not implement full AV2 §5.20 decode_tile(), recursive
-// partition/block syntax, broad §8.3 CDF selection, reconstruction expansion,
-// filesystem I/O, subprocesses, AVM, dav2d, or ffmpeg invocation. Run with:
-//
-//     cargo install cargo-fuzz --locked
-//     cargo +nightly fuzz run tile_payload_decode_bytes
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;

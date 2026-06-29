@@ -98,8 +98,6 @@ impl BitWriter {
                 width_bits: 1,
             });
         }
-        // `current` holds at most 7 bits before this call, so `current << 1` is at
-        // most `0b1111_1110` and never overflows a `u8`.
         self.current = (self.current << 1) | bit;
         self.nbits += 1;
         if self.nbits == 8 {
@@ -136,8 +134,6 @@ impl BitWriter {
                 max: 32,
             });
         }
-        // For `n == 32` every `u32` fits; for `n < 32` reject values with bits set
-        // above the field so the write is the exact inverse of an `n`-bit read.
         if n < 32 && value >= (1u32 << n) {
             return Err(WriteError::ValueTooWide {
                 value: u64::from(value),
@@ -193,7 +189,6 @@ impl BitWriter {
                 value,
             });
         }
-        // The bottom `n` bits of the two's-complement value are the coded field.
         let field_mask: i64 = if n == 32 {
             i64::from(u32::MAX)
         } else {
@@ -212,10 +207,6 @@ impl BitWriter {
     /// require 32 leading zero bits — an AV2 conformance violation the reader never
     /// produces.
     pub fn write_uvlc(&mut self, value: u32) -> WriteResult<()> {
-        // The reader returns `suffix + (1 << leadingZeros) - 1`, so the encoded
-        // magnitude is `m = value + 1`, split into a `leadingZeros`-bit prefix and a
-        // `leadingZeros`-bit suffix. AV2 requires `leadingZeros < 32`, i.e. `m` fits
-        // in 32 bits; `value == u32::MAX` would need `leadingZeros == 32`.
         let m = u64::from(value) + 1;
         if m > u64::from(u32::MAX) {
             return Err(WriteError::ValueOutOfRange {
@@ -239,15 +230,11 @@ impl BitWriter {
     /// Returns [`WriteError::ValueOutOfRange`] if `value == i32::MIN`, whose
     /// magnitude exceeds the `uvlc()` conformance bound.
     pub fn write_svlc(&mut self, value: i32) -> WriteResult<()> {
-        // Inverse of `half = (v + 1) >> 1; svlc = (v & 1) ? half : -half`:
-        //   value == 0 -> v = 0; value > 0 -> v = 2*value - 1; value < 0 -> v = -2*value.
         let v = if value > 0 {
             2 * i64::from(value) - 1
         } else {
             -2 * i64::from(value)
         };
-        // `v` must be a valid `uvlc()` input: `0 ..= u32::MAX - 1`. Only `i32::MIN`
-        // (whose `-2*value == 2^32`) falls outside it.
         if v < 0 || v > i64::from(u32::MAX) - 1 {
             return Err(WriteError::ValueOutOfRange {
                 descriptor: "svlc",
@@ -342,7 +329,6 @@ impl BitWriter {
     /// Returns [`WriteError::ZeroWidth`] if `n == 0`, or
     /// [`WriteError::ValueOutOfRange`] if `value >= n` (the descriptor encodes
     /// `0 ..= n - 1`).
-    // n/w/m/v mirror the AV2 § 4.11.8 ns(n) descriptor derivation notation.
     #[allow(clippy::many_single_char_names)]
     pub fn write_ns(&mut self, value: u32, n: u32) -> WriteResult<()> {
         if n == 0 {
@@ -358,10 +344,8 @@ impl BitWriter {
         let m = (1u64 << w) - u64::from(n);
         let value = u64::from(value);
         if value < m {
-            // `value < m <= 2^(w-1)`, so it fits the `w - 1`-bit short form.
             self.write_bits(value as u32, w - 1)
         } else {
-            // Inverse of `value = (v << 1) - m + extra`: recover `v` and `extra`.
             let t = value + m;
             let v = (t >> 1) as u32;
             let extra = (t & 1) as u8;
@@ -385,8 +369,6 @@ impl BitWriter {
                 value: i64::from(value),
             });
         }
-        // § 4.11.9: a series of `value` 1-bits; the terminating 0 is omitted only when the
-        // maximum `mx` is reached (every bit a 1).
         for _ in 0..value {
             self.write_bit(1)?;
         }
@@ -412,8 +394,6 @@ impl BitWriter {
                 max: 32,
             });
         }
-        // `value >> 32` is undefined for `u32`; for `n == 32` the quotient is always
-        // zero and the whole value is the remainder.
         let (quotient, remainder) = if n == 32 {
             (0u32, value)
         } else {
@@ -439,8 +419,6 @@ impl BitWriter {
     /// A no-op when already byte-aligned.
     pub fn align_to_byte(&mut self) {
         if self.nbits != 0 {
-            // Left-justify the `nbits` written bits into the byte and zero-pad the
-            // low bits; `current < 2^nbits`, so the shift stays within a `u8`.
             let pad = 8 - u32::from(self.nbits);
             self.bytes.push(self.current << pad);
             self.current = 0;
@@ -488,8 +466,6 @@ impl BitWriter {
         for &byte in &other.bytes {
             self.write_bits_u8(byte, 8)?;
         }
-        // The in-progress partial byte holds `nbits` bits packed toward the LSB, MSB first;
-        // replay them in the same order so the appended sequence is bit-exact.
         for i in (0..other.nbits).rev() {
             self.write_bit((other.current >> i) & 1)?;
         }
@@ -518,7 +494,6 @@ mod tests {
 
     #[test]
     fn writes_msb_first_matching_the_reader_doctest() {
-        // Mirror of `bitio::tests::reads_msb_first`: 1, then 0b011, then 0b0010.
         let mut writer = BitWriter::new();
         writer.write_bit(1).unwrap();
         writer.write_bits(0b011, 3).unwrap();
@@ -534,10 +509,8 @@ mod tests {
         writer.write_flag(true).unwrap();
         writer.write_flag(false).unwrap();
         assert_eq!(writer.bit_len(), 2);
-        // 1 then 0, zero-padded -> 0b1000_0000.
         let bytes = writer.into_bytes();
         assert_eq!(bytes, vec![0b1000_0000]);
-        // Round-trip through read_flag: [true, false, true] reads back identically.
         let mut w2 = BitWriter::new();
         for f in [true, false, true] {
             w2.write_flag(f).unwrap();
@@ -571,7 +544,6 @@ mod tests {
                 max: 32
             })
         ));
-        // 0b1_0000 needs five bits; four is too narrow.
         assert!(matches!(
             writer.write_bits(0b1_0000, 4),
             Err(WriteError::ValueTooWide {
@@ -579,7 +551,6 @@ mod tests {
                 width_bits: 4
             })
         ));
-        // `n == 0` accepts only zero.
         assert!(writer.write_bits(0, 0).is_ok());
         assert!(matches!(
             writer.write_bits(1, 0),
@@ -596,13 +567,11 @@ mod tests {
         assert_eq!(writer.bit_len(), 1);
         writer.align_to_byte();
         assert!(writer.is_byte_aligned());
-        // 1 followed by seven zero pad bits -> 0b1000_0000.
         assert_eq!(writer.into_bytes(), vec![0b1000_0000]);
     }
 
     #[test]
     fn write_leb128_emits_canonical_encodings() {
-        // The canonical encodings asserted by `bitio::tests::read_leb128_*`.
         for (value, expected) in [
             (0u32, vec![0x00]),
             (127, vec![0x7F]),
@@ -619,7 +588,6 @@ mod tests {
     #[test]
     fn write_su_rejects_out_of_range_and_invalid_widths() {
         let mut writer = BitWriter::new();
-        // su(4) range is -8..=7.
         assert!(matches!(
             writer.write_su(8, 4),
             Err(WriteError::ValueOutOfRange {
@@ -651,7 +619,6 @@ mod tests {
                 ..
             })
         ));
-        // u32::MAX - 1 is the largest encodable uvlc value.
         assert!(writer.write_uvlc(u32::MAX - 1).is_ok());
     }
 
@@ -678,7 +645,6 @@ mod tests {
                 max: 8
             })
         ));
-        // 0x1_00 needs two bytes; one is too narrow.
         assert!(matches!(
             writer.write_le_u64(0x1_00, 1),
             Err(WriteError::ValueTooWide {
@@ -714,7 +680,6 @@ mod tests {
                 max: 32
             })
         ));
-        // rg(2) quotient is value >> 2; 128 >> 2 == 32 would not terminate in 32 bits.
         assert!(matches!(
             writer.write_rg(128, 2),
             Err(WriteError::ValueOutOfRange {
@@ -722,7 +687,6 @@ mod tests {
                 value: 128
             })
         ));
-        // (31 << 2) + 3 == 127 is the largest rg(2) value (matches the reader test).
         let mut max = BitWriter::new();
         max.write_rg(127, 2).unwrap();
         assert_eq!(max.into_bytes(), vec![0xFF, 0xFF, 0xFF, 0xFE, 0xC0]);
@@ -730,7 +694,6 @@ mod tests {
 
     #[test]
     fn ns_round_trips_a_non_power_of_two_range() {
-        // The exact cases from `bitio::tests::read_ns_decodes_non_power_of_two_range`.
         for value in 0u32..5 {
             let mut writer = BitWriter::new();
             writer.write_ns(value, 5).unwrap();
@@ -753,7 +716,6 @@ mod tests {
 
     #[test]
     fn write_tu_round_trips_and_rejects_out_of_range() {
-        // tu(7): every value 0..=7 round-trips; 7 is the all-ones terminal form (no 0 bit).
         for mx in [0u32, 1, 3, 7, 31] {
             for value in 0..=mx {
                 let mut writer = BitWriter::new();
@@ -762,11 +724,9 @@ mod tests {
                 assert_eq!(read_tu(&mut reader(&bytes), mx), value, "tu({value}, {mx})");
             }
         }
-        // The maximum form writes exactly `mx` 1-bits and no terminator.
         let mut max = BitWriter::new();
         max.write_tu(7, 7).unwrap();
         assert_eq!(max.bit_len(), 7);
-        // A value above the maximum is rejected before any bit is written.
         let mut writer = BitWriter::new();
         assert!(matches!(
             writer.write_tu(8, 7),
@@ -780,8 +740,6 @@ mod tests {
 
     #[test]
     fn append_preserves_bits_across_alignment() {
-        // A scratch writer holding a non-byte-aligned bit sequence appends bit-exactly onto a
-        // destination that is itself mid-byte: the result must read back as the concatenation.
         let mut scratch = BitWriter::new();
         scratch.write_bit(1).unwrap();
         scratch.write_bits(0b010, 3).unwrap();
@@ -793,7 +751,6 @@ mod tests {
 
         let bytes = dest.into_bytes();
         let mut r = reader(&bytes);
-        // Read back: the 2 dest bits, then the 5 scratch bits, in order.
         assert_eq!(r.read_bits(2).unwrap(), 0b11);
         assert_eq!(r.read_bit().unwrap(), 1);
         assert_eq!(r.read_bits(3).unwrap(), 0b010);
@@ -811,12 +768,10 @@ mod tests {
 
     #[test]
     fn trailing_bits_round_trip_and_reject_empty() {
-        // `trailing_bits(0)` is rejected (the parser rejects an empty field).
         assert!(matches!(
             BitWriter::new().write_trailing_bits(0),
             Err(WriteError::EmptyTrailingBits)
         ));
-        // 1..=16 bits: a `1` marker then zeros; reparses without a § 5.2.3 error.
         for nb in 1u64..=16 {
             let mut writer = BitWriter::new();
             writer.write_trailing_bits(nb).unwrap();
@@ -824,7 +779,6 @@ mod tests {
             let mut r = reader(&bytes);
             crate::obu::parse_trailing_bits(&mut r, nb).unwrap();
         }
-        // The single-bit case is exactly the marker bit (zero-padded to a byte).
         let mut one = BitWriter::new();
         one.write_trailing_bits(1).unwrap();
         assert_eq!(one.into_bytes(), vec![0b1000_0000]);
@@ -940,10 +894,6 @@ mod proptests {
                 32 => remainder_bits,
                 _ => remainder_bits & ((1u32 << n) - 1),
             };
-            // Build a value whose quotient terminates (`< 32`) without overflowing
-            // `u32`; for `n == 32` the quotient is always 0 and the value is the
-            // remainder, and any overflow at large `(quotient, n)` falls back to a
-            // quotient-0 value (still a valid `rg(n)` of width `n`).
             let value = (u64::from(quotient) << n)
                 .checked_add(u64::from(remainder))
                 .and_then(|v| u32::try_from(v).ok())
@@ -1013,8 +963,6 @@ mod proptests {
             let _ = writer.write_leb128(value);
             let _ = writer.write_ns(value, n);
             let _ = writer.write_rg(value, n.min(32));
-            // `tu` emits up to `mx` unary 1-bits, so keep the magnitude small (a huge `value`
-            // would emit billions of bits); exercise both the in-range and out-of-range arms.
             let tu_value = value % 130;
             let _ = writer.write_tu(tu_value, 64);
             writer.align_to_byte();

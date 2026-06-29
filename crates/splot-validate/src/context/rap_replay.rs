@@ -286,10 +286,6 @@ impl RapReplayTracker {
     /// is retained so its leading / random-access qualification can be resolved at
     /// completion.
     pub(super) fn note_resend(&mut self, key: RapHlsKey, xlayer: ExtendedLayerId) {
-        // Accumulate every sender in this unit (not last-writer-wins): a qualifying resend
-        // must not be lost when a later non-qualifying (leading, non-random-access) resend
-        // of the same object follows it in the same unit — § 7.3.8.1 availability holds if
-        // *any* same-unit send qualifies.
         self.resent_this_tu.entry(key).or_default().insert(xlayer);
     }
 
@@ -322,11 +318,6 @@ impl RapReplayTracker {
         offset: ByteOffset,
     ) {
         let promoted_events = self.resend_events.get(&key).cloned().unwrap_or_default();
-        // The senders of this object earlier in this unit (before this reference, in-band
-        // order). Their visibility is deferred: the random access point's own unit is always
-        // decoded, so a before-reference resend in it counts even when the unit is leading.
-        // The full set (not just one sender) is captured so a visible resend is not lost
-        // behind a later non-visible one.
         let this_tu_resend_xlayers = self.resent_this_tu.get(&key).cloned().unwrap_or_default();
         self.pending_this_tu.push(RapPendingReference {
             key,
@@ -357,18 +348,9 @@ impl RapReplayTracker {
         governing_xlayer: ExtendedLayerId,
         ref_tu: u64,
     ) -> impl Iterator<Item = u64> + '_ {
-        // `..=ref_tu`: a random access point strictly after the reference cannot be a start
-        // point the reference is decoded from. Ascending order is intentional — the caller
-        // reports the smallest (earliest) violated start point, which is the most actionable.
-        // A governing anchor `R` is a start point a decoder uses; it is itself always decoded
-        // (§ 7.4.1), so its own leading-ness never disqualifies it — only the temporal-unit
-        // keys matter here (leading-ness gates *senders* reached from `R`, in
-        // [`Self::sender_decodable_at`]). For a global reference the keys come from the
-        // any-layer history; for a layer reference from that layer's per-anchor history.
         let history: &BTreeMap<u64, bool> = if governing_xlayer.is_global() {
             &self.rap_history_any
         } else {
-            // No history for an unseen layer == no governing anchor.
             self.rap_history
                 .get(&governing_xlayer)
                 .unwrap_or(&self.empty_rap_history)
@@ -388,7 +370,7 @@ impl RapReplayTracker {
     /// decode coded extended layer units for an extended layer until a random access point
     /// for that extended layer is encountered"), so the send is decoded iff the layer had a
     /// random access point `T` in the closed interval `[rap_tu, send_tu]` **whose own temporal
-    /// unit is itself decoded under start-at-`rap_tu`** (round-5 finding). `T`'s temporal unit
+    /// unit is itself decoded under start-at-`rap_tu`**. `T`'s temporal unit
     /// is decoded under start-at-`rap_tu` exactly when it is the start unit (`T == rap_tu`,
     /// always decoded — § 7.4.1) or it carries no leading frame in any layer (a strictly-later
     /// leading temporal unit drops wholesale under start-at-`rap_tu`, § 7.3.8.1, taking the
@@ -485,10 +467,6 @@ impl RapReplayTracker {
     /// below the anchor floor.
     pub(super) fn complete_temporal_unit(&mut self, tu_index: u64) -> Vec<(RapHlsKey, Diagnostic)> {
         let tu_has_any_leading = !self.current_tu_leading_xlayers.is_empty();
-        // Append this unit's resends as events, one per sending layer (all senders, not
-        // last-writer-wins): per-anchor visibility filters them, so § 7.3.8.1's per-object
-        // "any visible send suffices" is preserved even when a non-visible layer also
-        // resends the same object here.
         for (key, xlayers) in std::mem::take(&mut self.resent_this_tu) {
             let events = self.resend_events.entry(key).or_default();
             for sending_xlayer in xlayers {
@@ -499,14 +477,6 @@ impl RapReplayTracker {
                 });
             }
         }
-        // Advance the per-extended-layer and global random-access-point anchors and record
-        // the per-layer / any-layer random-access-point histories (the governing anchors for
-        // later references, finding 2, and § 7.4.6 sender-decodability). Each entry carries
-        // this temporal unit's `tu_has_any_leading` so sender-decodability can tell whether a
-        // random access point's own temporal unit is decoded under an earlier start
-        // (round-5 finding; see [`Self::sender_decodable_at`]). The any-layer history
-        // (governing GLOBAL_XLAYER_ID references) records this temporal unit whenever *any*
-        // layer random-accesses here.
         if !self.current_tu_rap_xlayers.is_empty() {
             self.most_recent_rap_tu_any = Some(tu_index);
             self.rap_history_any.insert(tu_index, tu_has_any_leading);
@@ -521,36 +491,14 @@ impl RapReplayTracker {
 
         let mut diagnostics = Vec::new();
         for pending in std::mem::take(&mut self.pending_this_tu) {
-            // § 7.3.8.1 requires availability "if decoding process starts at ANY random access
-            // point". So this reference must be satisfied under *every* governing anchor a
-            // decoder might start from — every `R <= tu_index` random-accessing the reference's
-            // governing layer (any layer for a global reference), not merely the most recent
-            // (finding 2). A clause-(a) resend in a temporal unit that also carries leading
-            // frames satisfies the newest anchor (that unit is its own start) yet is invisible
-            // to an older anchor (under which the unit drops), so the most-recent anchor alone
-            // can hide a real violation. The anchors are scanned smallest-first; the first
-            // unsatisfied one is reported (the earliest violated start point is the most
-            // actionable). Collected up front so the borrow of `self` ends before the
-            // `self.emitted` mutation below (the anchor count per window is small).
             let governing_anchors: Vec<u64> = self
                 .governing_rap_tus(pending.governing_xlayer, tu_index)
                 .collect();
-            // No random access point governs this reference yet (decoding from the bitstream
-            // start needs no resend).
             for rap_tu in governing_anchors {
-                // Moot when this reference's own temporal unit drops under start-at-rap_tu: a
-                // strictly-later temporal unit carrying any leading frame is dropped wholesale
-                // (§ 7.3.8.1), taking this reference with it — for a global referencing OBU
-                // (e.g. a buffer-removal-timing OBU) just as for a frame-bearing one. The
-                // random access point's own temporal unit (tu_index == rap_tu) is always
-                // decoded (§ 7.4.1), so it is keyed to the governing anchor here.
                 let reference_unit_drops = tu_index > rap_tu && tu_has_any_leading;
                 if reference_unit_drops {
                     continue;
                 }
-                // Visible from the completed-unit events, or from a before-reference resend in
-                // this unit (its event carries this unit's `tu_index` / leading-ness — built
-                // here so the before-reference senders evaluate against the same predicate).
                 let satisfied = pending
                     .promoted_events
                     .iter()
@@ -580,17 +528,6 @@ impl RapReplayTracker {
                 ));
             }
         }
-        // Prune events and random-access-point history strictly below the anchor floor (the
-        // earliest retained random access point; see [`Self::anchor_floor`]). Such an entry
-        // can never affect a future verdict: no retained — hence no future-governing — anchor
-        // `R <= entry.tu` exists, so clause (a)'s `S.tu == R` and clause (b)'s `S.tu > R` both
-        // fail, and sender-decodability `range(R..=S.tu)` (with `R >= floor`) never scans
-        // below the floor. Pruning `rap_history_any` below its own minimum is a no-op (the
-        // floor is that minimum); it is included only to keep the floor invariant explicit.
-        // Under the every-anchor rule the floor advances only when the earliest anchor is no
-        // longer a candidate governing anchor, so retained state is bounded by the random
-        // access points in the live window — small for real streams (correctness over a
-        // tighter bound).
         if let Some(floor) = self.anchor_floor() {
             for events in self.resend_events.values_mut() {
                 events.retain(|event| event.tu >= floor);
@@ -649,20 +586,13 @@ pub(super) fn rap_replay_suppressed_by_external_hls(
     external_hls: &ExternalHlsMode,
 ) -> bool {
     let ExternalHlsMode::Provided(set) = external_hls else {
-        // Disabled: the caller asserts no external provision, so nothing is suppressed.
         return false;
     };
     match key {
-        // Declarable kinds: authoritative exact-key match.
         RapHlsKey::SequenceHeader(id) => set.has_sequence_header(id),
         RapHlsKey::OperatingPointSet { xlayer, ops_id } => {
             set.has_operating_point_set(xlayer, ops_id)
         }
-        // Inexpressible kinds: any Provided mode suppresses (partial-declaration policy).
-        // ExternalHlsSet cannot express film-grain or quantizer-matrix OBUs, so such a model /
-        // level MAY be supplied externally under any Provided mode — matching the linear
-        // `frame-header/film-grain-model-unavailable` / `frame-header/qm-level-unavailable`
-        // suppression.
         RapHlsKey::MultiFrameHeader(_)
         | RapHlsKey::LayerConfigurationRecord { .. }
         | RapHlsKey::Atlas { .. }
@@ -728,7 +658,7 @@ impl ValidatorContext {
     /// just-completed temporal unit `completed_tu_index` and emits any replay
     /// diagnostics, gated on the partial-declaration external-HLS suppression policy.
     ///
-    /// **External-HLS suppression (PR #49 policy, refined per-key — finding 3).**
+    /// **External-HLS suppression (partial-declaration policy, refined per key).**
     /// § 7.3.8.1's external-means escape — "When HLS OBUs are provided through external
     /// means, they remain available to the decoding process until superseded" — means an
     /// externally-provided object need not be resent at a random access point. The
@@ -788,8 +718,6 @@ impl ValidatorContext {
                 id: seq_lcr_id,
             }
         } else {
-            // Unresolved in-band: the linear `hls/unavailable-layer-configuration-record`
-            // check owns this; do not replay (disjointness).
             return;
         };
         self.note_rap_reference(key, xlayer, obu.offset);

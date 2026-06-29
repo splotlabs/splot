@@ -225,9 +225,6 @@ fn padding_diagnostic(
     bit_offset: BitOffset,
 ) -> Diagnostic {
     let (rule_id, spec_section) = match kind {
-        // The "at least one non-zero byte" rule is stated in the § 5.16 NOTE
-        // (§ 6.15 only says padding bytes have arbitrary values), so both padding
-        // diagnostics cite § 5.16, the section where the constraint appears.
         PaddingErrorKind::AllZeroPayload => ("padding/all-zero-payload", "5.16"),
         PaddingErrorKind::InvalidTrailingBits => ("padding/invalid-trailing-bits", "5.16"),
     };

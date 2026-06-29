@@ -107,13 +107,10 @@ pub fn parse_seg_info(reader: &mut BitReader<'_>, num_segments: u8) -> Result<Se
                 let bits_to_read = SEGMENTATION_FEATURE_BITS[j];
                 let limit = SEGMENTATION_FEATURE_MAX[j];
                 if SEGMENTATION_FEATURE_SIGNED[j] {
-                    // AV2 § 5.4.9: n = 1 + bitsToRead; feature_value = su(n).
                     let value = reader.read_su(1 + bits_to_read)?;
                     clip3(-limit, limit, value)
                 } else {
-                    // f(bitsToRead); for j = 1, 2 bitsToRead is 0 (no value bits).
                     let value = reader.read_bits(bits_to_read)?;
-                    // bits_to_read <= 9 here, so the value fits in i32 without loss.
                     clip3(0, limit, value as i32)
                 }
             } else {
@@ -124,7 +121,6 @@ pub fn parse_seg_info(reader: &mut BitReader<'_>, num_segments: u8) -> Result<Se
     }
 
     Ok(SegmentInfo {
-        // count <= MAX_SEGMENTS (16), so it fits in u8.
         num_segments: count as u8,
         features,
     })
@@ -141,7 +137,6 @@ mod tests {
 
     #[test]
     fn all_disabled_eight_segments_consumes_one_bit_per_feature() {
-        // 8 segments * SEG_LVL_MAX (3) feature_enabled bits, all 0.
         let mut bits = Bits::default();
         for _ in 0..(8 * SEG_LVL_MAX) {
             bits.bit(0);
@@ -156,7 +151,6 @@ mod tests {
                 assert_eq!(info.features[i][j], SegmentFeature::DISABLED);
             }
         }
-        // Segments beyond num_segments are disabled too.
         assert_eq!(info.segment(8), None);
         assert_eq!(info.features[15][0], SegmentFeature::DISABLED);
     }
@@ -182,15 +176,11 @@ mod tests {
 
     #[test]
     fn signed_quantizer_feature_is_read_via_su_and_clipped() {
-        // Segment 0, feature 0 (SEG_LVL_ALT_Q) enabled with a negative su(10) value;
-        // remaining features disabled. su(10) of 0b10_0000_0000 = -512, clipped to
-        // -351 (Segmentation_Feature_Max[0] = MAXQ_BITS = 351).
         let mut bits = Bits::default();
         bits.bit(1); // feature_enabled[0][0]
         bits.f(0b10_0000_0000, 10); // su(10) value = -512
         bits.bit(0); // feature_enabled[0][1]
         bits.bit(0); // feature_enabled[0][2]
-        // Segment 1: all disabled (3 bits) -> exercise num_segments = 2.
         bits.bit(0);
         bits.bit(0);
         bits.bit(0);
@@ -206,7 +196,6 @@ mod tests {
 
     #[test]
     fn signed_quantizer_feature_within_limit_is_not_clipped() {
-        // su(10) value 100 (positive, within +/-351) is stored unclipped.
         let mut bits = Bits::default();
         bits.bit(1); // feature_enabled[0][0]
         bits.f(100, 10); // su(10) value = 100

@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-// Unit, byte-exact, and rejection tests for the § 5.4.10 filter / § 5.4.2 tile writers and
-// the composing `write_sequence_header`. `include!`d into `crate::write::seq_tile` so
-// `super::*` resolves to its writers and private helpers. The property tests live in the
-// sibling `seq_tile_proptests.rs` (split to keep each source under the line-budget).
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::too_many_lines)]
@@ -31,16 +27,11 @@ mod tests {
         }
     }
 
-    // =========================================================================
-    // Shared still-picture header fixture (mirrors the parser's own
-    // `push_still_picture_header_until_tile`, then appends a chosen tile region).
-    // =========================================================================
 
     /// Appends a still-picture `sequence_header_obu()` up to (but not including)
     /// `sequence_tile_config()`, field-for-field with the parser. `seq_level_idx` selects
     /// the level (single-picture headers never code `seq_tier`). 16x8 frame, BLOCK_64X64.
     fn push_still_picture_header_until_tile(bits: &mut Bits, seq_level_idx: u32) {
-        // general (single_picture_header_flag = 1, chroma 4:2:0)
         bits.uvlc(0); // seq_header_id
         bits.f(0, 5); // seq_profile_idc
         bits.bit(1); // single_picture_header_flag
@@ -52,16 +43,13 @@ mod tests {
         bits.f(15, 4); // max_frame_width_minus_1 -> 16
         bits.f(7, 4); // max_frame_height_minus_1 -> 8
         bits.bit(0); // seq_cropping_window_present_flag
-        // sequence_partition_config (not monochrome, single picture)
         bits.bit(0); // use_256x256_superblock
         bits.bit(0); // use_128x128_superblock -> seqSbSize = BLOCK_64X64
         bits.bit(0); // enable_sdp
         bits.bit(0); // enable_ext_partitions
         bits.bit(0); // reduce_pb_aspect_ratio
-        // sequence_segment_config
         bits.bit(0); // enable_ext_seg -> MaxSegments = 8
         bits.bit(0); // seq_seg_info_present_flag
-        // sequence_intra_config (not monochrome)
         bits.bit(0); // enable_dip
         bits.bit(0); // enable_intra_edge_filter
         bits.bit(0); // enable_mrls
@@ -69,14 +57,11 @@ mod tests {
         bits.f(0, 2); // cfl_ds_filter_index
         bits.bit(0); // enable_mhccp
         bits.bit(0); // enable_ibp
-        // sequence_inter_config (single_picture_header_flag branch)
         bits.bit(0); // enable_refmvbank
         bits.bit(1); // disable_drl_reorder -> DRL_REORDER_DISABLED
         bits.bit(0); // seq_max_bvp_drl_bits_minus_1 = ns(3) -> 0
         bits.bit(0); // allow_frame_max_bvp_drl_bits
         bits.bit(0); // enable_bawp
-        // sequence_scc_config (single picture -> no signalled bits)
-        // sequence_transform_quant_entropy_config (not monochrome, single picture)
         bits.bit(0); // enable_fsc
         bits.bit(0); // enable_idtx_intra
         bits.bit(0); // enable_intra_ist
@@ -90,7 +75,6 @@ mod tests {
         bits.bit(1); // equal_ac_dc_q -> skip y/uv dc delta reads
         bits.f(0, 5); // base_uv_ac_delta_q
         bits.bit(0); // uv_ac_delta_q_enabled
-        // sequence_filter_config (single picture, seqSbSize = BLOCK_64X64)
         bits.bit(0); // disable_loopfilters_across_tiles
         bits.bit(0); // enable_cdef
         bits.bit(0); // enable_gdf
@@ -118,14 +102,9 @@ mod tests {
         assert_eq!(write_header(&reparsed), bytes, "write not idempotent");
     }
 
-    // =========================================================================
-    // Byte-exact full-header round-trips on canonical fixtures
-    // =========================================================================
 
     #[test]
     fn full_still_picture_header_no_tile_byte_exact() {
-        // The whole payload + the trailing-pad pattern matches the parser's
-        // `push_still_picture_header` fixture; the writer reproduces it byte-exact.
         let mut bits = Bits::default();
         push_still_picture_header_until_tile(&mut bits, 0);
         bits.bit(0); // seq_tile_info_present_flag (fully parsed, no tile bits)
@@ -140,7 +119,6 @@ mod tests {
 
     #[test]
     fn full_header_uniform_single_tile_byte_exact() {
-        // 16x8 -> single uniform tile; only the uniform flag bit is signalled.
         let mut bits = Bits::default();
         push_still_picture_header_until_tile(&mut bits, 0);
         bits.bit(1); // seq_tile_info_present_flag
@@ -160,7 +138,6 @@ mod tests {
 
     #[test]
     fn full_header_uniform_two_columns_byte_exact() {
-        // 256x8 -> miCols 64, sbCols 4; tileColsLog2 incremented once (1,0), one row (0).
         let mut bits = Bits::default();
         push_still_picture_header_until_tile_wide(&mut bits);
         bits.bit(1); // seq_tile_info_present_flag
@@ -185,7 +162,6 @@ mod tests {
 
     #[test]
     fn full_header_non_uniform_two_columns_byte_exact() {
-        // 128x8 -> sbCols 2, sbRows 1; non-uniform two 1-superblock columns.
         let mut bits = Bits::default();
         push_still_picture_header_until_tile_128wide(&mut bits);
         bits.bit(1); // seq_tile_info_present_flag
@@ -237,16 +213,13 @@ mod tests {
         bits.f(w_minus_1, w_bits); // max_frame_width_minus_1
         bits.f(h_minus_1, h_bits); // max_frame_height_minus_1
         bits.bit(0); // seq_cropping_window_present_flag
-        // partition
         bits.bit(0); // use_256x256_superblock
         bits.bit(0); // use_128x128_superblock
         bits.bit(0); // enable_sdp
         bits.bit(0); // enable_ext_partitions
         bits.bit(0); // reduce_pb_aspect_ratio
-        // segment
         bits.bit(0); // enable_ext_seg
         bits.bit(0); // seq_seg_info_present_flag
-        // intra
         bits.bit(0); // enable_dip
         bits.bit(0); // enable_intra_edge_filter
         bits.bit(0); // enable_mrls
@@ -254,13 +227,11 @@ mod tests {
         bits.f(0, 2); // cfl_ds_filter_index
         bits.bit(0); // enable_mhccp
         bits.bit(0); // enable_ibp
-        // inter (single picture)
         bits.bit(0); // enable_refmvbank
         bits.bit(1); // disable_drl_reorder
         bits.bit(0); // seq_max_bvp_drl_bits_minus_1
         bits.bit(0); // allow_frame_max_bvp_drl_bits
         bits.bit(0); // enable_bawp
-        // tq-entropy (single picture)
         bits.bit(0); // enable_fsc
         bits.bit(0); // enable_idtx_intra
         bits.bit(0); // enable_intra_ist
@@ -274,7 +245,6 @@ mod tests {
         bits.bit(1); // equal_ac_dc_q
         bits.f(0, 5); // base_uv_ac_delta_q
         bits.bit(0); // uv_ac_delta_q_enabled
-        // filter (single picture)
         bits.bit(0); // disable_loopfilters_across_tiles
         bits.bit(0); // enable_cdef
         bits.bit(0); // enable_gdf
@@ -283,14 +253,9 @@ mod tests {
         bits.f(0, 2); // df_par_bits_minus_2
     }
 
-    // =========================================================================
-    // Reserved-level residual -> UnwritableSequenceHeader
-    // =========================================================================
 
     #[test]
     fn reserved_level_tile_residual_is_unwritable() {
-        // seq_level_idx 22 is reserved: seq_tile_info_present bounds at tile_params, so the
-        // header is unfully-parsed and the writer rejects it before any bit.
         let mut bits = Bits::default();
         push_still_picture_header_until_tile(&mut bits, 22);
         bits.bit(1); // seq_tile_info_present_flag -> reserved-level residual
@@ -356,8 +321,6 @@ mod tests {
 
     #[test]
     fn filter_all_branches_round_trip() {
-        // Exercise: gdf on/off x sb size, restoration on (uv present / mirrored), ccso,
-        // cdef enum (3 variants) x single_picture, df_par_bits.
         let mut bits = Bits::default();
         bits.bit(1); // disable_loopfilters_across_tiles
         bits.bit(1); // enable_cdef
@@ -384,8 +347,6 @@ mod tests {
 
     #[test]
     fn filter_restoration_mirrored_uv_round_trips() {
-        // restoration on, lr_tools_uv_present = 0 -> lr_uv_wiener_nonsep_disabled mirrors
-        // lr_wiener_nonsep_disabled (no bit).
         let mut bits = Bits::default();
         bits.bit(0); // disable_loopfilters_across_tiles
         bits.bit(0); // enable_cdef
@@ -408,7 +369,6 @@ mod tests {
 
     #[test]
     fn filter_single_picture_infers_adaptive_cdef() {
-        // single picture -> CdefOnSkipTxfm inferred Adaptive, no cdef bits.
         let mut bits = Bits::default();
         bits.bit(0); // disable_loopfilters_across_tiles
         bits.bit(0); // enable_cdef
@@ -425,7 +385,6 @@ mod tests {
 
     #[test]
     fn filter_gdf_gate_off_when_not_64x64_round_trips() {
-        // enable_gdf with a 128x128 seqSbSize -> gdf_unit_matches_sb_size not signalled.
         let mut bits = Bits::default();
         bits.bit(0); // disable_loopfilters_across_tiles
         bits.bit(0); // enable_cdef
@@ -442,9 +401,6 @@ mod tests {
         assert_filter_roundtrip(&c, false, SuperblockSize::Block128x128);
     }
 
-    // =========================================================================
-    // Per-config tile round-trip
-    // =========================================================================
 
     fn parse_tile(bytes: &[u8], input: TileParamsInput) -> SequenceTileConfig {
         let mut reader = BitReader::new(bytes, ByteOffset::new(0));
@@ -489,9 +445,6 @@ mod tests {
 
     #[test]
     fn tile_uniform_increment_run_hits_max_byte_exact() {
-        // 512x8 -> miCols 128, sbCols 8; maxLog2TileCols = tile_log2(1, 8) = 3. Driving the
-        // column increment to its maximum (three 1 bits, NO terminating 0 because the loop
-        // exits at the while condition) -> 8 single-superblock columns.
         let input = tile_input(512, 8);
         let mut bits = Bits::default();
         bits.bit(1); // seq_tile_info_present_flag
@@ -500,7 +453,6 @@ mod tests {
         bits.bit(1); // increment_tile_cols_log2 = 1
         bits.bit(1); // increment_tile_cols_log2 = 1
         bits.bit(1); // increment_tile_cols_log2 = 1 (now tileColsLog2 == maxLog2TileCols -> no stop bit)
-        // single row (sbRows 1 -> maxLog2TileRows 0 -> no row bits)
         let data = bits.into_bytes();
         let c = parse_tile(&data, input);
         let params = c.params.unwrap();
@@ -517,18 +469,13 @@ mod tests {
 
     #[test]
     fn tile_non_uniform_wide_first_column_byte_exact() {
-        // 256x8 -> sbCols 4. Non-uniform multi-column layout: a 2-wide first column then
-        // two 1-wide columns (starts [0, 2, 3]), exercising a width_in_sbs_minus_1 > 0 and
-        // a width recovered from a delta that is not the last-tile edge case.
         let input = tile_input(256, 8);
         let mut bits = Bits::default();
         bits.bit(1); // seq_tile_info_present_flag
         bits.bit(1); // allow_tile_info_change
         bits.bit(0); // uniform_tile_spacing_flag = 0
-        // ns(4) of width_in_sbs_minus_1 = 1 (size 2): n=4 -> w=3, m=4; 1 < 4 -> w-1=2 bits = 0b001.
         bits.bit(0);
         bits.bit(1);
-        // remaining columns: ns(2) then ns(1); first reads 1 bit = 0 -> size 1.
         bits.bit(0);
         let data = bits.into_bytes();
         let c = parse_tile(&data, input);
@@ -561,7 +508,6 @@ mod tests {
 
     #[test]
     fn tile_uniform_two_rows_byte_exact() {
-        // 8x256 frame -> sbRows 4; one column, two rows via the row increment run.
         let input = TileParamsInput {
             frame_width: 16,
             frame_height: 256,
@@ -571,7 +517,6 @@ mod tests {
         bits.bit(1); // seq_tile_info_present_flag
         bits.bit(0); // allow_tile_info_change
         bits.bit(1); // uniform_tile_spacing_flag
-        // single column (sbCols 1 -> minLog2TileCols == maxLog2TileCols == 0, no col bits)
         bits.bit(1); // increment_tile_rows_log2 = 1
         bits.bit(0); // increment_tile_rows_log2 = 0 (stop)
         let data = bits.into_bytes();
@@ -641,9 +586,6 @@ mod tests {
         }
     }
 
-    // =========================================================================
-    // Rejection / gated-off / domain tests — each asserts bit_len() == 0
-    // =========================================================================
 
     fn full_no_tile_header() -> SequenceHeader {
         let mut bits = Bits::default();
@@ -669,20 +611,16 @@ mod tests {
 
     #[test]
     fn filter_reject_gdf_unit_without_gate() {
-        // single-picture full header -> seqSbSize 64x64; enable_gdf is false, so the gate
-        // (enable_gdf && 64x64) is off and a set gdf_unit_matches_sb_size is non-canonical.
         assert_filter_rejected(|f| f.gdf_unit_matches_sb_size = true, "gdf_unit_matches_sb_size");
     }
 
     #[test]
     fn filter_reject_lr_uv_pc_wiener_mismatch() {
-        // restoration is false in the fixture, so lr_uv_pc_wiener_disabled must equal it.
         assert_filter_rejected(|f| f.lr_uv_pc_wiener_disabled = true, "lr_uv_pc_wiener_disabled");
     }
 
     #[test]
     fn filter_reject_restoration_subfield_without_gate() {
-        // restoration off -> lr_pc_wiener_disabled must stay false.
         assert_filter_rejected(|f| f.lr_pc_wiener_disabled = true, "restoration_subfields");
     }
 
@@ -693,13 +631,11 @@ mod tests {
 
     #[test]
     fn filter_reject_non_adaptive_cdef_single_picture() {
-        // The fixture is single-picture, so cdef_on_skip_txfm must be Adaptive.
         assert_filter_rejected(|f| f.cdef_on_skip_txfm = CdefOnSkipTxfm::AlwaysOn, "cdef_on_skip_txfm");
     }
 
     #[test]
     fn filter_reject_df_par_bits_too_wide() {
-        // df_par_bits_minus_2 must fit f(2).
         let mut header = full_no_tile_header();
         let mut filter = header.filter.unwrap();
         filter.df_par_bits_minus_2 = 4; // > 3 doesn't fit f(2)
@@ -718,14 +654,12 @@ mod tests {
 
     #[test]
     fn tile_reject_present_flag_with_payload() {
-        // seq_tile_info_present_flag false but params present -> non-canonical.
         let input = tile_input(16, 8);
         let mut bits = Bits::default();
         bits.bit(1);
         bits.bit(0);
         bits.bit(1);
         let c = parse_tile(&bits.into_bytes(), input);
-        // Build an inconsistent config: flag false but keep the params.
         let bad = SequenceTileConfig {
             seq_tile_info_present_flag: false,
             ..c
@@ -743,9 +677,6 @@ mod tests {
 
     #[test]
     fn tile_reject_is_bridge_input() {
-        // is_bridge is a §5.18.7.4 frame concept; the §5.4.2 sequence config never sets it.
-        // With is_bridge the parser reads zero layout bits (uniform inferred), so this
-        // sequence writer rejects it before any bit rather than emit a flag the parse skips.
         let mut bits = Bits::default();
         bits.bit(1); // seq_tile_info_present_flag
         bits.bit(0); // allow_tile_info_change
@@ -766,7 +697,6 @@ mod tests {
 
     #[test]
     fn tile_reject_reserved_level_params_none() {
-        // present flag set, params None -> UnwritableSequenceHeader at the tile-config level.
         let input = tile_input(16, 8);
         let bad = SequenceTileConfig {
             seq_tile_info_present_flag: true,
@@ -788,8 +718,6 @@ mod tests {
 
     #[test]
     fn tile_reject_grid_mismatch() {
-        // Parse a 16x8 single-tile config, then write it against a 128x8 input: the stored
-        // sb grid no longer matches the recomputed grid.
         let mut bits = Bits::default();
         bits.bit(1);
         bits.bit(0);
@@ -806,7 +734,6 @@ mod tests {
 
     #[test]
     fn tile_reject_corrupt_start_array() {
-        // A non-monotonic start array could never have been produced by the parser.
         let input = tile_input(128, 8);
         let mut bits = Bits::default();
         bits.bit(1);
@@ -854,14 +781,9 @@ mod tests {
         assert_eq!(writer.bit_len(), 0);
     }
 
-    // =========================================================================
-    // Never-panics: writing arbitrary mutated configs and parser-reachable models.
-    // =========================================================================
 
     #[test]
     fn writer_never_panics_on_truncated_fixtures() {
-        // Parse the full header at every byte prefix where it parses, then write it; the
-        // writer must never panic (it may reject).
         let mut bits = Bits::default();
         push_still_picture_header_until_tile(&mut bits, 0);
         bits.bit(0);

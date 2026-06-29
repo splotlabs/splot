@@ -157,27 +157,14 @@ pub fn parse_segmentation_params(
     seg: &CoreSeqSegView,
     mfh: Option<&MfhSegView>,
 ) -> Result<SegmentationParams> {
-    // AV2 § 5.18.7.1: segmentation_enabled f(1).
     let segmentation_enabled = reader.read_flag()?;
 
     let mut features = [[SegmentFeature::DISABLED; SEG_LVL_MAX]; MAX_SEGMENTS];
     let mut reuse_seg_info = false;
     let mut segmentation_update_map = false;
-    // AV2 § 5.18.7.1: segmentation_temporal_update = 0 on every path this parser
-    // models (intra, DerivedPrimaryRefFrame == PRIMARY_REF_NONE).
     let segmentation_temporal_update = false;
 
     if segmentation_enabled {
-        // AV2 § 5.18.7.1 haveSegParams / allowChange / mfhId derivation, in the spec's
-        // branch order:
-        //   if ( cur_mfh_id > 0 && mfh_seg_info_present_flag[cur_mfh_id] ) {
-        //       haveSegParams = mfh_ext_seg_flag[cur_mfh_id] == enable_ext_seg
-        //       allowChange   = haveSegParams && mfh_allow_seg_info_change[cur_mfh_id]
-        //   } else if ( seq_seg_info_present_flag ) { ... } else { 0, 0 }
-        // `mfh.is_some()` already encodes `cur_mfh_id > 0 && mfh_seg_info_present_flag`
-        // (the caller builds the view only when that gate holds). `reuse_source` carries
-        // the data a `reuse_seg_info` copy draws from (MfhFeatureData on the MFH branch,
-        // SeqFeatureData on the sequence branch).
         let (have_seg_params, allow_change, reuse_source) = if let Some(mfh) = mfh {
             let have = mfh.mfh_ext_seg_flag == seg.enable_ext_seg;
             (
@@ -191,8 +178,6 @@ pub fn parse_segmentation_params(
             (false, false, None)
         };
 
-        // AV2 § 5.18.7.1: reuse_seg_info f(1) when allowChange, else inferred
-        // reuse_seg_info = haveSegParams.
         reuse_seg_info = if allow_change {
             reader.read_flag()?
         } else {
@@ -200,37 +185,22 @@ pub fn parse_segmentation_params(
         };
 
         if reuse_seg_info {
-            // AV2 § 5.18.7.1: FeatureEnabled / FeatureData copy the stored data for all
-            // MAX_SEGMENTS segments — SeqFeature* when mfhId == 0, MfhFeature* when
-            // mfhId == cur_mfh_id. reuse_seg_info == 1 implies haveSegParams == 1, so a
-            // view built from a real record always carries the stored data here; an
-            // inconsistent hand-built view keeps the all-disabled default instead of
-            // panicking.
             if let Some(info) = reuse_source {
                 features = info.features;
             }
         } else {
-            // AV2 § 5.18.7.1: (FeatureEnabled, FeatureData) =
-            // seg_info(MaxSegments) (§ 5.4.9).
             features = parse_seg_info(reader, seg.max_segments)?.features;
         }
 
-        // AV2 § 5.18.7.1: DerivedPrimaryRefFrame == PRIMARY_REF_NONE on the
-        // intra path, so segmentation_update_map = 1 and
-        // segmentation_temporal_update = 0 are inferred without reading bits.
         segmentation_update_map = true;
     }
-    // AV2 § 5.18.7.1 else-branch: FeatureEnabled / FeatureData stay all zero.
 
-    // AV2 § 5.18.7.1: SegIdPreSkip / LastActiveSegId derivation over
-    // 0 <= i < MaxSegments (capped at MAX_SEGMENTS like seg_info(), § 5.4.9).
     let max_segments = (seg.max_segments as usize).min(MAX_SEGMENTS);
     let mut seg_id_pre_skip = false;
     let mut last_active_seg_id = 0u8;
     for (i, segment) in features.iter().enumerate().take(max_segments) {
         for (j, feature) in segment.iter().enumerate() {
             if feature.enabled {
-                // i < MAX_SEGMENTS (16), so it fits in u8.
                 last_active_seg_id = i as u8;
                 if j >= SEG_LVL_SKIP {
                     seg_id_pre_skip = true;
@@ -293,8 +263,6 @@ mod tests {
 
     #[test]
     fn disabled_segmentation_zeroes_features_and_reads_one_bit() {
-        // § 5.18.7.1 else-branch: all FeatureEnabled/FeatureData zero, no
-        // further bits read.
         let mut bits = Bits::default();
         bits.bit(0); // segmentation_enabled
         let data = bits.into_bytes();
@@ -318,9 +286,6 @@ mod tests {
 
     #[test]
     fn fresh_seg_info_quantizer_feature_sets_last_active_without_pre_skip() {
-        // No sequence info: haveSegParams = 0, allowChange = 0, so
-        // reuse_seg_info is inferred 0 (no bit) and seg_info(8) is parsed.
-        // Segment 2 feature 0 (SEG_LVL_ALT_Q, j < SEG_LVL_SKIP) enabled.
         let mut bits = Bits::default();
         bits.bit(1); // segmentation_enabled
         for _ in 0..2 {
@@ -336,13 +301,11 @@ mod tests {
         let data = bits.into_bytes();
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
         let params = parse_segmentation_params(&mut reader, &no_seq_info_view(8), None).unwrap();
-        // 1 + 8 * SEG_LVL_MAX enabled bits + 10 value bits.
         assert_eq!(reader.consumed_bits(), 35);
         assert!(params.segmentation_enabled);
         assert!(!params.reuse_seg_info);
         assert!(params.features[2][0].enabled);
         assert_eq!(params.features[2][0].data, 100);
-        // Intra path: update_map inferred 1, temporal_update inferred 0.
         assert!(params.segmentation_update_map);
         assert!(!params.segmentation_temporal_update);
         assert_eq!(params.last_active_seg_id, 2);
@@ -351,8 +314,6 @@ mod tests {
 
     #[test]
     fn fresh_seg_info_skip_feature_sets_pre_skip() {
-        // Segment 5 feature 1 (j >= SEG_LVL_SKIP) enabled: no value bits
-        // (Segmentation_Feature_Bits[1] = 0), SegIdPreSkip = 1.
         let mut bits = Bits::default();
         bits.bit(1); // segmentation_enabled
         for _ in 0..5 {
@@ -375,8 +336,6 @@ mod tests {
 
     #[test]
     fn fresh_seg_info_with_ext_seg_reaches_segment_fifteen() {
-        // enable_ext_seg: MaxSegments = 16; segment 15 feature 0 enabled
-        // exercises the full derivation loop bound.
         let mut bits = Bits::default();
         bits.bit(1); // segmentation_enabled
         for _ in 0..15 {
@@ -396,8 +355,6 @@ mod tests {
 
     #[test]
     fn sequence_reuse_is_inferred_without_a_bit_when_change_not_allowed() {
-        // seq_seg_info_present_flag = 1, seq_allow_seg_info_change = 0:
-        // reuse_seg_info inferred = haveSegParams = 1, only 1 bit read.
         let view = seq_info_view(false);
         let mut bits = Bits::default();
         bits.bit(1); // segmentation_enabled
@@ -413,14 +370,12 @@ mod tests {
         );
         assert!(params.segmentation_update_map);
         assert!(!params.segmentation_temporal_update);
-        // Stored feature: segment 7, feature 2 (j >= SEG_LVL_SKIP).
         assert_eq!(params.last_active_seg_id, 7);
         assert!(params.seg_id_pre_skip);
     }
 
     #[test]
     fn sequence_reuse_bit_is_read_when_change_allowed() {
-        // seq_allow_seg_info_change = 1: reuse_seg_info f(1) read as 1.
         let view = seq_info_view(true);
         let mut bits = Bits::default();
         bits.bit(1); // segmentation_enabled
@@ -436,8 +391,6 @@ mod tests {
 
     #[test]
     fn declined_reuse_parses_fresh_seg_info_instead_of_stored_data() {
-        // reuse_seg_info read as 0: seg_info(8) is parsed and the stored
-        // sequence data is ignored.
         let view = seq_info_view(true);
         let mut bits = Bits::default();
         bits.bit(1); // segmentation_enabled
@@ -472,8 +425,6 @@ mod tests {
 
     #[test]
     fn truncation_inside_seg_info_reports_eof() {
-        // segmentation_enabled = 1 then only 7 more bits, but seg_info(8)
-        // needs at least 24.
         let data = [0b1000_0000u8];
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
         assert!(matches!(
@@ -502,9 +453,6 @@ mod tests {
 
     #[test]
     fn mfh_arm_reuse_inferred_copies_mfh_feature_data_when_change_not_allowed() {
-        // § 5.18.7.1 MFH branch: mfh_ext_seg_flag == enable_ext_seg -> haveSegParams = 1;
-        // mfh_allow_seg_info_change == 0 -> allowChange = 0, so reuse_seg_info is
-        // inferred 1 (no bit) and FeatureData copies MfhFeatureData[cur_mfh_id].
         let seg = no_seq_info_view(8); // enable_ext_seg == false
         let mfh = mfh_seg_view(false, false); // mfh_ext_seg_flag == enable_ext_seg
         let mut bits = Bits::default();
@@ -524,8 +472,6 @@ mod tests {
 
     #[test]
     fn mfh_arm_reads_reuse_bit_when_change_allowed() {
-        // mfh_allow_seg_info_change == 1 with haveSegParams == 1 -> allowChange = 1, so
-        // reuse_seg_info f(1) is read (here 1), then MFH data is copied.
         let seg = no_seq_info_view(8);
         let mfh = mfh_seg_view(false, true);
         let mut bits = Bits::default();
@@ -542,9 +488,6 @@ mod tests {
 
     #[test]
     fn mfh_arm_ext_seg_mismatch_yields_no_seg_params_and_parses_fresh() {
-        // mfh_ext_seg_flag != enable_ext_seg -> haveSegParams = 0, allowChange = 0, so
-        // reuse_seg_info is inferred 0 and seg_info(MaxSegments) is parsed fresh,
-        // ignoring the stored MFH data.
         let seg = no_seq_info_view(8); // enable_ext_seg == false
         let mfh = mfh_seg_view(true, true); // mfh_ext_seg_flag == true != false
         let mut bits = Bits::default();
@@ -566,8 +509,6 @@ mod tests {
 
     #[test]
     fn mfh_arm_takes_priority_over_sequence_branch() {
-        // Both the MFH arm (mfh present) and seq_seg_info_present_flag would supply
-        // data; § 5.18.7.1 selects the MFH branch first, so MFH data wins.
         let seg = seq_info_view(false); // seq segment 7, feature 2 enabled
         let mfh = mfh_seg_view(false, false); // MFH segment 3, feature 0 enabled
         let mut bits = Bits::default();
@@ -582,12 +523,9 @@ mod tests {
 
     #[test]
     fn mfh_arm_truncation_reports_eof() {
-        // MFH arm with allowChange == 1 reads segmentation_enabled then reuse_seg_info;
-        // a single-bit payload (only segmentation_enabled == 1) overruns the reuse bit.
         let seg = no_seq_info_view(8);
         let mfh = mfh_seg_view(false, true);
         let mut reader = BitReader::new(&[], ByteOffset::new(0));
-        // Empty input: segmentation_enabled f(1) itself overruns.
         assert!(matches!(
             parse_segmentation_params(&mut reader, &seg, Some(&mfh)),
             Err(Error::UnexpectedEof { .. })

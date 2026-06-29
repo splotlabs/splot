@@ -419,8 +419,6 @@ fn selector_returns_rows_and_bounds_errors() {
         .unwrap();
     assert_eq!(row, DEFAULT_RECT_TYPE_CDF[1][63].as_slice());
 
-    // §8.3.2: `do_square_split` `PlaneStart` is fixed at 0, so plane 0 resolves to
-    // the plane-0 row; the chroma SDP plane (1) is rejected for this selector.
     let row = tile
         .row(TileCdfSelector::DoSquareSplit {
             plane_start: 0,
@@ -925,8 +923,6 @@ fn work_unit_boundary_applies_saved_and_frame_updates_transactionally() {
 
 #[test]
 fn eob_extra_selector_returns_rows_and_bounds_error() {
-    // AV2 § 8.3.2: TileEobExtraCdf is selected directly by coeff_cdf_q_ctx with
-    // no per-symbol context. Each q-context returns its Default_Eob_Extra_Cdf row.
     let frame = FrameCdfSubset::from_defaults();
     let tile = frame.tile_copy();
     for (q, expected) in DEFAULT_EOB_EXTRA_CDF.iter().enumerate() {
@@ -935,7 +931,6 @@ fn eob_extra_selector_returns_rows_and_bounds_error() {
             .unwrap();
         assert_eq!(row, expected.as_slice(), "eob_extra q-ctx {q}");
     }
-    // A coeff_cdf_q_ctx at the bound is a typed SelectorOutOfRange naming the array.
     assert!(matches!(
         tile.row(TileCdfSelector::EobExtra { coeff_cdf_q_ctx: 4 }),
         Err(TileCdfError::SelectorOutOfRange {
@@ -952,7 +947,6 @@ fn eob_extra_tile_copy_does_not_alias_the_frame() {
     let frame = FrameCdfSubset::from_defaults();
     let mut tile = frame.tile_copy();
     tile.rows_mut().block.eob_extra[2] = [12_345, 0, 7];
-    // The tile copy is mutated; the frame's default row is untouched.
     assert_eq!(tile.rows().eob_extra()[2], [12_345, 0, 7]);
     assert_eq!(frame.rows().eob_extra()[2], DEFAULT_EOB_EXTRA_CDF[2]);
 }
@@ -962,7 +956,6 @@ fn assert_eob_pt_bank<const N: usize>(
     size: EobPtSize,
     expected: &[[[i32; N]; 3]; 4],
 ) {
-    // AV2 §8.3.2 selects TileEobPt<size>Cdf[eobCtx] for the active q-context.
     for (q, expected_q) in expected.iter().enumerate() {
         for (c, expected_qc) in expected_q.iter().enumerate() {
             let row = tile
@@ -1036,8 +1029,6 @@ fn eob_pt_tile_copy_does_not_alias_the_frame() {
 
 #[test]
 fn dc_sign_loads_defaults_and_selects_by_all_indices() {
-    // AV2 §8.3.2: dc_sign reads TileDcSignCdf[ptype][isHidden][ctx] for the
-    // active q-context. Verify every [q][plane][group][ctx] cell round-trips.
     let frame = FrameCdfSubset::from_defaults();
     let tile = frame.tile_copy();
     for (q, q_rows) in DEFAULT_DC_SIGN_CDF.iter().enumerate() {
@@ -1063,7 +1054,6 @@ fn dc_sign_loads_defaults_and_selects_by_all_indices() {
 fn dc_sign_selector_rejects_out_of_range_indices() {
     let frame = FrameCdfSubset::from_defaults();
     let tile = frame.tile_copy();
-    // Each of the four index axes is bounds-checked and names the DcSign array.
     assert!(matches!(
         tile.row(TileCdfSelector::DcSign {
             coeff_cdf_q_ctx: 4,
@@ -1136,9 +1126,6 @@ fn dc_sign_tile_copy_does_not_alias_the_frame() {
 
 #[test]
 fn txb_skip_plane_type_error_still_names_txb_skip() {
-    // `checked_plane_type` is now parameterized with the owning array (shared by
-    // txb_skip and dc_sign); an out-of-range txb_skip plane_type must still name
-    // TxbSkip, not DcSign.
     let frame = FrameCdfSubset::from_defaults();
     let tile = frame.tile_copy();
     assert!(matches!(

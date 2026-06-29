@@ -74,8 +74,6 @@ fn write_leb128_with_len(
         return Err(WriteError::NonCanonicalMetadata { what });
     }
     for i in 0..len {
-        // i < len <= 8 and i < 5 keeps 7*i < 32, so the shift never exceeds a u32 width; for
-        // i >= 5 the high padding groups encode zero (value >> 35 == 0).
         let shift = (7u32).saturating_mul(i as u32);
         let group = if shift >= 32 {
             0u8
@@ -140,8 +138,6 @@ pub fn write_metadata_short_obu(
     obu: &MetadataShortObu,
     passthrough: &[u8],
 ) -> WriteResult<()> {
-    // The metadata OBU payload begins at a byte boundary (the § 5.17 parser reads it byte-aligned);
-    // a mid-byte writer would mis-position every following byte. Matches the §5.4 OBU writers.
     if !writer.is_byte_aligned() {
         return Err(WriteError::WriterNotByteAligned);
     }
@@ -150,10 +146,8 @@ pub fn write_metadata_short_obu(
             what: "muh_field_domain",
         });
     }
-    // § 6.16 Table 6.17: a Reserved value the parser would re-map to a named type is unwritable.
     check_canonical_metadata_type(obu.metadata_type)?;
     if obu.muh_cancel_flag {
-        // § 5.17.2: a cancelled OBU carries no unit, so there is nothing to summarize.
         if obu.unit.is_some() {
             return Err(WriteError::NonCanonicalMetadata {
                 what: "short_cancel_unit",
@@ -171,12 +165,10 @@ pub fn write_metadata_short_obu(
     }
 
     let mut scratch = BitWriter::new();
-    // § 5.17.2: the 1-byte header, MSB-first.
     scratch.write_flag(obu.metadata_is_suffix)?;
     scratch.write_bits_u8(obu.muh_layer_idc, 3)?;
     scratch.write_flag(obu.muh_cancel_flag)?;
     scratch.write_bits_u8(obu.muh_persistence_idc, 3)?;
-    // § 5.17.2: metadata_type leb128(), reproduced byte-exactly from metadata_type_leb128_bytes.
     write_leb128_with_len(
         &mut scratch,
         obu.metadata_type.value(),
@@ -184,7 +176,6 @@ pub fn write_metadata_short_obu(
         "metadata_type_leb_len",
     )?;
     if let Some(unit) = obu.unit.as_ref() {
-        // The metadata_type the unit dispatches on must match the OBU's metadata_type.
         if unit.metadata_type != obu.metadata_type {
             return Err(WriteError::NonCanonicalMetadata {
                 what: "type_payload_mismatch",
@@ -217,8 +208,6 @@ pub fn write_metadata_group_obu(
     obu_xlayer_id: ExtendedLayerId,
     passthrough: &[&[u8]],
 ) -> WriteResult<()> {
-    // The metadata OBU payload begins at a byte boundary (the § 5.17 parser reads it byte-aligned);
-    // a mid-byte writer would mis-position every following byte. Matches the §5.4 OBU writers.
     if !writer.is_byte_aligned() {
         return Err(WriteError::WriterNotByteAligned);
     }
@@ -227,7 +216,6 @@ pub fn write_metadata_group_obu(
             what: "group_passthrough_count",
         });
     }
-    // § 5.17.3: metadata_unit_cnt_minus_1 = units - 1; the parser bounds it to < 16383.
     if obu.units.is_empty() {
         return Err(WriteError::NonCanonicalMetadata {
             what: "group_unit_count",
@@ -246,11 +234,9 @@ pub fn write_metadata_group_obu(
     }
 
     let mut scratch = BitWriter::new();
-    // § 5.17.3: the 1-byte group header, MSB-first.
     scratch.write_flag(obu.metadata_is_suffix)?;
     scratch.write_bits_u8(obu.metadata_necessity_idc, 2)?;
     scratch.write_bits_u8(obu.metadata_application_id, 5)?;
-    // § 5.17.3: metadata_unit_cnt_minus_1 leb128() (minimal — its byte count is not modeled).
     scratch.write_leb128(cnt_minus_1 as u32)?;
     for (unit, &unit_passthrough) in obu.units.iter().zip(passthrough.iter()) {
         write_metadata_group_unit(&mut scratch, unit, obu_xlayer_id, unit_passthrough)?;
@@ -307,9 +293,6 @@ pub fn write_metadata_group_obu_flat(
     obu_xlayer_id: ExtendedLayerId,
     passthrough: &[u8],
 ) -> WriteResult<()> {
-    // Split the flat passthrough into one slice per unit by each unit's modeled blob length, in
-    // unit order. checked_add + the `end <= len` bound keep a constructed (over-large) length from
-    // panicking; an exact-sum mismatch is rejected below.
     let mut slices: Vec<&[u8]> = Vec::with_capacity(obu.units.len());
     let mut offset = 0usize;
     for unit in &obu.units {
@@ -345,19 +328,14 @@ fn write_metadata_group_unit(
             what: "muh_header_size_domain",
         });
     }
-    // § 6.16 Table 6.17: a Reserved value the parser would re-map to a named type is unwritable.
     check_canonical_metadata_type(unit.metadata_type)?;
 
     let mut scratch = BitWriter::new();
-    // § 5.17.3: metadata_type leb128() (minimal — its byte count is not modeled in the group).
     scratch.write_leb128(unit.metadata_type.value())?;
-    // § 5.17.3: header byte = (muh_header_size << 1) | muh_cancel_flag, MSB-first f(7) + f(1).
     scratch.write_bits_u8(unit.muh_header_size, 7)?;
     scratch.write_flag(unit.muh_cancel_flag)?;
 
     if unit.muh_cancel_flag {
-        // § 5.17.3: a cancelled unit carries no metadata_unit, so there is nothing to summarize;
-        // reject supplied opaque bytes rather than silently dropping them (as the short OBU does).
         if !passthrough.is_empty() {
             return Err(WriteError::NonCanonicalMetadata {
                 what: "passthrough_len",
@@ -374,7 +352,6 @@ fn write_metadata_group_unit(
 /// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-17-3`): all `muh_*`
 /// fields and the unit are absent, and `muh_header_size` zero header-extension bytes follow.
 fn write_group_unit_cancel(scratch: &mut BitWriter, unit: &MetadataGroupUnit) -> WriteResult<()> {
-    // § 5.17.3: a cancelled unit carries none of the non-cancel fields.
     if unit.muh_payload_size.is_some()
         || unit.muh_layer_idc.is_some()
         || unit.muh_persistence_idc.is_some()
@@ -388,8 +365,6 @@ fn write_group_unit_cancel(scratch: &mut BitWriter, unit: &MetadataGroupUnit) ->
             what: "group_cancel_fields",
         });
     }
-    // On cancel, headerRemainingBytes == muh_header_size (no payload_size / fixed bytes were
-    // consumed), so header_extension_len must equal muh_header_size.
     if unit.header_extension_len != usize::from(unit.muh_header_size) {
         return Err(WriteError::NonCanonicalMetadata {
             what: "muh_header_size",
@@ -411,7 +386,6 @@ fn write_group_unit_body(
     obu_xlayer_id: ExtendedLayerId,
     passthrough: &[u8],
 ) -> WriteResult<()> {
-    // § 5.17.3: every non-cancel muh_* field is present, as is the unit.
     let (
         Some(muh_payload_size),
         Some(muh_layer_idc),
@@ -441,13 +415,8 @@ fn write_group_unit_body(
         });
     }
 
-    // § 6.16.3: layer maps depend on muh_layer_idc and the OBU scope; validate the modeled
-    // xlayer/mlayer maps against the branch and derive their byte count.
     let layer_map_bytes = check_layer_maps(unit, muh_layer_idc, obu_xlayer_id)?;
 
-    // headerRemainingBytes = muh_header_size - payload_size_bytes - 2 - layer_map_bytes (then the
-    // header-extension bytes). Invert: payload_size_bytes = muh_header_size - 2 - layer_map_bytes -
-    // header_extension_len. The result must be a valid leb128() length for muh_payload_size.
     let fixed = 2usize
         .checked_add(layer_map_bytes)
         .and_then(|v| v.checked_add(unit.header_extension_len));
@@ -463,8 +432,6 @@ fn write_group_unit_body(
             what: "muh_payload_size_leb_len",
         });
     }
-    // The bounded metadata_unit() occupies exactly muh_payload_size bytes and dispatches on the
-    // unit's metadata_type, which must match.
     if metadata_unit.payload_size != muh_payload_size as usize {
         return Err(WriteError::NonCanonicalMetadata {
             what: "muh_payload_size",
@@ -476,26 +443,20 @@ fn write_group_unit_body(
         });
     }
 
-    // § 5.17.3 write order: muh_payload_size leb128() padded to payload_size_bytes ...
     write_leb128_with_len(
         scratch,
         muh_payload_size,
         payload_size_bytes,
         "muh_payload_size_leb_len",
     )?;
-    // ... then the two fixed bytes (muh_layer_idc f(3), muh_persistence_idc f(3), muh_priority
-    // f(8), muh_reserved_zero_2bits f(2)) ...
     scratch.write_bits_u8(muh_layer_idc, 3)?;
     scratch.write_bits_u8(muh_persistence_idc, 3)?;
     scratch.write_bits_u8(muh_priority, 8)?;
     scratch.write_bits_u8(muh_reserved_zero_2bits, 2)?;
-    // ... then the layer maps ...
     write_layer_maps(scratch, unit, muh_layer_idc, obu_xlayer_id)?;
-    // ... then header_extension_len zero bytes ...
     for _ in 0..unit.header_extension_len {
         scratch.write_bits_u8(0, 8)?;
     }
-    // ... then the bounded metadata_unit().
     write_metadata_unit(scratch, metadata_unit, passthrough)
 }
 
@@ -508,7 +469,6 @@ fn check_layer_maps(
 ) -> WriteResult<usize> {
     if muh_layer_idc == LAYER_VALUES {
         if obu_xlayer_id.is_global() {
-            // § 6.16.3: muh_xlayer_map f(32) then one muh_mlayer_map per set bit in 0..=30.
             let Some(xlayer_map) = unit.muh_xlayer_map else {
                 return Err(WriteError::NonCanonicalMetadata {
                     what: "layer_map_presence",
@@ -520,10 +480,8 @@ fn check_layer_maps(
                     what: "layer_map_count",
                 });
             }
-            // 4 (xlayer_map) + one byte per set bit; set_bits <= 31 keeps this small.
             Ok(4 + set_bits)
         } else {
-            // § 6.16.3: a single muh_mlayer_map byte; no muh_xlayer_map.
             if unit.muh_xlayer_map.is_some() || unit.muh_mlayer_maps.len() != 1 {
                 return Err(WriteError::NonCanonicalMetadata {
                     what: "layer_map_count",
@@ -532,7 +490,6 @@ fn check_layer_maps(
             Ok(1)
         }
     } else {
-        // § 6.16.3: no layer maps when muh_layer_idc != LAYER_VALUES.
         if unit.muh_xlayer_map.is_some() || !unit.muh_mlayer_maps.is_empty() {
             return Err(WriteError::NonCanonicalMetadata {
                 what: "layer_map_count",
@@ -555,7 +512,6 @@ fn write_layer_maps(
     if obu_xlayer_id.is_global() {
         let xlayer_map = unit.muh_xlayer_map.unwrap_or(0);
         scratch.write_bits(xlayer_map, 32)?;
-        // One muh_mlayer_map per set bit in 0..=30, in bit order (the order the parser pushed).
         let mut next = 0usize;
         for n in 0..31u32 {
             if xlayer_map & (1 << n) != 0 {
@@ -596,8 +552,6 @@ pub fn write_metadata_unit(
     let mut scratch = BitWriter::new();
     write_metadata_payload(&mut scratch, &unit.payload, passthrough)?;
     let typed_bits = scratch.bit_len();
-    // metadataPayloadSize bytes -> target_bits; payload_size is bounded to the u32 ceiling by
-    // check_unit_type_and_size, so the *8 cannot overflow u64. The typed payload must fit.
     let target_bits = (unit.payload_size as u64).saturating_mul(8);
     if typed_bits > target_bits {
         return Err(WriteError::NonCanonicalMetadata {
@@ -605,9 +559,6 @@ pub fn write_metadata_unit(
         });
     }
     writer.append(&scratch)?;
-    // § 6.16.1: metadata_unit_remaining_bit zero padding to the declared size. The iteration count
-    // is bounded by the u32 payload_size cap above, so a constructed model cannot drive it
-    // unbounded; for any real (small) padding this is a handful of bits.
     for _ in 0..(target_bits - typed_bits) {
         writer.write_bit(0)?;
     }
@@ -618,25 +569,18 @@ pub fn write_metadata_unit(
 /// `payload_size` is consistent with the payload (AV2 v1.0.0 § 5.17.1 / § 6.16.1,
 /// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-17-1`).
 fn check_unit_type_and_size(unit: &MetadataUnit) -> WriteResult<()> {
-    // § 6.16 Table 6.17: a Reserved value the parser would re-map to a named type is unwritable.
-    // The OBU writers also guard this, but a direct write_metadata_unit caller must be caught here
-    // (a Reserved(1..=10) + UnknownRaw unit would otherwise reparse under the named type).
     check_canonical_metadata_type(unit.metadata_type)?;
     if !type_matches_payload(unit.metadata_type, &unit.payload) {
         return Err(WriteError::NonCanonicalMetadata {
             what: "type_payload_mismatch",
         });
     }
-    // metadataPayloadSize is derived from the leb128 obuPayloadSize / muh_payload_size, both u32,
-    // so a payload_size beyond the u32 ceiling could never have been parsed. Rejecting it also
-    // bounds the unit padding (§ 6.16.1) so a constructed model cannot drive an unbounded write.
     if unit.payload_size as u64 > u64::from(u32::MAX) {
         return Err(WriteError::NonCanonicalMetadata {
             what: "unit_payload_size",
         });
     }
     let consistent = match &unit.payload {
-        // The length-summarized payloads pin payload_size relative to their modeled length.
         MetadataPayload::IccProfile(p) => unit.payload_size == p.payload_len,
         MetadataPayload::UnknownRaw(p) => unit.payload_size == p.raw_len,
         MetadataPayload::UserDataUnregistered(p) => {
@@ -646,8 +590,6 @@ fn check_unit_type_and_size(unit: &MetadataUnit) -> WriteResult<()> {
             let ext = usize::from(p.itu_t_t35_country_code_extension_byte.is_some());
             unit.payload_size == 1usize.saturating_add(ext).saturating_add(p.payload_len)
         }
-        // The fully-modeled payloads do not constrain payload_size beyond the per-unit padding
-        // check in write_metadata_unit, so accept any size here.
         _ => true,
     };
     if !consistent {
@@ -707,7 +649,6 @@ pub fn write_metadata_payload(
     match payload {
         MetadataPayload::HdrCll(p) => {
             require_empty_passthrough(passthrough)?;
-            // § 5.17.5: max_cll f(16), max_fall f(16).
             writer.write_bits(u32::from(p.max_cll), 16)?;
             writer.write_bits(u32::from(p.max_fall), 16)
         }
@@ -729,7 +670,6 @@ pub fn write_metadata_payload(
             write_banding_hints(writer, p)
         }
         MetadataPayload::IccProfile(p) => {
-            // § 5.17.9: the parser reads nothing; the profile bytes are the passthrough.
             require_passthrough_len(passthrough, p.payload_len)?;
             writer.write_le(passthrough)
         }
@@ -739,19 +679,14 @@ pub fn write_metadata_payload(
         }
         MetadataPayload::TemporalPointInfo(p) => {
             require_empty_passthrough(passthrough)?;
-            // § 5.17.11: frame_presentation_time leb128() (minimal — its byte count is not
-            // modeled), matching the parser's read_leb128().
             writer.write_leb128(p.frame_presentation_time)
         }
         MetadataPayload::UserDataUnregistered(p) => {
-            // § 5.17.13: uuid_iso_iec_11578 (16 bytes) then the user-data passthrough.
             require_passthrough_len(passthrough, p.payload_len)?;
             writer.write_le(&p.uuid_iso_iec_11578)?;
             writer.write_le(passthrough)
         }
         MetadataPayload::UnknownRaw(p) => {
-            // § 6.16.1 NOTE: reserved / private types have undefined syntax; the raw bytes are the
-            // passthrough.
             require_passthrough_len(passthrough, p.raw_len)?;
             writer.write_le(passthrough)
         }
@@ -785,7 +720,6 @@ fn require_passthrough_len(passthrough: &[u8], expected: usize) -> WriteResult<(
 /// Writes `metadata_hdr_mdcv()` (AV2 v1.0.0 § 5.17.6,
 /// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-17-6`).
 fn write_hdr_mdcv(writer: &mut BitWriter, p: &MetadataHdrMdcv) -> WriteResult<()> {
-    // § 5.17.6: per i, primary x then primary y (interleaved), then white x/y f(16), lum f(32).
     for i in 0..3 {
         writer.write_bits(u32::from(p.primary_chromaticity_x[i]), 16)?;
         writer.write_bits(u32::from(p.primary_chromaticity_y[i]), 16)?;
@@ -803,7 +737,6 @@ fn write_itut_t35(
     p: &MetadataItutT35,
     passthrough: &[u8],
 ) -> WriteResult<()> {
-    // § 5.17.4: the extension byte is present iff the country code is 0xFF.
     let ext_present = p.itu_t_t35_country_code == 0xFF;
     if ext_present != p.itu_t_t35_country_code_extension_byte.is_some() {
         return Err(WriteError::NonCanonicalMetadata {
@@ -823,7 +756,6 @@ fn write_itut_t35(
 fn write_timecode(writer: &mut BitWriter, p: &MetadataTimecode) -> WriteResult<()> {
     check_timecode_encodable(p)?;
 
-    // § 5.17.7: counting_type f(5), three flags f(1), n_frames f(9).
     writer.write_bits_u8(p.counting_type, 5)?;
     writer.write_flag(p.full_timestamp_flag)?;
     writer.write_flag(p.discontinuity_flag)?;
@@ -831,12 +763,10 @@ fn write_timecode(writer: &mut BitWriter, p: &MetadataTimecode) -> WriteResult<(
     writer.write_bits(u32::from(p.n_frames), 9)?;
 
     if p.full_timestamp_flag {
-        // § 5.17.7: seconds f(6), minutes f(6), hours f(5) (all present, validated up front).
         writer.write_bits_u8(p.seconds_value.unwrap_or(0), 6)?;
         writer.write_bits_u8(p.minutes_value.unwrap_or(0), 6)?;
         writer.write_bits_u8(p.hours_value.unwrap_or(0), 5)?;
     } else {
-        // § 5.17.7: a prefix chain of flag-then-value.
         writer.write_flag(p.seconds_value.is_some())?;
         if let Some(seconds) = p.seconds_value {
             writer.write_bits_u8(seconds, 6)?;
@@ -851,7 +781,6 @@ fn write_timecode(writer: &mut BitWriter, p: &MetadataTimecode) -> WriteResult<(
         }
     }
 
-    // § 5.17.7: time_offset_length f(5); time_offset_value f(time_offset_length) iff length > 0.
     writer.write_bits_u8(p.time_offset_length, 5)?;
     if let Some(offset) = p.time_offset_value {
         writer.write_bits(offset, u32::from(p.time_offset_length))?;
@@ -863,8 +792,6 @@ fn write_timecode(writer: &mut BitWriter, p: &MetadataTimecode) -> WriteResult<(
 /// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-17-7`), before any
 /// bit is written.
 fn check_timecode_encodable(p: &MetadataTimecode) -> WriteResult<()> {
-    // Field domains: counting_type f(5), n_frames f(9), seconds/minutes f(6), hours f(5),
-    // time_offset_length f(5).
     if p.counting_type >= 32
         || p.n_frames >= 512
         || p.seconds_value.is_some_and(|v| v >= 64)
@@ -876,25 +803,19 @@ fn check_timecode_encodable(p: &MetadataTimecode) -> WriteResult<()> {
             what: "timecode_domain",
         });
     }
-    // Presence chains.
     if p.full_timestamp_flag {
-        // A full timestamp signals all three values.
         if p.seconds_value.is_none() || p.minutes_value.is_none() || p.hours_value.is_none() {
             return Err(WriteError::NonCanonicalMetadata {
                 what: "timecode_presence",
             });
         }
-    } else {
-        // Partial: minutes present implies seconds present; hours present implies minutes present.
-        if (p.minutes_value.is_some() && p.seconds_value.is_none())
-            || (p.hours_value.is_some() && p.minutes_value.is_none())
-        {
-            return Err(WriteError::NonCanonicalMetadata {
-                what: "timecode_presence",
-            });
-        }
+    } else if (p.minutes_value.is_some() && p.seconds_value.is_none())
+        || (p.hours_value.is_some() && p.minutes_value.is_none())
+    {
+        return Err(WriteError::NonCanonicalMetadata {
+            what: "timecode_presence",
+        });
     }
-    // time_offset_value is present iff time_offset_length > 0, and must fit f(length).
     if (p.time_offset_length > 0) != p.time_offset_value.is_some() {
         return Err(WriteError::NonCanonicalMetadata {
             what: "timecode_presence",
@@ -902,7 +823,6 @@ fn check_timecode_encodable(p: &MetadataTimecode) -> WriteResult<()> {
     }
     if let Some(offset) = p.time_offset_value {
         let length = u32::from(p.time_offset_length);
-        // length is 1..=31 here (length > 0 implied by Some, and < 32 from the domain check).
         if length < 32 && offset >= (1u32 << length) {
             return Err(WriteError::NonCanonicalMetadata {
                 what: "timecode_domain",
@@ -915,7 +835,6 @@ fn check_timecode_encodable(p: &MetadataTimecode) -> WriteResult<()> {
 /// Writes `metadata_scan_type()` (AV2 v1.0.0 § 5.17.10,
 /// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-17-10`).
 fn write_scan_type(writer: &mut BitWriter, p: MetadataScanType) -> WriteResult<()> {
-    // § 5.17.10 domains: mps_pic_struct_type f(5), mps_source_scan_type_idc f(2).
     if p.mps_pic_struct_type >= 32 || p.mps_source_scan_type_idc >= 4 {
         return Err(WriteError::NonCanonicalMetadata {
             what: "scan_type_domain",
@@ -932,27 +851,22 @@ fn write_decoded_frame_hash(
     writer: &mut BitWriter,
     p: &MetadataDecodedFrameHash,
 ) -> WriteResult<()> {
-    // § 5.17.12 domains: hash_type f(4), reserved f(1).
     if p.hash_type >= 16 || p.reserved >= 2 {
         return Err(WriteError::NonCanonicalMetadata {
             what: "frame_hash_domain",
         });
     }
     if p.per_plane {
-        // § 5.17.12: one plane_hash per plane (1 if monochrome, else 3); no single frame_hash.
         let expected = if p.is_monochrome { 1 } else { 3 };
         if p.plane_hashes.len() != expected || p.frame_hash.is_some() {
             return Err(WriteError::NonCanonicalMetadata {
                 what: "frame_hash_presence",
             });
         }
-    } else {
-        // § 5.17.12: a single frame_hash; no per-plane hashes.
-        if !p.plane_hashes.is_empty() || p.frame_hash.is_none() {
-            return Err(WriteError::NonCanonicalMetadata {
-                what: "frame_hash_presence",
-            });
-        }
+    } else if !p.plane_hashes.is_empty() || p.frame_hash.is_none() {
+        return Err(WriteError::NonCanonicalMetadata {
+            what: "frame_hash_presence",
+        });
     }
 
     writer.write_bits_u8(p.hash_type, 4)?;
@@ -973,7 +887,6 @@ fn write_decoded_frame_hash(
 /// Writes `metadata_banding_hints()` (AV2 v1.0.0 § 5.17.8,
 /// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-17-8`).
 fn write_banding_hints(writer: &mut BitWriter, p: &MetadataBandingHints) -> WriteResult<()> {
-    // § 5.17.8: hints are only signaled (and only present) when coding_banding_present_flag.
     if !p.coding_banding_present_flag && p.hints.is_some() {
         return Err(WriteError::NonCanonicalMetadata {
             what: "banding_hints_presence",
@@ -986,7 +899,6 @@ fn write_banding_hints(writer: &mut BitWriter, p: &MetadataBandingHints) -> Writ
     writer.write_flag(p.coding_banding_present_flag)?;
     writer.write_flag(p.source_banding_present_flag)?;
     if p.coding_banding_present_flag {
-        // § 5.17.8: banding_hints_flag f(1) = hints.is_some().
         writer.write_flag(p.hints.is_some())?;
         if let Some(detail) = p.hints.as_ref() {
             write_banding_detail(writer, detail)?;
@@ -1010,7 +922,6 @@ fn check_banding_detail_encodable(detail: &BandingHintsDetail) -> WriteResult<()
     }
     for component in &detail.components {
         if component.banding_in_component_present_flag {
-            // § 5.17.8: max_band_width_minus_4 f(6), max_band_step_minus_1 f(4) when present.
             let (Some(width), Some(step)) = (
                 component.max_band_width_minus_4,
                 component.max_band_step_minus_1,
@@ -1041,7 +952,6 @@ fn check_banding_detail_encodable(detail: &BandingHintsDetail) -> WriteResult<()
 /// Validates a [`BandUnits`] (AV2 v1.0.0 § 5.17.8,
 /// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-17-8`) before any bit is written.
 fn check_band_units_encodable(band_units: &BandUnits) -> WriteResult<()> {
-    // § 5.17.8 domains: num_band_units_rows/cols_minus_1 f(5).
     if band_units.num_band_units_rows_minus_1 >= 32 || band_units.num_band_units_cols_minus_1 >= 32
     {
         return Err(WriteError::NonCanonicalMetadata {
@@ -1050,9 +960,8 @@ fn check_band_units_encodable(band_units: &BandUnits) -> WriteResult<()> {
     }
     let rows = usize::from(band_units.num_band_units_rows_minus_1) + 1;
     let cols = usize::from(band_units.num_band_units_cols_minus_1) + 1;
-    if let Some(varying) = band_units.varying_size.as_ref() {
-        // § 5.17.8: band_block_in_luma_samples f(3); one vert per row, one horz per col, f(5).
-        if varying.band_block_in_luma_samples >= 8
+    if let Some(varying) = band_units.varying_size.as_ref()
+        && (varying.band_block_in_luma_samples >= 8
             || varying.vert_size_in_band_blocks_minus_1.len() != rows
             || varying.horz_size_in_band_blocks_minus_1.len() != cols
             || varying
@@ -1062,14 +971,12 @@ fn check_band_units_encodable(band_units: &BandUnits) -> WriteResult<()> {
             || varying
                 .horz_size_in_band_blocks_minus_1
                 .iter()
-                .any(|&v| v >= 32)
-        {
-            return Err(WriteError::NonCanonicalMetadata {
-                what: "band_units_varying",
-            });
-        }
+                .any(|&v| v >= 32))
+    {
+        return Err(WriteError::NonCanonicalMetadata {
+            what: "band_units_varying",
+        });
     }
-    // § 5.17.8: banding_in_band_unit_present[r][c] f(1), row-major over rows * cols.
     if band_units.banding_in_band_unit_present.len() != rows.saturating_mul(cols) {
         return Err(WriteError::NonCanonicalMetadata {
             what: "band_units_present_count",
@@ -1086,7 +993,6 @@ fn write_banding_detail(writer: &mut BitWriter, detail: &BandingHintsDetail) -> 
     for component in &detail.components {
         write_banding_component(writer, *component)?;
     }
-    // § 5.17.8: band_units_information_present_flag f(1) = band_units.is_some().
     writer.write_flag(detail.band_units.is_some())?;
     if let Some(band_units) = detail.band_units.as_ref() {
         write_band_units(writer, band_units)?;
@@ -1114,7 +1020,6 @@ fn write_banding_component(writer: &mut BitWriter, component: BandingComponent) 
 fn write_band_units(writer: &mut BitWriter, band_units: &BandUnits) -> WriteResult<()> {
     writer.write_bits_u8(band_units.num_band_units_rows_minus_1, 5)?;
     writer.write_bits_u8(band_units.num_band_units_cols_minus_1, 5)?;
-    // § 5.17.8: varying_size_band_units_flag f(1) = varying_size.is_some().
     writer.write_flag(band_units.varying_size.is_some())?;
     if let Some(varying) = band_units.varying_size.as_ref() {
         write_varying_band_units(writer, varying)?;
@@ -1162,9 +1067,6 @@ fn reparse_group(
     crate::headers::metadata::parse_metadata_group(&mut reader, obu_xlayer_id)
 }
 
-// The unit/rejection tests and the property tests live in sibling files (kept under the advisory
-// source-line limit); `include!` pastes them into this module so their `super::*` resolves to the
-// writers and private helpers above.
 #[cfg(test)]
 include!("metadata_tests.rs");
 #[cfg(test)]

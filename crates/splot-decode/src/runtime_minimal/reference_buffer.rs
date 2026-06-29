@@ -131,7 +131,6 @@ impl RuntimeReferenceBuffer {
     /// allFrames` key marks ONLY the first refreshed slot valid, the rest invalid,
     /// mirror § 7.23 :14100); an inter frame sets every refreshed slot valid.
     pub(super) fn update(&mut self, frame_index: usize, update: FrameRefUpdate) {
-        // §7.23: FrameCounter is 0 on the first update, incremented thereafter.
         if self.started {
             self.frame_counter = self.frame_counter.wrapping_add(1);
         }
@@ -141,7 +140,6 @@ impl RuntimeReferenceBuffer {
             if (update.refresh_frame_flags >> i) & 1 == 0 {
                 continue;
             }
-            // §7.23 :14100: RefValid[i] = (KEY || SWITCH) ? first : 1.
             slot.valid = if update.is_key_or_switch { first } else { true };
             first = false;
             slot.order_hint = update.order_hint;

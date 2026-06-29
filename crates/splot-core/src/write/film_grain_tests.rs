@@ -1,13 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-// Round-trip and reject tests for the §5.14 / §5.18.10.2 film_grain_obu() writer. `include!`d into
-// `crate::write::film_grain` so `super::*` resolves to `write_film_grain` and its helpers.
-//
-// Round-trips build a FilmGrainObu by PARSING a hand-built byte payload via parse_film_grain (so the
-// model is guaranteed parser-producible), then write it back, reparse, and assert model equality.
-// The body is variable-width; the parser reads exactly the body bits and ignores the byte-padding
-// `into_bytes` adds. Reject tests mutate a parsed model to construct a parser-unproducible value.
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -53,13 +46,9 @@ mod tests {
         bits.bit(0); // film_grain_block_size
     }
 
-    // ===================================================================================
-    // Round-trips
-    // ===================================================================================
 
     #[test]
     fn empty_update_flags_round_trips() {
-        // fgm_update_flags = 0 (a §6.13 violation the parser preserves), no models.
         let mut bits = Bits::default();
         bits.f(0, 8);
         bits.uvlc(CHROMA_FORMAT_420);
@@ -70,14 +59,10 @@ mod tests {
 
     #[test]
     fn monochrome_minimal_model_round_trips() {
-        // fgm_chroma_idc = CHROMA_FORMAT_400 (monochrome): chroma_scaling_from_luma forced 0
-        // (no bit), no chroma points.
         let mut bits = Bits::default();
         bits.f(0b0000_0001, 8); // slot 0
         bits.uvlc(CHROMA_FORMAT_400);
-        // monochrome model: NO chroma_scaling_from_luma bit.
         bits.f(0, 4); // num_y_points = 0
-        // monochrome -> no num_cb/cr point reads.
         bits.f(0, 2); // grain_scaling_minus_8
         bits.f(0, 2); // ar_coeff_lag = 0
         bits.f(0, 2); // ar_coeff_shift_minus_6
@@ -93,12 +78,10 @@ mod tests {
 
     #[test]
     fn full_chroma_model_round_trips() {
-        // 4:2:0, a model with Y, Cb, Cr scaling points and AR coeffs (ar_coeff_lag = 1).
         let mut bits = Bits::default();
         bits.f(0b0000_0001, 8); // slot 0
         bits.uvlc(CHROMA_FORMAT_420);
         bits.bit(0); // chroma_scaling_from_luma = 0 -> chroma points coded
-        // luma: 2 points
         bits.f(2, 4); // num_y_points = 2
         bits.f(0, 3); // incr bits-1 = 0 -> bitsIncr = 1
         bits.f(0, 2); // scal bits-5 = 0 -> bitsScal = 5
@@ -106,13 +89,11 @@ mod tests {
         bits.f(3, 5); // point_y_scaling[0] = 3
         bits.f(1, 1); // increment -> value 2
         bits.f(4, 5); // scaling = 4
-        // cb: 1 point
         bits.f(1, 4); // num_cb_points = 1
         bits.f(2, 3); // incr bits-1 = 2 -> bitsIncr = 3
         bits.f(1, 2); // scal bits-5 = 1 -> bitsScal = 6
         bits.f(5, 3); // point_cb_value[0] = 5
         bits.f(20, 6); // point_cb_scaling[0] = 20
-        // cr: 1 point
         bits.f(1, 4); // num_cr_points = 1
         bits.f(0, 3); // bitsIncr = 1
         bits.f(0, 2); // bitsScal = 5
@@ -120,29 +101,24 @@ mod tests {
         bits.f(7, 5); // point_cr_scaling[0] = 7
         bits.f(1, 2); // grain_scaling_minus_8
         bits.f(1, 2); // ar_coeff_lag = 1 -> numPosLuma = 4, numPosChroma = 5
-        // ar_coeffs_y (num_y_points > 0): bitsCoef from f(2)+5
         bits.f(0, 2); // bitsCoef = 5, midpoint 16
         bits.f(16, 5); // 0
         bits.f(17, 5); // 1
         bits.f(15, 5); // -1
         bits.f(31, 5); // 15
-        // ar_coeffs_cb (num_cb_points > 0): numPosChroma = 5
         bits.f(0, 2); // bitsCoef = 5
         for _ in 0..5 {
             bits.f(16, 5); // 0
         }
-        // ar_coeffs_cr (num_cr_points > 0): numPosChroma = 5
         bits.f(1, 2); // bitsCoef = 6, midpoint 32
         for _ in 0..5 {
             bits.f(32, 6); // 0
         }
         bits.f(2, 2); // ar_coeff_shift_minus_6
         bits.f(3, 2); // grain_scale_shift
-        // cb_mult/cb_luma_mult/cb_offset (num_cb_points > 0)
         bits.f(100, 8);
         bits.f(200, 8);
         bits.f(300, 9);
-        // cr_mult/cr_luma_mult/cr_offset (num_cr_points > 0)
         bits.f(50, 8);
         bits.f(60, 8);
         bits.f(511, 9);
@@ -162,7 +138,6 @@ mod tests {
 
     #[test]
     fn chroma_scaling_from_luma_round_trips() {
-        // chroma_scaling_from_luma = 1: no cb/cr scaling points, but ar_coeffs_cb/cr ARE coded.
         let mut bits = Bits::default();
         bits.f(0b0000_0001, 8); // slot 0
         bits.uvlc(CHROMA_FORMAT_444);
@@ -172,27 +147,22 @@ mod tests {
         bits.f(0, 2); // bitsScal = 5
         bits.f(1, 1); // value 1
         bits.f(8, 5); // scaling 8
-        // chroma_scaling_from_luma -> no cb/cr point reads, num_cb/cr = 0.
         bits.f(0, 2); // grain_scaling_minus_8
         bits.f(2, 2); // ar_coeff_lag = 2 -> numPosLuma = 12, numPosChroma = 13
-        // ar_coeffs_y (num_y_points > 0): 12 coeffs
         bits.f(0, 2); // bitsCoef = 5
         for _ in 0..12 {
             bits.f(16, 5);
         }
-        // ar_coeffs_cb (chroma_scaling_from_luma): 13 coeffs
         bits.f(0, 2);
         for _ in 0..13 {
             bits.f(16, 5);
         }
-        // ar_coeffs_cr (chroma_scaling_from_luma): 13 coeffs
         bits.f(0, 2);
         for _ in 0..13 {
             bits.f(16, 5);
         }
         bits.f(0, 2); // ar_coeff_shift_minus_6
         bits.f(0, 2); // grain_scale_shift
-        // num_cb/cr = 0 -> no mult/offset.
         bits.bit(0); // overlap_flag
         bits.bit(0); // clip_to_restricted_range
         bits.bit(0); // film_grain_block_size
@@ -228,7 +198,6 @@ mod tests {
 
     #[test]
     fn multiple_slots_round_trip() {
-        // Two updated slots (bits 1 and 5), each a minimal non-monochrome model.
         let mut bits = Bits::default();
         bits.f(0b0010_0010, 8); // slots 1 and 5
         bits.uvlc(CHROMA_FORMAT_420);
@@ -243,13 +212,10 @@ mod tests {
 
     #[test]
     fn full_bit_width_range_round_trips() {
-        // Scaling-point increments / scalings and AR coeffs that span the full bit-width range, to
-        // exercise the width-selection canonicalization at several widths.
         let mut bits = Bits::default();
         bits.f(0b0000_0001, 8);
         bits.uvlc(CHROMA_FORMAT_420);
         bits.bit(0); // chroma_scaling_from_luma = 0
-        // luma: increments up to 255 (needs bitsIncr 8), scalings up to 255 (needs bitsScal 8).
         bits.f(3, 4); // num_y_points = 3
         bits.f(7, 3); // incr bits-1 = 7 -> bitsIncr = 8
         bits.f(3, 2); // scal bits-5 = 3 -> bitsScal = 8
@@ -259,35 +225,29 @@ mod tests {
         bits.f(0, 8); // scaling 0
         bits.f(200, 8); // increment 200 -> value 456
         bits.f(128, 8); // scaling 128
-        // cb: small increments (bitsIncr 1), large scaling.
         bits.f(1, 4); // num_cb_points = 1
         bits.f(0, 3); // bitsIncr = 1
         bits.f(3, 2); // bitsScal = 8
         bits.f(1, 1); // value 1
         bits.f(255, 8); // scaling 255
-        // cr: 0 points
         bits.f(0, 4); // num_cr_points = 0
         bits.f(0, 2); // grain_scaling_minus_8
         bits.f(3, 2); // ar_coeff_lag = 3 -> numPosLuma = 24, numPosChroma = 25
-        // ar_coeffs_y: bitsCoef = 8 -> range [-128, 128); use extremes.
         bits.f(3, 2); // bitsCoef = 8, midpoint 128
         bits.f(0, 8); // -128
         bits.f(255, 8); // 127
         for _ in 0..22 {
             bits.f(128, 8); // 0
         }
-        // ar_coeffs_cb (num_cb_points > 0): numPosChroma = 25
         bits.f(3, 2); // bitsCoef = 8
         for _ in 0..25 {
             bits.f(128, 8);
         }
         bits.f(0, 2); // ar_coeff_shift_minus_6
         bits.f(0, 2); // grain_scale_shift
-        // cb mult/offset (num_cb_points > 0)
         bits.f(255, 8);
         bits.f(0, 8);
         bits.f(0, 9);
-        // num_cr_points = 0 -> no cr mult/offset.
         bits.bit(0); // overlap_flag
         bits.bit(0); // clip_to_restricted_range
         bits.bit(0); // film_grain_block_size
@@ -303,8 +263,6 @@ mod tests {
 
     #[test]
     fn out_of_range_chroma_idc_round_trips() {
-        // fgm_chroma_idc = 4 (>3, a §6.13 violation the parser preserves) is reproduced verbatim;
-        // it is not monochrome (4 != CHROMA_FORMAT_400) and subX=subY=false (the fallback).
         let mut bits = Bits::default();
         bits.f(0b0000_0001, 8);
         bits.uvlc(4);
@@ -315,9 +273,6 @@ mod tests {
         round_trip(&fg);
     }
 
-    // ===================================================================================
-    // Rejects (each a parser-unproducible / locally-decidable invariant)
-    // ===================================================================================
 
     /// Builds a valid single-slot non-monochrome FilmGrainObu (one minimal model) for mutation.
     fn valid_single_slot() -> FilmGrainObu {
@@ -352,12 +307,10 @@ mod tests {
 
     #[test]
     fn slot_vs_update_flags_mismatch_rejects() {
-        // Wrong slot index for the lone set bit (update_flags = 1 -> slot must be 0).
         let mut fg = valid_single_slot();
         fg.models[0].slot = 3;
         assert_reject(&fg, "slot_update_flags");
 
-        // Wrong popcount: update_flags has one set bit but the models Vec is empty.
         let mut fg2 = valid_single_slot();
         fg2.models.clear();
         assert_reject(&fg2, "slot_update_flags");
@@ -365,8 +318,6 @@ mod tests {
 
     #[test]
     fn non_monotonic_points_reject() {
-        // A model with luma points whose cumulative value decreases — the parser only produces
-        // non-decreasing values.
         let mut bits = Bits::default();
         bits.f(0b0000_0001, 8);
         bits.uvlc(CHROMA_FORMAT_420);
@@ -382,7 +333,6 @@ mod tests {
         bits.f(0, 4); // num_cr_points = 0
         bits.f(0, 2); // grain_scaling_minus_8
         bits.f(0, 2); // ar_coeff_lag = 0
-        // ar_coeffs_y present (num_y_points > 0): numPosLuma = 0 -> bitsCoef read, 0 coeffs.
         bits.f(0, 2); // bitsCoef = 5
         bits.f(0, 2); // ar_coeff_shift_minus_6
         bits.f(0, 2); // grain_scale_shift
@@ -390,7 +340,6 @@ mod tests {
         bits.bit(0);
         bits.bit(0);
         let mut fg = parse(&bits.into_bytes());
-        // Force the second point below the first.
         fg.models[0].model.point_y[1].value = 4;
         assert_reject(&fg, "non_monotonic_points");
     }
@@ -398,7 +347,6 @@ mod tests {
     #[test]
     fn num_y_points_len_mismatch_rejects() {
         let mut fg = valid_single_slot();
-        // num_y_points says 0 but we add a point.
         fg.models[0].model.num_y_points = 0;
         fg.models[0].model.point_y.push(FilmGrainScalingPoint {
             value: 1,
@@ -409,7 +357,6 @@ mod tests {
 
     #[test]
     fn chroma_points_gate_reject_under_monochrome() {
-        // A monochrome model with a non-zero num_cb_points (the parser forces 0).
         let mut bits = Bits::default();
         bits.f(0b0000_0001, 8);
         bits.uvlc(CHROMA_FORMAT_400);
@@ -432,7 +379,6 @@ mod tests {
 
     #[test]
     fn monochrome_chroma_scaling_reject() {
-        // A monochrome model storing chroma_scaling_from_luma = true (forced 0 by the parser).
         let mut bits = Bits::default();
         bits.f(0b0000_0001, 8);
         bits.uvlc(CHROMA_FORMAT_400);
@@ -451,7 +397,6 @@ mod tests {
 
     #[test]
     fn ar_coeffs_y_len_mismatch_rejects() {
-        // ar_coeff_lag = 0, num_y_points = 0 -> ar_coeffs_y must be empty; add one.
         let mut fg = valid_single_slot();
         fg.models[0].model.ar_coeffs_y.push(0);
         assert_reject(&fg, "ar_coeffs_y_len");
@@ -459,7 +404,6 @@ mod tests {
 
     #[test]
     fn cb_mult_gate_mismatch_rejects() {
-        // num_cb_points = 0 -> cb_mult must be None; set it.
         let mut fg = valid_single_slot();
         fg.models[0].model.cb_mult = Some(7);
         fg.models[0].model.cb_luma_mult = Some(8);
@@ -469,7 +413,6 @@ mod tests {
 
     #[test]
     fn mc_identity_without_clip_rejects() {
-        // mc_identity = true while clip_to_restricted_range = false (forced 0 by the parser).
         let mut fg = valid_single_slot();
         fg.models[0].model.mc_identity = true;
         assert_reject(&fg, "mc_identity_clip");
@@ -477,14 +420,12 @@ mod tests {
 
     #[test]
     fn point_increment_too_large_for_max_width_rejects() {
-        // An increment of 256 fits no in-range bitsIncr (max width 8 covers 0..=255).
         let mut fg = valid_single_slot();
         fg.models[0].model.num_y_points = 1;
         fg.models[0].model.point_y = vec![FilmGrainScalingPoint {
             value: 256,
             scaling: 0,
         }];
-        // ar_coeffs_y must match num_y_points > 0 with numPosLuma = 0 -> stays empty (ok).
         assert_reject(&fg, "point_increment_width");
     }
 

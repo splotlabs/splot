@@ -63,8 +63,6 @@ pub(super) fn frame_annex_a_level_checks(
     report: &mut ValidationReport,
 ) {
     let level_idx = active_sequence.general.seq_level_idx.get();
-    // Annex A.4: level 31 and reserved levels are not in Tables A.8/A.9, so no
-    // level-limit constraint binds. A bounds-checked lookup (no indexing panic).
     let Some(limits) = level_limits(level_idx) else {
         return;
     };
@@ -74,7 +72,6 @@ pub(super) fn frame_annex_a_level_checks(
         let height = frame_size.height;
         let pic_size = u64::from(width) * u64::from(height);
 
-        // Annex A.4 line 618: FrameWidth * FrameHeight <= MaxPicSize.
         if pic_size > limits.max_pic_size {
             report.push(
                 Diagnostic::error(
@@ -89,7 +86,6 @@ pub(super) fn frame_annex_a_level_checks(
                 .with_byte_offset(obu.offset),
             );
         }
-        // Annex A.4 line 619: FrameWidth <= MaxHSize.
         if width > limits.max_h_v_size {
             report.push(
                 Diagnostic::error(
@@ -103,7 +99,6 @@ pub(super) fn frame_annex_a_level_checks(
                 .with_byte_offset(obu.offset),
             );
         }
-        // Annex A.4 line 620: FrameHeight <= MaxVSize (same shared column value).
         if height > limits.max_h_v_size {
             report.push(
                 Diagnostic::error(
@@ -117,7 +112,6 @@ pub(super) fn frame_annex_a_level_checks(
                 .with_byte_offset(obu.offset),
             );
         }
-        // Annex A.4 lines 628-629: FrameWidth >= 16 and FrameHeight >= 16.
         if width < MIN_FRAME_DIMENSION || height < MIN_FRAME_DIMENSION {
             report.push(
                 Diagnostic::error(
@@ -136,7 +130,6 @@ pub(super) fn frame_annex_a_level_checks(
     if let Some(tile_info) = core.tile_info.as_ref() {
         let tile_cols = tile_info.tile_cols;
         let num_tiles = u64::from(tile_cols) * u64::from(tile_info.tile_rows);
-        // Annex A.4 line 621: NumTiles <= MaxTiles.
         if num_tiles > u64::from(limits.max_tiles) {
             report.push(
                 Diagnostic::error(
@@ -151,7 +144,6 @@ pub(super) fn frame_annex_a_level_checks(
                 .with_byte_offset(obu.offset),
             );
         }
-        // Annex A.4 line 622: TileCols <= MaxTileCols.
         if tile_cols > limits.max_tile_cols {
             report.push(
                 Diagnostic::error(
@@ -168,13 +160,6 @@ pub(super) fn frame_annex_a_level_checks(
         }
 
         // TODO(spec: AV2-A-LEVELS-TIERS): the per-tile constraints in the same Annex A.4
-        // gated block (mirror lines 623-627) are not checked yet: TileWidth <=
-        // Tile_Width_Scaling_Factor[seq_tier][LevelIdx] * MAX_TILE_WIDTH / 4, TileWidth
-        // >= 64 for non-rightmost tiles, and TileWidth * TileHeight <=
-        // Tile_Area_Scaling_Factor[seq_tier][LevelIdx] * 4096 * 2304 / 4. They need the
-        // per-tile layout geometry and the tier-dependent scaling-factor tables
-        // (currently private to splot-core's tile parser, which already bounds tile
-        // sizing at parse via the same tables).
     }
 }
 
@@ -216,24 +201,11 @@ pub(super) fn check_ops_level_tier_value_space(
     report: &mut ValidationReport,
 ) {
     // TODO(spec: AV2-A-LEVELS-TIERS): this checks only the OPS-carried *value space*
-    // (reserved ops_level_idx / high-tier-below-4.0). § 6.10.4
-    // (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-10-4) additionally
-    // requires the operating point's bitstream to satisfy the Annex A.4 level limits
-    // (frame size, tile geometry) with seq_level_idx set to ops_level_idx — i.e. the
-    // static level-limit checks now run only against the activated seq_level_idx must
-    // *also* run against each OPS-advertised ops_level_idx. That needs an
-    // operating-point-to-frame mapping (which frames belong to which operating point)
-    // the validator does not model yet, so the planned `annex-a/frame-exceeds-ops-level`
-    // diagnostic is backlogged (see the Planned diagnostics backlog in
-    // docs/VALIDATOR-ROADMAP.md, blocked on operating-point frame mapping).
     for payload in &ops.payloads {
         for entry in &payload.xlayer_entries {
             let Some(ptl) = entry.ptl_info.as_ref() else {
                 continue;
             };
-            // Annex A.2 Table A.1: a reserved ops_seq_profile_idc (5-30) conforms to no
-            // defined profile. Annex A applies its profile constraints per sub-bitstream
-            // using the OPS-derived profile id (§ 6.10.4, mirror lines 443-451).
             if is_reserved_profile(ptl.seq_profile_idc.get()) {
                 report.push(
                     Diagnostic::error(
@@ -270,10 +242,6 @@ pub(super) fn check_ops_level_tier_value_space(
                     .with_byte_offset(obu.offset),
                 );
             }
-            // Annex A.4 Table A.9 NOTE (informative): a High tier (ops_tier_flag == 1)
-            // can only be signaled for level 4.0 (LevelIdx 4) and above. Unlike the
-            // sequence header (where seq_tier is gated on seq_level_idx > 3), the OPS PTL
-            // syntax carries ops_tier_flag unconditionally, so this is a reachable case.
             if ptl.tier_flag && ptl.level_idx < HIGH_TIER_MIN_LEVEL_IDX {
                 report.push(
                     Diagnostic::warning(
@@ -346,17 +314,6 @@ impl ValidatorContext {
         xlayer: ExtendedLayerId,
         report: &mut ValidationReport,
     ) {
-        // Emit only for a *frame-confirmed* activation — one a parsed frame-header
-        // reference loaded (§ 5.18.2 load_sequence_header). The OBU-order first-seen
-        // fallback is a guess (§ 7.3.6 permits staging headers before any frame
-        // activates one): even while a staged header is momentarily the sole in-band
-        // candidate it can be superseded by a later staged header that a frame then
-        // references instead, and a value-space error already emitted against the guess
-        // could not be retracted. So, unlike the § 6.10.7 / § 6.8.9 agreement checks
-        // (whose `agreement_activation_for` also admits the sole-header shortcut because
-        // they emit nothing without an OPS/LCR present), the Annex A value-space check —
-        // which fires unconditionally on a reserved/mismatched field — defers entirely to
-        // frame-driven activation and re-enters here the moment the frame confirms it.
         if !self.frame_confirmed_xlayers.contains(&xlayer) {
             return;
         }
@@ -368,13 +325,6 @@ impl ValidatorContext {
             .get(&seq_header_id)
             .copied()
             .unwrap_or(ByteOffset::new(0));
-        // Emit once per activated header per coded video sequence: the same activation
-        // can be re-confirmed by multiple frames in one coded video sequence (and a CLK
-        // re-activation across a coded-video-sequence boundary legitimately re-emits). The
-        // key carries a fingerprint of the checked value-space fields (§ 7.3.6 permits a
-        // same-`seq_header_id` redefinition with different content): a redefinition that
-        // changes any field this check inspects re-runs the checks rather than being
-        // suppressed by the original activation's key.
         let epoch = self.cvs.cvs_generation_epoch(xlayer);
         let fingerprint = annex_a_value_space_fingerprint(&general);
         if !self
@@ -388,7 +338,6 @@ impl ValidatorContext {
         let level_idx = general.seq_level_idx.get();
         let is_configurable = profile_idc == crate::annex_a::CONFIGURABLE_PROFILE_IDC;
 
-        // Annex A.2 Table A.1: reserved seq_profile_idc (5-30).
         if is_reserved_profile(profile_idc) {
             report.push(
                 Diagnostic::error(
@@ -402,9 +351,6 @@ impl ValidatorContext {
                 .with_byte_offset(offset),
             );
         } else if !is_configurable {
-            // Annex A.2 Table A.1: chroma_format_idc must be in the profile's allowed
-            // set. Configurable (31) and reserved profiles have no defined set, so the
-            // mismatch check applies only to profiles 0-4.
             if !profile_allows_chroma(profile_idc, general.chroma_format_idc) {
                 report.push(
                     Diagnostic::error(
@@ -419,12 +365,6 @@ impl ValidatorContext {
                     .with_byte_offset(offset),
                 );
             }
-            // Annex A.2 Table A.1: bit_depth_idc must be 0 or 1 for profiles 0-4. The
-            // parsed BitDepthIdc enum only represents 0 (10-bit) and 1 (8-bit) — any
-            // other value is rejected at parse time as BitDepthOutOfRange before a
-            // header can be activated — so this branch is defensively never reachable
-            // today; it is kept to make the Table A.1 column explicit and to remain
-            // correct if a future profile widens the bit-depth value space.
             let bit_depth_value = general.bit_depth_idc.get();
             if bit_depth_value > 1 {
                 report.push(
@@ -441,7 +381,6 @@ impl ValidatorContext {
             }
         }
 
-        // Annex A.4 Table A.7: reserved seq_level_idx (22-30).
         if is_reserved_level(level_idx) {
             report.push(
                 Diagnostic::error(
@@ -456,9 +395,6 @@ impl ValidatorContext {
             );
         }
 
-        // Annex A.4 Table A.9 NOTE (informative): seq_tier == 1 (High) can only be
-        // signaled for level 4.0 (LevelIdx 4) and above. Warning, not error: the source
-        // is a non-normative NOTE plus the undefined HighMbps/HighCR cells below 4.0.
         if matches!(general.seq_tier, Tier::High) && level_idx < HIGH_TIER_MIN_LEVEL_IDX {
             report.push(
                 Diagnostic::warning(

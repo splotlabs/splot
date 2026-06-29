@@ -72,19 +72,15 @@ pub(in crate::runtime_minimal) fn derive_plane_scaling(
     block_w: i64,
     block_h: i64,
 ) -> PlaneScaling {
-    // §7.13.3.17 identity scale: xScale == yScale == 1 << REF_SCALE_SHIFT.
     let scale: i64 = 1 << REF_SCALE_SHIFT;
     let half_sample: i64 = 1 << (SUBPEL_BITS - 1); // 8 (1/16-sample units)
 
-    // origX/origY: prescaled == 0, so mv is in 1/8-sample units. The current-plane
-    // position is already in plane samples (plane_x/plane_y).
     let orig_x = (plane_x << SUBPEL_BITS) + ((2 * mv_col) >> sub_x) + half_sample;
     let orig_y = (plane_y << SUBPEL_BITS) + ((2 * mv_row) >> sub_y) + half_sample;
 
     let base_x = orig_x * scale - (half_sample << REF_SCALE_SHIFT);
     let base_y = orig_y * scale - (half_sample << REF_SCALE_SHIFT);
 
-    // off = (1 << (SCALE_SUBPEL_BITS - SUBPEL_BITS)) / 2.
     let off: i64 = (1 << (SCALE_SUBPEL_BITS - SUBPEL_BITS)) / 2;
     let round_shift = REF_SCALE_SHIFT + SUBPEL_BITS - SCALE_SUBPEL_BITS; // 8
     let start_x = round2_signed(base_x, round_shift) + off;
@@ -93,15 +89,9 @@ pub(in crate::runtime_minimal) fn derive_plane_scaling(
     let step_x = round2_signed(scale, REF_SCALE_SHIFT - SCALE_SUBPEL_BITS); // 1024
     let step_y = round2_signed(scale, REF_SCALE_SHIFT - SCALE_SUBPEL_BITS); // 1024
 
-    // §7.13.3.18 clip bounds (useRefArea == 0; also used by IntrABC refIdx == -1):
-    // lastX = ((RefMiCols * MI_SIZE) >> subX) - 1; firstX = firstY = 0.
     let last_x = ((ref_mi_cols * MI_SIZE) >> sub_x) - 1;
     let last_y = ((ref_mi_rows * MI_SIZE) >> sub_y) - 1;
 
-    // The §7.13.3.18 convolution reads ref[Clip3(firstY, lastY, ...)][Clip3(firstX,
-    // lastX, ...)], so firstX/firstY are 0 and the block-w/h only matter via the
-    // kernel's own coordinate walk. Kept as explicit inputs for clarity / future
-    // useRefArea support.
     let _ = (block_w, block_h);
     PlaneScaling {
         start_x,
@@ -123,22 +113,17 @@ mod tests {
 
     #[test]
     fn zero_mv_luma_is_full_pel_origin() {
-        // Zero MV, luma (sub == 0), 64x64 (16 MI) reference: startX/startY land on a
-        // full-pel sample with zero fractional phase, step == 1024.
         let s = derive_plane_scaling(0, 0, 0, 0, 0, 0, 16, 16, 64, 64);
         assert_eq!(s.step_x, 1024);
         assert_eq!(s.step_y, 1024);
         assert_eq!(s.last_x, 63);
         assert_eq!(s.last_y, 63);
-        // A zero-MV start must have a zero sub-pel phase: (startX >> 6) & 15 == 0.
         assert_eq!((s.start_x >> 6) & 15, 0);
         assert_eq!((s.start_y >> 6) & 15, 0);
     }
 
     #[test]
     fn fractional_mv_produces_subpel_phase() {
-        // A horizontal +4 eighth-pel (== half a luma sample) MV produces a non-zero
-        // horizontal sub-pel phase but a zero vertical phase.
         let s = derive_plane_scaling(0, 0, 0, 4, 0, 0, 16, 16, 64, 64);
         assert_ne!((s.start_x >> 6) & 15, 0, "horizontal sub-pel phase set");
         assert_eq!((s.start_y >> 6) & 15, 0, "vertical phase zero");
@@ -146,7 +131,6 @@ mod tests {
 
     #[test]
     fn chroma_420_halves_dimensions() {
-        // 4:2:0 chroma over a 64x64 luma reference: lastX/lastY == 31.
         let s = derive_plane_scaling(0, 0, 0, 0, 1, 1, 16, 16, 32, 32);
         assert_eq!(s.last_x, 31);
         assert_eq!(s.last_y, 31);

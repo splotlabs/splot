@@ -117,7 +117,6 @@ impl Bits {
     }
 
     pub(crate) fn svlc(&mut self, value: i32) {
-        // Invert half = (uvlc + 1) >> 1 with sign in the uvlc parity.
         let uvlc = if value > 0 {
             2 * (value as u32) - 1
         } else {

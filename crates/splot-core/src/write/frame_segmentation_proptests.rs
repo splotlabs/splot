@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-// Property tests for the § 5.18.7.1 `segmentation_params()` writer.
-
-// `include!`d into `crate::write::frame_segmentation` so `super::*` resolves to its writer
-// and private helpers.
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
@@ -98,8 +94,6 @@ mod proptests {
             let Ok(params) = parse_segmentation_params(&mut reader, &seg, mfh.as_ref()) else {
                 return Ok(());
             };
-            // The model came from the parser under these exact inputs, so the writer must
-            // accept it and produce a byte-stable, reparse-identical encoding.
             let mut writer = BitWriter::new();
             write_segmentation_params(&mut writer, &params, &seg, mfh.as_ref())
                 .expect("parser-produced model must be writable");
@@ -144,7 +138,6 @@ mod proptests {
                 last_active_seg_id: last_active,
             };
             let mut writer = BitWriter::new();
-            // Either accepted or rejected; never a panic, and a reject leaves bit_len 0.
             if write_segmentation_params(&mut writer, &params, &seg, mfh.as_ref()).is_err() {
                 prop_assert_eq!(writer.bit_len(), 0);
             }

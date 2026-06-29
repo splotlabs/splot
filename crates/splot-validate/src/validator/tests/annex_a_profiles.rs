@@ -3,10 +3,6 @@
 
 use super::*;
 
-// ---------------------------------------------------------------------------
-// Annex A: profiles, levels, and tiers (AV2-A-PROFILES / AV2-A-LEVELS-TIERS).
-// ---------------------------------------------------------------------------
-
 /// Tunable knobs for [`annex_a_seq_payload`], a complete, frame-activatable §5.4
 /// sequence header (xlayer 0, `max_tlayer_id`/`max_mlayer_id` 0, monotonic output).
 #[derive(Clone, Copy)]
@@ -103,7 +99,6 @@ pub(in crate::validator::tests) fn td_seq_and_confirming_frame(o: AnnexASeq) -> 
 /// every tool flag cleared, gating the chroma-only reads on `monochrome` exactly as
 /// the parser does, then the §5.2.1 payload tail.
 pub(in crate::validator::tests) fn append_annex_a_child_configs(bits: &mut Bits, monochrome: bool) {
-    // sequence_partition_config (BLOCK_64X64, SDP off)
     bits.bit(0); // use_256x256_superblock
     bits.bit(0); // use_128x128_superblock
     if !monochrome {
@@ -111,10 +106,8 @@ pub(in crate::validator::tests) fn append_annex_a_child_configs(bits: &mut Bits,
     }
     bits.bit(0); // enable_ext_partitions
     bits.bit(0); // reduce_pb_aspect_ratio
-    // sequence_segment_config
     bits.bit(0); // enable_ext_seg
     bits.bit(0); // seq_seg_info_present_flag
-    // sequence_intra_config
     bits.bit(0); // enable_dip
     bits.bit(0); // enable_intra_edge_filter
     bits.bit(0); // enable_mrls
@@ -124,7 +117,6 @@ pub(in crate::validator::tests) fn append_annex_a_child_configs(bits: &mut Bits,
     }
     bits.bit(0); // enable_mhccp
     bits.bit(0); // enable_ibp
-    // sequence_inter_config (non-single-picture branch)
     bits.f(0, 4); // seq_enabled_motion_modes
     bits.bit(0); // enable_masked_compound
     bits.bit(0); // enable_ref_frame_mvs
@@ -153,10 +145,8 @@ pub(in crate::validator::tests) fn append_annex_a_child_configs(bits: &mut Bits,
     bits.bit(0); // enable_flex_mvres
     bits.bit(0); // enable_global_motion
     bits.bit(0); // enable_short_refresh_frame_flags
-    // sequence_scc_config (SELECT both)
     bits.bit(1); // seq_choose_screen_content_tools
     bits.bit(1); // seq_choose_integer_mv
-    // sequence_transform_quant_entropy_config
     bits.bit(0); // enable_fsc
     bits.bit(0); // enable_idtx_intra
     bits.bit(0); // enable_intra_ist
@@ -180,7 +170,6 @@ pub(in crate::validator::tests) fn append_annex_a_child_configs(bits: &mut Bits,
         bits.f(0, 5); // base_uv_ac_delta_q
         bits.bit(0); // uv_ac_delta_q_enabled
     }
-    // sequence_filter_config (BLOCK_64X64)
     bits.bit(0); // disable_loopfilters_across_tiles
     bits.bit(0); // enable_cdef
     bits.bit(0); // enable_gdf
@@ -189,7 +178,6 @@ pub(in crate::validator::tests) fn append_annex_a_child_configs(bits: &mut Bits,
     bits.bit(0); // cdef_on_skip_txfm_always_on
     bits.bit(0); // cdef_on_skip_txfm_disabled
     bits.f(0, 2); // df_par_bits_minus_2
-    // sequence_tile_config
     bits.bit(0); // seq_tile_info_present_flag
     bits.bit(0); // film_grain_params_present
     extensible_obu_tail(bits);
@@ -221,13 +209,11 @@ pub(in crate::validator::tests) fn annex_a_frame_obu(
     fb.bit(0); // immediate_output_frame (implicit forced 0 by monotonic)
     fb.bit(1); // frame_size_override_flag
     fb.f(0, 1); // order_hint f(OrderHintBits == 1)
-    // refresh: CLK + max_mlayer_id == 0 -> allFrames (no bits)
     fb.f(width - 1, frame_dim_bits); // frame_width_minus_1
     fb.f(height - 1, frame_dim_bits); // frame_height_minus_1
     fb.bit(0); // allow_screen_content_tools
     fb.bit(0); // allow_intrabc
     fb.bit(0); // disable_cdf_update
-    // tile_info() (§ 5.18.7.2 -> tile_params, § 5.18.7.3) for a single tile.
     fb.bit(1); // uniform_tile_spacing_flag
     for _ in 0..col_increment_bits {
         fb.bit(0); // increment_tile_cols_log2 stop bit
@@ -258,30 +244,22 @@ pub(in crate::validator::tests) fn annex_a_single_tile_increments(
         }
         k
     }
-    // BLOCK_64X64: sb4x4 = 16, sbShift = 4 (§ 9.3).
     let sb_cols = (2 * ((width + 7) >> 3) + 15) >> 4;
     let sb_rows = (2 * ((height + 7) >> 3) + 15) >> 4;
-    // Level 2.0 Main tier: width_sf = 4, area_sf = 4 (tile.rs scaling tables).
     let max_tile_width_sb = (4 * 4096) >> (4 + 4); // == 64
     let max_tile_area_sb = (4u32 * 4096 * 2304) >> (2 * (4 + 2) + 2); // == 2304
     let min_log2_tile_cols = tile_log2(max_tile_width_sb, sb_cols);
     let max_log2_tile_cols = tile_log2(1, sb_cols.min(64));
     let max_log2_tile_rows = tile_log2(1, sb_rows.min(64));
     let min_log2_tiles = min_log2_tile_cols.max(tile_log2(max_tile_area_sb, sb_rows * sb_cols));
-    // A single column tile: emit one stop bit iff the loop would run (min < max).
     let col_bits = u32::from(min_log2_tile_cols < max_log2_tile_cols);
-    // After the single column tile, tile_cols_log2 == 0; the row loop starts at
-    // (min_log2_tiles - 0) and reads a stop bit iff it is below max_log2_tile_rows.
     let min_log2_tile_rows = min_log2_tiles; // tile_cols_log2 == 0 for one column tile
     let row_bits = u32::from(min_log2_tile_rows < max_log2_tile_rows);
     (col_bits, row_bits)
 }
 
-// --- Profile / chroma / bit-depth value-space (Annex A.2 Table A.1) ---
-
 #[test]
 fn annex_a_flags_reserved_profile() {
-    // seq_profile_idc 5 is in the reserved range 5-30 (Table A.1).
     let data = td_seq_and_confirming_frame(AnnexASeq {
         profile_idc: 5,
         ..AnnexASeq::base()
@@ -297,8 +275,6 @@ fn annex_a_flags_reserved_profile() {
 
 #[test]
 fn annex_a_accepts_profile_4_and_30_boundary() {
-    // Profile 4 is the last defined profile (not reserved); profile 30 is the last
-    // reserved value, profile 31 is Configurable (not reserved).
     let ok = Validator::new(false).validate_bytes(&td_seq_and_confirming_frame(AnnexASeq {
         profile_idc: 4,
         chroma_format_idc: 0, // 4:2:0 is allowed under profile 4
@@ -321,8 +297,6 @@ fn annex_a_accepts_profile_4_and_30_boundary() {
 
 #[test]
 fn annex_a_flags_chroma_format_mismatch_under_profile() {
-    // Profile 0 allows only CHROMA_FORMAT_400 / CHROMA_FORMAT_420; chroma_format_idc
-    // 3 (CHROMA_FORMAT_422) is outside its set (Table A.1).
     let data = td_seq_and_confirming_frame(AnnexASeq {
         profile_idc: 0,
         chroma_format_idc: 3, // CHROMA_FORMAT_422
@@ -339,8 +313,6 @@ fn annex_a_flags_chroma_format_mismatch_under_profile() {
 
 #[test]
 fn annex_a_profile_3_allows_422_but_not_444() {
-    // Profile 3 (Main_422) adds CHROMA_FORMAT_422 (idc 3) but not CHROMA_FORMAT_444
-    // (idc 2) (Table A.1).
     let ok = Validator::new(false).validate_bytes(&td_seq_and_confirming_frame(AnnexASeq {
         profile_idc: 3,
         chroma_format_idc: 3, // CHROMA_FORMAT_422
@@ -365,8 +337,6 @@ fn annex_a_profile_3_allows_422_but_not_444() {
 
 #[test]
 fn annex_a_profile_4_allows_444_but_not_422() {
-    // Profile 4 (Main_444) adds CHROMA_FORMAT_444 (idc 2) but not CHROMA_FORMAT_422
-    // (idc 3) (Table A.1).
     let ok = Validator::new(false).validate_bytes(&td_seq_and_confirming_frame(AnnexASeq {
         profile_idc: 4,
         chroma_format_idc: 2, // CHROMA_FORMAT_444
@@ -391,8 +361,6 @@ fn annex_a_profile_4_allows_444_but_not_422() {
 
 #[test]
 fn annex_a_configurable_profile_is_unconstrained() {
-    // Profile 31 (Configurable) leaves chroma/bit-depth unconstrained (Table A.1
-    // dashes): a 4:2:2 sequence under it must not be flagged, and 31 is not reserved.
     let data = td_seq_and_confirming_frame(AnnexASeq {
         profile_idc: 31,
         chroma_format_idc: 3, // CHROMA_FORMAT_422
@@ -407,11 +375,8 @@ fn annex_a_configurable_profile_is_unconstrained() {
     );
 }
 
-// --- Level / tier value-space (Annex A.4 Tables A.7 / A.9 NOTE) ---
-
 #[test]
 fn annex_a_flags_reserved_level() {
-    // seq_level_idx 25 is in the reserved range 22-30 (Table A.7).
     let data = td_seq_and_confirming_frame(AnnexASeq {
         level_idx: 25,
         ..AnnexASeq::base()
@@ -427,23 +392,13 @@ fn annex_a_flags_reserved_level() {
 
 #[test]
 fn annex_a_value_space_rechecked_on_same_id_redefinition_with_different_level() {
-    // § 7.3.6 permits re-sending the activated seq_header_id with different content.
-    // The Annex A value-space dedup key carries a fingerprint of the checked fields,
-    // so a same-id redefinition whose seq_level_idx changes from a clean value to a
-    // reserved one re-runs the check and flags it — rather than being suppressed by
-    // the first (clean) activation's key.
     let mut data = temporal_delimiter_obu();
-    // First activation: seq_header_id 0 at a defined level (0 == 2.0) — clean —
-    // frame-confirmed by a CLK that references it.
     data.extend(annex_a_seq_obu(AnnexASeq {
         seq_id: 0,
         level_idx: 0,
         ..AnnexASeq::base()
     }));
     data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0)); // confirm clean activation
-    // Redefinition of the SAME seq_header_id 0 (still active for xlayer 0) at a
-    // reserved level (25, in 22-30), re-confirmed by another CLK: re-activates and
-    // must re-run the value-space check (the dedup key's fingerprint changed).
     data.extend(annex_a_seq_obu(AnnexASeq {
         seq_id: 0,
         level_idx: 25,
@@ -462,18 +417,7 @@ fn annex_a_value_space_rechecked_on_same_id_redefinition_with_different_level() 
 
 #[test]
 fn annex_a_value_space_deferred_until_a_frame_confirms_a_staged_header() {
-    // § 7.3.6 allows staging multiple sequence headers before any frame activates
-    // one. With two distinct staged headers and no frame, the OBU-order first-seen
-    // fallback for xlayer 0 is a guess a later frame can contradict — so the Annex A
-    // value-space check must NOT fire for the staged reserved-level header (a
-    // value-space error against the guess could not be retracted). Once a frame
-    // confirms the reserved-level header, the deferred check runs and flags it.
     let mut staged = temporal_delimiter_obu();
-    // The reserved-level header (id 0, level 25) is seen FIRST, so the OBU-order
-    // fallback makes it the active guess for xlayer 0 — but a second staged header
-    // (id 1, clean) means the activation is NOT yet decidable (a later frame could
-    // reference id 1 instead). The reserved-level value-space error must therefore be
-    // deferred, not fired against the guess.
     staged.extend(annex_a_seq_obu(AnnexASeq {
         seq_id: 0,
         level_idx: 25, // reserved 22-30
@@ -493,8 +437,6 @@ fn annex_a_value_space_deferred_until_a_frame_confirms_a_staged_header() {
          diagnostic against the OBU-order fallback guess; report was: {staged_report}"
     );
 
-    // Now a CLK frame on xlayer 0 references the reserved-level id 0, confirming its
-    // activation: the deferred check runs and flags the reserved level.
     let mut confirmed = staged.clone();
     confirmed.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0));
     let confirmed_report = Validator::new(false).validate_bytes(&confirmed);
@@ -510,11 +452,6 @@ fn annex_a_value_space_deferred_until_a_frame_confirms_a_staged_header() {
 #[test]
 fn annex_a_value_space_fires_for_in_band_header_under_external_hls() {
     use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
-    // External HLS declares an unrelated header (id 5, < MAX_SEQ_NUM). The activating
-    // frame still resolves to an IN-BAND header (id 0) whose seq_level_idx is reserved
-    // — a locally decidable Annex A value-space fact that an external declaration
-    // cannot shadow. The check must fire even under Provided mode (unlike the
-    // agreement checks, which a Provided external header genuinely suppresses).
     let mut data = temporal_delimiter_obu();
     data.extend(annex_a_seq_obu(AnnexASeq {
         seq_id: 0,
@@ -538,11 +475,6 @@ fn annex_a_value_space_fires_for_in_band_header_under_external_hls() {
 #[test]
 fn annex_a_value_space_silent_for_external_only_activation() {
     use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
-    // External HLS declares header id 5 and a frame references it via cur_mfh_id /
-    // direct seq ref, but no in-band sequence header exists. The active header is
-    // out-of-band content this validator does not model, so no Annex A value-space
-    // fact is decidable — nothing must fire (unknown content never produces a
-    // value-space diagnostic).
     let mut data = temporal_delimiter_obu();
     data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 5)); // ref external-only seq 5
     let options = ValidationOptions {
@@ -558,17 +490,6 @@ fn annex_a_value_space_silent_for_external_only_activation() {
 
 #[test]
 fn annex_a_value_space_redefinition_rechecks_all_layers_using_the_id() {
-    // Header id 0 is active for xlayer 0 (CLK frame) and xlayer 1 (a layer frame),
-    // both referencing seq 0 at a clean level. A later same-id redefinition of seq 0
-    // (still active for both layers) flips seq_level_idx to a reserved value: the
-    // Annex A value-space recheck must cover EVERY extended layer the id is active
-    // for, not only the redefinition-activating layer. The diagnostic is anchored at
-    // the (shared) defining sequence-header OBU and deduped per
-    // (xlayer, seq_header_id, cvs_epoch, fingerprint), so it fires once per affected
-    // layer key.
-    // TU 1: clean activation of seq 0, frame-confirmed for xlayer 0 then xlayer 1
-    // (ascending obu_xlayer_id order, § 7.3.7). `frame_confirmed_xlayers` is monotonic,
-    // so both stay confirmed afterward.
     let mut data = temporal_delimiter_obu();
     data.extend(annex_a_seq_obu(AnnexASeq {
         seq_id: 0,
@@ -577,10 +498,6 @@ fn annex_a_value_space_redefinition_rechecks_all_layers_using_the_id() {
     }));
     data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0)); // CLK xlayer 0 ref seq 0
     data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 1, 0)); // CLK xlayer 1 ref seq 0
-    // TU 2: same-id redefinition of seq 0 flipping the level to a reserved value (25),
-    // re-confirmed by an xlayer-0 CLK. seq 0 is still active for BOTH xlayer 0 and
-    // xlayer 1, so the value-space-fingerprint-change recheck must cover both even
-    // though only xlayer 0 re-confirms here.
     data.extend(temporal_delimiter_obu());
     data.extend(annex_a_seq_obu(AnnexASeq {
         seq_id: 0,
@@ -606,8 +523,6 @@ fn annex_a_value_space_redefinition_rechecks_all_layers_using_the_id() {
 
 #[test]
 fn annex_a_accepts_level_21_and_31() {
-    // LevelIdx 21 (8.3) is the last defined level; 31 is Maximum parameters (valid);
-    // 22 is the first reserved value.
     for level_idx in [21u32, 31] {
         let report =
             Validator::new(false).validate_bytes(&td_seq_and_confirming_frame(AnnexASeq {
@@ -633,13 +548,6 @@ fn annex_a_accepts_level_21_and_31() {
 
 #[test]
 fn annex_a_high_tier_below_level_4_0_is_unreachable_in_syntax() {
-    // Spec-honesty boundary: `annex-a/high-tier-below-4-0` (the Table A.9 NOTE,
-    // mirror lines 436-437) is a warning, but the § 5.4.1 parser only reads seq_tier
-    // when seq_level_idx > 3 (i.e. LevelIdx 4 == level 4.0 and above) — for any lower
-    // level it infers Tier::Main. So a *signaled* High tier below 4.0 cannot occur in
-    // a parseable stream, and the warning never fires. This test pins that: even with
-    // the High-tier knob set at level 0, the parser infers Main and no warning is
-    // emitted. The check is kept as a documented, defensive guard.
     let report = Validator::new(false).validate_bytes(&td_and_annex_a_seq(AnnexASeq {
         level_idx: 0,
         high_tier: true, // not signaled at level 0; the parser infers Main tier
@@ -660,8 +568,6 @@ fn annex_a_high_tier_below_level_4_0_is_unreachable_in_syntax() {
 
 #[test]
 fn annex_a_high_tier_at_level_4_0_is_accepted() {
-    // seq_tier High at LevelIdx 4 (level 4.0) is allowed (Table A.9 NOTE: 4.0 and
-    // above), so no high-tier warning.
     let report = Validator::new(false).validate_bytes(&td_and_annex_a_seq(AnnexASeq {
         level_idx: 4,
         high_tier: true,
@@ -680,5 +586,3 @@ fn annex_a_high_tier_at_level_4_0_is_accepted() {
         "no high-tier warning at level 4.0; report was: {report}"
     );
 }
-
-// --- Static level limits on the parsed intra frame path (Annex A.4) ---

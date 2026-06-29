@@ -116,6 +116,9 @@
 
 use splot_recon::{PlaneId, PlaneRect, TransformClass, coefficient_scan_order};
 
+#[cfg(test)]
+#[allow(unused_imports)]
+use super::eob_pt_16_token;
 pub(super) use super::general_walk_geom::TxGeom;
 use super::general_walk_golomb::{
     golomb_params_from_hr_level_avg, golomb_x_max, next_hr_level_avg, push_read_quant_golomb_tail,
@@ -129,17 +132,9 @@ use super::{
     coeff_base_lf_token_sized, coeff_br_hf_token, coeff_br_lf_luma_context, coeff_br_lf_token,
     eob_extra_token, eob_pt_token, luma_all_zero_token_sized, luma_dc_sign_token,
 };
-// Re-exported only for the sibling 4x4 test modules' `eob_pt_16_token` references; the
-// size-generic walk uses `eob_pt_token` instead.
-#[cfg(test)]
-#[allow(unused_imports)]
-use super::eob_pt_16_token;
 use crate::block_symbol_trace::BlockSymbolToken;
 use crate::error::{Error, Result};
 
-// The § 8.2 self-consistency recovery inverse moved to `general_walk_recover`; it is
-// re-exported here so the sibling test modules resolve it through `super::*`. Only the
-// test modules reference it, so the lib-only build sees it as unused.
 #[allow(unused_imports)]
 pub(super) use super::general_walk_recover::recover_quant_from_tokens;
 
@@ -208,9 +203,6 @@ const TX_4X4_COEFF_COUNT: usize = 16;
 /// reach eobPt 6 (its base 17 > 16).
 const MAX_4X4_EOB_PT: usize = 5;
 
-// 4x4 geometry constants, kept for the sibling 4x4 test modules (they pass these to
-// the size-generic § 8.3.2 context mirrors directly). The size-generic walk reads
-// them from `TxGeom::TX_4X4` instead.
 #[cfg(test)]
 const TX_4X4_WIDTH: usize = 4;
 #[cfg(test)]
@@ -271,8 +263,6 @@ pub(super) fn tokenize_general_luma_block(
     max_eob_pt: usize,
     coeff_cdf_q_ctx: usize,
 ) -> Result<Vec<BlockSymbolToken>> {
-    // The all-zero chroma tail appended after the sign pass: the U and V `txb_skip`
-    // tokens (this brick's blocks have no coded chroma coefficients).
     const CHROMA_ALL_ZERO_TAIL_LEN: usize = 2;
 
     if quant.len() != geom.coeff_count {
@@ -290,9 +280,6 @@ pub(super) fn tokenize_general_luma_block(
             .map_err(|_| Error::CoefficientTokenizationAllocationFailed {
                 context: "general walk all-zero block trace",
             })?;
-        // Route the all-zero `txb_skip` through `geom.tx_size_ctx` so a 16x16 all-zero block
-        // uses the `TX_16X16` row (not `TX_4X4`); for the 4x4 geom this is byte-identical to
-        // `luma_all_zero_token` (`tx_size == TX_SIZE_4X4_CTX`).
         trace.push(BlockSymbolToken::Coeff(luma_all_zero_token_sized(
             coeff_cdf_q_ctx,
             geom.tx_size_ctx,
@@ -305,8 +292,6 @@ pub(super) fn tokenize_general_luma_block(
     let base_pass = compose_base_pass(quant, &scan, eob, geom, coeff_cdf_q_ctx)?;
     let sign_pass = compose_sign_pass(quant, &scan, eob, geom, coeff_cdf_q_ctx)?;
 
-    // An eobPt-`>=3` block (eob `>= 3`) carries an `eob_extra` CDF token after the
-    // `eob_pt_*` symbol, followed by `eobPt - 3` `eob_extra_bit` bypass literals.
     let eob_pt = eob_pt_from_eob(eob);
     let has_eob_extra = eob >= MIN_EOB_WITH_EXTRA;
     let (eob_extra_flag, eob_extra_bits, eob_extra_width) = if has_eob_extra {
@@ -314,13 +299,7 @@ pub(super) fn tokenize_general_luma_block(
     } else {
         (false, 0, 0)
     };
-    // The `eob_pt_256` symbol-7 `eob_pt_extra` bypass bit (eobPt 8 / 9 only): emitted
-    // AFTER the `eob_pt_256` symbol and BEFORE the `eob_extra` CDF flag. `None` for
-    // every other eobPt (the 4x4 `eob_pt_16` class never reaches symbol 7).
     let eob_pt_extra_bit = eob_pt_extra_for_eob_pt(eob_pt);
-    // Header: luma all_zero + eob_pt_*, plus the optional `eob_pt_extra` bypass bit,
-    // plus (when refined) the `eob_extra` flag and `eob_extra_width` `eob_extra_bit`
-    // bypass literals.
     let header_len = 2usize
         + usize::from(eob_pt_extra_bit.is_some())
         + usize::from(has_eob_extra)
@@ -356,17 +335,9 @@ pub(super) fn tokenize_general_luma_block(
         eob_pt_symbol(eob),
     )));
     if let Some(bit) = eob_pt_extra_bit {
-        // The `eob_pt_256` `eob_pt_extra` refinement (eobPt 8 → 0, eobPt 9 → 1): a
-        // width-1 bypass literal read by the decoder AFTER the `eob_pt_256` symbol and
-        // BEFORE `eob_extra` (`read_nonzero_coeff_eob`, the `read_eob_literal(.., width,
-        // "eob_pt_extra")` call). Mirrors `resolved_eob_pt`'s `8 + eob_pt_extra`.
         trace.push(BlockSymbolToken::bypass(1, bit));
     }
     if has_eob_extra {
-        // Emit the `eob_extra` CDF flag (the HIGH refinement bit), then the
-        // `eob_extra_width` `eob_extra_bit` bypass literals (the LOW refinement bits)
-        // MSB-first — the order the decoder reads them into `eob_extra_bits` via one
-        // `read_literal(width)` (see the module `eob_extra_bit` BIT ORDER note).
         trace.push(BlockSymbolToken::Coeff(eob_extra_token(
             coeff_cdf_q_ctx,
             eob_extra_flag,
@@ -460,10 +431,6 @@ fn validate_general_scope(
     geom: TxGeom,
     max_eob_pt: usize,
 ) -> Result<()> {
-    // Reject an eob whose eobPt exceeds this caller's window (e.g. eob >= 33 for the
-    // 16x16 base pass, which needs the `eob_pt_256` symbol-7 `eob_pt_extra`
-    // refinement, the next brick). Reported via the EOB error using the last in-window
-    // scan index as the max.
     if eob_pt_from_eob(eob) > max_eob_pt {
         let c = eob - 1;
         let raster = scan_pos(scan, c)?;
@@ -475,8 +442,6 @@ fn validate_general_scope(
         });
     }
 
-    // Reject any nonzero outside the supported scan window (forward scan, so the
-    // smallest offending scan index is reported).
     for (c, &raster) in scan.iter().enumerate() {
         let value = quant.get(raster as usize).copied().unwrap_or(0);
         if value == 0 {
@@ -492,7 +457,6 @@ fn validate_general_scope(
         }
     }
 
-    // Thread the running `hrLevelAvg` across the golomb coefficients in reverse scan.
     let mut hr_level_avg = 0u32;
     for offset in 0..eob {
         let c = eob - 1 - offset;
@@ -528,8 +492,6 @@ fn validate_general_scope(
 /// block's `max_scan_index`). Used only to populate the rejection error's
 /// `max_scan_index` field for the eobPt-too-large case.
 fn max_eob_pt_scan_index(geom: TxGeom, max_eob_pt: usize) -> usize {
-    // The largest eob for eobPt `<= max_eob_pt` is the base of `max_eob_pt + 1` minus
-    // one (the eob just below the next eobPt's base), clamped to the block window.
     let next_base = eob_base_for_pt(max_eob_pt + 1);
     next_base.saturating_sub(2).min(geom.max_scan_index)
 }
@@ -586,8 +548,6 @@ fn compose_base_pass(
     coeff_cdf_q_ctx: usize,
 ) -> Result<Vec<CoefficientEntropyToken>> {
     let mut tokens = Vec::new();
-    // One `coeff_base`/`coeff_base_eob` token per coefficient, plus at most one
-    // `coeff_br` per coefficient.
     let capacity = eob
         .checked_mul(2)
         .ok_or(Error::CoefficientTokenizationAllocationFailed {
@@ -598,7 +558,6 @@ fn compose_base_pass(
             context: "general walk base pass tokens",
         }
     })?;
-    // The running `Level[]` is sized to the block coefficient count, allocated checked.
     let mut level = Vec::new();
     level.try_reserve_exact(geom.coeff_count).map_err(|_| {
         Error::CoefficientTokenizationAllocationFailed {
@@ -612,10 +571,6 @@ fn compose_base_pass(
         let pos = scan_pos(scan, c)?;
         let magnitude = quant.get(pos).copied().unwrap_or(0).unsigned_abs();
         if offset == 0 {
-            // EOB coefficient: `coeff_base_eob`; `level = coeff_base_eob + 1`. The base
-            // level saturates at `base_levels + 1` (LF `LF_NUM_BASE_LEVELS`, HF
-            // `NUM_BASE_LEVELS`) and `coeff_br` is read when the level exceeds
-            // `base_levels`.
             if is_lf_position_geom(pos, geom) {
                 let eob_level = magnitude.min(LF_NUM_BASE_LEVELS + 1) as u8;
                 tokens.push(coeff_base_lf_eob_token_sized(
@@ -651,9 +606,6 @@ fn compose_base_pass(
                 }
             }
         } else if is_lf_position_geom(pos, geom) {
-            // Non-EOB LOW-frequency coefficient: the § 8.3.2 LF luma `coeff_base`
-            // context derived from the partially-built `Level[]`. A non-EOB
-            // `coeff_base` symbol is `min(mag, LF_NUM_BASE_LEVELS + 1)`.
             let ctx = coeff_base_lf_luma_context(
                 pos,
                 geom.bwl,
@@ -685,11 +637,6 @@ fn compose_base_pass(
                 tokens.push(coeff_br_lf_token(coeff_cdf_q_ctx, br_ctx, br_symbol));
             }
         } else {
-            // Non-EOB HIGH-frequency coefficient: the § 8.3.2 HF luma `coeff_base`
-            // context derived from the partially-built `Level[]` via
-            // `coeff_base_hf_luma_context`. The HF base level saturates at
-            // `NUM_BASE_LEVELS + 1 == 3` (a 4-symbol CDF) and `coeff_br` (the HF
-            // `coeff_br`, no `+7`) refines when the magnitude exceeds `NUM_BASE_LEVELS`.
             let ctx = coeff_base_hf_luma_context(
                 pos,
                 geom.bwl,
@@ -720,7 +667,6 @@ fn compose_base_pass(
                 tokens.push(coeff_br_hf_token(coeff_cdf_q_ctx, br_ctx, br_symbol));
             }
         }
-        // Write `Level[pos] = mag` before deriving the next (lower-c) context.
         if let Some(slot) = level.get_mut(pos) {
             *slot = magnitude;
         }
@@ -741,8 +687,6 @@ fn compose_sign_pass(
     geom: TxGeom,
     coeff_cdf_q_ctx: usize,
 ) -> Result<Vec<BlockSymbolToken>> {
-    // Reserve one sign token per nonzero coefficient plus, for every golomb
-    // coefficient, its golomb-tail bypass literals (an exact upper bound).
     let mut reserve = eob;
     let mut hr_level_avg = 0u32;
     for offset in 0..eob {
@@ -768,7 +712,6 @@ fn compose_sign_pass(
         }
     })?;
 
-    // Reset the predictor for the emission loop (it walks the same reverse-scan order).
     let mut hr_level_avg = 0u32;
     for offset in 0..eob {
         let c = eob - 1 - offset;
@@ -781,13 +724,11 @@ fn compose_sign_pass(
         let row = pos.checked_shr(geom.bwl).unwrap_or(0);
         let col = pos - row.checked_shl(geom.bwl).unwrap_or(0);
         if row == 0 && col == 0 {
-            // The luma DC sign is CDF-coded (`dc_sign`).
             tokens.push(BlockSymbolToken::Coeff(luma_dc_sign_token(
                 coeff_cdf_q_ctx,
                 negative,
             )));
         } else {
-            // Every non-DC luma sign under TX_CLASS_2D is a § 8.2.5 `sign_bit` bypass.
             tokens.push(BlockSymbolToken::bypass(1, u32::from(negative)));
         }
         let magnitude = value.unsigned_abs();
@@ -880,8 +821,6 @@ pub(super) const fn eob_base_for_pt(eob_pt: usize) -> usize {
 const fn eob_pt_symbol(eob: usize) -> u8 {
     let eob_pt = eob_pt_from_eob(eob);
     if eob_pt >= EOB_PT_WITH_EXTRA {
-        // eobPt 8 and 9 BOTH map to `eob_pt_256` symbol 7; the `eob_pt_extra` bit
-        // distinguishes them. Mirrors `resolved_eob_pt`'s `8 + eob_pt_extra`.
         EOB_PT_256_EXTRA_SYMBOL
     } else {
         (eob_pt - 1) as u8
@@ -898,8 +837,6 @@ const fn eob_pt_symbol(eob: usize) -> u8 {
 /// inverse of `resolved_eob_pt` for eobPt 8 and 9.
 const fn eob_pt_extra_for_eob_pt(eob_pt: usize) -> Option<u32> {
     if eob_pt >= EOB_PT_WITH_EXTRA {
-        // eobPt 8 → eob_pt_extra 0; eobPt 9 → eob_pt_extra 1. The decoder computes
-        // `eobPt = 8 + eob_pt_extra`, so `eob_pt_extra = eobPt - 8`.
         Some((eob_pt - EOB_PT_WITH_EXTRA) as u32)
     } else {
         None

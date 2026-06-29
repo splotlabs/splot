@@ -17,7 +17,6 @@ pub(super) struct PaddingSyntax;
 
 impl Check for PaddingSyntax {
     fn id(&self) -> &'static str {
-        // Registry identifier; emitted diagnostics use their own rule ids.
         "padding/syntax"
     }
 

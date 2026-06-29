@@ -592,7 +592,6 @@ mod tests {
 
         let second = shared.share();
         assert_eq!(shared.handle_count(), 2);
-        // Both handles borrow the same storage: identical Y sample pointer, no copy.
         assert_eq!(
             shared.get().y().samples().as_ptr(),
             second.get().y().samples().as_ptr()

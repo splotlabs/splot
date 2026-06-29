@@ -163,7 +163,6 @@ fn num_bits_to_read_does_not_truncate_large_symbol_max_bits() {
 
 #[test]
 fn ec_prob_shift_matches_av2_constant() {
-    // docs/spec/av2/1.0.0/03-symbols.md line 181: EC_PROB_SHIFT is 7.
     assert_eq!(EC_PROB_SHIFT, 7);
 }
 
@@ -297,11 +296,6 @@ fn invalid_cdf_rows_are_rejected_before_mutation() {
 
 #[test]
 fn read_symbol_extreme_values_select_first_and_last_symbol_for_all_arities() {
-    // Cover every supported arity N = 2..8. `init_symbol` sets SymbolValue to
-    // 0x7FFF for an all-zero payload and 0x0000 for an all-ones 15-bit payload;
-    // a maximal SymbolValue breaks the §8.2.6 threshold loop at symbol 0, and a
-    // zero SymbolValue walks to the last symbol N-1 (whose cur is 0 because
-    // Prob_Inc[N-2][N-1] == 0). This exercises every Prob_Inc row end-to-end.
     let config = SymbolDecoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Disabled);
     for n in MIN_SYMBOLS..=MAX_SYMBOLS {
         let step = CDF_PROB_SCALE as i32 / n as i32;
@@ -309,7 +303,6 @@ fn read_symbol_extreme_values_select_first_and_last_symbol_for_all_arities() {
         for (i, entry) in row.iter_mut().take(n - 1).enumerate() {
             *entry = step * (i as i32 + 1);
         }
-        // row[n - 1] = 0 adaptation-rate index, row[n] = 0 capped count.
 
         let mut first = SymbolDecoder::with_config(&[0x00, 0x00], config).unwrap();
         let mut first_row = row.clone();
@@ -336,19 +329,11 @@ fn read_symbol_extreme_values_select_first_and_last_symbol_for_all_arities() {
 
 #[test]
 fn adaptation_can_equalize_adjacent_cumulative_entries() {
-    // AV2 § 8.2.6 (docs/spec/av2/1.0.0/08-parsing-process.md#s-8-2) adaptation
-    // does not preserve strict monotonicity: smaller cumulative entries gain
-    // more per increment, so adjacent entries converge and can land on the
-    // same value. Confirm this is reachable from a shipped § 9.3 default row
-    // (not a synthetic-only concern), which is why `validate_cdf` must accept
-    // equal adjacent entries.
     let (cdf, n) = adapt_default_row_to_equal_adjacent();
     assert!(
         (1..n - 1).any(|i| cdf[i] == cdf[i - 1]),
         "adaptation from a default § 9.3 row should equalize adjacent cumulative entries: {cdf:?}"
     );
-    // The equalized entries remain inside the valid [1, 32767] coding range,
-    // so only the strict-monotonicity precondition is relaxed.
     assert!(
         cdf[..n - 1]
             .iter()
@@ -358,11 +343,6 @@ fn adaptation_can_equalize_adjacent_cumulative_entries() {
 
 #[test]
 fn read_symbol_accepts_and_decodes_equal_adjacent_cumulative_entries() {
-    // A 4-ary row whose first two cumulative entries are EQUAL (16384 ==
-    // 16384). AV2 § 8.2.6 permits this, and the threshold loop still
-    // separates symbols 0 and 1 through `Prob_Inc` (12 vs 8): symbol 1 owns
-    // the narrow-but-nonzero range [16448, 16480). Each payload deterministically
-    // decodes to the expected symbol.
     let config = SymbolDecoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Disabled);
     let row = [16_384, 16_384, 24_576, 0, 0];
     let cases = [
@@ -384,9 +364,6 @@ fn read_symbol_accepts_and_decodes_equal_adjacent_cumulative_entries() {
 
 #[test]
 fn update_cdf_rate_extremes_are_exact() {
-    // Absolute minimum rate (2), reachable only at N=2: timeInterval 0 (count 0),
-    // Min(FloorLog2(2),2)=1, Para_Adjustment_List[50][0] = -2  =>  rate = 3 + 0 + 1 - 2 = 2.
-    // Symbol 1 decrements the single cumulative entry by `>> 2`: 16384 - 4096 = 12288.
     let mut min_rate = [16_384, 50, 0];
     update_cdf(
         &mut min_rate,
@@ -399,8 +376,6 @@ fn update_cdf_rate_extremes_are_exact() {
     );
     assert_eq!(min_rate, [12_288, 50, 1]);
 
-    // Low rate (3) for N=4: timeInterval 0 (count 0), Min(FloorLog2(4),2)=2,
-    // Para_Adjustment_List[50][0] = -2  =>  rate = 3 + 0 + 2 - 2 = 3.
     let mut low = [8192, 16_384, 24_576, 50, 0];
     update_cdf(
         &mut low,
@@ -413,8 +388,6 @@ fn update_cdf_rate_extremes_are_exact() {
     );
     assert_eq!(low, [7168, 18_432, 25_600, 50, 1]);
 
-    // Absolute maximum rate (8) for N=4: timeInterval 2 (count 32), Min(FloorLog2(4),2)=2,
-    // Para_Adjustment_List[3][2] = 1  =>  rate = 3 + 2 + 2 + 1 = 8.
     let mut high = [8192, 16_384, 24_576, 3, 32];
     update_cdf(
         &mut high,
@@ -430,10 +403,6 @@ fn update_cdf_rate_extremes_are_exact() {
 
 #[test]
 fn deep_negative_symbol_max_bits_pads_deterministically() {
-    // A 2-byte payload leaves SymbolMaxBits = 1 after init; repeatedly reading
-    // symbols drives it far below zero, exercising the implicit zero-padding
-    // path (num_bits_to_read returns 0). Decoding must stay in range, never
-    // panic, and be deterministic across fresh decoders.
     let decode_run = || {
         let mut decoder = SymbolDecoder::new(&[0x5A, 0xC3]).unwrap();
         let mut row = [10_922, 21_844, 0, 0]; // N=3, rate index 0, count 0
@@ -457,9 +426,6 @@ fn deep_negative_symbol_max_bits_pads_deterministically() {
 
 #[test]
 fn adapted_row_with_equal_adjacent_entries_is_accepted_and_decodes() {
-    // Regression for the Phase 3/4 tile-payload case where a persistent CDF
-    // bank row is read many times: the exact adapted row with equal adjacent
-    // entries must be accepted by `read_symbol` and decode a valid symbol.
     let (mut cdf, n) = adapt_default_row_to_equal_adjacent();
     assert!(
         (1..n - 1).any(|i| cdf[i] == cdf[i - 1]),

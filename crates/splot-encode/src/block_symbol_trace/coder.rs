@@ -88,7 +88,6 @@ impl BlockSymbolTraceRoundtrip {
 /// packet — those are later bricks.
 pub(crate) fn encode_block_symbol_trace(trace: &[BlockSymbolToken]) -> Result<Vec<u8>> {
     let mut encode_cdfs = BlockSymbolTraceCdfRows::from_defaults();
-    // One operation per CDF symbol and per bypass-literal bit, plus headroom.
     let trace_cost = trace
         .iter()
         .map(|token| match token {
@@ -145,10 +144,6 @@ pub(crate) fn roundtrip_block_symbol_trace(
         })?;
     for (index, token) in trace.iter().enumerate() {
         let decoded = if let BlockSymbolToken::Bypass { width, value } = token {
-            // A bypass literal carries no CDF. Verify the FULL-WIDTH value
-            // roundtrips (the `decoded_symbols` view below truncates to u8, so
-            // this u32 check is what proves a wide literal — e.g. the golomb
-            // tail — was reproduced exactly, not just its low byte).
             let actual = decoder
                 .read_literal(*width)
                 .map_err(|source| Error::BlockSymbolTraceSymbolRead { index, source })?;

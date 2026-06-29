@@ -72,13 +72,6 @@ pub(crate) fn check_duplication(root: &Path) -> Result<()> {
     let budget: Budget = toml::from_str(&budget_text)
         .with_context(|| format!("failed to parse {}", budget_path.display()))?;
 
-    // Default scope (no `--include-tests`): dupehound deliberately excludes the
-    // bodies of `#[test]` functions from the slop score, because per-scenario test
-    // cases are usually intentionally explicit — exactly this repo's testing
-    // philosophy (each named test documents one spec scenario). The gate therefore
-    // measures *production* duplication (plus non-`#[test]` test helpers), the kind
-    // that actually costs maintainability and is worth removing. `--json` keeps the
-    // count machine-readable and stable across dupehound's human report changes.
     let display = "dupehound scan <root> --json";
     eprintln!("> {display}");
     let output = Command::new("dupehound")
@@ -147,7 +140,6 @@ mod tests {
 
     #[test]
     fn at_budget_passes() {
-        // Both a nonzero ceiling and the ratchet target (0/0) report "at budget".
         for (actual, ceiling) in [(100_u64, 100_u64), (0, 0)] {
             let result = enforce_budget(actual, ceiling);
             assert!(result.is_ok(), "at budget ({actual}/{ceiling}) must pass");

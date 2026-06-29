@@ -45,21 +45,16 @@ use crate::write::error::{WriteError, WriteResult};
 /// All checks run before any byte is written, so a rejected header leaves the writer
 /// unchanged.
 pub fn write_obu_header(writer: &mut BitWriter, header: &ObuHeader) -> WriteResult<()> {
-    // The OBU header is byte-granular and the parser reparses it from a byte boundary,
-    // so a mid-byte write would not round-trip. Validate the writer state and the
-    // header fully up front, before any byte is written.
     if !writer.is_byte_aligned() {
         return Err(WriteError::WriterNotByteAligned);
     }
     check_header_encodable(*header)?;
 
-    // Byte 0: obu_header_extension_flag f(1), obu_type f(5), obu_tlayer_id f(2).
     writer.write_flag(header.has_header_extension)?;
     writer.write_bits_u8(header.obu_type.raw(), 5)?;
     writer.write_bits_u8(header.temporal_layer_id.get(), 2)?;
 
     if header.has_header_extension {
-        // Byte 1: obu_mlayer_id f(3), obu_xlayer_id f(5).
         write_obu_header_extension(writer, header.embedded_layer_id, header.extended_layer_id)
     } else {
         Ok(())
@@ -81,27 +76,17 @@ fn check_header_encodable(header: ObuHeader) -> WriteResult<()> {
             size_bytes: header.header_size_bytes,
         });
     }
-    // Byte-0 field widths: obu_type f(5), obu_tlayer_id f(2). A model value built
-    // outside the parser (e.g. `ObuType::Reserved(32)` or `TemporalLayerId::from_bits(4)`)
-    // is rejected here, before any byte is written.
     check_field_width(header.obu_type.raw(), 5)?;
     check_field_width(header.temporal_layer_id.get(), 2)?;
-    // Reject a non-canonical `obu_type` whose raw value the parser would map to a
-    // different variant on reparse (e.g. `ObuType::Reserved(1)` reparses as a named
-    // type), which would break `read(write(x)) == x`. A canonical type satisfies
-    // `from_raw(raw) == type`.
     if ObuType::from_raw(header.obu_type.raw()) != header.obu_type {
         return Err(WriteError::NonCanonicalObuType {
             raw: header.obu_type.raw(),
         });
     }
     if header.has_header_extension {
-        // Byte-1 field widths: obu_mlayer_id f(3), obu_xlayer_id f(5).
         check_field_width(header.embedded_layer_id.get(), 3)?;
         check_field_width(header.extended_layer_id.get(), 5)?;
     } else {
-        // The parser re-infers the layer ids (obu.rs § 5.2.2), so a no-extension header
-        // carrying ids it could never infer is unrepresentable in one byte.
         let inferred_xlayer = if header.obu_type.requires_global_xlayer() {
             GLOBAL_XLAYER_ID
         } else {
@@ -145,8 +130,6 @@ pub fn write_obu_header_extension(
     embedded_layer_id: EmbeddedLayerId,
     extended_layer_id: ExtendedLayerId,
 ) -> WriteResult<()> {
-    // Validate the writer state and both fields up front so a rejected call leaves
-    // the writer clean.
     if !writer.is_byte_aligned() {
         return Err(WriteError::WriterNotByteAligned);
     }
@@ -186,13 +169,9 @@ pub fn write_annexb_obu(
     header: &ObuHeader,
     payload: &[u8],
 ) -> WriteResult<()> {
-    // Annex B OBUs are byte-granular; a mid-byte writer would mis-position the size
-    // and header. Reject before writing rather than relying on a debug-only assert.
     if !writer.is_byte_aligned() {
         return Err(WriteError::WriterNotByteAligned);
     }
-    // Validate the header before writing the size prefix so a rejected header leaves
-    // no partial bytes (a stray LEB128 size) in the writer.
     check_header_encodable(*header)?;
     let total = obu_total_len(header.header_size_bytes, payload.len())?;
     writer.write_leb128(total)?;
@@ -221,9 +200,7 @@ mod tests {
         for bytes in [&[0x04u8][..], &[0x99, 0x65][..], &[0x08][..], &[0x50][..]] {
             let header = read_obu_header_from_slice(bytes, ByteOffset::new(0)).unwrap();
             let written = write_header(header);
-            // Byte-exact for these canonical encodings.
             assert_eq!(written, bytes, "byte-exact for {bytes:02x?}");
-            // Semantic: reparse equals the original.
             let reparsed = read_obu_header_from_slice(&written, ByteOffset::new(0)).unwrap();
             assert_eq!(reparsed, header);
         }
@@ -232,7 +209,6 @@ mod tests {
     /// C: exhaustive header-byte sweep, every header the parser can produce.
     #[test]
     fn header_byte_sweep_round_trips() {
-        // No-extension: every obu_type x tlayer, with parser-inferred layer ids.
         for type_raw in 0u8..32 {
             for tlayer in 0u8..4 {
                 let byte0 = (type_raw << 2) | tlayer; // ext bit 0
@@ -242,7 +218,6 @@ mod tests {
                 assert_eq!(reparsed, header, "no-ext type={type_raw} tlayer={tlayer}");
             }
         }
-        // Extension: a representative type x every mlayer (3b) x xlayer (5b).
         for mlayer in 0u8..8 {
             for xlayer in 0u8..32 {
                 let byte0 = 0x98u8; // 0b1_00110_00: ext=1, type=6, tlayer=0
@@ -284,7 +259,6 @@ mod tests {
     #[test]
     fn rejects_invalid_headers_and_oversize() {
         let mut writer = BitWriter::new();
-        // has_header_extension=true but header_size_bytes=1.
         let bad = ObuHeader {
             has_header_extension: true,
             obu_type: ObuType::SequenceHeader,
@@ -301,7 +275,6 @@ mod tests {
             })
         ));
 
-        // No-extension SequenceHeader with a non-inferable xlayer (infers 0).
         let bad_ids = ObuHeader {
             has_header_extension: false,
             obu_type: ObuType::SequenceHeader,
@@ -318,15 +291,12 @@ mod tests {
             })
         ));
 
-        // obu_total_len overflow (no giant allocation needed).
         assert_eq!(obu_total_len(1, 0).unwrap(), 1);
         assert!(matches!(
             obu_total_len(1, u32::MAX as usize),
             Err(WriteError::ObuTooLarge { .. })
         ));
 
-        // The error path validates before writing, so the writer is left clean
-        // (no partial OBU-header byte or stray LEB128 size prefix).
         let mut clean = BitWriter::new();
         assert!(write_obu_header(&mut clean, &bad_ids).is_err());
         assert_eq!(clean.bit_len(), 0);
@@ -334,9 +304,6 @@ mod tests {
         assert!(write_annexb_obu(&mut clean_framed, &bad, &[0xAB]).is_err());
         assert_eq!(clean_framed.bit_len(), 0);
 
-        // Field values built outside the parser that overflow their bit width
-        // (obu_tlayer_id f(2) here, obu_xlayer_id f(5) below) are rejected up front
-        // with ValueTooWide, also leaving the writer clean.
         let wide_tlayer = ObuHeader {
             has_header_extension: false,
             obu_type: ObuType::SequenceHeader,
@@ -367,8 +334,6 @@ mod tests {
         ));
         assert_eq!(w_xl.bit_len(), 0);
 
-        // A non-canonical `ObuType::Reserved(raw)` whose raw value reparses as a
-        // different variant is rejected (would otherwise break read(write(x)) == x).
         let aliased = ObuHeader {
             has_header_extension: false,
             obu_type: ObuType::Reserved(1), // raw 1 reparses as SequenceHeader
@@ -384,7 +349,6 @@ mod tests {
         ));
         assert_eq!(w_alias.bit_len(), 0);
 
-        // A non-byte-aligned writer is rejected before any framing bytes are written.
         let td = read_obu_header_from_slice(&[0x08], ByteOffset::new(0)).unwrap();
         let mut unaligned = BitWriter::new();
         unaligned.write_bit(1).unwrap();
@@ -394,7 +358,6 @@ mod tests {
         ));
         assert_eq!(unaligned.bit_len(), 1); // unchanged — the framer wrote nothing
 
-        // A direct `write_obu_header` on an unaligned writer is rejected too.
         let mut unaligned_h = BitWriter::new();
         unaligned_h.write_bit(1).unwrap();
         assert!(matches!(
@@ -408,7 +371,6 @@ mod tests {
     /// (different bytes) but is semantically equal on reparse.
     #[test]
     fn non_canonical_size_reemits_canonically() {
-        // [0x81, 0x00] is a non-minimal LEB128 encoding of size 1; header 0x08 (TD).
         let input = [0x81u8, 0x00, 0x08];
         let parsed = parse_annex_b_obus_partial(&input);
         assert!(parsed.error.is_none());
@@ -420,10 +382,8 @@ mod tests {
         write_annexb_obu(&mut writer, &header, &payload).unwrap();
         let reemitted = writer.into_bytes();
 
-        // Byte-exact does NOT hold (canonical minimal form differs)...
         assert_ne!(reemitted, input);
         assert_eq!(reemitted, vec![0x01, 0x08]);
-        // ...but the semantic round-trip does.
         let reparsed = parse_annex_b_obus_partial(&reemitted);
         assert_eq!(reparsed.obus[0].header, header);
         assert_eq!(reparsed.obus[0].payload, &payload[..]);

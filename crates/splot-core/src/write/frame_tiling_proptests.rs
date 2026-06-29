@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-// Round-trip property tests for the § 5.18.7.2 frame tile_info writer. `include!`d into
-// `crate::write::frame_tiling` so `super::*` resolves to its writers and private helpers.
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
@@ -82,12 +80,10 @@ mod proptests {
             };
             let frame = FrameSize::new(frame_width, frame_height);
             let mut reader = BitReader::new(&data, ByteOffset::new(0));
-            // Only round-trip the models the parser can actually produce.
             if let Ok(info) =
                 parse_tile_info(&mut reader, &view, frame, true, is_bridge, tip_frame_as_output)
             {
                 let mut writer = BitWriter::new();
-                // A parser-produced model must always be writable.
                 write_tile_info(
                     &mut writer,
                     &info,

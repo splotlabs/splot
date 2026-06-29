@@ -55,9 +55,6 @@ fn derive_seg_params(
     seg: &CoreSeqSegView,
     mfh: Option<&MfhSegView>,
 ) -> (bool, bool, Option<SegmentInfo>) {
-    // AV2 § 5.18.7.1 branch order: the MFH arm (the caller builds `mfh` only when
-    // `cur_mfh_id > 0 && mfh_seg_info_present_flag[cur_mfh_id]` holds) takes priority over
-    // the sequence arm, which takes priority over the zero fallback.
     if let Some(mfh) = mfh {
         let have = mfh.mfh_ext_seg_flag == seg.enable_ext_seg;
         (
@@ -88,7 +85,6 @@ fn derive_seg_id_state(
     for (i, segment) in features.iter().enumerate().take(count) {
         for (j, feature) in segment.iter().enumerate() {
             if feature.enabled {
-                // i < MAX_SEGMENTS (16), so it fits in u8.
                 last_active_seg_id = i as u8;
                 if j >= SEG_LVL_SKIP {
                     seg_id_pre_skip = true;
@@ -133,38 +129,24 @@ pub fn write_segmentation_params(
 ) -> WriteResult<()> {
     check_segmentation_encodable(params, seg, mfh)?;
 
-    // AV2 § 5.18.7.1: segmentation_enabled f(1) — always.
     writer.write_flag(params.segmentation_enabled)?;
 
     if params.segmentation_enabled {
         let (_have_seg_params, allow_change, _reuse_source) = derive_seg_params(seg, mfh);
 
-        // AV2 § 5.18.7.1: reuse_seg_info f(1) is coded only when allowChange; otherwise it
-        // is inferred (= haveSegParams) and no bit is written. The up-front check has
-        // already verified the inferred value matches `params.reuse_seg_info`.
         if allow_change {
             writer.write_flag(params.reuse_seg_info)?;
         }
 
         if params.reuse_seg_info {
-            // AV2 § 5.18.7.1 reuse branch: FeatureEnabled / FeatureData copy the stored data
-            // with no bits of their own (validated against the reuse source up front).
         } else {
-            // AV2 § 5.18.7.1: (FeatureEnabled, FeatureData) = seg_info(MaxSegments) (§ 5.4.9).
-            // The body was pre-validated by check_segmentation_encodable, so this cannot
-            // emit a partial buffer.
             let info = SegmentInfo {
                 num_segments: (seg.max_segments as usize).min(MAX_SEGMENTS) as u8,
                 features: params.features,
             };
             write_seg_info(writer, &info, seg.max_segments)?;
         }
-
-        // AV2 § 5.18.7.1: segmentation_update_map (inferred 1) and
-        // segmentation_temporal_update (inferred 0) on the intra path
-        // (DerivedPrimaryRefFrame == PRIMARY_REF_NONE) are not coded.
     }
-    // AV2 § 5.18.7.1 else-branch: FeatureEnabled / FeatureData stay all zero; no bits.
 
     Ok(())
 }
@@ -187,19 +169,13 @@ fn check_segmentation_encodable(
         let (have_seg_params, allow_change, reuse_source) = derive_seg_params(seg, mfh);
 
         if allow_change {
-            // reuse_seg_info is coded as f(1); any boolean is reproducible.
         } else if params.reuse_seg_info != have_seg_params {
-            // The parser infers reuse_seg_info = haveSegParams when allowChange == 0; a model
-            // disagreeing with that inference would reparse with a different value.
             return Err(WriteError::NonCanonicalFrameHeader {
                 what: "segmentation_reuse_seg_info",
             });
         }
 
         if params.reuse_seg_info {
-            // AV2 § 5.18.7.1 reuse branch: the parser copies the stored feature data
-            // verbatim (the all-disabled default when the source is absent). A model whose
-            // features differ from the reuse source could not have been produced here.
             let source = reuse_source.map_or(ALL_DISABLED, |info| info.features);
             if params.features != source {
                 return Err(WriteError::NonCanonicalFrameHeader {
@@ -207,8 +183,6 @@ fn check_segmentation_encodable(
                 });
             }
         } else {
-            // AV2 § 5.18.7.1 fresh branch: validate the seg_info(MaxSegments) body up front
-            // (§ 5.4.9) so write_seg_info cannot reject mid-write.
             let info = SegmentInfo {
                 num_segments: (seg.max_segments as usize).min(MAX_SEGMENTS) as u8,
                 features: params.features,
@@ -216,9 +190,6 @@ fn check_segmentation_encodable(
             check_seg_info_encodable(&info, seg.max_segments)?;
         }
 
-        // AV2 § 5.18.7.1 intra path: segmentation_update_map is inferred 1 and
-        // segmentation_temporal_update is inferred 0; neither is coded, so a model that
-        // disagrees would reparse with the inferred constants.
         if !params.segmentation_update_map {
             return Err(WriteError::NonCanonicalFrameHeader {
                 what: "segmentation_update_map",
@@ -230,8 +201,6 @@ fn check_segmentation_encodable(
             });
         }
     } else {
-        // AV2 § 5.18.7.1 else-branch: the parser leaves every derived field at its disabled
-        // default. Any non-default value could not have been produced.
         if params.reuse_seg_info {
             return Err(WriteError::NonCanonicalFrameHeader {
                 what: "segmentation_disabled_reuse_seg_info",
@@ -254,9 +223,6 @@ fn check_segmentation_encodable(
         }
     }
 
-    // AV2 § 5.18.7.1: SegIdPreSkip / LastActiveSegId are always derived from the feature
-    // table (over 0 <= i < min(MaxSegments, MAX_SEGMENTS)); a model carrying different
-    // derived values would reparse differently regardless of the enabled flag.
     let (seg_id_pre_skip, last_active_seg_id) =
         derive_seg_id_state(&params.features, seg.max_segments);
     if params.seg_id_pre_skip != seg_id_pre_skip {
@@ -273,9 +239,6 @@ fn check_segmentation_encodable(
     Ok(())
 }
 
-// The unit/rejection tests and the property tests live in sibling files (to keep this
-// module under the advisory source-line limit); `include!` pastes them into this module so
-// their `super::*` resolves to the writer and its private helpers.
 #[cfg(test)]
 include!("frame_segmentation_tests.rs");
 

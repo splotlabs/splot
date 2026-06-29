@@ -131,7 +131,6 @@ pub(crate) fn cdef_general_intra_frame<T: ReconSample>(
     let coeff_shift = u32::from(bit_depth.bits()) - 8;
     let max_sample = i32::from(bit_depth.max_sample());
 
-    // 4:2:0 (the admitted subset): SubsamplingX == SubsamplingY == 1, three planes.
     let sub_x = 1usize;
     let sub_y = 1usize;
 
@@ -140,14 +139,10 @@ pub(crate) fn cdef_general_intra_frame<T: ReconSample>(
     let chroma_w = luma_w >> sub_x;
     let chroma_h = luma_h >> sub_y;
 
-    // §7.18 filters CurrFrame into CdefFrame: snapshot the deblocked frame so every
-    // tap reads a pre-CDEF sample regardless of raster write order.
     let luma_snap = PlaneSnapshot::capture(workspace, PlaneId::Y, luma_w, luma_h)?;
     let u_snap = PlaneSnapshot::capture(workspace, PlaneId::U, chroma_w, chroma_h)?;
     let v_snap = PlaneSnapshot::capture(workspace, PlaneId::V, chroma_w, chroma_h)?;
 
-    // §7.18: iterate the 8x8 blocks (step4 in MI units). cdef_idx is 0 everywhere
-    // (CdefStrengths == 1), so every block uses the single strength set.
     let mut r = 0usize;
     while r < mi_rows {
         let mut c = 0usize;
@@ -198,7 +193,6 @@ fn cdef_block<T: ReconSample>(
     u_snap: &PlaneSnapshot,
     v_snap: &PlaneSnapshot,
 ) -> Result<(), CdefError> {
-    // §7.18.2 direction search over the deblocked luma 8x8 block.
     let x0 = ctx.c << MI_SIZE_LOG2;
     let y0 = ctx.r << MI_SIZE_LOG2;
     let mut block = [[0i32; 8]; 8];
@@ -220,7 +214,6 @@ fn cdef_block<T: ReconSample>(
         );
     }
 
-    // §7.18.1 ordered steps 1-6 (luma).
     let pri_str = ctx.params.y_pri << ctx.coeff_shift;
     let sec_str = ctx.params.y_sec << ctx.coeff_shift;
     let dir = if pri_str == 0 { 0 } else { y_dir };
@@ -256,7 +249,6 @@ fn cdef_block<T: ReconSample>(
         },
     )?;
 
-    // §7.18.1 ordered steps 9-14 (chroma U and V).
     let uv_pri = ctx.params.uv_pri << ctx.coeff_shift;
     let uv_sec = ctx.params.uv_sec << ctx.coeff_shift;
     let uv_dir = if uv_pri == 0 {
@@ -362,8 +354,6 @@ fn gather_taps(
     let fetch = |dir: usize, k: usize, sign: i32| -> CdefTap {
         let y = (y0 + i) as isize + sign as isize * CDEF_DIRECTIONS[dir][k][0] as isize;
         let x = (x0 + j) as isize + sign as isize * CDEF_DIRECTIONS[dir][k][1] as isize;
-        // §7.18.3 cdef_get_at: candidateR/C map the plane sample back to a luma MI;
-        // §5.20.9.3 is_inside_filter_region (single tile) == is_inside_frame.
         let candidate_r = (y << sub_y) >> MI_SIZE_LOG2;
         let candidate_c = (x << sub_x) >> MI_SIZE_LOG2;
         let inside = candidate_r >= 0
@@ -402,7 +392,6 @@ fn gather_taps(
         for sign_index in 0..2 {
             let sign = sign_for(sign_index);
             primary[k][sign_index] = fetch(ctx.dir, k, sign);
-            // §7.18.3 secondary taps: dirOff in {-2, +2} -> (dir + dirOff) & 7.
             for (dir_off_index, dir_off) in [-2i32, 2].into_iter().enumerate() {
                 let sdir = ((ctx.dir as i32 + dir_off) & 7) as usize;
                 secondary[k][sign_index][dir_off_index] = fetch(sdir, k, sign);
@@ -459,9 +448,6 @@ mod tests {
 
     #[test]
     fn flat_frame_is_unchanged() {
-        // §7.18: a flat frame has var == 0, so every priStr scales to 0 and every
-        // constrain over a zero diff is 0; CDEF is a no-op. (Damping 4, strengths
-        // arbitrary.)
         let mut ws = workspace_8bit(64, 64, 100);
         cdef_general_intra_frame(
             &mut ws,
@@ -489,15 +475,7 @@ mod tests {
 
     #[test]
     fn small_ringing_step_is_deringed_within_bounds() {
-        // §7.18: CDEF is designed to remove SMALL ringing, not large outliers — the
-        // §7.18.3 `constrain` threshold rejects a difference whose `Abs(diff) >>
-        // dampingAdj` exceeds the strength, so a low-amplitude ringing pattern is
-        // smoothed while staying within the original value band. A small alternating
-        // ±3 ripple on a 100 field is filtered toward the mean; this pins the
-        // sample-changing luma path deterministically. (A larger spike is correctly
-        // left untouched, the dual of this case.)
         let mut ws = workspace_8bit(64, 64, 100);
-        // A small ripple across the top-left 8x8 block (rows/cols 0..8).
         for y in 0..8 {
             for x in 0..8 {
                 let v = if (x + y) % 2 == 0 { 103 } else { 97 };
@@ -531,7 +509,6 @@ mod tests {
             after.iter().all(|&s| (97..=103).contains(&s)),
             "deringed samples stay within the original [97, 103] band: {after:?}"
         );
-        // A sample far from the ripple is untouched (its block is flat, var 0).
         assert_eq!(
             ws.reconstructed_sample(PlaneId::Y, 40, 40).unwrap(),
             100,
@@ -541,8 +518,6 @@ mod tests {
 
     #[test]
     fn snapshot_get_bounds() {
-        // The pre-CDEF snapshot returns None off-frame so the caller flags
-        // CdefAvailable = 0 (the §7.18.3 boundary behaviour).
         let ws = workspace_8bit(16, 16, 50);
         let snap = PlaneSnapshot::capture(&ws, PlaneId::Y, 16, 16).unwrap();
         assert_eq!(snap.get(0, 0), Some(50));
@@ -568,10 +543,6 @@ mod tests {
                 }
             }
         }
-        // A directional gradient over the top-left luma 8x8 block: row-varying
-        // (constant along columns) projects onto §7.18.2 partial[2] -> yDir 2;
-        // column-varying projects onto partial[6] -> yDir 6. Everywhere else luma
-        // stays flat 128 (yDir 0).
         for y in 0..8usize {
             for x in 0..8usize {
                 let g = if row_varying { y } else { x } as i32;
@@ -608,11 +579,6 @@ mod tests {
 
     #[test]
     fn zero_uv_strengths_leave_chroma_untouched() {
-        // §7.18.1 chroma steps 9-14: with uv strengths 0 the chroma priStr/secStr are
-        // 0, so every §7.18.3 constrain returns 0, sum stays 0, and the output equals
-        // the center — the chroma planes are byte-identical (the luma-only subset the
-        // earlier fixtures pinned). This is the no-op baseline the nonzero-uv path is
-        // measured against.
         let before = workspace_chroma_ripple(true);
         let mut after = workspace_chroma_ripple(true);
         run_cdef(&mut after, 0, 0);
@@ -627,17 +593,9 @@ mod tests {
 
     #[test]
     fn nonzero_uv_strengths_dering_chroma_only() {
-        // §7.18.1 chroma steps 9-14: a nonzero (uv) strength set derings the chroma
-        // ripple while leaving luma untouched (uv strengths drive ONLY the chroma
-        // planes — the 4:2:0 subsampled 4x4 tap addressing never writes luma). The
-        // deringed chroma stays inside the original [124, 132] band. This exercises
-        // the chroma path the luma-only fixtures left untested; the committed
-        // `syn-2sb-cdefuv-intra-128x64-q170.ivf` fixture pins the same path bit-exact
-        // vs avmdec/dav2d.
         let before = workspace_chroma_ripple(true);
         let mut after = workspace_chroma_ripple(true);
         run_cdef(&mut after, 2, 4);
-        // Chroma changed and stayed bounded.
         for plane in [PlaneId::U, PlaneId::V] {
             assert_ne!(
                 before.samples(plane).unwrap(),
@@ -653,8 +611,6 @@ mod tests {
                 "deringed chroma stays within the original [126, 130] band",
             );
         }
-        // Luma is byte-identical to the input: the chroma (uv) strengths never touch
-        // luma (and y strengths are 0 here).
         assert_eq!(
             before.samples(PlaneId::Y).unwrap(),
             after.samples(PlaneId::Y).unwrap(),
@@ -664,14 +620,6 @@ mod tests {
 
     #[test]
     fn uv_dir_selection_tracks_luma_direction_only_when_uv_pri_nonzero() {
-        // §7.18.1: the chroma filter direction is `uvDir = priStr == 0 ? 0 :
-        // Cdef_Uv_Dir[subX][subY][yDir]`. So the underlying luma block's §7.18.2 yDir
-        // changes the chroma OUTPUT only when uv_pri is nonzero; with uv_pri 0 the
-        // direction is forced to 0 and the luma direction is ignored. This pins the
-        // `Cdef_Uv_Dir` selection that uv=0 fixtures cannot reach.
-        //
-        // First confirm the two luma blocks really do pick different yDirs (the test
-        // premise): row-varying -> 2, column-varying -> 6.
         let mut row_block = [[0i32; 8]; 8];
         let mut col_block = [[0i32; 8]; 8];
         for i in 0..8 {
@@ -700,8 +648,6 @@ mod tests {
              chroma output depends on the luma direction",
         );
 
-        // uv_pri zero (only uv_sec): the direction is forced to 0 regardless of yDir,
-        // so the SAME chroma ripple derings identically under both luma directions.
         let mut horiz0 = workspace_chroma_ripple(true);
         let mut vert0 = workspace_chroma_ripple(false);
         run_cdef(&mut horiz0, 0, 4);

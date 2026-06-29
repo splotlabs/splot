@@ -39,20 +39,11 @@ pub(super) fn tile_group_range_checks(
     mfh_record: Option<&MultiFrameHeaderRecord>,
     report: &mut ValidationReport,
 ) {
-    // Only a tile-group OBU carries the §5.19 tile_group_obu() structure; SEF / TIP /
-    // bridge frames route through decode_frame_wrapup() (mirror :3942-3958) with no
-    // tile_group_obu() control region.
     if !obu.header.obu_type.is_tile_group() {
         return;
     }
 
-    // Re-parse from the OBU payload start so the reader is positioned exactly past
-    // frame_header() (the same span parse_frame_core consumes), then derive the structure.
     let mut reader = BitReader::new(obu.payload, obu.payload_offset());
-    // tile_group_obu(): is_first_tile_group must be 1 for a parseable first frame_header(1)
-    // (a non-first tile group carries frame_header_copy(), not checked here — its tg range
-    // needs the prior-group continuity state). A read failure or a 0 flag leaves the
-    // structure undecidable.
     let Ok(is_first) = reader.read_bit() else {
         return;
     };
@@ -71,12 +62,6 @@ pub(super) fn tile_group_range_checks(
         return;
     };
 
-    // The §5.19 structure is decidable only on the intra-complete path: IntraHeaderComplete
-    // guarantees the whole frame_header_info() parsed (so the reader sits exactly at the end
-    // of frame_header()), frame_is_intra makes use_bru/bru_inactive the derived 0 constants,
-    // and tile_info supplies NumTiles / TileColsLog2 / TileRowsLog2. Any other stop (a
-    // coverage stop, an inter/TIP/bridge path, or a truncation) is the BRU-undecidable
-    // honest stop (BruUndecidable::NotIntraComplete) — leave the range unjudged.
     if core.status != FrameHeaderParseStatus::IntraHeaderComplete
         || core.frame_is_intra != Some(true)
     {
@@ -92,11 +77,7 @@ pub(super) fn tile_group_range_checks(
         tile_info.tile_cols_log2,
         tile_info.tile_rows_log2,
     );
-    // sz is the OBU payload size in bytes (§5.2.1); obu.payload is exactly that slice.
     let sz = obu.payload.len() as u64;
-    // The reader sits exactly past frame_header() (the same span parse_frame_core consumes);
-    // parse the §5.19 remainder and run the §6.18 range + §5.20.1 framing checks. is_first is
-    // true here, so the FIRST-tile-group tg_start == 0 clause is enforced.
     tile_group_structure_checks(
         obu,
         &mut reader,
@@ -137,10 +118,6 @@ pub(super) fn tile_group_structure_checks(
 ) {
     let num_tiles = layout.num_tiles;
     let Ok(structure) = parse_tile_group_structure(reader, layout, sz) else {
-        // The only non-EOF error is a §6.2.4 byte_alignment() zero-bit defect. The
-        // byte_alignment() reachability is owned by AV2-5.2.4-BYTE-ALIGNMENT and the
-        // tile-group dispatch does not yet route that diagnostic to this OBU; surface it
-        // through the dedicated tile-group rule so the defect is not silently dropped.
         report.push(frame_header_error(
             "tile-group/byte-alignment-zero-bit",
             "6.2.4",
@@ -152,11 +129,6 @@ pub(super) fn tile_group_structure_checks(
         return;
     };
 
-    // A truncation inside the §5.19 structure means the OBU payload ended before the
-    // tile-group range / byte_alignment() could be read — a §6.2.1 mandatory-syntax
-    // truncation, parallel to frame-header/truncated-frame-header. The already-parsed
-    // facts are preserved on `structure`; surface the truncation rather than judging an
-    // incomplete range.
     if structure.outcome == TileGroupStructureOutcome::Truncated {
         report.push(frame_header_error(
             "tile-group/truncated-structure",
@@ -171,11 +143,6 @@ pub(super) fn tile_group_structure_checks(
         return;
     }
 
-    // §6.18 (mirror :6215-6216): tg_start of the FIRST tile group equals TileNum == 0.
-    // Only the explicit-range path (tile_start_and_end_present_flag == 1) can violate it;
-    // the inferred path sets tg_start = 0 by construction. A continuation tile group's
-    // tg_start is `previous tg_end + 1` (cross-group continuity the segmenter does not
-    // thread), so this clause is gated on the first tile group only.
     if is_first && structure.tile_start_and_end_present_flag && structure.tg_start != 0 {
         report.push(frame_header_error(
             "tile-group/first-tg-start-not-zero",
@@ -190,7 +157,6 @@ pub(super) fn tile_group_structure_checks(
         ));
     }
 
-    // §6.18 (mirror :6220): tg_end >= tg_start.
     if structure.tg_end < structure.tg_start {
         report.push(frame_header_error(
             "tile-group/tg-end-before-tg-start",
@@ -204,9 +170,6 @@ pub(super) fn tile_group_structure_checks(
         ));
     }
 
-    // §6.18 (mirror :6218-6223): tg_end is a zero-based tile index and the last tile
-    // group's tg_end is NumTiles - 1, so no tg_end may exceed NumTiles - 1. Decidable from
-    // the explicit range and NumTiles; the inferred path sets tg_end = NumTiles - 1.
     if structure.tile_start_and_end_present_flag
         && num_tiles > 0
         && structure.tg_end > num_tiles - 1
@@ -224,17 +187,6 @@ pub(super) fn tile_group_structure_checks(
         ));
     }
 
-    // Likewise tg_start must be a valid tile index (< NumTiles). For the first tile group
-    // the stricter tg_start == 0 check above subsumes this, but a coded tg_start beyond
-    // NumTiles is still independently a §6.18 bounds defect worth its own anchor only when
-    // the first-tg-start-not-zero rule did not already fire — which it always does for any
-    // nonzero tg_start. So no separate tg_start-bounds rule is emitted for the first group.
-
-    // §5.20.1 (mirror :8553-8640): once the §5.19 structure is COMPLETE and the tg-range is
-    // self-consistent, parse the per-tile framing over the tile_group_payload() region and
-    // flag the provable framing defects (AV2-5.20-TILE-GROUP-PAYLOAD). Skip when the range is
-    // not self-consistent (the §6.18 diagnostics above already own that), so framing never
-    // runs over a meaningless tile count.
     if structure.tg_end < structure.tg_start || (num_tiles > 0 && structure.tg_end > num_tiles - 1)
     {
         return;
@@ -274,41 +226,24 @@ pub(super) fn tile_group_framing_checks(
     tile_size_bytes_field: Option<u32>,
     report: &mut ValidationReport,
 ) {
-    // The framing needs headerBytes / payload_size (the byte-aligned region boundary) and
-    // TileSizeBytes. headerBytes/payload_size are Some only on the Complete path.
     let (Some(header_bytes), Some(payload_size)) = (structure.header_bytes, structure.payload_size)
     else {
         return;
     };
 
-    // TileSizeBytes is present only when (TileCols > 1 || TileRows > 1) (§5.18.7.2). When it
-    // is absent the frame is a single tile, so this tile group's only tile is the last tile
-    // and reads no size field — the framing is trivially the whole region as one tile. When
-    // it is absent but the range spans >1 tile, the size-field width is unknown (an
-    // unparsed/ambiguous layout) — stay silent. A present, in-domain (1..=4) value frames the
-    // multi-tile case.
     let num_tiles_in_group = u64::from(structure.tg_end - structure.tg_start) + 1;
     let tile_size_bytes = match tile_size_bytes_field {
         Some(tsb) if (1..=4).contains(&tsb) => tsb,
-        // Single-tile group with no size field: frame the whole region as the lone tile.
         None if num_tiles_in_group == 1 => 1,
-        // Multi-tile group with no / out-of-domain TileSizeBytes: undecidable, stay silent.
         _ => return,
     };
 
-    // The tile_group_payload() region is the payload_size bytes after the §5.19
-    // byte_alignment(), i.e. starting at headerBytes into the OBU payload. Bound the slice
-    // defensively (the structure's payload_size is sz - headerBytes, already within the OBU
-    // payload, but a slice out of range must never panic).
     let start = usize::try_from(header_bytes).unwrap_or(usize::MAX);
     let end = usize::try_from(header_bytes.saturating_add(payload_size)).unwrap_or(usize::MAX);
     let Some(region) = obu.payload.get(start..end.min(obu.payload.len())) else {
         return;
     };
 
-    // IsBridge is always 0 on this path: tile_group_range_checks only reaches here for an
-    // is_tile_group() OBU on the intra-complete path (a BRIDGE frame is its own OBU type, not
-    // a tile-group type, and the intra path never enters the FrameType==INTER_FRAME BRU gate).
     let framing = parse_tile_group_framing(
         region,
         structure.tg_start,
@@ -321,8 +256,6 @@ pub(super) fn tile_group_framing_checks(
         return;
     };
 
-    // Anchor at the offending tile's size-field byte offset within the bitstream:
-    // payload_offset + headerBytes + the offset within the tile_group_payload() region.
     let region_base = obu.payload_offset().get().saturating_add(header_bytes);
     let anchor = ByteOffset::new(region_base.saturating_add(defect.size_field_offset()));
 
@@ -385,8 +318,6 @@ pub(super) fn tile_group_framing_checks(
                 .with_byte_offset(anchor),
             );
         }
-        // `TileFramingDefect` is `#[non_exhaustive]`; a future framing defect with no
-        // established conformance meaning is silent rather than guessed (zero false positives).
         _ => {}
     }
 }
@@ -402,9 +333,6 @@ pub(super) fn frame_tile_info_checks(
     obu: &ObuEnvelope<'_>,
     report: &mut ValidationReport,
 ) {
-    // AV2 § 6.17.7.2: "It is a requirement of bitstream conformance that TileCols is
-    // less than or equal to MAX_TILE_COLS." Reachable for a non-uniform layout that
-    // codes more than MAX_TILE_COLS one-superblock tiles.
     if tile_info.tile_cols > MAX_TILE_COLS {
         report.push(frame_header_error(
             "frame-header/tile-cols-out-of-range",
@@ -417,8 +345,6 @@ pub(super) fn frame_tile_info_checks(
             ),
         ));
     }
-    // AV2 § 6.17.7.2: "It is a requirement of bitstream conformance that TileRows is
-    // less than or equal to MAX_TILE_ROWS."
     if tile_info.tile_rows > MAX_TILE_ROWS {
         report.push(frame_header_error(
             "frame-header/tile-rows-out-of-range",
@@ -431,12 +357,6 @@ pub(super) fn frame_tile_info_checks(
             ),
         ));
     }
-    // AV2 § 6.17.7.2: "It is a requirement of bitstream conformance that
-    // context_update_tile_id is less than TileCols * TileRows." Reachable because the
-    // f(TileRowsLog2 + TileColsLog2) read can encode values at or beyond the actual
-    // tile count when the count is not a power of two. The skipped-read paths
-    // (single tile, avg-CDF gating) leave the value 0, which never trips the bound
-    // for the >= 1 tile counts every parsed layout produces.
     let tile_count = u64::from(tile_info.tile_cols) * u64::from(tile_info.tile_rows);
     if u64::from(tile_info.context_update_tile_id) >= tile_count {
         report.push(frame_header_error(
@@ -473,8 +393,6 @@ pub(super) fn frame_ccso_params_checks(
     report: &mut ValidationReport,
 ) {
     for (plane, params) in ccso.planes.iter().enumerate() {
-        // AV2 § 6.17.7.8 (:5819): ccso_ext_filter is not equal to 7. Present only on the
-        // non-ccso_bo_only arm (otherwise inferred 0); `None` when ccso_planes[plane] == 0.
         if params.ccso_ext_filter == Some(7) {
             report.push(frame_header_error(
                 "frame-header/ccso-ext-filter-reserved",
@@ -486,9 +404,6 @@ pub(super) fn frame_ccso_params_checks(
                 ),
             ));
         }
-        // AV2 § 6.17.7.8 (:5824): 1 << ccso_max_band_log2 <= CCSO_BAND_NUM. Use a widened
-        // shift so a non-conformant value cannot overflow: ccso_max_band_log2 is f(2..=3)
-        // (0..=7), and `1u32 << 7` is in range.
         if let Some(max_band_log2) = params.ccso_max_band_log2 {
             let max_band = 1u32 << u32::from(max_band_log2);
             if max_band > CCSO_BAND_NUM {

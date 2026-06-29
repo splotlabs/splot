@@ -35,7 +35,6 @@ fn validate_plane_view(
         });
     }
 
-    // `visible_rect` always has positive height, so `bottom - 1` is the last row.
     let bottom = visible_rect.y().checked_add(visible_rect.height()).ok_or(
         ReconError::ArithmeticOverflow {
             context: "plane view bottom row",
@@ -546,7 +545,6 @@ mod tests {
         let samples: [u8; 12] = [0, 1, 2, 3, 10, 11, 12, 13, 20, 21, 22, 23];
         let view = PlaneRef::new(&samples, 4, rect(1, 1, 2, 2)).unwrap();
         assert_eq!(view.visible_size(), size(2, 2));
-        // The view borrows the exact backing buffer (same pointer, no copy).
         assert_eq!(view.samples().as_ptr(), samples.as_ptr());
         let rows: Vec<&[u8]> = view.visible_rows().collect();
         assert_eq!(rows, vec![&[11, 12][..], &[21, 22][..]]);
@@ -587,8 +585,6 @@ mod tests {
         }
         let read_back: Vec<&[u8]> = view.as_plane_ref().visible_rows().collect();
         assert_eq!(read_back, vec![&[0, 1][..], &[10, 11][..]]);
-        // The visible rect starts at (1, 1): writes land at indices 5,6 (row 1)
-        // and 9,10 (row 2); row 0 and all stride/padding columns stay zero.
         assert_eq!(samples, [0, 0, 0, 0, 0, 0, 1, 0, 0, 10, 11, 0]);
     }
 
@@ -626,7 +622,6 @@ mod tests {
         let frame = owned_yuv420_frame();
         let view = frame.as_frame_ref();
         assert_eq!(view.info().output_index(), frame.output_index());
-        // The Y view borrows the frame's own storage — no copy.
         assert_eq!(view.y().samples().as_ptr(), frame.y().samples().as_ptr());
         assert_eq!(view.u().map(|p| p.visible_size()), Some(size(2, 2)));
         assert_eq!(view.v().map(|p| p.visible_size()), Some(size(2, 2)));
@@ -684,7 +679,6 @@ mod tests {
         let u = PlaneMut::new(&mut u_samples, 2, rect(0, 0, 2, 2)).unwrap();
         let v = PlaneMut::new(&mut v_samples, 2, rect(0, 0, 2, 2)).unwrap();
         let frame = FrameMut::new(frame_info, y, Some(u), Some(v)).unwrap();
-        // Immutable chroma reads mirror FrameRef without an exclusive borrow.
         assert_eq!(frame.u().map(PlaneMut::visible_size), Some(size(2, 2)));
         assert_eq!(frame.v().map(PlaneMut::visible_size), Some(size(2, 2)));
         assert!(frame.plane(PlaneId::Y).is_some());

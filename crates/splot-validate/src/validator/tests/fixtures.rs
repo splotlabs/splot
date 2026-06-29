@@ -152,9 +152,6 @@ pub(in crate::validator::tests) fn sequence_header_payload_with_lcr(
     bits.f(max_tlayer_id, 2);
     bits.f(max_mlayer_id, 3);
     if max_mlayer_id > 0 {
-        // SeqMaxMlayerCnt = max_mlayer_id + 1 allows every declared embedded layer
-        // 0..=max_mlayer_id in the coded video sequence (AV2 § 6.4.1), so a fixture
-        // that also uses embedded layer max_mlayer_id stays conformant.
         bits.f(max_mlayer_id, ceil_log2_u32(max_mlayer_id + 1)); // seq_max_mlayer_cnt_minus_1
     }
     bits.bit(1); // monotonic_output_order_flag
@@ -180,16 +177,13 @@ pub(in crate::validator::tests) fn sequence_header_payload_with_lcr(
 /// (`obu_extension_flag = 0` + `trailing_bits`). This makes the validator's
 /// state-test payloads complete sequence headers that pass the full syntax check.
 pub(in crate::validator::tests) fn append_non_single_child_configs(bits: &mut Bits) {
-    // sequence_partition_config (BLOCK_64X64, SDP off)
     bits.bit(0); // use_256x256_superblock
     bits.bit(0); // use_128x128_superblock
     bits.bit(0); // enable_sdp
     bits.bit(0); // enable_ext_partitions
     bits.bit(0); // reduce_pb_aspect_ratio
-    // sequence_segment_config
     bits.bit(0); // enable_ext_seg
     bits.bit(0); // seq_seg_info_present_flag
-    // sequence_intra_config
     bits.bit(0); // enable_dip
     bits.bit(0); // enable_intra_edge_filter
     bits.bit(0); // enable_mrls
@@ -197,7 +191,6 @@ pub(in crate::validator::tests) fn append_non_single_child_configs(bits: &mut Bi
     bits.f(0, 2); // cfl_ds_filter_index
     bits.bit(0); // enable_mhccp
     bits.bit(0); // enable_ibp
-    // sequence_inter_config (non-single-picture branch)
     bits.f(0, 4); // seq_enabled_motion_modes[INTERINTRA..MOTION_MODES]
     bits.bit(0); // enable_masked_compound
     bits.bit(0); // enable_ref_frame_mvs
@@ -226,10 +219,8 @@ pub(in crate::validator::tests) fn append_non_single_child_configs(bits: &mut Bi
     bits.bit(0); // enable_flex_mvres
     bits.bit(0); // enable_global_motion
     bits.bit(0); // enable_short_refresh_frame_flags
-    // sequence_scc_config (non-single-picture branch)
     bits.bit(1); // seq_choose_screen_content_tools -> SELECT
     bits.bit(1); // seq_choose_integer_mv -> SELECT
-    // sequence_transform_quant_entropy_config
     bits.bit(0); // enable_fsc
     bits.bit(0); // enable_idtx_intra
     bits.bit(0); // enable_intra_ist
@@ -245,7 +236,6 @@ pub(in crate::validator::tests) fn append_non_single_child_configs(bits: &mut Bi
     bits.bit(1); // equal_ac_dc_q
     bits.f(0, 5); // base_uv_ac_delta_q
     bits.bit(0); // uv_ac_delta_q_enabled
-    // sequence_filter_config (BLOCK_64X64)
     bits.bit(0); // disable_loopfilters_across_tiles
     bits.bit(0); // enable_cdef
     bits.bit(0); // enable_gdf
@@ -254,11 +244,8 @@ pub(in crate::validator::tests) fn append_non_single_child_configs(bits: &mut Bi
     bits.bit(0); // cdef_on_skip_txfm_always_on
     bits.bit(0); // cdef_on_skip_txfm_disabled -> Adaptive
     bits.f(0, 2); // df_par_bits_minus_2
-    // sequence_tile_config
     bits.bit(0); // seq_tile_info_present_flag
-    // film_grain_params_present
     bits.bit(0);
-    // open_bitstream_unit tail (extensible OBU)
     bits.bit(0); // obu_extension_flag = 0
     bits.bit(1); // trailing_one_bit
 }
@@ -297,12 +284,9 @@ pub(in crate::validator::tests) fn sequence_header_payload_with_decoder_model_su
     bits.bit(1); // decoder_model_info_present_flag
     bits.f(1, 32); // num_units_in_decoding_tick
     bits.bit(1); // seq_decoder_model_info_present_flag
-    // seq_decoder_model_info() (§ 5.4.13)
     bits.uvlc(decoder_delay); // decoder_buffer_delay
     bits.uvlc(encoder_delay); // encoder_buffer_delay
     bits.bit(0); // low_delay_mode_flag
-    // dependency maps: max_mlayer_id = 1 -> mlayer_dependency_present_flag,
-    // max_tlayer_id = 1 -> tlayer_dependency_present_flag
     bits.bit(0); // mlayer_dependency_present_flag
     bits.bit(0); // tlayer_dependency_present_flag
     append_non_single_child_configs(&mut bits);

@@ -59,7 +59,6 @@ impl<'a> DecodeStreamInput<'a> {
 }
 
 /// The fixed base-layer selection supported by the first stream planner.
-// `*_layer_id` fields mirror the AV2 temporal/embedded/extended layer-id syntax elements; the suffix preserves that mapping.
 #[allow(clippy::struct_field_names)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DecodeLayerSelection {

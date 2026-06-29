@@ -91,6 +91,7 @@ jobs:
       - run: cargo machete --with-metadata
       - run: cargo xtask check-license-headers
       - run: cargo xtask check-source-lines
+      - run: cargo xtask check-comment-density
       - run: cargo xtask check-dependency-direction
       - run: cargo xtask check-concurrency-policy
       - run: cargo xtask check-spec-mirror

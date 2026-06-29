@@ -1,14 +1,5 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
-//
-// Fuzz target: source-backed intra prediction and current-frame workspace
-// primitives must return typed results, never panic, for bounded structured
-// inputs derived from arbitrary bytes. This target intentionally does not parse
-// AV2 bitstreams, invoke splot-decode, write filesystem paths, or invoke
-// AVM/dav2d. Run with:
-//
-//     cargo install cargo-fuzz --locked
-//     cargo +nightly fuzz run recon_intra_prediction_bytes
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;

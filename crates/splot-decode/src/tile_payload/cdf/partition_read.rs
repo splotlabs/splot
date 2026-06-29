@@ -208,9 +208,6 @@ mod tests {
         );
     }
 
-    // §8.3.2: `do_square_split` `PlaneStart` is fixed at 0 (the chroma partition is
-    // forced for large block sizes), so plane 1 — accepted by the shared 2-plane
-    // partition bound — is rejected for this selector before any symbol is consumed.
     #[test]
     fn square_split_invalid_plane_fails_before_symbol_read() {
         assert_selector_error_is_inert(

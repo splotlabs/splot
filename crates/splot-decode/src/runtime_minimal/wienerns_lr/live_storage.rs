@@ -17,12 +17,6 @@ pub(in crate::runtime_minimal) const LR_LIVE_FRAME_SAMPLE_STORAGE_BYTES: u64 =
 pub(in crate::runtime_minimal) const LR_LIVE_TX_SKIP_STORAGE_BYTES_PER_VALUE: u64 =
     core::mem::size_of::<Option<u8>>() as u64;
 
-// This proof shell keeps explicit "missing" state while the runtime still fails
-// closed before tile reconstruction populates samples. `Option<u16>` is
-// intentionally bit-depth-agnostic: it can carry 8/10/12-bit decoded samples,
-// and the retention frontier charges the current slot size before allocation.
-// Before this storage becomes populated retained state, replace these slots with
-// packed presence masks plus typed value buffers.
 #[cfg_attr(
     not(test),
     allow(

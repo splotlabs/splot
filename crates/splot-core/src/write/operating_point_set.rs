@@ -150,9 +150,6 @@ pub fn write_operating_point_set(
         return Err(WriteError::WriterNotByteAligned);
     }
 
-    // The parser stores the OBU's obu_xlayer_id on the model and branches on it; a
-    // model whose stored id disagrees with the OBU header's scope could not have been
-    // parsed from this OBU and would not round-trip.
     if ops.xlayer_id != obu_xlayer_id {
         return Err(non_canonical("xlayer_id"));
     }
@@ -164,12 +161,8 @@ pub fn write_operating_point_set(
     scratch.write_bits_u8(ops.ops_cnt, OPS_COUNT_BITS)?;
 
     if ops.ops_cnt == 0 {
-        // § 5.10: the header optional fields and every payload are gated on
-        // ops_cnt > 0, so a reset OPS carries none of them. A model that stores any
-        // of them could never have been parsed.
         reject_reset_invariants(ops)?;
     } else {
-        // § 5.10: ops_priority / ops_intent are present iff ops_cnt > 0.
         let priority = ops
             .priority
             .ok_or_else(|| non_canonical("reset_branch_field"))?;
@@ -181,7 +174,6 @@ pub fn write_operating_point_set(
         scratch.write_flag(ops.intent_present)?;
         scratch.write_flag(ops.ptl_present)?;
         scratch.write_flag(ops.color_info_present)?;
-        // § 5.10: global reads ops_mlayer_info_idc, local reads ops_reserved_2bits.
         if is_global {
             let idc = ops
                 .mlayer_info_idc
@@ -200,12 +192,10 @@ pub fn write_operating_point_set(
             scratch.write_bits_u8(reserved, OPS_RESERVED_2BITS)?;
         }
 
-        // § 5.10: exactly ops_cnt operating_point_payload() structures follow.
         if ops.payloads.len() != usize::from(ops.ops_cnt) {
             return Err(non_canonical("payload_count"));
         }
         for (index, payload) in ops.payloads.iter().enumerate() {
-            // `index` is the parser's loop counter (0..ops_cnt), not a wire field.
             if usize::from(payload.index) != index {
                 return Err(non_canonical("payload_index"));
             }
@@ -252,12 +242,8 @@ fn write_operating_point_payload(
     obu_xlayer_id: ExtendedLayerId,
     payload: &OperatingPointPayload,
 ) -> WriteResult<()> {
-    // Draft the body (everything after ops_data_size, through byte_alignment()) so
-    // its byte length is the opsBytes the parser would compute. ops_data_size is
-    // written before it, then the body appended.
     let mut body = BitWriter::new();
 
-    // § 5.11: ops_op_intent is read iff ops_intent_present_flag.
     if ops.intent_present {
         let op_intent = payload
             .op_intent
@@ -267,15 +253,8 @@ fn write_operating_point_payload(
         return Err(non_canonical("op_intent_gate"));
     }
 
-    // § 5.11: the top-level PTL, in parse order (before ops_color_info()). For a global
-    // payload this is ops_aggregate_info() (gated on ops_ptl_present_flag); for a local
-    // payload it is the single ops_seq_profile_tier_level_info() targeting the OBU's own
-    // layer (also gated on ops_ptl_present_flag), stored on the lone xlayer entry. The
-    // local xlayer entry is validated here (count, layer) so its PTL can be written now;
-    // the entry's ops_mlayer_info() is written later in write_xlayer_section.
     write_top_level_ptl(&mut body, ops, obu_xlayer_id, payload)?;
 
-    // § 5.11: ops_color_info() is read iff ops_color_info_present_flag.
     if ops.color_info_present {
         let color = payload
             .color_info
@@ -286,47 +265,25 @@ fn write_operating_point_payload(
         return Err(non_canonical("color_info_gate"));
     }
 
-    // § 5.11: ops_decoder_model_info_for_this_op_present_flag then the optional
-    // ops_decoder_model_info().
     body.write_flag(payload.decoder_model_info.is_some())?;
     if let Some(dm) = &payload.decoder_model_info {
         write_ops_decoder_model_info(&mut body, dm)?;
     }
 
-    // § 5.11: ops_initial_display_delay_present_flag then the optional
-    // ops_initial_display_delay_minus_1 f(4).
     body.write_flag(payload.initial_display_delay_minus_1.is_some())?;
     if let Some(delay) = payload.initial_display_delay_minus_1 {
         body.write_bits_u8(delay, OPS_INITIAL_DISPLAY_DELAY_BITS)?;
     }
 
-    // § 5.11: the xlayer map / per-layer loop (global) or the single local layer.
     write_xlayer_section(&mut body, ops, obu_xlayer_id, payload)?;
 
-    // § 5.11: byte_alignment() closes the payload; opsBytes counts from after
-    // ops_data_size through this padding.
     body.align_to_byte();
     let ops_bytes =
         u32::try_from(body.bit_len() / 8).map_err(|_| non_canonical("ops_data_size"))?;
-    // The parser stores BOTH the declared `ops_data_size` (the wire leb128) and the
-    // computed `opsBytes` (the body length it measured), and it TOLERATES `declared !=
-    // computed` — that is the § 6.10.2 `ops/payload-size-mismatch` non-conformance the
-    // validator flags, not a parse error (parse_operating_point_payload returns Ok with
-    // both values; see `OperatingPointPayload::has_size_mismatch`). So `declared_size_bytes`
-    // is a wire field we reproduce VERBATIM, even when it disagrees with the body (like the
-    // reserved `local_reserved_2bits` / `mlayer_info_idc == 3` / PTL reserved bits this
-    // writer already preserves). `computed_size_bytes`, by contrast, is a parse measurement:
-    // a reparse overwrites it with the re-derived `opsBytes`, so a model whose `computed`
-    // disagrees with the body the writer lays out could not round-trip — that one IS
-    // locally-decidable, so reject it. Do NOT require `declared == computed`.
     if payload.computed_size_bytes != ops_bytes {
         return Err(non_canonical("ops_computed_size"));
     }
 
-    // § 5.11: emit `ops_data_size` as the declared wire leb128 verbatim — reproducing a
-    // tolerated declared-vs-computed mismatch faithfully; the parser advances by the actual
-    // body length (`opsBytes`), not by `declared`, so a non-conformant `declared` does not
-    // mis-position the next payload and the round-trip holds.
     scratch.write_leb128(payload.declared_size_bytes)?;
     scratch.append(&body)
 }
@@ -355,11 +312,9 @@ fn write_top_level_ptl(
             return Err(non_canonical("aggregate_info_gate"));
         }
     } else {
-        // A local payload never carries ops_aggregate_info().
         if payload.aggregate_info.is_some() {
             return Err(non_canonical("aggregate_info_gate"));
         }
-        // § 5.11: local OPS -> XCount == 1, the single layer is the OBU's own.
         if payload.xlayer_map.is_some() {
             return Err(non_canonical("xlayer_map_scope"));
         }
@@ -370,8 +325,6 @@ fn write_top_level_ptl(
         if entry.xlayer_id != obu_xlayer_id {
             return Err(non_canonical("xlayer_entries"));
         }
-        // The local PTL (gated on ops_ptl_present_flag, targeting the OBU's own layer)
-        // is read at this point, before ops_color_info().
         write_entry_ptl(body, ops, entry, obu_xlayer_id)?;
     }
     Ok(())
@@ -391,8 +344,6 @@ fn write_xlayer_section(
         let map = payload
             .xlayer_map
             .ok_or_else(|| non_canonical("xlayer_map_scope"))?;
-        // The parser visits set bits 0..30 in ascending order, one entry each; the
-        // entries must match that exact set and order to round-trip.
         let expected: Vec<u8> = (0..OPS_XLAYER_MAP_LAYERS)
             .filter(|j| map & (1u32 << u32::from(*j)) != 0)
             .collect();
@@ -408,9 +359,6 @@ fn write_xlayer_section(
             write_global_entry(body, ops, entry, entry_xlayer)?;
         }
     } else {
-        // § 5.11: local OPS -> XCount == 1; the single entry (and its PTL) was already
-        // validated and its PTL written in parse order by write_top_level_ptl. Here only
-        // ops_mlayer_info() remains (always coded for a local OPS).
         let entry = &payload.xlayer_entries[0];
         match &entry.mlayer {
             OpsMlayerSource::Explicit(mlayer) => write_ops_mlayer_info(body, mlayer)?,
@@ -445,7 +393,6 @@ fn write_entry_ptl(
             .ptl_info
             .as_ref()
             .ok_or_else(|| non_canonical("entry_ptl_gate"))?;
-        // The parser stamps the entry's own layer onto target_xlayer_id.
         if ptl.target_xlayer_id != target_xlayer {
             return Err(non_canonical("entry_ptl_gate"));
         }
@@ -473,7 +420,6 @@ fn write_global_mlayer_source(
         },
         Some(2) => match source {
             OpsMlayerSource::Explicit(mlayer) => {
-                // ops_mlayer_explicit_info_flag = 1, then ops_mlayer_info().
                 body.write_bit(1)?;
                 write_ops_mlayer_info(body, mlayer)
             }
@@ -481,15 +427,12 @@ fn write_global_mlayer_source(
                 embedded_ops_id,
                 embedded_op_index,
             } => {
-                // ops_mlayer_explicit_info_flag = 0, then the embedded reference.
                 body.write_bit(0)?;
                 body.write_bits_u8(*embedded_ops_id, OPS_EMBEDDED_OPS_ID_BITS)?;
                 body.write_bits_u8(*embedded_op_index, OPS_EMBEDDED_OP_INDEX_BITS)
             }
             OpsMlayerSource::Absent => Err(non_canonical("global_mlayer_source")),
         },
-        // idc 0, the reserved idc 3, and (defensively) a missing idc code nothing:
-        // the source must be Absent.
         _ => match source {
             OpsMlayerSource::Absent => Ok(()),
             _ => Err(non_canonical("global_mlayer_source")),
@@ -531,7 +474,6 @@ fn write_ops_decoder_model_info(body: &mut BitWriter, dm: &OpsDecoderModelInfo) 
 fn write_ops_color_info(body: &mut BitWriter, color: &OpsColorInfo) -> WriteResult<()> {
     body.write_rg(color.color_description_idc, OPS_COLOR_DESCRIPTION_RG)?;
     if color.color_description_idc == 0 {
-        // § 5.11.4: the explicit color_primaries / transfer / matrix triple.
         let primaries = color
             .color_primaries
             .ok_or_else(|| non_canonical("color_triple_gate"))?;
@@ -578,8 +520,5 @@ fn non_canonical(what: &'static str) -> WriteError {
     WriteError::NonCanonicalOperatingPointSet { what }
 }
 
-// The round-trip / reject tests live in a sibling file (kept under the advisory
-// source-line limit); `include!` pastes them into this module so their `super::*`
-// resolves to the writer above.
 #[cfg(test)]
 include!("operating_point_set_tests.rs");

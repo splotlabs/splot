@@ -101,7 +101,6 @@ pub(crate) struct AllZeroCoeffBlockInput {
 }
 
 /// Caller-resolved facts for computing the nonzero § 5.20.7.27 EOB value.
-// `eob_*` fields mirror the AV2 §5.20.7.27 eobPt/eob_extra/eob_extra_bit syntax names; the prefix preserves that mapping.
 #[allow(clippy::struct_field_names)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct NonZeroCoeffEobInput {
@@ -397,8 +396,6 @@ pub(crate) fn apply_all_zero_coeff_block(
     input: AllZeroCoeffBlockInput,
 ) -> Result<AllZeroCoeffBlock, CoeffLoopContextError> {
     // TODO(spec: DECODE-COEFF-ALL-ZERO-BLOCK-STATE): Model the plane-0
-    // `TxTypes[y4+j][x4+i] = DCT_DCT` writes and plane-1 `EobU` / `cctx_type`
-    // reset when broader transform-block state is wired.
     let width = adjusted_coeff_extent(input.w4);
     let height = adjusted_coeff_extent(input.h4);
     let block = TransformCoeffBlockState::new(width, height)?;
@@ -849,9 +846,6 @@ mod tests {
         state.update_after_coeffs(update(0, 0, 0, 1, 1)).unwrap();
         let before = state.clone();
 
-        // An origin AT or beyond the line length is a genuine out-of-tile write
-        // (not a frame-edge overhang); the §5.20.7.27 context-write edge clamp
-        // still rejects it, matching AVM `av2_set_entropy_contexts`.
         let err = apply_all_zero_coeff_block(
             &mut state,
             AllZeroCoeffBlockInput {
@@ -955,8 +949,6 @@ mod tests {
         })
         .unwrap();
 
-        // eobPt 5 starts from (1 << 3) + 1, then `eob_extra` adds bit 2 and
-        // packed refinement bits add bits 1..=0.
         assert_eq!(eob.eob(), 15);
     }
 

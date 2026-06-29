@@ -95,7 +95,6 @@ mod tests {
 
     #[test]
     fn registry_has_a_substantial_catalog() {
-        // A floor, not a frozen count (the generator/--check enforce exactness vs the doc).
         assert!(
             all().len() >= 200,
             "expected >= 200 entries, got {}",

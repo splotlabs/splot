@@ -182,8 +182,6 @@ pub fn run_gen_tables(root: &Path, check: bool) -> Result<()> {
                 Err(_) => drift.push(format!("missing: {rel}")),
             }
         }
-        // Also flag stray generated files that the generator would no longer
-        // emit, across every output directory.
         for dir_rel in OUTPUT_DIRS {
             let dir = root.join(dir_rel);
             if dir.is_dir() {
@@ -225,9 +223,6 @@ pub fn run_gen_tables(root: &Path, check: bool) -> Result<()> {
     for dir_rel in OUTPUT_DIRS {
         std::fs::create_dir_all(root.join(dir_rel))
             .with_context(|| format!("failed to create {dir_rel}"))?;
-        // Remove stale generated modules first (a renamed/no-longer-emitted table
-        // group would otherwise survive every regeneration and keep --check failing
-        // until deleted by hand — codex review, PR #66).
         for entry in std::fs::read_dir(root.join(dir_rel))
             .with_context(|| format!("failed to read {dir_rel}"))?
         {
@@ -297,8 +292,6 @@ fn generate(root: &Path) -> Result<Outputs> {
 
     let skip_reason: BTreeMap<&str, &str> = SKIP_ALLOWLIST.iter().copied().collect();
 
-    // Group declarations by module, preserving the attachment's declaration order
-    // within each module for stable output.
     let mut by_module: BTreeMap<&'static str, Vec<GeneratedTable<'_>>> = BTreeMap::new();
     let mut skipped: Vec<(String, String)> = Vec::new();
     let mut generated = 0usize;
@@ -347,7 +340,6 @@ fn generate(root: &Path) -> Result<Outputs> {
         }
     }
 
-    // One `mod.rs` per output directory, listing only that directory's modules.
     for (dir, sections) in &emitted_by_dir {
         files.insert(format!("{dir}/mod.rs"), render_mod_rs(sections));
     }
@@ -371,8 +363,6 @@ fn build_section_map(root: &Path, decls: &[Decl]) -> Result<BTreeMap<String, &'s
         let md = std::fs::read_to_string(&md_path)
             .with_context(|| format!("failed to read {}", md_path.display()))?;
         for line in md.lines() {
-            // A table declaration line in the mirror text: leading whitespace, a
-            // capitalized identifier, then `[`.
             let trimmed = line.trim_start();
             if let Some(name) = table_name_before_bracket(trimmed) {
                 map.entry(name.to_string()).or_insert(section.module);
@@ -410,7 +400,6 @@ fn table_name_before_bracket(s: &str) -> Option<&str> {
         if c.is_ascii_alphanumeric() || c == '_' {
             end = i + c.len_utf8();
         } else {
-            // The identifier must be followed by `[` (allowing intervening spaces).
             let rest = s[end..].trim_start();
             if rest.starts_with('[') {
                 return Some(&s[..end]);
@@ -433,27 +422,21 @@ fn parse_decls(raw: &str) -> Result<Vec<Decl>> {
     let n = bytes.len();
 
     while i < n {
-        // Find the start of a candidate identifier (a letter or underscore at a
-        // position not preceded by an identifier char).
         let c = bytes[i];
         let prev_ident = i > 0 && is_ident_byte(bytes[i - 1]);
         if !prev_ident && (c.is_ascii_alphabetic() || c == b'_') {
-            // Read the identifier.
             let name_start = i;
             while i < n && is_ident_byte(bytes[i]) {
                 i += 1;
             }
             let name = &text[name_start..i];
-            // Skip whitespace, then optional `[ ... ]` dimension groups, then `=`.
             let after_name = i;
             let mut j = i;
             skip_ws(bytes, &mut j, n);
             let dims_start = j;
-            // Consume zero or more bracket groups.
             loop {
                 skip_ws(bytes, &mut j, n);
                 if j < n && bytes[j] == b'[' {
-                    // advance to matching ']'
                     while j < n && bytes[j] != b']' {
                         j += 1;
                     }
@@ -470,7 +453,6 @@ fn parse_decls(raw: &str) -> Result<Vec<Decl>> {
                 j += 1;
                 skip_ws(bytes, &mut j, n);
                 if j < n && bytes[j] == b'{' {
-                    // Brace-match the body.
                     let body_start = j;
                     let mut depth = 0i32;
                     while j < n {
@@ -505,7 +487,6 @@ fn parse_decls(raw: &str) -> Result<Vec<Decl>> {
                     continue;
                 }
             }
-            // Not a declaration; resume scanning right after the identifier.
             i = after_name;
             continue;
         }
@@ -553,7 +534,6 @@ fn strip_comments(raw: &str) -> String {
             while i < n && bytes[i] != b'\n' {
                 i += 1;
             }
-            // leave the newline (if any) to the outer loop
         } else {
             out.push(bytes[i] as char);
             i += 1;
@@ -570,7 +550,7 @@ fn strip_comments(raw: &str) -> String {
 /// sometimes prints a space between the sign and the digits (`- 1`), so whitespace
 /// between the sign and the digit is tolerated.
 ///
-/// ASSUMPTION (claude review, PR #66): a binary subtraction like `1-2` would be
+/// ASSUMPTION: a binary subtraction like `1-2` would be
 /// misread as the two values `1` and `-2` — the attachment contains no arithmetic
 /// expressions (only literals), and the determinism test's exact table count would
 /// flag a future spec version that introduced one.
@@ -596,8 +576,6 @@ fn is_numeric_body(body: &str) -> bool {
 /// Render one § 9 module file: SPDX + provenance header, then one `pub static` per
 /// table.
 fn render_module(section: &Section, decls: &[GeneratedTable<'_>]) -> Result<String> {
-    // Writing to a `String` is infallible, so `write!`/`writeln!` results are
-    // discarded with `let _ = ...` (the workspace denies `unwrap`).
     let mut out = String::new();
     out.push_str(GENERATED_HEADER);
     let _ = writeln!(out, "//! AV2 § {} — {}.", section.spec, section.title);
@@ -608,8 +586,6 @@ fn render_module(section: &Section, decls: &[GeneratedTable<'_>]) -> Result<Stri
     );
     let _ = writeln!(out, "//! ({ATTACHMENT_REL}). Do not edit by hand.");
     out.push('\n');
-    // Generated nested arrays trip a few pedantic/style lints; allow them
-    // module-wide since the data is machine-emitted and not meant to be read.
     out.push_str(
         "#![allow(clippy::all, clippy::pedantic)]\n#![allow(clippy::unreadable_literal)]\n\n",
     );
@@ -619,28 +595,17 @@ fn render_module(section: &Section, decls: &[GeneratedTable<'_>]) -> Result<Stri
         let rust_name = to_screaming_snake(&decl.name);
         let value = render_value(&table.body)?;
         let ty = array_type(&table.body)?;
-        // Collapse the declaration dims onto one line so multi-line declarations
-        // (the dims spill across lines in the attachment) stay inside the `///`.
         let dims = normalize_ws(&decl.dims);
         let _ = writeln!(
             out,
             "/// `{}{}` (AV2 § {}, generated from `{ATTACHMENT_REL}`).",
             decl.name, dims, section.spec
         );
-        // The const value is one long array literal; `#[rustfmt::skip]` keeps it on
-        // a single line so `cargo fmt --check` is stable and the generator's output
-        // does not depend on the installed rustfmt version.
         let _ = writeln!(out, "#[rustfmt::skip]");
-        // `pub static`, not `pub const`: a const is value-substituted at every
-        // mention, so the large §9 arrays (e.g. the ~216 KiB QUANTIZER_MATRIX)
-        // could be re-materialized at call sites; a static has one read-only
-        // storage location (codex review, PR #66).
         let _ = writeln!(out, "pub static {rust_name}: {ty} = {value};");
         out.push('\n');
     }
 
-    // End with exactly one trailing newline (rustfmt-clean), not the blank line
-    // left after the last item.
     Ok(trim_trailing_blank_lines(&out))
 }
 
@@ -659,8 +624,6 @@ fn render_mod_rs(sections: &[&Section]) -> String {
     out.push_str("//!\n");
     out.push_str("//! One submodule per § 9 subsection; see each module's docs for the\n");
     out.push_str("//! generating attachment and spec citation.\n\n");
-    // Emit `pub mod` declarations alphabetically by module name so the file is
-    // rustfmt-clean (rustfmt reorders module declarations).
     let mut sorted: Vec<&&Section> = sections.iter().collect();
     sorted.sort_by_key(|s| s.module);
     for section in sorted {
@@ -737,8 +700,6 @@ fn tokenize_body(body: &str) -> Result<Vec<Tok>> {
             if b == b'-' {
                 neg = true;
                 i += 1;
-                // The attachment may print a space between the sign and digits
-                // (`- 1`); skip it so the literal parses.
                 while i < n && bytes[i].is_ascii_whitespace() {
                     i += 1;
                 }
@@ -765,9 +726,6 @@ fn render_node(toks: &[Tok], idx: &mut usize) -> Result<String> {
     match toks.get(*idx) {
         Some(Tok::Int(v)) => {
             *idx += 1;
-            // The generated consts are typed i32: reject out-of-range values here with
-            // a clear generator error instead of deferring to a rustc type error in the
-            // generated file (claude review, PR #66).
             if i32::try_from(*v).is_err() {
                 bail!("table value {v} does not fit the generated i32 type");
             }
@@ -926,8 +884,6 @@ mod tests {
     #[test]
     fn regeneration_is_byte_identical_and_deterministic() -> Result<()> {
         let root = workspace_root()?;
-        // Two independent generation passes over the committed attachment must
-        // produce byte-identical output (no timestamps, stable ordering).
         let a = generate(&root)?;
         let b = generate(&root)?;
         assert_eq!(
@@ -941,7 +897,6 @@ mod tests {
                 "nondeterministic output for {rel}"
             );
         }
-        // The committed files on disk must match the freshly generated output.
         for (rel, content) in &a.files {
             let on_disk = std::fs::read_to_string(root.join(rel))
                 .with_context(|| format!("failed to read committed {rel}"))?;
@@ -950,8 +905,6 @@ mod tests {
                 "committed {rel} drifted from gen-tables output"
             );
         }
-        // Sanity: 234 numeric tables plus four resolved `BLOCK_*` tables, four
-        // resolved `TX_*` tables, and one resolved `TxType` table.
         assert_eq!(a.generated, 243, "generated-table count changed");
         assert_eq!(a.skipped.len(), SKIP_ALLOWLIST.len());
         Ok(())
@@ -959,9 +912,6 @@ mod tests {
 
     #[test]
     fn every_allowlisted_skip_is_actually_symbolic() -> Result<()> {
-        // Guards the allowlist against rot: each listed table must still parse as
-        // symbolic in the committed attachment (else it should be generated, not
-        // skipped).
         let root = workspace_root()?;
         let raw = std::fs::read_to_string(root.join(ATTACHMENT_REL))?;
         let decls = parse_decls(&raw)?;

@@ -1,15 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-// Round-trip and reject tests for the §5.8 layer_config_record_obu() writer. `include!`d into
-// `crate::write::layer_config_record` so `super::*` resolves to `write_layer_config_record` and the
-// model imports.
-//
-// Every round-trip model is produced by parsing a hand-built byte payload via
-// `parse_layer_config_record`, so it is guaranteed to be parser-producible; the writer then re-emits
-// it and the bytes are reparsed and compared (byte-exact, since every §5.8 body ends byte-aligned, and
-// semantic). Reject tests mutate a parsed model into a parser-unproducible state and assert the typed
-// reject without any bit written.
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -126,7 +117,6 @@ mod tests {
         }
     }
 
-    // ---- round-trip coverage ----
 
     #[test]
     fn minimal_global_round_trips() {
@@ -146,7 +136,6 @@ mod tests {
 
     #[test]
     fn global_with_seq_ptl_round_trips() {
-        // Two xlayers (bits 0 and 2) => two PTL bodies, one per set-bit id.
         let mut bits = global_prefix(2, 0b101, false, true, false, false, false);
         bits.ptl(4, 7, 1, 3, 0); // xId = 0
         bits.ptl(31, 12, 0, 1, 0); // xId = 2 (Configurable profile)
@@ -156,8 +145,6 @@ mod tests {
     #[test]
     fn global_with_atlas_id_round_trips() {
         let mut bits = global_prefix(3, 0b1, false, false, false, false, true);
-        // The shared prefix already coded lcr_global_atlas_id = 0 in the f(3) slot; rebuild it with a
-        // non-zero atlas id to exercise the atlas branch.
         bits.bits.clear();
         bits.f(3, 3); // id
         bits.f(0b1, 31); // map
@@ -197,7 +184,6 @@ mod tests {
 
     #[test]
     fn global_payload_with_dependent_map_round_trips() {
-        // xlayer_map bit 1 set => xId = 1, dependent flag set => lcr_num_dependent_xlayer_map f(1).
         let mut bits = global_prefix(1, 0b10, false, false, true, true, false);
         bits.leb128_byte(2); // lcr_data_size = 2 bytes
         bits.bit(1); // lcr_num_dependent_xlayer_map f(1) = 1
@@ -212,8 +198,6 @@ mod tests {
 
     #[test]
     fn global_payload_with_atlas_else_branch_round_trips() {
-        // Global atlas id present + payload present, no embedded layer => xlayer_info takes the
-        // else-branch f(8) atlas triple.
         let mut bits = Bits::default();
         bits.f(1, 3); // id
         bits.f(0b1, 31); // map
@@ -265,7 +249,6 @@ mod tests {
         bits.ptl(0, 5, 0, 2, 0); // lcr_seq_profile_tier_level_info(xId)
         bits.f(0, 3); // reserved_zero_3bits
         bits.f(0, 5); // reserved_zero_5bits
-        // lcr_xlayer_info(0, xId): rep_info present (with format + cropping window).
         bits.bit(1); // rep_info present
         bits.bit(0); // purpose present
         bits.bit(0); // color present
@@ -302,7 +285,6 @@ mod tests {
         bits.bit(1); // local atlas present
         bits.f(1, 3); // lcr_local_atlas_id
         bits.f(0, 5); // reserved_zero_5bits
-        // lcr_xlayer_info(0, xId):
         bits.bit(0); // rep_info present
         bits.bit(0); // purpose present
         bits.bit(1); // color info present
@@ -314,7 +296,6 @@ mod tests {
         bits.bit(1); // full_range_flag
         bits.align(); // byte_alignment()
         bits.f(0b0000_0011, 8); // lcr_mlayer_map -> j = 0 and j = 1
-        // j = 0 (atlas present):
         bits.f(0b0101, 4); // lcr_tlayer_map
         bits.f(7, 8); // atlas_segment_id
         bits.f(2, 8); // priority_order
@@ -323,12 +304,10 @@ mod tests {
         bits.f(9, 8); // lcr_auxiliary_type
         bits.f(u32::from(VIEW_EXPLICIT), 8); // lcr_view_type = VIEW_EXPLICIT
         bits.f(3, 8); // lcr_view_id
-        // j == 0 => no dependent map.
         bits.bit(0); // same_sh_max_resolution_flag = 0 -> max expected follows
         bits.uvlc(1920); // max_expected_width
         bits.uvlc(1080); // max_expected_height
         bits.align(); // per-iteration byte_alignment()
-        // j = 1 (atlas present):
         bits.f(0b0001, 4); // lcr_tlayer_map
         bits.f(8, 8); // atlas_segment_id
         bits.f(1, 8); // priority_order
@@ -359,7 +338,6 @@ mod tests {
         assert!(embedded.layers[1].same_sh_max_resolution_flag);
     }
 
-    // ---- reject coverage (one per decidable invariant) ----
 
     #[test]
     fn rejects_aggregate_info_gate() {
@@ -448,7 +426,6 @@ mod tests {
 
     #[test]
     fn rejects_num_dependent_gate() {
-        // xId = 1, dependent flag clear (no map). Flipping the flag on makes the map mandatory.
         let mut bits = global_prefix(1, 0b10, false, false, true, false, false);
         bits.leb128_byte(1);
         bits.extend(minimal_xlayer_info(false));
@@ -477,7 +454,6 @@ mod tests {
 
     #[test]
     fn rejects_global_record_under_local_header() {
-        // A global record written under a non-global header would reparse as a local record.
         let record = parse(
             &global_prefix(1, 0b1, false, false, false, false, false).into_bytes(),
             GLOBAL_XLAYER_ID,
@@ -488,7 +464,6 @@ mod tests {
 
     #[test]
     fn rejects_local_record_under_global_header() {
-        // A local record written under the global header would reparse as a global record.
         let record = parse(&minimal_local_body(), ExtendedLayerId::from_bits(2));
         let err = write_err_xlayer(&record, GLOBAL_XLAYER_ID);
         assert_eq!(what(&err), "xlayer_scope");
@@ -496,8 +471,6 @@ mod tests {
 
     #[test]
     fn rejects_local_xlayer_id_disagreeing_with_header() {
-        // The stored xlayer_id (2) is parse-context = the header's obu_xlayer_id; a different
-        // (still non-global) header would re-derive a different id on reparse.
         let record = parse(&minimal_local_body(), ExtendedLayerId::from_bits(2));
         let err = write_err_xlayer(&record, ExtendedLayerId::from_bits(5));
         assert_eq!(what(&err), "local_xlayer_id");
@@ -505,8 +478,6 @@ mod tests {
 
     #[test]
     fn rejects_local_ptl_xlayer_id() {
-        // A local record with a PTL; the parser sets the PTL's xlayer_id to the record's, so a
-        // different PTL xlayer_id is parser-unproducible.
         let mut bits = Bits::default();
         bits.f(0, 3); // lcr_global_id
         bits.f(2, 3); // lcr_local_id
@@ -523,8 +494,6 @@ mod tests {
 
     #[test]
     fn rejects_xlayer_atlas_gate() {
-        // Global payload with the atlas else-branch present; clearing the atlas makes the branch
-        // mandatory-but-absent.
         let mut bits = Bits::default();
         bits.f(1, 3); // id
         bits.f(0b1, 31); // map

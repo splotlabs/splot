@@ -1,15 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-// Round-trip and reject tests for the §5.9 atlas_segment_info_obu() writer. `include!`d into
-// `crate::write::atlas_segment` so `super::*` resolves to `write_atlas_segment` and the model
-// imports.
-//
-// Every round-trip starts from a model produced by `parse_atlas_segment` over a hand-built,
-// spec-grounded byte payload (so the model is guaranteed parser-producible), then writes it,
-// reparses the emitted bytes, and asserts model equality. Reject tests mutate such a model into a
-// shape the parser could never produce and assert the typed `NonCanonicalAtlasSegment { what }`
-// reject with `bit_len() == 0`.
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -242,9 +233,6 @@ mod tests {
         round_trip(&atlas);
     }
 
-    // ===================================================================================
-    // Reject tests (decidable invariants; bit_len() == 0)
-    // ===================================================================================
 
     #[test]
     fn rejects_unaligned_writer() {
@@ -257,8 +245,6 @@ mod tests {
 
     #[test]
     fn rejects_mode_vs_mode_info_mismatch() {
-        // The parser builds the variant from the mode; a Single mode carrying a Basic body is
-        // parser-unproducible.
         let basic = basic_atlas_signaled();
         let mut atlas = single_atlas();
         atlas.mode_info = basic.mode_info;
@@ -267,8 +253,6 @@ mod tests {
 
     #[test]
     fn rejects_num_segments_disagreeing_with_derivation() {
-        // num_segments is derived from the mode body; a stored value that disagrees could not
-        // round-trip (a reparse re-derives it).
         let mut atlas = basic_atlas_signaled();
         atlas.num_segments = 3; // mode body derives 2
         reject(&atlas, "num_segments");
@@ -276,7 +260,6 @@ mod tests {
 
     #[test]
     fn rejects_basic_segment_count_vs_len_mismatch() {
-        // num_atlas_segments_minus_1 + 1 must equal segments.len().
         let mut atlas = basic_atlas_signaled();
         let AtlasModeInfo::Basic(basic) = &mut atlas.mode_info else {
             panic!("expected basic mode info");
@@ -287,7 +270,6 @@ mod tests {
 
     #[test]
     fn rejects_basic_stream_id_gate_present_without_flag() {
-        // stream_id_present == false but a segment carries an input_stream_id.
         let mut atlas = basic_atlas_unsignaled_no_stream_id();
         let AtlasModeInfo::Basic(basic) = &mut atlas.mode_info else {
             panic!("expected basic mode info");
@@ -299,7 +281,6 @@ mod tests {
 
     #[test]
     fn rejects_basic_stream_id_gate_absent_with_flag() {
-        // stream_id_present == true but a segment is missing its input_stream_id.
         let mut atlas = basic_atlas_signaled();
         let AtlasModeInfo::Basic(basic) = &mut atlas.mode_info else {
             panic!("expected basic mode info");
@@ -311,7 +292,6 @@ mod tests {
 
     #[test]
     fn rejects_region_dimension_out_of_range() {
-        // §6.9.3.1: num_region_columns_minus_1 >= MAX_ATLAS_COLS is parser-unproducible.
         let mut atlas = enhanced_explicit_mapping();
         let AtlasModeInfo::Enhanced(enhanced) = &mut atlas.mode_info else {
             panic!("expected enhanced mode info");
@@ -322,7 +302,6 @@ mod tests {
 
     #[test]
     fn rejects_num_regions_in_atlas_disagreeing() {
-        // NumRegionsInAtlas is derived from the column/row counts.
         let mut atlas = enhanced_explicit_mapping();
         let AtlasModeInfo::Enhanced(enhanced) = &mut atlas.mode_info else {
             panic!("expected enhanced mode info");
@@ -333,7 +312,6 @@ mod tests {
 
     #[test]
     fn rejects_uniform_flag_with_explicit_lists() {
-        // uniform_spacing == true must carry the Some width/height pair and empty explicit lists.
         let mut atlas = enhanced_uniform_single_region();
         let AtlasModeInfo::Enhanced(enhanced) = &mut atlas.mode_info else {
             panic!("expected enhanced mode info");
@@ -345,7 +323,6 @@ mod tests {
 
     #[test]
     fn rejects_explicit_column_list_length_mismatch() {
-        // Non-uniform: column_widths_minus_1.len() must equal num_region_columns_minus_1 + 1.
         let mut atlas = enhanced_explicit_mapping();
         let AtlasModeInfo::Enhanced(enhanced) = &mut atlas.mode_info else {
             panic!("expected enhanced mode info");
@@ -357,7 +334,6 @@ mod tests {
 
     #[test]
     fn rejects_single_region_mapping_with_explicit_segments() {
-        // single_region_per_atlas_segment leaves `segments` empty (the count is derived).
         let mut atlas = enhanced_uniform_single_region();
         let AtlasModeInfo::Enhanced(enhanced) = &mut atlas.mode_info else {
             panic!("expected enhanced mode info");
@@ -369,28 +345,21 @@ mod tests {
             bottom_right_region_column_off: 0,
             bottom_right_region_row_off: 0,
         });
-        // num_segments now disagrees with the (still 1) derivation, but the segments-non-empty
-        // check fires first in write_region_to_segment_mapping. Keep num_segments consistent so the
-        // earlier num_segments guard does not pre-empt this one.
         reject(&atlas, "single_region_segments");
     }
 
     #[test]
     fn rejects_explicit_mapping_segment_count_vs_len() {
-        // Non-single-region mapping: segments.len() must equal num_atlas_segments_minus_1 + 1.
         let mut atlas = enhanced_explicit_mapping();
         let AtlasModeInfo::Enhanced(enhanced) = &mut atlas.mode_info else {
             panic!("expected enhanced mode info");
         };
         enhanced.mapping.segments.pop(); // now 1, count expects 2
-        // num_segments is derived from num_atlas_segments_minus_1 (still 1 -> 2), so it still
-        // matches; the segments length check is what fires.
         reject(&atlas, "segment_count");
     }
 
     #[test]
     fn rejects_multistream_alpha_present_on_non_alpha_mode() {
-        // alpha_segments_present is Some only for the MULTISTREAM_ALPHA variant.
         let mut atlas = multistream_atlas();
         let AtlasModeInfo::Multistream(msi) = &mut atlas.mode_info else {
             panic!("expected multistream mode info");
@@ -401,7 +370,6 @@ mod tests {
 
     #[test]
     fn rejects_multistream_last_segment_alpha_flag_set() {
-        // §6.9.5: the last alpha segment's flag is inferred 0; a stored true is parser-unproducible.
         let mut atlas = multistream_alpha_atlas();
         let AtlasModeInfo::MultistreamAlpha(msi) = &mut atlas.mode_info else {
             panic!("expected multistream-alpha mode info");
@@ -413,7 +381,6 @@ mod tests {
 
     #[test]
     fn rejects_label_segment_count_mismatch() {
-        // label.segment_ids.len() must equal the derived numSegments.
         let mut atlas = basic_atlas_signaled();
         atlas.label.segment_ids.pop(); // now 1, numSegments is 2
         reject(&atlas, "label_segment_count");
@@ -421,7 +388,6 @@ mod tests {
 
     #[test]
     fn rejects_unsignaled_label_non_identity_ids() {
-        // An unsignaled label must carry the identity indices (segment_ids[i] == i).
         let mut atlas = basic_atlas_unsignaled_no_stream_id();
         assert!(!atlas.label.signaled_atlas_segment_ids);
         atlas.label.segment_ids = vec![9]; // identity would be [0]

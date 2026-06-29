@@ -445,7 +445,7 @@ pub struct FrameHeaderCore {
     /// `true` even when the parse later truncates inside the inter control region (the
     /// facts-preserving [`FrameHeaderParseStatus::StoppedInsideInterControl`] keeps the core),
     /// so a consumer can confirm the § 7.3.8.9 quantizer-matrix availability reset from the
-    /// parsed bits alone rather than requiring the whole core parse to complete (codex F2).
+    /// parsed bits alone rather than requiring the whole core parse to complete.
     /// `false` for every frame type whose `reset_qm()` trigger is not met, and for a RAS /
     /// restricted SWITCH whose parse stops BEFORE the call site (truncated mid-prefix or
     /// mid-`ref_long_term_id` — the reset is then unconfirmed).
@@ -471,22 +471,13 @@ pub fn parse_frame_header_core(
 ) -> Result<FrameHeaderCore> {
     let start_bits = reader.consumed_bits();
 
-    // The activation/reference prefix is parsed exactly as the prefix parser does, so
-    // existing behavior cannot regress (AV2 § 5.18.2 activation fields).
     let prefix =
         parse_frame_header_prefix(reader, input.obu_type, Some(input.first_picture_in_tu))?;
     let mut core = init_core_from_prefix(&prefix, input.obu_type, input.first_picture_in_tu);
 
-    // Activation-prefix mode, or core mode without a fully parsed active sequence
-    // header, stops at the prefix: the next field (`order_hint`, `bridge_frame_ref_idx`,
-    // …) needs OrderHintBits / NumRefFrames, which live in the sequence inter config.
     if input.mode == FrameHeaderParseMode::Core
         && let Some(seq) = input.active_sequence.and_then(CoreSeqView::from_sequence)
     {
-        // Resolve the `cur_mfh_id > 0` multi-frame-header state once, against the active
-        // sequence maxima. `None` when `cur_mfh_id == 0` (direct sequence reference) or
-        // when the in-band MFH is unresolvable (the resolution guard upstream passes no
-        // record), which keeps the unsupported/Unknown routing rather than guessing.
         let mfh_view = if core.cur_mfh_id.is_zero() {
             None
         } else {
@@ -586,11 +577,6 @@ pub(crate) fn parse_core_body(
 ) -> Result<()> {
     let obu_type = core.obu_type;
 
-    // AV2 § 5.18.2 (mirror :4117-4123): the `if ( IsBridge )` read of bridge_frame_ref_idx
-    // f(CeilLog2(NumRefFrames)) runs immediately after load_sequence_header() — BEFORE the
-    // `if ( single_picture_header_flag )` branch (mirror :4131). So a bridge frame ALWAYS
-    // reads bridge_frame_ref_idx, but whether it then takes the bridge inter path or the
-    // single-picture path depends on single_picture_header_flag (codex F5).
     let bridge_frame_ref_idx = if core.is_bridge {
         let idx = reader.read_f(ceil_log2(seq.num_ref_frames))?;
         core.bridge_frame_ref_idx = Some(idx);
@@ -600,34 +586,17 @@ pub(crate) fn parse_core_body(
     };
 
     if seq.single_picture_header_flag {
-        // AV2 § 5.18.2 (mirror :4131-4142): single_picture_header_flag forces a key frame and
-        // skips the entire show-existing / frame-type / output-control block (including the
-        // bridge's INTER_FRAME / immediate_output_frame = 0 assignments at mirror :4203-4205
-        // / :4295-4313). This applies to a bridge frame too (it already read
-        // bridge_frame_ref_idx above): the single-picture branch comes BEFORE the `if (
-        // IsBridge ) FrameType = INTER_FRAME` else-arm, so a single-picture bridge becomes a
-        // KEY_FRAME with FrameIsIntra = 1 / immediate_output_frame = 1 — NOT an inter bridge.
         core.show_existing_frame = Some(false);
         core.frame_type = Some(FrameType::Key);
         core.frame_is_intra = Some(true);
         core.immediate_output_frame = Some(true);
         core.implicit_output_frame = Some(false);
-        // A single-picture bridge is a HYBRID, not the plain intra key path: FrameIsIntra == 1
-        // and IsBridge == 1 hold together, so it still reads `bridge_frame_overwrite_flag` (mirror
-        // :4423) and reaches the § 5.18.2 `IsBridge` early-return arm (:4971/:5045) instead of the
-        // full intra structure cluster. Route it to the dedicated bridge tail, which reads exactly
-        // the modeled prefix and stops at that arm. parse_intra_tail's invariant (TipFrameMode ==
-        // TIP_FRAME_DISABLED and !IsBridge) does NOT hold here, so it must not be used.
         if let Some(bridge_frame_ref_idx) = bridge_frame_ref_idx {
             return parse_single_picture_bridge_tail(reader, core, seq, bridge_frame_ref_idx);
         }
         return parse_intra_tail(reader, core, seq, mfh, FrameType::Key, true);
     }
 
-    // A non-single-picture bridge takes the IsBridge inter arm: FrameType = INTER_FRAME
-    // (mirror :4203-4205), immediate_output_frame / implicit_output_frame = 0 (mirror
-    // :4295-4313), and frame_size_override_flag / order_hint are NOT read (the bridge skips
-    // the non-bridge :4351+ block), so it enters the inter control region directly.
     if let Some(bridge_frame_ref_idx) = bridge_frame_ref_idx {
         core.frame_type = Some(FrameType::Inter);
         core.frame_is_intra = Some(false);
@@ -636,20 +605,13 @@ pub(crate) fn parse_core_body(
         return parse_bridge_inter_path(reader, core, seq, bridge_frame_ref_idx, reference_state);
     }
 
-    // AV2 § 5.18.2: ShowExistingFrame = is_sef().
     let show_existing_frame = obu_type.is_sef();
     core.show_existing_frame = Some(show_existing_frame);
     if show_existing_frame {
         return parse_show_existing_frame(reader, core, seq);
     }
 
-    // AV2 § 5.18.2: frame-type determination (the non-SEF, non-bridge branch).
     let frame_type = if obu_type == ObuType::Switch || obu_type == ObuType::RasFrame {
-        // restricted_prediction_switch f(1): a real bit. It affects only reference-state
-        // derivations (OrderHint / RefOrderHint, mirror :4259-4277) the inter region does
-        // not compute here, so its value does not change any modeled bit position; it IS
-        // recorded for the validator's § 7.3.8.9 OBU_SWITCH quantizer-matrix reset gate
-        // (the reset applies only when restricted_prediction_switch == 1).
         core.restricted_prediction_switch = Some(reader.read_flag()?);
         FrameType::Switch
     } else if obu_type.is_tip_frame() {
@@ -668,16 +630,6 @@ pub(crate) fn parse_core_body(
     core.frame_type = Some(frame_type);
     core.frame_is_intra = Some(frame_is_intra);
 
-    // AV2 § 5.18.2: long_term_id_plus_1 (KEY frames) and num_key_ref_frames +
-    // ref_long_term_id[i] (RAS / OLK frames) are read after the frame-type field and
-    // before the FrameIsIntra split. Both are fully determined by sequence state, so
-    // they are read even on the non-intra paths the parser then stops on.
-    //
-    // mirror :4231-4239: `LongTermId = -1`, then for a KEY frame
-    // `LongTermId = long_term_id_plus_1 - 1`. When `long_term_frame_id_bits == 0` the
-    // `f(0)` read yields `long_term_id_plus_1 == 0`, so `LongTermId == -1` even for a KEY
-    // frame — the `-1` "not a long-term frame" sentinel. The § 7.23 update stores this as
-    // `RefLongTermId[i]` for the refreshed slots (mirror :14113).
     core.long_term_id = Some(-1);
     if frame_type == FrameType::Key {
         let long_term_id_plus_1 = reader.read_f(seq.long_term_frame_id_bits)?;
@@ -686,8 +638,6 @@ pub(crate) fn parse_core_body(
     if (obu_type == ObuType::RasFrame || obu_type == ObuType::OpenLoopKey)
         && seq.long_term_frame_id_bits != 0
     {
-        // AV2 § 6.17.2: every ref_long_term_id[i] must differ from the reserved
-        // (1 << long_term_frame_id_bits) - 1; record a violation for the validator.
         let reserved_long_term_id = (1u32 << seq.long_term_frame_id_bits).wrapping_sub(1);
         let num_key_ref_frames = reader.read_bits(3)?;
         let mut ref_long_term_ids = Vec::with_capacity(num_key_ref_frames as usize);
@@ -696,30 +646,14 @@ pub(crate) fn parse_core_body(
             if ref_long_term_id == reserved_long_term_id {
                 core.forbidden_ref_long_term_id = true;
             }
-            // Recorded for the validator's § 6.17.2 RAS `long_term_id_in_use` check
-            // (mirror :4615-4616) and `long_term_id_in_use()` (mirror :5529-5536).
             ref_long_term_ids.push(ref_long_term_id);
         }
         core.ref_long_term_ids = ref_long_term_ids;
     }
 
-    // AV2 § 5.18.2 reset_qm() call site (mirror :4279-4283): the parse has now passed
-    // `restricted_prediction_switch`, the `num_key_ref_frames` / `ref_long_term_id[i]` list,
-    // and the SWITCH-restricted output flush — the exact point the spec calls `reset_qm()`,
-    // BEFORE the output-control flags below and the inter control region. Record an explicit
-    // "reached reset_qm with its trigger met" fact so a consumer can confirm the § 7.3.8.9
-    // quantizer-matrix availability reset from the parsed bits even when the parse later
-    // truncates inside the inter control region (codex F2). The trigger is exactly the spec's
-    // `obu_type == OBU_RAS_FRAME || (obu_type == OBU_SWITCH && restricted_prediction_switch)`;
-    // for a SWITCH the gate reads `restricted_prediction_switch` (set above on the SWITCH /
-    // RAS frame-type arm), so an unread gate (`None`) leaves the fact `false` (unconfirmed).
     core.reached_qm_reset = obu_type == ObuType::RasFrame
         || (obu_type == ObuType::Switch && core.restricted_prediction_switch == Some(true));
 
-    // AV2 § 5.18.2 output control (mirror :4295-4313). This block is in the non-SEF,
-    // non-single-picture branch and applies to BOTH intra and inter frames. A bridge
-    // frame already returned above; here `obu_type` is never OBU_BRIDGE_FRAME, so the
-    // gate reduces to the OLK / monotonic-output checks.
     let immediate_output_frame = if obu_type == ObuType::OpenLoopKey {
         false
     } else {
@@ -737,11 +671,6 @@ pub(crate) fn parse_core_body(
         return parse_intra_tail(reader, core, seq, mfh, frame_type, false);
     }
 
-    // AV2 § 5.18.2 (mirror :4351-4403): the non-bridge inter / switch / TIP path reads
-    // frame_size_override_flag (when not SWITCH / single-picture), order_hint, then the
-    // reference control region. order_hint is bit-direct; OrderHint = get_disp_order_hint()
-    // is a reference-state derivation that affects no bit position here, so it is not
-    // computed.
     parse_inter_path(reader, core, seq, frame_type, reference_state)
 }
 
@@ -773,19 +702,11 @@ fn parse_inter_path(
 
     let obu_type = core.obu_type;
 
-    // The control region's facts accumulate in a caller-owned `control` so an EOF inside a
-    // modeled field preserves the fields parsed before it (codex F2).
     let mut control = crate::headers::frame::inter::InterControl::default();
 
-    // `shared_tail_ran` records whether the shared-tail parser set `core.status` itself
-    // (the `ReachedSharedTail` continuation); `finish_inter_control` must then leave the
-    // status untouched on `Ok`.
     let mut shared_tail_ran = false;
 
     let result = (|| -> Result<()> {
-        // mirror :4353-4365: frame_size_override_flag. SWITCH_FRAME forces 1 (no bit);
-        // single_picture_header_flag forces 0; otherwise f(1). The inter path is never a
-        // single-picture frame (that path is intra-only above), so the gate is SWITCH vs read.
         let frame_size_override_flag = if frame_type == FrameType::Switch {
             true
         } else {
@@ -793,7 +714,6 @@ fn parse_inter_path(
         };
         core.frame_size_override_flag = Some(frame_size_override_flag);
 
-        // mirror :4367: order_hint f(OrderHintBits); OrderHintLsbs = order_hint.
         let order_hint = reader.read_f(seq.order_hint_bits)?;
         core.order_hint_lsb = Some(order_hint);
 
@@ -816,22 +736,7 @@ fn parse_inter_path(
             &mut control,
         )?;
 
-        // mirror :5183: when the control region converged on the shared tail, continue into
-        // it. The shared tail reads from `control` (NumTotalRefs / ref_frame_idx /
-        // frame_enabled_motion_modes) and the already-set `core` output flags / frame size;
-        // it sets `core.status` itself (InterHeaderComplete or an honest coverage stop). An
-        // EOF inside the modeled tail propagates out of this closure and
-        // `finish_inter_control` converts it to StoppedInsideInterControl with the facts
-        // parsed so far preserved. The control facts are lifted onto `core.inter` AFTER the
-        // tail runs (it borrows `control`), so a non-tail-EOF still preserves them.
         if control.stop == Some(InterStop::ReachedSharedTail) {
-            // The shared tail's tile_info() needs the reference-grounded FrameWidth/Height
-            // (the control region resolved it on `control.frame_size`); lift it onto `core`
-            // BEFORE the tail runs so the tile/GDF/LR geometry derivations see it. (The
-            // refresh-flags / disable_cdf_update lift stays in finish_inter_control_with_tail;
-            // only the size is read by the shared tail.) When the size is genuinely unknown
-            // (a hit on an unmodeled ref slot), it stays None and the shared tail stops
-            // honestly at its own frame_size guard.
             core.frame_size = control.frame_size;
             shared_tail_ran = true;
             parse_inter_shared_tail(reader, core, seq, &control, frame_type)?;
@@ -844,7 +749,7 @@ fn parse_inter_path(
 
 /// Records a parsed inter / bridge `control` onto `core` and sets the terminal status,
 /// converting an [`Error::UnexpectedEof`] inside the modeled § 5.18.2 control region into a
-/// facts-preserving truncation status (codex F2):
+/// facts-preserving truncation status:
 ///
 /// - `Ok(())`: the control region reached one of its modeled coverage stops. The facts are
 ///   preserved on `core.inter`; the distinct stop class lives in `control.stop`. The core
@@ -856,16 +761,13 @@ fn parse_inter_path(
 ///   status is [`FrameHeaderParseStatus::StoppedInsideInterControl`], which the validator's
 ///   `is_truncated_in_modeled_region()` partition routes to `frame-header/truncated-frame-
 ///   header`. Without this the `Err` would propagate out of `parse_frame_header_core` and the
-///   validator's `.ok()` would drop ALL facts and the truncation (the PR #57/#59 regression
-///   class).
+///   validator's `.ok()` would drop ALL facts and the truncation.
 /// - Any other `Err`: a genuine malformed-input error propagates unchanged.
 fn finish_inter_control(
     core: &mut FrameHeaderCore,
     control: crate::headers::frame::inter::InterControl,
     result: Result<()>,
 ) -> Result<()> {
-    // Lift the inter reference-grounded frame size / refresh flags onto the core so existing
-    // state-supported diagnostics and the inspector see whatever parsed before any EOF.
     if let Some(size) = control.frame_size {
         core.frame_size = Some(size);
     }
@@ -882,8 +784,6 @@ fn finish_inter_control(
             };
             Ok(())
         }
-        // EOF inside the modeled § 5.18.2 control region: a payload-bounds truncation, not a
-        // hard parse error. Keep the preserved facts and surface the truncation status.
         Err(Error::UnexpectedEof { .. }) => {
             core.status = FrameHeaderParseStatus::StoppedInsideInterControl;
             Ok(())
@@ -912,10 +812,6 @@ fn finish_inter_control_with_tail(
     result: Result<()>,
     shared_tail_ran: bool,
 ) -> Result<()> {
-    // Lift the inter reference-grounded frame size / refresh flags onto the core so existing
-    // state-supported diagnostics and the inspector see whatever parsed before any EOF. The
-    // shared tail already wrote the cluster facts (tile/quant/segmentation/…) onto `core`;
-    // these lift the control-region facts that live only on `control`.
     if let Some(size) = control.frame_size {
         core.frame_size = Some(size);
     }
@@ -928,19 +824,12 @@ fn finish_inter_control_with_tail(
     match result {
         Ok(()) => {
             if !shared_tail_ran {
-                // A control-region coverage stop short of the shared tail (TIP-as-output,
-                // bru-inactive / bridge, poisoned / unmodeled derivation): the shared tail
-                // is unmodeled by construction here, so the unsupported-coverage status.
                 core.status = FrameHeaderParseStatus::UnsupportedUntilFeature {
                     feature_id: FRAME_HEADER_INFO_FEATURE,
                 };
             }
-            // shared_tail_ran: parse_inter_shared_tail set the terminal status itself; leave it.
             Ok(())
         }
-        // EOF inside the modeled § 5.18.2 control region OR shared tail: a payload-bounds
-        // truncation, not a hard parse error. Keep the preserved facts and surface the
-        // truncation status.
         Err(Error::UnexpectedEof { .. }) => {
             core.status = FrameHeaderParseStatus::StoppedInsideInterControl;
             Ok(())
@@ -1013,17 +902,10 @@ fn parse_bridge_inter_path(
         is_bridge: true,
         bridge_frame_ref_idx: Some(bridge_frame_ref_idx),
         cur_mfh_id_is_zero: core.cur_mfh_id.is_zero(),
-        // The bridge arm derives NumTotalRefs = 1 / ref_frame_idx[0] = bridge_frame_ref_idx
-        // (mirror :4597/:4615) without calling get_ref_frames(); order_hint is inert here.
         order_hint: 0,
     };
 
-    // The control region's facts accumulate in a caller-owned `control` so an EOF inside a
-    // modeled bridge field preserves the fields parsed before it (codex F2).
     let mut control = crate::headers::frame::inter::InterControl::default();
-    // frame_size_override_flag is never read on the bridge path; frame_size_with_bridge()
-    // is selected unconditionally by the IsBridge arm (mirror :4627), so the flag is inert
-    // for the bridge and passed as false.
     let result = parse_inter_control_into(
         reader,
         &inter_seq,
@@ -1074,7 +956,7 @@ fn parse_bridge_inter_path(
 /// the parsed prefix preserved on `core.inter`, reporting
 /// [`FrameHeaderParseStatus::UnsupportedUntilFeature`] (the reference-derived quant is unmodeled).
 /// An EOF inside the modeled prefix or the grain tail is converted to the facts-preserving
-/// [`FrameHeaderParseStatus::StoppedInsideInterControl`] by [`finish_inter_control`] (codex F2).
+/// [`FrameHeaderParseStatus::StoppedInsideInterControl`] by [`finish_inter_control`].
 /// When `film_grain_params_present` is unknown (a bounded sequence-header stop), `apply_grain`
 /// is undecidable, so the parse stops before the grain read (the same honest behavior as the
 /// intra / SEF tails).
@@ -1096,33 +978,13 @@ fn parse_single_picture_bridge_tail(
 ) -> Result<()> {
     use crate::headers::frame::inter::{InterControl, InterStop, TipFrameMode};
 
-    // `PRIMARY_REF_NONE` (AV2 § 3): the IsBridge arm infers primary_ref_frame = PRIMARY_REF_NONE
-    // (mirror :4345, no bits).
     const PRIMARY_REF_NONE: u8 = 7;
 
-    // The bridge facts accumulate in a caller-owned `control` so an EOF inside a modeled field
-    // preserves the fields parsed before it (codex F2); finish_inter_control lifts them onto core,
-    // sets the terminal status, and converts an EOF into StoppedInsideInterControl.
     let mut control = InterControl::default();
     let result = (|| -> Result<()> {
-        // mirror :4423-4427: bridge_frame_overwrite_flag f(1) — read on any IsBridge frame.
         let bridge_frame_overwrite_flag = reader.read_flag()?;
         control.bridge_frame_overwrite_flag = Some(bridge_frame_overwrite_flag);
 
-        // refresh_frame_flags: SPEC CONTRADICTION at this corner. § 5.18.2 syntax (:4429-4445)
-        // would read it UNCONDITIONALLY via the `if ( FrameType == KEY_FRAME )` arm (a
-        // single-picture bridge has FrameType == KEY_FRAME, so the `else if ( IsBridge &&
-        // !bridge_frame_overwrite_flag )` arm at :4489 is unreachable). But § 6.17.2 SEMANTICS
-        // (06-syntax-structures-semantics.md :4522-4524) states unconditionally that
-        // `bridge_frame_overwrite_flag == 0` means refresh_frame_flags is NOT present and is
-        // inferred `1 << bridge_frame_ref_idx`, and AVM (decodeframe.c:8394-8422) implements
-        // exactly that overwrite-gated reading. Per the maintainer decision (codex PR review),
-        // splot follows § 6.17.2 + AVM — a validator must match the reference decoder so it does
-        // not misparse a real (AVM-encoded) overwrite == 0 single-picture bridge by reading
-        // NumRefFrames phantom bits. So:
-        //   overwrite == 0 -> refresh_frame_flags = 1 << bridge_frame_ref_idx (no bits).
-        //   overwrite == 1 -> read it (the bridge arm, mirror AVM: has_refresh_frame_flags f(1) +
-        //                     frame_to_refresh on the short-flag path, else f(NumRefFrames)).
         let refresh_frame_flags = if !bridge_frame_overwrite_flag {
             1u32.wrapping_shl(bridge_frame_ref_idx)
         } else if seq.enable_short_refresh_frame_flags {
@@ -1136,12 +998,6 @@ fn parse_single_picture_bridge_tail(
         };
         control.refresh_frame_flags = Some(refresh_frame_flags);
 
-        // mirror :4565-4567 / § 5.18.4.1: frame_size() on the FrameIsIntra arm.
-        // frame_size_override_flag defaults to 0 (the IsBridge arm at :4343 never assigns it), so
-        // this is the non-override default-dimensions path. A bridge frame always has
-        // cur_mfh_id == 0 (mirror :4119 `if ( IsBridge ) cur_mfh_id = 0`, enforced in
-        // parse_frame_header_prefix), so the default dims are the sequence maxima (§ 5.18.4.1
-        // else-branch) — there is no cur_mfh_id > 0 / MFH-resolution case here. No bits are read.
         core.frame_size_override_flag = Some(false);
         control.frame_size = parse_frame_size(
             reader,
@@ -1151,7 +1007,6 @@ fn parse_single_picture_bridge_tail(
             Some((seq.max_frame_width, seq.max_frame_height)),
         )?;
 
-        // mirror :4569 / § 5.18.3.3: screen_content_params().
         let scc = parse_screen_content_params_full(
             reader,
             seq.seq_force_screen_content_tools,
@@ -1161,41 +1016,17 @@ fn parse_single_picture_bridge_tail(
         core.force_integer_mv = Some(scc.force_integer_mv);
         control.allow_screen_content_tools = Some(scc.allow_screen_content_tools);
 
-        // mirror :4571 / § 5.18.3.4: intrabc_params() (FrameIsIntra == 1).
         let intrabc = parse_intrabc_params_full(reader, true, seq.allow_frame_max_bvp_drl_bits)?;
         core.allow_intrabc = Some(intrabc.allow_intrabc);
         core.intrabc = Some(intrabc);
         control.allow_intrabc = Some(intrabc.allow_intrabc);
 
-        // mirror :4573-4575 / :4345: the FrameIsIntra arm tail — NumTotalRefs = 0,
-        // TipFrameMode = TIP_FRAME_DISABLED (no bits); primary_ref_frame = PRIMARY_REF_NONE was
-        // inferred on the IsBridge arm (:4345). Recorded for the inspector/validator.
         control.num_total_refs = Some(0);
         control.tip_frame_mode = Some(TipFrameMode::Disabled);
         control.primary_ref_frame = Some(PRIMARY_REF_NONE);
 
-        // mirror :4971-5011: the IsBridge early-return arm. tile_info() reads ZERO bits for a
-        // bridge (uniform_tile_spacing_flag forced 1, the increment loops gated behind !IsBridge,
-        // :6599/:6615/:6645), and base_q_idx = RefBaseQIdx[bridge_frame_ref_idx] / DeltaQ are
-        // reference-state derived (no bits, :4997) — those quant values stay unmodeled, so this
-        // remains a BruInactiveOrBridgeReturn coverage stop. disable_cdf_update (the :5039 else-arm)
-        // and the entire quant/segmentation/deblocking/cdef/ccso/restoration cluster (:5045-5083)
-        // are SKIPPED (no bits).
-        //
-        // film_grain_config() (:5011 / § 5.18.10.1) is the LAST modeled frame-header read, and it
-        // IS decidable without reference state: with single_picture_header_flag == 1 and
-        // immediate_output_frame == 1, apply_grain is inferred (mirror :8165-8171 — 1 when
-        // film_grain_params_present, else 0) and reads fgm_id f(3) + grain_seed f(16). Consume it so
-        // consumed_bits covers the mandatory frame-header syntax and a truncation there surfaces as
-        // StoppedInsideInterControl, not a silent coverage stop (codex review). The bridge frame is
-        // unsupported coverage (base_q_idx unmodeled), so the parsed grain config is not exposed —
-        // the read is for bit-accuracy + truncation detection only. If the active sequence header
-        // was a bounded stop that never read film_grain_params_present, apply_grain is undecidable,
-        // so stop before the grain read (the honest behavior the intra / SEF tails also use).
         if let Some(film_grain_params_present) = seq.film_grain_params_present {
             let input = FrameTailInput {
-                // base_q_idx is reference-derived; film_grain_config() does not consult
-                // coded_lossless, so the value supplied here is inert.
                 coded_lossless: false,
                 film_grain_params_present,
                 single_picture_header_flag: true,
@@ -1226,25 +1057,15 @@ fn parse_intra_tail(
     frame_type: FrameType,
     single_picture: bool,
 ) -> Result<()> {
-    // frame_size_override_flag: 0 for a single-picture key frame, else f(1) (a key
-    // frame is never SWITCH_FRAME, which would force it to 1).
     let frame_size_override_flag = if single_picture {
         false
     } else {
         reader.read_flag()?
     };
-    // Record the dims provenance for the §6.17.4.1 / §6.17.2 validator split: the
-    // non-override path (`false`) derives FrameWidth/FrameHeight from the MFH default
-    // dimensions (or the sequence maxima for cur_mfh_id == 0), the override path
-    // (`true`) from this frame's explicit frame_width/height_minus_1 fields below.
     core.frame_size_override_flag = Some(frame_size_override_flag);
 
-    // order_hint f(OrderHintBits); OrderHintLsbs = order_hint.
     core.order_hint_lsb = Some(reader.read_f(seq.order_hint_bits)?);
-    // FrameIsIntra -> primary_ref_frame = PRIMARY_REF_NONE (no bits read).
 
-    // refresh_frame_flags (AV2 § 5.18.2). For an intra frame this is the KEY_FRAME or
-    // INTRA_ONLY_FRAME path; both are fully determined by sequence state.
     core.refresh_frame_flags = Some(read_refresh_frame_flags(
         reader,
         seq,
@@ -1252,14 +1073,6 @@ fn parse_intra_tail(
         frame_type,
     )?);
 
-    // FrameIsIntra branch: frame_size(); screen_content_params(); intrabc_params().
-    // AV2 § 5.18.4.1 non-override default dimensions:
-    //   - cur_mfh_id == 0: max_frame_width/height (the § 5.18.2 :4101 inference for the
-    //     direct sequence reference).
-    //   - cur_mfh_id > 0: mfh_frame_width/height_minus_1[ cur_mfh_id ] + 1, with the
-    //     same omitted-size inference already folded into MfhFrameView::default_dims
-    //     (:4101). `None` only when the in-band MFH was unresolvable, which keeps the
-    //     parse from inventing a size (the structure cluster then stops).
     let default_dims = if core.cur_mfh_id.is_zero() {
         Some((seq.max_frame_width, seq.max_frame_height))
     } else {
@@ -1283,11 +1096,8 @@ fn parse_intra_tail(
     core.allow_intrabc = Some(intrabc.allow_intrabc);
     core.intrabc = Some(intrabc);
 
-    // Not a TIP-as-output / bru-inactive / bridge frame -> disable_cdf_update f(1)
-    // (AV2 § 5.18.2 else-branch of `if ( bru_inactive || IsBridge )`).
     core.disable_cdf_update = Some(reader.read_flag()?);
 
-    // On the intra path, no BRU / motion-field / TIP block reads before `tile_info()`.
     parse_intra_structures(reader, core, seq, mfh)
 }
 
@@ -1313,10 +1123,6 @@ fn parse_intra_structures(
     seq: &CoreSeqView,
     mfh: Option<&MfhFrameView>,
 ) -> Result<()> {
-    // AV2 § 5.18.7.2: tile_info() derives sbCols/sbRows from MiCols/MiRows, i.e. from
-    // the exact FrameWidth/FrameHeight (§ 5.18.4.4). On the cur_mfh_id > 0 path those
-    // come from MfhFrameView::default_dims; `frame_size` is `None` only when the in-band
-    // MFH was unresolvable (no record), which keeps the unsupported/Unknown routing.
     let Some(frame_size) = core.frame_size else {
         core.status = FrameHeaderParseStatus::UnsupportedUntilFeature {
             feature_id: FRAME_HEADER_INFO_FEATURE,
@@ -1324,13 +1130,8 @@ fn parse_intra_structures(
         return Ok(());
     };
 
-    // AV2 § 5.18.2: tile_info() (§ 5.18.7.2). FrameIsIntra here, and the intra path
-    // has IsBridge == 0 and TipFrameMode == TIP_FRAME_DISABLED.
     core.tile_info = match parse_tile_info(reader, &seq.tile, frame_size, true, false, false) {
         Ok(tile_info) => Some(tile_info),
-        // The tile layout depends on unmodeled sequence state (reserved
-        // seq_level_idx, or the unrecorded non-uniform sequence start arrays); stop
-        // with the blocking Feature ID rather than guessing bit positions.
         Err(Error::Unimplemented { feature }) => {
             core.status = FrameHeaderParseStatus::UnsupportedUntilFeature {
                 feature_id: feature,
@@ -1340,45 +1141,22 @@ fn parse_intra_structures(
         Err(error) => return Err(error),
     };
 
-    // AV2 § 5.18.2: quantization_params() (§ 5.18.6.1); TIP_FRAME_AS_OUTPUT is
-    // impossible on the intra path.
     let quantization = parse_quantization_params(reader, &seq.quant, false)?;
     core.quantization_params = Some(quantization);
 
-    // AV2 § 5.18.2: set_primary_ref_frame_and_ctx( 1 ) reads no bits.
-
-    // AV2 § 5.18.7.1: segmentation_params() consults mfh_seg_info_present_flag /
-    // mfh_ext_seg_flag / mfh_allow_seg_info_change when cur_mfh_id > 0. On the
-    // cur_mfh_id > 0 path the resolved MFH state must be known to derive the
-    // haveSegParams / allowChange / mfhId arm; if the in-band MFH is unresolvable
-    // (`mfh` is None) the derivation is undecidable, so stop here rather than guess.
-    // (Reachable only when frame_size_override_flag == 1 supplied an explicit size;
-    // otherwise the frame_size guard above already stopped.)
     if !core.cur_mfh_id.is_zero() && mfh.is_none() {
         core.status = FrameHeaderParseStatus::UnsupportedUntilFeature {
             feature_id: FRAME_HEADER_INFO_FEATURE,
         };
         return Ok(());
     }
-    // The resolved MFH segmentation arm (`MfhSegView`) is passed through; it is `Some`
-    // only when cur_mfh_id > 0 with mfh_seg_info_present_flag set, otherwise the
-    // sequence/zero derivation applies (cur_mfh_id == 0, or the MFH did not signal
-    // segment info).
     let mfh_seg = mfh.and_then(|view| view.seg.as_ref());
     let segmentation = parse_segmentation_params(reader, &seq.seg, mfh_seg)?;
 
-    // AV2 § 5.18.2: setup_qm_params() (§ 5.18.6.2) runs after segmentation_params()
-    // and is gated on the frame's parsed segmentation_enabled.
     let qm = parse_setup_qm_params(reader, &seq.quant, segmentation.segmentation_enabled)?;
 
-    // AV2 § 5.18.2: delta_q_params() (§ 5.18.7.8), gated on base_q_idx.
     let delta_q = parse_delta_q_params(reader, quantization.base_q_idx)?;
 
-    // AV2 § 5.18.2: init_coeff_cdfs() / load_previous_segment_ids() read no bits
-    // (and the intra path has DerivedPrimaryRefFrame == PRIMARY_REF_NONE).
-
-    // AV2 § 5.18.2: the per-segment lossless/QM derivation loop (qm_index reads),
-    // then allow_tcq and allow_parity_hiding.
     core.lossless_info = Some(parse_lossless_info(
         reader,
         &seq.quant,
@@ -1392,33 +1170,16 @@ fn parse_intra_structures(
         .lossless_info
         .as_ref()
         .is_some_and(|info| info.coded_lossless);
-    // These were parsed earlier but are stored only after `parse_lossless_info`
-    // releases its borrows; on error the core is never returned, so the deferred
-    // assignment is unobservable.
     core.segmentation_params = Some(segmentation);
     core.setup_qm_params = Some(qm);
     core.delta_q_params = Some(delta_q);
 
-    // AV2 § 5.18.2 tail (mirror :5297-5307): the loop-filter cluster
-    // deblocking_filter_params() / gdf_params() / cdef_params(), then lr_params()
-    // (§ 5.18.7.11) and ccso_params() (§ 5.18.7.12). A truncation INSIDE the cluster must
-    // not discard the control-region facts already parsed above (frame size, output flags,
-    // tile/quant/segmentation): the validator/inspect call sites .ok() the result, so an Err
-    // would silently drop every earlier state-supported diagnostic. parse_filter_cluster()
-    // therefore converts a payload-EOF into the StoppedInsideFilterParams status (facts
-    // preserved, unreached cluster fields left None) and only propagates a genuine structural
-    // error.
     match parse_filter_cluster(reader, core, seq, mfh, coded_lossless) {
-        // parse_filter_cluster sets the terminal status itself (the cluster-complete stop,
-        // or the unreachable missing-tile_info guard), so the Ok arm leaves it untouched.
         Ok(()) => Ok(()),
-        // The payload ran out mid-cluster: keep the preserved control-region facts and
-        // record the truncation through the status rather than failing the whole parse.
         Err(Error::UnexpectedEof { .. }) => {
             core.status = FrameHeaderParseStatus::StoppedInsideFilterParams;
             Ok(())
         }
-        // A structural error (e.g. an impossible read width) is a real parse failure.
         Err(error) => Err(error),
     }
 }
@@ -1455,31 +1216,17 @@ fn parse_filter_cluster(
     mfh: Option<&MfhFrameView>,
     coded_lossless: bool,
 ) -> Result<()> {
-    // AV2 § 5.18.5.2: the cur_mfh_id > 0 arm copies apply_deblocking_filter from the
-    // resolved MFH; on the cur_mfh_id == 0 direct path no MFH view is supplied.
     let mfh_deblocking = mfh.map(|view| &view.deblocking);
     core.deblocking_filter_params = Some(parse_deblocking_filter_params(
         reader,
         coded_lossless,
         seq.quant.num_planes,
         seq.filter.df_par_bits_minus_2,
-        // AV2 § 5.18.5.2 (mirror :5935): allow_df_sub_pu is read only on the
-        // FrameType == INTER_FRAME path; this is the intra cluster, so it never fires.
         false,
         mfh_deblocking,
     )?);
 
-    // AV2 § 5.18.7.9: gdf_params() needs the frame SbSize and the parsed tile_info()
-    // geometry (MiCols/MiRows via the start-array sentinels, TileCols/TileRows, and the
-    // per-tile MiColStarts/MiRowStarts for the SB-64x64 alignment scan). The intra path
-    // SbSize is frame_sb_size(frame_is_intra == true). The geometry borrow of
-    // `core.tile_info` is scoped so the later `core.gdf_params` write is unambiguous.
     let gdf = {
-        // `tile_info` was set to `Some` earlier in parse_intra_structures (every other
-        // path returns before the cluster), so this binding never falls through; the
-        // explicit guard keeps the parser panic-free even under direct API misuse rather
-        // than unwrapping. The borrow is scoped to this block so the later
-        // `core.gdf_params` write is unambiguous.
         let Some(tile_info) = core.tile_info.as_ref() else {
             core.status = FrameHeaderParseStatus::UnsupportedUntilFeature {
                 feature_id: FRAME_HEADER_INFO_FEATURE,
@@ -1488,8 +1235,6 @@ fn parse_filter_cluster(
         };
         let geometry = GdfGeometry {
             sb_size: seq.tile.frame_sb_size(true),
-            // MiColStarts[TileCols] / MiRowStarts[TileRows] are the MiCols / MiRows
-            // sentinels appended by parse_tile_info(); fall back to 0 when absent.
             mi_cols: tile_info.mi_col_starts.last().copied().unwrap_or(0),
             mi_rows: tile_info.mi_row_starts.last().copied().unwrap_or(0),
             tile_cols: tile_info.tile_cols,
@@ -1501,7 +1246,6 @@ fn parse_filter_cluster(
     };
     core.gdf_params = Some(gdf);
 
-    // AV2 § 5.18.7.10: cdef_params().
     core.cdef_params = Some(parse_cdef_params(
         reader,
         coded_lossless,
@@ -1509,15 +1253,7 @@ fn parse_filter_cluster(
         &seq.filter,
     )?);
 
-    // AV2 § 5.18.7.11: lr_params() (loop restoration). On the intra path FrameIsIntra, so
-    // numRefFrames == 0 and the temporal-prediction arm is dead; the SbSize and chroma
-    // subsampling drive the size signaling. A plane signalling frame_filters_on consumes
-    // the fixed-coded read_wienerns_filter() bank and stores it on the completed
-    // LrPlaneParams.
     let lr_geometry = LrGeometry::new(seq.tile.frame_sb_size(true), seq.chroma_format_idc);
-    // base_q_idx feeds the spec's get_filter_set_index derivation only (SubclassLookup); it
-    // signals no bits. It is `Some` here because quantization_params() always parses before
-    // the cluster on the reached intra path.
     let base_q_idx = core
         .quantization_params
         .as_ref()
@@ -1537,17 +1273,12 @@ fn parse_filter_cluster(
             feature_id,
             partial,
         } => {
-            // Reserved unsupported branch. Surface the real prefix on the dedicated partial
-            // field; `lr_params` stays None so partial and complete parses cannot be
-            // confused.
             core.lr_params_partial = Some(partial);
             core.status = FrameHeaderParseStatus::StoppedBeforeWienerNsFilter { feature_id };
             return Ok(());
         }
     }
 
-    // AV2 § 5.18.7.12: ccso_params(). The intra path's reuse arm (reuse_ccso / ccso_ref_idx)
-    // is dead (FrameIsIntra), so it parses fully on plain (f/tu) reads.
     core.ccso_params = Some(parse_ccso_params(
         reader,
         coded_lossless,
@@ -1555,11 +1286,6 @@ fn parse_filter_cluster(
         &seq.ccso,
     )?);
 
-    // AV2 § 5.18.2 tail (mirror :5307-5341): read_tx_mode() (§ 5.18.8.1), the no-bit
-    // frame_reference_mode() / skip_mode_params() / allow_bawp / allow_warpmv_mode intra
-    // inferences, reduced_tx_set, the no-bit intra arm of global_motion_params()
-    // (§ 5.18.9.1), and film_grain_config() (§ 5.18.10.1). This completes the intra
-    // frame header.
     parse_intra_tail_structures(reader, core, seq, coded_lossless)
 }
 
@@ -1584,24 +1310,12 @@ fn parse_intra_tail_structures(
     seq: &CoreSeqView,
     coded_lossless: bool,
 ) -> Result<()> {
-    // film_grain_config() (the last § 5.18.2 tail structure) consumes
-    // film_grain_params_present (§ 5.4.1, the apply_grain gate). If the active sequence
-    // header was a bounded stop that never read that flag, it is genuinely unknown: the
-    // control region and loop-filter cluster already parsed and their facts are preserved,
-    // but the parser cannot decide apply_grain without guessing. Stop honestly before the
-    // tail rather than inventing the flag — this is the deferred half of the § 5.4.1
-    // film_grain_params_present requirement (the view no longer gates the whole parse on it).
     let Some(film_grain_params_present) = seq.film_grain_params_present else {
         core.status = FrameHeaderParseStatus::UnsupportedUntilFeature {
             feature_id: FRAME_HEADER_INFO_FEATURE,
         };
         return Ok(());
     };
-    // The output flags are always Some by the time the intra tail is reached: the
-    // single-picture path sets them in parse_core_body, and the non-single-picture intra
-    // path sets them before parse_intra_tail. Defaulting to the spec's intra inference
-    // (immediate_output_frame = whatever was parsed) keeps the parser panic-free under
-    // direct API misuse without inventing bits.
     let input = FrameTailInput {
         coded_lossless,
         film_grain_params_present,
@@ -1615,8 +1329,6 @@ fn parse_intra_tail_structures(
             core.status = FrameHeaderParseStatus::IntraHeaderComplete;
             Ok(())
         }
-        // The payload ran out mid-tail: keep the preserved control-region / cluster facts
-        // and record the truncation through the status rather than failing the whole parse.
         Err(Error::UnexpectedEof { .. }) => {
             core.status = FrameHeaderParseStatus::StoppedInsideIntraTail;
             Ok(())
@@ -1643,7 +1355,6 @@ fn read_refresh_frame_flags(
             reader.read_f(seq.num_ref_frames)
         }
     } else if seq.enable_short_refresh_frame_flags {
-        // INTRA_ONLY_FRAME with the compact signaling mode.
         let has_refresh_frame_flags = reader.read_flag()?;
         if has_refresh_frame_flags {
             let frame_to_refresh = reader.read_f(ceil_log2(seq.num_ref_frames))?;

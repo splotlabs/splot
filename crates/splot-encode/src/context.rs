@@ -47,9 +47,7 @@ const SUPPORTED_FRAME_DIMENSION: usize = 64;
 /// the skip block's all-zero residual makes the flat-128 reconstruction independent of the
 /// exact `base_q_idx`. Above 90 the q-context derivation is not yet modeled, and `0`
 /// (lossless) is excluded from this minimal tier.
-//
 // TODO(spec: ENC-CONFIG-QP-FIELD): widen once the `get_qctx` mapping lands (co-evolving
-// with the decoder's currently-placeholder q-context).
 const SUPPORTED_SKIP_QP: core::ops::RangeInclusive<u8> = 1..=90;
 
 /// A queued input frame with its visible samples owned, so [`Context::receive_packet`] can
@@ -247,9 +245,6 @@ impl Context {
         let info = frame.info();
         self.validate_frame_info(info)?;
         // splot-copy-ok: retain the visible input samples as owned buffers — the borrowed `Frame`
-        // does not outlive `send_frame`, so `receive_packet` must own a copy to inspect the pixels
-        // (and choose/produce the encode) after the borrow ends. This is the deliberate
-        // input-materialization boundary of the push/pull encoder.
         self.input_queue.push_back(QueuedFrame {
             info,
             y: frame.y().visible_rows().flatten().copied().collect(),
@@ -283,9 +278,6 @@ impl Context {
             match self.try_emit_supported_packet(&frame) {
                 Ok(Some(packet)) => return Ok(ReceivePacketStatus::Packet(packet)),
                 Ok(None) => {
-                    // The input is outside the subset the minimal encoder can honestly encode
-                    // (64x64, every visible sample == the 128 DC predictor). Retire it without
-                    // a packet — never a canned packet that ignores the input.
                     if self.state == EncoderState::Draining && self.input_queue.is_empty() {
                         self.state = EncoderState::Finished;
                         return Ok(ReceivePacketStatus::Finished);
@@ -325,8 +317,6 @@ impl Context {
         if size.width() != SUPPORTED_FRAME_DIMENSION || size.height() != SUPPORTED_FRAME_DIMENSION {
             return Ok(None);
         }
-        // The quantizer comes from the RateController seam (a constant-QP controller for the
-        // minimal encoder); a rate-controlled implementation would choose it per frame here.
         let base_q_idx = self.rate_controller.frame_base_q_idx();
         if !SUPPORTED_SKIP_QP.contains(&base_q_idx) {
             return Ok(None);
@@ -339,8 +329,6 @@ impl Context {
         {
             return Ok(None);
         }
-        // The packet carries one coded access unit (the Annex B temporal unit), not a full IVF
-        // file — so a consumer can mux multiple packets into a stream.
         let data =
             crate::general_intra_trace::emit_minimal_intra_skip_temporal_unit_with_base_q_idx(
                 base_q_idx,
@@ -467,8 +455,6 @@ mod tests {
             SendFrameStatus::Accepted { .. }
         ));
         assert!(matches!(ctx.flush().unwrap(), FlushStatus::Draining { .. }));
-        // The public lifecycle now yields a REAL packet — one coded access unit (the Annex B
-        // temporal unit of the decode-proven minimal skip frame), not a full IVF file.
         let status = ctx.receive_packet().unwrap();
         assert!(
             matches!(&status, ReceivePacketStatus::Packet(packet)
@@ -478,7 +464,6 @@ mod tests {
                             .unwrap()),
             "expected the minimal skip access unit, got {status:?}"
         );
-        // The single frame is consumed; the next pull finishes the stream.
         assert_eq!(ctx.receive_packet().unwrap(), ReceivePacketStatus::Finished);
         assert_eq!(ctx.state(), EncoderState::Finished);
     }
@@ -496,7 +481,6 @@ mod tests {
             SendFrameStatus::Accepted { .. }
         ));
         assert!(matches!(ctx.flush().unwrap(), FlushStatus::Draining { .. }));
-        // No canned packet: the unsupported frame is retired and the stream finishes.
         assert_eq!(ctx.receive_packet().unwrap(), ReceivePacketStatus::Finished);
         assert_eq!(ctx.queued_output_packets(), 0);
     }
@@ -835,10 +819,6 @@ mod tests {
 
     #[test]
     fn context_pool_runs_parallel_iterators_via_prelude_deterministically() {
-        // splot-encode has no direct `rayon` dependency: parallel iteration is
-        // reached only through `splot_parallel::prelude`, driven on the context's
-        // own `WorkerPool` (not Rayon's global pool). Indexed map + ordered collect
-        // is deterministic regardless of worker count.
         use splot_parallel::prelude::*;
 
         let ctx = Context::new(

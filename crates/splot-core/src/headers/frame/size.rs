@@ -90,7 +90,6 @@ pub(crate) fn parse_frame_size(
     default_dims: Option<(u32, u32)>,
 ) -> Result<Option<FrameSize>> {
     if frame_size_override_flag {
-        // AV2 § 5.18.4.1: f(frame_width_bits_minus_1 + 1) / f(frame_height_bits_minus_1 + 1).
         let frame_width_minus_1 = reader.read_bits(frame_width_bits)?;
         let frame_height_minus_1 = reader.read_bits(frame_height_bits)?;
         Ok(Some(FrameSize::new(
@@ -98,8 +97,6 @@ pub(crate) fn parse_frame_size(
             frame_height_minus_1.saturating_add(1),
         )))
     } else {
-        // AV2 § 5.18.4.1 else-branch: FrameWidth/Height come from the multi-frame-header
-        // defaults, which equal the sequence maximum when cur_mfh_id == 0 (§ 5.18.2).
         Ok(default_dims.map(|(width, height)| FrameSize::new(width, height)))
     }
 }
@@ -115,7 +112,6 @@ mod tests {
 
     #[test]
     fn ceil_log2_matches_spec_definition() {
-        // CeilLog2(0) == CeilLog2(1) == 0; otherwise the bits to code 0..x.
         assert_eq!(ceil_log2(0), 0);
         assert_eq!(ceil_log2(1), 0);
         assert_eq!(ceil_log2(2), 1);
@@ -127,7 +123,6 @@ mod tests {
 
     #[test]
     fn frame_size_override_reads_explicit_width_and_height() {
-        // frame_width_bits = 12, frame_height_bits = 12; 1920x1080.
         let mut bits = Bits::default();
         bits.f(1920 - 1, 12); // frame_width_minus_1
         bits.f(1080 - 1, 12); // frame_height_minus_1
@@ -162,7 +157,6 @@ mod tests {
 
     #[test]
     fn frame_size_override_eof_is_structured_error() {
-        // Only 12 bits available, but the override path needs 24.
         let mut bits = Bits::default();
         bits.f(0, 12);
         let data = bits.into_bytes();

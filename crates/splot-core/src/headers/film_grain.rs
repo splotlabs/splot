@@ -142,17 +142,11 @@ pub struct FilmGrainModel {
 /// validator) fall back to `(false, false)`; `subX` / `subY` are not used by
 /// `film_grain_model()` itself, so the fallback only affects the preserved summary.
 const fn chroma_subsampling(chroma_idc: u32) -> (bool, bool) {
-    // The CHROMA_FORMAT_444 arm is kept distinct from the out-of-range `_` fallback to
-    // document the § 5.14 don't-care semantics, even though both yield (false, false).
     #[allow(clippy::match_same_arms)]
     match chroma_idc {
-        // AV2 § 5.14 explicitly assigns subX = subY = 1 to both CHROMA_FORMAT_420 and
-        // CHROMA_FORMAT_400 (monochrome). The fields are a don't-care for the model
-        // syntax but drive the validator's § 6.17.10.2 4:2:0 chroma-pairing check.
         CHROMA_FORMAT_420 | CHROMA_FORMAT_400 => (true, true),
         CHROMA_FORMAT_422 => (true, false),
         CHROMA_FORMAT_444 => (false, false),
-        // Out-of-range (`> 3`, a § 6.13 conformance violation the validator reports).
         _ => (false, false),
     }
 }
@@ -180,7 +174,6 @@ pub fn parse_film_grain(reader: &mut BitReader<'_>) -> Result<FilmGrainObu> {
             continue;
         }
         let model = parse_film_grain_model(reader, monochrome)?;
-        // slot < MAX_FILM_GRAIN (8), so it fits in u8.
         models.push(FilmGrainSlotUpdate {
             slot: slot as u8,
             model,
@@ -211,7 +204,6 @@ fn read_scaling_points(reader: &mut BitReader<'_>) -> Result<(u8, Vec<FilmGrainS
     let mut value = 0u32;
     for i in 0..num_points {
         let increment = reader.read_bits(bits_incr)?;
-        // AV2 § 5.18.10.2: point_*_value[i] += point_*_value[i - 1] for i > 0.
         value = if i == 0 { increment } else { value + increment };
         let scaling = reader.read_bits(bits_scal)?;
         points.push(FilmGrainScalingPoint { value, scaling });
@@ -223,11 +215,9 @@ fn read_scaling_points(reader: &mut BitReader<'_>) -> Result<(u8, Vec<FilmGrainS
 /// (AV2 v1.0.0 § 5.18.10.2): `ar_coeffs[i] = f(bitsCoef) - (1 << (bitsCoef - 1))`.
 fn read_ar_coeffs(reader: &mut BitReader<'_>, count: usize) -> Result<Vec<i32>> {
     let bits_coef = reader.read_bits(2)? + 5;
-    // bits_coef is in 5..=8, so the midpoint fits comfortably in i32.
     let midpoint = 1i32 << (bits_coef - 1);
     let mut coeffs = Vec::with_capacity(count);
     for _ in 0..count {
-        // The read value is at most 2^8 - 1, so `as i32` is exact.
         let raw = reader.read_bits(bits_coef)? as i32;
         coeffs.push(raw - midpoint);
     }
@@ -285,7 +275,6 @@ fn parse_film_grain_model(reader: &mut BitReader<'_>, monochrome: bool) -> Resul
     let (cb_mult, cb_luma_mult, cb_offset) = if num_cb_points > 0 {
         let mult = reader.read_bits_u8(8)?;
         let luma_mult = reader.read_bits_u8(8)?;
-        // cb_offset is f(9), at most 511, so `as u16` is exact.
         let offset = reader.read_bits(9)? as u16;
         (Some(mult), Some(luma_mult), Some(offset))
     } else {
@@ -390,7 +379,6 @@ mod tests {
         let mut bits = Bits::default();
         bits.f(0b0000_0010, 8); // fgm_update_flags: slot 1
         bits.uvlc(CHROMA_FORMAT_400); // monochrome
-        // model: monochrome -> chroma_scaling_from_luma forced 0 (no bit read).
         bits.f(2, 4); // num_y_points = 2
         bits.f(0, 3); // point_value_increment_bits_minus_1 = 0 -> bitsIncr = 1
         bits.f(0, 2); // point_scaling_bits_minus_5 = 0 -> bitsScal = 5
@@ -398,7 +386,6 @@ mod tests {
         bits.f(3, 5); // point_y_scaling[0] = 3
         bits.f(1, 1); // point_y_value[1] increment = 1 -> cumulative 2
         bits.f(4, 5); // point_y_scaling[1] = 4
-        // monochrome -> num_cb_points = num_cr_points = 0 (no reads).
         bits.f(0, 2); // grain_scaling_minus_8
         bits.f(1, 2); // ar_coeff_lag = 1 -> numPosLuma = 2*1*2 = 4
         bits.f(0, 2); // bits_per_ar_coeff_y_minus_5 = 0 -> bitsCoef = 5, midpoint 16
@@ -406,10 +393,8 @@ mod tests {
         bits.f(17, 5); // ar_coeffs_y[1] = 17 - 16 = 1
         bits.f(15, 5); // ar_coeffs_y[2] = 15 - 16 = -1
         bits.f(16, 5); // ar_coeffs_y[3] = 0
-        // chroma_scaling_from_luma = 0 and num_cb/cr = 0 -> no chroma AR coeffs.
         bits.f(0, 2); // ar_coeff_shift_minus_6
         bits.f(0, 2); // grain_scale_shift
-        // num_cb/cr = 0 -> no mult/offset.
         bits.bit(1); // overlap_flag
         bits.bit(1); // clip_to_restricted_range = 1 -> read mc_identity
         bits.bit(1); // mc_identity

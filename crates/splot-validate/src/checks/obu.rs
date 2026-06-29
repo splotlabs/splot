@@ -20,7 +20,6 @@ pub(super) struct TrailingBitsForEmptySyntaxObus;
 
 impl Check for TrailingBitsForEmptySyntaxObus {
     fn id(&self) -> &'static str {
-        // Registry identifier only; emitted diagnostics use syntax_error_diagnostic() rule ids.
         "trailing-bits/empty-syntax-obu-payload"
     }
 

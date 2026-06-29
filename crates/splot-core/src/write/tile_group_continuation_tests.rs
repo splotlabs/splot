@@ -1,14 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-// Round-trip and reject tests for the non-first (continuation) tile_group_obu() writer (§ 5.19 /
-// § 5.20.1). `include!`d into `crate::write::tile_group` so `super::*` resolves to the composer.
-//
-// The continuation has no single parseable struct — the pieces (prefix, frame_header_copy() bits,
-// structure, framing) are parsed/validated separately. The round-trip test builds the recorded first
-// header + a structure + a framing, composes the OBU payload, then reparses it piece by piece
-// (prefix -> recorded copy bits -> structure -> framing) and asserts each piece matches and the copy
-// region is bit-identical. Reject tests assert reject-before-write (`bit_len() == 0`).
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -63,7 +55,6 @@ mod continuation_tests {
 
     #[test]
     fn non_first_tile_group_round_trips() {
-        // Continuation covering the last tile of a 2-tile frame, with a 10-bit frame_header_copy().
         let recorded = recorded_header(0b10_1100_1101, 10);
         let layout = two_tile_layout();
         let tile_bytes: &[u8] = &[0x11, 0x22, 0x33];
@@ -86,14 +77,12 @@ mod continuation_tests {
         let bytes = writer.into_bytes();
         let sz = bytes.len() as u64;
 
-        // Reparse piece by piece from one reader.
         let mut reader = BitReader::new(&bytes, ByteOffset::new(0));
         let prefix = parse_tile_group_prefix(&mut reader, ObuType::ClosedLoopKey, None).unwrap();
         assert!(!prefix.is_first_tile_group);
         assert!(prefix.frame_header_present_flag);
         assert!(prefix.frame_header.is_none());
 
-        // frame_header_copy(): exactly NumFrameHeaderBits bits, bit-identical to the recorded header.
         let copy = RecordedFrameHeaderBits::record(&mut reader, recorded.num_frame_header_bits())
             .unwrap();
         assert_eq!(copy, recorded, "frame_header_copy() is bit-identical");
@@ -104,7 +93,6 @@ mod continuation_tests {
         assert_eq!(reparsed_structure.tg_end, 1);
         assert!(reparsed_structure.tile_start_and_end_present_flag);
 
-        // The framing region is the payload bytes after the byte-aligned header.
         let hb = reparsed_structure.header_bytes.unwrap() as usize;
         let reparsed_framing = parse_tile_group_framing(
             &bytes[hb..],
@@ -121,7 +109,6 @@ mod continuation_tests {
 
     #[test]
     fn non_first_tile_group_without_frame_header_round_trips() {
-        // A continuation whose frame_header_present_flag is 0 (no frame_header_copy()).
         let layout = two_tile_layout();
         let tile_bytes: &[u8] = &[0xAB, 0xCD];
         let framing = last_tile_framing(1, tile_bytes.len() as u64);
@@ -175,7 +162,6 @@ mod continuation_tests {
 
     #[test]
     fn rejects_frame_header_copy_gate_flag_without_bits() {
-        // frame_header_present_flag set but no recorded copy bits supplied.
         let mut writer = BitWriter::new();
         let err = write_tile_group_continuation_obu(
             &mut writer,
@@ -197,7 +183,6 @@ mod continuation_tests {
 
     #[test]
     fn rejects_frame_header_copy_gate_bits_without_flag() {
-        // recorded copy bits supplied but frame_header_present_flag clear.
         let recorded = recorded_header(0b1, 1);
         let mut writer = BitWriter::new();
         let err = write_tile_group_continuation_obu(
@@ -220,8 +205,6 @@ mod continuation_tests {
 
     #[test]
     fn rejects_empty_frame_header_copy() {
-        // frame_header_present_flag set but the recorded header has 0 bits (a real first header is
-        // never empty).
         let empty = recorded_header(0, 0);
         assert_eq!(empty.num_frame_header_bits(), 0);
         let mut writer = BitWriter::new();
@@ -245,7 +228,6 @@ mod continuation_tests {
 
     #[test]
     fn rejects_continuation_starting_at_tile_zero() {
-        // A continuation (is_first == 0) whose tg_start == 0 restarts the payload at tile 0 (§ 6.18).
         let recorded = recorded_header(0b1, 1);
         let mut writer = BitWriter::new();
         let err = write_tile_group_continuation_obu(
@@ -268,7 +250,6 @@ mod continuation_tests {
 
     #[test]
     fn rejects_framing_tile_number_mismatch() {
-        // The structure says tile 1 (tg_start == tg_end == 1) but the framing's tile_num is 0.
         let recorded = recorded_header(0b1, 1);
         let mut writer = BitWriter::new();
         let err = write_tile_group_continuation_obu(

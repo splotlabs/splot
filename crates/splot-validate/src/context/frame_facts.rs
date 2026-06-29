@@ -39,8 +39,6 @@ pub(super) fn frame_leadingness(obu_type: ObuType) -> Leadingness {
         | ObuType::Switch
         | ObuType::RasFrame
         | ObuType::BridgeFrame => Leadingness::Regular,
-        // A CLK is neither leading nor regular under the AVM tri-state (the § 6.4.1 gloss
-        // would call it leading; the oracle and this validator do not).
         _ => Leadingness::Indeterminate,
     }
 }
@@ -54,13 +52,10 @@ pub(super) fn parse_frame_prefix(
 ) -> Option<FrameHeaderPrefix> {
     let mut reader = BitReader::new(obu.payload, obu.payload_offset());
     if obu.header.obu_type.is_tile_group() {
-        // Tile-group OBUs carry tile_group_obu(); a frame header is parseable only for
-        // the first tile group (a non-first tile group carries frame_header_copy()).
         parse_tile_group_prefix(&mut reader, obu.header.obu_type, Some(first_picture_in_tu))
             .ok()
             .and_then(|tile_group| tile_group.frame_header)
     } else {
-        // SEF / TIP / bridge frames call frame_header( 1 ) directly (AV2 § 5.2.1).
         parse_frame_header_prefix(&mut reader, obu.header.obu_type, Some(first_picture_in_tu)).ok()
     }
 }
@@ -86,8 +81,6 @@ pub(super) fn parse_frame_core(
     let obu_type = obu.header.obu_type;
     let mut reader = BitReader::new(obu.payload, obu.payload_offset());
     if obu_type.is_tile_group() {
-        // tile_group_obu(): only the first tile group carries a parseable frame_header(1);
-        // its frame_header_present_flag is inferred 1 (AV2 § 5.19).
         if reader.read_bit().ok()? == 0 {
             return None;
         }
@@ -99,13 +92,6 @@ pub(super) fn parse_frame_core(
         first_picture_in_tu,
         active_sequence: Some(active_sequence),
         mfh_record,
-        // AV2 § 7.23: the modeled per-extended-layer reference-frame buffer view. No
-        // §5.18 INTRA parse branch consumes it today (the intra paths derive their state
-        // without RefValid/RefOrderHint/dims); it is forward plumbing so the §5.18 INTER
-        // reference paths (explicit reference map, frame_size_with_refs, primary-ref) can
-        // read the modeled state once they land (AV2-5.18.2-FRAME-HEADER-INFO inter path)
-        // without changing the parser's call signature. The validator already consumes
-        // the modeled state directly for the §6.17.2 show-existing-frame slot check.
         reference_state,
         mode: FrameHeaderParseMode::Core,
     };
@@ -121,14 +107,8 @@ impl ValidatorContext {
     ) -> Option<FrameHeaderCore> {
         let active_sequence = self.sequence_headers.get(&seq_id)?;
 
-        // Resolve the frame's `cur_mfh_id` (> 0) reference to its in-band multi-frame header,
-        // so the parser can be invoked with the resolving record (shared §7.3.8.7 discipline).
         let mfh_record = self.resolve_frame_mfh_record(obu, first_picture_in_tu, seq_id);
 
-        // AV2 § 7.23: thread the modeled per-extended-layer reference-frame buffer view into
-        // the core parse (no §5.18 reference read precedes the §5.18.2 reset_qm() call site, so
-        // the `reached_qm_reset` fact this caller reads is independent of the buffer view). The
-        // scratch arrays must outlive the parse, so they are stack-local here.
         let mut ref_valid = [false; NUM_REF_FRAMES];
         let mut ref_oh = [0u32; NUM_REF_FRAMES];
         let mut ref_w = [0u32; NUM_REF_FRAMES];
@@ -157,9 +137,6 @@ impl ValidatorContext {
             reference_state,
         )?;
 
-        // The frame must reference `seq_id` (the header parsed against): for a `cur_mfh_id == 0`
-        // direct reference, the prefix's resolved id; for a `cur_mfh_id > 0` reference, the
-        // resolved in-band MFH record's `mfh_seq_header_id` (§ 7.3.8.7).
         let referenced = if core.cur_mfh_id.is_zero() {
             core.referenced_sequence_header_id
         } else {
@@ -196,21 +173,12 @@ impl ValidatorContext {
                 is_first_tile_group: self.frame_is_first_tile_group(obu),
                 output: self.frame_output_class(obu, first_picture_in_tu),
             },
-            // Sequence headers, LCR/OPS/atlas/MSDO, temporal delimiters, reserved:
-            // not part of a coded frame unit's grammar (§ 7.3.3 / § 7.3.4 list none
-            // of them). They live at the temporal-unit / coded-extended-layer level
-            // and are ordered by the § 7.3.7 / § 7.3.6 machinery. Map to Padding so
-            // the segmenter treats them as position-free separators (they neither
-            // start nor advance a coded frame unit).
             _ => SegRole::Padding,
         }
     }
 
     /// Reads `is_first_tile_group` from a tile-group OBU's prefix (AV2 § 5.19),
     /// `None` if the first bit cannot be read.
-    // Member of the `&self` `ValidatorContext` frame-fact method family (dispatched as
-    // `self.frame_is_first_tile_group(obu)` beside `self`-reading siblings); the uniform
-    // receiver keeps the family consistent.
     #[allow(clippy::unused_self)]
     pub(super) fn frame_is_first_tile_group(&self, obu: &ObuEnvelope<'_>) -> Option<bool> {
         if !obu.header.obu_type.is_tile_group() {
@@ -244,7 +212,7 @@ impl ValidatorContext {
     ///
     /// External-HLS caveat: an MFH only *externally* declared (`ExternalHlsMode::Provided`, not
     /// in-band) is **not** a verifiable association — `multi_frame_header` returns `None` for
-    /// it — so the frame stays Unknown (the PR #49 partial-declaration policy). An out-of-range
+    /// it — so the frame stays Unknown (the partial-declaration policy). An out-of-range
     /// `cur_mfh_id`, an absent record, or an MFH whose `mfh_seq_header_id` names a different
     /// header all keep Unknown.
     ///
@@ -282,9 +250,6 @@ impl ValidatorContext {
             return None;
         }
         let record = self.hls.multi_frame_header(prefix.cur_mfh_id)?;
-        // §7.3.8.7: the resolved record must name the sequence header parsed against,
-        // otherwise the multi-frame-header state would be applied against the wrong
-        // maxima; a mismatch keeps the unresolvable early-stop.
         (record.mfh_seq_header_id == seq_id).then_some(record)
     }
 
@@ -293,9 +258,6 @@ impl ValidatorContext {
         obu: &ObuEnvelope<'_>,
         first_picture_in_tu: bool,
     ) -> Option<FrameHeaderCore> {
-        // The extended layer's currently active (§5.18.2-confirmed) sequence header is the one
-        // this frame parses against. The actual parse + referenced-header guard is shared with
-        // the pre-activation reset path via `frame_core_against_resolved_header`.
         let seq_id = *self
             .active_sequence_by_xlayer
             .get(&obu.header.extended_layer_id)?;
@@ -317,8 +279,6 @@ impl ValidatorContext {
         let core = self.frame_core_against_referenced_header(obu, first_picture_in_tu)?;
         match (core.immediate_output_frame, core.implicit_output_frame) {
             (Some(immediate), Some(implicit)) => Some(immediate || implicit),
-            // One flag known and already true settles the output class; the other
-            // being unreached cannot flip an output frame to non-output.
             (Some(true), _) | (_, Some(true)) => Some(true),
             _ => None,
         }
@@ -331,12 +291,7 @@ impl ValidatorContext {
     /// padding is position-free. Frame-bearing OBUs are dispatched by the caller (see
     /// [`Self::observe_frame_bearing_obu`]) so their facts and OrderHintBits come from a single
     /// shared parse + resolution; if one reaches here it is treated as transparent padding.
-    // Parallel to the `&self` `Self::seg_role_for`; dispatched as `self.celu_role_for(obu)`,
-    // so the uniform receiver keeps the role-classifier method family consistent.
     #[allow(clippy::unused_self)]
-    // The explicit `Padding` arm and the reserved-type catch-all both yield the transparent
-    // `Padding` role but are kept distinct on purpose: the named arm documents the actual
-    // OBU_PADDING mapping, the `_` arm the § 7.3.6 "ignore undefined types" rule.
     #[allow(clippy::match_same_arms)]
     pub(super) fn celu_role_for(&self, obu: &ObuEnvelope<'_>) -> CeluRole {
         match obu.header.obu_type {
@@ -352,11 +307,6 @@ impl ValidatorContext {
             | ObuType::MetadataShort
             | ObuType::MetadataGroup
             | ObuType::MultiFrameHeader => CeluRole::FrameInterior,
-            // Reserved types (and the global-only temporal delimiter / MSDO, which the
-            // tracker filters as global) are ignored by the § 7.3.6 grammar ("OBU types that
-            // are not defined in this specification can be ignored", mirror line 618). Map to
-            // Padding so they are transparent — neither opening a frame nor advancing an HLS
-            // phase.
             _ => CeluRole::Padding,
         }
     }
@@ -382,32 +332,16 @@ impl ValidatorContext {
         let obu_type = obu.header.obu_type;
         let leadingness = frame_leadingness(obu_type);
 
-        // F3: the output class is TYPE-DECIDED for a SEF (§ 7.3.3 "Or" branch -> output) and a
-        // BRIDGE (§ 7.3.4 list only -> non-output) by `obu_type` alone, BEFORE consulting any
-        // parsed flag — `type_decided_output` is the single source of truth shared with the
-        // frame-unit segmenter. A bridge parser stops early and would otherwise route to Unknown,
-        // suppressing the § 7.3.6 presence checks; the type decision keeps it decided.
         let type_decided = type_decided_output(obu_type);
 
-        // F4: one core parse + resolution drives BOTH the flag-derived facts AND the OrderHintBits
-        // contribution. `frame_core_against_referenced_header` returns `Some` only when the
-        // frame's referenced sequence header resolved to the active header it parsed against
-        // (the stale-activation guard). When it resolves, the active header IS the referenced
-        // one, so its `OrderHintBits` is this frame's bits; when it does not resolve, the bits
-        // contribution is `None` (not the stale active header's bits) so the § 7.3.7
-        // same-OrderHintBits-in-TU check is never fed a wrong-bits value.
         let core = self.frame_core_against_referenced_header(obu, first_picture_in_tu);
         let (flag_output, order_hint, bits) = match &core {
             Some(core) => {
                 let flag_output = match (core.immediate_output_frame, core.implicit_output_frame) {
                     (Some(immediate), Some(implicit)) => Some(immediate || implicit),
-                    // One flag known and already true settles output; the other being unreached
-                    // cannot flip an output frame to non-output (mirror § 6.17.2).
                     (Some(true), _) | (_, Some(true)) => Some(true),
                     _ => None,
                 };
-                // The resolved frame's OrderHintBits is the active (== referenced) header's,
-                // when its inter config was parsed (the Unknown invariant otherwise).
                 let bits = self
                     .active_sequence_by_xlayer
                     .get(&obu.header.extended_layer_id)
@@ -419,10 +353,6 @@ impl ValidatorContext {
             None => (None, None, None),
         };
 
-        // The type decision wins when present; otherwise the flag-derived class (Unknown when
-        // the parse did not resolve / reach the flags). `order_hint` is the parsed `order_hint_lsb`
-        // (the LSB proxy, see [`crate::celu`]); a SEF/bridge with an absent reference keeps its
-        // type-decided output but contributes no order_hint / bits.
         let output = type_decided.or(flag_output);
 
         (
@@ -431,12 +361,6 @@ impl ValidatorContext {
                 boundary: boundary.unwrap_or(FrameBoundary::OpensNewUnit),
                 output,
                 order_hint,
-                // Round-6 F2: carry the per-frame OrderHintBits into the facts so the CELU
-                // tracker can gate the cross-CELU §7.3.7 OrderHint comparison on only the two
-                // COMPARED output units' bits being known and equal — the SAME resolved bits
-                // value also threaded TU-wide to `note_order_hint_bits` for the same-bits
-                // judgment (constraint 1). A frame whose referenced header did not resolve
-                // contributes `None` here too (the stale-activation guard).
                 order_hint_bits: bits,
                 leadingness,
             },

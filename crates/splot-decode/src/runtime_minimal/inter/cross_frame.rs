@@ -83,10 +83,6 @@ pub(super) fn resolve_cdf_load(
     enable_avg_cdf: bool,
     avg_cdf_type: u8,
 ) -> ResolvedCdfLoad {
-    // mirror :5412-5413: (DerivedPrimaryRefFrame, derivedSecondaryRefFrame) =
-    // choose_primary_secondary_ref_frame(), which already folds in the :5497-5508
-    // signal_primary_ref_frame override (the signalled primary overrides the inter-only
-    // ranking even with no candidate — cross-checked vs AVM pred_common.c).
     let (derived, derived_secondary) = choose_primary_secondary_ref_frame(
         signal_primary_ref_frame,
         primary_ref_frame,
@@ -99,40 +95,22 @@ pub(super) fn resolve_cdf_load(
         current_base_q_idx,
         current_order_hint,
     );
-    // mirror :5414-5416: PRIMARY_REF_CHOOSE -> DerivedPrimaryRefFrame (the unsignalled
-    // placeholder; a signalled frame carries its real primary_ref_frame, which the override
-    // already folded into `derived`).
     let mut primary = match primary_ref_frame {
         Some(PRIMARY_REF_CHOOSE) => derived,
         Some(p) => p,
-        // A None primary (no complete control region) -> conservatively NONE (no load).
         None => PRIMARY_REF_NONE,
     };
-    // mirror :5417-5422: DerivedPrimaryRefFrame == NONE || primary_ref_frame == NONE
-    // -> primary = NONE, disable_cross_frame_cdf_init = 1.
     let mut cross_frame_init_disabled = disable_cross_frame_cdf_init == Some(true);
     if derived == PRIMARY_REF_NONE || primary == PRIMARY_REF_NONE {
         primary = PRIMARY_REF_NONE;
         cross_frame_init_disabled = true;
     }
-    // mirror :5426-5430: NONE || disable_cross_frame_cdf_init -> init_non_coeff_cdfs().
     if primary == PRIMARY_REF_NONE || cross_frame_init_disabled {
         return ResolvedCdfLoad::Default;
     }
-    // mirror :5424: load_cdfs(ref_frame_idx[primary_ref_frame]).
     let Some(&primary_slot) = ref_frame_idx.get(primary as usize) else {
-        // mirror § 6.17.2 (primary_ref_frame < NumTotalRefs): a real primary index past
-        // ref_frame_idx[] is a NON-conformant frame; reject it (the minimal path runs no later
-        // range rule). The derived (ranking) primary is always in range, so this only fires
-        // for a signalled out-of-range primary_ref_frame.
         return ResolvedCdfLoad::OutOfRangePrimary;
     };
-    // mirror :5431-5439: the §5 blend_cdfs secondary load. blendFrame =
-    // (primary_ref_frame == DerivedPrimaryRefFrame) ? derivedSecondaryRefFrame :
-    // DerivedPrimaryRefFrame; blend_cdfs(ref_frame_idx[blendFrame]) runs when
-    // enable_avg_cdf && !avg_cdf_type && blendFrame != PRIMARY_REF_NONE (the verified subset
-    // has bru_inactive == 0). Report the blend slot so the caller can reject only an ACTUAL
-    // adapted blend (a frame with no second loadable reference does not blend).
     let blend = if enable_avg_cdf && avg_cdf_type == 0 {
         let blend_frame = if primary == derived {
             derived_secondary
@@ -167,7 +145,6 @@ pub(super) fn resolve_cdf_load(
 /// (mirror :5497-5508) UNCONDITIONALLY overrides the derived primary to the signalled
 /// `primary_ref_frame` (demoting the ranking primary to secondary), so a signalled frame's
 /// derived primary is its signalled value even with no inter ranking candidate.
-// Single-char bindings (q, d, w, h, i) mirror the AV2 §7.x ref-ranking spec variables named in the inline comments.
 #[allow(clippy::too_many_arguments, clippy::many_single_char_names)]
 pub(super) fn choose_primary_secondary_ref_frame(
     signal_primary_ref_frame: Option<bool>,
@@ -191,8 +168,6 @@ pub(super) fn choose_primary_secondary_ref_frame(
     let mut secondary_ratio: i32 = 0;
     for (i, &slot) in ref_frame_idx.iter().enumerate() {
         let slot = slot as usize;
-        // mirror :5470: RefFrameType[idx] == INTER_FRAME (&& first_slot_with_ref &&
-        // RefOrderHint != RESTRICTED_OH — both no-ops here).
         if ref_is_inter.get(slot).copied() != Some(true) {
             continue;
         }
@@ -202,16 +177,13 @@ pub(super) fn choose_primary_secondary_ref_frame(
             ref_frame_width.get(slot).copied().unwrap_or(0),
             ref_frame_height.get(slot).copied().unwrap_or(0),
         );
-        // mirror :5474: dRatio = FloorLog2(RefFrameWidth * RefFrameHeight).
         let d_ratio = floor_log2(u64::from(w) * u64::from(h));
-        // mirror :5475: qpDiff = Abs(q - base_q_idx).
         let qp_diff = i64::from(q.abs_diff(current_base_q_idx));
         let i = u8::try_from(i).unwrap_or(PRIMARY_REF_NONE);
         if qp_diff < primary_qp_diff
             || (qp_diff == primary_qp_diff
                 && is_ref_better(current_order_hint, d, primary_d, d_ratio, primary_ratio))
         {
-            // mirror :5478-5485: the old primary becomes the secondary.
             secondary = primary;
             secondary_qp_diff = primary_qp_diff;
             secondary_d = primary_d;
@@ -230,7 +202,6 @@ pub(super) fn choose_primary_secondary_ref_frame(
             secondary_ratio = d_ratio;
         }
     }
-    // mirror :5497-5508: the signal_primary_ref_frame override.
     if signal_primary_ref_frame == Some(true) {
         let signalled = primary_ref_frame.unwrap_or(PRIMARY_REF_NONE);
         if signalled == PRIMARY_REF_NONE {
@@ -298,8 +269,6 @@ pub(super) fn order_hint_history_unwrapped(
     if order_hint_bits == 0 {
         return true;
     }
-    // Half the OrderHintBits window — the get_disp_order_hint correction threshold
-    // (conformant order_hint_bits is 1..=8; clamp the shift to stay panic-free).
     let half_window = 1u32 << (order_hint_bits.min(31).saturating_sub(1));
     let max_prior = ref_valid
         .iter()
@@ -308,8 +277,6 @@ pub(super) fn order_hint_history_unwrapped(
         .map(|(i, _)| ref_order_hint.get(i).copied().unwrap_or(0))
         .max();
     match max_prior {
-        // The correction fires only in the wrap-back direction (max prior hint ahead of this
-        // frame's LSB by >= half a window); saturating_sub makes a forward frame yield 0.
         Some(max_disp) => max_disp.saturating_sub(next_order_hint_lsb) < half_window,
         None => true,
     }

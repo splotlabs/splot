@@ -123,19 +123,11 @@ pub(in crate::runtime_minimal) fn read_newmv_block_mvd_with_config(
     config: MvReadConfig,
 ) -> Result<Mv> {
     validate_config(config, tile_offset)?;
-    // §5.20.7.20: read the shell magnitude split into the two unsigned component
-    // magnitudes (diff_row, diff_col), each already left-shifted by `shift`.
     let (diff_row, diff_col) = read_shell_diff(cdfs, symbols, tile_offset, config)?;
 
-    // §5.20.7.13 assign_mv sign pass. EighthPel disables MVD sign derivation
-    // (`MvPrecision >= MV_PRECISION_QUARTER_PEL`), so each nonzero component reads
-    // an explicit `mv_sign` L(1) bypass bit. Spec order: i == 0 (single ref), comp
-    // 0 (row) then comp 1 (col).
     let row = apply_sign(diff_row, symbols, tile_offset)?;
     let col = apply_sign(diff_col, symbols, tile_offset)?;
 
-    // §5.20.7.13: diffMvs[0][comp] (the raw signed MV difference); the caller forms
-    // BlockMvs[0][comp] = mv_clamp_to_integer(PredMvs[0][comp] + diffMvs[0][comp]).
     Ok(Mv { row, col })
 }
 
@@ -147,13 +139,11 @@ fn read_shell_diff(
     tile_offset: ByteOffset,
     config: MvReadConfig,
 ) -> Result<(i32, i32)> {
-    // shell_set  S()  -> TileJointShellSetCdf[MvCtx].
     let shell_set_selector = TileCdfSelector::ReadMv(MvCdfSelector::JointShellSet {
         mv_ctx: config.mv_ctx,
     });
     let shell_set = read_symbol(cdfs, symbols, shell_set_selector, tile_offset)?;
 
-    // shell_class  S()  -> TileJointShellPClassQCdf[MvCtx] where P is MvPrecision.
     let raw_shell_class = read_symbol(
         cdfs,
         symbols,
@@ -167,8 +157,6 @@ fn read_shell_diff(
     let mut shell_class = raw_shell_class as i64;
     if shell_set != 0 {
         shell_class += i64::from((11 + config.precision) >> 1);
-        // EighthPel only: when the raw shell_class symbol is 7, read the
-        // last-two-classes refinement.
         if config.precision == MV_PRECISION_EIGHTH_PEL && raw_shell_class == 7 {
             let selector = TileCdfSelector::ReadMv(MvCdfSelector::JointShellLastTwo {
                 mv_ctx: config.mv_ctx,
@@ -178,7 +166,6 @@ fn read_shell_diff(
         }
     }
 
-    // shellClassOffset derivation.
     let shell_class_offset =
         read_shell_class_offset(cdfs, symbols, shell_class, tile_offset, config)?;
 
@@ -190,12 +177,9 @@ fn read_shell_diff(
     let shell_index = shell_class_base_index + shell_class_offset;
 
     if shell_index <= 0 {
-        // §5.20.7.20: diffMv stays (0, 0) when shellIndex == 0.
         return Ok((0, 0));
     }
 
-    // §5.20.7.20: split shellIndex into the column magnitude `col`, then derive the
-    // row magnitude as `shellIndex - col`. Then scale by `shift`.
     let diff_col = read_col_split(cdfs, symbols, shell_index, shell_class, tile_offset, config)?;
     let diff_row = shell_index - diff_col;
 
@@ -232,7 +216,6 @@ fn read_shell_class_offset(
     config: MvReadConfig,
 ) -> Result<i64> {
     if shell_class < 2 {
-        // shell_offset_low_class  S()  -> TileShellOffsetLowClassCdf[shellClass].
         let selector = TileCdfSelector::ReadMv(MvCdfSelector::ShellOffsetLowClass {
             mv_ctx: config.mv_ctx,
             shell_class: shell_class as usize,
@@ -241,8 +224,6 @@ fn read_shell_class_offset(
         return Ok(i64::from(offset));
     }
     if shell_class == 2 {
-        // §5.20.7.20: the class-2 loop reads shell_offset_class2 S() then up to two
-        // shell_offset_class2_high L(1) bits, stopping when shellClassOffset == i.
         let mut shell_class_offset: i64 = 0;
         for i in 0..3 {
             if i == 0 {
@@ -261,8 +242,6 @@ fn read_shell_class_offset(
         }
         return Ok(shell_class_offset);
     }
-    // shell_class > 2: read `shellClass` bits, each shell_offset_other_class S()
-    // from bank `i`, building shellClassOffset |= bit << i.
     let mut shell_class_offset: i64 = 0;
     for i in 0..shell_class {
         let selector = TileCdfSelector::ReadMv(MvCdfSelector::ShellOffsetOtherClass {
@@ -291,7 +270,6 @@ fn read_col_split(
     if maximum_pair_index > 0 {
         let max_idx_bits = maximum_pair_index.min(MAX_COL_TRUNCATED_UNARY_VAL as i64);
         for i in 0..max_idx_bits {
-            // col_mv_greater  S()  -> TileColMvGreaterCdf[MvCtx][i].
             let selector = TileCdfSelector::ReadMv(MvCdfSelector::ColMvGreater {
                 mv_ctx: config.mv_ctx,
                 i: i as usize,
@@ -305,8 +283,6 @@ fn read_col_split(
         if maximum_pair_index > MAX_COL_TRUNCATED_UNARY_VAL as i64
             && col == MAX_COL_TRUNCATED_UNARY_VAL as i64
         {
-            // col_remainder  NS(n)  with n = maximumPairIndex - 1, coded
-            // arithmetically (§4.11.13 over the §8.2 bypass primitives).
             let n = maximum_pair_index - 1;
             let remainder = read_ns(symbols, n, tile_offset)?;
             col = remainder + MAX_COL_TRUNCATED_UNARY_VAL as i64;
@@ -318,7 +294,6 @@ fn read_col_split(
         return Ok(maximum_pair_index);
     }
 
-    // col_mv_index  S()  -> TileColMvIndexCdf[MvCtx][Min(shellClass, NUM_CTX - 1)].
     let ctx = (shell_class as usize).min(NUM_CTX_COL_MV_INDEX - 1);
     let selector = TileCdfSelector::ReadMv(MvCdfSelector::ColMvIndex {
         mv_ctx: config.mv_ctx,
@@ -348,7 +323,6 @@ fn read_ns(symbols: &mut SymbolDecoder<'_>, n: i64, tile_offset: ByteOffset) -> 
     if n <= 1 {
         return Ok(0);
     }
-    // §4.11.13: w = FloorLog2(n) + 1; m = (1 << w) - n; v = L(w - 1).
     let n_u = u64::try_from(n).map_err(|_| mv_overflow(tile_offset))?;
     let floor_log2 = n_u.ilog2(); // FloorLog2(n) for n_u >= 1.
     let w = floor_log2 + 1;
@@ -357,7 +331,6 @@ fn read_ns(symbols: &mut SymbolDecoder<'_>, n: i64, tile_offset: ByteOffset) -> 
     if u64::from(v) < m {
         return Ok(i64::from(v));
     }
-    // extra_bit L(1); return (v << 1) - m + extra_bit.
     let extra = read_bypass_bit(symbols, tile_offset)?;
     let result = (u64::from(v) << 1) - m + u64::from(extra);
     i64::try_from(result).map_err(|_| mv_overflow(tile_offset))

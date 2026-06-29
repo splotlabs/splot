@@ -152,8 +152,6 @@ pub(crate) fn compose_minimal_intra_dc_coded_chroma_block_trace() -> Result<Vec<
     )?;
     let u_coeffs =
         chroma_u_dc_coded_coeff_tokens(MINIMAL_COEFF_CDF_Q_CTX, MINIMAL_CODED_CHROMA_DC_MAGNITUDE)?;
-    // mode prefix + luma + U coefficients + the U `sign_bit` bypass + the V
-    // all-zero `txb_skip`.
     let total = modes
         .len()
         .checked_add(luma.len())
@@ -171,14 +169,10 @@ pub(crate) fn compose_minimal_intra_dc_coded_chroma_block_trace() -> Result<Vec<
     trace.extend(modes.into_iter().map(BlockSymbolToken::Mode));
     trace.extend(luma.into_iter().map(BlockSymbolToken::Coeff));
     trace.extend(u_coeffs.into_iter().map(BlockSymbolToken::Coeff));
-    // The U DC sign is a § 5.20.7.27 `sign_bit L(1)` bypass literal, not a CDF
-    // `dc_sign` (that path is the luma DC / directional luma axis signs).
     trace.push(BlockSymbolToken::bypass(
         CHROMA_SIGN_BIT_WIDTH,
         MINIMAL_CODED_CHROMA_DC_NEGATIVE as u32,
     ));
-    // The U plane is coded (`EobU != 0`), so the V `txb_skip` uses § 8.3.2 context
-    // 6 (the `+6` EobU term), not the all-zero-U neutral context 0.
     trace.push(BlockSymbolToken::Coeff(chroma_v_all_zero_token(
         MINIMAL_COEFF_CDF_Q_CTX,
         CHROMA_V_TXB_SKIP_CTX_EOBU,
@@ -219,10 +213,6 @@ pub(crate) fn compose_minimal_intra_dc_coded_chroma_block_trace() -> Result<Vec<
 /// cross-check).
 pub(crate) fn compose_minimal_intra_two_coeff_block_trace() -> Result<Vec<BlockSymbolToken>> {
     let modes = compose_minimal_intra_dc_block_mode_trace()?;
-    // Derive the AC's raster position from the AV2 2D scan order (scan index 1 maps
-    // to raster position 4 in the 4x4 order, not 1), then derive the DC's § 8.3.2
-    // coeff_base low-frequency context from the AC's Level[] (the AC of level 1 is
-    // the DC's significant neighbour).
     let mut scan = [0u16; TX_4X4_WIDTH * TX_4X4_HEIGHT];
     coefficient_scan_order(TX_4X4_WIDTH, TX_4X4_HEIGHT, TransformClass::TwoD, &mut scan).map_err(
         |_| Error::BlockSymbolTraceAllocationFailed {
@@ -263,7 +253,6 @@ pub(crate) fn compose_minimal_intra_two_coeff_block_trace() -> Result<Vec<BlockS
         EOB_CTX_LUMA_INTRA,
         EOB_PT_16_SYMBOL_EOB2,
     )));
-    // Base pass (c = eob-1..0): the AC `coeff_base_eob` then the DC `coeff_base`.
     trace.push(BlockSymbolToken::Coeff(coeff_base_lf_eob_token(
         MINIMAL_COEFF_CDF_Q_CTX,
         COEFF_BASE_LF_EOB_CTX_EOB2_AC,
@@ -275,7 +264,6 @@ pub(crate) fn compose_minimal_intra_two_coeff_block_trace() -> Result<Vec<BlockS
         COEFF_BASE_LF_TCQ_CTX_NEUTRAL,
         EOB2_DC_LEVEL,
     )));
-    // Sign pass: the AC `sign_bit` (a §8.2.5 bypass literal); the zero DC has no sign.
     trace.push(BlockSymbolToken::bypass(1, EOB2_AC_NEGATIVE as u32));
     trace.push(BlockSymbolToken::Coeff(chroma_u_all_zero_token(
         MINIMAL_COEFF_CDF_Q_CTX,
@@ -299,8 +287,6 @@ pub(crate) fn compose_minimal_intra_two_coeff_block_trace() -> Result<Vec<BlockS
 pub(crate) fn compose_minimal_intra_two_coeff_block_trace_with_tx_type()
 -> Result<Vec<BlockSymbolToken>> {
     let base = compose_minimal_intra_two_coeff_block_trace()?;
-    // Derive the insertion point from the `eob_pt_16` token kind so it tracks any
-    // growth of the base trace, falling back to the known `EOB_PT_16_TRACE_INDEX`.
     let split = base
         .iter()
         .position(|token| {
@@ -342,8 +328,6 @@ pub(crate) fn compose_minimal_intra_two_coeff_block_trace_with_tx_type()
 pub(crate) fn compose_minimal_intra_two_coeff_block_trace_with_ist() -> Result<Vec<BlockSymbolToken>>
 {
     let base = compose_minimal_intra_two_coeff_block_trace_with_tx_type()?;
-    // `sec_tx_type` is read right after `intra_tx_type`; derive the insertion point
-    // from the `intra_tx_type` token kind, falling back to just after `eob_pt_16`.
     let split = base
         .iter()
         .position(|token| {

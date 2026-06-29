@@ -89,19 +89,12 @@ impl TemporalUnitState {
         report: &mut ValidationReport,
     ) {
         if obu.header.extended_layer_id.is_global() {
-            // A global *prefix* (metadata_is_suffix == 0) is a § 7.3.7 global prefix OBU.
-            // A global *suffix* (metadata_is_suffix == 1) is part of a coded frame unit's
-            // suffix tail; record it so a later global HLS prefix OBU is flagged. An
-            // unreadable first bit is left unclassified (the metadata syntax check reports
-            // the structural error).
             match metadata_is_suffix(obu) {
                 Some(false) => self.observe_global_hls_prefix(obu, report),
                 Some(true) => self.saw_global_suffix_metadata = true,
                 None => {}
             }
         } else {
-            // Non-global metadata sits inside a coded frame unit (§ 7.3.3 / § 7.3.4) of
-            // its extended layer's coded extended layer unit, i.e. in the frame region.
             self.observe_coded_extended_layer_obu(obu, report);
         }
     }
@@ -159,9 +152,6 @@ impl TemporalUnitState {
         obu: &ObuEnvelope<'_>,
         report: &mut ValidationReport,
     ) {
-        // A global suffix metadata is more specific evidence that the prefix region
-        // is over than merely being in the coded-layers phase, so prefer the
-        // metadata-suffix rule when it applies (§ 7.3.7).
         if self.saw_global_suffix_metadata {
             report.push(ordering_error(
                 "obu-order/global-hls-after-metadata-suffix",
@@ -213,12 +203,6 @@ impl TemporalUnitState {
         }
         self.phase = TemporalUnitPhase::CodedLayers;
 
-        // AV2 § 7.3.6: a coded extended layer unit is ordered LCR → OPS → atlas →
-        // sequence header → frame units. A non-global HLS *header* OBU (LCR / OPS /
-        // atlas / sequence header) appearing after the frame region of this same
-        // extended layer has begun is out of order. The frame region begins at the
-        // first non-HLS-header coded-extended-layer OBU (a content-interpretation,
-        // multi-frame-header, pre-frame BRT/QM/FGM/metadata, or frame-bearing OBU).
         let is_hls_header = matches!(
             obu.header.obu_type,
             ObuType::LayerConfigurationRecord
@@ -228,11 +212,6 @@ impl TemporalUnitState {
         );
         if is_hls_header {
             if self.coded_frame_started_xlayer.contains(&xlayer) {
-                // This rule belongs to § 7.3.6 (coded extended layer unit ordering: LCR
-                // → OPS → atlas → sequence header → frame units), not the § 7.3.7
-                // temporal-unit ordering that the shared `ordering_error` helper assumes;
-                // override the section so the emitted spec_section matches the registry
-                // entry (VALIDATOR-DIAGNOSTICS.md documents this diagnostic as § 7.3.6).
                 report.push(
                     ordering_error(
                         "obu-order/non-global-hls-before-coded-layer",
@@ -249,10 +228,6 @@ impl TemporalUnitState {
                 );
             }
         } else {
-            // A frame-region OBU for this extended layer: record that the frame
-            // region has begun, so a later HLS header for *that* layer fires — tracked
-            // per extended layer so a reordered header for an earlier layer after a
-            // later layer's frame region is not masked by the last-layer-only scalar.
             self.coded_frame_started_xlayer.insert(xlayer);
         }
     }
@@ -305,22 +280,7 @@ pub(super) fn metadata_is_suffix(obu: &ObuEnvelope<'_>) -> Option<bool> {
 }
 
 pub(super) fn is_global_hls_prefix_obu(obu: &ObuEnvelope<'_>) -> bool {
-    // AV2 § 7.3.7 lists the global temporal-unit prefix OBUs exhaustively: MSDO,
-    // global LCR, global OPS, global atlas segment, and global *prefix* metadata. The two
-    // metadata OBU types are NOT matched here: global metadata is classified by its
-    // parsed metadata_is_suffix bit in observe_metadata (a suffix is not a prefix), so it
-    // must not be matched as an unconditional global prefix.
-    //
-    // OBU_BUFFER_REMOVAL_TIMING is deliberately NOT in this set: § 7.3.7 does not list
-    // it as a global prefix OBU, and § 7.3.3 / § 7.3.4 place a BRT inside a coded
-    // frame unit at the frame's own xlayer (see is_coded_extended_layer_obu). A global
-    // BRT therefore has no § 7.3.7 prefix position to enforce here, so it is left
-    // unclassified rather than flagged — a sound-over-complete choice that avoids
-    // false positives.
-    //
     // TODO(spec: AV2-7.3-OBU-ORDERING): a hard `brt/global-ordering-position`
-    // diagnostic for a global BRT would need the § 7.3.8 decoder-model / random-access
-    // state that is not yet modeled.
     obu.header.extended_layer_id.is_global()
         && matches!(
             obu.header.obu_type,
@@ -332,9 +292,6 @@ pub(super) fn is_global_hls_prefix_obu(obu: &ObuEnvelope<'_>) -> bool {
 }
 
 pub(super) fn is_coded_extended_layer_obu(obu: &ObuEnvelope<'_>) -> bool {
-    // A local (non-global) OBU_BUFFER_REMOVAL_TIMING falls here: AV2 § 7.3.3 / § 7.3.4
-    // place it inside a coded output / non-output frame unit at the frame's xlayer, so
-    // it follows the same coded-extended-layer classification as the frame OBUs.
     !obu.header.extended_layer_id.is_global()
         && !matches!(
             obu.header.obu_type,

@@ -107,7 +107,6 @@ pub fn quantizer_value(qindex: u32, delta: i32, bit_depth: BitDepth) -> u32 {
     }
     let max = i64::from(max_quantizer_index(bit_depth));
     let clamped = (i64::from(qindex) + i64::from(delta)).clamp(1, max);
-    // `clamped` is within `1..=MaxQ` (at most 303), so the cast cannot truncate.
     qlookup(clamped as u32)
 }
 
@@ -151,7 +150,6 @@ pub fn quantizer_index(
         };
         let max = i64::from(max_quantizer_index(bit_depth));
         let qindex = (base + i64::from(segment_alt_q_data)).clamp(0, max);
-        // `qindex` is within `0..=MaxQ` (at most 303), so the cast cannot truncate.
         qindex as u32
     } else if delta_q_applies {
         current_q_index
@@ -238,30 +236,22 @@ mod tests {
 
     #[test]
     fn qlookup_applies_shift_extension_for_large_q() {
-        // q = 25: index ((24 % 24) + 1) = 1 -> 40, shift 24 / 24 = 1 -> 40 << 1.
         assert_eq!(qlookup(25), 80);
-        // q = 49: index 1 -> 40, shift 2 -> 40 << 2.
         assert_eq!(qlookup(49), 160);
-        // q = 255 (8-bit MaxQ): index 15 -> 60, shift 10 -> 60 << 10.
         assert_eq!(qlookup(255), 61_440);
-        // q = 303 (10-bit MaxQ): index 15 -> 60, shift 12 -> 60 << 12.
         assert_eq!(qlookup(303), 245_760);
     }
 
     #[test]
     fn qlookup_is_total_beyond_contract() {
-        // Out-of-contract q whose shift reaches the u32 width must saturate,
-        // not panic. q = 769 -> shift (768 / 24) = 32 -> checked_shl is None.
         assert_eq!(qlookup(769), u32::MAX);
         assert_eq!(qlookup(u32::MAX), u32::MAX);
     }
 
     #[test]
     fn quantizer_value_uses_zero_index_special_case() {
-        // qindex == 0 and delta <= 0 returns Ac_Qlookup[0] regardless of delta.
         assert_eq!(quantizer_value(0, 0, BitDepth::Eight), 64);
         assert_eq!(quantizer_value(0, -255, BitDepth::Eight), 64);
-        // qindex == 0 with a positive delta is not the special case.
         assert_eq!(quantizer_value(0, 3, BitDepth::Eight), qlookup(3));
     }
 
@@ -273,18 +263,13 @@ mod tests {
 
     #[test]
     fn quantizer_value_clamps_into_one_through_max_q() {
-        // Low clamp: a large negative delta clamps the index up to 1.
         assert_eq!(quantizer_value(5, -100, BitDepth::Eight), qlookup(1));
-        // High clamp depends on the bit-depth-specific MaxQ.
         assert_eq!(quantizer_value(255, 48, BitDepth::Eight), qlookup(255));
         assert_eq!(quantizer_value(255, 48, BitDepth::Ten), qlookup(303));
     }
 
     #[test]
     fn quantizer_value_is_panic_free_at_input_extremes() {
-        // Out-of-contract extremes must clamp, not overflow or panic. A huge
-        // index clamps up to MaxQ; a small index plus the most negative delta
-        // clamps down to 1.
         assert_eq!(
             quantizer_value(u32::MAX, i32::MAX, BitDepth::Ten),
             qlookup(303)
@@ -292,7 +277,6 @@ mod tests {
         assert_eq!(quantizer_value(1, i32::MIN, BitDepth::Eight), qlookup(1));
     }
 
-    // Convenience: the common ignore_delta_q=false / delta_q_present=false form.
     fn qindex(
         base_q_idx: u32,
         current_q_index: u32,
@@ -315,32 +299,25 @@ mod tests {
 
     #[test]
     fn quantizer_index_baseline_returns_base_q_idx() {
-        // Segment feature off and delta_q not applied -> base_q_idx, unclamped.
         assert_eq!(qindex(40, 99, false, 0, false, false, BitDepth::Eight), 40);
         assert_eq!(qindex(40, 99, false, 0, true, true, BitDepth::Eight), 40);
     }
 
     #[test]
     fn quantizer_index_delta_q_returns_current_q_index() {
-        // Segment feature off, delta_q applied -> CurrentQIndex, unclamped.
         assert_eq!(qindex(40, 99, false, 0, true, false, BitDepth::Eight), 99);
     }
 
     #[test]
     fn quantizer_index_segment_feature_uses_base_then_clips() {
-        // Segment active, delta_q not applied -> Clip3(0, MaxQ, base_q_idx + data).
         assert_eq!(qindex(40, 99, true, 5, false, false, BitDepth::Eight), 45);
-        // Segment active, delta_q applied -> Clip3(0, MaxQ, CurrentQIndex + data).
         assert_eq!(qindex(40, 99, true, 5, true, false, BitDepth::Eight), 104);
-        // ignore_delta_q forces the base_q_idx form even when delta_q_present.
         assert_eq!(qindex(40, 99, true, 5, true, true, BitDepth::Eight), 45);
     }
 
     #[test]
     fn quantizer_index_segment_feature_clips_both_bounds() {
-        // Low clamp to 0 (the lossless-segment approach with data = -255).
         assert_eq!(qindex(10, 0, true, -255, false, false, BitDepth::Eight), 0);
-        // High clamp to the bit-depth-specific MaxQ.
         assert_eq!(
             qindex(255, 0, true, 255, false, false, BitDepth::Eight),
             255
@@ -350,7 +327,6 @@ mod tests {
 
     #[test]
     fn quantizer_index_is_panic_free_at_input_extremes() {
-        // Only the segment-feature branch clamps; extremes must not overflow.
         assert_eq!(
             qindex(u32::MAX, 0, true, i32::MAX, false, false, BitDepth::Ten),
             303
@@ -393,7 +369,6 @@ mod tests {
             u_ac: 4,
             v_ac: 5,
         };
-        // Luma AC delta is always 0 per §7.14.2.
         assert_eq!(
             ac_quantizer(PlaneId::Y, 50, deltas, BitDepth::Eight),
             quantizer_value(50, 0, BitDepth::Eight)
@@ -410,8 +385,6 @@ mod tests {
 
     #[test]
     fn quantizer_composition_reaches_zero_index_special_case() {
-        // qindex resolving to 0 plus a non-positive plane delta yields
-        // Ac_Qlookup[0] (64) end-to-end through quantizer_value's special case.
         let deltas = QuantizerDeltas {
             y_dc: 0,
             u_dc: -10,

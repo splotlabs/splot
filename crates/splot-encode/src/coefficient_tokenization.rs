@@ -36,8 +36,6 @@ use crate::quantization::QuantizedTransformBlock;
 mod general_walk_geom;
 
 mod coeff_base_lf;
-// Re-exported for the sibling tests and the upcoming eob>1 trace brick; not yet
-// referenced by non-test code in this module.
 #[allow(unused_imports)]
 pub(crate) use coeff_base_lf::{
     coeff_base_hf_luma_context, coeff_base_lf_luma_context, coeff_base_lf_token,
@@ -45,8 +43,6 @@ pub(crate) use coeff_base_lf::{
 };
 
 mod multi_coeff;
-// Re-exported for the sibling tests and the upcoming eob>1 trace brick; not yet
-// referenced by non-test code in this module.
 #[allow(unused_imports)]
 pub(crate) use multi_coeff::{
     coded_luma_all_zero_token, coeff_base_hf_eob_token, coeff_base_hf_eob_token_sized,
@@ -56,17 +52,10 @@ pub(crate) use multi_coeff::{
 };
 
 mod transform_type;
-// Re-exported for the sibling tests and the general eob>1 trace bricks; the
-// `intra_tx_type` token is consumed by the trace, the `sec_tx_type` token is not yet
-// referenced by non-test code in this module.
 #[allow(unused_imports)]
 pub(crate) use transform_type::{intra_tx_type_set1_token, sec_tx_type_intra_token};
 
 mod general_coded;
-// `general_intra_16x16_luma_dc_coded_tokens` (`ENC-COEFF-TOKENIZE-16X16-DC`) is the
-// smallest 16x16 slice: exercised by the sibling §8.2 roundtrip tests but not yet wired
-// into a `general_intra_trace` composer (the downstream brick), so its re-export is
-// test-only for now.
 #[allow(unused_imports)]
 pub(crate) use general_coded::{
     general_intra_16x16_luma_dc_coded_tokens, general_intra_32x32_chroma_u_dc_coded_tokens,
@@ -80,142 +69,48 @@ const DCT_DCT_4X4_WIDTH: usize = 4;
 const DCT_DCT_4X4_HEIGHT: usize = 4;
 const DCT_DCT_4X4_COEFF_COUNT: usize = DCT_DCT_4X4_WIDTH * DCT_DCT_4X4_HEIGHT;
 const COEFF_CDF_Q_CONTEXTS: usize = 4;
-// AV2 § 8.3.2 `TileTxbSkipCdf[ is_inter || fsc_mode ][ txSzCtx ][ ctx ]`: the
-// first index is the inter/FSC bank, NOT plane type (the `plane_type` field name
-// is a pre-existing misnomer). For an intra non-FSC block it is 0, the bank that
-// luma and U share; the plane is distinguished only by `ctx`.
 const LUMA_PLANE_TYPE: usize = 0;
 const INTRA_NON_FSC_TXB_SKIP_BANK: usize = 0;
 const TX_SIZE_4X4_CTX: usize = 0;
-// AV2 § 8.3.2 `txb_skip` `txSzCtx = ((TxSizeSqr[txSz] + TxSizeSqrUp[txSz] + 1) >> 1)`.
-// For a square `TX_64X64` luma transform that is `(4 + 4 + 1) >> 1 == 4`; for a
-// square `TX_32X32` chroma transform `(3 + 3 + 1) >> 1 == 3`. Both were confirmed
-// empirically against the decoder's general-intra `txb_skip` selector while
-// decoding the AVM-validated `syn-flat-intra-64x64-q80` fixture (its 64x64 luma
-// transform read `tx_size: 4`, its 32x32 chroma U transform read `tx_size: 3`).
 const TX_SIZE_64X64_CTX: usize = 4;
 const TX_SIZE_32X32_CTX: usize = 3;
-// AV2 § 8.3.2 `txSzCtx = ((TX_SIZE_SQR[txSz] + TX_SIZE_SQR_UP[txSz] + 1) >> 1)`. For a
-// square `TX_16X16` that is `(2 + 2 + 1) >> 1 == 2` (`TX_SIZE_SQR[TX_16X16] ==
-// TX_SIZE_SQR_UP[TX_16X16] == 2` in `crates/splot-core/src/tables/conversion.rs`),
-// cross-checking the decoder's `TX_16X16_CONTEXT == 2`
-// (`crates/splot-decode/src/tile_payload/coeff_loop/fsc_level_pass.rs`).
 const TX_SIZE_16X16_CTX: usize = 2;
 const TXB_SKIP_CTX_NEUTRAL: usize = 0;
-// AV2 § 8.3.2: the U-plane `txb_skip` context adds a fixed +6 to the
-// neutral (above==0, left==0) base context.
 const CHROMA_U_TXB_SKIP_CTX_NEUTRAL: usize = 6;
 const EOB_CTX_LUMA_INTRA: usize = 0;
-// AV2 § 5.20.7.27 line 15362: `eobCtx = (plane > 0) ? 2 : is_inter`, so an intra
-// chroma coefficient uses eob context 2.
 const EOB_CTX_CHROMA: usize = 2;
 const COEFF_BASE_LF_EOB_CTX_DC: usize = 0;
-// The § 8.3.2 `coeff_base_eob` context for the EOB-position coefficient of the
-// minimal eob=2 trace (the AC at scan index 1): `coeff_base_eob_ctx(c=1, bwl=2,
-// h=4) = SIG_COEF_CONTEXTS_EOB - 3 = 1` (`c <= numCoeffs/8 = 2`).
 const COEFF_BASE_LF_EOB_CTX_EOB2_AC: usize = 1;
 const COEFF_BR_LF_CTX_DC: usize = 0;
-// The § 8.3.2 `coeff_br` low-frequency luma context for the EOB coefficient at a
-// non-zero raster position (an AC, eob == 2). In the reverse-scan base pass the EOB
-// coefficient is visited FIRST, so the running `Level[]` is all-zero when its
-// `coeff_br` context is derived. Mirroring the decoder `CoeffBrContext::ctx` with an
-// empty `Level[]` (`crates/splot-decode/src/tile_payload/cdf/coeff_context.rs`,
-// the `ctx` method): the neighbour sum `mag` is 0, `Min((0 + 1) >> 1, 6) = 0`, and
-// for a 2D low-frequency luma coefficient at a non-zero `pos` the `self.is_lf` branch
-// yields `mag + 7 == 7`. (The DC EOB coefficient at `pos == 0` takes the
-// `self.pos == 0` branch and yields `mag == 0`, the existing `COEFF_BR_LF_CTX_DC`.)
 const COEFF_BR_LF_CTX_EOB_AC: usize = 7;
-// The § 8.3.2 `coeff_br` low-frequency luma context for the NON-EOB DC at raster
-// position 0 when its sole significant neighbour — the already-written EOB AC at
-// scan pos 1 — has magnitude `1..=2`. The `coeff_br` magnitude sum clamps the
-// neighbour to `MAX_BASE_BR_RANGE - 1 = 5`, so for AC mag `1..=2` the sum is `1..=2`,
-// `mag = Min((sum + 1) >> 1, 6) = 1`, and the DC (`pos == 0`) `self.pos == 0` branch
-// of `CoeffBrContext::ctx` yields `mag == 1` (see `coeff_br_lf_luma_context`).
 const COEFF_BR_LF_CTX_DC_BR_AC_LOW: usize = 1;
-// The § 8.3.2 `coeff_br` low-frequency luma context for the NON-EOB DC when its EOB
-// AC neighbour has magnitude `3..=4`: the sum is `3..=4`, so
-// `mag = Min((sum + 1) >> 1, 6) = 2`, and the DC `self.pos == 0` branch yields `2`
-// (see `coeff_br_lf_luma_context`).
 const COEFF_BR_LF_CTX_DC_BR_AC_MID: usize = 2;
-// The § 8.3.2 `coeff_br` low-frequency luma context for the NON-EOB DC when its EOB
-// AC neighbour has magnitude `5..=7`: the clamp pins the neighbour to 5, so
-// `mag = Min((5 + 1) >> 1, 6) = 3`, and the DC `self.pos == 0` branch yields `3`
-// (see `coeff_br_lf_luma_context`).
 const COEFF_BR_LF_CTX_DC_BR_AC_HIGH: usize = 3;
-// The § 8.3.2 `coeff_base` low-frequency luma context for the DC of the minimal
-// eob=2 trace (the only `coeff_base_lf` consumer): an AC coefficient of level 1 at
-// scan pos 1 is the DC's sole significant neighbour, so `mag = 1`, `ctx = 1`, and
-// the low-frequency `c == 0` band yields `ctx.min(8) = 1`
-// (see `coeff_base_lf_luma_context`). `tcq_ctx = (tcqState >> 1) & 1` is 0 when TCQ
-// is off.
 const COEFF_BASE_LF_CTX_EOB2_DC: usize = 1;
-// The § 8.3.2 `coeff_base` low-frequency luma context for the DC when its sole
-// significant neighbour — the EOB AC at scan pos 1 — has magnitude `>= 5`: the
-// `coeff_base` `magLimit` clamps the neighbour to 5, so `mag = 5`,
-// `ctx = (5 + 1) >> 1 = 3`, and the low-frequency `c == 0` band yields
-// `ctx.min(8) = 3` (see `coeff_base_lf_luma_context`).
 const COEFF_BASE_LF_CTX_EOB2_DC_BR: usize = 3;
 const COEFF_BASE_LF_TCQ_CTX_NEUTRAL: usize = 0;
 const COEFF_BASE_LF_CDF_ROW_LEN: usize = 7;
-// AV2 §8.3.2 context-dimension counts of the generated default 4x4 low-frequency
-// CDF tables. The `CoefficientTokenCdfRows` entropy-proof router sizes its 4x4-LF
-// banks to these full context dimensions so any reachable `coeff_base` /
-// `coeff_base_eob` / `coeff_br` low-frequency context routes to a real generated
-// default row (the same hole-free banking the block-symbol router uses):
-// `DEFAULT_COEFF_BASE_LF_CDF` has 33 contexts, `DEFAULT_COEFF_BASE_LF_EOB_CDF` 4,
-// `DEFAULT_COEFF_BR_LF_CDF` 14.
 const COEFF_BASE_LF_CTX_COUNT: usize = 33;
 const COEFF_BASE_LF_EOB_CTX_COUNT: usize = 4;
 const COEFF_BR_LF_CTX_COUNT: usize = 14;
 const COEFF_BASE_LF_EOB_CDF_ROW_LEN: usize = 6;
 const COEFF_BR_LF_CDF_ROW_LEN: usize = 5;
-// AV2 §8.3.2 context-dimension counts of the generated default HIGH-frequency CDF
-// tables (distinct from the LF banks above): `DEFAULT_COEFF_BASE_EOB_CDF` is
-// `[q][tx_size][ctx][row]` with `4` `coeff_base_eob` contexts and a 4-symbol row
-// (`[i32; 4]`); `DEFAULT_COEFF_BR_CDF` is `[q][ctx][row]` (NO transform-size
-// dimension) with `7` `coeff_br` contexts and a 5-entry row. Sizing the HF banks to
-// these full context dimensions makes the entropy-proof HF tier hole-free.
 const COEFF_BASE_EOB_CTX_COUNT: usize = 4;
 const COEFF_BR_CTX_COUNT: usize = 7;
 const COEFF_BASE_EOB_CDF_ROW_LEN: usize = 4;
 const COEFF_BR_CDF_ROW_LEN: usize = 5;
-// AV2 §8.3.2 context-dimension counts of the generated default HIGH-frequency non-EOB
-// `coeff_base` table `DEFAULT_COEFF_BASE_CDF` (dims `[q][tx_size][ctx][tcq][row]`):
-// it has `COEFF_BASE_CTX_COUNT` (20) `coeff_base` contexts (the decoder
-// `COEFF_BASE_CONTEXTS`) and a 4-symbol row (`[i32; 5]`). For 4x4 2D the reachable HF
-// positions are diagonals 4..=6, so the reachable context is roughly 0..9, but the
-// bank is sized to the full 20 for hole-free routing (exactly as the LF bank is sized
-// to its full 33).
 const COEFF_BASE_CTX_COUNT: usize = 20;
 const COEFF_BASE_CDF_ROW_LEN: usize = 5;
-// AV2 §8.3.2 Table 8.2: `intra_tx_type` for `TX_SET_INTRA_1` uses
-// `TileIntraTxTypeSet1Cdf[Tx_Size_Sqr[txSz]]`; `Tx_Size_Sqr[TX_4X4] = 0`. The CDF
-// has one row per `Tx_Size_Sqr` value (3 rows).
 const INTRA_TX_TYPE_SET1_TX_SIZE_SQR_4X4: usize = 0;
 const INTRA_TX_TYPE_SET1_TX_SIZE_SQR_COUNT: usize = 3;
 const INTRA_TX_TYPE_SET1_CDF_ROW_LEN: usize = 8;
-// AV2 §8.3.2 (08-parsing-process.md:867): `sec_tx_type` (the IST secondary
-// transform) uses `TileSecTxTypeCdf[is_inter][Tx_Size_Sqr[txSz]]`. The encoder's
-// minimal subset is intra, so the bank index is `is_inter = 0`. `DEFAULT_SEC_TX_TYPE_CDF[0]`
-// has one row per `Tx_Size_Sqr` value (5 rows, `Tx_Size_Sqr 0..=4`); each row is
-// `STX_TYPES (4) + 1 = 5` long → 4 `sec_tx_type` symbol values.
 const SEC_TX_TYPE_INTRA_BANK: usize = 0;
 const SEC_TX_TYPE_TX_SIZE_SQR_4X4: usize = 0;
 const SEC_TX_TYPE_TX_SIZE_SQR_COUNT: usize = 5;
 const SEC_TX_TYPE_CDF_ROW_LEN: usize = 5;
 const DC_SIGN_GROUP_VISIBLE: usize = 0;
 const DC_SIGN_CTX_NEUTRAL: usize = 0;
-// AV2 § 5.20.7.27 / § 8.3.2: a low-frequency luma EOB coefficient's base level
-// is `coeff_base_eob + 1` (max 5), and `coeff_br` is read when that level
-// exceeds `LF_NUM_BASE_LEVELS`, adding `0..COEFF_BASE_RANGE` (i.e. `0..=2`) to the
-// level. `LF_NUM_BASE_LEVELS` is shared from `splot_core::coefficient`.
 const MAX_BASE_EOB_MAGNITUDE: u32 = 4;
-// The largest magnitude fully coded by `coeff_base_eob` + one `coeff_br`, before
-// AV2 § 5.20.7.28 `read_quant` emits the golomb tail (a later brick). For the LF
-// luma DC EOB coefficient `maxLevel = LF_NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1 = 8`
-// and `read_quant` is invoked when `quant >= maxLevel - allowTcq` (TCQ off here,
-// so `quant >= 8`); the largest magnitude that needs no golomb tail is therefore
-// `maxLevel - 1 = LF_NUM_BASE_LEVELS + COEFF_BASE_RANGE = 7` (`coeff_br` up to 2).
 const MAX_BASE_BR_MAGNITUDE: u32 = LF_NUM_BASE_LEVELS + COEFF_BASE_RANGE;
 const COEFF_CDF_Q_CTX_0_MAX_QINDEX: u32 = 90;
 const COEFF_CDF_Q_CTX_1_MAX_QINDEX: u32 = 140;
@@ -372,8 +267,6 @@ pub(crate) fn luma_dc_coded_tokens(
     magnitude: u32,
     negative: bool,
 ) -> Result<Vec<CoefficientEntropyToken>> {
-    // Contract: callers pass a real nonzero coefficient magnitude. A magnitude of
-    // 0 is an all-zero block (handled by `all_zero_token`, never this path).
     debug_assert!(magnitude >= 1, "coded DC magnitude must be nonzero");
     let needs_br = magnitude > LF_NUM_BASE_LEVELS;
     let len = if needs_br { 5 } else { 4 };
@@ -1031,43 +924,22 @@ const fn coeff_cdf_q_context(qindex: u32) -> usize {
 mod cdf_rows;
 
 mod entropy_proof;
-// Referenced only by the sibling §8.2 roundtrip tests, not by non-test code.
 #[allow(unused_imports)]
 pub(crate) use entropy_proof::roundtrip_entropy_tokens;
 
 mod general_walk;
-// The general 4x4 luma coefficient-tokenization walk
-// (`ENC-COEFF-GENERAL-WALK-LF-BASE` and its HF / golomb extensions). Re-exported
-// for the upcoming multi-coefficient tokenizer wiring and the sibling tests; not yet
-// referenced by non-test code in this module.
 #[allow(unused_imports)]
 pub(crate) use general_walk::tokenize_general_lf_luma_block;
 
 mod general_walk_16x16;
-// The general 16x16 DCT_DCT luma base-pass entry
-// (`ENC-COEFF-TOKENIZE-16X16-BASE`): the size-generic general walk specialized to a
-// `Quant[256]` block in the base pass (eob 1..=32, eobPt <= 5). Re-exported for the
-// sibling §8.2 roundtrip tests; not yet referenced by non-test code in this module.
 #[allow(unused_imports)]
 pub(crate) use general_walk_16x16::tokenize_general_16x16_luma_block;
-// The general 16x16 DCT_DCT luma FULL-range entry
-// (`ENC-COEFF-TOKENIZE-16X16-REFINE`): the same walk over the WHOLE `eob_pt_256` range
-// (eob 1..=256, eobPt <= 9), adding the symbol-7 `eob_pt_extra` refinement for eobPt 8
-// and 9. Re-exported for the sibling §8.2 roundtrip tests; not yet referenced by
-// non-test code in this module.
 #[allow(unused_imports)]
 pub(crate) use general_walk_16x16::tokenize_general_16x16_luma_block_full;
 
 mod general_walk_golomb;
-// The § 5.20.7.28 `read_quant` golomb tail (emission + recovery) for the general
-// walk's single golomb coefficient, split out to keep each file under the 1000-line
-// source budget. Consumed by `general_walk` (emission) and `general_walk_recover`
-// (recovery); no parent re-export needed.
 
 mod general_walk_recover;
-// The § 8.2 self-consistency recovery inverse of `general_walk`, split out to keep
-// each file under the 1000-line source budget. Re-exported for the sibling tests;
-// not yet referenced by non-test code in this module.
 #[allow(unused_imports)]
 pub(crate) use general_walk_recover::{recover_quant_from_tokens, recover_quant_from_tokens_geom};
 

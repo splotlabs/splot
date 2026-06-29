@@ -98,7 +98,6 @@ pub(crate) fn read_single_ref(
     if num_total_refs == 0 {
         return Err(SingleRefReadError::InsufficientRefs { num_total_refs });
     }
-    // §5.20.7.12: for ( ref = 0; ref < NumTotalRefs - 1; ref++ ).
     let decisions = num_total_refs - 1;
     if contexts.len() < decisions {
         return Err(SingleRefReadError::MissingContext {
@@ -108,18 +107,13 @@ pub(crate) fn read_single_ref(
         });
     }
     for (ref_idx, &ctx) in contexts.iter().enumerate().take(decisions) {
-        // §8.3.2: TileSingleRefCdf[ctx][ref]. The context for this `ref` is
-        // caller-supplied (the neighbour derivation is deferred to the
-        // multi-reference runtime brick).
         let single_ref = cdfs
             .read_block_symbol_trace(TileCdfSelector::SingleRef { ctx, ref_idx }, symbols)
             .map_err(|_| SingleRefReadError::SymbolRead { ref_idx })?;
-        // §5.20.7.12: if ( single_ref ) return ref.
         if single_ref.get() != 0 {
             return Ok(ref_idx);
         }
     }
-    // §5.20.7.12: return NumTotalRefs - 1.
     Ok(decisions)
 }
 

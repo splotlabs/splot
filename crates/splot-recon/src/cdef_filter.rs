@@ -85,13 +85,8 @@ const fn floor_log2(x: u32) -> u32 {
 /// The `partial[][]` sums of eight `(sample - 128)` terms fit comfortably in `i32`,
 /// but the squared partials times `Div_Table` (up to `840`) accumulate well past
 /// `i32`, so the cost uses `i64` accumulators per the spec's exact index mapping.
-// The §7.18.2 cost loops are a literal transcription of the spec pseudocode, where
-// the running index also drives the `Div_Table[...]` / `partial[14 - i]` / `cost[i]`
-// arithmetic; the index IS the spec variable, so an iterator rewrite would obscure
-// the mapping the bit-exact result depends on.
 #[allow(clippy::needless_range_loop)]
 pub fn cdef_direction(block: &[[i32; 8]; 8]) -> (usize, i64) {
-    // partial[8][15]: the directional projections of the (sample - 128) values.
     let mut partial = [[0i64; 15]; 8];
     for i in 0..8 {
         for j in 0..8 {
@@ -243,9 +238,6 @@ mod tests {
 
     #[test]
     fn flat_block_has_zero_variance() {
-        // §7.18.2: a flat block projects to zero partials, so every cost is zero,
-        // yDir stays 0, and var is 0. CDEF then leaves the block unchanged (the
-        // §7.18.1 priStr scaling multiplies by `var`).
         let block = [[0i32; 8]; 8];
         let (y_dir, var) = cdef_direction(&block);
         assert_eq!((y_dir, var), (0, 0), "flat block: yDir 0, var 0");
@@ -253,9 +245,6 @@ mod tests {
 
     #[test]
     fn horizontal_gradient_picks_a_horizontal_direction() {
-        // §7.18.2: a block that varies only down the rows (constant along columns)
-        // has its energy entirely in the partial[2][i] = sum over j of row i
-        // projection (direction 2, the horizontal-edge direction), so yDir == 2.
         let mut block = [[0i32; 8]; 8];
         for (i, row) in block.iter_mut().enumerate() {
             for cell in row.iter_mut() {
@@ -269,21 +258,14 @@ mod tests {
 
     #[test]
     fn constrain_matches_spec_branches() {
-        // §7.18.3 constrain: zero threshold -> 0; otherwise sign * Clip3(0,
-        // Abs(diff), threshold - (Abs(diff) >> dampingAdj)).
         assert_eq!(cdef_constrain(50, 0, 4), 0, "zero threshold returns 0");
-        // threshold 4, damping 4: FloorLog2(4) = 2, dampingAdj = Max(0, 4-2) = 2.
-        // diff 50: Abs(diff) >> 2 = 12; threshold - 12 = -8; Clip3(0, 50, -8) = 0.
         assert_eq!(cdef_constrain(50, 4, 4), 0, "large diff clamps to 0");
-        // diff 3: Abs >> 2 = 0; threshold - 0 = 4; Clip3(0, 3, 4) = 3; sign +.
         assert_eq!(
             cdef_constrain(3, 4, 4),
             3,
             "small positive diff passes through"
         );
-        // diff -3: magnitude 3, negated.
         assert_eq!(cdef_constrain(-3, 4, 4), -3, "small negative diff negated");
-        // diff 6: Abs >> 2 = 1; threshold - 1 = 3; Clip3(0, 6, 3) = 3.
         assert_eq!(
             cdef_constrain(6, 4, 4),
             3,
@@ -293,8 +275,6 @@ mod tests {
 
     #[test]
     fn filter_with_all_unavailable_taps_is_identity() {
-        // §7.18.3: with every tap unavailable, sum stays 0, min == max == center,
-        // and Clip3(center, center, center + (8 >> 4)) == center.
         let unavail = CdefTap {
             value: 0,
             available: false,
@@ -313,8 +293,6 @@ mod tests {
 
     #[test]
     fn filter_pulls_center_toward_a_brighter_primary_neighbour() {
-        // §7.18.3: one available primary tap brighter than the center pushes `sum`
-        // positive, raising the output toward (but clamped at) the neighbour value.
         let avail = |v| CdefTap {
             value: v,
             available: true,
@@ -325,14 +303,9 @@ mod tests {
         };
         let taps = CdefSampleTaps {
             center: 100,
-            // primary[0][1] (k=0, sign +1) available and brighter; rest unavailable.
             primary: [[unavail, avail(108)], [unavail, unavail]],
             secondary: [[[unavail; 2]; 2]; 2],
         };
-        // priStr 8 (>> coeffShift 0 -> tap row 0, pri tap [0]=4); damping 4.
-        // constrain(108-100=8, 8, 4): FloorLog2(8)=3, dampingAdj=Max(0,4-3)=1,
-        // Abs>>1=4, 8-4=4, Clip3(0,8,4)=4; sum = 4 * 4 = 16.
-        // out = 100 + ((8 + 16 - 0) >> 4) = 100 + 1 = 101; Clip3(100,108,101)=101.
         assert_eq!(
             cdef_filter_sample(&taps, 8, 8, 4, 0),
             101,
@@ -358,7 +331,6 @@ mod tests {
 
     #[test]
     fn directions_table_matches_spec() {
-        // §7.18.3 Cdef_Directions: spot-check the first and last rows.
         assert_eq!(CDEF_DIRECTIONS[0], [[-1, 1], [-2, 2]]);
         assert_eq!(CDEF_DIRECTIONS[7], [[1, 0], [2, -1]]);
     }

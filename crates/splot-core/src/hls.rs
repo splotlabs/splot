@@ -219,7 +219,6 @@ pub fn parse_msdo(reader: &mut BitReader<'_>) -> Result<MultistreamDecoderOperat
         multistream_tier,
         multistream_even_allocation_flag,
         multistream_large_picture_idc,
-        // `count` is at most MAX_SUB_STREAMS, so it fits in u8.
         sub_stream_count: count as u8,
         sub_streams,
         multistream_doh_constraint_flag,
@@ -327,7 +326,6 @@ pub fn parse_multi_frame_header(reader: &mut BitReader<'_>) -> Result<MultiFrame
     let (mfh_ext_seg_flag, mfh_allow_seg_info_change, segment_info) = if mfh_seg_info_present_flag {
         let ext_seg = reader.read_flag()?;
         let allow_change = reader.read_flag()?;
-        // AV2 § 5.7: ( MfhFeatureEnabled, MfhFeatureData ) = seg_info(mfh_ext_seg_flag ? 16 : 8).
         let info = parse_seg_info(reader, if ext_seg { 16 } else { 8 })?;
         (Some(ext_seg), Some(allow_change), Some(info))
     } else {
@@ -412,8 +410,6 @@ mod tests {
 
     #[test]
     fn parses_msdo_with_too_many_streams_for_validator_to_flag() {
-        // num_streams_minus_2 = 5 (> 2) is parseable; the conformance bound is a
-        // validator concern, not a parse error.
         let data = msdo_bits(5).into_bytes();
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
         let msdo = parse_msdo(&mut reader).unwrap();
@@ -481,7 +477,6 @@ mod tests {
 
     #[test]
     fn mfh_with_segment_info_is_parsed() {
-        // mfh_ext_seg_flag = 0 -> seg_info(8); all features disabled.
         let mut bits = Bits::default();
         bits.uvlc(0); // mfh_seq_header_id
         bits.uvlc(0); // mfh_id_minus_1
@@ -505,7 +500,6 @@ mod tests {
 
     #[test]
     fn mfh_with_ext_segment_info_uses_sixteen_segments() {
-        // mfh_ext_seg_flag = 1 -> seg_info(16).
         let mut bits = Bits::default();
         bits.uvlc(0); // mfh_seq_header_id
         bits.uvlc(0); // mfh_id_minus_1
@@ -527,7 +521,6 @@ mod tests {
 
     #[test]
     fn mfh_out_of_range_ids_are_detectable() {
-        // mfh_seq_header_id = 16 (== MAX_SEQ_NUM) and mfh_id_minus_1 = 16 -> mfhId = 17.
         let mut bits = Bits::default();
         bits.uvlc(16); // mfh_seq_header_id
         bits.uvlc(16); // mfh_id_minus_1 -> mfhId = 17 (>= MAX_MFH_NUM)

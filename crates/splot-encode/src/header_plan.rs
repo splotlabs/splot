@@ -241,7 +241,6 @@ fn validate_frame_compatibility(
     frame_info: FrameInfo,
 ) -> HeaderPlanResult<()> {
     // TODO(spec: ENC-MINIMAL-HEADER-PLAN): revisit coded-vs-visible luma size
-    // equality when frame size, superres, or render-size signalling lands.
     if frame_info.visible_luma_size() != coded_luma_size {
         return Err(HeaderPlanError::FrameSizeMismatch {
             frame: frame_info.id(),

@@ -95,7 +95,6 @@ mod tests {
                 bytes_read: 2
             }
         );
-        // Classic example: 0xe5 0x8e 0x26 -> 624485.
         assert_eq!(at_start(&[0xe5, 0x8e, 0x26]).unwrap().value, 624_485);
     }
 
@@ -118,7 +117,6 @@ mod tests {
 
     #[test]
     fn value_overflow_is_error() {
-        // 0x10 << 28 == 2^32, which exceeds u32::MAX.
         let overflow = [0x80, 0x80, 0x80, 0x80, 0x10];
         assert!(matches!(
             at_start(&overflow),

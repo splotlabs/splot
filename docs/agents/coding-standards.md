@@ -48,6 +48,30 @@ Enforcement:
 cargo xtask check-license-headers
 ```
 
+## Comment Diet
+
+Comments explain invariants or exceptions, not normal control flow. Prefer names,
+types, and smaller functions over prose that restates the next statement.
+
+Use short AV2 section anchors instead of copying spec prose into source. If the
+explanation needs more than a short anchor, move it to a design doc or ADR and
+link it only where needed.
+
+Public Rustdoc must be minimal but complete enough for `missing_docs` and public
+API users. Avoid historical notes, implementation chronology, and long spec
+quotations in Rustdoc.
+
+Historical explanations belong in ADRs or design docs, not source comments. AI
+agents must not add comments containing filler or process-history language such
+as "this helper", "this function", "now", "former", "previously", "round", or
+PR-history references.
+
+Enforcement:
+
+```bash
+cargo xtask check-comment-density
+```
+
 ## Source Size
 
 Rust source files should stay at or below 1000 physical lines. The hard cap is

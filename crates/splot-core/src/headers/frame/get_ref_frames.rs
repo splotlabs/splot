@@ -224,8 +224,6 @@ pub(crate) fn get_ref_frames(input: &GetRefFramesInput, check_res: bool) -> GetR
     let num_ref_frames = (input.num_ref_frames as usize).min(NUM_REF_FRAMES);
     let active_num_ref_frames = REFS_PER_FRAME.min(input.num_ref_frames);
 
-    // § 7.7: prepare mapOrderHint / mapBaseQIdx / maxDisp over the distinct references.
-    // mapOrderHint[i] == -1 marks a slot excluded from scoring; we keep it as Option.
     let mut map_order_hint: [Option<i32>; NUM_REF_FRAMES] = [None; NUM_REF_FRAMES];
     let mut map_base_q_idx: [u32; NUM_REF_FRAMES] = [0; NUM_REF_FRAMES];
     let mut max_disp: i32 = 0;
@@ -254,7 +252,6 @@ pub(crate) fn get_ref_frames(input: &GetRefFramesInput, check_res: bool) -> GetR
         }
     }
 
-    // § 7.7: score the distinct references.
     let mut ranked: Vec<Ranked> = Vec::with_capacity(num_ref_frames);
     let mut min_q: u32 = 0;
     let mut max_q: u32 = 0;
@@ -265,29 +262,16 @@ pub(crate) fn get_ref_frames(input: &GetRefFramesInput, check_res: bool) -> GetR
         let slot = &input.slots[i];
         let q = map_base_q_idx[i];
         let disp_diff = get_relative_dist(input.order_hint, d);
-        // tDist = Abs(dispDiff) + obu_mlayer_id - RefMLayerId[i].
         let t_dist =
             i64::from(disp_diff.abs()) + i64::from(input.obu_mlayer_id) - i64::from(slot.mlayer_id);
         let mut score: i64 = if max_disp > input.order_hint {
             (t_dist << DIST_WEIGHT_BITS) + i64::from(q)
         } else {
-            // Dist_Score_Lookup[Min(tDist, DECAY_DIST_CAP)] + Max(tDist - DECAY_DIST_CAP, 0) + q.
-            // The spec writes `Min(tDist, DECAY_DIST_CAP)` (upper bound only); `tDist`
-            // can be negative here (it includes `obu_mlayer_id - RefMLayerId[i]`), for
-            // which a literal index is out of bounds, so the lower clamp to 0 keeps the
-            // array access total and panic-free. Cross-reference ranking now DOES run over
-            // >= 2 valid slots (DECODE-INTER-MULTIREF-RUNTIME), but this negative-tDist path
-            // stays unreachable: derive_implicit_ref_map forces obu_mlayer_id == 0 and every
-            // RefMLayerId == 0 (single spatial layer), so tDist = Abs(dispDiff) >= 0. The
-            // lower clamp is kept for panic-safety.
             // TODO(spec: AV2-7.7-GET-REF-FRAMES): re-validate the tDist < 0 score against a
-            // multi-reference avmdec/dav2d oracle if a multi-layer reference (obu_mlayer_id
-            // > 0 or RefMLayerId[i] > 0) is ever admitted.
             let cap = i64::from(DECAY_DIST_CAP);
             let lookup_idx = t_dist.clamp(0, cap) as usize;
             DIST_SCORE_LOOKUP[lookup_idx] + (t_dist - cap).max(0) + i64::from(q)
         };
-        // refRatio = FloorLog2( RefFrameWidth[i] * RefFrameHeight[i] ); score -= refRatio << 5.
         let area = u64::from(slot.width).saturating_mul(u64::from(slot.height));
         let ref_ratio = i64::from(floor_log2_u32_from_u64(area));
         score -= ref_ratio << 5;
@@ -311,20 +295,15 @@ pub(crate) fn get_ref_frames(input: &GetRefFramesInput, check_res: bool) -> GetR
         }
     }
 
-    // § 7.7: if too many references, drop one.
     if ranked.len() as u32 > REFS_PER_FRAME {
-        // qThresh = (maxQ + minQ + 1) / 2 (§ 7.7): the round-half-up midpoint, expressed as
-        // `div_ceil` so it stays panic-free and clippy-clean (identical value).
         let q_thresh = (max_q + min_q).div_ceil(2);
         if let Some(unmapped) = get_unmapped_ref(&ranked, q_thresh) {
             ranked[unmapped].score = 0x7fff_ffff;
         }
     }
 
-    // § 7.7: bubble_sort_ref_scores() — ascending by score.
     bubble_sort_ref_scores(&mut ranked);
 
-    // § 7.7: NumTotalRefs = Min(NRanked, ActiveNumRefFrames); ref_frame_idx[i] = ScoresIndex[i].
     let n_ranked = ranked.len() as u32;
     let mut num_total_refs = n_ranked.min(active_num_ref_frames);
     let mut ref_frame_idx: Vec<u32> = ranked
@@ -333,7 +312,6 @@ pub(crate) fn get_ref_frames(input: &GetRefFramesInput, check_res: bool) -> GetR
         .map(|r| r.index)
         .collect();
 
-    // § 7.7: append any remaining restricted frames (checkRes && !IsBridge).
     if check_res && !input.is_bridge {
         for i in 0..num_ref_frames {
             let slot = &input.slots[i];
@@ -508,8 +486,6 @@ mod tests {
         assert_eq!(res0.num_total_refs, 1);
         assert_eq!(res0.ref_frame_idx, vec![0]);
 
-        // The second call (checkRes == 1, after frame_size) yields the same map: the single
-        // ref is resolution-compatible and there are no restricted frames to append.
         let res1 = get_ref_frames(&input, true);
         assert_eq!(res1.num_total_refs, 1);
         assert_eq!(res1.ref_frame_idx, vec![0]);
@@ -615,7 +591,6 @@ mod tests {
         let res = get_ref_frames(&input, false);
         assert_eq!(res.num_total_refs, 7);
         assert_eq!(res.ref_frame_idx.len(), 7);
-        // Every kept index is a distinct valid slot in 0..8.
         for idx in &res.ref_frame_idx {
             assert!(*idx < 8);
         }
@@ -627,7 +602,6 @@ mod tests {
     fn restricted_frame_appended_only_with_check_res() {
         let mut input = base_input();
         input.order_hint = 10;
-        // Slot 0: an ordinary past reference (scored).
         input.slots[0] = RefSlot {
             valid: true,
             order_hint: 8,
@@ -638,7 +612,6 @@ mod tests {
             width: 64,
             height: 64,
         };
-        // Slot 1: a restricted reference.
         input.slots[1] = RefSlot {
             valid: true,
             order_hint: RESTRICTED_OH,
@@ -649,11 +622,9 @@ mod tests {
             width: 64,
             height: 64,
         };
-        // checkRes == 0: the restricted frame is NOT appended.
         let res0 = get_ref_frames(&input, false);
         assert_eq!(res0.num_total_refs, 1);
         assert_eq!(res0.ref_frame_idx, vec![0]);
-        // checkRes == 1: the restricted frame is appended after the scored ref.
         let res1 = get_ref_frames(&input, true);
         assert_eq!(res1.num_total_refs, 2);
         assert_eq!(res1.ref_frame_idx, vec![0, 1]);
@@ -683,11 +654,9 @@ mod tests {
             width: 64,
             height: 64,
         };
-        // checkRes == 0: resolution unknown, the ref is admitted.
         let res0 = get_ref_frames(&input, false);
         assert_eq!(res0.num_total_refs, 1);
         assert_eq!(res0.ref_frame_idx, vec![0]);
-        // checkRes == 1: 1280 > 16 * 64 == 1024, the ref is dropped.
         let res1 = get_ref_frames(&input, true);
         assert_eq!(res1.num_total_refs, 0);
         assert!(res1.ref_frame_idx.is_empty());
@@ -708,7 +677,6 @@ mod tests {
             width: 64,
             height: 64,
         };
-        // Clear bit 0: slot 0 is no longer allowed.
         input.allowed_frames = !1;
         let res = get_ref_frames(&input, false);
         assert_eq!(res.num_total_refs, 0);

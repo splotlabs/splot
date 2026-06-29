@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-// Round-trip and reject tests for the §5.12 buffer_removal_timing_obu() writer. `include!`d into
-// `crate::write::buffer_removal_timing` so `super::*` resolves to `write_buffer_removal_timing`.
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -36,7 +34,6 @@ mod tests {
     fn extended_layer_round_trips() {
         round_trip(&BufferRemovalTiming::ExtendedLayer { br_time: 0 });
         round_trip(&BufferRemovalTiming::ExtendedLayer { br_time: 42 });
-        // The largest rg(4)-encodable value: quotient 31 (< 32), remainder 15.
         round_trip(&BufferRemovalTiming::ExtendedLayer { br_time: 511 });
     }
 
@@ -47,7 +44,6 @@ mod tests {
             br_ops_cnt: 2,
             op_times: vec![op(0, Some(7)), op(1, None)],
         });
-        // br_ops_cnt == 0: the field maxima with no per-op entries.
         round_trip(&BufferRemovalTiming::OperatingPointSet {
             br_ops_id: 15,
             br_ops_cnt: 0,
@@ -110,8 +106,6 @@ mod tests {
 
     #[test]
     fn out_of_range_br_time_rejects() {
-        // rg(4) requires quotient < 32; br_time = 512 -> quotient 32 -> ValueOutOfRange. The parser
-        // could never have produced it, so the writer rejects rather than emitting a 32-bit run.
         let brt = BufferRemovalTiming::ExtendedLayer { br_time: 512 };
         let mut writer = BitWriter::new();
         let err = write_buffer_removal_timing(&mut writer, &brt).unwrap_err();
@@ -124,8 +118,6 @@ mod tests {
 
     #[test]
     fn out_of_field_br_ops_id_rejects() {
-        // br_ops_id is f(4); a constructed value >= 16 cannot be written and is rejected by the
-        // primitive (the scratch protects the caller). br_ops_cnt is f(3) and behaves the same way.
         let brt = BufferRemovalTiming::OperatingPointSet {
             br_ops_id: 16,
             br_ops_cnt: 0,

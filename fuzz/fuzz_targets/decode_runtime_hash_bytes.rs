@@ -1,13 +1,5 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
-//
-// Fuzz target: the current minimal runtime hash byte API must return a typed
-// result, never panic, on arbitrary raw Annex B/IVF input and bounded mutations
-// of the committed minimal IVF fixture. This target intentionally does not
-// write files, fuzz Y4M/raw output, or invoke AVM/dav2d. Run with:
-//
-//     cargo install cargo-fuzz --locked
-//     cargo +nightly fuzz run decode_runtime_hash_bytes
 #![no_main]
 
 use std::sync::OnceLock;
@@ -55,9 +47,6 @@ fuzz_target!(|data: &[u8]| {
 
     let options = DecodeOptions::new(runtime_hash_fuzz_limits(flags, bitstream.len()));
     if let Ok(report) = context.decode_hash_report_bytes(bitstream, options) {
-        // The minimal report shape only holds for the pristine frozen fixture; a
-        // mutation can now route to the general intra path and decode
-        // successfully to a different (still valid) frame.
         if bitstream == MINIMAL_FIXTURE {
             assert_minimal_hash_report_shape(&report);
         }

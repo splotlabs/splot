@@ -10,7 +10,6 @@ use std::collections::TryReserveError;
 use super::partition_size::{BlockSize, PartitionSizeError};
 use super::partition_traversal::TilePartitionContextState;
 
-// AV2 §9.2 generated block-size table index for the §6.19.2.1 clear-context seed.
 const BLOCK_256X256_INDEX: usize = 18;
 const PLANE_COUNT: usize = 2;
 

@@ -1,13 +1,5 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
-//
-// Fuzz target for ENC-Y4M-INPUT: bounded byte-derived dimensions, strides,
-// formats, plane presence, and buffer truncation must drive encoder frame-input
-// view construction without panics. This target does not parse Y4M, invoke AVM,
-// encode packets, or write output. Run with:
-//
-//     cargo install cargo-fuzz --locked
-//     cargo +nightly fuzz run encoder_frame_input_views_bytes
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;

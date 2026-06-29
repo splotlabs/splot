@@ -228,8 +228,6 @@ impl PlaneCoverage {
         let mut marked = 0usize;
         for r in mi_row..mi_row.saturating_add(mi_h) {
             for c in mi_col..mi_col.saturating_add(mi_w) {
-                // `off_grid` rejects a column at/past the row stride so a wide block's
-                // overhang cannot alias into the next row's cells.
                 if !self.off_grid(c, r)
                     && let Some(slot) = self.covered.get_mut(r * self.cols + c)
                 {
@@ -338,9 +336,6 @@ fn wide_angle_mapping(w: u32, h: u32, p_angle: i32) -> i32 {
 /// Strength `0` means `av2_filter_intra_edge` is a no-op, so the §7.13.2.8
 /// prediction over the UNFILTERED edge is bit-exact. Transcribed VERBATIM from the
 /// committed spec mirror `docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-17`.
-// The §7.13.2.17 `blkWh <= 12` and `blkWh <= 16` branches both yield
-// `d >= 40 => strength = 1`; the spec keeps them as distinct verbatim branches, so
-// the duplicate-block clippy lint is suppressed to preserve the literal transcription.
 #[allow(clippy::if_same_then_else)]
 fn intra_edge_filter_strength(w: u32, h: u32, filter_type: u8, delta: i32) -> u8 {
     let d = delta.unsigned_abs();
@@ -419,7 +414,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         enable_ibp: bool,
         enable_intra_edge_filter: bool,
     ) -> Result<Self> {
-        // 4:2:0 chroma planes are half the luma dimensions in each axis.
         let chroma_width = luma_width.div_ceil(2);
         let chroma_height = luma_height.div_ceil(2);
         Ok(Self {
@@ -510,7 +504,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         mi_h: usize,
     ) -> bool {
         let coverage = &self.coverage[Self::coverage_index(plane_id)];
-        // Above row: the MI units directly above the block's top edge.
         if let Some(above) = mi_row.checked_sub(1) {
             for c in mi_col..mi_col.saturating_add(mi_w) {
                 if !coverage.off_grid(c, above) && !coverage.is_covered(c, above) {
@@ -518,7 +511,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 }
             }
         }
-        // Left column: the MI units directly left of the block's left edge.
         if let Some(left) = mi_col.checked_sub(1) {
             for r in mi_row..mi_row.saturating_add(mi_h) {
                 if !coverage.off_grid(left, r) && !coverage.is_covered(left, r) {
@@ -568,9 +560,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 .all(|r| !coverage.off_grid(col_left, r) && coverage.is_covered(col_left, r))
         };
         match direction {
-            // H_PRED reads the left column `mi_col - 1`. Off-grid left
-            // (`mi_col == 0`): §7.13.2.1 synthesizes `LeftCol` from the above row
-            // (`mi_row - 1`) when that is reconstructed.
             IntraCardinalDirection::Horizontal => match mi_col.checked_sub(1) {
                 Some(left) => left_col_covered(left),
                 None => match mi_row.checked_sub(1) {
@@ -578,9 +567,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     None => false,
                 },
             },
-            // V_PRED reads the above row `mi_row - 1`. Off-grid above
-            // (`mi_row == 0`): §7.13.2.1 synthesizes `AboveRow` from the left column
-            // (`mi_col - 1`) when that is reconstructed.
             IntraCardinalDirection::Vertical => match mi_row.checked_sub(1) {
                 Some(above) => above_row_covered(above),
                 None => match mi_col.checked_sub(1) {
@@ -612,20 +598,15 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
     ) -> bool {
         let coverage = &self.coverage[Self::coverage_index(plane_id)];
         let (Some(above), Some(left)) = (mi_row.checked_sub(1), mi_col.checked_sub(1)) else {
-            // A frame-top or frame-left block has no real above/left neighbour, so
-            // the corner-bearing two-sided config does not hold; defer.
             return false;
         };
         let covered = |c: usize, r: usize| !coverage.off_grid(c, r) && coverage.is_covered(c, r);
-        // Above row: every MI unit directly above the block's top edge.
         if !(mi_col..mi_col.saturating_add(mi_w)).all(|c| covered(c, above)) {
             return false;
         }
-        // Left column: every MI unit directly left of the block's left edge.
         if !(mi_row..mi_row.saturating_add(mi_h)).all(|r| covered(left, r)) {
             return false;
         }
-        // The §7.13.2.1 corner unit `AboveRow[-1] = CurrFrame[plane][y-1][x-1]`.
         covered(left, above)
     }
 
@@ -680,7 +661,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         mi_h: usize,
         tile_offset: ByteOffset,
     ) -> Result<bool> {
-        // §5.20.5.5 multi-reference line: the IDIF edge is the immediate line only.
         if mrl_index != 0 {
             return Ok(false);
         }
@@ -689,14 +669,9 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         };
         let w = 1u32 << log2_width;
         let h = 1u32 << log2_height;
-        // §5.20.5.3 / §7.13.2.8 pAngle = Mode_To_Angle[mode] + AngleDeltaY *
-        // ANGLE_STEP + Mrl_Index_To_Delta[MrlIndex], then §5.20.7.29 wide-angle
-        // remap (is_inter == 0 for a general-intra leaf).
         let mrl_delta = MRL_INDEX_TO_DELTA[usize::from(mrl_index).min(3)];
         let nominal_angle = i32::from(nominal) + i32::from(angle_delta_y) * ANGLE_STEP + mrl_delta;
         let p_angle = wide_angle_mapping(w, h, nominal_angle);
-        // One-sided range (zone-1 reads above, zone-3 reads left). The cardinals
-        // (90/180) and the zone-2 middle band (90 < p < 180) are handled elsewhere.
         let one_sided = (0 < p_angle && p_angle < 90) || (180 < p_angle && p_angle < 270);
         if !one_sided {
             return Ok(false);
@@ -707,27 +682,12 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         let Ok(angle) = IntraDirectionalAngle::try_from_p_angle(p_angle_u16) else {
             return Ok(false);
         };
-        // §7.13.2.7 applyIbp = enable_ibp && not4x4; useIBP additionally needs an
-        // EVEN angleDelta, plane 0, a one-sided pAngle, and MrlIndex == 0. When
-        // useIBP fires, the §7.13.2.9 IBP secondary blend (unmodelled) changes the
-        // output — DEFER. (angleDelta is the SIGNED AngleDeltaY count.)
         let not4x4 = !(w == 4 && h == 4);
         let apply_ibp = self.enable_ibp && not4x4;
         let angle_delta_even = angle_delta_y % 2 == 0;
-        // §7.13.2.7 useIBP = applyIbp && EVEN angleDelta (one-sided pAngle + plane 0
-        // + MrlIndex == 0 already hold). When useIBP fires, the §7.13.2.9 IBP
-        // secondary blend (unmodelled) changes the output — DEFER. (`apply_ibp` on
-        // its own does NOT imply useIBP: an ODD AngleDeltaY clears it while the
-        // §7.13.2.7 corner / edge filter still fire.)
         if apply_ibp && angle_delta_even {
             return Ok(false);
         }
-        // §7.13.2.7 step 1 corner / edge filter resolution. When
-        // `enable_intra_edge_filter == 1` && `MrlIndex == 0` the read edge is
-        // rewritten by the §7.13.2.14 corner filter and §7.13.2.18 edge filter
-        // BEFORE the §7.13.2.8 prediction. Derive the per-edge §7.13.2.17 strength
-        // from the real §7.13.2.15/16 neighbour-smooth modes; DEFER (return `false`)
-        // when a needed neighbour mode / corner sample is unresolved.
         let Some(edge_filter) = self.resolve_one_sided_edge_filter(
             mi_col,
             mi_row,
@@ -746,30 +706,15 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         ) else {
             return Ok(false);
         };
-        // The furthest logical edge index the projection reads (`base + 2`, capped at
-        // maxBase). The above-right (zone-1) / below-left (zone-3) it walks into must
-        // be reconstructed.
         let Ok(max_read) = angle.max_one_sided_edge_read_index(block_size) else {
             return Ok(false);
         };
-        // §7.13.2.1 in-block read spans: the zone-1 above row covers `AboveRow[0..w)`
-        // (the above-right begins at sample column `x + w`); the zone-3 left column
-        // covers `LeftCol[0..h)` (the below-left begins at sample row `y + h`). The
-        // coverage guards convert `max_read` (a logical edge index) relative to that
-        // in-block span, so the threshold is the WIDTH for zone-1 / the HEIGHT for
-        // zone-3 — NOT a single square `side`.
         let w = w as usize;
         let h = h as usize;
-        // The §7.13.2.7 edge filter is a no-op only when BOTH the §7.13.2.18 edge
-        // filter (`strength == 0`) AND the §7.13.2.14 corner filter (`corner_opposite
-        // == None`) do nothing. An active filter consumes the full `mi_w`/`mi_h`
-        // above-right/below-left span (padded), so the coverage guard must require it.
         let edge_filter_active = edge_filter.strength != 0 || edge_filter.corner_opposite.is_some();
         let (x, y) = luma_sample_origin(mi_col, mi_row, tile_offset)?;
         match angle.required_edge() {
             IntraDirectionalAngleEdge::Above => {
-                // zone-1: verify the corner + above row + above-right coverage, and
-                // count the §7.13.2.1 above-right 4x4 units (capped at `mi_w`).
                 let Some(num4_above_right) = self.one_sided_above_coverage(
                     mi_col,
                     mi_row,
@@ -876,8 +821,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         }
         let coverage = &self.coverage[Self::coverage_index(PlaneId::Y)];
         let smooth = |mode: Option<IntraYMode>| mode.is_some_and(IntraYMode::is_smooth);
-        // §7.13.2.15/16: the above neighbour is `YModes[MiRow-1][MiCol]`, the left
-        // neighbour `YModes[MiRow][MiCol-1]` (off-grid => is_smooth 0).
         let above_smooth = smooth(
             mi_row
                 .checked_sub(1)
@@ -888,7 +831,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 .checked_sub(1)
                 .and_then(|c| coverage.y_mode_at(c, mi_row)),
         );
-        // §7.13.2.7: zone boundaries set the base need flags; applyIbp forces all.
         let zone1 = p_angle < 90;
         let (mut need_above, mut need_left) = if zone1 { (true, false) } else { (false, true) };
         let (mut filter_type_above, mut filter_type_left) = (above_smooth, left_smooth);
@@ -908,25 +850,17 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 angle_left += 180;
             }
         } else {
-            // §7.13.2.7 non-IBP: a single OR'd filterType seeds both edges.
             let filter_type = above_smooth || left_smooth;
             filter_type_above = filter_type;
             filter_type_left = filter_type;
         }
         let corner_applies = need_above && need_left && (w + h) >= 24;
-        // §7.13.2.8 reads ONLY the above edge (zone-1) or the left edge (zone-3); the
-        // strength/numPx/corner are computed for that read edge, with the corner's
-        // opposite-edge `[0]` sample read directly from the workspace.
         let (filter, opposite_col_row) = if zone1 {
-            // zone-1: read above. numPx = Min(w, maxX - x + 1) + (needRight ? h : 0)
-            // + 1. The §7.13.2.14 corner reads LeftCol[0] = CurrFrame[y][x-1].
             (
                 (filter_type_above, angle_above, need_right, w, h),
                 (mi_col.checked_sub(1), Some(mi_row)),
             )
         } else {
-            // zone-3: read left. numPx = Min(h, maxY - y + 1) + (needBottom ? w : 0)
-            // + 1. The §7.13.2.14 corner reads AboveRow[0] = CurrFrame[y-1][x].
             (
                 (filter_type_left, angle_left, need_bottom, h, w),
                 (Some(mi_col), mi_row.checked_sub(1)),
@@ -935,7 +869,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         let (filter_type, angle_delta, need_far, primary, secondary) = filter;
         let strength = intra_edge_filter_strength(w, h, u8::from(filter_type), angle_delta);
         let (x, y) = luma_sample_origin(mi_col, mi_row, tile_offset)?;
-        // numPx primary-axis storage clamp: Min(primary, maxAxis - origin + 1).
         let plane = self.workspace.plane(PlaneId::Y)?;
         let storage = plane.storage_size();
         let (origin, max_axis) = if zone1 {
@@ -953,19 +886,13 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     "unsupported_wienerns_lr_one_sided_edge_filter_numpx_overflow",
                 )
             })?;
-        // §7.13.2.14 corner: the opposite-edge `[0]` reconstructed sample.
         let corner_opposite = if corner_applies {
             let (Some(opp_col), Some(opp_row)) = opposite_col_row else {
-                // The opposite neighbour is off-grid: the §7.13.2.14 corner read
-                // would not have a reconstructed sample to blend. DEFER.
                 return Ok(None);
             };
             if coverage.off_grid(opp_col, opp_row) || !coverage.is_covered(opp_col, opp_row) {
                 return Ok(None);
             }
-            // The opposite-edge logical `[0]` sample: zone-1 LeftCol[0] =
-            // CurrFrame[y][x-1]; zone-3 AboveRow[0] = CurrFrame[y-1][x]. Both are the
-            // opposite MI unit's edge sample adjacent to this block's origin.
             let (sample_x, sample_y) = if zone1 {
                 (x.checked_sub(1), Some(y))
             } else {
@@ -1023,15 +950,12 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         let above = mi_row.checked_sub(1)?;
         let corner = mi_col.checked_sub(1)?;
         let covered = |c: usize, r: usize| !coverage.off_grid(c, r) && coverage.is_covered(c, r);
-        // Corner `AboveRow[-1]` and the in-block above row.
         if !covered(corner, above) {
             return None;
         }
         if !(mi_col..mi_col.saturating_add(mi_w)).all(|c| covered(c, above)) {
             return None;
         }
-        // Above-right: AVM provides up to `tx_size_wide_unit == mi_w` consecutive
-        // coded MI units (`px_top_right <= Min(txwpx, ...)`), then pads the rest.
         let right_edge_mi = mi_col.checked_add(mi_w)?;
         let mut num4_above_right = 0usize;
         for offset in 0..mi_w {
@@ -1043,16 +967,10 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             }
         }
         if edge_filter_active {
-            // The active §7.13.2.18 edge filter consumes the full `mi_w` above-right
-            // span (padded beyond the real samples); to match AVM's pad boundary we
-            // need every `mi_w` unit covered — DEFER otherwise.
             if num4_above_right < mi_w {
                 return None;
             }
         } else {
-            // No-op edge filter: only the §7.13.2.8 projection reads matter. Its
-            // furthest REAL above-right read (`x + width + 4*num4 - 1`) must lie in
-            // the covered span; a deeper real read would hit an uncovered sample.
             let covered_extent = width.checked_add(num4_above_right.checked_mul(MI_SIZE)?)?;
             if max_read >= width && max_read >= covered_extent {
                 return None;
@@ -1091,13 +1009,9 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         let coverage = &self.coverage[Self::coverage_index(PlaneId::Y)];
         let left = mi_col.checked_sub(1)?;
         let covered = |c: usize, r: usize| !coverage.off_grid(c, r) && coverage.is_covered(c, r);
-        // The in-block left column (the corner `LeftCol[-1]` is its top sample for a
-        // `haveAbove == 0` block; verifying the full column covers it).
         if !(mi_row..mi_row.saturating_add(mi_h)).all(|r| covered(left, r)) {
             return None;
         }
-        // Below-left: AVM provides up to `tx_size_high_unit == mi_h` consecutive
-        // coded MI units, then pads.
         let bottom_edge_mi = mi_row.checked_add(mi_h)?;
         let mut num4_below_left = 0usize;
         for offset in 0..mi_h {
@@ -1184,17 +1098,11 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         tile_offset: ByteOffset,
     ) -> Result<()> {
         if !self.quant_reconstructable {
-            // Defer a frame whose dequant the primitive cannot honor.
             return Ok(());
         }
         let Some((log2_width, log2_height)) = tx_size_log2(tx_size) else {
             return Ok(());
         };
-        // Record this leaf's §5.20.5.3 decoded `YModes` over its MI footprint for the
-        // §7.13.2.15/16 neighbour-smooth pick a LATER block reads, regardless of
-        // whether this leaf is itself admitted or deferred (a deferred neighbour is
-        // still `AvailU`/`AvailL`). An IntrABC leaf records its placeholder `DC_PRED`
-        // (its real §5.20.5.3 mode; `is_smooth == false`, matching AVM's mbmi read).
         let (mi_w, mi_h) = mi_extent(log2_width, log2_height);
         if let Some(mode) = leaf_y_mode {
             self.coverage[Self::coverage_index(PlaneId::Y)]
@@ -1204,18 +1112,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             return Ok(());
         }
         if is_intrabc {
-            // A §7.13.3.18 IntrABC leaf's luma prediction is the displaced `CurrFrame`
-            // copy `reconstruct_intrabc_block` already wrote into the workspace (for a
-            // non-skip block, recorded in `pending_intrabc_predictions`), NOT a §7.13.2
-            // intra prediction — the `leaf_y_mode` is a §5.20.5.3 placeholder `DC_PRED`
-            // (no intra Y mode is read for IntrABC). This leaf adds its §5.20.7.27
-            // residual onto that copied predictor and marks its own coverage. The
-            // residual is gated by `residual_is_reconstructable` above (no real IST, no
-            // FSC); a skip IntrABC block carries no residual leaf here (its copy already
-            // marked coverage). The copy must have landed: the leaf's rect must lie
-            // inside a pending IntrABC prediction — otherwise the copy was deferred
-            // (fractional DV / uncovered source / non-reconstructable quant) and adding
-            // a residual onto the fill value would be the cardinal sin, so DEFER.
             return self.reconstruct_intrabc_residual_leaf(
                 mi_col,
                 mi_row,
@@ -1227,9 +1123,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 tile_offset,
             );
         }
-        // The cardinal direction the sink can predict bit-exact, or `None` for DC /
-        // every deferred mode. Only a CARDINAL `H_PRED` / `V_PRED` directional leaf
-        // is admitted here; the angular modes (D45/D135/...) stay deferred.
         let cardinal = match directional {
             Some(SupportedDirectionalLumaMode::Horizontal) => {
                 Some(IntraCardinalDirection::Horizontal)
@@ -1240,9 +1133,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         match (leaf_y_mode, cardinal) {
             (Some(IntraYMode::DC_PRED), _) => {
                 if !self.dc_edges_reconstructed(PlaneId::Y, mi_col, mi_row, mi_w, mi_h) {
-                    // A DC-prediction edge neighbour exists on-grid but was deferred;
-                    // its workspace samples are the fill value, not reconstruction, so
-                    // the DC prediction would be wrong. Defer this block too.
                     return Ok(());
                 }
                 let (x, y) = luma_sample_origin(mi_col, mi_row, tile_offset)?;
@@ -1268,20 +1158,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 })?;
             }
             (_, Some(direction)) => {
-                // Cardinal `H_PRED` / `V_PRED`: a §7.13.2.8 pure sample copy of the
-                // real reconstructed left column (H) / above row (V). The cardinal
-                // recon primitive is now fully RECTANGULAR (independent width/height:
-                // V copies the W-wide above row into every one of the H rows; H fills
-                // each of the H rows with one left sample), but it still reads the
-                // IMMEDIATE edge (`MrlIndex == 0`), so defer a §5.20.5.5 multi-reference
-                // line (`mrl_index > 0`): the primitive copies the ADJACENT left/above
-                // samples, not the selected MRL reference line, so it would write the
-                // wrong prediction. A non-`all_zero` residual of ANY eob now
-                // reconstructs with its retained `block.plane_tx_type` (the §7.15.4
-                // primary inverse resolves the real `Transform_1d_Type[PlaneTxType]`
-                // kernels), so the former non-square `eob > 1` cardinal defer is gone —
-                // `residual_is_reconstructable` already cleared the FSC / real-IST
-                // gates above.
                 if mrl_index != 0 {
                     return Ok(());
                 }
@@ -1316,14 +1192,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     )
                 })?;
             }
-            // §7.13.2.2 PAETH (`PAETH_PRED`, IntraYMode 12, non-directional): admitted
-            // ONLY for an `all_zero` leaf whose §7.13.2.1 above row AND left column are
-            // BOTH real reconstructed neighbours (`haveAbove == 1 && haveLeft == 1`),
-            // so the corner `AboveRow[-1] = CurrFrame[plane][y-1][x-1]` and both edges
-            // are the genuine reconstructed samples — no §7.13.2.1 single-sided
-            // synthesis (which the oracle shows PAETH does not match here) and no
-            // residual (a non-`all_zero` PAETH would re-introduce the §5.20.7.29
-            // tx-type / IST question). Every other PAETH config DEFERS.
             (Some(mode), None) if mode.is_paeth() && block.all_zero && mrl_index == 0 => {
                 if !self.paeth_neighbours_reconstructed(PlaneId::Y, mi_col, mi_row, mi_w, mi_h) {
                     return Ok(());
@@ -1345,12 +1213,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     )
                 })?;
             }
-            // §7.13.2.8 ONE-SIDED angular luma (zone-1 `pAngle < 90`, reads the above
-            // row + above-right; zone-3 `pAngle > 180`, reads the left column +
-            // below-left), admitted ONLY for the proven no-IDIF-edge-filter,
-            // no-useIBP, neighbour-covered subset. Every other angular leaf (the
-            // zone-2 middle band, a filtered-edge angle, a `useIBP` blend, a non-zero
-            // `MrlIndex`, or an uncovered neighbour) DEFERS.
             (Some(mode), None)
                 if mode.is_directional()
                     && self.try_reconstruct_one_sided_angular(
@@ -1368,15 +1230,8 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                         mi_h,
                         tile_offset,
                     )? => {}
-            // Non-DC, non-cardinal luma (SMOOTH / non-admitted PAETH / angular /
-            // a one-sided angle the guard could not prove): defer rather than emit
-            // an unproven prediction.
             _ => return Ok(()),
         }
-        // Count only the IN-FRAME 4x4 units `mark` actually covered: a frame-edge
-        // transform writes (and so reconstructs) only its in-frame samples, so the
-        // 4x4 tally must drop the off-frame overhang to stay equal to the canonical
-        // covered region the oracle aggregate walks.
         let marked =
             self.coverage[Self::coverage_index(PlaneId::Y)].mark(mi_col, mi_row, mi_w, mi_h);
         self.reconstructed_luma_4x4 = self.reconstructed_luma_4x4.saturating_add(marked);
@@ -1413,9 +1268,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         let width = 1usize << log2_width;
         let height = 1usize << log2_height;
         if !self.rect_within_pending_intrabc_prediction(x, y, width, height) {
-            // The whole-block IntrABC copy was deferred (or this leaf overhangs it),
-            // so the predictor under the transform is the fill value — never add a
-            // residual onto it.
             return Ok(());
         }
         reconstruct_intrabc_block_residual_rect_into(
@@ -1470,7 +1322,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         let Some((log2_width, log2_height)) = tx_size_log2(chroma_tx) else {
             return Ok(());
         };
-        // Chroma is never an FSC leaf.
         if !residual_is_reconstructable(block, false) {
             return Ok(());
         }
@@ -1479,8 +1330,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         if !self.dc_edges_reconstructed(plane_id, mi_col, mi_row, mi_w, mi_h) {
             return Ok(());
         }
-        // The sink admits only DC chroma (never `UV_CFL_PRED`), so the §7.13.2.12
-        // IBP DC gate reduces to `enable_ibp && !(w == 4 && h == 4)` for chroma too.
         let ibp_dc = self.ibp_dc_applies(log2_width, log2_height);
         reconstruct_general_intra_block_rect_into(
             &mut self.workspace,
@@ -1491,7 +1340,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             log2_width,
             log2_height,
             qindex,
-            // Chroma never uses the §7.14.4 TCQ dqDenom term (luma DCT_DCT only).
             false,
             ibp_dc,
             self.bit_depth,
@@ -1546,30 +1394,17 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         tile_offset: ByteOffset,
     ) -> Result<()> {
         if !self.quant_reconstructable {
-            // Defer a frame whose dequant the primitive cannot honor.
             return Ok(());
         }
-        // An integer block vector keeps the predictor a same-shape copy; a fractional
-        // vector widens the source by a BILINEAR border (deferred — needs convolution).
         if source.size() != target.size() {
             return Ok(());
         }
-        // The source rectangle's covered-MI span must be computed from the actual
-        // sample EXTENT, not a floored width: a NON-4x4-aligned integer source offset
-        // (the parser can produce e.g. a -504 eighth-pel == -63px vector) makes a
-        // source straddle a trailing partial MI unit that `width / MI_SIZE` would drop.
-        // Ceil the right/bottom edge and floor the left/top so EVERY MI unit the source
-        // touches is checked (codex finding 1) — otherwise an unreconstructed trailing
-        // MI could be copied as fill and marked bit-exact. ac0ej3's 4x4-aligned source
-        // (x=224, width=32) is unchanged: floor(224/4)=56, ceil(256/4)=64, mi_w=8.
         let coverage = &self.coverage[Self::coverage_index(PlaneId::Y)];
         let src_mi_col = source.x() / MI_SIZE;
         let src_mi_row = source.y() / MI_SIZE;
         let src_mi_w = (source.x() + source.width()).div_ceil(MI_SIZE) - src_mi_col;
         let src_mi_h = (source.y() + source.height()).div_ceil(MI_SIZE) - src_mi_row;
         if !coverage.region_fully_covered(src_mi_col, src_mi_row, src_mi_w, src_mi_h) {
-            // A source MI unit is off-grid or still the workspace fill value; copying
-            // it would claim an unreconstructed sample as correct. Defer this block.
             return Ok(());
         }
         self.workspace
@@ -1581,10 +1416,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 )
             })?;
         if !skip_flag {
-            // The copy is only the §7.13.2 prediction; the §5.20.7.27 residual leaves
-            // (decoded after this prelude, in decode order) own the coverage. Record
-            // the target rect so a residual leaf can prove its predictor is the real
-            // displaced copy before adding its residual.
             self.pending_intrabc_predictions.push(target);
             return Ok(());
         }
@@ -1672,17 +1503,10 @@ pub(in crate::runtime_minimal) fn reconstruct_ac0ej3_selectable_intra_region(
         )
     })?;
     let bit_depth = BitDepth::from_av2_bit_depth_idc(sequence.general.bit_depth_idc.get())?;
-    // §5.4.5 `enable_ibp`: the selectable tool gate (unlike `fixed_largest`) admits
-    // `enable_ibp`, so a DC_PRED leaf must run the §7.13.2.12 IBP DC modifier when
-    // the sequence enables it. ac0ej3's intra config has `enable_ibp == 1`.
     let enable_ibp = sequence
         .intra
         .as_ref()
         .is_some_and(|intra| intra.enable_ibp);
-    // §5.4.5 `enable_intra_edge_filter`: when set, the §7.13.2.7 edge / corner
-    // filter runs for non-cardinal angles; the sink admits a one-sided angular leaf
-    // only when that filter is a §7.13.2.17 strength-0 no-op (and no corner filter).
-    // ac0ej3's sequence sets this flag.
     let enable_intra_edge_filter = sequence
         .intra
         .as_ref()
@@ -1695,22 +1519,6 @@ pub(in crate::runtime_minimal) fn reconstruct_ac0ej3_selectable_intra_region(
         enable_ibp,
         enable_intra_edge_filter,
     )?;
-    // The walk reconstructs into the sink in decode order. With the AVM-faithful
-    // §5.20.3.1 SDP chroma partition plane (plane 1 for the chroma tree) and the
-    // §8.3.2 `is_cfl` neighbour-context fix (the chroma `is_cfl` CDF is keyed by the
-    // above/left `UVCfls` neighbours, not a hardcoded `ctx == 0`), the parse stays
-    // entropy-synced past the IntrABC ref-stack wall and — with the §5.20.7.27 context
-    // write AND the §5.20 `reset_block_context` write both now clamped to the frame
-    // edge — past the bottom-edge skipped transforms. The selectable transform-record
-    // handoff now runs to COMPLETION (`Ok`): the verified subset is reconstructed in
-    // decode order and the out-of-subset IntrABC/general-intra blocks are
-    // conservatively deferred to their fill value (never a confident-wrong sample), so
-    // no per-block frontier is raised (see `EXPECTED_RECON_FRONTIER_REASON`); the owned
-    // sink retains the verified reconstructed region.
-    // `EXPECTED_RECON_FRONTIER_REASON` is the DEFENSIVE net: if a regression
-    // re-introduces an earlier handoff frontier or desync, swallow ONLY that one known
-    // reason — every other error is propagated so the test fails loudly instead of
-    // silently passing on a partial walk.
     match super::tx_records::derive_wienerns_lr_selectable_transform_record_handoff(
         bytes,
         options,
@@ -1903,17 +1711,7 @@ fn residual_is_reconstructable(block: &LumaCoeffBlock, fsc_mode: bool) -> bool {
     if block.all_zero {
         return true;
     }
-    // §7.15.3: a `sec_tx_type == 0` IST leaf applies NO secondary inverse
-    // transform — it reconstructs via the identical §7.14.4 / §7.15.4 primary
-    // residual path as a non-IST leaf (the primitive never consults `intra_ist`).
-    // Only a REAL IST leaf (`sec_tx_type != 0`) needs the unimplemented §7.15.3
-    // secondary transform, so defer ONLY that. A no-op-IST leaf must still satisfy
-    // every other residual condition below (the FSC / real-IST gates), exactly
-    // like a non-IST leaf.
     let real_ist = block.intra_ist.is_some_and(|ist| ist.sec_tx_type != 0);
-    // The §7.15.4 primary inverse now resolves the retained `block.plane_tx_type`
-    // for both square and non-square blocks at any eob, so the former non-square
-    // `eob > 1` tx-type defer is gone. The FSC / real-IST gates remain.
     !(real_ist || fsc_mode)
 }
 

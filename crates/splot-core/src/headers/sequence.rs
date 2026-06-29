@@ -513,8 +513,6 @@ pub fn parse_sequence_header_general(reader: &mut BitReader<'_>) -> Result<Seque
                 ));
             }
             let seq_decoder_model_info_present_flag = reader.read_flag()?;
-            // AV2 § 5.4.1: when present, seq_decoder_model_info() (§ 5.4.13) is
-            // parsed here, before the dependency-map bits.
             let decoder_model_info = if seq_decoder_model_info_present_flag {
                 Some(parse_sequence_decoder_model_info(reader)?)
             } else {
@@ -638,8 +636,6 @@ pub fn parse_sequence_header(reader: &mut BitReader<'_>) -> Result<SequenceHeade
         parse_sequence_transform_quant_entropy_config(reader, monochrome, single_picture)?;
     let filter = parse_sequence_filter_config(reader, single_picture, seq_sb_size)?;
 
-    // AV2 § 5.4.2: tile_params(max_frame_width_minus_1 + 1, max_frame_height_minus_1 + 1,
-    // seqSbSize, seqSbSize, 0) with the sequence tier/level.
     let tile_params_input = TileParamsInput {
         frame_width: general.max_frame_width.get(),
         frame_height: general.max_frame_height.get(),
@@ -735,9 +731,6 @@ pub fn parse_timing_info(reader: &mut BitReader<'_>) -> Result<TimingInfo> {
         let ticks_offset = reader.byte_offset();
         let ticks_bit_offset = reader.bit_offset();
         let value = reader.read_uvlc()?;
-        // AV2 § 6.4.12 bounds num_ticks_per_picture_minus_1 to (1 << 32) - 2. The
-        // uvlc() descriptor already caps values at (1 << 32) - 2, so this guard is
-        // defensive; it can only fire if the descriptor contract changes.
         if u64::from(value) > (1u64 << 32) - 2 {
             return Err(invalid_sequence_header(
                 ticks_offset,

@@ -58,8 +58,6 @@ pub(super) fn resolve_body(table_name: &str, body: &str) -> Result<Option<String
     Ok(Some(out))
 }
 
-// AV2 § 6.19.3 Table 6.22 defines valid block-size values 0..=28; AV2 § 3
-// defines `BLOCK_INVALID = 29` and `BLOCK_SIZES = 29`.
 fn block_size_symbol_value(symbol: &str) -> Option<i32> {
     Some(match symbol {
         "BLOCK_4X4" => 0,
@@ -96,7 +94,6 @@ fn block_size_symbol_value(symbol: &str) -> Option<i32> {
     })
 }
 
-// AV2 § 6.19.6.1 defines TxSize values 0..=24 and `TX_INVALID = 255`.
 fn tx_size_symbol_value(symbol: &str) -> Option<i32> {
     Some(match symbol {
         "TX_4X4" => 0,
@@ -129,7 +126,6 @@ fn tx_size_symbol_value(symbol: &str) -> Option<i32> {
     })
 }
 
-// AV2 § 3 Table 3.1 defines TxType values 0..=15 and `TX_TYPES = 16`.
 fn tx_type_symbol_value(symbol: &str) -> Option<i32> {
     Some(match symbol {
         "DCT_DCT" => 0,

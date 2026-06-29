@@ -16,18 +16,12 @@ use super::{
 };
 
 const BLOCK_SIZES: usize = MI_WIDTH_LOG2.len();
-// AV2 § 8.3.2 do_square_split uses the BLOCK_256X256 discriminant from the
-// generated § 9.2 block-size conversion-table order.
 const BLOCK_256X256_INDEX: usize = 18;
 
-// AV2 § 8.3.2 Partition_Size_Adjust
-// (`docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2`).
 const PARTITION_SIZE_ADJUST: [usize; BLOCK_SIZES] = [
     0, 0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 0, 0, 0, 0,
 ];
 
-// AV2 § 8.3.2 Partition_Size_Adjust_Rect_Type
-// (`docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2`).
 const PARTITION_SIZE_ADJUST_RECT_TYPE: [usize; BLOCK_SIZES] = [
     0, 0, 0, 0, 1, 2, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 13, 14, 13, 14, 0, 0, 0, 0,
 ];
@@ -599,11 +593,6 @@ mod tests {
 
     #[test]
     fn chroma_sdp_do_split_reads_plane_one_cdf_and_neighbor_array() {
-        // §5.20.3.1 / §8.3.2: the SDP chroma partition tree reads `do_split` /
-        // `rect_type` / `do_square_split` from plane 1, deriving its split context
-        // from the plane-1 (chroma) neighbor block-size arrays. The plane-0 (luma)
-        // neighbor arrays here are deliberately set to a different size so a
-        // regression that re-read plane 0 would change the derived context.
         let left0 = [BLOCK_4X4];
         let left1 = [BLOCK_256X256];
         let above0 = [BLOCK_4X4];
@@ -612,8 +601,6 @@ mod tests {
             PartitionContextInput::new(BLOCK_16X16, 1, 0, 0, [&left0, &left1], [&above0, &above1])
                 .unwrap();
 
-        // The selector targets plane 1 and uses the plane-1 neighbor sizes (both
-        // `BLOCK_256X256`, wider/taller than the 16x16 block -> both context bits 0).
         assert_eq!(
             input.do_split_selector().unwrap(),
             TileCdfSelector::DoSplit {
@@ -621,8 +608,6 @@ mod tests {
                 ctx: 4,
             }
         );
-        // The corresponding plane-0 read derives a different context from the (much
-        // smaller) plane-0 neighbors, proving the plane index selects the array.
         let luma =
             PartitionContextInput::new(BLOCK_16X16, 0, 0, 0, [&left0, &left1], [&above0, &above1])
                 .unwrap();
@@ -634,9 +619,6 @@ mod tests {
             }
         );
 
-        // Square-split, by contrast, is fixed to plane 0 (§8.3.2: the chroma
-        // partition is forced for the large block sizes where it is read), so the
-        // chroma SDP plane is rejected for it even inside the chroma tree.
         let empty_plane: [&[usize]; 0] = [];
         let empty_mi_sizes = [&empty_plane[..], &empty_plane[..]];
         assert!(matches!(
@@ -770,9 +752,6 @@ mod tests {
             }
         );
 
-        // §8.3.2: `do_square_split` is fixed to plane 0, so the chroma SDP plane
-        // (1) — valid for `do_split` / rect contexts — is rejected for it before any
-        // grid-neighbor table access.
         let err = SquareSplitContextInput::new(BLOCK_16X16, 1, 0, 0, false, false, empty_mi_sizes)
             .unwrap()
             .do_square_split_selector()

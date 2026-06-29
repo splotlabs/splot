@@ -1,15 +1,5 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
-//
-// Fuzz target: ENC-BITSTREAM-WRITER public AV2 §8.2 symbol encoder evidence.
-// The encoder must return typed results, never panic, on bounded operation
-// streams and must emit payloads that decode back through the in-tree
-// SymbolDecoder. This target intentionally does not perform §8.3 syntax-element
-// CDF selection, tile traversal, reconstruction, runtime output, filesystem I/O,
-// or AVM/dav2d invocation. Run with:
-//
-//     cargo install cargo-fuzz --locked
-//     cargo +nightly fuzz run symbol_encoder_bytes
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;

@@ -149,9 +149,6 @@ fn run_intrabc_prelude(
 
 #[test]
 fn active_intrabc_nearmv_skip_reads_use_skip_mode_and_drl_then_advances() {
-    // A `skip` IntrABC leaf reads its mode-info in order, then the walk advances:
-    // `read_intrabc_info` returns `Ok` (no residual symbols follow a skip leaf), so
-    // the partition/superblock walk continues to the next block.
     let (use_skip, info, symbol_count) = run_intrabc_prelude(
         &[
             (Some(TileCdfSelector::Intrabc { ctx: 0 }), 1),
@@ -216,29 +213,15 @@ fn active_intrabc_newmv_nonskip_reads_block_vector_and_returns_info_for_residual
             skip_flag: false,
         }
     );
-    // A NON-`skip` IntrABC leaf reads its full §5.20.5.4 block-vector syntax and
-    // returns the parsed mode-info: its §5.20.6.1 inter tx-partition + §5.20.7.29
-    // inter transform-type + §5.20.7.27 coefficient residual are decoded by the
-    // is_inter-aware tx-record + coefficient machinery the partition walk drives
-    // AFTER this prelude returns, so the prelude itself must not stop the walk.
     let info = info.expect("non-skip IntrABC prelude returns parsed mode-info");
     assert_eq!(info.intrabc_mode, 0);
     assert_eq!(info.block_mv, IntrabcBlockVector { row: -512, col: 0 });
     assert_eq!(symbol_count, 8);
 }
 
-// The admission gate ADMITS a TWO-distinct-candidate block end-to-end, applying
-// the § 7.12.2.19 weight sort through `read_intrabc_info`. This proves the gate
-// WIRING threads the sort + the real `drl_reorder` flag: MI(20,8) (within-SB,
-// bw4 = 4) reads its step-7 left-bottom (23,7) = (-512,0) (weight 1) and step-10
-// above (19,8) = (0,-3072) (weight 1) as TWO distinct candidates. Equal weights ->
-// strict-`>` no-op swap, so slot 0 keeps the scan-order-first (-512,0); the NEARMV
-// (intrabc_mode 1) DRL index 0 predictor is therefore (-512,0) and the block-mv
-// syntax is read (admit), not deferred.
 #[test]
 fn active_intrabc_ref_stack_admits_two_distinct_spatial_candidates() {
     let (mut sequence, core) = selectable_large_frame_fixture();
-    // DRL_REORDER_ALWAYS so the § 7.12.2.19 sort actually runs for nearest > 1.
     sequence.inter.as_mut().unwrap().drl_reorder = DrlReorder::Always;
     let mut cdfs = FrameCdfSubset::from_defaults().tile_copy();
     let payload = encode_steps(&[
@@ -271,8 +254,6 @@ fn active_intrabc_ref_stack_admits_two_distinct_spatial_candidates() {
             )
             .unwrap();
     };
-    // Step-7 left-bottom (MiRow+bh4-1, MiCol-1) = (23,7) and step-10 above
-    // (MiRow-1, MiCol) = (19,8) hold DISTINCT IntrABC BVs.
     neighbour(&mut state, 23, 7, IntrabcBlockVector { row: -512, col: 0 });
     neighbour(&mut state, 19, 8, IntrabcBlockVector { row: 0, col: -3072 });
     let block = IntrabcBlockContext::new(20, 8, 2, false);
@@ -307,17 +288,9 @@ fn active_intrabc_ref_stack_admits_two_distinct_spatial_candidates() {
             skip_flag: false,
         }
     );
-    // NEARMV predictor = sorted stack slot 0 = (-512,0) (no-op swap, equal weights).
     assert_eq!(info.block_mv, IntrabcBlockVector { row: -512, col: 0 });
 }
 
-// ac0ej3 frame-0 MI(0,112) admission through the full guard: after MI(16,56)
-// (BV (-512,0)) enters the ref-MV bank, the § 7.12.2.21 frame-boundary test
-// REJECTS the bank candidate (ref_y = -64 <= -block_height), so the stack is
-// default-only and the DRL index selects the same BV as the bounded fallback
-// -> ADMIT (the guard returns Ok). The pure bank/stack/admission logic is
-// verified in the sibling intrabc_ref_mv_stack module against AVM
-// av2_find_mv_refs; this test proves the guard wiring on the default-only path.
 #[test]
 fn intrabc_ref_stack_admits_ac0ej3_mi_0_112_default_only_stack() {
     let (mut sequence, _core) = selectable_large_frame_fixture();
@@ -326,14 +299,10 @@ fn intrabc_ref_stack_admits_ac0ej3_mi_0_112_default_only_stack() {
         .as_mut()
         .unwrap()
         .seq_max_bvp_drl_bits_minus_1 = 2;
-    // A 1024-wide luma MI grid (256 MI cols) keeps MI(0,112)'s candidates in
-    // bounds; 128 MI rows span the frame height.
     let mut state = TileIntrabcPreludeState::new(128, 256, &sequence, no_off()).unwrap();
-    // MI(16,56): the first (skip) IntrABC block, BV (-512, 0).
     state
         .record_block(16, 56, 8, 16, ac0ej3_skip_neighbour(), no_off())
         .unwrap();
-    // MI(0,112): 32x64 (n4w 8, n4h 16), no spatial IntrABC neighbour, DRL idx 3.
     let geometry =
         IntrabcBlockGeometry::new(IntrabcBlockContext::new(0, 112, BLOCK_16X16, false), 8, 16);
     let syntax = IntrabcInfoSyntax {
@@ -345,24 +314,13 @@ fn intrabc_ref_stack_admits_ac0ej3_mi_0_112_default_only_stack() {
 
     let pred_mv =
         ensure_intrabc_ref_stack_supported(&state, &sequence, geometry, syntax, no_off()).unwrap();
-    // DRL index 3 selects the §7.12.2.20 default tail (0,-256).
     assert_eq!(pred_mv, Mv { row: 0, col: -256 });
 }
 
-// The § 7.12.2.6 step-14 SB-border above-left probe is at the 8x8-aligned column
-// `compute_aligned_offset(MiCol, -2)`, which for an EVEN MiCol reads
-// (MiRow - 1, MiCol - 2). It is now MODELLED, so an SB-border block whose ONLY
-// IntrABC above neighbour sits at that step-14 column ADMITS the candidate (a
-// single distinct BV, no defer) — matching AVM's `row_smvp_state[3]`. The control
-// (an interior block whose within-SB above scan starts at MiCol - 1) does NOT
-// reach MiCol - 2, so a neighbour there reads nothing (no defer). The fixture's
-// seq SB is 64x64, so sb_size4 == 16 and MiRow 16 is an SB-row boundary, MiRow 20
-// is not.
 #[test]
 fn spatial_scan_admits_sb_border_col_minus_two_neighbour() {
     let (sequence, _core) = selectable_large_frame_fixture();
     let neighbour = ac0ej3_skip_neighbour(); // BV (-512, 0).
-    // SB-border block MI(16,56) (even MiCol): the (15,54)==(row-1,MiCol-2) probe.
     let mut sb_border = TileIntrabcPreludeState::new(64, 64, &sequence, no_off()).unwrap();
     sb_border
         .record_block(15, 54, 1, 1, neighbour, no_off())
@@ -370,7 +328,6 @@ fn spatial_scan_admits_sb_border_col_minus_two_neighbour() {
     let at_border =
         IntrabcBlockGeometry::new(IntrabcBlockContext::new(16, 56, BLOCK_16X16, false), 8, 16);
     let scan = sb_border.spatial_intrabc_scan(at_border);
-    // The step-14 above-left corner carries OTHER_SMVP_WEIGHT (0).
     assert_eq!(
         scan.candidates,
         vec![super::super::intrabc_ref_mv_stack::WeightedBv {
@@ -380,9 +337,6 @@ fn spatial_scan_admits_sb_border_col_minus_two_neighbour() {
     );
     assert!(!scan.defer);
 
-    // Control: interior block MI(20,56) (row 20 % 16 != 0) does NOT probe MiCol-2;
-    // a neighbour at (19,54) is outside its within-SB above scan, so no defer and
-    // no candidate.
     let mut interior = TileIntrabcPreludeState::new(64, 64, &sequence, no_off()).unwrap();
     interior
         .record_block(19, 54, 1, 1, neighbour, no_off())
@@ -634,8 +588,6 @@ fn intrabc_geometry_clamps_bottom_edge_overhang_target_to_visible_region() {
     let tile_info = core.tile_info.as_mut().unwrap();
     tile_info.mi_col_starts = vec![0, 4];
     tile_info.mi_row_starts = vec![0, 4];
-    // Nominal: MI(row=2,col=0), n4=(4,4) -> 16x16 nominal, y[8,24) overhangs the
-    // 16-row storage by 8 rows.
     let block = IntrabcBlockContext::new(2, 0, 2, false);
     let geometry = IntrabcBlockGeometry::new(block, 4, 4);
     let info = IntrabcInfo {
@@ -649,8 +601,6 @@ fn intrabc_geometry_clamps_bottom_edge_overhang_target_to_visible_region() {
         derive_intrabc_luma_prediction_geometry(&core, geometry, info, ByteOffset::new(20))
             .unwrap();
 
-    // Target clamped to the in-frame 16x8 rect (NOT the nominal 16x16); source is
-    // the congruent in-frame 16x8 rect 8 rows up. Same shape -> integer copy.
     assert_eq!(prediction.target, PlaneRect::new(0, 8, 16, 8).unwrap());
     assert_eq!(prediction.source, PlaneRect::new(0, 0, 16, 8).unwrap());
     assert_eq!(prediction.target.size(), prediction.source.size());
@@ -666,7 +616,6 @@ fn intrabc_geometry_rejects_off_frame_top_left_block() {
     let tile_info = core.tile_info.as_mut().unwrap();
     tile_info.mi_col_starts = vec![0, 4];
     tile_info.mi_row_starts = vec![0, 4];
-    // Top-left MI row 4 == mi_rows (4): the block's origin is itself off-frame.
     let block = IntrabcBlockContext::new(4, 0, 2, false);
     let geometry = IntrabcBlockGeometry::new(block, 4, 4);
     let info = IntrabcInfo {
@@ -780,9 +729,6 @@ fn intrabc_newmv_read_errors_use_intrabc_frontier_diagnostic() {
     let payload = [];
     let mut symbols = decoder(&payload);
 
-    // Force the shared read_mv helper to fail at the IntrABC caller boundary
-    // (NEWMV, empty payload); public IntrABC mode-info only passes spec-valid
-    // precisions.
     let error = assign_intrabc_mv(
         &mut cdfs,
         &mut symbols,
@@ -911,8 +857,6 @@ fn intrabc_ref_stack_caps_256_sequence_superblocks_to_intra_sb_size() {
     let partition = sequence.partition.as_mut().unwrap();
     partition.use_256x256_superblock = true;
     partition.use_128x128_superblock = false;
-    // A 256x256 sequence superblock is capped to the 128x128 intra SB, so the
-    // §7.12.2.20 default `(0, -sb)` / `(-sb-DELAY, 0)` terms use sb = 128.
     let stack_geometry = IntrabcStackGeometry {
         mi_row: 0,
         mi_col: 0,
@@ -937,10 +881,6 @@ fn intrabc_ref_stack_caps_256_sequence_superblocks_to_intra_sb_size() {
     );
 }
 
-// Codex finding 2: the §6.19.7.12 local-range geometry. ac0ej3's first IntrABC
-// block (128x128 SB, MI(16,56), block 32x64, DV (-512, 0)) is PROVEN valid — its
-// source x[224,256) y[0,64) sits in the SAME superblock as the active block and the
-// same superblock column. Verified against AVM `av2_is_dv_in_local_range`.
 #[test]
 fn local_intrabc_range_admits_ac0ej3_first_block() {
     assert!(local_intrabc_range_valid(IntrabcLocalRangeInputs {
@@ -954,12 +894,8 @@ fn local_intrabc_range_admits_ac0ej3_first_block() {
     }));
 }
 
-// A DV whose source lies in the UNCODED bottom-right region of the active block's
-// top-left corner is rejected (the §6.19.7.12 first local-range guard).
 #[test]
 fn local_intrabc_range_rejects_uncoded_bottom_right_source() {
-    // dv (+8, +8) eighth-pel == +1 sample down/right: source overlaps the uncoded
-    // region (`(dvCol>>3)+bw > 0 && (dvRow>>3)+bh > 0`).
     assert!(!local_intrabc_range_valid(IntrabcLocalRangeInputs {
         mi_row: 16,
         mi_col: 56,
@@ -971,13 +907,8 @@ fn local_intrabc_range_rejects_uncoded_bottom_right_source() {
     }));
 }
 
-// A DV whose source is in a DIFFERENT (previous) superblock is rejected by the
-// same-superblock narrowing.
 #[test]
 fn local_intrabc_range_rejects_source_beyond_left_buffer_window() {
-    // Block at SB column 2 (mi_col 64 == 256px), source displaced 3 SBs left
-    // (dv_col == -3 * 128 * 8 == -3072): the source SB column is 3 SBs left of the
-    // active SB, so it is not in the same superblock.
     assert!(!local_intrabc_range_valid(IntrabcLocalRangeInputs {
         mi_row: 64,
         mi_col: 64,
@@ -989,12 +920,6 @@ fn local_intrabc_range_rejects_source_beyond_left_buffer_window() {
     }));
 }
 
-// Codex re-review finding 1: a source in the PREVIOUS 128x128 superblock — which
-// `av2_is_dv_in_local_range`'s left-buffer window would admit but §6.19.7.12
-// `check_valid_local_ibc` can reject on a 64x64 IBC-buffer collocation collision — is
-// DEFERRED by the same-superblock narrowing. Codex's example: MI(0,68) (active px
-// 272 == SB col 2), DV (0, -128px): source px[144,175] sits in SB col 1, a previous
-// superblock, so it must defer (never copy a not-actually-valid MV).
 #[test]
 fn local_intrabc_range_rejects_previous_superblock_buffer_collision_source() {
     assert!(!local_intrabc_range_valid(IntrabcLocalRangeInputs {
@@ -1008,8 +933,6 @@ fn local_intrabc_range_rejects_previous_superblock_buffer_collision_source() {
     }));
 }
 
-// The full `intrabc_dv_proven_valid` gate DEFERS when `allow_local_intrabc` is
-// explicitly `Some(false)`, even for an otherwise-valid same-SB integer DV.
 #[test]
 fn proven_valid_defers_when_local_intrabc_disabled() {
     let (sequence, mut core) = selectable_large_frame_fixture();
@@ -1020,7 +943,6 @@ fn proven_valid_defers_when_local_intrabc_disabled() {
         change_bvp_drl: Some(false),
         max_bvp_drl_bits_minus_1: None,
     });
-    // A same-SB source within SB col 0 (active px 0, source displaced fully inside).
     let geometry = IntrabcBlockGeometry::new(IntrabcBlockContext::new(20, 0, 2, false), 4, 4);
     let info = IntrabcInfo {
         intrabc_mode: 1,
@@ -1033,13 +955,9 @@ fn proven_valid_defers_when_local_intrabc_disabled() {
     );
 }
 
-// Codex re-review finding 2: §5.18.3.4 inference. A frame with `allow_global_intrabc
-// == 0` infers `allow_local_intrabc = 1` (the parser stores the inferred value as
-// `None`), so an inferred-local frame with a valid same-SB integer DV is ADMITTED.
 #[test]
 fn proven_valid_admits_inferred_local_intrabc_frame() {
     let (sequence, mut core) = selectable_large_frame_fixture();
-    // allow_global_intrabc == 0 -> allow_local_intrabc inferred 1 (stored `None`).
     core.intrabc = Some(IntrabcParams {
         allow_intrabc: true,
         allow_global_intrabc: Some(false),
@@ -1047,10 +965,6 @@ fn proven_valid_admits_inferred_local_intrabc_frame() {
         change_bvp_drl: Some(false),
         max_bvp_drl_bits_minus_1: None,
     });
-    // A same-SB source for any SB size >= 64: block 16x16 at MI(4,4) (active px
-    // (16,16), SB (0,0)), DV (-128 eighth == -16px row, 0) -> source px[16,31] y[0,15],
-    // directly above the block in the same superblock (col 0, row 0). The DV clears
-    // the uncoded-bottom-right guard ((dvRow>>3)+bh == 0, not > 0).
     let geometry = IntrabcBlockGeometry::new(IntrabcBlockContext::new(4, 4, 2, false), 4, 4);
     let info = IntrabcInfo {
         intrabc_mode: 1,
@@ -1063,9 +977,6 @@ fn proven_valid_admits_inferred_local_intrabc_frame() {
     );
 }
 
-// AV2 §5.18.3.4 `allow_global_intrabc` resolves to `true` ONLY for the explicitly-read
-// `Some(true)` value — never the inferred `None` (inferred `0`) and never `Some(false)`,
-// unlike `allow_local_intrabc` which infers to `1`.
 #[test]
 fn resolve_allow_global_intrabc_only_admits_explicit_true() {
     fn check(allow_intrabc: bool, global: Option<bool>) -> bool {
@@ -1082,29 +993,18 @@ fn resolve_allow_global_intrabc_only_admits_explicit_true() {
     assert!(check(true, Some(true)));
     assert!(!check(true, Some(false)));
     assert!(!check(true, None));
-    // `allow_intrabc == false` always disables it.
     assert!(!check(false, Some(true)));
 }
 
-// `global_superblock_samples` returns the TRUE §5.18.7.6 SB size (it must NOT collapse
-// 256 to 128 the way `superblock_samples` does — the global wavefront `gradient` /
-// `mib_size_log2` depend on the real size).
 #[test]
 fn global_superblock_samples_returns_true_sb_size() {
     let (sequence, _core) = selectable_fixture();
-    // The minimal intra fixture is a 64x64 SB; `global_superblock_samples` returns the
-    // true §5.18.7.6 sample size (it would return 256 for the 256x256 tier, where
-    // `superblock_samples` collapses to 128).
     assert_eq!(global_superblock_samples(&sequence, no_off()).unwrap(), 64);
 }
 
-// The `total_sb64_per_row` matches AVM's
-// `(((mi_col_end - mi_col_start - 1) >> mi_size_high_log2[BLOCK_64X64]) + 1)`. For the
-// 480-MI-wide ac0ej3 single tile this is `((480-1)>>4)+1 == 30`.
 #[test]
 fn intrabc_tile_total_sb64_per_row_matches_avm() {
     let (_, mut core) = selectable_large_frame_fixture();
-    // A 480-MI-wide single tile (the whole ac0ej3 frame).
     let tile_info = core.tile_info.as_mut().unwrap();
     tile_info.mi_col_starts = vec![0, 480];
     tile_info.mi_row_starts = vec![0, 272];
@@ -1116,11 +1016,6 @@ fn intrabc_tile_total_sb64_per_row_matches_avm() {
     );
 }
 
-// AVM `av2_is_dv_valid` GLOBAL wavefront branch (`av2/common/mvref_common.h:954-993`),
-// modelled in `global_intrabc_range_valid`. Every vector is derived from an exact i64
-// replica of the AVM predicate (single-tile `total_sb64_per_row == 30`, 128x128 SB except
-// the unsupported-SB row). Each row is `(label, (mi_row, mi_col), (bw, bh), (dv_row,
-// dv_col), sb_size, expect_admit)`.
 #[test]
 fn global_intrabc_range_matches_avm_wavefront_vectors() {
     type Vector = (
@@ -1132,9 +1027,6 @@ fn global_intrabc_range_matches_avm_wavefront_vectors() {
         bool,
     );
     let vectors: &[Vector] = &[
-        // ac0ej3 MI(256,56) DV(-1024,0) BLOCK_16X64: a -128px VERTICAL source in the
-        // PREVIOUS 128x128 SB row (src_sb_row 7, active 8), wavefront-valid. The same-SB
-        // local branch rejects it (different SB row); the global branch admits.
         (
             "prev-SB-row wavefront source",
             (256, 56),
@@ -1143,7 +1035,6 @@ fn global_intrabc_range_matches_avm_wavefront_vectors() {
             128,
             true,
         ),
-        // MI(0,256) DV(0,-2560): src_sb64 11 < active_sb64 16 - INTRABC_DELAY_SB64 4.
         (
             "same-row far-enough source",
             (0, 256),
@@ -1152,8 +1043,6 @@ fn global_intrabc_range_matches_avm_wavefront_vectors() {
             128,
             true,
         ),
-        // MI(0,256) DV(0,-2048): src_sb64 == active_sb64 - INTRABC_DELAY_SB64 (12 == 16-4);
-        // AVM's guard is `>=`, so the boundary REJECTS (one SB64 too close).
         (
             "one SB64 too close",
             (0, 256),
@@ -1162,8 +1051,6 @@ fn global_intrabc_range_matches_avm_wavefront_vectors() {
             128,
             false,
         ),
-        // MI(0,256) DV(+1024,...): the source is 128px BELOW the active block, so
-        // src_sb_row 1 > active_sb_row 0 — AVM's `src_sb_row > active_sb_row` reject.
         (
             "source in a later SB row",
             (0, 256),
@@ -1172,11 +1059,6 @@ fn global_intrabc_range_matches_avm_wavefront_vectors() {
             128,
             false,
         ),
-        // MI(16,0) DV(0,-2168): a bottom-left-128 position (sb128, active_sb64_col even,
-        // active_sb64_row odd) whose source clears the RELAXED `sb_64_residual == -1`
-        // horizon but NOT the strict `residual == 0` horizon. Without `sb_root_partition_info`
-        // the fail-closed model requires BOTH horizons, so this DEFERS — never admitting a
-        // DV a non-`SB_HORZ_OR_QUAD` partition would reject.
         (
             "bottom-left-128 residual-sensitive",
             (16, 0),
@@ -1185,8 +1067,6 @@ fn global_intrabc_range_matches_avm_wavefront_vectors() {
             128,
             false,
         ),
-        // MI(16,0) DV(0,-3584): same bottom-left-128 position but a source far enough left
-        // to clear BOTH horizons, so it is admitted regardless of the untracked partition.
         (
             "bottom-left-128 both horizons clear",
             (16, 0),
@@ -1224,22 +1104,14 @@ fn global_intrabc_range_matches_avm_wavefront_vectors() {
     }
 }
 
-// §5.20.6.1 `record_block` clamps its per-MI mode-info fill to the frame edge
-// (modelling AVM §5.20.3.2 `block_coded(r,c) { r < MiRows && c < MiCols }`,
-// 05-syntax-structures.md:9621): a leaf whose NOMINAL MI footprint overhangs the
-// bottom (or right) frame edge records exactly its IN-FRAME MI cells and leaves
-// the out-of-frame cells `None`, instead of hard-erroring `..._intrabc_block_bounds`.
 #[test]
 fn record_block_clamps_bottom_edge_overhang_to_in_frame_cells() {
     let (sequence, _core) = selectable_fixture();
-    // A 4x4 MI grid. A leaf at MI(2,0) with a NOMINAL 4-tall, 2-wide footprint
-    // overhangs the bottom edge by 2 MI rows (rows 4,5 are off-frame).
     let mut state = TileIntrabcPreludeState::new(4, 4, &sequence, no_off()).unwrap();
     state
         .record_block(2, 0, 2, 4, ac0ej3_skip_neighbour(), no_off())
         .unwrap();
 
-    // The 2 in-frame rows (2,3) x 2 cols (0,1) record the block's facts.
     for r in 2..4 {
         for c in 0..2 {
             assert!(
@@ -1248,32 +1120,24 @@ fn record_block_clamps_bottom_edge_overhang_to_in_frame_cells() {
             );
         }
     }
-    // Cell (0,0) is above the block; it stays `None`.
     assert!(state.value(0, 0, no_off()).unwrap().is_none());
-    // The off-frame rows (4,5) are never written — `value`/`index` would even
-    // reject them as out of grid, so the clamp prevented any OOB write/panic.
     assert!(state.value(3, 3, no_off()).unwrap().is_none());
 }
 
 #[test]
 fn record_block_clamps_right_edge_overhang_to_in_frame_cells() {
     let (sequence, _core) = selectable_fixture();
-    // Symmetric right-edge case: a leaf at MI(0,2) with a NOMINAL 4-wide footprint
-    // overhangs the right edge by 2 MI cols (cols 4,5 are off-frame).
     let mut state = TileIntrabcPreludeState::new(4, 4, &sequence, no_off()).unwrap();
     state
         .record_block(0, 2, 4, 1, ac0ej3_skip_neighbour(), no_off())
         .unwrap();
 
-    // The single in-frame row 0 x in-frame cols (2,3) record the block's facts.
     for c in 2..4 {
         assert!(
             state.value(0, c, no_off()).unwrap().is_some(),
             "in-frame MI cell (0,{c}) must record the block"
         );
     }
-    // Col (0,1) is left of the block; it stays `None`.
     assert!(state.value(0, 1, no_off()).unwrap().is_none());
-    // Row 1 is below the 1-tall block; it stays `None`.
     assert!(state.value(1, 2, no_off()).unwrap().is_none());
 }

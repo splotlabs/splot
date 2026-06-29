@@ -34,7 +34,6 @@ fn mv_clamp_to_integer_clamps_out_of_range() {
 
 #[test]
 fn read_ns_small_n_reads_nothing() {
-    // n <= 1 has a single value (0) and consumes no bits.
     let mut symbols = SymbolDecoder::new(&[0x00, 0x80]).unwrap();
     let before = symbols.consumed_bits();
     assert_eq!(read_ns(&mut symbols, 1, ByteOffset::new(0)).unwrap(), 0);
@@ -45,7 +44,6 @@ fn read_ns_small_n_reads_nothing() {
 
 #[test]
 fn read_ns_returns_values_in_range() {
-    // NS(n) returns values strictly in 0..n for any decoded bit pattern.
     for n in 2..16i64 {
         let mut symbols = SymbolDecoder::new(&[0xAA, 0x55, 0x80]).unwrap();
         let value = read_ns(&mut symbols, n, ByteOffset::new(0)).unwrap();

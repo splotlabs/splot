@@ -51,20 +51,15 @@ pub fn write_buffer_removal_timing(
 
     let mut scratch = BitWriter::new();
     match brt {
-        // § 5.12: br_ops_dependent_flag = 0, then br_time rg(4).
         BufferRemovalTiming::ExtendedLayer { br_time } => {
             scratch.write_bit(0)?;
             scratch.write_rg(*br_time, BR_TIME_RG_ORDER)?;
         }
-        // § 5.12: br_ops_dependent_flag = 1, then br_ops_id f(4), br_ops_cnt f(3), and br_ops_cnt
-        // per-operating-point entries.
         BufferRemovalTiming::OperatingPointSet {
             br_ops_id,
             br_ops_cnt,
             op_times,
         } => {
-            // The parser pushes exactly br_ops_cnt entries (0..br_ops_cnt), so a length mismatch is
-            // a model it could never have produced.
             if op_times.len() != usize::from(*br_ops_cnt) {
                 return Err(WriteError::NonCanonicalBufferRemovalTiming { what: "op_count" });
             }
@@ -72,13 +67,9 @@ pub fn write_buffer_removal_timing(
             scratch.write_bits_u8(*br_ops_id, BR_OPS_ID_BITS)?;
             scratch.write_bits_u8(*br_ops_cnt, BR_OPS_COUNT_BITS)?;
             for (i, op) in op_times.iter().enumerate() {
-                // `index` is the parser's loop counter (it is not a wire field); a model whose index
-                // disagrees with its position could never have been parsed and would not round-trip.
                 if usize::from(op.index) != i {
                     return Err(WriteError::NonCanonicalBufferRemovalTiming { what: "op_index" });
                 }
-                // § 5.12: br_time_op is read iff br_decoder_model_present_op_flag is set, so the
-                // parser ties Some(..) to the flag. Reject a model that stores one without the other.
                 if op.decoder_model_present != op.br_time_op.is_some() {
                     return Err(WriteError::NonCanonicalBufferRemovalTiming {
                         what: "op_decoder_model_flag",
@@ -94,7 +85,5 @@ pub fn write_buffer_removal_timing(
     writer.append(&scratch)
 }
 
-// The round-trip / reject tests live in a sibling file (kept under the advisory source-line limit);
-// `include!` pastes them into this module so their `super::*` resolves to the writer above.
 #[cfg(test)]
 include!("buffer_removal_timing_tests.rs");

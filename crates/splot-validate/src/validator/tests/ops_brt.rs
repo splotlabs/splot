@@ -57,8 +57,6 @@ fn ops_payload_size_mismatch_is_flagged() {
 
 #[test]
 fn ops_inherited_op_index_out_of_range_is_flagged() {
-    // Same-OPS reference (embedded_ops_id == ops_id 0): op_index 5 >= ops_cnt 1
-    // and >= j (layer 1).
     let mut data = temporal_delimiter_obu();
     data.extend(global_ops_inherited_obu(0, 0, 5));
     let report = Validator::new(false).validate_bytes(&data);
@@ -72,9 +70,6 @@ fn ops_inherited_op_index_out_of_range_is_flagged() {
 
 #[test]
 fn ops_cross_ops_inherited_op_index_out_of_range_is_flagged() {
-    // OPS 0 inherits from a different, already-defined OPS 1 (ops_cnt 1) at
-    // op_index 5, which is out of range — exercises the cross-OPS resolution
-    // against the prior active OPS state.
     let mut data = temporal_delimiter_obu();
     data.extend(global_ops_obu(false, 1, 1)); // define OPS 1 (ops_cnt 1)
     data.extend(global_ops_inherited_obu(0, 1, 5)); // OPS 0 inherits OPS 1 op 5
@@ -89,8 +84,6 @@ fn ops_cross_ops_inherited_op_index_out_of_range_is_flagged() {
 
 #[test]
 fn ops_cross_ops_inherited_op_index_in_range_is_not_flagged() {
-    // OPS 0 inherits from OPS 1 (ops_cnt 3) at op_index 2, which is in range, so
-    // the cross-OPS bound check must not flag it.
     let mut data = temporal_delimiter_obu();
     data.extend(global_ops_obu(false, 1, 3)); // define OPS 1 (ops_cnt 3)
     data.extend(global_ops_inherited_obu(0, 1, 2)); // OPS 0 inherits OPS 1 op 2
@@ -104,7 +97,6 @@ fn ops_cross_ops_inherited_op_index_in_range_is_not_flagged() {
 
 #[test]
 fn ops_reset_removes_active_ops() {
-    // Define OPS 0 (cnt 2), reference it (resolves), reset it, reference again.
     let mut data = temporal_delimiter_obu();
     data.extend(global_ops_obu(false, 0, 2));
     data.extend(brt_dependent_obu(31, 0, 2)); // matches active ops_cnt 2
@@ -125,7 +117,6 @@ fn ops_reset_removes_active_ops() {
 
 #[test]
 fn ops_update_changes_active_ops_count() {
-    // Define OPS 0 (cnt 2), match a BRT, then update to cnt 3 and re-reference.
     let mut data = temporal_delimiter_obu();
     data.extend(global_ops_obu(false, 0, 2));
     data.extend(brt_dependent_obu(31, 0, 2)); // matches cnt 2
@@ -194,8 +185,6 @@ fn brt_missing_ops_is_flagged_when_external_hls_lacks_the_ops() {
     use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
     let mut data = temporal_delimiter_obu();
     data.extend(brt_dependent_obu(31, 5, 1)); // references OPS (31, 5)
-    // External HLS is provided but only declares a sequence header and a
-    // different OPS, so OPS (31, 5) is still unavailable and must be flagged.
     let options = ValidationOptions {
         external_hls: ExternalHlsMode::Provided(
             ExternalHlsSet::new()
@@ -215,8 +204,6 @@ fn brt_missing_ops_is_flagged_when_external_hls_lacks_the_ops() {
 
 #[test]
 fn ops_malformed_payload_is_flagged() {
-    // A global OPS header claims ops_cnt=1 but the payload ends immediately, so
-    // the header fields cannot be read. The OPS syntax check must report it.
     let mut data = temporal_delimiter_obu();
     data.extend(annex_b_obu_with_header(
         &layer_obu_header(18, 0, 0, 31),
@@ -233,9 +220,6 @@ fn ops_malformed_payload_is_flagged() {
 
 #[test]
 fn brt_malformed_payload_is_flagged() {
-    // br_ops_dependent_flag=1, br_ops_id=0, br_ops_cnt=1 fills the single payload
-    // byte, so the per-op flag read runs past the input. The BRT syntax check
-    // must report it.
     let mut data = temporal_delimiter_obu();
     data.extend(annex_b_obu_with_header(
         &layer_obu_header(15, 0, 0, 31),
@@ -252,7 +236,6 @@ fn brt_malformed_payload_is_flagged() {
 
 #[test]
 fn global_brt_before_coded_layers_is_accepted() {
-    // A global BRT before any coded extended layer unit raises no ordering error.
     let mut data = temporal_delimiter_obu();
     data.extend(brt_extended_layer_obu(31)); // global BRT, extended-layer form
     data.extend(local_ops_obu(2, false, 0, 1, 0, false, 0)); // a coded-layer OBU
@@ -266,10 +249,6 @@ fn global_brt_before_coded_layers_is_accepted() {
 
 #[test]
 fn global_brt_after_coded_layer_is_not_flagged() {
-    // § 7.3.7 does not list BRT among global prefix OBUs and § 7.3.3/§ 7.3.4 place
-    // it in coded frame units, so a global BRT after a coded layer is left
-    // unclassified rather than flagged (sound-over-complete; see
-    // is_global_hls_prefix_obu).
     let mut data = temporal_delimiter_obu();
     data.extend(local_ops_obu(2, false, 0, 1, 0, false, 0)); // coded-layer OBU
     data.extend(brt_extended_layer_obu(31)); // global BRT after the coded layer
@@ -283,8 +262,6 @@ fn global_brt_after_coded_layer_is_not_flagged() {
 
 #[test]
 fn local_brt_follows_coded_layer_classification() {
-    // A local BRT is a coded extended layer OBU (§ 7.3.3/§ 7.3.4): it starts the
-    // coded-layer phase, so a later global OPS prefix is flagged out of order.
     let mut data = temporal_delimiter_obu();
     data.extend(brt_extended_layer_obu(2)); // local BRT -> coded extended layer unit
     data.extend(global_ops_obu(false, 0, 1)); // global OPS prefix after a coded layer

@@ -1,11 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-// Unit, byte-exact, and rejection tests for the § 5.18.6 / § 5.18.7.8 / § 5.18.2 frame
-// quantization writers.
-
-// `include!`d into `crate::write::frame_quant` so `super::*` resolves to its writers and
-// private helpers (the property tests live in the sibling `frame_quant_proptests.rs`).
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::too_many_lines)]
@@ -53,7 +48,6 @@ mod tests {
         BitReader::new(bytes, ByteOffset::new(0))
     }
 
-    // ----- write_read_delta_q (§ 5.18.6.3) -----
 
     fn roundtrip_delta_q(value: i32) {
         let mut writer = BitWriter::new();
@@ -72,7 +66,6 @@ mod tests {
 
     #[test]
     fn read_delta_q_zero_is_one_bit_canonical() {
-        // Canonicalization 1: delta_q == 0 -> delta_coded f(1) = 0, no su.
         let mut writer = BitWriter::new();
         write_read_delta_q(&mut writer, 0).unwrap();
         assert_eq!(writer.bit_len(), 1);
@@ -81,7 +74,6 @@ mod tests {
 
     #[test]
     fn read_delta_q_nonzero_is_eight_bits() {
-        // delta_coded f(1) = 1 then su(7).
         let mut writer = BitWriter::new();
         write_read_delta_q(&mut writer, 5).unwrap();
         assert_eq!(writer.bit_len(), 8);
@@ -106,7 +98,6 @@ mod tests {
         }
     }
 
-    // ----- write_quantization_params (§ 5.18.6.1) -----
 
     /// Parse the hand-built bits with `parse_quantization_params`, then write the parsed
     /// model back and assert byte-exact round-trip (canonical fixtures).
@@ -270,7 +261,6 @@ mod tests {
 
     #[test]
     fn quant_chroma_block_off_nonzero_rejected() {
-        // No chroma reads enabled: any chroma delta / diff_uv_delta is non-canonical.
         let mut params = quant_params(10);
         params.delta_q_u_ac = 1;
         let mut writer = BitWriter::new();
@@ -286,7 +276,6 @@ mod tests {
 
     #[test]
     fn quant_diff_uv_delta_without_separate_rejected() {
-        // diff_uv_delta is only coded when separate_uv_delta_q; setting it otherwise is bad.
         let quant = CoreSeqQuantView {
             uv_ac_delta_q_enabled: true,
             ..base_quant()
@@ -306,7 +295,6 @@ mod tests {
 
     #[test]
     fn quant_inferred_v_mismatch_rejected() {
-        // !diff_uv_delta -> DeltaQV* must equal DeltaQU*; a mismatch is non-canonical.
         let quant = CoreSeqQuantView {
             uv_ac_delta_q_enabled: true,
             ..base_quant()
@@ -328,7 +316,6 @@ mod tests {
 
     #[test]
     fn quant_equal_ac_dc_q_mismatch_rejected() {
-        // equal_ac_dc_q -> DeltaQUDc must equal DeltaQUAc (no DC read).
         let quant = CoreSeqQuantView {
             equal_ac_dc_q: true,
             uv_ac_delta_q_enabled: true,
@@ -352,7 +339,6 @@ mod tests {
 
     #[test]
     fn quant_coded_delta_out_of_su_domain_rejected() {
-        // A coded read_delta_q value outside [-64, 63] is rejected before any bit.
         let quant = CoreSeqQuantView {
             y_dc_delta_q_enabled: true,
             ..base_quant()
@@ -371,7 +357,6 @@ mod tests {
         assert_eq!(writer.bit_len(), 0);
     }
 
-    // ----- write_setup_qm_params (§ 5.18.6.2) -----
 
     fn roundtrip_qm(bits: Bits, quant: &CoreSeqQuantView, seg_enabled: bool) {
         let data = bits.into_bytes();
@@ -544,7 +529,6 @@ mod tests {
 
     #[test]
     fn qm_shared_uv_mismatch_rejected() {
-        // !separate_uv_delta_q copies qm_v = qm_u; qm_v != qm_u is non-canonical.
         let mut qm = qm_disabled();
         qm.using_qmatrix = true;
         qm.levels[0] = QmSetLevels {
@@ -584,7 +568,6 @@ mod tests {
 
     #[test]
     fn qm_level_beyond_num_nonzero_rejected() {
-        // pic_qm_num_minus_1 = 0 -> 1 level; a non-default level[1] could not be parsed.
         let mut qm = qm_disabled();
         qm.using_qmatrix = true;
         qm.levels[1] = QmSetLevels {
@@ -603,7 +586,6 @@ mod tests {
         assert_eq!(writer.bit_len(), 0);
     }
 
-    // ----- write_delta_q_params (§ 5.18.7.8) -----
 
     fn roundtrip_delta_q_params(bits: Bits, base_q_idx: u32) {
         let data = bits.into_bytes();
@@ -690,7 +672,6 @@ mod tests {
         assert_eq!(writer.bit_len(), 0);
     }
 
-    // ----- write_lossless_info (§ 5.18.2) -----
 
     #[allow(clippy::too_many_arguments)]
     fn roundtrip_lossless(
@@ -918,16 +899,12 @@ mod tests {
 
     #[test]
     fn lossless_qm_pic_num_out_of_range_rejected() {
-        // A constructed qm whose pic_qm_num_minus_1 is beyond the f(2) field (0..=3) would
-        // drive an over-wide qm_index field; reject before any bit even when
-        // write_lossless_info is called without a prior write_setup_qm_params.
         let quant = base_quant();
         let good_qm = SetupQmParams {
             using_qmatrix: true,
             pic_qm_num_minus_1: 0,
             levels: [QmSetLevels::default(); MAX_PIC_QM_NUM],
         };
-        // All-lossless (base_q_idx == 0): every segment stores [15, 15, 15], no qm_index bits.
         let data = Bits::default().into_bytes();
         let info = parse_lossless_info(
             &mut reader(&data),
@@ -967,8 +944,6 @@ mod tests {
 
     #[test]
     fn lossless_qm_disabled_nonzero_level_rejected() {
-        // With using_qmatrix off the parser leaves seg_qm_levels zeroed; a stored non-zero
-        // triple could not have been produced.
         let quant = base_quant();
         let data = Bits::default().into_bytes();
         let mut info = parse_lossless_info(
@@ -1005,8 +980,6 @@ mod tests {
 
     #[test]
     fn lossless_tail_beyond_max_segments_rejected() {
-        // The parser only touches segments 0..MaxSegments; a stored entry beyond it (here
-        // lossless_array[8] with max_segments == 8) could not have been produced.
         let quant = base_quant();
         let data = Bits::default().into_bytes();
         let mut info = parse_lossless_info(
@@ -1043,7 +1016,6 @@ mod tests {
 
     #[test]
     fn lossless_qm_index_no_match_rejected() {
-        // Constructed model: a non-lossless segment stores a triple matching no level set.
         let qm = SetupQmParams {
             using_qmatrix: true,
             pic_qm_num_minus_1: 0,
@@ -1068,7 +1040,6 @@ mod tests {
             8,
         )
         .unwrap();
-        // Tamper a stored level triple to one no level set can reproduce.
         info.seg_qm_levels[0] = [9, 9, 9];
         let mut writer = BitWriter::new();
         let err = write_lossless_info(
@@ -1093,13 +1064,11 @@ mod tests {
 
     #[test]
     fn lossless_segment_wrong_level_15_rejected() {
-        // A lossless segment must store [15, 15, 15]; a constructed mismatch is rejected.
         let quant = CoreSeqQuantView {
             enable_parity_hiding: true,
             ..base_quant()
         };
         let mut segmentation = seg_params(true);
-        // Segment 0 lossless (base_q_idx 0, feature off); others lossless too.
         let qm = SetupQmParams {
             using_qmatrix: true,
             pic_qm_num_minus_1: 0,
@@ -1114,8 +1083,6 @@ mod tests {
                 QmSetLevels::default(),
             ],
         };
-        // Force one segment non-lossless via a positive ALT_Q so it has a qm_index, but make
-        // segment 0 lossless and tamper its stored [15,15,15].
         segmentation.features[1][0] = SegmentFeature {
             enabled: true,
             data: 5,
@@ -1224,7 +1191,6 @@ mod tests {
 
     #[test]
     fn lossless_allow_tcq_inferred_mismatch_rejected() {
-        // !choose_tcq_per_frame -> allow_tcq inferred enable_tcq (false here); true is bad.
         let mut info = parse_lossless_info(
             &mut reader(&[]),
             &base_quant(),
@@ -1254,7 +1220,6 @@ mod tests {
 
     #[test]
     fn lossless_allow_parity_hiding_inferred_mismatch_rejected() {
-        // enable_parity_hiding = false -> allow_parity_hiding inferred false; true is bad.
         let mut info = parse_lossless_info(
             &mut reader(&[]),
             &base_quant(),
@@ -1289,7 +1254,6 @@ mod tests {
 
     #[test]
     fn lossless_hostile_max_segments_does_not_panic() {
-        // max_segments = 255 must not index out of bounds (the writer caps at MAX_SEGMENTS).
         let info = parse_lossless_info(
             &mut reader(&[]),
             &base_quant(),

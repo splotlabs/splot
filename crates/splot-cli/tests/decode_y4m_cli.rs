@@ -57,10 +57,6 @@ fn conformance_vector(name: &str) -> PathBuf {
         .join(name)
 }
 
-// Y4M framing header (unchanged 64x64 4:2:0 at 30 fps) followed by the decoded
-// raw planar output of the committed conformant luma-skip fixture (luma flat 128
-// skip block; chroma a real coded residual). The raw planar bytes are the
-// committed avmdec/dav2d-agreed reference next to the fixture.
 fn expected_minimal_y4m() -> Vec<u8> {
     let mut bytes = b"YUV4MPEG2 W64 H64 F30:1 Ip A0:0 C420\nFRAME\n".to_vec();
     bytes.extend_from_slice(include_bytes!(
@@ -348,8 +344,6 @@ exec "$SPLOT_BIN" decode --output-format y4m "$SPLOT_INPUT" -o "$out"
     assert_eq!(std::fs::read(&output).unwrap(), expected_minimal_y4m());
     let names = read_dir_names(&dir);
     assert!(names.contains(&"selected-output-name.txt".to_string()));
-    // Exact literal-suffix match on the decoder's known-lowercase temp-file naming, not a
-    // case-insensitive file-extension test; `ends_with` is the intended, correct comparison here.
     #[allow(clippy::case_sensitive_file_extension_comparisons)]
     let tmp_count = names.iter().filter(|name| name.ends_with(".tmp")).count();
     assert_eq!(tmp_count, 1);

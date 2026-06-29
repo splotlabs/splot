@@ -356,9 +356,6 @@ mod tests {
         residual
     }
 
-    // An asymmetric, non-uniform 16x16 residual whose forward DCT carries real
-    // non-zero AC (a smooth gradient plus a high-frequency checkerboard so distinct
-    // +/- magnitudes appear and a sign-order bug cannot be masked).
     fn ac_residual() -> [i32; DCT_DCT_16X16_COEFF_COUNT] {
         let mut residual = [0i32; DCT_DCT_16X16_COEFF_COUNT];
         for r in 0..DCT_DCT_16X16_HEIGHT {
@@ -386,10 +383,6 @@ mod tests {
 
     #[test]
     fn block_quantizes_real_ac_per_coefficient() {
-        // Every one of the 256 coefficients is quantized by the round-to-nearest
-        // policy with its selected quantizer (index 0 the DC quantizer, the rest the
-        // AC quantizer), matching an independent re-derivation. Real non-zero AC
-        // levels appear (not a DC-only degenerate case).
         let residual = ac_residual();
         let transformed = forward(&residual);
         let block =
@@ -411,9 +404,6 @@ mod tests {
 
     #[test]
     fn dequantized_equals_independent_recon_dequant() {
-        // The stored `dequantized` array is exactly what the decoder reconstructs from
-        // the emitted levels: an independent `splot-recon` dequantize_block reproduces
-        // it bit-for-bit.
         let residual = ac_residual();
         let block = quantized(&residual, 2);
         let dequant_params = DequantBlockParams {
@@ -431,16 +421,6 @@ mod tests {
 
     #[test]
     fn closed_loop_random_blocks_reconstruct_within_bound() {
-        // CLOSED-LOOP PROOF for the 16x16 quantizer. A deterministic LCG sweeps random
-        // 8-bit residual blocks; forward16 -> quant16 -> splot-recon dequant +
-        // inverse-16x16 reconstructs the residual within |err| <= BOUND at a fixed
-        // qindex.
-        //
-        // BOUND = 12 at qindex 80: the reconstruction error combines the lossy quant
-        // step (the qindex-80 quantizer rounds each coefficient to a multiple of its
-        // step) with the small <= 5 DCT16 non-orthogonality residue. The worst error
-        // measured over these 1500 random blocks is 10; 12 is the documented bound with
-        // a small margin. The flat-DC sub-check below confirms the lossless anchor.
         const QINDEX: u32 = 80;
         const BOUND: i32 = 12;
         let mut state: u64 = 0x243F_6A88_85A3_08D3;
@@ -475,8 +455,6 @@ mod tests {
 
     #[test]
     fn closed_loop_flat_dc_is_lossless_anchor() {
-        // The flat (DC-only) subset is the lossless anchor: at qindex 0 a uniform
-        // residual reconstructs bit-exactly through quant + dequant + inverse.
         for v in [-127, -8, -1, 0, 1, 7, 127] {
             let block = quantized(&uniform(v), 0);
             assert_eq!(

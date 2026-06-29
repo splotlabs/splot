@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-// Property tests for the § 5.4.10 filter / § 5.4.2 tile writers (round-trip + never-panic
-// over parser-reachable models). Split out of `seq_tile_tests.rs` to keep each test source
-// under the 1000-line advisory budget; `include!`d into `crate::write::seq_tile` so
-// `super::*` resolves to its writers and private helpers.
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
@@ -26,8 +22,6 @@ mod proptests {
         }
     }
 
-    // Parser-reachable filter / tile configs round-trip and are byte-stable; the writers
-    // never panic on an arbitrary config parsed from random bits.
     proptest! {
         /// Every parser-reachable filter config round-trips and is byte-stable.
         #[test]
@@ -36,14 +30,10 @@ mod proptests {
             single_picture in any::<bool>(),
             sb in any::<u8>(),
         ) {
-            // Drive the parser on a generous, padded bit source so it always has enough
-            // bits; then re-emit the parsed model and require byte-exactness over the
-            // consumed prefix (the writer is canonical by construction).
             let mut raw = Vec::new();
             for b in &bits {
                 raw.push(u8::from(*b));
             }
-            // Pad to ensure the parser never hits EOF mid-field.
             let padding = [0u8; 4];
             let packed = pack_bits(&raw, &padding);
             let sb = sb_size(sb);
@@ -88,7 +78,6 @@ mod proptests {
             };
             let mut reader = BitReader::new(&packed, ByteOffset::new(0));
             if let Ok(config) = parse_sequence_tile_config(&mut reader, input) {
-                // A reserved-level residual is unwritable by design; skip it.
                 if config.unimplemented_at().is_some() {
                     return Ok(());
                 }

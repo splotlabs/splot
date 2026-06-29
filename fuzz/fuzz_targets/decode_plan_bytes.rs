@@ -1,13 +1,5 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
-//
-// Fuzz target: the first byte-consuming decode planner must return a typed
-// result, never panic, on arbitrary raw Annex B or IVF/DKIF input. This target
-// intentionally does not reconstruct pixels, compute hashes, write Y4M, or
-// invoke AVM/dav2d. Run with:
-//
-//     cargo install cargo-fuzz --locked
-//     cargo +nightly fuzz run decode_plan_bytes
 #![no_main]
 
 use std::sync::OnceLock;

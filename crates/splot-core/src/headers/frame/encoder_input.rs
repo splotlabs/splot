@@ -55,7 +55,6 @@ impl CoreSeqInterView {
             allow_frame_max_drl_bits: false,
             enable_flex_mvres: false,
             seq_frame_motion_modes_present_flag: false,
-            // MOTION_MODES == 5 (§3); hardcoded here since the const is private to `info`.
             seq_enabled_motion_modes: [false; 5],
             enable_opfl_refine: 0,
             enable_bawp: false,
@@ -97,9 +96,6 @@ impl CoreSeqView {
     #[must_use]
     pub fn new_minimal_intra(max_frame_width: u32, max_frame_height: u32) -> Option<Self> {
         use crate::headers::sequence::{CdefOnSkipTxfm, LevelIdx, SuperblockSize, Tier};
-        // §5.4.1 dim bit-widths derived from the maxima so any in-range maxima can write
-        // an overridden frame size (ceil_log2(4096) == 12 keeps base_seq); clamped to the
-        // 1-bit spec minimum and gated to the writable 1..=2^16 maxima domain.
         let dim_bits = |max: u32| -> Option<u32> {
             (1..=(1u32 << 16))
                 .contains(&max)
@@ -157,9 +153,6 @@ impl CoreSeqView {
                 enable_avg_cdf: false,
                 avg_cdf_type: 0,
                 seq_tier: Tier::Main,
-                // §A: the no-level / `Configurable` sentinel, so the §5.18.7.2 tile-info
-                // writer's level-derived tile-width/area bounds do not constrain a
-                // larger writer-input view (which the maxima would otherwise exceed).
                 seq_level_idx: LevelIdx::from_bits(31),
             },
             filter: CoreSeqFilterView {
@@ -215,20 +208,15 @@ impl CoreSeqView {
         max_frame_height: u32,
     ) -> Option<Self> {
         let mut view = Self::new_minimal_intra(max_frame_width, max_frame_height)?;
-        // §5.4.1: the single_picture_header_flag mirror (top-level + filter + CCSO).
         view.single_picture_header_flag = true;
         view.filter.single_picture_header_flag = true;
         view.ccso.single_picture_header_flag = true;
-        // §5.4.6: OrderHintBits = 0 (frame order_hint becomes f(0) -> omitted); NumRefFrames = 2.
         view.order_hint_bits = 0;
         view.num_ref_frames = 2;
-        // §5.4.7: SELECT_SCREEN_CONTENT_TOOLS / SELECT_INTEGER_MV (both the sentinel value 2).
         view.seq_force_screen_content_tools = 2;
         view.seq_force_integer_mv = 2;
-        // §5.4.8: single-picture sequence_tq_entropy_config infers (enable_avg_cdf, avg_cdf_type).
         view.tile.enable_avg_cdf = true;
         view.tile.avg_cdf_type = 1;
-        // §5.4.1: the single-picture general branch infers monotonic_output_order_flag = true.
         view.monotonic_output_order_flag = true;
         Some(view)
     }
@@ -275,10 +263,6 @@ fn minimal_intra_clk_body_bytes(base_q_idx: u8) -> WriteResult<Vec<u8>> {
     let mut writer = BitWriter::new();
     writer.write_uvlc(0)?; // cur_mfh_id == 0 (direct reference, no MFH)
     writer.write_uvlc(0)?; // seq_header_id_in_frame_header == 0
-    // single-picture: no frame_type / show_existing / output-flag / frame_size_override bits.
-    // order_hint: f(OrderHintBits == 0) -> omitted (no bit).
-    // refresh_frame_flags: CLK + max_mlayer_id == 0 -> all-frames inference (no bit, derives 3).
-    // frame_size: non-override -> the seq 64x64 maxima (no bits).
     writer.write_bit(0)?; // allow_screen_content_tools (SCC == SELECT forces this; 0 => no force_integer_mv)
     writer.write_bit(0)?; // allow_intrabc
     writer.write_bit(0)?; // disable_cdf_update
@@ -346,13 +330,6 @@ fn build_minimal_intra_clk_core_impl(
     }
     let mut seq = CoreSeqView::new_minimal_intra_single_picture(FROZEN_TIER_DIM, FROZEN_TIER_DIM)
         .ok_or(MinimalIntraCoreError::Seq)?;
-    // Frozen 64x64 tier: one 64x64 superblock — the root partition the decode minimal runtime
-    // frontier expects. This is a frozen-tier choice, not a § 5.4 single-picture inference, so
-    // it is set here, not in `new_minimal_intra_single_picture` (whose default `Block128x128`
-    // is shared with the `base_seq` round-trip suite). A 64x64 frame is one superblock at
-    // either SB size, so the canonical body bit-sequence is unchanged (the
-    // `uniform_tile_spacing_flag` reads zero increment bits either way, and `enable_gdf ==
-    // false` means the `seq_sb_size`-dependent GDF read never fires).
     seq.tile.seq_sb_size = SuperblockSize::Block64x64;
     seq.tile.use_128x128_superblock = false;
     let data = minimal_intra_clk_body_bytes(base_q_idx)?;
@@ -471,7 +448,6 @@ fn encode_minimal_intra_clk_annexb_obu_impl(
     tile_data: &[u8],
 ) -> Result<Vec<u8>, MinimalIntraTileGroupError> {
     let payload = encode_minimal_intra_clk_tile_group_obu_impl(base_q_idx, tile_data)?;
-    // § 5.2.2: the no-extension OBU_CLOSED_LOOP_KEY header (inferred layer ids 0).
     let header = ObuHeader {
         has_header_extension: false,
         obu_type: ObuType::ClosedLoopKey,
@@ -503,7 +479,6 @@ fn encode_minimal_intra_clk_annexb_obu_impl(
 /// Returns [`WriteError`] if the Annex B OBU framing cannot be serialized. (Unreachable for
 /// the fixed two-byte temporal-delimiter encoding; the `Result` honors the no-panic policy.)
 pub fn encode_temporal_delimiter_obu() -> Result<Vec<u8>, WriteError> {
-    // § 5.2.2: the no-extension OBU_TEMPORAL_DELIMITER header (global xlayer 31, mlayer 0).
     let header = ObuHeader {
         has_header_extension: false,
         obu_type: ObuType::TemporalDelimiter,
@@ -593,7 +568,6 @@ fn minimal_intra_sequence_header_payload() -> Result<Vec<u8>, MinimalIntraSequen
 pub fn encode_minimal_intra_sequence_header_obu() -> Result<Vec<u8>, MinimalIntraSequenceHeaderError>
 {
     let payload = minimal_intra_sequence_header_payload()?;
-    // § 5.2.2: the no-extension OBU_SEQUENCE_HEADER header (inferred layer ids 0).
     let header = ObuHeader {
         has_header_extension: false,
         obu_type: ObuType::SequenceHeader,
@@ -691,7 +665,6 @@ pub fn encode_minimal_intra_clk_temporal_unit_with_base_q_idx(
     base_q_idx: u8,
     tile_data: &[u8],
 ) -> Result<Vec<u8>, MinimalIntraIvfError> {
-    // AV2 Annex B temporal unit: TD, then the sequence header, then the frame OBU.
     let mut temporal_unit = encode_temporal_delimiter_obu()?;
     temporal_unit.extend_from_slice(&encode_minimal_intra_sequence_header_obu()?);
     temporal_unit.extend_from_slice(&encode_minimal_intra_clk_annexb_obu_impl(
@@ -707,8 +680,6 @@ fn encode_minimal_intra_clk_ivf_impl(
     let temporal_unit =
         encode_minimal_intra_clk_temporal_unit_with_base_q_idx(base_q_idx, tile_data)?;
 
-    // IVF container: one AV02 64x64 frame carrying the temporal unit (the frozen-tier shape;
-    // the timebase 30/1 and frame count 1 match the committed conformance vector's header).
     let mut ivf = Vec::new();
     write_ivf_header(&mut ivf, &IvfHeader::new(*b"AV02", 64, 64, 30, 1, 1))?;
     write_ivf_frame(&mut ivf, 0, &temporal_unit)?;
@@ -726,10 +697,6 @@ mod tests {
 
     #[test]
     fn core_seq_inter_view_minimal_intra_is_all_disabled() {
-        // The public encoder writer-input constructor yields the inert §5.4.6 inter view:
-        // every tool off, every motion mode disabled. (CoreSeqInterView has no PartialEq,
-        // so assert the fields directly; the frame-header writer round-trips additionally
-        // exercise it through the minimal-intra seq view's inlined inter field.)
         let v = CoreSeqInterView::new_minimal_intra();
         assert!(!v.enable_ref_frame_mvs);
         assert!(!v.explicit_ref_frame_map);
@@ -745,9 +712,6 @@ mod tests {
 
     #[test]
     fn core_seq_view_minimal_intra_derives_dim_bits_and_is_non_single_picture() {
-        // frame_width_bits / frame_height_bits are derived from the maxima so any
-        // in-range maxima can write an overridden frame size; ceil_log2(4096) == 12
-        // keeps the base_seq shape, ceil_log2(64) == 6 for the encoder's 64x64 tier.
         let base = CoreSeqView::new_minimal_intra(4096, 2304).unwrap();
         assert_eq!((base.frame_width_bits, base.frame_height_bits), (12, 12));
         assert_eq!((base.max_frame_width, base.max_frame_height), (4096, 2304));
@@ -755,17 +719,12 @@ mod tests {
         let small = CoreSeqView::new_minimal_intra(64, 64).unwrap();
         assert_eq!((small.frame_width_bits, small.frame_height_bits), (6, 6));
 
-        // A 1-pixel maximum clamps to the 1-bit spec minimum; the largest f(4)-describable
-        // maximum (2^16) uses 16 bits; a zero or wider-than-2^16 maximum (frame_*_bits would
-        // exceed the f(4) range) has no valid §5.4.1 sequence header and is rejected.
         let bits = |max| CoreSeqView::new_minimal_intra(max, max).map(|v| v.frame_width_bits);
         assert_eq!(bits(1), Some(1));
         assert_eq!(bits(1 << 16), Some(16));
         assert_eq!(bits(0), None);
         assert_eq!(bits((1 << 16) + 1), None);
 
-        // The constructor builds the non-single-picture shape; the single-picture
-        // variant (different §5.4.1 inferences) is a separate constructor (below).
         assert!(!base.single_picture_header_flag);
         assert!(!base.filter.single_picture_header_flag);
         assert!(!base.ccso.single_picture_header_flag);
@@ -776,7 +735,6 @@ mod tests {
         let base = CoreSeqView::new_minimal_intra(64, 64).unwrap();
         let sp = CoreSeqView::new_minimal_intra_single_picture(64, 64).unwrap();
 
-        // The eight §5.4.x single-picture inferences that differ from the non-single view.
         assert!(sp.single_picture_header_flag && !base.single_picture_header_flag);
         assert!(sp.filter.single_picture_header_flag && !base.filter.single_picture_header_flag);
         assert!(sp.ccso.single_picture_header_flag && !base.ccso.single_picture_header_flag);
@@ -797,7 +755,6 @@ mod tests {
         assert_eq!((base.tile.avg_cdf_type, sp.tile.avg_cdf_type), (0, 1)); // §5.4.8
         assert!(sp.monotonic_output_order_flag && !base.monotonic_output_order_flag);
 
-        // Out-of-range maxima reject like the non-single ctor; the rest is inherited unchanged.
         assert!(CoreSeqView::new_minimal_intra_single_picture(0, 0).is_none());
         assert!(CoreSeqView::new_minimal_intra_single_picture((1 << 16) + 1, 64).is_none());
         assert_eq!((sp.max_frame_width, sp.max_frame_height), (64, 64));
@@ -806,20 +763,15 @@ mod tests {
 
     #[test]
     fn build_minimal_intra_clk_core_round_trips() {
-        // Self-contained: it builds the matching 64x64 single-picture view itself and
-        // returns the (core, seq) pair, so a caller cannot mis-pair the body and view.
         let (core, seq) = build_minimal_intra_clk_core().unwrap();
         assert_eq!((seq.max_frame_width, seq.max_frame_height), (64, 64));
         assert!(seq.single_picture_header_flag);
-        // Frozen 64x64 tier: a single 64x64 superblock (the decode minimal runtime frontier's
-        // root partition), not the new_minimal_intra default Block128x128.
         assert_eq!(
             seq.tile.seq_sb_size,
             crate::headers::sequence::SuperblockSize::Block64x64
         );
         assert!(!seq.tile.use_128x128_superblock);
 
-        // Parses to a complete intra header with the derived single-picture CLK facts.
         assert_eq!(core.status, FrameHeaderParseStatus::IntraHeaderComplete);
         assert_eq!(core.frame_type, Some(FrameType::Key));
         assert_eq!(core.frame_size, Some(FrameSize::new(64, 64)));
@@ -828,7 +780,6 @@ mod tests {
         assert_eq!(core.immediate_output_frame, Some(true));
         assert_eq!(core.implicit_output_frame, Some(false));
 
-        // Round-trips: the existing §5.18.2 writer re-emits a stream reparsing to an equal core.
         let mut writer = BitWriter::new();
         write_frame_header_core(&mut writer, &core, &seq, None, true).unwrap();
         let bytes = writer.into_bytes();
@@ -850,11 +801,9 @@ mod tests {
 
     #[test]
     fn encode_minimal_intra_clk_tile_group_obu_round_trips() {
-        // Five coded tile bytes with a distinct marker each (the writer-test pattern).
         let tile_data: Vec<u8> = (0u8..5).map(|b| b.wrapping_mul(37)).collect();
         let bytes = encode_minimal_intra_clk_tile_group_obu(&tile_data).unwrap();
 
-        // The payload is a valid first tile group carrying an embedded frame header.
         let mut reader = BitReader::new(&bytes, ByteOffset::new(0));
         let prefix =
             parse_tile_group_prefix(&mut reader, ObuType::ClosedLoopKey, Some(true)).unwrap();
@@ -862,8 +811,6 @@ mod tests {
         assert!(prefix.frame_header_present_flag);
         assert!(prefix.frame_header.is_some());
 
-        // The lone (last) tile reads no size field and takes the byte-aligned remainder, so the
-        // coded tile bytes are the trailing region of the payload.
         assert_eq!(
             &bytes[bytes.len() - tile_data.len()..],
             tile_data.as_slice()
@@ -872,7 +819,6 @@ mod tests {
 
     #[test]
     fn encode_minimal_intra_clk_tile_group_obu_rejects_empty_tile_data() {
-        // §8.2.2: a zero-size tile is a framing defect the writer rejects — a typed error, no panic.
         let err = encode_minimal_intra_clk_tile_group_obu(&[]).unwrap_err();
         assert!(matches!(err, MinimalIntraTileGroupError::Write(_)));
     }
@@ -882,7 +828,6 @@ mod tests {
         let tile_data: Vec<u8> = (0u8..5).map(|b| b.wrapping_mul(37)).collect();
         let bytes = encode_minimal_intra_clk_annexb_obu(&tile_data).unwrap();
 
-        // The Annex B stream reparses cleanly as exactly one OBU_CLOSED_LOOP_KEY.
         let parsed = parse_annex_b_obus_partial(&bytes);
         assert!(parsed.error.is_none());
         assert_eq!(parsed.obus.len(), 1);
@@ -890,7 +835,6 @@ mod tests {
         assert_eq!(obu.header.obu_type, ObuType::ClosedLoopKey);
         assert!(!obu.header.has_header_extension);
 
-        // The carried payload is exactly the tile_group_obu() payload (ending in the tile bytes).
         let payload = encode_minimal_intra_clk_tile_group_obu(&tile_data).unwrap();
         assert_eq!(obu.payload, payload.as_slice());
         assert_eq!(
@@ -901,7 +845,6 @@ mod tests {
 
     #[test]
     fn encode_minimal_intra_clk_annexb_obu_rejects_empty_tile_data() {
-        // Propagates the inner zero-size-tile rejection — a typed error, no panic.
         let err = encode_minimal_intra_clk_annexb_obu(&[]).unwrap_err();
         assert!(matches!(err, MinimalIntraTileGroupError::Write(_)));
     }
@@ -909,10 +852,8 @@ mod tests {
     #[test]
     fn encode_temporal_delimiter_obu_round_trips() {
         let bytes = encode_temporal_delimiter_obu().unwrap();
-        // The canonical minimal encoding: leb128(1) + the TD header byte 0x08.
         assert_eq!(bytes, vec![0x01, 0x08]);
 
-        // Reparses as exactly one OBU_TEMPORAL_DELIMITER with an empty payload.
         let parsed = parse_annex_b_obus_partial(&bytes);
         assert!(parsed.error.is_none());
         assert_eq!(parsed.obus.len(), 1);
@@ -923,8 +864,6 @@ mod tests {
 
     #[test]
     fn minimal_intra_sequence_header_payload_round_trips() {
-        // The canonical payload parses (the body prefix), and the byte-exact body+tail writer
-        // reproduces it (so the OBU payload matches the committed conformance vector's payload).
         let payload = minimal_intra_sequence_header_payload().unwrap();
         assert_eq!(payload, MINIMAL_INTRA_SEQUENCE_HEADER_PAYLOAD);
     }
@@ -932,13 +871,10 @@ mod tests {
     #[test]
     fn encode_minimal_intra_sequence_header_obu_matches_conformance_vector() {
         let bytes = encode_minimal_intra_sequence_header_obu().unwrap();
-        // Byte-exact to the OBU_SEQUENCE_HEADER in the committed syn-cos-intra-64x64-q180
-        // vector: leb128(12) + obu_header 0x04 + the 11-byte payload.
         let mut expected = vec![0x0c, 0x04];
         expected.extend_from_slice(&MINIMAL_INTRA_SEQUENCE_HEADER_PAYLOAD);
         assert_eq!(bytes, expected);
 
-        // Reparses as exactly one OBU_SEQUENCE_HEADER carrying the body.
         let parsed = parse_annex_b_obus_partial(&bytes);
         assert!(parsed.error.is_none());
         assert_eq!(parsed.obus.len(), 1);
@@ -955,7 +891,6 @@ mod tests {
         let tile_data: Vec<u8> = (0u8..5).map(|b| b.wrapping_mul(37)).collect();
         let ivf = encode_minimal_intra_clk_ivf(&tile_data).unwrap();
 
-        // A valid AV02 64x64 IVF with exactly one frame.
         let parsed = crate::ivf::parse_ivf_partial(&ivf);
         assert!(parsed.error.is_none());
         let header = parsed.header.unwrap();
@@ -963,8 +898,6 @@ mod tests {
         assert_eq!((header.width, header.height), (64, 64));
         assert_eq!(parsed.frames.len(), 1);
 
-        // The frame payload is the Annex B temporal unit, in the decoder-required order:
-        // temporal delimiter, sequence header, then the frame OBU.
         let obus = parse_annex_b_obus_partial(parsed.frames[0].payload);
         assert!(obus.error.is_none());
         let types: Vec<_> = obus.obus.iter().map(|o| o.header.obu_type).collect();
@@ -977,8 +910,6 @@ mod tests {
             ]
         );
 
-        // The frame OBU is consistent with this sequence header: from_sequence(seq) is the
-        // frozen 64x64 single-picture Block64x64 tier the frame header was built for.
         let seq = build_minimal_intra_sequence_header().unwrap();
         let view = CoreSeqView::from_sequence(&seq).unwrap();
         assert!(view.single_picture_header_flag);
@@ -992,18 +923,12 @@ mod tests {
 
     #[test]
     fn encode_minimal_intra_clk_ivf_rejects_empty_tile_data() {
-        // The empty-tile_data rejection propagates from the frame assembler — a typed error.
         let err = encode_minimal_intra_clk_ivf(&[]).unwrap_err();
         assert!(matches!(err, MinimalIntraIvfError::Frame(_)));
     }
 
     #[test]
     fn ivf_with_base_q_idx_80_reproduces_the_avm_validated_q80_fixture() {
-        // The AVM- and dav2d-validated syn-flat-intra-64x64-q80.ivf is a base_q_idx == 80
-        // single-tile CLK frame. Re-muxing its exact tile_data through the base_q_idx-80
-        // assembler reproduces the fixture byte-for-byte — proving the emitted container
-        // (TD + sequence header + CLK frame header + IVF framing) matches the reference
-        // structure, with base_q_idx as the only parameterized field.
         const Q80_TILE_DATA: [u8; 10] =
             [0x00, 0x03, 0xb6, 0x27, 0x68, 0x56, 0x9a, 0x3f, 0x2f, 0x20];
         let fixture =
@@ -1015,9 +940,6 @@ mod tests {
 
     #[test]
     fn ivf_with_base_q_idx_zero_is_rejected_as_lossless() {
-        // base_q_idx == 0 would make CodedLossless == 1 and change the §5.18.2 body layout the
-        // fixed canonical writer does not model; it is rejected with a typed error before any
-        // bytes are produced.
         let err = encode_minimal_intra_clk_ivf_with_base_q_idx(0, &[0x01]).unwrap_err();
         assert!(matches!(
             err,

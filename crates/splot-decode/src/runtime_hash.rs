@@ -22,10 +22,6 @@ pub(crate) fn decode_hash_report_from_plan(
     plan: &DecodeStreamPlan,
     resolved_threads: NonZeroUsize,
 ) -> Result<DecodeHashReport> {
-    // One hash report frame per displayed frame, in output order (AV2 § 6.18).
-    // The §6.4.1 sample depth selects the storage arm; the splot-recon hash input
-    // is generic over the sample type, so the digest contract holds for both
-    // (10-bit packs each visible sample 16-bit-LE before the SHA-256).
     let outputs = crate::runtime_minimal::decode_minimal_frames_from_plan(bytes, options, plan)?;
     let mut report_frames = Vec::with_capacity(outputs.len());
     for output in &outputs {
@@ -88,10 +84,6 @@ mod tests {
 
     const BROAD_FIXTURE: &[u8] =
         include_bytes!("../../../tests/conformance/vectors/valid/syn-key-intra-64x64.ivf");
-    // SHA-256 of the decoded raw planar output for the committed conformant
-    // luma-skip fixture, which routes through the general intra path. avmdec and
-    // dav2d both decode this fixture to the same raw output (recorded in
-    // docs/LOCAL-REFERENCE-EVIDENCE.toml); this digest is that output's hash.
     const EXPECTED_DIGEST: &str =
         "92c4477c8b50d5646c6ed5351cbb8f4fc04517ba39354a127c306e196fd059af";
 
@@ -220,9 +212,6 @@ mod tests {
 
     #[test]
     fn tile_trace_mismatch_fails_closed_as_unsupported() {
-        // The conformant fixture routes through the general intra path; flipping
-        // the final tile-payload bit corrupts the §8.2.4 exit_symbol padding, so
-        // the decoder fails closed with a typed general-intra UnsupportedFeature.
         let mut bytes = MINIMAL_FIXTURE.to_vec();
         let last = bytes.len() - 1;
         bytes[last] ^= 0x01;
@@ -241,9 +230,6 @@ mod tests {
 
     #[test]
     fn partition_symbol_mutation_fails_closed_through_general_path() {
-        // Corrupting the partition/mode region of the tile payload desyncs the
-        // general intra block decode, which fails closed with a typed
-        // general-intra UnsupportedFeature rather than producing output.
         let mut bytes = MINIMAL_FIXTURE.to_vec();
         let tile_start = bytes.len() - 2;
         bytes[tile_start] = 0xFF;
@@ -262,10 +248,6 @@ mod tests {
 
     #[test]
     fn tile_payload_byte_mutations_return_typed_results() {
-        // Fuzz the trailing tile-payload bytes: every mutation either fails closed
-        // with a typed error or decodes through the general intra path to a
-        // well-formed single-frame hash report. The unmutated fixture pins the
-        // canonical digest.
         let context = context(ThreadCount::from(1usize));
         let tile_payload_offsets = (MINIMAL_FIXTURE.len() - 2)..MINIMAL_FIXTURE.len();
 

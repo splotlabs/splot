@@ -20,8 +20,7 @@ pub(super) struct MsdoSubstreamMax {
     /// note), so two i values may name the same extended layer; a header activated by
     /// that layer must then satisfy both ceilings, so a duplicate `sub_xlayer_id` keeps
     /// the most restrictive (per-dimension minimum) maximum rather than letting a
-    /// last-wins insert discard the tighter ceiling (recorded in `observe_msdo`; codex
-    /// finding 3392940071).
+    /// last-wins insert discard the tighter ceiling.
     pub(super) ceilings: BTreeMap<u8, SubStreamCeiling>,
     /// `multistream_doh_constraint_flag` of the recorded MSDO, for the § 6.6
     /// DOH-constraint requirement (`msdo/doh-constraint-required`).
@@ -98,9 +97,6 @@ pub(super) struct MsdoSubStream {
 
 /// One sub-stream's § 6.6 PTL ceiling (`sub_stream_max_profile` / `sub_stream_max_level`
 /// / `sub_stream_max_tier`).
-// Field names mirror the AV2 § 6.6 syntax elements `sub_stream_max_profile`,
-// `sub_stream_max_level`, and `sub_stream_max_tier`; renaming to drop the shared
-// `max` prefix would break that spec traceability.
 #[allow(clippy::struct_field_names)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct SubStreamCeiling {
@@ -250,8 +246,6 @@ impl MsdoIdentityTracker {
                     .with_byte_offset(offset),
                 );
             }
-            // The reference advances per MSDO regardless of the verdict (pairwise-previous
-            // within the temporal unit; a RAP temporal unit advances without comparison).
             self.previous = Some(fingerprint);
         }
         self.current_tu_is_rap = false;
@@ -320,37 +314,15 @@ impl ValidatorContext {
         }
         let observation = self.msdo.observe(&msdo);
         self.cmvs.note_msdo(observation);
-        // AV2 § 7.3.2 / Annex A Table A.3: this OBU_MSDO sets MultiStreamDecoderMode == 1,
-        // so num_streams_minus_2 + 2 is the declared Table A.3 extended-layer count and
-        // multistream_profile_idc is the Table A.4 interoperability-point source for the
-        // current temporal unit (committed to the right coded-video-sequence window at
-        // temporal-unit completion).
         self.annex_a_iop.note_msdo(
             msdo.num_streams(),
             msdo.multistream_profile_idc.get(),
             obu.offset,
         );
 
-        // AV2 § 7.3.8.2: buffer this MSDO's full-payload fingerprint and offset for the
-        // temporal unit, resolved against the previous OBU_MSDO at temporal-unit end
-        // (the TU's random-access-point-ness, § 7.4.1, is only known then). Multiple
-        // MSDOs in one temporal unit each compare against their pairwise predecessor.
         self.msdo_identity
             .note_msdo(payload_fingerprint(obu.payload), obu.offset);
 
-        // AV2 § 6.6: record the sub-stream PTL ceilings keyed by sub_xlayer_id, replacing
-        // any earlier MSDO's ceilings. The live MSDO is the active multistream operation.
-        //
-        // § 6.6 states the ceiling constraints "for each sequence header activated by the
-        // i-th independent sub-stream" — i.e. for EACH i in 0..=num_streams_minus_2+1.
-        // The spec declares no uniqueness requirement on sub_xlayer_id (see the proposal's
-        // roadmap-hygiene note), so two entries i and j may name the same extended layer.
-        // A header activated by that layer is then "activated by the i-th sub-stream" for
-        // BOTH i and j, so it must satisfy both ceilings; the effective per-layer ceiling
-        // is the most restrictive (minimum) maximum per dimension. Merging by per-field
-        // min on a duplicate sub_xlayer_id keeps that semantics; a plain last-wins insert
-        // would silently discard the tighter of two declared ceilings (codex finding
-        // 3392940071).
         let mut ceilings: BTreeMap<u8, SubStreamCeiling> = BTreeMap::new();
         for sub in msdo.sub_streams() {
             let declared = SubStreamCeiling {
@@ -367,9 +339,6 @@ impl ValidatorContext {
                 })
                 .or_insert(declared);
         }
-        // AV2 § 6.8.2: keep the raw declaration-order substream entries and the aggregate
-        // PTL fields for the MSDO↔global-LCR agreement and the Table A.4 IOP window,
-        // resolved at CMVS / coded-video-sequence boundaries.
         let aggregate = MsdoAggregate {
             num_streams: msdo.num_streams(),
             profile_idc: msdo.multistream_profile_idc.get(),
@@ -387,9 +356,6 @@ impl ValidatorContext {
                 })
                 .collect(),
         };
-        // AV2 § 6.8.2 agreement: accumulate this MSDO so EVERY MSDO present in the CMVS is
-        // evaluated against the resolved activated global LCR — not just the live last-wins
-        // one (codex finding 3393274380). Deduped by OBU offset so re-observing is idempotent.
         if !self
             .msdo_agreement_snapshots
             .iter()
@@ -407,16 +373,6 @@ impl ValidatorContext {
             offset: obu.offset,
         });
 
-        // AV2 § 6.6: the MSDO-arrives-after-the-header arrival order — re-run the
-        // sub-stream PTL-ceiling agreement against every extended layer with a
-        // frame-confirmed activation, so a violation is flagged whether the MSDO precedes
-        // or follows the activation. The activation-precedes-MSDO order is covered by the
-        // calls in `on_sequence_activation`. The DOH-constraint check is NOT run here: it
-        // is scoped to a coded multistream *video* sequence whose membership is not final
-        // until the temporal unit completes, so it is deferred to
-        // `resolve_deferred_doh_constraint` at temporal-unit boundary resolution (which
-        // also covers the same-id CLK that opens a CMVS without re-activating a header,
-        // codex finding 3392940072).
         let xlayers: Vec<ExtendedLayerId> = self.frame_confirmed_xlayers.iter().copied().collect();
         for xlayer in xlayers {
             self.check_substream_max_ceilings(xlayer, options, report);
@@ -473,8 +429,6 @@ impl ValidatorContext {
         let Some(substream_max) = self.msdo_substream_max.as_ref() else {
             return;
         };
-        // The MSDO names sub-streams by obu_xlayer_id; only an extended layer named by a
-        // sub_xlayer_id[i] is an independent sub-stream with a declared ceiling.
         let Some(&ceiling) = substream_max.ceilings.get(&xlayer.get()) else {
             return;
         };
@@ -482,9 +436,6 @@ impl ValidatorContext {
         let Some((seq_header_id, general)) = self.active_general_for(xlayer) else {
             return;
         };
-        // Anchor at the violating sequence header when its offset is known (matching
-        // the annex-a/* value-space checks); the MSDO offset is the fallback for a
-        // header whose defining OBU was not recorded.
         let anchor = self
             .sequence_header_offsets
             .get(&seq_header_id)
@@ -573,11 +524,11 @@ impl ValidatorContext {
     /// unit's CMVS membership is not final until its temporal unit completes: a same-id
     /// header redefinition at the top of a temporal unit that a later MSDO-less CLK ENDS
     /// (§ 7.3.2 end condition 2) sits *outside* the CMVS even though the committed state
-    /// is still `Inside` when the header activates (codex finding 3392940061). And a
+    /// is still `Inside` when the header activates. And a
     /// same-id CLK that re-references an already-active header opens the CMVS at the CLK
     /// without re-entering `on_sequence_activation` (the seq id is unchanged and the layer
     /// was already frame-confirmed), so an eager activation-time check never sees the
-    /// transition (codex finding 3392940072). Both are handled by routing this check
+    /// transition. Both are handled by routing this check
     /// through [`ValidatorContext::resolve_deferred_doh_constraint`], which runs at
     /// temporal-unit completion against the *resolved* membership and the then-current
     /// frame-confirmed activations — the same membership-resolution discipline the landed
@@ -606,8 +557,6 @@ impl ValidatorContext {
             return;
         };
         let msdo_offset = substream_max.offset;
-        // multistream_doh_constraint_flag == 1 already satisfies the requirement; the
-        // flag travels with the recorded MSDO state (it is not a § 7.3.2 key field).
         if substream_max.doh_constraint_flag {
             return;
         }

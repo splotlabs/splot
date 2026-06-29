@@ -252,9 +252,6 @@ impl AnnexAIopTracker {
         if let Some(offset) = pending.anchor_offset {
             window.anchor_offset = offset;
         }
-        // Combine this temporal unit's IOP into the window's: a single agreed IOP carries
-        // through; a disagreement marks the window Mixed (the Table A.4 row is then not
-        // determinable, so the check is skipped).
         window.iop = match (window.iop, pending.iop) {
             (None, p) => p,
             (w, None) => w,
@@ -345,16 +342,6 @@ impl ValidatorContext {
             .get(&seq_header_id)
             .copied()
             .unwrap_or(ByteOffset::new(0));
-        // The activated global LCR span for this layer, if its association resolved a
-        // global record. Only an *activated* (associated) global LCR contributes the
-        // Table A.3 declared count / satisfies the Table A.4 global-LCR arms.
-        //
-        // Read `LcrMaxNumXLayerCount` from the association-time snapshot
-        // (`association.global_record`), NOT a live `global_lcr_records` lookup, exactly like
-        // the § 6.8.2 agreement path (`activated_global_lcr_in_window`). A same-id global-LCR
-        // redefinition *after* this header associated otherwise retargets the count to the
-        // later revision's `lcr_xlayer_map`; the snapshot keeps the Table A.4 layer accounting
-        // pinned to the revision this header actually associated to.
         let activated_global_count = self
             .lcr_associations
             .get(&(xlayer, seq_header_id))
@@ -388,8 +375,6 @@ impl ValidatorContext {
         report: &mut ValidationReport,
     ) {
         if self.annex_a_iop.pending_starts_new_cvs(completed_tu_index) {
-            // This temporal unit begins the next coded video sequence: flush+evaluate the
-            // ending window, then seed a fresh one from this temporal unit's pending facts.
             self.flush_annex_a_iop_window(options, report);
             let pending = std::mem::take(&mut self.annex_a_iop.pending);
             self.annex_a_iop.window = Some(AnnexAIopTracker::window_from_pending(
@@ -397,8 +382,6 @@ impl ValidatorContext {
                 completed_tu_index,
             ));
         } else {
-            // The same coded video sequence continues (or leading evidence before the first
-            // CLK): merge this temporal unit's pending facts into the open window.
             let pending = std::mem::take(&mut self.annex_a_iop.pending);
             let window = self
                 .annex_a_iop
@@ -406,8 +389,6 @@ impl ValidatorContext {
                 .get_or_insert_with(AnnexAIopWindow::default);
             AnnexAIopTracker::merge_pending_into(window, &pending, completed_tu_index);
         }
-        // Both branches above `std::mem::take` `self.annex_a_iop.pending`, leaving it at
-        // `TuIopFacts::default()`, so an explicit `reset_pending()` here would be a no-op.
     }
 
     /// Takes the current Annex A Table A.4 IOP window and evaluates its MSDO/LCR
@@ -460,17 +441,13 @@ impl ValidatorContext {
         window: &AnnexAIopWindow,
         report: &mut ValidationReport,
     ) {
-        // The MSDO's multistream_profile_idc determines the IOP when an MSDO is present
-        // (mirror lines 1659-1662); otherwise the activated headers' agreed IOP is used.
         let iop = match window.msdo_profile_idc {
             Some(profile) => match interoperability_point(profile) {
                 Some(iop) => iop,
-                // Reserved / Configurable multistream_profile_idc: IOP not table-determined.
                 None => return,
             },
             None => match window.iop {
                 Some(AnnexAIopState::Single(iop)) => iop,
-                // No in-band profile, or activated profiles disagree: row not determinable.
                 _ => return,
             },
         };
@@ -479,9 +456,6 @@ impl ValidatorContext {
         let m = window.max_embedded_layers.max(1) > 1;
         let offset = window.anchor_offset;
         let global_lcr = window.activated_global_count.is_some();
-        // AV2 Annex A Table A.3 (mirror lines 125-170): the per-IOP layer budget. Checked
-        // before the Table A.4 presence rules — an IOP1 window with both E and M exceeds the
-        // budget and has no Table A.4 row, so the budget bound is the only constraint on it.
         self.emit_iop_layer_budget(
             iop,
             extended_layers,
@@ -493,19 +467,15 @@ impl ValidatorContext {
         );
         match iop {
             InteroperabilityPoint::Iop0 => {
-                // Rows 1-2 (lines 183-185): embedded layers are N/A.
                 self.emit_iop_msdo_presence(e, window, extended_layers, offset, report);
             }
             InteroperabilityPoint::Iop1 => {
                 if !m {
-                    // Rows 3-4 (lines 187-189): MSDO prohibited (!E) / required (E).
                     self.emit_iop_msdo_presence(e, window, extended_layers, offset, report);
                 } else if !e {
-                    // Row 5 (line 191): !E && M -> MSDO prohibited; local LCR required.
                     self.emit_msdo_prohibited(window, offset, report);
                     self.emit_iop1_local_lcr_required(window, offset, report);
                 }
-                // E && M: no Table A.4 row (outside IOP1's layer budget); see the TODO.
             }
             InteroperabilityPoint::Iop2 => {
                 self.evaluate_iop2(e, m, window, global_lcr, extended_layers, offset, report);
@@ -530,9 +500,6 @@ impl ValidatorContext {
     /// disagreeing profile). The Table A.3 "Number of Layers" (sum of embedded counts across
     /// singlestreams) bound is not tracked and stays a named residual.
     #[allow(clippy::too_many_arguments)]
-    // Leaf member of the `&self` Annex A IOP emit-method family (siblings dispatch via
-    // `self.emit_*`); the uniform receiver keeps the family consistent and lets a future
-    // emitter read context state without a signature churn.
     #[allow(clippy::unused_self)]
     pub(super) fn emit_iop_layer_budget(
         &self,
@@ -544,7 +511,6 @@ impl ValidatorContext {
         offset: ByteOffset,
         report: &mut ValidationReport,
     ) {
-        // (max extended layers, max embedded layers, is the E && M combination permitted).
         let (max_extended, max_embedded, combination_allowed) = match iop {
             InteroperabilityPoint::Iop0 => (4, 1, false),
             InteroperabilityPoint::Iop1 => (4, 2, false),
@@ -622,10 +588,7 @@ impl ValidatorContext {
         report: &mut ValidationReport,
     ) {
         match (e, m) {
-            // Row "2 N N" (line 193): MSDO prohibited.
             (false, false) => self.emit_msdo_prohibited(window, offset, report),
-            // Row "2 Y N" (line 195): MSDO or an activated global LCR required (either
-            // satisfies); MSDO is not prohibited here.
             (true, false) => {
                 if !window.msdo_present && !global_lcr {
                     report.push(annex_a_iop_error(
@@ -640,8 +603,6 @@ impl ValidatorContext {
                     ));
                 }
             }
-            // Row "2 N Y" (line 197): MSDO prohibited; LCR (local or activated global)
-            // required.
             (false, true) => {
                 self.emit_msdo_prohibited(window, offset, report);
                 if !global_lcr && !window.local_lcr_present {
@@ -656,8 +617,6 @@ impl ValidatorContext {
                     ));
                 }
             }
-            // Row "2 Y Y" (lines 199-200): (MSDO and local LCR) or an activated global LCR
-            // required.
             (true, true) => {
                 let satisfied = (window.msdo_present && window.local_lcr_present) || global_lcr;
                 if !satisfied {
@@ -689,9 +648,6 @@ impl ValidatorContext {
     /// materialize as distinct extended layers — is the declared-vs-observed reconciliation
     /// owned by the § 6.6 sub-stream change, not this presence window. The id stays emitted
     /// (and registered) so a future declared-vs-observed model can reach it.
-    // Leaf member of the `&self` Annex A IOP emit-method family (siblings dispatch via
-    // `self.emit_*`); the uniform receiver keeps the family consistent and lets a future
-    // emitter read context state without a signature churn.
     #[allow(clippy::unused_self)]
     pub(super) fn emit_msdo_prohibited(
         &self,
@@ -713,9 +669,6 @@ impl ValidatorContext {
 
     /// Emits `annex-a/lcr-required-for-iop` for the IOP1 `!E && M` "Required (Local)" row
     /// (mirror line 191) when no local LCR is present in the window.
-    // Leaf member of the `&self` Annex A IOP emit-method family (siblings dispatch via
-    // `self.emit_*`); the uniform receiver keeps the family consistent and lets a future
-    // emitter read context state without a signature churn.
     #[allow(clippy::unused_self)]
     pub(super) fn emit_iop1_local_lcr_required(
         &self,

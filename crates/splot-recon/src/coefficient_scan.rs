@@ -48,8 +48,6 @@ pub enum TransformClass {
 /// # Errors
 /// Returns [`ReconError::InvalidScanShape`] if `w` / `h` are not each 4/8/16/32,
 /// and [`ReconError::ScanLengthMismatch`] if `out` is not exactly `w * h` long.
-// `w`/`h`/`x`/`y`/`c` mirror the AV2 § 8.3.1.2 scan-order pseudocode notation
-// (block width/height, sample coordinates, scan-position counter).
 #[allow(clippy::many_single_char_names)]
 pub fn coefficient_scan_order(
     w: usize,
@@ -68,7 +66,6 @@ pub fn coefficient_scan_order(
         });
     }
     match class {
-        // TX_CLASS_VERT: out[c] = y*w + x with y outer, x inner -> identity.
         TransformClass::Vertical => {
             let mut c = 0;
             for y in 0..h {
@@ -78,7 +75,6 @@ pub fn coefficient_scan_order(
                 }
             }
         }
-        // TX_CLASS_HORIZ: out[c] = y*w + x with x outer, y inner -> transpose.
         TransformClass::Horizontal => {
             let mut c = 0;
             for x in 0..w {
@@ -88,8 +84,6 @@ pub fn coefficient_scan_order(
                 }
             }
         }
-        // TX_CLASS_2D: anti-diagonal scan. Signed x/y mirror the spec's `y -= 1`
-        // / `y < 0` logic, which underflows in `usize`.
         TransformClass::TwoD => {
             let (wi, hi) = (w as i32, h as i32);
             let (mut x, mut y) = (0i32, 0i32);
@@ -125,11 +119,8 @@ pub fn coefficient_scan_order(
 #[must_use]
 pub const fn tx_class(plane_tx_type: usize) -> TransformClass {
     match plane_tx_type {
-        // V_DCT, V_ADST, V_FLIPADST.
         10 | 12 | 14 => TransformClass::Vertical,
-        // H_DCT, H_ADST, H_FLIPADST.
         11 | 13 | 15 => TransformClass::Horizontal,
-        // DCT_DCT..IDTX (0..9) and any other value -> TX_CLASS_2D.
         _ => TransformClass::TwoD,
     }
 }
@@ -139,7 +130,6 @@ pub const fn tx_class(plane_tx_type: usize) -> TransformClass {
 mod tests {
     use super::*;
 
-    // `tx_class` is a `const fn`: a fixed PlaneTxType resolves at compile time.
     const _CONST_CLASS_CHECK: () = assert!(matches!(tx_class(10), TransformClass::Vertical));
 
     fn scan(w: usize, h: usize, class: TransformClass) -> Vec<u16> {
@@ -161,15 +151,12 @@ mod tests {
 
     #[test]
     fn two_d_4x4_matches_the_spec_anti_diagonal_scan() {
-        // Independently hand-traced from §5.20.7.30 for w=h=4: anti-diagonals,
-        // each from high-y(low-x) to low-y(high-x).
         let expected: [u16; 16] = [0, 4, 1, 8, 5, 2, 12, 9, 6, 3, 13, 10, 7, 14, 11, 15];
         assert_eq!(scan(4, 4, TransformClass::TwoD).as_slice(), &expected);
     }
 
     #[test]
     fn vertical_scan_is_row_major_identity() {
-        // TX_CLASS_VERT: out[c] = c (raster).
         let order = scan(8, 4, TransformClass::Vertical);
         for (c, &p) in order.iter().enumerate() {
             assert_eq!(usize::from(p), c, "vertical scan slot {c}");
@@ -178,7 +165,6 @@ mod tests {
 
     #[test]
     fn horizontal_scan_is_column_major_transpose() {
-        // TX_CLASS_HORIZ on 4x4: x outer, y inner -> column-major (transpose).
         let expected: [u16; 16] = [0, 4, 8, 12, 1, 5, 9, 13, 2, 6, 10, 14, 3, 7, 11, 15];
         assert_eq!(scan(4, 4, TransformClass::Horizontal).as_slice(), &expected);
     }
@@ -217,19 +203,15 @@ mod tests {
 
     #[test]
     fn tx_class_maps_every_plane_tx_type() {
-        // V_DCT(10), V_ADST(12), V_FLIPADST(14) -> Vertical.
         for t in [10usize, 12, 14] {
             assert_eq!(tx_class(t), TransformClass::Vertical, "txType {t}");
         }
-        // H_DCT(11), H_ADST(13), H_FLIPADST(15) -> Horizontal.
         for t in [11usize, 13, 15] {
             assert_eq!(tx_class(t), TransformClass::Horizontal, "txType {t}");
         }
-        // DCT_DCT..IDTX (0..=9) -> TwoD.
         for t in 0..=9usize {
             assert_eq!(tx_class(t), TransformClass::TwoD, "txType {t}");
         }
-        // Spec `else` branch: any out-of-range value also maps to TwoD.
         assert_eq!(tx_class(16), TransformClass::TwoD);
         assert_eq!(tx_class(usize::MAX), TransformClass::TwoD);
     }

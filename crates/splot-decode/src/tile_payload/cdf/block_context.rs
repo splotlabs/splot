@@ -51,11 +51,7 @@ impl YModeIndexContext {
     /// `MiCol == 0`, whose left (`MiCol - 1`) and above (`MiRow - 1`) joint-mode
     /// neighbours are both out of frame, so `get_joint_mode` returns `DC_PRED`
     /// for each (§ 5 `get_joint_mode` / § 8.3.2).
-    //
     // TODO(spec: DECODE-TILE-CDF-SELECTION-BOUNDARY): in-frame neighbours read
-    // `IntraJointModes[mvRow][mvCol]`; the minimal flat-intra frontier tracks no
-    // neighbour mode state yet, so only the out-of-frame `DC_PRED` branch is
-    // modelled here.
     pub(crate) const fn tile_origin_block() -> Self {
         Self {
             left_joint_mode: DC_PRED,
@@ -470,57 +466,25 @@ pub(crate) fn supported_chroma_mode(
     match uv_mode_value {
         DC_PRED_VALUE => Some(SupportedChromaMode::Dc),
         SMOOTH_PRED_VALUE => Some(SupportedChromaMode::Smooth),
-        // Directional-follow D135 chroma: `uv_mode == 0` over a directional luma
-        // makes § 5.20.5.3 return `YMode` (`AngleDeltaUV = AngleDeltaY`). Only the
-        // luma D135 (`AngleDeltaY == 0`) follow is verified, so require both the
-        // follow branch (`uv_mode == 0`, directional luma) and `YMode == D135`.
         D135_PRED_VALUE if uv_mode == 0 && y_mode.is_directional() => {
             Some(SupportedChromaMode::D135Follow)
         }
-        // Directional-follow D113 chroma: `uv_mode == 0` over a directional luma
-        // makes § 5.20.5.3 return `YMode` (`AngleDeltaUV = AngleDeltaY`). Only the
-        // luma D113 (`AngleDeltaY == 0`) follow is verified, so require both the
-        // follow branch (`uv_mode == 0`, directional luma) and `YMode == D113`.
         D113_PRED_VALUE if uv_mode == 0 && y_mode.is_directional() => {
             Some(SupportedChromaMode::D113Follow)
         }
-        // Directional-follow D157 chroma: `uv_mode == 0` over a directional luma
-        // makes § 5.20.5.3 return `YMode` (`AngleDeltaUV = AngleDeltaY`). Only the
-        // luma D157 (`AngleDeltaY == 0`) follow is verified, so require both the
-        // follow branch (`uv_mode == 0`, directional luma) and `YMode == D157`.
         D157_PRED_VALUE if uv_mode == 0 && y_mode.is_directional() => {
             Some(SupportedChromaMode::D157Follow)
         }
-        // Cardinal directional-follow V_PRED / H_PRED chroma: `uv_mode == 0` over a
-        // cardinal directional luma (`YMode == V_PRED` / `H_PRED`) makes § 5.20.5.3
-        // return `YMode`, with `AngleDeltaUV = AngleDeltaY == 0`. The cardinal copy
-        // reads only the § 7.13.2.1 above row (V) or left column (H); chroma uses no
-        // IDIF, so it is bit-exact over a real reconstructed edge. Require the follow
-        // branch (`uv_mode == 0`) to keep the verified subset narrow.
         V_PRED_VALUE if uv_mode == 0 && y_mode.is_directional() => {
             Some(SupportedChromaMode::VerticalFollow)
         }
         H_PRED_VALUE if uv_mode == 0 && y_mode.is_directional() => {
             Some(SupportedChromaMode::HorizontalFollow)
         }
-        // Non-follow H_PRED chroma: the explicit `uv_mode` index resolves to
-        // `H_PRED` over a non-directional luma (not the `uv_mode == 0` directional
-        // follow). The § 7.13.2.8 horizontal copy reads only the § 7.13.2.1 left
-        // column; at the no-neighbour top-left block (the only position the caller
-        // admits) that column is the flat fallback, so the prediction is bit-exact.
         H_PRED_VALUE => Some(SupportedChromaMode::Horizontal),
-        // Directional-follow D45 chroma: `uv_mode == 0` over the zone-1 D45 luma
-        // makes § 5.20.5.3 return `YMode == D45_PRED` (`AngleDeltaUV =
-        // AngleDeltaY == 0`). Chroma uses the bilinear one-sided predictor; for
-        // D45 (`shift == 0`) that is the sample copy `AboveRow[base]`.
         D45_PRED_VALUE if uv_mode == 0 && y_mode.is_directional() => {
             Some(SupportedChromaMode::D45Follow)
         }
-        // Directional-follow D203 chroma: `uv_mode == 0` over the zone-3 D203 luma
-        // makes § 5.20.5.3 return `YMode == D203_PRED` (`AngleDeltaUV =
-        // AngleDeltaY == 0`). Chroma uses the spec-mandated bilinear one-sided
-        // predictor (`enableIdif == 0`), reading the real reconstructed chroma
-        // left column + below-left.
         D203_PRED_VALUE if uv_mode == 0 && y_mode.is_directional() => {
             Some(SupportedChromaMode::D203Follow)
         }
@@ -550,10 +514,7 @@ const REORDERED_Y_MODE_NON_DIRECTIONAL: [IntraYMode; NON_DIRECTIONAL_MODES_COUNT
 /// `get_intra_y_mode_set` passes `modeIdx` through unchanged (it is below
 /// `NON_DIRECTIONAL_MODES_COUNT`), and `YMode == Reordered_Y_Mode[y_mode_index]`.
 /// Returns `None` for inputs outside this subset.
-//
 // TODO(spec: DECODE-TILE-CDF-SELECTION-BOUNDARY): the directional-neighbour
-// reordering (`modeDelta >= NON_DIRECTIONAL_MODES_COUNT` with an in-frame
-// directional `IntraJointMode`) is not yet modelled.
 pub(crate) fn reconstruct_minimal_y_mode(y_mode_set: u8, y_mode_index: u8) -> Option<IntraYMode> {
     if y_mode_set != 0 {
         return None;
@@ -660,18 +621,13 @@ pub(crate) struct YModeEscapeResult {
 ///
 /// Returns `None` for a `y_mode_offset` outside `0..MODE_OFFSET_COUNT` or any
 /// arithmetic that escapes the table bounds.
-//
 // TODO(spec: DECODE-GENERAL-INTRA-ANGLE): the in-frame directional-neighbour
-// reorder branches of `get_intra_y_mode_set` (which depend on the per-block
-// `IntraJointModes` neighbour state and `Block_Width * Block_Height > 64`
-// expansion) are not modelled; only the top-left no-neighbour case is supported.
 pub(crate) fn reconstruct_y_mode_offset_escape_top_left(
     y_mode_offset: u8,
 ) -> Option<YModeEscapeResult> {
     if y_mode_offset >= MODE_OFFSET_COUNT {
         return None;
     }
-    // modeIdx = y_mode_index + y_mode_offset, with y_mode_index == MODE_INDEX_COUNT - 1.
     let mode_idx = usize::from(MODE_INDEX_COUNT - 1) + usize::from(y_mode_offset);
     resolve_y_mode_top_left(mode_idx)
 }
@@ -698,18 +654,13 @@ pub(crate) fn reconstruct_y_mode_offset_escape_top_left(
 /// at or above `MODE_INDEX_COUNT - 1` (the escape, handled by
 /// [`reconstruct_y_mode_offset_escape_top_left`]), or for any arithmetic that
 /// escapes the table bounds.
-//
 // TODO(spec: DECODE-GENERAL-INTRA-ANGLE): only the `ctx == 0` (no
-// directional-neighbour reorder) first-set directional reconstruction is
-// modelled; the in-frame directional-neighbour reorder of `get_intra_y_mode_set`
-// remains deferred (the caller rejects `ctx != 0` for this path).
 pub(crate) fn reconstruct_y_mode_first_set_directional_top_left(
     y_mode_index: u8,
 ) -> Option<YModeEscapeResult> {
     if y_mode_index < (NON_DIRECTIONAL_MODES_COUNT as u8) || y_mode_index >= MODE_INDEX_COUNT - 1 {
         return None;
     }
-    // §5.20.5.3 `y_mode_set == 0`, non-escape: modeIdx = y_mode_index.
     resolve_y_mode_top_left(usize::from(y_mode_index))
 }
 
@@ -726,11 +677,7 @@ pub(crate) fn reconstruct_y_mode_first_set_directional_top_left(
 ///
 /// Returns `None` for `y_mode_set == 0`, a `y_second_mode` outside
 /// `0..SECOND_MODE_COUNT`, or arithmetic/table overflow.
-//
 // TODO(spec: DECODE-GENERAL-INTRA-ANGLE): only the `ctx == 0` (no
-// directional-neighbour reorder) second-mode reconstruction is modelled; the
-// in-frame directional-neighbour reorder of `get_intra_y_mode_set` remains
-// deferred (the caller rejects `ctx != 0` for this path).
 pub(crate) fn reconstruct_y_mode_second_set_top_left(
     y_mode_set: u8,
     y_second_mode: u8,
@@ -776,11 +723,6 @@ fn resolve_y_mode_top_left(mode_idx: usize) -> Option<YModeEscapeResult> {
 }
 
 fn resolve_y_mode_delta(mode_delta: usize) -> Option<YModeEscapeResult> {
-    // This is the AV2 § 5.20.5.5 `IntraJointMode` (`modeDelta`) stored for the
-    // § 8.3.2 neighbour context; it is also `>= NON_DIRECTIONAL_MODES_COUNT` for
-    // the directional reconstruction branch below.
-    // Preserve the stored `IntraJointMode` before the directional rebase, which
-    // mutates `mode_delta` only for the `YMode` / `AngleDeltaY` reorder math.
     let intra_joint_mode = u8::try_from(mode_delta).ok()?;
 
     if mode_delta < NON_DIRECTIONAL_MODES_COUNT {
@@ -794,7 +736,6 @@ fn resolve_y_mode_delta(mode_delta: usize) -> Option<YModeEscapeResult> {
     let mode_delta = mode_delta - NON_DIRECTIONAL_MODES_COUNT;
     let reorder_index = mode_delta / TOTAL_ANGLE_DELTA_COUNT + NON_DIRECTIONAL_MODES_COUNT;
     let y_mode = *REORDERED_Y_MODE.get(reorder_index)?;
-    // AngleDeltaY = (modeDelta % TOTAL_ANGLE_DELTA_COUNT) - MAX_ANGLE_DELTA.
     let angle_delta_y = (mode_delta % TOTAL_ANGLE_DELTA_COUNT) as i8 - MAX_ANGLE_DELTA;
     Some(YModeEscapeResult {
         y_mode,
@@ -959,7 +900,6 @@ pub(crate) const fn txb_skip_ctx_luma(
 /// columns / rows is non-zero. `chroma_block_larger_than_tx` is `bw * bh > w * h`
 /// and `eob_u_nonzero` is `EobU != 0`. (The `plane == 1` U-plane `+6` branch is
 /// not modelled — the minimal trace has no U `all_zero` symbol.)
-// Each bool is a distinct AV2 §8.3.2 V-plane txb_skip context input; bundling them would obscure the spec mapping.
 #[allow(clippy::fn_params_excessive_bools)]
 pub(crate) const fn v_txb_skip_ctx(
     above_nonzero: bool,
@@ -985,16 +925,11 @@ mod tests {
 
     #[test]
     fn tile_origin_block_is_dc_pred_context_zero() {
-        // Both neighbours out of frame -> DC_PRED (0), which is non-directional
-        // (0 < NON_DIRECTIONAL_MODES_COUNT), so each term is 0 and ctx == 0. This
-        // matches the literal the minimal flat-intra trace previously hardcoded.
         assert_eq!(YModeIndexContext::tile_origin_block().ctx(), 0);
     }
 
     #[test]
     fn directional_neighbours_raise_the_context() {
-        // A directional joint mode (>= NON_DIRECTIONAL_MODES_COUNT) on one side
-        // gives ctx 1; on both sides ctx 2 (the § 8.3.2 sum of two indicators).
         let one = YModeIndexContext {
             left_joint_mode: NON_DIRECTIONAL_MODES_COUNT,
             above_joint_mode: DC_PRED,
@@ -1009,8 +944,6 @@ mod tests {
 
     #[test]
     fn last_non_directional_mode_does_not_raise_the_context() {
-        // The boundary: mode NON_DIRECTIONAL_MODES_COUNT - 1 is still
-        // non-directional, so it contributes 0.
         let ctx = YModeIndexContext {
             left_joint_mode: NON_DIRECTIONAL_MODES_COUNT - 1,
             above_joint_mode: NON_DIRECTIONAL_MODES_COUNT - 1,
@@ -1020,15 +953,11 @@ mod tests {
 
     #[test]
     fn minimal_y_mode_reconstruction_maps_set0_index0_to_dc_pred() {
-        // The minimal flat-intra trace decodes y_mode_set == 0, y_mode_index == 0,
-        // so YMode == Reordered_Y_Mode[0] == DC_PRED.
         assert_eq!(reconstruct_minimal_y_mode(0, 0), Some(IntraYMode::DC_PRED));
     }
 
     #[test]
     fn minimal_y_mode_reconstruction_covers_the_non_directional_subset() {
-        // y_mode_set == 0 with a non-directional index maps to the reorder prefix;
-        // every reconstructed mode is non-directional.
         for index in 0..NON_DIRECTIONAL_MODES_COUNT {
             let mode = reconstruct_minimal_y_mode(0, index as u8)
                 .expect("non-directional index is supported");
@@ -1041,8 +970,6 @@ mod tests {
 
     #[test]
     fn minimal_y_mode_reconstruction_rejects_unsupported_inputs() {
-        // A non-zero set and a directional/escape index are outside the supported
-        // subset and return None (deferred to a future increment).
         assert_eq!(reconstruct_minimal_y_mode(1, 0), None);
         assert_eq!(
             reconstruct_minimal_y_mode(0, NON_DIRECTIONAL_MODES_COUNT as u8),
@@ -1052,29 +979,19 @@ mod tests {
 
     #[test]
     fn uv_mode_ctx_is_zero_for_dc_pred_and_one_for_directional() {
-        // is_directional_mode(DC_PRED) == false -> ctx 0 (matches the literal the
-        // trace previously hardcoded); a directional mode -> ctx 1.
         assert_eq!(uv_mode_ctx(IntraYMode::DC_PRED), 0);
         assert_eq!(uv_mode_ctx(IntraYMode(IntraYMode::V_PRED)), 1);
         assert_eq!(uv_mode_ctx(IntraYMode(IntraYMode::D67_PRED)), 1);
-        // A non-directional mode above the directional range (PAETH_PRED) -> 0.
         assert_eq!(uv_mode_ctx(IntraYMode(12)), 0);
     }
 
     #[test]
     fn luma_txb_skip_ctx_first_block_filling_transform_is_zero() {
-        // The minimal trace's first luma transform block: zero level context
-        // (first block, out-of-frame neighbours) and a transform that fills its
-        // residual block -> the `bw == w && bh == h` branch -> ctx 0, matching
-        // the value the conformant fixture forces.
         assert_eq!(txb_skip_ctx_luma(0, 0, true, false), 0);
     }
 
     #[test]
     fn luma_txb_skip_ctx_uses_min_clamped_level_sum_when_not_filling() {
-        // When the transform does not fill the block, ctx = (Min(top,4) +
-        // Min(left,4) + 3) >> 1. Zero context -> (0+0+3)>>1 = 1; saturated
-        // context -> (4+4+3)>>1 = 5 (the Min(.,4) clamp caps each term).
         assert_eq!(txb_skip_ctx_luma(0, 0, false, false), 1);
         assert_eq!(txb_skip_ctx_luma(9, 9, false, false), 5);
         assert_eq!(txb_skip_ctx_luma(1, 2, false, false), 3);
@@ -1082,25 +999,17 @@ mod tests {
 
     #[test]
     fn luma_txb_skip_ctx_fsc_selects_last_context() {
-        // fsc_mode && enable_fsc -> ctx = TXB_SKIP_CONTEXTS - 1, overriding the
-        // fill/level branches.
         assert_eq!(txb_skip_ctx_luma(0, 0, true, true), TXB_SKIP_CONTEXTS - 1);
         assert_eq!(txb_skip_ctx_luma(3, 3, false, true), TXB_SKIP_CONTEXTS - 1);
     }
 
     #[test]
     fn v_txb_skip_ctx_first_block_larger_chroma_is_three() {
-        // The minimal trace's V transform block: zero level/DC context (first
-        // block), a chroma residual block larger than the transform (+3), and
-        // EobU == 0 (the U plane decoded all-zero) -> ctx 3, matching the value
-        // the conformant fixture forces.
         assert_eq!(v_txb_skip_ctx(false, false, true, false), 3);
     }
 
     #[test]
     fn v_txb_skip_ctx_adds_neighbour_chroma_and_eob_contributions() {
-        // ctx = (above != 0) + (left != 0), then +3 if the chroma block exceeds
-        // the transform and +6 if EobU != 0.
         assert_eq!(v_txb_skip_ctx(false, false, false, false), 0);
         assert_eq!(v_txb_skip_ctx(true, false, false, false), 1);
         assert_eq!(v_txb_skip_ctx(true, true, false, false), 2);
@@ -1110,12 +1019,6 @@ mod tests {
 
     #[test]
     fn y_mode_offset_escape_reconstructs_d135_for_the_hedge_fixture() {
-        // The hedge fixture's escape: y_mode_set == 0,
-        // y_mode_index == MODE_INDEX_COUNT - 1, y_mode_offset == 3 ->
-        // modeIdx = 7 + 3 = 10; get_intra_y_mode_set(10) (top-left, no directional
-        // neighbour) = Default_Mode_List_Y[10 - 5] + 5 = 31 + 5 = 36; directional:
-        // 36 - 5 = 31; Reordered_Y_Mode[31 / 7 + 5] = Reordered_Y_Mode[9] = D135;
-        // AngleDeltaY = 31 % 7 - 3 = 0.
         let escape = reconstruct_y_mode_offset_escape_top_left(3)
             .expect("y_mode_offset 3 reconstructs a mode");
         assert_eq!(escape.y_mode, IntraYMode(IntraYMode::D135_PRED));
@@ -1129,15 +1032,12 @@ mod tests {
 
     #[test]
     fn y_mode_offset_escape_rejects_out_of_range_offset() {
-        // y_mode_offset must be in 0..MODE_OFFSET_COUNT (0..6).
         assert!(reconstruct_y_mode_offset_escape_top_left(MODE_OFFSET_COUNT).is_none());
         assert!(reconstruct_y_mode_offset_escape_top_left(u8::MAX).is_none());
     }
 
     #[test]
     fn y_mode_offset_escape_is_total_over_the_legal_offset_range() {
-        // Every legal y_mode_offset reconstructs a mode without panicking, and the
-        // reconstructed AngleDeltaY stays in -MAX_ANGLE_DELTA..=MAX_ANGLE_DELTA.
         for offset in 0..MODE_OFFSET_COUNT {
             let escape = reconstruct_y_mode_offset_escape_top_left(offset)
                 .expect("legal offset reconstructs");
@@ -1148,19 +1048,12 @@ mod tests {
 
     #[test]
     fn get_intra_uv_mode_set_directional_luma_returns_y_mode_for_index_zero() {
-        // is_directional_mode(D135) -> uv_mode 0 returns YMode (D135).
         let d135 = IntraYMode(IntraYMode::D135_PRED);
         assert_eq!(get_intra_uv_mode_set(d135, 0), Some(IntraYMode::D135_PRED));
     }
 
     #[test]
     fn supported_directional_admits_middle_d45_and_d203_but_rejects_d67() {
-        // §7.13.2.8 middle-angle luma IDIF support: the three "middle" angles
-        // D113 (value 5), D135 (value 4) and D157 (value 6) are admitted, plus
-        // the ZONE-1 one-sided angle D45 (value 3, pAngle 45, reads above-right)
-        // and the symmetric ZONE-3 one-sided angle D203 (value 7, pAngle 203,
-        // reads below-left); the remaining one-sided directional mode D67
-        // (value 8) is NOT, because it has no oracle-verified fixture.
         assert_eq!(
             IntraYMode(IntraYMode::D45_PRED).supported_directional(),
             Some(SupportedDirectionalLumaMode::D45)
@@ -1181,15 +1074,11 @@ mod tests {
             IntraYMode(IntraYMode::D157_PRED).supported_directional(),
             Some(SupportedDirectionalLumaMode::D157)
         );
-        // D67 (8) remains unsupported (the last one-sided angle without a fixture).
         assert_eq!(IntraYMode(8).supported_directional(), None);
     }
 
     #[test]
     fn supported_chroma_mode_directional_follow_resolves_d113_for_uv_mode_zero() {
-        // §5.20.5.3: with a directional luma, uv_mode 0 returns YMode itself
-        // (`AngleDeltaUV = AngleDeltaY`). For YMode == D113_PRED that is the
-        // directional-follow D113 chroma the decode now reconstructs.
         let d113 = IntraYMode(IntraYMode::D113_PRED);
         assert_eq!(get_intra_uv_mode_set(d113, 0), Some(IntraYMode::D113_PRED));
         assert_eq!(
@@ -1200,13 +1089,6 @@ mod tests {
 
     #[test]
     fn y_mode_offset_escape_reconstructs_d113() {
-        // The §5.20.5.3 `y_mode_offset` escape (`y_mode_set == 0`,
-        // `y_mode_index == MODE_INDEX_COUNT - 1`, top-left no-directional-neighbour
-        // ctx == 0) with `y_mode_offset == 2` reconstructs D113: modeIdx = 7 + 2 =
-        // 9; get_intra_y_mode_set(9) (no directional neighbour) =
-        // Default_Mode_List_Y[9 - 5] + 5 = Default_Mode_List_Y[4] + 5 = 24 + 5 =
-        // 29; modeDelta 29 -> (29 - 5) = 24, Reordered_Y_Mode[24 / 7 + 5] =
-        // Reordered_Y_Mode[8] = D113_PRED (5); AngleDeltaY = (24 % 7) - 3 = 0.
         let escape = reconstruct_y_mode_offset_escape_top_left(2)
             .expect("y_mode_offset 2 reconstructs a mode");
         assert_eq!(escape.y_mode, IntraYMode(IntraYMode::D113_PRED));
@@ -1220,9 +1102,6 @@ mod tests {
 
     #[test]
     fn supported_chroma_mode_directional_follow_resolves_d157_for_uv_mode_zero() {
-        // §5.20.5.3: with a directional luma, uv_mode 0 returns YMode itself
-        // (`AngleDeltaUV = AngleDeltaY`). For YMode == D157_PRED that is the
-        // directional-follow D157 chroma the decode now reconstructs.
         let d157 = IntraYMode(IntraYMode::D157_PRED);
         assert_eq!(get_intra_uv_mode_set(d157, 0), Some(IntraYMode::D157_PRED));
         assert_eq!(
@@ -1233,10 +1112,6 @@ mod tests {
 
     #[test]
     fn supported_chroma_mode_directional_follow_resolves_d203_for_uv_mode_zero() {
-        // §5.20.5.3: with a directional luma, uv_mode 0 returns YMode itself
-        // (`AngleDeltaUV = AngleDeltaY`). For YMode == D203_PRED that is the
-        // directional-follow D203 chroma (the §7.13.2.8 zone-3 bilinear one-sided
-        // branch) the decode now reconstructs.
         let d203 = IntraYMode(IntraYMode::D203_PRED);
         assert_eq!(get_intra_uv_mode_set(d203, 0), Some(IntraYMode::D203_PRED));
         assert_eq!(
@@ -1247,9 +1122,6 @@ mod tests {
 
     #[test]
     fn supported_chroma_mode_directional_luma_resolves_dc_for_uv_mode_one() {
-        // The original hedge fixture: directional luma (D135) with DC chroma. With
-        // is_directional_mode(YMode), uv_mode 1 -> after modeIdx -= 1, the first
-        // Default_Mode_List_Uv entry (DC_PRED) -> SupportedChromaMode::Dc.
         let d135 = IntraYMode(IntraYMode::D135_PRED);
         assert_eq!(
             supported_chroma_mode(d135, 1),
@@ -1259,9 +1131,6 @@ mod tests {
 
     #[test]
     fn supported_chroma_mode_directional_follow_resolves_d135_for_uv_mode_zero() {
-        // §5.20.5.3: with a directional luma, uv_mode 0 returns YMode itself
-        // (`AngleDeltaUV = AngleDeltaY`). For YMode == D135_PRED that is the
-        // directional-follow D135 chroma the decode now reconstructs.
         let d135 = IntraYMode(IntraYMode::D135_PRED);
         assert_eq!(get_intra_uv_mode_set(d135, 0), Some(IntraYMode::D135_PRED));
         assert_eq!(
@@ -1272,10 +1141,6 @@ mod tests {
 
     #[test]
     fn supported_chroma_mode_non_follow_d135_is_deferred() {
-        // The §5.20.5.3 scan can also yield D135_PRED paired with a non-directional
-        // luma (`Default_Mode_List_Uv[8] == D135`, reached at uv_mode 8 for DC luma).
-        // That non-follow D135 chroma pairing is not yet oracle-verified, so it is
-        // deferred (only the uv_mode 0 directional-follow branch is admitted).
         let dc = IntraYMode::DC_PRED;
         assert_eq!(get_intra_uv_mode_set(dc, 8), Some(IntraYMode::D135_PRED));
         assert_eq!(supported_chroma_mode(dc, 8), None);
@@ -1283,27 +1148,17 @@ mod tests {
 
     #[test]
     fn supported_chroma_mode_non_directional_luma_passes_list_through() {
-        // For a non-directional luma mode, get_intra_uv_mode_set skips no entry, so
-        // uv_mode indexes Default_Mode_List_Uv directly: 0 -> DC, 1 -> SMOOTH.
         let dc = IntraYMode::DC_PRED;
         assert_eq!(supported_chroma_mode(dc, 0), Some(SupportedChromaMode::Dc));
         assert_eq!(
             supported_chroma_mode(dc, 1),
             Some(SupportedChromaMode::Smooth)
         );
-        // A directional Default_Mode_List_Uv entry (e.g. V_PRED at index 5) is not
-        // a supported chroma predictor.
         assert_eq!(supported_chroma_mode(dc, 5), None);
     }
 
     #[test]
     fn first_set_directional_reconstructs_v_pred_for_index_five() {
-        // §5.20.5.3 direct first-mode-set: y_mode_set == 0, y_mode_index == 5
-        // (< MODE_INDEX_COUNT - 1, so no escape). modeIdx == 5;
-        // get_intra_y_mode_set(5) (top-left, no directional neighbour) =
-        // Default_Mode_List_Y[5 - 5] + 5 = 17 + 5 = 22; directional: 22 - 5 = 17;
-        // Reordered_Y_Mode[17 / 7 + 5] = Reordered_Y_Mode[7] = V_PRED;
-        // AngleDeltaY = 17 % 7 - 3 = 0.
         let result = reconstruct_y_mode_first_set_directional_top_left(5)
             .expect("y_mode_index 5 reconstructs V_PRED");
         assert_eq!(result.y_mode, IntraYMode(IntraYMode::V_PRED));
@@ -1317,9 +1172,6 @@ mod tests {
 
     #[test]
     fn first_set_directional_reconstructs_h_pred_for_index_six() {
-        // modeIdx == 6; get_intra_y_mode_set(6) = Default_Mode_List_Y[1] + 5 =
-        // 45 + 5 = 50; directional: 50 - 5 = 45; Reordered_Y_Mode[45 / 7 + 5] =
-        // Reordered_Y_Mode[11] = H_PRED; AngleDeltaY = 45 % 7 - 3 = 0.
         let result = reconstruct_y_mode_first_set_directional_top_left(6)
             .expect("y_mode_index 6 reconstructs H_PRED");
         assert_eq!(result.y_mode, IntraYMode(IntraYMode::H_PRED));
@@ -1333,10 +1185,6 @@ mod tests {
 
     #[test]
     fn first_set_directional_rejects_non_directional_or_escape_indices() {
-        // y_mode_index < NON_DIRECTIONAL_MODES_COUNT is the non-directional prefix
-        // (handled by reconstruct_minimal_y_mode), and y_mode_index >=
-        // MODE_INDEX_COUNT - 1 is the escape (handled by the escape reconstructor),
-        // so neither is reconstructed by the first-set directional path.
         for index in 0..(NON_DIRECTIONAL_MODES_COUNT as u8) {
             assert!(reconstruct_y_mode_first_set_directional_top_left(index).is_none());
         }
@@ -1346,11 +1194,6 @@ mod tests {
 
     #[test]
     fn second_set_reconstructs_y_mode_from_y_second_mode() {
-        // §5.20.5.5 second-mode branch: y_mode_set == 1, y_second_mode == 0 gives
-        // modeIdx = FIRST_MODE_COUNT + 0 = 13. With no directional neighbours,
-        // get_intra_y_mode_set(13) = Default_Mode_List_Y[13 - 5] + 5 = 15 + 5 =
-        // 20. Directional reconstruction then maps modeDelta 20 to V_PRED with
-        // AngleDeltaY = (20 - 5) % 7 - 3 = -2.
         let result = reconstruct_y_mode_second_set_top_left(1, 0)
             .expect("legal second-mode branch reconstructs");
         assert_eq!(result.y_mode, IntraYMode(IntraYMode::V_PRED));
@@ -1360,10 +1203,6 @@ mod tests {
 
     #[test]
     fn second_set_reconstructs_later_mode_sets() {
-        // y_mode_set == 2, y_second_mode == 15 gives modeIdx = 13 + 16 + 15 = 44.
-        // The top-left-equivalent Default_Mode_List_Y scan resolves
-        // Default_Mode_List_Y[44 - 5] == 53, so modeDelta == 58 and the typed
-        // mode is D203_PRED with AngleDeltaY == 1.
         let result = reconstruct_y_mode_second_set_top_left(2, 15)
             .expect("later legal second-mode branch reconstructs");
         assert_eq!(result.y_mode, IntraYMode(IntraYMode::D203_PRED));
@@ -1380,10 +1219,6 @@ mod tests {
 
     #[test]
     fn neighbour_reorder_selects_directional_joint_mode_before_default_list() {
-        // modeIdx == 5 enters get_intra_y_mode_set's directional branch with local
-        // modeIdx 0. With a D135 left neighbour (stored IntraJointMode 36), the
-        // neighbour is returned before Default_Mode_List_Y[0] (which would be
-        // V_PRED in the top-left case).
         let result = reconstruct_y_mode_with_neighbours(5, [36, 0], 16, 16)
             .expect("directional neighbour reconstructs");
         assert_eq!(result.intra_joint_mode, 36);
@@ -1393,9 +1228,6 @@ mod tests {
 
     #[test]
     fn neighbour_reorder_skips_duplicate_directional_neighbours() {
-        // Duplicate left/above D135 neighbours count once. The second candidate
-        // for a large block is the first -1 expansion around D135:
-        // mode 31 - 1 = 30, stored IntraJointMode 35.
         let result = reconstruct_y_mode_with_neighbours(6, [36, 36], 16, 16)
             .expect("duplicate directional neighbours reconstruct");
         assert_eq!(result.intra_joint_mode, 35);
@@ -1403,9 +1235,6 @@ mod tests {
 
     #[test]
     fn neighbour_reorder_uses_default_list_after_small_block_neighbour() {
-        // For an 8x8 block, Block_Width * Block_Height == 64, so the ±1..4
-        // expansion is not used. After consuming the D135 neighbour, the next
-        // candidate resumes the default scan at Default_Mode_List_Y[0] == 17.
         let result = reconstruct_y_mode_with_neighbours(6, [36, 0], 2, 2)
             .expect("small block directional neighbour reconstructs");
         assert_eq!(result.intra_joint_mode, 22);
@@ -1414,19 +1243,9 @@ mod tests {
 
     #[test]
     fn neighbour_reorder_runs_for_wide_tall_sub_8x8_blocks() {
-        // §5.20.5.3 line 11128 gates the directional-neighbour reorder on
-        // `MiSize >= BLOCK_8X8`, which excludes ONLY {BLOCK_4X4, BLOCK_4X8,
-        // BLOCK_8X4} (`block_n4w * block_n4h <= 2`). `BLOCK_4X16` (n4w=1, n4h=4,
-        // area 4) and `BLOCK_16X4` (n4w=4, n4h=1) are `>= BLOCK_8X8` and MUST run
-        // the reorder — the earlier `n4w >= 2 && n4h >= 2` gate wrongly skipped
-        // them, deriving the wrong YMode (the ac0ej3 MI(32,225) bug: the first
-        // directional neighbour 18 -> D67_PRED was lost to Default_Mode_List_Y[0]
-        // -> V_PRED). Their single-MI dimension is `>= 2` only in the other axis.
         for (n4w, n4h) in [(1usize, 4usize), (4, 1)] {
             let result = reconstruct_y_mode_with_neighbours(5, [18, 19], n4w, n4h)
                 .expect("wide/tall sub-8x8 directional neighbour reconstructs");
-            // mode_idx 5 selects the first directional neighbour (joint mode 18 ==
-            // D67_PRED + reorder bias) instead of the default-list head.
             assert_eq!(result.intra_joint_mode, 18, "{n4w}x{n4h} stored joint mode");
             assert_eq!(
                 result.y_mode,
@@ -1434,9 +1253,6 @@ mod tests {
                 "{n4w}x{n4h} reconstructed YMode"
             );
         }
-        // The genuinely-small {4x4, 4x8, 8x4} blocks (area <= 2) still skip the
-        // reorder: mode_idx 5 falls straight to Default_Mode_List_Y[0] == 17 (joint
-        // mode 22 -> V_PRED), unchanged by the fix.
         for (n4w, n4h) in [(1usize, 1usize), (1, 2), (2, 1)] {
             let result = reconstruct_y_mode_with_neighbours(5, [18, 19], n4w, n4h)
                 .expect("sub-8x8 small block reconstructs via the default list");
@@ -1449,9 +1265,6 @@ mod tests {
 
     #[test]
     fn supported_chroma_mode_cardinal_follow_resolves_v_and_h_for_uv_mode_zero() {
-        // §5.20.5.3: with a directional luma, uv_mode 0 returns YMode itself
-        // (`AngleDeltaUV = AngleDeltaY`). For V_PRED / H_PRED that is the cardinal
-        // directional-follow chroma the decode now reconstructs.
         let v = IntraYMode(IntraYMode::V_PRED);
         let h = IntraYMode(IntraYMode::H_PRED);
         assert_eq!(get_intra_uv_mode_set(v, 0), Some(IntraYMode::V_PRED));
@@ -1468,22 +1281,14 @@ mod tests {
 
     #[test]
     fn supported_chroma_mode_cardinal_luma_with_dc_chroma_resolves_dc() {
-        // A cardinal directional luma (V_PRED) with DC chroma: uv_mode 1 ->
-        // after modeIdx -= 1 the first Default_Mode_List_Uv entry (DC_PRED).
         let v = IntraYMode(IntraYMode::V_PRED);
         assert_eq!(supported_chroma_mode(v, 1), Some(SupportedChromaMode::Dc));
     }
 
     #[test]
     fn supported_chroma_mode_non_follow_h_pred_over_dc_luma_resolves_horizontal() {
-        // The two-frame inter target's key frame: a DC (non-directional) luma with
-        // an explicit uv_mode that resolves to H_PRED (the non-follow path, NOT the
-        // uv_mode == 0 directional follow). This must map to the non-follow
-        // `Horizontal` chroma mode, distinct from `HorizontalFollow`.
         let dc = IntraYMode(DC_PRED as u8);
         assert!(!dc.is_directional());
-        // uv_mode 6 resolves through Default_Mode_List_Uv to H_PRED (value 2) for a
-        // non-directional luma, matching the committed syn-2frame-inter-64x64 key.
         assert_eq!(get_intra_uv_mode_set(dc, 6), Some(H_PRED_VALUE));
         assert_eq!(
             supported_chroma_mode(dc, 6),

@@ -247,8 +247,6 @@ impl TileIntrabcPreludeState {
             .inter
             .as_ref()
             .is_some_and(|inter| inter.enable_refmvbank);
-        // Map the § 5.4.6 `DrlReorder` mode (inferred `DRL_REORDER_DISABLED` when the
-        // sequence has no inter config) into the decode-internal `DrlReorderMode`.
         let drl_reorder = match sequence.inter.as_ref().map(|inter| inter.drl_reorder) {
             Some(DrlReorder::Always) => DrlReorderMode::Always,
             Some(DrlReorder::Constraint) => DrlReorderMode::Constraint,
@@ -292,16 +290,6 @@ impl TileIntrabcPreludeState {
                 "unsupported_wienerns_lr_selectable_transform_records_intrabc_col_overflow",
             )
         })?;
-        // §5.20.6.1 fills the mode-info grid over the block's NOMINAL MI footprint
-        // (`row..row_end`, `col..col_end`) with NO MiRows/MiCols clamp; a leaf
-        // straddling the frame edge (a partial bottom/right SB row) keeps its nominal
-        // size. The out-of-frame MI cells are dropped DOWNSTREAM by the §5.20.3.2
-        // `block_coded(r,c) { return r < MiRows && c < MiCols }`
-        // (05-syntax-structures.md:9621). Model that frame-edge drop here: skip cells
-        // past the frame extent in the fill so a partial-SB MI row at the frame edge
-        // records only its in-frame cells (leaving out-of-frame cells `None`) instead
-        // of erroring `..._intrabc_block_bounds`. The `checked_add` guards above stay:
-        // they catch genuine usize overflow, not frame edges.
         for r in row..row_end {
             if r >= self.mi_rows {
                 break;
@@ -314,14 +302,6 @@ impl TileIntrabcPreludeState {
                 self.values[index] = Some(facts);
             }
         }
-        // AV2 § 7.12.2 `av2_read_mode_info` POST-block bank maintenance: feed the
-        // block (IBC or not) into the ref-MV bank in decode order. The SB-row reset
-        // already ran at block entry in [`Self::prepare_for_block`]. The bank footprint
-        // uses the block's NOMINAL `n4w`/`n4h`, NOT the frame-clamped extent:
-        // `decide_rmb_unit_update_count` (`mvref_common.c:4589`) derives the rmb-unit
-        // count from `bsize = mbmi->sb_type` (the nominal block size), so clamping it
-        // would desync the §7.12.2 remain_hits budget. The per-MI grid IS clipped by
-        // §5.20.3.2 `block_coded`; the bank is NOT — this contrast is load-bearing.
         if self.enable_refmvbank {
             self.bank.update_after_block(
                 row,
@@ -587,17 +567,6 @@ pub(super) fn read_intrabc_info(
     let info =
         finish_intrabc_info_record(cdfs, symbols, sequence, core, syntax, pred_mv, tile_offset)?;
     let prediction = derive_intrabc_luma_prediction_geometry(core, geometry, info, tile_offset)?;
-    // §7.13.3.18 IntrABC luma prediction: with the block-vector geometry bounds-checked
-    // above, an attached reconstruction sink copies the displaced predictor rectangle
-    // from the partially-built `CurrFrame` (gated to the proven integer-vector skip
-    // subset inside the sink). The §6.19.7.12 `is_mv_valid` conformance predicate must
-    // ALSO hold before the copy: the geometry derivation proves the tile-edge clause,
-    // and `intrabc_dv_proven_valid` proves the global-intrabc wavefront clause (the
-    // local-IBC-buffer clause needs runtime buffer state splot does not track, so it is
-    // conservatively deferred). An invalid (or not-provably-valid) DV defers the copy —
-    // never marks an out-of-buffer reference bit-exact. The sink retains the
-    // reconstructed IntrABC target for the region test; the PUBLIC decode threads no
-    // sink, so it never copies a sample and still emits no frame.
     if let Some(sink) = sink
         && intrabc_dv_proven_valid(sequence, core, geometry, info, tile_offset)?
     {
@@ -608,21 +577,6 @@ pub(super) fn read_intrabc_info(
             tile_offset,
         )?;
     }
-    // §5.20.4 decode_block continuation. A `skip` IntrABC leaf carries NO residual,
-    // and §5.20.6.1 read_block_tx_size for a skipped inter block (is_inter == 1 for
-    // IntrABC, §5.20.5.3) assigns Max_Tx_Size_Rect with NO partition symbols (the
-    // walk's `allow_select == !skip || !is_inter == false` max-rect branch). A NON-skip
-    // IntrABC leaf instead reads its §5.20.6.1 inter tx-partition + §5.20.7.29 inter
-    // transform-type + §5.20.7.27 coefficient residual via the SAME is_inter-aware
-    // tx-record + coefficient machinery the partition walk drives after this prelude
-    // returns. Returning the parsed mode-info for BOTH cases lets that machinery
-    // advance the partition/superblock walk AVM-faithfully to the next leaf — the
-    // entropy state after the block is exactly where AVM leaves it. For a non-skip
-    // leaf the sink's `reconstruct_intrabc_block` wrote the displaced copy as the
-    // §7.13.2 PREDICTION and recorded the target as pending; each §5.20.7.27 residual
-    // transform leaf then adds its decoded residual onto that predictor inside the
-    // sink's transform-record path (gated to the proven integer-DV / no-real-IST
-    // subset), so the IntrABC reconstruction is prediction + residual, bit-exact.
     Ok(info)
 }
 
@@ -637,9 +591,6 @@ fn read_intrabc_info_record(
 ) -> Result<IntrabcInfo> {
     use super::intrabc_ref_mv_stack::build_intrabc_ref_mv_stack;
     let syntax = read_intrabc_info_syntax(cdfs, symbols, sequence, core, tile_offset)?;
-    // These geometry tests have no neighbours: the §7.12.2 stack is bank-empty +
-    // spatial-empty, i.e. the §7.12.2.20 default fill, and `pred_mv` is its
-    // `RefStackMv[ref_mv_idx]` (the same entry the live admission path selects).
     let stack_geometry = IntrabcStackGeometry {
         mi_row: geometry.block.row,
         mi_col: geometry.block.col,
@@ -795,9 +746,6 @@ fn finish_intrabc_info_record(
     pred_mv: Mv,
     tile_offset: ByteOffset,
 ) -> Result<IntrabcInfo> {
-    // `pred_mv` is `RefStackMv[ref_mv_idx]` from the real §7.12.2 stack the live
-    // path built (spatial scan + ref-MV bank + default fill); the assign path adds
-    // the §5.20.5.4 MV delta to it (NEWMV) or uses it directly (NEARMV).
     let block_mv = assign_intrabc_mv(
         cdfs,
         symbols,
@@ -888,12 +836,6 @@ pub(super) fn derive_intrabc_luma_prediction_geometry(
             "unsupported_wienerns_lr_selectable_transform_records_intrabc_geometry",
         )
     })?;
-    // Clamp the nominal target rect to the visible region (storage ∩ tile_bounds),
-    // modelling AVM §5.20.3.2 `block_coded(r,c) { r < MiRows && c < MiCols }`
-    // (05-syntax-structures.md:9621): a bottom/right-edge block carries its full
-    // nominal MI extent for §7.12.2 context/parse purposes but reconstructs and
-    // stores only its in-frame samples. A genuinely off-frame block (top-left MI
-    // outside the visible region) is still rejected — never an overhang.
     let target = intrabc_clamped_target(target_x, target_y, width, height, &domain, tile_offset)?;
     let source = intrabc_luma_source_envelope(target, info.block_mv, tile_offset)?;
     if !source.is_within(domain.storage) || !rect_is_within_rect(source, domain.tile_bounds) {
@@ -988,9 +930,6 @@ fn intrabc_clamped_target(
                 "unsupported_wienerns_lr_selectable_transform_records_intrabc_geometry",
             )
         })?;
-    // The top-left corner must be in-frame: at/after the tile origin, before the
-    // visible right/bottom edge, and within storage. A block whose top-left MI is
-    // itself off-frame is genuinely out of the visible region (not an overhang).
     let nominal_right = target_x.checked_add(width).ok_or_else(|| {
         wienerns_lr_selectable_transform_record_error_reason(
             tile_offset,
@@ -1017,8 +956,6 @@ fn intrabc_clamped_target(
             "unsupported_wienerns_lr_selectable_transform_records_intrabc_target_bounds",
         ));
     }
-    // `visible_right > target_x` and `visible_bottom > target_y` are guaranteed by the
-    // guard above, so the effective extents are positive (no zero-dimension error).
     let eff_width = visible_right - target_x;
     let eff_height = visible_bottom - target_y;
     PlaneRect::new(target_x, target_y, eff_width, eff_height).map_err(|_| {
@@ -1034,8 +971,6 @@ fn intrabc_luma_prediction_domain(
     geometry: IntrabcBlockGeometry,
     tile_offset: ByteOffset,
 ) -> Result<IntrabcLumaPredictionDomain> {
-    // Keep the missing-frame-size diagnostic distinct, but derive the luma
-    // storage domain from the padded MI sentinels used by §7.13.3.18.
     let _frame_size = core.frame_size.ok_or_else(|| {
         wienerns_lr_selectable_transform_record_error_reason(
             tile_offset,
@@ -1211,18 +1146,12 @@ fn intrabc_dv_proven_valid(
     info: IntrabcInfo,
     tile_offset: ByteOffset,
 ) -> Result<bool> {
-    // A non-integer block vector is deferred upstream (the source/target shapes differ
-    // in the sink); the conformance predicate only proves the integer-copy subset.
     if info.block_mv.row & 7 != 0 || info.block_mv.col & 7 != 0 {
         return Ok(false);
     }
     if !resolve_allow_local_intrabc(core) {
         return Ok(false);
     }
-    // §6.19.7.12 superblock size (samples). The same-superblock admission below never
-    // uses the `numLeftActiveSB` left-buffer window, so the §6.19.7.12 64x64-tier BRU
-    // reduction (the only local-range term needing runtime SB-active state) cannot
-    // affect it — no BRU gate is needed for the same-SB subset.
     let sb_samples = superblock_samples(sequence, tile_offset)?;
     let sb_size = usize::try_from(sb_samples).map_err(|_| {
         wienerns_lr_selectable_transform_record_error_reason(
@@ -1232,17 +1161,6 @@ fn intrabc_dv_proven_valid(
     })?;
     let block_w = geometry.n4w * MI_SIZE;
     let block_h = geometry.n4h * MI_SIZE;
-    // `av2_is_dv_valid` (`av2/common/mvref_common.h`) tries the `allow_local_intrabc`
-    // local-IBC-buffer branch FIRST and returns valid on a hit (mvref_common.h:927-951),
-    // then — for an intra-only frame with `allow_global_intrabc` — falls through to the
-    // GLOBAL wavefront branch (mvref_common.h:956-993). Mirror that order: try the same-SB
-    // local subset first, then the §7.13.3.18 global wavefront branch gated on an
-    // intra-only frame AND an explicitly-read `allow_global_intrabc` (resolved by
-    // [`resolve_allow_global_intrabc`]). Both clauses are deterministic geometry checks
-    // that only ADMIT a source whose entire rectangle is already coded in decode order; an
-    // admitted copy is per-sample bit-exact vs the AVM pre-filter oracle. Over-rejecting is
-    // always safe (a deferred copy never claims a wrong sample), so a non-{64,128,256} SB
-    // size or missing tile info fails the global clause closed.
     let local_valid = local_intrabc_range_valid(IntrabcLocalRangeInputs {
         mi_row: geometry.block.row,
         mi_col: geometry.block.col,
@@ -1255,17 +1173,9 @@ fn intrabc_dv_proven_valid(
     if local_valid {
         return Ok(true);
     }
-    // The matching `frame_is_intra` clause of `av2_is_dv_valid` (mvref_common.h:954) plus
-    // the explicit `allow_global_intrabc`. `None` (inferred 0 on a non-intra frame) and
-    // `Some(false)` both disable the global branch — only an explicitly-read `Some(true)`
-    // on an intra-only frame enables it.
     if core.frame_is_intra != Some(true) || !resolve_allow_global_intrabc(core) {
         return Ok(false);
     }
-    // The global wavefront branch needs the TRUE §5.18.7.6 superblock size (it must NOT
-    // collapse the 256 tier to 128 the way `superblock_samples` does — the `gradient` /
-    // `mib_size_log2` terms depend on the real size) and the block's tile 64x64-column
-    // extent (`total_sb64_per_row`).
     let global_sb_size = global_superblock_samples(sequence, tile_offset)?;
     let total_sb64_per_row = intrabc_tile_total_sb64_per_row(core, geometry, tile_offset)?;
     Ok(global_intrabc_range_valid(IntrabcGlobalRangeInputs {
@@ -1316,7 +1226,6 @@ fn intrabc_tile_total_sb64_per_row(
             "unsupported_wienerns_lr_selectable_transform_records_intrabc_geometry",
         ));
     }
-    // mi_size_high_log2[BLOCK_64X64] == 4 (a 64x64 SB is 16 MI tall/wide).
     Ok(((tile_mi_cols - 1) >> 4) + 1)
 }
 
@@ -1371,7 +1280,6 @@ fn local_intrabc_range_valid(inputs: IntrabcLocalRangeInputs) -> bool {
     let bh = inputs.block_h as i64;
     let dv_row = i64::from(inputs.dv_row);
     let dv_col = i64::from(inputs.dv_col);
-    // sb_size_log2 from the superblock sample size (64 -> 6, 128 -> 7, 256 -> 8).
     let sb_size_log2 = match inputs.sb_size {
         64 => 6,
         128 => 7,
@@ -1383,7 +1291,6 @@ fn local_intrabc_range_valid(inputs: IntrabcLocalRangeInputs) -> bool {
     let src_left_edge = (inputs.mi_col as i64 * MI_SIZE as i64) * 8 + dv_col;
     let src_bottom_edge = (inputs.mi_row as i64 * MI_SIZE as i64 + bh) * 8 + dv_row;
     let src_right_edge = (inputs.mi_col as i64 * MI_SIZE as i64 + bw) * 8 + dv_col;
-    // Integer DV: no interp border, and the `-1` rounding on the bottom/right edges.
     let src_top_y = src_top_edge >> 3;
     let src_left_x = src_left_edge >> 3;
     let src_bottom_y = (src_bottom_edge >> 3) - 1;
@@ -1391,16 +1298,9 @@ fn local_intrabc_range_valid(inputs: IntrabcLocalRangeInputs) -> bool {
     let act_left_x = inputs.mi_col as i64 * MI_SIZE as i64;
     let act_top_y = inputs.mi_row as i64 * MI_SIZE as i64;
 
-    // Reference block cannot be in the uncoded bottom-right region of the current
-    // block's top-left corner (integer DV: no interp borders).
     if ((dv_col >> 3) + bw) > 0 && ((dv_row >> 3) + bh) > 0 {
         return false;
     }
-    // The whole source rectangle must lie in the SAME superblock as the active block
-    // (row AND column). This is stricter than `av2_is_dv_in_local_range`'s
-    // current-or-left-`numLeftSB`-SBs window: it excludes every previous-SB source,
-    // which is exactly the set §6.19.7.12 `check_valid_local_ibc` may then reject on a
-    // 64x64 IBC-buffer collocation collision (runtime state this gate cannot prove).
     let act_sb_col = act_left_x >> sb_size_log2;
     let act_sb_row = act_top_y >> sb_size_log2;
     (src_left_x >> sb_size_log2) == act_sb_col
@@ -1466,8 +1366,6 @@ fn global_intrabc_range_valid(inputs: IntrabcGlobalRangeInputs) -> bool {
     let mi_row = inputs.mi_row as i64;
     let mi_col = inputs.mi_col as i64;
     let mi = i64::from(MI_SIZE as u32);
-    // `mib_size_log2` is the MI-tier log2 of the SB (64 -> 4, 128 -> 5, 256 -> 6); the
-    // matching `sb_size` sample size is `(1 << mib_size_log2) * MI_SIZE`.
     let mib_size_log2: i64 = match inputs.sb_size {
         64 => 4,
         128 => 5,
@@ -1476,8 +1374,6 @@ fn global_intrabc_range_valid(inputs: IntrabcGlobalRangeInputs) -> bool {
     };
     let sb_size = i64::from(inputs.sb_size as u32);
 
-    // Integer DV: no interp border, and the `-1` integer rounding on the bottom/right
-    // source edges, exactly as `av2_is_dv_valid` derives them (mvref_common.h:956-993).
     let src_bottom_edge = (mi_row * mi + bh) * 8 + dv_row;
     let src_right_edge = (mi_col * mi + bw) * 8 + dv_col;
 
@@ -1485,22 +1381,15 @@ fn global_intrabc_range_valid(inputs: IntrabcGlobalRangeInputs) -> bool {
     let active_sb64_col = mi_col >> LOG2_MI_PER_64;
     let src_sb_row = ((src_bottom_edge >> 3) - 1) >> (mib_size_log2 + MI_SIZE_LOG2);
     let src_sb64_col = ((src_right_edge >> 3) - 1) >> (LOG2_MI_PER_64 + MI_SIZE_LOG2);
-    // `active_sb64_row` is the 64x64-tier row of the active block (sample-major).
     let active_sb64_row = (mi_row * mi) >> (LOG2_MI_PER_64 + MI_SIZE_LOG2);
 
-    // The `wavefront` raster index mixes the SB row stride (`total_sb64_per_row`, 64x64
-    // columns) with the SB128/256-tier `active_sb_row` exactly as AVM does.
     let active_sb64 = active_sb_row * inputs.total_sb64_per_row + active_sb64_col;
     let src_sb64 = src_sb_row * inputs.total_sb64_per_row + src_sb64_col;
 
     let gradient = 1 + INTRABC_DELAY_SB64 + i64::from(sb_size > 64) + 2 * i64::from(sb_size > 128);
     let wf_offset = gradient * (active_sb_row - src_sb_row);
 
-    // `sb_64_residual` fail-closed: 0 unless the bottom-left-128 position is possible.
     let is_bottom_left = sb_size == 128 && (active_sb64_col & 1) == 0 && (active_sb64_row & 1) == 1;
-    // The set of residual values any §5.20 root partition could legally produce here.
-    // For the bottom-left-128 case AVM's `SB_HORZ_OR_QUAD` partition yields `-1` and
-    // every other partition yields `0`; without partition state both must admit.
     let residuals: &[i64] = if is_bottom_left { &[0, -1] } else { &[0] };
     residuals.iter().all(|&sb_64_residual| {
         if src_sb64 >= active_sb64 - INTRABC_DELAY_SB64 - sb_64_residual {
@@ -1522,11 +1411,6 @@ fn tile_interval_for_block(
     bounds_reason: &'static str,
     tile_offset: ByteOffset,
 ) -> Result<(usize, usize)> {
-    // Overflow guard on the nominal MI extent (kept verbatim): a block whose nominal
-    // MI span overflows `usize` is malformed geometry. The end itself is no longer a
-    // containment bound — a bottom/right-edge block's nominal extent may overhang the
-    // visible tile and is clamped to the visible region downstream
-    // ([`intrabc_clamped_target`]), per AVM §5.20.3.2 `block_coded`.
     let block_end = block_start.checked_add(block_len).ok_or_else(|| {
         wienerns_lr_selectable_transform_record_error_reason(
             tile_offset,
@@ -1547,10 +1431,6 @@ fn tile_interval_for_block(
                 "unsupported_wienerns_lr_selectable_transform_records_intrabc_geometry",
             )
         })?;
-        // The block belongs to the interval whose MI range contains its TOP-LEFT MI
-        // (§5.20.3.2 `block_coded` admits a block by its top-left corner; the nominal
-        // extent may overhang the tile/frame bottom-right edge). The visible-region
-        // clamp happens downstream — this interval supplies the tile bounds.
         if block_start >= start && block_start < end {
             return Ok((start, end));
         }
@@ -1604,9 +1484,6 @@ fn intrabc_luma_source_envelope(
     block_mv: IntrabcBlockVector,
     tile_offset: ByteOffset,
 ) -> Result<PlaneRect> {
-    // IntrABC forces BILINEAR (§5.20.5.4). In §7.13.3.18 its non-zero taps are
-    // the integer sample and the next sample on the fractional side, so no
-    // top/left EIGHTTAP halo is part of this effective luma footprint.
     let bottom_border = usize::from(block_mv.row & 7 != 0);
     let right_border = usize::from(block_mv.col & 7 != 0);
     let delta_row = block_mv.row >> 3;

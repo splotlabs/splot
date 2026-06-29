@@ -63,8 +63,6 @@ fn derive_is_regular(obu_type: ObuType) -> bool {
 pub(crate) fn check_frame_header_prefix_encodable(prefix: &FrameHeaderPrefix) -> WriteResult<()> {
     let reject = |what: &'static str| Err(WriteError::NonCanonicalFrameHeader { what });
 
-    // The prefix parser only produces the first-header path and stops at the activation
-    // fields, so these two are invariant.
     if !prefix.is_first {
         return reject("is_first");
     }
@@ -72,7 +70,6 @@ pub(crate) fn check_frame_header_prefix_encodable(prefix: &FrameHeaderPrefix) ->
         return reject("status");
     }
 
-    // The `is_*` flags are derived from `obu_type`; reject a model that stores anything else.
     if prefix.is_key_frame != derive_key_frame(prefix.obu_type) {
         return reject("is_key_frame");
     }
@@ -90,18 +87,10 @@ pub(crate) fn check_frame_header_prefix_encodable(prefix: &FrameHeaderPrefix) ->
         return reject("starts_cvs");
     }
 
-    // A bridge frame infers `cur_mfh_id = 0`; a stored non-zero value could not have been
-    // produced by the parser's bridge branch.
     if prefix.is_bridge && !prefix.cur_mfh_id.is_zero() {
         return reject("cur_mfh_id");
     }
 
-    // `seq_header_id_in_frame_header` is present iff `cur_mfh_id == 0`, and
-    // `referenced_sequence_header_id` is its in-range resolution. Accumulate the exact bit
-    // count the written fields will occupy so the derived `consumed_bits` can be validated
-    // against it. A `uvlc` value of `u32::MAX` is unencodable (`read_uvlc` maxes at
-    // `u32::MAX - 1`), so reject it up front rather than let the second `write_uvlc` fail
-    // mid-write and leave a partial buffer.
     let mut expected_bits: u64 = 0;
     if !prefix.is_bridge {
         let cur = prefix.cur_mfh_id.get();
@@ -136,9 +125,6 @@ pub(crate) fn check_frame_header_prefix_encodable(prefix: &FrameHeaderPrefix) ->
         }
     }
 
-    // `consumed_bits` is the derived bit count of the activation fields; a model whose stored
-    // value disagrees with the syntax it carries is not parser-reachable and would reparse to
-    // a different prefix, so reject it before any bit.
     if prefix.consumed_bits != expected_bits {
         return reject("consumed_bits");
     }
@@ -179,13 +165,10 @@ pub fn write_frame_header_prefix(
 ) -> WriteResult<()> {
     check_frame_header_prefix_encodable(prefix)?;
 
-    // A bridge frame infers cur_mfh_id = 0 (no bits); otherwise it is coded.
     if !prefix.is_bridge {
         writer.write_uvlc(prefix.cur_mfh_id.get())?;
     }
-    // cur_mfh_id == 0 references a sequence header directly via seq_header_id_in_frame_header.
     if prefix.cur_mfh_id.is_zero() {
-        // Presence guaranteed by check_frame_header_prefix_encodable.
         let raw =
             prefix
                 .seq_header_id_in_frame_header
@@ -233,14 +216,12 @@ mod tests {
     fn assert_roundtrip(obu_type: ObuType, first_pic: Option<bool>, bytes: &[u8]) {
         let prefix = parse_prefix(bytes, obu_type, first_pic);
         let written = write_prefix(&prefix);
-        // Byte-exact over the consumed prefix (uvlc is canonical by construction).
         let consumed_bytes = prefix.consumed_bits.div_ceil(8) as usize;
         assert_eq!(
             &written[..],
             &bytes[..consumed_bytes],
             "{obu_type:?}: prefix not byte-exact"
         );
-        // Semantic round-trip.
         let reparsed = parse_prefix(&written, obu_type, first_pic);
         assert_eq!(
             reparsed, prefix,
@@ -250,8 +231,6 @@ mod tests {
 
     #[test]
     fn mfh_zero_round_trips_across_obu_types() {
-        // cur_mfh_id == 0 + a seq_header_id, across every frame-bearing obu_type. The
-        // derived flags differ by type, so this also guards the local derive_* mirrors.
         for obu_type in [
             ObuType::ClosedLoopKey,
             ObuType::OpenLoopKey,
@@ -270,22 +249,18 @@ mod tests {
 
     #[test]
     fn mfh_zero_clk_withheld_first_picture_round_trips() {
-        // A CLK with FirstPictureInTU withheld -> starts_cvs == None (valid, no bit).
         let bytes = prefix_bytes(false, 0, Some(0));
         assert_roundtrip(ObuType::ClosedLoopKey, None, &bytes);
     }
 
     #[test]
     fn mfh_nonzero_round_trips() {
-        // cur_mfh_id > 0 -> no seq_header_id; the prefix resolves the sequence header
-        // through the MFH record, so seq_header_id_in_frame_header is None.
         let bytes = prefix_bytes(false, 5, None);
         assert_roundtrip(ObuType::RegularSef, Some(false), &bytes);
     }
 
     #[test]
     fn bridge_infers_mfh_zero_and_writes_no_cur_mfh_id() {
-        // A bridge frame infers cur_mfh_id = 0 and codes only seq_header_id.
         let bytes = prefix_bytes(true, 0, Some(2));
         let prefix = parse_prefix(&bytes, ObuType::BridgeFrame, Some(false));
         assert!(prefix.is_bridge);
@@ -300,8 +275,6 @@ mod tests {
 
     #[test]
     fn seq_header_id_out_of_range_round_trips() {
-        // seq_header_id_in_frame_header >= MAX_SEQ_NUM -> referenced id is None but the raw
-        // value still round-trips.
         let bytes = prefix_bytes(false, 0, Some(16));
         let prefix = parse_prefix(&bytes, ObuType::ClosedLoopKey, Some(true));
         assert_eq!(prefix.seq_header_id_in_frame_header, Some(16));
@@ -392,7 +365,6 @@ mod tests {
     #[test]
     fn reject_referenced_id_mismatch() {
         let mut prefix = base_prefix();
-        // base raw seq_header_id is 1 -> referenced should be try_new(1); store a wrong one.
         prefix.referenced_sequence_header_id = SequenceHeaderId::try_new(2);
         assert_rejected(&prefix, "referenced_sequence_header_id");
     }
@@ -406,8 +378,6 @@ mod tests {
 
     #[test]
     fn reject_consumed_bits_mismatch() {
-        // consumed_bits must equal the bit length of the activation fields; a stored value
-        // that disagrees with the syntax would reparse to a different prefix.
         let mut prefix = base_prefix();
         prefix.consumed_bits += 1;
         assert_rejected(&prefix, "consumed_bits");
@@ -415,7 +385,6 @@ mod tests {
 
     #[test]
     fn reject_cur_mfh_id_u32_max_before_any_bit() {
-        // u32::MAX is unencodable by uvlc; reject before any bit (not mid-write).
         let mut prefix = parse_prefix(
             &prefix_bytes(false, 4, None),
             ObuType::RegularSef,
@@ -436,8 +405,6 @@ mod tests {
 
     #[test]
     fn reject_seq_header_id_u32_max_before_any_bit() {
-        // The second uvlc would otherwise fail only after cur_mfh_id was written, leaving a
-        // partial buffer; the up-front check rejects it before any bit.
         let mut prefix = base_prefix();
         prefix.seq_header_id_in_frame_header = Some(u32::MAX);
         prefix.referenced_sequence_header_id = SequenceHeaderId::try_new(u32::MAX); // None

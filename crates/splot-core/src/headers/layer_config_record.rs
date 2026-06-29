@@ -380,8 +380,6 @@ fn parse_lcr_global_info(reader: &mut BitReader<'_>) -> Result<LcrGlobalInfo> {
     let global_config_record_id = reader.read_bits_u8(3)?;
     let xlayer_map = reader.read_bits(31)?;
 
-    // AV2 § 5.8.1: derive LcrXLayerID[] / LcrMaxNumXLayerCount from the set bits of
-    // lcr_xlayer_map; these drive the PTL and payload loops below.
     let xlayer_ids = derive_xlayer_ids(xlayer_map);
 
     let aggregate_info_present = reader.read_flag()?;
@@ -561,7 +559,6 @@ fn parse_lcr_global_payload(
     let parsed_bits = reader.consumed_bits().saturating_sub(start_bits);
     let total_bits = u64::from(data_size).saturating_mul(8);
     if parsed_bits > total_bits {
-        // AV2 § 5.8.5 / § 6.8.6: RemainingLcrPayloadBits would be negative.
         return Err(Error::InvalidLayerConfigRecord {
             offset: reader.byte_offset(),
             bit_offset: reader.bit_offset(),
@@ -578,8 +575,6 @@ fn parse_lcr_global_payload(
         });
     }
 
-    // Consume the reserved lcr_remaining_payload_bit bits (value ignored) in 32-bit
-    // chunks; the count is bounded by the declared, already-validated payload size.
     let mut left = remaining_payload_bits;
     while left >= 32 {
         let _ = reader.read_bits(32)?;
@@ -624,7 +619,6 @@ fn parse_lcr_xlayer_info(
         None
     };
 
-    // AV2 § 5.8.6: byte_alignment() before the embedded-layer / atlas block.
     reader.byte_align_zero()?;
 
     let (embedded_layer_info, xlayer_atlas) = if embedded_layer_info_present {
@@ -756,7 +750,6 @@ fn parse_lcr_embedded_layer_info(
             (Some(reader.read_uvlc()?), Some(reader.read_uvlc()?))
         };
 
-        // AV2 § 5.8.8: byte_alignment() at the end of each set-bit iteration.
         reader.byte_align_zero()?;
 
         layers.push(LcrEmbeddedLayer {
@@ -881,8 +874,6 @@ mod tests {
 
     #[test]
     fn parses_global_lcr_with_payload_and_remaining_bits() {
-        // One xlayer (bit 0), payload present. data_size = 2 bytes: the minimal
-        // xlayer_info is exactly 1 byte, leaving 8 remaining payload bits.
         let mut bits = global_prefix(2, 0b1, false, false, true, false);
         bits.leb128_byte(2); // lcr_data_size[0] = 2
         bits.bits.extend(minimal_xlayer_info(false).bits); // lcr_xlayer_info(1, 0)
@@ -915,7 +906,6 @@ mod tests {
 
     #[test]
     fn global_payload_too_small_size_is_overflow() {
-        // data_size = 0 cannot contain the 1-byte xlayer_info.
         let mut bits = global_prefix(2, 0b1, false, false, true, false);
         bits.leb128_byte(0);
         bits.bits.extend(minimal_xlayer_info(false).bits);
@@ -998,8 +988,6 @@ mod tests {
 
     #[test]
     fn local_lcr_embedded_layer_with_atlas_and_color() {
-        // A local LCR with a local atlas, whose xlayer_info carries color info and an
-        // embedded layer map selecting mlayer 0 with an atlas segment.
         let mut bits = Bits::default();
         bits.f(0, 3); // lcr_global_id
         bits.f(1, 3); // lcr_local_id
@@ -1007,7 +995,6 @@ mod tests {
         bits.bit(1); // local atlas present
         bits.f(1, 3); // lcr_local_atlas_id = 1
         bits.f(0, 5); // reserved_zero_5bits
-        // lcr_xlayer_info(0, xId):
         bits.bit(0); // rep_info present
         bits.bit(0); // purpose present
         bits.bit(1); // color info present
@@ -1018,9 +1005,7 @@ mod tests {
         bits.f(6, 8); // layer_matrix_coefficients
         bits.bit(1); // layer_full_range_flag
         bits.align(); // byte_alignment()
-        // lcr_embedded_layer_info(0, xId): mlayer_map = 0b0000_0001 -> only j=0.
         bits.f(0b0000_0001, 8);
-        // j = 0 (atlas present because local atlas present):
         bits.f(0b0101, MAX_NUM_TLAYERS); // lcr_tlayer_map
         bits.f(7, 8); // lcr_layer_atlas_segment_id
         bits.f(2, 8); // lcr_priority_order
@@ -1029,7 +1014,6 @@ mod tests {
         bits.f(9, 8); // lcr_auxiliary_type
         bits.f(VIEW_EXPLICIT as u32, 8); // lcr_view_type = VIEW_EXPLICIT -> view id follows
         bits.f(3, 8); // lcr_view_id
-        // j == 0 so no lcr_dependent_layer_map.
         bits.bit(0); // lcr_same_sh_max_resolution_flag = 0 -> max expected follows
         bits.uvlc(1920); // lcr_max_expected_width
         bits.uvlc(1080); // lcr_max_expected_height
@@ -1060,9 +1044,6 @@ mod tests {
     #[test]
     fn detects_nonzero_reserved_bits() {
         let mut bits = global_prefix(1, 0b1, false, false, false, false);
-        // Overwrite the trailing reserved_zero_5bits (last 5 bits appended) with a
-        // non-zero pattern by rebuilding the prefix with a nonzero reserved field.
-        // Simpler: build the prefix manually with reserved_zero_5bits != 0.
         bits.bits.clear();
         bits.f(1, 3); // id
         bits.f(0b1, 31); // map
@@ -1099,7 +1080,6 @@ mod tests {
 
     #[test]
     fn rejects_nonzero_byte_alignment_bits() {
-        // A local LCR whose xlayer_info has a non-zero byte-alignment bit.
         let mut bits = Bits::default();
         bits.f(0, 3); // global_id
         bits.f(1, 3); // local_id
@@ -1107,7 +1087,6 @@ mod tests {
         bits.bit(0); // local atlas present
         bits.f(0, 3); // reserved_zero_3bits
         bits.f(0, 5); // reserved_zero_5bits
-        // xlayer_info: 4 present flags clear, then a non-zero alignment bit.
         bits.bit(0);
         bits.bit(0);
         bits.bit(0);

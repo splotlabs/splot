@@ -1,12 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-// Property tests for the §5.19 tile-group structure writer: a constructed round-trip over an
-// arbitrary VALID (layout, structure) pair (write -> reparse -> assert syntax fields), plus a
-// "never panics" property over arbitrary field values (incl. huge num_tiles, out-of-range range,
-// truncated outcome) asserting no panic and `bit_len() == 0` on Err.
-
-// `include!`d into `crate::write::tile_group` so `super::*` resolves to its writer and helpers.
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -17,9 +11,6 @@ mod proptests {
     use crate::span::ByteOffset;
     use proptest::prelude::*;
 
-    // Builds an arbitrary VALID (layout, structure) the writer must accept and round-trip. The
-    // layout uses AV2-legal log2 sizes (`0..=6` each) and a `num_tiles` consistent with the
-    // signaled/inferred range path.
     prop_compose! {
         fn arbitrary_valid()(
             cols_log2 in 0u8..=6,
@@ -28,9 +19,6 @@ mod proptests {
             frac_start in 0u32..=u32::MAX,
             frac_end in 0u32..=u32::MAX,
         )(
-            // num_tiles in 1 ..= 2^(cols_log2 + rows_log2); a real layout has tiles within the
-            // log2-derived grid, but the writer only needs num_tiles >= 1 and the range to be
-            // consistent. Use the tileBits span as the tile-count ceiling.
             num_tiles in 1u32..=(1u32 << (u32::from(cols_log2) + u32::from(rows_log2))),
             cols_log2 in Just(cols_log2),
             rows_log2 in Just(rows_log2),
@@ -38,15 +26,10 @@ mod proptests {
             frac_start in Just(frac_start),
             frac_end in Just(frac_end),
         ) -> (TileGroupLayout, TileGroupStructure) {
-            // Build a layout whose num_tiles is the chosen value; tile_cols/tile_rows only feed
-            // the saturating product, so set cols = num_tiles, rows = 1.
             let layout = TileGroupLayout::new(num_tiles, 1, cols_log2, rows_log2);
 
             let range_written = num_tiles > 1 && flag;
             let structure = if range_written {
-                // Pick tg_start <= tg_end, both in 0 .. num_tiles (the §6.18 in-range requirement;
-                // num_tiles >= 2 here, and num_tiles <= 2^(cols_log2+rows_log2) == 2^tileBits, so the
-                // values also fit f(tileBits)).
                 let a = (u64::from(frac_start) % u64::from(num_tiles)) as u32;
                 let b = (u64::from(frac_end) % u64::from(num_tiles)) as u32;
                 let (tg_start, tg_end) = if a <= b { (a, b) } else { (b, a) };
@@ -59,8 +42,6 @@ mod proptests {
                     payload_size: None,
                 }
             } else {
-                // Inferred range: flag must be false (single tile can't signal it), range is the
-                // default 0 .. num_tiles - 1.
                 TileGroupStructure {
                     tile_start_and_end_present_flag: false,
                     tg_start: 0,
@@ -124,8 +105,6 @@ mod proptests {
             let mut writer = BitWriter::new();
             match write_tile_group_structure(&mut writer, &s, layout) {
                 Ok(()) => {
-                    // A successful write must reparse to the same syntax fields (the writer only
-                    // accepts reproducible models).
                     let bytes = writer.into_bytes();
                     let sz = bytes.len() as u64;
                     let mut reader = BitReader::new(&bytes, ByteOffset::new(0));
@@ -140,7 +119,6 @@ mod proptests {
                     prop_assert_eq!(parsed.outcome, TileGroupStructureOutcome::Complete);
                 }
                 Err(_) => {
-                    // Reject-before-write: no bit was emitted.
                     prop_assert_eq!(writer.bit_len(), 0);
                 }
             }
@@ -148,13 +126,6 @@ mod proptests {
     }
 }
 
-// Property tests for the §5.20.1 tile-group payload framing writer: a parser-driven round-trip over
-// an arbitrary conformant region (build bytes -> parse -> write -> assert byte-exact + reparse-equal)
-// and a "never panics" property over arbitrary constructed framings/tile_data/TileSizeBytes/is_bridge
-// (incl. out-of-domain TileSizeBytes, zero sizes, count/length mismatches, defects) asserting no
-// panic and `bit_len() == 0` on Err.
-
-// `include!`d into `crate::write::tile_group` so `super::*` resolves to its writers and helpers.
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -188,12 +159,8 @@ mod payload_proptests {
         #[test]
         fn payload_round_trips(
             tile_size_bytes in 1u32..=4,
-            // Up to 5 tiles; each non-last tile_size must fit le(tile_size_bytes), so cap sizes at a
-            // value that fits the narrowest width exercised (le(1) -> 256). Keep regions small.
             raw_sizes in proptest::collection::vec(1u64..=256, 1..=5),
         ) {
-            // For non-last tiles the size field must hold tile_size - 1 in le(tile_size_bytes); the
-            // 1..=256 range fits le(1) (and any wider width), so every build is conformant.
             let tile_sizes = raw_sizes;
             let region = build_region(&tile_sizes, tile_size_bytes);
             let tg_end = (tile_sizes.len() - 1) as u32;
@@ -233,8 +200,6 @@ mod payload_proptests {
             has_defect in any::<bool>(),
             extra_data in any::<bool>(),
         ) {
-            // Build a framing whose tiles carry the arbitrary sizes; offsets are sequential so a
-            // valid case reparses, but the writer must not panic even when they are inconsistent.
             let mut tiles = Vec::new();
             let mut offset = 0u64;
             let last = sizes.len().saturating_sub(1);
@@ -264,8 +229,6 @@ mod payload_proptests {
             };
             let framing = TileGroupFraming { tiles, defect };
 
-            // One data slice per tile, each exactly tile_size bytes (so a valid framing round-trips);
-            // `extra_data` perturbs the count to exercise the tile_data_count reject.
             let mut owned: Vec<Vec<u8>> = sizes.iter().map(|&s| vec![0u8; s as usize]).collect();
             if extra_data {
                 owned.push(vec![0u8]);
@@ -281,7 +244,6 @@ mod payload_proptests {
                 is_bridge,
             ) {
                 Ok(()) => {
-                    // A successful write reparses to the same framing.
                     let bytes = writer.into_bytes();
                     let tg_end = (framing.tiles.len() - 1) as u32;
                     let reparsed =
@@ -289,7 +251,6 @@ mod payload_proptests {
                     prop_assert_eq!(reparsed, framing);
                 }
                 Err(_) => {
-                    // Reject-before-write: no bit was emitted.
                     prop_assert_eq!(writer.bit_len(), 0);
                 }
             }

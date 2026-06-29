@@ -116,9 +116,6 @@ fn eob_extra_bits(tokens: &[BlockSymbolToken]) -> Vec<u32> {
 
 #[test]
 fn base_pass_eob_32_unchanged_by_full_entry() {
-    // The FULL entry must be byte-identical to the base entry over the base-pass window
-    // (eob 1..=32). A block reaching eob 32 (eobPt 6, symbol 5) tokenizes the SAME way
-    // through both entries.
     let pairs = [(0usize, 4u32), (5, 1), (17, 2), (31, 3)];
     let quant = block_from(&pairs);
     let full = tokenize_general_16x16_luma_block_full(&quant, Q_CTX).unwrap();
@@ -129,32 +126,19 @@ fn base_pass_eob_32_unchanged_by_full_entry() {
 
 #[test]
 fn eob_pt_7_eob_48_uses_symbol_6_no_eob_pt_extra() {
-    // eobPt 7 (eob 33..=64, base 33): the PLAIN `eob_pt_256` symbol 6 — NO `eob_pt_extra`
-    // bit (only symbol 7 carries it). eob 48 → offset 48 - 33 = 15, width eobPt - 3 = 4:
-    // eob_extra (high bit) = (15 >> 4) & 1 = 0, eob_extra_bits = 15 & 15 = 0b1111 (4 bits).
-    // EOB nonzero at scan index 47 (odd → positive, HF magnitude 1 to stay base-range).
     let quant = block_from(&[(0, 5), (3, 2), (47, 1)]);
     let trace = assert_full_roundtrips(&quant);
     let header = eob_header_after_all_zero(&trace);
 
-    // eob_pt_256 symbol 6, then DIRECTLY the eob_extra CDF flag (NO eob_pt_extra bypass).
     assert_eob_pt_256(header[0], 6);
     assert_eob_extra(header[1], 0); // high refinement bit 0
-    // Exactly 4 eob_extra_bit literals MSB-first: 0b1111 = [1, 1, 1, 1].
     let bits = eob_extra_bits(&header[2..]);
     assert_eq!(bits, vec![1, 1, 1, 1], "eobPt 7 → 4 eob_extra_bit literals");
-    // No eob_pt_extra bypass means the header is symbol + eob_extra + 4 bits = 6 tokens.
     assert_eq!(header.len(), 6);
 }
 
 #[test]
 fn eob_pt_8_eob_96_uses_symbol_7_eob_pt_extra_0() {
-    // eobPt 8 (eob 65..=128, base 65): `eob_pt_256` symbol 7 + an `eob_pt_extra` bypass
-    // bit 0 + `eob_extra` + 5 `eob_extra_bit` literals. eob 96 → offset 96 - 65 = 31,
-    // width eobPt - 3 = 5: eob_extra (high bit) = (31 >> 5) & 1 = 0, eob_extra_bits =
-    // 31 & 31 = 0b11111 (5 bits). HAND-COMPUTED header sequence (mirroring the decoder
-    // `read_nonzero_coeff_eob`): [eob_pt_256=7, eob_pt_extra=0, eob_extra=0, 1,1,1,1,1].
-    // EOB nonzero at scan index 95 (odd → positive, HF magnitude 1).
     let quant = block_from(&[(0, 6), (4, 3), (95, 1)]);
     let trace = assert_full_roundtrips(&quant);
     let header = eob_header_after_all_zero(&trace);
@@ -162,24 +146,17 @@ fn eob_pt_8_eob_96_uses_symbol_7_eob_pt_extra_0() {
     assert_eob_pt_256(header[0], 7); // both eobPt 8 and 9 use symbol 7
     assert_bypass_bit(header[1], 0); // eob_pt_extra 0 → eobPt 8 (= 8 + 0)
     assert_eob_extra(header[2], 0); // high refinement bit 0
-    // Exactly 5 eob_extra_bit literals MSB-first: 0b11111 = [1, 1, 1, 1, 1].
     let bits = eob_extra_bits(&header[3..]);
     assert_eq!(
         bits,
         vec![1, 1, 1, 1, 1],
         "eobPt 8 → 5 eob_extra_bit literals"
     );
-    // Full header: symbol + eob_pt_extra + eob_extra + 5 bits = 8 tokens.
     assert_eq!(header.len(), 8);
 }
 
 #[test]
 fn eob_pt_9_eob_200_uses_symbol_7_eob_pt_extra_1() {
-    // eobPt 9 (eob 129..=256, base 129): `eob_pt_256` symbol 7 + an `eob_pt_extra` bypass
-    // bit 1 + `eob_extra` + 6 `eob_extra_bit` literals. eob 200 → offset 200 - 129 = 71,
-    // width eobPt - 3 = 6: eob_extra (high bit) = (71 >> 6) & 1 = 1, eob_extra_bits =
-    // 71 & 63 = 7 = 0b000111 (6 bits). HAND-COMPUTED header sequence: [eob_pt_256=7,
-    // eob_pt_extra=1, eob_extra=1, 0,0,0,1,1,1]. EOB nonzero at scan 199 (odd → positive).
     let quant = block_from(&[(0, 7), (5, 2), (199, 1)]);
     let trace = assert_full_roundtrips(&quant);
     let header = eob_header_after_all_zero(&trace);
@@ -187,23 +164,17 @@ fn eob_pt_9_eob_200_uses_symbol_7_eob_pt_extra_1() {
     assert_eob_pt_256(header[0], 7); // symbol 7 (shared by eobPt 8 and 9)
     assert_bypass_bit(header[1], 1); // eob_pt_extra 1 → eobPt 9 (= 8 + 1)
     assert_eob_extra(header[2], 1); // high refinement bit 1
-    // Exactly 6 eob_extra_bit literals MSB-first: 0b000111 = [0, 0, 0, 1, 1, 1].
     let bits = eob_extra_bits(&header[3..]);
     assert_eq!(
         bits,
         vec![0, 0, 0, 1, 1, 1],
         "eobPt 9 → 6 eob_extra_bit literals"
     );
-    // Full header: symbol + eob_pt_extra + eob_extra + 6 bits = 9 tokens.
     assert_eq!(header.len(), 9);
 }
 
 #[test]
 fn near_full_eob_256_uses_symbol_7_eob_pt_extra_1() {
-    // eob 256 (eobPt 9, the largest a Quant[256] block can reach): base 129, offset
-    // 256 - 129 = 127, width 6: eob_extra (high bit) = (127 >> 6) & 1 = 1, eob_extra_bits
-    // = 127 & 63 = 63 = 0b111111 (6 ones). HAND-COMPUTED header: [eob_pt_256=7,
-    // eob_pt_extra=1, eob_extra=1, 1,1,1,1,1,1]. EOB nonzero at scan 255 (odd → positive).
     let quant = block_from(&[(0, 4), (2, 3), (255, 1)]);
     let trace = assert_full_roundtrips(&quant);
     let header = eob_header_after_all_zero(&trace);
@@ -222,11 +193,6 @@ fn near_full_eob_256_uses_symbol_7_eob_pt_extra_1() {
 
 #[test]
 fn eob_pt_extra_bit_position_is_between_symbol_and_eob_extra() {
-    // Guards the TOKEN ORDER that the §8.2 roundtrip cannot catch but a real decoder
-    // depends on: the `eob_pt_extra` bypass bit is emitted AFTER the `eob_pt_256` symbol
-    // and BEFORE the `eob_extra` CDF flag (the decoder `read_nonzero_coeff_eob` reads
-    // `eob_pt_256` → `eob_pt_extra` literal → `eob_extra` CDF). For an eobPt-8 block the
-    // first three header tokens MUST be exactly: EobPt256 symbol, Bypass(1), EobExtra.
     let quant = block_from(&[(0, 6), (95, 1)]);
     let trace = tokenize_general_16x16_luma_block_full(&quant, Q_CTX).unwrap();
     let header = eob_header_after_all_zero(&trace);
@@ -245,10 +211,6 @@ fn eob_pt_extra_bit_position_is_between_symbol_and_eob_extra() {
 
 #[test]
 fn eobpt_8_and_9_share_symbol_7_distinguished_only_by_eob_pt_extra() {
-    // The HIGHEST-RISK invariant: eobPt 8 and eobPt 9 emit the SAME `eob_pt_256` symbol
-    // (7); ONLY the `eob_pt_extra` bypass bit (0 vs 1) distinguishes them. A wrong symbol
-    // (e.g. 8 for eobPt 9) would desync a real decoder but the §8.2 roundtrip cannot
-    // catch it — so assert the symbol/bit split directly.
     let eob_pt_8 =
         tokenize_general_16x16_luma_block_full(&block_from(&[(0, 5), (95, 1)]), Q_CTX).unwrap();
     let eob_pt_9 =
@@ -263,11 +225,6 @@ fn eobpt_8_and_9_share_symbol_7_distinguished_only_by_eob_pt_extra() {
 
 #[test]
 fn full_range_admits_the_whole_1_to_256_window() {
-    // The FULL entry's `max_eob_pt = 9` admits the WHOLE `eob_pt_256` range: eob `1..=256`
-    // (eobPt `1..=9`). A `Quant[256]` block is structurally bounded to eob `<= 256` (a
-    // nonzero past scan index 255 cannot exist), so eob `> 256` is unreachable for a
-    // well-formed 16x16 block — the only eob rejection (`max_eob_pt`) now never fires. A
-    // block whose EOB is the very last coefficient (scan 255 → eob 256) is accepted.
     let quant = block_from(&[(0, 1), (255, 1)]);
     let trace = tokenize_general_16x16_luma_block_full(&quant, Q_CTX);
     assert!(trace.is_ok(), "eob 256 must be accepted: {trace:?}");
@@ -275,11 +232,7 @@ fn full_range_admits_the_whole_1_to_256_window() {
 
 #[test]
 fn golomb_magnitude_overflow_still_rejected_at_full_range() {
-    // The golomb cap rejection is independent of the eob window: an LF DC magnitude far
-    // beyond the per-`m` golomb cap is rejected with a typed error even when the EOB is
-    // in the refined range. (A modest DC magnitude that exceeds the first golomb m's cap.)
     let mut quant = block_from(&[(199, 1)]);
-    // Place a huge magnitude at the DC raster (scan 0 == raster 0).
     quant[0] = i32::MAX;
     let err = tokenize_general_16x16_luma_block_full(&quant, Q_CTX).unwrap_err();
     assert!(

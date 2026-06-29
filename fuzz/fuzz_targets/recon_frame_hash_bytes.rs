@@ -1,15 +1,5 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
-//
-// Fuzz target for CONF-RECON-FRAME-HASH-FUZZ: source-backed decoded-frame hash
-// input serialization must be deterministic and must ignore non-visible frame
-// padding and output index for bounded valid decoded frames derived from
-// arbitrary bytes. This target intentionally does not parse AV2 bitstreams,
-// invoke splot-decode, write filesystem paths, call Y4M output, invoke
-// AVM/dav2d/ffmpeg, or depend on sha2 directly. Run with:
-//
-//     cargo install cargo-fuzz --locked
-//     cargo +nightly fuzz run recon_frame_hash_bytes
 #![no_main]
 
 use std::{

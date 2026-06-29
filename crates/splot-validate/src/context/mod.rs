@@ -103,8 +103,6 @@ mod tests;
 mod tile_groups;
 mod timecode;
 
-// This is a mechanical split of the former context.rs monolith: the submodules
-// intentionally share this crate-private helper namespace via `use super::*`.
 use self::annex_a_iop::*;
 use self::annex_a_value_space::*;
 use self::cmvs::*;
@@ -130,9 +128,6 @@ use self::shared::*;
 use self::temporal_unit::*;
 use self::tile_groups::*;
 use self::timecode::*;
-// frame_headers, lcr_sequence_agreement, and reference_frames only add
-// ValidatorContext impl methods; they are included by `mod` declarations above
-// and export no standalone helper symbols for this glob list.
 
 /// Stateful validator data derived from parseable high-level syntax OBUs.
 #[derive(Debug, Default)]
@@ -272,8 +267,7 @@ pub(crate) struct ValidatorContext {
     /// loop to only the headers activated within the *current* CMVS window
     /// (`>= cmvs_start_tu_index`): both loops otherwise iterate the whole-history
     /// `frame_confirmed_xlayers` accumulator and would flag a non-monotonic header left
-    /// active from an earlier, already-ended coded video sequence outside the current CMVS
-    /// (codex finding 3393129745).
+    /// active from an earlier, already-ended coded video sequence outside the current CMVS.
     frame_confirmed_activation_tu: BTreeMap<ExtendedLayerId, u64>,
     /// For each extended layer with a frame-confirmed activation, the
     /// `(max_tlayer_id, max_mlayer_id)` of the header *as activated* by the latest
@@ -341,8 +335,7 @@ pub(crate) struct ValidatorContext {
     /// `msdo_substream_max` is last-wins (correct for the § 6.6 ceiling check — the live MSDO
     /// is the active operation), but the agreement must hold for EVERY MSDO present in the
     /// CMVS: a per-MSDO last-wins overwrite would let an earlier non-conforming MSDO escape
-    /// when a later conforming one replaced it before the deferred resolution (codex finding
-    /// 3393274380). § 7.3.8.2's identity rule bounds this — a non-RAP MSDO must be identical
+    /// when a later conforming one replaced it before the deferred resolution. § 7.3.8.2's identity rule bounds this — a non-RAP MSDO must be identical
     /// to its predecessor, so distinct MSDOs only appear at RAPs — but distinct MSDOs CAN
     /// appear in one CMVS, so each is evaluated against the resolved LCR. Deduped by MSDO byte
     /// offset (one entry per OBU); the deferred resolution filters to the current CMVS window
@@ -469,7 +462,7 @@ pub(crate) struct ValidatorContext {
     /// containing a CLK belongs to the new coded video sequence (§ 7.3.6), so a CI's CELU
     /// membership is final only once the temporal unit (with any CLK) is complete — the
     /// presence judgment is therefore deferred to the boundary rather than fired eagerly at
-    /// CI-observation time (round-6 F3). See [`Self::resolve_ci_first_celu_for_tu`].
+    /// CI-observation time. See [`Self::resolve_ci_first_celu_for_tu`].
     ci_observed_in_tu: BTreeMap<(ExtendedLayerId, EmbeddedLayerId), ByteOffset>,
     /// The § 7.23 reference-frame buffer state model, per extended layer (see
     /// [`ReferenceStateTracker`]). Updated at each completed frame's coded-frame
@@ -500,42 +493,18 @@ impl ValidatorContext {
         options: &ValidationOptions,
         report: &mut ValidationReport,
     ) {
-        // The per-extended-layer FirstPictureInTU as of *before* this OBU, captured
-        // before `observe_frame_bearing_obu` marks the layer's frame seen. The
-        // coded-frame-unit segmenter's output classification re-derives the same
-        // frame-header fields the activation path used, so it must see the same
-        // FirstPictureInTU value (AV2 § 6.17.2 / § 5.18.2 `startCVS`).
         let first_picture_in_tu = self.first_picture_in_tu(obu.header.extended_layer_id);
 
-        // Temporal-unit and coded-video-sequence boundary events run first: a global
-        // temporal delimiter completes the previous temporal unit (flushing deferred
-        // CVS-scoped diagnostics) and a CLK starts a new coded video sequence for its
-        // extended layer (AV2 § 7.3.6); see observe_cvs_boundary_events.
         self.observe_cvs_boundary_events(obu, options, report);
 
         self.temporal_unit.observe_obu(obu, report);
 
-        // AV2 § 5.5 (mirror :1626-1630): temporal_delimiter_obu() clears QmProtected[level] =
-        // 0 for every level. After this point a QM OBU sent earlier in a previous temporal
-        // unit no longer protects its level from a CLK/OLK/SWITCH/RAS reset_qm() in this
-        // temporal unit — the QmProtected discipline the § 7.3.8.9 availability check honors.
         if obu.header.obu_type == ObuType::TemporalDelimiter {
             self.qm.clear_qm_protected_at_temporal_delimiter();
         }
 
-        // Annex A Table A.3: record this OBU's non-global obu_xlayer_id into the current
-        // temporal unit's Table A.4 pending facts (the distinct extended-layer base count,
-        // mirror lines 146-151). Recorded after the boundary events so a CLK's own xlayer
-        // joins this temporal unit's facts, which the §7.3.6 per-temporal-unit attribution
-        // assigns to the correct coded video sequence at temporal-unit completion.
         self.annex_a_iop.note_xlayer(obu.header.extended_layer_id);
 
-        // AV2 § 7.3.8.1: a temporal unit carrying a LEADING_* frame OBU drops under
-        // random access, so a resend inside it does not satisfy the availability replay.
-        // The LEADING_* types (OBU_LEADING_TILE_GROUP / OBU_LEADING_SEF / OBU_LEADING_TIP)
-        // are detectable from the OBU type alone — the sound type-detectable subset; a
-        // non-LEADING_* leading frame (only knowable from inter-frame parsing) is the
-        // documented under-approximation that leaves the unit qualifying.
         if matches!(
             obu.header.obu_type,
             ObuType::LeadingTileGroup | ObuType::LeadingSef | ObuType::LeadingTip
@@ -547,22 +516,10 @@ impl ValidatorContext {
         if obu.header.obu_type == ObuType::SequenceHeader {
             self.observe_sequence_header(obu, options, report);
         } else {
-            // AV2 § 5.18.2: a frame header's load_sequence_header() runs at the start
-            // of frame_header_info(), before the frame's own layer ids are
-            // interpreted. So for a frame-bearing OBU, parse the prefix (best-effort)
-            // and run the HLS reference + activation checks FIRST, then check the
-            // active-sequence layer limits against the just-activated header. A parse
-            // failure is silent, consistent with the multi-frame-header and
-            // content-interpretation observers: the prefix is not-yet-validated
-            // coverage, not a new error path.
             self.observe_frame_bearing_obu(obu, options, report);
             self.validate_active_sequence_limits(obu, options, report);
         }
 
-        // AV2 § 6.4.1: count distinct obu_mlayer_id values per coded video sequence
-        // against the active sequence header's SeqMaxMlayerCnt. Run after the
-        // sequence-header / frame-bearing branch so a frame that activates a (more
-        // permissive) header is counted against the just-activated header.
         self.count_distinct_mlayer(obu, options, report);
 
         match obu.header.obu_type {
@@ -587,95 +544,20 @@ impl ValidatorContext {
             _ => {}
         }
 
-        // AV2 § 6.12 / § 6.13: both duplicate windows close at *any* coded frame,
-        // including a SEF. The two families are scoped by their own verbatim
-        // sentences, which both treat a SEF as a coded-frame boundary:
-        //
-        // - § 6.13 (film grain) scopes the duplicate-slot rule to the "same coded
-        //   frame unit" and its NOTE permits reuse "in a subsequent coded frame
-        //   unit". § 7.3.3 makes a single OBU_LEADING_SEF / OBU_REGULAR_SEF its own
-        //   coded frame unit, so a SEF ends the current film-grain coded-frame-unit
-        //   window — the next film-grain OBU belongs to a subsequent unit.
-        // - § 6.12 (QM) scopes the duplicate-level rule to "between coded frames" and
-        //   `QmSeen` to levels seen "since the last frame". § 7.3.3 lists a SEF as one
-        //   of the two alternatives for "the coded frame" of a unit and states "Such a
-        //   frame is associated with a decoded display order hint value, OrderHint",
-        //   i.e. the spec calls a SEF a frame. So a SEF is a coded-frame boundary for
-        //   `QmSeen` too.
-        //
-        // The two sentences therefore do not genuinely differ on the SEF boundary, so
-        // `is_frame_bearing` (which includes a SEF) drives a single shared reset. The
-        // reset is NOT at a temporal-unit boundary: a level / slot reused across a bare
-        // temporal delimiter with no intervening frame is still a duplicate.
         if is_frame_bearing(obu.header.obu_type) {
             self.reset_coded_frame_window();
         }
-        // AV2 § 6.16.3: NO_PERSISTENCE metadata is "Used only for the current
-        // frame", so it expires at the coded frame of its frame unit (§ 7.3.5) —
-        // including a SEF, which is the current displayed frame. This is the
-        // coded-frame-unit-granular expiry the metadata-lifetime store's former
-        // per-OBU TODO required; a SEF coded frame unit is its own unit, so its
-        // NO_PERSISTENCE metadata expires at the SEF.
         if is_frame_bearing(obu.header.obu_type) {
             self.metadata.expire_no_persistence();
         }
 
-        // AV2 § 7.3.3 / § 7.3.4 / § 7.3.5 / § 7.3.8.10: feed the coded-frame-unit
-        // segmenter. The role (region classification, plus the output class and
-        // is_first_tile_group / metadata_is_suffix facts) is computed from the
-        // already-parsed state; an undecidable frame-header parse path yields an
-        // unknown output class that routes the unit to Unknown (silent). The segmenter
-        // returns each frame-bearing OBU's coded-frame-unit boundary signal — the CELU
-        // tracker consumes it as the single source of truth for coded-frame-unit
-        // boundaries (§ 7.3.6), rather than re-deriving them from frame-delimiter bits.
         let role = self.seg_role_for(obu, first_picture_in_tu);
         let boundary = self.frame_unit.observe(obu, role, report);
 
-        // AV2 § 5.18.1 / § 6.17.1: record a completed first tile group's frame-header bits
-        // and check a non-first tile group's frame_header_copy() bit-for-bit against them.
-        // Keyed by the segmenter's per-coded-frame boundary signal (the authority) so the
-        // pairing only ever joins a non-first tile group to ITS frame's first tile group.
         self.observe_frame_header_copy(obu, first_picture_in_tu, boundary, report);
 
-        // AV2 § 7.3.6 / § 7.3.7 / § 7.4.6: feed the coded-extended-layer-unit tracker,
-        // which sits above the frame-unit segmenter (keyed per obu_xlayer_id across the
-        // temporal unit). The per-frame facts (output class, order_hint, leading-ness,
-        // CLK/OLK identity) come from the same best-effort core parse; the coded-frame-unit
-        // boundary comes from the segmenter (above). Any field the parse cannot reach is
-        // left undecidable and routes the dependent judgment to silence; an Ambiguous
-        // boundary poisons the embedded layer's unit-count-dependent judgments. The
-        // per-frame OrderHintBits (from the active sequence header) is threaded separately
-        // for the § 7.3.7 same-OrderHintBits-in-TU check, since it spans CELUs.
         let celu_role = if is_frame_bearing(obu.header.obu_type) {
-            // A frame-bearing OBU: derive its CELU facts AND its OrderHintBits contribution from
-            // ONE core parse + resolution (F4 — no double parse). The OrderHintBits is gated on
-            // the SAME resolution decision the facts use: a frame whose referenced sequence
-            // header did not resolve to the active header contributes no bits (None), rather
-            // than the stale active header's bits, so the § 7.3.7 same-OrderHintBits-in-TU check
-            // is not fed a wrong-bits value. (The CELU tracker filters global frame-bearing OBUs
-            // in `observe`.)
             let (facts, bits) = self.frame_celu_facts(obu, first_picture_in_tu, boundary);
-            // AV2 § 7.3.7 (mirror line 655): the same-OrderHintBits judgment is over frame
-            // UNITS, not OBUs (F1). Feed the accumulator per frame-unit boundary, so a
-            // continuation OBU (a non-first tile group of an already-counted coded frame) does
-            // not contribute a redundant — and possibly unresolved-`None` — value that would
-            // poison the whole temporal unit's bits judgment:
-            //
-            // - `OpensNewUnit` notes the unit's resolved bits (`Some` or, when the opener does
-            //   not resolve to its active header, `None` — an unresolved opener still soundly
-            //   poisons, since the unit it opens has unknowable bits);
-            // - `ContinuesUnit` is skipped: the unit's bits came from its opener;
-            // - `Ambiguous` notes `None`: the OBU might open a unit whose bits are unknowable,
-            //   so it soundly poisons (the Unknown invariant).
-            //
-            // Global frame-bearing OBUs (obu_xlayer_id == GLOBAL_XLAYER_ID) are excluded BEFORE
-            // the accumulator, mirroring the CELU tracker's non-global filter in
-            // [`CodedExtendedLayerTracker::observe`] (round-5 F3). Such an OBU is invalid (a
-            // frame-bearing OBU may not use the global xlayer — already diagnosed by
-            // `obu-header/global-xlayer-allowed-types`) and is not part of any coded extended
-            // layer unit (§ 7.3.6), so it never resolves an active sequence header and would
-            // feed a spurious `None` that poisons the § 7.3.7 same-OrderHintBits judgment for
-            // the valid CELUs in the temporal unit, suppressing a real bits mismatch.
             if !obu.header.extended_layer_id.is_global() {
                 match facts.boundary {
                     FrameBoundary::OpensNewUnit => self.celu.note_order_hint_bits(bits, obu.offset),
@@ -689,23 +571,10 @@ impl ValidatorContext {
         };
         self.celu.observe(obu, celu_role, report);
 
-        // AV2 § 7.23: maintain the per-extended-layer reference-frame buffer state. A
-        // frame-bearing OBU that OPENS a new coded frame first commits the previous
-        // frame's pending § 7.23 update (decode_frame_wrapup runs after that frame was
-        // decoded, so its update must land before this frame's reference checks read the
-        // buffer), then runs this frame's reference checks against the post-update buffer
-        // and records this frame's own pending update. A non-frame OBU and a
-        // continuation (non-first tile group) leave the pending update untouched.
         if is_frame_bearing(obu.header.obu_type) {
             self.observe_reference_state(obu, first_picture_in_tu, boundary, report);
         }
 
-        // AV2 § 6.16.5 / § 6.16.6: mark this embedded layer's first coded picture
-        // seen once its first coded frame (any frame-bearing OBU) is observed, for
-        // the "shall be indicated at the first coded picture" check. A SEF is a
-        // coded picture too. Record the *first* picture's temporal-unit index
-        // (`or_insert`, not `insert`) so a later picture in the same CVS does not
-        // overwrite it; the CLK hook prunes the entry at a new-CVS boundary.
         if is_frame_bearing(obu.header.obu_type) && !obu.header.extended_layer_id.is_global() {
             self.embedded_layer_first_picture_seen
                 .entry((obu.header.extended_layer_id, obu.header.embedded_layer_id))
@@ -725,88 +594,26 @@ impl ValidatorContext {
     /// after the last OBU.
     pub(crate) fn finish(&mut self, options: &ValidationOptions, report: &mut ValidationReport) {
         self.cvs.flush_completed_tu(report);
-        // AV2 § 7.3.2 end condition 3: "The end of the bitstream." The final temporal
-        // unit (which has no trailing global temporal delimiter) is completed here so
-        // its § 7.3.2 begin/end facts are applied exactly as at an internal boundary.
-        // Any deferred provisional-Inside § 6.4.1 monotonic disagreements that never saw
-        // a CLK (the temporal unit stayed inside the CMVS until the end of the bitstream)
-        // are emitted here. `cvs.tu_index` is the final temporal unit's index (no
-        // advance_temporal_unit runs at the end of the bitstream), stamping the CMVS-window
-        // start if this final temporal unit begins one.
-        //
-        // The CMVS-window start of the FINAL temporal unit, captured BEFORE
-        // `complete_temporal_unit` applies this unit's § 7.3.2 begin/end conditions and
-        // mutates the live window (round-6 F1, mirroring the internal-boundary capture). The
-        // § 7.3.7 DOH flag for the final unit must be sampled against the CMVS that CONTAINS
-        // it: when the end of the bitstream (end condition 3) ends a CMVS this final unit
-        // CLOSED (a CLK with no MSDO, no activated global LCR — end condition 2), it is the
-        // LAST temporal unit of the ENDING CMVS, so its governing window is this pre-completion
-        // start — not the live window `complete_temporal_unit` is about to clear (see
-        // [`Self::doh_constraint_flag_active_for_completed_tu`]).
         let cmvs_window_before_completion = self.cmvs.current_cmvs_start_tu_index();
         self.cmvs.complete_temporal_unit(self.cvs.tu_index, report);
-        // AV2 § 6.6: resolve the deferred `msdo/doh-constraint-required` check for the
-        // final temporal unit's frame-confirmed activations, exactly as an internal
-        // boundary would (see resolve_deferred_doh_constraint).
         self.resolve_deferred_doh_constraint(options, report);
-        // AV2 § 6.8.2: resolve the deferred MSDO↔global-LCR agreement and LCR DOH
-        // requirement for the final temporal unit, exactly as an internal boundary would.
         self.resolve_deferred_lcr_msdo_agreement(options, report);
-        // AV2 § 7.3.2: resolve the boundary-set-identity check for the final temporal
-        // unit, exactly as an internal boundary would.
         self.resolve_deferred_cmvs_boundary(options, report);
-        // Annex A Table A.4: commit the final temporal unit's IOP pending facts, then flush
-        // and evaluate the final coded-(multistream-)video-sequence window — the end of the
-        // bitstream ends the final coded video sequence (AV2 § 2 / § 7.3.2 end condition 3),
-        // so its MSDO/LCR presence requirements are evaluated here.
         self.commit_annex_a_iop_pending(self.cvs.tu_index, options, report);
         self.flush_annex_a_iop_window(options, report);
-        // AV2 § 7.3.8.2: the final temporal unit (which has no trailing global temporal
-        // delimiter) is resolved here, exactly as an internal boundary would, so a
-        // buffered final-TU OBU_MSDO is compared against the previous one.
         self.msdo_identity.complete_temporal_unit(report);
-        // AV2 § 7.3.8.1: resolve the final temporal unit's buffered HLS-availability
-        // replay references, exactly as an internal boundary would. `cvs.tu_index` is the
-        // final temporal unit's index (no advance runs at the end of the bitstream).
         self.complete_rap_replay_tu(self.cvs.tu_index, options, report);
         let scope_keys: Vec<ExtendedLayerId> = self.scan_type.scopes.keys().copied().collect();
         for scope_key in scope_keys {
             self.flush_scan_type_scope(scope_key, u64::MAX, report);
         }
-        // AV2 § 6.16.7 / § 7.3.6: the end of the bitstream ends the final coded video
-        // sequence with no further CLK, so any deferred inference-presence diagnostic
-        // whose earlier-temporal-unit seed survived stayed intra-CVS and inferred
-        // cleanly — drop the survivors silently (see TimecodeCvsState::pending_inference).
         self.drop_pending_timecode_inference();
-        // AV2 § 7.3.3 / § 7.3.4: the end of the bitstream ends the final temporal
-        // unit (no trailing global temporal delimiter), so resolve its open coded
-        // frame units' deferred checks exactly as a temporal-delimiter boundary would.
         self.frame_unit.finish(report);
-        // AV2 § 7.3.6 / § 7.3.7 / § 7.4.6: the end of the bitstream ends the final
-        // temporal unit, so resolve its coded-extended-layer-unit constraints and the
-        // flag-gated DOH OrderHint / OrderHintBits checks exactly as an internal boundary
-        // would. The DOH flag is recorded from the final temporal unit's activated global
-        // LCR / preceding MSDO before resolution. The LCR side is sampled against the
-        // GOVERNING window of the final unit (captured before `complete_temporal_unit` cleared
-        // the live window, round-6 F1) — symmetric with the internal-boundary path — so a CLK
-        // final unit that ends the CMVS at the end of the bitstream is still governed by the
-        // activated global LCR of the CMVS that contained it (the MSDO side is window-
-        // independent live last-wins state).
         self.celu.set_doh_flag_active(
             self.doh_constraint_flag_active_for_completed_tu(cmvs_window_before_completion),
         );
         self.celu.finish(report);
-        // AV2 § 7.3.6 (round-6 F3): resolve the final temporal unit's CIs against the
-        // first-coded-extended-layer-unit-of-the-sequence presence rule, exactly as an
-        // internal boundary would. `cvs.tu_index` is the final temporal unit's index (no
-        // advance runs at the end of the bitstream); its CLK boundary events were already
-        // applied at the CLK OBU, so each CI's CVS membership is final.
         self.resolve_ci_first_celu_for_tu(self.cvs.tu_index, options, report);
-        // AV2 § 7.23: the final frame has no following coded-frame boundary, so its
-        // deferred reference-frame-update process runs at the end of the bitstream. This
-        // commit keeps the modeled buffer consistent with the decoded state (no reference
-        // check reads it after the end of the bitstream, but the flush is the symmetric
-        // no-trailing-delimiter completion of the per-frame deferral).
         self.commit_pending_ref_update();
     }
 

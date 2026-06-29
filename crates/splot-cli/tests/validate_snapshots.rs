@@ -36,9 +36,7 @@ fn validate(fixture: &str, extra: &[&str]) -> (Option<i32>, String) {
 
 #[test]
 fn validate_max_diagnostics_text() {
-    // `bad-global-xlayer.av2` yields two errors; cap to one.
     let (code, stdout) = validate("bad-global-xlayer.av2", &["--max-diagnostics", "1"]);
-    // Presentation-only: the exit code matches the uncapped run.
     assert_eq!(code, Some(1));
     insta::assert_snapshot!("validate_max_diagnostics_text", stdout);
 }
@@ -69,7 +67,6 @@ fn validate_summary_only_json() {
 
 #[test]
 fn validate_summary_only_clean_text() {
-    // A conformant fixture still exits 0 under --summary-only.
     let (code, stdout) = validate("operating-point-set.av2", &["--summary-only"]);
     assert_eq!(code, Some(0));
     insta::assert_snapshot!("validate_summary_only_clean_text", stdout);

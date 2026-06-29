@@ -1,14 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-// Round-trip, Unimplemented, and reject-propagation tests for the unified complete-OBU writer.
-// `include!`d into `crate::write::dispatch` so `super::*` resolves to its writers and helpers.
-//
-// Each round-trip builds a `ParsedObu` (directly, or by parsing a hand-built OBU payload via the
-// parser/`dispatch_obu_payload`), writes it with `write_obu_payload` / `write_complete_obu`,
-// reparses the emitted bytes, and asserts the reparsed `ParsedObu` equals the original. The
-// Unimplemented and reject tests assert the typed error and that no bit was written
-// (`bit_len() == 0`).
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -43,7 +35,6 @@ mod tests {
     /// via `parse_sequence_header`. The body ends byte-aligned; the writer adds its own tail.
     fn still_picture_sequence_header() -> SequenceHeader {
         let mut bits = Bits::default();
-        // general (single_picture_header_flag = 1, chroma 4:2:0)
         bits.uvlc(0); // seq_header_id
         bits.f(0, 5); // seq_profile_idc
         bits.bit(1); // single_picture_header_flag
@@ -55,16 +46,13 @@ mod tests {
         bits.f(15, 4); // max_frame_width_minus_1 -> 16
         bits.f(7, 4); // max_frame_height_minus_1 -> 8
         bits.bit(0); // seq_cropping_window_present_flag
-        // sequence_partition_config (not monochrome, single picture)
         bits.bit(0); // use_256x256_superblock
         bits.bit(0); // use_128x128_superblock -> seqSbSize = BLOCK_64X64
         bits.bit(0); // enable_sdp
         bits.bit(0); // enable_ext_partitions
         bits.bit(0); // reduce_pb_aspect_ratio
-        // sequence_segment_config
         bits.bit(0); // enable_ext_seg -> MaxSegments = 8
         bits.bit(0); // seq_seg_info_present_flag
-        // sequence_intra_config (not monochrome)
         bits.bit(0); // enable_dip
         bits.bit(0); // enable_intra_edge_filter
         bits.bit(0); // enable_mrls
@@ -72,14 +60,11 @@ mod tests {
         bits.f(0, 2); // cfl_ds_filter_index
         bits.bit(0); // enable_mhccp
         bits.bit(0); // enable_ibp
-        // sequence_inter_config (single_picture_header_flag branch)
         bits.bit(0); // enable_refmvbank
         bits.bit(1); // disable_drl_reorder -> DRL_REORDER_DISABLED
         bits.bit(0); // seq_max_bvp_drl_bits_minus_1 = ns(3) -> 0
         bits.bit(0); // allow_frame_max_bvp_drl_bits
         bits.bit(0); // enable_bawp
-        // sequence_scc_config (single picture -> no signalled bits)
-        // sequence_transform_quant_entropy_config (not monochrome, single picture)
         bits.bit(0); // enable_fsc
         bits.bit(0); // enable_idtx_intra
         bits.bit(0); // enable_intra_ist
@@ -93,14 +78,12 @@ mod tests {
         bits.bit(1); // equal_ac_dc_q -> skip y/uv dc delta reads
         bits.f(0, 5); // base_uv_ac_delta_q
         bits.bit(0); // uv_ac_delta_q_enabled
-        // sequence_filter_config (single picture, seqSbSize = BLOCK_64X64)
         bits.bit(0); // disable_loopfilters_across_tiles
         bits.bit(0); // enable_cdef
         bits.bit(0); // enable_gdf
         bits.bit(0); // enable_restoration
         bits.bit(0); // enable_ccso
         bits.f(0, 2); // df_par_bits_minus_2
-        // §5.4.2 tile config + film grain
         bits.bit(0); // seq_tile_info_present_flag
         bits.bit(0); // film_grain_params_present
         let body = bits.into_bytes();
@@ -123,16 +106,12 @@ mod tests {
     /// Builds a no-extension OBU header for `obu_type` (tlayer 0), the natural header for the
     /// global-scope and base-layer round-trip fixtures here.
     fn header_for(obu_type: ObuType) -> ObuHeader {
-        // obu_header() = ext(0) | type(5) | tlayer(0): the type occupies bits 6..2.
         let header_byte = obu_type.raw() << 2;
         read_obu_header_from_slice(&[header_byte], ByteOffset::new(0)).unwrap()
     }
 
     include!("dispatch_roundtrip_tests.rs");
 
-    // ===================================================================================
-    // write_complete_obu round-trips (framed through write_annexb_obu)
-    // ===================================================================================
 
     #[test]
     fn complete_obu_sequence_header_round_trips_via_annexb() {
@@ -140,8 +119,6 @@ mod tests {
         assert_eq!(header.obu_type, ObuType::SequenceHeader);
         let payload = ParsedObu::SequenceHeader(Box::new(still_picture_sequence_header()));
 
-        // write_complete_obu emits header + payload + tail; capture the payload bytes alone to
-        // frame them with write_annexb_obu (which prepends leb128(num_bytes_in_obu) + header).
         let mut payload_writer = BitWriter::new();
         write_obu_payload(&mut payload_writer, &payload, true, &[]).unwrap();
         let payload_bytes = payload_writer.into_bytes();
@@ -157,7 +134,6 @@ mod tests {
         let reparsed = reparse_payload(parsed.obus[0].header, parsed.obus[0].payload);
         assert_eq!(reparsed, payload);
 
-        // And write_complete_obu produces exactly header-bytes ++ payload-bytes.
         let mut complete = BitWriter::new();
         write_complete_obu(&mut complete, &header, &payload, &[]).unwrap();
         let complete_bytes = complete.into_bytes();
@@ -186,38 +162,23 @@ mod tests {
 
     #[test]
     fn complete_obu_group_uses_header_xlayer() {
-        // A global-xlayer (31) metadata-group header takes the §6.16.3 global layer-map branch.
-        // write_complete_obu threads header.extended_layer_id, so a global-branch group writes
-        // and round-trips through write_complete_obu even though write_obu_payload alone defaults
-        // to the local branch.
         let header = read_obu_header_from_slice(&[0xA4, 0x1F], ByteOffset::new(0)).unwrap();
         assert_eq!(header.obu_type, ObuType::MetadataGroup);
         assert_eq!(header.extended_layer_id, GLOBAL_XLAYER_ID);
 
-        // One cancelled unit (no layer maps regardless of branch) then a trailing byte.
         let fixture = [0x00u8, 0x00, 0x04, 0x01, 0x80];
         let payload = reparse_payload(header, &fixture);
 
         let mut complete = BitWriter::new();
         write_complete_obu(&mut complete, &header, &payload, &[]).unwrap();
         let bytes = complete.into_bytes();
-        // bytes = header (2) ++ payload; reparse the payload region.
         let reparsed = reparse_payload(header, &bytes[2..]);
         assert_eq!(reparsed, payload);
     }
 
-    // Every ParsedObu variant now has a body writer (the §5.13 quantizer-matrix writer was the
-    // last), so the dispatch no longer returns WriteError::Unimplemented for any payload; the
-    // per-type round-trips (including quantizer matrix) live in dispatch_roundtrip_tests.rs.
-
-    // ===================================================================================
-    // Sub-writer reject propagation (bit_len() == 0)
-    // ===================================================================================
 
     #[test]
     fn non_canonical_sequence_header_reject_propagates() {
-        // An unwritable sequence header (unimplemented_at set) makes write_sequence_header reject
-        // with UnwritableSequenceHeader; the dispatch must propagate it and write nothing.
         let mut header = still_picture_sequence_header();
         header.unimplemented_at = Some("AV2-5.4.2-SEQUENCE-TILE-CONFIG");
         let payload = ParsedObu::SequenceHeader(Box::new(header));
@@ -277,10 +238,6 @@ mod tests {
 
     #[test]
     fn padding_trailing_len_zero_with_padding_bytes_rejects_without_writing() {
-        // §5.16: the parser splits at the last non-zero byte, so a non-empty payload always
-        // has trailing_len >= 1. `trailing_len == 0` with `padding_len > 0` is a hand-built
-        // model the parser never emits (its bytes would reparse as InvalidPadding), so the
-        // writer must reject it before any bit rather than emit a non-round-tripping stream.
         let payload = ParsedObu::Padding(PaddingObu {
             padding_len: 3,
             trailing_len: 0,
@@ -319,9 +276,6 @@ mod tests {
 
     #[test]
     fn complete_obu_rejects_mismatched_header_payload() {
-        // The §5.2.1 OBU dispatch routes one obu_type to one payload syntax, so a SequenceHeader
-        // header paired with a TemporalDelimiter payload is a pair the parser could never produce
-        // (it would reparse as a sequence header). Reject before any bit.
         let header = header_for(ObuType::SequenceHeader);
         let mut writer = BitWriter::new();
         let err = write_complete_obu(&mut writer, &header, &ParsedObu::TemporalDelimiter, &[])

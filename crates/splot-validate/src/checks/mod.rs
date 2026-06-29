@@ -18,7 +18,6 @@
 //!
 //! Error-kind → diagnostic mapping lives in `syntax_error`. OBU ordering and
 //! sequence/frame-level conformance are future work.
-//
 // TODO(spec: AV2-7.3-OBU-ORDERING): add OBU-ordering checks.
 
 mod hls;

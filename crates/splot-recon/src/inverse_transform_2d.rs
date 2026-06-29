@@ -128,9 +128,6 @@ pub fn inverse_transform_2d(
         });
     }
 
-    // Adjusted operating dimensions: `Adjusted_Tx_Size` caps each side's log2 at
-    // 5 (§ 7.15.4 / the conversion table; `adjLog2 = Min(log2, 5)`), so `w`/`h`
-    // are each in 4..=32.
     let w = 1usize << log2_w.min(5);
     let h = 1usize << log2_h.min(5);
     let expected = w * h;
@@ -142,17 +139,12 @@ pub fn inverse_transform_2d(
         });
     }
 
-    // The √2 rescale parity is taken from the *original* log2 dimensions, not the
-    // adjusted ones (§ 7.15.4.1 line `If Abs( log2W - log2H ) is odd`).
     let odd_ratio = log2_w.abs_diff(log2_h) % 2 == 1;
 
-    // `intermediate[i * w + j]` holds the row-transformed coefficients.
     let mut intermediate = [0i32; MAX_DIM * MAX_DIM];
     let mut buf_in = [0i32; MAX_DIM];
     let mut buf_out = [0i32; MAX_DIM];
 
-    // Row pass: transform each row into `intermediate`. The identity scale uses
-    // the original row log2 dimension.
     let row_pass = Pass {
         lossless: params.lossless,
         dim: params.row_type,
@@ -166,13 +158,9 @@ pub fn inverse_transform_2d(
             let coeff = dequant[i * w + j];
             buf_in[j] = if odd_ratio { round2_2896(coeff) } else { coeff };
         }
-        // Write the row transform straight into the intermediate row (no scratch
-        // round-trip), then the column pass reads it back column by column.
         run_1d(&buf_in[..w], &mut intermediate[i * w..i * w + w], row_pass)?;
     }
 
-    // Column pass: transform each intermediate column into `residual`. The
-    // identity scale uses the original column log2 dimension.
     let col_pass = Pass {
         lossless: params.lossless,
         dim: params.col_type,
@@ -207,8 +195,6 @@ struct Pass {
 /// Runs one § 7.15.4.1 1D pass over `src`, writing `out` (same length).
 fn run_1d(src: &[i32], out: &mut [i32], pass: Pass) -> Result<()> {
     if pass.lossless {
-        // Lossless implies a 4x4 block, so each pass is a 4-element
-        // Walsh-Hadamard transform (§ 7.15.4.1: row shift 3, column shift 0).
         let walsh_shift = if pass.col_tx { 0 } else { 3 };
         let input = [src[0], src[1], src[2], src[3]];
         for (dst, value) in out
@@ -289,9 +275,6 @@ mod tests {
 
     #[test]
     fn dc_only_dct_4x4_is_flat() {
-        // A DC-only DCT block reconstructs a flat field. With DC = 128 and the
-        // 4x4 Transform_Shift (row 7, col 10): row DCT -> 64 everywhere, col DCT
-        // -> Round2(64*64, 10) = 4 everywhere.
         let mut dequant = [0i32; 16];
         dequant[0] = 128;
         let mut residual = [0i32; 16];
@@ -306,9 +289,6 @@ mod tests {
 
     #[test]
     fn lossless_4x4_walsh_hadamard_dc() {
-        // Lossless DC-only: row Walsh-Hadamard (shift 3) of [64,0,0,0] ->
-        // [4,4,4,4]; column Walsh-Hadamard (shift 0) of [4,0,0,0] -> [2,2,2,2];
-        // so the block is flat 2.
         let mut dequant = [0i32; 16];
         dequant[0] = 64;
         let mut residual = [0i32; 16];
@@ -323,8 +303,6 @@ mod tests {
 
     #[test]
     fn identity_2d_preserves_coefficient_position() {
-        // The identity transform is diagonal, so a single coefficient at (1, 1)
-        // — index 5 in a 4-wide block — stays at (1, 1) and spreads nowhere else.
         const POS: usize = 5;
         let mut dequant = [0i32; 16];
         dequant[POS] = 10;
@@ -349,18 +327,13 @@ mod tests {
 
     #[test]
     fn round2_2896_applies_sqrt2_rescale() {
-        // 4096 * 2896 / 4096 = 2896 (the √2 ~ 2896/2048 factor at 12 bits).
         assert_eq!(round2_2896(4096), 2896);
         assert_eq!(round2_2896(0), 0);
-        // Panic-free for the dequant magnitude extreme (~2^18).
         assert!(round2_2896(262_144) > 0);
     }
 
     #[test]
     fn rectangular_4x8_applies_rescale_path() {
-        // A 4x8 block (log2 2x3) has odd |log2W - log2H|, so the row inputs are
-        // √2-rescaled. A DC-only block stays flat; the test confirms the
-        // rectangular path runs end-to-end and produces a uniform field.
         let mut dequant = [0i32; 32];
         dequant[0] = 1024;
         let mut residual = [0i32; 32];
@@ -380,10 +353,6 @@ mod tests {
 
     #[test]
     fn rescale_parity_uses_original_not_adjusted_dimensions() {
-        // Regression for the original-vs-adjusted parity blocker: TX_64X32 has
-        // original log2 (6, 5) -> |6 - 5| = 1 (odd) so the √2 rescale MUST fire,
-        // even though both adjusted dimensions are 32 (adjusted parity would be
-        // even). Operating size is 32x32 either way.
         const N: usize = 32 * 32;
         let mut dequant_64x32 = [0i32; N];
         dequant_64x32[0] = 4096;
@@ -395,8 +364,6 @@ mod tests {
         )
         .unwrap();
 
-        // Equivalent 32x32 (log2 5,5; even parity, no rescale) fed the manually
-        // pre-rescaled DC: identical, proving (6,5) applied Round2(x*2896,12).
         let mut dequant_pre = [0i32; N];
         dequant_pre[0] = round2_2896(4096); // 2896
         let mut out_pre = [0i32; N];
@@ -411,8 +378,6 @@ mod tests {
             "TX_64X32 must rescale by √2 like a pre-rescaled 32x32"
         );
 
-        // And the same 32x32 fed the raw DC (no rescale) must differ, proving the
-        // rescale actually fired rather than both paths skipping it.
         let mut dequant_raw = [0i32; N];
         dequant_raw[0] = 4096;
         let mut out_raw = [0i32; N];
@@ -427,7 +392,6 @@ mod tests {
 
     #[test]
     fn dc_only_dct_8x8_is_flat() {
-        // Larger square (log2 3x3): a DC-only DCT block is still a flat field.
         let mut dequant = [0i32; 64];
         dequant[0] = 256;
         let mut residual = [0i32; 64];
@@ -447,9 +411,6 @@ mod tests {
 
     #[test]
     fn mixed_row_dct_col_identity_confines_energy_to_row_zero() {
-        // Row DCT spreads a DC-only input across row 0 (and leaves rows 1..h at
-        // zero); the column identity transform then keeps every column's single
-        // non-zero sample at i = 0. So energy stays in row 0 only.
         const W: usize = 8;
         const H: usize = 8;
         let mut dequant = [0i32; W * H];
@@ -472,12 +433,6 @@ mod tests {
 
     #[test]
     fn orchestration_matches_manual_row_then_column_for_non_square_kernels() {
-        // Pins the row-then-column wiring (intermediate layout, the per-pass
-        // transpose, and the per-pass type/shift) for a non-square, non-DCT,
-        // rescaled case that symmetric flat-field tests cannot catch. An 8x16
-        // block (log2 3x4, odd ratio -> the √2 rescale fires) with an ADST row
-        // pass and a DCT column pass, against an asymmetric coefficient pattern,
-        // must equal a manual reference built from the same trusted 1D primitive.
         const W: usize = 8;
         const H: usize = 16;
         const ROW_SHIFT: u8 = 6;
@@ -485,7 +440,6 @@ mod tests {
         let bd = BitDepth::Eight;
 
         let mut dequant = [0i32; W * H];
-        // Asymmetric, off-diagonal coefficients so a transpose/index swap shows up.
         dequant[0] = 100;
         dequant[1] = 50;
         dequant[W] = -30;
@@ -500,8 +454,6 @@ mod tests {
         )
         .unwrap();
 
-        // Manual reference: row ADST (with the odd-ratio √2 rescale) into an
-        // intermediate, then column DCT, both via inverse_transform_1d.
         let mut intermediate = [0i32; W * H];
         for i in 0..H {
             let mut row_in = [0i32; W];
@@ -547,7 +499,6 @@ mod tests {
             got, expected,
             "2D orchestration must match the manual row-then-column reference"
         );
-        // Guard against a vacuous all-zero comparison.
         assert!(
             got.iter().any(|&v| v != 0),
             "reference produced a trivial all-zero block"

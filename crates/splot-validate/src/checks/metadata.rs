@@ -30,7 +30,6 @@ pub(super) struct MetadataSyntax;
 
 impl Check for MetadataSyntax {
     fn id(&self) -> &'static str {
-        // Registry identifier; emitted diagnostics use their own rule ids.
         "metadata/syntax"
     }
 
@@ -53,7 +52,6 @@ fn check_metadata_short(obu: &ObuEnvelope<'_>, report: &mut ValidationReport) {
     let mut reader = BitReader::new(obu.payload, obu.payload_offset());
     match parse_metadata_short(&mut reader, obu.payload.len()) {
         Ok(metadata) => {
-            // AV2 § 6.16.2: muh_layer_idc shall be less than 3 for OBU_METADATA_SHORT.
             if metadata.muh_layer_idc >= 3 {
                 report.push(
                     Diagnostic::error(
@@ -67,12 +65,6 @@ fn check_metadata_short(obu: &ObuEnvelope<'_>, report: &mut ValidationReport) {
                     .with_byte_offset(obu.offset),
                 );
             }
-            // AV2 § 6.16.3: muh_persistence_idc values 4..=7 read only "Reserved —
-            // Reserved for AOMedia use", with no "shall"; a reserved value is a
-            // producer anomaly (warning), never a violation. A cancel unit's
-            // muh_persistence_idc is parsed (§ 5.17.2 reads it before the early
-            // return) but carries no persistence semantics, so only non-cancel
-            // units warn.
             if !metadata.muh_cancel_flag && metadata.muh_persistence_idc >= 4 {
                 report.push(
                     Diagnostic::warning(
@@ -87,12 +79,9 @@ fn check_metadata_short(obu: &ObuEnvelope<'_>, report: &mut ValidationReport) {
                     .with_byte_offset(obu.offset),
                 );
             }
-            // Temporal point info IS allowed in a short OBU (§ 6.16.11), so only the
-            // payload range checks run here.
             if let Some(unit) = &metadata.unit {
                 check_metadata_unit_payload(unit, obu, report);
             }
-            // AV2 § 5.2.1: a metadata OBU is not extensible -> trailing_bits() only.
             finish_payload_or_emit(&mut reader, obu.payload, false, report);
         }
         Err(error) => report.push(
@@ -127,9 +116,6 @@ fn check_metadata_group_unit(
     obu: &ObuEnvelope<'_>,
     report: &mut ValidationReport,
 ) {
-    // AV2 § 6.16.3: muh_reserved_zero_2bits must be 0, but it is ignored by decoders, so
-    // a non-zero value is a producer anomaly (warning), consistent with
-    // content-interpretation/reserved-bits-nonzero.
     if let Some(reserved) = unit.muh_reserved_zero_2bits
         && reserved != 0
     {
@@ -146,12 +132,6 @@ fn check_metadata_group_unit(
         );
     }
 
-    // AV2 § 6.16.3: muh_layer_idc values 4..=7 read only "Reserved — Reserved for
-    // AOMedia use", with no "shall"; a reserved value is a producer anomaly
-    // (warning), never a violation. The short form's stricter muh_layer_idc < 3
-    // rule (§ 6.16.2) is a separate error in check_metadata_short; group cancel
-    // units carry no muh_layer_idc (§ 5.17.3), so the field's presence implies a
-    // non-cancel unit.
     if let Some(layer_idc) = unit.muh_layer_idc
         && layer_idc >= 4
     {
@@ -168,8 +148,6 @@ fn check_metadata_group_unit(
         );
     }
 
-    // AV2 § 6.16.3: muh_persistence_idc values 4..=7 are likewise "Reserved for
-    // AOMedia use" (warning, never a violation); absent only on cancel units.
     if let Some(persistence_idc) = unit.muh_persistence_idc
         && persistence_idc >= 4
     {
@@ -186,7 +164,6 @@ fn check_metadata_group_unit(
         );
     }
 
-    // AV2 § 6.16.3: bit 31 of muh_xlayer_map must be 0.
     if let Some(xlayer_map) = unit.muh_xlayer_map
         && (xlayer_map & (1 << 31)) != 0
     {
@@ -200,7 +177,6 @@ fn check_metadata_group_unit(
         );
     }
 
-    // AV2 § 6.16.3: bit m of muh_mlayer_map must be 0 for m less than obu_mlayer_id.
     let obu_mlayer_id = obu.header.embedded_layer_id.get();
     if obu_mlayer_id > 0 {
         let below_obu_mlayer_mask = (1u16 << obu_mlayer_id) - 1;
@@ -222,8 +198,6 @@ fn check_metadata_group_unit(
         }
     }
 
-    // AV2 § 6.16.11: METADATA_TYPE_TEMPORAL_POINT_INFO shall only appear in an OBU with
-    // obu_type equal to OBU_METADATA_SHORT.
     if unit.metadata_type == MetadataType::TemporalPointInfo {
         report.push(
             Diagnostic::error(
@@ -249,16 +223,6 @@ fn check_metadata_unit_payload(
 ) {
     match &unit.payload {
         MetadataPayload::Timecode(timecode) => {
-            // AV2 § 6.16.7: counting_type values 7..=31 are marked "reserved" in the
-            // counting_type table (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-7,
-            // line 3823) with NO conformance sentence forbidding them — § 6.16.7 only
-            // says counting_type "should be the same for all pictures" (line 3804, a
-            // recommendation, not a "shall"). A reserved value is therefore a
-            // decoder-ignored producer anomaly (warning), matching the established
-            // reserved-value pattern for table-"reserved"-without-"shall" fields
-            // (metadata/persistence-idc-reserved, metadata/group-layer-idc-reserved); it
-            // is NOT an error like mps_pic_struct_type > 12, which § 6.16.10 Table 6.18
-            // backs with a "shall not be present" sentence.
             if timecode.counting_type >= 7 {
                 report.push(
                     Diagnostic::warning(
@@ -273,7 +237,6 @@ fn check_metadata_unit_payload(
                     .with_byte_offset(obu.offset),
                 );
             }
-            // AV2 § 6.16.7: seconds 0..=59, minutes 0..=59, hours 0..=23 when present.
             if let Some(seconds) = timecode.seconds_value
                 && seconds > 59
             {
@@ -311,8 +274,6 @@ fn check_metadata_unit_payload(
                 );
             }
         }
-        // AV2 § 6.16.10 (Table 6.18): mps_pic_struct_type above 12 is reserved and shall
-        // not be present.
         MetadataPayload::ScanType(scan_type) if scan_type.mps_pic_struct_type > 12 => {
             report.push(
                 Diagnostic::error(
@@ -326,15 +287,6 @@ fn check_metadata_unit_payload(
                 .with_byte_offset(obu.offset),
             );
         }
-        // AV2 § 6.16.13: "reserved shall be set to 0 and ignored by decoders. This bit is
-        // reserved for future use by AOMedia"
-        // (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-13, line 4248). The
-        // decoder ignores the value, so a non-zero reserved bit is a producer anomaly
-        // (warning), matching the established decoder-ignored reserved-field pattern
-        // (content-interpretation/reserved-bits-nonzero, metadata/group-reserved-bits-nonzero).
-        // The plane_hash/frame_hash verification against the decoded output stays
-        // decoder-blocked (§ 7.21 output process); only this local reserved-field fact is
-        // decidable here.
         MetadataPayload::DecodedFrameHash(frame_hash) if frame_hash.reserved != 0 => {
             report.push(
                 Diagnostic::warning(

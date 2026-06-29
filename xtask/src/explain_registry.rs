@@ -95,11 +95,6 @@ fn parse_entries(doc: &str) -> Result<Vec<Entry>> {
         if !trimmed.starts_with('|') {
             continue;
         }
-        // Split a `| id | severity | section | condition |` row into columns. Drop the
-        // leading empty (the row starts with `|`) and an optional trailing empty (a
-        // closing `|`), so rows with OR without a trailing pipe — both valid GitHub
-        // Markdown — parse to the same columns. A diagnostics row then has >= 4
-        // columns; the 3-column `*/syntax` table is shorter and stays excluded.
         let mut cells: Vec<&str> = trimmed.split('|').collect();
         cells.remove(0); // the empty before the opening `|` (row is `starts_with('|')`)
         if cells.last().is_some_and(|cell| cell.trim().is_empty()) {
@@ -118,25 +113,18 @@ fn parse_entries(doc: &str) -> Result<Vec<Entry>> {
         if !is_rule_id(rule_id) {
             continue; // a backtick token that is not a rule id
         }
-        // From here the row IS a diagnostics row (a valid backtick rule id in the
-        // first column), so its severity MUST be valid — a silent skip would drop a
-        // real diagnostic (e.g. a dual `error/warning` cell).
         let severity_cell = cells[1].trim();
         if !is_severity_cell(severity_cell) {
             bail!(
                 "gen-explain: rule `{rule_id}` in {DOC_REL} has an unparsable severity `{severity_cell}`"
             );
         }
-        // Render a dual `error/warning` cell with a comma so the stored value is not
-        // a single-slash token a rule-id scanner would flag.
         let severity = severity_cell
             .split('/')
             .map(str::trim)
             .collect::<Vec<_>>()
             .join(", ");
         let section = parse_section(cells[2].trim());
-        // Rejoin any `|` that appeared inside the condition cell (defensive: the doc
-        // has none today) so an embedded pipe never silently drops the row.
         let summary = cells[3..].join("|").trim().to_owned();
         if summary.is_empty() {
             bail!("gen-explain: empty condition for `{rule_id}` in {DOC_REL}");
@@ -224,7 +212,6 @@ fn render_generated(entries: &[Entry]) -> String {
             Some(section) => format!("Some({section:?})"),
             None => "None".to_owned(),
         };
-        // Writing to a `String` is infallible, so the `fmt::Result` is discarded.
         let _ = writeln!(
             out,
             "    super::DiagnosticInfo {{ rule_id: {:?}, severity: {:?}, section: {}, summary: {:?} }},",
@@ -264,7 +251,6 @@ outro `ns/after`
     fn parses_four_column_rows_only() {
         let entries = parse_entries(DOC).unwrap();
         let ids: Vec<&str> = entries.iter().map(|e| e.rule_id.as_str()).collect();
-        // Sorted; the 3-col syntax row and prose ids are excluded.
         assert_eq!(
             ids,
             ["brt/bar", "ops/dual", "ops/foo", "ops/notrail", "ops/piped"]
@@ -273,8 +259,6 @@ outro `ns/after`
 
     #[test]
     fn row_without_a_trailing_pipe_is_parsed() {
-        // GitHub Markdown allows a table row to omit the closing `|`; such a row must
-        // still be captured (and the 3-col `*/syntax` table still excluded by count).
         let entries = parse_entries(DOC).unwrap();
         let notrail = entries.iter().find(|e| e.rule_id == "ops/notrail").unwrap();
         assert_eq!(notrail.severity, "warning");
@@ -286,7 +270,6 @@ outro `ns/after`
     fn dual_severity_preserved_as_comma_list() {
         let entries = parse_entries(DOC).unwrap();
         let dual = entries.iter().find(|e| e.rule_id == "ops/dual").unwrap();
-        // Both severities survive; the slash is normalized to a comma.
         assert_eq!(dual.severity, "error, warning");
     }
 
@@ -324,12 +307,10 @@ outro `ns/after`
     fn generated_output_escapes_and_is_stable() {
         let entries = parse_entries(DOC).unwrap();
         let generated = render_generated(&entries);
-        // Quotes in the summary are escaped into a valid Rust literal.
         assert!(generated.contains(r#"summary: "a thing is wrong with \"quoted\" text""#));
         assert!(generated.contains(r#"severity: "error""#));
         assert!(generated.contains("section: None"));
         assert!(generated.contains("#[rustfmt::skip]"));
-        // Deterministic: rendering twice yields the same bytes.
         assert_eq!(generated, render_generated(&parse_entries(DOC).unwrap()));
     }
 

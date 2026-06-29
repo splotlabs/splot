@@ -23,32 +23,13 @@ impl ValidatorContext {
         options: &ValidationOptions,
         report: &mut ValidationReport,
     ) {
-        // Suppressed under any Provided external-HLS mode. This check pairs the in-band
-        // header's dependency maps against the LCR its `seq_lcr_id` resolves to under
-        // § 6.4.1, which is *association-dependent*: `ExternalHlsSet` cannot enumerate an
-        // external LCR (it models only sequence-header ids and operating-point sets), but
-        // a Provided declaration is a *partial* one — other external HLS OBUs, including
-        // local LCRs, MAY exist unenumerated (see `ExternalHlsMode::Provided`). An external
-        // *local* LCR with this `seq_lcr_id` would win the local-first § 6.4.1 resolution
-        // ahead of the in-band record, so the association the validator paired may not be
-        // the one a real decoder uses, and an in-band "violation" against it would be a
-        // false positive (zero-false-positive principle). This is the identical
-        // local-first-shadowing reasoning `check_seq_lcr_reference` uses to suppress
-        // lcr/global-xlayer-map-missing-xlayer. The gate is "any Provided mode", not
-        // "declares a sequence header": an external LCR can be shadowing even when the set
-        // enumerates only OPS or nothing at all, so the suppression is not about sequence
-        // headers.
         if !matches!(options.external_hls, ExternalHlsMode::Disabled) {
             return;
         }
-        // Strict frame-confirmed activation (no sole-in-band-header fallback): a check that
-        // fires unconditionally on a violation must not emit against a guessed activation.
         let Some((seq_header_id, general)) = self.frame_confirmed_activation_for(xlayer) else {
             return;
         };
         let Some(association) = self.lcr_associations.get(&(xlayer, seq_header_id)) else {
-            // seq_lcr_id == 0 or unresolved at the header's observation (§ 6.4.1:
-            // no OBU is associated).
             return;
         };
         let lcr_is_global = association.lcr_is_global;
@@ -151,10 +132,6 @@ impl ValidatorContext {
         options: &ValidationOptions,
         report: &mut ValidationReport,
     ) {
-        // Suppress under any Provided mode and gate on a strict frame-confirmed
-        // activation; see check_lcr_dependency_agreement for the full rationale (the
-        // § 6.4.1 association an unmodeled external local LCR could shadow, plus the
-        // no-emit-against-a-guess requirement).
         if !matches!(options.external_hls, ExternalHlsMode::Disabled) {
             return;
         }
@@ -165,8 +142,6 @@ impl ValidatorContext {
             return;
         };
         let Some(ptl) = association.ptl else {
-            // § 6.8.5 "when lcr_seq_profile_tier_level_info(i) is present": absent PTL
-            // info compares nothing.
             return;
         };
         let lcr_is_global = association.lcr_is_global;
@@ -174,13 +149,11 @@ impl ValidatorContext {
         let lcr_offset = ptl.offset;
         let scope = if lcr_is_global { "global" } else { "local" };
 
-        // The activated header's compared PTL values.
         let seq_profile = u32::from(general.seq_profile_idc.get());
         let seq_level = u32::from(general.seq_level_idx.get());
         let seq_tier = u32::from(u8::from(matches!(general.seq_tier, Tier::High)));
         let seq_mlayer_count = u32::from(general.seq_max_mlayer_count.get());
 
-        // Each ceiling: header value <= LCR-declared maximum (equality passes).
         let checks = [
             (
                 LcrPtlField::Profile,
@@ -273,8 +246,6 @@ impl ValidatorContext {
         options: &ValidationOptions,
         report: &mut ValidationReport,
     ) {
-        // Suppress under any Provided mode and gate on a strict frame-confirmed
-        // activation; see check_lcr_dependency_agreement for the full rationale.
         if !matches!(options.external_hls, ExternalHlsMode::Disabled) {
             return;
         }
@@ -285,7 +256,6 @@ impl ValidatorContext {
             return;
         };
         let Some(rep) = association.rep_info else {
-            // Absent rep-info compares nothing.
             return;
         };
         let lcr_is_global = association.lcr_is_global;
@@ -293,12 +263,8 @@ impl ValidatorContext {
         let lcr_offset = rep.offset;
         let scope = if lcr_is_global { "global" } else { "local" };
 
-        // Collect (field, lcr_value, header_value, message-fragment) for each
-        // disagreeing comparison. lcr_value / header_value also feed the dedup key.
         let mut mismatches: Vec<(LcrRepInfoField, u64, u64, String)> = Vec::new();
 
-        // § 6.8.8 lines 1925-1933: lcr_max_pic_width/height shall equal
-        // max_frame_width/height_minus_1 + 1 (always present in the rep info).
         let header_width = general.max_frame_width.get();
         if rep.max_pic_width != header_width {
             mismatches.push((
@@ -324,9 +290,6 @@ impl ValidatorContext {
             ));
         }
 
-        // § 6.8.8 lines 1950-1958: lcr_bit_depth_idc / lcr_chroma_format_idc shall equal
-        // bit_depth_idc / chroma_format_idc — present only when
-        // lcr_format_info_present_flag == 1 (absent compares nothing).
         if let Some((lcr_bit_depth, lcr_chroma)) = rep.format {
             let header_bit_depth = u32::from(general.bit_depth_idc.get());
             if lcr_bit_depth != header_bit_depth {
@@ -352,9 +315,6 @@ impl ValidatorContext {
             }
         }
 
-        // § 6.8.8 lines 1943-1968: lcr_cropping_window_present_flag shall equal
-        // seq_cropping_window_present_flag; the offsets shall match the seq_cropping_*
-        // offsets (the LCR offsets are present only when the LCR cropping window is).
         let lcr_cropping_present = rep.cropping.is_some();
         let header_cropping_present = general.seq_cropping_window_present_flag;
         if lcr_cropping_present != header_cropping_present {
@@ -370,10 +330,6 @@ impl ValidatorContext {
             ));
         }
         if let Some((lcr_left, lcr_right, lcr_top, lcr_bottom)) = rep.cropping {
-            // The header's seq_cropping_win_* offsets are 0 when the window is absent
-            // (§ 6.4.1 inference). The present-flag mismatch above already fires in that
-            // case; the offset comparisons still run against the header's effective
-            // (possibly inferred-0) values per the § 6.8.8 "shall match" sentence.
             let crop = general.cropping_window;
             for (field, lcr_value, header_value, name) in [
                 (LcrRepInfoField::CropLeft, lcr_left, crop.left, "left"),
@@ -469,7 +425,6 @@ impl ValidatorContext {
             return;
         };
         let Some(maps) = association.maps.as_ref() else {
-            // No embedded-layer info means no lcr_max_expected_* to bound.
             return;
         };
         let lcr_is_global = association.lcr_is_global;
@@ -479,10 +434,6 @@ impl ValidatorContext {
         let header_max_width = general.max_frame_width.get();
         let header_max_height = general.max_frame_height.get();
 
-        // Collect (mlayer_index, is_width, lcr_value, header_max) per violation. The
-        // human-readable fragment is built lazily in the dedup loop below (after the
-        // `insert(key)` check), so a finding already emitted spends no allocation — matching
-        // [`Self::check_lcr_rep_info_agreement`].
         let mut violations: Vec<(u8, bool, u32, u32)> = Vec::new();
         for &(mlayer_index, width, height) in &maps.max_expected {
             if let Some(lcr_width) = width

@@ -95,18 +95,11 @@ pub fn write_complete_obu(
     if !writer.is_byte_aligned() {
         return Err(WriteError::WriterNotByteAligned);
     }
-    // § 5.2.1: the OBU dispatch routes one obu_type to exactly one payload syntax, so a header whose
-    // obu_type does not select `payload`'s variant could never have come from parsing one OBU — and
-    // would reparse as the header's type, not the supplied payload. Reject it (the writer rejects
-    // exactly what the reader could not have produced), mirroring the §5.2.2 NonCanonicalObuType and
-    // §6.16 metadata-type guards.
     if !obu_type_matches_payload(header.obu_type, payload) {
         return Err(WriteError::ObuTypePayloadMismatch {
             payload: payload.syntax_name(),
         });
     }
-    // Draft the whole OBU (header + payload + tail) into a scratch and commit only on full
-    // success, so a payload reject leaves no stray header byte in the caller's writer.
     let mut scratch = BitWriter::new();
     write_obu_header(&mut scratch, header)?;
     write_obu_payload_inner(
@@ -159,8 +152,6 @@ pub fn write_obu_payload(
     is_extensible: bool,
     passthrough: &[u8],
 ) -> WriteResult<()> {
-    // No header is available here, so the metadata-group branch uses the non-global
-    // (local) layer-map scope; see the function-level note.
     write_obu_payload_inner(
         writer,
         payload,
@@ -189,17 +180,13 @@ fn write_obu_payload_inner(
 
     let mut scratch = BitWriter::new();
     match payload {
-        // § 5.5: an empty body. `finish_obu_payload` returns early for an empty payload, so
-        // there is no tail. The OBU carries no payload bytes, so the passthrough is empty.
         ParsedObu::TemporalDelimiter => {
             if !passthrough.is_empty() {
                 return Err(WriteError::NonCanonicalMetadata {
                     what: "temporal_delimiter_passthrough",
                 });
             }
-            // No body, no tail: an empty payload round-trips through write -> reparse.
         }
-        // § 5.4: the sequence-header body, then the generic extensible tail.
         ParsedObu::SequenceHeader(header) => {
             if !passthrough.is_empty() {
                 return Err(WriteError::NonCanonicalSequenceValue {
@@ -209,26 +196,17 @@ fn write_obu_payload_inner(
             write_sequence_header(&mut scratch, header)?;
             write_generic_tail(&mut scratch, is_extensible)?;
         }
-        // § 5.16: padding owns its whole tail (the obu_padding_byte run plus its own
-        // trailing_bits), so it is NOT followed by the generic extensible tail.
         ParsedObu::Padding(padding) => {
             write_padding_payload(&mut scratch, padding, passthrough)?;
         }
-        // § 5.17.2: the short-metadata body, then the generic tail (metadata is
-        // non-extensible, so the tail is trailing_bits() only).
         ParsedObu::MetadataShort(obu) => {
             write_metadata_short_obu(&mut scratch, obu, passthrough)?;
             write_generic_tail(&mut scratch, is_extensible)?;
         }
-        // § 5.17.3: the group-metadata body, then the generic tail. The flat-passthrough writer
-        // splits `passthrough` per unit by each unit's modeled blob length, so a multi-unit group
-        // (cancelled / fully-modeled / length-summarized units in any mix) round-trips.
         ParsedObu::MetadataGroup(obu) => {
             write_metadata_group_obu_flat(&mut scratch, obu, obu_xlayer_id, passthrough)?;
             write_generic_tail(&mut scratch, is_extensible)?;
         }
-        // § 5.12: the buffer-removal-timing body, then the generic tail (the OBU type is not
-        // extensible, so the tail is trailing_bits() only). It carries no passthrough.
         ParsedObu::BufferRemovalTiming(brt) => {
             if !passthrough.is_empty() {
                 return Err(WriteError::NonCanonicalBufferRemovalTiming {
@@ -238,8 +216,6 @@ fn write_obu_payload_inner(
             write_buffer_removal_timing(&mut scratch, brt)?;
             write_generic_tail(&mut scratch, is_extensible)?;
         }
-        // § 5.6: the multistream-decoder-operation body, then the generic tail (not extensible). It
-        // carries no passthrough.
         ParsedObu::Msdo(msdo) => {
             if !passthrough.is_empty() {
                 return Err(WriteError::NonCanonicalMsdo {
@@ -249,10 +225,6 @@ fn write_obu_payload_inner(
             write_msdo(&mut scratch, msdo)?;
             write_generic_tail(&mut scratch, is_extensible)?;
         }
-        // § 5.10 / § 5.11: the operating-point-set body, then the generic tail. OPS is an
-        // extensible OBU type, so the tail is obu_extension_flag = 0 + trailing_bits(). The OBU's
-        // obu_xlayer_id (global vs local) selects the OPS syntax branch, so the dispatch threads it
-        // through. It carries no passthrough.
         ParsedObu::OperatingPointSet(ops) => {
             if !passthrough.is_empty() {
                 return Err(WriteError::NonCanonicalOperatingPointSet {
@@ -262,9 +234,6 @@ fn write_obu_payload_inner(
             write_operating_point_set(&mut scratch, ops, obu_xlayer_id)?;
             write_generic_tail(&mut scratch, is_extensible)?;
         }
-        // § 5.15: the content-interpretation body, then the generic tail. The OBU type is
-        // extensible, so the tail is obu_extension_flag = 0 + trailing_bits(). It carries no
-        // obu_xlayer_id-dependent branch and no passthrough.
         ParsedObu::ContentInterpretation(ci) => {
             if !passthrough.is_empty() {
                 return Err(WriteError::NonCanonicalContentInterpretation {
@@ -274,8 +243,6 @@ fn write_obu_payload_inner(
             write_content_interpretation(&mut scratch, ci)?;
             write_generic_tail(&mut scratch, is_extensible)?;
         }
-        // § 5.14 / § 5.18.10.2: the film-grain body, then the generic tail (the OBU type is not
-        // extensible, so the tail is trailing_bits() only). It carries no passthrough.
         ParsedObu::FilmGrain(fg) => {
             if !passthrough.is_empty() {
                 return Err(WriteError::NonCanonicalFilmGrain {
@@ -285,10 +252,6 @@ fn write_obu_payload_inner(
             write_film_grain(&mut scratch, fg)?;
             write_generic_tail(&mut scratch, is_extensible)?;
         }
-        // § 5.9: the atlas-segment body, then the generic tail. OBU_ATLAS_SEGMENT is an extensible
-        // OBU type, so the tail is obu_extension_flag = 0 + trailing_bits(). The stored
-        // atlas_segment_id is an f(3) wire field on the model (not threaded from the header), so
-        // there is no obu_xlayer_id-dependent branch. It carries no passthrough.
         ParsedObu::AtlasSegment(atlas) => {
             if !passthrough.is_empty() {
                 return Err(WriteError::NonCanonicalAtlasSegment {
@@ -298,9 +261,6 @@ fn write_obu_payload_inner(
             write_atlas_segment(&mut scratch, atlas)?;
             write_generic_tail(&mut scratch, is_extensible)?;
         }
-        // § 5.7: the multi-frame-header body, then the generic tail. OBU_MULTI_FRAME_HEADER is an
-        // extensible OBU type, so the tail is obu_extension_flag = 0 + trailing_bits(). It carries
-        // no obu_xlayer_id-dependent branch and no passthrough.
         ParsedObu::MultiFrameHeader(mfh) => {
             if !passthrough.is_empty() {
                 return Err(WriteError::NonCanonicalMultiFrameHeader {
@@ -310,11 +270,6 @@ fn write_obu_payload_inner(
             write_multi_frame_header(&mut scratch, mfh)?;
             write_generic_tail(&mut scratch, is_extensible)?;
         }
-        // OBU_LAYER_CONFIGURATION_RECORD (§ 5.8) is an extensible OBU type, so the tail is
-        // obu_extension_flag = 0 + trailing_bits(). The parser selects the global vs local body
-        // from obu_xlayer_id, so the dispatch threads it through (like the §5.10 OPS writer): the
-        // writer rejects a Global/Local model variant — or a local xlayer_id — that disagrees with
-        // the header. It carries no passthrough.
         ParsedObu::LayerConfigurationRecord(record) => {
             if !passthrough.is_empty() {
                 return Err(WriteError::NonCanonicalLayerConfigRecord {
@@ -324,10 +279,6 @@ fn write_obu_payload_inner(
             write_layer_config_record(&mut scratch, record, obu_xlayer_id)?;
             write_generic_tail(&mut scratch, is_extensible)?;
         }
-        // § 5.13 / § 5.4.11: the quantizer-matrix body, then the generic tail (the OBU type is not
-        // extensible, so the tail is trailing_bits() only). The writer canonicalizes the lossy model
-        // to the long form (see write_quantizer_matrix). It carries no passthrough. This is the last
-        // OBU-type body writer, so the dispatch no longer returns Unimplemented for any variant.
         ParsedObu::QuantizationMatrix(qm) => {
             if !passthrough.is_empty() {
                 return Err(WriteError::NonCanonicalQuantizationMatrix {
@@ -352,11 +303,8 @@ fn write_obu_payload_inner(
 /// `reader.remaining_bits()` over the byte-granular OBU payload.
 fn write_generic_tail(scratch: &mut BitWriter, is_extensible: bool) -> WriteResult<()> {
     if is_extensible {
-        // § 6.2.1: obu_extension_flag is 0 in this specification version.
         scratch.write_bit(0)?;
     }
-    // trailing_bits() runs from here to the OBU payload's byte boundary: a full byte (8 bits)
-    // when byte-aligned, else the bits that complete the current byte.
     let nb_bits = bits_to_byte_boundary(scratch.bit_len());
     scratch.write_trailing_bits(nb_bits)
 }
@@ -393,13 +341,6 @@ fn write_padding_payload(
     padding: &PaddingObu,
     passthrough: &[u8],
 ) -> WriteResult<()> {
-    // § 5.16 / § 6.15: the parser splits the payload at the last non-zero byte, so a
-    // non-empty payload always has at least one trailing_bits() byte — `trailing_len == 0`
-    // occurs only for the empty payload (`padding_len == 0`). Any other split
-    // (`trailing_len == 0` with `padding_len > 0`) is a hand-built model the parser could
-    // not have produced; emitting it would write `padding_len` bytes with no trailing byte,
-    // whose last non-zero byte is not a valid trailing_bits() pattern (the reparse fails).
-    // Reject it before any bit, like the sibling metadata/sequence writers.
     if padding.trailing_len == 0 && padding.padding_len != 0 {
         return Err(WriteError::NonCanonicalMetadata {
             what: "padding_trailing_len",
@@ -410,11 +351,7 @@ fn write_padding_payload(
             what: "padding_passthrough_len",
         });
     }
-    // § 5.16: the leading obu_padding_byte run is opaque; re-emit it verbatim.
     scratch.write_le(passthrough)?;
-    // § 5.16: trailing_len bytes of trailing_bits() (0 only for an empty payload). The
-    // parser derives trailing_len from the last non-zero byte; padding_len + trailing_len
-    // == obuPayloadSize, so this restores the exact byte count.
     if padding.trailing_len > 0 {
         let nb_bits = (padding.trailing_len as u64).saturating_mul(8);
         scratch.write_trailing_bits(nb_bits)?;
@@ -459,8 +396,5 @@ fn obu_type_matches_payload(obu_type: ObuType, payload: &ParsedObu) -> bool {
     )
 }
 
-// The round-trip / Unimplemented / reject-propagation tests live in a sibling file (kept under
-// the advisory source-line limit); `include!` pastes them into this module so their `super::*`
-// resolves to the writers and private helpers above.
 #[cfg(test)]
 include!("dispatch_tests.rs");

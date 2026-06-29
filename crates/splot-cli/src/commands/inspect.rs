@@ -123,8 +123,6 @@ impl InspectRecord {
         ivf_header: Option<IvfHeader>,
         ivf_frame: Option<IvfFrame<'_>>,
     ) -> Self {
-        // Parse the frame-header state once; the prefix / core / tile-group-structure
-        // views all read this single cache instead of re-running the parsers themselves.
         let frame_cache = FrameInspectCache::new(obu, sequences, multi_frame_headers);
         Self {
             index,
@@ -585,11 +583,6 @@ impl FrameInspectCache {
         multi_frame_headers: &BTreeMap<u32, MultiFrameHeaderRecord>,
     ) -> Self {
         let prefix = parse_inspect_prefix(obu);
-        // The active sequence and multi-frame header are resolved from the one cached
-        // prefix (no re-parse). When the prefix did not parse both stay `None`, exactly
-        // as the per-view resolvers returned on a failed re-parse — the core parser is
-        // still run (and may reach its activation-only stop) by reading the payload
-        // directly, so this does not couple the core view to prefix success.
         let mfh_record = prefix
             .as_ref()
             .and_then(|prefix| resolve_inspect_mfh(prefix, multi_frame_headers));
@@ -640,8 +633,6 @@ fn parse_inspect_core_and_structure(
     let mut reader = BitReader::new(obu.payload, obu.payload_offset());
     let is_tile_group = obu_type.is_tile_group();
     if is_tile_group {
-        // Only the first tile group carries a parseable frame_header(1) (AV2 § 5.19); a
-        // cleared is_first_tile_group bit (or an unreadable one) leaves no core to parse.
         if !matches!(reader.read_bit(), Ok(bit) if bit != 0) {
             return (None, None);
         }
@@ -717,27 +708,16 @@ fn frame_header_copy_view(obu: &ObuEnvelope<'_>) -> Option<FrameHeaderCopyView> 
     let mut reader = BitReader::new(obu.payload, obu.payload_offset());
     let is_first_tile_group = reader.read_bit().ok()? != 0;
     if is_first_tile_group {
-        // A first tile group carries frame_header( 1 ), surfaced via frame_header_core; it
-        // has no copy region.
         return None;
     }
     let frame_header_present_flag = reader.read_bit().ok()? != 0;
     if !frame_header_present_flag {
-        // frame_header_present_flag == 0: no frame_header_copy() in this tile group.
         return None;
     }
     Some(FrameHeaderCopyView {
         payload_kind: "frame_header_copy",
-        // The copy region begins at the reader's current position, AFTER the two prefix
-        // bits (is_first_tile_group + frame_header_present_flag). Those bits are still
-        // within the first payload byte, so `byte_offset()` alone points at the byte
-        // CONTAINING the prefix bits — a byte-only field would let a consumer mistake the
-        // two prefix bits for copy bits. Pair it with the MSB-first bit position within
-        // that byte (== 2 here) so the copy region's first bit is locatable exactly.
         copy_region_start_byte: reader.byte_offset().get(),
         copy_region_start_bit: reader.bit_offset().get(),
-        // The comparison needs the coded frame's first header (cross-OBU state the
-        // stateless inspector does not hold); the validator performs it.
         compared: false,
     })
 }
@@ -841,8 +821,6 @@ fn resolve_inspect_sequence<'a>(
     let seq_id = if prefix.cur_mfh_id.is_zero() {
         prefix.referenced_sequence_header_id?
     } else {
-        // cur_mfh_id > 0: the referenced sequence header is the resolved MFH's
-        // mfh_seq_header_id (§ 7.3.8.7), available only when the MFH was seen in-band.
         mfh_record?.mfh_seq_header_id
     };
     sequences.get(&seq_id.get())
@@ -879,18 +857,11 @@ fn tile_group_structure_view(
     obu: &ObuEnvelope<'_>,
     cache: &FrameInspectCache,
 ) -> Option<TileGroupStructureView> {
-    // The cache parsed the § 5.19 structure from the core's reader continuation and
-    // already gated it to the intra-complete first-tile-group path (see
-    // [`parse_inspect_tile_structure`]); this view only shapes the result for JSON.
     let structure = cache.structure?;
     let core = cache.core.as_ref()?;
     let tile_info = core.tile_info.as_ref()?;
     let layout = inspect_tile_layout(tile_info);
 
-    // §5.20.1: surface the per-tile framing over the tile_group_payload() region when the
-    // structure completed and the range is self-consistent. IsBridge == 0 on this
-    // intra-complete tile-group path; TileSizeBytes comes from tile_info() (None == single
-    // tile, framed as the lone last tile).
     let (mut tile_framing, mut tile_framing_defect) = (Vec::new(), None);
     if let (Some(header_bytes), Some(payload_size)) =
         (structure.header_bytes, structure.payload_size)
@@ -1221,7 +1192,6 @@ impl SegmentationParamsView {
 
 /// One `(qm_y[i], qm_u[i], qm_v[i])` level set for `--json` (AV2 § 5.18.6.2).
 #[derive(Serialize)]
-// Field names are the AV2 § 5.18.6.2 syntax-element names and the stable `--json` key contract.
 #[allow(clippy::struct_field_names)]
 struct QmSetLevelsView {
     qm_y: u8,
@@ -1320,7 +1290,6 @@ impl DeblockingFilterParamsView {
 /// Parsed `gdf_params()` for `--json` (AV2 § 5.18.7.9). The per-frame fields are
 /// omitted when GDF is not frame-enabled.
 #[derive(Serialize)]
-// Field names are the AV2 § 5.18.7.9 syntax-element names and the stable `--json` key contract.
 #[allow(clippy::struct_field_names)]
 struct GdfParamsView {
     gdf_frame_enable: bool,
@@ -1345,7 +1314,6 @@ impl GdfParamsView {
 
 /// One CDEF strength set for `--json` (AV2 § 5.18.7.10).
 #[derive(Serialize)]
-// Field names are the AV2 § 5.18.7.10 syntax-element names and the stable `--json` key contract.
 #[allow(clippy::struct_field_names)]
 struct CdefStrengthSetView {
     y_pri_strength: u8,
@@ -1815,8 +1783,6 @@ impl InspectPayloadStatus {
                 blocked_on: None,
                 error: None,
             },
-            // The dispatcher parsed the frame-carrying OBU's state-free prefix; the
-            // state-dependent remainder is surfaced by the stateful frame-header views.
             Ok(PayloadStatus::PrefixParsed {
                 prefix,
                 blocked_on,
@@ -1856,7 +1822,6 @@ impl InspectPayloadStatus {
 /// serialized.
 pub fn run(args: &InspectArgs) -> Result<ExitCode> {
     let data = read_input(&args.input)?;
-    // Use the partial parser so the OBUs before a malformed tail are still shown.
     let parsed = parse_bitstream_partial(&data);
 
     if args.json {
@@ -1876,11 +1841,7 @@ pub fn run(args: &InspectArgs) -> Result<ExitCode> {
 }
 
 fn inspect_records(parsed: &ParsedBitstream<'_>) -> Vec<InspectRecord> {
-    // Track sequence headers in OBU order so a later frame header's core parse can
-    // resolve the sequence state it references (AV2 § 5.18.2 load_sequence_header).
     let mut sequences: BTreeMap<u8, SequenceHeader> = BTreeMap::new();
-    // Track in-band multi-frame headers (keyed by mfhId) so a later frame header's
-    // `cur_mfh_id > 0` core parse can resolve its § 5.7 state (AV2 § 5.18.2).
     let mut multi_frame_headers: BTreeMap<u32, MultiFrameHeaderRecord> = BTreeMap::new();
     let mut records = Vec::new();
 
@@ -1945,9 +1906,6 @@ fn push_inspect_record(
             }
         }
         ObuType::MultiFrameHeader => {
-            // Record the parsed § 5.7 state (frame size, segmentation arm, deblocking
-            // update) keyed by mfhId, mirroring the validator's availability record, so
-            // a later `cur_mfh_id` reference resolves the same view.
             let mut reader = BitReader::new(obu.payload, obu.payload_offset());
             if let Ok(mfh) = parse_multi_frame_header(&mut reader)
                 && mfh.mfh_id_in_range()

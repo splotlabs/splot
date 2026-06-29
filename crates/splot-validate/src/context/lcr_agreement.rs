@@ -76,8 +76,7 @@ impl ValidatorContext {
     /// resolutions is a separate, out-of-scope residual, so this takes the first resolved
     /// record and the agreement checks compare the MSDO against it.
     ///
-    /// Two correctness properties of this resolution (codex findings 3393129738 /
-    /// 3393129741):
+    /// Two correctness properties of this resolution:
     ///
     /// - **Association-time snapshot.** The record returned is the [`GlobalLcrRecord`]
     ///   cloned into the association at the header's latest observation, NOT a live
@@ -104,9 +103,6 @@ impl ValidatorContext {
         &self,
         cmvs_start: u64,
     ) -> Option<(u8, &GlobalLcrRecord)> {
-        // § 6.8.2 "present in the same CMVS": the associated record must have been observed at
-        // or after the CMVS-window start. (The activation xlayer is not consulted here — only
-        // the record's observation temporal unit bounds the window.)
         self.activated_global_lcr_where(|_xlayer, record| record.observed_tu_index >= cmvs_start)
     }
 
@@ -118,8 +114,8 @@ impl ValidatorContext {
     /// layer configuration record". An activated global LCR activated only EARLIER in the CMVS
     /// (its association still chain-resolvable, but its activation temporal unit precedes the
     /// boundary TU) does NOT make end condition 2 false at a later CLK boundary TU that carries
-    /// no activation of its own — both rule sets end the CMVS there, so there is no mismatch
-    /// (codex finding 3393274375). The scope is the *activation* temporal unit, not the global
+    /// no activation of its own — both rule sets end the CMVS there, so there is no mismatch.
+    /// The scope is the *activation* temporal unit, not the global
     /// record's observation temporal unit, because a same-id CLK re-references an already-active
     /// header (re-activating in the boundary TU) without re-sending its sequence header — so the
     /// association snapshot keeps the global record's earlier observation timestamp while the
@@ -195,7 +191,6 @@ impl ValidatorContext {
         msdo_offset: ByteOffset,
         report: &mut ValidationReport,
     ) {
-        // Constraint 1: num_streams_minus_2 + 2 == LcrMaxNumXLayerCount (line 1650).
         if msdo.num_streams != global.max_num_xlayer_count {
             self.push_lcr_agreement(
                 "lcr/msdo-stream-count-mismatch",
@@ -214,7 +209,6 @@ impl ValidatorContext {
             );
         }
 
-        // Constraint 2: every sub_xlayer_id[i] is in LcrXLayerID[] (lines 1651-1652).
         for sub in &msdo.sub_streams {
             if !global.xlayer_ids.contains(&sub.sub_xlayer_id) {
                 self.push_lcr_agreement(
@@ -235,8 +229,6 @@ impl ValidatorContext {
             }
         }
 
-        // Constraint 3: aggregate-info agreement, gated on lcr_aggregate_info_present_flag
-        // (lines 1657-1664).
         if let Some(agg) = global.aggregate_info {
             self.check_lcr_aggregate_agreement(
                 global_id,
@@ -248,16 +240,10 @@ impl ValidatorContext {
             );
         }
 
-        // Constraint 4: per-substream PTL equality, gated on
-        // lcr_seq_profile_tier_level_info_present_flag (lines 1666-1671).
         if global.seq_ptl_present {
             self.check_lcr_substream_ptl_agreement(global_id, global, msdo, msdo_offset, report);
         }
 
-        // Constraint 5: multistream_doh_constraint_flag == lcr_doh_constraint_flag (line
-        // 1673). The MSDO's flag travels in the snapshot argument, so the whole check
-        // operates on `msdo`/`global` and never reaches back into the live
-        // `msdo_substream_max` (which a later same-CMVS MSDO could have retargeted).
         let msdo_doh = msdo.doh_constraint_flag;
         if msdo_doh != global.doh_constraint_flag {
             self.push_lcr_agreement(
@@ -291,9 +277,6 @@ impl ValidatorContext {
         global_offset: ByteOffset,
         report: &mut ValidationReport,
     ) {
-        // multistream_profile_idc consistent with lcr_config_idc per Annex A.3 Table A.6
-        // (lines 1659-1660). Only a *defined* configuration (0..=2) has a value space; a
-        // reserved lcr_config_idc is the § 6.8.4 Annex-A range residual, not this check.
         if is_defined_config_idc(agg.config_idc)
             && !config_idc_allows_profile(agg.config_idc, msdo.profile_idc)
         {
@@ -314,10 +297,6 @@ impl ValidatorContext {
             );
         }
 
-        // The interoperability point of multistream_profile_idc (Annex A.2 Table A.1) equals
-        // lcr_max_interop (lines 1661-1662). A reserved / Configurable profile has no
-        // table-determined IOP, so the equality is undecidable there and is skipped (the
-        // reserved-profile case is owned by annex-a/profile-reserved).
         if let Some(iop) = interoperability_point(msdo.profile_idc)
             && iop.value() != agg.max_interop
         {
@@ -340,7 +319,6 @@ impl ValidatorContext {
             );
         }
 
-        // multistream_level_idx == lcr_aggregate_level_idx (line 1663).
         if msdo.level_idx != agg.aggregate_level_idx {
             self.push_lcr_agreement(
                 "lcr/msdo-aggregate-mismatch",
@@ -358,7 +336,6 @@ impl ValidatorContext {
             );
         }
 
-        // multistream_tier == lcr_max_tier_flag (line 1664).
         let lcr_tier = u8::from(agg.max_tier_flag);
         if msdo.tier != lcr_tier {
             self.push_lcr_agreement(
@@ -440,14 +417,13 @@ impl ValidatorContext {
     /// whose latest activation lies within the current CMVS window — NOT the whole-history
     /// `frame_confirmed_xlayers` accumulator, so a non-monotonic header left active from an
     /// earlier, already-ended coded video sequence outside this CMVS is not flagged against
-    /// this CMVS's global LCR (codex finding 3393129745).
+    /// this CMVS's global LCR.
     pub(super) fn check_lcr_doh_constraint_required(
         &mut self,
         global_id: u8,
         global: &GlobalLcrRecord,
         report: &mut ValidationReport,
     ) {
-        // lcr_doh_constraint_flag == 1 already satisfies the requirement.
         if global.doh_constraint_flag {
             return;
         }
@@ -467,8 +443,6 @@ impl ValidatorContext {
             self.push_lcr_agreement(
                 "lcr/doh-constraint-required",
                 global_id,
-                // The dedup key uses the activating header offset so each disagreeing
-                // header fires once; the global-LCR offset keeps redefinitions distinct.
                 anchor,
                 global.offset,
                 anchor,
@@ -533,7 +507,6 @@ impl ValidatorContext {
     ) {
         let key = (xlayer, seq_header_id);
         if seq_lcr_id == 0 {
-            // AV2 § 6.4.1: seq_lcr_id == 0 means no LCR is associated.
             self.lcr_associations.remove(&key);
             return;
         }
@@ -542,12 +515,7 @@ impl ValidatorContext {
                 lcr_is_global: false,
                 lcr_id: seq_lcr_id,
                 maps: self.hls.local_lcr_embedded(xlayer, seq_lcr_id).cloned(),
-                // A local association carries no § 6.8.2 global-agreement record.
                 global_record: None,
-                // § 6.8.5/§ 6.8.8 snapshot the local record's PTL / rep-info present
-                // *prior to this header* (the same discipline as `maps`), so a later
-                // same-id local redefinition cannot retarget the ceiling/equality
-                // comparison. The § 6.8.5 sentences key the ceiling on the *local* LCR.
                 ptl: self.hls.local_lcr_ptl(xlayer, seq_lcr_id).copied(),
                 rep_info: self.hls.local_lcr_rep_info(xlayer, seq_lcr_id).copied(),
             })
@@ -556,13 +524,7 @@ impl ValidatorContext {
                 lcr_is_global: true,
                 lcr_id: seq_lcr_id,
                 maps: self.hls.global_lcr_embedded(seq_lcr_id, xlayer).cloned(),
-                // § 6.8.2: snapshot the full global record present *prior to this header*
-                // so a later same-id redefinition cannot retarget the agreement (codex
-                // finding 3393129741). `has_local_lcr` failing and the xlayer map being
-                // present means the chain resolved to this in-band global record.
                 global_record: self.global_lcr_records.get(&seq_lcr_id).cloned(),
-                // § 6.8.5/§ 6.8.8: a global association reads the global record's PTL /
-                // rep-info for this xlayer, snapshotted alongside `global_record`.
                 ptl: self.hls.global_lcr_ptl(seq_lcr_id, xlayer).copied(),
                 rep_info: self.hls.global_lcr_rep_info(seq_lcr_id, xlayer).copied(),
             })

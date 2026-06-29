@@ -78,21 +78,17 @@ fn rewrite_annexb(bytes: &[u8]) -> Vec<u8> {
 #[test]
 fn writer_reemission_of_conformant_fixtures_stays_conformant() {
     let root = fixtures_root();
-    // Non-strict matches the CLI default and the manifest's `expect = "clean"` declaration.
     let validator = Validator::new(false);
 
     for name in CONFORMANT_WRITABLE_FIXTURES {
         let original =
             std::fs::read(root.join(name)).unwrap_or_else(|e| panic!("read {name}: {e}"));
 
-        // Sanity: the committed fixture is itself conformant (guards a stale or edited fixture).
         assert!(
             validator.validate_bytes(&original).is_conformant(),
             "fixture {name} is not validator-clean to begin with"
         );
 
-        // Cross-tool agreement: the writer's re-emission is byte-exact (these fixtures are canonical
-        // and carry no opaque non-zero blob) and still reports zero error diagnostics.
         let rewritten = rewrite_annexb(&original);
         assert_eq!(
             rewritten, original,
@@ -112,9 +108,6 @@ fn writer_reemission_of_conformant_fixtures_stays_conformant() {
 
 #[test]
 fn validator_clean_check_is_not_vacuous() {
-    // Guard the positive test above: prove `is_conformant()` can be false, so a clean result is
-    // meaningful and not an artifact of the validator accepting everything. A truncated leb128 size
-    // prefix is a structural error the validator must flag (and never panic on).
     let validator = Validator::new(false);
     let report = validator.validate_bytes(&[0xFF]);
     assert!(

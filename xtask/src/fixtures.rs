@@ -105,9 +105,6 @@ fn validate_metadata(entry: &FixtureEntry) -> Vec<String> {
     if entry.path.is_empty() {
         problems.push(format!("fixture `{label}` has an empty path"));
     } else if entry.path.contains('/') || entry.path.starts_with('.') {
-        // The corpus is flat: `path` must be a bare filename. Rejecting separators
-        // and dot-prefixes keeps it canonical, so variant spellings (e.g.
-        // `./conformant.av2`) cannot dodge the uniqueness / git-tracked checks.
         problems.push(format!(
             "fixture `{label}`: path `{}` must be a bare filename under tests/fixtures/ \
              (no `/` or leading `.`)",
@@ -181,13 +178,9 @@ pub(crate) fn check_fixtures(root: &Path) -> Result<()> {
         );
     }
 
-    // The git-tracked `.av2` fixtures (index, not just the working tree), so a new
-    // fixture that was added to the manifest but never `git add`ed is caught here
-    // and not just later in CI on a clean checkout.
     let tracked: BTreeSet<String> = run_git(root, &["ls-files", "tests/fixtures"])?
         .lines()
         .filter_map(|line| line.trim().strip_prefix("tests/fixtures/"))
-        // Case-sensitive `.av2` match: fixtures use the lowercase extension by convention.
         .filter(|rel| std::path::Path::new(rel).extension() == Some(std::ffi::OsStr::new("av2")))
         .map(str::to_owned)
         .collect();
@@ -204,9 +197,6 @@ pub(crate) fn check_fixtures(root: &Path) -> Result<()> {
         if !entry.path.is_empty() && !seen_paths.insert(entry.path.as_str()) {
             problems.push(format!("duplicate fixture path `{}`", entry.path));
         }
-        // Presence (must be git-tracked) + content hash. `validate_metadata` has
-        // already rejected non-bare paths, so `entry.path` is a plain filename and
-        // matches the `git ls-files` spelling directly.
         if !entry.path.is_empty() && !tracked.contains(&entry.path) {
             problems.push(format!(
                 "fixture `{}`: path `{}` is not a git-tracked tests/fixtures/*.av2 \
@@ -236,7 +226,6 @@ pub(crate) fn check_fixtures(root: &Path) -> Result<()> {
         }
     }
 
-    // Orphans: every git-tracked `tests/fixtures/*.av2` must be in the manifest.
     for rel in &tracked {
         if !seen_paths.contains(rel.as_str()) {
             problems.push(format!(
@@ -316,9 +305,7 @@ mod tests {
 
     #[test]
     fn inconsistent_categories_are_flagged() {
-        // valid must be clean.
         assert!(!validate_metadata(&entry(Category::Valid, diags(&["x/y"]))).is_empty());
-        // parse-error must be exactly the bare parse-error set.
         assert!(!validate_metadata(&entry(Category::ParseError, clean())).is_empty());
         assert!(
             !validate_metadata(&entry(
@@ -327,7 +314,6 @@ mod tests {
             ))
             .is_empty()
         );
-        // validation-error must not be the bare parse-error set or clean.
         assert!(
             !validate_metadata(&entry(
                 Category::ValidationError,

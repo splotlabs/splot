@@ -274,16 +274,12 @@ pub(super) fn derive_hdr_association(
         LAYER_VALUES => {
             let mut pairs = Vec::new();
             if xlayer.is_global() {
-                // Global form: one muh_mlayer_map per set muh_xlayer_map bit, in
-                // ascending bit order (§ 5.17.3); bit 31 must be 0 (§ 6.16.3).
                 let xlayer_map = header.xlayer_map?;
                 let mut maps = header.mlayer_maps.iter();
                 for x in 0..31u8 {
                     if xlayer_map & (1 << x) == 0 {
                         continue;
                     }
-                    // The § 5.17.3 parser emits exactly one map per set bit;
-                    // bail on a mismatch rather than misattribute maps to layers.
                     let &mlayer_map = maps.next()?;
                     push_mlayer_pairs(&mut pairs, ExtendedLayerId::from_bits(x), mlayer_map);
                 }
@@ -292,8 +288,6 @@ pub(super) fn derive_hdr_association(
             }
             (!pairs.is_empty()).then_some(HdrAssociation::Pairs(pairs))
         }
-        // LAYER_UNSPECIFIED (0), LAYER_CURRENT on a global OBU, and the reserved
-        // values 4..=7: no bitstream-derivable association.
         _ => None,
     }
 }
@@ -331,14 +325,6 @@ impl ValidatorContext {
                     return;
                 };
                 if short.muh_cancel_flag {
-                    // A short-form cancel unit DOES carry muh_layer_idc and
-                    // muh_persistence_idc — § 5.17.2 reads them before the
-                    // muh_cancel_flag early return — unlike the group form, whose
-                    // cancel units skip every muh_* field but metadata_type
-                    // (§ 5.17.3). The asymmetry is syntactic only: § 6.16.3 keys
-                    // cancellation on the metadata type and the OBU's extended
-                    // layer alone, so the extra short-form fields carry no cancel
-                    // semantics.
                     self.metadata
                         .cancel(obu.header.extended_layer_id, short.metadata_type.value());
                     return;
@@ -366,8 +352,6 @@ impl ValidatorContext {
                 };
                 for group_unit in group.units {
                     if group_unit.muh_cancel_flag {
-                        // Group-form cancel units carry only metadata_type
-                        // (§ 5.17.3; see the short-form arm for the asymmetry).
                         self.metadata.cancel(
                             obu.header.extended_layer_id,
                             group_unit.metadata_type.value(),
@@ -381,14 +365,6 @@ impl ValidatorContext {
                     ) else {
                         continue;
                     };
-                    // Collapsed LAYER_VALUES targeting for the § 6.16.3 lifetime
-                    // store: the single muh_mlayer_map byte of the local form, or
-                    // of a global form whose muh_xlayer_map selected exactly one
-                    // extended layer (§ 5.17.3). A global unit with several
-                    // per-xlayer maps has no single-byte representation, so the
-                    // lifetime store does not model its explicit targeting in
-                    // this phase; the § 6.16.5 / § 6.16.6 HDR association uses
-                    // the full maps instead (see derive_hdr_association).
                     let collapsed_mlayer_map = match group_unit.muh_mlayer_maps.as_slice() {
                         [single] => Some(*single),
                         _ => None,
@@ -425,9 +401,6 @@ impl ValidatorContext {
             self.check_scan_type_consistency(obu, *scan, report);
         }
         if let MetadataPayload::Timecode(timecode) = &unit.payload {
-            // The § 6.16.3 layer targeting scopes the n_frames bound's pairing to the
-            // content interpretation OBUs of the layers this timecode describes
-            // (finding 4); `None` when targeting is not bitstream-derivable.
             let targeting = derive_hdr_association(obu, header);
             self.check_timecode_consistency(obu, timecode, targeting, report);
         }
@@ -493,16 +466,6 @@ impl ValidatorContext {
             return;
         };
         let tu_index = self.cvs.tu_index;
-        // § 6.16.5 / § 6.16.6 first-coded-picture half: a baseline of the same type
-        // whose association includes a given embedded layer means the content was
-        // already established for *that* layer earlier in the coded video sequence, so
-        // this unit is an allowed (later) repeat for it — not a fresh first
-        // establishment. The rule binds PER associated embedded layer (finding 4), so
-        // the "already established" gate is applied per (obu_xlayer_id, obu_mlayer_id)
-        // pair: a unit targeting {an established layer + a NEW layer} is still checked
-        // for the new layer. (`check_hdr_first_coded_picture` only inspects explicit
-        // pairs; for `XLayerWide` / `Universal` targeting it returns early regardless,
-        // so the per-pair filter is a no-op there.)
         self.check_hdr_first_coded_picture(obu, &association, is_mdcv, report);
         for record in &self.hdr_baselines {
             if record.is_mdcv != is_mdcv
@@ -542,13 +505,6 @@ impl ValidatorContext {
                 report,
             );
         }
-        // Refresh or append the baseline: § 7.3.6 starts a new coded video
-        // sequence *at the temporal unit*, so a unit re-sent in a CLK temporal
-        // unit must survive the CLK pruning as the new coded video sequence's
-        // baseline (a differing repeat also becomes the new baseline after being
-        // routed above), matching the sequence-fingerprint and
-        // content-interpretation stores. A same-association record is overwritten
-        // in place; a new association appends its own baseline.
         if let Some(record) = self
             .hdr_baselines
             .iter_mut()
@@ -614,25 +570,6 @@ impl ValidatorContext {
             return;
         };
         let current_tu = self.cvs.tu_index;
-        // Partition the named pairs that are *late* (their first coded picture has
-        // already passed) into same-TU (eager, definitely the current CVS) and
-        // earlier-TU (deferred, possibly a previous CVS) groups. A pair a prior
-        // same-type baseline already includes is filtered first (finding 4): it was
-        // established earlier in the coded video sequence, so this unit is an allowed
-        // later repeat for that pair, not a fresh first establishment — the per-pair
-        // gate, replacing the former whole-unit `any(intersects)` suppression.
-        // § 7.3.3 places the suffix-metadata tail *after* the coded frame but still
-        // inside the same coded frame unit. So a suffix metadata (`metadata_is_suffix
-        // == 1`) appearing after the first coded picture's OBUs, yet within that
-        // picture's own coded frame unit, is "indicated at the first coded picture" —
-        // it is NOT late. The lateness predicate therefore keys on coded-frame-UNIT
-        // boundaries, not first-frame-OBU order: a suffix metadata is timely when the
-        // segmenter reports the embedded layer is still within its first coded frame
-        // unit of this temporal unit (no unit completed yet). A prefix metadata
-        // (`Some(false)`) heads a *new* unit, so the same-unit grace does not apply;
-        // and a coded frame unit never spans temporal units (§ 7.3.7), so this grace is
-        // scoped to the same temporal unit as the first picture (`seen_tu ==
-        // current_tu`), where the completed-unit count is reliable.
         let is_suffix_metadata = metadata_is_suffix(obu) == Some(true);
         let mut eager_late: Vec<(ExtendedLayerId, EmbeddedLayerId)> = Vec::new();
         let mut deferred_late: Vec<((ExtendedLayerId, EmbeddedLayerId), u64)> = Vec::new();
@@ -648,9 +585,6 @@ impl ValidatorContext {
                 continue;
             };
             if seen_tu == current_tu {
-                // Same-temporal-unit first picture. A suffix metadata still inside the
-                // layer's first coded frame unit of this temporal unit (no completed
-                // unit yet) is in the same unit as the first picture, so it is timely.
                 if is_suffix_metadata
                     && self
                         .frame_unit
@@ -693,13 +627,9 @@ impl ValidatorContext {
             .with_spec_section(spec_section)
             .with_byte_offset(obu.offset)
         };
-        // Same-TU late pairs: emit one eager finding naming them all.
         if !eager_late.is_empty() {
             report.push(build(&eager_late));
         }
-        // Earlier-TU late pairs: defer each on its own extended layer, so a CLK that
-        // starts a new CVS for that layer in the current temporal unit drops the stale
-        // finding at the flush (the pair's first picture was in the previous CVS).
         for (pair, seen_tu) in deferred_late {
             self.cvs
                 .defer_or_emit(pair.0, seen_tu, build(std::slice::from_ref(&pair)), report);

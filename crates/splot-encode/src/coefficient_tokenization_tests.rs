@@ -182,9 +182,6 @@ fn negative_dc_only_block_emits_negative_dc_sign() {
 
 #[test]
 fn coded_dc_tokens_match_tokenizer() {
-    // `tokenize_coefficients` delegates to `luma_dc_coded_tokens`, so they
-    // must agree across the full supported magnitude/sign range (base tier
-    // 1..=4 and base-range tier 5..=7) — this guards the trace accessor.
     let max = MAX_BASE_BR_MAGNITUDE as i32;
     for mag in 1..=max {
         for dc in [mag, -mag] {
@@ -201,10 +198,6 @@ fn coded_dc_tokens_match_tokenizer() {
 
 #[test]
 fn base_range_tier_emits_coeff_br() {
-    // Magnitude 5..=7 saturates coeff_base_eob at 4 (level 5) and emits one
-    // coeff_br = magnitude - 5 (§5.20.7.27); magnitude 4 stays base-only.
-    // Magnitude 8 (coeff_br=3, level == maxLevel) needs the golomb tail and
-    // is rejected (see `rejects_magnitude_outside_base_range_tier`).
     for (magnitude, expected) in [(4u32, None), (5, Some(0u8)), (6, Some(1)), (7, Some(2))] {
         let tokens = luma_dc_coded_tokens(0, magnitude, false).unwrap();
         let br = tokens
@@ -226,7 +219,6 @@ fn base_range_tier_emits_coeff_br() {
                         ctx: COEFF_BR_LF_CTX_DC,
                     }
                 );
-                // The base-eob symbol saturates at 4 (level 5) in the br tier.
                 assert_eq!(tokens[2].symbol, 4, "magnitude {magnitude} coeff_base_eob");
             }
         }
@@ -235,7 +227,6 @@ fn base_range_tier_emits_coeff_br() {
 
 #[test]
 fn base_range_tier_tokens_roundtrip() {
-    // The 5-token br sequence roundtrips through the §8.2 coder.
     let mut coefficients = [0; DCT_DCT_4X4_COEFF_COUNT];
     coefficients[0] = 6; // coeff_base_eob=4, coeff_br=1, dc_sign=0
     let plan =
@@ -310,9 +301,6 @@ fn general_intra_64x64_luma_all_zero_token_targets_tx_64x64_neutral() {
             symbol: 1,
         }
     );
-    // The roundtrip of this general-context row is proven by the block-symbol-trace
-    // driver in `general_intra_trace` (the coefficient-local `roundtrip_entropy_tokens`
-    // only resolves the minimal `TX_4X4` rows).
     assert_eq!(general_intra_64x64_luma_all_zero_token(0).symbol(), 1);
 }
 
@@ -338,7 +326,6 @@ fn general_intra_32x32_chroma_u_all_zero_token_targets_tx_32x32_ctx6() {
 
 #[test]
 fn general_intra_64x64_luma_dc_coded_tokens_use_eob_pt_1024_and_tx_64x64() {
-    // Magnitude 6 (negative): txb_skip=0, eob_pt=0, coeff_base_eob=4, coeff_br=1, dc_sign=1.
     let tokens = general_intra_64x64_luma_dc_coded_tokens(0, 6, true).unwrap();
     let syntaxes: Vec<_> = tokens.iter().map(|t| t.syntax()).collect();
     assert_eq!(
@@ -351,8 +338,6 @@ fn general_intra_64x64_luma_dc_coded_tokens_use_eob_pt_1024_and_tx_64x64() {
             CoefficientTokenSyntax::DcSign,
         ]
     );
-    // The luma txb_skip and coeff_base_eob use the TX_64X64 txSzCtx (4); the EOB symbol is
-    // the 1024-position size class.
     assert!(matches!(
         tokens[0].selector(),
         CoefficientCdfRowSelector::TxbSkip {
@@ -377,7 +362,6 @@ fn general_intra_64x64_luma_dc_coded_tokens_use_eob_pt_1024_and_tx_64x64() {
     let symbols: Vec<_> = tokens.iter().map(|t| t.symbol()).collect();
     assert_eq!(symbols, vec![0, 0, 4, 1, 1]);
 
-    // A sub-base magnitude (2 <= LF_NUM_BASE_LEVELS) omits the coeff_br token.
     let small = general_intra_64x64_luma_dc_coded_tokens(0, 2, false).unwrap();
     assert_eq!(small.len(), 4);
 }
@@ -396,9 +380,6 @@ fn dc_tokens_roundtrip_through_symbol_coder() {
 
 #[test]
 fn general_intra_16x16_luma_dc_coded_tokens_use_eob_pt_256_and_tx_16x16() {
-    // Magnitude 6 (negative, asymmetric — NOT 0 or a symmetric value, so a sign/bit
-    // order bug cannot hide behind exit_symbol's bit-count-only check): txb_skip=0,
-    // eob_pt_256=0, coeff_base_eob=4, coeff_br=1, dc_sign=1.
     let tokens = general_intra_16x16_luma_dc_coded_tokens(0, 6, true).unwrap();
     let syntaxes: Vec<_> = tokens.iter().map(|t| t.syntax()).collect();
     assert_eq!(
@@ -411,8 +392,6 @@ fn general_intra_16x16_luma_dc_coded_tokens_use_eob_pt_256_and_tx_16x16() {
             CoefficientTokenSyntax::DcSign,
         ]
     );
-    // The luma txb_skip and coeff_base_eob use the TX_16X16 txSzCtx (2); the EOB symbol
-    // is the 256-position size class.
     assert!(matches!(
         tokens[0].selector(),
         CoefficientCdfRowSelector::TxbSkip {
@@ -438,7 +417,6 @@ fn general_intra_16x16_luma_dc_coded_tokens_use_eob_pt_256_and_tx_16x16() {
     let symbols: Vec<_> = tokens.iter().map(|t| t.symbol()).collect();
     assert_eq!(symbols, vec![0, 0, 4, 1, 1]);
 
-    // A sub-base magnitude (2 <= LF_NUM_BASE_LEVELS) omits the coeff_br token.
     let small = general_intra_16x16_luma_dc_coded_tokens(0, 2, false).unwrap();
     assert_eq!(small.len(), 4);
     assert!(
@@ -450,11 +428,6 @@ fn general_intra_16x16_luma_dc_coded_tokens_use_eob_pt_256_and_tx_16x16() {
 
 #[test]
 fn general_intra_16x16_luma_dc_tokens_roundtrip_through_entropy_proof() {
-    // The 16x16 luma single-coded-DC token stream (txb_skip, eob_pt_256, coeff_base_eob,
-    // coeff_br, dc_sign), proved through one § 8.2 SymbolEncoder↔decoder pass with the
-    // EobPt256 + TX_16X16 banks newly routed in the entropy-proof CDF router. The DC value
-    // is an ASYMMETRIC, nonzero magnitude (6, negative) so a sign/bit-order desync that
-    // exit_symbol's bit-count-only check cannot catch is exposed.
     let tokens = general_intra_16x16_luma_dc_coded_tokens(0, 6, true).unwrap();
     let expected: Vec<u8> = tokens.iter().map(|token| token.symbol()).collect();
     assert_eq!(expected, vec![0, 0, 4, 1, 1]);
@@ -467,11 +440,6 @@ fn general_intra_16x16_luma_dc_tokens_roundtrip_through_entropy_proof() {
 
 #[test]
 fn general_intra_16x16_luma_dc_block_with_chroma_tail_roundtrips_through_one_coder() {
-    // The full 16x16 single-coded-DC block: the luma DC token stream followed by the
-    // chroma U/V all-zero tail (the 4x4-chroma `TxbSkip`/`VTxbSkip` tokens shared with the
-    // existing 4x4/64x64 DC path), proved through one § 8.2 coder via the block-symbol
-    // router (which routes the V-plane `all_zero` the entropy-proof router does not). The
-    // DC value is ASYMMETRIC and nonzero (6, negative) so a sign/bit-order desync shows.
     use crate::block_symbol_trace::{BlockSymbolToken, roundtrip_block_symbol_trace};
 
     let luma = general_intra_16x16_luma_dc_coded_tokens(0, 6, true).unwrap();
@@ -480,7 +448,6 @@ fn general_intra_16x16_luma_dc_block_with_chroma_tail_roundtrips_through_one_cod
     trace.push(BlockSymbolToken::Coeff(chroma_v_all_zero_token(0, 0)));
 
     let expected: Vec<u8> = trace.iter().map(|token| token.symbol()).collect();
-    // luma txb_skip=0, eob_pt_256=0, coeff_base_eob=4, coeff_br=1, dc_sign=1, U=1, V=1.
     assert_eq!(expected, vec![0, 0, 4, 1, 1, 1, 1]);
 
     let proof = roundtrip_block_symbol_trace(&trace).unwrap();
@@ -559,8 +526,6 @@ fn rejects_non_dc_coefficient() {
 
 #[test]
 fn rejects_magnitude_outside_base_range_tier() {
-    // Magnitude 28 is beyond the base+range tier (max 7); the golomb tail
-    // that would encode it is a later brick.
     let block = quantized(7, 0);
     let err = tokenize_quantized_4x4_dct_dct_dc_only(&block).unwrap_err();
 
@@ -578,10 +543,6 @@ fn rejects_magnitude_outside_base_range_tier() {
 
 #[test]
 fn rejects_max_level_magnitude_requiring_golomb() {
-    // Magnitude 8 reaches maxLevel (LF_NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1),
-    // so AV2 §5.20.7.28 read_quant emits the golomb tail; until that brick
-    // lands, magnitude 8 must be rejected rather than emit an incomplete
-    // (coeff_br=3, no golomb) token stream.
     assert_eq!(MAX_BASE_BR_MAGNITUDE, 7);
     let mut coefficients = [0; DCT_DCT_4X4_COEFF_COUNT];
     coefficients[0] = 8;
@@ -617,9 +578,6 @@ fn rejects_wrong_coefficient_count() {
 
 #[test]
 fn chroma_u_dc_coded_coeff_tokens_emit_chroma_contexts() {
-    // The coded chroma U CDF tokens use the §8.3.2 chroma contexts: U `txb_skip`
-    // bank 0 ctx 6, eob ctx 2, and the chroma `CoeffBaseLfEobUv` CDF. No sign
-    // token — the chroma DC sign is an `L(1)` bypass literal handled by the trace.
     let tokens = chroma_u_dc_coded_coeff_tokens(0, 3).unwrap();
     assert_eq!(tokens.len(), 3);
     assert_eq!(
@@ -651,21 +609,15 @@ fn chroma_u_dc_coded_coeff_tokens_emit_chroma_contexts() {
 
 #[test]
 fn chroma_u_dc_coded_coeff_tokens_roundtrip_through_generic_helper() {
-    // The chroma U CDF tokens roundtrip through `roundtrip_entropy_tokens` too
-    // (its CDF-row router accepts the chroma U/eob/UV selectors), so the accessor
-    // is usable in both the generic and the block-trace proof paths.
     let tokens = chroma_u_dc_coded_coeff_tokens(0, 3).unwrap();
     let proof = roundtrip_entropy_tokens(&tokens).unwrap();
 
-    // txb_skip=0, eob_pt_16=0, coeff_base_eob=2 (magnitude 3).
     assert_eq!(proof.decoded_symbols(), &[0, 0, 2]);
     assert_eq!(proof.symbol_count(), 3);
 }
 
 #[test]
 fn chroma_u_dc_coded_coeff_tokens_reject_out_of_tier_magnitude() {
-    // Magnitude 0 (all-zero) and >=5 (needs coeff_br/golomb) are rejected with a
-    // typed error rather than a debug-only assertion.
     for magnitude in [0u32, 5, 28] {
         let err = chroma_u_dc_coded_coeff_tokens(0, magnitude).unwrap_err();
         assert!(
@@ -682,8 +634,6 @@ fn chroma_u_dc_coded_coeff_tokens_reject_out_of_tier_magnitude() {
     }
 }
 
-// AV2 § 8.3.2 `coeff_base` low-frequency luma context (4x4 luma: bwl=2, txw=txh=4,
-// 2D class). `level` is row-major, txw-wide.
 const LF_CTX_BWL: u32 = 2;
 const LF_CTX_TXW: usize = 4;
 const LF_CTX_TXH: usize = 4;
@@ -691,9 +641,6 @@ const LF_CTX_2D: usize = 0;
 
 #[test]
 fn coeff_base_lf_dc_context_for_single_ac_neighbour_is_one() {
-    // The eob=2 trace brick's exact case: DC at pos 0, the only nonzero neighbour
-    // an AC of level 1 at pos 1 (the DC's right neighbour). mag = min(1,5) = 1 →
-    // ctx = (1+1)>>1 = 1 → LF c==0 band ctx.min(8) = 1.
     let mut level = [0u32; 16];
     level[1] = 1;
     let ctx =
@@ -703,8 +650,6 @@ fn coeff_base_lf_dc_context_for_single_ac_neighbour_is_one() {
 
 #[test]
 fn coeff_base_lf_dc_context_clamps_neighbour_magnitude() {
-    // A large neighbour level is clamped by the near-DC magLimit of 5:
-    // mag = min(10,5) = 5 → ctx = (5+1)>>1 = 3 → c==0 band ctx.min(8) = 3.
     let mut level = [0u32; 16];
     level[1] = 10;
     let ctx =
@@ -715,17 +660,14 @@ fn coeff_base_lf_dc_context_clamps_neighbour_magnitude() {
 #[test]
 fn coeff_base_lf_context_bands_match_spec_mapping() {
     let zero = [0u32; 16];
-    // c==0 band (DC), no neighbours → ctx 0 → ctx.min(8) = 0.
     assert_eq!(
         coeff_base_lf_luma_context(0, LF_CTX_BWL, LF_CTX_TXW, LF_CTX_TXH, LF_CTX_2D, 0, &zero),
         0
     );
-    // row+col<2 band: pos 1 (row 0, col 1), c=1, no neighbours → ctx 0 → 0 + 9 = 9.
     assert_eq!(
         coeff_base_lf_luma_context(1, LF_CTX_BWL, LF_CTX_TXW, LF_CTX_TXH, LF_CTX_2D, 1, &zero),
         9
     );
-    // else band: pos 5 (row 1, col 1, row+col=2), c=2, no neighbours → ctx 0 → 16.
     assert_eq!(
         coeff_base_lf_luma_context(5, LF_CTX_BWL, LF_CTX_TXW, LF_CTX_TXH, LF_CTX_2D, 2, &zero),
         16
@@ -734,16 +676,11 @@ fn coeff_base_lf_context_bands_match_spec_mapping() {
 
 #[test]
 fn coeff_base_lf_context_out_of_range_neighbours_do_not_panic() {
-    // Bottom-right corner: every 2D neighbour offset falls outside the 4x4 bounds,
-    // so all contribute 0 (mag 0, ctx 0). pos 15 is row 3, col 3 (row+col=6) → else
-    // band ctx.min(4)+16 = 16. Must not panic.
     let zero = [0u32; 16];
     assert_eq!(
         coeff_base_lf_luma_context(15, LF_CTX_BWL, LF_CTX_TXW, LF_CTX_TXH, LF_CTX_2D, 3, &zero),
         16
     );
-    // A short Level[] slice: the bounds-guard skips the missing entries (contribute
-    // 0) instead of indexing out of range.
     let short: [u32; 1] = [7];
     assert_eq!(
         coeff_base_lf_luma_context(0, LF_CTX_BWL, LF_CTX_TXW, LF_CTX_TXH, LF_CTX_2D, 0, &short),
@@ -753,9 +690,6 @@ fn coeff_base_lf_context_out_of_range_neighbours_do_not_panic() {
 
 #[test]
 fn coeff_base_lf_token_carries_non_eob_base_level() {
-    // The non-EOB `coeff_base` level equals its symbol (unlike `coeff_base_eob`,
-    // which is symbol + 1). The token selects the `TileCoeffBaseLfCdf` row at the
-    // eob=2 DC context (1) and TCQ-off context (0).
     let token = coeff_base_lf_token(
         0,
         COEFF_BASE_LF_CTX_EOB2_DC,
@@ -777,9 +711,6 @@ fn coeff_base_lf_token_carries_non_eob_base_level() {
 
 #[test]
 fn coeff_base_lf_token_roundtrips_through_generic_helper() {
-    // The `coeff_base_lf` token roundtrips through `roundtrip_entropy_tokens` (its
-    // CDF-row router accepts the new low-frequency `coeff_base` selector), so the
-    // accessor is usable in the block-trace proof path the eob>1 trace will build.
     for level in [0u8, 2, 5] {
         let token = coeff_base_lf_token(
             0,
@@ -795,10 +726,6 @@ fn coeff_base_lf_token_roundtrips_through_generic_helper() {
 
 #[test]
 fn eob_extra_token_roundtrips_through_entropy_proof() {
-    // The `eob_extra` token (eobPt 3 EOB refinement) routes through the generic
-    // `roundtrip_entropy_tokens` CDF-row router, not only the block-symbol wrapper:
-    // its `EobExtra` selector has a `TileEobExtraCdf[q]` row arm. Both flags (eob 3
-    // and eob 4) roundtrip.
     for flag in [false, true] {
         let token = eob_extra_token(0, flag);
         assert!(matches!(
@@ -813,12 +740,6 @@ fn eob_extra_token_roundtrips_through_entropy_proof() {
 
 #[test]
 fn entropy_proof_routes_full_4x4_lf_context_banks() {
-    // The 4x4 low-frequency CDF banks in `CoefficientTokenCdfRows` cover the full
-    // §8.3.2 context dimension, so every reachable `coeff_base_eob` / `coeff_base` /
-    // `coeff_br` low-frequency context routes through `roundtrip_entropy_tokens`, not
-    // only the hand-picked eob<=2 contexts. Expanding the tokenizer to eob 3/4 reaches
-    // e.g. `CoeffBaseLfEob { ctx: 2 }` and `CoeffBaseLf { ctx: 9 }`; this proves no
-    // single-context routing holes remain across the whole 4x4-LF tier.
     for ctx in 0..COEFF_BASE_LF_EOB_CTX_COUNT {
         let token = coeff_base_lf_eob_token(0, ctx, 1);
         let proof = roundtrip_entropy_tokens(&[token]).unwrap();
@@ -838,15 +759,6 @@ fn entropy_proof_routes_full_4x4_lf_context_banks() {
 
 #[test]
 fn entropy_proof_routes_full_4x4_hf_context_banks() {
-    // The 4x4 HIGH-frequency CDF banks in `CoefficientTokenCdfRows` cover the full
-    // §8.3.2 context dimension (`DEFAULT_COEFF_BASE_EOB_CDF` 4 contexts,
-    // `DEFAULT_COEFF_BASE_CDF` 20 contexts, `DEFAULT_COEFF_BR_CDF` 7 contexts), so every
-    // reachable HF `coeff_base_eob` / `coeff_base` / `coeff_br` context routes through
-    // `roundtrip_entropy_tokens`. The eob-11 HF EOB coefficient reaches
-    // `CoeffBaseEob { ctx: 3 }` and `CoeffBr { ctx: 0 }`; the eob-12..=16 non-EOB HF
-    // coefficient reaches the `CoeffBase` HF banks. Sweeping the full context dimension
-    // proves no single-context routing holes remain across the HF tier (the dual-router
-    // rule: the OTHER proof carries these banks too).
     for ctx in 0..COEFF_BASE_EOB_CTX_COUNT {
         let token = coeff_base_hf_eob_token(0, ctx, 1);
         let proof = roundtrip_entropy_tokens(&[token]).unwrap();
@@ -866,11 +778,8 @@ fn entropy_proof_routes_full_4x4_hf_context_banks() {
 
 #[test]
 fn multi_coeff_token_accessors_carry_expected_symbols() {
-    // coded all_zero == 0 (block has coefficients).
     assert_eq!(coded_luma_all_zero_token(0).symbol(), 0);
-    // eob_pt_16 symbol 1 selects eob = 2 (eobPt = 2 < 3).
     assert_eq!(eob_pt_16_token(0, EOB_CTX_LUMA_INTRA, 1).symbol(), 1);
-    // coeff_base_eob level == symbol + 1, so a base level of 1 is symbol 0.
     let ac = coeff_base_lf_eob_token(0, COEFF_BASE_LF_EOB_CTX_EOB2_AC, 1);
     assert_eq!(ac.symbol(), 0);
     assert!(matches!(
@@ -885,10 +794,6 @@ fn multi_coeff_token_accessors_carry_expected_symbols() {
 
 #[test]
 fn multi_coeff_eob2_cdf_subsequence_roundtrips() {
-    // The CDF tokens of the minimal eob=2 luma block (the bypass sign and the
-    // chroma all-zero tokens are proven separately in the block trace): coded
-    // all_zero, eob_pt_16=1 (eob=2), the AC coeff_base_eob at ctx 1 (level 1), and
-    // the DC coeff_base at ctx 1 (level 0).
     let tokens = [
         coded_luma_all_zero_token(0),
         eob_pt_16_token(0, EOB_CTX_LUMA_INTRA, 1),
@@ -908,9 +813,6 @@ fn multi_coeff_eob2_cdf_subsequence_roundtrips() {
 
 #[test]
 fn intra_tx_type_set1_dct_dct_is_symbol_zero() {
-    // For a 4x4 (Size_Class 0) DC_PRED (intraDir 0) block, the §9 Md_Idx_To_Type
-    // row maps intra_tx_type symbol 0 to TxType 0 (DCT_DCT) — the symbol the encoder
-    // emits for a plain DCT_DCT eob>1 block. This guards the derivation.
     use splot_core::tables::conversion::MD_IDX_TO_TYPE;
     const DCT_DCT: i32 = 0;
     const SIZE_CLASS_4X4: usize = 0;
@@ -920,8 +822,6 @@ fn intra_tx_type_set1_dct_dct_is_symbol_zero() {
 
 #[test]
 fn intra_tx_type_set1_token_roundtrips_through_generic_helper() {
-    // The intra_tx_type DCT_DCT token (symbol 0, Tx_Size_Sqr 0 = 4x4) roundtrips
-    // through the §8.2 router via the new TX_SET_INTRA_1 CDF row.
     let token = intra_tx_type_set1_token(INTRA_TX_TYPE_SET1_TX_SIZE_SQR_4X4, 0);
     assert_eq!(token.syntax(), CoefficientTokenSyntax::IntraTxType);
     assert_eq!(token.symbol(), 0);
@@ -936,8 +836,6 @@ fn intra_tx_type_set1_token_roundtrips_through_generic_helper() {
 
 #[test]
 fn intra_tx_type_set1_token_roundtrips_every_tx_size_sqr_row() {
-    // §8.3.2 indexes TileIntraTxTypeSet1Cdf by Tx_Size_Sqr[txSz] (3 rows), so the
-    // router must accept every valid Tx_Size_Sqr, not just 4x4.
     for tx_size_sqr in 0..INTRA_TX_TYPE_SET1_TX_SIZE_SQR_COUNT {
         let token = intra_tx_type_set1_token(tx_size_sqr, 0);
         let proof = roundtrip_entropy_tokens(&[token]).unwrap();
@@ -947,9 +845,6 @@ fn intra_tx_type_set1_token_roundtrips_every_tx_size_sqr_row() {
 
 #[test]
 fn sec_tx_type_intra_off_token_roundtrips_through_generic_helper() {
-    // The intra sec_tx_type "IST off" token (symbol 0, Tx_Size_Sqr 0 = 4x4) roundtrips
-    // through the §8.2 router via the new TileSecTxTypeCdf[0] row. Symbol 0 means
-    // sec_tx_type = 0, which (§5.20.8.2 line 16615) reads no most_probable_stx_set.
     let token = sec_tx_type_intra_token(SEC_TX_TYPE_TX_SIZE_SQR_4X4, 0);
     assert_eq!(token.syntax(), CoefficientTokenSyntax::SecTxType);
     assert_eq!(token.symbol(), 0);
@@ -964,8 +859,6 @@ fn sec_tx_type_intra_off_token_roundtrips_through_generic_helper() {
 
 #[test]
 fn sec_tx_type_intra_token_roundtrips_every_tx_size_sqr_row() {
-    // §8.3.2 indexes TileSecTxTypeCdf[is_inter] by Tx_Size_Sqr[txSz] (5 rows for the
-    // intra bank), so the router must accept every valid Tx_Size_Sqr.
     for tx_size_sqr in 0..SEC_TX_TYPE_TX_SIZE_SQR_COUNT {
         let token = sec_tx_type_intra_token(tx_size_sqr, 0);
         let proof = roundtrip_entropy_tokens(&[token]).unwrap();
@@ -975,8 +868,6 @@ fn sec_tx_type_intra_token_roundtrips_every_tx_size_sqr_row() {
 
 #[test]
 fn sec_tx_type_intra_token_roundtrips_every_symbol_value() {
-    // sec_tx_type has STX_TYPES = 4 values (0..=3); the inner CDF row of length 5
-    // holds 3 thresholds + count + pad. Each value roundtrips through the §8.2 coder.
     const STX_TYPES: u8 = 4;
     for symbol in 0..STX_TYPES {
         let token = sec_tx_type_intra_token(SEC_TX_TYPE_TX_SIZE_SQR_4X4, symbol);

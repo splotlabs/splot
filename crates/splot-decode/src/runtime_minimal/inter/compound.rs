@@ -103,12 +103,6 @@ pub(super) fn read_compound_average_syntax(
         ));
     }
 
-    // §5.20.7.11 read_compound_ref: with NumTotalRefs == 2 and
-    // NumSameRefCompound == 0, no comp_ref symbol is read. When
-    // NumSameRefCompound > 1, the first `comp_ref` is signalled through CompRef0
-    // and must select RefFrame[0] == 0. When NumSameRefCompound > 0, the repeated
-    // ref loop then reads one CompRef1 symbol; the verified fixture takes
-    // comp_ref == 0, leaving RefFrame[1] at the default NumTotalRefs - 1 == 1.
     if input.num_same_ref_compound > 1 {
         let comp_ref0 = cdfs
             .read_block_symbol_trace(
@@ -225,7 +219,6 @@ fn gate_compound_subset(input: CompoundParseInput, tile_offset: ByteOffset) -> R
         ));
     }
 
-    // Local const kept beside its guard so the magic-value documentation stays in context.
     #[allow(clippy::items_after_statements)]
     const FULL_SB_N4: usize = 16;
     if input.n4w != FULL_SB_N4

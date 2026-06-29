@@ -25,7 +25,9 @@ use splot_recon::{LoopRestorationSource, PlaneId, ReconError};
 use super::super::{MinimalRuntimeFrame, decode_minimal_frames_from_plan};
 use super::block::interp_filter_no_neighbour_ctx;
 use super::compound_is_joint_context_from_order_hints;
-use super::test_support::fixture_sequence_and_key_core;
+use super::test_support::{
+    UnsupportedFeatureExpectation, assert_unsupported_feature, fixture_sequence_and_key_core,
+};
 use crate::error::{DecodeError, Result};
 use crate::tile_payload::{
     MinimalRuntimePartitionFrontierError, TilePartitionTraversalError, WienerNsLrSourceBlock,
@@ -123,7 +125,6 @@ const MVORDER_INTER_FIXTURE: &[u8] = include_bytes!(
     "../../../../../tests/conformance/vectors/valid/syn-2frame-inter-mvorder-64x64.ivf"
 );
 
-// avmdec / dav2d both decode every plane of both frames to these flat values.
 const FLAT_LUMA: u8 = 100;
 const FLAT_CHROMA_U: u8 = 120;
 const FLAT_CHROMA_V: u8 = 130;
@@ -316,9 +317,6 @@ fn two_frame_inter_fixture_decodes_both_frames_bit_exact() {
 
 #[test]
 fn inter_frame_is_a_bit_exact_copy_of_the_key_frame() {
-    // §7.13.3.18 zero-fraction motion compensation reduces to a straight copy of the
-    // co-located key block, so frame 1's planes must be byte-identical to frame 0's
-    // (avmdec/dav2d agree: frame 1 == a copy of frame 0).
     let frames = decode_frames();
     let key = frames[0].frame();
     let inter = frames[1].frame();
@@ -372,8 +370,6 @@ fn subpel_inter_frame_differs_from_key_frame() {
         inter.y().samples(),
         "the sub-pel inter luma must differ from the key luma (real fractional MC)"
     );
-    // The fixture's content is purely horizontal, so the chroma planes are flat and
-    // a horizontal sub-pel shift leaves them unchanged; only luma differs.
 }
 
 /// Regression pin for the per-frame decode hash of the sub-pel fixture. The raw
@@ -477,7 +473,6 @@ fn residual_inter_frame_differs_from_key_frame() {
     let frames = decode_fixture(TWO_FRAME_RESIDUAL_FIXTURE);
     let key = frames[0].frame();
     let inter = frames[1].frame();
-    // The key frame is flat (Y=100, U=120, V=130) per the avmdec/dav2d oracle.
     assert!(
         key.y().samples().iter().all(|&s| s == FLAT_LUMA),
         "key luma must be flat {FLAT_LUMA}"
@@ -487,7 +482,6 @@ fn residual_inter_frame_differs_from_key_frame() {
         inter.y().samples(),
         "the residual inter luma must differ from the flat key luma (real residual)"
     );
-    // The decoded residual is luma-only; the inter chroma equals the key chroma.
     assert_eq!(
         key.u().unwrap().samples(),
         inter.u().unwrap().samples(),
@@ -1012,10 +1006,6 @@ fn append_multiref_third_frame_as_fourth_ivf_record() -> Vec<u8> {
         write_ivf_frame(&mut bytes, frame.frame.pts, frame.frame.payload)
             .expect("write original IVF record");
     }
-    // Reusing the already oracle-proven third frame payload gives the runtime a
-    // fourth planned inter candidate without inventing new syntax bytes. After the
-    // original frame 2 refreshes slot 2, the reference buffer has three valid slots,
-    // so this extra candidate must fail at the precise reference-state gate.
     write_ivf_frame(&mut bytes, 3, parsed.frames[2].frame.payload)
         .expect("write repeated fourth IVF record");
 
@@ -1075,8 +1065,6 @@ fn multiref_fixture_decodes_three_frames_bit_exact() {
         3,
         "the stream decodes a key frame + two inter frames"
     );
-    // avmdec / dav2d both decode frame 0 to luma 100 / U 120 / V 130 and frames 1 and
-    // 2 to luma 160 / U 90 / V 70.
     let expected: [(u8, u8, u8); 3] = [(100, 120, 130), (160, 90, 70), (160, 90, 70)];
     for (index, output) in frames.iter().enumerate() {
         let frame = output.frame();
@@ -1148,11 +1136,6 @@ fn multiref_fixture_rejects_when_inter_tile_group_starts_ivf_record() {
 
 #[test]
 fn ten_bit_sequence_passes_runtime_storage_gate() {
-    // §6.4.1: the runtime now stores 8-bit (`u8`) and 10-bit (`u16`) samples, so
-    // the storage bit-depth gate admits both. A 10-bit stream that is NOT the
-    // general-intra DC subset (e.g. this two-frame inter stream) is rejected
-    // later (the inter / reference path is 8-bit only via `frame_eight`), not at
-    // this gate. `DECODE-GENERAL-INTRA-10BIT`.
     let (mut sequence, _) = fixture_sequence_and_quantization(TWO_FRAME_INTER_FIXTURE);
     sequence.general.bit_depth_idc = BitDepthIdc::Ten;
     super::super::ensure_runtime_storage_bit_depth(&sequence, ByteOffset::new(47))
@@ -1189,41 +1172,24 @@ fn wienerns_header_status_reports_precise_runtime_frontier() {
 #[test]
 fn parsed_wienerns_bank_reports_next_runtime_frontier() {
     let error = super::super::wienerns_lr_source_read_runtime_error(ByteOffset::new(74));
-    let DecodeError::UnsupportedFeature { unsupported } = error else {
-        panic!("parsed Wiener NS bank frontier must be an unsupported-feature error");
-    };
-
-    assert_eq!(unsupported.reason(), "unsupported_wienerns_lr_source_read");
-    assert_eq!(unsupported.matrix_row(), "ac0ej3-lr-source-read-frontier");
-    assert_eq!(
-        unsupported.feature_id(),
-        "DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER"
-    );
-    assert_eq!(unsupported.spec_section(), "7.20.2");
-    assert_eq!(unsupported.byte_offset(), Some(ByteOffset::new(74)));
-    assert!(
-        unsupported.message().contains("source-bound facts"),
-        "message should make clear that source-bound derivation owns the diagnostic"
-    );
-    assert!(
-        unsupported.message().contains("per-unit selection state"),
-        "message should make clear that the prior retained selection frontier has advanced"
-    );
-    assert!(
-        unsupported.message().contains("source-read state"),
-        "message should make clear that the source-read frontier has been reached"
-    );
-    assert!(
-        unsupported.message().contains("Wiener tap"),
-        "message should make clear that Wiener tap coordinates are included"
-    );
-    assert!(
-        unsupported.message().contains("source sample values"),
-        "message should make clear that value reads are still deferred"
-    );
-    assert!(
-        unsupported.message().contains("§7.20.3 filtering"),
-        "message should make clear that filtering is not implemented"
+    assert_unsupported_feature(
+        error,
+        "parsed Wiener NS bank frontier",
+        UnsupportedFeatureExpectation::at_byte_offset(
+            "unsupported_wienerns_lr_source_read",
+            "ac0ej3-lr-source-read-frontier",
+            "DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER",
+            "7.20.2",
+            ByteOffset::new(74),
+            &[
+                "source-bound facts",
+                "per-unit selection state",
+                "source-read state",
+                "Wiener tap",
+                "source sample values",
+                "§7.20.3 filtering",
+            ],
+        ),
     );
 }
 
@@ -1756,7 +1722,6 @@ fn multiref_frame2_reads_retained_inter_frame_not_key() {
     let key = frames[0].frame();
     let inter1 = frames[1].frame();
     let inter2 = frames[2].frame();
-    // Frame 2 == frame 1 (it copied the retained inter frame).
     assert_eq!(
         inter2.y().samples(),
         inter1.y().samples(),
@@ -1772,7 +1737,6 @@ fn multiref_frame2_reads_retained_inter_frame_not_key() {
         inter1.v().unwrap().samples(),
         "frame 2 V must equal the retained frame 1 (slot 1)"
     );
-    // Frame 2 != the key: a wrong slot-0 (key) selection would have matched the key.
     assert_ne!(
         inter2.y().samples(),
         key.y().samples(),
@@ -1804,8 +1768,6 @@ fn multiref_fixture_per_frame_hash_is_stable() {
         inter2_hash, "7dad863f3e72b5785012a4e0497e9eb0eab98281bec147f7fb81240aa5116e1b",
         "multi-reference frame-2 hash (== retained frame 1)"
     );
-    // Frames 1 and 2 reconstruct identically (frame 2 copied the retained frame 1);
-    // both differ from the key.
     assert_eq!(inter1_hash, inter2_hash, "frame 2 == retained frame 1");
     assert_ne!(
         key_hash, inter1_hash,
@@ -1914,8 +1876,6 @@ fn assert_rounded_average(ref0: &[u8], ref1: &[u8], compound: &[u8]) {
 fn choose_primary_ref_frame_skips_non_inter_slots() {
     use super::cross_frame::choose_primary_secondary_ref_frame as choose;
     const PRIMARY_REF_NONE: u8 = 7;
-    // ref_frame_idx = [0]; slot 0 holds a KEY frame (is_inter == false). Unsignalled CHOOSE
-    // (signal=false, primary_ref_frame=8) takes the ranking.
     let ref_frame_idx = [0u32];
     let is_inter = [false, false];
     let base_q = [70u32, 0];
@@ -1939,8 +1899,6 @@ fn choose_primary_ref_frame_skips_non_inter_slots() {
         PRIMARY_REF_NONE,
         "a KEY-only reference history resolves CHOOSE to PRIMARY_REF_NONE"
     );
-    // Now slot 0 holds an INTER frame: it becomes the derived primary (index 0 into
-    // ref_frame_idx).
     let is_inter = [true, false];
     assert_eq!(
         choose(
@@ -1966,8 +1924,6 @@ fn choose_primary_ref_frame_skips_non_inter_slots() {
 #[test]
 fn choose_primary_ref_frame_ranks_two_inter_slots_by_qp_diff() {
     use super::cross_frame::choose_primary_secondary_ref_frame as choose;
-    // ref_frame_idx = [0, 1]; both inter. base_q_idx == 100. Slot 0 q=70 (diff 30),
-    // slot 1 q=109 (diff 9): slot 1 (index 1) wins on the smaller qpDiff; slot 0 is secondary.
     let ref_frame_idx = [0u32, 1];
     let is_inter = [true, true];
     let base_q = [70u32, 109];
@@ -2003,8 +1959,6 @@ fn choose_primary_ref_frame_ranks_two_inter_slots_by_qp_diff() {
 #[test]
 fn resolve_cdf_load_models_choose_resolution_and_load_decision() {
     use super::cross_frame::{ResolvedCdfLoad, resolve_cdf_load as resolve};
-    // ref_frame_idx = [0, 1]: slot 0 is the KEY frame (is_inter false), slot 1 is an inter
-    // frame. base_q matches the 3-frame fixture (key q70, inter1 q109), current q at slot 2.
     let ref_frame_idx = [0u32, 1];
     let is_inter = [false, true]; // slot 0 key, slot 1 inter
     let base_q = [70u32, 109];
@@ -2012,9 +1966,6 @@ fn resolve_cdf_load_models_choose_resolution_and_load_decision() {
     let w = [64u32, 64];
     let h = [64u32, 64];
 
-    // CHOOSE (signal=false, prf=8) over this history resolves DerivedPrimaryRefFrame to
-    // index 1 (the only inter candidate). If slot 1 is NOT adapted, the caller would not
-    // reject; resolve_cdf_load reports LoadSlot(1) (ref_frame_idx[1] == slot 1).
     let load = resolve(
         Some(false),
         Some(8),     // PRIMARY_REF_CHOOSE
@@ -2041,8 +1992,6 @@ fn resolve_cdf_load_models_choose_resolution_and_load_decision() {
         "CHOOSE resolves to the inter slot 1 -> load_cdfs(ref_frame_idx[1] == slot 1), no blend"
     );
 
-    // A KEY-ONLY history (no inter candidate) resolves CHOOSE to PRIMARY_REF_NONE -> Default
-    // (no load), exactly the committed 2-frame fixtures.
     let key_only_is_inter = [false, false];
     let load = resolve(
         Some(false),
@@ -2064,7 +2013,6 @@ fn resolve_cdf_load_models_choose_resolution_and_load_decision() {
         "CHOOSE over a KEY-only history resolves to PRIMARY_REF_NONE -> Default (no load)"
     );
 
-    // cross-frame CDF init disabled -> always Default even with an inter candidate.
     let load = resolve(
         Some(false),
         Some(8),
@@ -2085,7 +2033,6 @@ fn resolve_cdf_load_models_choose_resolution_and_load_decision() {
         "disable_cross_frame_cdf_init == 1 -> Default (init_non_coeff_cdfs)"
     );
 
-    // An EXPLICIT primary_ref_frame (signal=true) naming an inter slot loads it.
     let load = resolve(
         Some(true),
         Some(1), // primary_ref_frame == 1 (ref_frame_idx[1] == slot 1)
@@ -2106,7 +2053,6 @@ fn resolve_cdf_load_models_choose_resolution_and_load_decision() {
         "an explicit primary_ref_frame loads ref_frame_idx[primary_ref_frame]"
     );
 
-    // An explicit PRIMARY_REF_NONE (7) is always Default.
     let load = resolve(
         Some(true),
         Some(7),
@@ -2131,12 +2077,6 @@ fn resolve_cdf_load_models_choose_resolution_and_load_decision() {
 #[test]
 fn resolve_cdf_load_signal_primary_overrides_ranking_even_with_no_inter_candidate() {
     use super::cross_frame::{ResolvedCdfLoad, resolve_cdf_load as resolve};
-    // §5 :5497-5508: with signal_primary_ref_frame == 1 the signalled primary_ref_frame
-    // overrides DerivedPrimaryRefFrame UNCONDITIONALLY — even when the inter-only ranking
-    // finds no candidate. Here ref_frame_idx[0] is the KEY (non-inter) slot and there is no
-    // inter slot, so the ranking returns PRIMARY_REF_NONE; a signalled primary 0 must still
-    // resolve to LoadSlot(0) so the caller's adapted-slot reject is REACHABLE, NOT the
-    // Default the ranking-only resolution would (wrongly) produce — the P1 under-reject.
     let ref_frame_idx = [0u32];
     let is_inter = [false]; // KEY-only history: no inter ranking candidate
     let base_q = [70u32];
@@ -2171,10 +2111,6 @@ fn resolve_cdf_load_reports_blend_slot_only_when_a_secondary_exists() {
     let oh = [0u32, 1];
     let w = [64u32, 64];
     let h = [64u32, 64];
-    // §5 :5431-5439 blend_cdfs: with enable_avg_cdf && avg_cdf_type == 0 and TWO inter
-    // candidates, the second-best (derivedSecondary) is the blendFrame; resolve reports its
-    // slot so the caller rejects only an ADAPTED blend. base_q [70,109] @ current 70 -> slot 0
-    // is primary (qpDiff 0), slot 1 secondary -> blend slot = ref_frame_idx[1] == 1.
     let load = resolve(
         Some(false),
         Some(8),
@@ -2200,8 +2136,6 @@ fn resolve_cdf_load_reports_blend_slot_only_when_a_secondary_exists() {
         ),
         "two inter candidates -> primary slot 0, blend slot 1 (the derivedSecondary)"
     );
-    // ONE inter candidate -> no derivedSecondary -> blendFrame NONE -> blend None (the
-    // committed multiref class: a loading frame with one inter reference does NOT blend).
     let load = resolve(
         Some(false),
         Some(8),
@@ -2227,9 +2161,6 @@ fn resolve_cdf_load_reports_blend_slot_only_when_a_secondary_exists() {
         ),
         "one inter candidate -> blendFrame NONE -> no blend"
     );
-    // codex's case: a SIGNALLED primary equal to the sole derived inter primary has
-    // blendFrame == derivedSecondary == NONE -> no blend (NOT over-rejected by a `signalled`
-    // proxy). ref_frame_idx[0] is the only inter; signalled primary 0 == derivedPrimary 0.
     let load = resolve(
         Some(true),
         Some(0),
@@ -2260,9 +2191,6 @@ fn resolve_cdf_load_reports_blend_slot_only_when_a_secondary_exists() {
 #[test]
 fn resolve_cdf_load_rejects_out_of_range_signalled_primary() {
     use super::cross_frame::{ResolvedCdfLoad, resolve_cdf_load as resolve};
-    // §6.17.2: primary_ref_frame < NumTotalRefs. A signalled primary 6 (< PRIMARY_REF_NONE)
-    // with a single reference (ref_frame_idx.len() == 1) is out of range -> non-conformant ->
-    // OutOfRangePrimary (the caller rejects it before output), NOT a silent Default decode.
     let load = resolve(
         Some(true),
         Some(6),
@@ -2350,22 +2278,13 @@ fn effective_quantizer_delta_gate_includes_frame_and_sequence_offsets() {
 #[test]
 fn order_hint_history_wrap_guard() {
     use super::cross_frame::order_hint_history_unwrapped as unwrapped;
-    // order_hint_bits 0 -> trivially non-wrapping (no order-hint signaling).
     assert!(unwrapped(&[true], &[0u32], 0, 5));
-    // FORWARD frames are always exact (currentLSB >= maxDisp -> no correction), even with a
-    // large span: prior {0}, window 1<<4 == 16, next 1 / 9 / 15 -> all admitted.
     assert!(unwrapped(&[true], &[0u32], 4, 1));
     assert!(unwrapped(&[true], &[0u32], 4, 9)); // the forward span the symmetric bound wrongly rejected
     assert!(unwrapped(&[true], &[0u32], 4, 15));
-    // WRAP-BACK (a small LSB after a larger prior hint) is corrected -> rejected: prior {15},
-    // next 0, window 16 -> maxDisp - LSB = 15 >= half(8) -> rejected.
     assert!(!unwrapped(&[true], &[15u32], 4, 0));
-    // The threshold is exactly half a window: prior {8}, next 0, bits 4 (half 8) -> 8 >= 8
-    // rejected; prior {7}, next 0 -> 7 < 8 admitted.
     assert!(!unwrapped(&[true], &[8u32], 4, 0));
     assert!(unwrapped(&[true], &[7u32], 4, 0));
-    // maxDisp is taken over ALL valid prior slots: prior {0, 12}, next 1, bits 4 -> maxDisp
-    // 12, 12 - 1 = 11 >= 8 -> rejected (slot 1 wraps relative to the current frame).
     assert!(!unwrapped(&[true, true], &[0u32, 12], 4, 1));
 }
 

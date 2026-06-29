@@ -211,12 +211,10 @@ pub(crate) fn read_partition_decision(
     }
 
     let trace = ReadPartitionDecisionTrace::default();
-    if let Some(partition) = input.implied_partition {
-        // AV2 §5.20.3.2 returns the implied partition only when it is allowed;
-        // otherwise the decision falls through to the later branches.
-        if input.allowed.contains(partition) {
-            return Ok(ReadPartitionDecision::new(partition, trace));
-        }
+    if let Some(partition) = input.implied_partition
+        && input.allowed.contains(partition)
+    {
+        return Ok(ReadPartitionDecision::new(partition, trace));
     }
 
     if let Some(partition) = input.allowed.only() {
@@ -224,8 +222,6 @@ pub(crate) fn read_partition_decision(
     }
 
     if !input.bru_active {
-        // AV2 §5.20.3.2 returns PARTITION_NONE unconditionally after the
-        // single-allowed branch, even if allowed[PARTITION_NONE] is false.
         return Ok(ReadPartitionDecision::new(PartitionType::None, trace));
     }
 
@@ -320,12 +316,7 @@ pub(crate) fn read_partition_decision(
         rect_type,
     );
     if !input.allowed.contains(partition) {
-        // AV2 §5.20.3.2 returns the Rect_Part_Table result. If the caller's
-        // allowed facts reject that result, keep the boundary typed for now but
-        // verify this against `is_partition_allowed` when traversal derives the
-        // real allowed set.
         // TODO(spec: DECODE-TILE-PARTITION-DECISION-BOUNDARY): decide whether
-        // this remains an invariant or must match the unconditional table return.
         return Err(PartitionDecisionError::FinalPartitionDisallowed { partition });
     }
 

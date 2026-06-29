@@ -312,10 +312,6 @@ impl Proof {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Loading
-// ---------------------------------------------------------------------------
-
 /// Parses a matrix from TOML text.
 fn parse_matrix(text: &str) -> Result<Matrix> {
     toml::from_str::<Matrix>(text).context("failed to parse the implementation matrix")
@@ -342,10 +338,6 @@ fn filtered<'a>(
         .filter(|f| kind.is_none_or(|k| f.kind == k))
         .collect()
 }
-
-// ---------------------------------------------------------------------------
-// `feature-status`
-// ---------------------------------------------------------------------------
 
 /// Implements `cargo xtask feature-status`.
 pub(crate) fn run_feature_status(
@@ -441,7 +433,6 @@ fn render_table(features: &[&Feature]) -> String {
         }
         let _ = writeln!(out, "{}", line.trim_end());
         if r == 0 {
-            // Separator under the header.
             let mut sep = String::new();
             for (i, width) in widths.iter().enumerate() {
                 if i > 0 {
@@ -544,10 +535,6 @@ fn render_markdown(matrix: &Matrix, features: &[&Feature]) -> String {
     out
 }
 
-// ---------------------------------------------------------------------------
-// `spec-coverage`
-// ---------------------------------------------------------------------------
-
 /// Implements `cargo xtask spec-coverage`.
 pub(crate) fn run_spec_coverage(
     root: &Path,
@@ -571,10 +558,6 @@ pub(crate) fn run_spec_coverage(
     }
     Ok(())
 }
-
-// ---------------------------------------------------------------------------
-// `writer-coverage`
-// ---------------------------------------------------------------------------
 
 /// Implements `cargo xtask writer-coverage`.
 pub(crate) fn run_writer_coverage(
@@ -608,9 +591,6 @@ fn writer_rows(matrix: &Matrix) -> Vec<&Feature> {
         .feature
         .iter()
         .filter(|f| {
-            // The document describes the `splot-core::write` AV2 bitstream writer surface, so scope
-            // to `splot-core`: a non-`splot-core` feature with a generic `write` stage (e.g. the
-            // `splot-recon` Y4M output writer or an `xtask` generator) is not part of it.
             f.krate == "splot-core"
                 && ((f.kind == "bitstream-syntax" && f.status.write != "not-applicable")
                     || matches!(f.status.write.as_str(), "done" | "partial"))
@@ -878,8 +858,6 @@ fn parse_mirror_index(text: &str) -> MirrorIndex {
         }
         let label = cells[0].trim_matches('`').trim();
         let section = label.strip_prefix('§').map_or(label, str::trim);
-        // `](` is the markdown separator between link text and target; using it
-        // (rather than the first `(`) tolerates parentheses in the link text.
         let Some(bracket) = cells[2].find("](") else {
             continue;
         };
@@ -1094,10 +1072,6 @@ fn coverage_markdown(matrix: &Matrix, index: &MirrorIndex) -> String {
     out
 }
 
-// ---------------------------------------------------------------------------
-// `check-feature-status`
-// ---------------------------------------------------------------------------
-
 /// Implements `cargo xtask check-feature-status`.
 pub(crate) fn run_check_feature_status(root: &Path) -> Result<()> {
     let matrix = load_matrix(root)?;
@@ -1259,14 +1233,10 @@ impl Checker {
                 let marker = from + rel;
                 let after = marker + needle.len();
                 let line = line_of(&text, marker);
-                // Bound the marker to its own line so a stray `)` later in the file
-                // cannot be mistaken for the marker's close paren.
                 let rest = &text[after..];
                 let line_rest = &rest[..rest.find('\n').unwrap_or(rest.len())];
                 let location = format!("{}:{line}", display_path(&self.root, &path));
                 if let Some(remainder) = line_rest.strip_prefix(':') {
-                    // The id is the leading feature-id run after the colon; any
-                    // trailing `): note` or `, note` is ignored.
                     let id: String = remainder
                         .trim_start()
                         .chars()
@@ -1344,8 +1314,6 @@ impl Checker {
     fn check_generated_doc(&mut self, rel_path: &str, expected: &str, regen: &str) -> Result<()> {
         let path = self.root.join(rel_path);
         if !path.exists() {
-            // These are committed, referenced artifacts: a missing one is drift too (a deleted doc
-            // must not slip the guard), so flag it rather than silently passing.
             self.problems
                 .push(format!("{rel_path} is missing; regenerate with `{regen}`"));
             return Ok(());
@@ -1390,10 +1358,6 @@ impl Checker {
         )
     }
 }
-
-// ---------------------------------------------------------------------------
-// Free helpers
-// ---------------------------------------------------------------------------
 
 /// Returns `true` if `token` equals `id` followed by `.` and a non-empty suffix.
 fn is_suffixed(token: &str, id: &str) -> bool {
@@ -1465,7 +1429,6 @@ pub(crate) fn is_diagnostic_id(s: &str) -> bool {
     {
         return false;
     }
-    // Must contain at least one separator and have no empty segments.
     if !(s.contains('-') || s.contains('/')) {
         return false;
     }
@@ -1489,7 +1452,6 @@ fn string_literals(text: &str) -> Vec<String> {
         if in_string {
             match c {
                 '\\' => {
-                    // Skip the escaped character; exact content is irrelevant here.
                     let _ = chars.next();
                 }
                 '"' => {
@@ -1683,7 +1645,6 @@ diagnostics = []
         let tokens = extract_candidate_tokens(text);
         assert!(tokens.contains(&"AV2-5.2.2-OBU-HEADER".to_owned()));
         assert!(tokens.contains(&"AV2-5.2.2-OBU-HEADER.MISSING-BYTE".to_owned()));
-        // "AV2-specific" / "AV2-permitted" have lowercase tails and are not tokens.
         assert!(!tokens.iter().any(|t| t.contains("specific")));
         assert!(!tokens.iter().any(|t| t.contains("permitted")));
     }
@@ -1694,7 +1655,6 @@ diagnostics = []
             "AV2-5.2.2-OBU-HEADER.MISSING-BYTE",
             "AV2-5.2.2-OBU-HEADER"
         ));
-        // Built at runtime so this non-id example does not trip the token scanner.
         let extended = format!("{}-X", "AV2-5.2.2-OBU-HEADER");
         assert!(!is_suffixed(&extended, "AV2-5.2.2-OBU-HEADER"));
         assert!(!is_suffixed("AV2-5.2.2-OBU-HEADER", "AV2-5.2.2-OBU-HEADER"));
@@ -1718,9 +1678,7 @@ diagnostics = []
         let src = r#"let a = "obu-header/ok"; let b = "say \"hi\" then frame/sneaky";"#;
         let literals = string_literals(src);
         assert!(literals.iter().any(|s| s == "obu-header/ok"));
-        // The escaped quotes do not split the second literal into pieces of code.
         assert_eq!(literals.iter().filter(|s| s.contains("say")).count(), 1);
-        // ... so a bad-prefix token embedded in prose is not a standalone literal.
         assert!(!literals.iter().any(|s| s == "frame/sneaky"));
     }
 
@@ -1729,8 +1687,6 @@ diagnostics = []
         let matrix = parse_matrix(SAMPLE).unwrap();
         let all: Vec<&Feature> = matrix.feature.iter().collect();
         let rendered = render_markdown(&matrix, &all);
-        // Guard the exact header (including the curated stage projection) so a
-        // change to column order/headers/separator is caught here.
         assert!(
             rendered.contains(
                 "| ID | Name | Category | Kind | Mapped | Types | Parse | Validate | \
@@ -1738,7 +1694,6 @@ diagnostics = []
             ),
             "header row changed:\n{rendered}"
         );
-        // Guard a feature row and a status value, then confirm determinism.
         assert!(
             rendered.contains("`AV2-5.2.2-OBU-HEADER`"),
             "feature row missing"
@@ -1814,14 +1769,11 @@ diagnostics = []
                 "annex-b.md#s-annex-b".to_owned()
             ))
         );
-        // Header and separator rows must not leak into the entries.
         assert_eq!(index.entries.len(), 2);
     }
 
     #[test]
     fn mirror_index_skips_malformed_link_cells_without_panicking() {
-        // Reversed/partial parens and parens in the link text must not panic
-        // or produce bogus entries.
         let malformed = "\
 | `§ 1.1` | bad | )text( | 1 |
 | `§ 1.2` | bad | [x](no-close | 1 |
@@ -1838,7 +1790,6 @@ diagnostics = []
 
     #[test]
     fn coverage_markdown_renders_linked_rows_and_sectionless_tail() {
-        // SAMPLE plus a second feature without spec sections.
         let text = format!(
             "{SAMPLE}\n{}",
             SAMPLE
@@ -1891,7 +1842,6 @@ diagnostics = []
 
     #[test]
     fn writer_coverage_markdown_renders_writable_rows_deterministically() {
-        // SAMPLE's lone feature is a bitstream-syntax row with write = todo, so it is a writable row.
         let matrix = parse_matrix(SAMPLE).unwrap();
         let rendered = writer_coverage_markdown(&matrix);
         assert!(
@@ -1909,7 +1859,6 @@ diagnostics = []
             rendered.contains("| Write status | Features |") && rendered.contains("| `todo` | 1 |"),
             "writer-coverage status summary missing:\n{rendered}"
         );
-        // Deterministic: regenerating yields byte-identical output (the drift guard relies on this).
         assert_eq!(rendered, writer_coverage_markdown(&matrix));
     }
 }

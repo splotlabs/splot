@@ -64,8 +64,6 @@ pub fn reconstruct_add_residual<T: ReconSample>(
     }
 
     let max_sample = bit_depth.max_sample();
-    // Validate every prediction sample before writing any output (no partial
-    // mutation on a rejected input).
     for (sample_index, &pred) in prediction.iter().enumerate() {
         let value = pred.to_u16();
         if value > max_sample {
@@ -80,8 +78,6 @@ pub fn reconstruct_add_residual<T: ReconSample>(
     let max = i64::from(max_sample);
     for ((slot, &pred), &res) in out.iter_mut().zip(prediction).zip(residual) {
         let reconstructed = (i64::from(pred.to_u16()) + i64::from(res)).clamp(0, max);
-        // `reconstructed` is within `0..=max_sample`, which the validated sample
-        // type can represent, so the conversion cannot fail.
         *slot = T::try_from_u16(reconstructed as u16)?;
     }
     Ok(())
@@ -108,7 +104,6 @@ mod tests {
     #[test]
     fn clip1_clamps_below_zero_and_above_max() {
         let mut out = [0u8; 3];
-        // 8-bit Clip1 range is [0, 255].
         reconstruct_add_residual(&[10u8, 250, 0], &[-50, 50, 255], BitDepth::Eight, &mut out)
             .unwrap();
         assert_eq!(out, [0, 255, 255]);
@@ -118,14 +113,12 @@ mod tests {
     fn ten_bit_uses_u16_and_clamps_to_1023() {
         let mut out = [0u16; 2];
         reconstruct_add_residual(&[1000u16, 5], &[100, -50], BitDepth::Ten, &mut out).unwrap();
-        // 1000 + 100 = 1100 clamps to 1023; 5 - 50 = -45 clamps to 0.
         assert_eq!(out, [1023, 0]);
     }
 
     #[test]
     fn is_total_for_extreme_residual() {
         let mut out = [0u8; 2];
-        // i32 residual extremes must clamp via i64, not overflow or panic.
         reconstruct_add_residual(
             &[128u8, 128],
             &[i32::MAX, i32::MIN],
@@ -163,8 +156,6 @@ mod tests {
 
     #[test]
     fn rejects_prediction_sample_above_bit_depth() {
-        // A u16 prediction of 300 is out of range at 8-bit (max 255); reject it
-        // rather than letting Clip1 silently fold it.
         let mut out = [0u16; 2];
         assert!(matches!(
             reconstruct_add_residual(&[10u16, 300], &[0, -100], BitDepth::Eight, &mut out),
@@ -174,7 +165,6 @@ mod tests {
                 max: 255
             })
         ));
-        // The output buffer is untouched on a rejected input.
         assert_eq!(out, [0, 0]);
     }
 }

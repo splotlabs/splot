@@ -7,8 +7,6 @@ use crate::write::WriteError;
 
 use super::*;
 
-// ENC-BITSTREAM-WRITER evidence for the generic AV2 § 8.2 symbol encoder.
-
 fn evenly_spaced_cdf(n: usize) -> Vec<i32> {
     let mut row = Vec::with_capacity(n + 1);
     for index in 1..n {

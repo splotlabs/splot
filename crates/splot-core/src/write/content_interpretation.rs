@@ -101,17 +101,11 @@ pub fn write_content_interpretation(
     }
 
     let mut scratch = BitWriter::new();
-    // § 5.15: ci_scan_type_idc f(2). The value (including a reserved 0/3) is preserved
-    // verbatim — the parser returns Ok for any 2-bit value, the validator flags it.
     scratch.write_bits_u8(ci.scan_type_idc.get(), F2)?;
-    // § 5.15: the four optional-structure present flags. Each flag IS the model's
-    // matching Option presence, so it is derived here rather than stored separately.
     scratch.write_flag(ci.color_description.is_some())?;
     scratch.write_flag(ci.chroma_sample_position.is_some())?;
     scratch.write_flag(ci.aspect_ratio.is_some())?;
     scratch.write_flag(ci.timing_info.is_some())?;
-    // § 5.15: ci_reserved_2bit f(2). § 6.14 requires 0, but the parser preserves any
-    // 0..=3 value, so the writer reproduces it verbatim.
     scratch.write_bits_u8(ci.reserved_2bit, F2)?;
 
     if let Some(color) = &ci.color_description {
@@ -139,12 +133,8 @@ pub fn write_content_interpretation(
 /// `f(1)`. A reserved idc (`6..=127`) is reproduced verbatim; only a
 /// `primaries`-vs-idc disagreement is rejected.
 fn write_color_description(scratch: &mut BitWriter, color: &ColorDescription) -> WriteResult<()> {
-    // § 6.14: ci_color_description_idc has the rg(2) domain 0..=127; the writer
-    // reproduces a reserved 6..=127 idc verbatim (write_rg rejects only a quotient
-    // that could not terminate in 32 bits, i.e. a value the parser never produced).
     scratch.write_rg(color.color_description_idc, COLOR_DESCRIPTION_RG)?;
     if color.color_description_idc == 0 {
-        // § 5.15: the explicit (color_primaries, transfer, matrix) triple.
         let primaries = color
             .primaries
             .ok_or_else(|| non_canonical("color_primaries_idc"))?;
@@ -152,8 +142,6 @@ fn write_color_description(scratch: &mut BitWriter, color: &ColorDescription) ->
         scratch.write_bits_u8(primaries.transfer_characteristics, F8)?;
         scratch.write_bits_u8(primaries.matrix_coefficients, F8)?;
     } else if color.primaries.is_some() {
-        // The parser reads the triple ONLY when idc == 0, so a non-zero idc that
-        // stores primaries is parser-unproducible.
         return Err(non_canonical("color_primaries_idc"));
     }
     scratch.write_flag(color.full_range_flag)
@@ -171,8 +159,6 @@ fn write_chroma_sample_position(
 ) -> WriteResult<()> {
     scratch.write_uvlc(chroma.top)?;
     if is_progressive_frame {
-        // § 5.15: the parser infers bottom == top for ci_scan_type_idc == 1 and codes
-        // no bottom; a differing pair is parser-unproducible.
         if chroma.bottom != chroma.top {
             return Err(non_canonical("chroma_bottom_progressive"));
         }
@@ -187,19 +173,14 @@ fn write_chroma_sample_position(
 /// `255`. A reserved idc (`17..=254`) is reproduced verbatim; only an
 /// `extended_sar`-vs-idc disagreement is rejected.
 fn write_aspect_ratio_info(scratch: &mut BitWriter, aspect: &AspectRatioInfo) -> WriteResult<()> {
-    // § 5.15: ci_aspect_ratio_idc f(8). A reserved 17..=254 idc (a § 6.14 violation
-    // the validator flags) is preserved verbatim by the parser, so reproduce it.
     scratch.write_bits_u8(aspect.aspect_ratio_idc, F8)?;
     if aspect.aspect_ratio_idc == ASPECT_RATIO_EXTENDED_SAR {
-        // § 5.15: the explicit ci_sar_width / ci_sar_height pair.
         let sar = aspect
             .extended_sar
             .ok_or_else(|| non_canonical("extended_sar_idc"))?;
         scratch.write_uvlc(sar.sar_width)?;
         scratch.write_uvlc(sar.sar_height)?;
     } else if aspect.extended_sar.is_some() {
-        // The parser reads the explicit SAR ONLY when idc == 255, so a non-255 idc
-        // that stores one is parser-unproducible.
         return Err(non_canonical("extended_sar_idc"));
     }
     Ok(())
@@ -219,9 +200,6 @@ fn write_aspect_ratio_info(scratch: &mut BitWriter, aspect: &AspectRatioInfo) ->
 /// presence gate is enforced. All three reject before any bit reaches `scratch`, so a
 /// parser-unproducible model never produces bytes that fail to reparse.
 fn write_timing_info(scratch: &mut BitWriter, timing: &TimingInfo) -> WriteResult<()> {
-    // § 6.4.12: `parse_timing_info` rejects a zero num_units_in_display_tick / time_scale
-    // (Error::InvalidSequenceHeader), so a model carrying a zero is parser-unproducible and
-    // its bytes would not reparse — reject it before any bit (f(32) accepts any u32).
     if timing.num_units_in_display_tick == 0 {
         return Err(non_canonical("timing_display_tick_zero"));
     }
@@ -231,9 +209,6 @@ fn write_timing_info(scratch: &mut BitWriter, timing: &TimingInfo) -> WriteResul
     scratch.write_bits(timing.num_units_in_display_tick, TIMING_F32)?;
     scratch.write_bits(timing.time_scale, TIMING_F32)?;
     scratch.write_flag(timing.equal_picture_interval)?;
-    // § 5.4.12: num_ticks_per_picture_minus_1 is read iff equal_picture_interval, so
-    // the parser ties Some(..) to the flag. Reject a model that stores one without the
-    // other.
     if timing.equal_picture_interval {
         let ticks = timing
             .num_ticks_per_picture_minus_1
@@ -251,8 +226,5 @@ fn non_canonical(what: &'static str) -> WriteError {
     WriteError::NonCanonicalContentInterpretation { what }
 }
 
-// The round-trip / reject tests live in a sibling file (kept under the advisory
-// source-line limit); `include!` pastes them into this module so their `super::*`
-// resolves to the writer above.
 #[cfg(test)]
 include!("content_interpretation_tests.rs");

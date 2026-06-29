@@ -62,7 +62,6 @@ pub(crate) struct FrameCandidateCoeffFacts {
 
 impl FrameCandidateCoeffFacts {
     /// Creates coefficient frame facts from the active sequence header.
-    // Each bool is a distinct AV2 sequence-level syntax flag; bundling them would obscure the spec mapping.
     #[allow(clippy::fn_params_excessive_bools)]
     #[must_use]
     pub(crate) const fn new(
@@ -626,8 +625,6 @@ fn validate_candidate(
             FrameCandidateTileMalformed::CandidateNotInPlan,
         ));
     }
-    // Accept an intra key `FrameCandidate` or an inter `InterFrameCandidate`
-    // (DECODE-FIRST-INTER-FRAME-FRONTIER); `is_frame_candidate()` covers both.
     if !candidate.role().is_frame_candidate() {
         return Err(FrameCandidateTileBoundaryError::Unsupported {
             reason: FrameCandidateTileUnsupportedReason::CandidateNotFrame,
@@ -767,10 +764,6 @@ fn validate_supported_position(
             reason: FrameCandidateTileUnsupportedReason::BridgeFrame,
         });
     }
-    // The tile-payload boundary is supported for an intra `OBU_CLOSED_LOOP_KEY` frame
-    // and for an inter `OBU_REGULAR_TILE_GROUP` frame (DECODE-FIRST-INTER-FRAME-FRONTIER).
-    // An intra frame must carry the key OBU type, and an inter frame the regular
-    // tile-group OBU type; any other (frame_is_intra, obu_type) pairing is rejected.
     match (facts.frame_is_intra, candidate.obu_type()) {
         (true, ObuType::ClosedLoopKey) | (false, ObuType::RegularTileGroup) => {}
         _ => {

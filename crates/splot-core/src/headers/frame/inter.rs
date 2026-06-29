@@ -399,7 +399,7 @@ fn ref_dims(reference_state: &FrameReferenceStateView<'_>, idx: u32) -> Option<(
 /// This is the value-returning convenience used by the unit tests; production callers use
 /// [`parse_inter_control_into`] with a caller-owned `control` so a mid-field
 /// [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof) preserves the partial facts
-/// (codex F2).
+/// across EOF.
 ///
 /// # Errors
 /// Returns a typed error if the payload ends or is malformed before a modeled field can
@@ -429,7 +429,7 @@ pub(crate) fn parse_inter_control(
 /// fields parsed before any [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof)
 /// survive on the caller's `control` rather than being dropped with a local value. This is
 /// the facts-preserving entry the core parser uses to convert an EOF inside the modeled
-/// inter / bridge control region into a truncation status (codex F2): on `Err(UnexpectedEof)`
+/// inter / bridge control region into a truncation status: on `Err(UnexpectedEof)`
 /// the caller keeps `control`'s partial facts and records the truncation; on `Ok` the region
 /// reached one of its modeled coverage stops.
 ///
@@ -444,29 +444,17 @@ pub(crate) fn parse_inter_control_into(
     frame_size_override_flag: bool,
     control: &mut InterControl,
 ) -> Result<()> {
-    // AV2 § 5.18.2 (mirror :4341): disable_cross_frame_cdf_init = 0 (init).
-    // AV2 § 5.18.2 (mirror :4343-4403): the non-bridge / bridge primary-reference block.
-    // order_hint was already read by the caller in the shared order-hint read; here we
-    // read only the primary-reference signaling. A bridge frame infers primary_ref_frame
-    // = PRIMARY_REF_NONE (no bits).
-    if ctx.is_bridge {
-        control.primary_ref_frame = Some(PRIMARY_REF_NONE);
-        control.disable_cross_frame_cdf_init = Some(false);
-    } else if ctx.frame_type == FrameType::Switch {
-        // mirror :4377: FrameIsIntra || SWITCH_FRAME -> primary_ref_frame = PRIMARY_REF_NONE.
+    if ctx.is_bridge || ctx.frame_type == FrameType::Switch {
         control.primary_ref_frame = Some(PRIMARY_REF_NONE);
         control.disable_cross_frame_cdf_init = Some(false);
     } else {
-        // mirror :4383: signal_primary_ref_frame f(1).
         let signal = reader.read_flag()?;
         control.signal_primary_ref_frame = Some(signal);
-        // mirror :4385-4389: if ( !is_tip_frame() ) disable_cross_frame_cdf_init f(1).
         if !ctx.obu_type.is_tip_frame() {
             control.disable_cross_frame_cdf_init = Some(reader.read_flag()?);
         } else {
             control.disable_cross_frame_cdf_init = Some(false);
         }
-        // mirror :4391-4399: if ( signal ) primary_ref_frame f(3); else PRIMARY_REF_CHOOSE.
         if signal {
             control.primary_ref_frame = Some(reader.read_bits_u8(3)?);
         } else {
@@ -474,24 +462,17 @@ pub(crate) fn parse_inter_control_into(
         }
     }
 
-    // AV2 § 5.18.2 (mirror :4423-4427): if ( IsBridge ) bridge_frame_overwrite_flag f(1).
     if ctx.is_bridge {
         control.bridge_frame_overwrite_flag = Some(reader.read_flag()?);
     }
 
-    // AV2 § 5.18.2 (mirror :4429-4537): refresh_frame_flags. The KEY-frame arms were
-    // handled on the intra path; here we cover the bridge / RAS / switch / inter arms.
     control.refresh_frame_flags = read_inter_refresh_frame_flags(reader, seq, ctx, control)?;
 
-    // The RAS arm (mirror :4493) derives refresh_frame_flags from RefValid/RefLongTermId;
-    // when that arm is selected but the reference state is not modeled, the derivation is
-    // undecidable and we stopped above with None — surface the honest stop.
     if control.refresh_frame_flags.is_none() {
         control.stop = Some(InterStop::UnmodeledDerivation);
         return Ok(());
     }
 
-    // AV2 § 5.18.2 (mirror :4577): the !FrameIsIntra branch.
     parse_inter_reference_region(
         reader,
         seq,
@@ -513,32 +494,23 @@ fn read_inter_refresh_frame_flags(
     ctx: &InterFrameContext,
     control: &InterControl,
 ) -> Result<Option<u32>> {
-    // mirror :4489: else if ( IsBridge && !bridge_frame_overwrite_flag )
-    //               refresh_frame_flags = 1 << bridge_frame_ref_idx.
     if ctx.is_bridge {
         let overwrite = control.bridge_frame_overwrite_flag.unwrap_or(false);
         if !overwrite {
             let idx = ctx.bridge_frame_ref_idx.unwrap_or(0);
             return Ok(Some(1u32.wrapping_shl(idx)));
         }
-        // mirror :4533 (else): a bridge frame with overwrite reads f(NumRefFrames).
         return Ok(Some(reader.read_f(seq.num_ref_frames)?));
     }
 
-    // mirror :4493: else if ( obu_type == OBU_RAS_FRAME && max_mlayer_id == 0 ) — the
-    // derivation reads RefValid / RefLongTermId, which this phase does not model. The
-    // arm reads no bits, so stopping before it loses no bit position.
     if ctx.obu_type == ObuType::RasFrame && seq.max_mlayer_id == 0 {
         return Ok(None);
     }
 
-    // mirror :4507: else if ( FrameType == SWITCH_FRAME ) refresh_frame_flags f(NumRefFrames).
     if ctx.frame_type == FrameType::Switch {
         return Ok(Some(reader.read_f(seq.num_ref_frames)?));
     }
 
-    // mirror :4511: else if ( enable_short_refresh_frame_flags && !SWITCH && !KEY )
-    //               has_refresh_frame_flags f(1); conditional frame_to_refresh f(n).
     if seq.enable_short_refresh_frame_flags {
         let has = reader.read_flag()?;
         if has {
@@ -548,7 +520,6 @@ fn read_inter_refresh_frame_flags(
         return Ok(Some(0));
     }
 
-    // mirror :4533 (else): refresh_frame_flags f(NumRefFrames).
     Ok(Some(reader.read_f(seq.num_ref_frames)?))
 }
 
@@ -566,7 +537,6 @@ fn parse_inter_reference_region(
 ) -> Result<()> {
     let is_tip = ctx.obu_type.is_tip_frame();
 
-    // mirror :4579-4593: explicitRefFrameMap.
     let explicit_ref_frame_map = if ctx.frame_type == FrameType::Switch || ctx.is_bridge {
         true
     } else if seq.explicit_ref_frame_map {
@@ -576,32 +546,19 @@ fn parse_inter_reference_region(
     };
     control.explicit_ref_frame_map = Some(explicit_ref_frame_map);
 
-    // mirror :4595-4625: NumTotalRefs and ref_frame_idx[i]. The implicit reference map
-    // (`!explicitRefFrameMap`) derives both from `get_ref_frames( 0 )` (§ 7.7, mirror :4607,
-    // reads no bits); the explicit map / bridge arms set NumTotalRefs from the bitstream and
-    // then read / infer each ref_frame_idx[i].
     let mut num_total_refs = if ctx.is_bridge {
         1
     } else if explicit_ref_frame_map {
         reader.read_bits(3)? // num_total_refs f(3)
+    } else if let Some(map) = derive_implicit_ref_map(seq, ctx, reference_state, false, None) {
+        control.ref_frame_idx = map.ref_frame_idx;
+        map.num_total_refs
     } else {
-        // mirror :4607: get_ref_frames( 0 ) — model the § 7.7 ranking when the modeled
-        // reference state can resolve it EXACTLY (the at-most-one-valid-reference gate);
-        // otherwise stop honestly (the unmodeled scoring inputs are needed). The call reads
-        // no bits either way, so the bit position is unchanged.
-        if let Some(map) = derive_implicit_ref_map(seq, ctx, reference_state, false, None) {
-            control.ref_frame_idx = map.ref_frame_idx;
-            map.num_total_refs
-        } else {
-            control.stop = Some(InterStop::UnmodeledDerivation);
-            return Ok(());
-        }
+        control.stop = Some(InterStop::UnmodeledDerivation);
+        return Ok(());
     };
     control.num_total_refs = Some(num_total_refs);
 
-    // mirror :4611-4625: ref_frame_idx[i]. On the implicit-map path the indices were already
-    // set by get_ref_frames( 0 ) above (no bits read); the loop runs only to read the
-    // explicit-map f(CeilLog2(NumRefFrames)) indices or infer the bridge index.
     let ref_idx_bits = ceil_log2(seq.num_ref_frames);
     let mut ref_frame_idx = Vec::with_capacity(num_total_refs as usize);
     for _ in 0..num_total_refs {
@@ -610,50 +567,19 @@ fn parse_inter_reference_region(
         } else if explicit_ref_frame_map {
             reader.read_f(ref_idx_bits)?
         } else {
-            // Implicit map: indices already on control.ref_frame_idx (no bits). Skip the
-            // bitstream read; the validation loop below runs over the derived values.
             break;
         };
-        // AV2 § 6.17.2 (mirror `06-syntax-structures-semantics.md` lines 4605-4606):
-        // `RefValid[ ref_frame_idx[i] ] == 1` is required, and RefValid is defined only over
-        // the active slots `0..NumRefFrames-1` of the `NUM_REF_FRAMES`-slot buffer. A
-        // conformant `ref_frame_idx[i]` must therefore be both `< NumRefFrames` (the ACTIVE
-        // bound — RefValid is defined there) and `< NUM_REF_FRAMES` (the physical buffer
-        // bound). Two ways a parsed value escapes:
-        //   - The read width is `CeilLog2(NumRefFrames)` (mirror :4619), which over-covers a
-        //     non-power-of-two NumRefFrames (e.g. 6 -> 3 bits -> values 0..7), so an index
-        //     `>= NumRefFrames` can be encoded — outside the active range, RefValid undefined
-        //     (codex F3). The bridge path already enforces the same active bound on
-        //     bridge_frame_ref_idx.
-        //   - A direct/fuzz caller with a non-conformant `NumRefFrames > NUM_REF_FRAMES`
-        //     widens the read so an index `>= NUM_REF_FRAMES` can be encoded — outside the
-        //     physical buffer.
-        // Either is an unconditional §6.17.2 violation decidable from the parsed value alone,
-        // so the bound is `idx >= min(NumRefFrames, NUM_REF_FRAMES)`. The in-range
-        // proven-invalid case (`RefValid[idx] == 0` for an in-range idx) is under-reported
-        // here: `view_into` collapses an Unknown slot and a ProvenInvalid slot to the same
-        // `ref_valid == false`, so flagging it would false-positive on the resting Unknown
-        // state — that distinction needs an extended view (a future phase). Both arms fold
-        // into the single `has_invalid_ref_frame_idx` flag the validator turns into one
-        // `frame-header/ref-frame-idx-invalid-slot` diagnostic (one home, no double-fire).
         let active_slot_bound = u64::from(seq.num_ref_frames).min(NUM_REF_FRAMES as u64);
         if u64::from(idx) >= active_slot_bound {
             control.has_invalid_ref_frame_idx = true;
         }
         ref_frame_idx.push(idx);
     }
-    // Only the explicit-map / bridge arms populate `ref_frame_idx` above (the implicit-map
-    // `break` leaves it empty); the implicit map already set `control.ref_frame_idx` from
-    // get_ref_frames( 0 ), so do not clobber it with the empty local vector.
     if explicit_ref_frame_map || ctx.is_bridge {
         control.ref_frame_idx = ref_frame_idx;
     }
 
-    // mirror :4627-4643: the reference-grounded frame size.
     if ctx.is_bridge {
-        // mirror :4633 / § 5.18.4.2: frame_size_with_bridge() reads the explicit dims then
-        // Min()s with RefFrameWidth/Height[ bridge_frame_ref_idx ]; the dims are bit-direct
-        // so we read them, but the Min needs the reference dims.
         let n_w = seq.frame_width_bits;
         let n_h = seq.frame_height_bits;
         let bridge_w = reader.read_bits(n_w)?.saturating_add(1);
@@ -664,55 +590,23 @@ fn parse_inter_reference_region(
         {
             control.frame_size = Some(FrameSize::new(bridge_w.min(ref_w), bridge_h.min(ref_h)));
         } else {
-            // The Min needs the reference dims; the bits were read, so stopping here
-            // keeps the bit position correct but the size unknown.
             control.stop = Some(InterStop::PoisonedReferenceState);
             return Ok(());
         }
     } else if frame_size_override_flag && ctx.frame_type != FrameType::Switch {
-        // mirror :4637 / § 5.18.4.3: frame_size_with_refs() reads found_ref f(1) per ref
-        // (until found), and on a hit copies RefFrameWidth/Height[ ref_frame_idx[i] ] then
-        // compute_image_size() (no bits, mirror :5847) — NO further size bits follow a hit.
-        // The next inter-control fields (BRU / use_ref_frame_mvs / TIP / screen-content /
-        // MV-precision / filter / motion-mode / disable_cdf_update) have presence and widths
-        // determined by sequence state and NumTotalRefs, never by FrameWidth / MiRows, so a
-        // hit on a slot whose dims the model has not proven leaves the bit position exact —
-        // only the SIZE is unknown. So `parse_frame_size_with_refs` consumes every found_ref
-        // bit regardless, and we continue parsing with `frame_size` left None rather than
-        // stopping (codex F4): the down-stream presence-known fields and pure BRU diagnostics
-        // stay reachable. (Only later tail structures — tile_info() / film_grain_config() at
-        // the shared tail — consume the dims, and those are already a separate coverage stop.)
-        // A hit on an unmodeled slot returns None with every found_ref bit consumed, so the
-        // bit position stays exact and only the resolved size is unknown — record the size
-        // when known and fall through either way (no stop).
         control.frame_size =
             parse_frame_size_with_refs(reader, seq, reference_state, &control.ref_frame_idx)?;
+    } else if frame_size_override_flag {
+        let w = reader.read_bits(seq.frame_width_bits)?.saturating_add(1);
+        let h = reader.read_bits(seq.frame_height_bits)?.saturating_add(1);
+        control.frame_size = Some(FrameSize::new(w, h));
+    } else if ctx.cur_mfh_id_is_zero {
+        control.frame_size = Some(FrameSize::new(seq.max_frame_width, seq.max_frame_height));
     } else {
-        // mirror :4641 / § 5.18.4.1: frame_size(). On the non-override inter path the dims
-        // come from the MFH defaults / sequence maxima; only the cur_mfh_id == 0 default is
-        // known here (the MFH default is threaded on the intra path, not yet inter).
-        if frame_size_override_flag {
-            // SWITCH_FRAME with override: explicit f(n) dims.
-            let w = reader.read_bits(seq.frame_width_bits)?.saturating_add(1);
-            let h = reader.read_bits(seq.frame_height_bits)?.saturating_add(1);
-            control.frame_size = Some(FrameSize::new(w, h));
-        } else if ctx.cur_mfh_id_is_zero {
-            control.frame_size = Some(FrameSize::new(seq.max_frame_width, seq.max_frame_height));
-        } else {
-            // cur_mfh_id > 0 non-override inter size needs the resolved MFH defaults this
-            // phase does not thread on the inter path; no bits are read, stop honestly.
-            control.stop = Some(InterStop::UnmodeledDerivation);
-            return Ok(());
-        }
+        control.stop = Some(InterStop::UnmodeledDerivation);
+        return Ok(());
     }
 
-    // mirror :4645-4649: if ( !explicitRefFrameMap ) get_ref_frames( 1 ). With FrameWidth /
-    // FrameHeight now resolved, § 7.7 re-runs with checkRes == 1 (the resolution gate +
-    // restricted-frame append), overwriting NumTotalRefs / ref_frame_idx (mirror :1636/:1684).
-    // Reads no bits. On the gated at-most-one-valid-reference path the result is identical to
-    // the checkRes == 0 call (one resolution-compatible ref, no restricted frame); the
-    // re-derivation keeps the model faithful to the spec's two-call sequence rather than
-    // assuming it. If the gate stopped above (UnmodeledDerivation) this point is unreachable.
     if !explicit_ref_frame_map && !ctx.is_bridge {
         if let Some(map) =
             derive_implicit_ref_map(seq, ctx, reference_state, true, control.frame_size)
@@ -721,17 +615,11 @@ fn parse_inter_reference_region(
             control.num_total_refs = Some(num_total_refs);
             control.ref_frame_idx = map.ref_frame_idx;
         } else {
-            // The second call cannot be modeled though the first was: only possible if the
-            // proven-valid slot count grew, which it cannot between the two no-bit calls.
-            // Stop honestly rather than continue on a stale map.
             control.stop = Some(InterStop::UnmodeledDerivation);
             return Ok(());
         }
     }
 
-    // mirror :4651: NumSameRefCompound (no bits).
-
-    // mirror :4653-4669: the BRU triple.
     if seq.enable_bru && ctx.frame_type == FrameType::Inter && !is_tip && !ctx.is_bridge {
         let use_bru = reader.read_flag()?; // use_bru f(1)
         control.use_bru = Some(use_bru);
@@ -748,13 +636,6 @@ fn parse_inter_reference_region(
     }
     let bru_inactive = control.bru_inactive.unwrap_or(false);
 
-    // mirror :4671-4681: ScoresDistance[i] = get_relative_dist(...) (no bits).
-    // mirror :4683: get_past_future_cur_ref_lists() derives NumFutureRefs / NumPastRefs /
-    // ClosestFuture / ClosestPast from reference state — unmodeled, reads no bits. We only
-    // need its outputs for the TIP block's usesEqualWeight and the use_ref_frame_mvs gate's
-    // downstream TIP gate; defer the honest stop until a read actually needs them.
-
-    // mirror :4685-4695: use_ref_frame_mvs.
     let use_ref_frame_mvs = if ctx.frame_type == FrameType::Switch
         || !seq.enable_ref_frame_mvs
         || ctx.is_bridge
@@ -766,54 +647,25 @@ fn parse_inter_reference_region(
     };
     control.use_ref_frame_mvs = Some(use_ref_frame_mvs);
 
-    // mirror :4697-4707: tmvp_sample_step_minus_1 f(1) when
-    // use_ref_frame_mvs && NumTotalRefs > 1 && SbSize != BLOCK_64X64.
     if use_ref_frame_mvs && num_total_refs > 1 && seq.sb_size != SuperblockSize::Block64x64 {
         control.tmvp_sample_step_minus_1 = Some(reader.read_flag()?);
     }
 
-    // mirror :4709-4735: FrameDistance / OrderHints derivations (no bits).
-
-    // mirror :4737-4853: the TIP block.
     let tip_gate = seq.enable_tip && use_ref_frame_mvs && num_total_refs >= 2 && !bru_inactive;
     if tip_gate {
-        // The TIP block's very first step (mirror :4749) is the
-        // `EnableTipOutput && is_tip_frame()` branch that decides whether TipFrameMode is
-        // TIP_FRAME_AS_OUTPUT (no bit) or a signaled `tip_frame_mode` f(1) (mirror :4755).
-        // That branch — and the later `allow_tip_hole_fill` gate (mirror :4767), the
-        // `usesEqualWeight` derivation (mirror :4775), and the `tip_global_wtd_index` f(3)
-        // (mirror :4787) — needs `EnableTipOutput` / `enable_tip_hole_fill` /
-        // `enable_tip_refinemv` and the `get_past_future_cur_ref_lists()` NumFutureRefs /
-        // NumPastRefs, none of which this phase threads through `InterSeqView` or models.
-        // The first bit in the block (`tip_frame_mode` f(1)) is therefore already
-        // undeterminable, so we stop honestly before any TIP read rather than guess.
         control.stop = Some(InterStop::PoisonedReferenceState);
         return Ok(());
     }
-    // mirror :4843-4853 (else): TipFrameMode = TIP_FRAME_DISABLED, then
-    // frame_opfl_refine_type() when !bru_inactive && !IsBridge.
     control.tip_frame_mode = Some(TipFrameMode::Disabled);
     if !bru_inactive && !ctx.is_bridge {
-        // mirror :4849 / § 5.18.3.2: frame_opfl_refine_type(). With TipFrameMode !=
-        // TIP_FRAME_AS_OUTPUT here, it reads opfl_refine_type f(1) (+ opfl_refine_all f(1))
-        // only when enable_opfl_refine == REFINE_AUTO; otherwise it reads nothing.
         read_frame_opfl_refine_type(reader, seq.enable_opfl_refine)?;
     }
 
-    // mirror :4855-4943: the (TipFrameMode != AS_OUTPUT && !bru_inactive && !IsBridge)
-    // block. With TIP disabled here, the gate reduces to !bru_inactive && !IsBridge.
     if bru_inactive || ctx.is_bridge {
-        // mirror :4971/:5045: the bru_inactive / IsBridge early-return arm infers
-        // base_q_idx = RefBaseQIdx[refIdx] / DeltaQ — reference-derived (no-bit) values this
-        // phase does not thread. The arm's bit reads here are inert: tile_info() reads zero
-        // bits for a bridge, and film_grain_config() reads zero bits because immediate_output_frame
-        // == 0 on this non-intra path forces apply_grain == 0 (the single-picture bridge, where
-        // apply_grain == 1, is handled by parse_single_picture_bridge_tail). Stop with facts preserved.
         control.stop = Some(InterStop::BruInactiveOrBridgeReturn);
         return Ok(());
     }
 
-    // mirror :4859-4861: screen_content_params() / intrabc_params().
     let scc = parse_screen_content_params_full(
         reader,
         seq.seq_force_screen_content_tools,
@@ -826,16 +678,12 @@ fn parse_inter_reference_region(
         seq.allow_frame_max_bvp_drl_bits,
     )?);
 
-    // mirror :4863-4883: max_drl_bits_minus_1 = seq_max_drl_bits_minus_1; the change_drl
-    // override.
     let mut max_drl_bits_minus_1 = seq.seq_max_drl_bits_minus_1;
     if seq.allow_frame_max_drl_bits {
         let change_drl = reader.read_flag()?; // change_drl f(1)
         if change_drl {
-            // mirror :4871: n = MAX_REF_MV_STACK_SIZE - 2; max_drl_bits_minus_1 ns(n).
             let n = MAX_REF_MV_STACK_SIZE - 2;
             let mut value = reader.read_ns(n)?;
-            // mirror :4875: if ( value >= seq_max_drl_bits_minus_1 ) value += 1.
             if value >= seq.seq_max_drl_bits_minus_1 {
                 value += 1;
             }
@@ -844,17 +692,13 @@ fn parse_inter_reference_region(
     }
     control.max_drl_bits_minus_1 = Some(max_drl_bits_minus_1);
 
-    // mirror :4885-4917: MV precision.
     let mv_precision = if scc.force_integer_mv {
-        // mirror :4885-4893: FrameMvPrecision = MV_PRECISION_ONE_PEL (no bits).
         MvPrecision::OnePel
     } else {
-        // mirror :4897: use_qtr_precision_mv f(1).
         let use_qtr_precision_mv = reader.read_flag()?;
         if use_qtr_precision_mv {
             MvPrecision::QuarterPel
         } else {
-            // mirror :4905: allow_high_precision_mv f(1).
             let allow_high_precision_mv = reader.read_flag()?;
             if allow_high_precision_mv {
                 MvPrecision::EighthPel
@@ -864,42 +708,24 @@ fn parse_inter_reference_region(
         }
     };
     control.mv_precision = Some(mv_precision);
-    // mirror :4913: UsePerBlockMvPrecision = enable_flex_mvres (no bits); not surfaced.
     let _ = seq.enable_flex_mvres;
 
-    // mirror :4919 / § 5.18.5.1: read_interpolation_filter().
     control.interpolation_filter = Some(read_interpolation_filter(reader)?);
 
-    // mirror :4921-4939: frame_enabled_motion_modes[mode].
     let mut motion_modes = [false; MOTION_MODES];
     for (mode, enabled) in motion_modes.iter_mut().enumerate().skip(INTERINTRA) {
         if !seq.seq_frame_motion_modes_present_flag {
-            // mirror :4925: frame_enabled = seq_enabled (no bit).
             *enabled = seq.seq_enabled_motion_modes[mode];
         } else if seq.seq_enabled_motion_modes[mode] {
-            // mirror :4931: frame_enabled_motion_modes[mode] f(1).
             *enabled = reader.read_flag()?;
         } else {
-            // mirror :4935: frame_enabled_motion_modes[mode] = 0 (no bit).
             *enabled = false;
         }
     }
     control.frame_enabled_motion_modes = Some(motion_modes);
 
-    // mirror :4945-4969: TIP_FRAME_AS_OUTPUT block — not reached (TipFrameMode disabled here).
-    // mirror :4971-5043: TipFrameMode == AS_OUTPUT || bru_inactive || IsBridge — all false
-    // here, so the early-return `if` arm is NOT taken and parsing enters the `else` arm
-    // (mirror :5039-5043), which reads disable_cdf_update f(1) immediately before the shared
-    // tail. This is the same f(1) the intra path reads at its own position (info.rs, the
-    // else-branch of `if ( bru_inactive || IsBridge )`); the inter ordinary path reaches it
-    // here, after the motion-mode block. Recording it keeps the consumed-bit count exact, so
-    // the shared tail starts at the right position.
     control.disable_cdf_update = Some(reader.read_flag()?);
 
-    // mirror :5045-5095: the bru_inactive / IsBridge return arm — not taken here. mirror
-    // :5097-5181: use_ref_frame_mvs motion-field / TIP-output derivations read no bits here
-    // (TipFrameMode == TIP_FRAME_DISABLED, no AS_OUTPUT return). The next bits are the
-    // shared tail tile_info() (mirror :5183).
     control.stop = Some(InterStop::ReachedSharedTail);
     Ok(())
 }
@@ -918,10 +744,8 @@ fn parse_inter_reference_region(
 /// field is truncated.
 fn read_frame_opfl_refine_type(reader: &mut BitReader<'_>, enable_opfl_refine: u8) -> Result<()> {
     if enable_opfl_refine == REFINE_AUTO {
-        // mirror :5599: opfl_refine_type f(1).
         let opfl_refine_type = reader.read_bits(1)?;
         if opfl_refine_type != REFINE_SWITCHABLE {
-            // mirror :5603: opfl_refine_all f(1).
             reader.read_bit()?;
         }
     }
@@ -934,7 +758,7 @@ fn read_frame_opfl_refine_type(reader: &mut BitReader<'_>, enable_opfl_refine: u
 /// **unknown but every consumed bit is exact** (the `found_ref` bits up to and including the
 /// hit were read; per § 5.18.4.3 a hit then calls `compute_image_size()`, which reads no
 /// bits, mirror :5847), so the caller continues parsing the rest of the modeled inter
-/// control region rather than stopping (codex F4). When no ref is found the fallback
+/// control region rather than stopping. When no ref is found the fallback
 /// `frame_size()` is the non-override default, which the caller does not reach here (override
 /// is set), so an all-miss reads `NumTotalRefs` `found_ref` bits then falls to the override
 /// `frame_size()` explicit dims.
@@ -947,13 +771,9 @@ fn parse_frame_size_with_refs(
     for &idx in ref_frame_idx {
         let found_ref = reader.read_flag()?; // found_ref f(1)
         if found_ref {
-            // mirror :4827: FrameWidth/Height = RefFrameWidth/Height[ ref_frame_idx[i] ].
             return Ok(ref_dims(reference_state, idx).map(|(w, h)| FrameSize::new(w, h)));
         }
     }
-    // mirror :4841: NumTotalRefs == 0 || found_ref == 0 -> frame_size(). The caller invokes
-    // this only on the override path (frame_size_override_flag && !SWITCH), so frame_size()
-    // reads the explicit f(n) width/height.
     let w = reader.read_bits(seq.frame_width_bits)?.saturating_add(1);
     let h = reader.read_bits(seq.frame_height_bits)?.saturating_add(1);
     Ok(Some(FrameSize::new(w, h)))
@@ -984,29 +804,14 @@ fn derive_implicit_ref_map(
     check_res: bool,
     frame_size: Option<FrameSize>,
 ) -> Option<GetRefFrames> {
-    // The gate needs the modeled RefValid; an unknown view cannot prove the slot count.
     let ref_valid = reference_state.ref_valid?;
     let num_ref_frames = (seq.num_ref_frames as usize).min(NUM_REF_FRAMES);
 
-    // Count the proven-valid slots within the active range.
     let valid_count = ref_valid
         .iter()
         .take(num_ref_frames)
         .filter(|v| **v)
         .count();
-    // With two or more valid references the § 7.7 ranking scores each slot's
-    // `RefBaseQIdx` (the `q` term), and tie-breaks on `RefOrderHint` and the per-slot
-    // dimensions (the `is_ref_better` distance/ratio terms). The single-spatial-layer
-    // minimal frame makes every OTHER scoring input deterministic (distinct per-slot
-    // `RefCounter` via the `first` dedup rule, `AllowedFrames == -1`, all layers depend,
-    // layer ids 0). So the multi-valid-slot derivation is exact ONLY when the caller
-    // actually supplies all of `RefBaseQIdx` / `RefOrderHint` / dims AS COMPLETE PARALLEL
-    // SLICES covering every active slot. If any is unmodeled (`None`) or a short slice
-    // that would silently default the missing entries to zero, the ranking would be
-    // derived from fabricated state — so stay an honest `UnmodeledDerivation` stop (the
-    // historical `from_slots` view, with no `RefBaseQIdx`, falls here too). For two or
-    // more valid slots the resolution-scoring `is_ref_better` distance term also needs the
-    // current frame size, so require it once `check_res` is set.
     if valid_count > 1 {
         let covers_active =
             |slice: Option<&[u32]>| slice.is_some_and(|s| s.len() >= num_ref_frames);
@@ -1026,10 +831,6 @@ fn derive_implicit_ref_map(
     let ref_h = reference_state.ref_frame_height;
     let ref_base_q_idx = reference_state.ref_base_q_idx;
 
-    // Build the per-slot § 7.7 input from the modeled view, defaulting the unmodeled scoring
-    // fields. With <= 1 valid slot these defaults cannot change the result: a distinct
-    // RefCounter per slot keeps first_slot_with_ref's dedup a no-op, AllowedFrames = -1 admits
-    // every slot, and the single-layer dependency predicate is always true.
     let default_slot = RefSlot {
         valid: false,
         order_hint: 0,
@@ -1046,16 +847,11 @@ fn derive_implicit_ref_map(
         let order_hint = ref_order_hint
             .and_then(|s| s.get(i).copied())
             .map_or(0, |oh| i32::try_from(oh).unwrap_or(i32::MAX));
-        // RefOrderHint of 0 from a non-modeled view is fine: the gate's <= 1 valid slot makes
-        // the order hint irrelevant to the result. A real RESTRICTED_OH (-1) slot would never
-        // be RefValid here (it is appended only in the restricted loop), so map it through.
         slot.valid = valid;
         slot.order_hint = order_hint;
         slot.counter = i as u32; // distinct per slot (dedup is a no-op for <= 1 valid)
         slot.width = ref_w.and_then(|s| s.get(i).copied()).unwrap_or(0);
         slot.height = ref_h.and_then(|s| s.get(i).copied()).unwrap_or(0);
-        // §7.7 `q` scoring term. Modeled only on the multi-valid-slot path (it cannot
-        // change the result for <= 1 valid slot, so a `None` view keeps the default 0).
         slot.base_q_idx = ref_base_q_idx.and_then(|s| s.get(i).copied()).unwrap_or(0);
     }
 
@@ -1072,8 +868,6 @@ fn derive_implicit_ref_map(
         bridge_frame_ref_idx: 0,
         frame_width,
         frame_height,
-        // Single-spatial-layer minimal frame: every dependency-map entry is 1 (a layer
-        // depends on itself; the gated path only admits layer-0 references).
         layer_dependency: |_frame_mlayer, _frame_tlayer, _ref_mlayer, _ref_tlayer| true,
     };
     Some(get_ref_frames(&input, check_res))
@@ -1126,9 +920,6 @@ mod tests {
 
     #[test]
     fn inter_explicit_map_parses_through_to_shared_tail() {
-        // INTER, signal_primary_ref_frame=1, primary_ref_frame=2, refresh f(8),
-        // explicit map=1, num_total_refs=2, two ref_frame_idx f(3), then the MV-precision /
-        // interpolation-filter / motion-mode block converging into the shared tail.
         let mut bits = Bits::default();
         bits.bit(1); // signal_primary_ref_frame
         bits.bit(0); // disable_cross_frame_cdf_init (not TIP)
@@ -1138,20 +929,12 @@ mod tests {
         bits.f(2, 3); // num_total_refs
         bits.f(3, 3); // ref_frame_idx[0]
         bits.f(5, 3); // ref_frame_idx[1]
-        // non-override, cur_mfh_id == 0 -> frame_size() default dims (no bits).
         bits.bit(0); // use_ref_frame_mvs = 0
-        // tmvp not read (use_ref_frame_mvs == 0). TIP gate false. TipFrameMode = DISABLED.
-        // frame_opfl_refine_type: enable_opfl_refine != REFINE_AUTO -> no bits.
-        // screen_content_params(): seq_force off -> allow_screen_content_tools = 0, no bits.
         bits.bit(0); // intrabc_params(): allow_intrabc = 0 (one bit)
-        // max_drl: allow_frame_max_drl_bits false -> no bits.
-        // MV precision: force_integer_mv = 0 -> use_qtr_precision_mv f(1).
         bits.bit(0); // use_qtr_precision_mv = 0
         bits.bit(0); // allow_high_precision_mv = 0 -> HALF_PEL
-        // read_interpolation_filter(): is_filter_switchable f(1).
         bits.bit(0); // is_filter_switchable = 0
         bits.f(2, 2); // interpolation_filter = 2 (EIGHTTAP_SHARP)
-        // motion modes: seq_frame_motion_modes_present_flag false -> no bits.
         bits.bit(0); // disable_cdf_update f(1) (mirror :5041), just before the shared tail.
         let data = bits.into_bytes();
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
@@ -1194,8 +977,6 @@ mod tests {
     /// consumed count was one short and `disable_cdf_update` stayed `None`, so the shared tail
     /// would have started one bit early.)
     fn reached_shared_tail_consumes_disable_cdf_update(disable_cdf_update_bit: u8) {
-        // Bits consumed up to (not including) disable_cdf_update (derivation documented at the
-        // disable_cdf_update write below).
         const BITS_BEFORE_DISABLE_CDF_UPDATE: u64 = 30;
         let mut bits = Bits::default();
         bits.bit(1); // signal_primary_ref_frame
@@ -1206,20 +987,12 @@ mod tests {
         bits.f(2, 3); // num_total_refs
         bits.f(3, 3); // ref_frame_idx[0]
         bits.f(5, 3); // ref_frame_idx[1]
-        // non-override, cur_mfh_id == 0 -> frame_size() default dims (no bits).
         bits.bit(0); // use_ref_frame_mvs = 0
-        // TIP gate false. TipFrameMode = DISABLED. frame_opfl_refine_type(): no bits.
         bits.bit(0); // intrabc_params(): allow_intrabc = 0
         bits.bit(0); // use_qtr_precision_mv = 0
         bits.bit(0); // allow_high_precision_mv = 0 -> HALF_PEL
         bits.bit(0); // is_filter_switchable = 0
         bits.f(2, 2); // interpolation_filter = 2
-        // motion modes: seq_frame_motion_modes_present_flag false -> no bits.
-        // Bits consumed up to (not including) disable_cdf_update:
-        //   1 (signal) + 1 (cdf_init) + 3 (primary_ref) + 8 (refresh) + 1 (explicit map)
-        //   + 3 (num_total_refs) + 3 + 3 (two ref_frame_idx, CeilLog2(8) == 3 each)
-        //   + 1 (use_ref_frame_mvs) + 1 (allow_intrabc) + 1 + 1 (mv precision)
-        //   + 1 (is_filter_switchable) + 2 (interpolation_filter) = 30.
         bits.bit(disable_cdf_update_bit); // disable_cdf_update f(1) (mirror :5041)
         let data = bits.into_bytes();
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
@@ -1229,13 +1002,10 @@ mod tests {
         let control = parse_inter_control(&mut reader, &seq, &ctx, &rs, false).unwrap();
 
         assert_eq!(control.stop, Some(InterStop::ReachedSharedTail));
-        // The recorded flag matches the input bit, both ways.
         assert_eq!(
             control.disable_cdf_update,
             Some(disable_cdf_update_bit != 0)
         );
-        // disable_cdf_update was consumed: the reader is positioned exactly at the shared
-        // tail tile_info() (mirror :5183), one bit past where it would be pre-fix.
         assert_eq!(reader.consumed_bits(), BITS_BEFORE_DISABLE_CDF_UPDATE + 1);
     }
 
@@ -1259,30 +1029,21 @@ mod tests {
         bits.bit(1); // frame_explicit_ref_frame_map
         bits.f(1, 3); // num_total_refs = 1
         bits.f(0, 3); // ref_frame_idx[0]
-        // non-override, cur_mfh_id == 0 -> frame_size() default dims (no bits).
         bits.bit(0); // use_ref_frame_mvs = 0 (num_total_refs == 1 -> no tmvp)
-        // TIP gate false (enable_tip off). TipFrameMode = DISABLED. Then frame_opfl_refine_type().
     }
 
     /// Appends the inter tail after `frame_opfl_refine_type()`: screen_content / intrabc /
     /// MV-precision / interpolation-filter, converging into the shared tail.
     fn opfl_refine_tail(bits: &mut Bits) {
-        // screen_content_params(): seq_force off -> allow_screen_content_tools = 0, no bits.
         bits.bit(0); // intrabc_params(): allow_intrabc = 0
         bits.bit(0); // use_qtr_precision_mv = 0
         bits.bit(0); // allow_high_precision_mv = 0 -> HALF_PEL
         bits.bit(1); // is_filter_switchable = 1 (no interpolation_filter f(2))
-        // motion modes: seq_frame_motion_modes_present_flag false -> no bits.
         bits.bit(0); // disable_cdf_update f(1) (mirror :5041), just before the shared tail.
     }
 
     #[test]
     fn opfl_refine_auto_switchable_skips_opfl_refine_all() {
-        // AV2 § 5.18.3.2 (mirror :5597-5607): enable_opfl_refine == REFINE_AUTO reads
-        // opfl_refine_type f(1); when opfl_refine_type == REFINE_SWITCHABLE (1),
-        // opfl_refine_all is NOT read. A REFINE_SWITCHABLE constant of 2 would (wrongly) read
-        // the extra bit and shift every subsequent field by one — the post-fix layout aligns
-        // is_filter_switchable to the bit right after opfl_refine_type.
         let mut bits = Bits::default();
         opfl_refine_prefix(&mut bits);
         bits.bit(1); // opfl_refine_type = 1 (REFINE_SWITCHABLE) -> NO opfl_refine_all
@@ -1297,7 +1058,6 @@ mod tests {
         assert_eq!(control.tip_frame_mode, Some(TipFrameMode::Disabled));
         assert_eq!(control.allow_intrabc, Some(false));
         assert_eq!(control.mv_precision, Some(MvPrecision::HalfPel));
-        // is_filter_switchable == 1 only lands here if opfl_refine_all was skipped.
         assert_eq!(
             control.interpolation_filter,
             Some(InterpolationFilter::Switchable)
@@ -1307,9 +1067,6 @@ mod tests {
 
     #[test]
     fn opfl_refine_auto_non_switchable_reads_opfl_refine_all() {
-        // AV2 § 5.18.3.2 (mirror :5597-5607): enable_opfl_refine == REFINE_AUTO reads
-        // opfl_refine_type f(1); when opfl_refine_type != REFINE_SWITCHABLE (here 0,
-        // REFINE_NONE), opfl_refine_all f(1) IS read. The tail then aligns one bit later.
         let mut bits = Bits::default();
         opfl_refine_prefix(&mut bits);
         bits.bit(0); // opfl_refine_type = 0 (REFINE_NONE) -> opfl_refine_all IS read
@@ -1334,14 +1091,10 @@ mod tests {
 
     #[test]
     fn inter_implicit_map_stops_unmodeled() {
-        // explicit_ref_frame_map seq flag off, INTER -> explicitRefFrameMap derived 0 ->
-        // get_ref_frames(0) is unmodeled.
         let mut bits = Bits::default();
         bits.bit(0); // signal_primary_ref_frame
         bits.bit(0); // disable_cross_frame_cdf_init
         bits.f(0, 8); // refresh_frame_flags f(8)
-        // explicit_ref_frame_map seq flag is false in this view -> no frame_explicit bit,
-        // explicitRefFrameMap = 0 -> get_ref_frames(0) stop.
         let data = bits.into_bytes();
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
         let mut seq = inter_seq();
@@ -1365,9 +1118,6 @@ mod tests {
         bits.bit(0); // signal_primary_ref_frame
         bits.bit(0); // disable_cross_frame_cdf_init
         bits.f(0, 8); // refresh_frame_flags f(8)
-        // explicit_ref_frame_map seq flag off -> get_ref_frames(0) derives NumTotalRefs == 1,
-        // ref_frame_idx == [0] (no bits). num_total_refs == 1 -> no tmvp.
-        // non-override, cur_mfh_id == 0 -> frame_size() default dims (no bits).
         bits.bit(0); // use_ref_frame_mvs = 0
         bits.bit(0); // intrabc_params(): allow_intrabc = 0
         bits.bit(0); // use_qtr_precision_mv = 0
@@ -1378,14 +1128,9 @@ mod tests {
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
         let mut seq = inter_seq();
         seq.explicit_ref_frame_map = false;
-        // The non-override frame_size() default dims (max_frame_*) must be resolution-
-        // compatible with the reference for the checkRes == 1 second get_ref_frames() call
-        // (§ 7.7 valid_ref_frame_size: FrameWidth <= 16 * RefFrameWidth). Match the fixture's
-        // 64x64 frame against the 64x64 reference.
         seq.max_frame_width = 64;
         seq.max_frame_height = 64;
         let ctx = inter_ctx();
-        // One valid slot (slot 0), OrderHint 0, 64x64 — the post-key minimal reference state.
         let mut ref_valid = [false; NUM_REF_FRAMES];
         ref_valid[0] = true;
         let ref_oh = [0u32; NUM_REF_FRAMES];
@@ -1412,7 +1157,6 @@ mod tests {
         bits.bit(0); // signal_primary_ref_frame
         bits.bit(0); // disable_cross_frame_cdf_init
         bits.f(0, 8); // refresh_frame_flags f(8)
-        // get_ref_frames(0) -> NumTotalRefs == 0. num_total_refs == 0 -> no tmvp / TIP.
         bits.bit(0); // use_ref_frame_mvs = 0
         bits.bit(0); // allow_intrabc = 0
         bits.bit(0); // use_qtr_precision_mv = 0
@@ -1473,7 +1217,6 @@ mod tests {
         bits.bit(0); // signal_primary_ref_frame
         bits.bit(0); // disable_cross_frame_cdf_init (not TIP)
         bits.f(0, 8); // refresh_frame_flags f(NumRefFrames)
-        // Implicit map: ref_frame_idx are derived (no bits). Continue the control region.
         bits.bit(0); // use_ref_frame_mvs = 0 (NumTotalRefs > 1, but mvs off -> no tmvp bits)
         bits.bit(0); // intrabc_params(): allow_intrabc = 0
         bits.bit(0); // use_qtr_precision_mv = 0
@@ -1493,8 +1236,6 @@ mod tests {
         let mut ref_oh = [0u32; NUM_REF_FRAMES];
         ref_oh[0] = 8;
         ref_oh[1] = 5;
-        // Resolution-compatible dims so the checkRes == 1 valid_ref_frame_size gate keeps
-        // both slots (the test frame size is the cur_mfh_id == 0 sequence maxima).
         let ref_w = [4096u32; NUM_REF_FRAMES];
         let ref_h = [2304u32; NUM_REF_FRAMES];
         let mut ref_q = [0u32; NUM_REF_FRAMES];
@@ -1557,8 +1298,6 @@ mod tests {
         let mut ref_valid = [false; NUM_REF_FRAMES];
         ref_valid[0] = true;
         ref_valid[1] = true;
-        // A short RefOrderHint slice (1 entry) cannot cover both valid slots: slot 1's order
-        // hint would silently default to 0 if admitted. The completeness gate must reject.
         let ref_oh_short = [8u32];
         let ref_w = [4096u32; NUM_REF_FRAMES];
         let ref_h = [2304u32; NUM_REF_FRAMES];
@@ -1579,9 +1318,6 @@ mod tests {
 
     #[test]
     fn inter_ref_idx_out_of_buffer_range_is_flagged() {
-        // A non-conformant NumRefFrames == 20 (> NUM_REF_FRAMES) makes
-        // CeilLog2(20) == 5-bit ref_frame_idx; an index 17 is at/beyond the NUM_REF_FRAMES
-        // buffer (AV2 § 6.17.2).
         let mut bits = Bits::default();
         bits.bit(0); // signal_primary_ref_frame
         bits.bit(0); // disable_cross_frame_cdf_init
@@ -1606,7 +1342,7 @@ mod tests {
         assert_eq!(control.stop, Some(InterStop::ReachedSharedTail));
     }
 
-    /// AV2 § 6.17.2 (mirror :4605-4606): codex F3. With a non-power-of-two NumRefFrames the
+    /// AV2 § 6.17.2 (mirror :4605-4606). With a non-power-of-two NumRefFrames the
     /// read width `CeilLog2(NumRefFrames)` over-covers the active slot range, so an encoded
     /// `ref_frame_idx[i]` can exceed `NumRefFrames - 1` while still fitting the buffer bound
     /// of 16. RefValid is defined only over `0..NumRefFrames-1`, so such an index is an
@@ -1636,7 +1372,6 @@ mod tests {
 
     #[test]
     fn inter_ref_idx_beyond_active_num_ref_frames_is_flagged() {
-        // idx == 7 >= NumRefFrames (6): outside the active reference buffer (codex F3).
         let control = parse_ref_idx_with_num_ref_frames_6(7);
         assert!(
             control.has_invalid_ref_frame_idx,
@@ -1649,8 +1384,6 @@ mod tests {
 
     #[test]
     fn inter_ref_idx_within_active_num_ref_frames_is_silent() {
-        // idx == 5 < NumRefFrames (6): in range, so the active-bound check stays silent (the
-        // in-range RefValid == 0 case is decided by the validator's §7.23 check, not here).
         let control = parse_ref_idx_with_num_ref_frames_6(5);
         assert!(
             !control.has_invalid_ref_frame_idx,
@@ -1663,20 +1396,12 @@ mod tests {
 
     #[test]
     fn switch_frame_infers_primary_ref_none_and_reads_explicit_map() {
-        // SWITCH_FRAME: primary_ref_frame = PRIMARY_REF_NONE (no bits), explicitRefFrameMap
-        // = 1, refresh f(NumRefFrames), num_total_refs f(3), override forces explicit dims.
         let mut bits = Bits::default();
-        // No primary-ref bits for SWITCH.
-        // refresh_frame_flags f(NumRefFrames) (SWITCH arm).
         bits.f(0xFF, 8);
         bits.f(1, 3); // num_total_refs = 1
         bits.f(4, 3); // ref_frame_idx[0]
-        // frame_size_override_flag true but FrameType == SWITCH -> frame_size() else arm
-        // (non with_refs). Override true -> explicit f(12)+f(12).
         bits.f(1920 - 1, 12);
         bits.f(1080 - 1, 12);
-        // use_ref_frame_mvs: SWITCH -> inferred 0 (no bit). TIP gate false. The
-        // MV-precision / interpolation-filter / motion-mode block then runs.
         bits.bit(0); // allow_intrabc
         bits.bit(0); // use_qtr_precision_mv
         bits.bit(0); // allow_high_precision_mv
@@ -1699,8 +1424,6 @@ mod tests {
 
     #[test]
     fn frame_size_with_refs_copies_valid_ref_dims() {
-        // override INTER (not switch): frame_size_with_refs(). found_ref=1 on first ref,
-        // copies that slot's modeled dims.
         let mut bits = Bits::default();
         bits.bit(0); // signal_primary_ref_frame
         bits.bit(0); // disable_cross_frame_cdf_init
@@ -1732,14 +1455,6 @@ mod tests {
 
     #[test]
     fn frame_size_with_refs_continues_when_hit_slot_unknown() {
-        // Codex F4: override INTER, found_ref=1 on a slot the model has not proven. A hit
-        // consumes NO further size bits (§ 5.18.4.3 copies the ref dims then compute_image_
-        // size(), no bits), and the rest of the inter control region's presence/widths
-        // depend on sequence state / NumTotalRefs, never on FrameWidth/MiRows — so the bit
-        // position is exact and the parse must CONTINUE with frame_size left None, reaching
-        // the shared tail, rather than stopping with PoisonedReferenceState. Pre-fix this
-        // returned PoisonedReferenceState and dropped every presence-known field after the
-        // size hit.
         let mut bits = Bits::default();
         bits.bit(0); // signal_primary_ref_frame
         bits.bit(0); // disable_cross_frame_cdf_init
@@ -1748,7 +1463,6 @@ mod tests {
         bits.f(1, 3); // num_total_refs = 1
         bits.f(2, 3); // ref_frame_idx[0] = 2 (Unknown slot under the unknown() view)
         bits.bit(1); // found_ref = 1 -> hits the unmodeled slot 2 (size unknown)
-        // The control region continues (presence-known fields, no dims needed):
         bits.bit(0); // use_ref_frame_mvs (num_total_refs == 1 -> no tmvp)
         bits.bit(0); // allow_intrabc
         bits.bit(0); // use_qtr_precision_mv
@@ -1782,8 +1496,6 @@ mod tests {
 
     #[test]
     fn bru_triple_reads_and_inactive_returns() {
-        // enable_bru, use_bru=1, bru_inactive=1 -> use_ref_frame_mvs inferred 0,
-        // BruInactiveOrBridgeReturn stop.
         let mut bits = Bits::default();
         bits.bit(0); // signal_primary_ref_frame
         bits.bit(0); // disable_cross_frame_cdf_init
@@ -1795,7 +1507,6 @@ mod tests {
         bits.bit(1); // use_bru
         bits.f(1, 1); // bru_ref f(CeilLog2(2)=1)
         bits.bit(1); // bru_inactive = 1
-        // use_ref_frame_mvs inferred 0 (bru_inactive). TIP gate false. bru_inactive arm.
         let data = bits.into_bytes();
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
         let mut seq = inter_seq();
@@ -1812,8 +1523,6 @@ mod tests {
 
     #[test]
     fn tip_gate_stops_poisoned_on_past_future_refs() {
-        // enable_tip, use_ref_frame_mvs=1, num_total_refs>=2 -> TIP gate true, usesEqualWeight
-        // needs past/future ref counts -> poisoned stop.
         let mut bits = Bits::default();
         bits.bit(0); // signal_primary_ref_frame
         bits.bit(0); // disable_cross_frame_cdf_init
@@ -1872,7 +1581,6 @@ mod tests {
         use crate::obu::{ParsedObu, PayloadStatus};
         use crate::stream::{ParsedBitstream, parse_bitstream_partial};
 
-        // The committed conformance fixture (workspace-root-relative from this crate).
         let data = include_bytes!(
             "../../../../../tests/conformance/vectors/valid/syn-key-inter-64x64.ivf"
         );
@@ -1904,9 +1612,6 @@ mod tests {
         let seq_header = seq_header.expect("fixture has a sequence header");
         let inter_obu = inter_obu.expect("fixture has a regular tile group (inter) frame");
 
-        // Reproduce the § 7.23 reference state the validator threads after the CLK key frame:
-        // refresh_frame_flags == 255 + the `first` rule leaves ONLY slot 0 valid (OrderHint 0,
-        // 64x64); every other slot is invalid.
         let mut ref_valid = [false; NUM_REF_FRAMES];
         let mut ref_oh = [0u32; NUM_REF_FRAMES];
         let mut ref_w = [0u32; NUM_REF_FRAMES];
@@ -1939,18 +1644,13 @@ mod tests {
             Some(false),
             "the fixture uses the IMPLICIT reference map"
         );
-        // The implicit map derived NumTotalRefs == 1, ref_frame_idx == [0] via § 7.7.
         assert_eq!(inter.num_total_refs, Some(1));
         assert_eq!(inter.ref_frame_idx, vec![0]);
-        // The whole inter control region parsed to the shared tail — PAST the old
-        // UnmodeledDerivation stop. This is the bit-level proof (the parser consumed exactly
-        // the right inter-header bits to converge here).
         assert_eq!(
             inter.stop,
             Some(InterStop::ReachedSharedTail),
             "with get_ref_frames() modeled, the implicit-map inter frame reaches the shared tail"
         );
-        // Honest coverage stop, never a truncation: the shared tail is unmodeled by design.
         assert!(!core.status.is_truncated_in_modeled_region());
     }
 
@@ -2084,7 +1784,6 @@ mod tests {
         let seq_header = seq_header.expect("fixture has a sequence header");
         let inter_obu = inter_obu.expect("fixture has a regular tile group (inter) frame");
 
-        // Post-key § 7.23 reference state: only slot 0 valid (OrderHint 0, 64x64).
         let mut ref_valid = [false; NUM_REF_FRAMES];
         let mut ref_oh = [0u32; NUM_REF_FRAMES];
         let mut ref_w = [0u32; NUM_REF_FRAMES];
@@ -2107,7 +1806,6 @@ mod tests {
         };
         let core = parse_frame_header_core(&mut reader, &input).unwrap();
 
-        // The inter frame header is now PARSED TO COMPLETION through the shared tail.
         assert_eq!(
             core.status,
             FrameHeaderParseStatus::InterHeaderComplete,
@@ -2119,15 +1817,12 @@ mod tests {
         );
         assert_eq!(core.frame_type, Some(FrameType::Inter));
 
-        // The inter control region still converged on the shared tail (the precondition).
         let inter = core.inter.as_ref().expect("inter control region parsed");
         assert_eq!(inter.stop, Some(InterStop::ReachedSharedTail));
         assert_eq!(inter.explicit_ref_frame_map, Some(false));
         assert_eq!(inter.num_total_refs, Some(1));
         assert_eq!(inter.ref_frame_idx, vec![0]);
 
-        // Shared-tail facts (provenance: hand-decoded 56-bit payload vs the § 5.18.2 spec +
-        // the fixture sequence config; confirmed bit-exact vs avmdec/dav2d by the fixture).
         let tile_info = core.tile_info.as_ref().expect("tile_info parsed");
         assert_eq!(
             tile_info.tile_cols, 1,
@@ -2159,7 +1854,6 @@ mod tests {
             "deblocking is off for the flat copy frame"
         );
 
-        // Inter-tail facts.
         let tail = core.inter_tail.as_ref().expect("inter tail parsed");
         assert_eq!(tail.tx_mode, TxMode::Largest, "tx_mode_select == 0");
         assert!(!tail.reference_select, "single-reference frame");

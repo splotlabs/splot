@@ -100,10 +100,8 @@ const QM_LEVEL_MAX_PLUS_1: u8 = 16;
 pub fn write_read_delta_q(writer: &mut BitWriter, delta_q: i32) -> WriteResult<()> {
     check_delta_q_encodable(delta_q)?;
     if delta_q == 0 {
-        // § 5.18.6.3: delta_coded f(1) = 0; delta_q inferred 0 (no su).
         writer.write_bit(0)
     } else {
-        // § 5.18.6.3: delta_coded f(1) = 1; delta_q su(7).
         writer.write_bit(1)?;
         writer.write_su(delta_q, 7)
     }
@@ -147,46 +145,28 @@ pub fn write_quantization_params(
 ) -> WriteResult<()> {
     check_quantization_encodable(params, quant, tip_frame_as_output)?;
 
-    // § 5.18.6.1: n = BitDepth == 8 ? 8 : 9; base_q_idx f(n).
     let n = if quant.bit_depth == 8 { 8 } else { 9 };
     writer.write_bits(params.base_q_idx, n)?;
 
-    // § 5.18.6.1: if ( TipFrameMode != TIP_FRAME_AS_OUTPUT && y_dc_delta_q_enabled )
-    // DeltaQYDc = read_delta_q( ).
     if !tip_frame_as_output && quant.y_dc_delta_q_enabled {
         write_read_delta_q(writer, params.delta_q_y_dc)?;
     }
-    // § 5.18.6.1: if ( NumPlanes > 1 && ( uv_ac_delta_q_enabled ||
-    // (TipFrameMode != TIP_FRAME_AS_OUTPUT && uv_dc_delta_q_enabled) ) ).
     if quant.num_planes > 1
         && (quant.uv_ac_delta_q_enabled || (!tip_frame_as_output && quant.uv_dc_delta_q_enabled))
     {
-        // § 5.18.6.1: if ( separate_uv_delta_q ) diff_uv_delta f(1).
         if quant.separate_uv_delta_q {
             writer.write_flag(params.diff_uv_delta)?;
         }
-        // § 5.18.6.1: if ( TipFrameMode != TIP_FRAME_AS_OUTPUT && uv_dc_delta_q_enabled )
-        // DeltaQUDc = read_delta_q( ). The read is UNCONDITIONAL on this gate; when
-        // equal_ac_dc_q the parser afterward overwrites DeltaQUDc with DeltaQUAc, so the
-        // coded DC value is discarded by the model (canonicalization 4 — see the module
-        // docs). The writer re-emits the retained DeltaQUDc (which equals DeltaQUAc on a
-        // canonical equal_ac_dc_q model, validated up front), so the bit count matches and
-        // the value reparses identically.
         if !tip_frame_as_output && quant.uv_dc_delta_q_enabled {
             write_read_delta_q(writer, params.delta_q_u_dc)?;
         }
-        // § 5.18.6.1: if ( uv_ac_delta_q_enabled ) DeltaQUAc = read_delta_q( ).
         if quant.uv_ac_delta_q_enabled {
             write_read_delta_q(writer, params.delta_q_u_ac)?;
         }
         if params.diff_uv_delta {
-            // § 5.18.6.1: if ( TipFrameMode != TIP_FRAME_AS_OUTPUT && uv_dc_delta_q_enabled )
-            // DeltaQVDc = read_delta_q( ) (unconditional on this gate; equal_ac_dc_q then
-            // overwrites it with DeltaQVAc — canonicalization 4).
             if !tip_frame_as_output && quant.uv_dc_delta_q_enabled {
                 write_read_delta_q(writer, params.delta_q_v_dc)?;
             }
-            // § 5.18.6.1: if ( uv_ac_delta_q_enabled ) DeltaQVAc = read_delta_q( ).
             if quant.uv_ac_delta_q_enabled {
                 write_read_delta_q(writer, params.delta_q_v_ac)?;
             }
@@ -204,7 +184,6 @@ fn check_quantization_encodable(
     quant: &CoreSeqQuantView,
     tip_frame_as_output: bool,
 ) -> WriteResult<()> {
-    // base_q_idx f(n): reject a value that overflows its field before any bit.
     let n = if quant.bit_depth == 8 { 8 } else { 9 };
     if params.base_q_idx >= (1u32 << n) {
         return Err(WriteError::ValueTooWide {
@@ -213,7 +192,6 @@ fn check_quantization_encodable(
         });
     }
 
-    // Gate for the Y DC read (else inferred 0).
     let y_dc_coded = !tip_frame_as_output && quant.y_dc_delta_q_enabled;
     if y_dc_coded {
         check_delta_q_encodable(params.delta_q_y_dc)?;
@@ -223,7 +201,6 @@ fn check_quantization_encodable(
         });
     }
 
-    // Whole chroma block gate (else every chroma field inferred 0 / diff_uv_delta 0).
     let chroma_block = quant.num_planes > 1
         && (quant.uv_ac_delta_q_enabled || (!tip_frame_as_output && quant.uv_dc_delta_q_enabled));
     if !chroma_block {
@@ -240,7 +217,6 @@ fn check_quantization_encodable(
         return Ok(());
     }
 
-    // diff_uv_delta is coded only when separate_uv_delta_q; else inferred 0.
     if !quant.separate_uv_delta_q && params.diff_uv_delta {
         return Err(WriteError::NonCanonicalFrameHeader {
             what: "diff_uv_delta",
@@ -250,9 +226,7 @@ fn check_quantization_encodable(
     let uv_dc_coded = !tip_frame_as_output && quant.uv_dc_delta_q_enabled;
     let uv_ac_coded = quant.uv_ac_delta_q_enabled;
 
-    // DeltaQUAc is read iff uv_ac_delta_q_enabled; else inferred 0.
     check_chroma_ac(params.delta_q_u_ac, uv_ac_coded, "delta_q_u_ac")?;
-    // DeltaQUDc is read iff uv_dc_coded; equal_ac_dc_q then overwrites it with DeltaQUAc.
     check_chroma_dc(
         params.delta_q_u_dc,
         params.delta_q_u_ac,
@@ -262,7 +236,6 @@ fn check_quantization_encodable(
     )?;
 
     if params.diff_uv_delta {
-        // V deltas are coded (under the same uv_*_coded gates) when diff_uv_delta.
         check_chroma_ac(params.delta_q_v_ac, uv_ac_coded, "delta_q_v_ac")?;
         check_chroma_dc(
             params.delta_q_v_dc,
@@ -271,14 +244,12 @@ fn check_quantization_encodable(
             quant.equal_ac_dc_q,
             "delta_q_v_dc",
         )?;
-    } else {
-        // § 5.18.6.1: else DeltaQVDc = DeltaQUDc, DeltaQVAc = DeltaQUAc (no V reads).
-        if params.delta_q_v_dc != params.delta_q_u_dc || params.delta_q_v_ac != params.delta_q_u_ac
-        {
-            return Err(WriteError::NonCanonicalFrameHeader {
-                what: "quant_v_inferred",
-            });
-        }
+    } else if params.delta_q_v_dc != params.delta_q_u_dc
+        || params.delta_q_v_ac != params.delta_q_u_ac
+    {
+        return Err(WriteError::NonCanonicalFrameHeader {
+            what: "quant_v_inferred",
+        });
     }
     Ok(())
 }
@@ -311,11 +282,9 @@ fn check_chroma_dc(
     what: &'static str,
 ) -> WriteResult<()> {
     if equal_ac_dc_q {
-        // equal_ac_dc_q overwrites DC with AC, so the retained model DC must match AC.
         if dc != ac {
             return Err(WriteError::NonCanonicalFrameHeader { what });
         }
-        // When the DC field is coded, the emitted value (== ac) must be in the su(7) domain.
         if dc_coded {
             return check_delta_q_encodable(dc);
         }
@@ -360,33 +329,24 @@ pub fn write_setup_qm_params(
 ) -> WriteResult<()> {
     check_setup_qm_encodable(qm, quant, segmentation_enabled)?;
 
-    // § 5.18.6.2: using_qmatrix f(1).
     writer.write_flag(qm.using_qmatrix)?;
     if !qm.using_qmatrix {
         return Ok(());
     }
-    // § 5.18.6.2: if ( segmentation_enabled ) pic_qm_num_minus_1 f(2) else inferred 0.
     if segmentation_enabled {
         writer.write_bits_u8(qm.pic_qm_num_minus_1, 2)?;
     }
-    // § 5.18.6.2: qmNum = pic_qm_num_minus_1 + 1.
     let qm_num = usize::from(qm.pic_qm_num_minus_1) + 1;
     for level in qm.levels.iter().take(qm_num) {
-        // § 5.18.6.2: qm_y[ i ] f(4).
         writer.write_bits_u8(level.qm_y, 4)?;
-        // § 5.18.6.2: if ( NumPlanes > 1 ).
         if quant.num_planes > 1 {
-            // Canonicalization 2: same_as_y when both chroma equal qm_y.
             let same_as_y = level.qm_u == level.qm_y && level.qm_v == level.qm_y;
             writer.write_flag(same_as_y)?;
             if !same_as_y {
-                // § 5.18.6.2: qm_u[ i ] f(4).
                 writer.write_bits_u8(level.qm_u, 4)?;
                 if quant.separate_uv_delta_q {
-                    // § 5.18.6.2: qm_v[ i ] f(4).
                     writer.write_bits_u8(level.qm_v, 4)?;
                 }
-                // else qm_v = qm_u is inferred (validated up front), no bits.
             }
         }
     }
@@ -402,8 +362,6 @@ fn check_setup_qm_encodable(
     segmentation_enabled: bool,
 ) -> WriteResult<()> {
     if !qm.using_qmatrix {
-        // The parser leaves pic_qm_num_minus_1 = 0 and every level zeroed when QM is off;
-        // a non-default model could not have been produced.
         if qm.pic_qm_num_minus_1 != 0 || qm.levels.iter().any(|l| *l != QmSetLevels::default()) {
             return Err(WriteError::NonCanonicalFrameHeader {
                 what: "setup_qm_disabled",
@@ -412,7 +370,6 @@ fn check_setup_qm_encodable(
         return Ok(());
     }
 
-    // pic_qm_num_minus_1 f(2): only 0..=3 are representable; non-zero requires segmentation.
     if qm.pic_qm_num_minus_1 >= 4 {
         return Err(WriteError::ValueTooWide {
             value: u64::from(qm.pic_qm_num_minus_1),
@@ -428,26 +385,19 @@ fn check_setup_qm_encodable(
     let qm_num = usize::from(qm.pic_qm_num_minus_1) + 1;
     for (i, level) in qm.levels.iter().enumerate() {
         if i < qm_num {
-            // qm_y is always coded; chroma fields only when NumPlanes > 1.
             check_qm_level_value(level.qm_y)?;
             if quant.num_planes > 1 {
                 check_qm_level_value(level.qm_u)?;
                 check_qm_level_value(level.qm_v)?;
-                // !separate_uv_delta_q copies qm_v = qm_u with no read, so a mismatch could
-                // not have been parsed (and would round-trip to qm_v == qm_u).
                 if !quant.separate_uv_delta_q && level.qm_v != level.qm_u {
                     return Err(WriteError::NonCanonicalFrameHeader { what: "qm_v" });
                 }
-            } else {
-                // Monochrome: the parser leaves qm_u = qm_v = 0 (never read).
-                if level.qm_u != 0 || level.qm_v != 0 {
-                    return Err(WriteError::NonCanonicalFrameHeader {
-                        what: "qm_monochrome",
-                    });
-                }
+            } else if level.qm_u != 0 || level.qm_v != 0 {
+                return Err(WriteError::NonCanonicalFrameHeader {
+                    what: "qm_monochrome",
+                });
             }
         } else if *level != QmSetLevels::default() {
-            // Levels beyond qmNum are never read; the parser leaves them zeroed.
             return Err(WriteError::NonCanonicalFrameHeader {
                 what: "qm_level_beyond_num",
             });
@@ -487,11 +437,9 @@ pub fn write_delta_q_params(
 ) -> WriteResult<()> {
     check_delta_q_params_encodable(*dq, base_q_idx)?;
 
-    // § 5.18.7.8: if ( base_q_idx > 0 ) delta_q_present f(1) else inferred 0.
     if base_q_idx > 0 {
         writer.write_flag(dq.delta_q_present)?;
     }
-    // § 5.18.7.8: if ( delta_q_present ) delta_q_res f(2) else inferred 0.
     if dq.delta_q_present {
         writer.write_bits_u8(dq.delta_q_res, 2)?;
     }
@@ -501,19 +449,16 @@ pub fn write_delta_q_params(
 /// Validates a [`DeltaQParams`] is a model the § 5.18.7.8
 /// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-7-8`) parser could have produced.
 fn check_delta_q_params_encodable(dq: DeltaQParams, base_q_idx: u32) -> WriteResult<()> {
-    // delta_q_present is inferred 0 when base_q_idx == 0 (no bit).
     if base_q_idx == 0 && dq.delta_q_present {
         return Err(WriteError::NonCanonicalFrameHeader {
             what: "delta_q_present",
         });
     }
-    // delta_q_res is inferred 0 unless delta_q_present.
     if !dq.delta_q_present && dq.delta_q_res != 0 {
         return Err(WriteError::NonCanonicalFrameHeader {
             what: "delta_q_res",
         });
     }
-    // delta_q_res f(2): only 0..=3 are representable.
     if dq.delta_q_res >= 4 {
         return Err(WriteError::ValueTooWide {
             value: u64::from(dq.delta_q_res),
@@ -551,10 +496,6 @@ fn check_delta_q_params_encodable(dq: DeltaQParams, base_q_idx: u32) -> WriteRes
 ///   segment's stored level triple matches no `levels[..qmNum]` set; if a lossless segment's
 ///   triple is not `[15, 15, 15]`; or if `allow_tcq` / `allow_parity_hiding` disagree with
 ///   their inferred (gated-off) values.
-// The argument list mirrors `parse_lossless_info`'s inputs (every one is needed to re-derive
-// the §5.18.2 lossless state — the sequence view, the quantizer deltas, the QM level table,
-// the delta-q-present gate, the segmentation features, and MaxSegments), so the writer is a
-// faithful inverse and cannot be split without losing that one-to-one correspondence.
 #[allow(clippy::too_many_arguments)]
 pub fn write_lossless_info(
     writer: &mut BitWriter,
@@ -576,8 +517,6 @@ pub fn write_lossless_info(
         max_segments,
     )?;
 
-    // § 5.18.2: for each segment in 0..MaxSegments, when using_qmatrix and the segment is
-    // not lossless, write qm_index f(CeilLog2(qmNum)).
     if qm.using_qmatrix {
         let qm_num = u32::from(qm.pic_qm_num_minus_1) + 1;
         let qm_index_bits = ceil_log2(qm_num);
@@ -588,19 +527,14 @@ pub fn write_lossless_info(
             .take(derived.count)
         {
             if !lossless {
-                // Recovered up front; index is in the coded f(CeilLog2(qmNum)) domain.
                 writer.write_bits(u32::from(qm_index), qm_index_bits)?;
             }
         }
     }
 
-    // § 5.18.2: if ( CodedLossless ) allow_tcq = 0 else if ( choose_tcq_per_frame )
-    // allow_tcq f(1) else allow_tcq = enable_tcq.
     if !derived.coded_lossless && quant.choose_tcq_per_frame {
         writer.write_flag(info.allow_tcq)?;
     }
-    // § 5.18.2: if ( CodedLossless || !enable_parity_hiding || allow_tcq )
-    // allow_parity_hiding = 0 else allow_parity_hiding f(1).
     if !derived.coded_lossless && quant.enable_parity_hiding && !info.allow_tcq {
         writer.write_flag(info.allow_parity_hiding)?;
     }
@@ -636,11 +570,6 @@ fn check_lossless_encodable(
     segmentation: &SegmentationParams,
     max_segments: u8,
 ) -> WriteResult<DerivedLossless> {
-    // write_lossless_info consumes `qm` (its pic_qm_num drives the qm_index field width, its
-    // levels drive the reverse-lookup), so the whole QM table must be a model the § 5.18.6.2
-    // parser could have produced — fully validate it here so reject-before-write holds even
-    // when write_lossless_info is called without a prior write_setup_qm_params (the two entry
-    // points then reject an identical set of non-canonical `qm`).
     check_setup_qm_encodable(qm, quant, segmentation.segmentation_enabled)?;
 
     let count = usize::from(max_segments).min(MAX_SEGMENTS);
@@ -649,9 +578,6 @@ fn check_lossless_encodable(
     let mut has_lossless_segment = false;
     let mut qm_indices = [0u8; MAX_SEGMENTS];
 
-    // Iterate the recovered-index array (and the lossless / level arrays via `zip`) so the
-    // loop never indexes by a bare counter; `take(count)` is the §5.18.2 MaxSegments bound,
-    // already capped at MAX_SEGMENTS so a hostile `max_segments` never reads out of bounds.
     for (segment_id, ((qm_index_slot, &stored_lossless), &stored_levels)) in qm_indices
         .iter_mut()
         .zip(info.lossless_array.iter())
@@ -659,7 +585,6 @@ fn check_lossless_encodable(
         .enumerate()
         .take(count)
     {
-        // § 5.18.2: qindex = get_qindex( 1, segmentId ); LosslessArray[segmentId] = ...
         let qindex =
             get_qindex_ignore_delta_q(quant, quantization.base_q_idx, segmentation, segment_id);
         let lossless = qindex == 0
@@ -670,7 +595,6 @@ fn check_lossless_encodable(
             && i64::from(quantization.delta_q_u_ac) + i64::from(quant.base_uv_ac_delta_q) <= 0
             && i64::from(quantization.delta_q_v_ac) + i64::from(quant.base_uv_ac_delta_q) <= 0;
 
-        // The stored lossless_array entry must match the re-derivation.
         if stored_lossless != lossless {
             return Err(WriteError::NonCanonicalFrameHeader {
                 what: "lossless_array",
@@ -684,28 +608,21 @@ fn check_lossless_encodable(
 
         if qm.using_qmatrix {
             if lossless {
-                // § 5.18.2: SegQMLevel[0..2][segmentId] = 15; no qm_index coded.
                 if stored_levels != [15, 15, 15] {
                     return Err(WriteError::NonCanonicalFrameHeader {
                         what: "seg_qm_level_lossless",
                     });
                 }
             } else {
-                // Canonicalization 3: recover the smallest qm_index reproducing the triple.
                 *qm_index_slot = recover_qm_index(qm, stored_levels)?;
             }
         } else if stored_levels != [0, 0, 0] {
-            // § 5.18.2: when using_qmatrix is 0 the loop never writes SegQMLevel, so the parser
-            // leaves it zeroed; a stored non-zero triple could not have been produced.
             return Err(WriteError::NonCanonicalFrameHeader {
                 what: "seg_qm_level_disabled",
             });
         }
     }
 
-    // § 5.18.2: the loop runs only for segmentId < MaxSegments, so the parser leaves every
-    // entry at or beyond `count` at its default (LosslessArray = false, SegQMLevel = 0). A
-    // stored model with non-default tail entries could not have been produced.
     if info.lossless_array.iter().skip(count).any(|&l| l)
         || info
             .seg_qm_levels
@@ -718,7 +635,6 @@ fn check_lossless_encodable(
         });
     }
 
-    // The stored coded_lossless / has_lossless_segment must match the re-derivation.
     if info.coded_lossless != coded_lossless {
         return Err(WriteError::NonCanonicalFrameHeader {
             what: "coded_lossless",
@@ -730,7 +646,6 @@ fn check_lossless_encodable(
         });
     }
 
-    // allow_tcq: inferred unless !CodedLossless && choose_tcq_per_frame.
     let tcq_coded = !coded_lossless && quant.choose_tcq_per_frame;
     if !tcq_coded {
         let inferred = if coded_lossless {
@@ -742,7 +657,6 @@ fn check_lossless_encodable(
             return Err(WriteError::NonCanonicalFrameHeader { what: "allow_tcq" });
         }
     }
-    // allow_parity_hiding: inferred 0 when CodedLossless || !enable_parity_hiding || allow_tcq.
     let ph_coded = !coded_lossless && quant.enable_parity_hiding && !info.allow_tcq;
     if !ph_coded && info.allow_parity_hiding {
         return Err(WriteError::NonCanonicalFrameHeader {
@@ -769,14 +683,10 @@ fn check_lossless_encodable(
 /// construction. Returns a typed reject (never panics) when no level reproduces the triple —
 /// a constructed model the parser could not have produced.
 fn recover_qm_index(qm: &SetupQmParams, stored: [u8; 3]) -> WriteResult<u8> {
-    // 2^CeilLog2(qmNum) is the size of the qm_index f-field's value domain; for qmNum in
-    // 1..=4 it is 1, 2, or 4, always <= MAX_PIC_QM_NUM, so the `min` never truncates a
-    // parser-reachable index.
     let qm_index_bits = ceil_log2(u32::from(qm.pic_qm_num_minus_1) + 1);
     let coded_domain = (1usize << qm_index_bits).min(MAX_PIC_QM_NUM);
     for (i, level) in qm.levels.iter().enumerate().take(coded_domain) {
         if [level.qm_y, level.qm_u, level.qm_v] == stored {
-            // i < coded_domain <= MAX_PIC_QM_NUM (4), so the cast never truncates.
             return Ok(i as u8);
         }
     }
@@ -785,9 +695,6 @@ fn recover_qm_index(qm: &SetupQmParams, stored: [u8; 3]) -> WriteResult<u8> {
     })
 }
 
-// The unit/byte-exact/reject tests and the property tests live in sibling files (each kept
-// under the advisory source-line limit); `include!` pastes them into this module so their
-// `super::*` resolves to the writers and private helpers above.
 #[cfg(test)]
 include!("frame_quant_tests.rs");
 #[cfg(test)]

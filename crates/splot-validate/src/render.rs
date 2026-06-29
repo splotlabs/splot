@@ -169,8 +169,6 @@ impl ValidationReport {
             total,
             omitted: total - shown,
         });
-        // When the list is capped, include the full counts so a consumer reading
-        // only the capped array still sees the true error/warning totals.
         let summary = truncation.is_some().then(|| self.build_summary(conformant));
         RenderedReport {
             summary,
@@ -225,7 +223,6 @@ mod tests {
             text.contains("... 2 more diagnostic(s) not shown (--max-diagnostics 1)"),
             "{text}"
         );
-        // Summary counts stay truthful (computed from the full report).
         assert!(text.contains("2 error(s), 1 warning(s), 0 info"), "{text}");
         assert!(text.contains("NOT conformant"), "{text}");
     }
@@ -307,9 +304,6 @@ mod tests {
 
     #[test]
     fn acceptable_override_drives_conformance() {
-        // A warning-only report is conformant by the error-only rule, but under
-        // `--strict` it is not acceptable; `acceptable` makes the rendered
-        // conformance match the exit code.
         let mut report = ValidationReport::new();
         report.push(Diagnostic::warning("obu-header/test-warning", "a warning"));
         assert!(report.is_conformant());
@@ -323,7 +317,6 @@ mod tests {
         assert!(text.contains("NOT conformant"), "{text}");
         assert!(!report.rendered(&strict).summary.unwrap().conformant);
 
-        // Default (acceptable: None) falls back to is_conformant → conformant.
         let default = RenderOptions {
             summary_only: true,
             ..RenderOptions::default()
@@ -347,7 +340,6 @@ mod tests {
         let rendered = report.rendered(&opts);
         assert_eq!(rendered.diagnostics.len(), 1);
         assert!(rendered.truncation.is_some());
-        // The full counts are present even though the array is capped.
         let summary = rendered
             .summary
             .expect("capped output carries the full summary");

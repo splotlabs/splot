@@ -1,14 +1,5 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
-//
-// Fuzz target: the public AV2 §8.2 symbol decoder must return typed results,
-// never panic, on bounded arbitrary tile-payload bytes and bounded valid or
-// malformed caller-supplied CDF rows. This target intentionally does not perform
-// §8.3 syntax-element CDF selection, tile-payload traversal, reconstruction,
-// runtime output, filesystem I/O, or AVM/dav2d invocation. Run with:
-//
-//     cargo install cargo-fuzz --locked
-//     cargo +nightly fuzz run symbol_decoder_bytes
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;

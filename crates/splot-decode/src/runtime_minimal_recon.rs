@@ -66,11 +66,6 @@ fn reconstruct_luma_dc_chroma_h_pred_8bit420_64x64() -> Result<DecodedFrame<u8>>
     let luma_block = IntraSquareBlockSize::new(MINIMAL_LUMA_LOG2_SIZE)?;
     workspace.predict_intra_dc_square(PlaneId::Y, 0, 0, luma_block)?;
 
-    // AV2 §7.13.2.1 uses (1 << (BitDepth - 1)) + 1 for LeftCol when no
-    // neighbor is available. The traced top-left chroma blocks use H_PRED
-    // (pAngle 180 via §7.13.2.8 and §9.2), so prepare that left edge
-    // explicitly for this narrow minimal tier instead of claiming broad edge
-    // preparation.
     let chroma_block = IntraRectBlockSize::new(MINIMAL_CHROMA_LOG2_SIZE, MINIMAL_CHROMA_LOG2_SIZE)?;
     let chroma_left = [TOP_LEFT_CHROMA_H_PRED_LEFT_FALLBACK_SAMPLE; MINIMAL_CHROMA_HEIGHT];
     let mut chroma_prediction = [0u8; MINIMAL_CHROMA_WIDTH * MINIMAL_CHROMA_HEIGHT];
@@ -187,12 +182,6 @@ pub(crate) fn reconstruct_general_intra_block_rect_into<T: ReconSample>(
     let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
     let edges = workspace.intra_dc_edges_for_rect(plane_id, x, y, block_size)?;
     let dc = predict_intra_dc_rect_value(bit_depth, block_size, edges.as_dc_edges())?;
-    // §7.13.2.10 produces a flat DC prediction; when the §7.13.2.12 IBP DC gate
-    // (`enable_ibp && useDip == 0 && DC_PRED && !(w == 4 && h == 4) && (plane 0 ||
-    // UVMode != CfL)`) holds, blend the edge rows/columns toward the reconstructed
-    // neighbours BEFORE adding the residual. The blend is a validated no-op over
-    // uniform neighbours (the value blends toward itself), so a block whose left /
-    // above column is flat reconstructs identically with or without it.
     let prediction = if ibp_dc {
         let mut pred = vec![dc; width * height];
         apply_intra_ibp_dc_rect(bit_depth, block_size, edges.as_dc_edges(), &mut pred, width)?;
@@ -246,15 +235,12 @@ pub(crate) fn reconstruct_inter_block_residual_into<T: ReconSample>(
     bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     if block.all_zero {
-        // §5.20.7.27 all_zero == 1: no residual, the MC prediction is the
-        // reconstruction. Leave the workspace prediction in place.
         return Ok(());
     }
     let side = 1usize << log2_side;
     let log2 = u8::try_from(log2_side).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2, log2)?;
     let rect = PlaneRect::new(x, y, side, side)?;
-    // Gather the §7.13.3.18 motion-compensated prediction for this block.
     let mut prediction = Vec::with_capacity(side * side);
     for row in workspace.rect_rows(plane_id, rect)? {
         prediction.extend_from_slice(row);
@@ -309,12 +295,9 @@ pub(crate) fn reconstruct_intrabc_block_residual_rect_into<T: ReconSample>(
     let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
     if block.all_zero {
-        // §5.20.7.27 all_zero == 1: no residual, the displaced copy IS the
-        // reconstruction. Leave the workspace prediction in place.
         return Ok(());
     }
     let rect = PlaneRect::new(x, y, width, height)?;
-    // Gather the §7.13.3.18 displaced-copy prediction for this transform.
     let mut prediction = Vec::with_capacity(width * height);
     for row in workspace.rect_rows(plane_id, rect)? {
         prediction.extend_from_slice(row);
@@ -421,15 +404,8 @@ fn reconstruct_general_intra_smooth_over_edges_into<T: ReconSample>(
     let log2 = u8::try_from(log2_side).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2, log2)?;
     let edges = workspace.intra_dc_edges_for_rect(plane_id, x, y, block_size)?;
-    // §7.13.2.1 `haveLeft` / `haveAbove`: in this single-tile minimal path a
-    // reconstructed neighbour exists exactly when the block is not at the frame
-    // edge, which `intra_dc_edges_for_rect` reports as a present left/above edge.
     let have_left = edges.left_samples().is_some();
     let have_above = edges.above_samples().is_some();
-    // §7.13.2.1 top-right sentinel `AboveRow[w]`: when haveAbove and the
-    // above-right is decoded (`num4AboveRight > 0`), read the real reconstructed
-    // `CurrFrame[plane][y-1][Min(aboveLimit, x+w)]`; otherwise the no-above
-    // fallback / clamped last in-block sample is used (built below).
     let above_right_sentinel = resolve_smooth_above_right_sentinel(
         workspace,
         plane_id,
@@ -495,12 +471,6 @@ fn build_smooth_edges<T: ReconSample>(
     bit_depth: BitDepth,
 ) -> (Vec<T>, Vec<T>) {
     let edge_len = side + 1;
-    // §7.13.2.1 `LeftCol[i]`: reconstructed left column when haveLeft; else when
-    // haveAbove, the above neighbour's first sample; else the no-left fallback.
-    // The bottom-left sentinel `LeftCol[h]` keeps the clamped last left sample:
-    // in raster decode order a full-superblock block's below-left is never
-    // decoded yet (`num4BelowLeft == 0`), so the spec value
-    // `CurrFrame[plane][Min(maxY, y+h)][x-1]` equals the clamped last sample.
     let left = match (have_left, left_neighbour) {
         (true, Some(samples)) => fill_edge_from_neighbour(samples, edge_len, bit_depth),
         _ if have_above => {
@@ -511,8 +481,6 @@ fn build_smooth_edges<T: ReconSample>(
         }
         _ => vec![noneighbour_left::<T>(bit_depth); edge_len],
     };
-    // §7.13.2.1 `AboveRow[i]`: reconstructed above row when haveAbove; else when
-    // haveLeft, the left neighbour's first sample; else the no-above fallback.
     let mut above = match (have_above, above_neighbour) {
         (true, Some(samples)) => fill_edge_from_neighbour(samples, edge_len, bit_depth),
         _ if have_left => {
@@ -523,9 +491,6 @@ fn build_smooth_edges<T: ReconSample>(
         }
         _ => vec![noneighbour_above::<T>(bit_depth); edge_len],
     };
-    // §7.13.2.1 top-right sentinel `AboveRow[w]` (index `side`): overwrite the
-    // clamped last in-block sample with the real reconstructed above-right sample
-    // when the caller resolved one (above-right decoded, in-frame).
     if let Some(sentinel) = above_right_sentinel
         && let Some(slot) = above.get_mut(side)
     {
@@ -562,10 +527,6 @@ fn resolve_smooth_above_right_sentinel<T: ReconSample>(
     if !have_above || num4_above_right == 0 {
         return Ok(None);
     }
-    // §7.13.2.1: maxX = ((MiCols * MI_SIZE) >> SubsamplingX) - 1, i.e. the chroma
-    // frame right column. The chroma workspace plane storage width equals the
-    // chroma frame width for these multiple-of-64 frames, so its last column is
-    // `maxX`.
     let plane = workspace.plane(plane_id)?;
     let storage_width = plane.storage_size().width();
     let Some(max_x) = storage_width.checked_sub(1) else {
@@ -575,13 +536,7 @@ fn resolve_smooth_above_right_sentinel<T: ReconSample>(
         return Ok(None);
     };
     let x_plus_w = x.saturating_add(side);
-    // aboveLimit = Min(maxX, x + w + 4 * num4AboveRight - 1). Since
-    // num4AboveRight >= 1, `x + w + 4*num4AboveRight - 1 >= x + w`, so the
-    // sentinel column `Min(aboveLimit, x + w)` simplifies to `Min(maxX, x + w)`.
     let sentinel_col = x_plus_w.min(max_x);
-    // When the block already touches the frame right edge (`x + w > maxX`) the
-    // sentinel collapses to the clamped last in-block sample (`maxX` would be the
-    // block's own last column), which the clamp already supplies; leave it.
     if x_plus_w > max_x {
         return Ok(None);
     }
@@ -787,8 +742,6 @@ fn predict_directional_noneighbour<T: ReconSample>(
     bit_depth: BitDepth,
 ) -> core::result::Result<Vec<T>, GeneralIntraResidualError> {
     let angle = middle_directional_angle(mode)?;
-    // Logical `AboveRow[-1..w)` and `LeftCol[-1..h)` (length side + 1): index 0
-    // is the corner; index `k + 1` is logical `k`.
     let mut above = vec![noneighbour_above::<T>(bit_depth); side + 1];
     let mut left = vec![noneighbour_left::<T>(bit_depth); side + 1];
     above[0] = noneighbour_corner::<T>(bit_depth);
@@ -851,18 +804,8 @@ pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into<T: Reco
     let log2 = u8::try_from(log2_side).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2, log2)?;
     let edges = workspace.intra_dc_edges_for_rect(plane_id, x, y, block_size)?;
-    // §7.13.2.1 `haveLeft` / `haveAbove`: a reconstructed neighbour exists exactly
-    // when the block is not at the frame edge, which `intra_dc_edges_for_rect`
-    // reports as a present left/above edge.
     let have_left = edges.left_samples().is_some();
     let have_above = edges.above_samples().is_some();
-    // §7.13.2.1 corner AboveRow[-1] == LeftCol[-1] for the `haveLeft && haveAbove`
-    // arm is the real reconstructed diagonally-above-left sample
-    // CurrFrame[plane][y-1][x-1] (aboveMrlIndex == 0 at the superblock boundary,
-    // MrlIndex == 0). It lies outside the block's immediate above row / left column,
-    // so it is read explicitly here; `intra_dc_edges_for_rect` does not return it.
-    // The other arms ignore `above_corner` (they derive the corner from the above row
-    // / left column), so only read it when both neighbours are present.
     let above_corner = if have_left && have_above {
         match (x.checked_sub(1), y.checked_sub(1)) {
             (Some(cx), Some(cy)) => Some(workspace.reconstructed_sample(plane_id, cx, cy)?),
@@ -882,11 +825,6 @@ pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into<T: Reco
     )?;
     let angle = middle_directional_angle(mode)?;
     let mut prediction = vec![T::default(); side * side];
-    // §7.13.2.8 `enableIdif = plane == 0`: luma uses the IDIF 4-tap (which for
-    // D135 `shift == 0` is the same sample copy as bilinear, but for D157 `shift
-    // != 0` genuinely interpolates); chroma uses the `enableIdif == 0` bilinear
-    // branch. The chroma callers only pass D135 (shift == 0), so both branches
-    // agree there, but the plane dispatch keeps the spec contract exact.
     if matches!(plane_id, PlaneId::Y) {
         let (left_idif, above_idif) =
             extend_directional_middle_idif_edges(&left, &above, bit_depth);
@@ -964,34 +902,20 @@ pub(crate) fn reconstruct_general_intra_luma_paeth_neighbour_block_into<T: Recon
     let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
     let edges = workspace.intra_dc_edges_for_rect(plane_id, x, y, block_size)?;
-    // The caller's `paeth_neighbours_reconstructed` gate guarantees BOTH the above
-    // row and the left column are real reconstructed neighbours; treat a missing
-    // edge as a gate violation rather than synthesizing a fallback (PAETH only ever
-    // reaches here in the two-sided config). Reuse the directional "missing real
-    // above-neighbour edge / §7.13.2.1 corner" guard — the same defensive class.
     let (Some(above_neighbour), Some(left_neighbour)) =
         (edges.above_samples(), edges.left_samples())
     else {
         return Err(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge);
     };
-    // §7.13.2.1 corner `AboveRow[-1] = CurrFrame[plane][y-1][x-1]` for the
-    // `haveAbove && haveLeft` arm — the real reconstructed diagonal above-left
-    // sample, read exactly as the §7.13.2.8 middle-directional neighbour path does.
     let (Some(corner_x), Some(corner_y)) = (x.checked_sub(1), y.checked_sub(1)) else {
         return Err(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge);
     };
     let top_left = workspace.reconstructed_sample(plane_id, corner_x, corner_y)?;
-    // §7.13.2.2 reads exactly `AboveRow[0..w)` and `LeftCol[0..h)`; copy the
-    // reconstructed neighbour samples into width / height-sized edges.
     let above: Vec<T> = above_neighbour.iter().take(width).copied().collect();
     let left: Vec<T> = left_neighbour.iter().take(height).copied().collect();
     if above.len() != width || left.len() != height {
         return Err(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge);
     }
-    // The caller gates this helper to an `all_zero` leaf (zero residual), so the
-    // bare §7.13.2.2 prediction IS the reconstruction. A non-`all_zero` PAETH
-    // residual (which would need the §5.20.7.29 tx-type / IST coupling) stays
-    // deferred upstream, so no dequant / inverse-transform runs here.
     let mut prediction = vec![T::default(); width * height];
     predict_intra_paeth_rect_into(
         bit_depth,
@@ -1079,19 +1003,11 @@ pub(crate) fn reconstruct_general_intra_one_sided_neighbour_block_into<T: ReconS
     bit_depth: BitDepth,
     edge_filter: OneSidedEdgeFilter,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
-    // §7.13.2.8 is non-square-aware: `w == Tx_Width`, `h == Tx_Height` are
-    // independent. The zone-1 above edge has length `w + h` (numPx) and the
-    // above-right extent `aboveLimit = x + w + 4*num4AboveRight - 1` keys on `w`.
     let width = 1usize << log2_width;
     let height = 1usize << log2_height;
     let log2_w = u8::try_from(log2_width).unwrap_or(u8::MAX);
     let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
-    // §7.13.2.1 above row + above-right; the corner is the real diagonally-above-
-    // left sample. The zone-1 block is gated to a row>0, non-first-column position
-    // (`haveLeft && haveAbove`), so both the above row and the corner are real. The
-    // §7.13.2.7 corner / edge filter (when `edge_filter` is non-default) rewrites
-    // the raw edge in place before the §7.13.2.8 prediction reads it.
     let above_idif = build_one_sided_above_idif_edge(
         workspace,
         plane_id,
@@ -1103,10 +1019,6 @@ pub(crate) fn reconstruct_general_intra_one_sided_neighbour_block_into<T: ReconS
         edge_filter,
     )?;
     let mut prediction = vec![T::default(); width * height];
-    // §7.13.2.8 `enableIdif = plane == 0`: luma uses the IDIF 4-tap; chroma uses
-    // the `enableIdif == 0` bilinear one-sided branch. For D45 (`shift == 0`) both
-    // reduce to the same sample copy `AboveRow[base]`, so the result is bit-exact
-    // either way, but the plane dispatch keeps the spec contract exact.
     if matches!(plane_id, PlaneId::Y) {
         predict_intra_directional_angle_rect_one_sided_idif_into(
             bit_depth,
@@ -1117,9 +1029,6 @@ pub(crate) fn reconstruct_general_intra_one_sided_neighbour_block_into<T: ReconS
             width,
         )?;
     } else {
-        // The chroma bilinear one-sided predictor reads the logical above edge
-        // `AboveRow[0..w+h)` (length `w + h`); drop the IDIF `-2`/`-1` corner
-        // prefix (slice indices 0,1) to recover that view.
         let above_bilinear = &above_idif[2..2 + width + height];
         predict_intra_directional_angle_rect_into(
             bit_depth,
@@ -1178,12 +1087,6 @@ fn build_one_sided_above_idif_edge<T: ReconSample>(
     let above_row = y
         .checked_sub(1)
         .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
-    // §7.13.2.1 maxX = ((MiCols * MI_SIZE) >> SubsamplingX) - 1, i.e. the plane's
-    // last reconstructed column. aboveLimit = Min(maxX, x + w + 4*num4AboveRight - 1)
-    // (AVM reconintra.c `num_top_pixels_needed = txwpx + (need_right ? txhpx : 0)`;
-    // the in-block span is `w == txwpx`, the above-right extension `4 * num4`). The
-    // corner `AboveRow[-1] = CurrFrame[plane][y-1][x-1]`, and the in-row samples
-    // walk the above row `CurrFrame[plane][y-1][Min(aboveLimit, x + i)]`.
     let max_x = workspace
         .plane(plane_id)?
         .storage_size()
@@ -1236,8 +1139,7 @@ fn build_one_sided_idif_edge<T: ReconSample>(
         .checked_add(5)
         .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
     let mut edge = vec![T::default(); edge_len];
-    edge[1] = corner()?; // logical -1
-    // In-edge samples logical 0..=maxBase -> slice indices 2..=maxBase+2.
+    edge[1] = corner()?;
     for i in 0..=max_base {
         let slot = i
             .checked_add(2)
@@ -1287,15 +1189,11 @@ fn finalize_one_sided_idif_edge<T: ReconSample>(
         let filtered = filter_intra_edge_corner(opposite, corner, own0);
         edge[1] = T::try_from_u16(filtered)?;
     }
-    // §7.13.2.18 filters the corner + `num_px` reference samples starting at the
-    // logical `[-1]` corner (`slice[1]`); `apply_intra_edge_filter` treats its
-    // `edge[0]` as the corner (read, never written).
     if filter.num_px > 0
         && let Some(window) = edge.get_mut(1..)
     {
         apply_intra_edge_filter(window, filter.num_px, filter.strength)?;
     }
-    // §7.13.2.8 extension from the (possibly filtered) edge.
     edge[0] = edge[1];
     let last_in_edge = edge[max_base + 2];
     if let Some(slot) = edge.get_mut(max_base + 3) {
@@ -1356,21 +1254,12 @@ pub(crate) fn reconstruct_general_intra_one_sided_left_neighbour_block_into<T: R
     bit_depth: BitDepth,
     edge_filter: OneSidedEdgeFilter,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
-    // §7.13.2.8 is non-square-aware: `w == Tx_Width`, `h == Tx_Height` are
-    // independent. The zone-3 left edge has length `w + h` (numPx) and the
-    // below-left extent `leftLimit = y + h + 4*num4BelowLeft - 1` keys on `h`.
     let width = 1usize << log2_width;
     let height = 1usize << log2_height;
     let log2_w = u8::try_from(log2_width).unwrap_or(u8::MAX);
     let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
     let angle = IntraDirectionalAngle::try_from_p_angle(p_angle)?;
-    // §7.13.2.1 left column + below-left; at the gated first-superblock-row,
-    // non-first-column position (`haveAbove == 0 && haveLeft == 1`) the corner is
-    // `CurrFrame[plane][y][x-1]` and the left column is the real reconstructed
-    // right column of the already-decoded left superblock. The §7.13.2.7 corner /
-    // edge filter (when `edge_filter` is non-default) rewrites the raw edge in
-    // place before the §7.13.2.8 prediction reads it.
     let left_idif = build_one_sided_left_idif_edge(
         workspace,
         plane_id,
@@ -1382,9 +1271,6 @@ pub(crate) fn reconstruct_general_intra_one_sided_left_neighbour_block_into<T: R
         edge_filter,
     )?;
     let mut prediction = vec![T::default(); width * height];
-    // §7.13.2.8 `enableIdif = plane == 0`: luma uses the zone-3 IDIF 4-tap; chroma
-    // uses the `enableIdif == 0` bilinear one-sided branch (the spec-mandated
-    // chroma branch). Both read the same prepared left edge.
     if matches!(plane_id, PlaneId::Y) {
         predict_intra_directional_angle_rect_one_sided_idif_into(
             bit_depth,
@@ -1395,9 +1281,6 @@ pub(crate) fn reconstruct_general_intra_one_sided_left_neighbour_block_into<T: R
             width,
         )?;
     } else {
-        // The chroma bilinear one-sided predictor reads the logical left edge
-        // `LeftCol[0..w+h)` (length `w + h`); drop the IDIF `-2`/`-1` corner
-        // prefix (slice indices 0,1) to recover that view.
         let left_bilinear = &left_idif[2..2 + width + height];
         predict_intra_directional_angle_rect_into(
             bit_depth,
@@ -1455,12 +1338,6 @@ fn build_one_sided_left_idif_edge<T: ReconSample>(
     let left_col = x
         .checked_sub(1)
         .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
-    // §7.13.2.1 maxY = ((MiRows * MI_SIZE) >> SubsamplingY) - 1, i.e. the plane's
-    // last reconstructed row. leftLimit = Min(maxY, y + h + 4*num4BelowLeft - 1)
-    // (AVM reconintra.c `num_left_pixels_needed = txhpx + (need_bottom ? txwpx : 3)`;
-    // the in-block span is `h == txhpx`, the below-left extension `4 * num4`). At
-    // `haveAbove == 0 && haveLeft == 1` the corner `LeftCol[-1] = CurrFrame[y][x-1]`,
-    // and the in-column samples walk `CurrFrame[Min(leftLimit, y + i)][x-1]`.
     let max_y = workspace
         .plane(plane_id)?
         .storage_size()
@@ -1484,11 +1361,6 @@ fn build_one_sided_left_idif_edge<T: ReconSample>(
     )
 }
 
-// (zone-3 reconstructor `reconstruct_general_intra_one_sided_left_neighbour_block_into`
-// is SQUARE OR NON-SQUARE: `log2_width`/`log2_height` are independent
-// `Tx_Width`/`Tx_Height` log2s; `maxBaseY == w + h - 1`, `leftLimit == y + h +
-// 4*num4BelowLeft - 1` keys on `h`, and the IDIF predictor iterates `h` rows x `w`
-// columns.)
 /// Reconstructs one neighbour-having CARDINAL directional luma block — `V_PRED`
 /// (§ 7.13.2.8 step 4, pAngle 90) or `H_PRED` (step 5, pAngle 180) — over the
 /// § 7.13.2.1 edge read from the partially-built frame's **real reconstructed
@@ -1544,26 +1416,6 @@ pub(crate) fn reconstruct_general_intra_cardinal_neighbour_block_into<T: ReconSa
     let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
     let edges = workspace.intra_dc_edges_for_rect(plane_id, x, y, block_size)?;
-    // §7.13.2.8 step 4/5 read ONLY the above row (V) or the left column (H). Build
-    // exactly that rectangular edge from the real reconstructed neighbour
-    // (`intra_dc_edges_for_rect` returns the W-wide above row and the H-tall left
-    // column). `predict_intra_cardinal_directional_rect_into` is fully rectangular:
-    // V copies the W-wide above row into every one of the H rows; H fills each of
-    // the H rows with one of the H left samples.
-    //
-    // When the required real edge is absent at a frame/tile boundary but the
-    // ORTHOGONAL neighbour exists, §7.13.2.1 synthesizes the missing edge as a flat
-    // repeat of one orthogonal sample (`MrlIndex == 0`):
-    // * V_PRED, `haveAbove == 0 && haveLeft == 1` (lines 5286-5287):
-    //   `AboveRow[i] = CurrFrame[plane][y][x-1]` — the block's top-left left
-    //   neighbour, which is `left[0]` of the H-tall reconstructed left column.
-    // * H_PRED, `haveLeft == 0 && haveAbove == 1` (lines 5272-5273):
-    //   `LeftCol[i] = CurrFrame[plane][y-1][x]` — the block's top-left above
-    //   neighbour, which is `above[0]` of the W-wide reconstructed above row.
-    // The cardinal copy of a flat synthesized edge is a flat block (the §7.13.2.1
-    // `!haveAbove`/`!haveLeft` no-neighbour midpoint fallback is a SEPARATE path: it
-    // applies only when the orthogonal neighbour is ALSO absent, which the admission
-    // gate excludes). The synthesized edge is owned here so it outlives the borrow.
     let synthesized_edge;
     let cardinal_edges = match direction {
         IntraCardinalDirection::Vertical => {
@@ -1667,19 +1519,10 @@ fn build_directional_middle_edges<T: ReconSample>(
     bit_depth: BitDepth,
 ) -> core::result::Result<(Vec<T>, Vec<T>), GeneralIntraResidualError> {
     let edge_len = side + 1;
-    // §7.13.2.1 LeftCol[i] (logical 0..side-1 -> slice index 1..=side) and the
-    // corner LeftCol[-1] (slice index 0).
     let mut left = Vec::with_capacity(edge_len);
     let mut above = Vec::with_capacity(edge_len);
     match (have_left, have_above) {
         (true, true) => {
-            // §7.13.2.1 haveLeft && haveAbove (aboveMrlIndex == 0 at the superblock
-            // boundary, MrlIndex == 0): LeftCol[i] = CurrFrame[plane][y+i][x-1] (the
-            // real reconstructed left column), AboveRow[i] =
-            // CurrFrame[plane][y-1][x+i] (the real reconstructed above row), and the
-            // corner AboveRow[-1] = LeftCol[-1] = CurrFrame[plane][y-1][x-1] (the real
-            // diagonally-above-left sample, supplied by the caller). D135 reads the
-            // corner on its main diagonal (above_base == -1, shift == 0).
             let Some(corner) = above_corner else {
                 return Err(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge);
             };
@@ -1701,12 +1544,6 @@ fn build_directional_middle_edges<T: ReconSample>(
             }
         }
         (false, true) => {
-            // §7.13.2.1 !haveLeft && haveAbove (aboveMrlIndex == 0, MrlIndex == 0):
-            // AboveRow[i] = CurrFrame[plane][y-1][x+i] (the real reconstructed above
-            // row), LeftCol[i] = CurrFrame[plane][y-1][x] (the first above sample,
-            // repeated), and the corner AboveRow[-1] = LeftCol[-1] =
-            // CurrFrame[plane][y-1][x] = AboveRow[0] (the first above sample). No
-            // separate corner read is needed.
             let above_samples = above_neighbour.unwrap_or(&[]);
             let seed = above_samples
                 .first()
@@ -1724,10 +1561,6 @@ fn build_directional_middle_edges<T: ReconSample>(
             }
         }
         (true, false) => {
-            // §7.13.2.1 haveLeft && !haveAbove: AboveRow[i] = CurrFrame[plane][y][x-1]
-            // (the first left sample, repeated), corner AboveRow[-1] = LeftCol[-1] =
-            // CurrFrame[plane][y][x-1] (also the first left sample). LeftCol[i] is the
-            // reconstructed left column.
             let left_samples = left_neighbour.unwrap_or(&[]);
             let seed = left_samples
                 .first()
@@ -1745,8 +1578,6 @@ fn build_directional_middle_edges<T: ReconSample>(
             }
         }
         (false, false) => {
-            // §7.13.2.1 no-neighbour fallbacks (handled by the first-block path, but
-            // kept total here): AboveRow 127, LeftCol 129, shared corner 128.
             left.push(noneighbour_corner::<T>(bit_depth));
             above.push(noneighbour_corner::<T>(bit_depth));
             for _ in 0..side {
@@ -1782,9 +1613,6 @@ fn middle_directional_angle(
         SupportedDirectionalLumaMode::D113 => Ok(IntraMiddleDirectionalAngle::D113),
         SupportedDirectionalLumaMode::D135 => Ok(IntraMiddleDirectionalAngle::D135),
         SupportedDirectionalLumaMode::D157 => Ok(IntraMiddleDirectionalAngle::D157),
-        // The cardinal copy modes and the one-sided angles (zone-1 D45,
-        // zone-3 D203) use dedicated predictors and never reach the middle-angle
-        // path; return an error (defensive: the dispatch routes them away first).
         SupportedDirectionalLumaMode::Vertical
         | SupportedDirectionalLumaMode::Horizontal
         | SupportedDirectionalLumaMode::D45
@@ -1814,7 +1642,6 @@ fn extend_directional_middle_idif_edges<T: ReconSample>(
 }
 
 fn extend_one_middle_idif_edge<T: ReconSample>(edge: &[T], bit_depth: BitDepth) -> Vec<T> {
-    // `edge` is `Edge[-1..side)`: index 0 = `-1` (corner), index `k + 1` = k.
     let corner = edge
         .first()
         .copied()
@@ -1900,7 +1727,6 @@ mod tests {
             eob: 0,
             quant: Vec::new(),
             intra_ist: None,
-            // §3 `DCT_DCT` index 0; a skip block inverts no residual.
             plane_tx_type: 0,
         }
     }
@@ -1947,8 +1773,6 @@ mod tests {
     /// MASK a transpose.
     #[test]
     fn rect_cardinal_vertical_64x32_copies_wide_above_row_per_row() {
-        // Workspace tall/wide enough: the block sits at y=64 so it has a real above
-        // row at y=63, x[0,64). Build a non-flat above row (x + 100, distinct per x).
         let mut ws = new_general_intra_workspace::<u8>(64, 128, BitDepth::Eight).unwrap();
         let above_row: Vec<u8> = (0..64).map(|x| 100 + x as u8).collect();
         lay_above_row(&mut ws, 63, 6, &above_row);
@@ -1987,7 +1811,6 @@ mod tests {
     #[test]
     fn rect_cardinal_horizontal_32x64_fills_each_row_from_tall_left_column() {
         let mut ws = new_general_intra_workspace::<u8>(128, 64, BitDepth::Eight).unwrap();
-        // Block at x=64, y=0: real left column at x=63, y[0,64) (non-flat per row).
         let left_col: Vec<u8> = (0..64).map(|y| 50 + y as u8).collect();
         lay_left_col(&mut ws, 63, 6, &left_col);
 
@@ -2029,7 +1852,6 @@ mod tests {
     #[test]
     fn rect_cardinal_vertical_64x32_no_above_fallback_is_flat_left_corner() {
         let mut ws = new_general_intra_workspace::<u8>(128, 64, BitDepth::Eight).unwrap();
-        // Block at x=64, y=0 (frame top): non-flat left column at x=63, y[0,32).
         let left_col: Vec<u8> = (0..32).map(|y| 70 + y as u8).collect();
         lay_left_col(&mut ws, 63, 5, &left_col);
 
@@ -2048,7 +1870,6 @@ mod tests {
         )
         .unwrap();
 
-        // Every sample equals left[0] (= CurrFrame[0][63] = 70), flat over 64x32.
         for row in 0..32 {
             for col in 0..64 {
                 assert_eq!(
@@ -2068,7 +1889,6 @@ mod tests {
     #[test]
     fn rect_cardinal_horizontal_32x64_no_left_fallback_is_flat_above_corner() {
         let mut ws = new_general_intra_workspace::<u8>(64, 128, BitDepth::Eight).unwrap();
-        // Block at x=0, y=64 (frame left edge): non-flat above row at y=63, x[0,32).
         let above_row: Vec<u8> = (0..32).map(|x| 80 + x as u8).collect();
         lay_above_row(&mut ws, 63, 5, &above_row);
 
@@ -2087,7 +1907,6 @@ mod tests {
         )
         .unwrap();
 
-        // Every sample equals above[0] (= CurrFrame[63][0] = 80), flat over 32x64.
         for row in 0..64 {
             for col in 0..32 {
                 assert_eq!(
@@ -2128,14 +1947,8 @@ mod tests {
     /// ac0ej3 oracle (all `68`) would MASK every one of those mix-ups.
     #[test]
     fn rect_paeth_8x16_uses_above_left_and_distinct_corner() {
-        // Block at (16, 16): real above row at y=15 over x[16,24), real left column
-        // at x=15 over y[16,32), and corner at (15, 15). Lay the above-NEIGHBOUR
-        // block at (16, 12) so its bottom row y=15 carries `above[j]`, and the
-        // left-NEIGHBOUR block at (12, 15) so its right column x=15 carries the
-        // corner (row 15) and `left[i]` (rows 16..32). Build a 64x64 workspace.
         let mut ws = new_general_intra_workspace::<u8>(64, 64, BitDepth::Eight).unwrap();
 
-        // Above row: 8 distinct values over x[16,24).
         let above: Vec<u8> = (0..8).map(|j| 30 + 7 * j as u8).collect();
         let above_block: Vec<u8> = (0..4).flat_map(|_| above.iter().copied()).collect();
         ws.write_rect_block(
@@ -2147,11 +1960,6 @@ mod tests {
         )
         .unwrap();
 
-        // Left column at x=15: a DISTINCT corner at y=15 plus 16 distinct left
-        // samples over y[16,32). Write a 4-wide x 32-tall block at (12, 0) whose
-        // rightmost column x=15 carries: rows 0..15 arbitrary, row 15 = corner 200,
-        // rows 16..32 = left[i]. (Lower rows are overwritten by the above block only
-        // over x[16,24); x=15 stays as written here.)
         let corner: u8 = 200;
         let left: Vec<u8> = (0..16).map(|i| 40 + 5 * i as u8).collect();
         let mut left_block = vec![0u8; 4 * 32];
@@ -2170,7 +1978,6 @@ mod tests {
         )
         .unwrap();
 
-        // Sanity: the laid neighbours read back as intended.
         assert_eq!(ws.reconstructed_sample(PlaneId::Y, 15, 15).unwrap(), corner);
         assert_eq!(
             ws.reconstructed_sample(PlaneId::Y, 16, 15).unwrap(),

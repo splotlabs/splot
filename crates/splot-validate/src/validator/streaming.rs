@@ -85,8 +85,6 @@ fn run_stream<R: Read>(
     let checks = default_checks();
     let mut context = ValidatorContext::default();
 
-    // Diagnostics that the in-memory runner emits *after* `finish()`, accumulated
-    // here so streaming preserves the exact ordering.
     let mut annexb_terminal_error = None;
     let mut ivf_warnings = Vec::new();
     let mut ivf_container_error = None;
@@ -100,7 +98,6 @@ fn run_stream<R: Read>(
                     process_obu(&mut context, checks, obu, options, &mut report);
                 }
                 if let Some(error) = parsed.error {
-                    // Terminal Annex B error: emitted after finish() (runner order).
                     annexb_terminal_error = Some(error);
                     break;
                 }
@@ -114,8 +111,6 @@ fn run_stream<R: Read>(
                     process_obu(&mut context, checks, obu, options, &mut report);
                 }
                 if let Some(error) = &parsed.error {
-                    // Per-frame Annex B error: interleaved right after the frame's
-                    // OBUs, exactly as the in-memory IVF runner does.
                     report.push(parse_error_diagnostic(error));
                 }
             }
@@ -139,11 +134,8 @@ fn run_stream<R: Read>(
         }
     }
 
-    // The end of the stream completes the final temporal unit (AV2 § 7.3.6).
     context.finish(options, &mut report);
 
-    // Deferred diagnostics, in the exact in-memory runner order: Annex B terminal
-    // error, then IVF warnings, then the IVF container error.
     if let Some(error) = annexb_terminal_error {
         report.push(parse_error_diagnostic(&error));
     }
@@ -228,17 +220,14 @@ mod tests {
         cases.push(ivf(&[&[0x02, 0x88, 0x05]])); // frame OBU producing an error diag
         cases.push(ivf(&[&[0x05, 0x08]])); // Annex B error inside a frame payload
 
-        // IVF truncated initial frame header.
         let mut truncated_header = ivf(&[]);
         truncated_header.extend_from_slice(&[0x05, 0x00]);
         cases.push(truncated_header);
 
-        // IVF trailing partial header after a good frame (warning).
         let mut trailing = ivf(&[&[0x01, 0x08]]);
         trailing.extend_from_slice(&[0x05, 0x00]);
         cases.push(trailing);
 
-        // IVF truncated frame payload.
         let mut truncated_payload = ivf(&[&[0x01, 0x08]]);
         truncated_payload.extend_from_slice(&5u32.to_le_bytes());
         truncated_payload.extend_from_slice(&0u64.to_le_bytes());
@@ -265,7 +254,6 @@ mod tests {
 
     #[test]
     fn over_cap_unit_is_a_reader_error_not_a_diagnostic() {
-        // An OBU declaring 1000 bytes with a 16-byte cap aborts streaming.
         let mut data = vec![0xE8, 0x07];
         data.extend_from_slice(&[0u8; 8]);
         let reader = TemporalUnitReader::with_max_unit_bytes(Cursor::new(data), 16);

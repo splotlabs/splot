@@ -121,18 +121,7 @@ impl CoreSeqView {
         let scc = seq.screen_content.as_ref()?;
         let tq = seq.transform_quant_entropy.as_ref()?;
         let tile = seq.tile.as_ref()?;
-        // `sequence_filter_config()` (§ 5.4.10) gates the § 5.18.2 tail loop-filter
-        // structures; without it the intra tail cannot reach deblocking/GDF/CDEF.
         let filter = seq.filter.as_ref()?;
-        // `film_grain_params_present` (§ 5.4.1) is read last in the sequence header, AFTER
-        // every child config above. A bounded `sequence_tile_config()` stop yields a header
-        // with all those children present but this flag `None`. It is NOT required to read
-        // the control region (frame size, output flags, order hint, tile/quant/segmentation,
-        // the loop-filter cluster) — only `film_grain_config()` consumes it — so its absence
-        // must NOT collapse the whole view (that would suppress every locally-decidable
-        // frame-size / output / order-hint diagnostic). Carry it as `Option` and defer the
-        // requirement to `film_grain_config()` consumption: an unknown flag there is an
-        // honest stop with the parsed facts preserved, not a guess.
         let film_grain_params_present = seq.film_grain_params_present;
         let general = &seq.general;
         Some(Self {
@@ -150,8 +139,6 @@ impl CoreSeqView {
             seq_force_screen_content_tools: scc.seq_force_screen_content_tools,
             seq_force_integer_mv: scc.seq_force_integer_mv,
             allow_frame_max_bvp_drl_bits: inter.allow_frame_max_bvp_drl_bits,
-            // AV2 § 5.4.6: the inter-config flags consumed by the § 5.18.2 non-intra
-            // control region.
             inter: CoreSeqInterView {
                 enable_ref_frame_mvs: inter.enable_ref_frame_mvs,
                 explicit_ref_frame_map: inter.explicit_ref_frame_map,
@@ -169,7 +156,6 @@ impl CoreSeqView {
             quant: CoreSeqQuantView::from_sequence_configs(general, tq),
             seg: CoreSeqSegView::from_sequence_config(segment),
             tile: CoreSeqTileView::from_sequence_configs(general, partition, tq, tile),
-            // AV2 § 5.4.10: the loop-filter tool flags consumed by the § 5.18.2 tail.
             filter: CoreSeqFilterView {
                 enable_cdef: filter.enable_cdef,
                 enable_gdf: filter.enable_gdf,
@@ -177,12 +163,9 @@ impl CoreSeqView {
                 disable_loopfilters_across_tiles: filter.disable_loopfilters_across_tiles,
                 cdef_on_skip_txfm: filter.cdef_on_skip_txfm,
                 df_par_bits_minus_2: filter.df_par_bits_minus_2,
-                // AV2 § 5.4.6: enable_df_sub_pu lives in the inter config; it gates the
-                // § 5.18.5.2 inter-path allow_df_sub_pu read (inert on the intra path).
                 enable_df_sub_pu: inter.enable_df_sub_pu,
                 single_picture_header_flag: general.single_picture_header_flag,
             },
-            // AV2 § 5.4.10: the loop-restoration tool flags consumed by lr_params().
             restoration: CoreSeqRestorationView {
                 enable_restoration: filter.enable_restoration,
                 lr_pc_wiener_disabled: filter.lr_pc_wiener_disabled,
@@ -190,7 +173,6 @@ impl CoreSeqView {
                 lr_uv_pc_wiener_disabled: filter.lr_uv_pc_wiener_disabled,
                 lr_uv_wiener_nonsep_disabled: filter.lr_uv_wiener_nonsep_disabled,
             },
-            // AV2 § 5.4.10 / § 5.4.1: the CCSO inputs consumed by ccso_params().
             ccso: CoreSeqCcsoView {
                 enable_ccso: filter.enable_ccso,
                 single_picture_header_flag: general.single_picture_header_flag,
@@ -233,11 +215,6 @@ impl MfhFrameView {
     /// shared by the parser and the inverse [`crate::write`] frame-header writer.
     #[must_use]
     pub fn from_record(record: &MultiFrameHeaderRecord, seq: &CoreSeqView) -> Self {
-        // AV2 § 5.18.2 (:4101): `if ( cur_mfh_id == 0 || !mfh_frame_size_present_flag )`
-        // infers `mfh_frame_width/height_minus_1[ cur_mfh_id ]` to `max_frame_*_minus_1`.
-        // On this path `cur_mfh_id > 0`, so the inference applies exactly when the MFH
-        // carried no frame-size payload; otherwise the explicit MFH dimensions are used
-        // (§ 5.18.4.1, :5767). `width`/`height` here are the `*_minus_1 + 1` luma values.
         let default_dims = match record.mfh_frame_size {
             Some(size) => (
                 size.width_minus_1.saturating_add(1),
@@ -245,9 +222,6 @@ impl MfhFrameView {
             ),
             None => (seq.max_frame_width, seq.max_frame_height),
         };
-        // AV2 § 5.18.7.1: the MFH segmentation branch is gated on
-        // `mfh_seg_info_present_flag`; build its view only then. The seg-info flags and
-        // parsed feature data are present together with the flag (AV2 § 5.7).
         let seg = if record.mfh_seg_info_present_flag {
             match (
                 record.mfh_ext_seg_flag,
@@ -259,18 +233,11 @@ impl MfhFrameView {
                     mfh_allow_seg_info_change: allow_change,
                     mfh_segment_info: segment_info,
                 }),
-                // An inconsistent record (flag set without its payload) cannot select
-                // the MFH branch soundly; fall back to the sequence/zero derivation
-                // rather than guessing.
                 _ => None,
             }
         } else {
             None
         };
-        // AV2 § 5.18.5.2 (mirror :5949): the resolved MFH's deblocking-update state
-        // for the `cur_mfh_id > 0` arm. `mfh_apply_deblocking_filter` is all-false
-        // unless the record signalled an update (§ 5.7 parse), so copying it is safe
-        // even when the update bit is clear (the arm is then not selected).
         let deblocking = MfhDeblockingView {
             mfh_deblocking_filter_update: record.mfh_deblocking_filter_update,
             mfh_apply_deblocking_filter: record.mfh_apply_deblocking_filter,

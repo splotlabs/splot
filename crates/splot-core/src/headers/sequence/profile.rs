@@ -103,8 +103,6 @@ impl PartialOrd for ProfileIdc {
 
 impl Ord for ProfileIdc {
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
-        // Order by the raw `seq_profile_idc` value, so ordering is robust to a
-        // hand-constructed non-canonical `Reserved` payload (consistent with `Eq`).
         self.get().cmp(&other.get())
     }
 }

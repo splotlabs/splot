@@ -123,7 +123,6 @@ impl CoreSeqQuantView {
         let monochrome = general.chroma_format_idc.is_monochrome();
         Self {
             bit_depth: general.bit_depth_idc.bit_depth(),
-            // AV2 § 6.4.1: NumPlanes = Monochrome ? 1 : 3.
             num_planes: if monochrome { 1 } else { 3 },
             separate_uv_delta_q: tq.separate_uv_delta_q,
             equal_ac_dc_q: tq.equal_ac_dc_q,
@@ -289,11 +288,9 @@ pub(crate) fn get_qindex_ignore_delta_q(
         .copied()
         .unwrap_or(SegmentFeature::DISABLED);
     if segmentation.segmentation_enabled && feature.enabled {
-        // AV2 § 7.14.2: qindex = base_q_idx + data; return Clip3( 0, MaxQ, qindex ).
         let qindex = i64::from(base_q_idx) + i64::from(feature.data);
         clip3(0, quant.max_q(), qindex)
     } else {
-        // AV2 § 7.14.2: otherwise, return base_q_idx.
         i64::from(base_q_idx)
     }
 }
@@ -306,13 +303,10 @@ pub(crate) fn get_qindex_ignore_delta_q(
 /// Returns [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof) if the
 /// payload ends mid-field.
 pub fn read_delta_q(reader: &mut BitReader<'_>) -> Result<i32> {
-    // AV2 § 5.18.6.3: delta_coded f(1).
     let delta_coded = reader.read_flag()?;
     if delta_coded {
-        // AV2 § 5.18.6.3: delta_q su(7).
         reader.read_su(7)
     } else {
-        // AV2 § 5.18.6.3: delta_q = 0.
         Ok(0)
     }
 }
@@ -332,10 +326,8 @@ pub fn parse_quantization_params(
     quant: &CoreSeqQuantView,
     tip_frame_as_output: bool,
 ) -> Result<QuantizationParams> {
-    // AV2 § 5.18.6.1: n = BitDepth == 8 ? 8 : 9; base_q_idx f(n).
     let n = if quant.bit_depth == 8 { 8 } else { 9 };
     let base_q_idx = reader.read_bits(n)?;
-    // AV2 § 5.18.6.1: DeltaQYDc = DeltaQUDc = DeltaQUAc = DeltaQVDc = DeltaQVAc = 0.
     let mut params = QuantizationParams {
         base_q_idx,
         delta_q_y_dc: 0,
@@ -345,50 +337,35 @@ pub fn parse_quantization_params(
         delta_q_v_ac: 0,
         diff_uv_delta: false,
     };
-    // AV2 § 5.18.6.1: if ( TipFrameMode != TIP_FRAME_AS_OUTPUT &&
-    // y_dc_delta_q_enabled ) DeltaQYDc = read_delta_q( ).
     if !tip_frame_as_output && quant.y_dc_delta_q_enabled {
         params.delta_q_y_dc = read_delta_q(reader)?;
     }
-    // AV2 § 5.18.6.1: if ( NumPlanes > 1 && ( uv_ac_delta_q_enabled ||
-    // (TipFrameMode != TIP_FRAME_AS_OUTPUT && uv_dc_delta_q_enabled) ) ).
     if quant.num_planes > 1
         && (quant.uv_ac_delta_q_enabled || (!tip_frame_as_output && quant.uv_dc_delta_q_enabled))
     {
-        // AV2 § 5.18.6.1: if ( separate_uv_delta_q ) diff_uv_delta f(1)
-        // else diff_uv_delta = 0.
         if quant.separate_uv_delta_q {
             params.diff_uv_delta = reader.read_flag()?;
         }
-        // AV2 § 5.18.6.1: if ( TipFrameMode != TIP_FRAME_AS_OUTPUT &&
-        // uv_dc_delta_q_enabled ) DeltaQUDc = read_delta_q( ).
         if !tip_frame_as_output && quant.uv_dc_delta_q_enabled {
             params.delta_q_u_dc = read_delta_q(reader)?;
         }
-        // AV2 § 5.18.6.1: if ( uv_ac_delta_q_enabled ) DeltaQUAc = read_delta_q( ).
         if quant.uv_ac_delta_q_enabled {
             params.delta_q_u_ac = read_delta_q(reader)?;
         }
-        // AV2 § 5.18.6.1: if ( equal_ac_dc_q ) DeltaQUDc = DeltaQUAc.
         if quant.equal_ac_dc_q {
             params.delta_q_u_dc = params.delta_q_u_ac;
         }
         if params.diff_uv_delta {
-            // AV2 § 5.18.6.1: if ( TipFrameMode != TIP_FRAME_AS_OUTPUT &&
-            // uv_dc_delta_q_enabled ) DeltaQVDc = read_delta_q( ).
             if !tip_frame_as_output && quant.uv_dc_delta_q_enabled {
                 params.delta_q_v_dc = read_delta_q(reader)?;
             }
-            // AV2 § 5.18.6.1: if ( uv_ac_delta_q_enabled ) DeltaQVAc = read_delta_q( ).
             if quant.uv_ac_delta_q_enabled {
                 params.delta_q_v_ac = read_delta_q(reader)?;
             }
-            // AV2 § 5.18.6.1: if ( equal_ac_dc_q ) DeltaQVDc = DeltaQVAc.
             if quant.equal_ac_dc_q {
                 params.delta_q_v_dc = params.delta_q_v_ac;
             }
         } else {
-            // AV2 § 5.18.6.1: else DeltaQVDc = DeltaQUDc, DeltaQVAc = DeltaQUAc.
             params.delta_q_v_dc = params.delta_q_u_dc;
             params.delta_q_v_ac = params.delta_q_u_ac;
         }
@@ -411,40 +388,26 @@ pub fn parse_setup_qm_params(
     quant: &CoreSeqQuantView,
     segmentation_enabled: bool,
 ) -> Result<SetupQmParams> {
-    // AV2 § 5.18.6.2: using_qmatrix f(1).
     let using_qmatrix = reader.read_flag()?;
     let mut pic_qm_num_minus_1 = 0u8;
     let mut levels = [QmSetLevels::default(); MAX_PIC_QM_NUM];
     if using_qmatrix {
-        // AV2 § 5.18.6.2: if ( segmentation_enabled ) pic_qm_num_minus_1 f(2)
-        // else pic_qm_num_minus_1 = 0.
         if segmentation_enabled {
             pic_qm_num_minus_1 = reader.read_bits_u8(2)?;
         }
-        // AV2 § 5.18.6.2: qmNum = pic_qm_num_minus_1 + 1.
         let qm_num = usize::from(pic_qm_num_minus_1) + 1;
-        // qm_num <= MAX_PIC_QM_NUM (pic_qm_num_minus_1 is f(2)), so `take` never
-        // truncates the spec loop.
         for level in levels.iter_mut().take(qm_num) {
-            // AV2 § 5.18.6.2: qm_y[ i ] f(4).
             level.qm_y = reader.read_bits_u8(4)?;
-            // AV2 § 5.18.6.2: if ( NumPlanes > 1 ).
             if quant.num_planes > 1 {
-                // AV2 § 5.18.6.2: qm_uv_same_as_y f(1).
                 let qm_uv_same_as_y = reader.read_flag()?;
                 if qm_uv_same_as_y {
-                    // AV2 § 5.18.6.2: qm_u[ i ] = qm_y[ i ], qm_v[ i ] = qm_y[ i ].
                     level.qm_u = level.qm_y;
                     level.qm_v = level.qm_y;
                 } else {
-                    // AV2 § 5.18.6.2: qm_u[ i ] f(4).
                     level.qm_u = reader.read_bits_u8(4)?;
                     if quant.separate_uv_delta_q {
-                        // AV2 § 5.18.6.2: qm_v[ i ] f(4).
                         level.qm_v = reader.read_bits_u8(4)?;
                     } else {
-                        // AV2 § 5.18.6.2: if ( !separate_uv_delta_q )
-                        // qm_v[ i ] = qm_u[ i ].
                         level.qm_v = level.qm_u;
                     }
                 }
@@ -468,14 +431,11 @@ pub fn parse_setup_qm_params(
 /// Returns [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof) if the
 /// payload ends mid-field.
 pub fn parse_delta_q_params(reader: &mut BitReader<'_>, base_q_idx: u32) -> Result<DeltaQParams> {
-    // AV2 § 5.18.7.8: delta_q_res = 0; delta_q_present = 0.
     let mut delta_q_present = false;
     let mut delta_q_res = 0u8;
-    // AV2 § 5.18.7.8: if ( base_q_idx > 0 ) delta_q_present f(1).
     if base_q_idx > 0 {
         delta_q_present = reader.read_flag()?;
     }
-    // AV2 § 5.18.7.8: if ( delta_q_present ) delta_q_res f(2).
     if delta_q_present {
         delta_q_res = reader.read_bits_u8(2)?;
     }
@@ -508,14 +468,10 @@ pub fn parse_lossless_info(
     segmentation: &SegmentationParams,
     max_segments: u8,
 ) -> Result<LosslessInfo> {
-    // AV2 § 5.18.2: CodedLossless = 1; HasLosslessSegment = 0.
     let mut coded_lossless = true;
     let mut has_lossless_segment = false;
     let mut lossless_array = [false; MAX_SEGMENTS];
     let mut seg_qm_levels = [[0u8; 3]; MAX_SEGMENTS];
-    // AV2 § 5.18.2: for ( segmentId = 0; segmentId < MaxSegments; segmentId++ ).
-    // MaxSegments is 8 or 16 (AV2 § 5.4.4); the `min` only guards the array bound
-    // against a hostile caller value and never truncates a spec-legal loop.
     let count = usize::from(max_segments).min(MAX_SEGMENTS);
     for (segment_id, (lossless, qm_levels)) in lossless_array
         .iter_mut()
@@ -523,13 +479,8 @@ pub fn parse_lossless_info(
         .enumerate()
         .take(count)
     {
-        // AV2 § 5.18.2: qindex = get_qindex( 1, segmentId ).
         let qindex =
             get_qindex_ignore_delta_q(quant, quantization.base_q_idx, segmentation, segment_id);
-        // AV2 § 5.18.2: LosslessArray[ segmentId ] = qindex == 0 &&
-        // delta_q_present == 0 && DeltaQYDc + BaseYDcDeltaQ <= 0 &&
-        // DeltaQUDc + BaseUVDcDeltaQ <= 0 && DeltaQVDc + BaseUVDcDeltaQ <= 0 &&
-        // DeltaQUAc + BaseUVAcDeltaQ <= 0 && DeltaQVAc + BaseUVAcDeltaQ <= 0.
         *lossless = qindex == 0
             && !delta_q.delta_q_present
             && i64::from(quantization.delta_q_y_dc) + i64::from(quant.base_y_dc_delta_q) <= 0
@@ -537,28 +488,18 @@ pub fn parse_lossless_info(
             && i64::from(quantization.delta_q_v_dc) + i64::from(quant.base_uv_dc_delta_q) <= 0
             && i64::from(quantization.delta_q_u_ac) + i64::from(quant.base_uv_ac_delta_q) <= 0
             && i64::from(quantization.delta_q_v_ac) + i64::from(quant.base_uv_ac_delta_q) <= 0;
-        // AV2 § 5.18.2: if ( LosslessArray[ segmentId ] ) HasLosslessSegment = 1
-        // else CodedLossless = 0.
         if *lossless {
             has_lossless_segment = true;
         } else {
             coded_lossless = false;
         }
-        // AV2 § 5.18.2: if ( using_qmatrix ).
         if qm.using_qmatrix {
             if *lossless {
-                // AV2 § 5.18.2: SegQMLevel[ 0..2 ][ segmentId ] = 15.
                 *qm_levels = [15, 15, 15];
             } else {
-                // AV2 § 5.18.2: qmNum = pic_qm_num_minus_1 + 1;
-                // qmIndexBits = CeilLog2( qmNum ); qm_index f(qmIndexBits).
                 let qm_num = u32::from(qm.pic_qm_num_minus_1) + 1;
                 let qm_index_bits = ceil_log2(qm_num);
                 let qm_index = reader.read_bits(qm_index_bits)?;
-                // AV2 § 5.18.2: SegQMLevel[ plane ][ segmentId ] =
-                // qm_y/qm_u/qm_v[ qm_index ]. qm_index is f(<=2) so it always
-                // indexes within MAX_PIC_QM_NUM; `get` keeps the lookup panic-free
-                // (entries beyond qmNum are the zeroed defaults).
                 let level = qm
                     .levels
                     .get(qm_index as usize)
@@ -568,9 +509,6 @@ pub fn parse_lossless_info(
             }
         }
     }
-    // AV2 § 5.18.2: if ( CodedLossless ) allow_tcq = 0
-    // else if ( choose_tcq_per_frame ) allow_tcq f(1)
-    // else allow_tcq = enable_tcq.
     let allow_tcq = if coded_lossless {
         false
     } else if quant.choose_tcq_per_frame {
@@ -578,8 +516,6 @@ pub fn parse_lossless_info(
     } else {
         quant.enable_tcq
     };
-    // AV2 § 5.18.2: if ( CodedLossless || !enable_parity_hiding || allow_tcq )
-    // allow_parity_hiding = 0 else allow_parity_hiding f(1).
     let allow_parity_hiding = if coded_lossless || !quant.enable_parity_hiding || allow_tcq {
         false
     } else {
@@ -635,8 +571,6 @@ mod tests {
         }
     }
 
-    // ----- read_delta_q (§ 5.18.6.3) -----
-
     #[test]
     fn read_delta_q_not_coded_is_zero() {
         let mut bits = Bits::default();
@@ -679,9 +613,6 @@ mod tests {
 
     #[test]
     fn read_delta_q_eof_inside_su() {
-        // Consume 2 bits first so only 6 remain: delta_coded reads 1, then su(7)
-        // hits EOF.
-        // Bit layout: 2 padding bits, delta_coded = 1, then 5 zero bits.
         let data = [0b0010_0000];
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
         reader.read_bits(2).unwrap();
@@ -690,8 +621,6 @@ mod tests {
             Err(Error::UnexpectedEof { .. })
         ));
     }
-
-    // ----- quantization_params (§ 5.18.6.1) -----
 
     #[test]
     fn quantization_params_base_only_8bit() {
@@ -712,7 +641,6 @@ mod tests {
 
     #[test]
     fn quantization_params_9_bit_base_q_idx_for_high_bit_depth() {
-        // § 5.18.6.1: n = BitDepth == 8 ? 8 : 9.
         let quant = CoreSeqQuantView {
             bit_depth: 10,
             ..base_quant()
@@ -728,7 +656,6 @@ mod tests {
 
     #[test]
     fn quantization_params_monochrome_reads_no_chroma() {
-        // NumPlanes == 1 skips the whole chroma block even with UV reads enabled.
         let quant = CoreSeqQuantView {
             num_planes: 1,
             separate_uv_delta_q: true,
@@ -767,9 +694,6 @@ mod tests {
 
     #[test]
     fn quantization_params_tip_frame_as_output_skips_dc_reads() {
-        // With TipFrameMode == TIP_FRAME_AS_OUTPUT the Y DC read is skipped and the
-        // chroma condition `uv_ac || (!tip && uv_dc)` collapses to false when only
-        // uv_dc is enabled.
         let quant = CoreSeqQuantView {
             y_dc_delta_q_enabled: true,
             uv_dc_delta_q_enabled: true,
@@ -788,7 +712,6 @@ mod tests {
 
     #[test]
     fn quantization_params_shared_uv_delta_copies_v() {
-        // separate_uv_delta_q == 0: no diff_uv_delta bit, V deltas copy U deltas.
         let quant = CoreSeqQuantView {
             uv_dc_delta_q_enabled: true,
             uv_ac_delta_q_enabled: true,
@@ -841,7 +764,6 @@ mod tests {
 
     #[test]
     fn quantization_params_equal_ac_dc_q_copies_ac_to_dc() {
-        // equal_ac_dc_q == 1: DeltaQUDc = DeltaQUAc and DeltaQVDc = DeltaQVAc.
         let quant = CoreSeqQuantView {
             separate_uv_delta_q: true,
             equal_ac_dc_q: true,
@@ -890,8 +812,6 @@ mod tests {
         ));
     }
 
-    // ----- setup_qm_params (§ 5.18.6.2) -----
-
     #[test]
     fn setup_qm_params_disabled_reads_one_bit() {
         let mut bits = Bits::default();
@@ -907,7 +827,6 @@ mod tests {
 
     #[test]
     fn setup_qm_params_no_segmentation_infers_single_set() {
-        // segmentation_enabled == 0: pic_qm_num_minus_1 is not read (inferred 0).
         let mut bits = Bits::default();
         bits.bit(1); // using_qmatrix
         bits.f(9, 4); // qm_y[0]
@@ -931,7 +850,6 @@ mod tests {
 
     #[test]
     fn setup_qm_params_segmentation_three_sets_mixed_gating() {
-        // pic_qm_num_minus_1 = 2 -> 3 sets; separate_uv_delta_q gates qm_v reads.
         let quant = CoreSeqQuantView {
             separate_uv_delta_q: true,
             ..base_quant()
@@ -939,15 +857,12 @@ mod tests {
         let mut bits = Bits::default();
         bits.bit(1); // using_qmatrix
         bits.f(2, 2); // pic_qm_num_minus_1
-        // Set 0: qm_uv_same_as_y = 1.
         bits.f(1, 4);
         bits.bit(1);
-        // Set 1: qm_uv_same_as_y = 0, separate -> qm_v read.
         bits.f(2, 4);
         bits.bit(0);
         bits.f(3, 4); // qm_u[1]
         bits.f(4, 4); // qm_v[1]
-        // Set 2: same shape as set 1.
         bits.f(5, 4);
         bits.bit(0);
         bits.f(6, 4);
@@ -986,7 +901,6 @@ mod tests {
 
     #[test]
     fn setup_qm_params_shared_uv_copies_qm_v() {
-        // !separate_uv_delta_q: qm_v[i] = qm_u[i] without a read.
         let mut bits = Bits::default();
         bits.bit(1); // using_qmatrix
         bits.f(8, 4); // qm_y[0]
@@ -1031,16 +945,11 @@ mod tests {
 
     #[test]
     fn setup_qm_params_eof_cases() {
-        // EOF on using_qmatrix.
         let mut reader = BitReader::new(&[], ByteOffset::new(0));
         assert!(matches!(
             parse_setup_qm_params(&mut reader, &base_quant(), false),
             Err(Error::UnexpectedEof { .. })
         ));
-        // EOF inside the QM set loop: 1 + 2 + (4 + 1) bits fill the byte, then
-        // qm_u of set 0 (qm_uv_same_as_y = 0) needs 4 more.
-        // Bit layout: using_qmatrix = 1, pic_qm_num_minus_1 = 0b11, qm_y[0] = 0,
-        // qm_uv_same_as_y = 0 (last bit).
         let data = [0b1110_0000_u8];
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
         assert!(matches!(
@@ -1048,8 +957,6 @@ mod tests {
             Err(Error::UnexpectedEof { .. })
         ));
     }
-
-    // ----- delta_q_params (§ 5.18.7.8) -----
 
     #[test]
     fn delta_q_params_zero_base_q_idx_reads_nothing() {
@@ -1087,14 +994,11 @@ mod tests {
 
     #[test]
     fn delta_q_params_eof_cases() {
-        // EOF on delta_q_present.
         let mut reader = BitReader::new(&[], ByteOffset::new(0));
         assert!(matches!(
             parse_delta_q_params(&mut reader, 1),
             Err(Error::UnexpectedEof { .. })
         ));
-        // EOF on delta_q_res: pre-consume 7 bits so only the present bit remains.
-        // Bit layout: 7 padding bits, then delta_q_present = 1 (last bit).
         let data = [0b0000_0001_u8];
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
         reader.read_bits(7).unwrap();
@@ -1104,13 +1008,8 @@ mod tests {
         ));
     }
 
-    // ----- § 5.18.2 lossless/QM derivation -----
-
     #[test]
     fn lossless_all_segments_coded_lossless_reads_no_bits() {
-        // base_q_idx = 0, no deltas, no offsets: every segment satisfies the
-        // § 5.18.2 formula, so CodedLossless = 1 forces allow_tcq = 0 and
-        // allow_parity_hiding = 0 without reading (despite enable_tcq = 1).
         let quant = CoreSeqQuantView {
             enable_tcq: true,
             enable_parity_hiding: true,
@@ -1138,10 +1037,6 @@ mod tests {
 
     #[test]
     fn lossless_segment_via_alt_q_skips_qm_index_and_forces_level_15() {
-        // Hand-computed from § 5.18.2 + § 7.14.2: segment 0 has SEG_LVL_ALT_Q
-        // data -40 with base_q_idx 40, so get_qindex(1, 0) = Clip3(0, 255, 0) = 0
-        // and the segment is lossless (all delta sums are 0). Segments 1..8 keep
-        // qindex 40 and each read qm_index f(1) (qmNum = 2 -> CeilLog2 = 1).
         let quant = CoreSeqQuantView {
             choose_tcq_per_frame: true,
             enable_parity_hiding: true,
@@ -1192,9 +1087,7 @@ mod tests {
         assert!(!info.lossless_array[1]);
         assert!(!info.coded_lossless);
         assert!(info.has_lossless_segment);
-        // Lossless segment: spec-assigned level 15, no qm_index read.
         assert_eq!(info.seg_qm_levels[0], [15, 15, 15]);
-        // Non-lossless segments: SegQMLevel from qm_index 1,0,1,0,1,0,1.
         assert_eq!(info.seg_qm_levels[1], [4, 5, 6]);
         assert_eq!(info.seg_qm_levels[2], [1, 2, 3]);
         assert_eq!(info.seg_qm_levels[3], [4, 5, 6]);
@@ -1207,8 +1100,6 @@ mod tests {
 
     #[test]
     fn lossless_blocked_by_positive_base_uv_ac_offset() {
-        // Hand-computed: qindex = 0 but DeltaQUAc + BaseUVAcDeltaQ = 0 + 2 > 0,
-        // so no segment is lossless per the § 5.18.2 formula.
         let quant = CoreSeqQuantView {
             base_uv_ac_delta_q: 2,
             enable_parity_hiding: true,
@@ -1238,8 +1129,6 @@ mod tests {
 
     #[test]
     fn lossless_blocked_by_delta_q_present() {
-        // qindex = Clip3(0, 255, 100 - 100) = 0, but delta_q_present == 1 fails
-        // the § 5.18.2 formula.
         let mut segmentation = seg_params(true);
         for segment in &mut segmentation.features {
             segment[SEG_LVL_ALT_Q] = SegmentFeature {
@@ -1268,8 +1157,6 @@ mod tests {
 
     #[test]
     fn lossless_formula_hand_computed_delta_sums() {
-        // Sums exactly at the <= 0 boundary stay lossless: DeltaQYDc(-1) +
-        // BaseYDcDeltaQ(1) = 0, DeltaQUDc(5) + BaseUVDcDeltaQ(-5) = 0.
         let quant = CoreSeqQuantView {
             base_y_dc_delta_q: 1,
             base_uv_dc_delta_q: -5,
@@ -1291,8 +1178,6 @@ mod tests {
         )
         .unwrap();
         assert!(info.coded_lossless);
-        // Flipping a single sum positive (DeltaQVAc(1) + BaseUVAcDeltaQ(0) = 1)
-        // breaks losslessness for every segment.
         quantization.delta_q_v_ac = 1;
         let mut reader = BitReader::new(&[], ByteOffset::new(0));
         let info = parse_lossless_info(
@@ -1311,8 +1196,6 @@ mod tests {
 
     #[test]
     fn lossless_alt_q_feature_makes_zero_base_segment_non_lossless() {
-        // § 7.14.2: with SEG_LVL_ALT_Q active, qindex = base_q_idx + data even when
-        // base_q_idx == 0, so a positive feature value blocks losslessness.
         let mut segmentation = seg_params(true);
         segmentation.features[0][SEG_LVL_ALT_Q] = SegmentFeature {
             enabled: true,
@@ -1337,8 +1220,6 @@ mod tests {
 
     #[test]
     fn lossless_qm_num_one_reads_zero_bit_qm_index() {
-        // qmNum = 1 -> CeilLog2(1) = 0 -> qm_index f(0) reads nothing and selects
-        // level set 0 for every non-lossless segment.
         let qm = SetupQmParams {
             using_qmatrix: true,
             pic_qm_num_minus_1: 0,
@@ -1370,8 +1251,6 @@ mod tests {
 
     #[test]
     fn lossless_allow_tcq_inferred_from_enable_tcq() {
-        // !CodedLossless && !choose_tcq_per_frame: allow_tcq = enable_tcq, which in
-        // turn forces allow_parity_hiding = 0 without a read.
         let quant = CoreSeqQuantView {
             enable_tcq: true,
             enable_parity_hiding: true,
@@ -1395,7 +1274,6 @@ mod tests {
 
     #[test]
     fn lossless_eof_cases() {
-        // EOF in the qm_index reads.
         let qm = SetupQmParams {
             using_qmatrix: true,
             pic_qm_num_minus_1: 1,
@@ -1414,7 +1292,6 @@ mod tests {
             ),
             Err(Error::UnexpectedEof { .. })
         ));
-        // EOF on the allow_tcq read.
         let quant = CoreSeqQuantView {
             choose_tcq_per_frame: true,
             ..base_quant()
@@ -1432,7 +1309,6 @@ mod tests {
             ),
             Err(Error::UnexpectedEof { .. })
         ));
-        // EOF on the allow_parity_hiding read.
         let quant = CoreSeqQuantView {
             enable_parity_hiding: true,
             ..base_quant()

@@ -89,7 +89,6 @@ mod tests {
 
     #[test]
     fn round2_signed_matches_spec_for_both_signs() {
-        // Round2Signed(x, 7) mirrors negatives via -Round2(-x, 7).
         assert_eq!(round2_signed(0, 7), 0);
         assert_eq!(round2_signed(64, 7), 1); // (64 + 64) >> 7 = 1
         assert_eq!(round2_signed(63, 7), 0);
@@ -101,8 +100,6 @@ mod tests {
 
     #[test]
     fn round2_is_total_for_public_callers() {
-        // Public primitive: must not panic on extreme inputs even with
-        // workspace `overflow-checks = true`.
         assert_eq!(round2(i64::MAX, 0), i64::MAX); // n == 0 is the identity
         assert_eq!(round2(i64::MAX, 1), 1 << 62); // (2^63 - 1 + 1) >> 1
         assert_eq!(round2(i64::MIN, 1), -(1 << 62)); // widened add, no overflow
@@ -112,7 +109,6 @@ mod tests {
 
     #[test]
     fn round2_signed_is_total_at_i64_min() {
-        // `-i64::MIN` overflows i64; round2_signed must stay panic-free.
         assert_eq!(round2_signed(i64::MIN, 0), i64::MIN); // n == 0 is the identity
         assert_eq!(round2_signed(i64::MIN, 1), -(1 << 62)); // -Round2(2^63, 1)
         let _ = round2_signed(i64::MIN, 7);

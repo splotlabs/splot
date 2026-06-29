@@ -75,10 +75,6 @@ fn check_field_width(value: u64, width_bits: u32) -> WriteResult<()> {
     }
 }
 
-// =============================================================================
-// § 5.4.3 sequence_partition_config()
-// =============================================================================
-
 /// Writes `sequence_partition_config()` (AV2 v1.0.0 § 5.4.3,
 /// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-4-3`), the exact inverse of
 /// [`crate::headers::sequence::parse_sequence_partition_config`].
@@ -129,8 +125,6 @@ pub fn write_sequence_partition_config(
     }
     writer.write_flag(config.reduce_pb_aspect_ratio)?;
     if config.reduce_pb_aspect_ratio {
-        // MaxPbAspectRatio = 1 << (log2_minus_1 + 1); log2_minus_1 is f(1) in {0, 1},
-        // so MaxPbAspectRatio is 2 or 4. Recover log2_minus_1 (validated up front).
         let log2_minus_1 = partition_aspect_log2_minus_1(config.max_pb_aspect_ratio)?;
         writer.write_bits_u8(log2_minus_1, 1)?;
     }
@@ -156,31 +150,25 @@ pub(crate) fn check_partition_encodable(
     monochrome: bool,
     single_picture: bool,
 ) -> WriteResult<()> {
-    // use_128x128_superblock is only read when !use_256x256_superblock; otherwise the
-    // parser infers it false.
     if config.use_256x256_superblock && config.use_128x128_superblock {
         return Err(WriteError::NonCanonicalSequenceValue {
             what: "use_128x128_superblock",
         });
     }
-    // enable_sdp is inferred 0 for Monochrome.
     if monochrome && config.enable_sdp {
         return Err(WriteError::NonCanonicalSequenceValue { what: "enable_sdp" });
     }
-    // enable_extended_sdp is inferred 0 unless enable_sdp && !single_picture.
     let extended_sdp_signaled = config.enable_sdp && !single_picture;
     if !extended_sdp_signaled && config.enable_extended_sdp {
         return Err(WriteError::NonCanonicalSequenceValue {
             what: "enable_extended_sdp",
         });
     }
-    // enable_uneven_4way_partitions is inferred 0 unless enable_ext_partitions.
     if !config.enable_ext_partitions && config.enable_uneven_4way_partitions {
         return Err(WriteError::NonCanonicalSequenceValue {
             what: "enable_uneven_4way_partitions",
         });
     }
-    // MaxPbAspectRatio: 8 when !reduce, else 2 or 4 (the only `1 << (k+1)` results).
     if config.reduce_pb_aspect_ratio {
         partition_aspect_log2_minus_1(config.max_pb_aspect_ratio)?;
     } else if config.max_pb_aspect_ratio != 8 {
@@ -190,10 +178,6 @@ pub(crate) fn check_partition_encodable(
     }
     Ok(())
 }
-
-// =============================================================================
-// § 5.4.4 sequence_segment_config()
-// =============================================================================
 
 /// Writes `sequence_segment_config()` (AV2 v1.0.0 § 5.4.4,
 /// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-4-4`), the exact inverse of
@@ -221,7 +205,6 @@ pub fn write_sequence_segment_config(
     writer.write_flag(config.enable_ext_seg)?;
     writer.write_flag(config.seq_seg_info_present_flag)?;
     if config.seq_seg_info_present_flag {
-        // Both Options are present iff the flag is set (checked up front).
         let allow =
             config
                 .seq_allow_seg_info_change
@@ -242,14 +225,12 @@ pub fn write_sequence_segment_config(
 
 /// Validates that `config` is a model the § 5.4.4 parser could have produced.
 pub(crate) fn check_segment_encodable(config: &SequenceSegmentConfig) -> WriteResult<()> {
-    // MaxSegments is derived, never signaled.
     let expected_max = if config.enable_ext_seg { 16 } else { 8 };
     if config.max_segments != expected_max {
         return Err(WriteError::NonCanonicalSequenceValue {
             what: "max_segments",
         });
     }
-    // The two Option payloads are present iff seq_seg_info_present_flag is set.
     let allow_present = config.seq_allow_seg_info_change.is_some();
     let info_present = config.segment_info.is_some();
     if allow_present != config.seq_seg_info_present_flag
@@ -259,18 +240,11 @@ pub(crate) fn check_segment_encodable(config: &SequenceSegmentConfig) -> WriteRe
             what: "seq_seg_info_present_flag",
         });
     }
-    // Pre-validate the nested seg_info() body up front, so a bad body is rejected before
-    // the writer emits the leading enable_ext_seg / present / allow flags
-    // (reject-before-write for the composite § 5.4.4 structure).
     if let Some(info) = &config.segment_info {
         check_seg_info_encodable(info, config.max_segments)?;
     }
     Ok(())
 }
-
-// =============================================================================
-// § 5.4.5 sequence_intra_config()
-// =============================================================================
 
 /// Writes `sequence_intra_config()` (AV2 v1.0.0 § 5.4.5,
 /// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-4-5`), the exact inverse of
@@ -315,7 +289,6 @@ pub(crate) fn check_intra_encodable(
     monochrome: bool,
 ) -> WriteResult<()> {
     if monochrome {
-        // cfl_ds_filter_index is inferred 0 for Monochrome (no bits read).
         if config.cfl_ds_filter_index != 0 {
             return Err(WriteError::NonCanonicalSequenceValue {
                 what: "cfl_ds_filter_index",
@@ -326,10 +299,6 @@ pub(crate) fn check_intra_encodable(
     }
     Ok(())
 }
-
-// =============================================================================
-// § 5.4.6 sequence_inter_config()
-// =============================================================================
 
 /// Returns the `disable_drl_reorder` / `constrain_drl_reorder` bit pattern for a
 /// [`DrlReorder`] (AV2 § 5.4.6): `Disabled` -> `disable = 1` (one bit); `Constraint` ->
@@ -392,30 +361,24 @@ pub fn write_sequence_inter_config(
         return Ok(());
     }
 
-    // Full branch. seq_enabled_motion_modes[INTERINTRA..MOTION_MODES]: f(1) each.
     for mode in INTERINTRA..MOTION_MODES {
         writer.write_flag(config.seq_enabled_motion_modes[mode])?;
     }
-    // seq_frame_motion_modes_present_flag: f(1), only when any motion mode is enabled.
     if any_motion_mode_enabled(config) {
         writer.write_flag(config.seq_frame_motion_modes_present_flag)?;
     }
-    // enable_six_param_warp_delta: f(1), only when DELTAWARP is enabled.
     if config.seq_enabled_motion_modes[DELTAWARP] {
         writer.write_flag(config.enable_six_param_warp_delta)?;
     }
     writer.write_flag(config.enable_masked_compound)?;
     writer.write_flag(config.enable_ref_frame_mvs)?;
-    // reduced_ref_frame_mvs_mode: f(1), only when enable_ref_frame_mvs.
     if config.enable_ref_frame_mvs {
         writer.write_flag(config.reduced_ref_frame_mvs_mode)?;
     }
-    // order_hint_bits_minus_1: f(4) of (order_hint_bits - 1).
     writer.write_bits_u8(config.order_hint_bits - 1, 4)?;
     writer.write_flag(config.enable_refmvbank)?;
     write_drl_reorder(writer, config.drl_reorder)?;
     writer.write_flag(config.explicit_ref_frame_map)?;
-    // explicit_num_ref_frames: f(1); when set, num_ref_frames_minus_1: f(4).
     writer.write_flag(config.explicit_num_ref_frames())?;
     if config.explicit_num_ref_frames() {
         writer.write_bits_u8(config.num_ref_frames - 1, 4)?;
@@ -431,7 +394,6 @@ pub fn write_sequence_inter_config(
     writer.write_bits_u8(config.num_same_ref_compound, 2)?;
     writer.write_flag(config.enable_tip)?;
     if config.enable_tip {
-        // disable_tip_output = !EnableTipOutput.
         writer.write_flag(!config.enable_tip_output)?;
         writer.write_flag(config.enable_tip_hole_fill)?;
     }
@@ -440,13 +402,11 @@ pub fn write_sequence_inter_config(
     writer.write_flag(config.enable_cwp)?;
     writer.write_flag(config.enable_imp_msk_bld)?;
     writer.write_flag(config.enable_df_sub_pu)?;
-    // enable_tip_explicit_qp: f(1), only when EnableTipOutput && enable_df_sub_pu.
     if config.enable_tip_output && config.enable_df_sub_pu {
         writer.write_flag(config.enable_tip_explicit_qp)?;
     }
     writer.write_bits_u8(config.enable_opfl_refine, 2)?;
     writer.write_flag(config.enable_refinemv)?;
-    // enable_tip_refinemv: f(1), only when enable_tip && (opfl_refine != 0 || refinemv).
     if config.enable_tip && (config.enable_opfl_refine != 0 || config.enable_refinemv) {
         writer.write_flag(config.enable_tip_refinemv)?;
     }
@@ -454,7 +414,6 @@ pub fn write_sequence_inter_config(
     writer.write_flag(config.enable_adaptive_mvd)?;
     writer.write_flag(config.enable_mvd_sign_derive)?;
     writer.write_flag(config.enable_flex_mvres)?;
-    // enable_global_motion: f(1) (single_picture is false on this branch).
     writer.write_flag(config.enable_global_motion)?;
     writer.write_flag(config.enable_short_refresh_frame_flags)?;
     Ok(())
@@ -477,10 +436,6 @@ trait InterConfigExt {
 
 impl InterConfigExt for SequenceInterConfig {
     fn explicit_num_ref_frames(&self) -> bool {
-        // `explicit_num_ref_frames` is true iff `NumRefFrames` was signaled, i.e. != the
-        // inferred 8. A stored `8` is written via the non-explicit (inferred) form — both
-        // an explicit-8 and an inferred-8 reparse to `num_ref_frames == 8`, so the
-        // canonical (shorter) encoding round-trips.
         self.num_ref_frames != 8
     }
 }
@@ -492,7 +447,6 @@ pub(crate) fn check_inter_encodable(
     config: &SequenceInterConfig,
     single_picture: bool,
 ) -> WriteResult<()> {
-    // seq_enabled_motion_modes[0] (SIMPLE) is never signaled; it must stay 0.
     if config.seq_enabled_motion_modes[0] {
         return Err(WriteError::NonCanonicalSequenceValue {
             what: "seq_enabled_motion_modes_simple",
@@ -500,9 +454,6 @@ pub(crate) fn check_inter_encodable(
     }
 
     if single_picture {
-        // The single-picture branch infers every field except enable_refmvbank,
-        // drl_reorder, seq_max_bvp_drl_bits_minus_1, allow_frame_max_bvp_drl_bits, and
-        // enable_bawp. Reject any non-default value for the inferred fields.
         let inferred_ok = !config.seq_enabled_motion_modes[INTERINTRA..MOTION_MODES]
             .iter()
             .any(|&e| e)
@@ -540,7 +491,6 @@ pub(crate) fn check_inter_encodable(
                 what: "single_picture_inter_inferred",
             });
         }
-        // The five signaled fields: only seq_max_bvp_drl_bits_minus_1 has a width bound.
         if config.seq_max_bvp_drl_bits_minus_1 >= MAX_REF_BV_STACK_SIZE - 1 {
             return Err(WriteError::ValueOutOfRange {
                 descriptor: "ns",
@@ -550,16 +500,12 @@ pub(crate) fn check_inter_encodable(
         return Ok(());
     }
 
-    // Full branch field-width / domain bounds.
-    // order_hint_bits = order_hint_bits_minus_1 + 1, so it must be >= 1 and <= 16.
     if config.order_hint_bits == 0 {
         return Err(WriteError::NonCanonicalSequenceValue {
             what: "order_hint_bits",
         });
     }
     check_field_width(u64::from(config.order_hint_bits - 1), 4)?;
-    // num_ref_frames: when explicit, num_ref_frames_minus_1 is f(4), so 1..=16; the
-    // inferred (non-explicit) value is exactly 8.
     if config.num_ref_frames == 0 {
         return Err(WriteError::NonCanonicalSequenceValue {
             what: "num_ref_frames",
@@ -571,7 +517,6 @@ pub(crate) fn check_inter_encodable(
     check_field_width(u64::from(config.long_term_frame_id_bits), 3)?;
     check_field_width(u64::from(config.num_same_ref_compound), 2)?;
     check_field_width(u64::from(config.enable_opfl_refine), 2)?;
-    // ns(n) domain bounds: value < n.
     if config.seq_max_drl_bits_minus_1 >= MAX_REF_MV_STACK_SIZE - 1 {
         return Err(WriteError::ValueOutOfRange {
             descriptor: "ns",
@@ -585,9 +530,6 @@ pub(crate) fn check_inter_encodable(
         });
     }
 
-    // Reject non-canonical values behind DISABLED gates: when a gate is false the parser
-    // infers these fields to their defaults and does not read them, so a stored non-default
-    // would shift the rest of the stream and break read(write(x)) == x.
     if !any_motion_mode_enabled(config) && config.seq_frame_motion_modes_present_flag {
         return Err(WriteError::NonCanonicalSequenceValue {
             what: "seq_frame_motion_modes_present_flag",
@@ -623,10 +565,6 @@ pub(crate) fn check_inter_encodable(
     Ok(())
 }
 
-// =============================================================================
-// § 5.4.7 sequence_scc_config()
-// =============================================================================
-
 /// Writes `sequence_scc_config()` (AV2 v1.0.0 § 5.4.7,
 /// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-4-7`), the exact inverse of
 /// [`crate::headers::sequence::parse_sequence_scc_config`].
@@ -652,16 +590,13 @@ pub fn write_sequence_scc_config(
     check_scc_encodable(*config, single_picture)?;
 
     if single_picture {
-        // Both forces inferred to SELECT_* (no bits signaled).
         return Ok(());
     }
 
     let sct = config.seq_force_screen_content_tools;
-    // seq_choose_screen_content_tools: f(1), set iff sct is the SELECT sentinel.
     let choose_sct = sct == SELECT_SCREEN_CONTENT_TOOLS;
     writer.write_flag(choose_sct)?;
     if !choose_sct {
-        // seq_force_screen_content_tools: f(1) in {0, 1}.
         writer.write_bits_u8(sct, 1)?;
     }
     if sct > 0 {
@@ -690,7 +625,6 @@ pub(crate) fn check_scc_encodable(
         }
         return Ok(());
     }
-    // Non-single-picture: each force is 0, 1, or the SELECT sentinel 2.
     if config.seq_force_screen_content_tools > SELECT_SCREEN_CONTENT_TOOLS {
         return Err(WriteError::NonCanonicalSequenceValue {
             what: "seq_force_screen_content_tools",
@@ -701,9 +635,6 @@ pub(crate) fn check_scc_encodable(
             what: "seq_force_integer_mv",
         });
     }
-    // seq_force_integer_mv is signaled only when seq_force_screen_content_tools > 0;
-    // otherwise the parser infers SELECT_INTEGER_MV (2). A different stored value could
-    // never have been produced.
     if config.seq_force_screen_content_tools == 0
         && config.seq_force_integer_mv != SELECT_INTEGER_MV
     {
@@ -713,10 +644,6 @@ pub(crate) fn check_scc_encodable(
     }
     Ok(())
 }
-
-// =============================================================================
-// § 5.4.8 sequence_transform_quant_entropy_config()
-// =============================================================================
 
 /// Writes `sequence_transform_quant_entropy_config()` (AV2 v1.0.0 § 5.4.8,
 /// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-4-8`), the exact inverse of
@@ -760,7 +687,6 @@ pub fn write_sequence_transform_quant_entropy_config(
     check_tq_entropy_encodable(config, monochrome, single_picture)?;
 
     writer.write_flag(config.enable_fsc)?;
-    // enable_idtx_intra: f(1), only when !enable_fsc (inferred 1 when enable_fsc).
     if !config.enable_fsc {
         writer.write_flag(config.enable_idtx_intra)?;
     }
@@ -780,8 +706,6 @@ pub fn write_sequence_transform_quant_entropy_config(
     if config.enable_tcq && !single_picture {
         writer.write_flag(config.choose_tcq_per_frame)?;
     }
-    // enable_parity_hiding is inferred 0 only when (enable_tcq && !choose_tcq_per_frame);
-    // it is signaled (f(1)) in every other case.
     let parity_hiding_inferred = config.enable_tcq && !config.choose_tcq_per_frame;
     if !parity_hiding_inferred {
         writer.write_flag(config.enable_parity_hiding)?;
@@ -807,7 +731,6 @@ pub fn write_sequence_transform_quant_entropy_config(
         }
         writer.write_bits_u8(config.base_uv_ac_delta_q, 5)?;
         writer.write_flag(config.uv_ac_delta_q_enabled)?;
-        // base_uv_dc_delta_q mirrors base_uv_ac_delta_q when equal_ac_dc_q (no bits).
     }
     Ok(())
 }
@@ -818,13 +741,11 @@ pub(crate) fn check_tq_entropy_encodable(
     monochrome: bool,
     single_picture: bool,
 ) -> WriteResult<()> {
-    // enable_idtx_intra is inferred 1 when enable_fsc (no bit read).
     if config.enable_fsc && !config.enable_idtx_intra {
         return Err(WriteError::NonCanonicalSequenceValue {
             what: "enable_idtx_intra",
         });
     }
-    // Chroma fields are inferred 0 for Monochrome.
     if monochrome
         && (config.enable_chroma_dctonly
             || config.enable_cctx
@@ -838,43 +759,35 @@ pub(crate) fn check_tq_entropy_encodable(
             what: "monochrome_chroma_fields",
         });
     }
-    // enable_inter_ddt is inferred 0 for single-picture headers.
     if single_picture && config.enable_inter_ddt {
         return Err(WriteError::NonCanonicalSequenceValue {
             what: "enable_inter_ddt",
         });
     }
-    // choose_tcq_per_frame is inferred 0 unless enable_tcq && !single_picture.
     let choose_tcq_signaled = config.enable_tcq && !single_picture;
     if !choose_tcq_signaled && config.choose_tcq_per_frame {
         return Err(WriteError::NonCanonicalSequenceValue {
             what: "choose_tcq_per_frame",
         });
     }
-    // enable_parity_hiding is inferred 0 when enable_tcq && !choose_tcq_per_frame.
     if config.enable_tcq && !config.choose_tcq_per_frame && config.enable_parity_hiding {
         return Err(WriteError::NonCanonicalSequenceValue {
             what: "enable_parity_hiding",
         });
     }
-    // (enable_avg_cdf, avg_cdf_type) is inferred (1, 1) for single-picture headers.
     if single_picture {
         if !config.enable_avg_cdf || config.avg_cdf_type != 1 {
             return Err(WriteError::NonCanonicalSequenceValue {
                 what: "single_picture_avg_cdf",
             });
         }
-    } else {
-        // avg_cdf_type is f(1) only when enable_avg_cdf, else inferred 0.
-        if config.enable_avg_cdf {
-            check_field_width(u64::from(config.avg_cdf_type), 1)?;
-        } else if config.avg_cdf_type != 0 {
-            return Err(WriteError::NonCanonicalSequenceValue {
-                what: "avg_cdf_type",
-            });
-        }
+    } else if config.enable_avg_cdf {
+        check_field_width(u64::from(config.avg_cdf_type), 1)?;
+    } else if config.avg_cdf_type != 0 {
+        return Err(WriteError::NonCanonicalSequenceValue {
+            what: "avg_cdf_type",
+        });
     }
-    // base_y_dc_delta_q / y_dc_delta_q_enabled are inferred 0 when equal_ac_dc_q.
     if config.equal_ac_dc_q && (config.base_y_dc_delta_q != 0 || config.y_dc_delta_q_enabled) {
         return Err(WriteError::NonCanonicalSequenceValue {
             what: "base_y_dc_delta_q",
@@ -883,20 +796,15 @@ pub(crate) fn check_tq_entropy_encodable(
     if !config.equal_ac_dc_q {
         check_field_width(u64::from(config.base_y_dc_delta_q), 5)?;
     }
-    // Chroma delta-q block (only when !monochrome).
     if !monochrome {
         if !config.equal_ac_dc_q {
             check_field_width(u64::from(config.base_uv_dc_delta_q), 5)?;
         } else if config.base_uv_dc_delta_q != config.base_uv_ac_delta_q {
-            // base_uv_dc_delta_q mirrors base_uv_ac_delta_q when equal_ac_dc_q; a
-            // divergent stored value could not have been produced.
             return Err(WriteError::NonCanonicalSequenceValue {
                 what: "base_uv_dc_delta_q",
             });
         }
         check_field_width(u64::from(config.base_uv_ac_delta_q), 5)?;
-        // uv_dc_delta_q_enabled is only read when !equal_ac_dc_q; when equal_ac_dc_q the
-        // parser leaves it false (no bit).
         if config.equal_ac_dc_q && config.uv_dc_delta_q_enabled {
             return Err(WriteError::NonCanonicalSequenceValue {
                 what: "uv_dc_delta_q_enabled",
@@ -906,8 +814,5 @@ pub(crate) fn check_tq_entropy_encodable(
     Ok(())
 }
 
-// The unit-test and property-test modules live in a sibling file to keep this writer
-// source under the advisory source-line limit; `include!` pastes them into this module
-// so their `super::*` resolves to the writers and private helpers above.
 #[cfg(test)]
 include!("seq_config_tests.rs");
