@@ -52,6 +52,13 @@ pub(super) fn record_skipped_selectable_residuals(
     {
         let zero = skipped_coeff_block();
         for record in luma_records.iter().copied() {
+            sink.record_block_decoded_far_edge(
+                record.col,
+                record.row,
+                record.tx_size,
+                recon.block_num4_above_right,
+                recon.block_num4_below_left,
+            );
             sink.reconstruct_luma_transform(
                 record.col,
                 record.row,

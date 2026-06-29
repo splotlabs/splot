@@ -1191,3 +1191,22 @@ fn wide_angle_mapping_wraps_non_square_blocks_verbatim_vs_avm() {
     assert_eq!(wide_angle_mapping(32, 8, 200), 200 - 180);
     assert_eq!(wide_angle_mapping(32, 8, 194), 194);
 }
+
+/// The threaded AV2 §5.20.2.3 `BlockDecoded` far-edge availability infra: the sink
+/// records a block's §7.13.2.1 `num4AboveRight` / `num4BelowLeft` (in luma 4x4
+/// units) over the transform's MI footprint and exposes them through
+/// [`WienerNsLrReconSink::block_decoded_far_edge`]. A unit not written to (no block
+/// decoded there yet) reads `None`. This pins the durable threading wiring
+/// independently of the conservative coverage gates (which are unchanged).
+#[test]
+fn block_decoded_far_edge_records_and_queries_threaded_availability() {
+    let mut sink = sink();
+    sink.record_block_decoded_far_edge(0, 0, TX_16X16, 3, 2);
+    assert_eq!(sink.block_decoded_far_edge(0, 0), Some((3, 2)));
+    assert_eq!(sink.block_decoded_far_edge(3, 3), Some((3, 2)));
+    assert_eq!(sink.block_decoded_far_edge(4, 0), None);
+    assert_eq!(sink.block_decoded_far_edge(0, 4), None);
+    sink.record_block_decoded_far_edge(4, 0, TX_16X16, 0, 0);
+    assert_eq!(sink.block_decoded_far_edge(4, 0), Some((0, 0)));
+    assert_eq!(sink.block_decoded_far_edge(0, 0), Some((3, 2)));
+}

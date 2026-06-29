@@ -795,7 +795,7 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
         sequence,
         core,
         limits,
-        |work_unit, symbols, frontier, joint_modes, uses_mrls, fsc_modes, is_cfl_ctx, _block_decoded| {
+        |work_unit, symbols, frontier, joint_modes, uses_mrls, fsc_modes, is_cfl_ctx, block_decoded| {
             let n4w = frontier.b_size.num_4x4_wide().map_err(|_| {
                 wienerns_lr_selectable_transform_record_error_reason(
                     tile_offset,
@@ -808,6 +808,8 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                     "unsupported_wienerns_lr_selectable_transform_records_block_height",
                 )
             })?;
+            let (block_num4_above_right, block_num4_below_left) =
+                block_luma_far_edge_avail(block_decoded, frontier.r, frontier.c, n4w, n4h);
             if frontier.chroma_offset
                 && !selectable_chroma_offset_leaf_supported(
                     frontier.is_luma_part(),
@@ -868,6 +870,8 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                     luma_use_tcq,
                     fsc_mode: false,
                     is_intrabc: false,
+                    block_num4_above_right,
+                    block_num4_below_left,
                 };
                 decode_chroma_residual_chunks(
                     work_unit,
@@ -1024,6 +1028,8 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                 luma_use_tcq,
                 fsc_mode: fsc_mode != 0,
                 is_intrabc: prelude.use_intrabc,
+                block_num4_above_right,
+                block_num4_below_left,
             };
             decode_selectable_residual_chunks(
                 work_unit,
@@ -1393,6 +1399,13 @@ fn decode_luma_records_for_chunk(
             )
         })?;
         if let Some(sink) = sink.as_deref_mut() {
+            sink.record_block_decoded_far_edge(
+                record.col,
+                record.row,
+                record.tx_size,
+                recon.block_num4_above_right,
+                recon.block_num4_below_left,
+            );
             sink.reconstruct_luma_transform(
                 record.col,
                 record.row,
@@ -1549,6 +1562,31 @@ fn chunk_origin(base: usize, chunk: usize, tile_offset: ByteOffset) -> Result<us
             "unsupported_wienerns_lr_selectable_transform_records_chunk_origin_add_overflow",
         )
     })
+}
+
+/// Derives a luma partition block's AV2 §7.13.2.1 far-edge availability
+/// (`num4AboveRight`, `num4BelowLeft`, in luma 4x4 units) from the live §5.20.2.3
+/// `BlockDecoded` state at the tree-walk callback, faithfully to §5.20.7.25
+/// `count_top_right_avail` / `count_bottom_left_avail` over the SAME superblock-
+/// relative block position the `general_intra.rs` path uses
+/// (`luma_num4_above_right_from_block_decoded`): `x4 = c & sbMask`, `y4 = r &
+/// sbMask`, `w4 = n4w`, `h4 = n4h` (luma is not subsampled, so plane `0` 4x4 units
+/// equal luma MI units). Called at the callback, where `BlockDecoded` reflects
+/// exactly the decode-order availability for this block's edges BEFORE the walk
+/// marks this block, so the returned counts match what AVM reads for the block.
+fn block_luma_far_edge_avail(
+    block_decoded: &crate::tile_payload::TileBlockDecodedState,
+    r: usize,
+    c: usize,
+    n4w: usize,
+    n4h: usize,
+) -> (usize, usize) {
+    let sb_mask = block_decoded.sb_size4().saturating_sub(1);
+    let x4 = c & sb_mask;
+    let y4 = r & sb_mask;
+    let above_right = block_decoded.count_top_right_avail(0, x4, y4, n4w);
+    let below_left = block_decoded.count_bottom_left_avail(0, x4, y4, n4h);
+    (above_right, below_left)
 }
 
 fn mi_to_sample(mi: usize, tile_offset: ByteOffset) -> Result<usize> {
