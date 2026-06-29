@@ -808,8 +808,6 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                     "unsupported_wienerns_lr_selectable_transform_records_block_height",
                 )
             })?;
-            let (block_num4_above_right, block_num4_below_left) =
-                block_luma_far_edge_avail(block_decoded, frontier.r, frontier.c, n4w, n4h);
             if frontier.chroma_offset
                 && !selectable_chroma_offset_leaf_supported(
                     frontier.is_luma_part(),
@@ -870,8 +868,6 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                     luma_use_tcq,
                     fsc_mode: false,
                     is_intrabc: false,
-                    block_num4_above_right,
-                    block_num4_below_left,
                 };
                 decode_chroma_residual_chunks(
                     work_unit,
@@ -1018,6 +1014,21 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                     "unsupported_wienerns_lr_selectable_transform_records_output_allocation",
                 )
             })?;
+            if let Some(sink) = sink.as_deref_mut() {
+                let block_extent = LumaCodingBlockExtent {
+                    block_row: frontier.r,
+                    block_col: frontier.c,
+                    n4w,
+                    n4h,
+                };
+                record_per_transform_far_edge(
+                    sink,
+                    block_decoded,
+                    &luma_records,
+                    block_extent,
+                    tile_offset,
+                )?;
+            }
             let recon_context = SelectableReconContext {
                 leaf_y_mode: leaf_mode.luma_y_mode(),
                 directional_luma,
@@ -1028,8 +1039,6 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                 luma_use_tcq,
                 fsc_mode: fsc_mode != 0,
                 is_intrabc: prelude.use_intrabc,
-                block_num4_above_right,
-                block_num4_below_left,
             };
             decode_selectable_residual_chunks(
                 work_unit,
@@ -1399,13 +1408,6 @@ fn decode_luma_records_for_chunk(
             )
         })?;
         if let Some(sink) = sink.as_deref_mut() {
-            sink.record_block_decoded_far_edge(
-                record.col,
-                record.row,
-                record.tx_size,
-                recon.block_num4_above_right,
-                recon.block_num4_below_left,
-            );
             sink.reconstruct_luma_transform(
                 record.col,
                 record.row,
@@ -1564,29 +1566,109 @@ fn chunk_origin(base: usize, chunk: usize, tile_offset: ByteOffset) -> Result<us
     })
 }
 
-/// Derives a luma partition block's AV2 §7.13.2.1 far-edge availability
-/// (`num4AboveRight`, `num4BelowLeft`, in luma 4x4 units) from the live §5.20.2.3
-/// `BlockDecoded` state at the tree-walk callback, faithfully to §5.20.7.25
-/// `count_top_right_avail` / `count_bottom_left_avail` over the SAME superblock-
-/// relative block position the `general_intra.rs` path uses
-/// (`luma_num4_above_right_from_block_decoded`): `x4 = c & sbMask`, `y4 = r &
-/// sbMask`, `w4 = n4w`, `h4 = n4h` (luma is not subsampled, so plane `0` 4x4 units
-/// equal luma MI units). Called at the callback, where `BlockDecoded` reflects
-/// exactly the decode-order availability for this block's edges BEFORE the walk
-/// marks this block, so the returned counts match what AVM reads for the block.
-fn block_luma_far_edge_avail(
-    block_decoded: &crate::tile_payload::TileBlockDecodedState,
-    r: usize,
-    c: usize,
+/// The coding block origin (luma MI) and extent (luma 4x4 units) enclosing a
+/// transform, for the AV2 §7.13.2.1 per-transform far-edge derivation.
+#[derive(Clone, Copy)]
+struct LumaCodingBlockExtent {
+    block_row: usize,
+    block_col: usize,
     n4w: usize,
     n4h: usize,
+}
+
+/// Derives a single luma TRANSFORM's AV2 §7.13.2.1 far-edge availability
+/// (`num4AboveRight`, `num4BelowLeft`, in luma 4x4 units) at the transform's own
+/// position and `Tx_Width`/`Tx_Height` 4x4 extent — NOT the enclosing partition
+/// block's `n4w` / `n4h`. Faithful to AVM `has_top_right` / `has_bottom_left`
+/// (`av2/common/reconintra.c:59` / `:163`), which key the count on
+/// `tx_size_wide_unit[txsz]` / `tx_size_high_unit[txsz]` at the transform's
+/// `(row_off, col_off)` within the coding block (plane Y, so `ss_x == ss_y == 0`,
+/// `plane_bw_unit == n4w`, `plane_bh_unit == n4h`):
+///
+/// * above-right (`has_top_right`): a transform whose above-right lies inside the
+///   coding block's own span returns `tx_w4` WITHOUT consulting `BlockDecoded` —
+///   `row_off > 0` ⇒ `col_off + tx_w4 < n4w` (the in-block right neighbour above,
+///   `reconintra.c:110`); `row_off == 0` ⇒ `col_off + tx_w4 < n4w` (all above-right
+///   pixels are in the row above the whole block, `:113`). Only when that fails
+///   (the top-right transform of the block, `row_off == 0`) does AVM fall to the
+///   superblock `is_mi_coded` scan, modelled here by §5.20.7.25
+///   `count_top_right_avail` over the live `BlockDecoded`.
+/// * below-left (`has_bottom_left`): mirror — `col_off > 0` ⇒ unavailable
+///   (`:222-224`); `col_off == 0` ⇒ `row_off + tx_h4 < n4h` returns `tx_h4`
+///   (`:231`), else the §5.20.7.25 `count_bottom_left_avail` scan.
+///
+/// Block sizes above 64x64 (the `block_size_wide > 64` special cases at
+/// `reconintra.c:89` / `:196`) are not split into multi-128 residual units in this
+/// sink's reachable region, so the common-case logic suffices. Called while
+/// `BlockDecoded` is live at the tree-walk callback (before this whole block is
+/// marked), so the fall-through SB scan reflects exactly AVM's decode-order reads.
+fn transform_luma_far_edge_avail(
+    block_decoded: &crate::tile_payload::TileBlockDecodedState,
+    tx_row: usize,
+    tx_col: usize,
+    tx_w4: usize,
+    tx_h4: usize,
+    block: LumaCodingBlockExtent,
 ) -> (usize, usize) {
     let sb_mask = block_decoded.sb_size4().saturating_sub(1);
-    let x4 = c & sb_mask;
-    let y4 = r & sb_mask;
-    let above_right = block_decoded.count_top_right_avail(0, x4, y4, n4w);
-    let below_left = block_decoded.count_bottom_left_avail(0, x4, y4, n4h);
+    let x4 = tx_col & sb_mask;
+    let y4 = tx_row & sb_mask;
+    let col_off = tx_col.saturating_sub(block.block_col);
+    let row_off = tx_row.saturating_sub(block.block_row);
+    let above_right = if col_off + tx_w4 < block.n4w {
+        tx_w4
+    } else if row_off == 0 {
+        block_decoded.count_top_right_avail(0, x4, y4, tx_w4)
+    } else {
+        0
+    };
+    let below_left = if col_off > 0 {
+        0
+    } else if row_off + tx_h4 < block.n4h {
+        tx_h4
+    } else {
+        block_decoded.count_bottom_left_avail(0, x4, y4, tx_h4)
+    };
     (above_right, below_left)
+}
+
+/// Records the AV2 §7.13.2.1 far-edge availability for EVERY luma transform of the
+/// current block into the sink, at PER-TRANSFORM granularity (each record's own
+/// `Tx_Width`/`Tx_Height` 4x4 extent, via [`transform_luma_far_edge_avail`]), while
+/// the live §5.20.2.3 `BlockDecoded` state still reflects the decode-order
+/// availability for this block's transforms (the tree-walk marks this whole block
+/// only after the leaf callback returns). The per-transform `num4AboveRight` /
+/// `num4BelowLeft` is what AVM `has_top_right` / `has_bottom_left` read — distinct
+/// from the enclosing partition block's counts when the block splits into multiple
+/// transforms (a transform whose above-right lies inside the coding block's own
+/// above span reads the already-decoded row above the whole block).
+fn record_per_transform_far_edge(
+    sink: &mut WienerNsLrReconSink<u16>,
+    block_decoded: &crate::tile_payload::TileBlockDecodedState,
+    luma_records: &[SelectableLumaTxRecord],
+    block: LumaCodingBlockExtent,
+    tile_offset: ByteOffset,
+) -> Result<()> {
+    for record in luma_records {
+        let tx_w4 = tx_dimension("Tx_Width", &TX_WIDTH, record.tx_size, tile_offset)? / MI_SIZE;
+        let tx_h4 = tx_dimension("Tx_Height", &TX_HEIGHT, record.tx_size, tile_offset)? / MI_SIZE;
+        let (above_right, below_left) = transform_luma_far_edge_avail(
+            block_decoded,
+            record.row,
+            record.col,
+            tx_w4,
+            tx_h4,
+            block,
+        );
+        sink.record_block_decoded_far_edge(
+            record.col,
+            record.row,
+            record.tx_size,
+            above_right,
+            below_left,
+        );
+    }
+    Ok(())
 }
 
 fn mi_to_sample(mi: usize, tile_offset: ByteOffset) -> Result<usize> {
