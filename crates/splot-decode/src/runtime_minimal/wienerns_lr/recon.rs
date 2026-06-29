@@ -404,9 +404,11 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
     /// * the frame dequant matches the primitive's zero-`QuantizerDeltas`
     ///   assumption (`quant_reconstructable`);
     /// * the residual is the proven primitive kind ([`residual_is_reconstructable`]:
-    ///   an `all_zero` flat block, or a square non-`all_zero` block that applies no
-    ///   §7.15.3 secondary transform — no IST syntax or a `sec_tx_type == 0` no-op
-    ///   IST leaf — and no FSC);
+    ///   an `all_zero` flat block, or a non-`all_zero` block — square OR non-square,
+    ///   any eob — that applies no §7.15.3 secondary transform (no IST syntax or a
+    ///   `sec_tx_type == 0` no-op IST leaf) and is not FSC; the retained
+    ///   `block.plane_tx_type` drives the §7.15.4 primary inverse, so a non-`DCT_DCT`
+    ///   leaf reconstructs with its real `Transform_1d_Type[PlaneTxType]` kernels);
     /// * the leaf mode is one the sink can predict bit-exact AND its required
     ///   §7.13.2 prediction neighbours are off-frame or already reconstructed:
     ///   - `DC_PRED` (the §7.13.2.10 flat DC, with the §7.13.2.12 IBP DC modifier
@@ -416,17 +418,16 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
     ///     Some(Horizontal)`): the §7.13.2.8 step-5 left-column copy. The left
     ///     column must be present and covered ([`Self::cardinal_left_reconstructed`]);
     ///     it reads ONLY the left column (no above, no corner, no IDIF, no `useIBP`),
-    ///     the leaf must use the immediate edge (`mrl_index == 0` — the primitive reads
-    ///     the adjacent left/above samples, not a §5.20.5.5 multi-reference line), and
-    ///     a non-`all_zero` residual must be DC-only when the transform is non-square
-    ///     (`eob == 1`): the cardinal recon primitive is fully RECTANGULAR (the copy
-    ///     is per-row), but a non-square non-DC-only residual may carry a non-`DCT_DCT`
-    ///     luma tx type that `LumaCoeffBlock` does not retain, and the primitive always
-    ///     inverse-transforms `DCT_DCT` (see [`residual_is_reconstructable`]);
+    ///     and the leaf must use the immediate edge (`mrl_index == 0` — the primitive
+    ///     reads the adjacent left/above samples, not a §5.20.5.5 multi-reference
+    ///     line). The cardinal recon primitive is fully RECTANGULAR (the copy is
+    ///     per-row) and the retained `block.plane_tx_type` drives the §7.15.4 inverse,
+    ///     so a non-`all_zero` residual of ANY eob reconstructs with its real tx-type
+    ///     (see [`residual_is_reconstructable`]);
     ///   - cardinal `V_PRED` (pAngle 90, `directional == Some(Vertical)`): the
     ///     §7.13.2.8 step-4 above-row copy. The above row must be present and covered
     ///     ([`Self::cardinal_above_reconstructed`]); same rectangular-aware
-    ///     `mrl_index == 0` / non-square-DC-only-residual gates.
+    ///     `mrl_index == 0` gate.
     ///
     /// Every OTHER mode (the §7.13.2.8 angular modes D45/D67/D113/D135/D157/D203,
     /// PAETH, SMOOTH, and any directional mode with a non-zero `AngleDeltaY` — which
@@ -474,7 +475,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         let Some((log2_width, log2_height)) = tx_size_log2(tx_size) else {
             return Ok(());
         };
-        if !residual_is_reconstructable(block, fsc_mode, log2_width == log2_height) {
+        if !residual_is_reconstructable(block, fsc_mode) {
             return Ok(());
         }
         let (mi_w, mi_h) = mi_extent(log2_width, log2_height);
@@ -524,23 +525,16 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 // recon primitive is now fully RECTANGULAR (independent width/height:
                 // V copies the W-wide above row into every one of the H rows; H fills
                 // each of the H rows with one left sample), but it still reads the
-                // IMMEDIATE edge (`MrlIndex == 0`), so defer otherwise:
-                // * a §5.20.5.5 multi-reference line (`mrl_index > 0`): the primitive
-                //   copies the ADJACENT left/above samples, not the selected MRL
-                //   reference line, so it would write the wrong prediction;
-                // * a non-`all_zero` residual that is not DC-only (`eob != 1`): it may
-                //   carry a non-`DCT_DCT` luma tx type `LumaCoeffBlock` does not retain
-                //   (the primitive always inverse-transforms `DCT_DCT`). A DC-only
-                //   (`eob == 1`) residual is tx-type-agnostic (one shared DC coeff).
-                //   `residual_is_reconstructable` admits a non-square cardinal block
-                //   only when it is `all_zero` (ac0ej3's `TX_64X32` V_PRED frontier)
-                //   or DC-only (`eob == 1`); a non-square `eob > 1` cardinal residual
-                //   STILL defers (the unretained non-`DCT_DCT` luma tx type would be
-                //   guessed wrong).
+                // IMMEDIATE edge (`MrlIndex == 0`), so defer a §5.20.5.5 multi-reference
+                // line (`mrl_index > 0`): the primitive copies the ADJACENT left/above
+                // samples, not the selected MRL reference line, so it would write the
+                // wrong prediction. A non-`all_zero` residual of ANY eob now
+                // reconstructs with its retained `block.plane_tx_type` (the §7.15.4
+                // primary inverse resolves the real `Transform_1d_Type[PlaneTxType]`
+                // kernels), so the former non-square `eob > 1` cardinal defer is gone —
+                // `residual_is_reconstructable` already cleared the FSC / real-IST
+                // gates above.
                 if mrl_index != 0 {
-                    return Ok(());
-                }
-                if !block.all_zero && block.eob != 1 {
                     return Ok(());
                 }
                 if !self.cardinal_edge_reconstructed(
@@ -645,7 +639,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             return Ok(());
         };
         // Chroma is never an FSC leaf.
-        if !residual_is_reconstructable(block, false, log2_width == log2_height) {
+        if !residual_is_reconstructable(block, false) {
             return Ok(());
         }
         let (mi_col, mi_row) = (x / MI_SIZE, y / MI_SIZE);
@@ -1034,37 +1028,36 @@ fn mi_extent(log2_width: u32, log2_height: u32) -> (usize, usize) {
 /// is not an FSC leaf. A REAL IST leaf (`sec_tx_type != 0`) still defers (the
 /// §7.15.3 secondary transform is unimplemented).
 ///
-/// A SQUARE non-`all_zero` residual is the proven case. A NON-square (rectangular)
-/// residual is admitted only when it is DC-only (`eob == 1`): the §7.15.4 outer
-/// process ([`inverse_transform_2d_outer`]) already drives the rectangular path
-/// (the §7.15.4.1 `Adjusted_Tx_Size` per-side `Min(log2, 5)` cap, the
-/// `Abs(log2W - log2H)` odd-ratio `Round2(x * 2896, 12)` √2 rescale, and the
-/// nearest-neighbour duplication for any original side over 32), and a single DC
-/// coefficient is shared by every DCT-family transform, so the (unretained) luma tx
-/// type is irrelevant — proven bit-exact for the ac0ej3 `TX_16X64` `DC_PRED` leaf at
-/// MI(4,0) (x[16,32), y[0,64)) against the AVM pre-filter oracle. A non-square
-/// `eob > 1` block may carry a non-`DCT_DCT` luma tx type that `LumaCoeffBlock` does
-/// not retain (the primitive always reconstructs `DCT_DCT`), so it stays deferred.
+/// Both SQUARE and NON-square (rectangular) non-`all_zero` residuals are now
+/// admitted: `LumaCoeffBlock` retains the real §3 `PlaneTxType`, and the §7.15.4
+/// primary inverse transform ([`inverse_transform_2d_outer`]) resolves the actual
+/// `Transform_1d_Type[PlaneTxType]` row/col kernels for it (the §7.15.4.1
+/// `Adjusted_Tx_Size` per-side `Min(log2, 5)` cap, the `Abs(log2W - log2H)`
+/// odd-ratio `Round2(x * 2896, 12)` √2 rescale, and the nearest-neighbour
+/// duplication for any original side over 32 all apply for every type). Intra
+/// passes use `use_ddt == false`, so the inter-only DDT/DDTX substitution never
+/// applies. The DC-only (`eob == 1`) rectangular case stays proven bit-exact for the
+/// ac0ej3 `TX_16X64` `DC_PRED` leaf at MI(4,0) (x[16,32), y[0,64)), and an `eob > 1`
+/// block — square or non-square, any DCT/ADST/FLIPADST/IDTX/cardinal type — now
+/// reconstructs with its REAL tx-type instead of the former hardcoded `DCT_DCT`.
 /// The REAL-IST (`sec_tx_type != 0`) / FSC / quant-delta / incomplete-neighbour
 /// gates stay intact; everything else is deferred.
-fn residual_is_reconstructable(block: &LumaCoeffBlock, fsc_mode: bool, square: bool) -> bool {
+fn residual_is_reconstructable(block: &LumaCoeffBlock, fsc_mode: bool) -> bool {
     if block.all_zero {
         return true;
     }
     // §7.15.3: a `sec_tx_type == 0` IST leaf applies NO secondary inverse
-    // transform — it reconstructs via the identical §7.14.4 / §7.15.4 DCT_DCT
+    // transform — it reconstructs via the identical §7.14.4 / §7.15.4 primary
     // residual path as a non-IST leaf (the primitive never consults `intra_ist`).
     // Only a REAL IST leaf (`sec_tx_type != 0`) needs the unimplemented §7.15.3
     // secondary transform, so defer ONLY that. A no-op-IST leaf must still satisfy
-    // every other residual condition below (the FSC / square / eob / proven-tx-type
-    // gates), exactly like a non-IST leaf.
+    // every other residual condition below (the FSC / real-IST gates), exactly
+    // like a non-IST leaf.
     let real_ist = block.intra_ist.is_some_and(|ist| ist.sec_tx_type != 0);
-    if real_ist || fsc_mode {
-        return false;
-    }
-    // Square non-`all_zero` is the proven path; a non-square residual is only
-    // DC-only-safe (`eob == 1`), where the unretained luma tx type cannot matter.
-    square || block.eob == 1
+    // The §7.15.4 primary inverse now resolves the retained `block.plane_tx_type`
+    // for both square and non-square blocks at any eob, so the former non-square
+    // `eob > 1` tx-type defer is gone. The FSC / real-IST gates remain.
+    !(real_ist || fsc_mode)
 }
 
 #[cfg(test)]
@@ -1078,6 +1071,10 @@ mod tests {
     /// §3 `TxSize` index for TX_16X64 (`Tx_Width[17] == 16`, `Tx_Height[17] == 64`):
     /// a NON-SQUARE transform.
     const TX_16X64: usize = 17;
+    /// §3 `TX_TYPES` index for `DCT_DCT` (`Transform_1d_Type[0] == (DCT, DCT)`).
+    const DCT_DCT: usize = 0;
+    /// §3 `TX_TYPES` index for `ADST_ADST` (`Transform_1d_Type[3] == (ADST, ADST)`).
+    const ADST_ADST: usize = 3;
 
     /// An `all_zero` (`txb_skip`) DC block: reconstruction writes the bare §7.13.2
     /// DC prediction (zero residual).
@@ -1087,21 +1084,28 @@ mod tests {
             eob: 0,
             quant: Vec::new(),
             intra_ist: None,
+            plane_tx_type: DCT_DCT,
         }
     }
 
-    /// A non-`all_zero` block with a single decoded coefficient and `quant` sized
-    /// for a 16x16 adjusted transform (256 entries), used to exercise the non-skip
-    /// reconstruction path and its gates.
-    fn coeff_block_16x16() -> LumaCoeffBlock {
-        let mut quant = vec![0i32; 256];
-        quant[0] = -355;
+    /// A non-`all_zero` `DCT_DCT` block with a single decoded DC coefficient `dc`
+    /// over an `adjusted`-entry coefficient grid (the §7.15.4.1 `Min(w,32) x
+    /// Min(h,32)` adjusted-size), used to exercise the non-skip reconstruction path.
+    fn dc_coeff_block(adjusted: usize, dc: i32) -> LumaCoeffBlock {
+        let mut quant = vec![0i32; adjusted];
+        quant[0] = dc;
         LumaCoeffBlock {
             all_zero: false,
             eob: 1,
             quant,
             intra_ist: None,
+            plane_tx_type: DCT_DCT,
         }
+    }
+
+    /// A non-`all_zero` block sized for a 16x16 adjusted transform (256 entries).
+    fn coeff_block_16x16() -> LumaCoeffBlock {
+        dc_coeff_block(256, -355)
     }
 
     fn sink() -> WienerNsLrReconSink<u16> {
@@ -1293,14 +1297,7 @@ mod tests {
     /// `Min(16,32) x Min(64,32) == 16x32 == 512`-entry coefficient grid), with a
     /// single DC coefficient, used to exercise the non-square residual path.
     fn coeff_block_16x64() -> LumaCoeffBlock {
-        let mut quant = vec![0i32; 512];
-        quant[0] = -2;
-        LumaCoeffBlock {
-            all_zero: false,
-            eob: 1,
-            quant,
-            intra_ist: None,
-        }
+        dc_coeff_block(512, -2)
     }
 
     // A non-`all_zero`, non-square DC leaf (e.g. TX_16X64) is now ADMITTED: the
@@ -1429,12 +1426,14 @@ mod tests {
         assert_eq!(sink.reconstructed_counts().0, 0);
     }
 
-    // Codex review: a non-`all_zero`, NON-square DC leaf with `eob > 1` may carry a
-    // non-`DCT_DCT` luma tx type (not retained in `LumaCoeffBlock`); the primitive
-    // always reconstructs `DCT_DCT`, so it is DEFERRED. Only a DC-only (`eob == 1`)
-    // non-square residual is tx-type-agnostic and admitted (the ac0ej3 mi(4,0) case).
+    // A non-`all_zero`, NON-square DC leaf with `eob > 1` is now ADMITTED: the
+    // retained `block.plane_tx_type` flows to the §7.15.4 primary inverse, so the
+    // former "unretained non-`DCT_DCT` type" defer is gone. The whole 16x64 block
+    // reconstructs (64 4x4 units), and the non-DC coefficient produces a real (non
+    // flat-DC) residual variation that distinguishes the tx-type — see
+    // `non_square_eob_gt1_threads_real_tx_type` for the per-type correctness proof.
     #[test]
-    fn non_square_multi_coeff_dc_leaf_is_deferred() {
+    fn non_square_multi_coeff_dc_leaf_is_reconstructed() {
         let mut sink = sink();
         let mut block = coeff_block_16x64();
         block.eob = 2;
@@ -1448,8 +1447,74 @@ mod tests {
             Some(IntraYMode::DC_PRED),
             false,
         );
-        assert_eq!(sink.reconstructed_sample(PlaneId::Y, 0, 0).unwrap(), 0);
-        assert_eq!(sink.reconstructed_counts().0, 0);
+        // 16x64 == 4 MI cols x 16 MI rows == 64 4x4 units, all reconstructed.
+        assert_eq!(sink.reconstructed_counts().0, 64);
+    }
+
+    /// Reconstructs `base` (its asymmetric `eob > 1` coefficients) twice — once as
+    /// `DCT_DCT` and once as `ADST_ADST` — over the no-neighbour frame origin, and
+    /// asserts both fully reconstruct (`expected_count` 4x4 units) AND the two
+    /// reconstructions DIFFER somewhere over the `width x height` block. Under the
+    /// former hardcoded `DCT_DCT` argument BOTH types reconstructed identically (as
+    /// `DCT_DCT`), so a per-sample difference proves the retained `plane_tx_type`
+    /// now drives the §7.15.4 inverse — the latent confident-wrong is removed.
+    fn assert_tx_type_threads(
+        base: &LumaCoeffBlock,
+        tx_size: usize,
+        (width, height): (usize, usize),
+        expected_count: usize,
+    ) {
+        let recon_with = |tx_type: usize| {
+            let mut block = base.clone();
+            block.plane_tx_type = tx_type;
+            let mut sink = sink();
+            recon_luma(
+                &mut sink,
+                0,
+                0,
+                tx_size,
+                &block,
+                Some(IntraYMode::DC_PRED),
+                false,
+            );
+            sink
+        };
+        let sink_dct = recon_with(DCT_DCT);
+        let sink_adst = recon_with(ADST_ADST);
+        assert_eq!(sink_dct.reconstructed_counts().0, expected_count);
+        assert_eq!(sink_adst.reconstructed_counts().0, expected_count);
+        let differs = (0..height).any(|y| {
+            (0..width).any(|x| {
+                sink_dct.reconstructed_sample(PlaneId::Y, x, y).unwrap()
+                    != sink_adst.reconstructed_sample(PlaneId::Y, x, y).unwrap()
+            })
+        });
+        assert!(
+            differs,
+            "ADST_ADST must reconstruct differently from DCT_DCT for the same eob>1 coeffs (tx {tx_size})"
+        );
+    }
+
+    // Correctness proof (removes the latent confident-wrong): an `eob > 1` leaf —
+    // both the SQUARE (`TX_16X16`) and NON-square (`TX_16X64`) case — reconstructs
+    // with its REAL tx-type, NOT the former hardcoded `DCT_DCT`. Under the old
+    // hardcoded argument an `ADST_ADST` leaf reconstructed identically to `DCT_DCT`
+    // (a latent confident-wrong, safe only because every prior-admitted block
+    // happened to be `DCT_DCT`). Asymmetric coefficients (per the decode-verify
+    // lesson: symmetric/zero values can mask a kernel difference) sit in distinct
+    // row/col positions so both 1-D types matter.
+    #[test]
+    fn eob_gt1_threads_real_tx_type_square_and_non_square() {
+        for (mut block, tx_size, dims, count) in [
+            (coeff_block_16x16(), TX_16X16, (16, 16), 16),
+            (coeff_block_16x64(), TX_16X64, (16, 64), 64),
+        ] {
+            block.quant[0] = -3;
+            block.quant[1] = 9;
+            block.quant[16] = -7;
+            block.eob = 3;
+            assert_tx_type_threads(&block, tx_size, dims, count);
+        }
     }
 
     // Finding #1: an FSC DC leaf is DEFERRED (non-FSC primitive).
@@ -1774,14 +1839,13 @@ mod tests {
         assert_eq!(sink.reconstructed_sample(PlaneId::Y, 16, 0).unwrap(), 0);
     }
 
-    // Finding 2: a cardinal H_PRED leaf with a NON-`all_zero`, non-DC-only residual
-    // (`eob > 1`) is DEFERRED. Such a block may carry a non-`DCT_DCT` luma tx type
-    // that `LumaCoeffBlock` does not retain; the cardinal primitive always
-    // inverse-transforms `DCT_DCT`, so it would write wrong residual samples. Only a
-    // DC-only (`eob == 1`) residual is tx-type-agnostic and admitted. The left
-    // neighbour is covered, so only the residual gate causes the deferral.
+    // A cardinal H_PRED leaf with a NON-`all_zero`, non-DC-only residual (`eob > 1`)
+    // is now ADMITTED: the retained `block.plane_tx_type` flows to the §7.15.4
+    // primary inverse, so the cardinal recon primitive applies the REAL tx-type
+    // residual rather than a hardcoded `DCT_DCT`. The left neighbour is covered
+    // (the same-size DC block at (0,0)), so the block reconstructs.
     #[test]
-    fn cardinal_with_multi_coeff_residual_is_deferred() {
+    fn cardinal_with_multi_coeff_residual_is_reconstructed() {
         let mut sink = sink();
         recon_luma(
             &mut sink,
@@ -1807,8 +1871,8 @@ mod tests {
             SupportedDirectionalLumaMode::Horizontal,
             0,
         );
-        assert_eq!(sink.reconstructed_counts().0, before);
-        assert_eq!(sink.reconstructed_sample(PlaneId::Y, 16, 0).unwrap(), 0);
+        // TX_16X16 == 16 4x4 units, now reconstructed on top of the DC block.
+        assert_eq!(sink.reconstructed_counts().0, before + 16);
     }
 
     /// A §7.13.3.18 IntrABC integer-vector skip copy whose source rectangle is fully

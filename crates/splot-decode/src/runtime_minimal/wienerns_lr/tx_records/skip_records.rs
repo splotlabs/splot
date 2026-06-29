@@ -24,6 +24,8 @@ fn skipped_coeff_block() -> LumaCoeffBlock {
         eob: 0,
         quant: Vec::new(),
         intra_ist: None,
+        // §3 `DCT_DCT` index 0; a skip block inverts no residual.
+        plane_tx_type: 0,
     }
 }
 

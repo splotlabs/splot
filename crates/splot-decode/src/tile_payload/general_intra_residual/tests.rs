@@ -56,6 +56,8 @@ fn reconstruct_with_prediction_rejects_wrong_prediction_length() {
         64,
         PlaneId::Y,
         2,
+        // DCT_DCT (§3 PlaneTxType 0); rejected on length before the transform resolves.
+        0,
         false,
         BitDepth::Eight,
     );

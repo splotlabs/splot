@@ -316,6 +316,13 @@ pub(crate) struct LumaCoeffBlock {
     pub(crate) quant: Vec<i32>,
     /// Parsed intra IST syntax, when AV2 § 5.20.7.29 read that branch.
     pub(crate) intra_ist: Option<IntraIstSyntax>,
+    /// The retained § 3 `PlaneTxType` index (`0..TX_TYPES`, `DCT_DCT == 0`) of
+    /// this luma transform block: the already-decoded `metadata.luma_tx_type`,
+    /// carried so the § 7.15.4 primary inverse transform resolves the ACTUAL
+    /// `Transform_1d_Type[PlaneTxType]` kernels instead of assuming `DCT_DCT`.
+    /// The simple non-staged path forces `DCT_DCT` (its eob==1/DCTONLY subset),
+    /// and an `all_zero` skip block carries `DCT_DCT` (no residual is inverted).
+    pub(crate) plane_tx_type: usize,
 }
 
 /// Error returned while decoding the general intra luma coefficient block.
@@ -569,6 +576,9 @@ pub(crate) fn decode_general_intra_plane_coeffs(
             eob: 0,
             quant: Vec::new(),
             intra_ist: None,
+            // A skipped block has no residual to inverse-transform; the type is
+            // irrelevant, so carry the canonical `DCT_DCT`.
+            plane_tx_type: DCT_DCT,
         });
     }
 
@@ -627,6 +637,9 @@ pub(crate) fn decode_general_intra_plane_coeffs(
         eob: pass.eob_read().eob().eob(),
         quant: pass.block().quant().to_vec(),
         intra_ist: None,
+        // The simple non-staged path is the `DCTONLY`-forced subset (no
+        // transform-tool syntax was read), so the luma tx-type is `DCT_DCT`.
+        plane_tx_type: DCT_DCT,
     })
 }
 
@@ -729,6 +742,7 @@ fn decode_staged_transform_tool_nonzero_coeffs(
             eob: pass.eob_read().eob().eob(),
             quant: pass.block().quant().to_vec(),
             intra_ist: metadata.intra_ist,
+            plane_tx_type: metadata.luma_tx_type,
         });
     }
     let pass = apply_staged_nonzero_coeff_ordinary_branch_from_lossless(
@@ -750,6 +764,7 @@ fn decode_staged_transform_tool_nonzero_coeffs(
         eob,
         quant: pass.block().quant().to_vec(),
         intra_ist: metadata.intra_ist,
+        plane_tx_type: metadata.luma_tx_type,
     })
 }
 
@@ -1491,17 +1506,20 @@ fn unsupported_transform_tool_residual<T>(
 /// § 7.14.3 residual addition (`reconstruct_transform_block_residual`) over the
 /// flat § 7.13.2 DC prediction (`dc_sample`, derived from the partially-built
 /// frame's neighbours, or `128` when none). `qindex == base_q_idx` for this
-/// minimal-tool frame (no segmentation or delta-Q), and the transform is
-/// `DCT_DCT` over the original `log2_side` (adjusted, capped at 32) dimensions.
-/// `use_tcq` adds the § 7.14.4 TCQ `dqDenom` term (luma only). `bit_depth` is the
+/// minimal-tool frame (no segmentation or delta-Q), and the § 7.15.4 primary
+/// inverse transform uses the supplied `plane_tx_type` (a § 3 `PlaneTxType`
+/// index, `DCT_DCT == 0`) over the original `log2_side` (adjusted, capped at 32)
+/// dimensions. `use_tcq` adds the § 7.14.4 TCQ `dqDenom` term (luma only). `bit_depth` is the
 /// active sequence sample depth (§ 6.4.1); the sample storage type `T` matches it
 /// (`u8` for 8-bit, `u16` for 10-bit) and bounds the § 7.14.3 Clip1.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_block<T: ReconSample>(
     quant: &[i32],
     dc_sample: T,
     qindex: u32,
     plane_id: PlaneId,
     log2_side: u32,
+    plane_tx_type: usize,
     use_tcq: bool,
     bit_depth: BitDepth,
 ) -> Result<Vec<T>, GeneralIntraResidualError> {
@@ -1513,6 +1531,7 @@ pub(crate) fn reconstruct_general_intra_block<T: ReconSample>(
         qindex,
         plane_id,
         log2_side,
+        plane_tx_type,
         use_tcq,
         bit_depth,
     )
@@ -1528,12 +1547,14 @@ pub(crate) fn reconstruct_general_intra_block<T: ReconSample>(
 /// supplies a per-sample predicted block. `bit_depth` is the active sequence
 /// sample depth (§ 6.4.1); the sample storage type `T` matches it and bounds the
 /// § 7.14.3 Clip1.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_block_with_prediction<T: ReconSample>(
     quant: &[i32],
     prediction: &[T],
     qindex: u32,
     plane_id: PlaneId,
     log2_side: u32,
+    plane_tx_type: usize,
     use_tcq: bool,
     bit_depth: BitDepth,
 ) -> Result<Vec<T>, GeneralIntraResidualError> {
@@ -1541,7 +1562,15 @@ pub(crate) fn reconstruct_general_intra_block_with_prediction<T: ReconSample>(
     // §7.15.4 outer process collapses to the no-adjustment, no-√2-rescale,
     // no-duplication path for `log2_width == log2_height <= 5`.
     reconstruct_general_intra_block_rect_with_prediction(
-        quant, prediction, qindex, plane_id, log2_side, log2_side, use_tcq, bit_depth,
+        quant,
+        prediction,
+        qindex,
+        plane_id,
+        log2_side,
+        log2_side,
+        plane_tx_type,
+        use_tcq,
+        bit_depth,
     )
 }
 
@@ -1556,10 +1585,12 @@ pub(crate) fn reconstruct_general_intra_block_with_prediction<T: ReconSample>(
 /// rows/columns the IBP modifier has already blended toward the reconstructed
 /// neighbours. This composes the §7.14.4
 /// dequantization over the adjusted `Min(1<<log2_w, 32) x Min(1<<log2_h, 32)`
-/// coefficient grid, the §7.15.4 / §7.15.4.1 inverse transform (the `Abs(log2_w -
-/// log2_h)` odd-ratio √2 rescale and the over-32 sample duplication included), and
-/// the §7.14.3 residual addition. Chroma never uses the §7.14.4 TCQ `dqDenom` term
-/// (luma DCT_DCT only), so `use_tcq` is `false` for chroma callers.
+/// coefficient grid, the §7.15.4 / §7.15.4.1 inverse transform (resolving the
+/// `Transform_1d_Type[PlaneTxType]` row/col kernels for the supplied
+/// `plane_tx_type`, plus the `Abs(log2_w - log2_h)` odd-ratio √2 rescale and the
+/// over-32 sample duplication), and the §7.14.3 residual addition. Intra passes
+/// use `use_ddt == false`. Chroma never uses the §7.14.4 TCQ `dqDenom` term (only
+/// the luma 2-D `DCT_DCT` class does), so `use_tcq` is `false` for chroma callers.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_block_rect_with_prediction<T: ReconSample>(
     quant: &[i32],
@@ -1568,6 +1599,7 @@ pub(crate) fn reconstruct_general_intra_block_rect_with_prediction<T: ReconSampl
     plane_id: PlaneId,
     log2_width: u32,
     log2_height: u32,
+    plane_tx_type: usize,
     use_tcq: bool,
     bit_depth: BitDepth,
 ) -> Result<Vec<T>, GeneralIntraResidualError> {
@@ -1611,8 +1643,12 @@ pub(crate) fn reconstruct_general_intra_block_rect_with_prediction<T: ReconSampl
         dq_denom,
         bit_depth,
     };
+    // §7.15.4 / §7.15.4.1: the primary inverse transform resolves the per-pass
+    // `Transform_1d_Type[PlaneTxType]` kernels for the ACTUAL retained luma
+    // tx-type. Intra passes use `use_ddt == false`, so the inter-only DDT/DDTX
+    // substitution (transform_params.rs) never applies here.
     let transform = InverseTransform2dOuter::resolve(
-        DCT_DCT,
+        plane_tx_type,
         log2_width,
         log2_height,
         false,
