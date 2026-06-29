@@ -60,10 +60,6 @@ const DR_INTRA_DERIVATIVE: [u16; 90] = [
     3,    2,    1,
 ];
 
-const DR_INTRA_DERIVATIVE_23: u16 = DR_INTRA_DERIVATIVE[23];
-const DR_INTRA_DERIVATIVE_45: u16 = DR_INTRA_DERIVATIVE[45];
-const DR_INTRA_DERIVATIVE_67: u16 = DR_INTRA_DERIVATIVE[67];
-
 /// AV2 §7.13.2.8 zone boundary: a `pAngle` strictly below `ZONE_1_MAX` reads the
 /// above row (step 1, zone-1), strictly above `ZONE_3_MIN` reads the left column
 /// (step 3, zone-3). `90`/`180` are the cardinals (steps 4/5) and `90 < pAngle <
@@ -310,16 +306,22 @@ impl IntraMiddleDirectionalAngle {
 
     /// Creates a supported middle directional angle from an AV2 pAngle.
     ///
+    /// Admits ANY pAngle in the §7.13.2.8 zone-2 middle band (`90 < pAngle <
+    /// 180`); the §9.2 derivatives are `dx = Dr_Intra_Derivative[180 - pAngle]`
+    /// and `dy = Dr_Intra_Derivative[pAngle - 90]` (AVM `av2_get_dx` / `av2_get_dy`
+    /// for `90 < angle < 180`), so every in-band pAngle has a valid pair (both
+    /// indices land in `1..=89`). The named modes `D113` / `D135` / `D157` are the
+    /// `AngleDeltaY == 0` cases; non-zero `AngleDeltaY` and the §5.20.7.29
+    /// wide-angle remap produce the other in-band pAngles.
+    ///
     /// # Errors
-    /// Returns [`ReconError::UnsupportedIntraMiddleDirectionalAngle`] for
-    /// pAngles outside this primitive's narrow pAngle `113`, `135`, and `157`
-    /// scope.
+    /// Returns [`ReconError::UnsupportedIntraMiddleDirectionalAngle`] for a pAngle
+    /// outside the open zone-2 band (`pAngle <= 90` or `pAngle >= 180`).
     pub const fn try_from_p_angle(p_angle: u16) -> Result<Self> {
-        match p_angle {
-            ANGLE_D113 => Ok(Self::D113),
-            ANGLE_D135 => Ok(Self::D135),
-            ANGLE_D157 => Ok(Self::D157),
-            _ => Err(ReconError::UnsupportedIntraMiddleDirectionalAngle { p_angle }),
+        if p_angle > ZONE_1_MAX && p_angle < ZONE_3_MIN {
+            Ok(Self { p_angle })
+        } else {
+            Err(ReconError::UnsupportedIntraMiddleDirectionalAngle { p_angle })
         }
     }
 
@@ -329,23 +331,14 @@ impl IntraMiddleDirectionalAngle {
     }
 
     fn branch(self) -> Result<MiddleDirectionalAngleBranch> {
-        match self.p_angle {
-            ANGLE_D113 => Ok(MiddleDirectionalAngleBranch {
-                dx: DR_INTRA_DERIVATIVE_67,
-                dy: DR_INTRA_DERIVATIVE_23,
-            }),
-            ANGLE_D135 => Ok(MiddleDirectionalAngleBranch {
-                dx: DR_INTRA_DERIVATIVE_45,
-                dy: DR_INTRA_DERIVATIVE_45,
-            }),
-            ANGLE_D157 => Ok(MiddleDirectionalAngleBranch {
-                dx: DR_INTRA_DERIVATIVE_23,
-                dy: DR_INTRA_DERIVATIVE_67,
-            }),
-            _ => Err(ReconError::UnsupportedIntraMiddleDirectionalAngle {
+        if self.p_angle <= ZONE_1_MAX || self.p_angle >= ZONE_3_MIN {
+            return Err(ReconError::UnsupportedIntraMiddleDirectionalAngle {
                 p_angle: self.p_angle,
-            }),
+            });
         }
+        let dx = DR_INTRA_DERIVATIVE[usize::from(ZONE_3_MIN - self.p_angle)];
+        let dy = DR_INTRA_DERIVATIVE[usize::from(self.p_angle - ZONE_1_MAX)];
+        Ok(MiddleDirectionalAngleBranch { dx, dy })
     }
 }
 

@@ -182,6 +182,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
                 log2_side,
                 qindex,
                 num4_below_left,
+                false, // have_above: unchanged chroma §7.13.2.1 corner `CurrFrame[y][x-1]`
                 false,
                 bit_depth,
                 OneSidedEdgeFilter::default(),

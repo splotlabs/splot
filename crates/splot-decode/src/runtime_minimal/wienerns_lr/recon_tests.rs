@@ -803,6 +803,113 @@ fn cardinal_with_multi_coeff_residual_is_reconstructed() {
     assert_eq!(sink.reconstructed_counts().0, before + 16);
 }
 
+/// A §7.13.2.2 PAETH leaf with a NON-`all_zero` residual reconstructs when its
+/// `haveAbove && haveLeft` neighbours (above row, left column, AND the diagonal
+/// corner unit) are all covered: the predictor reads the real reconstructed edges
+/// and the §5.20.7.27 residual is added on top. Proven by the count growing AND the
+/// sample moving off the would-be flat `512` Paeth prediction (the residual fired).
+#[test]
+fn paeth_with_residual_reconstructs_when_neighbours_covered() {
+    let mut sink = sink();
+    for col in 0..8 {
+        recon_luma(
+            &mut sink,
+            col,
+            0,
+            TX_16X16,
+            &zero_block(),
+            Some(IntraYMode::DC_PRED),
+            false,
+        );
+    }
+    for row in 0..8 {
+        recon_luma(
+            &mut sink,
+            0,
+            row,
+            TX_16X16,
+            &zero_block(),
+            Some(IntraYMode::DC_PRED),
+            false,
+        );
+    }
+    let before = sink.reconstructed_counts().0;
+    let mut block = coeff_block_16x16();
+    block.eob = 2;
+    block.quant[1] = 9;
+    recon_luma(
+        &mut sink,
+        4,
+        4,
+        TX_16X16,
+        &block,
+        Some(IntraYMode::PAETH_PRED_FOR_TEST),
+        false,
+    );
+    assert_eq!(sink.reconstructed_counts().0, before + 16);
+    let mut moved = false;
+    for dy in 0..16 {
+        for dx in 0..16 {
+            if sink
+                .reconstructed_sample(PlaneId::Y, 16 + dx, 16 + dy)
+                .unwrap()
+                != 512
+            {
+                moved = true;
+            }
+        }
+    }
+    assert!(
+        moved,
+        "the PAETH residual must move samples off the flat prediction"
+    );
+}
+
+/// A §7.13.2.2 PAETH leaf whose diagonal CORNER unit is NOT covered is DEFERRED
+/// (the corner `AboveRow[-1]` is load-bearing for Paeth, so an uncovered corner must
+/// not fall back to a fill value).
+#[test]
+fn paeth_with_uncovered_corner_is_deferred() {
+    let mut sink = sink();
+    for col in 1..8 {
+        recon_luma(
+            &mut sink,
+            col,
+            0,
+            TX_16X16,
+            &zero_block(),
+            Some(IntraYMode::DC_PRED),
+            false,
+        );
+    }
+    for row in 1..8 {
+        recon_luma(
+            &mut sink,
+            0,
+            row,
+            TX_16X16,
+            &zero_block(),
+            Some(IntraYMode::DC_PRED),
+            false,
+        );
+    }
+    let before = sink.reconstructed_counts().0;
+    recon_luma(
+        &mut sink,
+        4,
+        4,
+        TX_16X16,
+        &zero_block(),
+        Some(IntraYMode::PAETH_PRED_FOR_TEST),
+        false,
+    );
+    assert_eq!(
+        sink.reconstructed_counts().0,
+        before,
+        "uncovered corner defers"
+    );
+}
+
 /// A §7.13.3.18 IntrABC integer-vector skip copy whose source rectangle is fully
 /// reconstructed copies the source samples into the target (target == source).
 #[test]

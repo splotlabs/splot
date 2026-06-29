@@ -110,20 +110,213 @@ const LUMA_REGION_FNV1A64: u64 = 0x31c1_4055_9bd3_8725;
 /// The §7.13.2.12 IBP DC value at the MI(4,0) `TX_16X64` leaf's top-left 3 columns.
 const MI40_IBP_STEP: u16 = 65;
 
-/// The total count of bit-exact reconstructed luma samples over the sink's covered
-/// MI units (a non-rectangular union, bounding box x[0,1151] y[0,1079]), verified
-/// ZERO-mismatch per sample against the AVM pre-filter reconstruction oracle (the
-/// `inspect --dump-prefiltered` luma plane, 1920x1080 u16-LE, stride 3840) and
-/// aggregated alongside [`LUMA_RECON_REGION_SAMPLE_SUM`] / [`LUMA_RECON_REGION_FNV1A64`].
-const LUMA_RECON_SAMPLE_TOTAL: usize = 772_576;
+/// The total reconstructed luma sample count after the §7.12.2.19 IntrABC ref-MV
+/// weight-sort advancement. The prior §7.12.2.6 above-row stage reconstructed
+/// `204800` samples (it stopped at the MI(192,112) §7.12.2.19 multi-candidate
+/// weight-sort defer); modelling the §7.12.2.19 max-weight-to-slot-0 reorder (with
+/// the §7.12.2.6 per-candidate weights) admits the `BLOCK_64X32` MI(192,112) block
+/// — which has TWO distinct spatial candidates ((-1024,0) step 7 weight 2 +
+/// (-512,0) step 8 weight 1) so the sort runs (a no-op swap; slot 0 keeps the
+/// max-weight (-1024,0), drl=1 selects (-512,0), bit-exact vs avmdec) — and its
+/// downstream IntrABC siblings faithfully. Each admitted block keeps the entropy
+/// parse synced in decode order, so the walk reconstructs many more proven-subset
+/// general-intra DC / cardinal leaves before the next defer.
+///
+/// The verified region is `245760` bit-exact luma samples (bounding box x[0,447]
+/// y[0,1023], a non-rectangular union of the covered MI units). After the §5.20.4.1
+/// SDP chroma-reference MI-size fix (which removed the MI(240,240) §8.3.2 `do_split`
+/// left-context desync and the downstream `bitstream_desync` over-read) and the
+/// §5.20.7.27 coefficient context-write edge clamp (modelling AVM
+/// `av2_set_entropy_contexts`, which advanced the walk past the bottom-edge skipped
+/// TX_64X64 transforms whose 16-tall left span overhangs the tile by 2 MI rows), the
+/// walk reconstructed `233472` samples and stopped at the §5.20.6.1 selectable
+/// transform-record `recon_luma_write` frontier MI(64,0) — a `TX_64X32` (non-square)
+/// `V_PRED` `all_zero` leaf at the FRAME TOP (`mi_row == 0`, so `haveAbove == 0`).
+/// Modelling the §7.13.2.1 single-neighbour edge fallback (`haveAbove == 0 &&
+/// haveLeft == 1`: `AboveRow[i] = CurrFrame[plane][y][x-1]`, the block's left
+/// neighbour repeated across the synthesized above row) lets the §7.13.2.8 V_PRED
+/// copy reconstruct the flat `68` block, which CASCADES: its now-covered samples
+/// become valid left/above neighbours for the rest of the top-row SB columns 4-6,
+/// adding the solid rectangle x[256,448) y[0,64) (`12288` samples: `11264` of `68`
+/// plus a `32x32` patch of `64` at x[352,384) y[0,32)).
+///
+/// Modelling the §7.13.2.2 PAETH (`PAETH_PRED`) predictor for the two-sided
+/// `haveAbove == 1 && haveLeft == 1` config — the §7.13.2.1 above row, left column,
+/// AND the real reconstructed corner `AboveRow[-1] = CurrFrame[plane][y-1][x-1]` —
+/// then admits the two `all_zero` `TX_64X64` PAETH leaves MI(64,16) (x[256,320)
+/// y[64,128)) and MI(80,16) (x[320,384) y[64,128)) and the DC / cardinal leaves they
+/// CASCADE into (their now-covered samples become valid neighbours), adding `14848`
+/// bit-exact samples (`245760` → `260608`). The single-sided PAETH configs
+/// (`haveAbove ^ haveLeft`, e.g. MI(56,248)) DEFER: the oracle shows PAETH does not
+/// match the naive §7.13.2.1 single-neighbour fallback there, so they await their own
+/// verified model. The walk then stops at the GENUINELY DISTINCT next mechanism.
+///
+/// With the §7.11.3 reconstructed-sample WORKSPACE WRITE now clamped to the frame
+/// edge (modelling AVM's in-frame-only reconstruction: a transform overhanging a
+/// partial-superblock frame edge writes only the in-frame rows/cols and drops the
+/// overhang — see [`CurrentFramePlane::clamp_rect_to_storage`] in `splot-recon`), the
+/// `TX_64X64 DC_PRED all_zero` leaf at MI(0,256) (sample x[0,64) y[1024,1088)) — whose
+/// 64-tall write overhangs the 1080-tall luma storage by 8 rows — now writes its 56
+/// IN-FRAME rows (y[1024,1080), `3584` samples of the flat `64`) instead of erroring
+/// `WorkspaceRectOutOfBounds`. The §7.13.2.1 frame-edge EDGE-EXTENSION (a transform
+/// overhanging the frame bottom/right edge-extends its clamped in-frame left column /
+/// above row back to the block's full nominal height/width by replicating the LAST
+/// in-frame sample, per AVM `av2/common/reconintra.c:1191-1195`) lets the bottom-edge
+/// `TX_64X64 DC_PRED` block at MI(16,256) (sample x[64,128) y[1024,1080)) — whose
+/// 56-row in-frame left column previously errored `IntraPredictionEdgeLengthMismatch`
+/// (`expected:64, actual:56`) in the §7.13.2 DC primitive — reconstruct its 56 in-frame
+/// rows (`3584` flat-`64` samples) bit-exact, advancing the region `264192` → `267776`.
+///
+/// The §5.20.6.1 IntrABC `record_block` mode-info fill is now ALSO clamped to the
+/// frame edge (modelling AVM §5.20.3.2 `block_coded(r,c) { r < MiRows && c < MiCols }`,
+/// 05-syntax-structures.md:9621): a non-IntrABC `BLOCK_128X64` leaf at MI(256,0) whose
+/// nominal 16-tall MI footprint overhangs the 270-row MI grid by 2 MI rows (8 luma
+/// rows) records only its 14 in-frame MI rows instead of erroring
+/// `..._intrabc_block_bounds`. The walk advances past that former parse/recon frontier
+/// and the bottom partial-SB row's in-frame samples (MI rows 256..269, y[1024,1080))
+/// now reconstruct, growing the region `267776` → `273152` (+5376).
+///
+/// The §6.19.7.12 IntrABC PREDICTION-GEOMETRY target is now ALSO clamped to the visible
+/// region (the same §5.20.3.2 `block_coded` model, one pipeline stage later): the
+/// bottom-edge `BLOCK_16X64` IntrABC block at MI(256,56) — whose nominal 64-tall target
+/// overhangs the 1080-row luma frame by 8 rows — derives an EFFECTIVE 16x56 in-frame
+/// target (congruent 16x56 source) instead of erroring `intrabc_target_bounds`, so the
+/// parse advances past that former frontier. That block's own reconstruction still
+/// DEFERS (it stays at the fill value, so the region count is UNCHANGED at `273152`):
+/// its real DV `(row=-1024, col=0)` is a -128px VERTICAL displacement whose source sits
+/// in the PREVIOUS superblock row, which AVM validates only via the
+/// `allow_global_intrabc` path (an unmodeled DV class), so `intrabc_dv_proven_valid`
+/// conservatively defers the copy — never a confident-wrong sample. The §5.20
+/// `reset_block_context` write and the §5.20.6.1 PC-Wiener `LrTxSkip` FilterClass grid
+/// retention are now ALSO clamped to the frame edge (the same §5.20.3.2 `block_coded`
+/// model): the bottom-edge skipped transforms at MI(256,0) — whose nominal 16-tall MI
+/// footprint overhangs the 270-row MI grid by 2 — zero / fill only their on-frame
+/// cells instead of erroring `skipped_context_reset` / `LrTxSkip transform record
+/// bounds`. With those clamps the recon-sink handoff now runs to COMPLETION (the
+/// verified subset reconstructs; out-of-subset blocks defer to their fill value), and
+/// the parse-only public path advances to the §7.20.4
+/// `live_frame_samples_unpopulated` gate. That milestone left the verified region at
+/// `273152` (the skipped edge blocks were already covered/deferred).
+///
+/// The §7.15.4 primary inverse transform now reconstructs with the REAL retained
+/// `PlaneTxType` instead of a hardcoded `DCT_DCT`: `LumaCoeffBlock` carries the
+/// already-decoded `metadata.luma_tx_type`, the inverse resolves the actual
+/// `Transform_1d_Type[PlaneTxType]` row/col kernels, and the former non-square /
+/// cardinal `eob > 1` tx-type defers are gone. This unblocked the MI(112,16) H_PRED
+/// `TX_16X16` `eob == 6` leaf (and its cascade), growing the region to `299264`.
+///
+/// The §7.13.3.18 GLOBAL IntrABC wavefront DV-validity branch is now WIRED into the
+/// live displaced-copy admission ([`intrabc_dv_proven_valid`]): the §6.19.7.12
+/// `av2_is_dv_valid` local-IBC same-SB subset is tried first, then — on an intra-only
+/// frame with an explicitly-read `allow_global_intrabc` — the modelled global
+/// wavefront branch admits a source in the already-coded top-left wavefront region.
+/// With the §5.20.5.5 y-mode neighbour-reorder gate fixed, every
+/// global-IntrABC displaced copy and the regular-intra cascade it re-ignites is
+/// per-sample bit-exact, growing the region `299264` → `670976`. The blocks the
+/// global branch does NOT prove (e.g. the still-deferred MI(36,224) V_PRED leaf, no
+/// longer mis-parsed but not yet reconstructable through this sink) stay UNCOVERED at
+/// their fill value — the sink never claims a sample it has not proven bit-exact.
+///
+/// The §7.13.3.18 NON-skip integer-DV IntrABC RESIDUAL leaves are now reconstructed:
+/// the displaced copy lands as the §7.13.2 prediction, then each §5.20.7.27 residual
+/// transform leaf adds its decoded residual onto the copied predictor (the §7.14.4 /
+/// §7.15.4 / §7.14.3 dequant → inverse → Clip1-add path the DC / cardinal intra leaves
+/// already use, over the IntrABC predictor instead of an intra prediction). Admitted
+/// only for an integer DV, a fully-reconstructed source, no real §5.20.7.29 IST
+/// (`sec_tx_type == 0`), and a reconstructable residual; a fractional DV, a real IST,
+/// an uncovered source, or chroma still DEFER. This grew the region `670976` →
+/// `743456` (the 13 reachable non-skip integer-DV IntrABC blocks plus the regular-intra
+/// + IntrABC cascade their reconstructed targets re-ignite through the coverage guards).
+///
+/// Verified ZERO-mismatch, per sample, over EVERY covered luma sample against the AVM
+/// pre-filter reconstruction oracle (the `inspect --dump-prefiltered` luma plane,
+/// 1920x1080 u16-LE, stride 3840), aggregated by count + sum + FNV-1a-64 in
+/// [`LUMA_RECON_REGION_SAMPLE_SUM`] / [`LUMA_RECON_REGION_FNV1A64`].
+///
+/// Modelling the §7.13.2.8 ONE-SIDED IDIF luma predictor (zone-1 `pAngle < 90` reads
+/// the above row + above-right; zone-3 `pAngle > 180` reads the left column +
+/// below-left) over the proven no-edge-filter subset grew the region `743456` →
+/// `743520` (+64, the zone-1 `TX_8X8` leaf at MI(248,28), `pAngle 81` from
+/// `Mode_To_Angle[D67] + AngleDeltaY(-3) * ANGLE_STEP`).
+///
+/// Wiring the §7.13.2.18 intra edge filter + §7.13.2.14 corner filter into the
+/// one-sided IDIF reconstructors then admitted the corner-filter + edge-filter-active
+/// one-sided sub-class (`743520` → `743776`, +256, the zone-1 16x16 `D45`-seed leaf at
+/// MI(148,168), `pAngle 58`, `strength 3`, corner active). The §7.13.2.15/16 per-edge
+/// `filterType` is derived from the REAL decoded neighbour `is_smooth` modes recorded
+/// in the coverage map; the §7.13.2.17 strength + §7.13.2.7 `numPx` drive the
+/// `av2_filter_intra_edge` sweep, and the §7.13.2.14 corner blend
+/// (`needAbove && needLeft && (w + h) >= 24`) rewrites the shared corner from the
+/// reconstructed opposite-edge `[0]` sample. A leaf is admitted only when `useIBP == 0`
+/// (`applyIbp && EVEN AngleDeltaY` DEFERS — the §7.13.2.9 IBP secondary blend is
+/// unmodelled), `MrlIndex == 0`, square, the read edge + above-right/below-left are
+/// reconstructed, AND (when the corner fires) the opposite-edge `[0]` sample is
+/// reconstructed — otherwise the leaf DEFERS rather than reading a fill value (so the
+/// prompt's named MI(232,28) seed DEFERS until its left neighbour MI(231,28) is
+/// reconstructed by the decode-order cascade). The `useIBP` / `MrlIndex > 0` one-sided
+/// leaves still DEFER.
+///
+/// Generalising the one-sided IDIF reconstructors + edge builders to NON-SQUARE
+/// transforms (`log2_width != log2_height`) then admitted the non-square one-sided
+/// sub-class (`743776` → `743904`, +128). §7.13.2.8 is non-square-aware: `maxBase ==
+/// w + h - 1`, the §5.20.7.29 wide-angle remap's tall-block (`h == k*w`) / wide-block
+/// (`w == k*h`) wrap branches now fire (verified VERBATIM vs AVM `wide_angle_mapping`,
+/// `reconintra.h`), the §7.13.2.1 `aboveLimit` keys on `w` (above-right capped at
+/// `tx_size_wide_unit == mi_w`), and `leftLimit` keys on `h` (below-left capped at
+/// `tx_size_high_unit == mi_h`). When the §7.13.2.18 edge filter is active it consumes
+/// the full padded `mi_w`/`mi_h` above-right/below-left span, so the coverage guard
+/// requires that whole span covered to match AVM's pad boundary (`has_top_right` /
+/// `has_bottom_left`); a no-op filter only needs the projection's `max_read` reads.
+/// The `useIBP` / `MrlIndex > 0` / zone-2 one-sided leaves still DEFER.
+///
+/// Relaxing the §7.13.2.1 single-neighbour cardinal fallback gate to the
+/// origin-adjacent orthogonal sample (the AVM `(!need_left && n_top_px == 0)` /
+/// `(!need_above && n_left_px == 0)` fast path that fills the whole block with
+/// `left_ref[0]`/`above_ref[0]`, `reconintra.c:1150-1163`) admitted the PARTIAL
+/// cardinal-fallback sub-class (`743904` → `772576`, +28672). The seed is the
+/// `TX_16X8 V_PRED` leaf MI(272,0), x[1088,1152) y[0,32): `mi_row == 0` so
+/// `haveAbove == 0`, and the left neighbour column at MI col 271 is only PARTIALLY
+/// reconstructed (rows 0-1 covered by an earlier IntrABC copy, rows 2-7 deferred).
+/// V_PRED reads ONLY `left_ref[0] = CurrFrame[0][1087]` (`= 68`), so the block is
+/// flat `68` and the deferred deeper rows are never read — the old full-edge gate
+/// deferred it spuriously. Admitting it cascades into its downstream
+/// decode-order neighbours. Zero mismatch vs the AVM prefilter oracle over the
+/// whole grown region. The NO-neighbour midpoint fallback (both edges off-grid,
+/// e.g. the frame origin) still DEFERS.
+///
+/// Admitting the §7.13.2.2 PAETH RESIDUAL leaves (dropping the old `all_zero` gate
+/// — the PAETH predictor reads the same real reconstructed above row / left column /
+/// corner, then the §5.20.7.27 residual is ADDED via the standard §7.14.3
+/// `Clip1(pred + inverse-transform(residual))`, exactly as the directional paths do)
+/// re-ignited the decode-order cascade: the region grew `772576` → `775904` (+3328).
+/// A residual-bearing PAETH leaf reconstructs in decode order once its
+/// `haveAbove && haveLeft` neighbours (the above row, left column, AND diagonal
+/// corner unit) are covered; admitting them unblocks their downstream neighbours.
+/// Zero mismatch vs the AVM prefilter oracle over the whole grown region (verified
+/// per sample against `/tmp/pref.yuv` frame-0, md5 `f7959cb8…`). PAETH leaves whose
+/// neighbours are still deferred, and `mrl_index > 0` PAETH, still DEFER.
+///
+/// Wiring the §7.13.2.8 ZONE-2 (middle, `90 < pAngle < 180`) two-sided IDIF
+/// predictor — the generalized middle primitive over the in-block above row + left
+/// column + shared corner, with the §7.13.2.18 edge filter on BOTH edges and the
+/// §7.13.2.14 corner blend — grew the region `775904` → `791776` (+15872). The same
+/// commit fixed a latent §7.13.2.1 zone-3 (left-reading) corner bug the zone-2
+/// cascade EXPOSED: a `haveAbove == 1` interior zone-3 leaf must read the corner
+/// `LeftCol[-1]` from the DIAGONAL above-left `CurrFrame[y - 1][x - 1]`, not the
+/// left-column top `CurrFrame[y][x - 1]` (the prior code, correct only for the
+/// frame-top `haveAbove == 0` leaves that were previously reachable). With both, the
+/// whole grown region is bit-exact (the off-by-one at MI(64,240)/(256,960) — the
+/// D203+`AngleDeltaY` zone-3 leaf unblocked by a zone-2 neighbour — is resolved).
+/// Zone-2 leaves whose above row / left column / corner are still deferred DEFER.
+const LUMA_RECON_SAMPLE_TOTAL: usize = 791_776;
 /// Sum of every reconstructed luma sample in the verified region (derived from the AVM
 /// pre-filter oracle over the sink's covered MI units, zero mismatch vs splot).
-const LUMA_RECON_REGION_SAMPLE_SUM: u64 = 51_935_379;
+const LUMA_RECON_REGION_SAMPLE_SUM: u64 = 53_847_203;
 /// FNV-1a-64 over every reconstructed luma sample (row-major over the covered MI
 /// units, sample-major u16 LE), the whole-region per-value oracle pin: a wrong
 /// reconstruction anywhere in the covered region changes this checksum even at the
 /// same sample count.
-const LUMA_RECON_REGION_FNV1A64: u64 = 0xbb99_ea7b_d81a_aef8;
+const LUMA_RECON_REGION_FNV1A64: u64 = 0x093f_7fdd_63fd_ae46;
 
 /// The bottom-edge `TX_64X64 DC_PRED` block at MI(16,256), x[64,128) y[1024,1080):
 /// its 56 in-frame rows (the 64-tall block overhangs the 1080-tall frame by 8). The
