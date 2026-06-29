@@ -107,6 +107,22 @@ pub(in crate::runtime_minimal) struct SelectableReconContext {
     /// branch); a `skip` IntrABC block carries no residual leaf (its copy already marked
     /// coverage).
     pub(in crate::runtime_minimal) is_intrabc: bool,
+    /// The §7.13.2.1 `num4AboveRight` for THIS partition block's luma plane (in luma
+    /// 4x4 units), derived from the live §5.20.2.3 `BlockDecoded` state at the
+    /// callback via §5.20.7.25 `count_top_right_avail` — the SAME AVM-faithful
+    /// far-edge availability the `general_intra.rs` path reads through
+    /// `luma_num4_above_right_from_block_decoded`. Threaded from the tree-walk
+    /// callback (where `BlockDecoded` is live, reflecting exactly the decode-order
+    /// availability for this block's edges BEFORE the walk marks this block) down to
+    /// the sink, so the sink can query the real AVM above-right count per block
+    /// instead of re-deriving it from its conservative coverage map. Recorded but not
+    /// yet consumed by the (coverage-gated) admission path.
+    pub(in crate::runtime_minimal) block_num4_above_right: usize,
+    /// The §7.13.2.1 `num4BelowLeft` for THIS partition block's luma plane (in luma
+    /// 4x4 units), derived from the live §5.20.2.3 `BlockDecoded` state at the
+    /// callback via §5.20.7.25 `count_bottom_left_avail`. The below-left mirror of
+    /// [`Self::block_num4_above_right`]; see its note for the threading rationale.
+    pub(in crate::runtime_minimal) block_num4_below_left: usize,
 }
 
 /// Reconstructs the verified NON-IntrABC general-intra DC subset of the ac0ej3
@@ -175,6 +191,81 @@ pub(in crate::runtime_minimal) struct WienerNsLrReconSink<T: ReconSample> {
     /// SKIP IntrABC block (no residual) marks its coverage at copy time and records
     /// nothing here.
     pending_intrabc_predictions: Vec<PlaneRect>,
+    /// Per-luma-MI-unit AV2 §7.13.2.1 far-edge availability (`num4AboveRight`,
+    /// `num4BelowLeft`, in luma 4x4 units) derived from the live §5.20.2.3
+    /// `BlockDecoded` state at the tree-walk callback (the AVM-faithful counts the
+    /// `general_intra.rs` path reads), recorded over each decoded block's MI footprint
+    /// by [`Self::record_block_decoded_far_edge`]. `far_edge_avail[mi_row * cols +
+    /// mi_col]` is `None` until a block is decoded into that unit. This is the durable
+    /// `BlockDecoded`-availability infrastructure: the sink can query the real AVM
+    /// above-right / below-left count per block (see
+    /// [`Self::block_decoded_far_edge`]) instead of re-deriving it from the
+    /// conservative coverage map. Recorded for EVERY luma transform the walk decodes;
+    /// the (still coverage-gated) admission path does not yet consume it.
+    far_edge_avail: FarEdgeAvailGrid,
+}
+
+/// Row-major per-luma-MI AV2 §7.13.2.1 far-edge availability grid, populated from
+/// the live §5.20.2.3 `BlockDecoded` state threaded through the tree-walk callback.
+struct FarEdgeAvailGrid {
+    cols: usize,
+    rows: usize,
+    /// `Some((num4_above_right, num4_below_left))` per luma MI unit once a block has
+    /// been decoded there; `None` for not-yet-decoded units.
+    avail: Vec<Option<(u32, u32)>>,
+}
+
+impl FarEdgeAvailGrid {
+    #[cfg(test)]
+    fn new(width_samples: usize, height_samples: usize) -> Self {
+        let cols = width_samples.div_ceil(MI_SIZE);
+        let rows = height_samples.div_ceil(MI_SIZE);
+        let cells = cols.saturating_mul(rows);
+        Self {
+            cols,
+            rows,
+            avail: vec![None; cells],
+        }
+    }
+
+    const fn off_grid(&self, mi_col: usize, mi_row: usize) -> bool {
+        mi_col >= self.cols || mi_row >= self.rows
+    }
+
+    /// Records the block-level §7.13.2.1 far-edge counts over every IN-GRID MI unit of
+    /// the `mi_w` x `mi_h` block at `(mi_col, mi_row)`. The counts are the same value
+    /// for every unit of the block (they are a per-block §5.20.7.25 read), so a later
+    /// query at any covered unit returns the deciding block's availability.
+    fn record(
+        &mut self,
+        mi_col: usize,
+        mi_row: usize,
+        mi_w: usize,
+        mi_h: usize,
+        num4_above_right: u32,
+        num4_below_left: u32,
+    ) {
+        for r in mi_row..mi_row.saturating_add(mi_h) {
+            for c in mi_col..mi_col.saturating_add(mi_w) {
+                if !self.off_grid(c, r)
+                    && let Some(slot) = self.avail.get_mut(r * self.cols + c)
+                {
+                    *slot = Some((num4_above_right, num4_below_left));
+                }
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn get(&self, mi_col: usize, mi_row: usize) -> Option<(u32, u32)> {
+        if self.off_grid(mi_col, mi_row) {
+            return None;
+        }
+        self.avail
+            .get(mi_row * self.cols + mi_col)
+            .copied()
+            .flatten()
+    }
 }
 
 /// Row-major MI-unit reconstruction coverage for one plane grid.
@@ -486,6 +577,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             reconstructed_luma_4x4: 0,
             reconstructed_chroma_4x4: 0,
             pending_intrabc_predictions: Vec::new(),
+            far_edge_avail: FarEdgeAvailGrid::new(luma_width, luma_height),
         })
     }
 
@@ -1571,6 +1663,51 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             }
         }
         Some(num4_below_left)
+    }
+
+    /// Records the AV2 §7.13.2.1 far-edge availability (`num4AboveRight`,
+    /// `num4BelowLeft`, in luma 4x4 units) for the luma transform at `(mi_col,
+    /// mi_row)` of `mi_w` x `mi_h` MI units, as derived from the live §5.20.2.3
+    /// `BlockDecoded` state threaded through the tree-walk callback (the AVM-faithful
+    /// counts `general_intra.rs` reads through `count_top_right_avail` /
+    /// `count_bottom_left_avail`). This is the durable `BlockDecoded`-availability
+    /// infrastructure: it populates [`Self::far_edge_avail`] so any predictor path can
+    /// query the real AVM far-edge availability per block (via
+    /// [`Self::block_decoded_far_edge`]) rather than re-deriving it from the
+    /// conservative coverage map. Behavior-neutral: the coverage-gated admission path
+    /// does not consume the recorded data yet.
+    pub(in crate::runtime_minimal) fn record_block_decoded_far_edge(
+        &mut self,
+        mi_col: usize,
+        mi_row: usize,
+        tx_size: usize,
+        num4_above_right: usize,
+        num4_below_left: usize,
+    ) {
+        let Some((log2_width, log2_height)) = tx_size_log2(tx_size) else {
+            return;
+        };
+        let (mi_w, mi_h) = mi_extent(log2_width, log2_height);
+        let above_right = u32::try_from(num4_above_right).unwrap_or(u32::MAX);
+        let below_left = u32::try_from(num4_below_left).unwrap_or(u32::MAX);
+        self.far_edge_avail
+            .record(mi_col, mi_row, mi_w, mi_h, above_right, below_left);
+    }
+
+    /// The AV2 §7.13.2.1 far-edge availability (`num4AboveRight`, `num4BelowLeft`)
+    /// recorded for the luma MI unit at `(mi_col, mi_row)` from the live §5.20.2.3
+    /// `BlockDecoded` state, or `None` when no block has been decoded into that unit.
+    /// Lets a verification test confirm the threaded AVM far-edge counts match the
+    /// spec `count_top_right_avail` / `count_bottom_left_avail` reads.
+    #[cfg(test)]
+    pub(in crate::runtime_minimal) fn block_decoded_far_edge(
+        &self,
+        mi_col: usize,
+        mi_row: usize,
+    ) -> Option<(usize, usize)> {
+        self.far_edge_avail
+            .get(mi_col, mi_row)
+            .map(|(ar, bl)| (ar as usize, bl as usize))
     }
 
     /// Reconstructs one luma transform block at the given MI position into the
