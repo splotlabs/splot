@@ -61,7 +61,6 @@ use splot_recon::PlaneId;
 use crate::{DecodeContext, DecodeOptions, DecodeRuntimeConfig};
 
 use super::reconstruct_ac0ej3_intra_region_from_plan;
-use super::reconstruct_ac0ej3_intra_region_from_plan_with_mode;
 use super::wienerns_lr::WienerNsLrReconSink;
 
 /// Frame-origin `DC_PRED` luma leaf side (a 16x16 §5.20.6 `TxSize` transform).
@@ -469,7 +468,7 @@ fn reconstruct_ac0ej3_sink() -> WienerNsLrReconSink<u16> {
     let bytes = std::fs::read(&path).expect("read ac0ej3 fixture");
     let options = DecodeOptions::default();
     let plan = context().plan_bytes(&bytes, options).expect("plan ac0ej3");
-    reconstruct_ac0ej3_intra_region_from_plan(&bytes, options, &plan)
+    reconstruct_ac0ej3_intra_region_from_plan(&bytes, options, &plan, false)
         .expect("reconstruct ac0ej3 region")
 }
 
@@ -482,7 +481,7 @@ fn reconstruct_ac0ej3_full_recon_sink() -> WienerNsLrReconSink<u16> {
     let bytes = std::fs::read(&path).expect("read ac0ej3 fixture");
     let options = DecodeOptions::default();
     let plan = context().plan_bytes(&bytes, options).expect("plan ac0ej3");
-    reconstruct_ac0ej3_intra_region_from_plan_with_mode(&bytes, options, &plan, true)
+    reconstruct_ac0ej3_intra_region_from_plan(&bytes, options, &plan, true)
         .expect("full-recon ac0ej3 region")
 }
 

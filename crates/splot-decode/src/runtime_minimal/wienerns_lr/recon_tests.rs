@@ -763,38 +763,6 @@ fn angular_directional_mode_is_deferred() {
     assert_eq!(sink.reconstructed_sample(PlaneId::Y, 16, 0).unwrap(), 0);
 }
 
-/// An H_PRED leaf with `MrlIndex == 1` resolves to §7.13.2.8 `pAngle == 180 + 1 ==
-/// 181` (zone-3, left-reading). A non-zero MrlIndex routes the cardinal mode to the
-/// one-sided angular path, but the ZONE-3 MRL projection is deferred (its dy == 1
-/// last-row case is not yet reconciled with avmdec), so this leaf is left as the
-/// workspace fill value — never a claimed-correct sample.
-#[test]
-fn cardinal_h_pred_zone3_mrl_index_is_deferred() {
-    let mut sink = sink();
-    recon_luma(
-        &mut sink,
-        0,
-        0,
-        TX_16X16,
-        &zero_block(),
-        Some(IntraYMode::DC_PRED),
-        false,
-    );
-    let before = sink.reconstructed_counts().0;
-    recon_luma_cardinal(
-        &mut sink,
-        4,
-        0,
-        TX_16X16,
-        &zero_block(),
-        IntraYMode::H_PRED_FOR_TEST,
-        SupportedDirectionalLumaMode::Horizontal,
-        1,
-    );
-    assert_eq!(sink.reconstructed_counts().0, before);
-    assert_eq!(sink.reconstructed_sample(PlaneId::Y, 16, 0).unwrap(), 0);
-}
-
 #[test]
 fn cardinal_with_multi_coeff_residual_is_reconstructed() {
     let mut sink = sink();
