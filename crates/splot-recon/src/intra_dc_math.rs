@@ -6,7 +6,7 @@
 use crate::intra::{IntraDcEdge, IntraRectBlockSize};
 use crate::{BitDepth, ReconError, ReconSample, Result};
 
-const DIV_LUT_BITS: u8 = 7;
+pub(crate) const DIV_LUT_BITS: u8 = 7;
 const DIV_LUT_PREC_BITS: u8 = 9;
 #[rustfmt::skip]
 const DIV_LUT: [u16; 129] = [
@@ -177,7 +177,14 @@ pub(crate) fn approx_divide(num: u64, den: u64) -> Result<u16> {
     Ok(round2(scaled, shift))
 }
 
-fn resolve_divisor(den: u64) -> Result<(u8, u16)> {
+/// AV2 §7.13.2.9 / §7.13.2.12 `resolve_divisor(D)`: decomposes `D` so that
+/// `1/D ≈ scale / 2^shift`, returning `(shift, scale)` with `scale` at
+/// `DIV_LUT_PREC_BITS` precision. Matches AVM `resolve_divisor_32`
+/// (`warped_motion.h`): `shift = get_msb(D)`, the lookup index `f` is the top
+/// `DIV_LUT_BITS` bits of `D` after resetting its MSB, and the returned shift is
+/// `get_msb(D) + DIV_LUT_PREC_BITS`. Shared by the IBP DC modifier and the
+/// §7.13.2.9 IBP angular weights process.
+pub(crate) fn resolve_divisor(den: u64) -> Result<(u8, u16)> {
     if den == 0 {
         return Err(ReconError::ArithmeticOverflow {
             context: "intra DC divisor resolution",
