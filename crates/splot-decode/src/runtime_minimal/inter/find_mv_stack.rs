@@ -12,7 +12,7 @@
 //! NEARESTMV reusing a spatial-neighbour MV).
 //!
 //! It is the inter analog of the directional-prediction / sub-pel-MC kernels:
-//! a precise, unit-tested subset that admits exactly the verified fixture and
+//! a precise, unit-tested subset that admits exactly the supported inter case and
 //! defers the rest with explicit spec TODOs.
 //!
 //! ## What is modelled

@@ -196,3 +196,13 @@ Details: [docs/agents/licensing.md](./docs/agents/licensing.md).
 Ask before making algorithmic encoder choices, resolving ambiguous AV2 spec
 interpretation, adding a third-party dependency, changing the crate dependency
 graph, or changing legal/licensing terms.
+
+## 11. AI-Slop and Comment Policy
+
+Source comments are rare and high-signal; new codec support extends generic
+models, tables, dispatchers, or capability gates rather than adding one-off
+branches. Enforced by `cargo xtask check-ai-slop` (banned history/diary phrases,
+hard zero) and `cargo xtask check-comment-density` (implementation-comment
+budget).
+
+Details: [docs/agents/coding-standards.md](./docs/agents/coding-standards.md).

@@ -110,6 +110,17 @@ Only for encoder or encoder-facing syntax PRs.
 - [ ] Does `cargo xtask check-feature-status` pass?
 - [ ] Does every `done` status have proof recorded in `[feature.proof]`?
 
+## AI-slop
+
+- [ ] No banned process-history or fixture-diary phrase in source comments
+      (`cargo xtask check-ai-slop`)?
+- [ ] Could a new branch be replaced by a generic table, capability, or
+      dispatcher instead of a one-off fixture/transform/block-shape case?
+- [ ] Does each unsupported diagnostic name the missing capability rather than
+      tell an implementation-history story?
+- [ ] Did implementation-comment count, duplicate-code budget, or source-line
+      pressure rise without justification?
+
 ## Hygiene
 
 - [ ] SPDX header on every `.rs` file (`cargo xtask check-license-headers`)?

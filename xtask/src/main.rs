@@ -13,6 +13,7 @@ use std::process::{Command, Stdio};
 use anyhow::{Context as _, Result, anyhow, bail};
 use clap::{Parser, Subcommand};
 
+mod ai_slop;
 mod audit_scope;
 mod comment_density;
 mod concurrency_policy;
@@ -112,6 +113,8 @@ enum Task {
     CheckSourceLines,
     /// Verify implementation comments stay within the repository comment budget.
     CheckCommentDensity,
+    /// Verify tracked source comments carry no banned AI-slop history/diary phrase.
+    CheckAiSlop,
     /// Verify member crates honor the one-way dependency direction.
     CheckDependencyDirection,
     /// Verify the workspace honors the Rayon + crossbeam-channel concurrency policy.
@@ -252,6 +255,7 @@ fn main() -> Result<()> {
         Task::CheckLicenseHeaders => check_license_headers(&workspace_root()?),
         Task::CheckSourceLines => source_lines::check_source_lines(&workspace_root()?),
         Task::CheckCommentDensity => comment_density::check_comment_density(&workspace_root()?),
+        Task::CheckAiSlop => ai_slop::check_ai_slop(&workspace_root()?),
         Task::CheckDependencyDirection => check_dependency_direction(&workspace_root()?),
         Task::CheckConcurrencyPolicy => {
             concurrency_policy::check_concurrency_policy(&workspace_root()?)
@@ -361,6 +365,7 @@ fn run_ci() -> Result<()> {
     check_license_headers(&root)?;
     source_lines::check_source_lines(&root)?;
     comment_density::check_comment_density(&root)?;
+    ai_slop::check_ai_slop(&root)?;
     check_dependency_direction(&root)?;
     concurrency_policy::check_concurrency_policy(&root)?;
     zero_copy::check_zero_copy_policy(&root)?;

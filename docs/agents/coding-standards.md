@@ -63,13 +63,49 @@ quotations in Rustdoc.
 
 Historical explanations belong in ADRs or design docs, not source comments. AI
 agents must not add comments containing filler or process-history language such
-as "this helper", "this function", "now", "former", "previously", "round", or
-PR-history references.
+as "this helper", "this function", "now", or "former". For the enforced
+process-history and fixture-diary phrase list — and the domain-vocabulary
+carve-outs (e.g. "previously decoded", round-trip) — see the AI-Slop section.
 
 Enforcement:
 
 ```bash
 cargo xtask check-comment-density
+```
+
+## AI-Slop
+
+Beyond the comment diet, two patterns are banned outright.
+
+**Banned comment phrases** (process history and development diary) — enforced at
+zero by `cargo xtask check-ai-slop`:
+
+- process history: `formerly`, `round-<n>`, `PR #<n>`, `this refactor`,
+  `this used to`, `used to be`, `old behavior`/`old behaviour`, `introduced by`;
+- fixture diary: `oracle fixture`, `verified fixture`, `pinned by fixture`,
+  `not yet fixtured`.
+
+Replace each with a current invariant, a capability description, or a short
+`§ N.M` spec anchor. The gate skips generated files and leaves established
+domain vocabulary alone (for example the decoder partition `frontier` and AV2
+"previously decoded" spec language); extend the phrase list as new slop appears.
+
+**Banned code shape** (one-off branches). New codec support extends a generic
+model, table, dispatcher, capability gate, or shared helper. Do not add a branch
+for a single fixture, transform, block shape, MV case, prediction angle,
+bit-depth, or neighbour position unless the AV2 algorithm has a real special
+case and the branch name says so. Report missing support as a capability, not a
+fixture story.
+
+Allowed comments are unchanged from the comment diet: license or generated-file
+headers, minimal public Rustdoc (`# Errors` / `# Panics` / `# Safety` contracts),
+a non-obvious invariant, a short spec anchor, an external workaround, a stable
+diagnostic note, or a `TODO`/`FIXME` carrying a tracker.
+
+Enforcement:
+
+```bash
+cargo xtask check-ai-slop
 ```
 
 ## Source Size
