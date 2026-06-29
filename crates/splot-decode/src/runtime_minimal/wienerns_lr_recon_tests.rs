@@ -1485,25 +1485,22 @@ fn ac0ej3_full_decode_order_reconstruction_differs_against_prefilter_oracle() {
         }
         if block_mismatch > 0 && first_clean_block.is_none() {
             let neighbours_exact = |leaf: &super::wienerns_lr::FullReconLumaLeaf| {
+                let span = leaf.width + leaf.height;
+                let sample_ok = |x: usize, y: usize| {
+                    x >= FULL_FRAME_WIDTH
+                        || y >= FULL_FRAME_HEIGHT
+                        || sink.reconstructed_sample(PlaneId::Y, x, y).unwrap() == oracle_at(x, y)
+                };
                 let above_ok = leaf.y == 0
-                    || (0..leaf.width).all(|dx| {
-                        let x = leaf.x + dx;
-                        x >= FULL_FRAME_WIDTH
-                            || sink
-                                .reconstructed_sample(PlaneId::Y, x, leaf.y - 1)
-                                .unwrap()
-                                == oracle_at(x, leaf.y - 1)
+                    || (0..span).all(|dx| {
+                        leaf.x + dx >= FULL_FRAME_WIDTH || sample_ok(leaf.x + dx, leaf.y - 1)
                     });
                 let left_ok = leaf.x == 0
-                    || (0..leaf.height).all(|dy| {
-                        let y = leaf.y + dy;
-                        y >= FULL_FRAME_HEIGHT
-                            || sink
-                                .reconstructed_sample(PlaneId::Y, leaf.x - 1, y)
-                                .unwrap()
-                                == oracle_at(leaf.x - 1, y)
+                    || (0..span).all(|dy| {
+                        leaf.y + dy >= FULL_FRAME_HEIGHT || sample_ok(leaf.x - 1, leaf.y + dy)
                     });
-                above_ok && left_ok
+                let corner_ok = leaf.x == 0 || leaf.y == 0 || sample_ok(leaf.x - 1, leaf.y - 1);
+                above_ok && left_ok && corner_ok
             };
             if neighbours_exact(leaf) {
                 first_clean_block = Some((idx, block_mismatch));
