@@ -129,7 +129,7 @@ fn is_generated_source(text: &str) -> bool {
 fn count_comment_lines(text: &str) -> CommentCounts {
     let mut counts = CommentCounts::default();
     let mut block = BlockComment::None;
-    let mut in_string = false;
+    let mut string = StringState::None;
 
     for line in text.lines() {
         let stripped = line.trim();
@@ -137,8 +137,8 @@ fn count_comment_lines(text: &str) -> CommentCounts {
             continue;
         }
 
-        if in_string {
-            update_string_state(stripped, &mut in_string);
+        if string.is_active() {
+            update_string_state(stripped, &mut string);
             continue;
         }
 
@@ -177,42 +177,92 @@ fn count_comment_lines(text: &str) -> CommentCounts {
         } else if stripped.starts_with("//") {
             counts.implementation_comment_lines += 1;
         } else {
-            update_string_state(stripped, &mut in_string);
+            update_string_state(stripped, &mut string);
         }
     }
 
     counts
 }
 
-fn update_string_state(line: &str, in_string: &mut bool) {
+fn update_string_state(line: &str, state: &mut StringState) {
     let mut escaped = false;
     let mut chars = line.char_indices().peekable();
     while let Some((idx, ch)) = chars.next() {
-        if *in_string {
-            if escaped {
-                escaped = false;
-                continue;
+        match *state {
+            StringState::None => {
+                if let Some((end, hashes)) = raw_string_start(line, idx) {
+                    *state = StringState::Raw { hashes };
+                    while chars.peek().is_some_and(|(next_idx, _)| *next_idx <= end) {
+                        chars.next();
+                    }
+                } else if ch == '"' {
+                    *state = StringState::Normal;
+                } else if ch == '\''
+                    && let Some(end) = char_literal_end(line, idx)
+                {
+                    while chars.peek().is_some_and(|(next_idx, _)| *next_idx <= end) {
+                        chars.next();
+                    }
+                }
             }
-            if ch == '\\' {
-                escaped = true;
-                continue;
+            StringState::Normal => {
+                if escaped {
+                    escaped = false;
+                    continue;
+                }
+                if ch == '\\' {
+                    escaped = true;
+                    continue;
+                }
+                if ch == '"' {
+                    *state = StringState::None;
+                }
             }
-            if ch == '"' {
-                *in_string = false;
-            }
-            continue;
-        }
-
-        if ch == '"' {
-            *in_string = true;
-        } else if ch == '\''
-            && let Some(end) = char_literal_end(line, idx)
-        {
-            while chars.peek().is_some_and(|(next_idx, _)| *next_idx <= end) {
-                chars.next();
+            StringState::Raw { hashes } => {
+                if ch == '"' && raw_string_closes(line, idx, hashes) {
+                    *state = StringState::None;
+                }
             }
         }
     }
+}
+
+fn raw_string_start(line: &str, start: usize) -> Option<(usize, usize)> {
+    let bytes = line.as_bytes();
+    if start > 0 {
+        let prev = bytes[start - 1];
+        if prev.is_ascii_alphanumeric() || prev == b'_' {
+            return None;
+        }
+    }
+
+    let mut idx = start;
+    match bytes.get(idx).copied()? {
+        b'r' => idx += 1,
+        b'b' | b'c' => {
+            idx += 1;
+            if bytes.get(idx).copied()? != b'r' {
+                return None;
+            }
+            idx += 1;
+        }
+        _ => return None,
+    }
+
+    let mut hashes = 0usize;
+    while bytes.get(idx).is_some_and(|byte| *byte == b'#') {
+        hashes += 1;
+        idx += 1;
+    }
+    (bytes.get(idx).is_some_and(|byte| *byte == b'"')).then_some((idx, hashes))
+}
+
+fn raw_string_closes(line: &str, quote: usize, hashes: usize) -> bool {
+    let bytes = line.as_bytes();
+    let Some(tail) = bytes.get(quote + 1..quote + 1 + hashes) else {
+        return false;
+    };
+    tail.iter().all(|byte| *byte == b'#')
 }
 
 fn char_literal_end(line: &str, start: usize) -> Option<usize> {
@@ -263,6 +313,19 @@ enum BlockComment {
     Implementation,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StringState {
+    None,
+    Normal,
+    Raw { hashes: usize },
+}
+
+impl StringState {
+    fn is_active(self) -> bool {
+        !matches!(self, Self::None)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -299,6 +362,19 @@ mod tests {
         let counts = count_comment_lines(concat!(
             "fn main() { let quote = '\"'; }\n",
             "// counted after the char literal\n",
+        ));
+
+        assert_eq!(counts.implementation_comment_lines, 1);
+    }
+
+    #[test]
+    fn raw_string_quotes_do_not_hide_following_comments() {
+        let counts = count_comment_lines(concat!(
+            "const INLINE: &str = r#\"d(\"x\")\"#;\n",
+            "const MULTI: &str = r##\"\n",
+            "// raw string content is not a source comment\n",
+            "\"##;\n",
+            "// counted after raw strings\n",
         ));
 
         assert_eq!(counts.implementation_comment_lines, 1);
