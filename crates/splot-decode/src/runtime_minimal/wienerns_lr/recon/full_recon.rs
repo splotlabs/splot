@@ -24,10 +24,14 @@ pub(super) enum FarEdgeSide {
     /// `num4BelowLeft` (AVM `has_bottom_left`) for a zone-3 left-reading leaf.
     BelowLeft,
 }
+use crate::runtime_minimal::inter::mv_scaling::PlaneScaling;
 use crate::runtime_minimal::wienerns_lr::diagnostics::wienerns_lr_selectable_transform_record_error_reason;
 use crate::tile_payload::{GeneralIntraResidualError, IntraYMode, SupportedDirectionalLumaMode};
 use splot_core::span::ByteOffset;
-use splot_recon::ReconSample;
+use splot_recon::{
+    InterpolationFilter, PlaneId, PlaneRect, ReconSample, ReferencePlaneView, SubpelPredictParams,
+    subpel_predict_block,
+};
 
 impl<T: ReconSample> WienerNsLrReconSink<T> {
     /// Switches this sink into the DIAGNOSTIC-ONLY full-reconstruction mode (see the
@@ -39,6 +43,89 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
     pub(in crate::runtime_minimal) fn into_full_recon(mut self) -> Self {
         self.full_recon = true;
         self
+    }
+
+    /// Whether this sink is in the DIAGNOSTIC-ONLY full-reconstruction mode. The
+    /// fractional-DV IntrABC bilinear predictor runs ONLY here (the shipped gated
+    /// sink still DEFERS a fractional-DV block); the gated copy path is untouched.
+    pub(in crate::runtime_minimal) const fn is_full_recon(&self) -> bool {
+        self.full_recon
+    }
+
+    /// Reconstructs a fractional-DV §7.13.3.18 IntrABC luma block into the `target`
+    /// rect by the bilinear sub-pel convolution, returning whether the predictor was
+    /// written (`false` keeps the workspace fill value, e.g. for a non-`u16` storage
+    /// type the full-recon harness never uses). The displaced predictor is the
+    /// §7.13.3.13 / §7.13.3.18 `block_inter_prediction(refIdx = -1, …, BILINEAR)`:
+    /// the §7.13.3.17 `scaling` (`startX` / `startY` / `stepX` / `stepY`, already
+    /// derived from the block position + eighth-pel DV) drives the two-pass
+    /// separable convolution over `CurrFrame` (the workspace luma plane is the
+    /// reference, `ref = CurrFrame` for `refIdx == -1`). `Subpel_Filters[BILINEAR]`
+    /// (the spec's 2-tap row at taps 3/4) carries the fractional weights; the
+    /// `InterRound0 = 3` / `InterRound1 = 11` rounding and the final §4.8 `Clip1`
+    /// are [`subpel_predict_block`]'s.
+    ///
+    /// This is the predictor an INTEGER-DV block writes via the plain rect copy; for
+    /// a fractional DV (`block_mv & 7 != 0`) the copy is replaced by this
+    /// convolution. The caller has cleared the §6.19 DV-validity gate, so the whole
+    /// `-3..=+4`-tap reference window lies in the already-reconstructed region
+    /// (the source is above-left of the target in decode order).
+    pub(super) fn reconstruct_intrabc_fractional_into(
+        &mut self,
+        target: PlaneRect,
+        scaling: PlaneScaling,
+        tile_offset: ByteOffset,
+    ) -> Result<bool> {
+        let storage = self.workspace.plane(PlaneId::Y)?.storage_size();
+        let (width, height) = (storage.width(), storage.height());
+        let reference: Vec<u16> = self
+            .workspace
+            .samples(PlaneId::Y)?
+            .iter()
+            .map(|sample| sample.to_u16())
+            .collect();
+        let view = ReferencePlaneView::new(&reference, width, height).map_err(|_| {
+            wienerns_lr_selectable_transform_record_error_reason(
+                tile_offset,
+                "unsupported_wienerns_lr_selectable_transform_records_intrabc_copy",
+            )
+        })?;
+        let params = SubpelPredictParams {
+            interp: InterpolationFilter::Bilinear,
+            w: target.width(),
+            h: target.height(),
+            start_x: scaling.start_x,
+            start_y: scaling.start_y,
+            step_x: scaling.step_x,
+            step_y: scaling.step_y,
+            first_x: scaling.first_x,
+            first_y: scaling.first_y,
+            last_x: scaling.last_x,
+            last_y: scaling.last_y,
+            bit_depth: self.bit_depth,
+        };
+        let predicted = subpel_predict_block(&view, &params).map_err(|_| {
+            wienerns_lr_selectable_transform_record_error_reason(
+                tile_offset,
+                "unsupported_wienerns_lr_selectable_transform_records_intrabc_copy",
+            )
+        })?;
+        let mut typed: Vec<T> = Vec::with_capacity(predicted.len());
+        for sample in predicted {
+            let Ok(value) = T::try_from_u16(sample) else {
+                return Ok(false);
+            };
+            typed.push(value);
+        }
+        self.workspace
+            .write_rect(PlaneId::Y, target, &typed, target.width())
+            .map_err(|_| {
+                wienerns_lr_selectable_transform_record_error_reason(
+                    tile_offset,
+                    "unsupported_wienerns_lr_selectable_transform_records_intrabc_copy",
+                )
+            })?;
+        Ok(true)
     }
 
     /// The full-recon directional read-or-pad `num4` for one far edge of the luma MI

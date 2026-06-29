@@ -36,6 +36,7 @@ use splot_recon::{
 };
 
 use crate::Result;
+use crate::runtime_minimal::inter::mv_scaling::PlaneScaling;
 #[cfg(test)]
 use crate::runtime_minimal_recon::new_general_intra_workspace;
 use crate::runtime_minimal_recon::{
@@ -2195,22 +2196,29 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
     /// predictor and mark their own coverage. So the displaced copy runs for both
     /// skip and non-skip; only coverage timing differs.
     ///
+    /// A FRACTIONAL DV (`source` shape one row/col larger than `target`) takes the
+    /// §7.13.3.18 bilinear convolution ([`Self::reconstruct_intrabc_fractional_into`])
+    /// instead of the copy, but ONLY in full-recon; the gated sink DEFERS it. An
+    /// INTEGER DV (same shape) copies the source rect.
+    ///
     /// The block is DEFERRED (returns `Ok(())` without writing — never wrong samples
     /// claimed correct) unless ALL of the proven subset holds:
     /// * the frame dequant matches the zero-`QuantizerDeltas` assumption
     ///   (`quant_reconstructable`);
-    /// * the block vector is INTEGER (`source` and `target` have the same shape) — a
-    ///   fractional BILINEAR IntrABC predictor needs a convolution path, not a copy;
+    /// * the block vector is INTEGER (or full-recon, which runs the bilinear path);
     /// * EVERY source MI unit is already reconstructed by this sink — copying an
     ///   unreconstructed (fill) source sample is the cardinal sin. (Full-recon drops
     ///   this conservative coverage gate: it reconstructs every block in decode order,
     ///   so the integer-DV source — always above-left of the target — is written.)
     ///
-    /// `source` / `target` are the §7.13.3.18 luma copy rectangles (sample units).
+    /// `source` / `target` are the §7.13.3.18 luma copy rectangles (sample units);
+    /// `scaling` is the §7.13.3.17 reference-block location / step (`startX` /
+    /// `startY` / `stepX` / `stepY`) used by the fractional-DV bilinear predictor.
     pub(in crate::runtime_minimal) fn reconstruct_intrabc_block(
         &mut self,
         source: PlaneRect,
         target: PlaneRect,
+        scaling: PlaneScaling,
         skip_flag: bool,
         tile_offset: ByteOffset,
     ) -> Result<()> {
@@ -2218,26 +2226,31 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             return Ok(());
         }
         if source.size() != target.size() {
-            return Ok(());
+            if !self.is_full_recon()
+                || !self.reconstruct_intrabc_fractional_into(target, scaling, tile_offset)?
+            {
+                return Ok(());
+            }
+        } else {
+            let coverage = &self.coverage[Self::coverage_index(PlaneId::Y)];
+            let src_mi_col = source.x() / MI_SIZE;
+            let src_mi_row = source.y() / MI_SIZE;
+            let src_mi_w = (source.x() + source.width()).div_ceil(MI_SIZE) - src_mi_col;
+            let src_mi_h = (source.y() + source.height()).div_ceil(MI_SIZE) - src_mi_row;
+            if !self.full_recon
+                && !coverage.region_fully_covered(src_mi_col, src_mi_row, src_mi_w, src_mi_h)
+            {
+                return Ok(());
+            }
+            self.workspace
+                .copy_rect_within_plane(PlaneId::Y, source, target)
+                .map_err(|_| {
+                    wienerns_lr_selectable_transform_record_error_reason(
+                        tile_offset,
+                        "unsupported_wienerns_lr_selectable_transform_records_recon_intrabc_copy",
+                    )
+                })?;
         }
-        let coverage = &self.coverage[Self::coverage_index(PlaneId::Y)];
-        let src_mi_col = source.x() / MI_SIZE;
-        let src_mi_row = source.y() / MI_SIZE;
-        let src_mi_w = (source.x() + source.width()).div_ceil(MI_SIZE) - src_mi_col;
-        let src_mi_h = (source.y() + source.height()).div_ceil(MI_SIZE) - src_mi_row;
-        if !self.full_recon
-            && !coverage.region_fully_covered(src_mi_col, src_mi_row, src_mi_w, src_mi_h)
-        {
-            return Ok(());
-        }
-        self.workspace
-            .copy_rect_within_plane(PlaneId::Y, source, target)
-            .map_err(|_| {
-                wienerns_lr_selectable_transform_record_error_reason(
-                    tile_offset,
-                    "unsupported_wienerns_lr_selectable_transform_records_recon_intrabc_copy",
-                )
-            })?;
         if !skip_flag {
             self.pending_intrabc_predictions.push(target);
             return Ok(());
