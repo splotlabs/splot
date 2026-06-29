@@ -190,6 +190,37 @@ pub(in crate::runtime_minimal) struct WienerNsLrReconSink<T: ReconSample> {
     /// (the `num4AboveRight > 0` read-or-pad is not yet proven bit-exact against the
     /// AVM oracle, so admitting on it alone would risk a confident-wrong sample).
     far_edge_avail: FarEdgeAvailGrid,
+    /// DIAGNOSTIC-ONLY full-reconstruction mode (set by [`Self::into_full_recon`],
+    /// driven only by the `SPLOT_AC0EJ3_FULL_RECON` ignored harness). When `true`,
+    /// [`Self::reconstruct_luma_transform`] DROPS the conservative §7.13.2 edge-coverage
+    /// gates and reconstructs EVERY luma leaf in decode order, sourcing the §7.13.2.1
+    /// `num4AboveRight` / `num4BelowLeft` read-or-pad bound from the per-transform
+    /// [`Self::far_edge_avail`] (AVM `has_top_right` / `has_bottom_left`) instead of the
+    /// coverage map. NEVER changes the shipped (`false`) path; `false` for every shipped
+    /// sink (the 16 ignored oracle-pin tests still drive the gated sink).
+    full_recon: bool,
+    /// DIAGNOSTIC-ONLY decode-order log of luma leaves, appended by
+    /// [`Self::reconstruct_luma_transform`] only when [`Self::full_recon`] is set (empty
+    /// otherwise). The `SPLOT_AC0EJ3_FULL_RECON` harness replays it to find the FIRST
+    /// decode-order block whose samples diverge from the AVM pre-filter oracle.
+    full_recon_luma_log: Vec<FullReconLumaLeaf>,
+}
+
+/// One decode-order luma leaf recorded by the full-reconstruction diagnostic (see
+/// [`WienerNsLrReconSink::full_recon_luma_log`]): sample-space origin `(x, y)`, MI
+/// origin `(mi_col, mi_row)`, sample `(width, height)`, a §7.13.2 mode label, and
+/// `written` (a real predictor vs. the workspace fill value left for an unwired mode).
+#[cfg(test)]
+#[derive(Clone, Copy)]
+pub(in crate::runtime_minimal) struct FullReconLumaLeaf {
+    pub mi_col: usize,
+    pub mi_row: usize,
+    pub x: usize,
+    pub y: usize,
+    pub width: usize,
+    pub height: usize,
+    pub mode: &'static str,
+    pub written: bool,
 }
 
 /// Row-major per-luma-MI AV2 §7.13.2.1 far-edge availability grid, populated from
@@ -569,6 +600,8 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             reconstructed_chroma_4x4: 0,
             pending_intrabc_predictions: Vec::new(),
             far_edge_avail: FarEdgeAvailGrid::new(luma_width, luma_height),
+            full_recon: false,
+            full_recon_luma_log: Vec::new(),
         })
     }
 
@@ -1140,7 +1173,9 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         };
         let w = 1u32 << log2_width;
         let h = 1u32 << log2_height;
-        if !self.two_sided_middle_neighbours_reconstructed(mi_col, mi_row, mi_w, mi_h) {
+        if !self.full_recon
+            && !self.two_sided_middle_neighbours_reconstructed(mi_col, mi_row, mi_w, mi_h)
+        {
             return Ok(false);
         }
         let Some(filters) =
@@ -1445,7 +1480,10 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
     /// Shared by the read-edge ([`Self::resolve_one_sided_edge_filter`]) and the
     /// IBP secondary-edge ([`Self::resolve_ibp_secondary_edge_filter`]) resolution.
     /// Returns `None` (defer) when the corner fires but its opposite sample is
-    /// off-grid or uncovered.
+    /// off-grid or uncovered. In full-recon mode the "uncovered by this sink" half of
+    /// that gate is dropped (a genuinely off-frame corner still defers): the
+    /// decode-order-prior opposite sample is always written, so only the gated path's
+    /// conservative coverage check is skipped.
     #[allow(clippy::too_many_arguments)]
     fn assemble_one_sided_edge_filter(
         &self,
@@ -1503,7 +1541,9 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             let (Some(opp_col), Some(opp_row)) = (opp_col, opp_row) else {
                 return Ok(None);
             };
-            if coverage.off_grid(opp_col, opp_row) || !coverage.is_covered(opp_col, opp_row) {
+            if coverage.off_grid(opp_col, opp_row)
+                || (!self.full_recon && !coverage.is_covered(opp_col, opp_row))
+            {
                 return Ok(None);
             }
             let (Some(sx), Some(sy)) = (sample_x, sample_y) else {
@@ -1554,6 +1594,9 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         max_read: usize,
         edge_filter_active: bool,
     ) -> Option<usize> {
+        if self.full_recon {
+            return Some(self.far_edge_above_right(mi_col, mi_row));
+        }
         let coverage = &self.coverage[Self::coverage_index(PlaneId::Y)];
         let above = mi_row.checked_sub(1)?;
         let corner = mi_col.checked_sub(1)?;
@@ -1627,6 +1670,9 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         max_read: usize,
         edge_filter_active: bool,
     ) -> Option<usize> {
+        if self.full_recon {
+            return Some(self.far_edge_below_left(mi_col, mi_row));
+        }
         let coverage = &self.coverage[Self::coverage_index(PlaneId::Y)];
         let left = mi_col.checked_sub(1)?;
         let covered = |c: usize, r: usize| !coverage.off_grid(c, r) && coverage.is_covered(c, r);
@@ -1777,6 +1823,14 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 .record_y_mode(mi_col, mi_row, mi_w, mi_h, mode);
         }
         if !residual_is_reconstructable(block, fsc_mode) {
+            self.record_full_recon_leaf(
+                mi_col,
+                mi_row,
+                log2_width,
+                log2_height,
+                full_recon_mode_label(leaf_y_mode, directional, is_intrabc),
+                false,
+            );
             return Ok(());
         }
         if is_intrabc {
@@ -1800,12 +1854,22 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         };
         match (leaf_y_mode, cardinal) {
             (Some(IntraYMode::DC_PRED), _) => {
-                if !self.dc_edges_reconstructed(PlaneId::Y, mi_col, mi_row, mi_w, mi_h) {
+                if !self.full_recon
+                    && !self.dc_edges_reconstructed(PlaneId::Y, mi_col, mi_row, mi_w, mi_h)
+                {
+                    self.record_full_recon_leaf(
+                        mi_col,
+                        mi_row,
+                        log2_width,
+                        log2_height,
+                        "DC_PRED",
+                        false,
+                    );
                     return Ok(());
                 }
                 let (x, y) = luma_sample_origin(mi_col, mi_row, tile_offset)?;
                 let ibp_dc = self.ibp_dc_applies(log2_width, log2_height);
-                reconstruct_general_intra_block_rect_into(
+                let result = reconstruct_general_intra_block_rect_into(
                     &mut self.workspace,
                     block,
                     PlaneId::Y,
@@ -1817,95 +1881,185 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     use_tcq,
                     ibp_dc,
                     self.bit_depth,
-                )
-                .map_err(|_| {
-                    wienerns_lr_selectable_transform_record_error_reason(
-                        tile_offset,
-                        "unsupported_wienerns_lr_selectable_transform_records_recon_luma_write",
-                    )
-                })?;
-            }
-            (_, Some(direction)) => {
-                if mrl_index != 0 {
-                    return Ok(());
-                }
-                if !self.cardinal_edge_reconstructed(
-                    direction,
-                    PlaneId::Y,
+                );
+                if !self.finish_luma_predict(
+                    &result,
                     mi_col,
                     mi_row,
-                    mi_w,
-                    mi_h,
-                ) {
-                    return Ok(());
-                }
-                let (x, y) = luma_sample_origin(mi_col, mi_row, tile_offset)?;
-                reconstruct_general_intra_cardinal_neighbour_block_into(
-                    &mut self.workspace,
-                    block,
-                    direction,
-                    PlaneId::Y,
-                    x,
-                    y,
                     log2_width,
                     log2_height,
-                    qindex,
-                    use_tcq,
-                    self.bit_depth,
-                )
-                .map_err(|_| {
-                    wienerns_lr_selectable_transform_record_error_reason(
-                        tile_offset,
-                        "unsupported_wienerns_lr_selectable_transform_records_recon_luma_cardinal_write",
-                    )
-                })?;
-            }
-            (Some(mode), None) if mode.is_paeth() && mrl_index == 0 => {
-                if !self.paeth_neighbours_reconstructed(PlaneId::Y, mi_col, mi_row, mi_w, mi_h) {
+                    "DC_PRED",
+                    tile_offset,
+                    "unsupported_wienerns_lr_selectable_transform_records_recon_luma_write",
+                )? {
                     return Ok(());
                 }
-                let (x, y) = luma_sample_origin(mi_col, mi_row, tile_offset)?;
-                reconstruct_general_intra_luma_paeth_neighbour_block_into(
-                    &mut self.workspace,
-                    block,
-                    PlaneId::Y,
-                    x,
-                    y,
-                    log2_width,
-                    log2_height,
-                    qindex,
-                    use_tcq,
-                    self.bit_depth,
-                )
-                .map_err(|_| {
-                    wienerns_lr_selectable_transform_record_error_reason(
-                        tile_offset,
-                        "unsupported_wienerns_lr_selectable_transform_records_recon_luma_paeth_write",
-                    )
-                })?;
             }
-            (Some(mode), None)
-                if mode.is_directional()
-                    && self.try_reconstruct_one_sided_angular(
+            (_, Some(direction)) => {
+                let cardinal_label = match direction {
+                    IntraCardinalDirection::Vertical => "V_PRED",
+                    IntraCardinalDirection::Horizontal => "H_PRED",
+                };
+                if mrl_index != 0 {
+                    self.record_full_recon_leaf(
                         mi_col,
                         mi_row,
                         log2_width,
                         log2_height,
-                        mode,
-                        angle_delta_y,
-                        mrl_index,
-                        block,
-                        qindex,
-                        use_tcq,
+                        cardinal_label,
+                        false,
+                    );
+                    return Ok(());
+                }
+                if !self.full_recon
+                    && !self.cardinal_edge_reconstructed(
+                        direction,
+                        PlaneId::Y,
+                        mi_col,
+                        mi_row,
                         mi_w,
                         mi_h,
-                        tile_offset,
-                    )? => {}
-            _ => return Ok(()),
+                    )
+                {
+                    self.record_full_recon_leaf(
+                        mi_col,
+                        mi_row,
+                        log2_width,
+                        log2_height,
+                        cardinal_label,
+                        false,
+                    );
+                    return Ok(());
+                }
+                let (x, y) = luma_sample_origin(mi_col, mi_row, tile_offset)?;
+                let result = reconstruct_general_intra_cardinal_neighbour_block_into(
+                    &mut self.workspace,
+                    block,
+                    direction,
+                    PlaneId::Y,
+                    x,
+                    y,
+                    log2_width,
+                    log2_height,
+                    qindex,
+                    use_tcq,
+                    self.bit_depth,
+                );
+                if !self.finish_luma_predict(
+                    &result,
+                    mi_col,
+                    mi_row,
+                    log2_width,
+                    log2_height,
+                    cardinal_label,
+                    tile_offset,
+                    "unsupported_wienerns_lr_selectable_transform_records_recon_luma_cardinal_write",
+                )? {
+                    return Ok(());
+                }
+            }
+            (Some(mode), None) if mode.is_paeth() && mrl_index == 0 => {
+                if !self.full_recon
+                    && !self.paeth_neighbours_reconstructed(PlaneId::Y, mi_col, mi_row, mi_w, mi_h)
+                {
+                    self.record_full_recon_leaf(
+                        mi_col,
+                        mi_row,
+                        log2_width,
+                        log2_height,
+                        "PAETH_PRED",
+                        false,
+                    );
+                    return Ok(());
+                }
+                let (x, y) = luma_sample_origin(mi_col, mi_row, tile_offset)?;
+                let result = reconstruct_general_intra_luma_paeth_neighbour_block_into(
+                    &mut self.workspace,
+                    block,
+                    PlaneId::Y,
+                    x,
+                    y,
+                    log2_width,
+                    log2_height,
+                    qindex,
+                    use_tcq,
+                    self.bit_depth,
+                );
+                if !self.finish_luma_predict(
+                    &result,
+                    mi_col,
+                    mi_row,
+                    log2_width,
+                    log2_height,
+                    "PAETH_PRED",
+                    tile_offset,
+                    "unsupported_wienerns_lr_selectable_transform_records_recon_luma_paeth_write",
+                )? {
+                    return Ok(());
+                }
+            }
+            (Some(mode), None) if mode.is_directional() => {
+                let result = self.try_reconstruct_one_sided_angular(
+                    mi_col,
+                    mi_row,
+                    log2_width,
+                    log2_height,
+                    mode,
+                    angle_delta_y,
+                    mrl_index,
+                    block,
+                    qindex,
+                    use_tcq,
+                    mi_w,
+                    mi_h,
+                    tile_offset,
+                );
+                let label = full_recon_mode_label(leaf_y_mode, directional, is_intrabc);
+                let wrote = match result {
+                    Ok(true) => true,
+                    Ok(false) => false,
+                    Err(error) => {
+                        if !self.full_recon {
+                            return Err(error);
+                        }
+                        false
+                    }
+                };
+                if !wrote {
+                    self.record_full_recon_leaf(
+                        mi_col,
+                        mi_row,
+                        log2_width,
+                        log2_height,
+                        label,
+                        false,
+                    );
+                    return Ok(());
+                }
+            }
+            _ => {
+                self.record_full_recon_leaf(
+                    mi_col,
+                    mi_row,
+                    log2_width,
+                    log2_height,
+                    full_recon_mode_label(leaf_y_mode, directional, is_intrabc),
+                    false,
+                );
+                return Ok(());
+            }
         }
         let marked =
             self.coverage[Self::coverage_index(PlaneId::Y)].mark(mi_col, mi_row, mi_w, mi_h);
         self.reconstructed_luma_4x4 = self.reconstructed_luma_4x4.saturating_add(marked);
+        self.record_full_recon_leaf(
+            mi_col,
+            mi_row,
+            log2_width,
+            log2_height,
+            full_recon_mode_label(leaf_y_mode, directional, is_intrabc),
+            true,
+        );
         Ok(())
     }
 
@@ -2157,6 +2311,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
 /// never calls this (it runs the handoff with no sink and emits no frame). This is
 /// a 10-bit (`u16`) driver: the ac0ej3 sequence is 10-bit 4:2:0.
 #[cfg(test)]
+#[allow(clippy::too_many_arguments)]
 pub(in crate::runtime_minimal) fn reconstruct_ac0ej3_selectable_intra_region(
     bytes: &[u8],
     options: crate::DecodeOptions,
@@ -2165,6 +2320,7 @@ pub(in crate::runtime_minimal) fn reconstruct_ac0ej3_selectable_intra_region(
     key_envelope: splot_core::annexb::ObuEnvelope<'_>,
     sequence: &splot_core::headers::sequence::SequenceHeader,
     core: &splot_core::headers::frame::FrameHeaderCore,
+    full_recon: bool,
 ) -> Result<WienerNsLrReconSink<u16>> {
     let frame_size = core.frame_size.ok_or_else(|| {
         super::super::unsupported_at(
@@ -2182,7 +2338,7 @@ pub(in crate::runtime_minimal) fn reconstruct_ac0ej3_selectable_intra_region(
         .intra
         .as_ref()
         .is_some_and(|intra| intra.enable_intra_edge_filter);
-    let mut sink = WienerNsLrReconSink::<u16>::new(
+    let base_sink = WienerNsLrReconSink::<u16>::new(
         frame_size.width as usize,
         frame_size.height as usize,
         bit_depth,
@@ -2190,6 +2346,11 @@ pub(in crate::runtime_minimal) fn reconstruct_ac0ej3_selectable_intra_region(
         enable_ibp,
         enable_intra_edge_filter,
     )?;
+    let mut sink = if full_recon {
+        base_sink.into_full_recon()
+    } else {
+        base_sink
+    };
     match super::tx_records::derive_wienerns_lr_selectable_transform_record_handoff(
         bytes,
         options,
@@ -2317,6 +2478,11 @@ fn residual_is_reconstructable(block: &LumaCoeffBlock, fsc_mode: bool) -> bool {
     let real_ist = block.intra_ist.is_some_and(|ist| ist.sec_tx_type != 0);
     !(real_ist || fsc_mode)
 }
+
+#[cfg(test)]
+mod full_recon;
+#[cfg(test)]
+use full_recon::full_recon_mode_label;
 
 #[cfg(test)]
 #[path = "recon_tests.rs"]

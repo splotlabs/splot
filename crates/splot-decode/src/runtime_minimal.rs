@@ -262,6 +262,19 @@ fn reconstruct_ac0ej3_intra_region_from_plan(
     options: DecodeOptions,
     plan: &DecodeStreamPlan,
 ) -> Result<wienerns_lr::WienerNsLrReconSink<u16>> {
+    reconstruct_ac0ej3_intra_region_from_plan_with_mode(bytes, options, plan, false)
+}
+
+/// As [`reconstruct_ac0ej3_intra_region_from_plan`], but selects the gated (shipped)
+/// sink (`full_recon == false`) or the DIAGNOSTIC-ONLY full-reconstruction sink
+/// (`full_recon == true`, driven by the `SPLOT_AC0EJ3_FULL_RECON` harness).
+#[cfg(test)]
+fn reconstruct_ac0ej3_intra_region_from_plan_with_mode(
+    bytes: &[u8],
+    options: DecodeOptions,
+    plan: &DecodeStreamPlan,
+    full_recon: bool,
+) -> Result<wienerns_lr::WienerNsLrReconSink<u16>> {
     let parsed = parse_bitstream_partial(bytes);
     let (ivf, _header) = require_multiframe_ivf(&parsed)?;
     let first_ivf_frame = ivf.frames.first().ok_or_else(|| {
@@ -291,6 +304,7 @@ fn reconstruct_ac0ej3_intra_region_from_plan(
         key_envelope,
         &sequence,
         &key_core,
+        full_recon,
     )
 }
 
