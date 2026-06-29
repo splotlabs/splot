@@ -762,8 +762,6 @@ fn step8_above_row_column(geometry: &SpatialScanGeometry) -> Option<usize> {
         "step-8 deltaCol must be even for the MiCol-parity floor shortcut; \
          an odd deltaCol (odd bw4) needs the full (MiCol+deltaCol)>>1<<1 floor",
     );
-    // The (mvCol >> 1) << 1 alignment must not shift the spec column, i.e. mi_col
-    // must be even (given the even deltaCol above); an odd mi_col is not modelled.
     if col & 1 != 0 {
         return None;
     }
@@ -818,7 +816,6 @@ fn spatial_scan_unmodelled_has_new_bv(
     let col = geometry.mi_col;
     let bw4 = geometry.n4w;
     let is_new = |mv: Option<Mv>| mv.is_some_and(|mv| !modelled.iter().any(|entry| entry.mv == mv));
-    // Step-11 below-bottom-left probe (bh4, -1), gated by has_bottom_left state.
     if geometry.n4h <= MAX_SMVP_AXIS_MI
         && let Some(left_col) = col.checked_sub(1)
         && let Some(r) = row.checked_add(geometry.n4h)
@@ -826,24 +823,11 @@ fn spatial_scan_unmodelled_has_new_bv(
     {
         return true;
     }
-    // Above-row probes (deltaRow = -1). At the frame top edge there is no above
-    // row, so nothing is read; otherwise over-scan the above row from the
-    // step-14 above-left column out to the top-right column, EXCLUDING the columns
-    // the [`AboveRowScan`] now places faithfully above.
     if let Some(above_row) = row.checked_sub(1) {
         let modelled_cols = [above.step8, above.step10, above.step12, above.step14];
-        // The SB-border path aligns the above row to the 8x8 grid; its unmodelled
-        // probes can reach MiCol - 2 - (MiCol & 1). The within-SB path reads the
-        // above row at 4x4 resolution from MiCol - 1 (step 14). Over-scan the wider
-        // SB-border span when on a border so an unmodelled SB-border probe still
-        // defers; otherwise the within-SB span from the step-14 column.
+        // § 7.12.2.1 step 12: SB-border reach is `Max(2, bw4)`; left reach carries 8x8 parity.
         let extra_left = if above.is_sb_border { 2 + (col & 1) } else { 1 };
         let leftmost = col.saturating_sub(extra_left);
-        // The step-12 top-right probe reaches `MiCol + bw4` within-SB, but `MiCol +
-        // Max(2, bw4)` on the SB border (`isSbBorder ? Max(2,bw4) : bw4`,
-        // § 7.12.2.1 step 12). For a narrow SB-border block (bw4 == 1) that pushes the
-        // reach to `MiCol + 2`, one column past `MiCol + bw4`; over-scan out to the
-        // wider reach so an unmodelled-but-reachable step-12 column still defers.
         let right_reach = if above.is_sb_border { bw4.max(2) } else { bw4 };
         let rightmost = col.saturating_add(right_reach); // inclusive of the top-right col
         for c in leftmost..=rightmost {
@@ -855,10 +839,6 @@ fn spatial_scan_unmodelled_has_new_bv(
             }
         }
     }
-    // § 7.12.2.5 deltaCol = -3 non-adjacent left scan: positions (bh4 - 1, -3) and
-    // (0, -3). AVM's `is_valid_candidate` skips a position that is the same block
-    // as the adjacent deltaCol = -1 column; a same-block read has the same recorded
-    // block vector, so the modelled-dedup test below subsumes that skip.
     if let Some(deep_col) = col.checked_sub(3) {
         let bottom = row.checked_add(geometry.n4h.saturating_sub(1));
         let probes = [bottom, Some(row)];
@@ -924,7 +904,6 @@ pub(super) fn build_intrabc_ref_mv_stack(
     };
     let mut stack: Vec<Mv> = Vec::new();
 
-    // § 7.12.2 spatial SMVP scan candidates (already deduped, in step order).
     for &cand in spatial {
         if stack.len() >= max_count {
             break;
@@ -932,9 +911,6 @@ pub(super) fn build_intrabc_ref_mv_stack(
         stack.push(cand);
     }
 
-    // § 7.12.2.21 fill from ref mv bank: iterate the bank in reverse (LIFO). Only
-    // when `enable_refmvbank == 1` (AV2 gates both the fill and the bank update on
-    // this flag); otherwise the bank contributes nothing.
     if enable_refmvbank {
         for &cand in bank.entries().iter().rev() {
             if stack.len() >= max_count {
@@ -946,7 +922,6 @@ pub(super) fn build_intrabc_ref_mv_stack(
         }
     }
 
-    // § 7.12.2.20 extra search: the four IBC default block vectors, no dedup.
     let sb = geometry.sb_samples;
     let w = block_w;
     let h = block_h;
@@ -1013,8 +988,6 @@ fn sort_nearest_max_weight_to_slot0(candidates: &mut [WeightedBv]) {
     let mut max_weight = first.weight;
     let mut max_idx = 0usize;
     for (offset, entry) in rest.iter().enumerate() {
-        // Strict `>`: a later equal weight does NOT displace an earlier max, so the
-        // lowest index wins ties (matches `maxWeight < WeightStack[idx]`).
         if entry.weight > max_weight {
             max_weight = entry.weight;
             max_idx = offset + 1;
@@ -1071,9 +1044,6 @@ pub(super) fn intrabc_ref_stack_admission(
     if spatial.defer {
         return IntrabcStackAdmission::Defer;
     }
-    // § 7.12.2.18 step 18 / § 7.12.2.19: when useSort holds AND there is more than one
-    // nearest candidate, move the max-weight candidate to slot 0 (single swap). Every
-    // modelled-placed candidate carries a provable § 7.12.2.6 weight, so the sort is faithful.
     let mut nearest: Vec<WeightedBv> = spatial.candidates.clone();
     if drl_reorder.use_sort(nearest.len()) && nearest.len() > 1 {
         sort_nearest_max_weight_to_slot0(&mut nearest);
@@ -1135,11 +1105,7 @@ mod tests {
 
     #[test]
     fn ac0ej3_mi_0_112_is_default_only() {
-        // AVM dump: at MI(0,112) the bank holds only MI(16,56)'s BV (-512, 0),
-        // which check_rmb_cand REJECTS on the frame-boundary test (ref_y = 0*4 +
-        // (-512/8) = -64 <= -block_height(64)). So the stack is default-only.
         let mut bank = IntrabcRefMvBank::new(32);
-        // MI(16,56) records BV (-512, 0).
         bank.record_block(16, 56, 8, 16, true, Some(Mv { row: -512, col: 0 }));
         assert_eq!(bank.entries(), [Mv { row: -512, col: 0 }]);
 
@@ -1157,10 +1123,6 @@ mod tests {
 
     #[test]
     fn ac0ej3_mi_0_232_is_reordered_by_bank() {
-        // AVM dump: at MI(0,232) the bank holds [(-512,0), (0,-256)] (MI(16,56),
-        // MI(0,112)). The LIFO fill tries (0,-256) first: ref_x = 232*4 + (-256/8)
-        // = 928 - 32 = 896, in bounds -> ADMIT. Then (-512,0): ref_y = -64 <= -64
-        // -> REJECT. Defaults fill the rest, giving the reordered stack.
         let mut bank = IntrabcRefMvBank::new(32);
         bank.record_block(16, 56, 8, 16, true, Some(Mv { row: -512, col: 0 }));
         bank.record_block(0, 112, 8, 16, true, Some(Mv { row: 0, col: -256 }));
@@ -1194,7 +1156,6 @@ mod tests {
 
     #[test]
     fn check_rmb_cand_rejects_frame_boundary_top_edge() {
-        // (-512, 0) at MI(0, 112), block 64 high: ref_y = -64 <= -64 -> reject.
         assert!(!check_rmb_cand(
             Mv { row: -512, col: 0 },
             &[],
@@ -1204,7 +1165,6 @@ mod tests {
 
     #[test]
     fn check_rmb_cand_admits_in_bounds_candidate() {
-        // (0, -256) at MI(0, 232), block 32 wide: ref_x = 896, in bounds -> admit.
         assert!(check_rmb_cand(
             Mv { row: 0, col: -256 },
             &[],
@@ -1223,25 +1183,17 @@ mod tests {
         let mut bank = IntrabcRefMvBank::new(32);
         bank.record_block(0, 0, 8, 16, true, Some(Mv { row: -512, col: 0 }));
         assert_eq!(bank.entries().len(), 1);
-        // A block in the next SB row (mi_row 32) zeroes the bank.
         bank.record_block(32, 0, 8, 16, true, Some(Mv { row: -1024, col: 0 }));
         assert_eq!(bank.entries(), [Mv { row: -1024, col: 0 }]);
     }
 
-    // Finding 2: the FIRST block of a new SB row reads an EMPTY bank. After SB row 0
-    // populates the bank, entering a block in SB row 1 (the entry-time reset) clears
-    // the bank BEFORE the § 7.12.2.21 fill runs, so the built stack is default-only
-    // (no stale previous-row candidate would defer a valid block).
     #[test]
     fn first_block_of_new_sb_row_reads_empty_bank() {
         let mut bank = IntrabcRefMvBank::new(32);
-        // SB row 0 records a BV whose displaced ref would be in-bounds at SB row 1.
         bank.record_block(0, 0, 8, 16, true, Some(Mv { row: 0, col: -256 }));
         assert_eq!(bank.entries(), [Mv { row: 0, col: -256 }]);
-        // Entering the first block of SB row 1 (mi_row 32) zeroes the bank...
         bank.enter_block_superblock(32, 8);
         assert!(bank.entries().is_empty());
-        // ...so the stack built for that block is default-only (no stale candidate).
         let stack = build_intrabc_ref_mv_stack(&bank, ac0ej3_geometry(32, 8), true, &[]);
         assert_eq!(
             stack,
@@ -1262,9 +1214,6 @@ mod tests {
         }
     }
 
-    // ac0ej3 frame-0 MI(0,112): the bank's MI(16,56) candidate is rejected on the
-    // frame boundary, so the real stack is default-only and the DRL index (3)
-    // selects the default tail (0,-256) -> ADMIT with that BV.
     #[test]
     fn admission_admits_ac0ej3_mi_0_112_default_only() {
         let mut bank = IntrabcRefMvBank::new(32);
@@ -1284,11 +1233,6 @@ mod tests {
         );
     }
 
-    // ac0ej3 frame-0 MI(0,232): the bank [(-512,0),(0,-256)] LIFO-reorders the stack
-    // to [(0,-256),(-1024,0),(0,-3072),(-512,0)]; DRL index 2 selects (0,-3072), the
-    // BV AVM records for this block. With `enable_refmvbank` OFF, AVM runs no bank
-    // fill, so the stack is the default-only [(-1024,0),(0,-3072),(-512,0),(0,-256)]
-    // and DRL index 2 selects the default (-512,0).
     #[test]
     fn admission_selects_ac0ej3_mi_0_232_bank_reordered_bv() {
         let mut bank = IntrabcRefMvBank::new(32);
@@ -1318,12 +1262,6 @@ mod tests {
         );
     }
 
-    // ac0ej3 frame-0 MI(0,240): the § 7.12.2 spatial scan adds the left neighbour
-    // MI(0,232)'s BV (0,-3072) first; the bank [(-512,0),(0,-256),(0,-3072)] LIFO
-    // fill dedups (0,-3072), admits (0,-256), rejects (-512,0); defaults fill the
-    // rest. The DRL index 0 selects the spatial BV (0,-3072), matching the AVM
-    // `setup_ref_mv_list` dump `stack=[(r0,c-3072)(r0,c-256)(r-1024,c0)(r0,c-3072)]
-    // drl=0`.
     #[test]
     fn admission_selects_ac0ej3_mi_0_240_spatial_bv() {
         let mut bank = IntrabcRefMvBank::new(32);
@@ -1364,7 +1302,6 @@ mod tests {
         );
     }
 
-    // An unmodelled § 7.12.2 spatial position holding an IntrABC neighbour defers.
     #[test]
     fn admission_defers_on_unmodelled_spatial_intrabc() {
         let bank = IntrabcRefMvBank::new(32);
@@ -1385,17 +1322,9 @@ mod tests {
         );
     }
 
-    // The § 7.12.2.19 max-weight sort is a REAL reorder, not a scan-order passthrough:
-    // a weight-0 step-14-first candidate followed by a weight-1 candidate must place
-    // the WEIGHT-1 one in slot 0 (the DRL index 0 selects it). This proves the sort
-    // moves the max-weight entry to slot 0 even when it arrived later in scan order.
     #[test]
     fn admission_forced_swap_places_max_weight_at_slot0() {
         let bank = IntrabcRefMvBank::new(32);
-        // Scan order: [0] step-14 above-left BV (weight 0), [1] a left-column BV
-        // (weight 1). DRL_REORDER_ALWAYS + nearest > 1 -> the sort swaps the weight-1
-        // entry into slot 0. With DRL index 0, the selected predictor is the weight-1
-        // BV (the spatial candidate that was at scan index 1).
         let unsorted = SpatialIntrabcScan {
             candidates: vec![
                 wbv(Mv { row: 0, col: -64 }, 0),
