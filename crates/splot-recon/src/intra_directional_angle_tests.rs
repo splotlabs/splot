@@ -79,6 +79,66 @@ fn d45_one_sided_idif_clamps_base_at_max_base_x() {
     );
 }
 
+/// D45 (dx = 64) has shift == 0 everywhere, so the IDIF reduces to the copy
+/// `Edge[base]` with `base = (i + 1 + mrlIndex) + j`. The ascending edge makes the
+/// mrlIndex shift visible (slot k is logical k - 2; edge length `w + h + 4 + (mrl <<
+/// 1)`): mrlIndex == 0 gives `value = (i + j + 1) + 2`, and mrlIndex == 2 reads two
+/// lines further out (`value = (i + j + 3) + 2`, every sample larger by 2).
+#[test]
+fn d45_mrl_idif_reads_the_offset_reference_line_not_the_adjacent_one() {
+    let above_idif: [u8; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+    let mut mrl0 = [0u8; 16];
+    predict_intra_directional_angle_rect_one_sided_idif_mrl_into(
+        BitDepth::Eight,
+        rect_size(2, 2),
+        IntraDirectionalAngle::D45,
+        IntraDirectionalAngleIdifEdges::above(&above_idif[..12]),
+        0,
+        &mut mrl0,
+        4,
+    )
+    .unwrap();
+    assert_eq!(mrl0, [3, 4, 5, 6, 4, 5, 6, 7, 5, 6, 7, 8, 6, 7, 8, 9]);
+
+    let mut mrl2 = [0u8; 16];
+    predict_intra_directional_angle_rect_one_sided_idif_mrl_into(
+        BitDepth::Eight,
+        rect_size(2, 2),
+        IntraDirectionalAngle::D45,
+        IntraDirectionalAngleIdifEdges::above(&above_idif),
+        2,
+        &mut mrl2,
+        4,
+    )
+    .unwrap();
+    assert_eq!(mrl2, [5, 6, 7, 8, 6, 7, 8, 9, 7, 8, 9, 10, 8, 9, 10, 11]);
+}
+
+/// `maxBase = w + h - 1 + (mrlIndex << 1) == 9` for 4x4 mrlIndex == 1; the trailing
+/// slots repeat the clamp value, so `base = (i + 2 + j)`, `value = Edge[min(base,
+/// 9)]`. The 250 sentinels past maxBase prove the walk never over-reads.
+#[test]
+fn d45_mrl_idif_clamps_at_the_widened_max_base() {
+    let above_idif: [u8; 14] = [0, 0, 10, 20, 30, 40, 50, 60, 70, 80, 80, 80, 250, 250];
+    let mut output = [0u8; 16];
+    predict_intra_directional_angle_rect_one_sided_idif_mrl_into(
+        BitDepth::Eight,
+        rect_size(2, 2),
+        IntraDirectionalAngle::D45,
+        IntraDirectionalAngleIdifEdges::above(&above_idif),
+        1,
+        &mut output,
+        4,
+    )
+    .unwrap();
+    assert_eq!(
+        output,
+        [
+            30, 40, 50, 60, 40, 50, 60, 70, 50, 60, 70, 80, 60, 70, 80, 80
+        ]
+    );
+}
+
 #[test]
 fn d45_one_sided_idif_rejects_wrong_length_edge() {
     let above_idif = [0u8; 8];

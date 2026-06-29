@@ -15,6 +15,7 @@ use splot_recon::{
     filter_intra_edge_corner, predict_intra_cardinal_directional_rect_into,
     predict_intra_dc_rect_value, predict_intra_directional_angle_rect_into,
     predict_intra_directional_angle_rect_one_sided_idif_into,
+    predict_intra_directional_angle_rect_one_sided_idif_mrl_into,
     predict_intra_middle_directional_angle_rect_idif_into,
     predict_intra_middle_directional_angle_rect_into, predict_intra_paeth_rect_into,
     predict_intra_smooth_rect_into,
@@ -864,6 +865,72 @@ pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into<T: Reco
     Ok(())
 }
 
+/// Builds the § 7.13.2.1 PAETH reference edges (`AboveRow[0..w)`, `LeftCol[0..h)`,
+/// and the shared corner `AboveRow[-1]`) for a block at `(x, y)`, applying the
+/// spec's `haveAbove` / `haveLeft` availability fallback.
+///
+/// `above_in` / `left_in` are the workspace's in-storage edges (`Some` when the
+/// block has a decoded above row / left column; `None` only at the `y == 0` /
+/// `x == 0` frame edge, which equals `haveAbove == 0` / `haveLeft == 0` for the
+/// single-tile decode-order walk). The § 7.13.2.1 reference build is:
+/// * above row — real above when `haveAbove`; else `CurrFrame[plane][y][x-1]` (the
+///   left column's top sample, `left_in[0]`) when `haveLeft`; else the
+///   `(1 << (BitDepth-1)) - 1` no-above constant;
+/// * left column — real left when `haveLeft`; else `CurrFrame[plane][y-1][x]` (the
+///   above row's first sample, `above_in[0]`) when `haveAbove`; else the
+///   `(1 << (BitDepth-1)) + 1` no-left constant;
+/// * corner `AboveRow[-1]` — `CurrFrame[plane][y-1][x-1]` when both neighbours
+///   exist; else the available edge's first sample (`above_in[0]` / `left_in[0]`);
+///   else the `1 << (BitDepth-1)` no-neighbour constant.
+///
+/// This mirrors AVM `av2_build_intra_predictors_high`
+/// (`av2/common/reconintra.c`): `above_row[i] = left_ref[0]` / `left_col[i] =
+/// above_ref[0]` for the single-missing edge and `above_row[-1] = left_ref[0]` /
+/// `above_ref[0]` for the corner. `MrlIndex == 0` (PAETH is dispatched only for the
+/// immediate edge), so `aboveMrlIndex == 0`.
+#[allow(clippy::too_many_arguments)]
+fn paeth_reference_edges<T: ReconSample>(
+    workspace: &CurrentFrameWorkspace<T>,
+    plane_id: PlaneId,
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+    bit_depth: BitDepth,
+    above_in: Option<&[T]>,
+    left_in: Option<&[T]>,
+) -> core::result::Result<(Vec<T>, Vec<T>, T), GeneralIntraResidualError> {
+    let above = match (above_in, left_in) {
+        (Some(above), _) => above.iter().take(width).copied().collect::<Vec<T>>(),
+        (None, Some(left)) => {
+            vec![*left.first().unwrap_or(&noneighbour_above::<T>(bit_depth)); width]
+        }
+        (None, None) => vec![noneighbour_above::<T>(bit_depth); width],
+    };
+    let left = match (left_in, above_in) {
+        (Some(left), _) => left.iter().take(height).copied().collect::<Vec<T>>(),
+        (None, Some(above)) => {
+            vec![*above.first().unwrap_or(&noneighbour_left::<T>(bit_depth)); height]
+        }
+        (None, None) => vec![noneighbour_left::<T>(bit_depth); height],
+    };
+    if above.len() != width || left.len() != height {
+        return Err(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge);
+    }
+    let top_left = match (above_in, left_in) {
+        (Some(_), Some(_)) => {
+            let (Some(corner_x), Some(corner_y)) = (x.checked_sub(1), y.checked_sub(1)) else {
+                return Err(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge);
+            };
+            workspace.reconstructed_sample(plane_id, corner_x, corner_y)?
+        }
+        (Some(above), None) => *above.first().unwrap_or(&noneighbour_corner::<T>(bit_depth)),
+        (None, Some(left)) => *left.first().unwrap_or(&noneighbour_corner::<T>(bit_depth)),
+        (None, None) => noneighbour_corner::<T>(bit_depth),
+    };
+    Ok((above, left, top_left))
+}
+
 /// Reconstructs one neighbour-having § 7.13.2.2 PAETH (`PAETH_PRED`,
 /// non-directional) luma block over the § 7.13.2.1 above row / left column / corner
 /// read from the partially-built frame's **real reconstructed neighbours**. For an
@@ -880,16 +947,12 @@ pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into<T: Reco
 /// rectangular (independent `w` x `h`) and needs no IDIF / edge-filter / above-right
 /// / bottom-left synthesis.
 ///
-/// The caller admits ONLY the § 7.13.2.1 `haveAbove == 1 && haveLeft == 1` config,
-/// so:
-/// * `AboveRow[0..w)` is the real reconstructed above row
-///   (`intra_dc_edges_for_rect` above edge);
-/// * `LeftCol[0..h)` is the real reconstructed left column (its left edge);
-/// * the corner `AboveRow[-1] = CurrFrame[plane][y-1][x-1]` (the diagonal
-///   above-left sample, `MrlIndex == 0`, `aboveMrlIndex == 0`), read explicitly
-///   here exactly as the § 7.13.2.8 directional-middle neighbour path reads it
-///   (`intra_dc_edges_for_rect` does not return the corner). No single-sided
-///   § 7.13.2.1 fallback is taken — those PAETH configs DEFER upstream.
+/// The § 7.13.2.1 reference edges (above row, left column, shared corner) are built
+/// by [`paeth_reference_edges`], which applies the spec's full `haveAbove` /
+/// `haveLeft` fallback: when a frame-edge block has no above row (or no left column)
+/// the missing edge is synthesized from the available perpendicular edge's first
+/// sample (or the § 7.13.2.1 mid-grey constant when neither neighbour exists), so a
+/// top-row / left-column PAETH leaf reconstructs instead of deferring.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_luma_paeth_neighbour_block_into<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
@@ -909,20 +972,17 @@ pub(crate) fn reconstruct_general_intra_luma_paeth_neighbour_block_into<T: Recon
     let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
     let edges = workspace.intra_dc_edges_for_rect(plane_id, x, y, block_size)?;
-    let (Some(above_neighbour), Some(left_neighbour)) =
-        (edges.above_samples(), edges.left_samples())
-    else {
-        return Err(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge);
-    };
-    let (Some(corner_x), Some(corner_y)) = (x.checked_sub(1), y.checked_sub(1)) else {
-        return Err(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge);
-    };
-    let top_left = workspace.reconstructed_sample(plane_id, corner_x, corner_y)?;
-    let above: Vec<T> = above_neighbour.iter().take(width).copied().collect();
-    let left: Vec<T> = left_neighbour.iter().take(height).copied().collect();
-    if above.len() != width || left.len() != height {
-        return Err(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge);
-    }
+    let (above, left, top_left) = paeth_reference_edges(
+        workspace,
+        plane_id,
+        x,
+        y,
+        width,
+        height,
+        bit_depth,
+        edges.above_samples(),
+        edges.left_samples(),
+    )?;
     let mut prediction = vec![T::default(); width * height];
     predict_intra_paeth_rect_into(
         bit_depth,
@@ -973,6 +1033,21 @@ pub(crate) struct OneSidedEdgeFilter {
     pub corner_opposite: Option<u16>,
 }
 
+/// The §7.13.2.1 / §5.20.5.5 MULTI-REFERENCE-LINE offsets for a ZONE-1 one-sided
+/// above-reading leaf. The §7.13.2.8 projection geometry (`maxBase = w + h - 1 +
+/// (mrlIndex << 1)`, `idx = (i + 1 + mrlIndex) * dx`) keys on the full `mrl_index`,
+/// but the above ROW is read from `CurrFrame[y - 1 - aboveMrlIndex]` where
+/// `aboveMrlIndex == sbBoundary ? 0 : mrlIndex` (AVM `above_ref_1st = ref -
+/// ref_stride * (above_mrl_idx + 1)` with `above_mrl_idx = is_sb_boundary ? 0 :
+/// mrl_index`). At the immediate edge both are `0`.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct OneSidedAboveMrl {
+    /// §5.20.5.5 `MrlIndex` — the projection-geometry reference-line distance.
+    pub mrl_index: usize,
+    /// `aboveMrlIndex == sbBoundary ? 0 : MrlIndex` — the above-row read offset.
+    pub above_mrl_index: usize,
+}
+
 /// Reconstructs one neighbour-having ZONE-1 ONE-SIDED directional luma/chroma
 /// block (any `pAngle < 90`, e.g. D45 § 7.13.2.8 step 1) over the § 7.13.2.1 above
 /// row PLUS the real reconstructed above-right read from the partially-built
@@ -1021,6 +1096,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_neighbour_block_into<T: ReconS
     log2_height: u32,
     qindex: u32,
     num4_above_right: usize,
+    mrl: OneSidedAboveMrl,
     use_tcq: bool,
     bit_depth: BitDepth,
     edge_filter: OneSidedEdgeFilter,
@@ -1038,19 +1114,25 @@ pub(crate) fn reconstruct_general_intra_one_sided_neighbour_block_into<T: ReconS
         width,
         height,
         num4_above_right,
+        mrl.mrl_index,
+        mrl.above_mrl_index,
         edge_filter,
     )?;
     let mut prediction = vec![T::default(); width * height];
     if matches!(plane_id, PlaneId::Y) {
-        predict_intra_directional_angle_rect_one_sided_idif_into(
+        predict_intra_directional_angle_rect_one_sided_idif_mrl_into(
             bit_depth,
             block_size,
             IntraDirectionalAngle::try_from_p_angle(p_angle)?,
             IntraDirectionalAngleIdifEdges::above(&above_idif),
+            mrl.mrl_index,
             &mut prediction,
             width,
         )?;
     } else {
+        if mrl.mrl_index != 0 {
+            return Err(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge);
+        }
         let above_bilinear = &above_idif[2..2 + width + height];
         predict_intra_directional_angle_rect_into(
             bit_depth,
@@ -1095,6 +1177,11 @@ pub(crate) fn reconstruct_general_intra_one_sided_neighbour_block_into<T: ReconS
 /// and `AboveRow[maxBase + 1] = AboveRow[maxBase + 2] = AboveRow[maxBase]` (the
 /// two trailing samples repeat the clamped last in-row sample). `aboveLimit =
 /// Min(maxX, x + w + 4 * num4AboveRight - 1)`.
+///
+/// For `MrlIndex > 0` the above row is read `aboveMrlIndex` lines further up (AVM
+/// `above_ref_1st = ref - ref_stride * (aboveMrlIndex + 1)`, with `aboveMrlIndex ==
+/// sbBoundary ? 0 : MrlIndex` resolved by the caller), and the projection geometry
+/// widens by `mrl_index` (`maxBase += mrl_index << 1`).
 #[allow(clippy::too_many_arguments)]
 fn build_one_sided_above_idif_edge<T: ReconSample>(
     workspace: &CurrentFrameWorkspace<T>,
@@ -1104,10 +1191,13 @@ fn build_one_sided_above_idif_edge<T: ReconSample>(
     width: usize,
     height: usize,
     num4_above_right: usize,
+    mrl_index: usize,
+    above_mrl_index: usize,
     edge_filter: OneSidedEdgeFilter,
 ) -> core::result::Result<Vec<T>, GeneralIntraResidualError> {
     let above_row = y
         .checked_sub(1)
+        .and_then(|row| row.checked_sub(above_mrl_index))
         .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
     let max_x = workspace
         .plane(plane_id)?
@@ -1126,6 +1216,7 @@ fn build_one_sided_above_idif_edge<T: ReconSample>(
     build_one_sided_idif_edge(
         width,
         height,
+        mrl_index,
         edge_filter,
         || workspace.reconstructed_sample(plane_id, corner_col, above_row),
         |i| {
@@ -1149,6 +1240,7 @@ fn build_one_sided_above_idif_edge<T: ReconSample>(
 fn build_one_sided_idif_edge<T: ReconSample>(
     width: usize,
     height: usize,
+    mrl_index: usize,
     edge_filter: OneSidedEdgeFilter,
     corner: impl FnOnce() -> core::result::Result<T, splot_recon::ReconError>,
     in_edge: impl Fn(usize) -> core::result::Result<T, splot_recon::ReconError>,
@@ -1156,6 +1248,7 @@ fn build_one_sided_idif_edge<T: ReconSample>(
     let max_base = width
         .checked_add(height)
         .and_then(|v| v.checked_sub(1))
+        .and_then(|v| v.checked_add(mrl_index << 1))
         .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
     let edge_len = max_base
         .checked_add(5)
@@ -1273,6 +1366,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_left_neighbour_block_into<T: R
     qindex: u32,
     num4_below_left: usize,
     have_above: bool,
+    mrl_index: usize,
     use_tcq: bool,
     bit_depth: BitDepth,
     edge_filter: OneSidedEdgeFilter,
@@ -1292,19 +1386,24 @@ pub(crate) fn reconstruct_general_intra_one_sided_left_neighbour_block_into<T: R
         height,
         num4_below_left,
         have_above,
+        mrl_index,
         edge_filter,
     )?;
     let mut prediction = vec![T::default(); width * height];
     if matches!(plane_id, PlaneId::Y) {
-        predict_intra_directional_angle_rect_one_sided_idif_into(
+        predict_intra_directional_angle_rect_one_sided_idif_mrl_into(
             bit_depth,
             block_size,
             angle,
             IntraDirectionalAngleIdifEdges::left(&left_idif),
+            mrl_index,
             &mut prediction,
             width,
         )?;
     } else {
+        if mrl_index != 0 {
+            return Err(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge);
+        }
         let left_bilinear = &left_idif[2..2 + width + height];
         predict_intra_directional_angle_rect_into(
             bit_depth,
@@ -1351,6 +1450,10 @@ pub(crate) fn reconstruct_general_intra_one_sided_left_neighbour_block_into<T: R
 /// (here `LeftCol[-2] = LeftCol[-1]`) and `LeftCol[maxBase + 1] = LeftCol[maxBase +
 /// 2] = LeftCol[maxBase]` (the two trailing samples repeat the clamped last in-column
 /// sample).
+///
+/// For `MrlIndex > 0` the left column is read `MrlIndex` columns further left (AVM
+/// `left_ref_1st = ref - 1 - MrlIndex`; the left axis has no sbBoundary special
+/// case), and the projection widens by `mrl_index` (`maxBase += mrl_index << 1`).
 #[allow(clippy::too_many_arguments)]
 fn build_one_sided_left_idif_edge<T: ReconSample>(
     workspace: &CurrentFrameWorkspace<T>,
@@ -1361,10 +1464,12 @@ fn build_one_sided_left_idif_edge<T: ReconSample>(
     height: usize,
     num4_below_left: usize,
     have_above: bool,
+    mrl_index: usize,
     edge_filter: OneSidedEdgeFilter,
 ) -> core::result::Result<Vec<T>, GeneralIntraResidualError> {
     let left_col = x
         .checked_sub(1)
+        .and_then(|col| col.checked_sub(mrl_index))
         .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
     let max_y = workspace
         .plane(plane_id)?
@@ -1386,6 +1491,7 @@ fn build_one_sided_left_idif_edge<T: ReconSample>(
     build_one_sided_idif_edge(
         width,
         height,
+        mrl_index,
         edge_filter,
         || workspace.reconstructed_sample(plane_id, left_col, corner_row),
         |i| {
@@ -1456,6 +1562,8 @@ pub(crate) fn reconstruct_general_intra_one_sided_ibp_luma_block_into<T: ReconSa
             width,
             height,
             primary_num4_far,
+            0, // mrl_index: the §7.13.2.7 IBP blend is gated to the immediate edge
+            0, // above_mrl_index
             primary_edge_filter,
         )?;
         predict_intra_directional_angle_rect_one_sided_idif_into(
@@ -1476,6 +1584,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_ibp_luma_block_into<T: ReconSa
             height,
             primary_num4_far,
             true,
+            0, // mrl_index: the §7.13.2.7 IBP blend is gated to the immediate edge
             primary_edge_filter,
         )?;
         predict_intra_directional_angle_rect_one_sided_idif_into(
@@ -1499,6 +1608,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_ibp_luma_block_into<T: ReconSa
             height,
             secondary.num4_far,
             true,
+            0, // mrl_index: the §7.13.2.7 IBP blend is gated to the immediate edge
             secondary.edge_filter,
         )?;
         predict_intra_directional_angle_rect_one_sided_idif_into(
@@ -1518,6 +1628,8 @@ pub(crate) fn reconstruct_general_intra_one_sided_ibp_luma_block_into<T: ReconSa
             width,
             height,
             secondary.num4_far,
+            0, // mrl_index: the §7.13.2.7 IBP blend is gated to the immediate edge
+            0, // above_mrl_index
             secondary.edge_filter,
         )?;
         predict_intra_directional_angle_rect_one_sided_idif_into(

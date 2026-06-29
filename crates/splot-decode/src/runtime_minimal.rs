@@ -256,11 +256,15 @@ pub(crate) fn decode_minimal_frame_from_plan(
 /// `TX_MODE_SELECT` selectable transform-record handoff, then runs that walk with
 /// a sink attached. The returned sink holds the first superblock reconstructed
 /// before the walk's expected IntrABC fail-closed rejection.
+/// As [`reconstruct_ac0ej3_intra_region_from_plan`], but selects the gated (shipped)
+/// sink (`full_recon == false`) or the DIAGNOSTIC-ONLY full-reconstruction sink
+/// (`full_recon == true`, driven by the `SPLOT_AC0EJ3_FULL_RECON` harness).
 #[cfg(test)]
 fn reconstruct_ac0ej3_intra_region_from_plan(
     bytes: &[u8],
     options: DecodeOptions,
     plan: &DecodeStreamPlan,
+    full_recon: bool,
 ) -> Result<wienerns_lr::WienerNsLrReconSink<u16>> {
     let parsed = parse_bitstream_partial(bytes);
     let (ivf, _header) = require_multiframe_ivf(&parsed)?;
@@ -291,6 +295,7 @@ fn reconstruct_ac0ej3_intra_region_from_plan(
         key_envelope,
         &sequence,
         &key_core,
+        full_recon,
     )
 }
 

@@ -468,8 +468,21 @@ fn reconstruct_ac0ej3_sink() -> WienerNsLrReconSink<u16> {
     let bytes = std::fs::read(&path).expect("read ac0ej3 fixture");
     let options = DecodeOptions::default();
     let plan = context().plan_bytes(&bytes, options).expect("plan ac0ej3");
-    reconstruct_ac0ej3_intra_region_from_plan(&bytes, options, &plan)
+    reconstruct_ac0ej3_intra_region_from_plan(&bytes, options, &plan, false)
         .expect("reconstruct ac0ej3 region")
+}
+
+/// As [`reconstruct_ac0ej3_sink`], but drives the DIAGNOSTIC-ONLY full-reconstruction
+/// sink (every luma leaf reconstructed in decode order, gates dropped, far-edge
+/// read-or-pad from the per-transform `BlockDecoded` availability). Used ONLY by the
+/// `SPLOT_AC0EJ3_FULL_RECON` whole-frame differential harness.
+fn reconstruct_ac0ej3_full_recon_sink() -> WienerNsLrReconSink<u16> {
+    let path = require_fixture();
+    let bytes = std::fs::read(&path).expect("read ac0ej3 fixture");
+    let options = DecodeOptions::default();
+    let plan = context().plan_bytes(&bytes, options).expect("plan ac0ej3");
+    reconstruct_ac0ej3_intra_region_from_plan(&bytes, options, &plan, true)
+        .expect("full-recon ac0ej3 region")
 }
 
 /// FNV-1a-64 over a u16 sample stream (little-endian bytes), matching the offline
@@ -1356,3 +1369,212 @@ const NONSQ_ZONE1_TALL_SAMPLE_COUNT: usize = 128;
 const NONSQ_ZONE1_TALL_SAMPLE_SUM: u64 = 8_732;
 /// FNV-1a-64 over the block (row-major, sample-major u16 LE).
 const NONSQ_ZONE1_TALL_FNV1A64: u64 = 0xc62f_e673_751d_4e4f;
+
+/// ac0ej3 luma plane width (the §6.4.2 `1920x1080` 10-bit 4:2:0 frame).
+const FULL_FRAME_WIDTH: usize = 1920;
+/// ac0ej3 luma plane height.
+const FULL_FRAME_HEIGHT: usize = 1080;
+
+/// Loads the AVM pre-filter oracle luma plane (`SPLOT_AC0EJ3_PREFILTER_YUV` or
+/// `/tmp/pref.yuv`): the first `1920 * 1080` u16 little-endian samples of the
+/// planar 10-bit 4:2:0 dump (`--dump-prefiltered`). Returns the row-major luma
+/// samples. Panics with a clear message when the file is missing or too short, so a
+/// stale / unregenerated oracle is loud rather than silently mis-comparing.
+fn load_prefilter_oracle_luma() -> Vec<u16> {
+    let path =
+        std::env::var("SPLOT_AC0EJ3_PREFILTER_YUV").unwrap_or_else(|_| "/tmp/pref.yuv".to_string());
+    let bytes = std::fs::read(&path).unwrap_or_else(|err| {
+        panic!(
+            "read AVM pre-filter oracle at {path} (set SPLOT_AC0EJ3_PREFILTER_YUV; \
+             regenerate with avm inspect --dump-prefiltered): {err}"
+        )
+    });
+    let luma_samples = FULL_FRAME_WIDTH * FULL_FRAME_HEIGHT;
+    assert!(
+        bytes.len() >= luma_samples * 2,
+        "oracle {path} is {} bytes, need at least {} for the {FULL_FRAME_WIDTH}x{FULL_FRAME_HEIGHT} luma plane",
+        bytes.len(),
+        luma_samples * 2
+    );
+    bytes
+        .chunks_exact(2)
+        .take(luma_samples)
+        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        .collect()
+}
+
+/// DIAGNOSTIC harness (the maintainer's full-reconstruction pivot): reconstructs
+/// EVERY luma block in decode order with the gates dropped, then per-sample diffs the
+/// whole `1920x1080` luma plane against the AVM pre-filter oracle. Reports the
+/// bit-exact %, the covered (written) %, and the FIRST decode-order block whose
+/// samples diverge (MI / xy / mode / size / first splot-vs-oracle sample). Drives the
+/// iterative FIND-AND-FIX loop; it does NOT change the shipped (gated) reconstruction
+/// — the 16 oracle-pin tests above keep the 791,776-sample region bit-exact.
+///
+/// Gated behind the `SPLOT_AC0EJ3_FULL_RECON` env var (in addition to `#[ignore]`) so
+/// a casual `--ignored` run that has no regenerated oracle does not fail; set the var
+/// to run it: `SPLOT_AC0EJ3_FULL_RECON=1 cargo test ... -- --ignored full_recon`.
+#[test]
+#[ignore = "diagnostic; set SPLOT_AC0EJ3_FULL_RECON=1 and provide the AVM pre-filter oracle (/tmp/pref.yuv)"]
+fn ac0ej3_full_decode_order_reconstruction_differs_against_prefilter_oracle() {
+    if std::env::var("SPLOT_AC0EJ3_FULL_RECON").is_err() {
+        eprintln!("SPLOT_AC0EJ3_FULL_RECON unset; skipping the full-recon differential");
+        return;
+    }
+    let sink = reconstruct_ac0ej3_full_recon_sink();
+    let oracle = load_prefilter_oracle_luma();
+
+    let oracle_at = |x: usize, y: usize| oracle[y * FULL_FRAME_WIDTH + x];
+
+    let mut written_total = 0usize;
+    let mut written_exact = 0usize;
+    let mut first_mismatch: Option<(usize, usize, u16, u16)> = None;
+    for leaf in sink.full_recon_luma_log() {
+        if !leaf.written {
+            continue;
+        }
+        for dy in 0..leaf.height {
+            for dx in 0..leaf.width {
+                let (x, y) = (leaf.x + dx, leaf.y + dy);
+                if x >= FULL_FRAME_WIDTH || y >= FULL_FRAME_HEIGHT {
+                    continue;
+                }
+                let got = sink.reconstructed_sample(PlaneId::Y, x, y).unwrap();
+                let want = oracle_at(x, y);
+                written_total += 1;
+                if got == want {
+                    written_exact += 1;
+                } else if first_mismatch.is_none() {
+                    first_mismatch = Some((x, y, got, want));
+                }
+            }
+        }
+    }
+
+    let mut first_block: Option<(usize, usize)> = None;
+    let mut first_clean_block: Option<(usize, usize)> = None;
+    let mut first_unwritten: Option<usize> = None;
+    let mut covered_samples = 0usize;
+    let mut unwired: std::collections::BTreeMap<&'static str, usize> =
+        std::collections::BTreeMap::new();
+    for (idx, leaf) in sink.full_recon_luma_log().iter().enumerate() {
+        if !leaf.written {
+            *unwired.entry(leaf.mode).or_default() += 1;
+            if first_unwritten.is_none() {
+                first_unwritten = Some(idx);
+            }
+            continue;
+        }
+        let mut block_mismatch = 0usize;
+        for dy in 0..leaf.height {
+            for dx in 0..leaf.width {
+                let (x, y) = (leaf.x + dx, leaf.y + dy);
+                if x >= FULL_FRAME_WIDTH || y >= FULL_FRAME_HEIGHT {
+                    continue;
+                }
+                covered_samples += 1;
+                let got = sink.reconstructed_sample(PlaneId::Y, x, y).unwrap();
+                if got != oracle_at(x, y) {
+                    block_mismatch += 1;
+                }
+            }
+        }
+        if block_mismatch > 0 && first_block.is_none() {
+            first_block = Some((idx, block_mismatch));
+        }
+        if block_mismatch > 0 && first_clean_block.is_none() {
+            let neighbours_exact = |leaf: &super::wienerns_lr::FullReconLumaLeaf| {
+                let span = leaf.width + leaf.height;
+                let sample_ok = |x: usize, y: usize| {
+                    x >= FULL_FRAME_WIDTH
+                        || y >= FULL_FRAME_HEIGHT
+                        || sink.reconstructed_sample(PlaneId::Y, x, y).unwrap() == oracle_at(x, y)
+                };
+                let above_ok = leaf.y == 0
+                    || (0..span).all(|dx| {
+                        leaf.x + dx >= FULL_FRAME_WIDTH || sample_ok(leaf.x + dx, leaf.y - 1)
+                    });
+                let left_ok = leaf.x == 0
+                    || (0..span).all(|dy| {
+                        leaf.y + dy >= FULL_FRAME_HEIGHT || sample_ok(leaf.x - 1, leaf.y + dy)
+                    });
+                let corner_ok = leaf.x == 0 || leaf.y == 0 || sample_ok(leaf.x - 1, leaf.y - 1);
+                above_ok && left_ok && corner_ok
+            };
+            if neighbours_exact(leaf) {
+                first_clean_block = Some((idx, block_mismatch));
+            }
+        }
+    }
+
+    let frame_samples = FULL_FRAME_WIDTH * FULL_FRAME_HEIGHT;
+    let pct = |num: usize, den: usize| {
+        if den == 0 {
+            0.0
+        } else {
+            100.0 * num as f64 / den as f64
+        }
+    };
+    eprintln!("==== ac0ej3 FULL DECODE-ORDER LUMA RECONSTRUCTION vs AVM pre-filter oracle ====");
+    eprintln!(
+        "frame {FULL_FRAME_WIDTH}x{FULL_FRAME_HEIGHT} = {frame_samples} luma samples; \
+         leaves logged = {}",
+        sink.full_recon_luma_log().len()
+    );
+    eprintln!(
+        "written (predicted) samples = {written_total} ({:.2}% of frame); \
+         bit-exact = {written_exact} ({:.2}% of written, {:.2}% of frame)",
+        pct(written_total, frame_samples),
+        pct(written_exact, written_total),
+        pct(written_exact, frame_samples),
+    );
+    eprintln!("covered samples (re-counted) = {covered_samples}");
+    if !unwired.is_empty() {
+        eprintln!("unwired (fill) leaves by mode:");
+        for (mode, n) in &unwired {
+            eprintln!("    {mode}: {n} leaves");
+        }
+    }
+    let log = sink.full_recon_luma_log();
+    let describe = |idx: usize| {
+        let l = log[idx];
+        format!(
+            "#{idx} {} {}x{} MI({},{}) x[{},{}) y[{},{})",
+            l.mode,
+            l.width,
+            l.height,
+            l.mi_col,
+            l.mi_row,
+            l.x,
+            l.x + l.width,
+            l.y,
+            l.y + l.height,
+        )
+    };
+    match (first_block, first_mismatch) {
+        (Some((idx, block_mismatch)), Some((mx, my, got, want))) => {
+            eprintln!(
+                "FIRST decode-order mismatch: leaf {} — {block_mismatch} mismatched samples; \
+                 first at ({mx},{my}) splot={got} oracle={want}",
+                describe(idx)
+            );
+        }
+        _ => {
+            eprintln!("NO decode-order mismatch found among written leaves (full bit-exact!)");
+        }
+    }
+    if let Some(idx) = first_unwritten {
+        eprintln!(
+            "FIRST decode-order UNWRITTEN (fill root) leaf: {}",
+            describe(idx)
+        );
+    }
+    if let Some((idx, n)) = first_clean_block {
+        eprintln!(
+            "FIRST clean-neighbour predictor mismatch: {} — {n} mismatched samples \
+             (neighbours bit-exact, so a real predictor bug)",
+            describe(idx)
+        );
+    }
+    eprintln!("================================================================================");
+}

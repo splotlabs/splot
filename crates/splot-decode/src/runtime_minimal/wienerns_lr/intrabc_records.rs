@@ -549,6 +549,14 @@ pub(super) fn read_intrabc_use_and_skip(
     })
 }
 
+/// Reads one §5.20.5.3 `use_intrabc` block's mode info and, when a reconstruction
+/// `sink` is attached, reconstructs its §7.13.3.18 displaced predictor.
+///
+/// The gated sink admits ONLY the §6.19-proven same-superblock INTEGER-DV copy
+/// (`intrabc_dv_proven_valid`). The full-recon diagnostic reconstructs every block
+/// in decode order over a bounds-checked source (`source.is_within(domain.storage)`),
+/// so it trusts the decoded DV: an integer DV copies the (possibly cross-SB) source
+/// and a fractional DV runs the §7.13.3.18 bilinear predictor.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn read_intrabc_info(
     cdfs: &mut TileCdfSubset,
@@ -567,15 +575,21 @@ pub(super) fn read_intrabc_info(
     let info =
         finish_intrabc_info_record(cdfs, symbols, sequence, core, syntax, pred_mv, tile_offset)?;
     let prediction = derive_intrabc_luma_prediction_geometry(core, geometry, info, tile_offset)?;
-    if let Some(sink) = sink
-        && intrabc_dv_proven_valid(sequence, core, geometry, info, tile_offset)?
-    {
-        sink.reconstruct_intrabc_block(
-            prediction.source,
-            prediction.target,
-            skip_flag,
-            tile_offset,
-        )?;
+    if let Some(sink) = sink {
+        let admit = if sink.is_full_recon() {
+            true
+        } else {
+            intrabc_dv_proven_valid(sequence, core, geometry, info, tile_offset)?
+        };
+        if admit {
+            sink.reconstruct_intrabc_block(
+                prediction.source,
+                prediction.target,
+                prediction.scaling,
+                skip_flag,
+                tile_offset,
+            )?;
+        }
     }
     Ok(info)
 }
