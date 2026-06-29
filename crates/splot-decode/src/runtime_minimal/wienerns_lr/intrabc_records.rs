@@ -1162,6 +1162,21 @@ fn resolve_allow_local_intrabc(core: &FrameHeaderCore) -> bool {
         .is_some_and(|params| params.allow_intrabc && params.allow_local_intrabc != Some(false))
 }
 
+/// Resolves AV2 §5.18.3.4 `allow_global_intrabc` for an IntrABC-enabled frame.
+///
+/// Per §5.18.3.4 `intrabc_params()`, `allow_global_intrabc` is READ (an `f(1)` flag) only
+/// for an intra frame with `allow_intrabc == 1`; for an inter frame it is INFERRED `0`.
+/// Unlike `allow_local_intrabc`, it is never inferred to `1`, so the parser stores the
+/// active value as `Some(true)`/`Some(false)` and an inferred `0` as `None`. The §7.13.3.18
+/// global wavefront branch is therefore only enabled when the flag is explicitly
+/// `Some(true)` — `None` (inferred `0` on a non-intra frame) and `Some(false)` both disable
+/// it. The matching `frame_is_intra` clause of `av2_is_dv_valid` is checked by the caller.
+fn resolve_allow_global_intrabc(core: &FrameHeaderCore) -> bool {
+    core.intrabc
+        .as_ref()
+        .is_some_and(|params| params.allow_intrabc && params.allow_global_intrabc == Some(true))
+}
+
 /// AV2 §6.19.7.12 `is_mv_valid` for the bounded ac0ej3 IntrABC subset, proven via the
 /// `allow_local_intrabc` local-IBC-buffer branch NARROWED to same-superblock sources.
 ///
@@ -1213,15 +1228,108 @@ fn intrabc_dv_proven_valid(
             "unsupported_wienerns_lr_selectable_transform_records_intrabc_geometry",
         )
     })?;
-    Ok(local_intrabc_range_valid(IntrabcLocalRangeInputs {
+    let block_w = geometry.n4w * MI_SIZE;
+    let block_h = geometry.n4h * MI_SIZE;
+    // `av2_is_dv_valid` (`av2/common/mvref_common.h`) tries the `allow_local_intrabc`
+    // local-IBC-buffer branch FIRST and returns valid on a hit (mvref_common.h:927-951),
+    // then — for an intra-only frame with `allow_global_intrabc` — falls through to the
+    // GLOBAL wavefront branch (mvref_common.h:956-993). Mirror that order: try the same-SB
+    // local subset first, then the §7.13.3.18 global wavefront branch gated on an
+    // intra-only frame AND an explicitly-read `allow_global_intrabc` (resolved by
+    // [`resolve_allow_global_intrabc`]). Both clauses are deterministic geometry checks
+    // that only ADMIT a source whose entire rectangle is already coded in decode order; an
+    // admitted copy is per-sample bit-exact vs the AVM pre-filter oracle. Over-rejecting is
+    // always safe (a deferred copy never claims a wrong sample), so a non-{64,128,256} SB
+    // size or missing tile info fails the global clause closed.
+    let local_valid = local_intrabc_range_valid(IntrabcLocalRangeInputs {
         mi_row: geometry.block.row,
         mi_col: geometry.block.col,
-        block_w: geometry.n4w * MI_SIZE,
-        block_h: geometry.n4h * MI_SIZE,
+        block_w,
+        block_h,
         dv_row: info.block_mv.row,
         dv_col: info.block_mv.col,
         sb_size,
+    });
+    if local_valid {
+        return Ok(true);
+    }
+    // The matching `frame_is_intra` clause of `av2_is_dv_valid` (mvref_common.h:954) plus
+    // the explicit `allow_global_intrabc`. `None` (inferred 0 on a non-intra frame) and
+    // `Some(false)` both disable the global branch — only an explicitly-read `Some(true)`
+    // on an intra-only frame enables it.
+    if core.frame_is_intra != Some(true) || !resolve_allow_global_intrabc(core) {
+        return Ok(false);
+    }
+    // The global wavefront branch needs the TRUE §5.18.7.6 superblock size (it must NOT
+    // collapse the 256 tier to 128 the way `superblock_samples` does — the `gradient` /
+    // `mib_size_log2` terms depend on the real size) and the block's tile 64x64-column
+    // extent (`total_sb64_per_row`).
+    let global_sb_size = global_superblock_samples(sequence, tile_offset)?;
+    let total_sb64_per_row = intrabc_tile_total_sb64_per_row(core, geometry, tile_offset)?;
+    Ok(global_intrabc_range_valid(IntrabcGlobalRangeInputs {
+        mi_row: geometry.block.row,
+        mi_col: geometry.block.col,
+        block_w,
+        block_h,
+        dv_row: info.block_mv.row,
+        dv_col: info.block_mv.col,
+        sb_size: global_sb_size,
+        total_sb64_per_row,
     }))
+}
+
+/// The TILE `total_sb64_per_row` of `av2_is_dv_valid` (`av2/common/mvref_common.h:984`):
+/// `(((mi_col_end - mi_col_start - 1) >> mi_size_high_log2[BLOCK_64X64]) + 1)`, the count
+/// of 64x64 columns spanning the block's tile. Derived from the block's tile interval
+/// (single-tile ac0ej3 spans the whole frame) so a multi-tile frame uses the correct
+/// per-tile extent.
+fn intrabc_tile_total_sb64_per_row(
+    core: &FrameHeaderCore,
+    geometry: IntrabcBlockGeometry,
+    tile_offset: ByteOffset,
+) -> Result<i64> {
+    let tile_info = core.tile_info.as_ref().ok_or_else(|| {
+        wienerns_lr_selectable_transform_record_error_reason(
+            tile_offset,
+            "unsupported_wienerns_lr_selectable_transform_records_intrabc_geometry",
+        )
+    })?;
+    let (tile_col_start, tile_col_end) = tile_interval_for_block(
+        &tile_info.mi_col_starts,
+        geometry.block.col,
+        geometry.n4w,
+        "unsupported_wienerns_lr_selectable_transform_records_intrabc_target_bounds",
+        tile_offset,
+    )?;
+    let tile_mi_cols =
+        i64::try_from(tile_col_end.saturating_sub(tile_col_start)).map_err(|_| {
+            wienerns_lr_selectable_transform_record_error_reason(
+                tile_offset,
+                "unsupported_wienerns_lr_selectable_transform_records_intrabc_geometry",
+            )
+        })?;
+    if tile_mi_cols <= 0 {
+        return Err(wienerns_lr_selectable_transform_record_error_reason(
+            tile_offset,
+            "unsupported_wienerns_lr_selectable_transform_records_intrabc_geometry",
+        ));
+    }
+    // mi_size_high_log2[BLOCK_64X64] == 4 (a 64x64 SB is 16 MI tall/wide).
+    Ok(((tile_mi_cols - 1) >> 4) + 1)
+}
+
+/// True §5.18.7.6 superblock sample size (64/128/256) for the global wavefront branch.
+///
+/// Distinct from [`superblock_samples`], which caps the 256x256 tier to 128 (the
+/// same-SB local subset never needs the true 256 size); the global branch's
+/// `mib_size_log2`, `gradient`, and `sb_64_residual` terms all depend on the REAL SB
+/// size, so it must not collapse 256 to 128.
+fn global_superblock_samples(sequence: &SequenceHeader, tile_offset: ByteOffset) -> Result<usize> {
+    Ok(match intra_capped_seq_sb_size(sequence, tile_offset)? {
+        SuperblockSize::Block64x64 => 64,
+        SuperblockSize::Block128x128 => 128,
+        SuperblockSize::Block256x256 => 256,
+    })
 }
 
 /// Inputs to the deterministic §6.19.7.12 local-intrabc range check (sample / MI-unit
@@ -1297,6 +1405,112 @@ fn local_intrabc_range_valid(inputs: IntrabcLocalRangeInputs) -> bool {
         && (src_right_x >> sb_size_log2) == act_sb_col
         && (src_top_y >> sb_size_log2) == act_sb_row
         && (src_bottom_y >> sb_size_log2) == act_sb_row
+}
+
+/// Inputs to the deterministic §7.13.3.18 global-intrabc wavefront range check (sample /
+/// MI-unit terms; the block vector is in eighth-pel units, `sb_size` the TRUE 64/128/256
+/// superblock sample size, `total_sb64_per_row` the block's tile 64x64-column extent).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct IntrabcGlobalRangeInputs {
+    mi_row: usize,
+    mi_col: usize,
+    block_w: usize,
+    block_h: usize,
+    dv_row: i32,
+    dv_col: i32,
+    sb_size: usize,
+    total_sb64_per_row: i64,
+}
+
+/// AVM `INTRABC_DELAY_PIXELS / 64` (`av2/common/mvref_common.h:610`): the wavefront SB64
+/// delay of the global IntrABC reference window.
+const INTRABC_DELAY_SB64: i64 = 4;
+/// `mi_size_wide_log2[BLOCK_64X64]` / `mi_size_high_log2[BLOCK_64X64]` == 4 (a 64x64 SB is
+/// 16 MI wide/tall, `common_data.h`).
+const LOG2_MI_PER_64: i64 = 4;
+/// `MI_SIZE_LOG2` == 2 (`enums.h:162`).
+const MI_SIZE_LOG2: i64 = 2;
+
+/// The GLOBAL wavefront branch of AV2 §7.13.3.18 / AVM `av2_is_dv_valid`
+/// (`av2/common/mvref_common.h:954-993`), for an INTEGER block vector on an INTRA-ONLY
+/// frame with `allow_global_intrabc`, modelled in i64.
+///
+/// This is the path AVM takes after the `allow_local_intrabc` local branch misses
+/// (mvref_common.h:951) and the frame is intra-only with global IntrABC enabled. It admits
+/// a source in the already-coded top-left wavefront region of the frame: the source's
+/// bottom-right 64x64 raster cell must lead the active block's by more than the
+/// `INTRABC_DELAY_SB64` delay, and the source-vs-active SB64 column gap must respect the
+/// per-SB-row wavefront `gradient`. The block vector is integer here (a fractional DV is
+/// deferred upstream), so the `IBC_*_INTERP_BORDER` terms are all zero and the bottom/right
+/// edges keep the `-1` integer rounding of [`local_intrabc_range_valid`] (mvref_common.h's
+/// `(src_*_edge >> 3) - 1`).
+///
+/// `sb_64_residual` is the ONLY term needing the §5.20 superblock root partition
+/// (`SB_HORZ_OR_QUAD` of a 128x128 SB at a bottom-left 64x64 position relaxes the horizon
+/// by one SB64). splot does not retain `sb_root_partition_info`, so this models it
+/// FAIL-CLOSED: `sb_64_residual == 0` (the strictest horizon) UNLESS the bottom-left-128
+/// position is geometrically possible (`sb_size == 128` and the active block sits at the
+/// bottom-left 64x64 quadrant of its 128x128 SB), in which case BOTH the `residual == 0`
+/// and the relaxed `residual == -1` horizons must admit the source — never admit a DV any
+/// partition value would reject. Whether the active block's partition is actually
+/// `SB_HORZ_OR_QUAD` only ever WIDENS AVM's admission, so requiring the stricter horizon
+/// can over-reject (safe: a deferred copy never writes a wrong sample) but never
+/// over-admits.
+fn global_intrabc_range_valid(inputs: IntrabcGlobalRangeInputs) -> bool {
+    let bw = inputs.block_w as i64;
+    let bh = inputs.block_h as i64;
+    let dv_row = i64::from(inputs.dv_row);
+    let dv_col = i64::from(inputs.dv_col);
+    let mi_row = inputs.mi_row as i64;
+    let mi_col = inputs.mi_col as i64;
+    let mi = i64::from(MI_SIZE as u32);
+    // `mib_size_log2` is the MI-tier log2 of the SB (64 -> 4, 128 -> 5, 256 -> 6); the
+    // matching `sb_size` sample size is `(1 << mib_size_log2) * MI_SIZE`.
+    let mib_size_log2: i64 = match inputs.sb_size {
+        64 => 4,
+        128 => 5,
+        256 => 6,
+        _ => return false,
+    };
+    let sb_size = i64::from(inputs.sb_size as u32);
+
+    // Integer DV: no interp border, and the `-1` integer rounding on the bottom/right
+    // source edges, exactly as `av2_is_dv_valid` derives them (mvref_common.h:956-993).
+    let src_bottom_edge = (mi_row * mi + bh) * 8 + dv_row;
+    let src_right_edge = (mi_col * mi + bw) * 8 + dv_col;
+
+    let active_sb_row = mi_row >> mib_size_log2;
+    let active_sb64_col = mi_col >> LOG2_MI_PER_64;
+    let src_sb_row = ((src_bottom_edge >> 3) - 1) >> (mib_size_log2 + MI_SIZE_LOG2);
+    let src_sb64_col = ((src_right_edge >> 3) - 1) >> (LOG2_MI_PER_64 + MI_SIZE_LOG2);
+    // `active_sb64_row` is the 64x64-tier row of the active block (sample-major).
+    let active_sb64_row = (mi_row * mi) >> (LOG2_MI_PER_64 + MI_SIZE_LOG2);
+
+    // The `wavefront` raster index mixes the SB row stride (`total_sb64_per_row`, 64x64
+    // columns) with the SB128/256-tier `active_sb_row` exactly as AVM does.
+    let active_sb64 = active_sb_row * inputs.total_sb64_per_row + active_sb64_col;
+    let src_sb64 = src_sb_row * inputs.total_sb64_per_row + src_sb64_col;
+
+    let gradient = 1 + INTRABC_DELAY_SB64 + i64::from(sb_size > 64) + 2 * i64::from(sb_size > 128);
+    let wf_offset = gradient * (active_sb_row - src_sb_row);
+
+    // `sb_64_residual` fail-closed: 0 unless the bottom-left-128 position is possible.
+    let is_bottom_left = sb_size == 128 && (active_sb64_col & 1) == 0 && (active_sb64_row & 1) == 1;
+    // The set of residual values any §5.20 root partition could legally produce here.
+    // For the bottom-left-128 case AVM's `SB_HORZ_OR_QUAD` partition yields `-1` and
+    // every other partition yields `0`; without partition state both must admit.
+    let residuals: &[i64] = if is_bottom_left { &[0, -1] } else { &[0] };
+    residuals.iter().all(|&sb_64_residual| {
+        if src_sb64 >= active_sb64 - INTRABC_DELAY_SB64 - sb_64_residual {
+            return false;
+        }
+        if src_sb_row > active_sb_row
+            || src_sb64_col >= active_sb64_col - INTRABC_DELAY_SB64 - sb_64_residual + wf_offset
+        {
+            return false;
+        }
+        true
+    })
 }
 
 fn tile_interval_for_block(
