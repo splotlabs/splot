@@ -171,24 +171,30 @@ impl IntraDirectionalAngle {
     }
 
     /// Returns the furthest logical edge index this one-sided §7.13.2.8 IDIF
-    /// projection reads for a `size` block (`mrlIndex == 0`), i.e. the largest
+    /// projection reads for a `size` block at `mrl_index`, i.e. the largest
     /// `base + 2` the 4-tap reads while `base <= maxBase`, capped at `maxBase`
-    /// (`= w + h - 1`). Beyond the block's own in-edge span (`side - 1`) this is
-    /// how far into the above-right (zone-1) / below-left (zone-3) the prediction
-    /// reaches. A caller verifies those neighbour samples are reconstructed before
-    /// admitting the block. Returns `None` only on arithmetic overflow.
+    /// (`= w + h - 1 + (mrlIndex << 1)`). Beyond the block's own in-edge span
+    /// (`side - 1`) this is how far into the above-right (zone-1) / below-left
+    /// (zone-3) the prediction reaches. A caller verifies those neighbour samples
+    /// are reconstructed before admitting the block. `mrl_index == 0` is the
+    /// immediate reference line.
     ///
     /// # Errors
     /// Returns [`ReconError::ArithmeticOverflow`] when the block dimensions
     /// overflow the index arithmetic.
-    pub fn max_one_sided_edge_read_index(self, size: IntraRectBlockSize) -> Result<usize> {
+    pub fn max_one_sided_edge_read_index(
+        self,
+        size: IntraRectBlockSize,
+        mrl_index: usize,
+    ) -> Result<usize> {
         let derivative = one_sided_idif_derivative(self);
         let branch = self.branch();
-        let max_base = one_sided_max_base(size)?;
+        let max_base = one_sided_max_base(size, mrl_index)?;
         let mut furthest: i64 = 0;
         for row in 0..size.height() {
             for column in 0..size.width() {
-                let reference = one_sided_idif_reference(branch, row, column, derivative)?;
+                let reference =
+                    one_sided_idif_reference(branch, row, column, derivative, mrl_index)?;
                 let read = if reference.base <= max_base {
                     reference
                         .base
@@ -730,15 +736,56 @@ pub fn predict_intra_directional_angle_rect_one_sided_idif_into<T: ReconSample>(
     output: &mut [T],
     stride_samples: usize,
 ) -> Result<()> {
+    predict_intra_directional_angle_rect_one_sided_idif_mrl_into(
+        bit_depth,
+        size,
+        angle,
+        edges,
+        0,
+        output,
+        stride_samples,
+    )
+}
+
+/// Writes a supported luma IDIF one-sided directional prediction at a §5.20.5.5
+/// `mrl_index` (the multi-reference-line distance; `0` is the immediate edge).
+///
+/// The §7.13.2.8 projection shifts out by `mrl_index` reference lines: `idx =
+/// (scaled + 1 + mrl_index) * derivative`, `maxBase = w + h - 1 + (mrlIndex <<
+/// 1)`. The prepared `edges` slice must be the wider MRL edge (length `w + h + 4 +
+/// (mrlIndex << 1)`); index zero is still the logical `-2` sample. Otherwise
+/// identical to [`predict_intra_directional_angle_rect_one_sided_idif_into`].
+///
+/// # Errors
+/// Returns the same [`ReconError`] cases as
+/// [`predict_intra_directional_angle_rect_one_sided_idif_into`].
+pub fn predict_intra_directional_angle_rect_one_sided_idif_mrl_into<T: ReconSample>(
+    bit_depth: BitDepth,
+    size: IntraRectBlockSize,
+    angle: IntraDirectionalAngle,
+    edges: IntraDirectionalAngleIdifEdges<'_, T>,
+    mrl_index: usize,
+    output: &mut [T],
+    stride_samples: usize,
+) -> Result<()> {
     let edge = validate_one_sided_idif_inputs(
         bit_depth,
         size,
         angle,
         edges,
+        mrl_index,
         output.len(),
         stride_samples,
     )?;
-    write_one_sided_idif_prediction(bit_depth, size, angle, edge, output, stride_samples)
+    write_one_sided_idif_prediction(
+        bit_depth,
+        size,
+        angle,
+        edge,
+        mrl_index,
+        output,
+        stride_samples,
+    )
 }
 
 /// Writes a supported luma IDIF zone-1 one-sided directional prediction from a
@@ -1189,6 +1236,7 @@ fn validate_one_sided_idif_inputs<T: ReconSample>(
     size: IntraRectBlockSize,
     angle: IntraDirectionalAngle,
     edges: IntraDirectionalAngleIdifEdges<'_, T>,
+    mrl_index: usize,
     output_len: usize,
     stride_samples: usize,
 ) -> Result<&[T]> {
@@ -1209,17 +1257,19 @@ fn validate_one_sided_idif_inputs<T: ReconSample>(
         });
     }
     let edge = edges.edge;
-    let edge_len = required_one_sided_idif_edge_len(size)?;
+    let edge_len = required_one_sided_idif_edge_len(size, mrl_index)?;
     validate_edge(direction, edge, edge_len, bit_depth)?;
-    validate_one_sided_idif_index_bounds(size, angle, edge.len())?;
+    validate_one_sided_idif_index_bounds(size, angle, mrl_index, edge.len())?;
     Ok(edge)
 }
 
-/// One-sided IDIF edge length: logical `-2 ..= w + h + 1` is `w + h + 4` samples
-/// (`mrlIndex == 0`), for both the zone-1 above edge and the zone-3 left edge.
-fn required_one_sided_idif_edge_len(size: IntraRectBlockSize) -> Result<usize> {
+/// One-sided IDIF edge length: logical `-2 ..= w + h + 1 + (mrlIndex << 1)` is
+/// `w + h + 4 + (mrlIndex << 1)` samples, for both the zone-1 above edge and the
+/// zone-3 left edge. `mrl_index == 0` is the immediate reference line.
+fn required_one_sided_idif_edge_len(size: IntraRectBlockSize, mrl_index: usize) -> Result<usize> {
     required_edge_len(size)?
         .checked_add(4)
+        .and_then(|v| v.checked_add(mrl_index << 1))
         .ok_or(ReconError::ArithmeticOverflow {
             context: "one-sided directional angle IDIF edge length",
         })
@@ -1228,14 +1278,15 @@ fn required_one_sided_idif_edge_len(size: IntraRectBlockSize) -> Result<usize> {
 fn validate_one_sided_idif_index_bounds(
     size: IntraRectBlockSize,
     angle: IntraDirectionalAngle,
+    mrl_index: usize,
     edge_len: usize,
 ) -> Result<()> {
     let derivative = one_sided_idif_derivative(angle);
     let branch = angle.branch();
-    let max_base = one_sided_max_base(size)?;
+    let max_base = one_sided_max_base(size, mrl_index)?;
     for row in 0..size.height() {
         for column in 0..size.width() {
-            let reference = one_sided_idif_reference(branch, row, column, derivative)?;
+            let reference = one_sided_idif_reference(branch, row, column, derivative, mrl_index)?;
             if reference.base <= max_base {
                 for tap in 0..(DR_INTERP_FILTER_TAPS as i64) {
                     let logical = reference.base.checked_add(tap - 1).ok_or(
@@ -1269,36 +1320,45 @@ fn one_sided_idif_derivative(angle: IntraDirectionalAngle) -> i64 {
     }
 }
 
-/// §7.13.2.8 `maxBaseX = maxBaseY = w + h - 1 + (mrlIndex << 1)` (`mrlIndex ==
-/// 0`); identical for the zone-1 above and zone-3 left one-sided projections.
-fn one_sided_max_base(size: IntraRectBlockSize) -> Result<i64> {
-    let max_base =
-        required_edge_len(size)?
-            .checked_sub(1)
-            .ok_or(ReconError::ArithmeticOverflow {
-                context: "one-sided directional angle maxBase",
-            })?;
+/// §7.13.2.8 `maxBaseX = maxBaseY = w + h - 1 + (mrlIndex << 1)`; identical for
+/// the zone-1 above and zone-3 left one-sided projections. `mrl_index == 0` is the
+/// immediate reference line.
+fn one_sided_max_base(size: IntraRectBlockSize, mrl_index: usize) -> Result<i64> {
+    let max_base = required_edge_len(size)?
+        .checked_sub(1)
+        .and_then(|v| v.checked_add(mrl_index << 1))
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "one-sided directional angle maxBase",
+        })?;
     i64::try_from(max_base).map_err(|_| ReconError::ArithmeticOverflow {
         context: "one-sided directional angle maxBase range",
     })
 }
 
 /// AV2 §7.13.2.8 one-sided projection for one predicted sample. Zone-1 above
-/// (step 1, `pAngle < 90`): `idx = (i + 1) * dx`, `base = (idx >> 6) + j`. Zone-3
-/// left (step 3, `pAngle > 180`): `idx = (j + 1) * dy`, `base = (idx >> 6) + i`.
-/// `shift = (idx >> 1) & 0x1F` in both (`mrlIndex == 0`).
+/// (step 1, `pAngle < 90`): `idx = (i + 1 + mrlIndex) * dx`, `base = (idx >> 6) +
+/// j`. Zone-3 left (step 3, `pAngle > 180`): `idx = (j + 1 + mrlIndex) * dy`,
+/// `base = (idx >> 6) + i`. `shift = (idx >> 1) & 0x1F` in both. The §5.20.5.5
+/// `mrlIndex` shifts the projection out by `mrlIndex` reference lines (`mrlIndex ==
+/// 0` is the immediate edge).
 fn one_sided_idif_reference(
     branch: DirectionalAngleBranch,
     row: usize,
     column: usize,
     derivative: i64,
+    mrl_index: usize,
 ) -> Result<OneSidedReference> {
     let (scaled, offset) = match branch {
         DirectionalAngleBranch::Above { .. } => (row, column),
         DirectionalAngleBranch::Left { .. } => (column, row),
     };
-    let scaled_plus_one =
-        checked_usize_plus_one_i64(scaled, "one-sided directional angle projection index")?;
+    let scaled_plus_one = scaled
+        .checked_add(1)
+        .and_then(|v| v.checked_add(mrl_index))
+        .and_then(|v| i64::try_from(v).ok())
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "one-sided directional angle projection index",
+        })?;
     let idx = scaled_plus_one
         .checked_mul(derivative)
         .ok_or(ReconError::ArithmeticOverflow {
@@ -1323,16 +1383,17 @@ fn write_one_sided_idif_prediction<T: ReconSample>(
     size: IntraRectBlockSize,
     angle: IntraDirectionalAngle,
     edge: &[T],
+    mrl_index: usize,
     output: &mut [T],
     stride_samples: usize,
 ) -> Result<()> {
     let derivative = one_sided_idif_derivative(angle);
     let branch = angle.branch();
-    let max_base = one_sided_max_base(size)?;
+    let max_base = one_sided_max_base(size, mrl_index)?;
     for row in 0..size.height() {
         let row_start = row * stride_samples;
         for column in 0..size.width() {
-            let reference = one_sided_idif_reference(branch, row, column, derivative)?;
+            let reference = one_sided_idif_reference(branch, row, column, derivative, mrl_index)?;
             let value = if reference.base <= max_base {
                 idif_tap(edge, reference.base, reference.shift, bit_depth)?
             } else {

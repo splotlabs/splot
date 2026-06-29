@@ -80,6 +80,74 @@ fn d45_one_sided_idif_clamps_base_at_max_base_x() {
 }
 
 #[test]
+fn d45_mrl_idif_reads_the_offset_reference_line_not_the_adjacent_one() {
+    // D45 (dx = 64) has shift == 0 everywhere, so the IDIF reduces to the copy
+    // Edge[base] with base = (i + 1 + mrlIndex) + j. The ascending edge makes the
+    // mrlIndex shift visible: a slot index is its own value, so a sample equals its
+    // logical-`base` reference line. mrlIndex == 2 must read two lines further out
+    // than mrlIndex == 0 (an adjacent-line read would copy the smaller values).
+    // Edge length for a 4x4 mrlIndex == 2 edge is w + h + 4 + (2 << 1) == 16; slot k
+    // is logical (k - 2).
+    let above_idif: [u8; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+    let mut mrl0 = [0u8; 16];
+    predict_intra_directional_angle_rect_one_sided_idif_mrl_into(
+        BitDepth::Eight,
+        rect_size(2, 2),
+        IntraDirectionalAngle::D45,
+        IntraDirectionalAngleIdifEdges::above(&above_idif[..12]),
+        0,
+        &mut mrl0,
+        4,
+    )
+    .unwrap();
+    // mrlIndex == 0: value(i, j) = base + 2 = (i + j + 1) + 2.
+    assert_eq!(mrl0, [3, 4, 5, 6, 4, 5, 6, 7, 5, 6, 7, 8, 6, 7, 8, 9]);
+
+    let mut mrl2 = [0u8; 16];
+    predict_intra_directional_angle_rect_one_sided_idif_mrl_into(
+        BitDepth::Eight,
+        rect_size(2, 2),
+        IntraDirectionalAngle::D45,
+        IntraDirectionalAngleIdifEdges::above(&above_idif),
+        2,
+        &mut mrl2,
+        4,
+    )
+    .unwrap();
+    // mrlIndex == 2: value(i, j) = base + 2 = (i + j + 3) + 2, two reference lines
+    // further out than mrlIndex == 0 (every sample larger by exactly 2).
+    assert_eq!(mrl2, [5, 6, 7, 8, 6, 7, 8, 9, 7, 8, 9, 10, 8, 9, 10, 11]);
+}
+
+#[test]
+fn d45_mrl_idif_clamps_at_the_widened_max_base() {
+    // maxBase = w + h - 1 + (mrlIndex << 1) = 7 + 2 == 9 for 4x4 mrlIndex == 1.
+    // The trailing edge slots (logical 8..10) repeat the clamp value so a base past
+    // maxBase reads Edge[maxBase]. Place a sentinel beyond maxBase to prove the walk
+    // never reads it. Edge length 4 + 4 + 4 + (1 << 1) == 14.
+    let above_idif: [u8; 14] = [0, 0, 10, 20, 30, 40, 50, 60, 70, 80, 80, 80, 250, 250];
+    let mut output = [0u8; 16];
+    predict_intra_directional_angle_rect_one_sided_idif_mrl_into(
+        BitDepth::Eight,
+        rect_size(2, 2),
+        IntraDirectionalAngle::D45,
+        IntraDirectionalAngleIdifEdges::above(&above_idif),
+        1,
+        &mut output,
+        4,
+    )
+    .unwrap();
+    // base = (i + 2 + j); value = Edge[min(base, 9)] (slot base + 2). The 250
+    // sentinels (slots 12, 13 = logical 10, 11) are never read.
+    assert_eq!(
+        output,
+        [
+            30, 40, 50, 60, 40, 50, 60, 70, 50, 60, 70, 80, 60, 70, 80, 80
+        ]
+    );
+}
+
+#[test]
 fn d45_one_sided_idif_rejects_wrong_length_edge() {
     let above_idif = [0u8; 8];
     let mut output = [0u8; 16];
