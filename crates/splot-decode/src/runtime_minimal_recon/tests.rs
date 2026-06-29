@@ -118,10 +118,6 @@ fn lay_left_col(ws: &mut CurrentFrameWorkspace<u8>, edge_x: usize, log2_h: u8, p
 #[test]
 fn zone1_d45_mrl_index_2_reads_the_offset_above_reference_line() {
     let mut ws = new_general_intra_workspace::<u8>(64, 64, BitDepth::Eight).unwrap();
-    // A 32x4 block at (0, 4) spans rows 4..8. Row 5 (the `MrlIndex == 2` offset
-    // reference line for a block at y == 8) carries an ASCENDING pattern; the other
-    // rows — including the immediate-adjacent row 7 — carry a DISTINCT constant
-    // (`200`) a faithful offset read must NOT pick up.
     let mut block = vec![200u8; 32 * 4];
     for c in 0..32 {
         block[32 + c] = 10 + 4 * c as u8; // row index 1 within the block == row 5
@@ -158,10 +154,6 @@ fn zone1_d45_mrl_index_2_reads_the_offset_above_reference_line() {
     )
     .unwrap();
 
-    // pred[i][j] = AboveRow_row5[base] with base = (i + 1 + 2) + j = i + j + 3, where
-    // AboveRow_row5[k] = CurrFrame[5][8 + k] = 10 + 4 * (8 + k) = 42 + 4k. So
-    // pred[i][j] = 42 + 4 * (i + j + 3) = 54 + 4 * (i + j). NONE is the constant 200,
-    // proving the offset (row 5) line was read, not the adjacent (row 7) line.
     let got: Vec<u8> = (0..4)
         .flat_map(|r| (0..4).map(move |c| (r, c)))
         .map(|(r, c)| ws.reconstructed_sample(PlaneId::Y, 8 + c, 8 + r).unwrap())
@@ -327,9 +319,9 @@ fn zone3_d203_interior_leaf_reads_diagonal_above_left_corner() {
 /// (MrlIndex << 1) == 17`. This pins the zone-3 MRL geometry and edge independently
 /// of any partial-frame reconstruction; a primitive that read the immediate column
 /// (15), the wrong base shift, or the wrong maxBase would diverge from the reference.
+/// `FILTER` is the §7.13.2.8 `Dr_Interp_Filter` table.
 #[test]
 fn zone3_d203_mrl_index_1_matches_inline_avm_z3_idif_reference() {
-    // §7.13.2.8 Dr_Interp_Filter rows used by D203 mrl=1 (shifts the projection hits).
     const FILTER: [[i32; 4]; 32] = [
         [0, 128, 0, 0],
         [-2, 127, 4, -1],
@@ -369,14 +361,8 @@ fn zone3_d203_mrl_index_1_matches_inline_avm_z3_idif_reference() {
     const W: usize = 8;
     const H: usize = 8;
     let corner: i64 = 200;
-    // The left column at col 14 over rows 16.. (the in-block 8 + below-left up to
-    // maxBase); ascending and distinct so a wrong column / base is observable.
-    let left_col: Vec<i64> = (0..32).map(|i| 40 + 3 * i as i64).collect();
-
-    // Build the logical edge slice `Edge[-2 ..= w + h + 1 + (mrl << 1)]` exactly as
-    // the primitive does: slot 0 = logical -2, slot 1 = corner (-1), slot i+2 =
-    // logical i. maxBase = w + h - 1 + (mrl << 1).
-    let max_base = W + H - 1 + (MRL as usize) * 2;
+    let left_col: Vec<i64> = (0..32).map(|i| 40 + 3 * i as i64).collect(); // ascending col 14
+    let max_base = W + H - 1 + (MRL as usize) * 2; // logical edge: slot 0 = -2, slot 1 = corner
     let mut edge = vec![0i64; max_base + 5];
     edge[1] = corner;
     for i in 0..=max_base {
@@ -406,10 +392,7 @@ fn zone3_d203_mrl_index_1_matches_inline_avm_z3_idif_reference() {
         })
         .collect();
 
-    // Lay the workspace so col 14 over rows 16..40 is `left_col`, the corner
-    // (14, 15) is 200, then run the primitive at (16, 16) with mrl=1.
     let mut ws = new_general_intra_workspace::<u8>(64, 64, BitDepth::Eight).unwrap();
-    // corner block at (12, 12) carrying 200 at (14, 15).
     ws.write_rect_block(
         PlaneId::Y,
         12,
@@ -418,8 +401,6 @@ fn zone3_d203_mrl_index_1_matches_inline_avm_z3_idif_reference() {
         &[200u8; 16],
     )
     .unwrap();
-    // left column at col 14 over rows 16..48 (a 4x32 block at (12, 16); col index 2
-    // within the block == col 14).
     let mut col_block = vec![0u8; 4 * 32];
     for (r, &v) in left_col.iter().enumerate() {
         for c in 0..4 {

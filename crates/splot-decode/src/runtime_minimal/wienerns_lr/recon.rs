@@ -788,6 +788,18 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
     ///   below-left (zone-3) the projection walks into — counted EXACTLY from
     ///   `IntraDirectionalAngle::max_one_sided_edge_read_index`, so an under-covered
     ///   neighbour DEFERS rather than reading a fill sentinel.
+    ///
+    /// §5.20.5.5 MULTI-REFERENCE-LINE: a non-zero `MrlIndex` shifts the §7.13.2.8
+    /// `pAngle` off the raw `Mode_To_Angle` by `Mrl_Index_To_Delta[MrlIndex]`, so a
+    /// cardinal V_PRED / H_PRED leaf becomes a real angle on the offset reference line.
+    /// The ZONE-1 (above) MRL projection is admitted (the edge builder threads the
+    /// `aboveMrlIndex == sbBoundary ? 0 : MrlIndex` row offset and the widened
+    /// `maxBase`); the §7.13.2.7 edge/corner filter and IBP blend are skipped at
+    /// `MrlIndex > 0` (AVM `mrl_index == 0` gates). The ZONE-3 (left) MRL, the zone-2
+    /// middle band, and the `MrlIndex`-3 exact-cardinal still DEFER: the zone-3
+    /// primitive is AVM-exact in isolation (`zone3_d203_mrl_index_1...`) but a
+    /// near-cardinal `pAngle == 181` interior leaf is off by 1 in its last projected
+    /// row against the stream oracle — unresolved.
     #[allow(clippy::too_many_arguments)]
     fn try_reconstruct_one_sided_angular(
         &mut self,
@@ -815,11 +827,8 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         let nominal_angle = i32::from(nominal) + i32::from(angle_delta_y) * ANGLE_STEP + mrl_delta;
         let p_angle = wide_angle_mapping(w, h, nominal_angle);
         if 90 < p_angle && p_angle < 180 {
-            // The §7.13.2.8 zone-2 middle band at a non-zero MrlIndex is not yet
-            // modelled (the MRL middle minBase shift differs); DEFER it. MrlIndex == 0
-            // routes to the verified two-sided middle path.
             if mrl != 0 {
-                return Ok(false);
+                return Ok(false); // §7.13.2.8 zone-2 middle MRL is unmodelled
             }
             return self.try_reconstruct_two_sided_middle(
                 mi_col,
@@ -848,9 +857,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         let not4x4 = !(w == 4 && h == 4);
         let apply_ibp = self.enable_ibp && not4x4;
         let angle_delta_even = angle_delta_y % 2 == 0;
-        // §7.13.2.7 gates the IBP secondary blend on `MrlIndex == 0` (AVM
-        // `mrl_index == 0 && angle_delta % 2 == 0`), so a non-zero MrlIndex never IBPs.
-        let use_ibp = apply_ibp && angle_delta_even && mrl == 0;
+        let use_ibp = apply_ibp && angle_delta_even && mrl == 0; // §7.13.2.7 IBP needs MrlIndex == 0
         if use_ibp {
             return self.try_reconstruct_one_sided_ibp_angular(
                 mi_col,
@@ -868,9 +875,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 tile_offset,
             );
         }
-        // §7.13.2.7 / AVM `if (!disable_edge_filter && mrl_index == 0)`: the edge and
-        // corner filter run ONLY at the immediate line; a non-zero MrlIndex reads the
-        // raw offset edge unfiltered.
         let edge_filter = if mrl == 0 {
             match self.resolve_one_sided_edge_filter(
                 mi_col,
@@ -912,8 +916,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 ) else {
                     return Ok(false);
                 };
-                // §7.13.2.1 `aboveMrlIndex == sbBoundary ? 0 : MrlIndex` (the SB-row
-                // boundary forces the above line to the immediate edge).
                 let above_mrl_inputs = OneSidedAboveMrl {
                     mrl_index: mrl,
                     above_mrl_index: self.above_mrl_index(mi_row, mrl),
@@ -942,15 +944,8 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 })?;
             }
             IntraDirectionalAngleEdge::Left => {
-                // DEFER the zone-3 (left-reading) MRL projection. The primitive is
-                // AVM-exact in isolation (proven by
-                // `zone3_d203_mrl_index_1_matches_inline_avm_z3_idif_reference`), but
-                // against the stream oracle a near-cardinal `pAngle == 181` (dy == 1)
-                // interior leaf is off by 1 in its LAST projected row even with every
-                // §7.13.2.1 edge input bit-exact — an unresolved discrepancy, so it stays
-                // deferred until reconciled with avmdec. Zone-1 (above) MRL is verified.
                 if mrl != 0 {
-                    return Ok(false);
+                    return Ok(false); // DEFER zone-3 MRL: pAngle 181 mismatches avmdec
                 }
                 let Some(num4_below_left) = self.one_sided_left_coverage(
                     mi_col,
@@ -1048,9 +1043,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         else {
             return Ok(false);
         };
-        // The IBP one-sided path is gated to `MrlIndex == 0` (the §7.13.2.7 IBP
-        // blend never fires with a non-zero MrlIndex), so the read extent uses the
-        // immediate reference line.
         let Ok(primary_max_read) = angle.max_one_sided_edge_read_index(block_size, 0) else {
             return Ok(false);
         };
@@ -1567,12 +1559,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     IntraCardinalDirection::Horizontal => "H_PRED",
                 };
                 if mrl_index != 0 {
-                    // A non-zero MrlIndex nudges the cardinal V_PRED (90) / H_PRED
-                    // (180) off the cardinal via §7.13.2.8 `Mrl_Index_To_Delta`, so the
-                    // leaf is a genuine directional projection on the offset reference
-                    // line — route it to the angular path (which threads the MRL edge
-                    // offset and DEFERS the still-unmodelled zone-2 / zone-3 / MrlIndex-3
-                    // cases). The shared tail marks/records on success.
                     let routed = match leaf_y_mode {
                         Some(mode) => self.try_reconstruct_one_sided_angular(
                             mi_col,
@@ -1601,7 +1587,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                         );
                     }
                 } else {
-                    // MrlIndex == 0: the immediate-edge §7.13.2.8 cardinal copy.
                     if !self.full_recon
                         && !self.cardinal_edge_reconstructed(
                             direction,

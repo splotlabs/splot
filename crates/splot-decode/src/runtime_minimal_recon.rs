@@ -1130,8 +1130,6 @@ pub(crate) fn reconstruct_general_intra_one_sided_neighbour_block_into<T: ReconS
             width,
         )?;
     } else {
-        // The chroma bilinear branch is `MrlIndex == 0` only (chroma MRL is not
-        // modelled here); reject a non-zero MRL rather than read the wrong edge.
         if mrl.mrl_index != 0 {
             return Err(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge);
         }
@@ -1179,6 +1177,11 @@ pub(crate) fn reconstruct_general_intra_one_sided_neighbour_block_into<T: ReconS
 /// and `AboveRow[maxBase + 1] = AboveRow[maxBase + 2] = AboveRow[maxBase]` (the
 /// two trailing samples repeat the clamped last in-row sample). `aboveLimit =
 /// Min(maxX, x + w + 4 * num4AboveRight - 1)`.
+///
+/// For `MrlIndex > 0` the above row is read `aboveMrlIndex` lines further up (AVM
+/// `above_ref_1st = ref - ref_stride * (aboveMrlIndex + 1)`, with `aboveMrlIndex ==
+/// sbBoundary ? 0 : MrlIndex` resolved by the caller), and the projection geometry
+/// widens by `mrl_index` (`maxBase += mrl_index << 1`).
 #[allow(clippy::too_many_arguments)]
 fn build_one_sided_above_idif_edge<T: ReconSample>(
     workspace: &CurrentFrameWorkspace<T>,
@@ -1192,9 +1195,6 @@ fn build_one_sided_above_idif_edge<T: ReconSample>(
     above_mrl_index: usize,
     edge_filter: OneSidedEdgeFilter,
 ) -> core::result::Result<Vec<T>, GeneralIntraResidualError> {
-    // §7.13.2.1 / AVM `above_ref_1st = ref - ref_stride * (aboveMrlIndex + 1)`:
-    // the above row is read `aboveMrlIndex` lines further up than the immediate
-    // edge. `aboveMrlIndex == sbBoundary ? 0 : MrlIndex` is resolved by the caller.
     let above_row = y
         .checked_sub(1)
         .and_then(|row| row.checked_sub(above_mrl_index))
@@ -1401,8 +1401,6 @@ pub(crate) fn reconstruct_general_intra_one_sided_left_neighbour_block_into<T: R
             width,
         )?;
     } else {
-        // The chroma bilinear branch is `MrlIndex == 0` only (chroma MRL is not
-        // modelled here); reject a non-zero MRL rather than read the wrong edge.
         if mrl_index != 0 {
             return Err(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge);
         }
@@ -1452,6 +1450,10 @@ pub(crate) fn reconstruct_general_intra_one_sided_left_neighbour_block_into<T: R
 /// (here `LeftCol[-2] = LeftCol[-1]`) and `LeftCol[maxBase + 1] = LeftCol[maxBase +
 /// 2] = LeftCol[maxBase]` (the two trailing samples repeat the clamped last in-column
 /// sample).
+///
+/// For `MrlIndex > 0` the left column is read `MrlIndex` columns further left (AVM
+/// `left_ref_1st = ref - 1 - MrlIndex`; the left axis has no sbBoundary special
+/// case), and the projection widens by `mrl_index` (`maxBase += mrl_index << 1`).
 #[allow(clippy::too_many_arguments)]
 fn build_one_sided_left_idif_edge<T: ReconSample>(
     workspace: &CurrentFrameWorkspace<T>,
@@ -1465,9 +1467,6 @@ fn build_one_sided_left_idif_edge<T: ReconSample>(
     mrl_index: usize,
     edge_filter: OneSidedEdgeFilter,
 ) -> core::result::Result<Vec<T>, GeneralIntraResidualError> {
-    // §7.13.2.1 / AVM `left_ref_1st = ref - 1 - MrlIndex`: the left column is read
-    // `MrlIndex` columns further left than the immediate edge (the left axis has no
-    // sbBoundary special case — only the above axis does).
     let left_col = x
         .checked_sub(1)
         .and_then(|col| col.checked_sub(mrl_index))
